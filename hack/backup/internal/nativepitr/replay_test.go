@@ -93,6 +93,7 @@ type commitThenUncertainReplayStore struct {
 	storage.KvStorage
 	commits                   int
 	uncertainOnce             bool
+	uncertainAtCommit         int
 	uncertainBeforeCommitOnce bool
 	cancelAfterCommit         context.CancelFunc
 	failReadsAfterCommit      bool
@@ -129,7 +130,7 @@ func (b *commitThenUncertainReplayBatch) Commit(ctx context.Context) error {
 		return err
 	}
 	b.store.commits++
-	if b.store.uncertainOnce {
+	if b.store.uncertainOnce && (b.store.uncertainAtCommit == 0 || b.store.commits == b.store.uncertainAtCommit) {
 		b.store.uncertainOnce = false
 		b.store.reconciliationReadsFail = b.store.failReadsAfterCommit
 		if b.store.cancelAfterCommit != nil {
@@ -760,6 +761,47 @@ func TestApplyReplaySeparatesTransactionsWithCollidingCommitTS(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ReplayApplyResult{AppliedMutations: 3, AppliedTransactions: 2, LastCommitTS: 150, LastStartTS: 121}, result)
 	require.Equal(t, 2, target.commits, "each distinct source start TS must commit separately")
+	require.NotEmpty(t, mutations[0].Key, "the compatibility API must preserve caller-owned mutations")
+}
+
+func TestApplyReplayAndReleaseClearsOnlyDurablyReconciledTransactions(t *testing.T) {
+	task, _ := readyTask(t)
+	ks, err := coder.NewKeyspace(task.Keyspace)
+	require.NoError(t, err)
+	encode := ks.NewCoder().EncodeRevisionKey
+	mutations := []ReplayMutation{
+		{CommitTS: 150, StartTS: 120, Key: encode([]byte("/a")), Value: bytes.Repeat([]byte{'a'}, 1024)},
+		{CommitTS: 151, StartTS: 121, Key: encode([]byte("/b")), Value: bytes.Repeat([]byte{'b'}, 1024)},
+		{CommitTS: 152, StartTS: 122, Key: encode([]byte("/c")), Value: bytes.Repeat([]byte{'c'}, 1024)},
+	}
+	mutationDigest, err := digestReplayMutations(mutations)
+	require.NoError(t, err)
+	manifest := ReplayManifest{
+		Format: ReplayManifestFormat, LogArtifactReceiptSHA256: digest, ArtifactManifestSHA256: digest,
+		Keyspace: task.Keyspace, StartExclusiveTS: 119, RestoreTS: 152,
+		MutationCount: 3, TransactionCount: 3, PutCount: 3,
+		FirstCommitTS: 150, LastCommitTS: 152, MutationsSHA256: mutationDigest,
+		AllEntriesInTenantRange: true, AllPutsResolved: true, ExactLocalMirrorRechecked: true,
+	}
+	retryMutations := append([]ReplayMutation(nil), mutations...)
+	inner := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, inner.Close()) })
+	target := &commitThenUncertainReplayStore{KvStorage: inner, uncertainOnce: true, uncertainAtCommit: 2}
+
+	result, err := ApplyReplayAndRelease(t.Context(), target, digest, manifest, mutations)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.Equal(t, ReplayApplyResult{AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: 150, LastStartTS: 120}, result)
+	require.Equal(t, ReplayMutation{}, mutations[0], "a definitely committed transaction must release its payload before a later failure")
+	require.NotEmpty(t, mutations[1].Key, "an uncertain transaction must retain its payload until checkpoint reconciliation")
+	require.NotEmpty(t, mutations[2].Key, "an unattempted transaction must remain intact")
+
+	result, err = ApplyReplayAndRelease(t.Context(), target, digest, manifest, retryMutations)
+	require.NoError(t, err)
+	require.Equal(t, ReplayApplyResult{CheckpointMutationsBefore: 2, CheckpointTransactionsBefore: 2, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: 152, LastStartTS: 122, Resumed: true}, result)
+	require.Equal(t, ReplayMutation{}, retryMutations[0], "checkpoint-reconciled prefix must be released")
+	require.Equal(t, ReplayMutation{}, retryMutations[1], "uncertain transaction must release after checkpoint reconciliation")
+	require.Equal(t, ReplayMutation{}, retryMutations[2], "newly committed transaction must be released")
+	require.Equal(t, 3, target.commits, "each source transaction must commit exactly once across the retry")
 }
 
 func TestMaterializeReplayFailsClosed(t *testing.T) {

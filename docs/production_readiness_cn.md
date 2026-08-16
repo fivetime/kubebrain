@@ -3074,6 +3074,13 @@ reconciliation 窗口拒绝全部读取；调用保留 `ErrUncertainResult` 和�
 生产 CLI 从 exact marker + 257 个 open key 幂等生成 handoff，随后最终语义验证通过。该门禁证明跨调用证据收敛，但故障读取
 是确定性包装，不是宿主网络规则、PD/TiKV 分区或进程重启；生产故障矩阵仍必须覆盖这些条件。
 
+native log-replay 生产 CLI 自 A4911 起使用 `ApplyReplayAndRelease`：在完整 manifest/digest/order 校验后，启动 checkpoint 已确认
+的 mutation 前缀立即清除引用；此后每个 source transaction 只有在 mutation 与 v2 checkpoint 原子提交成功后才清除 key/value
+引用。uncertain 或失败的当前事务保持完整，不会用内存释放冒充提交证据。公共 `ApplyReplay` 仍是非破坏 API，破坏性变体的输入
+在调用后不得复用。2026-08-16 source/target 各 3 PD + 3 TiKV 的 plaintext 正式全链以 41.98 秒通过，v6 receipt、fence handoff
+与最终 revision/key/lease/watch 均通过。该优化只让 apply 阶段的 live payload 随 checkpoint 前进而下降；materialization 仍先
+持有完整 canonical slice，生产规模放宽必须等待 disk-backed canonical plan/stream apply，不能仅依赖 GC 或本项结果。
+
 TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
 每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
 恢复方关闭 gate 时必须以 range compare 同时证明 session 前缀为空，因此新进程注册与 restore acquire 只能

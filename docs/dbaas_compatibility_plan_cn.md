@@ -55098,6 +55098,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   语义验收 48.29 秒通过，一次性容器已清理。该证据是“真实 TiKV commit + 确定性 post-commit read loss”，不冒充真实 PD/TiKV
   网络分区或进程重启；后者仍需独立故障注入。
 
+- A4911 开始收敛 A4894-A4897 保留的 canonical replay output 内存驻留。`MaterializeReplayWithScratchDir` 仍需先构造并校验完整
+  canonical mutation slice，但旧生产 `ApplyReplay` 在每个 source transaction 成功提交后仍保留其 key/value backing references
+  直到整个 CLI 退出，使长窗口 apply 阶段始终维持 O(all output) 活跃对象。新增显式破坏性
+  `ApplyReplayAndRelease`：完成 manifest/digest/order/checkpoint 全量验证后，已由启动 checkpoint 确认的前缀立即 `clear`；每个新
+  source transaction 只有在 mutation 与 checkpoint 原子 commit 成功后才 clear 对应 entries。commit 返回 uncertain 或确定失败
+  时当前 transaction 必须保留，避免把未知结果误当成可释放证据。原 `ApplyReplay` 保持非破坏兼容，只有生产 log-replay CLI
+  选择低驻留 API，调用后不得复用 mutation slice。
+
+  状态机用三个 1 KiB payload 固定“第二事务真实提交后返回 uncertain”：首次调用已确认的第一项被清空，unknown 第二项与尚未
+  尝试的第三项保持完整；第二次调用从 checkpoint reconcile 前两项后释放 unknown 前缀、提交并释放第三项，底层总 commit
+  精确为三。非破坏 API 回归继续要求输入 key/value 保留。
+  2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 与官方 BR v7.5.1
+  上执行正式 `TestNativeLogReplayRealBR`：低驻留 CLI 的 v6 receipt 累计守恒、v2 checkpoint、条件 release/handoff 与最终
+  revision/key/lease/watch 语义验收 41.98 秒通过，一次性容器已清理。该项降低 apply 进度后的 live heap，不降低 materialization
+  初始峰值，也不保证 GC 发生时刻；超大窗口所需 disk-backed canonical mutation plan/stream apply 缺口仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

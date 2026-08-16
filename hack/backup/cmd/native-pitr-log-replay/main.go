@@ -177,7 +177,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 		return err
 	}
 	started := now().UTC().Unix()
-	result, err := nativepitr.ApplyReplay(ctx, store, planSHA, manifest, mutations)
+	result, err := nativepitr.ApplyReplayAndRelease(ctx, store, planSHA, manifest, mutations)
 	if err != nil {
 		return err
 	}

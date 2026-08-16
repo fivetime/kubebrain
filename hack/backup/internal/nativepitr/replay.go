@@ -466,6 +466,18 @@ func (m ReplayManifest) Validate() error {
 // transaction. The mutation group and its durable checkpoint advance
 // atomically, making retries exact at source (commit TS, start TS) boundaries.
 func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, manifest ReplayManifest, mutations []ReplayMutation) (ReplayApplyResult, error) {
+	return applyReplay(ctx, target, planSHA, manifest, mutations, false)
+}
+
+// ApplyReplayAndRelease is the production large-window variant. It clears the
+// caller's mutation entries only after their source transaction and checkpoint
+// commit successfully, allowing key/value backing storage to be reclaimed as
+// replay advances. The input must not be reused after this call.
+func ApplyReplayAndRelease(ctx context.Context, target storage.KvStorage, planSHA string, manifest ReplayManifest, mutations []ReplayMutation) (ReplayApplyResult, error) {
+	return applyReplay(ctx, target, planSHA, manifest, mutations, true)
+}
+
+func applyReplay(ctx context.Context, target storage.KvStorage, planSHA string, manifest ReplayManifest, mutations []ReplayMutation, releaseCommitted bool) (ReplayApplyResult, error) {
 	if err := manifest.Validate(); err != nil {
 		return ReplayApplyResult{}, err
 	}
@@ -507,6 +519,9 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 		CheckpointMutationsBefore:    current.AppliedMutations,
 		CheckpointTransactionsBefore: replayTransactionCount(mutations[:current.AppliedMutations]),
 		Resumed:                      resumed, LastCommitTS: current.LastCommitTS, LastStartTS: current.LastStartTS,
+	}
+	if releaseCommitted && current.AppliedMutations > 0 {
+		clear(mutations[:current.AppliedMutations])
 	}
 	if len(mutations) == 0 && !resumed {
 		next := replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: planSHA, MutationsSHA256: manifest.MutationsSHA256, RestoreTS: manifest.RestoreTS}
@@ -551,6 +566,9 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 		result.AppliedTransactions++
 		result.LastCommitTS = next.LastCommitTS
 		result.LastStartTS = next.LastStartTS
+		if releaseCommitted {
+			clear(mutations[offset:end])
+		}
 		offset = end
 	}
 	return result, nil
