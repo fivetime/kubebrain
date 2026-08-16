@@ -54307,6 +54307,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A4828 暴露的两个基线失败现均已由 A4829 生产错误分类修复恢复，本轮没有修改测试文件。在线 A4776 未滚动，
   iterator transport/close fault 下“不误告警、不误解封”的行为仍留待正式新镜像故障门禁。
 
+- A4831 将 iterator fail-closed 合同扩展到 Watch full-history fallback、retained/legacy etcd metadata 重建及 count-index
+  event-log replay。旧同步扫描可在 Close 失败后返回完整 events/metadata，count-index 更可能把已经逐组 apply、但未可靠
+  收尾的结果标记 ready。前三条生产路径现在聚合主错误与 Close；count-index Close 失败除返回错误外还强制
+  `served=false`，让调用方重建而不是发布部分索引。异步 SnapshotHistory 的终端帧/Close 排序单列后续收敛。
+
+  Watch fallback/history scan、metadata、count-index 与 event-log replay 精确 race（8.962 秒）和 `pkg/backend` vet 通过；
+  本轮没有修改测试文件。在线 A4776 未滚动，Badger close fault 下的 Watch 非成功与 count-index rebuild 仍留待门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
