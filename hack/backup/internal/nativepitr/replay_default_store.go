@@ -22,9 +22,14 @@ type replayDefaultStore struct {
 	tx           *bolt.Tx
 	bucket       *bolt.Bucket
 	pendingBytes uint64
+	quota        *replayScratchQuota
 }
 
 func newReplayDefaultStore(scratchDir string) (*replayDefaultStore, error) {
+	return newReplayDefaultStoreWithQuota(scratchDir, nil)
+}
+
+func newReplayDefaultStoreWithQuota(scratchDir string, quota *replayScratchQuota) (*replayDefaultStore, error) {
 	file, err := os.CreateTemp(scratchDir, ".kubebrain-native-pitr-defaults-*.db")
 	if err != nil {
 		return nil, err
@@ -37,12 +42,17 @@ func newReplayDefaultStore(scratchDir string) (*replayDefaultStore, error) {
 	if err != nil {
 		return nil, errors.Join(err, os.Remove(path))
 	}
-	store := &replayDefaultStore{db: db, path: path}
+	store := &replayDefaultStore{db: db, path: path, quota: quota}
 	if err := db.Update(func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucket(replayDefaultBucket)
 		return err
 	}); err != nil {
 		return nil, errors.Join(err, store.Close())
+	}
+	if quota != nil {
+		if err := quota.add(path); err != nil {
+			return nil, errors.Join(err, store.Close())
+		}
 	}
 	return store, nil
 }
@@ -149,6 +159,9 @@ func (s *replayDefaultStore) Flush() error {
 	if err != nil {
 		return fmt.Errorf("commit native PITR replay default-CF index: %w", err)
 	}
+	if s.quota != nil {
+		return s.quota.check()
+	}
 	return nil
 }
 
@@ -158,5 +171,9 @@ func (s *replayDefaultStore) Close() error {
 		rollbackErr = s.tx.Rollback()
 		s.tx, s.bucket = nil, nil
 	}
-	return errors.Join(rollbackErr, s.db.Close(), os.Remove(s.path))
+	remove := func() error { return os.Remove(s.path) }
+	if s.quota != nil {
+		remove = func() error { return s.quota.remove(s.path) }
+	}
+	return errors.Join(rollbackErr, s.db.Close(), remove())
 }

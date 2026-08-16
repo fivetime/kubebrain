@@ -50,6 +50,53 @@ type ReplayDiskPlan struct {
 	db       *bolt.DB
 	path     string
 	manifest ReplayManifest
+	quota    *replayScratchQuota
+}
+
+type replayScratchQuota struct {
+	maxBytes uint64
+	paths    []string
+}
+
+func newReplayScratchQuota(maxBytes uint64) (*replayScratchQuota, error) {
+	if maxBytes == 0 {
+		return nil, errors.New("native PITR replay scratch byte limit must be positive")
+	}
+	return &replayScratchQuota{maxBytes: maxBytes}, nil
+}
+
+func (q *replayScratchQuota) add(path string) error {
+	q.paths = append(q.paths, path)
+	return q.check()
+}
+
+func (q *replayScratchQuota) check() error {
+	var total uint64
+	for _, path := range q.paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("stat native PITR replay scratch file: %w", err)
+		}
+		size := info.Size()
+		if size < 0 || uint64(size) > q.maxBytes-total {
+			return fmt.Errorf("native PITR replay scratch files exceed %d-byte limit", q.maxBytes)
+		}
+		total += uint64(size)
+	}
+	return nil
+}
+
+func (q *replayScratchQuota) remove(path string) error {
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	for index, tracked := range q.paths {
+		if tracked == path {
+			q.paths = append(q.paths[:index], q.paths[index+1:]...)
+			break
+		}
+	}
+	return nil
 }
 
 // Manifest returns the immutable manifest bound to this disk plan. The value
@@ -69,6 +116,7 @@ type replayCandidateStore struct {
 	candidates   *bolt.Bucket
 	starts       *bolt.Bucket
 	pendingBytes uint64
+	quota        *replayScratchQuota
 }
 
 func newReplayScratchDB(scratchDir, pattern string, buckets ...[]byte) (*bolt.DB, string, error) {
@@ -97,12 +145,16 @@ func newReplayScratchDB(scratchDir, pattern string, buckets ...[]byte) (*bolt.DB
 	return db, path, nil
 }
 
-func newReplayCandidateStore(scratchDir string) (*replayCandidateStore, error) {
+func newReplayCandidateStore(scratchDir string, quota *replayScratchQuota) (*replayCandidateStore, error) {
 	db, path, err := newReplayScratchDB(scratchDir, ".kubebrain-native-pitr-candidates-*.db", replayCandidateBucket, replayStartTSBucket)
 	if err != nil {
 		return nil, err
 	}
-	return &replayCandidateStore{db: db, path: path}, nil
+	store := &replayCandidateStore{db: db, path: path, quota: quota}
+	if err := quota.add(path); err != nil {
+		return nil, errors.Join(err, store.Close())
+	}
+	return store, nil
 }
 
 func (s *replayCandidateStore) begin() error {
@@ -199,7 +251,7 @@ func (s *replayCandidateStore) Flush() error {
 	if err != nil {
 		return fmt.Errorf("commit native PITR replay candidate scratch index: %w", err)
 	}
-	return nil
+	return s.quota.check()
 }
 
 func (s *replayCandidateStore) Close() error {
@@ -208,15 +260,19 @@ func (s *replayCandidateStore) Close() error {
 		rollbackErr = s.tx.Rollback()
 		s.tx, s.candidates, s.starts = nil, nil, nil
 	}
-	return errors.Join(rollbackErr, s.db.Close(), os.Remove(s.path))
+	return errors.Join(rollbackErr, s.db.Close(), s.quota.remove(s.path))
 }
 
-func newReplayDiskPlan(scratchDir string) (*ReplayDiskPlan, error) {
+func newReplayDiskPlan(scratchDir string, quota *replayScratchQuota) (*ReplayDiskPlan, error) {
 	db, path, err := newReplayScratchDB(scratchDir, ".kubebrain-native-pitr-plan-*.db", replayPlanBucket)
 	if err != nil {
 		return nil, err
 	}
-	return &ReplayDiskPlan{db: db, path: path}, nil
+	plan := &ReplayDiskPlan{db: db, path: path, quota: quota}
+	if err := quota.add(path); err != nil {
+		return nil, errors.Join(err, plan.Close())
+	}
+	return plan, nil
 }
 
 func replayPlanKey(m ReplayMutation) []byte {
@@ -271,7 +327,7 @@ func (p *ReplayDiskPlan) Close() error {
 	if p == nil || p.db == nil {
 		return nil
 	}
-	err := errors.Join(p.db.Close(), os.Remove(p.path))
+	err := errors.Join(p.db.Close(), p.quota.remove(p.path))
 	p.db = nil
 	return err
 }
@@ -354,6 +410,9 @@ func numberReplayDiskPlanWithBatchBytes(plan *ReplayDiskPlan, maxBatchBytes uint
 			return nil
 		})
 		if err != nil {
+			return err
+		}
+		if err := plan.quota.check(); err != nil {
 			return err
 		}
 		if done {
@@ -599,7 +658,7 @@ func ApplyReplayDiskPlan(ctx context.Context, target storage.KvStorage, planSHA 
 // order in rebuildable scratch storage. Physical write candidates, duplicate
 // detection, source-transaction consistency, and final ordering never require
 // an O(all output) Go slice.
-func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scratchDir string, startExclusive, restoreTS uint64) (_ *ReplayDiskPlan, retErr error) {
+func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scratchDir string, startExclusive, restoreTS, maxScratchBytes uint64) (_ *ReplayDiskPlan, retErr error) {
 	if err := logs.Validate(); err != nil {
 		return nil, err
 	}
@@ -621,15 +680,19 @@ func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, r
 		return nil, err
 	}
 	start, end := ks.ObjectKeyspaceStart(), ks.ObjectKeyspaceEnd()
-	defaults, err := newReplayDefaultStore(scratchDir)
+	quota, err := newReplayScratchQuota(maxScratchBytes)
+	if err != nil {
+		return nil, err
+	}
+	defaults, err := newReplayDefaultStoreWithQuota(scratchDir, quota)
 	if err != nil {
 		return nil, fmt.Errorf("create replay default-CF index: %w", err)
 	}
-	candidates, err := newReplayCandidateStore(scratchDir)
+	candidates, err := newReplayCandidateStore(scratchDir, quota)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create replay write-candidate index: %w", err), defaults.Close())
 	}
-	plan, err := newReplayDiskPlan(scratchDir)
+	plan, err := newReplayDiskPlan(scratchDir, quota)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create replay canonical disk plan: %w", err), candidates.Close(), defaults.Close())
 	}
@@ -696,7 +759,10 @@ func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, r
 		}
 		err := planTx.Commit()
 		planTx, planBucket, pendingBytes = nil, nil, 0
-		return err
+		if err != nil {
+			return err
+		}
+		return quota.check()
 	}
 	putPlan := func(mutation ReplayMutation) error {
 		if planTx == nil {

@@ -55180,6 +55180,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/backup/internal/nativepitr` 与正式 log-replay CLI 的定向 race、vet 和 diff check 通过。此项不改变 TiKV transaction、
   checkpoint 或 receipt wire format，因此沿用 A4915 的真实 3+3 TiKV/PD 数据路径证据，不重复声称执行新的存储故障演练。
 
+- A4917 为 A4913 保留的 scratch 容量风险增加 executor 自身的 fail-closed 上限。log-replay CLI 新增
+  `--max-replay-scratch-bytes`，默认 512 GiB；default-CF join、write candidate 与 canonical plan 共用一份配额，在各自初始
+  bucket 建立及之后每个 8 MiB bbolt commit 后聚合三个文件的 apparent size。任一文件 stat 失败或合计超限都在 target PD/TiKV
+  client 创建前终止 materialization，并沿既有 Close/remove 聚合路径清空全部临时文件。正常 Close 会从活跃配额注销已删除文件，
+  因此外部意外删除仍 fail closed，而 default/candidate 的预期提前清理不会令仍存活的 plan 后续操作误报。
+
+  回归覆盖两文件精确合计、增长超限、意外消失，以及 1-byte 配额下 bbolt 初始文件即拒绝且 scratch 目录为空；nativepitr 与正式
+  log-replay CLI 的 race、vet、diff check 通过。2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零
+  pending peer、plaintext、MinIO 与官方 BR v7.5.1 上执行正式 `TestNativeLogReplayRealBR`：新默认配额路径的 v6 receipt、v2
+  checkpoint、fence/handoff 与最终 revision/key/lease/watch 语义验收 43.01 秒通过，一次性容器已清理。门禁按 apparent size
+  对稀疏文件保守计费，但不是 filesystem quota：单个超大 record 或 commit 可能在提交后的检查之前先收到 ENOSPC；该错误仍会
+  中止且不连接 target。生产规模 scratch sizing、空间压力告警、IOPS/latency soak 与真实块设备 I/O error 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

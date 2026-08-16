@@ -17,6 +17,7 @@ package nativepitr
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -24,6 +25,33 @@ import (
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
 )
+
+func TestReplayScratchQuotaAggregatesApparentFileSizes(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	second := filepath.Join(dir, "second")
+	require.NoError(t, os.WriteFile(first, []byte("12"), 0o600))
+	require.NoError(t, os.WriteFile(second, []byte("345"), 0o600))
+	quota, err := newReplayScratchQuota(5)
+	require.NoError(t, err)
+	require.NoError(t, quota.add(first))
+	require.NoError(t, quota.add(second))
+
+	require.NoError(t, os.WriteFile(second, []byte("3456"), 0o600))
+	require.ErrorContains(t, quota.check(), "exceed 5-byte limit")
+	require.NoError(t, os.Remove(first))
+	require.ErrorContains(t, quota.check(), "stat native PITR replay scratch file")
+}
+
+func TestMaterializeReplayDiskPlanRejectsScratchQuotaAndCleansFiles(t *testing.T) {
+	_, receipt, root, _, _ := replayFixture(t)
+	scratch := t.TempDir()
+	_, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, scratch, 119, 150, 1)
+	require.ErrorContains(t, err, "scratch files exceed 1-byte limit")
+	entries, readErr := os.ReadDir(scratch)
+	require.NoError(t, readErr)
+	require.Empty(t, entries)
+}
 
 type changeReplayPlanOnGetStore struct {
 	storage.KvStorage
@@ -49,7 +77,7 @@ func TestMaterializeReplayDiskPlanMatchesCanonicalMemoryPlan(t *testing.T) {
 	require.NoError(t, err)
 	scratch := t.TempDir()
 
-	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, scratch, 119, 150)
+	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, scratch, 119, 150, ^uint64(0))
 	require.NoError(t, err)
 	require.Equal(t, wantManifest, plan.Manifest())
 	var got []ReplayMutation
@@ -74,7 +102,7 @@ func TestMaterializeReplayDiskPlanMatchesCanonicalMemoryPlan(t *testing.T) {
 
 func TestReplayDiskPlanManifestIsAnImmutableSnapshot(t *testing.T) {
 	_, receipt, root, _, _ := replayFixture(t)
-	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
+	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150, ^uint64(0))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, plan.Close()) }()
 
@@ -96,7 +124,7 @@ func TestMaterializeAndApplyEmptyReplayDiskPlanMatchesNilDigestContract(t *testi
 	wantManifest, wantMutations, err := MaterializeReplay(receipt, digest, root, 119, 125)
 	require.NoError(t, err)
 	require.Nil(t, wantMutations)
-	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 125)
+	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 125, ^uint64(0))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, plan.Close()) }()
 	require.Equal(t, wantManifest, plan.Manifest())
@@ -115,7 +143,9 @@ func TestMaterializeAndApplyEmptyReplayDiskPlanMatchesNilDigestContract(t *testi
 }
 
 func TestReplayCandidateStoreRejectsConflictsAndMultipleCommitTS(t *testing.T) {
-	store, err := newReplayCandidateStore(t.TempDir())
+	quota, err := newReplayScratchQuota(^uint64(0))
+	require.NoError(t, err)
+	store, err := newReplayCandidateStore(t.TempDir(), quota)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, store.Close()) }()
 
@@ -127,7 +157,7 @@ func TestReplayCandidateStoreRejectsConflictsAndMultipleCommitTS(t *testing.T) {
 
 func TestReplayDiskPlanDoesNotExposeMmapMemory(t *testing.T) {
 	_, receipt, root, _, _ := replayFixture(t)
-	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
+	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150, ^uint64(0))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, plan.Close()) }()
 
@@ -170,7 +200,7 @@ func TestReplayDiskPlanRecordChecksumBindsKeyValueAndEmptySemantics(t *testing.T
 
 func TestApplyReplayDiskPlanBoundsTransactionBeforeTargetAccessAndResumes(t *testing.T) {
 	_, receipt, root, keyA, keyB := replayFixture(t)
-	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
+	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150, ^uint64(0))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, plan.Close()) }()
 	inner := memkv.NewKvStorage()
@@ -200,7 +230,7 @@ func TestApplyReplayDiskPlanBoundsTransactionBeforeTargetAccessAndResumes(t *tes
 
 func TestApplyReplayDiskPlanRejectsScratchCorruptionBeforeTargetWrite(t *testing.T) {
 	_, receipt, root, _, _ := replayFixture(t)
-	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
+	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150, ^uint64(0))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, plan.Close()) }()
 	require.NoError(t, plan.db.Update(func(tx *bolt.Tx) error {
@@ -221,7 +251,7 @@ func TestApplyReplayDiskPlanRejectsScratchCorruptionBeforeTargetWrite(t *testing
 
 func TestApplyReplayDiskPlanRejectsMutationAfterPreflightBeforeTargetWrite(t *testing.T) {
 	_, receipt, root, _, _ := replayFixture(t)
-	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
+	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150, ^uint64(0))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, plan.Close()) }()
 	inner := memkv.NewKvStorage()
@@ -270,7 +300,7 @@ func TestApplyReplayDiskPlanRejectsSequenceChangeAfterPreflight(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			_, receipt, root, _, _ := replayFixture(t)
-			plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
+			plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150, ^uint64(0))
 			require.NoError(t, err)
 			defer func() { require.NoError(t, plan.Close()) }()
 			inner := memkv.NewKvStorage()
@@ -288,7 +318,7 @@ func TestApplyReplayDiskPlanRejectsSequenceChangeAfterPreflight(t *testing.T) {
 
 func TestApplyReplayDiskPlanResolvesCommittedUncertainCheckpoint(t *testing.T) {
 	_, receipt, root, keyA, keyB := replayFixture(t)
-	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
+	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150, ^uint64(0))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, plan.Close()) }()
 	inner := memkv.NewKvStorage()

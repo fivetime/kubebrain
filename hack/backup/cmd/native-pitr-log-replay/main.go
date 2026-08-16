@@ -29,12 +29,14 @@ import (
 
 const maxReceiptBytes = 4 << 20
 const defaultMaxReplayMemoryBytes = 512 << 20
+const defaultMaxReplayScratchBytes = 512 << 30
 
 type options struct {
 	plan, fullRestore, logArtifacts, logRoot, scratchDir, fenceReceipt, admissionHandoff string
 	pdAddrs, ca, cert, key, approve                                                      string
 	timeout                                                                              time.Duration
 	maxReplayMemoryBytes                                                                 uint64
+	maxReplayScratchBytes                                                                uint64
 }
 
 func main() {
@@ -57,6 +59,7 @@ func main() {
 	flag.StringVar(&o.approve, "approve-plan-sha256", "", "explicit approval equal to exact plan SHA-256")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "log replay deadline")
 	flag.Uint64Var(&o.maxReplayMemoryBytes, "max-replay-memory-bytes", defaultMaxReplayMemoryBytes, "maximum logical resident bytes for one source transaction during disk-plan replay")
+	flag.Uint64Var(&o.maxReplayScratchBytes, "max-replay-scratch-bytes", defaultMaxReplayScratchBytes, "maximum combined apparent file bytes for replay scratch databases")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -82,6 +85,9 @@ func configurePingCAPLogging() error {
 func execute(parent context.Context, o options, out io.Writer, now func() time.Time) (retErr error) {
 	if o.maxReplayMemoryBytes == 0 {
 		o.maxReplayMemoryBytes = defaultMaxReplayMemoryBytes
+	}
+	if o.maxReplayScratchBytes == 0 {
+		o.maxReplayScratchBytes = defaultMaxReplayScratchBytes
 	}
 	if o.plan == "" || o.fullRestore == "" || o.logArtifacts == "" || o.logRoot == "" || o.fenceReceipt == "" || o.admissionHandoff == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 {
 		return errors.New("plan, full-restore, log-artifacts, log-root, restoration-fence, target-pd-addrs, approval, and positive timeout are required")
@@ -160,7 +166,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 		return err
 	}
 	replayPlan, err := nativepitr.MaterializeReplayDiskPlanWithScratchDir(
-		logs, logSHA, o.logRoot, replayScratchDir(o), plan.Full.BackupTS, plan.RestoreTS,
+		logs, logSHA, o.logRoot, replayScratchDir(o), plan.Full.BackupTS, plan.RestoreTS, o.maxReplayScratchBytes,
 	)
 	if err != nil {
 		return err
