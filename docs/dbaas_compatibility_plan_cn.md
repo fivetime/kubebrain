@@ -53003,6 +53003,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   11.457ms；主/JWT 六副本使用最终 runtime imageID 且 Ready/零重启，PD/TiKV 3+3 Ready/零重启。
   两个临时探针二进制、临时源码和六个端口转发均已清除。
 
+- A4744 将 A4743 的 Range 局部归一提升为统一 unary follower peer transport 契约，但先用第二种
+  production RPC 证明问题不是 Range 特例。真实 TiKV 中写入 300 个 4 KiB value，32 个 raw gRPC
+  worker 持续从明确 follower 执行 success 分支仅含 1.2 MiB Range 的 read-only Txn，每次调用预算
+  5 秒；删除当时 leader 后，A4743 镜像 20 秒结果为
+  `ok=2893,canceled=32,unavailable=0,deadline=32,other=0`。这与 A4743 Range RED 同型，证明根因位于
+  共享 peer `ClientConn` retirement，而不是某个 handler。
+
+  生产提交 `09a420ab` 把归一下沉到内部 clientv3 连接的 unary interceptor：所有 KV、Lease、Auth、
+  Cluster 与 Maintenance unary follower forward 在 downstream context 仍存活时，统一把
+  context/gRPC `Canceled` 映射为 upstream `ErrGRPCLeaderChanged`；caller context 已取消时保留
+  `Canceled`，其他 application status 原样通过。server-stream/bidi-stream 明确不进入该 interceptor，
+  继续由 Snapshot checksum、RangeStream partial-stream、Watch revision resume 与 LeaseKeepAlive
+  message-preserving retry 等各自契约处理。A4743 的 Range 局部 mapper 因而删除，不保留两套分类逻辑。
+
+  两条最小测试从 Range 专名提升为统一 unary 边界；聚焦 0.055 秒、proxy 全包 3.033 秒、完整
+  `pkg/server/etcd` 184.500 秒及两包 vet 通过。最终镜像 `kubebrain:a4744-09a420ab` 内嵌完整 SHA
+  `09a420abcefb551e3631cc6167c9f6bc05d435c9`、build time `2026-08-16T00:26:33Z`，本地 OCI index
+  为 `sha256:c5694109fae8f4068f9f5fc2694cfbf6d694cf4f1fb4e265f11d57ccc5205a2d`，Kind runtime
+  imageID 为 `sha256:985663c7a448ce1091f41cea934612a3c67f0299063123e704927f8bc56c66ca`。
+
+  最终镜像在两个独立 leader term 上复用同一 300-key fixture：read-only Txn 得到
+  `ok=3220,canceled=0,unavailable=44,deadline=32,other=0`；随后从另一 follower 跑 unary Range 并
+  再次删除新 leader，得到 `ok=2021,canceled=0,unavailable=42,deadline=32,other=0`。两条路径都把
+  内部取消稳定转换为可重试拓扑错误，探针自身 5 秒 deadline 保持独立。
+
+  最终 300 键以 8 路逐键删除全部成功，前缀 Count=0、LeaseList/AlarmList 为空、proposal health
+  15.644ms；主/JWT 六副本使用最终 runtime imageID 且 Ready/零重启，PD/TiKV 3+3 Ready/零重启。
+  三个非入库探针二进制、临时源码和六个端口转发均已清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
