@@ -209,6 +209,12 @@ func NewClientWithOpts(ctx context.Context, pdAddrs []string, opts ...ClientOpt)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+	pdClientOwned := true
+	defer func() {
+		if pdClientOwned {
+			pdCli.Close()
+		}
+	}()
 
 	// Build a CodecPDClient
 	var codecCli *tikv.CodecPDClient
@@ -233,6 +239,7 @@ func NewClientWithOpts(ctx context.Context, pdAddrs []string, opts ...ClientOpt)
 		client.WithCodec(codecCli.GetCodec()),
 	)
 
+	pdClientOwned = false
 	return &Client{
 		apiVersion:  opt.apiVersion,
 		clusterID:   pdCli.GetClusterID(ctx),
