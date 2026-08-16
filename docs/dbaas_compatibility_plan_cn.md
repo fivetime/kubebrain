@@ -52973,6 +52973,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   health 14.461ms。主与 JWT 六个 KubeBrain Pod 使用最终 runtime imageID 且 Ready/零重启，三个 PD
   与三个 TiKV Ready/零重启；六个端口转发和临时压测二进制均已清除。
 
+- A4743 修复 unary `Range` 经 follower 转发时在 leader connection retirement 窗口泄漏内部
+  `Canceled`。A4742 后先审计其余长流：Watch 已按明确 resume revision 自动重连，LeaseKeepAlive
+  已有 message-preserving retry、caller-cancel 和多轮真实切主门禁，因而没有为相似源码重复造测试；
+  随后转向尚未归一的 unary peer forwarding。
+
+  在最终 A4742 三副本与真实 TiKV 上写入 300 个 4 KiB value，用临时非入库 raw gRPC 探针让 32 个
+  worker 持续直连明确 follower 读取约 1.2 MiB range，每次调用预算 5 秒；删除当时 leader 后，修复前
+  20 秒结果为 `ok=1657,canceled=32,unavailable=0,deadline=32,other=0`。全部 worker 都观察到一次
+  `Canceled`，而 public caller context 仍存活；deadline 来自探针自己的 5 秒预算。这会阻止 grpc-go
+  按 leader-loss `Unavailable` 执行透明 unary retry。
+
+  生产提交 `e08bec27` 只修改已由真实 RED 证明的 `etcdProxy.Range`：共享 peer client 因 leader loss
+  关闭且 downstream context 仍存活时，把 context/gRPC `Canceled` 归一为 upstream
+  `ErrGRPCLeaderChanged`；真实 caller cancellation 与 application status 原样保留。修改一个生产文件，
+  新增两条直接覆盖内部取消与 caller 取消的最小回归；聚焦 0.055 秒、proxy 全包 3.103 秒、完整
+  `pkg/server/etcd` 174.952 秒及两包 vet 通过。Put/Txn 等其他 unary RPC 未用本轮结果外推，仍须各自
+  取得可观察 RED 后再决定是否共享归一层。
+
+  最终镜像 `kubebrain:a4743-e08bec27` 内嵌完整 SHA
+  `e08bec27a9a16c161695dcc945d2a2d09c6403a3`、build time `2026-08-16T00:12:28Z`，本地 OCI
+  index 为 `sha256:ec299f94fe131c998765edc6d1cbdf15f97a500fe9a82513e33410b824fa28b5`，Kind runtime
+  imageID 为 `sha256:f65bd116febb0bd712c28794094d839c02a843e70dc314a8319870b598cd9619`。滚动主与 JWT
+  六副本后复用同一 300-key/32-worker/5 秒预算场景，结果为
+  `ok=2509,canceled=0,unavailable=32,deadline=32,other=0`，精确证明内部取消已变为可重试拓扑错误，
+  而调用预算仍独立生效。
+
+  最终 300 键以 8 路逐键删除全部成功，前缀 Count=0、LeaseList/AlarmList 为空、proposal health
+  11.457ms；主/JWT 六副本使用最终 runtime imageID 且 Ready/零重启，PD/TiKV 3+3 Ready/零重启。
+  两个临时探针二进制、临时源码和六个端口转发均已清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
