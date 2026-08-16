@@ -53453,6 +53453,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   严格为 `1/3/3`，两个存活流都收到最终 v3。fixture prefix 为 0、临时 Watch/文件无残留；PD/TiKV 3+3
   Ready、零重启，AlarmList/LeaseList 为空，proposal health 16.377ms。
 
+- A4765 继续修复同一 Watch fan-out 调用链中共享 PrevKV flight 的调用者生命周期缺口。A4762 已让
+  resolver shutdown 取消底层五秒 TiKV retry，A4764 已隔离 legacy metadata 调用者；但
+  `cachedPreviousEtcdKv` 仍同步调用 `singleflight.Do`。因此单事件转换和一批最多 16 路的冷 PrevKV 预取都
+  会等待共享 flight 完成，即使该 Watch context 已取消；故障期取消流可额外滞留完整 retry budget，延迟
+  watcher goroutine/quota 释放。不能简单把底层 lookup 改绑任一 caller，因为同一 `(key,revision)` flight
+  仍可能服务其他健康 Watch，且可信结果应继续进入共享 cache。
+
+  生产提交 `d9c2af6a` 把 Watch context 同时贯穿批量预取和单事件转换，将 PrevKV singleflight 改为
+  `DoChan`：每个 caller 独立选择自身 cancellation、resolver shutdown 或共享结果；取消 caller 立即返回，
+  resolver-owned TiKV retry 继续为其他 Watch 完成并只缓存 certain answer。最小回归让两个 caller 共用
+  transiently failing lookup，取消首 caller 后其立即结束，storage 恢复后第二 caller 仍获得真实 PrevKV；
+  A4762 shutdown、uncertain-nil-not-cached 和 transient recovery 契约同时保持。新用例 6.122 秒，race
+  7.276 秒、vet 和完整 `pkg/server/etcd` 191.662 秒通过。
+
+  最终镜像 `kubebrain:a4765-d9c2af6a` 内嵌完整 SHA
+  `d9c2af6a88831d69b81116a31e23feeded44323e`、build time `2026-08-16T04:44:18Z`，本地 OCI digest
+  `sha256:2aa4a86e1e848cc7c854614b91d16ba8c5e96749788e16a4d3c721c10099e7e3`，Kind runtime imageID
+  `sha256:68f556e65b8786efbc8ec08e1d48f0b67fd6eaa9ead12d1a3db20fbfe3242b11`。主/JWT 六副本滚动后
+  全部 Ready、零重启。真实 NodePort 三条同 key `--prev-kv` Watch 先各收到 v1，取消一条后继续 v2/v3；
+  事件数严格为 `1/3/3`，两个存活流的值均为 `v1×2, v2×2, v3×1`，证明 current/PrevKV 顺序完整。
+  fixture prefix 为 0、Watch/临时文件无残留；PD/TiKV 3+3 Ready、零重启，AlarmList/LeaseList 为空，
+  proposal health 15.252ms。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
