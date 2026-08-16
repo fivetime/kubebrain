@@ -184,12 +184,14 @@ func WriteRollupAtomic(path string, rollup Rollup) (RollupStatus, error) {
 		}
 		return RollupStatus{}, err
 	}
+	if err := os.Remove(tempName); err != nil {
+		return RollupStatus{}, fmt.Errorf("remove temporary object storage rollup link %q: %w", tempName, err)
+	}
 	directory, err := os.Open(dir)
 	if err != nil {
 		return RollupStatus{}, err
 	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
+	if err := errors.Join(directory.Sync(), directory.Close()); err != nil {
 		return RollupStatus{}, err
 	}
 	return ReadRollup(path)

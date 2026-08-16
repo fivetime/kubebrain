@@ -386,12 +386,14 @@ func WriteAtomic(path string, sample Sample, maxStaleness time.Duration) (Status
 		}
 		return Status{}, err
 	}
+	if err := os.Remove(tempName); err != nil {
+		return Status{}, fmt.Errorf("remove temporary metering artifact link %q: %w", tempName, err)
+	}
 	directory, err := os.Open(dir)
 	if err != nil {
 		return Status{}, err
 	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
+	if err := errors.Join(directory.Sync(), directory.Close()); err != nil {
 		return Status{}, err
 	}
 	return status, nil

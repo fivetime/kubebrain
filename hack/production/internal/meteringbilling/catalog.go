@@ -219,12 +219,16 @@ func writeCanonicalAtomic(path string, data []byte, description string, limit in
 		}
 		return err
 	}
+	if err := os.Remove(tempName); err != nil {
+		return fmt.Errorf("remove temporary %s link %q: %w", description, tempName, err)
+	}
 	directory, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	return directory.Sync()
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func readBoundedFile(path, description string, limit int64) ([]byte, error) {

@@ -217,12 +217,14 @@ func WriteSnapshotAtomic(path string, snapshot Snapshot) (SnapshotStatus, error)
 		}
 		return SnapshotStatus{}, err
 	}
+	if err := os.Remove(tempName); err != nil {
+		return SnapshotStatus{}, fmt.Errorf("remove temporary object storage sample link %q: %w", tempName, err)
+	}
 	directory, err := os.Open(dir)
 	if err != nil {
 		return SnapshotStatus{}, err
 	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
+	if err := errors.Join(directory.Sync(), directory.Close()); err != nil {
 		return SnapshotStatus{}, err
 	}
 	return ReadSnapshot(path)

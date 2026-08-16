@@ -354,12 +354,16 @@ func WriteAtomic(path string, artifact Artifact) error {
 		}
 		return err
 	}
+	if err := os.Remove(tempName); err != nil {
+		return fmt.Errorf("remove temporary audit artifact link %q: %w", tempName, err)
+	}
 	directory, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	return directory.Sync()
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func Inspect(path string) (Status, error) {
