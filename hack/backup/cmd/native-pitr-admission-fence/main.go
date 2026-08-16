@@ -74,7 +74,7 @@ func configureLogging() error {
 	return nil
 }
 
-func execute(parent context.Context, o options, out io.Writer, now func() time.Time) error {
+func execute(parent context.Context, o options, out io.Writer, now func() time.Time) (retErr error) {
 	if o.plan == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 || (o.action != "acquire" && o.action != "verify" && o.action != "release") {
 		return errors.New("valid action, plan, target PD, approval, and positive timeout are required")
 	}
@@ -116,7 +116,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
-	defer cli.Close()
+	defer func() { retErr = errors.Join(retErr, cli.Close()) }()
 	switch o.action {
 	case "acquire":
 		if o.operationID == "" || o.receipt != "" || o.fullRestore != "" || o.restorationFence != "" {
@@ -199,7 +199,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 		if err != nil {
 			return err
 		}
-		defer store.Close()
+		defer func() { retErr = errors.Join(retErr, store.Close()) }()
 		if err := restorationfence.Verify(ctx, store, fence.CoordinationPrefix, fenceToken); err != nil {
 			return err
 		}
@@ -228,13 +228,13 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	panic("validated action")
 }
 
-func readBounded(path string) ([]byte, error) {
+func readBounded(path string) (b []byte, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
+	b, err = io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
 	if err != nil {
 		return nil, err
 	}
