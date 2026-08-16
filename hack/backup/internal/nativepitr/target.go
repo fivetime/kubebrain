@@ -95,7 +95,7 @@ func InspectLiveTargetSnapshotEmpty(ctx context.Context, addrs []string, ca, cer
 	tikvcfg.UpdateGlobal(func(c *tikvcfg.Config) {
 		c.Security = tikvcfg.NewSecurity(ca, cert, key, nil)
 	})
-	txn, err := txnkv.NewClient(addrs)
+	txn, err := txnkv.NewClientWithContext(ctx, addrs)
 	if err != nil {
 		pdc.Close()
 		return TargetSnapshotEmptyReceipt{}, fmt.Errorf("connect target TiKV: %w", err)

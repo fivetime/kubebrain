@@ -9,8 +9,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
@@ -35,7 +37,9 @@ func main() {
 	flag.StringVar(&o.key, "key", "", "target PD/TiKV client private key file")
 	flag.DurationVar(&o.timeout, "timeout", 30*time.Second, "overall read-only inspection timeout")
 	flag.Parse()
-	if err := execute(context.Background(), o, os.Stdout); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := execute(ctx, o, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR target snapshot-empty check:", err)
 		os.Exit(1)
 	}

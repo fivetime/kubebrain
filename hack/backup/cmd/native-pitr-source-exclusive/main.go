@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
@@ -39,7 +41,9 @@ func main() {
 	flag.StringVar(&o.key, "key", "", "source client private key")
 	flag.DurationVar(&o.timeout, "timeout", 30*time.Minute, "historical outside-range scan deadline")
 	flag.Parse()
-	if err := execute(context.Background(), o, os.Stdout, time.Now); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := execute(ctx, o, os.Stdout, time.Now); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR source range-exclusive check:", err)
 		os.Exit(1)
 	}

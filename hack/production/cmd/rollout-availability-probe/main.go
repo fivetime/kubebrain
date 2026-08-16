@@ -8,8 +8,10 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	tikverr "github.com/tikv/client-go/v2/error"
@@ -58,7 +60,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	if err := run(context.Background(), cfg); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "PROBE_FAIL", err)
 		os.Exit(1)
 	}
@@ -235,7 +239,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("backend preflight: %w", err)
 	}
-	tikvClient, err := txnkv.NewClient(cfg.pdEndpoints)
+	tikvClient, err := txnkv.NewClientWithContext(ctx, cfg.pdEndpoints)
 	if err != nil {
 		return fmt.Errorf("backend preflight: create TiKV client: %w", err)
 	}
