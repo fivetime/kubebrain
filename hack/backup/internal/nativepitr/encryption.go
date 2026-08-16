@@ -67,7 +67,7 @@ func ReadAES256KeyFile(path string) (key []byte, retErr error) {
 
 // StageAES256KeyFile gives BR a private immutable-by-convention snapshot of
 // already validated key bytes instead of the externally mutable source path.
-func StageAES256KeyFile(key []byte) (string, func(), error) {
+func StageAES256KeyFile(key []byte) (string, func() error, error) {
 	if len(key) != 32 {
 		return "", nil, errors.New("staged AES-256 key must contain 32 bytes")
 	}
@@ -76,19 +76,23 @@ func StageAES256KeyFile(key []byte) (string, func(), error) {
 		return "", nil, err
 	}
 	path := f.Name()
-	cleanup := func() { _ = os.Remove(path) }
-	if err := f.Chmod(0o600); err == nil {
-		_, err = f.WriteString(hex.EncodeToString(key))
+	cleanup := func() error {
+		err := os.Remove(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
 	}
-	if err == nil {
-		err = f.Sync()
+	if err := f.Chmod(0o600); err != nil {
+		return "", nil, errors.Join(err, f.Close(), cleanup())
 	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
+	_, writeErr := f.WriteString(hex.EncodeToString(key))
+	var syncErr error
+	if writeErr == nil {
+		syncErr = f.Sync()
 	}
-	if err != nil {
-		cleanup()
-		return "", nil, err
+	if err := errors.Join(writeErr, syncErr, f.Close()); err != nil {
+		return "", nil, errors.Join(err, cleanup())
 	}
 	return path, cleanup, nil
 }

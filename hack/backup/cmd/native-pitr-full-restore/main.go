@@ -94,7 +94,7 @@ func main() {
 	}
 }
 
-func execute(parent context.Context, o options, runner commandRunner, inspectTarget inspectTargetFn, out, logs io.Writer, now func() time.Time) error {
+func execute(parent context.Context, o options, runner commandRunner, inspectTarget inspectTargetFn, out, logs io.Writer, now func() time.Time) (retErr error) {
 	if err := validateOptions(o); err != nil {
 		return err
 	}
@@ -173,12 +173,12 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 		if err != nil {
 			return err
 		}
-		var cleanup func()
+		var cleanup func() error
 		runtimeEncryptionKeyFile, cleanup, err = nativepitr.StageAES256KeyFile(encryptionKey)
 		if err != nil {
 			return err
 		}
-		defer cleanup()
+		defer func() { retErr = errors.Join(retErr, cleanup()) }()
 	}
 	inventory, inventoryBytes, err := pitrinventory.ReadCanonical(o.inventory)
 	if err != nil {

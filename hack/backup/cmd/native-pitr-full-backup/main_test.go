@@ -197,4 +197,7 @@ func TestExecuteDoesNotOverwriteAttestationPublishedDuringBackup(t *testing.T) {
 	body, err := os.ReadFile(output)
 	require.NoError(t, err)
 	require.Equal(t, []byte("winner"), body)
+	temps, err := filepath.Glob(filepath.Join(dir, ".native-pitr-full-backup-*.tmp"))
+	require.NoError(t, err)
+	require.Empty(t, temps)
 }

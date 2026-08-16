@@ -54683,6 +54683,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增两端 oversized input 回归；full-snapshot/log-artifact/pitrinventory race（1.503/1.478 秒及缓存套件）、vet 与 diff
   check 通过。真实 backupmeta/task receipt close fault 仍留待 artifact mirror Job 文件系统门禁。
 
+- A4875 收紧 native PITR full backup/restore 的敏感 key staging 与 BR executable 生命周期。共享 `StageAES256KeyFile` 旧只
+  返回 void cleanup，backup/restore 都 defer 丢弃明文 key snapshot 的 Remove 错误；stage 的 chmod/write/sync 失败也会
+  丢同级 Close/Remove。full-backup 另 defer 丢弃已 hash 的 BR inode Close，open/hash/rewind 失败分支同样吞 Close，
+  attestation temp writer 的 chmod/write/sync 错误也未完整聚合。key cleanup 现返回 error，两个 executor 用命名错误 Join；
+  staging、BR pin 与 attestation publish 聚合全部 Close/Remove，使 key 残留或 executable/receipt 收尾失败均令 Job 非零。
+
+  新增 key cleanup failure 与 attestation 发布竞态后无临时残留回归；nativepitr/full-backup/full-restore race（3.183/1.410
+  秒及缓存套件）、vet 与 diff check 通过。真实 secret volume unlink 与 BR inode close fault 的 receipt 对账仍留待正式 Job 门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

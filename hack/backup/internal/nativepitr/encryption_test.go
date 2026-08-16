@@ -24,8 +24,18 @@ func TestAES256KeyFileAndPrivateSnapshot(t *testing.T) {
 	stagedKey, err := ReadAES256KeyFile(staged)
 	require.NoError(t, err)
 	require.Equal(t, key, stagedKey)
-	cleanup()
+	require.NoError(t, cleanup())
 	require.NoFileExists(t, staged)
+}
+
+func TestPrivateSnapshotCleanupReportsFailure(t *testing.T) {
+	staged, cleanup, err := StageAES256KeyFile([]byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(staged) })
+	require.NoError(t, os.Remove(staged))
+	require.NoError(t, os.Mkdir(staged, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(staged, "blocker"), []byte("x"), 0o600))
+	require.Error(t, cleanup())
 }
 
 func TestLegacyPlaintextAndEncryptedPlanRestoreIdentity(t *testing.T) {

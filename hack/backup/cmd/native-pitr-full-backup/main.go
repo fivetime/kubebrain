@@ -99,7 +99,7 @@ func main() {
 	}
 }
 
-func execute(parent context.Context, o options, runner commandRunner, logs io.Writer, now func() time.Time) error {
+func execute(parent context.Context, o options, runner commandRunner, logs io.Writer, now func() time.Time) (retErr error) {
 	if o.backupTS == 0 || o.output == "" || o.timeout <= 0 || o.timeout > 24*time.Hour {
 		return errors.New("backup-ts, attestation-output, and a positive timeout no greater than 24h are required")
 	}
@@ -128,12 +128,12 @@ func execute(parent context.Context, o options, runner commandRunner, logs io.Wr
 		if err != nil {
 			return err
 		}
-		var cleanup func()
+		var cleanup func() error
 		runtimeEncryptionKeyFile, cleanup, err = nativepitr.StageAES256KeyFile(encryptionKey)
 		if err != nil {
 			return err
 		}
-		defer cleanup()
+		defer func() { retErr = errors.Join(retErr, cleanup()) }()
 	}
 	addrs, pdSHA, err := canonicalPDAddresses(o.pdAddrs)
 	if err != nil {
@@ -146,7 +146,7 @@ func execute(parent context.Context, o options, runner commandRunner, logs io.Wr
 	if err != nil {
 		return err
 	}
-	defer brFile.Close()
+	defer func() { retErr = errors.Join(retErr, brFile.Close()) }()
 	versionBytes, err := runner.Output(parent, brFile, resolvedBR, "--version")
 	if err != nil || !nativepitr.PinnedBRVersion(string(versionBytes)) {
 		return fmt.Errorf("BR must be exact v7.5.1 build, got %q", versionBytes)
@@ -225,18 +225,18 @@ func openExecutable(name string) (*os.File, string, string, error) {
 		return nil, "", "", fmt.Errorf("open BR executable: %w", err)
 	}
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		f.Close()
-		return nil, "", "", errors.New("BR executable must be a regular file")
+	if err != nil {
+		return nil, "", "", errors.Join(err, f.Close())
+	}
+	if !info.Mode().IsRegular() {
+		return nil, "", "", errors.Join(errors.New("BR executable must be a regular file"), f.Close())
 	}
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		f.Close()
-		return nil, "", "", fmt.Errorf("hash BR executable: %w", err)
+		return nil, "", "", errors.Join(fmt.Errorf("hash BR executable: %w", err), f.Close())
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		f.Close()
-		return nil, "", "", fmt.Errorf("rewind BR executable: %w", err)
+		return nil, "", "", errors.Join(fmt.Errorf("rewind BR executable: %w", err), f.Close())
 	}
 	return f, resolved, hex.EncodeToString(h.Sum(nil)), nil
 }
@@ -254,21 +254,18 @@ func writeReceiptAtomic(path string, receipt nativepitr.FullBackupAttestation) (
 		}
 	}()
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
+		return errors.Join(err, tmp.Close())
 	}
 	encoded, err := json.Marshal(receipt)
+	var writeErr, syncErr error
 	if err == nil {
 		encoded = append(encoded, '\n')
-		_, err = tmp.Write(encoded)
+		_, writeErr = tmp.Write(encoded)
 	}
-	if err == nil {
-		err = tmp.Sync()
+	if err == nil && writeErr == nil {
+		syncErr = tmp.Sync()
 	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
+	if err := errors.Join(err, writeErr, syncErr, tmp.Close()); err != nil {
 		return err
 	}
 	if err := os.Link(tmpName, path); err != nil {
@@ -284,7 +281,7 @@ func writeReceiptAtomic(path string, receipt nativepitr.FullBackupAttestation) (
 	if err != nil {
 		return fmt.Errorf("open full-backup attestation directory: %w", err)
 	}
-	syncErr := directory.Sync()
+	syncErr = directory.Sync()
 	closeErr := directory.Close()
 	if syncErr != nil {
 		syncErr = fmt.Errorf("sync full-backup attestation directory: %w", syncErr)
