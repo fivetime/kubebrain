@@ -54829,6 +54829,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （3.614 秒）；backend vet 与 diff check 通过。key 内容本身没有另加 checksum，节点磁盘与同 UID 进程隔离仍是完整性边界，
   但可由顺序不变量识别的损坏不得静默成为客户端结果。
 
+- A4890 关闭 A4889 明确保留的 spill key 内容完整性缺口。仅校验长度与严格递增仍无法识别保持排序的 payload bit flip，例如
+  `aa -> ab` 后仍小于下一键 `cc`；若碰巧变成范围内另一个现存 key，最终 exact lookup 可返回错误对象而不触发结构错误。
+  每个 key run 现在由 writer 流式计算 SHA-256，并在 flush 成功后写固定 32-byte footer；reader 用 SectionReader 隔离 data/footer、
+  流式重算摘要，并只在全部 record 消费且 checksum 匹配时返回 EOF。merge input 与最终 run 的调用方都必须读到 EOF，故任何
+  pass 的内容篡改都会阻止 terminal RangeStream 成功；内存仍为当前 key、前键及 hash state，不回退到全量物化。
+
+  新增保持顺序的 payload 篡改回归，先证明 `ab`,`cc` 两条结构仍合法，再要求 EOF 返回 checksum mismatch；与 length/order/
+  multi-pass 套件合并 race 连续 10 轮（3.495 秒）、backend vet 与 diff check 通过。footer 不承担持久备份职责，仅把节点临时
+  介质 silent corruption 转成显式 stream error；ephemeral-storage 可靠性仍由 DBaaS 节点与调度策略保障。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

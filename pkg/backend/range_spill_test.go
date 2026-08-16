@@ -17,6 +17,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -95,12 +96,39 @@ func TestExternalKeySorterBoundsRunRecordsWithoutCappingConfiguredKeySize(t *tes
 	path := filepath.Join(sorter.dir, "malformed-run")
 	var prefix [binary.MaxVarintLen64]byte
 	n := binary.PutUvarint(prefix[:], uint64(decodedRangeSpillRunBytes+1))
-	require.NoError(t, os.WriteFile(path, prefix[:n], 0o600))
+	require.NoError(t, os.WriteFile(path, append(prefix[:n], make([]byte, sha256.Size)...), 0o600))
 	reader, err := openKeyRun(path)
 	require.NoError(t, err)
 	_, err = reader.Next()
 	require.ErrorContains(t, err, "exceeds remaining run bytes")
 	require.NoError(t, reader.Close())
+}
+
+func TestKeyRunReaderRejectsChecksumPreservingOrderTamper(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run")
+	writer, err := createKeyRun(path)
+	require.NoError(t, err)
+	require.NoError(t, writer.Write([]byte("aa")))
+	require.NoError(t, writer.Write([]byte("cc")))
+	require.NoError(t, writer.Close())
+
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, byte('a'), contents[2])
+	contents[2] = 'b'
+	require.NoError(t, os.WriteFile(path, contents, 0o600))
+
+	reader, err := openKeyRun(path)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, reader.Close()) }()
+	key, err := reader.Next()
+	require.NoError(t, err)
+	require.Equal(t, []byte("ab"), key)
+	key, err = reader.Next()
+	require.NoError(t, err)
+	require.Equal(t, []byte("cc"), key)
+	_, err = reader.Next()
+	require.ErrorContains(t, err, "checksum mismatch")
 }
 
 func TestKeyRunReaderRejectsEmptyOrNonIncreasingRecords(t *testing.T) {

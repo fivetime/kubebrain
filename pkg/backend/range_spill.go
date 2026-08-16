@@ -19,9 +19,11 @@ import (
 	"bytes"
 	"container/heap"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -330,8 +332,9 @@ func (s *externalKeySorter) Finish(ctx context.Context) (string, error) {
 }
 
 type keyRunWriter struct {
-	file   *os.File
-	buffer *bufio.Writer
+	file     *os.File
+	buffer   *bufio.Writer
+	checksum hash.Hash
 }
 
 func createKeyRun(path string) (*keyRunWriter, error) {
@@ -339,7 +342,7 @@ func createKeyRun(path string) (*keyRunWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &keyRunWriter{file: file, buffer: bufio.NewWriterSize(file, 64<<10)}, nil
+	return &keyRunWriter{file: file, buffer: bufio.NewWriterSize(file, 64<<10), checksum: sha256.New()}, nil
 }
 
 func (w *keyRunWriter) Write(key []byte) error {
@@ -348,14 +351,27 @@ func (w *keyRunWriter) Write(key []byte) error {
 	if _, err := w.buffer.Write(size[:n]); err != nil {
 		return err
 	}
-	_, err := w.buffer.Write(key)
-	return err
+	_, _ = w.checksum.Write(size[:n])
+	if _, err := w.buffer.Write(key); err != nil {
+		return err
+	}
+	_, _ = w.checksum.Write(key)
+	return nil
 }
 
 func (w *keyRunWriter) Close() error {
 	flushErr := w.buffer.Flush()
+	var checksumErr error
+	if flushErr == nil {
+		checksum := w.checksum.Sum(nil)
+		if n, err := w.file.Write(checksum); err != nil {
+			checksumErr = err
+		} else if n != len(checksum) {
+			checksumErr = io.ErrShortWrite
+		}
+	}
 	closeErr := w.file.Close()
-	return errors.Join(flushErr, closeErr)
+	return errors.Join(flushErr, checksumErr, closeErr)
 }
 
 type keyRunReader struct {
@@ -363,6 +379,9 @@ type keyRunReader struct {
 	buffer    *bufio.Reader
 	remaining uint64
 	previous  []byte
+	checksum  hash.Hash
+	wantHash  []byte
+	verified  bool
 }
 
 func openKeyRun(path string) (*keyRunReader, error) {
@@ -374,10 +393,32 @@ func openKeyRun(path string) (*keyRunReader, error) {
 	if err != nil {
 		return nil, errors.Join(err, file.Close())
 	}
-	return &keyRunReader{file: file, buffer: bufio.NewReaderSize(file, 64<<10), remaining: uint64(info.Size())}, nil
+	if info.Size() < sha256.Size {
+		return nil, errors.Join(errors.New("decoded range spill is too short for checksum"), file.Close())
+	}
+	dataBytes := info.Size() - sha256.Size
+	wantHash := make([]byte, sha256.Size)
+	if _, err := file.ReadAt(wantHash, dataBytes); err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	checksum := sha256.New()
+	data := io.NewSectionReader(file, 0, dataBytes)
+	return &keyRunReader{
+		file: file, buffer: bufio.NewReaderSize(io.TeeReader(data, checksum), 64<<10),
+		remaining: uint64(dataBytes), checksum: checksum, wantHash: wantHash,
+	}, nil
 }
 
 func (r *keyRunReader) Next() ([]byte, error) {
+	if r.remaining == 0 {
+		if !r.verified {
+			if !bytes.Equal(r.checksum.Sum(nil), r.wantHash) {
+				return nil, errors.New("decoded range spill checksum mismatch")
+			}
+			r.verified = true
+		}
+		return nil, io.EOF
+	}
 	counted := countingByteReader{reader: r.buffer}
 	size, err := binary.ReadUvarint(&counted)
 	if err != nil {
