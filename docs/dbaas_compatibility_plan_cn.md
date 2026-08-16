@@ -54027,6 +54027,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   vet 通过。本轮只修改生产代码和兼容性记录，没有修改测试文件。在线 A4776 未滚动，真实非-cancellation
   concurrency Close failure 的进程退出证据留待正式新镜像故障门禁。
 
+- A4801 修复管理面 `/drain` 的首次失败被 `sync.Once` 永久缓存、最终 Close 无法重试 durable leadership release
+  的生产缺口。旧实现把 campaign stop/wait 与 `EnsureVoluntaryRelease(request.Context())` 放在同一个 once 内；若
+  localhost drain client 断开、请求 deadline 到达或 PD/TiKV 瞬态失败，第一次调用返回错误后，后续 `/drain`
+  以及进程 Close 都只能读同一失败，无法使用 Close 自己的 5 秒预算再次确认/缩短旧 leader lease。生产 Drain
+  现在以 mutex 串行化并发调用，只把 campaign cancel/wait 标记为一次性完成；durable release 每次失败后均可
+  重试，只有确认成功才缓存 drained GREEN。每次尝试仍在 `DrainLeadership` unary admission 边界内执行，因而
+  不会在 retry 时允许新写跨越 voluntary release。
+
+  server race（5.999 秒）、Endpoint 全量（16.888 秒）及 server/endpoint/option vet 通过；本轮没有修改测试
+  文件。在线 A4776 未滚动，真实首次 HTTP client cancel、随后 Close 在 PD 恢复后成功释放的现场证据留待正式
+  新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
