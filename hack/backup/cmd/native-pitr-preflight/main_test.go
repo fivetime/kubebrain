@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
@@ -54,6 +56,14 @@ func TestValidateOptions(t *testing.T) {
 		_, err := validateOptions(tc)
 		require.Error(t, err, "%+v", tc)
 	}
+}
+
+func TestTransportCredentialsRejectsOversizedCA(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxTLSPEMBytes+1), 0o600))
+
+	_, err := transportCredentials(options{ca: path})
+	require.ErrorContains(t, err, "TLS PEM exceeds")
 }
 
 func TestInspectBuildsTenantRangeAndProbesEveryUpStore(t *testing.T) {

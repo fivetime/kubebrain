@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"regexp"
@@ -33,6 +34,7 @@ import (
 )
 
 const metaPrefix = "/tidb/br-stream"
+const maxTLSPEMBytes = 1 << 20
 
 var taskNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)
 
@@ -238,7 +240,7 @@ func transportCredentials(o options) (credentials.TransportCredentials, error) {
 	if o.ca == "" {
 		return insecure.NewCredentials(), nil
 	}
-	pem, err := os.ReadFile(o.ca)
+	pem, err := readBoundedPEM(o.ca)
 	if err != nil {
 		return nil, fmt.Errorf("read CA: %w", err)
 	}
@@ -257,17 +259,33 @@ func transportCredentials(o options) (credentials.TransportCredentials, error) {
 	return credentials.NewTLS(cfg), nil
 }
 
-func probeLogBackup(ctx context.Context, address string, creds credentials.TransportCredentials) error {
+func probeLogBackup(ctx context.Context, address string, creds credentials.TransportCredentials) (retErr error) {
 	conn, err := grpc.DialContext(ctx, address, grpc.WithTransportCredentials(creds), grpc.WithBlock())
 	if err != nil {
 		return fmt.Errorf("connect log-backup service: %w", err)
 	}
-	defer conn.Close()
+	defer func() { retErr = errors.Join(retErr, conn.Close()) }()
 	_, err = logbackuppb.NewLogBackupClient(conn).GetLastFlushTSOfRegion(ctx, &logbackuppb.GetLastFlushTSOfRegionRequest{})
 	if err != nil {
 		return fmt.Errorf("probe log-backup service: %w", err)
 	}
 	return nil
+}
+
+func readBoundedPEM(path string) (contents []byte, retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	contents, err = io.ReadAll(io.LimitReader(file, maxTLSPEMBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(contents) > maxTLSPEMBytes {
+		return nil, fmt.Errorf("TLS PEM exceeds %d bytes", maxTLSPEMBytes)
+	}
+	return contents, nil
 }
 
 var probeLogBackupFn = probeLogBackup

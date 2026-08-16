@@ -54554,6 +54554,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三个命令新增 pre-connect option validation 回归；create/ready/delete race（1.295/1.275/1.325 秒）、vet 与 diff check
   通过。真实 PD metadata close fault 后的 receipt 收集/对账仍留待正式 executor Job 门禁。
 
+- A4860 收紧 native PITR preflight 对每个 TiKV log-backup service 的 transport 与 TLS 输入门禁。旧 probe 在 RPC 成功后
+  defer 丢弃 gRPC connection Close，仍会把 store 标为 `available` 并签发只读 receipt；CA 又用无上限 `os.ReadFile`，
+  错误挂载的大文件可在探测前放大内存。probe 现在以命名错误 Join connection Close，任一 store transport 收尾失败都
+  阻止 receipt；CA 读取限制为 1 MiB，聚合 file Close，只有 bounded PEM 完整读完并关闭后才进入 x509 解析。
+
+  新增 oversized CA 回归；native-pitr-preflight race（1.244 秒）、vet 与 diff check 通过。真实 TiKV 半关闭连接与 PD
+  client void-Close 资源归零仍留待独立 TiKV/PD preflight Job 门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
