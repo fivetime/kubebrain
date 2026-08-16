@@ -55008,6 +55008,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   restoration fence release 与 semantic verifier 均通过公共 decoder 接受该证据，最终 etcd 语义验收通过，总耗时 40.15 秒，
   一次性容器已清理。该修复加强证据自洽性，不声称 receipt 自身能替代对 target checkpoint 或最终语义的在线验证。
 
+- A4905 将 A4904 的局部约束补成可验证的累计守恒关系，并把 log replay execution receipt 升级为 v5。v4 只记录
+  `applied_*_this_run` 与 `resumed_from_checkpoint`，即使限制 fresh/resumed 的取值范围，仍没有携带启动时 checkpoint 已覆盖的
+  mutation/transaction 数，decoder 无法证明本轮结束时完整覆盖 manifest。`ApplyReplay` 现在在验证 v2 checkpoint 的 exact
+  plan/mutation digest 与 source transaction 边界后，统计其 mutation 前缀和 transaction 前缀；producer 将两项写入
+  `checkpoint_mutations_before_run`、`checkpoint_transactions_before_run`。v5 validator 强制 checkpoint-before 与本轮 applied
+  分别相加后精确等于 manifest 总量，并校验两组 mutation/transaction 关系及 resume 状态。旧 v4 因无法补出该前缀证据被
+  fail closed 拒绝；restoration-fence help、公共 decoder、semantic verifier 与真实集成断言同步切到 v5。
+
+  单元回归覆盖 fresh full、resumed partial、resumed complete、旧 v4、总量不守恒、resume/checkpoint 矛盾和 mutation/transaction
+  不一致。2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 与官方
+  BR v7.5.1 上重跑 committed-uncertain 链：首事务及 v2 checkpoint 真实提交 7/19 mutation 后返回 uncertain，实际 CLI 在 v5
+  receipt 中记录非零且小于总量的 checkpoint mutation/transaction 前缀以及余下本轮 applied 数，两者分别精确闭合 manifest；
+  fence release、最终 revision/key/lease/watch 语义验收通过，总耗时 42.25 秒，一次性容器已清理。receipt 的累计守恒仍不替代
+  target 在线 checkpoint 核验、最终语义验证或真实网络诱发 uncertain 故障演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

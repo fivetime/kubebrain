@@ -433,21 +433,21 @@ func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing
 	require.True(t, receipt.ContinuousWriterExclusion)
 	require.False(t, receipt.PostRestoreSemanticValidated)
 	require.False(t, receipt.PITRComplete)
-	require.Equal(t, "kubebrain.native-pitr-log-replay.v4", receipt.Format)
+	require.Equal(t, "kubebrain.native-pitr-log-replay.v5", receipt.Format)
 	var encoded bytes.Buffer
 	require.NoError(t, json.NewEncoder(&encoded).Encode(receipt))
 	_, err = DecodeLogReplayExecution(&encoded)
 	require.NoError(t, err)
 	wrongFormat := receipt
-	wrongFormat.Format = "kubebrain.native-pitr-log-replay.v3"
+	wrongFormat.Format = "kubebrain.native-pitr-log-replay.v4"
 	require.EqualError(t, wrongFormat.Validate(), "native PITR log replay receipt is incomplete")
 
 	freshPartial := receipt
 	freshPartial.AppliedMutations, freshPartial.AppliedTransactions = 0, 0
-	require.EqualError(t, freshPartial.Validate(), "native PITR log replay receipt has incomplete fresh replay statistics")
+	require.EqualError(t, freshPartial.Validate(), "native PITR log replay receipt progress does not complete the manifest")
 	resumedFull := receipt
 	resumedFull.Resumed = true
-	require.EqualError(t, resumedFull.Validate(), "native PITR log replay receipt has invalid resumed replay statistics")
+	require.EqualError(t, resumedFull.Validate(), "native PITR log replay receipt checkpoint progress contradicts resume state")
 	mutationsWithoutTransactions := receipt
 	mutationsWithoutTransactions.AppliedTransactions = 0
 	require.EqualError(t, mutationsWithoutTransactions.Validate(), "native PITR log replay receipt has invalid applied statistics")
@@ -457,10 +457,12 @@ func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing
 	resumedComplete := receipt
 	resumedComplete.Resumed = true
 	resumedComplete.AppliedMutations, resumedComplete.AppliedTransactions = 0, 0
+	resumedComplete.CheckpointMutationsBefore, resumedComplete.CheckpointTransactionsBefore = 1, 1
 	require.NoError(t, resumedComplete.Validate())
 	resumedPartial := receipt
 	resumedPartial.Resumed = true
 	resumedPartial.MutationCount, resumedPartial.TransactionCount = 3, 3
+	resumedPartial.CheckpointMutationsBefore, resumedPartial.CheckpointTransactionsBefore = 2, 2
 	require.NoError(t, resumedPartial.Validate())
 }
 
@@ -508,7 +510,7 @@ func TestApplyReplayCheckpointsAndResumesExactly(t *testing.T) {
 
 	result, err = ApplyReplay(t.Context(), target, digest, manifest, mutations)
 	require.NoError(t, err)
-	require.Equal(t, ReplayApplyResult{Resumed: true, LastCommitTS: 140}, result)
+	require.Equal(t, ReplayApplyResult{CheckpointMutationsBefore: 3, CheckpointTransactionsBefore: 3, Resumed: true, LastCommitTS: 140}, result)
 
 	changed := append([]ReplayMutation(nil), mutations...)
 	changed[0].Value = []byte("tampered")
@@ -534,7 +536,7 @@ func TestApplyReplayResolvesCommittedUncertainResultFromCheckpoint(t *testing.T)
 
 	result, err = ApplyReplay(t.Context(), target, digest, manifest, mutations)
 	require.NoError(t, err)
-	require.Equal(t, ReplayApplyResult{AppliedMutations: 2, AppliedTransactions: 2, Resumed: true, LastCommitTS: 140}, result)
+	require.Equal(t, ReplayApplyResult{CheckpointMutationsBefore: 1, CheckpointTransactionsBefore: 1, AppliedMutations: 2, AppliedTransactions: 2, Resumed: true, LastCommitTS: 140}, result)
 	require.Equal(t, 3, target.commits, "the committed uncertain source transaction must not be replayed")
 	_, err = target.Get(t.Context(), keyA)
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)

@@ -2581,7 +2581,7 @@ TiKV fence key，成功才签发连续排写交接收据：
 `(commit_ts,start_ts)` 的全部 mutation 与 target 内部 checkpoint 在一条 TiKV transaction 中提交；checkpoint 绑定 exact
 plan/mutation digest，失败重跑只从完整 source transaction 边界继续。执行前后必须以 receipt 内的 exact
 token 逐一验证 control + 256 shards，并再次确认 plan/full/log/fence 四个输入文件未漂移。成功输出
-`kubebrain.native-pitr-log-replay.v4`，同时绑定 exact restoration fence 与 admission-handoff receipt，并记录
+`kubebrain.native-pitr-log-replay.v5`，同时绑定 exact restoration fence 与 admission-handoff receipt，并记录
 `replay_write_fence_proven=true`、`continuous_writer_exclusion=true`、`target_write_fence_proven=true`；
 回放收据本身仍固定 `post_restore_semantic_validated=false`、`pitr_complete=false`。当前实现已通过编码、
 范围、摘要、长短值、事务分组、原子 checkpoint、续跑与错误交接绑定单测。2026-08-16 又以单副本独立 source/target
@@ -2601,16 +2601,17 @@ v2 checkpoint 的原子提交，再向调用方返回标准 `storage.ErrUncertai
 记录 `resumed_from_checkpoint=true`，完整语义门禁 39.88 秒通过。这里的响应丢失由存储接口包装层确定性注入，尚不等同于
 在 TiKV 2PC/网络分区窗口自然产生 uncertain commit；后者仍需独立基础设施故障演练。
 
-v4 receipt 的 applied/resumed 统计也是 release 门禁的一部分：fresh 成功必须在本轮应用全部 manifest mutation/transaction；
-resumed 非空成功只能应用严格少于总数的剩余工作（已完成 checkpoint 重跑允许本轮两项均为零）；任一模式都要求 mutation 与
-transaction 的零值同步，且 applied mutation 不少于 applied transaction。自相矛盾的 receipt 会在 fence release 和 semantic
-verify 前由公共 decoder 拒绝。2026-08-16 在上述三副本 commit-response-loss 场景重跑收紧后的 validator，真实续跑、release
-与最终语义验收仍通过（40.15 秒）。
+v5 receipt 将 `checkpoint_*_before_run` 与 `applied_*_this_run` 同时作为 release 门禁：两者之和必须分别精确等于 manifest
+mutation/transaction 总量，checkpoint 前缀与 `resumed_from_checkpoint` 必须一致，且 mutation/transaction 的零值同步、
+mutation 数不少于 transaction 数。这样 verifier 能从一张 receipt 证明“已持久化前缀 + 本轮工作 = 完整 manifest”，不再只凭
+布尔 completion 声明。自相矛盾的 receipt 会在 fence release 和 semantic verify 前由公共 decoder 拒绝。2026-08-16 在三副本
+commit-response-loss 场景重跑 v5：checkpoint 前缀 7/19 mutation，真实续跑、release 与最终语义验收通过（42.25 秒）。
 
-v4 不接受旧 `log-replay-manifest.v1`、`log-replay-checkpoint.v1` 或 `native-pitr-log-replay.v3`
-证据：这些格式没有摘要绑定 source `start_ts`，无法在 commit TSO 碰撞时证明 source transaction 边界。
+v5 不接受旧 `log-replay-manifest.v1`、`log-replay-checkpoint.v1` 或 `native-pitr-log-replay.v3/v4` 证据：manifest/checkpoint
+旧格式没有摘要绑定 source `start_ts`，无法在 commit TSO 碰撞时证明 source transaction 边界；execution v4 又没有
+checkpoint-before 统计，无法证明 resumed 前缀与本轮 applied 工作合计覆盖整个 manifest。
 若目标上存在旧 checkpoint，executor 必须 fail closed；不能删除 checkpoint 后在同一目标猜测重放。按 failed-target
-流程完成 `NativePITRTargetRetirement`，供应全新空白 replacement target，再从 exact full restore 重新执行 v4 链。
+流程完成 `NativePITRTargetRetirement`，供应全新空白 replacement target，再从 exact full restore 重新执行 v5 链。
 
 `--scratch-dir` 保存可重建的临时 bbolt default-CF join index；应放在与 log mirror 同容量域的加密 PVC，容量至少覆盖
 回放窗口内 default-CF 长值及 bbolt page overhead，不要指向 executor 的 64Mi `emptyDir`。未显式设置时命令使用

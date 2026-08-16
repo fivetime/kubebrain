@@ -35,7 +35,7 @@ import (
 )
 
 const ReplayManifestFormat = "kubebrain.native-pitr-log-replay-manifest.v2"
-const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v4"
+const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v5"
 
 type ReplayMutation struct {
 	CommitTS uint64 `json:"commit_ts"`
@@ -72,10 +72,12 @@ type ReplayManifest struct {
 const replayCheckpointFormat = "kubebrain.native-pitr-log-replay-checkpoint.v2"
 
 type ReplayApplyResult struct {
-	AppliedMutations    int
-	AppliedTransactions int
-	Resumed             bool
-	LastCommitTS        uint64
+	CheckpointMutationsBefore    int
+	CheckpointTransactionsBefore int
+	AppliedMutations             int
+	AppliedTransactions          int
+	Resumed                      bool
+	LastCommitTS                 uint64
 }
 
 type replayCheckpoint struct {
@@ -104,6 +106,8 @@ type LogReplayExecutionReceipt struct {
 	RestoreTS                     uint64 `json:"restore_ts"`
 	MutationCount                 int    `json:"mutation_count"`
 	TransactionCount              int    `json:"transaction_count"`
+	CheckpointMutationsBefore     int    `json:"checkpoint_mutations_before_run"`
+	CheckpointTransactionsBefore  int    `json:"checkpoint_transactions_before_run"`
 	AppliedMutations              int    `json:"applied_mutations_this_run"`
 	AppliedTransactions           int    `json:"applied_transactions_this_run"`
 	LastCommitTS                  uint64 `json:"last_commit_ts,omitempty"`
@@ -155,7 +159,7 @@ func BuildLogReplayExecution(plan Plan, restore FullRestoreExecutionReceipt, man
 }
 
 func (r LogReplayExecutionReceipt) Validate() error {
-	if r.Format != LogReplayExecutionFormat || r.SourceClusterID == 0 || r.TargetClusterID == 0 || r.SourceClusterID == r.TargetClusterID || r.Keyspace == "" || r.BackupTS == 0 || r.RestoreTS <= r.BackupTS || r.MutationCount < 0 || r.TransactionCount < 0 || r.AppliedMutations < 0 || r.AppliedTransactions < 0 || r.AppliedMutations > r.MutationCount || r.AppliedTransactions > r.TransactionCount || !r.CheckpointAtomic || !r.ReplayWriteFenceProven || !r.ContinuousWriterExclusion || !r.LogReplayCompleted || !r.TargetWriteFenceProven || r.PostRestoreSemanticValidated || r.PITRComplete || r.StartedAtUnix <= 0 || r.CompletedAtUnix < r.StartedAtUnix {
+	if r.Format != LogReplayExecutionFormat || r.SourceClusterID == 0 || r.TargetClusterID == 0 || r.SourceClusterID == r.TargetClusterID || r.Keyspace == "" || r.BackupTS == 0 || r.RestoreTS <= r.BackupTS || r.MutationCount < 0 || r.TransactionCount < 0 || r.CheckpointMutationsBefore < 0 || r.CheckpointTransactionsBefore < 0 || r.AppliedMutations < 0 || r.AppliedTransactions < 0 || r.CheckpointMutationsBefore > r.MutationCount || r.CheckpointTransactionsBefore > r.TransactionCount || r.AppliedMutations > r.MutationCount || r.AppliedTransactions > r.TransactionCount || !r.CheckpointAtomic || !r.ReplayWriteFenceProven || !r.ContinuousWriterExclusion || !r.LogReplayCompleted || !r.TargetWriteFenceProven || r.PostRestoreSemanticValidated || r.PITRComplete || r.StartedAtUnix <= 0 || r.CompletedAtUnix < r.StartedAtUnix {
 		return errors.New("native PITR log replay receipt is incomplete")
 	}
 	for _, value := range []string{r.PlanSHA256, r.FullRestoreReceiptSHA256, r.LogArtifactReceiptSHA256, r.ArtifactManifestSHA256, r.MutationsSHA256, r.RestorationFenceReceiptSHA256, r.AdmissionHandoffReceiptSHA256} {
@@ -166,14 +170,14 @@ func (r LogReplayExecutionReceipt) Validate() error {
 	if (r.MutationCount == 0) != (r.TransactionCount == 0) || (r.MutationCount == 0) != (r.LastCommitTS == 0) || (r.LastCommitTS != 0 && (r.LastCommitTS <= r.BackupTS || r.LastCommitTS > r.RestoreTS)) {
 		return errors.New("native PITR log replay receipt has invalid bounds")
 	}
-	if (r.AppliedMutations == 0) != (r.AppliedTransactions == 0) || r.AppliedMutations < r.AppliedTransactions {
+	if (r.CheckpointMutationsBefore == 0) != (r.CheckpointTransactionsBefore == 0) || r.CheckpointMutationsBefore < r.CheckpointTransactionsBefore || (r.AppliedMutations == 0) != (r.AppliedTransactions == 0) || r.AppliedMutations < r.AppliedTransactions {
 		return errors.New("native PITR log replay receipt has invalid applied statistics")
 	}
-	if !r.Resumed && (r.AppliedMutations != r.MutationCount || r.AppliedTransactions != r.TransactionCount) {
-		return errors.New("native PITR log replay receipt has incomplete fresh replay statistics")
+	if r.CheckpointMutationsBefore != r.MutationCount-r.AppliedMutations || r.CheckpointTransactionsBefore != r.TransactionCount-r.AppliedTransactions {
+		return errors.New("native PITR log replay receipt progress does not complete the manifest")
 	}
-	if r.Resumed && r.MutationCount > 0 && (r.AppliedMutations >= r.MutationCount || r.AppliedTransactions >= r.TransactionCount) {
-		return errors.New("native PITR log replay receipt has invalid resumed replay statistics")
+	if (!r.Resumed && (r.CheckpointMutationsBefore != 0 || r.CheckpointTransactionsBefore != 0)) || (r.Resumed && r.MutationCount > 0 && (r.CheckpointMutationsBefore == 0 || r.CheckpointTransactionsBefore == 0)) {
+		return errors.New("native PITR log replay receipt checkpoint progress contradicts resume state")
 	}
 	return nil
 }
@@ -380,7 +384,11 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 	} else if !errors.Is(err, storage.ErrKeyNotFound) {
 		return ReplayApplyResult{}, err
 	}
-	result := ReplayApplyResult{Resumed: resumed, LastCommitTS: current.LastCommitTS}
+	result := ReplayApplyResult{
+		CheckpointMutationsBefore:    current.AppliedMutations,
+		CheckpointTransactionsBefore: replayTransactionCount(mutations[:current.AppliedMutations]),
+		Resumed:                      resumed, LastCommitTS: current.LastCommitTS,
+	}
 	if len(mutations) == 0 && !resumed {
 		next := replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: planSHA, MutationsSHA256: manifest.MutationsSHA256, RestoreTS: manifest.RestoreTS}
 		nextBytes, err := json.Marshal(next)
@@ -426,6 +434,19 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 		offset = end
 	}
 	return result, nil
+}
+
+func replayTransactionCount(mutations []ReplayMutation) int {
+	transactions := 0
+	for offset := 0; offset < len(mutations); {
+		transactions++
+		commitTS, startTS := mutations[offset].CommitTS, mutations[offset].StartTS
+		offset++
+		for offset < len(mutations) && mutations[offset].CommitTS == commitTS && mutations[offset].StartTS == startTS {
+			offset++
+		}
+	}
+	return transactions
 }
 
 func canonicalizeReplayMutations(mutations []ReplayMutation) ([]ReplayMutation, error) {

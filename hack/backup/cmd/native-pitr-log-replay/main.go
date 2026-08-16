@@ -201,7 +201,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	}
 	fenceSHA := digest(fenceBytes)
 	handoffSHA := digest(handoffBytes)
-	receipt, err := nativepitr.BuildLogReplayExecution(plan, restore, manifest, fence, fenceSHA, handoff, handoffSHA, nativepitr.LogReplayExecutionReceipt{PlanSHA256: planSHA, FullRestoreReceiptSHA256: digest(restoreBytes), LogArtifactReceiptSHA256: logSHA, RestorationFenceReceiptSHA256: fenceSHA, AdmissionHandoffReceiptSHA256: handoffSHA, AppliedMutations: result.AppliedMutations, AppliedTransactions: result.AppliedTransactions, LastCommitTS: manifest.LastCommitTS, Resumed: result.Resumed, StartedAtUnix: started, CompletedAtUnix: now().UTC().Unix()})
+	receipt, err := nativepitr.BuildLogReplayExecution(plan, restore, manifest, fence, fenceSHA, handoff, handoffSHA, nativepitr.LogReplayExecutionReceipt{PlanSHA256: planSHA, FullRestoreReceiptSHA256: digest(restoreBytes), LogArtifactReceiptSHA256: logSHA, RestorationFenceReceiptSHA256: fenceSHA, AdmissionHandoffReceiptSHA256: handoffSHA, CheckpointMutationsBefore: result.CheckpointMutationsBefore, CheckpointTransactionsBefore: result.CheckpointTransactionsBefore, AppliedMutations: result.AppliedMutations, AppliedTransactions: result.AppliedTransactions, LastCommitTS: manifest.LastCommitTS, Resumed: result.Resumed, StartedAtUnix: started, CompletedAtUnix: now().UTC().Unix()})
 	if err != nil {
 		return err
 	}
