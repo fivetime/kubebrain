@@ -3643,7 +3643,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   `/v3/*` 返回 404、`/health` 仍可用。启用 client-cert-auth 时，Kubernetes 原生
   HTTPS probe 无法携带客户端证书；生产 Pod 应继续用不暴露数据的 info 端口
   `/ping`/`/ready` 探针，不能把无证书访问 client `/health` 当作进程故障。
-  endpoint HTTP server 必须限制 header admission：`ReadHeaderTimeout=5s`、
+  endpoint HTTP server 必须限制 header admission：`ReadHeaderTimeout=5m`（对齐 upstream etcd
+  `0e3027bdd`；TLS handshake 仍有独立 10s deadline）、
   `IdleTimeout=2m`、`MaxHeaderBytes=1MiB`（与 upstream etcd 使用的 Go 默认值等价）；不要设置全局 `ReadTimeout` 或
   `WriteTimeout`，以免截断 Watch/Lease gateway 的合法长流。
   client/peer 端口的 gRPC 与 HTTP/gateway 入口必须像 etcd 一样在 HTTP server 内按

@@ -54194,6 +54194,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   普通 `pkg/endpoint` 全套（16.964 秒）、race、TLS/Endpoint 定向与 vet 通过；本轮没有修改测试文件。在线
   A4776 未滚动，真实 Slowloris、证书轮换并发握手和 256-slot 饱和恢复仍留待正式新镜像网络故障门禁。
 
+- A4818 对齐 upstream etcd `0e3027bdd` 的 client HTTP header 时间窗。KubeBrain A718 旧合同把
+  `ReadHeaderTimeout` 固定为 5 秒，虽能更快拒绝 Slowloris，却会比 etcd 提前断开高延迟或受背压代理后的合法
+  HTTP/gRPC 首请求头，不符合通用 endpoint 行为。生产默认现改为 upstream 的 5 分钟；TLS handshake 仍由 A4817
+  独立限制为 10 秒/最多 256 个并发，header 仍受 1 MiB 上限、连接仍受 2 分钟 idle timeout，Watch/Lease 长流
+  继续不设置全局 Read/WriteTimeout。
+
+  HTTP/1、h2c、TLS 双栈 Endpoint 定向、race（0.327/1.434 秒）及 vet 通过；本轮没有修改测试文件。在线 A4776
+  未滚动，真实慢 header、代理背压与 Slowloris 资源曲线仍留待正式新镜像网络门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
