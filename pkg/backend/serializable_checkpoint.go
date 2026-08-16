@@ -79,7 +79,7 @@ func SerializableCheckpointFromContext(ctx context.Context) (SerializableCheckpo
 	return c, ok && c.Revision != 0 && c.Timestamp != 0
 }
 
-func (b *backend) snapshotGet(ctx context.Context, key []byte) ([]byte, error) {
+func (b *backend) snapshotGet(ctx context.Context, key []byte) (result []byte, retErr error) {
 	if timestamp, ok := storage.SnapshotTimestampFromContext(ctx); ok {
 		reader, supported := storage.FindCapability[storage.SnapshotGetter](b.kv)
 		if supported {
@@ -93,7 +93,7 @@ func (b *backend) snapshotGet(ctx context.Context, key []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer it.Close()
+		defer func() { retErr = errors.Join(retErr, it.Close()) }()
 		if err := it.Next(ctx); err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil, storage.ErrKeyNotFound

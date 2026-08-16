@@ -43,14 +43,14 @@ func (b *backend) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
 	return b.snapshotGet(ctx, b.ks.EncodeInternalKey(key))
 }
 
-func (b *backend) InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error) {
+func (b *backend) InternalRange(ctx context.Context, prefix []byte) (result map[string][]byte, retErr error) {
 	start := b.ks.EncodeInternalKey(prefix)
 	timestamp, _ := storage.SnapshotTimestampFromContext(ctx)
 	it, err := b.kv.Iter(ctx, start, rawPrefixEnd(start), timestamp, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer it.Close()
+	defer func() { retErr = errors.Join(retErr, it.Close()) }()
 	out := make(map[string][]byte)
 	for {
 		err = it.Next(ctx)

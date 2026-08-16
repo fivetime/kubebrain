@@ -25,7 +25,7 @@ type BackendHashResult struct {
 // not interpret MVCC revisions or logical compaction: physical rows and
 // internal service metadata are deliberately part of this diagnostic value,
 // matching etcd's distinction between backend Hash and user-key HashKV.
-func (b *backend) Hash(ctx context.Context) (BackendHashResult, error) {
+func (b *backend) Hash(ctx context.Context) (result BackendHashResult, retErr error) {
 	b.logicalWriteMu.Lock()
 	defer b.logicalWriteMu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -35,7 +35,7 @@ func (b *backend) Hash(ctx context.Context) (BackendHashResult, error) {
 	if err != nil {
 		return BackendHashResult{}, err
 	}
-	defer it.Close()
+	defer func() { retErr = errors.Join(retErr, it.Close()) }()
 	h := crc32.New(hashKVTable)
 	// Upstream backend.Hash includes each bbolt bucket name before its rows.
 	// KubeBrain has one tenant-scoped encoded storage domain, so use a stable
@@ -70,7 +70,7 @@ func (b *backend) Hash(ctx context.Context) (BackendHashResult, error) {
 // HashKV checksums the logical object MVCC state visible at revision. Versions
 // retired by logical compaction are excluded before physical GC catches up.
 // Internal service metadata is excluded, matching etcd HashKV's user-KV scope.
-func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, error) {
+func (b *backend) HashKV(ctx context.Context, revision int64) (result HashKVResult, retErr error) {
 	b.logicalWriteMu.Lock()
 	defer b.logicalWriteMu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -107,7 +107,7 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, err
 	if err != nil {
 		return HashKVResult{}, err
 	}
-	defer it.Close()
+	defer func() { retErr = errors.Join(retErr, it.Close()) }()
 
 	h := crc32.New(hashKVTable)
 	_, _ = h.Write([]byte("key"))

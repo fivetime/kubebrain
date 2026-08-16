@@ -17,6 +17,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"math"
@@ -220,7 +221,7 @@ func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint6
 	if err != nil {
 		return nil, 0, err
 	}
-	defer iter.Close()
+	defer func() { err = stderrors.Join(err, iter.Close()) }()
 	for {
 		err = iter.Next(ctx)
 		if err != nil {
