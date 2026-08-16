@@ -53646,6 +53646,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   完整 runner。临时 reference etcd 已停止，数据目录与 12379/12380 listener 已清除；四个 KubeBrain fixture
   前缀均为空。该证据支持“当前请求校验无已知差异”，不把有限矩阵外推为完整兼容声明。
 
+- A4775 修复 native PITR 已实现生产命令没有进入发布制品的交付缺口。完整恢复流程此前在
+  `production_readiness_cn.md` 中要求从源码树 `go run` preflight、task lifecycle、artifact verifier、
+  source/fence、restore plan、log replay 与 semantic verifier；自动化 full backup/restore executor 只覆盖
+  其中一部分。结果是 receipt 合同和真实演练虽然存在，运维方仍无法仅凭不可变发布镜像执行完整受审流程。
+
+  生产提交 `a833af12` 在统一 Docker build stage 构建缺失的 14 个命令，并把全部非 BR 编排、收据与校验
+  工具复制到默认 KubeBrain 镜像；需要约 218 MiB BR 工具链的 full-backup/full-restore 继续保持在固定
+  v7.5.1 专用镜像，避免扩大所有数据面与 Operation Pod。生产手册的对应入口全部改为
+  `/usr/local/bin/kubebrain-native-pitr-*`，不再要求生产环境挂载源码或即时下载依赖。本轮没有新增或修改测试
+  文件；14 个生产包先在宿主机直接编译，随后完整默认镜像构建成功。
+
+  最终镜像 `kubebrain:a4775-a833af12` 内嵌完整 SHA
+  `a833af12fe71faab433f9ce2d8b076aa6a1fe200`、build time `2026-08-16T06:15:09Z`，本地 image ID
+  `sha256:360da7fc6fe19719c71550a5a0e03faf910a0d030e6025c6e71627680ab8ffec`。从最终 Alpine 运行层以
+  UID/GID 65532 逐一执行 14 个新增二进制的 `--help`，全部成功且均具可执行权限；临时检查容器与宿主机
+  编译产物已精确清除。本轮只交付离线运维制品，不改变在线 server 行为，因此没有用未滚动的数据面集群
+  状态冒充该镜像内容验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
