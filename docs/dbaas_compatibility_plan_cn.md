@@ -54039,6 +54039,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   文件。在线 A4776 未滚动，真实首次 HTTP client cancel、随后 Close 在 PD 恢复后成功释放的现场证据留待正式
   新镜像故障门禁。
 
+- A4802 补齐 A4799 admission shutdown 传播链内部仍会丢失次级错误的缺口。`tikvProcessAdmission.Close` 已按
+  顺序等待 keepalive worker、revoke PD embedded-etcd lease、再关闭 client，但 session revoke 一旦失败便只返回
+  该错误，client Close 的并发连接回收错误不可见；`StartSession` 失败 rollback 同样丢弃 client Close 结果。
+  生产实现现在以标准 `errors.Join` 同时保留 session/client Close，以及注册主错误/client rollback Close；两者
+  都为 nil 时成功路径仍返回 nil，资源关闭顺序与 5 秒预算不变。由 A4799 建立的 exactly-once helper 会把最终
+  聚合结果继续送达 Options.Run、Cobra 和进程退出码。
+
+  option 与 admissionfence race（分别 1.370 秒、5.731 秒）、cmd 全量编译及相关 vet 通过；本轮没有修改测试
+  文件。在线 A4776 未滚动，真实 revoke failure + client Close failure 双故障的完整错误文本与非零退出仍留待
+  正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
