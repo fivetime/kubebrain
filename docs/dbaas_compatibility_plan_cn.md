@@ -54014,6 +54014,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   修改测试文件。在线 A4776 未滚动，真实 admission etcd revoke failure 与 TiKV pool close failure 组合下的非零
   进程退出和 StatefulSet replacement 拒绝仍留待正式新镜像故障门禁。
 
+- A4800 把 Lock/Election concurrency client 的关闭错误接入 A4798/A4799 已建立的 server→Endpoint→进程错误链，
+  并修正由此审计出的 cancellation 分类回归。此前 `RPCServer.Close` 为 void 且丢弃本地 clientv3 adapter 的
+  Close 错误；现在返回该错误并由 server Join。但首轮 server race 立即证明不能机械传播所有错误：正常 Close
+  会先停止 campaign/server context，voluntary-release 最后一次存储操作和 concurrency client Close 均可能按设计
+  返回 `context.Canceled`，若把它当失败，每次干净 SIGTERM 都会变成非零退出。生产 Close 因而只在进程 shutdown
+  边界过滤这两个 cancellation sentinel；显式 `/drain` 仍对 cancellation fail closed，`DeadlineExceeded`、durable
+  release failure、真实 concurrency/peer Close failure 均继续传播。
+
+  修正前 `TestCloseWaitsForLeadershipCallbackBeforeReturning` race 确定性 RED（正常 Close 返回 canceled）；修正后
+  server race、Lock/Election 聚焦、etcd 编译、Endpoint 全量（16.909 秒）、option 回归及 server/endpoint/option
+  vet 通过。本轮只修改生产代码和兼容性记录，没有修改测试文件。在线 A4776 未滚动，真实非-cancellation
+  concurrency Close failure 的进程退出证据留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
