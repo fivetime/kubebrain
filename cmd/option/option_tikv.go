@@ -19,6 +19,7 @@ package option
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -55,10 +56,7 @@ func (a *tikvProcessAdmission) Close() error {
 	defer cancel()
 	sessionErr := a.session.Close(ctx)
 	clientErr := a.client.Close()
-	if sessionErr != nil {
-		return sessionErr
-	}
-	return clientErr
+	return errors.Join(sessionErr, clientErr)
 }
 
 func (s *storageConfig) buildProcessAdmission(ctx context.Context, keyspace, identity string) (processAdmission, error) {
@@ -74,8 +72,10 @@ func (s *storageConfig) buildProcessAdmission(ctx context.Context, keyspace, ide
 	}
 	session, err := admissionfence.StartSession(ctx, client, keyspace, identity, 15*time.Second)
 	if err != nil {
-		_ = client.Close()
-		return nil, fmt.Errorf("register PD restore admission session: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("register PD restore admission session: %w", err),
+			client.Close(),
+		)
 	}
 	return &tikvProcessAdmission{session: session, client: client}, nil
 }
