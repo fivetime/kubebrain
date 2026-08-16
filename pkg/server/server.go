@@ -121,9 +121,7 @@ func (s *server) Close() error {
 		// that error, but process Close must not turn a clean SIGTERM into a
 		// non-zero exit. A close-budget deadline and all other release failures
 		// remain actionable.
-		if errors.Is(drainErr, context.Canceled) {
-			drainErr = nil
-		}
+		drainErr = withoutContextCanceled(drainErr)
 		s.closeErr = errors.Join(s.closeErr, drainErr)
 		drainCancel()
 		if s.cancel != nil {
@@ -152,6 +150,23 @@ func (s *server) Close() error {
 		}
 	})
 	return s.closeErr
+}
+
+func withoutContextCanceled(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var result error
+		for _, child := range joined.Unwrap() {
+			result = errors.Join(result, withoutContextCanceled(child))
+		}
+		return result
+	}
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 func (s *server) Drain(ctx context.Context) error {

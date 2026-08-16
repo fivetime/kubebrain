@@ -343,10 +343,7 @@ func (s *RPCServer) waitLeaderReadyEpoch(ctx context.Context) (uint64, error) {
 func (s *RPCServer) Close() error {
 	var closeErr error
 	if s.concurrencyClient != nil {
-		closeErr = s.concurrencyClient.Close()
-		if errors.Is(closeErr, context.Canceled) {
-			closeErr = nil
-		}
+		closeErr = withoutContextCanceled(s.concurrencyClient.Close())
 	}
 	// The concrete production shim owns shared Watch PrevKV lookups. Cancel
 	// those before the lease manager and raw TiKV backend start shutting down;
@@ -357,6 +354,23 @@ func (s *RPCServer) Close() error {
 	}
 	s.leaseManager.close()
 	return closeErr
+}
+
+func withoutContextCanceled(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var result error
+		for _, child := range joined.Unwrap() {
+			result = errors.Join(result, withoutContextCanceled(child))
+		}
+		return result
+	}
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 // SetRequestLimits configures etcd-compatible admission limits. Zero keeps the
