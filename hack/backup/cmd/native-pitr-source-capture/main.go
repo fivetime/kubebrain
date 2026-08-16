@@ -73,7 +73,7 @@ func configureLogging() error {
 	return nil
 }
 
-func execute(parent context.Context, o options, out io.Writer, now func() time.Time) error {
+func execute(parent context.Context, o options, out io.Writer, now func() time.Time) (retErr error) {
 	if (o.action != "acquire" && o.action != "finalize") || o.task == "" || o.pdAddrs == "" || o.timeout <= 0 || (o.ca == "") != (o.cert == "") || (o.ca == "") != (o.key == "") {
 		return errors.New("valid action, task-create, source PD, TLS tuple, and positive timeout are required")
 	}
@@ -111,7 +111,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { retErr = errors.Join(retErr, store.Close()) }()
 	prefix := nativepitr.CoordinationPrefix(task.Keyspace)
 	if o.action == "acquire" {
 		witnessSHA, err := digestFile(o.witness)
@@ -204,13 +204,13 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	return json.NewEncoder(out).Encode(receipt)
 }
 
-func readBounded(path string) ([]byte, error) {
+func readBounded(path string) (b []byte, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
+	b, err = io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
 	if err != nil {
 		return nil, err
 	}
@@ -221,12 +221,17 @@ func readBounded(path string) ([]byte, error) {
 }
 
 func digest(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
-func digestFile(path string) (string, error) {
+func digestFile(path string) (digestValue string, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			digestValue = ""
+			retErr = errors.Join(retErr, closeErr)
+		}
+	}()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
