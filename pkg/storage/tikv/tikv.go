@@ -112,12 +112,12 @@ func NewKvStorageWithContext(ctx context.Context, pdAddrs []string, clientNum in
 		return nil, err
 	}
 	if !stopStartupCancellation() {
-		closeClient(clients)
+		closeErr := closeClient(clients)
 		cancelStartup()
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, multierr.Append(err, closeErr)
 		}
-		return nil, context.Canceled
+		return nil, multierr.Append(context.Canceled, closeErr)
 	}
 	s := NewKvStoreWithClient(clients)
 	return s, nil
@@ -164,8 +164,8 @@ func createTxnClients(clientNum int, factory func(int) (*txnkv.Client, error)) (
 				created = append(created, client)
 			}
 		}
-		closeClient(created)
-		return nil, errors.Wrapf(err, "failed to create txn client %d", i)
+		createErr := errors.Wrapf(err, "failed to create txn client %d", i)
+		return nil, multierr.Append(createErr, closeClient(created))
 	}
 	return clients, nil
 }
