@@ -53870,6 +53870,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在线三副本仍运行 A4776 旧镜像，本轮没有绕过 release gate 滚动新二进制，因此两项现场 GREEN 均留待
   下一次受控发布；官方 reference、临时目录、测试 lease 与 auth/alarm 状态已由 runner cleanup 恢复。
 
+- A4789 沿 A4788 的 TSO 调用链继续关闭请求取消不覆盖 transaction start 的生产生命周期缺口。审计确认
+  `GetTimestampOracle` 已进入带重试路径，但普通 TiKV `Get` 和所有 `BeginBatchWrite` 仍调用 client-go
+  `KVStore.Begin()`；该 API 固定以 `context.Background()` 创建 TSO backoffer。PD leader 切换或网络黑洞时，
+  即使 gRPC request deadline 已到，读请求以及尚未开始 2PC 的写事务仍可脱离调用方继续等待。生产提交
+  `b237fe5b` 在维护的 client-go fork 增加 `BeginWithContext`，旧 `Begin` 保留为 Background wrapper；TiKV
+  point Get 直接传入 request context，write batch 则延迟到 `Commit(ctx)` 才选择 start TSO 并建立事务。
+  begin 失败继续映射 `storage.ErrUnavailable`，不会发布 nil/半初始化 transaction，也不会进入 mutation closure；
+  已建立事务的 rollback 与 uncertain commit 分类保持原样。
+
+  最小 adapter 回归只固定 canceled context 必须原样传入 lazy begin，并连续 20 轮通过。TiKV storage race、
+  storage 全树、backend 全树 79.224 秒、client-go `tikv` 全套、fork vet/txnkv compile、root cmd/server compile
+  与 backend/server/storage vet 均通过。该修复同样未滚入仍运行 A4776 的在线实例；真实 PD blackhole 下的
+  request-deadline GREEN 必须随下一次正式镜像通过 production release gate 验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
