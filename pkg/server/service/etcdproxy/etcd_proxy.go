@@ -63,7 +63,12 @@ type etcdProxy struct {
 	election  leader.LeaderElection
 	tlsConfig *tls.Config
 
-	closed    chan struct{}
+	closed chan struct{}
+	// updateCh lets request handlers wake the single background connector
+	// without waiting behind updateMu or performing a multi-second peer health
+	// check themselves. This keeps the public request lifetime bounded by its
+	// own context while preserving one dial/check flight per proxy.
+	updateCh  chan struct{}
 	client    *clientv3.Client
 	err       error
 	curLeader string
@@ -116,7 +121,7 @@ func NewEtcdProxy(ctx context.Context, leaderElection leader.LeaderElection, tls
 	proxy := &etcdProxy{
 		election: leaderElection, tlsConfig: tlsConfig,
 		allowInsecure: allowInsecure, callOptions: proxyCallOptions(maxRequestBytes),
-		cancel: cancel, loopDone: make(chan struct{}),
+		cancel: cancel, loopDone: make(chan struct{}), updateCh: make(chan struct{}, 1),
 	}
 	proxy.updateClient()
 	go func() {
@@ -155,9 +160,20 @@ func (e *etcdProxy) checkLeaderLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-e.updateCh:
 		case <-timer.C:
 		}
 		timer.Reset(time.Second)
+	}
+}
+
+func (e *etcdProxy) requestClientUpdate() {
+	if e.updateCh == nil {
+		return
+	}
+	select {
+	case e.updateCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -1060,7 +1076,11 @@ func (e *etcdProxy) waitReady(ctx context.Context) error {
 		default:
 		}
 
-		e.updateClient()
+		// A peer dial/health check can legitimately consume the full five-second
+		// connection timeout. Never run it, or wait for updateMu, in this request
+		// goroutine: wake the single connector and keep polling readiness under the
+		// caller-derived waitCtx instead.
+		e.requestClientUpdate()
 		if err := e.Ready(); err == nil {
 			return nil
 		} else {

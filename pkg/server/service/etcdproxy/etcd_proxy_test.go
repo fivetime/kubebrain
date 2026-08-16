@@ -132,6 +132,25 @@ func TestWaitReadyReturnsUnavailableWhenLeaderConnectionIsNotReady(t *testing.T)
 	require.Less(t, time.Since(start), 4*time.Second)
 }
 
+func TestWaitReadyDoesNotBlockBehindPeerConnectionUpdate(t *testing.T) {
+	proxy := &etcdProxy{
+		election: &testLeaderElection{leaderAddress: "127.0.0.1:1"},
+		updateCh: make(chan struct{}, 1),
+	}
+	proxy.updateMu.Lock()
+	defer proxy.updateMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := proxy.waitReady(ctx)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), 250*time.Millisecond,
+		"a request must not wait for another goroutine's peer dial timeout")
+	require.Len(t, proxy.updateCh, 1, "the background connector must be notified")
+}
+
 func registerServingHealth(server *grpc.Server) *health.Server {
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
