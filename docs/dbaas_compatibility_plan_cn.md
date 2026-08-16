@@ -54061,6 +54061,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   没有修改测试文件。在线 A4776 未滚动，真实磁盘 writeback/close failure 下 backup task 非零终态与 artifact
   拒绝仍留待正式新镜像故障门禁。
 
+- A4804 补齐 Maintenance Snapshot 临时 artifact 与只读 descriptor 的终态错误处理。旧 `sendSnapshot` 在
+  `CreateTemp` 后若初始 fd Close 或后续 build 失败，只 best-effort Remove 且丢弃错误；包含完整 keyspace 与 auth
+  password hash 的命名文件可能遗留，而 RPC 只报告其他主因甚至成功。`streamSnapshotFile` 虽在首个 response 前
+  主动 unlink，却裸 defer 只读 fd Close，最终 hash 发送后本地 Close 异常也不可见。生产路径现在从取得 path 起
+  立即安装 named-return cleanup，Remove 失败与主错误 Join；流式主路径已 unlink 后的 `IsNotExist` 明确忽略。
+  snapshot fd Close 同样 Join 到 stream 终态，使客户端不会把服务端观察到的 I/O teardown failure 当正常 EOF。
+
+  Snapshot race 聚焦（26.818 秒）、etcdsnapshot、backup adapter 及相关 vet 通过；本轮没有修改测试文件。在线
+  A4776 未滚动，真实目录权限/文件系统故障下 unlink failure 和 fd close failure 的 RPC 非正常终态仍留待正式
+  新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
