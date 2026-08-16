@@ -34,20 +34,19 @@ import (
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 )
 
-const ReplayManifestFormat = "kubebrain.native-pitr-log-replay-manifest.v1"
-const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v3"
+const ReplayManifestFormat = "kubebrain.native-pitr-log-replay-manifest.v2"
+const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v4"
 
 type ReplayMutation struct {
 	CommitTS uint64 `json:"commit_ts"`
+	StartTS  uint64 `json:"start_ts"`
 	Key      []byte `json:"key"`
 	Value    []byte `json:"value,omitempty"`
 
-	// MaterializeReplay temporarily carries BR write-CF join fields here so
-	// candidates can become final mutations without a second struct array.
-	// They are cleared before validation, hashing, or return.
-	sourceStartTS uint64
-	Delete        bool `json:"delete,omitempty"`
+	Delete bool `json:"delete,omitempty"`
 
+	// MaterializeReplay temporarily carries the write kind for exact duplicate
+	// comparison. It is cleared before validation, hashing, or return.
 	sourceWriteKind byte
 }
 
@@ -70,7 +69,7 @@ type ReplayManifest struct {
 	ExactLocalMirrorRechecked bool   `json:"exact_local_mirror_rechecked"`
 }
 
-const replayCheckpointFormat = "kubebrain.native-pitr-log-replay-checkpoint.v1"
+const replayCheckpointFormat = "kubebrain.native-pitr-log-replay-checkpoint.v2"
 
 type ReplayApplyResult struct {
 	AppliedMutations    int
@@ -86,6 +85,7 @@ type replayCheckpoint struct {
 	RestoreTS        uint64 `json:"restore_ts"`
 	AppliedMutations int    `json:"applied_mutations"`
 	LastCommitTS     uint64 `json:"last_commit_ts"`
+	LastStartTS      uint64 `json:"last_start_ts"`
 }
 
 type LogReplayExecutionReceipt struct {
@@ -249,7 +249,7 @@ func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scr
 					if ts > startExclusive && ts <= restoreTS && (kind == 'P' || kind == 'D') {
 						mutations = append(mutations, ReplayMutation{
 							CommitTS: ts, Key: append([]byte(nil), rawKey...), Value: short,
-							Delete: kind == 'D', sourceStartTS: startTS, sourceWriteKind: kind,
+							Delete: kind == 'D', StartTS: startTS, sourceWriteKind: kind,
 						})
 					}
 				default:
@@ -273,12 +273,12 @@ func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scr
 		return ReplayManifest{}, nil, err
 	}
 	putCount, deleteCount, txns := 0, 0, 0
-	var lastTS uint64
+	var lastCommitTS, lastStartTS uint64
 	for i := range mutations {
 		mutation := &mutations[i]
-		if mutation.CommitTS != lastTS {
+		if mutation.CommitTS != lastCommitTS || mutation.StartTS != lastStartTS {
 			txns++
-			lastTS = mutation.CommitTS
+			lastCommitTS, lastStartTS = mutation.CommitTS, mutation.StartTS
 		}
 		if mutation.Delete {
 			// A delete has no etcd value. Keep any source short-value bytes only
@@ -287,7 +287,7 @@ func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scr
 			deleteCount++
 		} else {
 			if mutation.Value == nil {
-				value, ok, err := defaults.Get(replayValueKey(mutation.Key, mutation.sourceStartTS))
+				value, ok, err := defaults.Get(replayValueKey(mutation.Key, mutation.StartTS))
 				if err != nil {
 					return ReplayManifest{}, nil, err
 				}
@@ -298,7 +298,7 @@ func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scr
 			}
 			putCount++
 		}
-		mutation.sourceStartTS, mutation.sourceWriteKind = 0, 0
+		mutation.sourceWriteKind = 0
 	}
 	mutationsDigest, err := digestReplayMutations(mutations)
 	if err != nil {
@@ -332,7 +332,7 @@ func (m ReplayManifest) Validate() error {
 
 // ApplyReplay commits every original source transaction as one target
 // transaction. The mutation group and its durable checkpoint advance
-// atomically, making retries exact at source commit-TS boundaries.
+// atomically, making retries exact at source (commit TS, start TS) boundaries.
 func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, manifest ReplayManifest, mutations []ReplayMutation) (ReplayApplyResult, error) {
 	if err := manifest.Validate(); err != nil {
 		return ReplayApplyResult{}, err
@@ -359,13 +359,13 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 	resumed := err == nil
 	var current replayCheckpoint
 	if err == nil {
-		if json.Unmarshal(currentBytes, &current) != nil || current.Format != replayCheckpointFormat || current.PlanSHA256 != planSHA || current.MutationsSHA256 != manifest.MutationsSHA256 || current.RestoreTS != manifest.RestoreTS || current.AppliedMutations < 0 || current.AppliedMutations > len(mutations) {
+		if json.Unmarshal(currentBytes, &current) != nil || current.Format != replayCheckpointFormat || current.PlanSHA256 != planSHA || current.MutationsSHA256 != manifest.MutationsSHA256 || current.RestoreTS != manifest.RestoreTS || current.AppliedMutations < 0 || current.AppliedMutations > len(mutations) || (current.AppliedMutations == 0) != (current.LastCommitTS == 0 && current.LastStartTS == 0) {
 			return ReplayApplyResult{}, errors.New("target replay checkpoint does not match this exact plan")
 		}
-		if current.AppliedMutations > 0 && mutations[current.AppliedMutations-1].CommitTS != current.LastCommitTS {
+		if current.AppliedMutations > 0 && (mutations[current.AppliedMutations-1].CommitTS != current.LastCommitTS || mutations[current.AppliedMutations-1].StartTS != current.LastStartTS) {
 			return ReplayApplyResult{}, errors.New("target replay checkpoint is not on a transaction boundary")
 		}
-		if current.AppliedMutations < len(mutations) && mutations[current.AppliedMutations].CommitTS == current.LastCommitTS {
+		if current.AppliedMutations < len(mutations) && mutations[current.AppliedMutations].CommitTS == current.LastCommitTS && mutations[current.AppliedMutations].StartTS == current.LastStartTS {
 			return ReplayApplyResult{}, errors.New("target replay checkpoint splits a source transaction")
 		}
 	} else if !errors.Is(err, storage.ErrKeyNotFound) {
@@ -386,10 +386,10 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 	}
 	for offset := current.AppliedMutations; offset < len(mutations); {
 		end := offset + 1
-		for end < len(mutations) && mutations[end].CommitTS == mutations[offset].CommitTS {
+		for end < len(mutations) && mutations[end].CommitTS == mutations[offset].CommitTS && mutations[end].StartTS == mutations[offset].StartTS {
 			end++
 		}
-		next := replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: planSHA, MutationsSHA256: manifest.MutationsSHA256, RestoreTS: manifest.RestoreTS, AppliedMutations: end, LastCommitTS: mutations[offset].CommitTS}
+		next := replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: planSHA, MutationsSHA256: manifest.MutationsSHA256, RestoreTS: manifest.RestoreTS, AppliedMutations: end, LastCommitTS: mutations[offset].CommitTS, LastStartTS: mutations[offset].StartTS}
 		nextBytes, err := json.Marshal(next)
 		if err != nil {
 			return result, err
@@ -420,6 +420,8 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 }
 
 func canonicalizeReplayMutations(mutations []ReplayMutation) ([]ReplayMutation, error) {
+	// First group the physical write-CF identity so repeated log segments can be
+	// deduplicated and conflicting start timestamps cannot hide in txn order.
 	sort.Slice(mutations, func(i, j int) bool {
 		if mutations[i].CommitTS != mutations[j].CommitTS {
 			return mutations[i].CommitTS < mutations[j].CommitTS
@@ -431,7 +433,7 @@ func canonicalizeReplayMutations(mutations []ReplayMutation) ([]ReplayMutation, 
 		if len(canonical) != 0 {
 			previous := canonical[len(canonical)-1]
 			if previous.CommitTS == mutation.CommitTS && bytes.Equal(previous.Key, mutation.Key) {
-				if previous.sourceStartTS != mutation.sourceStartTS ||
+				if previous.StartTS != mutation.StartTS ||
 					previous.sourceWriteKind != mutation.sourceWriteKind ||
 					previous.Delete != mutation.Delete ||
 					(previous.Value == nil) != (mutation.Value == nil) ||
@@ -443,6 +445,31 @@ func canonicalizeReplayMutations(mutations []ReplayMutation) ([]ReplayMutation, 
 		}
 		canonical = append(canonical, mutation)
 	}
+	sort.Slice(canonical, func(i, j int) bool {
+		if canonical[i].StartTS != canonical[j].StartTS {
+			return canonical[i].StartTS < canonical[j].StartTS
+		}
+		if canonical[i].CommitTS != canonical[j].CommitTS {
+			return canonical[i].CommitTS < canonical[j].CommitTS
+		}
+		return bytes.Compare(canonical[i].Key, canonical[j].Key) < 0
+	})
+	for i := 1; i < len(canonical); i++ {
+		if canonical[i].StartTS == canonical[i-1].StartTS && canonical[i].CommitTS != canonical[i-1].CommitTS {
+			return nil, errors.New("source transaction has multiple commit TSOs")
+		}
+	}
+	// A commit timestamp is not globally unique in TiKV. Preserve each source
+	// transaction boundary and make its replay order deterministic.
+	sort.Slice(canonical, func(i, j int) bool {
+		if canonical[i].CommitTS != canonical[j].CommitTS {
+			return canonical[i].CommitTS < canonical[j].CommitTS
+		}
+		if canonical[i].StartTS != canonical[j].StartTS {
+			return canonical[i].StartTS < canonical[j].StartTS
+		}
+		return bytes.Compare(canonical[i].Key, canonical[j].Key) < 0
+	})
 	return canonical, nil
 }
 
@@ -500,12 +527,38 @@ func validateReplayMutations(manifest ReplayManifest, mutations []ReplayMutation
 		return err
 	}
 	start, end := ks.ObjectKeyspaceStart(), ks.ObjectKeyspaceEnd()
+	transactions, puts, deletes := 0, 0, 0
 	for i, mutation := range mutations {
-		if mutation.CommitTS <= manifest.StartExclusiveTS || mutation.CommitTS > manifest.RestoreTS || len(mutation.Key) == 0 || bytes.Compare(mutation.Key, start) < 0 || bytes.Compare(mutation.Key, end) >= 0 || (mutation.Delete && mutation.Value != nil) || (!mutation.Delete && mutation.Value == nil) || mutation.sourceStartTS != 0 || mutation.sourceWriteKind != 0 || (i > 0 && (mutation.CommitTS < mutations[i-1].CommitTS || (mutation.CommitTS == mutations[i-1].CommitTS && bytes.Compare(mutation.Key, mutations[i-1].Key) <= 0))) {
+		if mutation.StartTS == 0 || mutation.StartTS >= mutation.CommitTS || mutation.CommitTS <= manifest.StartExclusiveTS || mutation.CommitTS > manifest.RestoreTS || len(mutation.Key) == 0 || bytes.Compare(mutation.Key, start) < 0 || bytes.Compare(mutation.Key, end) >= 0 || (mutation.Delete && mutation.Value != nil) || (!mutation.Delete && mutation.Value == nil) || mutation.sourceWriteKind != 0 || (i > 0 && !replayMutationLess(mutations[i-1], mutation)) {
 			return errors.New("replay mutations are not canonical, bounded, or complete")
 		}
+		if i == 0 || mutation.CommitTS != mutations[i-1].CommitTS || mutation.StartTS != mutations[i-1].StartTS {
+			transactions++
+		}
+		if mutation.Delete {
+			deletes++
+		} else {
+			puts++
+		}
+	}
+	firstCommitTS, lastCommitTS := uint64(0), uint64(0)
+	if len(mutations) != 0 {
+		firstCommitTS, lastCommitTS = mutations[0].CommitTS, mutations[len(mutations)-1].CommitTS
+	}
+	if len(mutations) != manifest.MutationCount || transactions != manifest.TransactionCount || puts != manifest.PutCount || deletes != manifest.DeleteCount || firstCommitTS != manifest.FirstCommitTS || lastCommitTS != manifest.LastCommitTS {
+		return errors.New("replay mutation statistics do not match manifest")
 	}
 	return nil
+}
+
+func replayMutationLess(left, right ReplayMutation) bool {
+	if left.CommitTS != right.CommitTS {
+		return left.CommitTS < right.CommitTS
+	}
+	if left.StartTS != right.StartTS {
+		return left.StartTS < right.StartTS
+	}
+	return bytes.Compare(left.Key, right.Key) < 0
 }
 
 func verifyReplayObject(path string, object LogArtifactObject) (retErr error) {

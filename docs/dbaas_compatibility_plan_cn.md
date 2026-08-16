@@ -54921,6 +54921,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   及 A4896 的 BR→ApplyReplay 黑盒回归覆盖。本项是受支持 v7.5.1 工件完整性加固，不声明任意未来 TiKV write-CF 字段的恢复语义已验证，
   也不扩大 pinned 版本矩阵。
 
+- A4898 修复 native PITR 将 commit TSO 错当作 source transaction 唯一身份的原子性差距。TiKV v7.5.1
+  `components/txn_types/src/write.rs::Write` 明确记录 commit timestamp 不保证全局唯一；旧 materializer 却在 default-CF
+  join 后清除 startTS，仅按 commitTS 统计事务，ApplyReplay 也把相同 commitTS 的全部 key 放进一条 target transaction。
+  这会把两个独立 source transaction 错误合并，checkpoint 也无法表达二者边界。现有 BR-format fixture 已包含
+  `(commit=130,start=120)` 与 `(commit=130,start=121)`，旧断言恰好把它们误计为一个事务，现已成为直接差异回归。
+
+  mutation 现在摘要绑定 `start_ts`，以 `(commit_ts,start_ts,key)` 规范排序，并按 `(commit_ts,start_ts)` 计数、提交和续跑；
+  原地排序扫描还拒绝同一 startTS 映射到多个 commitTS。validator 从 mutation 重新计算 transaction/PUT/DELETE/首末 commit
+  统计，拒绝伪报 manifest。新增 counting target 证明同一 source transaction 的多 key 只提交一次，而 commitTS 相同、
+  startTS 不同的事务分别提交。该原子边界也对齐
+  `/root/etcd@5cd9f4ee1380/tests/integration/clientv3/txn_test.go::TestTxnSuccess` 所依赖的单个 etcd Txn 原子提交合同。
+
+  由于旧证据无法补出 startTS，manifest/checkpoint 分别升为 v2，log replay execution receipt 升为 v4；旧 v1 checkpoint
+  和 v3 receipt fail closed，部分写入目标必须 retirement→replacement→full restore 后重跑，不能删除 checkpoint 原地续作。
+  碰撞/分组专项 race 连续 10 轮通过。本项修复 source transaction 身份，不证明任意大事务都低于 TiKV transaction size；
+  生产请求上限、BR 工件与 target transaction 限制仍须在容量演练中一致配置。此前真实双集群演练签发的是 v3 收据，v4
+  与 commitTS 碰撞输入仍须重跑真实 source/target TiKV 演练后才能成为新生产证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

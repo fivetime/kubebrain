@@ -16,6 +16,7 @@ package nativepitr
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -41,15 +42,15 @@ func TestMaterializeReplayResolvesDefaultAndShortValues(t *testing.T) {
 	manifest, mutations, err := MaterializeReplay(receipt, digest, root, 119, 150)
 	require.NoError(t, err)
 	require.Equal(t, 3, manifest.MutationCount)
-	require.Equal(t, 2, manifest.TransactionCount)
+	require.Equal(t, 3, manifest.TransactionCount)
 	require.Equal(t, 2, manifest.PutCount)
 	require.Equal(t, 1, manifest.DeleteCount)
 	require.Equal(t, uint64(130), manifest.FirstCommitTS)
 	require.Equal(t, uint64(140), manifest.LastCommitTS)
 	require.Equal(t, task.Keyspace, manifest.Keyspace)
-	require.Equal(t, ReplayMutation{CommitTS: 130, Key: keyA, Value: []byte("long-value")}, mutations[0])
-	require.Equal(t, ReplayMutation{CommitTS: 130, Key: keyB, Value: []byte("short")}, mutations[1])
-	require.Equal(t, ReplayMutation{CommitTS: 140, Key: keyA, Delete: true}, mutations[2])
+	require.Equal(t, ReplayMutation{CommitTS: 130, StartTS: 120, Key: keyA, Value: []byte("long-value")}, mutations[0])
+	require.Equal(t, ReplayMutation{CommitTS: 130, StartTS: 121, Key: keyB, Value: []byte("short")}, mutations[1])
+	require.Equal(t, ReplayMutation{CommitTS: 140, StartTS: 135, Key: keyA, Delete: true}, mutations[2])
 }
 
 type boundedReadRequest struct {
@@ -62,6 +63,28 @@ type boundedWriteRequest struct {
 	bytes.Buffer
 	max         int
 	maxObserved int
+}
+
+type countingReplayStore struct {
+	storage.KvStorage
+	commits int
+}
+
+func (s *countingReplayStore) BeginBatchWrite() storage.BatchWrite {
+	return &countingReplayBatch{BatchWrite: s.KvStorage.BeginBatchWrite(), store: s}
+}
+
+type countingReplayBatch struct {
+	storage.BatchWrite
+	store *countingReplayStore
+}
+
+func (b *countingReplayBatch) Commit(ctx context.Context) error {
+	err := b.BatchWrite.Commit(ctx)
+	if err == nil {
+		b.store.commits++
+	}
+	return err
 }
 
 func (w *boundedWriteRequest) Write(data []byte) (int, error) {
@@ -123,9 +146,9 @@ func TestReplayMutationJSONPropagatesShortWrite(t *testing.T) {
 
 func TestCanonicalizeReplayMutationsReusesCandidateBackingArray(t *testing.T) {
 	mutations := []ReplayMutation{
-		{CommitTS: 2, Key: []byte("b"), Value: []byte("short"), sourceStartTS: 1, sourceWriteKind: 'P'},
-		{CommitTS: 1, Key: []byte("a"), Delete: true, sourceStartTS: 1, sourceWriteKind: 'D'},
-		{CommitTS: 2, Key: []byte("b"), Value: []byte("short"), sourceStartTS: 1, sourceWriteKind: 'P'},
+		{CommitTS: 3, StartTS: 2, Key: []byte("b"), Value: []byte("short"), sourceWriteKind: 'P'},
+		{CommitTS: 2, StartTS: 1, Key: []byte("a"), Delete: true, sourceWriteKind: 'D'},
+		{CommitTS: 3, StartTS: 2, Key: []byte("b"), Value: []byte("short"), sourceWriteKind: 'P'},
 	}
 	backing := &mutations[0]
 
@@ -134,25 +157,33 @@ func TestCanonicalizeReplayMutationsReusesCandidateBackingArray(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, canonical, 2)
 	require.Same(t, backing, &canonical[0], "canonicalization must not allocate a second mutation array")
-	require.Equal(t, uint64(1), canonical[0].CommitTS)
-	require.Equal(t, uint64(2), canonical[1].CommitTS)
+	require.Equal(t, uint64(2), canonical[0].CommitTS)
+	require.Equal(t, uint64(3), canonical[1].CommitTS)
 }
 
 func TestCanonicalizeReplayMutationsRejectsConflictingDuplicate(t *testing.T) {
-	base := ReplayMutation{CommitTS: 2, Key: []byte("key"), Value: []byte("short"), sourceStartTS: 1, sourceWriteKind: 'P'}
+	base := ReplayMutation{CommitTS: 2, StartTS: 1, Key: []byte("key"), Value: []byte("short"), sourceWriteKind: 'P'}
 	for _, conflicting := range []ReplayMutation{
-		{CommitTS: 2, Key: []byte("key"), Value: []byte("short"), sourceStartTS: 9, sourceWriteKind: 'P'},
-		{CommitTS: 2, Key: []byte("key"), Value: []byte("short"), sourceStartTS: 1, sourceWriteKind: 'D', Delete: true},
-		{CommitTS: 2, Key: []byte("key"), Value: []byte("different"), sourceStartTS: 1, sourceWriteKind: 'P'},
+		{CommitTS: 2, StartTS: 9, Key: []byte("key"), Value: []byte("short"), sourceWriteKind: 'P'},
+		{CommitTS: 2, StartTS: 1, Key: []byte("key"), Value: []byte("short"), sourceWriteKind: 'D', Delete: true},
+		{CommitTS: 2, StartTS: 1, Key: []byte("key"), Value: []byte("different"), sourceWriteKind: 'P'},
 	} {
 		_, err := canonicalizeReplayMutations([]ReplayMutation{base, conflicting})
 		require.EqualError(t, err, "stream log contains conflicting write-CF entries")
 	}
 	_, err := canonicalizeReplayMutations([]ReplayMutation{
-		{CommitTS: 2, Key: []byte("empty"), sourceStartTS: 1, sourceWriteKind: 'P'},
-		{CommitTS: 2, Key: []byte("empty"), Value: []byte{}, sourceStartTS: 1, sourceWriteKind: 'P'},
+		{CommitTS: 2, StartTS: 1, Key: []byte("empty"), sourceWriteKind: 'P'},
+		{CommitTS: 2, StartTS: 1, Key: []byte("empty"), Value: []byte{}, sourceWriteKind: 'P'},
 	})
 	require.EqualError(t, err, "stream log contains conflicting write-CF entries")
+}
+
+func TestCanonicalizeReplayMutationsRejectsMultipleCommitsForStartTS(t *testing.T) {
+	_, err := canonicalizeReplayMutations([]ReplayMutation{
+		{CommitTS: 2, StartTS: 1, Key: []byte("a"), Value: []byte("one"), sourceWriteKind: 'P'},
+		{CommitTS: 3, StartTS: 1, Key: []byte("b"), Value: []byte("two"), sourceWriteKind: 'P'},
+	})
+	require.EqualError(t, err, "source transaction has multiple commit TSOs")
 }
 
 func TestDecodeWriteValuePreservesPresentEmptyShortValue(t *testing.T) {
@@ -258,7 +289,7 @@ func TestMaterializeReplayPreservesEmptyEtcdValue(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, 1, manifest.PutCount)
-	require.Equal(t, []ReplayMutation{{CommitTS: 130, Key: key, Value: []byte{}}}, mutations)
+	require.Equal(t, []ReplayMutation{{CommitTS: 130, StartTS: 120, Key: key, Value: []byte{}}}, mutations)
 	require.NotNil(t, mutations[0].Value)
 	target := memkv.NewKvStorage()
 	defer target.Close()
@@ -375,10 +406,13 @@ func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing
 	require.True(t, receipt.ContinuousWriterExclusion)
 	require.False(t, receipt.PostRestoreSemanticValidated)
 	require.False(t, receipt.PITRComplete)
+	require.Equal(t, "kubebrain.native-pitr-log-replay.v4", receipt.Format)
 	var encoded bytes.Buffer
 	require.NoError(t, json.NewEncoder(&encoded).Encode(receipt))
 	_, err = DecodeLogReplayExecution(&encoded)
 	require.NoError(t, err)
+	receipt.Format = "kubebrain.native-pitr-log-replay.v3"
+	require.EqualError(t, receipt.Validate(), "native PITR log replay receipt is incomplete")
 }
 
 func TestBuildLogReplayExecutionRejectsWrongOrLateFence(t *testing.T) {
@@ -416,7 +450,7 @@ func TestApplyReplayCheckpointsAndResumesExactly(t *testing.T) {
 	defer target.Close()
 	result, err := ApplyReplay(t.Context(), target, digest, manifest, mutations)
 	require.NoError(t, err)
-	require.Equal(t, ReplayApplyResult{AppliedMutations: 3, AppliedTransactions: 2, LastCommitTS: 140}, result)
+	require.Equal(t, ReplayApplyResult{AppliedMutations: 3, AppliedTransactions: 3, LastCommitTS: 140}, result)
 	_, err = target.Get(t.Context(), keyA)
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 	value, err := target.Get(t.Context(), keyB)
@@ -431,6 +465,40 @@ func TestApplyReplayCheckpointsAndResumesExactly(t *testing.T) {
 	changed[0].Value = []byte("tampered")
 	_, err = ApplyReplay(t.Context(), target, digest, manifest, changed)
 	require.ErrorContains(t, err, "manifest")
+}
+
+func TestApplyReplaySeparatesTransactionsWithCollidingCommitTS(t *testing.T) {
+	task, _ := readyTask(t)
+	ks, err := coder.NewKeyspace(task.Keyspace)
+	require.NoError(t, err)
+	encode := ks.NewCoder().EncodeRevisionKey
+	mutations := []ReplayMutation{
+		{CommitTS: 150, StartTS: 120, Key: encode([]byte("/a")), Value: []byte("one")},
+		{CommitTS: 150, StartTS: 120, Key: encode([]byte("/b")), Value: []byte("two")},
+		{CommitTS: 150, StartTS: 121, Key: encode([]byte("/c")), Value: []byte("three")},
+	}
+	mutationDigest, err := digestReplayMutations(mutations)
+	require.NoError(t, err)
+	manifest := ReplayManifest{
+		Format: ReplayManifestFormat, LogArtifactReceiptSHA256: digest, ArtifactManifestSHA256: digest,
+		Keyspace: task.Keyspace, StartExclusiveTS: 119, RestoreTS: 150,
+		MutationCount: 3, TransactionCount: 2, PutCount: 3,
+		FirstCommitTS: 150, LastCommitTS: 150, MutationsSHA256: mutationDigest,
+		AllEntriesInTenantRange: true, AllPutsResolved: true, ExactLocalMirrorRechecked: true,
+	}
+	inner := memkv.NewKvStorage()
+	defer inner.Close()
+	target := &countingReplayStore{KvStorage: inner}
+	badManifest := manifest
+	badManifest.TransactionCount = 1
+	_, err = ApplyReplay(t.Context(), target, digest, badManifest, mutations)
+	require.EqualError(t, err, "replay mutation statistics do not match manifest")
+
+	result, err := ApplyReplay(t.Context(), target, digest, manifest, mutations)
+
+	require.NoError(t, err)
+	require.Equal(t, ReplayApplyResult{AppliedMutations: 3, AppliedTransactions: 2, LastCommitTS: 150}, result)
+	require.Equal(t, 2, target.commits, "each distinct source start TS must commit separately")
 }
 
 func TestMaterializeReplayFailsClosed(t *testing.T) {
