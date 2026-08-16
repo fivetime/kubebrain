@@ -105,4 +105,7 @@ func TestWriteAtomicDoesNotReplacePublishedReceipt(t *testing.T) {
 	var actual Receipt
 	require.NoError(t, json.Unmarshal(data, &actual))
 	require.Equal(t, first, actual)
+	temps, err := filepath.Glob(filepath.Join(dir, ".*.tmp-*"))
+	require.NoError(t, err)
+	require.Empty(t, temps, "failed no-overwrite publication must clean its temporary receipt")
 }

@@ -54447,6 +54447,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增回归以可失败 response reader 证明 Close 错误原样返回且候选制品不存在；`legacyremediation` race（1.084 秒）、vet
   与 diff check 通过。该门禁不改变已明确受限的 legacy lease history 恢复范围，也不关闭真实 CSI/PITR 缺口。
 
+- A4848 补齐 restore verification receipt 原子发布的完整 filesystem lifecycle。对照
+  `/root/etcd/client/v3/snapshot/v3_snapshot.go` 的 snapshot file fsync/close-before-publish 顺序，旧 receipt writer 在
+  chmod/encode/file Sync/Link 失败时吞掉临时文件 Close/Remove sibling，成功路径还以 defer 忽略目录 Close；因此恢复
+  验证证据可能在目录句柄收尾失败后仍报告成功。生产 writer 现在聚合每个失败阶段的主错误与 cleanup，并在 hard-link
+  已建立后无论临时名删除是否成功都继续执行 parent directory Sync/Close，最终任一 durability/cleanup 错误均使 receipt
+  发布任务失败。no-overwrite 回归同时固定冲突路径不改变旧 receipt 且不遗留临时证据。
+
+  `restorereceipt` race（1.048 秒）、vet 与 diff check 通过。真实只读文件系统、目录 fsync/close fault 注入仍留待正式
+  新镜像恢复执行器门禁；本项不关闭真实 CSI/PITR 缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

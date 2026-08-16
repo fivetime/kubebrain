@@ -43,39 +43,30 @@ func WriteAtomic(path string, receipt Receipt) error {
 	if err != nil {
 		return err
 	}
-	cleanup := func() {
-		_ = temp.Close()
-		_ = os.Remove(temp.Name())
+	cleanup := func() error {
+		return errors.Join(temp.Close(), os.Remove(temp.Name()))
 	}
 	if err := temp.Chmod(0o600); err != nil {
-		cleanup()
-		return err
+		return errors.Join(err, cleanup())
 	}
 	encoder := json.NewEncoder(temp)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(receipt); err != nil {
-		cleanup()
-		return err
+		return errors.Join(err, cleanup())
 	}
 	if err := temp.Sync(); err != nil {
-		cleanup()
-		return err
+		return errors.Join(err, cleanup())
 	}
 	if err := temp.Close(); err != nil {
-		_ = os.Remove(temp.Name())
-		return err
+		return errors.Join(err, os.Remove(temp.Name()))
 	}
 	if err := os.Link(temp.Name(), path); err != nil {
-		_ = os.Remove(temp.Name())
-		return err
+		return errors.Join(err, os.Remove(temp.Name()))
 	}
-	if err := os.Remove(temp.Name()); err != nil {
-		return err
-	}
+	removeErr := os.Remove(temp.Name())
 	directory, err := os.Open(dir)
 	if err != nil {
-		return err
+		return errors.Join(removeErr, err)
 	}
-	defer directory.Close()
-	return directory.Sync()
+	return errors.Join(removeErr, directory.Sync(), directory.Close())
 }
