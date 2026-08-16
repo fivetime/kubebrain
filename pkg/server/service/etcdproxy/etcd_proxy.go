@@ -123,7 +123,6 @@ func NewEtcdProxy(ctx context.Context, leaderElection leader.LeaderElection, tls
 		allowInsecure: allowInsecure, callOptions: proxyCallOptions(maxRequestBytes),
 		cancel: cancel, loopDone: make(chan struct{}), updateCh: make(chan struct{}, 1),
 	}
-	proxy.updateClient()
 	go func() {
 		defer util.Recover()
 		defer close(proxy.loopDone)

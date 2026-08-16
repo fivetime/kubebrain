@@ -525,7 +525,7 @@ func TestCloseStopsLeaderLoopAndClosesClient(t *testing.T) {
 	proxy := NewEtcdProxy(context.Background(), &testLeaderElection{
 		leaderAddress: endpoint,
 	}, nil, true, 0).(*etcdProxy)
-	require.NoError(t, proxy.Ready())
+	require.Eventually(t, func() bool { return proxy.Ready() == nil }, time.Second, 10*time.Millisecond)
 
 	require.NoError(t, proxy.Close())
 	select {
@@ -538,6 +538,29 @@ func TestCloseStopsLeaderLoopAndClosesClient(t *testing.T) {
 	require.Empty(t, proxy.curLeader)
 	proxy.lock.RUnlock()
 	require.NoError(t, proxy.Close(), "Close must remain idempotent")
+}
+
+func TestNewEtcdProxyDoesNotBlockOnInitialPeerHealth(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() {
+		conn, acceptErr := lis.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+	t.Cleanup(func() { _ = lis.Close() })
+
+	start := time.Now()
+	proxy := NewEtcdProxy(context.Background(), &testLeaderElection{
+		leaderAddress: lis.Addr().String(),
+	}, nil, true, 0).(*etcdProxy)
+	require.Less(t, time.Since(start), 500*time.Millisecond,
+		"initial peer health must not block server construction")
+	require.Error(t, proxy.Ready())
+	require.NoError(t, proxy.Close())
 }
 
 func TestCloseCancelsBlockedLeaderHealthCheck(t *testing.T) {
