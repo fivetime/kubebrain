@@ -68,3 +68,11 @@ func TestRunVerifiesExactMirror(t *testing.T) {
 func TestRunRequiresRemoteInventory(t *testing.T) {
 	require.ErrorContains(t, run("", "", "", "", "", "", &bytes.Buffer{}), "required")
 }
+
+func TestReadReceiptRejectsOversizedInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxReceiptBytes+1), 0o600))
+	_, err := readReceipt(path)
+	require.ErrorContains(t, err, "receipt")
+	require.ErrorContains(t, err, "exceeds")
+}

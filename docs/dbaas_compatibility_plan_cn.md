@@ -54603,6 +54603,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 pre-connect option 与 oversized receipt 回归；source-exclusive/nativepitr race（1.446 秒及缓存套件）、vet 与
   diff check 通过。真实 receipt close fault 加历史 scan 仍留待正式源端 Job 文件系统门禁。
 
+- A4866 收紧 native PITR target-empty/full-artifact 两条恢复资格证据。target-empty 底层已通过可选 `CloseError` 聚合 live
+  txn client Close，本轮新增服务层回归固定：snapshot scan 即使成功，只要 probe close 失败就不得输出可信 receipt。
+  full-artifact verifier 的 full-snapshot/attestation reader 旧 defer 丢弃 file Close，可能用介质收尾失败的绑定信息验证
+  exact mirror；reader 现使用命名错误 Join Close，只有 bounded input 完整读完并关闭后才进入 inventory/decrypt/hash。
+
+  新增 target probe close failure 与 oversized artifact receipt 回归；两命令/nativepitr race（1.480 秒及缓存套件）、vet
+  与 diff check 通过。真实 txn close/receipt close fault 仍留待恢复资格 Job 文件系统与 transport 门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

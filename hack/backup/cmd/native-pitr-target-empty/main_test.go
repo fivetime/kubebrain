@@ -20,6 +20,7 @@ type fakeProbe struct {
 	ts          uint64
 	found       bool
 	err         error
+	closeErr    error
 	closed      bool
 }
 
@@ -31,7 +32,8 @@ func (p *fakeProbe) GetAllStores(context.Context, ...pd.GetStoreOption) ([]*meta
 func (p *fakeProbe) SnapshotTSAndFirstKey(context.Context) (uint64, bool, error) {
 	return p.ts, p.found, p.err
 }
-func (p *fakeProbe) Close() { p.closed = true }
+func (p *fakeProbe) Close()            { p.closed = true }
+func (p *fakeProbe) CloseError() error { return p.closeErr }
 
 func goodProbe() *fakeProbe {
 	return &fakeProbe{pdID: 22, txnID: 22, ts: 123, stores: []*metapb.Store{
@@ -68,6 +70,7 @@ func TestInspectFailsClosed(t *testing.T) {
 		{"scan failure", func(p *fakeProbe) { p.err = errors.New("unavailable") }, "unavailable"},
 		{"no stores", func(p *fakeProbe) { p.stores = nil }, "no Up"},
 		{"zero tso", func(p *fakeProbe) { p.ts = 0 }, "observation time"},
+		{"probe close failure", func(p *fakeProbe) { p.closeErr = errors.New("close failed") }, "close failed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
