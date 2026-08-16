@@ -88,7 +88,7 @@ type State struct {
 
 // WriteBackend writes an official etcd bbolt backend without the trailing
 // integrity hash. Maintenance.Snapshot streams that hash as its final message.
-func WriteBackend(path string, state State) error {
+func WriteBackend(path string, state State) (retErr error) {
 	if state.Revision <= 0 {
 		return invalidSnapshotMetadataf("snapshot revision must be positive: %d", state.Revision)
 	}
@@ -99,7 +99,7 @@ func WriteBackend(path string, state State) error {
 	if err != nil {
 		return err
 	}
-	defer builder.Close()
+	defer func() { retErr = errors.Join(retErr, builder.Close()) }()
 	if err = builder.Append(state.Records); err != nil {
 		return err
 	}
@@ -145,8 +145,7 @@ func NewBuilder(path string, state State) (*Builder, error) {
 		builder.compactRevision = state.CompactRevision
 	}
 	if err = db.Update(func(tx *bolt.Tx) error { return writeMetadata(tx, state) }); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, errors.Join(err, db.Close())
 	}
 	return builder, nil
 }
