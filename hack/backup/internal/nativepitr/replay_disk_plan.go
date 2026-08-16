@@ -71,6 +71,15 @@ func (q *replayScratchQuota) add(path string) error {
 }
 
 func (q *replayScratchQuota) check() error {
+	return q.checkAdditional(0)
+}
+
+// checkAdditional applies a conservative logical charge before bbolt is
+// allowed to stage more scratch data. The post-commit check remains
+// authoritative for page allocation and copy-on-write amplification, but this
+// gate prevents a single obviously over-budget record or batch from reaching
+// the filesystem first.
+func (q *replayScratchQuota) checkAdditional(additional uint64) error {
 	var total uint64
 	for _, path := range q.paths {
 		info, err := os.Stat(path)
@@ -82,6 +91,9 @@ func (q *replayScratchQuota) check() error {
 			return fmt.Errorf("native PITR replay scratch files exceed %d-byte limit", q.maxBytes)
 		}
 		total += uint64(size)
+	}
+	if additional > q.maxBytes-total {
+		return fmt.Errorf("native PITR replay scratch files plus %d pending bytes exceed %d-byte limit", additional, q.maxBytes)
 	}
 	return nil
 }
@@ -229,13 +241,20 @@ func (s *replayCandidateStore) Put(commitTS, startTS uint64, key []byte, kind by
 	if existing := s.starts.Get(startKey); existing != nil && !bytes.Equal(existing, commitValue) {
 		return errors.New("source transaction has multiple commit TSOs")
 	}
+	candidateBytes := uint64(len(key)) + uint64(len(short)) + 34
+	if candidateBytes < uint64(len(key)) || candidateBytes < uint64(len(short)) || candidateBytes > ^uint64(0)-s.pendingBytes {
+		return errors.New("native PITR replay candidate scratch size overflows uint64")
+	}
+	if err := s.quota.checkAdditional(s.pendingBytes + candidateBytes); err != nil {
+		return err
+	}
 	if err := s.starts.Put(startKey, commitValue); err != nil {
 		return err
 	}
 	if err := s.candidates.Put(candidateKey, candidateValue); err != nil {
 		return err
 	}
-	s.pendingBytes += uint64(len(candidateKey) + len(candidateValue) + len(startKey) + len(commitValue))
+	s.pendingBytes += candidateBytes
 	if s.pendingBytes >= replayDefaultStoreBatchBytes {
 		return s.Flush()
 	}
@@ -395,11 +414,18 @@ func numberReplayDiskPlanWithBatchBytes(plan *ReplayDiskPlan, maxBatchBytes uint
 					return err
 				}
 				numbered := replayPlanValue(key, mutation, ordinal)
+				charge := uint64(len(key)) + uint64(len(numbered))
+				if charge < uint64(len(key)) || charge > ^uint64(0)-batchBytes {
+					return errors.New("native PITR replay disk plan numbering size overflows uint64")
+				}
+				if err := plan.quota.checkAdditional(batchBytes + charge); err != nil {
+					return err
+				}
 				if err := bucket.Put(key, numbered); err != nil {
 					return err
 				}
 				ordinal++
-				batchBytes += uint64(len(key) + len(numbered))
+				batchBytes += charge
 				key, value = cursor.Next()
 				if batchBytes >= maxBatchBytes && key != nil {
 					nextKey = append(nextKey[:0], key...)
@@ -776,12 +802,19 @@ func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, r
 				return errors.New("native PITR replay disk plan bucket is missing")
 			}
 		}
+		charge := uint64(len(mutation.Key)) + uint64(len(mutation.Value)) + 16 + replayPlanRecordHeader
+		if charge < uint64(len(mutation.Key)) || charge < uint64(len(mutation.Value)) || charge > ^uint64(0)-pendingBytes {
+			return errors.New("native PITR replay disk plan scratch size overflows uint64")
+		}
+		if err := quota.checkAdditional(pendingBytes + charge); err != nil {
+			return err
+		}
 		key := replayPlanKey(mutation)
 		value := replayPlanValue(key, mutation, 0)
 		if err := planBucket.Put(key, value); err != nil {
 			return err
 		}
-		pendingBytes += uint64(len(key) + len(value))
+		pendingBytes += charge
 		if pendingBytes >= replayDefaultStoreBatchBytes {
 			return flushPlan()
 		}

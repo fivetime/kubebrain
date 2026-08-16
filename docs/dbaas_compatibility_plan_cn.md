@@ -55218,6 +55218,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   alarm/hash/revoke 场景共 11.51 秒通过，两个 follower 均返回各自本地成员身份；测试键与 port-forward 已清理。本轮未复现生产
   差异，不修改生产代码；它关闭的是 streaming response header 可被只检查业务 payload 的测试遗漏的证据缺口。
 
+- A4920 关闭 A4917 “只在 bbolt commit 后检查 scratch 配额”的明显超大记录窗口。共享 quota 现在在 default-CF join、write
+  candidate、canonical plan 建立及 ordinal 编号的每次 `Bucket.Put` 前，按三个文件当前 apparent size 加本 transaction 已接纳和
+  当前记录的逻辑字节执行保守预留；uint64 累加溢出同样 fail closed。commit 后仍重新 stat 实际文件，覆盖 bbolt 页分配与
+  copy-on-write 放大。重复 default/write 记录在确认内容完全相同后不重复收费；超限的新记录在写入前返回，事务回滚后无部分
+  ordinal，scratch 文件大小不增长，materialization 失败仍清空三个临时文件且 CLI 尚未创建 target PD/TiKV client。
+
+  回归覆盖共享文件合计、精确 pending 边界、default/write 两类记录和 plan numbering transaction；nativepitr 完整套件、race、
+  正式 log-replay CLI 测试与 vet 通过。2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、
+  plaintext、MinIO 与官方 BR v7.5.1 上执行 `TestNativeLogReplayRealBR`：默认配额路径的 v6 receipt、v2 checkpoint、fence/handoff
+  与最终 revision/key/lease/watch 语义验收 39.71 秒通过，一次性容器已清理。预留是应用层逻辑 charge，不替代 filesystem/PVC
+  quota；页放大、外部并发占盘、真实 I/O error 和生产规模空间压力告警仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

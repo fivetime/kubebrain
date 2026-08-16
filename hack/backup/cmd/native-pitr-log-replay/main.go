@@ -59,7 +59,7 @@ func main() {
 	flag.StringVar(&o.approve, "approve-plan-sha256", "", "explicit approval equal to exact plan SHA-256")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "log replay deadline")
 	flag.Uint64Var(&o.maxReplayMemoryBytes, "max-replay-memory-bytes", defaultMaxReplayMemoryBytes, "maximum logical resident bytes for one source transaction during disk-plan replay")
-	flag.Uint64Var(&o.maxReplayScratchBytes, "max-replay-scratch-bytes", defaultMaxReplayScratchBytes, "maximum combined apparent file bytes for replay scratch databases")
+	flag.Uint64Var(&o.maxReplayScratchBytes, "max-replay-scratch-bytes", defaultMaxReplayScratchBytes, "maximum combined apparent file and pending logical bytes for replay scratch databases")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

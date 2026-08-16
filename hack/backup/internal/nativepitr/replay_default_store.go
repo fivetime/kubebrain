@@ -99,6 +99,15 @@ func (s *replayDefaultStore) Put(joinKey string, value []byte) error {
 	if len(value) > maxInt-4 || len(joinKey) > maxInt-4-len(value) {
 		return errors.New("native PITR replay default-CF record is too large")
 	}
+	recordBytes := uint64(len(joinKey)) + uint64(len(value)) + 4 + sha256.Size
+	if recordBytes < uint64(len(joinKey)) || recordBytes < uint64(len(value)) || recordBytes > ^uint64(0)-s.pendingBytes {
+		return errors.New("native PITR replay default-CF scratch size overflows uint64")
+	}
+	if s.quota != nil {
+		if err := s.quota.checkAdditional(s.pendingBytes + recordBytes); err != nil {
+			return err
+		}
+	}
 	record := make([]byte, 4+len(joinKey)+len(value))
 	binary.BigEndian.PutUint32(record, uint32(len(joinKey)))
 	copy(record[4:], joinKey)
@@ -106,7 +115,7 @@ func (s *replayDefaultStore) Put(joinKey string, value []byte) error {
 	if err := s.bucket.Put(digest[:], record); err != nil {
 		return err
 	}
-	s.pendingBytes += uint64(len(digest) + len(record))
+	s.pendingBytes += recordBytes
 	if s.pendingBytes >= replayDefaultStoreBatchBytes {
 		return s.Flush()
 	}

@@ -2621,10 +2621,10 @@ receipt 精确绑定到 v2 checkpoint 的最后 source transaction identity。
 `--scratch-dir` 保存可重建的临时 bbolt default-CF join index、物理 write candidate index 与 canonical mutation plan；应放在与
 log mirror 同容量域的加密 PVC，容量必须同时覆盖回放窗口内 default-CF 长值、write candidate、resolved canonical value 和
 bbolt page overhead，不要指向 executor 的 64Mi `emptyDir`。未显式设置时命令使用 `--log-root` 的父目录。
-`--max-replay-scratch-bytes` 默认 512 GiB，并在每次 bbolt commit 后按三个文件的合计 apparent size fail closed（稀疏文件按
-逻辑长度保守计费）；应按 PVC 可用容量
-显式下调并给 mirror、receipt、filesystem reserve 留出余量。该应用层门禁不能替代 PVC/ephemeral-storage quota：单个超大 record
-或 bbolt commit 在检查前仍可能先收到 ENOSPC，但不会连接 target 或降级到不受限内存路径。三个 scratch store
+`--max-replay-scratch-bytes` 默认 512 GiB；每条新记录写入前按三个文件的合计 apparent size 加当前 bbolt transaction 尚未提交的
+逻辑字节保守预留，每次 commit 后再按实际 apparent size fail closed（稀疏文件按逻辑长度计费）。应按 PVC 可用容量
+显式下调并给 mirror、receipt、filesystem reserve 留出余量。该应用层门禁不能替代 PVC/ephemeral-storage quota：bbolt 页分配/
+copy-on-write 放大或同卷外部写入仍可能先收到 ENOSPC，但不会连接 target 或降级到不受限内存路径。三个 scratch store
 均按 8MiB 批次提交、成功或失败后删除，不是恢复证据；空间耗尽、写入、提交、关闭或删除失败均令 replay 失败，不能降级回
 全量内存或跳过长值。
 

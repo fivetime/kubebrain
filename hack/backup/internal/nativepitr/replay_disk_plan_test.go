@@ -16,6 +16,7 @@ package nativepitr
 
 import (
 	"context"
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,6 +42,132 @@ func TestReplayScratchQuotaAggregatesApparentFileSizes(t *testing.T) {
 	require.ErrorContains(t, quota.check(), "exceed 5-byte limit")
 	require.NoError(t, os.Remove(first))
 	require.ErrorContains(t, quota.check(), "stat native PITR replay scratch file")
+}
+
+func TestReplayScratchQuotaRejectsPendingBytesBeforeFileGrowth(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scratch")
+	require.NoError(t, os.WriteFile(path, []byte("1234"), 0o600))
+	quota, err := newReplayScratchQuota(7)
+	require.NoError(t, err)
+	require.NoError(t, quota.add(path))
+	require.NoError(t, quota.checkAdditional(3))
+	require.ErrorContains(t, quota.checkAdditional(4), "plus 4 pending bytes exceed 7-byte limit")
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, []byte("1234"), contents)
+}
+
+func TestReplayScratchStoresRejectNewRecordBeforeBboltPut(t *testing.T) {
+	t.Run("default CF", func(t *testing.T) {
+		quota, err := newReplayScratchQuota(^uint64(0))
+		require.NoError(t, err)
+		store, err := newReplayDefaultStoreWithQuota(t.TempDir(), quota)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, store.Close()) }()
+		info, err := os.Stat(store.path)
+		require.NoError(t, err)
+		quota.maxBytes = uint64(info.Size()) + sha256.Size + 4 + uint64(len("join")) + uint64(len("value")) - 1
+
+		err = store.Put("join", []byte("value"))
+		require.ErrorContains(t, err, "pending bytes exceed")
+		require.Zero(t, store.pendingBytes)
+		digest := sha256.Sum256([]byte("join"))
+		require.Nil(t, store.bucket.Get(digest[:]))
+		after, err := os.Stat(store.path)
+		require.NoError(t, err)
+		require.Equal(t, info.Size(), after.Size())
+	})
+
+	t.Run("write candidate", func(t *testing.T) {
+		quota, err := newReplayScratchQuota(^uint64(0))
+		require.NoError(t, err)
+		store, err := newReplayCandidateStore(t.TempDir(), quota)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, store.Close()) }()
+		info, err := os.Stat(store.path)
+		require.NoError(t, err)
+		quota.maxBytes = uint64(info.Size()) + uint64(len("key")) + uint64(len("short")) + 34 - 1
+
+		err = store.Put(20, 10, []byte("key"), 'P', []byte("short"))
+		require.ErrorContains(t, err, "pending bytes exceed")
+		require.Zero(t, store.pendingBytes)
+		require.Nil(t, store.candidates.Get(replayCandidateKey(20, []byte("key"))))
+		after, err := os.Stat(store.path)
+		require.NoError(t, err)
+		require.Equal(t, info.Size(), after.Size())
+	})
+}
+
+func TestReplayDiskPlanNumberingReservesBatchBeforeBboltPut(t *testing.T) {
+	quota, err := newReplayScratchQuota(^uint64(0))
+	require.NoError(t, err)
+	plan, err := newReplayDiskPlan(t.TempDir(), quota)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, plan.Close()) }()
+	mutations := []ReplayMutation{
+		{CommitTS: 20, StartTS: 10, Key: []byte("a"), Value: []byte("one")},
+		{CommitTS: 30, StartTS: 11, Key: []byte("b"), Value: []byte("two")},
+	}
+	require.NoError(t, plan.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(replayPlanBucket)
+		for _, mutation := range mutations {
+			key := replayPlanKey(mutation)
+			if err := bucket.Put(key, replayPlanValue(key, mutation, 0)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+	info, err := os.Stat(plan.path)
+	require.NoError(t, err)
+	firstKey := replayPlanKey(mutations[0])
+	firstValue := replayPlanValue(firstKey, mutations[0], 0)
+	quota.maxBytes = uint64(info.Size()) + uint64(len(firstKey)+len(firstValue)) - 1
+
+	err = numberReplayDiskPlanWithBatchBytes(plan, replayDefaultStoreBatchBytes)
+	require.ErrorContains(t, err, "pending bytes exceed")
+	after, err := os.Stat(plan.path)
+	require.NoError(t, err)
+	require.Equal(t, info.Size(), after.Size())
+	require.NoError(t, plan.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(replayPlanBucket)
+		for _, mutation := range mutations {
+			key := replayPlanKey(mutation)
+			_, ordinal, decodeErr := decodeReplayPlanRecord(key, bucket.Get(key))
+			require.NoError(t, decodeErr)
+			require.Zero(t, ordinal, "failed numbering transaction must not partially persist")
+		}
+		return nil
+	}))
+}
+
+func TestReplayScratchDuplicateRecordsDoNotConsumeAnotherReservation(t *testing.T) {
+	t.Run("default CF", func(t *testing.T) {
+		quota, err := newReplayScratchQuota(^uint64(0))
+		require.NoError(t, err)
+		store, err := newReplayDefaultStoreWithQuota(t.TempDir(), quota)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, store.Close()) }()
+		require.NoError(t, store.Put("join", []byte("value")))
+		pending := store.pendingBytes
+		quota.maxBytes = 1
+		require.NoError(t, store.Put("join", []byte("value")))
+		require.Equal(t, pending, store.pendingBytes)
+	})
+
+	t.Run("write candidate", func(t *testing.T) {
+		quota, err := newReplayScratchQuota(^uint64(0))
+		require.NoError(t, err)
+		store, err := newReplayCandidateStore(t.TempDir(), quota)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, store.Close()) }()
+		require.NoError(t, store.Put(20, 10, []byte("key"), 'P', []byte("short")))
+		pending := store.pendingBytes
+		quota.maxBytes = 1
+		require.NoError(t, store.Put(20, 10, []byte("key"), 'P', []byte("short")))
+		require.Equal(t, pending, store.pendingBytes)
+	})
 }
 
 func TestMaterializeReplayDiskPlanRejectsScratchQuotaAndCleansFiles(t *testing.T) {
