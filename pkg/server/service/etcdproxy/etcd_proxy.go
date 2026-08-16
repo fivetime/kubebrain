@@ -464,7 +464,21 @@ func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (
 	klog.InfoS("forward range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd), "revision", req.Revision)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
-	return resp, err
+	return resp, rangeForwardError(ctx, err)
+}
+
+func rangeForwardError(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	// Retiring the shared peer connection after a leader loss can make an
+	// in-flight unary Range return Canceled even though the downstream caller is
+	// still live. Classify that topology failure as retryable; preserve genuine
+	// caller cancellation and all application-level statuses.
+	if errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled {
+		return rpctypes.ErrGRPCLeaderChanged
+	}
+	return err
 }
 
 func (e *etcdProxy) RangeStream(ctx context.Context, req *etcdserverpb.RangeRequest) (<-chan RangeStreamResult, error) {

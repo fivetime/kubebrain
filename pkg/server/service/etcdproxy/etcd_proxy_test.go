@@ -105,6 +105,18 @@ func TestIsForwardConnectionError(t *testing.T) {
 	}
 }
 
+func TestRangeForwardErrorMapsInternalCancellationToLeaderChanged(t *testing.T) {
+	err := rangeForwardError(context.Background(), status.Error(codes.Canceled, "grpc: the client connection is closing"))
+	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+}
+
+func TestRangeForwardErrorPreservesCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, rangeForwardError(ctx, context.Canceled), context.Canceled)
+}
+
 func TestWaitReadyReturnsUnavailableWhenLeaderConnectionIsNotReady(t *testing.T) {
 	proxy := &etcdProxy{
 		election: &testLeaderElection{leaderAddress: "127.0.0.1:1"},
