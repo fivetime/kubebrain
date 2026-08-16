@@ -54571,6 +54571,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 pre-connect option、oversized receipt 与模糊 PD endpoint 回归；admission-fence race（1.471 秒）、vet 与 diff check
   通过。真实 release 后双 client close fault 的 receipt 收集/审批对账仍留待正式恢复 Job 门禁。
 
+- A4862 将同一 fail-closed 生命周期扩展到 restoration fence acquire/verify/release。旧 executor defer 丢弃
+  transactional TiKV store Close；plan、fence 与 replay receipt 的 bounded reader 也忽略文件 Close，因而 writer gate
+  Acquire/Release 已提交后可在 transport/介质收尾失败时仍让 Job 成功。execute/read helper 现在用命名错误 Join Close；
+  canonical fence receipt/handoff 仍先输出，保留 durable mutation 的精确对账输入，但 cleanup failure 明确返回非零。
+
+  新增 pre-connect option、oversized receipt 与重复/带 scheme PD endpoint 回归；restoration-fence race（1.439 秒）、vet
+  与 diff check 通过。真实 release+store close 双故障的 handoff 收集仍留待正式恢复 Job 门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
