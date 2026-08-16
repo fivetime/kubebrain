@@ -61,6 +61,7 @@ type interruptReplayStore struct {
 	interruptAfter          int
 	commitThenUncertainOnce bool
 	uncertainBeforeCommit   bool
+	cancelAfterCommit       context.CancelFunc
 }
 
 func (s *interruptReplayStore) BeginBatchWrite() storage.BatchWrite {
@@ -90,6 +91,9 @@ func (b *interruptReplayBatch) Commit(ctx context.Context) error {
 	}
 	b.store.committed++
 	if b.store.commitThenUncertainOnce && b.store.committed == b.store.interruptAfter {
+		if b.store.cancelAfterCommit != nil {
+			b.store.cancelAfterCommit()
+		}
 		return storage.NewErrUncertainResult(errReplayIntegrationInterrupt)
 	}
 	return nil
@@ -3026,6 +3030,16 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
 	var handoffPath string
 	if withLogs {
+		if releaseDrill := os.Getenv("KUBEBRAIN_NATIVE_PITR_RELEASE_CANCELED_RESPONSE_LOSS_DRILL"); releaseDrill != "" {
+			require.Equal(t, "true", releaseDrill, "invalid canceled release response-loss drill setting")
+			releaseCtx, cancelRelease := context.WithCancel(ctx)
+			uncertainStore := &interruptReplayStore{KvStorage: targetKV, interruptAfter: 1, commitThenUncertainOnce: true, cancelAfterCommit: cancelRelease}
+			require.NoError(t, nativepitr.ReleaseReplayFence(releaseCtx, uncertainStore, fenceReceipt.CoordinationPrefix, fenceToken, replayReceipt, digest(replayBytes)))
+			require.ErrorIs(t, releaseCtx.Err(), context.Canceled)
+			require.Equal(t, 1, uncertainStore.committed)
+			require.NoError(t, restorationfence.VerifyOpen(ctx, targetKV, fenceReceipt.CoordinationPrefix))
+			t.Log("native PITR committed-uncertain fence release reconciled after caller cancellation; CLI retry remains pending")
+		}
 		if releaseDrill := os.Getenv("KUBEBRAIN_NATIVE_PITR_RELEASE_PRECOMMIT_UNCERTAIN_DRILL"); releaseDrill != "" {
 			require.Equal(t, "true", releaseDrill, "invalid release pre-commit uncertain drill setting")
 			uncertainStore := &interruptReplayStore{KvStorage: targetKV, interruptAfter: 1, uncertainBeforeCommit: true}

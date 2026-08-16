@@ -3046,6 +3046,20 @@ hack/backup/run-native-pitr-full-restore-integration.sh
 marker 未提交，257 个 fence key 仍为原 owner。随后生产 CLI 使用相同 v6 receipt 重试，完成唯一 release、handoff 与最终语义
 验证。此门禁与 committed-response-loss 门禁共同固定“不猜测未知提交”的两种确定性边界；自然网络/进程故障仍需另行验证。
 
+调用方取消与已提交 response loss 的组合门禁使用：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-log-replay-release-canceled-response-loss-resume \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+2026-08-16 真实双集群三副本用例以 42.48 秒通过：target TiKV 原子 release 已提交后，包装层同步取消 release caller
+context 并返回 uncertain；恢复逻辑以不继承该取消信号的独立 5 秒 context 核验 exact marker 与 257 个 open key，因而安全返回
+成功。随后生产 CLI exact 重试、handoff 与最终语义验证通过。独立 reconciliation 只隔离 caller cancel，不绕过自身 deadline；
+若其到 PD/TiKV 也不可达，仍必须 fail closed 并交由新的 Job/CLI 尝试。
+
 TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
 每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
 恢复方关闭 gate 时必须以 range compare 同时证明 session 前缀为空，因此新进程注册与 restore acquire 只能

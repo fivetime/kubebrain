@@ -94,6 +94,7 @@ type commitThenUncertainReplayStore struct {
 	commits                   int
 	uncertainOnce             bool
 	uncertainBeforeCommitOnce bool
+	cancelAfterCommit         context.CancelFunc
 }
 
 func (s *commitThenUncertainReplayStore) BeginBatchWrite() storage.BatchWrite {
@@ -121,6 +122,9 @@ func (b *commitThenUncertainReplayBatch) Commit(ctx context.Context) error {
 	b.store.commits++
 	if b.store.uncertainOnce {
 		b.store.uncertainOnce = false
+		if b.store.cancelAfterCommit != nil {
+			b.store.cancelAfterCommit()
+		}
 		return storage.NewErrUncertainResult(errors.New("response lost after commit"))
 	}
 	return nil
@@ -627,6 +631,33 @@ func TestReleaseReplayFenceReconcilesCommittedUncertainResult(t *testing.T) {
 	require.NoError(t, ReleaseReplayFence(t.Context(), target, prefix, token, receipt, digest))
 	require.NoError(t, restorationfence.VerifyOpen(t.Context(), inner, prefix))
 	require.NoError(t, ReleaseReplayFence(t.Context(), target, prefix, token, receipt, digest), "exact release retry must be idempotent")
+}
+
+func TestReleaseReplayFenceReconcilesAfterCallerCancellation(t *testing.T) {
+	plan := validReceiptPlan(t)
+	receipt := validHandoffReplay(plan, time.Now().Unix())
+	prefix := "/kubebrain-internal/" + plan.Source.Keyspace
+	token, err := restorationfence.NewToken("restore-1", receipt.PlanSHA256, receipt.TargetClusterID, receipt.Keyspace)
+	require.NoError(t, err)
+	ks, err := coder.NewKeyspace(receipt.Keyspace)
+	require.NoError(t, err)
+	checkpointBytes, err := json.Marshal(replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: receipt.PlanSHA256, MutationsSHA256: receipt.MutationsSHA256, RestoreTS: receipt.RestoreTS, AppliedMutations: receipt.MutationCount, LastCommitTS: receipt.LastCommitTS, LastStartTS: receipt.LastStartTS})
+	require.NoError(t, err)
+	inner := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, inner.Close()) })
+	_, err = restorationfence.Acquire(t.Context(), inner, prefix, token)
+	require.NoError(t, err)
+	batch := inner.BeginBatchWrite()
+	batch.Put(ks.EncodeInternalKey([]byte("native-pitr/log-replay-checkpoint")), checkpointBytes, 0)
+	require.NoError(t, batch.Commit(t.Context()))
+	releaseCtx, cancel := context.WithCancel(t.Context())
+	target := &commitThenUncertainReplayStore{KvStorage: inner, uncertainOnce: true, cancelAfterCommit: cancel}
+
+	require.NoError(t, ReleaseReplayFence(releaseCtx, target, prefix, token, receipt, digest))
+	require.ErrorIs(t, releaseCtx.Err(), context.Canceled)
+	require.Equal(t, 1, target.commits)
+	require.NoError(t, restorationfence.VerifyOpen(t.Context(), inner, prefix))
+	require.NoError(t, ReleaseReplayFence(t.Context(), target, prefix, token, receipt, digest), "exact retry after canceled caller must be idempotent")
 }
 
 func TestReleaseReplayFenceDoesNotAcceptUncommittedUncertainResult(t *testing.T) {

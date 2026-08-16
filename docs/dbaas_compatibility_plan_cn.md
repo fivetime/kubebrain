@@ -55070,6 +55070,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一次性容器已清理。该证据覆盖真实 TiKV transaction-local abort 加确定性 uncertain 包装，不等同于请求未抵达 TiKV、网络
   分区或进程崩溃自然产生的 uncertain；这些真实故障注入仍保持开放。
 
+- A4909 验证 release commit-response-loss 与调用方取消同时发生时的恢复路径。A4907 已使用
+  `context.WithoutCancel(caller)` 为 marker reconciliation 建立独立 5 秒预算，但此前 committed-uncertain 测试的 caller 始终
+  可用，无法证明 CLI timeout、Job 终止信号或上层 cancel 不会阻断已提交事务的证据读取。状态机包装器现在可在底层 batch 成功
+  commit marker/checkpoint/257 个 fence key 后，同步取消传入 context，再返回 `storage.ErrUncertainResult`；断言 caller 已为
+  `context.Canceled`，`ReleaseReplayFence` 仍从 exact marker + 全 open fence 返回成功，底层 commit 精确为一，随后新 context 的
+  exact 重试保持幂等。
+
+  新 profile `target-log-replay-release-canceled-response-loss-resume` 在真实 target TiKV release transaction 提交后执行相同
+  cancel+response-loss。2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、
+  MinIO 与官方 BR v7.5.1 上执行：release 子-context 已确认取消，独立 reconciliation 仍读到持久 marker 和全部 open shard；
+  随后实际 restoration-fence CLI 用同一 v6 receipt 幂等完成 handoff，最终 revision/key/lease/watch 语义验收 42.48 秒通过，
+  一次性容器已清理。该门禁证明应用层 cancel 不会抹除已提交证据，不等同于 reconciliation 自身到 PD/TiKV 的网络同时不可用、
+  进程 `SIGKILL` 或自然 TiKV 2PC uncertain；这些故障仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
