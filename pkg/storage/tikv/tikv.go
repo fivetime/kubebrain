@@ -72,6 +72,11 @@ var _ storage.SnapshotRegionWarmer = (*store)(nil)
 // multiplies PD load and fragments TSO batching rather than adding throughput.
 const defaultClientNum = 16
 
+func newDetachableStartupContext(parent context.Context) (context.Context, context.CancelFunc, func() bool) {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	return ctx, cancel, context.AfterFunc(parent, cancel)
+}
+
 func NewKvStorage(pdAddrs []string, clientNum int, sec Security) (storage.KvStorage, error) {
 	return NewKvStorageWithContext(context.Background(), pdAddrs, clientNum, sec)
 }
@@ -90,13 +95,28 @@ func NewKvStorageWithContext(ctx context.Context, pdAddrs []string, clientNum in
 			c.Security = tikvcfg.NewSecurity(sec.CAPath, sec.CertPath, sec.KeyPath, sec.VerifyCN)
 		})
 	}
+	// PD's NewClientWithContext uses its parent for the client's entire lifetime.
+	// Forward cancellation only while the pool is being built; after successful
+	// publication, Endpoint owns shutdown ordering and closes storage after gRPC
+	// drain. Canceling the process root must not tear PD down ahead of that drain.
+	startupCtx, cancelStartup, stopStartupCancellation := newDetachableStartupContext(ctx)
 	clients, err := createTxnClients(clientNum, func(index int) (*txnkv.Client, error) {
 		return createTxnClientWithEndpointRotation(pdAddrs, index, func(addrs []string) (*txnkv.Client, error) {
-			return txnkv.NewClientWithContext(ctx, addrs)
+			return txnkv.NewClientWithContext(startupCtx, addrs)
 		})
 	})
 	if err != nil {
+		stopStartupCancellation()
+		cancelStartup()
 		return nil, err
+	}
+	if !stopStartupCancellation() {
+		closeClient(clients)
+		cancelStartup()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, context.Canceled
 	}
 	s := NewKvStoreWithClient(clients)
 	return s, nil

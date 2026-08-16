@@ -23,6 +23,21 @@ func TestNewKvStorageStartupHonorsCallerCancellation(t *testing.T) {
 	require.Less(t, time.Since(start), time.Second)
 }
 
+func TestSuccessfulStartupDetachesClientLifetimeFromCaller(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	startup, cancelStartup, detach := newDetachableStartupContext(parent)
+	require.True(t, detach())
+
+	cancelParent()
+	select {
+	case <-startup.Done():
+		t.Fatal("published storage must remain alive for explicit post-drain Close")
+	default:
+	}
+	cancelStartup()
+	require.ErrorIs(t, startup.Err(), context.Canceled)
+}
+
 func TestCreateTxnClientsStartsPoolConcurrently(t *testing.T) {
 	const count = 16
 	var started atomic.Int32
