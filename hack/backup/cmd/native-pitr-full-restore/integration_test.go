@@ -60,6 +60,7 @@ type interruptReplayStore struct {
 	committed               int
 	interruptAfter          int
 	commitThenUncertainOnce bool
+	uncertainBeforeCommit   bool
 }
 
 func (s *interruptReplayStore) BeginBatchWrite() storage.BatchWrite {
@@ -72,6 +73,15 @@ type interruptReplayBatch struct {
 }
 
 func (b *interruptReplayBatch) Commit(ctx context.Context) error {
+	if b.store.uncertainBeforeCommit {
+		b.store.uncertainBeforeCommit = false
+		abortErr := errors.New("abort simulated pre-commit request")
+		b.BatchWrite.Atomic(func(context.Context, storage.AtomicBatch) error { return abortErr })
+		if err := b.BatchWrite.Commit(ctx); !errors.Is(err, abortErr) {
+			return fmt.Errorf("abort simulated pre-commit request: %w", err)
+		}
+		return storage.NewErrUncertainResult(errReplayIntegrationInterrupt)
+	}
 	if !b.store.commitThenUncertainOnce && b.store.committed >= b.store.interruptAfter {
 		return errReplayIntegrationInterrupt
 	}
@@ -3016,6 +3026,16 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
 	var handoffPath string
 	if withLogs {
+		if releaseDrill := os.Getenv("KUBEBRAIN_NATIVE_PITR_RELEASE_PRECOMMIT_UNCERTAIN_DRILL"); releaseDrill != "" {
+			require.Equal(t, "true", releaseDrill, "invalid release pre-commit uncertain drill setting")
+			uncertainStore := &interruptReplayStore{KvStorage: targetKV, interruptAfter: 1, uncertainBeforeCommit: true}
+			releaseErr := nativepitr.ReleaseReplayFence(ctx, uncertainStore, fenceReceipt.CoordinationPrefix, fenceToken, replayReceipt, digest(replayBytes))
+			require.ErrorIs(t, releaseErr, storage.ErrUncertainResult)
+			require.ErrorContains(t, releaseErr, "release marker was not committed")
+			require.Zero(t, uncertainStore.committed)
+			require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
+			t.Log("native PITR uncommitted-uncertain fence release timed out without a marker; CLI retry remains pending")
+		}
 		if releaseDrill := os.Getenv("KUBEBRAIN_NATIVE_PITR_RELEASE_RESPONSE_LOSS_DRILL"); releaseDrill != "" {
 			require.Equal(t, "true", releaseDrill, "invalid release response-loss drill setting")
 			uncertainStore := &interruptReplayStore{KvStorage: targetKV, interruptAfter: 1, commitThenUncertainOnce: true}

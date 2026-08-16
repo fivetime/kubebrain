@@ -73,6 +73,7 @@ type ReplayManifest struct {
 
 const replayCheckpointFormat = "kubebrain.native-pitr-log-replay-checkpoint.v2"
 const replayReleaseMarkerFormat = "kubebrain.native-pitr-log-replay-release.v1"
+const replayReleaseReconcileTimeout = 5 * time.Second
 
 type replayReleaseMarker struct {
 	Format              string `json:"format"`
@@ -212,6 +213,10 @@ func DecodeLogReplayExecution(reader io.Reader) (LogReplayExecutionReceipt, erro
 // shards. A changed, missing, partial, or foreign checkpoint aborts the same
 // transaction that would release writer admission.
 func ReleaseReplayFence(ctx context.Context, target storage.KvStorage, prefix string, token restorationfence.Token, receipt LogReplayExecutionReceipt, receiptSHA string) error {
+	return releaseReplayFence(ctx, target, prefix, token, receipt, receiptSHA, replayReleaseReconcileTimeout)
+}
+
+func releaseReplayFence(ctx context.Context, target storage.KvStorage, prefix string, token restorationfence.Token, receipt LogReplayExecutionReceipt, receiptSHA string, reconcileTimeout time.Duration) error {
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
@@ -267,7 +272,7 @@ func ReleaseReplayFence(ctx context.Context, target storage.KvStorage, prefix st
 		}
 		return err
 	}
-	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reconcileTimeout)
 	defer cancel()
 	var reconcileErr error
 	for {
@@ -277,10 +282,11 @@ func ReleaseReplayFence(ctx context.Context, target storage.KvStorage, prefix st
 			return nil
 		}
 		if reconcileCtx.Err() != nil {
-			if reconcileErr == nil {
-				reconcileErr = errors.New("replay release marker was not committed")
+			evidenceErr := errors.New("replay release marker was not committed before the reconciliation deadline")
+			if reconcileErr != nil && !errors.Is(reconcileErr, context.DeadlineExceeded) && !errors.Is(reconcileErr, context.Canceled) {
+				evidenceErr = errors.Join(evidenceErr, reconcileErr)
 			}
-			return errors.Join(err, fmt.Errorf("reconcile uncertain replay fence release: %w", reconcileErr))
+			return errors.Join(err, fmt.Errorf("reconcile uncertain replay fence release: %w", evidenceErr))
 		}
 		timer := time.NewTimer(50 * time.Millisecond)
 		select {

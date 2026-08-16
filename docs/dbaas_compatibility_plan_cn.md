@@ -55056,6 +55056,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过，一次性容器已清理。该证据覆盖“真实提交 + 确定性 response loss”，不冒充 TiKV 2PC、store/PD 网络分区或进程崩溃
   自然产生的 uncertain；未提交的 uncertain 仍必须超时失败并由后续重试继续核验 held fence，真实故障矩阵保持开放。
 
+- A4908 补齐 A4907 的 uncommitted-uncertain 对偶状态，并稳定其运维诊断。release reconciliation 的生产窗口固定为 5 秒，
+  测试通过私有 duration seam 缩短等待但不改变公共 API；窗口内未同时观察到 exact marker 与 257 个 open fence key 时，必须
+  保留原 `storage.ErrUncertainResult` 并返回稳定的 `release marker was not committed before the reconciliation deadline`，而非
+  被最后一次存储读取的 `context deadline exceeded` 掩盖。状态机包装器在底层 batch 追加必败的 transaction-local guard，确保
+  staged checkpoint/marker/fence 写全部回滚，再模拟调用方收到 uncertain；首次调用必须零 commit、无 marker、所有 shard 仍由
+  exact token 持有，随后同 receipt 重试必须只提交一次并全量开放。
+
+  新 profile `target-log-replay-release-precommit-uncertain-resume` 把同一原子中止放在真实三副本 target TiKV batch 的 commit
+  边界。2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 与官方
+  BR v7.5.1 上执行：首次 release 返回 uncertain，完整 5 秒窗口未出现 marker，在线核验 257 个 fence key 全部仍为原 owner；
+  随后实际 restoration-fence CLI 用同一 v6 receipt 成功 release/handoff，最终 revision/key/lease/watch 语义验收 47.56 秒通过，
+  一次性容器已清理。该证据覆盖真实 TiKV transaction-local abort 加确定性 uncertain 包装，不等同于请求未抵达 TiKV、网络
+  分区或进程崩溃自然产生的 uncertain；这些真实故障注入仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

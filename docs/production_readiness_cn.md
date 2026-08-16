@@ -3032,6 +3032,20 @@ hack/backup/run-native-pitr-full-restore-integration.sh
 release transaction 提交后由包装层确定性返回 uncertain，进程内从 marker reconcile，随后生产 CLI exact 重试并完成 handoff
 和最终 etcd 语义验证。该门禁不是自然网络分区、进程崩溃或 TiKV 2PC uncertain 演练；这些场景仍需生产故障矩阵覆盖。
 
+未提交的 uncertain 对偶门禁使用：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-log-replay-release-precommit-uncertain-resume \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+2026-08-16 真实双集群三副本用例以 47.56 秒通过：target TiKV release batch 在 commit 前由 transaction-local guard
+原子中止，再向恢复方返回 uncertain；5 秒 reconciliation 窗口无 exact marker，错误保持 `ErrUncertainResult` 并明确报告
+marker 未提交，257 个 fence key 仍为原 owner。随后生产 CLI 使用相同 v6 receipt 重试，完成唯一 release、handoff 与最终语义
+验证。此门禁与 committed-response-loss 门禁共同固定“不猜测未知提交”的两种确定性边界；自然网络/进程故障仍需另行验证。
+
 TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
 每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
 恢复方关闭 gate 时必须以 range compare 同时证明 session 前缀为空，因此新进程注册与 restore acquire 只能
