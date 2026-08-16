@@ -54315,6 +54315,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Watch fallback/history scan、metadata、count-index 与 event-log replay 精确 race（8.962 秒）和 `pkg/backend` vet 通过；
   本轮没有修改测试文件。在线 A4776 未滚动，Badger close fault 下的 Watch 非成功与 count-index rebuild 仍留待门禁。
 
+- A4832 修正异步 SnapshotHistory 的成功终态与 iterator shutdown 排序。旧 goroutine 先向客户端发送 `Done=true`，
+  返回后 defer 才执行 Close 且丢弃错误，因此 artifact consumer 可确认完整快照后才发生不可见的事务收尾失败。生产流
+  现在以幂等 close helper 管理 iterator：EOF 先 Close，成功后才 flush 尾块并发送 Done；扫描、对象校验、metadata 或
+  event-order join 的所有终端错误均与 Close Join 后发送。消费者取消仍由 defer 保证释放 pin 与 iterator。
+
+  SnapshotHistory 全部现有 race（1.760 秒）、`pkg/backend` vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776
+  未滚动，真实 Close fault 下“有前置 chunk、无 Done、有 error terminal”的 artifact 行为仍留待新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
