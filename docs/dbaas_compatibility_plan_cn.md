@@ -54379,6 +54379,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   内置 `rawkv` 全套 race（2.121 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776 未滚动，RawKV
   keyspace initialization failure 的连接归零仍留待正式新镜像运维工具启动门禁。
 
+- A4840 修正内置 TiKV KVStore 的 worker pool shutdown 顺序与等待语义。旧默认 `gp.Pool.Close` 只停止 idle worker，
+  明确允许 inflight task 继续；KVStore 又通过 defer 最后才 Close pool，因此 RPC、PD、region cache、SafePoint KV 已先
+  关闭，后台任务仍可能访问失效依赖。默认 Spool 现在以 mutex/WaitGroup 原子地拒绝新任务、跟踪并等待所有已接纳任务；
+  KVStore Close 在释放任何 client/cache 前先关闭并 drain pool，形成“停止接纳→等待任务→关闭依赖”的顺序。
+
+  内置 `tikv` 全套 race（5.400 秒）、KubeBrain `pkg/storage/tikv` race（1.236 秒）及双方 vet 通过；本轮没有修改测试
+  文件。在线 A4776 未滚动，长事务 cleanup task 与 SIGTERM 并发时无 shutdown use-after-close 仍留待新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
