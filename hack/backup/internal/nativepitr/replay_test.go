@@ -438,8 +438,30 @@ func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing
 	require.NoError(t, json.NewEncoder(&encoded).Encode(receipt))
 	_, err = DecodeLogReplayExecution(&encoded)
 	require.NoError(t, err)
-	receipt.Format = "kubebrain.native-pitr-log-replay.v3"
-	require.EqualError(t, receipt.Validate(), "native PITR log replay receipt is incomplete")
+	wrongFormat := receipt
+	wrongFormat.Format = "kubebrain.native-pitr-log-replay.v3"
+	require.EqualError(t, wrongFormat.Validate(), "native PITR log replay receipt is incomplete")
+
+	freshPartial := receipt
+	freshPartial.AppliedMutations, freshPartial.AppliedTransactions = 0, 0
+	require.EqualError(t, freshPartial.Validate(), "native PITR log replay receipt has incomplete fresh replay statistics")
+	resumedFull := receipt
+	resumedFull.Resumed = true
+	require.EqualError(t, resumedFull.Validate(), "native PITR log replay receipt has invalid resumed replay statistics")
+	mutationsWithoutTransactions := receipt
+	mutationsWithoutTransactions.AppliedTransactions = 0
+	require.EqualError(t, mutationsWithoutTransactions.Validate(), "native PITR log replay receipt has invalid applied statistics")
+	moreTransactionsThanMutations := receipt
+	moreTransactionsThanMutations.AppliedMutations = 0
+	require.EqualError(t, moreTransactionsThanMutations.Validate(), "native PITR log replay receipt has invalid applied statistics")
+	resumedComplete := receipt
+	resumedComplete.Resumed = true
+	resumedComplete.AppliedMutations, resumedComplete.AppliedTransactions = 0, 0
+	require.NoError(t, resumedComplete.Validate())
+	resumedPartial := receipt
+	resumedPartial.Resumed = true
+	resumedPartial.MutationCount, resumedPartial.TransactionCount = 3, 3
+	require.NoError(t, resumedPartial.Validate())
 }
 
 func TestBuildLogReplayExecutionRejectsWrongOrLateFence(t *testing.T) {

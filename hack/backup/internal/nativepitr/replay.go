@@ -166,6 +166,15 @@ func (r LogReplayExecutionReceipt) Validate() error {
 	if (r.MutationCount == 0) != (r.TransactionCount == 0) || (r.MutationCount == 0) != (r.LastCommitTS == 0) || (r.LastCommitTS != 0 && (r.LastCommitTS <= r.BackupTS || r.LastCommitTS > r.RestoreTS)) {
 		return errors.New("native PITR log replay receipt has invalid bounds")
 	}
+	if (r.AppliedMutations == 0) != (r.AppliedTransactions == 0) || r.AppliedMutations < r.AppliedTransactions {
+		return errors.New("native PITR log replay receipt has invalid applied statistics")
+	}
+	if !r.Resumed && (r.AppliedMutations != r.MutationCount || r.AppliedTransactions != r.TransactionCount) {
+		return errors.New("native PITR log replay receipt has incomplete fresh replay statistics")
+	}
+	if r.Resumed && r.MutationCount > 0 && (r.AppliedMutations >= r.MutationCount || r.AppliedTransactions >= r.TransactionCount) {
+		return errors.New("native PITR log replay receipt has invalid resumed replay statistics")
+	}
 	return nil
 }
 

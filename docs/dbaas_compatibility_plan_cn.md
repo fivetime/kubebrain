@@ -54996,6 +54996,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   总耗时 39.88 秒，一次性容器已清理。该证据覆盖真实 TiKV commit 加确定性 response-loss 注入；它不冒充由 TiKV 2PC、
   store/PD 网络分区或进程崩溃自然产生的 uncertain，后者以及 uncertain 后 checkpoint 读取暂时失败仍保持开放。
 
+- A4904 修复 v4 log replay receipt 对 applied/resumed 统计约束不足。旧 `Validate` 只要求 applied 不超过 manifest 总数，因而
+  手工构造的 `resumed=false` 部分应用 receipt，或 `resumed=true` 却声称本轮重新应用全部事务的 receipt，仍可能被 restoration
+  fence release 与 semantic verifier 接受。新门禁要求 fresh 成功精确应用全部 mutation/transaction；resumed 非空成功的本轮
+  applied 两项必须严格小于总数（checkpoint 已完成后的幂等重跑允许两项均为零）；mutation/transaction 的 applied 零值必须
+  同步，且每个 source transaction 至少对应一个 mutation。负向回归固定 fresh partial、resumed full、mutation/transaction
+  不一致，正向覆盖 fresh full、resumed partial 与 resumed complete。
+
+  2026-08-16 再次执行 A4903 的独立 source/target 各 3 PD + 3 TiKV committed-uncertain 演练；所有 Region 3 peers/零 pending
+  peer，首事务真实提交 7/19 mutation 后返回 uncertain，实际 CLI 续跑余下 12 个并签发符合新统计约束的 v4 receipt。随后
+  restoration fence release 与 semantic verifier 均通过公共 decoder 接受该证据，最终 etcd 语义验收通过，总耗时 40.15 秒，
+  一次性容器已清理。该修复加强证据自洽性，不声称 receipt 自身能替代对 target checkpoint 或最终语义的在线验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

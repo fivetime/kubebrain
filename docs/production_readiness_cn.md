@@ -2601,6 +2601,12 @@ v2 checkpoint 的原子提交，再向调用方返回标准 `storage.ErrUncertai
 记录 `resumed_from_checkpoint=true`，完整语义门禁 39.88 秒通过。这里的响应丢失由存储接口包装层确定性注入，尚不等同于
 在 TiKV 2PC/网络分区窗口自然产生 uncertain commit；后者仍需独立基础设施故障演练。
 
+v4 receipt 的 applied/resumed 统计也是 release 门禁的一部分：fresh 成功必须在本轮应用全部 manifest mutation/transaction；
+resumed 非空成功只能应用严格少于总数的剩余工作（已完成 checkpoint 重跑允许本轮两项均为零）；任一模式都要求 mutation 与
+transaction 的零值同步，且 applied mutation 不少于 applied transaction。自相矛盾的 receipt 会在 fence release 和 semantic
+verify 前由公共 decoder 拒绝。2026-08-16 在上述三副本 commit-response-loss 场景重跑收紧后的 validator，真实续跑、release
+与最终语义验收仍通过（40.15 秒）。
+
 v4 不接受旧 `log-replay-manifest.v1`、`log-replay-checkpoint.v1` 或 `native-pitr-log-replay.v3`
 证据：这些格式没有摘要绑定 source `start_ts`，无法在 commit TSO 碰撞时证明 source transaction 边界。
 若目标上存在旧 checkpoint，executor 必须 fail closed；不能删除 checkpoint 后在同一目标猜测重放。按 failed-target
