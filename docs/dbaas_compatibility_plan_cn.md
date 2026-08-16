@@ -53302,6 +53302,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同一副本恢复 Ready；随后以 StatefulSet 常规替换清除故障注入产生的 restart counter，最终六副本重新回到
   Ready/零重启。
 
+- A4758 修复新副本被初始 peer health 同步阻塞、延迟整个 server 启动的生产缺口。启动顺序审计确认
+  `server.NewServer → NewPeerService → NewEtcdProxy` 发生在 election goroutine 和 client/peer/info listener
+  启动之前；A4757 虽使运行中检查可取消，但 constructor 仍同步调用一次最长五秒的 `updateClient`。
+
+  最终 A4757 镜像上的真实 RED 短暂黑洞 pod CIDR 到当前 leader pod-1 的 peer `:3380`，再以 StatefulSet
+  替换 follower pod-0。新进程于 `02:51:43.683Z` 开始初始 `check conn`，直到 `02:51:48.687Z` 才超时；
+  8080/3380/3379 分别到 `02:51:48.752–48.759Z` 才监听，证明一次 peer 故障把该副本的 listener 与参与选举
+  整体延迟约 5.07 秒，而不是只让 proxy 保持 NotReady。
+
+  生产提交 `7fdbe424` 删除 constructor 的同步首拨；既有单飞后台 goroutine 启动后第一步仍立即执行同一
+  context-aware update，连接建立前 `Ready()` 继续返回 Unavailable，但 server construction、listener 和 election
+  不再等待远端 health。已有立即 Ready 假设改为一秒有界等待，并只增加一个黑洞 TCP peer 的最小构造回归。
+  启动/关闭三用例连续 20 轮 0.356 秒、proxy 全包 3.090 秒、race 4.362 秒、两包 vet 和完整
+  `pkg/server/etcd` 196.858 秒通过。
+
+  最终镜像 `kubebrain:a4758-7fdbe424` 内嵌完整 SHA
+  `7fdbe4245fe2be19359e2a8fb65ce6924c320e96`、build time `2026-08-16T02:56:59Z`，本地 OCI index
+  `sha256:a6e6a6ab03a9053927b6dc36363d41ac26375ca10d56de6fadf792228b203d87`，Kind runtime imageID
+  `sha256:dfe40b52ed9c9ef4b214ec2c07647a0dcb33172dc152a11a0a4329ad13c0db2b`。六副本滚动后复用相同
+  destination-wide peer 黑洞并替换 pod-0：后台 `check conn` 于 `03:02:28.054Z` 开始，三个 listener 已于
+  `03:02:28.073Z` 全部监听，仅相差约 19ms；health 仍独立按五秒 timeout fail closed。解除 DROP 后后台在
+  `03:02:40.204Z` 连回同一 leader，pod-0 恢复 Ready/零重启，证明快速启动没有伪造 proxy readiness。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
