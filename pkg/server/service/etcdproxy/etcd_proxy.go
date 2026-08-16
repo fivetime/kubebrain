@@ -898,6 +898,14 @@ func mapLeaseKeepAliveForwardError(parentCtx, callCtx context.Context, err error
 			status.Code(err) == codes.DeadlineExceeded) {
 		return rpctypes.ErrGRPCTimeout
 	}
+	// The shared leader ClientConn is retired on a topology change. Its in-flight
+	// bidi stream can report Canceled even though the downstream KeepAlive stream
+	// is still live; classify it as retryable so the already-consumed message is
+	// retried by leaseKeepAlive's Unavailable loop. Preserve caller cancellation.
+	if err != nil && parentCtx.Err() == nil &&
+		(errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled) {
+		return rpctypes.ErrGRPCLeaderChanged
+	}
 	return err
 }
 

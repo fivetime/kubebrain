@@ -477,6 +477,10 @@ func TestMapLeaseKeepAliveForwardError(t *testing.T) {
 			parent, liveCall, status.Error(codes.DeadlineExceeded, "upstream deadline"),
 		),
 		"gRPC can report the internal deadline before callCtx.Err is observable")
+	require.Equal(t, rpctypes.ErrGRPCLeaderChanged,
+		mapLeaseKeepAliveForwardError(
+			parent, liveCall, status.Error(codes.Canceled, "grpc: the client connection is closing"),
+		))
 
 	canceledParent, cancelParent := context.WithCancel(context.Background())
 	cancelParent()
