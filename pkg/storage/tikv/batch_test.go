@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	tikverr "github.com/tikv/client-go/v2/error"
+	"github.com/tikv/client-go/v2/txnkv"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -43,6 +44,16 @@ func TestBatchCommitWithFailedBeginReturnsErrorNotPanic(t *testing.T) {
 		err := b.Commit(context.Background())
 		require.ErrorIs(t, err, beginErr)
 	})
+}
+
+func TestBatchCommitBindsBeginToCallerContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	b := &batch{begin: func(got context.Context) (*txnkv.KVTxn, error) {
+		require.ErrorIs(t, got.Err(), context.Canceled)
+		return nil, got.Err()
+	}}
+	require.ErrorIs(t, b.Commit(ctx), context.Canceled)
 }
 
 func TestUnavailableBeginErrorPreservesRetryableClassification(t *testing.T) {

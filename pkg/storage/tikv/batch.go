@@ -28,8 +28,9 @@ import (
 )
 
 type batch struct {
-	txn  *txnkv.KVTxn
-	list []func(ctx context.Context) error
+	txn   *txnkv.KVTxn
+	begin func(context.Context) (*txnkv.KVTxn, error)
+	list  []func(ctx context.Context) error
 }
 
 // KubeBrain accepts at most 2MiB raw physical keys. The managed TiKV manifests
@@ -174,14 +175,18 @@ func (b *batch) Atomic(fn func(context.Context, storage.AtomicBatch) error) {
 
 func (b *batch) Commit(ctx context.Context) (err error) {
 	defer func() {
-		// b.txn is nil when BeginBatchWrite's Begin() failed (e.g. PD/TSO
-		// briefly unavailable); the stashed error surfaces as list[0]. Guard the
-		// rollback so a failed Begin returns the error instead of panicking the
-		// whole process.
+		// A context-bound Begin can fail before publishing a transaction. Guard the
+		// rollback so the PD/TSO error is returned instead of dereferencing nil.
 		if err != nil && b.txn != nil {
 			b.txn.Rollback()
 		}
 	}()
+	if b.txn == nil && b.begin != nil {
+		b.txn, err = b.begin(ctx)
+		if err != nil {
+			return err
+		}
+	}
 	for _, f := range b.list {
 		err = f(ctx)
 		if err != nil {

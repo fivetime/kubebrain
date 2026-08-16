@@ -342,6 +342,13 @@ func (s *KVStore) runSafePointChecker() {
 
 // Begin a global transaction.
 func (s *KVStore) Begin(opts ...TxnOption) (txn *transaction.KVTxn, err error) {
+	return s.BeginWithContext(context.Background(), opts...)
+}
+
+// BeginWithContext begins a global transaction while binding start-TS lookup
+// and its PD retry budget to the caller lifecycle. Begin remains the backwards-
+// compatible detached wrapper used by existing client-go consumers.
+func (s *KVStore) BeginWithContext(ctx context.Context, opts ...TxnOption) (txn *transaction.KVTxn, err error) {
 	options := &transaction.TxnOptions{}
 	// Inject the options
 	for _, opt := range opts {
@@ -357,7 +364,7 @@ func (s *KVStore) Begin(opts ...TxnOption) (txn *transaction.KVTxn, err error) {
 	if options.StartTS != nil {
 		startTS = *options.StartTS
 	} else {
-		bo := retry.NewBackofferWithVars(context.Background(), transaction.TsoMaxBackoff, nil)
+		bo := retry.NewBackofferWithVars(ctx, transaction.TsoMaxBackoff, nil)
 		startTS, err = s.getTimestampWithRetry(bo, options.TxnScope)
 		if err != nil {
 			return nil, err

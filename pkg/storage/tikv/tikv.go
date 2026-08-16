@@ -394,21 +394,18 @@ func (s *store) Iter(ctx context.Context, start []byte, end []byte, timestamp ui
 }
 
 func (s *store) BeginBatchWrite() storage.BatchWrite {
-	b := &batch{}
-	var err error
-	f := func(ctx context.Context) error {
-		return err
-	}
-	b.txn, err = s.getClient().Begin()
-	if err != nil {
-		err = unavailableBeginError("write", err)
-	}
-	b.list = append(b.list, f)
-	return b
+	client := s.getClient()
+	return &batch{begin: func(ctx context.Context) (*txnkv.KVTxn, error) {
+		txn, err := client.BeginWithContext(ctx)
+		if err != nil {
+			return nil, unavailableBeginError("write", err)
+		}
+		return txn, nil
+	}}
 }
 
 func (s *store) Get(ctx context.Context, key []byte) (val []byte, err error) {
-	txn, err := s.getClient().Begin()
+	txn, err := s.getClient().BeginWithContext(ctx)
 	if err != nil {
 		return nil, unavailableBeginError("read", err)
 	}
