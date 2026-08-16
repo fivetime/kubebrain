@@ -54466,6 +54466,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对照 `/root/etcd/client/v3/snapshot/v3_snapshot.go` 的 snapshot response/file close 生命周期；objectstore 聚焦 race
   （1.196 秒）、vet 与 diff check 通过。真实 S3 连接 reset/临时盘 unlink fault 仍留待正式新镜像对象存储故障门禁。
 
+- A4850 将 exact-version transport/介质收尾门禁扩展到通用 immutable blob archive/read。旧 archive verifier 与 read
+  consumer 均在完整 Read 后 defer 丢弃 S3 Body.Close；read 甚至先把 bytes 原子链接到输出，随后才静默关闭 response，
+  因而 metering、billing 或恢复控制制品可能在 HTTP 收尾失败后仍被消费。现在两条路径在内容比较/落盘前显式聚合
+  Read+Close；archive close failure 不签发 receipt，read close failure 不创建输出。bounded 本地输入读取及 atomic output
+  的 file Close、temp Remove 也纳入命名返回错误，避免介质 cleanup 假成功。
+
+  新增 archive/read 两个可失败 response reader 回归，分别固定 receipt/output 不存在；blob 聚焦 race（1.769 秒）、
+  objectstore vet 与 diff check 通过。真实 S3 半关闭、只读目录和 unlink fault 仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

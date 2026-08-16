@@ -2,6 +2,7 @@ package objectstore
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -90,6 +91,26 @@ func TestArchiveBlobFailsClosedOnConflictCorruptionAndRetentionDrift(t *testing.
 		_, err = ArchiveBlob(context.Background(), client, request)
 		require.ErrorContains(t, err, "retention does not match")
 	})
+}
+
+func TestArchiveBlobRejectsRemoteBodyCloseFailure(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	input := filepath.Join(t.TempDir(), "sample.json")
+	require.NoError(t, os.WriteFile(input, []byte("sample\n"), 0o600))
+	closeErr := errors.New("blob response close failed")
+	client := &fakeS3{getCloseErr: closeErr}
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+
+	_, err := ArchiveBlob(context.Background(), client, BlobRequest{
+		Input: input, ArtifactFormat: "sample.v1", ArtifactID: "slot-100",
+		Instance: "instance-a", ObjectStoreID: "store-a", Bucket: "blobs",
+		ObjectKey: "samples/slot-100.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(time.Hour).Unix(), ReceiptOutput: receiptPath, Now: now,
+	})
+
+	require.ErrorIs(t, err, closeErr)
+	_, statErr := os.Stat(receiptPath)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func TestArchiveBlobRejectsEmptyOversizedAndNonCanonicalReceipt(t *testing.T) {
@@ -282,5 +303,14 @@ func TestReadBlobFailsClosedOnVersionRetentionAndContentDrift(t *testing.T) {
 		client.corruptGet = true
 		_, err := ReadBlob(context.Background(), client, request)
 		require.ErrorContains(t, err, "protected metadata")
+	})
+	t.Run("response close failure", func(t *testing.T) {
+		client, request := newFixture(t)
+		closeErr := errors.New("blob read response close failed")
+		client.getCloseErr = closeErr
+		_, err := ReadBlob(context.Background(), client, request)
+		require.ErrorIs(t, err, closeErr)
+		_, statErr := os.Stat(request.Output)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
 	})
 }

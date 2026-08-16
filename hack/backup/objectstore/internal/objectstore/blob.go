@@ -252,12 +252,13 @@ func ReadBlob(ctx context.Context, client S3API, request BlobReadRequest) (BlobR
 	if err != nil {
 		return BlobReadReceipt{}, fmt.Errorf("download immutable blob version: %w", err)
 	}
-	defer output.Body.Close()
 	if aws.ToString(output.VersionId) != versionID {
-		return BlobReadReceipt{}, errors.New("downloaded immutable blob returned a different version ID")
+		return BlobReadReceipt{}, errors.Join(
+			errors.New("downloaded immutable blob returned a different version ID"), output.Body.Close(),
+		)
 	}
-	body, err := io.ReadAll(io.LimitReader(output.Body, maxImmutableBlobBytes+1))
-	if err != nil {
+	body, readErr := io.ReadAll(io.LimitReader(output.Body, maxImmutableBlobBytes+1))
+	if err := errors.Join(readErr, output.Body.Close()); err != nil {
 		return BlobReadReceipt{}, err
 	}
 	sum := sha256.Sum256(body)
@@ -302,7 +303,7 @@ func blobReadFormats(request BlobReadRequest) (map[string]bool, error) {
 	return allowed, nil
 }
 
-func writeBlobOutputAtomic(path string, body []byte) error {
+func writeBlobOutputAtomic(path string, body []byte) (retErr error) {
 	if existing, err := readBoundedFile(path, "existing immutable blob output", int64(len(body))); err == nil {
 		if bytes.Equal(existing, body) {
 			return nil
@@ -317,18 +318,19 @@ func writeBlobOutputAtomic(path string, body []byte) error {
 		return err
 	}
 	tempName := temp.Name()
-	defer os.Remove(tempName)
+	defer func() {
+		if removeErr := os.Remove(tempName); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
 	if err := temp.Chmod(0o600); err != nil {
-		temp.Close()
-		return err
+		return errors.Join(err, temp.Close())
 	}
 	if _, err := temp.Write(body); err != nil {
-		temp.Close()
-		return err
+		return errors.Join(err, temp.Close())
 	}
 	if err := temp.Sync(); err != nil {
-		temp.Close()
-		return err
+		return errors.Join(err, temp.Close())
 	}
 	if err := temp.Close(); err != nil {
 		return err
@@ -358,13 +360,13 @@ func writeBlobOutputAtomic(path string, body []byte) error {
 	return errors.Join(syncErr, closeErr)
 }
 
-func readBoundedFile(path, description string, limit int64) ([]byte, error) {
+func readBoundedFile(path, description string, limit int64) (data []byte, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err
 	}
@@ -374,13 +376,13 @@ func readBoundedFile(path, description string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func readBoundedBlob(path string) ([]byte, error) {
+func readBoundedBlob(path string) (body []byte, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	body, err := io.ReadAll(io.LimitReader(file, maxImmutableBlobBytes+1))
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	body, err = io.ReadAll(io.LimitReader(file, maxImmutableBlobBytes+1))
 	if err != nil {
 		return nil, err
 	}
@@ -433,9 +435,8 @@ func verifyBlobRemote(
 	if err != nil {
 		return fmt.Errorf("download immutable blob: %w", err)
 	}
-	defer output.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(output.Body, int64(len(expected))+1))
-	if err != nil {
+	body, readErr := io.ReadAll(io.LimitReader(output.Body, int64(len(expected))+1))
+	if err := errors.Join(readErr, output.Body.Close()); err != nil {
 		return err
 	}
 	if !bytes.Equal(body, expected) {
