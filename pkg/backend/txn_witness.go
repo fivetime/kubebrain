@@ -264,7 +264,7 @@ func (b *backend) validateEventLogWindowWitnesses(
 // verifyObjects is reserved for CORRUPT disarm: leadership startup must remain
 // one sequential witness/event merge, while an operator asking to reopen writes
 // must also prove every uncompacted event's referenced object version exists.
-func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjects bool) error {
+func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjects bool) (retErr error) {
 	compactRevision, err := b.GetCompactRevisionFresh(ctx)
 	if err != nil {
 		return err
@@ -282,11 +282,11 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 	if err != nil {
 		return err
 	}
-	defer witnesses.Close()
+	defer func() { retErr = errors.Join(retErr, witnesses.Close()) }()
 	var events storage.Iter
 	defer func() {
 		if events != nil {
-			_ = events.Close()
+			retErr = errors.Join(retErr, events.Close())
 		}
 	}()
 
@@ -770,9 +770,12 @@ func (b *backend) persistWitnessedObjectCorruption(
 	for {
 		nextErr := iter.Next(ctx)
 		if nextErr != nil {
-			_ = iter.Close()
+			closeErr := iter.Close()
 			if nextErr != io.EOF {
-				return cause
+				return errors.Join(cause, nextErr, closeErr)
+			}
+			if closeErr != nil {
+				return errors.Join(cause, closeErr)
 			}
 			break
 		}
@@ -780,15 +783,13 @@ func (b *backend) persistWitnessedObjectCorruption(
 		entryValue := append([]byte(nil), iter.Val()...)
 		entryRevision, entryUserKey, decodeErr := b.ks.DecodeEventLogKey(entryKey)
 		if decodeErr != nil || entryRevision != revision {
-			_ = iter.Close()
-			return cause
+			return errors.Join(cause, iter.Close())
 		}
 		verbByte, previousRevision, _, _, _, ok := coder.DecodeOrderedEventLogValue(entryValue)
 		verb := proto.Event_EventType(verbByte)
 		if !ok || (verb != proto.Event_CREATE && verb != proto.Event_PUT) {
 			if bytes.Equal(entryUserKey, userKey) {
-				_ = iter.Close()
-				return cause
+				return errors.Join(cause, iter.Close())
 			}
 		} else if bytes.Equal(entryUserKey, userKey) {
 			targetCovered = (verb == proto.Event_CREATE && previousRevision == 0) ||
