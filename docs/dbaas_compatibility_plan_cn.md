@@ -53590,6 +53590,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   5 秒强杀。本轮只改变离线运维二进制，不改变 server 镜像或数据语义，因此不把主集群滚动状态冒充为本修复
   的验证证据。
 
+- A4771 继续清理 native PITR 执行链中剩余的 storage pool Background wrapper。source-capture、
+  restoration-fence、log-replay、admission-fence release，以及恢复后 endpoint/TiKV 语义绑定校验都已持有
+  整体 operation context，但此前调用 `NewKvStorage`；PD/TiKV client pool 初始化因此可能越过 2 分钟乃至
+  2 小时的作业 deadline。四个命令入口也未把 SIGTERM 传给该 context。对应 upstream 约束沿用 A4770：
+  etcdctl 的命令 RPC 有 command context，长运行检查会把进程中断转成 cancellation；独立 TiKV 数据面的
+  备份/恢复工具不能因为多一层远端 storage 构造而丢失同一生命周期。
+
+  生产提交 `2209e921` 将五处生产调用切换为 `NewKvStorageWithContext`，并为四个 native PITR CLI 接入
+  SIGINT/SIGTERM 根 context。没有新增测试文件；五个受影响包既有测试、storage/tikv 与 semanticverify race、
+  五包 vet 全部通过。另用不提交的实际构造探针调用相同 1-client pool API，连接黑洞
+  `10.255.255.1:2379` 并设置 1 秒 deadline；PD discovery 明确返回 gRPC `Canceled`，完整 storage 构造在
+  1.001 秒返回错误。探针源码与二进制随后清除。搜索确认 `hack/backup` 生产代码已无旧
+  `storagetikv.NewKvStorage` 调用，剩余旧调用仅属于 full-restore 集成测试和独立 persistence smoke；本轮不以
+  测试改写代替生产修复，也不把未改变的 server 集群状态作为证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
