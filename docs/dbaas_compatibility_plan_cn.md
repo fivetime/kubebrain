@@ -54220,6 +54220,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   普通 `pkg/endpoint` 全套（16.951 秒）、race 及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，多 listener
   同时产生 normal-close 与 injected real-close error 的非零退出仍留待正式新镜像故障门禁。
 
+- A4821 将 joined-error cancellation 分类修复扩展到核心 server shutdown。外层 `server.Close` 对 Drain 结果、
+  `RPCServer.Close` 对 concurrency client 结果都曾执行 `errors.Is(err, context.Canceled)` 后清空整个错误；campaign
+  正常取消若与 leadership durable release、PD/client transport Close 等真实错误 Join，进程仍会错误返回成功。
+  两个生产边界现在递归处理 multi-error，只删除 cancellation child，保留 deadline 与所有其他 sibling；单层 wrapped
+  cancellation 的正常 SIGTERM 合同不变，显式 `/drain` 仍原样暴露取消。
+
+  `pkg/server` 与 `pkg/server/etcd` race（5.129 秒及对应套件）和 vet 通过；本轮没有修改测试文件。在线 A4776
+  未滚动，campaign cancellation 叠加 PD release/client Close fault 的非零退出仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
