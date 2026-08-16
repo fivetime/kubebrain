@@ -53574,6 +53574,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   终态全部规则清除，PD/TiKV 3+3 与主/JWT 六副本统一 A4769 digest、Ready、零重启，
   AlarmList/LeaseList 为空，proposal health 13.907ms。
 
+- A4770 把 A4768 的可取消 TiKV client 构造继续贯穿到 DBaaS 运维面。发布可用性探针、native PITR
+  target-empty 和 source-exclusive 虽然已有调用级 context/timeout，此前仍用 `txnkv.NewClient` 的
+  Background wrapper；三个命令的进程入口也都从 `context.Background()` 启动。因此 PD 连接黑洞时，
+  Job 超时只能约束部分后续 RPC，SIGINT/SIGTERM 无法中断正在进行的 txnkv 初始化。对照固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`，etcdctl 普通 RPC 通过
+  `etcdctl/ctlv3/command/util.go:commandCtx` 施加 command timeout，长运行检查还在
+  `check.go:interruptableContext` 把进程中断转成 context cancellation。
+
+  生产提交 `dd37df11` 让三个 CLI 用 `signal.NotifyContext` 捕获 SIGINT/SIGTERM，并让 rollout probe 与
+  native PITR 的源/目标证明调用 `txnkv.NewClientWithContext`，将同一作业生命周期传至 PD discovery、
+  cluster identity 与 KVStore 初始化。未增加测试文件；五个受影响生产包的既有测试、nativepitr race 与
+  四组 vet 均通过。实际编译 `native-pitr-target-empty`，以 `10.255.255.1:2379` 模拟 PD 黑洞并配置 10 分钟
+  内部超时，外部在 1 秒发送 SIGTERM，进程在 1.110 秒退出并报告 PD cluster-ID 获取失败，未等内部超时或
+  5 秒强杀。本轮只改变离线运维二进制，不改变 server 镜像或数据语义，因此不把主集群滚动状态冒充为本修复
+  的验证证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
