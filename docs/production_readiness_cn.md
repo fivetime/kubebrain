@@ -1979,10 +1979,11 @@ PD MetaStorage 的 `/tidb/br-stream/ranges/<task>/` 二进制键值。TiKV 会�
 按 Region 订阅事务提交并维护 checkpoint，因此 KubeBrain 的完整 tenant 物理范围可以成为
 独立任务，不需要伪造 TiDB table ID 或 schema。
 
-上线前可执行只读能力预检：
+上线前可从发布的 KubeBrain 镜像执行只读能力预检；下述非 BR 编排、收据和校验命令均随默认镜像发布，
+full backup/restore 命令则分别位于固定 BR 版本的专用镜像中，不再要求在生产环境挂载源码或即时编译：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-preflight \
+/usr/local/bin/kubebrain-native-pitr-preflight \
   --pd-addrs=kb-pd-0.storage.svc:2379,kb-pd-1.storage.svc:2379 \
   --keyspace=kubebrain-system \
   --task-name=kubebrain-system-native-pitr \
@@ -2133,12 +2134,12 @@ parameter broker、operation status、日志或 env。restore-side durable Opera
 把同一不可变版本身份及 key-file 显式传入；两个命令只在内存中解密元数据，收据摘要仍覆盖存储密文：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-full-snapshot-receipt \
+/usr/local/bin/kubebrain-native-pitr-full-snapshot-receipt \
   --task-create="$TASK_CREATE" --backupmeta="$BACKUPMETA" \
   --storage-prefix="$FULL_PREFIX" --crypter-method=aes256-ctr \
   --encryption-key-id="$ENCRYPTION_KEY_ID" --encryption-key-file="$ENCRYPTION_KEY_FILE"
 
-go run ./hack/backup/cmd/native-pitr-full-artifact-verify \
+/usr/local/bin/kubebrain-native-pitr-full-artifact-verify \
   --full-snapshot="$FULL_SNAPSHOT" --full-backup-attestation="$ATTESTATION" \
   --remote-inventory="$REMOTE_INVENTORY" --artifact-root="$ARTIFACT_ROOT" \
   --encryption-key-id="$ENCRYPTION_KEY_ID" --encryption-key-file="$ENCRYPTION_KEY_FILE"
@@ -2264,7 +2265,7 @@ PD 地址会校验、排序并摘要；S3 URL 禁止 userinfo/query/fragment，T
 full snapshot receipt：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-full-snapshot-receipt \
+/usr/local/bin/kubebrain-native-pitr-full-snapshot-receipt \
   --task-create=/evidence/native-pitr-task-create.json \
   --backupmeta=/evidence/backupmeta \
   --storage-prefix=s3://immutable-bucket/instance/run-id/full
@@ -2308,7 +2309,7 @@ storage/BackupTS 串联，避免要求 executor 再次下载远端对象。失�
 `/evidence/native-pitr-full-remote-inventory.json`。再按 receipt 的 exact key/version 下载完整镜像并运行：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-full-artifact-verify \
+/usr/local/bin/kubebrain-native-pitr-full-artifact-verify \
   --full-snapshot=/evidence/native-pitr-full-snapshot.json \
   --full-backup-attestation=/evidence/native-pitr-full-backup-attestation.json \
   --remote-inventory=/evidence/native-pitr-full-remote-inventory.json \
@@ -2352,7 +2353,7 @@ capture receipt 当前上限 64 MiB，超限会 fail closed，超大集群仍需
 按 receipt 中的 exact key/version 下载完整镜像后，再运行：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-log-artifact-verify \
+/usr/local/bin/kubebrain-native-pitr-log-artifact-verify \
   --task-create=/evidence/native-pitr-task-create.json \
   --task-ready=/evidence/native-pitr-task-ready.json \
   --remote-inventory=/evidence/native-pitr-log-remote-inventory.json \
@@ -2376,7 +2377,7 @@ v2 receipt 同时绑定 remote inventory 文件 SHA-256、object-store/bucket/pr
 plan 前还必须回到 source cluster，以 full backup 的精确历史 TSO 检查范围外可见事务键：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-source-exclusive \
+/usr/local/bin/kubebrain-native-pitr-source-exclusive \
   --full-snapshot=/evidence/native-pitr-full-snapshot.json \
   --pd-addrs="$SOURCE_PD_ADDRS" \
   --ca=/source-tls/ca.crt --cert=/source-tls/tls.crt --key=/source-tls/tls.key \
@@ -2395,7 +2396,7 @@ tombstone/MVCC history 物理不存在；这与
 在生成计划前，先对独立目标 PD/TiKV 做只读全事务键空间检查：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-target-empty \
+/usr/local/bin/kubebrain-native-pitr-target-empty \
   --pd-addrs="$TARGET_PD_ADDRS" \
   --ca=/target-tls/ca.crt --cert=/target-tls/tls.crt --key=/target-tls/tls.key \
   > /evidence/native-pitr-target-snapshot-empty.json
@@ -2417,7 +2418,7 @@ source-range-exclusive/target-snapshot-empty/source-capture receipt 与已冻结
 生成严格只读计划：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-restore-plan \
+/usr/local/bin/kubebrain-native-pitr-restore-plan \
   --task-create=/evidence/native-pitr-task-create.json \
   --full-snapshot=/evidence/native-pitr-full-snapshot.json \
   --full-artifacts=/evidence/native-pitr-full-artifacts.json \
@@ -2447,7 +2448,7 @@ SHA-256、operation ID、capture/fence TSO 和连续 source writer 排除结论�
 
 ```shell
 PLAN_SHA256="$(sha256sum /evidence/native-pitr-restore-plan.json | awk '{print $1}')"
-go run ./hack/backup/cmd/native-pitr-admission-fence \
+/usr/local/bin/kubebrain-native-pitr-admission-fence \
   --action=acquire \
   --plan=/evidence/native-pitr-restore-plan.json \
   --operation-id="$RESTORE_OPERATION_ID" \
@@ -2459,7 +2460,7 @@ go run ./hack/backup/cmd/native-pitr-admission-fence \
 随后显式批准并执行 full import；full-only 与带日志计划使用同一条 base restore 路径：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-full-restore \
+/usr/local/bin/kubebrain-native-pitr-full-restore \
   --plan=/evidence/native-pitr-restore-plan.json \
   --full-snapshot=/evidence/native-pitr-full-snapshot.json \
   --full-artifacts=/evidence/native-pitr-full-artifacts.json \
@@ -2521,7 +2522,7 @@ admission/full/fence 三份 exact receipt。命令在开放 PD gate 前验证两
 TiKV fence key，成功才签发连续排写交接收据：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-restoration-fence \
+/usr/local/bin/kubebrain-native-pitr-restoration-fence \
   --action=acquire \
   --plan=/evidence/native-pitr-restore-plan.json \
   --operation-id="$RESTORE_OPERATION_ID" \
@@ -2529,7 +2530,7 @@ go run ./hack/backup/cmd/native-pitr-restoration-fence \
   --approve-plan-sha256="$PLAN_SHA256" \
   > /evidence/native-pitr-restoration-fence.json
 
-go run ./hack/backup/cmd/native-pitr-admission-fence \
+/usr/local/bin/kubebrain-native-pitr-admission-fence \
   --action=release \
   --plan=/evidence/native-pitr-restore-plan.json \
   --admission-receipt=/evidence/native-pitr-restore-admission.json \
@@ -2543,7 +2544,7 @@ go run ./hack/backup/cmd/native-pitr-admission-fence \
 当 plan 的 `restore_ts > full_snapshot.backup_ts` 时，随后在 TiKV fence 持有期间运行独立日志回放：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-log-replay \
+/usr/local/bin/kubebrain-native-pitr-log-replay \
   --plan=/evidence/native-pitr-restore-plan.json \
   --full-restore=/evidence/native-pitr-full-restore.json \
   --log-artifacts=/evidence/native-pitr-log-artifacts.json \
@@ -2574,7 +2575,7 @@ stream 制品完成双集群演练。
 日志回放成功后不得直接手工删除 fence key。必须用 exact replay receipt 驱动原子交接：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-restoration-fence \
+/usr/local/bin/kubebrain-native-pitr-restoration-fence \
   --action=release \
   --plan=/evidence/native-pitr-restore-plan.json \
   --fence-receipt=/evidence/native-pitr-restoration-fence.json \
@@ -2622,7 +2623,7 @@ ENDPOINT=https://restored-kubebrain.example:2379 \
 ETCD_CACERT=/target-tls/ca.crt \
 ETCD_CERT=/target-tls/tls.crt \
 ETCD_KEY=/target-tls/tls.key \
-go run ./hack/backup/cmd/native-pitr-semantic-verify \
+/usr/local/bin/kubebrain-native-pitr-semantic-verify \
   --plan=/evidence/native-pitr-restore-plan.json \
   --full-snapshot=/evidence/native-pitr-full-snapshot.json \
   --full-restore=/evidence/native-pitr-full-restore.json \
@@ -2981,7 +2982,7 @@ restoration fence 的 receipt 化交接，并由最终 semantic receipt 绑定�
 arbitrary-range task 的安全创建入口现为：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-task-create \
+/usr/local/bin/kubebrain-native-pitr-task-create \
   --preflight=/evidence/native-pitr-preflight.json \
   --s3-endpoint=https://s3.example.invalid \
   --s3-region=region-a \
@@ -3030,7 +3031,7 @@ advancer owner、global checkpoint 和 coordinator safepoint持续健康，否�
 operation 自己的 bootstrap safepoint）：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-task-ready \
+/usr/local/bin/kubebrain-native-pitr-task-ready \
   --task-create=/evidence/native-pitr-task-create.json \
   --pd=kb-pd-0.storage.svc:2379,kb-pd-1.storage.svc:2379 \
   --ca=/tls/ca.crt --cert=/tls/tls.crt --key=/tls/tls.key
@@ -3047,7 +3048,7 @@ safepoint 与 checkpoint 前进，ready receipt 不是长期健康证明。
 停止 task 时禁止直接调用官方无条件删除入口。必须同时提供 create/ready 两份 receipt：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-task-delete \
+/usr/local/bin/kubebrain-native-pitr-task-delete \
   --task-create=/evidence/native-pitr-task-create.json \
   --task-ready=/evidence/native-pitr-task-ready.json \
   --pd=kb-pd-0.storage.svc:2379,kb-pd-1.storage.svc:2379 \

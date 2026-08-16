@@ -77,13 +77,27 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-logical-etcd-snapshot ./hack/backup/cmd/logical-etcd-snapshot \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-full-backup ./hack/backup/cmd/native-pitr-full-backup \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-full-restore ./hack/backup/cmd/native-pitr-full-restore \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-admission-fence ./hack/backup/cmd/native-pitr-admission-fence \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-full-artifact-verify ./hack/backup/cmd/native-pitr-full-artifact-verify \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-full-restore-receipt-verify ./hack/backup/cmd/native-pitr-full-restore-receipt-verify \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-full-snapshot-receipt ./hack/backup/cmd/native-pitr-full-snapshot-receipt \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-log-artifact-verify ./hack/backup/cmd/native-pitr-log-artifact-verify \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-log-replay ./hack/backup/cmd/native-pitr-log-replay \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-preflight ./hack/backup/cmd/native-pitr-preflight \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-restoration-fence ./hack/backup/cmd/native-pitr-restoration-fence \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-restore-plan ./hack/backup/cmd/native-pitr-restore-plan \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-semantic-verify ./hack/backup/cmd/native-pitr-semantic-verify \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-source-capture ./hack/backup/cmd/native-pitr-source-capture \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-source-exclusive ./hack/backup/cmd/native-pitr-source-exclusive \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-target-replacement-handoff ./hack/backup/cmd/native-pitr-target-replacement-handoff \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-target-provisioning-receipt ./hack/backup/cmd/native-pitr-target-provisioning-receipt \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-target-retirement-receipt ./hack/backup/cmd/native-pitr-target-retirement-receipt \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-target-retirement-authorize ./hack/backup/cmd/native-pitr-target-retirement-authorize \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-target-provision-control ./hack/backup/cmd/native-pitr-target-provision-control \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-target-empty ./hack/backup/cmd/native-pitr-target-empty \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-task-create ./hack/backup/cmd/native-pitr-task-create \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-task-delete ./hack/backup/cmd/native-pitr-task-delete \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-task-ready ./hack/backup/cmd/native-pitr-task-ready \
     && go build -trimpath -o /src/bin/kubebrain-etcd-audit-probe ./hack/production/cmd/etcd-audit-probe \
     && go build -trimpath -o /src/bin/kubebrain-uid-delete ./hack/production/cmd/uid-delete \
     && cd /src/hack/backup/objectstore \
@@ -185,12 +199,26 @@ COPY --from=build /src/bin/kubebrain-logical-status /usr/local/bin/kubebrain-log
 COPY --from=build /src/bin/kubebrain-cold-snapshot-receipt /usr/local/bin/kubebrain-cold-snapshot-receipt
 COPY --from=build /src/bin/kubebrain-cold-restore-render /usr/local/bin/kubebrain-cold-restore-render
 COPY --from=build /src/bin/kubebrain-legacy-snapshot-remediation /usr/local/bin/kubebrain-legacy-snapshot-remediation
+COPY --from=build /src/bin/kubebrain-native-pitr-admission-fence /usr/local/bin/kubebrain-native-pitr-admission-fence
+COPY --from=build /src/bin/kubebrain-native-pitr-full-artifact-verify /usr/local/bin/kubebrain-native-pitr-full-artifact-verify
+COPY --from=build /src/bin/kubebrain-native-pitr-full-snapshot-receipt /usr/local/bin/kubebrain-native-pitr-full-snapshot-receipt
+COPY --from=build /src/bin/kubebrain-native-pitr-log-artifact-verify /usr/local/bin/kubebrain-native-pitr-log-artifact-verify
+COPY --from=build /src/bin/kubebrain-native-pitr-log-replay /usr/local/bin/kubebrain-native-pitr-log-replay
+COPY --from=build /src/bin/kubebrain-native-pitr-preflight /usr/local/bin/kubebrain-native-pitr-preflight
+COPY --from=build /src/bin/kubebrain-native-pitr-restoration-fence /usr/local/bin/kubebrain-native-pitr-restoration-fence
+COPY --from=build /src/bin/kubebrain-native-pitr-restore-plan /usr/local/bin/kubebrain-native-pitr-restore-plan
+COPY --from=build /src/bin/kubebrain-native-pitr-semantic-verify /usr/local/bin/kubebrain-native-pitr-semantic-verify
+COPY --from=build /src/bin/kubebrain-native-pitr-source-capture /usr/local/bin/kubebrain-native-pitr-source-capture
+COPY --from=build /src/bin/kubebrain-native-pitr-source-exclusive /usr/local/bin/kubebrain-native-pitr-source-exclusive
 COPY --from=build /src/bin/kubebrain-native-pitr-target-replacement-handoff /usr/local/bin/kubebrain-native-pitr-target-replacement-handoff
 COPY --from=build /src/bin/kubebrain-native-pitr-target-provisioning-receipt /usr/local/bin/kubebrain-native-pitr-target-provisioning-receipt
 COPY --from=build /src/bin/kubebrain-native-pitr-target-retirement-receipt /usr/local/bin/kubebrain-native-pitr-target-retirement-receipt
 COPY --from=build /src/bin/kubebrain-native-pitr-target-retirement-authorize /usr/local/bin/kubebrain-native-pitr-target-retirement-authorize
 COPY --from=build /src/bin/kubebrain-native-pitr-target-provision-control /usr/local/bin/kubebrain-native-pitr-target-provision-control
 COPY --from=build /src/bin/kubebrain-native-pitr-target-empty /usr/local/bin/kubebrain-native-pitr-target-empty
+COPY --from=build /src/bin/kubebrain-native-pitr-task-create /usr/local/bin/kubebrain-native-pitr-task-create
+COPY --from=build /src/bin/kubebrain-native-pitr-task-delete /usr/local/bin/kubebrain-native-pitr-task-delete
+COPY --from=build /src/bin/kubebrain-native-pitr-task-ready /usr/local/bin/kubebrain-native-pitr-task-ready
 COPY --from=build /src/bin/kubebrain-storage-capacity-verify /usr/local/bin/kubebrain-storage-capacity-verify
 COPY --from=build /src/bin/kubebrain-logical-verify /usr/local/bin/kubebrain-logical-verify
 COPY --from=build /src/bin/kubebrain-logical-etcd-snapshot /usr/local/bin/kubebrain-logical-etcd-snapshot
