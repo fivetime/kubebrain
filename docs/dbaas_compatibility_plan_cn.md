@@ -53849,6 +53849,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   identity、路由目录、原 checkpoint TSO/绝对期限和可续用的 safepoint ownership 原子持久化，并提供 Pod
   replacement 可恢复卷；在此协议完成前，cache 丢失继续 fail closed。
 
+- A4787 补齐 A4786 对 follower 非正 revision HashKV 的不完整 fence。完整官方 differential 自然跑完后，
+  `TestHashKVDifferentialAgainstReferenceEtcd` 暴露第二个真实 RED：`HashKV(-1)` 的 CRC 与
+  `HashRevision=-1` 已和固定 upstream 一致，但 KubeBrain response header 比刚确认的 Put revision 少 1，
+  upstream delta 为 0。对照 `/root/etcd/server/storage/mvcc/kvstore.go:hashByRev`，负 revision 不会改写为
+  current，因此仍保留空历史 hash；但 Maintenance header 独立返回 serving member 的 `currentRev`。生产提交
+  `555afea8` 因而把 follower 本地候选的 barrier 从 `revision == 0` 扩为 `revision <= 0`：零 revision 继续
+  hash latest，负 revision 继续保持 upstream hash 语义，只阻止陈旧 current header 抢赢 leader 候选；显式
+  正历史 revision 不增加 barrier。既有 hedge 回归只增加一个负 revision 调用，聚焦 20 轮和单轮均通过，
+  完整 `pkg/server/etcd` 202.292 秒通过。
+
+- A4788 修复完整 differential 高负载下 PD leader handoff 被一次性 TSO 调用放大的生产可用性缺口。同轮
+  `TestRangeOptionMatrixDifferentialAgainstReferenceEtcd` 与随后一个 Range option 场景曾返回
+  `Unavailable: [PD:tso:ErrGenerateTimestamp] ... requested pd is not leader of cluster`；其前后 Range、Txn、
+  Watch 均继续通过，证明不是排序/历史读取语义差异。审计发现 `pkg/storage/tikv.GetTimestampOracle` 绕过
+  `txnkv.Client.GetTimestamp`，直接调用底层 oracle 一次，而本仓库维护的 client-go 已在
+  `KVStore.getTimestampWithRetry` 实现 context-bound `BoPDRPC` backoff 和 PD leader rediscovery。生产提交
+  `82e74c6e` 改走该正式重试入口，仍在调用方 deadline 内失败并保持 `storage.ErrUnavailable` 映射，不增加
+  KubeBrain 自定义重试层。`pkg/storage/tikv` race、storage/server 两包 vet 与上述完整 server 回归通过。
+  在线三副本仍运行 A4776 旧镜像，本轮没有绕过 release gate 滚动新二进制，因此两项现场 GREEN 均留待
+  下一次受控发布；官方 reference、临时目录、测试 lease 与 auth/alarm 状态已由 runner cleanup 恢复。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
