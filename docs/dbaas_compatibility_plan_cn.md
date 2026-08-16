@@ -54072,6 +54072,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A4776 未滚动，真实目录权限/文件系统故障下 unlink failure 和 fd close failure 的 RPC 非正常终态仍留待正式
   新镜像故障门禁。
 
+- A4805 修复 native PITR full-backup attestation 发布缺少父目录 fsync 的 durable receipt 缺口。BR transaction
+  backup 成功后，旧 writer 已 fsync/close 临时文件并以 hard-link 原子创建最终名，却立即返回成功；节点掉电时
+  目录项仍可能丢失，而且 deferred 临时名删除发生在未同步目录修改之后。生产顺序现在固定为临时文件
+  Sync/Close → Link 最终名 → Remove 临时名 → Sync/Close 父目录，最终名发布与临时名清理由同一次目录 fsync
+  持久化。所有 remove/sync/close 错误通过 named return 与主错误 Join；output 已出现的不可变拒绝合同保持不变，
+  不会在不确定发布后覆盖或静默重跑 BR。
+
+  native full-backup race（1.456 秒）、nativepitr/restorereceipt 回归及相关 vet 通过；本轮没有修改测试文件。
+  在线 A4776 未滚动，真实掉电/writeback fault 下 receipt 目录项持久性仍留待正式 executor 镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
