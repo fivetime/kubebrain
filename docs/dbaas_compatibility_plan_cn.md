@@ -54545,6 +54545,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 unknown action、grant-before-validation 和 empty-prefix destructive action 回归；prefix-tool race（1.060 秒）、vet
   与 diff check 通过。真实 uncertain Txn+Revoke 双故障仍留待独立 TiKV/PD 运维 smoke。
 
+- A4859 补齐 native PITR backup-stream task create/ready/delete 的 PD metadata client 收尾错误。三个 executor 都已把业务
+  helper 封装为返回 error，但仍以 defer 丢弃 etcd client Close；task 安装、bootstrap safepoint release 或 task delete 已
+  durable 后，transport/session cleanup failure 因此会被 Job 错报为成功。三个 execute 现使用命名错误 Join Close，PD
+  client 的 void Close 仍按上游 API 执行。考虑状态变更不可盲目重放，canonical receipt 仍先写 stdout；若随后 Close
+  失败则 Job 非零但保留 receipt，控制面可据 task identity/checkpoint 精确对账，而不是生成新 operation ID 重做。
+
+  三个命令新增 pre-connect option validation 回归；create/ready/delete race（1.295/1.275/1.325 秒）、vet 与 diff check
+  通过。真实 PD metadata close fault 后的 receipt 收集/对账仍留待正式 executor Job 门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

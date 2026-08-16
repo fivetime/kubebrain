@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -47,7 +48,7 @@ func main() {
 	}
 }
 
-func execute(parent context.Context, o options, out interface{ Write([]byte) (int, error) }) error {
+func execute(parent context.Context, o options, out interface{ Write([]byte) (int, error) }) (retErr error) {
 	if o.taskCreate == "" || o.taskReady == "" || o.pd == "" {
 		return fmt.Errorf("task-create, task-ready, and pd are required")
 	}
@@ -95,7 +96,7 @@ func execute(parent context.Context, o options, out interface{ Write([]byte) (in
 	if err != nil {
 		return fmt.Errorf("connect PD metadata: %w", err)
 	}
-	defer etcd.Close()
+	defer func() { retErr = errors.Join(retErr, etcd.Close()) }()
 	pdc, err := pd.NewClientWithContext(ctx, endpoints, pd.SecurityOption{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
 	if err != nil {
 		return fmt.Errorf("connect PD: %w", err)

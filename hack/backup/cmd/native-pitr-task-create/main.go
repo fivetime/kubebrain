@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -60,7 +61,7 @@ func main() {
 	}
 }
 
-func execute(parent context.Context, o options, out interface{ Write([]byte) (int, error) }) error {
+func execute(parent context.Context, o options, out interface{ Write([]byte) (int, error) }) (retErr error) {
 	if o.preflight == "" {
 		return fmt.Errorf("preflight is required")
 	}
@@ -96,7 +97,7 @@ func execute(parent context.Context, o options, out interface{ Write([]byte) (in
 	if err != nil {
 		return fmt.Errorf("connect PD metadata: %w", err)
 	}
-	defer etcd.Close()
+	defer func() { retErr = errors.Join(retErr, etcd.Close()) }()
 	pdc, err := pd.NewClientWithContext(ctx, p.PDAddrs, pd.SecurityOption{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
 	if err != nil {
 		return fmt.Errorf("connect PD: %w", err)
