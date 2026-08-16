@@ -52944,6 +52944,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分别为 5.468ms、19.384ms，两端 AlarmList/LeaseList 为空；主与 JWT 六个 Pod 保持 A4738 镜像且 Ready/零重启，
   reference 进程/data-dir、端口转发与盘点临时文件在记录后清除。
 
+- A4742 关闭 A4739 保留的 follower `RangeStream` 在真实服务端背压后切主时泄漏伪
+  `Canceled` 的生产差距。真实 TiKV 中写入 8,192 个 4 KiB value（约 32 MiB），从明确的
+  follower 直连发起每 chunk 暂停 10 秒的官方 client/v3 `GetStream`；删除当时 leader 后，
+  A4738 镜像在已经交付 7 个 chunk 时返回
+  `Canceled: grpc: the client connection is closing`。调用方 context 未取消，且部分响应不能与
+  successor 的新 snapshot 拼接，因此客户端必须丢弃整条流并以可重试的 leader-change 错误重新
+  LIST。
+
+  生产提交 `f849fc56` 在 follower proxy 的同步建流和异步结果两条错误出口统一检查 downstream
+  context：只有调用方仍存活时，peer transport 的 context/gRPC `Canceled` 才映射为 upstream
+  `ErrGRPCLeaderChanged`（`Unavailable`）；真实 caller cancellation、其他错误、已有 chunk 与
+  revision/header 契约均保持不变。修改一个生产文件，并新增两条直接覆盖内部 transport 取消与
+  caller 取消边界的最小回归；聚焦测试 0.091 秒、`go vet ./pkg/server/etcd` 和完整包回归
+  199.522 秒通过。
+
+  最终镜像 `kubebrain:a4742-f849fc56` 内嵌完整 SHA
+  `f849fc56fcc7457d6074e902a553ad7d77bafe35`、build time `2026-08-15T23:59:00Z`，本地 OCI
+  index 为 `sha256:5b30b5e3d3dafa25cab6925125b7722575172fe4f2843aff15cec718a203df40`，Kind runtime
+  imageID 为 `sha256:afeedcfbddf458bd8a6879e290b66fb9b0e6bdbeec1d23523704aeadb59f9e84`。同一
+  32 MiB/10 秒背压场景在最终生产代码上仍于 7 个 chunk 后终止，但客户端收到
+  `etcdserver: leader changed`；follower 指标精确记录 `RangeStream/Unavailable=1`、
+  `Canceled=0`、sent messages=7，证明残缺流没有被误报为成功。第一次制品构建虽源码相同，但
+  内嵌完整 SHA 后缀错误，终态门禁发现后作废并重新构建、加载和滚动，没有将其作为最终 provenance。
+
+  清理首次 64 路逐键删除在切主后的 PD/Region cache 恢复窗口造成瞬时 timeout，停止后精确盘点剩余
+  4,560 键，再以 4 路幂等删除全部成功；最终前缀 Count=0、LeaseList/AlarmList 为空、proposal
+  health 14.461ms。主与 JWT 六个 KubeBrain Pod 使用最终 runtime imageID 且 Ready/零重启，三个 PD
+  与三个 TiKV Ready/零重启；六个端口转发和临时压测二进制均已清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
