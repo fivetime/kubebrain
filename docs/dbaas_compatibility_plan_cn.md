@@ -54757,6 +54757,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 Abort 后无临时文件残留断言，并复用 Commit 冲突无残留套件；backupfile/logical-export/status/cold-verifier race
   （1.098/1.058/1.077/1.336 秒）、vet 与 diff check 通过。真实 export read failure 叠加 unlink fault 仍留待 Job 文件系统门禁。
 
+- A4883 补齐 logical→official etcd snapshot 转换器的私有临时 inode 终态。转换器已用 hard-link 独占发布并对生成文件执行
+  hash append、file Sync 与父目录 Sync，且持续用 upstream `etcdutl` Status/Restore 验证 hash-protected bbolt 互操作；但
+  CreateTemp 后的 deferred Remove 被静默丢弃，转换失败或两个并发发布者碰撞时，unlink failure 仍可能留下含完整 keyspace
+  与 lease 的 `.kubebrain-etcd-snapshot-*` 文件。Convert 现以命名返回错误 Join 所有出口的 Remove，并忽略成功显式删除后的
+  ENOENT；Close、转换或发布主错误与 cleanup sibling 均不会被遮蔽，no-overwrite 与已发布 snapshot 格式不变。
+
+  并发发布回归现在同时断言恰一成功、恰一返回 `os.ErrExist` 且目录无 converter 临时文件；etcdsnapshot/CLI race、vet 与
+  diff check 通过。真实 bbolt/hash failure 叠加 unlink fault 仍留待转换 Job 文件系统故障注入门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -113,7 +113,8 @@ func TestConvertPublishesWithoutOverwrite(t *testing.T) {
 	_, err = writer.Commit()
 	require.NoError(t, err)
 
-	output := filepath.Join(t.TempDir(), "snapshot.db")
+	outputDir := t.TempDir()
+	output := filepath.Join(outputDir, "snapshot.db")
 	start := make(chan struct{})
 	errs := make(chan error, 2)
 	var workers sync.WaitGroup
@@ -140,6 +141,9 @@ func TestConvertPublishesWithoutOverwrite(t *testing.T) {
 	}
 	require.Equal(t, 1, succeeded)
 	require.Equal(t, 1, rejected)
+	temporaryFiles, err := filepath.Glob(filepath.Join(outputDir, ".kubebrain-etcd-snapshot-*"))
+	require.NoError(t, err)
+	require.Empty(t, temporaryFiles)
 }
 
 func TestConvertRejectsIncompleteOrImpossibleArtifacts(t *testing.T) {

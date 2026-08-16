@@ -75,11 +75,14 @@ func Convert(input, output string, options Options) (status backupfile.Status, r
 		return backupfile.Status{}, err
 	}
 	tmpPath := tmp.Name()
+	defer func() {
+		if err := os.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove snapshot temporary file: %w", err))
+		}
+	}()
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
 		return backupfile.Status{}, err
 	}
-	defer os.Remove(tmpPath)
 	if err := os.Chmod(tmpPath, 0o600); err != nil {
 		return backupfile.Status{}, err
 	}
