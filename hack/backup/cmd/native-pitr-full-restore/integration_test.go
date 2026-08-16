@@ -1219,6 +1219,21 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 		followerClientPort, followerPeerPort, freeTCPPort(t), initialCluster, authArg,
 	)
 	defer followerServer.stop(t)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		contents, readErr := os.ReadFile(followerServer.logPath)
+		if readErr != nil {
+			t.Logf("read isolated follower log: %v", readErr)
+			return
+		}
+		lines := bytes.Split(contents, []byte{'\n'})
+		if len(lines) > 200 {
+			lines = lines[len(lines)-200:]
+		}
+		t.Logf("isolated follower log tail:\n%s", bytes.Join(lines, []byte{'\n'}))
+	})
 	followerEndpoint := fmt.Sprintf("127.0.0.1:%d", followerClientPort)
 	followerBootstrap := waitForEndpoint(t, ctx, followerEndpoint, followerServer)
 	defer followerBootstrap.Close()
@@ -1446,6 +1461,46 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.Len(t, quorumRecovery.Kvs, 1)
 	require.Equal(t, []byte("before-split-z"), quorumRecovery.Kvs[0].Value)
 	require.Equal(t, topology.Header.Revision, quorumRecovery.Header.Revision)
+	encodedTopologyA := tikvcodec.EncodeBytes(nil, physicalKeyspace.NewCoder().EncodeRevisionKey([]byte("topology/a")))
+	leftRegion, err := pdc.GetRegion(ctx, encodedTopologyA)
+	require.NoError(t, err)
+	require.NotNil(t, leftRegion)
+	require.NotNil(t, leftRegion.Meta)
+	rightRegion, err := pdc.GetRegion(ctx, encodedTopologyZ)
+	require.NoError(t, err)
+	require.NotNil(t, rightRegion)
+	require.NotNil(t, rightRegion.Meta)
+	require.NotEqual(t, leftRegion.Meta.Id, rightRegion.Meta.Id, "the split boundary must still separate topology/a and topology/z")
+	mergeOutput, err := exec.CommandContext(
+		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
+		"operator", "add", "merge-region", strconv.FormatUint(rightRegion.Meta.Id, 10), strconv.FormatUint(leftRegion.Meta.Id, 10),
+	).CombinedOutput()
+	require.NoError(t, err, "merge split Regions: %s", mergeOutput)
+	require.Contains(t, string(mergeOutput), "Success")
+	require.Eventually(t, func() bool {
+		left, leftErr := pdc.GetRegion(ctx, encodedTopologyA)
+		right, rightErr := pdc.GetRegion(ctx, encodedTopologyZ)
+		return leftErr == nil && rightErr == nil && left != nil && right != nil && left.Meta != nil && right.Meta != nil &&
+			left.Meta.Id == right.Meta.Id
+	}, 30*time.Second, 250*time.Millisecond, "PD must observe both keys in the merged Region")
+	mergedCtx, mergedCancel := context.WithTimeout(ctx, 5*time.Second)
+	mergedCtx = metadata.NewOutgoingContext(
+		mergedCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+	)
+	merged, err := followerRawKV.Range(mergedCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("topology/"), RangeEnd: []byte(clientv3.GetPrefixRangeEnd("topology/")), Serializable: true,
+	})
+	mergedCancel()
+	require.NoError(t, err, "authoritative TiKV EpochNotMatch metadata must repair an isolated merged Region")
+	require.Equal(t, map[string]string{
+		"topology/a": "before-split-a",
+		"topology/z": "before-split-z",
+	}, mapFromRange(merged))
+	require.Equal(t, serializable.Header.Revision, merged.Header.Revision)
+	region, err = pdc.GetRegion(ctx, encodedTopologyZ)
+	require.NoError(t, err)
+	require.NotNil(t, region)
+	require.NotNil(t, region.Meta)
 	spareOutput, err := exec.CommandContext(
 		ctx, "docker", "run", "-d", "--name", spareTiKVContainer, "--network", "host",
 		"--tmpfs", "/data:rw,size=64g,mode=1777", "-v", tikvConfig+":/native-pitr-integration.toml:ro",
@@ -1514,41 +1569,6 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.Nil(t, replacement)
 	require.True(t, errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded,
 		"replacement address discovery must time out rather than return stale data: %v", err)
-	encodedTopologyA := tikvcodec.EncodeBytes(nil, physicalKeyspace.NewCoder().EncodeRevisionKey([]byte("topology/a")))
-	leftRegion, err := pdc.GetRegion(ctx, encodedTopologyA)
-	require.NoError(t, err)
-	require.NotNil(t, leftRegion)
-	require.NotNil(t, leftRegion.Meta)
-	rightRegion, err := pdc.GetRegion(ctx, encodedTopologyZ)
-	require.NoError(t, err)
-	require.NotNil(t, rightRegion)
-	require.NotNil(t, rightRegion.Meta)
-	require.NotEqual(t, leftRegion.Meta.Id, rightRegion.Meta.Id, "the split boundary must still separate topology/a and topology/z")
-	mergeOutput, err := exec.CommandContext(
-		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
-		"operator", "add", "merge-region", strconv.FormatUint(rightRegion.Meta.Id, 10), strconv.FormatUint(leftRegion.Meta.Id, 10),
-	).CombinedOutput()
-	require.NoError(t, err, "merge split Regions: %s", mergeOutput)
-	require.Contains(t, string(mergeOutput), "Success")
-	require.Eventually(t, func() bool {
-		left, leftErr := pdc.GetRegion(ctx, encodedTopologyA)
-		right, rightErr := pdc.GetRegion(ctx, encodedTopologyZ)
-		return leftErr == nil && rightErr == nil && left != nil && right != nil && left.Meta != nil && right.Meta != nil &&
-			left.Meta.Id == right.Meta.Id
-	}, 30*time.Second, 250*time.Millisecond, "PD must observe both keys in the merged Region")
-	mergedCtx, mergedCancel := context.WithTimeout(ctx, 5*time.Second)
-	mergedCtx = metadata.NewOutgoingContext(
-		mergedCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
-	)
-	merged, err := followerRawKV.Range(mergedCtx, &etcdserverpb.RangeRequest{
-		Key: []byte("topology/"), RangeEnd: []byte(clientv3.GetPrefixRangeEnd("topology/")), Serializable: true,
-	})
-	mergedCancel()
-	require.Error(t, err, "a merge cannot currently be repaired without PD and must fail closed")
-	require.Nil(t, merged)
-	require.True(t, errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded,
-		"an isolated merge must time out rather than return stale or partial data: %v", err)
-
 	restoreNetwork()
 	require.Eventually(t, func() bool {
 		mergedRecoveryCtx, mergedRecoveryCancel := context.WithTimeout(ctx, 3*time.Second)

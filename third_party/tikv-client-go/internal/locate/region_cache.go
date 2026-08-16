@@ -975,6 +975,22 @@ func (c *RegionCache) TryLocateKey(key []byte) *KeyLocation {
 	}
 }
 
+// TryLocateEndKey searches only the region cache using end-key semantics. The
+// start key of a region is exclusive, so an exact boundary resolves to the
+// preceding region. It never falls back to PD.
+func (c *RegionCache) TryLocateEndKey(key []byte) *KeyLocation {
+	r := c.tryFindRegionByKey(key, true)
+	if r == nil {
+		return nil
+	}
+	return &KeyLocation{
+		Region:   r.VerID(),
+		StartKey: r.StartKey(),
+		EndKey:   r.EndKey(),
+		Buckets:  r.getStore().buckets,
+	}
+}
+
 // LocateEndKey searches for the region and range that the key is located.
 // Unlike LocateKey, start key of a region is exclusive and end key is inclusive.
 func (c *RegionCache) LocateEndKey(bo *retry.Backoffer, key []byte) (*KeyLocation, error) {

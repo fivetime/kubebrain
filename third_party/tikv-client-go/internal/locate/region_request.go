@@ -108,6 +108,9 @@ type RegionRequestSender struct {
 	replicaSelector   *replicaSelector
 	failStoreIDs      map[uint64]struct{}
 	failProxyStoreIDs map[uint64]struct{}
+	// disableMergeRecovery prevents a metadata probe from recursively issuing
+	// another probe when its candidate Region is stale too.
+	disableMergeRecovery bool
 	RegionRequestRuntimeStats
 }
 
@@ -1221,6 +1224,10 @@ func (s *RegionRequestSender) SendReqCtx(
 			return nil, nil, retryTimes, err
 		}
 		if regionErr != nil {
+			if epochNotMatch := regionErr.GetEpochNotMatch(); epochNotMatch != nil &&
+				len(epochNotMatch.CurrentRegions) == 0 {
+				s.tryRecoverMergedRegion(bo, rpcCtx, req, timeout, et, opts...)
+			}
 			retry, err = s.onRegionError(bo, rpcCtx, req, regionErr)
 			if err != nil {
 				return nil, nil, retryTimes, err
@@ -1235,6 +1242,104 @@ func (s *RegionRequestSender) SendReqCtx(
 			}
 		}
 		return resp, rpcCtx, retryTimes, nil
+	}
+}
+
+// tryRecoverMergedRegion asks an adjacent cached Region to refresh itself when
+// TiKV reports an empty EpochNotMatch for a disappeared merge source. The
+// probe reads the candidate's own start key, and its data response is always
+// discarded. Recovery therefore succeeds only when TiKV returns authoritative
+// non-empty CurrentRegions metadata and the nested sender installs it in the
+// cache. No Region boundary is inferred or synthesized here.
+func (s *RegionRequestSender) tryRecoverMergedRegion(
+	bo *retry.Backoffer,
+	ctx *RPCContext,
+	req *tikvrpc.Request,
+	timeout time.Duration,
+	et tikvrpc.EndpointType,
+	opts ...StoreSelectorOption,
+) {
+	if s.disableMergeRecovery || ctx == nil || ctx.Meta == nil || req == nil || et != tikvrpc.TiKV {
+		return
+	}
+	key, version, ok := mergeRecoveryRead(req)
+	if !ok {
+		return
+	}
+
+	candidates := make([]*KeyLocation, 0, 2)
+	if len(ctx.Meta.StartKey) > 0 {
+		candidates = append(candidates, s.regionCache.TryLocateEndKey(ctx.Meta.StartKey))
+	}
+	if len(ctx.Meta.EndKey) > 0 {
+		candidates = append(candidates, s.regionCache.TryLocateKey(ctx.Meta.EndKey))
+	}
+
+	for _, candidate := range candidates {
+		if candidate == nil || candidate.Region.GetID() == ctx.Region.GetID() {
+			continue
+		}
+		probe := *req
+		probe.Type = tikvrpc.CmdGet
+		probe.Req = &kvrpcpb.GetRequest{
+			Key:     append([]byte(nil), candidate.StartKey...),
+			Version: version,
+		}
+		probe.ForwardedHost = ""
+		probeSender := NewRegionRequestSender(s.regionCache, s.client)
+		probeSender.disableMergeRecovery = true
+		probeResp, _, _, probeErr := probeSender.SendReqCtx(bo, &probe, candidate.Region, timeout, et, opts...)
+
+		location := s.regionCache.TryLocateKey(key)
+		if location != nil && location.Region != ctx.Region {
+			logutil.Logger(bo.GetCtx()).Info(
+				"recovered merged region from authoritative TiKV metadata",
+				zap.Uint64("sourceRegion", ctx.Region.GetID()),
+				zap.Uint64("probeRegion", candidate.Region.GetID()),
+				zap.Uint64("currentRegion", location.Region.GetID()),
+			)
+			return
+		}
+		var probeRegionErr *errorpb.Error
+		if probeResp != nil {
+			probeRegionErr, _ = probeResp.GetRegionError()
+		}
+		logutil.Logger(bo.GetCtx()).Info(
+			"authoritative merged region metadata probe did not refresh source key",
+			zap.String("command", req.Type.String()),
+			zap.Uint64("sourceRegion", ctx.Region.GetID()),
+			zap.Uint64("probeRegion", candidate.Region.GetID()),
+			zap.Error(probeErr),
+			zap.String("probeRegionError", fmt.Sprint(probeRegionErr)),
+		)
+	}
+}
+
+// mergeRecoveryRead returns one key known to belong to the failed Region and
+// the immutable MVCC timestamp for the read-only transactional commands used
+// by snapshot-backed Range. Writes and reverse scans are deliberately excluded.
+func mergeRecoveryRead(req *tikvrpc.Request) ([]byte, uint64, bool) {
+	switch req.Type {
+	case tikvrpc.CmdGet:
+		get, ok := req.Req.(*kvrpcpb.GetRequest)
+		if !ok {
+			return nil, 0, false
+		}
+		return get.Key, get.Version, true
+	case tikvrpc.CmdBatchGet:
+		batch, ok := req.Req.(*kvrpcpb.BatchGetRequest)
+		if !ok || len(batch.Keys) == 0 {
+			return nil, 0, false
+		}
+		return batch.Keys[0], batch.Version, true
+	case tikvrpc.CmdScan:
+		scan, ok := req.Req.(*kvrpcpb.ScanRequest)
+		if !ok || scan.Reverse {
+			return nil, 0, false
+		}
+		return scan.StartKey, scan.Version, true
+	default:
+		return nil, 0, false
 	}
 }
 
