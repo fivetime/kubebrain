@@ -54414,6 +54414,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   backupfile/semanticverify/etcdsnapshot race（1.100/1.237/1.258 秒）及 vet、嵌套 objectstore race（3.110 秒）/vet 通过；
   本轮没有修改测试文件。在线 A4776 未滚动，logical artifact temp/source multi-fault 仍留待正式新镜像文件系统门禁。
 
+- A4844 将文件生命周期合同扩展到 native PITR full/log/replay artifact 的共享读取 helper。full backup object 与 bounded
+  metadata、remote inventory object、physical log data object、replay object/segment 旧实现均忽略 Close，因此 exact
+  mirror/digest verifier 可在介质收尾失败后返回成功；部分路径还用通用 size/SHA mismatch 遮蔽 Stat/Copy/ReadAll 实错。
+  生产 helper 现在以命名错误 Join Close，并先返回真实 I/O error，再把纯长度/摘要不符分类为内容 mismatch。
+
+  `hack/backup/internal/nativepitr` 全套 race（3.259 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776
+  未滚动，full/log/replay artifact close fault 下 verifier 非成功及错误分类仍留待正式新镜像文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
