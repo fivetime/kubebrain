@@ -53923,6 +53923,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项不改变 GC safepoint 值、发布顺序或错误可见性；在线 A4776 未滚动，真实 safepoint endpoint 黑洞下的
   多 client shutdown 时延仍由下一次正式镜像故障门禁验证。
 
+- A4793 修复大事务 primary-lock TTL manager 在事务结束后仍可能执行 detached TSO/heartbeat 的生命周期
+  缺口。常规 etcd 请求受约 1.5 MiB 上限约束，不会达到 client-go 默认 32 MiB keepalive 阈值；但同一 TiKV
+  adapter 也服务恢复、修复等内部批处理，且 threshold 属 client config，因此该路径仍是 DBaaS 生产可达面。
+  旧 `ttlManager.close/reset` 只关闭 channel；已经进入 ticker 分支的 keepalive 会用 20 秒 Background backoff
+  获取 TSO、定位 primary Region 并发送 heartbeat，commit/rollback 返回后仍可能继续续锁。生产提交
+  `8fa5ad91` 为每个 keepalive 建立由 close channel 驱动的 context，并把它传入 TSO、Region/backoff 与
+  heartbeat 完整调用链；正常失败/TTL 上限退出也会停止 watcher，不泄漏辅助 goroutine。
+
+  client-go transaction race、`tikv`/`txnkv` 全套与 vet、root TiKV storage race、backend 全树 78.817 秒、
+  相关 server Txn/Snapshot/Restore 41.097 秒及 storage/backend/server vet 均通过。在线仍是 A4776，真实大
+  transaction 与 PD/TiKV 黑洞重叠的 lock-release 时延留待正式新镜像门禁验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
