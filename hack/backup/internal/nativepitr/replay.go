@@ -507,10 +507,11 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 	return applyReplay(ctx, target, planSHA, manifest, mutations, false)
 }
 
-// ApplyReplayAndRelease is the production large-window variant. It clears the
-// caller's mutation entries only after their source transaction and checkpoint
-// commit successfully, allowing key/value backing storage to be reclaimed as
-// replay advances. The input must not be reused after this call.
+// ApplyReplayAndRelease is the destructive in-memory variant retained for API
+// compatibility and focused recovery tests. It clears entries only after their
+// source transaction and checkpoint commit successfully. Production uses
+// ApplyReplayDiskPlan so the full canonical output never resides in a slice.
+// The input must not be reused after this call.
 func ApplyReplayAndRelease(ctx context.Context, target storage.KvStorage, planSHA string, manifest ReplayManifest, mutations []ReplayMutation) (ReplayApplyResult, error) {
 	return applyReplay(ctx, target, planSHA, manifest, mutations, true)
 }

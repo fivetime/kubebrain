@@ -55126,6 +55126,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确上界；生产 Pod 还必须给 allocator、GC、scratch/BR 及其余进程状态留余量。materialization 仍为 O(all output)，真正的
   disk-backed canonical mutation plan/stream apply 缺口保持开放。
 
+- A4913 交付生产 disk-backed canonical mutation plan/stream apply。新 scratch 链用三个自动清理的 bbolt store 分别保存
+  default-CF join、物理 write candidate 和 resolved canonical mutation：candidate 按 `(commit_ts,key)` 去重并比较完整
+  start TS/kind/short-value identity，start-TS index 拒绝一个 source transaction 对应多个 commit TSO，最终 mutation 按
+  `(commit_ts,start_ts,key)` 确定排序。manifest 统计和 JSON SHA-256 从磁盘顺序流式生成；对照测试证明其 manifest、完整 mutation
+  序列和 digest 与原内存算法完全相同，nil/非 nil 空值及 default-CF 长值语义不变。生产 CLI 在连接 target 前完成全盘 digest、
+  tenant boundary、canonical order、统计和单事务预算复核，scratch 损坏或超限均在任何 target write 前失败。
+
+  apply 每次仅 materialize 一个 source transaction，并继续使用 v2 checkpoint 将 mutation 与进度原子提交；committed-uncertain
+  测试证明新调用从持久 checkpoint 跳过已提交事务，未重复写入。`--max-replay-memory-bytes` 因而从 A4912 的全窗口拒绝阈值转为
+  单个 source transaction 阈值，默认 512 MiB，Go-owned mutation payload 从 O(all output) 收敛为 O(largest source
+  transaction)。三个 scratch DB 使用 8MiB 写批次并在全部成功/失败路径删除；它们不是持久恢复证据，生产加密 PVC 必须容纳
+  default、candidate、canonical 数据及 bbolt overhead。bbolt mmap/page cache、单条 BR entry、allocator/GC 不受逻辑阈值精确
+  覆盖，因此 RSS/磁盘容量与 IOPS 仍需规模验证。
+
+  2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 与官方 BR
+  v7.5.1 上执行正式 `TestNativeLogReplayRealBR`：生产 disk-plan CLI 的 v6 receipt、v2 checkpoint、fence/handoff 与最终
+  revision/key/lease/watch 语义验收 40.96 秒通过，一次性容器已清理。生产规模 scratch sizing、长窗口 RSS/IOPS/latency soak、
+  磁盘空间耗尽/IO error 以及超大单事务矩阵仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -56,7 +56,7 @@ func main() {
 	flag.StringVar(&o.key, "target-key", "", "target PD client private key")
 	flag.StringVar(&o.approve, "approve-plan-sha256", "", "explicit approval equal to exact plan SHA-256")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "log replay deadline")
-	flag.Uint64Var(&o.maxReplayMemoryBytes, "max-replay-memory-bytes", defaultMaxReplayMemoryBytes, "maximum logical resident bytes for the canonical mutation plan")
+	flag.Uint64Var(&o.maxReplayMemoryBytes, "max-replay-memory-bytes", defaultMaxReplayMemoryBytes, "maximum logical resident bytes for one source transaction during disk-plan replay")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -159,12 +159,14 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
-	manifest, mutations, err := nativepitr.MaterializeReplayWithScratchDirAndMemoryLimit(
-		logs, logSHA, o.logRoot, replayScratchDir(o), plan.Full.BackupTS, plan.RestoreTS, o.maxReplayMemoryBytes,
+	replayPlan, err := nativepitr.MaterializeReplayDiskPlanWithScratchDir(
+		logs, logSHA, o.logRoot, replayScratchDir(o), plan.Full.BackupTS, plan.RestoreTS,
 	)
 	if err != nil {
 		return err
 	}
+	defer func() { retErr = errors.Join(retErr, replayPlan.Close()) }()
+	manifest := replayPlan.Manifest
 	pdc, err := pd.NewClientWithContext(ctx, addrs, pd.SecurityOption{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
 	if err != nil {
 		return err
@@ -183,7 +185,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 		return err
 	}
 	started := now().UTC().Unix()
-	result, err := nativepitr.ApplyReplayAndRelease(ctx, store, planSHA, manifest, mutations)
+	result, err := nativepitr.ApplyReplayDiskPlan(ctx, store, planSHA, replayPlan, o.maxReplayMemoryBytes)
 	if err != nil {
 		return err
 	}

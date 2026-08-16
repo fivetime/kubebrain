@@ -2617,10 +2617,11 @@ receipt 精确绑定到 v2 checkpoint 的最后 source transaction identity。
 若目标上存在旧 checkpoint，executor 必须 fail closed；不能删除 checkpoint 后在同一目标猜测重放。按 failed-target
 流程完成 `NativePITRTargetRetirement`，供应全新空白 replacement target，再从 exact full restore 重新执行 v6 链。
 
-`--scratch-dir` 保存可重建的临时 bbolt default-CF join index；应放在与 log mirror 同容量域的加密 PVC，容量至少覆盖
-回放窗口内 default-CF 长值及 bbolt page overhead，不要指向 executor 的 64Mi `emptyDir`。未显式设置时命令使用
-`--log-root` 的父目录。索引按 8MiB 批次提交、成功或失败后都删除，不是恢复证据；空间耗尽、写入、提交、关闭或删除失败
-均令 replay 失败，不能改用跳过长值的降级路径。
+`--scratch-dir` 保存可重建的临时 bbolt default-CF join index、物理 write candidate index 与 canonical mutation plan；应放在与
+log mirror 同容量域的加密 PVC，容量必须同时覆盖回放窗口内 default-CF 长值、write candidate、resolved canonical value 和
+bbolt page overhead，不要指向 executor 的 64Mi `emptyDir`。未显式设置时命令使用 `--log-root` 的父目录。三个 scratch store
+均按 8MiB 批次提交、成功或失败后删除，不是恢复证据；空间耗尽、写入、提交、关闭或删除失败均令 replay 失败，不能降级回
+全量内存或跳过长值。
 
 日志回放成功后不得直接手工删除 fence key。必须用 exact replay receipt 驱动原子交接：
 
@@ -3091,6 +3092,20 @@ short value 与 key 使用独立 owned copy，既避免保留更大的 segment �
 该数值是保守的逻辑 payload 门禁，不是 Go heap/RSS 的精确上界，也不能直接等同 Pod memory limit；allocator、GC、scratch index、
 BR 元数据及进程其余部分仍需预留余量。当前 materialization 依旧为 O(all output)，disk-backed canonical mutation plan/stream apply
 仍是解除大窗口规模限制的开放项。
+
+A4913 已把生产 log-replay CLI 切换到 disk-backed canonical plan。物理 write-CF candidate 以 `(commit_ts,key)` bbolt key 去重并
+比较完整 start TS/kind/short-value identity，独立 start-TS index 拒绝同一 source transaction 多个 commit TSO；resolved mutation
+再以 `(commit_ts,start_ts,key)` 排序写入最终 plan。manifest 统计及 JSON mutation SHA-256 均从 plan 顺序流式生成，并与旧内存
+canonicalization 的 manifest、mutation 序列和 digest 完全一致。apply 在连接 target PD/TiKV 前先重读并验证完整 plan digest、
+tenant 范围、排序、统计与所有 source transaction 的内存上限，之后每次仅持有一个 source transaction，并沿用相同 v2 checkpoint
+原子提交/恢复契约。scratch record 返回 owned copy，损坏会在任何 target write 前 fail closed；所有临时 DB 在成功和失败路径删除。
+
+`--max-replay-memory-bytes` 自 A4913 起约束“单个 source transaction”的逻辑 key/value/元数据，而不再限制整个回放窗口；默认仍为
+512 MiB。这样 Go-owned mutation payload 从 O(all output) 收敛为 O(largest source transaction)，但不构成精确 RSS 上界：单条
+BR entry、bbolt mmap/page cache、allocator、GC 与其余进程状态仍需容量余量，超大单事务仍会被明确拒绝。2026-08-16 在独立
+source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 和官方 BR v7.5.1 上，生产磁盘计划路径的
+v6 receipt、checkpoint、fence/handoff 及最终 revision/key/lease/watch 全链以 40.96 秒通过。生产规模 scratch sizing、长窗口
+RSS/IOPS/latency soak 与磁盘故障注入仍保持开放。
 
 TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
 每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
