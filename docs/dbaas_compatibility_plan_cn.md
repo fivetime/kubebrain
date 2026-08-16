@@ -54255,6 +54255,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Maintenance Snapshot 聚焦 race、`pkg/etcdsnapshot` race（1.337 秒）及两组 vet 通过；本轮没有修改测试文件。
   在线 A4776 未滚动，扫描取消/leadership loss 叠加真实 bbolt Close fault 的客户端终态仍留待正式新镜像故障门禁。
 
+- A4825 补齐 decoded RangeStream 外部排序 spill 的 cleanup 错误聚合。旧 `keyRunWriter.Close` 在 `Flush` 失败时
+  不再报告底层文件 `Close` 错误；`mergeKeyRuns` 也只在主流程成功时保留 writer/reader Close 错误，因此取消、
+  读写故障会遮蔽 spill 文件最终落盘或关闭失败。生产实现现在 Join writer 的 Flush 与 Close，并始终聚合主错误、
+  writer Close 及每个 reader Close，保留完整故障因果链。
+
+  Range spill 聚焦 race 与 `pkg/backend` vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，磁盘满或关闭失败
+  注入下的大范围排序终态仍留待正式新镜像文件系统故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
