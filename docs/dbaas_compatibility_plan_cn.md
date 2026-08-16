@@ -54766,6 +54766,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并发发布回归现在同时断言恰一成功、恰一返回 `os.ErrExist` 且目录无 converter 临时文件；etcdsnapshot/CLI race、vet 与
   diff check 通过。真实 bbolt/hash failure 叠加 unlink fault 仍留待转换 Job 文件系统故障注入门禁。
 
+- A4884 收紧 upgrade-era legacy snapshot remediation 的输出门禁与 preflight 介质终态。该工具会在识别 upstream
+  Maintenance Snapshot 的 retained legacy lease diagnostic 后，凭 cluster/revision 四重确认执行不可逆 physical compact；
+  旧实现却忽略所有 cluster/status/final receipt stdout 写错误，并静默丢弃 probe 目录 RemoveAll。状态管道已断开时仍可能
+  继续下载乃至 compact，或在遗留完整 preflight snapshot 后报告成功。所有输出现在逐次检查并在进入下一阶段前失败；命名
+  defer 聚合 probe 目录清理错误并强制 exit code 1，已发布 post-remediation snapshot 的原有独占链接与 fsync 合同不变。
+
+  新增 failing writer 回归，固定 endpoint status 首写失败时 Snapshot 调用数为零且绝不 compact；legacyremediation/CLI race、
+  vet 与 diff check 通过。真实 compact 成功后 final receipt pipe failure 需由调用方按已发布 OUTPUT 幂等对账，不能盲目重做。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

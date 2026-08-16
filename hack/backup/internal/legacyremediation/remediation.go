@@ -126,18 +126,27 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 	if !positiveDecimal.MatchString(result.ClusterID) || !positiveDecimal.MatchString(result.Revision) {
 		return result, 1, errors.New("endpoint returned a non-positive cluster ID or revision")
 	}
-	fmt.Fprintf(out, "cluster_id=%s\nrevision=%s\nendpoint=%s\n", result.ClusterID, result.Revision, c.Endpoint)
+	if _, err = fmt.Fprintf(out, "cluster_id=%s\nrevision=%s\nendpoint=%s\n", result.ClusterID, result.Revision, c.Endpoint); err != nil {
+		return result, 1, fmt.Errorf("write endpoint status: %w", err)
+	}
 
 	probeDir, err := os.MkdirTemp("", "kubebrain-legacy-snapshot-preflight.")
 	if err != nil {
 		return result, 1, err
 	}
-	defer os.RemoveAll(probeDir)
+	defer func() {
+		if removeErr := os.RemoveAll(probeDir); removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove snapshot preflight directory: %w", removeErr))
+			exitCode = 1
+		}
+	}()
 	probe := filepath.Join(probeDir, "preflight.db")
 	err = downloadAndValidate(ctx, cli, probe)
 	if err == nil {
 		result.SnapshotStatus = "healthy"
-		fmt.Fprintln(out, "snapshot_status=healthy")
+		if _, err = fmt.Fprintln(out, "snapshot_status=healthy"); err != nil {
+			return result, 1, fmt.Errorf("write snapshot status: %w", err)
+		}
 		if c.Action == "compact" {
 			return result, 1, errors.New("refusing compaction: Maintenance Snapshot already succeeds")
 		}
@@ -156,8 +165,9 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 		return result, 1, errors.New("refusing legacy-history remediation: Snapshot returned an invalid compact revision")
 	}
 	result.SnapshotStatus = "legacy_lease_history_ambiguous"
-	fmt.Fprintln(out, "snapshot_status="+result.SnapshotStatus)
-	fmt.Fprintln(out, "minimum_compact_revision="+result.CompactRevision)
+	if _, err = fmt.Fprintf(out, "snapshot_status=%s\nminimum_compact_revision=%s\n", result.SnapshotStatus, result.CompactRevision); err != nil {
+		return result, 1, fmt.Errorf("write legacy snapshot status: %w", err)
+	}
 	if c.Action == "diagnose" {
 		return result, 3, nil
 	}
@@ -220,7 +230,9 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 		return result, 1, err
 	}
 	result.SnapshotStatus = "remediated"
-	fmt.Fprintf(out, "snapshot_status=remediated\ncompacted_revision=%d\nsnapshot_output=%s\n", revision, c.Output)
+	if _, err = fmt.Fprintf(out, "snapshot_status=remediated\ncompacted_revision=%d\nsnapshot_output=%s\n", revision, c.Output); err != nil {
+		return result, 1, fmt.Errorf("write remediation status: %w", err)
+	}
 	return result, 0, nil
 }
 

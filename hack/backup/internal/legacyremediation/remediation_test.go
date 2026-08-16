@@ -36,6 +36,7 @@ type fakeEtcdClient struct {
 	status        *clientv3.StatusResponse
 	snapshotBytes []byte
 	snapshotClose error
+	snapshotCalls int
 	compacted     bool
 	compactRev    int64
 }
@@ -51,10 +52,27 @@ func (f *fakeEtcdClient) Status(context.Context, string) (*clientv3.StatusRespon
 	return f.status, nil
 }
 func (f *fakeEtcdClient) Snapshot(context.Context) (io.ReadCloser, error) {
+	f.snapshotCalls++
 	if !f.compacted {
 		return nil, errors.New(LegacyDiagnostic + `: key "/old"; minimum physical compact revision 3`)
 	}
 	return closeErrorReader{Reader: bytes.NewReader(f.snapshotBytes), err: f.snapshotClose}, nil
+}
+
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestRunStopsBeforeSnapshotWhenStatusOutputFails(t *testing.T) {
+	writeErr := errors.New("status pipe closed")
+	client := &fakeEtcdClient{status: &clientv3.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 7301, Revision: 42}}}
+
+	_, code, err := runWithClient(context.Background(), Config{Action: "diagnose", Endpoint: "https://kb:2379"}, failingWriter{err: writeErr}, client)
+
+	require.ErrorIs(t, err, writeErr)
+	require.Equal(t, 1, code)
+	require.Zero(t, client.snapshotCalls)
+	require.False(t, client.compacted)
 }
 func (f *fakeEtcdClient) Compact(_ context.Context, revision int64, _ ...clientv3.CompactOption) (*clientv3.CompactResponse, error) {
 	f.compacted = true
