@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"sort"
@@ -744,7 +745,7 @@ func (w *worker) runWithBackoffRetry(ctx context.Context, receiver resultReceive
 	return count, err
 }
 
-func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) {
+func (w *worker) run(ctx context.Context, receiver resultReceiver) (countResult int, retErr error) {
 	// record start time
 	startTime := time.Now()
 	scanCtx, cancel := context.WithTimeout(ctx, iterTimeout)
@@ -758,7 +759,7 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 		klog.ErrorS(err, "scan failed", "worker", w.info())
 		return 0, err
 	}
-	defer it.Close()
+	defer func() { retErr = stderrors.Join(retErr, it.Close()) }()
 	receiver.reset()
 	w.pendingDeletes = w.pendingDeletes[:0]
 	if !w.compact {
@@ -1224,7 +1225,7 @@ func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact
 	return nil
 }
 
-func scannerGet(ctx context.Context, store storage.KvStorage, key []byte) ([]byte, error) {
+func scannerGet(ctx context.Context, store storage.KvStorage, key []byte) (result []byte, retErr error) {
 	if timestamp, ok := storage.SnapshotTimestampFromContext(ctx); ok {
 		reader, supported := storage.FindCapability[storage.SnapshotGetter](store)
 		if supported {
@@ -1241,7 +1242,7 @@ func scannerGet(ctx context.Context, store storage.KvStorage, key []byte) ([]byt
 		if err != nil {
 			return nil, err
 		}
-		defer it.Close()
+		defer func() { retErr = stderrors.Join(retErr, it.Close()) }()
 		if err := it.Next(ctx); err != nil {
 			if err == io.EOF {
 				return nil, storage.ErrKeyNotFound
