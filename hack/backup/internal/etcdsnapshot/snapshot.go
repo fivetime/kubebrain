@@ -23,7 +23,7 @@ type Options struct {
 	AcknowledgeAuthDisabled bool
 }
 
-func Convert(input, output string, options Options) (backupfile.Status, error) {
+func Convert(input, output string, options Options) (status backupfile.Status, retErr error) {
 	if !options.AcknowledgeAuthDisabled {
 		return backupfile.Status{}, errors.New("conversion requires explicit acknowledgement that output auth is disabled")
 	}
@@ -31,8 +31,8 @@ func Convert(input, output string, options Options) (backupfile.Status, error) {
 	if err != nil {
 		return backupfile.Status{}, err
 	}
-	defer verified.Close()
-	status := verified.Status()
+	defer func() { retErr = errors.Join(retErr, verified.Close()) }()
+	status = verified.Status()
 	if status.Format != backupfile.Format {
 		return backupfile.Status{}, fmt.Errorf("etcd snapshot conversion requires %s, got %s", backupfile.Format, status.Format)
 	}
@@ -103,8 +103,7 @@ func Convert(input, output string, options Options) (backupfile.Status, error) {
 		return backupfile.Status{}, err
 	}
 	if err := dir.Sync(); err != nil {
-		dir.Close()
-		return backupfile.Status{}, err
+		return backupfile.Status{}, errors.Join(err, dir.Close())
 	}
 	if err := dir.Close(); err != nil {
 		return backupfile.Status{}, err
@@ -167,8 +166,7 @@ func appendIntegrityHash(path string) error {
 	}
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		f.Close()
-		return err
+		return errors.Join(err, f.Close())
 	}
 	if err := f.Close(); err != nil {
 		return err
@@ -180,11 +178,5 @@ func appendIntegrityHash(path string) error {
 	_, writeErr := out.Write(h.Sum(nil))
 	syncErr := out.Sync()
 	closeErr := out.Close()
-	if writeErr != nil {
-		return writeErr
-	}
-	if syncErr != nil {
-		return syncErr
-	}
-	return closeErr
+	return errors.Join(writeErr, syncErr, closeErr)
 }

@@ -37,7 +37,7 @@ type Observation struct {
 
 // VerifyTargetProbeHistory binds the etcd endpoint observation to the exact
 // target PD/TiKV cluster by reading the retained probe PUT version directly.
-func VerifyTargetProbeHistory(ctx context.Context, addrs []string, security storagetikv.Security, keyspace string, observation Observation) error {
+func VerifyTargetProbeHistory(ctx context.Context, addrs []string, security storagetikv.Security, keyspace string, observation Observation) (retErr error) {
 	if len(observation.ProbeKey) == 0 || len(observation.ProbeValue) == 0 || observation.ProbeLeaseID == 0 || observation.ProbePutRevision <= 0 {
 		return errors.New("semantic watch probe returned incomplete target-binding evidence")
 	}
@@ -45,7 +45,7 @@ func VerifyTargetProbeHistory(ctx context.Context, addrs []string, security stor
 	if err != nil {
 		return fmt.Errorf("connect target TiKV for probe history: %w", err)
 	}
-	defer storage.Close()
+	defer func() { retErr = errors.Join(retErr, storage.Close()) }()
 	ks, err := coder.NewKeyspace(keyspace)
 	if err != nil {
 		return err
