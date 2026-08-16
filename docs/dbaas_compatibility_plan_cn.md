@@ -54238,6 +54238,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   普通 `pkg/endpoint` 全套（16.776 秒）、race 及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，Snapshot
   取消叠加 fd Close/unlink fault 的客户端非成功终态仍留待正式新镜像文件系统故障门禁。
 
+- A4823 对齐请求结果指标与 A4822 的 joined-error 优先级。Lease metadata uncertain-write reconciliation 等路径会
+  Join caller cancel/deadline 与二次读取、状态不匹配或后端故障；旧 `errClass` 在 handler 内先用 `errors.Is` 命中
+  context child，将真实故障错误标成 benign `canceled/deadline`，即使 interceptor 最终已向客户端保留真实错误，
+  DBaaS dashboard/alert 仍会漏报。指标分类现在递归移除 multi-error 的 context child 后分类其他 sibling；只有错误
+  集合全部是 context cancellation/deadline 时才沿用原标签。
+
+  `pkg/server/etcd` race 及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，uncertain lease write 叠加
+  reconciliation fault 的 `errclass=other/unavailable` 实际采集仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
