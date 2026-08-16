@@ -54247,6 +54247,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `pkg/server/etcd` race 及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，uncertain lease write 叠加
   reconciliation fault 的 `errclass=other/unavailable` 实际采集仍留待正式新镜像故障门禁。
 
+- A4824 补齐 Maintenance Snapshot builder 的主错误+cleanup 错误聚合。Snapshot 历史扫描建立 bbolt builder 后，
+  旧 defer 仅在主流程成功时返回 `builder.Close` 错误；若 cancellation、leadership change、legacy provenance 或磁盘
+  Append/Finish 已先失败，最终 bbolt flush/Close failure 被丢弃，A4822 的 RPC multi-error 分类也无从保留。生产
+  defer 现在始终以 `errors.Join(retErr, builder.Close())` 返回两类原因，与 standalone etcdsnapshot writer 合同一致。
+
+  Maintenance Snapshot 聚焦 race、`pkg/etcdsnapshot` race（1.337 秒）及两组 vet 通过；本轮没有修改测试文件。
+  在线 A4776 未滚动，扫描取消/leadership loss 叠加真实 bbolt Close fault 的客户端终态仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
