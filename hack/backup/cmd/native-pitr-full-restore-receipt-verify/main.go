@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
@@ -194,8 +195,13 @@ func verify(o options) error {
 	return nativepitr.VerifyTargetReplacementHandoffBinding(handoff, plan, oldTarget, target, oldProvisioning, provisioning, qualification, writers, oldRetirement, oldAdmission, digest(oldTargetBytes), digest(oldProvisioningBytes), digest(provisioningBytes), digest(qualificationBytes), digest(writerBytes), digest(oldRetirementBytes), digest(oldAdmissionBytes), binding)
 }
 
-func readBounded(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+func readBounded(path string) (data []byte, retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, (8<<20)+1))
 	if err != nil {
 		return nil, err
 	}

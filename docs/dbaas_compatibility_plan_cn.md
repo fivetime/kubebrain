@@ -54665,6 +54665,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增共享 failedrestore oversized evidence 回归，并复用 operationaudit oversized suite；两包 race（1.684/1.190 秒）、
   vet 与 diff check 通过。真实 audit/parameters/plan close fault 仍留待 remediation Job 文件系统故障注入门禁。
 
+- A4873 补齐 native PITR full-restore receipt verifier 的输入文件终态。该 verifier 决定 Operation 是否能发布或对账终态
+  success，但 receipt、plan、full artifacts、source-exclusive、target/admission、provisioning/qualification/writer exclusion
+  以及可选 replacement lineage 共十四类绑定输入仍通过无界 `os.ReadFile` 读取；介质 Close 失败时仍会计算 SHA 并接受
+  restore receipt。共享 reader 现使用 8 MiB bounded stream 和命名错误 Join Close，只有每份输入完整读取并关闭成功后
+  才能解码、绑定 exact bytes 并进入 full restore/replacement 双层语义验证。
+
+  新增 base binding preflight 与 oversized input 命令级回归；receipt verifier/nativepitr race（1.655 秒及缓存套件）、vet
+  与 diff check 通过。真实多输入 close fault 与 Operation terminal-success 抑制仍留待正式恢复 Job 文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
