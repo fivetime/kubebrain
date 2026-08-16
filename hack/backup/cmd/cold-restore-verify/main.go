@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
@@ -307,7 +309,9 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(rootCtx, timeout)
 	defer cancel()
 
 	historical, historicalRevision, err := fetchRange(ctx, cli, status.Prefix, status.Revision)

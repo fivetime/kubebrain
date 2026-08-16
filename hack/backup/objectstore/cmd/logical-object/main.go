@@ -9,8 +9,10 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -21,7 +23,9 @@ import (
 )
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), durationEnv("TIMEOUT", 30*time.Minute))
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(rootCtx, durationEnv("TIMEOUT", 30*time.Minute))
 	defer cancel()
 	action := os.Getenv("ACTION")
 	if action == "manifest" {

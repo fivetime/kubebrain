@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -34,7 +36,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(rootCtx, timeout)
 	defer cancel()
 
 	switch action {
