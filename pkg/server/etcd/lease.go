@@ -1838,6 +1838,18 @@ func (m *leaseManager) restoreLeases(ctx context.Context) error {
 	return nil
 }
 
+func (m *leaseManager) restoreLeasesAtStartup(parent context.Context, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	if err := m.restoreLeases(ctx); err != nil {
+		// An empty or partial constructor snapshot is not authoritative. Production
+		// leadership reload will reopen this gate only after a complete durable read.
+		m.PrepareLeaseReload()
+		return err
+	}
+	return nil
+}
+
 // ReloadLeases refreshes in-memory lease state from storage. It MUST be called
 // when this node acquires leadership: while a follower the node holds a stale
 // snapshot (the real leader advanced deadlines via keepalive and granted leases

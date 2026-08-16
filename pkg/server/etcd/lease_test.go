@@ -56,6 +56,18 @@ type observingRevisionBackend struct {
 	observed chan<- struct{}
 }
 
+type blockingStartupLeaseBackend struct {
+	BackendShim
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingStartupLeaseBackend) GetFollowerSnapshotTimestamp(ctx context.Context) (uint64, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+
 type blockingLeaseMetaBackend struct {
 	BackendShim
 	entered chan struct{}
@@ -2395,6 +2407,27 @@ func TestLeaseLeasesOrdersByExpiryLikeEtcd(t *testing.T) {
 		{ID: 3002},
 		{ID: 3003},
 	}, resp.Leases)
+}
+
+func TestLeaseStartupRestoreIsBoundedWhenPDIsUnavailable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	backend := &blockingStartupLeaseBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+	}
+	server.backend = backend
+
+	start := time.Now()
+	err := server.restoreLeasesAtStartup(context.Background(), 25*time.Millisecond)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), time.Second)
+	require.False(t, server.leaseReady.Load(), "a failed constructor restore must leave lease reads closed")
+	select {
+	case <-backend.entered:
+	default:
+		t.Fatal("startup restore did not attempt to obtain a PD snapshot timestamp")
+	}
 }
 
 func TestLeaseRestoreFromBackend(t *testing.T) {
