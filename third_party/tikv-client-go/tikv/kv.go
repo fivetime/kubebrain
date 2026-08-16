@@ -401,10 +401,10 @@ func (s *KVStore) GetSnapshot(ts uint64) *txnsnapshot.KVSnapshot {
 
 // Close store
 func (s *KVStore) Close() error {
-	defer s.gP.Close()
 	s.close.Store(true)
 	s.cancel()
 	s.wg.Wait()
+	s.gP.Close()
 
 	s.oracle.Close()
 	s.pdClient.Close()
