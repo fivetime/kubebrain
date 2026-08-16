@@ -53884,6 +53884,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 backend/server/storage vet 均通过。该修复同样未滚入仍运行 A4776 的在线实例；真实 PD blackhole 下的
   request-deadline GREEN 必须随下一次正式镜像通过 production release gate 验证。
 
+- A4790 继续关闭 TiKV snapshot scan 翻页脱离请求生命周期的生产缺口。KubeBrain 的 storage `Iter.Next(ctx)`
+  表面接收 context，但 client-go `txnsnapshot.Scanner.Next()` 每次固定从 `context.Background()` 创建最长
+  20 秒 backoffer，锁解析也再次使用 Background；初始 scan 同样在无 context 的 `Iter/IterReverse` 内发生。
+  因而大 Range、HashKV、Snapshot、Watch replay 与后台 scanner 在客户端取消后，仍可能继续 Region locate、
+  scan RPC 和 resolve-lock。生产提交 `c76442b4` 在维护 fork 增加 `IterWithContext`、
+  `IterReverseWithContext` 与 `NextWithContext`，并把同一个 caller context 贯穿初始页、后续页、interceptor、
+  Region backoff 和锁解析；旧 API 全部保留为 Background wrapper。KubeBrain TiKV adapter 只使用新入口，
+  已取消 context 在发起下一页前立即关闭 scanner 并返回原 context error。
+
+  最小 adapter 回归只证明 `Iter.Next(ctx)` 原样下传 context，连续 20 轮 race 通过。TiKV storage race、
+  client-go `tikv`/`txnkv` 全套与 fork vet、相关 server Range/Hash/Snapshot 21.909 秒、backend 全树
+  81.674 秒以及 root storage/backend/server vet 均通过。在线实例仍是 A4776；真实 TiKV Region/lock RPC
+  黑洞下的取消时延继续留给正式新镜像的故障注入门禁，不以源码回归冒充现场 GREEN。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
