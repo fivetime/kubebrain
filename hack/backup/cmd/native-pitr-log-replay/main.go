@@ -74,7 +74,7 @@ func configurePingCAPLogging() error {
 	return nil
 }
 
-func execute(parent context.Context, o options, out io.Writer, now func() time.Time) error {
+func execute(parent context.Context, o options, out io.Writer, now func() time.Time) (retErr error) {
 	if o.plan == "" || o.fullRestore == "" || o.logArtifacts == "" || o.logRoot == "" || o.fenceReceipt == "" || o.admissionHandoff == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 {
 		return errors.New("plan, full-restore, log-artifacts, log-root, restoration-fence, target-pd-addrs, approval, and positive timeout are required")
 	}
@@ -168,7 +168,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { retErr = errors.Join(retErr, store.Close()) }()
 	if err := restorationfence.Verify(ctx, store, fence.CoordinationPrefix, fenceToken); err != nil {
 		return err
 	}
@@ -234,13 +234,13 @@ func readStable(path string) ([]byte, error) {
 	}
 	return a, nil
 }
-func readBounded(path string) ([]byte, error) {
+func readBounded(path string) (b []byte, retErr error) {
 	f, e := os.Open(path)
 	if e != nil {
 		return nil, e
 	}
-	defer f.Close()
-	b, e := io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
+	b, e = io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
 	if e != nil {
 		return nil, e
 	}

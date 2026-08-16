@@ -54712,6 +54712,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增已 hash `/bin/true` 后把原路径替换为 `/bin/false`、仍必须成功执行原 inode 的回归，并覆盖 exact digest；full-restore
   race（1.621 秒）、vet 与 diff check 通过。Linux procfs 可用性由正式 Kubernetes Job 基础镜像/安全上下文继续做启动门禁。
 
+- A4878 补齐 native PITR log-replay executor 的输入与 transactional TiKV store 终态。该阶段不调用 BR，而是校验本地
+  stream mirror、物化 default/write CF 记录后直接向目标 TiKV 应用事务；plan/full-restore/log-artifacts/restoration-fence/
+  admission-handoff 五类 receipt 的前后双读旧 defer 丢弃 file Close，ApplyReplay 和最终 fence verification 成功后也 defer
+  丢弃 store Close。reader 与 execute 现使用命名错误 Join Close；输入介质或目标 transport 收尾失败均令 Job 非零，
+  canonical stdout receipt 仍保留给控制面按 plan SHA、mutation/transaction 计数与 last commit TSO 精确对账。
+
+  新增 oversized receipt 回归；log-replay/nativepitr race（1.506 秒及缓存套件）、vet 与 diff check 通过。PD client 的 void
+  Close 仍按上游 API 执行；真实 ApplyReplay 成功叠加 store close fault 仍留待正式 replay Job transport 故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
