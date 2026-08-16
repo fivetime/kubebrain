@@ -2,11 +2,13 @@ package restorationfence
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -134,4 +136,22 @@ func TestReleaseRejectsForeignShardWithoutOpeningAnyKey(t *testing.T) {
 	want, err := token.Bytes()
 	require.NoError(t, err)
 	require.Equal(t, want, control, "failed atomic release must not open the control key")
+}
+
+func TestReleaseIfKeepsFenceClosedWhenAtomicGuardFails(t *testing.T) {
+	store := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	ctx := context.Background()
+	prefix := "/kubebrain-internal/ks-a1001"
+	token := testToken(t, "restore-1")
+	_, err := Acquire(ctx, store, prefix, token)
+	require.NoError(t, err)
+	sentinel := errors.New("completion evidence changed")
+
+	err = ReleaseIf(ctx, store, prefix, token, func(context.Context, storage.AtomicBatch) error {
+		return sentinel
+	})
+
+	require.ErrorIs(t, err, sentinel)
+	require.NoError(t, Verify(ctx, store, prefix, token))
 }

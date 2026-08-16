@@ -44,7 +44,7 @@ func main() {
 	flag.StringVar(&o.action, "action", "acquire", "acquire, verify, or release")
 	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v12 receipt")
 	flag.StringVar(&o.receipt, "fence-receipt", "", "exact fence receipt (required for verify/release)")
-	flag.StringVar(&o.replayReceipt, "log-replay-receipt", "", "exact native-pitr-log-replay.v5 receipt (required for release)")
+	flag.StringVar(&o.replayReceipt, "log-replay-receipt", "", "exact native-pitr-log-replay.v6 receipt (required for release)")
 	flag.StringVar(&o.operationID, "operation-id", "", "immutable restore operation ID (required for acquire)")
 	flag.StringVar(&o.pdAddrs, "target-pd-addrs", "", "comma-separated target PD addresses")
 	flag.StringVar(&o.ca, "target-ca", "", "target PD CA file")
@@ -205,7 +205,7 @@ func operate(ctx context.Context, o options, plan nativepitr.Plan, planSHA strin
 		if err := restorationfence.Verify(ctx, store, fence.CoordinationPrefix, token); err != nil {
 			return err
 		}
-		if err := restorationfence.Release(ctx, store, fence.CoordinationPrefix, token); err != nil {
+		if err := nativepitr.ReleaseReplayFence(ctx, store, fence.CoordinationPrefix, token, replay); err != nil {
 			return err
 		}
 		handoff, err := nativepitr.BuildRestorationFenceHandoff(plan, planSHA, fence, fenceSHA, replay, replaySHA, now().Unix())

@@ -31,6 +31,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
@@ -425,7 +426,7 @@ func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing
 	fence, _, err := BuildRestorationFenceReceipt(plan, digest, "restore-1", now-1, false)
 	require.NoError(t, err)
 	handoff := replayAdmissionHandoff(t, plan, restore, fence, now)
-	receipt, err := BuildLogReplayExecution(plan, restore, manifest, fence, digest, handoff, digest, LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, StartedAtUnix: now, CompletedAtUnix: now})
+	receipt, err := BuildLogReplayExecution(plan, restore, manifest, fence, digest, handoff, digest, LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, LastStartTS: plan.RestoreTS - 1, StartedAtUnix: now, CompletedAtUnix: now})
 	require.NoError(t, err)
 	require.True(t, receipt.LogReplayCompleted)
 	require.True(t, receipt.ReplayWriteFenceProven)
@@ -433,14 +434,20 @@ func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing
 	require.True(t, receipt.ContinuousWriterExclusion)
 	require.False(t, receipt.PostRestoreSemanticValidated)
 	require.False(t, receipt.PITRComplete)
-	require.Equal(t, "kubebrain.native-pitr-log-replay.v5", receipt.Format)
+	require.Equal(t, "kubebrain.native-pitr-log-replay.v6", receipt.Format)
 	var encoded bytes.Buffer
 	require.NoError(t, json.NewEncoder(&encoded).Encode(receipt))
 	_, err = DecodeLogReplayExecution(&encoded)
 	require.NoError(t, err)
 	wrongFormat := receipt
-	wrongFormat.Format = "kubebrain.native-pitr-log-replay.v4"
+	wrongFormat.Format = "kubebrain.native-pitr-log-replay.v5"
 	require.EqualError(t, wrongFormat.Validate(), "native PITR log replay receipt is incomplete")
+	missingLastStart := receipt
+	missingLastStart.LastStartTS = 0
+	require.EqualError(t, missingLastStart.Validate(), "native PITR log replay receipt has invalid bounds")
+	nonPrecedingLastStart := receipt
+	nonPrecedingLastStart.LastStartTS = nonPrecedingLastStart.LastCommitTS
+	require.EqualError(t, nonPrecedingLastStart.Validate(), "native PITR log replay receipt has invalid bounds")
 
 	freshPartial := receipt
 	freshPartial.AppliedMutations, freshPartial.AppliedTransactions = 0, 0
@@ -475,7 +482,7 @@ func TestBuildLogReplayExecutionRejectsWrongOrLateFence(t *testing.T) {
 	fence, _, err := BuildRestorationFenceReceipt(plan, digest, "restore-1", now-1, false)
 	require.NoError(t, err)
 	handoff := replayAdmissionHandoff(t, plan, restore, fence, now)
-	input := LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, StartedAtUnix: now, CompletedAtUnix: now}
+	input := LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, LastStartTS: plan.RestoreTS - 1, StartedAtUnix: now, CompletedAtUnix: now}
 
 	_, err = BuildLogReplayExecution(plan, restore, manifest, fence, strings.Repeat("b", 64), handoff, digest, input)
 	require.ErrorContains(t, err, "does not match")
@@ -501,7 +508,7 @@ func TestApplyReplayCheckpointsAndResumesExactly(t *testing.T) {
 	defer target.Close()
 	result, err := ApplyReplay(t.Context(), target, digest, manifest, mutations)
 	require.NoError(t, err)
-	require.Equal(t, ReplayApplyResult{AppliedMutations: 3, AppliedTransactions: 3, LastCommitTS: 140}, result)
+	require.Equal(t, ReplayApplyResult{AppliedMutations: 3, AppliedTransactions: 3, LastCommitTS: 140, LastStartTS: 135}, result)
 	_, err = target.Get(t.Context(), keyA)
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 	value, err := target.Get(t.Context(), keyB)
@@ -510,7 +517,7 @@ func TestApplyReplayCheckpointsAndResumesExactly(t *testing.T) {
 
 	result, err = ApplyReplay(t.Context(), target, digest, manifest, mutations)
 	require.NoError(t, err)
-	require.Equal(t, ReplayApplyResult{CheckpointMutationsBefore: 3, CheckpointTransactionsBefore: 3, Resumed: true, LastCommitTS: 140}, result)
+	require.Equal(t, ReplayApplyResult{CheckpointMutationsBefore: 3, CheckpointTransactionsBefore: 3, Resumed: true, LastCommitTS: 140, LastStartTS: 135}, result)
 
 	changed := append([]ReplayMutation(nil), mutations...)
 	changed[0].Value = []byte("tampered")
@@ -536,13 +543,55 @@ func TestApplyReplayResolvesCommittedUncertainResultFromCheckpoint(t *testing.T)
 
 	result, err = ApplyReplay(t.Context(), target, digest, manifest, mutations)
 	require.NoError(t, err)
-	require.Equal(t, ReplayApplyResult{CheckpointMutationsBefore: 1, CheckpointTransactionsBefore: 1, AppliedMutations: 2, AppliedTransactions: 2, Resumed: true, LastCommitTS: 140}, result)
+	require.Equal(t, ReplayApplyResult{CheckpointMutationsBefore: 1, CheckpointTransactionsBefore: 1, AppliedMutations: 2, AppliedTransactions: 2, Resumed: true, LastCommitTS: 140, LastStartTS: 135}, result)
 	require.Equal(t, 3, target.commits, "the committed uncertain source transaction must not be replayed")
 	_, err = target.Get(t.Context(), keyA)
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 	value, err = target.Get(t.Context(), keyB)
 	require.NoError(t, err)
 	require.Equal(t, []byte("short"), value)
+}
+
+func TestReleaseReplayFenceRequiresExactCompletedCheckpoint(t *testing.T) {
+	plan := validReceiptPlan(t)
+	receipt := validHandoffReplay(plan, time.Now().Unix())
+	prefix := "/kubebrain-internal/" + plan.Source.Keyspace
+	token, err := restorationfence.NewToken("restore-1", receipt.PlanSHA256, receipt.TargetClusterID, receipt.Keyspace)
+	require.NoError(t, err)
+	ks, err := coder.NewKeyspace(receipt.Keyspace)
+	require.NoError(t, err)
+	checkpointKey := ks.EncodeInternalKey([]byte("native-pitr/log-replay-checkpoint"))
+
+	for _, tc := range []struct {
+		name       string
+		checkpoint replayCheckpoint
+		wantError  bool
+	}{
+		{name: "exact", checkpoint: replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: receipt.PlanSHA256, MutationsSHA256: receipt.MutationsSHA256, RestoreTS: receipt.RestoreTS, AppliedMutations: receipt.MutationCount, LastCommitTS: receipt.LastCommitTS, LastStartTS: receipt.LastStartTS}},
+		{name: "partial", checkpoint: replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: receipt.PlanSHA256, MutationsSHA256: receipt.MutationsSHA256, RestoreTS: receipt.RestoreTS, AppliedMutations: 0}, wantError: true},
+		{name: "foreign digest", checkpoint: replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: receipt.PlanSHA256, MutationsSHA256: strings.Repeat("b", 64), RestoreTS: receipt.RestoreTS, AppliedMutations: receipt.MutationCount, LastCommitTS: receipt.LastCommitTS, LastStartTS: receipt.LastStartTS}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := memkv.NewKvStorage()
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			_, err := restorationfence.Acquire(t.Context(), store, prefix, token)
+			require.NoError(t, err)
+			checkpointBytes, err := json.Marshal(tc.checkpoint)
+			require.NoError(t, err)
+			batch := store.BeginBatchWrite()
+			batch.Put(checkpointKey, checkpointBytes, 0)
+			require.NoError(t, batch.Commit(t.Context()))
+
+			err = ReleaseReplayFence(t.Context(), store, prefix, token, receipt)
+			if tc.wantError {
+				require.ErrorContains(t, err, "checkpoint")
+				require.NoError(t, restorationfence.Verify(t.Context(), store, prefix, token))
+			} else {
+				require.NoError(t, err)
+				require.NoError(t, restorationfence.VerifyOpen(t.Context(), store, prefix))
+			}
+		})
+	}
 }
 
 func TestApplyReplaySeparatesTransactionsWithCollidingCommitTS(t *testing.T) {
@@ -575,7 +624,7 @@ func TestApplyReplaySeparatesTransactionsWithCollidingCommitTS(t *testing.T) {
 	result, err := ApplyReplay(t.Context(), target, digest, manifest, mutations)
 
 	require.NoError(t, err)
-	require.Equal(t, ReplayApplyResult{AppliedMutations: 3, AppliedTransactions: 2, LastCommitTS: 150}, result)
+	require.Equal(t, ReplayApplyResult{AppliedMutations: 3, AppliedTransactions: 2, LastCommitTS: 150, LastStartTS: 121}, result)
 	require.Equal(t, 2, target.commits, "each distinct source start TS must commit separately")
 }
 

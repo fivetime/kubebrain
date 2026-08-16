@@ -30,12 +30,13 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 )
 
 const ReplayManifestFormat = "kubebrain.native-pitr-log-replay-manifest.v2"
-const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v5"
+const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v6"
 
 type ReplayMutation struct {
 	CommitTS uint64 `json:"commit_ts"`
@@ -78,6 +79,7 @@ type ReplayApplyResult struct {
 	AppliedTransactions          int
 	Resumed                      bool
 	LastCommitTS                 uint64
+	LastStartTS                  uint64
 }
 
 type replayCheckpoint struct {
@@ -111,6 +113,7 @@ type LogReplayExecutionReceipt struct {
 	AppliedMutations              int    `json:"applied_mutations_this_run"`
 	AppliedTransactions           int    `json:"applied_transactions_this_run"`
 	LastCommitTS                  uint64 `json:"last_commit_ts,omitempty"`
+	LastStartTS                   uint64 `json:"last_start_ts,omitempty"`
 	Resumed                       bool   `json:"resumed_from_checkpoint"`
 	CheckpointAtomic              bool   `json:"checkpoint_atomic_with_source_transaction"`
 	ReplayWriteFenceProven        bool   `json:"replay_write_fence_proven"`
@@ -167,7 +170,7 @@ func (r LogReplayExecutionReceipt) Validate() error {
 			return errors.New("native PITR log replay receipt has invalid digest")
 		}
 	}
-	if (r.MutationCount == 0) != (r.TransactionCount == 0) || (r.MutationCount == 0) != (r.LastCommitTS == 0) || (r.LastCommitTS != 0 && (r.LastCommitTS <= r.BackupTS || r.LastCommitTS > r.RestoreTS)) {
+	if (r.MutationCount == 0) != (r.TransactionCount == 0) || (r.MutationCount == 0) != (r.LastCommitTS == 0 && r.LastStartTS == 0) || (r.LastCommitTS != 0 && (r.LastCommitTS <= r.BackupTS || r.LastCommitTS > r.RestoreTS || r.LastStartTS == 0 || r.LastStartTS >= r.LastCommitTS)) {
 		return errors.New("native PITR log replay receipt has invalid bounds")
 	}
 	if (r.CheckpointMutationsBefore == 0) != (r.CheckpointTransactionsBefore == 0) || r.CheckpointMutationsBefore < r.CheckpointTransactionsBefore || (r.AppliedMutations == 0) != (r.AppliedTransactions == 0) || r.AppliedMutations < r.AppliedTransactions {
@@ -193,6 +196,38 @@ func DecodeLogReplayExecution(reader io.Reader) (LogReplayExecutionReceipt, erro
 		return receipt, errors.New("native PITR log replay receipt contains trailing JSON")
 	}
 	return receipt, receipt.Validate()
+}
+
+// ReleaseReplayFence atomically proves that the target still holds the exact
+// completed replay checkpoint described by receipt and reopens all writer
+// shards. A changed, missing, partial, or foreign checkpoint aborts the same
+// transaction that would release writer admission.
+func ReleaseReplayFence(ctx context.Context, target storage.KvStorage, prefix string, token restorationfence.Token, receipt LogReplayExecutionReceipt) error {
+	if err := receipt.Validate(); err != nil {
+		return err
+	}
+	if token.PlanSHA256 != receipt.PlanSHA256 || token.TargetClusterID != receipt.TargetClusterID || token.Keyspace != receipt.Keyspace {
+		return errors.New("replay receipt does not match restoration fence owner")
+	}
+	ks, err := coder.NewKeyspace(receipt.Keyspace)
+	if err != nil {
+		return err
+	}
+	checkpointKey := ks.EncodeInternalKey([]byte("native-pitr/log-replay-checkpoint"))
+	return restorationfence.ReleaseIf(ctx, target, prefix, token, func(ctx context.Context, txn storage.AtomicBatch) error {
+		checkpointBytes, err := txn.Get(ctx, checkpointKey)
+		if err != nil {
+			return fmt.Errorf("read completed replay checkpoint: %w", err)
+		}
+		var checkpoint replayCheckpoint
+		if json.Unmarshal(checkpointBytes, &checkpoint) != nil || checkpoint.Format != replayCheckpointFormat || checkpoint.PlanSHA256 != receipt.PlanSHA256 || checkpoint.MutationsSHA256 != receipt.MutationsSHA256 || checkpoint.RestoreTS != receipt.RestoreTS || checkpoint.AppliedMutations != receipt.MutationCount || checkpoint.LastCommitTS != receipt.LastCommitTS || checkpoint.LastStartTS != receipt.LastStartTS {
+			return errors.New("target replay checkpoint does not match completed replay receipt")
+		}
+		// TiKV optimistic transactions do not validate a read-only key at commit.
+		// Re-stage the exact bytes so a concurrent checkpoint replacement
+		// conflicts with this same transaction before the fence can open.
+		return txn.Put(checkpointKey, checkpointBytes, 0)
+	})
 }
 
 // MaterializeReplay converts BR stream default/write CF records into raw
@@ -387,7 +422,7 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 	result := ReplayApplyResult{
 		CheckpointMutationsBefore:    current.AppliedMutations,
 		CheckpointTransactionsBefore: replayTransactionCount(mutations[:current.AppliedMutations]),
-		Resumed:                      resumed, LastCommitTS: current.LastCommitTS,
+		Resumed:                      resumed, LastCommitTS: current.LastCommitTS, LastStartTS: current.LastStartTS,
 	}
 	if len(mutations) == 0 && !resumed {
 		next := replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: planSHA, MutationsSHA256: manifest.MutationsSHA256, RestoreTS: manifest.RestoreTS}
@@ -431,6 +466,7 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 		result.AppliedMutations += end - offset
 		result.AppliedTransactions++
 		result.LastCommitTS = next.LastCommitTS
+		result.LastStartTS = next.LastStartTS
 		offset = end
 	}
 	return result, nil

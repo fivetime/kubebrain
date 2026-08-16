@@ -48,7 +48,7 @@ func validHandoffReplay(plan Plan, completedAt int64) LogReplayExecutionReceipt 
 		RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, SourceClusterID: plan.Source.ClusterID,
 		TargetClusterID: plan.Target.ClusterID, Keyspace: plan.Source.Keyspace, BackupTS: plan.Full.BackupTS,
 		RestoreTS: plan.RestoreTS, MutationCount: 1, TransactionCount: 1, AppliedMutations: 1,
-		AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, CheckpointAtomic: true,
+		AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, LastStartTS: plan.RestoreTS - 1, CheckpointAtomic: true,
 		ReplayWriteFenceProven: true, ContinuousWriterExclusion: true, TargetWriteFenceProven: true, LogReplayCompleted: true, StartedAtUnix: completedAt - 1,
 		CompletedAtUnix: completedAt,
 	}

@@ -164,11 +164,22 @@ func VerifyOpen(ctx context.Context, store storage.KvStorage, prefix string) err
 
 // Release atomically reopens every key only for its exact current owner.
 func Release(ctx context.Context, store storage.KvStorage, prefix string, token Token) error {
+	return ReleaseIf(ctx, store, prefix, token, nil)
+}
+
+// ReleaseIf atomically verifies an optional caller-supplied storage guard and
+// reopens every fence key. The guard reads from the same transaction that
+// performs the owner-checked CAS operations, so protected completion evidence
+// cannot change between validation and writer admission.
+func ReleaseIf(ctx context.Context, store storage.KvStorage, prefix string, token Token, guard func(context.Context, storage.AtomicBatch) error) error {
 	tokenBytes, err := token.Bytes()
 	if err != nil {
 		return err
 	}
 	batch := store.BeginBatchWrite()
+	if guard != nil {
+		batch.Atomic(guard)
+	}
 	for _, key := range AllKeys(prefix) {
 		batch.CAS(key, []byte(Open), tokenBytes, 0)
 	}

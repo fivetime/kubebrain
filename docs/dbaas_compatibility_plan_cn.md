@@ -55023,6 +55023,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fence release、最终 revision/key/lease/watch 语义验收通过，总耗时 42.25 秒，一次性容器已清理。receipt 的累计守恒仍不替代
   target 在线 checkpoint 核验、最终语义验证或真实网络诱发 uncertain 故障演练。
 
+- A4906 关闭 replay receipt 生成到 restoration fence release 之间的 checkpoint TOCTOU。旧 release 只验证 v5 receipt 文件、
+  plan-bound token 与 257 个 fence key，未重新读取 target checkpoint；若 privileged storage actor 在 receipt 生成后替换或回退
+  checkpoint，release 仍会开放 writers。新增通用 `restorationfence.ReleaseIf`，让调用方 guard 与所有 owner-checked fence CAS
+  在同一 storage transaction 执行。replay 专用 release guard 验证 exact v2 checkpoint 的 plan SHA、mutation SHA、restore TS、
+  completed mutation 数及最终 start/commit TS，并把同一 checkpoint 字节原样写回事务：TiKV optimistic transaction 对纯读不做
+  冲突检查，该原样写入把 checkpoint 加入 2PC 写集，确保并发替换与 fence 开放不能同时提交。guard 失败则 257 个 fence key
+  全部保持原 owner。
+
+  为携带 exact 最终 source transaction identity，execution receipt 升为 v6 并新增必填 `last_start_ts`；已提交的 v5 不能静默
+  改 schema，故公共 decoder 和 release fail closed 拒绝 v5。单元回归覆盖条件 release guard 失败原子回滚、exact completed
+  checkpoint 成功、partial checkpoint 与 foreign mutation digest 拒绝并保持 fence 关闭；既有 foreign shard 原子回滚继续通过。
+  2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer 的 committed-uncertain 链上，以包含
+  `last_start_ts` 的实现先验证 checkpoint + 257 fence keys 的真实 TiKV 原子事务，随后 handoff 与最终 etcd 语义验收通过，
+  耗时 43.97 秒。格式升为 v6 后再次从全新双集群执行同一链：首事务 checkpoint 为 7/19 mutation，正式 v6 receipt、条件
+  release、handoff 和最终语义验收 42.90 秒通过，两轮一次性容器均已清理。该证据不覆盖 release transaction 自身返回
+  uncertain 时的 handoff reconciliation；该恢复缺口保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -2965,7 +2965,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.NoError(t, os.WriteFile(replayPath, replayBytes, 0o600))
 		replayReceipt, receiptErr := nativepitr.DecodeLogReplayExecution(bytes.NewReader(replayBytes))
 		require.NoError(t, receiptErr)
-		require.Equal(t, "kubebrain.native-pitr-log-replay.v5", replayReceipt.Format)
+		require.Equal(t, "kubebrain.native-pitr-log-replay.v6", replayReceipt.Format)
 		require.Equal(t, replayReceipt.MutationCount, replayReceipt.CheckpointMutationsBefore+replayReceipt.AppliedMutations)
 		require.Equal(t, replayReceipt.TransactionCount, replayReceipt.CheckpointTransactionsBefore+replayReceipt.AppliedTransactions)
 		require.Positive(t, replayReceipt.AppliedMutations)
