@@ -54104,6 +54104,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1.273/1.357/1.663/1.607/1.093 秒通过，retirement receipt 编译和全部相关 vet 通过；本轮没有修改测试文件。
   在线 A4776 未滚动，六类 artifact 的真实掉电目录持久性仍留待正式 executor 故障门禁。
 
+- A4808 将 durable hardlink 合同收敛到对象存储 backup/deletion 等控制 receipt。两个通用生产 writer 原先在
+  Link 最终名并 Sync 父目录后，才由 deferred cleanup 删除临时 hardlink；掉电恢复可能同时暴露最终 receipt
+  与包含同一控制信息的隐藏临时副本。现在统一为 Link → Remove temp → directory Sync/Close，并同时保留目录
+  Sync 与 Close 错误；既有 immutable exact-existing 幂等判断保持不变。
+
+  objectstore package race 与 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，真实对象存储 executor
+  文件系统掉电与目录 close/writeback fault 仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
