@@ -54355,6 +54355,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `pkg/endpoint` 全套 race（14.132 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776 未滚动，gateway
   registration failure 叠加 transport close fault 的非零启动终态仍留待正式新镜像故障门禁。
 
+- A4837 补齐 etcd peer proxy 热切换全过程的 client lifecycle 错误。旧 leader reset、候选 client 健康检查失败及最终
+  failed branch 都丢弃 Close；最终 shutdown 还用最后一次 Close 覆盖历史错误，使长生命周期连接泄漏无法进入进程
+  终态。生产 proxy 现在利用既有 `updateMu` 串行边界统一关闭 client：失败即时记录并 Join 到累计 `closeErr`，热切换
+  可继续使用健康新 client，而最终 `Close` 返回整个实例生命周期的 transport cleanup 故障链。
+
+  `pkg/server/service/etcdproxy` 全套 race（4.352 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776
+  未滚动，多次 leader 切换叠加 client close fault 的 shutdown 非零结果仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
