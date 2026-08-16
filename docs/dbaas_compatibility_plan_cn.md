@@ -53098,6 +53098,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   六副本使用最终 runtime imageID 且 Ready/零重启，PD/TiKV 3+3 Ready/零重启。九个跨候选重放的
   port-forward、临时探针源码和二进制均已清除。
 
+- A4748 尝试补齐 A4747 尚未取得的“固定 ingress 保持 follower、另一 Pod 成为 successor”短租约现场证据，
+  全程不先修改生产或测试代码。最终 A4747 镜像上继续使用显式 lease `0x47480001`、TTL=3、绑定键、单条
+  raw gRPC follower stream、每秒一次续租和 30 秒预算；四个独立 term 分别直连 pod-2、pod-1、重建后
+  重新加入选举的 pod-2、pod-0，并删除各轮明确的其他 leader。四轮均完整 GREEN，分别收到
+  28/27/27/28 次 response，`min_ttl=3`、`ttl_zero=0`、public code=OK，且仅在 caller budget 到期时清理，
+  绑定键与 lease 在终态检查时仍存活。
+
+  但四轮选举都由活动 ingress 自己接任，包括先把目标 follower 重建、使其重新加入候选之后仍然如此；因此
+  这些结果是 A4747 self-promotion 路径的重复稳定性证据，不能冒充“另一 successor peer reconnect”的现场
+  证明，也不足以把活动流与选举结果的相关性定性为产品缺陷。已有确定性
+  `TestLeaseFollowerKeepAliveWaitsForSuccessorLeader` 继续覆盖另一 peer 的消息保留重试，但真实 TiKV/PD
+  现场仍需可控选主或不同调度时机补证。本轮没有生产 RED，故不修改仓库代码、不构建新镜像。
+
+  四轮 lease 均自然过期并删除绑定键；最终 A4748 前缀 Count=0、LeaseList/AlarmList 为空、proposal health
+  15.444ms。主/JWT 六副本继续使用 A4747 runtime imageID 且 Ready/零重启，PD/TiKV 3+3 Ready/零重启；
+  四个 port-forward、临时探针源码和二进制均已清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
