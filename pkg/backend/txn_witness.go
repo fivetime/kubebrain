@@ -199,7 +199,7 @@ func eventMarkerIdentity(p *txnPrep) (verb proto.Event_EventType, previousRevisi
 // close that gap and also bind the marker bytes, including operation order.
 func (b *backend) validateEventLogWindowWitnesses(
 	ctx context.Context, entries []eventLogPending, fromRevision, toRevision uint64,
-) error {
+) (retErr error) {
 	if fromRevision == 0 || toRevision < fromRevision {
 		return fmt.Errorf("invalid transaction witness window [%d,%d]", fromRevision, toRevision)
 	}
@@ -219,7 +219,7 @@ func (b *backend) validateEventLogWindowWitnesses(
 	if err != nil {
 		return err
 	}
-	defer iter.Close()
+	defer func() { retErr = errors.Join(retErr, iter.Close()) }()
 	next := fromRevision
 	for {
 		if err := iter.Next(ctx); err != nil {
@@ -880,8 +880,11 @@ func (b *backend) cleanupTxnWitnesses(ctx context.Context, through uint64) bool 
 			}
 			keys = append(keys, append([]byte(nil), it.Key()...))
 		}
-		_ = it.Close()
-		if err != nil && err != io.EOF {
+		if err == io.EOF {
+			err = nil
+		}
+		err = errors.Join(err, it.Close())
+		if err != nil {
 			klog.ErrorS(err, "transaction witness cleanup scan failed", "through", through)
 			return false
 		}

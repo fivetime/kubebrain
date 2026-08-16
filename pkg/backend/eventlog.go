@@ -553,7 +553,11 @@ func (b *backend) eventLogTouchedKeys(ctx context.Context, fromRev, toRev uint64
 	if err != nil {
 		return nil, false
 	}
-	defer iter.Close()
+	defer func() {
+		if iter.Close() != nil {
+			keys, ok = nil, false
+		}
+	}()
 	seen := make(map[string]struct{}, 256)
 	for {
 		if err := iter.Next(ctx); err != nil {
@@ -631,7 +635,7 @@ func (b *backend) cleanupEventLog(ctx context.Context, revision uint64) {
 			}
 			keys = append(keys, append([]byte(nil), iter.Key()...))
 		}
-		_ = iter.Close()
+		scanErr = errors.Join(scanErr, iter.Close())
 		if scanErr != nil {
 			// Watermark already advanced, so leftovers are shadowed and the next
 			// compaction sweep reaps them; just don't misreport a truncated scan
