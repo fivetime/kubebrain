@@ -53528,6 +53528,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   终态两条临时 chain/jump 与规则均清除，PD/TiKV 3+3、主/JWT 六副本全部 Ready、零重启，
   AlarmList/LeaseList 为空，proposal health 17.416ms。
 
+- A4768 继续关闭 A4767 现场首先暴露的、更早一层 TiKV client 启动生命周期缺口。txnkv 构造链在创建 PD
+  client、生成 UUID 和初始化 `KVStore.clusterID` 时分别使用 `Background/TODO`；因此 KubeBrain 已收到
+  SIGTERM、根 context 已取消后，PD 黑洞中的构造仍不会返回，只能等 Kubernetes grace period 后强杀。
+  同时 KubeBrain `store.ClusterID()` 又向 PD 远程取一次已经由 txnkv `KVStore` 缓存的固定 cluster ID，令
+  backend 构造和本应纯内存的响应头 identity 多出不必要的网络依赖。upstream etcd 从本地 membership/backend
+  持有稳定 cluster identity，不会为每个 response header 访问远端协调服务。
+
+  生产提交 `3d8c03d9` 在本仓库维护的 TiKV client fork 增加 context-aware `NewPDClientWithContext`、
+  `NewKVStoreWithContext` 和 `txnkv.NewClientWithContext`，再由 `cmd/option → storage/tikv` 把进程根 context
+  贯穿 16 路并行 client 初始化；旧 API 保留为 Background wrapper，避免破坏独立工具调用方。
+  `store.ClusterID()` 改为读取 txnkv 已缓存的 immutable ID。最小真实网络回归以不可连接的 PD endpoint 和
+  50ms deadline 构造 storage，必须在 1 秒内返回错误；聚焦 storage/option、TiKV fork 编译、race、vet 以及
+  tikv/badger 两种 option build 均通过。
+
+  最终镜像 `kubebrain:a4768-3d8c03d9` 内嵌完整 SHA
+  `3d8c03d95ce9c6de75f07e265d05e535b49effea`、build time `2026-08-16T05:28:17Z`，本地 image ID
+  `sha256:d4dfe22775dcef303819bcaf43c7df6d12a0530a1ea61a403ab99ce63c93cf15`，Kind runtime imageID
+  `sha256:7fa2c2660a4f8281d71e3c05a0e87650880c8c8e68be6148c6549b9dc0c58af4`。真实 `KBA4768`
+  chain 精确 DROP Pod 网段到三 PD 的 2379 后重建 `kubebrain-2`，新 UID 停在 Running/NotReady、零重启；
+  在分区仍存在时再次删除，SIGTERM 到旧 UID 消失只用 1.308 秒，证明初始化会响应进程 cancellation，而非
+  等 30 秒强杀。清理规则后下一 UID 恢复 Ready。终态 chain/jump/规则全部清除，PD/TiKV 3+3 与主/JWT
+  六副本全部运行同一 A4768 runtime digest、Ready、零重启，AlarmList/LeaseList 为空，proposal health
+  13.813ms。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
