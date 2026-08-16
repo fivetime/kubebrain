@@ -43,7 +43,7 @@ func (s *storageConfig) validate() error {
 	return nil
 }
 
-func (s *storageConfig) buildStorage() (storage.KvStorage, error) {
+func (s *storageConfig) buildStorage(context.Context) (storage.KvStorage, error) {
 	return badger.NewKvStorage(s.Config)
 }
 

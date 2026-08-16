@@ -120,8 +120,8 @@ func (s *storageConfig) validate() error {
 	return nil
 }
 
-func (s *storageConfig) buildStorage() (storage.KvStorage, error) {
-	return storagetikv.NewKvStorage(s.pdAddrs, s.clientNum, storagetikv.Security{
+func (s *storageConfig) buildStorage(ctx context.Context) (storage.KvStorage, error) {
+	return storagetikv.NewKvStorageWithContext(ctx, s.pdAddrs, s.clientNum, storagetikv.Security{
 		CAPath:   s.caFile,
 		CertPath: s.certFile,
 		KeyPath:  s.keyFile,

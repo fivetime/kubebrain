@@ -73,6 +73,12 @@ var _ storage.SnapshotRegionWarmer = (*store)(nil)
 const defaultClientNum = 16
 
 func NewKvStorage(pdAddrs []string, clientNum int, sec Security) (storage.KvStorage, error) {
+	return NewKvStorageWithContext(context.Background(), pdAddrs, clientNum, sec)
+}
+
+// NewKvStorageWithContext binds all parallel txn client construction to the
+// caller's startup and shutdown lifecycle.
+func NewKvStorageWithContext(ctx context.Context, pdAddrs []string, clientNum int, sec Security) (storage.KvStorage, error) {
 	if clientNum <= 0 {
 		clientNum = defaultClientNum
 	}
@@ -86,7 +92,7 @@ func NewKvStorage(pdAddrs []string, clientNum int, sec Security) (storage.KvStor
 	}
 	clients, err := createTxnClients(clientNum, func(index int) (*txnkv.Client, error) {
 		return createTxnClientWithEndpointRotation(pdAddrs, index, func(addrs []string) (*txnkv.Client, error) {
-			return txnkv.NewClient(addrs)
+			return txnkv.NewClientWithContext(ctx, addrs)
 		})
 	})
 	if err != nil {
@@ -293,7 +299,7 @@ func minBytes(a []byte, b []byte) []byte {
 
 // ClusterID implements storage.ClusterIdentifier with the PD cluster ID.
 func (s *store) ClusterID() uint64 {
-	return s.getClient().GetPDClient().GetClusterID(context.Background())
+	return s.getClient().GetClusterID()
 }
 
 func (s *store) GetPartitions(ctx context.Context, start, end []byte) (partitions []storage.Partition, err error) {

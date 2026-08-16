@@ -57,13 +57,19 @@ func WithAPIVersion(apiVersion kvrpcpb.APIVersion) ClientOpt {
 
 // NewClient creates a txn client with pdAddrs.
 func NewClient(pdAddrs []string, opts ...ClientOpt) (*Client, error) {
+	return NewClientWithContext(context.Background(), pdAddrs, opts...)
+}
+
+// NewClientWithContext binds PD discovery and cluster identity initialization
+// to the caller's lifecycle instead of using process-global TODO contexts.
+func NewClientWithContext(ctx context.Context, pdAddrs []string, opts ...ClientOpt) (*Client, error) {
 	// Apply options.
 	opt := &option{}
 	for _, o := range opts {
 		o(opt)
 	}
 	// Use an unwrapped PDClient to obtain keyspace meta.
-	pdClient, err := tikv.NewPDClient(pdAddrs)
+	pdClient, err := tikv.NewPDClientWithContext(ctx, pdAddrs)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -88,7 +94,7 @@ func NewClient(pdAddrs []string, opts ...ClientOpt) (*Client, error) {
 
 	cfg := config.GetGlobalConfig()
 	// init uuid
-	uuid := fmt.Sprintf("tikv-%v", pdClient.GetClusterID(context.TODO()))
+	uuid := fmt.Sprintf("tikv-%v", pdClient.GetClusterID(ctx))
 	tlsConfig, err := cfg.Security.ToTLSConfig()
 	if err != nil {
 		return nil, err
@@ -101,7 +107,7 @@ func NewClient(pdAddrs []string, opts ...ClientOpt) (*Client, error) {
 
 	rpcClient := tikv.NewRPCClient(tikv.WithSecurity(cfg.Security), tikv.WithCodec(codecCli.GetCodec()))
 
-	s, err := tikv.NewKVStore(uuid, pdClient, spkv, rpcClient)
+	s, err := tikv.NewKVStoreWithContext(ctx, uuid, pdClient, spkv, rpcClient)
 	if err != nil {
 		return nil, err
 	}

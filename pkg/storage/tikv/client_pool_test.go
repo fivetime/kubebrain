@@ -1,6 +1,7 @@
 package tikv
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -10,6 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tikv/client-go/v2/txnkv"
 )
+
+func TestNewKvStorageStartupHonorsCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	store, err := NewKvStorageWithContext(ctx, []string{"http://127.0.0.1:1"}, 1, Security{})
+	require.Nil(t, store)
+	require.Error(t, err)
+	require.Less(t, time.Since(start), time.Second)
+}
 
 func TestCreateTxnClientsStartsPoolConcurrently(t *testing.T) {
 	const count = 16

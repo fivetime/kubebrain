@@ -204,13 +204,19 @@ func loadOption(store *KVStore, opt ...Option) {
 
 // NewKVStore creates a new TiKV store instance.
 func NewKVStore(uuid string, pdClient pd.Client, spkv SafePointKV, tikvclient Client, opt ...Option) (*KVStore, error) {
+	return NewKVStoreWithContext(context.Background(), uuid, pdClient, spkv, tikvclient, opt...)
+}
+
+// NewKVStoreWithContext creates a store without detaching cluster identity
+// initialization from the caller's startup lifecycle.
+func NewKVStoreWithContext(startupCtx context.Context, uuid string, pdClient pd.Client, spkv SafePointKV, tikvclient Client, opt ...Option) (*KVStore, error) {
 	o, err := oracles.NewPdOracle(pdClient, time.Duration(oracleUpdateInterval)*time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	store := &KVStore{
-		clusterID:       pdClient.GetClusterID(context.TODO()),
+		clusterID:       pdClient.GetClusterID(startupCtx),
 		uuid:            uuid,
 		oracle:          o,
 		pdClient:        pdClient,
@@ -237,13 +243,19 @@ func NewKVStore(uuid string, pdClient pd.Client, spkv SafePointKV, tikvclient Cl
 
 // NewPDClient returns an unwrapped pd client.
 func NewPDClient(pdAddrs []string) (pd.Client, error) {
+	return NewPDClientWithContext(context.Background(), pdAddrs)
+}
+
+// NewPDClientWithContext binds PD discovery to the caller's lifecycle.
+func NewPDClientWithContext(ctx context.Context, pdAddrs []string) (pd.Client, error) {
 	cfg := config.GetGlobalConfig()
 	security, tlsDialOptions, err := pdSecurityOptions(cfg.Security)
 	if err != nil {
 		return nil, err
 	}
 	// init pd-client
-	pdCli, err := pd.NewClient(
+	pdCli, err := pd.NewClientWithContext(
+		ctx,
 		pdAddrs, security,
 		pd.WithGRPCDialOptions(
 			append(tlsDialOptions,

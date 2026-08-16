@@ -450,7 +450,7 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 	o.epsConf.ClusterMembers = members
 	o.epsConf.AdvertiseClientURLs = advertiseClientURLs
 
-	kv, err := o.storageConfig.buildStorage()
+	kv, err := o.storageConfig.buildStorage(ctx)
 	if err != nil {
 		return err
 	}
