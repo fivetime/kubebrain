@@ -85,8 +85,9 @@ func WriteSuccess(path, instance string, status backupfile.Status, artifactBytes
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	return directory.Sync()
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func escapeLabel(value string) string {

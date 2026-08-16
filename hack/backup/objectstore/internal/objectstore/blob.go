@@ -346,12 +346,16 @@ func writeBlobOutputAtomic(path string, body []byte) error {
 		}
 		return err
 	}
+	if err := os.Remove(tempName); err != nil {
+		return fmt.Errorf("remove temporary blob output link %q: %w", tempName, err)
+	}
 	directory, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	return directory.Sync()
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func readBoundedFile(path, description string, limit int64) ([]byte, error) {
