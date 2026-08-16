@@ -298,6 +298,13 @@ func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendS
 	return shim
 }
 
+// Close terminates background work owned by the shim. It is intentionally not
+// part of BackendShim so lightweight protocol fakes do not acquire a lifecycle
+// obligation; RPCServer discovers it on the concrete production shim.
+func (b *backendShim) Close() {
+	b.prevKvResolver.close()
+}
+
 func (b *backendShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
 	return b.backend.InternalGet(ctx, key)
 }
@@ -1414,7 +1421,7 @@ func (r *prevKvResolver) previousEtcdKv(ctx context.Context, key []byte, revisio
 	if revision == 0 {
 		return nil, true
 	}
-	readCtx, cancel := context.WithTimeout(context.Background(), prevKvRetryBudget)
+	readCtx, cancel := context.WithTimeout(ctx, prevKvRetryBudget)
 	defer cancel()
 	backoff := 10 * time.Millisecond
 	for {

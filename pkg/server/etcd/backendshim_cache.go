@@ -35,7 +35,10 @@ import (
 // methods stay promoted. Storage access (Get, backend, metrics) is borrowed from
 // the owning shim via srv rather than copied, so there is one source of truth.
 type prevKvResolver struct {
-	shim *backendShim
+	shim      *backendShim
+	runCtx    context.Context
+	cancel    context.CancelFunc
+	closeOnce sync.Once
 
 	metaCache  *revKeyCache
 	metaFlight singleflight.Group
@@ -48,12 +51,23 @@ type prevKvResolver struct {
 }
 
 func newPrevKvResolver(shim *backendShim) *prevKvResolver {
+	runCtx, cancel := context.WithCancel(context.Background())
 	return &prevKvResolver{
 		shim:      shim,
+		runCtx:    runCtx,
+		cancel:    cancel,
 		metaCache: newRevKeyCache(revKeyCacheCap, revKeyCacheMaxBytes),
 		prevCache: newRevKeyCache(revKeyCacheCap, revKeyCacheMaxBytes),
 		prevHints: newPrevHintCache(prevHintCacheCap, prevHintCacheMaxBytes),
 	}
+}
+
+// close stops shared previous-value lookups owned by this shim. Individual
+// watch cancellation deliberately does not cancel a singleflight used by other
+// watches, but server shutdown must not leave a TiKV retry running for its full
+// five-second budget after the backend starts closing.
+func (r *prevKvResolver) close() {
+	r.closeOnce.Do(r.cancel)
 }
 
 // prevKvRetryBudget bounds how long one previous-value lookup keeps retrying
@@ -421,7 +435,7 @@ func (r *prevKvResolver) cachedPreviousEtcdKv(key []byte, revision uint64, versi
 		// a transient-failure nil would hand the poisoned nil to every watcher
 		// stream converting the same event and amplify one storage hiccup into
 		// a cacher re-list storm (#36).
-		pk, certain := r.previousEtcdKv(context.Background(), key, revision)
+		pk, certain := r.previousEtcdKv(r.runCtx, key, revision)
 		if certain {
 			r.prevCache.put(ck, pk, kvBytes(pk))
 		}

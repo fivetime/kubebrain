@@ -338,6 +338,13 @@ func (s *RPCServer) Close() {
 	if s.concurrencyClient != nil {
 		_ = s.concurrencyClient.Close()
 	}
+	// The concrete production shim owns shared Watch PrevKV lookups. Cancel
+	// those before the lease manager and raw TiKV backend start shutting down;
+	// test/embedding BackendShim implementations are intentionally not required
+	// to expose lifecycle management.
+	if closer, ok := s.backend.(interface{ Close() }); ok {
+		closer.Close()
+	}
 	s.leaseManager.close()
 }
 

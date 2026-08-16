@@ -125,3 +125,25 @@ func TestPrevKvUncertainNilNotCached(t *testing.T) {
 	require.NotNil(t, prev, "uncertain nil must not be cached; recovered lookup must return the previous version")
 	require.Equal(t, updateRev, uint64(prev.ModRevision)+uint64(updateRev-uint64(prev.ModRevision)), "sanity")
 }
+
+// TestPrevKvLookupStopsWithShim pins the component lifetime boundary: the
+// shared lookup outlives any one watch, but it must not outlive its server.
+func TestPrevKvLookupStopsWithShim(t *testing.T) {
+	shim, b, kv := newPrevKvTestShim(t)
+	key, updateRev := seedUpdatedKey(t, b)
+	kv.failing.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		shim.cachedPreviousEtcdKv(key, updateRev, 0, 0)
+	}()
+	time.Sleep(30 * time.Millisecond) // allow the retry loop to enter storage
+	shim.Close()
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("shared PrevKV lookup survived backend shim shutdown")
+	}
+}
