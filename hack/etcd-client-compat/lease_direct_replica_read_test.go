@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -77,6 +78,25 @@ func TestLeaseReadAndRevokeAcrossDirectReplicas(t *testing.T) {
 		require.NoError(t, listErr)
 		require.True(t, leaseListContains(listed, grant.ID),
 			"direct replica %s omitted live lease %x", endpoint, grant.ID)
+
+		maintenance := etcdserverpb.NewMaintenanceClient(replica.ActiveConnection())
+		statusResponse, statusErr := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+		require.NoError(t, statusErr)
+		require.NotNil(t, statusResponse.Header)
+		keepAlive, keepAliveErr := etcdserverpb.NewLeaseClient(replica.ActiveConnection()).LeaseKeepAlive(ctx)
+		require.NoError(t, keepAliveErr)
+		require.NoError(t, keepAlive.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: int64(grant.ID)}))
+		kept, keepAliveErr := keepAlive.Recv()
+		require.NoError(t, keepAliveErr)
+		require.NotNil(t, kept.Header)
+		require.Equal(t, int64(grant.ID), kept.ID)
+		require.Positive(t, kept.TTL)
+		require.Equal(t, statusResponse.Header.ClusterId, kept.Header.ClusterId,
+			"keepalive cluster id must belong to direct replica %s", endpoint)
+		require.Equal(t, statusResponse.Header.MemberId, kept.Header.MemberId,
+			"keepalive member id must identify direct replica %s", endpoint)
+		require.Positive(t, kept.Header.RaftTerm)
+		require.NoError(t, keepAlive.CloseSend())
 	}
 
 	_, err = service.Revoke(ctx, grant.ID)

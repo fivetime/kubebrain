@@ -55206,6 +55206,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   unary 数据语义一致；同 profile 的 decoded-boundary 大值门禁也通过，总计 6.25 秒。一次性 reference 数据与 port-forward 已
   清理。本轮未复现生产差异，不修改生产代码；它关闭的是 proxy header 身份此前可被同型错误掩盖的证据缺口。
 
+- A4919 将同一副本身份门禁扩展到 Watch 与 LeaseKeepAlive 双向流。固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3rpc/watch.go` 与 `lease.go`：由接收
+  请求的成员为 create/error/event/cancel watch response 及 keepalive response 填入本地 header。既有直连测试只验证 Watch
+  控制状态和 Lease TTL/List/Revoke 数据结果，没有把流响应的 `ClusterId/MemberId/RaftTerm` 绑定到该直连端点，也没有产生真实
+  watch data event；leader 代理身份泄漏可能因此保持 GREEN。回归现在先取每个端点的 Status，再逐一约束 negative/invalid/success/
+  duplicate create、真实 Put event、cancel 与 LeaseKeepAlive header 的 cluster/member 身份及正 Raft term，并校验事件 revision 等于
+  Put revision、keepalive ID/TTL 有效。
+
+  2026-08-16 对 `kubebrain-0/1/2` 三个独立 port-forward 执行完整 direct-replica consistency suite：Watch、LeaseKeepAlive 及既有
+  alarm/hash/revoke 场景共 11.51 秒通过，两个 follower 均返回各自本地成员身份；测试键与 port-forward 已清理。本轮未复现生产
+  差异，不修改生产代码；它关闭的是 streaming response header 可被只检查业务 payload 的测试遗漏的证据缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
