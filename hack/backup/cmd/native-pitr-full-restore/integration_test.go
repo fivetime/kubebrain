@@ -2812,6 +2812,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.NoError(t, inspectErr, "wrong-key restore must leave the full transactional target empty")
 		require.Equal(t, targetEvidence.ClusterID, afterWrongKey.ClusterID)
 		require.Equal(t, targetEvidence.Stores, afterWrongKey.Stores)
+		t.Log("native PITR wrong-key executor and pinned BR were rejected without populating the target")
 	}
 	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, targetProvisioning: provisioningPath, targetQualification: qualificationPath, writerExclusion: writersPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, encryptionKeyID: encryption.KeyID, encryptionKeyFile: encryptionKeyFile, approve: digest(planBytes), admissionCheckInterval: 5 * time.Second, timeout: 3 * time.Minute}, runner, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
 	require.NoError(t, err)

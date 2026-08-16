@@ -54960,6 +54960,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   容器均已清理。该项关闭三副本 plaintext/AES 正路径尚未重签 v4 证据的缺口，不替代 commitTS 碰撞定向回归，也不关闭
   v4 故障中断续跑、错钥拒绝、key version promotion/撤权、跨可用区、生产规模和长时间 soak 门禁。
 
+- A4901 补齐三副本 AES-256-CTR v4 的错钥负路径。以 A4900 相同的 3 PD + 3 TiKV source/target 拓扑运行
+  `KUBEBRAIN_NATIVE_PITR_WRONG_KEY_DRILL=true`：错误 key 首先被 executor 的 exact local full mirror 复核拒绝且 stdout
+  不产生成功 receipt；随后绕过 executor 直接调用官方 BR v7.5.1 仍以 `wrong aes cipher` 失败。测试重新执行 live target
+  empty inspection，确认 cluster/store 身份未漂移且 transactional range 仍为空，之后才允许正确 key full restore、v4 replay、
+  v2 checkpoint、fence/handoff 与最终 etcd 语义验收继续，完整演练 39.99 秒通过。
+
+  集成测试新增明确日志标记上述“双层拒绝且 target 未填充”终态，避免 CI 只显示最终正路径 PASS。该项关闭当前 v4 三副本
+  错钥拒绝证据缺口，但 deterministic drill key 不代表生产 KMS；key version promotion、旧版本撤权后的恢复拒绝、密钥材料
+  注入审计和长期轮换演练仍保持开放，故障中断续跑也未由错钥早期失败覆盖。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
