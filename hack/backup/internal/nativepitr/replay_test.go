@@ -121,6 +121,93 @@ func TestReplayMutationJSONPropagatesShortWrite(t *testing.T) {
 	require.ErrorIs(t, writeReplayMutationsJSON(shortReplayWriter{}, []ReplayMutation{}), io.ErrShortWrite)
 }
 
+func TestCanonicalizeReplayMutationsReusesCandidateBackingArray(t *testing.T) {
+	mutations := []ReplayMutation{
+		{CommitTS: 2, Key: []byte("b"), Value: []byte("short"), sourceStartTS: 1, sourceWriteKind: 'P'},
+		{CommitTS: 1, Key: []byte("a"), Delete: true, sourceStartTS: 1, sourceWriteKind: 'D'},
+		{CommitTS: 2, Key: []byte("b"), Value: []byte("short"), sourceStartTS: 1, sourceWriteKind: 'P'},
+	}
+	backing := &mutations[0]
+
+	canonical, err := canonicalizeReplayMutations(mutations)
+
+	require.NoError(t, err)
+	require.Len(t, canonical, 2)
+	require.Same(t, backing, &canonical[0], "canonicalization must not allocate a second mutation array")
+	require.Equal(t, uint64(1), canonical[0].CommitTS)
+	require.Equal(t, uint64(2), canonical[1].CommitTS)
+}
+
+func TestCanonicalizeReplayMutationsRejectsConflictingDuplicate(t *testing.T) {
+	base := ReplayMutation{CommitTS: 2, Key: []byte("key"), Value: []byte("short"), sourceStartTS: 1, sourceWriteKind: 'P'}
+	for _, conflicting := range []ReplayMutation{
+		{CommitTS: 2, Key: []byte("key"), Value: []byte("short"), sourceStartTS: 9, sourceWriteKind: 'P'},
+		{CommitTS: 2, Key: []byte("key"), Value: []byte("short"), sourceStartTS: 1, sourceWriteKind: 'D', Delete: true},
+		{CommitTS: 2, Key: []byte("key"), Value: []byte("different"), sourceStartTS: 1, sourceWriteKind: 'P'},
+	} {
+		_, err := canonicalizeReplayMutations([]ReplayMutation{base, conflicting})
+		require.EqualError(t, err, "stream log contains conflicting write-CF entries")
+	}
+	_, err := canonicalizeReplayMutations([]ReplayMutation{
+		{CommitTS: 2, Key: []byte("empty"), sourceStartTS: 1, sourceWriteKind: 'P'},
+		{CommitTS: 2, Key: []byte("empty"), Value: []byte{}, sourceStartTS: 1, sourceWriteKind: 'P'},
+	})
+	require.EqualError(t, err, "stream log contains conflicting write-CF entries")
+}
+
+func TestDecodeWriteValuePreservesPresentEmptyShortValue(t *testing.T) {
+	kind, startTS, short, err := decodeWriteValue(encodeReplayWrite('P', 123, []byte{}))
+	require.NoError(t, err)
+	require.Equal(t, byte('P'), kind)
+	require.Equal(t, uint64(123), startTS)
+	require.NotNil(t, short)
+	require.Empty(t, short)
+}
+
+func TestMaterializeReplayPreservesEmptyEtcdValue(t *testing.T) {
+	task, _ := readyTask(t)
+	ready := readyReceiptFor(task)
+	ks, err := coder.NewKeyspace(task.Keyspace)
+	require.NoError(t, err)
+	key := ks.NewCoder().EncodeRevisionKey([]byte("/empty"))
+	writeData := encodeReplayEntry(
+		encodeReplayMVCCKey(key, 130), encodeReplayWrite('P', 120, []byte{}),
+	)
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "v1/log"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "v1/backupmeta"), 0o700))
+	writeFile := replayDataFile(
+		"v1/log/write.log", "write", writeData, task.StartTS, ready.GlobalCheckpointTS, 1,
+	)
+	require.NoError(t, os.WriteFile(filepath.Join(root, writeFile.Path), writeData, 0o600))
+	meta := &backuppb.Metadata{
+		MetaVersion: backuppb.MetaVersion_V1, StoreId: 1,
+		MinTs: task.StartTS, MaxTs: ready.GlobalCheckpointTS, ResolvedTs: ready.GlobalCheckpointTS,
+		Files: []*backuppb.DataFileInfo{writeFile},
+	}
+	metaBytes, err := meta.Marshal()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "v1/backupmeta/1.meta"), metaBytes, 0o600))
+	inventory := inventoryForMirror(t, task.LogStoragePrefix, root)
+	receipt, err := VerifyLogArtifacts(task, digest, ready, digest, inventory, digest, root)
+	require.NoError(t, err)
+
+	manifest, mutations, err := MaterializeReplay(receipt, digest, root, 119, 150)
+
+	require.NoError(t, err)
+	require.Equal(t, 1, manifest.PutCount)
+	require.Equal(t, []ReplayMutation{{CommitTS: 130, Key: key, Value: []byte{}}}, mutations)
+	require.NotNil(t, mutations[0].Value)
+	target := memkv.NewKvStorage()
+	defer target.Close()
+	result, err := ApplyReplay(t.Context(), target, digest, manifest, mutations)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.AppliedMutations)
+	value, err := target.Get(t.Context(), key)
+	require.NoError(t, err)
+	require.Empty(t, value)
+}
+
 func (r *boundedReadRequest) Read(data []byte) (int, error) {
 	if len(data) > r.max {
 		return 0, errors.New("reader was asked to materialize the segment")

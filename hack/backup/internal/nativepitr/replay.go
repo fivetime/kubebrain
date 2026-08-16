@@ -41,7 +41,14 @@ type ReplayMutation struct {
 	CommitTS uint64 `json:"commit_ts"`
 	Key      []byte `json:"key"`
 	Value    []byte `json:"value,omitempty"`
-	Delete   bool   `json:"delete,omitempty"`
+
+	// MaterializeReplay temporarily carries BR write-CF join fields here so
+	// candidates can become final mutations without a second struct array.
+	// They are cleared before validation, hashing, or return.
+	sourceStartTS uint64
+	Delete        bool `json:"delete,omitempty"`
+
+	sourceWriteKind byte
 }
 
 type ReplayManifest struct {
@@ -61,12 +68,6 @@ type ReplayManifest struct {
 	AllEntriesInTenantRange   bool   `json:"all_entries_in_tenant_range"`
 	AllPutsResolved           bool   `json:"all_puts_resolved"`
 	ExactLocalMirrorRechecked bool   `json:"exact_local_mirror_rechecked"`
-}
-
-type replayWrite struct {
-	commitTS, startTS uint64
-	key, shortValue   []byte
-	kind              byte
 }
 
 const replayCheckpointFormat = "kubebrain.native-pitr-log-replay-checkpoint.v1"
@@ -216,7 +217,6 @@ func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scr
 		return ReplayManifest{}, nil, fmt.Errorf("create replay default-CF index: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, defaults.Close()) }()
-	var writes []replayWrite
 	for _, object := range expected {
 		for _, segment := range object.segments {
 			entries := int64(0)
@@ -247,7 +247,10 @@ func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scr
 						return errors.New("write-CF commit TSO does not follow start TSO")
 					}
 					if ts > startExclusive && ts <= restoreTS && (kind == 'P' || kind == 'D') {
-						writes = append(writes, replayWrite{commitTS: ts, startTS: startTS, key: append([]byte(nil), rawKey...), shortValue: short, kind: kind})
+						mutations = append(mutations, ReplayMutation{
+							CommitTS: ts, Key: append([]byte(nil), rawKey...), Value: short,
+							Delete: kind == 'D', sourceStartTS: startTS, sourceWriteKind: kind,
+						})
 					}
 				default:
 					return fmt.Errorf("unsupported stream column family %q", segment.Cf)
@@ -265,53 +268,37 @@ func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scr
 	if err := defaults.Flush(); err != nil {
 		return ReplayManifest{}, nil, err
 	}
-	sort.Slice(writes, func(i, j int) bool {
-		if writes[i].commitTS != writes[j].commitTS {
-			return writes[i].commitTS < writes[j].commitTS
-		}
-		return bytes.Compare(writes[i].key, writes[j].key) < 0
-	})
-	canonicalWrites := writes[:0]
-	for _, write := range writes {
-		if len(canonicalWrites) != 0 {
-			previous := canonicalWrites[len(canonicalWrites)-1]
-			if previous.commitTS == write.commitTS && bytes.Equal(previous.key, write.key) {
-				if previous.startTS != write.startTS || previous.kind != write.kind || !bytes.Equal(previous.shortValue, write.shortValue) {
-					return ReplayManifest{}, nil, errors.New("stream log contains conflicting write-CF entries")
-				}
-				continue
-			}
-		}
-		canonicalWrites = append(canonicalWrites, write)
+	mutations, err = canonicalizeReplayMutations(mutations)
+	if err != nil {
+		return ReplayManifest{}, nil, err
 	}
-	writes = canonicalWrites
-	mutations = make([]ReplayMutation, 0, len(writes))
 	putCount, deleteCount, txns := 0, 0, 0
 	var lastTS uint64
-	for _, write := range writes {
-		if write.commitTS != lastTS {
+	for i := range mutations {
+		mutation := &mutations[i]
+		if mutation.CommitTS != lastTS {
 			txns++
-			lastTS = write.commitTS
+			lastTS = mutation.CommitTS
 		}
-		mutation := ReplayMutation{CommitTS: write.commitTS, Key: write.key}
-		if write.kind == 'D' {
-			mutation.Delete = true
+		if mutation.Delete {
+			// A delete has no etcd value. Keep any source short-value bytes only
+			// through duplicate comparison, matching the former replayWrite path.
+			mutation.Value = nil
 			deleteCount++
 		} else {
-			mutation.Value = write.shortValue
 			if mutation.Value == nil {
-				value, ok, err := defaults.Get(replayValueKey(write.key, write.startTS))
+				value, ok, err := defaults.Get(replayValueKey(mutation.Key, mutation.sourceStartTS))
 				if err != nil {
 					return ReplayManifest{}, nil, err
 				}
 				if !ok {
-					return ReplayManifest{}, nil, fmt.Errorf("PUT at commit TSO %d lacks its default-CF value", write.commitTS)
+					return ReplayManifest{}, nil, fmt.Errorf("PUT at commit TSO %d lacks its default-CF value", mutation.CommitTS)
 				}
 				mutation.Value = value
 			}
 			putCount++
 		}
-		mutations = append(mutations, mutation)
+		mutation.sourceStartTS, mutation.sourceWriteKind = 0, 0
 	}
 	mutationsDigest, err := digestReplayMutations(mutations)
 	if err != nil {
@@ -432,6 +419,33 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 	return result, nil
 }
 
+func canonicalizeReplayMutations(mutations []ReplayMutation) ([]ReplayMutation, error) {
+	sort.Slice(mutations, func(i, j int) bool {
+		if mutations[i].CommitTS != mutations[j].CommitTS {
+			return mutations[i].CommitTS < mutations[j].CommitTS
+		}
+		return bytes.Compare(mutations[i].Key, mutations[j].Key) < 0
+	})
+	canonical := mutations[:0]
+	for _, mutation := range mutations {
+		if len(canonical) != 0 {
+			previous := canonical[len(canonical)-1]
+			if previous.CommitTS == mutation.CommitTS && bytes.Equal(previous.Key, mutation.Key) {
+				if previous.sourceStartTS != mutation.sourceStartTS ||
+					previous.sourceWriteKind != mutation.sourceWriteKind ||
+					previous.Delete != mutation.Delete ||
+					(previous.Value == nil) != (mutation.Value == nil) ||
+					!bytes.Equal(previous.Value, mutation.Value) {
+					return nil, errors.New("stream log contains conflicting write-CF entries")
+				}
+				continue
+			}
+		}
+		canonical = append(canonical, mutation)
+	}
+	return canonical, nil
+}
+
 func digestReplayMutations(mutations []ReplayMutation) (string, error) {
 	digest := sha256.New()
 	if err := writeReplayMutationsJSON(digest, mutations); err != nil {
@@ -487,7 +501,7 @@ func validateReplayMutations(manifest ReplayManifest, mutations []ReplayMutation
 	}
 	start, end := ks.ObjectKeyspaceStart(), ks.ObjectKeyspaceEnd()
 	for i, mutation := range mutations {
-		if mutation.CommitTS <= manifest.StartExclusiveTS || mutation.CommitTS > manifest.RestoreTS || len(mutation.Key) == 0 || bytes.Compare(mutation.Key, start) < 0 || bytes.Compare(mutation.Key, end) >= 0 || (mutation.Delete && mutation.Value != nil) || (!mutation.Delete && mutation.Value == nil) || (i > 0 && (mutation.CommitTS < mutations[i-1].CommitTS || (mutation.CommitTS == mutations[i-1].CommitTS && bytes.Compare(mutation.Key, mutations[i-1].Key) <= 0))) {
+		if mutation.CommitTS <= manifest.StartExclusiveTS || mutation.CommitTS > manifest.RestoreTS || len(mutation.Key) == 0 || bytes.Compare(mutation.Key, start) < 0 || bytes.Compare(mutation.Key, end) >= 0 || (mutation.Delete && mutation.Value != nil) || (!mutation.Delete && mutation.Value == nil) || mutation.sourceStartTS != 0 || mutation.sourceWriteKind != 0 || (i > 0 && (mutation.CommitTS < mutations[i-1].CommitTS || (mutation.CommitTS == mutations[i-1].CommitTS && bytes.Compare(mutation.Key, mutations[i-1].Key) <= 0))) {
 			return errors.New("replay mutations are not canonical, bounded, or complete")
 		}
 	}
@@ -677,7 +691,8 @@ func decodeWriteValue(value []byte) (byte, uint64, []byte, error) {
 			if len(rest) < 2 || int(rest[1]) > len(rest)-2 {
 				return 0, 0, nil, errors.New("invalid short write value")
 			}
-			short = append([]byte(nil), rest[2:2+int(rest[1])]...)
+			short = make([]byte, int(rest[1]))
+			copy(short, rest[2:2+int(rest[1])])
 			rest = rest[2+int(rest[1]):]
 		case 'R':
 			rest = rest[1:]

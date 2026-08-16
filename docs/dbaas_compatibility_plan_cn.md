@@ -54895,6 +54895,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   现在摘要阶段额外内存为 O(max encoded mutation)，但有序 `writes`、最终 mutations 和 ApplyReplay 输入仍是 O(relevant output)；
   真正超大窗口仍需持久 canonical mutation plan 与按 source transaction 流式 apply，不能仅凭本项放宽 executor memory gate。
 
+- A4896 消除 native PITR write candidate→最终 mutation 的重复结构数组，并修复过程中暴露的 empty-value 恢复差异。
+  旧 materializer 先保留 `[]replayWrite`，排序去重后再分配等长 `[]ReplayMutation`；现在将 startTS/write-kind 暂存在
+  `ReplayMutation` 的非 JSON 内部字段，直接在同一 backing array 原地排序、去重和 default join，返回/摘要/Apply 前清零，
+  validator 也拒绝任何残留内部字段，避免未被 manifest digest 绑定的状态进入 apply。回归固定 canonical slice 与 candidate
+  共享 backing array，并保持 duplicate exact 接受、startTS/kind/short-value 冲突拒绝。
+
+  同轮对照 `/root/etcd@5cd9f4ee1380/tests/integration/clientv3/kv_test.go::TestKVRange` 的 empty value Put/Get 合同发现：
+  TiKV short-value marker `v,0` 经过 `append(nil, empty...)` 会变成 nil，旧 replay 错把合法空值当作缺失 long value 并要求
+  default-CF entry。decoder 现在用 `make(0)` 保留“present but empty”，去重明确区分 nil/empty；BR fixture 从 write-CF
+  materialize 后通过 ApplyReplay 写入 memkv 并读回空值。专项 race 连续 10 轮（4.241 秒）、nativepitr 全包 race
+  （4.483 秒）、backup 全树 race、vet 与 diff check 通过。本项消除 O(mutation count) 的第二个 struct array；最终 mutation values 仍按 relevant
+  output 驻留，disk-backed canonical plan/stream apply 缺口不变。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
