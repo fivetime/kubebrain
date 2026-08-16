@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -58,7 +59,7 @@ func execute(parent context.Context, o options, out interface{ Write([]byte) (in
 	if (o.cert == "") != (o.key == "") || (o.cert != "" && o.ca == "") {
 		return fmt.Errorf("cert and key must be set together and require ca")
 	}
-	createBytes, err := os.ReadFile(o.taskCreate)
+	createBytes, err := readBounded(o.taskCreate, "task create receipt")
 	if err != nil {
 		return err
 	}
@@ -66,7 +67,7 @@ func execute(parent context.Context, o options, out interface{ Write([]byte) (in
 	if err != nil {
 		return err
 	}
-	readyBytes, err := os.ReadFile(o.taskReady)
+	readyBytes, err := readBounded(o.taskReady, "task ready receipt")
 	if err != nil {
 		return err
 	}
@@ -114,4 +115,20 @@ func execute(parent context.Context, o options, out interface{ Write([]byte) (in
 	encoded = append(encoded, '\n')
 	_, err = out.Write(encoded)
 	return err
+}
+
+func readBounded(path, description string) (data []byte, retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, (8<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || len(data) > 8<<20 {
+		return nil, fmt.Errorf("%s is empty or exceeds 8 MiB", description)
+	}
+	return data, nil
 }

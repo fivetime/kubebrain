@@ -54647,6 +54647,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增两端 oversized input、不覆盖既有输出及冲突后无临时残留回归；control/receipt race（1.625/1.705 秒）、vet 与
   diff check 通过。真实 Kubernetes/CSI create 成功叠加 close/unlink/fsync fault 的对账仍留待正式 provisioning Job 门禁。
 
+- A4871 补齐 native PITR backup-stream task create/ready/delete 的输入 receipt 文件终态。A4859 已聚合三个 executor 的
+  PD metadata client Close，但 create 的 preflight、ready 的 task-create 及 delete 的 task-create/task-ready 仍通过无界
+  `os.ReadFile` 读取；介质 Close 失败时仍可能计算 preflight SHA、创建日志任务、释放 bootstrap GC safepoint或删除任务。
+  三个命令现统一使用 8 MiB bounded stream，并通过命名错误 Join file Close；只有输入完整读取且关闭成功后才解码并进入
+  PD/metadata mutation。状态变更后的 canonical stdout receipt 与 A4859 的 cleanup 对账语义保持不变。
+
+  新增三个 oversized receipt 回归；create/ready/delete race（1.678/1.648/1.643 秒）、vet 与 diff check 通过。真实输入
+  close fault 与已提交 task mutation 的组合故障仍留待正式 backup-stream executor Job 门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

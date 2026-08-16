@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -74,7 +75,7 @@ func execute(parent context.Context, o options, out interface{ Write([]byte) (in
 	if o.cert != "" && o.ca == "" {
 		return fmt.Errorf("client certificate authentication requires ca")
 	}
-	b, err := os.ReadFile(o.preflight)
+	b, err := readBounded(o.preflight)
 	if err != nil {
 		return err
 	}
@@ -121,4 +122,20 @@ func execute(parent context.Context, o options, out interface{ Write([]byte) (in
 	outBytes = append(outBytes, '\n')
 	_, err = out.Write(outBytes)
 	return err
+}
+
+func readBounded(path string) (data []byte, retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, (8<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || len(data) > 8<<20 {
+		return nil, errors.New("task create preflight is empty or exceeds 8 MiB")
+	}
+	return data, nil
 }
