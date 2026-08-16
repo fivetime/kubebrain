@@ -53980,6 +53980,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   storage/backend/server vet 均通过；本轮没有修改测试文件。在线 A4776 未滚动，真实 RPC close failure 与
   safepoint-etcd close failure 同时注入时的 FD/goroutine 归零证据留待正式新镜像故障门禁验证。
 
+- A4797 补齐 A4796 在 KubeBrain 16-client adapter 层被吞掉的关闭错误与幂等性缺口。底层 KVStore 已能完整
+  清理并聚合错误，但 `pkg/storage/tikv.closeClient` 丢弃每个 client 的返回值，`store.Close` 永远返回 nil；直接
+  二次 Close 还会重复关闭 channel 并 panic。因此 backend/Endpoint 无法把任一 PD/TiKV/safepoint 关闭异常交给
+  发布系统，A4796 的错误证据实际上到不了进程 owner。生产 adapter 现在尝试关闭全部 pool client，以
+  `multierr` 聚合所有返回错误，并通过 `sync.Once` 保存首次结果；并发或重复 Close 返回同一结果而不重复释放。
+  启动失败 cleanup 仍 best-effort 忽略 cleanup error，保持最初的构造错误为主因。根模块只把已有 multierr 从
+  indirect 改为 direct，没有增加依赖或清理无关 go.sum 条目。
+
+  KubeBrain TiKV storage race、backend 全量（79.671 秒）及 storage/backend/server vet 通过；本轮没有修改
+  测试文件。在线 A4776 未滚动，真实多 client Close 故障下的聚合错误与资源归零仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
