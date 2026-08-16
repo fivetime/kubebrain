@@ -54093,6 +54093,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过；本轮没有修改测试文件。在线 A4776 未滚动，真实掉电后目录扫描无隐藏 artifact 的证据留待正式 backup
   executor 故障门禁。
 
+- A4807 完成同一 durable hardlink 合同向 cold-restore manifest/semantic receipt、native PITR target replacement
+  handoff、retirement/provisioning receipt 与 legacy snapshot remediation 的收敛。前五类 writer 与 A4806 相同，
+  均在 directory fsync 之后才 deferred 删除临时名；legacy remediation 发布完整 etcd snapshot 后甚至没有父目录
+  fsync，却先输出 `snapshot_status=remediated`。六条生产路径现在统一执行 Link → Remove temp → directory
+  Sync/Close，Sync 与 Close 双错误均保留；legacy 状态只在 durable publish 完成后变为 remediated。由此审批链
+  不再出现“receipt 已 durable、handoff/manifest 仅 page-cache 可见”的不对称状态。
+
+  cold-restore-render/verify、replacement handoff、provisioning receipt、legacy remediation race 分别在
+  1.273/1.357/1.663/1.607/1.093 秒通过，retirement receipt 编译和全部相关 vet 通过；本轮没有修改测试文件。
+  在线 A4776 未滚动，六类 artifact 的真实掉电目录持久性仍留待正式 executor 故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
