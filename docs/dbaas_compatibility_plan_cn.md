@@ -54396,6 +54396,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   JWT/AuthToken race（60.854 秒）、endpoint TLS/security/config race（11.040 秒）及两包 vet 通过；本轮没有修改测试
   文件。在线 A4776 未滚动，credential file close fault 下启动失败仍留待正式新镜像文件系统故障门禁。
 
+- A4842 收紧 DBaaS artifact semantic verification 与 logical→etcd snapshot conversion 的成功条件。target-binding probe
+  历史校验旧实现忽略独立 TiKV client Close，可能在 transport 未可靠收尾时返回验证成功；转换器也忽略 verified input
+  Close，并在 hash Copy/Write/Sync/Close 或目录 Sync/Close 并发失败时只保留首错。生产 helper 现在用命名错误聚合
+  TiKV/input cleanup，hash append 一次 Join 全部写入收尾结果，目录 Sync 失败也保留 Close sibling；artifact acceptance
+  与发布成功因此依赖完整资源生命周期。
+
+  `semanticverify` 与 `etcdsnapshot` race（1.289/1.282 秒）、两包 vet 和 diff check 通过；本轮没有修改测试文件。在线
+  A4776 未滚动，TiKV close 与 filesystem multi-fault 下 verifier/converter 非成功仍留待正式新镜像 artifact 故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
