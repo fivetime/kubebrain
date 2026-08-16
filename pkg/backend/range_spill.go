@@ -90,7 +90,12 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 			fail(fmt.Errorf("create decoded range ordering spill: %w", err))
 			return
 		}
-		defer sorter.Close()
+		sorterClosed := false
+		defer func() {
+			if !sorterClosed {
+				_ = sorter.Close()
+			}
+		}()
 
 		end := userEnd
 		if isFromKeyEnd(end) {
@@ -131,7 +136,6 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 				if kv == nil {
 					continue
 				}
-				observed++
 				if addErr := sorter.Add(chunkKeys[index]); addErr != nil {
 					return fmt.Errorf("write decoded range exact-key spill: %w", addErr)
 				}
@@ -158,7 +162,12 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 				fail(openErr)
 				return
 			}
-			defer reader.Close()
+			readerClosed := false
+			defer func() {
+				if !readerClosed {
+					_ = reader.Close()
+				}
+			}()
 			var carry []byte
 			for {
 				keys := make([][]byte, 0, decodedRangeStreamIndexPage)
@@ -208,7 +217,17 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 					return
 				}
 			}
+			if closeErr := reader.Close(); closeErr != nil {
+				fail(fmt.Errorf("close decoded range ordering spill: %w", closeErr))
+				return
+			}
+			readerClosed = true
 		}
+		if closeErr := sorter.Close(); closeErr != nil {
+			fail(fmt.Errorf("remove decoded range ordering spill: %w", closeErr))
+			return
+		}
+		sorterClosed = true
 		b.metricCli.EmitGauge("backend.range_stream.decoded_spill_bytes", spillBytes)
 		b.metricCli.EmitCounter("backend.range_stream.decoded_spill", 1)
 		b.metricCli.EmitGauge("backend.range_stream.decoded_spill_keys", observed)
@@ -269,8 +288,7 @@ func (s *externalKeySorter) flushRun() error {
 			continue
 		}
 		if err = writer.Write(key); err != nil {
-			_ = writer.Close()
-			return err
+			return errors.Join(err, writer.Close())
 		}
 		previous = key
 	}

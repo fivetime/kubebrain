@@ -631,6 +631,8 @@ func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T
 	t.Setenv("TMPDIR", spillDir)
 	tracked := &checkpointCountScanner{Scanner: b.scanner}
 	b.scanner = tracked
+	metricRecorder := &compactMetricRecorder{}
+	b.metricCli = metricRecorder
 	store.resetTrace()
 	stream, err := b.RangeStream(ctx, []byte("a"), []byte("b"), 304)
 	require.NoError(t, err)
@@ -667,4 +669,13 @@ func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T
 	entries, err := os.ReadDir(spillDir)
 	require.NoError(t, err)
 	require.Empty(t, entries, "the per-stream spill file must be removed after terminal delivery")
+	metricRecorder.mu.Lock()
+	defer metricRecorder.mu.Unlock()
+	var observedMetric []interface{}
+	for _, metric := range metricRecorder.records {
+		if metric.kind == "gauge" && metric.name == "backend.range_stream.decoded_spill_keys" {
+			observedMetric = append(observedMetric, metric.value)
+		}
+	}
+	require.Equal(t, []interface{}{int64(len(keys))}, observedMetric)
 }

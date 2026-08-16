@@ -54795,6 +54795,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （1.332/1.364 秒）、vet 与 diff check 通过。真实 TiKV/PD 分区导致 Revoke uncertain 时 Job 必须非零并等待 TTL/运维核验，
   不得把 verifier failure 当作目标无残留证明。
 
+- A4887 收紧 decoded RangeStream 外排排序器的成功终态与容量指标。该路径在 current ordering index overflow 或旧历史窗口
+  不可信时，以固定 fan-in 的磁盘 runs 恢复 etcd 二进制 key 顺序；旧 goroutine 在发送 terminal response 后才由忽略错误的
+  defer 关闭 final reader/RemoveAll sorter，文件关闭或临时目录删除失败仍表现为完整成功并可能持续占用节点磁盘。exact-key
+  补扫还在调用统一 add 计数前额外 `observed++`，使 `$`/NUL 等边界键被计量两次。现在 final reader Close 与 sorter Close
+  都是 terminal response 前的显式门禁，失败发送 stream error；defer 仍覆盖早退 cleanup，run write failure 同时 Join writer
+  flush/Close。exact key 只经统一 add 计数，数据排序、分页与 pinned revision 不变。
+
+  overflow 回归现断言 `backend.range_stream.decoded_spill_keys` 精确等于返回键数，并继续要求 terminal delivery 后 spill 根目录
+  为空；完整 race 首轮还暴露 runtime-index corruption 用例把可合法滞后的旧 ready watermark 当成当前完整 witness，object-missing
+  子例因后台 durable watermark 前进而抖动。测试现仅对 object corruption 注入后重建同 watermark count index，再断言同步
+  arm CORRUPT；该用例 race 连续 20 轮（8.838 秒）通过，未放宽生产 follower stale-index fail-closed 边界。external sorter/
+  overflow 聚焦 race（1.627 秒）、backend vet 与 diff check 通过。真实 node ephemeral-storage unlink/close fault 仍需预生产
+  故障注入，任何 cleanup error 都不得被当作完整 RangeStream。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

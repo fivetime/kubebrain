@@ -123,6 +123,13 @@ func TestLatestGetArmsCorruptForWitnessedMissingOrMismatchedIndexTarget(t *testi
 				corrupt.Put(corruptKey, tombStoneBytes, 0)
 			}
 			require.NoError(t, corrupt.Commit(ctx))
+			if target == "object-missing" || target == "object-tombstone" {
+				// Keep the complete count-index witness at the same durable
+				// watermark as the injected object corruption. A concurrently
+				// advanced durable watermark deliberately makes an older index
+				// advisory, as it would be on a lagging follower.
+				require.NoError(t, b.RebuildCountIndex(ctx))
+			}
 
 			resp, getErr := b.Get(ctx, &proto.GetRequest{Key: key})
 			require.Nil(t, resp)
