@@ -53240,6 +53240,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   文件和 direct port-forward 均清除，A4754 prefix Count=0。终态主/JWT 六副本使用最终 runtime imageID
   且 Ready/零重启，PD/TiKV 3+3 Ready/零重启，LeaseList/AlarmList 为空，proposal health 通过。
 
+- A4755 回到公开服务端协议面筛查真实差异，全程不修改生产或测试代码。先对照
+  `/root/etcd/server/etcdserver/api/v3rpc` 与当前 KubeBrain 实现，排除两项不成立的候选：`net/http/pprof`
+  虽因具名 handler import 执行标准库注册，但所有 KubeBrain listener 均使用私有 mux；主 Service 对
+  `/debug/pprof/` 与 `/debug/pprof/goroutine` 实测均为 404，未形成公开暴露。A4754 的失败 leader 冷却按完整
+  peer endpoint 绑定，不同 identity 立即绕过；正常运行的选举锁描述保留最近合法 identity，因此没有把仅靠
+  猜测的“未知 identity 刷新风暴”包装成生产修复。
+
+  随后以本机独立 reference etcd `127.0.0.1:2379` 和当前 KubeBrain NodePort 运行八条现有、互不改写的
+  黑盒差分：单个超过 2 MiB 的 Watch event 不拆分、Txn 任意执行顺序命中 future revision 时整笔回滚、
+  LeaseKeepAlive `CloseSend` 后按请求顺序排空响应并 EOF、取消 Range 不污染共享连接、重复 lease ID 响应顺序、
+  Txn 静态/执行期校验顺序，以及 Watch ID 有符号边界。两端结果逐字段一致，两组命令分别在 1.180 秒和
+  1.108 秒通过。该轮没有生产 RED，故不增加为测试而测试的改动、不构建或滚动新镜像；运行环境继续保持
+  A4754 制品。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
