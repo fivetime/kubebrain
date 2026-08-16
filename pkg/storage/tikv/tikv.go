@@ -363,7 +363,7 @@ type tiKvIterator interface {
 	Valid() bool
 	Key() []byte
 	Value() []byte
-	Next() error
+	NextWithContext(context.Context) error
 	Close()
 }
 
@@ -380,11 +380,11 @@ func (s *store) Iter(ctx context.Context, start []byte, end []byte, timestamp ui
 	var it tiKvIterator
 
 	if !reverse {
-		it, err = snapshot.Iter(start, end)
+		it, err = snapshot.IterWithContext(ctx, start, end)
 	} else {
 		// iter of tikv failed to scan the start, so append \x00 to start to get it
 		next := append(start, '\x00')
-		it, err = snapshot.IterReverse(next)
+		it, err = snapshot.IterReverseWithContext(ctx, next)
 	}
 
 	if err != nil {

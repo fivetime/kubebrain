@@ -755,10 +755,20 @@ func (s *KVSnapshot) Iter(k []byte, upperBound []byte) (unionstore.Iterator, err
 	return scanner, err
 }
 
+// IterWithContext is Iter with caller-bound initial scan and retry lifecycle.
+func (s *KVSnapshot) IterWithContext(ctx context.Context, k []byte, upperBound []byte) (*Scanner, error) {
+	return newScannerWithContext(ctx, s, k, upperBound, s.scanBatchSize, false)
+}
+
 // IterReverse creates a reversed Iterator positioned on the first entry which key is less than k.
 func (s *KVSnapshot) IterReverse(k []byte) (unionstore.Iterator, error) {
 	scanner, err := newScanner(s, nil, k, s.scanBatchSize, true)
 	return scanner, err
+}
+
+// IterReverseWithContext is IterReverse with caller-bound initial scan and retry lifecycle.
+func (s *KVSnapshot) IterReverseWithContext(ctx context.Context, k []byte) (*Scanner, error) {
+	return newScannerWithContext(ctx, s, nil, k, s.scanBatchSize, true)
 }
 
 // SetNotFillCache indicates whether tikv should skip filling cache when

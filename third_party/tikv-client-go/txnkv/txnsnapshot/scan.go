@@ -70,6 +70,10 @@ type Scanner struct {
 }
 
 func newScanner(snapshot *KVSnapshot, startKey []byte, endKey []byte, batchSize int, reverse bool) (*Scanner, error) {
+	return newScannerWithContext(context.Background(), snapshot, startKey, endKey, batchSize, reverse)
+}
+
+func newScannerWithContext(ctx context.Context, snapshot *KVSnapshot, startKey []byte, endKey []byte, batchSize int, reverse bool) (*Scanner, error) {
 	// It must be > 1. Otherwise scanner won't skipFirst.
 	if batchSize <= 1 {
 		batchSize = DefaultScanBatchSize
@@ -83,7 +87,7 @@ func newScanner(snapshot *KVSnapshot, startKey []byte, endKey []byte, batchSize 
 		reverse:      reverse,
 		nextEndKey:   endKey,
 	}
-	err := scanner.Next()
+	err := scanner.NextWithContext(ctx)
 	if tikverr.IsErrNotFound(err) {
 		return scanner, nil
 	}
@@ -115,10 +119,20 @@ const scannerNextMaxBackoff = 20000
 
 // Next return next element.
 func (s *Scanner) Next() error {
-	bo := retry.NewBackofferWithVars(context.WithValue(context.Background(), retry.TxnStartKey, s.snapshot.version), scannerNextMaxBackoff, s.snapshot.vars)
+	return s.NextWithContext(context.Background())
+}
+
+// NextWithContext advances the scanner while binding Region lookup, scan RPC,
+// lock resolution and their backoff budget to the caller lifecycle.
+func (s *Scanner) NextWithContext(ctx context.Context) error {
 	if !s.valid {
 		return errors.New("scanner iterator is invalid")
 	}
+	if err := ctx.Err(); err != nil {
+		s.Close()
+		return err
+	}
+	bo := retry.NewBackofferWithVars(context.WithValue(ctx, retry.TxnStartKey, s.snapshot.version), scannerNextMaxBackoff, s.snapshot.vars)
 	s.snapshot.mu.RLock()
 	if s.snapshot.mu.interceptor != nil {
 		// User has called snapshot.SetRPCInterceptor() to explicitly set an interceptor, we
@@ -181,8 +195,7 @@ func (s *Scanner) startTS() uint64 {
 }
 
 func (s *Scanner) resolveCurrentLock(bo *retry.Backoffer, current *kvrpcpb.KvPair) error {
-	ctx := context.Background()
-	val, err := s.snapshot.get(ctx, bo, current.Key)
+	val, err := s.snapshot.get(bo.GetCtx(), bo, current.Key)
 	if err != nil {
 		return err
 	}

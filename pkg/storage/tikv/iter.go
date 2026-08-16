@@ -55,7 +55,7 @@ func (i *iter) Next(ctx context.Context) (err error) {
 	}
 
 	i.count++
-	err = i.iter.Next()
+	err = i.iter.NextWithContext(ctx)
 	if err != nil {
 		return err
 	} else if !i.iter.Valid() {

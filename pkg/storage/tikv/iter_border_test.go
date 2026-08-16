@@ -27,13 +27,14 @@ type mockTiKvIter struct {
 	keys [][]byte
 	vals [][]byte
 	pos  int
+	ctx  context.Context
 }
 
-func (m *mockTiKvIter) Valid() bool   { return m.pos < len(m.keys) }
-func (m *mockTiKvIter) Key() []byte   { return m.keys[m.pos] }
-func (m *mockTiKvIter) Value() []byte { return m.vals[m.pos] }
-func (m *mockTiKvIter) Next() error   { m.pos++; return nil }
-func (m *mockTiKvIter) Close()        {}
+func (m *mockTiKvIter) Valid() bool                               { return m.pos < len(m.keys) }
+func (m *mockTiKvIter) Key() []byte                               { return m.keys[m.pos] }
+func (m *mockTiKvIter) Value() []byte                             { return m.vals[m.pos] }
+func (m *mockTiKvIter) NextWithContext(ctx context.Context) error { m.ctx = ctx; m.pos++; return nil }
+func (m *mockTiKvIter) Close()                                    {}
 
 // TestReverseIterFirstKeyIsBorderChecked pins #25: the first position of a reverse
 // iterator must be range-checked. IterReverse is not bounded by `end` (the lower
@@ -65,4 +66,14 @@ func TestReverseIterFirstKeyIsBorderChecked(t *testing.T) {
 		it := &iter{iter: m, reverse: true, end: end}
 		require.Equal(t, io.EOF, it.Next(context.Background()))
 	})
+}
+
+func TestIterNextPassesCallerContextToTiKVScanner(t *testing.T) {
+	m := &mockTiKvIter{keys: [][]byte{[]byte("a"), []byte("b")}, vals: [][]byte{nil, nil}}
+	it := &iter{iter: m, end: []byte("z")}
+	require.NoError(t, it.Next(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.NoError(t, it.Next(ctx))
+	require.Same(t, ctx, m.ctx)
 }
