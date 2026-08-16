@@ -338,14 +338,14 @@ func (b *backend) boundedHistoryScan(ctx context.Context, prefix string, fromRev
 // historyWatchEvents, returning every event under prefix with revision in
 // [fromRevision, currentRevision]. It is invoked through historyScanGroup so a
 // reconnect herd shares one execution rather than each issuing its own scan.
-func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevision, currentRevision uint64) ([]*proto.Event, error) {
+func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevision, currentRevision uint64) (result []*proto.Event, retErr error) {
 	prefixBytes := []byte(prefix)
 	start, end := b.historyPrefixBounds(prefixBytes)
 	iter, err := b.kv.Iter(ctx, start, end, 0, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
+	defer func() { retErr = errors.Join(retErr, iter.Close()) }()
 
 	events := make([]*proto.Event, 0)
 	// A DELETE's prev-kv — the newest live version before the tombstone — has

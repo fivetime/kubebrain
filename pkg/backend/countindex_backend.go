@@ -313,7 +313,7 @@ func (b *backend) syncCountIndexFromEventLog(ctx context.Context, fromRevision, 
 	return true, nil
 }
 
-func (b *backend) replayCountIndexEventLog(ctx context.Context, fromRevision, toRevision uint64, apply func(eventLogPending)) (bool, error) {
+func (b *backend) replayCountIndexEventLog(ctx context.Context, fromRevision, toRevision uint64, apply func(eventLogPending)) (served bool, retErr error) {
 	if fromRevision > toRevision {
 		return true, nil
 	}
@@ -326,7 +326,12 @@ func (b *backend) replayCountIndexEventLog(ctx context.Context, fromRevision, to
 	if err != nil {
 		return false, err
 	}
-	defer iter.Close()
+	defer func() {
+		if closeErr := iter.Close(); closeErr != nil {
+			served = false
+			retErr = errors.Join(retErr, closeErr)
+		}
+	}()
 	var group []eventLogPending
 	flush := func() (bool, error) {
 		if len(group) == 0 {

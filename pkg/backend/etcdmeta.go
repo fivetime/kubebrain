@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"math"
@@ -87,7 +88,7 @@ func (b *backend) GetEtcdMetadata(ctx context.Context, key []byte, modRevision u
 // fixed compact watermark establishes an authoritative generation boundary.
 func (b *backend) recoverRetainedEtcdMetadata(
 	ctx context.Context, key []byte, modRevision uint64,
-) (EtcdMetadata, bool, error) {
+) (result EtcdMetadata, proven bool, retErr error) {
 	compactRevision, err := b.loadCompactRevision(ctx)
 	if err != nil {
 		return EtcdMetadata{}, false, err
@@ -110,7 +111,7 @@ func (b *backend) recoverRetainedEtcdMetadata(
 	if err != nil {
 		return EtcdMetadata{}, false, err
 	}
-	defer iter.Close()
+	defer func() { retErr = stderrors.Join(retErr, iter.Close()) }()
 
 	var current EtcdMetadata
 	anchored := false
@@ -193,7 +194,7 @@ func (b *backend) recoverRetainedEtcdMetadata(
 
 func (b *backend) loadRetainedLegacyEtcdMetadata(
 	ctx context.Context, key []byte, endRevision, timestamp uint64,
-) (map[uint64]EtcdMetadata, error) {
+) (result map[uint64]EtcdMetadata, retErr error) {
 	metaKey := b.etcdMetadataUserKey(key)
 	iter, err := b.kv.Iter(
 		ctx,
@@ -204,8 +205,8 @@ func (b *backend) loadRetainedLegacyEtcdMetadata(
 	if err != nil {
 		return nil, err
 	}
-	defer iter.Close()
-	result := make(map[uint64]EtcdMetadata)
+	defer func() { retErr = stderrors.Join(retErr, iter.Close()) }()
+	result = make(map[uint64]EtcdMetadata)
 	for {
 		if err := iter.Next(ctx); err != nil {
 			if errors.Is(err, io.EOF) {
