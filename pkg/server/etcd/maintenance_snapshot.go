@@ -405,7 +405,7 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 	return state, leaseIDs, leaseAttachments, nil
 }
 
-func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer) error {
+func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer) (retErr error) {
 	started := time.Now()
 	defer func() { emitEtcdBackendSnapshotDuration(s.metricCli, time.Since(started)) }()
 	tmp, err := os.CreateTemp("", ".kubebrain-maintenance-snapshot-*.db")
@@ -413,23 +413,26 @@ func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer)
 		return err
 	}
 	path := tmp.Name()
+	defer func() {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove etcd snapshot artifact: %w", removeErr))
+		}
+	}()
 	if closeErr := tmp.Close(); closeErr != nil {
-		_ = os.Remove(path)
 		return closeErr
 	}
-	defer os.Remove(path)
 	if err = s.buildSnapshot(stream.Context(), path); err != nil {
 		return err
 	}
 	return streamSnapshotFile(path, stream)
 }
 
-func streamSnapshotFile(path string, stream etcdserverpb.Maintenance_SnapshotServer) error {
+func streamSnapshotFile(path string, stream etcdserverpb.Maintenance_SnapshotServer) (retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	info, err := f.Stat()
 	if err != nil {
 		return err
