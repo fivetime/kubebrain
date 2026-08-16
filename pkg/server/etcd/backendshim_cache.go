@@ -399,18 +399,25 @@ func (r *prevKvResolver) cachedMetadata(ctx context.Context, key []byte, revisio
 	if v, ok := r.metaCache.get(ck); ok {
 		return v.(backend.EtcdMetadata), nil
 	}
-	v, err, _ := r.metaFlight.Do(ck, func() (interface{}, error) {
-		m, e := r.shim.backend.GetEtcdMetadata(ctx, key, revision)
+	resultCh := r.metaFlight.DoChan(ck, func() (interface{}, error) {
+		m, e := r.shim.backend.GetEtcdMetadata(r.runCtx, key, revision)
 		if e != nil {
 			return backend.EtcdMetadata{}, e
 		}
 		r.metaCache.put(ck, m, 0) // EtcdMetadata is fixed-size scalars; overhead covers it
 		return m, nil
 	})
-	if err != nil {
-		return backend.EtcdMetadata{}, err
+	select {
+	case <-ctx.Done():
+		return backend.EtcdMetadata{}, ctx.Err()
+	case <-r.runCtx.Done():
+		return backend.EtcdMetadata{}, r.runCtx.Err()
+	case result := <-resultCh:
+		if result.Err != nil {
+			return backend.EtcdMetadata{}, result.Err
+		}
+		return result.Val.(backend.EtcdMetadata), nil
 	}
-	return v.(backend.EtcdMetadata), nil
 }
 
 // cachedPreviousEtcdKv resolves the previous value for (key,revision) once and

@@ -38,6 +38,27 @@ type flakyKV struct {
 	failing atomic.Bool
 }
 
+type blockingMetadataBackend struct {
+	backend.Backend
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (b *blockingMetadataBackend) GetEtcdMetadata(ctx context.Context, _ []byte, _ uint64) (backend.EtcdMetadata, error) {
+	b.calls.Add(1)
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return backend.EtcdMetadata{}, ctx.Err()
+	case <-b.release:
+		return backend.EtcdMetadata{CreateRevision: 7, Version: 3}, nil
+	}
+}
+
 func (f *flakyKV) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if f.failing.Load() {
 		return nil, fmt.Errorf("injected transient storage failure")
@@ -146,4 +167,35 @@ func TestPrevKvLookupStopsWithShim(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("shared PrevKV lookup survived backend shim shutdown")
 	}
+}
+
+func TestMetadataSingleflightIsolatesCallerCancellation(t *testing.T) {
+	shim, rawBackend, _ := newPrevKvTestShim(t)
+	probe := &blockingMetadataBackend{
+		Backend: rawBackend,
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	shim.backend = probe
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := shim.cachedMetadata(firstCtx, []byte("legacy"), 11)
+		firstDone <- err
+	}()
+	<-probe.entered
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := shim.cachedMetadata(context.Background(), []byte("legacy"), 11)
+		secondDone <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // let the second caller join the flight
+	cancelFirst()
+	require.ErrorIs(t, <-firstDone, context.Canceled)
+	require.Equal(t, int32(1), probe.calls.Load())
+
+	close(probe.release)
+	require.NoError(t, <-secondDone, "one watch cancellation must not fail another watch sharing metadata")
 }
