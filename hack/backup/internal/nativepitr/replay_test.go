@@ -164,6 +164,68 @@ func TestDecodeWriteValuePreservesPresentEmptyShortValue(t *testing.T) {
 	require.Empty(t, short)
 }
 
+func TestDecodeWriteValueAcceptsCanonicalMetadataAndUnknownSuffix(t *testing.T) {
+	value := encodeReplayWrite('P', 123, []byte("value"))
+	value = append(value, 'R', 'F')
+	value = append(value, make([]byte, 8)...)
+	value = append(value, 'l')
+	value = append(value, make([]byte, 8)...)
+	value = append(value, 1, 'S', 2)
+	value = append(value, "future-field"...)
+
+	kind, startTS, short, err := decodeWriteValue(value)
+	require.NoError(t, err)
+	require.Equal(t, byte('P'), kind)
+	require.Equal(t, uint64(123), startTS)
+	require.Equal(t, []byte("value"), short)
+}
+
+func TestDecodeWriteValueRejectsNonCanonicalKnownMetadata(t *testing.T) {
+	base := encodeReplayWrite('P', 123, []byte("first"))
+	for name, suffix := range map[string][]byte{
+		"duplicate short value": {'v', 6, 's', 'e', 'c', 'o', 'n', 'd'},
+		"duplicate rollback":    {'R', 'R'},
+		"out of order":          {'S', 1, 'R'},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, _, err := decodeWriteValue(append(append([]byte(nil), base...), suffix...))
+			require.EqualError(t, err, "non-canonical write-CF metadata")
+		})
+	}
+}
+
+func TestMaterializeReplayRejectsNonCanonicalWriteMetadata(t *testing.T) {
+	task, _ := readyTask(t)
+	ready := readyReceiptFor(task)
+	ks, err := coder.NewKeyspace(task.Keyspace)
+	require.NoError(t, err)
+	key := ks.NewCoder().EncodeRevisionKey([]byte("/ambiguous"))
+	write := encodeReplayWrite('P', 120, []byte("first"))
+	write = append(write, 'v', 6, 's', 'e', 'c', 'o', 'n', 'd')
+	writeData := encodeReplayEntry(encodeReplayMVCCKey(key, 130), write)
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "v1/log"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "v1/backupmeta"), 0o700))
+	writeFile := replayDataFile(
+		"v1/log/write.log", "write", writeData, task.StartTS, ready.GlobalCheckpointTS, 1,
+	)
+	require.NoError(t, os.WriteFile(filepath.Join(root, writeFile.Path), writeData, 0o600))
+	meta := &backuppb.Metadata{
+		MetaVersion: backuppb.MetaVersion_V1, StoreId: 1,
+		MinTs: task.StartTS, MaxTs: ready.GlobalCheckpointTS, ResolvedTs: ready.GlobalCheckpointTS,
+		Files: []*backuppb.DataFileInfo{writeFile},
+	}
+	metaBytes, err := meta.Marshal()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "v1/backupmeta/1.meta"), metaBytes, 0o600))
+	inventory := inventoryForMirror(t, task.LogStoragePrefix, root)
+	receipt, err := VerifyLogArtifacts(task, digest, ready, digest, inventory, digest, root)
+	require.NoError(t, err)
+
+	_, _, err = MaterializeReplay(receipt, digest, root, 119, 150)
+	require.EqualError(t, err, "decode write log entry: non-canonical write-CF metadata")
+}
+
 func TestMaterializeReplayPreservesEmptyEtcdValue(t *testing.T) {
 	task, _ := readyTask(t)
 	ready := readyReceiptFor(task)

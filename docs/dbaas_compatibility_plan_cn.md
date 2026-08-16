@@ -54908,6 +54908,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （4.483 秒）、backup 全树 race、vet 与 diff check 通过。本项消除 O(mutation count) 的第二个 struct array；最终 mutation values 仍按 relevant
   output 驻留，disk-backed canonical plan/stream apply 缺口不变。
 
+- A4897 收紧 native PITR write-CF 元数据的规范性校验。对照固定来源
+  `/root/tikv@v7.5.1/components/txn_types/src/write.rs::WriteRef::{parse,to_bytes}`：TiKV 只按
+  `v`（short value）、`R`（overlapped rollback）、`F`（GC fence）、`l`（last change）、`S`（txn source）
+  顺序各序列化一次；旧 replay decoder 却接受重复或逆序的已知字段，并可能让后一个 `v` 静默覆盖前值。恢复器现在拒绝这类
+  固定版本生产者不会生成的非规范工件，避免摘要绑定的同一 write record 存在歧义解释；最小 BR metadata/segment 回归证明错误在
+  materialize 入口 fail closed，不能生成可 Apply 的 mutation plan。
+
+  TiKV v7.5.1 parser 为向前兼容会在首个未知字节停止解析，本项明确保留该行为：合法已知前缀后的未来字段仍被接受，不把固定
+  consumer 变成拒绝新版 suffix 的版本锁。合法五字段组合、未知后缀、重复 short/rollback 与逆序字段专项 race 连续 10 轮通过；
+  empty value 的 etcd 可观察合同仍由 `/root/etcd@5cd9f4ee1380/tests/integration/clientv3/kv_test.go::TestKVRange`
+  及 A4896 的 BR→ApplyReplay 黑盒回归覆盖。本项是受支持 v7.5.1 工件完整性加固，不声明任意未来 TiKV write-CF 字段的恢复语义已验证，
+  也不扩大 pinned 版本矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

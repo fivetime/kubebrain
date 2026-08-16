@@ -685,9 +685,12 @@ func decodeWriteValue(value []byte) (byte, uint64, []byte, error) {
 	}
 	rest := value[1+n:]
 	var short []byte
+	lastField := 0
 	for len(rest) != 0 {
+		field := 0
 		switch rest[0] {
 		case 'v':
+			field = 1
 			if len(rest) < 2 || int(rest[1]) > len(rest)-2 {
 				return 0, 0, nil, errors.New("invalid short write value")
 			}
@@ -695,13 +698,16 @@ func decodeWriteValue(value []byte) (byte, uint64, []byte, error) {
 			copy(short, rest[2:2+int(rest[1])])
 			rest = rest[2+int(rest[1]):]
 		case 'R':
+			field = 2
 			rest = rest[1:]
 		case 'F':
+			field = 3
 			if len(rest) < 9 {
 				return 0, 0, nil, errors.New("invalid GC fence")
 			}
 			rest = rest[9:]
 		case 'l':
+			field = 4
 			if len(rest) < 9 {
 				return 0, 0, nil, errors.New("invalid last-change metadata")
 			}
@@ -712,6 +718,7 @@ func decodeWriteValue(value []byte) (byte, uint64, []byte, error) {
 			}
 			rest = rest[n:]
 		case 'S':
+			field = 5
 			_, n = binary.Uvarint(rest[1:])
 			if n <= 0 {
 				return 0, 0, nil, errors.New("invalid txn source")
@@ -719,6 +726,12 @@ func decodeWriteValue(value []byte) (byte, uint64, []byte, error) {
 			rest = rest[1+n:]
 		default:
 			rest = nil
+		}
+		if field != 0 {
+			if field <= lastField {
+				return 0, 0, nil, errors.New("non-canonical write-CF metadata")
+			}
+			lastField = field
 		}
 	}
 	return kind, startTS, short, nil
