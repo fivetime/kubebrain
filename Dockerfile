@@ -126,6 +126,14 @@ COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-opera
 COPY --from=br-v751 /br /usr/local/bin/br
 COPY hack/production/run-native-pitr-full-backup-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-backup-operation.sh
 
+ARG KUBEBRAIN_VERSION
+ARG KUBEBRAIN_GIT_SHA
+ARG KUBEBRAIN_BUILD_DATE
+LABEL org.opencontainers.image.title="KubeBrain native PITR full backup" \
+      org.opencontainers.image.version="$KUBEBRAIN_VERSION" \
+      org.opencontainers.image.revision="$KUBEBRAIN_GIT_SHA" \
+      org.opencontainers.image.created="$KUBEBRAIN_BUILD_DATE"
+
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/kubebrain-native-pitr-full-backup"]
 
@@ -153,6 +161,14 @@ COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-opera
 COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl
 COPY --from=br-v751 /br /usr/local/bin/br
 COPY hack/production/run-native-pitr-full-restore-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-restore-operation.sh
+
+ARG KUBEBRAIN_VERSION
+ARG KUBEBRAIN_GIT_SHA
+ARG KUBEBRAIN_BUILD_DATE
+LABEL org.opencontainers.image.title="KubeBrain native PITR full restore" \
+      org.opencontainers.image.version="$KUBEBRAIN_VERSION" \
+      org.opencontainers.image.revision="$KUBEBRAIN_GIT_SHA" \
+      org.opencontainers.image.created="$KUBEBRAIN_BUILD_DATE"
 
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/kubebrain-native-pitr-full-restore"]
