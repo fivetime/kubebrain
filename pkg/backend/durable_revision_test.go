@@ -26,6 +26,18 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
+type contextBlockingDurableRevisionKV struct {
+	storage.KvStorage
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (s *contextBlockingDurableRevisionKV) Get(ctx context.Context, _ []byte) ([]byte, error) {
+	s.once.Do(func() { close(s.entered) })
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 func TestDurableRevisionTracksResolvedUserWrites(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	resp, err := b.Create(ctx, &proto.CreateRequest{
@@ -48,6 +60,33 @@ func TestDurableRevisionNeverMovesBackward(t *testing.T) {
 	revision, err := b.GetDurableRevision(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, uint64(200), revision)
+}
+
+func TestDurableRevisionPersisterStopsWithWorkerContext(t *testing.T) {
+	b, _ := newTxnApplyBackend(t)
+	b.stopWorkers()
+	original := b.kv
+	blocking := &contextBlockingDurableRevisionKV{
+		KvStorage: original,
+		entered:   make(chan struct{}),
+	}
+	b.kv = blocking
+	defer func() { b.kv = original }()
+
+	workerCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.persistDurableRevisionWithContext(workerCtx, 200)
+	}()
+	<-blocking.entered
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("durable revision persistence survived worker shutdown")
+	}
 }
 
 func TestDurableRevisionCorruptionFailsClosed(t *testing.T) {

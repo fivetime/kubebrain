@@ -46,7 +46,7 @@ func (b *backend) runDurableRevisionPersister(ctx context.Context) {
 		case <-b.durableRevisionSignal:
 			for {
 				target := atomic.LoadUint64(&b.durableRevisionTarget)
-				b.persistDurableRevision(target)
+				b.persistDurableRevisionWithContext(ctx, target)
 				if atomic.LoadUint64(&b.durableRevisionTarget) == target {
 					break
 				}
@@ -196,13 +196,19 @@ func (b *backend) stageNextDurableRevisionAfter(batch storage.BatchWrite, floor 
 // later progress retries with a higher target, while readers keep using the old
 // snapshot.
 func (b *backend) persistDurableRevision(target uint64) {
+	b.persistDurableRevisionWithContext(context.Background(), target)
+}
+
+func (b *backend) persistDurableRevisionWithContext(parent context.Context, target uint64) {
 	if target == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), unaryRpcTimeout)
+	ctx, cancel := context.WithTimeout(parent, unaryRpcTimeout)
 	defer cancel()
 	if err := b.persistDurableRevisionContext(ctx, target); err != nil {
-		b.logDurableRevisionFailure(target, err)
+		if parent.Err() == nil {
+			b.logDurableRevisionFailure(target, err)
+		}
 	}
 }
 
