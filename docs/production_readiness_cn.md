@@ -2588,9 +2588,13 @@ token 逐一验证 control + 256 shards，并再次确认 plan/full/log/fence �
 PD+TiKV、MinIO 和官方 BR v7.5.1 重跑完整 full+log 链（43.74 秒）：真实 executor 签发 v4 receipt，测试从 target
 读取并验证 v2 checkpoint 含非零且有序的 `last_start_ts/last_commit_ts`，随后 fence/handoff 与最终 etcd 语义验收通过。
 同日又在 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer 上分别完成 plaintext（41.84 秒）与
-AES-256-CTR（41.05 秒）v4 全链。演练没有人为制造 commitTS 碰撞；碰撞边界由 BR-format 定向回归覆盖，故障中断续跑、
-生产规模 v4 组合仍需另行重跑。同日三副本 AES 错钥演练（39.99 秒）证明错误 key 在 exact mirror 复核与 pinned BR
+AES-256-CTR（41.05 秒）v4 全链。演练没有人为制造 commitTS 碰撞；碰撞边界由 BR-format 定向回归覆盖，生产规模 v4
+组合仍需另行重跑。同日三副本 AES 错钥演练（39.99 秒）证明错误 key 在 exact mirror 复核与 pinned BR
 两层均被拒绝、不签发成功 receipt，且 target transactional range 复查仍为空；随后正确 key 的 v4 全链通过。
+同日三副本 plaintext 故障演练在首个 source transaction 原子提交后、第二个提交前注入确定性失败；target v2 checkpoint
+保持 7/19 个 mutation 的完整事务边界，随后真实 replay CLI 从该 checkpoint 续跑、签发 `resumed_from_checkpoint=true`
+的 v4 receipt，并通过 fence/handoff 和最终语义验收（39.94 秒）。该注入模拟确定性提交失败，不等同于进程 `SIGKILL`、
+节点/网络故障或不确定提交结果；这些组合及生产规模长时间 soak 仍需独立演练。
 
 v4 不接受旧 `log-replay-manifest.v1`、`log-replay-checkpoint.v1` 或 `native-pitr-log-replay.v3`
 证据：这些格式没有摘要绑定 source `start_ts`，无法在 commit TSO 碰撞时证明 source transaction 边界。

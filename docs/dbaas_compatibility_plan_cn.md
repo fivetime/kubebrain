@@ -54970,6 +54970,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   错钥拒绝证据缺口，但 deterministic drill key 不代表生产 KMS；key version promotion、旧版本撤权后的恢复拒绝、密钥材料
   注入审计和长期轮换演练仍保持开放，故障中断续跑也未由错钥早期失败覆盖。
 
+- A4902 补齐 v4 source-transaction checkpoint 的真实中断续跑证据。新增仅由集成脚本 profile
+  `target-log-replay-interrupt-resume` 启用的存储包装层；它复用生产 `ApplyReplay`，允许首个 source transaction 与 v2
+  checkpoint 在真实三副本 target TiKV 原子提交，并在第二个 batch 进入 TiKV transaction 前返回确定性错误，不向生产
+  replay CLI 增加故障参数。测试要求窗口至少两个 source transaction，核对失败结果和 target checkpoint 均停在同一完整
+  transaction 边界且 mutation 数小于 manifest 总数，然后启动实际 `native-pitr-log-replay` CLI 处理相同 exact plan、log mirror
+  与 fence 链，并要求 v4 receipt 明确记录 `resumed_from_checkpoint=true`。
+
+  2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext 与官方 BR v7.5.1
+  上执行：首事务提交 7/19 个 mutation 后注入失败，v2 checkpoint 保留非零 startTS/commitTS；CLI 从余下 12 个 mutation
+  续跑，fence/handoff、最终 revision/key/lease/watch 语义验收通过，总耗时 39.94 秒，一次性容器已清理。该项关闭
+  “v4 从未在真实 TiKV 从部分 checkpoint 续跑”的缺口，但确定性 pre-commit 失败不覆盖进程 `SIGKILL`、节点/网络故障、
+  TiKV uncertain commit、跨可用区、生产规模或长时间 soak；这些故障矩阵仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
