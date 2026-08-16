@@ -4730,9 +4730,9 @@ KubeBrain 副本使用与 revision、auth revision 和 compact watermark 一致�
 TSO，先注册 PD service GC safepoint 并预热所有已知租户 Region，再在本地安全窗内为
 `Range`、read-only `Txn` 和 `RangeStream` 提供固定快照。真实 PD packet isolation、
 cold Region cache、Region split、leader transfer、单 TiKV store 故障、cached-neighbor Region merge，以及
-checkpoint 已预注册 Up Store 的 Region peer replacement 门禁已通过。
+checkpoint 已预注册 Up Store 的 Region peer replacement/同 ID address migration 门禁已通过。
 该能力是有界的：默认可用窗约 150 秒；checkpoint 未发布、已过期、safepoint
-续租失败，或 replacement Store 在 checkpoint 后才注册、同 ID address change、cache 丢失需要新 PD directory 时继续
+续租失败，或 Store 注册/address change 发生在最新成功 directory refresh 后、cache 丢失需要新 PD directory 时继续
 fail closed，不伪造未受 GC 保护或鉴权状态不匹配的读。
 
 恢复后至少验证：
