@@ -54,6 +54,16 @@ func normalizeServeError(err error) error {
 	if err == nil {
 		return nil
 	}
+	// errors.Is on a joined error succeeds when any child matches. Normalize
+	// children independently so an expected net.ErrClosed sibling cannot hide a
+	// real transport failure returned by another listener/server.
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var result error
+		for _, child := range joined.Unwrap() {
+			result = errors.Join(result, normalizeServeError(child))
+		}
+		return result
+	}
 	if errors.Is(err, http.ErrServerClosed) ||
 		errors.Is(err, grpc.ErrServerStopped) ||
 		errors.Is(err, net.ErrClosed) ||
