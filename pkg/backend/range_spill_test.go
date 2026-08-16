@@ -103,6 +103,38 @@ func TestExternalKeySorterBoundsRunRecordsWithoutCappingConfiguredKeySize(t *tes
 	require.NoError(t, reader.Close())
 }
 
+func TestKeyRunReaderRejectsEmptyOrNonIncreasingRecords(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		keys [][]byte
+		want string
+	}{
+		{name: "empty", keys: [][]byte{nil}, want: "empty key"},
+		{name: "descending", keys: [][]byte{[]byte("b"), []byte("a")}, want: "not strictly increasing"},
+		{name: "duplicate", keys: [][]byte{[]byte("a"), []byte("a")}, want: "not strictly increasing"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "run")
+			writer, err := createKeyRun(path)
+			require.NoError(t, err)
+			for _, key := range test.keys {
+				require.NoError(t, writer.Write(key))
+			}
+			require.NoError(t, writer.Close())
+
+			reader, err := openKeyRun(path)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, reader.Close()) }()
+			for range len(test.keys) - 1 {
+				_, err = reader.Next()
+				require.NoError(t, err)
+			}
+			_, err = reader.Next()
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
 func TestExternalKeySorterCancellationCleansPartialMerge(t *testing.T) {
 	spillRoot := t.TempDir()
 	t.Setenv("TMPDIR", spillRoot)

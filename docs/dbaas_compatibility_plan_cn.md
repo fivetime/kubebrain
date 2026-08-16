@@ -54819,6 +54819,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新用例 race 连续 10 轮（1.713 秒）、完整 backend race、vet 与 diff check 通过。spill 目录为 0700 且文件为 0600；同 UID 主动篡改仍属于
   节点进程隔离边界，但不得把偶发介质损坏放大为无界内存分配。
 
+- A4889 完成 RangeStream spill run 的键序内容校验。A4888 只证明每条 length-prefixed record 落在文件物理边界内；旧 reader
+  仍接受零长度 key、重复 key 或降序 key。正常 sorter 永远生成非空、去重且严格递增的 run，因此这些形状只可能来自临时
+  介质损坏；若继续进入 heap merge，最终 RangeStream 可能静默违反 etcd 原始字节序或返回无效空 key。keyRunReader 现保存
+  上一条已验证 key，在交付前拒绝空 key 与 `previous >= current`；该校验同时覆盖每个 merge input 和最终消费 run，不增加
+  全量内存物化，单 reader 仅保留一条前键。
+
+  新增 empty/descending/duplicate 三类手工 run 回归，并与大 key/长度边界/multi-pass sorter 合并 race 连续 10 轮
+  （3.614 秒）；backend vet 与 diff check 通过。key 内容本身没有另加 checksum，节点磁盘与同 UID 进程隔离仍是完整性边界，
+  但可由顺序不变量识别的损坏不得静默成为客户端结果。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

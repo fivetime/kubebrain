@@ -362,6 +362,7 @@ type keyRunReader struct {
 	file      *os.File
 	buffer    *bufio.Reader
 	remaining uint64
+	previous  []byte
 }
 
 func openKeyRun(path string) (*keyRunReader, error) {
@@ -392,11 +393,18 @@ func (r *keyRunReader) Next() ([]byte, error) {
 	if size > uint64(maxInt()) {
 		return nil, fmt.Errorf("decoded range spill key length %d overflows int", size)
 	}
+	if size == 0 {
+		return nil, errors.New("decoded range spill contains an empty key")
+	}
 	key := make([]byte, int(size))
 	if _, err = io.ReadFull(r.buffer, key); err != nil {
 		return nil, err
 	}
 	r.remaining -= size
+	if r.previous != nil && bytes.Compare(r.previous, key) >= 0 {
+		return nil, errors.New("decoded range spill keys are not strictly increasing")
+	}
+	r.previous = append(r.previous[:0], key...)
 	return key, nil
 }
 
