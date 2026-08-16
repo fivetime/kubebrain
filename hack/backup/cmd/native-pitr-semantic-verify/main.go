@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
@@ -54,7 +56,9 @@ func main() {
 	flag.StringVar(&o.key, "target-key", "", "target PD client private key")
 	flag.DurationVar(&o.timeout, "timeout", 5*time.Minute, "semantic verification deadline")
 	flag.Parse()
-	if err := execute(context.Background(), o, os.Stdout, time.Now); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := execute(ctx, o, os.Stdout, time.Now); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR semantic verify:", err)
 		os.Exit(1)
 	}

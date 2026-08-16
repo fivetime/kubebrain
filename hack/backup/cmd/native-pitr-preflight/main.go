@@ -14,9 +14,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
@@ -97,7 +99,9 @@ func main() {
 	flag.StringVar(&o.key, "key", "", "PD/TiKV client private key file")
 	flag.DurationVar(&o.timeout, "timeout", 15*time.Second, "overall preflight timeout")
 	flag.Parse()
-	if err := execute(context.Background(), o, os.Stdout); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := execute(ctx, o, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR preflight:", err)
 		os.Exit(1)
 	}

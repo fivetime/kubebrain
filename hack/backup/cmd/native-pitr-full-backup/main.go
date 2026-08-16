@@ -16,10 +16,12 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
@@ -89,7 +91,9 @@ func main() {
 	flag.StringVar(&o.encryptionKeyFile, "encryption-key-file", "", "file containing the 64-character hexadecimal AES-256 key")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "BR backup deadline")
 	flag.Parse()
-	if err := execute(context.Background(), o, osRunner{}, os.Stderr, time.Now); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := execute(ctx, o, osRunner{}, os.Stderr, time.Now); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR full backup:", err)
 		os.Exit(1)
 	}

@@ -15,11 +15,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
@@ -84,7 +86,9 @@ func main() {
 	flag.DurationVar(&o.admissionCheckInterval, "admission-check-interval", 5*time.Second, "PD-backed restore admission verification interval during BR import")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "full restore deadline")
 	flag.Parse()
-	if err := execute(context.Background(), o, osRunner{}, nativepitr.InspectLiveTargetSnapshotEmpty, os.Stdout, os.Stderr, time.Now); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := execute(ctx, o, osRunner{}, nativepitr.InspectLiveTargetSnapshotEmpty, os.Stdout, os.Stderr, time.Now); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR full restore:", err)
 		os.Exit(1)
 	}
