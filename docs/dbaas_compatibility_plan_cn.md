@@ -53476,6 +53476,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fixture prefix 为 0、Watch/临时文件无残留；PD/TiKV 3+3 Ready、零重启，AlarmList/LeaseList 为空，
   proposal health 15.252ms。
 
+- A4766 修复压缩 Watch 终止路径对独立 TiKV 的无界依赖。对照固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+  `server/etcdserver/api/v3rpc/watch.go::serverWatchStream.sendLoop`：upstream 直接转发本地 MVCC
+  `WatchResponse.CompactRevision`，不会为了终止帧再访问远端存储；KubeBrain 为避免 follower 的 TTL
+  compact watermark 偏低，会在 `watcher.cancel` 中再做一次 durable fresh read，但此前使用
+  `context.Background()`。三 TiKV 不可达时，这会无限保留 Watch ID 并扣住终止响应，直到底层偶然恢复，
+  与 etcd 已经确定取消后立即发出 terminal response 的可观察语义不符。
+
+  生产提交 `9fbe509a` 将该 fresh read 绑定 Watch stream lifecycle，并复用已有 250ms
+  `watchCompactionProbeTimeout`。健康 TiKV 仍返回精确 durable watermark；stream 关闭会立即取消读取；
+  TiKV 超时/失败则沿用已有保守 `CompactRevision=1`，让 clientv3 立即 re-list，而不是无限等待。
+  Watch ID 仍保留到 terminal control 已排序，quota 仍在逻辑关闭时立即释放。只新增一条故障回归：阻塞
+  durable backend 不释放时，取消调用在 1 秒内返回、终止帧携带 fallback 1 且 ID 已释放；原有精确水位、
+  ID 排序、quota 和 progress 三组测试同时保持。定向测试、race、vet 以及完整 `pkg/server/etcd`
+  188.771 秒全部通过。
+
+  最终镜像 `kubebrain:a4766-9fbe509a` 内嵌完整 SHA
+  `9fbe509a720b0d42c993982b8cfcb17d78c6d561`、build time `2026-08-16T05:00:37Z`，本地 image ID
+  `sha256:8a3df685c4e9f63488795394a0c1ee23e097f84326a8d21c6baa72723a78b1fd`，Kind runtime imageID
+  `sha256:728063d160ac6e58d52293ef243dbd71a79bb5d64e081a196633dfece454e83b`。主/JWT 六副本滚动后
+  全部 Ready、零重启。真实独立 TiKV/PD 上写入 revision `468126003565956135` 并 Compact 后，从前一
+  revision 发起的官方 `etcdctl` Watch 在 123ms 返回 canceled，`CompactRevision` 精确等于上述水位。
+  无注入钩子的生产二进制无法确定性地在同一 RPC 内相邻两次 metadata read 之间切断 TiKV，因此不把普通
+  全隔离冒充成该窄故障路径的现场证明；不可达分支由阻塞真实接口的确定性回归证明。终态 fixture prefix
+  为 0，PD/TiKV 3+3 与主/JWT 六副本均 Ready、零重启，AlarmList/LeaseList 为空，无 A4766 firewall
+  规则，proposal health 13.278ms。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
