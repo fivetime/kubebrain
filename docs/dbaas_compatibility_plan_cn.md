@@ -54849,6 +54849,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   vet 与 diff check 通过。SIGTERM 后强制关闭仍可能让已提交 Kubernetes Operation 的客户端观察不确定，调用方必须按 immutable
   operation name/spec 查询对账，不能因进程非零盲目重复不同请求。
 
+- A4892 将 A4891 的关停终态扩展到 TiKV repair Alertmanager receiver，并消除三个 HTTPS 入口各自维护关停逻辑的
+  漂移风险。receiver 旧 SIGTERM 分支无条件丢弃 `http.Server.Shutdown` 结果，也没有 forced-close fallback；超过 15 秒的
+  repair policy 或 listener teardown 失败仍以 0 退出，可能让 rollout 在告警修复输入尚未取得明确终态时推进。新增
+  `hack/production/internal/httpserver.Shutdown` 统一执行有界 drain、失败后强制 Close、`errors.Join` 保留双重错误；
+  operation-api、parameter-broker 与 receiver 均调用该组件并在失败时非零退出。
+
+  共享组件用故障注入固定“graceful/forced-close 双错误均可 `errors.Is`、成功 drain 不调用 Close、deadline 后必定 Close”；
+  timeout race 连续 10 轮（1.155 秒），四个相关包 race（1.037/2.527/5.167/1.132 秒）、vet 与 diff check 通过。
+  强制关闭无法证明 repair policy 是否已对外部系统产生副作用，
+  policy executable 仍必须自身实现幂等键与查询对账，不能把 receiver 非零退出解释为“绝对未执行”。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

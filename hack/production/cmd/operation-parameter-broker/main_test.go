@@ -57,41 +57,6 @@ func (fakeServerCertificate) GetCertificate(*tls.ClientHelloInfo) (*tls.Certific
 	return &tls.Certificate{}, nil
 }
 
-type fakeShutdownServer struct {
-	shutdownErr error
-	closeErr    error
-	shutdowns   int
-	closes      int
-}
-
-func (s *fakeShutdownServer) Shutdown(context.Context) error {
-	s.shutdowns++
-	return s.shutdownErr
-}
-
-func (s *fakeShutdownServer) Close() error {
-	s.closes++
-	return s.closeErr
-}
-
-func TestShutdownHTTPServerPropagatesGracefulAndForcedCloseFailures(t *testing.T) {
-	shutdownErr := errors.New("drain timed out")
-	closeErr := errors.New("listener close failed")
-	server := &fakeShutdownServer{shutdownErr: shutdownErr, closeErr: closeErr}
-
-	err := shutdownHTTPServer(server, time.Second)
-
-	require.ErrorIs(t, err, shutdownErr)
-	require.ErrorIs(t, err, closeErr)
-	require.Equal(t, 1, server.shutdowns)
-	require.Equal(t, 1, server.closes)
-
-	server = &fakeShutdownServer{}
-	require.NoError(t, shutdownHTTPServer(server, time.Second))
-	require.Equal(t, 1, server.shutdowns)
-	require.Zero(t, server.closes)
-}
-
 func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
 	output, err := testcommand.GoRun(t, ".",
 		"--namespace", "ops.ns",

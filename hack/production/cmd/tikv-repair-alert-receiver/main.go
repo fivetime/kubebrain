@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	productionhttp "github.com/kubewharf/kubebrain/hack/production/internal/httpserver"
 	"github.com/kubewharf/kubebrain/hack/production/internal/tlscertreload"
 )
 
@@ -193,8 +194,8 @@ func main() {
 			log.Fatal(err)
 		}
 	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdown)
+		if err := productionhttp.Shutdown(server, 15*time.Second); err != nil {
+			log.Fatal(err)
+		}
 	}
 }

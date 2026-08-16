@@ -5,13 +5,13 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"os/signal"
 	"syscall"
 	"time"
 
+	productionhttp "github.com/kubewharf/kubebrain/hack/production/internal/httpserver"
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/parameterbroker"
 	"github.com/kubewharf/kubebrain/hack/production/internal/tlscertreload"
@@ -103,28 +103,10 @@ func main() {
 			log.Fatal(err)
 		}
 	case <-ctx.Done():
-		if err := shutdownHTTPServer(server, 20*time.Second); err != nil {
+		if err := productionhttp.Shutdown(server, 20*time.Second); err != nil {
 			log.Fatal(err)
 		}
 	}
-}
-
-type shutdownServer interface {
-	Shutdown(context.Context) error
-	Close() error
-}
-
-func shutdownHTTPServer(server shutdownServer, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		closeErr := server.Close()
-		if closeErr != nil {
-			closeErr = fmt.Errorf("force close HTTP server: %w", closeErr)
-		}
-		return errors.Join(fmt.Errorf("graceful HTTP shutdown failed: %w", err), closeErr)
-	}
-	return nil
 }
 
 type serverCertificate interface {
