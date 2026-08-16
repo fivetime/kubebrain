@@ -54156,6 +54156,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `pkg/storage/tikv` race（1.241 秒）及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，启动 deadline 与
   PD 黑洞/半开连接的真实进程退出时延仍留待正式新镜像网络故障门禁。
 
+- A4814 补齐 Endpoint transport 的 graceful-shutdown 错误传播。client-side generated gRPC gateway connection
+  关闭失败此前只写日志，每个 client/peer/info exposed HTTP/gRPC server 的 `close()` 错误则完全丢弃；即使 listener
+  或 transport 未完整释放，`Endpoint.Run` 仍可能返回 nil，使 DBaaS rollout 把异常 teardown 当正常退出。生产
+  run path 现在通过 named return/`errors.Join` 将 gateway 与 subserver Close 错误汇入既有 server/backend shutdown
+  结果，并继续等待 serve goroutine 终止后才返回。
+
+  `pkg/endpoint` race（13.913 秒）及 vet 通过，正常关闭未产生 `net.ErrClosed` 噪声；本轮没有修改测试文件。在线
+  A4776 未滚动，真实 listener/HTTP2/gateway Close fault 的非零进程终态仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
