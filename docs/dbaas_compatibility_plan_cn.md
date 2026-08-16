@@ -53799,6 +53799,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   parser 接受完整表达式。该项只改变监控规则，不滚动数据面或修改 checkpoint 语义；真实 Prometheus Operator
   firing/resolve 时序仍应在预生产规则 evaluation 门禁中验证，不能用 YAML 解析测试冒充运行时告警投递。
 
+- A4783 关闭 A4782 告警 `for: 30s` 窗口尚未触发时 production release gate 可能提前放行的缺口。生产提交
+  `e93c3694` 扩展现有、已被组合发布入口强制调用的 `validate-storage-latency-slo.sh`，复用同一受认证 HTTPS
+  Prometheus instant-query 客户端，在 PD/TiKV p99 与 telemetry 检查之后即时验证 KubeBrain
+  `serializable_checkpoint_available`、`revision`、`remaining_seconds`：三个 family 必须各有精确预期副本数，
+  available/revision 至少为 1、remaining 达到默认 60 秒下限，available/revision 最旧样本不超过默认 60 秒。
+  KubeBrain namespace、预期副本数和 remaining 下限均显式可配置且先做 fail-closed 校验；mixed rollout 缺 metric、
+  checkpoint 尚未发布、零 revision、短安全窗、陈旧/畸形样本或 Prometheus 错误全部在 release success 前返回非零。
+
+  脚本语法、storage/checkpoint 正向与缺副本/零 revision/短窗口/陈旧样本负例、总发布编排聚焦回归均通过。
+  当前在线 A4776 镜像不暴露 revision metric，因此按新合同必须拒绝，不能为了部署新代码临时跳过本门禁；需在受控
+  canary/mixed-rollout 流程先取得新 series，再执行完整 release。该项是即时发布拒绝，不替代 A4782 的持续告警，
+  也不把 fake Prometheus 契约测试描述为真实预生产规则 evaluation。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

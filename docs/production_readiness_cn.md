@@ -226,17 +226,20 @@ template image 与起始快照相同，拒绝门禁执行中启动的新 rollout
 组合入口在所有数据面检查后再次执行完整 Operator 门禁，防止控制器只在流水线开始时健康、随后于较慢的
 Region/Prometheus 检查期间进入 rollout 或失去 Ready。
 
-存储延迟子门禁可独立执行：
+存储延迟与 serializable checkpoint 子门禁可独立执行：
 
 ```bash
 PROMETHEUS_URL=https://prometheus.monitoring.svc:9090 \
 PROMETHEUS_BEARER_TOKEN_FILE=/run/secrets/prometheus/token \
 TIDB_NAMESPACE=tidb-cluster \
 TIDB_CLUSTER=kb \
+KUBEBRAIN_NAMESPACE=kubebrain-system \
 EXPECTED_PD_MEMBERS=3 \
 EXPECTED_TIKV_STORES=3 \
+EXPECTED_KUBEBRAIN_REPLICAS=3 \
 MAX_STORAGE_P99_SECONDS=1 \
 MAX_METRIC_AGE_SECONDS=60 \
+MIN_CHECKPOINT_REMAINING_SECONDS=60 \
 hack/production/validate-storage-latency-slo.sh
 ```
 
@@ -244,8 +247,12 @@ hack/production/validate-storage-latency-slo.sh
 RaftDB write、TiKV KVDB write 各自返回精确的预期副本数，所有值为有限非负十进制且不超过阈值；再以
 三个 histogram `_count` family 独立证明 series 完整，并以 `time()-timestamp(...)` 要求每个 family
 最旧样本不超过 60 秒，避免 Prometheus lookback 暂时保留的旧 series 被误判为当前证据；
+随后即时要求 KubeBrain checkpoint available/revision/remaining 三个 family 各有精确预期副本数，
+available≥1、revision≥1、remaining 不低于配置安全下限，并对 available/revision 执行相同样本新鲜度检查。
+这使 mixed rollout 缺少 revision metric、checkpoint 尚未发布/过期或 exporter 已停止时，在告警 `for` 窗口完成前
+也无法通过 release gate；
 `TIDB_NAMESPACE`/`TIDB_CLUSTER` 选择目标租户的
-metrics Service，二者必须是 DNS label。API/transport 错误、空/重复/缺失 series、NaN/Inf、
+metrics Service，`KUBEBRAIN_NAMESPACE` 选择对应数据面指标，三者必须是 DNS label。API/transport 错误、空/重复/缺失 series、NaN/Inf、
 超阈值或非 HTTPS URL 都返回非零。该脚本只读 Prometheus，不把一次通过解释为卷的永久 IOPS 保证。
 
 该脚本通过 Kubernetes Service proxy 读取 PD API，要求所有 TiKV store 为 `Up`，并要求
