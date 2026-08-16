@@ -53431,6 +53431,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   prefix 为 0；PD/TiKV 3+3 Ready、零重启，AlarmList/LeaseList 为空，proposal health 11.979ms，临时文件
   无残留。
 
+- A4764 修复 legacy Watch metadata singleflight 把首个调用者 cancellation 传播给其他健康 Watch 的隔离
+  缺口。新格式 value 以内联 envelope 携带 create revision/version；升级期 raw/v1 value 仍需通过
+  `GetEtcdMetadata` 读取历史元数据。为消除 fan-out 重复读取，KubeBrain 按 `(key,revision)` 共享一次
+  singleflight，但旧 closure 直接捕获第一个 Watch 的 context：该 Watch 取消时，底层 TiKV lookup 返回
+  `Canceled`，所有正在等待同一 flight 的健康 Watch 都收到同一错误并关闭。upstream 从本地 MVCC state
+  转换事件，不存在一个订阅者取消其他订阅者历史元数据读取的语义。
+
+  生产提交 `9c7b7860` 把共享 metadata lookup 绑定到 A4762 已引入的 resolver lifecycle context，并改用
+  `singleflight.DoChan`：每个调用者独立等待 result 或自己的 cancellation；取消一个 Watch 只结束该调用者，
+  共享 TiKV lookup 继续服务其他 Watch，server shutdown 仍通过 resolver cancel 统一停止。最小确定性回归
+  让两个 context 共用一个阻塞 metadata backend：首调用者取消必须立即得到 `context.Canceled`，backend
+  调用数保持 1，释放 lookup 后第二调用者成功；旧实现两者都会失败。新用例连续 20 轮 0.820 秒，A4762
+  shutdown 回归 6.117 秒，race 1.431 秒、vet 和完整 `pkg/server/etcd` 179.227 秒通过。
+
+  最终镜像 `kubebrain:a4764-9c7b7860` 内嵌完整 SHA
+  `9c7b78602463509873df99161629c37a4950ba12`、build time `2026-08-16T04:28:17Z`，本地 OCI digest
+  `sha256:7cf17c98c0eaa837d1ab14f53d4dd8d984ccb6e22f74ecae0814ffc21f184d78`，Kind runtime imageID
+  `sha256:72d118352242ab26da135b238b7c1b8785577e62d100939a92396e53a59b6299`。主/JWT 六副本滚动后
+  全部 Ready、零重启。真实 NodePort 上三个同 key Watch 先各收到 v1；取消其中一个后继续写 v2/v3，事件数
+  严格为 `1/3/3`，两个存活流都收到最终 v3。fixture prefix 为 0、临时 Watch/文件无残留；PD/TiKV 3+3
+  Ready、零重启，AlarmList/LeaseList 为空，proposal health 16.377ms。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
