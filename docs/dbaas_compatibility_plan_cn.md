@@ -53409,6 +53409,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时带旧值 `v1` 和新值 `v2`；fixture 清理后前缀为空。PD/TiKV 3+3 Ready、零重启，AlarmList/LeaseList
   为空，proposal health 14.990ms，临时 Watch 进程与文件均无残留。
 
+- A4763 修复 durable-revision 后台 persister 在 backend shutdown 时丢弃 worker context 的生产生命周期
+  缺口。该 worker 已由 `backend.workerCtx/workerWG` 所有，`backend.Close()` 也按“cancel 后 wait、最后关闭
+  TiKV client”的正确顺序实现；但旧 `runDurableRevisionPersister` 调用的 helper 会重新从
+  `context.Background()` 派生完整 unary RPC timeout。只要 watermark 的 TiKV Get/CAS 正在故障等待，
+  `stopWorkers()` 就无法及时完成，Pod rollout 会被本应已经取消的 marker 操作延长。marker 允许安全滞后，
+  后续进程会以更高 target 重试，因此 shutdown 不需要强行完成这次写入。
+
+  生产提交 `b5610df3` 将 worker context 贯穿 durable watermark Get/commit，并保留 Background wrapper 仅供
+  非 worker 的同步内部调用；正常 shutdown 的 `context.Canceled` 不再记录成持久化 failure，真实 timeout
+  和未取消的 storage error 仍照常告警。只增加一个 context-aware blocking storage 回归：进入 marker Get
+  后取消 worker，250ms 内必须结束；旧实现会继续等独立 RPC budget。聚焦三用例连续 20 轮 1.032 秒、race
+  1.292 秒、backend 全树 vet 与完整 `pkg/backend/...` 通过。
+
+  最终镜像 `kubebrain:a4763-b5610df3` 内嵌完整 SHA
+  `b5610df3f973135fffd90f29a2edac9b25a82bbe`、build time `2026-08-16T04:07:38Z`，本地 OCI digest
+  `sha256:74f9a8c672edd5a87e2b567e487fb8207725279e9aacd68e06c828ad6b80863d`，Kind runtime imageID
+  `sha256:468f21fa803b42b57f00e1aa4832e3285f24efda22026bf56d1a9488c1c0c4b8`。主/JWT 六副本滚动后
+  全部 Ready、零重启；随后在持续 revision 提交期间替换确认的 follower `kubebrain-1`，新 Pod 12.445 秒
+  Ready，30/30 Put 成功且 30 个 key 全部可读，日志无 durable-revision persistence failure。fixture 清理后
+  prefix 为 0；PD/TiKV 3+3 Ready、零重启，AlarmList/LeaseList 为空，proposal health 11.979ms，临时文件
+  无残留。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
