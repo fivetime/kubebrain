@@ -237,6 +237,7 @@ func (e *etcdProxy) updateClient() {
 	for _, tlsConfig := range tlsConfigs {
 		dialTimeout := e.connectionTimeout()
 		var dialOptions []grpc.DialOption
+		dialOptions = append(dialOptions, grpc.WithChainUnaryInterceptor(peerUnaryForwardErrorInterceptor))
 		if tlsConfig != nil && tlsConfig.ServerName != "" {
 			// grpc-go derives TLS ServerName from the resolver authority and
 			// overwrites tls.Config.ServerName. The proxy connects to a leader Pod
@@ -464,17 +465,31 @@ func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (
 	klog.InfoS("forward range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd), "revision", req.Revision)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
-	return resp, rangeForwardError(ctx, err)
+	return resp, err
 }
 
-func rangeForwardError(ctx context.Context, err error) error {
+func peerUnaryForwardErrorInterceptor(
+	ctx context.Context,
+	method string,
+	req, reply any,
+	cc *grpc.ClientConn,
+	invoker grpc.UnaryInvoker,
+	opts ...grpc.CallOption,
+) error {
+	err := invoker(ctx, method, req, reply, cc, opts...)
+	return normalizePeerUnaryForwardError(ctx, err)
+}
+
+func normalizePeerUnaryForwardError(ctx context.Context, err error) error {
 	if err == nil || ctx.Err() != nil {
 		return err
 	}
-	// Retiring the shared peer connection after a leader loss can make an
-	// in-flight unary Range return Canceled even though the downstream caller is
-	// still live. Classify that topology failure as retryable; preserve genuine
-	// caller cancellation and all application-level statuses.
+	// Retiring the shared peer connection after a leader loss can make any
+	// in-flight unary forward return Canceled even though the downstream caller
+	// is still live. Classify that topology failure as retryable at the internal
+	// client boundary; preserve genuine caller cancellation and application
+	// statuses. Streaming RPCs keep their operation-specific resume/integrity
+	// contracts and are intentionally outside this interceptor.
 	if errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled {
 		return rpctypes.ErrGRPCLeaderChanged
 	}

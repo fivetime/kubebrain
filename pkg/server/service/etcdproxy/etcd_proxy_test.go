@@ -105,16 +105,16 @@ func TestIsForwardConnectionError(t *testing.T) {
 	}
 }
 
-func TestRangeForwardErrorMapsInternalCancellationToLeaderChanged(t *testing.T) {
-	err := rangeForwardError(context.Background(), status.Error(codes.Canceled, "grpc: the client connection is closing"))
+func TestPeerUnaryForwardErrorMapsInternalCancellationToLeaderChanged(t *testing.T) {
+	err := normalizePeerUnaryForwardError(context.Background(), status.Error(codes.Canceled, "grpc: the client connection is closing"))
 	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 }
 
-func TestRangeForwardErrorPreservesCallerCancellation(t *testing.T) {
+func TestPeerUnaryForwardErrorPreservesCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	require.ErrorIs(t, rangeForwardError(ctx, context.Canceled), context.Canceled)
+	require.ErrorIs(t, normalizePeerUnaryForwardError(ctx, context.Canceled), context.Canceled)
 }
 
 func TestWaitReadyReturnsUnavailableWhenLeaderConnectionIsNotReady(t *testing.T) {
