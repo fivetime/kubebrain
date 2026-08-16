@@ -53632,6 +53632,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   operation timeout 或 5 秒强杀。临时二进制已清除。本轮是离线 Job 生命周期修复，不改变 server 镜像或
   TiKV 数据语义，因此不把未滚动的服务集群状态列为证明。
 
+- A4774 从运维生命周期修复返回公开 API 语义审计，且没有为制造提交而改动运行时。逐项对照固定 upstream
+  `api/v3rpc/key.go` 的 Range/Put/Delete/Txn 静态校验、`txn/range.go` 的 KeysOnly fast projection、
+  Watch filter 处理，以及 Snapshot/Status 的 storage-version 呈现。Snapshot response 的 `Version` 与生成
+  bbolt `meta/storageVersion` 当前同为 `3.7.0`；Status 和 `/version` 也已公开同一 storage schema。历史 legacy
+  value 缺少逐版本 lease provenance 时仍必须 fail closed 并要求 physical compact/remediation，因此矩阵中的
+  Snapshot“部分兼容”边界保持，不用伪造 lease=0 来换取表面成功。
+
+  为避免仅凭静态阅读下结论，在现有三副本 KubeBrain A4769、独立 3 PD/3 TiKV 后端与临时固定 SHA upstream
+  etcd 间运行非破坏 raw gRPC 差分：RangeStream validation、signed revision validation、Txn operation
+  validation、Txn execution validation order 四组全部通过（合计 1.982 秒），逐项比较 gRPC code/message、
+  校验优先级及最终状态。本轮没有修改测试或生产代码，也没有运行会推进全局 compact watermark 的 destructive
+  完整 runner。临时 reference etcd 已停止，数据目录与 12379/12380 listener 已清除；四个 KubeBrain fixture
+  前缀均为空。该证据支持“当前请求校验无已知差异”，不把有限矩阵外推为完整兼容声明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
