@@ -64,13 +64,13 @@ if [[ "${FAKE_PROM_ERROR:-false}" == true ]]; then
   printf '{"status":"error","error":"backend unavailable"}\n'
   exit 0
 fi
-if [[ "$query" == max\(time\(\)* ]]; then
+if [[ "$query" == max\(*time\(\)* ]]; then
   value="${FAKE_METRIC_AGE:-15}"
   printf '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"%s"]}]}}\n' "$value"
 elif [[ "$query" == count\(* ]]; then
   value="${FAKE_SERIES_COUNT:-3}"
   printf '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"%s"]}]}}\n' "$value"
-elif [[ "$query" == min\(serializable_checkpoint_* ]]; then
+elif [[ "$query" == min\(*serializable_checkpoint_* ]]; then
   if [[ "$query" == *serializable_checkpoint_available* ]]; then
     value="${FAKE_CHECKPOINT_AVAILABLE:-1}"
   elif [[ "$query" == *serializable_checkpoint_revision* ]]; then
@@ -113,7 +113,7 @@ fi
 	require.Equal(t, 17, strings.Count(string(queries), "\n"))
 	require.Equal(t, 3, strings.Count(string(queries), `namespace="storage-a",service="tenant-a-pd-metrics"`))
 	require.Equal(t, 6, strings.Count(string(queries), `namespace="storage-a",service="tenant-a-tikv-metrics"`))
-	require.Equal(t, 8, strings.Count(string(queries), `namespace="kubebrain-a"`))
+	require.Equal(t, 16, strings.Count(string(queries), `namespace="kubebrain-a"`))
 
 	for _, tc := range []struct {
 		name string

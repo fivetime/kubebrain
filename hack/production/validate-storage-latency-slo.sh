@@ -121,6 +121,12 @@ validate_minimum() {
 pd_selector="namespace=\"${TIDB_NAMESPACE}\",service=\"${TIDB_CLUSTER}-pd-metrics\""
 tikv_selector="namespace=\"${TIDB_NAMESPACE}\",service=\"${TIDB_CLUSTER}-tikv-metrics\""
 checkpoint_selector="namespace=\"${KUBEBRAIN_NAMESPACE}\""
+checkpoint_ready_pods="kube_pod_status_ready{namespace=\"${KUBEBRAIN_NAMESPACE}\",condition=\"true\"} == 1"
+checkpoint_available="serializable_checkpoint_available{${checkpoint_selector}} * on(namespace, pod) group_left() (${checkpoint_ready_pods})"
+checkpoint_revision="serializable_checkpoint_revision{${checkpoint_selector}} * on(namespace, pod) group_left() (${checkpoint_ready_pods})"
+checkpoint_remaining="serializable_checkpoint_remaining_seconds{${checkpoint_selector}} * on(namespace, pod) group_left() (${checkpoint_ready_pods})"
+checkpoint_available_age="(time() - timestamp(serializable_checkpoint_available{${checkpoint_selector}})) and on(namespace, pod) (${checkpoint_ready_pods})"
+checkpoint_revision_age="(time() - timestamp(serializable_checkpoint_revision{${checkpoint_selector}})) and on(namespace, pod) (${checkpoint_ready_pods})"
 pd_wal="histogram_quantile(0.99, sum by (instance, le) (rate(etcd_disk_wal_fsync_duration_seconds_bucket{${pd_selector}}[5m])))"
 tikv_raft="histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_raftdb_duration_seconds_bucket{${tikv_selector}}[5m])))"
 tikv_kv="histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_kvdb_duration_seconds_bucket{${tikv_selector}}[5m])))"
@@ -135,13 +141,13 @@ validate_freshness "PD WAL fsync metrics" "max(time() - timestamp(etcd_disk_wal_
 validate_freshness "TiKV RaftDB write metrics" "max(time() - timestamp(tikv_raftstore_store_write_raftdb_duration_seconds_count{${tikv_selector}}))"
 validate_freshness "TiKV KVDB write metrics" "max(time() - timestamp(tikv_raftstore_store_write_kvdb_duration_seconds_count{${tikv_selector}}))"
 
-validate_count "KubeBrain checkpoint availability metrics" "count(serializable_checkpoint_available{${checkpoint_selector}})" "$EXPECTED_KUBEBRAIN_REPLICAS"
-validate_count "KubeBrain checkpoint revision metrics" "count(serializable_checkpoint_revision{${checkpoint_selector}})" "$EXPECTED_KUBEBRAIN_REPLICAS"
-validate_count "KubeBrain checkpoint remaining-window metrics" "count(serializable_checkpoint_remaining_seconds{${checkpoint_selector}})" "$EXPECTED_KUBEBRAIN_REPLICAS"
-validate_minimum "KubeBrain checkpoint availability" "min(serializable_checkpoint_available{${checkpoint_selector}})" 1
-validate_minimum "KubeBrain checkpoint revision" "min(serializable_checkpoint_revision{${checkpoint_selector}})" 1
-validate_minimum "KubeBrain checkpoint remaining window" "min(serializable_checkpoint_remaining_seconds{${checkpoint_selector}})" "$MIN_CHECKPOINT_REMAINING_SECONDS"
-validate_freshness "KubeBrain checkpoint availability metrics" "max(time() - timestamp(serializable_checkpoint_available{${checkpoint_selector}}))"
-validate_freshness "KubeBrain checkpoint revision metrics" "max(time() - timestamp(serializable_checkpoint_revision{${checkpoint_selector}}))"
+validate_count "KubeBrain checkpoint availability metrics" "count(${checkpoint_available})" "$EXPECTED_KUBEBRAIN_REPLICAS"
+validate_count "KubeBrain checkpoint revision metrics" "count(${checkpoint_revision})" "$EXPECTED_KUBEBRAIN_REPLICAS"
+validate_count "KubeBrain checkpoint remaining-window metrics" "count(${checkpoint_remaining})" "$EXPECTED_KUBEBRAIN_REPLICAS"
+validate_minimum "KubeBrain checkpoint availability" "min(${checkpoint_available})" 1
+validate_minimum "KubeBrain checkpoint revision" "min(${checkpoint_revision})" 1
+validate_minimum "KubeBrain checkpoint remaining window" "min(${checkpoint_remaining})" "$MIN_CHECKPOINT_REMAINING_SECONDS"
+validate_freshness "KubeBrain checkpoint availability metrics" "max(${checkpoint_available_age})"
+validate_freshness "KubeBrain checkpoint revision metrics" "max(${checkpoint_revision_age})"
 
 echo "KubeBrain storage/checkpoint SLO gate passed: PD WAL and TiKV RaftDB/KVDB p99 are within ${MAX_STORAGE_P99_SECONDS}s, and ${EXPECTED_KUBEBRAIN_REPLICAS} KubeBrain checkpoints have positive revisions, at least ${MIN_CHECKPOINT_REMAINING_SECONDS}s remaining, and complete telemetry no older than ${MAX_METRIC_AGE_SECONDS}s"

@@ -1974,7 +1974,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 
 	checkpointRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointUnavailable")
 	require.Equal(t,
-		`count(serializable_checkpoint_available{namespace="kubebrain-system"}) != 3 or count(serializable_checkpoint_revision{namespace="kubebrain-system"}) != 3 or min(serializable_checkpoint_available{namespace="kubebrain-system"}) < 1 or min(serializable_checkpoint_revision{namespace="kubebrain-system"}) <= 0 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"}) < 60 or max(time() - timestamp(serializable_checkpoint_available{namespace="kubebrain-system"})) > 60 or max(time() - timestamp(serializable_checkpoint_revision{namespace="kubebrain-system"})) > 60`,
+		`count(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod) group_left() (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) != 3 or count(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod) group_left() (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) != 3 or min(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod) group_left() (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) < 1 or min(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod) group_left() (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) <= 0 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod) group_left() (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) < 60 or max((time() - timestamp(serializable_checkpoint_available{namespace="kubebrain-system"})) and on(namespace, pod) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) > 60 or max((time() - timestamp(serializable_checkpoint_revision{namespace="kubebrain-system"})) and on(namespace, pod) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) > 60`,
 		checkpointRule["expr"])
 	require.Equal(t, "30s", checkpointRule["for"])
 	require.Equal(t, "warning", checkpointRule["labels"].(map[string]any)["severity"])
@@ -2240,6 +2240,7 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"kubebrain_object_store_request_count",
 		"kubebrain_object_store_request_period_end_seconds",
 		"kube_pod_container_resource_limits",
+		"kube_pod_status_ready",
 		"kube_statefulset_status_replicas_ready",
 		"kubelet_volume_stats_available_bytes",
 		"kubelet_volume_stats_capacity_bytes",
