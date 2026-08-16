@@ -184,6 +184,12 @@ func DecodeLogReplayExecution(reader io.Reader) (LogReplayExecutionReceipt, erro
 // MaterializeReplay converts BR stream default/write CF records into raw
 // KubeBrain mutations. It performs no target writes.
 func MaterializeReplay(logs LogArtifactReceipt, logsSHA, root string, startExclusive, restoreTS uint64) (ReplayManifest, []ReplayMutation, error) {
+	return MaterializeReplayWithScratchDir(logs, logsSHA, root, "", startExclusive, restoreTS)
+}
+
+// MaterializeReplayWithScratchDir uses a private, rebuildable disk index in
+// scratchDir for default-CF values. An empty directory uses os.TempDir.
+func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scratchDir string, startExclusive, restoreTS uint64) (manifest ReplayManifest, mutations []ReplayMutation, retErr error) {
 	if err := logs.Validate(); err != nil {
 		return ReplayManifest{}, nil, err
 	}
@@ -205,7 +211,11 @@ func MaterializeReplay(logs LogArtifactReceipt, logsSHA, root string, startExclu
 		return ReplayManifest{}, nil, err
 	}
 	start, end := ks.ObjectKeyspaceStart(), ks.ObjectKeyspaceEnd()
-	defaults := make(map[string][]byte)
+	defaults, err := newReplayDefaultStore(scratchDir)
+	if err != nil {
+		return ReplayManifest{}, nil, fmt.Errorf("create replay default-CF index: %w", err)
+	}
+	defer func() { retErr = errors.Join(retErr, defaults.Close()) }()
 	var writes []replayWrite
 	for _, object := range expected {
 		for _, segment := range object.segments {
@@ -227,13 +237,7 @@ func MaterializeReplay(logs LogArtifactReceipt, logsSHA, root string, startExclu
 				switch segment.Cf {
 				case "default":
 					defaultKey := replayValueKey(rawKey, ts)
-					if existing, duplicate := defaults[defaultKey]; duplicate {
-						if !bytes.Equal(existing, value) {
-							return errors.New("stream log contains conflicting default-CF entries")
-						}
-						return nil
-					}
-					defaults[defaultKey] = append(make([]byte, 0, len(value)), value...)
+					return defaults.Put(defaultKey, value)
 				case "write":
 					kind, startTS, short, err := decodeWriteValue(value)
 					if err != nil {
@@ -258,6 +262,9 @@ func MaterializeReplay(logs LogArtifactReceipt, logsSHA, root string, startExclu
 			}
 		}
 	}
+	if err := defaults.Flush(); err != nil {
+		return ReplayManifest{}, nil, err
+	}
 	sort.Slice(writes, func(i, j int) bool {
 		if writes[i].commitTS != writes[j].commitTS {
 			return writes[i].commitTS < writes[j].commitTS
@@ -278,7 +285,7 @@ func MaterializeReplay(logs LogArtifactReceipt, logsSHA, root string, startExclu
 		canonicalWrites = append(canonicalWrites, write)
 	}
 	writes = canonicalWrites
-	mutations := make([]ReplayMutation, 0, len(writes))
+	mutations = make([]ReplayMutation, 0, len(writes))
 	putCount, deleteCount, txns := 0, 0, 0
 	var lastTS uint64
 	for _, write := range writes {
@@ -293,7 +300,10 @@ func MaterializeReplay(logs LogArtifactReceipt, logsSHA, root string, startExclu
 		} else {
 			mutation.Value = write.shortValue
 			if mutation.Value == nil {
-				value, ok := defaults[replayValueKey(write.key, write.startTS)]
+				value, ok, err := defaults.Get(replayValueKey(write.key, write.startTS))
+				if err != nil {
+					return ReplayManifest{}, nil, err
+				}
 				if !ok {
 					return ReplayManifest{}, nil, fmt.Errorf("PUT at commit TSO %d lacks its default-CF value", write.commitTS)
 				}
@@ -308,7 +318,7 @@ func MaterializeReplay(logs LogArtifactReceipt, logsSHA, root string, startExclu
 		return ReplayManifest{}, nil, err
 	}
 	digest := sha256.Sum256(encoded)
-	manifest := ReplayManifest{Format: ReplayManifestFormat, LogArtifactReceiptSHA256: logsSHA, ArtifactManifestSHA256: logs.ManifestSHA256, Keyspace: logs.Keyspace, StartExclusiveTS: startExclusive, RestoreTS: restoreTS, MutationCount: len(mutations), TransactionCount: txns, PutCount: putCount, DeleteCount: deleteCount, MutationsSHA256: hex.EncodeToString(digest[:]), AllEntriesInTenantRange: true, AllPutsResolved: true, ExactLocalMirrorRechecked: true}
+	manifest = ReplayManifest{Format: ReplayManifestFormat, LogArtifactReceiptSHA256: logsSHA, ArtifactManifestSHA256: logs.ManifestSHA256, Keyspace: logs.Keyspace, StartExclusiveTS: startExclusive, RestoreTS: restoreTS, MutationCount: len(mutations), TransactionCount: txns, PutCount: putCount, DeleteCount: deleteCount, MutationsSHA256: hex.EncodeToString(digest[:]), AllEntriesInTenantRange: true, AllPutsResolved: true, ExactLocalMirrorRechecked: true}
 	if len(mutations) != 0 {
 		manifest.FirstCommitTS, manifest.LastCommitTS = mutations[0].CommitTS, mutations[len(mutations)-1].CommitTS
 	}

@@ -54872,6 +54872,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （4.093 秒）、vet 与 diff check 通过。本项只消除 decoder 的整段副本，不声称 replay 总内存已与工件规模无关：最终 mutations
   及 default/write CF join 仍占 O(相关 mutation/default bytes)，生产规模的 disk-backed join/plan 仍需后续推进。
 
+- A4894 关闭 A4893 保留的全内存 default-CF join。旧 `map[string][]byte` 会保留回放 mirror 中每个 non-empty default
+  value，即使它不对应 `(backup_ts,restore_ts]` 内最终 PUT；A4893 去掉 segment buffer 后，长窗口仍可能以 O(all default
+  bytes) 撞上 executor 内存上限。新增 rebuildable bbolt scratch index：以 `(raw key,start_ts)` SHA-256 作为固定长度页键，
+  value 内再次保存并核对完整 join key，既支持超过 bbolt key limit 的合法 etcd key，也让摘要碰撞 fail closed；重复值必须
+  byte-identical，冲突继续拒绝。临时事务每 8MiB commit，读取复制脱离 mmap，所有成功/失败路径 rollback/Close/remove 并传播
+  cleanup 错误；`NoSync` 只用于可从 exact mirror 重建的临时索引，不承担 receipt durability。
+
+  log-replay CLI 新增 `--scratch-dir`，默认使用 `log-root` 父目录而不是生产 executor 仅 64Mi 的 `/tmp`；runbook 明确要求同
+  mirror 容量域的加密 PVC和空间耗尽 fail closed。专项 store/materialize race 连续 5 轮（2.901 秒）、nativepitr 与 CLI race
+  （4.228/1.454 秒）、backup 全树 race、vet、diff check 通过。最终有序 mutations 及窗口内被引用的 long values 仍必须驻留到 manifest digest
+  和 ApplyReplay，故总内存现为 O(relevant replay output)，后续若要支持超大恢复窗口仍需 disk-backed mutation plan/stream apply。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

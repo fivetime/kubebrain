@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -29,9 +30,9 @@ import (
 const maxReceiptBytes = 4 << 20
 
 type options struct {
-	plan, fullRestore, logArtifacts, logRoot, fenceReceipt, admissionHandoff string
-	pdAddrs, ca, cert, key, approve                                          string
-	timeout                                                                  time.Duration
+	plan, fullRestore, logArtifacts, logRoot, scratchDir, fenceReceipt, admissionHandoff string
+	pdAddrs, ca, cert, key, approve                                                      string
+	timeout                                                                              time.Duration
 }
 
 func main() {
@@ -44,6 +45,7 @@ func main() {
 	flag.StringVar(&o.fullRestore, "full-restore", "", "exact native-pitr-full-restore.v2 receipt")
 	flag.StringVar(&o.logArtifacts, "log-artifacts", "", "exact native-pitr-log-artifacts.v2 receipt")
 	flag.StringVar(&o.logRoot, "log-root", "", "local exact-version log artifact mirror")
+	flag.StringVar(&o.scratchDir, "scratch-dir", "", "replay join scratch directory; defaults to the log-root parent")
 	flag.StringVar(&o.fenceReceipt, "restoration-fence", "", "exact plan-bound restoration fence receipt")
 	flag.StringVar(&o.admissionHandoff, "admission-handoff", "", "exact admission-to-restoration handoff receipt")
 	flag.StringVar(&o.pdAddrs, "target-pd-addrs", "", "comma-separated target PD addresses")
@@ -160,7 +162,9 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if targetID == 0 || targetID != plan.Target.ClusterID {
 		return errors.New("live target PD cluster ID does not match plan")
 	}
-	manifest, mutations, err := nativepitr.MaterializeReplay(logs, logSHA, o.logRoot, plan.Full.BackupTS, plan.RestoreTS)
+	manifest, mutations, err := nativepitr.MaterializeReplayWithScratchDir(
+		logs, logSHA, o.logRoot, replayScratchDir(o), plan.Full.BackupTS, plan.RestoreTS,
+	)
 	if err != nil {
 		return err
 	}
@@ -204,6 +208,13 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	enc := json.NewEncoder(out)
 	enc.SetEscapeHTML(false)
 	return enc.Encode(receipt)
+}
+
+func replayScratchDir(o options) string {
+	if o.scratchDir != "" {
+		return o.scratchDir
+	}
+	return filepath.Dir(o.logRoot)
 }
 
 func parseAddrs(raw string) ([]string, error) {

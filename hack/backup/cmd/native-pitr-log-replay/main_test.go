@@ -32,3 +32,10 @@ func TestParseAddrsIsStrict(t *testing.T) {
 		require.Error(t, err)
 	}
 }
+
+func TestReplayScratchDirDefaultsToLogRootParent(t *testing.T) {
+	require.Equal(t, "/evidence", replayScratchDir(options{logRoot: "/evidence/log-mirror"}))
+	require.Equal(t, "/scratch", replayScratchDir(options{
+		logRoot: "/evidence/log-mirror", scratchDir: "/scratch",
+	}))
+}

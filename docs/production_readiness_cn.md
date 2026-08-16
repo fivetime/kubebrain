@@ -2563,6 +2563,7 @@ TiKV fence key，成功才签发连续排写交接收据：
   --full-restore=/evidence/native-pitr-full-restore.json \
   --log-artifacts=/evidence/native-pitr-log-artifacts.json \
   --log-root=/evidence/log-mirror \
+  --scratch-dir=/evidence \
   --restoration-fence=/evidence/native-pitr-restoration-fence.json \
   --admission-handoff=/evidence/native-pitr-admission-handoff.json \
   --target-pd-addrs="$TARGET_PD_ADDRS" \
@@ -2585,6 +2586,11 @@ token 逐一验证 control + 256 shards，并再次确认 plan/full/log/fence �
 回放收据本身仍固定 `post_restore_semantic_validated=false`、`pitr_complete=false`。当前实现已通过编码、
 范围、摘要、长短值、事务分组、原子 checkpoint、续跑与错误交接绑定单测，并用实际 CLI 和官方 v7.5.1
 stream 制品完成双集群演练。
+
+`--scratch-dir` 保存可重建的临时 bbolt default-CF join index；应放在与 log mirror 同容量域的加密 PVC，容量至少覆盖
+回放窗口内 default-CF 长值及 bbolt page overhead，不要指向 executor 的 64Mi `emptyDir`。未显式设置时命令使用
+`--log-root` 的父目录。索引按 8MiB 批次提交、成功或失败后都删除，不是恢复证据；空间耗尽、写入、提交、关闭或删除失败
+均令 replay 失败，不能改用跳过长值的降级路径。
 
 日志回放成功后不得直接手工删除 fence key。必须用 exact replay receipt 驱动原子交接：
 
