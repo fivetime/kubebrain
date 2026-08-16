@@ -114,7 +114,7 @@ type server struct {
 func (s *server) Close() error {
 	s.closeOnce.Do(func() {
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = s.Drain(drainCtx)
+		s.closeErr = errors.Join(s.closeErr, s.Drain(drainCtx))
 		drainCancel()
 		if s.cancel != nil {
 			s.cancel()
@@ -138,7 +138,7 @@ func (s *server) Close() error {
 			s.etcdServer.Close()
 		}
 		if s.peers != nil {
-			s.closeErr = s.peers.Close()
+			s.closeErr = errors.Join(s.closeErr, s.peers.Close())
 		}
 	})
 	return s.closeErr
