@@ -85,6 +85,9 @@ func NewKvStorage(pdAddrs []string, clientNum int, sec Security) (storage.KvStor
 // NewKvStorageWithContext binds all parallel txn client construction to the
 // caller's startup and shutdown lifecycle.
 func NewKvStorageWithContext(ctx context.Context, pdAddrs []string, clientNum int, sec Security) (storage.KvStorage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if clientNum <= 0 {
 		clientNum = defaultClientNum
 	}
