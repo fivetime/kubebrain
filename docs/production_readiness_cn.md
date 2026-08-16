@@ -2595,6 +2595,11 @@ AES-256-CTR（41.05 秒）v4 全链。演练没有人为制造 commitTS 碰撞�
 保持 7/19 个 mutation 的完整事务边界，随后真实 replay CLI 从该 checkpoint 续跑、签发 `resumed_from_checkpoint=true`
 的 v4 receipt，并通过 fence/handoff 和最终语义验收（39.94 秒）。该注入模拟确定性提交失败，不等同于进程 `SIGKILL`、
 节点/网络故障或不确定提交结果；这些组合及生产规模长时间 soak 仍需独立演练。
+同日进一步以三副本 plaintext 执行 commit-response-loss 演练：包装层先让真实 TiKV 完成首个 source transaction 与
+v2 checkpoint 的原子提交，再向调用方返回标准 `storage.ErrUncertainResult`；失败调用不把未知结果计入
+`applied_*_this_run`。后续真实 CLI 线性化读取到 7/19 mutation 的 checkpoint，跳过该已提交事务并续跑，v4 receipt
+记录 `resumed_from_checkpoint=true`，完整语义门禁 39.88 秒通过。这里的响应丢失由存储接口包装层确定性注入，尚不等同于
+在 TiKV 2PC/网络分区窗口自然产生 uncertain commit；后者仍需独立基础设施故障演练。
 
 v4 不接受旧 `log-replay-manifest.v1`、`log-replay-checkpoint.v1` 或 `native-pitr-log-replay.v3`
 证据：这些格式没有摘要绑定 source `start_ts`，无法在 commit TSO 碰撞时证明 source transaction 边界。

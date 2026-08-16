@@ -54983,6 +54983,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   “v4 从未在真实 TiKV 从部分 checkpoint 续跑”的缺口，但确定性 pre-commit 失败不覆盖进程 `SIGKILL`、节点/网络故障、
   TiKV uncertain commit、跨可用区、生产规模或长时间 soak；这些故障矩阵仍保持开放。
 
+- A4903 把 A4902 扩展到 committed-uncertain 分支。新增状态机回归在底层 batch 成功提交 mutation+checkpoint 后返回
+  `storage.ErrUncertainResult`：第一次 `ApplyReplay` 必须保留原 uncertain error，且不能把未知事务虚报进本轮 applied
+  统计；第二次调用从 checkpoint 识别该事务已经提交，仅执行剩余两组，底层总 commit 数精确为三，证明既不重复首事务也
+  不跳过后续事务。集成 profile `target-log-replay-commit-response-loss-resume` 使用同一机制，但首个 batch 实际落到独立三副本
+  target TiKV，生产 replay CLI 不含任何故障参数。
+
+  2026-08-16 在 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 和官方 BR v7.5.1
+  上执行：真实首事务及 v2 checkpoint 提交 7/19 个 mutation 后，包装层向调用方返回标准 uncertain；失败调用的 applied
+  mutation/transaction 均为零。随后实际 `native-pitr-log-replay` CLI 读取同一 exact plan/checkpoint，续跑余下 12 个
+  mutation，签发 `resumed_from_checkpoint=true` 的 v4 receipt，fence/handoff 与最终 revision/key/lease/watch 验收通过，
+  总耗时 39.88 秒，一次性容器已清理。该证据覆盖真实 TiKV commit 加确定性 response-loss 注入；它不冒充由 TiKV 2PC、
+  store/PD 网络分区或进程崩溃自然产生的 uncertain，后者以及 uncertain 后 checkpoint 读取暂时失败仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

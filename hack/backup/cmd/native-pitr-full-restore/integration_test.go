@@ -57,8 +57,9 @@ var errReplayIntegrationInterrupt = errors.New("integration replay interruption"
 
 type interruptReplayStore struct {
 	storage.KvStorage
-	committed      int
-	interruptAfter int
+	committed               int
+	interruptAfter          int
+	commitThenUncertainOnce bool
 }
 
 func (s *interruptReplayStore) BeginBatchWrite() storage.BatchWrite {
@@ -71,13 +72,16 @@ type interruptReplayBatch struct {
 }
 
 func (b *interruptReplayBatch) Commit(ctx context.Context) error {
-	if b.store.committed >= b.store.interruptAfter {
+	if !b.store.commitThenUncertainOnce && b.store.committed >= b.store.interruptAfter {
 		return errReplayIntegrationInterrupt
 	}
 	if err := b.BatchWrite.Commit(ctx); err != nil {
 		return err
 	}
 	b.store.committed++
+	if b.store.commitThenUncertainOnce && b.store.committed == b.store.interruptAfter {
+		return storage.NewErrUncertainResult(errReplayIntegrationInterrupt)
+	}
 	return nil
 }
 
@@ -2921,17 +2925,22 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	if withLogs {
 		resumeDrill := os.Getenv("KUBEBRAIN_NATIVE_PITR_REPLAY_RESUME_DRILL")
 		if resumeDrill != "" {
-			require.Equal(t, "true", resumeDrill, "invalid replay resume drill setting")
+			require.Contains(t, []string{"pre-commit", "commit-response-loss"}, resumeDrill, "invalid replay resume drill setting")
 			manifest, mutations, materializeErr := nativepitr.MaterializeReplayWithScratchDir(logs, digest(mustRead(t, logPath)), logRoot, t.TempDir(), backupTS, restoreTS)
 			require.NoError(t, materializeErr)
 			require.GreaterOrEqual(t, manifest.TransactionCount, 2, "resume drill requires multiple source transactions")
-			interruptedStore := &interruptReplayStore{KvStorage: targetKV, interruptAfter: 1}
+			interruptedStore := &interruptReplayStore{KvStorage: targetKV, interruptAfter: 1, commitThenUncertainOnce: resumeDrill == "commit-response-loss"}
 			partial, applyErr := nativepitr.ApplyReplay(ctx, interruptedStore, digest(planBytes), manifest, mutations)
-			require.ErrorIs(t, applyErr, errReplayIntegrationInterrupt)
+			if resumeDrill == "commit-response-loss" {
+				require.ErrorIs(t, applyErr, storage.ErrUncertainResult)
+				require.Zero(t, partial.AppliedTransactions, "an uncertain commit must not be reported as applied in this run")
+				require.Zero(t, partial.AppliedMutations, "an uncertain commit must not be reported as applied in this run")
+			} else {
+				require.ErrorIs(t, applyErr, errReplayIntegrationInterrupt)
+				require.Equal(t, 1, partial.AppliedTransactions)
+				require.Positive(t, partial.AppliedMutations)
+			}
 			require.Equal(t, 1, interruptedStore.committed)
-			require.Equal(t, 1, partial.AppliedTransactions)
-			require.Positive(t, partial.AppliedMutations)
-			require.Less(t, partial.AppliedMutations, manifest.MutationCount)
 			checkpointBytes, checkpointErr := targetKV.Get(ctx, ks.EncodeInternalKey([]byte("native-pitr/log-replay-checkpoint")))
 			require.NoError(t, checkpointErr)
 			var checkpoint struct {
@@ -2942,10 +2951,14 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 			}
 			require.NoError(t, json.Unmarshal(checkpointBytes, &checkpoint))
 			require.Equal(t, "kubebrain.native-pitr-log-replay-checkpoint.v2", checkpoint.Format)
-			require.Equal(t, partial.AppliedMutations, checkpoint.AppliedMutations)
-			require.Equal(t, partial.LastCommitTS, checkpoint.LastCommitTS)
+			require.Positive(t, checkpoint.AppliedMutations)
+			require.Less(t, checkpoint.AppliedMutations, manifest.MutationCount)
+			if resumeDrill == "pre-commit" {
+				require.Equal(t, partial.AppliedMutations, checkpoint.AppliedMutations)
+				require.Equal(t, partial.LastCommitTS, checkpoint.LastCommitTS)
+			}
 			require.NotZero(t, checkpoint.LastStartTS)
-			t.Logf("native PITR replay interruption preserved a v2 checkpoint after %d/%d mutations", partial.AppliedMutations, manifest.MutationCount)
+			t.Logf("native PITR replay %s drill preserved a v2 checkpoint after %d/%d mutations", resumeDrill, checkpoint.AppliedMutations, manifest.MutationCount)
 		}
 		replayBytes := runReceiptOutput(t, ctx, replayCommand, "--plan="+planPath, "--full-restore="+restorePath, "--log-artifacts="+logPath, "--log-root="+logRoot, "--restoration-fence="+fencePath, "--admission-handoff="+admissionHandoffPath, "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=1m")
 		replayPath = filepath.Join(t.TempDir(), "replay.json")
@@ -2955,7 +2968,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.Equal(t, "kubebrain.native-pitr-log-replay.v4", replayReceipt.Format)
 		require.Positive(t, replayReceipt.AppliedMutations)
 		require.Positive(t, replayReceipt.AppliedTransactions)
-		require.Equal(t, resumeDrill == "true", replayReceipt.Resumed)
+		require.Equal(t, resumeDrill != "", replayReceipt.Resumed)
 		require.Positive(t, replayReceipt.TransactionCount)
 		require.LessOrEqual(t, replayReceipt.TransactionCount, replayReceipt.MutationCount)
 		require.LessOrEqual(t, replayReceipt.AppliedTransactions, replayReceipt.AppliedMutations)

@@ -87,6 +87,33 @@ func (b *countingReplayBatch) Commit(ctx context.Context) error {
 	return err
 }
 
+type commitThenUncertainReplayStore struct {
+	storage.KvStorage
+	commits       int
+	uncertainOnce bool
+}
+
+func (s *commitThenUncertainReplayStore) BeginBatchWrite() storage.BatchWrite {
+	return &commitThenUncertainReplayBatch{BatchWrite: s.KvStorage.BeginBatchWrite(), store: s}
+}
+
+type commitThenUncertainReplayBatch struct {
+	storage.BatchWrite
+	store *commitThenUncertainReplayStore
+}
+
+func (b *commitThenUncertainReplayBatch) Commit(ctx context.Context) error {
+	if err := b.BatchWrite.Commit(ctx); err != nil {
+		return err
+	}
+	b.store.commits++
+	if b.store.uncertainOnce {
+		b.store.uncertainOnce = false
+		return storage.NewErrUncertainResult(errors.New("response lost after commit"))
+	}
+	return nil
+}
+
 func (w *boundedWriteRequest) Write(data []byte) (int, error) {
 	if len(data) > w.max {
 		return 0, errors.New("writer received the complete mutation plan")
@@ -465,6 +492,33 @@ func TestApplyReplayCheckpointsAndResumesExactly(t *testing.T) {
 	changed[0].Value = []byte("tampered")
 	_, err = ApplyReplay(t.Context(), target, digest, manifest, changed)
 	require.ErrorContains(t, err, "manifest")
+}
+
+func TestApplyReplayResolvesCommittedUncertainResultFromCheckpoint(t *testing.T) {
+	_, receipt, root, keyA, keyB := replayFixture(t)
+	manifest, mutations, err := MaterializeReplay(receipt, digest, root, 119, 150)
+	require.NoError(t, err)
+	inner := memkv.NewKvStorage()
+	defer inner.Close()
+	target := &commitThenUncertainReplayStore{KvStorage: inner, uncertainOnce: true}
+
+	result, err := ApplyReplay(t.Context(), target, digest, manifest, mutations)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.Equal(t, ReplayApplyResult{}, result, "an uncertain commit must not be reported as applied")
+	require.Equal(t, 1, target.commits)
+	value, err := target.Get(t.Context(), keyA)
+	require.NoError(t, err)
+	require.Equal(t, []byte("long-value"), value, "the first source transaction actually committed")
+
+	result, err = ApplyReplay(t.Context(), target, digest, manifest, mutations)
+	require.NoError(t, err)
+	require.Equal(t, ReplayApplyResult{AppliedMutations: 2, AppliedTransactions: 2, Resumed: true, LastCommitTS: 140}, result)
+	require.Equal(t, 3, target.commits, "the committed uncertain source transaction must not be replayed")
+	_, err = target.Get(t.Context(), keyA)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	value, err = target.Get(t.Context(), keyB)
+	require.NoError(t, err)
+	require.Equal(t, []byte("short"), value)
 }
 
 func TestApplyReplaySeparatesTransactionsWithCollidingCommitTS(t *testing.T) {
