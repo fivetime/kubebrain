@@ -457,6 +457,15 @@ func (s *store) WarmSnapshotRegions(ctx context.Context, starts [][]byte, timest
 	if timestamp == 0 {
 		return errors.New("snapshot timestamp must be non-zero")
 	}
+	stores, err := s.clients[0].GetPDClient().GetAllStores(ctx)
+	if err != nil {
+		return errors.Wrap(err, "failed to discover checkpoint stores")
+	}
+	for clientIndex, client := range s.clients {
+		if err := client.GetRegionCache().SeedStores(stores); err != nil {
+			return errors.Wrapf(err, "failed to seed checkpoint stores for client %d", clientIndex)
+		}
+	}
 	return warmSnapshotRegionReaders(ctx, starts, len(s.clients), func(clientIndex int) snapshotRegionReader {
 		return s.clients[clientIndex].GetSnapshot(timestamp)
 	})

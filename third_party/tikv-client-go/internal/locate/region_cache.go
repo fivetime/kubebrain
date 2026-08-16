@@ -534,6 +534,51 @@ func (c *RegionCache) checkAndResolve(needCheckStores []*Store, needCheck func(*
 	}
 }
 
+// SeedStores installs authoritative PD store metadata without loading any
+// Region. It is used by callers that must make a known store directory
+// available before PD becomes unreachable. Existing resolved entries are not
+// overwritten: address changes require the normal re-resolve path so Region
+// store pointers and epochs remain coherent.
+func (c *RegionCache) SeedStores(stores []*metapb.Store) error {
+	for _, meta := range stores {
+		if meta == nil || meta.GetState() != metapb.StoreState_Up {
+			continue
+		}
+		if meta.GetId() == 0 || meta.GetAddress() == "" {
+			return errors.Errorf("invalid store metadata: id=%d address=%q", meta.GetId(), meta.GetAddress())
+		}
+
+		c.storeMu.Lock()
+		store, exists := c.storeMu.stores[meta.GetId()]
+		if !exists {
+			c.storeMu.stores[meta.GetId()] = &Store{
+				storeID:   meta.GetId(),
+				addr:      meta.GetAddress(),
+				peerAddr:  meta.GetPeerAddress(),
+				saddr:     meta.GetStatusAddress(),
+				storeType: tikvrpc.GetStoreTypeByMeta(meta),
+				labels:    meta.GetLabels(),
+				state:     uint64(resolved),
+			}
+			c.storeMu.Unlock()
+			continue
+		}
+		c.storeMu.Unlock()
+
+		store.resolveMutex.Lock()
+		if store.getResolveState() == unresolved {
+			store.addr = meta.GetAddress()
+			store.peerAddr = meta.GetPeerAddress()
+			store.saddr = meta.GetStatusAddress()
+			store.storeType = tikvrpc.GetStoreTypeByMeta(meta)
+			store.labels = meta.GetLabels()
+			store.changeResolveStateTo(unresolved, resolved)
+		}
+		store.resolveMutex.Unlock()
+	}
+	return nil
+}
+
 // SetRegionCacheStore is used to set a store in region cache, for testing only
 func (c *RegionCache) SetRegionCacheStore(id uint64, addr string, peerAddr string, storeType tikvrpc.EndpointType, state uint64, labels []*metapb.StoreLabel) {
 	c.storeMu.Lock()

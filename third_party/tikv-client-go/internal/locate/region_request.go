@@ -270,6 +270,10 @@ type replicaSelector struct {
 	// TiKV can reject the request when its estimated wait duration exceeds busyThreshold.
 	// Then, the client will receive a ServerIsBusy error and choose another replica to retry.
 	busyThreshold time.Duration
+	// A pre-resolved store may be probed by read-only requests when TiKV names
+	// it in NotLeader. Only subsequent authoritative EpochNotMatch metadata is
+	// allowed to install the replacement topology in RegionCache.
+	allowKnownStoreLeaderProbe bool
 }
 
 // selectorState is the interface of states of the replicaSelector.
@@ -767,6 +771,7 @@ func newReplicaSelector(
 		}
 	}
 
+	_, _, allowKnownStoreLeaderProbe := mergeRecoveryRead(req)
 	return &replicaSelector{
 		regionCache,
 		cachedRegion,
@@ -776,6 +781,7 @@ func newReplicaSelector(
 		-1,
 		-1,
 		time.Duration(req.BusyThresholdMs) * time.Millisecond,
+		allowKnownStoreLeaderProbe,
 	}, nil
 }
 
@@ -948,8 +954,28 @@ func (s *replicaSelector) onNotLeader(
 	return true, nil
 }
 
-// updateLeader updates the leader of the cached region.
-// If the leader peer isn't found in the region, the region will be invalidated.
+// onRegionNotFound lets snapshot reads try another peer from the same cached
+// Region when the selected peer has been removed. A surviving peer can then
+// return either authoritative EpochNotMatch metadata or a NotLeader hint to a
+// pre-resolved replacement store. Writes retain the upstream fail-closed path.
+func (s *replicaSelector) onRegionNotFound() bool {
+	if !s.allowKnownStoreLeaderProbe || s.targetReplica() == nil {
+		return false
+	}
+	leaderIdx := s.targetIdx
+	s.replicas[leaderIdx].attempts = maxReplicaAttempt
+	s.state = &tryFollower{leaderIdx: leaderIdx, lastIdx: leaderIdx}
+	logutil.BgLogger().Info(
+		"retrying removed region peer to discover authoritative replacement metadata",
+		zap.Uint64("regionID", s.region.GetID()),
+		zap.Uint64("removedStoreID", s.replicas[leaderIdx].store.storeID),
+	)
+	return true
+}
+
+// updateLeader updates the leader of the cached Region. Read-only requests may
+// transiently follow a peer on a pre-resolved store; other unknown peers
+// invalidate the Region and reload through PD.
 func (s *replicaSelector) updateLeader(leader *metapb.Peer) {
 	if leader == nil {
 		return
@@ -981,8 +1007,30 @@ func (s *replicaSelector) updateLeader(leader *metapb.Peer) {
 			return
 		}
 	}
-	// Invalidate the region since the new leader is not in the cached version.
-	s.region.invalidate(StoreNotFound)
+	if !s.allowKnownStoreLeaderProbe {
+		// Invalidate the region since the new leader is not in the cached version.
+		s.region.invalidate(StoreNotFound)
+		return
+	}
+	s.regionCache.storeMu.RLock()
+	store := s.regionCache.storeMu.stores[leader.GetStoreId()]
+	s.regionCache.storeMu.RUnlock()
+	if store == nil || store.getResolveState() != resolved || store.addr == "" || store.storeType != tikvrpc.TiKV {
+		s.region.invalidate(StoreNotFound)
+		return
+	}
+	s.replicas = append(s.replicas, &replica{
+		store: store,
+		peer:  leader,
+		epoch: atomic.LoadUint32(&store.epoch),
+	})
+	leaderIdx := AccessIndex(len(s.replicas) - 1)
+	s.state = &accessKnownLeader{leaderIdx: leaderIdx}
+	logutil.BgLogger().Info(
+		"probing pre-resolved replacement leader for authoritative region metadata",
+		zap.Uint64("regionID", s.region.GetID()),
+		zap.Uint64("leaderStoreID", leader.GetStoreId()),
+	)
 }
 
 func (s *replicaSelector) onServerIsBusy(
@@ -1830,8 +1878,13 @@ func (s *RegionRequestSender) onRegionError(
 		)
 	}
 
-	// This peer is removed from the region. Invalidate the region since it's too stale.
+	// This peer is removed from the Region. Snapshot reads may first ask another
+	// cached peer for authoritative replacement metadata; other commands
+	// invalidate immediately and reload through PD.
 	if regionErr.GetRegionNotFound() != nil {
+		if s.replicaSelector != nil && s.replicaSelector.onRegionNotFound() {
+			return true, nil
+		}
 		s.regionCache.InvalidateCachedRegion(ctx.Region)
 		return false, nil
 	}

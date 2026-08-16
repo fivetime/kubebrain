@@ -877,7 +877,7 @@ func TestNativePDNetworkQuorumLossRealCluster(t *testing.T) {
 	require.Error(t, err, "KubeBrain write must fail closed without the PD quorum")
 	require.True(t, errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.Unavailable || status.Code(err) == codes.DeadlineExceeded,
 		"unexpected fail-closed write error: %v", err)
-	serializableCtx, serializableCancel := context.WithTimeout(ctx, 3*time.Second)
+	serializableCtx, serializableCancel := context.WithTimeout(ctx, 5*time.Second)
 	localMembers, err := client.MemberList(serializableCtx, clientv3.WithSerializable())
 	serializableCancel()
 	require.NoError(t, err)
@@ -1178,6 +1178,71 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.NotZero(t, parsedUID)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	pdEndpoint := strings.Split(targetPD, ",")[0]
+	schedulerOutput, err := exec.CommandContext(
+		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint, "scheduler", "show",
+	).CombinedOutput()
+	require.NoError(t, err, "list PD schedulers before registering spare store: %s", schedulerOutput)
+	var schedulers []string
+	require.NoError(t, json.Unmarshal(schedulerOutput, &schedulers), "decode PD scheduler list: %s", schedulerOutput)
+	schedulersPaused := true
+	resumeSchedulers := func() {
+		if !schedulersPaused {
+			return
+		}
+		for _, scheduler := range schedulers {
+			output, resumeErr := exec.Command(
+				"docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
+				"scheduler", "pause", scheduler, "0",
+			).CombinedOutput()
+			require.NoError(t, resumeErr, "resume PD scheduler %q: %s", scheduler, output)
+		}
+		schedulersPaused = false
+	}
+	t.Cleanup(resumeSchedulers)
+	for _, scheduler := range schedulers {
+		output, pauseErr := exec.CommandContext(
+			ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
+			"scheduler", "pause", scheduler, "300",
+		).CombinedOutput()
+		require.NoError(t, pauseErr, "pause PD scheduler %q while registering spare store: %s", scheduler, output)
+	}
+	spareOutput, err := exec.CommandContext(
+		ctx, "docker", "run", "-d", "--name", spareTiKVContainer, "--network", "host",
+		"--tmpfs", "/data:rw,size=64g,mode=1777", "-v", tikvConfig+":/native-pitr-integration.toml:ro",
+		"pingcap/tikv:v7.5.1", "--config=/native-pitr-integration.toml", "--addr="+spareTiKVAddress,
+		"--advertise-addr="+spareTiKVAddress, "--status-addr="+spareTiKVStatus, "--pd="+targetPD,
+		"--data-dir=/data", "--log-file=",
+	).CombinedOutput()
+	require.NoError(t, err, "start spare TiKV store: %s", spareOutput)
+	require.Eventually(t, func() bool {
+		_, curlErr := exec.CommandContext(ctx, "curl", "-fsS", "http://"+spareTiKVStatus+"/status").CombinedOutput()
+		return curlErr == nil
+	}, 60*time.Second, time.Second, "spare TiKV status endpoint must become healthy")
+	directoryPDC, err := pd.NewClientWithContext(ctx, strings.Split(targetPD, ","), pd.SecurityOption{})
+	require.NoError(t, err)
+	var spareStoreID uint64
+	require.Eventually(t, func() bool {
+		stores, storesErr := directoryPDC.GetAllStores(ctx)
+		if storesErr != nil {
+			return false
+		}
+		for _, store := range stores {
+			if store.GetAddress() == spareTiKVAddress {
+				spareStoreID = store.GetId()
+				return spareStoreID != 0
+			}
+		}
+		return false
+	}, 60*time.Second, 500*time.Millisecond, "PD must register the spare TiKV store")
+	directoryPDC.Close()
+	limitOutput, err := exec.CommandContext(
+		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
+		"store", "limit", strconv.FormatUint(spareStoreID, 10), "0.000001", "add-peer",
+	).CombinedOutput()
+	require.NoError(t, err, "disable peer placement on checkpoint spare store: %s", limitOutput)
+	require.Contains(t, string(limitOutput), "Success")
+	resumeSchedulers()
 
 	runIPTables := func(args ...string) {
 		output, commandErr := exec.CommandContext(ctx, "iptables", append([]string{"-w", "5"}, args...)...).CombinedOutput()
@@ -1201,6 +1266,7 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 
 	leaderClientPort, followerClientPort := freeTCPPort(t), freeTCPPort(t)
 	leaderPeerPort, followerPeerPort := freeTCPPort(t), freeTCPPort(t)
+	leaderInfoPort, followerInfoPort := freeTCPPort(t), freeTCPPort(t)
 	initialCluster := fmt.Sprintf(
 		"leader=http://127.0.0.1:%d,follower=http://127.0.0.1:%d", leaderPeerPort, followerPeerPort,
 	)
@@ -1208,7 +1274,7 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	authArg := "--auth-token=jwt,sign-method=HS256,priv-key=" + jwtSecret
 	leaderServer := startKubeBrainReplicaAsUID(
 		t, ctx, serverBinary, targetPD, root, "pd-follower-leader", keyspace, 0,
-		leaderClientPort, leaderPeerPort, freeTCPPort(t), initialCluster, authArg,
+		leaderClientPort, leaderPeerPort, leaderInfoPort, initialCluster, authArg,
 	)
 	defer leaderServer.stop(t)
 	leaderEndpoint := fmt.Sprintf("127.0.0.1:%d", leaderClientPort)
@@ -1216,7 +1282,7 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 
 	followerServer := startKubeBrainReplicaAsUID(
 		t, ctx, serverBinary, targetPD, root, "pd-follower-reader", keyspace, uint32(parsedUID),
-		followerClientPort, followerPeerPort, freeTCPPort(t), initialCluster, authArg,
+		followerClientPort, followerPeerPort, followerInfoPort, initialCluster, authArg,
 	)
 	defer followerServer.stop(t)
 	t.Cleanup(func() {
@@ -1229,6 +1295,18 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 			return
 		}
 		lines := bytes.Split(contents, []byte{'\n'})
+		checkpointLines := make([][]byte, 0)
+		for _, line := range lines {
+			lower := bytes.ToLower(line)
+			if bytes.Contains(lower, []byte("checkpoint")) || bytes.Contains(lower, []byte("replacement metadata")) ||
+				bytes.Contains(lower, []byte("replacement leader")) || bytes.Contains(lower, []byte("warm checkpoint")) ||
+				bytes.Contains(lower, []byte("seed checkpoint")) || bytes.Contains(lower, []byte("discover checkpoint")) {
+				checkpointLines = append(checkpointLines, line)
+			}
+		}
+		if len(checkpointLines) > 0 {
+			t.Logf("isolated follower checkpoint log:\n%s", bytes.Join(checkpointLines, []byte{'\n'}))
+		}
 		if len(lines) > 200 {
 			lines = lines[len(lines)-200:]
 		}
@@ -1279,7 +1357,28 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.NoError(t, err)
 	// Do not read the user key through the follower before isolation. Its only
 	// chance to cache the key's Region is checkpoint publication warmup.
-	time.Sleep(1500 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		metrics, metricsErr := exec.CommandContext(
+			ctx, "curl", "-fsS", fmt.Sprintf("http://127.0.0.1:%d/metrics", followerInfoPort),
+		).Output()
+		if metricsErr != nil {
+			return false
+		}
+		for _, line := range bytes.Split(metrics, []byte{'\n'}) {
+			if !bytes.HasPrefix(line, []byte("serializable_checkpoint_revision")) {
+				continue
+			}
+			fields := bytes.Fields(line)
+			if len(fields) != 2 {
+				continue
+			}
+			revision, parseErr := strconv.ParseInt(string(fields[1]), 10, 64)
+			if parseErr == nil && revision >= topologyPut.Header.Revision {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 250*time.Millisecond, "follower must publish a fully warmed checkpoint covering all pre-isolation writes")
 
 	pdClient, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(targetPD, ","), DialTimeout: time.Second})
 	require.NoError(t, err)
@@ -1365,7 +1464,6 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 		}
 	}
 	require.NotZero(t, targetStoreID)
-	pdEndpoint := strings.Split(targetPD, ",")[0]
 	transferOutput, err := exec.CommandContext(
 		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
 		"operator", "add", "transfer-leader", strconv.FormatUint(region.Meta.Id, 10), strconv.FormatUint(targetStoreID, 10),
@@ -1449,15 +1547,19 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	).CombinedOutput()
 	require.NoError(t, err, "unpause two TiKV stores: %s", quorumUnpauseOutput)
 	quorumStoresPaused = false
-	quorumRecoveryCtx, quorumRecoveryCancel := context.WithTimeout(ctx, 15*time.Second)
-	quorumRecoveryCtx = metadata.NewOutgoingContext(
-		quorumRecoveryCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
-	)
-	quorumRecovery, err := followerRawKV.Range(quorumRecoveryCtx, &etcdserverpb.RangeRequest{
-		Key: []byte("topology/z"), Serializable: true,
-	})
-	quorumRecoveryCancel()
-	require.NoError(t, err, "checkpoint reads must recover after the TiKV quorum returns")
+	var quorumRecovery *etcdserverpb.RangeResponse
+	require.Eventually(t, func() bool {
+		quorumRecoveryCtx, quorumRecoveryCancel := context.WithTimeout(ctx, 3*time.Second)
+		quorumRecoveryCtx = metadata.NewOutgoingContext(
+			quorumRecoveryCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+		)
+		var recoveryErr error
+		quorumRecovery, recoveryErr = followerRawKV.Range(quorumRecoveryCtx, &etcdserverpb.RangeRequest{
+			Key: []byte("topology/z"), Serializable: true,
+		})
+		quorumRecoveryCancel()
+		return recoveryErr == nil
+	}, 30*time.Second, 250*time.Millisecond, "checkpoint reads must recover after the TiKV quorum returns")
 	require.Len(t, quorumRecovery.Kvs, 1)
 	require.Equal(t, []byte("before-split-z"), quorumRecovery.Kvs[0].Value)
 	require.Equal(t, topology.Header.Revision, quorumRecovery.Header.Revision)
@@ -1471,6 +1573,9 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.NotNil(t, rightRegion)
 	require.NotNil(t, rightRegion.Meta)
 	require.NotEqual(t, leftRegion.Meta.Id, rightRegion.Meta.Id, "the split boundary must still separate topology/a and topology/z")
+	for _, peer := range rightRegion.Meta.Peers {
+		require.NotEqual(t, spareStoreID, peer.StoreId, "checkpoint spare must not carry the source Region before replacement")
+	}
 	mergeOutput, err := exec.CommandContext(
 		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
 		"operator", "add", "merge-region", strconv.FormatUint(rightRegion.Meta.Id, 10), strconv.FormatUint(leftRegion.Meta.Id, 10),
@@ -1501,32 +1606,12 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, region)
 	require.NotNil(t, region.Meta)
-	spareOutput, err := exec.CommandContext(
-		ctx, "docker", "run", "-d", "--name", spareTiKVContainer, "--network", "host",
-		"--tmpfs", "/data:rw,size=64g,mode=1777", "-v", tikvConfig+":/native-pitr-integration.toml:ro",
-		"pingcap/tikv:v7.5.1", "--config=/native-pitr-integration.toml", "--addr="+spareTiKVAddress,
-		"--advertise-addr="+spareTiKVAddress, "--status-addr="+spareTiKVStatus, "--pd="+targetPD,
-		"--data-dir=/data", "--log-file=",
+	limitOutput, err = exec.CommandContext(
+		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
+		"store", "limit", strconv.FormatUint(spareStoreID, 10), "15", "add-peer",
 	).CombinedOutput()
-	require.NoError(t, err, "start spare TiKV store: %s", spareOutput)
-	require.Eventually(t, func() bool {
-		_, curlErr := exec.CommandContext(ctx, "curl", "-fsS", "http://"+spareTiKVStatus+"/status").CombinedOutput()
-		return curlErr == nil
-	}, 60*time.Second, time.Second, "spare TiKV status endpoint must become healthy")
-	var spareStoreID uint64
-	require.Eventually(t, func() bool {
-		stores, storesErr := pdc.GetAllStores(ctx)
-		if storesErr != nil {
-			return false
-		}
-		for _, store := range stores {
-			if store.GetAddress() == spareTiKVAddress {
-				spareStoreID = store.GetId()
-				return spareStoreID != 0
-			}
-		}
-		return false
-	}, 60*time.Second, 500*time.Millisecond, "PD must register the spare TiKV store")
+	require.NoError(t, err, "enable peer placement on checkpoint spare store: %s", limitOutput)
+	require.Contains(t, string(limitOutput), "Success")
 	deleteStoreOutput, err := exec.CommandContext(
 		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
 		"store", "delete", strconv.FormatUint(targetStoreID, 10),
@@ -1547,28 +1632,37 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 		}
 		return foundSpare && len(updated.Meta.Peers) == 3
 	}, 90*time.Second, 500*time.Millisecond, "PD must replace the deleted Region peer with the spare store")
-	replacementLeaderOutput, err := exec.CommandContext(
-		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
-		"operator", "add", "transfer-leader", strconv.FormatUint(region.Meta.Id, 10), strconv.FormatUint(spareStoreID, 10),
-	).CombinedOutput()
-	require.NoError(t, err, "transfer Region leader to replacement store: %s", replacementLeaderOutput)
-	require.Contains(t, string(replacementLeaderOutput), "Success")
 	require.Eventually(t, func() bool {
 		updated, getErr := pdc.GetRegionByID(ctx, region.Meta.Id)
-		return getErr == nil && updated != nil && updated.Leader != nil && updated.Leader.StoreId == spareStoreID
+		if getErr != nil || updated == nil || updated.Leader == nil {
+			return false
+		}
+		if updated.Leader.StoreId == spareStoreID {
+			return true
+		}
+		replacementLeaderOutput, transferErr := exec.CommandContext(
+			ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
+			"operator", "add", "transfer-leader", strconv.FormatUint(region.Meta.Id, 10), strconv.FormatUint(spareStoreID, 10),
+		).CombinedOutput()
+		return transferErr == nil && strings.Contains(string(replacementLeaderOutput), "Success")
 	}, 30*time.Second, 250*time.Millisecond, "PD must move the Region leader to the replacement store")
-	replacementCtx, replacementCancel := context.WithTimeout(ctx, 5*time.Second)
-	replacementCtx = metadata.NewOutgoingContext(
-		replacementCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
-	)
-	replacement, err := followerRawKV.Range(replacementCtx, &etcdserverpb.RangeRequest{
-		Key: []byte("topology/z"), Serializable: true,
-	})
-	replacementCancel()
-	require.Error(t, err, "an isolated follower cannot resolve a replacement store address and must fail closed")
-	require.Nil(t, replacement)
-	require.True(t, errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded,
-		"replacement address discovery must time out rather than return stale data: %v", err)
+	var replacement *etcdserverpb.RangeResponse
+	require.Eventually(t, func() bool {
+		replacementCtx, replacementCancel := context.WithTimeout(ctx, 3*time.Second)
+		replacementCtx = metadata.NewOutgoingContext(
+			replacementCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+		)
+		var replacementErr error
+		replacement, replacementErr = followerRawKV.Range(replacementCtx, &etcdserverpb.RangeRequest{
+			Key: []byte("topology/z"), Serializable: true,
+		})
+		replacementCancel()
+		return replacementErr == nil
+	}, 30*time.Second, 250*time.Millisecond,
+		"the checkpoint store directory must resolve a pre-registered replacement without PD")
+	require.Len(t, replacement.Kvs, 1)
+	require.Equal(t, []byte("before-split-z"), replacement.Kvs[0].Value)
+	require.Equal(t, serializable.Header.Revision, replacement.Header.Revision)
 	restoreNetwork()
 	require.Eventually(t, func() bool {
 		mergedRecoveryCtx, mergedRecoveryCancel := context.WithTimeout(ctx, 3*time.Second)

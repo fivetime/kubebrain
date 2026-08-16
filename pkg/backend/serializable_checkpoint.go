@@ -29,6 +29,7 @@ func initSerializableCheckpointMetrics(metricCli metrics.Metrics) {
 		return
 	}
 	_ = metricCli.EmitGauge("serializable.checkpoint.available", int64(0))
+	_ = metricCli.EmitGauge("serializable.checkpoint.revision", int64(0))
 	_ = metricCli.EmitGauge("serializable.checkpoint.remaining_seconds", int64(0))
 }
 
@@ -408,11 +409,13 @@ func (b *backend) emitSerializableCheckpointMetrics(now time.Time) {
 	if b.metricCli == nil {
 		return
 	}
-	available, remaining := int64(0), int64(0)
+	available, revision, remaining := int64(0), int64(0), int64(0)
 	if checkpoint := b.serializableCheckpoint.Load(); checkpoint != nil && now.Before(checkpoint.ValidUntil) {
 		available = 1
+		revision = int64(checkpoint.Revision)
 		remaining = int64(checkpoint.ValidUntil.Sub(now) / time.Second)
 	}
 	_ = b.metricCli.EmitGauge("serializable.checkpoint.available", available)
+	_ = b.metricCli.EmitGauge("serializable.checkpoint.revision", revision)
 	_ = b.metricCli.EmitGauge("serializable.checkpoint.remaining_seconds", remaining)
 }
