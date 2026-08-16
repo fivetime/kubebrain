@@ -54229,6 +54229,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `pkg/server` 与 `pkg/server/etcd` race（5.129 秒及对应套件）和 vet 通过；本轮没有修改测试文件。在线 A4776
   未滚动，campaign cancellation 叠加 PD release/client Close fault 的非零退出仍留待正式新镜像故障门禁。
 
+- A4822 修复 gRPC context status interceptor 对 joined handler error 的同型吞噬。Maintenance Snapshot 等生产
+  RPC 会把请求 cancel/deadline 与 artifact Remove/file Close 错误 Join；旧 `normalizeContextStatus` 只要
+  `errors.Is` 命中 context error，就把整个结果改为 Canceled/DeadlineExceeded，使客户端看不到真实磁盘 cleanup
+  failure。interceptor 现在递归分区 multi-error：存在任一非 context sibling 时返回这些真实错误；只有全部 child
+  都是 cancel/deadline 时才映射标准 gRPC context code。单一请求取消的客户端行为不变。
+
+  普通 `pkg/endpoint` 全套（16.776 秒）、race 及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，Snapshot
+  取消叠加 fd Close/unlink fault 的客户端非成功终态仍留待正式新镜像文件系统故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
