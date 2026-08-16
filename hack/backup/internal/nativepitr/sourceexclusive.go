@@ -41,8 +41,13 @@ type SourceRangeProbe interface {
 	Close()
 }
 
-func InspectSourceRangeExclusive(ctx context.Context, probe SourceRangeProbe, full FullSnapshotReceipt, fullSHA string, addrs []string, checkedAt int64) (SourceRangeExclusiveReceipt, error) {
-	defer probe.Close()
+func InspectSourceRangeExclusive(ctx context.Context, probe SourceRangeProbe, full FullSnapshotReceipt, fullSHA string, addrs []string, checkedAt int64) (receiptResult SourceRangeExclusiveReceipt, retErr error) {
+	defer func() {
+		probe.Close()
+		if closer, ok := probe.(interface{ CloseError() error }); ok {
+			retErr = errors.Join(retErr, closer.CloseError())
+		}
+	}()
 	if err := validateFullSnapshotReceipt(full); err != nil {
 		return SourceRangeExclusiveReceipt{}, err
 	}
@@ -76,8 +81,9 @@ func InspectSourceRangeExclusive(ctx context.Context, probe SourceRangeProbe, fu
 }
 
 type liveSourceRangeProbe struct {
-	pd  pd.Client
-	txn *txnkv.Client
+	pd       pd.Client
+	txn      *txnkv.Client
+	closeErr error
 }
 
 func (p *liveSourceRangeProbe) PDClusterID(ctx context.Context) uint64 { return p.pd.GetClusterID(ctx) }
@@ -93,7 +99,11 @@ func (p *liveSourceRangeProbe) HasVisibleKey(_ context.Context, ts uint64, start
 	defer it.Close()
 	return it.Valid(), nil
 }
-func (p *liveSourceRangeProbe) Close() { _ = p.txn.Close(); p.pd.Close() }
+func (p *liveSourceRangeProbe) Close() {
+	p.closeErr = errors.Join(p.closeErr, p.txn.Close())
+	p.pd.Close()
+}
+func (p *liveSourceRangeProbe) CloseError() error { return p.closeErr }
 
 func (r SourceRangeExclusiveReceipt) Validate() error {
 	if r.Format != SourceRangeExclusiveFormat || !r.ReadOnly || r.ClusterID == 0 || r.SnapshotTS == 0 || r.CheckedAtUnix <= 0 {

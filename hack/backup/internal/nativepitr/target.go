@@ -54,8 +54,9 @@ type TargetProbe interface {
 }
 
 type liveTargetProbe struct {
-	pd  pd.Client
-	txn *txnkv.Client
+	pd       pd.Client
+	txn      *txnkv.Client
+	closeErr error
 }
 
 func (p *liveTargetProbe) PDClusterID(ctx context.Context) uint64 { return p.pd.GetClusterID(ctx) }
@@ -81,9 +82,10 @@ func (p *liveTargetProbe) SnapshotTSAndFirstKey(ctx context.Context) (uint64, bo
 	return ts, it.Valid(), nil
 }
 func (p *liveTargetProbe) Close() {
-	_ = p.txn.Close()
+	p.closeErr = errors.Join(p.closeErr, p.txn.Close())
 	p.pd.Close()
 }
+func (p *liveTargetProbe) CloseError() error { return p.closeErr }
 
 // InspectLiveTargetSnapshotEmpty opens independent PD and txnkv clients so a
 // caller cannot substitute a claimed cluster identity for the scanned target.
@@ -103,8 +105,13 @@ func InspectLiveTargetSnapshotEmpty(ctx context.Context, addrs []string, ca, cer
 	return InspectTargetSnapshotEmpty(ctx, &liveTargetProbe{pd: pdc, txn: txn}, addrs, checkedAt)
 }
 
-func InspectTargetSnapshotEmpty(ctx context.Context, probe TargetProbe, addrs []string, checkedAt int64) (TargetSnapshotEmptyReceipt, error) {
-	defer probe.Close()
+func InspectTargetSnapshotEmpty(ctx context.Context, probe TargetProbe, addrs []string, checkedAt int64) (receiptResult TargetSnapshotEmptyReceipt, retErr error) {
+	defer func() {
+		probe.Close()
+		if closer, ok := probe.(interface{ CloseError() error }); ok {
+			retErr = errors.Join(retErr, closer.CloseError())
+		}
+	}()
 	pdID, txnID := probe.PDClusterID(ctx), probe.TxnClusterID()
 	if pdID == 0 || txnID == 0 || pdID != txnID {
 		return TargetSnapshotEmptyReceipt{}, fmt.Errorf("target PD/TiKV cluster ID mismatch: pd=%d txn=%d", pdID, txnID)

@@ -160,7 +160,7 @@ func DecodeSourceCaptureReceipt(reader io.Reader) (SourceCaptureReceipt, error) 
 // visible in a tenant after its restoration fence has excluded all writers.
 // The durable watermark covers compacted/deleted latest versions; the physical
 // object scan detects a lagging watermark and rejects unknown encodings.
-func InspectFencedSourceRevision(ctx context.Context, store storage.KvStorage, keyspace string) (uint64, error) {
+func InspectFencedSourceRevision(ctx context.Context, store storage.KvStorage, keyspace string) (revisionResult uint64, retErr error) {
 	ks, err := coder.NewKeyspace(keyspace)
 	if err != nil {
 		return 0, err
@@ -177,7 +177,7 @@ func InspectFencedSourceRevision(ctx context.Context, store storage.KvStorage, k
 	if err != nil {
 		return 0, fmt.Errorf("scan fenced source revisions: %w", err)
 	}
-	defer it.Close()
+	defer func() { retErr = errors.Join(retErr, it.Close()) }()
 	maxRevision := durable
 	c := ks.NewCoder()
 	for {

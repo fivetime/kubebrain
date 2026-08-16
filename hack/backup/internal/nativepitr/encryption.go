@@ -34,7 +34,7 @@ type EncryptionIdentity struct {
 // ReadAES256KeyFile validates BR v7.5.1 key-file semantics without retaining
 // a verifier in durable evidence. The returned bytes are raw key material and
 // must remain process-local.
-func ReadAES256KeyFile(path string) ([]byte, error) {
+func ReadAES256KeyFile(path string) (key []byte, retErr error) {
 	if path == "" || !filepath.IsAbs(path) {
 		return nil, errors.New("AES-256 encryption key file must be an absolute path")
 	}
@@ -42,9 +42,12 @@ func ReadAES256KeyFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open AES-256 encryption key file: %w", err)
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
 		return nil, errors.New("AES-256 encryption key file must be regular")
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, 66))
