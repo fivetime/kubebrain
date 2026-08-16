@@ -2225,7 +2225,7 @@ type brFaultRunner struct {
 	networkFault            *pdNetworkBRFault
 }
 
-func (r *brFaultRunner) Run(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+func (r *brFaultRunner) Run(ctx context.Context, executable *os.File, name string, args []string, stdout, stderr io.Writer) error {
 	marker := &faultMarkerWriter{dst: stderr, marker: []byte("switch to import mode at beginning"), trigger: func() error {
 		var err error
 		if r.networkFault != nil {
@@ -2260,7 +2260,7 @@ func (r *brFaultRunner) Run(ctx context.Context, name string, args []string, std
 		r.mu.Unlock()
 		return err
 	}}
-	err := r.commandRunner.Run(ctx, name, args, stdout, marker)
+	err := r.commandRunner.Run(ctx, executable, name, args, stdout, marker)
 	r.mu.Lock()
 	r.completedBeforeRecovery = r.injected && !r.recovered
 	injectionErr, injected, recoveryDone := r.err, r.injected, r.recoveryDone

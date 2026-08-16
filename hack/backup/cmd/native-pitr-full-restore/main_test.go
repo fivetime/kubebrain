@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -96,10 +97,36 @@ func TestReadSmallRejectsOversizedReceipt(t *testing.T) {
 	require.ErrorContains(t, err, "exceeds")
 }
 
-func TestFileDigestHashesExactContents(t *testing.T) {
+func TestOpenExecutableHashesExactContents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "br")
 	require.NoError(t, os.WriteFile(path, []byte("pinned-br"), 0o700))
-	got, err := fileDigest(path)
+	opened, resolved, got, err := openExecutable(path)
 	require.NoError(t, err)
+	require.NoError(t, opened.Close())
+	require.Equal(t, path, resolved)
 	require.Equal(t, digest([]byte("pinned-br")), got)
+}
+
+func TestOSRunnerExecutesHashedOpenInodeAfterPathReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "br")
+	trueBytes, err := os.ReadFile("/bin/true")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, trueBytes, 0o700))
+	opened, resolved, _, err := openExecutable(path)
+	require.NoError(t, err)
+	defer opened.Close()
+	falseBytes, err := os.ReadFile("/bin/false")
+	require.NoError(t, err)
+	replacement := filepath.Join(dir, "replacement")
+	require.NoError(t, os.WriteFile(replacement, falseBytes, 0o700))
+	require.NoError(t, os.Rename(replacement, path))
+	require.NoError(t, (osRunner{}).Run(context.Background(), opened, resolved, nil, io.Discard, io.Discard))
+}
+
+func TestLimitedVersionOutputRejectsOversizedWrite(t *testing.T) {
+	output := limitedOutput{remaining: 4}
+	_, err := output.Write([]byte("12345"))
+	require.ErrorContains(t, err, "exceeds 16 KiB")
+	require.Empty(t, output.Bytes())
 }

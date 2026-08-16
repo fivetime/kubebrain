@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -46,19 +47,42 @@ type options struct {
 }
 
 type commandRunner interface {
-	Output(context.Context, string, ...string) ([]byte, error)
-	Run(context.Context, string, []string, io.Writer, io.Writer) error
+	Output(context.Context, *os.File, string, ...string) ([]byte, error)
+	Run(context.Context, *os.File, string, []string, io.Writer, io.Writer) error
 }
 type inspectTargetFn func(context.Context, []string, string, string, string, int64) (nativepitr.TargetSnapshotEmptyReceipt, error)
 type osRunner struct{}
 
-func (osRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+func (osRunner) Output(ctx context.Context, executable *os.File, displayName string, args ...string) ([]byte, error) {
+	cmd := commandForOpenExecutable(ctx, executable, displayName, args...)
+	output := limitedOutput{remaining: 16 << 10}
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	return output.Bytes(), err
 }
-func (osRunner) Run(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+func (osRunner) Run(ctx context.Context, executable *os.File, displayName string, args []string, stdout, stderr io.Writer) error {
+	cmd := commandForOpenExecutable(ctx, executable, displayName, args...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	return cmd.Run()
+}
+
+func commandForOpenExecutable(ctx context.Context, executable *os.File, displayName string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "/proc/self/fd/"+strconv.FormatUint(uint64(executable.Fd()), 10), args...)
+	cmd.Args[0] = displayName
+	return cmd
+}
+
+type limitedOutput struct {
+	bytes.Buffer
+	remaining int
+}
+
+func (w *limitedOutput) Write(p []byte) (int, error) {
+	if len(p) > w.remaining {
+		return 0, errors.New("BR version output exceeds 16 KiB")
+	}
+	w.remaining -= len(p)
+	return w.Buffer.Write(p)
 }
 
 func main() {
@@ -281,11 +305,12 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 		}
 	}
 
-	resolved, err := exec.LookPath(o.brBinary)
+	brFile, resolved, brSHA, err := openExecutable(o.brBinary)
 	if err != nil {
-		return fmt.Errorf("resolve BR binary: %w", err)
+		return err
 	}
-	versionBytes, err := runner.Output(ctx, resolved, "--version")
+	defer func() { retErr = errors.Join(retErr, brFile.Close()) }()
+	versionBytes, err := runner.Output(ctx, brFile, resolved, "--version")
 	if err != nil {
 		return fmt.Errorf("read BR version: %w: %s", err, strings.TrimSpace(string(versionBytes)))
 	}
@@ -293,11 +318,6 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if !pinnedBR(version) {
 		return fmt.Errorf("BR must be exact v7.5.1 build, got %q", version)
 	}
-	brSHA, err := fileDigest(resolved)
-	if err != nil {
-		return err
-	}
-
 	started := now().Unix()
 	if admission.AcquiredAtUnix > started {
 		return errors.New("restore admission was acquired after BR start")
@@ -306,7 +326,7 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 		return admissionfence.Verify(checkCtx, admissionClient, plan.Source.Keyspace, admissionToken)
 	}
 	if err := runWithAdmissionMonitor(ctx, o.admissionCheckInterval, verifyAdmission, func(runCtx context.Context) error {
-		return runner.Run(runCtx, resolved, buildBRArgs(addrs, o.artifactRoot, o.ca, o.cert, o.key, encryption, runtimeEncryptionKeyFile), logs, logs)
+		return runner.Run(runCtx, brFile, resolved, buildBRArgs(addrs, o.artifactRoot, o.ca, o.cert, o.key, encryption, runtimeEncryptionKeyFile), logs, logs)
 	}); err != nil {
 		return fmt.Errorf("BR transactional full restore failed: %w", err)
 	}
@@ -322,7 +342,7 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if err := verifyMirror(full, fullBytes, artifact, inventory, inventoryBytes, o.artifactRoot, encryptionKey); err != nil {
 		return errors.New("local full mirror changed during restore")
 	}
-	postBRHash, err := fileDigest(resolved)
+	postBRHash, err := digestOpenExecutable(brFile)
 	if err != nil || postBRHash != brSHA {
 		return errors.New("BR binary changed during restore")
 	}
@@ -433,15 +453,43 @@ func readSmall(path string) (b []byte, retErr error) {
 	return b, nil
 }
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
-func fileDigest(path string) (digestResult string, retErr error) {
-	f, err := os.Open(path)
+func openExecutable(name string) (*os.File, string, string, error) {
+	resolved, err := exec.LookPath(name)
 	if err != nil {
-		return "", err
+		return nil, "", "", fmt.Errorf("resolve BR executable: %w", err)
 	}
-	defer func() { retErr = errors.Join(retErr, f.Close()) }()
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return nil, "", "", err
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("open BR executable: %w", err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, "", "", errors.Join(err, f.Close())
+	}
+	if !info.Mode().IsRegular() {
+		return nil, "", "", errors.Join(errors.New("BR executable must be a regular file"), f.Close())
+	}
+	digest, err := digestOpenExecutable(f)
+	if err != nil {
+		return nil, "", "", errors.Join(err, f.Close())
+	}
+	return f, resolved, digest, nil
+}
+
+func digestOpenExecutable(f *os.File) (string, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind BR executable: %w", err)
+	}
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return "", err
+		return "", fmt.Errorf("hash BR executable: %w", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind BR executable: %w", err)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

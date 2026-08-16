@@ -54702,6 +54702,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   restore 目前仍按 pathname 启动 BR，仅做前后 digest；像 full-backup 一样改为已打开 inode 执行以消除 swap-back TOCTOU
   仍是下一项生产门禁，不能由本轮 cleanup 修复替代。
 
+- A4877 关闭 A4876 明确保留的 full-restore BR pathname swap-back TOCTOU。旧 executor 先按路径执行 `br --version`、再按
+  同一路径启动 destructive restore，并仅在结束后重新 hash 路径；攻击者或错误 sidecar 可在两次检查间替换为另一二进制，
+  执行后换回而通过前后摘要。restore runner 现与 full-backup 对齐：解析并打开 BR regular inode、在该 fd 上 hash/rewind，
+  version probe 和 restore 都通过 `/proc/self/fd/<fd>` 执行，结束后再次摘要同一 inode并聚合 Close。display path 仅保留作
+  argv[0]/审计，不再参与 executable resolution；version stdout/stderr 合计限制为 16 KiB，故障注入 runner 也显式透传
+  同一 open file。
+
+  新增已 hash `/bin/true` 后把原路径替换为 `/bin/false`、仍必须成功执行原 inode 的回归，并覆盖 exact digest；full-restore
+  race（1.621 秒）、vet 与 diff check 通过。Linux procfs 可用性由正式 Kubernetes Job 基础镜像/安全上下文继续做启动门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
