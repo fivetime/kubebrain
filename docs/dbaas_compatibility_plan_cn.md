@@ -54296,7 +54296,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
   原先在 detached A4827 基线上稳定失败的 `TestInternalWriteGuardRejectsStaleAuthorizedWrite` 已由该生产修复恢复；
   backend 精确 race（1.573 秒）、scanner/election 全套 race（1.959/1.270 秒）及三包 vet 通过，本轮没有修改测试文件。
-  另一项 runtime-index alarm member 断言基线失败仍单独保留待审。在线 A4776 未滚动，wrapped TiKV error 注入仍留待门禁。
+  同轮记录的 runtime-index alarm member 断言也在该修复后单独通过。在线 A4776 未滚动，wrapped TiKV error 注入仍留待门禁。
+
+- A4830 补齐 CORRUPT 取证扫描的 iterator failure contract。完整 persisted-witness validator 旧实现忽略 witness 与 event
+  两个 iterator 的 Close；单对象 witnessed corruption 取证还在 event Next/Close 失败时只返回原 metadata cause，可能
+  让调用方误以为证据扫描正常完成。生产实现现在聚合 validator 主结果与两个 Close，并在单对象取证中保留 Next、
+  Close 和原始 DataLoss 全部原因；任何资源/transport 收尾失败都不会被提升为可安全 arm/disarm 的完整证据。
+
+  Witness/leadership validation、RangeStream alarm 与 HashKV corruption 聚焦 race（4.283 秒）及 `pkg/backend` vet 通过；
+  A4828 暴露的两个基线失败现均已由 A4829 生产错误分类修复恢复，本轮没有修改测试文件。在线 A4776 未滚动，
+  iterator transport/close fault 下“不误告警、不误解封”的行为仍留待正式新镜像故障门禁。
 
 ### P2：运维兼容和长期验证
 
