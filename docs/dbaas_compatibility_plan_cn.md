@@ -53552,6 +53552,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   六副本全部运行同一 A4768 runtime digest、Ready、零重启，AlarmList/LeaseList 为空，proposal health
   13.813ms。
 
+- A4769 修正 A4768 context 贯穿后的长期 client 所有权风险。固定 PD client 的
+  `NewClientWithContext` 会以 `context.WithCancel(parent)` 创建整个客户端 lifetime；若把进程根 context
+  直接作为 parent，SIGTERM 会立即关闭 PD/TSO discovery，而 Endpoint 的既有顺序是先用最多 5 秒完成 gRPC
+  drain、随后 `backend.Close()` 才关闭 TiKV clients。A4768 的快速退出证明启动可取消，但不能据此证明健康
+  运行期 drain 正确；提前断存储可能让已 admission 的请求在排空窗口失败。
+
+  生产提交 `d25b310d` 在 storage pool 边界引入 detachable startup context：构造 16 个 txn clients 期间，
+  根 cancellation 通过 `context.AfterFunc` 转发；任一失败会取消构造并关闭已成功 clients；全部成功发布时则
+  原子停止转发，PD clients 保持存活并只由 Endpoint 在 drain 后显式 Close。若 cancellation 与 publication
+  竞争，停止 callback 失败的一方关闭整池并返回原 context error，不会发布半取消 storage。最小回归分别
+  连续 20 轮证明不可达 PD 的 50ms startup cancellation，以及成功 detach 后取消 parent 不会关闭已发布
+  lifetime、显式 storage cancel 仍生效；race 与 storage/option vet 通过。
+
+  最终镜像 `kubebrain:a4769-d25b310d` 内嵌完整 SHA
+  `d25b310d79021b40a0d55f0f1d05ab53b76ef51a`、build time `2026-08-16T05:37:40Z`，本地 image ID
+  `sha256:5db3713dabe086e1b262c15ddd7d71a1b8ab357df7f719e3968a3633508cb553`，Kind runtime imageID
+  `sha256:912b9b26b1ece023720909727c230a76688961fdfec7b89141c9a28fa584b6f7`。真实 PD 三 endpoint
+  DROP 下再次重建 `kubebrain-2`，blocked UID 保持 Running/NotReady、零重启；分区仍存在时删除只用
+  1.408 秒，证明 detach 没有回归启动取消。清理 `KBA4769/KBA4769B` chain 后新 UID 恢复 Ready。
+  终态全部规则清除，PD/TiKV 3+3 与主/JWT 六副本统一 A4769 digest、Ready、零重启，
+  AlarmList/LeaseList 为空，proposal health 13.907ms。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
