@@ -54950,6 +54950,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该证据关闭“v4 从未在真实引擎执行”的缺口，但不伪称真实生成了 commitTS 碰撞；碰撞仍由 A4898 的 BR-format fixture
   定向证明，三副本、AES-256、故障中断续跑和生产规模 v4 组合仍保持待演练。
 
+- A4900 将 A4899 的 v4 真实证据扩展到对称三副本和加密链。2026-08-16 连续以
+  `KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3`、`KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR`
+  运行 plaintext 与 AES-256-CTR：两轮均在 source/target 各 3 PD + 3 TiKV、精确 3 个 Up store、所有 Region 3 peers 且
+  零 pending peer 后才进入 BR；官方 v7.5.1 full backup/restore、MinIO stream mirror、v4 replay、target v2 checkpoint、
+  restoration/admission fence handoff 和最终 etcd revision/key/lease/watch 语义验收分别在 41.84 秒与 41.05 秒通过。
+
+  AES 轮的 BR backup/restore 均实际使用 `aes256-ctr` key file，receipt 链只绑定非秘密 key version identity；两轮一次性
+  容器均已清理。该项关闭三副本 plaintext/AES 正路径尚未重签 v4 证据的缺口，不替代 commitTS 碰撞定向回归，也不关闭
+  v4 故障中断续跑、错钥拒绝、key version promotion/撤权、跨可用区、生产规模和长时间 soak 门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -2587,7 +2587,9 @@ token 逐一验证 control + 256 shards，并再次确认 plan/full/log/fence �
 范围、摘要、长短值、事务分组、原子 checkpoint、续跑与错误交接绑定单测。2026-08-16 又以单副本独立 source/target
 PD+TiKV、MinIO 和官方 BR v7.5.1 重跑完整 full+log 链（43.74 秒）：真实 executor 签发 v4 receipt，测试从 target
 读取并验证 v2 checkpoint 含非零且有序的 `last_start_ts/last_commit_ts`，随后 fence/handoff 与最终 etcd 语义验收通过。
-该演练没有人为制造 commitTS 碰撞；碰撞边界由 BR-format 定向回归覆盖，三副本与 AES-256 v4 演练仍需另行重跑。
+同日又在 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer 上分别完成 plaintext（41.84 秒）与
+AES-256-CTR（41.05 秒）v4 全链。演练没有人为制造 commitTS 碰撞；碰撞边界由 BR-format 定向回归覆盖，故障中断续跑、
+错钥负路径和生产规模 v4 组合仍需另行重跑。
 
 v4 不接受旧 `log-replay-manifest.v1`、`log-replay-checkpoint.v1` 或 `native-pitr-log-replay.v3`
 证据：这些格式没有摘要绑定 source `start_ts`，无法在 commit TSO 碰撞时证明 source transaction 边界。
