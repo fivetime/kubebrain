@@ -89,34 +89,125 @@ type identityTLSListener struct {
 	net.Listener
 	config     *tls.Config
 	identities *transportidentity.Registry
+	startOnce  sync.Once
+	closeOnce  sync.Once
+	closeErr   error
+	done       chan struct{}
+	accepted   chan identityTLSAcceptResult
+	activeMu   sync.Mutex
+	active     map[net.Conn]struct{}
 }
 
-const tlsIdentityHandshakeTimeout = 10 * time.Second
+const (
+	tlsIdentityHandshakeTimeout = 10 * time.Second
+	maxConcurrentTLSHandshakes  = 256
+)
 
-func (l *identityTLSListener) Accept() (net.Conn, error) {
+type identityTLSAcceptResult struct {
+	conn net.Conn
+	err  error
+}
+
+func (l *identityTLSListener) start() {
+	l.startOnce.Do(func() {
+		l.done = make(chan struct{})
+		l.accepted = make(chan identityTLSAcceptResult)
+		l.active = make(map[net.Conn]struct{})
+		go l.acceptLoop()
+	})
+}
+
+func (l *identityTLSListener) acceptLoop() {
 	for {
 		raw, err := l.Listener.Accept()
 		if err != nil {
-			return nil, err
+			select {
+			case l.accepted <- identityTLSAcceptResult{err: err}:
+			case <-l.done:
+			}
+			return
 		}
-		conn := tls.Server(raw, l.config)
-		if err = raw.SetDeadline(time.Now().Add(tlsIdentityHandshakeTimeout)); err == nil {
-			err = conn.Handshake()
-		}
-		if err == nil {
-			err = raw.SetDeadline(time.Time{})
-		}
-		if err != nil {
-			// TLS authentication and malformed handshakes are connection-local.
-			// Returning them as listener errors makes cmux stop the entire secure
-			// endpoint, allowing one untrusted client to cause an outage.
+		l.activeMu.Lock()
+		select {
+		case <-l.done:
+			l.activeMu.Unlock()
 			_ = raw.Close()
-			klog.V(2).InfoS("rejected TLS connection", "err", err, "remoteAddr", raw.RemoteAddr())
+			return
+		default:
+		}
+		if len(l.active) >= maxConcurrentTLSHandshakes {
+			l.activeMu.Unlock()
+			_ = raw.Close()
+			klog.V(2).InfoS("rejected TLS connection: handshake limit reached", "remoteAddr", raw.RemoteAddr())
 			continue
 		}
-		unregister := l.identities.Register(conn.LocalAddr(), conn.RemoteAddr(), conn.ConnectionState())
-		return &identityTLSConn{Conn: conn, unregister: unregister}, nil
+		l.active[raw] = struct{}{}
+		l.activeMu.Unlock()
+		go l.handshake(raw)
 	}
+}
+
+func (l *identityTLSListener) handshake(raw net.Conn) {
+	defer func() {
+		l.activeMu.Lock()
+		delete(l.active, raw)
+		l.activeMu.Unlock()
+	}()
+	conn := tls.Server(raw, l.config)
+	err := raw.SetDeadline(time.Now().Add(tlsIdentityHandshakeTimeout))
+	if err == nil {
+		err = conn.Handshake()
+	}
+	if err == nil {
+		err = raw.SetDeadline(time.Time{})
+	}
+	if err != nil {
+		// TLS authentication and malformed handshakes are connection-local.
+		// Returning them as listener errors makes cmux stop the entire secure
+		// endpoint, allowing one untrusted client to cause an outage.
+		_ = raw.Close()
+		klog.V(2).InfoS("rejected TLS connection", "err", err, "remoteAddr", raw.RemoteAddr())
+		return
+	}
+	unregister := l.identities.Register(conn.LocalAddr(), conn.RemoteAddr(), conn.ConnectionState())
+	wrapped := &identityTLSConn{Conn: conn, unregister: unregister}
+	select {
+	case l.accepted <- identityTLSAcceptResult{conn: wrapped}:
+	case <-l.done:
+		_ = wrapped.Close()
+	}
+}
+
+func (l *identityTLSListener) Accept() (net.Conn, error) {
+	l.start()
+	select {
+	case <-l.done:
+		return nil, net.ErrClosed
+	case result := <-l.accepted:
+		if result.conn != nil {
+			select {
+			case <-l.done:
+				_ = result.conn.Close()
+				return nil, net.ErrClosed
+			default:
+			}
+		}
+		return result.conn, result.err
+	}
+}
+
+func (l *identityTLSListener) Close() error {
+	l.start()
+	l.closeOnce.Do(func() {
+		close(l.done)
+		l.closeErr = normalizeServeError(l.Listener.Close())
+		l.activeMu.Lock()
+		for raw := range l.active {
+			l.closeErr = errors.Join(l.closeErr, normalizeServeError(raw.Close()))
+		}
+		l.activeMu.Unlock()
+	})
+	return l.closeErr
 }
 
 type identityTLSConn struct {
