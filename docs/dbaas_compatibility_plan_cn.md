@@ -54936,8 +54936,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   由于旧证据无法补出 startTS，manifest/checkpoint 分别升为 v2，log replay execution receipt 升为 v4；旧 v1 checkpoint
   和 v3 receipt fail closed，部分写入目标必须 retirement→replacement→full restore 后重跑，不能删除 checkpoint 原地续作。
   碰撞/分组专项 race 连续 10 轮通过。本项修复 source transaction 身份，不证明任意大事务都低于 TiKV transaction size；
-  生产请求上限、BR 工件与 target transaction 限制仍须在容量演练中一致配置。此前真实双集群演练签发的是 v3 收据，v4
-  与 commitTS 碰撞输入仍须重跑真实 source/target TiKV 演练后才能成为新生产证据。
+  生产请求上限、BR 工件与 target transaction 限制仍须在容量演练中一致配置。本项提交时此前真实双集群演练签发的仍是 v3
+  收据；后续 v4 真实证据见 A4899。
+
+- A4899 为 A4898 的 v4 格式升级补齐真实 TiKV/PD 证据并强化演练门禁。`TestNativeLogReplayRealBR` 现在明确要求
+  `kubebrain.native-pitr-log-replay.v4`、正数且受 mutation count 约束的 source transaction 统计，并直接从 target tenant
+  internal key 读取 checkpoint，要求格式为 `kubebrain.native-pitr-log-replay-checkpoint.v2`、last start/commit TSO 均非零且
+  `start < commit`；因此测试不能仅凭最终键值正确而遗漏持久续跑格式。
+
+  2026-08-16 使用 `KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR`、单副本独立 source/target PD+TiKV、MinIO 与官方
+  BR v7.5.1 完成 plaintext full backup→stream log→full restore→v4 replay→fence handoff→最终 etcd 语义验收，耗时
+  43.74 秒；拓扑收敛为两端各 1 个 Up store、所有 Region 1 peer、零 pending peer，测试通过且一次性容器全部清理。
+  该证据关闭“v4 从未在真实引擎执行”的缺口，但不伪称真实生成了 commitTS 碰撞；碰撞仍由 A4898 的 BR-format fixture
+  定向证明，三副本、AES-256、故障中断续跑和生产规模 v4 组合仍保持待演练。
 
 ### P2：运维兼容和长期验证
 

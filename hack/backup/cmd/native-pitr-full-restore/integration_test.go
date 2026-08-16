@@ -2894,7 +2894,24 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.NoError(t, os.WriteFile(replayPath, replayBytes, 0o600))
 		replayReceipt, receiptErr := nativepitr.DecodeLogReplayExecution(bytes.NewReader(replayBytes))
 		require.NoError(t, receiptErr)
+		require.Equal(t, "kubebrain.native-pitr-log-replay.v4", replayReceipt.Format)
 		require.Positive(t, replayReceipt.AppliedMutations)
+		require.Positive(t, replayReceipt.AppliedTransactions)
+		require.Positive(t, replayReceipt.TransactionCount)
+		require.LessOrEqual(t, replayReceipt.TransactionCount, replayReceipt.MutationCount)
+		require.LessOrEqual(t, replayReceipt.AppliedTransactions, replayReceipt.AppliedMutations)
+		checkpointBytes, checkpointErr := targetKV.Get(ctx, ks.EncodeInternalKey([]byte("native-pitr/log-replay-checkpoint")))
+		require.NoError(t, checkpointErr)
+		var checkpoint struct {
+			Format       string `json:"format"`
+			LastCommitTS uint64 `json:"last_commit_ts"`
+			LastStartTS  uint64 `json:"last_start_ts"`
+		}
+		require.NoError(t, json.Unmarshal(checkpointBytes, &checkpoint))
+		require.Equal(t, "kubebrain.native-pitr-log-replay-checkpoint.v2", checkpoint.Format)
+		require.NotZero(t, checkpoint.LastCommitTS)
+		require.NotZero(t, checkpoint.LastStartTS)
+		require.Less(t, checkpoint.LastStartTS, checkpoint.LastCommitTS)
 		require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
 		require.True(t, replayReceipt.LogReplayCompleted)
 		require.True(t, replayReceipt.ReplayWriteFenceProven)
