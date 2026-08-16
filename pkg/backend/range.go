@@ -1599,8 +1599,16 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 	out := make(chan SnapshotHistoryChunk, 1)
 	go func() {
 		defer close(out)
-		defer iter.Close()
 		defer b.snapshotPins.unpin(snapshotPin)
+		iteratorClosed := false
+		closeIterator := func() error {
+			if iteratorClosed {
+				return nil
+			}
+			iteratorClosed = true
+			return iter.Close()
+		}
+		defer func() { _ = closeIterator() }()
 		send := func(chunk SnapshotHistoryChunk) bool {
 			select {
 			case out <- chunk:
@@ -1608,6 +1616,9 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 			case <-ctx.Done():
 				return false
 			}
+		}
+		fail := func(err error) {
+			send(SnapshotHistoryChunk{Revision: rev, Err: stderrors.Join(err, closeIterator())})
 		}
 		records := make([]SnapshotHistoryRecord, 0, snapshotHistoryChunkRecords)
 		chunkBytes := 0
@@ -1621,7 +1632,7 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 			}
 			values, getErr := b.snapshotEventLogValues(ctx, eventKeys)
 			if getErr != nil {
-				send(SnapshotHistoryChunk{Revision: rev, Err: fmt.Errorf("load snapshot event order: %w", getErr)})
+				fail(fmt.Errorf("load snapshot event order: %w", getErr))
 				return false
 			}
 			for i, eventKey := range eventKeys {
@@ -1677,12 +1688,16 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 		for {
 			if err := iter.Next(ctx); err != nil {
 				if err == io.EOF {
+					if closeErr := closeIterator(); closeErr != nil {
+						fail(closeErr)
+						return
+					}
 					if flushFamily() && flushChunk() {
 						send(SnapshotHistoryChunk{Revision: rev, Done: true})
 					}
 					return
 				}
-				send(SnapshotHistoryChunk{Revision: rev, Err: err})
+				fail(err)
 				return
 			}
 			rawKey := iter.Key()
@@ -1691,12 +1706,12 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 			}
 			userKey, modRevision, decodeErr := b.coder.Decode(rawKey)
 			if decodeErr != nil {
-				send(SnapshotHistoryChunk{Revision: rev, Err: invalidMVCCMetadataError(decodeErr, "decode snapshot object key")})
+				fail(invalidMVCCMetadataError(decodeErr, "decode snapshot object key"))
 				return
 			}
 			boundary, boundaryOK := b.coder.RevisionBoundaryForBorder(rawKey)
 			if !boundaryOK {
-				send(SnapshotHistoryChunk{Revision: rev, Err: fmt.Errorf("snapshot object key has no revision family boundary: %x", rawKey)})
+				fail(fmt.Errorf("snapshot object key has no revision family boundary: %x", rawKey))
 				return
 			}
 			if familyBoundary != nil && !bytes.Equal(boundary, familyBoundary) {
@@ -1724,25 +1739,25 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 						)
 					}
 					if validationErr != nil {
-						send(SnapshotHistoryChunk{Revision: rev, Err: validationErr})
+						fail(validationErr)
 						return
 					}
 				}
 				meta, rawValue, inlined, decodeErr := DecodeInlineValueChecked(stored)
 				if decodeErr != nil {
-					send(SnapshotHistoryChunk{Revision: rev, Err: decodeErr})
+					fail(decodeErr)
 					return
 				}
 				if !inlined {
 					meta, decodeErr = b.GetEtcdMetadata(ctx, userKey, modRevision)
 					if decodeErr != nil {
-						send(SnapshotHistoryChunk{Revision: rev, Err: decodeErr})
+						fail(decodeErr)
 						return
 					}
 					rawValue = stored
 				} else {
 					if validationErr := ValidateEtcdMetadataAtRevision(meta, modRevision, "snapshot inline value metadata"); validationErr != nil {
-						send(SnapshotHistoryChunk{Revision: rev, Err: validationErr})
+						fail(validationErr)
 						return
 					}
 					record.LeaseKnown = InlineValueLeaseKnown(stored)
