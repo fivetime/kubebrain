@@ -54332,6 +54332,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   scanner 全套 race（1.941 秒）、Range/Snapshot 精确 race（3.268 秒）及 backend/scanner vet 通过；本轮没有修改测试文件。
   在线 A4776 未滚动，真实 TiKV iterator close/transport fault 的重试与非成功 terminal 仍留待新镜像故障门禁。
 
+- A4834 收紧 follower revision HTTP 同步的响应生命周期。该控制响应决定 follower 可服务的 revision；旧路径在非 200
+  时丢弃 body read error，并在所有分支忽略 Body.Close，可能把 transport 收尾不完整的响应接受为新读取水位。生产
+  `getRevisionFromLeader` 现在使用命名错误返回值聚合 Close，非 200 同时保留 status 与 body read failure；只有状态、
+  bounded body、严格 JSON、leader term 复核及 Close 全部成功才发布 revision，其余进入既有 retry/错误指标路径。
+
+  `pkg/server/service/revision` 全套 race（7.909 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776
+  未滚动，代理截断/Close fault 下 follower 不推进 read watermark 仍留待正式新镜像网络故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
