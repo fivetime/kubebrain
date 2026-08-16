@@ -344,10 +344,11 @@ func runSubServer(ctx context.Context, lsn net.Listener, server exposedServer) f
 
 		closed := make(chan error, 1)
 		defer func() {
-			_ = server.close()
+			closeErr := server.close()
 			_ = lsn.Close()
 			// wait until closed
 			<-closed
+			err = errors.Join(err, closeErr)
 		}()
 
 		// run server in a new goroutine

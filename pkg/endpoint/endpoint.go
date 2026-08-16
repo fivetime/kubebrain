@@ -141,7 +141,7 @@ func (e *Endpoint) buildExposedServers(sc *SecurityConfig, servers ...exposedSer
 	return nil
 }
 
-func (e *Endpoint) runClientServer(ctx context.Context) error {
+func (e *Endpoint) runClientServer(ctx context.Context) (retErr error) {
 	clientGrpc := e.buildClientGrpcServer()
 	clientHTTPHandler, gatewayConn, err := e.buildClientHTTPHandler(ctx)
 	if err != nil {
@@ -149,9 +149,7 @@ func (e *Endpoint) runClientServer(ctx context.Context) error {
 	}
 	if gatewayConn != nil {
 		defer func() {
-			if err := gatewayConn.Close(); err != nil {
-				klog.ErrorS(err, "close gRPC gateway connection")
-			}
+			retErr = errors.Join(retErr, gatewayConn.Close())
 		}()
 	}
 	exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig,
