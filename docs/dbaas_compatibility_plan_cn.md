@@ -54528,6 +54528,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 failing writer 回归固定 revision 输出错误原样可见；logical-status race（1.081 秒）、vet 与 diff check 通过。
   真实 artifact close/unlink fault 仍留待备份验收 Job 文件系统故障门禁。
 
+- A4857 收紧 logical→official etcd snapshot 互操作 CLI 的参数和成功输出契约。入口由全局 `flag.Parse`/进程内
+  `log.Fatal` 改为 `run(args, io.Writer) error`，拒绝未知 flag 与多余位置参数，并传播最终 stdout 写失败；因此 Job/sidecar
+  不会在状态管道断开时误报转换成功。转换器本身继续负责 verified input Close、bbolt/hash/目录 fsync 与 no-overwrite
+  发布，状态输出失败不会反向删除已经 durable 的 snapshot，但进程明确非零，调用方可检查目标并幂等重试。
+
+  新增真实 full-keyspace logical artifact 转换加 failing writer 回归，并固定输出 snapshot 仍存在；CLI/etcdsnapshot race
+  （1.074 秒及缓存套件）、vet 与 diff check 通过。该能力仍不迁移 auth/history，仅用于已记录的离线当前状态互操作。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
