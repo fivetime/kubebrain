@@ -54387,6 +54387,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   内置 `tikv` 全套 race（5.400 秒）、KubeBrain `pkg/storage/tikv` race（1.236 秒）及双方 vet 通过；本轮没有修改测试
   文件。在线 A4776 未滚动，长事务 cleanup task 与 SIGTERM 并发时无 shutdown use-after-close 仍留待新镜像故障门禁。
 
+- A4841 对标 upstream etcd `10ef0667c` 的 snapshot ingress 限制并收紧本地安全材料文件生命周期。该 upstream 修复只
+  限制 Raft snapshot message envelope；KubeBrain 无 Raft snapshot ingress，DB snapshot 走独立 chunk/receipt artifact，
+  peer HashKV 已有 `MaxBytesReader`，故不机械移植。审计发现 JWT key 及 endpoint cert/key/CA/CRL bounded read 在 Read/size
+  成功后忽略文件 Close，可能用未可靠收尾的认证材料启动。两个生产 helper 现在聚合 Read/size 主错误与 Close；只有
+  全部成功才继续解析和启用 JWT/TLS。
+
+  JWT/AuthToken race（60.854 秒）、endpoint TLS/security/config race（11.040 秒）及两包 vet 通过；本轮没有修改测试
+  文件。在线 A4776 未滚动，credential file close fault 下启动失败仍留待正式新镜像文件系统故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
