@@ -53618,6 +53618,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   attestation，也没有遗留子进程。最初的 shebang 假 BR 因已打开 inode 的 `/proc/self/fd` 执行约束未进入
   backup 阶段，明确不计为证据；改用与真实 BR 同类的 ELF 后才完成有效验证。所有临时源码与二进制均已清除。
 
+- A4773 将相同的作业终止契约扩展到仍在生产使用的 logical/cold 灾备链，而不改变取消后的补偿边界。
+  logical-export、logical-restore、logical-verify、cold-restore-verify、legacy snapshot remediation、S3
+  logical-object 与 prefix-tool 此前都直接在 `context.Background()` 上叠加最长 30 分钟级 operation timeout；
+  因而 Pod SIGTERM 不会中止正在等待的 etcd/S3 RPC。logical-restore 的 rollback 以及 verify 的 cleanup 仍应在
+  主 context 取消后运行，故它们各自有界的 Background compensation context 明确保留。对照 upstream etcdctl
+  长运行检查把进程中断转为 command cancellation 的约束，DBaaS Job 的主操作也必须响应控制面终止。
+
+  生产提交 `97032e6d` 为七个命令建立 SIGINT/SIGTERM 根 context，再在其上保留原 operation timeout；没有
+  新增或修改测试文件。根模块六包既有测试/vet与独立 objectstore module 的 logical-object 测试/vet 均通过。
+  实际编译 prefix-tool，以 1 小时内部 timeout 对黑洞 `10.255.255.1:2379` 发起 Range，外部在 1 秒发送
+  SIGTERM；clientv3 明确报告 `code = Canceled`，进程在 1.110 秒退出，未等待 10 秒 dial timeout、1 小时
+  operation timeout 或 5 秒强杀。临时二进制已清除。本轮是离线 Job 生命周期修复，不改变 server 镜像或
+  TiKV 数据语义，因此不把未滚动的服务集群状态列为证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
