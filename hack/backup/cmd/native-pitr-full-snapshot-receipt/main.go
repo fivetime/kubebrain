@@ -78,13 +78,13 @@ func run(taskCreatePath, backupMetaPath, storagePrefix, cipherMethod, encryption
 	return err
 }
 
-func readBounded(path string, limit int64) ([]byte, error) {
+func readBounded(path string, limit int64) (b []byte, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
+	b, err = io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
 	}

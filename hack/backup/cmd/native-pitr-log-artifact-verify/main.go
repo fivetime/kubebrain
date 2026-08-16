@@ -70,13 +70,13 @@ func run(taskCreatePath, taskReadyPath, remoteInventoryPath, artifactRoot string
 	return err
 }
 
-func readReceipt(path string) ([]byte, error) {
+func readReceipt(path string) (b []byte, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
+	b, err = io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
 	if err != nil {
 		return nil, err
 	}

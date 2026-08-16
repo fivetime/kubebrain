@@ -54674,6 +54674,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 base binding preflight 与 oversized input 命令级回归；receipt verifier/nativepitr race（1.655 秒及缓存套件）、vet
   与 diff check 通过。真实多输入 close fault 与 Operation terminal-success 抑制仍留待正式恢复 Job 文件系统门禁。
 
+- A4874 补齐 native PITR full-snapshot receipt 与 log-artifact verifier 的本地输入终态。两工具虽已分别限制 task receipt
+  为 4 MiB、backupmeta 为 64 MiB，并由 `pitrinventory.ReadCanonical` 安全读取远端 inventory，但 task-create/task-ready/
+  backupmeta reader 仍 defer 丢弃 Close。介质收尾失败时因此可能把不可靠 bytes 的 SHA、BackupTS 或 verified segment
+  inventory 写入 restore-plan 上游证据。两个 reader 现使用命名错误 Join Close；只有任务 receipt 与 BR backupmeta 完整
+  读取且关闭成功后才计算摘要、解析 protobuf 并签发 full/log artifact receipt。
+
+  新增两端 oversized input 回归；full-snapshot/log-artifact/pitrinventory race（1.503/1.478 秒及缓存套件）、vet 与 diff
+  check 通过。真实 backupmeta/task receipt close fault 仍留待 artifact mirror Job 文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

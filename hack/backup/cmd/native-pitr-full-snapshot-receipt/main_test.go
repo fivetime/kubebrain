@@ -64,4 +64,11 @@ func TestRunDecryptsAES256CTRBackupMeta(t *testing.T) {
 	require.Equal(t, uint64(120), receipt.BackupTS)
 }
 
+func TestReadBoundedRejectsOversizedInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxReceiptBytes+1), 0o600))
+	_, err := readBounded(path, maxReceiptBytes)
+	require.ErrorContains(t, err, "exceeds")
+}
+
 const testDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
