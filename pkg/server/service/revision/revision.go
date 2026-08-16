@@ -76,6 +76,9 @@ type revisionSyncer struct {
 	// internal
 	schema     string
 	httpClient *http.Client
+	runCtx     context.Context
+	cancel     context.CancelFunc
+	closeOnce  sync.Once
 
 	// fetchMu guards the double-buffered read-index fetch state. current is the
 	// in-flight leader-revision fetch; next is the batch for readers that arrived
@@ -99,12 +102,15 @@ func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, strin
 
 func NewRevisionSyncer(backend Backend, metricCli metrics.Metrics, l leader.LeaderElection, tlsConfig *tls.Config) RevisionSyncer {
 	initEtcdReadIndexMetrics(metricCli)
+	runCtx, cancel := context.WithCancel(context.Background())
 	r := &revisionSyncer{
 		leaderElection: l,
 		metricCli:      metricCli,
 		backend:        backend,
 		schema:         "http",
 		enableTLS:      false,
+		runCtx:         runCtx,
+		cancel:         cancel,
 	}
 
 	// transport is a copy of http.DefaultTransport
@@ -196,7 +202,13 @@ func emitEtcdReadIndexFailure(metricCli metrics.Metrics, err error) {
 
 // Close implements RevisionSyncer
 func (r *revisionSyncer) Close() error {
-	r.httpClient.CloseIdleConnections()
+	r.closeOnce.Do(func() {
+		// Match upstream's linearizable read loop: component shutdown terminates
+		// an in-flight read-index attempt instead of letting its independent retry
+		// budget keep issuing peer requests after the server has stopped.
+		r.cancel()
+		r.httpClient.CloseIdleConnections()
+	})
 	return nil
 }
 
@@ -218,7 +230,14 @@ type LeaderRevision struct {
 // — i.e. after the reader arrived. All readers arriving during one fetch coalesce
 // into a single next fetch, so the leader is not stampeded.
 func (r *revisionSyncer) getFreshRevisionFromLeader(ctx context.Context) (uint64, error) {
+	if err := r.runCtx.Err(); err != nil {
+		return 0, err
+	}
 	r.fetchMu.Lock()
+	if err := r.runCtx.Err(); err != nil {
+		r.fetchMu.Unlock()
+		return 0, err
+	}
 	var f *revFetch
 	if r.current == nil {
 		f = &revFetch{done: make(chan struct{})}
@@ -248,7 +267,7 @@ func (r *revisionSyncer) getFreshRevisionFromLeader(ctx context.Context) (uint64
 func (r *revisionSyncer) runFetch(f *revFetch) {
 	// Independent timeout so a single reader's cancelled ctx does not abort the
 	// fetch the other readers are waiting on; bounded by the retry budget.
-	ctx, cancel := context.WithTimeout(context.Background(), syncRevMaxRetryElapsed)
+	ctx, cancel := context.WithTimeout(r.runCtx, syncRevMaxRetryElapsed)
 	f.rev, f.err = r.getRevisionFromLeaderWithRetry(ctx)
 	cancel()
 	close(f.done)
@@ -261,8 +280,11 @@ func (r *revisionSyncer) runFetch(f *revFetch) {
 		r.current = nxt
 	}
 	r.fetchMu.Unlock()
-	if nxt != nil {
+	if nxt != nil && r.runCtx.Err() == nil {
 		go r.runFetch(nxt)
+	} else if nxt != nil {
+		nxt.err = r.runCtx.Err()
+		close(nxt.done)
 	}
 }
 

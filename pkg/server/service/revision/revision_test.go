@@ -810,3 +810,36 @@ func TestReadIndexCanceledReaderDoesNotLeakFetchToNextReader(t *testing.T) {
 		"a reader arriving after cancellation must wait for a fetch started after its own arrival")
 	require.Equal(t, int32(2), callCount.Load())
 }
+
+func TestRevisionSyncerCloseCancelsInFlightFetch(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+
+	requestStarted := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+		close(requestStarted)
+		<-req.Context().Done()
+		close(requestCanceled)
+	}))
+	defer srv.Close()
+
+	le := &leader.Stub{ElectionInfo: leader.ElectionInfo{
+		IsLeader:      false,
+		LeaderAddress: strings.TrimPrefix(srv.URL, "http://"),
+	}}
+	rs := NewRevisionSyncer(&backendStub{}, mockMetrics, le, nil)
+	done := make(chan error, 1)
+	go func() { done <- rs.SyncReadRevision(context.Background()) }()
+	<-requestStarted
+
+	require.NoError(t, rs.Close())
+	require.ErrorIs(t, <-done, context.Canceled)
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight leader status request was not canceled by Close")
+	}
+	require.NoError(t, rs.Close(), "Close must remain idempotent")
+}
