@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -31,36 +32,52 @@ func rewriteKey(key []byte, from, to string) []byte {
 }
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() (retErr error) {
 	input := os.Getenv("INPUT")
 	rewriteFrom := os.Getenv("REWRITE_FROM")
 	rewriteTo := os.Getenv("REWRITE_TO")
 	receiptOutput := os.Getenv("RECEIPT_OUTPUT")
 	if rewriteFrom == "" && rewriteTo != "" {
-		log.Fatal("REWRITE_TO requires REWRITE_FROM")
+		return errors.New("REWRITE_TO requires REWRITE_FROM")
 	}
 
 	verified, err := backupfile.OpenVerified(input)
 	if err != nil {
-		log.Fatalf("backup integrity validation failed: %v", err)
+		return fmt.Errorf("backup integrity validation failed: %w", err)
 	}
-	defer verified.Close()
+	verifiedClosed := false
+	defer func() {
+		if !verifiedClosed {
+			retErr = errors.Join(retErr, verified.Close())
+		}
+	}()
 	status := verified.Status()
 	targetPrefix := status.Prefix
 	if receiptOutput != "" {
 		targetPrefix, err = receiptTargetPrefix(status.Prefix, rewriteFrom, rewriteTo)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 	}
 
 	cli, err := etcdutil.NewClientFromEnv()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	defer cli.Close()
+	clientClosed := false
+	defer func() {
+		if !clientClosed {
+			retErr = errors.Join(retErr, cli.Close())
+		}
+	}()
 	timeout, err := etcdutil.TimeoutFromEnv()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -114,16 +131,23 @@ func main() {
 		return nil
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	for sourceID, targetID := range targetLeaseBySource {
 		ttl, err := cli.TimeToLive(ctx, clientv3.LeaseID(targetID))
 		if err != nil {
-			log.Fatalf("read restored lease for source %d: %v", sourceID, err)
+			return fmt.Errorf("read restored lease for source %d: %w", sourceID, err)
 		}
 		if ttl.TTL <= 0 {
-			log.Fatalf("restored lease for source %d is expired", sourceID)
+			return fmt.Errorf("restored lease for source %d is expired", sourceID)
 		}
+	}
+	clientCloseErr := cli.Close()
+	clientClosed = true
+	verifiedCloseErr := verified.Close()
+	verifiedClosed = true
+	if err := errors.Join(clientCloseErr, verifiedCloseErr); err != nil {
+		return err
 	}
 	if receiptOutput != "" {
 		receipt := restorereceipt.Receipt{
@@ -135,11 +159,12 @@ func main() {
 			VerifiedAtUnix: time.Now().UTC().Unix(),
 		}
 		if err := restorereceipt.WriteAtomic(receiptOutput, receipt); err != nil {
-			log.Fatalf("publish restore verification receipt: %v", err)
+			return fmt.Errorf("publish restore verification receipt: %w", err)
 		}
 	}
-	fmt.Fprintf(os.Stderr, "verified %d restored records and %d leases from %s (snapshot revision %d, sha256 %s)\n",
+	_, err = fmt.Fprintf(os.Stderr, "verified %d restored records and %d leases from %s (snapshot revision %d, sha256 %s)\n",
 		total, len(targetLeaseBySource), input, status.Revision, status.SHA256)
+	return err
 }
 
 func receiptTargetPrefix(sourcePrefix, rewriteFrom, rewriteTo string) (string, error) {

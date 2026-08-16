@@ -26,3 +26,10 @@ func TestReceiptTargetPrefix(t *testing.T) {
 	_, err = receiptTargetPrefix("/source", "/source", "")
 	require.ErrorContains(t, err, "non-empty REWRITE_TO")
 }
+
+func TestRunReturnsEnvironmentValidationError(t *testing.T) {
+	t.Setenv("REWRITE_FROM", "")
+	t.Setenv("REWRITE_TO", "/target")
+
+	require.ErrorContains(t, run(), "REWRITE_TO requires REWRITE_FROM")
+}

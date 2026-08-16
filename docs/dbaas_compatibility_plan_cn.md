@@ -54493,6 +54493,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Upload 聚焦 race（1.129 秒）、objectstore vet 与 diff check 通过；真实 frozen-copy unlink/fd close fault 仍留待正式
   新镜像文件系统故障门禁。
 
+- A4853 修复 logical restore verifier CLI 的 `log.Fatal`/defer 生命周期失效。旧 main 在打开 verified artifact 和 etcd
+  client 后注册 defer，但任一后续校验失败调用 `log.Fatal` 会直接 `os.Exit(1)`，defer 完全不运行；成功路径又忽略两项
+  Close，并先写 restore verification receipt，可能泄漏连接/冻结副本或在 cleanup 失败后留下成功证据。入口现在采用
+  `main -> run() error`，所有错误正常展开 defer；在 receipt 发布前还显式关闭 client 与 artifact，聚合任一错误并阻止
+  receipt 落盘，最终 stderr 写失败也进入非零退出。
+
+  新增 run 可返回配置错误的回归，防止入口重新内嵌 fatal exit；logical-verify race（1.059 秒）、vet 与 diff check 通过。
+  真实 TiKV transport close/frozen-copy unlink fault 仍留待正式恢复 Job 故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
