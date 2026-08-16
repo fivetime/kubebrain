@@ -53605,6 +53605,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `storagetikv.NewKvStorage` 调用，剩余旧调用仅属于 full-restore 集成测试和独立 persistence smoke；本轮不以
   测试改写代替生产修复，也不把未改变的 server 集群状态作为证据。
 
+- A4772 关闭 native PITR 作业入口到外部 BR/RPC 的最后一段信号传播缺口。full-backup 与 full-restore
+  内部早已用 `exec.CommandContext` 启动 BR，并在 `execute` 中建立最长 24 小时的 deadline，但 `main` 传入
+  `context.Background()`；Kubernetes SIGTERM 因此不会取消 BR。task-create、task-ready、task-delete、
+  preflight 与 semantic-verify 同样只能等待自身 deadline。对照固定 upstream etcdctl 的
+  `check.go:interruptableContext`，长运行运维命令应把进程中断转为其请求/子进程 context cancellation。
+
+  生产提交 `8cc9a284` 为上述七个 CLI 统一建立 SIGINT/SIGTERM 根 context，不改变收据、事务或恢复业务逻辑，
+  也没有新增测试文件。七包既有测试与 vet 全部通过。实际编译 full-backup 和一个临时 ELF 假 BR；假 BR 返回
+  精确 pinned v7.5.1 version 后在 backup 阶段阻塞，命令配置 1 小时内部 timeout，外部在 1 秒发送 SIGTERM。
+  full-backup 于 1.110 秒返回 `BR transactional full backup failed: signal: terminated`，没有生成成功
+  attestation，也没有遗留子进程。最初的 shebang 假 BR 因已打开 inode 的 `/proc/self/fd` 执行约束未进入
+  backup 阶段，明确不计为证据；改用与真实 BR 同类的 ELF 后才完成有效验证。所有临时源码与二进制均已清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
