@@ -114,7 +114,16 @@ type server struct {
 func (s *server) Close() error {
 	s.closeOnce.Do(func() {
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		s.closeErr = errors.Join(s.closeErr, s.Drain(drainCtx))
+		drainErr := s.Drain(drainCtx)
+		// Campaign shutdown can make its final storage operation report the
+		// campaign context's normal cancellation. Explicit /drain still exposes
+		// that error, but process Close must not turn a clean SIGTERM into a
+		// non-zero exit. A close-budget deadline and all other release failures
+		// remain actionable.
+		if errors.Is(drainErr, context.Canceled) {
+			drainErr = nil
+		}
+		s.closeErr = errors.Join(s.closeErr, drainErr)
 		drainCancel()
 		if s.cancel != nil {
 			s.cancel()
@@ -135,7 +144,7 @@ func (s *server) Close() error {
 			<-s.stateMetricsDone
 		}
 		if s.etcdServer != nil {
-			s.etcdServer.Close()
+			s.closeErr = errors.Join(s.closeErr, s.etcdServer.Close())
 		}
 		if s.peers != nil {
 			s.closeErr = errors.Join(s.closeErr, s.peers.Close())

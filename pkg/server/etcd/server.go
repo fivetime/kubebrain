@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -338,9 +339,14 @@ func (s *RPCServer) waitLeaderReadyEpoch(ctx context.Context) (uint64, error) {
 
 // Close stops lease timers and waits for every lease-owned background task.
 // Endpoint invokes it after listeners drain and before the backend closes TiKV.
-func (s *RPCServer) Close() {
+
+func (s *RPCServer) Close() error {
+	var closeErr error
 	if s.concurrencyClient != nil {
-		_ = s.concurrencyClient.Close()
+		closeErr = s.concurrencyClient.Close()
+		if errors.Is(closeErr, context.Canceled) {
+			closeErr = nil
+		}
 	}
 	// The concrete production shim owns shared Watch PrevKV lookups. Cancel
 	// those before the lease manager and raw TiKV backend start shutting down;
@@ -350,6 +356,7 @@ func (s *RPCServer) Close() {
 		closer.Close()
 	}
 	s.leaseManager.close()
+	return closeErr
 }
 
 // SetRequestLimits configures etcd-compatible admission limits. Zero keeps the
