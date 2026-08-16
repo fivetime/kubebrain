@@ -17,6 +17,7 @@ package etcdproxy
 import (
 	"context"
 	"crypto/tls"
+	stderrors "errors"
 	"io"
 	"math"
 	"sync"
@@ -139,7 +140,7 @@ func (e *etcdProxy) Close() error {
 		e.updateMu.Lock()
 		e.lock.Lock()
 		if e.client != nil {
-			e.closeErr = e.client.Close()
+			e.closeClient(e.client)
 			e.client = nil
 		}
 		e.curLeader = ""
@@ -180,7 +181,7 @@ func (e *etcdProxy) resetClient() (reset bool) {
 	reset = e.client != nil
 
 	if e.client != nil {
-		_ = e.client.Close()
+		e.closeClient(e.client)
 		e.client = nil
 	}
 
@@ -189,6 +190,17 @@ func (e *etcdProxy) resetClient() (reset bool) {
 	}
 	e.closed = make(chan struct{})
 	return
+}
+
+// closeClient runs only while updateMu is held, so hot-swap cleanup failures
+// can be accumulated without racing final shutdown. A replacement client may
+// still become healthy, but the leaked/failed transport remains part of this
+// proxy instance's lifecycle result.
+func (e *etcdProxy) closeClient(client *clientv3.Client) {
+	if err := client.Close(); err != nil {
+		e.closeErr = stderrors.Join(e.closeErr, err)
+		klog.ErrorS(err, "failed to close etcd proxy client")
+	}
 }
 
 func (e *etcdProxy) updateClient() {
@@ -298,7 +310,7 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 
 		err = checkClientConnContext(ctx, client, nil, dialTimeout)
 		if err != nil {
-			_ = client.Close()
+			e.closeClient(client)
 			klog.InfoS("leader connection not ready", "err", err, "leaderIdentity", curLeader, "dialEndpoint", dialEndpoint, "secure", tlsConfig != nil)
 			e.lock.Lock()
 			e.err = err
@@ -327,7 +339,7 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 	e.curLeader = ""
 	e.deferLeaderRetryLocked(curLeader)
 	if e.client != nil {
-		_ = e.client.Close()
+		e.closeClient(e.client)
 		e.client = nil
 	}
 }
