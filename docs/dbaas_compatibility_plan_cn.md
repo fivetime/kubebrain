@@ -55170,6 +55170,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/key/lease/watch 语义验收 41.61 秒通过，一次性容器已清理。该机制不防御可同时重写整个 scratch plan、ordinal、checksum
   和进程内 manifest 的同权限恶意主体；权限隔离仍由 Pod/PVC 安全边界承担。
 
+- A4916 收紧 disk plan 的进程内 manifest 所有权。A4913-A4915 的 `ReplayDiskPlan.Manifest` 是公开可写字段，而完整 preflight、
+  target checkpoint 读取后的逐记录 scan 与 CLI receipt 构造在不同时间读取它；同进程调用方误改该字段可令后续 record-count
+  门禁与预检时使用的统计脱离同一权威值。生产类型现在私有持有 manifest，仅通过 `Manifest()` 返回按值快照；digest、统计、
+  checkpoint 边界及 apply 的每轮 scan 全部绑定私有值，CLI 也只能取得 receipt 构造所需的副本。回归先修改返回快照的 format、
+  mutation count 与 digest，再证明 plan 自身不变且完整 apply 成功。该收紧防止 API 误用和并发外部字段修改，不把 Go 进程内任意
+  内存写攻击冒充为安全边界；scratch 文件的同权限恶意重写限制仍与 A4915 相同。
+
+  `hack/backup/internal/nativepitr` 与正式 log-replay CLI 的定向 race、vet 和 diff check 通过。此项不改变 TiKV transaction、
+  checkpoint 或 receipt wire format，因此沿用 A4915 的真实 3+3 TiKV/PD 数据路径证据，不重复声称执行新的存储故障演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

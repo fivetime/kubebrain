@@ -166,7 +166,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 		return err
 	}
 	defer func() { retErr = errors.Join(retErr, replayPlan.Close()) }()
-	manifest := replayPlan.Manifest
+	manifest := replayPlan.Manifest()
 	pdc, err := pd.NewClientWithContext(ctx, addrs, pd.SecurityOption{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
 	if err != nil {
 		return err

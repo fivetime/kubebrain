@@ -51,7 +51,7 @@ func TestMaterializeReplayDiskPlanMatchesCanonicalMemoryPlan(t *testing.T) {
 
 	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, scratch, 119, 150)
 	require.NoError(t, err)
-	require.Equal(t, wantManifest, plan.Manifest)
+	require.Equal(t, wantManifest, plan.Manifest())
 	var got []ReplayMutation
 	require.NoError(t, plan.forEach(func(_ int, mutation ReplayMutation) error {
 		got = append(got, mutation)
@@ -72,6 +72,25 @@ func TestMaterializeReplayDiskPlanMatchesCanonicalMemoryPlan(t *testing.T) {
 	require.Empty(t, entries)
 }
 
+func TestReplayDiskPlanManifestIsAnImmutableSnapshot(t *testing.T) {
+	_, receipt, root, _, _ := replayFixture(t)
+	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, plan.Close()) }()
+
+	want := plan.Manifest()
+	changed := plan.Manifest()
+	changed.Format = "weakened"
+	changed.MutationCount++
+	changed.MutationsSHA256 = ""
+
+	require.Equal(t, want, plan.Manifest())
+	inner := memkv.NewKvStorage()
+	defer inner.Close()
+	_, err = ApplyReplayDiskPlan(t.Context(), inner, digest, plan, 1<<20)
+	require.NoError(t, err)
+}
+
 func TestMaterializeAndApplyEmptyReplayDiskPlanMatchesNilDigestContract(t *testing.T) {
 	_, receipt, root, _, _ := replayFixture(t)
 	wantManifest, wantMutations, err := MaterializeReplay(receipt, digest, root, 119, 125)
@@ -80,7 +99,7 @@ func TestMaterializeAndApplyEmptyReplayDiskPlanMatchesNilDigestContract(t *testi
 	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 125)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, plan.Close()) }()
-	require.Equal(t, wantManifest, plan.Manifest)
+	require.Equal(t, wantManifest, plan.Manifest())
 	inner := memkv.NewKvStorage()
 	defer inner.Close()
 	target := &countingReplayStore{KvStorage: inner}

@@ -49,7 +49,17 @@ const (
 type ReplayDiskPlan struct {
 	db       *bolt.DB
 	path     string
-	Manifest ReplayManifest
+	manifest ReplayManifest
+}
+
+// Manifest returns the immutable manifest bound to this disk plan. The value
+// is copied so callers cannot weaken later streaming validation by modifying
+// plan metadata between preflight and apply.
+func (p *ReplayDiskPlan) Manifest() ReplayManifest {
+	if p == nil {
+		return ReplayManifest{}
+	}
+	return p.manifest
 }
 
 type replayCandidateStore struct {
@@ -293,7 +303,7 @@ func (p *ReplayDiskPlan) forEach(fn func(int, ReplayMutation) error) error {
 		if err != nil {
 			return err
 		}
-		if p.Manifest.Format == ReplayManifestFormat && index != p.Manifest.MutationCount {
+		if p.manifest.Format == ReplayManifestFormat && index != p.manifest.MutationCount {
 			return errors.New("native PITR replay disk plan record count does not match manifest")
 		}
 		return nil
@@ -354,7 +364,7 @@ func numberReplayDiskPlanWithBatchBytes(plan *ReplayDiskPlan, maxBatchBytes uint
 
 func digestReplayDiskPlan(plan *ReplayDiskPlan) (string, error) {
 	digest := sha256.New()
-	if plan.Manifest.MutationCount == 0 {
+	if plan.manifest.MutationCount == 0 {
 		if err := writeReplayJSONString(digest, "null"); err != nil {
 			return "", err
 		}
@@ -388,7 +398,7 @@ func validateReplayDiskPlan(plan *ReplayDiskPlan, maxTransactionResidentBytes ui
 	if plan == nil || plan.db == nil {
 		return errors.New("native PITR replay disk plan is closed")
 	}
-	manifest := plan.Manifest
+	manifest := plan.manifest
 	if err := manifest.Validate(); err != nil {
 		return err
 	}
@@ -460,7 +470,7 @@ func ApplyReplayDiskPlan(ctx context.Context, target storage.KvStorage, planSHA 
 	if err := validateReplayDiskPlan(plan, maxTransactionResidentBytes); err != nil {
 		return ReplayApplyResult{}, err
 	}
-	manifest := plan.Manifest
+	manifest := plan.manifest
 	if !sha256RE.MatchString(planSHA) {
 		return ReplayApplyResult{}, errors.New("invalid replay plan digest")
 	}
@@ -776,12 +786,12 @@ func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, r
 	if err != nil {
 		return nil, err
 	}
-	plan.Manifest = manifest
+	plan.manifest = manifest
 	manifest.MutationsSHA256, err = digestReplayDiskPlan(plan)
 	if err != nil {
 		return nil, err
 	}
-	plan.Manifest = manifest
+	plan.manifest = manifest
 	if err := manifest.Validate(); err != nil {
 		return nil, err
 	}
