@@ -54637,6 +54637,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增两端 oversized input、既有目标不覆盖及冲突后无临时残留回归；authorize/receipt race（1.658/1.700 秒）、vet 与
   diff check 通过。真实 close/unlink/fsync fault 及已发布 receipt 的故障对账仍留待正式 retirement Job 文件系统门禁。
 
+- A4870 将 native PITR replacement target provision-control/provisioning-receipt 的文件协议提升到相同失败闭合标准。
+  control 的 authorize、dry-run、creation、qualification、writer exclusion 与 verify 模式旧共享 `os.ReadFile`，不能传播
+  Close；输出直接 O_EXCL 写最终路径，write/fsync 失败会留下阻塞同一授权重试的半成品。provisioning receipt 虽已采用
+  hard-link 独占发布，但仍丢弃输入 Close、chmod failure 的 Close 及 deferred Remove。两端现以 8 MiB bounded stream
+  读取并 Join Close；所有新证据都经 0600 临时文件 write/sync/Close、hard-link、Remove 和父目录 Sync/Close 后发布，
+  cleanup failure 一律阻止其进入 replacement handoff 信任链。
+
+  新增两端 oversized input、不覆盖既有输出及冲突后无临时残留回归；control/receipt race（1.625/1.705 秒）、vet 与
+  diff check 通过。真实 Kubernetes/CSI create 成功叠加 close/unlink/fsync fault 的对账仍留待正式 provisioning Job 门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

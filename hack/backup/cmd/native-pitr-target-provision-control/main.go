@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -496,8 +497,13 @@ func verifyCompletion(o options) error {
 	return nativepitr.VerifyAuthorizedReplacementProvisioning(a, creation, old, newReceipt, digest(authBytes))
 }
 
-func read(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+func read(path string) (data []byte, retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, (8<<20)+1))
 	if err != nil {
 		return nil, err
 	}
@@ -507,28 +513,39 @@ func read(path string) ([]byte, error) {
 	return data, nil
 }
 func digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
-func writeExclusive(path string, data []byte) error {
+func writeExclusive(path string, data []byte) (retErr error) {
 	clean := filepath.Clean(path)
-	f, err := os.OpenFile(clean, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	dirPath := filepath.Dir(clean)
+	temp, err := os.CreateTemp(dirPath, "."+filepath.Base(clean)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	if _, err = f.Write(data); err == nil {
-		err = f.Sync()
+	tempPath := temp.Name()
+	defer func() {
+		if removeErr := os.Remove(tempPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		return errors.Join(err, temp.Close())
 	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
+	_, writeErr := temp.Write(data)
+	var syncErr error
+	if writeErr == nil {
+		syncErr = temp.Sync()
 	}
+	if err := errors.Join(writeErr, syncErr, temp.Close()); err != nil {
+		return err
+	}
+	if err := os.Link(tempPath, clean); err != nil {
+		return err
+	}
+	if err := os.Remove(tempPath); err != nil {
+		return fmt.Errorf("remove published target provision temporary link: %w", err)
+	}
+	dir, err := os.Open(dirPath)
 	if err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(clean))
-	if err != nil {
-		return err
-	}
-	err = dir.Sync()
-	if closeErr := dir.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	return errors.Join(dir.Sync(), dir.Close())
 }

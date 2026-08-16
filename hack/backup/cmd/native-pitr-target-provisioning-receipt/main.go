@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -28,12 +29,9 @@ func run(input, output string) error {
 	if input == "" || output == "" {
 		return errors.New("input and output are required")
 	}
-	data, err := os.ReadFile(input)
+	data, err := readBounded(input)
 	if err != nil {
 		return err
-	}
-	if len(data) == 0 || len(data) > 8<<20 {
-		return errors.New("target provisioning candidate is empty or exceeds 8 MiB")
 	}
 	receipt, err := nativepitr.DecodeTargetProvisioningReceipt(bytes.NewReader(data))
 	if err != nil {
@@ -45,24 +43,47 @@ func run(input, output string) error {
 	}
 	canonical = append(canonical, '\n')
 	cleanOutput := filepath.Clean(output)
+	return writeExclusive(cleanOutput, canonical)
+}
+
+func readBounded(path string) (data []byte, retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, (8<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || len(data) > 8<<20 {
+		return nil, errors.New("target provisioning candidate is empty or exceeds 8 MiB")
+	}
+	return data, nil
+}
+
+func writeExclusive(output string, data []byte) (retErr error) {
+	cleanOutput := filepath.Clean(output)
 	dir := filepath.Dir(cleanOutput)
 	temp, err := os.CreateTemp(dir, "."+filepath.Base(cleanOutput)+".tmp-*")
 	if err != nil {
 		return err
 	}
 	tempName := temp.Name()
-	defer os.Remove(tempName)
+	defer func() {
+		if removeErr := os.Remove(tempName); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
 	if err := temp.Chmod(0o600); err != nil {
-		temp.Close()
-		return err
+		return errors.Join(err, temp.Close())
 	}
-	if _, err = temp.Write(canonical); err == nil {
-		err = temp.Sync()
+	_, writeErr := temp.Write(data)
+	var syncErr error
+	if writeErr == nil {
+		syncErr = temp.Sync()
 	}
-	if closeErr := temp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
+	if err := errors.Join(writeErr, syncErr, temp.Close()); err != nil {
 		return err
 	}
 	if err := os.Link(tempName, cleanOutput); err != nil {
@@ -75,7 +96,7 @@ func run(input, output string) error {
 	if err != nil {
 		return err
 	}
-	syncErr := dirFile.Sync()
+	syncErr = dirFile.Sync()
 	closeErr := dirFile.Close()
 	return errors.Join(syncErr, closeErr)
 }

@@ -25,6 +25,16 @@ func TestRunPublishesCanonicalReceiptWithoutOverwrite(t *testing.T) {
 	require.Equal(t, append(canonical, '\n'), got)
 	require.Equal(t, os.FileMode(0o600), mustStat(t, output).Mode().Perm())
 	require.Error(t, run(input, output))
+	temps, err := filepath.Glob(filepath.Join(dir, ".*.tmp-*"))
+	require.NoError(t, err)
+	require.Empty(t, temps)
+}
+
+func TestReadBoundedRejectsOversizedCandidate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "candidate.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, (8<<20)+1), 0o600))
+	_, err := readBounded(path)
+	require.ErrorContains(t, err, "exceeds 8 MiB")
 }
 
 func mustStat(t *testing.T, path string) os.FileInfo {
