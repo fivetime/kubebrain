@@ -54405,6 +54405,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `semanticverify` 与 `etcdsnapshot` race（1.289/1.282 秒）、两包 vet 和 diff check 通过；本轮没有修改测试文件。在线
   A4776 未滚动，TiKV close 与 filesystem multi-fault 下 verifier/converter 非成功仍留待正式新镜像 artifact 故障门禁。
 
+- A4843 在 logical backup 公共信任根补齐 AtomicWriter/OpenVerified/Inspect cleanup。旧 writer 的 chmod/header/footer/Sync
+  失败回滚吞 Close/Remove，目录 Sync 只保留主错；OpenVerified 忽略 source Close 及所有临时副本 cleanup；Inspect 与
+  Verified.Close 也会丢失 Close/Remove sibling。生产路径现在统一 Join，多阶段失败保留完整因果；若 source Close 在
+  已构造 Verified 后失败，会主动关闭/删除副本并把返回对象置 nil，避免 error+live handle 泄漏。公开 `Abort()` 仍保持
+  void API，内部 `abort() error` 专供生产 Commit/New 聚合。
+
+  backupfile/semanticverify/etcdsnapshot race（1.100/1.237/1.258 秒）及 vet、嵌套 objectstore race（3.110 秒）/vet 通过；
+  本轮没有修改测试文件。在线 A4776 未滚动，logical artifact temp/source multi-fault 仍留待正式新镜像文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
