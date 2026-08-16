@@ -53364,6 +53364,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均为空、LeaseList/AlarmList 为空，proposal health 14.127ms。主/JWT 六副本继续运行 A4759 imageID 且
   Ready、零重启，PD/TiKV 3+3 Ready、零重启；没有为相同二进制重建或滚动镜像。
 
+- A4761 对照 upstream `EtcdServer.MemberList` 与 clientv3 `MemberList(WithSerializable)`，补齐三成员
+  环境中 linearizable/serializable 成员发现的真实后端故障证据，全程不修改生产或测试代码。先使用永久
+  PD quorum-loss runner 隔离两个 PD 15 秒：固定 follower 上 400ms linearizable 请求按 deadline 失败，
+  serializable 请求仍从本地 applied membership 返回三成员；PD 恢复后 linearizable 自动恢复，完整门禁
+  37.897 秒通过。
+
+  随后的单成员精确隔离先后识别并丢弃两份无效夹具结果：第一次在前一轮故障后仍按旧 leader 位置选择
+  pod-0，实际隔离了已经接任的 KubeBrain leader；第二次把 port-forward readiness 重试放在隔离之后，令
+  预检自身累计等待约 200 秒。两者都不是产品 RED，未据此修改实现或测试。修正后的实验先建立 direct
+  follower pod-1 连接并完成三成员预检，再只 DROP 该 Pod 到三个 PD `:2379` 和三个 TiKV `:20160`，同时
+  保留到 leader pod-0 的 peer `:3380`。防火墙计数证明六类后端流量均被实际丢弃；serializable
+  `MemberList` 63ms 从本地返回完整三成员，linearizable `MemberList` 59ms 返回完整三成员，follower 日志
+  明确记录 `forward member list ... linearizable=true`。这同时证明本地 applied 路径与 leader proxy 路径
+  没有被独立 TiKV/PD 隔离错误耦合。
+
+  `KBA4761*` chain、FORWARD jump、direct port-forward 和临时文件均已清理并确认无残留。主/JWT 六个
+  KubeBrain Pod 继续运行 A4759 runtime imageID
+  `sha256:9a9200ae685261d6777b98820039ea30a34bec4fbdebdb509fbcc71cecc4d265`，全部 Ready、零重启；主
+  PD/TiKV 3+3 Ready、零重启，auth disabled、LeaseList/AlarmList 为空，proposal health 14.460ms。没有
+  稳定生产差异，故不新增回归、不重建或滚动相同二进制镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
