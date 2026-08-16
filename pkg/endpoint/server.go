@@ -306,7 +306,7 @@ func (gs *rootServer) run(ctx context.Context) (err error) {
 	}
 	mux := cmux.New(listener)
 	klog.InfoS("root server start to listen", "port", gs.port)
-	return serveMuxAndServers(ctx, listener, mux, gs.services)
+	return serveMuxAndServers(ctx, listener, mux, gs.services, true)
 }
 
 // runServers run servers concurrently and shutdown all servers if anyone is error
@@ -331,7 +331,7 @@ func prepareServers(ctx context.Context, mux cmux.CMux, servers []exposedServer)
 	}
 }
 
-func serveMuxAndServers(ctx context.Context, listener net.Listener, mux cmux.CMux, servers []exposedServer) error {
+func serveMuxAndServers(ctx context.Context, listener net.Listener, mux cmux.CMux, servers []exposedServer, failOnUnexpectedStop bool) error {
 	// Register every matcher before Serve starts; cmux matcher registration is not
 	// thread-safe and an early accepted connection must not race an incomplete map.
 	runServers := prepareServers(ctx, mux, servers)
@@ -354,7 +354,11 @@ func serveMuxAndServers(ctx context.Context, listener net.Listener, mux cmux.CMu
 		listenerCloseErr = normalizeServeError(listener.Close())
 		muxErr = <-muxErrCh
 	}
-	return errors.Join(muxErr, serversErr, listenerCloseErr)
+	result := errors.Join(muxErr, serversErr, listenerCloseErr)
+	if result == nil && failOnUnexpectedStop && ctx.Err() == nil {
+		return errors.New("root endpoint stopped while its context was still active")
+	}
+	return result
 }
 
 func runSubServer(ctx context.Context, lsn net.Listener, server exposedServer) func() error {

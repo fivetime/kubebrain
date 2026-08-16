@@ -82,7 +82,7 @@ func (t *secureServer) serve(listener net.Listener) (err error) {
 		}
 	}()
 
-	return serveMuxAndServers(ctx, tlsListener, mux, newSecureExposedServers(t.internalServers))
+	return serveMuxAndServers(ctx, tlsListener, mux, newSecureExposedServers(t.internalServers), false)
 }
 
 type identityTLSListener struct {
