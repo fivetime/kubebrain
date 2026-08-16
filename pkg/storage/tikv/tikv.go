@@ -30,6 +30,7 @@ import (
 	"github.com/tikv/client-go/v2/oracle"
 	"github.com/tikv/client-go/v2/tikv"
 	"github.com/tikv/client-go/v2/txnkv"
+	"go.uber.org/multierr"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -185,10 +186,12 @@ func NewKvStoreWithClient(clients []*txnkv.Client) storage.KvStorage {
 	return s
 }
 
-func closeClient(clients []*txnkv.Client) {
+func closeClient(clients []*txnkv.Client) error {
+	var closeErr error
 	for _, client := range clients {
-		_ = client.Close()
+		closeErr = multierr.Append(closeErr, client.Close())
 	}
+	return closeErr
 }
 
 // SupportTTL implements storage.KvStorage interface
@@ -203,7 +206,9 @@ func (c *clientBalancer) getClient() *txnkv.Client {
 
 type store struct {
 	*clientBalancer
-	closed chan struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (s *store) Del(ctx context.Context, key []byte) (err error) {
@@ -538,7 +543,9 @@ func (s *store) BatchGetAt(ctx context.Context, keys [][]byte, timestamp uint64)
 
 // Close implements storage.KvStorage interface
 func (s *store) Close() error {
-	close(s.closed)
-	closeClient(s.clients)
-	return nil
+	s.closeOnce.Do(func() {
+		close(s.closed)
+		s.closeErr = closeClient(s.clients)
+	})
+	return s.closeErr
 }
