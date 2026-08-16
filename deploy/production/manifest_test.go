@@ -1974,12 +1974,13 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 
 	checkpointRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointUnavailable")
 	require.Equal(t,
-		`count(serializable_checkpoint_available{namespace="kubebrain-system"}) != 3 or min(serializable_checkpoint_available{namespace="kubebrain-system"}) < 1 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"}) < 60`,
+		`count(serializable_checkpoint_available{namespace="kubebrain-system"}) != 3 or count(serializable_checkpoint_revision{namespace="kubebrain-system"}) != 3 or min(serializable_checkpoint_available{namespace="kubebrain-system"}) < 1 or min(serializable_checkpoint_revision{namespace="kubebrain-system"}) <= 0 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"}) < 60 or max(time() - timestamp(serializable_checkpoint_available{namespace="kubebrain-system"})) > 60 or max(time() - timestamp(serializable_checkpoint_revision{namespace="kubebrain-system"})) > 60`,
 		checkpointRule["expr"])
 	require.Equal(t, "30s", checkpointRule["for"])
 	require.Equal(t, "warning", checkpointRule["labels"].(map[string]any)["severity"])
 	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"], "PD-isolated serializable")
 	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"], "less than 60 seconds")
+	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"], "stopped publishing checkpoint telemetry")
 
 	checkpointRefreshRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointRefreshFailures")
 	require.Equal(t,

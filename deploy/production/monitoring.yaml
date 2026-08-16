@@ -346,13 +346,13 @@ spec:
             summary: KubeBrain count index rebuild failed
             description: "A leader count-index rebuild failed in the last 10 minutes; CountOnly requests may be falling back to TiKV scans."
         - alert: KubeBrainSerializableCheckpointUnavailable
-          expr: count(serializable_checkpoint_available{namespace="kubebrain-system"}) != 3 or min(serializable_checkpoint_available{namespace="kubebrain-system"}) < 1 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"}) < 60
+          expr: count(serializable_checkpoint_available{namespace="kubebrain-system"}) != 3 or count(serializable_checkpoint_revision{namespace="kubebrain-system"}) != 3 or min(serializable_checkpoint_available{namespace="kubebrain-system"}) < 1 or min(serializable_checkpoint_revision{namespace="kubebrain-system"}) <= 0 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"}) < 60 or max(time() - timestamp(serializable_checkpoint_available{namespace="kubebrain-system"})) > 60 or max(time() - timestamp(serializable_checkpoint_revision{namespace="kubebrain-system"})) > 60
           for: 30s
           labels:
             severity: warning
           annotations:
             summary: KubeBrain serializable checkpoint is unavailable
-            description: "At least one KubeBrain replica lacks a GC-protected checkpoint or has less than 60 seconds left in its local safety window, so bounded PD-isolated serializable Range, read-only Txn, and RangeStream service is unavailable or at risk. Check PD service GC safepoints, Region warmup, and checkpoint refresh errors."
+            description: "At least one KubeBrain replica lacks a fresh positive-revision GC-protected checkpoint, has less than 60 seconds left in its local safety window, or stopped publishing checkpoint telemetry for 60 seconds, so bounded PD-isolated serializable Range, read-only Txn, and RangeStream service is unavailable or at risk. Check scrape health, PD service GC safepoints, Region/store directory warmup, and checkpoint refresh errors."
         - alert: KubeBrainSerializableCheckpointRefreshFailures
           expr: sum(increase(serializable_checkpoint_refresh_err{namespace="kubebrain-system"}[10m])) > 0
           for: 0m
