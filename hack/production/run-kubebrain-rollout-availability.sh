@@ -51,7 +51,8 @@ if ! [[ "$KUBEBRAIN_CLIENT_PORT" =~ ^[1-9][0-9]*$ ]] ||
   ! [[ "$PROBE_DIAL_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
   ! [[ "$PROBE_MAX_OPERATION_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
   ! [[ "$PROBE_MAX_PD_TSO_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
-  ! [[ "$PROBE_MAX_TIKV_REGION_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]]; then
+  ! [[ "$PROBE_MAX_TIKV_REGION_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
+  ! [[ "$PROBE_COMPLETE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]]; then
   echo "probe port, interval, and timeout values are invalid" >&2
   exit 2
 fi
@@ -143,11 +144,25 @@ fi
 
 kctl rollout restart "statefulset/$KUBEBRAIN_STATEFULSET" >/dev/null
 kctl rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null
-if ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$PROBE_POD" --timeout="$PROBE_COMPLETE_TIMEOUT" >/dev/null; then
-  kctl logs "$PROBE_POD" >&2 || true
-  echo "availability probe did not complete successfully" >&2
-  exit 1
-fi
+case "$PROBE_COMPLETE_TIMEOUT" in
+  *ms) probe_complete_seconds=$(( (${PROBE_COMPLETE_TIMEOUT%ms} + 999) / 1000 )) ;;
+  *s) probe_complete_seconds=${PROBE_COMPLETE_TIMEOUT%s} ;;
+  *m) probe_complete_seconds=$(( ${PROBE_COMPLETE_TIMEOUT%m} * 60 )) ;;
+esac
+probe_complete_deadline=$((SECONDS + probe_complete_seconds))
+while ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$PROBE_POD" --timeout=1s >/dev/null 2>&1; do
+  probe_phase="$(kctl get pod "$PROBE_POD" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  if [[ "$probe_phase" == Failed ]]; then
+    kctl logs "$PROBE_POD" >&2 || true
+    echo "availability probe failed" >&2
+    exit 1
+  fi
+  if (( SECONDS >= probe_complete_deadline )); then
+    kctl logs "$PROBE_POD" >&2 || true
+    echo "availability probe did not complete within ${PROBE_COMPLETE_TIMEOUT}" >&2
+    exit 1
+  fi
+done
 probe_log="$(kctl logs "$PROBE_POD")"
 printf '%s\n' "$probe_log"
 summary="$(grep '^PROBE_SUMMARY ' <<<"$probe_log" || true)"

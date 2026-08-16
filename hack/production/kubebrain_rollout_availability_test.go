@@ -69,6 +69,23 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
 }
 
+func TestRolloutAvailabilityRunnerFailsFastWhenProbeFails(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_PROBE_FAILED=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"PROBE_ITERATIONS=3",
+		"PROBE_COMPLETE_TIMEOUT=3m",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "availability probe failed")
+}
+
 func writeRolloutAvailabilityKubectl(t *testing.T) (fakePath, logPath, statePath string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -88,10 +105,16 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
     spec:{replicas:3,template:{spec:{containers:[{name:"kubebrain",image:"kubebrain:test",args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   '
+elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.status.phase} "* ]] &&
+  [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then
+  printf Failed
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe "* ]]; then
   exit 1
 elif [[ " $* " == *" rollout restart statefulset/kubebrain "* ]]; then
   : >"$FAKE_KUBECTL_STATE"
+elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]] &&
+  [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then
+  exit 1
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
   printf '%s\n' PROBE_STARTED 'PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34'
 fi
