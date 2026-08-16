@@ -40,7 +40,10 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
-const proxyConnectTimeout = 5 * time.Second
+const (
+	proxyConnectTimeout            = 5 * time.Second
+	proxyFailedLeaderRetryInterval = time.Second
+)
 
 func loggedProxyKey(key []byte) string {
 	return util.LoggedKey(key)
@@ -64,7 +67,13 @@ type etcdProxy struct {
 	client    *clientv3.Client
 	err       error
 	curLeader string
-	lock      sync.RWMutex
+	// failedLeader/retryAfter bound reconnect pressure when long-lived Watch
+	// generations call waitReady every 100ms while the cached election holder is
+	// still the same unavailable endpoint. A newly observed leader identity
+	// bypasses this delay immediately.
+	failedLeader string
+	retryAfter   time.Time
+	lock         sync.RWMutex
 	// updateMu serializes updateClient so at most one goroutine builds/swaps the
 	// forwarding client at a time. Without it the 1s checkLeaderLoop and the RPC
 	// goroutines that call updateClient via waitReady run concurrently: each
@@ -130,6 +139,8 @@ func (e *etcdProxy) Close() error {
 			e.client = nil
 		}
 		e.curLeader = ""
+		e.failedLeader = ""
+		e.retryAfter = time.Time{}
 		e.lock.Unlock()
 		e.updateMu.Unlock()
 	})
@@ -177,8 +188,10 @@ func (e *etcdProxy) updateClient() {
 		if err := e.checkConn(); err != nil {
 			e.lock.Lock()
 			defer e.lock.Unlock()
+			failedLeader := e.curLeader
 			e.curLeader = ""
 			e.err = err
+			e.deferLeaderRetryLocked(failedLeader)
 			if e.resetClient() {
 				klog.InfoS("reset client caused by checking conn", "err", e.err)
 			}
@@ -197,6 +210,8 @@ func (e *etcdProxy) updateClient() {
 		// successor is the same address we previously followed, retaining this
 		// value would make the sameLeader fast path skip redial forever.
 		e.curLeader = ""
+		e.failedLeader = ""
+		e.retryAfter = time.Time{}
 		e.err = nil
 		return
 	}
@@ -216,8 +231,9 @@ func (e *etcdProxy) updateClient() {
 	}
 	e.lock.RLock()
 	sameLeader := e.client != nil && curLeader == e.curLeader
+	retryDeferred := curLeader == e.failedLeader && time.Now().Before(e.retryAfter)
 	e.lock.RUnlock()
-	if sameLeader || !election.IsLeaderKnown(curLeader) {
+	if sameLeader || retryDeferred || !election.IsLeaderKnown(curLeader) {
 		return
 	}
 
@@ -254,6 +270,7 @@ func (e *etcdProxy) updateClient() {
 			klog.ErrorS(err, "failed to create new client")
 			e.lock.Lock()
 			e.err = status.Error(codes.Internal, err.Error())
+			e.deferLeaderRetryLocked(curLeader)
 			e.lock.Unlock()
 			return
 		}
@@ -278,6 +295,8 @@ func (e *etcdProxy) updateClient() {
 		e.client = client
 		e.err = nil
 		e.curLeader = curLeader
+		e.failedLeader = ""
+		e.retryAfter = time.Time{}
 		e.lock.Unlock()
 		klog.InfoS("conn to new leader", "oldLeader", oldLeader, "curLeader", curLeader)
 		return
@@ -287,10 +306,19 @@ func (e *etcdProxy) updateClient() {
 	defer e.lock.Unlock()
 	klog.InfoS("leader connection not ready", "err", e.err, "leaderIdentity", curLeader, "dialEndpoint", dialEndpoint)
 	e.curLeader = ""
+	e.deferLeaderRetryLocked(curLeader)
 	if e.client != nil {
 		_ = e.client.Close()
 		e.client = nil
 	}
+}
+
+func (e *etcdProxy) deferLeaderRetryLocked(leader string) {
+	if !election.IsLeaderKnown(leader) {
+		return
+	}
+	e.failedLeader = leader
+	e.retryAfter = time.Now().Add(proxyFailedLeaderRetryInterval)
 }
 
 func (e *etcdProxy) connectionTimeout() time.Duration {
@@ -392,8 +420,10 @@ func (e *etcdProxy) markForwardError(ctx context.Context, client *clientv3.Clien
 	if e.client != client {
 		return
 	}
+	failedLeader := e.curLeader
 	e.err = err
 	e.curLeader = ""
+	e.deferLeaderRetryLocked(failedLeader)
 	if e.resetClient() {
 		klog.InfoS("reset client caused by forward error", "err", err)
 	}
