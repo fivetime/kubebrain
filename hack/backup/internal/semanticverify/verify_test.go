@@ -1,10 +1,21 @@
 package semanticverify
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestRevokeProbeLeasePropagatesCleanupFailure(t *testing.T) {
+	revokeErr := errors.New("revoke transport failed")
+	err := revokeProbeLease(func(ctx context.Context) error {
+		require.NoError(t, ctx.Err())
+		return revokeErr
+	})
+	require.ErrorIs(t, err, revokeErr)
+}
 
 func TestValidateProbePrefix(t *testing.T) {
 	require.NoError(t, ValidateProbePrefix("/kubebrain-restore-probe"))

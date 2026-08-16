@@ -204,7 +204,7 @@ func verifyLeases(ctx context.Context, cli *clientv3.Client, leases map[int64]re
 	return nil
 }
 
-func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (int64, int64, []byte, []byte, int64, error) {
+func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (putRevision int64, deleteRevision int64, keyBytes []byte, valueBytes []byte, leaseID int64, retErr error) {
 	token, err := randomHex(24)
 	if err != nil {
 		return 0, 0, nil, nil, 0, err
@@ -222,9 +222,10 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (in
 	revoked := false
 	defer func() {
 		if !revoked {
-			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, _ = cli.Revoke(cleanup, lease.ID)
+			retErr = errors.Join(retErr, revokeProbeLease(func(cleanup context.Context) error {
+				_, err := cli.Revoke(cleanup, lease.ID)
+				return err
+			}))
 		}
 	}()
 	put, err := cli.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).Then(clientv3.OpPut(key, value, clientv3.WithLease(lease.ID))).Commit()
@@ -256,6 +257,15 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (in
 	}
 	revoked = true
 	return put.Header.Revision, deleted.Header.Revision, []byte(key), []byte(value), int64(lease.ID), nil
+}
+
+func revokeProbeLease(revoke func(context.Context) error) error {
+	cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := revoke(cleanup); err != nil {
+		return fmt.Errorf("revoke probe lease during cleanup: %w", err)
+	}
+	return nil
 }
 
 func ValidateProbePrefix(prefix string) error {

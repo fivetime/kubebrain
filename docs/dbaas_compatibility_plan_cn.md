@@ -54785,6 +54785,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   check 通过。真实 S3 commit 成功叠加 stdout failure 仍属于 ambiguous client observation，必须以 canonical receipt/object
   identity reconcile，不能盲目重复 mutation。
 
+- A4886 补齐 logical/native 与 cold restore 两套 semantic watch probe 的失败回滚。两者都会 Grant 60 秒租约、条件 Put
+  随机隔离键并验证 Watch/Get/Delete；正常路径检查显式 Revoke，但任一中间步骤失败时 deferred Revoke 的 transport error
+  被 `_ =` 丢弃，verifier 可能只报告原验证错误而隐瞒目标集群仍有 probe lease/key。两个 runWatchProbe 现使用命名错误返回，
+  在独立 5 秒 cleanup context 中重试 Revoke，并以 `errors.Join` 同时保留业务与回滚错误；成功显式 Revoke 后仍取消 deferred
+  重试，探针 revision 与 receipt 语义不变。
+
+  两包均新增 failing revoker 回归，固定 cleanup transport error 可由 `errors.Is` 识别；semanticverify/cold verifier race
+  （1.332/1.364 秒）、vet 与 diff check 通过。真实 TiKV/PD 分区导致 Revoke uncertain 时 Job 必须非零并等待 TTL/运维核验，
+  不得把 verifier failure 当作目标无残留证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

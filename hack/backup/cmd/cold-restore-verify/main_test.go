@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,15 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestRevokeProbeLeasePropagatesCleanupFailure(t *testing.T) {
+	revokeErr := errors.New("revoke transport failed")
+	err := revokeProbeLease(func(ctx context.Context) error {
+		require.NoError(t, ctx.Err())
+		return revokeErr
+	})
+	require.ErrorIs(t, err, revokeErr)
+}
 
 func TestCompareKVsRequiresPhysicalMetadataIdentity(t *testing.T) {
 	expected := map[string]expectedKV{
