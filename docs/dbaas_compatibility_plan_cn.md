@@ -54050,6 +54050,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   文件。在线 A4776 未滚动，真实 revoke failure + client Close failure 双故障的完整错误文本与非零退出仍留待
   正式新镜像故障门禁。
 
+- A4803 修复 standalone etcd snapshot writer 在 bbolt Close/fsync 失败时仍报告成功的数据完整性缺口。
+  Maintenance Snapshot 的流式主路径已用 named return 合并 `Builder.Close`，但 native/logical backup adapter
+  调用的 `etcdsnapshot.WriteBackend` 仍裸 `defer builder.Close()`；`Finish` 成功后若最终文件关闭失败，任务会把
+  潜在截断 backend 当作可恢复快照。`NewBuilder` 初始 metadata transaction 失败时也丢弃 rollback Close 错误。
+  生产 writer 现在以标准 `errors.Join` 合并 Append/Finish 与最终 Close，并在 metadata 初始化失败时同时保留
+  bbolt 错误和 Close 错误；主错误分类 sentinel 仍可由 `errors.Is` 识别，成功路径只在真正关闭成功后返回 nil。
+
+  etcdsnapshot race（1.393 秒）、backup adapter、Maintenance Snapshot 聚焦（2.374 秒）及相关 vet 通过；本轮
+  没有修改测试文件。在线 A4776 未滚动，真实磁盘 writeback/close failure 下 backup task 非零终态与 artifact
+  拒绝仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
