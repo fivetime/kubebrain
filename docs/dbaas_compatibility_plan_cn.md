@@ -44,7 +44,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
-| Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
+| Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；follower 的 latest `HashKV(0)` 本地 hedge 必须先跨 leader revision barrier，不能以陈旧 hash 抢赢权威 peer；显式历史 revision 保持成员本地诊断；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理；peer `/downgrade/enabled` 稳定返回 `false`，用于兼容 etcd peer 版本诊断 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
 | Endpoint | v3 JSON/HTTP gateway | 兼容核心服务 | 默认启用 KV、Watch、Lease、Cluster、Maintenance、Auth、Lock、Election generated gateway；经本机 gRPC 回环保留 admission、auth、metrics、限流和 TLS 语义，可用 `--enable-grpc-gateway=false` 关闭 |
@@ -53829,6 +53829,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `max by (namespace,pod,uid)` 去重后的 Ready series 相交。同名旧 Pod 因 UID 不同被排除，HA
   kube-state-metrics 重复 scrape 被折叠；缺 UID/Ready/metric 继续返回零匹配并 fail closed。受影响的完整
   production manifest、release/storage gate 回归通过，官方 Prometheus v3.5 parser 接受最终表达式。
+
+- A4786 回到固定 upstream 的客户端可观察差分并修复 follower latest HashKV 陈旧成功。对
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 与在线 A4776 三副本 dbaas 实例运行完整
+  differential 时，`TestHashKVDifferentialAgainstReferenceEtcd` 得到真实 RED：刚确认 Put 后请求
+  `HashKV(0)`，HashRevision 与 response header 自洽，但二者都比 Put revision 少 1；reference delta 为 0。
+  根因是 follower 同时执行本地/leader hedge，通用 first-success 让快速陈旧本地 hash 抢赢权威 peer。
+  生产修复要求 revision=0 的本地候选先成功 `SyncReadRevision`；同步失败时本地候选返回错误并等待 leader
+  候选，绝不把陈旧结果包装成 latest。显式历史 revision 不增加 barrier，继续保留 member-local 故障诊断。
+
+  聚焦 hedge race 20 轮通过，完整 `pkg/server/etcd` 204.336 秒通过。在线实例仍是 A4776，未绕过正式
+  release gate 滚入未发布镜像，因此现场 GREEN 留待下一次受控 rollout；本项证据边界明确为“真实现场 RED +
+  当前源码确定性 GREEN”。广谱差分在该 RED 后继续通过 HTTP gateway/lease expiry 等场景，随后主动中断；
+  中断时 Auth fixture 的 cleanup 未执行，已使用 fixture root 凭据关闭鉴权并删除用户/角色，最终测试前缀、
+  LeaseList、Alarm 均为空且 endpoint proposal health 通过，reference 进程和临时目录已清理。
+
+  同轮审计确认 PD 隔离后的进程冷启动不能只靠序列化 RegionCache：当前路由无持久卷，safepoint service ID
+  按进程随机，盲目导入目录会把已失去 GC 保护的 snapshot 伪装成可用。安全实现必须把不可变 storage cluster
+  identity、路由目录、原 checkpoint TSO/绝对期限和可续用的 safepoint ownership 原子持久化，并提供 Pod
+  replacement 可恢复卷；在此协议完成前，cache 丢失继续 fail closed。
 
 ### P2：运维兼容和长期验证
 
