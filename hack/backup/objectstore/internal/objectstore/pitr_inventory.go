@@ -90,16 +90,22 @@ func CapturePITRInventory(ctx context.Context, client S3API, request PITRInvento
 	return receipt, nil
 }
 
-func verifyPITRVersion(ctx context.Context, client S3API, request PITRInventoryRequest, key, versionID string, listedBytes int64, now time.Time) (pitrinventory.Entry, error) {
+func verifyPITRVersion(ctx context.Context, client S3API, request PITRInventoryRequest, key, versionID string, listedBytes int64, now time.Time) (entryResult pitrinventory.Entry, retErr error) {
 	if listedBytes <= 0 || listedBytes == math.MaxInt64 || !validObjectScopeValue(versionID) {
 		return pitrinventory.Entry{}, errors.New("native PITR object listing has invalid size or version")
 	}
 	head, err := client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(request.Bucket), Key: aws.String(key), VersionId: aws.String(versionID)})
-	if err != nil || aws.ToString(head.VersionId) != versionID || aws.ToInt64(head.ContentLength) != listedBytes {
+	if err != nil {
+		return pitrinventory.Entry{}, err
+	}
+	if aws.ToString(head.VersionId) != versionID || aws.ToInt64(head.ContentLength) != listedBytes {
 		return pitrinventory.Entry{}, fmt.Errorf("native PITR exact-version HEAD differs for %s", key)
 	}
 	retention, err := client.GetObjectRetention(ctx, &s3.GetObjectRetentionInput{Bucket: aws.String(request.Bucket), Key: aws.String(key), VersionId: aws.String(versionID)})
-	if err != nil || retention.Retention == nil || retention.Retention.RetainUntilDate == nil {
+	if err != nil {
+		return pitrinventory.Entry{}, err
+	}
+	if retention.Retention == nil || retention.Retention.RetainUntilDate == nil {
 		return pitrinventory.Entry{}, fmt.Errorf("native PITR exact-version retention is missing for %s", key)
 	}
 	mode, retainUntil := string(retention.Retention.Mode), retention.Retention.RetainUntilDate.Unix()
@@ -110,13 +116,16 @@ func verifyPITRVersion(ctx context.Context, client S3API, request PITRInventoryR
 	if err != nil {
 		return pitrinventory.Entry{}, err
 	}
-	defer object.Body.Close()
+	defer func() { retErr = errors.Join(retErr, object.Body.Close()) }()
 	if aws.ToString(object.VersionId) != versionID {
 		return pitrinventory.Entry{}, fmt.Errorf("native PITR GET returned a different version for %s", key)
 	}
 	hash := sha256.New()
 	n, err := io.Copy(hash, io.LimitReader(object.Body, listedBytes+1))
-	if err != nil || n != listedBytes {
+	if err != nil {
+		return pitrinventory.Entry{}, err
+	}
+	if n != listedBytes {
 		return pitrinventory.Entry{}, fmt.Errorf("native PITR exact-version body size differs for %s", key)
 	}
 	return pitrinventory.Entry{ObjectKey: key, VersionID: versionID, Bytes: listedBytes, SHA256: hex.EncodeToString(hash.Sum(nil)), RetentionMode: mode, RetainUntilUnix: retainUntil}, nil

@@ -82,13 +82,13 @@ func Decode(reader io.Reader) (Receipt, error) {
 	return receipt, nil
 }
 
-func ReadCanonical(filePath string) (Receipt, []byte, error) {
+func ReadCanonical(filePath string) (receiptResult Receipt, canonicalBytes []byte, retErr error) {
 	var zero Receipt
 	f, err := os.Open(filePath)
 	if err != nil {
 		return zero, nil, err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	b, err := io.ReadAll(io.LimitReader(f, MaxBytes+1))
 	if err != nil {
 		return zero, nil, err
