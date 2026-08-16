@@ -1141,6 +1141,17 @@ const pessimisticLockMaxBackoff = 20000
 const maxConsecutiveFailure = 10
 
 func keepAlive(c *twoPhaseCommitter, closeCh chan struct{}, primaryKey []byte, lockCtx *kv.LockCtx) {
+	keepAliveCtx, cancelKeepAlive := context.WithCancel(context.Background())
+	watcherDone := make(chan struct{})
+	go func() {
+		select {
+		case <-closeCh:
+			cancelKeepAlive()
+		case <-watcherDone:
+		}
+	}()
+	defer close(watcherDone)
+	defer cancelKeepAlive()
 	// Ticker is set to 1/2 of the ManagedLockTTL.
 	ticker := time.NewTicker(time.Duration(atomic.LoadUint64(&ManagedLockTTL)) * time.Millisecond / 2)
 	defer ticker.Stop()
@@ -1151,14 +1162,14 @@ func keepAlive(c *twoPhaseCommitter, closeCh chan struct{}, primaryKey []byte, l
 	keepFail := 0
 	for {
 		select {
-		case <-closeCh:
+		case <-keepAliveCtx.Done():
 			return
 		case <-ticker.C:
 			// If kill signal is received, the ttlManager should exit.
 			if lockCtx != nil && lockCtx.Killed != nil && atomic.LoadUint32(lockCtx.Killed) != 0 {
 				return
 			}
-			bo := retry.NewBackofferWithVars(context.Background(), keepAliveMaxBackoff, c.txn.vars)
+			bo := retry.NewBackofferWithVars(keepAliveCtx, keepAliveMaxBackoff, c.txn.vars)
 			now, err := c.store.GetTimestampWithRetry(bo, c.txn.GetScope())
 			if err != nil {
 				logutil.Logger(bo.GetCtx()).Warn("keepAlive get tso fail",
