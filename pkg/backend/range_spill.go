@@ -337,10 +337,7 @@ func (w *keyRunWriter) Write(key []byte) error {
 func (w *keyRunWriter) Close() error {
 	flushErr := w.buffer.Flush()
 	closeErr := w.file.Close()
-	if flushErr != nil {
-		return flushErr
-	}
-	return closeErr
+	return errors.Join(flushErr, closeErr)
 }
 
 type keyRunReader struct {
@@ -397,9 +394,7 @@ func mergeKeyRuns(ctx context.Context, inputs []string, output string) (retErr e
 	readers := make([]*keyRunReader, 0, len(inputs))
 	defer func() {
 		for _, reader := range readers {
-			if err := reader.Close(); retErr == nil && err != nil {
-				retErr = err
-			}
+			retErr = errors.Join(retErr, reader.Close())
 		}
 	}()
 	items := make(keyRunHeap, 0, len(inputs))
@@ -423,11 +418,7 @@ func mergeKeyRuns(ctx context.Context, inputs []string, output string) (retErr e
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := writer.Close(); retErr == nil && err != nil {
-			retErr = err
-		}
-	}()
+	defer func() { retErr = errors.Join(retErr, writer.Close()) }()
 	var previous []byte
 	for items.Len() != 0 {
 		if err := ctx.Err(); err != nil {
