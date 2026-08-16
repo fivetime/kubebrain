@@ -54263,6 +54263,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Range spill 聚焦 race 与 `pkg/backend` vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，磁盘满或关闭失败
   注入下的大范围排序终态仍留待正式新镜像文件系统故障门禁。
 
+- A4826 补齐可信 event-log watch 历史回放的 iterator shutdown 错误传播。`storage.Iter.Close` 是可失败接口，
+  Badger 实现会在关闭时完成事务；旧回放路径无条件丢弃该错误，可能在资源/事务收尾失败后仍向 watch 客户端发布
+  一段看似完整的历史。生产 defer 现在把 Close 与扫描、解码、witness 校验或对象加载主错误 Join，既阻止假成功，
+  也保留多重故障因果；TiKV 当前 Close 返回 nil，因此正常数据面行为不变。
+
+  EventLog/HistoryWatch 聚焦 race（5.042 秒）与 `pkg/backend` vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，
+  Badger iterator close fault 及后续 TiKV iterator 可失败实现仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
