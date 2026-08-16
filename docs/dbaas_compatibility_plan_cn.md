@@ -53911,6 +53911,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `pkg/server/etcd` 201.167 秒通过。在线 A4776 未包含该提交，真实取消与 PD leader handoff 重叠的现场
   GREEN 继续等待正式发布流程。
 
+- A4792 修复 TiKV client pool 关闭时 safepoint checker 的剩余 detached RPC。每个 client 的后台 checker
+  会经 safepoint-etcd `Get` 更新本地 GC safepoint cache；旧实现为该 Get 创建独立 5 秒 Background timeout。
+  `KVStore.Close()` 虽先取消 store context 再等待 worker，但无法中断已经进入的 Get；KubeBrain 默认 16-client
+  pool 在 safepoint endpoint 黑洞时会侵蚀 gRPC drain 后的关闭预算。生产提交 `9af4b93c` 保持既有
+  `SafePointKV.Get` API 和 mock/第三方实现兼容，仅为生产 `EtcdSafePointKV` 增加可选 `GetWithContext`，checker
+  使用 KVStore lifetime context。Close cancellation 现在可立即打断 in-flight safepoint RPC；旧调用方仍使用
+  原 5 秒 bounded Background wrapper。
+
+  client-go `tikv` 全套与 vet、root TiKV storage race、backend compile 及 storage/backend/server vet 通过。
+  本项不改变 GC safepoint 值、发布顺序或错误可见性；在线 A4776 未滚动，真实 safepoint endpoint 黑洞下的
+  多 client shutdown 时延仍由下一次正式镜像故障门禁验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
