@@ -54422,6 +54422,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/backup/internal/nativepitr` 全套 race（3.259 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776
   未滚动，full/log/replay artifact close fault 下 verifier 非成功及错误分类仍留待正式新镜像文件系统门禁。
 
+- A4845 收紧 native PITR 在线 source/target probe 与 encryption key 的 receipt 成功条件。TargetProbe/SourceRangeProbe 的
+  既有 Close 是 void，真实 txn client Close 错误因此被吞，空目标或源范围独占 receipt 仍可签发。为保持 fake/embedder
+  兼容，live probe 现在保存 close error 并实现可选 `CloseError`；Inspect defer 关闭后按能力聚合。fenced source revision
+  的 storage iterator 与 AES-256 key file 也改为 Join Close，且 key Stat 的真实 I/O error 不再伪装成“非 regular”。
+
+  `hack/backup/internal/nativepitr` 全套 race（3.198 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776
+  未滚动，txn client/iterator/key-file close fault 下 receipt 不签发仍留待正式新镜像源目标取证门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
