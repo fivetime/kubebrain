@@ -23,10 +23,32 @@ import (
 )
 
 func normalizeContextStatus(err error) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return status.FromContextError(err).Err()
+	other, contextErr := splitContextError(err)
+	if other != nil {
+		return other
 	}
-	return err
+	if contextErr != nil {
+		return status.FromContextError(contextErr).Err()
+	}
+	return nil
+}
+
+func splitContextError(err error) (other, contextErr error) {
+	if err == nil {
+		return nil, nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			childOther, childContext := splitContextError(child)
+			other = errors.Join(other, childOther)
+			contextErr = errors.Join(contextErr, childContext)
+		}
+		return other, contextErr
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
+	return err, nil
 }
 
 func normalizeContextStatusUnary(
