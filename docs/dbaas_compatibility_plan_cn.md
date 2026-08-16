@@ -53898,6 +53898,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   81.674 秒以及 root storage/backend/server vet 均通过。在线实例仍是 A4776；真实 TiKV Region/lock RPC
   黑洞下的取消时延继续留给正式新镜像的故障注入门禁，不以源码回归冒充现场 GREEN。
 
+- A4791 修正 A4788/A4789/A4790 context 贯通后的 gRPC 错误分类缺口。TiKV TSO 与 transaction begin 失败
+  原先用 `%v` 嵌入底层错误并只保留 `storage.ErrUnavailable`，会丢失 caller 的
+  `context.Canceled/DeadlineExceeded`；scanner 虽用 `%w` 保留 cause，统一 `authGRPCError` 又先按 storage/
+  transport 分类，包装后的 context 可能落为 `Unknown/Unavailable`。生产提交 `a99c0845` 以调用方
+  `ctx.Err()` 为唯一取消判据：TSO 与 read/write begin 在 caller 已结束时返回原 context error，caller 仍有效
+  时的 PD/TSO 故障继续是 `Unavailable`。统一 gRPC 边界现在把包装后的 context 映射为精确
+  `Canceled/DeadlineExceeded`；`storage.ErrUncertainResult` 被显式放在它之前，已进入 commit 且结果未知的写
+  仍保持 etcd timeout/Unavailable 契约，绝不误报成可安全取消。
+
+  聚焦 storage 与 gRPC code 回归各连续 20 轮通过，TiKV storage race、storage 全树、相关 vet 与完整
+  `pkg/server/etcd` 201.167 秒通过。在线 A4776 未包含该提交，真实取消与 PD leader handoff 重叠的现场
+  GREEN 继续等待正式发布流程。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
