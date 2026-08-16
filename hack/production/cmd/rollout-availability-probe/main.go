@@ -42,7 +42,7 @@ func main() {
 	flag.StringVar(&cfg.prefix, "prefix", "/kubebrain-rollout-availability/", "exclusive probe key prefix")
 	flag.IntVar(&cfg.iterations, "iterations", 0, "number of write/watch probes")
 	flag.DurationVar(&cfg.interval, "interval", 100*time.Millisecond, "interval between probes")
-	flag.DurationVar(&cfg.commandTimeout, "command-timeout", time.Second, "per-operation timeout")
+	flag.DurationVar(&cfg.commandTimeout, "command-timeout", 10*time.Second, "per-operation timeout")
 	flag.DurationVar(&cfg.dialTimeout, "dial-timeout", time.Second, "client dial timeout")
 	flag.DurationVar(&cfg.maxLatency, "max-operation-latency", 5*time.Second, "maximum Put-to-Watch latency")
 	flag.Int64Var(&cfg.leaseTTL, "lease-ttl", 15, "lease TTL in seconds")
