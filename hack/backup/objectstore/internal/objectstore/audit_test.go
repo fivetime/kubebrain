@@ -2,6 +2,7 @@ package objectstore
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,6 +119,24 @@ func TestArchiveAuditRejectsConflictCorruptionAndRetentionDrift(t *testing.T) {
 		_, statErr := os.Stat(request.ReceiptOutput)
 		require.ErrorIs(t, statErr, os.ErrNotExist)
 	})
+}
+
+func TestArchiveAuditRejectsRemoteBodyCloseFailure(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	closeErr := errors.New("audit response close failed")
+	client := &fakeS3{getCloseErr: closeErr}
+	request := AuditRequest{
+		Input: writeAuditArtifact(t), ObjectStoreID: "store-a", Bucket: "audits",
+		ObjectKey: "instance-a/operation-1.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(time.Hour).Unix(),
+		ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	}
+
+	_, err := ArchiveAudit(context.Background(), client, request)
+
+	require.ErrorIs(t, err, closeErr)
+	_, statErr := os.Stat(request.ReceiptOutput)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func TestArchiveAuditReconcilesCommittedResponseError(t *testing.T) {

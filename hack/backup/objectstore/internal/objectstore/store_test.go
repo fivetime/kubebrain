@@ -134,6 +134,26 @@ func TestUploadUsesFrozenArtifactWhenSourceChangesBeforePut(t *testing.T) {
 	require.True(t, receipt.RemoteVerified)
 }
 
+func TestUploadRejectsRemoteBodyCloseFailure(t *testing.T) {
+	artifact := writeArtifact(t)
+	now := time.Unix(2_000_000_000, 0)
+	closeErr := errors.New("backup response close failed")
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	client := &fakeS3{getCloseErr: closeErr}
+
+	_, err := Upload(context.Background(), client, UploadRequest{
+		Input: artifact, Instance: "instance-a", BackupID: "backup-1",
+		ObjectStoreID: "store-a", Bucket: "backups", ObjectKey: "instance-a/backup-1.jsonl",
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: now.Add(time.Minute).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 1_000_000_000,
+		ReceiptOutput: receiptPath, Now: now,
+	})
+
+	require.ErrorIs(t, err, closeErr)
+	_, statErr := os.Stat(receiptPath)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 func TestUploadRefusesConflictingObject(t *testing.T) {
 	artifact := writeArtifact(t)
 	now := time.Unix(2_000_000_000, 0)
@@ -377,6 +397,7 @@ type fakeS3 struct {
 	mode                      types.ObjectLockRetentionMode
 	deleted                   bool
 	corruptGet                bool
+	getCloseErr               error
 	omitLastModified          bool
 	putCalls                  int
 	lastPut                   *s3.PutObjectInput
@@ -394,6 +415,13 @@ type fakeS3 struct {
 	putCancel                 context.CancelFunc
 	beforePut                 func()
 }
+
+type errorReadCloser struct {
+	io.Reader
+	err error
+}
+
+func (r errorReadCloser) Close() error { return r.err }
 
 func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	f.putCalls++
@@ -458,7 +486,7 @@ func (f *fakeS3) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s
 		body[0] ^= 0xff
 	}
 	return &s3.GetObjectOutput{
-		Body: io.NopCloser(bytes.NewReader(body)), VersionId: aws.String(f.versionID),
+		Body: errorReadCloser{Reader: bytes.NewReader(body), err: f.getCloseErr}, VersionId: aws.String(f.versionID),
 	}, nil
 }
 

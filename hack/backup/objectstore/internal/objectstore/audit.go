@@ -163,7 +163,7 @@ func verifyAuditRemote(
 	versionID string,
 	expected operationaudit.Status,
 	expectedBody []byte,
-) error {
+) (retErr error) {
 	output, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(request.Bucket), Key: aws.String(request.ObjectKey),
 		VersionId: aws.String(versionID),
@@ -171,7 +171,7 @@ func verifyAuditRemote(
 	if err != nil {
 		return fmt.Errorf("download operation audit object: %w", err)
 	}
-	defer output.Body.Close()
+	defer func() { retErr = errors.Join(retErr, output.Body.Close()) }()
 	body, err := io.ReadAll(io.LimitReader(output.Body, expected.Bytes+1))
 	if err != nil {
 		return err

@@ -54457,6 +54457,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `restorereceipt` race（1.048 秒）、vet 与 diff check 通过。真实只读文件系统、目录 fsync/close fault 注入仍留待正式
   新镜像恢复执行器门禁；本项不关闭真实 CSI/PITR 缺口。
 
+- A4849 收紧 immutable object-store backup/audit 的 exact-version GET 成功条件。S3 已返回完整 bytes 并不代表 HTTP
+  transport 已可靠收尾；旧 logical backup verifier 与 operation audit archiver 都 defer 后忽略 response Body.Close，
+  前者还忽略本地验证副本 Remove，因此可能在连接/临时介质 cleanup 失败后签发 `RemoteVerified=true` receipt。两条生产
+  路径现在以命名返回值聚合 Close/Remove，并在 defer 发现任一错误时撤销 verified 结果；audit 与 backup 各新增可失败
+  response reader 回归，固定 close error 原样可见且 receipt 不落盘。
+
+  对照 `/root/etcd/client/v3/snapshot/v3_snapshot.go` 的 snapshot response/file close 生命周期；objectstore 聚焦 race
+  （1.196 秒）、vet 与 diff check 通过。真实 S3 连接 reset/临时盘 unlink fault 仍留待正式新镜像对象存储故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

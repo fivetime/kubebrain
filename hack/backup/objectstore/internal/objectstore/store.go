@@ -385,20 +385,30 @@ func verifyRemote(
 	expected backupfile.Status,
 	expectedFileSHA256 string,
 	expectedSize int64,
-) (bool, error) {
+) (verified bool, retErr error) {
 	output, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket), Key: aws.String(key), VersionId: aws.String(versionID),
 	})
 	if err != nil {
 		return false, fmt.Errorf("download uploaded object: %w", err)
 	}
-	defer output.Body.Close()
+	defer func() {
+		if closeErr := output.Body.Close(); closeErr != nil {
+			verified = false
+			retErr = errors.Join(retErr, closeErr)
+		}
+	}()
 	temp, err := os.CreateTemp("", "kubebrain-object-verify-*")
 	if err != nil {
 		return false, err
 	}
 	tempName := temp.Name()
-	defer os.Remove(tempName)
+	defer func() {
+		if removeErr := os.Remove(tempName); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			verified = false
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
 	written, copyErr := io.Copy(temp, output.Body)
 	if copyErr == nil {
 		copyErr = temp.Sync()
