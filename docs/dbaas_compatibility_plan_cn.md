@@ -54112,6 +54112,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   objectstore package race 与 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，真实对象存储 executor
   文件系统掉电与目录 close/writeback fault 仍留待正式新镜像故障门禁。
 
+- A4809 补齐对象存储 immutable blob 输出与 logical-backup metrics 的 durable publication 尾部合同。blob writer
+  通过可替换的 `linkBlobOutput` 间接 hard-link，此前未纳入直接 `os.Link` 审计，仍在父目录 Sync 后才 deferred
+  删除临时名；现在改为 Link → Remove temp → directory Sync/Close。metrics writer 的 Rename 覆盖语义保持不变，
+  但目录 Sync 与 Close 错误都进入返回值，不再把 teardown failure 当作成功发布。
+
+  objectstore 与 backupmetrics package race（3.319 秒、1.036 秒）及 vet 通过；本轮没有修改测试文件。在线 A4776
+  未滚动，真实掉电与目录 writeback/close fault 的 blob/metrics 可观测终态仍留待正式 executor 镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
