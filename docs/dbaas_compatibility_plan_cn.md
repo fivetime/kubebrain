@@ -54721,6 +54721,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 oversized receipt 回归；log-replay/nativepitr race（1.506 秒及缓存套件）、vet 与 diff check 通过。PD client 的 void
   Close 仍按上游 API 执行；真实 ApplyReplay 成功叠加 store close fault 仍留待正式 replay Job transport 故障门禁。
 
+- A4879 补齐 cold physical snapshot receipt builder 的输入文件终态。inventory、VolumeSnapshot 列表与 logical semantic
+  witness 虽已各限制为 4 MiB 并严格拒绝 trailing/unknown JSON，但共享 reader 仍 defer 丢弃 file Close；冻结介质收尾
+  失败时可能把 snapshot identity、int64 revision 与 witness file SHA 签入 `cold-physical-snapshot.v2`。reader 现使用命名
+  错误 Join Close，只有三份输入完整读取且关闭成功后才构造 receipt；stdout Encode 错误继续由命令入口失败传播。
+
+  既有 oversized、int64 revision 与 strict witness 回归覆盖新路径；cold-snapshot-receipt race（1.283 秒）、vet 与 diff
+  check 通过。真实 frozen mount close fault 仍留待 cold snapshot executor Job 文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
