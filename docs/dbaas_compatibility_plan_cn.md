@@ -54002,6 +54002,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   因而如实记录为非确定失败，不修改测试掩盖。在线 A4776 未滚动，真实 drain timeout + peer close failure 的组合
   退出码与发布控制面拒绝仍留待正式新镜像故障门禁。
 
+- A4799 补齐 PD restore-admission identity 与启动失败 storage cleanup 的进程退出错误传播。admission lease 必须
+  在 shutdown signal 到达时与 Endpoint/backend drain 并行释放，现有 helper 已满足时序，但只记录 Close 错误；
+  `Options.Run` 因而仍可能在旧 identity lease 未释放时返回成功，replacement 随后与旧实例冲突。另一方面，
+  admission 构造失败时已创建的 TiKV pool 虽会关闭，其聚合 Close 错误也被直接丢弃。生产 helper 现在保持
+  exactly-once 并行关闭，同时保存结果；`Run` 的 named return defer 等待 watcher 后把 admission Close 与
+  Endpoint 返回值 Join。admission 构造失败则把原始错误与 storage Close 错误 Join，既不覆盖主因，也不隐藏
+  资源回收异常。
+
+  `cmd/option` race、Endpoint（16.835 秒）、server、完整 cmd 编译及 option/endpoint/server vet 通过；本轮没有
+  修改测试文件。在线 A4776 未滚动，真实 admission etcd revoke failure 与 TiKV pool close failure 组合下的非零
+  进程退出和 StatefulSet replacement 拒绝仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
