@@ -53683,6 +53683,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Pod 均未重启，事后 3 PD health、3 TiKV Up 与 KubeBrain `/health` 恢复。探针 Pod 已清理。该结果把
   “代码默认值已修复”和“当前单节点 Kind 后端未满足发布 SLO”分开记录，不放宽门槛换取绿色结论。
 
+- A4777 修复 A4776 现场失败后 production rollout runner 的反馈延迟。旧脚本只调用一次
+  `kubectl wait --for=jsonpath={.status.phase}=Succeeded --timeout=180s`；探针已经进入 `Failed` 时不可能再
+  成为 `Succeeded`，runner 却仍等满总超时才读取失败日志，延迟发布阻断和自动化处置。生产提交
+  `807c4739` 保留同一个有界总 timeout，但以 1 秒片段等待并读取权威 Pod phase：`Failed` 立即输出日志并
+  失败，只有 `Succeeded` 才进入严格 summary/postflight；Pending/Running 继续等待，超时信息与探针失败
+  明确区分。所有 latency、TSO、Region、heartbeat 和 fail=0 门槛均未放宽。
+
+  本轮只在既有 runner 测试文件增加一个直接回归，不新增测试文件；3 分钟配置的确定性 Failed Pod 会立即
+  返回 `availability probe failed`，原成功、显式 mutation approval 与 drain 拒绝路径继续通过。真实 A4776
+  三副本上又以同一生产 runner 完整滚动，1/1 端到端探针成功，Put→Watch/PD TSO/TiKV Region 最大延迟分别
+  为 38/2/8ms，revision 从 `kubebrain-6448b4678d` 变为 `kubebrain-7664d464cd`，三个 Pod Ready、零重启且
+  临时 probe Pod 自动清理。该短成功路径只验证 runner success/control flow，不推翻 A4776 的 230/637 轮
+  长门禁失败，Operation Deployment 继续不滚动。
+
+  最终镜像 `kubebrain:a4777-807c4739` 内嵌完整 SHA
+  `807c4739b74b1ebbd8a74a2ef1d53d5f525d3b44`、build time `2026-08-16T06:46:19Z`，本地 image ID
+  `sha256:f95a527fae8fc46778121d25d26d26c14f0963fac62231de2b05b604d11fcaf1`。最终 Alpine 层内的 runner
+  已通过 `bash -n`，并复核存在 Failed phase 与独立错误信息；检查容器已清理。线上数据面保持 A4776，
+  直到独立/资源隔离环境的完整发布门禁通过后再推广 A4777 与 Operation 面。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
