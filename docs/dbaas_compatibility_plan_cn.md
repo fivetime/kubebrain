@@ -54120,6 +54120,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   objectstore 与 backupmetrics package race（3.319 秒、1.036 秒）及 vet 通过；本轮没有修改测试文件。在线 A4776
   未滚动，真实掉电与目录 writeback/close fault 的 blob/metrics 可观测终态仍留待正式 executor 镜像故障门禁。
 
+- A4810 将同一 durable publication 合同扩展到 DBaaS operation audit、metering price catalog、object-storage
+  sample/rollup 与 metering archive sample/rollup。六类不可变控制证据此前均 Link 最终名后先 Sync 父目录、再由
+  defer 删除临时 hardlink，掉电恢复可能留下额外审计或计费副本；目录 Close 错误也被忽略。生产 writer 现统一
+  Link → Remove temp → directory Sync/Close，Remove、Sync、Close 任一失败都会阻止成功终态，原有 exact-existing
+  幂等与拒绝覆盖合同不变。
+
+  operationaudit、meteringbilling、meteringstorage、meteringarchive race（1.171/9.466/1.424/1.626 秒）及 vet
+  通过；本轮没有修改测试文件。在线 A4776 未滚动，真实掉电和目录 writeback/close fault 下审计、计费证据的
+  durable 可见性仍留待正式 operations 镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
