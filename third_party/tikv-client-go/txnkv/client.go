@@ -73,6 +73,12 @@ func NewClientWithContext(ctx context.Context, pdAddrs []string, opts ...ClientO
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+	pdClientOwned := true
+	defer func() {
+		if pdClientOwned {
+			pdClient.Close()
+		}
+	}()
 
 	pdClient = util.InterceptedPDClient{Client: pdClient}
 
@@ -82,7 +88,7 @@ func NewClientWithContext(ctx context.Context, pdAddrs []string, opts ...ClientO
 	case kvrpcpb.APIVersion_V1:
 		codecCli = tikv.NewCodecPDClient(tikv.ModeTxn, pdClient)
 	case kvrpcpb.APIVersion_V2:
-		codecCli, err = tikv.NewCodecPDClientWithKeyspace(tikv.ModeTxn, pdClient, opt.keyspaceName)
+		codecCli, err = tikv.NewCodecPDClientWithKeyspaceContext(ctx, tikv.ModeTxn, pdClient, opt.keyspaceName)
 		if err != nil {
 			return nil, err
 		}
@@ -104,8 +110,20 @@ func NewClientWithContext(ctx context.Context, pdAddrs []string, opts ...ClientO
 	if err != nil {
 		return nil, err
 	}
+	spkvOwned := true
+	defer func() {
+		if spkvOwned {
+			_ = spkv.Close()
+		}
+	}()
 
 	rpcClient := tikv.NewRPCClient(tikv.WithSecurity(cfg.Security), tikv.WithCodec(codecCli.GetCodec()))
+	rpcClientOwned := true
+	defer func() {
+		if rpcClientOwned {
+			_ = rpcClient.Close()
+		}
+	}()
 
 	s, err := tikv.NewKVStoreWithContext(ctx, uuid, pdClient, spkv, rpcClient)
 	if err != nil {
@@ -114,6 +132,10 @@ func NewClientWithContext(ctx context.Context, pdAddrs []string, opts ...ClientO
 	if cfg.TxnLocalLatches.Enabled {
 		s.EnableTxnLocalLatches(cfg.TxnLocalLatches.Capacity)
 	}
+	// KVStore now owns all three resources and closes them in dependency order.
+	pdClientOwned = false
+	spkvOwned = false
+	rpcClientOwned = false
 	return &Client{KVStore: s}, nil
 }
 

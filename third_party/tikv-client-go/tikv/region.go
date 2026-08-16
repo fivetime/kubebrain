@@ -98,6 +98,10 @@ var NewCodecPDClient = locate.NewCodecPDClient
 // NewCodecPDClientWithKeyspace creates a CodecPDClient in API v2 with keyspace name.
 var NewCodecPDClientWithKeyspace = locate.NewCodecPDClientWithKeyspace
 
+// NewCodecPDClientWithKeyspaceContext creates an API v2 CodecPDClient with
+// caller-bound keyspace discovery.
+var NewCodecPDClientWithKeyspaceContext = locate.NewCodecPDClientWithKeyspaceContext
+
 // NewCodecV1 is a constructor for v1 Codec.
 var NewCodecV1 = apicodec.NewCodecV1
 

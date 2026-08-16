@@ -210,7 +210,7 @@ func NewKVStore(uuid string, pdClient pd.Client, spkv SafePointKV, tikvclient Cl
 // NewKVStoreWithContext creates a store without detaching cluster identity
 // initialization from the caller's startup lifecycle.
 func NewKVStoreWithContext(startupCtx context.Context, uuid string, pdClient pd.Client, spkv SafePointKV, tikvclient Client, opt ...Option) (*KVStore, error) {
-	o, err := oracles.NewPdOracle(pdClient, time.Duration(oracleUpdateInterval)*time.Millisecond)
+	o, err := oracles.NewPdOracleWithContext(startupCtx, pdClient, time.Duration(oracleUpdateInterval)*time.Millisecond)
 	if err != nil {
 		return nil, err
 	}

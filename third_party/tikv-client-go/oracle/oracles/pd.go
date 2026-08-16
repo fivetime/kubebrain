@@ -69,12 +69,17 @@ type pdOracle struct {
 // `GetTimestamp()` is not called after `updateInterval`, it will be called by
 // itself to keep up with the timestamp on PD server.
 func NewPdOracle(pdClient pd.Client, updateInterval time.Duration) (oracle.Oracle, error) {
+	return NewPdOracleWithContext(context.Background(), pdClient, updateInterval)
+}
+
+// NewPdOracleWithContext binds the initial TSO fetch to the caller's startup
+// lifecycle. The updater remains owned by Oracle.Close after construction.
+func NewPdOracleWithContext(ctx context.Context, pdClient pd.Client, updateInterval time.Duration) (oracle.Oracle, error) {
 	o := &pdOracle{
 		c:    pdClient,
 		quit: make(chan struct{}),
 	}
-	ctx := context.TODO()
-	go o.updateTS(ctx, updateInterval)
+	go o.updateTS(context.Background(), updateInterval)
 	// Initialize the timestamp of the global txnScope by Get.
 	_, err := o.GetTimestamp(ctx, &oracle.Option{TxnScope: oracle.GlobalTxnScope})
 	if err != nil {

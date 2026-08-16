@@ -60,7 +60,13 @@ func NewCodecPDClient(mode apicodec.Mode, client pd.Client) *CodecPDClient {
 
 // NewCodecPDClientWithKeyspace creates a CodecPDClient in API v2 with keyspace name.
 func NewCodecPDClientWithKeyspace(mode apicodec.Mode, client pd.Client, keyspace string) (*CodecPDClient, error) {
-	id, err := GetKeyspaceID(client, keyspace)
+	return NewCodecPDClientWithKeyspaceContext(context.Background(), mode, client, keyspace)
+}
+
+// NewCodecPDClientWithKeyspaceContext creates an API v2 codec while binding
+// keyspace discovery to the caller's startup lifecycle.
+func NewCodecPDClientWithKeyspaceContext(ctx context.Context, mode apicodec.Mode, client pd.Client, keyspace string) (*CodecPDClient, error) {
+	id, err := GetKeyspaceIDWithContext(ctx, client, keyspace)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +80,12 @@ func NewCodecPDClientWithKeyspace(mode apicodec.Mode, client pd.Client, keyspace
 
 // GetKeyspaceID attempts to retrieve keyspace ID corresponding to the given keyspace name from PD.
 func GetKeyspaceID(client pd.Client, name string) (uint32, error) {
-	meta, err := client.LoadKeyspace(context.Background(), apicodec.BuildKeyspaceName(name))
+	return GetKeyspaceIDWithContext(context.Background(), client, name)
+}
+
+// GetKeyspaceIDWithContext loads keyspace metadata with the caller's context.
+func GetKeyspaceIDWithContext(ctx context.Context, client pd.Client, name string) (uint32, error) {
+	meta, err := client.LoadKeyspace(ctx, apicodec.BuildKeyspaceName(name))
 	if err != nil {
 		return 0, err
 	}
