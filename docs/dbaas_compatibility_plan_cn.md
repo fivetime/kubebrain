@@ -53664,6 +53664,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   编译产物已精确清除。本轮只交付离线运维制品，不改变在线 server 行为，因此没有用未滚动的数据面集群
   状态冒充该镜像内容验证。
 
+- A4776 在实际投放 A4775 前修复 rollout availability probe 自身不可用的默认配置。CLI help 原先声明
+  `command-timeout=1s`、`max-operation-latency=5s`，但 validation 强制后者不得大于前者，因此只提供
+  endpoint/PD/iterations 等必填参数时会立即以 `interval and timeouts must be positive` 退出，无法作为
+  独立发布制品使用。生产提交 `d34d5839` 将默认 per-operation timeout 对齐既有 production runner 的
+  10 秒；没有新增或修改测试文件，既有包测试/vet 通过。当前源码构建的静态二进制随后在集群内不传
+  `--command-timeout`，真实完成 PD leader/store、TSO、TiKV Region、etcd Put→Watch 与 lease 检查，输出
+  `ok=1 fail=0`，证明不是只让参数校验变绿。
+
+  最终镜像 `kubebrain:a4776-d34d5839` 内嵌完整 SHA
+  `d34d5839df1965c1166669b58d03a31495b7f4c1`、build time `2026-08-16T06:27:15Z`，本地 image ID
+  `sha256:af2d12b46ac912937412d69188eff428f34c1b1240a62e5e79c6fc14ec374d2a`。三副本数据面已滚到该镜像，
+  runtime imageID 均为 `sha256:14f94a870349fc33e277a3284ce22459047c1e8b447b6ee3e35adfbd3fb0936f`、Ready、
+  零重启；但本轮发布门禁明确没有通过，不能据此批准其余 Operation Deployment 滚动。首次 1200 轮探针在
+  第 637 轮因 PD TSO 2.926 秒超过 1 秒退出；第二次 production runner 的 300 轮受控重滚在第 230 轮因
+  Put→Watch 7.007 秒超过 5 秒退出。同期 PD leader 日志明确报告 slow-disk overload：heartbeat 延迟
+  2.446 秒导致 leader lease 过期，随后出现 1.586 秒 clock jet-lag 与 4.346 秒 embedded-etcd KV；PD/TiKV
+  Pod 均未重启，事后 3 PD health、3 TiKV Up 与 KubeBrain `/health` 恢复。探针 Pod 已清理。该结果把
+  “代码默认值已修复”和“当前单节点 Kind 后端未满足发布 SLO”分开记录，不放宽门槛换取绿色结论。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
