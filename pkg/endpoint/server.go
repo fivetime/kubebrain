@@ -178,7 +178,10 @@ func addCORSHeaders(w http.ResponseWriter, origin string) {
 }
 
 const (
-	httpReadHeaderTimeout = 5 * time.Second
+	// Match upstream etcd (0e3027bdd): bound slow-header connections without
+	// rejecting legitimate clients behind high-latency or backpressured proxies.
+	// TLS handshakes retain their independent 10-second deadline.
+	httpReadHeaderTimeout = 5 * time.Minute
 	httpIdleTimeout       = 2 * time.Minute
 	// Match net/http's default, which is also the effective limit used by
 	// upstream etcd. Keeping the value explicit preserves bounded admission
