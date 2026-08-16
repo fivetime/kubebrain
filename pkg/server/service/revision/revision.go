@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net"
@@ -423,7 +424,7 @@ func isSendHttpsReqToHttpServerErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "http: server gave HTTP response to HTTPS client")
 }
 
-func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, error) {
+func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (revisionValue uint64, retErr error) {
 	leaderAddress := r.leaderElection.GetLeaderInfo()
 	if !election.IsLeaderKnown(leaderAddress) {
 		return 0, status.Errorf(codes.Unavailable, "leader is not elected")
@@ -447,13 +448,16 @@ func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, err
 		r.metricCli.EmitCounter("follower.get.revision.err", 1, metrics.Tag("leader", leaderAddress))
 		return 0, err
 	}
-	defer response.Body.Close()
+	defer func() { retErr = stderrors.Join(retErr, response.Body.Close()) }()
 	if response.StatusCode != http.StatusOK {
 		r.metricCli.EmitCounter("follower.get.revision.failed", 1, metrics.Tag("leader", leaderAddress))
 		//return 0, errors.Wrapf(err, "status code from leader %s is %d", leaderAddress, response.StatusCode)
 
-		msg, _ := readLeaderStatusBody(response.Body)
-		return 0, fmt.Errorf("status code from leader %s is %d, msg is %s", leaderAddress, response.StatusCode, msg)
+		msg, readErr := readLeaderStatusBody(response.Body)
+		return 0, stderrors.Join(
+			fmt.Errorf("status code from leader %s is %d, msg is %s", leaderAddress, response.StatusCode, msg),
+			readErr,
+		)
 	}
 
 	responseBody, err := readLeaderStatusBody(response.Body)
