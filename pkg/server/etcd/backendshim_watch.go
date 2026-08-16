@@ -63,7 +63,7 @@ func (wt *watchTranslator) watchEventToEtcdEvent(ctx context.Context, e *proto.E
 			return nil, err
 		}
 		kv.ModRevision = int64(revision)
-		prevKv := wt.shim.cachedPreviousEtcdKv(e.Kv.Key, revision, kv.Version, kv.CreateRevision)
+		prevKv := wt.shim.cachedPreviousEtcdKv(ctx, e.Kv.Key, revision, kv.Version, kv.CreateRevision)
 		// A PUT event is an update, never a create, so its CreateRevision must
 		// differ from ModRevision (clientv3.Event.IsCreate reports create iff they
 		// are equal). Prefer the create_revision the value carries inline (approach

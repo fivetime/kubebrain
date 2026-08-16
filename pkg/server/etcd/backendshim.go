@@ -1349,7 +1349,7 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 						return
 					}
 				}
-				b.prefetchPrevKvs(events)
+				b.prefetchPrevKvs(ctx, events)
 				etcdEvents := make([]*mvccpb.Event, 0, len(events))
 				var batchRevision uint64
 				for i, e := range events {

@@ -353,7 +353,7 @@ const prefetchPrevKvsConcurrency = 16
 // whose previous version is neither hinted nor cached, issuing the revisioned
 // gets in parallel. cachedPreviousEtcdKv is singleflighted and idempotent, so
 // the sequential conversion that follows hits the warmed cache.
-func (r *prevKvResolver) prefetchPrevKvs(events []*proto.Event) {
+func (r *prevKvResolver) prefetchPrevKvs(ctx context.Context, events []*proto.Event) {
 	var cold []*proto.Event
 	for _, e := range events {
 		if e == nil || e.Kv == nil || e.Type != proto.Event_PUT {
@@ -385,7 +385,7 @@ func (r *prevKvResolver) prefetchPrevKvs(events []*proto.Event) {
 			defer func() { <-sem }()
 			// Zeros for the hint proof: these events already missed the hint in
 			// the filter above, so go straight to the shared slow path.
-			r.cachedPreviousEtcdKv(ev.Kv.Key, watchEventRevision(ev), 0, 0)
+			r.cachedPreviousEtcdKv(ctx, ev.Kv.Key, watchEventRevision(ev), 0, 0)
 		}(e)
 	}
 	wg.Wait()
@@ -424,7 +424,7 @@ func (r *prevKvResolver) cachedMetadata(ctx context.Context, key []byte, revisio
 // shares it across watcher streams. The returned *mvccpb.KeyValue is treated as
 // read-only by callers (it may be shared), matching the immutability of a past
 // key version.
-func (r *prevKvResolver) cachedPreviousEtcdKv(key []byte, revision uint64, version, createRev int64) *mvccpb.KeyValue {
+func (r *prevKvResolver) cachedPreviousEtcdKv(ctx context.Context, key []byte, revision uint64, version, createRev int64) *mvccpb.KeyValue {
 	if revision == 0 {
 		return nil
 	}
@@ -436,8 +436,8 @@ func (r *prevKvResolver) cachedPreviousEtcdKv(key []byte, revision uint64, versi
 	if v, ok := r.prevCache.get(ck); ok {
 		return v.(*mvccpb.KeyValue)
 	}
-	v, _, _ := r.prevFlight.Do(ck, func() (interface{}, error) {
-		// previousEtcdKv uses its own bounded (Background) context. Only a
+	resultCh := r.prevFlight.DoChan(ck, func() (interface{}, error) {
+		// previousEtcdKv uses the resolver's own bounded lifecycle context. Only a
 		// CERTAIN answer (value / clean miss / compacted) may be cached: caching
 		// a transient-failure nil would hand the poisoned nil to every watcher
 		// stream converting the same event and amplify one storage hiccup into
@@ -448,5 +448,12 @@ func (r *prevKvResolver) cachedPreviousEtcdKv(key []byte, revision uint64, versi
 		}
 		return pk, nil
 	})
-	return v.(*mvccpb.KeyValue)
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-r.runCtx.Done():
+		return nil
+	case result := <-resultCh:
+		return result.Val.(*mvccpb.KeyValue)
+	}
 }

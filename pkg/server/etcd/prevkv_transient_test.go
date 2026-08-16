@@ -23,6 +23,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
@@ -136,13 +137,13 @@ func TestPrevKvUncertainNilNotCached(t *testing.T) {
 
 	// Exhaust the budget: uncertain nil.
 	kv.failing.Store(true)
-	prev := shim.cachedPreviousEtcdKv(key, updateRev, 0, 0)
+	prev := shim.cachedPreviousEtcdKv(context.Background(), key, updateRev, 0, 0)
 	require.Nil(t, prev, "budget exhausted under persistent failure returns nil")
 
 	// Storage recovers: the SAME (key,revision) must now resolve — the
 	// uncertain nil must not have been cached.
 	kv.failing.Store(false)
-	prev = shim.cachedPreviousEtcdKv(key, updateRev, 0, 0)
+	prev = shim.cachedPreviousEtcdKv(context.Background(), key, updateRev, 0, 0)
 	require.NotNil(t, prev, "uncertain nil must not be cached; recovered lookup must return the previous version")
 	require.Equal(t, updateRev, uint64(prev.ModRevision)+uint64(updateRev-uint64(prev.ModRevision)), "sanity")
 }
@@ -157,7 +158,7 @@ func TestPrevKvLookupStopsWithShim(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shim.cachedPreviousEtcdKv(key, updateRev, 0, 0)
+		shim.cachedPreviousEtcdKv(context.Background(), key, updateRev, 0, 0)
 	}()
 	time.Sleep(30 * time.Millisecond) // allow the retry loop to enter storage
 	shim.Close()
@@ -198,4 +199,28 @@ func TestMetadataSingleflightIsolatesCallerCancellation(t *testing.T) {
 
 	close(probe.release)
 	require.NoError(t, <-secondDone, "one watch cancellation must not fail another watch sharing metadata")
+}
+
+func TestPrevKvSingleflightIsolatesCallerCancellation(t *testing.T) {
+	shim, b, kv := newPrevKvTestShim(t)
+	key, updateRev := seedUpdatedKey(t, b)
+	kv.failing.Store(true)
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan *mvccpb.KeyValue, 1)
+	go func() { firstDone <- shim.cachedPreviousEtcdKv(firstCtx, key, updateRev, 0, 0) }()
+	time.Sleep(30 * time.Millisecond) // enter the shared retry loop
+
+	secondDone := make(chan *mvccpb.KeyValue, 1)
+	go func() { secondDone <- shim.cachedPreviousEtcdKv(context.Background(), key, updateRev, 0, 0) }()
+	cancelFirst()
+	require.Nil(t, <-firstDone)
+
+	kv.failing.Store(false)
+	select {
+	case prev := <-secondDone:
+		require.NotNil(t, prev, "one watch cancellation must not abort another watch's shared PrevKV lookup")
+	case <-time.After(time.Second):
+		t.Fatal("surviving caller did not receive the recovered shared PrevKV lookup")
+	}
 }
