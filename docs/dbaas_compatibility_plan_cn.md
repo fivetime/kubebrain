@@ -54536,6 +54536,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增真实 full-keyspace logical artifact 转换加 failing writer 回归，并固定输出 snapshot 仍存在；CLI/etcdsnapshot race
   （1.074 秒及缓存套件）、vet 与 diff check 通过。该能力仍不迁移 auth/history，仅用于已记录的离线当前状态互操作。
 
+- A4858 收紧直接操作 etcd/TiKV keyspace 的 prefix-tool。旧入口在 client 建立后用 `log.Fatal` 处理 Range/Delete/Put/
+  Lease 错误，跳过 client Close；更危险的是空 `PREFIX` 未拒绝，`ACTION=delete` 可把维护动作扩大到全 keyspace。
+  `lease-put` 还先 Grant 再校验 suffix，非法输入会遗留空 lease，Txn 失败也不 Revoke。现在入口统一
+  `main -> run(io.Writer) error`，连接前拒绝空 prefix、未知 action、非法 TTL 与空 suffix；Txn 失败使用独立 30 秒 cleanup
+  context 撤销新 lease并聚合 revoke 错误。所有 mutation/read 完成后先关闭 client，再发布 count/deleted/lease ID 输出。
+
+  新增 unknown action、grant-before-validation 和 empty-prefix destructive action 回归；prefix-tool race（1.060 秒）、vet
+  与 diff check 通过。真实 uncertain Txn+Revoke 双故障仍留待独立 TiKV/PD 运维 smoke。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
