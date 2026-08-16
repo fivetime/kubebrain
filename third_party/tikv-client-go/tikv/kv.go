@@ -71,6 +71,7 @@ import (
 	resourceControlClient "github.com/tikv/pd/client/resource_group/controller"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	atomicutil "go.uber.org/atomic"
+	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -409,19 +410,16 @@ func (s *KVStore) Close() error {
 	s.pdClient.Close()
 	s.lockResolver.Close()
 
-	if err := s.GetTiKVClient().Close(); err != nil {
-		return err
-	}
+	var closeErr error
+	closeErr = multierr.Append(closeErr, s.GetTiKVClient().Close())
 
 	if s.txnLatches != nil {
 		s.txnLatches.Close()
 	}
 	s.regionCache.Close()
 
-	if err := s.kv.Close(); err != nil {
-		return err
-	}
-	return nil
+	closeErr = multierr.Append(closeErr, s.kv.Close())
+	return closeErr
 }
 
 // UUID return a unique ID which represents a Storage.
