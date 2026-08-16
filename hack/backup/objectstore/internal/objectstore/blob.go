@@ -336,15 +336,15 @@ func writeBlobOutputAtomic(path string, body []byte) error {
 	if err := linkBlobOutput(tempName, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			existing, readErr := readBoundedFile(path, "existing immutable blob output", int64(len(body)))
-			if readErr == nil && bytes.Equal(existing, body) {
-				return nil
-			}
 			if readErr != nil {
 				return readErr
 			}
-			return fmt.Errorf("refusing to overwrite immutable blob output %q", path)
+			if !bytes.Equal(existing, body) {
+				return fmt.Errorf("refusing to overwrite immutable blob output %q", path)
+			}
+		} else {
+			return err
 		}
-		return err
 	}
 	if err := os.Remove(tempName); err != nil {
 		return fmt.Errorf("remove temporary blob output link %q: %w", tempName, err)

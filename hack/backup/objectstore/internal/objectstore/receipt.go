@@ -368,12 +368,12 @@ func WriteReceiptAtomic(path string, receipt Receipt) error {
 	if err := os.Link(tempName, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			existing, readErr := ReadReceipt(path)
-			if readErr == nil && existing == receipt {
-				return nil
+			if readErr != nil || existing != receipt {
+				return fmt.Errorf("refusing to overwrite existing receipt %q", path)
 			}
-			return fmt.Errorf("refusing to overwrite existing receipt %q", path)
+		} else {
+			return err
 		}
-		return err
 	}
 	if err := os.Remove(tempName); err != nil {
 		return fmt.Errorf("remove temporary receipt link %q: %w", tempName, err)
@@ -455,16 +455,18 @@ func writeJSONAtomicLimit(path string, value any, description string, limit int,
 	if err := os.Link(tempName, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			existing, readErr := readExisting(path)
+			exact := false
 			if readErr == nil {
 				existingData, _ := json.Marshal(existing)
 				valueData, _ := json.Marshal(value)
-				if string(existingData) == string(valueData) {
-					return nil
-				}
+				exact = string(existingData) == string(valueData)
 			}
-			return fmt.Errorf("refusing to overwrite existing receipt %q", path)
+			if !exact {
+				return fmt.Errorf("refusing to overwrite existing receipt %q", path)
+			}
+		} else {
+			return err
 		}
-		return err
 	}
 	if err := os.Remove(tempName); err != nil {
 		return fmt.Errorf("remove temporary receipt link %q: %w", tempName, err)
