@@ -53385,6 +53385,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD/TiKV 3+3 Ready、零重启，auth disabled、LeaseList/AlarmList 为空，proposal health 14.460ms。没有
   稳定生产差异，故不新增回归、不重建或滚动相同二进制镜像。
 
+- A4762 修复 Watch 冷 `PrevKV` 共享 lookup 在进程 shutdown 后继续访问 TiKV 的生产生命周期缺口。对照
+  upstream 本地 MVCC watch 转换和 server stopping 边界：KubeBrain 为避免一次 TiKV 抖动产生
+  `PrevKV=nil` 并触发 Kubernetes cacher 重建，会把冷历史版本读取放入最多 5 秒的 retry；旧实现从
+  `context.Background()` 派生该预算，`RPCServer.Close()` 又只关闭 concurrency client 和 lease manager，
+  因而在途 lookup 可越过 listener drain 与 server close，继续碰触即将关闭的 backend。单个 Watch 的取消
+  不能直接杀掉该 lookup，因为同一 `(key,revision)` singleflight 可能同时服务其他 Watch；缺口应由组件
+  生命周期而非任一订阅者 context 关闭。
+
+  生产提交 `c1dd24a3` 为 `prevKvResolver` 增加独立、幂等的 lifecycle context/cancel，让共享 lookup 仍可
+  跨单个 Watch cancellation 完成并缓存可信结果，但由 concrete backend shim 的 `Close()` 统一终止；
+  `RPCServer.Close()` 在 lease/backend teardown 前发现并关闭该生产 shim，轻量 BackendShim fake 不被迫新增
+  生命周期接口。`previousEtcdKv` 同时改为真正使用传入 context，而不再无条件替换成 Background。只新增一条
+  shutdown 回归：持久 storage failure 下启动共享 lookup，shim close 后 250ms 内必须结束；旧实现会继续到
+  5 秒 budget，新实现约 30ms 结束。既有 transient-recovery 和 uncertain-nil-not-cached 用例保持通过，race
+  7.301 秒、vet 与完整 `pkg/server/etcd` 通过。
+
+  最终镜像 `kubebrain:a4762-c1dd24a3` 内嵌完整 SHA
+  `c1dd24a3b4e1454487e11ad2722525239c2060d3`、build time `2026-08-16T03:52:04Z`，本地 OCI
+  digest `sha256:cd537457ad4a76158c7b0842e5fa4252c391a5635a7b48d29cddccaafd22eba4`，Kind runtime
+  imageID `sha256:cfc57e2bc140488056626c0558eaa8e3966b1cec365a6fa594a2c734b798284d`。主/JWT 六副本顺序
+  滚动后全部 Ready、零重启。真实 NodePort `--prev-kv` Watch 的 create/update 输出包含两条 PUT event，第二条
+  同时带旧值 `v1` 和新值 `v2`；fixture 清理后前缀为空。PD/TiKV 3+3 Ready、零重启，AlarmList/LeaseList
+  为空，proposal health 14.990ms，临时 Watch 进程与文件均无残留。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
