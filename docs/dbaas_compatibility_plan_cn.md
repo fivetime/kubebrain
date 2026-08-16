@@ -54656,6 +54656,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增三个 oversized receipt 回归；create/ready/delete race（1.678/1.648/1.643 秒）、vet 与 diff check 通过。真实输入
   close fault 与已提交 task mutation 的组合故障仍留待正式 backup-stream executor Job 门禁。
 
+- A4872 补齐 failed-restore remediation 共同信任根的文件终态。target replacement/retirement 虽已收紧各自直接证据，
+  共享 `failedrestore.Load` 的 parameters/old-plan 仍以无界 `os.ReadFile` 读取；更上游 `operationaudit.InspectBytes` 虽限制
+  audit 为 1 MiB，却 defer 丢弃 Close。介质收尾失败时因此仍可能签发 replacement handoff 或 retirement authorization。
+  failedrestore reader 现以 8 MiB bounded stream 读取并 Join Close；operation audit bounded reader 同样用命名错误传播
+  Close。只有 exhausted receipt-less audit、精确参数和 old plan 三者均完整读取且关闭成功后才进入补救授权链。
+
+  新增共享 failedrestore oversized evidence 回归，并复用 operationaudit oversized suite；两包 race（1.684/1.190 秒）、
+  vet 与 diff check 通过。真实 audit/parameters/plan close fault 仍留待 remediation Job 文件系统故障注入门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -404,13 +404,13 @@ func InspectBytes(path string) (Status, []byte, error) {
 	}, data, nil
 }
 
-func readBoundedJSONFile(path, description string) ([]byte, error) {
+func readBoundedJSONFile(path, description string) (data []byte, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxOperationAuditJSONBytes+1))
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, maxOperationAuditJSONBytes+1))
 	if err != nil {
 		return nil, err
 	}

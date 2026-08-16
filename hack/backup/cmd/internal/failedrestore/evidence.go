@@ -138,8 +138,13 @@ func completeGroup(value map[string]json.RawMessage, keys []string, name string)
 	}
 	return nil
 }
-func readBounded(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+func readBounded(path string) (data []byte, retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, (8<<20)+1))
 	if err != nil {
 		return nil, err
 	}
