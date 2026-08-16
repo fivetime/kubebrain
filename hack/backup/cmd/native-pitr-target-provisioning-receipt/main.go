@@ -68,13 +68,14 @@ func run(input, output string) error {
 	if err := os.Link(tempName, cleanOutput); err != nil {
 		return err
 	}
+	if err := os.Remove(tempName); err != nil {
+		return fmt.Errorf("remove published provisioning receipt temporary link: %w", err)
+	}
 	dirFile, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	err = dirFile.Sync()
-	if closeErr := dirFile.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	syncErr := dirFile.Sync()
+	closeErr := dirFile.Close()
+	return errors.Join(syncErr, closeErr)
 }

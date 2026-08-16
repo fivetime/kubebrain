@@ -190,6 +190,24 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 	if err = os.Link(candidatePath, c.Output); err != nil {
 		return result, 1, fmt.Errorf("publish snapshot without overwrite: %w", err)
 	}
+	if err = os.Remove(candidatePath); err != nil {
+		return result, 1, fmt.Errorf("remove published remediation snapshot temporary link: %w", err)
+	}
+	directory, err := os.Open(parent)
+	if err != nil {
+		return result, 1, fmt.Errorf("open remediation snapshot directory: %w", err)
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		syncErr = fmt.Errorf("sync remediation snapshot directory: %w", syncErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close remediation snapshot directory: %w", closeErr)
+	}
+	if err = errors.Join(syncErr, closeErr); err != nil {
+		return result, 1, err
+	}
 	result.SnapshotStatus = "remediated"
 	fmt.Fprintf(out, "snapshot_status=remediated\ncompacted_revision=%d\nsnapshot_output=%s\n", revision, c.Output)
 	return result, 0, nil

@@ -161,12 +161,16 @@ func writeAtomic(path string, data []byte) (returnErr error) {
 		}
 		return err
 	}
+	if err := os.Remove(tmpName); err != nil {
+		return fmt.Errorf("remove published restore manifest temporary link: %w", err)
+	}
 	dir, err := os.Open(directory)
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
-	return dir.Sync()
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func fatal(err error) {

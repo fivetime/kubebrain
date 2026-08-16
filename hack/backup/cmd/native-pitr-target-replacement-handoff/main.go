@@ -204,15 +204,16 @@ func writeExclusive(path string, value nativepitr.TargetReplacementHandoff) erro
 	if err := os.Link(tempPath, cleanPath); err != nil {
 		return err
 	}
+	if err := os.Remove(tempPath); err != nil {
+		return fmt.Errorf("remove published replacement handoff temporary link: %w", err)
+	}
 	dirFile, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	err = dirFile.Sync()
-	if closeErr := dirFile.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	syncErr := dirFile.Sync()
+	closeErr := dirFile.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func digest(data []byte) string {

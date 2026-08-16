@@ -116,13 +116,14 @@ func writeExclusive(output string, data []byte) error {
 	if err = os.Link(name, clean); err != nil {
 		return err
 	}
+	if err = os.Remove(name); err != nil {
+		return fmt.Errorf("remove published retirement receipt temporary link: %w", err)
+	}
 	dirFile, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	err = dirFile.Sync()
-	if closeErr := dirFile.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	syncErr := dirFile.Sync()
+	closeErr := dirFile.Close()
+	return errors.Join(syncErr, closeErr)
 }
