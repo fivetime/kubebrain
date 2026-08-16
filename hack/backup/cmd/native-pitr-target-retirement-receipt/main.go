@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -79,8 +80,13 @@ func run(input, provisioningPath, targetPath, admissionPath, output string, veri
 	return writeExclusive(output, append(canonical, '\n'))
 }
 
-func readBounded(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+func readBounded(path string) (data []byte, retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, (8<<20)+1))
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +98,7 @@ func readBounded(path string) ([]byte, error) {
 
 func digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
 
-func writeExclusive(output string, data []byte) error {
+func writeExclusive(output string, data []byte) (retErr error) {
 	clean := filepath.Clean(output)
 	dir := filepath.Dir(clean)
 	temp, err := os.CreateTemp(dir, "."+filepath.Base(clean)+".tmp-*")
@@ -100,17 +106,20 @@ func writeExclusive(output string, data []byte) error {
 		return err
 	}
 	name := temp.Name()
-	defer os.Remove(name)
-	if err = temp.Chmod(0o600); err == nil {
-		_, err = temp.Write(data)
+	defer func() {
+		if removeErr := os.Remove(name); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		return errors.Join(err, temp.Close())
 	}
-	if err == nil {
-		err = temp.Sync()
+	_, writeErr := temp.Write(data)
+	var syncErr error
+	if writeErr == nil {
+		syncErr = temp.Sync()
 	}
-	if closeErr := temp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
+	if err := errors.Join(writeErr, syncErr, temp.Close()); err != nil {
 		return err
 	}
 	if err = os.Link(name, clean); err != nil {
@@ -123,7 +132,7 @@ func writeExclusive(output string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	syncErr := dirFile.Sync()
+	syncErr = dirFile.Sync()
 	closeErr := dirFile.Close()
 	return errors.Join(syncErr, closeErr)
 }

@@ -54628,6 +54628,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 oversized evidence 与冲突后无临时文件残留回归；target-replacement-handoff race（1.753 秒）、vet 与 diff check
   通过。真实 filesystem close/unlink fault 仍留待正式 replacement handoff Job 文件系统门禁。
 
+- A4869 收紧 native PITR old-target retirement authorization/receipt 的完整文件生命周期。authorization 旧实现用三个
+  无界 `os.ReadFile` 读取 target-empty/provisioning/admission 证据，并直接以 O_EXCL 写最终路径；写入或 fsync 失败会留下
+  不完整但不可重试的 authorization。receipt 的四类输入同样无法传播 Close，atomic writer 还会丢弃 chmod/write/sync
+  同级 Close 与临时文件 Remove 错误。两端现统一采用 8 MiB bounded stream 并 Join Close；输出先写 0600 临时文件，
+  聚合 write/sync/Close 后 hard-link 独占发布、删除临时链接并 Sync/Close 父目录，任一 cleanup failure 均返回非零。
+
+  新增两端 oversized input、既有目标不覆盖及冲突后无临时残留回归；authorize/receipt race（1.658/1.700 秒）、vet 与
+  diff check 通过。真实 close/unlink/fsync fault 及已发布 receipt 的故障对账仍留待正式 retirement Job 文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

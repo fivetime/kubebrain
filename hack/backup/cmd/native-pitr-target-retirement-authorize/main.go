@@ -6,7 +6,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/cmd/internal/failedrestore"
@@ -42,7 +44,7 @@ func run(audit, parameters, planPath, targetPath, provisioningPath, admissionPat
 	if evidence.TargetPath != targetPath || evidence.AdmissionPath != admissionPath || evidence.TargetProvisionPath != provisioningPath {
 		return errors.New("retirement evidence paths are not the exact failed restore parameters")
 	}
-	targetBytes, err := os.ReadFile(targetPath)
+	targetBytes, err := readBounded(targetPath)
 	if err != nil {
 		return err
 	}
@@ -50,7 +52,7 @@ func run(audit, parameters, planPath, targetPath, provisioningPath, admissionPat
 	if err != nil {
 		return err
 	}
-	provisioningBytes, err := os.ReadFile(provisioningPath)
+	provisioningBytes, err := readBounded(provisioningPath)
 	if err != nil {
 		return err
 	}
@@ -58,7 +60,7 @@ func run(audit, parameters, planPath, targetPath, provisioningPath, admissionPat
 	if err != nil {
 		return err
 	}
-	admissionBytes, err := os.ReadFile(admissionPath)
+	admissionBytes, err := readBounded(admissionPath)
 	if err != nil {
 		return err
 	}
@@ -75,15 +77,59 @@ func run(audit, parameters, planPath, targetPath, provisioningPath, admissionPat
 		return err
 	}
 	data = append(data, '\n')
-	f, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	return writeExclusive(output, data)
+}
+
+func readBounded(path string) (data []byte, retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, (8<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || len(data) > 8<<20 {
+		return nil, errors.New("retirement authorization evidence is empty or exceeds 8 MiB")
+	}
+	return data, nil
+}
+
+func writeExclusive(output string, data []byte) (retErr error) {
+	clean := filepath.Clean(output)
+	dir := filepath.Dir(clean)
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(clean)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	if _, err = f.Write(data); err == nil {
-		err = f.Sync()
+	name := temp.Name()
+	defer func() {
+		if removeErr := os.Remove(name); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		return errors.Join(err, temp.Close())
 	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
+	_, writeErr := temp.Write(data)
+	var syncErr error
+	if writeErr == nil {
+		syncErr = temp.Sync()
 	}
-	return err
+	if err := errors.Join(writeErr, syncErr, temp.Close()); err != nil {
+		return err
+	}
+	if err := os.Link(name, clean); err != nil {
+		return err
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("remove published retirement authorization temporary link: %w", err)
+	}
+	dirFile, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr = dirFile.Sync()
+	return errors.Join(syncErr, dirFile.Close())
 }
