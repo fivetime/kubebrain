@@ -95,6 +95,9 @@ func Convert(input, output string, options Options) (backupfile.Status, error) {
 		}
 		return backupfile.Status{}, err
 	}
+	if err := os.Remove(tmpPath); err != nil {
+		return backupfile.Status{}, fmt.Errorf("remove published snapshot temporary link: %w", err)
+	}
 	dir, err := os.Open(filepath.Dir(output))
 	if err != nil {
 		return backupfile.Status{}, err

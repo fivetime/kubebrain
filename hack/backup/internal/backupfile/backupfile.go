@@ -141,6 +141,9 @@ func (w *AtomicWriter) Commit() (Status, error) {
 		}
 		return Status{}, err
 	}
+	if err := os.Remove(tempName); err != nil {
+		return Status{}, fmt.Errorf("remove published backup temporary link: %w", err)
+	}
 	dir, err := os.Open(filepath.Dir(w.output))
 	if err != nil {
 		return Status{}, err
