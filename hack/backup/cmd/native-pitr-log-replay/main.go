@@ -28,11 +28,13 @@ import (
 )
 
 const maxReceiptBytes = 4 << 20
+const defaultMaxReplayMemoryBytes = 512 << 20
 
 type options struct {
 	plan, fullRestore, logArtifacts, logRoot, scratchDir, fenceReceipt, admissionHandoff string
 	pdAddrs, ca, cert, key, approve                                                      string
 	timeout                                                                              time.Duration
+	maxReplayMemoryBytes                                                                 uint64
 }
 
 func main() {
@@ -54,6 +56,7 @@ func main() {
 	flag.StringVar(&o.key, "target-key", "", "target PD client private key")
 	flag.StringVar(&o.approve, "approve-plan-sha256", "", "explicit approval equal to exact plan SHA-256")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "log replay deadline")
+	flag.Uint64Var(&o.maxReplayMemoryBytes, "max-replay-memory-bytes", defaultMaxReplayMemoryBytes, "maximum logical resident bytes for the canonical mutation plan")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -77,6 +80,9 @@ func configurePingCAPLogging() error {
 }
 
 func execute(parent context.Context, o options, out io.Writer, now func() time.Time) (retErr error) {
+	if o.maxReplayMemoryBytes == 0 {
+		o.maxReplayMemoryBytes = defaultMaxReplayMemoryBytes
+	}
 	if o.plan == "" || o.fullRestore == "" || o.logArtifacts == "" || o.logRoot == "" || o.fenceReceipt == "" || o.admissionHandoff == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 {
 		return errors.New("plan, full-restore, log-artifacts, log-root, restoration-fence, target-pd-addrs, approval, and positive timeout are required")
 	}
@@ -153,6 +159,12 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
+	manifest, mutations, err := nativepitr.MaterializeReplayWithScratchDirAndMemoryLimit(
+		logs, logSHA, o.logRoot, replayScratchDir(o), plan.Full.BackupTS, plan.RestoreTS, o.maxReplayMemoryBytes,
+	)
+	if err != nil {
+		return err
+	}
 	pdc, err := pd.NewClientWithContext(ctx, addrs, pd.SecurityOption{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
 	if err != nil {
 		return err
@@ -161,12 +173,6 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	pdc.Close()
 	if targetID == 0 || targetID != plan.Target.ClusterID {
 		return errors.New("live target PD cluster ID does not match plan")
-	}
-	manifest, mutations, err := nativepitr.MaterializeReplayWithScratchDir(
-		logs, logSHA, o.logRoot, replayScratchDir(o), plan.Full.BackupTS, plan.RestoreTS,
-	)
-	if err != nil {
-		return err
 	}
 	store, err := storagetikv.NewKvStorageWithContext(ctx, addrs, 1, storagetikv.Security{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
 	if err != nil {

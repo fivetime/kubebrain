@@ -55114,6 +55114,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/key/lease/watch 语义验收 41.98 秒通过，一次性容器已清理。该项降低 apply 进度后的 live heap，不降低 materialization
   初始峰值，也不保证 GC 发生时刻；超大窗口所需 disk-backed canonical mutation plan/stream apply 缺口仍保持开放。
 
+- A4912 在 disk-backed canonical plan 交付前为生产回放增加有界、fail-closed 的常驻内存门禁。log-replay CLI 新增
+  `--max-replay-memory-bytes`，默认 512 MiB；materialization 对每个物理 write candidate 保守计入 128 字节元数据、完整 key 与
+  short value，重复项即使 canonicalization 后消失也不退还预算，default-CF 长值解析后再按实际 value 长度收费。key/short value
+  使用 owned copy，避免 segment 大缓冲区被小切片长期引用，同时保持 nil 与非 nil 空 short value 的不同语义。超限在 target
+  client/store 创建和任何写入之前返回；长值边界测试证明预算少 1 字节失败、精确阈值成功。
+
+  2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 与官方 BR
+  v7.5.1 上执行正式 `TestNativeLogReplayRealBR`，默认 512 MiB 路径的 v6 receipt、fence/handoff 与最终
+  revision/key/lease/watch 语义验收 41.03 秒通过，一次性容器已清理。该预算是逻辑 payload 的保守安全阈值，并非 Go heap/RSS
+  精确上界；生产 Pod 还必须给 allocator、GC、scratch/BR 及其余进程状态留余量。materialization 仍为 O(all output)，真正的
+  disk-backed canonical mutation plan/stream apply 缺口保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

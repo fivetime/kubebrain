@@ -38,6 +38,7 @@ import (
 
 const ReplayManifestFormat = "kubebrain.native-pitr-log-replay-manifest.v2"
 const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v6"
+const replayMutationResidentOverhead = uint64(128)
 
 type ReplayMutation struct {
 	CommitTS uint64 `json:"commit_ts"`
@@ -323,11 +324,31 @@ func MaterializeReplay(logs LogArtifactReceipt, logsSHA, root string, startExclu
 // MaterializeReplayWithScratchDir uses a private, rebuildable disk index in
 // scratchDir for default-CF values. An empty directory uses os.TempDir.
 func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scratchDir string, startExclusive, restoreTS uint64) (manifest ReplayManifest, mutations []ReplayMutation, retErr error) {
+	return MaterializeReplayWithScratchDirAndMemoryLimit(logs, logsSHA, root, scratchDir, startExclusive, restoreTS, ^uint64(0))
+}
+
+// MaterializeReplayWithScratchDirAndMemoryLimit bounds the logical resident
+// mutation plan before any target write. The accounting deliberately includes
+// a conservative per-candidate overhead in addition to exact key/value bytes;
+// duplicate physical entries remain charged even if canonicalization removes
+// them. This is an OOM safety gate, not a replacement for a disk-backed plan.
+func MaterializeReplayWithScratchDirAndMemoryLimit(logs LogArtifactReceipt, logsSHA, root, scratchDir string, startExclusive, restoreTS, maxResidentBytes uint64) (manifest ReplayManifest, mutations []ReplayMutation, retErr error) {
 	if err := logs.Validate(); err != nil {
 		return ReplayManifest{}, nil, err
 	}
 	if !sha256RE.MatchString(logsSHA) || root == "" || startExclusive == 0 || restoreTS <= startExclusive || restoreTS > logs.GlobalCheckpointTS {
 		return ReplayManifest{}, nil, errors.New("invalid replay receipt digest, root, or TSO window")
+	}
+	if maxResidentBytes == 0 {
+		return ReplayManifest{}, nil, errors.New("native PITR replay resident memory limit must be positive")
+	}
+	residentBytes := uint64(0)
+	chargeResident := func(bytes uint64) error {
+		if bytes > maxResidentBytes-residentBytes {
+			return fmt.Errorf("native PITR replay mutation plan exceeds %d-byte resident memory limit", maxResidentBytes)
+		}
+		residentBytes += bytes
+		return nil
 	}
 	for _, object := range logs.Objects {
 		path := filepath.Join(root, filepath.FromSlash(object.Name))
@@ -379,8 +400,22 @@ func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scr
 						return errors.New("write-CF commit TSO does not follow start TSO")
 					}
 					if ts > startExclusive && ts <= restoreTS && (kind == 'P' || kind == 'D') {
+						charge := replayMutationResidentOverhead
+						for _, size := range []uint64{uint64(len(rawKey)), uint64(len(short))} {
+							if size > ^uint64(0)-charge {
+								return errors.New("native PITR replay mutation resident size overflows uint64")
+							}
+							charge += size
+						}
+						if err := chargeResident(charge); err != nil {
+							return err
+						}
+						var shortCopy []byte
+						if short != nil {
+							shortCopy = append([]byte{}, short...)
+						}
 						mutations = append(mutations, ReplayMutation{
-							CommitTS: ts, Key: append([]byte(nil), rawKey...), Value: short,
+							CommitTS: ts, Key: append([]byte(nil), rawKey...), Value: shortCopy,
 							Delete: kind == 'D', StartTS: startTS, sourceWriteKind: kind,
 						})
 					}
@@ -425,6 +460,9 @@ func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scr
 				}
 				if !ok {
 					return ReplayManifest{}, nil, fmt.Errorf("PUT at commit TSO %d lacks its default-CF value", mutation.CommitTS)
+				}
+				if err := chargeResident(uint64(len(value))); err != nil {
+					return ReplayManifest{}, nil, err
 				}
 				mutation.Value = value
 			}

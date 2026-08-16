@@ -3081,6 +3081,17 @@ native log-replay 生产 CLI 自 A4911 起使用 `ApplyReplayAndRelease`：在�
 与最终 revision/key/lease/watch 均通过。该优化只让 apply 阶段的 live payload 随 checkpoint 前进而下降；materialization 仍先
 持有完整 canonical slice，生产规模放宽必须等待 disk-backed canonical plan/stream apply，不能仅依赖 GC 或本项结果。
 
+A4912 在 disk-backed plan 完成前增加 fail-closed 常驻内存门禁。生产 log-replay CLI 新增
+`--max-replay-memory-bytes`，默认 512 MiB；materialization 对每个物理 write candidate 保守计入 128 字节元数据、完整 key 与
+short value，重复 candidate 即使稍后被 canonicalization 消除也不退还预算，default-CF 长值解析后再按实际 value 长度计入。
+short value 与 key 使用独立 owned copy，既避免保留更大的 segment 解码缓冲区，也保持 nil（需查 default-CF）和非 nil 空值的
+语义区别。超过预算会在 target PD/TiKV client/store 创建和任何 target write 之前失败；单元测试固定了长值使预算少 1 字节失败、
+精确阈值成功的边界。2026-08-16 source/target 各 3 PD + 3 TiKV 的正式全链以 41.03 秒通过。
+
+该数值是保守的逻辑 payload 门禁，不是 Go heap/RSS 的精确上界，也不能直接等同 Pod memory limit；allocator、GC、scratch index、
+BR 元数据及进程其余部分仍需预留余量。当前 materialization 依旧为 O(all output)，disk-backed canonical mutation plan/stream apply
+仍是解除大窗口规模限制的开放项。
+
 TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
 每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
 恢复方关闭 gate 时必须以 range compare 同时证明 session 前缀为空，因此新进程注册与 restore acquire 只能

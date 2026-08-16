@@ -55,6 +55,21 @@ func TestMaterializeReplayResolvesDefaultAndShortValues(t *testing.T) {
 	require.Equal(t, ReplayMutation{CommitTS: 140, StartTS: 135, Key: keyA, Delete: true}, mutations[2])
 }
 
+func TestMaterializeReplayResidentLimitIncludesCandidatesAndDefaultValues(t *testing.T) {
+	_, receipt, root, keyA, keyB := replayFixture(t)
+	candidateBytes := 3*replayMutationResidentOverhead + uint64(2*len(keyA)+len(keyB)+len("short"))
+	_, _, err := MaterializeReplayWithScratchDirAndMemoryLimit(receipt, digest, root, t.TempDir(), 119, 150, 0)
+	require.ErrorContains(t, err, "memory limit must be positive")
+
+	_, _, err = MaterializeReplayWithScratchDirAndMemoryLimit(receipt, digest, root, t.TempDir(), 119, 150, candidateBytes+uint64(len("long-value"))-1)
+	require.ErrorContains(t, err, "resident memory limit")
+
+	manifest, mutations, err := MaterializeReplayWithScratchDirAndMemoryLimit(receipt, digest, root, t.TempDir(), 119, 150, candidateBytes+uint64(len("long-value")))
+	require.NoError(t, err)
+	require.Equal(t, 3, manifest.MutationCount)
+	require.Equal(t, []byte("long-value"), mutations[0].Value)
+}
+
 type boundedReadRequest struct {
 	reader      io.Reader
 	max         int
