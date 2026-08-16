@@ -54148,6 +54148,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `pkg/storage/tikv` race（1.242 秒）及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，真实半成功并行拨号
   叠加 Close failure 的进程退出状态仍留待正式新镜像 PD/TiKV 网络故障门禁。
 
+- A4813 收紧 TiKV storage startup 的调用前取消合同。旧 `NewKvStorageWithContext` 先应用进程级 TiKV TLS global
+  config、创建 detached startup context 并准备 16 路 PD client 构造，已取消父 context 只能经异步 `AfterFunc`
+  稍后传入；取消请求仍可能产生全局配置副作用和短暂拨号。生产构造器现在首先检查 `ctx.Err()`，在任何配置修改、
+  goroutine 或网络资源创建前返回原始 canceled/deadline 错误；构造进行中的取消仍由既有 detached handoff 处理。
+
+  `pkg/storage/tikv` race（1.241 秒）及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，启动 deadline 与
+  PD 黑洞/半开连接的真实进程退出时延仍留待正式新镜像网络故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
