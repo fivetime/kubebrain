@@ -54279,6 +54279,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   EventLog/TxnWitness/Compaction/HistoryWatch 聚焦 race（6.403 秒）与 `pkg/backend` vet 通过；本轮没有修改测试文件。
   在线 A4776 未滚动，Badger iterator close fault 下的 fallback/leftover 保留仍留待正式新镜像故障门禁。
 
+- A4828 将可失败 iterator 的 shutdown 错误传播扩展到客户端核心读取：历史 point get、Serializable checkpoint
+  iterator fallback、InternalRange 以及 Maintenance Hash/HashKV。旧路径会在 Badger transaction Close 失败后仍返回
+  value/map/hash 成功，或在已有扫描/metadata 错误时遮蔽收尾故障。生产函数现在使用命名错误返回值并始终 Join Close；
+  TiKV iterator 当前 Close 返回 nil，正常独立 TiKV/PD 数据面不增加请求分支。
+
+  精确覆盖上述路径的 race（1.655 秒）、`pkg/backend` vet 与 diff check 通过；本轮没有修改测试文件。宽泛 backend
+  正则暴露 `TestInternalWriteGuardRejectsStaleAuthorizedWrite` 与
+  `TestLatestDecodedRangeStreamRejectsStaleIndexSelectedObject` 两项既有基线失败，均在 detached A4827 worktree 单独复现，
+  不计为本轮通过项并留待后续生产语义审计。在线 A4776 未滚动，真实 iterator close fault 仍留待新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
