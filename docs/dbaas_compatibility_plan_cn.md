@@ -53277,6 +53277,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   flight。解除 DROP 后同一 follower 首次探针 91.620ms 成功并重新建立 leader client，证明请求解耦没有牺牲
   恢复能力。
 
+- A4757 修复 A4756 后后台 peer health 仍不可由进程 shutdown 取消的独立生产缺口。`Close()` 先取消 proxy
+  run context、再等待 `loopDone`，但旧 `checkLeaderLoop` 调用无 context 的 `updateClient`；已有连接检查、新连接
+  health 与 election refresh 都从 `context.Background()` 派生五秒 timeout。因此故障期 rollout 会让 endpoint、
+  backend 和 admission handoff 的 15 秒进程总预算被 peer 检查额外占用。
+
+  最终 A4756 镜像上的强时序 RED 只黑洞 follower pod-0 到 leader pod-2 的 peer `:3380`。日志于
+  `02:37:09.519Z` 明确进入新一轮 `check conn`，`02:37:09.752Z` 直接向容器 PID 1 发 SIGTERM；旧容器直到
+  `02:37:14Z` health deadline 后才结束，基本耗完整个剩余五秒窗口，连同 Kubernetes restart backoff 新容器
+  约 18 秒后才出现。此前一次在 health 尾部发信号只观察到约 0.70 秒等待，明确作为较弱样本，不替代该 RED。
+
+  生产提交 `10567582` 增加 context-aware update/check helpers：构造期同步初始化仍保留独立五秒上限，后台循环
+  则把自身 run context 贯穿已有连接 health、新连接 health 和选举记录刷新；SIGTERM/`Close` 取消会立即拆除
+  在途检查，正常 dial timeout、A4754 冷却和 A4756 请求唤醒语义不变。只增加一个黑洞 TCP peer 的最小关闭回归。
+  关闭两用例连续 20 轮 0.174 秒、proxy 全包 3.072 秒、race 4.294 秒、两包 vet 和完整
+  `pkg/server/etcd` 190.931 秒通过。
+
+  最终镜像 `kubebrain:a4757-10567582` 内嵌完整 SHA
+  `1056758289fe5d0620a692d8b390088dfa592765`、build time `2026-08-16T02:42:56Z`，本地 OCI index
+  `sha256:2c3024854538a24b9fde08a70ce69254c9b36af6286cdb7c858a565320718431`，Kind runtime imageID
+  `sha256:a62206b7880eab2569f80d8b194a72a568243e5915e00ca3d66c051ef902f816`。六副本滚动后复用同型故障：
+  pod-0 于 `02:48:45.439Z` 进入到 leader pod-1 的黑洞 health，`02:48:45.574Z` 发 SIGTERM，旧容器同秒结束，
+  `kubectl exec kill` 仅 241.885ms 返回，新容器 1.565 秒出现；相比 RED 不再等待 health deadline。规则清除后
+  同一副本恢复 Ready；随后以 StatefulSet 常规替换清除故障注入产生的 restart counter，最终六副本重新回到
+  Ready/零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
