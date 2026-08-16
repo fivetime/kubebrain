@@ -55193,6 +55193,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对稀疏文件保守计费，但不是 filesystem quota：单个超大 record 或 commit 可能在提交后的检查之前先收到 ENOSPC；该错误仍会
   中止且不连接 target。生产规模 scratch sizing、空间压力告警、IOPS/latency soak 与真实块设备 I/O error 仍保持开放。
 
+- A4918 补齐 follower Range/RangeStream 响应身份的黑盒证据。固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3rpc/header.go`：即使线性读由 leader
+  执行，公开响应的 `ClusterId/MemberId/RaftTerm` 也由接收客户端请求的 follower 本地 header filler 写入。既有直连差分只比较
+  unary 与 stream 的完整 protobuf；若 KubeBrain 两条路径都错误保留被代理 leader 的 header，它们仍会彼此相等，而最终 outcome
+  又丢弃身份字段，形成假 GREEN。测试现在把每个 unary 与合并后的 RangeStream header 分别绑定该固定 direct endpoint 的 Status
+  `ClusterId/MemberId`，并要求正 Raft term；revision 仍按原规则容忍无关并发写。
+
+  先以一次性单成员 upstream 对当前三副本 KubeBrain 执行 generated Delete/Range/staged-Txn Range 差分，三组 22.05 秒通过；随后
+  以固定 upstream 三成员和 `kubebrain-0/1/2` 三个独立 port-forward 执行正式 `rangestream-follower` profile。两个 follower、
+  八种 latest/negative/historical/count-only/keys-only/limit/decoded-boundary/linearizable 场景均满足本地成员身份，RangeStream 与
+  unary 数据语义一致；同 profile 的 decoded-boundary 大值门禁也通过，总计 6.25 秒。一次性 reference 数据与 port-forward 已
+  清理。本轮未复现生产差异，不修改生产代码；它关闭的是 proxy header 身份此前可被同型错误掩盖的证据缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

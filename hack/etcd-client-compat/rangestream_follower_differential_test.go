@@ -164,6 +164,21 @@ func followerRangeStreamOutcomes(t *testing.T, endpoints []string, instance stri
 				outcomes = append(outcomes, outcome)
 				continue
 			}
+			// Upstream v3rpc fills both unary and RangeStream headers from the
+			// serving member, even when a linearizable follower read is executed
+			// through the leader. Comparing only unary with stream would miss the
+			// case where both accidentally leak the leader's header.
+			require.NotNil(t, unary.Header, scenario.name)
+			require.NotNil(t, streamed.Header, scenario.name)
+			for responseName, header := range map[string]*etcdserverpb.ResponseHeader{
+				"unary": unary.Header, "stream": streamed.Header,
+			} {
+				require.Equal(t, follower.status.Header.ClusterId, header.ClusterId,
+					"%s %s cluster id must belong to the direct follower", scenario.name, responseName)
+				require.Equal(t, follower.status.Header.MemberId, header.MemberId,
+					"%s %s member id must identify the direct follower", scenario.name, responseName)
+				require.Positive(t, header.RaftTerm, "%s %s", scenario.name, responseName)
+			}
 			require.GreaterOrEqual(t, unary.Header.Revision, last.Header.Revision,
 				"%s unary header must include every fixture write", scenario.name)
 			require.GreaterOrEqual(t, streamed.Header.Revision, last.Header.Revision,
