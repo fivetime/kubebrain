@@ -54212,6 +54212,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   普通 `pkg/endpoint` 全套（16.876 秒）、race 及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，256 个
   pending handshake 同时 shutdown 的真实退出时延与 fd 归零仍留待正式新镜像故障门禁。
 
+- A4820 修正 Endpoint 正常关闭错误分类对 `errors.Join` 的过度吞噬。旧 `normalizeServeError` 直接对组合错误执行
+  `errors.Is`；只要任一 listener/server child 是预期的 `net.ErrClosed`/`http.ErrServerClosed`，整个 join 都返回 nil，
+  另一个 child 的真实 HTTP2、gateway 或 listener teardown failure 会再次绕过 A4814 的进程错误传播。现在先识别
+  multi-error `Unwrap() []error`，逐 child 规范化后重新 Join；单层 wrapped 正常关闭仍保持兼容过滤。
+
+  普通 `pkg/endpoint` 全套（16.951 秒）、race 及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，多 listener
+  同时产生 normal-close 与 injected real-close error 的非零退出仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
