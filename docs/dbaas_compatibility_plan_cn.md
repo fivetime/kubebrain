@@ -54165,6 +54165,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `pkg/endpoint` race（13.913 秒）及 vet 通过，正常关闭未产生 `net.ErrClosed` 噪声；本轮没有修改测试文件。在线
   A4776 未滚动，真实 listener/HTTP2/gateway Close fault 的非零进程终态仍留待正式新镜像故障门禁。
 
+- A4815 修复 root/TLS `cmux` accept loop 未受监督与 matcher 注册竞态。旧 root mux 先启动 `Serve` goroutine、
+  后在另一调用栈注册 match listener；`cmux` 明确不支持该并发，且 root Accept 失败只写日志，随后子服务把关闭
+  规范化为 nil，Endpoint 可能在 client/peer 端口已失效时挂住或正常退出。生产编排现在先完整注册 matcher，再
+  同时运行 mux/subservers；任一侧或 context 先结束都会关闭根 listener、等待另一侧，并 Join mux、subserver、
+  listener 错误。TLS 内层复用同一编排；共享 HTTP/gRPC server 的预期重复关闭按 Go 历史 closed-connection 形状
+  归类为正常，未知 Close 错误仍传播。
+
+  `TestRunEndpoint`、普通 `pkg/endpoint` 全套（16.857 秒）、race（13.984 秒）及 vet 通过；普通套件必跑，因为
+  cmux 依赖的已知 race 会让若干真实端口测试在 `-race` 下跳过。本轮没有修改测试文件。在线 A4776 未滚动，
+  真实 root listener accept fault 和 TLS/insecure 双栈 teardown 仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
