@@ -54595,6 +54595,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   既有 incomplete option、strict PD addresses 与 oversized stable input 回归覆盖新路径；semantic-verify race（1.461 秒）、
   vet 与 diff check 通过。真实 probe成功叠加 client/frozen-copy close fault 仍留待正式验证 Job 门禁。
 
+- A4865 补齐 native PITR source range-exclusive CLI 的输入文件终态。A4845 已让底层 live source probe 聚合 txn client 与
+  iterator Close，但外层 full-snapshot receipt reader 仍 defer 丢弃 file Close，可能在介质收尾失败后继续执行历史范围
+  扫描并签发 exclusive receipt。reader 现在使用命名错误 Join Close，只有 bounded receipt 完整读取并关闭后才进入
+  Decode/PD/TiKV probe。
+
+  新增 pre-connect option 与 oversized receipt 回归；source-exclusive/nativepitr race（1.446 秒及缓存套件）、vet 与
+  diff check 通过。真实 receipt close fault 加历史 scan 仍留待正式源端 Job 文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
