@@ -453,12 +453,12 @@ func TestFollowerHashesHedgeIsolatedStorageAndPreserveRevision(t *testing.T) {
 		Header: txnHeader(77), Hash: 202, HashRevision: 42, CompactRevision: 10,
 	}
 	hashCalls, hashKVCalls := 0, 0
-	syncStarted := make(chan struct{})
+	syncStarted := make(chan struct{}, 2)
 	server.peers = testPeerService{
 		isLeader: false, proxyEnabled: true,
 		epochFn: func() (uint64, bool) { return 7, false },
 		syncReadFn: func(context.Context) error {
-			close(syncStarted)
+			syncStarted <- struct{}{}
 			return errors.New("latest revision sync unavailable")
 		},
 		hashFn: func(_ context.Context, got *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
@@ -468,7 +468,7 @@ func TestFollowerHashesHedgeIsolatedStorageAndPreserveRevision(t *testing.T) {
 		},
 		hashKVFn: func(_ context.Context, got *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
 			hashKVCalls++
-			if got.GetRevision() == 0 {
+			if got.GetRevision() <= 0 {
 				<-syncStarted
 			} else {
 				require.Same(t, hashKVRequest, got)
@@ -491,6 +491,9 @@ func TestFollowerHashesHedgeIsolatedStorageAndPreserveRevision(t *testing.T) {
 	require.Equal(t, uint64(77), server.backend.GetCurrentRevision())
 
 	got, err := server.HashKV(context.Background(), &etcdserverpb.HashKVRequest{})
+	require.NoError(t, err)
+	require.Same(t, hashKVResponse, got)
+	got, err = server.HashKV(context.Background(), &etcdserverpb.HashKVRequest{Revision: -1})
 	require.NoError(t, err)
 	require.Same(t, hashKVResponse, got)
 }
