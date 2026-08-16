@@ -53822,6 +53822,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   parser 接受完整表达式，production 聚焦回归通过；真实 rollout 后的 Prometheus instant-query 收敛仍需在
   预生产投放新镜像时验证。
 
+- A4785 修正 A4784 仅按 `namespace,pod` 关联 Ready 状态的不完整身份模型。StatefulSet replacement 会复用
+  Pod 名，旧、新 target series 在 lookback 内仍可共享该二元组；多副本 kube-state-metrics 还会让右侧 Ready
+  series 形成 many-to-many，告警表达式可能 evaluation error 而不是 firing。生产 ServiceMonitor 现在从
+  `__meta_kubernetes_pod_uid` 注入不可变 `uid`，checkpoint 查询按 `namespace,pod,uid` 与
+  `max by (namespace,pod,uid)` 去重后的 Ready series 相交。同名旧 Pod 因 UID 不同被排除，HA
+  kube-state-metrics 重复 scrape 被折叠；缺 UID/Ready/metric 继续返回零匹配并 fail closed。受影响的完整
+  production manifest、release/storage gate 回归通过，官方 Prometheus v3.5 parser 接受最终表达式。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

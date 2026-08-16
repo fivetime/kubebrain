@@ -249,9 +249,12 @@ RaftDB write、TiKV KVDB write 各自返回精确的预期副本数，所有值�
 最旧样本不超过 60 秒，避免 Prometheus lookback 暂时保留的旧 series 被误判为当前证据；
 随后即时要求 KubeBrain checkpoint available/revision/remaining 三个 family 各有精确预期副本数，
 available≥1、revision≥1、remaining 不低于配置安全下限，并对 available/revision 执行相同样本新鲜度检查。
-三组查询均以 `namespace,pod` 和 kube-state-metrics 的 `kube_pod_status_ready{condition="true"} == 1`
-相交，只计算当前 Ready Pod；滚动更新中已退出 Pod 留在 Prometheus lookback 窗口内的旧 series 不会把健康的
-三副本误算为四至六副本。mixed rollout 缺少 revision metric、Ready Pod 数量不足、kube-state-metrics 缺失、
+KubeBrain ServiceMonitor 从 Kubernetes target metadata 注入不可变 `uid` label；三组查询均以
+`namespace,pod,uid` 和按同一身份去重的 kube-state-metrics
+`kube_pod_status_ready{condition="true"} == 1` 相交，只计算当前 Ready Pod。滚动更新中同名旧 Pod 留在
+Prometheus lookback 窗口内的旧 series 因 UID 不同而不会把健康的三副本误算为四至六副本，多副本
+kube-state-metrics 也不会形成 many-to-many。mixed rollout 缺少 revision metric、Ready Pod 数量不足、
+kube-state-metrics/UID relabel 缺失、
 checkpoint 尚未发布/过期或 exporter 已停止时，在告警 `for` 窗口完成前也无法通过 release gate；
 `TIDB_NAMESPACE`/`TIDB_CLUSTER` 选择目标租户的
 metrics Service，`KUBEBRAIN_NAMESPACE` 选择对应数据面指标，三者必须是 DNS label。API/transport 错误、空/重复/缺失 series、NaN/Inf、
