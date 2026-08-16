@@ -156,7 +156,7 @@ func (e *etcdProxy) checkLeaderLoop(ctx context.Context) {
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	for {
-		e.updateClient()
+		e.updateClientContext(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -193,6 +193,10 @@ func (e *etcdProxy) resetClient() (reset bool) {
 }
 
 func (e *etcdProxy) updateClient() {
+	e.updateClientContext(context.Background())
+}
+
+func (e *etcdProxy) updateClientContext(ctx context.Context) {
 	// Serialize the whole build/swap: concurrent callers otherwise leak clients
 	// and stampede the leader (#41/#47). Once the winner has a healthy client, the
 	// queued callers fall through the hasClient()+checkConn() fast path and return
@@ -201,7 +205,7 @@ func (e *etcdProxy) updateClient() {
 	defer e.updateMu.Unlock()
 
 	if e.hasClient() {
-		if err := e.checkConn(); err != nil {
+		if err := e.checkConnContext(ctx); err != nil {
 			e.lock.Lock()
 			defer e.lock.Unlock()
 			failedLeader := e.curLeader
@@ -234,7 +238,7 @@ func (e *etcdProxy) updateClient() {
 
 	curLeader := e.election.GetLeaderInfo()
 	if !election.IsLeaderKnown(curLeader) {
-		refreshCtx, cancel := context.WithTimeout(context.Background(), e.connectionTimeout())
+		refreshCtx, cancel := context.WithTimeout(ctx, e.connectionTimeout())
 		err := e.election.RefreshLeaderInfo(refreshCtx)
 		cancel()
 		if err != nil {
@@ -293,7 +297,7 @@ func (e *etcdProxy) updateClient() {
 
 		klog.InfoS("check conn to new leader", "leaderIdentity", curLeader, "dialEndpoint", dialEndpoint, "secure", tlsConfig != nil)
 
-		err = checkClientConn(client, nil, dialTimeout)
+		err = checkClientConnContext(ctx, client, nil, dialTimeout)
 		if err != nil {
 			_ = client.Close()
 			klog.InfoS("leader connection not ready", "err", err, "leaderIdentity", curLeader, "dialEndpoint", dialEndpoint, "secure", tlsConfig != nil)
@@ -359,11 +363,15 @@ func (e *etcdProxy) hasClient() bool {
 }
 
 func (e *etcdProxy) checkConn() error {
+	return e.checkConnContext(context.Background())
+}
+
+func (e *etcdProxy) checkConnContext(ctx context.Context) error {
 	e.lock.RLock()
 	client := e.client
 	err := e.err
 	e.lock.RUnlock()
-	return checkExistingClientConn(client, err, e.connectionTimeout())
+	return checkExistingClientConnContext(ctx, client, err, e.connectionTimeout())
 }
 
 // checkExistingClientConn verifies that an already-published peer transport is
@@ -372,7 +380,11 @@ func (e *etcdProxy) checkConn() error {
 // safely serve storage-free operations such as ordinary lease keepalives. New
 // connections continue to require SERVING in checkClientConn below.
 func checkExistingClientConn(client *clientv3.Client, clientErr error, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return checkExistingClientConnContext(context.Background(), client, clientErr, timeout)
+}
+
+func checkExistingClientConnContext(parent context.Context, client *clientv3.Client, clientErr error, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	if client == nil {
 		return clientErr
@@ -384,7 +396,11 @@ func checkExistingClientConn(client *clientv3.Client, clientErr error, timeout t
 }
 
 func checkClientConn(client *clientv3.Client, clientErr error, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return checkClientConnContext(context.Background(), client, clientErr, timeout)
+}
+
+func checkClientConnContext(parent context.Context, client *clientv3.Client, clientErr error, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	if client == nil {
 		return clientErr

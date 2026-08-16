@@ -17,6 +17,7 @@ package etcdproxy
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -537,6 +538,48 @@ func TestCloseStopsLeaderLoopAndClosesClient(t *testing.T) {
 	require.Empty(t, proxy.curLeader)
 	proxy.lock.RUnlock()
 	require.NoError(t, proxy.Close(), "Close must remain idempotent")
+}
+
+func TestCloseCancelsBlockedLeaderHealthCheck(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, acceptErr := lis.Accept()
+		if acceptErr != nil {
+			return
+		}
+		accepted <- struct{}{}
+		defer conn.Close()
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+	t.Cleanup(func() { _ = lis.Close() })
+
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{lis.Addr().String()}})
+	require.NoError(t, err)
+	runCtx, cancel := context.WithCancel(context.Background())
+	proxy := &etcdProxy{
+		election:  &testLeaderElection{leaderAddress: lis.Addr().String()},
+		client:    client,
+		curLeader: lis.Addr().String(),
+		cancel:    cancel,
+		loopDone:  make(chan struct{}),
+		updateCh:  make(chan struct{}, 1),
+	}
+	go func() {
+		defer close(proxy.loopDone)
+		proxy.checkLeaderLoop(runCtx)
+	}()
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("proxy did not begin the blackholed peer health check")
+	}
+
+	start := time.Now()
+	require.NoError(t, proxy.Close())
+	require.Less(t, time.Since(start), 500*time.Millisecond,
+		"shutdown must cancel an in-flight peer health check")
 }
 
 func TestUpdateClientRefreshesUnknownLeader(t *testing.T) {
