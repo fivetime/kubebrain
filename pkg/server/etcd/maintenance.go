@@ -624,6 +624,17 @@ func (s *RPCServer) hedgedMaintenanceHashKV(
 	return hedgeMaintenanceResult(
 		ctx,
 		func(ctx context.Context) (*etcdserverpb.HashKVResponse, error) {
+			// revision=0 means the latest snapshot observed by this RPC. A follower's
+			// local hash is a valid hedge only after it has crossed the leader's read
+			// revision barrier; otherwise a fast stale local result can beat the
+			// authoritative peer response immediately after an acknowledged Put.
+			// Explicit historical revisions remain member-local diagnostics and do
+			// not need this latest-only barrier.
+			if req.GetRevision() == 0 {
+				if err := s.peers.SyncReadRevision(ctx); err != nil {
+					return nil, err
+				}
+			}
 			return s.localMaintenanceHashKV(ctx, req, false)
 		},
 		func(ctx context.Context) (*etcdserverpb.HashKVResponse, error) {
