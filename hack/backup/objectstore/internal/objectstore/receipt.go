@@ -375,12 +375,16 @@ func WriteReceiptAtomic(path string, receipt Receipt) error {
 		}
 		return err
 	}
+	if err := os.Remove(tempName); err != nil {
+		return fmt.Errorf("remove temporary receipt link %q: %w", tempName, err)
+	}
 	directory, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	return directory.Sync()
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func WriteDeletionReceiptAtomic(path string, receipt DeletionReceipt) error {
@@ -462,12 +466,16 @@ func writeJSONAtomicLimit(path string, value any, description string, limit int,
 		}
 		return err
 	}
+	if err := os.Remove(tempName); err != nil {
+		return fmt.Errorf("remove temporary receipt link %q: %w", tempName, err)
+	}
 	directory, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	return directory.Sync()
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func validateObjectStoreJSONSize(description string, data []byte) error {
