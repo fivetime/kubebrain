@@ -96,6 +96,7 @@ type identityTLSListener struct {
 	accepted   chan identityTLSAcceptResult
 	activeMu   sync.Mutex
 	active     map[net.Conn]struct{}
+	workerWG   sync.WaitGroup
 }
 
 const (
@@ -113,7 +114,11 @@ func (l *identityTLSListener) start() {
 		l.done = make(chan struct{})
 		l.accepted = make(chan identityTLSAcceptResult)
 		l.active = make(map[net.Conn]struct{})
-		go l.acceptLoop()
+		l.workerWG.Add(1)
+		go func() {
+			defer l.workerWG.Done()
+			l.acceptLoop()
+		}()
 	})
 }
 
@@ -142,8 +147,12 @@ func (l *identityTLSListener) acceptLoop() {
 			continue
 		}
 		l.active[raw] = struct{}{}
+		l.workerWG.Add(1)
 		l.activeMu.Unlock()
-		go l.handshake(raw)
+		go func(conn net.Conn) {
+			defer l.workerWG.Done()
+			l.handshake(conn)
+		}(raw)
 	}
 }
 
@@ -206,6 +215,7 @@ func (l *identityTLSListener) Close() error {
 			l.closeErr = errors.Join(l.closeErr, normalizeServeError(raw.Close()))
 		}
 		l.activeMu.Unlock()
+		l.workerWG.Wait()
 	})
 	return l.closeErr
 }
