@@ -107,7 +107,12 @@ func Run(ctx context.Context, c Config, out io.Writer) (result Result, exitCode 
 	if err != nil {
 		return result, 1, err
 	}
-	defer cli.Close()
+	defer func() {
+		if closeErr := cli.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close etcd client: %w", closeErr))
+			exitCode = 1
+		}
+	}()
 	return runWithClient(ctx, c, out, cli)
 }
 
@@ -181,9 +186,15 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 		return result, 1, err
 	}
 	candidatePath := candidate.Name()
-	candidate.Close()
-	os.Remove(candidatePath)
-	defer os.Remove(candidatePath)
+	if err = errors.Join(candidate.Close(), os.Remove(candidatePath)); err != nil {
+		return result, 1, fmt.Errorf("prepare post-remediation snapshot path: %w", err)
+	}
+	defer func() {
+		if removeErr := os.Remove(candidatePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			err = errors.Join(err, fmt.Errorf("remove post-remediation snapshot temporary file: %w", removeErr))
+			exitCode = 1
+		}
+	}()
 	if err = downloadAndValidate(ctx, cli, candidatePath); err != nil {
 		return result, 1, fmt.Errorf("post-compaction snapshot: %w", err)
 	}
@@ -213,43 +224,44 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 	return result, 0, nil
 }
 
-func downloadAndValidate(ctx context.Context, cli etcdClient, path string) error {
+func downloadAndValidate(ctx context.Context, cli etcdClient, path string) (retErr error) {
 	reader, err := cli.Snapshot(ctx)
 	if err != nil {
 		return err
 	}
-	defer reader.Close()
+	defer func() {
+		if closeErr := reader.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, closeErr)
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				retErr = errors.Join(retErr, removeErr)
+			}
+		}
+	}()
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
 	if _, err = io.Copy(f, reader); err != nil {
-		f.Close()
-		os.Remove(path)
-		return err
+		return errors.Join(err, f.Close(), os.Remove(path))
 	}
 	if err = f.Sync(); err != nil {
-		f.Close()
-		os.Remove(path)
-		return err
+		return errors.Join(err, f.Close(), os.Remove(path))
 	}
 	if err = f.Close(); err != nil {
-		os.Remove(path)
-		return err
+		return errors.Join(err, os.Remove(path))
 	}
 	if err = verifySnapshot(path); err != nil {
-		os.Remove(path)
-		return err
+		return errors.Join(err, os.Remove(path))
 	}
 	return nil
 }
 
-func verifySnapshot(path string) error {
+func verifySnapshot(path string) (retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	info, err := f.Stat()
 	if err != nil {
 		return err
@@ -272,7 +284,7 @@ func verifySnapshot(path string) error {
 	if err != nil {
 		return fmt.Errorf("open snapshot bbolt: %w", err)
 	}
-	defer db.Close()
+	defer func() { retErr = errors.Join(retErr, db.Close()) }()
 	return db.View(func(tx *bolt.Tx) error {
 		for checkErr := range tx.Check() {
 			if checkErr != nil {

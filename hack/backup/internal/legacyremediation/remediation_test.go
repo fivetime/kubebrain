@@ -35,9 +35,17 @@ func TestConfigFromEnvPreservesExactIdentityInputs(t *testing.T) {
 type fakeEtcdClient struct {
 	status        *clientv3.StatusResponse
 	snapshotBytes []byte
+	snapshotClose error
 	compacted     bool
 	compactRev    int64
 }
+
+type closeErrorReader struct {
+	io.Reader
+	err error
+}
+
+func (r closeErrorReader) Close() error { return r.err }
 
 func (f *fakeEtcdClient) Status(context.Context, string) (*clientv3.StatusResponse, error) {
 	return f.status, nil
@@ -46,12 +54,24 @@ func (f *fakeEtcdClient) Snapshot(context.Context) (io.ReadCloser, error) {
 	if !f.compacted {
 		return nil, errors.New(LegacyDiagnostic + `: key "/old"; minimum physical compact revision 3`)
 	}
-	return io.NopCloser(bytes.NewReader(f.snapshotBytes)), nil
+	return closeErrorReader{Reader: bytes.NewReader(f.snapshotBytes), err: f.snapshotClose}, nil
 }
 func (f *fakeEtcdClient) Compact(_ context.Context, revision int64, _ ...clientv3.CompactOption) (*clientv3.CompactResponse, error) {
 	f.compacted = true
 	f.compactRev = revision
 	return &clientv3.CompactResponse{Header: &etcdserverpb.ResponseHeader{Revision: revision}}, nil
+}
+
+func TestDownloadRejectsSnapshotWhenResponseCloseFails(t *testing.T) {
+	closeErr := errors.New("snapshot response close failed")
+	client := &fakeEtcdClient{compacted: true, snapshotBytes: validSnapshotArtifact(t), snapshotClose: closeErr}
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+
+	err := downloadAndValidate(context.Background(), client, path)
+
+	require.ErrorIs(t, err, closeErr)
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func TestRunCompactsOnlyAfterExactIdentityConfirmationAndPublishes(t *testing.T) {

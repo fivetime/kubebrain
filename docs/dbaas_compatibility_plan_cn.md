@@ -54438,6 +54438,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   pitrinventory/nativepitr race（1.045/3.215 秒）、嵌套 objectstore race（3.223 秒）及三包 vet 通过；本轮没有修改测试
   文件。在线 A4776 未滚动，S3 body/receipt close fault 下 inventory 不签发仍留待正式新镜像对象存储故障门禁。
 
+- A4847 收紧 legacy snapshot remediation 的制品发布与进程成功条件。对照
+  `/root/etcd/client/v3/snapshot/v3_snapshot.go` 的 snapshot client/stream/file 生命周期，旧修复工具忽略 etcd client、
+  snapshot response、digest reader、bbolt verifier 与候选临时文件的 Close/Remove 错误，可能在 transport 或介质收尾
+  失败后仍发布 `remediated`。生产路径现在聚合所有主错误与 cleanup sibling；snapshot response Close 失败会删除已下载
+  制品，候选路径准备或最终残留清理失败也强制非零退出，避免不可逆 physical compaction 后签发不可信恢复证据。
+
+  新增回归以可失败 response reader 证明 Close 错误原样返回且候选制品不存在；`legacyremediation` race（1.084 秒）、vet
+  与 diff check 通过。该门禁不改变已明确受限的 legacy lease history 恢复范围，也不关闭真实 CSI/PITR 缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
