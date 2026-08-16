@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -24,21 +25,32 @@ func nextKey(key []byte) []byte {
 }
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() (retErr error) {
 	prefix := os.Getenv("PREFIX")
 	output := os.Getenv("OUTPUT")
 	batchSize, err := strconv.ParseInt(os.Getenv("BATCH_SIZE"), 10, 64)
 	if err != nil || batchSize <= 0 {
-		log.Fatalf("invalid BATCH_SIZE: %q", os.Getenv("BATCH_SIZE"))
+		return fmt.Errorf("invalid BATCH_SIZE: %q", os.Getenv("BATCH_SIZE"))
 	}
 
 	cli, err := etcdutil.NewClientFromEnv()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	defer cli.Close()
+	clientClosed := false
+	defer func() {
+		if !clientClosed {
+			retErr = errors.Join(retErr, cli.Close())
+		}
+	}()
 	timeout, err := etcdutil.TimeoutFromEnv()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -67,30 +79,30 @@ func main() {
 		}
 		resp, err := cli.Get(ctx, string(start), opts...)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		if snapshotRevision == 0 && resp.Header != nil {
 			snapshotRevision = resp.Header.Revision
 			writer, err = backupfile.NewAtomicWriter(output, prefix, snapshotRevision)
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 		}
 		if writer == nil {
-			log.Fatal("range response did not contain a revision")
+			return errors.New("range response did not contain a revision")
 		}
 		for _, kv := range resp.Kvs {
 			if kv.Lease != 0 {
 				if _, exists := exportedLeases[kv.Lease]; !exists {
 					ttl, ttlErr := cli.TimeToLive(ctx, clientv3.LeaseID(kv.Lease))
 					if ttlErr != nil {
-						log.Fatalf("read lease %d TTL: %v", kv.Lease, ttlErr)
+						return fmt.Errorf("read lease %d TTL: %w", kv.Lease, ttlErr)
 					}
 					if ttl.TTL <= 0 {
-						log.Fatalf("lease %d expired while exporting snapshot revision %d", kv.Lease, snapshotRevision)
+						return fmt.Errorf("lease %d expired while exporting snapshot revision %d", kv.Lease, snapshotRevision)
 					}
 					if err := writer.AddLease(record.Lease{ID: kv.Lease, TTL: ttl.TTL, GrantedTTL: ttl.GrantedTTL}); err != nil {
-						log.Fatal(err)
+						return err
 					}
 					exportedLeases[kv.Lease] = struct{}{}
 				}
@@ -104,7 +116,7 @@ func main() {
 				Lease:          kv.Lease,
 			}
 			if err := writer.Add(rec); err != nil {
-				log.Fatal(err)
+				return err
 			}
 			total++
 		}
@@ -113,23 +125,30 @@ func main() {
 		}
 		start = nextKey(resp.Kvs[len(resp.Kvs)-1].Key)
 	}
+	if err := cli.Close(); err != nil {
+		clientClosed = true
+		return err
+	}
+	clientClosed = true
 	status, err := writer.Commit()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
+	writer = nil
 	if metricsOutput := os.Getenv("METRICS_OUTPUT"); metricsOutput != "" {
 		info, err := os.Stat(output)
 		if err != nil {
-			log.Fatalf("stat completed backup for metrics: %v", err)
+			return fmt.Errorf("stat completed backup for metrics: %w", err)
 		}
 		instance := os.Getenv("BACKUP_INSTANCE")
 		if instance == "" {
 			instance = "kubebrain"
 		}
 		if err := backupmetrics.WriteSuccess(metricsOutput, instance, status, info.Size(), time.Now()); err != nil {
-			log.Fatalf("publish backup success metrics: %v", err)
+			return fmt.Errorf("publish backup success metrics: %w", err)
 		}
 	}
-	fmt.Fprintf(os.Stderr, "exported %d records and %d leases from %s at revision %d to %s (sha256 %s)\n",
+	_, err = fmt.Fprintf(os.Stderr, "exported %d records and %d leases from %s at revision %d to %s (sha256 %s)\n",
 		total, status.Leases, prefix, snapshotRevision, output, status.SHA256)
+	return err
 }

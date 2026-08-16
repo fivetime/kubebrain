@@ -16,7 +16,7 @@ import (
 // WriteSuccess atomically publishes the last completed logical backup for a
 // Prometheus textfile collector. Failed exports intentionally leave the last
 // success intact so staleness alerts remain meaningful.
-func WriteSuccess(path, instance string, status backupfile.Status, artifactBytes int64, completedAt time.Time) error {
+func WriteSuccess(path, instance string, status backupfile.Status, artifactBytes int64, completedAt time.Time) (retErr error) {
 	if path == "" {
 		return errors.New("metrics output path is empty")
 	}
@@ -35,13 +35,13 @@ func WriteSuccess(path, instance string, status backupfile.Status, artifactBytes
 	if err != nil {
 		return err
 	}
-	cleanup := func() {
-		_ = temp.Close()
-		_ = os.Remove(temp.Name())
-	}
+	defer func() {
+		if removeErr := os.Remove(temp.Name()); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
 	if err := temp.Chmod(0o644); err != nil {
-		cleanup()
-		return err
+		return errors.Join(err, temp.Close())
 	}
 
 	writer := bufio.NewWriter(temp)
@@ -61,24 +61,19 @@ func WriteSuccess(path, instance string, status backupfile.Status, artifactBytes
 	for _, metric := range metrics {
 		if _, err := fmt.Fprintf(writer, "# HELP %s %s\n# TYPE %s %s\n%s%s %s\n",
 			metric.name, metric.help, metric.name, metric.kind, metric.name, label, metric.value); err != nil {
-			cleanup()
-			return err
+			return errors.Join(err, temp.Close())
 		}
 	}
 	if err := writer.Flush(); err != nil {
-		cleanup()
-		return err
+		return errors.Join(err, temp.Close())
 	}
 	if err := temp.Sync(); err != nil {
-		cleanup()
-		return err
+		return errors.Join(err, temp.Close())
 	}
 	if err := temp.Close(); err != nil {
-		_ = os.Remove(temp.Name())
 		return err
 	}
 	if err := os.Rename(temp.Name(), path); err != nil {
-		_ = os.Remove(temp.Name())
 		return err
 	}
 	directory, err := os.Open(dir)

@@ -54511,6 +54511,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 run 返回配置错误回归，防止重新引入进程内 fatal exit；logical-restore race（1.064 秒）、vet 与 diff check 通过。
   真实 TiKV uncertain write 叠加 revoke/transport close fault 仍留待独立 TiKV/PD 恢复 Job 故障门禁。
 
+- A4855 修复 logical exporter 的 fatal-exit 与 artifact/metrics 发布排序。旧 main 在 client 打开后所有 Range、Lease TTL、
+  writer 错误都调用 `log.Fatal`，跳过 client Close 和 AtomicWriter Abort；成功路径又先 Commit artifact，再静默关闭
+  client，可能在 TiKV/HTTP2 transport 收尾失败后留下可消费备份。入口现在统一 `main -> run() error`；完整 pinned-revision
+  扫描后先显式关闭 client，成功才 Commit artifact，随后依次发布 metrics 与最终日志。任何扫描、close、commit、metrics
+  或 stderr 错误均使 Job 非零，未 Commit writer 由正常 defer Abort。
+
+  同轮收紧 backupmetrics atomic writer：chmod/write/flush/file Sync 失败聚合 Close，所有出口聚合 temp Remove，成功继续要求
+  parent directory Sync+Close。新增 run 配置错误回归；export/metrics race（1.057/1.039 秒）、vet 与 diff check 通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
