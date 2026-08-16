@@ -53175,6 +53175,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   prefix delete 删除 21 个键，Count=0，临时探针及 direct port-forward 均清除。主三副本继续使用 A4747
   runtime imageID，Ready/零重启；LeaseList/AlarmList 为空，proposal health 通过。
 
+- A4752 补齐此前事件/Compact 故障流未覆盖的公开 `clientv3.Watcher.RequestProgress` 契约。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的 stream-wide `RequestProgressAll` 与
+  `storage/mvcc/watcher.go::RequestProgressAll`：只有全部活动 Watch 已同步时才发一条 `WatchId=-1` 的
+  header-only response。KubeBrain 生产实现同样以每个 generation 已交付的 `syncedRev` 求最小水位；follower
+  的水位来自 leader peer Watch 的 FIFO progress marker，不用本地陈旧 revision 伪造成功。
+
+  最终 A4747 镜像上用官方 client/v3 建立 pod-2 direct、静默 prefix `/a4752/watch/` 的 Watch。健康基线在
+  非匹配键提交 revision `468126003565955828` 后，`RequestProgress` 精确返回同 revision、events=0。故障轮
+  先收到 created revision `468126003565955829`，再用唯一 `KBA4752` chain 隔离 pod-2 到三个 PD 和三个
+  TiKV，删除 leader pod-1，并断言 pod-0/member `4034353177` 成为 successor；successor 对非匹配键提交
+  revision `468126003565955830`。在后端仍隔离时连续 5 秒没有 progress response，证明 follower 没有用陈旧
+  本地水位伪造同步；解除隔离、重新发现 leader 后，同一公开 stream 返回
+  `progress_revision=468126003565955830,target_revision=468126003565955830,events=0`。本轮没有生产 RED，
+  故不修改生产/测试代码、不构建新镜像。
+
+  六条精确 DROP、FORWARD jump 和 chain 本体均已删除并确认无 `KBA4752` 残留；fixture prefix 清零，临时
+  clientv3 探针和 direct port-forward 均清除。终态继续检查主/JWT 六副本与 PD/TiKV 3+3 Ready/零重启、
+  LeaseList/AlarmList 为空及 proposal health。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
