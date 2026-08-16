@@ -53346,6 +53346,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready、零重启并使用该 imageID；PD/TiKV 3+3 Ready、零重启，真实 endpoint proposal health
   12.290ms，AlarmList/LeaseList 为空。
 
+- A4760 回到公开 Lock/Election 数据面筛查生产差异，全程不修改生产或测试代码。以独立启动的固定
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 和当前 A4759 NodePort 运行现有真实差分：
+  Election Observe freshness、HTTP concurrency 鉴权、取消、错误 envelope、零 lease、零 lease 自然过期、
+  Lock recipe 与完整 recipes 均通过；零 lease 双端 expiry 分别为 61.03/60.38 秒。组合运行中
+  `TestHTTPGatewayElectionObserveAuthorizationDifferentialAgainstReferenceEtcd` 在权限撤销后等待既有
+  Observe 的下一次 Proclaim 时单次收到 EOF。
+
+  该现象与 A4721 已记录的单次 EOF 完全同型，而 A366 已修复 follower 首次转发丢失 caller token 的确定性
+  缺陷。不能凭一次连接结束重复修改生产代码，因此退出组合负载后使用相同 reference、相同 NodePort 将该
+  用例隔离连续运行 10 轮；10/10 全部通过，总耗时 67.891 秒，未形成稳定 RED。源码增量复核同时确认当前
+  upstream 从首次 `d947b2086` 到 `5cd9f4ee1` 的 v3rpc/lease/watch 行为提交均已纳入既有审计：watch
+  open-ended range 权限安全、peer lease HTTP body 上限、lease cache 并发与 downgrade semver；其后只有
+  gRPC/metrics/日志等依赖升级，没有新的未覆盖服务端语义提交。
+
+  reference 进程与 `mktemp` 数据目录均由 trap 清除；主实例 auth 终态为 disabled、四组 fixture prefix
+  均为空、LeaseList/AlarmList 为空，proposal health 14.127ms。主/JWT 六副本继续运行 A4759 imageID 且
+  Ready、零重启，PD/TiKV 3+3 Ready、零重启；没有为相同二进制重建或滚动镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
