@@ -54363,6 +54363,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `pkg/server/service/etcdproxy` 全套 race（4.352 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776
   未滚动，多次 leader 切换叠加 client close fault 的 shutdown 非零结果仍留待正式新镜像故障门禁。
 
+- A4838 补齐内置 TiKV txn client 部分构造失败的资源回滚错误。PD discovery、SafePoint KV 与 RPC client 依次创建后，
+  `NewKVStoreWithContext` 失败会触发 defer cleanup；旧 fork 只关闭 PD（其 API 无错误返回），却丢弃 SafePoint KV 与 RPC
+  Close 错误，使独立 TiKV/PD 启动失败伴随 transport/etcd session 泄漏时只暴露主因。构造函数现在使用命名错误并以
+  fork 已依赖的 `multierr` 聚合两项 cleanup；成功路径仍取消 defer ownership，由 KVStore 按原依赖顺序负责关闭。
+
+  内置 `txnkv` race 编译/vet（无上游测试文件）及 KubeBrain `pkg/storage/tikv` race（1.227 秒）/vet 通过；本轮没有修改
+  测试文件。在线 A4776 未滚动，NewKVStore failure 叠加 SafePoint/RPC close fault 仍留待正式新镜像启动故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
