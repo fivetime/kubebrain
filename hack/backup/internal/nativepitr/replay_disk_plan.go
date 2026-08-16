@@ -38,6 +38,11 @@ var (
 	replayPlanBucket      = []byte("canonical-mutations")
 )
 
+const (
+	replayPlanRecordVersion = byte(1)
+	replayPlanRecordHeader  = 2 + sha256.Size
+)
+
 // ReplayDiskPlan owns a rebuildable, canonical mutation plan in scratch
 // storage. Call Close when replay finishes; no returned key or value aliases
 // the bbolt mmap.
@@ -212,23 +217,36 @@ func replayPlanKey(m ReplayMutation) []byte {
 	return encoded
 }
 
-func replayPlanValue(m ReplayMutation) []byte {
-	encoded := make([]byte, 1+len(m.Value))
+func replayPlanValue(key []byte, m ReplayMutation) []byte {
+	encoded := make([]byte, replayPlanRecordHeader+len(m.Value))
+	encoded[0] = replayPlanRecordVersion
 	if m.Delete {
-		encoded[0] = 1
+		encoded[1] = 1
 	} else {
-		copy(encoded[1:], m.Value)
+		copy(encoded[replayPlanRecordHeader:], m.Value)
 	}
+	digest := sha256.New()
+	_, _ = digest.Write(key)
+	_, _ = digest.Write(encoded[:2])
+	_, _ = digest.Write(encoded[replayPlanRecordHeader:])
+	copy(encoded[2:replayPlanRecordHeader], digest.Sum(nil))
 	return encoded
 }
 
 func decodeReplayPlanMutation(key, value []byte) (ReplayMutation, error) {
-	if len(key) <= 16 || len(value) < 1 || value[0] > 1 || (value[0] == 1 && len(value) != 1) {
+	if len(key) <= 16 || len(value) < replayPlanRecordHeader || value[0] != replayPlanRecordVersion || value[1] > 1 || (value[1] == 1 && len(value) != replayPlanRecordHeader) {
 		return ReplayMutation{}, errors.New("native PITR replay disk plan record is corrupt")
 	}
-	mutation := ReplayMutation{CommitTS: binary.BigEndian.Uint64(key), StartTS: binary.BigEndian.Uint64(key[8:]), Key: append([]byte(nil), key[16:]...), Delete: value[0] == 1}
+	digest := sha256.New()
+	_, _ = digest.Write(key)
+	_, _ = digest.Write(value[:2])
+	_, _ = digest.Write(value[replayPlanRecordHeader:])
+	if !bytes.Equal(value[2:replayPlanRecordHeader], digest.Sum(nil)) {
+		return ReplayMutation{}, errors.New("native PITR replay disk plan record checksum does not match key and value")
+	}
+	mutation := ReplayMutation{CommitTS: binary.BigEndian.Uint64(key), StartTS: binary.BigEndian.Uint64(key[8:]), Key: append([]byte(nil), key[16:]...), Delete: value[1] == 1}
 	if !mutation.Delete {
-		mutation.Value = append([]byte{}, value[1:]...)
+		mutation.Value = append([]byte{}, value[replayPlanRecordHeader:]...)
 	}
 	return mutation, nil
 }
@@ -614,7 +632,8 @@ func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, r
 				return errors.New("native PITR replay disk plan bucket is missing")
 			}
 		}
-		key, value := replayPlanKey(mutation), replayPlanValue(mutation)
+		key := replayPlanKey(mutation)
+		value := replayPlanValue(key, mutation)
 		if err := planBucket.Put(key, value); err != nil {
 			return err
 		}

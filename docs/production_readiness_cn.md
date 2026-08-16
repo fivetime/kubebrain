@@ -3107,6 +3107,18 @@ source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plain
 v6 receipt、checkpoint、fence/handoff 及最终 revision/key/lease/watch 全链以 40.96 秒通过。生产规模 scratch sizing、长窗口
 RSS/IOPS/latency soak 与磁盘故障注入仍保持开放。
 
+A4914 将 canonical scratch record 固定为版本化格式，并为每条记录保存 SHA-256 校验值，覆盖完整 bbolt key（commit TS、start TS、
+tenant key）、record version、delete flag 与 value。全盘 manifest digest preflight 之外，每次 materialize transaction 的 decode 都
+重新验证该校验值；因此 preflight 完成后发生的 scratch 位翻转不会绕过检查。状态机测试在完整 digest/统计/内存门禁完成、首次
+target checkpoint `Get` 发生时篡改首条 canonical value：随后的流式读取必须返回 checksum mismatch，target batch commit 保持零；
+预检前损坏同样失败。直接 codec 测试还固定了 non-nil empty PUT、nil DELETE 及 key/value 绑定。
+
+该 checksum 用于检测临时介质/内存映射的意外损坏，不是防止拥有 executor 文件权限的恶意主体重写 record 和 checksum 的 MAC；
+权限隔离仍依赖 0600 scratch 文件、专用加密 PVC 与 Pod 身份。每条 canonical mutation 增加 34 字节 scratch payload，容量规划必须
+计入。2026-08-16 独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer 的 plaintext 正式全链以 38.98 秒
+通过，v6 manifest digest、checkpoint、fence/handoff 与最终 revision/key/lease/watch 语义不变。真实块设备 bit flip、I/O error、
+filesystem remount/read-only 和空间耗尽注入仍保持开放。
+
 TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
 每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
 恢复方关闭 gate 时必须以 range compare 同时证明 session 前缀为空，因此新进程注册与 restore acquire 只能

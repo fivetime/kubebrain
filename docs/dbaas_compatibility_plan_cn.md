@@ -55145,6 +55145,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/key/lease/watch 语义验收 40.96 秒通过，一次性容器已清理。生产规模 scratch sizing、长窗口 RSS/IOPS/latency soak、
   磁盘空间耗尽/IO error 以及超大单事务矩阵仍保持开放。
 
+- A4914 封闭 A4913 “只在 target 访问前校验一次完整 digest”的 TOCTOU 窗口。canonical scratch record 新增版本字节、delete flag
+  和逐记录 SHA-256，校验输入绑定完整 bbolt key（commit TS、start TS、tenant key）及 value；全盘 preflight 和之后每一次流式
+  decode 都验证 checksum。确定性状态机在 preflight 完成后的首次 target checkpoint read 中篡改首条 scratch value，apply 必须在
+  target batch commit 数为零时返回 checksum mismatch；预检前损坏、key 替换、non-nil empty PUT 与 nil DELETE 编解码边界也有
+  独立断言。该机制检测非恶意位翻转，不是 MAC；具备 executor 文件权限的攻击者仍由 0600 文件、加密 PVC 和 Pod 权限模型隔离，
+  每 mutation 的 34 字节 scratch overhead 必须纳入容量规划。
+
+  2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 与官方 BR
+  v7.5.1 上执行正式 `TestNativeLogReplayRealBR`：逐 record 校验生产路径的 v6 manifest digest、v2 checkpoint、fence/handoff 与
+  最终 revision/key/lease/watch 语义验收 38.98 秒通过，一次性容器已清理。真实块设备 bit flip、I/O error、filesystem
+  remount/read-only、空间耗尽及恶意同权限篡改不由该确定性测试冒充，仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -15,6 +15,7 @@
 package nativepitr
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -23,6 +24,27 @@ import (
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
 )
+
+type mutateReplayPlanOnGetStore struct {
+	storage.KvStorage
+	plan    *ReplayDiskPlan
+	mutated bool
+	err     error
+}
+
+func (s *mutateReplayPlanOnGetStore) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if !s.mutated {
+		s.mutated = true
+		s.err = s.plan.db.Update(func(tx *bolt.Tx) error {
+			bucket := tx.Bucket(replayPlanBucket)
+			planKey, value := bucket.Cursor().First()
+			changed := append([]byte(nil), value...)
+			changed[len(changed)-1] ^= 0xff
+			return bucket.Put(planKey, changed)
+		})
+	}
+	return s.KvStorage.Get(ctx, key)
+}
 
 func TestMaterializeReplayDiskPlanMatchesCanonicalMemoryPlan(t *testing.T) {
 	_, receipt, root, _, _ := replayFixture(t)
@@ -106,6 +128,25 @@ func TestReplayDiskPlanDoesNotExposeMmapMemory(t *testing.T) {
 	}))
 }
 
+func TestReplayDiskPlanRecordChecksumBindsKeyValueAndEmptySemantics(t *testing.T) {
+	key := replayPlanKey(ReplayMutation{CommitTS: 20, StartTS: 10, Key: []byte("key")})
+	putEmpty := ReplayMutation{CommitTS: 20, StartTS: 10, Key: []byte("key"), Value: []byte{}}
+	decoded, err := decodeReplayPlanMutation(key, replayPlanValue(key, putEmpty))
+	require.NoError(t, err)
+	require.Equal(t, putEmpty, decoded)
+	require.NotNil(t, decoded.Value)
+
+	deleteMutation := ReplayMutation{CommitTS: 20, StartTS: 10, Key: []byte("key"), Delete: true}
+	decoded, err = decodeReplayPlanMutation(key, replayPlanValue(key, deleteMutation))
+	require.NoError(t, err)
+	require.Equal(t, deleteMutation, decoded)
+
+	changedKey := append([]byte(nil), key...)
+	changedKey[len(changedKey)-1] ^= 0xff
+	_, err = decodeReplayPlanMutation(changedKey, replayPlanValue(key, putEmpty))
+	require.ErrorContains(t, err, "checksum")
+}
+
 func TestApplyReplayDiskPlanBoundsTransactionBeforeTargetAccessAndResumes(t *testing.T) {
 	_, receipt, root, keyA, keyB := replayFixture(t)
 	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
@@ -153,8 +194,24 @@ func TestApplyReplayDiskPlanRejectsScratchCorruptionBeforeTargetWrite(t *testing
 	target := &countingReplayStore{KvStorage: inner}
 
 	_, err = ApplyReplayDiskPlan(t.Context(), target, digest, plan, 1<<20)
-	require.ErrorContains(t, err, "does not match manifest")
+	require.ErrorContains(t, err, "checksum")
 	require.Zero(t, target.commits)
+}
+
+func TestApplyReplayDiskPlanRejectsMutationAfterPreflightBeforeTargetWrite(t *testing.T) {
+	_, receipt, root, _, _ := replayFixture(t)
+	plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, plan.Close()) }()
+	inner := memkv.NewKvStorage()
+	defer inner.Close()
+	counted := &countingReplayStore{KvStorage: inner}
+	target := &mutateReplayPlanOnGetStore{KvStorage: counted, plan: plan}
+
+	_, err = ApplyReplayDiskPlan(t.Context(), target, digest, plan, 1<<20)
+	require.NoError(t, target.err)
+	require.ErrorContains(t, err, "checksum")
+	require.Zero(t, counted.commits, "a post-preflight scratch bit flip must not enter a target transaction")
 }
 
 func TestApplyReplayDiskPlanResolvesCommittedUncertainCheckpoint(t *testing.T) {
