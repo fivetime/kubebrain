@@ -349,12 +349,12 @@ func scanMirror(root string) (map[string]bool, error) {
 	return actual, err
 }
 
-func verifyObject(path string, file *backuppb.File, kind string) (ArtifactObject, error) {
+func verifyObject(path string, file *backuppb.File, kind string) (result ArtifactObject, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return ArtifactObject{}, err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	hash := sha256.New()
 	written, err := io.Copy(hash, f)
 	if err != nil {
@@ -381,7 +381,7 @@ func objectKind(file *backuppb.File) string {
 	return "meta-index"
 }
 
-func readLimitedFile(path string, limit int64) ([]byte, error) {
+func readLimitedFile(path string, limit int64) (content []byte, retErr error) {
 	if limit <= 0 {
 		return nil, errors.New("invalid file size limit")
 	}
@@ -389,13 +389,13 @@ func readLimitedFile(path string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
+	content, err = io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(b)) > limit {
+	if int64(len(content)) > limit {
 		return nil, fmt.Errorf("file exceeds %d bytes", limit)
 	}
-	return b, nil
+	return content, nil
 }

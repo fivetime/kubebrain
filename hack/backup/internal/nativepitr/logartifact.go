@@ -177,15 +177,18 @@ func VerifyLogArtifacts(task TaskCreateReceipt, taskSHA string, ready TaskReadyR
 	return LogArtifactReceipt{Format: LogArtifactReceiptFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, TaskCreateSHA256: taskSHA, TaskReadySHA256: readySHA, StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, RemoteInventorySHA256: inventorySHA, ObjectStoreID: inventory.ObjectStoreID, Bucket: inventory.Bucket, ObjectPrefix: inventory.Prefix, MinRetainUntilUnix: inventory.MinRetainUntilUnix, InventoryCheckedAtUnix: inventory.CheckedAtUnix, Objects: objects, ObjectCount: len(objects), MetadataCount: len(metadataPaths), DataObjectCount: len(expected), ControlObjectCount: len(objects) - len(metadataPaths) - len(expected), VerifiedSegmentCount: segmentCount, TotalBytes: total, ManifestSHA256: hex.EncodeToString(manifestDigest[:]), MetadataMaxResolvedTS: maxResolved, ExactMirror: true, RemoteVersionsVerified: true, AllSegmentsVerified: true}, nil
 }
 
-func verifyInventoryObject(path string, entry pitrinventory.Entry) (LogArtifactObject, error) {
+func verifyInventoryObject(path string, entry pitrinventory.Entry) (result LogArtifactObject, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return LogArtifactObject{}, err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	h := sha256.New()
 	n, err := io.Copy(h, io.LimitReader(f, entry.Bytes+1))
-	if err != nil || n != entry.Bytes || hex.EncodeToString(h.Sum(nil)) != entry.SHA256 {
+	if err != nil {
+		return LogArtifactObject{}, err
+	}
+	if n != entry.Bytes || hex.EncodeToString(h.Sum(nil)) != entry.SHA256 {
 		return LogArtifactObject{}, errors.New("size or SHA-256 does not match remote exact version")
 	}
 	return LogArtifactObject{Name: entry.Name, Bytes: uint64(entry.Bytes), SHA256: entry.SHA256, Kind: "control"}, nil
@@ -291,7 +294,7 @@ func addLogDataObject(expected map[string]*logDataObject, name string, length ui
 	return nil
 }
 
-func verifyLogDataObject(root string, object *logDataObject) (LogArtifactObject, error) {
+func verifyLogDataObject(root string, object *logDataObject) (result LogArtifactObject, retErr error) {
 	segments := append([]*backuppb.DataFileInfo(nil), object.segments...)
 	sort.Slice(segments, func(i, j int) bool { return segments[i].RangeOffset < segments[j].RangeOffset })
 	if len(segments) == 0 {
@@ -319,9 +322,12 @@ func verifyLogDataObject(root string, object *logDataObject) (LogArtifactObject,
 	if err != nil {
 		return LogArtifactObject{}, err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	info, err := f.Stat()
-	if err != nil || info.Size() < 0 || uint64(info.Size()) != object.length {
+	if err != nil {
+		return LogArtifactObject{}, err
+	}
+	if info.Size() < 0 || uint64(info.Size()) != object.length {
 		return LogArtifactObject{}, errors.New("physical object length does not match stream metadata")
 	}
 	physicalHash := sha256.New()

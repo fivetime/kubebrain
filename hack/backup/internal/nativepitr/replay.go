@@ -443,15 +443,18 @@ func validateReplayMutations(manifest ReplayManifest, mutations []ReplayMutation
 	return nil
 }
 
-func verifyReplayObject(path string, object LogArtifactObject) error {
+func verifyReplayObject(path string, object LogArtifactObject) (retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	h := sha256.New()
 	n, err := io.Copy(h, io.LimitReader(f, int64(object.Bytes)+1))
-	if err != nil || uint64(n) != object.Bytes || hex.EncodeToString(h.Sum(nil)) != object.SHA256 {
+	if err != nil {
+		return err
+	}
+	if uint64(n) != object.Bytes || hex.EncodeToString(h.Sum(nil)) != object.SHA256 {
 		return errors.New("size or SHA-256 changed")
 	}
 	return nil
@@ -479,12 +482,12 @@ func replaySegments(root string, objects []LogArtifactObject) (map[string]*logDa
 	return expected, nil
 }
 
-func readReplaySegment(root, name string, segment *backuppb.DataFileInfo) ([]byte, error) {
+func readReplaySegment(root, name string, segment *backuppb.DataFileInfo) (content []byte, retErr error) {
 	f, err := os.Open(filepath.Join(root, filepath.FromSlash(name)))
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	var input io.Reader = f
 	if segment.RangeLength != 0 {
 		input = io.NewSectionReader(f, int64(segment.RangeOffset), int64(segment.RangeLength))
@@ -497,8 +500,11 @@ func readReplaySegment(root, name string, segment *backuppb.DataFileInfo) ([]byt
 		defer decoder.Close()
 		input = decoder
 	}
-	content, err := io.ReadAll(io.LimitReader(input, int64(segment.Length)+1))
-	if err != nil || uint64(len(content)) != segment.Length {
+	content, err = io.ReadAll(io.LimitReader(input, int64(segment.Length)+1))
+	if err != nil {
+		return nil, err
+	}
+	if uint64(len(content)) != segment.Length {
 		return nil, errors.New("decoded replay segment length mismatch")
 	}
 	digest := sha256.Sum256(content)
