@@ -54729,6 +54729,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   既有 oversized、int64 revision 与 strict witness 回归覆盖新路径；cold-snapshot-receipt race（1.283 秒）、vet 与 diff
   check 通过。真实 frozen mount close fault 仍留待 cold snapshot executor Job 文件系统门禁。
 
+- A4880 补齐 cold-restore manifest renderer 的 receipt 输入与原子输出终态。旧 reader 限制 snapshot receipt 为 4 MiB，
+  但 defer 丢弃 file Close；writer 在 chmod/write/sync 失败时丢弃 temp Close，deferred Remove 也仅在没有主错误时才传播，
+  可能留下包含 source snapshot handles/PVC identity 的临时 manifest。reader 现用命名错误 Join Close；writer 聚合
+  chmod/write/sync/Close/Remove，并继续 hard-link 独占发布和父目录 Sync/Close。任何 cleanup failure 都阻止 renderer 成功，
+  已存在目标仍绝不覆盖。
+
+  既有 oversized receipt、成功发布、冲突不覆盖与无临时残留回归覆盖新路径；cold-restore-render/snapshot-receipt race
+  （1.295 秒及缓存套件）、vet 与 diff check 通过。真实 unlink/fsync fault 仍留待 cold restore render Job 文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

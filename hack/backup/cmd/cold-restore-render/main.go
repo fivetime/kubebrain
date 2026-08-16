@@ -136,23 +136,19 @@ func writeAtomic(path string, data []byte) (returnErr error) {
 	}
 	tmpName := tmp.Name()
 	defer func() {
-		if err := os.Remove(tmpName); err != nil && !errors.Is(err, os.ErrNotExist) && returnErr == nil {
-			returnErr = err
+		if err := os.Remove(tmpName); err != nil && !errors.Is(err, os.ErrNotExist) {
+			returnErr = errors.Join(returnErr, err)
 		}
 	}()
 	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
+		return errors.Join(err, tmp.Close())
 	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
+	_, writeErr := tmp.Write(data)
+	var syncErr error
+	if writeErr == nil {
+		syncErr = tmp.Sync()
 	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
+	if err := errors.Join(writeErr, syncErr, tmp.Close()); err != nil {
 		return err
 	}
 	if err := os.Link(tmpName, path); err != nil {
@@ -168,7 +164,7 @@ func writeAtomic(path string, data []byte) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	syncErr := dir.Sync()
+	syncErr = dir.Sync()
 	closeErr := dir.Close()
 	return errors.Join(syncErr, closeErr)
 }
@@ -178,13 +174,13 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-func readBoundedJSONFile(path, description string) ([]byte, error) {
+func readBoundedJSONFile(path, description string) (data []byte, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxColdRestoreJSONBytes+1))
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, maxColdRestoreJSONBytes+1))
 	if err != nil {
 		return nil, err
 	}
