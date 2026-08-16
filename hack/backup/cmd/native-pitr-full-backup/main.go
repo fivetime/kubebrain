@@ -241,14 +241,18 @@ func openExecutable(name string) (*os.File, string, string, error) {
 	return f, resolved, hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func writeReceiptAtomic(path string, receipt nativepitr.FullBackupAttestation) error {
+func writeReceiptAtomic(path string, receipt nativepitr.FullBackupAttestation) (retErr error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".native-pitr-full-backup-*.tmp")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() {
+		if removeErr := os.Remove(tmpName); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove full-backup attestation temporary file: %w", removeErr))
+		}
+	}()
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		return err
@@ -273,5 +277,20 @@ func writeReceiptAtomic(path string, receipt nativepitr.FullBackupAttestation) e
 		}
 		return fmt.Errorf("publish full-backup attestation: %w", err)
 	}
-	return nil
+	if err := os.Remove(tmpName); err != nil {
+		return fmt.Errorf("remove published attestation temporary link: %w", err)
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open full-backup attestation directory: %w", err)
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		syncErr = fmt.Errorf("sync full-backup attestation directory: %w", syncErr)
+	}
+	if closeErr != nil {
+		closeErr = fmt.Errorf("close full-backup attestation directory: %w", closeErr)
+	}
+	return errors.Join(syncErr, closeErr)
 }
