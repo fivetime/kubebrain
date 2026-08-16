@@ -2127,8 +2127,10 @@ attestation/artifact/plan/restore receipt，长期证据只携带 method 与 key
 恢复时 `--encryption-key-id` 必须精确等于 plan/artifact 绑定值，并把相同版本的 key-file 传给
 `native-pitr-full-restore`；BR 成功解密 import 后，restore v3 才记录相同 identity。durable backup runner 已接入
 上述 immutable Secret volume；它先比较参数与挂载的 key-id，再把只读 key 文件交给 producer，密钥绝不进入
-parameter broker、operation status、日志或 env。restore-side durable Operation 尚未交付，恢复继续使用受审隔离
-命令和 plan approval，不能把 backup executor 接线冒充完整自动恢复编排。
+parameter broker、operation status、日志或 env。restore-side durable `NativePITRFullRestore` 已通过专用 requester、
+不可变审批参数、单 writer executor、固定 BR 镜像、全窗口 writer/admission monitor 和 durable receipt verifier
+交付；其启用仍必须满足后文 Kubernetes/CSI replacement、writer RBAC 与真实恢复门禁，不能把 backup executor
+接线或手工运行 restore CLI 冒充已审批的完整恢复操作。
 
 加密 `backupmeta` 不能直接交给明文 receipt/verifier。生成 full snapshot receipt 和核验 exact mirror 时必须
 把同一不可变版本身份及 key-file 显式传入；两个命令只在内存中解密元数据，收据摘要仍覆盖存储密文：

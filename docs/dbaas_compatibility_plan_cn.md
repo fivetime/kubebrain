@@ -53703,13 +53703,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已通过 `bash -n`，并复核存在 Failed phase 与独立错误信息；检查容器已清理。线上数据面保持 A4776，
   直到独立/资源隔离环境的完整发布门禁通过后再推广 A4777 与 Operation 面。
 
+- A4778 核实现行 runbook 中 `restore-side durable Operation 尚未交付` 已是陈旧结论：A4548–A4562 已交付
+  `NativePITRFullRestore` 类型、不可变审批参数、专用 requester/broker/executor、固定 BR 镜像、writer/admission
+  全窗口门禁与 durable receipt verifier，生产清单也包含 replicas=0 的单 writer Deployment。现行 readiness
+  文档改为要求通过该审批链执行，并把当前开放项准确收窄为真实 Kubernetes/CSI target retirement→provisioning→
+  restore 演练、KMS key version promotion/撤权、跨 AZ/规模/长 soak；A4540/A4541 当时仍开放的历史记录保持不改。
+  当前 API Server 对 Operation CRD、worker/requester RBAC、worker/requester/encryption admission 与 executor 清单
+  server-side dry-run 全部接受；writer RBAC 因验证集群使用 `kubebrain-dev` 而非生产 `kubebrain-system`，流式映射到
+  现存 namespace 后同样通过，未把 namespace NotFound 误报为 schema 成功。
+
+  制品审计又发现专用 `native-pitr-full-backup`/`native-pitr-full-restore` stages 不继承默认数据面 stage 末尾的 OCI
+  labels；旧镜像只能依赖可变 tag 外部推断源码，无法从 config 审计 version/revision/created。生产提交
+  `83e483ce` 为两个 BR stages 独立声明 build args，并写入不同 title 及 exact version/full SHA/build time。最终
+  `kubebrain-native-pitr-full-backup:a4778-83e483ce` image ID 为
+  `sha256:ea07dc3decb28f32ebcf1590195789bff09bf5f3827a107f9c878e22bd7c11d4`；
+  `kubebrain-native-pitr-full-restore:a4778-83e483ce` image ID 为
+  `sha256:20a71cda03dcec5d463cb8de25d31d55048e46c99d3ddb8ec9d54b2e2d85f8cf`。两者 labels 均精确绑定
+  version `a4778`、revision `83e483ce09d58b172f44dffb9456c7bcf673550f` 与 build time
+  `2026-08-16T07:00:30Z`；均以 UID/GID 65532 启动，backup/restore 主命令、restore verifier 与 runner 语法
+  通过，内置 BR 精确报告 v7.5.1 commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`。临时检查容器已清理。
+  A4776 长发布门禁仍未通过，因此本轮只完成可追溯制品，不把专用 executor 部署到当前 Operation namespace。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
    并把表纳入发布说明。
 2. transactional TiKV native PITR 的 pinned v7.5.1 受限链已完成功能闭环；继续扩大版本矩阵、
-   跨可用区故障、生产规模和长时间 soak，并完成加密 key version promotion 与 restore-side durable 编排；当前
-   plaintext/AES-256 executor attestation 已是 full artifact v5 强制门禁。不得用 TiDB BR
+   跨可用区故障、生产规模和长时间 soak，并完成加密 key version promotion/撤权以及真实 Kubernetes/CSI
+   target retirement→provisioning→durable restore 演练；当前 restore-side durable Operation、全窗口 writer/admission
+   monitor 与 plaintext/AES-256 executor attestation 已交付，full artifact v5 仍是强制门禁。不得用 TiDB BR
    full/PITR 的成功状态替代 KubeBrain exact receipt 与最终语义门禁。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性、lease lifecycle、
    显式 ID revoke/regrant 代际隔离、watch-backed 自然过期，以及可表达不确定写
