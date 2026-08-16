@@ -167,11 +167,7 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	if err != nil {
 		return fmt.Errorf("create etcd snapshot backend: %w", err)
 	}
-	defer func() {
-		if err := builder.Close(); retErr == nil && err != nil {
-			retErr = err
-		}
-	}()
+	defer func() { retErr = errors.Join(retErr, builder.Close()) }()
 
 	sawTerminal := false
 	// A legacy version without inline lease provenance cannot be exported. Keep
