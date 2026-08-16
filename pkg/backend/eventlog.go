@@ -252,7 +252,7 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	if err != nil {
 		return nil, false, err
 	}
-	defer func() { _ = iter.Close() }()
+	defer func() { err = errors.Join(err, iter.Close()) }()
 
 	var entries []eventLogPending
 	for {
