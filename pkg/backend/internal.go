@@ -111,7 +111,7 @@ func (b *backend) InternalDelete(ctx context.Context, key []byte) error {
 	batch := b.kv.BeginBatchWrite()
 	batch.Del(b.ks.EncodeInternalKey(key))
 	err := batch.Commit(ctx)
-	if err == storage.ErrKeyNotFound {
+	if errors.Is(err, storage.ErrKeyNotFound) {
 		return nil
 	}
 	return err

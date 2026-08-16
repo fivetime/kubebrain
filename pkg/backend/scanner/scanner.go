@@ -1158,7 +1158,7 @@ func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact
 		// range requests at already-compacted revisions would wrongly pass the
 		// guard below and return incomplete data.
 		val, err := scannerGet(ctx, r.store, r.config.CompactKey)
-		if err != nil && err != storage.ErrKeyNotFound {
+		if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
 			return err
 		}
 		compactRecordExists := err == nil
@@ -1205,7 +1205,7 @@ func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact
 	val, err := scannerGet(ctx, r.store, r.config.CompactKey)
 	if err != nil {
 		// if compact_key is not initialized, return nil
-		if err == storage.ErrKeyNotFound {
+		if errors.Is(err, storage.ErrKeyNotFound) {
 			return nil
 		}
 		klog.Errorf("get compact revision failed %v", err)

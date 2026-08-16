@@ -524,7 +524,7 @@ func (b *backend) loadEventValues(ctx context.Context, keys [][]byte) (vals map[
 			mu.Lock()
 			defer mu.Unlock()
 			if gerr != nil {
-				if gerr == storage.ErrKeyNotFound {
+				if errors.Is(gerr, storage.ErrKeyNotFound) {
 					inc = true // unexpectedly GC'd: replay cannot be trusted
 				} else if loadErr == nil {
 					loadErr = gerr

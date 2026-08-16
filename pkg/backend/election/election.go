@@ -226,7 +226,7 @@ func (r *resourceLock) getRecord(parent context.Context) (err error) {
 	defer cancel()
 	val, err := r.store.Get(ctx, r.electionKey)
 	if err != nil {
-		if err == storage.ErrKeyNotFound {
+		if errors.Is(err, storage.ErrKeyNotFound) {
 			return apierrors.NewNotFound(schema.GroupResource{}, string(r.electionKey))
 		}
 		return err

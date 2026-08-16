@@ -57,7 +57,7 @@ func (b *backend) Get(ctx context.Context, r *proto.GetRequest) (resp *proto.Get
 	requireRev := r.GetRevision()
 
 	val, modRev, err := b.get(ctx, r.Key, requireRev)
-	if err == storage.ErrKeyNotFound {
+	if errors.Is(err, storage.ErrKeyNotFound) {
 		return &proto.GetResponse{
 			Header: responseHeader(curRev),
 		}, nil

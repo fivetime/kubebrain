@@ -201,7 +201,7 @@ func (b *backend) loadCompactRevision(ctx context.Context) (uint64, error) {
 
 func (b *backend) loadCompactRevisionState(ctx context.Context) (uint64, bool, error) {
 	val, err := b.snapshotGet(ctx, getCompactKey(b.config.Prefix))
-	if err == storage.ErrKeyNotFound {
+	if errors.Is(err, storage.ErrKeyNotFound) {
 		return 0, false, nil
 	}
 	if err != nil {
@@ -639,7 +639,7 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 	}
 	// get stored compact revision
 	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
-	if err != nil && err != storage.ErrKeyNotFound {
+	if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
 		klog.ErrorS(err, "get compact revision failed")
 		return false, err
 	}
