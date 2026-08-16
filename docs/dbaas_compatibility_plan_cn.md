@@ -53115,6 +53115,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   15.444ms。主/JWT 六副本继续使用 A4747 runtime imageID 且 Ready/零重启，PD/TiKV 3+3 Ready/零重启；
   四个 port-forward、临时探针源码和二进制均已清除。
 
+- A4749 用可逆 backend 隔离补齐 A4748 未取得的“固定 ingress 保持 follower、另一 Pod 成为 successor”
+  现场证据，全程直接使用官方 `etcdctl lease keep-alive`，没有创建测试源码或修改仓库代码。当前 leader 为
+  pod-0、目标 follower pod-2 为 `10.244.0.130` 时，先通过 Service Grant TTL=3 并绑定
+  `/a4749/ttl3-peer`，从 pod-2 direct endpoint 取得首个 TTL=3 response；随后在 Kind node FORWARD
+  顶部挂载唯一 `KBA4749` chain，只 DROP 该源 IP 到三个 PD `:2379` 和三个 TiKV `:20160`，明确不阻断
+  KubeBrain peer `:3380`。删除 pod-0 后 successor member 为 pod-1 的 `2393892952`，并显式断言不是目标
+  ingress 的 `231094427`，因此本轮不能走 A4747 self-promotion 快路径。
+
+  30 秒官方 client 流在约 8 秒 leader/reload/backend-isolation 窗口前后共收到 22 个
+  `keepalived with TTL(3)`，没有 expired/revoked 或 gRPC error；这证明 follower 已消费的 request 经另一
+  successor peer 重连后继续获得有效 response。外层 `timeout` 以预期 124 结束后，客户端不再续租，TTL=3
+  lease 随即自然过期并原子删除绑定键；终态 TTL=-1、A4749 prefix Count=0，不能把预算结束后的自然过期
+  误报为故障中丢失。最初一次 Grant 与人工启动命令之间超过短 TTL、尚未注入任何故障即自然过期，明确作为
+  无效 fixture 丢弃；最终证据把 Grant/Put/KeepAlive 放在同一连续进程中消除了该控制端间隙。
+
+  精确 FORWARD jump、六条 DROP、chain 本体按顺序删除并确认无 `KBA4749` 残留，direct port-forward 关闭。
+  最终 LeaseList/AlarmList 为空、proposal health 11.863ms；主/JWT 六副本继续使用 A4747 runtime imageID
+  且 Ready/零重启，PD/TiKV 3+3 Ready/零重启。本轮没有生产 RED，故不修改生产/测试代码、不构建新镜像；
+  A4748 保留的另一-successor 真实证据缺口至此关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
