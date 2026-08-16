@@ -16,6 +16,7 @@ package option
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -94,14 +95,17 @@ type processAdmission interface {
 // period and leave the old identity leased while a replacement Pod starts.
 // The returned function joins the watcher and makes Close exactly-once on every
 // normal/error exit, including exits whose parent context was not canceled.
-func closeProcessAdmissionOnContext(ctx context.Context, admission processAdmission) func() {
+func closeProcessAdmissionOnContext(ctx context.Context, admission processAdmission) func() error {
 	var once sync.Once
-	closeAdmission := func() {
+	var closeErr error
+	closeAdmission := func() error {
 		once.Do(func() {
-			if err := admission.Close(); err != nil {
-				klog.ErrorS(err, "close PD restore admission session")
+			closeErr = admission.Close()
+			if closeErr != nil {
+				klog.ErrorS(closeErr, "close PD restore admission session")
 			}
 		})
+		return closeErr
 	}
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -109,14 +113,14 @@ func closeProcessAdmissionOnContext(ctx context.Context, admission processAdmiss
 		defer close(done)
 		select {
 		case <-ctx.Done():
-			closeAdmission()
+			_ = closeAdmission()
 		case <-stop:
 		}
 	}()
-	return func() {
+	return func() error {
 		close(stop)
 		<-done
-		closeAdmission()
+		return closeAdmission()
 	}
 }
 
@@ -430,7 +434,7 @@ func (o *KubeBrainOption) buildIdentity() (string, error) {
 }
 
 // Run runs the storage engine
-func (o *KubeBrainOption) Run(ctx context.Context) error {
+func (o *KubeBrainOption) Run(ctx context.Context) (retErr error) {
 	// add cluster metric tag
 	metricsCli := metrics.NewMetrics(imetrics.Tag("cluster", o.ClusterName))
 
@@ -456,11 +460,11 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 	}
 	admission, err := o.storageConfig.buildProcessAdmission(ctx, o.Keyspace, identity)
 	if err != nil {
-		_ = kv.Close()
-		return err
+		return errors.Join(err, kv.Close())
 	}
 	if admission != nil {
-		defer closeProcessAdmissionOnContext(ctx, admission)()
+		closeAdmission := closeProcessAdmissionOnContext(ctx, admission)
+		defer func() { retErr = errors.Join(retErr, closeAdmission()) }()
 		o.epsConf.AdmissionFresh = admission.Fresh
 	}
 
