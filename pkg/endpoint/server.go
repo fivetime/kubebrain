@@ -51,11 +51,15 @@ func matchersToMatchWriters(matchers ...cmux.Matcher) []cmux.MatchWriter {
 }
 
 func normalizeServeError(err error) error {
+	if err == nil {
+		return nil
+	}
 	if errors.Is(err, http.ErrServerClosed) ||
 		errors.Is(err, grpc.ErrServerStopped) ||
 		errors.Is(err, net.ErrClosed) ||
 		errors.Is(err, cmux.ErrListenerClosed) ||
-		errors.Is(err, cmux.ErrServerClosed) {
+		errors.Is(err, cmux.ErrServerClosed) ||
+		strings.Contains(err.Error(), "use of closed network connection") {
 		return nil
 	}
 	return err
@@ -300,27 +304,14 @@ func (gs *rootServer) run(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	defer listener.Close()
-
 	mux := cmux.New(listener)
-	go func() {
-		defer util.Recover()
-		klog.InfoS("root server start to listen", "port", gs.port)
-		muxErr := normalizeServeError(mux.Serve())
-		if muxErr == nil {
-			klog.InfoS("root server listener closed", "port", gs.port)
-		} else {
-			klog.ErrorS(muxErr, "root server shutdown cause by temporary network error", "port", gs.port)
-		}
-	}()
-
-	return runServers(ctx, mux, gs.services)
+	klog.InfoS("root server start to listen", "port", gs.port)
+	return serveMuxAndServers(ctx, listener, mux, gs.services)
 }
 
 // runServers run servers concurrently and shutdown all servers if anyone is error
-func runServers(ctx context.Context, mux cmux.CMux, servers []exposedServer) (err error) {
+func prepareServers(ctx context.Context, mux cmux.CMux, servers []exposedServer) func() error {
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	group, ctx := errgroup.WithContext(ctx)
 	for _, server := range servers {
 
@@ -334,9 +325,36 @@ func runServers(ctx context.Context, mux cmux.CMux, servers []exposedServer) (er
 			return runner()
 		})
 	}
+	return func() error {
+		defer cancel()
+		return group.Wait()
+	}
+}
 
-	// block until all sub exposedServer exit and return the first error if exist
-	return group.Wait()
+func serveMuxAndServers(ctx context.Context, listener net.Listener, mux cmux.CMux, servers []exposedServer) error {
+	// Register every matcher before Serve starts; cmux matcher registration is not
+	// thread-safe and an early accepted connection must not race an incomplete map.
+	runServers := prepareServers(ctx, mux, servers)
+	muxErrCh := make(chan error, 1)
+	serversErrCh := make(chan error, 1)
+	go func() {
+		var muxErr error
+		defer func() { muxErrCh <- muxErr }()
+		defer util.Recover()
+		muxErr = normalizeServeError(mux.Serve())
+	}()
+	go func() { serversErrCh <- runServers() }()
+
+	var muxErr, serversErr, listenerCloseErr error
+	select {
+	case muxErr = <-muxErrCh:
+		listenerCloseErr = normalizeServeError(listener.Close())
+		serversErr = <-serversErrCh
+	case serversErr = <-serversErrCh:
+		listenerCloseErr = normalizeServeError(listener.Close())
+		muxErr = <-muxErrCh
+	}
+	return errors.Join(muxErr, serversErr, listenerCloseErr)
 }
 
 func runSubServer(ctx context.Context, lsn net.Listener, server exposedServer) func() error {
@@ -344,7 +362,7 @@ func runSubServer(ctx context.Context, lsn net.Listener, server exposedServer) f
 
 		closed := make(chan error, 1)
 		defer func() {
-			closeErr := server.close()
+			closeErr := normalizeServeError(server.close())
 			_ = lsn.Close()
 			// wait until closed
 			<-closed

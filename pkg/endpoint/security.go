@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/soheilhy/cmux"
-	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/transportidentity"
@@ -83,18 +82,7 @@ func (t *secureServer) serve(listener net.Listener) (err error) {
 		}
 	}()
 
-	group, ctx := errgroup.WithContext(ctx)
-	group.Go(func() error {
-		defer cancel()
-		return normalizeServeError(mux.Serve())
-	})
-
-	group.Go(func() error {
-		defer cancel()
-		return runServers(ctx, mux, newSecureExposedServers(t.internalServers))
-	})
-
-	return group.Wait()
+	return serveMuxAndServers(ctx, tlsListener, mux, newSecureExposedServers(t.internalServers))
 }
 
 type identityTLSListener struct {
