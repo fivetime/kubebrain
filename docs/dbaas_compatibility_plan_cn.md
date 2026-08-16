@@ -54184,6 +54184,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   普通 `pkg/endpoint` 全套（16.867 秒）、race 及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，真实
   listener silent-stop 对 Pod 非零退出与重启策略的联动仍留待正式新镜像故障门禁。
 
+- A4817 消除 mTLS identity listener 的握手队头阻塞。为在 gRPC `TagConn` 前注册已验证证书身份，旧 Accept 在
+  根 accept loop 内同步执行最长 10 秒 handshake；一个只建立 TCP 而不发送 ClientHello 的连接即可阻塞该安全
+  端口接受所有后续客户端，而上游 etcd TLS listener 的 Accept 只包装连接。生产 listener 现在以单独 accept loop
+  持续接收 socket、每连接并发执行有 deadline 的握手，验证成功并注册 identity 后才交给内层 cmux；关闭会停止
+  accept 并主动关闭全部在途 socket。并发握手硬上限为 256，满载时拒绝新 socket，避免以无限 goroutine 换取
+  表面可用性；坏握手仍保持 connection-local，不会停止整个 endpoint。
+
+  普通 `pkg/endpoint` 全套（16.964 秒）、race、TLS/Endpoint 定向与 vet 通过；本轮没有修改测试文件。在线
+  A4776 未滚动，真实 Slowloris、证书轮换并发握手和 256-slot 饱和恢复仍留待正式新镜像网络故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
