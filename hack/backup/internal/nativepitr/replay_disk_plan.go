@@ -39,8 +39,8 @@ var (
 )
 
 const (
-	replayPlanRecordVersion = byte(1)
-	replayPlanRecordHeader  = 2 + sha256.Size
+	replayPlanRecordVersion = byte(2)
+	replayPlanRecordHeader  = 2 + 8 + sha256.Size
 )
 
 // ReplayDiskPlan owns a rebuildable, canonical mutation plan in scratch
@@ -217,7 +217,7 @@ func replayPlanKey(m ReplayMutation) []byte {
 	return encoded
 }
 
-func replayPlanValue(key []byte, m ReplayMutation) []byte {
+func replayPlanValue(key []byte, m ReplayMutation, ordinal uint64) []byte {
 	encoded := make([]byte, replayPlanRecordHeader+len(m.Value))
 	encoded[0] = replayPlanRecordVersion
 	if m.Delete {
@@ -225,30 +225,36 @@ func replayPlanValue(key []byte, m ReplayMutation) []byte {
 	} else {
 		copy(encoded[replayPlanRecordHeader:], m.Value)
 	}
+	binary.BigEndian.PutUint64(encoded[2:10], ordinal)
 	digest := sha256.New()
 	_, _ = digest.Write(key)
-	_, _ = digest.Write(encoded[:2])
+	_, _ = digest.Write(encoded[:10])
 	_, _ = digest.Write(encoded[replayPlanRecordHeader:])
-	copy(encoded[2:replayPlanRecordHeader], digest.Sum(nil))
+	copy(encoded[10:replayPlanRecordHeader], digest.Sum(nil))
 	return encoded
 }
 
-func decodeReplayPlanMutation(key, value []byte) (ReplayMutation, error) {
+func decodeReplayPlanRecord(key, value []byte) (ReplayMutation, uint64, error) {
 	if len(key) <= 16 || len(value) < replayPlanRecordHeader || value[0] != replayPlanRecordVersion || value[1] > 1 || (value[1] == 1 && len(value) != replayPlanRecordHeader) {
-		return ReplayMutation{}, errors.New("native PITR replay disk plan record is corrupt")
+		return ReplayMutation{}, 0, errors.New("native PITR replay disk plan record is corrupt")
 	}
 	digest := sha256.New()
 	_, _ = digest.Write(key)
-	_, _ = digest.Write(value[:2])
+	_, _ = digest.Write(value[:10])
 	_, _ = digest.Write(value[replayPlanRecordHeader:])
-	if !bytes.Equal(value[2:replayPlanRecordHeader], digest.Sum(nil)) {
-		return ReplayMutation{}, errors.New("native PITR replay disk plan record checksum does not match key and value")
+	if !bytes.Equal(value[10:replayPlanRecordHeader], digest.Sum(nil)) {
+		return ReplayMutation{}, 0, errors.New("native PITR replay disk plan record checksum does not match key, ordinal, and value")
 	}
 	mutation := ReplayMutation{CommitTS: binary.BigEndian.Uint64(key), StartTS: binary.BigEndian.Uint64(key[8:]), Key: append([]byte(nil), key[16:]...), Delete: value[1] == 1}
 	if !mutation.Delete {
 		mutation.Value = append([]byte{}, value[replayPlanRecordHeader:]...)
 	}
-	return mutation, nil
+	return mutation, binary.BigEndian.Uint64(value[2:10]), nil
+}
+
+func decodeReplayPlanMutation(key, value []byte) (ReplayMutation, error) {
+	mutation, _, err := decodeReplayPlanRecord(key, value)
+	return mutation, err
 }
 
 func (p *ReplayDiskPlan) Close() error {
@@ -270,10 +276,13 @@ func (p *ReplayDiskPlan) forEach(fn func(int, ReplayMutation) error) error {
 			return errors.New("native PITR replay disk plan bucket is missing")
 		}
 		index := 0
-		return bucket.ForEach(func(key, value []byte) error {
-			mutation, err := decodeReplayPlanMutation(key, value)
+		err := bucket.ForEach(func(key, value []byte) error {
+			mutation, ordinal, err := decodeReplayPlanRecord(key, value)
 			if err != nil {
 				return err
+			}
+			if ordinal != uint64(index) {
+				return errors.New("native PITR replay disk plan record ordinal is not contiguous")
 			}
 			if err := fn(index, mutation); err != nil {
 				return err
@@ -281,7 +290,66 @@ func (p *ReplayDiskPlan) forEach(fn func(int, ReplayMutation) error) error {
 			index++
 			return nil
 		})
+		if err != nil {
+			return err
+		}
+		if p.Manifest.Format == ReplayManifestFormat && index != p.Manifest.MutationCount {
+			return errors.New("native PITR replay disk plan record count does not match manifest")
+		}
+		return nil
 	})
+}
+
+func numberReplayDiskPlan(plan *ReplayDiskPlan) error {
+	return numberReplayDiskPlanWithBatchBytes(plan, replayDefaultStoreBatchBytes)
+}
+
+func numberReplayDiskPlanWithBatchBytes(plan *ReplayDiskPlan, maxBatchBytes uint64) error {
+	if maxBatchBytes == 0 {
+		return errors.New("native PITR replay disk plan numbering batch must be positive")
+	}
+	var nextKey []byte
+	ordinal := uint64(0)
+	for {
+		done := true
+		err := plan.db.Update(func(tx *bolt.Tx) error {
+			bucket := tx.Bucket(replayPlanBucket)
+			if bucket == nil {
+				return errors.New("native PITR replay disk plan bucket is missing")
+			}
+			cursor := bucket.Cursor()
+			key, value := cursor.First()
+			if nextKey != nil {
+				key, value = cursor.Seek(nextKey)
+			}
+			batchBytes := uint64(0)
+			for key != nil {
+				mutation, err := decodeReplayPlanMutation(key, value)
+				if err != nil {
+					return err
+				}
+				numbered := replayPlanValue(key, mutation, ordinal)
+				if err := bucket.Put(key, numbered); err != nil {
+					return err
+				}
+				ordinal++
+				batchBytes += uint64(len(key) + len(numbered))
+				key, value = cursor.Next()
+				if batchBytes >= maxBatchBytes && key != nil {
+					nextKey = append(nextKey[:0], key...)
+					done = false
+					return nil
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+	}
 }
 
 func digestReplayDiskPlan(plan *ReplayDiskPlan) (string, error) {
@@ -633,7 +701,7 @@ func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, r
 			}
 		}
 		key := replayPlanKey(mutation)
-		value := replayPlanValue(key, mutation)
+		value := replayPlanValue(key, mutation, 0)
 		if err := planBucket.Put(key, value); err != nil {
 			return err
 		}
@@ -683,6 +751,9 @@ func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, r
 	}
 	if err := flushPlan(); err != nil {
 		return nil, fmt.Errorf("commit native PITR replay disk plan: %w", err)
+	}
+	if err := numberReplayDiskPlan(plan); err != nil {
+		return nil, fmt.Errorf("number native PITR replay disk plan: %w", err)
 	}
 	var previousCommit, previousStart uint64
 	err = plan.forEach(func(index int, mutation ReplayMutation) error {

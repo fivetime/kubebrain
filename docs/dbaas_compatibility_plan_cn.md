@@ -55157,6 +55157,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   最终 revision/key/lease/watch 语义验收 38.98 秒通过，一次性容器已清理。真实块设备 bit flip、I/O error、filesystem
   remount/read-only、空间耗尽及恶意同权限篡改不由该确定性测试冒充，仍保持开放。
 
+- A4915 覆盖 A4914 内容 checksum 无法发现的整条 record 删除/插入。scratch record v2 增加 64-bit canonical ordinal，并将其纳入
+  SHA-256；最终 plan 写完后以 8MiB 有界 bbolt write transaction 批次按 `(commit_ts,start_ts,key)` cursor 顺序从零编号，避免编号
+  阶段重新引入 O(all output) dirty transaction。每一次 scan 都验证 ordinal 严格连续，
+  manifest 建立后还验证实际 record 总数等于 `mutation_count`：中间删除在下一条产生 gap，尾部删除触发 count mismatch，插入即使
+  使用重新计算的合法 checksum 也产生 ordinal 重复或错位。三个状态机都在完整 preflight 后、首次 target checkpoint read 时执行
+  变更，并证明 target batch commit 保持零。当前 header 为 42 字节；logical manifest SHA 不包含 scratch-only ordinal，因而 receipt
+  与 checkpoint digest 契约不变。
+
+  2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 与官方 BR
+  v7.5.1 上执行正式 `TestNativeLogReplayRealBR`：record v2 编号路径的 v6 receipt、v2 checkpoint、fence/handoff 与最终
+  revision/key/lease/watch 语义验收 41.61 秒通过，一次性容器已清理。该机制不防御可同时重写整个 scratch plan、ordinal、checksum
+  和进程内 manifest 的同权限恶意主体；权限隔离仍由 Pod/PVC 安全边界承担。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -25,22 +25,19 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-type mutateReplayPlanOnGetStore struct {
+type changeReplayPlanOnGetStore struct {
 	storage.KvStorage
 	plan    *ReplayDiskPlan
+	change  func(*bolt.Bucket) error
 	mutated bool
 	err     error
 }
 
-func (s *mutateReplayPlanOnGetStore) Get(ctx context.Context, key []byte) ([]byte, error) {
+func (s *changeReplayPlanOnGetStore) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if !s.mutated {
 		s.mutated = true
 		s.err = s.plan.db.Update(func(tx *bolt.Tx) error {
-			bucket := tx.Bucket(replayPlanBucket)
-			planKey, value := bucket.Cursor().First()
-			changed := append([]byte(nil), value...)
-			changed[len(changed)-1] ^= 0xff
-			return bucket.Put(planKey, changed)
+			return s.change(tx.Bucket(replayPlanBucket))
 		})
 	}
 	return s.KvStorage.Get(ctx, key)
@@ -61,6 +58,11 @@ func TestMaterializeReplayDiskPlanMatchesCanonicalMemoryPlan(t *testing.T) {
 		return nil
 	}))
 	require.Equal(t, wantMutations, got)
+	require.NoError(t, numberReplayDiskPlanWithBatchBytes(plan, 1), "numbering must resume exactly across bounded write transactions")
+	require.NoError(t, plan.forEach(func(index int, mutation ReplayMutation) error {
+		require.Equal(t, wantMutations[index], mutation)
+		return nil
+	}))
 	planPath := plan.path
 	require.NoError(t, plan.Close())
 	_, err = os.Stat(planPath)
@@ -131,19 +133,19 @@ func TestReplayDiskPlanDoesNotExposeMmapMemory(t *testing.T) {
 func TestReplayDiskPlanRecordChecksumBindsKeyValueAndEmptySemantics(t *testing.T) {
 	key := replayPlanKey(ReplayMutation{CommitTS: 20, StartTS: 10, Key: []byte("key")})
 	putEmpty := ReplayMutation{CommitTS: 20, StartTS: 10, Key: []byte("key"), Value: []byte{}}
-	decoded, err := decodeReplayPlanMutation(key, replayPlanValue(key, putEmpty))
+	decoded, err := decodeReplayPlanMutation(key, replayPlanValue(key, putEmpty, 7))
 	require.NoError(t, err)
 	require.Equal(t, putEmpty, decoded)
 	require.NotNil(t, decoded.Value)
 
 	deleteMutation := ReplayMutation{CommitTS: 20, StartTS: 10, Key: []byte("key"), Delete: true}
-	decoded, err = decodeReplayPlanMutation(key, replayPlanValue(key, deleteMutation))
+	decoded, err = decodeReplayPlanMutation(key, replayPlanValue(key, deleteMutation, 7))
 	require.NoError(t, err)
 	require.Equal(t, deleteMutation, decoded)
 
 	changedKey := append([]byte(nil), key...)
 	changedKey[len(changedKey)-1] ^= 0xff
-	_, err = decodeReplayPlanMutation(changedKey, replayPlanValue(key, putEmpty))
+	_, err = decodeReplayPlanMutation(changedKey, replayPlanValue(key, putEmpty, 7))
 	require.ErrorContains(t, err, "checksum")
 }
 
@@ -206,12 +208,63 @@ func TestApplyReplayDiskPlanRejectsMutationAfterPreflightBeforeTargetWrite(t *te
 	inner := memkv.NewKvStorage()
 	defer inner.Close()
 	counted := &countingReplayStore{KvStorage: inner}
-	target := &mutateReplayPlanOnGetStore{KvStorage: counted, plan: plan}
+	target := &changeReplayPlanOnGetStore{KvStorage: counted, plan: plan, change: func(bucket *bolt.Bucket) error {
+		planKey, value := bucket.Cursor().First()
+		changed := append([]byte(nil), value...)
+		changed[len(changed)-1] ^= 0xff
+		return bucket.Put(planKey, changed)
+	}}
 
 	_, err = ApplyReplayDiskPlan(t.Context(), target, digest, plan, 1<<20)
 	require.NoError(t, target.err)
 	require.ErrorContains(t, err, "checksum")
 	require.Zero(t, counted.commits, "a post-preflight scratch bit flip must not enter a target transaction")
+}
+
+func TestApplyReplayDiskPlanRejectsSequenceChangeAfterPreflight(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*bolt.Bucket) error
+		match  string
+	}{
+		{name: "middle deletion", match: "ordinal", change: func(bucket *bolt.Bucket) error {
+			cursor := bucket.Cursor()
+			key, _ := cursor.First()
+			key, _ = cursor.Next()
+			return bucket.Delete(key)
+		}},
+		{name: "tail deletion", match: "count", change: func(bucket *bolt.Bucket) error {
+			key, _ := bucket.Cursor().Last()
+			return bucket.Delete(key)
+		}},
+		{name: "insertion", match: "ordinal", change: func(bucket *bolt.Bucket) error {
+			key, value := bucket.Cursor().First()
+			mutation, err := decodeReplayPlanMutation(key, value)
+			if err != nil {
+				return err
+			}
+			mutation.Key = append(mutation.Key, 0)
+			insertedKey := replayPlanKey(mutation)
+			return bucket.Put(insertedKey, replayPlanValue(insertedKey, mutation, 1))
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, receipt, root, _, _ := replayFixture(t)
+			plan, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, t.TempDir(), 119, 150)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, plan.Close()) }()
+			inner := memkv.NewKvStorage()
+			defer inner.Close()
+			counted := &countingReplayStore{KvStorage: inner}
+			target := &changeReplayPlanOnGetStore{KvStorage: counted, plan: plan, change: test.change}
+
+			_, err = ApplyReplayDiskPlan(t.Context(), target, digest, plan, 1<<20)
+			require.NoError(t, target.err)
+			require.ErrorContains(t, err, test.match)
+			require.Zero(t, counted.commits, "a post-preflight sequence change must not enter a target transaction")
+		})
+	}
 }
 
 func TestApplyReplayDiskPlanResolvesCommittedUncertainCheckpoint(t *testing.T) {

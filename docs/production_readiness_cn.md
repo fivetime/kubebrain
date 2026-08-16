@@ -3119,6 +3119,18 @@ target checkpoint `Get` 发生时篡改首条 canonical value：随后的流式�
 通过，v6 manifest digest、checkpoint、fence/handoff 与最终 revision/key/lease/watch 语义不变。真实块设备 bit flip、I/O error、
 filesystem remount/read-only 和空间耗尽注入仍保持开放。
 
+A4915 继续封闭“整条 canonical record 在 preflight 后被删除或插入”的窗口，因为剩余记录的 A4914 内容 checksum 本身仍可全部
+正确。scratch record v2 新增 64-bit canonical ordinal，并把 ordinal 纳入逐记录 SHA-256；plan 完成写入后以 8MiB 有界 bbolt
+writable transaction 批次按最终 `(commit_ts,start_ts,key)` cursor 顺序编号。此后每次 plan scan 都要求 ordinal 从零严格连续，manifest 建立后
+还要求实际尾部计数等于 `mutation_count`。因此中间删除由下一个 ordinal 缺口发现，尾部删除由总数发现，插入即使带重新计算的合法
+checksum 也会造成 ordinal 重复/错位；三种状态机均在 preflight 后首次 target checkpoint read 时修改 scratch，并断言 target
+commit 为零。
+
+record header 当前总计 42 字节（version/flags 2、ordinal 8、SHA-256 32），scratch sizing 应使用当前值而非 A4914 的 34 字节历史
+格式。2026-08-16 独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 和官方 BR v7.5.1
+正式全链以 41.61 秒通过，logical manifest digest 与 v6 receipt 不包含临时 ordinal，checkpoint、fence/handoff 及最终
+revision/key/lease/watch 语义保持不变。恶意同权限主体可整体重写 plan、ordinal/checksum/内存 manifest，不属于 checksum 威胁模型。
+
 TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
 每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
 恢复方关闭 gate 时必须以 range compare 同时证明 session 前缀为空，因此新进程注册与 restore acquire 只能
