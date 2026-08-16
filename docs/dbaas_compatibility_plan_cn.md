@@ -54271,6 +54271,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   EventLog/HistoryWatch 聚焦 race（5.042 秒）与 `pkg/backend` vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，
   Badger iterator close fault 及后续 TiKV iterator 可失败实现仍留待正式新镜像故障门禁。
 
+- A4827 将 iterator fail-closed 合同扩展到 event-log witness 校验与 compaction GC。旧 witness 校验忽略 Close，可能
+  把未可靠收尾的快照提升为可信；touched-key 增量扫描同样可能返回可信集合；event/witness 清理甚至会在 Close
+  失败后继续删除。生产路径现在聚合 witness 校验主错误与 Close，增量集合在 Close 失败时降级为全扫描，并让两类
+  cleanup 在 scan/Close 任一失败时停止删除、保留 leftovers 供下一轮 sweep，避免扩大物理 GC 范围。
+
+  EventLog/TxnWitness/Compaction/HistoryWatch 聚焦 race（6.403 秒）与 `pkg/backend` vet 通过；本轮没有修改测试文件。
+  在线 A4776 未滚动，Badger iterator close fault 下的 fallback/leftover 保留仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
