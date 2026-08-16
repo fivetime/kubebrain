@@ -53032,6 +53032,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   15.644ms；主/JWT 六副本使用最终 runtime imageID 且 Ready/零重启，PD/TiKV 3+3 Ready/零重启。
   三个非入库探针二进制、临时源码和六个端口转发均已清除。
 
+- A4745 修复 bidi `LeaseKeepAlive` 在 follower 转发期间因 leader peer connection retirement 泄漏内部
+  `Canceled`。该流式路径刻意不经过 A4744 的 unary interceptor；对标
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go` 的服务端循环以及
+  `/root/etcd/client/v3/lease.go` 的重建流语义后，用显式 lease ID `0x47450001`、64 条 raw gRPC
+  KeepAlive 流直连明确 follower，并在持续收发期间删除 leader。A4744 最终镜像的修复前结果为
+  `responses=10999,canceled=3,unavailable=0,deadline=0,other=61`；调用方 context 仍存活，三个
+  `grpc: the client connection is closing` 因而是生产错误契约 RED，而不是客户端取消。
+
+  生产提交 `3158d79a` 只扩展现有 `mapLeaseKeepAliveForwardError`：parent/downstream context 仍存活且
+  peer bidi stream 返回 context/gRPC `Canceled` 时，映射为 `ErrGRPCLeaderChanged`，由
+  `leaseKeepAlive` 已有的 `Unavailable` message-preserving 循环重建 upstream stream 并重发已经消费的
+  request；真实 caller cancellation、forward deadline 与 application status 保持不变。新增一条直接覆盖
+  live-parent/internal-cancel 的最小断言，没有扩展无关测试。聚焦测试 0.168 秒、proxy 全包 3.116 秒、
+  完整 `pkg/server/etcd` 约 164 秒及两包 vet 通过；第一次完整回归的海量日志未可靠保留失败事件，改用
+  `go test -json` 只提取 `fail` 事件重跑后零失败，未以修改测试掩盖瞬态结果。
+
+  最终镜像 `kubebrain:a4745-3158d79a` 内嵌完整 SHA
+  `3158d79a31b87a2dd06f0998c95e53961c598357`、build time `2026-08-16T00:46:44Z`，本地 OCI index
+  为 `sha256:2a27baa73e727309eb19a05b966377d0d02e8c27b222c9820e3195669a38f00a`，Kind runtime
+  imageID 为 `sha256:144932213065d59ecd1c16f4c634d7e961f1f2136c6a73fec0c5b118567521ea`。首次无间隔
+  GREEN 在跨切主 11,966 次响应中已得到 `canceled=0`，但探针自身以非真实速率触发 22 个
+  `ResourceExhausted`；没有把该结果包装成全绿。改为每流 100ms 的真实节奏并在新 term 再删一次 leader，
+  得到 `responses=13824,canceled=0,unavailable=0,deadline=0,eof=0,cleanup=64,other=0`，证明 64 条
+  downstream stream 全部跨切主存活，仅在 25 秒探针预算结束时正常清理。
+
+  显式 lease 以 etcdctl 的十六进制参数 `47450001` 撤销，终态 LeaseList/AlarmList 为空、proposal health
+  15.898ms；主/JWT 六副本使用最终 runtime imageID 且 Ready/零重启，PD/TiKV 3+3 Ready/零重启。
+  三个端口转发、临时 raw gRPC 源码和二进制均已清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
