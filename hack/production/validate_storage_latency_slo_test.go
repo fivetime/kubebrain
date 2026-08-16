@@ -32,12 +32,22 @@ func TestStorageLatencyGateMatchesProductionAlerts(t *testing.T) {
 		}[metric] + `-metrics"}[5m])))`
 		require.Contains(t, monitoring, expression)
 	}
+	for _, metric := range []string{
+		"serializable_checkpoint_available",
+		"serializable_checkpoint_revision",
+		"serializable_checkpoint_remaining_seconds",
+	} {
+		require.Contains(t, script, metric)
+		require.Contains(t, monitoring, metric)
+	}
 	require.Contains(t, script, `TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"`)
 	require.Contains(t, script, `TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"`)
+	require.Contains(t, script, `KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"`)
 	require.Equal(t, 3, strings.Count(script, "histogram_quantile(0.99"))
 	require.Equal(t, 3, strings.Count(script, "[5m]"))
-	require.Equal(t, 3, strings.Count(script, "validate_count "))
-	require.Equal(t, 3, strings.Count(script, "validate_freshness "))
+	require.Equal(t, 6, strings.Count(script, "validate_count "))
+	require.Equal(t, 5, strings.Count(script, "validate_freshness "))
+	require.Equal(t, 3, strings.Count(script, "validate_minimum "))
 }
 
 func TestValidateStorageLatencySLOFailsClosed(t *testing.T) {
@@ -60,6 +70,15 @@ if [[ "$query" == max\(time\(\)* ]]; then
 elif [[ "$query" == count\(* ]]; then
   value="${FAKE_SERIES_COUNT:-3}"
   printf '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"%s"]}]}}\n' "$value"
+elif [[ "$query" == min\(serializable_checkpoint_* ]]; then
+  if [[ "$query" == *serializable_checkpoint_available* ]]; then
+    value="${FAKE_CHECKPOINT_AVAILABLE:-1}"
+  elif [[ "$query" == *serializable_checkpoint_revision* ]]; then
+    value="${FAKE_CHECKPOINT_REVISION:-42}"
+  else
+    value="${FAKE_CHECKPOINT_REMAINING:-120}"
+  fi
+  printf '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"%s"]}]}}\n' "$value"
 else
   value="${FAKE_LATENCY:-0.125}"
   results="${FAKE_LATENCY_RESULTS:-3}"
@@ -78,6 +97,7 @@ fi
 		"JQ=jq",
 		"TIDB_NAMESPACE=storage-a",
 		"TIDB_CLUSTER=tenant-a",
+		"KUBEBRAIN_NAMESPACE=kubebrain-a",
 		"FAKE_QUERY_LOG=" + queryLog,
 		"EXPECTED_PD_MEMBERS=3",
 		"EXPECTED_TIKV_STORES=3",
@@ -87,12 +107,13 @@ fi
 
 	output, err := runProductionScriptCommand(t, "validate-storage-latency-slo.sh", base)
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "storage latency SLO gate passed")
+	require.Contains(t, string(output), "storage/checkpoint SLO gate passed")
 	queries, err := os.ReadFile(queryLog)
 	require.NoError(t, err)
-	require.Equal(t, 9, strings.Count(string(queries), "\n"))
+	require.Equal(t, 17, strings.Count(string(queries), "\n"))
 	require.Equal(t, 3, strings.Count(string(queries), `namespace="storage-a",service="tenant-a-pd-metrics"`))
 	require.Equal(t, 6, strings.Count(string(queries), `namespace="storage-a",service="tenant-a-tikv-metrics"`))
+	require.Equal(t, 8, strings.Count(string(queries), `namespace="kubebrain-a"`))
 
 	for _, tc := range []struct {
 		name string
@@ -106,6 +127,9 @@ fi
 		{name: "count family missing", env: "FAKE_SERIES_COUNT=2", want: "expected 3 series"},
 		{name: "metric sample stale", env: "FAKE_METRIC_AGE=61", want: "oldest sample age exceeds 60s"},
 		{name: "metric sample age is NaN", env: "FAKE_METRIC_AGE=NaN", want: "or is malformed"},
+		{name: "checkpoint unavailable", env: "FAKE_CHECKPOINT_AVAILABLE=0", want: "checkpoint availability: minimum 1 not met"},
+		{name: "checkpoint revision missing", env: "FAKE_CHECKPOINT_REVISION=0", want: "checkpoint revision: minimum 1 not met"},
+		{name: "checkpoint window too short", env: "FAKE_CHECKPOINT_REMAINING=59", want: "checkpoint remaining window: minimum 60 not met"},
 		{name: "prometheus error", env: "FAKE_PROM_ERROR=true", want: "Prometheus query failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,6 +171,13 @@ func TestValidateStorageLatencySLORejectsUnsafeConfiguration(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "TIDB_NAMESPACE must be a DNS label")
+
+	output, err = runProductionScriptCommand(t, "validate-storage-latency-slo.sh", []string{
+		"PROMETHEUS_URL=https://prometheus.example.test",
+		"KUBEBRAIN_NAMESPACE=tenant/a",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "KUBEBRAIN_NAMESPACE must be a DNS label")
 
 	tokenPath := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(tokenPath, []byte("first\nsecond\n"), 0o600))
