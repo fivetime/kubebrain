@@ -42,6 +42,13 @@ func TestCompareKVsRequiresPhysicalMetadataIdentity(t *testing.T) {
 	require.ErrorContains(t, compareKVs(expected, nil), "record count")
 }
 
+func TestRunRejectsMissingEnvironmentBeforeOpeningResources(t *testing.T) {
+	for _, name := range []string{"WITNESS_FILE", "SNAPSHOT_RECEIPT_FILE", "RESTORE_RECEIPT_FILE", "RESTORE_MANIFEST_FILE", "SEMANTIC_RECEIPT_FILE", "VERIFY_PREFIX"} {
+		t.Setenv(name, "")
+	}
+	require.ErrorContains(t, run(), "are required")
+}
+
 func TestFileDigest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "witness.jsonl")
 	data := []byte("immutable-witness\n")
@@ -596,6 +603,9 @@ func TestWriteAtomicSemanticReceipt(t *testing.T) {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, original, data)
+	temps, err := filepath.Glob(filepath.Join(directory, ".cold-semantic-*.tmp"))
+	require.NoError(t, err)
+	require.Empty(t, temps)
 }
 
 func TestValidateSemanticReceiptRequiresCompleteIdentity(t *testing.T) {

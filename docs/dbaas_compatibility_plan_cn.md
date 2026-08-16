@@ -54738,6 +54738,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   既有 oversized receipt、成功发布、冲突不覆盖与无临时残留回归覆盖新路径；cold-restore-render/snapshot-receipt race
   （1.295 秒及缓存套件）、vet 与 diff check 通过。真实 unlink/fsync fault 仍留待 cold restore render Job 文件系统门禁。
 
+- A4881 修复 cold-restore semantic verifier 的错误控制流与全部本地资源终态。旧 `main` 在 verified witness、etcd client
+  打开后仍以 `fatal -> os.Exit(1)` 处理业务错误，Go defer 因而完全不运行；即使成功路径，witness/client Close、三类 JSON
+  receipt 双读和 witness digest reader 的 Close 也被丢弃。命令现拆为 `main -> run() error`，run 用命名错误 Join verified
+  witness、etcd client 与所有 file Close；stable witness 验证失败也聚合 Verified.Close。semantic receipt writer 同时聚合
+  encode/sync/Close/Remove，保持 hard-link 独占发布和父目录 Sync/Close，cleanup failure 不得提升为终态验证成功。
+
+  新增 pre-connect missing-env 与冲突发布后无临时残留回归，复用 oversized/stability/witness drift 套件；cold verifier/
+  renderer/snapshot race（1.383 秒及缓存套件）、vet 与 diff check 通过。真实 etcd client/witness close 双故障仍留待 verifier
+  Job transport 与文件系统故障注入门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

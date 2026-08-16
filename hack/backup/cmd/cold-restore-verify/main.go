@@ -248,6 +248,12 @@ type semanticReceipt struct {
 }
 
 func main() {
+	if err := run(); err != nil {
+		fatal(err)
+	}
+}
+
+func run() (retErr error) {
 	witnessPath := os.Getenv("WITNESS_FILE")
 	snapshotReceiptPath := os.Getenv("SNAPSHOT_RECEIPT_FILE")
 	restoreReceiptPath := os.Getenv("RESTORE_RECEIPT_FILE")
@@ -256,58 +262,58 @@ func main() {
 	probePrefix := os.Getenv("VERIFY_PREFIX")
 	if witnessPath == "" || snapshotReceiptPath == "" || restoreReceiptPath == "" ||
 		restoreManifestPath == "" || output == "" || probePrefix == "" {
-		fatal(errors.New("WITNESS_FILE, SNAPSHOT_RECEIPT_FILE, RESTORE_RECEIPT_FILE, RESTORE_MANIFEST_FILE, SEMANTIC_RECEIPT_FILE and VERIFY_PREFIX are required"))
+		return errors.New("WITNESS_FILE, SNAPSHOT_RECEIPT_FILE, RESTORE_RECEIPT_FILE, RESTORE_MANIFEST_FILE, SEMANTIC_RECEIPT_FILE and VERIFY_PREFIX are required")
 	}
 	if err := validateProbePrefix(probePrefix); err != nil {
-		fatal(err)
+		return err
 	}
 	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
-		fatal(errors.New("SEMANTIC_RECEIPT_FILE must not already exist"))
+		return errors.New("SEMANTIC_RECEIPT_FILE must not already exist")
 	}
 
 	verified, witnessFileSHA, err := openStableWitness(witnessPath)
 	if err != nil {
-		fatal(fmt.Errorf("verify witness artifact: %w", err))
+		return fmt.Errorf("verify witness artifact: %w", err)
 	}
-	defer verified.Close()
+	defer func() { retErr = errors.Join(retErr, verified.Close()) }()
 	status := verified.Status()
 	expected, leaseSpecs, leaseKeys, err := loadWitness(verified)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	for id, lease := range leaseSpecs {
 		if lease.GrantedTTL <= 0 {
-			fatal(fmt.Errorf("witness lease %d lacks granted_ttl; re-export with the current logical exporter", id))
+			return fmt.Errorf("witness lease %d lacks granted_ttl; re-export with the current logical exporter", id)
 		}
 	}
 	snapshotData, snapshotReceiptSHA, err := readStableBoundedJSONFile(snapshotReceiptPath, "snapshot receipt")
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	restoreData, restoreReceiptSHA, err := readStableBoundedJSONFile(restoreReceiptPath, "restore receipt")
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	restoreManifestData, restoreManifestSHA, err := readStableBoundedJSONFile(restoreManifestPath, "restore manifest")
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	snapshotRecord, restore, err := validateReceiptChain(status, witnessFileSHA, snapshotData, restoreData)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	if err := validateRestoreManifestBinding(restoreManifestData, restore, snapshotRecord); err != nil {
-		fatal(err)
+		return err
 	}
 
 	cli, err := etcdutil.NewClientFromEnv()
 	if err != nil {
-		fatal(err)
+		return err
 	}
-	defer cli.Close()
+	defer func() { retErr = errors.Join(retErr, cli.Close()) }()
 	timeout, err := etcdutil.TimeoutFromEnv()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -316,39 +322,39 @@ func main() {
 
 	historical, historicalRevision, err := fetchRange(ctx, cli, status.Prefix, status.Revision)
 	if err != nil {
-		fatal(fmt.Errorf("read witness revision %d: %w", status.Revision, err))
+		return fmt.Errorf("read witness revision %d: %w", status.Revision, err)
 	}
 	if err := compareKVs(expected, historical); err != nil {
-		fatal(fmt.Errorf("historical witness mismatch: %w", err))
+		return fmt.Errorf("historical witness mismatch: %w", err)
 	}
 	current, currentRevision, err := fetchRange(ctx, cli, status.Prefix, 0)
 	if err != nil {
-		fatal(fmt.Errorf("read current range: %w", err))
+		return fmt.Errorf("read current range: %w", err)
 	}
 	if currentRevision < status.Revision || historicalRevision < status.Revision {
-		fatal(fmt.Errorf("restored revision moved backwards: witness=%d historical=%d current=%d", status.Revision, historicalRevision, currentRevision))
+		return fmt.Errorf("restored revision moved backwards: witness=%d historical=%d current=%d", status.Revision, historicalRevision, currentRevision)
 	}
 	if err := compareKVs(expected, current); err != nil {
-		fatal(fmt.Errorf("current witness mismatch: %w", err))
+		return fmt.Errorf("current witness mismatch: %w", err)
 	}
 	if err := verifyLeases(ctx, cli, leaseSpecs, leaseKeys); err != nil {
-		fatal(err)
+		return err
 	}
 	putRevision, deleteRevision, err := runWatchProbe(ctx, cli, probePrefix)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	if err := verifyBoundedJSONFileDigest(snapshotReceiptPath, snapshotReceiptSHA, "snapshot receipt"); err != nil {
-		fatal(err)
+		return err
 	}
 	if err := verifyBoundedJSONFileDigest(restoreReceiptPath, restoreReceiptSHA, "restore receipt"); err != nil {
-		fatal(err)
+		return err
 	}
 	if err := verifyBoundedJSONFileDigest(restoreManifestPath, restoreManifestSHA, "restore manifest"); err != nil {
-		fatal(err)
+		return err
 	}
 	if err := verifyFileDigest(witnessPath, witnessFileSHA, "witness file"); err != nil {
-		fatal(err)
+		return err
 	}
 
 	receipt := semanticReceipt{
@@ -367,13 +373,14 @@ func main() {
 		ProbeDeleteRevision: deleteRevision, VerifiedAtUnix: time.Now().UTC().Unix(),
 	}
 	if err := validateSemanticReceipt(receipt); err != nil {
-		fatal(err)
+		return err
 	}
 	if err := writeAtomic(output, receipt); err != nil {
-		fatal(err)
+		return err
 	}
 	fmt.Fprintf(os.Stderr, "verified cold restore witness: records=%d leases=%d revision=%d probe=%d/%d\n",
 		status.Records, status.Leases, status.Revision, putRevision, deleteRevision)
+	return nil
 }
 
 func validateReceiptChain(status backupfile.Status, witnessFileSHA string, snapshotData, restoreData []byte) (snapshotReceipt, restoreReceipt, error) {
@@ -561,13 +568,13 @@ func decodeStrictJSON(data []byte, target any, description string) error {
 	return nil
 }
 
-func readBoundedJSONFile(path, description string) ([]byte, error) {
+func readBoundedJSONFile(path, description string) (data []byte, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxColdRestoreJSONBytes+1))
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, maxColdRestoreJSONBytes+1))
 	if err != nil {
 		return nil, err
 	}
@@ -616,18 +623,17 @@ func openStableWitness(path string) (*backupfile.Verified, string, error) {
 		return nil, "", err
 	}
 	if err := verifyFileDigest(path, witnessFileSHA, "witness file"); err != nil {
-		verified.Close()
-		return nil, "", err
+		return nil, "", errors.Join(err, verified.Close())
 	}
 	return verified, witnessFileSHA, nil
 }
 
-func fileDigest(path string) (string, error) {
+func fileDigest(path string) (digestResult string, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
@@ -1367,27 +1373,27 @@ func validateSemanticReceipt(receipt semanticReceipt) error {
 	return nil
 }
 
-func writeAtomic(path string, value any) error {
+func writeAtomic(path string, value any) (retErr error) {
 	directory := filepath.Dir(path)
 	tmp, err := os.CreateTemp(directory, ".cold-semantic-*.tmp")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() {
+		if removeErr := os.Remove(tmpName); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
+		return errors.Join(err, tmp.Close())
 	}
-	if err := json.NewEncoder(tmp).Encode(value); err != nil {
-		tmp.Close()
-		return err
+	encodeErr := json.NewEncoder(tmp).Encode(value)
+	var syncErr error
+	if encodeErr == nil {
+		syncErr = tmp.Sync()
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
+	if err := errors.Join(encodeErr, syncErr, tmp.Close()); err != nil {
 		return err
 	}
 	if err := os.Link(tmpName, path); err != nil {
@@ -1403,7 +1409,7 @@ func writeAtomic(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	syncErr := dir.Sync()
+	syncErr = dir.Sync()
 	closeErr := dir.Close()
 	return errors.Join(syncErr, closeErr)
 }
