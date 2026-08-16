@@ -26,7 +26,8 @@ func TestApprovedPlanDigestRejectsUnknownAndPartialParameters(t *testing.T) {
 }
 
 func TestWriteExclusiveDoesNotOverwrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "handoff.json")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "handoff.json")
 	value := nativeTargetReplacementForWriteTest()
 	require.NoError(t, writeExclusive(path, value))
 	first, err := os.ReadFile(path)
@@ -36,6 +37,16 @@ func TestWriteExclusiveDoesNotOverwrite(t *testing.T) {
 	second, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, first, second)
+	temps, err := filepath.Glob(filepath.Join(dir, ".*.tmp-*"))
+	require.NoError(t, err)
+	require.Empty(t, temps)
+}
+
+func TestReadBoundedRejectsOversizedEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, (8<<20)+1), 0o600))
+	_, err := readBounded(path)
+	require.ErrorContains(t, err, "exceeds 8 MiB")
 }
 
 func nativeTargetReplacementForWriteTest() nativepitr.TargetReplacementHandoff {

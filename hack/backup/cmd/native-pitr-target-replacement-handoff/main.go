@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -163,8 +164,13 @@ func decodeProvisioning(path string) ([]byte, nativepitr.TargetProvisioningRecei
 	return data, value, err
 }
 
-func readBounded(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+func readBounded(path string) (data []byte, retErr error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, (8<<20)+1))
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +180,7 @@ func readBounded(path string) ([]byte, error) {
 	return data, nil
 }
 
-func writeExclusive(path string, value nativepitr.TargetReplacementHandoff) error {
+func writeExclusive(path string, value nativepitr.TargetReplacementHandoff) (retErr error) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -187,18 +193,20 @@ func writeExclusive(path string, value nativepitr.TargetReplacementHandoff) erro
 		return err
 	}
 	tempPath := file.Name()
-	defer os.Remove(tempPath)
+	defer func() {
+		if removeErr := os.Remove(tempPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
 	if err := file.Chmod(0o600); err != nil {
-		file.Close()
-		return err
+		return errors.Join(err, file.Close())
 	}
-	if _, err = file.Write(data); err == nil {
-		err = file.Sync()
+	_, writeErr := file.Write(data)
+	var syncErr error
+	if writeErr == nil {
+		syncErr = file.Sync()
 	}
-	if closeErr := file.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
+	if err := errors.Join(writeErr, syncErr, file.Close()); err != nil {
 		return err
 	}
 	if err := os.Link(tempPath, cleanPath); err != nil {
@@ -211,7 +219,7 @@ func writeExclusive(path string, value nativepitr.TargetReplacementHandoff) erro
 	if err != nil {
 		return err
 	}
-	syncErr := dirFile.Sync()
+	syncErr = dirFile.Sync()
 	closeErr := dirFile.Close()
 	return errors.Join(syncErr, closeErr)
 }

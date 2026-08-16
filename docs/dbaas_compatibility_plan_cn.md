@@ -54619,6 +54619,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 oversized receipt 回归；restore-plan/nativepitr race（1.473 秒及缓存套件）、vet 与 diff check 通过。真实多输入
   close fault 与并发替换仍留待正式 plan builder Job 文件系统门禁。
 
+- A4868 补齐 native PITR target replacement handoff 的输入与独占输出文件终态。旧 bounded reader 通过 `os.ReadFile`
+  无法传播 Close；atomic writer 的 chmod/write/sync 失败会丢弃同级 Close 错误，临时文件 defer 也忽略 Remove，可能在
+  旧目标退役、新目标 provisioning、writer exclusion 与 admission 状态已绑定后遗留不可审计临时文件或假成功。
+  reader 现以 8 MiB bounded stream 读取并 Join Close；writer 聚合 chmod/write/sync/Close/Remove，并继续对父目录执行
+  Sync/Close，任何 cleanup failure 都阻止 handoff 成为流量切换证据，同时保留 hard-link 独占发布和不覆盖既有 receipt。
+
+  新增 oversized evidence 与冲突后无临时文件残留回归；target-replacement-handoff race（1.753 秒）、vet 与 diff check
+  通过。真实 filesystem close/unlink fault 仍留待正式 replacement handoff Job 文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
