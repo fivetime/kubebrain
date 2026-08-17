@@ -56076,6 +56076,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   低于三副本都在 5 分钟后 critical。精确 manifest 门禁固定两条 PromQL 及 minimum/exact/absent annotation，
   production readiness 已更新；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4980 将 A4979 的“最低三副本 + 当前期望全部可用”契约对称扩展到 KubeBrain 自身。旧
+  `KubeBrainInsufficientReplicas` 只判断 peer `up==1` 数是否小于 3，`KubeBrainReadinessUnavailable` 也只判断
+  StatefulSet Ready 是否小于 3；扩容到五副本后损失一个 member 将被两者同时漏报。现新增独立
+  `kubebrain_replicas:expected`，从按 `(namespace,statefulset)` 去重的 KSM desired replicas 发布，缺失时保持可观测的 0。
+  peer 告警将按 `instance` 去重的 scrapeable target 数与它精确比较；Ready 告警将 HA KSM Ready 样本按 StatefulSet
+  去重后与它精确比较。两者均要求三个数据面 StatefulSet 期望来源完整、KubeBrain 期望 series 存在且
+  期望值至少为 3；扩容未收敛、target/Ready 缺失、重复或拓扑降到三以下都在 5 分钟后 critical。
+  精确 manifest 门禁固定新 recording rule、两条 PromQL 和 minimum/exact/absent annotation，production readiness 已更新；
+  完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
