@@ -56096,6 +56096,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不冒充健康存储前提。精确 manifest 门禁和 annotation、production readiness 已更新，完整 `deploy/production` 测试通过。
   本项不重建数据面镜像。
 
+- A4982 修正 PD leader 与 TiKV Region leader-missing 告警在 gauge family 缺失时 fail open、在 HA scrape
+  重复时误报的问题。旧 `sum(etcd_server_is_leader) != 1` 会把空 family 留为无结果，也会把同一 PD 的重复样本
+  误计成多个 leader；旧 `max(tikv_raftstore_leader_missing) > 0` 同样无法识别空或部分 family。现两条告警均要求
+  三个 StatefulSet 期望来源完整、对应动态期望 recording series 存在，并要求按 `instance` 去重后的 gauge 数与
+  当前 PD/TiKV 期望副本数精确相等；证据齐备后再分别要求 PD leader gauge 之和恰为 1、TiKV leader-missing
+  gauge 最大值为 0。精确 manifest 门禁固定完整 PromQL，production readiness 已记录空 family、部分 family 与
+  HA 重复语义；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
