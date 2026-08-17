@@ -56371,6 +56371,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   invalid-value/alert PromQL 与 annotation，production readiness 已同步；完整 `deploy/production` 测试
   通过。本项不重建数据面镜像。
 
+- A5014 补齐 Ready replica quota telemetry 的数值与交叉字段闭包。旧门禁只验证 NOSPACE/backend/usage
+  三类新鲜 series 的 Pod UID 覆盖和副本间配置一致；NOSPACE 非布尔、backend 为零/NaN、usage 为负或
+  大于 backend 时，NOSPACE/usage-high 表达式仍可能为空或无意义。现新增 quota invalid-value count：只对
+  当前新鲜 Ready Pod UID 验证 NOSPACE 精确为 0/1、backend 为 `(0,2^53]` 内精确字节整数、usage 为
+  `[0,2^53]` 内精确字节整数且不超过同 Pod backend；recording 缺失或非零都触发
+  `KubeBrainQuotaMetricsInconsistent`。精确 manifest 门禁与 production readiness 已同步；完整
+  `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
