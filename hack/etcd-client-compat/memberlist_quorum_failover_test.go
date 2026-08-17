@@ -3,6 +3,7 @@ package compat
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,10 +49,21 @@ func TestMemberListSerializableSurvivesBackendQuorumLoss(t *testing.T) {
 		err    error
 	}
 	commandDone := make(chan commandResult, 1)
+	combinedReadyPath := filepath.Join(t.TempDir(), "combined-fault-ready")
+	requireCombinedReady := strings.Contains(command, "KUBEBRAIN_COMBINED_FAULT_READY_FILE")
+	if requireCombinedReady {
+		t.Setenv("KUBEBRAIN_COMBINED_FAULT_READY_FILE", combinedReadyPath)
+	}
 	go func() {
 		output, commandErr := runCompatShellCommandContext(t, ctx, command)
 		commandDone <- commandResult{output: output, err: commandErr}
 	}()
+	if requireCombinedReady {
+		require.Eventually(t, func() bool {
+			_, statErr := os.Stat(combinedReadyPath)
+			return statErr == nil
+		}, time.Minute, 100*time.Millisecond, "combined backend fault must signal both quorums ready")
+	}
 
 	// The helper's 15-second hold is intentionally much longer than this call
 	// deadline. Retry through setup and leader-lease transition until a request

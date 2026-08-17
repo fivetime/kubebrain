@@ -900,6 +900,24 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsMemberListConsistency(
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendCombinedPDAndTiKVQuorumPartitionRunsMemberListConsistency(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-quorum-memberlist)`)
+	require.Contains(t, script, `"serializable MemberList across concurrent PD quorum and TiKV quorum partition"`)
+	require.Contains(t, script, `COMBINED_FAULT_READY_FILE=\$KUBEBRAIN_COMBINED_FAULT_READY_FILE TIKV_COMBINED_FAULT_MODE=quorum`)
+	require.Contains(t, script, `run_memberlist_quorum_test`)
+
+	testSource, readErr := os.ReadFile("memberlist_quorum_failover_test.go")
+	require.NoError(t, readErr)
+	text := string(testSource)
+	require.Contains(t, text, `strings.Contains(command, "KUBEBRAIN_COMBINED_FAULT_READY_FILE")`)
+	require.Contains(t, text, `combined backend fault must signal both quorums ready`)
+	require.Contains(t, text, `MemberListRequest{Linearizable: true}`)
+	require.Contains(t, text, `require.Equal(t, baseline.Members, serializable.Members)`)
+}
+
 func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsLeaseRequireLeader(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
