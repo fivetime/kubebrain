@@ -106,6 +106,33 @@ type checkpointProtection struct {
 	timestamp uint64
 }
 
+type publicationValidatingCheckpointStorage struct {
+	*checkpointTestStorage
+	publicationMu         sync.Mutex
+	publicationTimestamps []uint64
+	publicationCalls      int
+	publicationStarts     [][]byte
+	publicationEnds       [][]byte
+}
+
+func (s *publicationValidatingCheckpointStorage) ValidateSnapshotPublication(
+	_ context.Context, start, end []byte, timestamp uint64,
+) error {
+	s.publicationMu.Lock()
+	defer s.publicationMu.Unlock()
+	s.publicationStarts = append(s.publicationStarts, append([]byte(nil), start...))
+	s.publicationEnds = append(s.publicationEnds, append([]byte(nil), end...))
+	index := s.publicationCalls
+	s.publicationCalls++
+	if index >= len(s.publicationTimestamps) {
+		return errors.New("missing publication timestamp")
+	}
+	if ready := s.publicationTimestamps[index]; ready < timestamp {
+		return errors.New("current topology has not reached checkpoint timestamp")
+	}
+	return nil
+}
+
 func (s *checkpointTestStorage) GetTimestampOracle(context.Context) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -408,6 +435,56 @@ func TestSerializableCheckpointWarmsEveryTenantRegionBeforePublication(t *testin
 	require.NoError(t, err)
 }
 
+func TestSerializableCheckpointRevalidatesTopologyAfterWarmBeforePublication(t *testing.T) {
+	base := &checkpointTestStorage{KvStorage: memkv.NewKvStorage()}
+	store := &publicationValidatingCheckpointStorage{
+		checkpointTestStorage: base,
+		publicationTimestamps: []uint64{200, 199},
+	}
+	b := newCheckpointBackend(t, store)
+	err := b.protectSerializableCheckpoint(
+		context.Background(), SerializableCheckpoint{Revision: 5, Timestamp: 200},
+	)
+	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable)
+	_, err = b.GetSerializableCheckpoint()
+	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable)
+
+	base.mu.Lock()
+	require.Len(t, base.protections, 1, "GC protection must precede the final publication fence")
+	require.Equal(t, uint64(200), base.protections[0].timestamp)
+	base.mu.Unlock()
+	compactKey := getCompactKey(b.config.Prefix)
+	require.Equal(t, [][]byte{b.ks.ObjectKeyspaceStart(), compactKey}, store.publicationStarts)
+	require.Equal(t, [][]byte{
+		b.ks.ObjectKeyspaceEnd(), append(append([]byte(nil), compactKey...), 0),
+	}, store.publicationEnds)
+}
+
+func TestSerializableCheckpointPublicationFailureRetainsPreviousGeneration(t *testing.T) {
+	base := &checkpointTestStorage{KvStorage: memkv.NewKvStorage()}
+	store := &publicationValidatingCheckpointStorage{
+		checkpointTestStorage: base,
+		publicationTimestamps: []uint64{300, 300, 300, 200},
+	}
+	b := newCheckpointBackend(t, store)
+	first := SerializableCheckpoint{Revision: 5, Timestamp: 200}
+	require.NoError(t, b.protectSerializableCheckpoint(context.Background(), first))
+	b.serializableCheckpointSwitchedAt = time.Now().Add(-serializableCheckpointProtectionGrace)
+	b.serializableCheckpointRegionsWarmedAt.Store(0)
+
+	err := b.protectSerializableCheckpoint(
+		context.Background(), SerializableCheckpoint{Revision: 6, Timestamp: 201},
+	)
+	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable)
+	served, serveErr := b.GetSerializableCheckpoint()
+	require.NoError(t, serveErr)
+	require.Equal(t, first.Timestamp, served.Timestamp)
+	base.mu.Lock()
+	require.Len(t, base.protections, 2)
+	require.NotEqual(t, base.protections[0].id, base.protections[1].id)
+	base.mu.Unlock()
+}
+
 func TestSerializableCheckpointUsableWindowExpiresBeforeDefaultRegionCacheTTL(t *testing.T) {
 	regionCacheTTL := time.Duration(tikvcfg.GetGlobalConfig().TiKVClient.RegionCacheTTL) * time.Second
 	require.Positive(t, regionCacheTTL)
@@ -444,6 +521,23 @@ func TestSerializableCheckpointCodecRejectsUnsafeMetadata(t *testing.T) {
 	encoded := encodeSerializableCheckpoint(SerializableCheckpoint{Revision: 4, Timestamp: 10, CompactRevision: 5})
 	_, err = decodeSerializableCheckpoint(encoded)
 	require.Error(t, err)
+}
+
+func TestSerializableCheckpointContextSeparatesProtectedFromOrdinaryPinnedSnapshot(t *testing.T) {
+	ordinary := storage.WithSnapshotTimestamp(context.Background(), 200)
+	_, pinned := storage.SnapshotTimestampFromContext(ordinary)
+	require.True(t, pinned)
+	require.False(t, storage.ProtectedSnapshotFromContext(ordinary))
+
+	checkpoint := SerializableCheckpoint{Revision: 5, Timestamp: 200}
+	protected := WithSerializableCheckpoint(context.Background(), checkpoint)
+	timestamp, pinned := storage.SnapshotTimestampFromContext(protected)
+	require.True(t, pinned)
+	require.Equal(t, checkpoint.Timestamp, timestamp)
+	require.True(t, storage.ProtectedSnapshotFromContext(protected))
+	served, ok := SerializableCheckpointFromContext(protected)
+	require.True(t, ok)
+	require.Equal(t, checkpoint, served)
 }
 
 func TestSerializableCheckpointReusesUnchangedSnapshot(t *testing.T) {

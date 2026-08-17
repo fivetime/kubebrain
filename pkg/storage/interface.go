@@ -21,17 +21,34 @@ import (
 )
 
 type snapshotTimestampContextKey struct{}
+type protectedSnapshotContextKey struct{}
 type snapshotIteratorFallbackContextKey struct{}
 
-// WithSnapshotTimestamp pins storage reads in ctx to an already protected
-// engine snapshot. Ordinary reads continue to obtain a fresh timestamp.
+// WithSnapshotTimestamp pins storage reads in ctx to an engine snapshot.
+// This alone does not assert that the snapshot is GC-protected or that all of
+// its Region routes were pre-warmed; ordinary historical and multi-step reads
+// must remain able to consult the topology service on cache misses.
 func WithSnapshotTimestamp(ctx context.Context, timestamp uint64) context.Context {
 	return context.WithValue(ctx, snapshotTimestampContextKey{}, timestamp)
+}
+
+// WithProtectedSnapshotTimestamp additionally asserts that timestamp is held
+// above engine GC and every required Region route was warmed and protected.
+// Storage adapters may use cache-only stale replica routing only under this
+// stronger context contract.
+func WithProtectedSnapshotTimestamp(ctx context.Context, timestamp uint64) context.Context {
+	ctx = WithSnapshotTimestamp(ctx, timestamp)
+	return context.WithValue(ctx, protectedSnapshotContextKey{}, true)
 }
 
 func SnapshotTimestampFromContext(ctx context.Context) (uint64, bool) {
 	timestamp, ok := ctx.Value(snapshotTimestampContextKey{}).(uint64)
 	return timestamp, ok && timestamp != 0
+}
+
+func ProtectedSnapshotFromContext(ctx context.Context) bool {
+	protected, _ := ctx.Value(protectedSnapshotContextKey{}).(bool)
+	return protected
 }
 
 // WithSnapshotIteratorFallback permits an exact timestamped iterator when an
@@ -197,6 +214,16 @@ type SnapshotRegionWarmer interface {
 // must be run for every candidate checkpoint before publication.
 type SnapshotReadinessValidator interface {
 	SnapshotReadyTimestamp(ctx context.Context, start, end []byte) (timestamp uint64, err error)
+}
+
+// SnapshotPublicationValidator is an OPTIONAL final fence for a routing
+// directory refresh. It revalidates that timestamp remains safe for the current
+// Region/Store topology after all routing caches have been warmed but before a
+// caller publishes the checkpoint locally. Implementations must fail closed if
+// topology changes during validation or if any required voter has not reached
+// timestamp.
+type SnapshotPublicationValidator interface {
+	ValidateSnapshotPublication(ctx context.Context, start, end []byte, timestamp uint64) error
 }
 
 // SnapshotProtector is an OPTIONAL capability for pinning an engine snapshot

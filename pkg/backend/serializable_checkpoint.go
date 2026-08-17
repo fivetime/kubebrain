@@ -73,7 +73,7 @@ type serializableCheckpointContextKey struct{}
 // WithSerializableCheckpoint pins all backend storage reads and the response
 // header revision to c. Callers must obtain c from GetSerializableCheckpoint.
 func WithSerializableCheckpoint(ctx context.Context, c SerializableCheckpoint) context.Context {
-	ctx = storage.WithSnapshotTimestamp(ctx, c.Timestamp)
+	ctx = storage.WithProtectedSnapshotTimestamp(ctx, c.Timestamp)
 	return context.WithValue(ctx, serializableCheckpointContextKey{}, c)
 }
 
@@ -335,7 +335,8 @@ func (b *backend) protectSerializableCheckpoint(ctx context.Context, c Serializa
 	}
 	// Warm and validate the candidate while the previous, older service
 	// safepoint is still registered.
-	if err := b.refreshSerializableCheckpointRegions(ctx, c.Timestamp); err != nil {
+	regionsRefreshed, err := b.refreshSerializableCheckpointRegions(ctx, c.Timestamp)
+	if err != nil {
 		return err
 	}
 	slot := b.serializableCheckpointSlot
@@ -351,6 +352,11 @@ func (b *backend) protectSerializableCheckpoint(ctx context.Context, c Serializa
 	if minimum > c.Timestamp {
 		return fmt.Errorf("%w: GC safepoint %d passed snapshot %d", ErrSerializableCheckpointUnavailable, minimum, c.Timestamp)
 	}
+	if regionsRefreshed {
+		if err := b.validateSerializableCheckpointPublication(ctx, c.Timestamp); err != nil {
+			return err
+		}
+	}
 	if current == nil || current.Timestamp != c.Timestamp {
 		b.serializableCheckpointSlot = slot
 		b.serializableCheckpointSwitchedAt = now
@@ -360,20 +366,38 @@ func (b *backend) protectSerializableCheckpoint(ctx context.Context, c Serializa
 	return nil
 }
 
-func (b *backend) refreshSerializableCheckpointRegions(ctx context.Context, timestamp uint64) error {
+func (b *backend) refreshSerializableCheckpointRegions(ctx context.Context, timestamp uint64) (bool, error) {
 	b.serializableCheckpointRegionWarmMu.Lock()
 	defer b.serializableCheckpointRegionWarmMu.Unlock()
 	now := time.Now()
 	warmedAt := b.serializableCheckpointRegionsWarmedAt.Load()
 	if warmedAt != 0 && now.UnixNano() >= warmedAt && now.UnixNano()-warmedAt < int64(serializableCheckpointRegionRefresh) {
-		return nil
+		return false, nil
 	}
 	if err := b.warmSerializableCheckpoint(ctx, timestamp); err != nil {
-		return err
+		return false, err
 	}
 	// Record completion rather than start: a large directory scan must not
 	// consume the next refresh interval while it is still running.
 	b.serializableCheckpointRegionsWarmedAt.Store(time.Now().UnixNano())
+	return true, nil
+}
+
+func (b *backend) validateSerializableCheckpointPublication(ctx context.Context, timestamp uint64) error {
+	validator, ok := storage.FindCapability[storage.SnapshotPublicationValidator](b.kv)
+	if !ok {
+		return nil
+	}
+	if err := validator.ValidateSnapshotPublication(
+		ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), timestamp,
+	); err != nil {
+		return fmt.Errorf("%w: revalidate checkpoint object regions: %v", ErrSerializableCheckpointUnavailable, err)
+	}
+	compactKey := getCompactKey(b.config.Prefix)
+	compactEnd := append(append([]byte(nil), compactKey...), 0)
+	if err := validator.ValidateSnapshotPublication(ctx, compactKey, compactEnd, timestamp); err != nil {
+		return fmt.Errorf("%w: revalidate checkpoint compact region: %v", ErrSerializableCheckpointUnavailable, err)
+	}
 	return nil
 }
 

@@ -420,7 +420,7 @@ func (s *store) Iter(ctx context.Context, start []byte, end []byte, timestamp ui
 		}
 	}
 	snapshot := s.getClient().GetSnapshot(timestamp)
-	if pinned {
+	if pinned && storage.ProtectedSnapshotFromContext(ctx) {
 		// Protected checkpoints are immutable historical snapshots. Mixed replica
 		// reads preserve their value semantics and let a warmed Region cache route
 		// around one unavailable TiKV store without asking PD for a new leader.
@@ -487,14 +487,17 @@ func unavailableBeginError(ctx context.Context, kind string, err error) error {
 }
 
 // GetAt reads a point key from an explicit TiKV MVCC snapshot. It deliberately
-// avoids Begin/GetTimestampOracle: callers use it only with a checkpoint TSO
-// already acquired while PD was healthy.
+// avoids Begin/GetTimestampOracle. An ordinary pinned snapshot may still load
+// Region routes from PD; only WithProtectedSnapshotTimestamp authorizes the
+// pre-warmed cache-only failure mode.
 func (s *store) GetAt(ctx context.Context, key []byte, timestamp uint64) ([]byte, error) {
 	if timestamp == 0 {
 		return nil, errors.New("snapshot timestamp must be non-zero")
 	}
 	snapshot := s.getClient().GetSnapshot(timestamp)
-	configureProtectedSnapshot(snapshot)
+	if storage.ProtectedSnapshotFromContext(ctx) {
+		configureProtectedSnapshot(snapshot)
+	}
 	val, err := snapshot.Get(ctx, key)
 	if err != nil {
 		if tikverr.IsErrNotFound(err) {
@@ -592,6 +595,20 @@ func (s *store) SnapshotReadyTimestamp(ctx context.Context, start, end []byte) (
 		return 0, errors.New("no non-zero TiKV Store safe timestamp discovered")
 	}
 	return minimum, nil
+}
+
+func (s *store) ValidateSnapshotPublication(ctx context.Context, start, end []byte, timestamp uint64) error {
+	if timestamp == 0 {
+		return errors.New("snapshot timestamp must be non-zero")
+	}
+	ready, err := s.SnapshotReadyTimestamp(ctx, start, end)
+	if err != nil {
+		return err
+	}
+	if ready < timestamp {
+		return errors.Errorf("checkpoint timestamp %d exceeds current topology safe timestamp %d", timestamp, ready)
+	}
+	return nil
 }
 
 func validateCheckpointTopology(
@@ -746,7 +763,9 @@ func (s *store) BatchGetAt(ctx context.Context, keys [][]byte, timestamp uint64)
 		return map[string][]byte{}, nil
 	}
 	snapshot := s.getClient().GetSnapshot(timestamp)
-	configureProtectedSnapshot(snapshot)
+	if storage.ProtectedSnapshotFromContext(ctx) {
+		configureProtectedSnapshot(snapshot)
+	}
 	m, err := snapshot.BatchGet(ctx, keys)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to batch get from TiKV snapshot %d", timestamp)
