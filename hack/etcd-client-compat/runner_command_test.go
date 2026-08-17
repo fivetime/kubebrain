@@ -409,6 +409,10 @@ func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
 	require.Contains(t, script, `sleep "$PD_QUORUM_PARTITION_HOLD_SECONDS"`)
 	require.Contains(t, script, `pd_pods=("$leader")`)
 	require.Contains(t, script, `http://${ip}:2379/health`)
+	require.Contains(t, script, `member_healthy=false`)
+	require.Contains(t, script, `preflight health did not become true within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s`)
+	require.Contains(t, script, `.items[] | select(.metadata.name == $pod) | .spec.nodeName`)
+	require.Contains(t, script, `expected all PD Pods on one node`)
 	require.Contains(t, script, `PD quorum loss observed`)
 	require.Contains(t, script, `dual_partition_tags+=("kubebrain-pd-quorum-${pod}-$$")`)
 	require.Contains(t, script, `trap cleanup_dual_partition EXIT`)
@@ -756,6 +760,17 @@ func TestBackendPDDegradedNetworkRunsPorcupineHistories(t *testing.T) {
 	require.Contains(t, script, `pd-cross-node-degraded-network-linearizability)`)
 	require.Contains(t, script, `"Porcupine histories across cross-node PD network degradation"`)
 	require.Contains(t, script, `"$self --degrade-pd-all-cross-node"`)
+	require.Contains(t, script, `run_degraded_network_linearizability_test`)
+	require.NotContains(t, script, "eval ")
+}
+
+func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsPorcupineHistories(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-member-linearizability)`)
+	require.Contains(t, script, `"Porcupine histories across concurrent PD quorum and TiKV member partition"`)
+	require.Contains(t, script, `"$ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"`)
 	require.Contains(t, script, `run_degraded_network_linearizability_test`)
 	require.NotContains(t, script, "eval ")
 }

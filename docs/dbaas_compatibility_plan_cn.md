@@ -55375,6 +55375,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   LeaseList 为空，三个 KubeBrain Pod Ready 且无新增重启；临时 port-forward 已清理。本轮修复故障验收工具，不修改数据面生产代码，
   也不把单节点 Kind 的双 Pod replacement 外推为跨 AZ 分区或 PD quorum + TiKV store 组合失联。
 
+- A4932 开始补齐 P2 的跨组件多数故障矩阵，对照固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 `tests/integration/network_partition_test.go`，新增
+  PD quorum loss 与一台 leader-heavy TiKV store 同时双向分区的编排器，并接入已有 client/v3 Porcupine register 与 multi-key Txn
+  历史。编排器并发复用两个已有、各自以唯一 comment 持有 iptables 规则和 EXIT/TERM 清理的分区器；任一子进程失败会立即 TERM 另一
+  子进程并传播原退出码，成功必须等待两边分别观察到故障并恢复，不能只凭固定 sleep 返回。
+
+  首轮真实执行在 5 秒内稳定 RED：主 runner 的 kubectl context 已是 `kind-kubebrain-dbaas`，PD/TiKV 分区器却默认进入旧
+  `kubebrain-dev-control-plane` 容器执行 curl/iptables；错误节点无法访问当前 Pod IP，preflight 以 curl exit 28 退出。修复后单节点
+  模式从目标 Pod `.spec.nodeName` 推导唯一 privileged Kind node，并拒绝组件跨多个节点却误用 single-node profile；cross-node 模式
+  继续逐 Pod 绑定节点。PD preflight 对每个成员使用有界健康等待，恢复探针保留 node 数组直到全部成员重新健康，修复过程中实际捕获并
+  修正了原数组过早清空导致的 unbound-variable RED。TiKV member 的规则安装与 cleanup 全部绑定解析出的目标节点，不再依赖陈旧默认值。
+
+  2026-08-17 在独立三 PD/三 TiKV、单节点 Kind 上先单独证明组合 helper：两个 PD member 不可达与 leader-heavy TiKV store
+  `Disconnected` 同窗出现，随后 PD members 和 store 均恢复 Up。正式 5 秒重叠 profile 的 register 历史记录 49 个不确定失败，multi-key
+  Txn 历史记录 66 个；错误包含 `DeadlineExceeded`、leader changed、commit 后 leadership changed 与 proxy not ready，两项 Porcupine
+  均为 GREEN，完整门禁 77.154 秒通过。终态 endpoint proposal 17.5ms，五类 Region check 全零，AlarmList/LeaseList 为空，三个
+  KubeBrain Pod Ready 且无新增重启，所有 iptables 规则、测试 key 和 port-forward 已清理。本轮修改故障工具与永久门禁，不修改数据面
+  生产代码；真实跨节点/AZ 的同类组合分区仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
