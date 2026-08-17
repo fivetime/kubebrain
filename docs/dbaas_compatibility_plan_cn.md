@@ -56170,6 +56170,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PromQL 与 60-second annotation，production readiness 已同步；完整 `deploy/production` 测试通过。本项
   不重建数据面镜像。
 
+- A4991 将 60 秒 freshness 契约扩展到 compute/network 分钟计费输入。旧 source count 依赖 `rate[5m]`
+  或裸 gauge；series 停止更新但尚未退出 range/lookback 时仍可维持 `metering_data_complete=1` 并继续发布
+  当前 CPU/memory/network usage。现先过滤原始 sample age 不超过 60 秒，再按 container/interface 发布
+  CPU rate、memory working set、network RX/TX rate 四条实体 recording；source count 与瞬时 usage 只消费
+  这些序列，任一当前副本停止更新即 fail closed。小时 counter increase 仍按实体去重整个历史窗口，以保留
+  窗口内已缩容 Pod 的合法用量，并继续受 60 个分钟 completeness 样本保护。精确 manifest 门禁固定四条
+  freshness recording 及下游 count/sum PromQL，production readiness 已同步；完整 `deploy/production`
+  测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
