@@ -585,14 +585,25 @@ func (s *store) SnapshotReadyTimestamp(ctx context.Context, start, end []byte) (
 	); err != nil {
 		return 0, err
 	}
+	return checkpointReadyTimestamp(activeStores, safeTS)
+}
+
+func checkpointReadyTimestamp(storeIDs []uint64, safeTS map[uint64]uint64) (uint64, error) {
 	minimum := uint64(math.MaxUint64)
-	for _, timestamp := range safeTS {
-		if timestamp != 0 && timestamp < minimum {
+	for _, storeID := range storeIDs {
+		timestamp, ok := safeTS[storeID]
+		if !ok {
+			return 0, errors.Errorf("TiKV Store %d safe timestamp is missing", storeID)
+		}
+		if timestamp == 0 {
+			return 0, errors.Errorf("TiKV Store %d safe timestamp is not ready", storeID)
+		}
+		if timestamp < minimum {
 			minimum = timestamp
 		}
 	}
 	if minimum == math.MaxUint64 {
-		return 0, errors.New("no non-zero TiKV Store safe timestamp discovered")
+		return 0, errors.New("no TiKV Store safe timestamp discovered")
 	}
 	return minimum, nil
 }

@@ -65,6 +65,24 @@ func TestCheckpointStoresForRangeCountsUniqueVoterStores(t *testing.T) {
 	require.ErrorContains(t, err, "Region 10 has only 1 active non-witness TiKV voter Stores")
 }
 
+func TestCheckpointReadyTimestampRequiresEverySelectedStore(t *testing.T) {
+	timestamp, err := checkpointReadyTimestamp(
+		[]uint64{1, 2, 3}, map[uint64]uint64{1: 120, 2: 100, 3: 110},
+	)
+	require.NoError(t, err)
+	require.Equal(t, uint64(100), timestamp)
+
+	_, err = checkpointReadyTimestamp(
+		[]uint64{1, 2, 3}, map[uint64]uint64{1: 120, 2: 0, 3: 110},
+	)
+	require.ErrorContains(t, err, "TiKV Store 2 safe timestamp is not ready")
+
+	_, err = checkpointReadyTimestamp(
+		[]uint64{1, 2, 3}, map[uint64]uint64{1: 120, 3: 110},
+	)
+	require.ErrorContains(t, err, "TiKV Store 2 safe timestamp is missing")
+}
+
 func TestValidateCheckpointTopologyAllowsUnrelatedEmptyStore(t *testing.T) {
 	stores, regions := stableCheckpointTopology()
 	afterStores := cloneStores(stores)
