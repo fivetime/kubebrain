@@ -55792,6 +55792,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   port-forward 均清理。该 GREEN 仍只承诺已完整发布、GC-protected、全 Region 预热的 member-local
   checkpoint；冷启动无 checkpoint、未覆盖 Region 或超出保护代际时继续 fail closed。
 
+- A4958 对齐 upstream `server/etcdserver/api/v3rpc/maintenance.go` 的 member-local
+  `Maintenance.Status` 可用性：`ae12b5ea` 保留健康态 live-first 路径，只在 750ms 内遇到
+  `DeadlineExceeded`/`Unavailable` 时转到最近一份已发布且 GC-protected 的 checkpoint；鉴权、
+  `DataLoss` 和确定性错误仍 fail closed。fallback 返回同一检查点 revision 的 header/Raft envelope、
+  本地 member/leader/term、版本、quota、alarm 与 checkpoint size，并有确定性测试覆盖成功回退、错误
+  分类及上下文预算。首个精确镜像 `kubebrain:a4977-status-checkpoint`（manifest list
+  `sha256:36f1dcf1ebe1b683a5858a738229f9d4b645c5a0bd8f8167f1d1828817f3225d`）在严格双 quorum
+  故障中命中 fallback metric，但仍因重复读取 durable revision 而 10 秒超时，形成真实 RED；
+  `9df2078a` 让 protected Status 直接采用 `safeBackendRevision` 已钉住的 checkpoint revision，取消该
+  多余 TiKV 路由依赖。定向单元、race、compat 全包与 `go vet ./pkg/server/etcd` 均通过。
+
+  最终精确镜像 `kubebrain:a4978-status-checkpoint-revision`（完整 revision
+  `9df2078a870ab89c1d09748993e9fb6151044c6a`，manifest list
+  `sha256:586029544bc00d3a5ce844a7cfb2cd73883599021a8ba5ab7b7ad2f4c64baf65`）由独立
+  `pd-quorum-tikv-quorum-status` 门禁验证：等待 90 秒跨过 60 秒保护代际 grace 后，同时隔离
+  `kb-pd-0/1` 与 `kb-tikv-2/0`，mutation 明确 `DeadlineExceeded`，官方 clientv3 Status 在完整故障
+  窗口内成功返回 revision/Raft、版本、member/leader/term、size/quota 包络；完整门禁 **141.74 秒
+  GREEN**，随后两个 quorum 恢复。此前把 Status 附着于 1.8MiB RangeStream 复合测试的一轮，被
+  protected snapshot cached-replica exhaustion 在 Status 调用前截断，未计作 Status RED；`e1107739`
+  将门禁解耦，避免无关 snapshot consumer 污染能力证据。该保证是有界陈旧的 member-local 状态，
+  仅在有效受保护检查点存在时成立，不声称当前 revision 已线性化；冷启动或检查点失效仍 fail closed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
