@@ -114,11 +114,19 @@ spec:
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:cpu_usage_sources:count
-          expr: count(rate(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""}[5m])) + count(rate(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}[5m]))
+          expr: count(max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""}[5m]))) + count(max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}[5m])))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:cpu_throttled_period_sources:count
+          expr: count(max by (namespace, pod, container) (container_cpu_cfs_throttled_periods_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""})) + count(max by (namespace, pod, container) (container_cpu_cfs_throttled_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:cpu_period_sources:count
+          expr: count(max by (namespace, pod, container) (container_cpu_cfs_periods_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""})) + count(max by (namespace, pod, container) (container_cpu_cfs_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}))
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:memory_working_set_sources:count
-          expr: count(container_memory_working_set_bytes{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""}) + count(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""})
+          expr: count(max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""})) + count(max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}))
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_receive_sources:count
@@ -602,13 +610,13 @@ spec:
             summary: KubeBrain logical backup timestamp violates the production RPO clock envelope
             description: "The newest reported successful logical backup is more than 25 hours old or over 5 minutes in the future. A future timestamp must not suppress stale-backup detection; verify the authoritative exporter and node clock."
         - alert: KubeBrainResourceMetricsMissing
-          expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:compute_replicas:expected) == 1 or absent(kubebrain_dbaas:memory_working_set_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:memory_working_set_sources:count != on() kubebrain_dbaas:compute_replicas:expected or (count(max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",resource="memory",unit="byte"})) + count(max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",resource="memory",unit="byte"}))) != on() kubebrain_dbaas:compute_replicas:expected
+          expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:compute_replicas:expected) == 1 or absent(kubebrain_dbaas:cpu_usage_sources:count) == 1 or absent(kubebrain_dbaas:cpu_throttled_period_sources:count) == 1 or absent(kubebrain_dbaas:cpu_period_sources:count) == 1 or absent(kubebrain_dbaas:memory_working_set_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:cpu_usage_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:cpu_throttled_period_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:cpu_period_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:memory_working_set_sources:count != on() kubebrain_dbaas:compute_replicas:expected or (count(max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",resource="memory",unit="byte"})) + count(max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",resource="memory",unit="byte"}))) != on() kubebrain_dbaas:compute_replicas:expected
           for: 15m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain data-plane resource metrics are incomplete
-            description: "Current KubeBrain/PD/TiKV cAdvisor memory usage or deduplicated kube-state-metrics memory-limit sources do not exactly match the current StatefulSet replica expectation, or an expectation/source recording series is absent."
+            description: "Deduplicated current KubeBrain/PD/TiKV cAdvisor CPU usage, throttled/total period, memory working-set, or kube-state-metrics memory-limit source counts do not exactly match the current StatefulSet replica expectation, or an expectation/source recording series is absent. Missing throttling numerator or denominator must not be interpreted as zero CPU pressure."
         - alert: KubeBrainDataPlaneMemoryHigh
           expr: ((container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) > 0.9) or ((container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",resource="memory",unit="byte"}) > 0.9)
           for: 10m

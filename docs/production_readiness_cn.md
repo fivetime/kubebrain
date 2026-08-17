@@ -1642,6 +1642,11 @@ family 分别按 `(namespace,pod,interface)` 去重，来源数必须与三个 S
 相等；任一 recording series 缺失也 fail closed。只有该 completeness 门禁健康时，零
 `KubeBrainNetworkErrors`/`KubeBrainNetworkPacketDrops` 才是可信的零故障证据。
 
+CPU/内存资源门禁采用相同原则。`KubeBrainResourceMetricsMissing` 要求按
+`(namespace,pod,container)` 去重的 CPU usage、CFS throttled periods、CFS total periods 和 memory
+working set，以及去重的 KSM memory limit，分别精确覆盖当前动态副本总数；任一 recording series
+缺失也告警。特别是 throttling 分子或分母缺失不得被解释为零 CPU pressure。
+
 `deploy/production/monitoring.yaml` 还以 1 分钟周期生成实例级计量序列：
 
 - `kubebrain_dbaas:cpu_usage_cores:sum`；
@@ -1659,7 +1664,8 @@ KubeBrain、PD、TiKV 容器和 PD/TiKV 存储 PVC，不把 restore/repair 等�
 `kube_statefulset_replicas` 输出三条期望来源数、容器期望副本总数和活跃存储副本数，另以去重的
 `kube_persistentvolumeclaim_info` 输出当前匹配 PVC 对象数，以
 `kube_persistentvolumeclaim_resource_requests_storage_bytes` 输出所有这些 PVC 的 requested-storage source 数和总量，并输出
-8 个计费必需的 `*:sources:count`、4 个网络 error/drop completeness source count 和
+8 个计费必需的 `*:sources:count`、2 个 CPU throttling completeness source count、4 个网络
+error/drop completeness source count 和
 `kubebrain_dbaas:metering_data_complete`。只有 KubeBrain/PD/TiKV 三个 StatefulSet
 期望来源全部存在、容器 source 与当前期望副本数精确相等、PVC requested-storage source 与当前 PVC
 对象数精确相等（且 PVC 对象不少于活跃存储副本）、kubelet capacity/available source 与活跃存储副本数精确相等，且唯一备份
