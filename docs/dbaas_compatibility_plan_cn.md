@@ -55911,6 +55911,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   **78.35 秒 GREEN**，随后两个 quorum 恢复。该项没有生产 RED，不重建镜像；它只证明公开 listener/服务进程
   liveness，不把 `SERVING` 解释为可提交线性写入，流量准入仍应结合 `/readyz` 或实际 proposal health。
 
+- A4964 为 A4962 的 checkpoint health 降级补齐生产可观测性。原实现能在 backend blackout 中持续返回
+  liveness，但没有信号区分 live backend 成功与有界陈旧 checkpoint；若平台只观察 200，会漏掉持续后端故障。
+  `812526d2` 新增低基数 `health_checkpoint_fallback{check=...}` counter，固定三种 check：`alarm`、
+  `serializable_read`、`data_corruption`。语义与既有 Range/Status/Hash fallback counter 一致，统计进入受保护
+  fallback 路径的次数；正常 live 成功、无 checkpoint、caller 已取消和 `DataLoss` 等确定性错误均不计数。
+  recorder 单测精确固定 legacy health、livez、readyz 的事件顺序，另固定 healthy/DataLoss 零事件；race、vet 和
+  完整 server 回归通过。
+
+  `d56ff779` 扩展 `pd-quorum-tikv-quorum-http-health` 门禁，强制显式提供与 client endpoint 同一 Pod 的
+  info/metrics endpoint，并比较故障前后 Prometheus counter，而不是读取别的负载均衡副本。旧 a4981 在功能断言
+  全部成功后因 alarm metric delta=0 得到真实 RED。精确镜像 `kubebrain:a4982-health-fallback-metrics`（完整
+  revision `d56ff779a9beb9dd825e2552a8e68f9af4873622`，manifest list
+  `sha256:61d6b75fe8215bd29e8f4c9f00096612287c0752a3fb908b0a174e1262a49afe`）同时隔离
+  `kb-pd-1/0` 与 `kb-tikv-2/1` 后，mutation 明确 `DeadlineExceeded`，所有 A4962/A4963 功能断言继续通过，
+  scrape 得到 alarm=`1`、data_corruption=`1`、serializable_read=`3`；完整门禁 **79.45 秒 GREEN**，随后
+  两个 quorum 恢复。平台可据 counter rate 告警降级读取，但不得把累计值本身当成当前故障状态。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
