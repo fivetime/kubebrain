@@ -56529,6 +56529,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定 `0→1→0`，精确 manifest 测试和文档同步；同时修正 observability 中已过时的“CORRUPT 无对应语义”。
   相关测试通过。本项需要下一生产镜像。
 
+- A5032 闭合裸 PD/TiKV 内建 MVCC GC driver 的 capability/error 生产链。旧 driver 只有 leader 成功后才
+  动态发布 `storage.gc.safepoint`，失败时才创建 `storage.gc.err`；production 无法证明每个副本使用正数
+  lifetime 且 storage 实现 `GarbageCollector`，也无法区分零失败与 family 缺失。现每个 backend 创建时发布
+  `storage.gc.enabled=0`/`storage.gc.err=0`，driver 确认 capability 与 `lifetime>0` 后立即置 enabled=1。
+  监控生成 60 秒新鲜的 Ready Pod UID 级 enabled/current-error/30 分钟 increase recording，要求三类来源
+  完整，验证 enabled 精确 0/1、current `[0,2^53]` 精确整数、increase 有限且同范围；disabled/unsupported
+  立即进入 critical，调用失败 warning，metrics-missing critical。测试固定初始化与 capable driver 启用状态。
+  本项刻意不把 `storage_gc_safepoint` 的 scrape freshness 当作推进证据；leader-only last-success/进度时效合同
+  仍需后续增量。精确 manifest/backend 测试与 production/observability 文档已同步；相关测试通过。本项
+  需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
