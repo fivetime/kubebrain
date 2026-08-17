@@ -94,6 +94,8 @@ type checkpointTestStorage struct {
 	readinessErr    error
 	readyTimestamp  uint64
 	readinessCalls  int
+	readinessStart  []byte
+	readinessEnd    []byte
 	snapshotValues  map[string][]byte
 }
 
@@ -164,10 +166,12 @@ func (s *checkpointTestStorage) WarmSnapshotRegions(ctx context.Context, starts 
 	return nil
 }
 
-func (s *checkpointTestStorage) SnapshotReadyTimestamp(_ context.Context) (uint64, error) {
+func (s *checkpointTestStorage) SnapshotReadyTimestamp(_ context.Context, start, end []byte) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.readinessCalls++
+	s.readinessStart = append([]byte(nil), start...)
+	s.readinessEnd = append([]byte(nil), end...)
 	if s.readinessErr != nil {
 		return 0, s.readinessErr
 	}
@@ -245,6 +249,8 @@ func TestSerializableCheckpointUsesRevisionWatermarksAtReadyTimestamp(t *testing
 	c, err := b.createSerializableCheckpoint(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, SerializableCheckpoint{Revision: 7, Timestamp: 300, CompactRevision: 3, AuthRevision: 5}, c)
+	require.Equal(t, b.ks.ObjectKeyspaceStart(), store.readinessStart)
+	require.Equal(t, b.ks.ObjectKeyspaceEnd(), store.readinessEnd)
 }
 
 func TestSerializableCheckpointFailsClosedAfterGCPassedOrLocalDeadline(t *testing.T) {

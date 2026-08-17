@@ -170,7 +170,9 @@ func (b *backend) createSerializableCheckpoint(ctx context.Context) (Serializabl
 	}
 	timestamp := uint64(0)
 	if validator, ok := storage.FindCapability[storage.SnapshotReadinessValidator](b.kv); ok {
-		timestamp, err = validator.SnapshotReadyTimestamp(ctx)
+		timestamp, err = validator.SnapshotReadyTimestamp(
+			ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(),
+		)
 		if err != nil {
 			return SerializableCheckpoint{}, err
 		}

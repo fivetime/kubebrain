@@ -694,6 +694,16 @@ func (s *KVStore) GetAllTiKVStoreSafeTS(ctx context.Context) (map[uint64]uint64,
 // it lets callers use a fresh PD membership snapshot without stale, retired
 // Store objects in the Region cache freezing their checkpoint indefinitely.
 func (s *KVStore) GetTiKVStoreSafeTS(ctx context.Context, storeIDs []uint64) (map[uint64]uint64, error) {
+	return s.GetTiKVStoreSafeTSForRange(ctx, storeIDs, nil, nil)
+}
+
+// GetTiKVStoreSafeTSForRange is GetTiKVStoreSafeTS scoped to the physical key
+// range used by the caller. TiKV returns zero when a Store has no Region in the
+// range, so callers should pass only Store IDs proven by the same PD topology
+// snapshot to host a relevant data peer.
+func (s *KVStore) GetTiKVStoreSafeTSForRange(
+	ctx context.Context, storeIDs []uint64, startKey, endKey []byte,
+) (map[uint64]uint64, error) {
 	stores := s.regionCache.GetStoresByType(tikvrpc.TiKV)
 	selected := stores
 	if storeIDs != nil {
@@ -716,7 +726,7 @@ func (s *KVStore) GetTiKVStoreSafeTS(ctx context.Context, storeIDs []uint64) (ma
 		resp, err := s.GetTiKVClient().SendRequest(
 			ctx, store.GetAddr(), tikvrpc.NewRequest(
 				tikvrpc.CmdStoreSafeTS, &kvrpcpb.StoreSafeTSRequest{
-					KeyRange: &kvrpcpb.KeyRange{StartKey: []byte(""), EndKey: []byte("")},
+					KeyRange: &kvrpcpb.KeyRange{StartKey: startKey, EndKey: endKey},
 				}, kvrpcpb.Context{RequestSource: util.RequestSourceFromCtx(ctx)},
 			), client.ReadTimeoutShort,
 		)

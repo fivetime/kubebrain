@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"github.com/tikv/client-go/v2/tikvrpc"
 	"github.com/tikv/client-go/v2/txnkv"
 	"github.com/tikv/client-go/v2/txnkv/txnsnapshot"
+	pd "github.com/tikv/pd/client"
 	"go.uber.org/multierr"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -526,7 +528,7 @@ func (s *store) WarmSnapshotRegions(ctx context.Context, starts [][]byte, timest
 	return nil
 }
 
-func (s *store) refreshSnapshotStores(ctx context.Context) ([]uint64, error) {
+func (s *store) refreshSnapshotStores(ctx context.Context) ([]*metapb.Store, error) {
 	stores, err := s.clients[0].GetPDClient().GetAllStores(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to discover checkpoint stores")
@@ -536,31 +538,29 @@ func (s *store) refreshSnapshotStores(ctx context.Context) ([]uint64, error) {
 			return nil, errors.Wrapf(err, "failed to seed checkpoint stores for client %d", clientIndex)
 		}
 	}
-	activeTiKVStores := make([]uint64, 0, len(stores))
-	for _, store := range stores {
-		if store != nil && store.GetState() == metapb.StoreState_Up &&
-			tikvrpc.GetStoreTypeByMeta(store) == tikvrpc.TiKV {
-			activeTiKVStores = append(activeTiKVStores, store.GetId())
-		}
-	}
-	if len(activeTiKVStores) == 0 {
-		return nil, errors.New("no active TiKV Store discovered")
-	}
-	return activeTiKVStores, nil
+	return stores, nil
 }
 
 // SnapshotReadyTimestamp returns the largest timestamp that every TiKV store
 // can already serve over its full key range. With three voters per Region, a
 // checkpoint at this common floor remains readable after any one Store loss.
-func (s *store) SnapshotReadyTimestamp(ctx context.Context) (uint64, error) {
+func (s *store) SnapshotReadyTimestamp(ctx context.Context, start, end []byte) (uint64, error) {
 	// Store membership changes more frequently than the deliberately throttled
 	// full Region scan. Refresh this small directory for every candidate so a
 	// newly scheduled peer can be resolved from EpochNotMatch metadata without PD.
-	activeStores, err := s.refreshSnapshotStores(ctx)
+	stores, err := s.refreshSnapshotStores(ctx)
 	if err != nil {
 		return 0, err
 	}
-	safeTS, err := s.clients[0].GetTiKVStoreSafeTS(ctx, activeStores)
+	regions, err := s.clients[0].GetPDClient().ScanRegions(ctx, start, end, -1)
+	if err != nil {
+		return 0, errors.Wrap(err, "discover checkpoint Region voters")
+	}
+	activeStores, err := checkpointStoresForRange(stores, regions)
+	if err != nil {
+		return 0, err
+	}
+	safeTS, err := s.clients[0].GetTiKVStoreSafeTSForRange(ctx, activeStores, start, end)
 	if err != nil {
 		return 0, errors.Wrap(err, "get checkpoint Store safe timestamps")
 	}
@@ -574,6 +574,51 @@ func (s *store) SnapshotReadyTimestamp(ctx context.Context) (uint64, error) {
 		return 0, errors.New("no non-zero TiKV Store safe timestamp discovered")
 	}
 	return minimum, nil
+}
+
+func checkpointStoresForRange(stores []*metapb.Store, regions []*pd.Region) ([]uint64, error) {
+	activeTiKV := make(map[uint64]struct{}, len(stores))
+	for _, store := range stores {
+		if store != nil && store.GetState() == metapb.StoreState_Up &&
+			tikvrpc.GetStoreTypeByMeta(store) == tikvrpc.TiKV {
+			activeTiKV[store.GetId()] = struct{}{}
+		}
+	}
+	if len(activeTiKV) == 0 {
+		return nil, errors.New("no active TiKV Store discovered")
+	}
+	if len(regions) == 0 {
+		return nil, errors.New("no checkpoint Region discovered")
+	}
+
+	selected := make(map[uint64]struct{})
+	for _, region := range regions {
+		if region == nil || region.Meta == nil {
+			return nil, errors.New("invalid checkpoint Region metadata")
+		}
+		voters := 0
+		for _, peer := range region.Meta.Peers {
+			if peer == nil || peer.GetIsWitness() || peer.GetRole() == metapb.PeerRole_Learner {
+				continue
+			}
+			if _, active := activeTiKV[peer.GetStoreId()]; !active {
+				continue
+			}
+			voters++
+			selected[peer.GetStoreId()] = struct{}{}
+		}
+		if voters < 2 {
+			return nil, errors.Errorf(
+				"checkpoint Region %d has only %d active non-witness TiKV voters", region.Meta.GetId(), voters,
+			)
+		}
+	}
+	storeIDs := make([]uint64, 0, len(selected))
+	for storeID := range selected {
+		storeIDs = append(storeIDs, storeID)
+	}
+	sort.Slice(storeIDs, func(i, j int) bool { return storeIDs[i] < storeIDs[j] })
+	return storeIDs, nil
 }
 
 type snapshotRegionReader interface {

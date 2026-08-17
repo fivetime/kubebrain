@@ -15,6 +15,7 @@
 package tikv
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync/atomic"
@@ -82,12 +83,16 @@ type storeSafeTsMockClient struct {
 	Client
 	requestCount int32
 	testSuite    *testKVSuite
+	startKey     []byte
+	endKey       []byte
 }
 
 func (c *storeSafeTsMockClient) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
 	if req.Type != tikvrpc.CmdStoreSafeTS {
 		return c.Client.SendRequest(ctx, addr, req, timeout)
 	}
+	c.testSuite.True(bytes.Equal(c.startKey, req.StoreSafeTS().GetKeyRange().GetStartKey()))
+	c.testSuite.True(bytes.Equal(c.endKey, req.StoreSafeTS().GetKeyRange().GetEndKey()))
 	atomic.AddInt32(&c.requestCount, 1)
 	resp := &tikvrpc.Response{}
 	if addr == c.testSuite.storeAddr(c.testSuite.tiflashPeerStoreID) {
@@ -152,6 +157,19 @@ func (s *testKVSuite) TestGetTiKVStoreSafeTSRejectsUnresolvedMember() {
 	safeTS, err := s.store.GetTiKVStoreSafeTS(context.Background(), []uint64{s.cluster.AllocID()})
 	s.Nil(safeTS)
 	s.ErrorContains(err, "is not resolved")
+}
+
+func (s *testKVSuite) TestGetTiKVStoreSafeTSUsesRequestedRange() {
+	mockClient := storeSafeTsMockClient{
+		Client: s.store.GetTiKVClient(), testSuite: s, startKey: []byte("a"), endKey: []byte("z"),
+	}
+	s.store.SetTiKVClient(&mockClient)
+
+	safeTS, err := s.store.GetTiKVStoreSafeTSForRange(
+		context.Background(), []uint64{s.tikvStoreID}, mockClient.startKey, mockClient.endKey,
+	)
+	s.Require().NoError(err)
+	s.Equal(map[uint64]uint64{s.tikvStoreID: 100}, safeTS)
 }
 
 func (s *testKVSuite) TestRURuntimeStatsCleanUp() {

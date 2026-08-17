@@ -196,7 +196,7 @@ type SnapshotRegionWarmer interface {
 // implementation. Unlike Region warming, validation is timestamp-specific and
 // must be run for every candidate checkpoint before publication.
 type SnapshotReadinessValidator interface {
-	SnapshotReadyTimestamp(ctx context.Context) (timestamp uint64, err error)
+	SnapshotReadyTimestamp(ctx context.Context, start, end []byte) (timestamp uint64, err error)
 }
 
 // SnapshotProtector is an OPTIONAL capability for pinning an engine snapshot
