@@ -50,6 +50,8 @@ type availableSnapshotCheckpointBackend struct {
 	probeTimestamp uint64
 	probeErr       error
 	probeCalls     atomic.Int64
+	probeGetErr    error
+	probeGetCalls  atomic.Int64
 }
 
 func (b *availableSnapshotCheckpointBackend) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
@@ -59,6 +61,16 @@ func (b *availableSnapshotCheckpointBackend) GetSerializableCheckpoint() (backen
 func (b *availableSnapshotCheckpointBackend) GetFollowerSnapshotTimestamp(context.Context) (uint64, error) {
 	b.probeCalls.Add(1)
 	return b.probeTimestamp, b.probeErr
+}
+
+func (b *availableSnapshotCheckpointBackend) Get(ctx context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	if _, protected := backend.SerializableCheckpointFromContext(ctx); !protected && bytes.Equal(request.Key, snapshotDataPlaneProbeKey) {
+		b.probeGetCalls.Add(1)
+		if b.probeGetErr != nil {
+			return nil, b.probeGetErr
+		}
+	}
+	return b.BackendShim.Get(ctx, request)
 }
 
 func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
@@ -515,6 +527,8 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
 	require.Equal(t, int64(1), shim.probeCalls.Load(),
 		"a healthy follower must prove the live data plane before proxying")
+	require.Equal(t, int64(1), shim.probeGetCalls.Load(),
+		"a healthy follower probe must reach the TiKV object data plane")
 	require.False(t, trap.called, "a follower must not capture independently from concurrent leader metadata mutations")
 	require.Equal(t, want, stream.responses)
 }
@@ -577,6 +591,17 @@ func TestMaintenanceSnapshotFollowerRejectsProxyStreamWithoutChecksum(t *testing
 }
 
 func TestMaintenanceSnapshotUsesProtectedCheckpointAfterReadBarrierFailure(t *testing.T) {
+	testMaintenanceSnapshotUsesProtectedCheckpointAfterProbeFailure(t,
+		status.Error(codes.Unavailable, "PD unavailable"), nil)
+}
+
+func TestMaintenanceSnapshotUsesProtectedCheckpointAfterTiKVProbeFailure(t *testing.T) {
+	testMaintenanceSnapshotUsesProtectedCheckpointAfterProbeFailure(t, nil,
+		status.Error(codes.Unavailable, "TiKV unavailable"))
+}
+
+func testMaintenanceSnapshotUsesProtectedCheckpointAfterProbeFailure(t *testing.T, tsoErr, getErr error) {
+	t.Helper()
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	// The in-memory test store intentionally lacks TiKV's point-in-time getter;
@@ -595,7 +620,8 @@ func TestMaintenanceSnapshotUsesProtectedCheckpointAfterReadBarrierFailure(t *te
 	shim := &availableSnapshotCheckpointBackend{
 		BackendShim: server.backend,
 		checkpoint:  checkpoint,
-		probeErr:    status.Error(codes.Unavailable, "backend unavailable"),
+		probeErr:    tsoErr,
+		probeGetErr: getErr,
 	}
 	server.backend = shim
 	server.tokens.snapshots = newAuthSnapshotCache(shim)
@@ -616,6 +642,11 @@ func TestMaintenanceSnapshotUsesProtectedCheckpointAfterReadBarrierFailure(t *te
 	stream := &maintenanceSnapshotServer{ctx: ctx}
 	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
 	require.Equal(t, int64(1), shim.probeCalls.Load())
+	if tsoErr == nil {
+		require.Equal(t, int64(1), shim.probeGetCalls.Load())
+	} else {
+		require.Zero(t, shim.probeGetCalls.Load(), "a failed TSO probe must short-circuit the TiKV read")
+	}
 	require.GreaterOrEqual(t, len(stream.responses), 2)
 	var artifact []byte
 	for _, response := range stream.responses[:len(stream.responses)-1] {

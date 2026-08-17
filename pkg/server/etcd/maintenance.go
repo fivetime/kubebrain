@@ -815,7 +815,7 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		// repeats the barrier under its write fence; this probe is availability
 		// selection, not linearization.
 		probeCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
-		_, probeErr := s.backend.GetFollowerSnapshotTimestamp(probeCtx)
+		probeErr := s.probeSnapshotDataPlane(probeCtx)
 		cancel()
 		protected = probeErr != nil
 	}
@@ -877,6 +877,21 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		// stable non-transient class instead of grpc-go's fallback Unknown.
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
+	return err
+}
+
+var snapshotDataPlaneProbeKey = []byte("\x00kubebrain/snapshot-data-plane-probe")
+
+// probeSnapshotDataPlane verifies both halves needed by a live capture. A TSO
+// alone only proves PD availability; the point read forces an actual TiKV
+// request through the tenant object/revision keyspace. Snapshot construction
+// remains the authoritative full-range check, so this admission probe stays
+// constant-cost instead of scanning the complete database twice.
+func (s *RPCServer) probeSnapshotDataPlane(ctx context.Context) error {
+	if _, err := s.backend.GetFollowerSnapshotTimestamp(ctx); err != nil {
+		return err
+	}
+	_, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: snapshotDataPlaneProbeKey})
 	return err
 }
 

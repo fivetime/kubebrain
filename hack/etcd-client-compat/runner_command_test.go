@@ -431,6 +431,18 @@ func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendTiKVQuorumLossRunsProtectedSnapshot(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-quorum-loss-snapshot)`)
+	require.Contains(t, script, `"TiKV quorum-loss Snapshot"`)
+	require.Contains(t, script, `"PARTITION_HOLD_SECONDS=60 $self --partition-tikv-quorum"`)
+	require.Contains(t, script, `run_snapshot_failover_test`)
+	require.Contains(t, script, `TestSnapshotSurvivesBackendFailoverFromProtectedCheckpoint`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendPDCrossNodeQuorumLossUsesObserverAndTargetNodes(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
