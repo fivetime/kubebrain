@@ -56311,6 +56311,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   recording 与全部下游 PromQL，annotation/production readiness 已同步；完整 `deploy/production` 测试通过。
   本项不重建数据面镜像。
 
+- A5007 关闭对象请求计费分类 allowlist 对 taxonomy drift 的静默过滤。A5005 的 current recording 只选择
+  `write|list|read|delete`，因此 provider 同时发布额外类别、空或缺失 `request_class` 时，未知 series 会先被
+  丢弃，四类来源仍可让 completeness=1；这违反分类必须恰为四种的合同，也会隐藏供应商计费 API 映射漂移。
+  现 current recording 保留目标实例/窗口下全部新鲜 request series 与来源标签，新增 unexpected-class count
+  对 `request_class!~"write|list|read|delete"`（包括空/缺失 label）显式计数；minute completeness 同时要求
+  四类各唯一、period-end 唯一且未知类为零。精确 manifest 门禁固定全量 current selector、mismatch recording
+  与完整 completeness PromQL，告警 annotation/production readiness 已同步；完整 `deploy/production` 测试
+  通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
