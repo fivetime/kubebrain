@@ -56428,6 +56428,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   increase。精确 manifest、backend 测试与 production/observability 文档已同步；相关测试通过。本项需要
   下一生产镜像携带 counter 初始化改动。
 
+- A5021 将同一权威零值合同扩展到 quota shared-state refresh。此前 `quota_refresh_err` 只在 TiKV metadata
+  读取失败时创建，raw `increase` family 缺失/陈旧/非法可静默为零。现 server 在启动 refresh goroutine 前
+  由独立 `initQuotaMetrics` 发布 counter 零值，单元测试固定初始化顺序；监控从 60 秒内 raw sample 生成
+  Ready Pod UID 级 current 与 10 分钟 increase recording，要求两者各自完整覆盖当前 Ready Pod。current
+  必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且在同一范围；invalid recording
+  缺失/非零均触发新的 metrics-missing，failure 告警只消费新鲜 increase。精确 manifest/server 测试与
+  production/observability 文档已同步；相关测试通过。本项需要下一生产镜像携带 counter 初始化改动。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
