@@ -1026,6 +1026,12 @@ backend snapshot 兼容指标 `etcd_disk_backend_snapshot_duration_seconds`（�
 backend defrag 兼容指标 `etcd_disk_backend_defrag_duration_seconds` 与
 `etcd_disk_defrag_inflight`（TiKV/PD 架构下分别保持 count=0/value=0；门禁拒绝非零 inflight），
 auth revision 指标 `etcd_debugging_auth_revision`，
+其值由每秒有界读取共享 `auth/config` 导出；RPC server 创建时先发布
+`auth_revision_refresh_err=0`。production 仅消费 60 秒内、按 Ready Pod UID 去重的 revision/current-error/
+10 分钟 increase，要求三类来源完整；revision 必须为 `(0,2^53]` 精确整数，error current 为
+`[0,2^53]` 精确整数，increase 可为分数但必须有限且同范围，并要求所有 Ready 副本在 2 分钟内收敛到
+同一 revision。刷新失败或完整性/分歧告警是 telemetry 诊断，不直接证明请求授权失败；必须与 AuthStatus、
+token claim revision 和 AuthOldRevision fence 对账，失败时不能信任 retained gauge snapshot。
 quota 指标 `etcd_server_quota_backend_bytes`，
 MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与
 `etcd_mvcc_db_total_size_in_use_in_bytes`（KubeBrain 语义为 keyspace 当前存活 key/value
@@ -4244,6 +4250,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   两者各精确覆盖 `5×Ready`；current 必须为 `[0,2^53]` 精确整数，increase 可为分数但必须有限且同范围。
   retry/两种 durable 终态为 warning，witness contradiction 或 CORRUPT 持久化失败立即 critical；缺失、
   陈旧或非法 telemetry 不能证明不确定提交已收敛或安全 fence 已建立。
+- 每个 RPC server 初始化 `auth_revision_refresh_err=0`，server-state metrics 每秒从共享 `auth/config` 读取
+  persisted revision 并导出 upstream `etcd_debugging_auth_revision`。监控要求 60 秒新鲜的 Ready Pod UID
+  revision/current-error/10 分钟 increase 全覆盖、revision 为正精确整数且所有副本两分钟内一致；refresh
+  failure、缺失、陈旧、非法或分歧触发 warning。该路径只导出 telemetry，不能单独断言授权失败；处置时
+  必须查询 AuthStatus，并核对 token revision/旧 revision fence。
 - 裸 PD/TiKV 没有 TiDB gc_worker fallback；每个 backend 创建时发布 `storage_gc_enabled=0` 与
   `storage_gc_err=0`，发现 storage `GarbageCollector` capability 且 `--storage-gc-lifetime>0` 后立即把 enabled
   置 1。production 只消费 60 秒内、按 Ready Pod UID 去重的 enabled/current-error/30 分钟 increase，要求

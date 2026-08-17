@@ -298,6 +298,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initEtcdWALMetrics(metricCli)
 	initEtcdRaftSnapshotMetrics(metricCli)
 	initAlarmStateMetrics(metricCli)
+	initAuthRevisionMetrics(metricCli)
 	return server
 }
 

@@ -18,7 +18,16 @@ import (
 	"context"
 
 	"k8s.io/klog/v2"
+
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
+
+func initAuthRevisionMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("auth.revision.refresh.err", int64(0))
+}
 
 // RefreshAuthMetrics emits etcd-compatible auth store gauges from KubeBrain's
 // persisted auth config. It intentionally reads only the auth config revision:
