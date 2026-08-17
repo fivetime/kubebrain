@@ -28,8 +28,10 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	runtimeutil "go.etcd.io/etcd/pkg/v3/runtime"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
@@ -791,6 +793,7 @@ func (s *server) revisionHandler(w http.ResponseWriter, req *http.Request) {
 const (
 	HealthResponse       = `{"health":"true","reason":""}`
 	healthCheckTimeout   = 5 * time.Second
+	healthLiveReadBudget = 750 * time.Millisecond
 	healthNoLeaderReason = "RAFT NO LEADER"
 	healthNoSpaceReason  = "ALARM NOSPACE"
 	healthCorruptReason  = "ALARM CORRUPT"
@@ -858,9 +861,33 @@ func (s *server) httpHealthHandler(w http.ResponseWriter, req *http.Request) {
 			excludedAlarms[alarm] = struct{}{}
 		}
 	}
-	if reason := s.healthAlarmFailureReason(req.Context(), excludedAlarms); reason != "" {
+	alarmCtx := req.Context()
+	var alarmCheckpoint backend.SerializableCheckpoint
+	var alarmCheckpointReady bool
+	var alarmCancel context.CancelFunc
+	if serializable && s.backend != nil {
+		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+			alarmCheckpoint, alarmCheckpointReady = checkpoint, true
+			alarmCtx, alarmCancel = context.WithTimeout(req.Context(), healthLiveReadBudget)
+		}
+	}
+	alarmReason, alarmErr := s.healthAlarmFailure(alarmCtx, excludedAlarms)
+	if alarmCancel != nil {
+		alarmCancel()
+	}
+	if alarmCheckpointReady && isHealthCheckpointFallbackError(alarmErr) && req.Context().Err() == nil {
+		alarmReason, alarmErr = s.healthAlarmFailure(
+			backend.WithSerializableCheckpoint(req.Context(), alarmCheckpoint), excludedAlarms,
+		)
+	}
+	if alarmErr != nil {
 		s.recordLegacyHealth(false)
-		s.writeUnhealthy(w, reason)
+		s.writeUnhealthy(w, "ALARM ERROR:"+alarmErr.Error())
+		return
+	}
+	if alarmReason != "" {
+		s.recordLegacyHealth(false)
+		s.writeUnhealthy(w, alarmReason)
 		return
 	}
 	if reason := s.healthFailureReason(req.Context(), serializable); reason != "" {
@@ -932,40 +959,40 @@ func (s *server) writeLegacyHealthHealthy(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(HealthResponse))
 }
 
-func (s *server) healthAlarmFailureReason(ctx context.Context, excluded map[string]struct{}) string {
+func (s *server) healthAlarmFailure(ctx context.Context, excluded map[string]struct{}) (string, error) {
 	if s.backend == nil {
-		return ""
+		return "", nil
 	}
 	if _, ok := excluded["NOSPACE"]; !ok {
 		_, _, noSpace, err := s.backend.QuotaStatus(ctx)
 		if err != nil {
-			return "ALARM ERROR:" + err.Error()
+			return "", err
 		}
 		if noSpace {
-			return healthNoSpaceReason
+			return healthNoSpaceReason, nil
 		}
 	}
 	if _, ok := excluded["CORRUPT"]; !ok {
 		alarms, err := s.backend.CorruptAlarms(ctx)
 		if err != nil {
-			return "ALARM ERROR:" + err.Error()
+			return "", err
 		}
 		if len(alarms) != 0 {
-			return healthCorruptReason
+			return healthCorruptReason, nil
 		}
 	}
 	if s.genericAlarms != nil {
 		alarms, err := s.genericAlarms(ctx)
 		if err != nil {
-			return "ALARM ERROR:" + err.Error()
+			return "", err
 		}
 		for _, alarm := range alarms {
 			if _, ok := excluded[alarm.GetAlarm().String()]; !ok {
-				return healthUnknownReason
+				return healthUnknownReason, nil
 			}
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func (s *server) writeUnhealthy(w http.ResponseWriter, reason string) {
@@ -993,6 +1020,21 @@ func (s *server) readHealthCheck(ctx context.Context, serializable bool) error {
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	defer cancel()
+	if serializable {
+		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+			liveCtx, liveCancel := context.WithTimeout(checkCtx, healthLiveReadBudget)
+			_, err := s.backend.Get(liveCtx, &proto.GetRequest{Key: []byte{0}})
+			liveCancel()
+			if err == nil || checkCtx.Err() != nil || !isHealthCheckpointFallbackError(err) {
+				return err
+			}
+			_, err = s.backend.Get(
+				backend.WithSerializableCheckpoint(checkCtx, checkpoint),
+				&proto.GetRequest{Key: []byte{0}},
+			)
+			return err
+		}
+	}
 	// Every successful public unary response must carry a positive leadership
 	// term. A cold serving replica may have a ready proxy/data path before it has
 	// observed the shared election record; admitting it then makes the first
@@ -1010,6 +1052,39 @@ func (s *server) readHealthCheck(ctx context.Context, serializable bool) error {
 	}
 	_, err := s.backend.Get(checkCtx, &proto.GetRequest{Key: []byte{0}})
 	return err
+}
+
+func (s *server) corruptHealthCheck(ctx context.Context) error {
+	if s.backend == nil {
+		return errors.New("backend is not initialized")
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	defer cancel()
+	check := func(checkCtx context.Context) error {
+		alarms, err := s.backend.CorruptAlarms(checkCtx)
+		if err != nil {
+			return err
+		}
+		if len(alarms) != 0 {
+			return fmt.Errorf("alarm activated: CORRUPT")
+		}
+		return nil
+	}
+	if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+		liveCtx, liveCancel := context.WithTimeout(checkCtx, healthLiveReadBudget)
+		err := check(liveCtx)
+		liveCancel()
+		if err == nil || checkCtx.Err() != nil || !isHealthCheckpointFallbackError(err) {
+			return err
+		}
+		return check(backend.WithSerializableCheckpoint(checkCtx, checkpoint))
+	}
+	return check(checkCtx)
+}
+
+func isHealthCheckpointFallbackError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, storage.ErrUnavailable) ||
+		status.Code(err) == codes.DeadlineExceeded || status.Code(err) == codes.Unavailable
 }
 
 func (s *server) requestPathReady() bool {

@@ -35,14 +35,7 @@ func (s *server) addEtcdHealthCheckHandlers(handlers map[string]http.Handler) {
 	}
 	readyz := []namedHealthCheck{
 		{name: "data_corruption", check: func(ctx context.Context) error {
-			alarms, err := s.backend.CorruptAlarms(ctx)
-			if err != nil {
-				return err
-			}
-			if len(alarms) != 0 {
-				return fmt.Errorf("alarm activated: CORRUPT")
-			}
-			return nil
+			return s.corruptHealthCheck(ctx)
 		}},
 		{name: "serializable_read", check: func(ctx context.Context) error {
 			return s.readHealthCheck(ctx, true)

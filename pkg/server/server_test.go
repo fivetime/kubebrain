@@ -37,6 +37,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
@@ -80,6 +82,45 @@ func (releaseFailingLeaderElection) EnsureVoluntaryRelease(context.Context) erro
 type healthStorage struct {
 	storage.KvStorage
 	fail bool
+}
+
+type checkpointHealthBackend struct {
+	backend.Backend
+	checkpoint  backend.SerializableCheckpoint
+	liveErr     error
+	liveReads   int
+	pinnedReads int
+}
+
+func (b *checkpointHealthBackend) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
+	return b.checkpoint, nil
+}
+
+func (b *checkpointHealthBackend) Get(ctx context.Context, _ *proto.GetRequest) (*proto.GetResponse, error) {
+	if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
+		b.pinnedReads++
+		return &proto.GetResponse{}, nil
+	}
+	b.liveReads++
+	return nil, b.liveErr
+}
+
+func (b *checkpointHealthBackend) QuotaStatus(ctx context.Context) (int64, int64, bool, error) {
+	if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
+		b.pinnedReads++
+		return 1, 1, false, nil
+	}
+	b.liveReads++
+	return 0, 0, false, b.liveErr
+}
+
+func (b *checkpointHealthBackend) CorruptAlarms(ctx context.Context) ([]uint64, error) {
+	if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
+		b.pinnedReads++
+		return nil, nil
+	}
+	b.liveReads++
+	return nil, b.liveErr
 }
 
 type blockingLeadershipBackend struct {
@@ -1228,6 +1269,73 @@ func TestEtcdLivezAndReadyzChecks(t *testing.T) {
 	handlers["/ping"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/ping", nil))
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(t, HealthResponse, recorder.Body.String())
+}
+
+func TestSerializableHTTPHealthFallsBackToProtectedCheckpoint(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metricsClient := mock.NewMinimalMetrics(ctrl)
+	base := backend.NewBackend(imemkv.NewKvStorage(), backend.Config{
+		Prefix: "/registry", Identity: "checkpoint-health-test",
+	}, metricsClient)
+	t.Cleanup(func() { require.NoError(t, base.(interface{ Close() error }).Close()) })
+	shim := &checkpointHealthBackend{
+		Backend: base,
+		checkpoint: backend.SerializableCheckpoint{
+			Revision: 37, Timestamp: 101, ValidUntil: time.Now().Add(time.Minute),
+		},
+		liveErr: storage.ErrUnavailable,
+	}
+	s := &server{backend: shim, leaderElection: &leader.Stub{}, metricCli: metricsClient}
+	handlers := s.GetClientHttpHandlers()
+
+	legacy := httptest.NewRecorder()
+	handlers["/health"].ServeHTTP(legacy, httptest.NewRequest(http.MethodGet, "/health?serializable=true", nil))
+	require.Equal(t, http.StatusOK, legacy.Code)
+	require.JSONEq(t, HealthResponse, legacy.Body.String())
+
+	livez := httptest.NewRecorder()
+	handlers["/livez"].ServeHTTP(livez, httptest.NewRequest(http.MethodGet, "/livez?verbose", nil))
+	require.Equal(t, http.StatusOK, livez.Code)
+	require.Equal(t, "[+]serializable_read ok\nok\n", livez.Body.String())
+	require.Positive(t, shim.liveReads)
+	require.Positive(t, shim.pinnedReads)
+
+	readyz := httptest.NewRecorder()
+	handlers["/readyz"].ServeHTTP(readyz, httptest.NewRequest(http.MethodGet, "/readyz?verbose", nil))
+	require.Equal(t, http.StatusServiceUnavailable, readyz.Code)
+	require.Contains(t, readyz.Body.String(), "[+]data_corruption ok")
+	require.Contains(t, readyz.Body.String(), "[+]serializable_read ok")
+	require.Contains(t, readyz.Body.String(), "[-]linearizable_read failed: RAFT NO LEADER")
+}
+
+func TestSerializableHTTPHealthDoesNotMaskDeterministicFailureWithCheckpoint(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metricsClient := mock.NewMinimalMetrics(ctrl)
+	base := backend.NewBackend(imemkv.NewKvStorage(), backend.Config{
+		Prefix: "/registry", Identity: "checkpoint-health-dataloss-test",
+	}, metricsClient)
+	t.Cleanup(func() { require.NoError(t, base.(interface{ Close() error }).Close()) })
+	wantErr := status.Error(codes.DataLoss, "corrupt health metadata")
+	shim := &checkpointHealthBackend{
+		Backend: base,
+		checkpoint: backend.SerializableCheckpoint{
+			Revision: 37, Timestamp: 101, ValidUntil: time.Now().Add(time.Minute),
+		},
+		liveErr: wantErr,
+	}
+	s := &server{backend: shim, leaderElection: &leader.Stub{}, metricCli: metricsClient}
+	handlers := s.GetClientHttpHandlers()
+
+	legacy := httptest.NewRecorder()
+	handlers["/health"].ServeHTTP(legacy, httptest.NewRequest(http.MethodGet, "/health?serializable=true", nil))
+	require.Equal(t, http.StatusServiceUnavailable, legacy.Code)
+	require.Contains(t, legacy.Body.String(), "ALARM ERROR:rpc error: code = DataLoss")
+
+	livez := httptest.NewRecorder()
+	handlers["/livez"].ServeHTTP(livez, httptest.NewRequest(http.MethodGet, "/livez?verbose", nil))
+	require.Equal(t, http.StatusServiceUnavailable, livez.Code)
+	require.Contains(t, livez.Body.String(), "serializable_read failed: rpc error: code = DataLoss")
+	require.Zero(t, shim.pinnedReads)
 }
 
 func TestEtcdHealthCheckHandlersAvailableOnInfoPort(t *testing.T) {
