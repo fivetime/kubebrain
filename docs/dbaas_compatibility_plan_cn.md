@@ -55421,6 +55421,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   90 秒。终态 endpoint proposal 20.16ms，LeaseList、AlarmList、测试前缀为空，五类 Region check 全零，规则和 port-forward 已清理。
   本轮未发现数据面生产语义 RED；过期可用性仍受 PD quorum/TiKV commit 可用性约束，不能声称故障期间按墙钟准点删除。
 
+- A4935 补齐 A4933 留下的长驻流式续租：新增 `pd-quorum-tikv-member-streaming-keepalive` profile，复用 A4932 的组合
+  分区器，并用 official client/v3 同时建立四条 TTL=60 的 `LeaseKeepAlive` 流。每条流在注入前必须先收到正 TTL 并写入绑定该
+  lease 的独立 key；故障命令在 15 秒校准点必须仍活跃，期间流不得关闭，恢复后还必须再次收到正 TTL、读回 key 的精确 lease ID，
+  最后 Revoke 并证明附属 key 消失。该门禁直接对应 upstream `client/v3/lease.go` 的 keepalive 重连和有界响应队列，以及
+  `tests/integration/clientv3/lease/lease_test.go:TestLeaseRenewLostQuorum` 的丢失 quorum 后恢复续租契约，而不以一次 unary TTL
+  请求替代长驻 stream 生命周期。
+
+  2026-08-17 在独立三 PD/三 TiKV 单节点 Kind 上以 20 秒 hold 实跑，两个 PD member 不可达与 leader-heavy TiKV store
+  `Up -> Disconnected` 同窗出现，随后 PD members 与 store 恢复 Up；四条流均跨越故障并完成恢复后续租、绑定校验和撤销，测试
+  88.71 秒通过。恢复瞬间 official client 报告容量 16 的 keepalive response queue 满并丢弃冗余响应，门禁仍从每条流取得正 TTL，
+  因此该告警按客户端有界背压处理而非流关闭或续租失败。终态 endpoint proposal 22.86ms，LeaseList、AlarmList、测试前缀为空，
+  五类 Region check 全零，三个 KubeBrain Pod Ready 且无新增重启，所有 iptables 规则与 port-forward 已清理。本轮未发现新的数据面
+  生产 RED，不修改生产代码；真实跨节点/AZ 的同类流式组合分区仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

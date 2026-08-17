@@ -442,7 +442,7 @@ func TestBackendPDCrossNodeQuorumLossUsesObserverAndTargetNodes(t *testing.T) {
 	require.Contains(t, script, `local placement="${1:-any}"`)
 	require.Contains(t, script, `expected 3 distinct PD nodes`)
 	require.Contains(t, script, `dual_partition_node_containers+=("$node")`)
-	require.Contains(t, script, `docker exec "$KIND_NODE_CONTAINER" curl`)
+	require.Contains(t, script, `docker exec "$node" curl`)
 	require.Contains(t, script, `docker exec "$node" iptables -w 5 -I FORWARD 1 -s "$ip"`)
 	require.Contains(t, script, `on nodes: ${dual_partition_node_containers[*]}`)
 	require.Contains(t, script, `cross-node PD quorum-loss MemberList consistency modes`)
@@ -565,8 +565,8 @@ func TestBackendQuorumTiKVCrossNodePartitionTargetsSelectedStoreNode(t *testing.
 	require.Contains(t, script, `partition_tikv_member cross-node`)
 	require.Contains(t, script, `local placement="${1:-any}"`)
 	require.Contains(t, script, `expected 3 distinct TiKV nodes`)
-	require.Contains(t, script, `KIND_NODE_CONTAINER="$tikv_node"`)
-	require.Contains(t, script, `Cross-node TiKV partition targets $tikv_pod on $KIND_NODE_CONTAINER`)
+	require.Contains(t, script, `docker inspect "$tikv_node"`)
+	require.Contains(t, script, `Cross-node TiKV partition targets $tikv_pod on $tikv_node`)
 	require.Contains(t, script, `partition_tag="kubebrain-tikv-partition-${tikv_pod}-$$"`)
 	require.Contains(t, script, `TiKV network partition changed store state`)
 	require.Contains(t, script, `TiKV network partition recovered store`)
@@ -801,6 +801,18 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsPorcupineLeaseExpiryHi
 	leaseSource, readErr := os.ReadFile("lease_linearizability_test.go")
 	require.NoError(t, readErr)
 	require.Contains(t, string(leaseSource), `testTimeout = 2 * time.Minute`)
+}
+
+func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsStreamingKeepAlive(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-member-streaming-keepalive)`)
+	require.Contains(t, script, `"streaming LeaseKeepAlive across concurrent PD quorum and TiKV member partition"`)
+	require.Contains(t, script, `"$ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"`)
+	require.Contains(t, script, `run_tikv_degraded_network_streaming_keepalive_test`)
+	require.Contains(t, script, `TestStreamingLeaseKeepAlivesRecoverAcrossTiKVDegradation`)
+	require.NotContains(t, script, "eval ")
 }
 
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
