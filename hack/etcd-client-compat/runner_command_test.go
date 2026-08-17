@@ -890,6 +890,18 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsRepeatedRequireLeader(
 	require.Contains(t, string(testSource), `time.Duration(cycles)*2*time.Minute`)
 }
 
+func TestBackendPDQuorumPartitionRunsFixedHashKV(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-hashkv)`)
+	require.Contains(t, script, `"fixed-revision HashKV across PD quorum loss"`)
+	require.Contains(t, script, `"$self --partition-pd-quorum"`)
+	require.Contains(t, script, `KUBEBRAIN_HASHKV_PD_QUORUM_FAULT_COMMAND="$command"`)
+	require.Contains(t, script, `TestFixedRevisionHashKVSurvivesPDQuorumFault`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

@@ -86,6 +86,12 @@ type requireSyncBeforeHashBackendShim struct {
 	synced func() bool
 }
 
+type checkpointHashKVBackendShim struct {
+	BackendShim
+	t          *testing.T
+	checkpoint backend.SerializableCheckpoint
+}
+
 type coldStatusRevisionBackendShim struct {
 	BackendShim
 	current    uint64
@@ -131,6 +137,24 @@ func (b *maintenanceHashTrapBackendShim) HashKV(context.Context, int64) (backend
 func (b *requireSyncBeforeHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
 	require.True(b.t, b.synced(), "peer HashKV should refresh the revision cache before hashing")
 	return b.BackendShim.HashKV(ctx, revision)
+}
+
+func (b *checkpointHashKVBackendShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
+	return b.checkpoint, nil
+}
+
+func (b *checkpointHashKVBackendShim) GetCompactRevisionFresh(context.Context) (uint64, error) {
+	return b.checkpoint.CompactRevision, nil
+}
+
+func (b *checkpointHashKVBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
+	checkpoint, ok := backend.SerializableCheckpointFromContext(ctx)
+	require.True(b.t, ok, "degraded fixed-revision HashKV must use the protected checkpoint")
+	require.Equal(b.t, b.checkpoint, checkpoint)
+	return backend.HashKVResult{
+		Hash: 71, HashRevision: revision, CurrentRevision: int64(checkpoint.Revision),
+		CompactRevision: int64(checkpoint.CompactRevision),
+	}, nil
 }
 
 func (b *compactBeforeHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
@@ -845,6 +869,37 @@ func TestMaintenanceHashKVFutureRevisionMatchesEtcd(t *testing.T) {
 			requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCFutureRev, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 		})
 	}
+}
+
+func TestMaintenanceFixedRevisionHashKVUsesProtectedCheckpoint(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.HashKV(context.Background(), &etcdserverpb.HashKVRequest{Revision: 1})
+	require.NoError(t, err, "prime the complete member-local auth snapshot")
+
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 91, Timestamp: 1234, CompactRevision: 0, AuthRevision: 1,
+		ValidUntil: time.Now().Add(time.Minute),
+	}
+	server.backend = &checkpointHashKVBackendShim{
+		BackendShim: server.backend, t: t, checkpoint: checkpoint,
+	}
+	synced := false
+	server.peers = testPeerService{
+		isLeader: true, epochFn: func() (uint64, bool) { return 7, true },
+		syncReadFn: func(context.Context) error {
+			synced = true
+			return errors.New("fixed-revision HashKV must not cross a read-index barrier")
+		},
+	}
+
+	response, err := server.HashKV(context.Background(), &etcdserverpb.HashKVRequest{Revision: 1})
+	require.NoError(t, err)
+	require.Equal(t, int64(91), response.Header.Revision)
+	require.Equal(t, int64(1), response.HashRevision)
+	require.Equal(t, int64(0), response.CompactRevision)
+	require.Equal(t, uint32(71), response.Hash)
+	require.False(t, synced)
 }
 
 func TestMaintenanceHashStableUntilWriteAndChangesAfterWrite(t *testing.T) {

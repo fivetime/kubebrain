@@ -550,6 +550,23 @@ func (s *RPCServer) localMaintenanceHash(ctx context.Context, refresh bool) (*et
 func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
 	s.metricCli.EmitCounter("maintenance.hashkv", 1)
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	// Upstream hashes an explicit historical revision from the serving member's
+	// already-applied local MVCC backend, so losing quorum does not require a new
+	// read index. KubeBrain has no per-member bbolt file; use the same
+	// GC-protected, Region-warmed TiKV checkpoint that backs degraded
+	// serializable reads. Filtering encoded object versions still happens at the
+	// requested logical revision, while the checkpoint supplies a known engine
+	// timestamp and the member's latest safely applied response-header revision.
+	// Select it independently of the sampled leading epoch: PD quorum can vanish
+	// after that sample, whereas an explicit historical hash must remain a local
+	// operation. Never use a checkpoint that predates the request, and retain the
+	// ordinary path for latest/negative revisions.
+	if requestedRevision := req.GetRevision(); requestedRevision > 0 {
+		if checkpoint, err := s.backend.GetSerializableCheckpoint(); err == nil &&
+			uint64(requestedRevision) <= checkpoint.Revision {
+			ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
+		}
+	}
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
 		return s.hedgedMaintenanceHashKV(ctx, req)
 	}
@@ -560,22 +577,58 @@ func (s *RPCServer) localMaintenanceHashKV(
 	ctx context.Context, req *etcdserverpb.HashKVRequest, refresh bool,
 ) (*etcdserverpb.HashKVResponse, error) {
 	if !authorizedPeerHashKVProxy(ctx) {
-		if err := s.requireAuthenticated(ctx, true); err != nil {
+		if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
+			// An upstream member authorizes historical HashKV against its already-
+			// applied local auth store. The protected checkpoint is useful during
+			// exactly the interval in which refreshing that store from TiKV would
+			// require a new PD TSO. Reuse only a complete applied snapshot; a cold
+			// member still falls through to the authoritative path and fails closed.
+			if caller, err, complete := s.authCallerFromCachedContext(ctx); complete {
+				if err != nil {
+					return nil, err
+				}
+				if caller != nil {
+					if err := caller.adminError(); err != nil {
+						return nil, err
+					}
+				}
+			} else if err := s.requireAuthenticated(ctx, true); err != nil {
+				return nil, err
+			}
+		} else if err := s.requireAuthenticated(ctx, true); err != nil {
 			return nil, err
 		}
 	}
 	// A successful refresh pins normal-operation hashes to the latest committed
 	// revision. A failed refresh must not make this local diagnostic unavailable.
 	if refresh {
+		if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
+			// An explicit historical hash is already bound to this member's
+			// protected applied snapshot. Upstream does not put a read-index barrier
+			// in front of HashKV(revision), and doing so would consume the entire RPC
+			// deadline while PD quorum is unavailable.
+			refresh = false
+		}
+	}
+	if refresh {
 		_ = s.peers.SyncReadRevision(ctx)
 	}
 	revision := req.GetRevision()
 	if req.GetRevision() > 0 {
-		// Use the request context so a cancelled/expired HashKV call aborts the
-		// revision and compaction lookups instead of running under a detached
-		// context.Background() (#59).
-		if err := s.checkRequestedRevision(ctx, req.GetRevision()); err != nil {
-			return nil, err
+		if checkpoint, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
+			if uint64(revision) < checkpoint.CompactRevision {
+				return nil, compactedRevisionError()
+			}
+			if uint64(revision) > checkpoint.Revision {
+				return nil, futureRevisionError()
+			}
+		} else {
+			// Use the request context so a cancelled/expired HashKV call aborts the
+			// revision and compaction lookups instead of running under a detached
+			// context.Background() (#59).
+			if err := s.checkRequestedRevision(ctx, revision); err != nil {
+				return nil, err
+			}
 		}
 	}
 	start := time.Now()

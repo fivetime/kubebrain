@@ -7,6 +7,8 @@ import (
 	"hash/crc32"
 	"io"
 	"sort"
+
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 var hashKVTable = crc32.MakeTable(crc32.Castagnoli)
@@ -71,15 +73,23 @@ func (b *backend) Hash(ctx context.Context) (result BackendHashResult, retErr er
 // retired by logical compaction are excluded before physical GC catches up.
 // Internal service metadata is excluded, matching etcd HashKV's user-KV scope.
 func (b *backend) HashKV(ctx context.Context, revision int64) (result HashKVResult, retErr error) {
-	b.logicalWriteMu.Lock()
-	defer b.logicalWriteMu.Unlock()
+	_, pinned := storage.SnapshotTimestampFromContext(ctx)
+	if !pinned {
+		b.logicalWriteMu.Lock()
+		defer b.logicalWriteMu.Unlock()
+	}
 	if err := ctx.Err(); err != nil {
 		return HashKVResult{}, err
 	}
 	// A witnessed corrupt row must persist the shared write fence before this
 	// exclusive hash barrier is released. Mark ownership so ArmCorrupt's
 	// InternalCAS does not try to reacquire logicalWriteMu through its read side.
-	ctx = b.withLogicalWriteOwnership(ctx)
+	// A protected snapshot was established under that same barrier and is
+	// immutable; it must not queue behind an ambiguous live mutation. Its corrupt
+	// witness path retains the ordinary self-locking behavior.
+	if !pinned {
+		ctx = b.withLogicalWriteOwnership(ctx)
+	}
 
 	current, err := b.safeCurrentRevision(ctx)
 	if err != nil {
@@ -88,9 +98,16 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (result HashKVResu
 	if revision == 0 {
 		revision = int64(current)
 	}
-	compactRevision, hasCompactRevision, err := b.loadCompactRevisionState(ctx)
-	if err != nil {
-		return HashKVResult{}, err
+	var compactRevision uint64
+	var hasCompactRevision bool
+	if checkpoint, ok := SerializableCheckpointFromContext(ctx); ok {
+		compactRevision = checkpoint.CompactRevision
+		hasCompactRevision = compactRevision != 0
+	} else {
+		compactRevision, hasCompactRevision, err = b.loadCompactRevisionState(ctx)
+		if err != nil {
+			return HashKVResult{}, err
+		}
 	}
 	if revision > 0 && hasCompactRevision && uint64(revision) < compactRevision {
 		return HashKVResult{}, ErrHashKVCompacted
@@ -103,7 +120,8 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (result HashKVResu
 		responseCompactRevision = int64(compactRevision)
 	}
 
-	it, err := b.kv.Iter(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), 0, 0)
+	timestamp, _ := storage.SnapshotTimestampFromContext(ctx)
+	it, err := b.kv.Iter(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), timestamp, 0)
 	if err != nil {
 		return HashKVResult{}, err
 	}

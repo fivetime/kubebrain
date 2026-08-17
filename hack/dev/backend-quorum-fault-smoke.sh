@@ -1196,6 +1196,19 @@ run_snapshot_failover_test() {
   wait_backend_ready
 }
 
+run_pd_quorum_hashkv_test() {
+  local label="$1"
+  local command="$2"
+  echo "Running ${label}"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_HASHKV_PD_QUORUM_FAULT_COMMAND="$command" \
+      go test . -run '^TestFixedRevisionHashKVSurvivesPDQuorumFault$' -count=1 -v
+  )
+  wait_backend_ready
+}
+
 run_pd_total_loss_restart_test() {
   local command="$1"
   echo "Running cross-node PD total-loss KubeBrain cold restart"
@@ -1605,8 +1618,15 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
       "repeated concurrent PD quorum and TiKV member partition require-leader streams" \
       "$ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"
     ;;
+  pd-quorum-hashkv)
+    need docker
+    need jq
+    run_pd_quorum_hashkv_test \
+	  "fixed-revision HashKV across PD quorum loss" \
+	  "$self --partition-pd-quorum"
+    ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, pd-cross-node-total-loss-lease-expiry-burst, pd-cross-node-total-loss-session-overlap, pd-cross-node-total-loss-session-long-deadline, pd-cross-node-total-loss-lease-revoke-long-deadline, pd-cross-node-total-loss-lease-keepalive-long-deadline, pd-cross-node-total-loss-kv-write-long-deadline, pd-cross-node-total-loss-compact-long-deadline, pd-cross-node-degraded-network, pd-cross-node-degraded-network-linearizability, pd-cross-node-degraded-network-lease-linearizability, pd-cross-node-degraded-network-lease-expiry-linearizability, tikv-network-partition, tikv-cross-node-partition, tikv-cross-node-degraded-network, tikv-cross-node-degraded-network-linearizability, tikv-cross-node-degraded-network-lease-linearizability, tikv-cross-node-degraded-network-lease-expiry-linearizability, tikv-cross-node-degraded-network-streaming-keepalive, tikv-cross-node-degraded-network-revoke-stream, tikv-quorum-loss, tikv-cross-node-quorum-loss, tikv-cross-node-quorum-loss-restart, pd-quorum-tikv-member-linearizability, pd-quorum-tikv-member-lease-linearizability, pd-quorum-tikv-member-lease-expiry-linearizability, pd-quorum-tikv-member-streaming-keepalive, pd-quorum-tikv-member-revoke-stream, pd-quorum-tikv-member-watch-recovery, pd-quorum-tikv-member-snapshot, pd-quorum-tikv-member-memberlist, pd-quorum-tikv-member-lease-require-leader, or pd-quorum-tikv-member-repeated-require-leader; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, pd-cross-node-total-loss-lease-expiry-burst, pd-cross-node-total-loss-session-overlap, pd-cross-node-total-loss-session-long-deadline, pd-cross-node-total-loss-lease-revoke-long-deadline, pd-cross-node-total-loss-lease-keepalive-long-deadline, pd-cross-node-total-loss-kv-write-long-deadline, pd-cross-node-total-loss-compact-long-deadline, pd-cross-node-degraded-network, pd-cross-node-degraded-network-linearizability, pd-cross-node-degraded-network-lease-linearizability, pd-cross-node-degraded-network-lease-expiry-linearizability, tikv-network-partition, tikv-cross-node-partition, tikv-cross-node-degraded-network, tikv-cross-node-degraded-network-linearizability, tikv-cross-node-degraded-network-lease-linearizability, tikv-cross-node-degraded-network-lease-expiry-linearizability, tikv-cross-node-degraded-network-streaming-keepalive, tikv-cross-node-degraded-network-revoke-stream, tikv-quorum-loss, tikv-cross-node-quorum-loss, tikv-cross-node-quorum-loss-restart, pd-quorum-tikv-member-linearizability, pd-quorum-tikv-member-lease-linearizability, pd-quorum-tikv-member-lease-expiry-linearizability, pd-quorum-tikv-member-streaming-keepalive, pd-quorum-tikv-member-revoke-stream, pd-quorum-tikv-member-watch-recovery, pd-quorum-tikv-member-snapshot, pd-quorum-tikv-member-memberlist, pd-quorum-tikv-member-lease-require-leader, pd-quorum-tikv-member-repeated-require-leader, or pd-quorum-tikv-member-hashkv; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac

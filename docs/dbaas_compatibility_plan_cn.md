@@ -55518,6 +55518,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   LeaseList、AlarmList、测试前缀为空，五类 Region check 全零，三个 KubeBrain Pod Ready 且无新增重启，iptables 规则与 port-forward
   已清理。本轮未发现数据面生产 RED，不修改生产代码；更多轮次、长 soak 与真实跨节点/AZ 组合故障仍保持开放。
 
+- A4942 对齐 upstream `server/etcdserver/api/v3rpc/maintenance.go` 的 member-local
+  `HashKV(revision)`：修复前，KubeBrain 虽不为正 revision 主动做 read-index，却仍以 TiKV
+  timestamp=0 扫描并重读 compact watermark，PD quorum 丢失时会在 `loadRegion from PD`/TSO
+  路径超时。现在正 revision 仅在受 GC 保护且已覆盖目标 revision 的 serializable checkpoint
+  上执行，直接采用其中原子绑定的 revision/compact/auth watermark；固定 snapshot scan 传递明确
+  TiKV timestamp、允许 mixed replica read，并且不再等待 read-index 或被不确定 live mutation
+  占用的逻辑写锁。latest/negative revision、未覆盖 revision 与 cold auth snapshot 仍保持原有
+  authoritative/fail-closed 路径。
+
+  新增 `pd-quorum-hashkv` 真实门禁：baseline Put 后等待三秒 checkpoint 发布，再以 400ms Put
+  明确观察 mutation-unavailable 窗口；故障仍活跃时，十秒预算内的固定 revision HashKV 必须返回
+  与基线完全相同的 hash、hash revision 和 compact revision，恢复后 latest HashKV 必须重新成功。
+  2026-08-17 在独立三 PD/三 TiKV Kind 上以 20 秒 hold 实跑通过（55.39 秒）；两个 PD member
+  不可达期间固定 hash 成功，恢复后 latest hash 成功，iptables 无遗留。更强的“同时隔离一个
+  TiKV member”门禁仍会因全库 scan 的失联 replica 路由在十秒内不收敛而失败，明确保留为后续
+  A4942 之外的开放项，不用本轮 PD-quorum GREEN 外推其可用性。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -5,10 +5,14 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"testing"
+	"time"
 
+	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	metricsmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
 func TestHashKVTracksDataAndPreservesHistoricalRevision(t *testing.T) {
@@ -102,6 +106,33 @@ func TestHashKVHonorsCancellation(t *testing.T) {
 
 	_, err := b.HashKV(ctx, 0)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestHashKVUsesPinnedSnapshotTimestampForObjectScan(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	rawStore := memkv.NewKvStorage()
+	store := &rangeSnapshotTraceStorage{KvStorage: rawStore}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metricsmock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(prefix + "/hash/pinned"), Value: []byte("value")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	store.resetTrace()
+	const timestamp = uint64(987654321)
+	pinned := WithSerializableCheckpoint(ctx, SerializableCheckpoint{
+		Revision: created.Header.Revision, Timestamp: timestamp,
+	})
+	b.logicalWriteMu.Lock()
+	_, err = b.HashKV(pinned, int64(created.Header.Revision))
+	b.logicalWriteMu.Unlock()
+	require.NoError(t, err)
+	require.Equal(t, []uint64{timestamp}, store.iterTimestamps,
+		"the complete object scan must use the protected engine snapshot")
 }
 
 func TestHashKVArmsCorruptForWitnessedInvalidObjectValue(t *testing.T) {
