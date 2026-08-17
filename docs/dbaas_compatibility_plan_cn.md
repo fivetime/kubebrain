@@ -56021,6 +56021,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ordinal；扩缩容未齐备的整小时保守标记为不可计费，不按零用量结算。production readiness 和精确 manifest
   门禁已更新，并登记新的 KSM 外部指标；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4974 修正 A4973 完整性链最外层的 PromQL absent fail-open。旧 `KubeBrainMeteringDataIncomplete` 直接比较
+  `metering_data_complete != 1`；如果 recording rule 未加载、求值失败或 series 丢失，比较结果是空向量，
+  critical 告警反而不会触发。对象请求 `object_request_data_complete` 有同样问题。现两条告警均用
+  `(series or on() vector(0)) != 1`：series 存在时保留原值与标签，缺失时明确产生 0 并在 15 分钟后
+  firing。manifest 门禁固定两条表达式和 absent 处置 annotation，production readiness 明确规则未加载/求值失败
+  也必须不可计费；完整 `deploy/production` 测试通过。本项不改变计量数值或数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
