@@ -56562,6 +56562,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   corrupt witness 同时产生 witness_corrupt 与 retry canonical outcome，零值顺序、精确 manifest 和文档同步。
   相关测试通过。本项需要下一生产镜像。
 
+- A5035 闭合 upstream auth revision 的 DBaaS freshness/一致性链。A4037 已每秒从共享 `auth/config` 导出
+  `etcd_debugging_auth_revision`，但读取失败才动态创建 `auth.revision.refresh.err`，production 既不消费 gauge
+  也无法区分零失败与 family 缺失或发现副本 revision 分歧。现 RPC server 创建时初始化 refresh-error 零值，
+  监控从 60 秒内样本生成 Ready Pod UID 级 revision/current-error/10 分钟 increase recording，要求三类来源
+  完整，验证 revision 为 `(0,2^53]` 精确整数、error current 为 `[0,2^53]` 精确整数、increase 有限且同范围，
+  并要求 Ready replicas 两分钟内收敛到同一 revision。refresh failure 和 metrics-inconsistent 均 warning；文案
+  明确该只读刷新只影响 telemetry，不能直接证明 request authorization 失败，必须用 AuthStatus、token claim
+  revision 与 AuthOldRevision fence 对账。测试固定 error authoritative zero 与初始 persisted revision 导出；
+  精确 manifest 和 production/observability 文档同步。相关测试通过。本项需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
