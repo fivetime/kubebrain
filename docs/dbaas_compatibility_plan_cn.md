@@ -55814,6 +55814,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   将门禁解耦，避免无关 snapshot consumer 污染能力证据。该保证是有界陈旧的 member-local 状态，
   仅在有效受保护检查点存在时成立，不声称当前 revision 已线性化；冷启动或检查点失效仍 fail closed。
 
+- A4959 继续对齐同一 upstream Maintenance 实现的 member-local backend `Hash`。旧 KubeBrain 即使已有
+  有效 checkpoint，仍持有 live logical-write mutex 并以 timestamp=0 扫描 TiKV；PD 与 TiKV quorum
+  同时丢失时，leader hedge 与本地扫描都会不可用。`4c9444c0` 保持健康态 live-first，只在 750ms 内
+  得到 `DeadlineExceeded`/`Unavailable` 时回退；protected 路径复用完整 member-local auth snapshot，
+  不等待 live write mutex，以 checkpoint timestamp 扫描包含内部服务状态的完整 tenant backend，并以同一
+  checkpoint revision 填充 header。`DataLoss`、鉴权和其他确定性错误不回退。backend timestamp/revision/
+  锁行为及 RPC 成功回退、错误分类的定向与 race 测试通过，`go vet ./pkg/backend ./pkg/server/etcd` 通过。
+
+  `87e4f589` 新增独立 `pd-quorum-tikv-quorum-hash` 门禁，不借 fixed-revision HashKV 或 Status 的结果
+  外推。精确镜像 `kubebrain:a4979-backend-hash-checkpoint`（完整 revision
+  `87e4f5894a458b236e33d15f1ac7c54f2255d9e2`，manifest list
+  `sha256:39da629b60ac049c7432cb7e944d960bc34b6128151737bdfa7d8dbad00d8dab`）等待 90 秒跨过
+  checkpoint protection grace 后，同时隔离 `kb-pd-0/1` 与 `kb-tikv-0/2`。mutation 明确
+  `DeadlineExceeded`，raw official Maintenance client 的 Hash 在完整双 quorum 故障窗口内成功，服务
+  `maintenance_hash_checkpoint_fallback` counter 增加至 1；完整门禁 **141.94 秒 GREEN**，随后两个
+  quorum 恢复。该响应是成员最近安全应用 checkpoint 的物理 backend hash，不承诺故障时的全局最新
+  revision；无有效 checkpoint 时继续 fail closed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
