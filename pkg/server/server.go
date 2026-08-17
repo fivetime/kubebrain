@@ -952,6 +952,7 @@ func (s *server) initLeaderElectionMetrics() {
 		return
 	}
 	_ = s.metricCli.EmitCounter("leader.election.lost", 0)
+	_ = s.metricCli.EmitCounter("leader.election.initialize.err", 0)
 	_ = s.metricCli.EmitCounter("leader.election.initialize.incompatible_witness", 0)
 	_ = s.metricCli.EmitCounter("leader.election.initialize.invalid_alarm_metadata", 0)
 }
