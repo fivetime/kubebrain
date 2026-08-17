@@ -56119,6 +56119,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   15 分钟均 critical。精确 manifest 门禁固定两条 PromQL 及 authoritative-source/future-clock annotation，
   production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4985 补齐逻辑备份原子 metrics 文件的 family completeness。exporter 每次成功后原子写出 timestamp、
+  artifact bytes、records、leases 和 snapshot revision 五项 gauge，但旧告警只检查 timestamp；collector
+  relabel/过滤造成其余 family 部分缺失时仍会宣称 RPO 可观测。现 `KubeBrainLogicalBackupMetricsMissing`
+  要求五项各恰有一个 series，任一缺失或重复持续一小时均 warning，禁止用部分文件证明 RPO 或 artifact
+  inventory。manifest 精确 PromQL/annotation 门禁和外部指标白名单覆盖完整五项，production readiness 已同步；
+  完整 `deploy/production` 与 backupmetrics exporter 专项测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
