@@ -20,8 +20,17 @@ import (
 
 	"k8s.io/klog/v2"
 
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+func initStorageGCMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitGauge("storage.gc.enabled", int64(0))
+	_ = metricCli.EmitCounter("storage.gc.err", int64(0))
+}
 
 // runStorageGC periodically advances the storage engine's MVCC GC safepoint —
 // the role TiDB's gc_worker plays in a TiDB deployment. On a bare PD+TiKV
@@ -45,6 +54,7 @@ func (b *backend) runStorageGC(workerCtx context.Context, lifetime time.Duration
 	if !ok || lifetime <= 0 {
 		return
 	}
+	_ = b.metricCli.EmitGauge("storage.gc.enabled", int64(1))
 	interval := lifetime
 	if interval > 10*time.Minute {
 		interval = 10 * time.Minute

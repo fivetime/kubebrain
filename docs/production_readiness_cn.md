@@ -4237,6 +4237,13 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   任一 active 立即 critical，覆盖缺口、非 0/1 或副本分歧持续一分钟也 critical。refresh 失败时保留旧
   snapshot 并由 alarm-refresh failure 链告警；缺失、陈旧、非法或分歧状态不能证明 durable write fence
   已安全解除。
+- 裸 PD/TiKV 没有 TiDB gc_worker fallback；每个 backend 创建时发布 `storage_gc_enabled=0` 与
+  `storage_gc_err=0`，发现 storage `GarbageCollector` capability 且 `--storage-gc-lifetime>0` 后立即把 enabled
+  置 1。production 只消费 60 秒内、按 Ready Pod UID 去重的 enabled/current-error/30 分钟 increase，要求
+  三类来源完整覆盖全部 Ready UID；enabled 必须精确为 0/1，current error 为 `[0,2^53]` 精确整数，increase
+  可为分数但必须有限且同范围。任一 Ready 副本 disabled/unsupported 为 critical，GC 调用失败为 warning，
+  缺失、陈旧或非法 telemetry fail closed。`storage_gc_safepoint` 是 leader-only 值；仅凭 exporter scrape
+  时间新鲜不能证明它持续推进，推进时效需要单独的 last-success 合同。
 - leader election 短时间频繁丢失。
 - 每个副本在 campaign 前初始化 leadership-lost、通用 initialization-error、incompatible-witness、
   invalid-alarm-metadata 四类 counter；只从 60 秒内样本生成 Ready Pod UID 级 current 与 10 分钟

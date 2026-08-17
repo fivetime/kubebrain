@@ -69,9 +69,7 @@ func (g *lifecycleGCKV) GC(ctx context.Context, _ time.Duration) (uint64, error)
 // GC with that lifetime — the gc_worker role on a bare PD+TiKV deployment,
 // without which MVCC versions accumulate forever and reads degrade.
 func TestStorageGCDriverAdvancesSafepoint(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	m := mock.NewMinimalMetrics(ctrl)
+	m := &compactMetricRecorder{}
 	kv := &gcRecordingKV{KvStorage: imemkv.NewKvStorage()}
 	defer func() { require.NoError(t, kv.Close()) }()
 
@@ -87,6 +85,19 @@ func TestStorageGCDriverAdvancesSafepoint(t *testing.T) {
 	require.Eventually(t, func() bool { return kv.calls.Load() >= 2 },
 		5*time.Second, 10*time.Millisecond, "GC driver must fire periodically on the leader")
 	require.Equal(t, int64(lifetime), kv.lifetime.Load(), "GC must receive the configured lifetime")
+	require.Contains(t, m.snapshot(), compactMetricRecord{
+		kind: "gauge", name: "storage.gc.enabled", value: int64(1),
+	}, "a capable configured backend must publish enabled before the first GC tick")
+}
+
+func TestStorageGCMetricsInitializeAuthoritativeDisabledAndZeroError(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	initStorageGCMetrics(recorder)
+
+	require.Equal(t, []compactMetricRecord{
+		{kind: "gauge", name: "storage.gc.enabled", value: int64(0)},
+		{kind: "counter", name: "storage.gc.err", value: int64(0)},
+	}, recorder.records)
 }
 
 // TestStorageGCDriverDisabledByZeroLifetime pins the off switch: lifetime 0
