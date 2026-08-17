@@ -56436,6 +56436,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   缺失/非零均触发新的 metrics-missing，failure 告警只消费新鲜 increase。精确 manifest/server 测试与
   production/observability 文档已同步；相关测试通过。本项需要下一生产镜像携带 counter 初始化改动。
 
+- A5022 为 count-index rebuild failure 建立跨换主的权威零值链。此前 counter 只在 leader 重建失败时
+  动态创建，raw `increase` family 在正常 follower、停止 scrape 或非法值时都可能表现为空；这会把
+  CountOnly 已退化为 TiKV scan 的诊断信号静默为零。现 server 在参与 leader election 前为每个副本初始化
+  `count_index.rebuild.err=0`，单元测试固定顺序；监控从 60 秒内样本生成 Ready Pod UID 级 current/10 分钟
+  increase recording，两者必须完整覆盖当前 Ready Pod。current 必须是 `[0,2^53]` 内精确整数，外推
+  increase 可为分数但必须有限且同范围；invalid recording 缺失/非零触发新的 metrics-missing，failure
+  告警只消费新鲜 increase。精确 manifest/server 测试及 production/observability 文档已同步；相关测试
+  通过。本项需要下一生产镜像携带 counter 初始化改动。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
