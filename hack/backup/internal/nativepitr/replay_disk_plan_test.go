@@ -311,6 +311,53 @@ func TestMaterializeReplayDiskPlanCleansAllScratchFilesAfterMidBuildENOSPC(t *te
 	}
 }
 
+func TestMaterializeReplayDiskPlanStopsScratchCommitsAfterFirstFilesystemFailure(t *testing.T) {
+	_, receipt, root, _, _ := replayFixtureWithDefaultValue(t, make([]byte, 1<<20))
+	scratch := t.TempDir()
+	baseline := make(map[string][sha256.Size]byte)
+	defaultFailed := false
+	candidateCommittedAfterFailure := false
+	freeBytes := func(path string) (uint64, error) {
+		entries, err := os.ReadDir(path)
+		require.NoError(t, err)
+		if len(entries) != 3 {
+			return ^uint64(0), nil
+		}
+		defaultChanged := false
+		for _, entry := range entries {
+			contents, readErr := os.ReadFile(filepath.Join(path, entry.Name()))
+			require.NoError(t, readErr)
+			current := sha256.Sum256(contents)
+			previous, found := baseline[entry.Name()]
+			baseline[entry.Name()] = current
+			if !found || current == previous {
+				continue
+			}
+			if strings.Contains(entry.Name(), "-defaults-") {
+				defaultChanged = true
+			}
+			if defaultFailed && strings.Contains(entry.Name(), "-candidates-") {
+				candidateCommittedAfterFailure = true
+			}
+		}
+		if defaultChanged && !defaultFailed {
+			defaultFailed = true
+			return 0, syscall.ENOSPC
+		}
+		return ^uint64(0), nil
+	}
+
+	_, err := materializeReplayDiskPlanWithScratchQuotaFactory(receipt, digest, root, scratch, 119, 150, func() (*replayScratchQuota, error) {
+		return newReplayScratchQuotaWithFreeBytes(^uint64(0), 1, scratch, freeBytes)
+	})
+	require.ErrorIs(t, err, syscall.ENOSPC)
+	require.True(t, defaultFailed)
+	require.False(t, candidateCommittedAfterFailure, "candidate scratch must not commit after default scratch reports ENOSPC")
+	entries, readErr := os.ReadDir(scratch)
+	require.NoError(t, readErr)
+	require.Empty(t, entries)
+}
+
 func TestMaterializeReplayDiskPlanValidatesEvidenceBeforeScratchQuotaFactory(t *testing.T) {
 	called := false
 	_, err := materializeReplayDiskPlanWithScratchQuotaFactory(LogArtifactReceipt{}, digest, t.TempDir(), t.TempDir(), 119, 150, func() (*replayScratchQuota, error) {

@@ -863,7 +863,10 @@ func materializeReplayDiskPlanWithScratchQuotaFactory(logs LogArtifactReceipt, l
 			}
 		}
 	}
-	if err := errors.Join(defaults.Flush(), candidates.Flush()); err != nil {
+	if err := defaults.Flush(); err != nil {
+		return nil, err
+	}
+	if err := candidates.Flush(); err != nil {
 		return nil, err
 	}
 

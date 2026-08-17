@@ -55334,6 +55334,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   语义验收 43.65 秒通过，一次性资源已清理。该门禁证明真实内核 truncate failure 与 errno 恢复，不冒充物理 ENOSPC、真实 fsync EIO、
   read-only remount、PVC eviction 或节点重启；这些场景仍保持开放。
 
+- A4929 修复 scratch 首错后仍继续写盘的问题。materializer 原先用
+  `errors.Join(defaults.Flush(), candidates.Flush())` 聚合错误；Go 在构造参数时会无条件执行两个 Flush，因此 default-CF index commit
+  已由 post-commit filesystem probe 返回 ENOSPC 后，write-candidate transaction 仍继续 commit，增加故障卷写入并把本应 rollback
+  的临时状态落盘。RED 用三个 DB 建立后的逐文件 SHA-256 基线证明：default 文件增长并触发 ENOSPC 后，candidate 文件内容仍发生变化。
+  生产路径现在严格顺序执行 default Flush、检查错误、再执行 candidate Flush；首错立即返回，candidate 活跃 transaction 只在 defer
+  Close 中 rollback，清理阶段仍用 `errors.Join` 确保所有 DB 都尝试关闭/删除。
+
+  回归转为 GREEN，且 A4927 的 default/plan probe ENOSPC、A4928 的内核 EFBIG 与三文件清理继续通过；全仓搜索未发现其他并行执行多个
+  Flush 的同型路径。nativepitr、正式 log-replay CLI、race、vet 与 diff check 通过。2026-08-17 在独立 source/target 各 3 PD +
+  3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 与官方 BR v7.5.1 上执行 `TestNativeLogReplayRealBR`：顺序 Flush
+  成功路径的 v7 receipt、v2 checkpoint、fence/handoff 与最终 revision/key/lease/watch 语义验收 41.02 秒通过，一次性资源已清理。
+  真实物理 ENOSPC/fsync EIO、只读重挂载、PVC eviction 与失败清理本身遇到只读文件系统仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
