@@ -924,6 +924,9 @@ func (s *server) initLegacyHealthMetrics() {
 	}
 	_ = s.metricCli.EmitCounter("etcd.server.health_success", 0)
 	_ = s.metricCli.EmitCounter("etcd.server.health_failures", 0)
+	for _, check := range []string{"alarm", "serializable_read", "data_corruption"} {
+		_ = s.metricCli.EmitCounter("health.checkpoint_fallback", 0, metrics.Tag("check", check))
+	}
 }
 
 func (s *server) httpPingHandler(w http.ResponseWriter, req *http.Request) {

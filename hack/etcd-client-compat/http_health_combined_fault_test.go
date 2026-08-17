@@ -87,6 +87,10 @@ func TestHTTPHealthSurvivesCombinedBackendFault(t *testing.T) {
 	baselineMetricsStatus, baselineMetrics, err := requestAt(infoHTTPEndpoint, "/metrics")
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, baselineMetricsStatus)
+	for _, check := range []string{"alarm", "serializable_read", "data_corruption"} {
+		_, present := prometheusCounterSample(baselineMetrics, "health_checkpoint_fallback", "check", check)
+		require.Truef(t, present, "%s fallback metric must be initialized before the first fallback", check)
+	}
 
 	type commandResult struct {
 		output []byte
@@ -161,6 +165,11 @@ func TestHTTPHealthSurvivesCombinedBackendFault(t *testing.T) {
 }
 
 func prometheusCounterValue(text, name, label, value string) float64 {
+	parsed, _ := prometheusCounterSample(text, name, label, value)
+	return parsed
+}
+
+func prometheusCounterSample(text, name, label, value string) (float64, bool) {
 	needle := label + "=\"" + value + "\""
 	for _, line := range strings.Split(text, "\n") {
 		if !strings.HasPrefix(line, name+"{") || !strings.Contains(line, needle) {
@@ -172,10 +181,10 @@ func prometheusCounterValue(text, name, label, value string) float64 {
 		}
 		parsed, err := strconv.ParseFloat(fields[1], 64)
 		if err == nil {
-			return parsed
+			return parsed, true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 func TestPrometheusCounterValue(t *testing.T) {
@@ -185,4 +194,8 @@ func TestPrometheusCounterValue(t *testing.T) {
 	require.Equal(t, 2.0, prometheusCounterValue(metricsText, "health_checkpoint_fallback", "check", "alarm"))
 	require.Equal(t, 3.5, prometheusCounterValue(metricsText, "health_checkpoint_fallback", "check", "serializable_read"))
 	require.Zero(t, prometheusCounterValue(metricsText, "health_checkpoint_fallback", "check", "data_corruption"))
+	_, present := prometheusCounterSample(metricsText, "health_checkpoint_fallback", "check", "alarm")
+	require.True(t, present)
+	_, present = prometheusCounterSample(metricsText, "health_checkpoint_fallback", "check", "data_corruption")
+	require.False(t, present)
 }

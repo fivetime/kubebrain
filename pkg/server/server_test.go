@@ -682,6 +682,12 @@ func TestLegacyHealthMetricsInitializedBeforeHealthRequests(t *testing.T) {
 	require.Equal(t, []healthMetricEvent{
 		{kind: "counter", name: "etcd.server.health_success", value: 0},
 		{kind: "counter", name: "etcd.server.health_failures", value: 0},
+		{kind: "counter", name: "health.checkpoint_fallback", value: 0,
+			tags: []metrics.T{metrics.Tag("check", "alarm")}},
+		{kind: "counter", name: "health.checkpoint_fallback", value: 0,
+			tags: []metrics.T{metrics.Tag("check", "serializable_read")}},
+		{kind: "counter", name: "health.checkpoint_fallback", value: 0,
+			tags: []metrics.T{metrics.Tag("check", "data_corruption")}},
 	}, recorder.events)
 }
 

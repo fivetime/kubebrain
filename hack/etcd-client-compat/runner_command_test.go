@@ -1068,6 +1068,7 @@ func TestBackendCombinedPDAndTiKVQuorumPartitionRunsHTTPHealth(t *testing.T) {
 	require.Contains(t, text, `healthpb.HealthCheckResponse_SERVING`)
 	require.Contains(t, text, `[-]linearizable_read failed:`)
 	require.Contains(t, text, `prometheusCounterValue(baselineMetrics, "health_checkpoint_fallback", "check", check)`)
+	require.Contains(t, text, `fallback metric must be initialized before the first fallback`)
 }
 
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
