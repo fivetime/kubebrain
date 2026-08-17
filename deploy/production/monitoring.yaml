@@ -113,6 +113,10 @@ spec:
           expr: max by (namespace, pod, uid, check) (health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} and (time() - timestamp(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}) <= 60))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:count_index_overflowed:max_by_pod
+          expr: max by (namespace, pod, uid) (count_index_overflowed{namespace="kubebrain-system"} and (time() - timestamp(count_index_overflowed{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
           expr: count(kubebrain_dbaas:statefulset_replicas:current)
           labels:
@@ -518,13 +522,21 @@ spec:
             summary: KubeBrain p99 gRPC latency is high
             description: "KubeBrain p99 gRPC latency for {{ $labels.grpc_method }} is above 1 second."
         - alert: KubeBrainCountIndexOverflowed
-          expr: max(count_index_overflowed{namespace="kubebrain-system"}) > 0
+          expr: max(kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 1m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain count index exceeded its key limit
-            description: "The leader count index overflowed and exact counts are falling back to TiKV scans. Increase the instance memory tier and --count-index-max-keys together."
+            description: "A current Ready Pod UID with count-index samples no older than 60 seconds reports that the leader count index overflowed and exact counts are falling back to TiKV scans. Stale replaced Pod samples are excluded. Increase the instance memory tier and --count-index-max-keys together."
+        - alert: KubeBrainCountIndexMetricsMissing
+          expr: count(kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current)
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain count-index telemetry is incomplete
+            description: "At least one current Ready Pod UID has not published count_index_overflowed within 60 seconds. Production enables the count index on every replica and refreshes this gauge every 15 seconds, so missing or stale telemetry cannot be interpreted as a healthy non-overflowed index. Check mixed binary/configuration rollout, Pod UID relabeling, and application scrape health."
         - alert: KubeBrainCountIndexRebuildFailures
           expr: sum(increase(count_index_rebuild_err{namespace="kubebrain-system"}[10m])) > 0
           for: 0m

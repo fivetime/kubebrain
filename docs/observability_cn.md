@@ -119,7 +119,10 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   正式发布入口还会调用 `validate-storage-latency-slo.sh` 对同一 available/revision/remaining 数量、下限和新鲜度执行即时 fail-closed 检查，不等待告警 `for` 窗口。
 - **watch send loop 拥塞**:`histogram_quantile(0.99, rate(etcd_debugging_server_watch_send_loop_watch_stream_duration_seconds_bucket[5m]))` 或 control/progress send-loop p99 持续升高。若这些指标高而 TiKV/collector 正常，优先查 gRPC 流控、客户端消费速度和 apiserver watch cache 初始化并发。
 - **版本膨胀**:`count_index.keys` 长期单调上涨且无压缩回落 → 检查 apiserver 压缩循环是否正常(KubeBrain 自身不自动压缩)。
-- **count index 退化**:`max(count_index_overflowed) > 0` 持续 1m，或
+- **count index 退化**：只对 KSM Ready 与 `count_index_overflowed` 原始样本均不超过 60 秒的
+  `(namespace,pod,uid)` 计算 `max(kubebrain_dbaas:count_index_overflowed:max_by_pod) > 0`，持续 1m；
+  每个当前 Ready UID 都必须有一条新鲜 overflow gauge，否则 `KubeBrainCountIndexMetricsMissing`
+  在 2m 后告警，不能把缺失/停止抓取解释成未溢出。另监控
   `increase(count_index_rebuild_err[10m]) > 0`。overflow 时应同时提高实例内存规格和
   `--count-index-max-keys`，不能只放大 key cap；重建失败先检查 TiKV scan 错误、PD
   可用性和 leader 切换频率。不要用 `count_index_keys == 0` 告警，followers 正常为 0。

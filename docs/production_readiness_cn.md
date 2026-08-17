@@ -4144,6 +4144,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - leader election 短时间频繁丢失。
 - watch revision lag 过高。
 - 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。
+- 任一当前 Ready Pod 的 `count_index_overflowed` 超过 60 秒未刷新，或任一新鲜 overflow gauge 为 1；
+  production 每个副本都启用 count index 且每 15 秒刷新该 gauge，缺失不能解释成健康零值。
 - gRPC p99 延迟超过 1 秒。
 
 这些阈值是预生产起点，不应直接作为最终生产阈值。正式上线前应基于真实对象规模、apiserver QPS、watch 数量和 TiKV 延迟重新校准。
