@@ -46,7 +46,10 @@ type failingMaintenanceSnapshotServer struct {
 
 type availableSnapshotCheckpointBackend struct {
 	BackendShim
-	checkpoint backend.SerializableCheckpoint
+	checkpoint     backend.SerializableCheckpoint
+	probeTimestamp uint64
+	probeErr       error
+	probeCalls     atomic.Int64
 }
 
 func (b *availableSnapshotCheckpointBackend) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
@@ -54,7 +57,8 @@ func (b *availableSnapshotCheckpointBackend) GetSerializableCheckpoint() (backen
 }
 
 func (b *availableSnapshotCheckpointBackend) GetFollowerSnapshotTimestamp(context.Context) (uint64, error) {
-	return 0, status.Error(codes.Unavailable, "backend unavailable")
+	b.probeCalls.Add(1)
+	return b.probeTimestamp, b.probeErr
 }
 
 func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
@@ -481,7 +485,14 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	trap := &localSnapshotTrapBackend{BackendShim: server.backend}
-	server.backend = trap
+	shim := &availableSnapshotCheckpointBackend{
+		BackendShim: trap,
+		checkpoint: backend.SerializableCheckpoint{
+			Revision: 1, Timestamp: 1, ValidUntil: time.Now().Add(time.Minute),
+		},
+		probeTimestamp: 2,
+	}
+	server.backend = shim
 	digest := sha256.Sum256([]byte("abc"))
 	want := []*etcdserverpb.SnapshotResponse{
 		{RemainingBytes: 2, Blob: []byte("a"), Version: Version},
@@ -502,6 +513,8 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 	}
 	stream := &maintenanceSnapshotServer{ctx: context.Background()}
 	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
+	require.Equal(t, int64(1), shim.probeCalls.Load(),
+		"a healthy follower must prove the live data plane before proxying")
 	require.False(t, trap.called, "a follower must not capture independently from concurrent leader metadata mutations")
 	require.Equal(t, want, stream.responses)
 }
@@ -579,7 +592,11 @@ func TestMaintenanceSnapshotUsesProtectedCheckpointAfterReadBarrierFailure(t *te
 		Revision: server.backend.GetCurrentRevision(), Timestamp: timestamp, ValidUntil: time.Now().Add(time.Minute),
 	}
 	require.GreaterOrEqual(t, int64(checkpoint.Revision), put.Header.Revision)
-	shim := &availableSnapshotCheckpointBackend{BackendShim: server.backend, checkpoint: checkpoint}
+	shim := &availableSnapshotCheckpointBackend{
+		BackendShim: server.backend,
+		checkpoint:  checkpoint,
+		probeErr:    status.Error(codes.Unavailable, "backend unavailable"),
+	}
 	server.backend = shim
 	server.tokens.snapshots = newAuthSnapshotCache(shim)
 
@@ -598,6 +615,7 @@ func TestMaintenanceSnapshotUsesProtectedCheckpointAfterReadBarrierFailure(t *te
 	}
 	stream := &maintenanceSnapshotServer{ctx: ctx}
 	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
+	require.Equal(t, int64(1), shim.probeCalls.Load())
 	require.GreaterOrEqual(t, len(stream.responses), 2)
 	var artifact []byte
 	for _, response := range stream.responses[:len(stream.responses)-1] {

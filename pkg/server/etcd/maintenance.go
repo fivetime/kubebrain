@@ -799,18 +799,21 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 	s.metricCli.EmitCounter("maintenance.snapshot", 1)
 	ctx := stream.Context()
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
-	// A healthy leader keeps the existing request-time capture semantics. A
-	// follower or an isolated former leader instead exports its last fully
+	// Healthy members keep the existing leader-captured semantics: a follower
+	// proxies to the leader instead of returning an arbitrarily old local
+	// checkpoint. A member whose data plane is unavailable exports its last fully
 	// protected applied checkpoint, matching etcd's member-local Snapshot
 	// availability without pretending that the artifact contains newer writes.
 	checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint()
-	protected := !leadingFresh && checkpointErr == nil
-	if leadingFresh && checkpointErr == nil {
+	protected := false
+	if checkpointErr == nil {
 		// A backend partition begins before the local leader lease expires. Probe
 		// the live read barrier with a small slice of the Snapshot deadline so the
 		// request can select the protected artifact before any stream frame is
-		// emitted. The actual live capture repeats the barrier under its write
-		// fence; this probe is availability selection, not linearization.
+		// emitted. This also prevents a healthy follower from serving a stale local
+		// checkpoint instead of proxying the current leader. The actual live capture
+		// repeats the barrier under its write fence; this probe is availability
+		// selection, not linearization.
 		probeCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
 		_, probeErr := s.backend.GetFollowerSnapshotTimestamp(probeCtx)
 		cancel()
