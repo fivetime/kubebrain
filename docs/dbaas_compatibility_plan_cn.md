@@ -55899,6 +55899,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   linearizable_read 必须失败，复跑完整门禁 **77.80 秒 GREEN**，随后两个 quorum 恢复。该能力依赖有效
   protected checkpoint；无 checkpoint 时不把过期或未保护状态冒充健康。
 
+- A4963 把 A4302/A4263/A4264 的公开 gRPC transport-health 合同纳入 A4962 的严格双 quorum 门禁。
+  upstream `server/etcdserver/api/v3rpc/health.go` 在 gRPC server 开始接流后对空 service 直接发布
+  `SERVING`，不随 Raft leader/quorum 翻转；KubeBrain 也已把公开 client health 与仅供 peer routing 的 leader
+  health 分离，但此前只在 bufconn/正常运行时证明。`7f60e3a6` 在同一故障 generation 中使用官方
+  `grpc.health.v1.Health` client 调用 `Check` 与 `List`：前者必须在一秒内返回 `SERVING`，后者必须只包含
+  `"" -> SERVING`，不得因后端不可写而发布具体 KV service 或 `NOT_SERVING`；同窗仍要求 mutation
+  `DeadlineExceeded`、HTTP liveness 成功且 readiness 的 linearizable_read 失败。
+
+  继续使用 `kubebrain:a4981-http-health-checkpoint` 同时隔离 `kb-pd-1/0` 与 `kb-tikv-0/2`，扩展门禁
+  **78.35 秒 GREEN**，随后两个 quorum 恢复。该项没有生产 RED，不重建镜像；它只证明公开 listener/服务进程
+  liveness，不把 `SERVING` 解释为可提交线性写入，流量准入仍应结合 `/readyz` 或实际 proposal health。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
