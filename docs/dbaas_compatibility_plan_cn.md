@@ -56551,6 +56551,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   backend 测试固定 start 与 success 只在相应路径发布，精确 manifest 与生产文档同步；相关测试通过。本项
   需要下一生产镜像。
 
+- A5034 闭合 TiKV uncertain commit resolver 的生产诊断与损坏链。旧 `txn.uncertain.resolve.*`、
+  `txn.uncertain.witness_corrupt*` 仅在事件后动态创建且 production 未消费；持续无法读取 commit evidence、
+  resolver 最终判定以及 mixed/mismatched ordered marker 都可静默。现新增 canonical
+  `txn.uncertain.resolution{outcome}`，固定 `retry|committed|not_committed|witness_corrupt|corrupt_alarm_failed`
+  五类并在每个 backend 创建时初始化零值，保留 legacy counters。监控生成 60 秒新鲜的 Ready Pod UID/
+  outcome current 与 10 分钟 increase，分别要求 `5×Ready` 完整来源，验证 `[0,2^53]` 精确 current 与有限
+  同范围 increase。retry/两类 durable 终态 warning；witness contradiction 和 CORRUPT alarm persistence
+  failure critical，后者即使共享 alarm 尚未出现也按 corrupt 处置；metrics-missing critical。行为测试固定
+  corrupt witness 同时产生 witness_corrupt 与 retry canonical outcome，零值顺序、精确 manifest 和文档同步。
+  相关测试通过。本项需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
