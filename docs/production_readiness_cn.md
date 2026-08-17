@@ -121,6 +121,10 @@ series 各恰好三份，并比较所有副本的 NOSPACE 与 backend quota 值�
 任一 NaN、Inf、负数、零分母、非整数、超界或 usage>backend 矛盾都会计入
 `quota_invalid_values`，并让 `KubeBrainQuotaMetricsInconsistent` fail closed；不能让非法分子或分母
 把 NOSPACE/usage-high 告警变成空向量或伪造健康余量。
+`quota_refresh_err` 在每个副本启动、首次共享状态读取前显式发布零值；运行期只从 60 秒内 raw sample
+生成按 Pod UID 去重的 current 与 10 分钟 increase recording，两者必须各自覆盖全部当前 Ready Pod。
+current counter 必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且在同一范围。
+缺失、陈旧或非法 refresh telemetry 由独立 metrics-missing 告警 fail closed，不能解释为零读取失败。
 
 ## TiKV/PD 升级完成门槛
 

@@ -261,6 +261,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.leaderElection = election
 	s.peers = peerService
 	s.initLegacyHealthMetrics()
+	s.initQuotaMetrics()
 	go func() {
 		defer close(s.campaignDone)
 		peerService.Campaign(campaignCtx)
@@ -927,6 +928,13 @@ func (s *server) initLegacyHealthMetrics() {
 	for _, check := range []string{"alarm", "serializable_read", "data_corruption"} {
 		_ = s.metricCli.EmitCounter("health.checkpoint_fallback", 0, metrics.Tag("check", check))
 	}
+}
+
+func (s *server) initQuotaMetrics() {
+	if s.metricCli == nil {
+		return
+	}
+	_ = s.metricCli.EmitCounter("quota.refresh.err", 0)
 }
 
 func (s *server) httpPingHandler(w http.ResponseWriter, req *http.Request) {
