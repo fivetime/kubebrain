@@ -2013,25 +2013,27 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	checkpointRefreshRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointRefreshFailures")
 	healthFallbackRule := prometheusRuleByAlert(t, groups, "KubeBrainHealthCheckpointFallback")
 	require.Equal(t,
-		`sum by (check) (increase(health_checkpoint_fallback{namespace="kubebrain-system"}[10m]) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`,
+		`sum by (check) ((max by (namespace, pod, uid, check) (increase(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}[10m])) and on(namespace, pod, uid, check) kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check) and on(namespace, pod, uid) kubebrain_dbaas:ready_pods:current) > 0`,
 		healthFallbackRule["expr"])
 	require.Equal(t, "0m", healthFallbackRule["for"])
 	require.Equal(t, "warning", healthFallbackRule["labels"].(map[string]any)["severity"])
 	healthFallbackDescription := healthFallbackRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, healthFallbackDescription, "bounded-stale degraded service")
 	require.Contains(t, healthFallbackDescription, "not proof that PD/TiKV recovered")
-	require.Contains(t, healthFallbackDescription, "KSM Ready sample is no older than 60 seconds")
-	require.Contains(t, healthFallbackDescription, "Stale counters from replaced Pods are excluded")
+	require.Contains(t, healthFallbackDescription, "KSM Ready and health counter samples are no older than 60 seconds")
+	require.Contains(t, healthFallbackDescription, "deduplicated by Pod UID and check")
+	require.Contains(t, healthFallbackDescription, "stopped scrapes are excluded")
 	healthFallbackMissingRule := prometheusRuleByAlert(t, groups,
 		"KubeBrainHealthCheckpointFallbackMetricsMissing")
 	require.Equal(t,
-		`count(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != 3 * count(kubebrain_dbaas:ready_pods:current)`,
+		`count(kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current)`,
 		healthFallbackMissingRule["expr"])
 	require.Equal(t, "5m", healthFallbackMissingRule["for"])
 	require.Equal(t, "warning", healthFallbackMissingRule["labels"].(map[string]any)["severity"])
 	healthFallbackMissingDescription := healthFallbackMissingRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, healthFallbackMissingDescription, "exactly three initialized")
-	require.Contains(t, healthFallbackMissingDescription, "KSM Ready samples are no older than 60 seconds")
+	require.Contains(t, healthFallbackMissingDescription, "samples no older than 60 seconds")
+	require.Contains(t, healthFallbackMissingDescription, "stopped application scrapes are excluded")
 	require.Contains(t, healthFallbackMissingDescription, "during scaling")
 	require.Contains(t, healthFallbackMissingDescription, "mixed binary versions")
 	require.Contains(t, healthFallbackMissingDescription, "pod UID relabeling")
@@ -2307,6 +2309,7 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		"kubebrain_dbaas:quota_nospace:max_by_pod":                           `max by (namespace, pod, uid) (quota_nospace{namespace="kubebrain-system"} and (time() - timestamp(quota_nospace{namespace="kubebrain-system"}) <= 60))`,
 		"kubebrain_dbaas:quota_backend_bytes:max_by_pod":                     `max by (namespace, pod, uid) (quota_backend_bytes{namespace="kubebrain-system"} and (time() - timestamp(quota_backend_bytes{namespace="kubebrain-system"}) <= 60))`,
 		"kubebrain_dbaas:quota_logical_usage_bytes:max_by_pod":               `max by (namespace, pod, uid) (quota_logical_usage_bytes{namespace="kubebrain-system"} and (time() - timestamp(quota_logical_usage_bytes{namespace="kubebrain-system"}) <= 60))`,
+		"kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check":    `max by (namespace, pod, uid, check) (health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} and (time() - timestamp(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}) <= 60))`,
 		"kubebrain_dbaas:replica_expectation_sources:count":                  `count(kubebrain_dbaas:statefulset_replicas:current)`,
 		"kubebrain_dbaas:compute_replicas:expected":                          `sum(kubebrain_dbaas:statefulset_replicas:current) or on() vector(0)`,
 		"kubebrain_dbaas:kubebrain_replicas:expected":                        `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)`,

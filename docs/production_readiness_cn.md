@@ -274,7 +274,10 @@ KSM 样本时间不超过 60 秒的 `(namespace,pod,uid)`，并按该不可变�
 完整性/新鲜度、health checkpoint fallback 事件及其三类固定 series 完整性都只与这组当前身份相交；
 滚动替换后仍位于 Prometheus lookback 窗口的旧 Pod counter/gauge 不能触发 fallback 告警，也不能为
 新 Pod 补齐 checkpoint 指标。若 KSM Ready family 停止刷新，记录会在一分钟内消失，不能继续把旧身份
-解释为当前 Ready 副本。
+解释为当前 Ready 副本。`health_checkpoint_fallback` 本身也必须有不超过 60 秒的新鲜样本，并按
+`(namespace,pod,uid,check)` 去重：10 分钟 counter increase 只有同时存在当前 counter 身份与 Ready UID
+时才参与事件告警；应用 scrape 停止后，lookback 中的旧 counter 既不能继续通过三类 series 完整性，
+也不能重复触发历史 fallback 事件。
 
 该脚本通过 Kubernetes Service proxy 读取 PD API，要求所有 TiKV store 为 `Up`，并要求
 `pending-peer`、`down-peer`、`miss-peer`、`extra-peer`、`learner-peer` 五类异常 Region 均为零；
