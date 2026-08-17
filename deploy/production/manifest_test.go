@@ -2121,7 +2121,7 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		"KubeBrainNetworkMetricsMissing":       `absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:compute_replicas:expected) == 1 or absent(kubebrain_dbaas:network_receive_sources:count) == 1 or absent(kubebrain_dbaas:network_transmit_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:network_receive_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_transmit_sources:count != on() kubebrain_dbaas:compute_replicas:expected`,
 		"KubeBrainNetworkErrors":               `(sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m])) > 0)`,
 		"KubeBrainNetworkPacketDrops":          `(sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m])) > 0)`,
-		"KubeBrainLogicalBackupMetricsMissing": `count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) != 1`,
+		"KubeBrainLogicalBackupMetricsMissing": `count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_records{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_leases{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_snapshot_revision{instance="kubebrain"}) != 1`,
 		"KubeBrainLogicalBackupStale":          `(time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) > 90000) or (max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) > time() + 300)`,
 	} {
 		alertRule := prometheusRuleByAlert(t, groups, alert)
@@ -2204,7 +2204,11 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 	backupMissingRule := prometheusRuleByAlert(t, groups, "KubeBrainLogicalBackupMetricsMissing")
 	require.Contains(t,
 		backupMissingRule["annotations"].(map[string]any)["description"],
-		"Exactly one logical backup success timestamp source is required",
+		"Exactly one timestamp, artifact-bytes, records, leases, and snapshot-revision series is required",
+	)
+	require.Contains(t,
+		backupMissingRule["annotations"].(map[string]any)["description"],
+		"atomically published logical backup metrics file",
 	)
 	backupStaleRule := prometheusRuleByAlert(t, groups, "KubeBrainLogicalBackupStale")
 	require.Contains(t,
@@ -2345,6 +2349,9 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"grpc_server_handling_seconds_bucket",
 		"kubebrain_logical_backup_artifact_bytes",
 		"kubebrain_logical_backup_last_success_timestamp_seconds",
+		"kubebrain_logical_backup_leases",
+		"kubebrain_logical_backup_records",
+		"kubebrain_logical_backup_snapshot_revision",
 		"kubebrain_object_store_request_count",
 		"kubebrain_object_store_request_period_end_seconds",
 		"kube_pod_container_resource_limits",

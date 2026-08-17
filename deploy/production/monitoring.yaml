@@ -570,13 +570,13 @@ spec:
             summary: KubeBrain object request billing inputs are incomplete
             description: "The provider request exporter does not expose exactly one finalized hourly count for every write, list, read, and delete class, or the completeness recording series itself is absent. Request billing must fail closed."
         - alert: KubeBrainLogicalBackupMetricsMissing
-          expr: count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) != 1
+          expr: count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_records{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_leases{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_snapshot_revision{instance="kubebrain"}) != 1
           for: 1h
           labels:
             severity: warning
           annotations:
-            summary: KubeBrain logical backup success metric is missing or non-unique
-            description: "Exactly one logical backup success timestamp source is required. Configure one authoritative METRICS_OUTPUT textfile collector and remove stale or duplicate exporters before trusting backup RPO."
+            summary: KubeBrain logical backup metric family is incomplete or non-unique
+            description: "Exactly one timestamp, artifact-bytes, records, leases, and snapshot-revision series is required from the atomically published logical backup metrics file. Configure one authoritative METRICS_OUTPUT textfile collector and remove partial, stale, or duplicate exporters before trusting backup RPO or artifact inventory."
         - alert: KubeBrainLogicalBackupStale
           expr: (time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) > 90000) or (max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) > time() + 300)
           for: 15m
