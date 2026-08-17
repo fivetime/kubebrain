@@ -55976,6 +55976,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   observability runbook 也改为按当前 Ready 副本数处置；完整 `deploy/production` 测试通过。本项只修复通用
   DBaaS 监控的扩缩容正确性，不重建数据面镜像。
 
+- A4969 将同类扩缩容审计延伸到 `KubeBrainSerializableCheckpointUnavailable`。原规则虽已用
+  `(namespace,pod,uid)` 与 Ready Pod 相交来排除滚动后的陈旧样本，但 available/revision 的期望数仍写死为
+  3：一副本或五副本部署即使每个 Ready member 都有有效 GC-protected checkpoint 也会误报。新表达式将两类
+  series 数分别与当前 Ready Pod UID 数动态比较；任一新 Ready Pod 缺指标仍 fail closed，而正常扩缩容不再受
+  固定三副本假设影响。`min(available/revision/remaining_seconds)` 和 60 秒 `timestamp()` 新鲜度条件保持不变。
+  production manifest 门禁固定动态基数与 scaling annotation，observability runbook 同步说明 Ready UID 期望值；完整
+  `deploy/production` 测试通过。本项不改变 checkpoint 数据面语义，不重建镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
