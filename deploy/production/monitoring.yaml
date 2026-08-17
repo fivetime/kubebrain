@@ -373,6 +373,14 @@ spec:
           annotations:
             summary: KubeBrain health probe used a protected checkpoint
             description: "KubeBrain {{ $labels.check }} health checks entered checkpoint fallback {{ $value }} times in 10 minutes. A successful liveness response is bounded-stale degraded service, not proof that PD/TiKV recovered. Inspect PD/TiKV quorum, serializable checkpoint lifetime, and refresh errors."
+        - alert: KubeBrainHealthCheckpointFallbackMetricsMissing
+          expr: count(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != 9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain health fallback metrics are incomplete
+            description: "Ready KubeBrain replicas do not expose exactly three initialized health_checkpoint_fallback series each. Check for mixed binary versions, missing pod UID relabeling, stale scrape targets, or an incomplete metrics registry before trusting the fallback alert."
         - alert: KubeBrainQuotaNoSpace
           expr: max(quota_nospace{namespace="kubebrain-system"}) > 0
           for: 0m
