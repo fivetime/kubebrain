@@ -55358,6 +55358,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   port-forward 均已关闭。本轮未复现生产差异，不修改生产代码；关闭的是 Cluster/Maintenance/Auth 非 KV 控制 RPC 在多副本部署下的
   serving-member header identity 证据缺口。
 
+- A4931 修复并发 PD leader + leader-heavy TiKV replacement 故障入口的恢复假绿。原
+  `hack/dev/delete-pd-and-tikv-leaders.sh` 只在删除前读取 leader/store，并在删除后等待两个 Pod Ready 与 UID 改变；它既不拒绝
+  已有的 PD member/store/Region 降级，也会在 TiDB Operator 已把 replacement Pod 标为 Ready、但 store 尚未 Up 或 Region 仍有
+  miss/pending/down/extra/learner peer 时输出 `combined replacements ready`。这与 A4730 已实际观察到的 Ready 后仍有 pending peer
+  窗口一致，会把不完整恢复冒充多点故障成功。
+
+  入口现在删除前 fail closed 验证恰好三个有效 PD member、三台 Up store，以及五类 Region check 全零；删除后除目标 Pod Ready 与
+  UID 变化外，还必须在默认 90 秒有界窗口内取得三次连续完整健康样本。timeout、采样数与间隔均作整数和上限校验。确定性 fake-kubectl
+  回归证明 preflight Region 异常时从不执行 delete，健康 replacement 可完成，而 UID 已变化但 postflight Region 持续异常时必须非零
+  退出且不得发布 ready 文案。
+
+  2026-08-17 在独立三 PD/三 TiKV 集群同时替换 PD leader `kb-pd-1` 与承载 5 个 Region leader 的 `kb-tikv-1`；两者 UID 均变化。
+  本次将健康预算显式设为 180 秒；实测 Pod Ready 后连续七次仍报告 store 非 Up，旧入口会在该窗口假绿；新门禁继续等待，约 44 秒后取得三次连续 member/store/Region
+  健康样本才成功。终态 Service proposal 25.5ms，三个 KubeBrain 直连副本分别 19.3/23.1/27.5ms，三 store Up，AlarmList 与
+  LeaseList 为空，三个 KubeBrain Pod Ready 且无新增重启；临时 port-forward 已清理。本轮修复故障验收工具，不修改数据面生产代码，
+  也不把单节点 Kind 的双 Pod replacement 外推为跨 AZ 分区或 PD quorum + TiKV store 组合失联。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
