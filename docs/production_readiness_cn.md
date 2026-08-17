@@ -1517,6 +1517,9 @@ OUTPUT=/backup/kubebrain-logical-backup.jsonl \
 生产规则先要求上述五个原子发布 family 的 raw scrape 样本均不超过 60 秒，再保留完整来源标签并要求
 各恰有一个 series；任一缺失、停止刷新或重复持续 1 小时后 warning。所有备份告警和 metering artifact/RPO
 输入只消费这五条 current recording，不能让 Prometheus lookback 旧值经 recording rule 重打当前时间戳。
+五项源值还必须是 `<=2^53` 的精确整数：timestamp 与 snapshot revision 必须为正，artifact bytes、records、
+leases 必须非负，timestamp 不得领先控制面时钟 5 分钟。任一非法值会同时触发 family 告警并把
+`metering_data_complete` 置零，不能生成小时计费证据。
 规则从唯一新鲜来源选择最新成功时间，
 最近成功备份超过 25 小时或时间戳领先控制面时钟 5 分钟、持续 15 分钟后 critical。未来时间不得掩盖 RPO
 超期，重复来源也不得充当权威证据。25 小时阈值为每日备份留出 1 小时调度抖动，不代表所有套餐都采用同一 RPO；
