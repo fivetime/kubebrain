@@ -306,6 +306,20 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 
 func (s *RPCServer) Status(ctx context.Context, req *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
 	s.metricCli.EmitCounter("maintenance.status", 1)
+	if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+		liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
+		response, err := s.statusOnce(liveCtx, req)
+		cancel()
+		if err == nil || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
+			return response, err
+		}
+		s.metricCli.EmitCounter("maintenance.status.checkpoint_fallback", 1)
+		return s.localMaintenanceStatus(backend.WithSerializableCheckpoint(ctx, checkpoint))
+	}
+	return s.statusOnce(ctx, req)
+}
+
+func (s *RPCServer) statusOnce(ctx context.Context, req *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
 		// Upstream Status reads only the serving member's already-applied BoltDB,

@@ -45,6 +45,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 type writeAfterHashBackendShim struct {
@@ -97,6 +98,64 @@ type coldStatusRevisionBackendShim struct {
 	current    uint64
 	durable    uint64
 	durableErr error
+}
+
+type checkpointStatusBackendShim struct {
+	BackendShim
+	t           *testing.T
+	checkpoint  backend.SerializableCheckpoint
+	liveErr     error
+	liveCalls   int
+	pinnedCalls int
+}
+
+func (b *checkpointStatusBackendShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
+	return b.checkpoint, nil
+}
+
+func (b *checkpointStatusBackendShim) GetDurableRevision(ctx context.Context) (uint64, error) {
+	_, pinned := backend.SerializableCheckpointFromContext(ctx)
+	if !pinned {
+		b.liveCalls++
+		return 0, b.liveErr
+	}
+	b.requirePinned(ctx)
+	return b.checkpoint.Revision, nil
+}
+
+func (b *checkpointStatusBackendShim) requirePinned(ctx context.Context) {
+	checkpoint, pinned := backend.SerializableCheckpointFromContext(ctx)
+	require.True(b.t, pinned)
+	require.Equal(b.t, b.checkpoint, checkpoint)
+	b.pinnedCalls++
+}
+
+func (b *checkpointStatusBackendShim) QuotaStatus(ctx context.Context) (int64, int64, bool, error) {
+	b.requirePinned(ctx)
+	return 11, 22, false, nil
+}
+
+func (b *checkpointStatusBackendShim) NoSpaceAlarms(ctx context.Context) ([]uint64, error) {
+	b.requirePinned(ctx)
+	return nil, nil
+}
+
+func (b *checkpointStatusBackendShim) ValidateCorruptAlarmMetadata(ctx context.Context) error {
+	b.requirePinned(ctx)
+	return nil
+}
+
+func (b *checkpointStatusBackendShim) CorruptAlarms(ctx context.Context) ([]uint64, error) {
+	b.requirePinned(ctx)
+	return nil, nil
+}
+
+func (b *checkpointStatusBackendShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
+	if _, pinned := backend.SerializableCheckpointFromContext(ctx); !pinned {
+		return b.BackendShim.InternalGet(ctx, key)
+	}
+	b.requirePinned(ctx)
+	return nil, storage.ErrKeyNotFound
 }
 
 func (b *coldStatusRevisionBackendShim) GetCurrentRevision() uint64 { return b.current }
@@ -226,6 +285,54 @@ func TestStatusVersionEnablesRequestWatchProgress(t *testing.T) {
 	supported := ge3_5_13 || (ge3_4_31 && lt3_5_0)
 	require.True(t, supported,
 		"Status.Version %q does not satisfy the apiserver RequestWatchProgress gate (>=3.5.13 or [3.4.31,3.5.0))", resp.Version)
+}
+
+func TestStatusFallsBackToProtectedCheckpointWhenBackendIsUnavailable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 37, Timestamp: 101, CompactRevision: 7, ValidUntil: time.Now().Add(time.Minute),
+	}
+	shim := &checkpointStatusBackendShim{
+		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: storage.ErrUnavailable,
+	}
+	server.backend = shim
+	server.auth.repo.backend = shim
+	server.tokens.repo.backend = shim
+	server.tokens.snapshots = newAuthSnapshotCache(shim)
+	server.peers = testPeerService{isLeader: true, currentTermFn: func() uint64 { return 9 }}
+
+	response, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+	require.Equal(t, checkpoint.Revision, response.RaftIndex)
+	require.Equal(t, checkpoint.Revision, response.RaftAppliedIndex)
+	require.Equal(t, uint64(9), response.RaftTerm)
+	require.Equal(t, 1, shim.liveCalls)
+	require.GreaterOrEqual(t, shim.pinnedCalls, 4)
+}
+
+func TestStatusDoesNotMaskDeterministicBackendFailureWithCheckpoint(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 37, Timestamp: 101, CompactRevision: 7, ValidUntil: time.Now().Add(time.Minute),
+	}
+	wantErr := status.Error(codes.DataLoss, "corrupt durable revision")
+	shim := &checkpointStatusBackendShim{
+		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: wantErr,
+	}
+	server.backend = shim
+	server.auth.repo.backend = shim
+	server.tokens.repo.backend = shim
+	server.tokens.snapshots = newAuthSnapshotCache(shim)
+	server.peers = testPeerService{isLeader: true, currentTermFn: func() uint64 { return 9 }}
+
+	response, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, 1, shim.liveCalls)
+	require.Zero(t, shim.pinnedCalls)
 }
 
 func TestVersionMetricsMatchAdvertisedProtocolVersions(t *testing.T) {
