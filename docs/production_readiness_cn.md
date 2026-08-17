@@ -305,7 +305,7 @@ leader-missing gauge 精确覆盖全部当前 TiKV，再要求最大值为 0。H
 `KubeBrainPDWALFsyncLatencyHigh`、`KubeBrainTiKVRaftDBWriteLatencyHigh` 和
 `KubeBrainTiKVKVDBWriteLatencyHigh` 按实例计算 5 分钟 p99，超过 1 秒持续 1 分钟即 critical；
 `KubeBrainStorageLatencyMetricsMissing` 要求按 instance 去重的 PD 与 TiKV 对应 histogram count series
-分别与当前 PD/TiKV StatefulSet 期望副本数精确相等；`KubeBrainStorageLatencyMetricsStale` 在任一 family 最旧样本超过 60 秒并持续 1 分钟时告警，防止
+分别与当前 PD/TiKV StatefulSet 期望副本数精确相等；`KubeBrainStorageLatencyMetricsStale` 先按 `instance` 从 HA 重复样本中选择最新时间戳，再在任一实例超过 60 秒并持续 1 分钟时告警，防止
 Prometheus lookback 把停止抓取的旧 series 暂时伪装成健康。缺失或陈旧都不能按零延迟处理。该门禁直接覆盖“PD/TiKV 全部 Ready/Up，但共享或过载磁盘让 PD heartbeat
 晚于 leader lease、短租约先过期”的故障形状。上线、CA/Envoy 轮换和短租约 SLO 验收都必须在这些
 告警无 firing/pending 且指标完整的独立 CSI worker 上进行；只检查 PVC 容量、逻辑 TiKV capacity 或

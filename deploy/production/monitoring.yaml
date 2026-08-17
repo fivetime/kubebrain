@@ -528,13 +528,13 @@ spec:
             summary: KubeBrain storage latency telemetry is incomplete
             description: "Deduplicated PD WAL and TiKV RaftDB/KVDB write histogram source counts do not exactly match the current PD/TiKV StatefulSet replica expectations, or an expectation recording series is absent. Do not declare the short-lease storage SLO healthy while any family is missing."
         - alert: KubeBrainStorageLatencyMetricsStale
-          expr: (max(time() - timestamp(etcd_disk_wal_fsync_duration_seconds_count{namespace="tidb-cluster",service="kb-pd-metrics"})) > 60) or (max(time() - timestamp(tikv_raftstore_store_write_raftdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"})) > 60) or (max(time() - timestamp(tikv_raftstore_store_write_kvdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"})) > 60)
+          expr: (max(time() - max by (instance) (timestamp(etcd_disk_wal_fsync_duration_seconds_count{namespace="tidb-cluster",service="kb-pd-metrics"}))) > 60) or (max(time() - max by (instance) (timestamp(tikv_raftstore_store_write_raftdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"}))) > 60) or (max(time() - max by (instance) (timestamp(tikv_raftstore_store_write_kvdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"}))) > 60)
           for: 1m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain storage latency telemetry is stale
-            description: "At least one PD WAL or TiKV RaftDB/KVDB histogram has not received a sample for more than 60 seconds. Prometheus lookback may still expose the old series; do not treat it as current SLO evidence."
+            description: "At least one PD WAL or TiKV RaftDB/KVDB instance has no fresh histogram sample from any HA scrape replica for more than 60 seconds. Per-instance freshness uses the newest duplicate sample; Prometheus lookback may still expose older replicas and must not create a false stale alert."
         - alert: KubeBrainStorageVolumeMetricsMissing
           expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:storage_replicas:expected) == 1 or absent(kubebrain_dbaas:storage_volumes:expected) == 1 or absent(kubebrain_dbaas:storage_requested_sources:count) == 1 or absent(kubebrain_dbaas:storage_capacity_sources:count) == 1 or absent(kubebrain_dbaas:storage_available_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:storage_volumes:expected < on() kubebrain_dbaas:storage_replicas:expected or kubebrain_dbaas:storage_requested_sources:count != on() kubebrain_dbaas:storage_volumes:expected or kubebrain_dbaas:storage_capacity_sources:count != on() kubebrain_dbaas:storage_replicas:expected or kubebrain_dbaas:storage_available_sources:count != on() kubebrain_dbaas:storage_replicas:expected
           for: 15m

@@ -2111,7 +2111,7 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		"KubeBrainTiKVRaftDBWriteLatencyHigh":   `histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_raftdb_duration_seconds_bucket{namespace="tidb-cluster",service="kb-tikv-metrics"}[5m]))) > 1`,
 		"KubeBrainTiKVKVDBWriteLatencyHigh":     `histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_kvdb_duration_seconds_bucket{namespace="tidb-cluster",service="kb-tikv-metrics"}[5m]))) > 1`,
 		"KubeBrainStorageLatencyMetricsMissing": `absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:pd_replicas:expected) == 1 or absent(kubebrain_dbaas:tikv_replicas:expected) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or count(max by (instance) (etcd_disk_wal_fsync_duration_seconds_count{namespace="tidb-cluster",service="kb-pd-metrics"})) != on() kubebrain_dbaas:pd_replicas:expected or count(max by (instance) (tikv_raftstore_store_write_raftdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"})) != on() kubebrain_dbaas:tikv_replicas:expected or count(max by (instance) (tikv_raftstore_store_write_kvdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"})) != on() kubebrain_dbaas:tikv_replicas:expected`,
-		"KubeBrainStorageLatencyMetricsStale":   `(max(time() - timestamp(etcd_disk_wal_fsync_duration_seconds_count{namespace="tidb-cluster",service="kb-pd-metrics"})) > 60) or (max(time() - timestamp(tikv_raftstore_store_write_raftdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"})) > 60) or (max(time() - timestamp(tikv_raftstore_store_write_kvdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"})) > 60)`,
+		"KubeBrainStorageLatencyMetricsStale":   `(max(time() - max by (instance) (timestamp(etcd_disk_wal_fsync_duration_seconds_count{namespace="tidb-cluster",service="kb-pd-metrics"}))) > 60) or (max(time() - max by (instance) (timestamp(tikv_raftstore_store_write_raftdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"}))) > 60) or (max(time() - max by (instance) (timestamp(tikv_raftstore_store_write_kvdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"}))) > 60)`,
 		"KubeBrainStorageVolumeMetricsMissing":  `absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:storage_replicas:expected) == 1 or absent(kubebrain_dbaas:storage_volumes:expected) == 1 or absent(kubebrain_dbaas:storage_requested_sources:count) == 1 or absent(kubebrain_dbaas:storage_capacity_sources:count) == 1 or absent(kubebrain_dbaas:storage_available_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:storage_volumes:expected < on() kubebrain_dbaas:storage_replicas:expected or kubebrain_dbaas:storage_requested_sources:count != on() kubebrain_dbaas:storage_volumes:expected or kubebrain_dbaas:storage_capacity_sources:count != on() kubebrain_dbaas:storage_replicas:expected or kubebrain_dbaas:storage_available_sources:count != on() kubebrain_dbaas:storage_replicas:expected`,
 		"KubeBrainStorageVolumeLow": `(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"} / ` +
 			`kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}) < 0.15`,
@@ -2191,6 +2191,15 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 	require.Contains(t,
 		regionMetricsRule["annotations"].(map[string]any)["description"],
 		"expectation chain is absent",
+	)
+	latencyStaleRule := prometheusRuleByAlert(t, groups, "KubeBrainStorageLatencyMetricsStale")
+	require.Contains(t,
+		latencyStaleRule["annotations"].(map[string]any)["description"],
+		"newest duplicate sample",
+	)
+	require.Contains(t,
+		latencyStaleRule["annotations"].(map[string]any)["description"],
+		"must not create a false stale alert",
 	)
 }
 
