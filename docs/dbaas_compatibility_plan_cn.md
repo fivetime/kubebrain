@@ -56453,6 +56453,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两条告警，明确刷新失败后的 gauge 是 last snapshot、不能证明当前共享 alarm 状态。精确 manifest/server
   测试及 production/observability 文档已同步；相关测试通过。本项需要下一生产镜像携带 counter 初始化改动。
 
+- A5024 统一闭合 leader-election 的三类关键 counter：leadership lost、incompatible transaction witness、
+  invalid alarm metadata。旧 counter 都仅在事件发生时创建，三条告警直接查询 raw `increase`；family
+  缺失/陈旧/非法可能掩盖 leader 抖动或因持久 metadata 不兼容/损坏导致的拒绝领导。现每个副本 campaign
+  前初始化三类权威零值，并生成 60 秒新鲜的 Ready Pod UID 级 current/10 分钟 increase recording；六类
+  来源必须完整，current 必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围。
+  lost 的动态前任 leader `addr` 先独立去重再按 Pod 求和，保留不同地址的多次丢主；另两类直接按 Pod
+  去重。三条事件告警只消费 recording，新 critical metrics-missing 统一拒绝缺失/陈旧/非法 telemetry。
+  精确 manifest/server 测试与 production/observability 文档已同步；相关测试通过。本项需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
