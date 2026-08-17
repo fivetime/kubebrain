@@ -4215,6 +4215,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   UID。stall 表示 writer 可能死在 revision 分配与 event publication 之间，先触发 warning；collector 在
   有界 deadline 后跳过 abandoned revision 则触发 critical。缺失、陈旧或非法 telemetry 不能作为 revision
   连续性和 watch delivery 健康的证据。
+- `revision_durable_persist_err` 在每个 backend 创建时初始化为权威零值，并仅从 60 秒内样本生成 Ready
+  Pod UID 级 current/10 分钟 increase recording。current 必须是 `[0,2^53]` 内精确整数，外推 increase
+  可为分数但必须有限且同范围，两类来源必须完整覆盖当前 Ready UID。后台失败会让 serializable reader
+  暂留旧安全快照，强制失败会阻塞 collector 直至 watermark 持久化成功，因此任一增量立即 critical；
+  缺失、陈旧或非法 telemetry 不能解释为 durable watermark 与 watch continuity 健康。
 - leader election 短时间频繁丢失。
 - 每个副本在 campaign 前初始化 leadership-lost、通用 initialization-error、incompatible-witness、
   invalid-alarm-metadata 四类 counter；只从 60 秒内样本生成 Ready Pod UID 级 current 与 10 分钟

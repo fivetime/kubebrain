@@ -38,6 +38,15 @@ func (s *contextBlockingDurableRevisionKV) Get(ctx context.Context, _ []byte) ([
 	return nil, ctx.Err()
 }
 
+func TestDurableRevisionMetricsInitializeAuthoritativeZero(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	initDurableRevisionMetrics(recorder)
+
+	require.Equal(t, []compactMetricRecord{
+		{kind: "counter", name: "revision.durable.persist_err", value: int64(0)},
+	}, recorder.records)
+}
+
 func TestDurableRevisionTracksResolvedUserWrites(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	resp, err := b.Create(ctx, &proto.CreateRequest{

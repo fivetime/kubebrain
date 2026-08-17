@@ -20,10 +20,18 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 var durableRevisionKey = []byte("revision/committed")
+
+func initDurableRevisionMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("revision.durable.persist_err", int64(0))
+}
 
 func (b *backend) queueDurableRevision(target uint64) {
 	for {

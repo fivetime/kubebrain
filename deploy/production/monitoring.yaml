@@ -297,6 +297,18 @@ spec:
           expr: count(((kubebrain_dbaas:watch_collector_stalled:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_collector_stalled:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_collector_stalled:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_collector_stalled:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_collector_stalled:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_collector_stalled:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(((kubebrain_dbaas:watch_collector_skipped_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_collector_skipped_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_collector_skipped_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_collector_skipped_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_collector_skipped_revision:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_collector_skipped_revision:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:durable_revision_persist_err:current_by_pod
+          expr: max by (namespace, pod, uid) (revision_durable_persist_err{namespace="kubebrain-system"} and (time() - timestamp(revision_durable_persist_err{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:durable_revision_persist_err:increase_10m_by_pod
+          expr: max by (namespace, pod, uid) (increase(revision_durable_persist_err{namespace="kubebrain-system"}[10m]) and (time() - timestamp(revision_durable_persist_err{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:durable_revision_persist_err_invalid_values:count
+          expr: count(((kubebrain_dbaas:durable_revision_persist_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:durable_revision_persist_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:durable_revision_persist_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:durable_revision_persist_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:durable_revision_persist_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:durable_revision_persist_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
           expr: count((kubebrain_dbaas:statefulset_replicas:current >= 0) and (kubebrain_dbaas:statefulset_replicas:current <= 9007199254740992) and (kubebrain_dbaas:statefulset_replicas:current == floor(kubebrain_dbaas:statefulset_replicas:current)))
           labels:
@@ -757,6 +769,22 @@ spec:
           annotations:
             summary: KubeBrain watch collector telemetry is incomplete or invalid
             description: "Every Ready KubeBrain replica initializes stalled and skipped-revision counters to authoritative zero. Current samples must be fresh exact non-negative integers no greater than 2^53, and extrapolated ten-minute increases must be finite and within [0, 2^53]. Missing, stale, or invalid telemetry cannot prove that every allocated revision was published or safely resolved."
+        - alert: KubeBrainDurableRevisionPersistenceFailures
+          expr: sum(kubebrain_dbaas:durable_revision_persist_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain failed to persist the durable revision watermark
+            description: "KubeBrain observed {{ $value }} durable revision watermark persistence failures in the last 10 minutes. Background failure leaves serializable readers on an older safe snapshot; synchronous failure blocks collector progress until persistence succeeds. Inspect TiKV availability, MVCC metadata integrity, and watch revision continuity."
+        - alert: KubeBrainDurableRevisionPersistenceMetricsMissing
+          expr: absent(kubebrain_dbaas:durable_revision_persist_err_invalid_values:count) == 1 or count(kubebrain_dbaas:durable_revision_persist_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:durable_revision_persist_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:durable_revision_persist_err_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain durable revision persistence telemetry is incomplete or invalid
+            description: "Every Ready KubeBrain replica initializes the durable revision persistence-error counter to authoritative zero. Current samples must be fresh exact non-negative integers no greater than 2^53, and extrapolated ten-minute increases must be finite and within [0, 2^53]. Missing, stale, or invalid telemetry cannot prove durable watermark or watch collector health."
         - alert: KubeBrainLeaderElectionFlapping
           expr: sum(kubebrain_dbaas:leader_election_lost:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 3
           for: 0m

@@ -622,6 +622,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	initEtcdMVCCCompactionMetrics(metricCli)
 	initSerializableCheckpointMetrics(metricCli)
 	initWatchMetrics(metricCli)
+	initDurableRevisionMetrics(metricCli)
 	ks, ksErr := coder.NewKeyspace(config.Keyspace)
 	if ksErr != nil {
 		// Validated at flag parsing; reaching here is a programming error, and
