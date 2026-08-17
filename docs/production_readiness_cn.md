@@ -1689,6 +1689,9 @@ capacity/available 后聚合，避免重复 scrape 造成过计费，
 且不伪造无法观测的卸载卷 used bytes。`KubeBrainStorageVolumeLow` 则使用每 PVC 最小 available 与最大
 capacity 的保守比率，任一重复样本显示低水位都不能被另一份较宽松样本掩盖。KSM 期望来源缺失也不能用零实际 source 伪造完整。控制面必须把
 完整性不为 1 或计量序列缺失的区间标为不可计费并 fail closed，禁止按零用量结算。
+活跃卷身份另从 60 秒内的 `kube_pod_spec_volumes_persistentvolumeclaims_info` 提取，每个当前 PD/TiKV
+数字 ordinal Pod 必须恰对应一个数据 PVC；该集合与新鲜 capacity、available 集合分别做双向差集且结果
+必须为零。retained scale-down PVC 仍进入 provisioned storage，但不能以相同数量替代缺失的活跃卷 stats。
 `KubeBrainMeteringDataIncomplete` 和对象请求的 completeness 告警都将 recording series 本身缺失显式
 折叠为 0；PrometheusRule 未加载、求值失败或记录序列丢失不能因空向量而让 critical 告警静默。
 规则还生成小时窗口序列：
