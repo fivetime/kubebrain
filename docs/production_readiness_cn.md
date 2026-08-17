@@ -2583,8 +2583,9 @@ TiKV fence key，成功才签发连续排写交接收据：
 `(commit_ts,start_ts)` 的全部 mutation 与 target 内部 checkpoint 在一条 TiKV transaction 中提交；checkpoint 绑定 exact
 plan/mutation digest，失败重跑只从完整 source transaction 边界继续。执行前后必须以 receipt 内的 exact
 token 逐一验证 control + 256 shards，并再次确认 plan/full/log/fence 四个输入文件未漂移。成功输出
-`kubebrain.native-pitr-log-replay.v6`，同时绑定 exact restoration fence 与 admission-handoff receipt，并记录
-`replay_write_fence_proven=true`、`continuous_writer_exclusion=true`、`target_write_fence_proven=true`；
+`kubebrain.native-pitr-log-replay.v7`，同时绑定 exact restoration fence 与 admission-handoff receipt，记录本轮实际使用的
+`max_transaction_resident_bytes`、`max_scratch_bytes`、`min_scratch_free_bytes`，并记录 `replay_write_fence_proven=true`、
+`continuous_writer_exclusion=true`、`target_write_fence_proven=true`；前两项资源上限必须为正，缺失它们的旧 receipt 不再可消费。
 回放收据本身仍固定 `post_restore_semantic_validated=false`、`pitr_complete=false`。当前实现已通过编码、
 范围、摘要、长短值、事务分组、原子 checkpoint、续跑与错误交接绑定单测。2026-08-16 又以单副本独立 source/target
 PD+TiKV、MinIO 和官方 BR v7.5.1 重跑完整 full+log 链（43.74 秒）：真实 executor 签发 v4 receipt，测试从 target

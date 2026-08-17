@@ -55243,6 +55243,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/key/lease/watch 语义验收 42.89 秒通过，一次性容器已清理。该检查仍有 statfs→write TOCTOU，且无法预测 bbolt 页放大
   或同卷并发写入；PVC quota、kubelet ephemeral-storage eviction、容量告警和真实 ENOSPC/I/O fault 演练仍是独立生产门禁。
 
+- A4922 关闭 A4917/A4921 资源门禁未进入 durable evidence chain 的缺口。旧
+  `kubebrain.native-pitr-log-replay.v6` receipt 能证明 mutation/checkpoint/fence，却无法证明 executor 本轮采用的 transaction
+  resident memory cap、scratch 总量 cap 或 filesystem free reserve；一个关闭/放宽门禁的执行与默认强门禁执行会生成同形收据。
+  receipt 升级为 v7，新增 `max_transaction_resident_bytes`、`max_scratch_bytes` 与 `min_scratch_free_bytes`；CLI 从实际生效 options
+  直接写入，前两项必须为正，严格 decoder 拒绝 v6、缺字段、零上限和未知字段。restoration-fence handoff 与最终 semantic verifier
+  继续消费 exact replay receipt SHA，因此三项限值随 v7 JSON 被后续交接链不可分割地绑定，而不是另发不受保护的旁路声明。
+
+  回归固定 v7 构造/encode/decode、两个必需上限缺失拒绝、允许显式零 free reserve，并让 handoff/PITR semantic fixtures 全部先验证
+  v7。nativepitr、log-replay、restoration-fence 与下游 semantic/full-restore 测试及 race/vet 通过。2026-08-17 在独立
+  source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO 与官方 BR v7.5.1 上执行
+  `TestNativeLogReplayRealBR`：正式 CLI 输出 v7，测试直接断言 512 MiB transaction cap、512 GiB scratch cap、1 GiB free reserve，
+  随后 v2 checkpoint、fence/handoff 与最终 revision/key/lease/watch 语义验收 39.94 秒通过，一次性容器已清理。receipt 记录的是
+  executor 自报且由 exact SHA 串联的配置，不替代 Pod spec/PVC quota 的外部证明；二进制 provenance、Operation 参数和运行时指标
+  仍须由控制面审计。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

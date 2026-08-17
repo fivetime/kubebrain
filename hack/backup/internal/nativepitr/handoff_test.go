@@ -49,6 +49,7 @@ func validHandoffReplay(plan Plan, completedAt int64) LogReplayExecutionReceipt 
 		TargetClusterID: plan.Target.ClusterID, Keyspace: plan.Source.Keyspace, BackupTS: plan.Full.BackupTS,
 		RestoreTS: plan.RestoreTS, MutationCount: 1, TransactionCount: 1, AppliedMutations: 1,
 		AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, LastStartTS: plan.RestoreTS - 1, CheckpointAtomic: true,
+		MaxTransactionResidentBytes: 512 << 20, MaxScratchBytes: 512 << 30, MinScratchFreeBytes: 1 << 30,
 		ReplayWriteFenceProven: true, ContinuousWriterExclusion: true, TargetWriteFenceProven: true, LogReplayCompleted: true, StartedAtUnix: completedAt - 1,
 		CompletedAtUnix: completedAt,
 	}

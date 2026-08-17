@@ -37,7 +37,7 @@ import (
 )
 
 const ReplayManifestFormat = "kubebrain.native-pitr-log-replay-manifest.v2"
-const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v6"
+const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v7"
 const replayMutationResidentOverhead = uint64(128)
 
 type ReplayMutation struct {
@@ -126,6 +126,9 @@ type LogReplayExecutionReceipt struct {
 	LastCommitTS                  uint64 `json:"last_commit_ts,omitempty"`
 	LastStartTS                   uint64 `json:"last_start_ts,omitempty"`
 	Resumed                       bool   `json:"resumed_from_checkpoint"`
+	MaxTransactionResidentBytes   uint64 `json:"max_transaction_resident_bytes"`
+	MaxScratchBytes               uint64 `json:"max_scratch_bytes"`
+	MinScratchFreeBytes           uint64 `json:"min_scratch_free_bytes"`
 	CheckpointAtomic              bool   `json:"checkpoint_atomic_with_source_transaction"`
 	ReplayWriteFenceProven        bool   `json:"replay_write_fence_proven"`
 	ContinuousWriterExclusion     bool   `json:"continuous_writer_exclusion"`
@@ -173,7 +176,7 @@ func BuildLogReplayExecution(plan Plan, restore FullRestoreExecutionReceipt, man
 }
 
 func (r LogReplayExecutionReceipt) Validate() error {
-	if r.Format != LogReplayExecutionFormat || r.SourceClusterID == 0 || r.TargetClusterID == 0 || r.SourceClusterID == r.TargetClusterID || r.Keyspace == "" || r.BackupTS == 0 || r.RestoreTS <= r.BackupTS || r.MutationCount < 0 || r.TransactionCount < 0 || r.CheckpointMutationsBefore < 0 || r.CheckpointTransactionsBefore < 0 || r.AppliedMutations < 0 || r.AppliedTransactions < 0 || r.CheckpointMutationsBefore > r.MutationCount || r.CheckpointTransactionsBefore > r.TransactionCount || r.AppliedMutations > r.MutationCount || r.AppliedTransactions > r.TransactionCount || !r.CheckpointAtomic || !r.ReplayWriteFenceProven || !r.ContinuousWriterExclusion || !r.LogReplayCompleted || !r.TargetWriteFenceProven || r.PostRestoreSemanticValidated || r.PITRComplete || r.StartedAtUnix <= 0 || r.CompletedAtUnix < r.StartedAtUnix {
+	if r.Format != LogReplayExecutionFormat || r.SourceClusterID == 0 || r.TargetClusterID == 0 || r.SourceClusterID == r.TargetClusterID || r.Keyspace == "" || r.BackupTS == 0 || r.RestoreTS <= r.BackupTS || r.MutationCount < 0 || r.TransactionCount < 0 || r.CheckpointMutationsBefore < 0 || r.CheckpointTransactionsBefore < 0 || r.AppliedMutations < 0 || r.AppliedTransactions < 0 || r.CheckpointMutationsBefore > r.MutationCount || r.CheckpointTransactionsBefore > r.TransactionCount || r.AppliedMutations > r.MutationCount || r.AppliedTransactions > r.TransactionCount || r.MaxTransactionResidentBytes == 0 || r.MaxScratchBytes == 0 || !r.CheckpointAtomic || !r.ReplayWriteFenceProven || !r.ContinuousWriterExclusion || !r.LogReplayCompleted || !r.TargetWriteFenceProven || r.PostRestoreSemanticValidated || r.PITRComplete || r.StartedAtUnix <= 0 || r.CompletedAtUnix < r.StartedAtUnix {
 		return errors.New("native PITR log replay receipt is incomplete")
 	}
 	for _, value := range []string{r.PlanSHA256, r.FullRestoreReceiptSHA256, r.LogArtifactReceiptSHA256, r.ArtifactManifestSHA256, r.MutationsSHA256, r.RestorationFenceReceiptSHA256, r.AdmissionHandoffReceiptSHA256} {

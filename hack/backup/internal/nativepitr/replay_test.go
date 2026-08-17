@@ -467,7 +467,7 @@ func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing
 	fence, _, err := BuildRestorationFenceReceipt(plan, digest, "restore-1", now-1, false)
 	require.NoError(t, err)
 	handoff := replayAdmissionHandoff(t, plan, restore, fence, now)
-	receipt, err := BuildLogReplayExecution(plan, restore, manifest, fence, digest, handoff, digest, LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, LastStartTS: plan.RestoreTS - 1, StartedAtUnix: now, CompletedAtUnix: now})
+	receipt, err := BuildLogReplayExecution(plan, restore, manifest, fence, digest, handoff, digest, LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, LastStartTS: plan.RestoreTS - 1, MaxTransactionResidentBytes: 512 << 20, MaxScratchBytes: 512 << 30, MinScratchFreeBytes: 1 << 30, StartedAtUnix: now, CompletedAtUnix: now})
 	require.NoError(t, err)
 	require.True(t, receipt.LogReplayCompleted)
 	require.True(t, receipt.ReplayWriteFenceProven)
@@ -475,7 +475,7 @@ func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing
 	require.True(t, receipt.ContinuousWriterExclusion)
 	require.False(t, receipt.PostRestoreSemanticValidated)
 	require.False(t, receipt.PITRComplete)
-	require.Equal(t, "kubebrain.native-pitr-log-replay.v6", receipt.Format)
+	require.Equal(t, "kubebrain.native-pitr-log-replay.v7", receipt.Format)
 	var encoded bytes.Buffer
 	require.NoError(t, json.NewEncoder(&encoded).Encode(receipt))
 	_, err = DecodeLogReplayExecution(&encoded)
@@ -483,6 +483,21 @@ func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing
 	wrongFormat := receipt
 	wrongFormat.Format = "kubebrain.native-pitr-log-replay.v5"
 	require.EqualError(t, wrongFormat.Validate(), "native PITR log replay receipt is incomplete")
+	legacyFormat := receipt
+	legacyFormat.Format = "kubebrain.native-pitr-log-replay.v6"
+	require.EqualError(t, legacyFormat.Validate(), "native PITR log replay receipt is incomplete")
+	missingMemoryLimit := receipt
+	missingMemoryLimit.MaxTransactionResidentBytes = 0
+	require.EqualError(t, missingMemoryLimit.Validate(), "native PITR log replay receipt is incomplete")
+	missingScratchLimit := receipt
+	missingScratchLimit.MaxScratchBytes = 0
+	require.EqualError(t, missingScratchLimit.Validate(), "native PITR log replay receipt is incomplete")
+	require.Equal(t, uint64(512<<20), receipt.MaxTransactionResidentBytes)
+	require.Equal(t, uint64(512<<30), receipt.MaxScratchBytes)
+	require.Equal(t, uint64(1<<30), receipt.MinScratchFreeBytes)
+	disabledFreeReserve := receipt
+	disabledFreeReserve.MinScratchFreeBytes = 0
+	require.NoError(t, disabledFreeReserve.Validate())
 	missingLastStart := receipt
 	missingLastStart.LastStartTS = 0
 	require.EqualError(t, missingLastStart.Validate(), "native PITR log replay receipt has invalid bounds")
@@ -523,7 +538,7 @@ func TestBuildLogReplayExecutionRejectsWrongOrLateFence(t *testing.T) {
 	fence, _, err := BuildRestorationFenceReceipt(plan, digest, "restore-1", now-1, false)
 	require.NoError(t, err)
 	handoff := replayAdmissionHandoff(t, plan, restore, fence, now)
-	input := LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, LastStartTS: plan.RestoreTS - 1, StartedAtUnix: now, CompletedAtUnix: now}
+	input := LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, LastStartTS: plan.RestoreTS - 1, MaxTransactionResidentBytes: 512 << 20, MaxScratchBytes: 512 << 30, MinScratchFreeBytes: 1 << 30, StartedAtUnix: now, CompletedAtUnix: now}
 
 	_, err = BuildLogReplayExecution(plan, restore, manifest, fence, strings.Repeat("b", 64), handoff, digest, input)
 	require.ErrorContains(t, err, "does not match")
