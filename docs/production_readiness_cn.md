@@ -4141,6 +4141,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 产品验证和真实接入测试应持续观察这些 KubeBrain 指标，具体告警阈值由运行环境自行决定：
 
 - gRPC 非 OK 响应、写失败、watch 后端错误、watch buffer overflow。
+- `watch_revision_lag` 在写高峰结束后必须随 collector 连续游标推进回落到 0；该 gauge 以本地已入 ring
+  最高 revision 为上界，不把 PD 已分配但仍在途的 revision 误算为积压。
 - leader election 短时间频繁丢失。
 - watch revision lag 过高。
 - 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。

@@ -97,7 +97,8 @@ func (b *backend) notifyBatch(events []*common.WatchEvent) {
 		return
 	}
 	b.watchEventsRingBuffer[int64(revision)%watchersChanCapacity].appendAll(events)
-	b.metricCli.EmitGauge("watch.revision.lag", revision-cur)
+	b.noteWatchRevision(revision)
+	b.emitWatchRevisionLag()
 	b.notifyMu.RUnlock()
 	b.signalWrite()
 }
@@ -130,7 +131,8 @@ func (b *backend) handleWatchEventOverflow(revision uint64) {
 		b.watchEventsRingBuffer[i].reset()
 	}
 	b.watchCache.Reset()
-	b.collectorRevision.Store(target)
+	b.noteWatchRevision(target)
+	b.setCollectorRevision(target)
 	b.SetCurrentRevision(target)
 	// Order matters: close the existing subscribers FIRST, then jump the published
 	// watermark. target = Dealt() covers revisions whose events were just wiped and
@@ -145,4 +147,34 @@ func (b *backend) handleWatchEventOverflow(revision uint64) {
 	b.watcherHub.CloseAll()
 	b.watcherHub.AdvancePublishedRevision(target)
 	b.signalWrite()
+}
+
+// noteWatchRevision advances the highest revision that has actually entered
+// the local watch ring. Writers can notify out of order, so this must be a
+// monotonic maximum rather than a plain Store.
+func (b *backend) noteWatchRevision(revision uint64) {
+	for {
+		current := b.watchRevisionHighWatermark.Load()
+		if revision <= current || b.watchRevisionHighWatermark.CompareAndSwap(current, revision) {
+			return
+		}
+	}
+}
+
+func (b *backend) setCollectorRevision(revision uint64) {
+	b.collectorRevision.Store(revision)
+	b.emitWatchRevisionLag()
+}
+
+// emitWatchRevisionLag refreshes the live backlog gauge on both enqueue and
+// collector progress. The old enqueue-only update left a high value published
+// forever when the collector caught up during an otherwise idle workload.
+func (b *backend) emitWatchRevisionLag() {
+	high := b.watchRevisionHighWatermark.Load()
+	current := b.collectorRevision.Load()
+	if high <= current {
+		_ = b.metricCli.EmitGauge("watch.revision.lag", float64(0))
+		return
+	}
+	_ = b.metricCli.EmitGauge("watch.revision.lag", float64(high-current))
 }

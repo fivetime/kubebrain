@@ -400,6 +400,11 @@ type backend struct {
 	// PD's allocation floor may be far ahead, but must not become observable
 	// until a user mutation actually commits there.
 	collectorRevision atomic.Uint64
+	// watchRevisionHighWatermark is the highest revision actually appended to
+	// this process's event ring. It deliberately does not use tso.Dealt(): a
+	// dealt revision may still belong to an in-flight or failed writer and is not
+	// watch backlog until notifyBatch publishes it.
+	watchRevisionHighWatermark atomic.Uint64
 	// hold watchers
 	watcherHub *WatcherHub
 
@@ -819,7 +824,7 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 						if !b.ensureDurableRevision(ctx, nextRevision) {
 							return
 						}
-						b.collectorRevision.Store(nextRevision)
+						b.setCollectorRevision(nextRevision)
 						b.SetCurrentRevision(nextRevision)
 						b.queueDurableRevision(nextRevision)
 						b.advanceCountIndexReadyRev(nextRevision)
@@ -884,7 +889,7 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 			if !validRevision && !b.ensureDurableRevision(ctx, nextRevision) {
 				return
 			}
-			b.collectorRevision.Store(nextRevision)
+			b.setCollectorRevision(nextRevision)
 			b.SetCurrentRevision(nextRevision)
 			b.queueDurableRevision(nextRevision)
 			b.advanceCountIndexReadyRev(nextRevision)
