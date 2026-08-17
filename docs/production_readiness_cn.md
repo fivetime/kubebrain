@@ -283,6 +283,10 @@ KSM 样本时间不超过 60 秒的 `(namespace,pod,uid)`，并按该不可变�
 `(namespace,pod,uid,check)` 去重：10 分钟 counter increase 只有同时存在当前 counter 身份与 Ready UID
 时才参与事件告警；应用 scrape 停止后，lookback 中的旧 counter 既不能继续通过三类 series 完整性，
 也不能重复触发历史 fallback 事件。
+三类 checkpoint gauge 先各自只从 60 秒内 raw sample 生成按 Pod UID 去重的 current recording；available
+必须精确为 0/1，revision 必须是 `(0,2^53]` 内精确整数，remaining seconds 必须是 `[0,2^53]` 内
+非负精确整数。任一 NaN/Inf、负数、分数、超界值或 invalid recording 缺失都让运行期 checkpoint 告警
+fail closed；缺失、陈旧或非法证据不得授权 PD 隔离读。
 
 该脚本通过 Kubernetes Service proxy 读取 PD API，要求所有 TiKV store 为 `Up`，并要求
 `pending-peer`、`down-peer`、`miss-peer`、`extra-peer`、`learner-peer` 五类异常 Region 均为零；
