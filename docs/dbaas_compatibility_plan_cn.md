@@ -55864,6 +55864,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Header=nil`，fallback counter 增加至 1，完整 **51.31 秒 GREEN**，随后两个 quorum 恢复。该能力仍
   依赖一份有效 GC-protected checkpoint；无 checkpoint 或无法验证管理员身份时继续 fail closed。
 
+- A4961 把 A4939 的 endpoint discovery 证据从“PD quorum + 单 TiKV Store”提升为严格同步的 PD quorum +
+  TiKV quorum。原 `TestMemberListSerializableSurvivesBackendQuorumLoss` 只等待 linearizable MemberList
+  超时；若直接切换 quorum helper，可能在 PD child 先失败而第二个 TiKV Store 尚未隔离时提前验证。
+  `cc2251eb` 为组合命令增加与 Snapshot/HashKV 相同的 combined-ready 文件握手，并新增
+  `pd-quorum-tikv-quorum-memberlist` profile；既有单故障和 member profile 保持原行为。
+
+  在 a4980 精确镜像上，同时隔离 `kb-pd-0/1` 与 `kb-tikv-1/0`，wrapper 确认两个 PD health endpoint
+  不可达且两个 TiKV Store 四条双向 DROP 全部安装后才放行。`Linearizable=true` MemberList 精确命中
+  400ms `DeadlineExceeded`；同一 gRPC 连接的 serializable MemberList 在一秒内返回与健康基线逐字段
+  相同的三个 KubeBrain 逻辑成员和 ClusterID，未泄漏 PD/TiKV 拓扑。完整门禁 **52.14 秒 GREEN**，
+  恢复后 linearizable MemberList 重新成功。本项未发现生产 RED，不修改数据面；它证明静态 applied
+  membership 在双 quorum blackout 中仍可发现，但不把 serializable 响应冒充最新线性一致 membership。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
