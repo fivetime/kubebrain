@@ -55450,6 +55450,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList、测试前缀为空，五类 Region check 全零，三个 KubeBrain Pod Ready 且无新增重启，iptables 规则和 port-forward 已清理。
   本轮未发现新的数据面生产 RED，不修改生产代码；真实跨节点/AZ 的组合 Revoke/stream 分区仍保持开放。
 
+- A4937 将 A4932 的组合分区扩展到 Watch，而不是用 KV register/Txn GREEN 外推 stream 恢复：新增
+  `pd-quorum-tikv-member-watch-recovery` profile。门禁先建立从显式 revision 开始的普通 prefix Watch 和 `WithRequireLeader` Watch，
+  两者均收到 created 后才启动持续 Put 与组合故障。require-leader 流必须以 canonical `ErrNoLeader` 关闭；普通流必须保持、恢复并追平
+  最终 linearizable Range，逐 key 校验 value/mod_revision 恰好一次，且全局事件 revision 严格递增。故障必须与至少一次不确定写重叠，
+  恢复后还必须成功新增八次写，排除未命中业务或只验证旧 backlog 的假绿。该职责与 upstream `client/v3/watch.go` 的自动重连、
+  `tests/integration/clientv3/watch/watch_test.go:TestWatchReconnRunning` 及 `TestWatchWithRequireLeader` 对齐。
+
+  2026-08-17 在独立三 PD/三 TiKV 单节点 Kind 上以 20 秒 hold 实跑，两个 PD member 不可达与 leader-heavy TiKV store
+  `Up -> Disconnected` 同窗出现。writer 在窗口内记录 19 次 `DeadlineExceeded`/proxy-not-ready 不确定失败；恢复后最终 Range 含 843 个
+  committed event，普通 Watch 以 844 个 response 恰好交付同一 843 个 event，value 与 mod_revision 全部匹配且 revision 无重复、无回退，
+  require-leader Watch 返回精确 `etcdserver: no leader`，测试 100.84 秒通过。终态 endpoint proposal 46.99ms，LeaseList、AlarmList、
+  测试前缀为空，五类 Region check 全零，三个 KubeBrain Pod Ready 且无新增重启，iptables 规则和 port-forward 已清理。本轮未发现新的
+  数据面生产 RED，不修改生产代码；真实跨节点/AZ 的组合 Watch 分区仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
