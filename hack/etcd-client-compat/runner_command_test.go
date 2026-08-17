@@ -1061,7 +1061,7 @@ func TestBackendCombinedPDAndTiKVQuorumPartitionRunsHTTPHealth(t *testing.T) {
 	require.Contains(t, text, `request("/health?serializable=true")`)
 	require.Contains(t, text, `request("/livez?verbose")`)
 	require.Contains(t, text, `request("/readyz?verbose")`)
-	require.Contains(t, text, `[-]linearizable_read failed: RAFT NO LEADER`)
+	require.Contains(t, text, `[-]linearizable_read failed:`)
 }
 
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {

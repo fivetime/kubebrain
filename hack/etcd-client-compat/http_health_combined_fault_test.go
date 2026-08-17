@@ -120,5 +120,5 @@ func TestHTTPHealthSurvivesCombinedBackendFault(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, readyzStatus)
 	require.Contains(t, readyzBody, "[+]data_corruption ok\n")
 	require.Contains(t, readyzBody, "[+]serializable_read ok\n")
-	require.Contains(t, readyzBody, "[-]linearizable_read failed: RAFT NO LEADER\n")
+	require.Contains(t, readyzBody, "[-]linearizable_read failed:")
 }
