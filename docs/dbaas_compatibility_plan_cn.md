@@ -56395,6 +56395,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   控制面健康”的隔离诊断还显式要求 mismatch 为零，非法值不能充当健康证据。精确 PromQL/annotation
   manifest 门禁和 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5017 补齐 Ready Pod watch-lag 与 count-index overflow gauge 的数值闭包。旧 Pod UID/freshness 门禁能
+  排除替换 Pod 和 lookback 旧值，但 NaN/Inf/负数/分数或超界值仍可让 `max` 阈值比较 fail-open。现分别
+  增加 invalid-value recording：当前 Ready Pod 的 watch revision lag 必须是 `[0,2^53]` 内非负精确
+  整数，count-index overflow 必须精确为 0/1；recording 缺失或非零均进入对应 metrics-missing 告警。
+  校验与告警沿用同一新鲜 Ready Pod UID 集合，旧 Pod 残留样本不会误报。精确 PromQL/annotation manifest
+  门禁和 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
