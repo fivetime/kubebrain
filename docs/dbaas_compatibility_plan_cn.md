@@ -56187,6 +56187,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不再伪造零故障或放大数值。精确 manifest 门禁固定六条 freshness recording、六条 count 和三条 alert
   PromQL，annotation 与 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4993 收口 memory pressure 告警两侧的 freshness/identity。A4991 已发布新鲜、去重 working-set
+  recording，但 `KubeBrainDataPlaneMemoryHigh` 仍重新读取 raw cAdvisor/KSM，memory limit 的 completeness
+  也只对 lookback series 直接计数；KSM 停止更新后旧 limit 可继续参与比率，重复标签还可能让查询失败。
+  现新增 sample age 不超过 60 秒、按 `(namespace,pod,container)` 去重的 memory-limit recording 及其 source
+  count，resource completeness 将其与动态副本总数精确比较；memory-high 直接用新鲜 working-set/limit
+  recording 相除。精确 manifest 门禁固定两条 recording、完整 resource alert 与 memory-high PromQL，
+  annotation 和 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
