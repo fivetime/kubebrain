@@ -56462,6 +56462,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   去重。三条事件告警只消费 recording，新 critical metrics-missing 统一拒绝缺失/陈旧/非法 telemetry。
   精确 manifest/server 测试与 production/observability 文档已同步；相关测试通过。本项需要下一生产镜像。
 
+- A5025 将通用 `leader.election.initialize.err` 纳入 A5024 的完整性根链。细分 counter 只分类 incompatible
+  witness 与 invalid alarm metadata；lease reload、event collector、count index、serializable checkpoint 等
+  其他领导初始化失败此前虽递增通用 counter，却没有生产告警且 family 缺失可静默。现 campaign 前初始化
+  第四个权威零值，生成 60 秒新鲜的 Ready Pod UID 级 current/10 分钟 increase recording，并以独立
+  invalid-value recording 验证 `[0,2^53]` 精确 current 与有限同范围 increase。新增 critical generic
+  initialization-failure 告警，要求 writes 保持 fenced 直到后续 campaign 完整成功；统一 leader metrics-
+  missing 现在要求四类 current/increase 全覆盖且两份 invalid recording 均为零。精确 manifest/server 测试
+  与 production/observability 文档已同步；相关测试通过。本项需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
