@@ -287,6 +287,11 @@ store `1005` peer 同时 pending/down：该 store 本地保留旧 epoch 的 Regi
 零异常。`KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 的“控制面健康”前提也同时
 要求这两类 PD gauge 为零；否则应由 Region peer 告警分类，不能再仅凭 leader-missing=0 声称健康。
 
+`KubeBrainPDInsufficientReplicas` 和 `KubeBrainTiKVInsufficientReplicas` 同时固定最低 HA 与扩缩容完整性：
+StatefulSet 期望副本数不得小于 3，按 `instance` 去重且 `up==1` 的 target 数必须与当前期望精确相等。
+因此五副本拓扑只有四个可抓取时仍会 critical；旧 target 残留或 HA scrape 重复不能伪造齐备。
+期望 recording chain 缺失同样 fail closed。
+
 副本数和 Region 状态之外还必须满足持久化 tail-latency 门禁。PrometheusRule
 `KubeBrainPDWALFsyncLatencyHigh`、`KubeBrainTiKVRaftDBWriteLatencyHigh` 和
 `KubeBrainTiKVKVDBWriteLatencyHigh` 按实例计算 5 分钟 p99，超过 1 秒持续 1 分钟即 critical；

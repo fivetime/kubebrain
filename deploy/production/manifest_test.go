@@ -2088,8 +2088,8 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	for alert, expr := range map[string]string{
-		"KubeBrainPDInsufficientReplicas":       `count(up{namespace="tidb-cluster",service="kb-pd-metrics"} == 1) < 3`,
-		"KubeBrainTiKVInsufficientReplicas":     `count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) < 3`,
+		"KubeBrainPDInsufficientReplicas":       `absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:pd_replicas:expected) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:pd_replicas:expected < 3 or count(max by (instance) (up{namespace="tidb-cluster",service="kb-pd-metrics"} == 1)) != on() kubebrain_dbaas:pd_replicas:expected`,
+		"KubeBrainTiKVInsufficientReplicas":     `absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:tikv_replicas:expected) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:tikv_replicas:expected < 3 or count(max by (instance) (up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1)) != on() kubebrain_dbaas:tikv_replicas:expected`,
 		"KubeBrainPDLeaderUnavailable":          `sum(etcd_server_is_leader{namespace="tidb-cluster",service="kb-pd-metrics"}) != 1`,
 		"KubeBrainTiKVRegionLeaderMissing":      `max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) > 0`,
 		"KubeBrainPDRegionPeerUnhealthy":        `max by (type) (pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) > 0`,
@@ -2158,6 +2158,12 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 	} {
 		expr := prometheusRuleByAlert(t, groups, alert)["expr"].(string)
 		require.NotContains(t, expr, "[0-2]", "operational alerts must cover scaled StatefulSet ordinals")
+	}
+	for _, alert := range []string{"KubeBrainPDInsufficientReplicas", "KubeBrainTiKVInsufficientReplicas"} {
+		description := prometheusRuleByAlert(t, groups, alert)["annotations"].(map[string]any)["description"].(string)
+		require.Contains(t, description, "production minimum of 3 replicas")
+		require.Contains(t, description, "exactly match the current expected replica count")
+		require.Contains(t, description, "expectation chain is absent")
 	}
 	regionPeerRule := prometheusRuleByAlert(t, groups, "KubeBrainPDRegionPeerUnhealthy")
 	require.Contains(t,
