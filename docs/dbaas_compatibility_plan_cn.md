@@ -55943,6 +55943,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   delta 全部通过，完整门禁 **169.56 秒 GREEN**，两个 quorum 恢复。由此健康新实例的零事件状态和故障后的
   单调事件状态都可被同一 Prometheus 查询稳定观测。
 
+- A4966 将 A4964/A4965 的 telemetry 接入生产告警与 runbook，而不是只交付一个无人消费的 counter。
+  `7252d210` 在 `kubebrain.etcd_compat` 规则组新增 warning 级
+  `KubeBrainHealthCheckpointFallback`：按 `check` 聚合
+  `increase(health_checkpoint_fallback{namespace="kubebrain-system"}[10m]) > 0`，任一实际 fallback 立即报告。
+  它与 `KubeBrainSerializableCheckpointUnavailable`/`RefreshFailures` 互补：后两者描述 checkpoint 风险，前者证明
+  health 流量已经实际进入有界陈旧服务。annotation 明确 liveness 成功不等于 PD/TiKV 恢复，要求检查 quorum、
+  checkpoint lifetime 与 refresh errors。
+
+  production manifest 门禁固定完整 PromQL、`for: 0m`、warning severity 和关键处置语义；既有 emitted-metric AST
+  对账同时证明规则引用的 `health_checkpoint_fallback` 由生产代码发出。`docs/observability_cn.md` 增加值班顺序：先看
+  readyz 与真实线性事务，再查 PD/TiKV 和 checkpoint 三类指标，只有线性探针恢复且 counter 新增速率归零才解除事件，
+  不要求单调 counter 回零。完整 `deploy/production` 测试通过；本项仅修改监控资产与文档，不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
