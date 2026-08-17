@@ -42,6 +42,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/gogo/protobuf/proto"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -193,6 +194,96 @@ func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadFailsAfterProtect
 	s.ErrorContains(err, "exhausted its cached replicas")
 	s.Equal(int32(3), attempts.Load())
 	s.Len(addresses, 3)
+}
+
+func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadInstallsEpochNotMatchTopology() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("x"))
+	s.NoError(err)
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("x")}))
+	old := s.cache.getProtectedRegion(loc.Region)
+	s.NotNil(old)
+	left := proto.Clone(old.meta).(*metapb.Region)
+	left.EndKey = []byte("m")
+	left.RegionEpoch.Version++
+	right := proto.Clone(old.meta).(*metapb.Region)
+	right.Id = old.GetID() + 1000
+	right.StartKey = []byte("m")
+	right.RegionEpoch.Version++
+	right.RegionEpoch.ConfVer++
+
+	s.regionRequestSender.client = &fnClient{fn: func(
+		_ context.Context, _ string, _ *tikvrpc.Request, _ time.Duration,
+	) (*tikvrpc.Response, error) {
+		return &tikvrpc.Response{Resp: &kvrpcpb.GetResponse{RegionError: &errorpb.Error{
+			EpochNotMatch: &errorpb.EpochNotMatch{CurrentRegions: []*metapb.Region{left, right}},
+		}}}, nil
+	}}
+	seed := uint32(0)
+	req := tikvrpc.NewReplicaReadRequest(tikvrpc.CmdGet, &kvrpcpb.GetRequest{
+		Key: []byte("x"), Version: 42,
+	}, kv.ReplicaReadMixed, &seed)
+	req.CacheOnlyRegionRead = true
+	resp, _, _, err := s.regionRequestSender.SendReqCtx(s.bo, req, loc.Region, time.Second, tikvrpc.TiKV)
+	s.NoError(err)
+	s.NotNil(resp)
+	updated, err := s.cache.LocateCachedKey([]byte("x"))
+	s.NoError(err)
+	s.Equal(right.Id, updated.Region.GetID())
+}
+
+func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadRecoversMergedRegionFromProtectedNeighbor() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("a"))
+	s.NoError(err)
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("a")}))
+	old := s.cache.getProtectedRegion(loc.Region)
+	s.NotNil(old)
+	left := proto.Clone(old.meta).(*metapb.Region)
+	left.EndKey = []byte("m")
+	left.RegionEpoch.Version++
+	right := proto.Clone(old.meta).(*metapb.Region)
+	right.Id = old.GetID() + 1000
+	right.StartKey = []byte("m")
+	right.RegionEpoch.Version++
+	right.RegionEpoch.ConfVer++
+	s.NoError(s.cache.UpdateProtectedRegions(
+		&RPCContext{Region: old.VerID(), Store: old.getStore().stores[0]},
+		[]*metapb.Region{left, right},
+	))
+	leftLoc, err := s.cache.LocateCachedKey([]byte("a"))
+	s.NoError(err)
+
+	merged := proto.Clone(left).(*metapb.Region)
+	merged.EndKey = nil
+	merged.RegionEpoch.Version++
+	var requests atomic.Int32
+	s.regionRequestSender.client = &fnClient{fn: func(
+		_ context.Context, _ string, req *tikvrpc.Request, _ time.Duration,
+	) (*tikvrpc.Response, error) {
+		requests.Add(1)
+		get := req.Req.(*kvrpcpb.GetRequest)
+		currentRegions := []*metapb.Region(nil)
+		if string(get.Key) == "m" {
+			currentRegions = []*metapb.Region{merged}
+		}
+		return &tikvrpc.Response{Resp: &kvrpcpb.GetResponse{RegionError: &errorpb.Error{
+			EpochNotMatch: &errorpb.EpochNotMatch{CurrentRegions: currentRegions},
+		}}}, nil
+	}}
+	seed := uint32(0)
+	req := tikvrpc.NewReplicaReadRequest(tikvrpc.CmdGet, &kvrpcpb.GetRequest{
+		Key: []byte("a"), Version: 42,
+	}, kv.ReplicaReadMixed, &seed)
+	req.CacheOnlyRegionRead = true
+	resp, _, _, err := s.regionRequestSender.SendReqCtx(
+		s.bo, req, leftLoc.Region, time.Second, tikvrpc.TiKV,
+	)
+	s.NoError(err)
+	s.NotNil(resp)
+	s.GreaterOrEqual(requests.Load(), int32(2))
+	updated, err := s.cache.LocateCachedKey([]byte("a"))
+	s.NoError(err)
+	s.Equal(merged.Id, updated.Region.GetID())
+	s.Empty(updated.EndKey)
 }
 
 func (s *testRegionRequestToThreeStoresSuite) loadAndGetLeaderStore() (*Store, string) {

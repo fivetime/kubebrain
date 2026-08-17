@@ -508,14 +508,8 @@ func (s *store) WarmSnapshotRegions(ctx context.Context, starts [][]byte, timest
 	if timestamp == 0 {
 		return errors.New("snapshot timestamp must be non-zero")
 	}
-	stores, err := s.clients[0].GetPDClient().GetAllStores(ctx)
-	if err != nil {
-		return errors.Wrap(err, "failed to discover checkpoint stores")
-	}
-	for clientIndex, client := range s.clients {
-		if err := client.GetRegionCache().SeedStores(stores); err != nil {
-			return errors.Wrapf(err, "failed to seed checkpoint stores for client %d", clientIndex)
-		}
+	if err := s.refreshSnapshotStores(ctx); err != nil {
+		return err
 	}
 	if err := warmSnapshotRegionReaders(ctx, starts, len(s.clients), func(clientIndex int) snapshotRegionReader {
 		return s.clients[clientIndex].GetSnapshot(timestamp)
@@ -530,10 +524,29 @@ func (s *store) WarmSnapshotRegions(ctx context.Context, starts [][]byte, timest
 	return nil
 }
 
+func (s *store) refreshSnapshotStores(ctx context.Context) error {
+	stores, err := s.clients[0].GetPDClient().GetAllStores(ctx)
+	if err != nil {
+		return errors.Wrap(err, "failed to discover checkpoint stores")
+	}
+	for clientIndex, client := range s.clients {
+		if err := client.GetRegionCache().SeedStores(stores); err != nil {
+			return errors.Wrapf(err, "failed to seed checkpoint stores for client %d", clientIndex)
+		}
+	}
+	return nil
+}
+
 // SnapshotReadyTimestamp returns the largest timestamp that every TiKV store
 // can already serve over its full key range. With three voters per Region, a
 // checkpoint at this common floor remains readable after any one Store loss.
 func (s *store) SnapshotReadyTimestamp(ctx context.Context) (uint64, error) {
+	// Store membership changes more frequently than the deliberately throttled
+	// full Region scan. Refresh this small directory for every candidate so a
+	// newly scheduled peer can be resolved from EpochNotMatch metadata without PD.
+	if err := s.refreshSnapshotStores(ctx); err != nil {
+		return 0, err
+	}
 	safeTS, err := s.clients[0].GetAllTiKVStoreSafeTS(ctx)
 	if err != nil {
 		return 0, errors.Wrap(err, "get checkpoint Store safe timestamps")

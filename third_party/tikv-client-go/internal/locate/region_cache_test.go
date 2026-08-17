@@ -1005,6 +1005,35 @@ func (s *testRegionCacheSuite) TestLocateCachedKeyRetainsInvalidatedTopology() {
 	s.Equal(loc.EndKey, retained.EndKey)
 }
 
+func (s *testRegionCacheSuite) TestProtectedRegionLearnsSplitFromEpochNotMatch() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("a"))
+	s.NoError(err)
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("a")}))
+	old := s.cache.getProtectedRegion(loc.Region)
+	s.NotNil(old)
+	oldStore := old.getStore().stores[0]
+
+	left := proto.Clone(old.meta).(*metapb.Region)
+	left.EndKey = []byte("m")
+	left.RegionEpoch.Version++
+	right := proto.Clone(old.meta).(*metapb.Region)
+	right.Id = old.GetID() + 1000
+	right.StartKey = []byte("m")
+	right.RegionEpoch.Version++
+	right.RegionEpoch.ConfVer++
+
+	err = s.cache.UpdateProtectedRegions(&RPCContext{Region: old.VerID(), Store: oldStore}, []*metapb.Region{left, right})
+	s.NoError(err)
+	leftLoc, err := s.cache.LocateCachedKey([]byte("a"))
+	s.NoError(err)
+	rightLoc, err := s.cache.LocateCachedKey([]byte("x"))
+	s.NoError(err)
+	s.Equal(left.Id, leftLoc.Region.GetID())
+	s.Equal(right.Id, rightLoc.Region.GetID())
+	s.Equal([]byte("m"), leftLoc.EndKey)
+	s.Equal([]byte("m"), rightLoc.StartKey)
+}
+
 func (s *testRegionCacheSuite) TestRegionEpochAheadOfTiKV() {
 	// Create a separated region cache to do this test.
 	pdCli := &CodecPDClient{mocktikv.NewPDClient(s.cluster), apicodec.NewCodecV1(apicodec.ModeTxn)}

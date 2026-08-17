@@ -1065,6 +1065,26 @@ func (c *RegionCache) LocateCachedKey(key []byte) (*KeyLocation, error) {
 	}, nil
 }
 
+// TryLocateCachedKey is the non-erroring form used by cache-only merge
+// recovery probes. It never contacts PD.
+func (c *RegionCache) TryLocateCachedKey(key []byte) *KeyLocation {
+	r := c.searchProtectedRegion(key, false)
+	if r == nil {
+		return nil
+	}
+	return &KeyLocation{Region: r.VerID(), StartKey: r.StartKey(), EndKey: r.EndKey(), Buckets: r.getStore().buckets}
+}
+
+// TryLocateCachedEndKey applies end-key boundary semantics to the protected
+// topology and never contacts PD.
+func (c *RegionCache) TryLocateCachedEndKey(key []byte) *KeyLocation {
+	r := c.searchProtectedRegion(key, true)
+	if r == nil {
+		return nil
+	}
+	return &KeyLocation{Region: r.VerID(), StartKey: r.StartKey(), EndKey: r.EndKey(), Buckets: r.getStore().buckets}
+}
+
 // ProtectCachedRegions atomically snapshots the active Region routes covering
 // starts. The copies retain Region boundaries, peers, resolved Store pointers,
 // and their observed epochs independently of active-cache invalidation and GC.
@@ -1109,6 +1129,82 @@ func (c *RegionCache) getProtectedRegion(id RegionVerID) *Region {
 	r := c.protected.regions[id]
 	c.protected.RUnlock()
 	return r
+}
+
+// UpdateProtectedRegions replaces a stale protected route with authoritative
+// Region metadata returned by TiKV. It deliberately resolves peers only from
+// the already-seeded Store directory and therefore remains safe when PD is
+// unavailable during a checkpoint read.
+func (c *RegionCache) UpdateProtectedRegions(ctx *RPCContext, currentRegions []*metapb.Region) error {
+	if ctx == nil || ctx.Store == nil || len(currentRegions) == 0 {
+		return errors.New("protected Region update requires current Region metadata")
+	}
+	for _, meta := range currentRegions {
+		if meta.GetId() == ctx.Region.id &&
+			(meta.GetRegionEpoch().GetConfVer() < ctx.Region.confVer || meta.GetRegionEpoch().GetVersion() < ctx.Region.ver) {
+			return errors.Errorf("protected Region epoch is ahead of TiKV: cached=%+v current=%s", ctx.Region, meta)
+		}
+	}
+
+	regions := make([]*Region, 0, len(currentRegions))
+	for _, meta := range currentRegions {
+		region, err := c.newProtectedRegion(meta, ctx.Store.StoreID())
+		if err != nil {
+			return err
+		}
+		regions = append(regions, region)
+	}
+
+	c.protected.Lock()
+	defer c.protected.Unlock()
+	for _, region := range regions {
+		if old := c.protected.sorted.ReplaceOrInsert(region); old != nil {
+			delete(c.protected.regions, old.VerID())
+		}
+		for _, deleted := range c.protected.sorted.removeIntersecting(region) {
+			delete(c.protected.regions, deleted.cachedRegion.VerID())
+		}
+		c.protected.regions[region.VerID()] = region
+	}
+	return nil
+}
+
+func (c *RegionCache) newProtectedRegion(meta *metapb.Region, preferredStoreID uint64) (*Region, error) {
+	region := &Region{meta: proto.Clone(meta).(*metapb.Region), syncFlag: updated, lastAccess: time.Now().Unix()}
+	regionStore := &regionStore{
+		workTiKVIdx: 0, proxyTiKVIdx: -1,
+		stores: make([]*Store, 0, len(region.meta.Peers)), storeEpochs: make([]uint32, 0, len(region.meta.Peers)),
+	}
+	availablePeers := region.meta.Peers[:0]
+	for _, peer := range region.meta.Peers {
+		c.storeMu.RLock()
+		store := c.storeMu.stores[peer.StoreId]
+		c.storeMu.RUnlock()
+		if store == nil || store.getResolveState() != resolved || store.GetAddr() == "" {
+			return nil, errors.Errorf("protected Region %d Store %d is not seeded", region.GetID(), peer.StoreId)
+		}
+		if peer.IsWitness && peer.StoreId != preferredStoreID {
+			continue
+		}
+		availablePeers = append(availablePeers, peer)
+		switch store.storeType {
+		case tikvrpc.TiKV:
+			regionStore.accessIndex[tiKVOnly] = append(regionStore.accessIndex[tiKVOnly], len(regionStore.stores))
+		case tikvrpc.TiFlash:
+			regionStore.accessIndex[tiFlashOnly] = append(regionStore.accessIndex[tiFlashOnly], len(regionStore.stores))
+		}
+		regionStore.stores = append(regionStore.stores, store)
+		regionStore.storeEpochs = append(regionStore.storeEpochs, atomic.LoadUint32(&store.epoch))
+		if peer.StoreId == preferredStoreID && store.storeType == tikvrpc.TiKV {
+			regionStore.workTiKVIdx = AccessIndex(len(regionStore.accessIndex[tiKVOnly]) - 1)
+		}
+	}
+	if len(regionStore.accessIndex[tiKVOnly]) == 0 {
+		return nil, errors.Errorf("protected Region %d has no seeded TiKV peers", region.GetID())
+	}
+	region.meta.Peers = availablePeers
+	region.setStore(regionStore)
+	return region, nil
 }
 
 // TryLocateKey searches for the region and range that the key is located, but return nil when region miss or invalid.

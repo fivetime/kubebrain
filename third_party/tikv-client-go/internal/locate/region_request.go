@@ -1311,6 +1311,17 @@ func (s *RegionRequestSender) SendReqCtx(
 					retryTimes++
 					continue
 				}
+				if epochNotMatch := regionErr.GetEpochNotMatch(); epochNotMatch != nil {
+					if len(epochNotMatch.CurrentRegions) > 0 {
+						if err := s.regionCache.UpdateProtectedRegions(rpcCtx, epochNotMatch.CurrentRegions); err != nil {
+							return nil, rpcCtx, retryTimes, err
+						}
+						return resp, rpcCtx, retryTimes, nil
+					}
+					if s.tryRecoverMergedRegion(bo, rpcCtx, req, timeout, et, opts...) {
+						return resp, rpcCtx, retryTimes, nil
+					}
+				}
 				return nil, rpcCtx, retryTimes, errors.Errorf(
 					"protected snapshot Region %d returned Region error: %s",
 					regionID.GetID(), regionErr.String(),
@@ -1350,21 +1361,30 @@ func (s *RegionRequestSender) tryRecoverMergedRegion(
 	timeout time.Duration,
 	et tikvrpc.EndpointType,
 	opts ...StoreSelectorOption,
-) {
+) bool {
 	if s.disableMergeRecovery || ctx == nil || ctx.Meta == nil || req == nil || et != tikvrpc.TiKV {
-		return
+		return false
 	}
 	key, version, ok := mergeRecoveryRead(req)
 	if !ok {
-		return
+		return false
 	}
 
 	candidates := make([]*KeyLocation, 0, 2)
-	if len(ctx.Meta.StartKey) > 0 {
-		candidates = append(candidates, s.regionCache.TryLocateEndKey(ctx.Meta.StartKey))
-	}
-	if len(ctx.Meta.EndKey) > 0 {
-		candidates = append(candidates, s.regionCache.TryLocateKey(ctx.Meta.EndKey))
+	if req.CacheOnlyRegionRead {
+		if len(ctx.Meta.StartKey) > 0 {
+			candidates = append(candidates, s.regionCache.TryLocateCachedEndKey(ctx.Meta.StartKey))
+		}
+		if len(ctx.Meta.EndKey) > 0 {
+			candidates = append(candidates, s.regionCache.TryLocateCachedKey(ctx.Meta.EndKey))
+		}
+	} else {
+		if len(ctx.Meta.StartKey) > 0 {
+			candidates = append(candidates, s.regionCache.TryLocateEndKey(ctx.Meta.StartKey))
+		}
+		if len(ctx.Meta.EndKey) > 0 {
+			candidates = append(candidates, s.regionCache.TryLocateKey(ctx.Meta.EndKey))
+		}
 	}
 
 	for _, candidate := range candidates {
@@ -1383,6 +1403,9 @@ func (s *RegionRequestSender) tryRecoverMergedRegion(
 		probeResp, _, _, probeErr := probeSender.SendReqCtx(bo, &probe, candidate.Region, timeout, et, opts...)
 
 		location := s.regionCache.TryLocateKey(key)
+		if req.CacheOnlyRegionRead {
+			location = s.regionCache.TryLocateCachedKey(key)
+		}
 		if location != nil && location.Region != ctx.Region {
 			logutil.Logger(bo.GetCtx()).Info(
 				"recovered merged region from authoritative TiKV metadata",
@@ -1390,7 +1413,7 @@ func (s *RegionRequestSender) tryRecoverMergedRegion(
 				zap.Uint64("probeRegion", candidate.Region.GetID()),
 				zap.Uint64("currentRegion", location.Region.GetID()),
 			)
-			return
+			return true
 		}
 		var probeRegionErr *errorpb.Error
 		if probeResp != nil {
@@ -1405,6 +1428,7 @@ func (s *RegionRequestSender) tryRecoverMergedRegion(
 			zap.String("probeRegionError", fmt.Sprint(probeRegionErr)),
 		)
 	}
+	return false
 }
 
 // mergeRecoveryRead returns one key known to belong to the failed Region and

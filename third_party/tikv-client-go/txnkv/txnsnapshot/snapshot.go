@@ -645,7 +645,13 @@ func (s *KVSnapshot) get(ctx context.Context, bo *retry.Backoffer, k []byte) ([]
 	var resolvingRecordToken *int
 	for {
 		util.EvalFailpoint("beforeSendPointGet")
-		loc, err := s.store.GetRegionCache().LocateKey(bo, k)
+		var loc *locate.KeyLocation
+		var err error
+		if s.cacheOnlyRegionRead {
+			loc, err = s.store.GetRegionCache().LocateCachedKey(k)
+		} else {
+			loc, err = s.store.GetRegionCache().LocateKey(bo, k)
+		}
 		if err != nil {
 			return nil, err
 		}
