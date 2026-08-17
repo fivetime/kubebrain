@@ -55928,6 +55928,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   scrape 得到 alarm=`1`、data_corruption=`1`、serializable_read=`3`；完整门禁 **79.45 秒 GREEN**，随后
   两个 quorum 恢复。平台可据 counter rate 告警降级读取，但不得把累计值本身当成当前故障状态。
 
+- A4965 修正 A4964 counter 在首次 fallback 前不存在的冷启动可发现性。Prometheus 将“series 不存在”和
+  “counter=0”视为不同状态；旧实现只在降级事件中首次调用 `EmitCounter`，健康新实例无法通过 dashboard/告警
+  预检证明 instrumentation 已加载。`a9cd0467` 在 `NewServer` 启动 campaign 与后台循环之前，和既有 legacy
+  health success/failure 一起以 `Add(0)` 预注册 alarm、serializable_read、data_corruption 三个固定 labeled child；
+  不增加 label cardinality，也不改变后续单调增量。单测固定初始化事件及 fallback/healthy/DataLoss 既有语义，
+  Prometheus parser/runner 门禁另把“sample present”与数值 0 分开判断；race、vet、完整 server/compat 回归通过。
+
+  精确镜像 `kubebrain:a4983-health-metrics-initialized`（完整 revision
+  `a9cd04672cc388bed129581fdc904c44ee9463d2`，manifest list
+  `sha256:29c730c84de97fdb97ca550dcc86d294329338758849d151da13d201000d9f6a`）滚动后，直连全新
+  `kubebrain-0`、未执行任何 fallback 前 scrape 即得到三条精确 0。随后等待完整 90 秒 checkpoint protection
+  grace，同时隔离 `kb-pd-1/0` 与 `kb-tikv-2/1`；baseline presence、A4962/A4963 功能分界及 A4964 counter
+  delta 全部通过，完整门禁 **169.56 秒 GREEN**，两个 quorum 恢复。由此健康新实例的零事件状态和故障后的
+  单调事件状态都可被同一 Prometheus 查询稳定观测。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
