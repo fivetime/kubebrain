@@ -56179,6 +56179,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   freshness recording 及下游 count/sum PromQL，production readiness 已同步；完整 `deploy/production`
   测试通过。本项不重建数据面镜像。
 
+- A4992 把 freshness/identity 契约延伸到 CPU 与网络故障告警自身。旧 CFS throttled/total、network
+  errors/drops source count 仍消费 lookback 原始 series，三条故障告警也各自重新聚合 raw rate/increase；
+  family 停止更新时可暂时通过 completeness，重复 scrape 还会放大告警值。现新增两条每容器 CFS rate 和
+  四条每接口 network error/drop 10 分钟 increase recording，均先要求原始 sample age 不超过 60 秒再按
+  identity 取最大值。来源数与 throttling/error/drop 告警共同消费这六条记录；缺失、陈旧或重复 series
+  不再伪造零故障或放大数值。精确 manifest 门禁固定六条 freshness recording、六条 count 和三条 alert
+  PromQL，annotation 与 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
