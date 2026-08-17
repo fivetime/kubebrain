@@ -56284,6 +56284,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   10→12→15 时 lag 精确 5→3→0、无后续写也清零；observability/production readiness 已同步。本项需要
   重建并发布 KubeBrain 数据面镜像；backend 专项与完整测试结果见提交验证。
 
+- A5004 将 A5003 的准确 watch lag 状态升级为可证明的新鲜 HA 运维证据。仅在 enqueue/collector 推进时
+  发布仍无法区分长期空闲的权威零值与应用 scrape 停止；raw 告警也会让替换 Pod 的旧高值在 lookback 内
+  继续触发。现每个 backend 启动时立即发布 `watch_revision_lag`，此后每 15 秒 heartbeat，worker 随统一
+  context 停止；新增测试证明无 enqueue/collector metric 调用时 heartbeat 仍把内部 5 更新为 idle 0 并在
+  cancel 后退出。production 新增 sample age 不超过 60 秒、按 `(namespace,pod,uid)` 去重的 recording；
+  high-lag 只与 fresh Ready UID 相交，completeness 要求每个当前 Ready UID 恰有一条 fresh gauge。精确
+  manifest 门禁固定 recording、两条 alert PromQL 与 heartbeat annotation，observability/readiness 已同步；
+  本项需要重建并发布数据面镜像，backend/race/production 回归结果见提交验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
