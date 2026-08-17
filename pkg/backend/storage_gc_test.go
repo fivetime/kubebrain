@@ -88,6 +88,17 @@ func TestStorageGCDriverAdvancesSafepoint(t *testing.T) {
 	require.Contains(t, m.snapshot(), compactMetricRecord{
 		kind: "gauge", name: "storage.gc.enabled", value: int64(1),
 	}, "a capable configured backend must publish enabled before the first GC tick")
+	var started, succeeded bool
+	for _, record := range m.snapshot() {
+		value, ok := record.value.(int64)
+		if !ok || value <= 0 {
+			continue
+		}
+		started = started || record.name == "storage.gc.driver_started_timestamp_seconds"
+		succeeded = succeeded || record.name == "storage.gc.last_success_timestamp_seconds"
+	}
+	require.True(t, started, "an enabled driver must publish its process-local start time")
+	require.True(t, succeeded, "a successful GC call must publish a wall-clock success time")
 }
 
 func TestStorageGCMetricsInitializeAuthoritativeDisabledAndZeroError(t *testing.T) {
@@ -96,6 +107,8 @@ func TestStorageGCMetricsInitializeAuthoritativeDisabledAndZeroError(t *testing.
 
 	require.Equal(t, []compactMetricRecord{
 		{kind: "gauge", name: "storage.gc.enabled", value: int64(0)},
+		{kind: "gauge", name: "storage.gc.driver_started_timestamp_seconds", value: int64(0)},
+		{kind: "gauge", name: "storage.gc.last_success_timestamp_seconds", value: int64(0)},
 		{kind: "counter", name: "storage.gc.err", value: int64(0)},
 	}, recorder.records)
 }

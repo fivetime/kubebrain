@@ -4243,7 +4243,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   三类来源完整覆盖全部 Ready UID；enabled 必须精确为 0/1，current error 为 `[0,2^53]` 精确整数，increase
   可为分数但必须有限且同范围。任一 Ready 副本 disabled/unsupported 为 critical，GC 调用失败为 warning，
   缺失、陈旧或非法 telemetry fail closed。`storage_gc_safepoint` 是 leader-only 值；仅凭 exporter scrape
-  时间新鲜不能证明它持续推进，推进时效需要单独的 last-success 合同。
+  时间新鲜不能证明它持续推进。因此每个副本另发布 driver-started timestamp，只有 leader 的真实 GC 成功
+  才更新 last-success timestamp。两者同样要求 60 秒新鲜、Ready UID 完整覆盖和合法 Unix 精确整数；
+  follower/首次执行前 last-success 的权威 0 合法。若所有 Ready 副本均未成功且最早 driver 已运行超过
+  20 分钟，或最近任一 leader 成功距今超过 20 分钟，持续 2 分钟即 warning；这为默认 10 分钟周期保留
+  两倍启动/换主余量，而不会把 follower 零值覆盖 leader 成功。
 - leader election 短时间频繁丢失。
 - 每个副本在 campaign 前初始化 leadership-lost、通用 initialization-error、incompatible-witness、
   invalid-alarm-metadata 四类 counter；只从 60 秒内样本生成 Ready Pod UID 级 current 与 10 分钟

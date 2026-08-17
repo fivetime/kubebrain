@@ -29,6 +29,8 @@ func initStorageGCMetrics(metricCli metrics.Metrics) {
 		return
 	}
 	_ = metricCli.EmitGauge("storage.gc.enabled", int64(0))
+	_ = metricCli.EmitGauge("storage.gc.driver_started_timestamp_seconds", int64(0))
+	_ = metricCli.EmitGauge("storage.gc.last_success_timestamp_seconds", int64(0))
 	_ = metricCli.EmitCounter("storage.gc.err", int64(0))
 }
 
@@ -55,6 +57,7 @@ func (b *backend) runStorageGC(workerCtx context.Context, lifetime time.Duration
 		return
 	}
 	_ = b.metricCli.EmitGauge("storage.gc.enabled", int64(1))
+	_ = b.metricCli.EmitGauge("storage.gc.driver_started_timestamp_seconds", time.Now().Unix())
 	interval := lifetime
 	if interval > 10*time.Minute {
 		interval = 10 * time.Minute
@@ -82,6 +85,7 @@ func (b *backend) runStorageGC(workerCtx context.Context, lifetime time.Duration
 				continue
 			}
 			b.metricCli.EmitGauge("storage.gc.safepoint", safepoint)
+			b.metricCli.EmitGauge("storage.gc.last_success_timestamp_seconds", time.Now().Unix())
 			klog.V(2).InfoS("storage GC safepoint advanced", "safepoint", safepoint)
 		}
 	}

@@ -353,6 +353,18 @@ spec:
           expr: count(((kubebrain_dbaas:storage_gc_enabled:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:storage_gc_enabled:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 1) or ((kubebrain_dbaas:storage_gc_enabled:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:storage_gc_enabled:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:storage_gc_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:storage_gc_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:storage_gc_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:storage_gc_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:storage_gc_err:increase_30m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:storage_gc_err:increase_30m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod
+          expr: max by (namespace, pod, uid) (storage_gc_driver_started_timestamp_seconds{namespace="kubebrain-system"} and (time() - timestamp(storage_gc_driver_started_timestamp_seconds{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod
+          expr: max by (namespace, pod, uid) (storage_gc_last_success_timestamp_seconds{namespace="kubebrain-system"} and (time() - timestamp(storage_gc_last_success_timestamp_seconds{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_gc_progress_invalid_values:count
+          expr: count(((kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) or ((kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > time() + 300)) + count(((kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) or ((kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > time() + 300))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
           expr: count((kubebrain_dbaas:statefulset_replicas:current >= 0) and (kubebrain_dbaas:statefulset_replicas:current <= 9007199254740992) and (kubebrain_dbaas:statefulset_replicas:current == floor(kubebrain_dbaas:statefulset_replicas:current)))
           labels:
@@ -877,6 +889,22 @@ spec:
           annotations:
             summary: KubeBrain storage GC telemetry is incomplete or invalid
             description: "Every Ready KubeBrain replica must expose a fresh exact 0/1 GC-enabled gauge plus authoritative-zero current and 30-minute-increase error counters. Current counters must be exact non-negative integers no greater than 2^53; extrapolated increases must be finite and within [0, 2^53]. Missing, stale, or invalid telemetry cannot prove that bare TiKV MVCC garbage collection is configured and observable."
+        - alert: KubeBrainStorageGCProgressStalled
+          expr: (max(kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) == 0 and max(time() - (kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) > 1200) or (max(kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0 and time() - max(kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 1200)
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain has not advanced the TiKV GC safepoint recently
+            description: "No current Ready KubeBrain replica has completed storage GC within 20 minutes, including the initial driver-start grace period. The default driver interval is 10 minutes; inspect current leadership, PD/TiKV connectivity, GC failures, and safepoint ownership before MVCC history growth degrades reads."
+        - alert: KubeBrainStorageGCProgressMetricsMissing
+          expr: absent(kubebrain_dbaas:storage_gc_progress_invalid_values:count) == 1 or count(kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:storage_gc_progress_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain storage GC progress telemetry is incomplete or invalid
+            description: "Every Ready KubeBrain replica must expose fresh driver-started and last-success timestamp gauges. Driver-started must be a positive exact Unix second, last-success may be authoritative zero on followers or before the first run, and neither may be fractional, above 2^53, or more than five minutes in the future. Missing, stale, or invalid telemetry cannot prove safepoint progress."
         - alert: KubeBrainLeaderElectionFlapping
           expr: sum(kubebrain_dbaas:leader_election_lost:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 3
           for: 0m
