@@ -1096,6 +1096,44 @@ func TestMaintenanceHashDoesNotMaskDeterministicBackendFailureWithCheckpoint(t *
 	require.Zero(t, shim.pinnedCalls)
 }
 
+func TestMaintenanceHashCheckpointFallbackPreservesAdminAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(
+		context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken),
+	)
+	_, err = server.Hash(rootCtx, &etcdserverpb.HashRequest{})
+	require.NoError(t, err, "prime the complete member-local root auth snapshot")
+	authSnapshot, err := server.tokens.snapshots.current(context.Background())
+	require.NoError(t, err)
+
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 91, Timestamp: 1234, CompactRevision: 7,
+		AuthRevision: authSnapshot.Config.Revision, ValidUntil: time.Now().Add(time.Minute),
+	}
+	shim := &checkpointHashBackendShim{
+		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: storage.ErrUnavailable,
+	}
+	server.backend = shim
+	server.auth.repo.backend = shim
+	server.tokens.repo.backend = shim
+	server.peers = testPeerService{isLeader: true}
+
+	response, err := server.Hash(rootCtx, &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	require.Equal(t, uint32(73), response.Hash)
+	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+	require.Equal(t, 1, shim.pinnedCalls)
+
+	response, err = server.Hash(aliceCtx, &etcdserverpb.HashRequest{})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	require.Equal(t, 1, shim.pinnedCalls, "a non-admin caller must not reach the protected backend hash")
+}
+
 func TestMaintenanceHashStableUntilWriteAndChangesAfterWrite(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
