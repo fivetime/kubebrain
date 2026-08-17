@@ -25,12 +25,14 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
-func initWatchEventBufferMetrics(metricCli metrics.Metrics) {
+func initWatchMetrics(metricCli metrics.Metrics) {
 	if metricCli == nil {
 		return
 	}
 	_ = metricCli.EmitCounter("watch.event.buffer.stale_drop", int64(0))
 	_ = metricCli.EmitCounter("watch.event.buffer.full", int64(0))
+	_ = metricCli.EmitCounter("watch.collector.stalled", int64(0))
+	_ = metricCli.EmitCounter("watch.collector.skipped_revision", int64(0))
 }
 
 // This file holds the watch-event RING: the per-revision slot buffer and the

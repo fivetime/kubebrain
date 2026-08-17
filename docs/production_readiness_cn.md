@@ -4209,6 +4209,12 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   完整覆盖 Ready UID；current 必须是 `[0,2^53]` 内精确整数，外推 rate 可为分数但必须有限且同范围。
   事件告警只消费这些新鲜 recording，统一 metrics-missing 对缺失、陈旧和非法值 fail closed，不能把
   不可信 telemetry 解释为零丢弃或零 overflow。
+- 每个 backend 同时把 `watch_collector_stalled` 与 `watch_collector_skipped_revision` 初始化为权威零值，
+  并仅从 60 秒内样本生成 Ready Pod UID 级 current/10 分钟 increase recording。两类 current 必须是
+  `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围，四类来源必须完整覆盖当前 Ready
+  UID。stall 表示 writer 可能死在 revision 分配与 event publication 之间，先触发 warning；collector 在
+  有界 deadline 后跳过 abandoned revision 则触发 critical。缺失、陈旧或非法 telemetry 不能作为 revision
+  连续性和 watch delivery 健康的证据。
 - leader election 短时间频繁丢失。
 - 每个副本在 campaign 前初始化 leadership-lost、通用 initialization-error、incompatible-witness、
   invalid-alarm-metadata 四类 counter；只从 60 秒内样本生成 Ready Pod UID 级 current 与 10 分钟

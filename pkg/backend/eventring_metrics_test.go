@@ -10,12 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWatchEventBufferMetricsInitializeAuthoritativeZero(t *testing.T) {
+func TestWatchMetricsInitializeAuthoritativeZero(t *testing.T) {
 	recorder := &compactMetricRecorder{}
-	initWatchEventBufferMetrics(recorder)
+	initWatchMetrics(recorder)
 
 	require.Equal(t, []compactMetricRecord{
 		{kind: "counter", name: "watch.event.buffer.stale_drop", value: int64(0)},
 		{kind: "counter", name: "watch.event.buffer.full", value: int64(0)},
+		{kind: "counter", name: "watch.collector.stalled", value: int64(0)},
+		{kind: "counter", name: "watch.collector.skipped_revision", value: int64(0)},
 	}, recorder.records)
 }
