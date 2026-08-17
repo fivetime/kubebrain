@@ -1646,10 +1646,9 @@ recording series 缺失也 fail closed。故障告警直接消费这些新鲜、
 CPU/内存资源门禁采用相同原则。`KubeBrainResourceMetricsMissing` 要求按
 `(namespace,pod,container)` 去重的 CPU usage、CFS throttled periods、CFS total periods 和 memory
 working set，以及去重的 KSM memory limit，分别精确覆盖当前动态副本总数；任一 recording series
-缺失也告警。CFS throttled/total rate 仅接收 60 秒内原始样本，throttling 告警直接使用这两条实体 recording。
-`KubeBrainDataPlaneMemoryHigh` 的分子、分母也先
-按同一容器 identity 去重，避免重复抓取造成 many-to-many 查询失败或重复告警。特别是 throttling 分子或
-分母缺失不得被解释为零 CPU pressure。
+缺失也告警。CFS throttled/total rate、memory working set 和 KSM memory limit 均仅接收 60 秒内原始样本；
+throttling 与 memory-high 告警直接使用对应实体 recording 相除。两侧按同一容器 identity 去重，避免重复
+抓取造成 many-to-many 查询失败或重复告警。任一分子或分母缺失/陈旧不得被解释为零资源压力。
 
 `deploy/production/monitoring.yaml` 还以 1 分钟周期生成实例级计量序列：
 
