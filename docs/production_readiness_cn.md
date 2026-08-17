@@ -4205,6 +4205,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   值还必须是 `[0,2^53]` 内的非负精确 revision 整数；NaN、Inf、负数、分数或超界值与 recording 缺失
   一样 fail closed，不能被阈值比较解释为空 backlog。
 - leader election 短时间频繁丢失。
+- 每个副本在 campaign 前初始化 leadership-lost、incompatible-witness、invalid-alarm-metadata 三类 counter；
+  只从 60 秒内样本生成 Ready Pod UID 级 current 与 10 分钟 increase recording，六类来源必须完整。
+  current 必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围；lost counter 先按
+  动态 `addr` 去重再按 Pod 求和。缺失、陈旧或非法 telemetry 不能隐藏 leader 抖动或持久 metadata
+  不兼容/损坏导致的拒绝领导。
 - watch revision lag 过高。
 - 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。
 - 任一当前 Ready Pod 的 `count_index_overflowed` 超过 60 秒未刷新，或任一新鲜 overflow gauge 为 1；

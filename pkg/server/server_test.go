@@ -711,6 +711,18 @@ func TestAlarmRefreshErrorMetricInitializedBeforeRefresh(t *testing.T) {
 	}, recorder.events)
 }
 
+func TestLeaderElectionMetricsInitializedBeforeCampaign(t *testing.T) {
+	recorder := &healthMetricRecorder{}
+	s := &server{metricCli: recorder}
+	s.initLeaderElectionMetrics()
+
+	require.Equal(t, []healthMetricEvent{
+		{kind: "counter", name: "leader.election.lost", value: 0},
+		{kind: "counter", name: "leader.election.initialize.incompatible_witness", value: 0},
+		{kind: "counter", name: "leader.election.initialize.invalid_alarm_metadata", value: 0},
+	}, recorder.events)
+}
+
 func TestCountIndexRebuildErrorMetricInitializedBeforeLeadership(t *testing.T) {
 	recorder := &healthMetricRecorder{}
 	s := &server{metricCli: recorder}

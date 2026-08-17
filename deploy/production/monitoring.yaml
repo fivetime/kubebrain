@@ -165,6 +165,34 @@ spec:
           expr: count(((kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:leader_election_lost:current_by_pod
+          expr: sum by (namespace, pod, uid) (max by (namespace, pod, uid, addr) (leader_election_lost{namespace="kubebrain-system"} and (time() - timestamp(leader_election_lost{namespace="kubebrain-system"}) <= 60)))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:leader_election_lost:increase_10m_by_pod
+          expr: sum by (namespace, pod, uid) (max by (namespace, pod, uid, addr) (increase(leader_election_lost{namespace="kubebrain-system"}[10m]) and (time() - timestamp(leader_election_lost{namespace="kubebrain-system"}) <= 60)))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:leader_incompatible_witness:current_by_pod
+          expr: max by (namespace, pod, uid) (leader_election_initialize_incompatible_witness{namespace="kubebrain-system"} and (time() - timestamp(leader_election_initialize_incompatible_witness{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:leader_incompatible_witness:increase_10m_by_pod
+          expr: max by (namespace, pod, uid) (increase(leader_election_initialize_incompatible_witness{namespace="kubebrain-system"}[10m]) and (time() - timestamp(leader_election_initialize_incompatible_witness{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:leader_invalid_alarm_metadata:current_by_pod
+          expr: max by (namespace, pod, uid) (leader_election_initialize_invalid_alarm_metadata{namespace="kubebrain-system"} and (time() - timestamp(leader_election_initialize_invalid_alarm_metadata{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:leader_invalid_alarm_metadata:increase_10m_by_pod
+          expr: max by (namespace, pod, uid) (increase(leader_election_initialize_invalid_alarm_metadata{namespace="kubebrain-system"}[10m]) and (time() - timestamp(leader_election_initialize_invalid_alarm_metadata{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:leader_election_invalid_values:count
+          expr: count(((kubebrain_dbaas:leader_election_lost:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:leader_election_lost:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:leader_election_lost:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:leader_election_lost:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:leader_election_lost:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:leader_election_lost:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(((kubebrain_dbaas:leader_incompatible_witness:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:leader_incompatible_witness:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:leader_incompatible_witness:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:leader_incompatible_witness:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:leader_incompatible_witness:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:leader_incompatible_witness:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(((kubebrain_dbaas:leader_invalid_alarm_metadata:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:leader_invalid_alarm_metadata:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:leader_invalid_alarm_metadata:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:leader_invalid_alarm_metadata:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:leader_invalid_alarm_metadata:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:leader_invalid_alarm_metadata:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check
           expr: max by (namespace, pod, uid, check) (health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} and (time() - timestamp(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}) <= 60))
           labels:
@@ -634,7 +662,7 @@ spec:
             summary: KubeBrain watch event buffer overflow
             description: "KubeBrain watch event buffer overflow rate is {{ $value }} events per second."
         - alert: KubeBrainLeaderElectionFlapping
-          expr: sum(increase(leader_election_lost{namespace="kubebrain-system"}[10m])) > 3
+          expr: sum(kubebrain_dbaas:leader_election_lost:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 3
           for: 0m
           labels:
             severity: warning
@@ -642,7 +670,7 @@ spec:
             summary: KubeBrain leader election is flapping
             description: "KubeBrain lost leadership {{ $value }} times in the last 10 minutes."
         - alert: KubeBrainIncompatibleTransactionWitness
-          expr: sum(increase(leader_election_initialize_incompatible_witness{namespace="kubebrain-system"}[10m])) > 0
+          expr: sum(kubebrain_dbaas:leader_incompatible_witness:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m
           labels:
             severity: critical
@@ -650,13 +678,21 @@ spec:
             summary: KubeBrain binary cannot read durable transaction witnesses
             description: "A KubeBrain replica rejected leadership because TiKV contains a newer transaction-witness format. Continue roll-forward; do not delete witness metadata or repair TiKV."
         - alert: KubeBrainInvalidCorruptAlarmMetadata
-          expr: sum(increase(leader_election_initialize_invalid_alarm_metadata{namespace="kubebrain-system"}[10m])) > 0
+          expr: sum(kubebrain_dbaas:leader_invalid_alarm_metadata:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m
           labels:
             severity: critical
           annotations:
             summary: KubeBrain rejected leadership due to invalid alarm metadata
             description: "A KubeBrain replica found malformed CORRUPT member/generation metadata in TiKV and refused leadership. Keep traffic fenced; do not clear or rewrite internal alarm keys. Preserve evidence and follow the corruption-repair runbook."
+        - alert: KubeBrainLeaderElectionMetricsMissing
+          expr: absent(kubebrain_dbaas:leader_election_invalid_values:count) == 1 or count(kubebrain_dbaas:leader_election_lost:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:leader_election_lost:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:leader_incompatible_witness:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:leader_incompatible_witness:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:leader_invalid_alarm_metadata:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:leader_invalid_alarm_metadata:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:leader_election_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain leader-election telemetry is incomplete
+            description: "At least one current Ready Pod UID lacks a fresh current or 10-minute-increase series for leadership loss, incompatible transaction witnesses, or invalid alarm metadata; the invalid-value recording is absent; or a value is invalid. Every replica initializes all three counters to authoritative zero before campaigning. Current counters must be non-negative exact integers no greater than 2^53; extrapolated increases may be fractional but must be finite and within [0,2^53]. Missing, stale, or invalid telemetry must not hide leadership churn or leadership refusal caused by incompatible/corrupt durable metadata."
         - alert: KubeBrainAlarmRefreshFailures
           expr: sum(kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m

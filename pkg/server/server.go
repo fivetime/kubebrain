@@ -261,6 +261,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.leaderElection = election
 	s.peers = peerService
 	s.initLegacyHealthMetrics()
+	s.initLeaderElectionMetrics()
 	s.initAlarmMetrics()
 	s.initQuotaMetrics()
 	s.initCountIndexMetrics()
@@ -944,6 +945,15 @@ func (s *server) initAlarmMetrics() {
 		return
 	}
 	_ = s.metricCli.EmitCounter("alarm.refresh.err", 0)
+}
+
+func (s *server) initLeaderElectionMetrics() {
+	if s.metricCli == nil {
+		return
+	}
+	_ = s.metricCli.EmitCounter("leader.election.lost", 0)
+	_ = s.metricCli.EmitCounter("leader.election.initialize.incompatible_witness", 0)
+	_ = s.metricCli.EmitCounter("leader.election.initialize.invalid_alarm_metadata", 0)
 }
 
 func (s *server) initCountIndexMetrics() {
