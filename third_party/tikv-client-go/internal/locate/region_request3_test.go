@@ -188,6 +188,9 @@ func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadFailsAfterProtect
 		Key: []byte("key"), Version: 42,
 	}, kv.ReplicaReadMixed, &seed)
 	req.CacheOnlyRegionRead = true
+	req.ReadReplicaScope = oracle.GlobalTxnScope
+	req.TxnScope = oracle.GlobalTxnScope
+	req.EnableStaleRead()
 	resp, _, _, err := s.regionRequestSender.SendReqCtx(
 		s.bo, req, loc.Region, time.Millisecond, tikvrpc.TiKV,
 	)

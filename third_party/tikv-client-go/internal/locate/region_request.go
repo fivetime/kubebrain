@@ -598,7 +598,11 @@ func (state *accessFollower) next(bo *retry.Backoffer, selector *replicaSelector
 		// Stale Read request will retry the leader or next peer on error,
 		// if txnScope is global, we will only retry the leader by using the WithLeaderOnly option,
 		// if txnScope is local, we will retry both other peers and the leader by the strategy of replicaSelector.
-		if state.isGlobalStaleRead {
+		// Ordinary global stale reads retain TiDB's leader fallback. A protected
+		// cache-only snapshot is different: its immutable timestamp was verified
+		// against every voter and may be served by any warmed replica after quorum
+		// loss. Forcing leaderOnly here can strand the sole reachable follower.
+		if state.isGlobalStaleRead && !selector.cacheOnlyRegionRead {
 			WithLeaderOnly()(&state.option)
 		}
 		state.lastIdx++
