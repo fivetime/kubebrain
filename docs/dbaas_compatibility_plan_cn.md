@@ -55478,6 +55478,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   check 全零，三个 KubeBrain Pod Ready 且无新增重启，iptables 规则与 port-forward 已清理。本轮未发现新的数据面生产 RED，不修改
   生产代码；真实跨节点/AZ 的组合 Snapshot 分区与生产规模 artifact soak 仍保持开放。
 
+- A4939 将组合故障矩阵扩展到 endpoint discovery/control-plane identity：新增 `pd-quorum-tikv-member-memberlist` profile，直接复用
+  upstream `tests/common/member_test.go:TestMemberListSerializable` 对齐门禁。测试先保存健康态成员与 ClusterID；组合分区仍活跃时反复用
+  400ms caller deadline 请求 `Linearizable=true`，必须实际观察 `DeadlineExceeded`，随后同一连接的 serializable MemberList 必须在
+  一秒内返回与基线逐字段相同的本地 applied topology 和 ClusterID。故障恢复后 linearizable MemberList 还必须重新返回完整成员集合。
+  这固定了 KubeBrain 的 DBaaS 边界：静态逻辑 etcd membership 不依赖 TiKV/PD read barrier，但请求最新一致性时不能绕过后端协调状态，
+  也不能把 PD/TiKV store 泄漏成 etcd member。
+
+  2026-08-17 在独立三 PD/三 TiKV 单节点 Kind 上以 20 秒 hold 实跑，两个 PD member 不可达与 leader-heavy TiKV store
+  `Up -> Disconnected` 同窗出现；linearizable MemberList 精确命中 400ms `DeadlineExceeded`，同连接 serializable 调用保持基线，PD
+  members 与 store 恢复后 linearizable 调用重新成功，完整测试 65.75 秒通过。终态 endpoint proposal 33.20ms，`etcdctl member list`
+  精确返回 `kubebrain-0/1/2` 三个稳定 ID，LeaseList、AlarmList 为空，五类 Region check 全零，三个 KubeBrain Pod Ready 且无新增重启，
+  iptables 规则和 port-forward 已清理。本轮未发现新的数据面生产 RED，不修改生产代码；真实跨节点/AZ 的组合 discovery 分区仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
