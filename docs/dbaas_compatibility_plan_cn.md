@@ -55347,6 +55347,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成功路径的 v7 receipt、v2 checkpoint、fence/handoff 与最终 revision/key/lease/watch 语义验收 41.02 秒通过，一次性资源已清理。
   真实物理 ENOSPC/fsync EIO、只读重挂载、PVC eviction 与失败清理本身遇到只读文件系统仍保持开放。
 
+- A4930 补齐三副本直连控制面响应身份门禁。对固定 upstream etcd `5cd9f4ee13801e18825d661e5005ae599460bc3a`
+  审计确认 `server/etcdserver/api/v3rpc/member.go` 的 MemberList 与 `maintenance.go` 的 Hash/HashKV/Alarm 都以 serving member
+  填充 header；KubeBrain 新回归逐一连接 `kubebrain-0/1/2`，以同连接 Status 为基线，约束 MemberList、Hash、HashKV、Alarm
+  GET/NONE、AuthStatus 的 `ClusterId` 一致、`MemberId` 等于当前副本且 `RaftTerm` 为正，并额外验证 MemberList 恰含三个成员且包含
+  当前成员、Hash revision 为正、HashKV compact revision 不超过 hash revision。该用例已纳入 fail-closed direct-replica runner。
+
+  2026-08-17 定向真实三副本测试 3.87 秒通过，纳入后的完整 direct-replica consistency suite 连同 pre/post test-prefix、lease/alarm
+  基线校验 19.133 秒通过；同一真实拓扑下 `-race` 再执行新增用例 3.11 秒通过。测试前后 key prefix、lease 与 alarm 基线一致，三个临时
+  port-forward 均已关闭。本轮未复现生产差异，不修改生产代码；关闭的是 Cluster/Maintenance/Auth 非 KV 控制 RPC 在多副本部署下的
+  serving-member header identity 证据缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
