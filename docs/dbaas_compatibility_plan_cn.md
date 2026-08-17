@@ -55297,6 +55297,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和三轮 port-forward 均已清理。本轮仍未复现生产差异，不修改生产代码；关闭的是 Lock/Campaign waiter 从内部 watch 醒来时的
   response identity 与 ownership handoff 证据缺口。
 
+- A4926 修正 A4925 的调度假阳性窗口：waiter goroutine 发出 started signal 只能证明准备调用，不能证明 Lock/Campaign 已将候选 key
+  持久入队；若 goroutine 在 300ms 后仍未获得调度，测试可能先释放 owner，随后 waiter 无争用成功，错误冒充“从内部 watch 醒来”。
+  状态机现在必须先从第三个 endpoint 执行线性 CountOnly prefix Range，观察 owner 与 waiter 两个候选均持久可见，再证明等待 RPC
+  继续阻塞，之后才允许跨副本 Unlock/Resign。该前置条件把测试证据绑定到真实排队状态，也同时验证 follower 上写入的候选已跨副本
+  可见。
+
+  2026-08-17 增强后的真实三副本 `-race` 状态机 1.90 秒通过；完整 direct-replica consistency suite 及 pre/post prefix、lease/alarm
+  基线校验 17.090 秒通过。测试资源与 port-forward 已清理。本轮修复的是测试证明强度，不修改生产代码，也不沿用 A4925 中无法排除
+  慢调度的较弱结论。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

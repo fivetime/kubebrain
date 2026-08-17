@@ -141,6 +141,16 @@ func TestContendedConcurrencyResponseHeadersAcrossDirectReplicas(t *testing.T) {
 		_, _ = leaseClient.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: waiterLease.ID})
 	}()
 	root := fmt.Sprintf("/registry/etcd-client-compat/direct-concurrency-contended/%d", time.Now().UnixNano())
+	kvClient := etcdserverpb.NewKVClient(connections[2])
+	waitForQueuedPair := func(name []byte) {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			response, rangeErr := kvClient.Range(ctx, &etcdserverpb.RangeRequest{
+				Key: name, RangeEnd: []byte(clientPrefixRangeEnd(string(name))), CountOnly: true,
+			})
+			return rangeErr == nil && response.Count == 2
+		}, 5*time.Second, 10*time.Millisecond, "owner and waiter were not both persisted under %q", name)
+	}
 
 	lockClients := []v3lockpb.LockClient{
 		v3lockpb.NewLockClient(connections[0]),
@@ -162,6 +172,7 @@ func TestContendedConcurrencyResponseHeadersAcrossDirectReplicas(t *testing.T) {
 		waiterLockDone <- lockResult{response: response, err: lockErr}
 	}()
 	<-waiterLockStarted
+	waitForQueuedPair([]byte(root + "/lock"))
 	select {
 	case result := <-waiterLockDone:
 		require.Failf(t, "contended lock returned before release", "response=%v error=%v", result.response, result.err)
@@ -199,6 +210,7 @@ func TestContendedConcurrencyResponseHeadersAcrossDirectReplicas(t *testing.T) {
 		waiterCampaignDone <- campaignResult{response: response, err: campaignErr}
 	}()
 	<-waiterCampaignStarted
+	waitForQueuedPair(electionName)
 	select {
 	case result := <-waiterCampaignDone:
 		require.Failf(t, "contended campaign returned before resign", "response=%v error=%v", result.response, result.err)
