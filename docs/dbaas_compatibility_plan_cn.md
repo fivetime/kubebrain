@@ -55504,6 +55504,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain Pod Ready 且无新增重启，iptables 规则与 port-forward 已清理。本轮未发现新的数据面生产 RED，不修改生产代码；真实
   跨节点/AZ 的组合 leader-sensitive Lease 分区仍保持开放。
 
+- A4941 补齐 A4940 单轮成功不能证明 monitor/transport 重新武装的缺口：新增
+  `pd-quorum-tikv-member-repeated-require-leader` profile，并在真实门禁显式设置两轮。每轮都重新 Grant TTL=600 lease、建立并完成
+  created/正 TTL 握手的 raw `WithRequireLeader` Watch 与 LeaseKeepAlive，随后独立执行 A4932 组合分区；两个 stream 都必须精确返回
+  gRPC `Unavailable`/`etcdserver: no leader`。每轮恢复后还必须用普通 `KeepAliveOnce`、Put 和 Range 依次证明 lease 与读写路径进展，
+  再 Revoke 并进入下一轮，防止沿用上一轮已关闭 channel 形成假绿。该门禁延伸 upstream Watch/Lease require-leader 契约到重复后端
+  generation，而非用一次正确关闭推断后续连接状态。
+
+  2026-08-17 在独立三 PD/三 TiKV 单节点 Kind 上以每轮 12 秒 hold 实跑：两轮均隔离同一时刻的 PD leader+peer，TiKV 则分别选择
+  `kb-tikv-0` 与 `kb-tikv-2` 并观察 `Up -> Disconnected -> Up`；四条新建 require-leader stream 均返回 canonical no-leader，每轮普通
+  lease/Put/Range 均恢复，完整测试 170.05 秒通过。该耗时距原 `cycles * 90s` 外层 context 仅约十秒，容易把稍慢但正确的恢复误判失败；
+  外层兜底现改为每轮两分钟，stream no-leader 15 秒及三项恢复各 45 秒的严格局部 deadline 不变。终态 endpoint proposal 17.97ms，
+  LeaseList、AlarmList、测试前缀为空，五类 Region check 全零，三个 KubeBrain Pod Ready 且无新增重启，iptables 规则与 port-forward
+  已清理。本轮未发现数据面生产 RED，不修改生产代码；更多轮次、长 soak 与真实跨节点/AZ 组合故障仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

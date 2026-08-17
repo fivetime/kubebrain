@@ -36,7 +36,7 @@ func TestRequireLeaderStreamsAcrossRepeatedBackendFailover(t *testing.T) {
 	require.GreaterOrEqual(t, cycles, 1)
 	require.LessOrEqual(t, cycles, 20)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cycles)*90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cycles)*2*time.Minute)
 	defer cancel()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
 	require.NoError(t, err)

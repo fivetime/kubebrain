@@ -875,6 +875,21 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsLeaseRequireLeader(t *
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsRepeatedRequireLeader(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-member-repeated-require-leader)`)
+	require.Contains(t, script, `"repeated concurrent PD quorum and TiKV member partition require-leader streams"`)
+	require.Contains(t, script, `"$ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"`)
+	require.Contains(t, script, `run_repeated_require_leader_test`)
+	require.Contains(t, script, `TestRequireLeaderStreamsAcrossRepeatedBackendFailover`)
+	require.NotContains(t, script, "eval ")
+	testSource, err := os.ReadFile("repeated_require_leader_backend_failover_test.go")
+	require.NoError(t, err)
+	require.Contains(t, string(testSource), `time.Duration(cycles)*2*time.Minute`)
+}
+
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
