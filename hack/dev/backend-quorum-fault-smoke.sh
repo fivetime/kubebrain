@@ -31,6 +31,8 @@ TIKV_NETEM_JITTER_MS="${TIKV_NETEM_JITTER_MS:-50}"
 TIKV_NETEM_LOSS_PERCENT="${TIKV_NETEM_LOSS_PERCENT:-2}"
 TIKV_NETEM_RATE="${TIKV_NETEM_RATE:-20mbit}"
 TIKV_PARTITION_POD="${TIKV_PARTITION_POD:-}"
+FAULT_READY_FILE="${FAULT_READY_FILE:-}"
+FAULT_RELEASE_FILE="${FAULT_RELEASE_FILE:-}"
 partition_pod_ip=""
 partition_tag=""
 dual_partition_pod_ips=()
@@ -54,6 +56,33 @@ need() {
 
 need go
 need kubectl
+
+hold_fault_window() {
+  local hold_seconds="$1" deadline
+  if [[ -n "$FAULT_READY_FILE" ]]; then
+    [[ "$FAULT_READY_FILE" == /* ]] || {
+      echo "FAULT_READY_FILE must be absolute" >&2
+      return 1
+    }
+    : >"$FAULT_READY_FILE"
+  fi
+  if [[ -z "$FAULT_RELEASE_FILE" ]]; then
+    sleep "$hold_seconds"
+    return
+  fi
+  [[ "$FAULT_RELEASE_FILE" == /* ]] || {
+    echo "FAULT_RELEASE_FILE must be absolute" >&2
+    return 1
+  }
+  deadline=$((SECONDS + 360))
+  while [[ ! -e "$FAULT_RELEASE_FILE" ]]; do
+    if (( SECONDS >= deadline )); then
+      echo "fault release was not signaled within 360s" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+}
 
 cleanup_partition() {
   local cleanup_failed=0
@@ -438,7 +467,7 @@ partition_pd_quorum() {
       return 1
     fi
   fi
-  sleep "$PD_QUORUM_PARTITION_HOLD_SECONDS"
+  hold_fault_window "$PD_QUORUM_PARTITION_HOLD_SECONDS"
   if [[ "$action" == "restart-kubebrain-staged" ]]; then
     cleanup_dual_partition_member 0
     echo "PD staged recovery has one reachable member: ${pd_pods[0]}"
@@ -648,7 +677,7 @@ partition_tikv_quorum() {
   if [[ "$action" == "restart-kubebrain" ]]; then
     restart_kubebrain_during_backend_loss
   fi
-  sleep "$PARTITION_HOLD_SECONDS"
+  hold_fault_window "$PARTITION_HOLD_SECONDS"
   cleanup_dual_partition
   dual_partition_pod_ips=()
   dual_partition_tags=()
@@ -800,7 +829,7 @@ partition_tikv_member() {
     return 1
   fi
   echo "TiKV network partition changed store state: $tikv_pod Up -> $store_state"
-  sleep "$PARTITION_HOLD_SECONDS"
+  hold_fault_window "$PARTITION_HOLD_SECONDS"
   cleanup_partition
   partition_pod_ip=""
   partition_tag=""
@@ -1633,7 +1662,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     need jq
     run_snapshot_failover_test \
       "concurrent PD quorum and TiKV quorum partition Snapshot" \
-      "TIKV_COMBINED_FAULT_MODE=quorum $ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"
+      "COMBINED_FAULT_READY_FILE=\$KUBEBRAIN_COMBINED_FAULT_READY_FILE TIKV_COMBINED_FAULT_MODE=quorum $ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"
     ;;
   pd-quorum-tikv-member-memberlist)
     need docker

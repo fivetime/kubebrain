@@ -406,7 +406,7 @@ func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
 	require.Contains(t, script, `PD_QUORUM_PARTITION_INTERVAL_SECONDS must be an integer in [0,300]`)
 	require.Contains(t, script, `for cycle in $(seq 1 "$PD_QUORUM_PARTITION_CYCLES")`)
 	require.Contains(t, script, `partition_pd_quorum_soak`)
-	require.Contains(t, script, `sleep "$PD_QUORUM_PARTITION_HOLD_SECONDS"`)
+	require.Contains(t, script, `hold_fault_window "$PD_QUORUM_PARTITION_HOLD_SECONDS"`)
 	require.Contains(t, script, `pd_pods=("$leader")`)
 	require.Contains(t, script, `http://${ip}:2379/health`)
 	require.Contains(t, script, `member_healthy=false`)
@@ -879,6 +879,9 @@ func TestBackendCombinedPDAndTiKVQuorumPartitionRunsProtectedSnapshot(t *testing
 	wrapper := string(data)
 	require.Contains(t, wrapper, `quorum) tikv_fault_argument="--partition-tikv-quorum"`)
 	require.Contains(t, wrapper, `"$FAULT_RUNNER" "$tikv_fault_argument"`)
+	require.Contains(t, wrapper, `while [[ ! -e "$pd_ready" || ! -e "$tikv_ready" ]]`)
+	require.Contains(t, wrapper, `combined PD quorum and TiKV $TIKV_COMBINED_FAULT_MODE partition ready`)
+	require.Contains(t, wrapper, `: >"$pd_release"`)
 	require.NotContains(t, wrapper, "eval ")
 }
 

@@ -63,10 +63,21 @@ func TestSnapshotSurvivesBackendFailoverFromProtectedCheckpoint(t *testing.T) {
 		err    error
 	}
 	commandDone := make(chan commandResult, 1)
+	combinedReadyPath := filepath.Join(t.TempDir(), "combined-fault-ready")
+	requireCombinedReady := strings.Contains(command, "KUBEBRAIN_COMBINED_FAULT_READY_FILE")
+	if requireCombinedReady {
+		t.Setenv("KUBEBRAIN_COMBINED_FAULT_READY_FILE", combinedReadyPath)
+	}
 	go func() {
 		output, commandErr := runCompatShellCommandContext(t, ctx, command)
 		commandDone <- commandResult{output: output, err: commandErr}
 	}()
+	if requireCombinedReady {
+		require.Eventually(t, func() bool {
+			_, statErr := os.Stat(combinedReadyPath)
+			return statErr == nil
+		}, 3*time.Minute, 100*time.Millisecond, "combined backend fault must signal both quorums ready")
+	}
 
 	require.Eventually(t, func() bool {
 		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
