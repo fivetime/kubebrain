@@ -56060,6 +56060,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   缩容保留卷因此继续进入 provisioned storage 聚合，直到 PVC 对象删除。精确 manifest 门禁、两类 KSM 外部指标登记、observability 和 production
   readiness 文档已更新，完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4978 消除存储 telemetry 中最后一个固定三 PD completeness 假设。旧
+  `KubeBrainPDRegionHealthMetricsMissing` 只要求 `pending-peer-region-count`/`down-peer-region-count` 总数恰好 6；
+  扩容到五 PD 后即使一个 target 两类 gauge 全缺，剩余 8 条仍不等于旧期望的行为虽会告警，但在其他部分缺失/
+  重复组合下可恰好落到 6 而假绿，且缩容也必然误报。现表达式将两类 gauge 按 `(instance,type)` 去除
+  HA scrape 重复，再与 `2 * pd_replicas:expected` 精确比较；三个 StatefulSet 期望来源或 PD 期望 recording
+  series 缺失也直接进入告警。manifest 门禁固定完整 PromQL 和动态/absent annotation，production readiness 不再把
+  6 条当成任意规模的常量；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
