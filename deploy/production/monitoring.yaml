@@ -534,21 +534,21 @@ spec:
     - name: kubebrain.resources
       rules:
         - alert: KubeBrainMeteringDataIncomplete
-          expr: kubebrain_dbaas:metering_data_complete != 1
+          expr: (kubebrain_dbaas:metering_data_complete or on() vector(0)) != 1
           for: 15m
           labels:
             severity: critical
           annotations:
             summary: KubeBrain billing inputs are incomplete
-            description: "KubeBrain, PD, TiKV, or PVC metric source counts do not exactly match the current deduplicated StatefulSet replica expectations, a replica expectation is missing, or a required backup source is not unique. Billing export must fail closed for this interval, including during incomplete scaling."
+            description: "KubeBrain, PD, TiKV, or PVC metric source counts do not exactly match the current deduplicated StatefulSet replica expectations, a replica expectation is missing, a required backup source is not unique, or the completeness recording series itself is absent. Billing export must fail closed for this interval, including during incomplete scaling."
         - alert: KubeBrainObjectRequestMeteringDataIncomplete
-          expr: kubebrain_dbaas:object_request_data_complete != 1
+          expr: (kubebrain_dbaas:object_request_data_complete or on() vector(0)) != 1
           for: 15m
           labels:
             severity: critical
           annotations:
             summary: KubeBrain object request billing inputs are incomplete
-            description: "The provider request exporter does not expose exactly one finalized hourly count for every write, list, read, and delete class. Request billing must fail closed."
+            description: "The provider request exporter does not expose exactly one finalized hourly count for every write, list, read, and delete class, or the completeness recording series itself is absent. Request billing must fail closed."
         - alert: KubeBrainLogicalBackupMetricsMissing
           expr: absent(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) == 1
           for: 1h

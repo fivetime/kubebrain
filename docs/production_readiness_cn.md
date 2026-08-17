@@ -1640,6 +1640,8 @@ KubeBrain、PD、TiKV 容器和 PD/TiKV 存储 PVC，不把 restore/repair 等�
 artifact/timestamp 源全部存在时，完整性才为 1，8 条计量输入才会产出。扩缩容期间任一新副本指标尚未齐备时
 都 fail closed；KSM 期望来源缺失也不能用零实际 source 伪造完整。控制面必须把
 完整性不为 1 或计量序列缺失的区间标为不可计费并 fail closed，禁止按零用量结算。
+`KubeBrainMeteringDataIncomplete` 和对象请求的 completeness 告警都将 recording series 本身缺失显式
+折叠为 0；PrometheusRule 未加载、求值失败或记录序列丢失不能因空向量而让 critical 告警静默。
 规则还生成小时窗口序列：
 
 - `kubebrain_dbaas:metering_hour_complete` 要求整个 `[1h]` 窗口的分钟完整性最小值为

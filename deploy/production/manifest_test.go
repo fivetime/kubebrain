@@ -2250,19 +2250,22 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	require.Empty(t, expected)
 
 	incompleteRule := prometheusRuleByAlert(t, groups, "KubeBrainMeteringDataIncomplete")
-	require.Equal(t, `kubebrain_dbaas:metering_data_complete != 1`, incompleteRule["expr"])
+	require.Equal(t, `(kubebrain_dbaas:metering_data_complete or on() vector(0)) != 1`, incompleteRule["expr"])
 	require.Equal(t, "15m", incompleteRule["for"])
 	require.Equal(t, "critical", incompleteRule["labels"].(map[string]any)["severity"])
 	incompleteDescription := incompleteRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, incompleteDescription, "deduplicated StatefulSet replica expectations")
 	require.Contains(t, incompleteDescription, "during incomplete scaling")
+	require.Contains(t, incompleteDescription, "recording series itself is absent")
 	requestIncomplete := prometheusRuleByAlert(
 		t, groups, "KubeBrainObjectRequestMeteringDataIncomplete",
 	)
-	require.Equal(t, `kubebrain_dbaas:object_request_data_complete != 1`,
+	require.Equal(t, `(kubebrain_dbaas:object_request_data_complete or on() vector(0)) != 1`,
 		requestIncomplete["expr"])
 	require.Equal(t, "15m", requestIncomplete["for"])
 	require.Equal(t, "critical", requestIncomplete["labels"].(map[string]any)["severity"])
+	require.Contains(t, requestIncomplete["annotations"].(map[string]any)["description"],
+		"recording series itself is absent")
 }
 
 func TestProductionAlertMetricsExist(t *testing.T) {
