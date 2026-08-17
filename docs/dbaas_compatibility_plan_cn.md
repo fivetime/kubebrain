@@ -56410,6 +56410,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   manifest 门禁、production readiness 与 observability 文档已同步；完整 `deploy/production` 测试通过。
   本项不重建数据面镜像。
 
+- A5019 闭合 health checkpoint fallback counter 的事件与零值证据。此前 current recording 已验证 60 秒
+  freshness 和三类 check 的 Ready Pod UID 覆盖，但事件告警仍直接消费 raw `increase`，NaN/Inf、负值或
+  超界值可让 `sum` 比较失效。现从同一新鲜 raw counter 生成按 Pod UID/check 去重的 10 分钟 increase
+  recording；current counter 必须是 `[0,2^53]` 内精确整数，Prometheus 外推 increase 可为分数但必须
+  有限且在 `[0,2^53]` 内。每个 Ready Pod 必须同时提供三类 current/increase，invalid recording 缺失或
+  非零也触发 metrics-missing，非法 telemetry 不能解释为零 degraded-health 事件。精确 PromQL/annotation
+  manifest 门禁、production readiness 与 observability 已同步；完整 `deploy/production` 测试通过。
+  本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
