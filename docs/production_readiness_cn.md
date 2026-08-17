@@ -116,6 +116,11 @@ series 各恰好三份，并比较所有副本的 NOSPACE 与 backend quota 值�
 `(namespace,pod,uid)` 去重；三条 quota 告警只把这些新鲜指标与统一的 60 秒新鲜 Ready Pod UID 集合
 相交。旧 Pod 残留指标不会触发 NOSPACE/high-usage，也不能以相同基数替代当前副本的 quota series；
 当前 Ready Pod 停止发布任一 quota gauge 后也会在一分钟内进入不完整状态，而不是继续信任 lookback 旧值。
+当前 Ready Pod 的 NOSPACE 值还必须是精确的 `0` 或 `1`，backend quota 必须是 `(0,2^53]` 内的
+精确字节整数，logical usage 必须是 `[0,2^53]` 内的精确字节整数且不得超过 backend quota。
+任一 NaN、Inf、负数、零分母、非整数、超界或 usage>backend 矛盾都会计入
+`quota_invalid_values`，并让 `KubeBrainQuotaMetricsInconsistent` fail closed；不能让非法分子或分母
+把 NOSPACE/usage-high 告警变成空向量或伪造健康余量。
 
 ## TiKV/PD 升级完成门槛
 
