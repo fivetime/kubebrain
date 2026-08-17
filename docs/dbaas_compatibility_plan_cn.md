@@ -56126,6 +56126,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   inventory。manifest 精确 PromQL/annotation 门禁和外部指标白名单覆盖完整五项，production readiness 已同步；
   完整 `deploy/production` 与 backupmetrics exporter 专项测试通过。本项不重建数据面镜像。
 
+- A4986 修复网络故障告警只验证流量 bytes、却把 error/drop family 缺失解释成零故障的问题。旧
+  `KubeBrainNetworkMetricsMissing` 只比较 receive/transmit bytes source 数；四个 errors/packet-drops
+  counter 可在 cAdvisor 配置或 relabel 漂移后全部消失，而对应故障告警保持无结果。现新增 receive/transmit
+  error 与 drop 四条 source-count recording rule，并将原两条 bytes rule 一并按
+  `(namespace,pod,interface)` 去除重复采集；六项均须与 KubeBrain/PD/TiKV 三个 StatefulSet 的动态期望副本
+  总数精确相等，任一 recording series 缺失也 fail closed。精确 manifest 门禁固定六条 recording PromQL、
+  完整 alert PromQL 与 zero-fault annotation，production readiness 已同步；完整 `deploy/production` 测试通过。
+  本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
