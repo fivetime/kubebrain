@@ -118,6 +118,7 @@ type KVSnapshot struct {
 	resolvedLocks   util.TSSet
 	committedLocks  util.TSSet
 	scanBatchSize   int
+	requestTimeout  time.Duration
 
 	// Cache the result of BatchGet.
 	// The invariance is that calling BatchGet multiple times using the same start ts,
@@ -424,7 +425,7 @@ func (s *KVSnapshot) batchGetSingleRegion(bo *retry.Backoffer, batch batchKeys, 
 			}
 			req.ReplicaReadType = readType
 		}
-		resp, _, _, err := cli.SendReqCtx(bo, req, batch.region, client.ReadTimeoutMedium, tikvrpc.TiKV, "", ops...)
+		resp, _, _, err := cli.SendReqCtx(bo, req, batch.region, s.readTimeout(client.ReadTimeoutMedium), tikvrpc.TiKV, "", ops...)
 		if err != nil {
 			return err
 		}
@@ -647,7 +648,7 @@ func (s *KVSnapshot) get(ctx context.Context, bo *retry.Backoffer, k []byte) ([]
 		if err != nil {
 			return nil, err
 		}
-		resp, _, _, err := cli.SendReqCtx(bo, req, loc.Region, client.ReadTimeoutShort, tikvrpc.TiKV, "", ops...)
+		resp, _, _, err := cli.SendReqCtx(bo, req, loc.Region, s.readTimeout(client.ReadTimeoutShort), tikvrpc.TiKV, "", ops...)
 		if err != nil {
 			return nil, err
 		}
@@ -785,6 +786,19 @@ func (s *KVSnapshot) SetKeyOnly(b bool) {
 // SetScanBatchSize sets the scan batchSize used to scan data from tikv.
 func (s *KVSnapshot) SetScanBatchSize(batchSize int) {
 	s.scanBatchSize = batchSize
+}
+
+// SetRequestTimeout overrides the timeout of each TiKV read RPC issued by the
+// snapshot. A zero duration keeps the command-specific client defaults.
+func (s *KVSnapshot) SetRequestTimeout(timeout time.Duration) {
+	s.requestTimeout = timeout
+}
+
+func (s *KVSnapshot) readTimeout(defaultTimeout time.Duration) time.Duration {
+	if s.requestTimeout > 0 {
+		return s.requestTimeout
+	}
+	return defaultTimeout
 }
 
 // SetReplicaRead sets up the replica read type.

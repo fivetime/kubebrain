@@ -31,6 +31,7 @@ import (
 	"github.com/tikv/client-go/v2/oracle"
 	"github.com/tikv/client-go/v2/tikv"
 	"github.com/tikv/client-go/v2/txnkv"
+	"github.com/tikv/client-go/v2/txnkv/txnsnapshot"
 	"go.uber.org/multierr"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -379,6 +380,17 @@ type tiKvIterator interface {
 	Close()
 }
 
+// A protected snapshot is served under a ten-second etcd unary deadline. Keep
+// each replica attempt short enough to retry the other cached TiKV peers when
+// one store is blackholed; ordinary latest-revision reads retain client-go's
+// command-specific defaults.
+const protectedSnapshotRequestTimeout = 2 * time.Second
+
+func configureProtectedSnapshot(snapshot *txnsnapshot.KVSnapshot) {
+	snapshot.SetReplicaRead(tikvkv.ReplicaReadMixed)
+	snapshot.SetRequestTimeout(protectedSnapshotRequestTimeout)
+}
+
 func (s *store) Iter(ctx context.Context, start []byte, end []byte, timestamp uint64, limit uint64) (storage.Iter, error) {
 	var err error
 	reverse := bytes.Compare(start, end) > 0
@@ -394,7 +406,7 @@ func (s *store) Iter(ctx context.Context, start []byte, end []byte, timestamp ui
 		// Protected checkpoints are immutable historical snapshots. Mixed replica
 		// reads preserve their value semantics and let a warmed Region cache route
 		// around one unavailable TiKV store without asking PD for a new leader.
-		snapshot.SetReplicaRead(tikvkv.ReplicaReadMixed)
+		configureProtectedSnapshot(snapshot)
 	}
 	var it tiKvIterator
 
@@ -464,7 +476,7 @@ func (s *store) GetAt(ctx context.Context, key []byte, timestamp uint64) ([]byte
 		return nil, errors.New("snapshot timestamp must be non-zero")
 	}
 	snapshot := s.getClient().GetSnapshot(timestamp)
-	snapshot.SetReplicaRead(tikvkv.ReplicaReadMixed)
+	configureProtectedSnapshot(snapshot)
 	val, err := snapshot.Get(ctx, key)
 	if err != nil {
 		if tikverr.IsErrNotFound(err) {
@@ -548,7 +560,7 @@ func (s *store) BatchGetAt(ctx context.Context, keys [][]byte, timestamp uint64)
 		return map[string][]byte{}, nil
 	}
 	snapshot := s.getClient().GetSnapshot(timestamp)
-	snapshot.SetReplicaRead(tikvkv.ReplicaReadMixed)
+	configureProtectedSnapshot(snapshot)
 	m, err := snapshot.BatchGet(ctx, keys)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to batch get from TiKV snapshot %d", timestamp)

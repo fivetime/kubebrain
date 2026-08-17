@@ -902,6 +902,18 @@ func TestBackendPDQuorumPartitionRunsFixedHashKV(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsFixedHashKV(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-member-hashkv)`)
+	require.Contains(t, script, `"fixed-revision HashKV across concurrent PD quorum and TiKV member partition"`)
+	require.Contains(t, script, `"$ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"`)
+	require.Contains(t, script, `KUBEBRAIN_HASHKV_COMBINED_FAULT_COMMAND="$command"`)
+	require.Contains(t, script, `TestFixedRevisionHashKVSurvivesCombinedBackendFault`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

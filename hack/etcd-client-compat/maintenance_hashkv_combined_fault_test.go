@@ -18,13 +18,25 @@ import (
 // hashing it must not require a fresh PD TSO. Latest HashKV remains free to fail
 // closed while the shared coordination path is unavailable.
 func TestFixedRevisionHashKVSurvivesPDQuorumFault(t *testing.T) {
-	command := os.Getenv("KUBEBRAIN_HASHKV_PD_QUORUM_FAULT_COMMAND")
+	runFixedRevisionHashKVFault(t, "KUBEBRAIN_HASHKV_PD_QUORUM_FAULT_COMMAND", "PD quorum fault")
+}
+
+// TestFixedRevisionHashKVSurvivesCombinedBackendFault verifies that a warmed,
+// immutable checkpoint can also route around one blackholed TiKV replica while
+// PD has no quorum to refresh Region metadata.
+func TestFixedRevisionHashKVSurvivesCombinedBackendFault(t *testing.T) {
+	runFixedRevisionHashKVFault(t, "KUBEBRAIN_HASHKV_COMBINED_FAULT_COMMAND", "combined backend fault")
+}
+
+func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
+	t.Helper()
+	command := os.Getenv(commandEnv)
 	if command == "" {
-		t.Skip("set KUBEBRAIN_HASHKV_PD_QUORUM_FAULT_COMMAND to run destructive PD quorum fault")
+		t.Skipf("set %s to run destructive %s", commandEnv, faultLabel)
 	}
 	endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
 	if endpoint == "" {
-		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for PD quorum HashKV fault")
+		t.Fatalf("set KUBEBRAIN_ETCD_ENDPOINT explicitly for %s HashKV", faultLabel)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -87,8 +99,8 @@ func TestFixedRevisionHashKVSurvivesPDQuorumFault(t *testing.T) {
 		// node and poison subsequent diagnostics.
 		result = <-commandDone
 	}
-	require.NoErrorf(t, result.err, "PD quorum fault command: %s", strings.TrimSpace(string(result.output)))
-	t.Logf("PD quorum fault command: %s", strings.TrimSpace(string(result.output)))
+	require.NoErrorf(t, result.err, "%s command: %s", faultLabel, strings.TrimSpace(string(result.output)))
+	t.Logf("%s command: %s", faultLabel, strings.TrimSpace(string(result.output)))
 	require.Falsef(t, endedBeforeHashValidation,
 		"combined fault ended before fixed-revision HashKV was validated: %s",
 		strings.TrimSpace(string(result.output)))
@@ -102,5 +114,5 @@ func TestFixedRevisionHashKVSurvivesPDQuorumFault(t *testing.T) {
 		defer callCancel()
 		latest, latestErr := client.HashKV(callCtx, endpoint, 0)
 		return latestErr == nil && latest != nil && latest.HashRevision >= revision
-	}, 45*time.Second, 100*time.Millisecond, "latest HashKV must recover after the combined fault")
+	}, 45*time.Second, 100*time.Millisecond, "latest HashKV must recover after the backend fault")
 }

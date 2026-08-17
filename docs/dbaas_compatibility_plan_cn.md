@@ -55535,6 +55535,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV member”门禁仍会因全库 scan 的失联 replica 路由在十秒内不收敛而失败，明确保留为后续
   A4942 之外的开放项，不用本轮 PD-quorum GREEN 外推其可用性。
 
+- A4943 把上述开放项固化为独立的 `pd-quorum-tikv-member-hashkv` 破坏性门禁，保留
+  `pd-quorum-hashkv` 作为较弱能力线，避免后续修复用 PD-only GREEN 掩盖组合故障。TiKV client
+  fork 同时增加 snapshot 级可选 RPC timeout；仅受保护历史 checkpoint 的 Get/BatchGet/Scan
+  使用两秒单副本预算，普通 latest snapshot 继续使用 client-go 的 30/60 秒默认值。该边界有
+  fork 单测，脚本 mode、命令传递和测试选择有 runner 契约测试。
+
+  2026-08-17 在同一独立三 PD/三 TiKV Kind 上连续四轮实跑新的组合门禁，均正确观察两个 PD
+  member 不可达和一个 TiKV store `Up -> Disconnected -> Up`，故障助手每轮均完成 iptables 清理，
+  但固定 revision HashKV 仍在十秒 caller deadline 内失败。探针依次证明：单 RPC timeout 本身不够；
+  普通后台读会先推进失联 store epoch、使全局 Region cache 转向 PD reload；实验性的陈旧 Region
+  topology 查找能消除显式 `loadRegion from PD`，但 selector/backoff 实验仍不能在十秒内完成全库
+  scan。未通过真实门禁的陈旧拓扑与免退避改动已撤回，不能作为生产保证。当前支持边界仍是
+  A4942 的 PD-quorum-only GREEN；组合 PD quorum + 单 TiKV member HashKV 明确保留为 RED/open，
+  下一步需要请求隔离的恢复 Region 目录或 checkpoint 物化 hash，而不是复用会被普通流量失效的
+  全局 client-go Region cache。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
