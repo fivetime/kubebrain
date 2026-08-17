@@ -56251,6 +56251,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前证据。精确 manifest 门禁固定 recording 与全部下游 PromQL，freshness/rollout annotation 和
   production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5000 关闭当前 Ready Pod 自身 quota gauge 的 Prometheus lookback 陈旧窗口。A4999 已排除旧 Pod UID，
+  但 `quota_nospace`、`quota_backend_bytes`、`quota_logical_usage_bytes` 仍直接消费 raw series；同一当前 Pod
+  停止发布后，旧值仍可在约五分钟内触发 NOSPACE/high-usage 或通过完整性检查。现三类 gauge 均先要求
+  sample age 不超过 60 秒，再按 `(namespace,pod,uid)` 去重发布 recording；quota 三条告警只把这些记录
+  与新鲜 Ready 身份相交。任一 family 超龄会在一分钟内从当前集合消失并由一致性告警 fail closed，重复
+  scrape 也不再制造重复 series。精确 manifest 门禁固定三条 recording 和全部下游 PromQL，freshness
+  annotation 与 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
