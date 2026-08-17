@@ -56364,6 +56364,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   denominator annotation，production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建
   数据面镜像。
 
+- A5013 补齐 network rate/error/drop 的数值闭包。旧 network completeness 已验证六个 family 的 freshness
+  与 source count，但 NaN、Inf、负数或超界 recording 仍可能让 fault sum 为空或失去意义。现新增 network
+  invalid-value count，要求 RX/TX byte rate 与四类 error/drop 10 分钟 increase 均等于其 `[0,2^53]`
+  clamp；`KubeBrainNetworkMetricsMissing` 同时要求该 recording 存在且为零。精确 manifest 门禁固定完整
+  invalid-value/alert PromQL 与 annotation，production readiness 已同步；完整 `deploy/production` 测试
+  通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
