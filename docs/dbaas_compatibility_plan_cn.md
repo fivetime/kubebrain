@@ -55956,6 +55956,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   readyz 与真实线性事务，再查 PD/TiKV 和 checkpoint 三类指标，只有线性探针恢复且 counter 新增速率归零才解除事件，
   不要求单调 counter 回零。完整 `deploy/production` 测试通过；本项仅修改监控资产与文档，不重建数据面镜像。
 
+- A4967 修正 A4966 在 fallback metric 完全缺失时静默的 fail-open 监控边界。事件规则依赖
+  `increase(health_checkpoint_fallback[10m])`；混合旧版本、ServiceMonitor relabel 漂移或 registry 初始化回退会让
+  series 消失，此时“没有告警”不能证明“没有降级”。`1c110a77` 新增 warning 级
+  `KubeBrainHealthCheckpointFallbackMetricsMissing`，沿用 checkpoint availability 规则已验证的
+  `(namespace,pod,uid)` Ready Pod join，只统计三种允许的 check，并要求固定三副本共精确 9 条 series；旧 Pod 的
+  stale target 不能补齐新 Pod，未知 check 也不能掩盖合法 series 缺失。持续 5 分钟才触发，以容纳正常顺序滚动与
+  两个 15 秒 scrape 周期。
+
+  manifest 门禁固定完整表达式、5m、warning 及 mixed binary/Pod UID relabel 诊断提示；emitted-metric 对账继续通过。
+  observability runbook 明确在恢复当前三个 Pod UID 对应的 9 条 series 前，不得把事件告警静默解释为零 fallback。
+  完整 `deploy/production` 测试通过；本项只改变监控资产，不部署 Prometheus Operator、不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
