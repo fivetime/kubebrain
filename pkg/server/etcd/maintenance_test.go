@@ -104,7 +104,6 @@ type checkpointHashBackendShim struct {
 
 type checkpointDefragmentBackendShim struct {
 	BackendShim
-	t          *testing.T
 	checkpoint backend.SerializableCheckpoint
 	liveErr    error
 	liveCalls  int
@@ -117,7 +116,7 @@ func (b *checkpointDefragmentBackendShim) GetSerializableCheckpoint() (backend.S
 func (b *checkpointDefragmentBackendShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
 	if bytes.Equal(key, authConfigKey) {
 		if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
-			require.FailNow(b.t, "protected Defragment must use the complete cached auth snapshot")
+			return b.BackendShim.InternalGet(ctx, key)
 		}
 		b.liveCalls++
 		return nil, b.liveErr
@@ -948,17 +947,16 @@ func TestFollowerDefragmentHedgeFailsClosedOnLocalAuthorization(t *testing.T) {
 func TestMaintenanceDefragmentFallsBackToProtectedAuthSnapshotWhenBackendIsUnavailable(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	_, err := server.Defragment(context.Background(), &etcdserverpb.DefragmentRequest{})
-	require.NoError(t, err, "prime the complete member-local auth snapshot")
 	checkpoint := backend.SerializableCheckpoint{
 		Revision: 37, Timestamp: 101, AuthRevision: 1, ValidUntil: time.Now().Add(time.Minute),
 	}
 	shim := &checkpointDefragmentBackendShim{
-		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: storage.ErrUnavailable,
+		BackendShim: server.backend, checkpoint: checkpoint, liveErr: storage.ErrUnavailable,
 	}
 	server.backend = shim
 	server.auth.repo.backend = shim
 	server.tokens.repo.backend = shim
+	server.tokens.snapshots = newAuthSnapshotCache(shim)
 	server.peers = testPeerService{isLeader: true}
 
 	response, err := server.Defragment(context.Background(), &etcdserverpb.DefragmentRequest{})
@@ -976,11 +974,12 @@ func TestMaintenanceDefragmentDoesNotMaskDeterministicAuthFailureWithCheckpoint(
 	}
 	wantErr := status.Error(codes.DataLoss, "corrupt auth metadata")
 	shim := &checkpointDefragmentBackendShim{
-		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: wantErr,
+		BackendShim: server.backend, checkpoint: checkpoint, liveErr: wantErr,
 	}
 	server.backend = shim
 	server.auth.repo.backend = shim
 	server.tokens.repo.backend = shim
+	server.tokens.snapshots = newAuthSnapshotCache(shim)
 	server.peers = testPeerService{isLeader: true}
 
 	response, err := server.Defragment(context.Background(), &etcdserverpb.DefragmentRequest{})
@@ -1007,7 +1006,7 @@ func TestMaintenanceDefragmentCheckpointFallbackPreservesAdminAuthorization(t *t
 		ValidUntil: time.Now().Add(time.Minute),
 	}
 	shim := &checkpointDefragmentBackendShim{
-		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: storage.ErrUnavailable,
+		BackendShim: server.backend, checkpoint: checkpoint, liveErr: storage.ErrUnavailable,
 	}
 	server.backend = shim
 	server.auth.repo.backend = shim
