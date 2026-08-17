@@ -55258,6 +55258,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   executor 自报且由 exact SHA 串联的配置，不替代 Pod spec/PVC quota 的外部证明；二进制 provenance、Operation 参数和运行时指标
   仍须由控制面审计。
 
+- A4923 将 A4918/A4919 的 serving-member identity 门禁扩展到 unary mutation/read-control 响应。固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3rpc/key.go` 与 `lease.go`：Put、
+  DeleteRange、Txn、LeaseGrant/Revoke/TTL/List 都在处理请求的本地成员调用 `header.fill`；mutation 即使由 Raft leader apply，公开
+  header 也不能泄漏 leader identity。既有 generated outcome 只归一化 revision gap/payload/error，三副本 lease 测试也只对
+  KeepAlive stream 绑定 Status，因此 unary proxy 两端同型错误仍可能 GREEN。新增直连测试逐成员先取 Status，再执行 leased Put、
+  compare-selected staged Txn Put+Range、PrevKV DeleteRange、重新 attach、TTL/List、Revoke 和 missing TTL；每个顶层 response 必须
+  匹配该 endpoint 的 `ClusterId/MemberId` 与正 Raft term，同时继续验证 txn 内层 revision、PrevKV、attachment 和 revoke 结果。
+
+  2026-08-17 先以一次性固定 upstream 对当前真实 KubeBrain 执行 generated Put、generated TxnPut、五 target compare matrix 与
+  Range option interaction，全部约 12 秒通过；reference 数据目录已清理。随后对 `kubebrain-0/1/2` 三个独立 port-forward 执行
+  完整 direct-replica consistency suite，新增门禁及 alarm/hash/watch/lease 基线共 12.30 秒通过，补强后的 DeleteRange/List 版本
+  单独复验 0.84 秒通过；测试前缀、lease/alarm 基线与 port-forward 均恢复。本轮未复现生产差异，不修改生产代码；关闭的是 unary
+  proxy header identity 此前可被只比较业务 outcome 的差分测试遗漏。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
