@@ -866,6 +866,22 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsProtectedSnapshot(t *t
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendCombinedPDAndTiKVQuorumPartitionRunsProtectedSnapshot(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-quorum-snapshot)`)
+	require.Contains(t, script, `TIKV_COMBINED_FAULT_MODE=quorum`)
+	require.Contains(t, script, `run_snapshot_failover_test`)
+
+	data, err = os.ReadFile("../dev/partition-pd-quorum-and-tikv-member.sh")
+	require.NoError(t, err)
+	wrapper := string(data)
+	require.Contains(t, wrapper, `quorum) tikv_fault_argument="--partition-tikv-quorum"`)
+	require.Contains(t, wrapper, `"$FAULT_RUNNER" "$tikv_fault_argument"`)
+	require.NotContains(t, wrapper, "eval ")
+}
+
 func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsMemberListConsistency(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

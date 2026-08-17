@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Run the existing PD-quorum and single-TiKV-store partitioners in one fault
-# window. Each child owns uniquely tagged iptables rules and removes them from
+# Run the existing PD-quorum and selected TiKV partitioner in one fault window.
+# The default preserves the single-Store profiles; quorum mode isolates two
+# Stores. Each child owns uniquely tagged iptables rules and removes them from
 # its EXIT/TERM trap; this wrapper makes child failure cancel the other child.
 set -euo pipefail
 
@@ -8,6 +9,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 FAULT_RUNNER="${FAULT_RUNNER:-$ROOT_DIR/hack/dev/backend-quorum-fault-smoke.sh}"
 COMBINED_FAULT_HOLD_SECONDS="${COMBINED_FAULT_HOLD_SECONDS:-20}"
 COMBINED_FAULT_START_GAP_SECONDS="${COMBINED_FAULT_START_GAP_SECONDS:-1}"
+TIKV_COMBINED_FAULT_MODE="${TIKV_COMBINED_FAULT_MODE:-member}"
 pd_pid=""
 tikv_pid=""
 
@@ -20,6 +22,11 @@ die() { echo "$*" >&2; exit 1; }
   die "COMBINED_FAULT_START_GAP_SECONDS must be a non-negative integer"
 (( COMBINED_FAULT_HOLD_SECONDS <= 300 && COMBINED_FAULT_START_GAP_SECONDS <= 30 )) || \
   die "combined fault limits exceeded"
+case "$TIKV_COMBINED_FAULT_MODE" in
+  member) tikv_fault_argument="--partition-tikv-member" ;;
+  quorum) tikv_fault_argument="--partition-tikv-quorum" ;;
+  *) die "TIKV_COMBINED_FAULT_MODE must be member or quorum" ;;
+esac
 
 cleanup() {
   local status=$? pid
@@ -47,7 +54,7 @@ if ! kill -0 "$pd_pid" 2>/dev/null; then
 fi
 
 PARTITION_HOLD_SECONDS="$COMBINED_FAULT_HOLD_SECONDS" \
-  "$FAULT_RUNNER" --partition-tikv-member &
+  "$FAULT_RUNNER" "$tikv_fault_argument" &
 tikv_pid=$!
 
 completed_pid=""
@@ -58,7 +65,7 @@ set -e
 if (( first_status != 0 )); then
   child="unknown"
   [[ "$completed_pid" == "$pd_pid" ]] && child="pd-quorum"
-  [[ "$completed_pid" == "$tikv_pid" ]] && child="tikv-member"
+  [[ "$completed_pid" == "$tikv_pid" ]] && child="tikv-$TIKV_COMBINED_FAULT_MODE"
   echo "combined backend partition child failed: child=$child pid=$completed_pid status=$first_status" >&2
   exit "$first_status"
 fi
@@ -72,4 +79,4 @@ else
   pd_pid=""
 fi
 trap - EXIT INT TERM
-echo "combined PD quorum and TiKV member partition recovered"
+echo "combined PD quorum and TiKV $TIKV_COMBINED_FAULT_MODE partition recovered"
