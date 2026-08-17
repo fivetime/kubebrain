@@ -50,9 +50,11 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 检查。收到告警后不要因为 `/health?serializable=true`、`/livez` 或公开 gRPC Health 仍成功就关闭事件：这些接口
 只证明进程可接流且仍有一份 GC-protected 有界陈旧状态。
 
-`KubeBrainHealthCheckpointFallbackMetricsMissing` 要求三个 Ready 副本各发布三条固定 check series。该告警持续
+`KubeBrainHealthCheckpointFallbackMetricsMissing` 按当前 Ready Pod UID 动态计算期望值，要求每个 Ready
+副本各发布三条固定 check series，因此正常扩缩容不会因固定三副本假设而误报。该告警持续
 5 分钟时，先排除混合版本滚动、ServiceMonitor 缺少 Pod UID relabel、旧 Pod scrape target 残留和 registry 初始化
-缺失；在恢复 9 条当前 Pod UID 对应的 series 前，不得把 fallback 告警静默解释为“没有降级事件”。
+缺失；在恢复 `3 × Ready 副本数` 条当前 Pod UID 对应的 series 前，不得把 fallback 告警静默解释为
+“没有降级事件”。
 
 1. 先检查 `/readyz?verbose` 和一条有 deadline 的真实线性 Range/事务探针；linearizable read 失败表示实例不可接收
    需要最新状态的流量。

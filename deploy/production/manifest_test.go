@@ -2002,12 +2002,14 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	healthFallbackMissingRule := prometheusRuleByAlert(t, groups,
 		"KubeBrainHealthCheckpointFallbackMetricsMissing")
 	require.Equal(t,
-		`count(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != 9`,
+		`count(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != 3 * count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))`,
 		healthFallbackMissingRule["expr"])
 	require.Equal(t, "5m", healthFallbackMissingRule["for"])
 	require.Equal(t, "warning", healthFallbackMissingRule["labels"].(map[string]any)["severity"])
 	healthFallbackMissingDescription := healthFallbackMissingRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, healthFallbackMissingDescription, "exactly three initialized")
+	require.Contains(t, healthFallbackMissingDescription, "current Ready replica count")
+	require.Contains(t, healthFallbackMissingDescription, "during scaling")
 	require.Contains(t, healthFallbackMissingDescription, "mixed binary versions")
 	require.Contains(t, healthFallbackMissingDescription, "pod UID relabeling")
 	require.Equal(t,
