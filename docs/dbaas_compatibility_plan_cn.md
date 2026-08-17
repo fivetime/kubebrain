@@ -56104,6 +56104,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   gauge 最大值为 0。精确 manifest 门禁固定完整 PromQL，production readiness 已记录空 family、部分 family 与
   HA 重复语义；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4983 修正存储延迟新鲜度告警把 HA scrape 的最旧重复样本当作实例状态的问题。旧
+  `max(time()-timestamp(raw series))` 会在一个 Prometheus 副本停止更新、另一个仍持续抓取同一 PD/TiKV
+  实例时选择旧样本并误报 stale。现三条 PD WAL、TiKV RaftDB/KVDB freshness 子表达式都先按 `instance`
+  对 `timestamp(...)` 取最大值，即选择任一 HA scrape 副本提供的最新样本，再在实例间选择最大 age；任一
+  当前实例完全缺失仍由动态 `KubeBrainStorageLatencyMetricsMissing` 精确覆盖。manifest 门禁固定完整 PromQL
+  和 newest-duplicate/false-stale annotation，production readiness 已更新；完整 `deploy/production` 测试通过。
+  本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
