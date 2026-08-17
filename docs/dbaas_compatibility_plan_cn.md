@@ -55286,6 +55286,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   pre/post test-prefix、lease 与 alarm 基线校验均恢复。定向 race、runner fail-closed 测试、vet 与 diff check 通过，port-forward
   已关闭。本轮未复现生产差异，不修改生产代码；关闭的是专用 concurrency RPC header identity 此前未被业务 recipe 覆盖的证据缺口。
 
+- A4925 补齐 A4924 只覆盖无争用立即返回、没有经过内部等待 watch 的边界。新三副本状态机由 endpoint 0 取得 Lock/Election
+  ownership，endpoint 1 使用另一 lease 发起同名 Lock/Campaign 并证明至少 300ms 不得提前成功，再由 endpoint 2 使用 owner key
+  执行 Unlock/Resign；等待调用完成后分别把释放响应绑定 endpoint 2、等待者响应绑定 endpoint 1，并由 endpoint 0 读取接棒后的
+  `waiter` leader、释放 waiter ownership。由此同时约束 FIFO ownership、跨副本 key 可见性和阻塞 RPC 醒来后的 serving-member
+  `ClusterId/MemberId/RaftTerm`，不会把仅在立即成功路径正确的 header stamping 冒充完整覆盖。
+
+  2026-08-17 对 `kubebrain-0/1/2` 独立 port-forward 执行争用状态机 1.42 秒通过；纳入后的完整 direct-replica consistency suite
+  连同 pre/post test-prefix、lease/alarm 基线校验 16.404 秒通过；真实三副本 `-race` 再执行争用状态机 1.46 秒通过。测试 lease、key
+  和三轮 port-forward 均已清理。本轮仍未复现生产差异，不修改生产代码；关闭的是 Lock/Campaign waiter 从内部 watch 醒来时的
+  response identity 与 ownership handoff 证据缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
