@@ -257,6 +257,26 @@ spec:
           expr: count(((kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_event_buffer_stale_drop:current_by_pod
+          expr: max by (namespace, pod, uid) (watch_event_buffer_stale_drop{namespace="kubebrain-system"} and (time() - timestamp(watch_event_buffer_stale_drop{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_event_buffer_stale_drop:rate_5m_by_pod
+          expr: max by (namespace, pod, uid) (rate(watch_event_buffer_stale_drop{namespace="kubebrain-system"}[5m]) and (time() - timestamp(watch_event_buffer_stale_drop{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_event_buffer_full:current_by_pod
+          expr: max by (namespace, pod, uid) (watch_event_buffer_full{namespace="kubebrain-system"} and (time() - timestamp(watch_event_buffer_full{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_event_buffer_full:rate_5m_by_pod
+          expr: max by (namespace, pod, uid) (rate(watch_event_buffer_full{namespace="kubebrain-system"}[5m]) and (time() - timestamp(watch_event_buffer_full{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_event_buffer_invalid_values:count
+          expr: count(((kubebrain_dbaas:watch_event_buffer_stale_drop:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_event_buffer_stale_drop:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_event_buffer_stale_drop:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_event_buffer_stale_drop:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_event_buffer_stale_drop:rate_5m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_event_buffer_stale_drop:rate_5m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(((kubebrain_dbaas:watch_event_buffer_full:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_event_buffer_full:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_event_buffer_full:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_event_buffer_full:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_event_buffer_full:rate_5m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_event_buffer_full:rate_5m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
           expr: count((kubebrain_dbaas:statefulset_replicas:current >= 0) and (kubebrain_dbaas:statefulset_replicas:current <= 9007199254740992) and (kubebrain_dbaas:statefulset_replicas:current == floor(kubebrain_dbaas:statefulset_replicas:current)))
           labels:
@@ -670,7 +690,7 @@ spec:
             summary: KubeBrain unexpected or timed-out writes detected
             description: "KubeBrain deadline/unexpected write error rate is {{ $value }} writes per second; retryable failover and client errors are excluded."
         - alert: KubeBrainWatchEventDrops
-          expr: sum(rate(watch_event_buffer_stale_drop{namespace="kubebrain-system"}[5m])) > 0
+          expr: sum(kubebrain_dbaas:watch_event_buffer_stale_drop:rate_5m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 5m
           labels:
             severity: critical
@@ -678,13 +698,21 @@ spec:
             summary: KubeBrain is dropping watch events
             description: "KubeBrain watch-event drop rate is {{ $value }} events per second (slow/stale watchers lose events)."
         - alert: KubeBrainWatchBufferFull
-          expr: sum(rate(watch_event_buffer_full{namespace="kubebrain-system"}[5m])) > 0
+          expr: sum(kubebrain_dbaas:watch_event_buffer_full:rate_5m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 2m
           labels:
             severity: critical
           annotations:
             summary: KubeBrain watch event buffer overflow
             description: "KubeBrain watch event buffer overflow rate is {{ $value }} events per second."
+        - alert: KubeBrainWatchEventBufferMetricsMissing
+          expr: absent(kubebrain_dbaas:watch_event_buffer_invalid_values:count) == 1 or count(kubebrain_dbaas:watch_event_buffer_stale_drop:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_event_buffer_stale_drop:rate_5m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_event_buffer_full:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_event_buffer_full:rate_5m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:watch_event_buffer_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain watch event buffer telemetry is incomplete or invalid
+            description: "Every Ready KubeBrain replica initializes both watch buffer counters to authoritative zero. Current samples must be fresh exact non-negative integers no greater than 2^53, and extrapolated five-minute rates must be finite and within [0, 2^53]. Missing, stale, or invalid telemetry cannot be interpreted as zero dropped events or zero buffer overflows."
         - alert: KubeBrainLeaderElectionFlapping
           expr: sum(kubebrain_dbaas:leader_election_lost:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 3
           for: 0m

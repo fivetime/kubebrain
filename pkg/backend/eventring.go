@@ -22,7 +22,16 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/common"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
+
+func initWatchEventBufferMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("watch.event.buffer.stale_drop", int64(0))
+	_ = metricCli.EmitCounter("watch.event.buffer.full", int64(0))
+}
 
 // This file holds the watch-event RING: the per-revision slot buffer and the
 // PRODUCER side (notifyBatch fills a whole transaction slot;

@@ -127,6 +127,11 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   production recording 只保留 60 秒内样本并按 Pod UID 去重，要求与当前 Ready UID 集合精确相等。
   `KubeBrainRevisionLagMetricsMissing` 表示不能再信任 backlog 零值；结合 stale-drop/full/skipped-revision
   counter 定位。
+  `watch_event_buffer_stale_drop` 与 `watch_event_buffer_full` 也在每个 backend 创建时发布权威零值；
+  production 仅消费 60 秒内、按 Ready Pod UID 去重的 current 与 5 分钟 rate recording。两类 current
+  必须是 `[0,2^53]` 内精确整数，外推 rate 可为分数但必须有限且同范围；四类来源必须完整覆盖当前
+  Ready UID。`KubeBrainWatchEventBufferMetricsMissing` fail closed，缺失、陈旧或非法 telemetry 不能解释为
+  没有丢事件或没有 buffer overflow；事件告警也只消费这些新鲜 recording。
 - **离线 serializable checkpoint 不可用/即将过期**：available/revision/remaining-seconds series 任一未覆盖全部当前 Ready Pod、`min(available) < 1`、`min(revision) <= 0`、`min(remaining_seconds) < 60`，或 invalid-value recording 缺失/非零，持续 30s 即告警。三类 raw gauge 先仅从 60 秒内样本按 `namespace,pod,uid` 去重为 current recording，再与同身份聚合去重的 kube-state-metrics Ready Pod 相交，三者的期望基数都动态等于当前 Ready Pod UID 数。这既避免滚动更新后同名旧 Pod 的残留 series 在 Prometheus lookback 窗口内制造重复副本，也允许正常扩缩容并兼容多副本 kube-state-metrics。available 必须精确为 0/1，revision 必须是 `(0,2^53]` 内精确整数，remaining seconds 必须是 `[0,2^53]` 内非负精确整数；缺少 UID、Ready 状态、Ready Pod 指标、fresh recording 或合法值都 fail closed。`serializable_checkpoint_revision` 暴露各副本当前受保护 revision，并在 checkpoint 不可用时归零，可用于判断隔离前写入是否已被固定快照覆盖。结合 `increase(serializable_checkpoint_refresh_err[10m])` 判断是 scrape、PD safepoint、Region/store directory warmup、metadata 还是刷新链路失败。正常 PD quorum 下最新读仍可工作，但该副本已失去或将在一分钟内失去有界 PD 隔离读能力。
   refresh-error counter 另生成 60 秒新鲜的 current 与 10 分钟 increase recording，并要求两者各精确覆盖
   当前 Ready Pod UID。current 必须是 `[0,2^53]` 内精确整数；外推 increase 可为分数，但必须有限且在

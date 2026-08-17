@@ -4204,6 +4204,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   15 秒 heartbeat；运行期只接受 60 秒内且属于当前 Ready Pod UID 的样本，任一 Ready 副本缺失即告警。
   值还必须是 `[0,2^53]` 内的非负精确 revision 整数；NaN、Inf、负数、分数或超界值与 recording 缺失
   一样 fail closed，不能被阈值比较解释为空 backlog。
+- 每个 backend 创建时把 `watch_event_buffer_stale_drop` 与 `watch_event_buffer_full` 初始化为权威零值。
+  运行期只接受 60 秒内、按当前 Ready Pod UID 去重的 current 与 5 分钟 rate recording，四类来源都必须
+  完整覆盖 Ready UID；current 必须是 `[0,2^53]` 内精确整数，外推 rate 可为分数但必须有限且同范围。
+  事件告警只消费这些新鲜 recording，统一 metrics-missing 对缺失、陈旧和非法值 fail closed，不能把
+  不可信 telemetry 解释为零丢弃或零 overflow。
 - leader election 短时间频繁丢失。
 - 每个副本在 campaign 前初始化 leadership-lost、通用 initialization-error、incompatible-witness、
   invalid-alarm-metadata 四类 counter；只从 60 秒内样本生成 Ready Pod UID 级 current 与 10 分钟
