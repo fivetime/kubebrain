@@ -298,8 +298,10 @@ StatefulSet 期望副本数不得小于 3，按 `instance` 去重且 `up==1` 的
 因此五副本拓扑只有四个可抓取时仍会 critical；旧 target 残留或 HA scrape 重复不能伪造齐备。
 期望 recording chain 缺失同样 fail closed。
 `KubeBrainPDLeaderUnavailable` 和 `KubeBrainTiKVRegionLeaderMissing` 也不得把空 gauge family 解释为健康：
-前者要求按 instance 去重的 leader gauge 精确覆盖全部当前 PD，再要求和恰为 1；后者要求
-leader-missing gauge 精确覆盖全部当前 TiKV，再要求最大值为 0。HA scrape 重复和 family 单独缺失都不会伪造健康。
+前者要求 60 秒内、按 instance 去重的 leader gauge 精确覆盖全部当前 PD，再要求和恰为 1；后者要求
+同样新鲜的 leader-missing gauge 精确覆盖全部当前 TiKV，再要求最大值为 0。PD pending/down Region gauge
+也先按 instance/type 新鲜化；异常值、完整性和事务路径分类共同消费该 recording。HA scrape 重复、旧
+lookback 或 family 单独缺失都不会伪造健康。
 
 副本数和 Region 状态之外还必须满足持久化 tail-latency 门禁。PrometheusRule
 `KubeBrainPDWALFsyncLatencyHigh`、`KubeBrainTiKVRaftDBWriteLatencyHigh` 和
