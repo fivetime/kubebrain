@@ -984,13 +984,31 @@ func TestBackendCombinedPDAndTiKVQuorumPartitionRunsProtectedStatus(t *testing.T
 	require.Contains(t, script, `pd-quorum-tikv-quorum-status)`)
 	require.Contains(t, script, `"Maintenance Status across concurrent PD quorum and TiKV quorum partition"`)
 	require.Contains(t, script, `COMBINED_FAULT_READY_FILE=\$KUBEBRAIN_COMBINED_FAULT_READY_FILE TIKV_COMBINED_FAULT_MODE=quorum`)
+	require.Contains(t, script, `run_combined_status_test`)
 
-	testSource, readErr := os.ReadFile("maintenance_hashkv_combined_fault_test.go")
+	testSource, readErr := os.ReadFile("maintenance_status_combined_fault_test.go")
 	require.NoError(t, readErr)
 	text := string(testSource)
 	require.Contains(t, text, `client.Status(statusCtx, endpoint)`)
 	require.Contains(t, text, `Maintenance Status must use the protected member checkpoint`)
-	require.Contains(t, text, `duringStatus.RaftAppliedIndex`)
+	require.Contains(t, text, `duringFault.RaftAppliedIndex`)
+}
+
+func TestBackendCombinedPDAndTiKVQuorumPartitionRunsProtectedHash(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-quorum-hash)`)
+	require.Contains(t, script, `"Maintenance Hash across concurrent PD quorum and TiKV quorum partition"`)
+	require.Contains(t, script, `COMBINED_FAULT_READY_FILE=\$KUBEBRAIN_COMBINED_FAULT_READY_FILE TIKV_COMBINED_FAULT_MODE=quorum`)
+	require.Contains(t, script, `run_combined_hash_test`)
+
+	testSource, readErr := os.ReadFile("maintenance_hash_combined_fault_test.go")
+	require.NoError(t, readErr)
+	text := string(testSource)
+	require.Contains(t, text, `NewMaintenanceClient(client.ActiveConnection()).Hash`)
+	require.Contains(t, text, `Maintenance Hash must use the protected member checkpoint`)
+	require.Contains(t, text, `duringFault.Header.Revision`)
 }
 
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
