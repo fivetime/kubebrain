@@ -504,7 +504,7 @@ spec:
             summary: KubeBrain storage latency telemetry is stale
             description: "At least one PD WAL or TiKV RaftDB/KVDB histogram has not received a sample for more than 60 seconds. Prometheus lookback may still expose the old series; do not treat it as current SLO evidence."
         - alert: KubeBrainStorageVolumeMetricsMissing
-          expr: count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 6
+          expr: count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}) < 6
           for: 15m
           labels:
             severity: warning
@@ -512,7 +512,7 @@ spec:
             summary: KubeBrain storage volume metrics are incomplete
             description: "Only {{ $value }} of 6 PD/TiKV PVCs expose kubelet capacity metrics. Verify that the production CSI driver implements volume statistics."
         - alert: KubeBrainStorageVolumeLow
-          expr: (kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"} / kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 0.15
+          expr: (kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"} / kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}) < 0.15
           for: 10m
           labels:
             severity: critical
@@ -554,7 +554,7 @@ spec:
             summary: KubeBrain has no recent successful logical backup
             description: "The last successful logical backup is {{ $value | humanizeDuration }} old; the production target is at most 25 hours."
         - alert: KubeBrainResourceMetricsMissing
-          expr: ((count(container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""}) + count(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})) < 9) or ((count(kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) + count(kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",resource="memory",unit="byte"})) < 9)
+          expr: ((count(container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""}) + count(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""})) < 9) or ((count(kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) + count(kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",resource="memory",unit="byte"})) < 9)
           for: 15m
           labels:
             severity: warning
@@ -562,7 +562,7 @@ spec:
             summary: KubeBrain data-plane resource metrics are incomplete
             description: "Expected cAdvisor usage and kube-state-metrics limit series for all 9 KubeBrain/PD/TiKV containers."
         - alert: KubeBrainDataPlaneMemoryHigh
-          expr: ((container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) > 0.9) or ((container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",resource="memory",unit="byte"}) > 0.9)
+          expr: ((container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) > 0.9) or ((container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",resource="memory",unit="byte"}) > 0.9)
           for: 10m
           labels:
             severity: critical
@@ -570,7 +570,7 @@ spec:
             summary: KubeBrain data-plane container memory exceeds 90% of its limit
             description: "Container {{ $labels.container }} in {{ $labels.pod }} is using {{ $value | humanizePercentage }} of its memory limit."
         - alert: KubeBrainDataPlaneCPUThrottlingHigh
-          expr: ((rate(container_cpu_cfs_throttled_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m]) / rate(container_cpu_cfs_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m])) > 0.25) or ((rate(container_cpu_cfs_throttled_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m]) / rate(container_cpu_cfs_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m])) > 0.25)
+          expr: ((rate(container_cpu_cfs_throttled_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m]) / rate(container_cpu_cfs_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m])) > 0.25) or ((rate(container_cpu_cfs_throttled_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}[5m]) / rate(container_cpu_cfs_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}[5m])) > 0.25)
           for: 15m
           labels:
             severity: warning
@@ -578,7 +578,7 @@ spec:
             summary: KubeBrain data-plane container CPU is heavily throttled
             description: "Container {{ $labels.container }} in {{ $labels.pod }} has {{ $value | humanizePercentage }} CPU periods throttled."
         - alert: KubeBrainNetworkMetricsMissing
-          expr: ((count(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}) + count(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"})) < 9) or ((count(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}) + count(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"})) < 9)
+          expr: ((count(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}) + count(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"})) < 9) or ((count(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}) + count(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"})) < 9)
           for: 15m
           labels:
             severity: warning
@@ -586,7 +586,7 @@ spec:
             summary: KubeBrain data-plane network metrics are incomplete
             description: "Expected cAdvisor RX and TX byte counters for all 9 KubeBrain/PD/TiKV pod interfaces."
         - alert: KubeBrainNetworkErrors
-          expr: (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m])) > 0)
+          expr: (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m])) > 0)
           for: 0m
           labels:
             severity: warning
@@ -594,7 +594,7 @@ spec:
             summary: KubeBrain data-plane network interface errors detected
             description: "Pod {{ $labels.pod }} reported {{ $value }} RX/TX errors on {{ $labels.interface }} in 10 minutes."
         - alert: KubeBrainNetworkPacketDrops
-          expr: (sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m])) > 0)
+          expr: (sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m])) > 0)
           for: 0m
           labels:
             severity: warning

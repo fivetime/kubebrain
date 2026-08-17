@@ -95,6 +95,9 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   正式发布入口会调用 `hack/production/validate-storage-latency-slo.sh`，以相同表达式对三个 PD/TiKV
   副本执行即时 fail-closed 检查，同时拒绝超过可配置 sample age 的陈旧 telemetry；这补足 Prometheus `for` 窗口尚未进入 firing 时的发布前拒绝，持续告警
   仍负责发布后的运行时保护。
+- **扩容副本资源异常**：存储 PVC 低水位、容器内存/CPU throttling、网络错误与丢包规则按
+  StatefulSet 数字 ordinal 匹配全部 `kubebrain-N`、`kb-pd-N`、`kb-tikv-N` 及对应 PVC，不局限于
+  默认 0–2。因此扩容后的新副本也必须纳入运行时告警；恢复作业等非数字后缀 Pod 仍被排除。
 - **etcd 兼容请求延迟过高**:`histogram_quantile(0.99, rate(etcd_server_request_duration_seconds_bucket[5m]))` 按 `type` 分组持续升高。它与 `read.latency`/`write.latency` 的 DBaaS-native method 维度互补，适合直接套用 upstream etcd dashboard。
 - **真故障率上升**:`rate(read/write{errclass="other"})` 或 `{errclass="deadline"}` 上升(把 `revision`/`unavailable`/`fenced` 排除 —— 那些客户端自愈)。
 - **gRPC 服务端故障**:
