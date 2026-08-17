@@ -297,6 +297,9 @@ store `1005` peer 同时 pending/down：该 store 本地保留旧 epoch 的 Regi
 StatefulSet 期望副本数不得小于 3，按 `instance` 去重且 `up==1` 的 target 数必须与当前期望精确相等。
 因此五副本拓扑只有四个可抓取时仍会 critical；旧 target 残留或 HA scrape 重复不能伪造齐备。
 期望 recording chain 缺失同样 fail closed。
+`KubeBrainPDLeaderUnavailable` 和 `KubeBrainTiKVRegionLeaderMissing` 也不得把空 gauge family 解释为健康：
+前者要求按 instance 去重的 leader gauge 精确覆盖全部当前 PD，再要求和恰为 1；后者要求
+leader-missing gauge 精确覆盖全部当前 TiKV，再要求最大值为 0。HA scrape 重复和 family 单独缺失都不会伪造健康。
 
 副本数和 Region 状态之外还必须满足持久化 tail-latency 门禁。PrometheusRule
 `KubeBrainPDWALFsyncLatencyHigh`、`KubeBrainTiKVRaftDBWriteLatencyHigh` 和
