@@ -1950,7 +1950,9 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		require.Contains(t, description, "production minimum of 3 replicas")
 		require.Contains(t, description, "exactly match the current expected replica count")
 		require.Contains(t, description, "expectation chain is absent")
+		require.Contains(t, description, "negative, fractional, non-finite, or greater-than-2^53")
 	}
+	require.Contains(t, readinessRule["annotations"].(map[string]any)["description"], "a Ready count exceeds desired")
 	require.Contains(t,
 		readinessRule["annotations"].(map[string]any)["description"],
 		"samples within 60 seconds",
@@ -2226,6 +2228,7 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		require.Contains(t, description, "production minimum of 3 replicas")
 		require.Contains(t, description, "exactly match the current expected replica count")
 		require.Contains(t, description, "expectation chain is absent")
+		require.Contains(t, description, "negative, fractional, non-finite, or greater-than-2^53")
 	}
 	regionPeerRule := prometheusRuleByAlert(t, groups, "KubeBrainPDRegionPeerUnhealthy")
 	require.Contains(t,
@@ -2392,7 +2395,7 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	expected := map[string]string{
 		"kubebrain_dbaas:statefulset_replicas:current":                       `max by (namespace, statefulset) (kube_statefulset_replicas{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"} and (time() - timestamp(kube_statefulset_replicas{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"}) <= 60))`,
 		"kubebrain_dbaas:statefulset_ready_replicas:current":                 `max by (namespace, statefulset) (kube_statefulset_status_replicas_ready{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"} and (time() - timestamp(kube_statefulset_status_replicas_ready{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"}) <= 60))`,
-		"kubebrain_dbaas:statefulset_ready_sources:count":                    `count(kubebrain_dbaas:statefulset_ready_replicas:current)`,
+		"kubebrain_dbaas:statefulset_ready_sources:count":                    `count(((kubebrain_dbaas:statefulset_ready_replicas:current >= 0) and (kubebrain_dbaas:statefulset_ready_replicas:current <= 9007199254740992) and (kubebrain_dbaas:statefulset_ready_replicas:current == floor(kubebrain_dbaas:statefulset_ready_replicas:current))) and on(namespace, statefulset) (kubebrain_dbaas:statefulset_ready_replicas:current <= kubebrain_dbaas:statefulset_replicas:current))`,
 		"kubebrain_dbaas:ready_pods:current":                                 `max by (namespace, pod, uid) ((kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1) and (time() - timestamp(kube_pod_status_ready{namespace="kubebrain-system",condition="true"}) <= 60))`,
 		"kubebrain_dbaas:quota_nospace:max_by_pod":                           `max by (namespace, pod, uid) (quota_nospace{namespace="kubebrain-system"} and (time() - timestamp(quota_nospace{namespace="kubebrain-system"}) <= 60))`,
 		"kubebrain_dbaas:quota_backend_bytes:max_by_pod":                     `max by (namespace, pod, uid) (quota_backend_bytes{namespace="kubebrain-system"} and (time() - timestamp(quota_backend_bytes{namespace="kubebrain-system"}) <= 60))`,
@@ -2401,7 +2404,7 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		"kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check":    `max by (namespace, pod, uid, check) (health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} and (time() - timestamp(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}) <= 60))`,
 		"kubebrain_dbaas:count_index_overflowed:max_by_pod":                  `max by (namespace, pod, uid) (count_index_overflowed{namespace="kubebrain-system"} and (time() - timestamp(count_index_overflowed{namespace="kubebrain-system"}) <= 60))`,
 		"kubebrain_dbaas:watch_revision_lag:max_by_pod":                      `max by (namespace, pod, uid) (watch_revision_lag{namespace="kubebrain-system"} and (time() - timestamp(watch_revision_lag{namespace="kubebrain-system"}) <= 60))`,
-		"kubebrain_dbaas:replica_expectation_sources:count":                  `count(kubebrain_dbaas:statefulset_replicas:current)`,
+		"kubebrain_dbaas:replica_expectation_sources:count":                  `count((kubebrain_dbaas:statefulset_replicas:current >= 0) and (kubebrain_dbaas:statefulset_replicas:current <= 9007199254740992) and (kubebrain_dbaas:statefulset_replicas:current == floor(kubebrain_dbaas:statefulset_replicas:current)))`,
 		"kubebrain_dbaas:compute_replicas:expected":                          `sum(kubebrain_dbaas:statefulset_replicas:current) or on() vector(0)`,
 		"kubebrain_dbaas:kubebrain_replicas:expected":                        `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)`,
 		"kubebrain_dbaas:storage_replicas:expected":                          `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"}) or on() vector(0)`,

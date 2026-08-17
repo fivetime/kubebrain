@@ -1707,7 +1707,11 @@ numerator>denominator 都由 `KubeBrainResourceMetricsMissing` fail closed，不
 部署模板化时必须同步替换实例标签、Pod/PVC 选择器和备份 `BACKUP_INSTANCE`。规则同时从
 `kube_statefulset_replicas` 与 `kube_statefulset_status_replicas_ready` 分别生成 desired/Ready current
 recording：仅接受 60 秒内样本并按 `(namespace,statefulset)` 去重。三条期望来源数、Ready 来源数、容器期望副本总数、KubeBrain/PD/TiKV 分项期望和活跃
-存储副本数全部从该统一拓扑记录派生；KSM lookback 旧值不能继续证明动态拓扑完整。PVC info 与
+存储副本数全部从该统一拓扑记录派生；KSM lookback 旧值不能继续证明动态拓扑完整。
+desired/Ready source count 还只接受 `[0,2^53]` 内的非负精确整数，并要求每个 StatefulSet 的 Ready
+不超过同身份 desired；NaN、Inf、负数、分数、超界或 Ready>desired 会让统一来源数不足，所有依赖它的
+容量、可用性、资源、网络、存储和计费门禁共同 fail closed，不能用非法 KSM 值构造健康拓扑。
+PVC info 与
 requested-storage 也先要求 60 秒内样本并按 `(namespace,persistentvolumeclaim)` 发布实体 recording；双向
 `unless` 要求两侧 PVC identity 集合完全相等，不能仅靠相同基数通过。requested-storage 总量只从这条已
 对账的新鲜 recording 聚合，并输出
