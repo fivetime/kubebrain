@@ -56402,6 +56402,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   校验与告警沿用同一新鲜 Ready Pod UID 集合，旧 Pod 残留样本不会误报。精确 PromQL/annotation manifest
   门禁和 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5018 收紧 PD-isolated serializable checkpoint 的运行期授权证据。旧告警虽检查三类 raw family 的
+  Pod UID 覆盖、阈值与 timestamp，但 NaN/Inf 或非法整数可通过 count 并让 `min` 比较失去意义。现先将
+  available/revision/remaining-seconds 各自限制为 60 秒内样本并按当前 Pod UID 去重，再验证 available
+  精确为 0/1、revision 为 `(0,2^53]` 内精确整数、remaining 为 `[0,2^53]` 内非负精确整数；任一非法值、
+  current recording 缺失或 invalid recording 缺失均触发 checkpoint unavailable。精确 PromQL/annotation
+  manifest 门禁、production readiness 与 observability 文档已同步；完整 `deploy/production` 测试通过。
+  本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
