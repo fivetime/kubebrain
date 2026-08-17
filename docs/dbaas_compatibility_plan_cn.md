@@ -56268,6 +56268,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   recording、两条下游 PromQL 与 annotation，production readiness 已同步；完整 `deploy/production` 测试
   通过。本项不重建数据面镜像。
 
+- A5002 修复 count-index overflow 告警既信任陈旧 gauge、又在 family 缺失时 fail open 的问题。production
+  每个副本强制启用 count index，后端每 15 秒主动刷新 `count_index_overflowed`，但旧告警直接
+  `max(raw gauge)`：替换 Pod 的旧 `1` 可误报，当前 Pod 的旧 `0` 或缺失 family 可静默。现新增 sample age
+  不超过 60 秒、按 `(namespace,pod,uid)` 去重的 overflow recording；overflow 只与 fresh Ready UID 相交，
+  新 completeness 告警要求每个当前 Ready UID 恰有一条 fresh gauge。精确 manifest 门禁固定 recording、
+  两条 alert PromQL 与 15 秒发布契约 annotation，observability/production readiness 已同步；完整
+  `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
