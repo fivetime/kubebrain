@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -64,9 +65,16 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	prefix := fmt.Sprintf("/compat/hashkv-combined/%d/", time.Now().UnixNano())
 	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cleanupCancel()
-		_, _ = client.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+		var cleanupErr error
+		cleaned := assert.Eventually(t, func() bool {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cleanupCancel()
+			_, cleanupErr = client.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+			return cleanupErr == nil
+		}, 30*time.Second, 200*time.Millisecond, "delete HashKV fault fixture after backend recovery: %v", cleanupErr)
+		if !cleaned {
+			t.Logf("manual cleanup required for %q", prefix)
+		}
 	})
 
 	put, err := client.Put(ctx, prefix+"baseline", "value")
