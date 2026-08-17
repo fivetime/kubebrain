@@ -98,6 +98,9 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 - **扩容副本资源异常**：存储 PVC 低水位、容器内存/CPU throttling、网络错误与丢包规则按
   StatefulSet 数字 ordinal 匹配全部 `kubebrain-N`、`kb-pd-N`、`kb-tikv-N` 及对应 PVC，不局限于
   默认 0–2。因此扩容后的新副本也必须纳入运行时告警；恢复作业等非数字后缀 Pod 仍被排除。
+  `KubeBrainStorageVolumeMetricsMissing`、`KubeBrainResourceMetricsMissing` 和
+  `KubeBrainNetworkMetricsMissing` 不只检查默认最低 6/9 条，而是与去重后的当前 StatefulSet 期望副本数
+  精确对账；扩容后 12 个容器只有 11 条指标也会 fail closed。任一期望/source recording series 缺失也直接告警。
 - **etcd 兼容请求延迟过高**:`histogram_quantile(0.99, rate(etcd_server_request_duration_seconds_bucket[5m]))` 按 `type` 分组持续升高。它与 `read.latency`/`write.latency` 的 DBaaS-native method 维度互补，适合直接套用 upstream etcd dashboard。
 - **真故障率上升**:`rate(read/write{errclass="other"})` 或 `{errclass="deadline"}` 上升(把 `revision`/`unavailable`/`fenced` 排除 —— 那些客户端自愈)。
 - **gRPC 服务端故障**:

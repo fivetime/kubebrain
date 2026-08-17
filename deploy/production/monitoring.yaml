@@ -516,13 +516,13 @@ spec:
             summary: KubeBrain storage latency telemetry is stale
             description: "At least one PD WAL or TiKV RaftDB/KVDB histogram has not received a sample for more than 60 seconds. Prometheus lookback may still expose the old series; do not treat it as current SLO evidence."
         - alert: KubeBrainStorageVolumeMetricsMissing
-          expr: count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}) < 6
+          expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:storage_replicas:expected) == 1 or absent(kubebrain_dbaas:storage_capacity_sources:count) == 1 or absent(kubebrain_dbaas:storage_available_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:storage_capacity_sources:count != on() kubebrain_dbaas:storage_replicas:expected or kubebrain_dbaas:storage_available_sources:count != on() kubebrain_dbaas:storage_replicas:expected
           for: 15m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain storage volume metrics are incomplete
-            description: "Only {{ $value }} of 6 PD/TiKV PVCs expose kubelet capacity metrics. Verify that the production CSI driver implements volume statistics."
+            description: "PD/TiKV PVC capacity or available-byte source counts do not exactly match the current deduplicated storage StatefulSet replica expectation, or an expectation/source recording series is absent. Verify kube-state-metrics and that the production CSI driver implements volume statistics."
         - alert: KubeBrainStorageVolumeLow
           expr: (kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"} / kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}) < 0.15
           for: 10m
@@ -566,13 +566,13 @@ spec:
             summary: KubeBrain has no recent successful logical backup
             description: "The last successful logical backup is {{ $value | humanizeDuration }} old; the production target is at most 25 hours."
         - alert: KubeBrainResourceMetricsMissing
-          expr: ((count(container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""}) + count(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""})) < 9) or ((count(kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) + count(kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",resource="memory",unit="byte"})) < 9)
+          expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:compute_replicas:expected) == 1 or absent(kubebrain_dbaas:memory_working_set_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:memory_working_set_sources:count != on() kubebrain_dbaas:compute_replicas:expected or (count(max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",resource="memory",unit="byte"})) + count(max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",resource="memory",unit="byte"}))) != on() kubebrain_dbaas:compute_replicas:expected
           for: 15m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain data-plane resource metrics are incomplete
-            description: "Expected cAdvisor usage and kube-state-metrics limit series for all 9 KubeBrain/PD/TiKV containers."
+            description: "Current KubeBrain/PD/TiKV cAdvisor memory usage or deduplicated kube-state-metrics memory-limit sources do not exactly match the current StatefulSet replica expectation, or an expectation/source recording series is absent."
         - alert: KubeBrainDataPlaneMemoryHigh
           expr: ((container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) > 0.9) or ((container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",resource="memory",unit="byte"}) > 0.9)
           for: 10m
@@ -590,13 +590,13 @@ spec:
             summary: KubeBrain data-plane container CPU is heavily throttled
             description: "Container {{ $labels.container }} in {{ $labels.pod }} has {{ $value | humanizePercentage }} CPU periods throttled."
         - alert: KubeBrainNetworkMetricsMissing
-          expr: ((count(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}) + count(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"})) < 9) or ((count(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}) + count(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"})) < 9)
+          expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:compute_replicas:expected) == 1 or absent(kubebrain_dbaas:network_receive_sources:count) == 1 or absent(kubebrain_dbaas:network_transmit_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:network_receive_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_transmit_sources:count != on() kubebrain_dbaas:compute_replicas:expected
           for: 15m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain data-plane network metrics are incomplete
-            description: "Expected cAdvisor RX and TX byte counters for all 9 KubeBrain/PD/TiKV pod interfaces."
+            description: "Current KubeBrain/PD/TiKV cAdvisor RX or TX source counts do not exactly match the current StatefulSet replica expectation, or an expectation/source recording series is absent."
         - alert: KubeBrainNetworkErrors
           expr: (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m])) > 0)
           for: 0m
