@@ -129,6 +129,11 @@ current counter 必须是 `[0,2^53]` 内精确整数，外推 increase 可为分
 60 秒内 raw sample 生成 Ready Pod UID 级 current/10 分钟 increase recording。任一覆盖缺口或非法值都会
 告警；refresh failure 时副本保留上次导出的 NOSPACE/CORRUPT gauge 快照，该快照不得继续解释为当前共享
 alarm 状态，应检查 TiKV/PD 连通性并以权威 AlarmList/共享 metadata 对账。
+RPC server 创建时还立即发布 `alarm_corrupt_active=0`，仅在完整读取共享 alarm 集合成功后刷新为是否存在
+任一 CORRUPT owner 的精确 0/1；refresh failure 保留旧值并由上述 error 链告警。production 只从 60 秒内
+样本生成 Ready Pod UID 级 current recording，要求覆盖全部 Ready UID、值精确为 0/1 且所有副本一致。
+任一 active 立即 critical；缺失、陈旧、非法或持续分歧也 critical，不能解释为安全解除写栅栏。修复必须
+保留 durable evidence，并只在 AlarmDeactivate 的 transaction-witness/alarm-generation 校验成功后解除。
 
 ## TiKV/PD 升级完成门槛
 
@@ -4227,6 +4232,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   监控要求 60 秒新鲜的 current/10 分钟 increase 分别精确覆盖 `4×Ready Pod UID` 与 `1×Ready Pod UID`；
   current 必须为 `[0,2^53]` 精确整数，increase 可为分数但必须有限且同范围。确认损坏和 alarm 持久化失败
   均立即 critical；缺失、陈旧或非法 telemetry 不能作为 event-log 完整性或 durable write fence 的证据。
+- `alarm_corrupt_active` 在 RPC server 创建时初始化为权威 0，并仅在完整读取共享 TiKV alarm 集合成功后
+  刷新为是否存在任一 CORRUPT owner 的精确 0/1。监控只消费 60 秒内、按 Ready Pod UID 去重的样本；
+  任一 active 立即 critical，覆盖缺口、非 0/1 或副本分歧持续一分钟也 critical。refresh 失败时保留旧
+  snapshot 并由 alarm-refresh failure 链告警；缺失、陈旧、非法或分歧状态不能证明 durable write fence
+  已安全解除。
 - leader election 短时间频繁丢失。
 - 每个副本在 campaign 前初始化 leadership-lost、通用 initialization-error、incompatible-witness、
   invalid-alarm-metadata 四类 counter；只从 60 秒内样本生成 Ready Pod UID 级 current 与 10 分钟

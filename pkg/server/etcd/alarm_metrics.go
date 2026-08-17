@@ -6,7 +6,16 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
+
+func initAlarmStateMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitGauge("alarm.corrupt_active", int64(0))
+}
 
 var etcdAlarmGauge = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
@@ -94,7 +103,6 @@ func (s *RPCServer) RefreshAlarmMetrics(ctx context.Context) error {
 		current[alarmMetricLabels(alarm)] = struct{}{}
 	}
 	s.alarmMetricMu.Lock()
-	defer s.alarmMetricMu.Unlock()
 	for labels := range current {
 		if _, known := s.knownAlarmMetrics[labels]; !known {
 			etcdAlarmGauge.WithLabelValues(labels.serverID, labels.alarmType).Set(1)
@@ -106,5 +114,11 @@ func (s *RPCServer) RefreshAlarmMetrics(ctx context.Context) error {
 		}
 	}
 	s.knownAlarmMetrics = current
+	s.alarmMetricMu.Unlock()
+	corruptActive := int64(0)
+	if len(corruptMembers) != 0 {
+		corruptActive = 1
+	}
+	_ = s.metricCli.EmitGauge("alarm.corrupt_active", corruptActive)
 	return nil
 }

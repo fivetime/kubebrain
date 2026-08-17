@@ -53,6 +53,30 @@ func TestAlarmMetricRefreshConvergesSharedGenericState(t *testing.T) {
 	require.Equal(t, float64(0), alarmMetricValue(t, labels.serverID, labels.alarmType))
 }
 
+func TestCorruptAlarmStateMetricInitializesAndConvergesSharedState(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	recorder := &recordingMetrics{}
+	server.metricCli = recorder
+	initAlarmStateMetrics(recorder)
+
+	ctx := context.Background()
+	require.NoError(t, server.backend.ArmCorrupt(ctx, 0xa342702))
+	require.NoError(t, server.RefreshAlarmMetrics(ctx))
+	removed, err := server.backend.DisarmCorrupt(ctx, 0xa342702)
+	require.NoError(t, err)
+	require.True(t, removed)
+	require.NoError(t, server.RefreshAlarmMetrics(ctx))
+
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	require.Equal(t, []recordedGauge{
+		{name: "alarm.corrupt_active", value: int64(0)},
+		{name: "alarm.corrupt_active", value: int64(1)},
+		{name: "alarm.corrupt_active", value: int64(0)},
+	}, recorder.gauges)
+}
+
 func alarmMetricValue(t *testing.T, serverID, alarmType string) float64 {
 	t.Helper()
 	metric := &io_prometheus_client.Metric{}

@@ -2033,6 +2033,23 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	alarmRefreshMissingDescription := alarmRefreshMissingRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, alarmRefreshMissingDescription, "authoritative zero before refreshing shared alarm state")
 	require.Contains(t, alarmRefreshMissingDescription, "Missing, stale, or invalid telemetry")
+	corruptAlarmRule := prometheusRuleByAlert(t, groups, "KubeBrainCorruptAlarmActive")
+	require.Equal(t,
+		`max(kubebrain_dbaas:alarm_corrupt_active:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`,
+		corruptAlarmRule["expr"])
+	require.Equal(t, "critical", corruptAlarmRule["labels"].(map[string]any)["severity"])
+	corruptAlarmDescription := corruptAlarmRule["annotations"].(map[string]any)["description"].(string)
+	require.Contains(t, corruptAlarmDescription, "remain fenced with DataLoss")
+	require.Contains(t, corruptAlarmDescription, "AlarmDeactivate after validation succeeds")
+	corruptAlarmInconsistentRule := prometheusRuleByAlert(t, groups, "KubeBrainCorruptAlarmMetricsInconsistent")
+	require.Equal(t,
+		`absent(kubebrain_dbaas:alarm_corrupt_active_invalid_values:count) == 1 or count(kubebrain_dbaas:alarm_corrupt_active:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:alarm_corrupt_active_invalid_values:count != 0 or (max(kubebrain_dbaas:alarm_corrupt_active:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) - min(kubebrain_dbaas:alarm_corrupt_active:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0)`,
+		corruptAlarmInconsistentRule["expr"])
+	require.Equal(t, "1m", corruptAlarmInconsistentRule["for"])
+	require.Equal(t, "critical", corruptAlarmInconsistentRule["labels"].(map[string]any)["severity"])
+	corruptAlarmInconsistentDescription := corruptAlarmInconsistentRule["annotations"].(map[string]any)["description"].(string)
+	require.Contains(t, corruptAlarmInconsistentDescription, "exactly 0 or 1")
+	require.Contains(t, corruptAlarmInconsistentDescription, "cannot be interpreted as safely unfenced")
 	require.Contains(t, description, "same-PVC TiKV repair")
 	require.Contains(t, description, "no pending/down peer Regions")
 
@@ -2741,6 +2758,10 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	expected["kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod"] =
 		`max by (namespace, pod, uid) (increase(alarm_refresh_err{namespace="kubebrain-system"}[10m]) and (time() - timestamp(alarm_refresh_err{namespace="kubebrain-system"}) <= 60))`
 	expected["kubebrain_dbaas:alarm_refresh_err_invalid_values:count"] = alarmRefreshInvalidValuesExpr
+	expected["kubebrain_dbaas:alarm_corrupt_active:max_by_pod"] =
+		`max by (namespace, pod, uid) (alarm_corrupt_active{namespace="kubebrain-system"} and (time() - timestamp(alarm_corrupt_active{namespace="kubebrain-system"}) <= 60))`
+	expected["kubebrain_dbaas:alarm_corrupt_active_invalid_values:count"] =
+		`count(((kubebrain_dbaas:alarm_corrupt_active:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:alarm_corrupt_active:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 1) or ((kubebrain_dbaas:alarm_corrupt_active:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:alarm_corrupt_active:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))`
 	expected["kubebrain_dbaas:leader_election_lost:current_by_pod"] =
 		`sum by (namespace, pod, uid) (max by (namespace, pod, uid, addr) (leader_election_lost{namespace="kubebrain-system"} and (time() - timestamp(leader_election_lost{namespace="kubebrain-system"}) <= 60)))`
 	expected["kubebrain_dbaas:leader_election_lost:increase_10m_by_pod"] =

@@ -28,6 +28,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `watch.collector.stalled` / `watch.collector.skipped_revision` counter | 事件收集器 stall/自愈跳过 —— 每个 backend 初始化为 0；非 0=有 writer 死在 deal↔notify 之间。 |
 | `revision.durable.persist_err` counter | durable user-revision watermark 后台/强制持久化失败次数；每个 backend 初始化为 0。非零时后台路径让离线 serializable reader 暂留旧安全快照，强制路径会阻塞 collector 连续推进直至成功。 |
 | `watch.event_log.corruption{kind}` / `watch.event_log.corrupt_alarm_failed` counter | 仅在 trusted window 内重新检查 cleanup/compaction watermark 后仍确认的 event-log 损坏，以及随后持久化 CORRUPT alarm 失败；`kind` 固定为 `malformed`、`witness_mismatch`、`incomplete`、`invalid_object`。每个 backend 初始化四个 kind 和 alarm-failure 零值，任一增量均为 critical。 |
+| `alarm.corrupt_active` gauge | 当前副本最近一次成功读取共享 TiKV alarm 集合时是否存在任一 CORRUPT owner；RPC server 创建时发布 0，随后每 15 秒刷新为精确 0/1。任一 1 都表示受保护写已被 DataLoss fence。 |
 | `serializable.checkpoint.available` / `serializable.checkpoint.remaining_seconds` gauge；`serializable.checkpoint.refresh_err` counter | 每副本受 PD service GC safepoint 保护的离线 serializable checkpoint 是否可用及本地安全窗剩余秒数；available 应恒为 1，remaining 默认每秒回到约 150。refresh-error counter 启动时发布权威零值；非零或 remaining 持续降至 0 表示该副本将在 PD 隔离时对 Range/read-only Txn/RangeStream fail closed。 |
 | `lease.orphan_sweep.{key_deleted,legacy_key_deleted,record_reclaimed,err}` counter | 孤儿 lease 清扫活动；`legacy_key_deleted` 表示依靠同 revision ownership witness 回收升级前 v1 leased value —— 正常均应极低。 |
 | `lease.legacy_migration_seal.err` counter | legacy user-MVCC lease source 已清空但 internal migration seal 写入失败次数；非零时 loader 仍保持兼容扫描，需检查 leadership/CORRUPT/TiKV fence。 |
@@ -206,12 +207,17 @@ fragmentation 可报告”，不表示 TiKV 实际占用。
   激活，旧 alarm 的解除返回成功但 `quota.nospace` 保持 1，调用方应重新执行
   `alarm list`。首次启动创建 quota usage 或因存量超额自动激活 alarm 的提交结果不确定
   时，同样会在 readiness 前独立回读确认。错误 owner 不会解除 tenant alarm。
-  CORRUPT 仍无对应语义。
+  CORRUPT 使用 TiKV 共享 member/generation metadata、写提交 generation fence 与显式校验后解除语义；
+  任一 owner 激活都会阻断受保护写并让 data-corruption readiness 失败。
   每个副本在共享 alarm refresh 启动前初始化 `alarm_refresh_err=0`；production 从 60 秒内样本生成
   current 与 10 分钟 increase recording，并要求分别覆盖当前 Ready Pod UID。current 必须是
   `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围。`KubeBrainAlarmRefreshFailures`
   报告实际 TiKV metadata 读取失败，`KubeBrainAlarmRefreshMetricsMissing` 拒绝缺失、陈旧或非法 counter。
   刷新失败时 exporter 保留上次 alarm gauge 快照，不能把该 stale snapshot 当作当前共享状态。
+  `alarm_corrupt_active` 在 RPC server 创建时发布权威 0，每次完整 refresh 成功后按共享 CORRUPT owner
+  集合刷新为精确 0/1。production 只接受 60 秒内且属于当前 Ready Pod UID 的样本；任一 1 立即 critical，
+  覆盖缺口、非 0/1 或副本分歧持续 1 分钟也 critical。解除前必须保留证据并通过 AlarmDeactivate 的
+  transaction-witness/alarm-generation 校验，不能直接删除内部 alarm key。
 
 active NOSPACE 是容量保护状态，不是进程不可服务：`/ready`、`/readyz` 应继续通过，
 读和释放容量的删除操作仍可用；`etcdctl endpoint health` 的线性化 proposal 会按 etcd
