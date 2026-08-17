@@ -56152,6 +56152,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   也按同一 identity 去重，避免 HA 重复造成 many-to-many 或重复告警。精确 manifest 门禁固定九条修改后的
   PromQL，production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4989 将相同实体去重契约延伸到 kubelet volume stats。旧 capacity/available source count 与
+  `storage_used_bytes` 直接消费原始 series；同一 PVC 因重复抓取或 Pod 替换残留两个 series 时，完整性会
+  误报来源过多、实际 used 也可能双倍计费，裸 available/capacity 告警还可能发生 many-to-many。现来源数按
+  `(namespace,persistentvolumeclaim)` 去重，used 计费对每 PVC 选择最大 capacity/available 后再求差，避免
+  重复过计费；低水位安全告警有意选择最小 available/最大 capacity 的保守比率，任一低水位证据都不会被
+  宽松重复样本掩盖。精确 manifest 门禁固定两条 source recording、used recording、低水位 PromQL 和
+  conservative annotation，production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建
+  数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
