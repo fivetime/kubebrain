@@ -56010,6 +56010,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   completeness 需要独立设计动态期望基数，不能只放宽 selector 而让扩容后计费数据恒为 incomplete。本项不重建
   数据面镜像。
 
+- A4973 将 A4972 刻意留下的 billing completeness 固定拓扑改为可扩缩容且 fail-closed 的动态期望。
+  旧 metering rules 只聚合 ordinal 0–2，并把完整条件写死为 9 个容器/6 个 PVC；扩容后新副本用量不进账单，
+  但 completeness 仍可为 1，构成直接少计费风险。现新增三条期望 recording rules：KubeBrain/PD/TiKV 三个
+  `kube_statefulset_replicas` 来源数、三类容器期望总数、PD+TiKV 存储期望数。HA kube-state-metrics 的重复
+  scrape 先以 `max by(namespace,statefulset)` 按 Kubernetes 对象去重；三条期望来源必须精确存在，且 CPU/内存/
+  RX/TX 实际 source 必须等于容器期望数、capacity/available 必须等于存储期望数，否则
+  `metering_data_complete=0`。期望指标缺失时用显式 zero fallback 保持 recording series 可观测，但独立来源数门禁
+  防止“期望与实际同为零”伪造完整。所有分钟/小时 CPU、内存、网络和 PVC 聚合 selector 同步改为任意数字
+  ordinal；扩缩容未齐备的整小时保守标记为不可计费，不按零用量结算。production readiness 和精确 manifest
+  门禁已更新，并登记新的 KSM 外部指标；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
