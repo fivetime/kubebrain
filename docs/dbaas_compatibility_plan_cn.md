@@ -56540,6 +56540,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍需后续增量。精确 manifest/backend 测试与 production/observability 文档已同步；相关测试通过。本项
   需要下一生产镜像。
 
+- A5033 完成 A5032 留下的 leader-only safepoint 进度时效合同。Prometheus 每次 scrape 都会给 retained
+  `storage_gc_safepoint` 新 timestamp，故 raw freshness 不能证明值在推进；followers 又不执行 GC，要求每
+  Pod 都有正 safepoint 会误报。现每个 backend 初始化 driver-started/last-success timestamp 为 0，确认 driver
+  enabled 时记录 process-local start，只有 leader 的真实 `gc.GC` 成功才更新 last-success。监控生成 60 秒
+  新鲜的 Ready Pod UID 级 current recording，要求两类来源完整；started 必须为正精确 Unix 秒，last-success
+  允许 follower/首次执行前权威 0，两者拒绝负数、分数、超 2^53 或未来超过 5 分钟。stalled 告警取所有
+  Ready UID 的最新成功：从未成功时使用最长 driver uptime，已有成功时使用 cluster 最新 last-success；
+  超过 20 分钟并持续 2 分钟 warning，为默认 10 分钟周期保留两倍启动/换主余量。metrics-missing critical。
+  backend 测试固定 start 与 success 只在相应路径发布，精确 manifest 与生产文档同步；相关测试通过。本项
+  需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
