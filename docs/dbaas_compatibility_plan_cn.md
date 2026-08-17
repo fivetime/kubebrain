@@ -55394,6 +55394,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain Pod Ready 且无新增重启，所有 iptables 规则、测试 key 和 port-forward 已清理。本轮修改故障工具与永久门禁，不修改数据面
   生产代码；真实跨节点/AZ 的同类组合分区仍保持开放。
 
+- A4933 将 A4932 的 PD quorum loss + leader-heavy TiKV member 同窗分区扩展到 lease，而不是用 KV/Txn 线性一致性外推租约。
+  新 `pd-quorum-tikv-member-lease-linearizability` profile 复用相同的节点身份绑定、唯一 iptables rule、双子进程失败传播与清理编排，
+  依次运行已有 5 client × 30 operation 的 lease generation 和 lease lifecycle Porcupine 模型。前者约束同一显式 lease ID 的
+  grant/regrant 代际、attached key、TTL 与 revoke 隔离；后者交错 grant、leased Put、KeepAlive、TTL、读与 Revoke，要求成功 revoke
+  与附属键删除原子一致，并把 transport/leadership 错误保守建模为不确定结果。该职责与 upstream `client/v3/lease.go` 的 KeepAlive
+  重连、LeaseGrant/Revoke retry 契约对齐，不把后端故障期间的 canonical lease-not-found 错算成未知提交。
+
+  2026-08-17 在独立三 PD/三 TiKV 单节点 Kind 上，每段历史分别执行 5 秒 PD 多数 + 单 TiKV store 重叠分区。generation 历史记录
+  30 个不确定 RPC 失败并保持 Porcupine GREEN；lifecycle 历史记录 46 个不确定失败并保持 GREEN，故障包含 auth pre-read deadline、
+  epoch-not-match、leadership changed during commit、Grant/Revoke/leased Put 失败与 canonical lease-not-found；完整门禁 79.826 秒通过。
+  终态 endpoint proposal 16.95ms，LeaseList、AlarmList 与 `/dbaas-linearizability/` 前缀为空，五类 Region check 全零，所有规则和
+  port-forward 已清理。本轮未发现新的数据面生产 RED，不修改生产代码；自然过期、长驻 streaming KeepAlive 以及真实跨节点/AZ
+  的同类组合分区仍需独立门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
