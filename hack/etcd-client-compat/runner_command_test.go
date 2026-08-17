@@ -958,6 +958,25 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsFixedHashKV(t *testing
 	require.Contains(t, string(testSource), `only the terminal RangeStream frame may carry metadata`)
 }
 
+func TestBackendCombinedPDAndTiKVQuorumPartitionRunsProtectedSerializableReads(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-quorum-serializable)`)
+	require.Contains(t, script, `"protected serializable reads across concurrent PD quorum and TiKV quorum partition"`)
+	require.Contains(t, script, `COMBINED_FAULT_READY_FILE=\$KUBEBRAIN_COMBINED_FAULT_READY_FILE TIKV_COMBINED_FAULT_MODE=quorum`)
+	require.Contains(t, script, `run_combined_hashkv_test`)
+
+	testSource, readErr := os.ReadFile("maintenance_hashkv_combined_fault_test.go")
+	require.NoError(t, readErr)
+	text := string(testSource)
+	require.Contains(t, text, `strings.Contains(command, "KUBEBRAIN_COMBINED_FAULT_READY_FILE")`)
+	require.Contains(t, text, `combined backend fault must signal both quorums ready`)
+	require.Contains(t, text, `serializable RangeStream must fall back before its first live frame`)
+	require.Contains(t, text, `serializable Range must use the protected member checkpoint`)
+	require.Contains(t, text, `serializable read-only Txn must use the protected member checkpoint`)
+}
+
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
