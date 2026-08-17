@@ -121,8 +121,16 @@ spec:
           expr: max by (namespace, pod, uid) (count_index_overflowed{namespace="kubebrain-system"} and (time() - timestamp(count_index_overflowed{namespace="kubebrain-system"}) <= 60))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:count_index_invalid_values:count
+          expr: count(((kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 1) or ((kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:watch_revision_lag:max_by_pod
           expr: max by (namespace, pod, uid) (watch_revision_lag{namespace="kubebrain-system"} and (time() - timestamp(watch_revision_lag{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_revision_lag_invalid_values:count
+          expr: count(((kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
@@ -586,13 +594,13 @@ spec:
             summary: KubeBrain watch revision lag is high
             description: "A current Ready Pod UID with KSM Ready and watch-lag samples no older than 60 seconds has a live watch revision backlog of {{ $value }} revisions. Samples are deduplicated by Pod UID; stale replaced Pods cannot keep this alert active after their collector is gone."
         - alert: KubeBrainRevisionLagMetricsMissing
-          expr: count(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current)
+          expr: absent(kubebrain_dbaas:watch_revision_lag_invalid_values:count) == 1 or count(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:watch_revision_lag_invalid_values:count != 0
           for: 2m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain watch revision lag telemetry is incomplete
-            description: "At least one current Ready Pod UID has not published watch_revision_lag within 60 seconds. Every replica emits an immediate value and refreshes the gauge every 15 seconds, including an authoritative zero while idle, so missing or stale telemetry cannot be interpreted as an empty watch backlog. Check mixed binary rollout, Pod UID relabeling, and application scrape health."
+            description: "At least one current Ready Pod UID has not published watch_revision_lag within 60 seconds, the invalid-value recording is absent, or a lag is NaN, infinite, negative, fractional, or above 2^53. Every replica emits an immediate value and refreshes the gauge every 15 seconds, including an authoritative zero while idle, so missing, stale, or invalid telemetry cannot be interpreted as an empty watch backlog. Check mixed binary rollout, Pod UID relabeling, and application scrape health."
         - alert: KubeBrainGrpcLatencyHigh
           expr: histogram_quantile(0.99, sum by (le, grpc_method) (rate(grpc_server_handling_seconds_bucket{namespace="kubebrain-system"}[5m]))) > 1
           for: 10m
@@ -610,13 +618,13 @@ spec:
             summary: KubeBrain count index exceeded its key limit
             description: "A current Ready Pod UID with count-index samples no older than 60 seconds reports that the leader count index overflowed and exact counts are falling back to TiKV scans. Stale replaced Pod samples are excluded. Increase the instance memory tier and --count-index-max-keys together."
         - alert: KubeBrainCountIndexMetricsMissing
-          expr: count(kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current)
+          expr: absent(kubebrain_dbaas:count_index_invalid_values:count) == 1 or count(kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:count_index_invalid_values:count != 0
           for: 2m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain count-index telemetry is incomplete
-            description: "At least one current Ready Pod UID has not published count_index_overflowed within 60 seconds. Production enables the count index on every replica and refreshes this gauge every 15 seconds, so missing or stale telemetry cannot be interpreted as a healthy non-overflowed index. Check mixed binary/configuration rollout, Pod UID relabeling, and application scrape health."
+            description: "At least one current Ready Pod UID has not published count_index_overflowed within 60 seconds, the invalid-value recording is absent, or the gauge is not exactly 0 or 1. Production enables the count index on every replica and refreshes this gauge every 15 seconds, so missing, stale, or invalid telemetry cannot be interpreted as a healthy non-overflowed index. Check mixed binary/configuration rollout, Pod UID relabeling, and application scrape health."
         - alert: KubeBrainCountIndexRebuildFailures
           expr: sum(increase(count_index_rebuild_err{namespace="kubebrain-system"}[10m])) > 0
           for: 0m

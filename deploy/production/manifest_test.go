@@ -2002,7 +2002,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 
 	revisionLagMissingRule := prometheusRuleByAlert(t, groups, "KubeBrainRevisionLagMetricsMissing")
 	require.Equal(t,
-		`count(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current)`,
+		`absent(kubebrain_dbaas:watch_revision_lag_invalid_values:count) == 1 or count(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:watch_revision_lag_invalid_values:count != 0`,
 		revisionLagMissingRule["expr"])
 	require.Equal(t, "2m", revisionLagMissingRule["for"])
 	require.Equal(t, "warning", revisionLagMissingRule["labels"].(map[string]any)["severity"])
@@ -2010,6 +2010,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Contains(t, revisionLagMissingDescription, "refreshes the gauge every 15 seconds")
 	require.Contains(t, revisionLagMissingDescription, "authoritative zero while idle")
 	require.Contains(t, revisionLagMissingDescription, "cannot be interpreted as an empty watch backlog")
+	require.Contains(t, revisionLagMissingDescription, "NaN, infinite, negative, fractional, or above 2^53")
 
 	overflowRule := prometheusRuleByAlert(t, groups, "KubeBrainCountIndexOverflowed")
 	require.Equal(t, `max(kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`, overflowRule["expr"])
@@ -2021,7 +2022,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 
 	countIndexMissingRule := prometheusRuleByAlert(t, groups, "KubeBrainCountIndexMetricsMissing")
 	require.Equal(t,
-		`count(kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current)`,
+		`absent(kubebrain_dbaas:count_index_invalid_values:count) == 1 or count(kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:count_index_invalid_values:count != 0`,
 		countIndexMissingRule["expr"])
 	require.Equal(t, "2m", countIndexMissingRule["for"])
 	require.Equal(t, "warning", countIndexMissingRule["labels"].(map[string]any)["severity"])
@@ -2029,6 +2030,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Contains(t, countIndexMissingDescription, "every 15 seconds")
 	require.Contains(t, countIndexMissingDescription, "cannot be interpreted as a healthy non-overflowed index")
 	require.Contains(t, countIndexMissingDescription, "mixed binary/configuration rollout")
+	require.Contains(t, countIndexMissingDescription, "not exactly 0 or 1")
 
 	rebuildRule := prometheusRuleByAlert(t, groups, "KubeBrainCountIndexRebuildFailures")
 	require.Equal(t,
@@ -2410,7 +2412,9 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		"kubebrain_dbaas:quota_invalid_values:count":                         quotaInvalidValuesExpr,
 		"kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check":    `max by (namespace, pod, uid, check) (health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} and (time() - timestamp(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}) <= 60))`,
 		"kubebrain_dbaas:count_index_overflowed:max_by_pod":                  `max by (namespace, pod, uid) (count_index_overflowed{namespace="kubebrain-system"} and (time() - timestamp(count_index_overflowed{namespace="kubebrain-system"}) <= 60))`,
+		"kubebrain_dbaas:count_index_invalid_values:count":                   `count(((kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 1) or ((kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))`,
 		"kubebrain_dbaas:watch_revision_lag:max_by_pod":                      `max by (namespace, pod, uid) (watch_revision_lag{namespace="kubebrain-system"} and (time() - timestamp(watch_revision_lag{namespace="kubebrain-system"}) <= 60))`,
+		"kubebrain_dbaas:watch_revision_lag_invalid_values:count":            `count(((kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))`,
 		"kubebrain_dbaas:replica_expectation_sources:count":                  `count((kubebrain_dbaas:statefulset_replicas:current >= 0) and (kubebrain_dbaas:statefulset_replicas:current <= 9007199254740992) and (kubebrain_dbaas:statefulset_replicas:current == floor(kubebrain_dbaas:statefulset_replicas:current)))`,
 		"kubebrain_dbaas:compute_replicas:expected":                          `sum(kubebrain_dbaas:statefulset_replicas:current) or on() vector(0)`,
 		"kubebrain_dbaas:kubebrain_replicas:expected":                        `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)`,

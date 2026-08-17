@@ -4184,11 +4184,14 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - `watch_revision_lag` 在写高峰结束后必须随 collector 连续游标推进回落到 0；该 gauge 以本地已入 ring
   最高 revision 为上界，不把 PD 已分配但仍在途的 revision 误算为积压。每个副本启动时立即发布、每
   15 秒 heartbeat；运行期只接受 60 秒内且属于当前 Ready Pod UID 的样本，任一 Ready 副本缺失即告警。
+  值还必须是 `[0,2^53]` 内的非负精确 revision 整数；NaN、Inf、负数、分数或超界值与 recording 缺失
+  一样 fail closed，不能被阈值比较解释为空 backlog。
 - leader election 短时间频繁丢失。
 - watch revision lag 过高。
 - 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。
 - 任一当前 Ready Pod 的 `count_index_overflowed` 超过 60 秒未刷新，或任一新鲜 overflow gauge 为 1；
-  production 每个副本都启用 count index 且每 15 秒刷新该 gauge，缺失不能解释成健康零值。
+  production 每个副本都启用 count index 且每 15 秒刷新该 gauge；值必须精确为 0 或 1，缺失、NaN、
+  Inf、负数、分数或其他超界值都不能解释成健康零值。
 - gRPC p99 延迟超过 1 秒。
 
 这些阈值是预生产起点，不应直接作为最终生产阈值。正式上线前应基于真实对象规模、apiserver QPS、watch 数量和 TiKV 延迟重新校准。
