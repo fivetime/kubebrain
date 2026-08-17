@@ -55821,6 +55821,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不等待 live write mutex，以 checkpoint timestamp 扫描包含内部服务状态的完整 tenant backend，并以同一
   checkpoint revision 填充 header。`DataLoss`、鉴权和其他确定性错误不回退。backend timestamp/revision/
   锁行为及 RPC 成功回退、错误分类的定向与 race 测试通过，`go vet ./pkg/backend ./pkg/server/etcd` 通过。
+  后续 `35a857c2` 又固定 auth-enabled 边界：已缓存完整 auth snapshot 时 root 可在 live storage 不可用后
+  使用 protected Hash，普通用户 alice 则在接触 protected backend 前得到 canonical `PermissionDenied`；
+  checkpoint 可用性不得降级管理员权限要求。
 
   `87e4f589` 新增独立 `pd-quorum-tikv-quorum-hash` 门禁，不借 fixed-revision HashKV 或 Status 的结果
   外推。精确镜像 `kubebrain:a4979-backend-hash-checkpoint`（完整 revision
