@@ -55724,6 +55724,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   2.803 秒、新分支 race 3.064 秒、完整 server/etcd 193.693 秒与 vet 均 GREEN。滚动后三副本零重启，
   终态 KubeBrain/PD/TiKV 全部 Ready 且 fault 规则已清理。
 
+- A4955 把 Snapshot 的 backend 探针与 TiKV quorum-loss 可用性从间接假设收紧为真实门禁。
+  `231d8d52` 在 TSO 探针之后增加固定内部 key 的 TiKV 点读，避免 PD TSO 尚可用、TiKV 数据面已经
+  失效时误选 live capture；新增独立 `tikv-quorum-loss-snapshot` profile，同时要求普通 mutation
+  不可用而 GC-protected checkpoint artifact 可下载。首轮实跑暴露 client-go 的 global stale read
+  在首次错误后强制 leader-only，`6ce60b8d` 让 cache-only protected route 遍历全部预热副本。
+
+  后续 RED 又固定了三层原先未被单 Store 故障覆盖的边界：`ac20fe52` 不再忽略相关 voter Store 的
+  `safe-ts=0` 或缺失条目，只有每个副本都有非零水位才发布 checkpoint；`97cfd168` 让 protected
+  Region 记住最近成功服务历史读的 peer，避免每个 key 重付黑洞 leader timeout；`8c314cf1` 进一步
+  按 immutable timestamp 把同一 checkpoint 的 Get/BatchGet/Iter 固定到同一 txnkv client/Region
+  cache，解决多 client round-robin 丢失该成功路由的问题，普通 snapshot 仍继续轮询分流。回归覆盖
+  全副本遍历、单副本 timeout、成功 peer 粘滞、零/缺失 safe-ts fail-closed 与 protected client
+  affinity，并通过 client locate/txnsnapshot 全包、race、storage/etcd Snapshot 定向测试和 vet。
+
+  精确镜像 `kubebrain:a4975-snapshot-client-affinity`（完整 revision
+  `8c314cf1bc9aa07bb3a6403173099feaa9e72c63`，manifest list
+  `sha256:f3067f2a9ca730434132db3aefd70e0471b1f5f2cb81fa82171556fc257cc655`）在同时隔离
+  `kb-tikv-0` 与 `kb-tikv-1`、仅剩一个无 quorum follower 的窗口内，先观察 mutation
+  `DeadlineExceeded`，随后约 **5.30 秒**完成 protected Snapshot 下载；完整门禁 **129.70 秒
+  GREEN**，恢复后当前 Snapshot 约 0.39 秒完成。终态三个 KubeBrain Ready、零重启，TiKV 状态恢复，
+  iptables fault 规则与 13379 port-forward 均已清理。该保证仍仅覆盖故障前完整发布且 GC-protected、
+  全 Region 预热的 checkpoint；没有有效 checkpoint 时继续 fail closed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
