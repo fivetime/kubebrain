@@ -267,6 +267,31 @@ func TestBackendHashHonorsCancellation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestBackendHashUsesPinnedSnapshotTimestampAndRevision(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	rawStore := memkv.NewKvStorage()
+	store := &rangeSnapshotTraceStorage{KvStorage: rawStore}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metricsmock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+
+	store.resetTrace()
+	const timestamp = uint64(987654321)
+	const revision = uint64(77)
+	pinned := WithSerializableCheckpoint(context.Background(), SerializableCheckpoint{
+		Revision: revision, Timestamp: timestamp,
+	})
+	// A protected immutable snapshot must not queue behind a live logical write.
+	b.logicalWriteMu.Lock()
+	result, err := b.Hash(pinned)
+	b.logicalWriteMu.Unlock()
+	require.NoError(t, err)
+	require.Equal(t, int64(revision), result.CurrentRevision)
+	require.Equal(t, []uint64{timestamp}, store.iterTimestamps)
+}
+
 func TestHashKVIsStableAcrossPhysicalCompaction(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	key := []byte(prefix + "/hash/compact")

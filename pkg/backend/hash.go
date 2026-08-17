@@ -28,12 +28,19 @@ type BackendHashResult struct {
 // internal service metadata are deliberately part of this diagnostic value,
 // matching etcd's distinction between backend Hash and user-key HashKV.
 func (b *backend) Hash(ctx context.Context) (result BackendHashResult, retErr error) {
-	b.logicalWriteMu.Lock()
-	defer b.logicalWriteMu.Unlock()
+	checkpoint, pinned := SerializableCheckpointFromContext(ctx)
+	if !pinned {
+		b.logicalWriteMu.Lock()
+		defer b.logicalWriteMu.Unlock()
+	}
 	if err := ctx.Err(); err != nil {
 		return BackendHashResult{}, err
 	}
-	it, err := b.kv.Iter(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), 0, 0)
+	timestamp := uint64(0)
+	if pinned {
+		timestamp = checkpoint.Timestamp
+	}
+	it, err := b.kv.Iter(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), timestamp, 0)
 	if err != nil {
 		return BackendHashResult{}, err
 	}

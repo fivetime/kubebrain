@@ -93,6 +93,30 @@ type checkpointHashKVBackendShim struct {
 	checkpoint backend.SerializableCheckpoint
 }
 
+type checkpointHashBackendShim struct {
+	BackendShim
+	t           *testing.T
+	checkpoint  backend.SerializableCheckpoint
+	liveErr     error
+	liveCalls   int
+	pinnedCalls int
+}
+
+func (b *checkpointHashBackendShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
+	return b.checkpoint, nil
+}
+
+func (b *checkpointHashBackendShim) Hash(ctx context.Context) (backend.BackendHashResult, error) {
+	checkpoint, pinned := backend.SerializableCheckpointFromContext(ctx)
+	if !pinned {
+		b.liveCalls++
+		return backend.BackendHashResult{}, b.liveErr
+	}
+	require.Equal(b.t, b.checkpoint, checkpoint)
+	b.pinnedCalls++
+	return backend.BackendHashResult{Hash: 73, CurrentRevision: int64(checkpoint.Revision)}, nil
+}
+
 type coldStatusRevisionBackendShim struct {
 	BackendShim
 	current    uint64
@@ -1021,6 +1045,55 @@ func TestMaintenanceFixedRevisionHashKVUsesProtectedCheckpoint(t *testing.T) {
 		"entered", "checkpoint_attached", "local", "local_entered", "auth_complete",
 		"refresh_complete", "revision_validated", "backend_started", "backend_complete",
 	}, stages)
+}
+
+func TestMaintenanceHashFallsBackToProtectedCheckpointWhenBackendIsUnavailable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Hash(context.Background(), &etcdserverpb.HashRequest{})
+	require.NoError(t, err, "prime the complete member-local auth snapshot")
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 91, Timestamp: 1234, CompactRevision: 7, AuthRevision: 1,
+		ValidUntil: time.Now().Add(time.Minute),
+	}
+	shim := &checkpointHashBackendShim{
+		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: storage.ErrUnavailable,
+	}
+	server.backend = shim
+	server.auth.repo.backend = shim
+	server.tokens.repo.backend = shim
+	server.tokens.snapshots = newAuthSnapshotCache(shim)
+	server.peers = testPeerService{isLeader: true}
+
+	response, err := server.Hash(context.Background(), &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	require.Equal(t, uint32(73), response.Hash)
+	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+	require.Equal(t, 1, shim.liveCalls)
+	require.Equal(t, 1, shim.pinnedCalls)
+}
+
+func TestMaintenanceHashDoesNotMaskDeterministicBackendFailureWithCheckpoint(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 91, Timestamp: 1234, CompactRevision: 7, ValidUntil: time.Now().Add(time.Minute),
+	}
+	wantErr := status.Error(codes.DataLoss, "corrupt backend hash")
+	shim := &checkpointHashBackendShim{
+		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: wantErr,
+	}
+	server.backend = shim
+	server.auth.repo.backend = shim
+	server.tokens.repo.backend = shim
+	server.tokens.snapshots = newAuthSnapshotCache(shim)
+	server.peers = testPeerService{isLeader: true}
+
+	response, err := server.Hash(context.Background(), &etcdserverpb.HashRequest{})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, 1, shim.liveCalls)
+	require.Zero(t, shim.pinnedCalls)
 }
 
 func TestMaintenanceHashStableUntilWriteAndChangesAfterWrite(t *testing.T) {

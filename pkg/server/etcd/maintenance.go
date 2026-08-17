@@ -538,6 +538,20 @@ func authorizedPeerHashKVProxy(ctx context.Context) bool {
 
 func (s *RPCServer) Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
 	s.metricCli.EmitCounter("maintenance.hash", 1)
+	if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+		liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
+		response, err := s.hashOnce(liveCtx, req)
+		cancel()
+		if err == nil || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
+			return response, err
+		}
+		s.metricCli.EmitCounter("maintenance.hash.checkpoint_fallback", 1)
+		return s.localMaintenanceHash(backend.WithSerializableCheckpoint(ctx, checkpoint), false)
+	}
+	return s.hashOnce(ctx, req)
+}
+
+func (s *RPCServer) hashOnce(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
 		// Race the local shared TiKV history with the leader peer. This preserves
@@ -549,7 +563,20 @@ func (s *RPCServer) Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*e
 }
 
 func (s *RPCServer) localMaintenanceHash(ctx context.Context, refresh bool) (*etcdserverpb.HashResponse, error) {
-	if err := s.requireAuthenticated(ctx, true); err != nil {
+	if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
+		if caller, err, complete := s.authCallerFromCachedContext(ctx); complete {
+			if err != nil {
+				return nil, err
+			}
+			if caller != nil {
+				if err := caller.adminError(); err != nil {
+					return nil, err
+				}
+			}
+		} else if err := s.requireAuthenticated(ctx, true); err != nil {
+			return nil, err
+		}
+	} else if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
 	// KubeBrain's committed revision is cached per replica even though the MVCC
