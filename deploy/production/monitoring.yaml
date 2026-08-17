@@ -357,8 +357,16 @@ spec:
           expr: count(kubebrain_dbaas:object_store_request_count:current{request_class!~"write|list|read|delete"}) or on() vector(0)
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_store_invalid_request_values:count
+          expr: count((kubebrain_dbaas:object_store_request_count:current < 0) or (kubebrain_dbaas:object_store_request_count:current > 9007199254740992) or (kubebrain_dbaas:object_store_request_count:current != floor(kubebrain_dbaas:object_store_request_count:current))) or on() vector(0)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_store_invalid_period_end_values:count
+          expr: count((kubebrain_dbaas:object_store_request_period_end_seconds:current < 0) or (kubebrain_dbaas:object_store_request_period_end_seconds:current > 9007199254740992) or (kubebrain_dbaas:object_store_request_period_end_seconds:current != floor(kubebrain_dbaas:object_store_request_period_end_seconds:current)) or (kubebrain_dbaas:object_store_request_period_end_seconds:current % 3600 != 0)) or on() vector(0)
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:object_request_data_complete
-          expr: (kubebrain_dbaas:object_store_write_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_list_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_read_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_delete_request_sources:count == bool 1) * (kubebrain_dbaas:object_request_period_end_sources:count == bool 1) * (kubebrain_dbaas:object_store_unexpected_request_classes:count == bool 0)
+          expr: (kubebrain_dbaas:object_store_write_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_list_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_read_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_delete_request_sources:count == bool 1) * (kubebrain_dbaas:object_request_period_end_sources:count == bool 1) * (kubebrain_dbaas:object_store_unexpected_request_classes:count == bool 0) * (kubebrain_dbaas:object_store_invalid_request_values:count == bool 0) * (kubebrain_dbaas:object_store_invalid_period_end_values:count == bool 0)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:metering_data_complete
@@ -776,7 +784,7 @@ spec:
             severity: critical
           annotations:
             summary: KubeBrain object request billing inputs are incomplete
-            description: "The provider request exporter does not expose within 60 seconds exactly one finalized hourly count for every write, list, read, and delete class plus exactly one period-end series, exposes any missing or unexpected request_class, or the completeness recording series itself is absent. All fresh source labels are retained so taxonomy drift cannot be hidden by the allowlist. Raw sample freshness is checked before recording so Prometheus lookback values cannot be re-timestamped as current billing evidence. Request billing must fail closed."
+            description: "The provider request exporter does not expose within 60 seconds exactly one finalized hourly count for every write, list, read, and delete class plus exactly one period-end series, exposes any missing or unexpected request_class, publishes a negative, fractional, or greater-than-2^53 value, publishes a period-end outside an exact UTC hour boundary, or the completeness recording series itself is absent. All fresh source labels are retained so taxonomy drift cannot be hidden by the allowlist. Canonical value checks run before hour completeness so invalid billing inputs cannot accumulate an apparently complete slot. Raw sample freshness is checked before recording so Prometheus lookback values cannot be re-timestamped as current billing evidence. Request billing must fail closed."
         - alert: KubeBrainLogicalBackupMetricsMissing
           expr: count(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current) != 1 or count(kubebrain_dbaas:logical_backup_artifact_bytes:current) != 1 or count(kubebrain_dbaas:logical_backup_records:current) != 1 or count(kubebrain_dbaas:logical_backup_leases:current) != 1 or count(kubebrain_dbaas:logical_backup_snapshot_revision:current) != 1
           for: 1h

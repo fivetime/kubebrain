@@ -1768,7 +1768,10 @@ period-end 必须是对应 UTC 小时边界。
 recording rules 先在 raw exporter 层要求四类 count 与 period-end 的 Prometheus 样本均不超过 60 秒，
 request-count current recording 保留所有来源和 `request_class` 标签，并独立计数不属于
 `write|list|read|delete`（包括缺失/空 label）的新鲜 series；任一未知分类都会让 minute completeness 为 0，
-不能通过 allowlist 过滤静默丢弃。随后对五个要求的新鲜源分别计数，缺失时用显式零值保持告警可见；只有整个小时至少
+不能通过 allowlist 过滤静默丢弃。request count 还必须是 `[0,2^53]` 内的精确整数；period-end 除同一
+整数值域外还必须满足 `% 3600 == 0`，即精确 UTC 小时边界。任一非法值在 minute completeness 前计数并
+fail closed，不能先积累一小时“完整”历史再只由归档器拒绝。随后对五个要求的新鲜源分别计数，缺失时
+用显式零值保持告警可见；只有整个小时至少
 60 次 evaluation 都恰好存在五个唯一源时，
 `kubebrain_dbaas:object_request_hour_complete` 才为 1。小时请求规则只转发 exporter
 提供的 finalized gauge，不对 counter 做 `increase` 或舍入。
