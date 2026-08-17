@@ -56144,6 +56144,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 zero-pressure annotation，production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建
   数据面镜像。
 
+- A4988 修复 metering completeness 与实际 usage 聚合使用不同去重语义导致的重复计费。A4986/A4987 已将
+  source count 按 Pod/container/interface 去重，但瞬时 CPU/memory/network 及小时 CPU/network recording
+  仍直接 `sum(raw series)`；同一实体存在重复采集时完整性可为 1，账单却成倍增加。现 CPU/memory 统一先按
+  `(namespace,pod,container)`、network 先按 `(namespace,pod,interface)` 取最大值，再聚合；相同规则覆盖
+  5 分钟瞬时 rate 和 1 小时原始 counter increase。memory pressure 与 CPU throttling 告警的两侧 operand
+  也按同一 identity 去重，避免 HA 重复造成 many-to-many 或重复告警。精确 manifest 门禁固定九条修改后的
+  PromQL，production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
