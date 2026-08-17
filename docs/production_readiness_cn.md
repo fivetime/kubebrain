@@ -1631,11 +1631,14 @@ output 时，若目标文件已存在，只读取受远端 metadata/digest 保�
 - `kubebrain_dbaas:logical_backup_artifact_bytes:last` 和
   `kubebrain_dbaas:logical_backup_age_seconds:last`。
 
-每条序列固定带 `dbaas_instance="kubebrain"`，只聚合本实例的 3 个 KubeBrain、
-3 个 PD、3 个 TiKV 容器和 6 个存储 PVC。部署模板化时必须同步替换实例标签、Pod/PVC
-选择器和备份 `BACKUP_INSTANCE`。规则同时输出 8 个 `*:sources:count` 和
-`kubebrain_dbaas:metering_data_complete`；只有 9 个容器、6 个 PVC 及唯一备份
-artifact/timestamp 源全部存在时，完整性才为 1，8 条计量输入才会产出。控制面必须把
+每条序列固定带 `dbaas_instance="kubebrain"`，按数字 StatefulSet ordinal 聚合本实例的全部
+KubeBrain、PD、TiKV 容器和 PD/TiKV 存储 PVC，不把 restore/repair 等非数字后缀工作负载纳入账单。
+部署模板化时必须同步替换实例标签、Pod/PVC 选择器和备份 `BACKUP_INSTANCE`。规则同时从
+`kube_statefulset_replicas` 输出三条期望来源数、容器期望副本总数和存储期望副本数，并输出
+8 个 `*:sources:count` 和 `kubebrain_dbaas:metering_data_complete`。只有 KubeBrain/PD/TiKV 三个 StatefulSet
+期望来源全部存在、容器/PVC 实际 source 数分别与当前期望副本数精确相等，且唯一备份
+artifact/timestamp 源全部存在时，完整性才为 1，8 条计量输入才会产出。扩缩容期间任一新副本指标尚未齐备时
+都 fail closed；KSM 期望来源缺失也不能用零实际 source 伪造完整。控制面必须把
 完整性不为 1 或计量序列缺失的区间标为不可计费并 fail closed，禁止按零用量结算。
 规则还生成小时窗口序列：
 
