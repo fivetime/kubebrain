@@ -1937,10 +1937,20 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	}
 	require.NotNil(t, readinessRule)
 	require.Equal(t,
-		`(kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"} or on() vector(0)) < 3`,
+		`absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:kubebrain_replicas:expected) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:kubebrain_replicas:expected < 3 or (max by (namespace, statefulset) (kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)) != on() kubebrain_dbaas:kubebrain_replicas:expected`,
 		readinessRule["expr"],
 	)
 	require.NotContains(t, readinessRule["expr"], "kube_deployment_")
+	insufficientRule := prometheusRuleByAlert(t, groups, "KubeBrainInsufficientReplicas")
+	require.Equal(t,
+		`absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:kubebrain_replicas:expected) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:kubebrain_replicas:expected < 3 or count(max by (instance) (up{namespace="kubebrain-system",service="kubebrain-peer"} == 1)) != on() kubebrain_dbaas:kubebrain_replicas:expected`,
+		insufficientRule["expr"])
+	for _, rule := range []map[string]any{readinessRule, insufficientRule} {
+		description := rule["annotations"].(map[string]any)["description"].(string)
+		require.Contains(t, description, "production minimum of 3 replicas")
+		require.Contains(t, description, "exactly match the current expected replica count")
+		require.Contains(t, description, "expectation chain is absent")
+	}
 
 	transactionPathRule := prometheusRuleByAlert(t, groups,
 		"KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane")
@@ -2202,6 +2212,7 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	expected := map[string]string{
 		"kubebrain_dbaas:replica_expectation_sources:count":         `count(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="kubebrain-system",statefulset="kubebrain"})) + count(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"}))`,
 		"kubebrain_dbaas:compute_replicas:expected":                 `(sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="kubebrain-system",statefulset="kubebrain"})) or on() vector(0)) + (sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"})) or on() vector(0))`,
+		"kubebrain_dbaas:kubebrain_replicas:expected":               `sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="kubebrain-system",statefulset="kubebrain"})) or on() vector(0)`,
 		"kubebrain_dbaas:storage_replicas:expected":                 `sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"})) or on() vector(0)`,
 		"kubebrain_dbaas:storage_volumes:expected":                  `count(max by (namespace, persistentvolumeclaim) (kube_persistentvolumeclaim_info{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}))`,
 		"kubebrain_dbaas:storage_requested_sources:count":           `count(max by (namespace, persistentvolumeclaim) (kube_persistentvolumeclaim_resource_requests_storage_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}))`,

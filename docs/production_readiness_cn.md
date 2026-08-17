@@ -83,6 +83,12 @@ bootstrap 的客户端在下一次 AutoSync 后整体断连。实例发布门禁
 在发布、扩缩和升级门禁中逐字校验。复用或变更 keyspace 会让实例读到其他租户数据，或让
 原数据看似消失，因此不能依赖默认空 keyspace，也不能把 namespace 名直接当作跨集群唯一值。
 
+生产 KubeBrain 可用性同时保留最低 HA 与扩缩容完整性。`KubeBrainInsufficientReplicas` 将按
+`instance` 去重的 peer `up==1` target 数与当前 KubeBrain StatefulSet 期望精确对账；
+`KubeBrainReadinessUnavailable` 将 HA kube-state-metrics 按 `(namespace,statefulset)` 去重后的 Ready 数与同一期望精确对账。
+两者都要求期望不少于 3，且期望 recording chain 必须存在；五副本拓扑中一个 target 或 Ready 副本缺失仍会
+critical，不会因剩余数仍大于 3 而静默。
+
 ## 租户逻辑配额
 
 标准 dedicated 实例必须显式设置 `--quota-backend-bytes`。production 明文和 TLS 基线均
