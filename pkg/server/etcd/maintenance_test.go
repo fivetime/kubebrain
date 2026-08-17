@@ -116,7 +116,7 @@ func (b *checkpointDefragmentBackendShim) GetSerializableCheckpoint() (backend.S
 func (b *checkpointDefragmentBackendShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
 	if bytes.Equal(key, authConfigKey) {
 		if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
-			return b.BackendShim.InternalGet(ctx, key)
+			return nil, storage.ErrKeyNotFound
 		}
 		b.liveCalls++
 		return nil, b.liveErr
