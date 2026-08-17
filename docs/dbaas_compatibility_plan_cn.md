@@ -56259,6 +56259,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   scrape 也不再制造重复 series。精确 manifest 门禁固定三条 recording 和全部下游 PromQL，freshness
   annotation 与 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5001 补齐 health checkpoint fallback counter 自身的新鲜度与 HA 去重。A4999 已用新鲜 Ready UID 排除
+  被替换 Pod，但当前 Ready Pod 的应用 scrape 停止后，旧 `health_checkpoint_fallback` series 仍可在
+  lookback 内通过三类完整性，并让 10 分钟 increase 继续出现；重复采集也会放大事件总数。现新增要求
+  sample age 不超过 60 秒、按 `(namespace,pod,uid,check)` 去重的 current counter recording。完整性只计
+  该 recording；事件告警先按同一身份去重 raw increase，再要求对应 current counter 与 current Ready UID
+  同时存在。停止 scrape、旧 Pod 与 HA duplicate 均不能伪造完整性或放大 fallback。精确 manifest 门禁固定
+  recording、两条下游 PromQL 与 annotation，production readiness 已同步；完整 `deploy/production` 测试
+  通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
