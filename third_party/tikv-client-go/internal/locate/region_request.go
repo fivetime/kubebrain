@@ -659,6 +659,21 @@ func (state *accessFollower) onSendFailure(bo *retry.Backoffer, selector *replic
 	}
 }
 
+func (state *accessFollower) onSendSuccess(selector *replicaSelector) {
+	if !selector.cacheOnlyRegionRead {
+		return
+	}
+	// Protected snapshots can issue many sequential point reads while the
+	// Region leader is blackholed. Remember the peer that just served the
+	// immutable stale read in the protected Region copy, so each following key
+	// does not pay the dead leader (and other dead peers) timeout again. This
+	// does not mutate the ordinary Region cache or claim that the Raft leader
+	// changed; workTiKVIdx is only the starting peer for this protected route.
+	if replica := selector.targetReplica(); replica != nil {
+		selector.region.switchWorkLeaderToPeer(replica.peer)
+	}
+}
+
 func (state *accessFollower) isCandidate(idx AccessIndex, replica *replica) bool {
 	// the epoch is staled or retry exhausted.
 	if replica.isEpochStale() || replica.isExhausted(1) {

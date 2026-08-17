@@ -229,6 +229,53 @@ func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadBoundsEachReplica
 	s.Equal(int32(3), attempts.Load())
 }
 
+func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadRemembersSuccessfulReplica() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("key"))
+	s.NoError(err)
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("key")}))
+
+	var attempts []string
+	s.regionRequestSender.client = &fnClient{fn: func(
+		_ context.Context, addr string, _ *tikvrpc.Request, _ time.Duration,
+	) (*tikvrpc.Response, error) {
+		attempts = append(attempts, addr)
+		if len(attempts) < 3 {
+			return nil, errors.New("partitioned")
+		}
+		return &tikvrpc.Response{Resp: &kvrpcpb.GetResponse{}}, nil
+	}}
+	unreachableFn := func(*Store, *retry.Backoffer) livenessState { return unreachable }
+	s.cache.testingKnobs.mockRequestLiveness.Store((*livenessFunc)(&unreachableFn))
+
+	newRequest := func() *tikvrpc.Request {
+		seed := uint32(0)
+		req := tikvrpc.NewReplicaReadRequest(tikvrpc.CmdGet, &kvrpcpb.GetRequest{
+			Key: []byte("key"), Version: 42,
+		}, kv.ReplicaReadMixed, &seed)
+		req.CacheOnlyRegionRead = true
+		req.ReadReplicaScope = oracle.GlobalTxnScope
+		req.TxnScope = oracle.GlobalTxnScope
+		req.EnableStaleRead()
+		return req
+	}
+	resp, _, _, err := s.regionRequestSender.SendReqCtx(
+		s.bo, newRequest(), loc.Region, client.ReadTimeoutShort, tikvrpc.TiKV,
+	)
+	s.NoError(err)
+	s.NotNil(resp)
+	s.Len(attempts, 3)
+	successfulAddr := attempts[2]
+
+	secondSender := NewRegionRequestSender(s.cache, s.regionRequestSender.client)
+	resp, _, _, err = secondSender.SendReqCtx(
+		s.bo, newRequest(), loc.Region, client.ReadTimeoutShort, tikvrpc.TiKV,
+	)
+	s.NoError(err)
+	s.NotNil(resp)
+	s.Len(attempts, 4)
+	s.Equal(successfulAddr, attempts[3])
+}
+
 func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadInstallsEpochNotMatchTopology() {
 	loc, err := s.cache.LocateKey(s.bo, []byte("x"))
 	s.NoError(err)
