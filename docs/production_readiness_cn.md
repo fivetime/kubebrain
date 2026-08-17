@@ -1671,14 +1671,15 @@ source count 或瞬时账单。去重同时应用于原始 counter 的小时 `in
 部署模板化时必须同步替换实例标签、Pod/PVC 选择器和备份 `BACKUP_INSTANCE`。规则同时从
 `kube_statefulset_replicas` 先生成 `kubebrain_dbaas:statefulset_replicas:current`：仅接受 60 秒内样本并按
 `(namespace,statefulset)` 去重。三条期望来源数、容器期望副本总数、KubeBrain/PD/TiKV 分项期望和活跃
-存储副本数全部从该统一拓扑记录派生；KSM lookback 旧值不能继续证明动态拓扑完整。另以去重的
-`kube_persistentvolumeclaim_info` 输出当前匹配 PVC 对象数，以
-`kube_persistentvolumeclaim_resource_requests_storage_bytes` 输出所有这些 PVC 的 requested-storage source 数和总量，并输出
+存储副本数全部从该统一拓扑记录派生；KSM lookback 旧值不能继续证明动态拓扑完整。PVC info 与
+requested-storage 也先要求 60 秒内样本并按 `(namespace,persistentvolumeclaim)` 发布实体 recording；双向
+`unless` 要求两侧 PVC identity 集合完全相等，不能仅靠相同基数通过。requested-storage 总量只从这条已
+对账的新鲜 recording 聚合，并输出
 8 个计费必需的 `*:sources:count`、2 个 CPU throttling completeness source count、4 个网络
 error/drop completeness source count 和
 `kubebrain_dbaas:metering_data_complete`。只有 KubeBrain/PD/TiKV 三个 StatefulSet
 期望来源全部存在、容器 source 与当前期望副本数精确相等、PVC requested-storage source 与当前 PVC
-对象数精确相等（且 PVC 对象不少于活跃存储副本）、kubelet capacity/available source 与活跃存储副本数精确相等，且唯一备份
+对象数及 identity 集合精确相等（且 PVC 对象不少于活跃存储副本）、kubelet capacity/available source 与活跃存储副本数精确相等，且唯一备份
 artifact/timestamp 源全部存在时，完整性才为 1，8 条计量输入才会产出。扩缩容期间任一新副本指标尚未齐备时
 都 fail closed；缩容后保留的 PVC 在实际删除前仍纳入 requested provisioned storage 聚合和计费，即使卸载后已无 kubelet
 volume stats。kubelet capacity/available 原始 series 必须在 60 秒内收到样本，随后才按
