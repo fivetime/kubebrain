@@ -56355,6 +56355,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证据。精确 manifest 门禁固定完整 mismatch/completeness PromQL 与 pre-hour annotation，production
   readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5012 关闭 CPU throttling 与 memory pressure 告警的非法分母 fail-open。此前 resource completeness 只
+  比较 family source 数；CFS total-period rate 为 0/NaN/Inf、throttled 为负或大于 total、memory limit 为
+  0/非法值时，比率表达式可为空或无意义，却仍被解释为指标完整。现新增 resource invalid-value count：CPU
+  usage/throttled/total rate 必须有限、非负且不超过 `2^53`，total 必须为正且 throttled 不超过 total；
+  working-set/limit 必须为不超过 `2^53` 的精确字节整数，working-set 非负、limit 为正。resource missing
+  告警同时要求 mismatch 为零。精确 manifest 门禁固定完整 value/cross-rate PromQL、alert 与 invalid-
+  denominator annotation，production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建
+  数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
