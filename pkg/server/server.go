@@ -876,6 +876,7 @@ func (s *server) httpHealthHandler(w http.ResponseWriter, req *http.Request) {
 		alarmCancel()
 	}
 	if alarmCheckpointReady && isHealthCheckpointFallbackError(alarmErr) && req.Context().Err() == nil {
+		s.recordHealthCheckpointFallback("alarm")
 		alarmReason, alarmErr = s.healthAlarmFailure(
 			backend.WithSerializableCheckpoint(req.Context(), alarmCheckpoint), excludedAlarms,
 		)
@@ -908,6 +909,13 @@ func (s *server) recordLegacyHealth(success bool) {
 		name = "etcd.server.health_success"
 	}
 	_ = s.metricCli.EmitCounter(name, 1)
+}
+
+func (s *server) recordHealthCheckpointFallback(check string) {
+	if s.metricCli == nil {
+		return
+	}
+	_ = s.metricCli.EmitCounter("health.checkpoint_fallback", 1, metrics.Tag("check", check))
 }
 
 func (s *server) initLegacyHealthMetrics() {
@@ -1028,6 +1036,7 @@ func (s *server) readHealthCheck(ctx context.Context, serializable bool) error {
 			if err == nil || checkCtx.Err() != nil || !isHealthCheckpointFallbackError(err) {
 				return err
 			}
+			s.recordHealthCheckpointFallback("serializable_read")
 			_, err = s.backend.Get(
 				backend.WithSerializableCheckpoint(checkCtx, checkpoint),
 				&proto.GetRequest{Key: []byte{0}},
@@ -1077,6 +1086,7 @@ func (s *server) corruptHealthCheck(ctx context.Context) error {
 		if err == nil || checkCtx.Err() != nil || !isHealthCheckpointFallbackError(err) {
 			return err
 		}
+		s.recordHealthCheckpointFallback("data_corruption")
 		return check(backend.WithSerializableCheckpoint(checkCtx, checkpoint))
 	}
 	return check(checkCtx)

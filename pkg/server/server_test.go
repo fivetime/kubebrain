@@ -228,6 +228,18 @@ func (r *healthMetricRecorder) counterValues(name string) []interface{} {
 	return values
 }
 
+func (r *healthMetricRecorder) counterEvents(name string) []healthMetricEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var events []healthMetricEvent
+	for _, event := range r.events {
+		if event.kind == "counter" && event.name == name {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
 func (r *healthMetricRecorder) gaugeValues(name string) []interface{} {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1285,7 +1297,8 @@ func TestSerializableHTTPHealthFallsBackToProtectedCheckpoint(t *testing.T) {
 		},
 		liveErr: storage.ErrUnavailable,
 	}
-	s := &server{backend: shim, leaderElection: &leader.Stub{}, metricCli: metricsClient}
+	healthMetrics := &healthMetricRecorder{}
+	s := &server{backend: shim, leaderElection: &leader.Stub{}, metricCli: healthMetrics}
 	handlers := s.GetClientHttpHandlers()
 
 	legacy := httptest.NewRecorder()
@@ -1306,6 +1319,18 @@ func TestSerializableHTTPHealthFallsBackToProtectedCheckpoint(t *testing.T) {
 	require.Contains(t, readyz.Body.String(), "[+]data_corruption ok")
 	require.Contains(t, readyz.Body.String(), "[+]serializable_read ok")
 	require.Contains(t, readyz.Body.String(), "[-]linearizable_read failed: RAFT NO LEADER")
+	require.Equal(t, []healthMetricEvent{
+		{kind: "counter", name: "health.checkpoint_fallback", value: 1,
+			tags: []metrics.T{metrics.Tag("check", "alarm")}},
+		{kind: "counter", name: "health.checkpoint_fallback", value: 1,
+			tags: []metrics.T{metrics.Tag("check", "serializable_read")}},
+		{kind: "counter", name: "health.checkpoint_fallback", value: 1,
+			tags: []metrics.T{metrics.Tag("check", "serializable_read")}},
+		{kind: "counter", name: "health.checkpoint_fallback", value: 1,
+			tags: []metrics.T{metrics.Tag("check", "data_corruption")}},
+		{kind: "counter", name: "health.checkpoint_fallback", value: 1,
+			tags: []metrics.T{metrics.Tag("check", "serializable_read")}},
+	}, healthMetrics.counterEvents("health.checkpoint_fallback"))
 }
 
 func TestSerializableHTTPHealthDoesNotMaskDeterministicFailureWithCheckpoint(t *testing.T) {
@@ -1323,7 +1348,8 @@ func TestSerializableHTTPHealthDoesNotMaskDeterministicFailureWithCheckpoint(t *
 		},
 		liveErr: wantErr,
 	}
-	s := &server{backend: shim, leaderElection: &leader.Stub{}, metricCli: metricsClient}
+	healthMetrics := &healthMetricRecorder{}
+	s := &server{backend: shim, leaderElection: &leader.Stub{}, metricCli: healthMetrics}
 	handlers := s.GetClientHttpHandlers()
 
 	legacy := httptest.NewRecorder()
@@ -1336,6 +1362,33 @@ func TestSerializableHTTPHealthDoesNotMaskDeterministicFailureWithCheckpoint(t *
 	require.Equal(t, http.StatusServiceUnavailable, livez.Code)
 	require.Contains(t, livez.Body.String(), "serializable_read failed: rpc error: code = DataLoss")
 	require.Zero(t, shim.pinnedReads)
+	require.Empty(t, healthMetrics.counterEvents("health.checkpoint_fallback"))
+}
+
+func TestSerializableHTTPHealthDoesNotCountAvailableCheckpointWithoutFallback(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metricsClient := mock.NewMinimalMetrics(ctrl)
+	base := backend.NewBackend(imemkv.NewKvStorage(), backend.Config{
+		Prefix: "/registry", Identity: "checkpoint-health-live-test",
+	}, metricsClient)
+	t.Cleanup(func() { require.NoError(t, base.(interface{ Close() error }).Close()) })
+	shim := &checkpointHealthBackend{
+		Backend: base,
+		checkpoint: backend.SerializableCheckpoint{
+			Revision: 37, Timestamp: 101, ValidUntil: time.Now().Add(time.Minute),
+		},
+	}
+	healthMetrics := &healthMetricRecorder{}
+	s := &server{backend: shim, leaderElection: &leader.Stub{}, metricCli: healthMetrics}
+	handlers := s.GetClientHttpHandlers()
+
+	legacy := httptest.NewRecorder()
+	handlers["/health"].ServeHTTP(legacy, httptest.NewRequest(http.MethodGet, "/health?serializable=true", nil))
+	require.Equal(t, http.StatusOK, legacy.Code)
+	livez := httptest.NewRecorder()
+	handlers["/livez"].ServeHTTP(livez, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	require.Equal(t, http.StatusOK, livez.Code)
+	require.Empty(t, healthMetrics.counterEvents("health.checkpoint_fallback"))
 }
 
 func TestEtcdHealthCheckHandlersAvailableOnInfoPort(t *testing.T) {
