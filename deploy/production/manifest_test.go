@@ -2266,14 +2266,15 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	require.Equal(t, "1m", meteringGroup["interval"])
 
 	expected := map[string]string{
-		"kubebrain_dbaas:replica_expectation_sources:count":                  `count(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="kubebrain-system",statefulset="kubebrain"})) + count(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"}))`,
-		"kubebrain_dbaas:compute_replicas:expected":                          `(sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="kubebrain-system",statefulset="kubebrain"})) or on() vector(0)) + (sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"})) or on() vector(0))`,
-		"kubebrain_dbaas:kubebrain_replicas:expected":                        `sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="kubebrain-system",statefulset="kubebrain"})) or on() vector(0)`,
-		"kubebrain_dbaas:storage_replicas:expected":                          `sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"})) or on() vector(0)`,
+		"kubebrain_dbaas:statefulset_replicas:current":                       `max by (namespace, statefulset) (kube_statefulset_replicas{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"} and (time() - timestamp(kube_statefulset_replicas{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"}) <= 60))`,
+		"kubebrain_dbaas:replica_expectation_sources:count":                  `count(kubebrain_dbaas:statefulset_replicas:current)`,
+		"kubebrain_dbaas:compute_replicas:expected":                          `sum(kubebrain_dbaas:statefulset_replicas:current) or on() vector(0)`,
+		"kubebrain_dbaas:kubebrain_replicas:expected":                        `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)`,
+		"kubebrain_dbaas:storage_replicas:expected":                          `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"}) or on() vector(0)`,
 		"kubebrain_dbaas:storage_volumes:expected":                           `count(max by (namespace, persistentvolumeclaim) (kube_persistentvolumeclaim_info{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}))`,
 		"kubebrain_dbaas:storage_requested_sources:count":                    `count(max by (namespace, persistentvolumeclaim) (kube_persistentvolumeclaim_resource_requests_storage_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}))`,
-		"kubebrain_dbaas:pd_replicas:expected":                               `sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset="kb-pd"})) or on() vector(0)`,
-		"kubebrain_dbaas:tikv_replicas:expected":                             `sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset="kb-tikv"})) or on() vector(0)`,
+		"kubebrain_dbaas:pd_replicas:expected":                               `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="tidb-cluster",statefulset="kb-pd"}) or on() vector(0)`,
+		"kubebrain_dbaas:tikv_replicas:expected":                             `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="tidb-cluster",statefulset="kb-tikv"}) or on() vector(0)`,
 		"kubebrain_dbaas:cpu_usage_cores:max_by_container":                   `max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""}[5m]) and (time() - timestamp(container_cpu_usage_seconds_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""}) <= 60))`,
 		"kubebrain_dbaas:memory_working_set_bytes:max_by_container":          `max by (namespace, pod, container) (container_memory_working_set_bytes{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""} and (time() - timestamp(container_memory_working_set_bytes{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""}) <= 60))`,
 		"kubebrain_dbaas:memory_limit_bytes:max_by_container":                `max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",resource="memory",unit="byte"} and (time() - timestamp(kube_pod_container_resource_limits{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",resource="memory",unit="byte"}) <= 60))`,
@@ -2417,6 +2418,17 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"up",
 	} {
 		emitted[external] = struct{}{}
+	}
+	for _, rawGroup := range groups {
+		group := rawGroup.(map[string]any)
+		rules, ok := group["rules"].([]any)
+		require.True(t, ok)
+		for _, rawRule := range rules {
+			candidate := rawRule.(map[string]any)
+			if record, ok := candidate["record"].(string); ok {
+				emitted[record] = struct{}{}
+			}
+		}
 	}
 
 	metricRE := regexp.MustCompile(`\b([a-zA-Z_:][a-zA-Z0-9_:]*)\{`)

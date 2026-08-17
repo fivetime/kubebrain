@@ -81,20 +81,24 @@ spec:
     - name: kubebrain.metering
       interval: 1m
       rules:
+        - record: kubebrain_dbaas:statefulset_replicas:current
+          expr: max by (namespace, statefulset) (kube_statefulset_replicas{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"} and (time() - timestamp(kube_statefulset_replicas{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
-          expr: count(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="kubebrain-system",statefulset="kubebrain"})) + count(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"}))
+          expr: count(kubebrain_dbaas:statefulset_replicas:current)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:compute_replicas:expected
-          expr: (sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="kubebrain-system",statefulset="kubebrain"})) or on() vector(0)) + (sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"})) or on() vector(0))
+          expr: sum(kubebrain_dbaas:statefulset_replicas:current) or on() vector(0)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:kubebrain_replicas:expected
-          expr: sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="kubebrain-system",statefulset="kubebrain"})) or on() vector(0)
+          expr: sum(kubebrain_dbaas:statefulset_replicas:current{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_replicas:expected
-          expr: sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"})) or on() vector(0)
+          expr: sum(kubebrain_dbaas:statefulset_replicas:current{namespace="tidb-cluster",statefulset=~"kb-(pd|tikv)"}) or on() vector(0)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_volumes:expected
@@ -106,11 +110,11 @@ spec:
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:pd_replicas:expected
-          expr: sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset="kb-pd"})) or on() vector(0)
+          expr: sum(kubebrain_dbaas:statefulset_replicas:current{namespace="tidb-cluster",statefulset="kb-pd"}) or on() vector(0)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:tikv_replicas:expected
-          expr: sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset="kb-tikv"})) or on() vector(0)
+          expr: sum(kubebrain_dbaas:statefulset_replicas:current{namespace="tidb-cluster",statefulset="kb-tikv"}) or on() vector(0)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:cpu_usage_cores:max_by_container
