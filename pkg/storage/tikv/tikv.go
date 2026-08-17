@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gogo/protobuf/proto"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pkg/errors"
 	tikvcfg "github.com/tikv/client-go/v2/config"
@@ -564,6 +565,23 @@ func (s *store) SnapshotReadyTimestamp(ctx context.Context, start, end []byte) (
 	if err != nil {
 		return 0, errors.Wrap(err, "get checkpoint Store safe timestamps")
 	}
+	verifiedStores, err := s.refreshSnapshotStores(ctx)
+	if err != nil {
+		return 0, errors.Wrap(err, "verify checkpoint Store topology")
+	}
+	verifiedRegions, err := s.clients[0].GetPDClient().ScanRegions(ctx, start, end, -1)
+	if err != nil {
+		return 0, errors.Wrap(err, "verify checkpoint Region topology")
+	}
+	verifiedActiveStores, err := checkpointStoresForRange(verifiedStores, verifiedRegions)
+	if err != nil {
+		return 0, errors.Wrap(err, "verify checkpoint topology")
+	}
+	if err := validateCheckpointTopology(
+		stores, regions, activeStores, verifiedStores, verifiedRegions, verifiedActiveStores,
+	); err != nil {
+		return 0, err
+	}
 	minimum := uint64(math.MaxUint64)
 	for _, timestamp := range safeTS {
 		if timestamp != 0 && timestamp < minimum {
@@ -574,6 +592,60 @@ func (s *store) SnapshotReadyTimestamp(ctx context.Context, start, end []byte) (
 		return 0, errors.New("no non-zero TiKV Store safe timestamp discovered")
 	}
 	return minimum, nil
+}
+
+func validateCheckpointTopology(
+	beforeStores []*metapb.Store,
+	beforeRegions []*pd.Region,
+	beforeSelected []uint64,
+	afterStores []*metapb.Store,
+	afterRegions []*pd.Region,
+	afterSelected []uint64,
+) error {
+	if len(beforeSelected) != len(afterSelected) {
+		return errors.New("checkpoint Store topology changed while reading safe timestamps")
+	}
+	for index := range beforeSelected {
+		if beforeSelected[index] != afterSelected[index] {
+			return errors.New("checkpoint Store topology changed while reading safe timestamps")
+		}
+	}
+	beforeStoreByID := make(map[uint64]*metapb.Store, len(beforeStores))
+	afterStoreByID := make(map[uint64]*metapb.Store, len(afterStores))
+	for _, store := range beforeStores {
+		if store != nil {
+			beforeStoreByID[store.GetId()] = store
+		}
+	}
+	for _, store := range afterStores {
+		if store != nil {
+			afterStoreByID[store.GetId()] = store
+		}
+	}
+	for _, storeID := range beforeSelected {
+		if !proto.Equal(beforeStoreByID[storeID], afterStoreByID[storeID]) {
+			return errors.Errorf("checkpoint TiKV Store %d changed while reading safe timestamps", storeID)
+		}
+	}
+	if len(beforeRegions) != len(afterRegions) {
+		return errors.New("checkpoint Region topology changed while reading safe timestamps")
+	}
+	beforeRegionByID := make(map[uint64]*metapb.Region, len(beforeRegions))
+	for _, region := range beforeRegions {
+		if region == nil || region.Meta == nil {
+			return errors.New("invalid checkpoint Region metadata before safe timestamp query")
+		}
+		beforeRegionByID[region.Meta.GetId()] = region.Meta
+	}
+	for _, region := range afterRegions {
+		if region == nil || region.Meta == nil {
+			return errors.New("invalid checkpoint Region metadata after safe timestamp query")
+		}
+		if !proto.Equal(beforeRegionByID[region.Meta.GetId()], region.Meta) {
+			return errors.Errorf("checkpoint Region %d changed while reading safe timestamps", region.Meta.GetId())
+		}
+	}
+	return nil
 }
 
 func checkpointStoresForRange(stores []*metapb.Store, regions []*pd.Region) ([]uint64, error) {
@@ -596,7 +668,7 @@ func checkpointStoresForRange(stores []*metapb.Store, regions []*pd.Region) ([]u
 		if region == nil || region.Meta == nil {
 			return nil, errors.New("invalid checkpoint Region metadata")
 		}
-		voters := 0
+		voterStores := make(map[uint64]struct{}, len(region.Meta.Peers))
 		for _, peer := range region.Meta.Peers {
 			if peer == nil || peer.GetIsWitness() || peer.GetRole() == metapb.PeerRole_Learner {
 				continue
@@ -604,12 +676,14 @@ func checkpointStoresForRange(stores []*metapb.Store, regions []*pd.Region) ([]u
 			if _, active := activeTiKV[peer.GetStoreId()]; !active {
 				continue
 			}
-			voters++
-			selected[peer.GetStoreId()] = struct{}{}
+			storeID := peer.GetStoreId()
+			voterStores[storeID] = struct{}{}
+			selected[storeID] = struct{}{}
 		}
-		if voters < 2 {
+		if len(voterStores) < 2 {
 			return nil, errors.Errorf(
-				"checkpoint Region %d has only %d active non-witness TiKV voters", region.Meta.GetId(), voters,
+				"checkpoint Region %d has only %d active non-witness TiKV voter Stores",
+				region.Meta.GetId(), len(voterStores),
 			)
 		}
 	}
