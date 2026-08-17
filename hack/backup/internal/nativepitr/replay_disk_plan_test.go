@@ -19,6 +19,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -85,6 +87,29 @@ func TestReplayFilesystemFreeBytesReadsScratchFilesystem(t *testing.T) {
 	require.Positive(t, available)
 	_, err = replayFilesystemFreeBytes(filepath.Join(t.TempDir(), "missing"))
 	require.ErrorContains(t, err, "stat native PITR replay scratch filesystem")
+}
+
+func TestRestoreReplayScratchErrnoOnlyMapsFixedBboltGrowthErrors(t *testing.T) {
+	for _, testCase := range []struct {
+		message string
+		errno   error
+	}{
+		{message: "file resize error: truncate /scratch/db: no space left on device", errno: syscall.ENOSPC},
+		{message: "file resize error: truncate /scratch/db: file too large", errno: syscall.EFBIG},
+		{message: "file sync error: disk quota exceeded", errno: syscall.EDQUOT},
+		{message: "file sync error: input/output error", errno: syscall.EIO},
+		{message: "file resize error: truncate /scratch/db: read-only file system", errno: syscall.EROFS},
+	} {
+		t.Run(testCase.errno.Error(), func(t *testing.T) {
+			original := errors.New(testCase.message)
+			restored := restoreReplayScratchErrno(original)
+			require.ErrorIs(t, restored, original)
+			require.ErrorIs(t, restored, testCase.errno)
+			require.Contains(t, restored.Error(), testCase.message)
+		})
+	}
+	original := errors.New("unrelated subsystem: no space left on device")
+	require.Same(t, original, restoreReplayScratchErrno(original))
 }
 
 func TestReplayScratchFilesystemReserveRejectsBeforeBboltPut(t *testing.T) {
@@ -294,6 +319,36 @@ func TestMaterializeReplayDiskPlanValidatesEvidenceBeforeScratchQuotaFactory(t *
 	})
 	require.Error(t, err)
 	require.False(t, called)
+}
+
+func TestMaterializeReplayDiskPlanCleansScratchAfterKernelFileSizeFailure(t *testing.T) {
+	const childEnv = "KUBEBRAIN_NATIVE_PITR_RLIMIT_FSIZE_CHILD"
+	if os.Getenv(childEnv) == "" {
+		command := exec.Command(os.Args[0], "-test.run=^TestMaterializeReplayDiskPlanCleansScratchAfterKernelFileSizeFailure$")
+		command.Env = append(os.Environ(), childEnv+"=1")
+		output, err := command.CombinedOutput()
+		require.NoError(t, err, "%s", output)
+		return
+	}
+
+	_, receipt, root, _, _ := replayFixtureWithDefaultValue(t, make([]byte, 1<<20))
+	scratch := t.TempDir()
+	var original syscall.Rlimit
+	require.NoError(t, syscall.Getrlimit(syscall.RLIMIT_FSIZE, &original))
+	require.GreaterOrEqual(t, original.Max, uint64(64<<10))
+	limited := original
+	limited.Cur = 64 << 10
+	require.NoError(t, syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limited))
+	defer func() { require.NoError(t, syscall.Setrlimit(syscall.RLIMIT_FSIZE, &original)) }()
+	signal.Ignore(syscall.SIGXFSZ)
+	defer signal.Reset(syscall.SIGXFSZ)
+
+	_, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, scratch, 119, 150, ^uint64(0))
+	require.ErrorIs(t, err, syscall.EFBIG)
+	require.ErrorContains(t, err, "file too large")
+	entries, readErr := os.ReadDir(scratch)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a kernel bbolt growth failure must remove every scratch database")
 }
 
 type changeReplayPlanOnGetStore struct {

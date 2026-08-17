@@ -55321,6 +55321,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   故障是扩页后 free-space probe 返回内核 ENOSPC，不冒充 bbolt `pwrite/fsync` 自身在 probe 间隙失败；真实小型 scratch filesystem
   耗尽、read-only remount、I/O error 与 kubelet/PVC eviction 仍保持开放。
 
+- A4928 首次覆盖不经过 free-space probe 的真实 bbolt 文件增长系统调用失败。隔离子进程先建立合法 1 MiB replay fixture，再将
+  `RLIMIT_FSIZE` 降到 64 KiB 并忽略 `SIGXFSZ`；生产 materializer 的 default-CF bbolt 在扩文件 `Truncate` 时由内核返回 `EFBIG`。
+  RED 证明固定 bbolt v1.5.0 `DB.grow` 使用 `fmt.Errorf("file resize error: %s", err)`，错误文本保留
+  `truncate ... file too large`，却丢失 errno chain，导致调用方不能用 `errors.Is(EFBIG)` 将 scratch 资源故障与格式错误分类。
+
+  materializer 末端现在仅对同一行包含 bbolt 固定 `file resize error:`/`file sync error:` 且以标准 errno 文本结尾的错误恢复 sentinel：
+  `ENOSPC`、`EFBIG`、`EDQUOT`、`EIO`、`EROFS`；原始 operation/path 文本完整保留，已有 errno 不重复 join，无 bbolt marker 的同文本
+  错误不映射。内核级回归转为 GREEN，并证明失败后 default/candidate/plan scratch 全部删除。nativepitr、正式 log-replay CLI、race、
+  vet 与 diff check 通过。2026-08-17 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO
+  与官方 BR v7.5.1 上执行 `TestNativeLogReplayRealBR`：v7 receipt、v2 checkpoint、fence/handoff 与最终 revision/key/lease/watch
+  语义验收 43.65 秒通过，一次性资源已清理。该门禁证明真实内核 truncate failure 与 errno 恢复，不冒充物理 ENOSPC、真实 fsync EIO、
+  read-only remount、PVC eviction 或节点重启；这些场景仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
@@ -93,6 +94,36 @@ func replayFilesystemFreeBytes(path string) (uint64, error) {
 		return 0, errors.New("native PITR replay scratch filesystem capacity is invalid")
 	}
 	return stat.Bavail * uint64(stat.Bsize), nil
+}
+
+// bbolt v1.5.0's DB.grow formats Truncate and Sync failures with %s, losing
+// the wrapped errno. Restore only the fixed resource/storage errno shapes at
+// the scratch boundary so callers can classify a failed replay safely while
+// retaining bbolt's original path and operation text.
+func restoreReplayScratchErrno(err error) error {
+	if err == nil {
+		return err
+	}
+	for _, candidate := range []struct {
+		message string
+		errno   error
+	}{
+		{message: "no space left on device", errno: syscall.ENOSPC},
+		{message: "file too large", errno: syscall.EFBIG},
+		{message: "disk quota exceeded", errno: syscall.EDQUOT},
+		{message: "input/output error", errno: syscall.EIO},
+		{message: "read-only file system", errno: syscall.EROFS},
+	} {
+		if errors.Is(err, candidate.errno) {
+			continue
+		}
+		for _, line := range strings.Split(err.Error(), "\n") {
+			if (strings.Contains(line, "file resize error:") || strings.Contains(line, "file sync error:")) && strings.HasSuffix(line, ": "+candidate.message) {
+				return errors.Join(err, candidate.errno)
+			}
+		}
+	}
+	return err
 }
 
 func (q *replayScratchQuota) add(path string) error {
@@ -769,6 +800,7 @@ func materializeReplayDiskPlanWithScratchQuotaFactory(logs LogArtifactReceipt, l
 	if quota == nil {
 		return nil, errors.New("native PITR replay scratch quota factory returned nil")
 	}
+	defer func() { retErr = restoreReplayScratchErrno(retErr) }()
 	defaults, err := newReplayDefaultStoreWithQuota(scratchDir, quota)
 	if err != nil {
 		return nil, fmt.Errorf("create replay default-CF index: %w", err)
