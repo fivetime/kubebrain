@@ -117,6 +117,10 @@ spec:
           expr: max by (namespace, pod, uid) (count_index_overflowed{namespace="kubebrain-system"} and (time() - timestamp(count_index_overflowed{namespace="kubebrain-system"}) <= 60))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_revision_lag:max_by_pod
+          expr: max by (namespace, pod, uid) (watch_revision_lag{namespace="kubebrain-system"} and (time() - timestamp(watch_revision_lag{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
           expr: count(kubebrain_dbaas:statefulset_replicas:current)
           labels:
@@ -506,13 +510,21 @@ spec:
             summary: KubeBrain rejected leadership due to invalid alarm metadata
             description: "A KubeBrain replica found malformed CORRUPT member/generation metadata in TiKV and refused leadership. Keep traffic fenced; do not clear or rewrite internal alarm keys. Preserve evidence and follow the corruption-repair runbook."
         - alert: KubeBrainRevisionLagHigh
-          expr: max(watch_revision_lag{namespace="kubebrain-system"}) > 10000
+          expr: max(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 10000
           for: 5m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain watch revision lag is high
-            description: "KubeBrain max watch revision lag is {{ $value }} revisions."
+            description: "A current Ready Pod UID with KSM Ready and watch-lag samples no older than 60 seconds has a live watch revision backlog of {{ $value }} revisions. Samples are deduplicated by Pod UID; stale replaced Pods cannot keep this alert active after their collector is gone."
+        - alert: KubeBrainRevisionLagMetricsMissing
+          expr: count(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current)
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain watch revision lag telemetry is incomplete
+            description: "At least one current Ready Pod UID has not published watch_revision_lag within 60 seconds. Every replica emits an immediate value and refreshes the gauge every 15 seconds, including an authoritative zero while idle, so missing or stale telemetry cannot be interpreted as an empty watch backlog. Check mixed binary rollout, Pod UID relabeling, and application scrape health."
         - alert: KubeBrainGrpcLatencyHigh
           expr: histogram_quantile(0.99, sum by (le, grpc_method) (rate(grpc_server_handling_seconds_bucket{namespace="kubebrain-system"}[5m]))) > 1
           for: 10m

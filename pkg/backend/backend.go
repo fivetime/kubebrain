@@ -66,6 +66,10 @@ const (
 	// gauge is otherwise only updated on a rebuild and goes stale as live writes
 	// change the key set.
 	countIndexMetricInterval = 15 * time.Second
+	// watchRevisionLagMetricInterval keeps the lag gauge live even while the
+	// workload is idle. This lets monitoring distinguish an authoritative zero
+	// backlog from an application scrape that has stopped.
+	watchRevisionLagMetricInterval = 15 * time.Second
 )
 
 type Backend interface {
@@ -698,6 +702,8 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	b.startWorker(b.runAutoCompactor)
 	// Live count-index gauges (no-op when the index is disabled).
 	b.startWorker(b.emitCountIndexMetrics)
+	// Live watch backlog gauge, including an authoritative idle zero.
+	b.startWorker(b.emitWatchRevisionLagMetrics)
 
 	return b
 }

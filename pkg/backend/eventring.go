@@ -15,7 +15,9 @@
 package backend
 
 import (
+	"context"
 	"sync"
+	"time"
 
 	"k8s.io/klog/v2"
 
@@ -177,4 +179,21 @@ func (b *backend) emitWatchRevisionLag() {
 		return
 	}
 	_ = b.metricCli.EmitGauge("watch.revision.lag", float64(high-current))
+}
+
+func (b *backend) emitWatchRevisionLagMetrics(ctx context.Context) {
+	b.runWatchRevisionLagMetrics(ctx, watchRevisionLagMetricInterval)
+}
+
+func (b *backend) runWatchRevisionLagMetrics(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		b.emitWatchRevisionLag()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

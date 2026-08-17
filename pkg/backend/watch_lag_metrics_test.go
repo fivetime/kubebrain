@@ -15,7 +15,9 @@
 package backend
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -58,4 +60,38 @@ func TestWatchRevisionLagFallsAsCollectorCatchesUp(t *testing.T) {
 	// Collector progress refreshes the gauge even when no later write arrives.
 	b.setCollectorRevision(15)
 	require.Equal(t, float64(0), watchLagGauge(recorder))
+}
+
+func TestWatchRevisionLagHeartbeatPublishesIdleStateAndStops(t *testing.T) {
+	recorder := newRecordCounters()
+	b := &backend{metricCli: recorder}
+	b.watchRevisionHighWatermark.Store(15)
+	b.collectorRevision.Store(10)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.runWatchRevisionLagMetrics(ctx, time.Millisecond)
+	}()
+	require.Eventually(t, func() bool {
+		return watchLagGauge(recorder) == 5
+	}, time.Second, time.Millisecond)
+
+	// Change only internal state: the heartbeat, rather than an enqueue or
+	// collector-side metric call, must publish the authoritative idle zero.
+	b.collectorRevision.Store(15)
+	require.Eventually(t, func() bool {
+		return watchLagGauge(recorder) == 0
+	}, time.Second, time.Millisecond)
+
+	cancel()
+	require.Eventually(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, time.Millisecond)
 }

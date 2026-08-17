@@ -1986,6 +1986,28 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Contains(t, description, "same-PVC TiKV repair")
 	require.Contains(t, description, "no pending/down peer Regions")
 
+	revisionLagRule := prometheusRuleByAlert(t, groups, "KubeBrainRevisionLagHigh")
+	require.Equal(t,
+		`max(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 10000`,
+		revisionLagRule["expr"])
+	require.Equal(t, "5m", revisionLagRule["for"])
+	require.Equal(t, "warning", revisionLagRule["labels"].(map[string]any)["severity"])
+	revisionLagDescription := revisionLagRule["annotations"].(map[string]any)["description"].(string)
+	require.Contains(t, revisionLagDescription, "samples no older than 60 seconds")
+	require.Contains(t, revisionLagDescription, "deduplicated by Pod UID")
+	require.Contains(t, revisionLagDescription, "stale replaced Pods")
+
+	revisionLagMissingRule := prometheusRuleByAlert(t, groups, "KubeBrainRevisionLagMetricsMissing")
+	require.Equal(t,
+		`count(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current)`,
+		revisionLagMissingRule["expr"])
+	require.Equal(t, "2m", revisionLagMissingRule["for"])
+	require.Equal(t, "warning", revisionLagMissingRule["labels"].(map[string]any)["severity"])
+	revisionLagMissingDescription := revisionLagMissingRule["annotations"].(map[string]any)["description"].(string)
+	require.Contains(t, revisionLagMissingDescription, "refreshes the gauge every 15 seconds")
+	require.Contains(t, revisionLagMissingDescription, "authoritative zero while idle")
+	require.Contains(t, revisionLagMissingDescription, "cannot be interpreted as an empty watch backlog")
+
 	overflowRule := prometheusRuleByAlert(t, groups, "KubeBrainCountIndexOverflowed")
 	require.Equal(t, `max(kubebrain_dbaas:count_index_overflowed:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`, overflowRule["expr"])
 	require.Equal(t, "1m", overflowRule["for"])
@@ -2325,6 +2347,7 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		"kubebrain_dbaas:quota_logical_usage_bytes:max_by_pod":               `max by (namespace, pod, uid) (quota_logical_usage_bytes{namespace="kubebrain-system"} and (time() - timestamp(quota_logical_usage_bytes{namespace="kubebrain-system"}) <= 60))`,
 		"kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check":    `max by (namespace, pod, uid, check) (health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} and (time() - timestamp(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}) <= 60))`,
 		"kubebrain_dbaas:count_index_overflowed:max_by_pod":                  `max by (namespace, pod, uid) (count_index_overflowed{namespace="kubebrain-system"} and (time() - timestamp(count_index_overflowed{namespace="kubebrain-system"}) <= 60))`,
+		"kubebrain_dbaas:watch_revision_lag:max_by_pod":                      `max by (namespace, pod, uid) (watch_revision_lag{namespace="kubebrain-system"} and (time() - timestamp(watch_revision_lag{namespace="kubebrain-system"}) <= 60))`,
 		"kubebrain_dbaas:replica_expectation_sources:count":                  `count(kubebrain_dbaas:statefulset_replicas:current)`,
 		"kubebrain_dbaas:compute_replicas:expected":                          `sum(kubebrain_dbaas:statefulset_replicas:current) or on() vector(0)`,
 		"kubebrain_dbaas:kubebrain_replicas:expected":                        `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)`,
