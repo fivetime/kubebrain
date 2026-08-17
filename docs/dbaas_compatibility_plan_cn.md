@@ -56068,6 +56068,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   series 缺失也直接进入告警。manifest 门禁固定完整 PromQL 和动态/absent annotation，production readiness 不再把
   6 条当成任意规模的常量；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4979 修正 PD/TiKV target 可抓取性告警只保证“不少于 3”、却不保证“当前期望全部可用”的扩容漏检。
+  旧 `count(up==1) < 3` 在五副本拓扑损失一个 target 时仍为假；而单纯改成动态期望又会允许运营方把拓扑
+  缩到 1 而不报警。现 `KubeBrainPDInsufficientReplicas`/`KubeBrainTiKVInsufficientReplicas` 同时要求：三个 StatefulSet
+  期望来源完整，对应 PD/TiKV 期望 recording series 存在，期望值至少为 3，且按 `instance` 去除 HA scrape
+  重复后的 `up==1` target 数与期望精确相等。因此扩容未收敛、任一期望副本失联、旧 target 残留或运营拓扑
+  低于三副本都在 5 分钟后 critical。精确 manifest 门禁固定两条 PromQL 及 minimum/exact/absent annotation，
+  production readiness 已更新；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
