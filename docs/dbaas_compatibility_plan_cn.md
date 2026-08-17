@@ -55840,6 +55840,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   **142.42 秒 GREEN** 且 hash 完全一致。该相等性成立于测试固定无并发 lease/auth mutation、后台
   checkpoint bookkeeping 被 Hash 明确忽略的窗口，不外推为有并发内部状态变化时的全局最新 hash。
 
+- A4960 补齐 member-local Maintenance 矩阵最后一项 `Defragment` 的严格双 quorum 证据。upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Defragment` 在管理员鉴权后压缩服务成员自己的
+  backend，并返回无 header 的空 response；KubeBrain 的物理 compaction 由独立 TiKV 管理，因此公开 RPC
+  是同样鉴权和 response 契约的本地兼容 no-op。此前只有 leader/storage 单侧隔离的 hedge 单测，没有证明
+  PD 与 TiKV quorum 同时丢失。`318f7a5c` 增加独立 `pd-quorum-tikv-quorum-defragment` 门禁；旧
+  a4979 镜像在同时隔离 `kb-pd-0/1` 与 `kb-tikv-0/1`、mutation 已 `DeadlineExceeded` 后，Defragment
+  耗尽 10 秒并同样 `DeadlineExceeded`，完整 **52.02 秒 RED**。根因是该 RPC 没有像 Status/Hash 一样
+  附加 protected checkpoint，auth-disabled 检查仍可能重读 live TiKV。
+
+  `7a2a9ce3` 保持健康态 live-first，在 750ms 内仅对 `DeadlineExceeded`/`Unavailable` 回退到 protected
+  checkpoint 上的本地 no-op，并抽出共用的 protected Maintenance auth helper；完整 cached auth snapshot
+  优先验证 token/TLS 与 root role，冷 cache 才从 pinned timestamp 读取，`DataLoss` 和权限错误不被掩盖。
+  单测覆盖冷 auth fallback、DataLoss fail-closed、root 成功与 alice `PermissionDenied`，定向 20 轮、race、
+  vet 均通过；`ddbe1e0b` 修正首版测试误先预热 cache、导致未真正触发 live error 的夹具假设，
+  `36fa304b` 再让 fake protected timestamp 返回历史 auth-config 不存在，准确建模 auth-disabled 初态而不把
+  memkv 不认识 TiKV timestamp 的 `checkpoint unavailable` 当成产品错误。
+
+  精确镜像 `kubebrain:a4980-defragment-checkpoint`（完整 revision
+  `7a2a9ce3f7dbbb8b801a63ddc0c70b1b0a525093`，manifest list
+  `sha256:32367f231f54ce2df9b8fdc382539a5a2272d0b628fd04b51bd76dfed80bc69d`）复跑原场景：
+  同时隔离 `kb-pd-1/0` 与 `kb-tikv-1/0`，mutation 明确 `DeadlineExceeded`，故障期 Defragment 成功且
+  `Header=nil`，fallback counter 增加至 1，完整 **51.31 秒 GREEN**，随后两个 quorum 恢复。该能力仍
+  依赖一份有效 GC-protected checkpoint；无 checkpoint 或无法验证管理员身份时继续 fail closed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
