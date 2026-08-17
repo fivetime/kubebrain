@@ -56001,6 +56001,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   observability runbook 同步改为三者 completeness/freshness 都 fail closed；完整 `deploy/production` 测试通过。
   本项不改变 checkpoint 刷新或隔离读语义，不重建数据面镜像。
 
+- A4972 修正实时运维告警把 StatefulSet ordinal 限死在 0–2 的通用化缺口。旧 PVC 低水位、TiKV/PD
+  内存与 CPU throttling、网络 metrics/errors/drops 表达式使用 `[0-2]`；扩容出的 ordinal 3 及以上副本
+  即使已 serving，也完全不进入高水位、错误或丢包检测。现运维规则改用任意数字 ordinal `[0-9]+`，
+  覆盖 `kubebrain-N`、`kb-pd-N`、`kb-tikv-N` 及对应 PD/TiKV PVC，同时仍排除 restore/repair 等非数字后缀
+  工作负载。精确 manifest 表达式测试已更新，并对八条运维告警新增显式反回归门禁，禁止重新出现
+  `[0-2]`；完整 `deploy/production` 测试通过。本项特意不混改 billing recording rules：后者的固定 9/6
+  completeness 需要独立设计动态期望基数，不能只放宽 selector 而让扩容后计费数据恒为 incomplete。本项不重建
+  数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
