@@ -56481,6 +56481,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   来源或值域缺口。精确 manifest/server 测试与 production/observability 文档已同步；相关测试通过。
   本项需要下一生产镜像。
 
+- A5027 闭合 watch ring stale-drop/full counter 的权威零值与生产告警链。旧实现仅在事件发生时创建
+  `watch_event_buffer_stale_drop` / `watch_event_buffer_full`，告警又直接查询 raw rate；family 缺失、陈旧
+  或非法值都可能静默为“零丢弃/零溢出”。现每个 backend 创建时初始化两类零值，单元测试固定输出；
+  监控从 60 秒内样本生成 Ready Pod UID 级 current/5 分钟 rate recording，四类来源必须完整覆盖当前
+  Ready UID。current 必须是 `[0,2^53]` 内精确整数，外推 rate 可为分数但必须有限且同范围；两条事件
+  告警只消费新鲜 recording，新的 critical metrics-missing 拒绝缺失、陈旧或非法 telemetry。精确 manifest/
+  server 测试与 production/observability 文档已同步；相关测试通过。本项需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
