@@ -55747,6 +55747,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   iptables fault 规则与 13379 port-forward 均已清理。该保证仍仅覆盖故障前完整发布且 GC-protected、
   全 Region 预热的 checkpoint；没有有效 checkpoint 时继续 fail closed。
 
+- A4956 新增更强且独立的 `pd-quorum-tikv-quorum-snapshot` 破坏性门禁，不把 A4954 的“PD quorum +
+  单 TiKV Store”或 A4955 的“PD 健康 + TiKV quorum”GREEN 外推为两种 quorum 同时丢失。组合故障
+  wrapper 现在以显式 `TIKV_COMBINED_FAULT_MODE=member|quorum` 选择隔离一个或两个 Store，默认 member
+  保持既有 profile 不变；两个 child 仍各自验证故障状态、持有唯一 iptables comment 并在任一失败时
+  联动清理。shell 语法、runner 契约连续 20 次及 client compatibility 全包通过；单独十秒实跑明确
+  观察 PD `kb-pd-2/kb-pd-0` 不可达，以及 TiKV `kb-tikv-1/kb-tikv-2`
+  `Up -> Disconnected -> Up`，两类规则均恢复。
+
+  当前精确镜像 `kubebrain:a4975-snapshot-client-affinity` 在该组合窗口正确拒绝 mutation，但三次
+  protected Snapshot 均耗尽 20 秒 deadline，完整门禁 **204.13 秒 RED**。同期 TiKV 日志显示 PD
+  连接失败后 follower safe-ts 停止推进并持续报告增大的 gap；现有故障前 range-scoped StoreSafeTS
+  证明尚未由真实结果证明足以覆盖“PD 与 Raft quorum 同时消失”的每 Region follower read。该能力
+  明确保留为 open：下一步需取得并校验逐 Region/逐 peer 的可服务水位，或发布更保守的冻结 timestamp/
+  物化 checkpoint artifact；在真实门禁转绿前不得宣称全后端 quorum-loss Snapshot 可用。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
