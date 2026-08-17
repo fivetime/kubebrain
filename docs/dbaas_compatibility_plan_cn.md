@@ -56471,6 +56471,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   missing 现在要求四类 current/increase 全覆盖且两份 invalid recording 均为零。精确 manifest/server 测试
   与 production/observability 文档已同步；相关测试通过。本项需要下一生产镜像。
 
+- A5026 为 acquired leader 发布 SERVING 前的五段阻塞重试建立统一 stage telemetry。旧 compact resume、
+  quota init、lease reload、event-log watermark、checkpoint protection 各自只在错误时递增不同 legacy
+  counter，production 完全未消费；持续失败会让 leader NotReady，却缺少可完整证明的阶段诊断。现新增
+  `leader.serving_initialization.err{stage}`，所有副本 campaign 前为五个固定 stage 初始化零值，并在保留
+  legacy counter 的同时同步递增。监控生成 60 秒新鲜的 Pod UID/stage current 与 10 分钟 increase，按
+  `5 × KubeBrain desired replicas` 对账并验证 `[0,2^53]` 精确 current/有限同范围 increase。事件告警刻意
+  不关联 Ready UID，确保主动 NotReady 的 blocked leader 仍可见；新的 critical metrics-missing 拒绝拓扑、
+  来源或值域缺口。精确 manifest/server 测试与 production/observability 文档已同步；相关测试通过。
+  本项需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
