@@ -1201,8 +1201,9 @@ run_snapshot_failover_test() {
     cd "$ROOT_DIR/hack/etcd-client-compat"
     KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
       KUBEBRAIN_SNAPSHOT_BACKEND_FAILOVER_COMMAND="$command" \
+      COMBINED_FAULT_HOLD_SECONDS=60 \
       ETCDUTL_BINARY="$ETCDUTL_BINARY" \
-      go test . -run '^TestSnapshotFailsClosedAndRecoversAcrossBackendFailover$' -count=1 -v
+      go test . -run '^TestSnapshotSurvivesBackendFailoverFromProtectedCheckpoint$' -count=1 -v
   )
   wait_backend_ready
 }

@@ -13,18 +13,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// TestSnapshotFailsClosedAndRecoversAcrossBackendFailover verifies that an
-// online portable snapshot cannot complete after the external PD quorum has
-// become unavailable, then validates the first post-recovery artifact with the
-// official etcdutl and by reading both sides of the fault from its bbolt MVCC
-// history.
-func TestSnapshotFailsClosedAndRecoversAcrossBackendFailover(t *testing.T) {
+// TestSnapshotSurvivesBackendFailoverFromProtectedCheckpoint verifies that a
+// member can export its last applied, protected checkpoint while the external
+// PD quorum is unavailable, then advances to a fresh artifact after recovery.
+func TestSnapshotSurvivesBackendFailoverFromProtectedCheckpoint(t *testing.T) {
 	command := os.Getenv("KUBEBRAIN_SNAPSHOT_BACKEND_FAILOVER_COMMAND")
 	if command == "" {
 		t.Skip("set KUBEBRAIN_SNAPSHOT_BACKEND_FAILOVER_COMMAND to run destructive backend failover")
@@ -39,7 +38,7 @@ func TestSnapshotFailsClosedAndRecoversAcrossBackendFailover(t *testing.T) {
 	}
 	requireReferenceEtcdProvenance(t, etcdutl)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
 	require.NoError(t, err)
@@ -49,6 +48,10 @@ func TestSnapshotFailsClosedAndRecoversAcrossBackendFailover(t *testing.T) {
 	afterKey := []byte(prefix + "after")
 	_, err = cli.Put(ctx, string(beforeKey), "before-value")
 	require.NoError(t, err)
+	// Give the local checkpoint loop an opportunity to publish. Snapshot remains
+	// member-local and non-linearizable, so another member may legally export an
+	// older applied checkpoint that does not yet contain this write.
+	time.Sleep(3 * time.Second)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cleanupCancel()
@@ -78,17 +81,30 @@ func TestSnapshotFailsClosedAndRecoversAcrossBackendFailover(t *testing.T) {
 	default:
 	}
 
-	faultCtx, faultCancel := context.WithTimeout(ctx, 6*time.Second)
-	versioned, snapshotErr := cli.SnapshotWithVersion(faultCtx)
-	if snapshotErr == nil {
-		require.NotNil(t, versioned)
-		_, snapshotErr = io.ReadAll(versioned.Snapshot)
-		require.NoError(t, versioned.Snapshot.Close())
+	var faultArtifact []byte
+	var faultSnapshotErr error
+	faultSucceeded := assert.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, 20*time.Second)
+		defer callCancel()
+		faultArtifact, faultSnapshotErr = downloadSnapshot(callCtx, cli)
+		if faultSnapshotErr != nil {
+			return false
+		}
+		return true
+	}, 45*time.Second, 100*time.Millisecond,
+		"Snapshot must export a protected checkpoint during the fault; last error: %v", faultSnapshotErr)
+	if !faultSucceeded {
+		result := <-commandDone
+		require.NoErrorf(t, result.err, "backend failover command cleanup: %s", strings.TrimSpace(string(result.output)))
+		t.FailNow()
 	}
-	faultCancel()
-	require.Error(t, snapshotErr, "Snapshot must not complete after PD quorum is unavailable")
-	require.Contains(t, []codes.Code{codes.Unavailable, codes.DeadlineExceeded}, status.Code(snapshotErr),
-		"Snapshot failure must remain a retryable gRPC class")
+	select {
+	case result := <-commandDone:
+		require.FailNowf(t, "backend recovered before the fault-window Snapshot completed",
+			"error=%v output=%s", result.err, strings.TrimSpace(string(result.output)))
+	default:
+	}
+	validateSnapshotArtifact(t, ctx, etcdutl, faultArtifact, "fault-checkpoint", beforeKey, afterKey, false, false)
 
 	result := <-commandDone
 	require.NoErrorf(t, result.err, "backend failover command: %s", strings.TrimSpace(string(result.output)))
@@ -103,6 +119,7 @@ func TestSnapshotFailsClosedAndRecoversAcrossBackendFailover(t *testing.T) {
 	var artifact []byte
 	var lastSnapshotErr error
 	var retainedHistoryErr error
+	candidateBackendPath := filepath.Join(t.TempDir(), "post-fault-candidate.db")
 	require.Eventually(t, func() bool {
 		probeClient, clientErr := clientv3.New(clientv3.Config{
 			Endpoints: []string{endpoint}, DialTimeout: time.Second,
@@ -114,23 +131,26 @@ func TestSnapshotFailsClosedAndRecoversAcrossBackendFailover(t *testing.T) {
 		defer probeClient.Close()
 		callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer callCancel()
-		response, callErr := probeClient.SnapshotWithVersion(callCtx)
-		if callErr != nil {
-			lastSnapshotErr = callErr
-			return false
-		}
-		contents, readErr := io.ReadAll(response.Snapshot)
-		closeErr := response.Snapshot.Close()
-		if readErr != nil {
-			lastSnapshotErr = readErr
-			if status.Code(readErr) == codes.FailedPrecondition {
-				retainedHistoryErr = readErr
+		contents, snapshotErr := downloadSnapshot(callCtx, probeClient)
+		if snapshotErr != nil {
+			lastSnapshotErr = snapshotErr
+			if status.Code(snapshotErr) == codes.FailedPrecondition {
+				retainedHistoryErr = snapshotErr
 				return true
 			}
 			return false
 		}
-		if closeErr != nil {
-			lastSnapshotErr = closeErr
+		if len(contents) <= sha256.Size {
+			lastSnapshotErr = fmt.Errorf("snapshot artifact is too short: %d", len(contents))
+			return false
+		}
+		if writeErr := os.WriteFile(candidateBackendPath, contents[:len(contents)-sha256.Size], 0o600); writeErr != nil {
+			lastSnapshotErr = writeErr
+			return false
+		}
+		if len(snapshotVersionsForKey(t, candidateBackendPath, beforeKey)) == 0 ||
+			len(snapshotVersionsForKey(t, candidateBackendPath, afterKey)) == 0 {
+			lastSnapshotErr = errors.New("snapshot landed on a member checkpoint older than recovered writes")
 			return false
 		}
 		artifact = contents
@@ -143,23 +163,51 @@ func TestSnapshotFailsClosedAndRecoversAcrossBackendFailover(t *testing.T) {
 		t.Logf("post-recovery Snapshot is deterministically blocked by retained legacy history: %v", retainedHistoryErr)
 		return
 	}
+	validateSnapshotArtifact(t, ctx, etcdutl, artifact, "post-fault", beforeKey, afterKey, true, true)
+}
+
+func downloadSnapshot(ctx context.Context, cli *clientv3.Client) ([]byte, error) {
+	type readResult struct {
+		contents []byte
+		err      error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		response, err := cli.SnapshotWithVersion(ctx)
+		if err != nil {
+			done <- readResult{err: err}
+			return
+		}
+		contents, readErr := io.ReadAll(response.Snapshot)
+		done <- readResult{contents: contents, err: errors.Join(readErr, response.Snapshot.Close())}
+	}()
+	select {
+	case result := <-done:
+		return result.contents, result.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func validateSnapshotArtifact(t *testing.T, ctx context.Context, etcdutl string, artifact []byte, label string, beforeKey, afterKey []byte, wantBefore, wantAfter bool) {
+	t.Helper()
 	require.Greater(t, len(artifact), sha256.Size)
 	digest := sha256.Sum256(artifact[:len(artifact)-sha256.Size])
 	require.Equal(t, digest[:], artifact[len(artifact)-sha256.Size:])
-	artifactPath := filepath.Join(t.TempDir(), "post-fault.snapshot")
+	artifactPath := filepath.Join(t.TempDir(), label+".snapshot")
 	require.NoError(t, os.WriteFile(artifactPath, artifact, 0o600))
-	statusCommand := exec.CommandContext(ctx, etcdutl, "snapshot", "status", artifactPath, "--write-out=json")
-	statusOutput, statusErr := statusCommand.CombinedOutput()
+	statusOutput, statusErr := exec.CommandContext(ctx, etcdutl, "snapshot", "status", artifactPath, "--write-out=json").CombinedOutput()
 	require.NoError(t, statusErr, string(statusOutput))
-
-	backendPath := filepath.Join(t.TempDir(), "post-fault.db")
+	backendPath := filepath.Join(t.TempDir(), label+".db")
 	require.NoError(t, os.WriteFile(backendPath, artifact[:len(artifact)-sha256.Size], 0o600))
-	require.Equal(t, []normalizedSnapshotVersion{{Value: "before-value", Version: 1, Create: true}},
-		snapshotVersionsForKey(t, backendPath, beforeKey))
-	require.Equal(t, []normalizedSnapshotVersion{{Value: "after-value", Version: 1, Create: true}},
-		snapshotVersionsForKey(t, backendPath, afterKey))
-
-	if errors.Is(snapshotErr, context.Canceled) {
-		t.Fatalf("fault-window Snapshot was canceled by the caller instead of the backend: %v", snapshotErr)
+	before := snapshotVersionsForKey(t, backendPath, beforeKey)
+	if wantBefore {
+		require.Equal(t, []normalizedSnapshotVersion{{Value: "before-value", Version: 1, Create: true}}, before)
+	}
+	after := snapshotVersionsForKey(t, backendPath, afterKey)
+	if wantAfter {
+		require.Equal(t, []normalizedSnapshotVersion{{Value: "after-value", Version: 1, Create: true}}, after)
+	} else {
+		require.Empty(t, after, "fault checkpoint must not contain the post-recovery write")
 	}
 }

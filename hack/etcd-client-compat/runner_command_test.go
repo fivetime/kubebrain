@@ -426,7 +426,8 @@ func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
 	require.Contains(t, script, `KUBEBRAIN_MEMBERLIST_QUORUM_FAILOVER_COMMAND="$command"`)
 	require.Contains(t, script, `TestMemberListSerializableSurvivesBackendQuorumLoss`)
 	require.Contains(t, script, `KUBEBRAIN_SNAPSHOT_BACKEND_FAILOVER_COMMAND="$command"`)
-	require.Contains(t, script, `TestSnapshotFailsClosedAndRecoversAcrossBackendFailover`)
+	require.Contains(t, script, `COMBINED_FAULT_HOLD_SECONDS=60`)
+	require.Contains(t, script, `TestSnapshotSurvivesBackendFailoverFromProtectedCheckpoint`)
 	require.NotContains(t, script, "eval ")
 }
 
@@ -841,7 +842,7 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsWatchRecovery(t *testi
 	require.NotContains(t, script, "eval ")
 }
 
-func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsSnapshotFailClosed(t *testing.T) {
+func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsProtectedSnapshot(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
 	script := string(data)
@@ -849,7 +850,7 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsSnapshotFailClosed(t *
 	require.Contains(t, script, `"concurrent PD quorum and TiKV member partition Snapshot"`)
 	require.Contains(t, script, `"$ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"`)
 	require.Contains(t, script, `run_snapshot_failover_test`)
-	require.Contains(t, script, `TestSnapshotFailsClosedAndRecoversAcrossBackendFailover`)
+	require.Contains(t, script, `TestSnapshotSurvivesBackendFailoverFromProtectedCheckpoint`)
 	require.NotContains(t, script, "eval ")
 }
 

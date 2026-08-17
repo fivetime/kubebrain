@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -41,6 +42,19 @@ import (
 type failingMaintenanceSnapshotServer struct {
 	*maintenanceSnapshotServer
 	err error
+}
+
+type availableSnapshotCheckpointBackend struct {
+	BackendShim
+	checkpoint backend.SerializableCheckpoint
+}
+
+func (b *availableSnapshotCheckpointBackend) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
+	return b.checkpoint, nil
+}
+
+func (b *availableSnapshotCheckpointBackend) GetFollowerSnapshotTimestamp(context.Context) (uint64, error) {
+	return 0, status.Error(codes.Unavailable, "backend unavailable")
 }
 
 func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
@@ -547,6 +561,51 @@ func TestMaintenanceSnapshotFollowerRejectsProxyStreamWithoutChecksum(t *testing
 	require.Equal(t, codes.DataLoss, status.Code(err))
 	require.ErrorContains(t, err, "ended before checksum")
 	require.Len(t, stream.responses, 1)
+}
+
+func TestMaintenanceSnapshotUsesProtectedCheckpointAfterReadBarrierFailure(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	// The in-memory test store intentionally lacks TiKV's point-in-time getter;
+	// permit its exact timestamp iterator only for this admission-path test.
+	ctx := storage.WithSnapshotIteratorFallback(context.Background())
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/snapshot/checkpoint/key"), Value: []byte("checkpoint-value"),
+	})
+	require.NoError(t, err)
+	timestamp, timestampErr := server.backend.GetFollowerSnapshotTimestamp(ctx)
+	require.NoError(t, timestampErr)
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: server.backend.GetCurrentRevision(), Timestamp: timestamp, ValidUntil: time.Now().Add(time.Minute),
+	}
+	require.GreaterOrEqual(t, int64(checkpoint.Revision), put.Header.Revision)
+	shim := &availableSnapshotCheckpointBackend{BackendShim: server.backend, checkpoint: checkpoint}
+	server.backend = shim
+	server.tokens.snapshots = newAuthSnapshotCache(shim)
+
+	server.peers = testPeerService{
+		isLeader:     true,
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 9, true },
+		syncReadFn: func(context.Context) error {
+			t.Fatal("checkpoint capture must not perform a live read barrier")
+			return nil
+		},
+		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			t.Fatal("protected member snapshot must not proxy to a leader")
+			return nil, nil
+		},
+	}
+	stream := &maintenanceSnapshotServer{ctx: ctx}
+	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
+	require.GreaterOrEqual(t, len(stream.responses), 2)
+	var artifact []byte
+	for _, response := range stream.responses[:len(stream.responses)-1] {
+		artifact = append(artifact, response.Blob...)
+	}
+	want := sha256.Sum256(artifact)
+	require.Equal(t, want[:], stream.responses[len(stream.responses)-1].Blob)
+	require.NotEmpty(t, artifact)
 }
 
 func TestMaintenanceSnapshotFollowerRejectsNilProxyResultChannel(t *testing.T) {

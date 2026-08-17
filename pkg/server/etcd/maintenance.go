@@ -797,8 +797,31 @@ func terminalMaintenanceResultError(err error) bool {
 
 func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcdserverpb.Maintenance_SnapshotServer) error {
 	s.metricCli.EmitCounter("maintenance.snapshot", 1)
+	ctx := stream.Context()
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
-	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+	// A healthy leader keeps the existing request-time capture semantics. A
+	// follower or an isolated former leader instead exports its last fully
+	// protected applied checkpoint, matching etcd's member-local Snapshot
+	// availability without pretending that the artifact contains newer writes.
+	checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint()
+	protected := !leadingFresh && checkpointErr == nil
+	if leadingFresh && checkpointErr == nil {
+		// A backend partition begins before the local leader lease expires. Probe
+		// the live read barrier with a small slice of the Snapshot deadline so the
+		// request can select the protected artifact before any stream frame is
+		// emitted. The actual live capture repeats the barrier under its write
+		// fence; this probe is availability selection, not linearization.
+		probeCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+		_, probeErr := s.backend.GetFollowerSnapshotTimestamp(probeCtx)
+		cancel()
+		protected = probeErr != nil
+	}
+	if protected {
+		ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
+		stream = &contextMaintenanceSnapshotServer{Maintenance_SnapshotServer: stream, ctx: ctx}
+		s.metricCli.EmitCounter("maintenance.snapshot.checkpoint", 1)
+	}
+	if !protected && !leadingFresh && s.peers.EtcdProxyEnabled() {
 		// A follower can remain reachable through the peer network after losing
 		// every TiKV/PD path. Do not read its auth snapshot before deciding to
 		// proxy: unlike raft etcd, that process-local cache is neither guaranteed
@@ -810,7 +833,7 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		}
 		return s.forwardSnapshot(proxyCtx, request, stream)
 	}
-	caller, err := s.authCallerFromContext(stream.Context())
+	caller, err := s.authCallerFromContext(ctx)
 	if err != nil {
 		if errors.Is(err, errInvalidAuthMetadata) {
 			return status.Error(codes.FailedPrecondition, fmt.Sprintf("%s: %v", etcdsnapshot.ErrInvalidSnapshotMetadata, err))
@@ -822,7 +845,7 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 			return err
 		}
 	}
-	if !s.peers.IsLeader() {
+	if !protected && !s.peers.IsLeader() {
 		if !s.peers.EtcdProxyEnabled() {
 			// BeginRangeTxn is a process-local barrier. A follower cannot use it
 			// to freeze the leader's metadata mutations while taking the several
@@ -853,6 +876,13 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 	}
 	return err
 }
+
+type contextMaintenanceSnapshotServer struct {
+	etcdserverpb.Maintenance_SnapshotServer
+	ctx context.Context
+}
+
+func (s *contextMaintenanceSnapshotServer) Context() context.Context { return s.ctx }
 
 func (s *RPCServer) forwardSnapshot(
 	ctx context.Context,

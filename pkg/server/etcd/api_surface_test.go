@@ -81,7 +81,6 @@ func TestEtcdAPISurfaceUnimplementedClassification(t *testing.T) {
 		"MemberRemove",
 		"MemberUpdate",
 		"MoveLeader",
-		"RangeStream",
 	}, publicRPCMethodsReturningUnimplemented(t))
 }
 

@@ -68,37 +68,45 @@ func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
 func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
-	if !leadingFresh {
-		// Snapshot() already rejects/forwards a request that initially lands on
-		// a follower. Reaching capture without a fresh lease means leadership
-		// changed after that admission check.
-		return errSnapshotLeaderChanged
-	}
-	checkLeadership := func() error {
-		currentEpoch, stillLeadingFresh := s.peers.EpochAndLeadingFresh()
-		if !stillLeadingFresh {
-			return errSnapshotLeaderChanged
-		}
-		if currentEpoch != epoch {
-			return errSnapshotLeaderChanged
-		}
-		return nil
-	}
-	rangeCtx, unlock := s.backend.BeginRangeTxn(ctx)
-	locked := true
+	checkpoint, protected := backend.SerializableCheckpointFromContext(ctx)
+	checkLeadership := func() error { return nil }
+	unlock := func() {}
+	locked := false
 	defer func() {
 		if locked {
 			unlock()
 		}
 	}()
-	ctx = rangeCtx
-	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return readBarrierStatusErr(err)
-	}
-	revision, err := safeBackendRevision(ctx, s.backend)
-	if err != nil {
-		return err
+	var revision uint64
+	if protected {
+		revision = checkpoint.Revision
+	} else {
+		epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+		if !leadingFresh {
+			// Snapshot() already rejects/forwards a request that initially lands on
+			// a follower. Reaching capture without a fresh lease means leadership
+			// changed after that admission check.
+			return errSnapshotLeaderChanged
+		}
+		checkLeadership = func() error {
+			currentEpoch, stillLeadingFresh := s.peers.EpochAndLeadingFresh()
+			if !stillLeadingFresh || currentEpoch != epoch {
+				return errSnapshotLeaderChanged
+			}
+			return nil
+		}
+		rangeCtx, rangeUnlock := s.backend.BeginRangeTxn(ctx)
+		ctx = rangeCtx
+		unlock = rangeUnlock
+		locked = true
+		if err := s.peers.SyncReadRevision(ctx); err != nil {
+			return readBarrierStatusErr(err)
+		}
+		var err error
+		revision, err = safeBackendRevision(ctx, s.backend)
+		if err != nil {
+			return err
+		}
 	}
 	if revision >= math.MaxInt64 {
 		return fmt.Errorf("%w: snapshot revision leaves no room for next etcd write: %d", production.ErrInvalidSnapshotMetadata, revision)

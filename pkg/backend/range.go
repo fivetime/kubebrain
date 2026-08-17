@@ -1591,7 +1591,8 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 	// its event-log ordering metadata is still being joined below.
 	snapshotPin := compactRevision + 1
 	b.snapshotPins.pin(snapshotPin)
-	iter, err := b.kv.Iter(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), 0, 0)
+	timestamp, _ := storage.SnapshotTimestampFromContext(ctx)
+	iter, err := b.kv.Iter(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), timestamp, 0)
 	if err != nil {
 		b.snapshotPins.unpin(snapshotPin)
 		return nil, err
@@ -1778,6 +1779,14 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 // capability: silently skipping the join on Badger (or another plain
 // KvStorage) reorders same-revision writes by key in exported etcd snapshots.
 func (b *backend) snapshotEventLogValues(ctx context.Context, keys [][]byte) (map[string][]byte, error) {
+	if timestamp, pinned := storage.SnapshotTimestampFromContext(ctx); pinned {
+		if reader, ok := storage.FindCapability[storage.SnapshotGetter](b.kv); ok {
+			return reader.BatchGetAt(ctx, keys, timestamp)
+		}
+		if !storage.SnapshotIteratorFallbackFromContext(ctx) {
+			return nil, ErrSerializableCheckpointUnavailable
+		}
+	}
 	if batchGetter, ok := storage.FindCapability[storage.BatchGetter](b.kv); ok {
 		return batchGetter.BatchGet(ctx, keys)
 	}
