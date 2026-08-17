@@ -153,12 +153,24 @@ spec:
           expr: count(max by (namespace, pod, interface) (container_network_transmit_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"})) + count(max by (namespace, pod, interface) (container_network_transmit_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_capacity_bytes:max_by_pvc
+          expr: max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"} and (time() - timestamp(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_available_bytes:max_by_pvc
+          expr: max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"} and (time() - timestamp(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_available_bytes:min_by_pvc
+          expr: min by (namespace, persistentvolumeclaim) (kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"} and (time() - timestamp(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_capacity_sources:count
-          expr: count(max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}))
+          expr: count(kubebrain_dbaas:storage_capacity_bytes:max_by_pvc)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_available_sources:count
-          expr: count(max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}))
+          expr: count(kubebrain_dbaas:storage_available_bytes:max_by_pvc)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:logical_backup_artifact_sources:count
@@ -218,7 +230,7 @@ spec:
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_used_bytes:sum
-          expr: clamp_min(sum(max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"})) - sum(max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"})), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)
+          expr: clamp_min(sum(kubebrain_dbaas:storage_capacity_bytes:max_by_pvc) - sum(kubebrain_dbaas:storage_available_bytes:max_by_pvc), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:logical_backup_artifact_bytes:last
@@ -568,13 +580,13 @@ spec:
             summary: KubeBrain storage volume metrics are incomplete
             description: "KSM requested-storage sources do not exactly cover every current matching PD/TiKV PVC object, kubelet capacity/available sources do not exactly cover active storage replicas, fewer PVC objects exist than active replicas, or an expectation/source recording series is absent. Retained scale-down PVCs remain provisioned and billable until deletion even when unmounted. Verify kube-state-metrics and that the production CSI driver implements volume statistics."
         - alert: KubeBrainStorageVolumeLow
-          expr: (min by (namespace, persistentvolumeclaim) (kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"}) / max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-9]+"})) < 0.15
+          expr: (kubebrain_dbaas:storage_available_bytes:min_by_pvc / kubebrain_dbaas:storage_capacity_bytes:max_by_pvc) < 0.15
           for: 10m
           labels:
             severity: critical
           annotations:
             summary: KubeBrain storage volume has less than 15% free space
-            description: "PVC {{ $labels.persistentvolumeclaim }} has only {{ $value | humanizePercentage }} free space using the most conservative deduplicated available/capacity samples."
+            description: "PVC {{ $labels.persistentvolumeclaim }} has only {{ $value | humanizePercentage }} free space using the most conservative deduplicated available/capacity samples received within 60 seconds."
     - name: kubebrain.resources
       rules:
         - alert: KubeBrainMeteringDataIncomplete
