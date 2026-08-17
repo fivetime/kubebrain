@@ -56320,6 +56320,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与完整 completeness PromQL，告警 annotation/production readiness 已同步；完整 `deploy/production` 测试
   通过。本项不重建数据面镜像。
 
+- A5008 将对象请求账单的 canonical 数值合同前移到 minute/hour completeness。此前归档器会拒绝负数、
+  非整数、超过 IEEE-754 精确整数上限 `2^53` 的请求量和错窗 period-end，但 recording completeness 只验证
+  来源；非法 gauge 可先积累 60 个“完整”分钟并发布 hour series，最后才在归档失败。现新增 request-value
+  mismatch count，要求四类 current value 均为 `[0,2^53]` 精确整数；新增 period-end mismatch count，除同一
+  值域/整数约束外要求 `% 3600 == 0` 的 UTC 整点。minute completeness 同时要求两项 mismatch 为零，因而
+  invalid input 不能生成 hour-complete 证据。精确 manifest 门禁固定两条 mismatch recording 与完整
+  completeness PromQL，告警 annotation/production readiness 已同步；完整 `deploy/production` 测试通过。
+  本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
