@@ -56161,6 +56161,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   conservative annotation，production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建
   数据面镜像。
 
+- A4990 关闭 kubelet volume stats 在 Prometheus lookback 内以陈旧样本继续通过计费完整性的窗口。A4989
+  已按 PVC 去重，但原始 series 停止更新后仍可见约 5 分钟，期间 source count、used bytes 和低水位告警
+  仍把它当作当前证据。现 recording group 先仅保留 sample age 不超过 60 秒的 capacity/available，再按
+  `(namespace,persistentvolumeclaim)` 发布 capacity max、available max/min 三条序列；source count、used
+  计费和容量告警只消费这条新鲜链。任一 PVC 无新鲜样本会降低动态来源数并 fail closed，旧重复样本也
+  不再影响账单或安全比率。精确 manifest 门禁固定三条 freshness recording、下游 count/usage/alert
+  PromQL 与 60-second annotation，production readiness 已同步；完整 `deploy/production` 测试通过。本项
+  不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
