@@ -113,7 +113,11 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	baseline, err := client.HashKV(ctx, endpoint, revision)
 	require.NoError(t, err)
 	require.Equal(t, revision, baseline.HashRevision)
-	baselineRange, err := client.Get(ctx, rangePrefix, clientv3.WithPrefix(), clientv3.WithSerializable())
+	// Build the expected fixture from an authoritative linearizable read. A
+	// healthy follower is allowed to serve latest serializable Range from its
+	// member-local checkpoint, which can predate the writes seeded above and is
+	// therefore not a valid source of truth for the later fault-time comparison.
+	baselineRange, err := client.Get(ctx, rangePrefix, clientv3.WithPrefix())
 	require.NoError(t, err)
 	require.Len(t, baselineRange.Kvs, rangeKeys)
 
