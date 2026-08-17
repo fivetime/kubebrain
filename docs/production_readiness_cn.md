@@ -1664,6 +1664,9 @@ family 分别按 `(namespace,pod,interface)` 去重，来源数必须与三个 S
 相等；bytes rate 与 errors/drops 10 分钟 increase 均只接收 sample age 不超过 60 秒的原始 series，任一
 recording series 缺失也 fail closed。故障告警直接消费这些新鲜、去重的 increase recording。只有该 completeness 门禁健康时，零
 `KubeBrainNetworkErrors`/`KubeBrainNetworkPacketDrops` 才是可信的零故障证据。
+六类 rate/increase recording 还必须等于各自的 `[0,2^53]` clamp；NaN、Inf、负数或超界值统一计入
+`network_invalid_values`，并由 `KubeBrainNetworkMetricsMissing` fail closed。不能让非法 fault operand
+产生空向量或无意义的和，再被解释为零网络故障。
 
 CPU/内存资源门禁采用相同原则。`KubeBrainResourceMetricsMissing` 要求按
 `(namespace,pod,container)` 去重的 CPU usage、CFS throttled periods、CFS total periods 和 memory
