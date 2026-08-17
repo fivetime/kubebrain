@@ -134,7 +134,10 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   `(namespace,pod,uid)` 计算 `max(kubebrain_dbaas:count_index_overflowed:max_by_pod) > 0`，持续 1m；
   每个当前 Ready UID 都必须有一条新鲜 overflow gauge，否则 `KubeBrainCountIndexMetricsMissing`
   在 2m 后告警，不能把缺失/停止抓取解释成未溢出。另监控
-  `increase(count_index_rebuild_err[10m]) > 0`。overflow 时应同时提高实例内存规格和
+  `count_index_rebuild_err`：每个副本在参与 leader election 前初始化为权威零值，production 从 60 秒内
+  样本生成 current 与 10 分钟 increase recording，并要求两者分别覆盖当前 Ready Pod UID。current 必须是
+  `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围；缺失、陈旧或非法值不能解释为零
+  rebuild failure。overflow 时应同时提高实例内存规格和
   `--count-index-max-keys`，不能只放大 key cap；重建失败先检查 TiKV scan 错误、PD
   可用性和 leader 切换频率。不要用 `count_index_keys == 0` 告警，followers 正常为 0。
 - **租户逻辑容量**：启用 `--quota-backend-bytes` 后，监控

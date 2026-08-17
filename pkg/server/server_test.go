@@ -701,6 +701,16 @@ func TestQuotaRefreshErrorMetricInitializedBeforeRefresh(t *testing.T) {
 	}, recorder.events)
 }
 
+func TestCountIndexRebuildErrorMetricInitializedBeforeLeadership(t *testing.T) {
+	recorder := &healthMetricRecorder{}
+	s := &server{metricCli: recorder}
+	s.initCountIndexMetrics()
+
+	require.Equal(t, []healthMetricEvent{
+		{kind: "counter", name: "count_index.rebuild.err", value: 0},
+	}, recorder.events)
+}
+
 // TestLeadershipHealthTransitions pins #61: losing leadership must flip the gRPC
 // health status to NOT_SERVING (it previously wrongly set SERVING), while
 // acquiring leadership sets SERVING.

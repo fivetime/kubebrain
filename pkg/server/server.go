@@ -262,6 +262,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.peers = peerService
 	s.initLegacyHealthMetrics()
 	s.initQuotaMetrics()
+	s.initCountIndexMetrics()
 	go func() {
 		defer close(s.campaignDone)
 		peerService.Campaign(campaignCtx)
@@ -935,6 +936,13 @@ func (s *server) initQuotaMetrics() {
 		return
 	}
 	_ = s.metricCli.EmitCounter("quota.refresh.err", 0)
+}
+
+func (s *server) initCountIndexMetrics() {
+	if s.metricCli == nil {
+		return
+	}
+	_ = s.metricCli.EmitCounter("count_index.rebuild.err", 0)
 }
 
 func (s *server) httpPingHandler(w http.ResponseWriter, req *http.Request) {

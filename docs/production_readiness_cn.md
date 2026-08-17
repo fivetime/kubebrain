@@ -4206,6 +4206,10 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - 任一当前 Ready Pod 的 `count_index_overflowed` 超过 60 秒未刷新，或任一新鲜 overflow gauge 为 1；
   production 每个副本都启用 count index 且每 15 秒刷新该 gauge；值必须精确为 0 或 1，缺失、NaN、
   Inf、负数、分数或其他超界值都不能解释成健康零值。
+- `count_index_rebuild_err` 在每个副本参与 leader election 前初始化为零，并只从 60 秒内 raw sample 生成
+  Ready Pod UID 级 current 与 10 分钟 increase recording。current 必须是 `[0,2^53]` 内精确整数，外推
+  increase 可为分数但必须有限且在同一范围；两类 series 不完整、invalid recording 缺失/非零都会告警，
+  不能把换主期间未观测到的 rebuild failure 当作权威零值。
 - gRPC p99 延迟超过 1 秒。
 
 这些阈值是预生产起点，不应直接作为最终生产阈值。正式上线前应基于真实对象规模、apiserver QPS、watch 数量和 TiKV 延迟重新校准。
