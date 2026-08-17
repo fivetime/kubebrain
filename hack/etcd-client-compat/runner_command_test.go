@@ -1046,6 +1046,24 @@ func TestBackendCombinedPDAndTiKVQuorumPartitionRunsDefragment(t *testing.T) {
 	require.Contains(t, text, `duringFault.Header`)
 }
 
+func TestBackendCombinedPDAndTiKVQuorumPartitionRunsHTTPHealth(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-quorum-http-health)`)
+	require.Contains(t, script, `"HTTP health probes across concurrent PD quorum and TiKV quorum partition"`)
+	require.Contains(t, script, `COMBINED_FAULT_READY_FILE=\$KUBEBRAIN_COMBINED_FAULT_READY_FILE TIKV_COMBINED_FAULT_MODE=quorum`)
+	require.Contains(t, script, `run_combined_http_health_test`)
+
+	testSource, readErr := os.ReadFile("http_health_combined_fault_test.go")
+	require.NoError(t, readErr)
+	text := string(testSource)
+	require.Contains(t, text, `request("/health?serializable=true")`)
+	require.Contains(t, text, `request("/livez?verbose")`)
+	require.Contains(t, text, `request("/readyz?verbose")`)
+	require.Contains(t, text, `[-]linearizable_read failed: RAFT NO LEADER`)
+}
+
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
