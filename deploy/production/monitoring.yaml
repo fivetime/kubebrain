@@ -122,11 +122,27 @@ spec:
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_receive_sources:count
-          expr: count(rate(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[5m])) + count(rate(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m]))
+          expr: count(max by (namespace, pod, interface) (rate(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[5m]))) + count(max by (namespace, pod, interface) (rate(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m])))
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_transmit_sources:count
-          expr: count(rate(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[5m])) + count(rate(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m]))
+          expr: count(max by (namespace, pod, interface) (rate(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[5m]))) + count(max by (namespace, pod, interface) (rate(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m])))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_receive_error_sources:count
+          expr: count(max by (namespace, pod, interface) (container_network_receive_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"})) + count(max by (namespace, pod, interface) (container_network_receive_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_transmit_error_sources:count
+          expr: count(max by (namespace, pod, interface) (container_network_transmit_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"})) + count(max by (namespace, pod, interface) (container_network_transmit_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_receive_drop_sources:count
+          expr: count(max by (namespace, pod, interface) (container_network_receive_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"})) + count(max by (namespace, pod, interface) (container_network_receive_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_transmit_drop_sources:count
+          expr: count(max by (namespace, pod, interface) (container_network_transmit_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"})) + count(max by (namespace, pod, interface) (container_network_transmit_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}))
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_capacity_sources:count
@@ -610,13 +626,13 @@ spec:
             summary: KubeBrain data-plane container CPU is heavily throttled
             description: "Container {{ $labels.container }} in {{ $labels.pod }} has {{ $value | humanizePercentage }} CPU periods throttled."
         - alert: KubeBrainNetworkMetricsMissing
-          expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:compute_replicas:expected) == 1 or absent(kubebrain_dbaas:network_receive_sources:count) == 1 or absent(kubebrain_dbaas:network_transmit_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:network_receive_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_transmit_sources:count != on() kubebrain_dbaas:compute_replicas:expected
+          expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:compute_replicas:expected) == 1 or absent(kubebrain_dbaas:network_receive_sources:count) == 1 or absent(kubebrain_dbaas:network_transmit_sources:count) == 1 or absent(kubebrain_dbaas:network_receive_error_sources:count) == 1 or absent(kubebrain_dbaas:network_transmit_error_sources:count) == 1 or absent(kubebrain_dbaas:network_receive_drop_sources:count) == 1 or absent(kubebrain_dbaas:network_transmit_drop_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:network_receive_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_transmit_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_receive_error_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_transmit_error_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_receive_drop_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_transmit_drop_sources:count != on() kubebrain_dbaas:compute_replicas:expected
           for: 15m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain data-plane network metrics are incomplete
-            description: "Current KubeBrain/PD/TiKV cAdvisor RX or TX source counts do not exactly match the current StatefulSet replica expectation, or an expectation/source recording series is absent."
+            description: "Deduplicated current KubeBrain/PD/TiKV eth0 receive/transmit byte, error, or packet-drop source counts do not exactly match the current StatefulSet replica expectation, or an expectation/source recording series is absent. Missing error/drop families must not be interpreted as zero network faults."
         - alert: KubeBrainNetworkErrors
           expr: (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m])) > 0)
           for: 0m

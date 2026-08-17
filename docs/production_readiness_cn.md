@@ -1636,6 +1636,12 @@ payload 上限仍是 16 MiB；它不扩大这些小型 JSON 证据文件的预�
 output 时，若目标文件已存在，只读取受远端 metadata/digest 保护的期望对象大小加 1 字节；
 超限会 fail closed，不为判断幂等而无界读取错误的大文件。
 
+网络故障告警不能把 cAdvisor family 缺失解释成零错误。`KubeBrainNetworkMetricsMissing` 对当前
+KubeBrain、PD、TiKV 数字 ordinal Pod 的 `eth0` receive/transmit bytes、errors 和 packet drops 六个
+family 分别按 `(namespace,pod,interface)` 去重，来源数必须与三个 StatefulSet 的动态期望副本总数精确
+相等；任一 recording series 缺失也 fail closed。只有该 completeness 门禁健康时，零
+`KubeBrainNetworkErrors`/`KubeBrainNetworkPacketDrops` 才是可信的零故障证据。
+
 `deploy/production/monitoring.yaml` 还以 1 分钟周期生成实例级计量序列：
 
 - `kubebrain_dbaas:cpu_usage_cores:sum`；
@@ -1653,7 +1659,8 @@ KubeBrain、PD、TiKV 容器和 PD/TiKV 存储 PVC，不把 restore/repair 等�
 `kube_statefulset_replicas` 输出三条期望来源数、容器期望副本总数和活跃存储副本数，另以去重的
 `kube_persistentvolumeclaim_info` 输出当前匹配 PVC 对象数，以
 `kube_persistentvolumeclaim_resource_requests_storage_bytes` 输出所有这些 PVC 的 requested-storage source 数和总量，并输出
-8 个 `*:sources:count` 和 `kubebrain_dbaas:metering_data_complete`。只有 KubeBrain/PD/TiKV 三个 StatefulSet
+8 个计费必需的 `*:sources:count`、4 个网络 error/drop completeness source count 和
+`kubebrain_dbaas:metering_data_complete`。只有 KubeBrain/PD/TiKV 三个 StatefulSet
 期望来源全部存在、容器 source 与当前期望副本数精确相等、PVC requested-storage source 与当前 PVC
 对象数精确相等（且 PVC 对象不少于活跃存储副本）、kubelet capacity/available source 与活跃存储副本数精确相等，且唯一备份
 artifact/timestamp 源全部存在时，完整性才为 1，8 条计量输入才会产出。扩缩容期间任一新副本指标尚未齐备时
