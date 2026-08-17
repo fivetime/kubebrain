@@ -1762,13 +1762,16 @@ header 或把错误 CA 文件交给 TLS 初始化继续处理。
 复用分类。exporter 输出必须是非负整数且不大于 IEEE-754 可精确表达上限 `2^53`，
 period-end 必须是对应 UTC 小时边界。
 
-recording rules 对五个源分别计数，缺失时用显式零值保持告警可见；只有整个小时至少
+recording rules 先在 raw exporter 层要求四类 count 与 period-end 的 Prometheus 样本均不超过 60 秒，
+再对五个新鲜源分别计数，缺失时用显式零值保持告警可见；只有整个小时至少
 60 次 evaluation 都恰好存在五个唯一源时，
 `kubebrain_dbaas:object_request_hour_complete` 才为 1。小时请求规则只转发 exporter
 提供的 finalized gauge，不对 counter 做 `increase` 或舍入。
 `kubebrain.metering-sample.v3` 在 v2 八项指标后追加四类请求数，并内嵌
 `object_request_period_end_unix`；归档器要求该值精确等于 artifact `slot_end`。
-缺类、重复、非整数、超出 `2^53`、陈旧、未来或错窗都会 fail closed。v1/v2 sample
+raw series 停止更新后会在 60 秒内让 completeness 归零，不能由 Prometheus lookback 旧值经过 recording
+rule 重打时间戳后伪装成新鲜账单证据。缺类、重复、非整数、超出 `2^53`、陈旧、未来或错窗都会
+fail closed。v1/v2 sample
 继续严格可读，已有不可变对象不重写。
 本地 metering sample 和 rollup 都是小型 canonical JSON，读取最多接受 1 MiB；超限会在
 schema 解码、canonical 比对、日汇总构造或 Object Lock executor 启动前 fail closed。

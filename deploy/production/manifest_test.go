@@ -2394,11 +2394,13 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		"kubebrain_dbaas:storage_available_sources:count":                    `count(kubebrain_dbaas:storage_available_bytes:max_by_pvc)`,
 		"kubebrain_dbaas:logical_backup_artifact_sources:count":              `count(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"})`,
 		"kubebrain_dbaas:logical_backup_timestamp_sources:count":             `count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"})`,
-		"kubebrain_dbaas:object_store_write_request_sources:count":           `count(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="write",window="1h"}) or on() vector(0)`,
-		"kubebrain_dbaas:object_store_list_request_sources:count":            `count(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="list",window="1h"}) or on() vector(0)`,
-		"kubebrain_dbaas:object_store_read_request_sources:count":            `count(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="read",window="1h"}) or on() vector(0)`,
-		"kubebrain_dbaas:object_store_delete_request_sources:count":          `count(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="delete",window="1h"}) or on() vector(0)`,
-		"kubebrain_dbaas:object_request_period_end_sources:count":            `count(kubebrain_object_store_request_period_end_seconds{dbaas_instance="kubebrain",window="1h"}) or on() vector(0)`,
+		"kubebrain_dbaas:object_store_request_count:current":                 `kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class=~"write|list|read|delete",window="1h"} and (time() - timestamp(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class=~"write|list|read|delete",window="1h"}) <= 60)`,
+		"kubebrain_dbaas:object_store_request_period_end_seconds:current":    `kubebrain_object_store_request_period_end_seconds{dbaas_instance="kubebrain",window="1h"} and (time() - timestamp(kubebrain_object_store_request_period_end_seconds{dbaas_instance="kubebrain",window="1h"}) <= 60)`,
+		"kubebrain_dbaas:object_store_write_request_sources:count":           `count(kubebrain_dbaas:object_store_request_count:current{request_class="write"}) or on() vector(0)`,
+		"kubebrain_dbaas:object_store_list_request_sources:count":            `count(kubebrain_dbaas:object_store_request_count:current{request_class="list"}) or on() vector(0)`,
+		"kubebrain_dbaas:object_store_read_request_sources:count":            `count(kubebrain_dbaas:object_store_request_count:current{request_class="read"}) or on() vector(0)`,
+		"kubebrain_dbaas:object_store_delete_request_sources:count":          `count(kubebrain_dbaas:object_store_request_count:current{request_class="delete"}) or on() vector(0)`,
+		"kubebrain_dbaas:object_request_period_end_sources:count":            `count(kubebrain_dbaas:object_store_request_period_end_seconds:current) or on() vector(0)`,
 		"kubebrain_dbaas:object_request_data_complete":                       `(kubebrain_dbaas:object_store_write_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_list_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_read_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_delete_request_sources:count == bool 1) * (kubebrain_dbaas:object_request_period_end_sources:count == bool 1)`,
 		"kubebrain_dbaas:metering_data_complete":                             `(kubebrain_dbaas:replica_expectation_sources:count == bool 3) * (kubebrain_dbaas:cpu_usage_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:memory_working_set_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:network_receive_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:network_transmit_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:storage_volumes:expected >= bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_requested_sources:count == bool kubebrain_dbaas:storage_volumes:expected) * (kubebrain_dbaas:storage_volume_identity_mismatches:count == bool 0) * (kubebrain_dbaas:storage_active_volume_sources:count == bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_capacity_sources:count == bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_available_sources:count == bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_volume_stats_identity_mismatches:count == bool 0) * (kubebrain_dbaas:logical_backup_artifact_sources:count == bool 1) * (kubebrain_dbaas:logical_backup_timestamp_sources:count == bool 1)`,
 		"kubebrain_dbaas:cpu_usage_cores:sum":                                `sum(kubebrain_dbaas:cpu_usage_cores:max_by_container) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
@@ -2411,7 +2413,7 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		"kubebrain_dbaas:logical_backup_age_seconds:last":                    `clamp_min(time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
 		"kubebrain_dbaas:metering_hour_complete":                             `(min_over_time(kubebrain_dbaas:metering_data_complete[1h]) == 1) * (count_over_time(kubebrain_dbaas:metering_data_complete[1h]) >= bool 60)`,
 		"kubebrain_dbaas:object_request_hour_complete":                       `(min_over_time(kubebrain_dbaas:object_request_data_complete[1h]) == 1) * (count_over_time(kubebrain_dbaas:object_request_data_complete[1h]) >= bool 60)`,
-		"kubebrain_dbaas:object_request_period_end:last":                     `max(kubebrain_object_store_request_period_end_seconds{dbaas_instance="kubebrain",window="1h"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
+		"kubebrain_dbaas:object_request_period_end:last":                     `max(kubebrain_dbaas:object_store_request_period_end_seconds:current) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
 		"kubebrain_dbaas:cpu_usage_core_seconds:hour": `(sum(max by (namespace, pod, container) (increase(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""}[1h]))) + ` +
 			`sum(max by (namespace, pod, container) (increase(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}[1h])))) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
 		"kubebrain_dbaas:memory_working_set_bytes:hour_avg": `avg_over_time(kubebrain_dbaas:memory_working_set_bytes:sum[1h]) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
@@ -2421,10 +2423,10 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 			`sum(max by (namespace, pod, interface) (increase(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[1h])))) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
 		"kubebrain_dbaas:storage_provisioned_bytes:hour_avg": `avg_over_time(kubebrain_dbaas:storage_provisioned_bytes:sum[1h]) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
 		"kubebrain_dbaas:storage_used_bytes:hour_avg":        `avg_over_time(kubebrain_dbaas:storage_used_bytes:sum[1h]) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
-		"kubebrain_dbaas:object_store_write_requests:hour":   `sum(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="write",window="1h"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
-		"kubebrain_dbaas:object_store_list_requests:hour":    `sum(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="list",window="1h"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
-		"kubebrain_dbaas:object_store_read_requests:hour":    `sum(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="read",window="1h"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
-		"kubebrain_dbaas:object_store_delete_requests:hour":  `sum(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="delete",window="1h"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
+		"kubebrain_dbaas:object_store_write_requests:hour":   `sum(kubebrain_dbaas:object_store_request_count:current{request_class="write"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
+		"kubebrain_dbaas:object_store_list_requests:hour":    `sum(kubebrain_dbaas:object_store_request_count:current{request_class="list"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
+		"kubebrain_dbaas:object_store_read_requests:hour":    `sum(kubebrain_dbaas:object_store_request_count:current{request_class="read"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
+		"kubebrain_dbaas:object_store_delete_requests:hour":  `sum(kubebrain_dbaas:object_store_request_count:current{request_class="delete"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
 	}
 	rules, ok := meteringGroup["rules"].([]any)
 	require.True(t, ok)
@@ -2458,6 +2460,10 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	require.Equal(t, "critical", requestIncomplete["labels"].(map[string]any)["severity"])
 	require.Contains(t, requestIncomplete["annotations"].(map[string]any)["description"],
 		"recording series itself is absent")
+	require.Contains(t, requestIncomplete["annotations"].(map[string]any)["description"],
+		"within 60 seconds")
+	require.Contains(t, requestIncomplete["annotations"].(map[string]any)["description"],
+		"Prometheus lookback values cannot be re-timestamped")
 }
 
 func TestProductionAlertMetricsExist(t *testing.T) {
