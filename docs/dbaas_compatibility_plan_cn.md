@@ -55627,6 +55627,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   port-forward 已清理。该保证仍限于已发布 checkpoint；进程冷启动尚未建立 checkpoint 时保持
   fail closed。
 
+- A4951 补齐 A4950 明确保留的 server-streaming 边界，对齐 upstream
+  `server/etcdserver/v3_server.go:rangeStream` 的单一 pinned snapshot 与逐帧 `Send` 契约。fresh
+  leader 上的 latest serializable RangeStream 现在同样先给 live snapshot 750ms budget；只有
+  `DeadlineExceeded`/`Unavailable`、原 caller 仍存活且**尚无任何一帧成功发送**时，才以请求入口取得的
+  protected checkpoint 重跑。发送代理只在底层 `Send` 成功后计数，因此首帧 transport 失败不会被
+  误记为 partial stream；一旦已有一帧，后续 backend/compaction/send 错误一律原样终止，客户端必须
+  丢弃本次流，绝不拼接两个 snapshot。点查、CountOnly 的 delegated unary shape 与真正多帧 scanner
+  共用该边界；DataLoss、校验/auth 错误和 caller cancellation 仍不 fallback。单测分别用真实 750ms
+  阻塞证明零帧降级成功，并用“先成功发一帧再 Unavailable”证明 checkpoint 完全未被触碰；全量
+  RangeStream、backend/server race 与 vet 均通过。
+
+  扩展组合门禁把 64 个 value 放大到总计约 1.8MiB，并分两批 Txn 写入，使 raw `KV.RangeStream`
+  必须产生至少两个 wire frame；故障探针后首先收取该流，逐帧验证仅末帧携带 header/count/more，
+  所有 KVs 拼接后与健康态 unary Range 的 key/value/MVCC metadata 精确相等，再验证固定 revision
+  HashKV、unary Range 与只读 Txn。旧镜像 `kubebrain:a4966-serializable-fallback` 的扩展门禁还稳定
+  暴露了 checkpoint 发布缺口：对象 Region 已 warm/protect，但 raw coordination namespace 的
+  `compact_key` Region 未纳入目录，组合故障内以“protected snapshot Region route is not cached”在
+  **142.51 秒 RED** 失败。修复后候选 timestamp 取 tenant object range 与 compact-key exact range
+  两次拓扑稳定 safe-ts 的较小值，并在所有独立 txnkv client 上额外 warm/protect compact Region；
+  发布前同时具备 timestamp readiness 与 cache-only route 完整性，不再依赖普通流量偶然残留缓存。
+
+  提交 `27eb2b4e` 构建的 `kubebrain:a4967-rangestream-fallback`（manifest list
+  `sha256:4256184c295e84631a58dae90591222b95e696b910c2405209d8643982342def`）在两个 PD member
+  不可达且 `kb-tikv-0` `Up -> Disconnected -> Up` 的同一窗口 **129.30 秒 GREEN**（Go package
+  129.327 秒）；多帧 RangeStream 作为首个读成功，随后 HashKV/Range/Txn 全部成功。恢复后所有
+  KubeBrain/PD/TiKV Pod Ready，iptables fault 规则与 13379 port-forward 已清理。该保证仍只适用于
+  已成功发布且在可用窗口内的 checkpoint；冷启动或任一 readiness/warm/protection 步骤失败时继续
+  fail closed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
