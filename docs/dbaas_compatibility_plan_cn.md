@@ -55656,6 +55656,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已成功发布且在可用窗口内的 checkpoint；冷启动或任一 readiness/warm/protection 步骤失败时继续
   fail closed。
 
+- A4952 收紧 checkpoint 的两条独立生产边界。第一，A4948 的 safe-ts/Region 双检与 A4951 的
+  multi-client warm/protect 原先是两个阶段：若 peer 调度恰好发生在其间，候选 timestamp 可能由旧
+  voter 集合证明，却在新目录发布后依赖尚未追平的新 voter。新增可选
+  `SnapshotPublicationValidator`；仅每 30 秒实际刷新 Region 目录时，在 warm 全部 client、写入 PD GC
+  service safepoint之后、本地 atomic publish 之前，再对 tenant object range 与 raw compact-key exact
+  range 执行一次完整 Store/Region 拓扑双检和 safe-ts 下界验证。任一范围当前 safe-ts 小于候选、拓扑
+  在查询中变化或 PD/TiKV 查询失败都不发布；若已有上一代，则继续服务上一代。每秒同代 safepoint
+  续租不重复全扫描。确定性测试覆盖“object 已追平、compact 新 voter 未追平”以及 alternate slot 已
+  保护但最终 fence 失败时旧本地代际不切换，并通过 backend/TiKV race 与 vet。
+
+  第二，完整 backend 回归同时发现 A4944 遗留的范围过宽：TiKV adapter 曾把任何非零显式 timestamp
+  都配置成 mixed replica + stale-read + 两秒 RPC + cache-only，等价于误称普通 etcd historical Range、
+  multi-step pinned Range 和 physical Compact 已经 GC-protected 且完整预热。冷 Region cache 下
+  `TestCompactDoesNotExpireKeysByEventsName` 稳定报“protected snapshot Region route is not cached”，
+  完整 backend **106.446 秒 RED**。现在 `WithSnapshotTimestamp` 只表示同一 engine snapshot；新增
+  `WithProtectedSnapshotTimestamp`，且只有经 `WithSerializableCheckpoint` 取得的 GC-protected、已 warm
+  checkpoint 才携带该强能力。GetAt/BatchGetAt/Iter 对普通历史 timestamp 保留 PD cache-miss reload，
+  checkpoint 才启用离线 cache-only。原失败测试单独 0.821 秒 GREEN，完整 backend **81.640 秒
+  GREEN**，checkpoint 定向测试、storage/tikv 全包、race 与 vet 均通过。
+
+  提交 `b5e8e540` 的镜像 `kubebrain:a4968-checkpoint-publication-fence`（manifest list
+  `sha256:75e4d5423095b05291c1a131dbb8e1d77bffe11c327724fe5325333042de57a8`）在真实 TiKV 上先以
+  revision `468126003565969704` 读回 v1，再写 v2、physical compact 到
+  `468126003565969705`；服务端日志确认 physical compaction 5 秒完成，旧 revision 返回 canonical
+  `OutOfRange/required revision has been compacted`，latest 返回 v2。随后同一镜像通过确定隔离
+  `kb-tikv-0` 的 PD quorum + TiKV member 组合门禁 **135.11 秒 GREEN**（Go package 135.139 秒），
+  多帧 RangeStream、HashKV、Range、只读 Txn 均保持 checkpoint 可用。终态三个 KubeBrain 零重启且
+  与 PD/TiKV 全部 Ready，fault 规则与 13379 port-forward 已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
