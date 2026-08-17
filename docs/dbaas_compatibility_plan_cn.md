@@ -55750,17 +55750,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 - A4956 新增更强且独立的 `pd-quorum-tikv-quorum-snapshot` 破坏性门禁，不把 A4954 的“PD quorum +
   单 TiKV Store”或 A4955 的“PD 健康 + TiKV quorum”GREEN 外推为两种 quorum 同时丢失。组合故障
   wrapper 现在以显式 `TIKV_COMBINED_FAULT_MODE=member|quorum` 选择隔离一个或两个 Store，默认 member
-  保持既有 profile 不变；两个 child 仍各自验证故障状态、持有唯一 iptables comment 并在任一失败时
-  联动清理。shell 语法、runner 契约连续 20 次及 client compatibility 全包通过；单独十秒实跑明确
-  观察 PD `kb-pd-2/kb-pd-0` 不可达，以及 TiKV `kb-tikv-1/kb-tikv-2`
-  `Up -> Disconnected -> Up`，两类规则均恢复。
+  保持既有 profile 不变。初版门禁只等任意 mutation 失败；PD child 先进入故障就会提前放行测试，且
+  TiDB Operator 在 PD quorum 丢失后不能可靠更新 TiKV `Disconnected` 状态，因此一轮 204.13 秒 RED
+  和一轮表面 GREEN 都没有证明两个 quorum 的故障窗口真正重叠，均从能力证据中撤销。
 
-  当前精确镜像 `kubebrain:a4975-snapshot-client-affinity` 在该组合窗口正确拒绝 mutation，但三次
-  protected Snapshot 均耗尽 20 秒 deadline，完整门禁 **204.13 秒 RED**。同期 TiKV 日志显示 PD
-  连接失败后 follower safe-ts 停止推进并持续报告增大的 gap；现有故障前 range-scoped StoreSafeTS
-  证明尚未由真实结果证明足以覆盖“PD 与 Raft quorum 同时消失”的每 Region follower read。该能力
-  明确保留为 open：下一步需取得并校验逐 Region/逐 peer 的可服务水位，或发布更保守的冻结 timestamp/
-  物化 checkpoint artifact；在真实门禁转绿前不得宣称全后端 quorum-loss Snapshot 可用。
+  `723b1a8e` 为两个 child 增加 ready/release handshake：PD 在目标 health endpoint 全部不可达后
+  ready，组合模式的 TiKV 在两个目标 Pod 的四条双向 DROP 规则安装后 ready；wrapper 只有收到两者
+  才原子发布 combined-ready，并从该时刻保持完整 60 秒窗口。普通单故障仍验证 CR
+  `Up -> Disconnected -> Up`。测试只在 combined-ready 后执行 mutation 与 Snapshot。超时审计又发现
+  compat command 曾用 `SIGKILL` 杀进程组，child trap 无机会清理而遗留八条规则；`149f6ae3` 改为先
+  `SIGTERM`，由现有 WaitDelay 负责最终升级，故障 helper 可先执行 TERM/EXIT cleanup。shell、process
+  group、runner 与 compatibility 全包回归通过。
+
+  `24358af5` 同时增加不含 key/value 的故障可观测性：checkpoint 路径记录 revision/timestamp，TiKV
+  明确返回 `DataIsNotReady` 时记录 Region/peer/Store/safe-ts。精确镜像
+  `kubebrain:a4976-snapshot-watermark-observe`（manifest list
+  `sha256:5051d844229e437a2a3809f220b2c7b6b165687bac0bbba64c390ec9c6332a88`）在严格同步的两轮
+  PD quorum + TiKV quorum 窗口中分别 **139.24 秒、135.37 秒 GREEN**；故障期 protected Snapshot
+  分别约 **4.71 秒、7.00 秒**完成，mutation 均不可用，日志确认使用 checkpoint timestamp
+  `468447482841137153` 且没有 `DataIsNotReady`。两轮分别隔离 `kb-tikv-0/1` 与
+  `kb-tikv-1/2`，恢复后 current Snapshot 和写入均成功。终态三个 KubeBrain Ready、零重启，所有
+  PD/TiKV fault 规则与 13379 port-forward 均清理。A4956 的组合 quorum Snapshot 能力由此转为 GREEN，
+  仍仅承诺故障前完整发布、GC-protected 且全 Region 预热的 checkpoint。
 
 ### P2：运维兼容和长期验证
 
