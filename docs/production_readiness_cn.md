@@ -1639,13 +1639,15 @@ output 时，若目标文件已存在，只读取受远端 metadata/digest 保�
 网络故障告警不能把 cAdvisor family 缺失解释成零错误。`KubeBrainNetworkMetricsMissing` 对当前
 KubeBrain、PD、TiKV 数字 ordinal Pod 的 `eth0` receive/transmit bytes、errors 和 packet drops 六个
 family 分别按 `(namespace,pod,interface)` 去重，来源数必须与三个 StatefulSet 的动态期望副本总数精确
-相等；任一 recording series 缺失也 fail closed。只有该 completeness 门禁健康时，零
+相等；bytes rate 与 errors/drops 10 分钟 increase 均只接收 sample age 不超过 60 秒的原始 series，任一
+recording series 缺失也 fail closed。故障告警直接消费这些新鲜、去重的 increase recording。只有该 completeness 门禁健康时，零
 `KubeBrainNetworkErrors`/`KubeBrainNetworkPacketDrops` 才是可信的零故障证据。
 
 CPU/内存资源门禁采用相同原则。`KubeBrainResourceMetricsMissing` 要求按
 `(namespace,pod,container)` 去重的 CPU usage、CFS throttled periods、CFS total periods 和 memory
 working set，以及去重的 KSM memory limit，分别精确覆盖当前动态副本总数；任一 recording series
-缺失也告警。`KubeBrainDataPlaneMemoryHigh` 与 `KubeBrainDataPlaneCPUThrottlingHigh` 的分子、分母也先
+缺失也告警。CFS throttled/total rate 仅接收 60 秒内原始样本，throttling 告警直接使用这两条实体 recording。
+`KubeBrainDataPlaneMemoryHigh` 的分子、分母也先
 按同一容器 identity 去重，避免重复抓取造成 many-to-many 查询失败或重复告警。特别是 throttling 分子或
 分母缺失不得被解释为零 CPU pressure。
 

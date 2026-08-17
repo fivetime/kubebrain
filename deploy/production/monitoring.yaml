@@ -129,16 +129,40 @@ spec:
           expr: max by (namespace, pod, interface) (rate(container_network_transmit_bytes_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m]) and (time() - timestamp(container_network_transmit_bytes_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}) <= 60))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:cpu_throttled_periods_per_second:max_by_container
+          expr: max by (namespace, pod, container) (rate(container_cpu_cfs_throttled_periods_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""}[5m]) and (time() - timestamp(container_cpu_cfs_throttled_periods_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:cpu_periods_per_second:max_by_container
+          expr: max by (namespace, pod, container) (rate(container_cpu_cfs_periods_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""}[5m]) and (time() - timestamp(container_cpu_cfs_periods_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_receive_errors:increase_10m_by_interface
+          expr: max by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) and (time() - timestamp(container_network_receive_errors_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_transmit_errors:increase_10m_by_interface
+          expr: max by (namespace, pod, interface) (increase(container_network_transmit_errors_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) and (time() - timestamp(container_network_transmit_errors_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_receive_drops:increase_10m_by_interface
+          expr: max by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) and (time() - timestamp(container_network_receive_packets_dropped_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_transmit_drops:increase_10m_by_interface
+          expr: max by (namespace, pod, interface) (increase(container_network_transmit_packets_dropped_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) and (time() - timestamp(container_network_transmit_packets_dropped_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:cpu_usage_sources:count
           expr: count(kubebrain_dbaas:cpu_usage_cores:max_by_container)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:cpu_throttled_period_sources:count
-          expr: count(max by (namespace, pod, container) (container_cpu_cfs_throttled_periods_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""})) + count(max by (namespace, pod, container) (container_cpu_cfs_throttled_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}))
+          expr: count(kubebrain_dbaas:cpu_throttled_periods_per_second:max_by_container)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:cpu_period_sources:count
-          expr: count(max by (namespace, pod, container) (container_cpu_cfs_periods_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""})) + count(max by (namespace, pod, container) (container_cpu_cfs_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}))
+          expr: count(kubebrain_dbaas:cpu_periods_per_second:max_by_container)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:memory_working_set_sources:count
@@ -154,19 +178,19 @@ spec:
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_receive_error_sources:count
-          expr: count(max by (namespace, pod, interface) (container_network_receive_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"})) + count(max by (namespace, pod, interface) (container_network_receive_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}))
+          expr: count(kubebrain_dbaas:network_receive_errors:increase_10m_by_interface)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_transmit_error_sources:count
-          expr: count(max by (namespace, pod, interface) (container_network_transmit_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"})) + count(max by (namespace, pod, interface) (container_network_transmit_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}))
+          expr: count(kubebrain_dbaas:network_transmit_errors:increase_10m_by_interface)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_receive_drop_sources:count
-          expr: count(max by (namespace, pod, interface) (container_network_receive_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"})) + count(max by (namespace, pod, interface) (container_network_receive_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}))
+          expr: count(kubebrain_dbaas:network_receive_drops:increase_10m_by_interface)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_transmit_drop_sources:count
-          expr: count(max by (namespace, pod, interface) (container_network_transmit_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"})) + count(max by (namespace, pod, interface) (container_network_transmit_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}))
+          expr: count(kubebrain_dbaas:network_transmit_drops:increase_10m_by_interface)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_capacity_bytes:max_by_pvc
@@ -644,7 +668,7 @@ spec:
             severity: warning
           annotations:
             summary: KubeBrain data-plane resource metrics are incomplete
-            description: "Deduplicated current KubeBrain/PD/TiKV cAdvisor CPU usage, throttled/total period, memory working-set, or kube-state-metrics memory-limit source counts do not exactly match the current StatefulSet replica expectation, or an expectation/source recording series is absent. Missing throttling numerator or denominator must not be interpreted as zero CPU pressure."
+            description: "Deduplicated current KubeBrain/PD/TiKV cAdvisor CPU usage, throttled/total period, memory working-set, or kube-state-metrics memory-limit source counts do not exactly match the current StatefulSet replica expectation, or an expectation/source recording series is absent. CFS inputs must have samples within 60 seconds; a missing or stale throttling numerator/denominator must not be interpreted as zero CPU pressure."
         - alert: KubeBrainDataPlaneMemoryHigh
           expr: ((max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""}) / max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"})) > 0.9) or ((max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}) / max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",resource="memory",unit="byte"})) > 0.9)
           for: 10m
@@ -654,7 +678,7 @@ spec:
             summary: KubeBrain data-plane container memory exceeds 90% of its limit
             description: "Container {{ $labels.container }} in {{ $labels.pod }} is using {{ $value | humanizePercentage }} of its memory limit."
         - alert: KubeBrainDataPlaneCPUThrottlingHigh
-          expr: ((max by (namespace, pod, container) (rate(container_cpu_cfs_throttled_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m])) / max by (namespace, pod, container) (rate(container_cpu_cfs_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m]))) > 0.25) or ((max by (namespace, pod, container) (rate(container_cpu_cfs_throttled_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}[5m])) / max by (namespace, pod, container) (rate(container_cpu_cfs_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}[5m]))) > 0.25)
+          expr: (kubebrain_dbaas:cpu_throttled_periods_per_second:max_by_container / kubebrain_dbaas:cpu_periods_per_second:max_by_container) > 0.25
           for: 15m
           labels:
             severity: warning
@@ -668,9 +692,9 @@ spec:
             severity: warning
           annotations:
             summary: KubeBrain data-plane network metrics are incomplete
-            description: "Deduplicated current KubeBrain/PD/TiKV eth0 receive/transmit byte, error, or packet-drop source counts do not exactly match the current StatefulSet replica expectation, or an expectation/source recording series is absent. Missing error/drop families must not be interpreted as zero network faults."
+            description: "Deduplicated current KubeBrain/PD/TiKV eth0 receive/transmit byte, error, or packet-drop source counts do not exactly match the current StatefulSet replica expectation, or an expectation/source recording series is absent. All inputs must have samples within 60 seconds; missing or stale error/drop families must not be interpreted as zero network faults."
         - alert: KubeBrainNetworkErrors
-          expr: (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m])) > 0)
+          expr: (kubebrain_dbaas:network_receive_errors:increase_10m_by_interface + kubebrain_dbaas:network_transmit_errors:increase_10m_by_interface) > 0
           for: 0m
           labels:
             severity: warning
@@ -678,7 +702,7 @@ spec:
             summary: KubeBrain data-plane network interface errors detected
             description: "Pod {{ $labels.pod }} reported {{ $value }} RX/TX errors on {{ $labels.interface }} in 10 minutes."
         - alert: KubeBrainNetworkPacketDrops
-          expr: (sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[10m])) > 0)
+          expr: (kubebrain_dbaas:network_receive_drops:increase_10m_by_interface + kubebrain_dbaas:network_transmit_drops:increase_10m_by_interface) > 0
           for: 0m
           labels:
             severity: warning
