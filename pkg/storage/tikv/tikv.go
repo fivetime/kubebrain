@@ -215,6 +215,18 @@ func (c *clientBalancer) getClient() *txnkv.Client {
 	return c.clients[int(idx)%len(c.clients)]
 }
 
+func (c *clientBalancer) getSnapshotClient(ctx context.Context, timestamp uint64) *txnkv.Client {
+	if storage.ProtectedSnapshotFromContext(ctx) {
+		// Every operation in one immutable checkpoint must share a Region cache.
+		// Round-robin selection would make each sequential metadata point read pay
+		// the unavailable-replica timeout independently before a healthy follower
+		// can become the protected Region's preferred peer. Timestamp hashing keeps
+		// different checkpoints distributed without losing affinity within one.
+		return c.clients[int(timestamp%uint64(len(c.clients)))]
+	}
+	return c.getClient()
+}
+
 type store struct {
 	*clientBalancer
 	closed    chan struct{}
@@ -419,7 +431,7 @@ func (s *store) Iter(ctx context.Context, start []byte, end []byte, timestamp ui
 			return nil, err
 		}
 	}
-	snapshot := s.getClient().GetSnapshot(timestamp)
+	snapshot := s.getSnapshotClient(ctx, timestamp).GetSnapshot(timestamp)
 	if pinned && storage.ProtectedSnapshotFromContext(ctx) {
 		// Protected checkpoints are immutable historical snapshots. Mixed replica
 		// reads preserve their value semantics and let a warmed Region cache route
@@ -494,7 +506,7 @@ func (s *store) GetAt(ctx context.Context, key []byte, timestamp uint64) ([]byte
 	if timestamp == 0 {
 		return nil, errors.New("snapshot timestamp must be non-zero")
 	}
-	snapshot := s.getClient().GetSnapshot(timestamp)
+	snapshot := s.getSnapshotClient(ctx, timestamp).GetSnapshot(timestamp)
 	if storage.ProtectedSnapshotFromContext(ctx) {
 		configureProtectedSnapshot(snapshot)
 	}
@@ -773,7 +785,7 @@ func (s *store) BatchGetAt(ctx context.Context, keys [][]byte, timestamp uint64)
 	if len(keys) == 0 {
 		return map[string][]byte{}, nil
 	}
-	snapshot := s.getClient().GetSnapshot(timestamp)
+	snapshot := s.getSnapshotClient(ctx, timestamp).GetSnapshot(timestamp)
 	if storage.ProtectedSnapshotFromContext(ctx) {
 		configureProtectedSnapshot(snapshot)
 	}

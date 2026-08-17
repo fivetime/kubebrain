@@ -8,9 +8,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/stretchr/testify/require"
 	"github.com/tikv/client-go/v2/txnkv"
 )
+
+func TestProtectedSnapshotUsesTimestampStableClient(t *testing.T) {
+	clients := []*txnkv.Client{{}, {}, {}}
+	balancer := &clientBalancer{clients: clients}
+	ctx := storage.WithProtectedSnapshotTimestamp(context.Background(), 101)
+
+	first := balancer.getSnapshotClient(ctx, 101)
+	for range 20 {
+		require.Same(t, first, balancer.getSnapshotClient(ctx, 101))
+	}
+	require.Same(t, clients[2], first)
+	require.Same(t, clients[0], balancer.getSnapshotClient(ctx, 102))
+}
+
+func TestOrdinarySnapshotStillBalancesClients(t *testing.T) {
+	clients := []*txnkv.Client{{}, {}, {}}
+	balancer := &clientBalancer{clients: clients}
+
+	require.NotSame(t,
+		balancer.getSnapshotClient(context.Background(), 101),
+		balancer.getSnapshotClient(context.Background(), 101),
+	)
+}
 
 func TestNewKvStorageStartupHonorsCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
