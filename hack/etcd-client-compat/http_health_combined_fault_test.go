@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // TestHTTPHealthSurvivesCombinedBackendFault verifies that member liveness and
@@ -100,6 +101,16 @@ func TestHTTPHealthSurvivesCombinedBackendFault(t *testing.T) {
 	}, 15*time.Second, 25*time.Millisecond, "combined fault must expose a mutation-unavailable window")
 
 	versionStatus, versionBody, versionErr := request("/version")
+	healthCallCtx, healthCallCancel := context.WithTimeout(ctx, time.Second)
+	grpcHealth, grpcHealthErr := healthpb.NewHealthClient(etcdClient.ActiveConnection()).Check(
+		healthCallCtx, &healthpb.HealthCheckRequest{},
+	)
+	healthCallCancel()
+	healthListCtx, healthListCancel := context.WithTimeout(ctx, time.Second)
+	grpcHealthList, grpcHealthListErr := healthpb.NewHealthClient(etcdClient.ActiveConnection()).List(
+		healthListCtx, &healthpb.HealthListRequest{},
+	)
+	healthListCancel()
 	healthStatus, healthBody, healthErr := request("/health?serializable=true")
 	livezStatus, livezBody, livezErr := request("/livez?verbose")
 	readyzStatus, readyzBody, readyzErr := request("/readyz?verbose")
@@ -110,6 +121,12 @@ func TestHTTPHealthSurvivesCombinedBackendFault(t *testing.T) {
 	require.NoError(t, versionErr)
 	require.Equal(t, http.StatusOK, versionStatus)
 	require.JSONEq(t, baselineVersion, versionBody)
+	require.NoError(t, grpcHealthErr)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, grpcHealth.GetStatus())
+	require.NoError(t, grpcHealthListErr)
+	require.Equal(t, map[string]*healthpb.HealthCheckResponse{
+		"": {Status: healthpb.HealthCheckResponse_SERVING},
+	}, grpcHealthList.GetStatuses())
 	require.NoError(t, healthErr)
 	require.Equal(t, http.StatusOK, healthStatus)
 	require.JSONEq(t, `{"health":"true","reason":""}`, healthBody)

@@ -1061,6 +1061,9 @@ func TestBackendCombinedPDAndTiKVQuorumPartitionRunsHTTPHealth(t *testing.T) {
 	require.Contains(t, text, `request("/health?serializable=true")`)
 	require.Contains(t, text, `request("/livez?verbose")`)
 	require.Contains(t, text, `request("/readyz?verbose")`)
+	require.Contains(t, text, `healthpb.NewHealthClient(etcdClient.ActiveConnection()).Check`)
+	require.Contains(t, text, `healthpb.NewHealthClient(etcdClient.ActiveConnection()).List`)
+	require.Contains(t, text, `healthpb.HealthCheckResponse_SERVING`)
 	require.Contains(t, text, `[-]linearizable_read failed:`)
 }
 
