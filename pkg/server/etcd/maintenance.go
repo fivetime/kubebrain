@@ -549,6 +549,7 @@ func (s *RPCServer) localMaintenanceHash(ctx context.Context, refresh bool) (*et
 
 func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
 	s.metricCli.EmitCounter("maintenance.hashkv", 1)
+	s.emitMaintenanceHashKVStage("entered")
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	// Upstream hashes an explicit historical revision from the serving member's
 	// already-applied local MVCC backend, so losing quorum does not require a new
@@ -565,17 +566,31 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 		if checkpoint, err := s.backend.GetSerializableCheckpoint(); err == nil &&
 			uint64(requestedRevision) <= checkpoint.Revision {
 			ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
+			s.emitMaintenanceHashKVStage("checkpoint_attached")
+		} else {
+			s.emitMaintenanceHashKVStage("checkpoint_unavailable")
 		}
 	}
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		s.emitMaintenanceHashKVStage("hedged")
 		return s.hedgedMaintenanceHashKV(ctx, req)
 	}
+	s.emitMaintenanceHashKVStage("local")
 	return s.localMaintenanceHashKV(ctx, req, true)
+}
+
+// emitMaintenanceHashKVStage exposes a bounded state machine for a diagnostic
+// RPC that is expected to remain usable during backend quorum faults. The
+// values are compile-time constants at call sites: never add revisions, keys,
+// tenants, member addresses, or error strings to this label.
+func (s *RPCServer) emitMaintenanceHashKVStage(stage string) {
+	_ = s.metricCli.EmitCounter("maintenance.hashkv.stage", 1, metrics.Tag("stage", stage))
 }
 
 func (s *RPCServer) localMaintenanceHashKV(
 	ctx context.Context, req *etcdserverpb.HashKVRequest, refresh bool,
 ) (*etcdserverpb.HashKVResponse, error) {
+	s.emitMaintenanceHashKVStage("local_entered")
 	if !authorizedPeerHashKVProxy(ctx) {
 		if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
 			// An upstream member authorizes historical HashKV against its already-
@@ -599,6 +614,7 @@ func (s *RPCServer) localMaintenanceHashKV(
 			return nil, err
 		}
 	}
+	s.emitMaintenanceHashKVStage("auth_complete")
 	// A successful refresh pins normal-operation hashes to the latest committed
 	// revision. A failed refresh must not make this local diagnostic unavailable.
 	if refresh {
@@ -613,6 +629,7 @@ func (s *RPCServer) localMaintenanceHashKV(
 	if refresh {
 		_ = s.peers.SyncReadRevision(ctx)
 	}
+	s.emitMaintenanceHashKVStage("refresh_complete")
 	revision := req.GetRevision()
 	if req.GetRevision() > 0 {
 		if checkpoint, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
@@ -631,9 +648,12 @@ func (s *RPCServer) localMaintenanceHashKV(
 			}
 		}
 	}
+	s.emitMaintenanceHashKVStage("revision_validated")
 	start := time.Now()
+	s.emitMaintenanceHashKVStage("backend_started")
 	hashResult, err := s.backend.HashKV(ctx, revision)
 	if err != nil {
+		s.emitMaintenanceHashKVStage("backend_failed")
 		if errors.Is(err, backend.ErrHashKVCompacted) {
 			return nil, compactedRevisionError()
 		}
@@ -642,6 +662,7 @@ func (s *RPCServer) localMaintenanceHashKV(
 		}
 		return nil, err
 	}
+	s.emitMaintenanceHashKVStage("backend_complete")
 	emitEtcdMVCCHashRevDuration(s.metricCli, time.Since(start))
 	return &etcdserverpb.HashKVResponse{
 		Header:          txnHeader(hashResult.CurrentRevision),

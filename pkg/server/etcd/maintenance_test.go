@@ -876,6 +876,8 @@ func TestMaintenanceFixedRevisionHashKVUsesProtectedCheckpoint(t *testing.T) {
 	defer closeFn()
 	_, err := server.HashKV(context.Background(), &etcdserverpb.HashKVRequest{Revision: 1})
 	require.NoError(t, err, "prime the complete member-local auth snapshot")
+	recorded := &recordingMetrics{}
+	server.metricCli = recorded
 
 	checkpoint := backend.SerializableCheckpoint{
 		Revision: 91, Timestamp: 1234, CompactRevision: 0, AuthRevision: 1,
@@ -900,6 +902,18 @@ func TestMaintenanceFixedRevisionHashKVUsesProtectedCheckpoint(t *testing.T) {
 	require.Equal(t, int64(0), response.CompactRevision)
 	require.Equal(t, uint32(71), response.Hash)
 	require.False(t, synced)
+	var stages []string
+	for _, counter := range recorded.counters {
+		if counter.name == "maintenance.hashkv.stage" {
+			require.Len(t, counter.tags, 1)
+			require.Equal(t, []metrics.T{metrics.Tag("stage", counter.tags[0].Value)}, counter.tags)
+			stages = append(stages, counter.tags[0].Value)
+		}
+	}
+	require.Equal(t, []string{
+		"entered", "checkpoint_attached", "local", "local_entered", "auth_complete",
+		"refresh_complete", "revision_validated", "backend_started", "backend_complete",
+	}, stages)
 }
 
 func TestMaintenanceHashStableUntilWriteAndChangesAfterWrite(t *testing.T) {

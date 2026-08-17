@@ -135,6 +135,66 @@ func (s *testRegionRequestToThreeStoresSuite) TestSwitchPeerWhenNoLeader() {
 	s.NotNil(resp)
 }
 
+func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadSelectsProtectedInvalidatedRegion() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("key"))
+	s.NoError(err)
+	active := s.cache.GetCachedRegionWithRLock(loc.Region)
+	s.NotNil(active)
+	for _, store := range active.getStore().stores {
+		atomic.AddUint32(&store.epoch, 1)
+	}
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("key")}))
+	protected := s.cache.getProtectedRegion(loc.Region)
+	s.NotNil(protected)
+	protected.invalidate(Other)
+	for _, store := range protected.getStore().stores {
+		atomic.AddUint32(&store.epoch, 1)
+	}
+
+	seed := uint32(0)
+	req := tikvrpc.NewReplicaReadRequest(tikvrpc.CmdGet, &kvrpcpb.GetRequest{
+		Key: []byte("key"), Version: 42,
+	}, kv.ReplicaReadMixed, &seed)
+	req.CacheOnlyRegionRead = true
+	selector, err := newReplicaSelector(s.cache, loc.Region, req)
+	s.NoError(err)
+	s.NotNil(selector)
+	rpcCtx, err := selector.next(s.bo)
+	s.NoError(err)
+	s.NotNil(rpcCtx)
+}
+
+func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadFailsAfterProtectedReplicasAreExhausted() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("key"))
+	s.NoError(err)
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("key")}))
+
+	var attempts atomic.Int32
+	addresses := make(map[string]struct{})
+	s.regionRequestSender.client = &fnClient{fn: func(
+		_ context.Context, addr string, _ *tikvrpc.Request, _ time.Duration,
+	) (*tikvrpc.Response, error) {
+		attempts.Add(1)
+		addresses[addr] = struct{}{}
+		return nil, errors.New("partitioned")
+	}}
+	unreachableFn := func(*Store, *retry.Backoffer) livenessState { return unreachable }
+	s.cache.testingKnobs.mockRequestLiveness.Store((*livenessFunc)(&unreachableFn))
+
+	seed := uint32(0)
+	req := tikvrpc.NewReplicaReadRequest(tikvrpc.CmdGet, &kvrpcpb.GetRequest{
+		Key: []byte("key"), Version: 42,
+	}, kv.ReplicaReadMixed, &seed)
+	req.CacheOnlyRegionRead = true
+	resp, _, _, err := s.regionRequestSender.SendReqCtx(
+		s.bo, req, loc.Region, time.Millisecond, tikvrpc.TiKV,
+	)
+	s.Nil(resp)
+	s.ErrorContains(err, "exhausted its cached replicas")
+	s.Equal(int32(3), attempts.Load())
+	s.Len(addresses, 3)
+}
+
 func (s *testRegionRequestToThreeStoresSuite) loadAndGetLeaderStore() (*Store, string) {
 	region, err := s.regionRequestSender.regionCache.findRegionByKey(s.bo, []byte("a"), false)
 	s.Nil(err)

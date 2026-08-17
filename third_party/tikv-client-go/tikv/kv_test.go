@@ -126,6 +126,15 @@ func (s *testKVSuite) TestMinSafeTs() {
 	s.Require().Equal(uint64(80), s.store.GetMinSafeTS(oracle.GlobalTxnScope))
 }
 
+func (s *testKVSuite) TestGetAllTiKVStoreSafeTSExcludesTiFlash() {
+	mockClient := storeSafeTsMockClient{Client: s.store.GetTiKVClient(), testSuite: s}
+	s.store.SetTiKVClient(&mockClient)
+
+	safeTS, err := s.store.GetAllTiKVStoreSafeTS(context.Background())
+	s.Require().NoError(err)
+	s.Equal(map[uint64]uint64{s.tikvStoreID: 100}, safeTS)
+}
+
 func (s *testKVSuite) TestRURuntimeStatsCleanUp() {
 	s.Nil(failpoint.Enable("tikvclient/mockFastRURuntimeStatsMapClean", `return()`))
 	defer func() {

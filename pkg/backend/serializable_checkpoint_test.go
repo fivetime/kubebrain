@@ -91,6 +91,10 @@ type checkpointTestStorage struct {
 	partitionStarts [][]byte
 	warmerCalls     int
 	batchTimestamps []uint64
+	readinessErr    error
+	readyTimestamp  uint64
+	readinessCalls  int
+	snapshotValues  map[string][]byte
 }
 
 func (s *checkpointTestStorage) GetTimestampOracle(context.Context) (uint64, error) {
@@ -134,6 +138,16 @@ func (s *checkpointTestStorage) GetAt(ctx context.Context, key []byte, _ uint64)
 func (s *checkpointTestStorage) BatchGetAt(ctx context.Context, keys [][]byte, timestamp uint64) (map[string][]byte, error) {
 	s.mu.Lock()
 	s.batchTimestamps = append(s.batchTimestamps, timestamp)
+	if s.snapshotValues != nil {
+		values := make(map[string][]byte, len(keys))
+		for _, key := range keys {
+			if value, ok := s.snapshotValues[string(key)]; ok {
+				values[string(key)] = append([]byte(nil), value...)
+			}
+		}
+		s.mu.Unlock()
+		return values, nil
+	}
 	s.mu.Unlock()
 	return s.KvStorage.(storage.BatchGetter).BatchGet(ctx, keys)
 }
@@ -148,6 +162,20 @@ func (s *checkpointTestStorage) WarmSnapshotRegions(ctx context.Context, starts 
 		}
 	}
 	return nil
+}
+
+func (s *checkpointTestStorage) SnapshotReadyTimestamp(_ context.Context) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readinessCalls++
+	if s.readinessErr != nil {
+		return 0, s.readinessErr
+	}
+	if s.readyTimestamp != 0 {
+		return s.readyTimestamp, nil
+	}
+	s.timestamp++
+	return s.timestamp, nil
 }
 
 func (s *checkpointTestStorage) ProtectSnapshot(_ context.Context, id string, ttl time.Duration, timestamp uint64) (uint64, error) {
@@ -204,6 +232,21 @@ func TestSerializableCheckpointBindsRevisionCompactAndAuthAtSnapshot(t *testing.
 	require.Positive(t, store.warmReads)
 }
 
+func TestSerializableCheckpointUsesRevisionWatermarksAtReadyTimestamp(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), readyTimestamp: 300}
+	b := newCheckpointBackend(t, store)
+	b.SetCurrentRevision(9)
+	store.snapshotValues = map[string][]byte{
+		string(b.ks.EncodeInternalKey(durableRevisionKey)):    uint64ToBytes(7),
+		string(getCompactKey(b.config.Prefix)):                uint64ToBytes(3),
+		string(b.ks.EncodeInternalKey([]byte("auth/config"))): append([]byte{1}, uint64ToBytes(5)...),
+	}
+
+	c, err := b.createSerializableCheckpoint(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, SerializableCheckpoint{Revision: 7, Timestamp: 300, CompactRevision: 3, AuthRevision: 5}, c)
+}
+
 func TestSerializableCheckpointFailsClosedAfterGCPassedOrLocalDeadline(t *testing.T) {
 	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), minimum: 201}
 	b := newCheckpointBackend(t, store)
@@ -226,6 +269,27 @@ func TestSerializableCheckpointFailsClosedWhenRegionWarmupFails(t *testing.T) {
 	require.ErrorIs(t, err, storage.ErrUnavailable)
 	_, err = b.GetSerializableCheckpoint()
 	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable)
+}
+
+func TestSerializableCheckpointWarmFailureKeepsOldProtection(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage()}
+	b := newCheckpointBackend(t, store)
+	old := SerializableCheckpoint{Revision: 5, Timestamp: 200}
+	require.NoError(t, b.protectSerializableCheckpoint(context.Background(), old))
+
+	store.mu.Lock()
+	store.getAtErr = storage.ErrUnavailable
+	store.mu.Unlock()
+	b.serializableCheckpointRegionsWarmedAt.Store(0)
+	err := b.protectSerializableCheckpoint(context.Background(), SerializableCheckpoint{Revision: 6, Timestamp: 201})
+	require.ErrorIs(t, err, storage.ErrUnavailable)
+
+	served, err := b.GetSerializableCheckpoint()
+	require.NoError(t, err)
+	require.Equal(t, old.Timestamp, served.Timestamp)
+	store.mu.Lock()
+	require.Equal(t, old.Timestamp, store.protectedTS)
+	store.mu.Unlock()
 }
 
 func TestSerializableCheckpointWarmsEveryTenantRegionBeforePublication(t *testing.T) {
@@ -297,8 +361,9 @@ func TestSerializableCheckpointReusesUnchangedSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, first.Timestamp, second.Timestamp)
 	store.mu.Lock()
-	require.Equal(t, 1, store.tsoReads)
+	tsoReads := store.tsoReads
 	store.mu.Unlock()
+	require.Zero(t, tsoReads)
 
 	b.SetCurrentRevision(9)
 	third, err := b.createSerializableCheckpoint(context.Background())

@@ -38,8 +38,22 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	if endpoint == "" {
 		t.Fatalf("set KUBEBRAIN_ETCD_ENDPOINT explicitly for %s HashKV", faultLabel)
 	}
+	hashCallTimeout := 10 * time.Second
+	if configured := os.Getenv("KUBEBRAIN_HASHKV_CALL_TIMEOUT"); configured != "" {
+		parsed, parseErr := time.ParseDuration(configured)
+		require.NoError(t, parseErr, "parse KUBEBRAIN_HASHKV_CALL_TIMEOUT")
+		require.Positive(t, parsed, "KUBEBRAIN_HASHKV_CALL_TIMEOUT must be positive")
+		hashCallTimeout = parsed
+	}
+	checkpointWait := 60 * time.Second
+	if configured := os.Getenv("KUBEBRAIN_HASHKV_CHECKPOINT_WAIT"); configured != "" {
+		parsed, parseErr := time.ParseDuration(configured)
+		require.NoError(t, parseErr, "parse KUBEBRAIN_HASHKV_CHECKPOINT_WAIT")
+		require.Positive(t, parsed, "KUBEBRAIN_HASHKV_CHECKPOINT_WAIT must be positive")
+		checkpointWait = parsed
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), checkpointWait+2*time.Minute)
 	defer cancel()
 	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
 	require.NoError(t, err)
@@ -54,11 +68,11 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	put, err := client.Put(ctx, prefix+"baseline", "value")
 	require.NoError(t, err)
 	revision := put.Header.Revision
-	// Checkpoint publication runs once per second. Let the newly committed
-	// revision become GC-protected and Region-warmed before testing the contract
-	// that applies to a covered historical revision.
+	// TiKV's store-wide safe timestamp intentionally trails the latest TSO. Let
+	// the committed revision enter every Store's common safe-time window before
+	// testing the contract that applies only to a covered historical revision.
 	select {
-	case <-time.After(3 * time.Second):
+	case <-time.After(checkpointWait):
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
@@ -83,7 +97,7 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 		return putErr != nil && isMutationFailoverAmbiguous(putErr)
 	}, 15*time.Second, 25*time.Millisecond, "PD quorum fault must expose a mutation-unavailable window")
 
-	callCtx, callCancel := context.WithTimeout(ctx, 10*time.Second)
+	callCtx, callCancel := context.WithTimeout(ctx, hashCallTimeout)
 	duringFault, hashErr := client.HashKV(callCtx, endpoint, revision)
 	callCancel()
 	var result commandResult

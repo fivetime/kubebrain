@@ -234,6 +234,10 @@ type Request struct {
 	ForwardedHost string
 	// ReplicaNumber is the number of current replicas, which is used to calculate the RU cost.
 	ReplicaNumber int64
+	// CacheOnlyRegionRead allows an explicitly protected immutable snapshot to
+	// route with retained, pre-warmed Region metadata after the active cache has
+	// invalidated it. It must never be set for writes or latest-revision reads.
+	CacheOnlyRegionRead bool
 }
 
 // NewRequest returns new kv rpc request.

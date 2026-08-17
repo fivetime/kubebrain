@@ -107,18 +107,19 @@ type ReplicaReadAdjuster func(int) (locate.StoreSelectorOption, kv.ReplicaReadTy
 
 // KVSnapshot implements the tidbkv.Snapshot interface.
 type KVSnapshot struct {
-	store           kvstore
-	version         uint64
-	isolationLevel  IsoLevel
-	priority        txnutil.Priority
-	notFillCache    bool
-	keyOnly         bool
-	vars            *kv.Variables
-	replicaReadSeed uint32
-	resolvedLocks   util.TSSet
-	committedLocks  util.TSSet
-	scanBatchSize   int
-	requestTimeout  time.Duration
+	store               kvstore
+	version             uint64
+	isolationLevel      IsoLevel
+	priority            txnutil.Priority
+	notFillCache        bool
+	keyOnly             bool
+	vars                *kv.Variables
+	replicaReadSeed     uint32
+	resolvedLocks       util.TSSet
+	committedLocks      util.TSSet
+	scanBatchSize       int
+	requestTimeout      time.Duration
+	cacheOnlyRegionRead bool
 
 	// Cache the result of BatchGet.
 	// The invariance is that calling BatchGet multiple times using the same start ts,
@@ -792,6 +793,13 @@ func (s *KVSnapshot) SetScanBatchSize(batchSize int) {
 // snapshot. A zero duration keeps the command-specific client defaults.
 func (s *KVSnapshot) SetRequestTimeout(timeout time.Duration) {
 	s.requestTimeout = timeout
+}
+
+// SetCacheOnlyRegionRead makes the snapshot use only pre-warmed Region
+// topology, including entries invalidated by unrelated active traffic. It is
+// intended only for immutable snapshots protected by an external GC lease.
+func (s *KVSnapshot) SetCacheOnlyRegionRead(enabled bool) {
+	s.cacheOnlyRegionRead = enabled
 }
 
 func (s *KVSnapshot) readTimeout(defaultTimeout time.Duration) time.Duration {

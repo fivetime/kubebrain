@@ -168,9 +168,21 @@ func (b *backend) createSerializableCheckpoint(ctx context.Context) (Serializabl
 	if err := b.persistDurableRevisionContext(ctx, revision); err != nil {
 		return SerializableCheckpoint{}, err
 	}
-	timestamp, err := b.kv.GetTimestampOracle(ctx)
-	if err != nil {
-		return SerializableCheckpoint{}, err
+	timestamp := uint64(0)
+	if validator, ok := storage.FindCapability[storage.SnapshotReadinessValidator](b.kv); ok {
+		timestamp, err = validator.SnapshotReadyTimestamp(ctx)
+		if err != nil {
+			return SerializableCheckpoint{}, err
+		}
+		revision, compactRevision, authRevision, err = b.loadSerializableCheckpointWatermarksAt(ctx, timestamp)
+		if err != nil {
+			return SerializableCheckpoint{}, err
+		}
+	} else {
+		timestamp, err = b.kv.GetTimestampOracle(ctx)
+		if err != nil {
+			return SerializableCheckpoint{}, err
+		}
 	}
 	c := SerializableCheckpoint{Revision: revision, Timestamp: timestamp, CompactRevision: compactRevision, AuthRevision: authRevision}
 	batch := b.kv.BeginBatchWrite()
@@ -179,6 +191,32 @@ func (b *backend) createSerializableCheckpoint(ctx context.Context) (Serializabl
 		return SerializableCheckpoint{}, err
 	}
 	return c, nil
+}
+
+func (b *backend) loadSerializableCheckpointWatermarksAt(ctx context.Context, timestamp uint64) (uint64, uint64, uint64, error) {
+	reader, ok := storage.FindCapability[storage.SnapshotGetter](b.kv)
+	if !ok {
+		return 0, 0, 0, ErrSerializableCheckpointUnavailable
+	}
+	durableKey := b.ks.EncodeInternalKey(durableRevisionKey)
+	compactKey := getCompactKey(b.config.Prefix)
+	authKey := b.ks.EncodeInternalKey([]byte("auth/config"))
+	values, err := reader.BatchGetAt(ctx, [][]byte{durableKey, compactKey, authKey}, timestamp)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	revision, err := decodeDurableRevisionWatermark(values[string(durableKey)])
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	compactValue, compactExists := values[string(compactKey)]
+	compactRevision, err := decodeSerializableCheckpointCompactWatermark(compactValue, compactExists)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	authValue, authExists := values[string(authKey)]
+	authRevision, err := decodeSerializableCheckpointAuthWatermark(authValue, authExists)
+	return revision, compactRevision, authRevision, err
 }
 
 // loadSerializableCheckpointWatermarks reads the two metadata rows that bind a
@@ -257,15 +295,18 @@ func (b *backend) protectSerializableCheckpoint(ctx context.Context, c Serializa
 	if !ok {
 		return ErrSerializableCheckpointUnavailable
 	}
+	// Warm and validate the candidate while the previous, older service
+	// safepoint is still registered. Advancing the single service record first
+	// would leave an advertised old checkpoint unprotected if validation failed.
+	if err := b.refreshSerializableCheckpointRegions(ctx, c.Timestamp); err != nil {
+		return err
+	}
 	minimum, err := protector.ProtectSnapshot(ctx, b.serializableCheckpointServiceID, serializableCheckpointTTL, c.Timestamp)
 	if err != nil {
 		return err
 	}
 	if minimum > c.Timestamp {
 		return fmt.Errorf("%w: GC safepoint %d passed snapshot %d", ErrSerializableCheckpointUnavailable, minimum, c.Timestamp)
-	}
-	if err := b.refreshSerializableCheckpointRegions(ctx, c.Timestamp); err != nil {
-		return err
 	}
 	c.ValidUntil = time.Now().Add(serializableCheckpointUsable)
 	b.serializableCheckpoint.Store(&c)

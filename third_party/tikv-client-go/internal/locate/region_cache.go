@@ -414,6 +414,11 @@ type RegionCache struct {
 		latestVersions map[uint64]RegionVerID  // cache the map from regionID to its latest RegionVerID
 		sorted         *SortedRegions          // cache regions are organized as sorted key to region ref mapping
 	}
+	protected struct {
+		sync.RWMutex
+		regions map[RegionVerID]*Region
+		sorted  *SortedRegions
+	}
 	storeMu struct {
 		sync.RWMutex
 		stores map[uint64]*Store
@@ -450,6 +455,8 @@ func NewRegionCache(pdClient pd.Client) *RegionCache {
 	c.mu.regions = make(map[RegionVerID]*Region)
 	c.mu.latestVersions = make(map[uint64]RegionVerID)
 	c.mu.sorted = NewSortedRegions(btreeDegree)
+	c.protected.regions = make(map[RegionVerID]*Region)
+	c.protected.sorted = NewSortedRegions(btreeDegree)
 	c.storeMu.stores = make(map[uint64]*Store)
 	c.tiflashComputeStoreMu.needReload = true
 	c.tiflashComputeStoreMu.stores = make([]*Store, 0)
@@ -1045,6 +1052,65 @@ func (c *RegionCache) LocateKey(bo *retry.Backoffer, key []byte) (*KeyLocation, 
 	}, nil
 }
 
+// LocateCachedKey searches the last explicitly protected Region topology
+// without contacting PD. It is reserved for immutable, GC-protected snapshots
+// whose caller independently bounds how long the warmed topology may be used.
+func (c *RegionCache) LocateCachedKey(key []byte) (*KeyLocation, error) {
+	r := c.searchProtectedRegion(key, false)
+	if r == nil {
+		return nil, errors.Errorf("protected snapshot Region route is not cached for key %q", util.HexRegionKeyStr(key))
+	}
+	return &KeyLocation{
+		Region: r.VerID(), StartKey: r.StartKey(), EndKey: r.EndKey(), Buckets: r.getStore().buckets,
+	}, nil
+}
+
+// ProtectCachedRegions atomically snapshots the active Region routes covering
+// starts. The copies retain Region boundaries, peers, resolved Store pointers,
+// and their observed epochs independently of active-cache invalidation and GC.
+func (c *RegionCache) ProtectCachedRegions(starts [][]byte) error {
+	regions := make(map[RegionVerID]*Region, len(starts))
+	sorted := NewSortedRegions(btreeDegree)
+	for _, start := range starts {
+		r := c.searchCachedRegion(start, false)
+		if r == nil {
+			return errors.Errorf("cannot protect uncached Region route for key %q", util.HexRegionKeyStr(start))
+		}
+		id := r.VerID()
+		if _, exists := regions[id]; exists {
+			continue
+		}
+		clone := &Region{
+			meta:       proto.Clone(r.meta).(*metapb.Region),
+			syncFlag:   updated,
+			lastAccess: time.Now().Unix(),
+		}
+		protectedStore := r.getStore().clone()
+		for i, store := range protectedStore.stores {
+			// The active Region entry may intentionally retain an older epoch until
+			// PD reloads it. A protected route snapshots already-resolved Store
+			// addresses now, so bind its candidates to the Store epochs observed at
+			// protection time instead of inheriting that stale invalidation fence.
+			protectedStore.storeEpochs[i] = atomic.LoadUint32(&store.epoch)
+		}
+		clone.setStore(protectedStore)
+		regions[id] = clone
+		sorted.ReplaceOrInsert(clone)
+	}
+	c.protected.Lock()
+	c.protected.regions = regions
+	c.protected.sorted = sorted
+	c.protected.Unlock()
+	return nil
+}
+
+func (c *RegionCache) getProtectedRegion(id RegionVerID) *Region {
+	c.protected.RLock()
+	r := c.protected.regions[id]
+	c.protected.RUnlock()
+	return r
+}
+
 // TryLocateKey searches for the region and range that the key is located, but return nil when region miss or invalid.
 func (c *RegionCache) TryLocateKey(key []byte) *KeyLocation {
 	r := c.tryFindRegionByKey(key, false)
@@ -1494,6 +1560,16 @@ func (c *RegionCache) searchCachedRegion(key []byte, isEndKey bool) *Region {
 	c.mu.RLock()
 	r = c.mu.sorted.DescendLessOrEqual(key, isEndKey, ts)
 	c.mu.RUnlock()
+	if r != nil && (!isEndKey && r.Contains(key) || isEndKey && r.ContainsByEnd(key)) {
+		return r
+	}
+	return nil
+}
+
+func (c *RegionCache) searchProtectedRegion(key []byte, isEndKey bool) *Region {
+	c.protected.RLock()
+	r := c.protected.sorted.DescendLessOrEqualEvenIfInvalid(key, isEndKey)
+	c.protected.RUnlock()
 	if r != nil && (!isEndKey && r.Contains(key) || isEndKey && r.ContainsByEnd(key)) {
 		return r
 	}

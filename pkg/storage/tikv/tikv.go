@@ -68,6 +68,7 @@ type clientBalancer struct {
 var _ storage.SnapshotGetter = (*store)(nil)
 var _ storage.SnapshotProtector = (*store)(nil)
 var _ storage.SnapshotRegionWarmer = (*store)(nil)
+var _ storage.SnapshotReadinessValidator = (*store)(nil)
 
 // defaultClientNum is the fallback number of round-robined txnkv clients when
 // the caller passes a non-positive count. Each client carries its own PD
@@ -384,11 +385,23 @@ type tiKvIterator interface {
 // each replica attempt short enough to retry the other cached TiKV peers when
 // one store is blackholed; ordinary latest-revision reads retain client-go's
 // command-specific defaults.
-const protectedSnapshotRequestTimeout = 2 * time.Second
+const (
+	protectedSnapshotRequestTimeout = 2 * time.Second
+)
 
 func configureProtectedSnapshot(snapshot *txnsnapshot.KVSnapshot) {
-	snapshot.SetReplicaRead(tikvkv.ReplicaReadMixed)
+	configureProtectedSnapshotReplica(snapshot, tikvkv.ReplicaReadMixed)
+}
+
+func configureProtectedSnapshotReplica(snapshot *txnsnapshot.KVSnapshot, replicaRead tikvkv.ReplicaReadType) {
+	snapshot.SetReplicaRead(replicaRead)
+	// The checkpoint timestamp is immutable and held above TiKV's GC safe point.
+	// Mark it as a stale read so healthy followers may serve it directly when the
+	// cached leader is partitioned; replica selection alone does not authorize a
+	// follower read in TiKV's request context.
+	snapshot.SetIsStalenessReadOnly(true)
 	snapshot.SetRequestTimeout(protectedSnapshotRequestTimeout)
+	snapshot.SetCacheOnlyRegionRead(true)
 }
 
 func (s *store) Iter(ctx context.Context, start []byte, end []byte, timestamp uint64, limit uint64) (storage.Iter, error) {
@@ -504,9 +517,37 @@ func (s *store) WarmSnapshotRegions(ctx context.Context, starts [][]byte, timest
 			return errors.Wrapf(err, "failed to seed checkpoint stores for client %d", clientIndex)
 		}
 	}
-	return warmSnapshotRegionReaders(ctx, starts, len(s.clients), func(clientIndex int) snapshotRegionReader {
+	if err := warmSnapshotRegionReaders(ctx, starts, len(s.clients), func(clientIndex int) snapshotRegionReader {
 		return s.clients[clientIndex].GetSnapshot(timestamp)
-	})
+	}); err != nil {
+		return err
+	}
+	for clientIndex, client := range s.clients {
+		if err := client.GetRegionCache().ProtectCachedRegions(starts); err != nil {
+			return errors.Wrapf(err, "failed to protect checkpoint regions for client %d", clientIndex)
+		}
+	}
+	return nil
+}
+
+// SnapshotReadyTimestamp returns the largest timestamp that every TiKV store
+// can already serve over its full key range. With three voters per Region, a
+// checkpoint at this common floor remains readable after any one Store loss.
+func (s *store) SnapshotReadyTimestamp(ctx context.Context) (uint64, error) {
+	safeTS, err := s.clients[0].GetAllTiKVStoreSafeTS(ctx)
+	if err != nil {
+		return 0, errors.Wrap(err, "get checkpoint Store safe timestamps")
+	}
+	minimum := uint64(math.MaxUint64)
+	for _, timestamp := range safeTS {
+		if timestamp != 0 && timestamp < minimum {
+			minimum = timestamp
+		}
+	}
+	if minimum == math.MaxUint64 {
+		return 0, errors.New("no non-zero TiKV Store safe timestamp discovered")
+	}
+	return minimum, nil
 }
 
 type snapshotRegionReader interface {

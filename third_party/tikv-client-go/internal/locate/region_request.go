@@ -274,6 +274,7 @@ type replicaSelector struct {
 	// it in NotLeader. Only subsequent authoritative EpochNotMatch metadata is
 	// allowed to install the replacement topology in RegionCache.
 	allowKnownStoreLeaderProbe bool
+	cacheOnlyRegionRead        bool
 }
 
 // selectorState is the interface of states of the replicaSelector.
@@ -549,6 +550,30 @@ type accessFollower struct {
 
 func (state *accessFollower) next(bo *retry.Backoffer, selector *replicaSelector) (*RPCContext, error) {
 	replicaSize := len(selector.replicas)
+	if selector.cacheOnlyRegionRead {
+		selector.targetIdx = -1
+		start := state.leaderIdx
+		if !state.tryLeader {
+			start = AccessIndex((int(state.leaderIdx) + 1) % replicaSize)
+		}
+		if state.lastIdx >= 0 {
+			start = AccessIndex((int(state.lastIdx) + 1) % replicaSize)
+		}
+		for i := 0; i < replicaSize; i++ {
+			idx := AccessIndex((int(start) + i) % replicaSize)
+			if !state.tryLeader && idx == state.leaderIdx {
+				continue
+			}
+			replica := selector.replicas[idx]
+			if !replica.isExhausted(1) && replica.store.IsLabelsMatch(state.option.labels) {
+				state.lastIdx = idx
+				selector.targetIdx = idx
+				return selector.buildRPCContext(bo)
+			}
+		}
+		selector.invalidateRegion()
+		return nil, nil
+	}
 	if state.lastIdx < 0 {
 		if state.tryLeader {
 			state.lastIdx = AccessIndex(rand.Intn(replicaSize))
@@ -729,7 +754,10 @@ func newReplicaSelector(
 	regionCache *RegionCache, regionID RegionVerID, req *tikvrpc.Request, opts ...StoreSelectorOption,
 ) (*replicaSelector, error) {
 	cachedRegion := regionCache.GetCachedRegionWithRLock(regionID)
-	if cachedRegion == nil || !cachedRegion.isValid() {
+	if req.CacheOnlyRegionRead {
+		cachedRegion = regionCache.getProtectedRegion(regionID)
+	}
+	if cachedRegion == nil || (!req.CacheOnlyRegionRead && !cachedRegion.isValid()) {
 		return nil, nil
 	}
 	regionStore := cachedRegion.getStore()
@@ -782,6 +810,7 @@ func newReplicaSelector(
 		-1,
 		time.Duration(req.BusyThresholdMs) * time.Millisecond,
 		allowKnownStoreLeaderProbe,
+		req.CacheOnlyRegionRead,
 	}, nil
 }
 
@@ -790,7 +819,7 @@ const maxReplicaAttempt = 10
 // next creates the RPCContext of the current candidate replica.
 // It returns a SendError if runs out of all replicas or the cached region is invalidated.
 func (s *replicaSelector) next(bo *retry.Backoffer) (rpcCtx *RPCContext, err error) {
-	if !s.region.isValid() {
+	if !s.cacheOnlyRegionRead && !s.region.isValid() {
 		metrics.TiKVReplicaSelectorFailureCounter.WithLabelValues("invalid").Inc()
 		return nil, nil
 	}
@@ -859,7 +888,7 @@ func (s *replicaSelector) buildRPCContext(bo *retry.Backoffer) (*RPCContext, err
 	targetReplica, proxyReplica := s.targetReplica(), s.proxyReplica()
 
 	// Backoff and retry if no replica is selected or the selected replica is stale
-	if targetReplica == nil || targetReplica.isEpochStale() ||
+	if targetReplica == nil || (!s.cacheOnlyRegionRead && targetReplica.isEpochStale()) ||
 		(proxyReplica != nil && proxyReplica.isEpochStale()) {
 		// TODO(youjiali1995): Is it necessary to invalidate the region?
 		metrics.TiKVReplicaSelectorFailureCounter.WithLabelValues("stale_store").Inc()
@@ -1220,6 +1249,11 @@ func (s *RegionRequestSender) SendReqCtx(
 			}
 		}
 		if rpcCtx == nil {
+			if req.CacheOnlyRegionRead {
+				return nil, nil, retryTimes, errors.Errorf(
+					"protected snapshot Region %d exhausted its cached replicas", regionID.GetID(),
+				)
+			}
 			// TODO(youjiali1995): remove it when using the replica selector for all requests.
 			// If the region is not found in cache, it must be out
 			// of date and already be cleaned up. We can skip the
@@ -1272,7 +1306,17 @@ func (s *RegionRequestSender) SendReqCtx(
 			return nil, nil, retryTimes, err
 		}
 		if regionErr != nil {
-			if epochNotMatch := regionErr.GetEpochNotMatch(); epochNotMatch != nil &&
+			if req.CacheOnlyRegionRead {
+				if regionErr.GetDataIsNotReady() != nil {
+					retryTimes++
+					continue
+				}
+				return nil, rpcCtx, retryTimes, errors.Errorf(
+					"protected snapshot Region %d returned Region error: %s",
+					regionID.GetID(), regionErr.String(),
+				)
+			}
+			if epochNotMatch := regionErr.GetEpochNotMatch(); !req.CacheOnlyRegionRead && epochNotMatch != nil &&
 				len(epochNotMatch.CurrentRegions) == 0 {
 				s.tryRecoverMergedRegion(bo, rpcCtx, req, timeout, et, opts...)
 			}
@@ -1609,7 +1653,7 @@ func (s *RegionRequestSender) sendReqToRegion(
 				return nil, false, err
 			}
 		}
-		if e := s.onSendFail(bo, rpcCtx, err); e != nil {
+		if e := s.onSendFail(bo, rpcCtx, err, req.CacheOnlyRegionRead); e != nil {
 			return nil, false, err
 		}
 		return nil, true, nil
@@ -1639,7 +1683,9 @@ func (s *RegionRequestSender) releaseStoreToken(st *Store) {
 	logutil.BgLogger().Warn("release store token failed, count equals to 0")
 }
 
-func (s *RegionRequestSender) onSendFail(bo *retry.Backoffer, ctx *RPCContext, err error) error {
+func (s *RegionRequestSender) onSendFail(
+	bo *retry.Backoffer, ctx *RPCContext, err error, cacheOnlyRegionRead bool,
+) error {
 	if span := opentracing.SpanFromContext(bo.GetCtx()); span != nil && span.Tracer() != nil {
 		span1 := span.Tracer().StartSpan("regionRequest.onSendFail", opentracing.ChildOf(span.Context()))
 		defer span1.Finish()
@@ -1683,6 +1729,13 @@ func (s *RegionRequestSender) onSendFail(bo *retry.Backoffer, ctx *RPCContext, e
 	var errGetResourceGroup *pderr.ErrClientGetResourceGroup
 	if errors.As(err, &errGetResourceGroup) {
 		return err
+	}
+	// A protected snapshot has a complete, immutable replica set and cannot
+	// refresh it through PD. Try the next protected replica immediately: generic
+	// TiKV RPC backoff only consumes the caller's bounded diagnostic deadline and
+	// cannot make this cache-only route fresher.
+	if cacheOnlyRegionRead {
+		return nil
 	}
 
 	// Retry on send request failure when it's not canceled.

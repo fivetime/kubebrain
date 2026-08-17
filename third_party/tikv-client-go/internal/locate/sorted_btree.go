@@ -78,6 +78,21 @@ func (s *SortedRegions) DescendLessOrEqual(key []byte, isEndKey bool, ts int64) 
 	return r
 }
 
+// DescendLessOrEqualEvenIfInvalid returns the cached topology without applying
+// its active-cache TTL or invalidation state. Callers must explicitly opt into
+// cache-only recovery semantics and bound the lifetime of the retained route.
+func (s *SortedRegions) DescendLessOrEqualEvenIfInvalid(key []byte, isEndKey bool) (r *Region) {
+	s.b.DescendLessOrEqual(newBtreeSearchItem(key), func(item *btreeItem) bool {
+		r = item.cachedRegion
+		if isEndKey && bytes.Equal(r.StartKey(), key) {
+			r = nil
+			return true
+		}
+		return false
+	})
+	return r
+}
+
 // AscendGreaterOrEqual returns all items that are greater than or equal to the key.
 func (s *SortedRegions) AscendGreaterOrEqual(startKey, endKey []byte, limit int) (regions []*Region) {
 	s.b.AscendGreaterOrEqual(newBtreeSearchItem(startKey), func(item *btreeItem) bool {

@@ -217,7 +217,11 @@ func (s *Scanner) getData(bo *retry.Backoffer) error {
 	var err error
 	for {
 		if !s.reverse {
-			loc, err = s.snapshot.store.GetRegionCache().LocateKey(bo, s.nextStartKey)
+			if s.snapshot.cacheOnlyRegionRead {
+				loc, err = s.snapshot.store.GetRegionCache().LocateCachedKey(s.nextStartKey)
+			} else {
+				loc, err = s.snapshot.store.GetRegionCache().LocateKey(bo, s.nextStartKey)
+			}
 		} else {
 			loc, err = s.snapshot.store.GetRegionCache().LocateEndKey(bo, s.nextEndKey)
 		}
@@ -262,6 +266,10 @@ func (s *Scanner) getData(bo *retry.Backoffer) error {
 			ResourceGroupName: s.snapshot.mu.resourceGroupName,
 			BusyThresholdMs:   uint32(s.snapshot.mu.busyThreshold.Milliseconds()),
 		})
+		req.CacheOnlyRegionRead = s.snapshot.cacheOnlyRegionRead
+		if s.snapshot.mu.isStaleness {
+			req.EnableStaleRead()
+		}
 		if s.snapshot.mu.resourceGroupTag == nil && s.snapshot.mu.resourceGroupTagger != nil {
 			s.snapshot.mu.resourceGroupTagger(req)
 		}

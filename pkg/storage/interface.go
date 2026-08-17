@@ -191,6 +191,14 @@ type SnapshotRegionWarmer interface {
 	WarmSnapshotRegions(ctx context.Context, starts [][]byte, timestamp uint64) error
 }
 
+// SnapshotReadinessValidator is an OPTIONAL capability for proving that an
+// engine snapshot can survive the storage failure model promised by the
+// implementation. Unlike Region warming, validation is timestamp-specific and
+// must be run for every candidate checkpoint before publication.
+type SnapshotReadinessValidator interface {
+	SnapshotReadyTimestamp(ctx context.Context) (timestamp uint64, err error)
+}
+
 // SnapshotProtector is an OPTIONAL capability for pinning an engine snapshot
 // against MVCC garbage collection. serviceID identifies one live consumer;
 // implementations must expire the protection after ttl unless it is renewed.

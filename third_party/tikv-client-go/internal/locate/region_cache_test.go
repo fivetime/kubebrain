@@ -992,6 +992,19 @@ func (s *testRegionCacheSuite) TestReconnect() {
 	s.checkCache(1)
 }
 
+func (s *testRegionCacheSuite) TestLocateCachedKeyRetainsInvalidatedTopology() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("a"))
+	s.NoError(err)
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("a")}))
+	s.cache.InvalidateCachedRegion(loc.Region)
+
+	retained, err := s.cache.LocateCachedKey([]byte("a"))
+	s.NoError(err)
+	s.Equal(loc.Region, retained.Region)
+	s.Equal(loc.StartKey, retained.StartKey)
+	s.Equal(loc.EndKey, retained.EndKey)
+}
+
 func (s *testRegionCacheSuite) TestRegionEpochAheadOfTiKV() {
 	// Create a separated region cache to do this test.
 	pdCli := &CodecPDClient{mocktikv.NewPDClient(s.cluster), apicodec.NewCodecV1(apicodec.ModeTxn)}

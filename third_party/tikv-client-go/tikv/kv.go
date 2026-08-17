@@ -680,6 +680,29 @@ func (s *KVStore) updateSafeTS(ctx context.Context) {
 	wg.Wait()
 }
 
+// GetAllTiKVStoreSafeTS fetches the store-wide safe timestamp from every
+// resolved TiKV store. A returned timestamp covers the full key range hosted
+// by that store, so callers can use it to prove that historical follower reads
+// at a checkpoint timestamp are ready before publishing the checkpoint.
+func (s *KVStore) GetAllTiKVStoreSafeTS(ctx context.Context) (map[uint64]uint64, error) {
+	stores := s.regionCache.GetStoresByType(tikvrpc.TiKV)
+	result := make(map[uint64]uint64, len(stores))
+	for _, store := range stores {
+		resp, err := s.GetTiKVClient().SendRequest(
+			ctx, store.GetAddr(), tikvrpc.NewRequest(
+				tikvrpc.CmdStoreSafeTS, &kvrpcpb.StoreSafeTSRequest{
+					KeyRange: &kvrpcpb.KeyRange{StartKey: []byte(""), EndKey: []byte("")},
+				}, kvrpcpb.Context{RequestSource: util.RequestSourceFromCtx(ctx)},
+			), client.ReadTimeoutShort,
+		)
+		if err != nil {
+			return nil, errors.Wrapf(err, "get safe timestamp from TiKV store %d", store.StoreID())
+		}
+		result[store.StoreID()] = resp.Resp.(*kvrpcpb.StoreSafeTSResponse).GetSafeTs()
+	}
+	return result, nil
+}
+
 func (s *KVStore) ruRuntimeStatsMapCleaner() {
 	defer s.wg.Done()
 	t := time.NewTicker(ruRuntimeStatsCleanInterval)
