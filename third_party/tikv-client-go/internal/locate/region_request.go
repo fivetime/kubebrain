@@ -1332,7 +1332,15 @@ func (s *RegionRequestSender) SendReqCtx(
 		}
 		if regionErr != nil {
 			if req.CacheOnlyRegionRead {
-				if regionErr.GetDataIsNotReady() != nil {
+				if notReady := regionErr.GetDataIsNotReady(); notReady != nil {
+					logutil.Logger(bo.GetCtx()).Warn(
+						"protected snapshot replica data is not ready",
+						zap.Uint64("regionID", notReady.GetRegionId()),
+						zap.Uint64("peerID", notReady.GetPeerId()),
+						zap.Uint64("storeID", rpcCtx.Store.storeID),
+						zap.Uint64("safeTS", notReady.GetSafeTs()),
+						zap.Stringer("requestType", req.Type),
+					)
 					retryTimes++
 					continue
 				}

@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
@@ -823,6 +824,11 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
 		stream = &contextMaintenanceSnapshotServer{Maintenance_SnapshotServer: stream, ctx: ctx}
 		s.metricCli.EmitCounter("maintenance.snapshot.checkpoint", 1)
+		klog.InfoS(
+			"serving maintenance Snapshot from protected checkpoint",
+			"revision", checkpoint.Revision,
+			"timestamp", checkpoint.Timestamp,
+		)
 	}
 	if !protected && !leadingFresh && s.peers.EtcdProxyEnabled() {
 		// A follower can remain reachable through the peer network after losing
