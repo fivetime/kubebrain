@@ -56379,6 +56379,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `KubeBrainQuotaMetricsInconsistent`。精确 manifest 门禁与 production readiness 已同步；完整
   `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5015 将 StatefulSet desired/Ready 的数值合同收敛到全局拓扑 source-count 根链。此前 60 秒 freshness
+  与三类 StatefulSet identity 已固定，但 NaN/Inf、负数、分数、超界 desired/Ready 或 Ready>desired
+  仍可能污染 expected replica 聚合，使下游比较为空或无意义。现 desired source 只计入 `[0,2^53]` 内
+  非负精确整数，Ready source 还必须不超过同 `(namespace,statefulset)` desired；任一非法值都会使统一
+  source count 不足，从而让 KubeBrain/PD/TiKV 容量、Ready、故障隔离、存储、资源、网络与计费门禁共同
+  fail closed。精确 recording 与运维 annotation manifest 门禁、production readiness 已同步；完整
+  `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
