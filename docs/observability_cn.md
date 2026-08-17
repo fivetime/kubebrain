@@ -87,8 +87,9 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   超过 1 秒即 critical。PD 官方告警本身也把 WAL fsync p99 >1s 视为 critical；对 KubeBrain 而言，
   该延迟会先拖慢 PD Raft heartbeat/leader lease，再让 TiKV TSO 和短 etcd lease 续期整体失去进展，
   即使 Pod Ready、store Up、Region leader-missing 仍为零也不能视为健康。
-  `KubeBrainStorageLatencyMetricsMissing` 另要求三个 PD WAL 和三个 TiKV RaftDB/KVDB histogram count
-  series 全部存在；缺失持续 5 分钟即 warning。`KubeBrainStorageLatencyMetricsStale` 另以
+  `KubeBrainStorageLatencyMetricsMissing` 将按 `instance` 去重的 PD WAL 和 TiKV RaftDB/KVDB histogram count
+  series 分别与当前 PD/TiKV StatefulSet 期望副本数精确对账；任一扩容副本缺失 family，或期望 recording
+  series 缺失，持续 5 分钟即 warning。`KubeBrainStorageLatencyMetricsStale` 另以
   `time()-timestamp(...)` 检查三个 family 的最旧样本，超过 60 秒持续 1 分钟即 warning，避免 Prometheus
   lookback 仍返回已停止抓取的旧 series。缺失或陈旧都禁止被误判成低延迟。阈值是发布下限，不是
   云盘选型承诺；容量、IOPS 与 tail-latency SLO 仍需按套餐压测并收紧。
