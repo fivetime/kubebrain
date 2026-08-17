@@ -102,6 +102,29 @@ type checkpointHashBackendShim struct {
 	pinnedCalls int
 }
 
+type checkpointDefragmentBackendShim struct {
+	BackendShim
+	t          *testing.T
+	checkpoint backend.SerializableCheckpoint
+	liveErr    error
+	liveCalls  int
+}
+
+func (b *checkpointDefragmentBackendShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
+	return b.checkpoint, nil
+}
+
+func (b *checkpointDefragmentBackendShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
+	if bytes.Equal(key, authConfigKey) {
+		if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
+			require.FailNow(b.t, "protected Defragment must use the complete cached auth snapshot")
+		}
+		b.liveCalls++
+		return nil, b.liveErr
+	}
+	return b.BackendShim.InternalGet(ctx, key)
+}
+
 func (b *checkpointHashBackendShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
 	return b.checkpoint, nil
 }
@@ -920,6 +943,85 @@ func TestFollowerDefragmentHedgeFailsClosedOnLocalAuthorization(t *testing.T) {
 			return false
 		}
 	}, time.Second, time.Millisecond)
+}
+
+func TestMaintenanceDefragmentFallsBackToProtectedAuthSnapshotWhenBackendIsUnavailable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Defragment(context.Background(), &etcdserverpb.DefragmentRequest{})
+	require.NoError(t, err, "prime the complete member-local auth snapshot")
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 37, Timestamp: 101, AuthRevision: 1, ValidUntil: time.Now().Add(time.Minute),
+	}
+	shim := &checkpointDefragmentBackendShim{
+		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: storage.ErrUnavailable,
+	}
+	server.backend = shim
+	server.auth.repo.backend = shim
+	server.tokens.repo.backend = shim
+	server.peers = testPeerService{isLeader: true}
+
+	response, err := server.Defragment(context.Background(), &etcdserverpb.DefragmentRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Nil(t, response.Header)
+	require.Equal(t, 1, shim.liveCalls)
+}
+
+func TestMaintenanceDefragmentDoesNotMaskDeterministicAuthFailureWithCheckpoint(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 37, Timestamp: 101, AuthRevision: 1, ValidUntil: time.Now().Add(time.Minute),
+	}
+	wantErr := status.Error(codes.DataLoss, "corrupt auth metadata")
+	shim := &checkpointDefragmentBackendShim{
+		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: wantErr,
+	}
+	server.backend = shim
+	server.auth.repo.backend = shim
+	server.tokens.repo.backend = shim
+	server.peers = testPeerService{isLeader: true}
+
+	response, err := server.Defragment(context.Background(), &etcdserverpb.DefragmentRequest{})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, 1, shim.liveCalls)
+}
+
+func TestMaintenanceDefragmentCheckpointFallbackPreservesAdminAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(
+		context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken),
+	)
+	_, err = server.Defragment(rootCtx, &etcdserverpb.DefragmentRequest{})
+	require.NoError(t, err, "prime the complete member-local root auth snapshot")
+	authSnapshot, err := server.tokens.snapshots.current(context.Background())
+	require.NoError(t, err)
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 37, Timestamp: 101, AuthRevision: authSnapshot.Config.Revision,
+		ValidUntil: time.Now().Add(time.Minute),
+	}
+	shim := &checkpointDefragmentBackendShim{
+		BackendShim: server.backend, t: t, checkpoint: checkpoint, liveErr: storage.ErrUnavailable,
+	}
+	server.backend = shim
+	server.auth.repo.backend = shim
+	server.tokens.repo.backend = shim
+	server.peers = testPeerService{isLeader: true}
+
+	response, err := server.Defragment(rootCtx, &etcdserverpb.DefragmentRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Nil(t, response.Header)
+
+	response, err = server.Defragment(aliceCtx, &etcdserverpb.DefragmentRequest{})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
 }
 
 func TestFollowerDowngradeProxiesEveryActionToLeader(t *testing.T) {

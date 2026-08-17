@@ -492,6 +492,20 @@ func alarmStatusError(alarm *etcdserverpb.AlarmMember) string {
 
 func (s *RPCServer) Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
 	s.metricCli.EmitCounter("maintenance.defragment", 1)
+	if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+		liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
+		response, err := s.defragmentOnce(liveCtx, req)
+		cancel()
+		if err == nil || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
+			return response, err
+		}
+		s.metricCli.EmitCounter("maintenance.defragment.checkpoint_fallback", 1)
+		return s.localMaintenanceDefragment(backend.WithSerializableCheckpoint(ctx, checkpoint))
+	}
+	return s.defragmentOnce(ctx, req)
+}
+
+func (s *RPCServer) defragmentOnce(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
 		// TiKV owns physical compaction, so this is a compatibility no-op after
@@ -504,10 +518,25 @@ func (s *RPCServer) Defragment(ctx context.Context, req *etcdserverpb.Defragment
 }
 
 func (s *RPCServer) localMaintenanceDefragment(ctx context.Context) (*etcdserverpb.DefragmentResponse, error) {
-	if err := s.requireAuthenticated(ctx, true); err != nil {
+	if err := s.requireProtectedMaintenanceAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.DefragmentResponse{}, nil
+}
+
+func (s *RPCServer) requireProtectedMaintenanceAuthenticated(ctx context.Context, root bool) error {
+	if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
+		if caller, err, complete := s.authCallerFromCachedContext(ctx); complete {
+			if err != nil {
+				return err
+			}
+			if root && caller != nil {
+				return caller.adminError()
+			}
+			return nil
+		}
+	}
+	return s.requireAuthenticated(ctx, root)
 }
 
 func (s *RPCServer) hedgedMaintenanceDefragment(
@@ -563,20 +592,7 @@ func (s *RPCServer) hashOnce(ctx context.Context, req *etcdserverpb.HashRequest)
 }
 
 func (s *RPCServer) localMaintenanceHash(ctx context.Context, refresh bool) (*etcdserverpb.HashResponse, error) {
-	if _, pinned := backend.SerializableCheckpointFromContext(ctx); pinned {
-		if caller, err, complete := s.authCallerFromCachedContext(ctx); complete {
-			if err != nil {
-				return nil, err
-			}
-			if caller != nil {
-				if err := caller.adminError(); err != nil {
-					return nil, err
-				}
-			}
-		} else if err := s.requireAuthenticated(ctx, true); err != nil {
-			return nil, err
-		}
-	} else if err := s.requireAuthenticated(ctx, true); err != nil {
+	if err := s.requireProtectedMaintenanceAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
 	// KubeBrain's committed revision is cached per replica even though the MVCC
