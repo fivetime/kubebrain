@@ -4220,6 +4220,13 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   可为分数但必须有限且同范围，两类来源必须完整覆盖当前 Ready UID。后台失败会让 serializable reader
   暂留旧安全快照，强制失败会阻塞 collector 直至 watermark 持久化成功，因此任一增量立即 critical；
   缺失、陈旧或非法 telemetry 不能解释为 durable watermark 与 watch continuity 健康。
+- event-log replay 的 legacy malformed/incomplete 等 counter 在最终排除 cleanup/compaction 竞态前递增，
+  不能直接作为 corruption 告警来源。canonical `watch_event_log_corruption{kind}` 只在 trusted window 重新
+  读取两类 watermark 后仍确认损坏时递增，四个固定 kind 为 `malformed`、`witness_mismatch`、`incomplete`、
+  `invalid_object`；每个 backend 同时初始化四条权威零值和 CORRUPT-alarm persistence-failure 零值。
+  监控要求 60 秒新鲜的 current/10 分钟 increase 分别精确覆盖 `4×Ready Pod UID` 与 `1×Ready Pod UID`；
+  current 必须为 `[0,2^53]` 精确整数，increase 可为分数但必须有限且同范围。确认损坏和 alarm 持久化失败
+  均立即 critical；缺失、陈旧或非法 telemetry 不能作为 event-log 完整性或 durable write fence 的证据。
 - leader election 短时间频繁丢失。
 - 每个副本在 campaign 前初始化 leadership-lost、通用 initialization-error、incompatible-witness、
   invalid-alarm-metadata 四类 counter；只从 60 秒内样本生成 Ready Pod UID 级 current 与 10 分钟

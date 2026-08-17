@@ -27,6 +27,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -829,9 +830,7 @@ func TestHistoryWatchFallbackArmsCorruptForWitnessedObjectValue(t *testing.T) {
 }
 
 func TestEventLogMissingObjectAfterCompactAdvanceDoesNotArmCorrupt(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	m := mock.NewMinimalMetrics(ctrl)
+	m := &compactMetricRecorder{}
 	kv := imemkv.NewKvStorage()
 	defer func() { require.NoError(t, kv.Close()) }()
 
@@ -864,12 +863,14 @@ func TestEventLogMissingObjectAfterCompactAdvanceDoesNotArmCorrupt(t *testing.T)
 	alarms, alarmErr := b.CorruptAlarms(ctx)
 	require.NoError(t, alarmErr)
 	require.Empty(t, alarms, "a freshly compacted object is normal GC, not durable corruption")
+	require.NotContains(t, m.snapshot(), compactMetricRecord{
+		kind: "counter", name: "watch.event_log.corruption", value: 1,
+		tags: []metrics.T{metrics.Tag("kind", eventLogCorruptionIncomplete)},
+	}, "a compaction race must not increment confirmed corruption telemetry")
 }
 
 func TestEventLogReplayRejectsMissingEntryCoveredByTxnWitness(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	m := mock.NewMinimalMetrics(ctrl)
+	m := &compactMetricRecorder{}
 	kv := imemkv.NewKvStorage()
 	defer func() { require.NoError(t, kv.Close()) }()
 
@@ -895,6 +896,10 @@ func TestEventLogReplayRejectsMissingEntryCoveredByTxnWitness(t *testing.T) {
 	require.ErrorContains(t, err, "transaction witness mismatch")
 	require.False(t, served)
 	require.Empty(t, events)
+	require.Contains(t, m.snapshot(), compactMetricRecord{
+		kind: "counter", name: "watch.event_log.corruption", value: 1,
+		tags: []metrics.T{metrics.Tag("kind", eventLogCorruptionWitnessMismatch)},
+	}, "a trusted witness mismatch must increment confirmed corruption telemetry")
 	alarms, alarmErr := b.CorruptAlarms(ctx)
 	require.NoError(t, alarmErr)
 	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms,

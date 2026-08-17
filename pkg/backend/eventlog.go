@@ -28,6 +28,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
@@ -41,12 +42,34 @@ import (
 // legacy 9-byte values remain readable.
 
 const (
+	eventLogCorruptionMalformed       = "malformed"
+	eventLogCorruptionWitnessMismatch = "witness_mismatch"
+	eventLogCorruptionIncomplete      = "incomplete"
+	eventLogCorruptionInvalidObject   = "invalid_object"
+
 	// eventLogReplayConcurrency bounds the parallel object-key point reads that
 	// rebuild event values during a replay.
 	eventLogReplayConcurrency = 16
 	// eventLogCleanupBatch bounds one cleanup transaction.
 	eventLogCleanupBatch = 512
 )
+
+var eventLogCorruptionKinds = []string{
+	eventLogCorruptionMalformed,
+	eventLogCorruptionWitnessMismatch,
+	eventLogCorruptionIncomplete,
+	eventLogCorruptionInvalidObject,
+}
+
+func initEventLogIntegrityMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, kind := range eventLogCorruptionKinds {
+		_ = metricCli.EmitCounter("watch.event_log.corruption", int64(0), metrics.Tag("kind", kind))
+	}
+	_ = metricCli.EmitCounter("watch.event_log.corrupt_alarm_failed", int64(0))
+}
 
 type eventLogPending struct {
 	verb    proto.Event_EventType
@@ -198,7 +221,7 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	if touchesUntrustedWindow && fromRevision != toRevision {
 		return nil, false, nil
 	}
-	trustedCorruption := func(cause error, detail string, persistAlarm bool) ([]*proto.Event, bool, error) {
+	trustedCorruption := func(cause error, detail, kind string) ([]*proto.Event, bool, error) {
 		if touchesUntrustedWindow {
 			return nil, false, nil
 		}
@@ -209,31 +232,26 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 		if refreshed, present := b.refreshEventLogStart(ctx); !present || fromRevision <= refreshed {
 			return nil, false, nil
 		}
-		if persistAlarm {
-			// Compaction publishes its durable MVCC watermark before physical
-			// object GC. A history scan admitted just before that commit can see a
-			// now-legitimate missing object while the event-log cleanup watermark
-			// still lags; that is a compacted fallback, not corruption.
-			compactRevision, compactErr := b.GetCompactRevisionFresh(ctx)
-			if compactErr != nil {
-				return nil, false, compactErr
-			}
-			if compactRevision > 0 && fromRevision < compactRevision {
-				return nil, false, nil
-			}
+		// Compaction publishes its durable MVCC watermark before physical
+		// object GC. A history scan admitted just before that commit can see a
+		// now-legitimate missing object while the event-log cleanup watermark
+		// still lags; that is a compacted fallback, not corruption.
+		compactRevision, compactErr := b.GetCompactRevisionFresh(ctx)
+		if compactErr != nil {
+			return nil, false, compactErr
 		}
+		if compactRevision > 0 && fromRevision < compactRevision {
+			return nil, false, nil
+		}
+		_ = b.metricCli.EmitCounter("watch.event_log.corruption", 1, metrics.Tag("kind", kind))
 		corruptionErr := invalidMVCCMetadataError(
 			cause, "%s in trusted event log window [%d,%d]", detail, fromRevision, toRevision,
 		)
-		if !persistAlarm {
-			return nil, false, corruptionErr
-		}
 		// The request may be canceled immediately after observing DataLoss. Give
 		// the safety transition its own bounded lifetime so durable corruption
 		// cannot remain a request-local signal. Entry/witness inconsistencies are
 		// revalidated by validatePersistedTxnWitnesses before an operator can
-		// disarm this alarm; referenced-object failures deliberately do not enter
-		// this path until their repair evidence is equally durable.
+		// disarm this alarm.
 		alarmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
 		defer cancel()
 		if alarmErr := b.ArmCorrupt(alarmCtx, b.localAlarmMemberID()); alarmErr != nil {
@@ -270,14 +288,14 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 			// referenced object version below).
 			b.metricCli.EmitCounter("watch.event_log.malformed", 1)
 			klog.ErrorS(derr, "event log entry key not decodable", "from", fromRevision, "to", toRevision)
-			return trustedCorruption(derr, "undecodable entry key", true)
+			return trustedCorruption(derr, "undecodable entry key", eventLogCorruptionMalformed)
 		}
 		verbByte, prevRev, subRevision, total, ordered, vok := coder.DecodeOrderedEventLogValue(iter.Val())
 		if !vok {
 			b.metricCli.EmitCounter("watch.event_log.malformed", 1)
 			decodeErr := fmt.Errorf("event log entry at revision %d has undecodable value", rev)
 			klog.ErrorS(decodeErr, "event log entry value not decodable", "rev", rev, "from", fromRevision, "to", toRevision)
-			return trustedCorruption(decodeErr, "undecodable entry value", true)
+			return trustedCorruption(decodeErr, "undecodable entry value", eventLogCorruptionMalformed)
 		}
 		entries = append(entries, eventLogPending{verb: proto.Event_EventType(verbByte), rev: rev, prevRev: prevRev,
 			userKey: append([]byte(nil), userKey...), sub: subRevision, total: total, ordered: ordered})
@@ -298,13 +316,13 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	if validationErr := validateEventLogEntries(entries); validationErr != nil {
 		b.metricCli.EmitCounter("watch.event_log.malformed", 1)
 		klog.ErrorS(validationErr, "event log entries are inconsistent", "from", fromRevision, "to", toRevision)
-		return trustedCorruption(validationErr, "inconsistent entries", true)
+		return trustedCorruption(validationErr, "inconsistent entries", eventLogCorruptionMalformed)
 	}
 	if !touchesUntrustedWindow {
 		if witnessErr := b.validateEventLogWindowWitnesses(ctx, entries, fromRevision, toRevision); witnessErr != nil {
 			b.metricCli.EmitCounter("watch.event_log.witness_mismatch", 1)
 			klog.ErrorS(witnessErr, "event log transaction witness mismatch", "from", fromRevision, "to", toRevision)
-			return trustedCorruption(witnessErr, "transaction witness mismatch", true)
+			return trustedCorruption(witnessErr, "transaction witness mismatch", eventLogCorruptionWitnessMismatch)
 		}
 	}
 	selfContained := exactRevisionEntriesComplete(entries, fromRevision, toRevision)
@@ -355,7 +373,7 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 		return trustedCorruption(
 			fmt.Errorf("event log referenced object version is missing"),
 			"incomplete referenced objects",
-			true,
+			eventLogCorruptionIncomplete,
 		)
 	}
 	for i := range entries {
@@ -369,7 +387,7 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 			b.metricCli.EmitCounter("watch.event_log.invalid_object", 1)
 			klog.ErrorS(validationErr, "event log referenced object value is invalid",
 				"rev", e.rev, "valueRev", valueRevision, "from", fromRevision, "to", toRevision)
-			return trustedCorruption(validationErr, "invalid referenced object value", true)
+			return trustedCorruption(validationErr, "invalid referenced object value", eventLogCorruptionInvalidObject)
 		}
 	}
 	events = make([]*proto.Event, len(entries))

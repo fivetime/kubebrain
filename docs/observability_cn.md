@@ -27,6 +27,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `count_index.rebuild.err` counter | leader 切换时索引快照重建失败次数；非零表示 CountOnly 暂时回退 TiKV 全扫。 |
 | `watch.collector.stalled` / `watch.collector.skipped_revision` counter | 事件收集器 stall/自愈跳过 —— 每个 backend 初始化为 0；非 0=有 writer 死在 deal↔notify 之间。 |
 | `revision.durable.persist_err` counter | durable user-revision watermark 后台/强制持久化失败次数；每个 backend 初始化为 0。非零时后台路径让离线 serializable reader 暂留旧安全快照，强制路径会阻塞 collector 连续推进直至成功。 |
+| `watch.event_log.corruption{kind}` / `watch.event_log.corrupt_alarm_failed` counter | 仅在 trusted window 内重新检查 cleanup/compaction watermark 后仍确认的 event-log 损坏，以及随后持久化 CORRUPT alarm 失败；`kind` 固定为 `malformed`、`witness_mismatch`、`incomplete`、`invalid_object`。每个 backend 初始化四个 kind 和 alarm-failure 零值，任一增量均为 critical。 |
 | `serializable.checkpoint.available` / `serializable.checkpoint.remaining_seconds` gauge；`serializable.checkpoint.refresh_err` counter | 每副本受 PD service GC safepoint 保护的离线 serializable checkpoint 是否可用及本地安全窗剩余秒数；available 应恒为 1，remaining 默认每秒回到约 150。refresh-error counter 启动时发布权威零值；非零或 remaining 持续降至 0 表示该副本将在 PD 隔离时对 Range/read-only Txn/RangeStream fail closed。 |
 | `lease.orphan_sweep.{key_deleted,legacy_key_deleted,record_reclaimed,err}` counter | 孤儿 lease 清扫活动；`legacy_key_deleted` 表示依靠同 revision ownership witness 回收升级前 v1 leased value —— 正常均应极低。 |
 | `lease.legacy_migration_seal.err` counter | legacy user-MVCC lease source 已清空但 internal migration seal 写入失败次数；非零时 loader 仍保持兼容扫描，需检查 leadership/CORRUPT/TiKV fence。 |
@@ -142,6 +143,12 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   current 必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围，两类来源必须完整。
   任一增量立即 critical；`KubeBrainDurableRevisionPersistenceMetricsMissing` 拒绝用缺失、陈旧或非法 telemetry
   证明 watermark、离线安全快照或 collector continuity 健康。
+  event-log integrity 不直接告警会在竞态排除前递增的 legacy malformed/incomplete counter；canonical
+  `watch.event_log.corruption{kind}` 仅在重新读取 cleanup 与 compact watermark 后仍确认 trusted-window 损坏
+  才递增。四个固定 kind 与 CORRUPT-alarm failure 分别生成 60 秒新鲜的 Ready Pod UID 级 current/10 分钟
+  increase，要求 `4×Ready` 与 `1×Ready` 精确覆盖；current 为 `[0,2^53]` 精确整数，increase 有限且同范围。
+  确认损坏或 alarm 持久化失败均立即 critical，缺失、陈旧或非法 telemetry 不能证明 event-log 完整或安全
+  fence 已持久化。
 - **离线 serializable checkpoint 不可用/即将过期**：available/revision/remaining-seconds series 任一未覆盖全部当前 Ready Pod、`min(available) < 1`、`min(revision) <= 0`、`min(remaining_seconds) < 60`，或 invalid-value recording 缺失/非零，持续 30s 即告警。三类 raw gauge 先仅从 60 秒内样本按 `namespace,pod,uid` 去重为 current recording，再与同身份聚合去重的 kube-state-metrics Ready Pod 相交，三者的期望基数都动态等于当前 Ready Pod UID 数。这既避免滚动更新后同名旧 Pod 的残留 series 在 Prometheus lookback 窗口内制造重复副本，也允许正常扩缩容并兼容多副本 kube-state-metrics。available 必须精确为 0/1，revision 必须是 `(0,2^53]` 内精确整数，remaining seconds 必须是 `[0,2^53]` 内非负精确整数；缺少 UID、Ready 状态、Ready Pod 指标、fresh recording 或合法值都 fail closed。`serializable_checkpoint_revision` 暴露各副本当前受保护 revision，并在 checkpoint 不可用时归零，可用于判断隔离前写入是否已被固定快照覆盖。结合 `increase(serializable_checkpoint_refresh_err[10m])` 判断是 scrape、PD safepoint、Region/store directory warmup、metadata 还是刷新链路失败。正常 PD quorum 下最新读仍可工作，但该副本已失去或将在一分钟内失去有界 PD 隔离读能力。
   refresh-error counter 另生成 60 秒新鲜的 current 与 10 分钟 increase recording，并要求两者各精确覆盖
   当前 Ready Pod UID。current 必须是 `[0,2^53]` 内精确整数；外推 increase 可为分数，但必须有限且在

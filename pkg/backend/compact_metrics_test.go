@@ -30,6 +30,7 @@ type compactMetricRecord struct {
 	kind  string
 	name  string
 	value interface{}
+	tags  []metrics.T
 }
 
 type compactMetricRecorder struct {
@@ -40,10 +41,10 @@ type compactMetricRecorder struct {
 func (r *compactMetricRecorder) GetGrpcServerOption() []grpc.ServerOption { return nil }
 func (r *compactMetricRecorder) GetHttpHandlers() map[string]http.Handler { return nil }
 
-func (r *compactMetricRecorder) EmitCounter(name string, value interface{}, _ ...metrics.T) error {
+func (r *compactMetricRecorder) EmitCounter(name string, value interface{}, tags ...metrics.T) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.records = append(r.records, compactMetricRecord{kind: "counter", name: name, value: value})
+	r.records = append(r.records, compactMetricRecord{kind: "counter", name: name, value: value, tags: append([]metrics.T(nil), tags...)})
 	return nil
 }
 func (r *compactMetricRecorder) EmitGauge(name string, value interface{}, _ ...metrics.T) error {
@@ -57,6 +58,12 @@ func (r *compactMetricRecorder) EmitHistogram(name string, value interface{}, _ 
 	defer r.mu.Unlock()
 	r.records = append(r.records, compactMetricRecord{kind: "histogram", name: name, value: value})
 	return nil
+}
+
+func (r *compactMetricRecorder) snapshot() []compactMetricRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]compactMetricRecord(nil), r.records...)
 }
 
 func TestEtcdMVCCCompactionMetricsUseUpstreamNames(t *testing.T) {
