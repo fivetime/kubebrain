@@ -55773,6 +55773,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD/TiKV fault 规则与 13379 port-forward 均清理。A4956 的组合 quorum Snapshot 能力由此转为 GREEN，
   仍仅承诺故障前完整发布、GC-protected 且全 Region 预热的 checkpoint。
 
+- A4957 把 A4950/A4951 对齐 upstream `server/etcdserver/v3_server.go` Range/Txn 与 `rangeStream`
+  单 snapshot、逐帧发送契约的可用性门禁，从“PD quorum + 单 TiKV member”提升到 PD quorum 与 TiKV
+  quorum 同时丢失。新增 `pd-quorum-tikv-quorum-serializable` profile，复用 A4956 的 ready/release
+  handshake；测试只有在两个 PD health endpoint 均不可达且两个 TiKV Store 的四条双向 DROP 规则全部
+  安装、wrapper 发布 combined-ready 后，才开始 mutation probe 和读验证。故障窗口内依次要求约 1.8MiB
+  的 64-key raw RangeStream 至少产生两个 frame 且仅末帧带 aggregate metadata、固定 revision HashKV
+  与健康态 hash/compact revision 相同、serializable Range 的全部 key/value/MVCC metadata 相同，以及
+  compare+branch read-only serializable Txn 命中正确分支；任一调用不能借恢复窗口取得伪 GREEN。
+
+  提交 `eac1196e` 的门禁在当前精确镜像 `kubebrain:a4976-snapshot-watermark-observe` 上连续两轮
+  **109.07 秒、112.21 秒 GREEN**。两轮 PD 均隔离 `kb-pd-1/0`，TiKV 分别隔离
+  `kb-tikv-1/0` 与 `kb-tikv-1/2`；mutation 明确 `DeadlineExceeded`，上述四类 protected read 均在
+  完整 60 秒组合 quorum 窗口内成功，恢复后 latest HashKV 成功。首轮 post-test Delete 恰逢 proxy
+  恢复抖动，暴露原 best-effort cleanup 会静默积累夹具；`b63cca34` 改为每次三秒、最多三十秒重试，
+  第二轮跨越 `leader changed`/`proxy is not ready` 后成功清空。另清除此前累计的 69 个专用测试键。
+  终态测试前缀为空、三个 KubeBrain Ready 且零重启、PD/TiKV 3/3 Ready，所有 fault 规则与 13379
+  port-forward 均清理。该 GREEN 仍只承诺已完整发布、GC-protected、全 Region 预热的 member-local
+  checkpoint；冷启动无 checkpoint、未覆盖 Region 或超出保护代际时继续 fail closed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
