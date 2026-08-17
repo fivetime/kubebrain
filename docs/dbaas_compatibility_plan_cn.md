@@ -56242,6 +56242,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   freshness annotation 与 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建
   数据面镜像。
 
+- A4999 统一 Pod 级 current Ready 身份并关闭滚动替换后的旧 UID 窗口。此前 serializable checkpoint、
+  health checkpoint fallback 与 quota 规则各自直接读取 raw `kube_pod_status_ready`；KSM 停止刷新或
+  Pod 被替换后，Prometheus lookback 内的旧 Ready UID 仍可参与计数、触发旧 counter，或为当前副本补齐
+  指标。现新增按 `(namespace,pod,uid)` 去重且要求 KSM 样本 age 不超过 60 秒的
+  `kubebrain_dbaas:ready_pods:current`。checkpoint 完整性/新鲜度、fallback 事件及三类固定 series 完整性、
+  quota NOSPACE/high-usage/一致性规则全部只消费该统一身份根；旧 Pod gauge/counter 不再触发告警或冒充
+  当前证据。精确 manifest 门禁固定 recording 与全部下游 PromQL，freshness/rollout annotation 和
+  production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
