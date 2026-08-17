@@ -182,6 +182,9 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 		Else(clientv3.OpGet(rangePrefix+"missing", clientv3.WithSerializable())).
 		Commit()
 	txnCancel()
+	statusCtx, statusCancel := context.WithTimeout(ctx, hashCallTimeout)
+	duringStatus, statusErr := client.Status(statusCtx, endpoint)
+	statusCancel()
 	var result commandResult
 	endedBeforeHashValidation := false
 	select {
@@ -240,6 +243,18 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	require.Equal(t, rangePrefix+"001", string(txnRange.Kvs[0].Key))
 	require.Equal(t, values[1], string(txnRange.Kvs[0].Value))
 	require.GreaterOrEqual(t, duringTxn.Header.Revision, revision)
+	require.NoError(t, statusErr, "Maintenance Status must use the protected member checkpoint")
+	require.NotNil(t, duringStatus)
+	require.GreaterOrEqual(t, duringStatus.Header.Revision, revision)
+	require.Equal(t, uint64(duringStatus.Header.Revision), duringStatus.RaftIndex)
+	require.Equal(t, duringStatus.RaftIndex, duringStatus.RaftAppliedIndex)
+	require.Equal(t, "3.7.0", duringStatus.Version)
+	require.Equal(t, "3.7.0", duringStatus.StorageVersion)
+	require.Positive(t, duringStatus.RaftTerm)
+	require.NotZero(t, duringStatus.Leader)
+	require.Positive(t, duringStatus.DbSize)
+	require.Positive(t, duringStatus.DbSizeInUse)
+	require.Positive(t, duringStatus.DbSizeQuota)
 	require.Eventually(t, func() bool {
 		callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer callCancel()
