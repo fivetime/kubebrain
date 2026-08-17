@@ -365,6 +365,14 @@ spec:
           annotations:
             summary: KubeBrain serializable checkpoint refresh failed
             description: "KubeBrain failed to create, load, protect, or warm a serializable checkpoint. Existing snapshots remain usable only until serializable_checkpoint_remaining_seconds reaches zero."
+        - alert: KubeBrainHealthCheckpointFallback
+          expr: sum by (check) (increase(health_checkpoint_fallback{namespace="kubebrain-system"}[10m])) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain health probe used a protected checkpoint
+            description: "KubeBrain {{ $labels.check }} health checks entered checkpoint fallback {{ $value }} times in 10 minutes. A successful liveness response is bounded-stale degraded service, not proof that PD/TiKV recovered. Inspect PD/TiKV quorum, serializable checkpoint lifetime, and refresh errors."
         - alert: KubeBrainQuotaNoSpace
           expr: max(quota_nospace{namespace="kubebrain-system"}) > 0
           for: 0m

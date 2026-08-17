@@ -19,6 +19,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `read` / `write` counter(labels: `method`,`success`,**`errclass`**) | 请求量 + 成败 + **错误分类**。`errclass` 区分良性可重试(`revision`=压缩/未来 revision、`unavailable`=换主、`fenced`=写栅栏)和真故障(`deadline`=超时/过载、`other`=意外)。 |
 | `read.latency` / `write.latency` histogram(labels: `method`,`success`) | 读写延迟分布 → p99 告警抓延迟/读放大回归。 |
 | `etcd_server_request_duration_seconds` histogram(labels: `type`,`success`) | etcd upstream 兼容的请求端到端耗时，覆盖 KV、Compact、LeaseGrant/Revoke、内部 LeaseCheckpoint、Alarm、Authenticate 与 Auth 管理类型；用于复用 etcd dashboard/runbook，并按 `success=false` 定位失败请求延迟。 |
+| `health_checkpoint_fallback` counter(labels: `check`) | HTTP health/livez/readyz 的 live TiKV 读因 DeadlineExceeded/Unavailable 转入 GC-protected checkpoint 的次数；`check` 固定为 `alarm`、`serializable_read`、`data_corruption`。增量表示有界陈旧降级服务，不表示请求失败，也不能证明 PD/TiKV 已恢复。 |
 | `storage_batch_count`(op=`write_batch`)histogram | 存储层批量写延迟(TiKV TSO+raft)。 |
 | `leader_revision` gauge | 当前 leader 的 revision(是否推进)。leader 身份见 info 端口 `/election`。 |
 | `count_index.keys` / `count_index.overflowed` gauge | leader 活跃 key 数与索引是否超过 `--count-index-max-keys`；overflow 后 List/count 回退 TiKV 全扫，decoded-boundary RangeStream 改走本地有界外排，延迟均会明显恶化。followers 的 keys=0 是正常值。 |
@@ -42,6 +43,20 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `etcd_mvcc_hash_duration_seconds` / `etcd_mvcc_hash_rev_duration_seconds` histogram | etcd upstream 兼容的 Maintenance Hash/HashKV 成功计算耗时；用于定位诊断 hash 受 keyspace、revision/compaction 查找或 TiKV 读路径影响。 |
 | `etcd_debugging_mvcc_db_compaction_last` gauge / `etcd_debugging_mvcc_db_compaction_total_duration_milliseconds` histogram / `etcd_debugging_mvcc_db_compaction_pause_duration_milliseconds` histogram / `etcd_debugging_mvcc_index_compaction_pause_duration_milliseconds` histogram / `etcd_debugging_mvcc_db_compaction_keys_total` counter | etcd upstream 兼容的物理 compaction 观测；KubeBrain 将 shared-storage version GC 总耗时映射到 db compaction total，将每次物理删除 batch/fallback 写事务耗时映射到 db compaction pause，将 count-index 裁剪耗时映射到 index compaction pause，并按 full/incremental scan 实际成功删除的物理 MVCC key 累加 keys total。只读扫描时间不算 db pause。 |
 | `etcd_debugging_mvcc_total_put_size_in_bytes` gauge | etcd upstream 兼容的本 member 成功 Put key/value 字节累计值；KubeBrain 在 public Put 和成功执行的 Txn Put op 后按实际 key+value 长度累加。 |
+
+## Health checkpoint fallback 告警处置
+
+`KubeBrainHealthCheckpointFallback` 按 `check` 报告最近 10 分钟实际进入 protected checkpoint 的 health
+检查。收到告警后不要因为 `/health?serializable=true`、`/livez` 或公开 gRPC Health 仍成功就关闭事件：这些接口
+只证明进程可接流且仍有一份 GC-protected 有界陈旧状态。
+
+1. 先检查 `/readyz?verbose` 和一条有 deadline 的真实线性 Range/事务探针；linearizable read 失败表示实例不可接收
+   需要最新状态的流量。
+2. 检查 PD leader/quorum、TiKV Region leader/peer 与 Store 状态，并对照
+   `serializable_checkpoint_available`、`serializable_checkpoint_remaining_seconds` 和
+   `serializable_checkpoint_refresh_err`。不要手工延长 remaining time 或删除 service GC safepoint。
+3. 只有在线性探针恢复、PD/TiKV 拓扑健康且 fallback counter 的新增速率归零后才解除降级事件。counter 是单调累计值，
+   不要求其回到 0。
 | `etcd_server_snapshot_apply_in_progress_total` gauge | etcd upstream 兼容的 raft snapshot apply 状态；KubeBrain 不运行 etcd raft snapshot apply，固定为 0，TiKV/PD snapshot 应看存储层指标。 |
 | `etcd_server_heartbeat_send_failures_total` counter | etcd upstream 兼容的 raft leader heartbeat 发送失败计数；KubeBrain 不运行 etcd raft transport，固定为 0，TiKV/PD heartbeat 应看存储层指标。 |
 | `etcd_server_proposals_committed_total` / `etcd_server_proposals_applied_total` / `etcd_server_proposals_pending` gauge，`etcd_server_proposals_failed_total` counter | etcd upstream 兼容的 raft proposal 状态；KubeBrain 不运行 etcd raft proposal pipeline，四者固定为 0。不得解释为 MVCC revision、public write RPC 或 TiKV transaction；底层共识使用 TiKV/PD 原生指标。 |

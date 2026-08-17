@@ -1990,6 +1990,15 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"], "stopped publishing checkpoint telemetry")
 
 	checkpointRefreshRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointRefreshFailures")
+	healthFallbackRule := prometheusRuleByAlert(t, groups, "KubeBrainHealthCheckpointFallback")
+	require.Equal(t,
+		`sum by (check) (increase(health_checkpoint_fallback{namespace="kubebrain-system"}[10m])) > 0`,
+		healthFallbackRule["expr"])
+	require.Equal(t, "0m", healthFallbackRule["for"])
+	require.Equal(t, "warning", healthFallbackRule["labels"].(map[string]any)["severity"])
+	healthFallbackDescription := healthFallbackRule["annotations"].(map[string]any)["description"].(string)
+	require.Contains(t, healthFallbackDescription, "bounded-stale degraded service")
+	require.Contains(t, healthFallbackDescription, "not proof that PD/TiKV recovered")
 	require.Equal(t,
 		`sum(increase(serializable_checkpoint_refresh_err{namespace="kubebrain-system"}[10m])) > 0`,
 		checkpointRefreshRule["expr"])
