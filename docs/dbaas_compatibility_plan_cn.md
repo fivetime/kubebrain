@@ -56293,6 +56293,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   manifest 门禁固定 recording、两条 alert PromQL 与 heartbeat annotation，observability/readiness 已同步；
   本项需要重建并发布数据面镜像，backend/race/production 回归结果见提交验证。
 
+- A5005 关闭对象存储请求计费输入在第一层 recording 前的 lookback 漏洞。归档器已拒绝超过 5 分钟的
+  最终 recording，但旧规则直接对 raw provider gauge 计数并重新记录；exporter 在小时末停止时，raw 旧值
+  可被 Prometheus lookback 保留并由 recording rule 获得当前时间戳，从而伪装为完整、新鲜的四类请求数与
+  period-end。现新增保留原始 source labels、要求 raw sample age 不超过 60 秒的 request-count/period-end
+  current recording；五项 source count、小时 finalized usage 和 period-end 全部只消费该链。重复来源仍因
+  labels 保留而 fail closed，任一停止刷新会在一分钟内把 minute completeness 置零并阻止 hour complete。
+  精确 manifest 门禁固定两条 freshness recording 及完整下游 PromQL 链，告警 annotation 与 production
+  readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
