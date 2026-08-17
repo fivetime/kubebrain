@@ -55708,6 +55708,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   server/etcd **199.687 秒**、checkpoint/history race、Snapshot race 与 client compatibility 全套均
   GREEN；终态 KubeBrain/PD/TiKV 全部 Ready，门禁期间 KubeBrain 无新增重启且 fault 规则已清理。
 
+- A4954 修正 A4953 的 follower checkpoint 选择过宽。旧条件把 `!leadingFresh` 直接等同于 backend
+  不可用，使健康 follower 也跳过 leader proxy、返回最多一个 checkpoint 周期前的 member-local
+  artifact；真实恢复门禁因此在 backend 已恢复、after write 已成功后仍连续下载旧快照近 45 秒。
+  现在只要存在 checkpoint，leader 与 follower 都先用 750ms 有界 TSO 探针判断实时数据面：探针成功
+  时 leader 保持 live capture、follower 恢复代理当前 leader；仅探针失败才在首帧前切换 protected
+  checkpoint。确定性测试固定“checkpoint 可用 + follower + probe 成功”必须且只探测一次、必须代理且
+  不得本地 capture，以及 probe 失败必须本地导出且不得执行 live barrier。
+
+  提交 `2db2a05f` 的镜像 `kubebrain:a4970-snapshot-fresh-follower`（完整 revision
+  `2db2a05f2255c4a80f6c79035502614fbd14c566`，manifest list
+  `sha256:052b192c6284e7d0390641d0effbd7910175c207a483967c192316b802acbdd1`）通过同一 PD quorum +
+  TiKV member 组合门禁 **225.175 秒 GREEN**：故障期 checkpoint artifact 约 15.92 秒完成；恢复后
+  第一份 Snapshot 仅 312ms 即同时包含 before/after，不再等待 follower checkpoint 刷新。Snapshot 全组
+  2.803 秒、新分支 race 3.064 秒、完整 server/etcd 193.693 秒与 vet 均 GREEN。滚动后三副本零重启，
+  终态 KubeBrain/PD/TiKV 全部 Ready 且 fault 规则已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
