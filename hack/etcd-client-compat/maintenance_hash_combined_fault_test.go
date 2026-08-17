@@ -59,6 +59,14 @@ func TestMaintenanceHashSurvivesCombinedBackendFault(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+	baselineCtx, baselineCancel := context.WithTimeout(ctx, 10*time.Second)
+	baseline, err := etcdserverpb.NewMaintenanceClient(client.ActiveConnection()).Hash(
+		baselineCtx, &etcdserverpb.HashRequest{},
+	)
+	baselineCancel()
+	require.NoError(t, err)
+	require.NotNil(t, baseline.Header)
+	require.GreaterOrEqual(t, baseline.Header.Revision, revision)
 
 	type commandResult struct {
 		output []byte
@@ -94,5 +102,6 @@ func TestMaintenanceHashSurvivesCombinedBackendFault(t *testing.T) {
 	require.NotNil(t, duringFault)
 	require.NotNil(t, duringFault.Header)
 	require.GreaterOrEqual(t, duringFault.Header.Revision, revision)
-	require.NotZero(t, duringFault.Hash)
+	require.Equal(t, baseline.Hash, duringFault.Hash,
+		"protected backend hash must match the healthy hash after the fixture entered the checkpoint")
 }
