@@ -1271,6 +1271,19 @@ run_combined_hashkv_test() {
   wait_backend_ready
 }
 
+run_combined_status_test() {
+  local label="$1"
+  local command="$2"
+  echo "Running ${label}"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_STATUS_COMBINED_FAULT_COMMAND="$command" \
+      go test . -run '^TestMaintenanceStatusSurvivesCombinedBackendFault$' -count=1 -v
+  )
+  wait_backend_ready
+}
+
 run_pd_total_loss_restart_test() {
   local command="$1"
   echo "Running cross-node PD total-loss KubeBrain cold restart"
@@ -1717,7 +1730,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
   pd-quorum-tikv-quorum-status)
     need docker
     need jq
-    run_combined_hashkv_test \
+    run_combined_status_test \
       "Maintenance Status across concurrent PD quorum and TiKV quorum partition" \
       "COMBINED_FAULT_READY_FILE=\$KUBEBRAIN_COMBINED_FAULT_READY_FILE TIKV_COMBINED_FAULT_MODE=quorum $ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"
     ;;
