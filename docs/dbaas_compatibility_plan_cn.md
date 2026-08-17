@@ -56037,6 +56037,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   绕过告警。精确 manifest 门禁和 observability runbook 已更新，完整 `deploy/production` 测试通过。本项不重建
   数据面镜像。
 
+- A4976 将动态 completeness 延伸到 PD/TiKV 持久化 tail-latency telemetry。旧
+  `KubeBrainStorageLatencyMetricsMissing` 把 WAL fsync、RaftDB 和 KVDB histogram count 期望数分别写死为 3；
+  扩容到五副本后即使缺一个 instance，实际数仍大于 3 且告警静默。现 metering group 新增独立
+  `pd_replicas:expected` 与 `tikv_replicas:expected`，两者都先按 `(namespace,statefulset)` 去除 HA KSM 重复并在缺失时
+  发布可观测的 0。告警先要求三个 StatefulSet 期望来源完整和两条期望 recording series 存在，再将按
+  `instance` 去重的 PD WAL 数与 PD 期望精确比较，TiKV RaftDB/KVDB 数分别与 TiKV 期望精确比较。
+  扩容或缩容未收敛、任一 histogram family 缺失或 KSM/recording 链缺失都在 5 分钟后 warning。精确 manifest
+  门禁、observability 与 production readiness 文档已更新，完整 `deploy/production` 测试通过。本项不重建
+  数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
