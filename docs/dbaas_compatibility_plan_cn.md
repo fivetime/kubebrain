@@ -56112,6 +56112,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 newest-duplicate/false-stale annotation，production readiness 已更新；完整 `deploy/production` 测试通过。
   本项不重建数据面镜像。
 
+- A4984 收紧逻辑备份 RPO 指标的权威来源与时钟边界。旧 missing 告警只用 `absent(...)`，多个 stale
+  textfile exporter 同时存在时不报警；旧 stale 告警逐条计算 age，会让旧重复来源在权威来源刚成功后仍单独
+  critical，且未来时间戳可无限掩盖超期。现 success timestamp 来源数必须恰为 1，缺失或重复持续一小时均
+  warning；RPO 告警用 `max(timestamp value)` 选择最新成功事实，超过 25 小时或领先控制面时钟 5 分钟并持续
+  15 分钟均 critical。精确 manifest 门禁固定两条 PromQL 及 authoritative-source/future-clock annotation，
+  production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
