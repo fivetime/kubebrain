@@ -56302,6 +56302,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确 manifest 门禁固定两条 freshness recording 及完整下游 PromQL 链，告警 annotation 与 production
   readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5006 将同一 raw-freshness 边界扩展到逻辑备份的五项原子指标。旧 backup missing/RPO 告警与 metering
+  artifact/age 直接读取 textfile collector raw series；scrape 停止后 lookback 旧值仍短暂可见，后续 recording
+  又会获得当前时间戳，使归档器的最终样本 age 检查无法证明原始采集仍存活。现 timestamp、artifact bytes、
+  records、leases、snapshot revision 分别先要求 raw sample age 不超过 60 秒并保留来源标签；五项完整性、
+  RPO 时钟边界、metering 来源数及 artifact/age 输出全部只消费 current recording。重复 exporter 仍因来源
+  标签保留而 fail closed，停止 scrape 在下一分钟移除当前证据。精确 manifest 门禁固定五条 freshness
+  recording 与全部下游 PromQL，annotation/production readiness 已同步；完整 `deploy/production` 测试通过。
+  本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
