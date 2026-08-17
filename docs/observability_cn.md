@@ -51,7 +51,9 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 只证明进程可接流且仍有一份 GC-protected 有界陈旧状态。
 
 `KubeBrainHealthCheckpointFallbackMetricsMissing` 按当前 Ready Pod UID 动态计算期望值，要求每个 Ready
-副本各发布三条固定 check series，因此正常扩缩容不会因固定三副本假设而误报。该告警持续
+副本各发布三条固定 check 的新鲜 current 与 10 分钟 increase series，因此正常扩缩容不会因固定三副本
+假设而误报。current counter 必须是 `[0,2^53]` 内精确整数；Prometheus 外推 increase 可以是分数，但
+必须有限且在 `[0,2^53]` 内。invalid-value recording 缺失/非零同样告警。该告警持续
 5 分钟时，先排除混合版本滚动、ServiceMonitor 缺少 Pod UID relabel、旧 Pod scrape target 残留和 registry 初始化
 缺失；在恢复 `3 × Ready 副本数` 条当前 Pod UID 对应的 series 前，不得把 fallback 告警静默解释为
 “没有降级事件”。

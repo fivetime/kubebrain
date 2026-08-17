@@ -133,6 +133,14 @@ spec:
           expr: max by (namespace, pod, uid, check) (health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} and (time() - timestamp(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}) <= 60))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:health_checkpoint_fallback:increase_10m_by_pod_check
+          expr: max by (namespace, pod, uid, check) (increase(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}[10m]) and (time() - timestamp(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:health_checkpoint_fallback_invalid_values:count
+          expr: count(((kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:health_checkpoint_fallback:increase_10m_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:health_checkpoint_fallback:increase_10m_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:count_index_overflowed:max_by_pod
           expr: max by (namespace, pod, uid) (count_index_overflowed{namespace="kubebrain-system"} and (time() - timestamp(count_index_overflowed{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -666,21 +674,21 @@ spec:
             summary: KubeBrain serializable checkpoint refresh failed
             description: "KubeBrain failed to create, load, protect, or warm a serializable checkpoint. Existing snapshots remain usable only until serializable_checkpoint_remaining_seconds reaches zero."
         - alert: KubeBrainHealthCheckpointFallback
-          expr: sum by (check) ((max by (namespace, pod, uid, check) (increase(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}[10m])) and on(namespace, pod, uid, check) kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check) and on(namespace, pod, uid) kubebrain_dbaas:ready_pods:current) > 0
+          expr: sum by (check) (kubebrain_dbaas:health_checkpoint_fallback:increase_10m_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain health probe used a protected checkpoint
-            description: "A current Ready KubeBrain Pod UID whose KSM Ready and health counter samples are no older than 60 seconds entered {{ $labels.check }} checkpoint fallback {{ $value }} times in 10 minutes. Counter increases are deduplicated by Pod UID and check; stale counters from replaced Pods or stopped scrapes are excluded. A successful liveness response is bounded-stale degraded service, not proof that PD/TiKV recovered. Inspect PD/TiKV quorum, serializable checkpoint lifetime, and refresh errors."
+            description: "A current Ready KubeBrain Pod UID whose KSM Ready and health counter samples are no older than 60 seconds entered {{ $labels.check }} checkpoint fallback {{ $value }} times in 10 minutes. Fresh counter increases are deduplicated by Pod UID and check; stale counters from replaced Pods or stopped scrapes are excluded. Current counter values must be non-negative exact integers no greater than 2^53, and extrapolated increases must be finite and within [0,2^53]. A successful liveness response is bounded-stale degraded service, not proof that PD/TiKV recovered. Inspect PD/TiKV quorum, serializable checkpoint lifetime, and refresh errors."
         - alert: KubeBrainHealthCheckpointFallbackMetricsMissing
-          expr: count(kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current)
+          expr: absent(kubebrain_dbaas:health_checkpoint_fallback_invalid_values:count) == 1 or count(kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:health_checkpoint_fallback:increase_10m_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:health_checkpoint_fallback_invalid_values:count != 0
           for: 5m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain health fallback metrics are incomplete
-            description: "At least one Ready KubeBrain replica does not expose exactly three initialized health_checkpoint_fallback series with samples no older than 60 seconds. The expected series count follows Pod UID identities whose KSM Ready samples are also no older than 60 seconds, including during scaling; stale replaced Pod identities and stopped application scrapes are excluded. Check for mixed binary versions, missing pod UID relabeling, stale scrape targets, or an incomplete metrics registry before trusting the fallback alert."
+            description: "At least one Ready KubeBrain replica does not expose exactly three initialized health_checkpoint_fallback current and 10-minute-increase series with samples no older than 60 seconds, the invalid-value recording is absent, or a counter/increase value is invalid. Current counters must be non-negative exact integers no greater than 2^53; extrapolated increases may be fractional but must be finite and within [0,2^53]. The expected series count follows Pod UID identities whose KSM Ready samples are also no older than 60 seconds, including during scaling; stale replaced Pod identities and stopped application scrapes are excluded. Missing, stale, or invalid fallback telemetry must not be interpreted as zero degraded-health events. Check for mixed binary versions, missing pod UID relabeling, stale scrape targets, or an incomplete metrics registry before trusting the fallback alert."
         - alert: KubeBrainQuotaNoSpace
           expr: max(kubebrain_dbaas:quota_nospace:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m

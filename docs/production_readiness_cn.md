@@ -280,9 +280,11 @@ KSM 样本时间不超过 60 秒的 `(namespace,pod,uid)`，并按该不可变�
 滚动替换后仍位于 Prometheus lookback 窗口的旧 Pod counter/gauge 不能触发 fallback 告警，也不能为
 新 Pod 补齐 checkpoint 指标。若 KSM Ready family 停止刷新，记录会在一分钟内消失，不能继续把旧身份
 解释为当前 Ready 副本。`health_checkpoint_fallback` 本身也必须有不超过 60 秒的新鲜样本，并按
-`(namespace,pod,uid,check)` 去重：10 分钟 counter increase 只有同时存在当前 counter 身份与 Ready UID
-时才参与事件告警；应用 scrape 停止后，lookback 中的旧 counter 既不能继续通过三类 series 完整性，
-也不能重复触发历史 fallback 事件。
+`(namespace,pod,uid,check)` 去重；10 分钟 increase 也先从同一新鲜 raw counter 生成实体 recording，再与
+Ready UID 相交参与事件告警。current counter 必须是 `[0,2^53]` 内精确整数；外推 increase 可为分数，
+但必须有限且在同一范围内。invalid recording 缺失/非零或任一 Ready Pod 未提供三类 current/increase
+series 都 fail closed；应用 scrape 停止后，lookback 中的旧 counter 既不能继续通过完整性，也不能重复
+触发历史 fallback 事件。
 三类 checkpoint gauge 先各自只从 60 秒内 raw sample 生成按 Pod UID 去重的 current recording；available
 必须精确为 0/1，revision 必须是 `(0,2^53]` 内精确整数，remaining seconds 必须是 `[0,2^53]` 内
 非负精确整数。任一 NaN/Inf、负数、分数、超界值或 invalid recording 缺失都让运行期 checkpoint 告警
