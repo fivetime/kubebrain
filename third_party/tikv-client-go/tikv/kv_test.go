@@ -135,6 +135,25 @@ func (s *testKVSuite) TestGetAllTiKVStoreSafeTSExcludesTiFlash() {
 	s.Equal(map[uint64]uint64{s.tikvStoreID: 100}, safeTS)
 }
 
+func (s *testKVSuite) TestGetTiKVStoreSafeTSUsesAuthoritativeStoreSet() {
+	retiredStoreID := s.cluster.AllocID()
+	s.store.regionCache.SetRegionCacheStore(
+		retiredStoreID, s.storeAddr(retiredStoreID), s.storeAddr(retiredStoreID), tikvrpc.TiKV, 1, nil,
+	)
+	mockClient := storeSafeTsMockClient{Client: s.store.GetTiKVClient(), testSuite: s}
+	s.store.SetTiKVClient(&mockClient)
+
+	safeTS, err := s.store.GetTiKVStoreSafeTS(context.Background(), []uint64{s.tikvStoreID})
+	s.Require().NoError(err)
+	s.Equal(map[uint64]uint64{s.tikvStoreID: 100}, safeTS)
+}
+
+func (s *testKVSuite) TestGetTiKVStoreSafeTSRejectsUnresolvedMember() {
+	safeTS, err := s.store.GetTiKVStoreSafeTS(context.Background(), []uint64{s.cluster.AllocID()})
+	s.Nil(safeTS)
+	s.ErrorContains(err, "is not resolved")
+}
+
 func (s *testKVSuite) TestRURuntimeStatsCleanUp() {
 	s.Nil(failpoint.Enable("tikvclient/mockFastRURuntimeStatsMapClean", `return()`))
 	defer func() {

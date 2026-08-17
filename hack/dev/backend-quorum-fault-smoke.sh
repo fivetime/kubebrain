@@ -30,6 +30,7 @@ TIKV_NETEM_DELAY_MS="${TIKV_NETEM_DELAY_MS:-250}"
 TIKV_NETEM_JITTER_MS="${TIKV_NETEM_JITTER_MS:-50}"
 TIKV_NETEM_LOSS_PERCENT="${TIKV_NETEM_LOSS_PERCENT:-2}"
 TIKV_NETEM_RATE="${TIKV_NETEM_RATE:-20mbit}"
+TIKV_PARTITION_POD="${TIKV_PARTITION_POD:-}"
 partition_pod_ip=""
 partition_tag=""
 dual_partition_pod_ips=()
@@ -713,9 +714,19 @@ partition_tikv_member() {
     exit 1
   fi
   cluster_json="$(kubectl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"
-  tikv_pod="$(jq -er '.status.tikv.stores | to_entries |
-    map(select(.value.state == "Up" and ((.value.leaderCount // 0) > 0))) |
-    max_by(.value.leaderCount).value.podName' <<<"$cluster_json")"
+  if [[ -n "$TIKV_PARTITION_POD" ]]; then
+    tikv_pod="$TIKV_PARTITION_POD"
+    jq -e --arg pod "$tikv_pod" '
+      [.status.tikv.stores[] | select(.podName == $pod and .state == "Up")] | length == 1
+    ' <<<"$cluster_json" >/dev/null || {
+      echo "TIKV_PARTITION_POD must name exactly one Up TiKV store: $tikv_pod" >&2
+      exit 1
+    }
+  else
+    tikv_pod="$(jq -er '.status.tikv.stores | to_entries |
+      map(select(.value.state == "Up" and ((.value.leaderCount // 0) > 0))) |
+      max_by(.value.leaderCount).value.podName' <<<"$cluster_json")"
+  fi
   if [[ "$tikv_pod" != "$TIDB_CLUSTER-tikv-"* ]]; then
     echo "refusing to partition TiKV member ${tikv_pod:-missing}: unexpected Pod name" >&2
     exit 1

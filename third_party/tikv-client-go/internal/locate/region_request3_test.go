@@ -50,6 +50,7 @@ import (
 	"github.com/stretchr/testify/suite"
 	tikverr "github.com/tikv/client-go/v2/error"
 	"github.com/tikv/client-go/v2/internal/apicodec"
+	"github.com/tikv/client-go/v2/internal/client"
 	"github.com/tikv/client-go/v2/internal/mockstore/mocktikv"
 	"github.com/tikv/client-go/v2/internal/retry"
 	"github.com/tikv/client-go/v2/kv"
@@ -194,6 +195,35 @@ func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadFailsAfterProtect
 	s.ErrorContains(err, "exhausted its cached replicas")
 	s.Equal(int32(3), attempts.Load())
 	s.Len(addresses, 3)
+}
+
+func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadBoundsEachReplicaAttempt() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("key"))
+	s.NoError(err)
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("key")}))
+
+	var attempts atomic.Int32
+	s.regionRequestSender.client = &fnClient{fn: func(
+		_ context.Context, _ string, _ *tikvrpc.Request, timeout time.Duration,
+	) (*tikvrpc.Response, error) {
+		s.Equal(protectedReplicaRequestTimeout, timeout)
+		attempts.Add(1)
+		return nil, errors.New("partitioned")
+	}}
+	unreachableFn := func(*Store, *retry.Backoffer) livenessState { return unreachable }
+	s.cache.testingKnobs.mockRequestLiveness.Store((*livenessFunc)(&unreachableFn))
+
+	seed := uint32(0)
+	req := tikvrpc.NewReplicaReadRequest(tikvrpc.CmdGet, &kvrpcpb.GetRequest{
+		Key: []byte("key"), Version: 42,
+	}, kv.ReplicaReadMixed, &seed)
+	req.CacheOnlyRegionRead = true
+	resp, _, _, err := s.regionRequestSender.SendReqCtx(
+		s.bo, req, loc.Region, client.ReadTimeoutShort, tikvrpc.TiKV,
+	)
+	s.Nil(resp)
+	s.ErrorContains(err, "exhausted its cached replicas")
+	s.Equal(int32(3), attempts.Load())
 }
 
 func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadInstallsEpochNotMatchTopology() {

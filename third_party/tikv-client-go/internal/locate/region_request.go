@@ -114,6 +114,12 @@ type RegionRequestSender struct {
 	RegionRequestRuntimeStats
 }
 
+// protectedReplicaRequestTimeout bounds one attempt against an immutable,
+// cache-only replica set. A network blackhole otherwise inherits the normal
+// 30-60 second read timeout and can consume the entire maintenance RPC
+// deadline before the selector gets a chance to try a healthy follower.
+const protectedReplicaRequestTimeout = time.Second
+
 // RegionRequestRuntimeStats records the runtime stats of send region requests.
 type RegionRequestRuntimeStats struct {
 	Stats map[tikvrpc.CmdType]*RPCRuntimeStats
@@ -1598,7 +1604,11 @@ func (s *RegionRequestSender) sendReqToRegion(
 
 	if !injectFailOnSend {
 		start := time.Now()
-		resp, err = s.client.SendRequest(ctx, sendToAddr, req, timeout)
+		requestTimeout := timeout
+		if req.CacheOnlyRegionRead && requestTimeout > protectedReplicaRequestTimeout {
+			requestTimeout = protectedReplicaRequestTimeout
+		}
+		resp, err = s.client.SendRequest(ctx, sendToAddr, req, requestTimeout)
 		// Record timecost of external requests on related Store when ReplicaReadMode == PreferLeader.
 		if req.ReplicaReadType == kv.ReplicaReadPreferLeader && !util.IsInternalRequest(req.RequestSource) {
 			rpcCtx.Store.recordSlowScoreStat(time.Since(start))

@@ -24,12 +24,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pkg/errors"
 	tikvcfg "github.com/tikv/client-go/v2/config"
 	tikverr "github.com/tikv/client-go/v2/error"
 	tikvkv "github.com/tikv/client-go/v2/kv"
 	"github.com/tikv/client-go/v2/oracle"
 	"github.com/tikv/client-go/v2/tikv"
+	"github.com/tikv/client-go/v2/tikvrpc"
 	"github.com/tikv/client-go/v2/txnkv"
 	"github.com/tikv/client-go/v2/txnkv/txnsnapshot"
 	"go.uber.org/multierr"
@@ -508,7 +510,7 @@ func (s *store) WarmSnapshotRegions(ctx context.Context, starts [][]byte, timest
 	if timestamp == 0 {
 		return errors.New("snapshot timestamp must be non-zero")
 	}
-	if err := s.refreshSnapshotStores(ctx); err != nil {
+	if _, err := s.refreshSnapshotStores(ctx); err != nil {
 		return err
 	}
 	if err := warmSnapshotRegionReaders(ctx, starts, len(s.clients), func(clientIndex int) snapshotRegionReader {
@@ -524,17 +526,27 @@ func (s *store) WarmSnapshotRegions(ctx context.Context, starts [][]byte, timest
 	return nil
 }
 
-func (s *store) refreshSnapshotStores(ctx context.Context) error {
+func (s *store) refreshSnapshotStores(ctx context.Context) ([]uint64, error) {
 	stores, err := s.clients[0].GetPDClient().GetAllStores(ctx)
 	if err != nil {
-		return errors.Wrap(err, "failed to discover checkpoint stores")
+		return nil, errors.Wrap(err, "failed to discover checkpoint stores")
 	}
 	for clientIndex, client := range s.clients {
 		if err := client.GetRegionCache().SeedStores(stores); err != nil {
-			return errors.Wrapf(err, "failed to seed checkpoint stores for client %d", clientIndex)
+			return nil, errors.Wrapf(err, "failed to seed checkpoint stores for client %d", clientIndex)
 		}
 	}
-	return nil
+	activeTiKVStores := make([]uint64, 0, len(stores))
+	for _, store := range stores {
+		if store != nil && store.GetState() == metapb.StoreState_Up &&
+			tikvrpc.GetStoreTypeByMeta(store) == tikvrpc.TiKV {
+			activeTiKVStores = append(activeTiKVStores, store.GetId())
+		}
+	}
+	if len(activeTiKVStores) == 0 {
+		return nil, errors.New("no active TiKV Store discovered")
+	}
+	return activeTiKVStores, nil
 }
 
 // SnapshotReadyTimestamp returns the largest timestamp that every TiKV store
@@ -544,10 +556,11 @@ func (s *store) SnapshotReadyTimestamp(ctx context.Context) (uint64, error) {
 	// Store membership changes more frequently than the deliberately throttled
 	// full Region scan. Refresh this small directory for every candidate so a
 	// newly scheduled peer can be resolved from EpochNotMatch metadata without PD.
-	if err := s.refreshSnapshotStores(ctx); err != nil {
+	activeStores, err := s.refreshSnapshotStores(ctx)
+	if err != nil {
 		return 0, err
 	}
-	safeTS, err := s.clients[0].GetAllTiKVStoreSafeTS(ctx)
+	safeTS, err := s.clients[0].GetTiKVStoreSafeTS(ctx, activeStores)
 	if err != nil {
 		return 0, errors.Wrap(err, "get checkpoint Store safe timestamps")
 	}

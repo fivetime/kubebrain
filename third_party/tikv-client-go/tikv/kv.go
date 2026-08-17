@@ -685,9 +685,34 @@ func (s *KVStore) updateSafeTS(ctx context.Context) {
 // by that store, so callers can use it to prove that historical follower reads
 // at a checkpoint timestamp are ready before publishing the checkpoint.
 func (s *KVStore) GetAllTiKVStoreSafeTS(ctx context.Context) (map[uint64]uint64, error) {
+	return s.GetTiKVStoreSafeTS(ctx, nil)
+}
+
+// GetTiKVStoreSafeTS fetches store-wide safe timestamps from the requested
+// TiKV stores. A nil storeIDs slice selects every resolved TiKV store for
+// compatibility with GetAllTiKVStoreSafeTS. A non-nil slice is authoritative:
+// it lets callers use a fresh PD membership snapshot without stale, retired
+// Store objects in the Region cache freezing their checkpoint indefinitely.
+func (s *KVStore) GetTiKVStoreSafeTS(ctx context.Context, storeIDs []uint64) (map[uint64]uint64, error) {
 	stores := s.regionCache.GetStoresByType(tikvrpc.TiKV)
-	result := make(map[uint64]uint64, len(stores))
-	for _, store := range stores {
+	selected := stores
+	if storeIDs != nil {
+		byID := make(map[uint64]*locate.Store, len(stores))
+		for _, store := range stores {
+			byID[store.StoreID()] = store
+		}
+		selected = make([]*locate.Store, 0, len(storeIDs))
+		for _, storeID := range storeIDs {
+			store := byID[storeID]
+			if store == nil {
+				return nil, errors.Errorf("TiKV store %d is not resolved", storeID)
+			}
+			selected = append(selected, store)
+		}
+	}
+
+	result := make(map[uint64]uint64, len(selected))
+	for _, store := range selected {
 		resp, err := s.GetTiKVClient().SendRequest(
 			ctx, store.GetAddr(), tikvrpc.NewRequest(
 				tikvrpc.CmdStoreSafeTS, &kvrpcpb.StoreSafeTSRequest{
