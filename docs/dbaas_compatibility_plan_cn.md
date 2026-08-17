@@ -56233,6 +56233,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PromQL 与 freshness annotation，production readiness 已同步；完整 `deploy/production` 测试通过。本项
   不重建数据面镜像。
 
+- A4998 将 60 秒 freshness 根延伸到 PD/TiKV 控制面健康 gauge。旧 PD leader、TiKV leader-missing 与
+  PD pending/down Region 规则虽已做动态来源数和 HA 去重，但仍直接消费 raw lookback；exporter 单独停止
+  family 后旧零值/leader 值可继续通过 completeness，并被事务路径分类当作“健康存储”。现新增 PD leader
+  每 instance、TiKV leader-missing 每 instance、PD Region status 每 instance/type 三条 recording，均先要求
+  sample age 不超过 60 秒再去重。leader/Region 异常与 completeness 告警、健康存储事务分类全部只消费
+  这些记录。精确 manifest 门禁固定三条 freshness recording、四条 storage alert 和事务分类 PromQL，
+  freshness annotation 与 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建
+  数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
