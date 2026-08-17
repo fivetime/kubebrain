@@ -119,8 +119,8 @@ func (b *checkpointStatusBackendShim) GetDurableRevision(ctx context.Context) (u
 		b.liveCalls++
 		return 0, b.liveErr
 	}
-	b.requirePinned(ctx)
-	return b.checkpoint.Revision, nil
+	require.FailNow(b.t, "protected Status must use the revision already carried by its checkpoint")
+	return 0, nil
 }
 
 func (b *checkpointStatusBackendShim) requirePinned(ctx context.Context) {
@@ -309,7 +309,7 @@ func TestStatusFallsBackToProtectedCheckpointWhenBackendIsUnavailable(t *testing
 	require.Equal(t, checkpoint.Revision, response.RaftAppliedIndex)
 	require.Equal(t, uint64(9), response.RaftTerm)
 	require.Equal(t, 1, shim.liveCalls)
-	require.GreaterOrEqual(t, shim.pinnedCalls, 4)
+	require.GreaterOrEqual(t, shim.pinnedCalls, 3)
 }
 
 func TestStatusDoesNotMaskDeterministicBackendFailureWithCheckpoint(t *testing.T) {

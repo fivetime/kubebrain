@@ -454,6 +454,13 @@ func (s *RPCServer) hedgedMaintenanceStatus(
 // validation); sampling durable state here keeps their response headers from
 // describing two revisions solely because the first request hit a follower.
 func (s *RPCServer) freshMaintenanceRevision(ctx context.Context) (uint64, error) {
+	if checkpoint, protected := backend.SerializableCheckpointFromContext(ctx); protected {
+		// The checkpoint revision is the durable watermark captured at the same
+		// protected engine timestamp. Re-reading its internal row would add no
+		// freshness and can reintroduce an avoidable TiKV route dependency while
+		// serving the member-local degraded Status path.
+		return checkpoint.Revision, nil
+	}
 	revision, err := safeBackendRevision(ctx, s.backend)
 	if err != nil {
 		return 0, err

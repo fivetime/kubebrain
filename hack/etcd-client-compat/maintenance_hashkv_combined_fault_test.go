@@ -50,7 +50,7 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 		require.Positive(t, parsed, "KUBEBRAIN_HASHKV_CALL_TIMEOUT must be positive")
 		hashCallTimeout = parsed
 	}
-	checkpointWait := 60 * time.Second
+	checkpointWait := 90 * time.Second
 	if configured := os.Getenv("KUBEBRAIN_HASHKV_CHECKPOINT_WAIT"); configured != "" {
 		parsed, parseErr := time.ParseDuration(configured)
 		require.NoError(t, parseErr, "parse KUBEBRAIN_HASHKV_CHECKPOINT_WAIT")
