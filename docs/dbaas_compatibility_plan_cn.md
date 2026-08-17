@@ -55877,6 +55877,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   恢复后 linearizable MemberList 重新成功。本项未发现生产 RED，不修改数据面；它证明静态 applied
   membership 在双 quorum blackout 中仍可发现，但不把 serializable 响应冒充最新线性一致 membership。
 
+- A4962 补齐 etcd HTTP 健康探针在严格 PD quorum + TiKV quorum blackout 下的可用性边界。旧
+  `kubebrain:a4980-defragment-checkpoint` 同时隔离 `kb-pd-1/0` 与 `kb-tikv-0/2` 后，mutation 明确
+  `DeadlineExceeded`，但 `/health?serializable=true` 在 8 秒内连 response header 都无法返回，真实门禁
+  RED。根因是 legacy health 的 quota/corrupt alarm 与串行 Range、`/livez` 的串行 Range，以及
+  `/readyz` 的 corruption 检查都直接访问 live TiKV。
+
+  `9a2f6bd2` 保持健康态 live-first，为这些 member-liveness 检查设置 750ms live budget，仅在
+  `DeadlineExceeded`/`Unavailable` 后回退到 GC-protected member checkpoint；`DataLoss` 与其他确定性
+  错误继续 fail closed。`/readyz` 不降级其 linearizable barrier，因此 blackout 时仍返回 503。单测覆盖
+  legacy health、livez、readyz 三条路径、确定性错误不回退，以及 corruption/serializable 成功而
+  linearizable 失败的组合；race、vet、完整 `pkg/server` 与 compat 回归通过。
+
+  精确镜像 `kubebrain:a4981-http-health-checkpoint`（完整 revision
+  `32e35c832947df4232525ce400ba5839eaa4a10a`，manifest list
+  `sha256:67aa88a943b27ef46926b0bbac8b6aea5c60712a4da55fe9a21ba56c7222be3f`）等待完整 90 秒
+  checkpoint protection grace 后复跑同一双 quorum 故障：`/version` 保持不变，serializable
+  `/health` 返回 200/healthy，`/livez?verbose` 返回 serializable_read ok；`/readyz?verbose` 返回 503，
+  data_corruption 与 serializable_read 为 ok，仅 linearizable_read 因代理 barrier 超时失败。首轮产品行为
+  已符合契约，但测试把合法失败原因过度限定为 `RAFT NO LEADER`；`92368861` 修正为只约束
+  linearizable_read 必须失败，复跑完整门禁 **77.80 秒 GREEN**，随后两个 quorum 恢复。该能力依赖有效
+  protected checkpoint；无 checkpoint 时不把过期或未保护状态冒充健康。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
