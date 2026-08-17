@@ -56347,6 +56347,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   门禁固定完整 value/cross-metric PromQL、alert/completeness 与 clamp-not-mask annotation，production
   readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5011 将 compute/network 分钟 usage 的有限非负合同前移到 metering completeness。旧 source count 只证明
+  CPU、memory working-set、network RX/TX series 存在；NaN、Inf、负数或异常超界值仍可通过 60 个分钟
+  completeness，直到归档器验证最终 recording 才失败。现新增 compute-value mismatch count：CPU cores 与
+  RX/TX bytes-per-second 必须等于其 `[0,2^53]` clamp（从而拒绝 NaN/Inf/负数/超界），memory working-set
+  必须为同范围内精确整数。`metering_data_complete` 要求 mismatch 为零，非法 usage 无法生成 hour-complete
+  证据。精确 manifest 门禁固定完整 mismatch/completeness PromQL 与 pre-hour annotation，production
+  readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
