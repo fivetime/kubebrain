@@ -2167,8 +2167,8 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		"KubeBrainNetworkMetricsMissing":        `absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:compute_replicas:expected) == 1 or absent(kubebrain_dbaas:network_receive_sources:count) == 1 or absent(kubebrain_dbaas:network_transmit_sources:count) == 1 or absent(kubebrain_dbaas:network_receive_error_sources:count) == 1 or absent(kubebrain_dbaas:network_transmit_error_sources:count) == 1 or absent(kubebrain_dbaas:network_receive_drop_sources:count) == 1 or absent(kubebrain_dbaas:network_transmit_drop_sources:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:network_receive_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_transmit_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_receive_error_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_transmit_error_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_receive_drop_sources:count != on() kubebrain_dbaas:compute_replicas:expected or kubebrain_dbaas:network_transmit_drop_sources:count != on() kubebrain_dbaas:compute_replicas:expected`,
 		"KubeBrainNetworkErrors":                `(kubebrain_dbaas:network_receive_errors:increase_10m_by_interface + kubebrain_dbaas:network_transmit_errors:increase_10m_by_interface) > 0`,
 		"KubeBrainNetworkPacketDrops":           `(kubebrain_dbaas:network_receive_drops:increase_10m_by_interface + kubebrain_dbaas:network_transmit_drops:increase_10m_by_interface) > 0`,
-		"KubeBrainLogicalBackupMetricsMissing":  `count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_records{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_leases{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_snapshot_revision{instance="kubebrain"}) != 1`,
-		"KubeBrainLogicalBackupStale":           `(time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) > 90000) or (max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) > time() + 300)`,
+		"KubeBrainLogicalBackupMetricsMissing":  `count(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current) != 1 or count(kubebrain_dbaas:logical_backup_artifact_bytes:current) != 1 or count(kubebrain_dbaas:logical_backup_records:current) != 1 or count(kubebrain_dbaas:logical_backup_leases:current) != 1 or count(kubebrain_dbaas:logical_backup_snapshot_revision:current) != 1`,
+		"KubeBrainLogicalBackupStale":           `(time() - max(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current) > 90000) or (max(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current) > time() + 300)`,
 	} {
 		alertRule := prometheusRuleByAlert(t, groups, alert)
 		require.Equal(t, expr, alertRule["expr"])
@@ -2263,6 +2263,14 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 	require.Contains(t,
 		backupMissingRule["annotations"].(map[string]any)["description"],
 		"atomically published logical backup metrics file",
+	)
+	require.Contains(t,
+		backupMissingRule["annotations"].(map[string]any)["description"],
+		"raw scrape sample must be no older than 60 seconds",
+	)
+	require.Contains(t,
+		backupMissingRule["annotations"].(map[string]any)["description"],
+		"Prometheus lookback values cannot be re-timestamped",
 	)
 	backupStaleRule := prometheusRuleByAlert(t, groups, "KubeBrainLogicalBackupStale")
 	require.Contains(t,
@@ -2392,8 +2400,12 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		"kubebrain_dbaas:storage_volume_stats_identity_mismatches:count":     `count(kubebrain_dbaas:storage_active_volumes:current_by_pvc unless on(namespace, persistentvolumeclaim) kubebrain_dbaas:storage_capacity_bytes:max_by_pvc) + count(kubebrain_dbaas:storage_capacity_bytes:max_by_pvc unless on(namespace, persistentvolumeclaim) kubebrain_dbaas:storage_active_volumes:current_by_pvc) + count(kubebrain_dbaas:storage_active_volumes:current_by_pvc unless on(namespace, persistentvolumeclaim) kubebrain_dbaas:storage_available_bytes:max_by_pvc) + count(kubebrain_dbaas:storage_available_bytes:max_by_pvc unless on(namespace, persistentvolumeclaim) kubebrain_dbaas:storage_active_volumes:current_by_pvc)`,
 		"kubebrain_dbaas:storage_capacity_sources:count":                     `count(kubebrain_dbaas:storage_capacity_bytes:max_by_pvc)`,
 		"kubebrain_dbaas:storage_available_sources:count":                    `count(kubebrain_dbaas:storage_available_bytes:max_by_pvc)`,
-		"kubebrain_dbaas:logical_backup_artifact_sources:count":              `count(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"})`,
-		"kubebrain_dbaas:logical_backup_timestamp_sources:count":             `count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"})`,
+		"kubebrain_dbaas:logical_backup_artifact_bytes:current":              `kubebrain_logical_backup_artifact_bytes{instance="kubebrain"} and (time() - timestamp(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"}) <= 60)`,
+		"kubebrain_dbaas:logical_backup_records:current":                     `kubebrain_logical_backup_records{instance="kubebrain"} and (time() - timestamp(kubebrain_logical_backup_records{instance="kubebrain"}) <= 60)`,
+		"kubebrain_dbaas:logical_backup_leases:current":                      `kubebrain_logical_backup_leases{instance="kubebrain"} and (time() - timestamp(kubebrain_logical_backup_leases{instance="kubebrain"}) <= 60)`,
+		"kubebrain_dbaas:logical_backup_snapshot_revision:current":           `kubebrain_logical_backup_snapshot_revision{instance="kubebrain"} and (time() - timestamp(kubebrain_logical_backup_snapshot_revision{instance="kubebrain"}) <= 60)`,
+		"kubebrain_dbaas:logical_backup_artifact_sources:count":              `count(kubebrain_dbaas:logical_backup_artifact_bytes:current)`,
+		"kubebrain_dbaas:logical_backup_timestamp_sources:count":             `count(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current)`,
 		"kubebrain_dbaas:object_store_request_count:current":                 `kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class=~"write|list|read|delete",window="1h"} and (time() - timestamp(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class=~"write|list|read|delete",window="1h"}) <= 60)`,
 		"kubebrain_dbaas:object_store_request_period_end_seconds:current":    `kubebrain_object_store_request_period_end_seconds{dbaas_instance="kubebrain",window="1h"} and (time() - timestamp(kubebrain_object_store_request_period_end_seconds{dbaas_instance="kubebrain",window="1h"}) <= 60)`,
 		"kubebrain_dbaas:object_store_write_request_sources:count":           `count(kubebrain_dbaas:object_store_request_count:current{request_class="write"}) or on() vector(0)`,
@@ -2409,8 +2421,8 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		"kubebrain_dbaas:network_transmit_bytes_per_second:sum":              `sum(kubebrain_dbaas:network_transmit_bytes_per_second:max_by_interface) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
 		"kubebrain_dbaas:storage_provisioned_bytes:sum":                      `sum(kubebrain_dbaas:storage_requested_bytes:max_by_pvc) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
 		"kubebrain_dbaas:storage_used_bytes:sum":                             `clamp_min(sum(kubebrain_dbaas:storage_capacity_bytes:max_by_pvc) - sum(kubebrain_dbaas:storage_available_bytes:max_by_pvc), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
-		"kubebrain_dbaas:logical_backup_artifact_bytes:last":                 `max(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"}) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
-		"kubebrain_dbaas:logical_backup_age_seconds:last":                    `clamp_min(time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
+		"kubebrain_dbaas:logical_backup_artifact_bytes:last":                 `max(kubebrain_dbaas:logical_backup_artifact_bytes:current) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
+		"kubebrain_dbaas:logical_backup_age_seconds:last":                    `clamp_min(time() - max(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
 		"kubebrain_dbaas:metering_hour_complete":                             `(min_over_time(kubebrain_dbaas:metering_data_complete[1h]) == 1) * (count_over_time(kubebrain_dbaas:metering_data_complete[1h]) >= bool 60)`,
 		"kubebrain_dbaas:object_request_hour_complete":                       `(min_over_time(kubebrain_dbaas:object_request_data_complete[1h]) == 1) * (count_over_time(kubebrain_dbaas:object_request_data_complete[1h]) >= bool 60)`,
 		"kubebrain_dbaas:object_request_period_end:last":                     `max(kubebrain_dbaas:object_store_request_period_end_seconds:current) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
@@ -2428,6 +2440,8 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		"kubebrain_dbaas:object_store_read_requests:hour":    `sum(kubebrain_dbaas:object_store_request_count:current{request_class="read"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
 		"kubebrain_dbaas:object_store_delete_requests:hour":  `sum(kubebrain_dbaas:object_store_request_count:current{request_class="delete"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)`,
 	}
+	expected["kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current"] =
+		`kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"} and (time() - timestamp(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) <= 60)`
 	rules, ok := meteringGroup["rules"].([]any)
 	require.True(t, ok)
 	require.Len(t, rules, len(expected))

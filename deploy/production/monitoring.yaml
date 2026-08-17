@@ -297,12 +297,32 @@ spec:
           expr: count(kubebrain_dbaas:storage_available_bytes:max_by_pvc)
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current
+          expr: kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"} and (time() - timestamp(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) <= 60)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:logical_backup_artifact_bytes:current
+          expr: kubebrain_logical_backup_artifact_bytes{instance="kubebrain"} and (time() - timestamp(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"}) <= 60)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:logical_backup_records:current
+          expr: kubebrain_logical_backup_records{instance="kubebrain"} and (time() - timestamp(kubebrain_logical_backup_records{instance="kubebrain"}) <= 60)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:logical_backup_leases:current
+          expr: kubebrain_logical_backup_leases{instance="kubebrain"} and (time() - timestamp(kubebrain_logical_backup_leases{instance="kubebrain"}) <= 60)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:logical_backup_snapshot_revision:current
+          expr: kubebrain_logical_backup_snapshot_revision{instance="kubebrain"} and (time() - timestamp(kubebrain_logical_backup_snapshot_revision{instance="kubebrain"}) <= 60)
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:logical_backup_artifact_sources:count
-          expr: count(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"})
+          expr: count(kubebrain_dbaas:logical_backup_artifact_bytes:current)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:logical_backup_timestamp_sources:count
-          expr: count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"})
+          expr: count(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:object_store_request_count:current
@@ -366,11 +386,11 @@ spec:
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:logical_backup_artifact_bytes:last
-          expr: max(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"}) and on() (kubebrain_dbaas:metering_data_complete == 1)
+          expr: max(kubebrain_dbaas:logical_backup_artifact_bytes:current) and on() (kubebrain_dbaas:metering_data_complete == 1)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:logical_backup_age_seconds:last
-          expr: clamp_min(time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)
+          expr: clamp_min(time() - max(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:metering_hour_complete
@@ -754,15 +774,15 @@ spec:
             summary: KubeBrain object request billing inputs are incomplete
             description: "The provider request exporter does not expose within 60 seconds exactly one finalized hourly count for every write, list, read, and delete class plus exactly one period-end series, or the completeness recording series itself is absent. Raw sample freshness is checked before recording so Prometheus lookback values cannot be re-timestamped as current billing evidence. Request billing must fail closed."
         - alert: KubeBrainLogicalBackupMetricsMissing
-          expr: count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_records{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_leases{instance="kubebrain"}) != 1 or count(kubebrain_logical_backup_snapshot_revision{instance="kubebrain"}) != 1
+          expr: count(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current) != 1 or count(kubebrain_dbaas:logical_backup_artifact_bytes:current) != 1 or count(kubebrain_dbaas:logical_backup_records:current) != 1 or count(kubebrain_dbaas:logical_backup_leases:current) != 1 or count(kubebrain_dbaas:logical_backup_snapshot_revision:current) != 1
           for: 1h
           labels:
             severity: warning
           annotations:
             summary: KubeBrain logical backup metric family is incomplete or non-unique
-            description: "Exactly one timestamp, artifact-bytes, records, leases, and snapshot-revision series is required from the atomically published logical backup metrics file. Configure one authoritative METRICS_OUTPUT textfile collector and remove partial, stale, or duplicate exporters before trusting backup RPO or artifact inventory."
+            description: "Exactly one timestamp, artifact-bytes, records, leases, and snapshot-revision series is required from the atomically published logical backup metrics file. Every raw scrape sample must be no older than 60 seconds. Freshness is checked before recording so Prometheus lookback values cannot be re-timestamped as current evidence. Configure one authoritative METRICS_OUTPUT textfile collector and remove partial, stale, or duplicate exporters before trusting backup RPO or artifact inventory."
         - alert: KubeBrainLogicalBackupStale
-          expr: (time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) > 90000) or (max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) > time() + 300)
+          expr: (time() - max(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current) > 90000) or (max(kubebrain_dbaas:logical_backup_last_success_timestamp_seconds:current) > time() + 300)
           for: 15m
           labels:
             severity: critical
