@@ -56276,6 +56276,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两条 alert PromQL 与 15 秒发布契约 annotation，observability/production readiness 已同步；完整
   `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5003 修复 `watch_revision_lag` 只在 enqueue 时更新、collector 追平后仍永久保留高值的问题。旧实现以
+  当前入队 revision 减 collector cursor 发布 gauge，但消费路径不再刷新；写高峰结束且无后续写入时，
+  已清空的 ring 仍会持续触发 lag 告警。现后端维护“实际进入本 Pod ring 的最高 revision”单调水位，拒绝
+  用包含在途/失败写的 PD `Dealt()` 伪造 backlog；正常消费、已证明废弃 revision 的 skip 与 overflow reset
+  每次推进 collector cursor 都重算 gauge。新增测试覆盖乱序通知不回退 high-watermark，以及 collector
+  10→12→15 时 lag 精确 5→3→0、无后续写也清零；observability/production readiness 已同步。本项需要
+  重建并发布 KubeBrain 数据面镜像；backend 专项与完整测试结果见提交验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
