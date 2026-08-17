@@ -289,6 +289,10 @@ series 都 fail closed；应用 scrape 停止后，lookback 中的旧 counter �
 必须精确为 0/1，revision 必须是 `(0,2^53]` 内精确整数，remaining seconds 必须是 `[0,2^53]` 内
 非负精确整数。任一 NaN/Inf、负数、分数、超界值或 invalid recording 缺失都让运行期 checkpoint 告警
 fail closed；缺失、陈旧或非法证据不得授权 PD 隔离读。
+`serializable_checkpoint_refresh_err` 也在每个副本启动时显式发布零值，并从 60 秒内 raw sample 生成
+current 与 10 分钟 increase recording；两者必须分别覆盖全部当前 Ready Pod UID。current counter 必须是
+`[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且在同一范围。缺失、陈旧或非法 telemetry
+会由独立 metrics-missing 告警 fail closed，不能把未观测到的 refresh failure 当作权威零值。
 
 该脚本通过 Kubernetes Service proxy 读取 PD API，要求所有 TiKV store 为 `Up`，并要求
 `pending-peer`、`down-peer`、`miss-peer`、`extra-peer`、`learner-peer` 五类异常 Region 均为零；

@@ -31,6 +31,7 @@ func initSerializableCheckpointMetrics(metricCli metrics.Metrics) {
 	_ = metricCli.EmitGauge("serializable.checkpoint.available", int64(0))
 	_ = metricCli.EmitGauge("serializable.checkpoint.revision", int64(0))
 	_ = metricCli.EmitGauge("serializable.checkpoint.remaining_seconds", int64(0))
+	_ = metricCli.EmitCounter("serializable.checkpoint.refresh_err", int64(0))
 }
 
 const (

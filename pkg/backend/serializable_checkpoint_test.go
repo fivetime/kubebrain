@@ -506,6 +506,7 @@ func TestSerializableCheckpointMetricsExposePerReplicaUsableWindow(t *testing.T)
 		{kind: "gauge", name: "serializable.checkpoint.available", value: int64(0)},
 		{kind: "gauge", name: "serializable.checkpoint.revision", value: int64(0)},
 		{kind: "gauge", name: "serializable.checkpoint.remaining_seconds", value: int64(0)},
+		{kind: "counter", name: "serializable.checkpoint.refresh_err", value: int64(0)},
 		{kind: "gauge", name: "serializable.checkpoint.available", value: int64(1)},
 		{kind: "gauge", name: "serializable.checkpoint.revision", value: int64(42)},
 		{kind: "gauge", name: "serializable.checkpoint.remaining_seconds", value: int64(90)},

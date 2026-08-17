@@ -113,6 +113,18 @@ spec:
           expr: count(((kubebrain_dbaas:serializable_checkpoint_available:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:serializable_checkpoint_available:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 1) or ((kubebrain_dbaas:serializable_checkpoint_available:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:serializable_checkpoint_available:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:serializable_checkpoint_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:serializable_checkpoint_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:serializable_checkpoint_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:serializable_checkpoint_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:serializable_checkpoint_remaining_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:serializable_checkpoint_remaining_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:serializable_checkpoint_remaining_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:serializable_checkpoint_remaining_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:serializable_checkpoint_refresh_err:current_by_pod
+          expr: max by (namespace, pod, uid) (serializable_checkpoint_refresh_err{namespace="kubebrain-system"} and (time() - timestamp(serializable_checkpoint_refresh_err{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:serializable_checkpoint_refresh_err:increase_10m_by_pod
+          expr: max by (namespace, pod, uid) (increase(serializable_checkpoint_refresh_err{namespace="kubebrain-system"}[10m]) and (time() - timestamp(serializable_checkpoint_refresh_err{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:serializable_checkpoint_refresh_err_invalid_values:count
+          expr: count(((kubebrain_dbaas:serializable_checkpoint_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:serializable_checkpoint_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:serializable_checkpoint_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:serializable_checkpoint_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:serializable_checkpoint_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:serializable_checkpoint_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:quota_nospace:max_by_pod
           expr: max by (namespace, pod, uid) (quota_nospace{namespace="kubebrain-system"} and (time() - timestamp(quota_nospace{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -666,13 +678,21 @@ spec:
             summary: KubeBrain serializable checkpoint is unavailable
             description: "At least one current Ready KubeBrain replica lacks a fresh positive-revision GC-protected checkpoint, has less than 60 seconds left in its local safety window, stopped publishing any of the available, revision, and remaining-seconds checkpoint gauges for 60 seconds, or publishes an invalid available/revision/remaining-seconds value, so bounded PD-isolated serializable Range, read-only Txn, and RangeStream service is unavailable or at risk. Available must be exactly 0 or 1; revision must be a positive exact integer no greater than 2^53; remaining seconds must be a non-negative exact integer no greater than 2^53. Expected telemetry follows Pod UID identities whose KSM Ready samples are no older than 60 seconds during scaling; stale replaced Pod identities are excluded. Missing, stale, or invalid checkpoint evidence must not authorize isolated reads. Check scrape health, PD service GC safepoints, Region/store directory warmup, and checkpoint refresh errors."
         - alert: KubeBrainSerializableCheckpointRefreshFailures
-          expr: sum(increase(serializable_checkpoint_refresh_err{namespace="kubebrain-system"}[10m])) > 0
+          expr: sum(kubebrain_dbaas:serializable_checkpoint_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain serializable checkpoint refresh failed
-            description: "KubeBrain failed to create, load, protect, or warm a serializable checkpoint. Existing snapshots remain usable only until serializable_checkpoint_remaining_seconds reaches zero."
+            description: "A current Ready KubeBrain Pod UID reported a fresh serializable checkpoint refresh failure. KubeBrain failed to create, load, protect, or warm a checkpoint. Existing snapshots remain usable only until serializable_checkpoint_remaining_seconds reaches zero."
+        - alert: KubeBrainSerializableCheckpointRefreshMetricsMissing
+          expr: absent(kubebrain_dbaas:serializable_checkpoint_refresh_err_invalid_values:count) == 1 or count(kubebrain_dbaas:serializable_checkpoint_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:serializable_checkpoint_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:serializable_checkpoint_refresh_err_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain serializable checkpoint refresh-error telemetry is incomplete
+            description: "At least one current Ready Pod UID lacks a refresh-error current or 10-minute-increase series with a sample no older than 60 seconds, the invalid-value recording is absent, or a value is invalid. Every replica initializes the counter to an authoritative zero. Current counters must be non-negative exact integers no greater than 2^53; extrapolated increases may be fractional but must be finite and within [0,2^53]. Missing, stale, or invalid telemetry must not be interpreted as zero checkpoint refresh failures."
         - alert: KubeBrainHealthCheckpointFallback
           expr: sum by (check) (kubebrain_dbaas:health_checkpoint_fallback:increase_10m_by_pod_check * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m
