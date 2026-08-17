@@ -56047,6 +56047,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   门禁、observability 与 production readiness 文档已更新，完整 `deploy/production` 测试通过。本项不重建
   数据面镜像。
 
+- A4977 修正 A4973/A4975 把“当前活跃存储副本数”误当成“当前应计费 PVC 数”的缩容语义。
+  TiDB StatefulSet 缩容后 PVC 可保留；它们仍占用持久容量并应在真正删除前继续监控/计费。旧 completeness
+  把 capacity/available source 数与 PD+TiKV 当前 replicas 精确比较，会将合法保留卷视为多余 source，让缩容后计费
+  永久 incomplete；若反向放宽又会漏计存储。现新增 `storage_volumes:expected`，对匹配实例数字 ordinal 的
+  `kube_persistentvolumeclaim_info` 先按 `(namespace,persistentvolumeclaim)` 去除 HA KSM 重复，再计算当前 PVC 对象数。
+  但 kubelet volume stats 对已卸载保留卷不是可靠来源，因此新增 requested-storage source count：它基于去重的
+  `kube_persistentvolumeclaim_resource_requests_storage_bytes` 必须精确覆盖全部 PVC 对象，并作为
+  `storage_provisioned_bytes` 的求和来源。metering completeness 另要求 PVC 对象数不少于活跃存储副本，
+  kubelet capacity/available source 只需与活跃副本精确相等；`storage_used_bytes` 仍只从可观测的活跃挂载卷计算，
+  不伪造卸载卷 used bytes。operational PVC completeness 使用同一套条件并显式检查所有 recording series 存在。
+  缩容保留卷因此继续进入 provisioned storage 聚合，直到 PVC 对象删除。精确 manifest 门禁、两类 KSM 外部指标登记、observability 和 production
+  readiness 文档已更新，完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
