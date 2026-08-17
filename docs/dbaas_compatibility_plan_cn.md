@@ -56195,6 +56195,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   recording 相除。精确 manifest 门禁固定两条 recording、完整 resource alert 与 memory-high PromQL，
   annotation 和 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4994 修复全部动态副本门禁的 KSM 期望根仍可被 lookback 旧值维持的问题。旧
+  `replica_expectation_sources`、compute/storage/KubeBrain/PD/TiKV expected 各自直接聚合
+  `kube_statefulset_replicas`；KSM 停止更新后约 5 分钟内三条来源仍看似齐全，后续 scrape、计费、容量与
+  故障分类门禁都会信任陈旧拓扑。现新增仅选择 sample age 不超过 60 秒、按
+  `(namespace,statefulset)` 去重的 `statefulset_replicas:current`，所有六条期望 recording 只从该统一根派生；
+  任一 StatefulSet KSM 样本超龄即让来源数不再为 3 并由既有告警 fail closed。manifest metric-reference
+  门禁也改为显式登记所有 recording 输出，合法 selector 引用不再依赖旧正则盲点。精确 recording 测试与
+  production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
