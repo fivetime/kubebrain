@@ -1937,7 +1937,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	}
 	require.NotNil(t, readinessRule)
 	require.Equal(t,
-		`absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:kubebrain_replicas:expected) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:kubebrain_replicas:expected < 3 or (max by (namespace, statefulset) (kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)) != on() kubebrain_dbaas:kubebrain_replicas:expected`,
+		`absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:statefulset_ready_sources:count) == 1 or absent(kubebrain_dbaas:kubebrain_replicas:expected) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:statefulset_ready_sources:count != 3 or kubebrain_dbaas:kubebrain_replicas:expected < 3 or (sum(kubebrain_dbaas:statefulset_ready_replicas:current{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)) != on() kubebrain_dbaas:kubebrain_replicas:expected`,
 		readinessRule["expr"],
 	)
 	require.NotContains(t, readinessRule["expr"], "kube_deployment_")
@@ -1951,11 +1951,15 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		require.Contains(t, description, "exactly match the current expected replica count")
 		require.Contains(t, description, "expectation chain is absent")
 	}
+	require.Contains(t,
+		readinessRule["annotations"].(map[string]any)["description"],
+		"samples within 60 seconds",
+	)
 
 	transactionPathRule := prometheusRuleByAlert(t, groups,
 		"KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane")
 	require.Equal(t,
-		`((max by (namespace, statefulset) (kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)) == 0) and on() (kubebrain_dbaas:replica_expectation_sources:count == 3) and on() (kubebrain_dbaas:pd_replicas:expected >= 3) and on() (kubebrain_dbaas:tikv_replicas:expected >= 3) and on() (count(max by (instance) (up{namespace="tidb-cluster",service="kb-pd-metrics"} == 1)) == on() kubebrain_dbaas:pd_replicas:expected) and on() (count(max by (instance) (up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1)) == on() kubebrain_dbaas:tikv_replicas:expected) and on() (sum(max by (instance) (etcd_server_is_leader{namespace="tidb-cluster",service="kb-pd-metrics"})) == 1) and on() (count(max by (instance, type) (pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"})) == on() (2 * kubebrain_dbaas:pd_replicas:expected)) and on() (max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) == 0) and on() (max(pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) == 0)`,
+		`((sum(kubebrain_dbaas:statefulset_ready_replicas:current{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)) == 0) and on() (kubebrain_dbaas:replica_expectation_sources:count == 3) and on() (kubebrain_dbaas:statefulset_ready_sources:count == 3) and on() (kubebrain_dbaas:pd_replicas:expected >= 3) and on() (kubebrain_dbaas:tikv_replicas:expected >= 3) and on() (count(max by (instance) (up{namespace="tidb-cluster",service="kb-pd-metrics"} == 1)) == on() kubebrain_dbaas:pd_replicas:expected) and on() (count(max by (instance) (up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1)) == on() kubebrain_dbaas:tikv_replicas:expected) and on() (sum(max by (instance) (etcd_server_is_leader{namespace="tidb-cluster",service="kb-pd-metrics"})) == 1) and on() (count(max by (instance, type) (pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"})) == on() (2 * kubebrain_dbaas:pd_replicas:expected)) and on() (max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) == 0) and on() (max(pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) == 0)`,
 		transactionPathRule["expr"])
 	require.Equal(t, "2m", transactionPathRule["for"])
 	require.Equal(t, "critical", transactionPathRule["labels"].(map[string]any)["severity"])
@@ -1964,6 +1968,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Contains(t, description, "complete current PD/TiKV topology")
 	require.Contains(t, description, "exactly one leader")
 	require.Contains(t, description, "complete Region-peer telemetry")
+	require.Contains(t, description, "Fresh desired/Ready StatefulSet telemetry")
 	incompatibleWitness := prometheusRuleByAlert(t, groups, "KubeBrainIncompatibleTransactionWitness")
 	require.Equal(t,
 		`sum(increase(leader_election_initialize_incompatible_witness{namespace="kubebrain-system"}[10m])) > 0`,
@@ -2284,6 +2289,8 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 
 	expected := map[string]string{
 		"kubebrain_dbaas:statefulset_replicas:current":                       `max by (namespace, statefulset) (kube_statefulset_replicas{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"} and (time() - timestamp(kube_statefulset_replicas{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"}) <= 60))`,
+		"kubebrain_dbaas:statefulset_ready_replicas:current":                 `max by (namespace, statefulset) (kube_statefulset_status_replicas_ready{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"} and (time() - timestamp(kube_statefulset_status_replicas_ready{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"}) <= 60))`,
+		"kubebrain_dbaas:statefulset_ready_sources:count":                    `count(kubebrain_dbaas:statefulset_ready_replicas:current)`,
 		"kubebrain_dbaas:replica_expectation_sources:count":                  `count(kubebrain_dbaas:statefulset_replicas:current)`,
 		"kubebrain_dbaas:compute_replicas:expected":                          `sum(kubebrain_dbaas:statefulset_replicas:current) or on() vector(0)`,
 		"kubebrain_dbaas:kubebrain_replicas:expected":                        `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)`,

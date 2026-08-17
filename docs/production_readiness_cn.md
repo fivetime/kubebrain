@@ -312,7 +312,8 @@ Prometheus lookback 把停止抓取的旧 series 暂时伪装成健康。缺失�
 瞬时 `df` 水位不能证明 IOPS/延迟隔离。
 
 `KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 专门识别持续
-2 分钟的反常状态：KubeBrain StatefulSet 为 0 Ready，三个期望来源完整且 PD/TiKV 期望均至少为 3，
+2 分钟的反常状态：desired 与 Ready 两类 StatefulSet KSM 样本均在 60 秒内且三条来源完整，KubeBrain
+StatefulSet 为 0 Ready，PD/TiKV 期望均至少为 3，
 按 instance 去重的 PD/TiKV `up==1` target 分别与当前期望精确相等，PD 恰有一个 leader 且两类
 Region peer gauge 完整/全零，TiKV 也没有报告缺失 Region leader。这正是“TCP/heartbeat/Debug 正常但事务卡死”的运行时分类，不能
 被一般 `KubeBrainReadinessUnavailable` 告警淹没。收到该告警后先执行端到端 etcd
@@ -1669,8 +1670,8 @@ source count 或瞬时账单。去重同时应用于原始 counter 的小时 `in
 合法历史用量，并由每分钟 completeness 的 60 个样本证明整窗持续完整。不能让 completeness 已按实体判定
 健康、实际 usage 却对 HA 重复 series 二次计费，也不能把停止更新的指标继续按当前用量计费。
 部署模板化时必须同步替换实例标签、Pod/PVC 选择器和备份 `BACKUP_INSTANCE`。规则同时从
-`kube_statefulset_replicas` 先生成 `kubebrain_dbaas:statefulset_replicas:current`：仅接受 60 秒内样本并按
-`(namespace,statefulset)` 去重。三条期望来源数、容器期望副本总数、KubeBrain/PD/TiKV 分项期望和活跃
+`kube_statefulset_replicas` 与 `kube_statefulset_status_replicas_ready` 分别生成 desired/Ready current
+recording：仅接受 60 秒内样本并按 `(namespace,statefulset)` 去重。三条期望来源数、Ready 来源数、容器期望副本总数、KubeBrain/PD/TiKV 分项期望和活跃
 存储副本数全部从该统一拓扑记录派生；KSM lookback 旧值不能继续证明动态拓扑完整。PVC info 与
 requested-storage 也先要求 60 秒内样本并按 `(namespace,persistentvolumeclaim)` 发布实体 recording；双向
 `unless` 要求两侧 PVC identity 集合完全相等，不能仅靠相同基数通过。requested-storage 总量只从这条已
