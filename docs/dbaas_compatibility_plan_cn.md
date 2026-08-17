@@ -56445,6 +56445,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   告警只消费新鲜 increase。精确 manifest/server 测试及 production/observability 文档已同步；相关测试
   通过。本项需要下一生产镜像携带 counter 初始化改动。
 
+- A5023 补上此前完全缺失的 shared alarm refresh 生产告警链。服务端已有 `alarm.refresh.err`，但只在
+  TiKV metadata 读取失败时动态创建，production manifest 未消费；副本可持续保留旧 NOSPACE/CORRUPT
+  gauge 快照而没有直接诊断。现每个副本在 alarm refresh goroutine 前初始化权威零值，并从 60 秒内 raw
+  sample 生成 Ready Pod UID 级 current/10 分钟 increase recording；两类来源必须完整，current 必须是
+  `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围。新增 failure 与 metrics-missing
+  两条告警，明确刷新失败后的 gauge 是 last snapshot、不能证明当前共享 alarm 状态。精确 manifest/server
+  测试及 production/observability 文档已同步；相关测试通过。本项需要下一生产镜像携带 counter 初始化改动。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
