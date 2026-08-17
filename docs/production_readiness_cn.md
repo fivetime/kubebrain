@@ -282,8 +282,8 @@ store `1005` peer 同时 pending/down：该 store 本地保留旧 epoch 的 Regi
 
 持续监控使用 PD 原生 `pd_regions_status` gauge。`KubeBrainPDRegionPeerUnhealthy` 按 `type` 分别观察
 `pending-peer-region-count` 与 `down-peer-region-count`，持续 2 分钟非零即 critical，并要求值班人员
-先运行上述只读门禁取得 Region/store/PV 证据。`KubeBrainPDRegionHealthMetricsMissing` 要求三个 PD
-target 各自暴露两条 gauge，共 6 条 series；持续 5 分钟不完整即 warning，避免指标缺失被解释成
+先运行上述只读门禁取得 Region/store/PV 证据。`KubeBrainPDRegionHealthMetricsMissing` 将按
+`(instance,type)` 去重的 gauge 数与当前 PD StatefulSet 期望副本数的两倍精确对账；任一 PD 缺一类或期望链缺失，持续 5 分钟即 warning，避免指标缺失被解释成
 零异常。`KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 的“控制面健康”前提也同时
 要求这两类 PD gauge 为零；否则应由 Region peer 告警分类，不能再仅凭 leader-missing=0 声称健康。
 

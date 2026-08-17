@@ -484,13 +484,13 @@ spec:
             summary: KubeBrain PD reports persistent unhealthy Region peers
             description: "PD has {{ $value }} Regions in {{ $labels.type }}. Run validate-tikv-region-health.sh and inspect the reported Region/store identities before any repair."
         - alert: KubeBrainPDRegionHealthMetricsMissing
-          expr: count(pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) != 6
+          expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:pd_replicas:expected) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or count(max by (instance, type) (pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"})) != on() (2 * kubebrain_dbaas:pd_replicas:expected)
           for: 5m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain PD Region health metrics are incomplete
-            description: "Expected pending/down peer Region gauges from all three PD replicas, but found {{ $value }} of 6 series."
+            description: "Deduplicated pending/down peer Region gauge sources do not exactly equal two series per current PD StatefulSet replica, or the replica expectation chain is absent."
         - alert: KubeBrainPDWALFsyncLatencyHigh
           expr: histogram_quantile(0.99, sum by (instance, le) (rate(etcd_disk_wal_fsync_duration_seconds_bucket{namespace="tidb-cluster",service="kb-pd-metrics"}[5m]))) > 1
           for: 1m

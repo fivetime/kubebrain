@@ -2093,7 +2093,7 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		"KubeBrainPDLeaderUnavailable":          `sum(etcd_server_is_leader{namespace="tidb-cluster",service="kb-pd-metrics"}) != 1`,
 		"KubeBrainTiKVRegionLeaderMissing":      `max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) > 0`,
 		"KubeBrainPDRegionPeerUnhealthy":        `max by (type) (pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) > 0`,
-		"KubeBrainPDRegionHealthMetricsMissing": `count(pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) != 6`,
+		"KubeBrainPDRegionHealthMetricsMissing": `absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:pd_replicas:expected) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or count(max by (instance, type) (pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"})) != on() (2 * kubebrain_dbaas:pd_replicas:expected)`,
 		"KubeBrainPDWALFsyncLatencyHigh":        `histogram_quantile(0.99, sum by (instance, le) (rate(etcd_disk_wal_fsync_duration_seconds_bucket{namespace="tidb-cluster",service="kb-pd-metrics"}[5m]))) > 1`,
 		"KubeBrainTiKVRaftDBWriteLatencyHigh":   `histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_raftdb_duration_seconds_bucket{namespace="tidb-cluster",service="kb-tikv-metrics"}[5m]))) > 1`,
 		"KubeBrainTiKVKVDBWriteLatencyHigh":     `histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_kvdb_duration_seconds_bucket{namespace="tidb-cluster",service="kb-tikv-metrics"}[5m]))) > 1`,
@@ -2167,7 +2167,11 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 	regionMetricsRule := prometheusRuleByAlert(t, groups, "KubeBrainPDRegionHealthMetricsMissing")
 	require.Contains(t,
 		regionMetricsRule["annotations"].(map[string]any)["description"],
-		"6 series",
+		"two series per current PD StatefulSet replica",
+	)
+	require.Contains(t,
+		regionMetricsRule["annotations"].(map[string]any)["description"],
+		"expectation chain is absent",
 	)
 }
 
