@@ -1663,8 +1663,10 @@ working set，以及去重的 KSM memory limit，分别精确覆盖当前动态�
 每条序列固定带 `dbaas_instance="kubebrain"`，按数字 StatefulSet ordinal 聚合本实例的全部
 KubeBrain、PD、TiKV 容器和 PD/TiKV 存储 PVC，不把 restore/repair 等非数字后缀工作负载纳入账单。
 CPU/memory 在 `(namespace,pod,container)`、network 在 `(namespace,pod,interface)` 上先选择重复采集中的
-最大值再聚合；该去重同时应用于瞬时序列与原始 counter 的小时 `increase`，不能让 completeness 已按实体
-判定健康、实际 usage 却对 HA 重复 series 二次计费。
+最大值再聚合；分钟实体 recording 还要求对应原始 sample age 不超过 60 秒，超龄 lookback series 不进入
+source count 或瞬时账单。去重同时应用于原始 counter 的小时 `increase`；小时窗口保留期间已缩容 Pod 的
+合法历史用量，并由每分钟 completeness 的 60 个样本证明整窗持续完整。不能让 completeness 已按实体判定
+健康、实际 usage 却对 HA 重复 series 二次计费，也不能把停止更新的指标继续按当前用量计费。
 部署模板化时必须同步替换实例标签、Pod/PVC 选择器和备份 `BACKUP_INSTANCE`。规则同时从
 `kube_statefulset_replicas` 输出三条期望来源数、容器期望副本总数和活跃存储副本数，另以去重的
 `kube_persistentvolumeclaim_info` 输出当前匹配 PVC 对象数，以

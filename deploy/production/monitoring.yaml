@@ -113,8 +113,24 @@ spec:
           expr: sum(max by (namespace, statefulset) (kube_statefulset_replicas{namespace="tidb-cluster",statefulset="kb-tikv"})) or on() vector(0)
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:cpu_usage_cores:max_by_container
+          expr: max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""}[5m]) and (time() - timestamp(container_cpu_usage_seconds_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:memory_working_set_bytes:max_by_container
+          expr: max by (namespace, pod, container) (container_memory_working_set_bytes{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""} and (time() - timestamp(container_memory_working_set_bytes{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",container=~"kubebrain|pd|tikv",image!=""}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_receive_bytes_per_second:max_by_interface
+          expr: max by (namespace, pod, interface) (rate(container_network_receive_bytes_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m]) and (time() - timestamp(container_network_receive_bytes_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_transmit_bytes_per_second:max_by_interface
+          expr: max by (namespace, pod, interface) (rate(container_network_transmit_bytes_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m]) and (time() - timestamp(container_network_transmit_bytes_total{namespace=~"kubebrain-system|tidb-cluster",pod=~"kubebrain-[0-9]+|kb-(pd|tikv)-[0-9]+",interface="eth0"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:cpu_usage_sources:count
-          expr: count(max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""}[5m]))) + count(max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}[5m])))
+          expr: count(kubebrain_dbaas:cpu_usage_cores:max_by_container)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:cpu_throttled_period_sources:count
@@ -126,15 +142,15 @@ spec:
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:memory_working_set_sources:count
-          expr: count(max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""})) + count(max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}))
+          expr: count(kubebrain_dbaas:memory_working_set_bytes:max_by_container)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_receive_sources:count
-          expr: count(max by (namespace, pod, interface) (rate(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[5m]))) + count(max by (namespace, pod, interface) (rate(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m])))
+          expr: count(kubebrain_dbaas:network_receive_bytes_per_second:max_by_interface)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_transmit_sources:count
-          expr: count(max by (namespace, pod, interface) (rate(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[5m]))) + count(max by (namespace, pod, interface) (rate(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m])))
+          expr: count(kubebrain_dbaas:network_transmit_bytes_per_second:max_by_interface)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_receive_error_sources:count
@@ -210,19 +226,19 @@ spec:
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:cpu_usage_cores:sum
-          expr: (sum(max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""}[5m]))) + sum(max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}[5m])))) and on() (kubebrain_dbaas:metering_data_complete == 1)
+          expr: sum(kubebrain_dbaas:cpu_usage_cores:max_by_container) and on() (kubebrain_dbaas:metering_data_complete == 1)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:memory_working_set_bytes:sum
-          expr: (sum(max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",container="kubebrain",image!=""})) + sum(max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",container=~"pd|tikv",image!=""}))) and on() (kubebrain_dbaas:metering_data_complete == 1)
+          expr: sum(kubebrain_dbaas:memory_working_set_bytes:max_by_container) and on() (kubebrain_dbaas:metering_data_complete == 1)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_receive_bytes_per_second:sum
-          expr: (sum(max by (namespace, pod, interface) (rate(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[5m]))) + sum(max by (namespace, pod, interface) (rate(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m])))) and on() (kubebrain_dbaas:metering_data_complete == 1)
+          expr: sum(kubebrain_dbaas:network_receive_bytes_per_second:max_by_interface) and on() (kubebrain_dbaas:metering_data_complete == 1)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_transmit_bytes_per_second:sum
-          expr: (sum(max by (namespace, pod, interface) (rate(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-9]+",interface="eth0"}[5m]))) + sum(max by (namespace, pod, interface) (rate(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-9]+",interface="eth0"}[5m])))) and on() (kubebrain_dbaas:metering_data_complete == 1)
+          expr: sum(kubebrain_dbaas:network_transmit_bytes_per_second:max_by_interface) and on() (kubebrain_dbaas:metering_data_complete == 1)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_provisioned_bytes:sum
