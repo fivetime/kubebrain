@@ -56329,6 +56329,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   completeness PromQL，告警 annotation/production readiness 已同步；完整 `deploy/production` 测试通过。
   本项不重建数据面镜像。
 
+- A5009 补齐逻辑备份五项 exporter 值域与计费 completeness 的交叉门禁。backupmetrics 始终以十进制整数
+  原子写出 timestamp、artifact bytes、records、leases 和 snapshot revision，但旧监控只验证 family
+  新鲜/唯一；负数、分数、超过 Prometheus 精确整数上限的值仍可进入 artifact/age metering，未来 timestamp
+  也只依赖独立 RPO 告警。现新增五项合并 invalid-value count：所有值必须为 `<=2^53` 精确整数，timestamp
+  与 snapshot revision 必须为正，bytes/records/leases 非负，timestamp 不得领先控制面时钟 5 分钟。
+  backup missing 告警和 `metering_data_complete` 同时要求 mismatch 为零。精确 manifest 门禁固定完整
+  mismatch/alert/completeness PromQL 与值域 annotation，production readiness 已同步；完整
+  `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
