@@ -1676,7 +1676,10 @@ error/drop completeness source count 和
 对象数精确相等（且 PVC 对象不少于活跃存储副本）、kubelet capacity/available source 与活跃存储副本数精确相等，且唯一备份
 artifact/timestamp 源全部存在时，完整性才为 1，8 条计量输入才会产出。扩缩容期间任一新副本指标尚未齐备时
 都 fail closed；缩容后保留的 PVC 在实际删除前仍纳入 requested provisioned storage 聚合和计费，即使卸载后已无 kubelet
-volume stats。`storage_used_bytes` 只聚合当前活跃挂载卷的 capacity-available；不伪造无法观测的卸载卷 used bytes。KSM 期望来源缺失也不能用零实际 source 伪造完整。控制面必须把
+volume stats。kubelet capacity/available 来源先按 `(namespace,persistentvolumeclaim)` 去重；
+`storage_used_bytes` 对每个活跃挂载卷分别选择最大 capacity/available 后聚合，避免重复 scrape 造成过计费，
+且不伪造无法观测的卸载卷 used bytes。`KubeBrainStorageVolumeLow` 则使用每 PVC 最小 available 与最大
+capacity 的保守比率，任一重复样本显示低水位都不能被另一份较宽松样本掩盖。KSM 期望来源缺失也不能用零实际 source 伪造完整。控制面必须把
 完整性不为 1 或计量序列缺失的区间标为不可计费并 fail closed，禁止按零用量结算。
 `KubeBrainMeteringDataIncomplete` 和对象请求的 completeness 告警都将 recording series 本身缺失显式
 折叠为 0；PrometheusRule 未加载、求值失败或记录序列丢失不能因空向量而让 critical 告警静默。
