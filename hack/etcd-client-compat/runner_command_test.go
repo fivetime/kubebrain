@@ -914,6 +914,10 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsFixedHashKV(t *testing
 	require.Contains(t, script, `KUBEBRAIN_HASHKV_COMBINED_FAULT_COMMAND="$command"`)
 	require.Contains(t, script, `TestFixedRevisionHashKVSurvivesCombinedBackendFault`)
 	require.NotContains(t, script, "eval ")
+	testSource, err := os.ReadFile("maintenance_hashkv_combined_fault_test.go")
+	require.NoError(t, err)
+	require.Contains(t, string(testSource), `clientv3.WithSerializable()`)
+	require.Contains(t, string(testSource), `serializable Range must use the protected member checkpoint`)
 }
 
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {

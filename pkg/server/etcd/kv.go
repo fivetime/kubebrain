@@ -41,6 +41,11 @@ import (
 
 const (
 	unaryRpcTimeout = 10 * time.Second
+	// A fresh leader normally serves the newest locally observed serializable
+	// state. Keep that behavior, but do not let a just-lost PD quorum consume the
+	// whole unary deadline before leadership freshness expires: a protected
+	// checkpoint is already the etcd-equivalent local applied backend fallback.
+	serializableLiveReadBudget = 750 * time.Millisecond
 
 	compactRevKey          = "compact_rev_key"
 	defaultMaxTxnOps       = 128
@@ -57,6 +62,27 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (re
 // final doSerialize auth-revision fence. RangeStream uses it for delegated
 // shapes so their Send remains inside the same serialized boundary as etcd.
 func (s *RPCServer) rangeWithAfterRead(
+	ctx context.Context,
+	r *etcdserverpb.RangeRequest,
+	afterRead func(*etcdserverpb.RangeResponse) error,
+) (response *etcdserverpb.RangeResponse, retErr error) {
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if afterRead == nil && r != nil && r.Serializable && r.Revision <= 0 && leadingFresh {
+		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+			liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
+			response, err := s.rangeWithAfterReadOnce(liveCtx, r, nil)
+			cancel()
+			if err == nil || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
+				return response, err
+			}
+			s.metricCli.EmitCounter("read.serializable.checkpoint_fallback", 1)
+			return s.rangeWithAfterReadOnce(backend.WithSerializableCheckpoint(ctx, checkpoint), r, nil)
+		}
+	}
+	return s.rangeWithAfterReadOnce(ctx, r, afterRead)
+}
+
+func (s *RPCServer) rangeWithAfterReadOnce(
 	ctx context.Context,
 	r *etcdserverpb.RangeRequest,
 	afterRead func(*etcdserverpb.RangeResponse) error,
@@ -214,6 +240,11 @@ func (s *RPCServer) rangeWithAfterRead(
 		return nil, authErr
 	}
 	return response, err
+}
+
+func isSerializableLiveReadFallbackError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, storage.ErrUnavailable) ||
+		status.Code(err) == codes.DeadlineExceeded || status.Code(err) == codes.Unavailable
 }
 
 // RangeStream implements the etcd 3.7 KV.RangeStream server-streaming RPC: it
@@ -651,8 +682,27 @@ func isFromKeyRangeEnd(rangeEnd []byte) bool {
 	return len(rangeEnd) == 1 && rangeEnd[0] == 0
 }
 
-func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (response *etcdserverpb.TxnResponse, retErr error) {
+func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
 	emitEtcdMVCCTxnCounter(s.metricCli, 1)
+	if txn != nil && txnIsReadonly(txn) && txnIsSerializable(txn) {
+		_, leadingFresh := s.peers.EpochAndLeadingFresh()
+		if leadingFresh {
+			if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+				liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
+				response, err := s.txnOnce(liveCtx, txn)
+				cancel()
+				if err == nil || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
+					return response, err
+				}
+				s.metricCli.EmitCounter("read.serializable_txn.checkpoint_fallback", 1)
+				return s.txnOnce(backend.WithSerializableCheckpoint(ctx, checkpoint), txn)
+			}
+		}
+	}
+	return s.txnOnce(ctx, txn)
+}
+
+func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (response *etcdserverpb.TxnResponse, retErr error) {
 	startTime := time.Now()
 
 	containsPut := txnContainsPut(txn)
@@ -705,12 +755,16 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 	}
 	checkpointTxn := false
 	if readOnly && txnIsSerializable(txn) {
-		_, leadingFresh := s.peers.EpochAndLeadingFresh()
-		if !s.peers.IsLeader() || !leadingFresh {
-			if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
-				ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
-				checkpointTxn = true
-				s.metricCli.EmitCounter("read.serializable_txn.checkpoint", 1)
+		if _, attached := backend.SerializableCheckpointFromContext(ctx); attached {
+			checkpointTxn = true
+		} else {
+			_, leadingFresh := s.peers.EpochAndLeadingFresh()
+			if !s.peers.IsLeader() || !leadingFresh {
+				if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+					ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
+					checkpointTxn = true
+					s.metricCli.EmitCounter("read.serializable_txn.checkpoint", 1)
+				}
 			}
 		}
 	}

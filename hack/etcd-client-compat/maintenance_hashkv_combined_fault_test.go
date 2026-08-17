@@ -22,8 +22,9 @@ func TestFixedRevisionHashKVSurvivesPDQuorumFault(t *testing.T) {
 }
 
 // TestFixedRevisionHashKVSurvivesCombinedBackendFault verifies that a warmed,
-// immutable checkpoint can also route around one blackholed TiKV replica while
-// PD has no quorum to refresh Region metadata.
+// immutable checkpoint can route both Maintenance.HashKV and the serializable
+// Range it exists to serve around one blackholed TiKV replica while PD has no
+// quorum to refresh Region metadata.
 func TestFixedRevisionHashKVSurvivesCombinedBackendFault(t *testing.T) {
 	runFixedRevisionHashKVFault(t, "KUBEBRAIN_HASHKV_COMBINED_FAULT_COMMAND", "combined backend fault")
 }
@@ -68,6 +69,17 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	put, err := client.Put(ctx, prefix+"baseline", "value")
 	require.NoError(t, err)
 	revision := put.Header.Revision
+	rangePrefix := prefix + "range/"
+	ops := make([]clientv3.Op, 0, 64)
+	for index := 0; index < cap(ops); index++ {
+		key := fmt.Sprintf("%s%03d", rangePrefix, index)
+		value := fmt.Sprintf("checkpoint-value-%03d", index)
+		ops = append(ops, clientv3.OpPut(key, value))
+	}
+	seeded, err := client.Txn(ctx).Then(ops...).Commit()
+	require.NoError(t, err)
+	require.True(t, seeded.Succeeded)
+	revision = seeded.Header.Revision
 	// TiKV's store-wide safe timestamp intentionally trails the latest TSO. Let
 	// the committed revision enter every Store's common safe-time window before
 	// testing the contract that applies only to a covered historical revision.
@@ -79,6 +91,9 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	baseline, err := client.HashKV(ctx, endpoint, revision)
 	require.NoError(t, err)
 	require.Equal(t, revision, baseline.HashRevision)
+	baselineRange, err := client.Get(ctx, rangePrefix, clientv3.WithPrefix(), clientv3.WithSerializable())
+	require.NoError(t, err)
+	require.Len(t, baselineRange.Kvs, len(ops))
 
 	type commandResult struct {
 		output []byte
@@ -100,6 +115,18 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	callCtx, callCancel := context.WithTimeout(ctx, hashCallTimeout)
 	duringFault, hashErr := client.HashKV(callCtx, endpoint, revision)
 	callCancel()
+	rangeCtx, rangeCancel := context.WithTimeout(ctx, hashCallTimeout)
+	duringRange, rangeErr := client.Get(
+		rangeCtx, rangePrefix, clientv3.WithPrefix(), clientv3.WithSerializable(),
+	)
+	rangeCancel()
+	txnCtx, txnCancel := context.WithTimeout(ctx, hashCallTimeout)
+	duringTxn, txnErr := client.Txn(txnCtx).
+		If(clientv3.Compare(clientv3.Value(rangePrefix+"000"), "=", "checkpoint-value-000")).
+		Then(clientv3.OpGet(rangePrefix+"001", clientv3.WithSerializable())).
+		Else(clientv3.OpGet(rangePrefix+"missing", clientv3.WithSerializable())).
+		Commit()
+	txnCancel()
 	var result commandResult
 	endedBeforeHashValidation := false
 	select {
@@ -123,6 +150,21 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	require.Equal(t, baseline.Hash, duringFault.Hash)
 	require.Equal(t, baseline.HashRevision, duringFault.HashRevision)
 	require.Equal(t, baseline.CompactRevision, duringFault.CompactRevision)
+	require.NoError(t, rangeErr, "serializable Range must use the protected member checkpoint")
+	require.NotNil(t, duringRange)
+	require.Equal(t, baselineRange.Kvs, duringRange.Kvs)
+	require.Equal(t, baselineRange.Count, duringRange.Count)
+	require.GreaterOrEqual(t, duringRange.Header.Revision, revision)
+	require.NoError(t, txnErr, "serializable read-only Txn must use the protected member checkpoint")
+	require.NotNil(t, duringTxn)
+	require.True(t, duringTxn.Succeeded)
+	require.Len(t, duringTxn.Responses, 1)
+	txnRange := duringTxn.Responses[0].GetResponseRange()
+	require.NotNil(t, txnRange)
+	require.Len(t, txnRange.Kvs, 1)
+	require.Equal(t, rangePrefix+"001", string(txnRange.Kvs[0].Key))
+	require.Equal(t, "checkpoint-value-001", string(txnRange.Kvs[0].Value))
+	require.GreaterOrEqual(t, duringTxn.Header.Revision, revision)
 	require.Eventually(t, func() bool {
 		callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer callCancel()

@@ -95,6 +95,7 @@ type checkpointRangeBackendShim struct {
 	BackendShim
 	checkpoint backend.SerializableCheckpoint
 	used       bool
+	liveCalls  int
 }
 
 type checkpointCountBackendShim struct {
@@ -139,6 +140,7 @@ func (b *checkpointRangeBackendShim) InternalRange(_ context.Context, prefix []b
 func (b *checkpointRangeBackendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 	timestamp, ok := storage.SnapshotTimestampFromContext(ctx)
 	if !ok || timestamp != b.checkpoint.Timestamp {
+		b.liveCalls++
 		return nil, storage.ErrUnavailable
 	}
 	b.used = true
@@ -819,6 +821,66 @@ func TestFollowerSerializableLatestRangeUsesProtectedCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(checkpoint.Revision), empty.Header.Revision)
 	require.Empty(t, empty.Kvs)
+}
+
+func TestFreshLeaderSerializableLatestRangeFallsBackToProtectedCheckpoint(t *testing.T) {
+	base, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 27, Timestamp: 100, CompactRevision: 7, ValidUntil: time.Now().Add(time.Minute),
+	}
+	shim := &checkpointRangeBackendShim{BackendShim: base.backend, checkpoint: checkpoint}
+	base.backend = shim
+	base.tokens.snapshots = newAuthSnapshotCache(shim)
+	base.peers = testPeerService{isLeader: true}
+
+	response, err := base.Range(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("/checkpoint"), Serializable: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, shim.liveCalls)
+	require.True(t, shim.used)
+	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+	require.Equal(t, []byte("checkpoint"), response.Kvs[0].Value)
+}
+
+func TestFreshLeaderSerializableReadonlyTxnFallsBackToProtectedCheckpoint(t *testing.T) {
+	base, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 28, Timestamp: 102, CompactRevision: 7, ValidUntil: time.Now().Add(time.Minute),
+	}
+	shim := &checkpointRangeBackendShim{BackendShim: base.backend, checkpoint: checkpoint}
+	base.backend = shim
+	base.tokens.snapshots = newAuthSnapshotCache(shim)
+	base.peers = testPeerService{isLeader: true}
+
+	response, err := base.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: []byte("/compare"), Target: etcdserverpb.Compare_VALUE, Result: etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("checkpoint")},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("/success"), Serializable: true},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("/failure"), Serializable: true},
+		}}},
+	})
+	require.NoError(t, err)
+	require.Positive(t, shim.liveCalls)
+	require.True(t, shim.used)
+	require.True(t, response.Succeeded)
+	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+	require.Equal(t, []byte("checkpoint"), response.Responses[0].GetResponseRange().Kvs[0].Value)
+}
+
+func TestSerializableLiveReadFallbackErrors(t *testing.T) {
+	require.True(t, isSerializableLiveReadFallbackError(context.DeadlineExceeded))
+	require.True(t, isSerializableLiveReadFallbackError(storage.ErrUnavailable))
+	require.True(t, isSerializableLiveReadFallbackError(status.Error(codes.Unavailable, "backend unavailable")))
+	require.False(t, isSerializableLiveReadFallbackError(status.Error(codes.DataLoss, "corrupt metadata")))
+	require.False(t, isSerializableLiveReadFallbackError(errors.New("validation failed")))
 }
 
 func TestFollowerSerializableLatestCountUsesProtectedCheckpointSnapshot(t *testing.T) {

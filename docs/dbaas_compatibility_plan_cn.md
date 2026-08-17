@@ -55606,6 +55606,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a4965-checkpoint-grace` 在换槽后执行 PD quorum + `kb-tikv-0` 隔离，固定 revision
   HashKV **134.14 秒 GREEN**。终态所有 Pod Ready，iptables 与 13379 port-forward 均已清理。
 
+- A4950 首次把 protected checkpoint 的直接使用者 Range/Txn 纳入 A4943 组合门禁，并发现
+  HashKV GREEN 未覆盖的真实可用性窗口。RED 镜像 `kubebrain:a4965-checkpoint-grace` 中，同一
+  checkpoint 的固定 revision HashKV 成功，但刚失去 PD quorum 时 serving leader 的本地租约仍在
+  freshness deadline 内；latest serializable Range 因而未附加 checkpoint，误走 live TSO，64 键
+  prefix LIST 在十秒后 `DeadlineExceeded`，完整门禁 **144.01 秒 RED**。这不是 TiKV protected route
+  问题，而是 backend-unavailable 早于 leadership-freshness 失效的状态机间隙。
+
+  生产 Range 和纯读 serializable Txn 现在在 fresh leader 上先以 750ms budget 尝试 live snapshot，
+  保留健康态最新可见性；仅 `DeadlineExceeded`/`Unavailable` 才在原十秒 caller context 内退到请求
+  入口已经取得的 GC-protected checkpoint。DataLoss、请求校验和其他确定性错误不 fallback，避免用
+  陈旧快照掩盖损坏或客户端错误；follower/stale-leader 原有直接 checkpoint 路径不变，RangeStream
+  也不在可能已发送 frame 后重试。单测覆盖 Range/Txn live 首试、checkpoint fallback、错误分类与
+  既有 stale/follower 路径，并通过相关 Range/Txn 全包 45.79 秒、race 与 vet。
+
+  组合门禁在同一 fault generation 内写入 64 个键，等待 safe-ts 覆盖后同时验证固定 revision
+  HashKV、完整 serializable prefix Range（逐项 key/value/MVCC metadata）以及 compare+branch 的
+  read-only serializable Txn；镜像 `kubebrain:a4966-serializable-fallback` 在 PD quorum 丢失并隔离
+  `kb-tikv-0` 时 **129.75 秒 GREEN**。恢复后 PD/TiKV/KubeBrain 全部 Ready，故障规则与 13379
+  port-forward 已清理。该保证仍限于已发布 checkpoint；进程冷启动尚未建立 checkpoint 时保持
+  fail closed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
