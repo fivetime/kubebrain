@@ -56489,6 +56489,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   告警只消费新鲜 recording，新的 critical metrics-missing 拒绝缺失、陈旧或非法 telemetry。精确 manifest/
   server 测试与 production/observability 文档已同步；相关测试通过。本项需要下一生产镜像。
 
+- A5028 闭合 watch collector stall/skip 的生产诊断链。旧 `watch.collector.stalled` 与
+  `watch.collector.skipped_revision` 只在 writer 死于 revision deal↔event notify 窗口后动态创建，production
+  无 recording 或告警，尽管 observability 文档已把它们定义为关键 watch-cache 冻结信号。现每个 backend
+  创建时初始化两类权威零值，并从 60 秒内样本生成 Ready Pod UID 级 current/10 分钟 increase recording；
+  四类来源必须完整覆盖当前 Ready UID，current 必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但
+  必须有限且同范围。stall 立即 warning，超过有界 publication deadline 后 skip abandoned revision 立即
+  critical；新的 metrics-missing 拒绝用缺失、陈旧或非法 telemetry 证明 revision continuity/watch delivery
+  健康。精确 manifest/backend 测试与 production/observability 文档已同步；相关测试通过。本项需要下一
+  生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
