@@ -56135,6 +56135,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   完整 alert PromQL 与 zero-fault annotation，production readiness 已同步；完整 `deploy/production` 测试通过。
   本项不重建数据面镜像。
 
+- A4987 对称补齐 CPU pressure 指标完整性。旧 `KubeBrainResourceMetricsMissing` 只验证 memory working
+  set 和 memory limit；`KubeBrainDataPlaneCPUThrottlingHigh` 的 throttled/total periods 任一 family 缺失时，
+  比率表达式无结果并静默。现新增两个 CFS period source-count recording rule，同时把 CPU usage 与 memory
+  working-set 来源按 `(namespace,pod,container)` 去除重复采集；resource completeness 要求 CPU usage、
+  throttled periods、total periods、memory working set 与 memory limit 五项分别精确覆盖当前 KubeBrain/PD/TiKV
+  动态副本总数，任一 recording series 缺失也 fail closed。精确 manifest 门禁固定 recording/alert PromQL
+  与 zero-pressure annotation，production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建
+  数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
