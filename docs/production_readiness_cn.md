@@ -4212,6 +4212,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   current 必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围；lost counter 先按
   动态 `addr` 去重再按 Pod 求和。缺失、陈旧或非法 telemetry 不能隐藏 leader 抖动或持久 metadata
   不兼容/损坏导致的拒绝领导。
+- acquired leader 在发布 SERVING 前依次重试 compact resume、quota init、lease reload、event-log watermark
+  和 checkpoint protection。新增固定 `stage` counter，每个副本 campaign 前初始化五条权威零值；事件
+  告警故意不按 Ready UID 过滤，因为阻塞中的 leader 会主动 NotReady。completeness 要求 60 秒新鲜的
+  current/increase series 数分别等于 `5 × KubeBrain StatefulSet desired replicas`，并验证 current 为
+  `[0,2^53]` 内精确整数、外推 increase 有限且同范围。不得绕过重试或向未完整初始化的 term 路由写入。
 - watch revision lag 过高。
 - 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。
 - 任一当前 Ready Pod 的 `count_index_overflowed` 超过 60 秒未刷新，或任一新鲜 overflow gauge 为 1；

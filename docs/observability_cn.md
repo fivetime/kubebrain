@@ -80,6 +80,10 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 ## 推荐告警(方向,阈值按环境调)
 
 - **leader 频繁切换 / 抖动**:`rate(etcd_server_healthchecks_total{type="readyz",name="linearizable_read",status="error"}[5m]) > 0` 持续出现，或 `write.fence.reject` 持续增长，或 `/election` leader 地址频繁变。正常换主不应导致 Pod 重启；重启率 > 0 是独立的进程稳定性告警。每个副本在 campaign 前初始化 leadership-lost、通用 initialization-error、incompatible-witness、invalid-alarm-metadata 四类 counter；production 从 60 秒内样本生成 Ready Pod UID 级 current/10 分钟 increase recording，要求八类来源完整且值合法。lost counter 先按动态前任 leader `addr` 去重再按 Pod 求和，不能吞掉不同地址的多次丢主。通用 initialization alert 覆盖 lease/event/count/checkpoint 等未由两个 durable-metadata 子类单独分类的失败。缺失、陈旧或非法 telemetry 不得掩盖抖动或拒绝领导。→ 见 [[failover_tuning_cn.md]](租约调优)。
+  acquired leader 在 SERVING 前的 compact resume、quota init、lease reload、event-log watermark、checkpoint
+  protection 五阶段另使用固定 `stage` counter。所有副本 campaign 前各初始化五条零值；failure 告警不关联
+  Ready UID，因为阻塞中的 leader 会主动 NotReady。completeness 将 60 秒新鲜 current/increase 总数与
+  `5 × StatefulSet desired replicas` 对账并验证值域，缺失/陈旧/非法 telemetry 不能隐藏 pre-serving 重试。
 - **共享存储不可读**:`etcd_server_healthcheck{type="livez",name="serializable_read"} == 0`，或对应 error counter 持续增长。它不依赖 KubeBrain leader，可直接指向 TiKV/PD、网络或租户 keyspace 读路径。
 - **写延迟过高**:`write.latency` p99 持续 > 你的 lease-sensitive 控制器续期窗口的一半(默认 controller-manager ~15s → 阈值 ~7s;满载 TiKV 单 region 热点会推高)。
 - **PD/TiKV 持久化延迟越界**：生产规则分别对

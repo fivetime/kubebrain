@@ -724,6 +724,26 @@ func TestLeaderElectionMetricsInitializedBeforeCampaign(t *testing.T) {
 	}, recorder.events)
 }
 
+func TestServingInitializationMetricsInitializedBeforeCampaign(t *testing.T) {
+	recorder := &healthMetricRecorder{}
+	s := &server{metricCli: recorder}
+	s.initServingInitializationMetrics()
+	s.emitServingInitializationError("lease")
+
+	want := make([]healthMetricEvent, 0, len(servingInitializationStages))
+	for _, stage := range servingInitializationStages {
+		want = append(want, healthMetricEvent{
+			kind: "counter", name: "leader.serving_initialization.err", value: 0,
+			tags: []metrics.T{metrics.Tag("stage", stage)},
+		})
+	}
+	want = append(want, healthMetricEvent{
+		kind: "counter", name: "leader.serving_initialization.err", value: 1,
+		tags: []metrics.T{metrics.Tag("stage", "lease")},
+	})
+	require.Equal(t, want, recorder.events)
+}
+
 func TestCountIndexRebuildErrorMetricInitializedBeforeLeadership(t *testing.T) {
 	recorder := &healthMetricRecorder{}
 	s := &server{metricCli: recorder}

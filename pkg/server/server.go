@@ -262,6 +262,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.peers = peerService
 	s.initLegacyHealthMetrics()
 	s.initLeaderElectionMetrics()
+	s.initServingInitializationMetrics()
 	s.initAlarmMetrics()
 	s.initQuotaMetrics()
 	s.initCountIndexMetrics()
@@ -521,6 +522,7 @@ func (s *server) onStartedLeading(ctx context.Context) {
 			break
 		}
 		s.metricCli.EmitCounter("compact.resume.err", 1)
+		s.emitServingInitializationError("compact")
 		klog.ErrorS(err, "resume physical compaction on leadership acquisition failed; retrying before serving")
 		select {
 		case <-ctx.Done():
@@ -534,6 +536,7 @@ func (s *server) onStartedLeading(ctx context.Context) {
 			break
 		}
 		s.metricCli.EmitCounter("quota.initialize.err", 1)
+		s.emitServingInitializationError("quota")
 		klog.ErrorS(err, "quota usage initialization failed; retrying before serving")
 		select {
 		case <-ctx.Done():
@@ -553,6 +556,7 @@ func (s *server) onStartedLeading(ctx context.Context) {
 				break
 			}
 			s.metricCli.EmitCounter("lease.reload.err", 1)
+			s.emitServingInitializationError("lease")
 			klog.ErrorS(err, "reload leases on leadership acquisition failed; retrying before serving")
 			select {
 			case <-ctx.Done():
@@ -575,6 +579,7 @@ func (s *server) onStartedLeading(ctx context.Context) {
 			break
 		}
 		s.metricCli.EmitCounter("event_log.ensure.err", 1)
+		s.emitServingInitializationError("event_log")
 		klog.ErrorS(err, "event log start initialization failed; retrying before serving")
 		select {
 		case <-ctx.Done():
@@ -588,6 +593,7 @@ func (s *server) onStartedLeading(ctx context.Context) {
 			break
 		}
 		s.metricCli.EmitCounter("serializable.checkpoint.initialize_err", 1)
+		s.emitServingInitializationError("checkpoint")
 		klog.ErrorS(err, "initialize serializable checkpoint failed; retrying before serving")
 		select {
 		case <-ctx.Done():
@@ -955,6 +961,24 @@ func (s *server) initLeaderElectionMetrics() {
 	_ = s.metricCli.EmitCounter("leader.election.initialize.err", 0)
 	_ = s.metricCli.EmitCounter("leader.election.initialize.incompatible_witness", 0)
 	_ = s.metricCli.EmitCounter("leader.election.initialize.invalid_alarm_metadata", 0)
+}
+
+var servingInitializationStages = []string{"compact", "quota", "lease", "event_log", "checkpoint"}
+
+func (s *server) initServingInitializationMetrics() {
+	if s.metricCli == nil {
+		return
+	}
+	for _, stage := range servingInitializationStages {
+		_ = s.metricCli.EmitCounter("leader.serving_initialization.err", 0, metrics.Tag("stage", stage))
+	}
+}
+
+func (s *server) emitServingInitializationError(stage string) {
+	if s.metricCli == nil {
+		return
+	}
+	_ = s.metricCli.EmitCounter("leader.serving_initialization.err", 1, metrics.Tag("stage", stage))
 }
 
 func (s *server) initCountIndexMetrics() {

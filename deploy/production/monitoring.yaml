@@ -205,6 +205,18 @@ spec:
           expr: count(((kubebrain_dbaas:leader_initialize_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:leader_initialize_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:leader_initialize_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:leader_initialize_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:leader_initialize_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:leader_initialize_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:leader_serving_initialization_err:current_by_pod_stage
+          expr: max by (namespace, pod, uid, stage) (leader_serving_initialization_err{namespace="kubebrain-system",stage=~"compact|quota|lease|event_log|checkpoint"} and (time() - timestamp(leader_serving_initialization_err{namespace="kubebrain-system",stage=~"compact|quota|lease|event_log|checkpoint"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:leader_serving_initialization_err:increase_10m_by_pod_stage
+          expr: max by (namespace, pod, uid, stage) (increase(leader_serving_initialization_err{namespace="kubebrain-system",stage=~"compact|quota|lease|event_log|checkpoint"}[10m]) and (time() - timestamp(leader_serving_initialization_err{namespace="kubebrain-system",stage=~"compact|quota|lease|event_log|checkpoint"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:leader_serving_initialization_err_invalid_values:count
+          expr: count((kubebrain_dbaas:leader_serving_initialization_err:current_by_pod_stage < 0) or (kubebrain_dbaas:leader_serving_initialization_err:current_by_pod_stage > 9007199254740992) or (kubebrain_dbaas:leader_serving_initialization_err:current_by_pod_stage != floor(kubebrain_dbaas:leader_serving_initialization_err:current_by_pod_stage))) + count(kubebrain_dbaas:leader_serving_initialization_err:increase_10m_by_pod_stage != clamp(kubebrain_dbaas:leader_serving_initialization_err:increase_10m_by_pod_stage, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check
           expr: max by (namespace, pod, uid, check) (health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} and (time() - timestamp(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}) <= 60))
           labels:
@@ -697,6 +709,22 @@ spec:
           annotations:
             summary: KubeBrain failed to initialize leadership state
             description: "At least one current Ready replica reported a fresh failure to initialize lease, event, count-index, checkpoint, witness, or alarm state before becoming leader. The specialized incompatible-witness and invalid-alarm alerts classify durable format/corruption failures; inspect the generic initialization error and keep writes fenced until a later campaign initializes all state successfully."
+        - alert: KubeBrainLeaderServingInitializationFailures
+          expr: sum by (stage) (kubebrain_dbaas:leader_serving_initialization_err:increase_10m_by_pod_stage) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain leader is blocked before serving
+            description: "A current KubeBrain replica reported a fresh {{ $labels.stage }} pre-serving initialization failure. The acquired leader is intentionally NotReady while it retries compact resume, quota initialization, lease reload, event-log watermark establishment, and checkpoint protection in order, and does not advertise SERVING until every stage succeeds. This alert deliberately does not filter on Ready Pod identity. Inspect the stage-specific legacy counter and backend error; do not bypass the retry or route writes to the incomplete term."
+        - alert: KubeBrainLeaderServingInitializationMetricsMissing
+          expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:kubebrain_replicas:expected) == 1 or absent(kubebrain_dbaas:leader_serving_initialization_err_invalid_values:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or count(kubebrain_dbaas:leader_serving_initialization_err:current_by_pod_stage) != on() (5 * kubebrain_dbaas:kubebrain_replicas:expected) or count(kubebrain_dbaas:leader_serving_initialization_err:increase_10m_by_pod_stage) != on() (5 * kubebrain_dbaas:kubebrain_replicas:expected) or kubebrain_dbaas:leader_serving_initialization_err_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain pre-serving initialization telemetry is incomplete
+            description: "The fresh compact/quota/lease/event_log/checkpoint current or 10-minute-increase series do not total exactly five per current KubeBrain StatefulSet replica, the topology/invalid-value recording is absent, or a value is invalid. Every replica initializes all five stage counters to authoritative zero before campaigning. These inputs deliberately include a leader that is NotReady while blocked before SERVING; samples older than 60 seconds are excluded. Current counters must be non-negative exact integers no greater than 2^53; extrapolated increases may be fractional but must be finite and within [0,2^53]. Missing, stale, or invalid telemetry must not hide a leader blocked before SERVING."
         - alert: KubeBrainInvalidCorruptAlarmMetadata
           expr: sum(kubebrain_dbaas:leader_invalid_alarm_metadata:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m
