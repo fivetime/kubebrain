@@ -56499,6 +56499,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   健康。精确 manifest/backend 测试与 production/observability 文档已同步；相关测试通过。本项需要下一
   生产镜像。
 
+- A5029 闭合 durable revision watermark 持久化失败的生产诊断链。旧
+  `revision.durable.persist_err` 只在 TiKV/CAS/metadata 错误后动态创建且 production 未消费；后台失败会
+  让 serializable reader 暂留旧安全快照，collector 的强制持久化失败则反复重试并阻塞 revision 连续推进，
+  但缺失 family 会被静默理解为零失败。现每个 backend 创建时初始化权威零值，并从 60 秒内样本生成
+  Ready Pod UID 级 current/10 分钟 increase recording；两类来源必须完整覆盖当前 Ready UID，current
+  必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围。任一增量立即 critical，新的
+  metrics-missing 拒绝用缺失、陈旧或非法 telemetry 证明 watermark、离线安全快照或 watch continuity
+  健康。精确 manifest/backend 测试与 production/observability 文档已同步；相关测试通过。本项需要下一
+  生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
