@@ -93,6 +93,10 @@ spec:
           expr: count(kubebrain_dbaas:statefulset_ready_replicas:current)
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:ready_pods:current
+          expr: max by (namespace, pod, uid) ((kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1) and (time() - timestamp(kube_pod_status_ready{namespace="kubebrain-system",condition="true"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
           expr: count(kubebrain_dbaas:statefulset_replicas:current)
           labels:
@@ -514,13 +518,13 @@ spec:
             summary: KubeBrain count index rebuild failed
             description: "A leader count-index rebuild failed in the last 10 minutes; CountOnly requests may be falling back to TiKV scans."
         - alert: KubeBrainSerializableCheckpointUnavailable
-          expr: count(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or min(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) < 1 or min(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) <= 0 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) < 60 or max((time() - timestamp(serializable_checkpoint_available{namespace="kubebrain-system"})) and on(namespace, pod, uid) (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 60 or max((time() - timestamp(serializable_checkpoint_revision{namespace="kubebrain-system"})) and on(namespace, pod, uid) (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 60 or max((time() - timestamp(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"})) and on(namespace, pod, uid) (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 60
+          expr: count(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or min(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) < 1 or min(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) <= 0 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) < 60 or max((time() - timestamp(serializable_checkpoint_available{namespace="kubebrain-system"})) and on(namespace, pod, uid) (kubebrain_dbaas:ready_pods:current)) > 60 or max((time() - timestamp(serializable_checkpoint_revision{namespace="kubebrain-system"})) and on(namespace, pod, uid) (kubebrain_dbaas:ready_pods:current)) > 60 or max((time() - timestamp(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"})) and on(namespace, pod, uid) (kubebrain_dbaas:ready_pods:current)) > 60
           for: 30s
           labels:
             severity: warning
           annotations:
             summary: KubeBrain serializable checkpoint is unavailable
-            description: "At least one current Ready KubeBrain replica lacks a fresh positive-revision GC-protected checkpoint, has less than 60 seconds left in its local safety window, or stopped publishing any of the available, revision, and remaining-seconds checkpoint gauges for 60 seconds, so bounded PD-isolated serializable Range, read-only Txn, and RangeStream service is unavailable or at risk. Expected telemetry follows the Ready Pod UID count during scaling. Check scrape health, PD service GC safepoints, Region/store directory warmup, and checkpoint refresh errors."
+            description: "At least one current Ready KubeBrain replica lacks a fresh positive-revision GC-protected checkpoint, has less than 60 seconds left in its local safety window, or stopped publishing any of the available, revision, and remaining-seconds checkpoint gauges for 60 seconds, so bounded PD-isolated serializable Range, read-only Txn, and RangeStream service is unavailable or at risk. Expected telemetry follows Pod UID identities whose KSM Ready samples are no older than 60 seconds during scaling; stale replaced Pod identities are excluded. Check scrape health, PD service GC safepoints, Region/store directory warmup, and checkpoint refresh errors."
         - alert: KubeBrainSerializableCheckpointRefreshFailures
           expr: sum(increase(serializable_checkpoint_refresh_err{namespace="kubebrain-system"}[10m])) > 0
           for: 0m
@@ -530,23 +534,23 @@ spec:
             summary: KubeBrain serializable checkpoint refresh failed
             description: "KubeBrain failed to create, load, protect, or warm a serializable checkpoint. Existing snapshots remain usable only until serializable_checkpoint_remaining_seconds reaches zero."
         - alert: KubeBrainHealthCheckpointFallback
-          expr: sum by (check) (increase(health_checkpoint_fallback{namespace="kubebrain-system"}[10m])) > 0
+          expr: sum by (check) (increase(health_checkpoint_fallback{namespace="kubebrain-system"}[10m]) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain health probe used a protected checkpoint
-            description: "KubeBrain {{ $labels.check }} health checks entered checkpoint fallback {{ $value }} times in 10 minutes. A successful liveness response is bounded-stale degraded service, not proof that PD/TiKV recovered. Inspect PD/TiKV quorum, serializable checkpoint lifetime, and refresh errors."
+            description: "A current Ready KubeBrain Pod UID whose KSM Ready sample is no older than 60 seconds entered {{ $labels.check }} checkpoint fallback {{ $value }} times in 10 minutes. Stale counters from replaced Pods are excluded. A successful liveness response is bounded-stale degraded service, not proof that PD/TiKV recovered. Inspect PD/TiKV quorum, serializable checkpoint lifetime, and refresh errors."
         - alert: KubeBrainHealthCheckpointFallbackMetricsMissing
-          expr: count(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != 3 * count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))
+          expr: count(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != 3 * count(kubebrain_dbaas:ready_pods:current)
           for: 5m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain health fallback metrics are incomplete
-            description: "At least one Ready KubeBrain replica does not expose exactly three initialized health_checkpoint_fallback series. The expected series count follows the current Ready replica count, including during scaling. Check for mixed binary versions, missing pod UID relabeling, stale scrape targets, or an incomplete metrics registry before trusting the fallback alert."
+            description: "At least one Ready KubeBrain replica does not expose exactly three initialized health_checkpoint_fallback series. The expected series count follows Pod UID identities whose KSM Ready samples are no older than 60 seconds, including during scaling; stale replaced Pod identities are excluded. Check for mixed binary versions, missing pod UID relabeling, stale scrape targets, or an incomplete metrics registry before trusting the fallback alert."
         - alert: KubeBrainQuotaNoSpace
-          expr: max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0
+          expr: max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0
           for: 0m
           labels:
             severity: critical
@@ -554,7 +558,7 @@ spec:
             summary: KubeBrain tenant quota is blocking growth writes
             description: "A persistent NOSPACE alarm is active. Delete data or revoke leases to reduce logical usage, then disarm the alarm."
         - alert: KubeBrainQuotaUsageHigh
-          expr: max((quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0.9
+          expr: max((quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0.9
           for: 10m
           labels:
             severity: warning
@@ -562,13 +566,13 @@ spec:
             summary: KubeBrain tenant logical quota usage is high
             description: "Logical key/value usage exceeds 90% of the configured tenant quota."
         - alert: KubeBrainQuotaMetricsInconsistent
-          expr: count(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(quota_logical_usage_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or (max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) - min(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) - min(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0)
+          expr: count(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(quota_logical_usage_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or (max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) - min(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) - min(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0)
           for: 1m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain replicas disagree on tenant quota state
-            description: "Quota metric series are missing or duplicated for current Ready replicas, or Ready replicas have reported different configured quota/NOSPACE state for more than one refresh interval. Expected telemetry follows the Ready Pod UID count during scaling; stale Pod samples are excluded."
+            description: "Quota metric series are missing or duplicated for current Ready replicas, or Ready replicas have reported different configured quota/NOSPACE state for more than one refresh interval. Expected telemetry follows Pod UID identities whose KSM Ready samples are no older than 60 seconds during scaling; stale replaced Pod identities are excluded."
         - alert: KubeBrainQuotaRefreshFailures
           expr: sum(increase(quota_refresh_err{namespace="kubebrain-system"}[10m])) > 0
           for: 0m

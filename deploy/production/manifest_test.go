@@ -1999,7 +1999,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 
 	checkpointRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointUnavailable")
 	require.Equal(t,
-		`count(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or min(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) < 1 or min(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) <= 0 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) < 60 or max((time() - timestamp(serializable_checkpoint_available{namespace="kubebrain-system"})) and on(namespace, pod, uid) (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 60 or max((time() - timestamp(serializable_checkpoint_revision{namespace="kubebrain-system"})) and on(namespace, pod, uid) (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 60 or max((time() - timestamp(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"})) and on(namespace, pod, uid) (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 60`,
+		`count(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or min(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) < 1 or min(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) <= 0 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) < 60 or max((time() - timestamp(serializable_checkpoint_available{namespace="kubebrain-system"})) and on(namespace, pod, uid) (kubebrain_dbaas:ready_pods:current)) > 60 or max((time() - timestamp(serializable_checkpoint_revision{namespace="kubebrain-system"})) and on(namespace, pod, uid) (kubebrain_dbaas:ready_pods:current)) > 60 or max((time() - timestamp(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"})) and on(namespace, pod, uid) (kubebrain_dbaas:ready_pods:current)) > 60`,
 		checkpointRule["expr"])
 	require.Equal(t, "30s", checkpointRule["for"])
 	require.Equal(t, "warning", checkpointRule["labels"].(map[string]any)["severity"])
@@ -2007,28 +2007,31 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"], "less than 60 seconds")
 	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"],
 		"stopped publishing any of the available, revision, and remaining-seconds checkpoint gauges")
-	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"], "Ready Pod UID count during scaling")
+	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"], "KSM Ready samples are no older than 60 seconds")
+	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"], "stale replaced Pod identities are excluded")
 
 	checkpointRefreshRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointRefreshFailures")
 	healthFallbackRule := prometheusRuleByAlert(t, groups, "KubeBrainHealthCheckpointFallback")
 	require.Equal(t,
-		`sum by (check) (increase(health_checkpoint_fallback{namespace="kubebrain-system"}[10m])) > 0`,
+		`sum by (check) (increase(health_checkpoint_fallback{namespace="kubebrain-system"}[10m]) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`,
 		healthFallbackRule["expr"])
 	require.Equal(t, "0m", healthFallbackRule["for"])
 	require.Equal(t, "warning", healthFallbackRule["labels"].(map[string]any)["severity"])
 	healthFallbackDescription := healthFallbackRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, healthFallbackDescription, "bounded-stale degraded service")
 	require.Contains(t, healthFallbackDescription, "not proof that PD/TiKV recovered")
+	require.Contains(t, healthFallbackDescription, "KSM Ready sample is no older than 60 seconds")
+	require.Contains(t, healthFallbackDescription, "Stale counters from replaced Pods are excluded")
 	healthFallbackMissingRule := prometheusRuleByAlert(t, groups,
 		"KubeBrainHealthCheckpointFallbackMetricsMissing")
 	require.Equal(t,
-		`count(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != 3 * count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))`,
+		`count(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != 3 * count(kubebrain_dbaas:ready_pods:current)`,
 		healthFallbackMissingRule["expr"])
 	require.Equal(t, "5m", healthFallbackMissingRule["for"])
 	require.Equal(t, "warning", healthFallbackMissingRule["labels"].(map[string]any)["severity"])
 	healthFallbackMissingDescription := healthFallbackMissingRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, healthFallbackMissingDescription, "exactly three initialized")
-	require.Contains(t, healthFallbackMissingDescription, "current Ready replica count")
+	require.Contains(t, healthFallbackMissingDescription, "KSM Ready samples are no older than 60 seconds")
 	require.Contains(t, healthFallbackMissingDescription, "during scaling")
 	require.Contains(t, healthFallbackMissingDescription, "mixed binary versions")
 	require.Contains(t, healthFallbackMissingDescription, "pod UID relabeling")
@@ -2044,13 +2047,13 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		severity string
 	}{
 		"KubeBrainQuotaNoSpace": {
-			expr: `max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0`, forValue: "0m", severity: "critical",
+			expr: `max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0`, forValue: "0m", severity: "critical",
 		},
 		"KubeBrainQuotaUsageHigh": {
-			expr: `max((quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0.9`, forValue: "10m", severity: "warning",
+			expr: `max((quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0.9`, forValue: "10m", severity: "warning",
 		},
 		"KubeBrainQuotaMetricsInconsistent": {
-			expr: `count(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(quota_logical_usage_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or (max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) - min(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) - min(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0)`, forValue: "1m", severity: "warning",
+			expr: `count(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(quota_logical_usage_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or (max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) - min(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) - min(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0)`, forValue: "1m", severity: "warning",
 		},
 		"KubeBrainQuotaRefreshFailures": {
 			expr: `sum(increase(quota_refresh_err{namespace="kubebrain-system"}[10m])) > 0`, forValue: "0m", severity: "warning",
@@ -2064,8 +2067,8 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	}
 	quotaConsistencyDescription := prometheusRuleByAlert(t, groups,
 		"KubeBrainQuotaMetricsInconsistent")["annotations"].(map[string]any)["description"].(string)
-	require.Contains(t, quotaConsistencyDescription, "Ready Pod UID count during scaling")
-	require.Contains(t, quotaConsistencyDescription, "stale Pod samples are excluded")
+	require.Contains(t, quotaConsistencyDescription, "KSM Ready samples are no older than 60 seconds")
+	require.Contains(t, quotaConsistencyDescription, "stale replaced Pod identities are excluded")
 
 	grpcRule := prometheusRuleByAlert(t, groups, "KubeBrainGrpcErrors")
 	require.Equal(t,
@@ -2299,6 +2302,7 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		"kubebrain_dbaas:statefulset_replicas:current":                       `max by (namespace, statefulset) (kube_statefulset_replicas{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"} and (time() - timestamp(kube_statefulset_replicas{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"}) <= 60))`,
 		"kubebrain_dbaas:statefulset_ready_replicas:current":                 `max by (namespace, statefulset) (kube_statefulset_status_replicas_ready{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"} and (time() - timestamp(kube_statefulset_status_replicas_ready{namespace=~"kubebrain-system|tidb-cluster",statefulset=~"kubebrain|kb-(pd|tikv)"}) <= 60))`,
 		"kubebrain_dbaas:statefulset_ready_sources:count":                    `count(kubebrain_dbaas:statefulset_ready_replicas:current)`,
+		"kubebrain_dbaas:ready_pods:current":                                 `max by (namespace, pod, uid) ((kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1) and (time() - timestamp(kube_pod_status_ready{namespace="kubebrain-system",condition="true"}) <= 60))`,
 		"kubebrain_dbaas:replica_expectation_sources:count":                  `count(kubebrain_dbaas:statefulset_replicas:current)`,
 		"kubebrain_dbaas:compute_replicas:expected":                          `sum(kubebrain_dbaas:statefulset_replicas:current) or on() vector(0)`,
 		"kubebrain_dbaas:kubebrain_replicas:expected":                        `sum(kubebrain_dbaas:statefulset_replicas:current{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)`,

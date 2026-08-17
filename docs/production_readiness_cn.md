@@ -112,7 +112,8 @@ NOSPACE 和有界流式 usage rebuild 的版本，等待全部 KubeBrain 副本�
 中恰好一个同值参数；镜像和 revision 收敛不能替代该检查。运行期
 `KubeBrainQuotaMetricsInconsistent` 要求 NOSPACE、backend quota 和 logical usage 三类
 series 各恰好三份，并比较所有副本的 NOSPACE 与 backend quota 值；缺失、重复或阈值漂移
-持续超过一分钟必须告警。
+持续超过一分钟必须告警。三条 quota 告警同样只使用统一的 60 秒新鲜 Ready Pod UID 集合；旧 Pod
+残留指标不会触发 NOSPACE/high-usage，也不能以相同基数替代当前副本的 quota series。
 
 ## TiKV/PD 升级完成门槛
 
@@ -265,6 +266,13 @@ checkpoint 尚未发布/过期或 exporter 已停止时，在告警 `for` 窗口
 `TIDB_NAMESPACE`/`TIDB_CLUSTER` 选择目标租户的
 metrics Service，`KUBEBRAIN_NAMESPACE` 选择对应数据面指标，三者必须是 DNS label。API/transport 错误、空/重复/缺失 series、NaN/Inf、
 超阈值或非 HTTPS URL 都返回非零。该脚本只读 Prometheus，不把一次通过解释为卷的永久 IOPS 保证。
+
+运行期告警统一从 `kubebrain_dbaas:ready_pods:current` 取得 Pod 级 Ready 身份：该记录只保留
+KSM 样本时间不超过 60 秒的 `(namespace,pod,uid)`，并按该不可变身份去重。serializable checkpoint
+完整性/新鲜度、health checkpoint fallback 事件及其三类固定 series 完整性都只与这组当前身份相交；
+滚动替换后仍位于 Prometheus lookback 窗口的旧 Pod counter/gauge 不能触发 fallback 告警，也不能为
+新 Pod 补齐 checkpoint 指标。若 KSM Ready family 停止刷新，记录会在一分钟内消失，不能继续把旧身份
+解释为当前 Ready 副本。
 
 该脚本通过 Kubernetes Service proxy 读取 PD API，要求所有 TiKV store 为 `Up`，并要求
 `pending-peer`、`down-peer`、`miss-peer`、`extra-peer`、`learner-peer` 五类异常 Region 均为零；
