@@ -56028,6 +56028,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   firing。manifest 门禁固定两条表达式和 absent 处置 annotation，production readiness 明确规则未加载/求值失败
   也必须不可计费；完整 `deploy/production` 测试通过。本项不改变计量数值或数据面镜像。
 
+- A4975 修正 A4972 实时运维规则仍只检查默认最低 source 数的扩容漏检。放宽 ordinal selector 后，
+  高水位/错误检测已能看到新副本，但 `ResourceMetricsMissing`/`NetworkMetricsMissing` 仍只判断总数是否少于 9，
+  PVC completeness 仍只判断是否少于 6；五副本扩容后缺一条指标仍可超过旧下限并静默。现三条告警复用
+  A4973 的去重 StatefulSet 期望 recording rules：PVC capacity/available、cAdvisor memory、RX/TX 都必须与当前存储/
+  容器期望数精确相等。memory limit 源以 `max by(namespace,pod,container)` 先去除 HA kube-state-metrics 重复，
+  且只包含数字 ordinal 工作负载。每条表达式还显式检查 expectation/source recording series 存在，不让空向量
+  绕过告警。精确 manifest 门禁和 observability runbook 已更新，完整 `deploy/production` 测试通过。本项不重建
+  数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
