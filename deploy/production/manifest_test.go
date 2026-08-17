@@ -1955,12 +1955,15 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	transactionPathRule := prometheusRuleByAlert(t, groups,
 		"KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane")
 	require.Equal(t,
-		`((kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"} or on() vector(0)) == 0) and on() (count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) == 3) and on() (max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) == 0) and on() (max(pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) == 0)`,
+		`((max by (namespace, statefulset) (kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"}) or on() vector(0)) == 0) and on() (kubebrain_dbaas:replica_expectation_sources:count == 3) and on() (kubebrain_dbaas:pd_replicas:expected >= 3) and on() (kubebrain_dbaas:tikv_replicas:expected >= 3) and on() (count(max by (instance) (up{namespace="tidb-cluster",service="kb-pd-metrics"} == 1)) == on() kubebrain_dbaas:pd_replicas:expected) and on() (count(max by (instance) (up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1)) == on() kubebrain_dbaas:tikv_replicas:expected) and on() (sum(max by (instance) (etcd_server_is_leader{namespace="tidb-cluster",service="kb-pd-metrics"})) == 1) and on() (count(max by (instance, type) (pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"})) == on() (2 * kubebrain_dbaas:pd_replicas:expected)) and on() (max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) == 0) and on() (max(pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) == 0)`,
 		transactionPathRule["expr"])
 	require.Equal(t, "2m", transactionPathRule["for"])
 	require.Equal(t, "critical", transactionPathRule["labels"].(map[string]any)["severity"])
 	description := transactionPathRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, description, "end-to-end etcd transaction probe")
+	require.Contains(t, description, "complete current PD/TiKV topology")
+	require.Contains(t, description, "exactly one leader")
+	require.Contains(t, description, "complete Region-peer telemetry")
 	incompatibleWitness := prometheusRuleByAlert(t, groups, "KubeBrainIncompatibleTransactionWitness")
 	require.Equal(t,
 		`sum(increase(leader_election_initialize_incompatible_witness{namespace="kubebrain-system"}[10m])) > 0`,

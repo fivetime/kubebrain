@@ -308,9 +308,10 @@ Prometheus lookback 把停止抓取的旧 series 暂时伪装成健康。缺失�
 告警无 firing/pending 且指标完整的独立 CSI worker 上进行；只检查 PVC 容量、逻辑 TiKV capacity 或
 瞬时 `df` 水位不能证明 IOPS/延迟隔离。
 
-`KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 专门识别三项同时成立且持续
-2 分钟的反常状态：KubeBrain StatefulSet 为 0 Ready、3 个 TiKV metrics target 均可抓取、TiKV
-没有报告缺失 Region leader。这正是“TCP/heartbeat/Debug 正常但事务卡死”的运行时分类，不能
+`KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 专门识别持续
+2 分钟的反常状态：KubeBrain StatefulSet 为 0 Ready，三个期望来源完整且 PD/TiKV 期望均至少为 3，
+按 instance 去重的 PD/TiKV `up==1` target 分别与当前期望精确相等，PD 恰有一个 leader 且两类
+Region peer gauge 完整/全零，TiKV 也没有报告缺失 Region leader。这正是“TCP/heartbeat/Debug 正常但事务卡死”的运行时分类，不能
 被一般 `KubeBrainReadinessUnavailable` 告警淹没。收到该告警后先执行端到端 etcd
 Put/Get/Delete；若事务仍失败，先停止 KubeBrain 失败选举写入，记录 TidbCluster UID、cluster
 ID、TiKV Pod UID/PVC/Region 状态，再按 quorum 栅栏执行同 PVC 进程修复。不得删除 PVC，也不得
