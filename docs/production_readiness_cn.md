@@ -320,6 +320,10 @@ StatefulSet 期望副本数不得小于 3，按 `instance` 去重且 `up==1` 的
 同样新鲜的 leader-missing gauge 精确覆盖全部当前 TiKV，再要求最大值为 0。PD pending/down Region gauge
 也先按 instance/type 新鲜化；异常值、完整性和事务路径分类共同消费该 recording。HA scrape 重复、旧
 lookback 或 family 单独缺失都不会伪造健康。
+三类 recording 还统一进入 `storage_control_plane_invalid_values`：PD leader 必须精确为 `0` 或 `1`，
+TiKV missing-leader 与 PD pending/down Region 必须是 `[0,2^53]` 内的非负精确整数。NaN、Inf、负数、
+分数或超界值会让 leader/Region completeness 告警 fail closed；该 mismatch 必须为零后，事务路径隔离告警
+才能声称 TiKV 控制面信号健康，不能让非法 `sum/max` operand 证明后端健康。
 
 副本数和 Region 状态之外还必须满足持久化 tail-latency 门禁。PrometheusRule
 `KubeBrainPDWALFsyncLatencyHigh`、`KubeBrainTiKVRaftDBWriteLatencyHigh` 和
