@@ -815,6 +815,18 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsStreamingKeepAlive(t *
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsRevokeStreamConvergence(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-member-revoke-stream)`)
+	require.Contains(t, script, `"LeaseRevoke/KeepAlive stream convergence across concurrent PD quorum and TiKV member partition"`)
+	require.Contains(t, script, `"$ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"`)
+	require.Contains(t, script, `run_tikv_degraded_network_revoke_stream_test`)
+	require.Contains(t, script, `TestLeaseRevokeClosesKeepAliveStreamsAcrossTiKVDegradation`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

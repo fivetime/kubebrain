@@ -55435,6 +55435,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   五类 Region check 全零，三个 KubeBrain Pod Ready 且无新增重启，所有 iptables 规则与 port-forward 已清理。本轮未发现新的数据面
   生产 RED，不修改生产代码；真实跨节点/AZ 的同类流式组合分区仍保持开放。
 
+- A4936 补齐 A4935 只证明流恢复、未证明并发 Revoke 收敛的边界：新增
+  `pd-quorum-tikv-member-revoke-stream` profile，在四条 TTL=60 KeepAlive 流及各自附属 key 已建立后启动 A4932 组合分区，
+  15 秒校准点确认故障仍活跃再并发发出四个有界 Revoke。每个 Revoke 必须取得服务端确认，允许确认前的 unary retry；确认后允许消费
+  已缓冲的正 TTL 响应，但对应 channel 最终必须关闭，且 LeaseList 不含该 ID、TimeToLive=-1、附属 key 消失。该契约直接延伸 upstream
+  `client/v3/lease.go` 对 Revoke 后缓冲响应的说明及
+  `tests/integration/clientv3/lease/lease_test.go:TestLeaseKeepAliveCloseAfterDisconnectRevoke`，不会把首次超时当成已撤销，也不会以 key
+  删除替代 stream closure。
+
+  2026-08-17 在独立三 PD/三 TiKV 单节点 Kind 上以 20 秒 hold 实跑，两个 PD member 不可达与 leader-heavy TiKV store
+  `Up -> Disconnected` 同窗出现。四个 Revoke 首轮均 `DeadlineExceeded`，随后实际经历 leader changed、startup leadership changed 与
+  proxy-not-ready；PD members 与 TiKV store 恢复后四项均由 official client 重试确认，四条 channel 全部关闭，测试 74.15 秒通过。
+  恢复瞬间容量 16 的 keepalive response queue 丢弃冗余积压响应，不影响最终 closure。终态 endpoint proposal 36.18ms，LeaseList、
+  AlarmList、测试前缀为空，五类 Region check 全零，三个 KubeBrain Pod Ready 且无新增重启，iptables 规则和 port-forward 已清理。
+  本轮未发现新的数据面生产 RED，不修改生产代码；真实跨节点/AZ 的组合 Revoke/stream 分区仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
