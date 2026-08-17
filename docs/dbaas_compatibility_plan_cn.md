@@ -55993,6 +55993,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   runbook 同步更新；完整 `deploy/production` 测试通过。本项只修复监控对通用副本数和滚动更新的判定，
   不改变 quota 写门禁或持久 alarm 语义，不重建数据面镜像。
 
+- A4971 修正 serializable checkpoint 告警对三类同步发布 gauge 的不对称覆盖。后端在初始化和每次刷新中
+  连续发布 available、revision 和 remaining-seconds；旧规则却只对前两者做 Ready UID completeness 和 60 秒
+  `timestamp()` 检查。如果 remaining-seconds family 被单独 relabel/drop 或停止抓取，`min(empty) < 60` 不产生
+  PromQL 结果，因而可以 fail open。现在该 gauge 也必须覆盖每个当前 Ready Pod UID，且任一 current-ready 样本
+  超过 60 秒未刷新都触发同一告警。manifest 门禁固定三类 gauge 对称的完整 PromQL 和 annotation，
+  observability runbook 同步改为三者 completeness/freshness 都 fail closed；完整 `deploy/production` 测试通过。
+  本项不改变 checkpoint 刷新或隔离读语义，不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
