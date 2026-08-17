@@ -1498,8 +1498,9 @@ OUTPUT=/backup/kubebrain-logical-backup.jsonl \
 控制面必须采集 `kubebrain_logical_backup_last_success_timestamp_seconds`、
 `kubebrain_logical_backup_artifact_bytes`、`kubebrain_logical_backup_records`、
 `kubebrain_logical_backup_leases` 和 `kubebrain_logical_backup_snapshot_revision`。
-生产规则在成功指标缺失 1 小时后 warning，最近成功备份超过 25 小时且持续 15 分钟后
-critical。25 小时阈值为每日备份留出 1 小时调度抖动，不代表所有套餐都采用同一 RPO；
+生产规则要求成功时间戳来源恰为一个，缺失或重复持续 1 小时后 warning；它从可见来源选择最新成功时间，
+最近成功备份超过 25 小时或时间戳领先控制面时钟 5 分钟、持续 15 分钟后 critical。未来时间不得掩盖 RPO
+超期，重复来源也不得充当权威证据。25 小时阈值为每日备份留出 1 小时调度抖动，不代表所有套餐都采用同一 RPO；
 更严格套餐必须下调规则。
 
 ### 对象存储不可变发布与保留删除
