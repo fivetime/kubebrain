@@ -56520,6 +56520,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证明 compaction race 不递增 canonical corruption、trusted witness mismatch 会递增。精确 manifest/backend
   测试与 production/observability 文档已同步；相关测试通过。本项需要下一生产镜像。
 
+- A5031 补上共享 CORRUPT active 状态本身的生产根告警。此前 production 能告警 event-log、leader metadata
+  等若干成因，却完全不消费 `etcd_debugging_server_alarms{alarm_type="CORRUPT"}`，而 upstream GaugeVec 在
+  无 alarm 时无 series，无法对每个副本证明安全零值。现新增 `alarm.corrupt_active`：RPC server 创建时发布
+  权威 0，只在完整读取共享 TiKV alarm 集合成功后刷新为是否存在任一 CORRUPT owner 的精确 0/1；读取
+  失败保留旧 snapshot 并由既有 alarm-refresh failure 链诊断。监控仅从 60 秒内样本生成 Ready Pod UID 级
+  recording，任一 active 立即 critical，覆盖缺口、非 0/1 或副本分歧持续一分钟也 critical。状态转换测试
+  固定 `0→1→0`，精确 manifest 测试和文档同步；同时修正 observability 中已过时的“CORRUPT 无对应语义”。
+  相关测试通过。本项需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
