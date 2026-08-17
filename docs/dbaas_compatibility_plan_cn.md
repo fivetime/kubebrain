@@ -55984,6 +55984,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   production manifest 门禁固定动态基数与 scaling annotation，observability runbook 同步说明 Ready UID 期望值；完整
   `deploy/production` 测试通过。本项不改变 checkpoint 数据面语义，不重建镜像。
 
+- A4970 修正 quota 告警同时存在的固定副本数和陈旧样本漏洞。旧 `KubeBrainQuotaMetricsInconsistent`
+  要求三类 series 各恰好 3 条，扩缩容会误报；`QuotaNoSpace` 和 `QuotaUsageHigh` 又直接聚合 namespace
+  内所有样本，滚动后 Prometheus lookback 中的旧 Pod UID 可以继续触发已解除的 NOSPACE/高水位，或在
+  completeness 中制造重复。现在三条规则都用 `(namespace,pod,uid)` 与当前 Ready Pod 相交；completeness 将
+  nospace/backend/usage 的实际 series 数分别与动态 Ready UID 数比较，共享 NOSPACE/quota 值一致性也只在同一
+  current-ready 集合中计算。manifest 门禁固定三条完整 PromQL 以及 scaling/stale-sample annotation，observability
+  runbook 同步更新；完整 `deploy/production` 测试通过。本项只修复监控对通用副本数和滚动更新的判定，
+  不改变 quota 写门禁或持久 alarm 语义，不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
