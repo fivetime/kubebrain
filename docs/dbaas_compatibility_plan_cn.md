@@ -56387,6 +56387,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fail closed。精确 recording 与运维 annotation manifest 门禁、production readiness 已同步；完整
   `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5016 关闭 PD/TiKV control-plane health gauge 的非法值 fail-open。旧门禁验证 PD leader、TiKV
+  missing-leader 与 PD pending/down Region family 的 freshness/source count，但 NaN/Inf、负数、分数或
+  超界值仍可让 `sum/max` 健康比较为空或无意义。现新增 storage-control-plane invalid-value count：PD
+  leader 必须精确为 0/1，另两类 Region count 必须是 `[0,2^53]` 内非负精确整数；recording 缺失或非零
+  同时触发 PD leader、TiKV missing-leader 与 PD Region completeness 告警。“KubeBrain 不可用但 TiKV
+  控制面健康”的隔离诊断还显式要求 mismatch 为零，非法值不能充当健康证据。精确 PromQL/annotation
+  manifest 门禁和 production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
