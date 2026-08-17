@@ -20,6 +20,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -240,6 +242,58 @@ func TestMaterializeReplayDiskPlanRejectsFilesystemReserveBeforeScratchCreation(
 	entries, readErr := os.ReadDir(scratch)
 	require.NoError(t, readErr)
 	require.Empty(t, entries)
+}
+
+func TestMaterializeReplayDiskPlanCleansAllScratchFilesAfterMidBuildENOSPC(t *testing.T) {
+	for _, failPattern := range []string{"-defaults-", "-plan-"} {
+		t.Run(failPattern, func(t *testing.T) {
+			_, receipt, root, _, _ := replayFixtureWithDefaultValue(t, make([]byte, 1<<20))
+			scratch := t.TempDir()
+			baseline := make(map[string]uint64)
+			observedTargetGrowth := false
+			freeBytes := func(path string) (uint64, error) {
+				require.Equal(t, scratch, path)
+				entries, err := os.ReadDir(path)
+				require.NoError(t, err)
+				if len(entries) != 3 {
+					return ^uint64(0), nil
+				}
+				for _, entry := range entries {
+					info, infoErr := entry.Info()
+					require.NoError(t, infoErr)
+					require.False(t, info.IsDir())
+					current := uint64(info.Size())
+					previous, found := baseline[entry.Name()]
+					baseline[entry.Name()] = current
+					if found && current > previous && strings.Contains(entry.Name(), failPattern) {
+						observedTargetGrowth = true
+						return 0, syscall.ENOSPC
+					}
+				}
+				return ^uint64(0), nil
+			}
+
+			_, err := materializeReplayDiskPlanWithScratchQuotaFactory(receipt, digest, root, scratch, 119, 150, func() (*replayScratchQuota, error) {
+				return newReplayScratchQuotaWithFreeBytes(^uint64(0), 1, scratch, freeBytes)
+			})
+			require.ErrorIs(t, err, syscall.ENOSPC)
+			require.ErrorContains(t, err, "no space left on device")
+			require.True(t, observedTargetGrowth, "ENOSPC must follow real growth of %s scratch", failPattern)
+			entries, readErr := os.ReadDir(scratch)
+			require.NoError(t, readErr)
+			require.Empty(t, entries, "default, candidate, and plan scratch databases must all be removed")
+		})
+	}
+}
+
+func TestMaterializeReplayDiskPlanValidatesEvidenceBeforeScratchQuotaFactory(t *testing.T) {
+	called := false
+	_, err := materializeReplayDiskPlanWithScratchQuotaFactory(LogArtifactReceipt{}, digest, t.TempDir(), t.TempDir(), 119, 150, func() (*replayScratchQuota, error) {
+		called = true
+		return nil, errors.New("scratch quota factory must not be called")
+	})
+	require.Error(t, err)
+	require.False(t, called)
 }
 
 type changeReplayPlanOnGetStore struct {

@@ -55307,6 +55307,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   基线校验 17.090 秒通过。测试资源与 port-forward 已清理。本轮修复的是测试证明强度，不修改生产代码，也不沿用 A4925 中无法排除
   慢调度的较弱结论。
 
+- A4927 补齐 A4921 只覆盖建库前/单条写前 reserve 拒绝、没有覆盖 bbolt 已扩页后 filesystem probe 报 ENOSPC 的清理路径。disk-plan
+  materializer 现在通过私有 quota factory seam 保持生产 `statfs` 实现不变，同时允许确定性故障测试在三个 scratch DB 全部建立后观察
+  apparent size。测试使用 1 MiB 合法 default-CF value 强制真实 bbolt 扩页，分别在 default index commit 后和 canonical plan commit
+  后由 probe 返回 `syscall.ENOSPC`；两条路径都必须保留 `errors.Is(ENOSPC)`、返回 `no space left on device`，并删除 default/candidate/plan
+  三个文件。后者证明前序 scratch commit 已成功时末段失败仍不会残留。另固定无效 receipt 必须在 quota factory/filesystem probe 前
+  拒绝，factory 返回 nil 也 fail closed。正式 CLI 仍在 materialization 完整成功后才创建 target PD/TiKV client，因此这些失败位于
+  target 访问前。
+
+  nativepitr 与 log-replay CLI 完整测试、race、vet 和 diff check 通过。2026-08-17 在独立 source/target 各 3 PD + 3 TiKV、所有
+  Region 3 peers/零 pending peer、plaintext、MinIO 与官方 BR v7.5.1 上执行正式 `TestNativeLogReplayRealBR`：生产真实 statfs 路径、
+  v7 receipt、v2 checkpoint、fence/handoff 与最终 revision/key/lease/watch 语义验收 40.52 秒通过，一次性容器与目录已清理。该确定性
+  故障是扩页后 free-space probe 返回内核 ENOSPC，不冒充 bbolt `pwrite/fsync` 自身在 probe 间隙失败；真实小型 scratch filesystem
+  耗尽、read-only remount、I/O error 与 kubelet/PVC eviction 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

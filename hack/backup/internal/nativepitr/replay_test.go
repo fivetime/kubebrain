@@ -849,6 +849,10 @@ func TestMaterializeReplayFailsClosed(t *testing.T) {
 }
 
 func replayFixture(t *testing.T) (TaskCreateReceipt, LogArtifactReceipt, string, []byte, []byte) {
+	return replayFixtureWithDefaultValue(t, []byte("long-value"))
+}
+
+func replayFixtureWithDefaultValue(t *testing.T, defaultValue []byte) (TaskCreateReceipt, LogArtifactReceipt, string, []byte, []byte) {
 	t.Helper()
 	task, _ := readyTask(t)
 	ready := readyReceiptFor(task)
@@ -856,7 +860,7 @@ func replayFixture(t *testing.T) (TaskCreateReceipt, LogArtifactReceipt, string,
 	require.NoError(t, err)
 	keyA := ks.NewCoder().EncodeRevisionKey([]byte("/a"))
 	keyB := ks.NewCoder().EncodeRevisionKey([]byte("/b"))
-	defaultData := encodeReplayEntry(encodeReplayMVCCKey(keyA, 120), []byte("long-value"))
+	defaultData := encodeReplayEntry(encodeReplayMVCCKey(keyA, 120), defaultValue)
 	writeData := append(encodeReplayEntry(encodeReplayMVCCKey(keyA, 130), encodeReplayWrite('P', 120, nil)), encodeReplayEntry(encodeReplayMVCCKey(keyB, 130), encodeReplayWrite('P', 121, []byte("short")))...)
 	writeData = append(writeData, encodeReplayEntry(encodeReplayMVCCKey(keyA, 140), encodeReplayWrite('D', 135, nil))...)
 	root := t.TempDir()

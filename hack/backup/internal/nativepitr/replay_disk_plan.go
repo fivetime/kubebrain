@@ -735,6 +735,12 @@ func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, r
 // minScratchFreeBytes on the filesystem that owns scratchDir. The check is an
 // application-level admission guard; filesystem quotas remain authoritative.
 func MaterializeReplayDiskPlanWithScratchLimits(logs LogArtifactReceipt, logsSHA, root, scratchDir string, startExclusive, restoreTS, maxScratchBytes, minScratchFreeBytes uint64) (_ *ReplayDiskPlan, retErr error) {
+	return materializeReplayDiskPlanWithScratchQuotaFactory(logs, logsSHA, root, scratchDir, startExclusive, restoreTS, func() (*replayScratchQuota, error) {
+		return newReplayScratchQuotaWithReserve(maxScratchBytes, minScratchFreeBytes, scratchDir)
+	})
+}
+
+func materializeReplayDiskPlanWithScratchQuotaFactory(logs LogArtifactReceipt, logsSHA, root, scratchDir string, startExclusive, restoreTS uint64, newQuota func() (*replayScratchQuota, error)) (_ *ReplayDiskPlan, retErr error) {
 	if err := logs.Validate(); err != nil {
 		return nil, err
 	}
@@ -756,9 +762,12 @@ func MaterializeReplayDiskPlanWithScratchLimits(logs LogArtifactReceipt, logsSHA
 		return nil, err
 	}
 	start, end := ks.ObjectKeyspaceStart(), ks.ObjectKeyspaceEnd()
-	quota, err := newReplayScratchQuotaWithReserve(maxScratchBytes, minScratchFreeBytes, scratchDir)
+	quota, err := newQuota()
 	if err != nil {
 		return nil, err
+	}
+	if quota == nil {
+		return nil, errors.New("native PITR replay scratch quota factory returned nil")
 	}
 	defaults, err := newReplayDefaultStoreWithQuota(scratchDir, quota)
 	if err != nil {
