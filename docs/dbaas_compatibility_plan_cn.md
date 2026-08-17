@@ -56338,6 +56338,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mismatch/alert/completeness PromQL 与值域 annotation，production readiness 已同步；完整
   `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A5010 补齐 PVC requested/capacity/available 的 canonical 字节值域与跨指标不变量。此前 freshness、来源
+  数和 PVC identity 均已闭环，但负数、分数、零 request/capacity、`available>capacity` 或
+  `capacity<requested` 仍可通过 completeness；`storage_used_bytes` 的 `clamp_min` 还会把部分矛盾掩盖成
+  零 used。现新增 storage invalid-byte count：requested/capacity/available max/min 均须为不超过 `2^53`
+  的精确整数，requested/capacity 为正、available 非负，并按 PVC 验证 available 不超过 capacity、capacity
+  不低于 request。存储 missing 告警和 `metering_data_complete` 同时要求 mismatch 为零。精确 manifest
+  门禁固定完整 value/cross-metric PromQL、alert/completeness 与 clamp-not-mask annotation，production
+  readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
