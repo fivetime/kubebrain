@@ -55835,6 +55835,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   quorum 恢复。该响应是成员最近安全应用 checkpoint 的物理 backend hash，不承诺故障时的全局最新
   revision；无有效 checkpoint 时继续 fail closed。
 
+  后续把门禁从概率性的 nonzero CRC 断言加强为故障前健康 Hash 与故障期 protected Hash 精确相等；
+  第二轮同时隔离 `kb-pd-2/0` 与 `kb-tikv-1/2`，mutation 再次明确 `DeadlineExceeded`，完整门禁
+  **142.42 秒 GREEN** 且 hash 完全一致。该相等性成立于测试固定无并发 lease/auth mutation、后台
+  checkpoint bookkeeping 被 Hash 明确忽略的窗口，不外推为有并发内部状态变化时的全局最新 hash。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
