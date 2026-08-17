@@ -839,6 +839,18 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsWatchRecovery(t *testi
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsSnapshotFailClosed(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-tikv-member-snapshot)`)
+	require.Contains(t, script, `"concurrent PD quorum and TiKV member partition Snapshot"`)
+	require.Contains(t, script, `"$ROOT_DIR/hack/dev/partition-pd-quorum-and-tikv-member.sh"`)
+	require.Contains(t, script, `run_snapshot_failover_test`)
+	require.Contains(t, script, `TestSnapshotFailsClosedAndRecoversAcrossBackendFailover`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

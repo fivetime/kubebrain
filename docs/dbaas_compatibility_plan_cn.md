@@ -55464,6 +55464,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试前缀为空，五类 Region check 全零，三个 KubeBrain Pod Ready 且无新增重启，iptables 规则和 port-forward 已清理。本轮未发现新的
   数据面生产 RED，不修改生产代码；真实跨节点/AZ 的组合 Watch 分区仍保持开放。
 
+- A4938 将组合故障矩阵扩展到 portable Snapshot：新增 `pd-quorum-tikv-member-snapshot` profile，在先写入 before key 后启动 A4932
+  组合分区，并用一秒 Put 探针证明 mutation-unavailable 窗口已经出现。该窗口内 `SnapshotWithVersion` 即使先返回 reader，也必须在
+  六秒读取预算内以 `Unavailable`/`DeadlineExceeded` fail closed，不能产出伪完整 artifact；恢复后写入 after key，再由 fresh client
+  下载首个可用 snapshot，校验末尾 SHA-256、官方 `etcdutl snapshot status`，并直接读取去除 digest 后的 bbolt MVCC history，证明
+  before/after 两个 key 均为 create version 1。该职责对应 upstream `client/v3/maintenance.go` 的 snapshot stream/read-closer 契约与
+  `tests/integration/clientv3/maintenance_test.go` 的 timeout、in-flight error 和 content digest 测试。
+
+  2026-08-17 在独立三 PD/三 TiKV 单节点 Kind 上以 20 秒 hold 实跑，两个 PD member 不可达与 leader-heavy TiKV store
+  `Up -> Disconnected` 同窗出现。故障 Put 先返回 `DeadlineExceeded`，随后 Snapshot stream 已打开但读取在六秒后精确
+  `DeadlineExceeded`，未泄漏 artifact；PD members 与 store 恢复后，fresh client 完整下载 snapshot，digest、官方 etcdutl status 以及
+  故障两侧 MVCC 内容全部通过，完整测试 77.14 秒。终态 endpoint proposal 25.50ms，LeaseList、AlarmList、测试前缀为空，五类 Region
+  check 全零，三个 KubeBrain Pod Ready 且无新增重启，iptables 规则与 port-forward 已清理。本轮未发现新的数据面生产 RED，不修改
+  生产代码；真实跨节点/AZ 的组合 Snapshot 分区与生产规模 artifact soak 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
