@@ -257,6 +257,10 @@ spec:
           expr: count(kubebrain_dbaas:network_transmit_bytes_per_second:max_by_interface)
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:metering_invalid_compute_values:count
+          expr: count(kubebrain_dbaas:cpu_usage_cores:max_by_container != clamp(kubebrain_dbaas:cpu_usage_cores:max_by_container, 0, 9007199254740992)) + count((kubebrain_dbaas:memory_working_set_bytes:max_by_container < 0) or (kubebrain_dbaas:memory_working_set_bytes:max_by_container > 9007199254740992) or (kubebrain_dbaas:memory_working_set_bytes:max_by_container != floor(kubebrain_dbaas:memory_working_set_bytes:max_by_container))) + count(kubebrain_dbaas:network_receive_bytes_per_second:max_by_interface != clamp(kubebrain_dbaas:network_receive_bytes_per_second:max_by_interface, 0, 9007199254740992)) + count(kubebrain_dbaas:network_transmit_bytes_per_second:max_by_interface != clamp(kubebrain_dbaas:network_transmit_bytes_per_second:max_by_interface, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:network_receive_error_sources:count
           expr: count(kubebrain_dbaas:network_receive_errors:increase_10m_by_interface)
           labels:
@@ -378,7 +382,7 @@ spec:
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:metering_data_complete
-          expr: (kubebrain_dbaas:replica_expectation_sources:count == bool 3) * (kubebrain_dbaas:cpu_usage_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:memory_working_set_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:network_receive_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:network_transmit_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:storage_volumes:expected >= bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_requested_sources:count == bool kubebrain_dbaas:storage_volumes:expected) * (kubebrain_dbaas:storage_volume_identity_mismatches:count == bool 0) * (kubebrain_dbaas:storage_active_volume_sources:count == bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_capacity_sources:count == bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_available_sources:count == bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_volume_stats_identity_mismatches:count == bool 0) * (kubebrain_dbaas:storage_invalid_byte_values:count == bool 0) * (kubebrain_dbaas:logical_backup_artifact_sources:count == bool 1) * (kubebrain_dbaas:logical_backup_timestamp_sources:count == bool 1) * (kubebrain_dbaas:logical_backup_invalid_values:count == bool 0)
+          expr: (kubebrain_dbaas:replica_expectation_sources:count == bool 3) * (kubebrain_dbaas:cpu_usage_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:memory_working_set_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:network_receive_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:network_transmit_sources:count == bool kubebrain_dbaas:compute_replicas:expected) * (kubebrain_dbaas:metering_invalid_compute_values:count == bool 0) * (kubebrain_dbaas:storage_volumes:expected >= bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_requested_sources:count == bool kubebrain_dbaas:storage_volumes:expected) * (kubebrain_dbaas:storage_volume_identity_mismatches:count == bool 0) * (kubebrain_dbaas:storage_active_volume_sources:count == bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_capacity_sources:count == bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_available_sources:count == bool kubebrain_dbaas:storage_replicas:expected) * (kubebrain_dbaas:storage_volume_stats_identity_mismatches:count == bool 0) * (kubebrain_dbaas:storage_invalid_byte_values:count == bool 0) * (kubebrain_dbaas:logical_backup_artifact_sources:count == bool 1) * (kubebrain_dbaas:logical_backup_timestamp_sources:count == bool 1) * (kubebrain_dbaas:logical_backup_invalid_values:count == bool 0)
           labels:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:cpu_usage_cores:sum
@@ -784,7 +788,7 @@ spec:
             severity: critical
           annotations:
             summary: KubeBrain billing inputs are incomplete
-            description: "KubeBrain, PD, TiKV, or PVC metric source counts do not exactly match the current deduplicated StatefulSet replica expectations, a replica expectation is missing, a required backup source is not unique, or the completeness recording series itself is absent. Billing export must fail closed for this interval, including during incomplete scaling."
+            description: "KubeBrain, PD, TiKV, or PVC metric source counts do not exactly match the current deduplicated StatefulSet replica expectations, a CPU/network rate is non-finite, negative, or above 2^53, a memory byte value is not an exact non-negative integer within 2^53, a storage/backup value is invalid, a replica expectation is missing, a required backup source is not unique, or the completeness recording series itself is absent. Canonical value checks run before minute/hour completeness; invalid usage cannot accumulate an apparently billable slot. Billing export must fail closed for this interval, including during incomplete scaling."
         - alert: KubeBrainObjectRequestMeteringDataIncomplete
           expr: (kubebrain_dbaas:object_request_data_complete or on() vector(0)) != 1
           for: 15m

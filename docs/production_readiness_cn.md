@@ -1690,6 +1690,9 @@ CPU/memory 在 `(namespace,pod,container)`、network 在 `(namespace,pod,interfa
 source count 或瞬时账单。去重同时应用于原始 counter 的小时 `increase`；小时窗口保留期间已缩容 Pod 的
 合法历史用量，并由每分钟 completeness 的 60 个样本证明整窗持续完整。不能让 completeness 已按实体判定
 健康、实际 usage 却对 HA 重复 series 二次计费，也不能把停止更新的指标继续按当前用量计费。
+CPU cores 与 network bytes/second 必须是 `[0,2^53]` 内的有限值，memory working-set 必须是同一范围内的
+精确非负字节整数；NaN、Inf、负数或超界值在分钟 usage 聚合前计入 mismatch，并把
+`metering_data_complete` 置零。非法瞬时值不能积累 60 个“完整”样本后再只依赖归档器拒绝。
 部署模板化时必须同步替换实例标签、Pod/PVC 选择器和备份 `BACKUP_INSTANCE`。规则同时从
 `kube_statefulset_replicas` 与 `kube_statefulset_status_replicas_ready` 分别生成 desired/Ready current
 recording：仅接受 60 秒内样本并按 `(namespace,statefulset)` 去重。三条期望来源数、Ready 来源数、容器期望副本总数、KubeBrain/PD/TiKV 分项期望和活跃
