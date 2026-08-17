@@ -56213,6 +56213,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新 recording、metering/alert/provisioned PromQL 与 identity/freshness annotation，production readiness
   已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4996 修复 active volume stats 仍只按数量、未按 PVC identity 对账的问题。即使 A4995 已固定全部 PVC
+  object/requested 集合，旧 capacity/available 仍仅要求数量等于 storage replica expected；一个活跃 PVC
+  stats 缺失时，另一个 retained/错误 PVC 的当前 stats 可用相同基数补位。现从 sample age 不超过 60 秒的
+  `kube_pod_spec_volumes_persistentvolumeclaims_info` 发布当前 PD/TiKV Pod 数据 PVC 集合，要求其数量等于
+  动态 storage replicas，并分别与新鲜 capacity/available 做双向 identity 差集。metering completeness 与
+  volume-missing 告警要求四项差集总数为零；retained PVC 继续计 provisioned storage，但绝不能替代活跃卷
+  stats。精确 manifest 门禁固定 active/source/mismatch recording、metering/alert PromQL、新 KSM 外部指标
+  与 retained-substitution annotation，production readiness 已同步；完整 `deploy/production` 测试通过。
+  本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
