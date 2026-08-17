@@ -1693,6 +1693,9 @@ source count 或瞬时账单。去重同时应用于原始 counter 的小时 `in
 CPU cores 与 network bytes/second 必须是 `[0,2^53]` 内的有限值，memory working-set 必须是同一范围内的
 精确非负字节整数；NaN、Inf、负数或超界值在分钟 usage 聚合前计入 mismatch，并把
 `metering_data_complete` 置零。非法瞬时值不能积累 60 个“完整”样本后再只依赖归档器拒绝。
+资源压力门禁还要求 CFS total-period rate 为正、throttled rate 非负且不超过 total，memory limit 为
+`(0,2^53]` 内精确字节整数；working-set 沿用非负精确字节约束。任一 NaN/Inf、非法分母或
+numerator>denominator 都由 `KubeBrainResourceMetricsMissing` fail closed，不能让比率表达式空向量冒充零压力。
 部署模板化时必须同步替换实例标签、Pod/PVC 选择器和备份 `BACKUP_INSTANCE`。规则同时从
 `kube_statefulset_replicas` 与 `kube_statefulset_status_replicas_ready` 分别生成 desired/Ready current
 recording：仅接受 60 秒内样本并按 `(namespace,statefulset)` 去重。三条期望来源数、Ready 来源数、容器期望副本总数、KubeBrain/PD/TiKV 分项期望和活跃
