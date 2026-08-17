@@ -56204,6 +56204,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   门禁也改为显式登记所有 recording 输出，合法 selector 引用不再依赖旧正则盲点。精确 recording 测试与
   production readiness 已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4995 收紧 retained-PVC provisioned storage 的 KSM freshness 与集合身份。旧 PVC-info/requested-storage
+  各自直接聚合 lookback series，且 completeness 只比较数量；两个不同 PVC 集合只要基数相同也会通过，
+  requested 总量可能给错误卷计费。现两类原始指标都先要求 sample age 不超过 60 秒并按
+  `(namespace,persistentvolumeclaim)` 发布实体 recording，再用双向 `unless` 输出 identity mismatch 数；
+  metering completeness 与 volume-missing 告警同时要求来源数相等、mismatch 为零，provisioned sum 只消费
+  新鲜 requested recording。任一缺失、超龄或同基数错身份集合均 fail closed。精确 manifest 门禁固定三条
+  新 recording、metering/alert/provisioned PromQL 与 identity/freshness annotation，production readiness
+  已同步；完整 `deploy/production` 测试通过。本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
