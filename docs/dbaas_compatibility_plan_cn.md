@@ -55408,6 +55408,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   port-forward 已清理。本轮未发现新的数据面生产 RED，不修改生产代码；自然过期、长驻 streaming KeepAlive 以及真实跨节点/AZ
   的同类组合分区仍需独立门禁。
 
+- A4934 补齐 A4933 未覆盖的自然过期：新增 `pd-quorum-tikv-member-lease-expiry-linearizability`，在先完成 Watch created、显式
+  TTL=8 Grant 和 leased Put 后启动 A4932 的组合分区，要求 fault command 在三秒校准点与 lease deadline 两处都仍活跃；持续交错
+  Range 与 LeaseTimeToLive，并以带 PrevKV 的 Watch DELETE 作为实际 expiry linearization point。最终历史还必须证明 key 不存在、
+  TTL=-1，Porcupine generation model 不允许过期后重新观察到 live lease 或附属键。这与 upstream `client/v3/lease.go` 的重连职责及
+  服务端 lessor“持久删除提交后才对外发 DELETE”边界一致，不用本地墙钟伪造不可持久化的过期。
+
+  2026-08-17 在独立三 PD/三 TiKV 单节点 Kind 上用 12 秒 hold，使 TTL deadline 明确落在两个 PD member 不可达且 leader-heavy
+  TiKV store Disconnected 的重叠窗。故障中 TimeToLive 多次收到 proxy-not-ready 并由 official client 重试；自然 DELETE 没有在后端
+  无法提交时提前泄漏，而是在组合故障恢复后提交，最终 Read 为空、TTL=-1，Porcupine GREEN。首轮耗时 89.03 秒，暴露原固定 90 秒
+  test context 只余不足一秒、会把稍慢但正确的恢复误判为失败；测试现在只在显式 external fault 时使用 2 分钟预算，baseline 仍保持
+  90 秒。终态 endpoint proposal 20.16ms，LeaseList、AlarmList、测试前缀为空，五类 Region check 全零，规则和 port-forward 已清理。
+  本轮未发现数据面生产语义 RED；过期可用性仍受 PD quorum/TiKV commit 可用性约束，不能声称故障期间按墙钟准点删除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

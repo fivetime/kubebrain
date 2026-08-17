@@ -473,7 +473,15 @@ func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
 		rounds = 1
 		ttl = 8 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	testTimeout := 90 * time.Second
+	if faultCommand != "" {
+		// A quorum-loss command includes fault observation, the deliberate hold,
+		// rule cleanup, backend recovery, and only then the delayed expiry event.
+		// Keep the baseline tight while leaving recovery evidence enough room to
+		// complete instead of racing the old 90-second outer deadline.
+		testTimeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
