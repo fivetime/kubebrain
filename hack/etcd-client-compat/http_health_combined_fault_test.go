@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,10 @@ func TestHTTPHealthSurvivesCombinedBackendFault(t *testing.T) {
 	endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
 	if endpoint == "" {
 		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for combined backend fault HTTP health")
+	}
+	infoEndpoint := os.Getenv("KUBEBRAIN_INFO_ENDPOINT")
+	if infoEndpoint == "" {
+		t.Fatal("set KUBEBRAIN_INFO_ENDPOINT explicitly for checkpoint fallback metrics")
 	}
 	checkpointWait := 90 * time.Second
 	if configured := os.Getenv("KUBEBRAIN_HTTP_HEALTH_CHECKPOINT_WAIT"); configured != "" {
@@ -61,8 +66,9 @@ func TestHTTPHealthSurvivesCombinedBackendFault(t *testing.T) {
 
 	httpClient := &http.Client{Timeout: 8 * time.Second}
 	httpEndpoint := "http://" + strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
-	request := func(path string) (int, string, error) {
-		req, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, httpEndpoint+path, nil)
+	infoHTTPEndpoint := "http://" + strings.TrimPrefix(strings.TrimPrefix(infoEndpoint, "http://"), "https://")
+	requestAt := func(baseURL, path string) (int, string, error) {
+		req, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
 		if requestErr != nil {
 			return 0, "", requestErr
 		}
@@ -74,9 +80,13 @@ func TestHTTPHealthSurvivesCombinedBackendFault(t *testing.T) {
 		body, requestErr := io.ReadAll(response.Body)
 		return response.StatusCode, string(body), requestErr
 	}
+	request := func(path string) (int, string, error) { return requestAt(httpEndpoint, path) }
 	baselineVersionStatus, baselineVersion, err := request("/version")
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, baselineVersionStatus)
+	baselineMetricsStatus, baselineMetrics, err := requestAt(infoHTTPEndpoint, "/metrics")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, baselineMetricsStatus)
 
 	type commandResult struct {
 		output []byte
@@ -114,6 +124,7 @@ func TestHTTPHealthSurvivesCombinedBackendFault(t *testing.T) {
 	healthStatus, healthBody, healthErr := request("/health?serializable=true")
 	livezStatus, livezBody, livezErr := request("/livez?verbose")
 	readyzStatus, readyzBody, readyzErr := request("/readyz?verbose")
+	metricsStatus, metricsBody, metricsErr := requestAt(infoHTTPEndpoint, "/metrics")
 	result := <-commandDone
 	require.NoErrorf(t, result.err, "combined backend fault command: %s", strings.TrimSpace(string(result.output)))
 	t.Logf("combined backend fault command: %s", strings.TrimSpace(string(result.output)))
@@ -138,4 +149,40 @@ func TestHTTPHealthSurvivesCombinedBackendFault(t *testing.T) {
 	require.Contains(t, readyzBody, "[+]data_corruption ok\n")
 	require.Contains(t, readyzBody, "[+]serializable_read ok\n")
 	require.Contains(t, readyzBody, "[-]linearizable_read failed:")
+	require.NoError(t, metricsErr)
+	require.Equal(t, http.StatusOK, metricsStatus)
+	for check, minimumDelta := range map[string]float64{
+		"alarm": 1, "serializable_read": 3, "data_corruption": 1,
+	} {
+		before := prometheusCounterValue(baselineMetrics, "health_checkpoint_fallback", "check", check)
+		after := prometheusCounterValue(metricsBody, "health_checkpoint_fallback", "check", check)
+		require.GreaterOrEqualf(t, after-before, minimumDelta, "%s fallback metric delta", check)
+	}
+}
+
+func prometheusCounterValue(text, name, label, value string) float64 {
+	needle := label + "=\"" + value + "\""
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, name+"{") || !strings.Contains(line, needle) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		parsed, err := strconv.ParseFloat(fields[1], 64)
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func TestPrometheusCounterValue(t *testing.T) {
+	metricsText := "# TYPE health_checkpoint_fallback counter\n" +
+		"health_checkpoint_fallback{check=\"alarm\",cluster=\"kb\"} 2\n" +
+		"health_checkpoint_fallback{check=\"serializable_read\",cluster=\"kb\"} 3.5\n"
+	require.Equal(t, 2.0, prometheusCounterValue(metricsText, "health_checkpoint_fallback", "check", "alarm"))
+	require.Equal(t, 3.5, prometheusCounterValue(metricsText, "health_checkpoint_fallback", "check", "serializable_read"))
+	require.Zero(t, prometheusCounterValue(metricsText, "health_checkpoint_fallback", "check", "data_corruption"))
 }

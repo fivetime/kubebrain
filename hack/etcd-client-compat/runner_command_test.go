@@ -1054,6 +1054,8 @@ func TestBackendCombinedPDAndTiKVQuorumPartitionRunsHTTPHealth(t *testing.T) {
 	require.Contains(t, script, `"HTTP health probes across concurrent PD quorum and TiKV quorum partition"`)
 	require.Contains(t, script, `COMBINED_FAULT_READY_FILE=\$KUBEBRAIN_COMBINED_FAULT_READY_FILE TIKV_COMBINED_FAULT_MODE=quorum`)
 	require.Contains(t, script, `run_combined_http_health_test`)
+	require.Contains(t, script, `INFO_ENDPOINT must name the info/metrics endpoint for the HTTP health profile`)
+	require.Contains(t, script, `KUBEBRAIN_INFO_ENDPOINT="$INFO_ENDPOINT"`)
 
 	testSource, readErr := os.ReadFile("http_health_combined_fault_test.go")
 	require.NoError(t, readErr)
@@ -1065,6 +1067,7 @@ func TestBackendCombinedPDAndTiKVQuorumPartitionRunsHTTPHealth(t *testing.T) {
 	require.Contains(t, text, `healthpb.NewHealthClient(etcdClient.ActiveConnection()).List`)
 	require.Contains(t, text, `healthpb.HealthCheckResponse_SERVING`)
 	require.Contains(t, text, `[-]linearizable_read failed:`)
+	require.Contains(t, text, `prometheusCounterValue(baselineMetrics, "health_checkpoint_fallback", "check", check)`)
 }
 
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {

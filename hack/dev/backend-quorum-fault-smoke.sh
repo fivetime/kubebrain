@@ -6,6 +6,7 @@ TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-dev}"
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
+INFO_ENDPOINT="${INFO_ENDPOINT:-}"
 TIMEOUT="${TIMEOUT:-180s}"
 RECOVERY_SETTLE_SECONDS="${RECOVERY_SETTLE_SECONDS:-10}"
 BACKEND_FAULT_MODE="${BACKEND_FAULT_MODE:-pod-replacement}"
@@ -1314,9 +1315,14 @@ run_combined_http_health_test() {
   local label="$1"
   local command="$2"
   echo "Running ${label}"
+  [[ -n "$INFO_ENDPOINT" ]] || {
+    echo "INFO_ENDPOINT must name the info/metrics endpoint for the HTTP health profile" >&2
+    return 1
+  }
   (
     cd "$ROOT_DIR/hack/etcd-client-compat"
     KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_INFO_ENDPOINT="$INFO_ENDPOINT" \
       KUBEBRAIN_HTTP_HEALTH_COMBINED_FAULT_COMMAND="$command" \
       go test . -run '^TestHTTPHealthSurvivesCombinedBackendFault$' -count=1 -v
   )
