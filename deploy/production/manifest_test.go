@@ -2025,13 +2025,13 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		severity string
 	}{
 		"KubeBrainQuotaNoSpace": {
-			expr: `max(quota_nospace{namespace="kubebrain-system"}) > 0`, forValue: "0m", severity: "critical",
+			expr: `max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0`, forValue: "0m", severity: "critical",
 		},
 		"KubeBrainQuotaUsageHigh": {
-			expr: `max(quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) > 0.9`, forValue: "10m", severity: "warning",
+			expr: `max((quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0.9`, forValue: "10m", severity: "warning",
 		},
 		"KubeBrainQuotaMetricsInconsistent": {
-			expr: `count(quota_nospace{namespace="kubebrain-system"}) != 3 or count(quota_backend_bytes{namespace="kubebrain-system"}) != 3 or count(quota_logical_usage_bytes{namespace="kubebrain-system"}) != 3 or (max(quota_nospace{namespace="kubebrain-system"}) - min(quota_nospace{namespace="kubebrain-system"}) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"}) - min(quota_backend_bytes{namespace="kubebrain-system"}) > 0)`, forValue: "1m", severity: "warning",
+			expr: `count(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(quota_logical_usage_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or (max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) - min(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) - min(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0)`, forValue: "1m", severity: "warning",
 		},
 		"KubeBrainQuotaRefreshFailures": {
 			expr: `sum(increase(quota_refresh_err{namespace="kubebrain-system"}[10m])) > 0`, forValue: "0m", severity: "warning",
@@ -2043,6 +2043,10 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		require.Equal(t, want.forValue, rule["for"])
 		require.Equal(t, want.severity, rule["labels"].(map[string]any)["severity"])
 	}
+	quotaConsistencyDescription := prometheusRuleByAlert(t, groups,
+		"KubeBrainQuotaMetricsInconsistent")["annotations"].(map[string]any)["description"].(string)
+	require.Contains(t, quotaConsistencyDescription, "Ready Pod UID count during scaling")
+	require.Contains(t, quotaConsistencyDescription, "stale Pod samples are excluded")
 
 	grpcRule := prometheusRuleByAlert(t, groups, "KubeBrainGrpcErrors")
 	require.Equal(t,

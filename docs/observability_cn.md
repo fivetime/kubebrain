@@ -127,7 +127,8 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   最多 5 秒；不要依赖某个固定 Pod 的瞬时值。生产规则
   `KubeBrainQuotaNoSpace`、`KubeBrainQuotaUsageHigh`、
   `KubeBrainQuotaMetricsInconsistent` 和 `KubeBrainQuotaRefreshFailures` 分别覆盖持久
-  NOSPACE、90% 水位、三副本 series 缺失/不一致以及共享状态读取失败。换主或 mutation
+  NOSPACE、90% 水位、当前 Ready Pod UID 集合的 series 缺失/不一致以及共享状态读取失败。
+  前三条规则都排除已终止 Pod 的陈旧 UID 样本，completeness 期望值随 Ready 副本数动态变化。换主或 mutation
   后一个刷新周期内的短暂不一致正常；持续超过 1 分钟表示副本无法收敛，不能仅用旧
   leader 的 stale gauge 判断 tenant 最终状态。
 

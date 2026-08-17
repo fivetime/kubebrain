@@ -382,7 +382,7 @@ spec:
             summary: KubeBrain health fallback metrics are incomplete
             description: "At least one Ready KubeBrain replica does not expose exactly three initialized health_checkpoint_fallback series. The expected series count follows the current Ready replica count, including during scaling. Check for mixed binary versions, missing pod UID relabeling, stale scrape targets, or an incomplete metrics registry before trusting the fallback alert."
         - alert: KubeBrainQuotaNoSpace
-          expr: max(quota_nospace{namespace="kubebrain-system"}) > 0
+          expr: max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0
           for: 0m
           labels:
             severity: critical
@@ -390,7 +390,7 @@ spec:
             summary: KubeBrain tenant quota is blocking growth writes
             description: "A persistent NOSPACE alarm is active. Delete data or revoke leases to reduce logical usage, then disarm the alarm."
         - alert: KubeBrainQuotaUsageHigh
-          expr: max(quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) > 0.9
+          expr: max((quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0.9
           for: 10m
           labels:
             severity: warning
@@ -398,13 +398,13 @@ spec:
             summary: KubeBrain tenant logical quota usage is high
             description: "Logical key/value usage exceeds 90% of the configured tenant quota."
         - alert: KubeBrainQuotaMetricsInconsistent
-          expr: count(quota_nospace{namespace="kubebrain-system"}) != 3 or count(quota_backend_bytes{namespace="kubebrain-system"}) != 3 or count(quota_logical_usage_bytes{namespace="kubebrain-system"}) != 3 or (max(quota_nospace{namespace="kubebrain-system"}) - min(quota_nospace{namespace="kubebrain-system"}) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"}) - min(quota_backend_bytes{namespace="kubebrain-system"}) > 0)
+          expr: count(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or count(quota_logical_usage_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != count(max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) or (max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) - min(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) - min(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 0)
           for: 1m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain replicas disagree on tenant quota state
-            description: "Quota metric series are missing, duplicated, or replicas have reported different configured quota/NOSPACE state for more than one refresh interval."
+            description: "Quota metric series are missing or duplicated for current Ready replicas, or Ready replicas have reported different configured quota/NOSPACE state for more than one refresh interval. Expected telemetry follows the Ready Pod UID count during scaling; stale Pod samples are excluded."
         - alert: KubeBrainQuotaRefreshFailures
           expr: sum(increase(quota_refresh_err{namespace="kubebrain-system"}[10m])) > 0
           for: 0m
