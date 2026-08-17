@@ -55491,6 +55491,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确返回 `kubebrain-0/1/2` 三个稳定 ID，LeaseList、AlarmList 为空，五类 Region check 全零，三个 KubeBrain Pod Ready 且无新增重启，
   iptables 规则和 port-forward 已清理。本轮未发现新的数据面生产 RED，不修改生产代码；真实跨节点/AZ 的组合 discovery 分区仍开放。
 
+- A4940 补齐 A4935 普通 KeepAlive 恢复不能覆盖的 leader-sensitive 语义：新增
+  `pd-quorum-tikv-member-lease-require-leader` profile，对齐 upstream
+  `tests/integration/clientv3/lease/lease_test.go:TestLeaseWithRequireLeader` 与 `client/v3/lease.go:closeRequireLeader`。门禁为两个
+  TTL=600 lease 分别建立高层 `WithRequireLeader` 与普通 KeepAlive，并额外建立一个已收到首个正 TTL、随后停在 `RecvMsg` 的 raw
+  require-leader stream。组合故障后 raw stream 必须精确返回 gRPC `Unavailable`/`etcdserver: no leader`，高层 require-leader channel
+  必须关闭；普通 channel 不得被连带关闭，恢复后 `KeepAliveOnce` 必须重新返回同一 lease ID 的正 TTL。
+
+  2026-08-17 在独立三 PD/三 TiKV 单节点 Kind 上以 20 秒 hold 实跑，两个 PD member 不可达与 leader-heavy TiKV store
+  `Up -> Disconnected` 同窗出现；三条流均在故障前完成正 TTL 握手，raw 与高层 require-leader 流按上述 canonical 契约终止，普通流跨越
+  故障并恢复续租，完整测试 79.38 秒通过。终态 endpoint proposal 23.45ms，LeaseList、AlarmList 为空，五类 Region check 全零，三个
+  KubeBrain Pod Ready 且无新增重启，iptables 规则与 port-forward 已清理。本轮未发现新的数据面生产 RED，不修改生产代码；真实
+  跨节点/AZ 的组合 leader-sensitive Lease 分区仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
