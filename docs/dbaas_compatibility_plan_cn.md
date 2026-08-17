@@ -56086,6 +56086,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确 manifest 门禁固定新 recording rule、两条 PromQL 和 minimum/exact/absent annotation，production readiness 已更新；
   完整 `deploy/production` 测试通过。本项不重建数据面镜像。
 
+- A4981 修正事务路径故障分类告警对“健康 TiKV 控制面”的固定三 target 弱证据。旧
+  `KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 只要求 KubeBrain 0 Ready、恰好 3 个 TiKV
+  `up==1`、leader-missing 和 PD peer 异常为零。扩容 TiKV 后该告警永不触发；同时它没有要求全部 PD target、
+  PD leader 唯一性或 Region gauge completeness，可把“证据缺失”误分类为“存储健康但事务卡死”。现规则先将
+  HA KSM Ready 按 StatefulSet 去重并确认 KubeBrain 0 Ready，再要求三个期望来源完整、PD/TiKV 期望均至少为 3、
+  按 instance 去重的 PD/TiKV scrapeable target 分别与动态期望精确相等、PD 恰有一个 leader、按 instance/type 去重的
+  Region gauge 数恰为 `2*PD expected` 且全零、TiKV leader-missing 为零。任一证据不完整由对应 completeness 告警分类，
+  不冒充健康存储前提。精确 manifest 门禁和 annotation、production readiness 已更新，完整 `deploy/production` 测试通过。
+  本项不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
