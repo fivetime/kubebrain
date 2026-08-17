@@ -112,8 +112,10 @@ NOSPACE 和有界流式 usage rebuild 的版本，等待全部 KubeBrain 副本�
 中恰好一个同值参数；镜像和 revision 收敛不能替代该检查。运行期
 `KubeBrainQuotaMetricsInconsistent` 要求 NOSPACE、backend quota 和 logical usage 三类
 series 各恰好三份，并比较所有副本的 NOSPACE 与 backend quota 值；缺失、重复或阈值漂移
-持续超过一分钟必须告警。三条 quota 告警同样只使用统一的 60 秒新鲜 Ready Pod UID 集合；旧 Pod
-残留指标不会触发 NOSPACE/high-usage，也不能以相同基数替代当前副本的 quota series。
+持续超过一分钟必须告警。三类 quota gauge 先分别要求原始样本不超过 60 秒，再按
+`(namespace,pod,uid)` 去重；三条 quota 告警只把这些新鲜指标与统一的 60 秒新鲜 Ready Pod UID 集合
+相交。旧 Pod 残留指标不会触发 NOSPACE/high-usage，也不能以相同基数替代当前副本的 quota series；
+当前 Ready Pod 停止发布任一 quota gauge 后也会在一分钟内进入不完整状态，而不是继续信任 lookback 旧值。
 
 ## TiKV/PD 升级完成门槛
 

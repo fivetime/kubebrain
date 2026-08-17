@@ -97,6 +97,18 @@ spec:
           expr: max by (namespace, pod, uid) ((kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1) and (time() - timestamp(kube_pod_status_ready{namespace="kubebrain-system",condition="true"}) <= 60))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:quota_nospace:max_by_pod
+          expr: max by (namespace, pod, uid) (quota_nospace{namespace="kubebrain-system"} and (time() - timestamp(quota_nospace{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:quota_backend_bytes:max_by_pod
+          expr: max by (namespace, pod, uid) (quota_backend_bytes{namespace="kubebrain-system"} and (time() - timestamp(quota_backend_bytes{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:quota_logical_usage_bytes:max_by_pod
+          expr: max by (namespace, pod, uid) (quota_logical_usage_bytes{namespace="kubebrain-system"} and (time() - timestamp(quota_logical_usage_bytes{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
           expr: count(kubebrain_dbaas:statefulset_replicas:current)
           labels:
@@ -550,7 +562,7 @@ spec:
             summary: KubeBrain health fallback metrics are incomplete
             description: "At least one Ready KubeBrain replica does not expose exactly three initialized health_checkpoint_fallback series. The expected series count follows Pod UID identities whose KSM Ready samples are no older than 60 seconds, including during scaling; stale replaced Pod identities are excluded. Check for mixed binary versions, missing pod UID relabeling, stale scrape targets, or an incomplete metrics registry before trusting the fallback alert."
         - alert: KubeBrainQuotaNoSpace
-          expr: max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0
+          expr: max(kubebrain_dbaas:quota_nospace:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m
           labels:
             severity: critical
@@ -558,7 +570,7 @@ spec:
             summary: KubeBrain tenant quota is blocking growth writes
             description: "A persistent NOSPACE alarm is active. Delete data or revoke leases to reduce logical usage, then disarm the alarm."
         - alert: KubeBrainQuotaUsageHigh
-          expr: max((quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0.9
+          expr: max((kubebrain_dbaas:quota_logical_usage_bytes:max_by_pod / kubebrain_dbaas:quota_backend_bytes:max_by_pod) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0.9
           for: 10m
           labels:
             severity: warning
@@ -566,13 +578,13 @@ spec:
             summary: KubeBrain tenant logical quota usage is high
             description: "Logical key/value usage exceeds 90% of the configured tenant quota."
         - alert: KubeBrainQuotaMetricsInconsistent
-          expr: count(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(quota_logical_usage_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or (max(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) - min(quota_nospace{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) - min(quota_backend_bytes{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (kubebrain_dbaas:ready_pods:current)) > 0)
+          expr: count(kubebrain_dbaas:quota_nospace:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:quota_backend_bytes:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:quota_logical_usage_bytes:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or (max(kubebrain_dbaas:quota_nospace:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) - min(kubebrain_dbaas:quota_nospace:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0) or (max(kubebrain_dbaas:quota_backend_bytes:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) - min(kubebrain_dbaas:quota_backend_bytes:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0)
           for: 1m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain replicas disagree on tenant quota state
-            description: "Quota metric series are missing or duplicated for current Ready replicas, or Ready replicas have reported different configured quota/NOSPACE state for more than one refresh interval. Expected telemetry follows Pod UID identities whose KSM Ready samples are no older than 60 seconds during scaling; stale replaced Pod identities are excluded."
+            description: "Quota metric series are missing or duplicated for current Ready replicas, have stopped publishing for 60 seconds, or Ready replicas have reported different configured quota/NOSPACE state for more than one refresh interval. Expected telemetry follows Pod UID identities whose KSM Ready and quota samples are no older than 60 seconds during scaling; stale replaced Pod identities and stale quota samples are excluded."
         - alert: KubeBrainQuotaRefreshFailures
           expr: sum(increase(quota_refresh_err{namespace="kubebrain-system"}[10m])) > 0
           for: 0m
