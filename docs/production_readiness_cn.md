@@ -1645,7 +1645,9 @@ family 分别按 `(namespace,pod,interface)` 去重，来源数必须与三个 S
 CPU/内存资源门禁采用相同原则。`KubeBrainResourceMetricsMissing` 要求按
 `(namespace,pod,container)` 去重的 CPU usage、CFS throttled periods、CFS total periods 和 memory
 working set，以及去重的 KSM memory limit，分别精确覆盖当前动态副本总数；任一 recording series
-缺失也告警。特别是 throttling 分子或分母缺失不得被解释为零 CPU pressure。
+缺失也告警。`KubeBrainDataPlaneMemoryHigh` 与 `KubeBrainDataPlaneCPUThrottlingHigh` 的分子、分母也先
+按同一容器 identity 去重，避免重复抓取造成 many-to-many 查询失败或重复告警。特别是 throttling 分子或
+分母缺失不得被解释为零 CPU pressure。
 
 `deploy/production/monitoring.yaml` 还以 1 分钟周期生成实例级计量序列：
 
@@ -1660,6 +1662,9 @@ working set，以及去重的 KSM memory limit，分别精确覆盖当前动态�
 
 每条序列固定带 `dbaas_instance="kubebrain"`，按数字 StatefulSet ordinal 聚合本实例的全部
 KubeBrain、PD、TiKV 容器和 PD/TiKV 存储 PVC，不把 restore/repair 等非数字后缀工作负载纳入账单。
+CPU/memory 在 `(namespace,pod,container)`、network 在 `(namespace,pod,interface)` 上先选择重复采集中的
+最大值再聚合；该去重同时应用于瞬时序列与原始 counter 的小时 `increase`，不能让 completeness 已按实体
+判定健康、实际 usage 却对 HA 重复 series 二次计费。
 部署模板化时必须同步替换实例标签、Pod/PVC 选择器和备份 `BACKUP_INSTANCE`。规则同时从
 `kube_statefulset_replicas` 输出三条期望来源数、容器期望副本总数和活跃存储副本数，另以去重的
 `kube_persistentvolumeclaim_info` 输出当前匹配 PVC 对象数，以
