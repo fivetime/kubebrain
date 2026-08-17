@@ -55551,6 +55551,61 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   下一步需要请求隔离的恢复 Region 目录或 checkpoint 物化 hash，而不是复用会被普通流量失效的
   全局 client-go Region cache。
 
+- A4944 关闭 A4943 的组合故障 RED。对照 upstream
+  `server/etcdserver/api/v3rpc/maintenance.go` 的固定 revision `HashKV` 与 TiKV stale read 约束，
+  `fdcbe726` 为 GC-protected checkpoint 建立与普通 Region cache 隔离的 Region 目录；每个独立
+  txnkv client 在 PD 健康时预热并复制 Region boundary、epoch、peer 与已解析 Store 地址。历史
+  snapshot 读取使用 cache-only Region lookup、mixed replica、staleness-read-only 标记和有界单
+  replica RPC，普通 latest 读取仍保留 client-go 默认 PD reload/backoff。checkpoint 候选不再直接
+  使用最新 TSO，而取所有 TiKV Store 的共同非零 safe-ts，避免 follower 尚不能服务该时间戳。
+
+  fork 回归覆盖 protected route 不被 active cache invalidation/GC 删除、blackhole replica 有界换路、
+  cache-only miss 不访问 PD、stale follower request context 与 snapshot timeout；backend/server 回归
+  固定 readiness 先于发布且失败时保留旧 checkpoint。`pd-quorum-tikv-member-hashkv` 从稳定十秒
+  timeout 转为 GREEN，证明固定 revision 全库 scan 可同时跨越 PD quorum 丢失与一个 TiKV Store
+  隔离；A4943 的 RED 状态自此关闭，但只承诺已预热、受 GC 保护且 checkpoint 覆盖的 revision，
+  latest/未覆盖 revision 继续 fail closed。
+
+- A4945 加固 protected Region 目录的长期拓扑新鲜度。`11dde095` 发现只在进程启动/首次 checkpoint
+  预热会把随后 split、merge、peer 调度或 Store 地址替换永久排除在故障快照外；现在每 30 秒在 PD
+  可达时重新扫描租户 object keyspace，并为每个 txnkv client 原子替换整套 protected route。
+  EpochNotMatch 在 cache-only 模式下可用响应内 Region 元数据更新 protected 目录，且只接受已解析
+  Store，不能退化成 PD reload。fork 单测覆盖 split metadata、replacement peer、Store epoch/address
+  更新、目录原子替换与旧 route 淘汰；backend 回归固定大扫描按完成时间节流，失败不发布候选。
+
+- A4946 修复扩缩容 Store 集合与 safe-ts 聚合边界。`d39cd0e0` 将 checkpoint readiness 从启动时
+  缓存的 Store 列表改为每个候选从 PD 刷新，只查询 `Up` TiKV Store；Offline/Tombstone 历史 Store
+  不再永久阻断，新增 Store 会立即 seed 到全部 client cache。每个 Store safe-ts RPC 使用一秒独立
+  budget，避免一个失联 Store 消耗整个十秒 HashKV deadline；真实门禁新增显式
+  `TIKV_PARTITION_POD`，确保连续回归总是隔离指定成员而非随 leader 漂移。client fork 单测覆盖
+  Store ID 子集、空集拒绝、逐 Store timeout 与地址缓存刷新。
+
+- A4947 将 readiness 从“所有 Up Store”收紧为租户 key range 的实际 Region voter 拓扑。
+  `f9b1ba5f` 扩展 `SnapshotReadyTimestamp(ctx,start,end)` 与 range-scoped StoreSafeTS；PD ScanRegions
+  后逐 Region 选择 Up、非 learner、非 witness 的 TiKV voter，只查询这些 Store，因而新加入但尚无
+  peer 的空 Store 不会把 safe-ts 0 带入候选，同时每个 Region 少于两个活跃数据 voter 时 fail closed。
+  回归覆盖空扩容 Store、learner/witness/Offline peer 与不足双副本。镜像
+  `kubebrain:a4963-range-aware-safe-ts` 在确定隔离 `kb-tikv-0` 且同时丢失 PD quorum 的固定 revision
+  HashKV 门禁 **151.94 秒 GREEN**；三副本 Ready，规则与 port-forward 全部清理。
+
+- A4948 关闭 safe-ts RPC 与 Region 调度并发窗口。`34b3b713` 在查询前后各读取一次相关 Store 与
+  Region 元数据，要求选中 Store 集合、这些 Store 的状态/地址以及每个 Region 的 epoch/boundary/
+  peer 完全稳定；split/merge、peer 迁移或 Store 替换期间拒绝候选并由后台重试，无关且未承载 peer
+  的空 Store 变化不阻断。副本数改按唯一 Store ID 计算，畸形重复 peer 不能冒充两个容灾副本。
+  表测覆盖 split、epoch/peer、选中 Store 集合、地址变化、无关空 Store 和重复 peer。镜像
+  `kubebrain:a4964-topology-stable-safe-ts` 的同一确定性组合门禁 **128.99 秒 GREEN**，终态所有
+  KubeBrain/PD/TiKV Ready 且无遗留网络规则。
+
+- A4949 修复 checkpoint 代际切换时在途 Range 的 GC 保护窗口。服务端 unary 请求最长十秒，而原
+  单一 PD service safepoint 每秒可能前移；已经取得旧 checkpoint 的请求会在完成前失去 MVCC
+  保护。`fc4f58d6` 为每个 KubeBrain 进程创建两个独立 service ID，checkpoint 最快 30 秒换槽，
+  同一槽至少 60 秒后才复用；宽限期内只续租当前代，切换后旧槽继续保护所有已开始请求，关闭时
+  两槽均 best-effort 释放。mutex 线性化同步 refresh 与 shutdown，失败仍依赖五分钟 TTL 安全回收。
+  单测覆盖宽限续租、换槽、不提前 release、双槽关闭，并通过 backend race、server 定向测试与 vet。
+  运行态 PD 明确观察三副本各两条、两组不同 safe-ts 的新 service 记录；镜像
+  `kubebrain:a4965-checkpoint-grace` 在换槽后执行 PD quorum + `kb-tikv-0` 隔离，固定 revision
+  HashKV **134.14 秒 GREEN**。终态所有 Pod Ready，iptables 与 13379 port-forward 均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
