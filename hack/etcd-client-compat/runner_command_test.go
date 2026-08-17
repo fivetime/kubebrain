@@ -118,7 +118,10 @@ func configureCompatProcessGroup(command *exec.Cmd) {
 		if command.Process == nil {
 			return nil
 		}
-		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		// Give shell fault injectors a chance to run their EXIT/TERM cleanup
+		// traps before Cmd.WaitDelay escalates termination. Killing the entire
+		// process group immediately can strand iptables rules owned by children.
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
 		if errors.Is(err, syscall.ESRCH) {
 			return os.ErrProcessDone
 		}

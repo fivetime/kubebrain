@@ -645,35 +645,39 @@ partition_tikv_quorum() {
       -m comment --comment "${dual_partition_tags[$index]}-in" -j DROP
   done
 
-  deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))
-  all_non_up=false
-  previous_states=""
-  while (( SECONDS < deadline )); do
-    if ! cluster_json="$(kubectl --request-timeout=5s -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"; then
-      echo "waiting for TiKV partition status: failed to read TidbCluster" >&2
+  if [[ -z "$FAULT_RELEASE_FILE" ]]; then
+    deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))
+    all_non_up=false
+    previous_states=""
+    while (( SECONDS < deadline )); do
+      if ! cluster_json="$(kubectl --request-timeout=5s -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"; then
+        echo "waiting for TiKV partition status: failed to read TidbCluster" >&2
+        sleep 0.5
+        continue
+      fi
+      states="$(jq -r --arg first "${tikv_pods[0]}" --arg second "${tikv_pods[1]}" '
+        [.status.tikv.stores[] | select((.podName == $first) or (.podName == $second)) |
+         "\(.podName)=\(.state)"] | sort | join(",")' <<<"$cluster_json" 2>/dev/null || true)"
+      if [[ -n "$states" && "$states" != "$previous_states" ]]; then
+        echo "TiKV quorum partition states: $states"
+        previous_states="$states"
+      fi
+      all_non_up="$(jq -r --arg first "${tikv_pods[0]}" --arg second "${tikv_pods[1]}" '
+        [.status.tikv.stores[] | select((.podName == $first) or (.podName == $second))] as $selected |
+        (($selected | length) == 2 and all($selected[]; .state != "Up"))' <<<"$cluster_json" 2>/dev/null || true)"
+      if [[ "$all_non_up" == "true" ]]; then
+        break
+      fi
       sleep 0.5
-      continue
+    done
+    if [[ "$all_non_up" != "true" ]]; then
+      echo "two TiKV members did not leave Up within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s" >&2
+      return 1
     fi
-    states="$(jq -r --arg first "${tikv_pods[0]}" --arg second "${tikv_pods[1]}" '
-      [.status.tikv.stores[] | select((.podName == $first) or (.podName == $second)) |
-       "\(.podName)=\(.state)"] | sort | join(",")' <<<"$cluster_json" 2>/dev/null || true)"
-    if [[ -n "$states" && "$states" != "$previous_states" ]]; then
-      echo "TiKV quorum partition states: $states"
-      previous_states="$states"
-    fi
-    all_non_up="$(jq -r --arg first "${tikv_pods[0]}" --arg second "${tikv_pods[1]}" '
-      [.status.tikv.stores[] | select((.podName == $first) or (.podName == $second))] as $selected |
-      (($selected | length) == 2 and all($selected[]; .state != "Up"))' <<<"$cluster_json" 2>/dev/null || true)"
-    if [[ "$all_non_up" == "true" ]]; then
-      break
-    fi
-    sleep 0.5
-  done
-  if [[ "$all_non_up" != "true" ]]; then
-    echo "two TiKV members did not leave Up within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s" >&2
-    return 1
+    echo "TiKV quorum partition observed: $states"
+  else
+    echo "TiKV quorum partition rules active: ${tikv_pods[*]}"
   fi
-  echo "TiKV quorum partition observed: $states"
   if [[ "$action" == "restart-kubebrain" ]]; then
     restart_kubebrain_during_backend_loss
   fi
@@ -815,20 +819,24 @@ partition_tikv_member() {
     -m comment --comment "$partition_tag-in" -j DROP
 
   attempts=$((PARTITION_FAILOVER_TIMEOUT_SECONDS * 2))
-  store_state=""
-  for _ in $(seq 1 "$attempts"); do
-    store_state="$(kubectl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json 2>/dev/null |
-      jq -r --arg pod "$tikv_pod" '.status.tikv.stores[] | select(.podName == $pod) | .state' || true)"
-    if [[ -n "$store_state" && "$store_state" != "Up" ]]; then
-      break
+  if [[ -z "$FAULT_RELEASE_FILE" ]]; then
+    store_state=""
+    for _ in $(seq 1 "$attempts"); do
+      store_state="$(kubectl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json 2>/dev/null |
+        jq -r --arg pod "$tikv_pod" '.status.tikv.stores[] | select(.podName == $pod) | .state' || true)"
+      if [[ -n "$store_state" && "$store_state" != "Up" ]]; then
+        break
+      fi
+      sleep 0.5
+    done
+    if [[ -z "$store_state" || "$store_state" == "Up" ]]; then
+      echo "TiKV member $tikv_pod did not leave Up within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s" >&2
+      return 1
     fi
-    sleep 0.5
-  done
-  if [[ -z "$store_state" || "$store_state" == "Up" ]]; then
-    echo "TiKV member $tikv_pod did not leave Up within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s" >&2
-    return 1
+    echo "TiKV network partition changed store state: $tikv_pod Up -> $store_state"
+  else
+    echo "TiKV member partition rules active: $tikv_pod"
   fi
-  echo "TiKV network partition changed store state: $tikv_pod Up -> $store_state"
   hold_fault_window "$PARTITION_HOLD_SECONDS"
   cleanup_partition
   partition_pod_ip=""
