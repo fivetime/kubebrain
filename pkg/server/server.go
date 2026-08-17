@@ -261,6 +261,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.leaderElection = election
 	s.peers = peerService
 	s.initLegacyHealthMetrics()
+	s.initAlarmMetrics()
 	s.initQuotaMetrics()
 	s.initCountIndexMetrics()
 	go func() {
@@ -936,6 +937,13 @@ func (s *server) initQuotaMetrics() {
 		return
 	}
 	_ = s.metricCli.EmitCounter("quota.refresh.err", 0)
+}
+
+func (s *server) initAlarmMetrics() {
+	if s.metricCli == nil {
+		return
+	}
+	_ = s.metricCli.EmitCounter("alarm.refresh.err", 0)
 }
 
 func (s *server) initCountIndexMetrics() {

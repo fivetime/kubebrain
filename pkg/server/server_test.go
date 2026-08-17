@@ -701,6 +701,16 @@ func TestQuotaRefreshErrorMetricInitializedBeforeRefresh(t *testing.T) {
 	}, recorder.events)
 }
 
+func TestAlarmRefreshErrorMetricInitializedBeforeRefresh(t *testing.T) {
+	recorder := &healthMetricRecorder{}
+	s := &server{metricCli: recorder}
+	s.initAlarmMetrics()
+
+	require.Equal(t, []healthMetricEvent{
+		{kind: "counter", name: "alarm.refresh.err", value: 0},
+	}, recorder.events)
+}
+
 func TestCountIndexRebuildErrorMetricInitializedBeforeLeadership(t *testing.T) {
 	recorder := &healthMetricRecorder{}
 	s := &server{metricCli: recorder}

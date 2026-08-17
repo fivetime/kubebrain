@@ -181,6 +181,11 @@ fragmentation 可报告”，不表示 TiKV 实际占用。
   `alarm list`。首次启动创建 quota usage 或因存量超额自动激活 alarm 的提交结果不确定
   时，同样会在 readiness 前独立回读确认。错误 owner 不会解除 tenant alarm。
   CORRUPT 仍无对应语义。
+  每个副本在共享 alarm refresh 启动前初始化 `alarm_refresh_err=0`；production 从 60 秒内样本生成
+  current 与 10 分钟 increase recording，并要求分别覆盖当前 Ready Pod UID。current 必须是
+  `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围。`KubeBrainAlarmRefreshFailures`
+  报告实际 TiKV metadata 读取失败，`KubeBrainAlarmRefreshMetricsMissing` 拒绝缺失、陈旧或非法 counter。
+  刷新失败时 exporter 保留上次 alarm gauge 快照，不能把该 stale snapshot 当作当前共享状态。
 
 active NOSPACE 是容量保护状态，不是进程不可服务：`/ready`、`/readyz` 应继续通过，
 读和释放容量的删除操作仍可用；`etcdctl endpoint health` 的线性化 proposal 会按 etcd

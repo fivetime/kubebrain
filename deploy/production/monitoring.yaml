@@ -153,6 +153,18 @@ spec:
           expr: count(((kubebrain_dbaas:quota_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:quota_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:quota_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:quota_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:quota_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:quota_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:alarm_refresh_err:current_by_pod
+          expr: max by (namespace, pod, uid) (alarm_refresh_err{namespace="kubebrain-system"} and (time() - timestamp(alarm_refresh_err{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod
+          expr: max by (namespace, pod, uid) (increase(alarm_refresh_err{namespace="kubebrain-system"}[10m]) and (time() - timestamp(alarm_refresh_err{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:alarm_refresh_err_invalid_values:count
+          expr: count(((kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:health_checkpoint_fallback:current_by_pod_check
           expr: max by (namespace, pod, uid, check) (health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"} and (time() - timestamp(health_checkpoint_fallback{namespace="kubebrain-system",check=~"alarm|serializable_read|data_corruption"}) <= 60))
           labels:
@@ -645,6 +657,22 @@ spec:
           annotations:
             summary: KubeBrain rejected leadership due to invalid alarm metadata
             description: "A KubeBrain replica found malformed CORRUPT member/generation metadata in TiKV and refused leadership. Keep traffic fenced; do not clear or rewrite internal alarm keys. Preserve evidence and follow the corruption-repair runbook."
+        - alert: KubeBrainAlarmRefreshFailures
+          expr: sum(kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain failed to refresh shared alarm state
+            description: "At least one current Ready replica reported a fresh failure to read shared NOSPACE/CORRUPT alarm metadata from TiKV in the last 10 minutes. The replica retains its last exported gauge snapshot; inspect TiKV/PD connectivity and do not treat that snapshot as current shared state."
+        - alert: KubeBrainAlarmRefreshMetricsMissing
+          expr: absent(kubebrain_dbaas:alarm_refresh_err_invalid_values:count) == 1 or count(kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:alarm_refresh_err_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain alarm refresh-error telemetry is incomplete
+            description: "At least one current Ready Pod UID lacks an alarm refresh-error current or 10-minute-increase series with a sample no older than 60 seconds, the invalid-value recording is absent, or a value is invalid. Every replica initializes the counter to an authoritative zero before refreshing shared alarm state. Current counters must be non-negative exact integers no greater than 2^53; extrapolated increases may be fractional but must be finite and within [0,2^53]. Missing, stale, or invalid telemetry must not be interpreted as zero alarm refresh failures."
         - alert: KubeBrainRevisionLagHigh
           expr: max(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 10000
           for: 5m

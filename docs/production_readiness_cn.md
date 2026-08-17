@@ -125,6 +125,10 @@ series 各恰好三份，并比较所有副本的 NOSPACE 与 backend quota 值�
 生成按 Pod UID 去重的 current 与 10 分钟 increase recording，两者必须各自覆盖全部当前 Ready Pod。
 current counter 必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且在同一范围。
 缺失、陈旧或非法 refresh telemetry 由独立 metrics-missing 告警 fail closed，不能解释为零读取失败。
+共享 alarm refresh 采用同一合同：每个副本在 refresh goroutine 启动前发布 `alarm_refresh_err=0`，并从
+60 秒内 raw sample 生成 Ready Pod UID 级 current/10 分钟 increase recording。任一覆盖缺口或非法值都会
+告警；refresh failure 时副本保留上次导出的 NOSPACE/CORRUPT gauge 快照，该快照不得继续解释为当前共享
+alarm 状态，应检查 TiKV/PD 连通性并以权威 AlarmList/共享 metadata 对账。
 
 ## TiKV/PD 升级完成门槛
 
