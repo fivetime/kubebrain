@@ -4237,6 +4237,13 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   任一 active 立即 critical，覆盖缺口、非 0/1 或副本分歧持续一分钟也 critical。refresh 失败时保留旧
   snapshot 并由 alarm-refresh failure 链告警；缺失、陈旧、非法或分歧状态不能证明 durable write fence
   已安全解除。
+- uncertain TiKV commit resolver 通过同事务 durable ordered event marker 判定 committed/not-committed，
+  不猜测结果。新增 `txn_uncertain_resolution{outcome}`，每个 backend 初始化 `retry`、`committed`、
+  `not_committed`、`witness_corrupt`、`corrupt_alarm_failed` 五条权威零值，并在保留 legacy counter 的同时
+  记录每个分支。production 只消费 60 秒内的 Ready Pod UID/outcome current 与 10 分钟 increase，要求
+  两者各精确覆盖 `5×Ready`；current 必须为 `[0,2^53]` 精确整数，increase 可为分数但必须有限且同范围。
+  retry/两种 durable 终态为 warning，witness contradiction 或 CORRUPT 持久化失败立即 critical；缺失、
+  陈旧或非法 telemetry 不能证明不确定提交已收敛或安全 fence 已建立。
 - 裸 PD/TiKV 没有 TiDB gc_worker fallback；每个 backend 创建时发布 `storage_gc_enabled=0` 与
   `storage_gc_err=0`，发现 storage `GarbageCollector` capability 且 `--storage-gc-lifetime>0` 后立即把 enabled
   置 1。production 只消费 60 秒内、按 Ready Pod UID 去重的 enabled/current-error/30 分钟 increase，要求

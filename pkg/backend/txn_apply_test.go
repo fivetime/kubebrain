@@ -29,6 +29,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	ibadger "github.com/kubewharf/kubebrain/pkg/storage/badger"
@@ -625,6 +626,8 @@ func TestTxnCommitRecordedValidatesExactOrderedMarkers(t *testing.T) {
 
 func TestUncertainTxnCorruptWitnessArmsPersistentAlarm(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
+	recorder := &compactMetricRecorder{}
+	b.metricCli = recorder
 	revision := b.GetCurrentRevision() + 1
 	preps := []txnPrep{{
 		op: TxnWriteOp{Key: []byte(prefix + "/marker/corrupt-alarm")}, effective: true, create: true,
@@ -651,6 +654,14 @@ func TestUncertainTxnCorruptWitnessArmsPersistentAlarm(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("uncertain resolver did not stop after cancellation")
 	}
+	require.Contains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "txn.uncertain.resolution", value: 1,
+		tags: []metrics.T{metrics.Tag("outcome", uncertainTxnOutcomeWitnessCorrupt)},
+	})
+	require.Contains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "txn.uncertain.resolution", value: 1,
+		tags: []metrics.T{metrics.Tag("outcome", uncertainTxnOutcomeRetry)},
+	})
 }
 
 func TestTxnApplyCommitIsFencedByConcurrentCrossReplicaCorruptActivation(t *testing.T) {

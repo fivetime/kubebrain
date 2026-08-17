@@ -28,8 +28,38 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/common"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+const (
+	uncertainTxnOutcomeRetry              = "retry"
+	uncertainTxnOutcomeCommitted          = "committed"
+	uncertainTxnOutcomeNotCommitted       = "not_committed"
+	uncertainTxnOutcomeWitnessCorrupt     = "witness_corrupt"
+	uncertainTxnOutcomeCorruptAlarmFailed = "corrupt_alarm_failed"
+)
+
+var uncertainTxnOutcomes = []string{
+	uncertainTxnOutcomeRetry,
+	uncertainTxnOutcomeCommitted,
+	uncertainTxnOutcomeNotCommitted,
+	uncertainTxnOutcomeWitnessCorrupt,
+	uncertainTxnOutcomeCorruptAlarmFailed,
+}
+
+func initUncertainTxnMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, outcome := range uncertainTxnOutcomes {
+		_ = metricCli.EmitCounter("txn.uncertain.resolution", int64(0), metrics.Tag("outcome", outcome))
+	}
+}
+
+func (b *backend) emitUncertainTxnOutcome(outcome string) {
+	_ = b.metricCli.EmitCounter("txn.uncertain.resolution", 1, metrics.Tag("outcome", outcome))
+}
 
 // ErrTxnGuardConflict is returned by TxnApply when a compare guard's key changed
 // since it was read, so the caller must re-evaluate the txn's compares (its
@@ -854,15 +884,18 @@ func (b *backend) resolveUncertainTxn(workerCtx context.Context, preps []txnPrep
 				if alarmErr == nil {
 					corruptArmed = true
 					b.metricCli.EmitCounter("txn.uncertain.witness_corrupt", 1)
+					b.emitUncertainTxnOutcome(uncertainTxnOutcomeWitnessCorrupt)
 					klog.ErrorS(err, "armed CORRUPT alarm for inconsistent uncertain transaction witness",
 						"revision", revision, "memberID", b.localAlarmMemberID())
 				} else {
 					b.metricCli.EmitCounter("txn.uncertain.witness_corrupt_alarm_failed", 1)
+					b.emitUncertainTxnOutcome(uncertainTxnOutcomeCorruptAlarmFailed)
 					klog.ErrorS(alarmErr, "failed to arm CORRUPT alarm for inconsistent uncertain transaction witness",
 						"revision", revision)
 				}
 			}
 			b.metricCli.EmitCounter("txn.uncertain.resolve.retry", 1)
+			b.emitUncertainTxnOutcome(uncertainTxnOutcomeRetry)
 			klog.ErrorS(err, "failed to resolve uncertain txn; retrying whole transaction",
 				"revision", revision, "retryAfter", retryDelay)
 			timer := time.NewTimer(retryDelay)
@@ -887,6 +920,7 @@ func (b *backend) resolveUncertainTxn(workerCtx context.Context, preps []txnPrep
 			b.tso.AdvanceDealFloor(revision)
 			b.notifyBatch(b.txnWatchEvents(preps, revision))
 			b.metricCli.EmitCounter("txn.uncertain.resolve.committed", 1)
+			b.emitUncertainTxnOutcome(uncertainTxnOutcomeCommitted)
 			return
 		}
 		// The allocator counter and every user/event mutation were in the same
@@ -895,6 +929,7 @@ func (b *backend) resolveUncertainTxn(workerCtx context.Context, preps []txnPrep
 		// the next writer may safely reuse the exact revision.
 		klog.InfoS("resolved uncertain txn as not committed", "revision", revision)
 		b.metricCli.EmitCounter("txn.uncertain.resolve.not_committed", 1)
+		b.emitUncertainTxnOutcome(uncertainTxnOutcomeNotCommitted)
 		return
 	}
 }
