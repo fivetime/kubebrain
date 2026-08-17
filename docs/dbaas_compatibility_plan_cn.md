@@ -55272,6 +55272,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   单独复验 0.84 秒通过；测试前缀、lease/alarm 基线与 port-forward 均恢复。本轮未复现生产差异，不修改生产代码；关闭的是 unary
   proxy header identity 此前可被只比较业务 outcome 的差分测试遗漏。
 
+- A4924 将 serving-member identity 门禁扩展到独立的 Lock/Election concurrency gRPC 服务。固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3lock/lock.go` 与
+  `api/v3election/election.go`：Lock/Unlock、Campaign/Leader/Proclaim/Observe/Resign 的公开 response header 都来自处理该请求的
+  member；底层 KV mutation 或 watch 即使经 leader 执行，也不能把 leader identity 暴露给直连 follower 客户端。既有 recipe
+  测试验证 Mutex/Election ownership、value 与故障接棒，但没有把这些专用 RPC（尤其 Observe server stream）的 header 绑定到直连
+  endpoint，因而 payload 正确时仍可能漏掉代理身份错误。新增测试逐成员先取 Status，再以独立 lease 完成 Lock→Unlock 和
+  Campaign→Leader→Proclaim→Observe→Resign 全生命周期；七类响应分别约束同一 `ClusterId/MemberId` 与正 Raft term，同时断言 lock
+  key、leader lease 及 `first`→`second` value 转换。兼容性子模块显式复用固定 `/root/etcd/server` protobuf client，避免另造协议类型。
+
+  2026-08-17 对 `kubebrain-0/1/2` 三个独立 port-forward 先执行新增测试，三成员 1.95 秒通过；随后执行完整
+  direct-replica consistency suite，新增 concurrency 门禁及 alarm/hash/watch/lease/mutation 基线共 14.846 秒通过，runner 的
+  pre/post test-prefix、lease 与 alarm 基线校验均恢复。定向 race、runner fail-closed 测试、vet 与 diff check 通过，port-forward
+  已关闭。本轮未复现生产差异，不修改生产代码；关闭的是专用 concurrency RPC header identity 此前未被业务 recipe 覆盖的证据缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

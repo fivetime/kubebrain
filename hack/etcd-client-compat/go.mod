@@ -12,6 +12,7 @@ require (
 	go.etcd.io/etcd/api/v3 v3.7.0-beta.0
 	go.etcd.io/etcd/cache/v3 v3.7.0-beta.0
 	go.etcd.io/etcd/client/v3 v3.7.0-beta.0
+	go.etcd.io/etcd/server/v3 v3.7.0-beta.0
 	go.uber.org/zap v1.28.0
 	google.golang.org/grpc v1.83.0
 	google.golang.org/protobuf v1.36.11
@@ -41,4 +42,5 @@ replace (
 	go.etcd.io/etcd/cache/v3 => /root/etcd/cache
 	go.etcd.io/etcd/client/pkg/v3 => /root/etcd/client/pkg
 	go.etcd.io/etcd/client/v3 => /root/etcd/client/v3
+	go.etcd.io/etcd/server/v3 => /root/etcd/server
 )

@@ -24,6 +24,7 @@ func TestDirectReplicaConsistencyRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "TestStatusAlarmCrossEndpointVisibility")
 	require.Contains(t, string(script), "TestCorruptAlarmCrossEndpoint")
 	require.Contains(t, string(script), "TestCombinedAlarmCrossEndpointStateTransition")
+	require.Contains(t, string(script), "TestConcurrencyResponseHeadersAcrossDirectReplicas")
 	require.Contains(t, string(script), "TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas")
 	require.Contains(t, string(script), "direct KubeBrain replica metrics preflight failed")
 }
