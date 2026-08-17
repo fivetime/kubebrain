@@ -56223,6 +56223,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 retained-substitution annotation，production readiness 已同步；完整 `deploy/production` 测试通过。
   本项不重建数据面镜像。
 
+- A4997 修复 KubeBrain readiness 与事务路径分类仍信任 KSM lookback 的问题。desired expectation 已在
+  A4994 新鲜化，但 `KubeBrainReadinessUnavailable` 与
+  `KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 仍直接读取 raw Ready gauge；旧 Ready
+  值会延迟故障告警，family 缺失又可能通过 `or vector(0)` 被误当作“已证明 0 Ready”。现新增覆盖
+  KubeBrain/PD/TiKV、sample age 不超过 60 秒并按 StatefulSet 去重的 Ready recording 与三来源 count。
+  readiness 告警要求 desired/Ready 两条链均完整再精确比较；事务分类只有 Ready source count 恰为 3 时
+  才允许把 KubeBrain 0 Ready 与健康存储证据组合。精确 manifest 门禁固定两条 recording、两条完整 alert
+  PromQL 与 freshness annotation，production readiness 已同步；完整 `deploy/production` 测试通过。本项
+  不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
