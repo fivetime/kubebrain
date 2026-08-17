@@ -55685,6 +55685,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   多帧 RangeStream、HashKV、Range、只读 Txn 均保持 checkpoint 可用。终态三个 KubeBrain 零重启且
   与 PD/TiKV 全部 Ready，fault 规则与 13379 port-forward 已清理。
 
+- A4953 把 Maintenance Snapshot 纳入同一受保护 checkpoint 可用性边界。健康 leader 仍执行实时
+  read barrier、range write fence 与 epoch 复检；follower 或 750ms 数据面 TSO 探针失败的 fresh-lease
+  窗口则在发送首帧前切换到最近一次完整发布的 serializable checkpoint，并让 auth、lease、alarm、
+  object history 与 event-log join 共用其 revision/timestamp。该 artifact 与 upstream etcd 一样是
+  member-local、非线性化快照，可能早于刚完成的写入，但不会包含故障恢复后的写入；冷启动或没有可用
+  protected checkpoint 时仍 fail closed。
+
+  真实组合故障最初暴露了两处隐式 PD 依赖：`SnapshotHistoryStream` 即使收到 pinned context 仍以
+  timestamp=0 建 iterator，event-log join 也仍调用普通 `BatchGet`，因此已选中 checkpoint 的流会在
+  中途重新申请 TSO 并超时。现在 iterator 显式使用 checkpoint timestamp，join 使用 `BatchGetAt`；
+  缺少 timestamp-aware capability 时生产路径返回 `ErrSerializableCheckpointUnavailable`，不静默退化
+  到不一致读。确定性回归同时证明 checkpoint 路径不做代理、不执行 live read barrier，且生成的
+  bbolt artifact 与 SHA-256 trailer 有效。
+
+  镜像 `kubebrain:a4969-protected-snapshot`（manifest list
+  `sha256:60c43794b76a77007e0239d5baafbeeb1355f238e5610bd454aa889dcb2a5d3b`）在两个 PD member
+  不可达且 `kb-tikv-0` `Up -> Disconnected -> Up` 的同一窗口完成故障期 Snapshot 下载（约
+  **12.14 秒**），通过 checksum、官方 etcdutl status 与 bbolt 语义校验；完整破坏性门禁
+  **238.306 秒 GREEN**。恢复阶段使用新连接反复采样，直到命中包含 before/after 写入的当前 member
+  artifact，避免把合法但较旧的 follower checkpoint 误判为恢复失败。完整 backend **79.932 秒**、
+  server/etcd **199.687 秒**、checkpoint/history race、Snapshot race 与 client compatibility 全套均
+  GREEN；终态 KubeBrain/PD/TiKV 全部 Ready，门禁期间 KubeBrain 无新增重启且 fault 规则已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
