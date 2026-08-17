@@ -83,9 +83,10 @@ type checkpointTestStorage struct {
 	protectedID     string
 	protectedTS     uint64
 	protectedTTL    time.Duration
+	protections     []checkpointProtection
 	warmReads       int
 	getAtErr        error
-	releasedID      string
+	releasedIDs     []string
 	tsoReads        int
 	partitions      int
 	partitionStarts [][]byte
@@ -97,6 +98,11 @@ type checkpointTestStorage struct {
 	readinessStart  []byte
 	readinessEnd    []byte
 	snapshotValues  map[string][]byte
+}
+
+type checkpointProtection struct {
+	id        string
+	timestamp uint64
 }
 
 func (s *checkpointTestStorage) GetTimestampOracle(context.Context) (uint64, error) {
@@ -186,12 +192,13 @@ func (s *checkpointTestStorage) ProtectSnapshot(_ context.Context, id string, tt
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.protectedID, s.protectedTS, s.protectedTTL = id, timestamp, ttl
+	s.protections = append(s.protections, checkpointProtection{id: id, timestamp: timestamp})
 	return s.minimum, nil
 }
 
 func (s *checkpointTestStorage) ReleaseSnapshot(_ context.Context, id string) error {
 	s.mu.Lock()
-	s.releasedID = id
+	s.releasedIDs = append(s.releasedIDs, id)
 	s.mu.Unlock()
 	return nil
 }
@@ -296,6 +303,69 @@ func TestSerializableCheckpointWarmFailureKeepsOldProtection(t *testing.T) {
 	store.mu.Lock()
 	require.Equal(t, old.Timestamp, store.protectedTS)
 	store.mu.Unlock()
+}
+
+func TestSerializableCheckpointRetainsPreviousProtectionDuringUnaryGrace(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage()}
+	b := newCheckpointBackend(t, store)
+	first := SerializableCheckpoint{Revision: 5, Timestamp: 200}
+	require.NoError(t, b.protectSerializableCheckpoint(context.Background(), first))
+
+	second := SerializableCheckpoint{Revision: 6, Timestamp: 201}
+	require.NoError(t, b.protectSerializableCheckpoint(context.Background(), second))
+	served, err := b.GetSerializableCheckpoint()
+	require.NoError(t, err)
+	require.Equal(t, first.Timestamp, served.Timestamp)
+
+	store.mu.Lock()
+	require.Len(t, store.protections, 2)
+	require.Equal(t, store.protections[0].id, store.protections[1].id)
+	require.Equal(t, []uint64{first.Timestamp, first.Timestamp}, []uint64{
+		store.protections[0].timestamp, store.protections[1].timestamp,
+	})
+	store.mu.Unlock()
+}
+
+func TestSerializableCheckpointRotatesProtectionAfterUnaryGrace(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage()}
+	b := newCheckpointBackend(t, store)
+	first := SerializableCheckpoint{Revision: 5, Timestamp: 200}
+	require.NoError(t, b.protectSerializableCheckpoint(context.Background(), first))
+	b.serializableCheckpointSwitchedAt = time.Now().Add(-serializableCheckpointProtectionGrace)
+
+	second := SerializableCheckpoint{Revision: 6, Timestamp: 201}
+	require.NoError(t, b.protectSerializableCheckpoint(context.Background(), second))
+	served, err := b.GetSerializableCheckpoint()
+	require.NoError(t, err)
+	require.Equal(t, second.Timestamp, served.Timestamp)
+
+	store.mu.Lock()
+	require.Len(t, store.protections, 2)
+	require.NotEqual(t, store.protections[0].id, store.protections[1].id)
+	require.Equal(t, []uint64{first.Timestamp, second.Timestamp}, []uint64{
+		store.protections[0].timestamp, store.protections[1].timestamp,
+	})
+	require.Empty(t, store.releasedIDs, "the previous slot must remain protected for in-flight reads")
+	store.mu.Unlock()
+}
+
+func TestSerializableCheckpointReleaseRemovesBothProtectionSlots(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage()}
+	b := newCheckpointBackend(t, store)
+	require.NoError(t, b.protectSerializableCheckpoint(
+		context.Background(), SerializableCheckpoint{Revision: 5, Timestamp: 200},
+	))
+	b.serializableCheckpointSwitchedAt = time.Now().Add(-serializableCheckpointProtectionGrace)
+	require.NoError(t, b.protectSerializableCheckpoint(
+		context.Background(), SerializableCheckpoint{Revision: 6, Timestamp: 201},
+	))
+
+	require.NoError(t, b.releaseSerializableCheckpoint(context.Background()))
+	store.mu.Lock()
+	require.ElementsMatch(t, b.serializableCheckpointServiceIDs[:], store.releasedIDs)
+	store.mu.Unlock()
+	_, err := b.GetSerializableCheckpoint()
+	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable)
 }
 
 func TestSerializableCheckpointWarmsEveryTenantRegionBeforePublication(t *testing.T) {

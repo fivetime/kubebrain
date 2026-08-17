@@ -49,6 +49,12 @@ const (
 	// PD is reachable part of a later isolation checkpoint without scanning PD
 	// on every one-second safepoint renewal.
 	serializableCheckpointRegionRefresh = 30 * time.Second
+	// A Range that selected the previous checkpoint may remain in flight for
+	// the server's ten-second unary request window. Rotate between two PD
+	// service records no faster than this grace period, so the previous record
+	// continues pinning its snapshot until every such request has terminated.
+	// Reusing one slot therefore takes at least twice this interval.
+	serializableCheckpointProtectionGrace = 30 * time.Second
 )
 
 // SerializableCheckpoint binds the client-visible revision and compact/auth
@@ -297,20 +303,43 @@ func (b *backend) protectSerializableCheckpoint(ctx context.Context, c Serializa
 	if !ok {
 		return ErrSerializableCheckpointUnavailable
 	}
+	b.serializableCheckpointProtectMu.Lock()
+	defer b.serializableCheckpointProtectMu.Unlock()
+
+	now := time.Now()
+	current := b.serializableCheckpoint.Load()
+	if current != nil && current.Timestamp != c.Timestamp &&
+		!b.serializableCheckpointSwitchedAt.IsZero() &&
+		now.Sub(b.serializableCheckpointSwitchedAt) < serializableCheckpointProtectionGrace {
+		// Renew rather than replace the advertised generation. Advancing its
+		// only service record here would allow GC to invalidate requests that
+		// already pinned it. The durable candidate may be newer; a subsequent
+		// refresh publishes it after the grace window.
+		c = *current
+	}
 	// Warm and validate the candidate while the previous, older service
-	// safepoint is still registered. Advancing the single service record first
-	// would leave an advertised old checkpoint unprotected if validation failed.
+	// safepoint is still registered.
 	if err := b.refreshSerializableCheckpointRegions(ctx, c.Timestamp); err != nil {
 		return err
 	}
-	minimum, err := protector.ProtectSnapshot(ctx, b.serializableCheckpointServiceID, serializableCheckpointTTL, c.Timestamp)
+	slot := b.serializableCheckpointSlot
+	if current != nil && current.Timestamp != c.Timestamp {
+		slot = 1 - slot
+	}
+	minimum, err := protector.ProtectSnapshot(
+		ctx, b.serializableCheckpointServiceIDs[slot], serializableCheckpointTTL, c.Timestamp,
+	)
 	if err != nil {
 		return err
 	}
 	if minimum > c.Timestamp {
 		return fmt.Errorf("%w: GC safepoint %d passed snapshot %d", ErrSerializableCheckpointUnavailable, minimum, c.Timestamp)
 	}
-	c.ValidUntil = time.Now().Add(serializableCheckpointUsable)
+	if current == nil || current.Timestamp != c.Timestamp {
+		b.serializableCheckpointSlot = slot
+		b.serializableCheckpointSwitchedAt = now
+	}
+	c.ValidUntil = now.Add(serializableCheckpointUsable)
 	b.serializableCheckpoint.Store(&c)
 	return nil
 }
@@ -385,6 +414,8 @@ func (b *backend) GetSerializableCheckpoint() (SerializableCheckpoint, error) {
 // so failure is safe during a PD outage; a bounded best-effort release keeps a
 // normal rollout from pinning TiKV MVCC history until that TTL expires.
 func (b *backend) releaseSerializableCheckpoint(ctx context.Context) error {
+	b.serializableCheckpointProtectMu.Lock()
+	defer b.serializableCheckpointProtectMu.Unlock()
 	checkpoint := b.serializableCheckpoint.Swap(nil)
 	if checkpoint == nil {
 		return nil
@@ -393,7 +424,14 @@ func (b *backend) releaseSerializableCheckpoint(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
-	return protector.ReleaseSnapshot(ctx, b.serializableCheckpointServiceID)
+	var releaseErr error
+	for _, serviceID := range b.serializableCheckpointServiceIDs {
+		if serviceID == "" {
+			continue
+		}
+		releaseErr = errors.Join(releaseErr, protector.ReleaseSnapshot(ctx, serviceID))
+	}
+	return releaseErr
 }
 
 // RefreshSerializableCheckpoint synchronously establishes the first protected

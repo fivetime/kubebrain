@@ -443,10 +443,13 @@ type backend struct {
 	// durableRevisionTarget and durableRevisionSignal coalesce collector progress
 	// into monotonic background persistence, so a slow metadata write cannot
 	// delay watch fan-out or user-write acknowledgement.
-	durableRevisionTarget           uint64
-	durableRevisionSignal           chan struct{}
-	serializableCheckpoint          atomic.Pointer[SerializableCheckpoint]
-	serializableCheckpointServiceID string
+	durableRevisionTarget            uint64
+	durableRevisionSignal            chan struct{}
+	serializableCheckpoint           atomic.Pointer[SerializableCheckpoint]
+	serializableCheckpointServiceIDs [2]string
+	serializableCheckpointProtectMu  sync.Mutex
+	serializableCheckpointSlot       int
+	serializableCheckpointSwitchedAt time.Time
 	// serializableCheckpointRegionsWarmedAt is the wall-clock UnixNano of the
 	// last complete PD directory scan plus Region-cache warmup. A one-shot warm
 	// is insufficient for a long-running data-plane process: Region topology and
@@ -641,16 +644,19 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			bufSize:          config.WatchFanoutBuffer,
 			progressKick:     make(chan struct{}, 1),
 		},
-		historyScanSem:                  make(chan struct{}, historyScanConcurrency),
-		decodedRangeSpillSem:            make(chan struct{}, 1),
-		historyScanGroup:                newScanGroup(),
-		commitNotify:                    newCommitNotify(),
-		durableRevisionSignal:           make(chan struct{}, 1),
-		serializableCheckpointServiceID: newSerializableCheckpointServiceID(config.Keyspace, config.Identity),
-		compactSignal:                   make(chan struct{}, 1),
-		metricCli:                       metricCli,
-		workerCtx:                       workerCtx,
-		workerCancel:                    workerCancel,
+		historyScanSem:        make(chan struct{}, historyScanConcurrency),
+		decodedRangeSpillSem:  make(chan struct{}, 1),
+		historyScanGroup:      newScanGroup(),
+		commitNotify:          newCommitNotify(),
+		durableRevisionSignal: make(chan struct{}, 1),
+		serializableCheckpointServiceIDs: [2]string{
+			newSerializableCheckpointServiceID(config.Keyspace, config.Identity),
+			newSerializableCheckpointServiceID(config.Keyspace, config.Identity),
+		},
+		compactSignal: make(chan struct{}, 1),
+		metricCli:     metricCli,
+		workerCtx:     workerCtx,
+		workerCancel:  workerCancel,
 	}
 	b.compactCtx.Store(compactContextHolder{ctx: workerCtx})
 	b.corruptAlarmFenceShard.Store(corruptAlarmFenceShardOffset(config.Identity))
