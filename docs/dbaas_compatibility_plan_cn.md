@@ -56419,6 +56419,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   manifest 门禁、production readiness 与 observability 已同步；完整 `deploy/production` 测试通过。
   本项不重建数据面镜像。
 
+- A5020 为 serializable checkpoint refresh failure 建立生产者到告警的权威零值链。此前该 counter 只在
+  错误发生时创建，监控直接查询 raw `increase`，因此 family 缺失、停止 scrape 或非法值都可静默为零；
+  仅在 PromQL 强求来源数又会把正常零事件误报。现 backend 初始化同时 `EmitCounter(...,0)`，单元测试固定
+  启动事件；监控从 60 秒内 raw sample 分别生成按 Pod UID 去重的 current/10 分钟 increase recording，
+  要求各自覆盖所有当前 Ready Pod。current 必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但必须
+  有限且同范围；invalid recording 缺失/非零均触发新的 metrics-missing 告警，failure 告警只消费新鲜
+  increase。精确 manifest、backend 测试与 production/observability 文档已同步；相关测试通过。本项需要
+  下一生产镜像携带 counter 初始化改动。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
