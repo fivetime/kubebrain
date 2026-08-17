@@ -56509,6 +56509,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   健康。精确 manifest/backend 测试与 production/observability 文档已同步；相关测试通过。本项需要下一
   生产镜像。
 
+- A5030 为 event-log replay 建立“确认损坏”而非“候选异常”的生产安全链。旧 malformed、incomplete、
+  witness-mismatch、invalid-object counter 在最终重读 cleanup/compact watermark 前递增，其中 referenced
+  object missing 可由合法并发 compaction 触发，直接告警会误报；同时 CORRUPT alarm 持久化失败仅有动态
+  legacy counter。现新增 canonical `watch.event_log.corruption{kind}`，只在 trusted window 且重新排除 cleanup/
+  compaction race 后递增，kind 固定为 `malformed|witness_mismatch|incomplete|invalid_object`；每个 backend
+  初始化四个 kind 和 `corrupt_alarm_failed` 权威零值。监控生成 60 秒新鲜的 Pod UID/kind current/10 分钟
+  increase，分别要求 `4×Ready` 与 `1×Ready` 来源完整，验证 `[0,2^53]` 精确 current 与有限同范围 increase；
+  确认损坏和 alarm 持久化失败均立即 critical，metrics-missing 拒绝缺失、陈旧或非法 telemetry。测试同时
+  证明 compaction race 不递增 canonical corruption、trusted witness mismatch 会递增。精确 manifest/backend
+  测试与 production/observability 文档已同步；相关测试通过。本项需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
