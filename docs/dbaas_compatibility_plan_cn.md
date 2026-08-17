@@ -55968,6 +55968,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   observability runbook 明确在恢复当前三个 Pod UID 对应的 9 条 series 前，不得把事件告警静默解释为零 fallback。
   完整 `deploy/production` 测试通过；本项只改变监控资产，不部署 Prometheus Operator、不重建数据面镜像。
 
+- A4968 取消 A4967 completeness 告警对固定三副本的假设。原表达式把期望 series 数写死为
+  9；即使每个 Ready Pod 都正确发布三个 check，正常扩容到五副本也会持续误报，缩容到一副本同样误报。
+  新规则保留 `(namespace,pod,uid)` Ready join，将实际合法 series 数与
+  `3 × count(current Ready Pod UID)` 动态比较；旧 Pod 样本仍不能补数，任一 Ready 副本缺失固定 label 仍会在
+  5 分钟后告警，而无 Ready Pod 时不制造无工作负载告警。生产 manifest 门禁固定动态期望表达式及扩缩容语义，
+  observability runbook 也改为按当前 Ready 副本数处置；完整 `deploy/production` 测试通过。本项只修复通用
+  DBaaS 监控的扩缩容正确性，不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
