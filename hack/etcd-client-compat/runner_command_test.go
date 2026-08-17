@@ -918,6 +918,9 @@ func TestBackendCombinedPDQuorumAndTiKVMemberPartitionRunsFixedHashKV(t *testing
 	require.NoError(t, err)
 	require.Contains(t, string(testSource), `clientv3.WithSerializable()`)
 	require.Contains(t, string(testSource), `serializable Range must use the protected member checkpoint`)
+	require.Contains(t, string(testSource), `NewKVClient(client.ActiveConnection()).RangeStream`)
+	require.Contains(t, string(testSource), `serializable RangeStream must fall back before its first live frame`)
+	require.Contains(t, string(testSource), `only the terminal RangeStream frame may carry metadata`)
 }
 
 func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {

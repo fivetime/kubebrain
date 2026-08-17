@@ -3,12 +3,14 @@ package compat
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -70,16 +72,27 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	require.NoError(t, err)
 	revision := put.Header.Revision
 	rangePrefix := prefix + "range/"
-	ops := make([]clientv3.Op, 0, 64)
-	for index := 0; index < cap(ops); index++ {
+	const rangeKeys = 64
+	values := make([]string, rangeKeys)
+	ops := make([]clientv3.Op, 0, rangeKeys/2)
+	for index := 0; index < rangeKeys; index++ {
 		key := fmt.Sprintf("%s%03d", rangePrefix, index)
-		value := fmt.Sprintf("checkpoint-value-%03d", index)
+		// The aggregate is deliberately larger than the default 1.5 MiB
+		// RangeStream frame target. Seed in two transactions so request admission
+		// remains below that limit while the fault-time LIST must cross a real
+		// successful Send boundary.
+		value := fmt.Sprintf("checkpoint-value-%03d-%s", index, strings.Repeat("x", 28*1024))
+		values[index] = value
 		ops = append(ops, clientv3.OpPut(key, value))
+		if len(ops) != cap(ops) {
+			continue
+		}
+		seeded, seedErr := client.Txn(ctx).Then(ops...).Commit()
+		require.NoError(t, seedErr)
+		require.True(t, seeded.Succeeded)
+		revision = seeded.Header.Revision
+		ops = ops[:0]
 	}
-	seeded, err := client.Txn(ctx).Then(ops...).Commit()
-	require.NoError(t, err)
-	require.True(t, seeded.Succeeded)
-	revision = seeded.Header.Revision
 	// TiKV's store-wide safe timestamp intentionally trails the latest TSO. Let
 	// the committed revision enter every Store's common safe-time window before
 	// testing the contract that applies only to a covered historical revision.
@@ -93,7 +106,7 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	require.Equal(t, revision, baseline.HashRevision)
 	baselineRange, err := client.Get(ctx, rangePrefix, clientv3.WithPrefix(), clientv3.WithSerializable())
 	require.NoError(t, err)
-	require.Len(t, baselineRange.Kvs, len(ops))
+	require.Len(t, baselineRange.Kvs, rangeKeys)
 
 	type commandResult struct {
 		output []byte
@@ -112,6 +125,28 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 		return putErr != nil && isMutationFailoverAmbiguous(putErr)
 	}, 15*time.Second, 25*time.Millisecond, "PD quorum fault must expose a mutation-unavailable window")
 
+	streamCtx, streamCancel := context.WithTimeout(ctx, hashCallTimeout)
+	rawStream, streamErr := etcdserverpb.NewKVClient(client.ActiveConnection()).RangeStream(
+		streamCtx,
+		&etcdserverpb.RangeRequest{
+			Key: []byte(rangePrefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(rangePrefix)), Serializable: true,
+		},
+	)
+	var streamFrames []*etcdserverpb.RangeStreamResponse
+	if streamErr == nil {
+		for {
+			frame, recvErr := rawStream.Recv()
+			if recvErr == io.EOF {
+				break
+			}
+			if recvErr != nil {
+				streamErr = recvErr
+				break
+			}
+			streamFrames = append(streamFrames, frame)
+		}
+	}
+	streamCancel()
 	callCtx, callCancel := context.WithTimeout(ctx, hashCallTimeout)
 	duringFault, hashErr := client.HashKV(callCtx, endpoint, revision)
 	callCancel()
@@ -122,7 +157,7 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	rangeCancel()
 	txnCtx, txnCancel := context.WithTimeout(ctx, hashCallTimeout)
 	duringTxn, txnErr := client.Txn(txnCtx).
-		If(clientv3.Compare(clientv3.Value(rangePrefix+"000"), "=", "checkpoint-value-000")).
+		If(clientv3.Compare(clientv3.Value(rangePrefix+"000"), "=", values[0])).
 		Then(clientv3.OpGet(rangePrefix+"001", clientv3.WithSerializable())).
 		Else(clientv3.OpGet(rangePrefix+"missing", clientv3.WithSerializable())).
 		Commit()
@@ -150,6 +185,26 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	require.Equal(t, baseline.Hash, duringFault.Hash)
 	require.Equal(t, baseline.HashRevision, duringFault.HashRevision)
 	require.Equal(t, baseline.CompactRevision, duringFault.CompactRevision)
+	require.NoError(t, streamErr, "serializable RangeStream must fall back before its first live frame")
+	require.GreaterOrEqual(t, len(streamFrames), 2, "fault-time LIST must exercise a successful non-terminal frame")
+	streamedKVs := make([]*etcdserverpb.RangeResponse, 0, len(streamFrames))
+	var concatenatedKVs = baselineRange.Kvs[:0:0]
+	for index, frame := range streamFrames {
+		response := frame.GetRangeResponse()
+		require.NotNil(t, response)
+		streamedKVs = append(streamedKVs, response)
+		concatenatedKVs = append(concatenatedKVs, response.Kvs...)
+		if index < len(streamFrames)-1 {
+			require.Nil(t, response.Header, "only the terminal RangeStream frame may carry metadata")
+			require.Zero(t, response.Count)
+		}
+	}
+	terminal := streamedKVs[len(streamedKVs)-1]
+	require.NotNil(t, terminal.Header)
+	require.GreaterOrEqual(t, terminal.Header.Revision, revision)
+	require.EqualValues(t, rangeKeys, terminal.Count)
+	require.False(t, terminal.More)
+	require.Equal(t, baselineRange.Kvs, concatenatedKVs)
 	require.NoError(t, rangeErr, "serializable Range must use the protected member checkpoint")
 	require.NotNil(t, duringRange)
 	require.Equal(t, baselineRange.Kvs, duringRange.Kvs)
@@ -163,7 +218,7 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 	require.NotNil(t, txnRange)
 	require.Len(t, txnRange.Kvs, 1)
 	require.Equal(t, rangePrefix+"001", string(txnRange.Kvs[0].Key))
-	require.Equal(t, "checkpoint-value-001", string(txnRange.Kvs[0].Value))
+	require.Equal(t, values[1], string(txnRange.Kvs[0].Value))
 	require.GreaterOrEqual(t, duringTxn.Header.Revision, revision)
 	require.Eventually(t, func() bool {
 		callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)

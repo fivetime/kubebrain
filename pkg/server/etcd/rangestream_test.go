@@ -92,6 +92,16 @@ type checkpointRangeStreamBackendShim struct {
 	used bool
 }
 
+type liveBlockingCheckpointRangeStreamBackendShim struct {
+	*checkpointRangeStreamBackendShim
+	liveAttempts int
+}
+
+type partialFailureCheckpointRangeStreamBackendShim struct {
+	*checkpointRangeStreamBackendShim
+	liveAttempts int
+}
+
 func (b *checkpointRangeStreamBackendShim) RangeStreamChan(
 	ctx context.Context, _, _ []byte, revision uint64,
 ) (<-chan rangeStreamChunk, error) {
@@ -108,6 +118,36 @@ func (b *checkpointRangeStreamBackendShim) RangeStreamChan(
 		}},
 	}}
 	ch <- rangeStreamChunk{resp: &etcdserverpb.RangeResponse{Header: txnHeader(int64(b.checkpoint.Revision))}}
+	close(ch)
+	return ch, nil
+}
+
+func (b *liveBlockingCheckpointRangeStreamBackendShim) RangeStreamChan(
+	ctx context.Context, start, end []byte, revision uint64,
+) (<-chan rangeStreamChunk, error) {
+	if _, ok := storage.SnapshotTimestampFromContext(ctx); ok {
+		return b.checkpointRangeStreamBackendShim.RangeStreamChan(ctx, start, end, revision)
+	}
+	b.liveAttempts++
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (b *partialFailureCheckpointRangeStreamBackendShim) RangeStreamChan(
+	ctx context.Context, start, end []byte, revision uint64,
+) (<-chan rangeStreamChunk, error) {
+	if _, ok := storage.SnapshotTimestampFromContext(ctx); ok {
+		return b.checkpointRangeStreamBackendShim.RangeStreamChan(ctx, start, end, revision)
+	}
+	b.liveAttempts++
+	ch := make(chan rangeStreamChunk, 3)
+	for _, key := range []string{"/partial/a", "/partial/b"} {
+		ch <- rangeStreamChunk{resp: &etcdserverpb.RangeResponse{
+			Header: txnHeader(int64(revision)),
+			Kvs:    []*mvccpb.KeyValue{{Key: []byte(key), Value: []byte("live"), ModRevision: int64(revision)}},
+		}}
+	}
+	ch <- rangeStreamChunk{err: storage.ErrUnavailable}
 	close(ch)
 	return ch, nil
 }
@@ -571,6 +611,65 @@ func TestFollowerRangeStreamPreservesCallerCancellation(t *testing.T) {
 	err := server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")},
 		&fakeRangeStreamServer{ctx: ctx})
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestFreshLeaderSerializableLatestRangeStreamFallsBackBeforeFirstFrame(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 41, Timestamp: 111, CompactRevision: 9, ValidUntil: time.Now().Add(time.Minute),
+	}
+	checkpointRange := &checkpointRangeBackendShim{BackendShim: server.backend, checkpoint: checkpoint}
+	checkpointStream := &checkpointRangeStreamBackendShim{checkpointRangeBackendShim: checkpointRange}
+	shim := &liveBlockingCheckpointRangeStreamBackendShim{checkpointRangeStreamBackendShim: checkpointStream}
+	server.backend = shim
+	server.tokens.snapshots = newAuthSnapshotCache(shim)
+	server.peers = testPeerService{
+		isLeader: true,
+		epochFn:  func() (uint64, bool) { return 5, true },
+	}
+
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	started := time.Now()
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/checkpoint/"), RangeEnd: []byte("/checkpoint0"), Serializable: true,
+	}, stream)
+	require.NoError(t, err)
+	require.Equal(t, 1, shim.liveAttempts)
+	require.True(t, checkpointStream.used)
+	require.GreaterOrEqual(t, time.Since(started), serializableLiveReadBudget)
+	require.NotEmpty(t, stream.sent)
+	terminal := stream.sent[len(stream.sent)-1].GetRangeResponse()
+	require.Equal(t, int64(checkpoint.Revision), terminal.GetHeader().GetRevision())
+	require.EqualValues(t, 1, terminal.Count)
+	require.Equal(t, []byte("checkpoint"), terminal.Kvs[0].Value)
+}
+
+func TestFreshLeaderSerializableLatestRangeStreamNeverFallsBackAfterFrame(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 41, Timestamp: 111, CompactRevision: 9, ValidUntil: time.Now().Add(time.Minute),
+	}
+	checkpointRange := &checkpointRangeBackendShim{BackendShim: server.backend, checkpoint: checkpoint}
+	checkpointStream := &checkpointRangeStreamBackendShim{checkpointRangeBackendShim: checkpointRange}
+	shim := &partialFailureCheckpointRangeStreamBackendShim{checkpointRangeStreamBackendShim: checkpointStream}
+	server.backend = shim
+	server.tokens.snapshots = newAuthSnapshotCache(shim)
+	server.peers = testPeerService{
+		isLeader: true,
+		epochFn:  func() (uint64, bool) { return 5, true },
+	}
+
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/partial/"), RangeEnd: []byte("/partial0"), Serializable: true,
+	}, stream)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, 1, shim.liveAttempts)
+	require.False(t, checkpointStream.used, "a partial public stream must never join a checkpoint snapshot")
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, []byte("/partial/a"), stream.sent[0].GetRangeResponse().Kvs[0].Key)
 }
 
 func TestStaleLeaderSerializableLatestRangeStreamUsesProtectedCheckpoint(t *testing.T) {

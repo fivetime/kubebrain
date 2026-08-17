@@ -260,10 +260,56 @@ func isSerializableLiveReadFallbackError(err error) bool {
 // stream then ends with a normal return (io.EOF). A
 // backend error aborts the stream with a gRPC status so the apiserver relists
 // rather than treating a partial stream as complete.
-func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV_RangeStreamServer) (retErr error) {
+func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV_RangeStreamServer) error {
 	emitEtcdMVCCRangeCounter(s.metricCli, 1)
-	ctx := rs.Context()
 	startTime := time.Now()
+	ctx := rs.Context()
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if r != nil && r.Serializable && r.Revision <= 0 && leadingFresh {
+		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+			liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
+			liveStream := &contextRangeStreamServer{KV_RangeStreamServer: rs, ctx: liveCtx}
+			err := s.rangeStreamOnce(r, liveStream, startTime)
+			cancel()
+			if err == nil || liveStream.sent > 0 || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
+				return err
+			}
+			s.metricCli.EmitCounter("read.range_stream.checkpoint_fallback", 1)
+			return s.rangeStreamOnce(r, &contextRangeStreamServer{
+				KV_RangeStreamServer: rs,
+				ctx:                  backend.WithSerializableCheckpoint(ctx, checkpoint),
+			}, startTime)
+		}
+	}
+	return s.rangeStreamOnce(r, &contextRangeStreamServer{KV_RangeStreamServer: rs, ctx: ctx}, startTime)
+}
+
+// contextRangeStreamServer lets one public RangeStream execute against a
+// bounded live-read context or a protected checkpoint while retaining the
+// original gRPC transport. sent counts only successfully delivered frames: a
+// retry is safe precisely while it remains zero.
+type contextRangeStreamServer struct {
+	etcdserverpb.KV_RangeStreamServer
+	ctx  context.Context
+	sent int
+}
+
+func (s *contextRangeStreamServer) Context() context.Context { return s.ctx }
+
+func (s *contextRangeStreamServer) Send(response *etcdserverpb.RangeStreamResponse) error {
+	if err := s.KV_RangeStreamServer.Send(response); err != nil {
+		return err
+	}
+	s.sent++
+	return nil
+}
+
+func (s *RPCServer) rangeStreamOnce(
+	r *etcdserverpb.RangeRequest,
+	rs etcdserverpb.KV_RangeStreamServer,
+	startTime time.Time,
+) (retErr error) {
+	ctx := rs.Context()
 	klog.V(4).InfoS("RANGE STREAM", "key", util.LoggedKey(r.Key), "rangeEnd", util.LoggedKey(r.RangeEnd), "rev", r.Revision)
 	if err := validateRangeRequest(r); err != nil {
 		return err

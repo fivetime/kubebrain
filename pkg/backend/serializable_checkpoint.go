@@ -176,11 +176,27 @@ func (b *backend) createSerializableCheckpoint(ctx context.Context) (Serializabl
 	}
 	timestamp := uint64(0)
 	if validator, ok := storage.FindCapability[storage.SnapshotReadinessValidator](b.kv); ok {
-		timestamp, err = validator.SnapshotReadyTimestamp(
+		objectTimestamp, readyErr := validator.SnapshotReadyTimestamp(
 			ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(),
 		)
-		if err != nil {
-			return SerializableCheckpoint{}, err
+		if readyErr != nil {
+			return SerializableCheckpoint{}, readyErr
+		}
+		// The compact watermark is deliberately stored in the coordination-key
+		// namespace, outside the tenant's encoded object interval. Serializable
+		// reads re-read it at the checkpoint for the compaction fence, so the
+		// advertised timestamp must also be safe for its Region. An exact-key
+		// interval avoids making one tenant depend on every unrelated Region
+		// between the coordination and encoded keyspaces.
+		compactKey := getCompactKey(b.config.Prefix)
+		compactEnd := append(append([]byte(nil), compactKey...), 0)
+		metadataTimestamp, readyErr := validator.SnapshotReadyTimestamp(ctx, compactKey, compactEnd)
+		if readyErr != nil {
+			return SerializableCheckpoint{}, readyErr
+		}
+		timestamp = min(objectTimestamp, metadataTimestamp)
+		if timestamp == 0 {
+			return SerializableCheckpoint{}, ErrSerializableCheckpointUnavailable
 		}
 		revision, compactRevision, authRevision, err = b.loadSerializableCheckpointWatermarksAt(ctx, timestamp)
 		if err != nil {
@@ -377,10 +393,15 @@ func (b *backend) warmSerializableCheckpoint(ctx context.Context, timestamp uint
 	if len(partitions) == 0 {
 		return fmt.Errorf("%w: no checkpoint regions", ErrSerializableCheckpointUnavailable)
 	}
-	starts := make([][]byte, 0, len(partitions))
+	starts := make([][]byte, 0, len(partitions)+1)
 	for _, partition := range partitions {
 		starts = append(starts, append([]byte(nil), partition.Start...))
 	}
+	// GetCompactRevisionFresh is part of every checkpoint-backed Range and
+	// RangeStream compaction fence, but the raw coordination key is outside the
+	// encoded object interval above. Warm and protect its Region in every
+	// independent TiKV client before making the checkpoint visible.
+	starts = append(starts, getCompactKey(b.config.Prefix))
 	if warmer, supported := storage.FindCapability[storage.SnapshotRegionWarmer](b.kv); supported {
 		if err := warmer.WarmSnapshotRegions(ctx, starts, timestamp); err != nil {
 			return fmt.Errorf("warm checkpoint regions: %w", err)

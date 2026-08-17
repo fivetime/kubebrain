@@ -94,9 +94,10 @@ type checkpointTestStorage struct {
 	batchTimestamps []uint64
 	readinessErr    error
 	readyTimestamp  uint64
+	readyTimestamps []uint64
 	readinessCalls  int
-	readinessStart  []byte
-	readinessEnd    []byte
+	readinessStarts [][]byte
+	readinessEnds   [][]byte
 	snapshotValues  map[string][]byte
 }
 
@@ -176,10 +177,13 @@ func (s *checkpointTestStorage) SnapshotReadyTimestamp(_ context.Context, start,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.readinessCalls++
-	s.readinessStart = append([]byte(nil), start...)
-	s.readinessEnd = append([]byte(nil), end...)
+	s.readinessStarts = append(s.readinessStarts, append([]byte(nil), start...))
+	s.readinessEnds = append(s.readinessEnds, append([]byte(nil), end...))
 	if s.readinessErr != nil {
 		return 0, s.readinessErr
+	}
+	if len(s.readyTimestamps) >= s.readinessCalls {
+		return s.readyTimestamps[s.readinessCalls-1], nil
 	}
 	if s.readyTimestamp != 0 {
 		return s.readyTimestamp, nil
@@ -256,8 +260,25 @@ func TestSerializableCheckpointUsesRevisionWatermarksAtReadyTimestamp(t *testing
 	c, err := b.createSerializableCheckpoint(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, SerializableCheckpoint{Revision: 7, Timestamp: 300, CompactRevision: 3, AuthRevision: 5}, c)
-	require.Equal(t, b.ks.ObjectKeyspaceStart(), store.readinessStart)
-	require.Equal(t, b.ks.ObjectKeyspaceEnd(), store.readinessEnd)
+	compactKey := getCompactKey(b.config.Prefix)
+	require.Equal(t, [][]byte{b.ks.ObjectKeyspaceStart(), compactKey}, store.readinessStarts)
+	require.Equal(t, [][]byte{b.ks.ObjectKeyspaceEnd(), append(append([]byte(nil), compactKey...), 0)}, store.readinessEnds)
+}
+
+func TestSerializableCheckpointUsesCommonObjectAndCompactRegionSafeTimestamp(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), readyTimestamps: []uint64{320, 300}}
+	b := newCheckpointBackend(t, store)
+	b.SetCurrentRevision(9)
+	store.snapshotValues = map[string][]byte{
+		string(b.ks.EncodeInternalKey(durableRevisionKey)):    uint64ToBytes(7),
+		string(getCompactKey(b.config.Prefix)):                uint64ToBytes(3),
+		string(b.ks.EncodeInternalKey([]byte("auth/config"))): append([]byte{1}, uint64ToBytes(5)...),
+	}
+
+	c, err := b.createSerializableCheckpoint(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, uint64(300), c.Timestamp)
+	require.Equal(t, []uint64{300}, store.batchTimestamps)
 }
 
 func TestSerializableCheckpointFailsClosedAfterGCPassedOrLocalDeadline(t *testing.T) {
@@ -380,7 +401,7 @@ func TestSerializableCheckpointWarmsEveryTenantRegionBeforePublication(t *testin
 		context.Background(), SerializableCheckpoint{Revision: 6, Timestamp: 201},
 	))
 	store.mu.Lock()
-	require.Equal(t, 3, store.warmReads)
+	require.Equal(t, 4, store.warmReads)
 	require.Equal(t, 1, store.warmerCalls)
 	store.mu.Unlock()
 	_, err := b.GetSerializableCheckpoint()
