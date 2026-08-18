@@ -1124,6 +1124,11 @@ lease 后台失败另由
 及尚存 key 后重试，避免先删内存状态造成孤儿数据；expire-corrupt-deferred 表示 durable CORRUPT fence 主动
 保留已到期 lease、attachment、metadata 与用户 key，必须保留损坏证据、修复后显式 disarm。后两类均已延迟
 公开到期语义，因此立即 critical；缺失、陈旧、非法或 operation 不完整同样 critical。
+constructor lease snapshot 的有界失败另由 `lease_startup_restore_failure` 记录，并在发起远端 PD/TiKV 读取前
+初始化权威零值。失败不会把空/部分 snapshot 标记为 ready，进程仍可进入 shutdown/election 生命周期；若后续成为
+leader，必须在 NOT_SERVING 下重新完成权威 lease reload 才能开放 RPC。production 生成 60 秒新鲜的 Ready Pod UID
+级 current 与 10 分钟 increase，要求每类与 Ready 数相等且 counter 合法；任一增量 warning，缺失、陈旧或非法
+warning。该历史信号补充而不替代 `leader_serving_initialization_err{stage="lease"}` 的当前任期 critical 门禁。
 orphan lease safety-net 另使用 `lease_orphan_sweep_failure{stage}`，覆盖完整 attachment snapshot load、legacy
 migration/seal、user/legacy attachment read 与解析、compare-delete 和 attachment retirement；九类固定 stage
 在 RPC server 创建时发布权威零值。production 同样从 60 秒内样本生成 Ready Pod UID/stage current 与

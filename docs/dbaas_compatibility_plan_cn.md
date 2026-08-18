@@ -56744,6 +56744,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   流程修复/disarm，不能当普通 TiKV 瞬时失败。固定 taxonomy、定向 server 与精确 production 测试通过；需要
   下一生产镜像和监控发布。
 
+- A5052 闭合 constructor lease restore 有界失败仅写日志的可观测缺口。A4767 已把独立 PD/TiKV snapshot 与
+  metadata scan 限制在 server attempt budget 内，失败保持 `leaseReady=false` 后允许进程继续进入 shutdown/
+  election 生命周期；但 `restore leases failed` 发生在原有 metrics 初始化之前，稍后 promotion reload 成功并变成
+  Ready 后没有稳定证据表明该副本曾跳过启动 snapshot。现新增固定 `lease.startup_restore.failure`，在 constructor
+  远端读之前初始化权威零值，`restoreLeasesAtStartup` 任一失败在关闭 gate 后递增。既有阻塞 PD 回归同时固定
+  deadline、gate 和 counter，正常 restore 不误报。production 生成 Ready Pod UID 级 60 秒新鲜 current/10 分钟
+  increase，要求来源与 Ready 数相等、current 为 `[0,2^53]` 精确整数、increase 有限同范围；失败增量及缺失/
+  陈旧/非法均 warning。该历史信号不替代 `leader_serving_initialization_err{stage="lease"}`：正式任期仍在
+  NOT_SERVING 下重试完整权威 reload，绝不因 constructor 继续启动而 fail open。定向 server 与精确 production
+  测试通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
