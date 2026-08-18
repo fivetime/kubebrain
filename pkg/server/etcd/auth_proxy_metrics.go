@@ -144,6 +144,17 @@ func validateAuthRoleGetProxyPayload(metricCli metrics.Metrics, request *etcdser
 	return response, nil
 }
 
+func validateAuthStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.AuthStatusResponse, err error) (*etcdserverpb.AuthStatusResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	if response.GetAuthRevision() == 0 {
+		emitAuthProxyIntegrityFailure(metricCli, authProxyActionStatus)
+		return nil, status.Error(codes.DataLoss, "leader auth_status proxy returned a zero auth revision")
+	}
+	return response, nil
+}
+
 func emitAuthProxyIntegrityFailure(metricCli metrics.Metrics, action string) {
 	if metricCli != nil {
 		_ = metricCli.EmitCounter("auth.proxy.integrity_failure", 1, metrics.Tag("action", action))

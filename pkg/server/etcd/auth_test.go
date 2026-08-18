@@ -396,6 +396,25 @@ func TestFollowerAuthStatusProxiesToLeader(t *testing.T) {
 	require.Equal(t, int64(123), response.GetHeader().GetRevision())
 }
 
+func TestFollowerRejectsZeroAuthStatusProxyRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initAuthProxyIntegrityMetrics(rec)
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		authStatusFn: func(context.Context, *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+			return &etcdserverpb.AuthStatusResponse{Header: txnHeader(2), Enabled: true}, nil
+		},
+	}
+
+	response, err := server.AuthStatus(context.Background(), &etcdserverpb.AuthStatusRequest{})
+	require.Nil(t, response)
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.Equal(t, []interface{}{int64(0), 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
+}
+
 func TestFollowerAuthReadsRejectInvalidProxyResults(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

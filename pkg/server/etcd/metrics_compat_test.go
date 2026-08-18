@@ -478,6 +478,38 @@ func TestAuthRoleGetProxyPayloadValidation(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 }
 
+func TestAuthStatusProxyPayloadValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		response *etcdserverpb.AuthStatusResponse
+		valid    bool
+	}{
+		{name: "disabled initial revision", response: &etcdserverpb.AuthStatusResponse{Header: txnHeader(1), AuthRevision: 1}, valid: true},
+		{name: "enabled revision", response: &etcdserverpb.AuthStatusResponse{Header: txnHeader(1), Enabled: true, AuthRevision: 10}, valid: true},
+		{name: "zero revision", response: &etcdserverpb.AuthStatusResponse{Header: txnHeader(1)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			response, err := validateAuthStatusProxyPayload(rec, tt.response, nil)
+			if tt.valid {
+				require.Same(t, tt.response, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.AuthStatusResponse{}
+	response, err := validateAuthStatusProxyPayload(nil, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initKVProxyIntegrityMetrics(rec)

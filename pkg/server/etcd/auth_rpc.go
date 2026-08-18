@@ -146,6 +146,7 @@ func (s *RPCServer) AuthStatus(ctx context.Context, request *etcdserverpb.AuthSt
 		// revision without requiring this ingress to reach its storage path.
 		response, err := s.peers.AuthStatus(proxyCtx, request)
 		response, err = validateAuthProxyResult(s.metricCli, authProxyActionStatus, response, err)
+		response, err = validateAuthStatusProxyPayload(s.metricCli, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
