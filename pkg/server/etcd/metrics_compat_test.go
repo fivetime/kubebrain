@@ -258,10 +258,15 @@ func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
 		response, err = validateKVProxyResult(rec, rpc, &etcdserverpb.RangeResponse{}, errors.New("mixed"))
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
-		require.Equal(t, []interface{}{int64(0), 1, 1}, recordedKVProxyIntegrityValues(rec, rpc))
+
+		response, err = validateKVProxyResult(rec, rpc, &etcdserverpb.RangeResponse{}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "without a header")
+		require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedKVProxyIntegrityValues(rec, rpc))
 	}
 
-	want := &etcdserverpb.RangeResponse{}
+	want := &etcdserverpb.RangeResponse{Header: &etcdserverpb.ResponseHeader{}}
 	response, err := validateKVProxyResult(rec, kvProxyRPCRange, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
@@ -269,7 +274,7 @@ func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateKVProxyResult[etcdserverpb.RangeResponse](rec, kvProxyRPCRange, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
 }
 
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {

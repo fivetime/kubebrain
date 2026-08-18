@@ -755,7 +755,7 @@ func TestClientCertificateIdentitySurvivesFollowerProxy(t *testing.T) {
 			caller, err := server.authCallerFromContext(peerCtx)
 			require.NoError(t, err)
 			forwardedUsername = caller.username
-			return &etcdserverpb.PutResponse{}, nil
+			return &etcdserverpb.PutResponse{Header: txnHeader(initialAuthRevision)}, nil
 		},
 	}
 

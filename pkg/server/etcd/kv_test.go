@@ -245,15 +245,18 @@ func TestFollowerUnaryKVRejectsInvalidProxyResults(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		rpc       string
-		configure func(*testPeerService, bool)
+		configure func(*testPeerService, string)
 		invoke    func(*RPCServer) (any, error)
 	}{
 		{
 			name: "range", rpc: kvProxyRPCRange,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.rangeFn = func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.RangeResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.RangeResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -264,10 +267,13 @@ func TestFollowerUnaryKVRejectsInvalidProxyResults(t *testing.T) {
 		},
 		{
 			name: "txn", rpc: kvProxyRPCTxn,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.txnFn = func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.TxnResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.TxnResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -280,10 +286,13 @@ func TestFollowerUnaryKVRejectsInvalidProxyResults(t *testing.T) {
 		},
 		{
 			name: "put", rpc: kvProxyRPCPut,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.putFn = func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.PutResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.PutResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -294,10 +303,13 @@ func TestFollowerUnaryKVRejectsInvalidProxyResults(t *testing.T) {
 		},
 		{
 			name: "delete_range", rpc: kvProxyRPCDeleteRange,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.deleteRangeFn = func(context.Context, *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.DeleteRangeResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.DeleteRangeResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -308,10 +320,13 @@ func TestFollowerUnaryKVRejectsInvalidProxyResults(t *testing.T) {
 		},
 		{
 			name: "compact", rpc: kvProxyRPCCompact,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.compactFn = func(context.Context, *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.CompactionResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.CompactionResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -321,19 +336,15 @@ func TestFollowerUnaryKVRejectsInvalidProxyResults(t *testing.T) {
 			},
 		},
 	} {
-		for _, mixed := range []bool{false, true} {
-			name := "nil"
-			if mixed {
-				name = "mixed"
-			}
-			t.Run(tc.name+"/"+name, func(t *testing.T) {
+		for _, shape := range []string{"nil", "mixed", "missing_header"} {
+			t.Run(tc.name+"/"+shape, func(t *testing.T) {
 				server, closeFn := newTestRPCServer(t)
 				defer closeFn()
 				rec := &recordingMetrics{}
 				server.metricCli = rec
 				initKVProxyIntegrityMetrics(rec)
 				peers := testPeerService{isLeader: false, proxyEnabled: true}
-				tc.configure(&peers, mixed)
+				tc.configure(&peers, shape)
 				server.peers = peers
 
 				response, err := tc.invoke(server)
