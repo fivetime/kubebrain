@@ -57338,6 +57338,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   递增，违例复用各自固定 `auth.proxy.integrity_failure{action="user_list|role_list"}` 并 DataLoss fail closed，不增加标签。
   合法空/有序集合、transport error 与公开 follower 异常注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5109 将同一 Auth 名称集合完整性扩展到 UserGet.Roles。对照
+  `/root/etcd/server/auth/store.go::{UserGrantRole,UserRevokeRole,UserGet}`：upstream 授予前以 `sort.SearchStrings`
+  幂等排除重复，插入后 `sort.Strings`；非 root 空角色无法通过 role lookup，root 名固定非空，撤销保持剩余顺序。
+  因此成功 UserGet 的 Roles 可为空，但非空时每项必须非空且严格字典序递增。旧 follower proxy 会确认空、重复或乱序
+  role 集合，使调用方看到 auth store 不可能生成的用户授权视图。现 UserGet 在 forwarded revision 观察前复用 A5108
+  validator，违例只递增固定 `auth.proxy.integrity_failure{action="user_get"}` 并 DataLoss fail closed。合法空/有序角色、
+  transport error 与公开 follower 重复/乱序注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
