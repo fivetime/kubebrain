@@ -54,6 +54,25 @@ func validateClusterProxyResult[T any](metricCli metrics.Metrics, rpc string, re
 	return nil, status.Error(codes.DataLoss, "leader member_list proxy returned both response and error")
 }
 
+func validateMemberListProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.MemberListResponse, err error) (*etcdserverpb.MemberListResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	var previousID uint64
+	for i, member := range response.GetMembers() {
+		if member == nil {
+			emitClusterProxyIntegrityFailure(metricCli, clusterProxyRPCMemberList)
+			return nil, status.Error(codes.DataLoss, "leader member_list proxy returned a nil member")
+		}
+		if i > 0 && member.GetID() <= previousID {
+			emitClusterProxyIntegrityFailure(metricCli, clusterProxyRPCMemberList)
+			return nil, status.Error(codes.DataLoss, "leader member_list proxy returned members outside strict ID order")
+		}
+		previousID = member.GetID()
+	}
+	return response, nil
+}
+
 func emitClusterProxyIntegrityFailure(metricCli metrics.Metrics, rpc string) {
 	if metricCli != nil {
 		_ = metricCli.EmitCounter("cluster.proxy.integrity_failure", 1, metrics.Tag("rpc", rpc))

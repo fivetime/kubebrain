@@ -756,6 +756,37 @@ func TestFollowerLinearizableMemberListRejectsInvalidProxyResult(t *testing.T) {
 	}
 }
 
+func TestFollowerLinearizableMemberListRejectsInvalidProxyPayload(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		members []*etcdserverpb.Member
+	}{
+		{name: "nil member", members: []*etcdserverpb.Member{nil}},
+		{name: "duplicate ID", members: []*etcdserverpb.Member{{ID: 1}, {ID: 1}}},
+		{name: "descending ID", members: []*etcdserverpb.Member{{ID: 2}, {ID: 1}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initClusterProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				proxyEnabled: true,
+				epochFn:      func() (uint64, bool) { return 7, false },
+				memberListFn: func(context.Context, *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
+					return &etcdserverpb.MemberListResponse{Header: txnHeader(2), Members: tt.members}, nil
+				},
+			}
+
+			response, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedClusterProxyIntegrityValues(rec))
+		})
+	}
+}
+
 // TestMemberListSerializableSurvivesUnavailableReadBarrier mirrors upstream
 // tests/common TestMemberListSerializable (845cd3885). KubeBrain's topology is
 // DBaaS-managed rather than Raft-mutated, but the wire option must preserve the

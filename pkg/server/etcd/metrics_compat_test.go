@@ -211,6 +211,41 @@ func TestClusterProxyIntegrityMetricsAndValidation(t *testing.T) {
 	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
 }
 
+func TestMemberListProxyPayloadValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		members []*etcdserverpb.Member
+		valid   bool
+	}{
+		{name: "empty", valid: true},
+		{name: "strict ID order", members: []*etcdserverpb.Member{{ID: 0}, {ID: 2, Name: "started"}}, valid: true},
+		{name: "nil member", members: []*etcdserverpb.Member{nil}},
+		{name: "duplicate ID", members: []*etcdserverpb.Member{{ID: 1}, {ID: 1}}},
+		{name: "descending ID", members: []*etcdserverpb.Member{{ID: 2}, {ID: 1}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			want := &etcdserverpb.MemberListResponse{Header: txnHeader(1), Members: tt.members}
+			response, err := validateMemberListProxyPayload(rec, want, nil)
+			if tt.valid {
+				require.Same(t, want, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedClusterProxyIntegrityValues(rec))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedClusterProxyIntegrityValues(rec))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.MemberListResponse{}
+	response, err := validateMemberListProxyPayload(nil, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initLeaseProxyIntegrityMetrics(rec)
