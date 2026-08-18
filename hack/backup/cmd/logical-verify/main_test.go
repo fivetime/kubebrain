@@ -3,13 +3,14 @@ package main
 import (
 	"testing"
 
+	"github.com/kubewharf/kubebrain/hack/backup/internal/keyrewrite"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRewriteKey(t *testing.T) {
-	require.Equal(t, []byte("/target/a"), rewriteKey([]byte("/source/a"), "/source", "/target"))
-	require.Equal(t, []byte("/other/a"), rewriteKey([]byte("/other/a"), "/source", "/target"))
-	require.Equal(t, []byte("/source/a"), rewriteKey([]byte("/source/a"), "", "/target"))
+	require.Equal(t, []byte("/target/a"), keyrewrite.Rewrite([]byte("/source/a"), "/source", "/target"))
+	require.Equal(t, []byte("/other/a"), keyrewrite.Rewrite([]byte("/other/a"), "/source", "/target"))
+	require.Equal(t, []byte("/source/a"), keyrewrite.Rewrite([]byte("/source/a"), "", "/target"))
 }
 
 func TestReceiptTargetPrefix(t *testing.T) {

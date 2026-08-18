@@ -14,21 +14,11 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/keyrewrite"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
-
-func rewriteKey(key []byte, from, to string) []byte {
-	if from == "" {
-		return key
-	}
-	keyText := string(key)
-	if !strings.HasPrefix(keyText, from) {
-		return key
-	}
-	return []byte(to + strings.TrimPrefix(keyText, from))
-}
 
 func envBool(name string) (bool, error) {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
@@ -155,8 +145,17 @@ func run() (retErr error) {
 	}); err != nil {
 		return err
 	}
+	seenTargetKeys := make(map[string]struct{})
 	if err := verified.Records(func(rec record.Record) error {
-		return validateLeaseReference(rec, leaseSpecs)
+		if err := validateLeaseReference(rec, leaseSpecs); err != nil {
+			return err
+		}
+		key, err := base64.StdEncoding.DecodeString(rec.Key)
+		if err != nil {
+			return err
+		}
+		_, err = keyrewrite.RewriteUnique(key, rewriteFrom, rewriteTo, seenTargetKeys)
+		return err
 	}); err != nil {
 		return err
 	}
@@ -195,7 +194,7 @@ func run() (retErr error) {
 			if decodeErr != nil {
 				return decodeErr
 			}
-			keys = append(keys, string(rewriteKey(key, rewriteFrom, rewriteTo)))
+			keys = append(keys, string(keyrewrite.Rewrite(key, rewriteFrom, rewriteTo)))
 			if len(keys) == batchSize {
 				return preflight()
 			}
@@ -290,7 +289,7 @@ func run() (retErr error) {
 		if err != nil {
 			return err
 		}
-		key = rewriteKey(key, rewriteFrom, rewriteTo)
+		key = keyrewrite.Rewrite(key, rewriteFrom, rewriteTo)
 		ops = append(ops, kvPair{key: key, value: value, lease: rec.Lease})
 		total++
 		if len(ops) >= batchSize {

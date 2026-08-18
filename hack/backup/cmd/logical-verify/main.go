@@ -9,27 +9,16 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/keyrewrite"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/restorereceipt"
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
-
-func rewriteKey(key []byte, from, to string) []byte {
-	if from == "" {
-		return key
-	}
-	keyText := string(key)
-	if !strings.HasPrefix(keyText, from) {
-		return key
-	}
-	return []byte(to + strings.TrimPrefix(keyText, from))
-}
 
 func main() {
 	if err := run(); err != nil {
@@ -86,6 +75,7 @@ func run() (retErr error) {
 	defer cancel()
 
 	total := 0
+	seenTargetKeys := make(map[string]struct{})
 	targetLeaseBySource := make(map[int64]int64)
 	sourceLeaseByTarget := make(map[int64]int64)
 	err = verified.Records(func(rec record.Record) error {
@@ -97,7 +87,10 @@ func run() (retErr error) {
 		if err != nil {
 			return err
 		}
-		key = rewriteKey(key, rewriteFrom, rewriteTo)
+		key, err = keyrewrite.RewriteUnique(key, rewriteFrom, rewriteTo, seenTargetKeys)
+		if err != nil {
+			return err
+		}
 
 		resp, err := cli.Get(ctx, string(key))
 		if err != nil {
