@@ -57385,6 +57385,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   校验，违例只递增固定 `maintenance.proxy.integrity_failure{rpc="alarm"}` 并 DataLoss fail closed。unordered/unknown/zero-ID、
   缺席 deactivate、transport error 与公开异常注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5114 将 unary Maintenance leader-proxy payload 完整性扩展到 Status。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status`：upstream success 固定返回非空 Version；backend
+  DbSize/DbSizeInUse 非负且 in-use 不大于 allocated；零 quota 被替换为正默认值；RaftAppliedIndex 不大于 committed
+  RaftIndex；DowngradeInfo 总是初始化；Leader 为 `raft.None` 当且仅当 Errors 含 `etcdserver: no leader`。KubeBrain 的 TiKV
+  logical-size/1-byte sentinel、default quota、synthetic equal indexes 与 no-leader error 遵守同一合同。StorageVersion 在
+  upstream 尚未发布时可空，启动期 Raft fields 可为零，不能误报。旧 hedged follower proxy 会确认空 version、负/倒置 size、
+  非正 quota、applied 越 committed、nil downgrade info、空 error 或 leader health 自相矛盾。现 leader 分支在覆盖本地
+  IsLearner 前验证 payload；违例复用固定 `maintenance.proxy.integrity_failure{rpc="status"}`，作为 terminal DataLoss 不被
+  hedge 掩盖。合法 early-state、storage-isolated follower 异常注入与连续十轮回归通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

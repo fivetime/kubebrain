@@ -4516,6 +4516,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   mandatory `ResponseHeader` 且 revision 非负。Alarm GET 每项必须非 nil/非 NONE、匹配 filter 且 member/type pair 唯一；
   ACTIVATE 非 NONE 精确返回一个匹配项，DEACTIVATE 非 NONE 返回零或一个匹配项，NONE mutation 必须为空。
   GET 顺序、MemberID=0 与未知 AlarmType 是 upstream 可产生值，不得误报。Defragment 对齐 upstream，允许无 Header 的空成功响应。production 要求 60 秒新鲜
+  Status success 必须有非空 Version，DbSize/DbSizeInUse 非负且 in-use 不大于 allocated，DbSizeQuota 为正，
+  RaftAppliedIndex 不大于 RaftIndex，DowngradeInfo 非 nil，Errors 不含空字符串，并且 Leader=0 当且仅当 errors 包含
+  `etcdserver: no leader`。启动早期零 Raft 字段与尚未发布的空 StorageVersion 合法。
   Ready Pod UID current/10 分钟 increase `6×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。
 - `kv_proxy_integrity_failure{rpc="range|txn|put|delete_range|compact"}` 在 RPC server 创建时初始化五类权威零值。
