@@ -56943,6 +56943,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   增量 warning，缺失/陈旧/非法/来源不完整 warning。回归固定零值到拒绝增量，并重跑普通与 Txn 写前拒绝、零
   mutation 合同；需要下一生产镜像和监控发布。
 
+- A5068 闭合生产已启用 `--max-requests-inflight=1024`、`--max-request-rate=2000`、`--max-watches=10000`，却没有
+  固定零值、容量水位和 Ready Pod 完整性监控的过载保护缺口。既有并发/速率 counter 带动态 gRPC method，Watch
+  counter 又是独立 family，无法预声明完整标签基数；两个 active gauge 也要等首个请求/Watch 才出现。现保留 legacy
+  下钻指标，新增固定 `client.admission.rejection{guard="concurrency|rate|watch"}`，RPC server 创建时初始化三类
+  权威零值，并同时初始化 inflight/active gauge 为 0。三条真实拒绝路径在旧指标旁递增 canonical guard，priority
+  LeaseRevoke reserve 的既有语义不变。production 生成 60 秒新鲜 Ready Pod UID recording，要求 gauge 各
+  `1×Ready`、counter current/increase 各 `3×Ready`，校验含 103 个 LeaseRevoke reserve 的 inflight 峰值 1127、
+  Watch 上限 10000、精确整数、有限 increase 和未知 guard；普通容量 90% 告警仍以 1024 为分母；
+  任一拒绝立即 warning，容量达到 90% 五分钟 warning，telemetry 缺失/陈旧/非法/不完整 warning。回归覆盖固定
+  初始化、跨连接并发、request-message rate 与 multiplexed Watch admission；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

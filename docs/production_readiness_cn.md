@@ -1122,8 +1122,16 @@ backend WatcherHub 真实状态刷新；production 只消费 60 秒内、按 Rea
 每类来源与 Ready 副本精确相等。三者必须是 `[0,2^53]` 精确整数，且同 Pod slow 不得超过 watcher；stream
 可为空，一个 stream 也可 multiplex 多个 watch，所以不错误要求 stream 与 watcher 相等。任一 Pod 的 stream
 或 watcher 超过 8000 持续 5 分钟 warning（生产 `--max-watches=10000`，native Watch 仍可能计入 backend
-watcher），slow 非零持续 5 分钟 warning；缺失、陈旧或非法 telemetry warning。事件交付另看
-`etcd_debugging_mvcc_events_total` 与 `etcd_debugging_mvcc_pending_events_total`，
+watcher），slow 非零持续 5 分钟 warning；缺失、陈旧或非法 telemetry warning。
+公开流量 admission 另由 `grpc_server_admission_inflight`、`watch_admission_active` 和固定
+`client_admission_rejection{guard="concurrency|rate|watch"}` 覆盖。RPC server 创建时先发布两个 gauge 零值及
+三类 counter 零值；legacy 带动态 method/kind 的并发/速率拒绝指标继续用于下钻，但不承担完整性证明。production
+清单的每 Pod 上限为 1024 个完整 RPC 生命周期和 10000 个逻辑 Watch，任一达到 90% 持续五分钟 warning；任一
+guard 十分钟增量立即 warning。recording 只接收 60 秒内当前 Ready Pod UID，要求两个 gauge 各 `1×Ready`、
+三类 counter current/increase 各 `3×Ready`；inflight 合法峰值包含 103 个 LeaseRevoke reserve，故为 1127，
+90% 告警仍以普通预算 1024 为分母；其余值为上限内精确整数或有限 `[0,2^53]` increase，未知 guard 非法；
+缺失、陈旧、非法或来源不完整 warning。修改清单上限时必须同步 PromQL 限值和 90% 分母，并经容量压测证明。
+事件交付另看 `etcd_debugging_mvcc_events_total` 与 `etcd_debugging_mvcc_pending_events_total`，
 production 从 60 秒内样本生成 Ready Pod UID 级 pending、delivered current 与 10 分钟 increase recording，
 要求三类来源完整。pending/current 必须是 `[0,2^53]` 精确整数，increase 可为分数但必须有限同范围；缺失、
 陈旧、负数、分数 current 或非有限值持续 2 分钟 warning。pending 在已转换 event 写入无缓冲 WatchResult
