@@ -5267,6 +5267,10 @@ checkpoint 已预注册 Up Store 的 Region peer replacement/同 ID address migr
 该能力是有界的：默认可用窗约 150 秒；checkpoint 未发布、已过期、safepoint
 续租失败，或 Store 注册/address change 发生在最新成功 directory refresh 后、cache 丢失需要新 PD directory 时继续
 fail closed，不伪造未受 GC 保护或鉴权状态不匹配的读。
+正常 rollout/shutdown 还必须删除该进程交替使用的两条 PD service safepoint。删除失败时 backend 仍关闭 TiKV client，
+但 `Close` 将 release error 与 storage close error 联合返回，`Endpoint.Run` 必须以非零 shutdown 结果结束；不得因
+registration 有有限 TTL 或退出期 counter 可能来不及被 Prometheus scrape 就把本次关闭标记成功。确认 TTL 到期或 PD
+恢复后 safepoint 消失，再判断旧 Pod 的 GC pin 已解除。
 
 恢复后至少验证：
 

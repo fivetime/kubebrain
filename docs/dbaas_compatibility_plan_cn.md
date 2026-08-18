@@ -56855,6 +56855,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList 仍空，明确空列表不能替代 fence outcome。定向 backend 与精确 production 测试通过；需要下一
   生产镜像和监控发布。
 
+- A5060 修复 serializable checkpoint safepoint release 失败仍被 `backend.Close` 伪报为成功的 shutdown 合同。
+  每个副本为 PD 隔离读交替维护两条有限 TTL 的 service GC safepoint；旧 Close 虽尝试逐条删除并递增
+  `serializable.checkpoint.release_err`，却丢弃 release error、只返回 `kv.Close()`，因此 Endpoint/主进程会把仍等待
+  TTL 过期的 GC pin 当作正常 rollout。更重要的是该 counter 发生在 exporter 退出阶段，不能假设 Prometheus 一定
+  抓到。现 Close 始终先停止 worker、尝试释放两条 service ID，再无条件关闭 storage client，并以
+  `errors.Join(releaseErr, storageCloseErr)` 保留两类结果；Endpoint 既有 defer 会把它合入 `Run` 返回值，从而让
+  进程非零报告未完成的 safepoint handoff。registration TTL 继续作为 PD outage 下最终安全兜底，但不再掩盖操作
+  失败。故障回归注入 ReleaseSnapshot 错误，证明两条 ID 均尝试、release counter 递增、storage 仍精确关闭一次、
+  首次与幂等二次 Close 都保留同一错误。定向与完整 backend 测试通过；本项需要下一生产镜像，不新增依赖退出期
+  scrape 的 Prometheus 假证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
