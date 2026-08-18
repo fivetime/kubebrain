@@ -314,6 +314,7 @@ func (w *WatcherHub) beginCatchUp(sub chan []*proto.Event, missed []*proto.Event
 	if w.ringLookup == nil || len(missed) == 0 {
 		klog.InfoS("drop slow consumer", "subscription", watchChannelID(sub), "bufSize", w.subBufferSize())
 		w.metricCli.EmitCounter("drop.slow.watcher", 1)
+		emitWatcherSlowConsumerOutcome(w.metricCli, watcherSlowConsumerOutcomeDropped)
 		w.DeleteWatcher(sub, true)
 		return
 	}
@@ -333,6 +334,7 @@ func (w *WatcherHub) beginCatchUp(sub chan []*proto.Event, missed []*proto.Event
 	w.catchingUp[sub] = st
 	w.Unlock()
 	w.metricCli.EmitCounter("watcher_hub.catch_up.entered", 1)
+	emitWatcherSlowConsumerOutcome(w.metricCli, watcherSlowConsumerOutcomeCatchUp)
 	klog.InfoS("slow consumer entering ring catch-up", "subscription", watchChannelID(sub),
 		"prefix", string(prefix), "fromRev", fromRev, "bufSize", w.subBufferSize())
 	go w.catchUp(sub, st, fromRev)
@@ -400,6 +402,7 @@ func (w *WatcherHub) catchUp(sub chan []*proto.Event, st *catchUpState, fromRev 
 			w.subs[sub] = st.prefix
 			w.Unlock()
 			w.metricCli.EmitCounter("watcher_hub.catch_up.recovered", 1)
+			emitWatcherSlowConsumerOutcome(w.metricCli, watcherSlowConsumerOutcomeRecovered)
 			klog.InfoS("slow consumer caught up, re-attached", "subscription", watchChannelID(sub), "nextRev", fromRev)
 			return
 		}
@@ -418,6 +421,7 @@ func (w *WatcherHub) finishCatchUp(sub chan []*proto.Event, st *catchUpState, ms
 	klog.InfoS(msg, "subscription", watchChannelID(sub), "prefix", util.LoggedKey(st.prefix))
 	if dropMetric != "" {
 		w.metricCli.EmitCounter(dropMetric, 1)
+		emitWatcherSlowConsumerOutcome(w.metricCli, watcherSlowConsumerOutcomeDropped)
 	}
 }
 

@@ -665,6 +665,18 @@ spec:
           expr: count(((kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:orphan_index_heal_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:orphan_index_heal_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome{outcome!~"healed|concurrent|fenced|failed"})
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (watcher_hub_slow_consumer_outcome{namespace="kubebrain-system"} and (time() - timestamp(watcher_hub_slow_consumer_outcome{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_slow_consumer_outcome:increase_10m_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (increase(watcher_hub_slow_consumer_outcome{namespace="kubebrain-system"}[10m]) and (time() - timestamp(watcher_hub_slow_consumer_outcome{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_slow_consumer_outcome_invalid_values:count
+          expr: count(((kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_slow_consumer_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_slow_consumer_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome{outcome!~"catch_up|recovered|dropped"})
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_gc_enabled:max_by_pod
           expr: max by (namespace, pod, uid) (storage_gc_enabled{namespace="kubebrain-system"} and (time() - timestamp(storage_gc_enabled{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1505,6 +1517,22 @@ spec:
           annotations:
             summary: KubeBrain orphan-index repair telemetry is incomplete
             description: "Every current Ready Pod UID must expose all four authoritative-zero healed, concurrent, fenced, and failed outcomes as fresh current and ten-minute-increase series. Current values must be non-negative exact integers within 2^53, increases finite in range, and unknown outcomes invalid. Missing, stale, invalid, or incomplete telemetry can hide revision-index damage or failed remediation."
+        - alert: KubeBrainWatchSlowConsumerCatchUp
+          expr: sum by (outcome) (kubebrain_dbaas:watch_slow_consumer_outcome:increase_10m_by_pod_outcome{outcome=~"catch_up|dropped"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain Watch consumers fell behind live fan-out
+            description: "A current Ready replica moved a full Watch subscriber into bounded ring catch-up or dropped it because the missed tail was unavailable. catch_up preserves a gap-free stream when replay succeeds; dropped closes the stream cleanly and forces the client to reconnect and re-list. Inspect client flow control, send-loop latency, ring capacity, and re-list amplification."
+        - alert: KubeBrainWatchSlowConsumerMetricsMissing
+          expr: absent(kubebrain_dbaas:watch_slow_consumer_outcome_invalid_values:count) == 1 or count(kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_slow_consumer_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:watch_slow_consumer_outcome_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain Watch slow-consumer telemetry is incomplete
+            description: "Every current Ready Pod UID must expose all three authoritative-zero catch_up, recovered, and dropped outcomes as fresh current and ten-minute-increase series. Current values must be non-negative exact integers within 2^53, increases finite in range, and unknown outcomes invalid. Missing, stale, invalid, or incomplete telemetry can hide Watch backpressure and forced re-list amplification."
         - alert: KubeBrainStorageGCDriverUnavailable
           expr: min(kubebrain_dbaas:storage_gc_enabled:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 1
           for: 2m

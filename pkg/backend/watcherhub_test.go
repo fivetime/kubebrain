@@ -24,8 +24,31 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 )
+
+func watcherSlowConsumerOutcomeValues(rec *compactMetricRecorder, outcome string) []interface{} {
+	var values []interface{}
+	for _, record := range rec.snapshot() {
+		if record.kind == "counter" && record.name == "watcher_hub.slow_consumer.outcome" &&
+			len(record.tags) == 1 && record.tags[0] == metrics.Tag("outcome", outcome) {
+			values = append(values, record.value)
+		}
+	}
+	return values
+}
+
+func TestWatcherSlowConsumerMetricsInitializeFixedOutcomes(t *testing.T) {
+	rec := &compactMetricRecorder{}
+	initWatcherSlowConsumerMetrics(rec)
+	for _, outcome := range watcherSlowConsumerOutcomes {
+		emitWatcherSlowConsumerOutcome(rec, outcome)
+	}
+	for _, outcome := range watcherSlowConsumerOutcomes {
+		require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, outcome))
+	}
+}
 
 func newTestWatcherHub(t *testing.T, bufSize int) *WatcherHub {
 	ctrl := gomock.NewController(t)
@@ -221,6 +244,20 @@ func TestBroadcastEvictsSlowConsumerBeforeNextBatch(t *testing.T) {
 // collector's order — the catch-up re-attach proof depends on it.
 func newCatchUpHub(t *testing.T, bufSize, ringSize int) (*WatcherHub, *Ring) {
 	hub := newTestWatcherHub(t, bufSize)
+	return wireCatchUpHub(hub, ringSize)
+}
+
+func newRecordedCatchUpHub(bufSize, ringSize int, metricCli metrics.Metrics) (*WatcherHub, *Ring) {
+	hub := &WatcherHub{
+		subs:       make(map[chan []*proto.Event][]byte),
+		catchingUp: make(map[chan []*proto.Event]*catchUpState),
+		metricCli:  metricCli,
+		bufSize:    bufSize,
+	}
+	return wireCatchUpHub(hub, ringSize)
+}
+
+func wireCatchUpHub(hub *WatcherHub, ringSize int) (*WatcherHub, *Ring) {
 	hub.catchingUp = make(map[chan []*proto.Event]*catchUpState)
 	ring := NewRing(ringSize)
 	hub.ringLookup = ring.FindEvents
@@ -272,7 +309,9 @@ func TestWatcherHubStatsCountsActiveAndSlowWatchers(t *testing.T) {
 // (buffered + replayed + post-reattach) is contiguous with no gap and no
 // duplicate.
 func TestSlowWatcherCatchUpNoGapAndReattach(t *testing.T) {
-	hub, ring := newCatchUpHub(t, 2, 1024)
+	rec := &compactMetricRecorder{}
+	initWatcherSlowConsumerMetrics(rec)
+	hub, ring := newRecordedCatchUpHub(2, 1024, rec)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -321,13 +360,18 @@ func TestSlowWatcherCatchUpNoGapAndReattach(t *testing.T) {
 			"stream must be contiguous, gap/dup between %d and %d", got[i-1], got[i])
 	}
 	require.Equal(t, uint64(11), got[len(got)-1], "stream must reach the post-reattach event")
+	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeCatchUp))
+	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeRecovered))
+	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeDropped))
 }
 
 // TestSlowWatcherBeyondRingDropped pins the bounded fallback: when the missed
 // tail has already been evicted from the ring, the subscriber is dropped (chan
 // closed) exactly as before #34 — catch-up never scans storage.
 func TestSlowWatcherBeyondRingDropped(t *testing.T) {
-	hub, ring := newCatchUpHub(t, 1, 4) // tiny ring: 4 events
+	rec := &compactMetricRecorder{}
+	initWatcherSlowConsumerMetrics(rec)
+	hub, ring := newRecordedCatchUpHub(1, 4, rec) // tiny ring: 4 events
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -350,6 +394,9 @@ func TestSlowWatcherBeyondRingDropped(t *testing.T) {
 	}, 5*time.Second, 5*time.Millisecond, "beyond-ring backlog must close the sub (legacy drop)")
 	require.Equal(t, 0, hub.subCount())
 	require.Equal(t, 0, hub.catchingUpCount())
+	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeCatchUp))
+	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeRecovered))
+	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeDropped))
 }
 
 // TestDeleteWatcherDuringCatchUpClosesChan pins the shutdown handoff: a watcher
@@ -357,7 +404,9 @@ func TestSlowWatcherBeyondRingDropped(t *testing.T) {
 // catch-up goroutine and close the channel exactly once (the goroutine owns
 // it), with no hub entry left behind.
 func TestDeleteWatcherDuringCatchUpClosesChan(t *testing.T) {
-	hub, ring := newCatchUpHub(t, 1, 1024)
+	rec := &compactMetricRecorder{}
+	initWatcherSlowConsumerMetrics(rec)
+	hub, ring := newRecordedCatchUpHub(1, 1024, rec)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sub, err := hub.AddWatcher(ctx, nil)
@@ -386,6 +435,9 @@ func TestDeleteWatcherDuringCatchUpClosesChan(t *testing.T) {
 		}
 	}, 5*time.Second, 5*time.Millisecond, "DeleteWatcher must close a catching-up sub")
 	require.Equal(t, 0, hub.catchingUpCount())
+	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeCatchUp))
+	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeRecovered))
+	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeDropped))
 }
 
 // TestStreamDeliversGapFreePrefixToSlowConsumer drives the real Stream loop with
