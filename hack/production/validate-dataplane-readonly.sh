@@ -2017,8 +2017,8 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv revision must be non-negative, got ${min_hashkv_revision}" >&2
     exit 1
   fi
-  if ! [[ "$min_hashkv_compact_revision" =~ ^[0-9]+$ ]]; then
-    echo "hashkv compact revision must be non-negative, got ${min_hashkv_compact_revision}" >&2
+  if ! [[ "$min_hashkv_compact_revision" =~ ^(-1|[0-9]+)$ ]]; then
+    echo "hashkv compact revision must be at least -1, got ${min_hashkv_compact_revision}" >&2
     exit 1
   fi
   if (( min_hashkv_compact_revision > min_hashkv_revision )); then
@@ -2137,8 +2137,8 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv hash mismatch: expected ${EXPECTED_HASHKV_HASH}, got ${gateway_hashkv_hash}" >&2
     exit 1
   fi
-  if ! [[ "$gateway_hashkv_compact_revision" =~ ^[0-9]+$ ]]; then
-    echo "gateway hashkv compact revision must be non-negative, got ${gateway_hashkv_compact_revision}" >&2
+  if ! [[ "$gateway_hashkv_compact_revision" =~ ^(-1|[0-9]+)$ ]]; then
+    echo "gateway hashkv compact revision must be at least -1, got ${gateway_hashkv_compact_revision}" >&2
     exit 1
   fi
   if ! [[ "$gateway_hashkv_hash_revision" =~ ^[0-9]+$ ]]; then
