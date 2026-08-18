@@ -332,18 +332,51 @@ func (s *RPCServer) rangeStreamOnce(
 			}
 			results, err := s.peers.RangeStream(proxyCtx, r)
 			if err != nil {
+				if ctx.Err() == nil {
+					emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
+				}
 				return rangeStreamForwardError(ctx, err)
 			}
+			if results == nil {
+				emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+				return status.Error(codes.Unavailable, "forwarded range stream returned a nil result channel")
+			}
+			terminalSeen := false
 			for result := range results {
+				if result.Err != nil && result.Response != nil {
+					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+					return status.Error(codes.Unavailable, "forwarded range stream result mixed response and error")
+				}
 				if result.Err != nil {
+					if ctx.Err() == nil {
+						emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
+					}
 					return rangeStreamForwardError(ctx, result.Err)
 				}
-				if response := result.Response; response != nil {
-					s.observeForwardedRevision(response.GetRangeResponse().GetHeader(), nil)
-					if err := rs.Send(response); err != nil {
-						return err
-					}
+				response := result.Response
+				if response == nil || response.RangeResponse == nil {
+					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+					return status.Error(codes.Unavailable, "forwarded range stream returned an empty result")
 				}
+				if terminalSeen {
+					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+					return status.Error(codes.Unavailable, "forwarded range stream continued after terminal metadata")
+				}
+				terminalSeen = response.RangeResponse.Header != nil
+				s.observeForwardedRevision(response.RangeResponse.Header, nil)
+				if err := rs.Send(response); err != nil {
+					if shouldCountServerStreamFailure(rs.Context(), err) {
+						emitRangeStreamFailure(s.metricCli, rangeStreamFailureSend)
+					}
+					return err
+				}
+			}
+			if !terminalSeen {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+				return status.Error(codes.Unavailable, "forwarded range stream ended without terminal metadata")
 			}
 			s.metricCli.EmitCounter("read.range_stream", 1)
 			s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
@@ -446,6 +479,11 @@ func (s *RPCServer) rangeStreamOnce(
 		s.metricCli.EmitCounter("read.range_stream.err", 1)
 		emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
 		return rangeStreamStatusErr(err)
+	}
+	if ch == nil {
+		s.metricCli.EmitCounter("read.range_stream.err", 1)
+		emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
+		return status.Error(codes.Unavailable, "range stream backend returned a nil result channel")
 	}
 	var (
 		terminalSeen bool

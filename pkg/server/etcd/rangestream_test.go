@@ -85,6 +85,16 @@ type prematureRangeStreamBackendShim struct {
 	BackendShim
 }
 
+type nilRangeStreamBackendShim struct {
+	BackendShim
+}
+
+func (b *nilRangeStreamBackendShim) RangeStreamChan(
+	context.Context, []byte, []byte, uint64,
+) (<-chan rangeStreamChunk, error) {
+	return nil, nil
+}
+
 type revisionRecordingRangeStreamBackendShim struct {
 	BackendShim
 	revision uint64
@@ -599,6 +609,127 @@ func TestFollowerLinearizableRangeStreamProxiesBeforeLocalBarrier(t *testing.T) 
 	stream := &fakeRangeStreamServer{ctx: context.Background()}
 	require.NoError(t, server.RangeStream(request, stream))
 	require.Equal(t, []*etcdserverpb.RangeStreamResponse{want}, stream.sent)
+}
+
+func TestFollowerRangeStreamRejectsInvalidProxyTermination(t *testing.T) {
+	tests := []struct {
+		name       string
+		results    func() <-chan etcdproxy.RangeStreamResult
+		message    string
+		sentFrames int
+	}{
+		{
+			name:    "nil channel",
+			results: func() <-chan etcdproxy.RangeStreamResult { return nil },
+			message: "forwarded range stream returned a nil result channel",
+		},
+		{
+			name: "closed without terminal",
+			results: func() <-chan etcdproxy.RangeStreamResult {
+				ch := make(chan etcdproxy.RangeStreamResult)
+				close(ch)
+				return ch
+			},
+			message: "forwarded range stream ended without terminal metadata",
+		},
+		{
+			name: "empty result",
+			results: func() <-chan etcdproxy.RangeStreamResult {
+				ch := make(chan etcdproxy.RangeStreamResult, 1)
+				ch <- etcdproxy.RangeStreamResult{}
+				close(ch)
+				return ch
+			},
+			message: "forwarded range stream returned an empty result",
+		},
+		{
+			name: "mixed response and error",
+			results: func() <-chan etcdproxy.RangeStreamResult {
+				ch := make(chan etcdproxy.RangeStreamResult, 1)
+				ch <- etcdproxy.RangeStreamResult{
+					Response: &etcdserverpb.RangeStreamResponse{RangeResponse: &etcdserverpb.RangeResponse{Header: txnHeader(42)}},
+					Err:      errors.New("mixed proxy result"),
+				}
+				close(ch)
+				return ch
+			},
+			message: "forwarded range stream result mixed response and error",
+		},
+		{
+			name: "continued after terminal",
+			results: func() <-chan etcdproxy.RangeStreamResult {
+				ch := make(chan etcdproxy.RangeStreamResult, 2)
+				ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{RangeResponse: &etcdserverpb.RangeResponse{Header: txnHeader(42)}}}
+				ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{RangeResponse: &etcdserverpb.RangeResponse{Kvs: []*mvccpb.KeyValue{{Key: []byte("late")}}}}}
+				close(ch)
+				return ch
+			},
+			message:    "forwarded range stream continued after terminal metadata",
+			sentFrames: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+			defer cleanup()
+			server.peers = testPeerService{
+				proxyEnabled: true,
+				epochFn:      func() (uint64, bool) { return 7, false },
+				rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+					return test.results(), nil
+				},
+			}
+			stream := &fakeRangeStreamServer{ctx: context.Background()}
+
+			err := server.RangeStream(&etcdserverpb.RangeRequest{
+				Key: []byte("/forward-invalid/"), RangeEnd: []byte("/forward-invalid0"),
+			}, stream)
+			requireRangeStreamStatusError(t, err, codes.Unavailable, test.message)
+			require.Len(t, stream.sent, test.sentFrames)
+			require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureProtocol))
+		})
+	}
+}
+
+func TestFollowerRangeStreamSendFailureUsesCanonicalMetric(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want []interface{}
+	}{
+		{name: "transport failure", err: status.Error(codes.Unavailable, "proxy client send failed"), want: []interface{}{int64(0), 1}},
+		{name: "client cancellation", err: status.Error(codes.Canceled, "context canceled"), want: []interface{}{int64(0)}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+			defer cleanup()
+			server.peers = testPeerService{
+				proxyEnabled: true,
+				epochFn:      func() (uint64, bool) { return 7, false },
+				rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+					ch := make(chan etcdproxy.RangeStreamResult, 1)
+					ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
+						RangeResponse: &etcdserverpb.RangeResponse{Header: txnHeader(42)},
+					}}
+					close(ch)
+					return ch, nil
+				},
+			}
+			stream := &failingRangeStreamServer{
+				fakeRangeStreamServer: fakeRangeStreamServer{ctx: context.Background()},
+				err:                   test.err,
+			}
+
+			err := server.RangeStream(&etcdserverpb.RangeRequest{
+				Key: []byte("/forward-send/"), RangeEnd: []byte("/forward-send0"),
+			}, stream)
+			require.ErrorIs(t, err, test.err)
+			require.Equal(t, test.want, recordedRangeStreamFailureValues(rec, rangeStreamFailureSend))
+		})
+	}
 }
 
 func TestFollowerRangeStreamMapsInternalProxyCancellationToLeaderChanged(t *testing.T) {
@@ -1139,6 +1270,21 @@ func TestRangeStreamRejectsPrematureBackendClose(t *testing.T) {
 	require.Empty(t, stream.sent,
 		"the final bounded data chunk stays buffered until terminal metadata validates completion")
 	require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureProtocol))
+}
+
+func TestRangeStreamRejectsNilBackendChannel(t *testing.T) {
+	rec := &recordingMetrics{}
+	server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+	defer cleanup()
+	server.backend = &nilRangeStreamBackendShim{BackendShim: server.backend}
+
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/nil-backend/"), RangeEnd: []byte("/nil-backend0"), Serializable: true,
+	}, stream)
+	requireRangeStreamStatusError(t, err, codes.Unavailable, "range stream backend returned a nil result channel")
+	require.Empty(t, stream.sent)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureBackend))
 }
 
 func TestRangeStreamSendFailureExcludesClientCancellation(t *testing.T) {
