@@ -56604,6 +56604,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   telemetry 持续 2 分钟 warning。精确 manifest 与 production/observability 文档同步，production 测试通过。
   本项只消费现有真实 gauge，不更改 Watch 请求语义；需要下一生产监控发布。
 
+- A5039 闭合 A4039 upstream `etcd_network_known_peers{Local,Remote}` 的生产静态成员一致性链。旧 production
+  只确认 family 存在，无法发现某 Pod 的 `--initial-cluster` 少成员、Ready Pods local member ID 冲突、Remote
+  集合分歧或非法 label/value。现生成 60 秒新鲜的 `(Pod UID,Local,Remote)` recording，并与三来源验证后的
+  StatefulSet `kubebrain_replicas:expected` 动态对账：每个 Ready Pod 必须恰有 expected 条 peer series，总数
+  等于 `Ready×expected`，Ready Pods 的 Local 唯一数等于 Ready 数，全局 Remote 唯一数等于 expected；每条值
+  必须精确为 1，Local/Remote 必须为非零小写十六进制。期望来源缺失/不足、Pod 覆盖不全、成员集合部分或
+  分歧、ID/value 非法持续 2 分钟 critical。该合同只含 KubeBrain service membership，不混入 TiKV/PD；
+  static config 在进程内不可变，retained gauge 合法，Pod UID 防止滚动旧样本冒充当前配置。精确 manifest 测试
+  同时修复 emitted-metric 扫描器只能识别同行 `Emit*`、漏掉多行真实调用的盲点；production/observability 文档
+  同步，测试通过。本项需要下一生产监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
