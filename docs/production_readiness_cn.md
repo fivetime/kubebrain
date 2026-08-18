@@ -4516,6 +4516,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   动作初始化 17 类权威零值。所有 Auth leader-proxy 必须在 forwarded revision 观察前证明 response/error 恰有其一；
   nil/mixed 均 DataLoss fail closed。production 要求 60 秒新鲜 Ready Pod UID current/10 分钟 increase `17×Ready`
   完整、值合法且拒绝未知 action；任一事件或 telemetry 缺失、陈旧、非法、组合不完整均 critical。
+- `lease_proxy_integrity_failure{rpc="grant|revoke|keep_alive|time_to_live|leases"}` 在 RPC server 创建时初始化五类
+  权威零值。所有 Lease unary/read fallback 与 streaming KeepAlive leader-proxy 必须在 revision 观察或 downstream
+  send 前证明 response/error 恰有其一；nil/mixed 均 DataLoss fail closed。production 要求 60 秒新鲜 Ready Pod UID
+  current/10 分钟 increase `5×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、非法、组合
+  不完整均 critical。
 - gRPC p99 延迟超过 1 秒。
 
 这些阈值是预生产起点，不应直接作为最终生产阈值。正式上线前应基于真实对象规模、apiserver QPS、watch 数量和 TiKV 延迟重新校准。

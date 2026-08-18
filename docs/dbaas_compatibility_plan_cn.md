@@ -57080,6 +57080,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非法/组合不完整均 critical。通用 validator 覆盖全部 action 的 nil/mixed/正常 response/error，六类公开查询/登录
   路径的表驱动回归连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5080 将 result ownership 不变量闭合到 LeaseGrant/Revoke/TimeToLive/Leases 与 streaming LeaseKeepAlive。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go`，upstream 的四类 unary 成功路径总是构造非 nil response，
+  KeepAlive 每条成功 renewal 同样发送具体 response；KubeBrain 七个 follower/read-demotion 代理调用点旧实现允许
+  `(nil,nil)`，其中 unary 会返回 nil success，KeepAlive 则在 header observation 时直接解引用 nil，mixed result 也
+  可能携带不可信 revision 或被 Unavailable retry 逻辑误分类。现所有调用点在 revision observation/downstream send 前
+  统一要求 response/error 恰有其一，nil/mixed 均 DataLoss fail closed，KeepAlive 协议违例不按换主重试。新增固定
+  `lease.proxy.integrity_failure{rpc="grant|revoke|keep_alive|time_to_live|leases"}`，RPC server 创建时初始化五类权威
+  零值；production 生成 60 秒新鲜 Ready Pod UID current/increase，要求各 `5×Ready`、值合法且未知 rpc 非法，任一
+  增量与 telemetry 缺失/陈旧/非法/组合不完整均 critical。四类 unary 与 KeepAlive nil/mixed 表驱动回归连续十轮
+  通过，且 malformed response 从未发送给客户端；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
