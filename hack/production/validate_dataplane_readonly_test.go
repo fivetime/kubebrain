@@ -2081,6 +2081,20 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "min_status_db_size_quota=2147483648",
 		},
 		{
+			name: "accepts disabled status db size quota sentinel",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99,"dbSizeQuota":-1}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:     true,
+			wantOutput: "min_status_db_size_quota=-1",
+		},
+		{
 			name: "reports status learner envelope in summary",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -2323,7 +2337,22 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":0,"isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
 			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:      false,
-			wantOutput:  "gateway status dbSizeQuota must be positive",
+			wantOutput:  "gateway status dbSizeQuota must be a non-zero integer",
+		},
+		{
+			name: "accepts disabled gateway status db size quota sentinel",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"-1","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:      true,
+			wantOutput:  "gateway_db_size_quota=-1",
 		},
 		{
 			name: "rejects malformed gateway status learner envelope",
@@ -3061,7 +3090,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "status storageVersion envelope invalid",
 		},
 		{
-			name: "rejects non positive status db size quota envelope",
+			name: "rejects zero status db size quota envelope",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},

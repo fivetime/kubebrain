@@ -1200,8 +1200,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
               "not_number"
             elif ($quota != ($quota | floor)) then
               "not_integer"
-            elif ($quota <= 0) then
-              "not_positive"
+            elif ($quota == 0) then
+              "zero"
             else
               empty
             end
@@ -1476,9 +1476,11 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status dbSizeInUse must be non-negative, got ${gateway_status_db_size_in_use}" >&2
     exit 1
   fi
-  if [[ "$gateway_status_db_size_quota" != "missing" && ! "$gateway_status_db_size_quota" =~ ^[1-9][0-9]*$ ]]; then
-    echo "gateway status dbSizeQuota must be positive, got ${gateway_status_db_size_quota}" >&2
-    exit 1
+  if [[ "$gateway_status_db_size_quota" != "missing" ]]; then
+    if ! [[ "$gateway_status_db_size_quota" =~ ^(-[1-9][0-9]*|[1-9][0-9]*)$ ]]; then
+      echo "gateway status dbSizeQuota must be a non-zero integer, got ${gateway_status_db_size_quota}" >&2
+      exit 1
+    fi
   fi
   if [[ "$gateway_status_is_learner_type" != "missing" && "$gateway_status_is_learner_type" != "boolean" ]]; then
     echo "gateway status isLearner must be boolean, got ${gateway_status_is_learner_type}" >&2
