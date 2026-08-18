@@ -87,12 +87,14 @@ type checkpointTestStorage struct {
 	warmReads       int
 	getAtErr        error
 	releasedIDs     []string
+	closeCalls      int
 	tsoReads        int
 	partitions      int
 	partitionStarts [][]byte
 	warmerCalls     int
 	batchTimestamps []uint64
 	readinessErr    error
+	releaseErr      error
 	readyTimestamp  uint64
 	readyTimestamps []uint64
 	readinessCalls  int
@@ -231,7 +233,34 @@ func (s *checkpointTestStorage) ReleaseSnapshot(_ context.Context, id string) er
 	s.mu.Lock()
 	s.releasedIDs = append(s.releasedIDs, id)
 	s.mu.Unlock()
-	return nil
+	return s.releaseErr
+}
+
+func (s *checkpointTestStorage) Close() error {
+	s.mu.Lock()
+	s.closeCalls++
+	s.mu.Unlock()
+	return s.KvStorage.Close()
+}
+
+func TestBackendCloseReturnsSerializableCheckpointReleaseFailure(t *testing.T) {
+	releaseErr := errors.New("injected checkpoint release failure")
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), releaseErr: releaseErr}
+	recorder := &compactMetricRecorder{}
+	b := NewBackend(store, Config{
+		Prefix: "/registry", Keyspace: "checkpoint-close-test", Identity: "peer-a", EnableEtcdCompatibility: true,
+	}, recorder).(*backend)
+	b.stopWorkers()
+	b.serializableCheckpoint.Store(&SerializableCheckpoint{Revision: 7, Timestamp: 11, ValidUntil: time.Now().Add(time.Minute)})
+
+	err := b.Close()
+	require.ErrorIs(t, err, releaseErr)
+	require.ErrorIs(t, b.Close(), releaseErr, "Close must retain the first shutdown result")
+	require.Len(t, store.releasedIDs, 2, "both alternating PD service safepoints must be released")
+	require.Equal(t, 1, store.closeCalls, "storage client must close despite checkpoint release failure")
+	require.Contains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "serializable.checkpoint.release_err", value: 1,
+	})
 }
 
 func newCheckpointBackend(t *testing.T, store storage.KvStorage) *backend {

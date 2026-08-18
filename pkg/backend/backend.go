@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"hash/fnv"
 	"sync"
 	"sync/atomic"
@@ -769,14 +770,18 @@ func (b *backend) Close() error {
 	b.closeOnce.Do(func() {
 		b.stopWorkers()
 		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), unaryRpcTimeout)
-		if err := b.releaseSerializableCheckpoint(releaseCtx); err != nil {
+		releaseErr := b.releaseSerializableCheckpoint(releaseCtx)
+		if releaseErr != nil {
 			if b.metricCli != nil {
 				b.metricCli.EmitCounter("serializable.checkpoint.release_err", 1)
 			}
-			klog.ErrorS(err, "release serializable checkpoint safepoint failed; waiting for TTL expiry")
+			klog.ErrorS(releaseErr, "release serializable checkpoint safepoint failed; waiting for TTL expiry")
 		}
 		releaseCancel()
-		b.closeErr = b.kv.Close()
+		// Closing the storage client remains mandatory even when PD safepoint
+		// release fails. Return both errors so Endpoint.Run cannot publish a clean
+		// shutdown while a service safepoint is still waiting for TTL expiry.
+		b.closeErr = errors.Join(releaseErr, b.kv.Close())
 	})
 	return b.closeErr
 }
