@@ -761,6 +761,7 @@ func TestLeaderElectionMetricsInitializedBeforeCampaign(t *testing.T) {
 		{kind: "counter", name: "leader.election.initialize.err", value: 0},
 		{kind: "counter", name: "leader.election.initialize.incompatible_witness", value: 0},
 		{kind: "counter", name: "leader.election.initialize.invalid_alarm_metadata", value: 0},
+		{kind: "counter", name: "etcd.server.leader_changes_seen_total", value: 0},
 	}, recorder.events)
 }
 

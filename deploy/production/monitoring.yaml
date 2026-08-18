@@ -241,6 +241,30 @@ spec:
           expr: count(kubebrain_dbaas:server_identity:max_by_pod_local != 1) + count(kubebrain_dbaas:server_identity:max_by_pod_local{Local!~"[1-9a-f][0-9a-f]*"})
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_has_leader:max_by_pod
+          expr: max by (namespace, pod, uid) (etcd_server_has_leader{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_has_leader{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_is_leader:max_by_pod
+          expr: max by (namespace, pod, uid) (etcd_server_is_leader{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_is_leader{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_is_learner:max_by_pod
+          expr: max by (namespace, pod, uid) (etcd_server_is_learner{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_is_learner{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_leader_changes:current_by_pod
+          expr: max by (namespace, pod, uid) (etcd_server_leader_changes_seen_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_leader_changes_seen_total{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_leader_changes:increase_10m_by_pod
+          expr: max by (namespace, pod, uid) (increase(etcd_server_leader_changes_seen_total{namespace="kubebrain-system"}[10m]) and (time() - timestamp(etcd_server_leader_changes_seen_total{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_state_invalid_values:count
+          expr: count(((kubebrain_dbaas:server_has_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:server_has_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 1) or ((kubebrain_dbaas:server_has_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:server_has_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:server_is_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:server_is_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 1) or ((kubebrain_dbaas:server_is_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:server_is_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:server_is_learner:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:server_is_learner:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 1) or ((kubebrain_dbaas:server_is_learner:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:server_is_learner:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:server_is_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > (kubebrain_dbaas:server_has_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) + count(((kubebrain_dbaas:server_is_leader:max_by_pod + on(namespace, pod, uid) kubebrain_dbaas:server_is_learner:max_by_pod) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 1) + count(((kubebrain_dbaas:server_leader_changes:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:server_leader_changes:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:server_leader_changes:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:server_leader_changes:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:server_leader_changes:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:server_leader_changes:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:fd_used:max_by_pod
           expr: max by (namespace, pod, uid) (os_fd_used{namespace="kubebrain-system"} and (time() - timestamp(os_fd_used{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1193,6 +1217,30 @@ spec:
           annotations:
             summary: KubeBrain server identity disagrees with static membership
             description: "Every Ready Pod UID must expose exactly one fresh value-1 etcd_server_id with a canonical nonzero lowercase hexadecimal ID, and that ID must exactly equal the same Pod's sole known_peers Local ID in both directions. Missing, stale, malformed, duplicated, or mismatched identity makes Status member ID and MemberList endpoint identity untrustworthy; reconcile peer identity and --initial-cluster before routing clients."
+        - alert: KubeBrainLeaderStateUnavailable
+          expr: sum(kubebrain_dbaas:server_is_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 1 or min(kubebrain_dbaas:server_has_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain Ready replicas do not agree on one leader
+            description: "Current Ready Pod UIDs must report exactly one KubeBrain data-plane leader and every Ready replica must report that a leader is known. Zero/multiple leaders or a replica that cannot identify the leader for one minute makes linearizable routing and write ownership unsafe; inspect the TiKV-backed election record and peer connectivity."
+        - alert: KubeBrainLeaderChangesHigh
+          expr: sum(kubebrain_dbaas:server_leader_changes:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 3
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain observed frequent leader changes
+            description: "Current Ready replicas observed more than three upstream-compatible leader transitions in ten minutes. Compare the per-Pod counter with leader-election-lost telemetry, TiKV/PD latency, readiness changes, and write-fence rejects before attributing the transitions to normal rollout."
+        - alert: KubeBrainServerStateMetricsInconsistent
+          expr: absent(kubebrain_dbaas:server_state_invalid_values:count) == 1 or count(kubebrain_dbaas:server_has_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:server_is_leader:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:server_is_learner:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:server_leader_changes:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:server_leader_changes:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:server_state_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain server-state telemetry is incomplete or contradictory
+            description: "Every Ready Pod UID must expose fresh has-leader/is-leader/is-learner gauges plus authoritative-zero leader-change current/increase. Boolean gauges must be exactly 0 or 1, a leader must know a leader and cannot be a learner, current counters must be non-negative exact integers within 2^53, and increases must be finite in range. Missing, stale, or invalid telemetry cannot prove safe election state."
         - alert: KubeBrainFileDescriptorUsageHigh
           expr: max((kubebrain_dbaas:fd_used:max_by_pod / on(namespace, pod, uid) kubebrain_dbaas:fd_limit:max_by_pod) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0.8
           for: 5m

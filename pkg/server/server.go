@@ -982,6 +982,7 @@ func (s *server) initLeaderElectionMetrics() {
 	_ = s.metricCli.EmitCounter("leader.election.initialize.err", 0)
 	_ = s.metricCli.EmitCounter("leader.election.initialize.incompatible_witness", 0)
 	_ = s.metricCli.EmitCounter("leader.election.initialize.invalid_alarm_metadata", 0)
+	_ = s.metricCli.EmitCounter("etcd.server.leader_changes_seen_total", 0)
 }
 
 var servingInitializationStages = []string{"compact", "quota", "lease", "event_log", "checkpoint"}
