@@ -57847,6 +57847,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四分片与 vet 全部通过。本项不改变 stdout 结果、action/env 合同、key/value、lease 生命周期成功路径、
   存储编码或在线 etcd 数据路径。
 
+- A5163 修复 break-glass legacy snapshot history remediation 对 Maintenance success payload 的盲信。
+  旧路径在 nil/header 校验前直接解引用 Status，并只用 cluster/revision；leader=0、Errors 非空、坏 version、
+  负 size 仍可进入诊断乃至不可逆 physical compaction，Compact response 又被完全丢弃。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::{Status,Compact}` 与 KubeBrain Maintenance proxy
+  validator，现 Status 在任何输出/Snapshot 前要求非 nil、cluster/member ID 与 revision 为正、严格 semver
+  server version、DbSize/DbSizeInUse 非负、leader 非零且 Errors 为空；Compact acknowledgement 要求非 nil、
+  同 cluster、member 非零且 response revision 不早于 requested compact revision，才允许 post-compaction
+  Snapshot。nil status 的 run-level 回归证明不再 panic，Status 十一类与 Compact 五类正反例连续二十轮、
+  包 race、完整非 production、production 326 项四分片与 vet 全部通过。本项不改变审批/确认字段、最小
+  compact revision、Snapshot 校验、OUTPUT 发布、MVCC 存储或在线 etcd RPC 语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
