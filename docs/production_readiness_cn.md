@@ -4407,6 +4407,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   告警故意不按 Ready UID 过滤，因为阻塞中的 leader 会主动 NotReady。completeness 要求 60 秒新鲜的
   current/increase series 数分别等于 `5 × KubeBrain StatefulSet desired replicas`，并验证 current 为
   `[0,2^53]` 内精确整数、外推 increase 有限且同范围。不得绕过重试或向未完整初始化的 term 路由写入。
+- persisted transaction witness 冷启动损坏使用固定
+  `txn_witness_restart_corruption{outcome="armed|failed"}`；每个 backend 初始化两类零值，production 要求 60 秒
+  新鲜的 Ready Pod UID/outcome current/increase 各 `2×Ready` 完整且值合法。两种 outcome 均 critical：armed
+  证明共享 CORRUPT write fence 已落盘；failed 证明 alarm persistence 失败且 leadership 初始化保持阻断，不能因
+  AlarmList 为空恢复写入。缺失、陈旧、非法或 outcome 不完整同样不能作为 witness/fence 健康证据。
 - watch revision lag 过高。
 - `watch_backend_integrity_failure{kind="invalid_result|invalid_revision"}` 每个 RPC server 初始化两类权威零值；
   production 只消费 60 秒内 Ready Pod UID/kind current 与 10 分钟 increase，要求两类均 `2×Ready` 完整，

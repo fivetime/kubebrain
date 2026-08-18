@@ -56842,6 +56842,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   终止 watch，故未把兼容降级误改成错误。固定 taxonomy、legacy 同步回归、既有 malformed/revision fence 与
   精确 production 测试通过；需要下一生产镜像和监控发布。
 
+- A5059 闭合 leadership 冷启动确认 persisted transaction witness 损坏后，CORRUPT write fence 是否真正落盘
+  缺少直接生产证据的安全缺口。旧 `txn.witness.restart_corrupt` 只在 `ArmCorrupt` 成功后动态递增；alarm
+  metadata CAS/commit 失败时函数返回 initialization error，但没有专用事件，AlarmList 又仍为空，operator 只能
+  从通用 leader startup failure 间接猜测是否存在未 fenced corruption。现新增固定
+  `txn.witness.restart_corruption{outcome="armed|failed"}`，每个 backend 创建时初始化两类权威零值；成功路径
+  同时保留 legacy counter 并递增 armed，alarm persistence 任一失败在返回前递增 failed，领导初始化继续
+  fail closed。production 从 60 秒新鲜 raw sample 生成 Ready Pod UID/outcome current 与 10 分钟 increase，
+  要求 `2×Ready` 完整、current 为 `[0,2^53]` 精确整数、increase 有限同范围；任一事件及缺失/陈旧/非法/
+  组合不完整均 critical。真实回归先提交完整 transaction witness 再破坏对应 event marker：正常重启证明
+  armed 且共享 alarm owner 存在；注入 alarm CAS 超时证明 failed、InitializeLeadershipRevision 返回错误且
+  AlarmList 仍空，明确空列表不能替代 fence outcome。定向 backend 与精确 production 测试通过；需要下一
+  生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
