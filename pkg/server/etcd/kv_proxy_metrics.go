@@ -178,6 +178,65 @@ func validateDeleteRangeProxyPayload(metricCli metrics.Metrics, request *etcdser
 	return response, nil
 }
 
+func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.TxnRequest, response *etcdserverpb.TxnResponse, err error) (*etcdserverpb.TxnResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	if response.GetHeader().GetRevision() <= 0 {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
+		return nil, status.Error(codes.DataLoss, "leader txn proxy returned a non-positive response revision")
+	}
+	if validationErr := validateTxnProxyResponseTree(request, response); validationErr != nil {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
+		return nil, status.Error(codes.DataLoss, validationErr.Error())
+	}
+	return response, nil
+}
+
+func validateTxnProxyResponseTree(request *etcdserverpb.TxnRequest, response *etcdserverpb.TxnResponse) error {
+	requests := request.GetFailure()
+	if response.GetSucceeded() {
+		requests = request.GetSuccess()
+	}
+	if len(response.GetResponses()) != len(requests) {
+		return fmt.Errorf("leader txn proxy returned %d response operations for selected branch with %d requests", len(response.GetResponses()), len(requests))
+	}
+	for index, requestOp := range requests {
+		responseOp := response.GetResponses()[index]
+		if requestOp == nil || responseOp == nil {
+			return fmt.Errorf("leader txn proxy returned a nil request/response operation at index %d", index)
+		}
+		switch requestUnion := requestOp.GetRequest().(type) {
+		case *etcdserverpb.RequestOp_RequestRange:
+			responseUnion, ok := responseOp.GetResponse().(*etcdserverpb.ResponseOp_ResponseRange)
+			if !ok || responseUnion.ResponseRange == nil {
+				return fmt.Errorf("leader txn proxy returned a non-range response for range request at index %d", index)
+			}
+		case *etcdserverpb.RequestOp_RequestPut:
+			responseUnion, ok := responseOp.GetResponse().(*etcdserverpb.ResponseOp_ResponsePut)
+			if !ok || responseUnion.ResponsePut == nil {
+				return fmt.Errorf("leader txn proxy returned a non-put response for put request at index %d", index)
+			}
+		case *etcdserverpb.RequestOp_RequestDeleteRange:
+			responseUnion, ok := responseOp.GetResponse().(*etcdserverpb.ResponseOp_ResponseDeleteRange)
+			if !ok || responseUnion.ResponseDeleteRange == nil {
+				return fmt.Errorf("leader txn proxy returned a non-delete response for delete request at index %d", index)
+			}
+		case *etcdserverpb.RequestOp_RequestTxn:
+			responseUnion, ok := responseOp.GetResponse().(*etcdserverpb.ResponseOp_ResponseTxn)
+			if !ok || requestUnion.RequestTxn == nil || responseUnion.ResponseTxn == nil {
+				return fmt.Errorf("leader txn proxy returned a non-txn response for txn request at index %d", index)
+			}
+			if err := validateTxnProxyResponseTree(requestUnion.RequestTxn, responseUnion.ResponseTxn); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("leader txn proxy selected an unknown request operation at index %d", index)
+		}
+	}
+	return nil
+}
+
 func validateProxyKeyValueLifecycle(kv *mvccpb.KeyValue) error {
 	if kv.GetCreateRevision() <= 0 || kv.GetModRevision() <= 0 || kv.GetVersion() <= 0 {
 		return backend.ErrInvalidMVCCMetadata

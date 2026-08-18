@@ -838,6 +838,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 			proxyCtx = s.forwardQuotaAdmissionMember(proxyCtx)
 			response, err := s.peers.Txn(proxyCtx, txn)
 			response, err = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, err)
+			response, err = validateTxnProxyPayload(s.metricCli, txn, response, err)
 			s.observeForwardedRevision(response.GetHeader(), err)
 			return response, err
 		}
@@ -862,6 +863,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 			}
 			response, err := s.peers.Txn(proxyCtx, txn)
 			response, err = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, err)
+			response, err = validateTxnProxyPayload(s.metricCli, txn, response, err)
 			s.observeForwardedRevision(response.GetHeader(), err)
 			return response, err
 		}
@@ -904,6 +906,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 				}
 				response, err := s.peers.Txn(proxyCtx, txn)
 				response, err = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, err)
+				response, err = validateTxnProxyPayload(s.metricCli, txn, response, err)
 				s.observeForwardedRevision(response.GetHeader(), err)
 				return response, err
 			}
@@ -964,6 +967,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 			}
 			response, err := s.peers.Txn(proxyCtx, txn)
 			response, err = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, err)
+			response, err = validateTxnProxyPayload(s.metricCli, txn, response, err)
 			s.observeForwardedRevision(response.GetHeader(), err)
 			return response, err
 		}
@@ -998,6 +1002,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 				}
 				response, proxyErr := s.peers.Txn(proxyCtx, txn)
 				response, proxyErr = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, proxyErr)
+				response, proxyErr = validateTxnProxyPayload(s.metricCli, txn, response, proxyErr)
 				s.observeForwardedRevision(response.GetHeader(), proxyErr)
 				return response, proxyErr
 			}

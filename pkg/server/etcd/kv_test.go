@@ -458,6 +458,9 @@ func TestSerializableHistoricalTxnProxiesWhenFollowerCheckpointLags(t *testing.T
 			return &etcdserverpb.TxnResponse{
 				Header:    txnHeader(written.Header.Revision),
 				Succeeded: true,
+				Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{
+					ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(written.Header.Revision)},
+				}}},
 			}, nil
 		},
 	}
@@ -495,6 +498,9 @@ func TestFollowerLinearizableReadonlyTxnProxiesBeforeLocalBarrier(t *testing.T) 
 			return &etcdserverpb.TxnResponse{
 				Header:    txnHeader(put.Header.Revision),
 				Succeeded: true,
+				Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{
+					ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(put.Header.Revision)},
+				}}},
 			}, nil
 		},
 	}
@@ -503,6 +509,55 @@ func TestFollowerLinearizableReadonlyTxnProxiesBeforeLocalBarrier(t *testing.T) 
 	require.Equal(t, 1, forwarded)
 	require.True(t, resp.Succeeded)
 	require.Equal(t, put.Header.Revision, resp.Header.Revision)
+}
+
+func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
+	rangeRequest := func(key string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(key)},
+		}}
+	}
+	rangeResponse := func() *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseRange{
+			ResponseRange: &etcdserverpb.RangeResponse{},
+		}}
+	}
+	simple := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}
+	nested := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: simple},
+	}}}
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.TxnRequest
+		response *etcdserverpb.TxnResponse
+	}{
+		{name: "zero revision", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(0), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{rangeResponse()}}},
+		{name: "missing operation", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true}},
+		{name: "nil operation", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{nil}}},
+		{name: "wrong operation type", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{}}}}}},
+		{name: "nil typed payload", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{}}}}},
+		{name: "nested mismatch", request: nested, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{Succeeded: true}}}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initKVProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				txnFn: func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+					return tt.response, nil
+				},
+			}
+
+			response, err := server.Txn(context.Background(), tt.request)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCTxn))
+		})
+	}
 }
 
 func TestTxnWithoutComparesIgnoresNonEmptyFailureBranch(t *testing.T) {

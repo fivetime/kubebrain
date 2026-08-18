@@ -579,6 +579,80 @@ func TestDeleteRangeProxyPayloadValidation(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 }
 
+func TestTxnProxyPayloadValidation(t *testing.T) {
+	rangeRequest := func(key string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte(key)}}}
+	}
+	putRequest := func(key string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte(key)}}}
+	}
+	deleteRequest := func(key string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte(key)}}}
+	}
+	rangeResponse := func() *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{}}}
+	}
+	putResponse := func() *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{}}}
+	}
+	deleteResponse := func() *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{}}}
+	}
+	nestedRequest := &etcdserverpb.TxnRequest{Failure: []*etcdserverpb.RequestOp{deleteRequest("nested")}}
+	nestedResponse := &etcdserverpb.TxnResponse{Responses: []*etcdserverpb.ResponseOp{deleteResponse()}}
+	request := &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			rangeRequest("range"), putRequest("put"), deleteRequest("delete"),
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: nestedRequest}},
+		},
+		Failure: []*etcdserverpb.RequestOp{putRequest("failure")},
+	}
+	validSuccess := &etcdserverpb.TxnResponse{
+		Header: txnHeader(5), Succeeded: true,
+		Responses: []*etcdserverpb.ResponseOp{
+			rangeResponse(), putResponse(), deleteResponse(),
+			{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: nestedResponse}},
+		},
+	}
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.TxnRequest
+		response *etcdserverpb.TxnResponse
+		valid    bool
+	}{
+		{name: "selected success tree", request: request, response: validSuccess, valid: true},
+		{name: "selected failure branch", request: request, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{putResponse()}}, valid: true},
+		{name: "zero revision", request: &etcdserverpb.TxnRequest{}, response: &etcdserverpb.TxnResponse{Header: txnHeader(0), Succeeded: true}},
+		{name: "wrong response count", request: request, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true}},
+		{name: "nil response operation", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{nil}}},
+		{name: "wrong response type", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{putResponse()}}},
+		{name: "nil typed payload", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{}}}}},
+		{name: "nested wrong branch count", request: request, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{rangeResponse(), putResponse(), deleteResponse(), {Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{Succeeded: false}}}}}},
+		{name: "nil nested payload", request: request, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{rangeResponse(), putResponse(), deleteResponse(), {Response: &etcdserverpb.ResponseOp_ResponseTxn{}}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			response, err := validateTxnProxyPayload(rec, tt.request, tt.response, nil)
+			if tt.valid {
+				require.Same(t, tt.response, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedKVProxyIntegrityValues(rec, kvProxyRPCTxn))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCTxn))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.TxnResponse{}
+	response, err := validateTxnProxyPayload(nil, &etcdserverpb.TxnRequest{}, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initMaintenanceProxyIntegrityMetrics(rec)
