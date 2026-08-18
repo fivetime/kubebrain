@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -134,6 +135,44 @@ func validateAlarmProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 		}
 	default:
 		return fail("leader alarm proxy returned success for an unknown action")
+	}
+	return response, nil
+}
+
+func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.StatusResponse, err error) (*etcdserverpb.StatusResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	fail := func(message string) (*etcdserverpb.StatusResponse, error) {
+		emitMaintenanceProxyIntegrityFailure(metricCli, maintenanceProxyRPCStatus)
+		return nil, status.Error(codes.DataLoss, message)
+	}
+	if response.GetVersion() == "" {
+		return fail("leader status proxy returned an empty version")
+	}
+	if response.GetDbSize() < 0 || response.GetDbSizeInUse() < 0 || response.GetDbSizeInUse() > response.GetDbSize() {
+		return fail("leader status proxy returned invalid database sizes")
+	}
+	if response.GetDbSizeQuota() <= 0 {
+		return fail("leader status proxy returned a non-positive database quota")
+	}
+	if response.GetRaftAppliedIndex() > response.GetRaftIndex() {
+		return fail("leader status proxy returned an applied index above its committed index")
+	}
+	if response.GetDowngradeInfo() == nil {
+		return fail("leader status proxy returned no downgrade information")
+	}
+	noLeader := false
+	for _, statusErr := range response.GetErrors() {
+		if statusErr == "" {
+			return fail("leader status proxy returned an empty status error")
+		}
+		if statusErr == rpctypes.ErrNoLeader.Error() {
+			noLeader = true
+		}
+	}
+	if noLeader != (response.GetLeader() == 0) {
+		return fail("leader status proxy returned inconsistent leader health")
 	}
 	return response, nil
 }

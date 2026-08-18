@@ -541,10 +541,14 @@ func TestFollowerStatusHedgesIsolatedStorageToLeaderAndPreservesLocalLearner(t *
 	want := &etcdserverpb.StatusResponse{
 		Header:           txnHeader(91),
 		Version:          Version,
+		DbSize:           1,
+		DbSizeInUse:      1,
+		DbSizeQuota:      defaultEtcdBackendQuota,
 		Leader:           8,
 		RaftIndex:        91,
 		RaftAppliedIndex: 91,
 		IsLearner:        false,
+		DowngradeInfo:    &etcdserverpb.DowngradeInfo{},
 	}
 	request := &etcdserverpb.StatusRequest{}
 	called := 0
@@ -596,6 +600,45 @@ func TestFollowerStatusHedgeRejectsInvalidProxyResult(t *testing.T) {
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.Equal(t, []interface{}{int64(0), 1},
 				recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
+		})
+	}
+}
+
+func TestFollowerStatusHedgeRejectsInvalidProxyPayload(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*etcdserverpb.StatusResponse)
+	}{
+		{name: "empty version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "" }},
+		{name: "invalid sizes", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = response.DbSize + 1 }},
+		{name: "applied above committed", mutate: func(response *etcdserverpb.StatusResponse) { response.RaftAppliedIndex = response.RaftIndex + 1 }},
+		{name: "missing downgrade info", mutate: func(response *etcdserverpb.StatusResponse) { response.DowngradeInfo = nil }},
+		{name: "inconsistent leader health", mutate: func(response *etcdserverpb.StatusResponse) { response.Leader = 0 }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initMaintenanceProxyIntegrityMetrics(rec)
+			server.backend = &quotaStatusErrorBackendShim{BackendShim: server.backend, err: errors.New("storage unavailable")}
+			response := &etcdserverpb.StatusResponse{
+				Header: txnHeader(5), Version: Version, DbSize: 10, DbSizeInUse: 8, DbSizeQuota: 100,
+				Leader: 1, RaftIndex: 7, RaftAppliedIndex: 6, DowngradeInfo: &etcdserverpb.DowngradeInfo{},
+			}
+			tt.mutate(response)
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				epochFn: func() (uint64, bool) { return 7, false },
+				statusFn: func(context.Context, *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
+					return response, nil
+				},
+			}
+
+			got, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+			require.Nil(t, got)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
 		})
 	}
 }

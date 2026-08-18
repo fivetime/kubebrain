@@ -908,6 +908,67 @@ func TestAlarmProxyPayloadValidation(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 }
 
+func TestStatusProxyPayloadValidation(t *testing.T) {
+	valid := func() *etcdserverpb.StatusResponse {
+		return &etcdserverpb.StatusResponse{
+			Header: txnHeader(5), Version: "3.6.0", DbSize: 10, DbSizeInUse: 8, DbSizeQuota: 100,
+			Leader: 1, RaftIndex: 7, RaftAppliedIndex: 6, DowngradeInfo: &etcdserverpb.DowngradeInfo{},
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*etcdserverpb.StatusResponse)
+		valid  bool
+	}{
+		{name: "healthy", valid: true},
+		{name: "no leader", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Leader = 0
+			response.Errors = []string{rpctypes.ErrNoLeader.Error()}
+		}, valid: true},
+		{name: "empty storage version allowed", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "" }, valid: true},
+		{name: "zero raft fields allowed", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.RaftIndex = 0
+			response.RaftAppliedIndex = 0
+			response.RaftTerm = 0
+		}, valid: true},
+		{name: "empty version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "" }},
+		{name: "negative size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSize = -1 }},
+		{name: "negative in use", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = -1 }},
+		{name: "in use above size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = 11 }},
+		{name: "zero quota", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeQuota = 0 }},
+		{name: "applied above committed", mutate: func(response *etcdserverpb.StatusResponse) { response.RaftAppliedIndex = 8 }},
+		{name: "missing downgrade info", mutate: func(response *etcdserverpb.StatusResponse) { response.DowngradeInfo = nil }},
+		{name: "empty status error", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{""} }},
+		{name: "zero leader without error", mutate: func(response *etcdserverpb.StatusResponse) { response.Leader = 0 }},
+		{name: "leader with no leader error", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{rpctypes.ErrNoLeader.Error()} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := valid()
+			if tt.mutate != nil {
+				tt.mutate(response)
+			}
+			rec := &recordingMetrics{}
+			got, err := validateStatusProxyPayload(rec, response, nil)
+			if tt.valid {
+				require.Same(t, response, got)
+				require.NoError(t, err)
+				require.Empty(t, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
+				return
+			}
+			require.Nil(t, got)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.StatusResponse{}
+	response, err := validateStatusProxyPayload(nil, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initMaintenanceProxyIntegrityMetrics(rec)
