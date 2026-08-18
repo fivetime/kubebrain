@@ -1088,6 +1088,12 @@ MVCC physical compaction 指标 `etcd_debugging_mvcc_db_compaction_last` 与
 以及仅在真实物理删除事务执行后出现的
 `etcd_debugging_mvcc_db_compaction_pause_duration_milliseconds` histogram（batch commit 与
 失败后的逐 key fallback 各自观察；只读 scan 时间不计入 pause），
+compaction 失败另由固定
+`storage_compaction_failure{stage="full_scan|incremental|auto|watermark|batch|key_delete"}` 表达，backend 创建时
+六类均发布权威零值。production 生成 60 秒新鲜的 Ready Pod UID/stage current 与 10 分钟 increase，分别要求
+`6×Ready` 完整；current 为 `[0,2^53]` 精确整数，increase 有限同范围。任一增量 warning：watermark 阻止
+logical compact 进展，其他 stage 使部分 physical MVCC garbage 留待后续回收；缺失、陈旧、非法或 stage 不完整
+critical。客户端 Compact 成功只证明 logical watermark 已提交，不能替代这条物理回收健康合同。
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
 `etcd_debugging_mvcc_watcher_total` 与 `etcd_debugging_mvcc_slow_watcher_total` 每秒从公开 gRPC stream 和
 backend WatcherHub 真实状态刷新；production 只消费 60 秒内、按 Ready Pod UID 去重的三类 gauge，并要求

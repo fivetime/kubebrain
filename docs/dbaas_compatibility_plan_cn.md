@@ -56755,6 +56755,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   NOT_SERVING 下重试完整权威 reload，绝不因 constructor 继续启动而 fail open。定向 server 与精确 production
   测试通过；需要下一生产镜像和监控发布。
 
+- A5053 闭合 TiKV-backed compaction 六类失败散落且 production 不消费的缺口。旧 full scan、incremental
+  CompactKeys、auto-compaction、shared watermark commit、scanner batch commit 与逐 key fallback delete 分别只
+  递增动态 legacy counter；客户端 Compact 的 logical watermark 已成功时，后续 physical scan/batch/key failure
+  甚至仍可对外成功，长期物理垃圾增长只能靠日志发现。现新增固定
+  `storage.compaction.failure{stage="full_scan|incremental|auto|watermark|batch|key_delete"}`，backend 创建时六类
+  全部发布权威零值，各 legacy 出口同步递增对应 stage；不改变既有 dashboard 或 logical/physical 成功语义。
+  production 生成 60 秒新鲜的 Ready Pod UID/stage current 与 10 分钟 increase，要求 `6×Ready` 完整、current
+  为 `[0,2^53]` 精确整数、increase 有限同范围；任一失败 warning，缺失/陈旧/非法/不完整 critical。告警文案
+  区分 watermark 阻断 logical compact 与其余 stage 延迟 physical garbage 回收，要求同时核对共享 watermark 和
+  TiKV 空间增长。固定零值、真实 full-scan failure、完整 backend/scanner 与精确 production 测试通过；需要下一
+  生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
