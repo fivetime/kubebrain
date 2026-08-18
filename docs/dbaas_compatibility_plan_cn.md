@@ -57102,6 +57102,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   local TiKV hash 的成功或更早 storage error 掩盖。MemberList 与 peer HashKV nil/mixed 回归连续十轮通过；需要下一
   生产镜像和监控发布。
 
+- A5082 将核心 unary KV leader-proxy 的完整性契约从 result ownership 收紧到 mandatory response header。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go`，upstream Range/Txn/Put/DeleteRange/Compact 的成功 wrapper 都直接
+  对 `resp.Header` 填充 cluster/member/term，故非 nil response 携带 nil Header 不是合法的空成功；旧代理会接受该
+  结构并让客户端失去 revision 与 cluster identity。现五类代理在 forwarded revision 观察前同时验证 response/error
+  恰有其一且 success response 的 `ResponseHeader` 非 nil，missing-header 与 nil/mixed 一样 DataLoss fail closed，并
+  复用固定 `kv.proxy.integrity_failure{rpc}` 五标签，不扩大指标基数。production critical 告警说明同步覆盖该结构违例；
+  通用 validator 与五类公开 RPC 表驱动回归连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
