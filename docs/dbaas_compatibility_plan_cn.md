@@ -57239,6 +57239,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `lease.proxy.integrity_failure{rpc="time_to_live|leases"}` 并 DataLoss fail closed，不增加标签。通用空/重复/nil/零值、公开
   follower TTL/Leases、合法空集合及 MinInt64/MaxInt64 ID 回归连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5098 将核心 KV leader-proxy 完整性从通用 response shape 扩展到 unary Range 请求绑定。对照
+  `/root/etcd/server/etcdserver/txn/range.go::executeRange/assembleRangeResponse` 与
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go::rangeKeys`，upstream success 的 Count 非负且不少于 materialized KVs；
+  CountOnly 不返回 KVs/More，KeysOnly 不返回 value，每个非 nil、非空、唯一 key 都属于请求的 exact/range/from-key
+  区间。旧 follower proxy 只校验 response/header/revision，会确认不可能的 count、泄漏 count-only/keys-only 数据或把
+  越界/重复 key 返回客户端。现两个 unary Range 转发入口均在 afterRead 与 forwarded revision 观察前复用固定
+  `kv.proxy.integrity_failure{rpc="range"}` 并 DataLoss fail closed，不增加标签。通用 exact/range/from-key、十二类
+  正常/损坏 payload 与公开 follower 注入回归连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
