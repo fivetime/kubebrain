@@ -567,6 +567,39 @@ func TestFollowerStatusHedgesIsolatedStorageToLeaderAndPreservesLocalLearner(t *
 	require.Equal(t, int64(91), response.GetHeader().GetRevision())
 }
 
+func TestFollowerStatusHedgeRejectsInvalidProxyResult(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		name := "nil"
+		if mixed {
+			name = "mixed"
+		}
+		t.Run(name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initMaintenanceProxyIntegrityMetrics(rec)
+			server.backend = &quotaStatusErrorBackendShim{BackendShim: server.backend, err: errors.New("storage unavailable")}
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				epochFn: func() (uint64, bool) { return 7, false },
+				statusFn: func(context.Context, *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
+					if mixed {
+						return &etcdserverpb.StatusResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				},
+			}
+
+			response, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1},
+				recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
+		})
+	}
+}
+
 func TestFollowerStatusHedgesIsolatedLeaderToLocalStatus(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -869,6 +902,66 @@ func TestFollowerAlarmProxiesEveryActionToLeader(t *testing.T) {
 		etcdserverpb.AlarmRequest_ACTIVATE,
 		etcdserverpb.AlarmRequest_DEACTIVATE,
 	}, forwarded)
+}
+
+func TestFollowerUnaryMaintenanceRejectsInvalidProxyResults(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		invoke    func(*RPCServer) (any, error)
+		configure func(*testPeerService, bool)
+		rpc       string
+	}{
+		{
+			name: "alarm", rpc: maintenanceProxyRPCAlarm,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.alarmFn = func(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
+					if mixed {
+						return &etcdserverpb.AlarmResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.Alarm(context.Background(), &etcdserverpb.AlarmRequest{})
+			},
+		},
+		{
+			name: "downgrade", rpc: maintenanceProxyRPCDowngrade,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.downgradeFn = func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
+					if mixed {
+						return &etcdserverpb.DowngradeResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.Downgrade(context.Background(), &etcdserverpb.DowngradeRequest{})
+			},
+		},
+	} {
+		for _, mixed := range []bool{false, true} {
+			name := "nil"
+			if mixed {
+				name = "mixed"
+			}
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				server, closeFn := newTestRPCServer(t)
+				defer closeFn()
+				rec := &recordingMetrics{}
+				server.metricCli = rec
+				initMaintenanceProxyIntegrityMetrics(rec)
+				peers := testPeerService{isLeader: false, proxyEnabled: true}
+				tc.configure(&peers, mixed)
+				server.peers = peers
+
+				response, err := tc.invoke(server)
+				require.Nil(t, response)
+				require.Equal(t, codes.DataLoss, status.Code(err))
+				require.Equal(t, []interface{}{int64(0), 1}, recordedMaintenanceProxyIntegrityValues(rec, tc.rpc))
+			})
+		}
+	}
 }
 
 func TestFollowerDefragmentHedgesIsolatedStorageToLeader(t *testing.T) {

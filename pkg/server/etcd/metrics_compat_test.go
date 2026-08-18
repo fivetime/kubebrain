@@ -27,8 +27,10 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/stats"
+	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
@@ -105,6 +107,46 @@ func recordedSnapshotFailureValues(rec *recordingMetrics, stage string) []interf
 		}
 	}
 	return values
+}
+
+func recordedMaintenanceProxyIntegrityValues(rec *recordingMetrics, rpc string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == "maintenance.proxy.integrity_failure" && len(counter.tags) == 1 &&
+			counter.tags[0] == metrics.Tag("rpc", rpc) {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
+func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
+	rec := &recordingMetrics{}
+	initMaintenanceProxyIntegrityMetrics(rec)
+	for _, rpc := range maintenanceProxyRPCs {
+		response, err := validateMaintenanceProxyResult[etcdserverpb.StatusResponse](rec, rpc, nil, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "neither response nor error")
+
+		response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{}, errors.New("mixed"))
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "both response and error")
+		require.Equal(t, []interface{}{int64(0), 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
+	}
+
+	want := &etcdserverpb.StatusResponse{}
+	response, err := validateMaintenanceProxyResult(rec, maintenanceProxyRPCStatus, want, nil)
+	require.Same(t, want, response)
+	require.NoError(t, err)
+	wantErr := errors.New("transport failed")
+	response, err = validateMaintenanceProxyResult[etcdserverpb.StatusResponse](rec, maintenanceProxyRPCStatus, nil, wantErr)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
 }
 
 func TestSnapshotFailureMetricsInitializeFixedStages(t *testing.T) {
