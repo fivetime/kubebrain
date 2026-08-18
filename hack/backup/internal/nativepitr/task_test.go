@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
@@ -17,6 +18,9 @@ type fakeSafePoints struct {
 	err       error
 	commitTS  uint64
 	commitErr error
+	physical  int64
+	logical   int64
+	rawTS     bool
 	calls     []struct {
 		id  string
 		ttl int64
@@ -28,11 +32,34 @@ func (f *fakeSafePoints) GetTS(context.Context) (int64, int64, error) {
 	if f.commitErr != nil {
 		return 0, 0, f.commitErr
 	}
+	if f.rawTS {
+		return f.physical, f.logical, nil
+	}
 	ts := f.commitTS
 	if ts == 0 {
 		ts = 110
 	}
 	return oracle.ExtractPhysical(ts), oracle.ExtractLogical(ts), nil
+}
+
+func TestComposePDTS(t *testing.T) {
+	physical := int64(1_700_000_000_000)
+	for _, logical := range []int64{0, 1, pdTSLogicalLimit - 1} {
+		ts, err := ComposePDTS(physical, logical)
+		require.NoError(t, err)
+		require.Equal(t, physical, oracle.ExtractPhysical(ts))
+		require.Equal(t, logical, oracle.ExtractLogical(ts))
+	}
+	for _, components := range [][2]int64{
+		{0, 0},
+		{-1, 0},
+		{1, -1},
+		{1, pdTSLogicalLimit},
+		{math.MaxInt64>>pdTSLogicalBits + 1, 0},
+	} {
+		_, err := ComposePDTS(components[0], components[1])
+		require.Error(t, err, components)
+	}
 }
 
 func (f *fakeSafePoints) UpdateServiceGCSafePoint(_ context.Context, id string, ttl int64, ts uint64) (uint64, error) {
@@ -131,6 +158,12 @@ func TestCreateTaskFailsClosedAndRemovesOwnGuard(t *testing.T) {
 		sp := &fakeSafePoints{minimum: 90, commitTS: 1_000}
 		_, err := CreateTask(context.Background(), sp, &fakeMetadata{created: true}, taskInput())
 		require.ErrorContains(t, err, "outside the task interval")
+		require.Len(t, sp.calls, 1)
+	})
+	t.Run("malformed post-commit TSO keeps task and guard", func(t *testing.T) {
+		sp := &fakeSafePoints{minimum: 90, rawTS: true, physical: 1, logical: pdTSLogicalLimit}
+		_, err := CreateTask(context.Background(), sp, &fakeMetadata{created: true}, taskInput())
+		require.ErrorContains(t, err, "invalid post-commit task TSO")
 		require.Len(t, sp.calls, 1)
 	})
 }

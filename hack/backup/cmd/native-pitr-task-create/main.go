@@ -22,7 +22,6 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 	pingcaplog "github.com/pingcap/log"
-	"github.com/tikv/client-go/v2/oracle"
 	pd "github.com/tikv/pd/client"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -109,7 +108,10 @@ func execute(parent context.Context, o options, out interface{ Write([]byte) (in
 		if err != nil {
 			return fmt.Errorf("obtain task start TSO: %w", err)
 		}
-		o.startTS = oracle.ComposeTS(physical, logical)
+		o.startTS, err = nativepitr.ComposePDTS(physical, logical)
+		if err != nil {
+			return fmt.Errorf("invalid task start TSO: %w", err)
+		}
 	}
 	receipt, err := nativepitr.CreateTask(ctx, pdc, nativepitr.EtcdMetadata{KV: etcd.KV}, nativepitr.TaskCreateInput{Preflight: p, PreflightSHA256: hex.EncodeToString(digest[:]), StartTS: o.startTS, EndTS: o.endTS, Storage: storage, OperationID: uuid.NewString()})
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -19,7 +20,22 @@ const (
 	TaskOwnerKey          = "/kubebrain/native-pitr/owner"
 	TaskCreateFormat      = "kubebrain.native-pitr-task-create.v4"
 	bootstrapSafePointTTL = int64((2 * time.Hour) / time.Second)
+	pdTSLogicalBits       = 18
+	pdTSLogicalLimit      = int64(1 << pdTSLogicalBits)
 )
+
+// ComposePDTS validates PD's signed TSO components before converting them to
+// the unsigned timestamp persisted in native PITR receipts.
+func ComposePDTS(physical, logical int64) (uint64, error) {
+	if physical < 0 || physical > math.MaxInt64>>pdTSLogicalBits || logical < 0 || logical >= pdTSLogicalLimit {
+		return 0, fmt.Errorf("invalid PD TSO components physical=%d logical=%d", physical, logical)
+	}
+	ts := oracle.ComposeTS(physical, logical)
+	if ts == 0 || oracle.ExtractPhysical(ts) != physical || oracle.ExtractLogical(ts) != logical {
+		return 0, errors.New("PD TSO components do not compose reversibly")
+	}
+	return ts, nil
+}
 
 type SafePointClient interface {
 	UpdateServiceGCSafePoint(context.Context, string, int64, uint64) (uint64, error)
@@ -157,7 +173,10 @@ func CreateTask(ctx context.Context, safePoints SafePointClient, metadata Atomic
 	if err != nil {
 		return TaskCreateReceipt{}, fmt.Errorf("obtain post-commit task TSO (task metadata and bootstrap guard remain): %w", err)
 	}
-	committedAtTS := oracle.ComposeTS(physical, logical)
+	committedAtTS, err := ComposePDTS(physical, logical)
+	if err != nil {
+		return TaskCreateReceipt{}, fmt.Errorf("invalid post-commit task TSO (task metadata and bootstrap guard remain): %w", err)
+	}
 	if committedAtTS < in.StartTS || committedAtTS >= in.EndTS {
 		return TaskCreateReceipt{}, errors.New("post-commit task TSO is outside the task interval; task metadata and bootstrap guard remain")
 	}
