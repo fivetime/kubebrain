@@ -241,6 +241,16 @@ func validatedWatchBatchRevision(result etcdproxy.WatchResult, sourceRevision ui
 		if event.GetType() == mvccpb.PUT && kv.GetVersion() == 0 {
 			return 0, fmt.Errorf("watch backend returned PUT event without a version at index %d", i)
 		}
+		if event.GetType() == mvccpb.PUT {
+			createRevision := kv.GetCreateRevision()
+			version := kv.GetVersion()
+			if version == 1 && createRevision != eventRevision {
+				return 0, fmt.Errorf("watch backend returned PUT version 1 with create revision %d differing from mod revision %d at index %d", createRevision, eventRevision, i)
+			}
+			if maximumVersion := eventRevision - createRevision + 1; version > maximumVersion {
+				return 0, fmt.Errorf("watch backend returned PUT version %d exceeding maximum %d for create revision %d and mod revision %d at index %d", version, maximumVersion, createRevision, eventRevision, i)
+			}
+		}
 		if prevKV := event.GetPrevKv(); prevKV != nil {
 			prevModRevision := prevKV.GetModRevision()
 			if prevModRevision <= 0 || prevModRevision >= eventRevision {
@@ -251,6 +261,20 @@ func validatedWatchBatchRevision(result etcdproxy.WatchResult, sourceRevision ui
 			}
 			if version := prevKV.GetVersion(); version <= 0 {
 				return 0, fmt.Errorf("watch backend returned invalid previous version %d at index %d", version, i)
+			}
+			prevCreateRevision := prevKV.GetCreateRevision()
+			prevVersion := prevKV.GetVersion()
+			if prevVersion == 1 && prevCreateRevision != prevModRevision {
+				return 0, fmt.Errorf("watch backend returned previous version 1 with create revision %d differing from mod revision %d at index %d", prevCreateRevision, prevModRevision, i)
+			}
+			if maximumVersion := prevModRevision - prevCreateRevision + 1; prevVersion > maximumVersion {
+				return 0, fmt.Errorf("watch backend returned previous version %d exceeding maximum %d for create revision %d and mod revision %d at index %d", prevVersion, maximumVersion, prevCreateRevision, prevModRevision, i)
+			}
+			if event.GetType() == mvccpb.PUT && prevCreateRevision != kv.GetCreateRevision() {
+				return 0, fmt.Errorf("watch backend returned PUT and previous values from different create revisions %d and %d at index %d", kv.GetCreateRevision(), prevCreateRevision, i)
+			}
+			if event.GetType() == mvccpb.PUT && prevVersion != kv.GetVersion()-1 {
+				return 0, fmt.Errorf("watch backend returned PUT version %d not following previous version %d at index %d", kv.GetVersion(), prevVersion, i)
 			}
 		}
 		if sourceRevision > 0 && uint64(eventRevision) <= sourceRevision {
