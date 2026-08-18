@@ -56646,6 +56646,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不证明客户端已从 wire 读取，后者须结合 send-loop histogram/stream-failure。精确 manifest 与 production/
   observability 文档同步，production 测试通过；本项只消费现有 upstream-compatible 指标，需要下一监控发布。
 
+- A5043 闭合 A4046 upstream `etcd_debugging_mvcc_keys_total` 的生产刷新真实性链。旧实现启动时发布 gauge=0，
+  每秒只接受 exact count index/bounded leader proxy，失败时保留旧值并动态创建 refresh-miss；production 只检查
+  family 存在，scrape timestamp 会把 retained gauge 伪装成持续刷新。现初始化
+  `mvcc.keys_total.refresh.miss=0` 与 last-success timestamp=0，只有 exact CountAtRevision 成功才同时发布 live-key
+  与真实 Unix 秒；失败继续拒绝周期性 O(keyspace) scan。监控生成 60 秒新鲜的 Ready Pod UID 级 live-key、
+  miss current/10 分钟 increase 与 last-success recording，要求四类来源完整；live-key/miss current 为
+  `[0,2^53]` 精确整数，increase 有限同范围，timestamp 为正精确值且未来偏差不超过 5 分钟。任一 miss warning，
+  两分钟未成功刷新 warning，缺失/陈旧/非法 critical。持续 mutation 与 Pod 采样偏移会让每次都精确的 count
+  不同，因此刻意不要求副本值相等。定向 server/etcd、精确 manifest、production/observability 文档同步，
+  测试通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

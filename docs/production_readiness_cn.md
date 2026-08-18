@@ -1058,6 +1058,13 @@ MVCC bbolt open read transaction 兼容指标 `etcd_mvcc_db_open_read_transactio
 （KubeBrain/TiKV 无嵌入式 bbolt read transaction，固定为 0；不要把它解释为 TiKV read
 RPC 或 snapshot 数），
 MVCC live key 指标 `etcd_debugging_mvcc_keys_total`，
+其每秒刷新只接受 exact count index 或 bounded leader proxy 结果；失败时不做周期性 O(keyspace) scan，而是保留
+旧 gauge、递增 server 创建时已初始化为 0 的 `mvcc_keys_total_refresh_miss`，且不推进
+`mvcc_keys_total_refresh_last_success_timestamp_seconds`。production 从 60 秒内样本生成 Ready Pod UID 级
+live-key、miss current/10 分钟 increase 与 last-success recording，要求四类来源完整；live-key/miss current
+必须为 `[0,2^53]` 精确整数，increase 有限同范围，last-success 为正精确 Unix 秒且未来偏差不超过 5 分钟。
+任一 miss warning，超过 2 分钟未成功刷新并持续 2 分钟 warning，缺失/陈旧/非法 critical。持续 mutation 与
+各 Pod scrape/refresh 时点偏移可令精确 count 短暂或长期不同，production 不错误要求跨副本值相等。
 MVCC put size 累计指标 `etcd_debugging_mvcc_total_put_size_in_bytes`，
 MVCC current revision 指标 `etcd_debugging_mvcc_current_revision`，
 MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
