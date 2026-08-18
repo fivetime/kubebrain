@@ -57276,6 +57276,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ID（含 MinInt64）保持合法，不增加标签。通用 create/update/异常 payload 与公开 follower 注入连续十轮通过；需要下一
   生产镜像和监控发布。
 
+- A5102 将核心 KV leader-proxy payload 完整性扩展到 unary DeleteRange 的原子前值集合。对照
+  `/root/etcd/server/etcdserver/txn/delete.go::deleteRange` 与
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go::DeleteRange`，upstream 在同一 write transaction 先按 key 升序读取
+  请求范围，再删除完全相同的 key 集合；成功 response revision 为正、Deleted 非负，PrevKv=false 不携带前值，
+  PrevKv=true 时 PrevKvs 与 Deleted 一一对应，每项非 nil、属于 exact/range/from-key 边界、generation 合法且 mod
+  revision 严格早于 delete revision。旧 follower proxy 会确认负 Deleted、前值泄漏/缺失、nil/越界/重复/乱序或损坏
+  前值。现 DeleteRange 转发在 forwarded revision 观察前复用固定
+  `kv.proxy.integrity_failure{rpc="delete_range"}` 并 DataLoss fail closed；signed lease ID（含 MinInt64）保持合法，不增加
+  标签。通用空/范围/异常 payload 与公开 follower 注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

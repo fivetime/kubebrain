@@ -4528,6 +4528,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   Put success 必须携带正 write revision；未请求 PrevKv 时不得返回前值，返回的前值必须精确匹配请求 key、具有合法
   generation 且 mod revision 严格早于本次写 revision。IgnoreValue/IgnoreLease 与 PrevKv 同时请求时 upstream 已证明
   key 必然存在，因此 nil PrevKv 同样按 DataLoss 拒绝；前值的 signed lease ID 保持合法。
+  DeleteRange success 同样必须有正 revision 与非负 Deleted；PrevKv=false 不得回传前值，PrevKv=true 时 PrevKvs 数量
+  必须精确等于 Deleted。每项必须非 nil、位于 exact/range/from-key 请求边界、按 key 严格升序、generation 合法且
+  mod revision 早于删除 revision；负 lease ID 不误报损坏。
   production 要求 60 秒新鲜
   Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。
