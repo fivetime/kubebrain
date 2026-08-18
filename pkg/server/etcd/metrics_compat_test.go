@@ -667,6 +667,18 @@ func TestLeaseBackgroundFailureMetricsUseFixedOperations(t *testing.T) {
 	}, rec.counters)
 }
 
+func TestLeaseStartupRestoreFailureMetricInitializesAuthoritativeZero(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initLeaseStartupRestoreFailureMetric(rec)
+	emitLeaseStartupRestoreFailure(rec)
+
+	require.Equal(t, []recordedCounter{
+		{name: "lease.startup_restore.failure", value: int64(0)},
+		{name: "lease.startup_restore.failure", value: 1},
+	}, rec.counters)
+}
+
 func TestLeaseOrphanSweepFailureMetricsUseFixedStages(t *testing.T) {
 	rec := &recordingMetrics{}
 

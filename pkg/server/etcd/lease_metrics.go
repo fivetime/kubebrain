@@ -51,6 +51,20 @@ func initLeaseBackgroundFailureMetrics(metricCli metrics.Metrics) {
 	}
 }
 
+func initLeaseStartupRestoreFailureMetric(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("lease.startup_restore.failure", int64(0))
+}
+
+func emitLeaseStartupRestoreFailure(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("lease.startup_restore.failure", 1)
+}
+
 func emitLeaseBackgroundFailure(metricCli metrics.Metrics, operation string) {
 	if metricCli == nil {
 		return

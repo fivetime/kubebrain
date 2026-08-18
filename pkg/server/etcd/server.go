@@ -277,6 +277,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	// crosses PD/TiKV, so a network black hole must not prevent the process from
 	// ever reaching its serving and shutdown lifecycle. A later leadership reload
 	// remains authoritative and reconstructs the complete lease state.
+	initLeaseStartupRestoreFailureMetric(metricCli)
 	if err := server.restoreLeasesAtStartup(context.Background(), unaryRpcTimeout); err != nil {
 		klog.ErrorS(err, "restore leases failed")
 	}

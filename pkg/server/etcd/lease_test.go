@@ -2681,6 +2681,8 @@ func TestLeaseLeasesOrdersByExpiryLikeEtcd(t *testing.T) {
 func TestLeaseStartupRestoreIsBoundedWhenPDIsUnavailable(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	recorder := &recordingMetrics{}
+	server.metricCli = recorder
 	backend := &blockingStartupLeaseBackend{
 		BackendShim: server.backend,
 		entered:     make(chan struct{}),
@@ -2692,6 +2694,7 @@ func TestLeaseStartupRestoreIsBoundedWhenPDIsUnavailable(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Less(t, time.Since(start), time.Second)
 	require.False(t, server.leaseReady.Load(), "a failed constructor restore must leave lease reads closed")
+	require.Contains(t, recorder.counters, recordedCounter{name: "lease.startup_restore.failure", value: 1})
 	select {
 	case <-backend.entered:
 	default:

@@ -2063,6 +2063,7 @@ func (m *leaseManager) restoreLeasesAtStartup(parent context.Context, timeout ti
 		// An empty or partial constructor snapshot is not authoritative. Production
 		// leadership reload will reopen this gate only after a complete durable read.
 		m.PrepareLeaseReload()
+		emitLeaseStartupRestoreFailure(m.srv.metricCli)
 		return err
 	}
 	return nil
