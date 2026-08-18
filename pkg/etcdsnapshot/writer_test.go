@@ -49,6 +49,7 @@ func TestBuilderAppendsMultipleBatchesWithoutLosingSameRevisionRecords(t *testin
 	defer db.Close()
 	got := make(map[string]string)
 	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		require.Equal(t, StorageVersion, schema.ReadStorageVersionFromSnapshot(tx).String())
 		return tx.Bucket(schema.Key.Name()).ForEach(func(_, value []byte) error {
 			var kv mvccpb.KeyValue
 			if err := proto.Unmarshal(value, &kv); err != nil {

@@ -35,6 +35,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+
+	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 )
 
 func TestClientSnapshotAPIsReturnHashProtectedEtcdBackend(t *testing.T) {
@@ -197,6 +199,9 @@ func TestRawGRPCSnapshotMatchesEtcdChunkAndDigestProtocol(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	statusResponse, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, etcdsnapshot.StorageVersion, statusResponse.StorageVersion)
 	stream, err := maintenance.Snapshot(ctx, &etcdserverpb.SnapshotRequest{})
 	require.NoError(t, err)
 	var responses []*etcdserverpb.SnapshotResponse
@@ -211,7 +216,7 @@ func TestRawGRPCSnapshotMatchesEtcdChunkAndDigestProtocol(t *testing.T) {
 	require.GreaterOrEqual(t, len(responses), 2)
 	var backendBytes []byte
 	for i, response := range responses[:len(responses)-1] {
-		require.Equal(t, Version, response.Version)
+		require.Equal(t, statusResponse.StorageVersion, response.Version)
 		require.LessOrEqual(t, len(response.Blob), snapshotSendBufferSize)
 		backendBytes = append(backendBytes, response.Blob...)
 		if i+1 < len(responses)-1 {
@@ -224,7 +229,7 @@ func TestRawGRPCSnapshotMatchesEtcdChunkAndDigestProtocol(t *testing.T) {
 	final := responses[len(responses)-1]
 	require.Zero(t, final.RemainingBytes)
 	require.Equal(t, digest[:], final.Blob)
-	require.Equal(t, Version, final.Version)
+	require.Equal(t, statusResponse.StorageVersion, final.Version)
 }
 
 func TestRawGRPCSnapshotReportsAmbiguousLegacyHistoryAsFailedPrecondition(t *testing.T) {
@@ -610,7 +615,7 @@ func TestClientStatusProtocolMetadataMatchesEtcdContract(t *testing.T) {
 	require.Equal(t, response.RaftIndex, response.RaftAppliedIndex)
 	require.GreaterOrEqual(t, response.RaftAppliedIndex, uint64(put.Header.Revision))
 	require.Equal(t, Version, response.Version)
-	require.Equal(t, Version, response.StorageVersion)
+	require.Equal(t, etcdsnapshot.StorageVersion, response.StorageVersion)
 	require.Equal(t, defaultEtcdBackendQuota, response.DbSizeQuota)
 	require.False(t, response.IsLearner)
 	require.NotNil(t, response.DowngradeInfo)

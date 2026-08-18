@@ -44,6 +44,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -459,7 +460,7 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	statusResp, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
 	require.Equal(t, Version, statusResp.Version)
-	require.Equal(t, Version, statusResp.StorageVersion)
+	require.Equal(t, etcdsnapshot.StorageVersion, statusResp.StorageVersion)
 	require.NotNil(t, statusResp.Header)
 	require.NotNil(t, statusResp.DowngradeInfo)
 	require.False(t, statusResp.DowngradeInfo.Enabled)

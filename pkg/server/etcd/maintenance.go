@@ -379,7 +379,7 @@ func (s *RPCServer) localMaintenanceStatus(ctx context.Context) (*etcdserverpb.S
 	resp := &etcdserverpb.StatusResponse{
 		Header:           txnHeader(int64(revision)),
 		Version:          Version,
-		StorageVersion:   Version,
+		StorageVersion:   etcdsnapshot.StorageVersion,
 		Leader:           leader,
 		RaftIndex:        revision,
 		RaftAppliedIndex: revision,

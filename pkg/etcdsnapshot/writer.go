@@ -30,6 +30,11 @@ var ErrInvalidRetainedHistory = errors.New("snapshot retained MVCC history is in
 // Storage I/O and transport failures must not be wrapped with this sentinel.
 var ErrInvalidSnapshotMetadata = errors.New("snapshot metadata is inconsistent")
 
+// StorageVersion is the etcd backend schema version emitted by this writer.
+// It is intentionally independent from the KubeBrain server binary/protocol
+// version: upstream Status and Snapshot expose the backend version separately.
+const StorageVersion = "3.7.0"
+
 // ErrInvalidMVCCLifecycle is retained for callers that adopted the narrower
 // A4207 name. It aliases the broader retained-history class.
 var ErrInvalidMVCCLifecycle = ErrInvalidRetainedHistory
@@ -158,7 +163,7 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 		}
 	}
 	meta := tx.Bucket(metaBucket)
-	if err := meta.Put([]byte("storageVersion"), []byte("3.7.0")); err != nil {
+	if err := meta.Put([]byte("storageVersion"), []byte(StorageVersion)); err != nil {
 		return err
 	}
 	one := make([]byte, 8)
