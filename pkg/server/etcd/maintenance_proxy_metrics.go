@@ -156,8 +156,11 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	if response.GetDbSize() < 0 || response.GetDbSizeInUse() < 0 {
 		return fail("leader status proxy returned invalid database sizes")
 	}
-	if response.GetDbSizeQuota() <= 0 {
-		return fail("leader status proxy returned a non-positive database quota")
+	// Upstream uses a negative configured quota to disable quota enforcement
+	// and publishes that sentinel unchanged in Status. Zero is replaced by the
+	// default quota before the response is returned.
+	if response.GetDbSizeQuota() == 0 {
+		return fail("leader status proxy returned a zero database quota")
 	}
 	if response.GetDowngradeInfo() == nil {
 		return fail("leader status proxy returned no downgrade information")

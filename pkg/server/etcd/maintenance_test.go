@@ -543,7 +543,7 @@ func TestFollowerStatusHedgesIsolatedStorageToLeaderAndPreservesLocalLearner(t *
 		Version:          Version,
 		DbSize:           1,
 		DbSizeInUse:      2,
-		DbSizeQuota:      defaultEtcdBackendQuota,
+		DbSizeQuota:      -1,
 		Leader:           8,
 		RaftIndex:        90,
 		RaftAppliedIndex: 91,
@@ -612,6 +612,7 @@ func TestFollowerStatusHedgeRejectsInvalidProxyPayload(t *testing.T) {
 		{name: "empty version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "" }},
 		{name: "negative size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSize = -1 }},
 		{name: "negative in use", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = -1 }},
+		{name: "zero quota", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeQuota = 0 }},
 		{name: "missing downgrade info", mutate: func(response *etcdserverpb.StatusResponse) { response.DowngradeInfo = nil }},
 		{name: "inconsistent leader health", mutate: func(response *etcdserverpb.StatusResponse) { response.Leader = 0 }},
 	} {
