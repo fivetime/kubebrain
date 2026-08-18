@@ -545,6 +545,23 @@ func TestEtcdMVCCWatchPendingEventGaugeUsesUpstreamMetricName(t *testing.T) {
 	}, rec.gauges)
 }
 
+func TestWatchBackendIntegrityMetricsInitializeAndPreserveLegacyCounters(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initWatchBackendIntegrityMetrics(rec)
+	emitWatchBackendIntegrityFailure(rec, "invalid_result")
+	emitWatchBackendIntegrityFailure(rec, "invalid_revision")
+
+	require.Equal(t, []recordedCounter{
+		{name: "watch.backend.integrity_failure", value: 0, tags: []metrics.T{metrics.Tag("kind", "invalid_result")}},
+		{name: "watch.backend.integrity_failure", value: 0, tags: []metrics.T{metrics.Tag("kind", "invalid_revision")}},
+		{name: "watch.backend.invalid_result", value: 1},
+		{name: "watch.backend.integrity_failure", value: 1, tags: []metrics.T{metrics.Tag("kind", "invalid_result")}},
+		{name: "watch.backend.invalid_revision", value: 1},
+		{name: "watch.backend.integrity_failure", value: 1, tags: []metrics.T{metrics.Tag("kind", "invalid_revision")}},
+	}, rec.counters)
+}
+
 func TestEtcdMVCCKeysGaugeUsesUpstreamMetricName(t *testing.T) {
 	rec := &recordingMetrics{}
 

@@ -16,6 +16,27 @@ package etcd
 
 import "github.com/kubewharf/kubebrain/pkg/metrics"
 
+var watchBackendIntegrityKinds = []string{"invalid_result", "invalid_revision"}
+
+func initWatchBackendIntegrityMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, kind := range watchBackendIntegrityKinds {
+		_ = metricCli.EmitCounter("watch.backend.integrity_failure", 0, metrics.Tag("kind", kind))
+	}
+}
+
+func emitWatchBackendIntegrityFailure(metricCli metrics.Metrics, kind string) {
+	if metricCli == nil {
+		return
+	}
+	// Keep the legacy counters for existing dashboards while publishing one
+	// bounded taxonomy that production monitoring can initialize and reconcile.
+	_ = metricCli.EmitCounter("watch.backend."+kind, 1)
+	_ = metricCli.EmitCounter("watch.backend.integrity_failure", 1, metrics.Tag("kind", kind))
+}
+
 var etcdWatchSendLoopDurationMetrics = []string{
 	"etcd_debugging.server.watch_send_loop.watch_stream.duration.seconds",
 	"etcd_debugging.server.watch_send_loop.watch_stream.duration_per_event.seconds",

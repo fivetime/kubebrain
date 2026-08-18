@@ -481,6 +481,18 @@ spec:
           expr: count(((kubebrain_dbaas:watch_collector_recovery:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_collector_recovery:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_collector_recovery:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_collector_recovery:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_collector_recovery:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_collector_recovery:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_backend_integrity_failure:current_by_pod_kind
+          expr: max by (namespace, pod, uid, kind) (watch_backend_integrity_failure{namespace="kubebrain-system",kind=~"invalid_result|invalid_revision"} and (time() - timestamp(watch_backend_integrity_failure{namespace="kubebrain-system",kind=~"invalid_result|invalid_revision"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_backend_integrity_failure:increase_10m_by_pod_kind
+          expr: max by (namespace, pod, uid, kind) (increase(watch_backend_integrity_failure{namespace="kubebrain-system",kind=~"invalid_result|invalid_revision"}[10m]) and (time() - timestamp(watch_backend_integrity_failure{namespace="kubebrain-system",kind=~"invalid_result|invalid_revision"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_backend_integrity_failure_invalid_values:count
+          expr: count(((kubebrain_dbaas:watch_backend_integrity_failure:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_backend_integrity_failure:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_backend_integrity_failure:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_backend_integrity_failure:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_backend_integrity_failure:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_backend_integrity_failure:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:durable_revision_persist_err:current_by_pod
           expr: max by (namespace, pod, uid) (revision_durable_persist_err{namespace="kubebrain-system"} and (time() - timestamp(revision_durable_persist_err{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1149,6 +1161,22 @@ spec:
           annotations:
             summary: KubeBrain watch collector recovery telemetry is incomplete
             description: "Every Ready Pod UID must expose authoritative-zero replayed, empty and failed outcomes. Current samples must be fresh non-negative exact integers within 2^53 and ten-minute increases finite in range. Missing, stale, invalid or incomplete telemetry cannot prove a stalled committed revision is replayed or safely classified before watermark advancement."
+        - alert: KubeBrainWatchBackendIntegrityFailures
+          expr: sum by (kind) (kubebrain_dbaas:watch_backend_integrity_failure:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain rejected an invalid Watch backend result
+            description: "A current Ready replica rejected a Watch backend/proxy result before publication because its {{ $labels.kind }} contract failed. The affected generation is canceled rather than exposing malformed events or a regressing/unrepresentable revision. Preserve logs and inspect collector, durable replay, and peer proxy ordering before treating Watch delivery as trustworthy."
+        - alert: KubeBrainWatchBackendIntegrityMetricsMissing
+          expr: absent(kubebrain_dbaas:watch_backend_integrity_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:watch_backend_integrity_failure:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_backend_integrity_failure:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:watch_backend_integrity_failure_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain Watch backend-integrity telemetry is incomplete
+            description: "Every current Ready Pod UID must expose both authoritative-zero kind values as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53 and increases finite in range. Missing, stale, invalid, or incomplete telemetry cannot prove that malformed or revision-regressing backend results are being detected before Watch publication."
         - alert: KubeBrainWatchCollectorMetricsMissing
           expr: absent(kubebrain_dbaas:watch_collector_invalid_values:count) == 1 or count(kubebrain_dbaas:watch_collector_stalled:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_collector_stalled:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_collector_skipped_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_collector_skipped_revision:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:watch_collector_invalid_values:count != 0
           for: 2m

@@ -1194,7 +1194,7 @@ watchLoop:
 				return
 			}
 			if resultErr := invalidWatchResultShape(result); resultErr != nil {
-				w.metricCli.EmitCounter("watch.backend.invalid_result", 1)
+				emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
 				klog.ErrorS(resultErr, "[watch stream] cancel due to invalid backend result", "watcher", w.id, "watch", id)
 				w.CancelGeneration(id, wt, resultErr, false)
 				cancel()
@@ -1202,7 +1202,7 @@ watchLoop:
 			}
 			if result.ProgressRevision > uint64(math.MaxInt64) {
 				revisionErr := fmt.Errorf("watch backend returned progress revision %d exceeds MaxInt64", result.ProgressRevision)
-				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+				emitWatchBackendIntegrityFailure(w.metricCli, "invalid_revision")
 				klog.ErrorS(revisionErr, "[watch stream] cancel due to unrepresentable progress revision", "watcher", w.id, "watch", id)
 				w.CancelGeneration(id, wt, revisionErr, false)
 				cancel()
@@ -1210,7 +1210,7 @@ watchLoop:
 			}
 			if result.Revision > uint64(math.MaxInt64) {
 				revisionErr := fmt.Errorf("watch backend returned batch revision %d exceeds MaxInt64", result.Revision)
-				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+				emitWatchBackendIntegrityFailure(w.metricCli, "invalid_revision")
 				klog.ErrorS(revisionErr, "[watch stream] cancel due to unrepresentable batch revision", "watcher", w.id, "watch", id)
 				w.CancelGeneration(id, wt, revisionErr, false)
 				cancel()
@@ -1221,7 +1221,7 @@ watchLoop:
 					sourceRevision := atomic.LoadUint64(&wt.sourceRev)
 					if result.ProgressRevision < sourceRevision {
 						revisionErr := fmt.Errorf("watch backend returned progress revision %d below source revision %d", result.ProgressRevision, sourceRevision)
-						w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+						emitWatchBackendIntegrityFailure(w.metricCli, "invalid_revision")
 						klog.ErrorS(revisionErr, "[watch stream] cancel due to regressing progress revision", "watcher", w.id, "watch", id)
 						w.CancelGeneration(id, wt, revisionErr, false)
 						cancel()
@@ -1256,7 +1256,7 @@ watchLoop:
 			}
 			batchRevision, revisionErr := validatedWatchBatchRevision(result, sourceRevision)
 			if revisionErr != nil {
-				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+				emitWatchBackendIntegrityFailure(w.metricCli, "invalid_revision")
 				klog.ErrorS(revisionErr, "[watch stream] cancel due to invalid backend batch revision", "watcher", w.id, "watch", id)
 				w.CancelGeneration(id, wt, revisionErr, false)
 				cancel()
@@ -1286,7 +1286,7 @@ watchLoop:
 					eventRevision := event.GetKv().GetModRevision()
 					if eventRevision < r.StartRevision {
 						revisionErr := fmt.Errorf("watch backend returned event revision %d below watch start revision %d", eventRevision, r.StartRevision)
-						w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+						emitWatchBackendIntegrityFailure(w.metricCli, "invalid_revision")
 						klog.ErrorS(revisionErr, "[watch stream] cancel due to invalid backend event revision", "watcher", w.id, "watch", id)
 						w.CancelGeneration(id, wt, revisionErr, false)
 						cancel()
