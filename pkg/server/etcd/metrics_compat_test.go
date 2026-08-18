@@ -664,6 +664,35 @@ func TestLeaseBackgroundFailureMetricsUseFixedOperations(t *testing.T) {
 	}, rec.counters)
 }
 
+func TestLeaseOrphanSweepFailureMetricsUseFixedStages(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initLeaseOrphanSweepFailureMetrics(rec)
+	for _, stage := range leaseOrphanSweepFailureStages {
+		emitLeaseOrphanSweepFailure(rec, stage)
+	}
+
+	require.Len(t, rec.counters, 2*len(leaseOrphanSweepFailureStages))
+	for i, stage := range leaseOrphanSweepFailureStages {
+		require.Equal(t, recordedCounter{
+			name: "lease.orphan_sweep.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", stage)},
+		}, rec.counters[i])
+		require.Equal(t, recordedCounter{
+			name: "lease.orphan_sweep.failure", value: 1, tags: []metrics.T{metrics.Tag("stage", stage)},
+		}, rec.counters[len(leaseOrphanSweepFailureStages)+i])
+	}
+}
+
+func TestLeaseOrphanSweepFailureMetricsIgnoreCanceledWork(t *testing.T) {
+	rec := &recordingMetrics{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	emitLeaseOrphanSweepFailureForContext(ctx, rec, "load")
+
+	require.Empty(t, rec.counters)
+}
+
 func TestEtcdLeaseLifecycleMetricsUseUpstreamMetricNames(t *testing.T) {
 	rec := &recordingMetrics{}
 

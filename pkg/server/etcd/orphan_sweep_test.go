@@ -25,6 +25,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -284,6 +285,8 @@ func TestOrphanLeaseSweeperStopsAcrossLeadershipEpoch(t *testing.T) {
 func TestOrphanLeaseSweepFencesDetachAcrossLeadershipEpoch(t *testing.T) {
 	server, original, cleanup := newLeaseTestServer(t)
 	defer cleanup()
+	recorder := &recordingMetrics{}
+	server.metricCli = recorder
 	ctx := context.Background()
 	const defunct int64 = 700020
 	const key = "/registry/events/ns/stale-fenced"
@@ -317,4 +320,7 @@ func TestOrphanLeaseSweepFencesDetachAcrossLeadershipEpoch(t *testing.T) {
 	value, err := original.InternalGet(ctx, leaseAttachKey(key))
 	require.NoError(t, err, "the old leadership term must not reclaim the attachment")
 	require.Equal(t, []byte("700020"), value)
+	require.Contains(t, recorder.counters, recordedCounter{
+		name: "lease.orphan_sweep.failure", value: 1, tags: []metrics.T{metrics.Tag("stage", "attachment_delete")},
+	})
 }

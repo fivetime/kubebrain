@@ -14,7 +14,11 @@
 
 package etcd
 
-import "github.com/kubewharf/kubebrain/pkg/metrics"
+import (
+	"context"
+
+	"github.com/kubewharf/kubebrain/pkg/metrics"
+)
 
 func initEtcdLeaseLifecycleMetrics(metricCli metrics.Metrics) {
 	emitEtcdLeaseGrantedCounter(metricCli, 0)
@@ -52,6 +56,41 @@ func emitLeaseBackgroundFailure(metricCli metrics.Metrics, operation string) {
 		return
 	}
 	_ = metricCli.EmitCounter("lease.background.failure", 1, metrics.Tag("operation", operation))
+}
+
+var leaseOrphanSweepFailureStages = []string{
+	"load",
+	"migration",
+	"seal",
+	"user_read",
+	"legacy_attachment_read",
+	"legacy_attachment_invalid",
+	"key_delete",
+	"key_compare",
+	"attachment_delete",
+}
+
+func initLeaseOrphanSweepFailureMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, stage := range leaseOrphanSweepFailureStages {
+		_ = metricCli.EmitCounter("lease.orphan_sweep.failure", int64(0), metrics.Tag("stage", stage))
+	}
+}
+
+func emitLeaseOrphanSweepFailure(metricCli metrics.Metrics, stage string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("lease.orphan_sweep.failure", 1, metrics.Tag("stage", stage))
+}
+
+func emitLeaseOrphanSweepFailureForContext(ctx context.Context, metricCli metrics.Metrics, stage string) {
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
+	emitLeaseOrphanSweepFailure(metricCli, stage)
 }
 
 func emitEtcdLeaseGrantedCounter(metricCli metrics.Metrics, value int) {

@@ -1881,6 +1881,7 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 	m.cleanupOrphanLegacyAttachments(ctx, legacyAttachments)
 	if err := m.sealLegacyLeaseMigrationIfClean(ctx); err != nil {
 		m.srv.metricCli.EmitCounter("lease.legacy_migration_seal.err", 1)
+		emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "seal")
 		klog.ErrorS(err, "lease reload: seal legacy migration failed")
 	}
 	// Release before startOrphanSweeper stops and joins the previous worker: that
@@ -2148,11 +2149,16 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, migrations []leg
 		complete := true
 		for _, k := range migration.attachKeys {
 			if err := m.attachKeyToStorage(ctx, id, k); err != nil {
+				emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "migration")
 				complete = false
 				break
 			}
 		}
-		if !complete || m.persistMigratedLeaseMetaIncarnation(ctx, id, ttl, remainingTTL, incarnation) != nil {
+		if !complete {
+			continue
+		}
+		if err := m.persistMigratedLeaseMetaIncarnation(ctx, id, ttl, remainingTTL, incarnation); err != nil {
+			emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "migration")
 			continue
 		}
 		// Keep the monolithic legacy lease row as a durable retry marker until all
@@ -2162,12 +2168,15 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, migrations []leg
 		cleanupComplete := true
 		for _, k := range migration.cleanupKeys {
 			if _, err := m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseAttachKey(k)}); err != nil {
+				emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "migration")
 				cleanupComplete = false
 				break
 			}
 		}
 		if cleanupComplete {
-			_, _ = m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseStorageKey(id)})
+			if _, err := m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseStorageKey(id)}); err != nil {
+				emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "migration")
+			}
 		}
 	}
 }
@@ -2529,6 +2538,7 @@ func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
 	records, attachments, legacyAttachments, staleInternalAttachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
+		emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "load")
 		klog.ErrorS(err, "orphan lease sweep: load attachment records failed")
 		return
 	}
@@ -2556,6 +2566,7 @@ func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
 	m.cleanupOrphanLegacyAttachments(ctx, legacyAttachments)
 	if err := m.sealLegacyLeaseMigrationIfClean(ctx); err != nil {
 		m.srv.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
+		emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "seal")
 		klog.ErrorS(err, "orphan lease sweep: seal legacy migration failed")
 	}
 }
@@ -2574,7 +2585,9 @@ func (m *leaseManager) cleanupOrphanLegacyAttachments(ctx context.Context, legac
 				continue
 			}
 		}
-		_, _ = m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseAttachKey(key)})
+		if _, err := m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseAttachKey(key)}); err != nil {
+			emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "attachment_delete")
+		}
 	}
 }
 
@@ -2593,10 +2606,12 @@ func (m *leaseManager) reconcileOrphanLegacyAttachment(ctx context.Context, key 
 	}
 	legacy, err := m.srv.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
 	if err != nil || len(legacy.Kvs) == 0 {
+		emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "legacy_attachment_read")
 		return false
 	}
 	legacyID, err := parseLeaseAttachmentRecord(key, legacy.Kvs[0].Value)
 	if err != nil || legacyID != id {
+		emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "legacy_attachment_invalid")
 		return false
 	}
 	if resp.Kvs[0].ModRevision != legacy.Kvs[0].ModRevision {
@@ -2605,7 +2620,12 @@ func (m *leaseManager) reconcileOrphanLegacyAttachment(ctx context.Context, key 
 		return true
 	}
 	dresp, err := m.srv.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
-	if err != nil || !dresp.GetSucceeded() {
+	if err != nil {
+		emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "key_delete")
+		return false
+	}
+	if !dresp.GetSucceeded() {
+		emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "key_compare")
 		return false
 	}
 	m.srv.metricCli.EmitCounter("lease.orphan_sweep.legacy_key_deleted", 1)
@@ -2620,6 +2640,7 @@ func (m *leaseManager) reconcileOrphanLegacyAttachment(ctx context.Context, key 
 func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string, id int64) bool {
 	resp, err := m.srv.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
 	if err != nil {
+		emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "user_read")
 		return false
 	}
 	if len(resp.Kvs) == 0 || resp.Kvs[0].Lease != id {
@@ -2632,6 +2653,7 @@ func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string
 			m.srv.metricCli.EmitCounter("lease.orphan_sweep.record_reclaimed", 1)
 			return true
 		}
+		emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "attachment_delete")
 		return false
 	}
 	// The key is live and its inline lease matches the stale attachment. The
@@ -2640,14 +2662,18 @@ func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string
 	// writers and storage state changed outside the online mutation path.
 	dresp, err := m.srv.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
 	if err != nil {
+		emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "key_delete")
 		return false
 	}
 	if dresp.GetSucceeded() {
-		_ = m.detachKeyFromStorage(ctx, key)
+		if err := m.detachKeyFromStorage(ctx, key); err != nil {
+			emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "attachment_delete")
+		}
 		m.srv.metricCli.EmitCounter("lease.orphan_sweep.key_deleted", 1)
 		klog.InfoS("orphan lease sweep: deleted key bound to a defunct lease", "key", util.LoggedKey([]byte(key)), "lease", id)
 		return true
 	}
+	emitLeaseOrphanSweepFailureForContext(ctx, m.srv.metricCli, "key_compare")
 	return false
 }
 
