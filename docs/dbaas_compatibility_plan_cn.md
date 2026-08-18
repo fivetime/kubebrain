@@ -57858,6 +57858,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   包 race、完整非 production、production 326 项四分片与 vet 全部通过。本项不改变审批/确认字段、最小
   compact revision、Snapshot 校验、OUTPUT 发布、MVCC 存储或在线 etcd RPC 语义。
 
+- A5164 修复 legacy remediation 继续使用 deprecated client/v3 `Snapshot()` 而丢失聚合响应身份的缺口。
+  旧接口只返回 reader；`(nil,nil)` 会在 defer Close panic，mixed response/error 可能泄漏 reader，且 pre/post
+  Snapshot 均未证明制品 storage version 与刚验证的 endpoint 一致。对照 client/v3
+  `maintenance.go::SnapshotWithVersion` 和 KubeBrain/upstream Snapshot frame 的 Version 生成，现 Status 额外要求
+  非空严格 semver StorageVersion；两次下载改用 SnapshotWithVersion，要求 response/reader 非 nil、Version 与
+  Status.StorageVersion byte-exact 一致。transport mixed、version mismatch、复制/sync/close/hash/bbolt 任一失败
+  都关闭 reader，并保留既有临时文件清理；不匹配在创建目标文件前失败。nil wrapper/reader、mixed error、版本
+  分裂、close failure 与完整成功路径连续二十轮、包 race、完整非 production、production 326 项四分片及 vet
+  全部通过。本项不改变 snapshot wire frames、SHA-256/bbolt 校验、compact boundary、OUTPUT 发布、receipt schema、
+  MVCC 存储或在线 etcd RPC 语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

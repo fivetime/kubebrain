@@ -4377,10 +4377,12 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   ```
 
   工具在读取 Status 后、任何输出或 Snapshot 前先校验完整成功响应：header 的 cluster/member ID 与
-  revision 必须为正，server version 必须是严格 semver，数据库 size 非负，leader 非零且 Errors 为空。
+  revision 必须为正，server/storage version 必须是严格 semver，数据库 size 非负，leader 非零且 Errors 为空。
   工具只在预检精确命中包含最小安全边界的 legacy lease diagnostic 时调用同步 `compact --physical`；其
   acknowledgement 必须非 nil、绑定同一 cluster、携带非零 member，且 header revision 不早于请求的
-  compact revision，随后才允许下载 post-compaction Snapshot。服务端即使
+  compact revision，随后才允许下载 post-compaction Snapshot。下载使用 client/v3 `SnapshotWithVersion`，
+  聚合响应与 reader 必须非 nil，snapshot storage version 必须与已验证 Status 完全一致；nil/mixed/version
+  mismatch 及复制、sync、校验等任一失败出口都会关闭 reader，不能 panic、泄漏流或发布制品。服务端即使
   已发现 legacy 行，也会先用不可发布的占位 lease 完整跑完其余 MVCC/order/metadata 校验；后部 corruption
   优先返回，不能被 legacy remediation 掩盖。其他 Snapshot
   失败和已健康实例均拒绝 mutation；压缩提交后才下载新制品，并通过官方 `etcdutl snapshot status`
