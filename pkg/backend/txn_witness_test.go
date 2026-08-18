@@ -27,6 +27,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -139,9 +140,14 @@ func TestLeadershipRestartValidatesPersistentTxnWitnessAndRecoversAfterRepair(t 
 	corrupt.Put(markerKey, []byte("corrupt-marker"), 0)
 	require.NoError(t, corrupt.Commit(ctx))
 
-	restarted := NewBackend(store, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	recorder := &compactMetricRecorder{}
+	restarted := NewBackend(store, config, recorder).(*backend)
 	require.NoError(t, restarted.InitializeLeadershipRevision(ctx, 0),
 		"witness corruption is converted into a persistent alarm, not an unsafe startup failure")
+	require.Contains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "txn.witness.restart_corruption", value: 1,
+		tags: []metrics.T{metrics.Tag("outcome", "armed")},
+	})
 	members, err := restarted.CorruptAlarms(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{restarted.localAlarmMemberID()}, members)
@@ -162,6 +168,42 @@ func TestLeadershipRestartValidatesPersistentTxnWitnessAndRecoversAfterRepair(t 
 	members, err = restarted.CorruptAlarms(ctx)
 	require.NoError(t, err)
 	require.Empty(t, members, "a repaired witness remains healthy after explicit disarm")
+}
+
+func TestLeadershipRestartWitnessCorruptAlarmFailureIsExplicit(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	config := Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}
+	ctx := context.Background()
+
+	initial := NewBackend(store, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	initial.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	key := []byte(prefix + "/restart-witness/alarm-failure")
+	_, revision, err := initial.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+	require.NoError(t, err)
+	markerKey := initial.ks.EncodeEventLogKey(revision, key)
+	corrupt := store.BeginBatchWrite()
+	corrupt.Put(markerKey, []byte("corrupt-marker"), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	failing := &transientCASStorage{KvStorage: store}
+	failing.failUntil.Store(time.Now().Add(time.Second).UnixNano())
+	recorder := &compactMetricRecorder{}
+	restarted := NewBackend(failing, config, recorder).(*backend)
+	initCtx, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
+	defer cancel()
+	err = restarted.InitializeLeadershipRevision(initCtx, 0)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "persist CORRUPT alarm for transaction witness revision")
+	require.Contains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "txn.witness.restart_corruption", value: 1,
+		tags: []metrics.T{metrics.Tag("outcome", "failed")},
+	})
+	members, alarmErr := restarted.CorruptAlarms(context.Background())
+	require.NoError(t, alarmErr)
+	require.Empty(t, members, "failed alarm persistence must never be reported as an armed write fence")
 }
 
 func TestLeadershipRestartArmsCorruptForWitnessedRevisionIndex(t *testing.T) {

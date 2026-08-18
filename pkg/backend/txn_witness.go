@@ -880,12 +880,23 @@ func (b *backend) persistWitnessedRevisionIndexCorruption(ctx context.Context, c
 
 func (b *backend) armPersistedWitnessCorrupt(ctx context.Context, revision uint64, cause error) error {
 	if err := b.ArmCorrupt(ctx, b.localAlarmMemberID()); err != nil {
+		b.metricCli.EmitCounter("txn.witness.restart_corruption", 1, metrics.Tag("outcome", "failed"))
 		return fmt.Errorf("persist CORRUPT alarm for transaction witness revision %d: %w", revision, err)
 	}
 	b.metricCli.EmitCounter("txn.witness.restart_corrupt", 1)
+	b.metricCli.EmitCounter("txn.witness.restart_corruption", 1, metrics.Tag("outcome", "armed"))
 	klog.ErrorS(cause, "persisted transaction witness is corrupt; armed CORRUPT alarm",
 		"revision", revision, "memberID", b.localAlarmMemberID())
 	return nil
+}
+
+func initRestartWitnessCorruptionMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, outcome := range []string{"armed", "failed"} {
+		_ = metricCli.EmitCounter("txn.witness.restart_corruption", 0, metrics.Tag("outcome", outcome))
+	}
 }
 
 func (b *backend) cleanupTxnWitnesses(ctx context.Context, through uint64) bool {
