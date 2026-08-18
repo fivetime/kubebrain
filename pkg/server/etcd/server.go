@@ -308,6 +308,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initKVProxyIntegrityMetrics(metricCli)
 	initAuthProxyIntegrityMetrics(metricCli)
 	initLeaseProxyIntegrityMetrics(metricCli)
+	initClusterProxyIntegrityMetrics(metricCli)
 	initClientAdmissionMetrics(metricCli)
 	initDeleteRangeAdmissionMetrics(metricCli)
 	initCountProxyMetrics(metricCli)

@@ -723,6 +723,37 @@ func TestFollowerLinearizableMemberListProxiesBeforeLocalBarrier(t *testing.T) {
 	require.Equal(t, want, response)
 }
 
+func TestFollowerLinearizableMemberListRejectsInvalidProxyResult(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		name := "nil"
+		if mixed {
+			name = "mixed"
+		}
+		t.Run(name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initClusterProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				proxyEnabled: true,
+				epochFn:      func() (uint64, bool) { return 7, false },
+				memberListFn: func(context.Context, *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
+					if mixed {
+						return &etcdserverpb.MemberListResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				},
+			}
+
+			response, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedClusterProxyIntegrityValues(rec))
+		})
+	}
+}
+
 // TestMemberListSerializableSurvivesUnavailableReadBarrier mirrors upstream
 // tests/common TestMemberListSerializable (845cd3885). KubeBrain's topology is
 // DBaaS-managed rather than Raft-mutated, but the wire option must preserve the

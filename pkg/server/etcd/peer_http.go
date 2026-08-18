@@ -245,6 +245,7 @@ func (s *RPCServer) hedgedPeerHashKV(ctx context.Context, req *etcdserverpb.Hash
 	go func() {
 		proxyCtx := metadata.AppendToOutgoingContext(ctx, authorizedPeerHashKVProxyMetadataKey, "1")
 		response, err := s.peers.HashKV(proxyCtx, req)
+		response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCHashKV, response, err)
 		results <- peerHashKVResult{response: response, err: err, forwarded: true}
 	}()
 
@@ -259,6 +260,11 @@ func (s *RPCServer) hedgedPeerHashKV(ctx context.Context, req *etcdserverpb.Hash
 			}
 			if result.err == nil {
 				return result.response, nil
+			}
+			if result.forwarded && status.Code(result.err) == codes.DataLoss {
+				// A malformed peer result is an adapter contract violation, not a
+				// storage-path race that the local hedge can safely mask.
+				return nil, result.err
 			}
 			if result.forwarded && isPeerHashKVRevisionError(result.err) {
 				// The leader's revision boundary is authoritative. Returning it also

@@ -1787,6 +1787,38 @@ func TestPeerHashKVHandlerRejectsByEtcdPriority(t *testing.T) {
 	}
 }
 
+func TestHedgedPeerHashKVRejectsInvalidForwardedResult(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		name := "nil"
+		if mixed {
+			name = "mixed"
+		}
+		t.Run(name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initMaintenanceProxyIntegrityMetrics(rec)
+			server.backend = &maintenanceHashTrapBackendShim{BackendShim: server.backend, err: errors.New("local storage unavailable")}
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				hashKVFn: func(context.Context, *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+					if mixed {
+						return &etcdserverpb.HashKVResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				},
+			}
+
+			response, err := server.hedgedPeerHashKV(context.Background(), &etcdserverpb.HashKVRequest{})
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1},
+				recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCHashKV))
+		})
+	}
+}
+
 func TestPeerHashKVHandlerMapsRevisionErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

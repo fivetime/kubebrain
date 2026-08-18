@@ -161,6 +161,42 @@ func recordedLeaseProxyIntegrityValues(rec *recordingMetrics, rpc string) []inte
 	return values
 }
 
+func recordedClusterProxyIntegrityValues(rec *recordingMetrics) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == "cluster.proxy.integrity_failure" && len(counter.tags) == 1 &&
+			counter.tags[0] == metrics.Tag("rpc", clusterProxyRPCMemberList) {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
+func TestClusterProxyIntegrityMetricsAndValidation(t *testing.T) {
+	rec := &recordingMetrics{}
+	initClusterProxyIntegrityMetrics(rec)
+	response, err := validateClusterProxyResult[etcdserverpb.MemberListResponse](rec, clusterProxyRPCMemberList, nil, nil)
+	require.Nil(t, response)
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	response, err = validateClusterProxyResult(rec, clusterProxyRPCMemberList,
+		&etcdserverpb.MemberListResponse{}, errors.New("mixed"))
+	require.Nil(t, response)
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedClusterProxyIntegrityValues(rec))
+
+	want := &etcdserverpb.MemberListResponse{}
+	response, err = validateClusterProxyResult(rec, clusterProxyRPCMemberList, want, nil)
+	require.Same(t, want, response)
+	require.NoError(t, err)
+	wantErr := errors.New("transport failed")
+	response, err = validateClusterProxyResult[etcdserverpb.MemberListResponse](rec, clusterProxyRPCMemberList, nil, wantErr)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedClusterProxyIntegrityValues(rec))
+}
+
 func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initLeaseProxyIntegrityMetrics(rec)
