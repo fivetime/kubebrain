@@ -218,6 +218,27 @@ func validateHashKVProxyPayload(metricCli metrics.Metrics, request *etcdserverpb
 	return response, nil
 }
 
+func validateDowngradeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.DowngradeRequest, response *etcdserverpb.DowngradeResponse, err error) (*etcdserverpb.DowngradeResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	fail := func(message string) (*etcdserverpb.DowngradeResponse, error) {
+		emitMaintenanceProxyIntegrityFailure(metricCli, maintenanceProxyRPCDowngrade)
+		return nil, status.Error(codes.DataLoss, message)
+	}
+	switch request.GetAction() {
+	case etcdserverpb.DowngradeRequest_VALIDATE,
+		etcdserverpb.DowngradeRequest_ENABLE,
+		etcdserverpb.DowngradeRequest_CANCEL:
+	default:
+		return fail("leader downgrade proxy returned success for an unknown action")
+	}
+	if response.GetVersion() != ClusterVersion {
+		return fail("leader downgrade proxy returned an unexpected cluster version")
+	}
+	return response, nil
+}
+
 func emitMaintenanceProxyIntegrityFailure(metricCli metrics.Metrics, rpc string) {
 	if metricCli != nil {
 		_ = metricCli.EmitCounter("maintenance.proxy.integrity_failure", 1, metrics.Tag("rpc", rpc))

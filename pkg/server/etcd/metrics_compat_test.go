@@ -1040,6 +1040,43 @@ func TestHashKVProxyPayloadValidation(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 }
 
+func TestDowngradeProxyPayloadValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		action  etcdserverpb.DowngradeRequest_DowngradeAction
+		version string
+		valid   bool
+	}{
+		{name: "validate", action: etcdserverpb.DowngradeRequest_VALIDATE, version: ClusterVersion, valid: true},
+		{name: "enable", action: etcdserverpb.DowngradeRequest_ENABLE, version: ClusterVersion, valid: true},
+		{name: "cancel", action: etcdserverpb.DowngradeRequest_CANCEL, version: ClusterVersion, valid: true},
+		{name: "empty version", action: etcdserverpb.DowngradeRequest_VALIDATE},
+		{name: "target instead of current version", action: etcdserverpb.DowngradeRequest_ENABLE, version: "3.6"},
+		{name: "unknown action", action: etcdserverpb.DowngradeRequest_DowngradeAction(127), version: ClusterVersion},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			want := &etcdserverpb.DowngradeResponse{Header: txnHeader(1), Version: tt.version}
+			response, err := validateDowngradeProxyPayload(rec, &etcdserverpb.DowngradeRequest{Action: tt.action}, want, nil)
+			if tt.valid {
+				require.Same(t, want, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCDowngrade))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCDowngrade))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.DowngradeResponse{}
+	response, err := validateDowngradeProxyPayload(nil, &etcdserverpb.DowngradeRequest{}, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initMaintenanceProxyIntegrityMetrics(rec)

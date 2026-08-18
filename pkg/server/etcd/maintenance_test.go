@@ -1253,7 +1253,7 @@ func TestFollowerDowngradeProxiesEveryActionToLeader(t *testing.T) {
 		proxyEnabled: true,
 		downgradeFn: func(_ context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
 			forwarded = append(forwarded, req.GetAction())
-			return &etcdserverpb.DowngradeResponse{Header: txnHeader(int64(len(forwarded)))}, nil
+			return &etcdserverpb.DowngradeResponse{Header: txnHeader(int64(len(forwarded))), Version: ClusterVersion}, nil
 		},
 	}
 
@@ -1267,10 +1267,36 @@ func TestFollowerDowngradeProxiesEveryActionToLeader(t *testing.T) {
 		response, err := server.Downgrade(context.Background(), &etcdserverpb.DowngradeRequest{
 			Action: action, Version: "3.6",
 		})
+		if action == etcdserverpb.DowngradeRequest_DowngradeAction(127) {
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			continue
+		}
 		require.NoError(t, err)
 		require.Equal(t, int64(len(forwarded)), response.GetHeader().GetRevision())
 	}
 	require.Equal(t, actions, forwarded)
+}
+
+func TestFollowerDowngradeRejectsInvalidProxyPayload(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initMaintenanceProxyIntegrityMetrics(rec)
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		downgradeFn: func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
+			return &etcdserverpb.DowngradeResponse{Header: txnHeader(2), Version: "3.6"}, nil
+		},
+	}
+
+	response, err := server.Downgrade(context.Background(), &etcdserverpb.DowngradeRequest{
+		Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "3.6",
+	})
+	require.Nil(t, response)
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.Equal(t, []interface{}{int64(0), 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCDowngrade))
 }
 
 func TestAlarmMutationFailsBeforeWriteWhenColdRevisionUnavailable(t *testing.T) {

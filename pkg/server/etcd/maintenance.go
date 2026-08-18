@@ -1161,6 +1161,7 @@ func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.Downgra
 		}
 		response, err := s.peers.Downgrade(proxyCtx, request)
 		response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCDowngrade, response, err)
+		response, err = validateDowngradeProxyPayload(s.metricCli, request, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
