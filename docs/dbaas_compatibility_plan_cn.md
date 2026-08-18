@@ -56625,6 +56625,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   production/observability 文档同步，production 测试通过；本项只验证启动期不可变身份，不混入 TiKV/PD
   member ID，需要下一生产监控发布。
 
+- A5041 闭合 A4031/A4040 upstream server leader/learner state 的生产选主合同。旧 production 只检查
+  `has_leader/is_leader/is_learner/leader_changes_seen` family 存在，leader-change counter 又只在首次观测 leader
+  后动态出现；无法证明 Ready 副本一致知道 leader、全局恰有一个 leader，或 leader 没被静态标成 learner。
+  现 campaign 前初始化 `etcd_server_leader_changes_seen_total=0`，并从 60 秒内样本生成 Ready Pod UID 级三个
+  state gauge、counter current 与 10 分钟 increase recording，要求五类来源完整。三个 gauge 必须为精确 0/1，
+  `is_leader<=has_leader` 且 `is_leader+is_learner<=1`；counter current 必须为 `[0,2^53]` 精确整数，increase
+  有限同范围。所有 Ready Pod has-leader=1 且 is-leader 总和=1 的合同违反 1 分钟 critical，10 分钟观测转换
+  超过 3 次 warning，缺失/陈旧/非法/交叉矛盾 2 分钟 critical。该状态描述 TiKV-backed KubeBrain 数据面
+  election owner，不混入 PD/TiKV Raft leader。零值服务端单测、精确 manifest 与 production/observability
+  文档同步，相关测试通过；需要下一生产镜像与监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -1010,6 +1010,13 @@ MVCC operation counter `etcd_mvcc_range_total`、`etcd_mvcc_put_total`、
 server 状态指标 `etcd_server_has_leader`、`etcd_server_is_leader`、
 `etcd_server_leader_changes_seen_total`、
 `etcd_server_is_learner`、`etcd_server_learner_promote_successes`，
+其中前三类布尔状态和 learner 每秒刷新，leader-change counter 在 campaign 前初始化权威 0。production 从
+60 秒内样本生成 Ready Pod UID 级 has/is-leader/is-learner、change current/10 分钟 increase recording；
+要求五类来源各与 Ready 数相等。布尔值必须精确为 0/1，leader 必须同时 has-leader 且不得是 learner；
+counter current 为 `[0,2^53]` 精确整数，increase 可为分数但必须有限同范围。所有 Ready Pod 必须知道 leader，
+且全局恰有一个数据面 leader，违反持续 1 分钟 critical；10 分钟超过 3 次观测转换 warning；覆盖缺失、陈旧、
+非法或交叉矛盾持续 2 分钟 critical。该 leader 是 TiKV-backed KubeBrain write/election owner，不是 PD/TiKV
+Raft leader；后者继续使用存储控制面原生指标。
 client request 指标 `etcd_server_client_requests_total`，
 server stream failure 指标 `etcd_network_server_stream_failures_total`，
 传统 `/health` 计数指标 `etcd_server_health_success` 与
