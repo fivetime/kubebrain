@@ -1814,6 +1814,7 @@ func (m *leaseManager) expireLeaseGenerationWithContext(workerCtx context.Contex
 	// expiry retry remove it after the alarm is explicitly disarmed.
 	if err := m.srv.rejectCorrupt(workerCtx); err != nil {
 		m.srv.metricCli.EmitCounter("lease.expire.corrupt_deferred", 1, errClassTag(err))
+		emitLeaseBackgroundFailure(m.srv.metricCli, "expire_corrupt_deferred")
 		m.retryLeaseExpiry(id, generation)
 		return
 	}

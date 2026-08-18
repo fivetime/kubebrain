@@ -1577,6 +1577,8 @@ func TestLeaseTimeToLiveLiveKeysAndLeaseListBoundary(t *testing.T) {
 func TestCorruptAlarmDefersNaturalLeaseExpiry(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	recorder := &recordingMetrics{}
+	server.metricCli = recorder
 	ctx := context.Background()
 	const leaseID = int64(5151)
 	key := []byte("corrupt-expiry")
@@ -1601,6 +1603,10 @@ func TestCorruptAlarmDefersNaturalLeaseExpiry(t *testing.T) {
 	_, retained := server.leases[leaseID]
 	server.leaseMu.Unlock()
 	require.True(t, retained)
+	require.Contains(t, recorder.counters, recordedCounter{
+		name: "lease.background.failure", value: 1,
+		tags: []metrics.T{metrics.Tag("operation", "expire_corrupt_deferred")},
+	})
 
 	removed, err := server.backend.DisarmCorrupt(ctx, 1)
 	require.NoError(t, err)

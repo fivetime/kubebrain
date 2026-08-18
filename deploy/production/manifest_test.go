@@ -2408,12 +2408,18 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		leaseExpiryDeleteFailureRule["expr"])
 	require.Equal(t, "critical", leaseExpiryDeleteFailureRule["labels"].(map[string]any)["severity"])
 	require.Contains(t, leaseExpiryDeleteFailureRule["annotations"].(map[string]any)["description"], "surviving keys are deliberately retained")
+	leaseExpiryCorruptDeferredRule := prometheusRuleByAlert(t, groups, "KubeBrainLeaseExpiryCorruptDeferred")
+	require.Equal(t,
+		`sum(kubebrain_dbaas:lease_background_failure:increase_10m_by_pod_operation{operation="expire_corrupt_deferred"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`,
+		leaseExpiryCorruptDeferredRule["expr"])
+	require.Equal(t, "critical", leaseExpiryCorruptDeferredRule["labels"].(map[string]any)["severity"])
+	require.Contains(t, leaseExpiryCorruptDeferredRule["annotations"].(map[string]any)["description"], "expired data remains publicly visible")
 	leaseBackgroundFailureMissingRule := prometheusRuleByAlert(t, groups, "KubeBrainLeaseBackgroundFailureMetricsMissing")
 	require.Equal(t,
-		`absent(kubebrain_dbaas:lease_background_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:lease_background_failure:current_by_pod_operation * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:lease_background_failure:increase_10m_by_pod_operation * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:lease_background_failure_invalid_values:count != 0`,
+		`absent(kubebrain_dbaas:lease_background_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:lease_background_failure:current_by_pod_operation * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:lease_background_failure:increase_10m_by_pod_operation * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:lease_background_failure_invalid_values:count != 0`,
 		leaseBackgroundFailureMissingRule["expr"])
 	require.Equal(t, "critical", leaseBackgroundFailureMissingRule["labels"].(map[string]any)["severity"])
-	require.Contains(t, leaseBackgroundFailureMissingRule["annotations"].(map[string]any)["description"], "checkpoint and expire_delete")
+	require.Contains(t, leaseBackgroundFailureMissingRule["annotations"].(map[string]any)["description"], "checkpoint, expire_delete, and expire_corrupt_deferred")
 	leaseOrphanBlockingRule := prometheusRuleByAlert(t, groups, "KubeBrainLeaseOrphanSweepBlockingFailures")
 	require.Equal(t,
 		`sum by (stage) (kubebrain_dbaas:lease_orphan_sweep_failure:increase_10m_by_pod_stage{stage=~"load|user_read|legacy_attachment_read|legacy_attachment_invalid|key_delete"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`,
@@ -3070,9 +3076,9 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		`max by (namespace, pod, uid, outcome) (label_replace((increase(lease_uncertain_reconcile_retry{namespace="kubebrain-system"}[10m]) and (time() - timestamp(lease_uncertain_reconcile_retry{namespace="kubebrain-system"}) <= 60)), "outcome", "retry", "namespace", ".*") or label_replace((increase(lease_uncertain_reconcile_success{namespace="kubebrain-system"}[10m]) and (time() - timestamp(lease_uncertain_reconcile_success{namespace="kubebrain-system"}) <= 60)), "outcome", "success", "namespace", ".*") or label_replace((increase(lease_uncertain_reconcile_err{namespace="kubebrain-system"}[10m]) and (time() - timestamp(lease_uncertain_reconcile_err{namespace="kubebrain-system"}) <= 60)), "outcome", "err", "namespace", ".*"))`
 	expected["kubebrain_dbaas:lease_uncertain_reconcile_invalid_values:count"] = leaseUncertainReconcileInvalidValuesExpr
 	expected["kubebrain_dbaas:lease_background_failure:current_by_pod_operation"] =
-		`max by (namespace, pod, uid, operation) (lease_background_failure{namespace="kubebrain-system",operation=~"checkpoint|expire_delete"} and (time() - timestamp(lease_background_failure{namespace="kubebrain-system",operation=~"checkpoint|expire_delete"}) <= 60))`
+		`max by (namespace, pod, uid, operation) (lease_background_failure{namespace="kubebrain-system",operation=~"checkpoint|expire_delete|expire_corrupt_deferred"} and (time() - timestamp(lease_background_failure{namespace="kubebrain-system",operation=~"checkpoint|expire_delete|expire_corrupt_deferred"}) <= 60))`
 	expected["kubebrain_dbaas:lease_background_failure:increase_10m_by_pod_operation"] =
-		`max by (namespace, pod, uid, operation) (increase(lease_background_failure{namespace="kubebrain-system",operation=~"checkpoint|expire_delete"}[10m]) and (time() - timestamp(lease_background_failure{namespace="kubebrain-system",operation=~"checkpoint|expire_delete"}) <= 60))`
+		`max by (namespace, pod, uid, operation) (increase(lease_background_failure{namespace="kubebrain-system",operation=~"checkpoint|expire_delete|expire_corrupt_deferred"}[10m]) and (time() - timestamp(lease_background_failure{namespace="kubebrain-system",operation=~"checkpoint|expire_delete|expire_corrupt_deferred"}) <= 60))`
 	expected["kubebrain_dbaas:lease_background_failure_invalid_values:count"] = leaseBackgroundFailureInvalidValuesExpr
 	expected["kubebrain_dbaas:lease_orphan_sweep_failure:current_by_pod_stage"] =
 		`max by (namespace, pod, uid, stage) (lease_orphan_sweep_failure{namespace="kubebrain-system",stage=~"load|migration|seal|user_read|legacy_attachment_read|legacy_attachment_invalid|key_delete|key_compare|attachment_delete"} and (time() - timestamp(lease_orphan_sweep_failure{namespace="kubebrain-system",stage=~"load|migration|seal|user_read|legacy_attachment_read|legacy_attachment_invalid|key_delete|key_compare|attachment_delete"}) <= 60))`

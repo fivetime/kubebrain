@@ -46,7 +46,7 @@ func initLeaseBackgroundFailureMetrics(metricCli metrics.Metrics) {
 	if metricCli == nil {
 		return
 	}
-	for _, operation := range []string{"checkpoint", "expire_delete"} {
+	for _, operation := range []string{"checkpoint", "expire_delete", "expire_corrupt_deferred"} {
 		_ = metricCli.EmitCounter("lease.background.failure", int64(0), metrics.Tag("operation", operation))
 	}
 }
