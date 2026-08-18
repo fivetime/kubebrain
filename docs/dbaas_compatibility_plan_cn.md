@@ -56636,6 +56636,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   election owner，不混入 PD/TiKV Raft leader。零值服务端单测、精确 manifest 与 production/observability
   文档同步，相关测试通过；需要下一生产镜像与监控发布。
 
+- A5042 闭合 A4042 upstream MVCC Watch pending/delivered event 的生产本地交付链。两个指标已在 RPC server
+  创建时初始化 0，但 production 只检查 family 存在；send loop 不再消费本地 WatchResult、pending 计数下溢
+  或某 Pod telemetry 缺失均可静默。现从 60 秒内样本生成 Ready Pod UID 级 pending gauge、delivered counter
+  current 与 10 分钟 increase recording，要求三类来源完整；pending/current 必须为 `[0,2^53]` 精确整数，
+  increase 可为分数但必须有限同范围。pending 在转换后 event 写入无缓冲 WatchResult channel 前递增、消费者
+  接收后递减，因此任一 Ready Pod 非零持续 5 分钟 warning，允许正常极短 handoff 窗口且不会把事件吞吐量
+  误当 backlog；缺失、陈旧、非法持续 2 分钟 warning。文案明确 delivered counter 只证明本地 handoff，
+  不证明客户端已从 wire 读取，后者须结合 send-loop histogram/stream-failure。精确 manifest 与 production/
+  observability 文档同步，production 测试通过；本项只消费现有 upstream-compatible 指标，需要下一监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

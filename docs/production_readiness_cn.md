@@ -1089,6 +1089,12 @@ backend WatcherHub 真实状态刷新；production 只消费 60 秒内、按 Rea
 或 watcher 超过 8000 持续 5 分钟 warning（生产 `--max-watches=10000`，native Watch 仍可能计入 backend
 watcher），slow 非零持续 5 分钟 warning；缺失、陈旧或非法 telemetry warning。事件交付另看
 `etcd_debugging_mvcc_events_total` 与 `etcd_debugging_mvcc_pending_events_total`，
+production 从 60 秒内样本生成 Ready Pod UID 级 pending、delivered current 与 10 分钟 increase recording，
+要求三类来源完整。pending/current 必须是 `[0,2^53]` 精确整数，increase 可为分数但必须有限同范围；缺失、
+陈旧、负数、分数 current 或非有限值持续 2 分钟 warning。pending 在已转换 event 写入无缓冲 WatchResult
+channel 前递增、消费者接收后递减，任一 Ready Pod `>0` 持续 5 分钟 warning，表示本地 handoff 阻塞而非
+普通吞吐波动。`events_total` 在 handoff 成功后递增，不证明客户端已从 socket 读取；wire send 仍需与
+watch send-loop histogram 和 `etcd_network_server_stream_failures_total` 对账。
 lease 指标 `etcd_debugging_server_lease_expired_total`、
 `etcd_debugging_lease_granted_total`、`etcd_debugging_lease_revoked_total` 与
 `etcd_debugging_lease_renewed_total`，
