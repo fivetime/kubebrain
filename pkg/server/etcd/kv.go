@@ -1684,6 +1684,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		proxyCtx = s.forwardQuotaAdmissionMember(proxyCtx)
 		response, err := s.peers.Put(proxyCtx, r)
 		response, err = validateKVProxyResult(s.metricCli, kvProxyRPCPut, response, err)
+		response, err = validatePutProxyPayload(s.metricCli, r, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}

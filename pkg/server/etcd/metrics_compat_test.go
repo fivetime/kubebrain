@@ -488,6 +488,51 @@ func TestRangeProxyPayloadValidation(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 }
 
+func TestPutProxyPayloadValidation(t *testing.T) {
+	key := []byte("key")
+	validPrevious := &mvccpb.KeyValue{
+		Key: key, Value: []byte("old"), CreateRevision: 2, ModRevision: 3, Version: 2, Lease: math.MinInt64,
+	}
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.PutRequest
+		response *etcdserverpb.PutResponse
+		valid    bool
+	}{
+		{name: "create with requested previous", request: &etcdserverpb.PutRequest{Key: key, PrevKv: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(2)}, valid: true},
+		{name: "update with signed lease previous", request: &etcdserverpb.PutRequest{Key: key, PrevKv: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(4), PrevKv: validPrevious}, valid: true},
+		{name: "no previous requested", request: &etcdserverpb.PutRequest{Key: key}, response: &etcdserverpb.PutResponse{Header: txnHeader(2)}, valid: true},
+		{name: "zero write revision", request: &etcdserverpb.PutRequest{Key: key}, response: &etcdserverpb.PutResponse{Header: txnHeader(0)}},
+		{name: "unrequested previous", request: &etcdserverpb.PutRequest{Key: key}, response: &etcdserverpb.PutResponse{Header: txnHeader(4), PrevKv: validPrevious}},
+		{name: "missing ignore previous", request: &etcdserverpb.PutRequest{Key: key, PrevKv: true, IgnoreValue: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(4)}},
+		{name: "wrong previous key", request: &etcdserverpb.PutRequest{Key: key, PrevKv: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(4), PrevKv: &mvccpb.KeyValue{Key: []byte("other"), CreateRevision: 2, ModRevision: 3, Version: 2}}},
+		{name: "incomplete previous metadata", request: &etcdserverpb.PutRequest{Key: key, PrevKv: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(4), PrevKv: &mvccpb.KeyValue{Key: key}}},
+		{name: "impossible previous metadata", request: &etcdserverpb.PutRequest{Key: key, PrevKv: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(4), PrevKv: &mvccpb.KeyValue{Key: key, CreateRevision: 2, ModRevision: 3, Version: 3}}},
+		{name: "previous at write revision", request: &etcdserverpb.PutRequest{Key: key, PrevKv: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(3), PrevKv: validPrevious}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			response, err := validatePutProxyPayload(rec, tt.request, tt.response, nil)
+			if tt.valid {
+				require.Same(t, tt.response, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedKVProxyIntegrityValues(rec, kvProxyRPCPut))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCPut))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.PutResponse{}
+	response, err := validatePutProxyPayload(nil, &etcdserverpb.PutRequest{}, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initMaintenanceProxyIntegrityMetrics(rec)

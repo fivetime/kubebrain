@@ -76,13 +76,8 @@ func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 		if request.GetKeysOnly() && len(kv.GetValue()) != 0 {
 			return fail("leader range proxy returned a value for a keys-only request")
 		}
-		if kv.GetCreateRevision() <= 0 || kv.GetModRevision() <= 0 || kv.GetVersion() <= 0 {
-			return fail("leader range proxy returned incomplete key-value revision metadata")
-		}
-		if validationErr := backend.ValidateEtcdMetadataAtRevision(backend.EtcdMetadata{
-			CreateRevision: uint64(kv.GetCreateRevision()), Version: uint64(kv.GetVersion()), Lease: kv.GetLease(),
-		}, uint64(kv.GetModRevision()), "leader range proxy key-value"); validationErr != nil {
-			return fail("leader range proxy returned impossible key-value revision metadata")
+		if validateProxyKeyValueLifecycle(kv) != nil {
+			return fail("leader range proxy returned invalid key-value revision metadata")
 		}
 		snapshotRevision := response.GetHeader().GetRevision()
 		if request.GetRevision() > 0 {
@@ -102,6 +97,51 @@ func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 		}
 	}
 	return response, nil
+}
+
+func validatePutProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.PutRequest, response *etcdserverpb.PutResponse, err error) (*etcdserverpb.PutResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	fail := func(message string) (*etcdserverpb.PutResponse, error) {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCPut)
+		return nil, status.Error(codes.DataLoss, message)
+	}
+	if response.GetHeader().GetRevision() <= 0 {
+		return fail("leader put proxy returned a non-positive write revision")
+	}
+	previous := response.GetPrevKv()
+	if !request.GetPrevKv() {
+		if previous != nil {
+			return fail("leader put proxy returned a previous key-value when none was requested")
+		}
+		return response, nil
+	}
+	if previous == nil {
+		if request.GetIgnoreValue() || request.GetIgnoreLease() {
+			return fail("leader put proxy omitted the required previous key-value for an ignore request")
+		}
+		return response, nil
+	}
+	if !bytes.Equal(previous.GetKey(), request.GetKey()) {
+		return fail("leader put proxy returned a previous key-value for a different key")
+	}
+	if validateProxyKeyValueLifecycle(previous) != nil {
+		return fail("leader put proxy returned invalid previous key-value revision metadata")
+	}
+	if previous.GetModRevision() >= response.GetHeader().GetRevision() {
+		return fail("leader put proxy returned a previous key-value not older than the write revision")
+	}
+	return response, nil
+}
+
+func validateProxyKeyValueLifecycle(kv *mvccpb.KeyValue) error {
+	if kv.GetCreateRevision() <= 0 || kv.GetModRevision() <= 0 || kv.GetVersion() <= 0 {
+		return backend.ErrInvalidMVCCMetadata
+	}
+	return backend.ValidateEtcdMetadataAtRevision(backend.EtcdMetadata{
+		CreateRevision: uint64(kv.GetCreateRevision()), Version: uint64(kv.GetVersion()), Lease: kv.GetLease(),
+	}, uint64(kv.GetModRevision()), "leader proxy key-value")
 }
 
 func rangeProxyOrderValid(request *etcdserverpb.RangeRequest, previous, current *mvccpb.KeyValue) bool {

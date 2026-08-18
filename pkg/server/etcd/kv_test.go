@@ -4155,6 +4155,43 @@ func TestFollowerPutAndDeleteRangeProxyToLeader(t *testing.T) {
 	require.True(t, deleteForwarded)
 }
 
+func TestFollowerRejectsInvalidPutProxyPayload(t *testing.T) {
+	key := []byte("/registry/follower-put-invalid")
+	validPrevious := &mvccpb.KeyValue{Key: key, CreateRevision: 2, ModRevision: 3, Version: 2}
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.PutRequest
+		response *etcdserverpb.PutResponse
+	}{
+		{name: "zero revision", request: &etcdserverpb.PutRequest{Key: key, Value: []byte("v")}, response: &etcdserverpb.PutResponse{Header: txnHeader(0)}},
+		{name: "unrequested previous", request: &etcdserverpb.PutRequest{Key: key, Value: []byte("v")}, response: &etcdserverpb.PutResponse{Header: txnHeader(4), PrevKv: validPrevious}},
+		{name: "missing ignore previous", request: &etcdserverpb.PutRequest{Key: key, PrevKv: true, IgnoreValue: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(4)}},
+		{name: "wrong previous key", request: &etcdserverpb.PutRequest{Key: key, Value: []byte("v"), PrevKv: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(4), PrevKv: &mvccpb.KeyValue{Key: []byte("other"), CreateRevision: 2, ModRevision: 3, Version: 2}}},
+		{name: "invalid previous metadata", request: &etcdserverpb.PutRequest{Key: key, Value: []byte("v"), PrevKv: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(4), PrevKv: &mvccpb.KeyValue{Key: key, CreateRevision: 2, ModRevision: 3, Version: 3}}},
+		{name: "previous at write revision", request: &etcdserverpb.PutRequest{Key: key, Value: []byte("v"), PrevKv: true}, response: &etcdserverpb.PutResponse{Header: txnHeader(3), PrevKv: validPrevious}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initKVProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				putFn: func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+					return tt.response, nil
+				},
+			}
+
+			response, err := server.Put(context.Background(), tt.request)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCPut))
+		})
+	}
+}
+
 func TestTxnCreateUpdateDeletePath(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
