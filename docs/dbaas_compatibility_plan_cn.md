@@ -57346,6 +57346,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   validator，违例只递增固定 `auth.proxy.integrity_failure{action="user_get"}` 并 DataLoss fail closed。合法空/有序角色、
   transport error 与公开 follower 重复/乱序注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5110 将 Auth leader-proxy payload 完整性扩展到 RoleGet.Perm。对照
+  `/root/etcd/server/auth/store.go::{RoleGet,RoleGrantPermission,permSlice}` 与
+  `server/auth/range_perm_cache.go::isValidPermissionRange`：普通 role permission 必须非 nil、key 非空，range_end 为空、
+  严格大于 key 或 canonical `{0}`，集合按 key 非递减；root 无论 stored grants 如何都只返回唯一
+  `READWRITE key=[] range_end=[0]`。upstream 允许同 key 不同 range，且 grant 路径未拒绝未知 permission enum，故 validator
+  明确保留这些值，不能机械要求严格 key 顺序或 enum 白名单。旧 follower proxy 会确认 nil、非法 range、乱序或伪 root
+  权限，可能向 RBAC 管理器暴露 leader 不可能生成的授权视图。现 RoleGet 在 forwarded revision 观察前验证上述合同，违例
+  只递增固定 `auth.proxy.integrity_failure{action="role_get"}` 并 DataLoss fail closed。普通空/多 range/未知 enum、canonical
+  root、transport error 与公开异常注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

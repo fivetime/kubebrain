@@ -4552,6 +4552,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   动作初始化 17 类权威零值。所有 Auth leader-proxy 必须在 forwarded revision 观察前证明 response/error 恰有其一，
   且 success response 携带 mandatory `ResponseHeader` 与非负 revision。UserGet 的 Roles 及 UserList/RoleList success
   名称集合必须无空值并按 UTF-8 字节字典序严格递增，重复或乱序同样 DataLoss fail closed；
+  RoleGet 普通角色的每项权限必须非 nil、key/range 合法且按 key 非递减；root 角色必须精确返回唯一
+  `READWRITE key=[] range_end=[0]` canonical 权限。普通角色同 key 多 range 与未知 permission enum 是 upstream 可产生值，
+  不得误报。
   nil/mixed/missing-header/negative-revision 也拒绝。production 要求
   60 秒新鲜 Ready Pod UID current/10 分钟 increase `17×Ready` 完整、值合法且拒绝未知 action；任一事件或 telemetry
   缺失、陈旧、非法、组合不完整均 critical。
