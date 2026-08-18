@@ -57405,6 +57405,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   payload 校验，违例复用固定 `maintenance.proxy.integrity_failure{rpc="hash"}` 或 `{rpc="hash_kv"}`，terminal DataLoss 不被 hedge
   掩盖。latest/historical/negative 正例、storage-isolated gRPC 与 peer HTTP 异常注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5116 将 unary Maintenance leader-proxy payload 完整性扩展到 Downgrade。对照
+  `/root/etcd/server/etcdserver/v3_server.go::{Downgrade,downgradeValidate,downgradeEnable,downgradeCancel}`：VALIDATE、
+  ENABLE、CANCEL 三种成功响应都返回操作前当前集群的 `major.minor`，不是请求中的目标版本；未知 action 必须返回
+  unknown-method error。KubeBrain 本地三种成功路径同样固定返回 `ClusterVersion`。旧 follower proxy 只检查 header，
+  会确认空 Version、错误/目标版本或未知 action 伪成功，使运维客户端误判当前兼容版本或非法操作已被接受。现 Downgrade
+  在 forwarded revision 观察前同时校验 action 白名单与 response Version 精确相等，违例复用固定
+  `maintenance.proxy.integrity_failure{rpc="downgrade"}` 并 DataLoss fail closed。三种正例、transport error、未知 action 与
+  公开错误版本注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
