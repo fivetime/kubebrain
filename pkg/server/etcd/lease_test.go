@@ -1002,6 +1002,30 @@ func TestRemainingTTLTruncatesLiveSubsecondToZeroLikeEtcd(t *testing.T) {
 	}), "etcd exposes elapsed whole seconds while an expired lease awaits revoke")
 }
 
+func TestLeaseTimeToLiveExposesExpiredLeaseAwaitingRevoke(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 2041
+	key := []byte("expired-visible")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+	require.NoError(t, err)
+	server.leaseMu.Lock()
+	state := server.leases[leaseID]
+	require.NotNil(t, state)
+	require.True(t, state.timer.Stop())
+	state.deadline = time.Now().Add(-2500 * time.Millisecond)
+	server.leaseMu.Unlock()
+
+	response, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, int64(-2), response.GetTTL())
+	require.Equal(t, int64(30), response.GetGrantedTTL())
+	require.Equal(t, [][]byte{key}, response.GetKeys())
+}
+
 func TestLeaseKeepAliveUnknownLeaseMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -2998,6 +3022,30 @@ func TestLeaseFollowerRejectsMismatchedUnaryProxyResponseID(t *testing.T) {
 	}
 }
 
+func TestLeaseFollowerAcceptsExpiredFoundTimeToLivePayload(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initLeaseProxyIntegrityMetrics(rec)
+	key := []byte("expired-visible")
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+			return &etcdserverpb.LeaseTimeToLiveResponse{
+				Header: txnHeader(1), ID: -1, TTL: -2, GrantedTTL: 30, Keys: [][]byte{key},
+			}, nil
+		},
+	}
+
+	response, err := server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: -1, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, int64(-2), response.GetTTL())
+	require.Equal(t, int64(30), response.GetGrantedTTL())
+	require.Equal(t, [][]byte{key}, response.GetKeys())
+	require.Equal(t, []interface{}{int64(0)}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCTimeToLive))
+}
+
 func TestLeaseFollowerRejectsInvalidUnaryProxyPayload(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -3055,16 +3103,16 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyPayload(t *testing.T) {
 			message: "returned keys when none were requested",
 		},
 		{
-			name: "malformed ttl not found", rpc: leaseProxyRPCTimeToLive,
+			name: "negative ttl without granted ttl", rpc: leaseProxyRPCTimeToLive,
 			configure: func(peers *testPeerService) {
 				peers.leaseTTLFn = func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
-					return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: math.MinInt64, TTL: -1, GrantedTTL: 30}, nil
+					return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: math.MinInt64, TTL: -2}, nil
 				}
 			},
 			invoke: func(server *RPCServer) (any, error) {
 				return server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: math.MinInt64, Keys: true})
 			},
-			message: "malformed not-found payload",
+			message: "invalid TTL -2 and granted TTL 0",
 		},
 		{
 			name: "ttl empty attached key", rpc: leaseProxyRPCTimeToLive,

@@ -123,14 +123,14 @@ func validateLeaseTimeToLiveProxyPayload(metricCli metrics.Metrics, keysRequeste
 		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCTimeToLive)
 		return nil, status.Error(codes.DataLoss, "leader lease time_to_live proxy returned keys when none were requested")
 	}
-	if response.GetTTL() == -1 {
-		if response.GetGrantedTTL() == 0 && len(response.GetKeys()) == 0 {
+	if response.GetTTL() == -1 && response.GetGrantedTTL() == 0 {
+		if len(response.GetKeys()) == 0 {
 			return response, nil
 		}
 		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCTimeToLive)
 		return nil, status.Errorf(codes.DataLoss, "leader lease time_to_live proxy returned malformed not-found payload with granted TTL %d and %d keys", response.GetGrantedTTL(), len(response.GetKeys()))
 	}
-	if response.GetTTL() >= 0 && response.GetGrantedTTL() > 0 {
+	if response.GetGrantedTTL() > 0 {
 		seen := make(map[string]struct{}, len(response.GetKeys()))
 		for _, key := range response.GetKeys() {
 			if len(key) == 0 {

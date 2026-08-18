@@ -360,11 +360,13 @@ func TestLeaseProxyPayloadValidation(t *testing.T) {
 			valid         bool
 		}{
 			{name: "found", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 0, GrantedTTL: 1, Keys: [][]byte{[]byte("key")}}, valid: true},
+			{name: "expired found", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -2, GrantedTTL: 1, Keys: [][]byte{[]byte("key")}}, valid: true},
+			{name: "minus one found", response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -1, GrantedTTL: 1}, valid: true},
 			{name: "not found", response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -1}, valid: true},
 			{name: "keys not requested", response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 1, GrantedTTL: 1, Keys: [][]byte{[]byte("key")}}},
-			{name: "ttl below not found", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -2}},
+			{name: "negative without granted ttl", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -2}},
 			{name: "found without granted ttl", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 0}},
-			{name: "malformed not found", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -1, GrantedTTL: 1}},
+			{name: "malformed not found", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -1, Keys: [][]byte{[]byte("stale")}}},
 			{name: "empty key", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 1, GrantedTTL: 1, Keys: [][]byte{{}}}},
 			{name: "duplicate key", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 1, GrantedTTL: 1, Keys: [][]byte{[]byte("key"), []byte("key")}}},
 		} {
