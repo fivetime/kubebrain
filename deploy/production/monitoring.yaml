@@ -261,6 +261,18 @@ spec:
           expr: count(((kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_delivered_watch_events:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_delivered_watch_events:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_delivered_watch_events:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_delivered_watch_events:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:mvcc_delivered_watch_events:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:mvcc_delivered_watch_events:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_stream_failure:current_by_pod_api_type
+          expr: max by (namespace, pod, uid, api, failure_type) (label_replace(label_replace((etcd_network_server_stream_failures_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_network_server_stream_failures_total{namespace="kubebrain-system"}) <= 60)), "api", "$1", "API", "(.*)"), "failure_type", "$1", "Type", "(.*)"))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_stream_failure:increase_10m_by_pod_api_type
+          expr: max by (namespace, pod, uid, api, failure_type) (label_replace(label_replace((increase(etcd_network_server_stream_failures_total{namespace="kubebrain-system"}[10m]) and (time() - timestamp(etcd_network_server_stream_failures_total{namespace="kubebrain-system"}) <= 60)), "api", "$1", "API", "(.*)"), "failure_type", "$1", "Type", "(.*)"))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_stream_failure_invalid_values:count
+          expr: count(((kubebrain_dbaas:server_stream_failure:current_by_pod_api_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:server_stream_failure:current_by_pod_api_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:server_stream_failure:current_by_pod_api_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:server_stream_failure:current_by_pod_api_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:server_stream_failure:increase_10m_by_pod_api_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:server_stream_failure:increase_10m_by_pod_api_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:server_stream_failure:current_by_pod_api_type{api!~"watch|lease-keepalive"} or kubebrain_dbaas:server_stream_failure:current_by_pod_api_type{failure_type!~"receive|send"})
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:known_peers:max_by_pod_local_remote
           expr: max by (namespace, pod, uid, Local, Remote) (etcd_network_known_peers{namespace="kubebrain-system"} and (time() - timestamp(etcd_network_known_peers{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1705,6 +1717,22 @@ spec:
           annotations:
             summary: KubeBrain Watch event-delivery telemetry is incomplete
             description: "Every Ready Pod UID must expose fresh authoritative-zero pending and delivered-event current/increase series. Pending/current must be non-negative exact integers no greater than 2^53; extrapolated increases may be fractional but must be finite and in range. Missing, stale, negative, fractional, or non-finite telemetry cannot be interpreted as an unblocked Watch delivery path."
+        - alert: KubeBrainServerStreamFailures
+          expr: sum by (api, failure_type) (kubebrain_dbaas:server_stream_failure:increase_10m_by_pod_api_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain server stream transport failed
+            description: "Current Ready replicas reported non-client-cancellation {{ $labels.failure_type }} failures for the {{ $labels.api }} stream in the last ten minutes. Watch failures can interrupt event delivery and LeaseKeepAlive failures can consume client reconnect budget or let leases expire; correlate client endpoint health, send-loop latency, admission pressure, and peer forwarding."
+        - alert: KubeBrainServerStreamFailureMetricsMissing
+          expr: absent(kubebrain_dbaas:server_stream_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:server_stream_failure:current_by_pod_api_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 4 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:server_stream_failure:increase_10m_by_pod_api_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 4 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:server_stream_failure_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain server stream failure telemetry is incomplete
+            description: "Every current Ready Pod UID must expose all four authoritative-zero api=watch|lease-keepalive and failure_type=receive|send counters as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53, increases finite in range, and unknown label values are invalid. Missing, stale, invalid, or incomplete telemetry cannot prove that long-lived stream transport is healthy."
         - alert: KubeBrainKnownPeersMetricsInconsistent
           expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:kubebrain_replicas:expected) == 1 or absent(kubebrain_dbaas:known_peers_invalid_values:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:kubebrain_replicas:expected < 3 or count(kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != on() (count(kubebrain_dbaas:ready_pods:current) * kubebrain_dbaas:kubebrain_replicas:expected) or count((count by (namespace, pod, uid) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != on() group_left() kubebrain_dbaas:kubebrain_replicas:expected) > 0 or count(count by (Local) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(count by (Remote) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != on() kubebrain_dbaas:kubebrain_replicas:expected or kubebrain_dbaas:known_peers_invalid_values:count != 0
           for: 2m
