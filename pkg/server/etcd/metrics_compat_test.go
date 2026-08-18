@@ -431,8 +431,8 @@ func TestRangeProxyPayloadValidation(t *testing.T) {
 		result  *etcdserverpb.RangeResponse
 		valid   bool
 	}{
-		{name: "exact key", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}, valid: true},
-		{name: "from key", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte{0}}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}, {Key: []byte("z")}}}, valid: true},
+		{name: "exact key with signed lease", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 3, Version: 2, Lease: math.MinInt64}}}, valid: true},
+		{name: "from key", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte{0}}, result: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 1, ModRevision: 1, Version: 1}, {Key: []byte("z"), CreateRevision: 2, ModRevision: 2, Version: 1}}}, valid: true},
 		{name: "negative count", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: -1}},
 		{name: "count below values", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
 		{name: "count only values", request: &etcdserverpb.RangeRequest{Key: []byte("b"), CountOnly: true}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
@@ -443,6 +443,14 @@ func TestRangeProxyPayloadValidation(t *testing.T) {
 		{name: "at range end", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("d")}}}},
 		{name: "duplicate key", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}, {Key: []byte("b")}}}},
 		{name: "keys only value", request: &etcdserverpb.RangeRequest{Key: []byte("b"), KeysOnly: true}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), Value: []byte("secret")}}}},
+		{name: "header below requested revision", request: &etcdserverpb.RangeRequest{Key: []byte("b"), Revision: 3}, result: &etcdserverpb.RangeResponse{Header: txnHeader(2)}},
+		{name: "missing metadata", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
+		{name: "future create revision", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 3, ModRevision: 2, Version: 1}}}},
+		{name: "version one after create", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 1, ModRevision: 2, Version: 1}}}},
+		{name: "impossible version", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 3, Version: 3}}}},
+		{name: "newer than historical snapshot", request: &etcdserverpb.RangeRequest{Key: []byte("b"), Revision: 2}, result: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 3, ModRevision: 3, Version: 1}}}},
+		{name: "below mod filter", request: &etcdserverpb.RangeRequest{Key: []byte("b"), MinModRevision: 3}, result: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 2, Version: 1}}}},
+		{name: "above create filter", request: &etcdserverpb.RangeRequest{Key: []byte("b"), MaxCreateRevision: 1}, result: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 2, Version: 1}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

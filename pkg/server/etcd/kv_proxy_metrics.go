@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
@@ -35,6 +36,9 @@ func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 	}
 	if response.GetCount() < 0 || response.GetCount() < int64(len(response.GetKvs())) {
 		return fail(fmt.Sprintf("leader range proxy returned count %d for %d key-values", response.GetCount(), len(response.GetKvs())))
+	}
+	if request.GetRevision() > 0 && response.GetHeader().GetRevision() < request.GetRevision() {
+		return fail(fmt.Sprintf("leader range proxy returned header revision %d below requested revision %d", response.GetHeader().GetRevision(), request.GetRevision()))
 	}
 	if request.GetCountOnly() {
 		if len(response.GetKvs()) != 0 || response.GetMore() {
@@ -56,6 +60,27 @@ func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 		seen[string(kv.GetKey())] = struct{}{}
 		if request.GetKeysOnly() && len(kv.GetValue()) != 0 {
 			return fail("leader range proxy returned a value for a keys-only request")
+		}
+		if kv.GetCreateRevision() <= 0 || kv.GetModRevision() <= 0 || kv.GetVersion() <= 0 {
+			return fail("leader range proxy returned incomplete key-value revision metadata")
+		}
+		if validationErr := backend.ValidateEtcdMetadataAtRevision(backend.EtcdMetadata{
+			CreateRevision: uint64(kv.GetCreateRevision()), Version: uint64(kv.GetVersion()), Lease: kv.GetLease(),
+		}, uint64(kv.GetModRevision()), "leader range proxy key-value"); validationErr != nil {
+			return fail("leader range proxy returned impossible key-value revision metadata")
+		}
+		snapshotRevision := response.GetHeader().GetRevision()
+		if request.GetRevision() > 0 {
+			snapshotRevision = request.GetRevision()
+		}
+		if kv.GetModRevision() > snapshotRevision {
+			return fail("leader range proxy returned a key-value newer than the requested snapshot")
+		}
+		if (request.GetMinModRevision() > 0 && kv.GetModRevision() < request.GetMinModRevision()) ||
+			(request.GetMaxModRevision() > 0 && kv.GetModRevision() > request.GetMaxModRevision()) ||
+			(request.GetMinCreateRevision() > 0 && kv.GetCreateRevision() < request.GetMinCreateRevision()) ||
+			(request.GetMaxCreateRevision() > 0 && kv.GetCreateRevision() > request.GetMaxCreateRevision()) {
+			return fail("leader range proxy returned a key-value outside the requested revision filters")
 		}
 	}
 	return response, nil

@@ -626,8 +626,11 @@ func TestFollowerLinearizableHistoricalRangeProxiesBeforeLocalBarrier(t *testing
 			require.Equal(t, []string{"raw-jwt"}, md.Get(rpctypes.TokenFieldNameGRPC))
 			return &etcdserverpb.RangeResponse{
 				Header: latest.Header,
-				Kvs:    []*mvccpb.KeyValue{{Key: key, Value: []byte("v1"), ModRevision: first.Header.Revision}},
-				Count:  1,
+				Kvs: []*mvccpb.KeyValue{{
+					Key: key, Value: []byte("v1"), CreateRevision: first.Header.Revision,
+					ModRevision: first.Header.Revision, Version: 1,
+				}},
+				Count: 1,
 			}, nil
 		},
 	}
@@ -2517,9 +2520,8 @@ func TestFollowerSerializableHistoricalRangeWithoutDurableRevisionProxiesToLeade
 			return &etcdserverpb.RangeResponse{
 				Header: &etcdserverpb.ResponseHeader{Revision: 20},
 				Kvs: []*mvccpb.KeyValue{{
-					Key:         req.Key,
-					Value:       []byte("leader"),
-					ModRevision: 10,
+					Key: req.Key, Value: []byte("leader"), CreateRevision: 10,
+					ModRevision: 10, Version: 1,
 				}},
 				Count: 1,
 			}, nil
@@ -2550,6 +2552,9 @@ func TestFollowerRejectsInvalidRangeProxyPayload(t *testing.T) {
 		{name: "outside range", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("d")}}}},
 		{name: "duplicate key", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}, {Key: []byte("b")}}}},
 		{name: "keys only value", request: &etcdserverpb.RangeRequest{Key: []byte("b"), KeysOnly: true}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), Value: []byte("secret")}}}},
+		{name: "impossible metadata", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 3, Version: 3}}}},
+		{name: "newer than snapshot", request: &etcdserverpb.RangeRequest{Key: []byte("b"), Revision: 2}, response: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 3, ModRevision: 3, Version: 1}}}},
+		{name: "outside revision filter", request: &etcdserverpb.RangeRequest{Key: []byte("b"), MinModRevision: 3}, response: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 2, Version: 1}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
