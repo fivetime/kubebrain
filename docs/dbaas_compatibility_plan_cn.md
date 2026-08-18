@@ -56990,6 +56990,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   warning。回归固定可恢复 replay 为 catch_up `[0,1]`、recovered `[0,1]`、dropped `[0]`，超 ring 为
   catch_up `[0,1]`、dropped `[0,1]`、recovered `[0]`，并保持取消路径不计 dropped；需要下一生产镜像和监控发布。
 
+- A5072 闭合换主/peer proxy 变化时 Watch generation 安全恢复只有日志、生产无法区分短暂重试、成功续传和强制
+  re-list 的可用性缺口。对照 `/root/etcd/server/storage/mvcc/watchable_store.go` 中 watchableStore 的 synced/
+  unsynced/victims 连续 revision 模型，KubeBrain 还需跨独立 member generation 从 `syncedRev+1` 重新打开 local 或
+  leader-proxy Watch；已发送 revision 只在 wire Send 成功后推进，因此 retry 不会制造 gap 或 duplicate。先审计的
+  `watch.event.zero_revision.dropped` 是事务在 durable allocator callback 前失败的预期清理，不代表已提交事件丢失，
+  未错误升级为事故。现新增固定 `watch.generation.recovery{outcome="retry|recovered|compacted|failed"}`，RPC server
+  创建时初始化四类权威零值；非 compaction open error 计 retry，成功 reopen 计 recovered，精确 resume revision
+  已压缩计 compacted，无 fresh local generation 且 proxy 禁用计 failed，context cancel/deadline 不污染失败。
+  production 生成 60 秒新鲜 Ready Pod UID current/increase，要求各 `4×Ready`、值合法且未知 outcome 非法；
+  retry/compacted/failed 任一增量和 telemetry 缺失/陈旧/非法/组合不完整 warning。定向回归固定瞬时 peer error 后
+  第二次成功为 retry/recovered `[0,1]`，compaction 只递增 compacted，无权威来源只递增 failed；需要下一生产镜像
+  和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

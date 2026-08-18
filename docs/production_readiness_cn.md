@@ -1145,6 +1145,13 @@ deadline 和服务 shutdown 不计 dropped。production 仅消费 60 秒新鲜 R
 increase，要求两者均为 `3×Ready`，current 为 `[0,2^53]` 精确整数、increase 有限同范围，未知 outcome 非法；
 catch_up 或 dropped 任一增长 warning，缺失、陈旧、非法或组合不完整 warning。出现 dropped 时必须同时检查 ring
 容量、Watch send-loop、客户端流控及 re-list 放大，不能因当前 slow gauge 已回零而关闭事件。
+换主或 peer transport 变化时，`watch_generation_recovery{outcome="retry|recovered|compacted|failed"}` 记录逻辑
+Watch generation 的恢复过程，RPC server 创建时四类均发布权威零值。每次 reopen 都从该 Watch 最后成功发送
+revision 的下一位开始：瞬时打开失败计 retry，成功建立权威 local/proxy channel 计 recovered，精确 resume revision
+已压缩计 compacted，无 fresh local generation 且 peer proxy 禁用计 failed；客户端取消或 deadline 不计失败。
+production 仅消费 60 秒新鲜 Ready Pod UID/outcome current 与十分钟 increase，要求两者均为 `4×Ready`，值域与
+慢消费者 counter 相同；retry、compacted 或 failed 任一增长 warning，缺失、陈旧、非法、未知 outcome 或组合不完整
+warning。处置时用 recovered 对账重试是否收敛，并检查 leader churn、peer proxy、compaction 压力和客户端 re-list。
 公开流量 admission 另由 `grpc_server_admission_inflight`、`watch_admission_active` 和固定
 `client_admission_rejection{guard="concurrency|rate|watch"}` 覆盖。RPC server 创建时先发布两个 gauge 零值及
 三类 counter 零值；legacy 带动态 method/kind 的并发/速率拒绝指标继续用于下钻，但不承担完整性证明。production
