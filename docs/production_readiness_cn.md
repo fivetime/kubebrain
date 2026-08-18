@@ -4480,8 +4480,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   首次创建时显式取消、reopen 时计 retry，而不会被非 nil wrapper channel 遮蔽并永久阻塞；
   发送前 fence 也会取消 generation 并阻止已检测到的 malformed/regressing result 上线；`invalid_result` 同时覆盖
   空 event key 与 key-mismatched PrevKv，`invalid_revision` 同时覆盖
-  PUT 缺失的正 CreateRevision/Version，以及 PrevKv 的非正 create/mod revision、非正 version、future create
-  revision 与不早于事件的 PrevKv；DELETE 当前 Kv 仍允许零 CreateRevision/Version。必须排查 backend adapter、
+  PUT 缺失的正 CreateRevision/Version、version 1 不在 create revision、version 超出 create→mod revision 窗口，
+  以及 PrevKv 的非正/future revision、不可能生命周期、跨 generation 或非连续版本；DELETE 当前 Kv 仍允许零
+  CreateRevision/Version，Lease ID 仍允许 etcd 支持的负值。必须排查 backend adapter、
   collector、durable replay 与 peer proxy ordering，不能把客户端收到 cancel 或 recovery retry 当成完整性已恢复。
 - 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。
 - 任一当前 Ready Pod 的 `count_index_overflowed` 超过 60 秒未刷新，或任一新鲜 overflow gauge 为 1；

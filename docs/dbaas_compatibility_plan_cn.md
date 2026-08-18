@@ -57186,6 +57186,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `watch.backend.integrity_failure{kind="invalid_revision"}` 并取消 generation，不增加标签。表驱动回归覆盖缺失 PUT
   metadata 与空 PrevKv，同时连续十轮验证正常 collector、PrevKV 和 event metadata；需要下一生产镜像和监控发布。
 
+- A5092 将 Watch KeyValue 校验从字段正值收紧到 generation 生命周期与 PrevKv 连续性。对照
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go`、`api/v3rpc/watch.go` 和 KubeBrain 已用于持久化值的
+  `ValidateEtcdMetadataAtRevision`：PUT 的 version 1 必须落在 create revision，version 不得超过 create→mod revision
+  窗口内每 revision 至多一次更新所允许的最大值；请求 PrevKv 时 upstream 从事件前一 revision 读取同一对象，因此非 nil
+  PUT PrevKv 必须与当前值共享 CreateRevision，且当前 Version 恰为前值加一。现这些不可能/断裂 metadata 在过滤、fragment
+  与 Send 前进入既有固定 `watch.backend.integrity_failure{kind="invalid_revision"}` 并取消 generation，不增加标签。另对照
+  `/root/etcd/tests/integration/v3_lease_test.go` 明确保留 Lease 的完整 signed int64 域，负 lease ID 不误报损坏。validator 与公开
+  watch 注入回归连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
