@@ -146,6 +146,30 @@ func TestConvertPublishesWithoutOverwrite(t *testing.T) {
 	require.Empty(t, temporaryFiles)
 }
 
+func TestConvertCanonicalizesPromotionLeaseGrace(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "logical.jsonl")
+	writer, err := backupfile.NewAtomicWriter(input, "/", 42)
+	require.NoError(t, err)
+	require.NoError(t, writer.AddLease(record.Lease{ID: 123, TTL: 63, GrantedTTL: 60}))
+	_, err = writer.Commit()
+	require.NoError(t, err)
+
+	output := filepath.Join(t.TempDir(), "snapshot.db")
+	_, err = Convert(input, output, Options{AcknowledgeAuthDisabled: true})
+	require.NoError(t, err)
+	db, err := bolt.Open(output, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		var got leasepb.Lease
+		require.NoError(t, tx.Bucket(schema.Lease.Name()).ForEach(func(_, value []byte) error {
+			return proto.Unmarshal(value, &got)
+		}))
+		require.True(t, proto.Equal(&leasepb.Lease{ID: 123, TTL: 60, RemainingTTL: 60}, &got))
+		return nil
+	}))
+}
+
 func TestConvertRejectsIncompleteOrImpossibleArtifacts(t *testing.T) {
 	tests := []struct {
 		name   string

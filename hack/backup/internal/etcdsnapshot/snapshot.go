@@ -152,8 +152,15 @@ func writeBackend(path string, revision int64, records []decodedRecord, leases [
 		})
 	}
 	for _, lease := range leases {
+		remainingTTL := lease.TTL
+		// Logical export observes the live deadline, including the temporary
+		// election grace added by Promote. Upstream backend snapshots persist only
+		// checkpoints at or below the grant, so discard that term-local extension.
+		if remainingTTL > lease.GrantedTTL {
+			remainingTTL = lease.GrantedTTL
+		}
 		state.Leases = append(state.Leases, production.Lease{
-			ID: lease.ID, GrantedTTL: lease.GrantedTTL, RemainingTTL: lease.TTL,
+			ID: lease.ID, GrantedTTL: lease.GrantedTTL, RemainingTTL: remainingTTL,
 		})
 	}
 	// Logical artifacts deliberately exclude KubeBrain's internal auth records.
