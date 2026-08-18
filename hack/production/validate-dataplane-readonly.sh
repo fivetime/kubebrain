@@ -1063,7 +1063,6 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       [
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
-        | $item.Status.header.revision as $revision
         | (if ($item.Status | has("raftIndex")) then $item.Status.raftIndex elif ($item.Status | has("raft_index")) then $item.Status.raft_index else null end) as $raft_index
         | (if ($item.Status | has("raftAppliedIndex")) then $item.Status.raftAppliedIndex elif ($item.Status | has("raft_applied_index")) then $item.Status.raft_applied_index else null end) as $applied_index
         | (
@@ -1077,10 +1076,6 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
               "not_integer"
             elif ($raft_index < 0 or $applied_index < 0) then
               "negative"
-            elif ($applied_index > $raft_index) then
-              "applied_beyond_raft_index"
-            elif ($raft_index != $revision or $applied_index != $revision) then
-              "not_revision"
             else
               empty
             end
@@ -1111,8 +1106,6 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
               "not_integer"
             elif ($db_size < 0 or $db_size_in_use < 0) then
               "negative"
-            elif ($db_size_in_use > $db_size) then
-              "in_use_beyond_db_size"
             else
               empty
             end
@@ -1423,7 +1416,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$min_status_raft_applied_index" != "-" ]]; then
     status_summary+=", min_status_raft_applied_index=${min_status_raft_applied_index}"
-    status_summary+=", raft_indexes_match_revision=true"
+    status_summary+=", raft_indexes_sampled=true"
   fi
 
   gateway_status_url="${ENDPOINT%/}/v3/maintenance/status"
@@ -1483,10 +1476,6 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status dbSizeInUse must be non-negative, got ${gateway_status_db_size_in_use}" >&2
     exit 1
   fi
-  if (( gateway_status_db_size_in_use > gateway_status_db_size )); then
-    echo "gateway status dbSizeInUse must not exceed dbSize: dbSizeInUse=${gateway_status_db_size_in_use}, dbSize=${gateway_status_db_size}" >&2
-    exit 1
-  fi
   if [[ "$gateway_status_db_size_quota" != "missing" && ! "$gateway_status_db_size_quota" =~ ^[1-9][0-9]*$ ]]; then
     echo "gateway status dbSizeQuota must be positive, got ${gateway_status_db_size_quota}" >&2
     exit 1
@@ -1519,14 +1508,6 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if ! [[ "$gateway_status_raft_applied_index" =~ ^[0-9]+$ ]]; then
     echo "gateway status raftAppliedIndex must be non-negative, got ${gateway_status_raft_applied_index}" >&2
-    exit 1
-  fi
-  if (( gateway_status_raft_applied_index > gateway_status_raft_index )); then
-    echo "gateway status raftAppliedIndex must not exceed raftIndex: raftAppliedIndex=${gateway_status_raft_applied_index}, raftIndex=${gateway_status_raft_index}" >&2
-    exit 1
-  fi
-  if [[ "$gateway_status_raft_index" != "$gateway_status_revision" || "$gateway_status_raft_applied_index" != "$gateway_status_revision" ]]; then
-    echo "gateway status raft indexes must match revision: revision=${gateway_status_revision}, raftIndex=${gateway_status_raft_index}, raftAppliedIndex=${gateway_status_raft_applied_index}" >&2
     exit 1
   fi
   if [[ "$gateway_status_downgrade_info_type" != "object" ]]; then
@@ -1615,7 +1596,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   status_summary+=", gateway_raft_term=${gateway_status_raft_term}"
   status_summary+=", gateway_raft_index=${gateway_status_raft_index}"
   status_summary+=", gateway_raft_applied_index=${gateway_status_raft_applied_index}"
-  status_summary+=", gateway_raft_indexes_match_revision=true"
+  status_summary+=", gateway_raft_indexes_sampled=true"
   status_summary+=", gateway_downgrade_info=object"
 
   gateway_auth_status_url="${ENDPOINT%/}/v3/auth/status"

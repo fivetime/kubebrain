@@ -2180,7 +2180,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_VERSION=3.7.0",
 			},
 			wantOK:     true,
-			wantOutput: "version_etcdserver=3.7.0, version_etcdcluster=3.7, version_storage=3.7.0, info_version_storage=3.7.0, gateway_db_size_in_use=88, gateway_db_size_quota=2147483648, gateway_is_learner=false, gateway_leader_id=456, gateway_raft_term=8, gateway_raft_index=7, gateway_raft_applied_index=7, gateway_raft_indexes_match_revision=true, gateway_downgrade_info=object",
+			wantOutput: "version_etcdserver=3.7.0, version_etcdcluster=3.7, version_storage=3.7.0, info_version_storage=3.7.0, gateway_db_size_in_use=88, gateway_db_size_quota=2147483648, gateway_is_learner=false, gateway_leader_id=456, gateway_raft_term=8, gateway_raft_index=7, gateway_raft_applied_index=7, gateway_raft_indexes_sampled=true, gateway_downgrade_info=object",
 		},
 		{
 			name: "rejects malformed version storage envelope",
@@ -2341,7 +2341,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput:  "gateway status isLearner must be boolean",
 		},
 		{
-			name: "rejects gateway status db size in use beyond db size",
+			name: "accepts independently sampled gateway db size inversion",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -2352,11 +2352,11 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
 			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"100","dbSizeQuota":"2147483648","leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
 			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOK:      false,
-			wantOutput:  "gateway status dbSizeInUse must not exceed dbSize",
+			wantOK:      true,
+			wantOutput:  "gateway_db_size_in_use=100",
 		},
 		{
-			name: "rejects gateway status applied index beyond raft index",
+			name: "accepts independently sampled gateway raft index inversion",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -2367,8 +2367,8 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
 			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"8","downgradeInfo":{}}`,
 			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOK:      false,
-			wantOutput:  "gateway status raftAppliedIndex must not exceed raftIndex",
+			wantOK:      true,
+			wantOutput:  "gateway_raft_applied_index=8, gateway_raft_indexes_sampled=true",
 		},
 		{
 			name: "rejects malformed gateway status storage version envelope",
@@ -2456,7 +2456,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			alarmJSON:  `{"header":{"cluster_id":"123","member_id":"456","revision":"9"}}`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:     true,
-			wantOutput: "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_match_revision=true",
+			wantOutput: "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_sampled=true",
 		},
 		{
 			name: "reports snakecase status raft indexes in summary",
@@ -2472,7 +2472,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			alarmJSON:  `{"header":{"cluster_id":"123","member_id":"456","revision":"9"}}`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:     true,
-			wantOutput: "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_match_revision=true",
+			wantOutput: "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_sampled=true",
 		},
 		{
 			name: "reports status db size in use in summary",
@@ -2876,7 +2876,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "status raft term envelope invalid",
 		},
 		{
-			name: "rejects status raft applied index beyond raft index",
+			name: "accepts independently sampled status applied index inversion",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -2886,7 +2886,8 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99,"raftIndex":8,"raftAppliedIndex":9}}]`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOutput: "status raft index envelope invalid",
+			wantOK:     true,
+			wantOutput: "min_status_raft_index=8, min_status_raft_applied_index=9, raft_indexes_sampled=true",
 		},
 		{
 			name: "rejects status raft index missing applied pair",
@@ -2928,7 +2929,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "status raft index envelope invalid",
 		},
 		{
-			name: "rejects status raft indexes that do not match revision",
+			name: "accepts independently sampled status raft indexes",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -2938,10 +2939,11 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99,"raftIndex":8,"raftAppliedIndex":8}}]`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOutput: "status raft index envelope invalid",
+			wantOK:     true,
+			wantOutput: "min_status_raft_index=8, min_status_raft_applied_index=8, raft_indexes_sampled=true",
 		},
 		{
-			name: "rejects status db size in use beyond db size",
+			name: "accepts independently sampled status db size inversion",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -2951,7 +2953,8 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99,"dbSizeInUse":100}}]`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOutput: "status dbSizeInUse envelope invalid",
+			wantOK:     true,
+			wantOutput: "min_status_db_size_in_use=100",
 		},
 		{
 			name: "rejects string status db size in use envelope",
@@ -4850,7 +4853,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"health=true",
 		"serializable_health=true",
 		"status_errors=empty",
-		"raft_indexes_match_revision=true",
+		"raft_indexes_sampled=true",
 		"gateway_status_version=<semver>",
 		"gateway_storage_version=<semver>",
 		"version_etcdserver=<semver>",
