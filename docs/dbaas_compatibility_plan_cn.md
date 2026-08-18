@@ -57683,6 +57683,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   二十轮、backupfile/converter race、完整非 production、production 326 项四分片与 vet 全部通过。本项不改变
   logical schema、合法历史制品、restore 写入模型、在线 MVCC 或 TiKV 数据路径。
 
+- A5148 修复 logical restore prefix rewrite 的写入前 keyspace 门禁。源 artifact key 唯一并不保证目标唯一：
+  `/source/a→/target/a` 可与 artifact 原有 `/target/a` 碰撞，精确 `/source→""` 还可生成 upstream Put 禁止的
+  空 key。旧 restore 直到创建目标 leases 后提交 Txn 才依赖
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go::checkIntervals`/Put admission 失败，verify 又有独立 rewrite 实现，
+  可能产生判定漂移。现抽取共享 keyrewrite，在任何 LeaseGrant 前遍历全部记录并拒绝空目标/重复目标；verify
+  复用同一 rewrite 与唯一性规则。matched、unmatched、no-rewrite 正例及 collision/empty 反例连续二十轮，三包
+  race、完整非 production、production 326 项四分片与 vet 全部通过。本项不改变无碰撞 rewrite、artifact、
+  在线 KV/lease 或 TiKV 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
