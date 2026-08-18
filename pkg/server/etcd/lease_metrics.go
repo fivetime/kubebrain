@@ -29,6 +29,15 @@ func initEtcdLeaseExpiredCounter(metricCli metrics.Metrics) {
 	emitEtcdLeaseExpiredCounter(metricCli, 0)
 }
 
+func initLeaseUncertainReconcileMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, outcome := range []string{"retry", "success", "err"} {
+		_ = metricCli.EmitCounter("lease.uncertain_reconcile."+outcome, int64(0))
+	}
+}
+
 func emitEtcdLeaseGrantedCounter(metricCli metrics.Metrics, value int) {
 	if metricCli == nil {
 		return

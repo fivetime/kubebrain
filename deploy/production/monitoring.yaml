@@ -529,6 +529,18 @@ spec:
           expr: count(((kubebrain_dbaas:uncertain_txn_resolution:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:uncertain_txn_resolution:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:uncertain_txn_resolution:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:uncertain_txn_resolution:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:uncertain_txn_resolution:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:uncertain_txn_resolution:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:lease_uncertain_reconcile:current_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (label_replace((lease_uncertain_reconcile_retry{namespace="kubebrain-system"} and (time() - timestamp(lease_uncertain_reconcile_retry{namespace="kubebrain-system"}) <= 60)), "outcome", "retry", "namespace", ".*") or label_replace((lease_uncertain_reconcile_success{namespace="kubebrain-system"} and (time() - timestamp(lease_uncertain_reconcile_success{namespace="kubebrain-system"}) <= 60)), "outcome", "success", "namespace", ".*") or label_replace((lease_uncertain_reconcile_err{namespace="kubebrain-system"} and (time() - timestamp(lease_uncertain_reconcile_err{namespace="kubebrain-system"}) <= 60)), "outcome", "err", "namespace", ".*"))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:lease_uncertain_reconcile:increase_10m_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (label_replace((increase(lease_uncertain_reconcile_retry{namespace="kubebrain-system"}[10m]) and (time() - timestamp(lease_uncertain_reconcile_retry{namespace="kubebrain-system"}) <= 60)), "outcome", "retry", "namespace", ".*") or label_replace((increase(lease_uncertain_reconcile_success{namespace="kubebrain-system"}[10m]) and (time() - timestamp(lease_uncertain_reconcile_success{namespace="kubebrain-system"}) <= 60)), "outcome", "success", "namespace", ".*") or label_replace((increase(lease_uncertain_reconcile_err{namespace="kubebrain-system"}[10m]) and (time() - timestamp(lease_uncertain_reconcile_err{namespace="kubebrain-system"}) <= 60)), "outcome", "err", "namespace", ".*"))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:lease_uncertain_reconcile_invalid_values:count
+          expr: count(((kubebrain_dbaas:lease_uncertain_reconcile:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:lease_uncertain_reconcile:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:lease_uncertain_reconcile:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:lease_uncertain_reconcile:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:lease_uncertain_reconcile:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:lease_uncertain_reconcile:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
           expr: count((kubebrain_dbaas:statefulset_replicas:current >= 0) and (kubebrain_dbaas:statefulset_replicas:current <= 9007199254740992) and (kubebrain_dbaas:statefulset_replicas:current == floor(kubebrain_dbaas:statefulset_replicas:current)))
           labels:
@@ -1093,6 +1105,30 @@ spec:
           annotations:
             summary: KubeBrain uncertain transaction telemetry is incomplete or invalid
             description: "Every Ready KubeBrain replica initializes exactly five outcome counters to authoritative zero: retry, committed, not_committed, witness_corrupt, and corrupt_alarm_failed. Current samples must be fresh exact non-negative integers no greater than 2^53; extrapolated ten-minute increases must be finite and within [0, 2^53]. Missing, stale, or invalid telemetry cannot prove uncertain commit resolution or corruption fencing health."
+        - alert: KubeBrainLeaseUncertainReconcileRetries
+          expr: sum(kubebrain_dbaas:lease_uncertain_reconcile:increase_10m_by_pod_outcome{outcome="retry"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain lease attachment reconciliation is retrying
+            description: "A current Ready replica could not read durable lease attachments while repairing an uncertain commit during the last ten minutes. The worker retains exclusive ordering against later lease mutations and retries with backoff; inspect TiKV connectivity and confirm a later success outcome before trusting the in-memory binding index."
+        - alert: KubeBrainLeaseUncertainReconcileErrors
+          expr: sum(kubebrain_dbaas:lease_uncertain_reconcile:increase_10m_by_pod_outcome{outcome="err"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain found an invalid durable lease attachment
+            description: "A current Ready replica found a durable lease attachment that could not be parsed while repairing an uncertain commit. Reconciliation terminates without publishing reconstructed bindings; preserve the record, inspect the corresponding transaction witness, and treat lease ownership as corrupt until repaired."
+        - alert: KubeBrainLeaseUncertainReconcileMetricsMissing
+          expr: absent(kubebrain_dbaas:lease_uncertain_reconcile_invalid_values:count) == 1 or count(kubebrain_dbaas:lease_uncertain_reconcile:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:lease_uncertain_reconcile:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:lease_uncertain_reconcile_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain lease reconciliation telemetry is incomplete
+            description: "Every Ready Pod UID must expose retry, success, and err authoritative-zero outcomes as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53 and increases finite in range. Missing, stale, invalid, or incomplete outcomes cannot prove that uncertain lease attachments are repaired."
         - alert: KubeBrainLeaderElectionFlapping
           expr: sum(kubebrain_dbaas:leader_election_lost:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 3
           for: 0m

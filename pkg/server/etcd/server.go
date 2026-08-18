@@ -287,6 +287,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initEtcdWatchSendLoopDurationMetrics(metricCli)
 	initEtcdLeaseLifecycleMetrics(metricCli)
 	initEtcdLeaseExpiredCounter(metricCli)
+	initLeaseUncertainReconcileMetrics(metricCli)
 	initEtcdClientRequestCounters(metricCli)
 	initEtcdClientGRPCBytesCounters(metricCli)
 	initEtcdServerStreamFailureCounters(metricCli)

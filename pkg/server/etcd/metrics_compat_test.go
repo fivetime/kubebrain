@@ -637,6 +637,18 @@ func TestEtcdLeaseExpiredCounterUsesUpstreamMetricName(t *testing.T) {
 	}, rec.counters)
 }
 
+func TestLeaseUncertainReconcileMetricsInitializeAuthoritativeZero(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initLeaseUncertainReconcileMetrics(rec)
+
+	require.Equal(t, []recordedCounter{
+		{name: "lease.uncertain_reconcile.retry", value: int64(0)},
+		{name: "lease.uncertain_reconcile.success", value: int64(0)},
+		{name: "lease.uncertain_reconcile.err", value: int64(0)},
+	}, rec.counters)
+}
+
 func TestEtcdLeaseLifecycleMetricsUseUpstreamMetricNames(t *testing.T) {
 	rec := &recordingMetrics{}
 
