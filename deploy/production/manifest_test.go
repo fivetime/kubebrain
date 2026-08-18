@@ -2606,6 +2606,23 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Equal(t, "2m", rangeStreamMissingRule["for"])
 	require.Contains(t, rangeStreamMissingRule["annotations"].(map[string]any)["description"], "authoritative-zero")
 	require.Contains(t, rangeStreamMissingRule["annotations"].(map[string]any)["description"], "Missing, stale, or invalid telemetry")
+	slowReadIndexRule := prometheusRuleByAlert(t, groups, "KubeBrainSlowReadIndexes")
+	require.Equal(t,
+		`sum(kubebrain_dbaas:read_index:increase_10m_by_pod_outcome{outcome="slow"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`,
+		slowReadIndexRule["expr"])
+	require.Equal(t, "warning", slowReadIndexRule["labels"].(map[string]any)["severity"])
+	readIndexFailureRule := prometheusRuleByAlert(t, groups, "KubeBrainReadIndexFailures")
+	require.Equal(t,
+		`sum(kubebrain_dbaas:read_index:increase_10m_by_pod_outcome{outcome="failed"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`,
+		readIndexFailureRule["expr"])
+	require.Contains(t, readIndexFailureRule["annotations"].(map[string]any)["description"], "failed closed")
+	readIndexMissingRule := prometheusRuleByAlert(t, groups, "KubeBrainReadIndexMetricsMissing")
+	require.Equal(t,
+		`absent(kubebrain_dbaas:read_index_invalid_values:count) == 1 or count(kubebrain_dbaas:read_index:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:read_index:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:read_index_invalid_values:count != 0`,
+		readIndexMissingRule["expr"])
+	require.Equal(t, "2m", readIndexMissingRule["for"])
+	require.Equal(t, "critical", readIndexMissingRule["labels"].(map[string]any)["severity"])
+	require.Contains(t, readIndexMissingRule["annotations"].(map[string]any)["description"], "authoritative-zero slow and failed counters")
 
 	checkpointRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointUnavailable")
 	require.Equal(t,
@@ -2996,6 +3013,7 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	quotaRefreshInvalidValuesExpr := `count(((kubebrain_dbaas:quota_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:quota_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:quota_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:quota_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:quota_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:quota_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))`
 	countIndexRebuildInvalidValuesExpr := `count(((kubebrain_dbaas:count_index_rebuild_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:count_index_rebuild_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:count_index_rebuild_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:count_index_rebuild_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:count_index_rebuild_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:count_index_rebuild_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))`
 	rangeStreamFailureInvalidValuesExpr := `count(((kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:range_stream_failure:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:range_stream_failure:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))`
+	readIndexInvalidValuesExpr := `count(((kubebrain_dbaas:read_index:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:read_index:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:read_index:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:read_index:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:read_index:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:read_index:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))`
 	alarmRefreshInvalidValuesExpr := `count(((kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:alarm_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))`
 	authRevisionInvalidValuesExpr := `count(((kubebrain_dbaas:auth_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:auth_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:auth_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:auth_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:auth_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:auth_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:auth_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:auth_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:auth_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:auth_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))`
 	mvccRevisionInvalidValuesExpr := `count(((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > on(namespace, pod, uid) (kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) + count(((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))`
@@ -3278,6 +3296,11 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	expected["kubebrain_dbaas:range_stream_failure:increase_10m_by_pod"] =
 		`max by (namespace, pod, uid) (increase(backend_list_by_stream_failed{namespace="kubebrain-system"}[10m]) and (time() - timestamp(backend_list_by_stream_failed{namespace="kubebrain-system"}) <= 60))`
 	expected["kubebrain_dbaas:range_stream_failure_invalid_values:count"] = rangeStreamFailureInvalidValuesExpr
+	expected["kubebrain_dbaas:read_index:current_by_pod_outcome"] =
+		`max by (namespace, pod, uid, outcome) (label_replace((etcd_server_slow_read_indexes_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_slow_read_indexes_total{namespace="kubebrain-system"}) <= 60)), "outcome", "slow", "namespace", ".*") or label_replace((etcd_server_read_indexes_failed_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_read_indexes_failed_total{namespace="kubebrain-system"}) <= 60)), "outcome", "failed", "namespace", ".*"))`
+	expected["kubebrain_dbaas:read_index:increase_10m_by_pod_outcome"] =
+		`max by (namespace, pod, uid, outcome) (label_replace((increase(etcd_server_slow_read_indexes_total{namespace="kubebrain-system"}[10m]) and (time() - timestamp(etcd_server_slow_read_indexes_total{namespace="kubebrain-system"}) <= 60)), "outcome", "slow", "namespace", ".*") or label_replace((increase(etcd_server_read_indexes_failed_total{namespace="kubebrain-system"}[10m]) and (time() - timestamp(etcd_server_read_indexes_failed_total{namespace="kubebrain-system"}) <= 60)), "outcome", "failed", "namespace", ".*"))`
+	expected["kubebrain_dbaas:read_index_invalid_values:count"] = readIndexInvalidValuesExpr
 	expected["kubebrain_dbaas:alarm_refresh_err:current_by_pod"] =
 		`max by (namespace, pod, uid) (alarm_refresh_err{namespace="kubebrain-system"} and (time() - timestamp(alarm_refresh_err{namespace="kubebrain-system"}) <= 60))`
 	expected["kubebrain_dbaas:alarm_refresh_err:increase_10m_by_pod"] =
@@ -3440,10 +3463,15 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 	require.True(t, found)
 
 	emitted := emittedMetricNames(t, "../../pkg")
-	for _, external := range []string{
+	// Include external metrics and source metrics whose Emit call uses a named
+	// constant rather than a string literal (which emittedMetricNames cannot
+	// discover with its deliberately small source scanner).
+	for _, indirectOrExternal := range []string{
 		"etcd_disk_wal_fsync_duration_seconds_bucket",
 		"etcd_disk_wal_fsync_duration_seconds_count",
+		"etcd_server_read_indexes_failed_total",
 		"etcd_server_is_leader",
+		"etcd_server_slow_read_indexes_total",
 		"container_cpu_cfs_periods_total",
 		"container_cpu_cfs_throttled_periods_total",
 		"container_cpu_usage_seconds_total",
@@ -3480,7 +3508,7 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"tikv_raftstore_store_write_raftdb_duration_seconds_count",
 		"up",
 	} {
-		emitted[external] = struct{}{}
+		emitted[indirectOrExternal] = struct{}{}
 	}
 	for _, rawGroup := range groups {
 		group := rawGroup.(map[string]any)

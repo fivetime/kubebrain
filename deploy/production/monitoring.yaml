@@ -421,6 +421,18 @@ spec:
           expr: count(((kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:range_stream_failure:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:range_stream_failure:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:read_index:current_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (label_replace((etcd_server_slow_read_indexes_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_slow_read_indexes_total{namespace="kubebrain-system"}) <= 60)), "outcome", "slow", "namespace", ".*") or label_replace((etcd_server_read_indexes_failed_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_read_indexes_failed_total{namespace="kubebrain-system"}) <= 60)), "outcome", "failed", "namespace", ".*"))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:read_index:increase_10m_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (label_replace((increase(etcd_server_slow_read_indexes_total{namespace="kubebrain-system"}[10m]) and (time() - timestamp(etcd_server_slow_read_indexes_total{namespace="kubebrain-system"}) <= 60)), "outcome", "slow", "namespace", ".*") or label_replace((increase(etcd_server_read_indexes_failed_total{namespace="kubebrain-system"}[10m]) and (time() - timestamp(etcd_server_read_indexes_failed_total{namespace="kubebrain-system"}) <= 60)), "outcome", "failed", "namespace", ".*"))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:read_index_invalid_values:count
+          expr: count(((kubebrain_dbaas:read_index:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:read_index:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:read_index:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:read_index:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:read_index:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:read_index:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:watch_revision_lag:max_by_pod
           expr: max by (namespace, pod, uid) (watch_revision_lag{namespace="kubebrain-system"} and (time() - timestamp(watch_revision_lag{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1837,6 +1849,30 @@ spec:
           annotations:
             summary: KubeBrain range-stream failure telemetry is incomplete
             description: "Every current Ready Pod UID must expose the authoritative-zero backend RangeStream failure counter as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53 and increases finite in range. Missing, stale, or invalid telemetry cannot prove that storage-backed streams are completing without worker failures."
+        - alert: KubeBrainSlowReadIndexes
+          expr: sum(kubebrain_dbaas:read_index:increase_10m_by_pod_outcome{outcome="slow"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain read-index barriers timed out
+            description: "Current Ready replicas reported follower/leader read-index barriers that exhausted a deadline or transport timeout in the last ten minutes. Requests failed closed rather than reading through an unconfirmed leader revision; inspect leader freshness, peer /status reachability, and TiKV/PD latency."
+        - alert: KubeBrainReadIndexFailures
+          expr: sum(kubebrain_dbaas:read_index:increase_10m_by_pod_outcome{outcome="failed"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain read-index barriers failed
+            description: "Current Ready replicas rejected read-index barriers for a non-timeout failure in the last ten minutes, including stale local leadership, leader changes, or invalid leader status. The affected linearizable request failed closed; correlate leader-election and peer identity telemetry before retrying."
+        - alert: KubeBrainReadIndexMetricsMissing
+          expr: absent(kubebrain_dbaas:read_index_invalid_values:count) == 1 or count(kubebrain_dbaas:read_index:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:read_index:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:read_index_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain read-index telemetry is incomplete
+            description: "Every current Ready Pod UID must expose authoritative-zero slow and failed counters as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53 and increases finite in range. Missing, stale, invalid, or incomplete telemetry cannot prove that unsafe or unavailable read barriers are rejected rather than silently bypassed."
         - alert: KubeBrainSerializableCheckpointUnavailable
           expr: absent(kubebrain_dbaas:serializable_checkpoint_invalid_values:count) == 1 or count(kubebrain_dbaas:serializable_checkpoint_available:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:serializable_checkpoint_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:serializable_checkpoint_remaining_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:serializable_checkpoint_invalid_values:count != 0 or min(kubebrain_dbaas:serializable_checkpoint_available:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 1 or min(kubebrain_dbaas:serializable_checkpoint_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0 or min(kubebrain_dbaas:serializable_checkpoint_remaining_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 60
           for: 30s
