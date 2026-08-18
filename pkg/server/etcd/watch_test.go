@@ -1293,7 +1293,7 @@ func TestWatchRejectsVisibleEventBelowRequestedStartRevision(t *testing.T) {
 	require.Equal(t, uint64(10), <-called)
 	results <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
 		Type: mvccpb.PUT,
-		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/a"), Value: []byte("stale"), ModRevision: 9},
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/a"), Value: []byte("stale"), CreateRevision: 1, ModRevision: 9, Version: 1},
 	}}}
 	close(results)
 
@@ -1340,7 +1340,7 @@ func TestWatchRejectsBatchRevisionBelowVisibleEvent(t *testing.T) {
 	require.Equal(t, uint64(10), <-called)
 	results <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
 		Type: mvccpb.PUT,
-		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/a"), Value: []byte("future"), ModRevision: 11},
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/a"), Value: []byte("future"), CreateRevision: 1, ModRevision: 11, Version: 1},
 	}}}
 	close(results)
 
@@ -1461,7 +1461,7 @@ func TestWatchRejectsMalformedEventBatchBeforePartialPublication(t *testing.T) {
 	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
 		Revision: 10,
 		Events: []*mvccpb.Event{
-			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/valid"), ModRevision: 10}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/valid"), CreateRevision: 1, ModRevision: 10, Version: 1}},
 			nil,
 		},
 	})
@@ -1475,8 +1475,8 @@ func TestWatchRejectsOutOfRangeEventAboveBatchRevisionBeforePartialPublication(t
 	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
 		Revision: 10,
 		Events: []*mvccpb.Event{
-			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/valid"), ModRevision: 10}},
-			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/outside/proxy-prefix"), ModRevision: 11}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/valid"), CreateRevision: 1, ModRevision: 10, Version: 1}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/outside/proxy-prefix"), CreateRevision: 1, ModRevision: 11, Version: 1}},
 		},
 	})
 	require.Len(t, responses, 1)
@@ -1520,24 +1520,39 @@ func TestValidatedWatchBatchRevisionRejectsInvalidKeyValueRevisions(t *testing.T
 			message: "invalid event version -1",
 		},
 		{
+			name:    "missing put create revision",
+			kv:      &mvccpb.KeyValue{ModRevision: 10, Version: 1},
+			message: "PUT event without a create revision",
+		},
+		{
+			name:    "missing put version",
+			kv:      &mvccpb.KeyValue{CreateRevision: 2, ModRevision: 10},
+			message: "PUT event without a version",
+		},
+		{
 			name: "negative previous mod revision",
-			kv:   &mvccpb.KeyValue{ModRevision: 10}, prevKV: &mvccpb.KeyValue{ModRevision: -1},
+			kv:   &mvccpb.KeyValue{CreateRevision: 2, ModRevision: 10, Version: 2}, prevKV: &mvccpb.KeyValue{ModRevision: -1},
 			message: "invalid previous mod revision -1 for event revision 10",
 		},
 		{
 			name: "future previous mod revision",
-			kv:   &mvccpb.KeyValue{ModRevision: 10}, prevKV: &mvccpb.KeyValue{ModRevision: 10},
+			kv:   &mvccpb.KeyValue{CreateRevision: 2, ModRevision: 10, Version: 2}, prevKV: &mvccpb.KeyValue{ModRevision: 10},
 			message: "invalid previous mod revision 10 for event revision 10",
 		},
 		{
 			name: "future previous create revision",
-			kv:   &mvccpb.KeyValue{ModRevision: 10}, prevKV: &mvccpb.KeyValue{ModRevision: 9, CreateRevision: 10},
+			kv:   &mvccpb.KeyValue{CreateRevision: 2, ModRevision: 10, Version: 2}, prevKV: &mvccpb.KeyValue{ModRevision: 9, CreateRevision: 10},
 			message: "invalid previous create revision 10 for mod revision 9",
 		},
 		{
 			name: "negative previous version",
-			kv:   &mvccpb.KeyValue{ModRevision: 10}, prevKV: &mvccpb.KeyValue{ModRevision: 9, Version: -1},
+			kv:   &mvccpb.KeyValue{CreateRevision: 2, ModRevision: 10, Version: 2}, prevKV: &mvccpb.KeyValue{ModRevision: 9, CreateRevision: 2, Version: -1},
 			message: "invalid previous version -1",
+		},
+		{
+			name: "empty previous metadata",
+			kv:   &mvccpb.KeyValue{CreateRevision: 2, ModRevision: 10, Version: 2}, prevKV: &mvccpb.KeyValue{},
+			message: "invalid previous mod revision 0",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1571,8 +1586,8 @@ func TestWatchRejectsRegressingEventRevisionWithinBatch(t *testing.T) {
 	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
 		Revision: 10,
 		Events: []*mvccpb.Event{
-			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/newer"), ModRevision: 10}},
-			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/older"), ModRevision: 9}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/newer"), CreateRevision: 1, ModRevision: 10, Version: 1}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/older"), CreateRevision: 1, ModRevision: 9, Version: 1}},
 		},
 	})
 	require.Len(t, responses, 1)
@@ -1586,7 +1601,7 @@ func TestWatchRejectsEventAlreadyCoveredBySourceWatermark(t *testing.T) {
 		Revision: 11,
 		Events: []*mvccpb.Event{{
 			Type: mvccpb.PUT,
-			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/stale"), ModRevision: 10},
+			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/stale"), CreateRevision: 1, ModRevision: 10, Version: 1},
 		}},
 	})
 	require.Len(t, responses, 1)
@@ -1735,7 +1750,7 @@ func TestLeaderWatchResumesThroughProxyAfterLocalGenerationCloses(t *testing.T) 
 	}()
 	require.Equal(t, uint64(10), <-localCalled)
 	localCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
-		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/proxy/a"), Value: []byte("local"), ModRevision: 10},
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/proxy/a"), Value: []byte("local"), CreateRevision: 1, ModRevision: 10, Version: 1},
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
 
@@ -1743,7 +1758,7 @@ func TestLeaderWatchResumesThroughProxyAfterLocalGenerationCloses(t *testing.T) 
 	close(localCh)
 	require.Equal(t, uint64(11), <-proxyCalled, "resume must start after the last successfully delivered revision")
 	proxyCh <- etcdproxy.WatchResult{Revision: 11, Events: []*mvccpb.Event{{
-		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/proxy/b"), Value: []byte("proxy"), ModRevision: 11},
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/proxy/b"), Value: []byte("proxy"), CreateRevision: 1, ModRevision: 11, Version: 1},
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
 	for _, response := range stream.snapshot() {
@@ -1795,7 +1810,7 @@ func TestFreshLeaderReopensLocalWatchWithoutPeerProxy(t *testing.T) {
 	require.Equal(t, uint64(10), <-called)
 	firstCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
 		Type: mvccpb.PUT,
-		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/local-reopen/"), Value: []byte("first"), ModRevision: 10},
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/local-reopen/"), Value: []byte("first"), CreateRevision: 1, ModRevision: 10, Version: 1},
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
 	close(firstCh)
@@ -1804,7 +1819,7 @@ func TestFreshLeaderReopensLocalWatchWithoutPeerProxy(t *testing.T) {
 	<-firstCanceled
 	secondCh <- etcdproxy.WatchResult{Revision: 11, Events: []*mvccpb.Event{{
 		Type: mvccpb.PUT,
-		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/local-reopen/"), Value: []byte("second"), ModRevision: 11},
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/local-reopen/"), Value: []byte("second"), CreateRevision: 1, ModRevision: 11, Version: 1},
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
 	for _, response := range stream.snapshot() {
@@ -2011,7 +2026,7 @@ func TestLeaderWatchFencesEstablishedLocalGenerationAfterEpochChange(t *testing.
 	}()
 	require.Equal(t, uint64(10), <-localCalled)
 	oldLocalCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
-		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/fenced/a"), Value: []byte("local"), ModRevision: 10},
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/fenced/a"), Value: []byte("local"), CreateRevision: 1, ModRevision: 10, Version: 1},
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
 
@@ -2019,12 +2034,12 @@ func TestLeaderWatchFencesEstablishedLocalGenerationAfterEpochChange(t *testing.
 	// closes. Its successor-window result must be replayed by the new generation.
 	epoch.Store(8)
 	oldLocalCh <- etcdproxy.WatchResult{Revision: 11, Events: []*mvccpb.Event{{
-		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/fenced/b"), Value: []byte("stale-local"), ModRevision: 11},
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/fenced/b"), Value: []byte("stale-local"), CreateRevision: 1, ModRevision: 11, Version: 1},
 	}}}
 	require.Equal(t, uint64(11), <-localCalled, "new epoch must resume after the last delivered revision")
 	<-oldGenerationCanceled
 	newLocalCh <- etcdproxy.WatchResult{Revision: 11, Events: []*mvccpb.Event{{
-		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/fenced/b"), Value: []byte("authoritative-new-epoch"), ModRevision: 11},
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/fenced/b"), Value: []byte("authoritative-new-epoch"), CreateRevision: 1, ModRevision: 11, Version: 1},
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
 	responses := stream.snapshot()
@@ -2196,9 +2211,9 @@ func TestLeaderWatchRechecksFreshnessAfterPrevKVAssemblyBeforeSend(t *testing.T)
 	require.Equal(t, uint64(10), <-localCalled)
 	localCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
 		Type: mvccpb.PUT,
-		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/send-fence/a"), Value: []byte("stale-local"), ModRevision: 10},
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/send-fence/a"), Value: []byte("stale-local"), CreateRevision: 1, ModRevision: 10, Version: 2},
 		PrevKv: &mvccpb.KeyValue{Key: []byte("/registry/watch/send-fence/a"), Value: []byte("old"),
-			ModRevision: 9},
+			CreateRevision: 1, ModRevision: 9, Version: 1},
 	}}}
 	<-blockedBackend.entered
 
@@ -2210,7 +2225,7 @@ func TestLeaderWatchRechecksFreshnessAfterPrevKVAssemblyBeforeSend(t *testing.T)
 	require.Equal(t, uint64(10), <-proxyCalled)
 	proxyCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
 		Type: mvccpb.PUT,
-		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/send-fence/a"), Value: []byte("authoritative-proxy"), ModRevision: 10},
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/send-fence/a"), Value: []byte("authoritative-proxy"), CreateRevision: 1, ModRevision: 10, Version: 1},
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
 	responses := stream.snapshot()
@@ -2257,7 +2272,7 @@ func TestWatchCancelAndIDReusePrecedeNoOldGenerationEventSend(t *testing.T) {
 	require.Equal(t, uint64(10), <-called)
 	results <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
 		Type: mvccpb.PUT,
-		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/cancel-order"), Value: []byte("must-not-follow-cancel"), ModRevision: 10},
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/cancel-order"), Value: []byte("must-not-follow-cancel"), CreateRevision: 1, ModRevision: 10, Version: 1},
 	}}}
 	<-headerEntered
 
@@ -2545,7 +2560,7 @@ func TestFollowerWatchResumesLocallyAfterProxyGenerationCloses(t *testing.T) {
 	}()
 	require.Equal(t, uint64(10), <-proxyCalled)
 	proxyCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
-		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/local/a"), Value: []byte("proxy"), ModRevision: 10},
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/local/a"), Value: []byte("proxy"), CreateRevision: 1, ModRevision: 10, Version: 1},
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
 
@@ -2553,7 +2568,7 @@ func TestFollowerWatchResumesLocallyAfterProxyGenerationCloses(t *testing.T) {
 	close(proxyCh)
 	require.Equal(t, uint64(11), <-localCalled, "resume must start after the last successfully delivered revision")
 	localCh <- etcdproxy.WatchResult{Revision: 11, Events: []*mvccpb.Event{{
-		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/local/b"), Value: []byte("local"), ModRevision: 11},
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/local/b"), Value: []byte("local"), CreateRevision: 1, ModRevision: 11, Version: 1},
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
 	for _, response := range stream.snapshot() {
@@ -3466,7 +3481,7 @@ func TestWatchProgressNeverOvertakesBufferedEvent(t *testing.T) {
 
 	// Deliver a real event at rev 7.
 	fed <- etcdproxy.WatchResult{Events: []*mvccpb.Event{
-		{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/buffered"), ModRevision: 7}},
+		{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/buffered"), CreateRevision: 1, ModRevision: 7, Version: 1}},
 	}}
 	// Once syncedRev reaches 7, the event was already Sent (storeMax runs after
 	// Send on the same goroutine), so the event Send is recorded first.
@@ -3615,7 +3630,7 @@ func TestFilteredWatchAdvancesThroughFullBatchRevision(t *testing.T) {
 		Revision: 9,
 		Events: []*mvccpb.Event{{
 			Type: mvccpb.PUT,
-			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/filtered/a"), ModRevision: 9},
+			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/filtered/a"), CreateRevision: 1, ModRevision: 9, Version: 1},
 		}},
 	}
 	require.Eventually(t, func() bool {
@@ -3629,7 +3644,7 @@ func TestFilteredWatchAdvancesThroughFullBatchRevision(t *testing.T) {
 		Revision: 12,
 		Events: []*mvccpb.Event{
 			{Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filtered/a"), ModRevision: 10}},
-			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filtered/b"), ModRevision: 12}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filtered/b"), CreateRevision: 1, ModRevision: 12, Version: 1}},
 		},
 	}
 	require.Eventually(t, func() bool {
@@ -3700,7 +3715,7 @@ func TestWatchFilterEnumUnknownAndDuplicateMatchEtcd(t *testing.T) {
 			fed <- etcdproxy.WatchResult{
 				Revision: 3,
 				Events: []*mvccpb.Event{
-					{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filter-enum/a"), ModRevision: 2}},
+					{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filter-enum/a"), CreateRevision: 1, ModRevision: 2, Version: 1}},
 					{Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filter-enum/a"), ModRevision: 3}},
 				},
 			}

@@ -235,15 +235,21 @@ func validatedWatchBatchRevision(result etcdproxy.WatchResult, sourceRevision ui
 		if version := kv.GetVersion(); version < 0 {
 			return 0, fmt.Errorf("watch backend returned invalid event version %d at index %d", version, i)
 		}
+		if event.GetType() == mvccpb.PUT && kv.GetCreateRevision() == 0 {
+			return 0, fmt.Errorf("watch backend returned PUT event without a create revision at index %d", i)
+		}
+		if event.GetType() == mvccpb.PUT && kv.GetVersion() == 0 {
+			return 0, fmt.Errorf("watch backend returned PUT event without a version at index %d", i)
+		}
 		if prevKV := event.GetPrevKv(); prevKV != nil {
 			prevModRevision := prevKV.GetModRevision()
-			if prevModRevision < 0 || prevModRevision >= eventRevision {
+			if prevModRevision <= 0 || prevModRevision >= eventRevision {
 				return 0, fmt.Errorf("watch backend returned invalid previous mod revision %d for event revision %d at index %d", prevModRevision, eventRevision, i)
 			}
-			if createRevision := prevKV.GetCreateRevision(); createRevision < 0 || createRevision > prevModRevision {
+			if createRevision := prevKV.GetCreateRevision(); createRevision <= 0 || createRevision > prevModRevision {
 				return 0, fmt.Errorf("watch backend returned invalid previous create revision %d for mod revision %d at index %d", createRevision, prevModRevision, i)
 			}
-			if version := prevKV.GetVersion(); version < 0 {
+			if version := prevKV.GetVersion(); version <= 0 {
 				return 0, fmt.Errorf("watch backend returned invalid previous version %d at index %d", version, i)
 			}
 		}
