@@ -56657,6 +56657,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不同，因此刻意不要求副本值相等。定向 server/etcd、精确 manifest、production/observability 文档同步，
   测试通过；需要下一生产镜像和监控发布。
 
+- A5044 闭合 lease attachment uncertain-commit reconcile 的生产修复链。TxnApply 不确定后会等待 durable revision，
+  再在 lease mutation 排他序下读取 attachment 并重建内存 binding；旧 `lease.uncertain_reconcile.retry|success|err`
+  仅在事件后动态创建，production 完全不消费，持续 TiKV 读取失败或不可解析 durable record 可静默。现 RPC
+  server 创建时初始化三条权威零值；监控用 `label_replace` 将三个 raw family 规范为固定
+  `outcome=retry|success|err`，生成 60 秒新鲜的 Ready Pod UID/outcome current 与 10 分钟 increase，分别要求
+  `3×Ready` 来源完整。current 为 `[0,2^53]` 精确整数，increase 有限同范围；retry warning，并要求排障确认
+  后续 success 或领导权已变化；err 表示解析失败后 worker 未发布 reconstructed bindings，立即 critical；缺失、
+  陈旧、非法或 outcome 不完整 critical。实现特意在 freshness 二元运算后不依赖会被 PromQL 丢弃的
+  `__name__`，而从保留的 namespace label 分别写入静态 outcome。权威零值单测、定向 server/etcd、精确
+  manifest 与 production/observability 文档同步，测试通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

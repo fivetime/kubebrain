@@ -1105,6 +1105,12 @@ watch send-loop histogram 和 `etcd_network_server_stream_failures_total` 对账
 lease 指标 `etcd_debugging_server_lease_expired_total`、
 `etcd_debugging_lease_granted_total`、`etcd_debugging_lease_revoked_total` 与
 `etcd_debugging_lease_renewed_total`，
+lease uncertain-commit attachment repair 另使用
+`lease_uncertain_reconcile_retry|success|err`；RPC server 创建时三条 counter 初始化权威 0。production 将三个
+raw family 规范为固定 `outcome` label，生成 60 秒新鲜的 Ready Pod UID/outcome current 与 10 分钟 increase，
+分别要求 `3×Ready` 来源完整。current 必须为 `[0,2^53]` 精确整数，increase 可为分数但必须有限同范围；
+retry warning，需确认随后出现 success 或领导权已变更；err 表示 durable attachment 不可解析、worker 未发布
+重建 binding，立即 critical；缺失、陈旧、非法或 outcome 不完整 critical。
 `promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；
