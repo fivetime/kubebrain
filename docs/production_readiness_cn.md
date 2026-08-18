@@ -1117,6 +1117,14 @@ lease 后台失败另由 `lease_background_failure{operation="checkpoint|expire_
 但必须有限同范围。checkpoint 写失败保留 lease 并重试，warning；expire-delete 原子事务失败会保留 lease
 及尚存 key 后重试，避免先删内存状态造成孤儿数据，但已延迟公开到期语义，因此立即 critical。缺失、陈旧、
 非法或 operation 不完整同样 critical。
+orphan lease safety-net 另使用 `lease_orphan_sweep_failure{stage}`，覆盖完整 attachment snapshot load、legacy
+migration/seal、user/legacy attachment read 与解析、compare-delete 和 attachment retirement；九类固定 stage
+在 RPC server 创建时发布权威零值。production 同样从 60 秒内样本生成 Ready Pod UID/stage current 与
+10 分钟 increase，要求 `9×Ready` 来源完整并执行精确 counter 值域检查。`load`、`user_read`、
+`legacy_attachment_read`、`legacy_attachment_invalid`、`key_delete` 会阻塞 defunct lease key 的最终回收，
+任一增量 critical；`migration`、`seal`、`key_compare`、`attachment_delete` 保留 durable retry marker 且不猜测
+删除矛盾用户数据，任一增量 warning。正常领导权
+context 取消不会递增规范 failure；缺失、陈旧、非法或 stage 不完整 critical。
 `promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；

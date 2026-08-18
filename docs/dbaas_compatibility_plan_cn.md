@@ -56679,6 +56679,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   critical。固定 operation 零值单测、精确 manifest 与定向 server/production 测试通过；需要下一生产镜像
   和监控发布。
 
+- A5046 闭合 orphan lease safety-net 的逐 key 静默失败。旧 `lease.orphan_sweep.err` 只覆盖顶层 load/seal，
+  legacy migration 的 attachment/meta/cleanup 写、user/legacy attachment 读取与解析、compare-delete、stale
+  attachment retirement 失败多数直接返回或被忽略；defunct lease key 可跨多轮存活而 production 仍显示健康。
+  现新增 `lease.orphan_sweep.failure{stage}`，固定九类 stage 并在 RPC server 创建时全部初始化权威零值；所有
+  失败出口保留完整 lease/attachment 证据供下一轮重试，成功删 user key 后 attachment 清理失败也单独记录，
+  不因 telemetry 改变安全删除边界。context 已取消的正常领导权退出不计规范 failure，epoch fence 拒绝旧任期
+  attachment delete 的回归则固定记录 `attachment_delete`。监控生成 60 秒新鲜的 Ready Pod UID/stage current
+  与 10 分钟 increase，要求 `9×Ready` 完整且 counter 合法；阻塞 defunct key 回收的 load/read/invalid/delete
+  五类 critical，migration/seal/compare/attachment maintenance 四类 warning，缺失、陈旧、非法或 stage 不完整
+  critical。固定 taxonomy、取消降噪、真实 epoch fence、完整 server 与精确 production 测试通过；需要下一
+  生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
