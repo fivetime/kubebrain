@@ -1270,6 +1270,15 @@ watchLoop:
 				cancel()
 				return
 			}
+			if !localGeneration {
+				if rangeErr := validateForwardedWatchEventRange(result.Events, r.Key, r.RangeEnd); rangeErr != nil {
+					emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
+					klog.ErrorS(rangeErr, "[watch stream] cancel due to out-of-range forwarded event", "watcher", w.id, "watch", id)
+					w.CancelGeneration(id, wt, rangeErr, false)
+					cancel()
+					return
+				}
+			}
 			if result.ProgressRevision > uint64(math.MaxInt64) {
 				revisionErr := fmt.Errorf("watch backend returned progress revision %d exceeds MaxInt64", result.ProgressRevision)
 				emitWatchBackendIntegrityFailure(w.metricCli, "invalid_revision")
@@ -1715,6 +1724,15 @@ func filterWatchEventsByRange(events []*mvccpb.Event, start, end []byte) []*mvcc
 		}
 	}
 	return filtered
+}
+
+func validateForwardedWatchEventRange(events []*mvccpb.Event, start, end []byte) error {
+	for i, event := range events {
+		if !watchEventInRange(event, start, end) {
+			return fmt.Errorf("watch leader proxy returned event key outside the requested range at index %d", i)
+		}
+	}
+	return nil
 }
 
 func watchEventInRange(event *mvccpb.Event, start, end []byte) bool {

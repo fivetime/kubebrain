@@ -400,6 +400,17 @@ func TestFilterWatchEventsByRange(t *testing.T) {
 	require.Equal(t, []byte("/registry/services/a"), openEnded[1].Kv.Key)
 }
 
+func TestValidateForwardedWatchEventRange(t *testing.T) {
+	event := func(key string) *mvccpb.Event {
+		return &mvccpb.Event{Kv: &mvccpb.KeyValue{Key: []byte(key)}}
+	}
+	require.NoError(t, validateForwardedWatchEventRange([]*mvccpb.Event{event("b"), event("c")}, []byte("b"), []byte("d")))
+	require.NoError(t, validateForwardedWatchEventRange([]*mvccpb.Event{event("b")}, []byte("b"), nil))
+	require.NoError(t, validateForwardedWatchEventRange([]*mvccpb.Event{event("z")}, []byte("b"), []byte{}))
+	require.EqualError(t, validateForwardedWatchEventRange([]*mvccpb.Event{event("a")}, []byte("b"), []byte("d")),
+		"watch leader proxy returned event key outside the requested range at index 0")
+}
+
 func TestWatchBackendPrefix(t *testing.T) {
 	require.Equal(t, "/registry/pods/a", watchBackendPrefix([]byte("/registry/pods/a"), nil))
 	require.Equal(t, "/registry/pods/", watchBackendPrefix([]byte("/registry/pods/"), []byte("/registry/pods0")))
@@ -2830,6 +2841,56 @@ func TestFollowerWatchResumesLocallyAfterProxyGenerationCloses(t *testing.T) {
 	cancel()
 	close(localCh)
 	<-done
+}
+
+func TestFollowerWatchRejectsOutOfRangeProxyEvent(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	initWatchBackendIntegrityMetrics(rec)
+	proxyCh := make(chan etcdproxy.WatchResult, 1)
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		watchFn: func(_ context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			require.Equal(t, []byte("/registry/watch/scope/"), key)
+			require.Equal(t, []byte("/registry/watch/scope0"), rangeEnd)
+			require.Equal(t, uint64(10), revision)
+			return proxyCh, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &fakeWatchServer{ctx: ctx}
+	wt := &watch{start: "/registry/watch/scope/", end: "/registry/watch/scope0", syncedRev: 9}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: wt}, metricCli: rec,
+	}
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/registry/watch/scope/"), RangeEnd: []byte("/registry/watch/scope0"), StartRevision: 10,
+		})
+	}()
+	proxyCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT,
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/other"), CreateRevision: 10, ModRevision: 10, Version: 1},
+	}}}
+
+	require.Eventually(t, func() bool { return len(stream.sentResponses()) == 1 }, time.Second, time.Millisecond)
+	response := stream.sentResponses()[0]
+	require.True(t, response.GetCanceled())
+	require.Contains(t, response.GetCancelReason(), "outside the requested range")
+	require.Empty(t, response.GetEvents())
+	require.Equal(t, uint64(0), atomic.LoadUint64(&wt.sourceRev), "rejected proxy payload must not advance the source watermark")
+	require.Equal(t, []interface{}{0, 1}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
+	<-done
+	close(proxyCh)
 }
 
 func TestWatchBackendCloseReportsCompactionWhenNextRevisionWasCompacted(t *testing.T) {
