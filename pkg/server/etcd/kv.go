@@ -444,6 +444,7 @@ func (s *RPCServer) rangeStreamOnce(
 	ch, err := s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, backendRevision)
 	if err != nil {
 		s.metricCli.EmitCounter("read.range_stream.err", 1)
+		emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
 		return rangeStreamStatusErr(err)
 	}
 	var (
@@ -466,15 +467,20 @@ func (s *RPCServer) rangeStreamOnce(
 			compactRevision, compactErr := s.backend.GetCompactRevisionFresh(ctx)
 			if compactErr != nil {
 				s.metricCli.EmitCounter("read.range_stream.err", 1)
+				emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
 				return rangeStreamStatusErr(compactErr)
 			}
 			if compactRevision > dataRevision {
 				s.metricCli.EmitCounter("read.range_stream.err", 1)
+				emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
 				return compactedRevisionError()
 			}
 		}
 		if err := rs.Send(response); err != nil {
-			s.metricCli.EmitCounter("read.range_stream.send_err", 1)
+			if shouldCountServerStreamFailure(rs.Context(), err) {
+				s.metricCli.EmitCounter("read.range_stream.send_err", 1)
+				emitRangeStreamFailure(s.metricCli, rangeStreamFailureSend)
+			}
 			return err
 		}
 		chunks++
@@ -483,6 +489,7 @@ func (s *RPCServer) rangeStreamOnce(
 	for chunk := range ch {
 		if chunk.err != nil {
 			s.metricCli.EmitCounter("read.range_stream.err", 1)
+			emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
 			return rangeStreamStatusErr(chunk.err)
 		}
 		headerRev = chunk.resp.Header.Revision
@@ -564,6 +571,7 @@ func (s *RPCServer) rangeStreamOnce(
 			return err
 		}
 		s.metricCli.EmitCounter("read.range_stream.err", 1)
+		emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
 		return status.Error(codes.Unavailable, "range stream ended without terminal metadata")
 	}
 	authChecked = true

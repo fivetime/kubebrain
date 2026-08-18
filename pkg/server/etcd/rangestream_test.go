@@ -36,6 +36,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -55,6 +56,15 @@ type blockingRangeStreamServer struct {
 	fakeRangeStreamServer
 	firstSent chan struct{}
 	release   chan struct{}
+}
+
+type failingRangeStreamServer struct {
+	fakeRangeStreamServer
+	err error
+}
+
+func (s *failingRangeStreamServer) Send(*etcdserverpb.RangeStreamResponse) error {
+	return s.err
 }
 
 func (s *blockingRangeStreamServer) Send(resp *etcdserverpb.RangeStreamResponse) error {
@@ -216,21 +226,39 @@ func (s *fakeRangeStreamServer) Context() context.Context {
 	return context.Background()
 }
 
+func recordedRangeStreamFailureValues(rec *recordingMetrics, stage string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name != "read.range_stream.failure" || len(counter.tags) != 1 ||
+			counter.tags[0] != metrics.Tag("stage", stage) {
+			continue
+		}
+		values = append(values, counter.value)
+	}
+	return values
+}
+
 // newRangeStreamTestServer builds a leader RPCServer over memkv.
 func newRangeStreamTestServer(t *testing.T) (*RPCServer, func()) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	m := mock.NewMinimalMetrics(ctrl)
+	return newRangeStreamTestServerWithMetrics(t, m)
+}
+
+func newRangeStreamTestServerWithMetrics(t *testing.T, metricCli metrics.Metrics) (*RPCServer, func()) {
+	t.Helper()
 	kv := memkv.NewKvStorage()
 	backendStore := backend.NewBackend(kv, backend.Config{
 		Identity:                "test-peer",
 		EnableEtcdCompatibility: true,
-	}, m)
-	server := New(backendStore, m, testPeerService{isLeader: true})
+	}, metricCli)
+	server := New(backendStore, metricCli, testPeerService{isLeader: true})
 	cleanup := func() {
 		server.stopLeases()
 		require.NoError(t, kv.Close())
-		ctrl.Finish()
 	}
 	return server, cleanup
 }
@@ -1098,7 +1126,8 @@ func TestRangeStreamPinsRevisionAcrossConcurrentWrite(t *testing.T) {
 }
 
 func TestRangeStreamRejectsPrematureBackendClose(t *testing.T) {
-	server, cleanup := newRangeStreamTestServer(t)
+	rec := &recordingMetrics{}
+	server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
 	defer cleanup()
 	server.backend = &prematureRangeStreamBackendShim{BackendShim: server.backend}
 
@@ -1109,6 +1138,34 @@ func TestRangeStreamRejectsPrematureBackendClose(t *testing.T) {
 	requireRangeStreamStatusError(t, err, codes.Unavailable, "range stream ended without terminal metadata")
 	require.Empty(t, stream.sent,
 		"the final bounded data chunk stays buffered until terminal metadata validates completion")
+	require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureProtocol))
+}
+
+func TestRangeStreamSendFailureExcludesClientCancellation(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want []interface{}
+	}{
+		{name: "transport failure", err: status.Error(codes.Unavailable, "injected send failure"), want: []interface{}{int64(0), 1}},
+		{name: "client cancellation", err: status.Error(codes.Canceled, "context canceled"), want: []interface{}{int64(0)}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+			defer cleanup()
+			stream := &failingRangeStreamServer{
+				fakeRangeStreamServer: fakeRangeStreamServer{ctx: context.Background()},
+				err:                   test.err,
+			}
+			err := server.RangeStream(&etcdserverpb.RangeRequest{
+				Key: []byte("/send-failure/"), RangeEnd: []byte("/send-failure0"),
+			}, stream)
+			require.ErrorIs(t, err, test.err)
+			require.Equal(t, test.want, recordedRangeStreamFailureValues(rec, rangeStreamFailureSend))
+		})
+	}
 }
 
 func TestRangeStreamPreservesTypedBackendStreamError(t *testing.T) {
@@ -1139,7 +1196,8 @@ func TestRangeStreamPreservesTypedBackendStreamError(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			server, cleanup := newRangeStreamTestServer(t)
+			rec := &recordingMetrics{}
+			server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
 			defer cleanup()
 			shim := server.backend.(*backendShim)
 			shim.backend = &encodedErrorRangeStreamBackend{Backend: shim.backend, err: test.err}
@@ -1151,6 +1209,7 @@ func TestRangeStreamPreservesTypedBackendStreamError(t *testing.T) {
 			require.Equal(t, test.code, status.Code(err))
 			require.Equal(t, test.message, status.Convert(err).Message())
 			require.Empty(t, stream.sent)
+			require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureBackend))
 		})
 	}
 }

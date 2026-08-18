@@ -243,6 +243,19 @@ func TestEmitEtcdRangeDurationUsesUpstreamMetricNameAndLabels(t *testing.T) {
 	}, rec.histograms)
 }
 
+func TestRangeStreamFailureMetricsInitializeFixedStages(t *testing.T) {
+	rec := &recordingMetrics{}
+	initRangeStreamFailureMetrics(rec)
+	emitRangeStreamFailure(rec, rangeStreamFailureProtocol)
+
+	require.Equal(t, []recordedCounter{
+		{name: "read.range_stream.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "backend")}},
+		{name: "read.range_stream.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "send")}},
+		{name: "read.range_stream.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "protocol")}},
+		{name: "read.range_stream.failure", value: 1, tags: []metrics.T{metrics.Tag("stage", "protocol")}},
+	}, rec.counters)
+}
+
 func TestEmitEtcdApplyDurationUsesCompleteUpstreamV3LabelMatrix(t *testing.T) {
 	rec := &recordingMetrics{}
 	ops := []string{
