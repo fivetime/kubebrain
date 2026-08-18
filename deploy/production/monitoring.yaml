@@ -225,6 +225,22 @@ spec:
           expr: count(((kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > on(namespace, pod, uid) (kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) or ((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod
+          expr: max by (namespace, pod, uid) (etcd_debugging_mvcc_pending_events_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_mvcc_pending_events_total{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_delivered_watch_events:current_by_pod
+          expr: max by (namespace, pod, uid) (etcd_debugging_mvcc_events_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_mvcc_events_total{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_delivered_watch_events:increase_10m_by_pod
+          expr: max by (namespace, pod, uid) (increase(etcd_debugging_mvcc_events_total{namespace="kubebrain-system"}[10m]) and (time() - timestamp(etcd_debugging_mvcc_events_total{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_watch_event_delivery_invalid_values:count
+          expr: count(((kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_delivered_watch_events:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_delivered_watch_events:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_delivered_watch_events:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_delivered_watch_events:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:mvcc_delivered_watch_events:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:mvcc_delivered_watch_events:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:known_peers:max_by_pod_local_remote
           expr: max by (namespace, pod, uid, Local, Remote) (etcd_network_known_peers{namespace="kubebrain-system"} and (time() - timestamp(etcd_network_known_peers{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1201,6 +1217,22 @@ spec:
           annotations:
             summary: KubeBrain Watch gauge telemetry is incomplete
             description: "Every Ready Pod UID must expose fresh stream, watcher, and slow-watcher gauges. Values must be non-negative exact integers no greater than 2^53, and slow watchers cannot exceed that Pod's total backend watchers. The one-second refresh publishes authoritative zero while idle; missing, stale, or invalid telemetry cannot be interpreted as no Watch load or catch-up pressure."
+        - alert: KubeBrainWatchEventDeliveryBlocked
+          expr: max(kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain Watch event delivery remains blocked
+            description: "A current Ready replica has converted Watch events waiting for its local WatchResult consumer for five minutes. The pending gauge is incremented immediately before the unbuffered handoff and decremented after receipt, so persistence indicates a blocked local delivery path rather than ordinary event volume; correlate slow watchers, send-loop latency, and client flow control."
+        - alert: KubeBrainWatchEventDeliveryMetricsMissing
+          expr: absent(kubebrain_dbaas:mvcc_watch_event_delivery_invalid_values:count) == 1 or count(kubebrain_dbaas:mvcc_pending_watch_events:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:mvcc_delivered_watch_events:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:mvcc_delivered_watch_events:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:mvcc_watch_event_delivery_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain Watch event-delivery telemetry is incomplete
+            description: "Every Ready Pod UID must expose fresh authoritative-zero pending and delivered-event current/increase series. Pending/current must be non-negative exact integers no greater than 2^53; extrapolated increases may be fractional but must be finite and in range. Missing, stale, negative, fractional, or non-finite telemetry cannot be interpreted as an unblocked Watch delivery path."
         - alert: KubeBrainKnownPeersMetricsInconsistent
           expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:kubebrain_replicas:expected) == 1 or absent(kubebrain_dbaas:known_peers_invalid_values:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:kubebrain_replicas:expected < 3 or count(kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != on() (count(kubebrain_dbaas:ready_pods:current) * kubebrain_dbaas:kubebrain_replicas:expected) or count((count by (namespace, pod, uid) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != on() group_left() kubebrain_dbaas:kubebrain_replicas:expected) > 0 or count(count by (Local) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(count by (Remote) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != on() kubebrain_dbaas:kubebrain_replicas:expected or kubebrain_dbaas:known_peers_invalid_values:count != 0
           for: 2m
