@@ -989,12 +989,18 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 			response.Errors = []string{rpctypes.ErrNoLeader.Error()}
 		}, valid: true},
 		{name: "empty storage version allowed", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "" }, valid: true},
+		{name: "semantic prerelease versions", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Version = "3.7.0-rc.1+build.2"
+			response.StorageVersion = "3.7.0-rc.1+build.2"
+		}, valid: true},
 		{name: "zero raft fields allowed", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.RaftIndex = 0
 			response.RaftAppliedIndex = 0
 			response.RaftTerm = 0
 		}, valid: true},
 		{name: "empty version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "" }},
+		{name: "invalid server version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "not-semver" }},
+		{name: "invalid storage version", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "not-semver" }},
 		{name: "negative size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSize = -1 }},
 		{name: "negative in use", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = -1 }},
 		{name: "independently sampled in use above size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = 11 }, valid: true},

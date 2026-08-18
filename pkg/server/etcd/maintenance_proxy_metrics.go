@@ -17,6 +17,7 @@ package etcd
 import (
 	"fmt"
 
+	"github.com/Masterminds/semver/v3"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
@@ -149,6 +150,16 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	}
 	if response.GetVersion() == "" {
 		return fail("leader status proxy returned an empty version")
+	}
+	if _, parseErr := semver.StrictNewVersion(response.GetVersion()); parseErr != nil {
+		return fail("leader status proxy returned an invalid server version")
+	}
+	// StorageVersion is empty on pre-3.6 backends, but whenever present upstream
+	// derives it from a parsed schema version and serializes semver.String().
+	if response.GetStorageVersion() != "" {
+		if _, parseErr := semver.StrictNewVersion(response.GetStorageVersion()); parseErr != nil {
+			return fail("leader status proxy returned an invalid storage version")
+		}
 	}
 	// Upstream samples Size and SizeInUse through two independent atomic loads.
 	// A concurrent backend commit can therefore make the later in-use sample

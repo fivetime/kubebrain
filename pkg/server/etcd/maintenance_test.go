@@ -612,6 +612,8 @@ func TestFollowerStatusHedgeRejectsInvalidProxyPayload(t *testing.T) {
 		mutate func(*etcdserverpb.StatusResponse)
 	}{
 		{name: "empty version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "" }},
+		{name: "invalid server version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "not-semver" }},
+		{name: "invalid storage version", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "not-semver" }},
 		{name: "negative size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSize = -1 }},
 		{name: "negative in use", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = -1 }},
 		{name: "zero quota", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeQuota = 0 }},
