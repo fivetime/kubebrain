@@ -609,6 +609,18 @@ spec:
           expr: count(((kubebrain_dbaas:write_fence_rejection:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:write_fence_rejection:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:write_fence_rejection:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:write_fence_rejection:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:write_fence_rejection:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:write_fence_rejection:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:write_fence_rejection:current_by_pod_kind{kind!~"leadership|restoration"})
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:delete_range_admission_rejected:current_by_pod
+          expr: max by (namespace, pod, uid) (delete_range_admission_rejected{namespace="kubebrain-system"} and (time() - timestamp(delete_range_admission_rejected{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:delete_range_admission_rejected:increase_10m_by_pod
+          expr: max by (namespace, pod, uid) (increase(delete_range_admission_rejected{namespace="kubebrain-system"}[10m]) and (time() - timestamp(delete_range_admission_rejected{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:delete_range_admission_rejected_invalid_values:count
+          expr: count(((kubebrain_dbaas:delete_range_admission_rejected:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:delete_range_admission_rejected:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:delete_range_admission_rejected:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:delete_range_admission_rejected:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:delete_range_admission_rejected:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:delete_range_admission_rejected:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_gc_enabled:max_by_pod
           expr: max by (namespace, pod, uid) (storage_gc_enabled{namespace="kubebrain-system"} and (time() - timestamp(storage_gc_enabled{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1361,6 +1373,22 @@ spec:
           annotations:
             summary: KubeBrain atomic write-fence telemetry is incomplete
             description: "Every current Ready Pod UID must expose both authoritative-zero kind=leadership|restoration counters as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53, increases finite in range, and unknown kinds invalid. Missing, stale, invalid, or incomplete telemetry cannot prove stale-term and restoration-window writes are rejected by their atomic guards."
+        - alert: KubeBrainDeleteRangeAdmissionRejected
+          expr: sum(kubebrain_dbaas:delete_range_admission_rejected:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain rejected an oversized atomic DeleteRange
+            description: "Current Ready replicas rejected DeleteRange or Txn(DeleteRange) requests above --max-delete-range-keys before allocating a revision or mutating data. Inspect callers for unbounded prefix deletion; raise the limit only after validating TiKV transaction size and p99 latency with representative keys and values."
+        - alert: KubeBrainDeleteRangeAdmissionMetricsMissing
+          expr: absent(kubebrain_dbaas:delete_range_admission_rejected_invalid_values:count) == 1 or count(kubebrain_dbaas:delete_range_admission_rejected:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:delete_range_admission_rejected:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:delete_range_admission_rejected_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain DeleteRange admission telemetry is incomplete
+            description: "Every current Ready Pod UID must expose an authoritative-zero DeleteRange rejection counter as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53 and increases finite in range. Missing, stale, invalid, or incomplete telemetry prevents operators from detecting callers that exceed the configured atomic transaction-size guard."
         - alert: KubeBrainStorageGCDriverUnavailable
           expr: min(kubebrain_dbaas:storage_gc_enabled:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 1
           for: 2m

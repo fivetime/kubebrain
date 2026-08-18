@@ -256,6 +256,17 @@ func TestRangeStreamFailureMetricsInitializeFixedStages(t *testing.T) {
 	}, rec.counters)
 }
 
+func TestDeleteRangeAdmissionMetricsInitializeAuthoritativeZero(t *testing.T) {
+	rec := &recordingMetrics{}
+	initDeleteRangeAdmissionMetrics(rec)
+	emitDeleteRangeAdmissionRejected(rec)
+
+	require.Equal(t, []recordedCounter{
+		{name: "delete_range.admission.rejected", value: int64(0)},
+		{name: "delete_range.admission.rejected", value: 1},
+	}, rec.counters)
+}
+
 func TestEmitEtcdApplyDurationUsesCompleteUpstreamV3LabelMatrix(t *testing.T) {
 	rec := &recordingMetrics{}
 	ops := []string{

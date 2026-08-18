@@ -1915,7 +1915,7 @@ func (m *leaseManager) keysInDeleteRange(ctx context.Context, r *etcdserverpb.De
 		return nil, err
 	}
 	if m.srv.maxDeleteRangeKeys > 0 && len(resp.Kvs) > int(m.srv.maxDeleteRangeKeys) {
-		m.srv.metricCli.EmitCounter("delete_range.admission.rejected", 1)
+		emitDeleteRangeAdmissionRejected(m.srv.metricCli)
 		return nil, rpctypes.ErrGRPCRequestTooManyRequests
 	}
 	keys := make([]string, 0, len(resp.Kvs))

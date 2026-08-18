@@ -283,7 +283,7 @@ func (e *stagedTxnExecutor) deleteRange(r *etcdserverpb.DeleteRangeRequest) (*et
 		return nil, err
 	}
 	if e.srv.maxDeleteRangeKeys > 0 && len(kvs) > int(e.srv.maxDeleteRangeKeys) {
-		e.srv.metricCli.EmitCounter("delete_range.admission.rejected", 1)
+		emitDeleteRangeAdmissionRejected(e.srv.metricCli)
 		return nil, rpctypes.ErrGRPCRequestTooManyRequests
 	}
 	resp := &etcdserverpb.DeleteRangeResponse{Header: txnHeader(e.visibleRevision())}
