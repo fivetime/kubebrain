@@ -13,6 +13,19 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
+type corruptAlarmCommitGuardContextKey struct{}
+
+// WithCorruptAlarmCommitGuard requires an internal CAS mutation to share the
+// same atomic CORRUPT-alarm boundary as an etcd applier mutation.
+func WithCorruptAlarmCommitGuard(ctx context.Context) context.Context {
+	return context.WithValue(ctx, corruptAlarmCommitGuardContextKey{}, true)
+}
+
+func corruptAlarmCommitGuardRequired(ctx context.Context) bool {
+	required, _ := ctx.Value(corruptAlarmCommitGuardContextKey{}).(bool)
+	return required
+}
+
 var (
 	corruptAlarmKey           = []byte("alarms/corrupt")
 	corruptAlarmGenerationKey = []byte("alarms/corrupt-generation")

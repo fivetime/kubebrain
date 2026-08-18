@@ -693,6 +693,25 @@ func TestLeaseOrphanSweepFailureMetricsIgnoreCanceledWork(t *testing.T) {
 	require.Empty(t, rec.counters)
 }
 
+func TestLeaseGrantCleanupMetricsUseFixedOutcomes(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initLeaseGrantCleanupMetrics(rec)
+	for _, outcome := range leaseGrantCleanupOutcomes {
+		emitLeaseGrantCleanup(rec, outcome)
+	}
+
+	require.Len(t, rec.counters, 2*len(leaseGrantCleanupOutcomes))
+	for i, outcome := range leaseGrantCleanupOutcomes {
+		require.Equal(t, recordedCounter{
+			name: "lease.grant_cleanup", value: int64(0), tags: []metrics.T{metrics.Tag("outcome", outcome)},
+		}, rec.counters[i])
+		require.Equal(t, recordedCounter{
+			name: "lease.grant_cleanup", value: 1, tags: []metrics.T{metrics.Tag("outcome", outcome)},
+		}, rec.counters[len(leaseGrantCleanupOutcomes)+i])
+	}
+}
+
 func TestEtcdLeaseLifecycleMetricsUseUpstreamMetricNames(t *testing.T) {
 	rec := &recordingMetrics{}
 

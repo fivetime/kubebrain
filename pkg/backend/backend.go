@@ -115,7 +115,9 @@ type Backend interface {
 	InternalDelete(ctx context.Context, key []byte) error
 	// InternalCAS atomically applies service-metadata mutations guarded by their
 	// exact previous values. It does not consume user MVCC revisions or emit
-	// watch events. A guard conflict returns storage.ErrCASFailed.
+	// watch events. A guard conflict returns storage.ErrCASFailed. Callers that
+	// implement an etcd applier mutation must opt into the atomic CORRUPT boundary
+	// with WithCorruptAlarmCommitGuard.
 	InternalCAS(ctx context.Context, ops []InternalCASOp) error
 	// QuotaStatus returns tenant-scoped logical usage, configured quota and the
 	// persisted NOSPACE alarm state. A zero quota means enforcement is disabled.

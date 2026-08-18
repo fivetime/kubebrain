@@ -126,6 +126,18 @@ func (b *backend) InternalCAS(ctx context.Context, ops []InternalCASOp) error {
 	if err := b.fenceAdmit(ctx); err != nil {
 		return err
 	}
+	var corruptGuard corruptAlarmCommitGuard
+	guardCorrupt := corruptAlarmCommitGuardRequired(ctx)
+	if guardCorrupt {
+		members, _, _, guard, err := b.readCorruptAlarmCommitState(ctx)
+		if err != nil {
+			return err
+		}
+		if len(members) != 0 {
+			return ErrCorruptAlarmActive
+		}
+		corruptGuard = guard
+	}
 
 	type prepared struct {
 		op      InternalCASOp
@@ -160,6 +172,9 @@ func (b *backend) InternalCAS(ctx context.Context, ops []InternalCASOp) error {
 	}
 
 	batch := b.kv.BeginBatchWrite()
+	if guardCorrupt {
+		stageCorruptAlarmCommitGuard(batch, b.ks.EncodeInternalKey(corruptGuard.key), corruptGuard)
+	}
 	for _, prep := range preps {
 		switch {
 		case prep.missing && prep.op.Delete:

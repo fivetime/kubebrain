@@ -77,3 +77,33 @@ func TestInternalPutCorruptGuardedIsRevisionNeutralAndRejectsActiveAlarm(t *test
 	require.Equal(t, []byte("lease"), value)
 	require.Equal(t, revision, b.GetCurrentRevision(), "guarded internal metadata must not consume a user revision")
 }
+
+func TestInternalCASCorruptCommitGuardRejectsActiveAlarm(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	ctx := context.Background()
+	key := []byte("leases/guarded-delete")
+	value := []byte("lease-generation-a")
+	require.NoError(t, b.InternalPut(ctx, key, value))
+	require.NoError(t, b.ArmCorrupt(ctx, 4503002))
+
+	err := b.InternalCAS(WithCorruptAlarmCommitGuard(ctx), []InternalCASOp{{
+		Key: key, Expected: value, ExpectedExists: true, Delete: true,
+	}})
+	require.ErrorIs(t, err, ErrCorruptAlarmActive)
+	stored, err := b.InternalGet(ctx, key)
+	require.NoError(t, err)
+	require.Equal(t, value, stored)
+
+	removed, err := b.DisarmCorrupt(ctx, 4503002)
+	require.NoError(t, err)
+	require.True(t, removed)
+	require.NoError(t, b.InternalCAS(WithCorruptAlarmCommitGuard(ctx), []InternalCASOp{{
+		Key: key, Expected: value, ExpectedExists: true, Delete: true,
+	}}))
+	_, err = b.InternalGet(ctx, key)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}

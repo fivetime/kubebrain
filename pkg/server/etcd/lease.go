@@ -290,28 +290,25 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 
 	incarnation, err := newLeaseIncarnation()
 	if err != nil {
-		m.leaseMu.Lock()
-		delete(m.pendingLeases, id)
-		m.leaseMu.Unlock()
+		m.releasePendingLease(id, grantGeneration)
 		return nil, err
 	}
 	if err := m.srv.backend.EnsureLeaseIncarnationFormatFence(ctx); err != nil {
-		m.leaseMu.Lock()
-		delete(m.pendingLeases, id)
-		m.leaseMu.Unlock()
+		m.releasePendingLease(id, grantGeneration)
 		return nil, mapFenceErr(err)
 	}
-	if err := m.persistLeaseMetaIncarnation(ctx, id, ttl, incarnation); err != nil {
+	grantMetadata, err := json.Marshal(leaseRecord{ID: id, Incarnation: incarnation, TTL: ttl})
+	if err != nil {
+		m.releasePendingLease(id, grantGeneration)
+		return nil, err
+	}
+	if err := m.persistLeaseRecord(ctx, leaseStorageKey(id), grantMetadata, true); err != nil {
 		// No Put can observe a pending lease, so there are no attached keys to
-		// revoke. Best-effort deletion resolves a commit-undetermined InternalPut
-		// before releasing the ID reservation; leadership fencing prevents an old
-		// leader from deleting a newer leader's grant.
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
-		_ = m.deleteLeaseState(cleanupCtx, id)
-		cleanupCancel()
-		m.leaseMu.Lock()
-		delete(m.pendingLeases, id)
-		m.leaseMu.Unlock()
+		// revoke. Exact-incarnation compensation resolves a commit-undetermined
+		// InternalPut before releasing the ID reservation. A failed delete retains
+		// the reservation for retry; generation, leadership, CORRUPT, and exact-value
+		// guards prevent an old grant from deleting a newer leader's metadata.
+		m.compensateFailedLeaseGrant(ctx, id, grantGeneration, epoch, grantMetadata)
 		return nil, mapFenceErr(err)
 	}
 
@@ -326,11 +323,8 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	m.leaseMu.Lock()
 	pendingGeneration, stillPending := m.pendingLeases[id]
 	if !stillPending || pendingGeneration != grantGeneration || m.leaseGeneration != grantGeneration {
-		delete(m.pendingLeases, id)
 		m.leaseMu.Unlock()
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
-		_ = m.deleteLeaseState(cleanupCtx, id)
-		cleanupCancel()
+		m.compensateFailedLeaseGrant(ctx, id, grantGeneration, epoch, grantMetadata)
 		return nil, mapFenceErr(backend.ErrLeadershipFenced)
 	}
 	delete(m.pendingLeases, id)
@@ -347,6 +341,120 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		ID:     id,
 		TTL:    ttl,
 	}, nil
+}
+
+func (m *leaseManager) releasePendingLease(id int64, generation uint64) bool {
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	if current, ok := m.pendingLeases[id]; !ok || current != generation {
+		return false
+	}
+	delete(m.pendingLeases, id)
+	return true
+}
+
+func (m *leaseManager) pendingLeaseInGeneration(id int64, generation uint64) bool {
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	current, ok := m.pendingLeases[id]
+	return ok && current == generation && m.leaseGeneration == generation
+}
+
+func (m *leaseManager) compensateFailedLeaseGrant(requestCtx context.Context, id int64, generation, epoch uint64, expected []byte) {
+	currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh || currentEpoch != epoch || !m.pendingLeaseInGeneration(id, generation) {
+		m.releasePendingLease(id, generation)
+		emitLeaseGrantCleanup(m.srv.metricCli, "handoff")
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(requestCtx), unaryRpcTimeout)
+	resolved, err := m.deleteFailedLeaseGrantIfMatch(cleanupCtx, id, expected)
+	cancel()
+	if resolved {
+		m.releasePendingLease(id, generation)
+		emitLeaseGrantCleanup(m.srv.metricCli, "success")
+		return
+	}
+	if errors.Is(err, errLeaseGrantCleanupSuperseded) {
+		m.releasePendingLease(id, generation)
+		emitLeaseGrantCleanup(m.srv.metricCli, "handoff")
+		return
+	}
+	emitLeaseGrantCleanup(m.srv.metricCli, "retry")
+	klog.ErrorS(err, "lease grant compensation failed; retaining ID reservation for retry", "lease", id)
+	m.startWorker(func(workerCtx context.Context) {
+		m.retryFailedLeaseGrantCleanup(workerCtx, id, generation, epoch, expected)
+	})
+}
+
+func (m *leaseManager) retryFailedLeaseGrantCleanup(workerCtx context.Context, id int64, generation, epoch uint64, expected []byte) {
+	retryDelay := 100 * time.Millisecond
+	for {
+		currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+		if !leadingFresh || currentEpoch != epoch || !m.pendingLeaseInGeneration(id, generation) {
+			m.releasePendingLease(id, generation)
+			emitLeaseGrantCleanup(m.srv.metricCli, "handoff")
+			return
+		}
+		ctx, cancel := context.WithTimeout(workerCtx, unaryRpcTimeout)
+		resolved, err := m.deleteFailedLeaseGrantIfMatch(backend.WithLeadershipEpoch(ctx, epoch), id, expected)
+		cancel()
+		if resolved {
+			m.releasePendingLease(id, generation)
+			emitLeaseGrantCleanup(m.srv.metricCli, "success")
+			return
+		}
+		if errors.Is(err, errLeaseGrantCleanupSuperseded) {
+			m.releasePendingLease(id, generation)
+			emitLeaseGrantCleanup(m.srv.metricCli, "handoff")
+			return
+		}
+		emitLeaseGrantCleanup(m.srv.metricCli, "retry")
+		klog.ErrorS(err, "lease grant compensation retry failed", "lease", id, "retryAfter", retryDelay)
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-workerCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			m.releasePendingLease(id, generation)
+			emitLeaseGrantCleanup(m.srv.metricCli, "handoff")
+			return
+		case <-timer.C:
+		}
+		if retryDelay < time.Second {
+			retryDelay *= 2
+			if retryDelay > time.Second {
+				retryDelay = time.Second
+			}
+		}
+	}
+}
+
+var errLeaseGrantCleanupSuperseded = errors.New("lease grant cleanup metadata was superseded")
+
+func (m *leaseManager) deleteFailedLeaseGrantIfMatch(ctx context.Context, id int64, expected []byte) (bool, error) {
+	key := leaseStorageKey(id)
+	err := m.srv.backend.InternalCAS(backend.WithCorruptAlarmCommitGuard(ctx), []backend.InternalCASOp{{
+		Key: key, Expected: expected, ExpectedExists: true, Delete: true,
+	}})
+	if err == nil {
+		return true, nil
+	}
+	if !errors.Is(err, storage.ErrCASFailed) {
+		return false, err
+	}
+	current, getErr := m.srv.backend.InternalGet(ctx, key)
+	switch {
+	case errors.Is(getErr, storage.ErrKeyNotFound):
+		return true, nil
+	case getErr != nil:
+		return false, errors.Join(err, fmt.Errorf("inspect failed lease grant before cleanup: %w", getErr))
+	case !bytes.Equal(current, expected):
+		return false, errLeaseGrantCleanupSuperseded
+	default:
+		return false, err
+	}
 }
 
 func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevokeRequest) (_ *etcdserverpb.LeaseRevokeResponse, retErr error) {
@@ -2426,6 +2534,7 @@ func (m *leaseManager) clearLeaseStateHoldingCheckpointLock() {
 		}
 	}
 	m.leases = make(map[int64]*leaseState)
+	m.pendingLeases = make(map[int64]uint64)
 	m.clearLeaseIncarnations()
 	m.keyLeaseIndex = make(map[string]int64)
 	atomic.StoreInt64(&m.leasedKeyCount, 0)

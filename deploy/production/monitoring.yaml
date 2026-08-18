@@ -565,6 +565,18 @@ spec:
           expr: count(((kubebrain_dbaas:lease_orphan_sweep_failure:current_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:lease_orphan_sweep_failure:current_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:lease_orphan_sweep_failure:current_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:lease_orphan_sweep_failure:current_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:lease_orphan_sweep_failure:increase_10m_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:lease_orphan_sweep_failure:increase_10m_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:lease_grant_cleanup:current_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (lease_grant_cleanup{namespace="kubebrain-system",outcome=~"retry|success|handoff"} and (time() - timestamp(lease_grant_cleanup{namespace="kubebrain-system",outcome=~"retry|success|handoff"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:lease_grant_cleanup:increase_10m_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (increase(lease_grant_cleanup{namespace="kubebrain-system",outcome=~"retry|success|handoff"}[10m]) and (time() - timestamp(lease_grant_cleanup{namespace="kubebrain-system",outcome=~"retry|success|handoff"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:lease_grant_cleanup_invalid_values:count
+          expr: count(((kubebrain_dbaas:lease_grant_cleanup:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:lease_grant_cleanup:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:lease_grant_cleanup:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:lease_grant_cleanup:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:lease_grant_cleanup:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:lease_grant_cleanup:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:replica_expectation_sources:count
           expr: count((kubebrain_dbaas:statefulset_replicas:current >= 0) and (kubebrain_dbaas:statefulset_replicas:current <= 9007199254740992) and (kubebrain_dbaas:statefulset_replicas:current == floor(kubebrain_dbaas:statefulset_replicas:current)))
           labels:
@@ -1201,6 +1213,22 @@ spec:
           annotations:
             summary: KubeBrain orphan lease failure telemetry is incomplete
             description: "Every Ready Pod UID must expose all nine authoritative-zero orphan reconciliation stages as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53 and increases finite in range. Missing, stale, invalid, or incomplete stages cannot prove eventual cleanup of keys owned by defunct leases."
+        - alert: KubeBrainLeaseGrantCleanupRetries
+          expr: sum(kubebrain_dbaas:lease_grant_cleanup:increase_10m_by_pod_outcome{outcome="retry"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain is retrying failed lease-grant compensation
+            description: "A failed LeaseGrant could not immediately remove possibly committed metadata, so its ID remains reserved and cannot be regranted in the same lease generation. Confirm a later success outcome or a leadership handoff before treating the ID as reusable."
+        - alert: KubeBrainLeaseGrantCleanupMetricsMissing
+          expr: absent(kubebrain_dbaas:lease_grant_cleanup_invalid_values:count) == 1 or count(kubebrain_dbaas:lease_grant_cleanup:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:lease_grant_cleanup:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:lease_grant_cleanup_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain lease-grant cleanup telemetry is incomplete
+            description: "Every Ready Pod UID must expose retry, success, and handoff authoritative-zero outcomes as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53 and increases finite in range. Missing, stale, invalid, or incomplete outcomes cannot prove failed-grant ID isolation."
         - alert: KubeBrainLeaderElectionFlapping
           expr: sum(kubebrain_dbaas:leader_election_lost:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 3
           for: 0m

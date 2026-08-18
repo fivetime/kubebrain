@@ -93,6 +93,24 @@ func emitLeaseOrphanSweepFailureForContext(ctx context.Context, metricCli metric
 	emitLeaseOrphanSweepFailure(metricCli, stage)
 }
 
+var leaseGrantCleanupOutcomes = []string{"retry", "success", "handoff"}
+
+func initLeaseGrantCleanupMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, outcome := range leaseGrantCleanupOutcomes {
+		_ = metricCli.EmitCounter("lease.grant_cleanup", int64(0), metrics.Tag("outcome", outcome))
+	}
+}
+
+func emitLeaseGrantCleanup(metricCli metrics.Metrics, outcome string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("lease.grant_cleanup", 1, metrics.Tag("outcome", outcome))
+}
+
 func emitEtcdLeaseGrantedCounter(metricCli metrics.Metrics, value int) {
 	if metricCli == nil {
 		return

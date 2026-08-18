@@ -106,6 +106,29 @@ type failAtomicLeaseRevokeBackend struct {
 	leaseID int64
 }
 
+type retryableFailedGrantCleanupBackend struct {
+	BackendShim
+	leaseID        int64
+	cleanupAllowed atomic.Bool
+	cleanupCalls   atomic.Int64
+}
+
+func (b *retryableFailedGrantCleanupBackend) InternalPutCorruptGuarded(context.Context, []byte, []byte) error {
+	return errFakeDelete
+}
+
+func (b *retryableFailedGrantCleanupBackend) InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error {
+	for _, op := range ops {
+		if op.Delete && string(op.Key) == string(leaseStorageKey(b.leaseID)) {
+			b.cleanupCalls.Add(1)
+			if !b.cleanupAllowed.Load() {
+				return errFakeDelete
+			}
+		}
+	}
+	return b.BackendShim.InternalCAS(ctx, ops)
+}
+
 type uncertainLeaseRevokeBackend struct {
 	BackendShim
 	leaseID int64
@@ -2132,6 +2155,99 @@ func TestLeaseGrantFailureReleasesPendingReservation(t *testing.T) {
 	close(shim.release)
 	_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5201})
 	require.NoError(t, err, "failed persistence must not poison the explicit lease ID")
+}
+
+func TestLeaseGrantCleanupFailureRetainsReservationUntilRetrySucceeds(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	const leaseID int64 = 5203
+	shim := &retryableFailedGrantCleanupBackend{BackendShim: server.backend, leaseID: leaseID}
+	server.backend = shim
+	recorder := &recordingMetrics{}
+	server.metricCli = recorder
+
+	_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.Error(t, err)
+	require.GreaterOrEqual(t, shim.cleanupCalls.Load(), int64(1))
+
+	server.leaseMu.Lock()
+	_, pending := server.pendingLeases[leaseID]
+	server.leaseMu.Unlock()
+	require.True(t, pending, "failed compensation must retain the explicit ID reservation")
+	_, err = server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseExist, codes.FailedPrecondition, "etcdserver: lease already exists")
+
+	shim.cleanupAllowed.Store(true)
+	require.Eventually(t, func() bool {
+		server.leaseMu.Lock()
+		defer server.leaseMu.Unlock()
+		_, pending = server.pendingLeases[leaseID]
+		return !pending
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Contains(t, recorder.counters, recordedCounter{
+		name: "lease.grant_cleanup", value: 1, tags: []metrics.T{metrics.Tag("outcome", "retry")},
+	})
+	require.Contains(t, recorder.counters, recordedCounter{
+		name: "lease.grant_cleanup", value: 1, tags: []metrics.T{metrics.Tag("outcome", "success")},
+	})
+}
+
+func TestPendingLeaseReleaseIsGenerationConditional(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	const leaseID int64 = 5204
+	server.leaseMu.Lock()
+	server.leaseGeneration = 2
+	server.pendingLeases[leaseID] = 2
+	server.leaseMu.Unlock()
+	metadata := []byte(`{"id":5204,"ttl":30}`)
+	require.NoError(t, server.backend.InternalPut(context.Background(), leaseStorageKey(leaseID), metadata))
+
+	require.False(t, server.releasePendingLease(leaseID, 1))
+	epoch, _ := server.peers.EpochAndLeadingFresh()
+	server.compensateFailedLeaseGrant(context.Background(), leaseID, 1, epoch, []byte(`{"id":5204,"ttl":30}`))
+	server.leaseMu.Lock()
+	require.Equal(t, uint64(2), server.pendingLeases[leaseID])
+	server.leaseMu.Unlock()
+	stored, err := server.backend.InternalGet(context.Background(), leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	require.Equal(t, metadata, stored, "an old generation must hand off without deleting newer metadata")
+	require.True(t, server.releasePendingLease(leaseID, 2))
+}
+
+func TestFailedLeaseGrantCleanupDeletesOnlyExactIncarnation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 5205
+	expected := []byte(`{"id":5205,"incarnation":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ttl":30}`)
+	replacement := []byte(`{"id":5205,"incarnation":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","ttl":30}`)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(leaseID), replacement))
+
+	resolved, err := server.deleteFailedLeaseGrantIfMatch(ctx, leaseID, expected)
+	require.False(t, resolved)
+	require.ErrorIs(t, err, errLeaseGrantCleanupSuperseded)
+	stored, err := server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	require.Equal(t, replacement, stored)
+
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(leaseID), expected))
+	require.NoError(t, server.backend.ArmCorrupt(ctx, uint64(leaseID)))
+	resolved, err = server.deleteFailedLeaseGrantIfMatch(ctx, leaseID, expected)
+	require.False(t, resolved)
+	require.ErrorIs(t, err, backend.ErrCorruptAlarmActive)
+	stored, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	require.Equal(t, expected, stored, "grant compensation must remain fail-closed under CORRUPT")
+	removed, err := server.backend.DisarmCorrupt(ctx, uint64(leaseID))
+	require.NoError(t, err)
+	require.True(t, removed)
+
+	resolved, err = server.deleteFailedLeaseGrantIfMatch(ctx, leaseID, expected)
+	require.NoError(t, err)
+	require.True(t, resolved)
+	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 }
 
 func TestLeaseGrantDoesNotPublishAcrossLeaseStateReset(t *testing.T) {
