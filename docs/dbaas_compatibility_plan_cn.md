@@ -56795,6 +56795,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试夹具，它们此前依赖 false-success backstop 掩盖 revision 1 空洞。定向 backend/server 与精确 production
   测试通过；需要下一生产镜像和监控发布。
 
+- A5056 修复 event collector stall watchdog 直接把空 ring slot 当作 eventless abandoned revision 的 watch
+  连续性缺口。A5055 已在 TiKV commit 后等待 read-visible watermark，但原 skip 分支超过 30 秒只依据
+  `revision<=Dealt()` 与进程内 slot 为空便推进 current/durable revision；writer 若已原子提交 object、ordered
+  event-log 与 transaction witness、却在 ring notify 前终止，仍连接的 watch 会永久漏掉该 durable mutation。
+  这违背 `/root/etcd/server/etcdserver/v3_server.go::waitAppliedIndex` 所保护的 apply-before-response 以及上游
+  watch 对已 apply revision 的连续交付边界。现 skip deadline 到达后先调用 exact-revision event-log replay；
+  ordered entry count、witness 和 referenced object 全部验证成功才把 reconstructed event 写入 watch cache、
+  count index 与现有 watch fan-out，再推进 collector/current/durable watermark。确证没有可重放 event 才保留
+  legacy skip；TiKV scan、完整性验证或 CORRUPT alarm 链失败则保持 watermark 不动并按 deadline 重试，绝不
+  fail open。新增固定 `watch.collector.recovery{outcome="replayed|empty|failed"}` 三类权威零值：replayed
+  warning、failed critical，empty 与既有 skipped-revision critical 同步；production 要求 Ready Pod UID/outcome
+  current/increase `3×Ready` 完整且值合法，缺失/陈旧/非法 critical。故障回归停止全部 backend worker、让
+  memkv 原子提交真实 transaction 后删除 ring slot，证明重启 collector 从 durable event/witness 重放同 key/value/
+  revision；另一回归注入 durable Iter 失败，证明 failed telemetry 出现且 committed watermark 严格不越过该
+  revision。定向 backend 与精确 production 测试通过；仍需在下一独立 TiKV/PD 故障演练中固定进程终止窗口，
+  并随生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

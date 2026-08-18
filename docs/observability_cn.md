@@ -29,7 +29,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `count_index.keys` / `count_index.overflowed` gauge | leader 活跃 key 数与索引是否超过 `--count-index-max-keys`；overflow 后 List/count 回退 TiKV 全扫，decoded-boundary RangeStream 改走本地有界外排，延迟均会明显恶化。followers 的 keys=0 是正常值。 |
 | `backend.range_stream.decoded_spill` counter；`backend.range_stream.decoded_spill_{bytes,keys}` gauge；`backend.range_stream.decoded_spill_latency_seconds` histogram | decoded-boundary RangeStream 无法使用内存排序 index 时的外排次数、最近一次最终有序 run 大小/观察键数和端到端外排耗时。正常应接近 0；持续增长先检查 count-index overflow/rebuild 和 `TMPDIR` emptyDir 容量。每副本只允许一个外排，等待会计入 RPC 延迟。 |
 | `count_index.rebuild.err` counter | leader 切换时索引快照重建失败次数；非零表示 CountOnly 暂时回退 TiKV 全扫。 |
-| `watch.collector.stalled` / `watch.collector.skipped_revision` counter | 事件收集器 stall/自愈跳过 —— 每个 backend 初始化为 0；非 0=有 writer 死在 deal↔notify 之间。 |
+| `watch.collector.stalled` / `watch.collector.skipped_revision` / `watch.collector.recovery{outcome}` counter | 事件收集器发现 deal↔notify 空洞及 durable exact-revision 自愈；recovery 固定 `replayed|empty|failed`。replayed 表示从 TiKV event-log/witness 重放后才推进，empty 才允许 eventless skip，failed 保持 watermark 不动。全部在 backend 创建时初始化权威零值。 |
 | `revision.durable.persist_err` counter | durable user-revision watermark 后台/强制持久化失败次数；每个 backend 初始化为 0。非零时后台路径让离线 serializable reader 暂留旧安全快照，强制路径会阻塞 collector 连续推进直至成功。 |
 | `watch.event_log.corruption{kind}` / `watch.event_log.corrupt_alarm_failed` counter | 仅在 trusted window 内重新检查 cleanup/compaction watermark 后仍确认的 event-log 损坏，以及随后持久化 CORRUPT alarm 失败；`kind` 固定为 `malformed`、`witness_mismatch`、`incomplete`、`invalid_object`。每个 backend 初始化四个 kind 和 alarm-failure 零值，任一增量均为 critical。 |
 | `read.integrity.fence{target,outcome}` counter | point/range 读取通过独立 transaction witness 确认 object value 或 revision index 矛盾后的 CORRUPT fence 结果；target 固定 `object|revision_index`，outcome 固定 `armed|failed`，四种组合在 backend 创建时初始化 0。armed 表示 durable write fence 已生效；failed 表示 alarm 持久化或独立 witness 验证链失败，即使 AlarmList 为空也必须按 CORRUPT 处置。 |
@@ -157,7 +157,9 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   collector 的 stalled/skipped-revision counter 同样在 backend 创建时初始化为权威零值，并生成 60 秒
   新鲜的 Ready Pod UID 级 current/10 分钟 increase recording。current 必须是 `[0,2^53]` 内精确整数，
   外推 increase 可为分数但必须有限且同范围；四类来源必须完整。stall 立即 warning，超过有界 publication
-  deadline 后跳过 abandoned revision 立即 critical；`KubeBrainWatchCollectorMetricsMissing` 拒绝把缺失、
+  deadline 后先从 durable event-log/witness 恢复 exact revision：replayed warning，只有自证 empty 才跳过并
+  critical，failed 保持 watermark 不动并 critical。`watch_collector_recovery{outcome}` 三类固定零值及
+  `3×Ready` 来源合同防止恢复结果静默；`KubeBrainWatchCollectorMetricsMissing` 拒绝把缺失、
   陈旧或非法 telemetry 当成每个已分配 revision 都已发布或安全解析的证据。
   durable revision persist-error counter 也生成 60 秒新鲜的 Ready Pod UID 级 current/10 分钟 increase；
   current 必须是 `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围，两类来源必须完整。
