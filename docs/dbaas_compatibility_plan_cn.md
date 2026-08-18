@@ -57641,6 +57641,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   定向二十轮、包级 race、完整非 production、production 326 项四分片与 vet 全部通过。本项仍由公开
   LeaseGrant 创建新 ID，不声称保留原 backend checkpoint envelope，也不改变 artifact、在线 lease 或 TiKV 数据。
 
+- A5143 分离“读取旧制品兼容”与“生成新制品完整性”。通用 `backupfile` 必须继续接受旧 v2 缺省
+  `GrantedTTL=0`，但旧 logical exporter 也因此会接受 attached lease 的 malformed TimeToLive 成功响应并发布
+  新的零 grant artifact，随后 physical status、semantic verify 与 snapshot 转换才失败；它也没有核对回显 ID。
+  现 exporter 在写 lease 行前要求非 nil 响应、ID 精确匹配、remaining TTL 为正、GrantedTTL 为正且不超过
+  upstream `clientv3.MaxLeaseTTL`。回归固定正常 `30/60`、promotion `63/60`、精确 Max 正例，以及 nil、ID 错配、
+  expired、零 grant、超限 grant 的 fail-closed 反例。定向二十轮、包级 race、完整非 production、production
+  326 项四分片与 vet 全部通过。本项不改变旧 artifact reader、logical.v2 schema、在线 lease 或 TiKV 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -83,7 +83,7 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 - 当前 `kubebrain.logical.v2` 格式；
 - 精确的全 keyspace 前缀 `/`，避免把局部备份伪装成完整 etcd snapshot；
 - 每个 lease 都含正 `granted_ttl`，且不得超过 upstream
-  `MaxLeaseTTL=9,000,000,000`；通用 logical.v2 验读已在转换前拒绝超限 grant；
+  `MaxLeaseTTL=9,000,000,000`；当前 exporter 已拒绝 ID 错配、非正或超限 grant，通用 logical.v2 验读也会在转换前拒绝超限 grant；
 - create/mod revision、version 和 snapshot revision 之间关系可成立的记录；
 - 操作者显式传入 `--acknowledge-auth-disabled`。
 
