@@ -4725,7 +4725,9 @@ RECEIPT_OUTPUT=/audit/restore-operation-123.json \
 ```
 
 只有 artifact 完整性、每个目标 key/value、永久/lease 绑定关系和目标 lease 正 TTL
-全部通过后，工具才原子发布 `kubebrain.restore-verification.v1`。receipt 绑定 artifact
+全部通过后，工具才原子发布 `kubebrain.restore-verification.v1`。每个 point Get 还必须含正 revision header、
+自洽的 `Count/More`、精确请求 key 与有效 MVCC metadata；每个未请求 keys 的 TimeToLive 必须回显目标 ID、
+正且不早于该 lease 所有已验证 KV 的最高观察 revision、正 TTL/合法 granted TTL，并且 keys 为空。receipt 绑定 artifact
 format/SHA-256/snapshot revision/创建时间、源/目标 prefix、record/lease count 和验证
 时间，不记录 endpoint 或证书。当前制品携带创建时间时必须满足
 `artifact_created_at_unix <= verified_at_unix`；二者均为秒级时间，允许相等，早期没有创建时间的

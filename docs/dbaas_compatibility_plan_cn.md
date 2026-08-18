@@ -57755,6 +57755,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四分片与 vet 全部通过。本项不改变 TTL 请求、artifact schema、合法 lease 时限、在线 KV/lease 或 TiKV 数据路径；
   异常响应在 lease 行写入和 no-clobber publish 前 fail closed。
 
+- A5155 加固 logical verify 生成 restore receipt 所依赖的目标读取证据。旧 verifier 对每个 point Get 只检查
+  `len(Kvs)==1` 后比较 value/lease，既不检查 response/header/Count/More，也不确认返回 key 就是请求 key；后续
+  TimeToLive 又直接解引用并只要求 `TTL>0`，可接受错 ID、坏/倒退 header、非法 grant 或未请求 keys。对照
+  `/root/etcd/server/etcdserver/{txn/range.go,v3_server.go::leaseTimeToLive}` 与 KubeBrain Range/TTL proxy validator，
+  现 Get 要求非 nil、正 revision、`More=false`、`Count==len(Kvs)==1`、精确 key 及共享 MVCC metadata 合法；按
+  target lease 聚合这些 Get 的最高 revision，TTL 必须非 nil、回显 target ID、header 不早于该观察点、TTL 正、
+  granted TTL 位于 `(0,MaxLeaseTTL]` 且无未请求 keys。有效 Get/TTL 与 promotion grace 正例，以及 nil/header、
+  hidden count/More、缺失/nil/错 key、坏 MVCC、错 ID、倒退 revision、expired、grant 缺失/超限和夹带 keys 反例
+  连续二十轮，包级 race、完整非 production、production 326 项四分片与 vet 全部通过。本项不把逐 key 验证
+  声称为同一 MVCC snapshot；receipt 仍证明验证窗口内的观测，且不改变 artifact/receipt schema、在线 KV/lease
+  或 TiKV 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
