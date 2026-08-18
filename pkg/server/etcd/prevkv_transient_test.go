@@ -28,6 +28,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	memkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -78,11 +79,15 @@ func newPrevKvTestShim(t *testing.T) (*backendShim, backend.Backend, *flakyKV) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	m := mock.NewMinimalMetrics(ctrl)
+	return newPrevKvTestShimWithMetrics(t, m)
+}
+
+func newPrevKvTestShimWithMetrics(t *testing.T, metricCli metrics.Metrics) (*backendShim, backend.Backend, *flakyKV) {
 	kv := &flakyKV{KvStorage: memkv.NewKvStorage()}
 	t.Cleanup(func() { require.NoError(t, kv.Close()) })
-	b := backend.NewBackend(kv, backend.Config{Identity: "test", EnableEtcdCompatibility: true}, m)
+	b := backend.NewBackend(kv, backend.Config{Identity: "test", EnableEtcdCompatibility: true}, metricCli)
 	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
-	return NewBackendShim(b, m).(*backendShim), b, kv
+	return NewBackendShim(b, metricCli).(*backendShim), b, kv
 }
 
 // seedUpdatedKey creates then updates a key, returning (key, updateRev).
@@ -129,7 +134,8 @@ func TestPrevKvTransientFailureRetriesUntilSuccess(t *testing.T) {
 // budget-exhausted (uncertain) nil must not be cached — once storage recovers,
 // the same event's conversion must resolve the real previous value.
 func TestPrevKvUncertainNilNotCached(t *testing.T) {
-	shim, b, kv := newPrevKvTestShim(t)
+	rec := &recordingMetrics{}
+	shim, b, kv := newPrevKvTestShimWithMetrics(t, rec)
 	key, updateRev := seedUpdatedKey(t, b)
 
 	old := prevKvRetryBudget
@@ -140,6 +146,16 @@ func TestPrevKvUncertainNilNotCached(t *testing.T) {
 	kv.failing.Store(true)
 	prev := shim.cachedPreviousEtcdKv(context.Background(), key, updateRev, 0, 0)
 	require.Nil(t, prev, "budget exhausted under persistent failure returns nil")
+	var budgetValues []interface{}
+	rec.mu.Lock()
+	for _, counter := range rec.counters {
+		if counter.name == "watch.prev_kv.budget_exhausted" {
+			budgetValues = append(budgetValues, counter.value)
+		}
+	}
+	rec.mu.Unlock()
+	require.Equal(t, []interface{}{int64(0), 1}, budgetValues,
+		"the shim must publish an authoritative zero before recording exhaustion")
 
 	// Storage recovers: the SAME (key,revision) must now resolve — the
 	// uncertain nil must not have been cached.

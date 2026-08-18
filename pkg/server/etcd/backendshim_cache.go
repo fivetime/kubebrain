@@ -25,6 +25,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
 // prevKvResolver owns the watch-fanout read-amplification caches and the logic
@@ -60,6 +61,13 @@ func newPrevKvResolver(shim *backendShim) *prevKvResolver {
 		prevCache: newRevKeyCache(revKeyCacheCap, revKeyCacheMaxBytes),
 		prevHints: newPrevHintCache(prevHintCacheCap, prevHintCacheMaxBytes),
 	}
+}
+
+func initWatchPrevKvBudgetExhaustedMetric(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("watch.prev_kv.budget_exhausted", int64(0))
 }
 
 // close stops shared previous-value lookups owned by this shim. Individual

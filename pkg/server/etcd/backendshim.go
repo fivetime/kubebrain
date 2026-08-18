@@ -285,6 +285,7 @@ type mutationLockOwner struct {
 }
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
+	initWatchPrevKvBudgetExhaustedMetric(metricCli)
 	shim := &backendShim{
 		backend:   backend,
 		metricCli: metricCli,
