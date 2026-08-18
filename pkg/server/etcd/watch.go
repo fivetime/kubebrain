@@ -218,9 +218,28 @@ func validatedWatchBatchRevision(result etcdproxy.WatchResult, sourceRevision ui
 	}
 	var precedingRevision int64
 	for i, event := range result.Events {
-		eventRevision := event.GetKv().GetModRevision()
+		kv := event.GetKv()
+		eventRevision := kv.GetModRevision()
 		if eventRevision <= 0 {
 			return 0, fmt.Errorf("watch backend returned invalid event revision %d at index %d", eventRevision, i)
+		}
+		if createRevision := kv.GetCreateRevision(); createRevision < 0 || createRevision > eventRevision {
+			return 0, fmt.Errorf("watch backend returned invalid event create revision %d for mod revision %d at index %d", createRevision, eventRevision, i)
+		}
+		if version := kv.GetVersion(); version < 0 {
+			return 0, fmt.Errorf("watch backend returned invalid event version %d at index %d", version, i)
+		}
+		if prevKV := event.GetPrevKv(); prevKV != nil {
+			prevModRevision := prevKV.GetModRevision()
+			if prevModRevision < 0 || prevModRevision >= eventRevision {
+				return 0, fmt.Errorf("watch backend returned invalid previous mod revision %d for event revision %d at index %d", prevModRevision, eventRevision, i)
+			}
+			if createRevision := prevKV.GetCreateRevision(); createRevision < 0 || createRevision > prevModRevision {
+				return 0, fmt.Errorf("watch backend returned invalid previous create revision %d for mod revision %d at index %d", createRevision, prevModRevision, i)
+			}
+			if version := prevKV.GetVersion(); version < 0 {
+				return 0, fmt.Errorf("watch backend returned invalid previous version %d at index %d", version, i)
+			}
 		}
 		if sourceRevision > 0 && uint64(eventRevision) <= sourceRevision {
 			return 0, fmt.Errorf("watch backend returned event revision %d at index %d does not advance source revision %d", eventRevision, i, sourceRevision)

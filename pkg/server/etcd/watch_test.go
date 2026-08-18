@@ -1468,6 +1468,76 @@ func TestValidatedWatchBatchRevisionRejectsNonPositiveEventRevision(t *testing.T
 	}
 }
 
+func TestValidatedWatchBatchRevisionRejectsInvalidKeyValueRevisions(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		kv      *mvccpb.KeyValue
+		prevKV  *mvccpb.KeyValue
+		message string
+	}{
+		{
+			name:    "negative create revision",
+			kv:      &mvccpb.KeyValue{ModRevision: 10, CreateRevision: -1},
+			message: "invalid event create revision -1 for mod revision 10",
+		},
+		{
+			name:    "future create revision",
+			kv:      &mvccpb.KeyValue{ModRevision: 10, CreateRevision: 11},
+			message: "invalid event create revision 11 for mod revision 10",
+		},
+		{
+			name:    "negative version",
+			kv:      &mvccpb.KeyValue{ModRevision: 10, Version: -1},
+			message: "invalid event version -1",
+		},
+		{
+			name: "negative previous mod revision",
+			kv:   &mvccpb.KeyValue{ModRevision: 10}, prevKV: &mvccpb.KeyValue{ModRevision: -1},
+			message: "invalid previous mod revision -1 for event revision 10",
+		},
+		{
+			name: "future previous mod revision",
+			kv:   &mvccpb.KeyValue{ModRevision: 10}, prevKV: &mvccpb.KeyValue{ModRevision: 10},
+			message: "invalid previous mod revision 10 for event revision 10",
+		},
+		{
+			name: "future previous create revision",
+			kv:   &mvccpb.KeyValue{ModRevision: 10}, prevKV: &mvccpb.KeyValue{ModRevision: 9, CreateRevision: 10},
+			message: "invalid previous create revision 10 for mod revision 9",
+		},
+		{
+			name: "negative previous version",
+			kv:   &mvccpb.KeyValue{ModRevision: 10}, prevKV: &mvccpb.KeyValue{ModRevision: 9, Version: -1},
+			message: "invalid previous version -1",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := validatedWatchBatchRevision(etcdproxy.WatchResult{
+				Revision: 10,
+				Events:   []*mvccpb.Event{{Type: mvccpb.PUT, Kv: test.kv, PrevKv: test.prevKV}},
+			}, 0)
+			require.ErrorContains(t, err, test.message)
+		})
+	}
+}
+
+func TestWatchRejectsInvalidPreviousRevisionBeforePublication(t *testing.T) {
+	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
+		Revision: 10,
+		Events: []*mvccpb.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/key"), CreateRevision: 2, ModRevision: 10, Version: 2},
+			PrevKv: &mvccpb.KeyValue{
+				Key: []byte("/registry/watch/key"), CreateRevision: 2, ModRevision: 11, Version: 1,
+			},
+		}},
+	})
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Empty(t, responses[0].Events)
+	require.Contains(t, responses[0].CancelReason, "invalid previous mod revision 11 for event revision 10")
+}
+
 func TestWatchRejectsRegressingEventRevisionWithinBatch(t *testing.T) {
 	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
 		Revision: 10,
