@@ -1447,6 +1447,13 @@ func (r *prevKvResolver) previousEtcdKv(ctx context.Context, key []byte, revisio
 		select {
 		case <-readCtx.Done():
 			timer.Stop()
+			// readCtx also inherits the resolver lifecycle. A server shutdown (or
+			// any caller-supplied parent deadline) can end the lookup before its
+			// own retry budget expires; that is cancellation, not evidence that
+			// TiKV remained unavailable for the full budget.
+			if ctx.Err() != nil {
+				return nil, false
+			}
 			r.shim.metricCli.EmitCounter("watch.prev_kv.budget_exhausted", 1)
 			klog.ErrorS(err, "previous watch kv unavailable after full retry budget; emitting uncertain nil",
 				"key", key, "revision", revision)

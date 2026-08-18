@@ -168,7 +168,8 @@ func TestPrevKvUncertainNilNotCached(t *testing.T) {
 // TestPrevKvLookupStopsWithShim pins the component lifetime boundary: the
 // shared lookup outlives any one watch, but it must not outlive its server.
 func TestPrevKvLookupStopsWithShim(t *testing.T) {
-	shim, b, kv := newPrevKvTestShim(t)
+	rec := &recordingMetrics{}
+	shim, b, kv := newPrevKvTestShimWithMetrics(t, rec)
 	key, updateRev := seedUpdatedKey(t, b)
 	kv.failing.Store(true)
 
@@ -185,6 +186,16 @@ func TestPrevKvLookupStopsWithShim(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("shared PrevKV lookup survived backend shim shutdown")
 	}
+	var budgetValues []interface{}
+	rec.mu.Lock()
+	for _, counter := range rec.counters {
+		if counter.name == "watch.prev_kv.budget_exhausted" {
+			budgetValues = append(budgetValues, counter.value)
+		}
+	}
+	rec.mu.Unlock()
+	require.Equal(t, []interface{}{int64(0)}, budgetValues,
+		"shim shutdown cancellation must not masquerade as a full retry-budget exhaustion")
 }
 
 func TestMetadataSingleflightIsolatesCallerCancellation(t *testing.T) {
