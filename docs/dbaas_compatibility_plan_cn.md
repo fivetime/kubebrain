@@ -57195,6 +57195,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/root/etcd/tests/integration/v3_lease_test.go` 明确保留 Lease 的完整 signed int64 域，负 lease ID 不误报损坏。validator 与公开
   watch 注入回归连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5093 闭合 Watch DELETE 当前 KeyValue 的 canonical tombstone 形态。对照
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go` 与 `watchable_store_txn.go`，upstream 删除时只序列化 Key，watch 层仅补
+  delete ModRevision；被删除 generation 的 Value/CreateRevision/Version/Lease 只属于可选 PrevKv。KubeBrain translator
+  已生成相同形态，但 backend/peer result validator 会放行携带存活对象 metadata 的 DELETE 当前 Kv。现 DELETE Kv 只允许
+  Key+正 ModRevision，非空 Value、非零 CreateRevision/Version/Lease 均在 revision validation、过滤、fragment 与 Send 前
+  进入既有固定 `watch.backend.integrity_failure{kind="invalid_result"}` 并取消 generation，不增加标签。PrevKv 仍保留完整
+  generation metadata 和 upstream 支持的 signed lease ID（含负值）。shape/public 注入、canonical DELETE、PrevKV 与真实事件
+  metadata 回归连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
