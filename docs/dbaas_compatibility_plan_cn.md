@@ -57321,6 +57321,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对三类 payload 全覆盖，任一违例只递增固定 `kv.proxy.integrity_failure{rpc="txn"}` 并在 revision 观察前 DataLoss
   fail closed。合法同 revision signed lease 前值、异常 payload 与公开 follower 注入回归通过；需要下一生产镜像和监控发布。
 
+- A5107 将核心 KV leader-proxy payload 完整性补齐到 Compact。对照
+  `/root/etcd/server/etcdserver/v3_server.go::Compact` 与
+  `/root/etcd/server/storage/mvcc/kvstore.go::updateCompactRev`：upstream 允许初始 `compactMainRev=-1` 时请求 revision 0，
+  但成功后会把 response header revision 强制设为当前 MVCC revision；该值为正且必不小于已接受的请求压缩点。
+  旧 follower proxy 只检查 header 存在/非负，会确认 revision=0 或 current revision 落后请求的伪成功，可能让客户端误信
+  尚不存在的压缩点已完成。现 Compact 转发在 forwarded revision 观察前验证这两个不变量，违例复用固定
+  `kv.proxy.integrity_failure{rpc="compact"}` 并 DataLoss fail closed；合法 revision 0 请求保持兼容。通用 payload、transport
+  error、正常 follower 转发与公开异常注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

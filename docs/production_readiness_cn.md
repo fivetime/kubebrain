@@ -4542,6 +4542,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   Put 和有效 DeleteRange op revision 必须等于 outer；PrevKv disclosure、key/range、generation、Deleted count 与严格 key
   顺序继续绑定原 RequestOp。shared TxnWrite 允许后序操作读取前序写在同一 outer revision 产生的对象，因此 Txn 前值
   只拒绝 `mod_revision > outer`，不会错误套用 unary 的严格 `< write_revision`。
+  Compact success header 表示 upstream server 在压缩完成后读取的当前 MVCC revision，必须为正且不小于请求压缩点；
+  revision 0 的首次压缩请求合法，但其成功响应仍不能返回 revision 0。落后或零 revision 响应在观察 forwarded
+  revision 前以 `rpc="compact"` DataLoss fail closed。
   production 要求 60 秒新鲜
   Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。
