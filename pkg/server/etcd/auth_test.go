@@ -400,15 +400,18 @@ func TestFollowerAuthReadsRejectInvalidProxyResults(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		action    string
-		configure func(*testPeerService, bool)
+		configure func(*testPeerService, string)
 		invoke    func(*RPCServer) (any, error)
 	}{
 		{
 			name: "auth_status", action: authProxyActionStatus,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.authStatusFn = func(context.Context, *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.AuthStatusResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.AuthStatusResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -419,10 +422,13 @@ func TestFollowerAuthReadsRejectInvalidProxyResults(t *testing.T) {
 		},
 		{
 			name: "authenticate", action: authProxyActionAuthenticate,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.authenticateFn = func(context.Context, *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.AuthenticateResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.AuthenticateResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -433,10 +439,13 @@ func TestFollowerAuthReadsRejectInvalidProxyResults(t *testing.T) {
 		},
 		{
 			name: "user_get", action: authProxyActionUserGet,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.userGetFn = func(context.Context, *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.AuthUserGetResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.AuthUserGetResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -447,10 +456,13 @@ func TestFollowerAuthReadsRejectInvalidProxyResults(t *testing.T) {
 		},
 		{
 			name: "user_list", action: authProxyActionUserList,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.userListFn = func(context.Context, *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.AuthUserListResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.AuthUserListResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -461,10 +473,13 @@ func TestFollowerAuthReadsRejectInvalidProxyResults(t *testing.T) {
 		},
 		{
 			name: "role_get", action: authProxyActionRoleGet,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.roleGetFn = func(context.Context, *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.AuthRoleGetResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.AuthRoleGetResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -475,10 +490,13 @@ func TestFollowerAuthReadsRejectInvalidProxyResults(t *testing.T) {
 		},
 		{
 			name: "role_list", action: authProxyActionRoleList,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.roleListFn = func(context.Context, *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.AuthRoleListResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.AuthRoleListResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -488,19 +506,15 @@ func TestFollowerAuthReadsRejectInvalidProxyResults(t *testing.T) {
 			},
 		},
 	} {
-		for _, mixed := range []bool{false, true} {
-			name := "nil"
-			if mixed {
-				name = "mixed"
-			}
-			t.Run(tc.name+"/"+name, func(t *testing.T) {
+		for _, shape := range []string{"nil", "mixed", "missing_header"} {
+			t.Run(tc.name+"/"+shape, func(t *testing.T) {
 				server, closeFn := newTestRPCServer(t)
 				defer closeFn()
 				rec := &recordingMetrics{}
 				server.metricCli = rec
 				initAuthProxyIntegrityMetrics(rec)
 				peers := testPeerService{isLeader: false, proxyEnabled: true}
-				tc.configure(&peers, mixed)
+				tc.configure(&peers, shape)
 				server.peers = peers
 
 				response, err := tc.invoke(server)

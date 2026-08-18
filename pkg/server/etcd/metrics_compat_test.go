@@ -238,10 +238,15 @@ func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
 		response, err = validateAuthProxyResult(rec, action, &etcdserverpb.AuthStatusResponse{}, errors.New("mixed"))
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
-		require.Equal(t, []interface{}{int64(0), 1, 1}, recordedAuthProxyIntegrityValues(rec, action))
+
+		response, err = validateAuthProxyResult(rec, action, &etcdserverpb.AuthStatusResponse{}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "without a header")
+		require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, action))
 	}
 
-	want := &etcdserverpb.AuthStatusResponse{}
+	want := &etcdserverpb.AuthStatusResponse{Header: &etcdserverpb.ResponseHeader{}}
 	response, err := validateAuthProxyResult(rec, authProxyActionStatus, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
@@ -249,7 +254,7 @@ func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateAuthProxyResult[etcdserverpb.AuthStatusResponse](rec, authProxyActionStatus, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
 }
 
 func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {

@@ -17,6 +17,7 @@ package etcd
 import (
 	"fmt"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -74,13 +75,26 @@ func initAuthProxyIntegrityMetrics(metricCli metrics.Metrics) {
 
 func validateAuthProxyResult[T any](metricCli metrics.Metrics, action string, response *T, err error) (*T, error) {
 	if (response == nil) != (err == nil) {
+		if response != nil {
+			headerResponse, ok := any(response).(interface {
+				GetHeader() *etcdserverpb.ResponseHeader
+			})
+			if !ok || headerResponse.GetHeader() == nil {
+				emitAuthProxyIntegrityFailure(metricCli, action)
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response without a header", action))
+			}
+		}
 		return response, err
 	}
-	if metricCli != nil {
-		_ = metricCli.EmitCounter("auth.proxy.integrity_failure", 1, metrics.Tag("action", action))
-	}
+	emitAuthProxyIntegrityFailure(metricCli, action)
 	if response == nil {
 		return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned neither response nor error", action))
 	}
 	return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned both response and error", action))
+}
+
+func emitAuthProxyIntegrityFailure(metricCli metrics.Metrics, action string) {
+	if metricCli != nil {
+		_ = metricCli.EmitCounter("auth.proxy.integrity_failure", 1, metrics.Tag("action", action))
+	}
 }
