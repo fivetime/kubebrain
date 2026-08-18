@@ -2555,6 +2555,8 @@ func TestFollowerRejectsInvalidRangeProxyPayload(t *testing.T) {
 		{name: "impossible metadata", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 3, Version: 3}}}},
 		{name: "newer than snapshot", request: &etcdserverpb.RangeRequest{Key: []byte("b"), Revision: 2}, response: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 3, ModRevision: 3, Version: 1}}}},
 		{name: "outside revision filter", request: &etcdserverpb.RangeRequest{Key: []byte("b"), MinModRevision: 3}, response: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 2, Version: 1}}}},
+		{name: "invalid pagination", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Limit: 2}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 2, More: true, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 1, ModRevision: 1, Version: 1}}}},
+		{name: "invalid sorting", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 2, Version: 1}, {Key: []byte("a"), CreateRevision: 1, ModRevision: 1, Version: 1}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

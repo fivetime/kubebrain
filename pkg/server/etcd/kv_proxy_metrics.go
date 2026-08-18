@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -46,8 +47,22 @@ func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 		}
 		return response, nil
 	}
+	if request.GetLimit() <= 0 && response.GetMore() {
+		return fail("leader range proxy returned more=true for an unlimited request")
+	}
+	if request.GetLimit() > 0 && int64(len(response.GetKvs())) > request.GetLimit() {
+		return fail("leader range proxy returned more key-values than the requested limit")
+	}
+	if response.GetMore() && int64(len(response.GetKvs())) != request.GetLimit() {
+		return fail("leader range proxy returned a non-full page with more=true")
+	}
+	if request.GetMinModRevision() == 0 && request.GetMaxModRevision() == 0 &&
+		request.GetMinCreateRevision() == 0 && request.GetMaxCreateRevision() == 0 &&
+		response.GetMore() != (response.GetCount() > int64(len(response.GetKvs()))) {
+		return fail("leader range proxy returned inconsistent count and more metadata")
+	}
 	seen := make(map[string]struct{}, len(response.GetKvs()))
-	for _, kv := range response.GetKvs() {
+	for index, kv := range response.GetKvs() {
 		if kv == nil {
 			return fail("leader range proxy returned a nil key-value")
 		}
@@ -82,8 +97,50 @@ func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 			(request.GetMaxCreateRevision() > 0 && kv.GetCreateRevision() > request.GetMaxCreateRevision()) {
 			return fail("leader range proxy returned a key-value outside the requested revision filters")
 		}
+		if index > 0 && !rangeProxyOrderValid(request, response.GetKvs()[index-1], kv) {
+			return fail("leader range proxy returned key-values outside the requested sort order")
+		}
 	}
 	return response, nil
+}
+
+func rangeProxyOrderValid(request *etcdserverpb.RangeRequest, previous, current *mvccpb.KeyValue) bool {
+	// Upstream sorts by the full value before KeysOnly projection. That ordering
+	// cannot be reconstructed from the intentionally elided response values.
+	if request.GetKeysOnly() && request.GetSortTarget() == etcdserverpb.RangeRequest_VALUE {
+		return true
+	}
+	comparison := 0
+	switch request.GetSortTarget() {
+	case etcdserverpb.RangeRequest_KEY:
+		comparison = bytes.Compare(previous.GetKey(), current.GetKey())
+	case etcdserverpb.RangeRequest_VERSION:
+		comparison = compareOrderedInt64(previous.GetVersion(), current.GetVersion())
+	case etcdserverpb.RangeRequest_CREATE:
+		comparison = compareOrderedInt64(previous.GetCreateRevision(), current.GetCreateRevision())
+	case etcdserverpb.RangeRequest_MOD:
+		comparison = compareOrderedInt64(previous.GetModRevision(), current.GetModRevision())
+	case etcdserverpb.RangeRequest_VALUE:
+		comparison = bytes.Compare(previous.GetValue(), current.GetValue())
+	}
+	order := request.GetSortOrder()
+	if order == etcdserverpb.RangeRequest_NONE {
+		order = etcdserverpb.RangeRequest_ASCEND
+	}
+	if order == etcdserverpb.RangeRequest_DESCEND {
+		return comparison >= 0
+	}
+	return comparison <= 0
+}
+
+func compareOrderedInt64(left, right int64) int {
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
 }
 
 func rangeProxyContainsKey(start, end, key []byte) bool {
