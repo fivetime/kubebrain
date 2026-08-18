@@ -3497,6 +3497,9 @@ service safepoint；如果全局 GC 已越过该 TSO，立即失败并只清理�
 transaction 同时比较全局 `/kubebrain/native-pitr/owner`、全局 task info 前缀，以及该 task 的
 ranges/checkpoint/storage-checkpoint/last-error 前缀均为空，再原子写 owner record、
 `StreamBackupTaskInfo` protobuf 和完整 tenant range。
+create transaction 的成功响应也属于门禁：必须有正 revision header；compare 成功时必须精确返回
+三个同 revision Put response 且不得携带未请求的 PrevKV，compare 失败时必须没有 operation response。
+nil、少/多 operation、错 union 或 nested header 不一致均按 metadata corruption fail closed。
 并发冲突或写失败同样只移除本 operation 的 bootstrap safepoint，避免失败重试解除另一个已成功
 操作的保护。输出 `kubebrain.native-pitr-task-create.v4` 绑定 exact preflight SHA-256、cluster/
 keyspace/range、start/end TSO、规范化 log `s3://bucket/prefix`、无凭据 StorageBackend protobuf
@@ -3540,7 +3543,10 @@ operation 自己的 bootstrap safepoint）：
 命令先核对 receipt 的 cluster ID，再在一个 etcd 读取事务中验证持久 owner 与 receipt 完全一致、
 task protobuf 的 name/start/end 一致、只有一个精确 tenant range、advancer 已选主，且
 `central_global` 是位于 task 时间区间内的 8-byte checkpoint。任一条件失败都会保留并续租
-bootstrap guard；全部通过才释放该 guard，并在 `kubebrain.native-pitr-task-ready.v4` 中固化
+bootstrap guard。读取事务在解引用前要求五个精确 Range response、统一的正 revision header、
+`Count=len(Kvs)`、`More=false`、exact/prefix key 边界以及严格递增且不重复的 key；malformed success
+不会再触发索引 panic 或被解释为 metadata 缺席。
+全部通过才释放该 guard，并在 `kubebrain.native-pitr-task-ready.v4` 中固化
 election owner identity 与 checkpoint。释放后
 返回的全局最小 safepoint 若已越过 checkpoint 仍会报错；生产监管还必须持续保证 coordinator
 safepoint 与 checkpoint 前进，ready receipt 不是长期健康证明。
@@ -3558,7 +3564,9 @@ safepoint 与 checkpoint 前进，ready receipt 不是长期健康证明。
 命令要求两份 receipt 与当前 cluster ID 完全一致，重新读取并验证 owner/task/range/advancer/
 checkpoint，拒绝 checkpoint 倒退，然后以持久 owner、task protobuf 和精确 range value 为 compare
 条件，在一个事务中删除该 task 的 info、ranges、checkpoint、storage-checkpoint、pause、last-error
-及 KubeBrain owner。比较失败不会删除任何 key。输出 `kubebrain.native-pitr-task-delete.v3` 固化最终
+及 KubeBrain owner。比较成功必须精确返回七个同 outer revision 的 Delete response，拒绝负 Deleted
+或未请求的 PrevKV；比较失败必须返回空 operation 集。任一 malformed success 不会签发删除 receipt。
+比较失败不会删除任何 key。输出 `kubebrain.native-pitr-task-delete.v3` 固化最终
 checkpoint；它仍不是备份完成 receipt。advancer 会从 task 删除事件自行清除共享
 `log-backup-coordinator` safepoint，命令绝不主动删除该全局 safepoint，以免影响并发观察者或未来
 版本的多 task 能力。生产监管必须另行确认 advancer 已观察删除且 coordinator safepoint 已按预期

@@ -57791,6 +57791,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race、完整非 production、production 326 项四分片与 vet 全部通过。本项不改变 probe key/value/TTL、watch
   匹配、receipt schema、target TiKV 历史绑定或在线数据路径；两条 verifier 继续共享同一准入。
 
+- A5158 修复 native PITR 的 PD-etcd 原子任务 metadata transaction 仍盲信 malformed success 的控制面缺口。
+  旧 `CreateIfAbsent`/`DeleteOwnedTask` 只读取 `Succeeded`，`ReadTaskStatus` 更直接索引五个 operation 并解引用
+  Range payload；nil/零 header、少/多/错 union、nested revision 分裂可被确认，status 少返回还会 panic。
+  对照 `/root/etcd/server/etcdserver/apply/backend.go::Txn` 与 KubeBrain Txn proxy response tree/header/payload
+  validator，新增共享 native PITR metadata 准入：三类事务均要求非 nil、正 outer revision，success/failure
+  branch 返回精确 operation 数；create 精确同 revision Put 且无 PrevKV；status 精确五个同 revision Range，
+  `Count=len(Kvs)`、`More=false`、exact/prefix 边界内 key 严格升序无重复；delete 精确同 revision Delete、
+  非负 Deleted 且无 PrevKV。所有解引用都发生在准入之后，异常 compare-false response 也被拒绝。三类正反例
+  连续二十轮、nativepitr race、完整非 production、production 326 项四分片与 vet 全部通过。本项不改变
+  task receipt schema、PD metadata key/value、compare 条件、事务写集、TiKV 数据编码或在线 etcd 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
