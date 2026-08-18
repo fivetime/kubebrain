@@ -4647,8 +4647,11 @@ lease 行固定源 ID 和导出时的正数剩余 TTL，尾行记录/lease 总�
 生成新的降级制品。导出先写同目录临时文件，完成
 `fsync` 后用与 reader 相同的完整 schema/invariant/digest 验证重新读取实际落盘字节，只有通过才 hard-link
 no-clobber 发布并同步父目录；验证失败或中断不会把不完整内容发布到目标路径，成功状态也取自该次验读。
-每个 Range 页面都必须含正 revision 的 header，后续页面 revision 不得早于固定 snapshot；`More=true`
-必须同时返回至少一条记录，禁止把异常空 continuation 当成完成并静默发布截断备份。空 keyspace 或正常末页仍可为空。
+每个 Range 页面都必须含正 revision 的 header，后续页面 revision 不得早于固定 snapshot；页面 `Count` 必须
+非负且不少于 payload 数量，`More` 必须与 `Count>len(Kvs)` 一致，continuation 必须填满请求 limit。每个 KV
+还必须非 nil、位于当前 `[start,end)`（`end=\x00` 按 from-key 无上界处理）、按 key 严格递增并含有效 snapshot
+MVCC 元数据。跨页要求下一页 `Count` 精确等于上一页 `Count-len(Kvs)`，从而拒绝游标跳跃造成的静默截断；
+空 keyspace 或正常末页仍可为空。
 `logical-status.sh`、restore 和 verify 都会先复制并验证完整文件，缺 footer、记录数
 不符、内容篡改、footer 后附加数据或 `granted_ttl` 超过 upstream
 `MaxLeaseTTL=9,000,000,000` 均 fail closed；精确最大值合法，旧 v2 制品缺省的

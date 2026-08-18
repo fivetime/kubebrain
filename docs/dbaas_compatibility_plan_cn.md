@@ -57733,6 +57733,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零/多删和残余 PrevKV 反例连续二十轮，包级 race、完整非 production、production 326 项四分片与 vet 全部通过。
   本项不改变补偿顺序、并发修改保护、覆盖模式限制、artifact、正常在线 KV/lease 或 TiKV 数据路径。
 
+- A5153 将 logical exporter 的 Range page 准入从 envelope 扩到 payload 与跨页完整性。旧 validator 只检查
+  response/header/revision 及 `More=true` 非空，会接受负/偏小 Count、超 limit、Count/More 矛盾、nil/越界/乱序/
+  重复 KV 或坏 MVCC；更隐蔽地，单页字段自洽但游标跳过中间 key 时，writer 的摘要与末次验读仍只能证明已写
+  子集自洽，无法证明 snapshot 未截断。对照 `/root/etcd/server/etcdserver/txn/range.go::assembleRangeResponse` 与
+  `pkg/server/etcd/kv_proxy_metrics.go::validateRangeProxyPayload`，现逐页要求 Count 覆盖 payload、page 不超 limit、
+  More 与剩余量一致且 continuation 满页，KV 非 nil、位于当前 range、严格升序并通过共享 MVCC metadata 校验；
+  另跟踪 `remaining=Count-len(Kvs)`，要求下一页 Count 精确承接，从固定 revision 的稳定 keyspace 证明分页无跳跃。
+  空 snapshot、正常 continuation、前向 header 与 `end=\x00` from-key 正例，以及 nil response/header、坏 revision、
+  Count/More/limit/连续性、nil/越界/乱序/重复 KV 和坏 MVCC 反例连续二十轮，包级 race、完整非 production、
+  production 326 项四分片与 vet 全部通过。本项不改变 Range request、artifact schema、lease TTL 读取、在线 KV
+  或 TiKV 数据路径；异常页仍在 no-clobber publish 前 fail closed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
