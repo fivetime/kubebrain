@@ -56734,6 +56734,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   disarm 后同一 worker 自动原子删除三者并返回 TTL=-1。实现注释同时把不可降级为入口 precheck 的约束钉在重试
   调用点。定向与完整 server/etcd 测试通过；本项不改变公开 RPC/metric taxonomy，需要下一生产镜像。
 
+- A5051 闭合自然 lease 过期被 CORRUPT fence 延期的生产可见性。旧路径会递增事件后才出现的
+  `lease.expire.corrupt_deferred` legacy counter、保留完整 lease 并重试，但 A5045 固定的
+  `lease.background.failure` 只含 checkpoint/expire-delete；production 无法区分“没有后台故障”与“已有到期
+  key 因 CORRUPT 继续公开可见”。现新增固定 `operation="expire_corrupt_deferred"` 权威零值，并在原 legacy
+  counter 旁同步递增，保持 dashboard 兼容；真实 CORRUPT 回归固定到期时 lease/key 保留及新 operation 事件，
+  disarm 后仍正常原子回收。production recording regex 和来源合同扩为 `3×Ready`，新 critical 告警明确
+  保留用户 key、attachment、metadata 是安全 fence 行为，但公开到期语义已延迟，必须保存损坏证据并按 operator
+  流程修复/disarm，不能当普通 TiKV 瞬时失败。固定 taxonomy、定向 server 与精确 production 测试通过；需要
+  下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
