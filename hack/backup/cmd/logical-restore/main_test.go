@@ -9,6 +9,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -114,6 +115,90 @@ func TestValidateRestoredLeaseGrant(t *testing.T) {
 		ResponseHeader: header, ID: 10, TTL: 30,
 	}, seen)
 	require.ErrorContains(t, err, "reused for source leases 1 and 2")
+}
+
+func TestValidateRestorePutTxnResponse(t *testing.T) {
+	header := func(revision int64) *etcdserverpb.ResponseHeader {
+		return &etcdserverpb.ResponseHeader{Revision: revision}
+	}
+	put := func(revision int64) *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{
+			ResponsePut: &etcdserverpb.PutResponse{Header: header(revision)},
+		}}
+	}
+	tests := map[string]struct {
+		response *clientv3.TxnResponse
+		expected int
+		wantRev  int64
+		wantErr  string
+	}{
+		"valid": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{put(5), put(5)}},
+			expected: 2,
+			wantRev:  5,
+		},
+		"empty response": {
+			expected: 1,
+			wantErr:  "empty transaction response",
+		},
+		"compare failed": {
+			response: &clientv3.TxnResponse{Header: header(5)},
+			expected: 1,
+			wantErr:  "refusing to overwrite",
+		},
+		"missing header": {
+			response: &clientv3.TxnResponse{Succeeded: true, Responses: []*etcdserverpb.ResponseOp{put(5)}},
+			expected: 1,
+			wantErr:  "without a valid response revision",
+		},
+		"wrong response count": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{put(5)}},
+			expected: 2,
+			wantErr:  "1 responses for 2 puts",
+		},
+		"nil operation": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{nil}},
+			expected: 1,
+			wantErr:  "response 0 is not a put response",
+		},
+		"wrong operation type": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: header(5)}},
+			}}},
+			expected: 1,
+			wantErr:  "response 0 is not a put response",
+		},
+		"missing put header": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{put(0)}},
+			expected: 1,
+			wantErr:  "put response 0 has revision 0",
+		},
+		"mismatched put revision": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{put(4)}},
+			expected: 1,
+			wantErr:  "put response 0 has revision 4, transaction revision is 5",
+		},
+		"unrequested previous key": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{
+					Header: header(5), PrevKv: &mvccpb.KeyValue{Key: []byte("a")},
+				}},
+			}}},
+			expected: 1,
+			wantErr:  "unrequested previous key",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			revision, err := validateRestorePutTxnResponse(tc.response, tc.expected)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantRev, revision)
+		})
+	}
 }
 
 func TestValidateBatchSize(t *testing.T) {

@@ -68,6 +68,35 @@ func validateRestoredLeaseGrant(sourceID, requestedTTL int64, response *clientv3
 	return nil
 }
 
+func validateRestorePutTxnResponse(response *clientv3.TxnResponse, expectedPuts int) (int64, error) {
+	if response == nil {
+		return 0, errors.New("restore batch returned an empty transaction response")
+	}
+	if !response.Succeeded {
+		return 0, errors.New("refusing to overwrite one or more existing keys in restore batch; set ALLOW_OVERWRITE=true to replace existing records")
+	}
+	if response.Header == nil || response.Header.Revision <= 0 {
+		return 0, errors.New("restore batch committed without a valid response revision")
+	}
+	if len(response.Responses) != expectedPuts {
+		return 0, fmt.Errorf("restore batch returned %d responses for %d puts", len(response.Responses), expectedPuts)
+	}
+	for i, op := range response.Responses {
+		if op == nil || op.GetResponsePut() == nil {
+			return 0, fmt.Errorf("restore batch response %d is not a put response", i)
+		}
+		put := op.GetResponsePut()
+		if put.Header == nil || put.Header.Revision != response.Header.Revision {
+			return 0, fmt.Errorf("restore batch put response %d has revision %d, transaction revision is %d",
+				i, put.GetHeader().GetRevision(), response.Header.Revision)
+		}
+		if put.PrevKv != nil {
+			return 0, fmt.Errorf("restore batch put response %d returned an unrequested previous key", i)
+		}
+	}
+	return response.Header.Revision, nil
+}
+
 func validateBatchSize(batchSize, maxTxnOps int) error {
 	if maxTxnOps <= 0 {
 		return fmt.Errorf("MAX_TXN_OPS must be positive")
@@ -296,18 +325,16 @@ func run() (retErr error) {
 		if err != nil {
 			return err
 		}
-		if !resp.Succeeded {
-			return fmt.Errorf("refusing to overwrite one or more existing keys in restore batch; set ALLOW_OVERWRITE=true to replace existing records")
+		responseRevision, err := validateRestorePutTxnResponse(resp, len(puts))
+		if err != nil {
+			return err
 		}
 		if !allowOverwrite {
-			if resp.Header == nil || resp.Header.Revision <= 0 {
-				return fmt.Errorf("restore batch committed without a valid response revision")
-			}
 			keys := make([]string, 0, len(ops))
 			for _, op := range ops {
 				keys = append(keys, string(op.key))
 			}
-			committed = append(committed, committedBatch{keys: keys, revision: resp.Header.Revision})
+			committed = append(committed, committedBatch{keys: keys, revision: responseRevision})
 		}
 		committedCount++
 		if failAfterBatches > 0 && committedCount >= failAfterBatches {
