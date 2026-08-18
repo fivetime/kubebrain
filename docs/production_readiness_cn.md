@@ -4583,8 +4583,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、非法、组合不完整均 critical。
 - `cluster_proxy_integrity_failure{rpc="member_list"}` 在 RPC server 创建时初始化权威零值；线性化 MemberList
   leader-proxy 的 success response 必须携带 mandatory `ResponseHeader` 与非负 revision，nil/mixed/missing-header/
-  negative-revision 结果都必须在 revision
-  观察前 DataLoss fail closed。production 要求每个 Ready Pod UID 都有 60 秒新鲜 current/10 分钟 increase 且值合法、
+  negative-revision 结果都必须在 revision 观察前 DataLoss fail closed。成员集合必须无 nil 且按 ID 严格递增，
+  重复/乱序同样拒绝；空集合、ID=0 及未启动成员的空属性合法。production 要求每个 Ready Pod UID 都有 60 秒新鲜 current/10 分钟 increase 且值合法、
   无未知 rpc；事件或 telemetry 缺失/陈旧/非法均 critical。
   peer HTTP corruption-check HashKV 的 hedged leader 旁路复用 `maintenance_proxy_integrity_failure{rpc="hash_kv"}`，其
   DataLoss 是终态，不允许被本地 hedge 的成功或存储错误掩盖。

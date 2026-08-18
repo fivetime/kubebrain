@@ -57414,6 +57414,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `maintenance.proxy.integrity_failure{rpc="downgrade"}` 并 DataLoss fail closed。三种正例、transport error、未知 action 与
   公开错误版本注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5117 将线性化 MemberList leader-proxy 完整性扩展到成员集合。对照
+  `/root/etcd/server/etcdserver/api/membership/cluster.go::Members` 与
+  `server/etcdserver/api/v3rpc/member.go::{MemberList,membersToProtoMembers}`：upstream 从 ID-keyed membership map 克隆成员，
+  按 ID 升序排序后逐项转换，因此正常 success 不可能含 nil、重复 ID 或乱序 ID。未启动的新成员可合法具有空 Name 与
+  ClientURLs；membership 内部并未对所有历史 PeerURLs 增加统一输出期语法验证，故门禁不机械收紧这些字段，空集合和
+  理论上的 ID=0 也保持兼容。旧 follower proxy 会确认 nil/重复/乱序集合，使 endpoint discovery 或成员运维观察到 leader
+  不可能生成的拓扑。现 MemberList 在 forwarded revision 观察前要求成员非 nil 且 ID 严格递增，违例复用固定
+  `cluster.proxy.integrity_failure{rpc="member_list"}` 并 DataLoss fail closed。合法空/未启动成员、transport error 与公开
+  三类异常注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
