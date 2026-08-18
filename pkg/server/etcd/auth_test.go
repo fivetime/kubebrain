@@ -565,13 +565,35 @@ func TestFollowerAuthReadsProxyToLeader(t *testing.T) {
 	require.Equal(t, []string{"user-get:u", "user-list", "role-get:r", "role-list"}, calls)
 }
 
-func TestFollowerRejectsInvalidAuthListProxyPayload(t *testing.T) {
+func TestFollowerRejectsInvalidAuthNameCollectionProxyPayload(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		action    string
 		configure func(*testPeerService)
 		invoke    func(*RPCServer) (any, error)
 	}{
+		{
+			name: "unsorted user roles", action: authProxyActionUserGet,
+			configure: func(peers *testPeerService) {
+				peers.userGetFn = func(context.Context, *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
+					return &etcdserverpb.AuthUserGetResponse{Header: txnHeader(2), Roles: []string{"writer", "reader"}}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.UserGet(context.Background(), &etcdserverpb.AuthUserGetRequest{Name: "alice"})
+			},
+		},
+		{
+			name: "duplicate user role", action: authProxyActionUserGet,
+			configure: func(peers *testPeerService) {
+				peers.userGetFn = func(context.Context, *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
+					return &etcdserverpb.AuthUserGetResponse{Header: txnHeader(2), Roles: []string{"reader", "reader"}}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.UserGet(context.Background(), &etcdserverpb.AuthUserGetRequest{Name: "alice"})
+			},
+		},
 		{
 			name: "empty user", action: authProxyActionUserList,
 			configure: func(peers *testPeerService) {

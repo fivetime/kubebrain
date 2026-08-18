@@ -294,6 +294,7 @@ func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserG
 	if proxy {
 		response, err := s.peers.UserGet(proxyCtx, request)
 		response, err = validateAuthProxyResult(s.metricCli, authProxyActionUserGet, response, err)
+		response, err = validateAuthNameListProxyPayload(s.metricCli, authProxyActionUserGet, response.GetRoles(), response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}

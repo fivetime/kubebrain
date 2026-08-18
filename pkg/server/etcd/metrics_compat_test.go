@@ -398,9 +398,13 @@ func TestAuthNameListProxyPayloadValidation(t *testing.T) {
 		valid  bool
 	}{
 		{name: "empty list", action: authProxyActionUserList, valid: true},
+		{name: "sorted user roles", action: authProxyActionUserGet, names: []string{"reader", "writer"}, valid: true},
 		{name: "sorted users", action: authProxyActionUserList, names: []string{"alice", "root"}, valid: true},
 		{name: "sorted roles", action: authProxyActionRoleList, names: []string{"reader", "root", "writer"}, valid: true},
 		{name: "empty user", action: authProxyActionUserList, names: []string{""}},
+		{name: "empty user role", action: authProxyActionUserGet, names: []string{""}},
+		{name: "duplicate user role", action: authProxyActionUserGet, names: []string{"reader", "reader"}},
+		{name: "unsorted user roles", action: authProxyActionUserGet, names: []string{"writer", "reader"}},
 		{name: "duplicate role", action: authProxyActionRoleList, names: []string{"reader", "reader"}},
 		{name: "unsorted user", action: authProxyActionUserList, names: []string{"root", "alice"}},
 	} {
