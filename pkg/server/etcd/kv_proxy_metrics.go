@@ -194,6 +194,10 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
 	}
+	if validationErr := validateTxnProxyRangePayloads(request, response); validationErr != nil {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
+		return nil, status.Error(codes.DataLoss, validationErr.Error())
+	}
 	return response, nil
 }
 
@@ -269,6 +273,27 @@ func validateTxnProxyResponseHeaders(response *etcdserverpb.TxnResponse, outerRe
 		revision := header.GetRevision()
 		if revision <= 0 || revision > outerRevision || revision < outerRevision-1 {
 			return fmt.Errorf("leader txn proxy returned response operation revision %d outside outer revision window [%d,%d] at index %d", revision, outerRevision-1, outerRevision, index)
+		}
+	}
+	return nil
+}
+
+func validateTxnProxyRangePayloads(request *etcdserverpb.TxnRequest, response *etcdserverpb.TxnResponse) error {
+	requests := request.GetFailure()
+	if response.GetSucceeded() {
+		requests = request.GetSuccess()
+	}
+	for index, requestOp := range requests {
+		responseOp := response.GetResponses()[index]
+		switch {
+		case requestOp.GetRequestRange() != nil:
+			if _, err := validateRangeProxyPayload(nil, requestOp.GetRequestRange(), responseOp.GetResponseRange(), nil); err != nil {
+				return fmt.Errorf("leader txn proxy returned invalid range payload at index %d: %s", index, status.Convert(err).Message())
+			}
+		case requestOp.GetRequestTxn() != nil:
+			if err := validateTxnProxyRangePayloads(requestOp.GetRequestTxn(), responseOp.GetResponseTxn()); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
