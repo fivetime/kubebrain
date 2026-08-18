@@ -1690,7 +1690,10 @@ ETCDCTL_CACERT=<ca> ETCDCTL_CERT=<client-cert> ETCDCTL_KEY=<client-key> \
 严格升序并含合法 snapshot MVCC metadata。restore receipt 中的 manifest digest 只接受小写 hex SHA-256，不能用大小写宽松
 的等价字符串绕过 schema。每个 lease 必须保留原 ID、granted TTL 和精确 attached key 集合且当前
 TTL 为正；带 keys 的 TTL 响应 revision 不得早于当前扫描，附件键不得为空或重复。最后以 CreatedNotify watch 建立探针，执行附 lease 的 Put、线性读、Delete、两次精确 watch
-event 和 Revoke；成功才原子发布 `kubebrain.cold-physical-semantic-verify.v1`。这仍不能替代真实
+event 和 Revoke。探针 Grant 必须返回非零 ID、正 header 和不短于请求的合法 TTL；单 Put/Delete Txn 必须各返回
+一个同 outer revision 的对应 response，Get 必须证明精确新键的 value/lease 与 `create=mod=putRevision,version=1`，
+Delete revision 必须晚于 Get，Revoke header 不得早于 Delete。任一步 malformed success 都 fail closed，异常 Grant
+携带的非零 lease 仍进入带响应校验的 defer cleanup；成功才原子发布 `kubebrain.cold-physical-semantic-verify.v1`。这仍不能替代真实
 CSI restore 演练，但它是物理恢复完成门禁，而不是普通 endpoint health 检查。
 语义门禁读取 snapshot/restore receipt 链时同样使用严格单 JSON 值解析，拒绝未知字段和
 尾随 JSON。snapshot receipt schema 必须完整包含 preflight recovery blueprint、PD/TiKV source PVC
@@ -3023,8 +3026,9 @@ witness，并额外传入：
 revision 分别逐 key 比较 value、create/mod revision、version 和 lease；逐 lease 比较 identity、有效
 TTL、granted TTL 与排序后的 attached keys。这里复用 cold restore 的 target verifier：current 多页扫描
 在首屏固定 revision，分页 envelope/payload/连续性均 fail closed，TTL revision 不得早于 current scan；
-最后执行带 lease 的条件 Put、线性读、Watch PUT/DELETE、
-条件 Delete 和 Revoke。全部通过才输出 `kubebrain.native-pitr-full-semantic-verify.v1`。输入 receipt 和
+最后执行带 lease 的条件 Put、线性读、Watch PUT/DELETE、条件 Delete 和 Revoke；该探针复用同一
+Grant/Txn/Get/Revoke success payload 准入与 revision 因果链。全部通过才输出
+`kubebrain.native-pitr-full-semantic-verify.v1`。输入 receipt 和
 watch 探针删除后，验证器还会通过 plan-bound target PD 直连 TiKV，按 tenant 编码 object key 读取该
 Put revision 的历史版本，并精确核对 inline value、create revision、version 与 lease ID；这一步把 etcd
 endpoint 行为和 target 物理集群绑定，避免“PD 对了但 endpoint 指向另一套存储”仍误通过。输入 receipt

@@ -57779,6 +57779,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   326 项四分片与 vet 全部通过。本项不改变 witness/receipt schema、historical revision、watch probe、在线
   KV/lease 或 TiKV 数据路径；两条门禁现在共享同一准入，避免安全语义再次漂移。
 
+- A5157 将 A5156 的共享准入推进到 cold/native semantic watch probe 全链。旧 probe 的 Grant 只看 RPC error，
+  Put Txn 只看 Succeeded/outer header，Get 直接解引用首项，Delete Txn 直接解引用 Delete payload，Revoke 丢弃
+  response；因此零 lease ID、少/错 operation、错 key/lease/MVCC、revision 倒退或 malformed cleanup success 仍可
+  签发语义 receipt，nil payload 还可能 panic。对照 `/root/etcd/server/etcdserver/{txn,apply/backend.go}` 及
+  KubeBrain lease/Txn/Range proxy validators，现 `targetverify` 要求 Grant 非 nil、signed nonzero ID、正 header、空
+  legacy error、TTL 位于 `[request,MaxLeaseTTL]`；Put Txn 精确一个同 revision Put 且无 PrevKV；Get header 不早于
+  Put、精确 key/value/lease、`Count=1/More=false` 且新键 `create=mod=putRevision,version=1`；Delete revision 严格晚于
+  Get、精确一个同 revision `Deleted=1` 且无 PrevKV；Revoke header 不早于 Delete。异常 Grant 的非零 ID 仍纳入
+  defer cleanup，cleanup response 也复用 Revoke validator。Grant/Put/Get/Delete/Revoke 正反例连续二十轮，三包
+  race、完整非 production、production 326 项四分片与 vet 全部通过。本项不改变 probe key/value/TTL、watch
+  匹配、receipt schema、target TiKV 历史绑定或在线数据路径；两条 verifier 继续共享同一准入。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
