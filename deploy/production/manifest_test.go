@@ -2103,6 +2103,15 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Equal(t, "2m", watchGaugeMissingRule["for"])
 	require.Equal(t, "warning", watchGaugeMissingRule["labels"].(map[string]any)["severity"])
 	require.Contains(t, watchGaugeMissingRule["annotations"].(map[string]any)["description"], "authoritative zero while idle")
+	knownPeersRule := prometheusRuleByAlert(t, groups, "KubeBrainKnownPeersMetricsInconsistent")
+	require.Equal(t,
+		`absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:kubebrain_replicas:expected) == 1 or absent(kubebrain_dbaas:known_peers_invalid_values:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:kubebrain_replicas:expected < 3 or count(kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != on() (count(kubebrain_dbaas:ready_pods:current) * kubebrain_dbaas:kubebrain_replicas:expected) or count((count by (namespace, pod, uid) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != on() group_left() kubebrain_dbaas:kubebrain_replicas:expected) > 0 or count(count by (Local) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(count by (Remote) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != on() kubebrain_dbaas:kubebrain_replicas:expected or kubebrain_dbaas:known_peers_invalid_values:count != 0`,
+		knownPeersRule["expr"])
+	require.Equal(t, "2m", knownPeersRule["for"])
+	require.Equal(t, "critical", knownPeersRule["labels"].(map[string]any)["severity"])
+	knownPeersDescription := knownPeersRule["annotations"].(map[string]any)["description"].(string)
+	require.Contains(t, knownPeersDescription, "distinct Local IDs")
+	require.Contains(t, knownPeersDescription, "union of Remote IDs")
 	fdUsageHighRule := prometheusRuleByAlert(t, groups, "KubeBrainFileDescriptorUsageHigh")
 	require.Equal(t,
 		`max((kubebrain_dbaas:fd_used:max_by_pod / on(namespace, pod, uid) kubebrain_dbaas:fd_limit:max_by_pod) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0.8`,
@@ -2949,6 +2958,10 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	expected["kubebrain_dbaas:mvcc_slow_watchers:max_by_pod"] =
 		`max by (namespace, pod, uid) (etcd_debugging_mvcc_slow_watcher_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_mvcc_slow_watcher_total{namespace="kubebrain-system"}) <= 60))`
 	expected["kubebrain_dbaas:mvcc_watch_gauges_invalid_values:count"] = watchGaugeInvalidValuesExpr
+	expected["kubebrain_dbaas:known_peers:max_by_pod_local_remote"] =
+		`max by (namespace, pod, uid, Local, Remote) (etcd_network_known_peers{namespace="kubebrain-system"} and (time() - timestamp(etcd_network_known_peers{namespace="kubebrain-system"}) <= 60))`
+	expected["kubebrain_dbaas:known_peers_invalid_values:count"] =
+		`count(kubebrain_dbaas:known_peers:max_by_pod_local_remote != 1) + count(kubebrain_dbaas:known_peers:max_by_pod_local_remote{Local!~"[1-9a-f][0-9a-f]*"} or kubebrain_dbaas:known_peers:max_by_pod_local_remote{Remote!~"[1-9a-f][0-9a-f]*"})`
 	expected["kubebrain_dbaas:fd_used:max_by_pod"] =
 		`max by (namespace, pod, uid) (os_fd_used{namespace="kubebrain-system"} and (time() - timestamp(os_fd_used{namespace="kubebrain-system"}) <= 60))`
 	expected["kubebrain_dbaas:fd_limit:max_by_pod"] =
@@ -3117,7 +3130,7 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 
 func emittedMetricNames(t *testing.T, root string) map[string]struct{} {
 	t.Helper()
-	emitRE := regexp.MustCompile(`Emit(Counter|Gauge|Histogram)\("([^"]+)"`)
+	emitRE := regexp.MustCompile(`Emit(Counter|Gauge|Histogram)\(\s*"([^"]+)"`)
 	names := make(map[string]struct{})
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {

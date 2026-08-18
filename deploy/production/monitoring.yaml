@@ -225,6 +225,14 @@ spec:
           expr: count(((kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > on(namespace, pod, uid) (kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) or ((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:known_peers:max_by_pod_local_remote
+          expr: max by (namespace, pod, uid, Local, Remote) (etcd_network_known_peers{namespace="kubebrain-system"} and (time() - timestamp(etcd_network_known_peers{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:known_peers_invalid_values:count
+          expr: count(kubebrain_dbaas:known_peers:max_by_pod_local_remote != 1) + count(kubebrain_dbaas:known_peers:max_by_pod_local_remote{Local!~"[1-9a-f][0-9a-f]*"} or kubebrain_dbaas:known_peers:max_by_pod_local_remote{Remote!~"[1-9a-f][0-9a-f]*"})
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:fd_used:max_by_pod
           expr: max by (namespace, pod, uid) (os_fd_used{namespace="kubebrain-system"} and (time() - timestamp(os_fd_used{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1161,6 +1169,14 @@ spec:
           annotations:
             summary: KubeBrain Watch gauge telemetry is incomplete
             description: "Every Ready Pod UID must expose fresh stream, watcher, and slow-watcher gauges. Values must be non-negative exact integers no greater than 2^53, and slow watchers cannot exceed that Pod's total backend watchers. The one-second refresh publishes authoritative zero while idle; missing, stale, or invalid telemetry cannot be interpreted as no Watch load or catch-up pressure."
+        - alert: KubeBrainKnownPeersMetricsInconsistent
+          expr: absent(kubebrain_dbaas:replica_expectation_sources:count) == 1 or absent(kubebrain_dbaas:kubebrain_replicas:expected) == 1 or absent(kubebrain_dbaas:known_peers_invalid_values:count) == 1 or kubebrain_dbaas:replica_expectation_sources:count != 3 or kubebrain_dbaas:kubebrain_replicas:expected < 3 or count(kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != on() (count(kubebrain_dbaas:ready_pods:current) * kubebrain_dbaas:kubebrain_replicas:expected) or count((count by (namespace, pod, uid) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != on() group_left() kubebrain_dbaas:kubebrain_replicas:expected) > 0 or count(count by (Local) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != count(kubebrain_dbaas:ready_pods:current) or count(count by (Remote) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) != on() kubebrain_dbaas:kubebrain_replicas:expected or kubebrain_dbaas:known_peers_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain static membership telemetry is inconsistent
+            description: "Every Ready Pod UID must expose one fresh value-1 known-peer series for every desired KubeBrain member, using nonzero lowercase hexadecimal Local/Remote IDs. Each Pod must have exactly the StatefulSet desired member count, Ready Pods must have distinct Local IDs, and their union of Remote IDs must equal the desired membership size. Missing, stale, malformed, partial, or divergent static membership can break MemberList endpoint sync and member identity; reconcile --initial-cluster before trusting client routing."
         - alert: KubeBrainFileDescriptorUsageHigh
           expr: max((kubebrain_dbaas:fd_used:max_by_pod / on(namespace, pod, uid) kubebrain_dbaas:fd_limit:max_by_pod) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0.8
           for: 5m
