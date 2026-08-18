@@ -57616,6 +57616,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   shutdown handoff。普通 100 轮、race 20 轮、完整非 production 集合、production 326 项四分片及 vet 全部通过。
   本项不改变 watcherhub 生产状态机、wire、TiKV 数据路径或指标语义。
 
+- A5140 将 A5138 的 upstream lease checkpoint 规范化扩展到 `kubebrain.logical.v2`→etcd backend snapshot
+  转换器。logical export 通过 TimeToLive 观测实时 deadline，合法 promote grace 可令 `TTL>GrantedTTL`；旧转换器
+  直接映射为 bbolt `RemainingTTL>TTL`，随后被正确的 production writer 拒绝，导致换主后的制品无法迁移到官方
+  etcd。现转换时只把该超出部分 clamp 到 granted TTL，较短 checkpoint 原样保留。回归直接读取生成 bbolt lease
+  bucket，固定 `63/60→TTL=60,RemainingTTL=60`，原 `30/60` 与官方 etcdutl status/restore 测试继续通过；定向十轮、
+  完整转换包及 race 通过。文档同时明确 logical restore 经公开 LeaseGrant 创建新 ID，不能声称精确保留 backend
+  checkpoint envelope。本项不改变 logical.v2 格式、源 artifact、在线 lease 或 TiKV 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

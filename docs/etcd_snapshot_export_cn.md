@@ -94,7 +94,9 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 - snapshot revision 必须小于 `MaxInt64`，为恢复后承诺的下一次官方 etcd 写入保留一个 signed
   revision；`MaxInt64-1` 仍是可导出的上界；
 - 当前 key/value、create revision、mod revision、version 和 lease ID 保持一致；
-- lease 的 granted TTL、导出时剩余 TTL 与 attached keys 可恢复；
+- lease 的 granted TTL、导出时剩余 TTL 与 attached keys 可恢复；若实时剩余 TTL 因 leader promote grace
+  暂时大于 granted TTL，转换器与在线 Snapshot 一样规范化为 granted TTL，避免把 term-local extension
+  写成 upstream 不可产生的 `RemainingTTL>TTL`；
 - 下一次官方 etcd 写入从 `snapshot revision + 1` 开始；
 - snapshot 点之前的历史明确视为已压缩，而不是伪造不存在的历史版本；
 - 输出使用原子 no-clobber 发布，并拒绝覆盖既有文件。
@@ -107,6 +109,8 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 - 这条转换命令是离线迁移/导出路径，不是 PITR、增量备份或 TiKV 物理灾备的替代品；需要
   保留 auth 配置时应优先使用在线 `Maintenance.Snapshot`。
 - `kubebrain.logical.v2` 本身仍不能直接交给 `etcdutl`；必须先通过转换器。
+- `logical-restore.sh` 是经公开 LeaseGrant 创建新 lease ID 的逻辑迁移路径，不能同时精确重建原 ID、granted TTL
+  和独立 remaining checkpoint；需要 upstream backend lease envelope 时必须使用本转换器或在线 Snapshot。
 
 发布门禁应至少包含：转换器单元与 race 测试、官方 snapshot status、官方 restore、恢复后
 etcd 启动、当前 KV 元数据对比、`snapshot+1` 写入 revision、compacted 边界，以及带 lease

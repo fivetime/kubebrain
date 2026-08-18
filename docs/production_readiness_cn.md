@@ -1446,8 +1446,11 @@ SECRET UID 行；未知行、额外列、缺失凭据行或顺序漂移都 fail 
 
 当前唯一通过端到端恢复验证的生产备份模式是 `kubebrain.logical.v2`。制品包含固定
 snapshot revision、源 prefix、记录数和 SHA-256，先写临时文件并 `fsync` 后原子发布；
-lease 元数据记录剩余 TTL；restore 为目标生成新 lease ID，同时保持 key 关联和共享
-关系。restore 在写目标前完整校验，并默认拒绝覆盖已有 key。每次发布备份配置前必须通过：
+lease 元数据记录剩余 TTL 和当前 exporter 的 granted TTL；logical restore 为目标生成新 lease ID，
+同时保持 key 关联和共享关系，但公开 LeaseGrant 不能同时精确重建源 ID、granted TTL 与独立 remaining
+checkpoint。需要可由官方 etcdutl 恢复的 upstream lease envelope 时，应使用在线 Snapshot 或 logical→etcd
+snapshot 转换器；二者都会丢弃 promote 后暂时高于 grant 的 term-local grace。restore 在写目标前完整校验，
+并默认拒绝覆盖已有 key。每次发布备份配置前必须通过：
 
 ```shell
 BACKUP_MODE=logical hack/backup/production-mode-check.sh
