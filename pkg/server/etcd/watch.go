@@ -1461,16 +1461,20 @@ func (w *watcher) reopenWatchChannel(ctx context.Context, r *etcdserverpb.WatchC
 	for {
 		if !w.grpcServer.peers.EtcdProxyEnabled() {
 			if _, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh(); !leadingFresh {
+				emitWatchGenerationRecovery(w.metricCli, watchGenerationRecoveryFailed)
 				return nil, false, 0, errors.New("watch has no fresh local generation and peer proxy is disabled")
 			}
 		}
 		ch, local, epoch, err := w.openWatchChannel(ctx, r, backendPrefix, revision)
 		if err == nil {
+			emitWatchGenerationRecovery(w.metricCli, watchGenerationRecoveryRecovered)
 			return ch, local, epoch, nil
 		}
 		if isWatchCompactedError(err) {
+			emitWatchGenerationRecovery(w.metricCli, watchGenerationRecoveryCompacted)
 			return nil, false, 0, err
 		}
+		emitWatchGenerationRecovery(w.metricCli, watchGenerationRecoveryRetry)
 		if err := waitWatchReconnect(ctx); err != nil {
 			return nil, false, 0, err
 		}

@@ -1720,12 +1720,14 @@ func TestFreshLeaderReopensLocalWatchWithoutPeerProxy(t *testing.T) {
 func TestLocalWatchReopenStopsWhenFreshnessIsLostWithoutPeerProxy(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	rec := &recordingMetrics{}
+	initWatchGenerationRecoveryMetrics(rec)
 	server.peers = testPeerService{
 		isLeaderFn:   func() bool { return true }, // stale client-go flag
 		epochFn:      func() (uint64, bool) { return 7, false },
 		proxyEnabled: false,
 	}
-	w := &watcher{backend: server.backend, grpcServer: server, metricCli: server.metricCli}
+	w := &watcher{backend: server.backend, grpcServer: server, metricCli: rec}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -1736,6 +1738,86 @@ func TestLocalWatchReopenStopsWhenFreshnessIsLostWithoutPeerProxy(t *testing.T) 
 	require.EqualError(t, err, "watch has no fresh local generation and peer proxy is disabled")
 	require.Less(t, time.Since(started), 500*time.Millisecond,
 		"reopen must not retry forever when no authoritative source is reachable")
+	require.Equal(t, []interface{}{int64(0), 1}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryFailed))
+	require.Equal(t, []interface{}{int64(0)}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRetry))
+}
+
+func TestWatchReopenMetricsRecordRetryAndRecovery(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	initWatchGenerationRecoveryMetrics(rec)
+	watchCh := make(chan etcdproxy.WatchResult)
+	var attempts atomic.Int32
+	server.peers = testPeerService{
+		epochFn:      func() (uint64, bool) { return 0, false },
+		proxyEnabled: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			if attempts.Add(1) == 1 {
+				return nil, errors.New("temporary peer reconnect")
+			}
+			return watchCh, nil
+		},
+	}
+	w := &watcher{backend: server.backend, grpcServer: server, metricCli: rec}
+
+	got, local, _, err := w.reopenWatchChannel(context.Background(), &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/retry"),
+	}, "/registry/watch/retry", 10)
+	require.NoError(t, err)
+	require.Equal(t, (<-chan etcdproxy.WatchResult)(watchCh), got)
+	require.False(t, local)
+	require.Equal(t, int32(2), attempts.Load())
+	require.Equal(t, []interface{}{int64(0), 1}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRetry))
+	require.Equal(t, []interface{}{int64(0), 1}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRecovered))
+	require.Equal(t, []interface{}{int64(0)}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryCompacted))
+}
+
+func TestWatchReopenMetricsRecordCompactedTerminal(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	initWatchGenerationRecoveryMetrics(rec)
+	server.peers = testPeerService{
+		epochFn:      func() (uint64, bool) { return 0, false },
+		proxyEnabled: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			return nil, status.Error(codes.OutOfRange, "required revision has been compacted")
+		},
+	}
+	w := &watcher{backend: server.backend, grpcServer: server, metricCli: rec}
+
+	_, _, _, err := w.reopenWatchChannel(context.Background(), &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/compacted"),
+	}, "/registry/watch/compacted", 10)
+	require.Equal(t, codes.OutOfRange, status.Code(err))
+	require.Equal(t, []interface{}{int64(0), 1}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryCompacted))
+	require.Equal(t, []interface{}{int64(0)}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRetry))
+}
+
+func TestWatchReopenContextCancellationIsNotRecoveryFailure(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	initWatchGenerationRecoveryMetrics(rec)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.peers = testPeerService{
+		epochFn:      func() (uint64, bool) { return 0, false },
+		proxyEnabled: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			cancel()
+			return nil, errors.New("peer unavailable")
+		},
+	}
+	w := &watcher{backend: server.backend, grpcServer: server, metricCli: rec}
+
+	_, _, _, err := w.reopenWatchChannel(ctx, &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/canceled"),
+	}, "/registry/watch/canceled", 10)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRetry))
+	require.Equal(t, []interface{}{int64(0)}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryFailed))
 }
 
 func TestLeaderWatchFencesEstablishedLocalGenerationAfterEpochChange(t *testing.T) {

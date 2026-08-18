@@ -68,6 +68,30 @@ type recordedGauge struct {
 	tags  []metrics.T
 }
 
+func recordedWatchGenerationRecoveryValues(rec *recordingMetrics, outcome string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == "watch.generation.recovery" && len(counter.tags) == 1 &&
+			counter.tags[0] == metrics.Tag("outcome", outcome) {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
+func TestWatchGenerationRecoveryMetricsInitializeFixedOutcomes(t *testing.T) {
+	rec := &recordingMetrics{}
+	initWatchGenerationRecoveryMetrics(rec)
+	for _, outcome := range watchGenerationRecoveryOutcomes {
+		emitWatchGenerationRecovery(rec, outcome)
+	}
+	for _, outcome := range watchGenerationRecoveryOutcomes {
+		require.Equal(t, []interface{}{int64(0), 1}, recordedWatchGenerationRecoveryValues(rec, outcome))
+	}
+}
+
 func (r *recordingMetrics) GetGrpcServerOption() []grpc.ServerOption { return nil }
 
 func (r *recordingMetrics) GetHttpHandlers() map[string]http.Handler { return nil }
