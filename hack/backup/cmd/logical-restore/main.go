@@ -150,7 +150,7 @@ func run() (retErr error) {
 	}
 	leaseSpecs := make(map[int64]int64)
 	if err := verified.Leases(func(lease record.Lease) error {
-		leaseSpecs[lease.ID] = lease.TTL
+		leaseSpecs[lease.ID] = restorableLeaseTTL(lease)
 		return nil
 	}); err != nil {
 		return err
@@ -346,4 +346,15 @@ func run() (retErr error) {
 	_, err = fmt.Fprintf(os.Stderr, "restored %d records and %d leases from %s to %s (snapshot revision %d, sha256 %s)\n",
 		total, status.Leases, input, os.Getenv("ENDPOINT"), status.Revision, status.SHA256)
 	return err
+}
+
+func restorableLeaseTTL(lease record.Lease) int64 {
+	ttl := lease.TTL
+	if lease.GrantedTTL > 0 && ttl > lease.GrantedTTL {
+		ttl = lease.GrantedTTL
+	}
+	if ttl > clientv3.MaxLeaseTTL {
+		ttl = clientv3.MaxLeaseTTL
+	}
+	return ttl
 }

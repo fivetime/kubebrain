@@ -7,6 +7,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func TestRewriteKey(t *testing.T) {
@@ -20,6 +21,39 @@ func TestValidateLeaseReference(t *testing.T) {
 	require.NoError(t, validateLeaseReference(record.Record{Lease: 123}, map[int64]int64{123: 30}))
 	err := validateLeaseReference(record.Record{Lease: 123}, nil)
 	require.ErrorContains(t, err, "unrestorable lease 123")
+}
+
+func TestRestorableLeaseTTL(t *testing.T) {
+	tests := map[string]struct {
+		lease record.Lease
+		want  int64
+	}{
+		"remaining checkpoint": {
+			lease: record.Lease{TTL: 30, GrantedTTL: 60},
+			want:  30,
+		},
+		"promotion extension": {
+			lease: record.Lease{TTL: 63, GrantedTTL: 60},
+			want:  60,
+		},
+		"legacy remaining": {
+			lease: record.Lease{TTL: 30},
+			want:  30,
+		},
+		"legacy above etcd maximum": {
+			lease: record.Lease{TTL: clientv3.MaxLeaseTTL + 1},
+			want:  clientv3.MaxLeaseTTL,
+		},
+		"exact etcd maximum": {
+			lease: record.Lease{TTL: clientv3.MaxLeaseTTL, GrantedTTL: clientv3.MaxLeaseTTL},
+			want:  clientv3.MaxLeaseTTL,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, tc.want, restorableLeaseTTL(tc.lease))
+		})
+	}
 }
 
 func TestValidateBatchSize(t *testing.T) {
