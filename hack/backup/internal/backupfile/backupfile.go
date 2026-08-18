@@ -124,6 +124,13 @@ func (w *AtomicWriter) Commit() (status Status, retErr error) {
 	if err := w.temp.Sync(); err != nil {
 		return Status{}, errors.Join(err, w.abort())
 	}
+	if _, err := w.temp.Seek(0, io.SeekStart); err != nil {
+		return Status{}, errors.Join(err, w.abort())
+	}
+	validatedStatus, err := validate(w.temp)
+	if err != nil {
+		return Status{}, errors.Join(fmt.Errorf("validate completed backup: %w", err), w.abort())
+	}
 	if err := w.temp.Close(); err != nil {
 		w.closed = true
 		return Status{}, errors.Join(err, os.Remove(w.temp.Name()))
@@ -154,10 +161,7 @@ func (w *AtomicWriter) Commit() (status Status, retErr error) {
 	if err := dir.Close(); err != nil {
 		return Status{}, err
 	}
-	return Status{
-		Format: Format, Prefix: w.prefix, Revision: w.revision, CreatedAtUnix: w.created,
-		Records: w.records, Leases: w.leases, SHA256: sum,
-	}, nil
+	return validatedStatus, nil
 }
 
 func (w *AtomicWriter) Abort() error { return w.abort() }

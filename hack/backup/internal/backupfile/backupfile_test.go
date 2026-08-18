@@ -79,7 +79,7 @@ func TestOpenVerifiedReadsV2WithoutCreationTimestamp(t *testing.T) {
 	require.Zero(t, status.CreatedAtUnix)
 }
 
-func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {
+func TestAtomicWriterCommitRejectsInvalidMetadata(t *testing.T) {
 	tests := map[string]struct {
 		populate func(*AtomicWriter) error
 		want     string
@@ -99,6 +99,21 @@ func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {
 			},
 			want: "duplicate backup lease 123",
 		},
+		"outside prefix": {
+			populate: func(writer *AtomicWriter) error {
+				return writer.Add(record.Record{Key: "L291dHNpZGUva2V5", Value: "YQ=="})
+			},
+			want: `backup record 1 key "/outside/key" is outside manifest prefix "/registry"`,
+		},
+		"duplicate key": {
+			populate: func(writer *AtomicWriter) error {
+				if err := writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "YQ=="}); err != nil {
+					return err
+				}
+				return writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "Yg=="})
+			},
+			want: `duplicate backup key "/registry/key"`,
+		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -107,9 +122,39 @@ func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, tc.populate(writer))
 			_, err = writer.Commit()
-			require.NoError(t, err)
+			require.ErrorContains(t, err, tc.want)
+			require.NoFileExists(t, path)
+		})
+	}
+}
 
-			_, err = OpenVerified(path)
+func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {
+	tests := map[string]struct {
+		lines   [][]byte
+		records int
+		leases  int
+		want    string
+	}{
+		"undeclared lease": {
+			lines:   [][]byte{[]byte(`{"key":"L3JlZ2lzdHJ5L2E=","value":"YQ==","lease":123}`)},
+			records: 1,
+			want:    "backup record 1 references undeclared lease 123",
+		},
+		"duplicate lease": {
+			lines: [][]byte{
+				[]byte(`{"type":"lease","id":123,"ttl":30}`),
+				[]byte(`{"type":"lease","id":123,"ttl":30}`),
+			},
+			leases: 2,
+			want:   "duplicate backup lease 123",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "backup.jsonl")
+			require.NoError(t, os.WriteFile(path, backupJSONLLines(t, tc.lines, tc.records, tc.leases, ""), 0o600))
+
+			_, err := OpenVerified(path)
 			require.ErrorContains(t, err, tc.want)
 		})
 	}
@@ -233,17 +278,17 @@ func TestCommitDoesNotOverwriteExistingBackup(t *testing.T) {
 
 func TestOpenVerifiedRejectsManifestMismatchAndDuplicateKeys(t *testing.T) {
 	tests := map[string]struct {
-		records []record.Record
-		want    string
+		lines [][]byte
+		want  string
 	}{
 		"outside prefix": {
-			records: []record.Record{{Key: "L291dHNpZGUva2V5", Value: "YQ=="}},
-			want:    `backup record 1 key "/outside/key" is outside manifest prefix "/registry"`,
+			lines: [][]byte{[]byte(`{"key":"L291dHNpZGUva2V5","value":"YQ=="}`)},
+			want:  `backup record 1 key "/outside/key" is outside manifest prefix "/registry"`,
 		},
 		"duplicate key": {
-			records: []record.Record{
-				{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "YQ=="},
-				{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "Yg=="},
+			lines: [][]byte{
+				[]byte(`{"key":"L3JlZ2lzdHJ5L2tleQ==","value":"YQ=="}`),
+				[]byte(`{"key":"L3JlZ2lzdHJ5L2tleQ==","value":"Yg=="}`),
 			},
 			want: `duplicate backup key "/registry/key"`,
 		},
@@ -251,15 +296,9 @@ func TestOpenVerifiedRejectsManifestMismatchAndDuplicateKeys(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "backup.jsonl")
-			writer, err := NewAtomicWriter(path, "/registry", 42)
-			require.NoError(t, err)
-			for _, rec := range tc.records {
-				require.NoError(t, writer.Add(rec))
-			}
-			_, err = writer.Commit()
-			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, backupJSONLLines(t, tc.lines, len(tc.lines), 0, ""), 0o600))
 
-			_, err = OpenVerified(path)
+			_, err := OpenVerified(path)
 			require.ErrorContains(t, err, tc.want)
 		})
 	}
@@ -267,14 +306,26 @@ func TestOpenVerifiedRejectsManifestMismatchAndDuplicateKeys(t *testing.T) {
 
 func backupJSONL(t *testing.T, line []byte, records, leases int, footerExtra string) []byte {
 	t.Helper()
+	var lines [][]byte
+	if line != nil {
+		lines = [][]byte{line}
+	}
+	return backupJSONLLines(t, lines, records, leases, footerExtra)
+}
+
+func backupJSONLLines(t *testing.T, lines [][]byte, records, leases int, footerExtra string) []byte {
+	t.Helper()
 	header := []byte("{\"type\":\"kubebrain.logical.v2\",\"prefix\":\"/registry\",\"revision\":42}\n")
 	digest := sha256.New()
 	_, err := digest.Write(header)
 	require.NoError(t, err)
 	var body []byte
-	if line != nil {
-		body = append(append([]byte(nil), line...), '\n')
-		_, err = digest.Write(body)
+	for _, line := range lines {
+		body = append(body, line...)
+		body = append(body, '\n')
+		_, err = digest.Write(line)
+		require.NoError(t, err)
+		_, err = digest.Write([]byte{'\n'})
 		require.NoError(t, err)
 	}
 	sum := hex.EncodeToString(digest.Sum(nil))
