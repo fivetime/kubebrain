@@ -39,6 +39,15 @@ func (e EtcdMetadata) ReadTaskStatus(ctx context.Context, task TaskCreateReceipt
 	if err != nil {
 		return TaskStatusSnapshot{}, err
 	}
+	if err := validateMetadataStatusResponse(resp, []metadataRangeExpectation{
+		{key: []byte(TaskOwnerKey)},
+		{key: []byte("/tidb/br-stream/info/" + task.TaskName)},
+		{key: []byte("/tidb/br-stream/ranges/" + task.TaskName + "/"), prefix: true},
+		{key: []byte("/tidb/br-stream/owner"), prefix: true},
+		{key: []byte(checkpointKey)},
+	}); err != nil {
+		return TaskStatusSnapshot{}, err
+	}
 	value := func(index int) []byte {
 		kvs := resp.Responses[index].GetResponseRange().Kvs
 		if len(kvs) != 1 {

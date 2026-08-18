@@ -46,6 +46,9 @@ func (e EtcdMetadata) DeleteOwnedTask(ctx context.Context, task TaskCreateReceip
 	if err != nil {
 		return false, err
 	}
+	if err := validateMetadataDeleteResponse(resp, 7); err != nil {
+		return false, err
+	}
 	return resp.Succeeded, nil
 }
 

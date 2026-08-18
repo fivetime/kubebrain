@@ -51,6 +51,9 @@ func (e EtcdMetadata) CreateIfAbsent(ctx context.Context, absent, absentPrefixes
 	if err != nil {
 		return false, err
 	}
+	if err := validateMetadataCreateResponse(resp, len(ops)); err != nil {
+		return false, err
+	}
 	return resp.Succeeded, nil
 }
 
