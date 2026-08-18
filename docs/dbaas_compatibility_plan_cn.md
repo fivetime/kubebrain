@@ -56583,6 +56583,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compact metadata 执行。零值单元测试、精确 manifest 和 production/observability 文档同步；相关测试通过。
   本项需要下一生产镜像。
 
+- A5037 闭合 upstream OS file descriptor 的生产资源边界。A4029 已立即并每 10 分钟刷新
+  `os_fd_used/os_fd_limit`，但 refresh-error 仅在事件后出现，production 只做 family 存在门禁；Prometheus
+  scrape timestamp 又会把 retained gauge 看似持续刷新，无法发现底层读取循环停滞。现 server 创建时按
+  `type=used|limit` 初始化 `fd.refresh.err=0` 与 last-success timestamp=0，每次对应 procfs/runtime 读取成功后
+  才更新真实 Unix 秒时间。监控生成 60 秒新鲜的 Ready Pod UID 级 used/limit、两类 error current/30 分钟
+  increase 与 last-success recording，要求来源精确完整；验证 used/limit 为 2^53 内精确整数、limit>0、
+  `used<=limit`，error current 精确非负、increase 有限同范围，timestamp 为正精确值且未来偏差不超过 5 分钟。
+  使用率超过 80% 持续 5 分钟 warning，读取失败 warning，任一类型 20 分钟未成功刷新 warning；缺失、陈旧、
+  非法或类型基数不完整 critical。server 单测固定权威零值、立即/周期刷新、类型标签和 context 停止；精确
+  manifest、production/observability 文档同步，相关测试通过。本项需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

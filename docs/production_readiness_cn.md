@@ -1049,6 +1049,14 @@ MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
 必须在两分钟内跨 Ready replicas 收敛，但 follower current 可因同步延迟短暂不同。刷新失败 warning；
 覆盖缺口、非法值、compact>current 或 compact 持续分歧 critical。该 gauge 刷新失败不替代请求路径对
 compact metadata 的独立读取/执行，排障需以 Range/Watch compacted 行为对账。
+文件描述符指标 `os_fd_used`、`os_fd_limit`、`fd_refresh_err{type="used|limit"}` 与
+`fd_refresh_last_success_timestamp_seconds{type="used|limit"}`；server 在刷新 goroutine 启动前为两类
+error/timestamp 初始化权威 0，随后立即读取并每 10 分钟刷新。production 从 60 秒内 scrape 按 Ready Pod UID
+去重，要求每 Pod 一条 used/limit 以及各两条 error current/30 分钟 increase/last-success。used 必须是
+`[0,2^53]` 精确整数且不大于正数 limit；counter、increase、timestamp 均验证有限值域，timestamp 不得未来
+漂移超过 5 分钟。占用超过 80% 持续 5 分钟 warning，读取失败 warning，任一 type 超过 20 分钟未成功刷新
+warning，覆盖缺失或非法值 critical。scrape timestamp 会随 exporter 保留值更新，不能替代 last-success
+判断刷新是否真正前进。
 MVCC physical compaction 指标 `etcd_debugging_mvcc_db_compaction_last` 与
 `etcd_debugging_mvcc_db_compaction_keys_total`（后者只累计 full/incremental GC 中实际成功
 删除的物理 object-version、object tombstone 与 revision-key tombstone），
