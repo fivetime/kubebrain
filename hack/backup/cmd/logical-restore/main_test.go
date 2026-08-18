@@ -201,6 +201,103 @@ func TestValidateRestorePutTxnResponse(t *testing.T) {
 	}
 }
 
+func TestValidateRestorePreflightTxnResponse(t *testing.T) {
+	header := func(revision int64) *etcdserverpb.ResponseHeader {
+		return &etcdserverpb.ResponseHeader{Revision: revision}
+	}
+	ranged := func(revision, count int64, more bool, kvs ...*mvccpb.KeyValue) *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseRange{
+			ResponseRange: &etcdserverpb.RangeResponse{Header: header(revision), Count: count, More: more, Kvs: kvs},
+		}}
+	}
+	tests := map[string]struct {
+		response *clientv3.TxnResponse
+		keys     []string
+		wantErr  string
+	}{
+		"empty target": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(5, 0, false)}},
+			keys:     []string{"a"},
+		},
+		"previous revision window": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(4, 0, false)}},
+			keys:     []string{"a"},
+		},
+		"empty transaction response": {keys: []string{"a"}, wantErr: "empty transaction response"},
+		"failure branch": {
+			response: &clientv3.TxnResponse{Header: header(5), Responses: []*etcdserverpb.ResponseOp{ranged(5, 0, false)}},
+			keys:     []string{"a"},
+			wantErr:  "failure branch",
+		},
+		"missing outer header": {
+			response: &clientv3.TxnResponse{Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(5, 0, false)}},
+			keys:     []string{"a"},
+			wantErr:  "no valid response revision",
+		},
+		"wrong response count": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true},
+			keys:     []string{"a"},
+			wantErr:  "0 responses for 1 keys",
+		},
+		"nil operation": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{nil}},
+			keys:     []string{"a"},
+			wantErr:  "not a range response",
+		},
+		"wrong operation type": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: header(5)}},
+			}}},
+			keys:    []string{"a"},
+			wantErr: "not a range response",
+		},
+		"missing range header": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{}},
+			}}},
+			keys:    []string{"a"},
+			wantErr: "revision 0 outside",
+		},
+		"stale range revision": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(3, 0, false)}},
+			keys:     []string{"a"},
+			wantErr:  "outside transaction revision window [4,5]",
+		},
+		"future range revision": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(6, 0, false)}},
+			keys:     []string{"a"},
+			wantErr:  "outside transaction revision window [4,5]",
+		},
+		"hidden existing key": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(5, 1, false)}},
+			keys:     []string{"a"},
+			wantErr:  "inconsistent count/more metadata",
+		},
+		"unexpected continuation": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(5, 0, true)}},
+			keys:     []string{"a"},
+			wantErr:  "inconsistent count/more metadata",
+		},
+		"existing key": {
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				ranged(5, 1, false, &mvccpb.KeyValue{Key: []byte("a")}),
+			}},
+			keys:    []string{"a"},
+			wantErr: "refusing to overwrite existing key \"a\"",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := validateRestorePreflightTxnResponse(tc.response, tc.keys)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidateBatchSize(t *testing.T) {
 	require.NoError(t, validateBatchSize(128, 128))
 	require.ErrorContains(t, validateBatchSize(129, 128), "exceeds")

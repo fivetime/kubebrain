@@ -97,6 +97,39 @@ func validateRestorePutTxnResponse(response *clientv3.TxnResponse, expectedPuts 
 	return response.Header.Revision, nil
 }
 
+func validateRestorePreflightTxnResponse(response *clientv3.TxnResponse, keys []string) error {
+	if response == nil {
+		return errors.New("target preflight returned an empty transaction response")
+	}
+	if !response.Succeeded {
+		return errors.New("target preflight unexpectedly selected the failure branch")
+	}
+	if response.Header == nil || response.Header.Revision <= 0 {
+		return errors.New("target preflight returned no valid response revision")
+	}
+	if len(response.Responses) != len(keys) {
+		return fmt.Errorf("target preflight returned %d responses for %d keys", len(response.Responses), len(keys))
+	}
+	for i, op := range response.Responses {
+		if op == nil || op.GetResponseRange() == nil {
+			return fmt.Errorf("target preflight response %d is not a range response", i)
+		}
+		ranged := op.GetResponseRange()
+		revision := ranged.GetHeader().GetRevision()
+		if ranged.Header == nil || revision <= 0 || revision > response.Header.Revision || revision < response.Header.Revision-1 {
+			return fmt.Errorf("target preflight range response %d has revision %d outside transaction revision window [%d,%d]",
+				i, revision, response.Header.Revision-1, response.Header.Revision)
+		}
+		if ranged.More || ranged.Count != int64(len(ranged.Kvs)) {
+			return fmt.Errorf("target preflight range response %d has inconsistent count/more metadata", i)
+		}
+		if len(ranged.Kvs) != 0 {
+			return fmt.Errorf("refusing to overwrite existing key %q; set ALLOW_OVERWRITE=true to replace existing records", keys[i])
+		}
+	}
+	return nil
+}
+
 func validateBatchSize(batchSize, maxTxnOps int) error {
 	if maxTxnOps <= 0 {
 		return fmt.Errorf("MAX_TXN_OPS must be positive")
@@ -229,17 +262,8 @@ func run() (retErr error) {
 			if err != nil {
 				return err
 			}
-			if len(resp.Responses) != len(keys) {
-				return fmt.Errorf("target preflight returned %d responses for %d keys", len(resp.Responses), len(keys))
-			}
-			for i, response := range resp.Responses {
-				ranged := response.GetResponseRange()
-				if ranged == nil {
-					return fmt.Errorf("target preflight response %d is not a range response", i)
-				}
-				if len(ranged.Kvs) != 0 {
-					return fmt.Errorf("refusing to overwrite existing key %q; set ALLOW_OVERWRITE=true to replace existing records", keys[i])
-				}
+			if err := validateRestorePreflightTxnResponse(resp, keys); err != nil {
+				return err
 			}
 			keys = keys[:0]
 			return nil
