@@ -57267,6 +57267,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fail closed。KeysOnly+VALUE 在 upstream 投影前排序，response 已丢弃 value，故仅跳过不可重建的 comparator 复验，
   其余边界仍强制。五类 target、三类 order、合法投影与公开 follower 异常注入回归通过；需要下一生产镜像和监控发布。
 
+- A5101 将核心 KV leader-proxy payload 完整性扩展到 Put write revision 与 PrevKv。对照
+  `/root/etcd/server/etcdserver/txn/put.go::put/checkAndGetPrevKV`，upstream 成功 Put 总是返回正的新 write revision；
+  PrevKv=false 时 response 不携带前值，PrevKv=true 的更新返回同 key、合法存活 generation 且 mod revision 严格早于
+  本次写入，创建可返回 nil。IgnoreValue/IgnoreLease 要求旧 key 存在，因此与 PrevKv 同时请求时 nil 前值不可能。
+  旧 follower proxy 会确认 revision=0、未请求前值泄漏、错 key、损坏/同 revision 前值或必需前值缺失。现 Put 转发在
+  forwarded revision 观察前复用固定 `kv.proxy.integrity_failure{rpc="put"}` 并 DataLoss fail closed；前值 signed lease
+  ID（含 MinInt64）保持合法，不增加标签。通用 create/update/异常 payload 与公开 follower 注入连续十轮通过；需要下一
+  生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
