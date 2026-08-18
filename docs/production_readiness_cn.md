@@ -4423,6 +4423,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   60 秒新鲜的 Ready Pod UID current/10 分钟 increase，并要求 `4×Ready` 完整。current 必须是 `[0,2^53]`
   精确整数、increase 有限同范围，未知 API/Type 也视为 taxonomy 损坏。非客户端取消的任一事件 warning；缺失、
   陈旧、非法或组合不完整同样 warning，不能据此假定 Watch 交付与 LeaseKeepAlive 续租长连接健康。
+- `watch_prev_kv_budget_exhausted` 在 backend shim 构造时初始化权威零值，只统计非压缩历史的冷 PrevKV
+  TiKV lookup 耗尽完整重试预算后仍失败并发送 uncertain nil 的事件；干净无前值、compacted history 与取消不计。
+  production 只消费 60 秒新鲜的 Ready Pod UID current/10 分钟 increase，要求完整覆盖且 current 为
+  `[0,2^53]` 精确整数、increase 有限同范围。任一事件或缺失、陈旧、非法 telemetry 均 warning；前者可能触发
+  Kubernetes cacher re-list 放大，后者不能证明存储退化期间 `WithPrevKV` 更新仍保留 previous value。
 - `watch_backend_integrity_failure{kind="invalid_result|invalid_revision"}` 每个 RPC server 初始化两类权威零值；
   production 只消费 60 秒内 Ready Pod UID/kind current 与 10 分钟 increase，要求两类均 `2×Ready` 完整，
   current 为 `[0,2^53]` 精确整数、increase 有限同范围。任一事件或缺失、陈旧、非法、不完整 telemetry 均

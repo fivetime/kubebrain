@@ -56891,6 +56891,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   可能使 lease 到期。既有回归已固定四类零值、真实 send/receive 错误与取消过滤；精确 production 测试通过。
   本项只消费已有数据面合同，需要下一生产监控发布，不重建数据面镜像。
 
+- A5063 闭合 Watch 冷 `PrevKV` lookup 耗尽完整 TiKV 重试预算后发送 uncertain nil 却可能静默的生产缺口。
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go`：upstream 在本地 `ModRevision-1` Range 失败或历史已压缩
+  时省略 PrevKV 而不终止 Watch，因此不能把 KubeBrain 的最终 fallback 误改为 stream error；但 KubeBrain 的
+  等价读取跨独立 TiKV，连续失败会让 Kubernetes consumer 终止全部相关 watcher 并 re-list，形成读放大反馈。
+  旧 `watch.prev_kv.budget_exhausted` 只在首个事故后动态创建，production 无法区分权威零事件与 family 缺失。
+  现 backend shim 构造时先初始化零值，既有完整预算出口继续递增；已压缩历史、干净无前值与 cancellation 不计。
+  production 从 60 秒新鲜 raw sample 生成 Ready Pod UID current/10 分钟 increase，要求完整覆盖，current 为
+  `[0,2^53]` 精确整数、increase 有限同范围；任一事件或缺失、陈旧、非法 telemetry 均 warning。回归以持久
+  storage failure 固定“先 0、预算耗尽后 +1”，并证明 uncertain nil 不进入 cache、恢复后同一事件可取回真实
+  previous value；transient recovery 与 shim shutdown 取消边界保持通过。需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
