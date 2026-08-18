@@ -131,17 +131,17 @@ func (b *backend) NoSpaceAlarms(ctx context.Context) ([]uint64, error) {
 
 func (b *backend) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error) {
 	quota = b.config.QuotaBackendBytes
-	if quota == 0 {
+	if quota <= 0 {
 		_, alarmErr := b.InternalGet(ctx, quotaAlarmKey)
 		switch {
 		case alarmErr == nil:
 			noSpace = true
 		case errors.Is(alarmErr, storage.ErrKeyNotFound):
 		default:
-			return 0, 0, false, alarmErr
+			return 0, quota, false, alarmErr
 		}
 		b.emitQuotaMetrics(0, noSpace)
-		return 0, 0, noSpace, nil
+		return 0, quota, noSpace, nil
 	}
 	tracking, trackingErr := b.InternalGet(ctx, quotaTrackingKey)
 	if trackingErr != nil || !bytes.Equal(tracking, quotaTrackingClean) {
@@ -175,7 +175,7 @@ func (b *backend) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace 
 }
 
 func (b *backend) EnsureQuotaInitialized(ctx context.Context) error {
-	if b.config.QuotaBackendBytes == 0 {
+	if b.config.QuotaBackendBytes <= 0 {
 		return b.InternalPut(ctx, quotaTrackingKey, quotaTrackingDirty)
 	}
 	b.logicalWriteMu.Lock()

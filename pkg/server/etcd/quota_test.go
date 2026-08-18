@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -47,6 +48,37 @@ func newQuotaRPCServer(t *testing.T, quota int64) *RPCServer {
 		ctrl.Finish()
 	})
 	return server
+}
+
+func TestNegativeQuotaDisablesEnforcementAndIsReported(t *testing.T) {
+	server := newQuotaRPCServer(t, -1)
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = client.Put(ctx, "large", string(make([]byte, 1024)))
+	require.NoError(t, err)
+	response, err := client.Status(ctx, "bufnet")
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), response.DbSizeQuota)
+
+	alarms, err := client.AlarmList(ctx)
+	require.NoError(t, err)
+	require.Empty(t, alarms.Alarms)
 }
 
 func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {

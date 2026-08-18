@@ -110,6 +110,18 @@ func newQuotaBackend(t *testing.T, quota int64) (*backend, context.Context) {
 	return b, context.Background()
 }
 
+func TestNegativeLogicalQuotaDisablesEnforcement(t *testing.T) {
+	b, ctx := newQuotaBackend(t, -1)
+	_, _, err := b.TxnApply(ctx, []TxnWriteOp{{Key: []byte("large"), Value: bytes.Repeat([]byte("x"), 1024)}}, nil)
+	require.NoError(t, err)
+
+	usage, quota, alarm, err := b.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.Zero(t, usage)
+	require.Equal(t, int64(-1), quota)
+	require.False(t, alarm)
+}
+
 func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	b, ctx := newQuotaBackend(t, 10)
 	key := []byte("a")

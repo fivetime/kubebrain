@@ -342,6 +342,15 @@ func TestAuthTokenValidationRejectsInvalidStartupProviders(t *testing.T) {
 	}
 }
 
+func TestNegativeBackendQuotaDisablesQuota(t *testing.T) {
+	o := NewOptions()
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	o.AddFlags(fs)
+	require.NoError(t, fs.Parse([]string{"--pd-addrs=127.0.0.1:2379", "--quota-backend-bytes=-1"}))
+	require.NoError(t, o.Validate())
+	require.Equal(t, int64(-1), o.quotaBackendBytes)
+}
+
 func TestTransportLimitValidationRejectsInvalidStartupFlags(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -372,11 +381,6 @@ func TestTransportLimitValidationRejectsInvalidStartupFlags(t *testing.T) {
 			name: "age without positive grace",
 			args: []string{"--grpc-max-connection-age=1h", "--grpc-max-connection-age-grace=0"},
 			want: "grpc max connection age grace must be positive",
-		},
-		{
-			name: "negative backend quota",
-			args: []string{"--quota-backend-bytes=-1"},
-			want: "--quota-backend-bytes must be non-negative",
 		},
 		{
 			name: "negative storage gc lifetime",
