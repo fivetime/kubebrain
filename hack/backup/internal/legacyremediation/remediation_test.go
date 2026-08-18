@@ -37,6 +37,9 @@ type fakeEtcdClient struct {
 	snapshotBytes []byte
 	snapshotClose error
 	snapshotCalls int
+	snapshotReply *clientv3.SnapshotResponse
+	snapshotErr   error
+	snapshotRaw   bool
 	compacted     bool
 	compactRev    int64
 }
@@ -44,8 +47,8 @@ type fakeEtcdClient struct {
 func validRemediationStatus(clusterID uint64, revision int64) *clientv3.StatusResponse {
 	return &clientv3.StatusResponse{
 		Header:  &etcdserverpb.ResponseHeader{ClusterId: clusterID, MemberId: 17, Revision: revision},
-		Version: "3.7.0",
-		Leader:  17,
+		Version: "3.7.0", StorageVersion: "3.7.0",
+		Leader: 17,
 	}
 }
 
@@ -59,12 +62,15 @@ func (r closeErrorReader) Close() error { return r.err }
 func (f *fakeEtcdClient) Status(context.Context, string) (*clientv3.StatusResponse, error) {
 	return f.status, nil
 }
-func (f *fakeEtcdClient) Snapshot(context.Context) (io.ReadCloser, error) {
+func (f *fakeEtcdClient) SnapshotWithVersion(context.Context) (*clientv3.SnapshotResponse, error) {
 	f.snapshotCalls++
+	if f.snapshotRaw {
+		return f.snapshotReply, f.snapshotErr
+	}
 	if !f.compacted {
 		return nil, errors.New(LegacyDiagnostic + `: key "/old"; minimum physical compact revision 3`)
 	}
-	return closeErrorReader{Reader: bytes.NewReader(f.snapshotBytes), err: f.snapshotClose}, nil
+	return &clientv3.SnapshotResponse{Version: "3.7.0", Snapshot: closeErrorReader{Reader: bytes.NewReader(f.snapshotBytes), err: f.snapshotClose}}, nil
 }
 
 type failingWriter struct{ err error }
@@ -93,8 +99,35 @@ func TestDownloadRejectsSnapshotWhenResponseCloseFails(t *testing.T) {
 	client := &fakeEtcdClient{compacted: true, snapshotBytes: validSnapshotArtifact(t), snapshotClose: closeErr}
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 
-	err := downloadAndValidate(context.Background(), client, path)
+	err := downloadAndValidate(context.Background(), client, path, "3.7.0")
 
+	require.ErrorIs(t, err, closeErr)
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestDownloadRejectsMalformedSnapshotResponsesAndClosesReaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	client := &fakeEtcdClient{snapshotRaw: true}
+	err := downloadAndValidate(context.Background(), client, path, "3.7.0")
+	require.ErrorContains(t, err, "empty response")
+
+	client.snapshotReply = &clientv3.SnapshotResponse{Version: "3.7.0"}
+	err = downloadAndValidate(context.Background(), client, path, "3.7.0")
+	require.ErrorContains(t, err, "empty reader")
+
+	closeErr := errors.New("close mismatched snapshot")
+	client.snapshotReply = &clientv3.SnapshotResponse{Version: "3.6.0", Snapshot: closeErrorReader{Reader: bytes.NewReader(nil), err: closeErr}}
+	err = downloadAndValidate(context.Background(), client, path, "3.7.0")
+	require.ErrorContains(t, err, "does not match")
+	require.ErrorIs(t, err, closeErr)
+
+	transportErr := errors.New("snapshot transport failed")
+	closeErr = errors.New("close mixed snapshot")
+	client.snapshotReply = &clientv3.SnapshotResponse{Version: "3.7.0", Snapshot: closeErrorReader{Reader: bytes.NewReader(nil), err: closeErr}}
+	client.snapshotErr = transportErr
+	err = downloadAndValidate(context.Background(), client, path, "3.7.0")
+	require.ErrorIs(t, err, transportErr)
 	require.ErrorIs(t, err, closeErr)
 	_, statErr := os.Stat(path)
 	require.ErrorIs(t, statErr, os.ErrNotExist)
@@ -137,10 +170,12 @@ func TestValidateStatusResponse(t *testing.T) {
 		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 0, Revision: 11}, Version: "3.7.0", Leader: 17},
 		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Leader: 17},
 		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "not-semver", Leader: 17},
-		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", Leader: 17, DbSize: -1},
-		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", Leader: 17, DbSizeInUse: -1},
-		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0"},
-		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", Leader: 17, Errors: []string{"unhealthy"}},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", Leader: 17},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", StorageVersion: "not-semver", Leader: 17},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", StorageVersion: "3.7.0", Leader: 17, DbSize: -1},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", StorageVersion: "3.7.0", Leader: 17, DbSizeInUse: -1},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", StorageVersion: "3.7.0"},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", StorageVersion: "3.7.0", Leader: 17, Errors: []string{"unhealthy"}},
 	}
 	for i, status := range tests {
 		require.Error(t, validateStatusResponse(status), i)

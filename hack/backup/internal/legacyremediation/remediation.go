@@ -43,7 +43,7 @@ type Result struct {
 
 type etcdClient interface {
 	Status(context.Context, string) (*clientv3.StatusResponse, error)
-	Snapshot(context.Context) (io.ReadCloser, error)
+	SnapshotWithVersion(context.Context) (*clientv3.SnapshotResponse, error)
 	Compact(context.Context, int64, ...clientv3.CompactOption) (*clientv3.CompactResponse, error)
 }
 
@@ -145,7 +145,7 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 		}
 	}()
 	probe := filepath.Join(probeDir, "preflight.db")
-	err = downloadAndValidate(ctx, cli, probe)
+	err = downloadAndValidate(ctx, cli, probe, status.StorageVersion)
 	if err == nil {
 		result.SnapshotStatus = "healthy"
 		if _, err = fmt.Fprintln(out, "snapshot_status=healthy"); err != nil {
@@ -214,7 +214,7 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 			exitCode = 1
 		}
 	}()
-	if err = downloadAndValidate(ctx, cli, candidatePath); err != nil {
+	if err = downloadAndValidate(ctx, cli, candidatePath, status.StorageVersion); err != nil {
 		return result, 1, fmt.Errorf("post-compaction snapshot: %w", err)
 	}
 	if err = os.Link(candidatePath, c.Output); err != nil {
@@ -255,6 +255,12 @@ func validateStatusResponse(status *clientv3.StatusResponse) error {
 	if _, err := semver.StrictNewVersion(status.Version); err != nil {
 		return errors.New("endpoint returned an invalid server version")
 	}
+	if status.StorageVersion == "" {
+		return errors.New("endpoint returned an empty storage version")
+	}
+	if _, err := semver.StrictNewVersion(status.StorageVersion); err != nil {
+		return errors.New("endpoint returned an invalid storage version")
+	}
 	if status.DbSize < 0 || status.DbSizeInUse < 0 {
 		return errors.New("endpoint returned invalid database sizes")
 	}
@@ -271,10 +277,23 @@ func validateCompactResponse(response *clientv3.CompactResponse, clusterID uint6
 	return nil
 }
 
-func downloadAndValidate(ctx context.Context, cli etcdClient, path string) (retErr error) {
-	reader, err := cli.Snapshot(ctx)
+func downloadAndValidate(ctx context.Context, cli etcdClient, path, expectedStorageVersion string) (retErr error) {
+	response, err := cli.SnapshotWithVersion(ctx)
 	if err != nil {
+		if response != nil && response.Snapshot != nil {
+			return errors.Join(err, response.Snapshot.Close())
+		}
 		return err
+	}
+	if response == nil {
+		return errors.New("snapshot returned an empty response")
+	}
+	if response.Snapshot == nil {
+		return errors.New("snapshot returned an empty reader")
+	}
+	reader := response.Snapshot
+	if response.Version != expectedStorageVersion {
+		return errors.Join(fmt.Errorf("snapshot storage version %q does not match endpoint %q", response.Version, expectedStorageVersion), reader.Close())
 	}
 	defer func() {
 		if closeErr := reader.Close(); closeErr != nil {
