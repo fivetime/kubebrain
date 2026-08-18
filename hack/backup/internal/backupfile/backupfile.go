@@ -21,6 +21,8 @@ import (
 const (
 	Format       = "kubebrain.logical.v2"
 	LegacyFormat = "kubebrain.logical.v1"
+	// Keep this aligned with upstream etcd server/lease.MaxLeaseTTL.
+	maxLeaseTTLSeconds int64 = 9000000000
 )
 
 type Header struct {
@@ -100,7 +102,7 @@ func (w *AtomicWriter) AddLease(lease record.Lease) error {
 		return errors.New("backup writer is closed")
 	}
 	lease.Type = "lease"
-	if lease.ID == 0 || lease.TTL <= 0 || lease.GrantedTTL < 0 {
+	if lease.ID == 0 || lease.TTL <= 0 || lease.GrantedTTL < 0 || lease.GrantedTTL > maxLeaseTTLSeconds {
 		return fmt.Errorf("invalid lease id=%d ttl=%d granted_ttl=%d", lease.ID, lease.TTL, lease.GrantedTTL)
 	}
 	if err := w.writeHashedJSON(lease); err != nil {
@@ -383,7 +385,7 @@ func validate(reader io.Reader) (Status, error) {
 			if err := decodeBackupLine(line, &lease, true); err != nil {
 				return Status{}, fmt.Errorf("invalid backup lease %d: %w", leases+1, err)
 			}
-			if lease.ID == 0 || lease.TTL <= 0 || lease.GrantedTTL < 0 {
+			if lease.ID == 0 || lease.TTL <= 0 || lease.GrantedTTL < 0 || lease.GrantedTTL > maxLeaseTTLSeconds {
 				return Status{}, fmt.Errorf("invalid backup lease id=%d ttl=%d granted_ttl=%d", lease.ID, lease.TTL, lease.GrantedTTL)
 			}
 			if _, exists := seenLeases[lease.ID]; exists {

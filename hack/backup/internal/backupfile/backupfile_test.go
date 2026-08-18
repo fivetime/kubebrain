@@ -122,6 +122,30 @@ func TestAddLeaseAcceptsEtcdPromotionExtensionAboveGrantedTTL(t *testing.T) {
 	require.NoError(t, writer.AddLease(record.Lease{ID: 123, TTL: 30, GrantedTTL: 29}))
 }
 
+func TestAddLeaseBoundsGrantedTTLAtEtcdMaximum(t *testing.T) {
+	writer, err := NewAtomicWriter(filepath.Join(t.TempDir(), "backup.jsonl"), "/registry", 42)
+	require.NoError(t, err)
+	defer func() { _ = writer.Abort() }()
+	require.NoError(t, writer.AddLease(record.Lease{
+		ID: 123, TTL: maxLeaseTTLSeconds, GrantedTTL: maxLeaseTTLSeconds,
+	}))
+	require.ErrorContains(t, writer.AddLease(record.Lease{
+		ID: 124, TTL: 30, GrantedTTL: maxLeaseTTLSeconds + 1,
+	}), "invalid lease")
+}
+
+func TestOpenVerifiedRejectsOversizedGrantedTTL(t *testing.T) {
+	contents := backupJSONL(t, []byte(fmt.Sprintf(
+		`{"type":"lease","id":123,"ttl":%d,"granted_ttl":%d}`,
+		30, maxLeaseTTLSeconds+1,
+	)), 0, 1, "")
+	path := filepath.Join(t.TempDir(), "oversized-grant.jsonl")
+	require.NoError(t, os.WriteFile(path, contents, 0o600))
+
+	_, err := OpenVerified(path)
+	require.ErrorContains(t, err, fmt.Sprintf("granted_ttl=%d", maxLeaseTTLSeconds+1))
+}
+
 func TestOpenVerifiedRejectsTruncatedAndCorruptBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "backup.jsonl")
 	writer, err := NewAtomicWriter(path, "/registry", 42)
