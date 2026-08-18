@@ -57366,6 +57366,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   独立计数器，不添加错误的大小关系。disabled/enabled 正 revision、transport error 与公开零值注入连续十轮通过；需要
   下一生产镜像和监控发布。
 
+- A5112 将 Auth leader-proxy payload 完整性扩展到 Authenticate.Token。对照
+  `/root/etcd/server/auth/{store.go::Authenticate,simple_token.go::assign,jwt.go::assign,nop.go::assign}`：nop provider
+  只能以 `ErrAuthFailed` 返回空 token；simple 即使 prefix 为空也生成 `.index`，JWT 签名成功也非空。因此成功响应 token
+  必须非空，但格式属于配置相关 opaque credential，不能强制 simple/JWT 结构或最小长度。旧 follower proxy 会确认空 token，
+  让客户端收到无法用于后续鉴权的伪成功。现 Authenticate 在 forwarded revision 观察前拒绝空 token，违例只递增固定
+  `auth.proxy.integrity_failure{action="authenticate"}` 并 DataLoss fail closed；既有 defer 仍清除 ingress request protobuf
+  中的明文密码。opaque token、空 prefix simple token、transport error、密码清除与公开空 token 注入连续十轮通过；需要
+  下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

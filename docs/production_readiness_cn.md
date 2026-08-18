@@ -4557,6 +4557,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   不得误报。
   AuthStatus 的 `AuthRevision` 必须非零；enabled/disabled 均可合法携带任意正 auth revision，且该独立计数器不能与
   KV header revision 比较。
+  Authenticate success 必须携带非空 token；token 格式保持 opaque（simple/JWT 均可），payload 拒绝路径仍必须清除
+  follower 请求 protobuf 中的明文密码。
   nil/mixed/missing-header/negative-revision 也拒绝。production 要求
   60 秒新鲜 Ready Pod UID current/10 分钟 increase `17×Ready` 完整、值合法且拒绝未知 action；任一事件或 telemetry
   缺失、陈旧、非法、组合不完整均 critical。
