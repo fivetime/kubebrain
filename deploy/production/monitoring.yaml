@@ -209,6 +209,22 @@ spec:
           expr: count(((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > on(namespace, pod, uid) (kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) + count(((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_watch_streams:max_by_pod
+          expr: max by (namespace, pod, uid) (etcd_debugging_mvcc_watch_stream_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_mvcc_watch_stream_total{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_watchers:max_by_pod
+          expr: max by (namespace, pod, uid) (etcd_debugging_mvcc_watcher_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_mvcc_watcher_total{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_slow_watchers:max_by_pod
+          expr: max by (namespace, pod, uid) (etcd_debugging_mvcc_slow_watcher_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_mvcc_slow_watcher_total{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_watch_gauges_invalid_values:count
+          expr: count(((kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > on(namespace, pod, uid) (kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) or ((kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:fd_used:max_by_pod
           expr: max by (namespace, pod, uid) (os_fd_used{namespace="kubebrain-system"} and (time() - timestamp(os_fd_used{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1121,6 +1137,30 @@ spec:
           annotations:
             summary: KubeBrain MVCC revision telemetry is incomplete or contradictory
             description: "Every Ready Pod UID must expose fresh current/compact revisions and authoritative-zero compact-refresh error current/increase. Current must be a positive exact integer, compact a non-negative exact integer no greater than that Pod's current revision, values must not exceed 2^53, and the shared compact watermark must converge across replicas. Current revisions may transiently differ on followers. Missing, stale, invalid, or persistently divergent compact telemetry cannot prove etcd revision semantics."
+        - alert: KubeBrainWatchCapacityHigh
+          expr: max(kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 8000 or max(kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 8000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain Watch capacity is high
+            description: "A current Ready replica has more than 8000 active logical backend watchers or Watch RPC streams for five minutes. Production config admits at most 10000 etcd logical watches per process; investigate client fan-out, empty streams, endpoint imbalance, and native Watch traffic before resource exhaustion."
+        - alert: KubeBrainSlowWatchersPersistent
+          expr: max(kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain Watch catch-up remains active
+            description: "At least one current Ready replica has a backend watcher in ring catch-up for five minutes. A brief nonzero value is self-healing flow control; persistence indicates a slow consumer or insufficient catch-up throughput and can precede ring eviction or expensive client re-listing."
+        - alert: KubeBrainWatchGaugeMetricsMissing
+          expr: absent(kubebrain_dbaas:mvcc_watch_gauges_invalid_values:count) == 1 or count(kubebrain_dbaas:mvcc_watch_streams:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:mvcc_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:mvcc_slow_watchers:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:mvcc_watch_gauges_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain Watch gauge telemetry is incomplete
+            description: "Every Ready Pod UID must expose fresh stream, watcher, and slow-watcher gauges. Values must be non-negative exact integers no greater than 2^53, and slow watchers cannot exceed that Pod's total backend watchers. The one-second refresh publishes authoritative zero while idle; missing, stale, or invalid telemetry cannot be interpreted as no Watch load or catch-up pressure."
         - alert: KubeBrainFileDescriptorUsageHigh
           expr: max((kubebrain_dbaas:fd_used:max_by_pod / on(namespace, pod, uid) kubebrain_dbaas:fd_limit:max_by_pod) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0.8
           for: 5m
