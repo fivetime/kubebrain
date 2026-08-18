@@ -57657,6 +57657,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `snapshot-1` 明确 fail closed；定向二十轮、包级 race、完整非 production、production 326 项四分片与 vet
   全部通过。本项不要求导出期间 revision 停止推进，也不改变 artifact schema、服务端 header、在线 lease 或 TiKV 数据。
 
+- A5145 修复 logical exporter 会把异常分页响应发布成“完整”备份的问题。旧循环仅在首个 Range header 非 nil
+  时固定 revision，首 revision 为 0 会生成后续无法验读的 artifact，后续缺 header 或 revision 落后则完全忽略；
+  更危险的是 `More=true,Kvs=[]` 会走正常 break 并提交已读取前缀，形成 digest/footer 都正确的静默截断制品。
+  现每页统一要求非 nil 响应/header、正 revision、后续 revision 不早于 snapshot，并要求 continuation 页非空；
+  空 keyspace 和正常空末页继续合法。回归固定初始空页、非空 continuation 正例，以及 nil、缺 header、revision 0、
+  stale revision、空 continuation 反例。定向二十轮、包级 race、完整非 production、production 326 项四分片与
+  vet 全部通过。本项不改变 Range wire 语义、logical.v2 schema、在线数据或 TiKV 路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
