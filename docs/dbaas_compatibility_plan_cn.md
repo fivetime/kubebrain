@@ -57624,6 +57624,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   完整转换包及 race 通过。文档同时明确 logical restore 经公开 LeaseGrant 创建新 ID，不能声称精确保留 backend
   checkpoint envelope。本项不改变 logical.v2 格式、源 artifact、在线 lease 或 TiKV 数据。
 
+- A5141 把 upstream lease grant 上限提升为 `kubebrain.logical.v2` 的共同制品准入约束。对照
+  `/root/etcd/server/lease/lessor.go::Grant`，成功 grant 的 TTL 不可能超过
+  `MaxLeaseTTL=9,000,000,000`；旧 writer/reader 仅拒绝负 `GrantedTTL`，使摘要正确但超限的制品可通过
+  status、verify、logical restore 与 cold witness 入口，直到 snapshot 转换才失败。现 writer 与
+  `OpenVerified` 同时拒绝超一秒，精确最大值正例成功；手工构造的 digest-valid 超限 artifact 固定 reader
+  在共同入口 fail closed。旧 v2 `GrantedTTL=0` 兼容性、promotion grace 的 `TTL>GrantedTTL` 和较短 checkpoint
+  均保持。定向二十轮、包级普通/race、完整非 production、production 326 项四分片与 vet 全部通过。
+  本项不改变 logical.v2 schema、在线 lease、TiKV 数据路径或已发布合法制品。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

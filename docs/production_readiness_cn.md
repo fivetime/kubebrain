@@ -4645,7 +4645,9 @@ lease 行固定源 ID 和导出时的正数剩余 TTL，尾行记录/lease 总�
 记录的 SHA-256。导出先写同目录临时文件，完成
 `fsync` 后原子 rename 并同步父目录；中断导出不会把不完整内容发布到目标路径。
 `logical-status.sh`、restore 和 verify 都会先复制并验证完整文件，缺 footer、记录数
-不符、内容篡改或 footer 后附加数据均 fail closed。restore 在任何 etcd 写入前完成
+不符、内容篡改、footer 后附加数据或 `granted_ttl` 超过 upstream
+`MaxLeaseTTL=9,000,000,000` 均 fail closed；精确最大值合法，旧 v2 制品缺省的
+`granted_ttl=0` 继续兼容，promotion grace 导致的 remaining TTL 高于 grant 也不会被误拒绝。restore 在任何 etcd 写入前完成
 验证，并按 `BATCH_SIZE` 把 compare 与 Put 放入同一个 Txn，使单批冲突不会部分落盘。
 header、record、lease 和 footer 行均使用严格 JSON schema 解码，拒绝未知字段和同一行内
 拼接的第二个 JSON 值；扩展逻辑备份格式必须先升级 format/schema，不能把额外字段混入
