@@ -41,6 +41,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
@@ -727,13 +728,13 @@ func TestFollowerHashesHedgeIsolatedStorageAndPreserveRevision(t *testing.T) {
 			} else {
 				require.Same(t, hashKVRequest, got)
 			}
-			response := *hashKVResponse
+			response := proto.Clone(hashKVResponse).(*etcdserverpb.HashKVResponse)
 			if got.GetRevision() == 0 {
 				response.HashRevision = response.GetHeader().GetRevision()
 			} else {
 				response.HashRevision = got.GetRevision()
 			}
-			return &response, nil
+			return response, nil
 		},
 	}
 

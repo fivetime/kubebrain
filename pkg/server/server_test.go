@@ -375,6 +375,10 @@ func TestRevisionHandlerRestoresColdLeaderFromDurableRevision(t *testing.T) {
 	b := backend.NewBackend(kv, backend.Config{
 		Prefix: "/registry", Identity: "cold-revision", EnableEtcdCompatibility: true,
 	}, metrics)
+	// Production initializes an empty etcd-compatible leader at revision 1
+	// before admitting writes. Establish the same collector baseline here so
+	// the first transaction does not manufacture an impossible revision-1 hole.
+	b.SetCurrentRevision(1)
 	_, writtenRevision, err := b.TxnApply(context.Background(), []backend.TxnWriteOp{{
 		Key: []byte("cold/revision"), Value: []byte("value"),
 	}}, nil)
