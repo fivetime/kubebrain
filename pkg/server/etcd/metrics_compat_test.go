@@ -649,6 +649,21 @@ func TestLeaseUncertainReconcileMetricsInitializeAuthoritativeZero(t *testing.T)
 	}, rec.counters)
 }
 
+func TestLeaseBackgroundFailureMetricsUseFixedOperations(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initLeaseBackgroundFailureMetrics(rec)
+	emitLeaseBackgroundFailure(rec, "checkpoint")
+	emitLeaseBackgroundFailure(rec, "expire_delete")
+
+	require.Equal(t, []recordedCounter{
+		{name: "lease.background.failure", value: int64(0), tags: []metrics.T{metrics.Tag("operation", "checkpoint")}},
+		{name: "lease.background.failure", value: int64(0), tags: []metrics.T{metrics.Tag("operation", "expire_delete")}},
+		{name: "lease.background.failure", value: 1, tags: []metrics.T{metrics.Tag("operation", "checkpoint")}},
+		{name: "lease.background.failure", value: 1, tags: []metrics.T{metrics.Tag("operation", "expire_delete")}},
+	}, rec.counters)
+}
+
 func TestEtcdLeaseLifecycleMetricsUseUpstreamMetricNames(t *testing.T) {
 	rec := &recordingMetrics{}
 

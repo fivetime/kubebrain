@@ -1612,6 +1612,7 @@ func (m *leaseManager) expireLeaseGenerationWithContext(workerCtx context.Contex
 	// rather than swallowing the error and orphaning the surviving keys (#36).
 	if _, err := m.deleteLeasedKeysAtomic(ctx, id, keys); err != nil {
 		m.srv.metricCli.EmitCounter("lease.expire.delete.err", 1)
+		emitLeaseBackgroundFailure(m.srv.metricCli, "expire_delete")
 		klog.ErrorS(err, "lease expiry: atomic delete of bound keys failed; keeping lease for retry", "lease", id, "keys", len(keys))
 		m.retryLeaseExpiry(id, generation)
 		return
@@ -2751,6 +2752,7 @@ func (m *leaseManager) checkpointLeaseGenerationWithContext(workerCtx context.Co
 	emitEtcdLeaseCheckpointDurations(m.srv.metricCli, time.Since(applyStart), err)
 	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.checkpoint.err", 1)
+		emitLeaseBackgroundFailure(m.srv.metricCli, "checkpoint")
 		klog.ErrorS(err, "lease checkpoint: failed to persist remaining TTL", "lease", id, "remainingTTL", remainingTTL)
 		m.retryLeaseCheckpoint(id, generation)
 		return

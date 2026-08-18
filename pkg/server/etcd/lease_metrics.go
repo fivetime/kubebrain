@@ -38,6 +38,22 @@ func initLeaseUncertainReconcileMetrics(metricCli metrics.Metrics) {
 	}
 }
 
+func initLeaseBackgroundFailureMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, operation := range []string{"checkpoint", "expire_delete"} {
+		_ = metricCli.EmitCounter("lease.background.failure", int64(0), metrics.Tag("operation", operation))
+	}
+}
+
+func emitLeaseBackgroundFailure(metricCli metrics.Metrics, operation string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("lease.background.failure", 1, metrics.Tag("operation", operation))
+}
+
 func emitEtcdLeaseGrantedCounter(metricCli metrics.Metrics, value int) {
 	if metricCli == nil {
 		return
