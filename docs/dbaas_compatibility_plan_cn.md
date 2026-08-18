@@ -56691,6 +56691,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   critical。固定 taxonomy、取消降噪、真实 epoch fence、完整 server 与精确 production 测试通过；需要下一
   生产镜像和监控发布。
 
+- A5047 修复 LeaseGrant 失败补偿释放 ID 过早及跨代误删风险。旧路径在 metadata write 返回错误后 best-effort
+  `deleteLeaseState`，无论清理是否失败都立即移除 `pendingLeases`；可能已提交的 grant metadata 因 TiKV/CORRUPT
+  故障未清掉时，同任期显式同 ID regrant 可越过 reservation，领导权 reload 也可能复活失败 RPC 的记录。现首次
+  compensation 失败会保留 generation-scoped reservation 并启动 100ms→1s 有界指数退避，同 ID grant 在终结前
+  返回 LeaseExist；success 仅在完整 `{id,incarnation,ttl}` exact CAS 删除成功或确认记录不存在后释放。所有 pending
+  release 均按 generation 条件执行，lease state reset 清空旧 map，迟到旧请求不能删除新 reservation。补偿删除
+  同时受 leadership epoch、generation、opt-in 原子 CORRUPT commit guard 和 exact metadata CAS 保护；记录值不同、
+  generation/epoch 变化或 worker 关闭均 handoff 给新 leader authoritative reload，旧代绝不猜测删除。新增固定
+  `lease.grant_cleanup{outcome="retry|success|handoff"}` 三类权威零值，production 要求 Ready Pod UID/outcome
+  current/increase `3×Ready` 完整且值合法；retry warning 并要求后续 success/handoff，缺失、陈旧、非法或 outcome
+  不完整 critical。回归覆盖 cleanup 恢复前 ID 隔离、后台成功、generation-conditional release、不同 incarnation
+  保留、CORRUPT fail-closed；backend/server 完整包及精确 production 测试通过。需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

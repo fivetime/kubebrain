@@ -1125,6 +1125,13 @@ migration/seal、user/legacy attachment read 与解析、compare-delete 和 atta
 任一增量 critical；`migration`、`seal`、`key_compare`、`attachment_delete` 保留 durable retry marker 且不猜测
 删除矛盾用户数据，任一增量 warning。正常领导权
 context 取消不会递增规范 failure；缺失、陈旧、非法或 stage 不完整 critical。
+失败 LeaseGrant 的 metadata compensation 由 `lease_grant_cleanup{outcome="retry|success|handoff"}` 表达，三类
+outcome 在 RPC server 创建时发布权威零值。失败写可能已经提交，因此首次 exact-incarnation 删除失败时继续保留
+同 generation ID reservation 并后台退避，禁止显式同 ID grant 越过未决清理；删除同时受 generation、leader
+epoch、原子 CORRUPT alarm guard 和完整 metadata CAS 保护。metadata 缺失或精确删除产生 success；领导权/
+generation 变化或记录已属于其他 incarnation 产生 handoff，旧代不再删除而由新 leader durable reload 判定。
+production 生成 Ready Pod UID/outcome current 与 10 分钟 increase，要求 `3×Ready` 完整及合法 counter；retry
+任一增量 warning，需确认后续 success 或 handoff，缺失、陈旧、非法或 outcome 不完整 critical。
 `promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；
