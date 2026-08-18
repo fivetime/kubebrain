@@ -3846,6 +3846,10 @@ RUN_BACKEND_QUORUM_FAULT_SMOKE=true hack/dev/verify.sh
 `TestBackendQuorumFailoverKeepsServing`，要求持续完成 KV/lease/MemberList/linearized
 proposal 操作，瞬态后端窗口只能表现为可重试错误；每轮故障后必须重新等待 TidbCluster
 Ready 并留出 settle 窗口，避免只验证 Pod Ready 而漏掉 region/PD client routing 恢复。
+组合 PD quorum + TiKV member/quorum 门禁由
+`hack/dev/partition-pd-quorum-and-tikv-member.sh` 协调两个 fault runner；两端都必须先发布
+ready 才进入持有窗口，任一 child 在 ready 前非零退出时 wrapper 保留其退出码并报告故障身份，
+正常提前退出则明确拒绝，所有失败路径都会终止并回收另一 child 的网络规则。
 
 可选 count-index failover smoke：
 

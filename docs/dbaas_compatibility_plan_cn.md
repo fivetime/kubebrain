@@ -57510,6 +57510,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   option 回归连续十轮通过；既有正 quota 官方 client/v3 Put/Status/Alarm 黑盒继续覆盖实际计量、NOSPACE 和公开上限。本项不改变
   backend 存储编码或已显式配置的正 quota，需要下一生产镜像和监控发布。
 
+- A5127 修复组合 PD quorum + TiKV partition 生产门禁自身的 fail-fast 盲区。全仓测试暴露
+  `partition_pd_quorum_and_tikv_member_test.go` 的 fake runner 从未实现真实 child 的 ready/release 文件协议，导致 success 路径
+  必然在 ready 前结束；修正夹具后又证明 wrapper 在 child 非零提前退出时会被 `set -e` 截断于裸 `wait`，丢失 child 身份和
+  原始状态码。现 fake runner 在故障建立后发布 ready、等待 release，启动失败则在 ready 前退出；wrapper 在两个 ready 检查
+  分支显式捕获 `wait` 状态，非零时报告 `pd-quorum`/`tikv-{member,quorum}` 并原样退出，零值提前结束仍给出专用诊断，EXIT trap
+  始终终止并等待兄弟 child。success、TiKV status=23 和 clean early-exit 三路径连续十轮通过，全仓、vet 与四路 production shards
+  全部 GREEN。该项不改变 etcd 客户端可观察语义或 TiKV 数据路径，只恢复组合后端故障门禁的可信执行证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
