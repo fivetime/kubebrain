@@ -2112,6 +2112,15 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	knownPeersDescription := knownPeersRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, knownPeersDescription, "distinct Local IDs")
 	require.Contains(t, knownPeersDescription, "union of Remote IDs")
+	serverIdentityRule := prometheusRuleByAlert(t, groups, "KubeBrainServerIdentityMetricsInconsistent")
+	require.Equal(t,
+		`absent(kubebrain_dbaas:server_identity_invalid_values:count) == 1 or absent(kubebrain_dbaas:known_peers_invalid_values:count) == 1 or count(kubebrain_dbaas:server_identity:max_by_pod_local * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:server_identity_invalid_values:count != 0 or kubebrain_dbaas:known_peers_invalid_values:count != 0 or count((kubebrain_dbaas:server_identity:max_by_pod_local * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) unless on(namespace, pod, uid, Local) max by (namespace, pod, uid, Local) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) > 0 or count(max by (namespace, pod, uid, Local) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) unless on(namespace, pod, uid, Local) (kubebrain_dbaas:server_identity:max_by_pod_local * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) > 0`,
+		serverIdentityRule["expr"])
+	require.Equal(t, "2m", serverIdentityRule["for"])
+	require.Equal(t, "critical", serverIdentityRule["labels"].(map[string]any)["severity"])
+	serverIdentityDescription := serverIdentityRule["annotations"].(map[string]any)["description"].(string)
+	require.Contains(t, serverIdentityDescription, "exactly equal")
+	require.Contains(t, serverIdentityDescription, "in both directions")
 	fdUsageHighRule := prometheusRuleByAlert(t, groups, "KubeBrainFileDescriptorUsageHigh")
 	require.Equal(t,
 		`max((kubebrain_dbaas:fd_used:max_by_pod / on(namespace, pod, uid) kubebrain_dbaas:fd_limit:max_by_pod) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0.8`,
@@ -2962,6 +2971,10 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		`max by (namespace, pod, uid, Local, Remote) (etcd_network_known_peers{namespace="kubebrain-system"} and (time() - timestamp(etcd_network_known_peers{namespace="kubebrain-system"}) <= 60))`
 	expected["kubebrain_dbaas:known_peers_invalid_values:count"] =
 		`count(kubebrain_dbaas:known_peers:max_by_pod_local_remote != 1) + count(kubebrain_dbaas:known_peers:max_by_pod_local_remote{Local!~"[1-9a-f][0-9a-f]*"} or kubebrain_dbaas:known_peers:max_by_pod_local_remote{Remote!~"[1-9a-f][0-9a-f]*"})`
+	expected["kubebrain_dbaas:server_identity:max_by_pod_local"] =
+		`max by (namespace, pod, uid, Local) (label_replace(etcd_server_id{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_id{namespace="kubebrain-system"}) <= 60), "Local", "$1", "server_id", "(.*)"))`
+	expected["kubebrain_dbaas:server_identity_invalid_values:count"] =
+		`count(kubebrain_dbaas:server_identity:max_by_pod_local != 1) + count(kubebrain_dbaas:server_identity:max_by_pod_local{Local!~"[1-9a-f][0-9a-f]*"})`
 	expected["kubebrain_dbaas:fd_used:max_by_pod"] =
 		`max by (namespace, pod, uid) (os_fd_used{namespace="kubebrain-system"} and (time() - timestamp(os_fd_used{namespace="kubebrain-system"}) <= 60))`
 	expected["kubebrain_dbaas:fd_limit:max_by_pod"] =

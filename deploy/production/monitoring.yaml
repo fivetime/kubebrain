@@ -233,6 +233,14 @@ spec:
           expr: count(kubebrain_dbaas:known_peers:max_by_pod_local_remote != 1) + count(kubebrain_dbaas:known_peers:max_by_pod_local_remote{Local!~"[1-9a-f][0-9a-f]*"} or kubebrain_dbaas:known_peers:max_by_pod_local_remote{Remote!~"[1-9a-f][0-9a-f]*"})
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_identity:max_by_pod_local
+          expr: max by (namespace, pod, uid, Local) (label_replace(etcd_server_id{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_id{namespace="kubebrain-system"}) <= 60), "Local", "$1", "server_id", "(.*)"))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:server_identity_invalid_values:count
+          expr: count(kubebrain_dbaas:server_identity:max_by_pod_local != 1) + count(kubebrain_dbaas:server_identity:max_by_pod_local{Local!~"[1-9a-f][0-9a-f]*"})
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:fd_used:max_by_pod
           expr: max by (namespace, pod, uid) (os_fd_used{namespace="kubebrain-system"} and (time() - timestamp(os_fd_used{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1177,6 +1185,14 @@ spec:
           annotations:
             summary: KubeBrain static membership telemetry is inconsistent
             description: "Every Ready Pod UID must expose one fresh value-1 known-peer series for every desired KubeBrain member, using nonzero lowercase hexadecimal Local/Remote IDs. Each Pod must have exactly the StatefulSet desired member count, Ready Pods must have distinct Local IDs, and their union of Remote IDs must equal the desired membership size. Missing, stale, malformed, partial, or divergent static membership can break MemberList endpoint sync and member identity; reconcile --initial-cluster before trusting client routing."
+        - alert: KubeBrainServerIdentityMetricsInconsistent
+          expr: absent(kubebrain_dbaas:server_identity_invalid_values:count) == 1 or absent(kubebrain_dbaas:known_peers_invalid_values:count) == 1 or count(kubebrain_dbaas:server_identity:max_by_pod_local * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:server_identity_invalid_values:count != 0 or kubebrain_dbaas:known_peers_invalid_values:count != 0 or count((kubebrain_dbaas:server_identity:max_by_pod_local * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) unless on(namespace, pod, uid, Local) max by (namespace, pod, uid, Local) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) > 0 or count(max by (namespace, pod, uid, Local) (kubebrain_dbaas:known_peers:max_by_pod_local_remote * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) unless on(namespace, pod, uid, Local) (kubebrain_dbaas:server_identity:max_by_pod_local * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) > 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain server identity disagrees with static membership
+            description: "Every Ready Pod UID must expose exactly one fresh value-1 etcd_server_id with a canonical nonzero lowercase hexadecimal ID, and that ID must exactly equal the same Pod's sole known_peers Local ID in both directions. Missing, stale, malformed, duplicated, or mismatched identity makes Status member ID and MemberList endpoint identity untrustworthy; reconcile peer identity and --initial-cluster before routing clients."
         - alert: KubeBrainFileDescriptorUsageHigh
           expr: max((kubebrain_dbaas:fd_used:max_by_pod / on(namespace, pod, uid) kubebrain_dbaas:fd_limit:max_by_pod) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0.8
           for: 5m
