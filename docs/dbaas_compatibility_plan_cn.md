@@ -57014,6 +57014,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   taxonomy。确定性回归用接口允许的 `(nil,nil)` 固定首次 open 不成功，以及首次 nil、第二次真实 channel 时严格得到
   invalid_result/retry/recovered 各 `[0,1]`；连续十轮通过且不再可能挂死。需要下一生产镜像和监控发布。
 
+- A5074 修复 follower `RangeStream` 代理分支未验证 result channel/terminal protocol 且绕过固定失败 taxonomy 的
+  缺口。对照 `/root/etcd/server/etcdserver/{v3_server.go::rangeStream,api/v3rpc/key.go::RangeStream}` 的逐帧 Send
+  error 必须终止公开流，以及 KubeBrain local RangeStream 已有的 mandatory terminal envelope，旧 follower 路径对
+  `(nil channel,nil)` 永久阻塞；对已关闭空 channel、空 result、response+error 混合、缺 terminal 或 terminal 后
+  继续则可能静默成功或忽略损坏。proxy open/result/send error 也未进入 A5065 的 backend/send 指标，使 Ready
+  follower 的公开失败不可见。现 forwarded path 要求非 nil channel、每个 result 恰为 response/error 之一、
+  response 含 RangeResponse、唯一最终 frame 含 Header 且其后无数据；缺失或违例返回 Unavailable 并递增
+  `read.range_stream.failure{stage="protocol"}`。proxy open/result error 计 backend，非客户端取消的 wire error 计
+  send；local `RangeStreamChan` 的 `(nil,nil)` 同样立即 Unavailable/backend，不再永久 range nil channel。既有
+  production 三态完整性和 protocol critical/backend-send warning 规则直接覆盖，无新增标签。回归覆盖 nil、空关闭、
+  empty、mixed、terminal 后继续及 local nil channel，并保持正常 follower terminal frame 与 leader-change error
+  映射；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

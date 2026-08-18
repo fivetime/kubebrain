@@ -4494,8 +4494,10 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - `read_range_stream_failure{stage="backend|send|protocol"}` 在 RPC server 创建时初始化三类权威零值，补足
   底层 worker 指标看不到的公开流边界。production 只消费 60 秒新鲜 Ready Pod UID current/10 分钟 increase，
   要求 `3×Ready` 完整、current 为 `[0,2^53]` 精确整数、increase 有限同范围且拒绝未知 stage。backend/send
-  事件 warning，其中 send 排除客户端取消；protocol 表示缺 mandatory terminal metadata、服务端扣留最终数据帧
-  后 fail closed，事件及 telemetry 缺失、陈旧、非法或组合不完整均 critical。
+  事件 warning，其中 backend 同时覆盖 local scanner 与 follower proxy open/result error，send 在 local/proxy 两路
+  都排除客户端取消；protocol 表示 local 或 forwarded stream 返回 nil/empty/mixed result、缺 mandatory terminal
+  metadata 或 terminal 后继续。local 路径扣留最终数据帧后 fail closed；事件及 telemetry 缺失、陈旧、非法或
+  组合不完整均 critical。
 - gRPC p99 延迟超过 1 秒。
 
 这些阈值是预生产起点，不应直接作为最终生产阈值。正式上线前应基于真实对象规模、apiserver QPS、watch 数量和 TiKV 延迟重新校准。
