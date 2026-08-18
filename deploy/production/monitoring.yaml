@@ -489,6 +489,18 @@ spec:
           expr: count(((kubebrain_dbaas:event_log_corruption:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:event_log_corruption:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:event_log_corruption:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:event_log_corruption:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:event_log_corruption:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:event_log_corruption:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(((kubebrain_dbaas:event_log_corrupt_alarm_failed:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:event_log_corrupt_alarm_failed:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:event_log_corrupt_alarm_failed:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:event_log_corrupt_alarm_failed:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:event_log_corrupt_alarm_failed:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:event_log_corrupt_alarm_failed:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:read_integrity_fence:current_by_pod_target_outcome
+          expr: max by (namespace, pod, uid, target, outcome) (read_integrity_fence{namespace="kubebrain-system",target=~"object|revision_index",outcome=~"armed|failed"} and (time() - timestamp(read_integrity_fence{namespace="kubebrain-system",target=~"object|revision_index",outcome=~"armed|failed"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:read_integrity_fence:increase_10m_by_pod_target_outcome
+          expr: max by (namespace, pod, uid, target, outcome) (increase(read_integrity_fence{namespace="kubebrain-system",target=~"object|revision_index",outcome=~"armed|failed"}[10m]) and (time() - timestamp(read_integrity_fence{namespace="kubebrain-system",target=~"object|revision_index",outcome=~"armed|failed"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:read_integrity_fence_invalid_values:count
+          expr: count(((kubebrain_dbaas:read_integrity_fence:current_by_pod_target_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:read_integrity_fence:current_by_pod_target_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:read_integrity_fence:current_by_pod_target_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:read_integrity_fence:current_by_pod_target_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:read_integrity_fence:increase_10m_by_pod_target_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:read_integrity_fence:increase_10m_by_pod_target_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_gc_enabled:max_by_pod
           expr: max by (namespace, pod, uid) (storage_gc_enabled{namespace="kubebrain-system"} and (time() - timestamp(storage_gc_enabled{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1125,6 +1137,22 @@ spec:
           annotations:
             summary: KubeBrain event-log integrity telemetry is incomplete or invalid
             description: "Every Ready KubeBrain replica initializes exactly four confirmed-corruption kinds and the CORRUPT-alarm persistence-failure counter to authoritative zero. Current samples must be fresh exact non-negative integers no greater than 2^53, and extrapolated ten-minute increases must be finite and within [0, 2^53]. Missing, stale, or invalid telemetry cannot prove trusted event-log integrity or durable safety fencing."
+        - alert: KubeBrainReadIntegrityFenceEvents
+          expr: sum by (target, outcome) (kubebrain_dbaas:read_integrity_fence:increase_10m_by_pod_target_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain read integrity required a CORRUPT fence
+            description: "A current Ready replica reported {{ $value }} witnessed {{ $labels.target }} integrity events with outcome {{ $labels.outcome }} in ten minutes. armed means the durable CORRUPT write fence is active; failed means alarm persistence or independent witness validation failed, so treat the keyspace as corrupt even if AlarmList is empty. Preserve physical object/index/event-witness evidence and stop unsafe mutation recovery."
+        - alert: KubeBrainReadIntegrityFenceMetricsMissing
+          expr: absent(kubebrain_dbaas:read_integrity_fence_invalid_values:count) == 1 or count(kubebrain_dbaas:read_integrity_fence:current_by_pod_target_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 4 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:read_integrity_fence:increase_10m_by_pod_target_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 4 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:read_integrity_fence_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain read-integrity fence telemetry is incomplete
+            description: "Every Ready Pod UID must expose the four authoritative-zero target/outcome pairs: object and revision_index crossed with armed and failed. Current samples must be fresh non-negative exact integers within 2^53 and ten-minute increases finite in range. Missing, stale, invalid, or incomplete telemetry cannot prove witnessed read corruption is durably fenced or escalated."
         - alert: KubeBrainStorageGCDriverUnavailable
           expr: min(kubebrain_dbaas:storage_gc_enabled:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 1
           for: 2m

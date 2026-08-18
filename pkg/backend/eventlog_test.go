@@ -490,9 +490,7 @@ func TestEventLogReplayRejectsCorruptReferencedObjectInTrustedWindow(t *testing.
 }
 
 func TestGetArmsCorruptForWitnessedInvalidObjectValue(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	m := mock.NewMinimalMetrics(ctrl)
+	m := &compactMetricRecorder{}
 	kv := imemkv.NewKvStorage()
 	defer func() { require.NoError(t, kv.Close()) }()
 
@@ -519,6 +517,10 @@ func TestGetArmsCorruptForWitnessedInvalidObjectValue(t *testing.T) {
 	alarms, alarmErr := b.CorruptAlarms(ctx)
 	require.NoError(t, alarmErr)
 	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+	require.Contains(t, m.snapshot(), compactMetricRecord{
+		kind: "counter", name: "read.integrity.fence", value: 1,
+		tags: []metrics.T{metrics.Tag("target", "object"), metrics.Tag("outcome", "armed")},
+	})
 	_, writeErr := b.Create(ctx, &proto.CreateRequest{Key: []byte(path.Join(pfx, "blocked")), Value: []byte("blocked")})
 	require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
 	removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())

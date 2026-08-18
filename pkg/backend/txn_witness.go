@@ -29,8 +29,32 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+var readIntegrityFenceTargets = []string{"object", "revision_index"}
+var readIntegrityFenceOutcomes = []string{"armed", "failed"}
+
+func initReadIntegrityFenceMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, target := range readIntegrityFenceTargets {
+		for _, outcome := range readIntegrityFenceOutcomes {
+			_ = metricCli.EmitCounter("read.integrity.fence", int64(0),
+				metrics.Tag("target", target), metrics.Tag("outcome", outcome))
+		}
+	}
+}
+
+func emitReadIntegrityFence(metricCli metrics.Metrics, target, outcome string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("read.integrity.fence", 1,
+		metrics.Tag("target", target), metrics.Tag("outcome", outcome))
+}
 
 var txnWitnessPrefix = []byte("txn/witness/")
 
@@ -819,9 +843,11 @@ func (b *backend) persistWitnessedObjectCorruption(
 	defer cancel()
 	if alarmErr := b.ArmCorrupt(alarmCtx, b.localAlarmMemberID()); alarmErr != nil {
 		b.metricCli.EmitCounter("read.object.corrupt_alarm_failed", 1)
+		emitReadIntegrityFence(b.metricCli, "object", "failed")
 		return errors.Join(cause, fmt.Errorf("persist CORRUPT alarm: %w", alarmErr))
 	}
 	b.metricCli.EmitCounter("read.object.corrupt_alarm_armed", 1)
+	emitReadIntegrityFence(b.metricCli, "object", "armed")
 	klog.ErrorS(cause, "witnessed object value is corrupt; armed CORRUPT alarm",
 		"key", Key(userKey), "revision", revision, "memberID", b.localAlarmMemberID())
 	return cause
@@ -843,9 +869,11 @@ func (b *backend) persistWitnessedRevisionIndexCorruption(ctx context.Context, c
 		return cause
 	case errors.Is(validationErr, ErrTxnWitnessCorrupt):
 		b.metricCli.EmitCounter("read.revision_index.corrupt_alarm_armed", 1)
+		emitReadIntegrityFence(b.metricCli, "revision_index", "armed")
 		return cause
 	default:
 		b.metricCli.EmitCounter("read.revision_index.corrupt_alarm_failed", 1)
+		emitReadIntegrityFence(b.metricCli, "revision_index", "failed")
 		return errors.Join(cause, fmt.Errorf("validate persisted transaction witnesses: %w", validationErr))
 	}
 }

@@ -24,3 +24,19 @@ func TestUncertainTxnMetricsInitializeAuthoritativeZero(t *testing.T) {
 		{kind: "counter", name: "txn.uncertain.resolution", value: int64(0), tags: []metrics.T{metrics.Tag("outcome", "corrupt_alarm_failed")}},
 	}, recorder.records)
 }
+
+func TestReadIntegrityFenceMetricsInitializeFixedTargetsAndOutcomes(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	initReadIntegrityFenceMetrics(recorder)
+	emitReadIntegrityFence(recorder, "object", "armed")
+	emitReadIntegrityFence(recorder, "revision_index", "failed")
+
+	require.Equal(t, []compactMetricRecord{
+		{kind: "counter", name: "read.integrity.fence", value: int64(0), tags: []metrics.T{metrics.Tag("target", "object"), metrics.Tag("outcome", "armed")}},
+		{kind: "counter", name: "read.integrity.fence", value: int64(0), tags: []metrics.T{metrics.Tag("target", "object"), metrics.Tag("outcome", "failed")}},
+		{kind: "counter", name: "read.integrity.fence", value: int64(0), tags: []metrics.T{metrics.Tag("target", "revision_index"), metrics.Tag("outcome", "armed")}},
+		{kind: "counter", name: "read.integrity.fence", value: int64(0), tags: []metrics.T{metrics.Tag("target", "revision_index"), metrics.Tag("outcome", "failed")}},
+		{kind: "counter", name: "read.integrity.fence", value: 1, tags: []metrics.T{metrics.Tag("target", "object"), metrics.Tag("outcome", "armed")}},
+		{kind: "counter", name: "read.integrity.fence", value: 1, tags: []metrics.T{metrics.Tag("target", "revision_index"), metrics.Tag("outcome", "failed")}},
+	}, recorder.records)
+}
