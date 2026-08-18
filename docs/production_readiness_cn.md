@@ -1094,6 +1094,13 @@ compaction 失败另由固定
 `6×Ready` 完整；current 为 `[0,2^53]` 精确整数，increase 有限同范围。任一增量 warning：watermark 阻止
 logical compact 进展，其他 stage 使部分 physical MVCC garbage 留待后续回收；缺失、陈旧、非法或 stage 不完整
 critical。客户端 Compact 成功只证明 logical watermark 已提交，不能替代这条物理回收健康合同。
+读取路径的 witnessed integrity fence 由
+`read_integrity_fence{target="object|revision_index",outcome="armed|failed"}` 表达，backend 创建时四种组合均
+初始化权威零值。只有 object 的完整 transaction witness 或独立 persisted-witness validation 确认物理
+object/revision-index 矛盾后才计数；普通 legacy/compacted history DataLoss 不会误 arm。production 生成 60 秒
+新鲜的 Ready Pod UID/target/outcome current 与 10 分钟 increase，要求 `4×Ready` 完整且 counter 合法；任一
+armed/failed 增量 critical，缺失、陈旧、非法或组合不完整 critical。failed 表示 alarm persistence 或 witness
+validation 链自身失败，不能因共享 AlarmList 暂为空而解除事故。
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
 `etcd_debugging_mvcc_watcher_total` 与 `etcd_debugging_mvcc_slow_watcher_total` 每秒从公开 gRPC stream 和
 backend WatcherHub 真实状态刷新；production 只消费 60 秒内、按 Ready Pod UID 去重的三类 gauge，并要求

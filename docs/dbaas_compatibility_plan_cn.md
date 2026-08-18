@@ -56767,6 +56767,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV 空间增长。固定零值、真实 full-scan failure、完整 backend/scanner 与精确 production 测试通过；需要下一
   生产镜像和监控发布。
 
+- A5054 闭合读路径 witnessed object/revision-index 损坏的 CORRUPT fence telemetry 缺口。既有 point/range/
+  stream read 只有在完整 transaction witness 或独立 persisted-witness validation 证明物理矛盾后才 arm durable
+  CORRUPT；但 `read.object.corrupt_alarm_{armed,failed}` 与
+  `read.revision_index.corrupt_alarm_{armed,failed}` 四个 legacy counter 均事件后动态创建且 production 不消费，
+  alarm 持久化/验证失败时 AlarmList 可能为空而事故静默。现新增固定
+  `read.integrity.fence{target="object|revision_index",outcome="armed|failed"}` 四组合权威零值，各 legacy 出口
+  同步递增；armed 表示共享写 fence 已生效，failed 表示 alarm persistence 或 independent witness validation
+  失败，两者都必须按 CORRUPT 处置。production 生成 60 秒新鲜的 Ready Pod UID/target/outcome current 与
+  10 分钟 increase，要求 `4×Ready` 完整、current 为 `[0,2^53]` 精确整数、increase 有限同范围；任一事件及
+  缺失/陈旧/非法/组合不完整均 critical。固定 taxonomy 与真实 witnessed invalid-object 回归、完整 backend 和
+  精确 production 测试通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
