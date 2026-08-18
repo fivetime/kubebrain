@@ -4274,8 +4274,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   PD/TiKV 集群的物理制品。真实 A143 演练已证明 TiDB BR
   full/PITR 不包含 KubeBrain transactional keys，BR raw 也不能提供跨 CF 一致快照，因此
   不能再把“使用 BR”写成已完成替代方案。在线 etcd snapshot 与
-  `kubebrain.logical.v2` 都不能代替存储引擎级 PITR。冷 CSI 多 PVC full
-  snapshot 已具备默认停用、单次审批、参数摘要/集群身份/语义 witness 绑定的持久
+  `kubebrain.logical.v2` 都不能代替存储引擎级 PITR。在线 etcd snapshot 的 lease 按 upstream
+  checkpoint envelope 投影：promote election grace 令实时 remaining TTL 暂时大于 granted TTL 时，
+  制品将其规范化为 granted TTL；较短的
+  durable checkpoint 仍精确保留。不得把 term-local grace 写成非法 `RemainingTTL>TTL`，也不得因此拒绝整次导出。
+  冷 CSI 多 PVC full snapshot 已具备默认停用、单次审批、参数摘要/集群身份/语义 witness 绑定的持久
   `ColdPhysicalSnapshot` Operation executor；隔离目标也具备 source/manifest/target UID 绑定、
   单次审批和 fail-closed target admission 的 `ColdPhysicalRestore` Operation executor。上线声明
   前述 snapshot/restore 以及 legacy history remediation worker 都要求

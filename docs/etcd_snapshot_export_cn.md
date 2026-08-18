@@ -20,6 +20,10 @@ lease=0。为了防止该诊断掩盖同一 retained history 后部的 corruptio
 builder 中以 lease=0 占位，仍完整执行 MVCC lifecycle、transaction ordering 和 metadata 校验；任何其他
 结构错误优先返回，修复器因此不会对同时损坏的数据执行不可逆 compact。
 lease 的倒计时按官方 etcd 的持久 checkpoint 语义恢复，而不是逐秒保存抓取瞬间的实时 TTL；
+leader promote 为在线 expiry 添加的 election grace 可能令抓取时 remaining TTL 暂时大于 granted TTL，
+但 upstream 只持久化严格小于 granted TTL 的 checkpoint。在线 Snapshot 因此把该临时 extension
+规范化为 granted TTL，再写入 `RemainingTTL`；不会因一次合法换主拒绝整个制品，也不会把只属于当前
+leadership term 的额外存活窗口带入恢复集群。小于 granted TTL 的真实 checkpoint 仍精确保留。
 auth token 会像官方 etcd 重启后一样失效，客户端必须用保留的用户凭据重新认证。输出仍不
 替代 TiKV 物理 PITR。
 在线 Snapshot 必须在当前 leader 上捕获。开启 etcd proxy 时，follower 会透明转发完整 stream；

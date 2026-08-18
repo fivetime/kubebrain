@@ -57600,6 +57600,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   窗口可能延长的 KeepAlive/TimeToLive remaining TTL 未被错误套用该限制，已过期等待异步 revoke 的负 TTL 继续合法。
   定向十轮、完整 etcd 包及 race 通过。本项不改变 leader 正常响应、lease metadata、TiKV 数据路径或存储编码。
 
+- A5138 修复 leader promote 后在线 `Maintenance.Snapshot` 可能拒绝合法 lease 的问题。对照
+  `/root/etcd/server/lease/lessor.go::findDueScheduledCheckpoints`：upstream 只提交严格小于 granted TTL 的
+  remaining checkpoint；`Lease.refresh` 添加的 election grace 属于当前 leader 的临时 expiry，不会以
+  `RemainingTTL>TTL` 写入 backend。KubeBrain 旧 snapshot metadata 投影直接从绝对 deadline 取整，换主后可能把
+  该 grace 交给 writer，并被正确的 upstream artifact 约束拒绝。现仅在 snapshot 投影层把超出 granted TTL 的
+  remaining 规范化为 granted TTL，在线 deadline、较短 durable checkpoint 和公开 TimeToLive 均不改变。回归从
+  `TTL=60/deadline≈120s` 的真实 metadata 生成 bbolt，并验证 lease protobuf 为 `TTL=60/RemainingTTL=60`；定向十轮、
+  完整 etcd 包及 race 通过。本项不改变 TiKV lease metadata、过期调度、MVCC revision 或 wire API。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
