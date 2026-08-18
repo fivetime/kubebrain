@@ -57813,6 +57813,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   326 项四分片与 vet 全部通过。本项不改变 preflight receipt schema、task ownership key、PD metadata、
   TiKV log-backup probe、存储编码或在线 etcd 数据路径。
 
+- A5160 将 native PITR preflight 准入推进到 PD store topology 与逐 TiKV LogBackup capability response。
+  旧路径直接遍历 `GetAllStores`，会接受零/重复 store ID、重复 endpoint、未知 state 或非 host:port 地址；
+  `GetLastFlushTSOfRegion` 空 Region probe 又丢弃 response，nil 或非空 checkpoint payload 仍被记为
+  `log_backup_service=available`。对照 PD `GetAllStores`、kvproto `metapb.Store` 与
+  `logbackuppb.GetLastFlushTSOfRegionResponse`，现全量 topology 要求 store 非 nil、ID 非零且唯一、state
+  属于已知枚举；Up endpoint 必须是去除首尾空白的唯一 `host:1..65535`，至少存在一个 Up store，并按 ID
+  排序后才探测。空请求 success 必须非 nil 且 checkpoints 精确为空。合法混合 topology、排序、十一类
+  异常 topology 与 probe nil/夹带 checkpoint 正反例连续二十轮、命令 race、完整非 production、production
+  326 项四分片与 vet 全部通过。本项不改变 preflight receipt schema、PD topology、探针 RPC、task metadata、
+  TiKV 存储编码或在线 etcd 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

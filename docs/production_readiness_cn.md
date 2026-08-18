@@ -2328,7 +2328,10 @@ full backup/restore 命令则分别位于固定 BR 版本的专用镜像中，�
 边界内、严格升序无重复并携带合法 MVCC metadata。nil 或“Count 为零但暗藏 KV”等 malformed success
 均 fail closed，不能签发 task available receipt。2026-08-10 已在隔离的
 PD/TiKV v7.5.1 单 store 集群实际通过该预检；命名 keyspace 的输出范围为一个连续且 tenant
-隔离的区间。
+隔离的区间。PD store topology 同样 fail closed：每项必须非 nil、ID 非零且全局唯一、state 属于
+已知枚举；每个 Up store 必须有唯一合法的 `host:port`，并按 ID 排序后逐一探测。空 Region
+`GetLastFlushTSOfRegion` 只有返回非 nil 且零 checkpoint 才证明 LogBackup 服务可用，nil 或夹带
+checkpoint 的 malformed success 不会进入 preflight receipt。
 
 受支持的受限 native PITR 链已完成功能闭环：后文记录的 task/advancer+safepoint 生命周期、不可变
 full/log artifact manifest、独立空白集群 transactional full restore、plan-bound log replay、连续 writer
