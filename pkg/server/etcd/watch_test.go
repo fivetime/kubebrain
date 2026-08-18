@@ -1747,6 +1747,7 @@ func TestWatchReopenMetricsRecordRetryAndRecovery(t *testing.T) {
 	defer closeFn()
 	rec := &recordingMetrics{}
 	initWatchGenerationRecoveryMetrics(rec)
+	initWatchBackendIntegrityMetrics(rec)
 	watchCh := make(chan etcdproxy.WatchResult)
 	var attempts atomic.Int32
 	server.peers = testPeerService{
@@ -1754,7 +1755,7 @@ func TestWatchReopenMetricsRecordRetryAndRecovery(t *testing.T) {
 		proxyEnabled: true,
 		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
 			if attempts.Add(1) == 1 {
-				return nil, errors.New("temporary peer reconnect")
+				return nil, nil
 			}
 			return watchCh, nil
 		},
@@ -1771,6 +1772,52 @@ func TestWatchReopenMetricsRecordRetryAndRecovery(t *testing.T) {
 	require.Equal(t, []interface{}{int64(0), 1}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRetry))
 	require.Equal(t, []interface{}{int64(0), 1}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRecovered))
 	require.Equal(t, []interface{}{int64(0)}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryCompacted))
+	require.Equal(t, []interface{}{0, 1}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
+}
+
+func TestOpenWatchChannelRejectsNilInitialGeneration(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	initWatchBackendIntegrityMetrics(rec)
+	server.peers = testPeerService{
+		epochFn:      func() (uint64, bool) { return 0, false },
+		proxyEnabled: true,
+		// The zero-value test proxy returns (nil, nil), simulating a broken
+		// adapter that claims success without a readable generation.
+	}
+	w := &watcher{backend: server.backend, grpcServer: server, metricCli: rec}
+
+	ch, local, _, err := w.openWatchChannel(context.Background(), &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/nil-generation"),
+	}, "/registry/watch/nil-generation", 10)
+	require.ErrorIs(t, err, errNilWatchGeneration)
+	require.Nil(t, ch)
+	require.False(t, local)
+	require.Equal(t, []interface{}{0, 1}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
+}
+
+func TestOpenWatchChannelRejectsNilLocalGeneration(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	initWatchBackendIntegrityMetrics(rec)
+	server.backend = &generationWatchBackend{
+		BackendShim: server.backend,
+		generations: []<-chan etcdproxy.WatchResult{nil},
+		called:      make(chan uint64, 1),
+	}
+	server.peers = testPeerService{epochFn: func() (uint64, bool) { return 7, true }}
+	w := &watcher{backend: server.backend, grpcServer: server, metricCli: rec}
+
+	ch, local, epoch, err := w.openWatchChannel(context.Background(), &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/nil-local-generation"),
+	}, "/registry/watch/nil-local-generation", 10)
+	require.ErrorIs(t, err, errNilWatchGeneration)
+	require.Nil(t, ch)
+	require.True(t, local)
+	require.Equal(t, uint64(7), epoch)
+	require.Equal(t, []interface{}{0, 1}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
 }
 
 func TestWatchReopenMetricsRecordCompactedTerminal(t *testing.T) {

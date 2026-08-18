@@ -1439,13 +1439,23 @@ func emitWatchSendLoopProgressDuration(metricCli metrics.Metrics, duration time.
 // openWatchChannel binds one watch generation to the authoritative source for
 // the node's current role. The local backend and follower proxy expose the same
 // WatchResult stream, so callers can resume between them at an explicit revision.
+var errNilWatchGeneration = errors.New("watch backend returned a nil generation channel")
+
 func (w *watcher) openWatchChannel(ctx context.Context, r *etcdserverpb.WatchCreateRequest, backendPrefix string, revision uint64) (<-chan etcdproxy.WatchResult, bool, uint64, error) {
 	epoch, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
 	if leadingFresh {
 		ch, err := w.backend.Watch(ctx, backendPrefix, revision)
+		if err == nil && ch == nil {
+			emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
+			err = errNilWatchGeneration
+		}
 		return ch, true, epoch, err
 	}
 	ch, err := w.grpcServer.peers.Watch(ctx, r.Key, r.RangeEnd, revision)
+	if err == nil && ch == nil {
+		emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
+		err = errNilWatchGeneration
+	}
 	return ch, false, 0, err
 }
 

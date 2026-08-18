@@ -81,6 +81,19 @@ func recordedWatchGenerationRecoveryValues(rec *recordingMetrics, outcome string
 	return values
 }
 
+func recordedWatchBackendIntegrityValues(rec *recordingMetrics, kind string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == "watch.backend.integrity_failure" && len(counter.tags) == 1 &&
+			counter.tags[0] == metrics.Tag("kind", kind) {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
 func TestWatchGenerationRecoveryMetricsInitializeFixedOutcomes(t *testing.T) {
 	rec := &recordingMetrics{}
 	initWatchGenerationRecoveryMetrics(rec)
