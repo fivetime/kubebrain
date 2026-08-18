@@ -1328,7 +1328,7 @@ func TestLeaseKeepAliveRecapturesEpochAfterLeaderStartupWait(t *testing.T) {
 		},
 		leaseKeepAliveFn: func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
 			forwarded.Add(1)
-			return &etcdserverpb.LeaseKeepAliveResponse{ID: leaseID, TTL: 30}, nil
+			return &etcdserverpb.LeaseKeepAliveResponse{Header: txnHeader(1), ID: leaseID, TTL: 30}, nil
 		},
 	}
 	server.PrepareLeaseReload()
@@ -2796,7 +2796,7 @@ func TestLeaseFollowerProxiesUnaryGrant(t *testing.T) {
 			called = true
 			require.Equal(t, int64(30), req.TTL)
 			require.Positive(t, req.ID)
-			return &etcdserverpb.LeaseGrantResponse{ID: req.ID, TTL: req.TTL}, nil
+			return &etcdserverpb.LeaseGrantResponse{Header: txnHeader(1), ID: req.ID, TTL: req.TTL}, nil
 		},
 	})
 	defer func() {
@@ -2817,15 +2817,18 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyResults(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		rpc       string
-		configure func(*testPeerService, bool)
+		configure func(*testPeerService, string)
 		invoke    func(*RPCServer) (any, error)
 	}{
 		{
 			name: "grant", rpc: leaseProxyRPCGrant,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.leaseGrantFn = func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.LeaseGrantResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.LeaseGrantResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -2836,10 +2839,13 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyResults(t *testing.T) {
 		},
 		{
 			name: "revoke", rpc: leaseProxyRPCRevoke,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.leaseRevokeFn = func(context.Context, *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.LeaseRevokeResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.LeaseRevokeResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -2850,10 +2856,13 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyResults(t *testing.T) {
 		},
 		{
 			name: "time_to_live", rpc: leaseProxyRPCTimeToLive,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.leaseTTLFn = func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.LeaseTimeToLiveResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.LeaseTimeToLiveResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -2864,10 +2873,13 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyResults(t *testing.T) {
 		},
 		{
 			name: "leases", rpc: leaseProxyRPCLeases,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.leaseLeasesFn = func(context.Context, *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.LeaseLeasesResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.LeaseLeasesResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -2877,19 +2889,15 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyResults(t *testing.T) {
 			},
 		},
 	} {
-		for _, mixed := range []bool{false, true} {
-			name := "nil"
-			if mixed {
-				name = "mixed"
-			}
-			t.Run(tc.name+"/"+name, func(t *testing.T) {
+		for _, shape := range []string{"nil", "mixed", "missing_header"} {
+			t.Run(tc.name+"/"+shape, func(t *testing.T) {
 				server, closeFn := newTestRPCServer(t)
 				defer closeFn()
 				rec := &recordingMetrics{}
 				server.metricCli = rec
 				initLeaseProxyIntegrityMetrics(rec)
 				peers := testPeerService{isLeader: false, proxyEnabled: true}
-				tc.configure(&peers, mixed)
+				tc.configure(&peers, shape)
 				server.peers = peers
 
 				response, err := tc.invoke(server)
@@ -2902,12 +2910,8 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyResults(t *testing.T) {
 }
 
 func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
-	for _, mixed := range []bool{false, true} {
-		name := "nil"
-		if mixed {
-			name = "mixed"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, shape := range []string{"nil", "mixed", "missing_header"} {
+		t.Run(shape, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
 			defer closeFn()
 			rec := &recordingMetrics{}
@@ -2916,8 +2920,11 @@ func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
 			server.peers = testPeerService{
 				isLeader: false, proxyEnabled: true,
 				leaseKeepAliveFn: func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.LeaseKeepAliveResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.LeaseKeepAliveResponse{}, nil
 					}
 					return nil, nil
 				},
@@ -2948,7 +2955,7 @@ func TestLeaseFollowerProxiesKeepAlive(t *testing.T) {
 		leaseKeepAliveFn: func(ctx context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
 			called = true
 			require.Equal(t, int64(7001), req.ID)
-			return &etcdserverpb.LeaseKeepAliveResponse{ID: req.ID, TTL: 30}, nil
+			return &etcdserverpb.LeaseKeepAliveResponse{Header: txnHeader(1), ID: req.ID, TTL: 30}, nil
 		},
 	})
 	defer func() {
@@ -2984,7 +2991,7 @@ func TestLeaseFollowerKeepAliveWaitsForSuccessorLeader(t *testing.T) {
 			if attempts.Add(1) < 3 {
 				return nil, rpctypes.ErrGRPCNoLeader
 			}
-			return &etcdserverpb.LeaseKeepAliveResponse{ID: req.ID, TTL: 30}, nil
+			return &etcdserverpb.LeaseKeepAliveResponse{Header: txnHeader(1), ID: req.ID, TTL: 30}, nil
 		},
 	})
 	defer func() {
@@ -3270,7 +3277,7 @@ func TestLeaseKeepAliveProxiesDemotionWhileWaitingForRenewal(t *testing.T) {
 		proxyEnabled: true,
 		leaseKeepAliveFn: func(_ context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
 			proxied <- struct{}{}
-			return &etcdserverpb.LeaseKeepAliveResponse{ID: req.ID, TTL: 29}, nil
+			return &etcdserverpb.LeaseKeepAliveResponse{Header: txnHeader(1), ID: req.ID, TTL: 29}, nil
 		},
 	}
 	server.leaseManager.leaseCheckpointMu.Lock()

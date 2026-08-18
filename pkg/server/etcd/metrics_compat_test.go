@@ -208,10 +208,15 @@ func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
 		response, err = validateLeaseProxyResult(rec, rpc, &etcdserverpb.LeaseGrantResponse{}, errors.New("mixed"))
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
-		require.Equal(t, []interface{}{int64(0), 1, 1}, recordedLeaseProxyIntegrityValues(rec, rpc))
+
+		response, err = validateLeaseProxyResult(rec, rpc, &etcdserverpb.LeaseGrantResponse{}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "without a header")
+		require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, rpc))
 	}
 
-	want := &etcdserverpb.LeaseGrantResponse{}
+	want := &etcdserverpb.LeaseGrantResponse{Header: &etcdserverpb.ResponseHeader{}}
 	response, err := validateLeaseProxyResult(rec, leaseProxyRPCGrant, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
@@ -219,7 +224,7 @@ func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateLeaseProxyResult[etcdserverpb.LeaseGrantResponse](rec, leaseProxyRPCGrant, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
 }
 
 func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
