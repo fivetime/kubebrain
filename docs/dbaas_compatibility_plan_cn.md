@@ -57665,6 +57665,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   stale revision、空 continuation 反例。定向二十轮、包级 race、完整非 production、production 326 项四分片与
   vet 全部通过。本项不改变 Range wire 语义、logical.v2 schema、在线数据或 TiKV 路径。
 
+- A5146 把逐调用方防御收敛为 `backupfile.AtomicWriter` 的发布不变量。旧 `Commit` 写 footer、fsync 后直接
+  hard-link，`Add` 又不校验 prefix、重复 key/lease 或 lease 引用，因此任一 producer 漏检都能先发布一个
+  `OpenVerified` 必拒绝的 artifact；no-clobber 随后还会阻止同路径重试。现 footer fsync 后、目标 link 前 seek
+  回临时文件起点并运行同一个 `validate`，只有完整 schema、计数、digest、prefix、唯一性和引用关系全部通过才
+  发布，返回 Status 也取自实际落盘验读。writer 回归固定 undeclared/duplicate lease、outside-prefix/duplicate key
+  均报错且目标不存在；reader 用手工 digest-valid 非法制品继续独立覆盖相同反例。定向二十轮、包级 race、完整
+  非 production、production 326 项四分片与 vet 全部通过。本项保持 hard-link no-clobber、logical.v2 schema、
+  在线 lease 与 TiKV 数据路径不变。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

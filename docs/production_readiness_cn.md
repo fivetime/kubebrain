@@ -4645,7 +4645,8 @@ lease 行固定源 ID 和导出时的正数剩余 TTL，尾行记录/lease 总�
 记录的 SHA-256。当前 exporter 对每个 attached lease 的 TimeToLive 成功响应要求回显同一 ID、存在且不早于
 固定 snapshot revision 的 header、正 remaining TTL、正且不超过官方最大值的 granted TTL；异常响应在制品发布前 fail closed，不能借通用 reader 的旧零 grant 兼容
 生成新的降级制品。导出先写同目录临时文件，完成
-`fsync` 后原子 rename 并同步父目录；中断导出不会把不完整内容发布到目标路径。
+`fsync` 后用与 reader 相同的完整 schema/invariant/digest 验证重新读取实际落盘字节，只有通过才 hard-link
+no-clobber 发布并同步父目录；验证失败或中断不会把不完整内容发布到目标路径，成功状态也取自该次验读。
 每个 Range 页面都必须含正 revision 的 header，后续页面 revision 不得早于固定 snapshot；`More=true`
 必须同时返回至少一条记录，禁止把异常空 continuation 当成完成并静默发布截断备份。空 keyspace 或正常末页仍可为空。
 `logical-status.sh`、restore 和 verify 都会先复制并验证完整文件，缺 footer、记录数
