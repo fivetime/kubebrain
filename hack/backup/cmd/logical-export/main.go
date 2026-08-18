@@ -98,10 +98,11 @@ func run() (retErr error) {
 					if ttlErr != nil {
 						return fmt.Errorf("read lease %d TTL: %w", kv.Lease, ttlErr)
 					}
-					if ttl.TTL <= 0 {
-						return fmt.Errorf("lease %d expired while exporting snapshot revision %d", kv.Lease, snapshotRevision)
+					lease, err := exportLeaseRecord(kv.Lease, ttl, snapshotRevision)
+					if err != nil {
+						return err
 					}
-					if err := writer.AddLease(record.Lease{ID: kv.Lease, TTL: ttl.TTL, GrantedTTL: ttl.GrantedTTL}); err != nil {
+					if err := writer.AddLease(lease); err != nil {
 						return err
 					}
 					exportedLeases[kv.Lease] = struct{}{}
@@ -151,4 +152,20 @@ func run() (retErr error) {
 	_, err = fmt.Fprintf(os.Stderr, "exported %d records and %d leases from %s at revision %d to %s (sha256 %s)\n",
 		total, status.Leases, prefix, snapshotRevision, output, status.SHA256)
 	return err
+}
+
+func exportLeaseRecord(id int64, ttl *clientv3.LeaseTimeToLiveResponse, snapshotRevision int64) (record.Lease, error) {
+	if ttl == nil {
+		return record.Lease{}, fmt.Errorf("lease %d returned an empty TTL response", id)
+	}
+	if int64(ttl.ID) != id {
+		return record.Lease{}, fmt.Errorf("lease %d TTL response returned mismatched ID %d", id, ttl.ID)
+	}
+	if ttl.TTL <= 0 {
+		return record.Lease{}, fmt.Errorf("lease %d expired while exporting snapshot revision %d", id, snapshotRevision)
+	}
+	if ttl.GrantedTTL <= 0 || ttl.GrantedTTL > clientv3.MaxLeaseTTL {
+		return record.Lease{}, fmt.Errorf("lease %d returned invalid granted TTL %d", id, ttl.GrantedTTL)
+	}
+	return record.Lease{ID: id, TTL: ttl.TTL, GrantedTTL: ttl.GrantedTTL}, nil
 }
