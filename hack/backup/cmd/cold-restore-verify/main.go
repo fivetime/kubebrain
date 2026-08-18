@@ -21,6 +21,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/targetverify"
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -337,7 +338,7 @@ func run() (retErr error) {
 	if err := compareKVs(expected, current); err != nil {
 		return fmt.Errorf("current witness mismatch: %w", err)
 	}
-	if err := verifyLeases(ctx, cli, leaseSpecs, leaseKeys); err != nil {
+	if err := verifyLeases(ctx, cli, leaseSpecs, leaseKeys, currentRevision); err != nil {
 		return err
 	}
 	putRevision, deleteRevision, err := runWatchProbe(ctx, cli, probePrefix)
@@ -1137,28 +1138,7 @@ func loadWitness(verified *backupfile.Verified) (map[string]expectedKV, map[int6
 }
 
 func fetchRange(ctx context.Context, cli *clientv3.Client, prefix string, revision int64) ([]*mvccpb.KeyValue, int64, error) {
-	start := []byte(prefix)
-	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
-	var result []*mvccpb.KeyValue
-	var headerRevision int64
-	for {
-		opts := []clientv3.OpOption{clientv3.WithRange(string(end)), clientv3.WithLimit(1000)}
-		if revision > 0 {
-			opts = append(opts, clientv3.WithRev(revision))
-		}
-		response, err := cli.Get(ctx, string(start), opts...)
-		if err != nil {
-			return nil, 0, err
-		}
-		if response.Header != nil && response.Header.Revision > headerRevision {
-			headerRevision = response.Header.Revision
-		}
-		result = append(result, response.Kvs...)
-		if !response.More || len(response.Kvs) == 0 {
-			return result, headerRevision, nil
-		}
-		start = append(append([]byte(nil), response.Kvs[len(response.Kvs)-1].Key...), 0)
-	}
+	return targetverify.FetchPrefix(ctx, cli, prefix, revision)
 }
 
 func compareKVs(expected map[string]expectedKV, actual []*mvccpb.KeyValue) error {
@@ -1182,22 +1162,14 @@ func compareKVs(expected map[string]expectedKV, actual []*mvccpb.KeyValue) error
 	return nil
 }
 
-func verifyLeases(ctx context.Context, cli *clientv3.Client, leases map[int64]record.Lease, expectedKeys map[int64][]string) error {
+func verifyLeases(ctx context.Context, cli *clientv3.Client, leases map[int64]record.Lease, expectedKeys map[int64][]string, minRevision int64) error {
 	for id, expected := range leases {
 		response, err := cli.TimeToLive(ctx, clientv3.LeaseID(id), clientv3.WithAttachedKeys())
 		if err != nil {
 			return fmt.Errorf("read physical lease %d: %w", id, err)
 		}
-		if response.ID != clientv3.LeaseID(id) || response.TTL <= 0 || response.GrantedTTL != expected.GrantedTTL {
-			return fmt.Errorf("physical lease identity/TTL mismatch for %d", id)
-		}
-		keys := make([]string, len(response.Keys))
-		for i := range response.Keys {
-			keys[i] = string(response.Keys[i])
-		}
-		sort.Strings(keys)
-		if !equalStrings(expectedKeys[id], keys) {
-			return fmt.Errorf("physical lease attached keys mismatch for %d", id)
+		if err := targetverify.ValidateLease(response, id, expected.GrantedTTL, minRevision, expectedKeys[id]); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1313,18 +1285,6 @@ func expectWatchEvent(watch clientv3.WatchChan, eventType mvccpb.Event_EventType
 		}
 	}
 	return errors.New("watch closed before expected event")
-}
-
-func equalStrings(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func digest(data []byte) string {

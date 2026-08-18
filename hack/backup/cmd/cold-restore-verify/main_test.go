@@ -715,12 +715,6 @@ func TestVerifyBoundedJSONFileDigestRejectsDriftAfterValidation(t *testing.T) {
 	require.ErrorContains(t, verifyBoundedJSONFileDigest(path, sha, "restore manifest"), "restore manifest changed after validation")
 }
 
-func TestEqualStrings(t *testing.T) {
-	require.True(t, equalStrings([]string{"a", "b"}, []string{"a", "b"}))
-	require.False(t, equalStrings([]string{"a"}, []string{"b"}))
-	require.False(t, equalStrings([]string{"a"}, []string{"a", "b"}))
-}
-
 func TestValidateProbePrefix(t *testing.T) {
 	require.NoError(t, validateProbePrefix("/__kubebrain/cold-restore-verify/instance-a"))
 	require.NoError(t, validateProbePrefix("/tmp/cold-restore-verify"))
