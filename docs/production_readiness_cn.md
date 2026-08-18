@@ -997,6 +997,11 @@ Ready Pod 的 Local 必须互异，全局 Remote 唯一集合大小必须等于 
 小写十六进制 ID。缺少期望来源、Pod 覆盖不全、成员集合部分/分歧或 label/value 非法持续 2 分钟 critical。
 该集合只描述 KubeBrain 静态数据面 service membership，不包含独立 TiKV/PD 节点；`--initial-cluster` 在进程
 生命周期内不可变，所以 exporter retained gauge 是合法快照，滚动后的旧配置由 Pod UID 关联淘汰。
+server identity 指标 `etcd_server_id{server_id}` 同样只消费 60 秒内、按 Ready Pod UID 去重的 value=1 series，
+并通过 `label_replace` 规范为与 known-peers 相同的 `Local` 维度。每个 Ready Pod 必须恰有一个 canonical 非零
+小写十六进制 ID；production 用双向集合差证明它既不缺失于同 Pod `known_peers.Local`，Local 也没有额外
+identity。覆盖缺失、重复、label/value 非法或两面不一致持续 2 分钟 critical；此时 Status member ID、响应
+header 与 MemberList endpoint identity 均不可视为可信。
 MVCC operation counter `etcd_mvcc_range_total`、`etcd_mvcc_put_total`、
 `etcd_mvcc_delete_total` 与 `etcd_mvcc_txn_total`，
 以及 Go runtime/promhttp 基础指标 `go_info`、

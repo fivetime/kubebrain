@@ -56615,6 +56615,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时修复 emitted-metric 扫描器只能识别同行 `Emit*`、漏掉多行真实调用的盲点；production/observability 文档
   同步，测试通过。本项需要下一生产监控发布。
 
+- A5040 闭合 A4028 `etcd_server_id{server_id}` 与 A5039 static membership 的生产身份交叉链。旧 gate 只检查
+  server-id family 存在，无法证明每个 Ready Pod 只有一个合法身份，或该身份确实等于同 Pod
+  `known_peers.Local`；数量碰巧正确仍可掩盖 ID 错配。现从 60 秒内样本生成 Ready Pod UID 级 server identity
+  recording，用 `label_replace` 将 `server_id` 规范为 `Local` 后聚合；值必须精确为 1，Local 必须为非零 canonical
+  小写十六进制，每个 Ready Pod 恰有一条。critical 告警除覆盖/值域外，对 server identity 与按 Pod 聚合的
+  known-peers Local 做双向 `unless` 集合差，任一额外或缺失 identity 持续 2 分钟即失败。文案明确失配时
+  Maintenance Status member ID、响应 header、MemberList endpoint identity 均不可信。精确 manifest 与
+  production/observability 文档同步，production 测试通过；本项只验证启动期不可变身份，不混入 TiKV/PD
+  member ID，需要下一生产监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
