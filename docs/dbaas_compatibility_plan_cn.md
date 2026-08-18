@@ -57110,6 +57110,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   复用固定 `kv.proxy.integrity_failure{rpc}` 五标签，不扩大指标基数。production critical 告警说明同步覆盖该结构违例；
   通用 validator 与五类公开 RPC 表驱动回归连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5083 将 mandatory response header 契约扩展到 LeaseGrant/Revoke/TimeToLive/Leases 与 streaming LeaseKeepAlive。
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/lease.go`，upstream 四类 unary wrapper 在成功路径填充 `resp.Header`，
+  LeaseKeepAlive 则在 renew 前创建并填充 header，保证其 revision 不晚于 renewal；故 nil Header 会丢失 cluster identity，
+  KeepAlive 还会破坏续租 revision 的时序证明。现七个 follower/read-demotion 代理调用点都在 revision 观察或 downstream
+  send 前验证 success response 的 `ResponseHeader` 非 nil，missing-header 与 nil/mixed 一样 DataLoss fail closed；流式
+  违例不按换主重试且不发送 malformed frame。既有固定 `lease.proxy.integrity_failure{rpc}` 五标签和 critical 告警直接
+  覆盖该结构违例，不扩大指标基数。通用 validator、四类公开 unary 与 KeepAlive 表驱动回归连续十轮通过；需要下一
+  生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
