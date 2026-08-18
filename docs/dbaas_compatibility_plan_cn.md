@@ -57154,6 +57154,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通用 validator 全分类、streaming KeepAlive、hedged HashKV 与线性化 MemberList 回归连续十轮通过；需要下一生产镜像
   和监控发布。
 
+- A5088 将 revision 完整性闭合到 Kubernetes watch-cache 初始化使用的 RangeStream。审计发现 forwarded stream 会
+  直接发送带负 terminal revision 的响应；local scanner loop 则在无结构验证时解引用 response/header，并只记录首个
+  chunk revision 而不证明后续 chunk 仍属于启动时 pinned snapshot。现 forwarded terminal header revision 必须非负；
+  local 每个 backend chunk 必须有具体 response/header、revision 非负且精确等于本次 `backendRevision`，否则统一递增
+  固定 `read.range_stream.failure{stage="protocol"}` 并在相关帧发送前 DataLoss fail closed。已有 terminal 缺失与
+  bounded-final-frame 扣留语义保持不变。定向回归覆盖 forwarded 负 revision、本地 nil response/header、负 revision、
+  跨 revision chunk 和正常 latest/historical/premature-close 路径，连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
