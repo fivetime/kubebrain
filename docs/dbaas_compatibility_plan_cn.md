@@ -57222,9 +57222,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response ID，保持原合同。通用 validator、负/MinInt64 ID、公开 follower Grant/TTL 及 streaming KeepAlive 错配与正常代理
   回归连续十轮通过；需要下一生产镜像和监控发布。
 
-- A5096 将 Lease leader-proxy 完整性闭合到 TTL 域与 TimeToLive keys disclosure。对照
+- A5096 将 Lease leader-proxy 完整性闭合到 TTL 域与 TimeToLive keys disclosure（其中 found TTL 非负假设已由 A5121
+  纠正）。对照
   `/root/etcd/server/etcdserver/apply/backend.go`、`v3_server.go` 与 `api/v3rpc/lease.go`：成功 Grant 返回正的 granted TTL；
-  KeepAlive 返回存活 lease 的正 TTL 或 not-found 0；TimeToLive 只返回 found `TTL>=0, GrantedTTL>0`，或 canonical
+  KeepAlive 返回存活 lease 的正 TTL 或 not-found 0；TimeToLive 返回 found `GrantedTTL>0`，或 canonical
   not-found `TTL=-1, GrantedTTL=0, Keys=[]`，并且只有 request.Keys=true 才填附件 keys。旧代理会接受负/零错误域、带残余
   metadata 的 not-found，或在 Keys=false 时泄露附件 key。现 Grant/KeepAlive/TimeToLive 在 ID 绑定后继续校验这些 payload，
   任一违例于 forwarded revision 观察或 stream Send 前复用固定 `lease.proxy.integrity_failure{rpc}` 并 DataLoss fail closed，
@@ -57453,6 +57454,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   且不改变 source watermark；local 宽 prefix 继续过滤。exact/prefix/from-key 正例、公开越界注入与 proxy→local 恢复连续
   十轮通过。本项不改变 TiKV Watch/commit/compaction 数据路径，无需新的存储格式或真实集群迁移验证；需要下一生产镜像
   和监控发布。
+
+- A5121 修正 A5096 对 LeaseTimeToLive found TTL 的过严 proxy 门禁。对照
+  `/root/etcd/server/etcdserver/v3_server.go::leaseTimeToLive`、`server/lease/lease.go::Remaining` 与 KubeBrain
+  `remainingTTL`：lease deadline 已过但异步 revoke 因 apply/CORRUPT/存储故障阻塞时，record 仍在 map，公开 TTL 由
+  `int64(Remaining().Seconds())` 产生并可持续低于 -1，同时 GrantedTTL 保持正值、Keys=true 仍可返回附件 key。只有 lessor
+  已找不到 record 时，v3rpc 才构造 canonical `TTL=-1, GrantedTTL=0, Keys=[]`。旧 validator 把 `<-1` 全部判损坏，并把
+  `TTL=-1, GrantedTTL>0` 误当 malformed not-found，使 follower 在最需要诊断阻塞过期的故障窗口返回 DataLoss。现以
+  GrantedTTL 区分 found/not-found：正 GrantedTTL 接受完整 signed TTL，零 GrantedTTL 只接受 canonical not-found；keys
+  disclosure/非空唯一性仍强制。真实本地 expired-visible lease、公开 follower `TTL=-2/GrantedTTL=30/Keys`、canonical
+  not-found 和零 GrantedTTL 异常注入连续十轮通过；不改变 TiKV lease 元数据或过期事务，需要下一生产镜像和监控发布。
 
 ### P2：运维兼容和长期验证
 
