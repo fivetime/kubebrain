@@ -4479,7 +4479,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   critical：raw backend→shim 或 peer open 成功却给出 nil generation channel，会在转换 goroutine 启动前被拒绝、
   首次创建时显式取消、reopen 时计 retry，而不会被非 nil wrapper channel 遮蔽并永久阻塞；
   发送前 fence 也会取消 generation 并阻止已检测到的 malformed/regressing result 上线；`invalid_result` 同时覆盖
-  空 event key 与 key-mismatched PrevKv，`invalid_revision` 同时覆盖
+  空 event key、key-mismatched PrevKv，以及 follower peer generation 返回超出精确请求 key/range 的 event；proxy 越界
+  必须在推进 source watermark 前取消，local backend 为任意 range 使用的宽 prefix 结果仍正常过滤。`invalid_revision` 同时覆盖
   PUT 缺失的正 CreateRevision/Version、version 1 不在 create revision、version 超出 create→mod revision 窗口，
   以及 PrevKv 的非正/future revision、不可能生命周期、跨 generation 或非连续版本；DELETE 当前 Kv 仍允许零
   CreateRevision/Version，且必须仅含 Key+ModRevision（Value/CreateRevision/Version/Lease 均为零值）；PrevKv Lease ID

@@ -57444,6 +57444,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RPC error 要求客户端丢弃已收前缀，不尝试跨 leader 拼接。canonical empty/multi-frame/limited/CountOnly/KeysOnly 正例及
   十一类公开异常注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5120 将 Watch peer-proxy 完整性绑定到 create request 的精确 key/range。KubeBrain local backend 为支持非 prefix
+  区间会用 `watchBackendPrefix` 订阅更宽事件源，再由 `filterWatchEventsByRange` 筛选；该宽结果是内部正常合同，不能统一
+  拒绝。follower 则把 `WatchCreateRequest.Key/RangeEnd` 原样传给 `peers.Watch`，正常 leader generation 不可能返回越界
+  event。旧路径对两者无差别静默过滤，并已先从未过滤 batch 推导 revision，故损坏 proxy 可用越界事件推进 source
+  watermark，造成恢复从过高 revision 开始并跳过合法事件。现仅对 `localGeneration=false` 的 result 在 revision 推进和
+  publication 前逐项验证请求范围，违例递增固定 `watch.backend.integrity_failure{kind="invalid_result"}`、取消 generation，
+  且不改变 source watermark；local 宽 prefix 继续过滤。exact/prefix/from-key 正例、公开越界注入与 proxy→local 恢复连续
+  十轮通过。本项不改变 TiKV Watch/commit/compaction 数据路径，无需新的存储格式或真实集群迁移验证；需要下一生产镜像
+  和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
