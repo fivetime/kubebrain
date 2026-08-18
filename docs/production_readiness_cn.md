@@ -1108,6 +1108,14 @@ etcd 超时契约的重复 mutation。production 生成 60 秒新鲜的 Ready Po
 要求 `2×Ready` 完整，current 为 `[0,2^53]` 精确整数、increase 有限同范围。context_done 任一增量 warning；
 三秒 backstop 任一增量 critical，必须检查 event collector、durable revision、CPU 与 TiKV latency；缺失、陈旧、
 非法或 reason 不完整 critical。
+原子写入栅栏拒绝由 `write_fence_rejection{kind="leadership|restoration"}` 表达，backend 创建时两类均发布
+权威零值。leadership 覆盖 RPC 入口 epoch/freshness 与 commit 内 storage-lease token CAS 两层防线，任一增量
+warning；换主期间少量拒绝是安全行为，持续增长需检查 leader churn、lease freshness 和客户端路由。
+restoration 表示 durable restore token 在写入飞行期间变化并被 TiKV 原子 guard 拒绝，任一增量 critical，必须
+核对 restore Operation、目标 generation receipt 和 admission window 后才能恢复流量。production 只消费 60 秒
+新鲜的 Ready Pod UID/kind current 与 10 分钟 increase，要求两者均为 `2×Ready`，current 是 `[0,2^53]` 精确
+整数、increase 有限同范围，未知 kind 非法；缺失、陈旧、非法或组合不完整 critical。legacy 动态指标仅供旧面板，
+不得用于证明两类原子防线完整。
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
 `etcd_debugging_mvcc_watcher_total` 与 `etcd_debugging_mvcc_slow_watcher_total` 每秒从公开 gRPC stream 和
 backend WatcherHub 真实状态刷新；production 只消费 60 秒内、按 Ready Pod UID 去重的三类 gauge，并要求

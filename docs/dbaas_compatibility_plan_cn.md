@@ -56924,6 +56924,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   warning，protocol 与缺失/陈旧/非法/组合不完整 critical。回归固定三类零值、typed backend error、真实 send
   Unavailable、Canceled 不误报及 premature close fail-closed；需要下一生产镜像和监控发布。
 
+- A5066 闭合换主与恢复期间原子写栅栏拒绝仅有动态 legacy counter、生产无法证明防线存在的缺口。对照
+  `/root/etcd/server/etcdserver/v3_server.go` 的 applied-index/term safety，KubeBrain 不运行单体 raft apply pipeline，
+  而是在分片 TiKV transaction 内 CAS durable storage-lease token，并独立 CAS restoration token；入口还以
+  leader epoch/freshness 快速拒绝旧请求。现新增固定 `write.fence.rejection{kind="leadership|restoration"}`，backend
+  创建时初始化两类权威零值；leadership 覆盖入口和 commit-time CAS，restoration 覆盖 commit-time restore guard，
+  legacy `write.fence.reject` / `write.restoration_fence.reject` 保持兼容。production 生成 60 秒新鲜 Ready Pod
+  UID/kind current 与 10 分钟 increase，要求 `2×Ready` 完整、值合法且未知 kind 非法；leadership warning，
+  restoration 与缺失/陈旧/非法/组合不完整 critical。回归通过真实 epoch 切换、successor 获取 storage lease 和
+  restoration token 变更验证零值到拒绝增量；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

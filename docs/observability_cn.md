@@ -55,7 +55,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `serializable.checkpoint.release_err` counter / shutdown error | 进程关闭时删除两条交替 PD service safepoint 失败。该 counter 与错误日志仅作同进程诊断，因为 exporter 也在退出，不能依赖下一次 scrape；权威合同是 `backend.Close`/`Endpoint.Run` 返回非零 shutdown error，同时仍关闭 TiKV client。PD registration 的有限 TTL 最终解除 GC pin，但 rollout 必须把非零退出视为未完成的 safepoint handoff。 |
 | `lease.orphan_sweep.{key_deleted,legacy_key_deleted,record_reclaimed,err}` / `lease.orphan_sweep.failure{stage}` counter | 孤儿 lease 清扫活动；`legacy_key_deleted` 表示依靠同 revision ownership witness 回收升级前 v1 leased value。failure stage 固定为 `load`、`migration`、`seal`、`user_read`、`legacy_attachment_read`、`legacy_attachment_invalid`、`key_delete`、`key_compare`、`attachment_delete`，RPC server 创建时九类均初始化 0；正常领导权 context 取消不计 failure。阻塞 defunct lease key 回收的 load/read/invalid/delete 为 critical，其余可安全重试维护失败为 warning。 |
 | `lease.legacy_migration_seal.err` counter | legacy user-MVCC lease source 已清空但 internal migration seal 写入失败次数；非零时 loader 仍保持兼容扫描，需检查 leadership/CORRUPT/TiKV fence。 |
-| `write.fence.reject` counter | 写栅栏拒绝(#39)—— 换主瞬间少量正常;持续高=leader 抖动。 |
+| `write.fence.rejection{kind}` counter | 原子写栅栏拒绝，`kind` 固定为 `leadership|restoration`，backend 创建时两类均初始化 0。leadership 同时覆盖入口 epoch/freshness 拒绝与 TiKV commit 内 storage-lease token CAS 拒绝；restoration 表示写入期间 durable restore token 已变化并被同一原子事务拒绝。legacy `write.fence.reject` / `write.restoration_fence.reject` 继续递增以兼容旧面板。 |
 | `grpc_server_admission_inflight` gauge | 当前公开 client RPC 总并发，stream 在完整生命周期内持续占槽。 |
 | `grpc_server_admission_rejected` counter(labels: `method`,`kind`) | `--max-requests-inflight` 超限拒绝数；持续增长表示实例过载或限额过低。 |
 | `grpc_server_rate_limit_rejected` counter(labels: `method`,`kind`) | `--max-request-rate` token bucket 超限数；`kind=unary` 统计 unary RPC，`kind=stream_message` 统计 Watch/KeepAlive 等每条入站消息。 |
@@ -108,7 +108,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 
 ## 推荐告警(方向,阈值按环境调)
 
-- **leader 频繁切换 / 抖动**:`rate(etcd_server_healthchecks_total{type="readyz",name="linearizable_read",status="error"}[5m]) > 0` 持续出现，或 `write.fence.reject` 持续增长，或 `/election` leader 地址频繁变。正常换主不应导致 Pod 重启；重启率 > 0 是独立的进程稳定性告警。每个副本在 campaign 前初始化 leadership-lost、通用 initialization-error、incompatible-witness、invalid-alarm-metadata 四类 counter；production 从 60 秒内样本生成 Ready Pod UID 级 current/10 分钟 increase recording，要求八类来源完整且值合法。lost counter 先按动态前任 leader `addr` 去重再按 Pod 求和，不能吞掉不同地址的多次丢主。通用 initialization alert 覆盖 lease/event/count/checkpoint 等未由两个 durable-metadata 子类单独分类的失败。缺失、陈旧或非法 telemetry 不得掩盖抖动或拒绝领导。→ 见 [[failover_tuning_cn.md]](租约调优)。
+- **leader 频繁切换 / 抖动**:`rate(etcd_server_healthchecks_total{type="readyz",name="linearizable_read",status="error"}[5m]) > 0` 持续出现，或 `write.fence.rejection{kind="leadership"}` 持续增长，或 `/election` leader 地址频繁变。正常换主不应导致 Pod 重启；重启率 > 0 是独立的进程稳定性告警。每个副本在 campaign 前初始化 leadership-lost、通用 initialization-error、incompatible-witness、invalid-alarm-metadata 四类 counter；production 从 60 秒内样本生成 Ready Pod UID 级 current/10 分钟 increase recording，要求八类来源完整且值合法。lost counter 先按动态前任 leader `addr` 去重再按 Pod 求和，不能吞掉不同地址的多次丢主。通用 initialization alert 覆盖 lease/event/count/checkpoint 等未由两个 durable-metadata 子类单独分类的失败。缺失、陈旧或非法 telemetry 不得掩盖抖动或拒绝领导。→ 见 [[failover_tuning_cn.md]](租约调优)。
   acquired leader 在 SERVING 前的 compact resume、quota init、lease reload、event-log watermark、checkpoint
   protection 五阶段另使用固定 `stage` counter。所有副本 campaign 前各初始化五条零值；failure 告警不关联
   Ready UID，因为阻塞中的 leader 会主动 NotReady。completeness 将 60 秒新鲜 current/increase 总数与
