@@ -57593,6 +57593,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回 `-1` 并要求完整摘要，两个 `<-1` 负例分别固定 fail closed；定向十轮与 race 通过。本项不改变 runtime wire、hash
   算法、compact 执行或存储编码。
 
+- A5137 收紧 storage-isolated follower 的 Lease granted TTL 完整性门禁。对照
+  `/root/etcd/server/lease/lessor.go::Grant`，upstream 拒绝任何超过 `MaxLeaseTTL=9,000,000,000` 的 lease，故成功的
+  LeaseGrant TTL 与后续 TimeToLive GrantedTTL 都不可能越过该上限。旧 validator 只检查正数和 Grant 不低于请求，会把
+  adapter 注入的超上限成功响应暴露给客户端。现两条路径均以 DataLoss fail closed，并各有公开 follower 回归；promote
+  窗口可能延长的 KeepAlive/TimeToLive remaining TTL 未被错误套用该限制，已过期等待异步 revoke 的负 TTL 继续合法。
+  定向十轮、完整 etcd 包及 race 通过。本项不改变 leader 正常响应、lease metadata、TiKV 数据路径或存储编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

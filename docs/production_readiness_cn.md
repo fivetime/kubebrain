@@ -4602,7 +4602,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   send 前证明 response/error 恰有其一，且 success response 携带 mandatory `ResponseHeader` 与非负 revision；
   Grant/KeepAlive/TimeToLive response ID 还必须与请求 ID 按 signed int64 精确相等；nil/mixed/missing-header/
   negative-revision/mismatched-ID 均 DataLoss fail closed。Grant TTL 必须为正且不得低于请求 TTL，success 的 legacy Error
-  必须为空；server-chosen 更长 TTL 合法。KeepAlive TTL 非负；TimeToLive found 以 `GrantedTTL>0` 标识，包含仍在 map 中
+  必须为空；server-chosen 更长 TTL 合法，但 Grant TTL 与 TimeToLive GrantedTTL 均不得超过 upstream
+  `MaxLeaseTTL=9,000,000,000`。KeepAlive TTL 非负；TimeToLive found 以 `GrantedTTL>0` 标识，包含仍在 map 中
   等待异步 revoke 的 expired lease，其 TTL 可继续降到 -1 以下；canonical not-found 才固定为
   `TTL=-1, GrantedTTL=0, Keys=[]`。未请求 Keys 时不得返回 key。
   请求 Keys 时每个 key 必须非空且唯一；LeaseLeases status 必须非 nil、ID 非零且唯一，负 ID 保持合法。payload 违例
