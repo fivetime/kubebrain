@@ -199,7 +199,21 @@ func invalidWatchResultShape(result etcdproxy.WatchResult) error {
 			return fmt.Errorf("watch backend returned a previous key that differs from the event key at index %d", i)
 		}
 		switch event.Type {
-		case mvccpb.PUT, mvccpb.DELETE:
+		case mvccpb.PUT:
+		case mvccpb.DELETE:
+			kv := event.Kv
+			if len(kv.Value) != 0 {
+				return fmt.Errorf("watch backend returned DELETE event with a non-empty value at index %d", i)
+			}
+			if kv.CreateRevision != 0 {
+				return fmt.Errorf("watch backend returned DELETE event with create revision %d at index %d", kv.CreateRevision, i)
+			}
+			if kv.Version != 0 {
+				return fmt.Errorf("watch backend returned DELETE event with version %d at index %d", kv.Version, i)
+			}
+			if kv.Lease != 0 {
+				return fmt.Errorf("watch backend returned DELETE event with lease %d at index %d", kv.Lease, i)
+			}
 		default:
 			return fmt.Errorf("watch backend returned unsupported event type %s at index %d", event.Type, i)
 		}

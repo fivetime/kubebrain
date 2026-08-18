@@ -1440,6 +1440,96 @@ func TestInvalidWatchResultShapeRejectsProgressWithBatchRevision(t *testing.T) {
 	}), "watch backend returned a previous key that differs from the event key at index 0")
 }
 
+func TestInvalidWatchResultShapeRejectsNonTombstoneDeleteMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		kv      *mvccpb.KeyValue
+		message string
+	}{
+		{
+			name:    "value",
+			kv:      &mvccpb.KeyValue{Key: []byte("key"), Value: []byte("stale"), ModRevision: 10},
+			message: "DELETE event with a non-empty value",
+		},
+		{
+			name:    "create revision",
+			kv:      &mvccpb.KeyValue{Key: []byte("key"), CreateRevision: 2, ModRevision: 10},
+			message: "DELETE event with create revision 2",
+		},
+		{
+			name:    "version",
+			kv:      &mvccpb.KeyValue{Key: []byte("key"), ModRevision: 10, Version: 3},
+			message: "DELETE event with version 3",
+		},
+		{
+			name:    "lease",
+			kv:      &mvccpb.KeyValue{Key: []byte("key"), ModRevision: 10, Lease: -1},
+			message: "DELETE event with lease -1",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := invalidWatchResultShape(etcdproxy.WatchResult{
+				Revision: 10,
+				Events:   []*mvccpb.Event{{Type: mvccpb.DELETE, Kv: test.kv}},
+			})
+			require.ErrorContains(t, err, test.message)
+		})
+	}
+}
+
+func TestWatchRejectsNonTombstoneDeleteBeforePublication(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		kv      *mvccpb.KeyValue
+		message string
+	}{
+		{
+			name:    "value",
+			kv:      &mvccpb.KeyValue{Key: []byte("/registry/watch/key"), Value: []byte("stale"), ModRevision: 10},
+			message: "DELETE event with a non-empty value",
+		},
+		{
+			name:    "generation",
+			kv:      &mvccpb.KeyValue{Key: []byte("/registry/watch/key"), CreateRevision: 2, ModRevision: 10, Version: 3},
+			message: "DELETE event with create revision 2",
+		},
+		{
+			name:    "lease",
+			kv:      &mvccpb.KeyValue{Key: []byte("/registry/watch/key"), ModRevision: 10, Lease: math.MinInt64},
+			message: fmt.Sprintf("DELETE event with lease %d", int64(math.MinInt64)),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
+				Revision: 10,
+				Events:   []*mvccpb.Event{{Type: mvccpb.DELETE, Kv: test.kv}},
+			})
+			require.Len(t, responses, 1)
+			require.True(t, responses[0].Canceled)
+			require.Empty(t, responses[0].Events)
+			require.Contains(t, responses[0].CancelReason, test.message)
+		})
+	}
+}
+
+func TestWatchAllowsCanonicalDeleteTombstoneWithSignedPreviousLease(t *testing.T) {
+	key := []byte("/registry/watch/key")
+	result := etcdproxy.WatchResult{
+		Revision: 10,
+		Events: []*mvccpb.Event{{
+			Type: mvccpb.DELETE,
+			Kv:   &mvccpb.KeyValue{Key: key, ModRevision: 10},
+			PrevKv: &mvccpb.KeyValue{
+				Key: key, Value: []byte("old"), CreateRevision: 9, ModRevision: 9, Version: 1, Lease: math.MinInt64,
+			},
+		}},
+	}
+	require.NoError(t, invalidWatchResultShape(result))
+	_, err := validatedWatchBatchRevision(result, 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(math.MinInt64), result.Events[0].PrevKv.Lease)
+}
+
 func TestWatchRejectsMismatchedPreviousKeyBeforePublication(t *testing.T) {
 	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
 		Revision: 10,
