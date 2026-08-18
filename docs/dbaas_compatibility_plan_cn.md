@@ -57375,6 +57375,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   中的明文密码。opaque token、空 prefix simple token、transport error、密码清除与公开空 token 注入连续十轮通过；需要
   下一生产镜像和监控发布。
 
+- A5113 将 unary Maintenance leader-proxy payload 完整性扩展到 Alarm 三类 action。对照
+  `/root/etcd/server/etcdserver/apply/backend.go::Alarm` 与 `server/etcdserver/api/v3alarm/alarms.go`：GET 返回匹配
+  AlarmType filter 的 map 集合，每项非 nil、Alarm 非 NONE 且 `(member,type)` 唯一；ACTIVATE 非 NONE 总是返回一个
+  request-matching alarm，DEACTIVATE 非 NONE 返回零或一个匹配项，NONE mutation 返回空。map 迭代无序、MemberID=0
+  合法，未知 AlarmType 可经通用 store 激活，故不能增加排序、ID 非零或 enum 白名单。KubeBrain NOSPACE 的 MemberID=0
+  ACTIVATE 会解析为稳定 owner，validator 对该请求允许 response 返回实际 ID。旧 follower proxy 会确认 nil/重复/越 filter
+  GET、缺失/多余/错 owner mutation result 或未知 action 伪成功。现 Alarm 在 forwarded revision 观察前执行 request-aware
+  校验，违例只递增固定 `maintenance.proxy.integrity_failure{rpc="alarm"}` 并 DataLoss fail closed。unordered/unknown/zero-ID、
+  缺席 deactivate、transport error 与公开异常注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
