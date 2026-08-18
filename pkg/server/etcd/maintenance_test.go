@@ -908,15 +908,18 @@ func TestFollowerUnaryMaintenanceRejectsInvalidProxyResults(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		invoke    func(*RPCServer) (any, error)
-		configure func(*testPeerService, bool)
+		configure func(*testPeerService, string)
 		rpc       string
 	}{
 		{
 			name: "alarm", rpc: maintenanceProxyRPCAlarm,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.alarmFn = func(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.AlarmResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.AlarmResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -927,10 +930,13 @@ func TestFollowerUnaryMaintenanceRejectsInvalidProxyResults(t *testing.T) {
 		},
 		{
 			name: "downgrade", rpc: maintenanceProxyRPCDowngrade,
-			configure: func(peers *testPeerService, mixed bool) {
+			configure: func(peers *testPeerService, shape string) {
 				peers.downgradeFn = func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.DowngradeResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.DowngradeResponse{}, nil
 					}
 					return nil, nil
 				}
@@ -940,19 +946,15 @@ func TestFollowerUnaryMaintenanceRejectsInvalidProxyResults(t *testing.T) {
 			},
 		},
 	} {
-		for _, mixed := range []bool{false, true} {
-			name := "nil"
-			if mixed {
-				name = "mixed"
-			}
-			t.Run(tc.name+"/"+name, func(t *testing.T) {
+		for _, shape := range []string{"nil", "mixed", "missing_header"} {
+			t.Run(tc.name+"/"+shape, func(t *testing.T) {
 				server, closeFn := newTestRPCServer(t)
 				defer closeFn()
 				rec := &recordingMetrics{}
 				server.metricCli = rec
 				initMaintenanceProxyIntegrityMetrics(rec)
 				peers := testPeerService{isLeader: false, proxyEnabled: true}
-				tc.configure(&peers, mixed)
+				tc.configure(&peers, shape)
 				server.peers = peers
 
 				response, err := tc.invoke(server)
@@ -1788,12 +1790,8 @@ func TestPeerHashKVHandlerRejectsByEtcdPriority(t *testing.T) {
 }
 
 func TestHedgedPeerHashKVRejectsInvalidForwardedResult(t *testing.T) {
-	for _, mixed := range []bool{false, true} {
-		name := "nil"
-		if mixed {
-			name = "mixed"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, shape := range []string{"nil", "mixed", "missing_header"} {
+		t.Run(shape, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
 			defer closeFn()
 			rec := &recordingMetrics{}
@@ -1803,8 +1801,11 @@ func TestHedgedPeerHashKVRejectsInvalidForwardedResult(t *testing.T) {
 			server.peers = testPeerService{
 				isLeader: false, proxyEnabled: true,
 				hashKVFn: func(context.Context, *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.HashKVResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.HashKVResponse{}, nil
 					}
 					return nil, nil
 				},

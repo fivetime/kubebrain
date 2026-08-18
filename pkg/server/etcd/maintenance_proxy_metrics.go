@@ -17,6 +17,7 @@ package etcd
 import (
 	"fmt"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -54,13 +55,26 @@ func validateMaintenanceProxyResult[T any](
 	metricCli metrics.Metrics, rpc string, response *T, err error,
 ) (*T, error) {
 	if (response == nil) != (err == nil) {
+		if response != nil && rpc != maintenanceProxyRPCDefragment {
+			headerResponse, ok := any(response).(interface {
+				GetHeader() *etcdserverpb.ResponseHeader
+			})
+			if !ok || headerResponse.GetHeader() == nil {
+				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response without a header", rpc))
+			}
+		}
 		return response, err
 	}
-	if metricCli != nil {
-		_ = metricCli.EmitCounter("maintenance.proxy.integrity_failure", 1, metrics.Tag("rpc", rpc))
-	}
+	emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
 	if response == nil {
 		return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned neither response nor error", rpc))
 	}
 	return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned both response and error", rpc))
+}
+
+func emitMaintenanceProxyIntegrityFailure(metricCli metrics.Metrics, rpc string) {
+	if metricCli != nil {
+		_ = metricCli.EmitCounter("maintenance.proxy.integrity_failure", 1, metrics.Tag("rpc", rpc))
+	}
 }

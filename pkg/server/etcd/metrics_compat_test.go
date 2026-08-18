@@ -300,10 +300,18 @@ func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "both response and error")
-		require.Equal(t, []interface{}{int64(0), 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
+		if rpc != maintenanceProxyRPCDefragment {
+			response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{}, nil)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, "without a header")
+			require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
+		} else {
+			require.Equal(t, []interface{}{int64(0), 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
+		}
 	}
 
-	want := &etcdserverpb.StatusResponse{}
+	want := &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{}}
 	response, err := validateMaintenanceProxyResult(rec, maintenanceProxyRPCStatus, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
@@ -311,7 +319,13 @@ func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateMaintenanceProxyResult[etcdserverpb.StatusResponse](rec, maintenanceProxyRPCStatus, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
+
+	wantDefragment := &etcdserverpb.DefragmentResponse{}
+	responseDefragment, err := validateMaintenanceProxyResult(rec, maintenanceProxyRPCDefragment, wantDefragment, nil)
+	require.Same(t, wantDefragment, responseDefragment)
+	require.NoError(t, err)
+	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCDefragment))
 }
 
 func TestSnapshotFailureMetricsInitializeFixedStages(t *testing.T) {
