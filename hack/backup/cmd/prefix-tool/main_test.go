@@ -21,6 +21,14 @@ func TestRunValidatesLeasePutBeforeGrant(t *testing.T) {
 	require.ErrorContains(t, run(io.Discard), "KEY_SUFFIXES contains an empty suffix")
 }
 
+func TestRunRejectsLeaseTTLAboveProtocolLimitBeforeConnecting(t *testing.T) {
+	t.Setenv("PREFIX", "/registry/test")
+	t.Setenv("ACTION", "lease-put")
+	t.Setenv("LEASE_TTL", "9000000001")
+	t.Setenv("KEY_SUFFIXES", "/a")
+	require.ErrorContains(t, run(io.Discard), "invalid LEASE_TTL")
+}
+
 func TestRunRejectsEmptyPrefixBeforeDestructiveAction(t *testing.T) {
 	t.Setenv("ACTION", "delete")
 	t.Setenv("PREFIX", "")

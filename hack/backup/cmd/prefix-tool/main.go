@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/backup/internal/targetverify"
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -44,7 +45,7 @@ func run(stdout io.Writer) (retErr error) {
 	case "lease-put":
 		var err error
 		leaseTTL, err = strconv.ParseInt(os.Getenv("LEASE_TTL"), 10, 64)
-		if err != nil || leaseTTL <= 0 {
+		if err != nil || leaseTTL <= 0 || leaseTTL > clientv3.MaxLeaseTTL {
 			return fmt.Errorf("invalid LEASE_TTL %q", os.Getenv("LEASE_TTL"))
 		}
 		leaseSuffixes = strings.Split(os.Getenv("KEY_SUFFIXES"), ",")
@@ -87,16 +88,25 @@ func run(stdout io.Writer) (retErr error) {
 		if err != nil {
 			return err
 		}
+		if err := validateCountResponse(resp); err != nil {
+			return err
+		}
 		result = resp.Count
 	case "delete":
 		resp, err := cli.Delete(ctx, prefix, clientv3.WithPrefix())
 		if err != nil {
 			return err
 		}
+		if err := validateDeleteResponse(resp); err != nil {
+			return err
+		}
 		result = resp.Deleted
 	case "put":
-		_, err := cli.Put(ctx, prefix+keySuffix, value)
+		response, err := cli.Put(ctx, prefix+keySuffix, value)
 		if err != nil {
+			return err
+		}
+		if err := validatePutResponse(response); err != nil {
 			return err
 		}
 	case "lease-put":
@@ -104,17 +114,26 @@ func run(stdout io.Writer) (retErr error) {
 		if err != nil {
 			return err
 		}
+		var cleanupLeaseID clientv3.LeaseID
+		if lease != nil && lease.ID != 0 {
+			cleanupLeaseID = lease.ID
+		}
+		leaseID, validationErr := targetverify.ValidateProbeGrant(lease, leaseTTL)
+		if validationErr != nil {
+			return errors.Join(validationErr, cleanupLease(cli, cleanupLeaseID))
+		}
 		ops := make([]clientv3.Op, 0, len(leaseSuffixes))
 		for _, suffix := range leaseSuffixes {
-			ops = append(ops, clientv3.OpPut(prefix+suffix, value, clientv3.WithLease(lease.ID)))
+			ops = append(ops, clientv3.OpPut(prefix+suffix, value, clientv3.WithLease(leaseID)))
 		}
-		if _, err := cli.Txn(ctx).Then(ops...).Commit(); err != nil {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_, revokeErr := cli.Revoke(cleanupCtx, lease.ID)
-			cleanupCancel()
-			return errors.Join(err, revokeErr)
+		response, err := cli.Txn(ctx).Then(ops...).Commit()
+		if err == nil {
+			err = validateLeasePutTxnResponse(response, len(ops))
 		}
-		result = lease.ID
+		if err != nil {
+			return errors.Join(err, cleanupLease(cli, cleanupLeaseID))
+		}
+		result = leaseID
 	}
 	if err := cli.Close(); err != nil {
 		clientClosed = true
@@ -126,4 +145,17 @@ func run(stdout io.Writer) (retErr error) {
 		return err
 	}
 	return nil
+}
+
+func cleanupLease(cli *clientv3.Client, id clientv3.LeaseID) error {
+	if id == 0 {
+		return nil
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cleanupCancel()
+	response, err := cli.Revoke(cleanupCtx, id)
+	if err != nil {
+		return err
+	}
+	return targetverify.ValidateProbeRevoke(response, 0)
 }
