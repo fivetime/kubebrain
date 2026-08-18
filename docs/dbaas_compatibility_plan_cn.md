@@ -56911,6 +56911,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同组真实 budget exhaustion 仍为 `[0,1]`，transient recovery 仍返回真实 previous value。需要下一生产镜像，
   A5063 production 规则无需变化。
 
+- A5065 闭合公开 RangeStream 失败出口分散、动态创建且正常客户端取消会污染 send-error 的生产缺口。对照
+  `/root/etcd/server/etcdserver/v3_server.go::RangeStream/rangeStream`，上游任何 Range 或 Send 错误都会终止流；
+  KubeBrain 还必须验证独立 scanner 的 terminal metadata、逐 wire chunk compaction watermark 与 typed backend
+  error。旧 `read.range_stream.err/send_err` 无零基线，A5057 的 `backend.list.by.stream.failed` 又只覆盖底层 worker，
+  看不到公开 handler 的 compaction、wire 和 terminal protocol 结果。现新增固定
+  `read.range_stream.failure{stage="backend|send|protocol"}`，RPC server 创建时初始化三类权威零值；backend 同步
+  覆盖 RangeStreamChan/chunk/逐帧 compact check，send 复用 stream failure 分类排除 context、deadline 和正常
+  gRPC CANCEL，protocol 专指 backend 未给 mandatory terminal metadata 就关闭。protocol 路径继续扣留最后一个
+  bounded data chunk 并返回 Unavailable，不把不完整 Count/More 伪报成功。production 生成 60 秒新鲜 Ready Pod
+  UID/stage current 与 10 分钟 increase，要求 `3×Ready` 完整、值合法且未知 stage 显式非法；backend/send
+  warning，protocol 与缺失/陈旧/非法/组合不完整 critical。回归固定三类零值、typed backend error、真实 send
+  Unavailable、Canceled 不误报及 premature close fail-closed；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

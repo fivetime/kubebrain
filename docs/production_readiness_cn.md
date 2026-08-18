@@ -4445,6 +4445,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   worker 失败。production 从 60 秒内样本生成 Ready Pod UID 级 current/10 分钟 increase，要求完整覆盖
   当前 Ready 副本并验证 current 为 `[0,2^53]` 精确整数、increase 有限同范围；任一增量 warning，缺失、
   陈旧或非法 telemetry 也不能解释为所有大范围读取、watch-cache 冷启动和 count-index 重建均成功。
+- `read_range_stream_failure{stage="backend|send|protocol"}` 在 RPC server 创建时初始化三类权威零值，补足
+  底层 worker 指标看不到的公开流边界。production 只消费 60 秒新鲜 Ready Pod UID current/10 分钟 increase，
+  要求 `3×Ready` 完整、current 为 `[0,2^53]` 精确整数、increase 有限同范围且拒绝未知 stage。backend/send
+  事件 warning，其中 send 排除客户端取消；protocol 表示缺 mandatory terminal metadata、服务端扣留最终数据帧
+  后 fail closed，事件及 telemetry 缺失、陈旧、非法或组合不完整均 critical。
 - gRPC p99 延迟超过 1 秒。
 
 这些阈值是预生产起点，不应直接作为最终生产阈值。正式上线前应基于真实对象规模、apiserver QPS、watch 数量和 TiKV 延迟重新校准。
