@@ -56828,6 +56828,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   健康证据。回归分别注入 GetPartitions 失败与 caller cancellation，证明前者只递增 failed、后者不误报；
   定向 backend 与精确 production 测试通过。需要下一生产镜像和监控发布。
 
+- A5058 闭合 Watch backend/proxy 结果完整性防线只取消单个 generation、事故指标却可静默缺失的生产诊断
+  缺口。既有发送前校验已拒绝空/mixed/malformed result、nil/非法 event、batch/event/progress revision 回退、
+  超过 int64 或不推进 source watermark 等情况，并保留精确 CancelReason；但
+  `watch.backend.invalid_result` / `.invalid_revision` 都只在事故后动态创建且 production 不消费，无法证明
+  Ready 副本正在执行这些关键 fence。现新增固定
+  `watch.backend.integrity_failure{kind="invalid_result|invalid_revision"}`，每个 RPC server 创建时初始化两类
+  权威零值，所有既有拒绝出口同时递增 canonical 与 legacy counter。production 生成 60 秒新鲜的 Ready Pod
+  UID/kind current 与 10 分钟 increase，要求两类 `2×Ready` 完整；current 为 `[0,2^53]` 精确整数、increase
+  有限同范围。任一事件及缺失/陈旧/非法/组合不完整均 critical：generation cancellation 阻止了已检测到的
+  非法发布，但不代表 collector、durable replay 或 peer proxy ordering 已恢复。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 同时确认 PrevKV 历史 Range 失败时上游也选择省略 PrevKV 而非
+  终止 watch，故未把兼容降级误改成错误。固定 taxonomy、legacy 同步回归、既有 malformed/revision fence 与
+  精确 production 测试通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
