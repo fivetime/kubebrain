@@ -110,6 +110,7 @@ func (s *RPCServer) rangeWithAfterReadOnce(
 		}
 		response, err := s.peers.Range(proxyCtx, r)
 		response, err = validateKVProxyResult(s.metricCli, kvProxyRPCRange, response, err)
+		response, err = validateRangeProxyPayload(s.metricCli, r, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		if err == nil && afterRead != nil {
 			err = afterRead(response)
@@ -146,6 +147,7 @@ func (s *RPCServer) rangeWithAfterReadOnce(
 		}
 		response, err := s.peers.Range(proxyCtx, r)
 		response, err = validateKVProxyResult(s.metricCli, kvProxyRPCRange, response, err)
+		response, err = validateRangeProxyPayload(s.metricCli, r, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		if err == nil && afterRead != nil {
 			err = afterRead(response)

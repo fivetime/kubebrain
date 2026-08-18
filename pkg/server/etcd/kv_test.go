@@ -627,6 +627,7 @@ func TestFollowerLinearizableHistoricalRangeProxiesBeforeLocalBarrier(t *testing
 			return &etcdserverpb.RangeResponse{
 				Header: latest.Header,
 				Kvs:    []*mvccpb.KeyValue{{Key: key, Value: []byte("v1"), ModRevision: first.Header.Revision}},
+				Count:  1,
 			}, nil
 		},
 	}
@@ -2535,6 +2536,41 @@ func TestFollowerSerializableHistoricalRangeWithoutDurableRevisionProxiesToLeade
 	require.True(t, called)
 	require.Equal(t, int64(1), resp.Count)
 	require.Equal(t, []byte("leader"), resp.Kvs[0].Value)
+}
+
+func TestFollowerRejectsInvalidRangeProxyPayload(t *testing.T) {
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.RangeRequest
+		response *etcdserverpb.RangeResponse
+	}{
+		{name: "count below values", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
+		{name: "count only values", request: &etcdserverpb.RangeRequest{Key: []byte("b"), CountOnly: true}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
+		{name: "nil value", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{nil}}},
+		{name: "outside range", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("d")}}}},
+		{name: "duplicate key", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}, {Key: []byte("b")}}}},
+		{name: "keys only value", request: &etcdserverpb.RangeRequest{Key: []byte("b"), KeysOnly: true}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), Value: []byte("secret")}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initKVProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+					return tt.response, nil
+				},
+			}
+
+			response, err := server.Range(context.Background(), tt.request)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
+		})
+	}
 }
 
 func TestRangeCompactedRevisionMatchesEtcd(t *testing.T) {

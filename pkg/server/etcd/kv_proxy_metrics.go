@@ -15,6 +15,7 @@
 package etcd
 
 import (
+	"bytes"
 	"fmt"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -23,6 +24,55 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
+
+func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.RangeRequest, response *etcdserverpb.RangeResponse, err error) (*etcdserverpb.RangeResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	fail := func(message string) (*etcdserverpb.RangeResponse, error) {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCRange)
+		return nil, status.Error(codes.DataLoss, message)
+	}
+	if response.GetCount() < 0 || response.GetCount() < int64(len(response.GetKvs())) {
+		return fail(fmt.Sprintf("leader range proxy returned count %d for %d key-values", response.GetCount(), len(response.GetKvs())))
+	}
+	if request.GetCountOnly() {
+		if len(response.GetKvs()) != 0 || response.GetMore() {
+			return fail("leader range proxy returned key-values or more=true for a count-only request")
+		}
+		return response, nil
+	}
+	seen := make(map[string]struct{}, len(response.GetKvs()))
+	for _, kv := range response.GetKvs() {
+		if kv == nil {
+			return fail("leader range proxy returned a nil key-value")
+		}
+		if !rangeProxyContainsKey(request.GetKey(), request.GetRangeEnd(), kv.GetKey()) {
+			return fail("leader range proxy returned a key outside the requested range")
+		}
+		if _, exists := seen[string(kv.GetKey())]; exists {
+			return fail("leader range proxy returned a duplicate key")
+		}
+		seen[string(kv.GetKey())] = struct{}{}
+		if request.GetKeysOnly() && len(kv.GetValue()) != 0 {
+			return fail("leader range proxy returned a value for a keys-only request")
+		}
+	}
+	return response, nil
+}
+
+func rangeProxyContainsKey(start, end, key []byte) bool {
+	if len(key) == 0 || bytes.Compare(key, start) < 0 {
+		return false
+	}
+	if len(end) == 0 {
+		return bytes.Equal(key, start)
+	}
+	if len(end) == 1 && end[0] == 0 {
+		return true
+	}
+	return bytes.Compare(key, end) < 0
+}
 
 const (
 	kvProxyRPCRange       = "range"

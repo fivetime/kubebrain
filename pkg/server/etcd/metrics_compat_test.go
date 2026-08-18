@@ -26,6 +26,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -421,6 +422,49 @@ func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
 	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
+}
+
+func TestRangeProxyPayloadValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		request *etcdserverpb.RangeRequest
+		result  *etcdserverpb.RangeResponse
+		valid   bool
+	}{
+		{name: "exact key", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}, valid: true},
+		{name: "from key", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte{0}}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}, {Key: []byte("z")}}}, valid: true},
+		{name: "negative count", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: -1}},
+		{name: "count below values", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
+		{name: "count only values", request: &etcdserverpb.RangeRequest{Key: []byte("b"), CountOnly: true}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
+		{name: "count only more", request: &etcdserverpb.RangeRequest{Key: []byte("b"), CountOnly: true}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), More: true}},
+		{name: "nil value", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{nil}}},
+		{name: "empty key", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{}}}},
+		{name: "before range", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a")}}}},
+		{name: "at range end", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("d")}}}},
+		{name: "duplicate key", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}, {Key: []byte("b")}}}},
+		{name: "keys only value", request: &etcdserverpb.RangeRequest{Key: []byte("b"), KeysOnly: true}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), Value: []byte("secret")}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			response, err := validateRangeProxyPayload(rec, tt.request, tt.result, nil)
+			if tt.valid {
+				require.Same(t, tt.result, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.RangeResponse{}
+	response, err := validateRangeProxyPayload(nil, &etcdserverpb.RangeRequest{}, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
 }
 
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
