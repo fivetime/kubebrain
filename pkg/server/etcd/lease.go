@@ -505,12 +505,91 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	}
 	rev, err := m.revokeLeaseLocked(ctx, req.ID)
 	if err != nil {
+		if errors.Is(err, storage.ErrUncertainResult) {
+			m.scheduleUncertainLeaseRevoke(req.ID, epoch)
+		}
 		return nil, mapFenceErr(err)
 	}
 	emitEtcdLeaseRevokedCounter(m.srv.metricCli, 1)
 	return &etcdserverpb.LeaseRevokeResponse{
 		Header: txnHeader(int64(rev)),
 	}, nil
+}
+
+var errLeaseRevokePending = status.Error(codes.Unavailable, "etcdserver: lease revoke outcome is pending")
+
+func (m *leaseManager) scheduleUncertainLeaseRevoke(id int64, epoch uint64) {
+	m.leaseMu.Lock()
+	st := m.leases[id]
+	if st == nil || st.revokePending {
+		m.leaseMu.Unlock()
+		return
+	}
+	st.revokePending = true
+	generation := m.leaseGeneration
+	m.leaseMu.Unlock()
+	emitLeaseRevokeReconcile(m.srv.metricCli, "retry")
+	m.startWorker(func(workerCtx context.Context) {
+		m.retryUncertainLeaseRevoke(workerCtx, id, generation, epoch)
+	})
+}
+
+func (m *leaseManager) retryUncertainLeaseRevoke(workerCtx context.Context, id int64, generation, epoch uint64) {
+	retryDelay := 100 * time.Millisecond
+	for {
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-workerCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			emitLeaseRevokeReconcile(m.srv.metricCli, "handoff")
+			return
+		case <-timer.C:
+		}
+
+		currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+		m.leaseMu.Lock()
+		st := m.leases[id]
+		stillPending := m.leaseGeneration == generation && st != nil && st.revokePending
+		m.leaseMu.Unlock()
+		if !leadingFresh || currentEpoch != epoch || !stillPending {
+			emitLeaseRevokeReconcile(m.srv.metricCli, "handoff")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(workerCtx, unaryRpcTimeout)
+		ctx = backend.WithLeadershipEpoch(ctx, epoch)
+		m.leaseWriteMu.Lock()
+		m.leaseTeardowns.Add(1)
+		m.leaseMu.Lock()
+		st = m.leases[id]
+		stillPending = m.leaseGeneration == generation && st != nil && st.revokePending
+		m.leaseMu.Unlock()
+		var err error
+		if stillPending {
+			_, err = m.revokeLeaseLocked(ctx, id)
+		}
+		m.leaseTeardowns.Add(-1)
+		m.leaseWriteMu.Unlock()
+		cancel()
+		if !stillPending {
+			emitLeaseRevokeReconcile(m.srv.metricCli, "handoff")
+			return
+		}
+		if err == nil || status.Code(err) == codes.NotFound {
+			emitLeaseRevokeReconcile(m.srv.metricCli, "success")
+			return
+		}
+		emitLeaseRevokeReconcile(m.srv.metricCli, "retry")
+		klog.ErrorS(err, "lease revoke reconciliation retry failed", "lease", id, "retryAfter", retryDelay)
+		if retryDelay < time.Second {
+			retryDelay *= 2
+			if retryDelay > time.Second {
+				retryDelay = time.Second
+			}
+		}
+	}
 }
 
 func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
@@ -866,6 +945,10 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 		}
 		return finishLocal(resp)
 	}
+	if st.revokePending {
+		m.leaseMu.Unlock()
+		return nil, errLeaseRevokePending
+	}
 
 	resp := &etcdserverpb.LeaseTimeToLiveResponse{
 		Header:     txnHeader(int64(m.srv.backend.GetCurrentRevision())),
@@ -931,6 +1014,12 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 		m.leaseMu.Unlock()
 		return nil, err
 	}
+	for _, lease := range m.leases {
+		if lease.revokePending {
+			m.leaseMu.Unlock()
+			return nil, errLeaseRevokePending
+		}
+	}
 	leases := make([]*leaseState, 0, len(m.leases))
 	for _, lease := range m.leases {
 		leases = append(leases, lease)
@@ -980,8 +1069,12 @@ func (m *leaseManager) ensureLeaseExists(id int64) error {
 	}
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
-	if _, ok := m.leases[id]; !ok {
+	st, ok := m.leases[id]
+	if !ok {
 		return leaseNotFound(id)
+	}
+	if st.revokePending {
+		return errLeaseRevokePending
 	}
 	return nil
 }
@@ -1423,6 +1516,11 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 		unlock()
 		return 0, leaseNotFound(id)
 	}
+	if st.revokePending {
+		m.leaseMu.Unlock()
+		unlock()
+		return 0, errLeaseRevokePending
+	}
 	now := time.Now()
 	// Match etcd lessor.Renew: a lease whose deadline has passed cannot be
 	// resurrected merely because its asynchronous revoke callback was delayed.
@@ -1489,6 +1587,11 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 		m.leaseMu.Unlock()
 		unlock()
 		return 0, leaseNotFound(id)
+	}
+	if st.revokePending {
+		m.leaseMu.Unlock()
+		unlock()
+		return 0, errLeaseRevokePending
 	}
 	now = time.Now()
 	st.deadline = now.Add(time.Duration(st.ttl) * time.Second)

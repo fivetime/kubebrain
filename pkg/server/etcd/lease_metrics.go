@@ -111,6 +111,24 @@ func emitLeaseGrantCleanup(metricCli metrics.Metrics, outcome string) {
 	_ = metricCli.EmitCounter("lease.grant_cleanup", 1, metrics.Tag("outcome", outcome))
 }
 
+var leaseRevokeReconcileOutcomes = []string{"retry", "success", "handoff"}
+
+func initLeaseRevokeReconcileMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, outcome := range leaseRevokeReconcileOutcomes {
+		_ = metricCli.EmitCounter("lease.revoke_reconcile", int64(0), metrics.Tag("outcome", outcome))
+	}
+}
+
+func emitLeaseRevokeReconcile(metricCli metrics.Metrics, outcome string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("lease.revoke_reconcile", 1, metrics.Tag("outcome", outcome))
+}
+
 func emitEtcdLeaseGrantedCounter(metricCli metrics.Metrics, value int) {
 	if metricCli == nil {
 		return

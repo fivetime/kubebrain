@@ -131,9 +131,10 @@ func (b *retryableFailedGrantCleanupBackend) InternalCAS(ctx context.Context, op
 
 type uncertainLeaseRevokeBackend struct {
 	BackendShim
-	leaseID int64
-	commit  bool
-	failed  bool
+	leaseID   int64
+	commit    bool
+	failed    bool
+	retryGate <-chan struct{}
 }
 
 type committedCheckpointErrorBackend struct {
@@ -235,8 +236,12 @@ func (b *failAtomicLeaseRevokeBackend) TxnApply(ctx context.Context, ops []backe
 
 func (b *uncertainLeaseRevokeBackend) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
 	target := string(leaseStorageKey(b.leaseID))
+	targeted := false
 	for _, op := range ops {
-		if !b.failed && op.Delete && op.Internal && string(op.Key) == target {
+		if op.Delete && op.Internal && string(op.Key) == target {
+			targeted = true
+		}
+		if !b.failed && targeted {
 			b.failed = true
 			if !b.commit {
 				return nil, 0, nil, storage.NewErrUncertainResult(context.DeadlineExceeded)
@@ -246,6 +251,13 @@ func (b *uncertainLeaseRevokeBackend) TxnApply(ctx context.Context, ops []backen
 				return nil, revision, nil, err
 			}
 			return nil, revision, nil, storage.NewErrUncertainResult(context.DeadlineExceeded)
+		}
+	}
+	if targeted && b.retryGate != nil {
+		select {
+		case <-b.retryGate:
+		case <-ctx.Done():
+			return nil, 0, nil, ctx.Err()
 		}
 	}
 	return b.BackendShim.TxnApply(ctx, ops, guards, prevKV)
@@ -757,7 +769,7 @@ func TestCommittedUncertainLeaseRevokeForgetsInMemoryLease(t *testing.T) {
 		"a committed revoke must not leave an in-memory lease that keepalive can resurrect")
 }
 
-func TestUncommittedUncertainLeaseRevokeRetainsLease(t *testing.T) {
+func TestUncommittedUncertainLeaseRevokeFailsClosedUntilRetrySucceeds(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	ctx := context.Background()
@@ -768,11 +780,15 @@ func TestUncommittedUncertainLeaseRevokeRetainsLease(t *testing.T) {
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
 	require.NoError(t, err)
 
+	retryGate := make(chan struct{})
 	shim := &uncertainLeaseRevokeBackend{
 		BackendShim: server.backend,
 		leaseID:     leaseID,
+		retryGate:   retryGate,
 	}
 	server.backend = shim
+	recorder := &recordingMetrics{}
+	server.metricCli = recorder
 	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
 	require.ErrorIs(t, err, storage.ErrUncertainResult)
 	require.True(t, shim.failed)
@@ -782,9 +798,71 @@ func TestUncommittedUncertainLeaseRevokeRetainsLease(t *testing.T) {
 	require.Len(t, current.Kvs, 1)
 	_, err = shim.InternalGet(ctx, leaseStorageKey(leaseID))
 	require.NoError(t, err)
-	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	_, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.ErrorIs(t, err, errLeaseRevokePending)
+	_, err = server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.ErrorIs(t, err, errLeaseRevokePending)
+	_, err = server.refreshLease(ctx, leaseID)
+	require.ErrorIs(t, err, errLeaseRevokePending)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/leases/pending-revoke-new"), Value: []byte("value"), Lease: leaseID,
+	})
+	require.ErrorIs(t, err, errLeaseRevokePending)
+	newKey, rangeErr := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/registry/leases/pending-revoke-new")})
+	require.NoError(t, rangeErr)
+	require.Empty(t, newKey.Kvs)
+
+	close(retryGate)
+	require.Eventually(t, func() bool {
+		ttl, ttlErr := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+		return ttlErr == nil && ttl.TTL == -1
+	}, 5*time.Second, 10*time.Millisecond)
+	current, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
-	require.Equal(t, [][]byte{key}, ttl.Keys)
+	require.Empty(t, current.Kvs)
+	_, err = shim.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	require.Contains(t, recorder.counters, recordedCounter{
+		name: "lease.revoke_reconcile", value: 1, tags: []metrics.T{metrics.Tag("outcome", "retry")},
+	})
+	require.Contains(t, recorder.counters, recordedCounter{
+		name: "lease.revoke_reconcile", value: 1, tags: []metrics.T{metrics.Tag("outcome", "success")},
+	})
+}
+
+func TestUncertainLeaseRevokeHandsOffAcrossLeadershipEpoch(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 2053
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	recorder := &recordingMetrics{}
+	server.metricCli = recorder
+	var epoch atomic.Uint64
+	epoch.Store(1)
+	server.peers = testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return epoch.Load(), true },
+	}
+
+	server.scheduleUncertainLeaseRevoke(leaseID, 1)
+	epoch.Store(2)
+	require.Eventually(t, func() bool {
+		recorder.mu.Lock()
+		defer recorder.mu.Unlock()
+		for _, counter := range recorder.counters {
+			if counter.name == "lease.revoke_reconcile" && counter.value == 1 &&
+				len(counter.tags) == 1 && counter.tags[0] == metrics.Tag("outcome", "handoff") {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond)
+	server.leaseMu.Lock()
+	require.True(t, server.leases[leaseID].revokePending,
+		"old epoch must leave the pending marker for authoritative reload")
+	server.leaseMu.Unlock()
 }
 
 func TestLeaseRevokeTransactionFailureRetainsKeysAndMetadata(t *testing.T) {

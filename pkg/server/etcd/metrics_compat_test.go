@@ -712,6 +712,25 @@ func TestLeaseGrantCleanupMetricsUseFixedOutcomes(t *testing.T) {
 	}
 }
 
+func TestLeaseRevokeReconcileMetricsUseFixedOutcomes(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initLeaseRevokeReconcileMetrics(rec)
+	for _, outcome := range leaseRevokeReconcileOutcomes {
+		emitLeaseRevokeReconcile(rec, outcome)
+	}
+
+	require.Len(t, rec.counters, 2*len(leaseRevokeReconcileOutcomes))
+	for i, outcome := range leaseRevokeReconcileOutcomes {
+		require.Equal(t, recordedCounter{
+			name: "lease.revoke_reconcile", value: int64(0), tags: []metrics.T{metrics.Tag("outcome", outcome)},
+		}, rec.counters[i])
+		require.Equal(t, recordedCounter{
+			name: "lease.revoke_reconcile", value: 1, tags: []metrics.T{metrics.Tag("outcome", outcome)},
+		}, rec.counters[len(leaseRevokeReconcileOutcomes)+i])
+	}
+}
+
 func TestEtcdLeaseLifecycleMetricsUseUpstreamMetricNames(t *testing.T) {
 	rec := &recordingMetrics{}
 

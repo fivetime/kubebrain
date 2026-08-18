@@ -208,6 +208,7 @@ type leaseState struct {
 	timer           *time.Timer
 	checkpointTimer *time.Timer
 	revoked         chan struct{}
+	revokePending   bool
 }
 
 // New returns the etcd rpc server
@@ -291,6 +292,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initLeaseBackgroundFailureMetrics(metricCli)
 	initLeaseOrphanSweepFailureMetrics(metricCli)
 	initLeaseGrantCleanupMetrics(metricCli)
+	initLeaseRevokeReconcileMetrics(metricCli)
 	initEtcdClientRequestCounters(metricCli)
 	initEtcdClientGRPCBytesCounters(metricCli)
 	initEtcdServerStreamFailureCounters(metricCli)
