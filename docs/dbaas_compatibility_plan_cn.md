@@ -57745,6 +57745,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   production 326 项四分片与 vet 全部通过。本项不改变 Range request、artifact schema、lease TTL 读取、在线 KV
   或 TiKV 数据路径；异常页仍在 no-clobber publish 前 fail closed。
 
+- A5154 补齐 logical exporter 的 LeaseTimeToLive keys disclosure 准入。exporter 调用
+  `clientv3.TimeToLive(ctx,id)` 时未设置 `WithAttachedKeys`，但旧 `exportLeaseRecord` 忽略 response Keys，也只通过
+  `revision>=snapshot` 间接要求正 header。对照 `/root/etcd/server/etcdserver/v3_server.go::leaseTimeToLive`（仅当
+  request.Keys 时填 Keys）与 `pkg/server/etcd/lease_proxy_metrics.go::validateLeaseTimeToLiveProxyPayload`，现显式要求
+  TTL header revision 为正，并拒绝任何未请求 attached keys；备份的 lease 共享关系仍由固定 revision Range 返回的
+  KV `Lease` 字段建立，不依赖实时 TTL attachment disclosure。合法 current/promotion/exact-max TTL 与 nil、ID/header/
+  revision、expired、grant 缺失/超限、夹带 keys 反例连续二十轮，包级 race、完整非 production、production 326 项
+  四分片与 vet 全部通过。本项不改变 TTL 请求、artifact schema、合法 lease 时限、在线 KV/lease 或 TiKV 数据路径；
+  异常响应在 lease 行写入和 no-clobber publish 前 fail closed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
