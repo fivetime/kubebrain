@@ -56572,6 +56572,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 与 AuthOldRevision fence 对账。测试固定 error authoritative zero 与初始 persisted revision 导出；
   精确 manifest 和 production/observability 文档同步。相关测试通过。本项需要下一生产镜像。
 
+- A5036 闭合 upstream current/compact MVCC revision 的 DBaaS 交叉一致性链。A4036 已每秒读取 durable
+  compact watermark，但 refresh-error 仅失败时动态创建，production 不消费 current/compact gauge，也未验证
+  `compact<=current` 或共享 compact 副本收敛。现 server 创建时初始化
+  `mvcc.compact_revision.refresh.err=0`；监控从 60 秒内样本生成 Ready Pod UID 级 current/compact/error-current/
+  10 分钟 increase recording，要求四类来源完整。current 必须为 `(0,2^53]` 精确整数，compact 为
+  `[0,2^53]` 精确整数且不得超过同 Pod current，error current 精确非负、increase 有限同范围；共享 compact
+  两分钟内必须一致，但不错误要求 follower current 完全相等。refresh failure warning；缺失、陈旧、非法、
+  compact>current 或持续 compact 分歧 critical。文案明确 telemetry refresh 不替代 Range/Watch 请求路径的
+  compact metadata 执行。零值单元测试、精确 manifest 和 production/observability 文档同步；相关测试通过。
+  本项需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
