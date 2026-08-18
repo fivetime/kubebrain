@@ -57388,11 +57388,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
 - A5114 将 unary Maintenance leader-proxy payload 完整性扩展到 Status。对照
   `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status`：upstream success 固定返回非空 Version；backend
-  DbSize/DbSizeInUse 非负；当时还错误要求 in-use 不大于 allocated（A5122 已按 upstream 独立采样合同撤销）；零 quota 被替换为正默认值；RaftAppliedIndex 不大于 committed
+  DbSize/DbSizeInUse 非负；当时还错误要求 in-use 不大于 allocated（A5122 已撤销）；零 quota 被替换为正默认值；当时还错误要求 RaftAppliedIndex 不大于先采样的 committed
   RaftIndex；DowngradeInfo 总是初始化；Leader 为 `raft.None` 当且仅当 Errors 含 `etcdserver: no leader`。KubeBrain 的 TiKV
   logical-size/1-byte sentinel、default quota、synthetic equal indexes 与 no-leader error 遵守同一合同。StorageVersion 在
   upstream 尚未发布时可空，启动期 Raft fields 可为零，不能误报。旧 hedged follower proxy 会确认空 version、负/倒置 size、
-  非正 quota、applied 越 committed、nil downgrade info、空 error 或 leader health 自相矛盾。现 leader 分支在覆盖本地
+  非正 quota、applied 越 committed（A5123 已按 upstream 独立采样合同撤销）、nil downgrade info、空 error 或 leader health 自相矛盾。现 leader 分支在覆盖本地
   IsLearner 前验证 payload；违例复用固定 `maintenance.proxy.integrity_failure{rpc="status"}`，作为 terminal DataLoss 不被
   hedge 掩盖。合法 early-state、storage-isolated follower 异常注入与连续十轮回归通过；需要下一生产镜像和监控发布。
 
@@ -57473,6 +57473,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非负，不再臆造跨采样不变量；非空 Version、正 quota、raft index、DowngradeInfo 与 leader health 门禁保持不变。validator 正例、
   公开 follower 倒置 size 正例及两个负值异常注入连续十轮通过；不改变本地 TiKV logical-size 计算或存储格式，需要下一生产镜像
   和监控发布。
+
+- A5123 修正 A5114 对 Maintenance Status raft index 关系的过严 proxy 门禁。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status` 与
+  `/root/etcd/server/etcdserver/server.go::{setCommittedIndex,setAppliedIndex,CommittedIndex,AppliedIndex}`：Status 先读
+  committed、后读 applied，两个 getter 是独立 atomic load；Raft loop 发布新 committed 后，apply loop 才异步推进 applied。
+  若两次读取之间完成 apply，后采样的 applied 可大于先采样的 committed，尽管 applied 从未超过当时最新 committed。旧
+  validator 把这一合法竞态判为 DataLoss。现撤销跨采样 `RaftAppliedIndex<=RaftIndex` 门禁；Leader/Errors 仍安全绑定，因为
+  upstream 根据已写入 response 的同一个 Leader 值追加 no-leader error。validator 正例与公开 follower 的倒置 index 正例
+  连续十轮通过；既有 malformed envelope、负 size、quota、downgrade 与 leader-health 异常仍 fail closed。本项不改变 TiKV
+  revision/index 合成或存储格式，需要下一生产镜像和监控发布。
 
 ### P2：运维兼容和长期验证
 

@@ -4521,7 +4521,7 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   GET 顺序、MemberID=0 与未知 AlarmType 是 upstream 可产生值，不得误报。Defragment 对齐 upstream，允许无 Header 的空成功响应。production 要求 60 秒新鲜
   Status success 必须有非空 Version，DbSize/DbSizeInUse 非负，DbSizeQuota 为正；两种 size 在 upstream 中独立采样，
   并发提交窗口允许后采样的 in-use 暂时大于先采样的 allocated，
-  RaftAppliedIndex 不大于 RaftIndex，DowngradeInfo 非 nil，Errors 不含空字符串，并且 Leader=0 当且仅当 errors 包含
+  committed/applied index 同样独立采样，并发推进窗口允许后采样的 applied 暂时大于先采样的 committed；DowngradeInfo 非 nil，Errors 不含空字符串，并且 Leader=0 当且仅当 errors 包含
   `etcdserver: no leader`。启动早期零 Raft 字段与尚未发布的空 StorageVersion 合法。
   Hash success header current revision 必须为正。HashKV revision=0 时 HashRevision 必须等于 header current revision；
   非零请求（含负数）必须精确回显请求值。CompactRevision 不得小于 -1；正 HashRevision 时满足
