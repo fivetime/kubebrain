@@ -1101,6 +1101,13 @@ object/revision-index 矛盾后才计数；普通 legacy/compacted history DataL
 新鲜的 Ready Pod UID/target/outcome current 与 10 分钟 increase，要求 `4×Ready` 完整且 counter 合法；任一
 armed/failed 增量 critical，缺失、陈旧、非法或组合不完整 critical。failed 表示 alarm persistence 或 witness
 validation 链自身失败，不能因共享 AlarmList 暂为空而解除事故。
+写入 apply-then-ack 失败由 `write_commit_wait_failure{reason="context_done|backstop"}` 表达，backend 创建时两类
+均初始化权威零值。TiKV transaction 已确定提交、但 read-visible revision 尚未追上时，KubeBrain 返回携带
+committed revision 的 outcome-unknown etcd timeout，绝不再把未可读写入作为成功 ACK；调用方重试可能产生符合
+etcd 超时契约的重复 mutation。production 生成 60 秒新鲜的 Ready Pod UID/reason current 与 10 分钟 increase，
+要求 `2×Ready` 完整，current 为 `[0,2^53]` 精确整数、increase 有限同范围。context_done 任一增量 warning；
+三秒 backstop 任一增量 critical，必须检查 event collector、durable revision、CPU 与 TiKV latency；缺失、陈旧、
+非法或 reason 不完整 critical。
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
 `etcd_debugging_mvcc_watcher_total` 与 `etcd_debugging_mvcc_slow_watcher_total` 每秒从公开 gRPC stream 和
 backend WatcherHub 真实状态刷新；production 只消费 60 秒内、按 Ready Pod UID 去重的三类 gauge，并要求

@@ -56779,6 +56779,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   缺失/陈旧/非法/组合不完整均 critical。固定 taxonomy 与真实 witnessed invalid-object 回归、完整 backend 和
   精确 production 测试通过；需要下一生产镜像和监控发布。
 
+- A5055 修复 TiKV commit 成功但 event collector 尚未推进 read-visible revision 时仍返回成功 ACK 的 etcd 语义
+  差距。对照 `/root/etcd/server/etcdserver/v3_server.go::waitAppliedIndex` 与
+  `/root/etcd/server/etcdserver/errors/errors.go::ErrTimeoutWaitAppliedIndex`：上游等待 apply 超时返回错误，不会把
+  尚未 apply 的 proposal 报成成功。KubeBrain 旧 `waitCommittedRevision` 在 client context 结束或固定三秒
+  backstop 后无错误返回，直接破坏 A35 声明的 apply-then-ack/read-your-write 保证；`write.commit_wait.ctx_done`
+  与 `.backstop` 又仅在事件后动态出现且 production 不消费。现等待函数在 revision 未可读时返回原因错误，
+  `TxnApply` 将 TiKV 已确定提交转换为保留 committed revision 的 `storage.ErrUncertainResult`，经既有 gRPC 映射
+  返回 retryable etcd timeout，且不返回 write results；这避免 false success，但保持 etcd 对超时 mutation 的
+  outcome-unknown/可能重复语义。旧 quota API 的二次冗余 wait 已删除，所有路径由 TxnApply 单点施加契约。
+  新增固定 `write.commit_wait.failure{reason="context_done|backstop"}` 两类权威零值，production 要求 Ready Pod
+  UID/reason current/increase `2×Ready` 完整且值合法；context_done warning、三秒 backstop critical、telemetry
+  缺失/陈旧/非法 critical。回归真实停止 backend collector 而保持 memkv 可写，证明事务分配并提交 revision 后
+  只返回 uncertain error、committed watermark 仍低于该 revision；同时修正三处绕过生产 leader revision 初始化的
+  测试夹具，它们此前依赖 false-success backstop 掩盖 revision 1 空洞。定向 backend/server 与精确 production
+  测试通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
