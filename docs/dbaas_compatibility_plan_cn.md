@@ -56817,6 +56817,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race、完整 backend 与精确 production 测试通过；仍需把该 opt-in 测试接入具备集群 DNS/路由的 release runner，
   并随生产镜像和监控发布。
 
+- A5057 闭合底层 RangeStream worker 非取消失败只写动态 legacy counter、production 可静默为零的可观测
+  缺口。RangeStream 同时承载大范围读取、watch-cache 冷启动和 count-index 快照重建；GetPartitions、TSO、
+  compact watermark 或 partition scan 错误会让流以 terminal error 提前结束，但旧
+  `backend.list.by.stream.failed` 仅在事故后创建，缺失 family、停止 scrape 或非法值都无法与零失败区分。
+  现每个 backend 构造时初始化该 counter 权威零值，保留调用方取消单独进入
+  `backend.list.by.stream.canceled` 的低噪声边界。production 从 60 秒内 raw sample 生成 Ready Pod UID 级
+  current/10 分钟 increase，要求两类完整覆盖当前 Ready 副本；current 为 `[0,2^53]` 精确整数，increase
+  有限同范围。任一真实 worker failure warning，缺失、陈旧或非法 telemetry 同样 warning，不能作为存储流
+  健康证据。回归分别注入 GetPartitions 失败与 caller cancellation，证明前者只递增 failed、后者不误报；
+  定向 backend 与精确 production 测试通过。需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

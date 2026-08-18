@@ -4416,6 +4416,10 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   Ready Pod UID 级 current 与 10 分钟 increase recording。current 必须是 `[0,2^53]` 内精确整数，外推
   increase 可为分数但必须有限且在同一范围；两类 series 不完整、invalid recording 缺失/非零都会告警，
   不能把换主期间未观测到的 rebuild failure 当作权威零值。
+- `backend_list_by_stream_failed` 在每个 backend 构造时初始化为零，并只统计非调用方取消的 RangeStream
+  worker 失败。production 从 60 秒内样本生成 Ready Pod UID 级 current/10 分钟 increase，要求完整覆盖
+  当前 Ready 副本并验证 current 为 `[0,2^53]` 精确整数、increase 有限同范围；任一增量 warning，缺失、
+  陈旧或非法 telemetry 也不能解释为所有大范围读取、watch-cache 冷启动和 count-index 重建均成功。
 - gRPC p99 延迟超过 1 秒。
 
 这些阈值是预生产起点，不应直接作为最终生产阈值。正式上线前应基于真实对象规模、apiserver QPS、watch 数量和 TiKV 延迟重新校准。
