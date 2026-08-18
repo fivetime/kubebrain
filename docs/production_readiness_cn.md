@@ -1064,7 +1064,12 @@ MVCC physical compaction 指标 `etcd_debugging_mvcc_db_compaction_last` 与
 `etcd_debugging_mvcc_db_compaction_pause_duration_milliseconds` histogram（batch commit 与
 失败后的逐 key fallback 各自观察；只读 scan 时间不计入 pause），
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
-`etcd_debugging_mvcc_watcher_total`、`etcd_debugging_mvcc_slow_watcher_total`、
+`etcd_debugging_mvcc_watcher_total` 与 `etcd_debugging_mvcc_slow_watcher_total` 每秒从公开 gRPC stream 和
+backend WatcherHub 真实状态刷新；production 只消费 60 秒内、按 Ready Pod UID 去重的三类 gauge，并要求
+每类来源与 Ready 副本精确相等。三者必须是 `[0,2^53]` 精确整数，且同 Pod slow 不得超过 watcher；stream
+可为空，一个 stream 也可 multiplex 多个 watch，所以不错误要求 stream 与 watcher 相等。任一 Pod 的 stream
+或 watcher 超过 8000 持续 5 分钟 warning（生产 `--max-watches=10000`，native Watch 仍可能计入 backend
+watcher），slow 非零持续 5 分钟 warning；缺失、陈旧或非法 telemetry warning。事件交付另看
 `etcd_debugging_mvcc_events_total` 与 `etcd_debugging_mvcc_pending_events_total`，
 lease 指标 `etcd_debugging_server_lease_expired_total`、
 `etcd_debugging_lease_granted_total`、`etcd_debugging_lease_revoked_total` 与

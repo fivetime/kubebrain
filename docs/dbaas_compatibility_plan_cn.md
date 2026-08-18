@@ -56594,6 +56594,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非法或类型基数不完整 critical。server 单测固定权威零值、立即/周期刷新、类型标签和 context 停止；精确
   manifest、production/observability 文档同步，相关测试通过。本项需要下一生产镜像。
 
+- A5038 闭合 A4038 upstream MVCC Watch gauge 的生产压力链。三个 gauge 已每秒导出公开 gRPC Watch stream、
+  backend active watcher 与 ring catch-up watcher，但 production 只检查 family 存在，无法发现副本流量倾斜、
+  长期 catch-up 或部分 Pod telemetry 缺失。现从 60 秒内样本生成 Ready Pod UID 级 stream/watcher/slow-watcher
+  recording，要求三类来源各与 Ready 副本精确相等；值必须为 `[0,2^53]` 精确整数，且同 Pod slow 不得超过
+  watcher。stream 可尚无 watch，一个 stream 也可 multiplex 多 watch，所以不伪造二者相等约束。任一 Pod
+  stream 或 watcher 超过 8000 持续 5 分钟 warning，对 production `--max-watches=10000` 留 20% 余量并同时
+  发现大量空 stream；slow 非零持续 5 分钟 warning，允许短暂自愈 catch-up；缺失、陈旧、非法或交叉矛盾
+  telemetry 持续 2 分钟 warning。精确 manifest 与 production/observability 文档同步，production 测试通过。
+  本项只消费现有真实 gauge，不更改 Watch 请求语义；需要下一生产监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
