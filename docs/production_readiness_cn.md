@@ -4653,7 +4653,10 @@ no-clobber 发布并同步父目录；验证失败或中断不会把不完整内
 不符、内容篡改、footer 后附加数据或 `granted_ttl` 超过 upstream
 `MaxLeaseTTL=9,000,000,000` 均 fail closed；精确最大值合法，旧 v2 制品缺省的
 `granted_ttl=0` 继续兼容，promotion grace 导致的 remaining TTL 高于 grant 也不会被误拒绝。restore 在任何 etcd 写入前完成
-验证，并按 `BATCH_SIZE` 把 compare 与 Put 放入同一个 Txn，使单批冲突不会部分落盘。
+验证；默认 no-overwrite 模式的目标存在性预检还要求 read-only Txn 选择 success branch、含正 outer revision、
+逐 key 返回等量 Range response、内层 revision 位于 outer 的当前/前一 revision 窗口，且 `Count==len(Kvs)`、
+`More=false`，防止畸形空 payload 隐藏已有键。随后按 `BATCH_SIZE` 把 compare 与 Put 放入同一个 Txn，使预检后的
+并发写冲突仍不会导致单批部分落盘。
 header、record、lease 和 footer 行均使用严格 JSON schema 解码，拒绝未知字段和同一行内
 拼接的第二个 JSON 值；扩展逻辑备份格式必须先升级 format/schema，不能把额外字段混入
 现有 `kubebrain.logical.v2` 制品。v1/v2 record 还统一要求非空 key、正 create/mod/version、

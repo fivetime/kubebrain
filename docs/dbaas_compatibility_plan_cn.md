@@ -57711,6 +57711,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   production 326 项四分片与 vet 全部通过。异常响应会进入现有 lease 清理与 no-overwrite 回滚；因 Txn 可能已经
   在服务端提交，本项不承诺覆盖模式可恢复旧值，也不改变正常 batch、artifact、在线 KV/lease 或 TiKV 数据路径。
 
+- A5151 修复 logical restore no-overwrite 目标预检对 malformed empty Range 的盲信。旧路径直接解引用 Txn
+  response，只检查 operation 数量/类型与 `len(Kvs)`；nil response 会 panic，`Kvs=[]` 但 `Count=1` 或
+  `More=true` 会被误判为空目标，从而延后到写入 compare 才发现冲突，并使预检失去 fail-closed 诊断价值。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go::Txn` 与 `pkg/server/etcd/kv_proxy_metrics.go` 的 Txn tree、header、
+  Range payload 门禁，现要求 read-only Txn 非 nil、选择 success branch、outer revision 为正、响应逐 key 等量且
+  均为 Range、内层 revision 位于 `[outer-1,outer]`，并要求无限制单 key Range 的 `Count==len(Kvs)`、`More=false`；
+  任何非空 payload 仍返回明确 overwrite 拒绝。空目标与前一 revision 窗口正例，以及 nil、failure branch、坏
+  header、数量/类型错误、过旧/未来 revision、隐藏 count、异常 continuation 和已有 key 反例连续二十轮，包级
+  race、完整非 production、production 326 项四分片与 vet 全部通过。本项不替代写入 Txn 的原子 version compare，
+  不影响 `ALLOW_OVERWRITE=true`（其不执行预检），也不改变 artifact、在线 KV/lease 或 TiKV 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
