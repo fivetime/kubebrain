@@ -6331,7 +6331,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   实现差异，只增加永久 Watch 授权状态机门禁，因此不构建镜像或滚动发布。
 
 - **Capacity A328 tenant logical quota / NOSPACE（2026-07-20）**：新增
-  `--quota-backend-bytes`（默认 0 禁用；A5125 起负值也按 upstream 语义禁用），按 keyspace 原子计量当前存活用户
+  `--quota-backend-bytes`（当时默认 0 禁用；A5125 起负值也按 upstream 语义禁用，A5126 起未配置默认 -1、显式 0 使用 upstream 2 GiB 默认值），按 keyspace 原子计量当前存活用户
   key+value 逻辑字节。用量元数据与用户 MVCC、event log 在同一 TiKV transaction
   CAS 提交，因此多副本和换主后保持一致；首次启用由 leader 在 readiness 前独占扫描
   存量数据并 PutIfNotExist 初始化，初始化失败时 fail closed，不会把存量误算为 0；
@@ -7642,7 +7642,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `apply/capped.go` 确认，持久 NOSPACE 会安装 capped applier，与 backend quota 数值
   无关：手工 ACTIVATE 必须成功并阻断 Put、含 Put 的 Txn 和 LeaseGrant，同时 Range、
   只读 Txn、DeleteRange 与 DEACTIVATE 保持可用。KubeBrain 此前在
-  `--quota-backend-bytes=0` 时直接以 FailedPrecondition 拒绝 ACTIVATE，后续三类写入均
+  当时 `--quota-backend-bytes=0` 表示禁用，且直接以 FailedPrecondition 拒绝 ACTIVATE，后续三类写入均
   错误成功；新增双端回归在 A371 镜像上完整复现该差异。
 
   提交 `746c92f` 解除 `ArmNoSpace` 与逻辑用量配置的耦合；quota=0 的 `QuotaStatus`
@@ -57497,10 +57497,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/root/etcd/server/storage/quota.go::NewBackendQuota`：任意负 `--quota-backend-bytes` 都返回 passthroughQuota，写入不受容量
   admission 限制，Status 保留原始负配置。KubeBrain 原先在 CLI 拒绝负值；若只删除该校验，现有 Txn admission 虽因 `>0`
   已自然跳过 quota，`EnsureQuotaInitialized`/`QuotaStatus` 却会进入正 quota 路径并报告 ErrQuotaUninitialized 或错误 NOSPACE。
-  现 CLI 文案与验证接受 non-positive disabled，backend 初始化/status 统一以 `<=0` 分支处理并返回原始 sentinel；既有默认 0
-  disabled 与 2 GiB Status 工具兼容值保持不变。真实 flag parse、backend 1 KiB 超限写、公开 Put/Status/Alarm 三层负 quota 回归
+  现 CLI 文案与验证接受 non-positive disabled，backend 初始化/status 统一以 `<=0` 分支处理并返回原始 sentinel；本轮仍保留既有
+  默认 0 disabled 与 2 GiB Status 工具兼容值，A5126 随后区分未配置与显式 0。真实 flag parse、backend 1 KiB 超限写、公开 Put/Status/Alarm 三层负 quota 回归
   连续十轮通过，证明不建立 usage 限额、不激活 NOSPACE 且 Status 返回 -1；正 quota accounting 与存储编码不变，需要下一生产
   镜像和监控发布。
+
+- A5126 将显式零 quota 的启动语义与 upstream 对齐。对照
+  `/root/etcd/server/storage/quota.go::NewBackendQuota`：负值选择 passthroughQuota，零值则替换为 2 GiB 默认上限。KubeBrain
+  先前把二者都当作 disabled，使显式 `--quota-backend-bytes=0` 的容量 admission 与 etcd 不同。现 option 未配置默认从 0 改为
+  -1，以保持 DBaaS 既有“缺省不设租户限额”；仅在构造 backend Config 前把显式 0 规范化为 2 GiB，负值和正值原样传递。
+  production 清单均显式配置 400 GiB，不受默认值迁移影响；旧显式 0 的无配额部署必须改用负值。默认、负值、显式零与正值
+  option 回归连续十轮通过；既有正 quota 官方 client/v3 Put/Status/Alarm 黑盒继续覆盖实际计量、NOSPACE 和公开上限。本项不改变
+  backend 存储编码或已显式配置的正 quota，需要下一生产镜像和监控发布。
 
 ### P2：运维兼容和长期验证
 

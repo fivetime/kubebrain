@@ -235,7 +235,8 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 返回该 keyspace 当前存活 key+value 的逻辑字节，`DbSizeQuota` 返回配置上限。未启用时
 仍返回相等的 1 字节哨兵和 etcd 默认 2 GiB quota 兼容值；1/1 只表达“无 bbolt
 fragmentation 可报告”，不表示 TiKV 实际占用。负值与 upstream 一样显式禁用 quota，Status
-保留该负 sentinel；KubeBrain 的既有 0 默认值也保持 disabled，但为官方工具返回 2 GiB 兼容值。
+保留该负 sentinel。KubeBrain 未传该参数时使用 `-1`，继续保持 DBaaS 默认不设限；显式
+传入 `0` 则与 upstream 一样启用 2 GiB 默认逻辑配额，Status 返回该正值。
 
 - **要物理字节/磁盘水位** → 抓 **TiKV/PD 自己的 Prometheus 指标**(store size、region count)。
 - **要对象数** → KubeBrain 的 `count_index.keys`(便宜、现成)。
