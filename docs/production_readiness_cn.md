@@ -4519,6 +4519,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   Status success 必须有非空 Version，DbSize/DbSizeInUse 非负且 in-use 不大于 allocated，DbSizeQuota 为正，
   RaftAppliedIndex 不大于 RaftIndex，DowngradeInfo 非 nil，Errors 不含空字符串，并且 Leader=0 当且仅当 errors 包含
   `etcdserver: no leader`。启动早期零 Raft 字段与尚未发布的空 StorageVersion 合法。
+  Hash success header current revision 必须为正。HashKV revision=0 时 HashRevision 必须等于 header current revision；
+  非零请求（含负数）必须精确回显请求值。CompactRevision 不得小于 -1；正 HashRevision 时满足
+  `compact_revision <= hash_revision <= header.revision`。公开 gRPC 与 peer HTTP corruption-check hedge 使用同一校验。
   Ready Pod UID current/10 分钟 increase `6×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。
 - `kv_proxy_integrity_failure{rpc="range|txn|put|delete_range|compact"}` 在 RPC server 创建时初始化五类权威零值。

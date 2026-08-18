@@ -57395,6 +57395,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   IsLearner 前验证 payload；违例复用固定 `maintenance.proxy.integrity_failure{rpc="status"}`，作为 terminal DataLoss 不被
   hedge 掩盖。合法 early-state、storage-isolated follower 异常注入与连续十轮回归通过；需要下一生产镜像和监控发布。
 
+- A5115 将 unary Maintenance leader-proxy payload 完整性扩展到 Hash/HashKV revision chronology。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::{Hash,HashKV}` 与
+  `server/storage/mvcc/{hash.go::HashByRev,kvstore.go::hashByRev}`：两类 response header 都是正的 current MVCC revision；
+  HashKV request=0 被归一为 current，非零请求（包括合法负 revision empty hash）原样成为 HashRevision；未压缩水位为 -1，
+  其余 CompactRevision 非负，正 hash point 必须满足 compact≤hash≤current。KubeBrain backend/hash.go 保持相同合同。
+  旧 hedged proxy 会确认零 current、错 historical/latest hash point、低于 -1 compact watermark 或倒置 chronology，使
+  corruption checker 比较错误快照。现公开 gRPC Hash/HashKV 与 peer HTTP HashKV leader 分支均在 revision 观察前执行
+  payload 校验，违例复用固定 `maintenance.proxy.integrity_failure{rpc="hash"}` 或 `{rpc="hash_kv"}`，terminal DataLoss 不被 hedge
+  掩盖。latest/historical/negative 正例、storage-isolated gRPC 与 peer HTTP 异常注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
