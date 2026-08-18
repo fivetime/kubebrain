@@ -1043,6 +1043,12 @@ MVCC live key 指标 `etcd_debugging_mvcc_keys_total`，
 MVCC put size 累计指标 `etcd_debugging_mvcc_total_put_size_in_bytes`，
 MVCC current revision 指标 `etcd_debugging_mvcc_current_revision`，
 MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
+两者只从 60 秒内样本生成 Ready Pod UID 级 recording；server 创建时发布
+`mvcc_compact_revision_refresh_err=0`，并生成 error current/10 分钟 increase。current 必须为
+`(0,2^53]` 精确整数，compact 为 `[0,2^53]` 精确整数且不得超过同 Pod current；共享 compact watermark
+必须在两分钟内跨 Ready replicas 收敛，但 follower current 可因同步延迟短暂不同。刷新失败 warning；
+覆盖缺口、非法值、compact>current 或 compact 持续分歧 critical。该 gauge 刷新失败不替代请求路径对
+compact metadata 的独立读取/执行，排障需以 Range/Watch compacted 行为对账。
 MVCC physical compaction 指标 `etcd_debugging_mvcc_db_compaction_last` 与
 `etcd_debugging_mvcc_db_compaction_keys_total`（后者只累计 full/incremental GC 中实际成功
 删除的物理 object-version、object tombstone 与 revision-key tombstone），
@@ -4255,6 +4261,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   revision/current-error/10 分钟 increase 全覆盖、revision 为正精确整数且所有副本两分钟内一致；refresh
   failure、缺失、陈旧、非法或分歧触发 warning。该路径只导出 telemetry，不能单独断言授权失败；处置时
   必须查询 AuthStatus，并核对 token revision/旧 revision fence。
+- server-state metrics 每秒导出本地 `etcd_debugging_mvcc_current_revision`，并从 TiKV 读取共享
+  `etcd_debugging_mvcc_compact_revision`；server 创建时初始化 compact-refresh error 零值。监控要求 60 秒
+  新鲜的 Ready Pod UID current/compact/error current/10 分钟 increase 全覆盖；current 必须为正精确整数，
+  compact 为非负精确整数且不得超过同 Pod current，共享 compact 两分钟内一致。follower current 可短暂
+  不同。refresh failure warning，缺失、陈旧、非法、compact>current 或持续 compact 分歧 critical。
 - 裸 PD/TiKV 没有 TiDB gc_worker fallback；每个 backend 创建时发布 `storage_gc_enabled=0` 与
   `storage_gc_err=0`，发现 storage `GarbageCollector` capability 且 `--storage-gc-lifetime>0` 后立即把 enabled
   置 1。production 只消费 60 秒内、按 Ready Pod UID 去重的 enabled/current-error/30 分钟 increase，要求

@@ -266,6 +266,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.initAlarmMetrics()
 	s.initQuotaMetrics()
 	s.initCountIndexMetrics()
+	s.initMVCCRevisionRefreshMetrics()
 	go func() {
 		defer close(s.campaignDone)
 		peerService.Campaign(campaignCtx)
@@ -287,6 +288,13 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		s.runServerStateMetricsRefresh(runCtx, serverStateMetricsRefreshInterval, serverStateMetricsRefreshTimeout)
 	}()
 	return s
+}
+
+func (s *server) initMVCCRevisionRefreshMetrics() {
+	if s == nil || s.metricCli == nil {
+		return
+	}
+	_ = s.metricCli.EmitCounter("mvcc.compact_revision.refresh.err", int64(0))
 }
 
 const quotaMetricsRefreshInterval = 15 * time.Second

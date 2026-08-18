@@ -614,6 +614,14 @@ func TestServerStateMetricsRefreshCountsKnownLeaderTransitions(t *testing.T) {
 	require.Equal(t, []interface{}{1, 1, 1}, metrics.counterValues("etcd.server.leader_changes_seen_total"))
 }
 
+func TestMVCCRevisionRefreshMetricsInitializeAuthoritativeZero(t *testing.T) {
+	recorder := &healthMetricRecorder{}
+	s := &server{metricCli: recorder}
+	s.initMVCCRevisionRefreshMetrics()
+
+	require.Equal(t, []interface{}{int64(0)}, recorder.counterValues("mvcc.compact_revision.refresh.err"))
+}
+
 func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
 	metrics := &healthMetricRecorder{}
 	be := &coldRevisionBackend{}

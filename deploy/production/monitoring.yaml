@@ -189,6 +189,26 @@ spec:
           expr: count(((kubebrain_dbaas:auth_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:auth_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:auth_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:auth_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:auth_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:auth_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:auth_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:auth_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:auth_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:auth_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_current_revision:max_by_pod
+          expr: max by (namespace, pod, uid) (etcd_debugging_mvcc_current_revision{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_mvcc_current_revision{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_compact_revision:max_by_pod
+          expr: max by (namespace, pod, uid) (etcd_debugging_mvcc_compact_revision{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_mvcc_compact_revision{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod
+          expr: max by (namespace, pod, uid) (mvcc_compact_revision_refresh_err{namespace="kubebrain-system"} and (time() - timestamp(mvcc_compact_revision_refresh_err{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod
+          expr: max by (namespace, pod, uid) (increase(mvcc_compact_revision_refresh_err{namespace="kubebrain-system"}[10m]) and (time() - timestamp(mvcc_compact_revision_refresh_err{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:mvcc_revision_invalid_values:count
+          expr: count(((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > on(namespace, pod, uid) (kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) + count(((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:leader_election_lost:current_by_pod
           expr: sum by (namespace, pod, uid) (max by (namespace, pod, uid, addr) (leader_election_lost{namespace="kubebrain-system"} and (time() - timestamp(leader_election_lost{namespace="kubebrain-system"}) <= 60)))
           labels:
@@ -1061,6 +1081,22 @@ spec:
           annotations:
             summary: KubeBrain auth revision telemetry is incomplete or divergent
             description: "Every Ready Pod UID must expose a persisted auth revision and authoritative-zero refresh-error current/increase with samples no older than 60 seconds. Revision must be a positive exact integer no greater than 2^53, error current must be a non-negative exact integer, increases must be finite, and replicas must converge to one revision. Missing, stale, invalid, or divergent telemetry requires comparison with AuthStatus; it does not by itself prove authorization failure."
+        - alert: KubeBrainMVCCCompactRevisionRefreshFailures
+          expr: sum(kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain failed to export the persisted compact revision
+            description: "A current Ready replica failed {{ $value }} times in 10 minutes to read the durable compact watermark for upstream-compatible metrics. The request path independently reads/enforces compact metadata; inspect TiKV connectivity and compare Range/Watch compacted behavior before trusting the retained gauge."
+        - alert: KubeBrainMVCCRevisionMetricsInconsistent
+          expr: absent(kubebrain_dbaas:mvcc_revision_invalid_values:count) == 1 or count(kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:mvcc_revision_invalid_values:count != 0 or (max(kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) - min(kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0)
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain MVCC revision telemetry is incomplete or contradictory
+            description: "Every Ready Pod UID must expose fresh current/compact revisions and authoritative-zero compact-refresh error current/increase. Current must be a positive exact integer, compact a non-negative exact integer no greater than that Pod's current revision, values must not exceed 2^53, and the shared compact watermark must converge across replicas. Current revisions may transiently differ on followers. Missing, stale, invalid, or persistently divergent compact telemetry cannot prove etcd revision semantics."
         - alert: KubeBrainRevisionLagHigh
           expr: max(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 10000
           for: 5m
