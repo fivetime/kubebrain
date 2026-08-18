@@ -57027,6 +57027,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   empty、mixed、terminal 后继续及 local nil channel，并保持正常 follower terminal frame 与 leader-change error
   映射；需要下一生产镜像和监控发布。
 
+- A5075 修复 A5073/A5074 的公开 handler 校验仍可被 `backendShim` 非 nil wrapper channel 遮蔽的底层缺口。raw
+  `backend.RangeStream/Watch` 若错误返回 `(nil,nil)`，旧 shim 会先创建 output channel 和转换 goroutine再返回成功；
+  goroutine 对 nil input 永久等待，所以上层看到的 channel 非 nil，既不会命中 nil guard，也永远等不到 close/error。
+  `SnapshotStream` 同样受影响，`SnapshotHistoryStream` 则会在持锁建立 pinned revision 时持续空等。现 shim 在创建
+  任一 goroutine 前验证四个 raw channel：RangeStream/SnapshotStream/SnapshotHistoryStream 返回包装
+  `errNilBackendStream`，RangeStream 由既有 `failure{stage="backend"}` warning 消费；Watch 递增固定
+  `watch.backend.integrity_failure{kind="invalid_result"}` 并返回 `errNilWatchGeneration`，初始/reopen 继续遵循
+  A5073 的取消/重试语义。所有派生 cancelable range/snapshot context 在拒绝时立即 cancel，不泄漏 scanner 生命周期。
+  确定性单测以一个实现四个 `(nil,nil)` 的 raw backend 证明所有 shim 返回 nil+error、不会启动转换 goroutine，且
+  Watch invalid_result 严格 `[0,1]`；连续十轮通过。需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

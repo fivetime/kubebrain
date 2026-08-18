@@ -4476,7 +4476,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - `watch_backend_integrity_failure{kind="invalid_result|invalid_revision"}` 每个 RPC server 初始化两类权威零值；
   production 只消费 60 秒内 Ready Pod UID/kind current 与 10 分钟 increase，要求两类均 `2×Ready` 完整，
   current 为 `[0,2^53]` 精确整数、increase 有限同范围。任一事件或缺失、陈旧、非法、不完整 telemetry 均
-  critical：open 成功却给出 nil generation channel 会在首次创建时显式取消、reopen 时计 retry，而不会永久阻塞；
+  critical：raw backend→shim 或 peer open 成功却给出 nil generation channel，会在转换 goroutine 启动前被拒绝、
+  首次创建时显式取消、reopen 时计 retry，而不会被非 nil wrapper channel 遮蔽并永久阻塞；
   发送前 fence 也会取消 generation 并阻止已检测到的 malformed/regressing result 上线。必须排查 backend adapter、
   collector、durable replay 与 peer proxy ordering，不能把客户端收到 cancel 或 recovery retry 当成完整性已恢复。
 - 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。
@@ -4494,7 +4495,7 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - `read_range_stream_failure{stage="backend|send|protocol"}` 在 RPC server 创建时初始化三类权威零值，补足
   底层 worker 指标看不到的公开流边界。production 只消费 60 秒新鲜 Ready Pod UID current/10 分钟 increase，
   要求 `3×Ready` 完整、current 为 `[0,2^53]` 精确整数、increase 有限同范围且拒绝未知 stage。backend/send
-  事件 warning，其中 backend 同时覆盖 local scanner 与 follower proxy open/result error，send 在 local/proxy 两路
+  事件 warning，其中 backend 同时覆盖 raw backend→shim nil stream、local scanner 与 follower proxy open/result error，send 在 local/proxy 两路
   都排除客户端取消；protocol 表示 local 或 forwarded stream 返回 nil/empty/mixed result、缺 mandatory terminal
   metadata 或 terminal 后继续。local 路径扣留最终数据帧后 fail closed；事件及 telemetry 缺失、陈旧、非法或
   组合不完整均 critical。
