@@ -56704,6 +56704,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不完整 critical。回归覆盖 cleanup 恢复前 ID 隔离、后台成功、generation-conditional release、不同 incarnation
   保留、CORRUPT fail-closed；backend/server 完整包及精确 production 测试通过。需要下一生产镜像和监控发布。
 
+- A5048 修复显式 LeaseRevoke uncertain result 后内存 lease 仍可继续使用。旧路径把 TiKV 不确定提交直接返回给
+  客户端，却保留 active 内存状态；若 durable revoke 实际已经提交，KeepAlive 仍可能延长私有 deadline，TTL/List
+  仍报告存在，Put 还可附着新 key，直到换主 reload 才突然消失。现不确定结果立即把同 generation lease 标记为
+  revoke-pending，TTL/List、KeepAlive 和新 attachment 全部以 Unavailable fail closed；同 leader epoch/generation
+  worker 以 100ms→1s 有界退避重试完整原子 revoke，成功或确认不存在后清除 lease/key/meta，领导权、generation
+  或 pending state 变化则 handoff 给 authoritative reload/其他请求，旧代不再写。新增固定
+  `lease.revoke_reconcile{outcome="retry|success|handoff"}` 三类权威零值，production 要求 Ready Pod UID/outcome
+  current/increase `3×Ready` 完整且值合法；retry warning，缺失、陈旧、非法或 outcome 不完整 critical。回归
+  覆盖 committed uncertain、uncommitted 阻塞期间四个公开 fail-closed 面、后台成功和 leadership epoch handoff；
+  server 完整包连续两次及精确 production 测试通过。需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
