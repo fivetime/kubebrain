@@ -562,7 +562,11 @@ func TestFollowerAuthReadsProxyToLeader(t *testing.T) {
 		},
 		roleGetFn: func(_ context.Context, req *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
 			calls = append(calls, "role-get:"+req.GetRole())
-			return &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(3)}, nil
+			return &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(3), Perm: []*authpb.Permission{
+				{PermType: authpb.READ, Key: []byte("same"), RangeEnd: []byte("same-b")},
+				{PermType: authpb.WRITE, Key: []byte("same"), RangeEnd: []byte("same-c")},
+				{PermType: authpb.WRITE, Key: []byte("same"), RangeEnd: []byte("same-c")},
+			}}, nil
 		},
 		roleListFn: func(context.Context, *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
 			calls = append(calls, "role-list")
@@ -576,8 +580,9 @@ func TestFollowerAuthReadsProxyToLeader(t *testing.T) {
 	users, err := server.UserList(context.Background(), &etcdserverpb.AuthUserListRequest{})
 	require.NoError(t, err)
 	require.Equal(t, []string{"u"}, users.GetUsers())
-	_, err = server.RoleGet(context.Background(), &etcdserverpb.AuthRoleGetRequest{Role: "r"})
+	role, err := server.RoleGet(context.Background(), &etcdserverpb.AuthRoleGetRequest{Role: "r"})
 	require.NoError(t, err)
+	require.Len(t, role.GetPerm(), 3)
 	roles, err := server.RoleList(context.Background(), &etcdserverpb.AuthRoleListRequest{})
 	require.NoError(t, err)
 	require.Equal(t, []string{"r"}, roles.GetRoles())

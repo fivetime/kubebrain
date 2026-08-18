@@ -808,6 +808,28 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 	require.Len(t, rawRole.Perm, 1)
 	require.Equal(t, authpb.WRITE, rawRole.Perm[0].PermType)
 
+	// etcd orders permissions by key only. Once two ranges share a key,
+	// regranting the non-first range appends an exact duplicate instead of
+	// finding it; preserve that externally visible RoleGet result.
+	const sharedKey = "/a1061/shared"
+	firstEnd := sharedKey + "-b"
+	secondEnd := sharedKey + "-c"
+	_, err = root.RoleGrantPermission(ctx, "a1061-lifecycle", sharedKey, firstEnd, clientv3.PermissionType(clientv3.PermRead))
+	require.NoError(t, err)
+	_, err = root.RoleGrantPermission(ctx, "a1061-lifecycle", sharedKey, secondEnd, clientv3.PermissionType(clientv3.PermWrite))
+	require.NoError(t, err)
+	_, err = root.RoleGrantPermission(ctx, "a1061-lifecycle", sharedKey, secondEnd, clientv3.PermissionType(clientv3.PermWrite))
+	require.NoError(t, err)
+	role, err = root.RoleGet(ctx, "a1061-lifecycle")
+	require.NoError(t, err)
+	var exactDuplicates int
+	for _, permission := range role.Perm {
+		if string(permission.Key) == sharedKey && string(permission.RangeEnd) == secondEnd && permission.PermType == authpb.WRITE {
+			exactDuplicates++
+		}
+	}
+	require.Equal(t, 2, exactDuplicates)
+
 	_, missingPermissionErr := root.RoleRevokePermission(
 		ctx,
 		"a1061-lifecycle",
