@@ -178,6 +178,24 @@ func validateDeleteRangeProxyPayload(metricCli metrics.Metrics, request *etcdser
 	return response, nil
 }
 
+func validateCompactProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.CompactionRequest, response *etcdserverpb.CompactionResponse, err error) (*etcdserverpb.CompactionResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	fail := func(message string) (*etcdserverpb.CompactionResponse, error) {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCCompact)
+		return nil, status.Error(codes.DataLoss, message)
+	}
+	revision := response.GetHeader().GetRevision()
+	if revision <= 0 {
+		return fail("leader compact proxy returned a non-positive current revision")
+	}
+	if revision < request.GetRevision() {
+		return fail(fmt.Sprintf("leader compact proxy returned current revision %d below compacted revision %d", revision, request.GetRevision()))
+	}
+	return response, nil
+}
+
 func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.TxnRequest, response *etcdserverpb.TxnResponse, err error) (*etcdserverpb.TxnResponse, error) {
 	if err != nil {
 		return response, err

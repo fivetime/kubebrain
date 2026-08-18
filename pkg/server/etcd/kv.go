@@ -1564,6 +1564,7 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 		}
 		response, err := s.peers.Compact(proxyCtx, r)
 		response, err = validateKVProxyResult(s.metricCli, kvProxyRPCCompact, response, err)
+		response, err = validateCompactProxyPayload(s.metricCli, r, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}

@@ -3105,6 +3105,37 @@ func TestFollowerCompactProxiesToLeader(t *testing.T) {
 	require.Equal(t, int64(456), resp.Header.Revision)
 }
 
+func TestFollowerRejectsInvalidCompactProxyPayload(t *testing.T) {
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.CompactionRequest
+		response *etcdserverpb.CompactionResponse
+	}{
+		{name: "zero current revision", request: &etcdserverpb.CompactionRequest{}, response: &etcdserverpb.CompactionResponse{Header: txnHeader(0)}},
+		{name: "current revision below requested", request: &etcdserverpb.CompactionRequest{Revision: 10}, response: &etcdserverpb.CompactionResponse{Header: txnHeader(9)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initKVProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				compactFn: func(context.Context, *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+					return tt.response, nil
+				},
+			}
+
+			response, err := server.Compact(context.Background(), tt.request)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCCompact))
+		})
+	}
+}
+
 func TestRangeWithFromKeyMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

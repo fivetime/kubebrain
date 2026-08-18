@@ -579,6 +579,41 @@ func TestDeleteRangeProxyPayloadValidation(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 }
 
+func TestCompactProxyPayloadValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.CompactionRequest
+		response *etcdserverpb.CompactionResponse
+		valid    bool
+	}{
+		{name: "current revision after requested", request: &etcdserverpb.CompactionRequest{Revision: 123}, response: &etcdserverpb.CompactionResponse{Header: txnHeader(456)}, valid: true},
+		{name: "initial zero compaction", request: &etcdserverpb.CompactionRequest{}, response: &etcdserverpb.CompactionResponse{Header: txnHeader(1)}, valid: true},
+		{name: "zero current revision", request: &etcdserverpb.CompactionRequest{}, response: &etcdserverpb.CompactionResponse{Header: txnHeader(0)}},
+		{name: "current revision below requested", request: &etcdserverpb.CompactionRequest{Revision: 123}, response: &etcdserverpb.CompactionResponse{Header: txnHeader(122)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			response, err := validateCompactProxyPayload(rec, tt.request, tt.response, nil)
+			if tt.valid {
+				require.Same(t, tt.response, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedKVProxyIntegrityValues(rec, kvProxyRPCCompact))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCCompact))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.CompactionResponse{}
+	response, err := validateCompactProxyPayload(nil, &etcdserverpb.CompactionRequest{}, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestTxnProxyPayloadValidation(t *testing.T) {
 	rangeRequest := func(key string) *etcdserverpb.RequestOp {
 		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte(key)}}}
