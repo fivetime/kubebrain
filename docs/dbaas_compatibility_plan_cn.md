@@ -57312,6 +57312,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kv.proxy.integrity_failure{rpc="txn"}` 并在 revision 观察前 DataLoss fail closed，不污染 range 分类。合法 historical
   Range、signed lease、顶层/嵌套异常与公开 follower 注入回归通过；需要下一生产镜像和监控发布。
 
+- A5106 将 Txn proxy payload 完整性扩展到每层 Put/DeleteRange。对照
+  `/root/etcd/server/etcdserver/txn/txn.go::executeTxn` 与 `txn/{put,delete}.go`，所选 branch 的操作顺序共享同一
+  TxnWrite：Put 与有效 Delete response revision 为最终 outer revision；PrevKv disclosure、key/range、generation、
+  Deleted count 和 key 升序合同与 unary 相同。但前序 Put 可在 outer revision 生成对象并成为后序 Put/Delete 的前值，
+  所以 Txn 合法前值允许 `mod_revision == outer`，不能机械套用 unary 严格小于写 revision。旧 proxy 仍会确认错 op
+  revision、未请求/错 key/未来 Put 前值，以及 Delete 负数/错 count/nil/越界/重复/乱序集合。现递归 operation validator
+  对三类 payload 全覆盖，任一违例只递增固定 `kv.proxy.integrity_failure{rpc="txn"}` 并在 revision 观察前 DataLoss
+  fail closed。合法同 revision signed lease 前值、异常 payload 与公开 follower 注入回归通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
