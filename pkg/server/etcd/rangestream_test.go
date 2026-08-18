@@ -603,7 +603,7 @@ func TestFollowerLinearizableRangeStreamProxiesBeforeLocalBarrier(t *testing.T) 
 	request := &etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")}
 	want := &etcdserverpb.RangeStreamResponse{RangeResponse: &etcdserverpb.RangeResponse{
 		Header: txnHeader(42), Count: 1,
-		Kvs: []*mvccpb.KeyValue{{Key: []byte("/stream/key"), Value: []byte("value")}},
+		Kvs: []*mvccpb.KeyValue{{Key: []byte("/stream/key"), Value: []byte("value"), CreateRevision: 1, ModRevision: 1, Version: 1}},
 	}}
 	server.peers = testPeerService{
 		proxyEnabled: true,
@@ -706,6 +706,79 @@ func TestFollowerRangeStreamRejectsInvalidProxyTermination(t *testing.T) {
 	}
 }
 
+func TestFollowerRangeStreamRejectsInvalidProxyPayload(t *testing.T) {
+	validKV := func(key string) *mvccpb.KeyValue {
+		return &mvccpb.KeyValue{Key: []byte(key), Value: []byte("value"), CreateRevision: 1, ModRevision: 1, Version: 1}
+	}
+	for _, test := range []struct {
+		name    string
+		request *etcdserverpb.RangeRequest
+		frames  []*etcdserverpb.RangeResponse
+		message string
+		sent    int
+	}{
+		{name: "zero terminal revision", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(0)}}, message: "forwarded range stream returned a non-positive terminal revision"},
+		{name: "nil key-value", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{nil}}}, message: "forwarded range stream returned a nil key-value"},
+		{name: "outside range", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned a key outside the requested range"},
+		{name: "cross-frame descending", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Kvs: []*mvccpb.KeyValue{validKV("b")}}, {Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned keys outside strict ascending order", sent: 1},
+		{name: "keys-only value", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned a value for a keys-only request"},
+		{name: "invalid lifecycle", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a")}}}}, message: "forwarded range stream returned invalid key-value revision metadata"},
+		{name: "future key-value", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Revision: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 2, ModRevision: 2, Version: 1}}}}, message: "forwarded range stream returned a key-value newer than the requested snapshot"},
+		{name: "early aggregate metadata", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned aggregate metadata before the terminal frame"},
+		{name: "count below sent", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned an invalid terminal count"},
+		{name: "inconsistent more", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Limit: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned inconsistent terminal count and more metadata"},
+		{name: "count-only payload", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned key-values for a count-only request"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+			defer cleanup()
+			server.peers = testPeerService{
+				proxyEnabled: true,
+				epochFn:      func() (uint64, bool) { return 7, false },
+				rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+					ch := make(chan etcdproxy.RangeStreamResult, len(test.frames))
+					for _, frame := range test.frames {
+						ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{RangeResponse: frame}}
+					}
+					close(ch)
+					return ch, nil
+				},
+			}
+			stream := &fakeRangeStreamServer{ctx: context.Background()}
+
+			err := server.RangeStream(test.request, stream)
+			requireRangeStreamStatusError(t, err, codes.DataLoss, test.message)
+			require.Len(t, stream.sent, test.sent)
+			require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureProtocol))
+		})
+	}
+}
+
+func TestRangeStreamProxyPayloadValidatorAcceptsCanonicalStreams(t *testing.T) {
+	kv := func(key string) *mvccpb.KeyValue {
+		return &mvccpb.KeyValue{Key: []byte(key), CreateRevision: 2, ModRevision: 2, Version: 1}
+	}
+	for _, test := range []struct {
+		name    string
+		request *etcdserverpb.RangeRequest
+		frames  []*etcdserverpb.RangeResponse
+	}{
+		{name: "empty", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2)}}},
+		{name: "multi-frame unlimited", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Kvs: []*mvccpb.KeyValue{kv("a")}}, {Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{kv("b")}}}},
+		{name: "limited more", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Limit: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, More: true, Kvs: []*mvccpb.KeyValue{kv("a")}}}},
+		{name: "count only", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 3}}},
+		{name: "keys only", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{kv("a")}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			validator := newRangeStreamProxyPayloadValidator(test.request)
+			for _, frame := range test.frames {
+				require.NoError(t, validator.validate(frame))
+			}
+		})
+	}
+}
+
 func TestFollowerRangeStreamRejectsNegativeTerminalRevision(t *testing.T) {
 	rec := &recordingMetrics{}
 	server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
@@ -727,7 +800,7 @@ func TestFollowerRangeStreamRejectsNegativeTerminalRevision(t *testing.T) {
 	err := server.RangeStream(&etcdserverpb.RangeRequest{
 		Key: []byte("/forward-negative/"), RangeEnd: []byte("/forward-negative0"),
 	}, stream)
-	requireRangeStreamStatusError(t, err, codes.DataLoss, "forwarded range stream returned a negative terminal revision")
+	requireRangeStreamStatusError(t, err, codes.DataLoss, "forwarded range stream returned a non-positive terminal revision")
 	require.Empty(t, stream.sent)
 	require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureProtocol))
 }

@@ -346,6 +346,7 @@ func (s *RPCServer) rangeStreamOnce(
 				return status.Error(codes.Unavailable, "forwarded range stream returned a nil result channel")
 			}
 			terminalSeen := false
+			payloadValidator := newRangeStreamProxyPayloadValidator(r)
 			for result := range results {
 				if result.Err != nil && result.Response != nil {
 					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
@@ -366,9 +367,9 @@ func (s *RPCServer) rangeStreamOnce(
 					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
 					return status.Error(codes.Unavailable, "forwarded range stream continued after terminal metadata")
 				}
-				if header := response.RangeResponse.Header; header != nil && header.GetRevision() < 0 {
+				if err := payloadValidator.validate(response.RangeResponse); err != nil {
 					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
-					return status.Error(codes.DataLoss, "forwarded range stream returned a negative terminal revision")
+					return err
 				}
 				terminalSeen = response.RangeResponse.Header != nil
 				s.observeForwardedRevision(response.RangeResponse.Header, nil)
