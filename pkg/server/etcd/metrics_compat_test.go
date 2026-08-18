@@ -994,7 +994,7 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 		{name: "empty version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "" }},
 		{name: "negative size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSize = -1 }},
 		{name: "negative in use", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = -1 }},
-		{name: "in use above size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = 11 }},
+		{name: "independently sampled in use above size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = 11 }, valid: true},
 		{name: "zero quota", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeQuota = 0 }},
 		{name: "applied above committed", mutate: func(response *etcdserverpb.StatusResponse) { response.RaftAppliedIndex = 8 }},
 		{name: "missing downgrade info", mutate: func(response *etcdserverpb.StatusResponse) { response.DowngradeInfo = nil }},

@@ -150,7 +150,10 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	if response.GetVersion() == "" {
 		return fail("leader status proxy returned an empty version")
 	}
-	if response.GetDbSize() < 0 || response.GetDbSizeInUse() < 0 || response.GetDbSizeInUse() > response.GetDbSize() {
+	// Upstream samples Size and SizeInUse through two independent atomic loads.
+	// A concurrent backend commit can therefore make the later in-use sample
+	// temporarily exceed the earlier allocated-size sample.
+	if response.GetDbSize() < 0 || response.GetDbSizeInUse() < 0 {
 		return fail("leader status proxy returned invalid database sizes")
 	}
 	if response.GetDbSizeQuota() <= 0 {
