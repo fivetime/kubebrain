@@ -132,13 +132,8 @@ func decodeRecord(rec record.Record, snapshotRevision int64) (decodedRecord, err
 	if len(key) == 0 {
 		return decodedRecord{}, fmt.Errorf("empty keys are invalid")
 	}
-	if rec.CreateRevision <= 0 || rec.ModRevision < rec.CreateRevision || rec.ModRevision > snapshotRevision || rec.Version <= 0 {
-		return decodedRecord{}, fmt.Errorf("invalid MVCC metadata create=%d mod=%d version=%d snapshot=%d",
-			rec.CreateRevision, rec.ModRevision, rec.Version, snapshotRevision)
-	}
-	if rec.Version > rec.ModRevision-rec.CreateRevision+1 {
-		return decodedRecord{}, fmt.Errorf("version %d cannot fit between create revision %d and mod revision %d",
-			rec.Version, rec.CreateRevision, rec.ModRevision)
+	if err := backupfile.ValidateRecordMetadata(rec, snapshotRevision); err != nil {
+		return decodedRecord{}, err
 	}
 	return decodedRecord{Record: rec, key: key, value: value}, nil
 }

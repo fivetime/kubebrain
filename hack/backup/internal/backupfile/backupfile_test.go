@@ -17,8 +17,8 @@ func TestAtomicWriterAndVerifiedReader(t *testing.T) {
 	writer, err := NewAtomicWriter(path, "/registry", 42)
 	require.NoError(t, err)
 	require.NoError(t, writer.AddLease(record.Lease{ID: 123, TTL: 30, GrantedTTL: 60}))
-	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", Value: "YQ==", ModRevision: 40}))
-	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2I=", Value: "Yg==", ModRevision: 41, Lease: 123}))
+	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", Value: "YQ==", CreateRevision: 39, ModRevision: 40, Version: 2}))
+	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2I=", Value: "Yg==", CreateRevision: 41, ModRevision: 41, Version: 1, Lease: 123}))
 	status, err := writer.Commit()
 	require.NoError(t, err)
 	require.Equal(t, 2, status.Records)
@@ -86,7 +86,7 @@ func TestAtomicWriterCommitRejectsInvalidMetadata(t *testing.T) {
 	}{
 		"undeclared lease": {
 			populate: func(writer *AtomicWriter) error {
-				return writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", Value: "YQ==", Lease: 123})
+				return writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", Value: "YQ==", CreateRevision: 1, ModRevision: 1, Version: 1, Lease: 123})
 			},
 			want: "backup record 1 references undeclared lease 123",
 		},
@@ -101,16 +101,16 @@ func TestAtomicWriterCommitRejectsInvalidMetadata(t *testing.T) {
 		},
 		"outside prefix": {
 			populate: func(writer *AtomicWriter) error {
-				return writer.Add(record.Record{Key: "L291dHNpZGUva2V5", Value: "YQ=="})
+				return writer.Add(record.Record{Key: "L291dHNpZGUva2V5", Value: "YQ==", CreateRevision: 1, ModRevision: 1, Version: 1})
 			},
 			want: `backup record 1 key "/outside/key" is outside manifest prefix "/registry"`,
 		},
 		"duplicate key": {
 			populate: func(writer *AtomicWriter) error {
-				if err := writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "YQ=="}); err != nil {
+				if err := writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "YQ==", CreateRevision: 1, ModRevision: 1, Version: 1}); err != nil {
 					return err
 				}
-				return writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "Yg=="})
+				return writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "Yg==", CreateRevision: 1, ModRevision: 2, Version: 2})
 			},
 			want: `duplicate backup key "/registry/key"`,
 		},
@@ -136,7 +136,7 @@ func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {
 		want    string
 	}{
 		"undeclared lease": {
-			lines:   [][]byte{[]byte(`{"key":"L3JlZ2lzdHJ5L2E=","value":"YQ==","lease":123}`)},
+			lines:   [][]byte{[]byte(`{"key":"L3JlZ2lzdHJ5L2E=","value":"YQ==","create_revision":1,"mod_revision":1,"version":1,"lease":123}`)},
 			records: 1,
 			want:    "backup record 1 references undeclared lease 123",
 		},
@@ -153,6 +153,47 @@ func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "backup.jsonl")
 			require.NoError(t, os.WriteFile(path, backupJSONLLines(t, tc.lines, tc.records, tc.leases, ""), 0o600))
+
+			_, err := OpenVerified(path)
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+func TestOpenVerifiedRejectsImpossibleMVCCMetadata(t *testing.T) {
+	tests := map[string]struct {
+		line string
+		want string
+	}{
+		"empty key": {
+			line: `{"key":"","value":"YQ==","create_revision":1,"mod_revision":1,"version":1}`,
+			want: "key is empty",
+		},
+		"missing create revision": {
+			line: `{"key":"L3JlZ2lzdHJ5L2E=","value":"YQ==","mod_revision":1,"version":1}`,
+			want: "invalid MVCC metadata create=0 mod=1 version=1 snapshot=42",
+		},
+		"mod before create": {
+			line: `{"key":"L3JlZ2lzdHJ5L2E=","value":"YQ==","create_revision":2,"mod_revision":1,"version":1}`,
+			want: "invalid MVCC metadata create=2 mod=1 version=1 snapshot=42",
+		},
+		"mod after snapshot": {
+			line: `{"key":"L3JlZ2lzdHJ5L2E=","value":"YQ==","create_revision":1,"mod_revision":43,"version":1}`,
+			want: "invalid MVCC metadata create=1 mod=43 version=1 snapshot=42",
+		},
+		"missing version": {
+			line: `{"key":"L3JlZ2lzdHJ5L2E=","value":"YQ==","create_revision":1,"mod_revision":1}`,
+			want: "invalid MVCC metadata create=1 mod=1 version=0 snapshot=42",
+		},
+		"version cannot fit": {
+			line: `{"key":"L3JlZ2lzdHJ5L2E=","value":"YQ==","create_revision":40,"mod_revision":41,"version":3}`,
+			want: "version 3 cannot fit between create revision 40 and mod revision 41",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "backup.jsonl")
+			require.NoError(t, os.WriteFile(path, backupJSONL(t, []byte(tc.line), 1, 0, ""), 0o600))
 
 			_, err := OpenVerified(path)
 			require.ErrorContains(t, err, tc.want)
@@ -195,7 +236,7 @@ func TestOpenVerifiedRejectsTruncatedAndCorruptBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "backup.jsonl")
 	writer, err := NewAtomicWriter(path, "/registry", 42)
 	require.NoError(t, err)
-	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", Value: "YQ=="}))
+	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", Value: "YQ==", CreateRevision: 1, ModRevision: 1, Version: 1}))
 	_, err = writer.Commit()
 	require.NoError(t, err)
 	complete, err := os.ReadFile(path)
@@ -207,7 +248,7 @@ func TestOpenVerifiedRejectsTruncatedAndCorruptBackup(t *testing.T) {
 	}{
 		"missing footer": {contents: complete[:len(complete)/2], want: "invalid backup line"},
 		"corrupt record": {contents: []byte(`{"type":"kubebrain.logical.v1","prefix":"/registry","revision":42}
-{"key":"L3JlZ2lzdHJ5L2E=","value":"corrupt","mod_revision":0,"create_revision":0,"version":0,"lease":0}
+{"key":"L3JlZ2lzdHJ5L2E=","value":"corrupt","mod_revision":1,"create_revision":1,"version":1,"lease":0}
 {"type":"footer","records":1,"sha256":"bad"}
 `), want: "invalid backup record 1 value"},
 		"trailing data": {contents: append(append([]byte(nil), complete...), []byte("{}\n")...), want: "backup contains data after footer"},
@@ -246,7 +287,7 @@ func TestAbortDoesNotReplaceExistingBackup(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("existing"), 0o600))
 	writer, err := NewAtomicWriter(path, "/registry", 1)
 	require.NoError(t, err)
-	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E="}))
+	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", CreateRevision: 1, ModRevision: 1, Version: 1}))
 	require.NoError(t, writer.Abort())
 
 	contents, err := os.ReadFile(path)
@@ -263,7 +304,7 @@ func TestCommitDoesNotOverwriteExistingBackup(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("existing\n"), 0o600))
 	writer, err := NewAtomicWriter(path, "/registry", 1)
 	require.NoError(t, err)
-	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E="}))
+	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", CreateRevision: 1, ModRevision: 1, Version: 1}))
 
 	_, err = writer.Commit()
 	require.ErrorIs(t, err, os.ErrExist)
@@ -282,13 +323,13 @@ func TestOpenVerifiedRejectsManifestMismatchAndDuplicateKeys(t *testing.T) {
 		want  string
 	}{
 		"outside prefix": {
-			lines: [][]byte{[]byte(`{"key":"L291dHNpZGUva2V5","value":"YQ=="}`)},
+			lines: [][]byte{[]byte(`{"key":"L291dHNpZGUva2V5","value":"YQ==","create_revision":1,"mod_revision":1,"version":1}`)},
 			want:  `backup record 1 key "/outside/key" is outside manifest prefix "/registry"`,
 		},
 		"duplicate key": {
 			lines: [][]byte{
-				[]byte(`{"key":"L3JlZ2lzdHJ5L2tleQ==","value":"YQ=="}`),
-				[]byte(`{"key":"L3JlZ2lzdHJ5L2tleQ==","value":"Yg=="}`),
+				[]byte(`{"key":"L3JlZ2lzdHJ5L2tleQ==","value":"YQ==","create_revision":1,"mod_revision":1,"version":1}`),
+				[]byte(`{"key":"L3JlZ2lzdHJ5L2tleQ==","value":"Yg==","create_revision":1,"mod_revision":2,"version":2}`),
 			},
 			want: `duplicate backup key "/registry/key"`,
 		},

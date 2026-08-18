@@ -180,8 +180,6 @@ func TestConvertRejectsIncompleteOrImpossibleArtifacts(t *testing.T) {
 	}{
 		{name: "partial prefix", prefix: "/registry", record: backupRecord("/registry/a", "a", 1, 1, 1, 0), want: "full-keyspace prefix /"},
 		{name: "missing granted ttl", prefix: "/", record: backupRecord("/a", "a", 1, 1, 1, 7), lease: &record.Lease{ID: 7, TTL: 30}, want: "lacks granted_ttl"},
-		{name: "future mod revision", prefix: "/", record: backupRecord("/a", "a", 1, 43, 1, 0), want: "invalid MVCC metadata"},
-		{name: "impossible version", prefix: "/", record: backupRecord("/a", "a", 40, 42, 4, 0), want: "cannot fit"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -49,6 +49,20 @@ type Status struct {
 	SHA256        string `json:"sha256"`
 }
 
+// ValidateRecordMetadata rejects MVCC tuples that cannot represent an etcd key
+// at the artifact's snapshot revision.
+func ValidateRecordMetadata(rec record.Record, snapshotRevision int64) error {
+	if rec.CreateRevision <= 0 || rec.ModRevision < rec.CreateRevision || rec.ModRevision > snapshotRevision || rec.Version <= 0 {
+		return fmt.Errorf("invalid MVCC metadata create=%d mod=%d version=%d snapshot=%d",
+			rec.CreateRevision, rec.ModRevision, rec.Version, snapshotRevision)
+	}
+	if rec.Version > rec.ModRevision-rec.CreateRevision+1 {
+		return fmt.Errorf("version %d cannot fit between create revision %d and mod revision %d",
+			rec.Version, rec.CreateRevision, rec.ModRevision)
+	}
+	return nil
+}
+
 type AtomicWriter struct {
 	output   string
 	temp     *os.File
@@ -411,6 +425,12 @@ func validate(reader io.Reader) (Status, error) {
 		key, err := base64.StdEncoding.DecodeString(rec.Key)
 		if err != nil {
 			return Status{}, fmt.Errorf("invalid backup record %d key: %w", records+1, err)
+		}
+		if len(key) == 0 {
+			return Status{}, fmt.Errorf("invalid backup record %d key is empty", records+1)
+		}
+		if err := ValidateRecordMetadata(rec, header.Revision); err != nil {
+			return Status{}, fmt.Errorf("invalid backup record %d: %w", records+1, err)
 		}
 		if !bytes.HasPrefix(key, []byte(header.Prefix)) {
 			return Status{}, fmt.Errorf("backup record %d key %q is outside manifest prefix %q",
