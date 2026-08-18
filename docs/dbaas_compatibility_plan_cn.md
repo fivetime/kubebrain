@@ -57633,6 +57633,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均保持。定向二十轮、包级普通/race、完整非 production、production 326 项四分片与 vet 全部通过。
   本项不改变 logical.v2 schema、在线 lease、TiKV 数据路径或已发布合法制品。
 
+- A5142 补齐 A5140 未覆盖的公开 API logical restore 路径。restore 旧实现直接把 artifact 的 remaining
+  `TTL` 传给 `clientv3.Grant`；合法 leader promotion grace 可产生 `TTL>GrantedTTL`，而缺 grant 字段的旧 v2
+  制品也可能记录高于上限的 remaining，二者都会被目标 `/root/etcd/server/lease/lessor.go::Grant` 以
+  `MaxLeaseTTL=9,000,000,000` 拒绝。现带正 grant 时把 extension 规范化回 grant，旧制品仅在超过官方最大值时
+  封顶；`30/60→30` 的较短 checkpoint、`63/60→60`、旧 `30/0→30`、旧 `Max+1→Max` 与精确 Max 正例均固定。
+  定向二十轮、包级 race、完整非 production、production 326 项四分片与 vet 全部通过。本项仍由公开
+  LeaseGrant 创建新 ID，不声称保留原 backend checkpoint envelope，也不改变 artifact、在线 lease 或 TiKV 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

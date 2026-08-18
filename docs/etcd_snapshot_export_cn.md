@@ -111,7 +111,8 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
   保留 auth 配置时应优先使用在线 `Maintenance.Snapshot`。
 - `kubebrain.logical.v2` 本身仍不能直接交给 `etcdutl`；必须先通过转换器。
 - `logical-restore.sh` 是经公开 LeaseGrant 创建新 lease ID 的逻辑迁移路径，不能同时精确重建原 ID、granted TTL
-  和独立 remaining checkpoint；需要 upstream backend lease envelope 时必须使用本转换器或在线 Snapshot。
+  和独立 remaining checkpoint；其 Grant TTL 保留较短 remaining checkpoint，但会把 promotion extension 压回
+  grant，并把缺 grant 的旧制品封顶到官方最大值。需要 upstream backend lease envelope 时必须使用本转换器或在线 Snapshot。
 
 发布门禁应至少包含：转换器单元与 race 测试、官方 snapshot status、官方 restore、恢复后
 etcd 启动、当前 KV 元数据对比、`snapshot+1` 写入 revision、compacted 边界，以及带 lease

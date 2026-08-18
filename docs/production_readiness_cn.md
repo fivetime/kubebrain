@@ -4652,7 +4652,9 @@ lease 行固定源 ID 和导出时的正数剩余 TTL，尾行记录/lease 总�
 header、record、lease 和 footer 行均使用严格 JSON schema 解码，拒绝未知字段和同一行内
 拼接的第二个 JSON 值；扩展逻辑备份格式必须先升级 format/schema，不能把额外字段混入
 现有 `kubebrain.logical.v2` 制品。
-恢复为每个源 lease 生成新目标 ID并保留多 key 共享关系。v1 无 lease 制品继续可恢复；
+恢复为每个源 lease 生成新目标 ID并保留多 key 共享关系。目标 LeaseGrant 使用导出时 remaining TTL；若
+promotion grace 令 remaining 高于正 `granted_ttl`，则规范化回 grant，缺 grant 的旧 v2 制品则最多使用
+官方 `MaxLeaseTTL`，避免合法制品因目标不可授予的 TTL 在写入前失败。v1 无 lease 制品继续可恢复；
 v1 中记录非零 lease 时因缺少 TTL 元数据会在任何写入前拒绝。没有 manifest/footer 的
 旧 JSONL 无法证明完整性，同样明确拒绝。
 
