@@ -724,12 +724,8 @@ func TestFollowerLinearizableMemberListProxiesBeforeLocalBarrier(t *testing.T) {
 }
 
 func TestFollowerLinearizableMemberListRejectsInvalidProxyResult(t *testing.T) {
-	for _, mixed := range []bool{false, true} {
-		name := "nil"
-		if mixed {
-			name = "mixed"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, shape := range []string{"nil", "mixed", "missing_header"} {
+		t.Run(shape, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
 			defer closeFn()
 			rec := &recordingMetrics{}
@@ -739,8 +735,11 @@ func TestFollowerLinearizableMemberListRejectsInvalidProxyResult(t *testing.T) {
 				proxyEnabled: true,
 				epochFn:      func() (uint64, bool) { return 7, false },
 				memberListFn: func(context.Context, *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
-					if mixed {
+					if shape == "mixed" {
 						return &etcdserverpb.MemberListResponse{}, errors.New("mixed")
+					}
+					if shape == "missing_header" {
+						return &etcdserverpb.MemberListResponse{}, nil
 					}
 					return nil, nil
 				},

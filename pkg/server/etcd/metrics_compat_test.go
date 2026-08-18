@@ -184,9 +184,15 @@ func TestClusterProxyIntegrityMetricsAndValidation(t *testing.T) {
 		&etcdserverpb.MemberListResponse{}, errors.New("mixed"))
 	require.Nil(t, response)
 	require.Equal(t, codes.DataLoss, status.Code(err))
-	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedClusterProxyIntegrityValues(rec))
 
-	want := &etcdserverpb.MemberListResponse{}
+	response, err = validateClusterProxyResult(rec, clusterProxyRPCMemberList,
+		&etcdserverpb.MemberListResponse{}, nil)
+	require.Nil(t, response)
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.ErrorContains(t, err, "without a header")
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
+
+	want := &etcdserverpb.MemberListResponse{Header: &etcdserverpb.ResponseHeader{}}
 	response, err = validateClusterProxyResult(rec, clusterProxyRPCMemberList, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
@@ -194,7 +200,7 @@ func TestClusterProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateClusterProxyResult[etcdserverpb.MemberListResponse](rec, clusterProxyRPCMemberList, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedClusterProxyIntegrityValues(rec))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
 }
 
 func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {

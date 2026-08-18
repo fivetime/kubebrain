@@ -15,6 +15,7 @@
 package etcd
 
 import (
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -31,13 +32,26 @@ func initClusterProxyIntegrityMetrics(metricCli metrics.Metrics) {
 
 func validateClusterProxyResult[T any](metricCli metrics.Metrics, rpc string, response *T, err error) (*T, error) {
 	if (response == nil) != (err == nil) {
+		if response != nil {
+			headerResponse, ok := any(response).(interface {
+				GetHeader() *etcdserverpb.ResponseHeader
+			})
+			if !ok || headerResponse.GetHeader() == nil {
+				emitClusterProxyIntegrityFailure(metricCli, rpc)
+				return nil, status.Error(codes.DataLoss, "leader member_list proxy returned a response without a header")
+			}
+		}
 		return response, err
 	}
-	if metricCli != nil {
-		_ = metricCli.EmitCounter("cluster.proxy.integrity_failure", 1, metrics.Tag("rpc", rpc))
-	}
+	emitClusterProxyIntegrityFailure(metricCli, rpc)
 	if response == nil {
 		return nil, status.Error(codes.DataLoss, "leader member_list proxy returned neither response nor error")
 	}
 	return nil, status.Error(codes.DataLoss, "leader member_list proxy returned both response and error")
+}
+
+func emitClusterProxyIntegrityFailure(metricCli metrics.Metrics, rpc string) {
+	if metricCli != nil {
+		_ = metricCli.EmitCounter("cluster.proxy.integrity_failure", 1, metrics.Tag("rpc", rpc))
+	}
 }
