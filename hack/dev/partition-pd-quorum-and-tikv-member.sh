@@ -76,11 +76,25 @@ tikv_pid=$!
 ready_deadline=$((SECONDS + COMBINED_FAULT_READY_TIMEOUT_SECONDS))
 while [[ ! -e "$pd_ready" || ! -e "$tikv_ready" ]]; do
   if ! kill -0 "$pd_pid" 2>/dev/null; then
+    set +e
     wait "$pd_pid"
+    child_status=$?
+    set -e
+    if (( child_status != 0 )); then
+      echo "combined backend partition child failed before readiness: child=pd-quorum pid=$pd_pid status=$child_status" >&2
+      exit "$child_status"
+    fi
     die "PD quorum child exited before signaling fault readiness"
   fi
   if ! kill -0 "$tikv_pid" 2>/dev/null; then
+    set +e
     wait "$tikv_pid"
+    child_status=$?
+    set -e
+    if (( child_status != 0 )); then
+      echo "combined backend partition child failed before readiness: child=tikv-$TIKV_COMBINED_FAULT_MODE pid=$tikv_pid status=$child_status" >&2
+      exit "$child_status"
+    fi
     die "TiKV $TIKV_COMBINED_FAULT_MODE child exited before signaling fault readiness"
   fi
   (( SECONDS < ready_deadline )) || die "combined backend fault did not become ready in time"
