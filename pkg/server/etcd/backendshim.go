@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -39,9 +40,9 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 )
 
-var (
-	_ BackendShim = (*backendShim)(nil)
-)
+var _ BackendShim = (*backendShim)(nil)
+
+var errNilBackendStream = errors.New("backend returned a nil stream channel")
 
 // normalizeRangeRevision translates etcd's signed wire convention to the
 // backend convention. Every non-positive Range revision means "latest" in
@@ -1204,6 +1205,10 @@ func (b *backendShim) RangeStreamChan(ctx context.Context, startKey, endKey []by
 		cancel()
 		return nil, err
 	}
+	if ch == nil {
+		cancel()
+		return nil, fmt.Errorf("%w: range stream", errNilBackendStream)
+	}
 	return b.translateRangeStream(ctx, cancel, ch, fmt.Sprintf("[%s,%s)", startKey, endKey)), nil
 }
 
@@ -1214,6 +1219,10 @@ func (b *backendShim) SnapshotStreamChan(ctx context.Context, revision uint64) (
 		cancel()
 		return nil, err
 	}
+	if ch == nil {
+		cancel()
+		return nil, fmt.Errorf("%w: snapshot stream", errNilBackendStream)
+	}
 	return b.translateRangeStream(ctx, cancel, ch, "complete keyspace"), nil
 }
 
@@ -1221,6 +1230,9 @@ func (b *backendShim) SnapshotHistoryStreamChan(ctx context.Context, revision ui
 	input, err := b.backend.SnapshotHistoryStream(ctx, revision)
 	if err != nil {
 		return nil, err
+	}
+	if input == nil {
+		return nil, fmt.Errorf("%w: snapshot history stream", errNilBackendStream)
 	}
 	output := make(chan backend.SnapshotHistoryChunk)
 	go func() {
@@ -1310,6 +1322,10 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 	ch, err := b.backend.Watch(ctx, key, revision)
 	if err != nil {
 		return nil, err
+	}
+	if ch == nil {
+		emitWatchBackendIntegrityFailure(b.metricCli, "invalid_result")
+		return nil, errNilWatchGeneration
 	}
 	watchResponseCh := make(chan etcdproxy.WatchResult)
 	transformResponseFunc := func(ctx context.Context, in <-chan []*proto.Event, out chan etcdproxy.WatchResult) {

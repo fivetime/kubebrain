@@ -31,6 +31,44 @@ import (
 	memkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
+type nilStreamBackend struct{ backend.Backend }
+
+func (b *nilStreamBackend) RangeStream(context.Context, []byte, []byte, uint64) (<-chan *proto.StreamRangeResponse, error) {
+	return nil, nil
+}
+
+func (b *nilStreamBackend) SnapshotStream(context.Context, uint64) (<-chan *proto.StreamRangeResponse, error) {
+	return nil, nil
+}
+
+func (b *nilStreamBackend) SnapshotHistoryStream(context.Context, uint64) (<-chan backend.SnapshotHistoryChunk, error) {
+	return nil, nil
+}
+
+func (b *nilStreamBackend) Watch(context.Context, string, uint64) (<-chan []*proto.Event, error) {
+	return nil, nil
+}
+
+func TestBackendShimRejectsNilBackendStreams(t *testing.T) {
+	rec := &recordingMetrics{}
+	initWatchBackendIntegrityMetrics(rec)
+	shim := &backendShim{backend: &nilStreamBackend{}, metricCli: rec}
+
+	rangeCh, err := shim.RangeStreamChan(context.Background(), []byte("a"), []byte("z"), 1)
+	require.ErrorIs(t, err, errNilBackendStream)
+	require.Nil(t, rangeCh)
+	snapshotCh, err := shim.SnapshotStreamChan(context.Background(), 1)
+	require.ErrorIs(t, err, errNilBackendStream)
+	require.Nil(t, snapshotCh)
+	historyCh, err := shim.SnapshotHistoryStreamChan(context.Background(), 1)
+	require.ErrorIs(t, err, errNilBackendStream)
+	require.Nil(t, historyCh)
+	watchCh, err := shim.Watch(context.Background(), "a", 1)
+	require.ErrorIs(t, err, errNilWatchGeneration)
+	require.Nil(t, watchCh)
+	require.Equal(t, []interface{}{0, 1}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
+}
+
 type scriptedBackendWatch struct {
 	backend.Backend
 	results <-chan []*proto.Event
