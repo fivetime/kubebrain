@@ -57330,6 +57330,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kv.proxy.integrity_failure{rpc="compact"}` 并 DataLoss fail closed；合法 revision 0 请求保持兼容。通用 payload、transport
   error、正常 follower 转发与公开异常注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5108 将 Auth leader-proxy payload 完整性扩展到 UserList/RoleList 名称集合。对照
+  `/root/etcd/server/auth/store.go::{UserList,RoleList}`、`server/storage/schema/auth_{users,roles}.go` 与 backend
+  sorted bucket traversal：upstream 创建 user/role 时拒绝空名称，list 由按 key 排序的唯一 bucket entry 生成；KubeBrain
+  本地 snapshot 同样 `sort.Strings`。旧 follower proxy 只检查 response/header，会确认空名、重复或乱序集合，向 etcdctl
+  和 RBAC 管理器暴露 leader 不可能生成的目录视图。现两个代理出口在 forwarded revision 观察前要求每项非空且严格字典序
+  递增，违例复用各自固定 `auth.proxy.integrity_failure{action="user_list|role_list"}` 并 DataLoss fail closed，不增加标签。
+  合法空/有序集合、transport error 与公开 follower 异常注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -4550,7 +4550,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   非法、组合不完整均 critical。
 - `auth_proxy_integrity_failure{action}` 在 RPC server 创建时为 auth enable/disable/status、authenticate、全部 user/role
   动作初始化 17 类权威零值。所有 Auth leader-proxy 必须在 forwarded revision 观察前证明 response/error 恰有其一，
-  且 success response 携带 mandatory `ResponseHeader` 与非负 revision；nil/mixed/missing-header/negative-revision 均 DataLoss fail closed。production 要求
+  且 success response 携带 mandatory `ResponseHeader` 与非负 revision。UserList/RoleList success 名称集合必须无空值并按
+  UTF-8 字节字典序严格递增，重复或乱序同样 DataLoss fail closed；nil/mixed/missing-header/negative-revision 也拒绝。production 要求
   60 秒新鲜 Ready Pod UID current/10 分钟 increase `17×Ready` 完整、值合法且拒绝未知 action；任一事件或 telemetry
   缺失、陈旧、非法、组合不完整均 critical。
 - `lease_proxy_integrity_failure{rpc="grant|revoke|keep_alive|time_to_live|leases"}` 在 RPC server 创建时初始化五类
