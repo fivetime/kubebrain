@@ -1418,14 +1418,43 @@ func TestInvalidWatchResultShapeRejectsProgressWithBatchRevision(t *testing.T) {
 	require.EqualError(t, err, "watch backend returned mixed progress revision 10 and batch revision 9")
 	require.NoError(t, invalidWatchResultShape(etcdproxy.WatchResult{ProgressRevision: 10}))
 	require.NoError(t, invalidWatchResultShape(etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
-		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{ModRevision: 10},
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("key"), ModRevision: 10},
 	}}}))
 	require.EqualError(t, invalidWatchResultShape(etcdproxy.WatchResult{
 		Revision: 10, Events: []*mvccpb.Event{{Type: mvccpb.PUT}},
 	}), "watch backend returned invalid nil event at index 0")
 	require.EqualError(t, invalidWatchResultShape(etcdproxy.WatchResult{
-		Revision: 10, Events: []*mvccpb.Event{{Type: mvccpb.Event_EventType(99), Kv: &mvccpb.KeyValue{ModRevision: 10}}},
+		Revision: 10, Events: []*mvccpb.Event{{Type: mvccpb.Event_EventType(99), Kv: &mvccpb.KeyValue{Key: []byte("key"), ModRevision: 10}}},
 	}), "watch backend returned unsupported event type 99 at index 0")
+	require.EqualError(t, invalidWatchResultShape(etcdproxy.WatchResult{
+		Revision: 10, Events: []*mvccpb.Event{{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{ModRevision: 10}}},
+	}), "watch backend returned an empty event key at index 0")
+	require.EqualError(t, invalidWatchResultShape(etcdproxy.WatchResult{
+		Revision: 10, Events: []*mvccpb.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("key"), ModRevision: 10},
+			PrevKv: &mvccpb.KeyValue{
+				Key: []byte("other"), ModRevision: 9,
+			},
+		}},
+	}), "watch backend returned a previous key that differs from the event key at index 0")
+}
+
+func TestWatchRejectsMismatchedPreviousKeyBeforePublication(t *testing.T) {
+	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
+		Revision: 10,
+		Events: []*mvccpb.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/key"), ModRevision: 10},
+			PrevKv: &mvccpb.KeyValue{
+				Key: []byte("/registry/watch/other"), ModRevision: 9,
+			},
+		}},
+	})
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Empty(t, responses[0].Events)
+	require.Contains(t, responses[0].CancelReason, "previous key that differs from the event key")
 }
 
 func TestWatchRejectsMalformedEventBatchBeforePartialPublication(t *testing.T) {

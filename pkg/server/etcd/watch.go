@@ -192,6 +192,12 @@ func invalidWatchResultShape(result etcdproxy.WatchResult) error {
 		if event == nil || event.Kv == nil {
 			return fmt.Errorf("watch backend returned invalid nil event at index %d", i)
 		}
+		if len(event.Kv.Key) == 0 {
+			return fmt.Errorf("watch backend returned an empty event key at index %d", i)
+		}
+		if event.PrevKv != nil && !bytes.Equal(event.Kv.Key, event.PrevKv.Key) {
+			return fmt.Errorf("watch backend returned a previous key that differs from the event key at index %d", i)
+		}
 		switch event.Type {
 		case mvccpb.PUT, mvccpb.DELETE:
 		default:
