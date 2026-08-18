@@ -57356,6 +57356,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   只递增固定 `auth.proxy.integrity_failure{action="role_get"}` 并 DataLoss fail closed。普通空/多 range/未知 enum、canonical
   root、transport error 与公开异常注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5111 将 Auth leader-proxy payload 完整性扩展到 AuthStatus.AuthRevision。对照
+  `/root/etcd/server/auth/store.go::NewAuthStore/commitRevision`、`server/storage/schema/auth.go::unsafeReadAuthRevision`
+  与 `server/etcdserver/apply/backend.go::AuthStatus`：backend 缺 revision 只可能出现在初始化阶段，auth store 构造会立即
+  commit 初始化为 1，此后 mutation 单调递增；serving AuthStatus 无论 Enabled 状态都不可能成功返回 0。KubeBrain 同样以
+  `initialAuthRevision=1`，并把持久零值作为损坏拒绝。旧 follower proxy 只检查 ResponseHeader，会确认零 auth revision，
+  让 token/RBAC 客户端误信未初始化状态。现 AuthStatus 在 forwarded KV revision 观察前要求 AuthRevision 非零，违例只递增
+  固定 `auth.proxy.integrity_failure{action="auth_status"}` 并 DataLoss fail closed；auth revision 与 KV header revision 是
+  独立计数器，不添加错误的大小关系。disabled/enabled 正 revision、transport error 与公开零值注入连续十轮通过；需要
+  下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
