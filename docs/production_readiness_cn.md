@@ -4499,6 +4499,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   都排除客户端取消；protocol 表示 local 或 forwarded stream 返回 nil/empty/mixed result、缺 mandatory terminal
   metadata 或 terminal 后继续。local 路径扣留最终数据帧后 fail closed；事件及 telemetry 缺失、陈旧、非法或
   组合不完整均 critical。
+- `maintenance_snapshot_failure{stage="source|proxy|send|protocol"}` 在 RPC server 创建时初始化四类权威零值。
+  production 只消费 60 秒新鲜 Ready Pod UID current/10 分钟 increase，要求 `4×Ready` 完整并拒绝未知 stage；
+  source/proxy/send 增量 warning，protocol 增量以及 telemetry 缺失、陈旧、非法或组合不完整 critical。send 排除
+  正常调用方取消；protocol 覆盖本地 history 与 leader-proxy 的 nil/empty/mixed/checksum/终止违例，不能把部分制品
+  或静默截断解释为成功快照。
 - gRPC p99 延迟超过 1 秒。
 
 这些阈值是预生产起点，不应直接作为最终生产阈值。正式上线前应基于真实对象规模、apiserver QPS、watch 数量和 TiKV 延迟重新校准。

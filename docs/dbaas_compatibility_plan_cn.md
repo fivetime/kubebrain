@@ -57038,6 +57038,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   确定性单测以一个实现四个 `(nil,nil)` 的 raw backend 证明所有 shim 返回 nil+error、不会启动转换 goroutine，且
   Watch invalid_result 严格 `[0,1]`；连续十轮通过。需要下一生产镜像和监控发布。
 
+- A5076 闭合 Maintenance Snapshot 失败只有动态总量、无法按本地数据源、leader proxy、wire send 与流协议定位的
+  生产可观测性缺口。对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Snapshot`，upstream 在逐块发送
+  bbolt snapshot 后发送 SHA-256，并直接返回读取或发送错误；KubeBrain 还需验证独立 TiKV history 与跨 member
+  proxy result。现新增固定 `maintenance.snapshot.failure{stage="source|proxy|send|protocol"}`，RPC server 创建时初始化
+  四类权威零值；source 覆盖本地捕获/存储/制品错误，proxy 覆盖 follower open/result transport error，send 覆盖
+  local/forwarded 非调用方取消的 wire error，protocol 覆盖 local history 以及 proxy nil/empty、response+error 混合、
+  checksum/remaining-bytes/终止违例。混合 result 现 fail closed 为 DataLoss，不再把携带 payload 的损坏结果当普通
+  transport error。production 生成 60 秒新鲜 Ready Pod UID current/increase，要求各 `4×Ready`、值合法且未知 stage
+  非法；source/proxy/send warning，protocol 与 telemetry 缺失/陈旧/非法/组合不完整 critical。确定性回归覆盖本地和
+  forwarded send、internal proxy cancel、caller cancel、nil/mixed result 及固定零值；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
