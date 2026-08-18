@@ -192,44 +192,65 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (pu
 	if err != nil {
 		return 0, 0, nil, nil, 0, fmt.Errorf("grant probe lease: %w", err)
 	}
+	cleanupLeaseID := clientv3.NoLease
+	if lease != nil {
+		cleanupLeaseID = lease.ID
+	}
 	revoked := false
 	defer func() {
-		if !revoked {
+		if !revoked && cleanupLeaseID != clientv3.NoLease {
 			retErr = errors.Join(retErr, revokeProbeLease(func(cleanup context.Context) error {
-				_, err := cli.Revoke(cleanup, lease.ID)
-				return err
+				response, err := cli.Revoke(cleanup, cleanupLeaseID)
+				if err != nil {
+					return err
+				}
+				return targetverify.ValidateProbeRevoke(response, 0)
 			}))
 		}
 	}()
-	put, err := cli.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).Then(clientv3.OpPut(key, value, clientv3.WithLease(lease.ID))).Commit()
+	probeLeaseID, err := targetverify.ValidateProbeGrant(lease, 60)
 	if err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
-	if !put.Succeeded || put.Header == nil || put.Header.Revision <= 0 {
-		return 0, 0, nil, nil, 0, errors.New("watch probe put failed")
+	put, err := cli.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).Then(clientv3.OpPut(key, value, clientv3.WithLease(probeLeaseID))).Commit()
+	if err != nil {
+		return 0, 0, nil, nil, 0, err
 	}
-	if err := expectWatchEvent(watch, mvccpb.PUT, []byte(key), put.Header.Revision); err != nil {
+	putRevision, err = targetverify.ValidateProbePutTxn(put)
+	if err != nil {
+		return 0, 0, nil, nil, 0, err
+	}
+	if err := expectWatchEvent(watch, mvccpb.PUT, []byte(key), putRevision); err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
 	read, err := cli.Get(ctx, key)
-	if err != nil || len(read.Kvs) != 1 || string(read.Kvs[0].Value) != value || read.Kvs[0].Lease != int64(lease.ID) {
-		return 0, 0, nil, nil, 0, errors.New("linearizable probe read mismatch")
+	if err != nil {
+		return 0, 0, nil, nil, 0, err
+	}
+	readRevision, err := targetverify.ValidateProbeGet(read, []byte(key), []byte(value), probeLeaseID, putRevision)
+	if err != nil {
+		return 0, 0, nil, nil, 0, err
 	}
 	deleted, err := cli.Txn(ctx).If(clientv3.Compare(clientv3.Value(key), "=", value)).Then(clientv3.OpDelete(key)).Commit()
 	if err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
-	if !deleted.Succeeded || deleted.Header == nil || len(deleted.Responses) != 1 || deleted.Responses[0].GetResponseDeleteRange().Deleted != 1 {
-		return 0, 0, nil, nil, 0, errors.New("watch probe delete failed")
-	}
-	if err := expectWatchEvent(watch, mvccpb.DELETE, []byte(key), deleted.Header.Revision); err != nil {
+	deleteRevision, err = targetverify.ValidateProbeDeleteTxn(deleted, readRevision)
+	if err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
-	if _, err := cli.Revoke(ctx, lease.ID); err != nil {
+	if err := expectWatchEvent(watch, mvccpb.DELETE, []byte(key), deleteRevision); err != nil {
+		return 0, 0, nil, nil, 0, err
+	}
+	revoke, err := cli.Revoke(ctx, probeLeaseID)
+	if err != nil {
+		return 0, 0, nil, nil, 0, err
+	}
+	if err := targetverify.ValidateProbeRevoke(revoke, deleteRevision); err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
 	revoked = true
-	return put.Header.Revision, deleted.Header.Revision, []byte(key), []byte(value), int64(lease.ID), nil
+	return putRevision, deleteRevision, []byte(key), []byte(value), int64(probeLeaseID), nil
 }
 
 func revokeProbeLease(revoke func(context.Context) error) error {
