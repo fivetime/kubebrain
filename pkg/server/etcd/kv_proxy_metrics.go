@@ -194,7 +194,7 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
 	}
-	if validationErr := validateTxnProxyRangePayloads(request, response); validationErr != nil {
+	if validationErr := validateTxnProxyOperationPayloads(request, response, response.GetHeader().GetRevision()); validationErr != nil {
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
 	}
@@ -278,7 +278,7 @@ func validateTxnProxyResponseHeaders(response *etcdserverpb.TxnResponse, outerRe
 	return nil
 }
 
-func validateTxnProxyRangePayloads(request *etcdserverpb.TxnRequest, response *etcdserverpb.TxnResponse) error {
+func validateTxnProxyOperationPayloads(request *etcdserverpb.TxnRequest, response *etcdserverpb.TxnResponse, outerRevision int64) error {
 	requests := request.GetFailure()
 	if response.GetSucceeded() {
 		requests = request.GetSuccess()
@@ -290,10 +290,83 @@ func validateTxnProxyRangePayloads(request *etcdserverpb.TxnRequest, response *e
 			if _, err := validateRangeProxyPayload(nil, requestOp.GetRequestRange(), responseOp.GetResponseRange(), nil); err != nil {
 				return fmt.Errorf("leader txn proxy returned invalid range payload at index %d: %s", index, status.Convert(err).Message())
 			}
+		case requestOp.GetRequestPut() != nil:
+			if err := validateTxnProxyPutPayload(requestOp.GetRequestPut(), responseOp.GetResponsePut(), outerRevision); err != nil {
+				return fmt.Errorf("leader txn proxy returned invalid put payload at index %d: %w", index, err)
+			}
+		case requestOp.GetRequestDeleteRange() != nil:
+			if err := validateTxnProxyDeletePayload(requestOp.GetRequestDeleteRange(), responseOp.GetResponseDeleteRange(), outerRevision); err != nil {
+				return fmt.Errorf("leader txn proxy returned invalid delete payload at index %d: %w", index, err)
+			}
 		case requestOp.GetRequestTxn() != nil:
-			if err := validateTxnProxyRangePayloads(requestOp.GetRequestTxn(), responseOp.GetResponseTxn()); err != nil {
+			if err := validateTxnProxyOperationPayloads(requestOp.GetRequestTxn(), responseOp.GetResponseTxn(), outerRevision); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+func validateTxnProxyPutPayload(request *etcdserverpb.PutRequest, response *etcdserverpb.PutResponse, outerRevision int64) error {
+	if response.GetHeader().GetRevision() != outerRevision {
+		return fmt.Errorf("put revision %d differs from outer revision %d", response.GetHeader().GetRevision(), outerRevision)
+	}
+	previous := response.GetPrevKv()
+	if !request.GetPrevKv() {
+		if previous != nil {
+			return fmt.Errorf("put returned an unrequested previous key-value")
+		}
+		return nil
+	}
+	if previous == nil {
+		if request.GetIgnoreValue() || request.GetIgnoreLease() {
+			return fmt.Errorf("put omitted the required previous key-value for an ignore request")
+		}
+		return nil
+	}
+	if !bytes.Equal(previous.GetKey(), request.GetKey()) {
+		return fmt.Errorf("put returned a previous key-value for a different key")
+	}
+	if validateProxyKeyValueLifecycle(previous) != nil {
+		return fmt.Errorf("put returned invalid previous key-value revision metadata")
+	}
+	if previous.GetModRevision() > outerRevision {
+		return fmt.Errorf("put returned a previous key-value newer than the transaction revision")
+	}
+	return nil
+}
+
+func validateTxnProxyDeletePayload(request *etcdserverpb.DeleteRangeRequest, response *etcdserverpb.DeleteRangeResponse, outerRevision int64) error {
+	if response.GetDeleted() < 0 {
+		return fmt.Errorf("delete returned a negative deleted count")
+	}
+	if response.GetDeleted() > 0 && response.GetHeader().GetRevision() != outerRevision {
+		return fmt.Errorf("effective delete revision %d differs from outer revision %d", response.GetHeader().GetRevision(), outerRevision)
+	}
+	if !request.GetPrevKv() {
+		if len(response.GetPrevKvs()) != 0 {
+			return fmt.Errorf("delete returned unrequested previous key-values")
+		}
+		return nil
+	}
+	if int64(len(response.GetPrevKvs())) != response.GetDeleted() {
+		return fmt.Errorf("delete previous key-value count differs from deleted")
+	}
+	for index, previous := range response.GetPrevKvs() {
+		if previous == nil {
+			return fmt.Errorf("delete returned a nil previous key-value")
+		}
+		if !rangeProxyContainsKey(request.GetKey(), request.GetRangeEnd(), previous.GetKey()) {
+			return fmt.Errorf("delete returned a previous key-value outside the requested range")
+		}
+		if validateProxyKeyValueLifecycle(previous) != nil {
+			return fmt.Errorf("delete returned invalid previous key-value revision metadata")
+		}
+		if previous.GetModRevision() > outerRevision {
+			return fmt.Errorf("delete returned a previous key-value newer than the transaction revision")
+		}
+		if index > 0 && bytes.Compare(response.GetPrevKvs()[index-1].GetKey(), previous.GetKey()) >= 0 {
+			return fmt.Errorf("delete returned duplicate or unsorted previous keys")
 		}
 	}
 	return nil
