@@ -305,6 +305,8 @@ func TestLeaseProxyPayloadValidation(t *testing.T) {
 			{name: "ttl below not found", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -2}},
 			{name: "found without granted ttl", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 0}},
 			{name: "malformed not found", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -1, GrantedTTL: 1}},
+			{name: "empty key", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 1, GrantedTTL: 1, Keys: [][]byte{{}}}},
+			{name: "duplicate key", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 1, GrantedTTL: 1, Keys: [][]byte{[]byte("key"), []byte("key")}}},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				rec := &recordingMetrics{}
@@ -318,6 +320,35 @@ func TestLeaseProxyPayloadValidation(t *testing.T) {
 					require.Nil(t, response)
 					require.Equal(t, codes.DataLoss, status.Code(err))
 					require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCTimeToLive))
+				}
+			})
+		}
+	})
+
+	t.Run("leases", func(t *testing.T) {
+		for _, test := range []struct {
+			name     string
+			response *etcdserverpb.LeaseLeasesResponse
+			valid    bool
+		}{
+			{name: "empty", response: &etcdserverpb.LeaseLeasesResponse{}, valid: true},
+			{name: "signed ids", response: &etcdserverpb.LeaseLeasesResponse{Leases: []*etcdserverpb.LeaseStatus{{ID: math.MinInt64}, {ID: math.MaxInt64}}}, valid: true},
+			{name: "nil status", response: &etcdserverpb.LeaseLeasesResponse{Leases: []*etcdserverpb.LeaseStatus{nil}}},
+			{name: "zero id", response: &etcdserverpb.LeaseLeasesResponse{Leases: []*etcdserverpb.LeaseStatus{{ID: 0}}}},
+			{name: "duplicate id", response: &etcdserverpb.LeaseLeasesResponse{Leases: []*etcdserverpb.LeaseStatus{{ID: -1}, {ID: -1}}}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				rec := &recordingMetrics{}
+				initLeaseProxyIntegrityMetrics(rec)
+				response, err := validateLeaseLeasesProxyPayload(rec, test.response, nil)
+				if test.valid {
+					require.Same(t, test.response, response)
+					require.NoError(t, err)
+					require.Equal(t, []interface{}{int64(0)}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCLeases))
+				} else {
+					require.Nil(t, response)
+					require.Equal(t, codes.DataLoss, status.Code(err))
+					require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCLeases))
 				}
 			})
 		}

@@ -3042,6 +3042,30 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyPayload(t *testing.T) {
 			},
 			message: "malformed not-found payload",
 		},
+		{
+			name: "ttl empty attached key", rpc: leaseProxyRPCTimeToLive,
+			configure: func(peers *testPeerService) {
+				peers.leaseTTLFn = func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+					return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: math.MinInt64, TTL: 1, GrantedTTL: 30, Keys: [][]byte{{}}}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: math.MinInt64, Keys: true})
+			},
+			message: "empty attached key",
+		},
+		{
+			name: "ttl duplicate attached key", rpc: leaseProxyRPCTimeToLive,
+			configure: func(peers *testPeerService) {
+				peers.leaseTTLFn = func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+					return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: math.MinInt64, TTL: 1, GrantedTTL: 30, Keys: [][]byte{[]byte("key"), []byte("key")}}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: math.MinInt64, Keys: true})
+			},
+			message: "duplicate attached key",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
@@ -3058,6 +3082,38 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyPayload(t *testing.T) {
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.ErrorContains(t, err, test.message)
 			require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, test.rpc))
+		})
+	}
+}
+
+func TestLeaseFollowerRejectsInvalidLeaseListProxyPayload(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		leases  []*etcdserverpb.LeaseStatus
+		message string
+	}{
+		{name: "nil status", leases: []*etcdserverpb.LeaseStatus{nil}, message: "nil lease status"},
+		{name: "zero id", leases: []*etcdserverpb.LeaseStatus{{ID: 0}}, message: "reserved zero lease ID"},
+		{name: "duplicate id", leases: []*etcdserverpb.LeaseStatus{{ID: -1}, {ID: -1}}, message: "duplicate lease ID -1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initLeaseProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				leaseLeasesFn: func(context.Context, *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
+					return &etcdserverpb.LeaseLeasesResponse{Header: txnHeader(1), Leases: test.leases}, nil
+				},
+			}
+
+			response, err := server.LeaseLeases(context.Background(), &etcdserverpb.LeaseLeasesRequest{})
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, test.message)
+			require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCLeases))
 		})
 	}
 }

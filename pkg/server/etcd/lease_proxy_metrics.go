@@ -123,10 +123,45 @@ func validateLeaseTimeToLiveProxyPayload(metricCli metrics.Metrics, keysRequeste
 		return nil, status.Errorf(codes.DataLoss, "leader lease time_to_live proxy returned malformed not-found payload with granted TTL %d and %d keys", response.GetGrantedTTL(), len(response.GetKeys()))
 	}
 	if response.GetTTL() >= 0 && response.GetGrantedTTL() > 0 {
+		seen := make(map[string]struct{}, len(response.GetKeys()))
+		for _, key := range response.GetKeys() {
+			if len(key) == 0 {
+				emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCTimeToLive)
+				return nil, status.Error(codes.DataLoss, "leader lease time_to_live proxy returned an empty attached key")
+			}
+			if _, exists := seen[string(key)]; exists {
+				emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCTimeToLive)
+				return nil, status.Error(codes.DataLoss, "leader lease time_to_live proxy returned a duplicate attached key")
+			}
+			seen[string(key)] = struct{}{}
+		}
 		return response, nil
 	}
 	emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCTimeToLive)
 	return nil, status.Errorf(codes.DataLoss, "leader lease time_to_live proxy returned invalid TTL %d and granted TTL %d", response.GetTTL(), response.GetGrantedTTL())
+}
+
+func validateLeaseLeasesProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.LeaseLeasesResponse, err error) (*etcdserverpb.LeaseLeasesResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	seen := make(map[int64]struct{}, len(response.GetLeases()))
+	for _, lease := range response.GetLeases() {
+		if lease == nil {
+			emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCLeases)
+			return nil, status.Error(codes.DataLoss, "leader lease leases proxy returned a nil lease status")
+		}
+		if lease.GetID() == 0 {
+			emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCLeases)
+			return nil, status.Error(codes.DataLoss, "leader lease leases proxy returned the reserved zero lease ID")
+		}
+		if _, exists := seen[lease.GetID()]; exists {
+			emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCLeases)
+			return nil, status.Errorf(codes.DataLoss, "leader lease leases proxy returned duplicate lease ID %d", lease.GetID())
+		}
+		seen[lease.GetID()] = struct{}{}
+	}
+	return response, nil
 }
 
 func emitLeaseProxyIntegrityFailure(metricCli metrics.Metrics, rpc string) {

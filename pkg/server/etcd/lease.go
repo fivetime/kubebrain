@@ -990,6 +990,7 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 		}
 		response, err := m.srv.peers.LeaseLeases(proxyCtx, req)
 		response, err = validateLeaseProxyResult(m.srv.metricCli, leaseProxyRPCLeases, response, err)
+		response, err = validateLeaseLeasesProxyPayload(m.srv.metricCli, response, err)
 		m.srv.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -1004,6 +1005,7 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 		}
 		response, forwardErr := m.srv.peers.LeaseLeases(proxyCtx, req)
 		response, forwardErr = validateLeaseProxyResult(m.srv.metricCli, leaseProxyRPCLeases, response, forwardErr)
+		response, forwardErr = validateLeaseLeasesProxyPayload(m.srv.metricCli, response, forwardErr)
 		m.srv.observeForwardedRevision(response.GetHeader(), forwardErr)
 		return response, forwardErr
 	}
