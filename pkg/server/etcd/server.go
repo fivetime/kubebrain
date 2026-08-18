@@ -253,6 +253,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 			return 0, false
 		}
 		if time.Now().UnixNano() < proxyQuietUntil.Load() {
+			emitCountProxyOutcome(server.metricCli, countProxyOutcomeQuietSkip)
 			return 0, false
 		}
 		req := proto.Clone(r).(*etcdserverpb.RangeRequest)
@@ -269,8 +270,10 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		if err != nil || resp == nil {
 			proxyQuietUntil.Store(time.Now().Add(countProxyFailureQuiet).UnixNano())
 			server.metricCli.EmitCounter("count.proxy.err", 1)
+			emitCountProxyOutcome(server.metricCli, countProxyOutcomeFailure)
 			return 0, false
 		}
+		emitCountProxyOutcome(server.metricCli, countProxyOutcomeHit)
 		return resp.Count, true
 	})
 	// Upstream recovers leases synchronously from local bbolt. Our equivalent
@@ -301,6 +304,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initRangeStreamFailureMetrics(metricCli)
 	initClientAdmissionMetrics(metricCli)
 	initDeleteRangeAdmissionMetrics(metricCli)
+	initCountProxyMetrics(metricCli)
 	initEtcdMVCCKeysGauge(metricCli)
 	initEtcdMVCCHashDurationMetrics(metricCli)
 	initEtcdBackendSnapshotDuration(metricCli)

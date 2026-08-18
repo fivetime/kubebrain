@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"testing"
@@ -30,9 +31,51 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+func countProxyOutcomeValues(rec *recordingMetrics, outcome string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == "count.proxy.outcome" && len(counter.tags) == 1 &&
+			counter.tags[0] == metrics.Tag("outcome", outcome) {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
+func TestCountProxyFailureArmsObservableQuietWindow(t *testing.T) {
+	rec := &recordingMetrics{}
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	pfx := fmt.Sprintf("/kubebrain/cproxy_metrics/%d", time.Now().UnixNano())
+	be := backend.NewBackend(kv, backend.Config{
+		Prefix: pfx, Identity: "count-proxy-metrics", EnableEtcdCompatibility: true,
+	}, rec)
+	proxyCalls := 0
+	server := New(be, rec, testPeerService{
+		proxyEnabled: true,
+		rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+			proxyCalls++
+			return nil, errors.New("leader count unavailable")
+		},
+	})
+	req := &etcdserverpb.RangeRequest{Key: []byte(pfx + "/"), RangeEnd: []byte(pfx + "0"), CountOnly: true}
+
+	_, err := server.backend.Count(context.Background(), req)
+	require.NoError(t, err)
+	_, err = server.backend.Count(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, 1, proxyCalls, "the second count must skip the peer during the quiet window")
+	require.Equal(t, []interface{}{int64(0), 1}, countProxyOutcomeValues(rec, countProxyOutcomeFailure))
+	require.Equal(t, []interface{}{int64(0), 1}, countProxyOutcomeValues(rec, countProxyOutcomeQuietSkip))
+	require.Equal(t, []interface{}{int64(0)}, countProxyOutcomeValues(rec, countProxyOutcomeHit))
+}
 
 // TestCountProxyServesFollowerCounts pins #41: when the local count index
 // cannot serve (a follower — the index is leader-only), counts route to the

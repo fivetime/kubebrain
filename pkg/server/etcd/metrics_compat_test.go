@@ -288,6 +288,23 @@ func TestClientAdmissionMetricsInitializeFixedGuardsAndActiveGauges(t *testing.T
 	}, rec.counters)
 }
 
+func TestCountProxyMetricsInitializeFixedOutcomes(t *testing.T) {
+	rec := &recordingMetrics{}
+	initCountProxyMetrics(rec)
+	for _, outcome := range countProxyOutcomes {
+		emitCountProxyOutcome(rec, outcome)
+	}
+
+	require.Equal(t, []recordedCounter{
+		{name: "count.proxy.outcome", value: int64(0), tags: []metrics.T{metrics.Tag("outcome", "hit")}},
+		{name: "count.proxy.outcome", value: int64(0), tags: []metrics.T{metrics.Tag("outcome", "failure")}},
+		{name: "count.proxy.outcome", value: int64(0), tags: []metrics.T{metrics.Tag("outcome", "quiet_skip")}},
+		{name: "count.proxy.outcome", value: 1, tags: []metrics.T{metrics.Tag("outcome", "hit")}},
+		{name: "count.proxy.outcome", value: 1, tags: []metrics.T{metrics.Tag("outcome", "failure")}},
+		{name: "count.proxy.outcome", value: 1, tags: []metrics.T{metrics.Tag("outcome", "quiet_skip")}},
+	}, rec.counters)
+}
+
 func TestEmitEtcdApplyDurationUsesCompleteUpstreamV3LabelMatrix(t *testing.T) {
 	rec := &recordingMetrics{}
 	ops := []string{
