@@ -89,10 +89,24 @@ type nilRangeStreamBackendShim struct {
 	BackendShim
 }
 
+type malformedRangeStreamBackendShim struct {
+	BackendShim
+	result func(uint64) rangeStreamChunk
+}
+
 func (b *nilRangeStreamBackendShim) RangeStreamChan(
 	context.Context, []byte, []byte, uint64,
 ) (<-chan rangeStreamChunk, error) {
 	return nil, nil
+}
+
+func (b *malformedRangeStreamBackendShim) RangeStreamChan(
+	_ context.Context, _, _ []byte, revision uint64,
+) (<-chan rangeStreamChunk, error) {
+	ch := make(chan rangeStreamChunk, 1)
+	ch <- b.result(revision)
+	close(ch)
+	return ch, nil
 }
 
 type revisionRecordingRangeStreamBackendShim struct {
@@ -208,11 +222,11 @@ func (b *writeBeforeRangeStreamBackendShim) RangeStreamChan(
 }
 
 func (b *prematureRangeStreamBackendShim) RangeStreamChan(
-	context.Context, []byte, []byte, uint64,
+	_ context.Context, _, _ []byte, revision uint64,
 ) (<-chan rangeStreamChunk, error) {
 	ch := make(chan rangeStreamChunk, 1)
 	ch <- rangeStreamChunk{resp: &etcdserverpb.RangeResponse{
-		Header: txnHeader(7),
+		Header: txnHeader(int64(revision)),
 		Kvs:    []*mvccpb.KeyValue{{Key: []byte("/premature/key"), Value: []byte("value")}},
 	}}
 	close(ch)
@@ -690,6 +704,32 @@ func TestFollowerRangeStreamRejectsInvalidProxyTermination(t *testing.T) {
 			require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureProtocol))
 		})
 	}
+}
+
+func TestFollowerRangeStreamRejectsNegativeTerminalRevision(t *testing.T) {
+	rec := &recordingMetrics{}
+	server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+	defer cleanup()
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			ch := make(chan etcdproxy.RangeStreamResult, 1)
+			ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
+				RangeResponse: &etcdserverpb.RangeResponse{Header: txnHeader(-1)},
+			}}
+			close(ch)
+			return ch, nil
+		},
+	}
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/forward-negative/"), RangeEnd: []byte("/forward-negative0"),
+	}, stream)
+	requireRangeStreamStatusError(t, err, codes.DataLoss, "forwarded range stream returned a negative terminal revision")
+	require.Empty(t, stream.sent)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureProtocol))
 }
 
 func TestFollowerRangeStreamSendFailureUsesCanonicalMetric(t *testing.T) {
@@ -1285,6 +1325,58 @@ func TestRangeStreamRejectsNilBackendChannel(t *testing.T) {
 	requireRangeStreamStatusError(t, err, codes.Unavailable, "range stream backend returned a nil result channel")
 	require.Empty(t, stream.sent)
 	require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureBackend))
+}
+
+func TestRangeStreamRejectsMalformedBackendRevisionMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		result  func(uint64) rangeStreamChunk
+		message string
+	}{
+		{
+			name:    "nil response",
+			result:  func(uint64) rangeStreamChunk { return rangeStreamChunk{} },
+			message: "range stream backend returned a response without a header",
+		},
+		{
+			name: "nil header",
+			result: func(uint64) rangeStreamChunk {
+				return rangeStreamChunk{resp: &etcdserverpb.RangeResponse{}}
+			},
+			message: "range stream backend returned a response without a header",
+		},
+		{
+			name: "negative revision",
+			result: func(uint64) rangeStreamChunk {
+				return rangeStreamChunk{resp: &etcdserverpb.RangeResponse{Header: txnHeader(-1)}}
+			},
+			message: "range stream backend returned revision -1 for pinned revision",
+		},
+		{
+			name: "different revision",
+			result: func(revision uint64) rangeStreamChunk {
+				return rangeStreamChunk{resp: &etcdserverpb.RangeResponse{Header: txnHeader(int64(revision + 1))}}
+			},
+			message: "for pinned revision",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+			defer cleanup()
+			server.backend = &malformedRangeStreamBackendShim{BackendShim: server.backend, result: test.result}
+			stream := &fakeRangeStreamServer{ctx: context.Background()}
+
+			err := server.RangeStream(&etcdserverpb.RangeRequest{
+				Key: []byte("/malformed-backend/"), RangeEnd: []byte("/malformed-backend0"), Serializable: true,
+			}, stream)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, test.message)
+			require.Empty(t, stream.sent)
+			require.Equal(t, []interface{}{int64(0), 1},
+				recordedRangeStreamFailureValues(rec, rangeStreamFailureProtocol))
+		})
+	}
 }
 
 func TestRangeStreamSendFailureExcludesClientCancellation(t *testing.T) {

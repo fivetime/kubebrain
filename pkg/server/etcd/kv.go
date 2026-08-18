@@ -364,6 +364,10 @@ func (s *RPCServer) rangeStreamOnce(
 					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
 					return status.Error(codes.Unavailable, "forwarded range stream continued after terminal metadata")
 				}
+				if header := response.RangeResponse.Header; header != nil && header.GetRevision() < 0 {
+					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+					return status.Error(codes.DataLoss, "forwarded range stream returned a negative terminal revision")
+				}
 				terminalSeen = response.RangeResponse.Header != nil
 				s.observeForwardedRevision(response.RangeResponse.Header, nil)
 				if err := rs.Send(response); err != nil {
@@ -532,7 +536,18 @@ func (s *RPCServer) rangeStreamOnce(
 			emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
 			return rangeStreamStatusErr(chunk.err)
 		}
+		if chunk.resp == nil || chunk.resp.Header == nil {
+			s.metricCli.EmitCounter("read.range_stream.err", 1)
+			emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+			return status.Error(codes.DataLoss, "range stream backend returned a response without a header")
+		}
 		headerRev = chunk.resp.Header.Revision
+		if headerRev < 0 || uint64(headerRev) != backendRevision {
+			s.metricCli.EmitCounter("read.range_stream.err", 1)
+			emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+			return status.Errorf(codes.DataLoss,
+				"range stream backend returned revision %d for pinned revision %d", headerRev, backendRevision)
+		}
 		if dataRevision == 0 {
 			dataRevision = uint64(headerRev)
 		}
