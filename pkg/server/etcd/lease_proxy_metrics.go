@@ -97,6 +97,10 @@ func validateLeaseGrantProxyPayload(metricCli metrics.Metrics, request *etcdserv
 		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCGrant)
 		return nil, status.Errorf(codes.DataLoss, "leader lease grant proxy returned non-positive granted TTL %d", response.GetTTL())
 	}
+	if response.GetTTL() > maxLeaseTTL {
+		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCGrant)
+		return nil, status.Errorf(codes.DataLoss, "leader lease grant proxy returned granted TTL %d above maximum %d", response.GetTTL(), maxLeaseTTL)
+	}
 	if response.GetTTL() < request.GetTTL() {
 		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCGrant)
 		return nil, status.Errorf(codes.DataLoss, "leader lease grant proxy returned granted TTL %d below requested TTL %d", response.GetTTL(), request.GetTTL())
@@ -129,6 +133,10 @@ func validateLeaseTimeToLiveProxyPayload(metricCli metrics.Metrics, keysRequeste
 		}
 		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCTimeToLive)
 		return nil, status.Errorf(codes.DataLoss, "leader lease time_to_live proxy returned malformed not-found payload with granted TTL %d and %d keys", response.GetGrantedTTL(), len(response.GetKeys()))
+	}
+	if response.GetGrantedTTL() > maxLeaseTTL {
+		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCTimeToLive)
+		return nil, status.Errorf(codes.DataLoss, "leader lease time_to_live proxy returned granted TTL %d above maximum %d", response.GetGrantedTTL(), maxLeaseTTL)
 	}
 	if response.GetGrantedTTL() > 0 {
 		seen := make(map[string]struct{}, len(response.GetKeys()))

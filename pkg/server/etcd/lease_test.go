@@ -3079,6 +3079,18 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyPayload(t *testing.T) {
 			message: "granted TTL 29 below requested TTL 30",
 		},
 		{
+			name: "grant ttl above maximum", rpc: leaseProxyRPCGrant,
+			configure: func(peers *testPeerService) {
+				peers.leaseGrantFn = func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+					return &etcdserverpb.LeaseGrantResponse{Header: txnHeader(1), ID: -1, TTL: maxLeaseTTL + 1}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: -1, TTL: 30})
+			},
+			message: "granted TTL 9000000001 above maximum 9000000000",
+		},
+		{
 			name: "grant legacy error", rpc: leaseProxyRPCGrant,
 			configure: func(peers *testPeerService) {
 				peers.leaseGrantFn = func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
@@ -3113,6 +3125,18 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyPayload(t *testing.T) {
 				return server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: math.MinInt64, Keys: true})
 			},
 			message: "invalid TTL -2 and granted TTL 0",
+		},
+		{
+			name: "ttl granted ttl above maximum", rpc: leaseProxyRPCTimeToLive,
+			configure: func(peers *testPeerService) {
+				peers.leaseTTLFn = func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+					return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: math.MinInt64, TTL: 1, GrantedTTL: maxLeaseTTL + 1}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: math.MinInt64, Keys: true})
+			},
+			message: "granted TTL 9000000001 above maximum 9000000000",
 		},
 		{
 			name: "ttl empty attached key", rpc: leaseProxyRPCTimeToLive,
