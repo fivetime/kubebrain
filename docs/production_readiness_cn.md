@@ -1235,6 +1235,11 @@ client 入口。配置 `EXPECTED_DEBUG_VARS_CHECKS=1` 时还会要求 info 口 `
 client 口 `/health` 与
 `/health?serializable=true` 必须返回 `{"health":"true","reason":""}`，以及对 `ENDPOINT` 与
 `STATUS_ENDPOINTS` 并集中的每个 endpoint 执行 `prefix-tool ACTION=count` 的非负整数结果；
+prefix-tool 不只检查 RPC error：count 要求正 revision、非负 Count、空 KVs 与 `More=false`；delete
+要求正 revision、非负 Deleted 且无未请求 PrevKV；put 要求正 revision 且无 PrevKV。`lease-put`
+还要求 TTL 不超过 client/v3 协议上限，Grant 返回非零 ID、合法 TTL/header，multi-Put Txn 精确返回
+同 outer revision 的 Put operation；Grant payload 校验或 Txn 任一失败都会清理已知非零 lease，且 Revoke response
+本身也必须通过 revision 校验。malformed success 不得成为只读、写入、清理或 lease 演练证据。
 配置 `EXPECTED_PREFIX_COUNT` 时还会固定每个 endpoint 的期望 count，并要求各 endpoint
 之间 count 一致。配置 `EXPECTED_STATUS_CLUSTER_ID` 时还会通过 `etcdctl endpoint status -w json`
 固定运行时 cluster ID，并要求 member ID 为正、revision/dbSize 为非负；配置

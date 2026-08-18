@@ -57835,6 +57835,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   完整非 production、production 326 项四分片与 vet 全部通过。本项不改变 TSO wire layout、task receipt
   schema、safepoint、metadata、TiKV 编码或在线 etcd 数据路径。
 
+- A5162 修复生产恢复演练与只读门禁共用的 `prefix-tool` 只检查 RPC error 的响应信任缺口。旧 count/delete
+  直接输出 Count/Deleted，put 丢弃 response，lease-put 盲信 Grant ID 与无 compare Txn，并且仅在 Txn transport
+  error 时 Revoke；nil/header=0、负计数、CountOnly 暗藏 KV、未请求 PrevKV、少/错 multi-Put operation、
+  revision 分裂或 malformed cleanup success 均可被当成演练成功。对照 `/root/etcd/server/etcdserver/apply/backend.go`
+  与 KubeBrain Range/Put/Delete/Txn/Lease proxy validators，现 count 要求正 header、Count 非负、KVs 空、
+  `More=false`；delete 要求正 header、Deleted 非负、PrevKvs 空；put 要求正 header、PrevKv 空；lease-put
+  在连接前拒绝超过 `MaxLeaseTTL` 的请求，Grant 复用非零 ID/TTL/header/legacy-error 准入，Txn 必须 success
+  且精确返回全部同 revision Put。异常 Grant 的非零 ID 仍被捕获，Grant payload/Txn 任一失败都执行 Revoke，cleanup
+  response 也要求正 revision。四类响应正反例连续二十轮、命令 race、完整非 production、production 326 项
+  四分片与 vet 全部通过。本项不改变 stdout 结果、action/env 合同、key/value、lease 生命周期成功路径、
+  存储编码或在线 etcd 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
