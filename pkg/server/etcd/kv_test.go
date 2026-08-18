@@ -4192,6 +4192,45 @@ func TestFollowerRejectsInvalidPutProxyPayload(t *testing.T) {
 	}
 }
 
+func TestFollowerRejectsInvalidDeleteRangeProxyPayload(t *testing.T) {
+	previousA := &mvccpb.KeyValue{Key: []byte("a"), CreateRevision: 1, ModRevision: 2, Version: 2}
+	previousB := &mvccpb.KeyValue{Key: []byte("b"), CreateRevision: 3, ModRevision: 3, Version: 1}
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.DeleteRangeRequest
+		response *etcdserverpb.DeleteRangeResponse
+	}{
+		{name: "zero revision", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(0)}},
+		{name: "negative deleted", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: -1}},
+		{name: "unrequested previous", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{previousA}}},
+		{name: "count mismatch", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1}},
+		{name: "outside range", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("b"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{previousB}}},
+		{name: "invalid metadata", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 1, ModRevision: 2, Version: 3}}}},
+		{name: "previous at delete revision", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("b"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{previousB}}},
+		{name: "unsorted previous", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("c"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 2, PrevKvs: []*mvccpb.KeyValue{previousB, previousA}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initKVProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				deleteRangeFn: func(context.Context, *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
+					return tt.response, nil
+				},
+			}
+
+			response, err := server.DeleteRange(context.Background(), tt.request)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCDeleteRange))
+		})
+	}
+}
+
 func TestTxnCreateUpdateDeletePath(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

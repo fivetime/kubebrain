@@ -135,6 +135,49 @@ func validatePutProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Pu
 	return response, nil
 }
 
+func validateDeleteRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.DeleteRangeRequest, response *etcdserverpb.DeleteRangeResponse, err error) (*etcdserverpb.DeleteRangeResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	fail := func(message string) (*etcdserverpb.DeleteRangeResponse, error) {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCDeleteRange)
+		return nil, status.Error(codes.DataLoss, message)
+	}
+	if response.GetHeader().GetRevision() <= 0 {
+		return fail("leader delete_range proxy returned a non-positive write revision")
+	}
+	if response.GetDeleted() < 0 {
+		return fail("leader delete_range proxy returned a negative deleted count")
+	}
+	if !request.GetPrevKv() {
+		if len(response.GetPrevKvs()) != 0 {
+			return fail("leader delete_range proxy returned previous key-values when none were requested")
+		}
+		return response, nil
+	}
+	if int64(len(response.GetPrevKvs())) != response.GetDeleted() {
+		return fail("leader delete_range proxy returned a previous key-value count different from deleted")
+	}
+	for index, previous := range response.GetPrevKvs() {
+		if previous == nil {
+			return fail("leader delete_range proxy returned a nil previous key-value")
+		}
+		if !rangeProxyContainsKey(request.GetKey(), request.GetRangeEnd(), previous.GetKey()) {
+			return fail("leader delete_range proxy returned a previous key-value outside the requested range")
+		}
+		if validateProxyKeyValueLifecycle(previous) != nil {
+			return fail("leader delete_range proxy returned invalid previous key-value revision metadata")
+		}
+		if previous.GetModRevision() >= response.GetHeader().GetRevision() {
+			return fail("leader delete_range proxy returned a previous key-value not older than the delete revision")
+		}
+		if index > 0 && bytes.Compare(response.GetPrevKvs()[index-1].GetKey(), previous.GetKey()) >= 0 {
+			return fail("leader delete_range proxy returned duplicate or unsorted previous keys")
+		}
+	}
+	return response, nil
+}
+
 func validateProxyKeyValueLifecycle(kv *mvccpb.KeyValue) error {
 	if kv.GetCreateRevision() <= 0 || kv.GetModRevision() <= 0 || kv.GetVersion() <= 0 {
 		return backend.ErrInvalidMVCCMetadata

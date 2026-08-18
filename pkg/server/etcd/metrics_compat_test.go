@@ -533,6 +533,52 @@ func TestPutProxyPayloadValidation(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 }
 
+func TestDeleteRangeProxyPayloadValidation(t *testing.T) {
+	previousA := &mvccpb.KeyValue{Key: []byte("a"), CreateRevision: 1, ModRevision: 2, Version: 2, Lease: math.MinInt64}
+	previousB := &mvccpb.KeyValue{Key: []byte("b"), CreateRevision: 3, ModRevision: 3, Version: 1}
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.DeleteRangeRequest
+		response *etcdserverpb.DeleteRangeResponse
+		valid    bool
+	}{
+		{name: "empty with previous requested", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3)}, valid: true},
+		{name: "range with signed lease previous", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("c"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 2, PrevKvs: []*mvccpb.KeyValue{previousA, previousB}}, valid: true},
+		{name: "no previous requested", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("c")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 2}, valid: true},
+		{name: "zero revision", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(0)}},
+		{name: "negative deleted", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: -1}},
+		{name: "unrequested previous", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{previousA}}},
+		{name: "previous count mismatch", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1}},
+		{name: "nil previous", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{nil}}},
+		{name: "outside range", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("b"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{previousB}}},
+		{name: "invalid metadata", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 1, ModRevision: 2, Version: 3}}}},
+		{name: "previous at delete revision", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("b"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{previousB}}},
+		{name: "unsorted previous", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("c"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 2, PrevKvs: []*mvccpb.KeyValue{previousB, previousA}}},
+		{name: "duplicate previous", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("c"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 2, PrevKvs: []*mvccpb.KeyValue{previousA, previousA}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			response, err := validateDeleteRangeProxyPayload(rec, tt.request, tt.response, nil)
+			if tt.valid {
+				require.Same(t, tt.response, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedKVProxyIntegrityValues(rec, kvProxyRPCDeleteRange))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCDeleteRange))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.DeleteRangeResponse{}
+	response, err := validateDeleteRangeProxyPayload(nil, &etcdserverpb.DeleteRangeRequest{}, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initMaintenanceProxyIntegrityMetrics(rec)

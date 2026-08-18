@@ -1780,6 +1780,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 			}
 			response, err := s.peers.DeleteRange(proxyCtx, r)
 			response, err = validateKVProxyResult(s.metricCli, kvProxyRPCDeleteRange, response, err)
+			response, err = validateDeleteRangeProxyPayload(s.metricCli, r, response, err)
 			s.observeForwardedRevision(response.GetHeader(), err)
 			return response, err
 		}
