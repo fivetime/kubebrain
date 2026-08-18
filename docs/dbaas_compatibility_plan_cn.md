@@ -57392,7 +57392,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RaftIndex；DowngradeInfo 总是初始化；Leader 为 `raft.None` 当且仅当 Errors 含 `etcdserver: no leader`。KubeBrain 的 TiKV
   logical-size/1-byte sentinel、default quota、synthetic equal indexes 与 no-leader error 遵守同一合同。StorageVersion 在
   upstream 尚未发布时可空，启动期 Raft fields 可为零，不能误报。旧 hedged follower proxy 会确认空 version、负/倒置 size、
-  非正 quota、applied 越 committed（A5123 已按 upstream 独立采样合同撤销）、nil downgrade info、空 error 或 leader health 自相矛盾。现 leader 分支在覆盖本地
+  非正 quota（A5124 已修正为只拒绝零值）、applied 越 committed（A5123 已按 upstream 独立采样合同撤销）、nil downgrade info、空 error 或 leader health 自相矛盾。现 leader 分支在覆盖本地
   IsLearner 前验证 payload；违例复用固定 `maintenance.proxy.integrity_failure{rpc="status"}`，作为 terminal DataLoss 不被
   hedge 掩盖。合法 early-state、storage-isolated follower 异常注入与连续十轮回归通过；需要下一生产镜像和监控发布。
 
@@ -57470,7 +57470,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/root/etcd/server/storage/backend/backend.go::{Size,SizeInUse,commit,Defrag}`：Status 先后读取 DbSize 与 DbSizeInUse，两个 getter
   是独立 atomic load，commit/defrag 也分别发布两个值；并发写入可让后采样的 in-use 暂时大于先采样的 allocated，这不是损坏
   payload。旧 validator 把该合法竞态判为 DataLoss，使 storage-isolated follower 的诊断请求偶发失败。现只分别要求两个 size
-  非负，不再臆造跨采样不变量；非空 Version、正 quota、raft index、DowngradeInfo 与 leader health 门禁保持不变。validator 正例、
+  非负，不再臆造跨采样不变量；非空 Version、当时的正 quota 要求（A5124 已修正）、raft index、DowngradeInfo 与 leader health 门禁保持不变。validator 正例、
   公开 follower 倒置 size 正例及两个负值异常注入连续十轮通过；不改变本地 TiKV logical-size 计算或存储格式，需要下一生产镜像
   和监控发布。
 
@@ -57483,6 +57483,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   upstream 根据已写入 response 的同一个 Leader 值追加 no-leader error。validator 正例与公开 follower 的倒置 index 正例
   连续十轮通过；既有 malformed envelope、负 size、quota、downgrade 与 leader-health 异常仍 fail closed。本项不改变 TiKV
   revision/index 合成或存储格式，需要下一生产镜像和监控发布。
+
+- A5124 修正 A5114 对 Maintenance Status quota sentinel 的过严 proxy 门禁。对照
+  `/root/etcd/server/storage/quota.go::NewBackendQuota`、`server/embed/config.go` 与
+  `server/etcdserver/api/v3rpc/maintenance.go::Status`：`--quota-backend-bytes` 是 signed int64；负值明确禁用 quota 并使用
+  passthroughQuota，Status 会原样公开该负值。只有配置 0 会在构造响应时替换为正的默认 2 GiB。因此旧 validator 的 `<=0`
+  判断把 upstream 支持的 disabled-quota endpoint 误判为 DataLoss。现只拒绝正常 success 不可能逸出的零 quota，接受任意负
+  sentinel；KubeBrain 自身 CLI 继续把负 quota 作为无效配置并以 0 表示不启用 tenant logical quota，这一部署策略不改变对
+  upstream wire contract 的兼容。validator 与公开 storage-isolated follower 负 quota 正例、公开零 quota 异常注入连续十轮
+  通过；不改变 TiKV quota accounting、NOSPACE 或存储格式，需要下一生产镜像和监控发布。
 
 ### P2：运维兼容和长期验证
 

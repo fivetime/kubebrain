@@ -4519,7 +4519,7 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   mandatory `ResponseHeader` 且 revision 非负。Alarm GET 每项必须非 nil/非 NONE、匹配 filter 且 member/type pair 唯一；
   ACTIVATE 非 NONE 精确返回一个匹配项，DEACTIVATE 非 NONE 返回零或一个匹配项，NONE mutation 必须为空。
   GET 顺序、MemberID=0 与未知 AlarmType 是 upstream 可产生值，不得误报。Defragment 对齐 upstream，允许无 Header 的空成功响应。production 要求 60 秒新鲜
-  Status success 必须有非空 Version，DbSize/DbSizeInUse 非负，DbSizeQuota 为正；两种 size 在 upstream 中独立采样，
+  Status success 必须有非空 Version，DbSize/DbSizeInUse 非负，DbSizeQuota 非零；upstream 用负 quota 表示禁用 quota，0 则在响应前替换为默认值；两种 size 在 upstream 中独立采样，
   并发提交窗口允许后采样的 in-use 暂时大于先采样的 allocated，
   committed/applied index 同样独立采样，并发推进窗口允许后采样的 applied 暂时大于先采样的 committed；DowngradeInfo 非 nil，Errors 不含空字符串，并且 Leader=0 当且仅当 errors 包含
   `etcdserver: no leader`。启动早期零 Raft 字段与尚未发布的空 StorageVersion 合法。
