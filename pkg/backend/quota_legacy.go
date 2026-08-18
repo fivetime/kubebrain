@@ -54,10 +54,12 @@ func (b *backend) transactionalUpdateOnce(ctx context.Context, request *proto.Up
 	}, []TxnGuard{{Key: key, Revision: request.GetKv().GetRevision()}})
 	if errors.Is(err, ErrTxnGuardConflict) {
 		if allowHeal {
-			if healed, healErr := b.healOrphanIndex(ctx, key); healErr == nil && healed {
-				return b.transactionalUpdateOnce(ctx, request, false)
-			} else if isCorruptAlarmFenceError(healErr) {
+			healed, healErr := b.healOrphanIndex(ctx, key)
+			if healErr != nil {
 				return nil, healErr
+			}
+			if healed {
+				return b.transactionalUpdateOnce(ctx, request, false)
 			}
 		}
 		response := &proto.UpdateResponse{
@@ -92,10 +94,12 @@ func (b *backend) transactionalDeleteOnce(ctx context.Context, request *proto.De
 	results, revision, err := b.TxnApply(ctx, []TxnWriteOp{op}, guards)
 	if errors.Is(err, ErrTxnGuardConflict) {
 		if allowHeal {
-			if healed, healErr := b.healOrphanIndex(ctx, request.Key); healErr == nil && healed {
-				return b.transactionalDeleteOnce(ctx, request, false)
-			} else if isCorruptAlarmFenceError(healErr) {
+			healed, healErr := b.healOrphanIndex(ctx, request.Key)
+			if healErr != nil {
 				return nil, healErr
+			}
+			if healed {
+				return b.transactionalDeleteOnce(ctx, request, false)
 			}
 		}
 		response := &proto.DeleteResponse{
@@ -112,10 +116,12 @@ func (b *backend) transactionalDeleteOnce(ctx context.Context, request *proto.De
 		return nil, err
 	}
 	if allowHeal && (len(results) != 1 || !results[0].Deleted) {
-		if healed, healErr := b.healOrphanIndex(ctx, request.Key); healErr == nil && healed {
-			return b.transactionalDeleteOnce(ctx, request, false)
-		} else if isCorruptAlarmFenceError(healErr) {
+		healed, healErr := b.healOrphanIndex(ctx, request.Key)
+		if healErr != nil {
 			return nil, healErr
+		}
+		if healed {
+			return b.transactionalDeleteOnce(ctx, request, false)
 		}
 	}
 	response := &proto.DeleteResponse{Header: responseHeader(revision)}

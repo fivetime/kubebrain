@@ -117,9 +117,11 @@ func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error)
 	}
 	members, corruptGenerationRaw, corruptGenerationExists, corruptGuard, err := b.readCorruptAlarmCommitState(ctx)
 	if err != nil {
+		emitOrphanIndexHealOutcome(b.metricCli, orphanIndexHealOutcomeFailed)
 		return false, err
 	}
 	if len(members) != 0 {
+		emitOrphanIndexHealOutcome(b.metricCli, orphanIndexHealOutcomeFenced)
 		return false, ErrCorruptAlarmActive
 	}
 	batch := b.kv.BeginBatchWrite()
@@ -129,20 +131,26 @@ func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error)
 		if errors.Is(commitErr, storage.ErrCASFailed) {
 			currentMembers, currentGenerationRaw, currentGenerationExists, alarmErr := b.readStableCorruptAlarmState(ctx)
 			if alarmErr != nil {
+				emitOrphanIndexHealOutcome(b.metricCli, orphanIndexHealOutcomeFailed)
 				return false, alarmErr
 			}
 			if len(currentMembers) != 0 {
+				emitOrphanIndexHealOutcome(b.metricCli, orphanIndexHealOutcomeFenced)
 				return false, ErrCorruptAlarmActive
 			}
 			if currentGenerationExists != corruptGenerationExists || !bytes.Equal(currentGenerationRaw, corruptGenerationRaw) {
+				emitOrphanIndexHealOutcome(b.metricCli, orphanIndexHealOutcomeFenced)
 				return false, ErrCorruptAlarmChanged
 			}
+			emitOrphanIndexHealOutcome(b.metricCli, orphanIndexHealOutcomeConcurrent)
 			return true, nil
 		}
+		emitOrphanIndexHealOutcome(b.metricCli, orphanIndexHealOutcomeFailed)
 		return false, commitErr
 	}
 	klog.InfoS("healed orphan revision index", "key", util.LoggedKey(key), "revision", modRevision)
 	b.metricCli.EmitCounter("backend.orphan_index.heal", 1)
+	emitOrphanIndexHealOutcome(b.metricCli, orphanIndexHealOutcomeHealed)
 	return true, nil
 }
 

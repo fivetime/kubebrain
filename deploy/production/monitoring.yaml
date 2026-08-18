@@ -653,6 +653,18 @@ spec:
           expr: count(((kubebrain_dbaas:count_proxy_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:count_proxy_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:count_proxy_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:count_proxy_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:count_proxy_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:count_proxy_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:count_proxy_outcome:current_by_pod_outcome{outcome!~"hit|failure|quiet_skip"})
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (backend_orphan_index_heal_outcome{namespace="kubebrain-system"} and (time() - timestamp(backend_orphan_index_heal_outcome{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:orphan_index_heal_outcome:increase_10m_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (increase(backend_orphan_index_heal_outcome{namespace="kubebrain-system"}[10m]) and (time() - timestamp(backend_orphan_index_heal_outcome{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:orphan_index_heal_outcome_invalid_values:count
+          expr: count(((kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:orphan_index_heal_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:orphan_index_heal_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome{outcome!~"healed|concurrent|fenced|failed"})
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_gc_enabled:max_by_pod
           expr: max by (namespace, pod, uid) (storage_gc_enabled{namespace="kubebrain-system"} and (time() - timestamp(storage_gc_enabled{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1469,6 +1481,30 @@ spec:
           annotations:
             summary: KubeBrain count-proxy telemetry is incomplete
             description: "Every current Ready Pod UID must expose all three authoritative-zero hit, failure, and quiet_skip outcomes as fresh current and ten-minute-increase series. Current values must be non-negative exact integers within 2^53, increases finite in range, and unknown outcomes invalid. Missing, stale, invalid, or incomplete telemetry can hide follower fallback scan amplification."
+        - alert: KubeBrainOrphanIndexHealed
+          expr: sum by (outcome) (kubebrain_dbaas:orphan_index_heal_outcome:increase_10m_by_pod_outcome{outcome=~"healed|concurrent"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain repaired a legacy orphan revision index
+            description: "A current Ready replica found a live object whose revision index was missing and restored it without allocating a user revision or watch event. healed committed this repair; concurrent means another writer repaired the same index first. Preserve logs and verify no unsupported old binary or external writer is still creating orphan state."
+        - alert: KubeBrainOrphanIndexHealFailed
+          expr: sum by (outcome) (kubebrain_dbaas:orphan_index_heal_outcome:increase_10m_by_pod_outcome{outcome=~"fenced|failed"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain could not repair an orphan revision index
+            description: "A current Ready replica confirmed a live object with a missing revision index but the revision-neutral repair was blocked. fenced means the durable CORRUPT alarm boundary prevented repair; failed means storage or alarm-state access failed and the client operation now returns that explicit error rather than a false compare result. Preserve the orphan and corruption evidence before remediation."
+        - alert: KubeBrainOrphanIndexHealMetricsMissing
+          expr: absent(kubebrain_dbaas:orphan_index_heal_outcome_invalid_values:count) == 1 or count(kubebrain_dbaas:orphan_index_heal_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 4 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:orphan_index_heal_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 4 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:orphan_index_heal_outcome_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain orphan-index repair telemetry is incomplete
+            description: "Every current Ready Pod UID must expose all four authoritative-zero healed, concurrent, fenced, and failed outcomes as fresh current and ten-minute-increase series. Current values must be non-negative exact integers within 2^53, increases finite in range, and unknown outcomes invalid. Missing, stale, invalid, or incomplete telemetry can hide revision-index damage or failed remediation."
         - alert: KubeBrainStorageGCDriverUnavailable
           expr: min(kubebrain_dbaas:storage_gc_enabled:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 1
           for: 2m

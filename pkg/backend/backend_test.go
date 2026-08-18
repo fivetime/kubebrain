@@ -17,6 +17,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"regexp"
@@ -48,6 +49,61 @@ import (
 	imetrics "github.com/kubewharf/kubebrain/pkg/storage/metrics"
 	itikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
 )
+
+type failOrphanHealCommitStorage struct {
+	storage.KvStorage
+	fail atomic.Bool
+	err  error
+}
+
+func (s *failOrphanHealCommitStorage) BeginBatchWrite() storage.BatchWrite {
+	return &failOrphanHealCommitBatch{BatchWrite: s.KvStorage.BeginBatchWrite(), storage: s}
+}
+
+type failOrphanHealCommitBatch struct {
+	storage.BatchWrite
+	storage       *failOrphanHealCommitStorage
+	putIfNotExist bool
+}
+
+func (b *failOrphanHealCommitBatch) PutIfNotExist(key, value []byte, ttl int64) {
+	b.putIfNotExist = true
+	b.BatchWrite.PutIfNotExist(key, value, ttl)
+}
+
+func (b *failOrphanHealCommitBatch) Commit(ctx context.Context) error {
+	if b.putIfNotExist && b.storage.fail.CompareAndSwap(true, false) {
+		// Force the real batch down its no-write conflict path so implementations
+		// such as memkv release BeginBatchWrite-held resources before we surface
+		// the injected transport-style failure.
+		b.BatchWrite.CAS([]byte("\xfforphan-heal-fault"), nil, []byte("missing"), 0)
+		_ = b.BatchWrite.Commit(ctx)
+		return b.storage.err
+	}
+	return b.BatchWrite.Commit(ctx)
+}
+
+func orphanIndexHealOutcomeValues(rec *compactMetricRecorder, outcome string) []interface{} {
+	var values []interface{}
+	for _, record := range rec.snapshot() {
+		if record.kind == "counter" && record.name == "backend.orphan_index.heal_outcome" &&
+			len(record.tags) == 1 && record.tags[0] == metrics.Tag("outcome", outcome) {
+			values = append(values, record.value)
+		}
+	}
+	return values
+}
+
+func TestOrphanIndexHealMetricsInitializeFixedOutcomes(t *testing.T) {
+	rec := &compactMetricRecorder{}
+	initOrphanIndexHealMetrics(rec)
+	for _, outcome := range orphanIndexHealOutcomes {
+		emitOrphanIndexHealOutcome(rec, outcome)
+	}
+	for _, outcome := range orphanIndexHealOutcomes {
+		require.Equal(t, []interface{}{int64(0), 1}, orphanIndexHealOutcomeValues(rec, outcome))
+	}
+}
 
 type storageType int
 
@@ -1882,6 +1938,32 @@ func TestOrphanIndexSelfHeal(t *testing.T) {
 		s.ast.NoError(rerr)
 		s.ast.Equal("v2", string(val))
 	})
+}
+
+func TestOrphanIndexHealStorageFailureIsNotReportedAsCompareFalse(t *testing.T) {
+	rec := &compactMetricRecorder{}
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	healErr := errors.New("orphan index repair unavailable")
+	store := &failOrphanHealCommitStorage{KvStorage: base, err: healErr}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, rec).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	key := []byte(path.Join(prefix, "orphan-heal-storage-failure"))
+	created, err := b.Create(context.Background(), &proto.CreateRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	require.NoError(t, base.Del(context.Background(), b.coder.EncodeRevisionKey(key)))
+	store.fail.Store(true)
+
+	response, err := b.Update(context.Background(), &proto.UpdateRequest{
+		Kv: &proto.KeyValue{Key: key, Value: []byte("v2"), Revision: created.Header.Revision},
+	})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, healErr, "repair failure must remain explicit instead of becoming compare-false")
+	require.Equal(t, []interface{}{int64(0), 1}, orphanIndexHealOutcomeValues(rec, orphanIndexHealOutcomeFailed))
+	_, err = base.Get(context.Background(), b.coder.EncodeRevisionKey(key))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 }
 
 // TestBackendDeleteRangeLargeRangeIsAtomic pins etcd's one-request,
