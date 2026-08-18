@@ -84,6 +84,8 @@ type KubeBrainOption struct {
 	watchProgressNotifyInterval time.Duration
 }
 
+const defaultEtcdQuotaBackendBytes int64 = 2 * 1024 * 1024 * 1024
+
 type processAdmission interface {
 	Fresh() bool
 	Close() error
@@ -166,6 +168,10 @@ func NewOptions() *KubeBrainOption {
 			HostWhitelist:             []string{"*"},
 			EnableGRPCGateway:         true,
 		},
+		// Keep DBaaS tenant quota disabled unless operators opt in. Negative is
+		// also etcd's explicit disabled sentinel; an explicitly supplied zero is
+		// normalized to etcd's 2 GiB default when building the backend config.
+		quotaBackendBytes: -1,
 		// The namespace for KubeBrain-internal coordination keys (leader-election
 		// lock, compact watermark) is a fixed constant, NOT configuration: it is
 		// unrelated to client key prefixes (reads/writes, physical GC and the
@@ -205,7 +211,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveTimeout, "grpc-keepalive-timeout", o.epsConf.GRPCKeepAliveTimeout, "Time to wait for a keepalive response; 0 disables server pings.")
 	fs.UintVar(&o.epsConf.MaxTxnOps, "max-txn-ops", o.epsConf.MaxTxnOps, "Maximum number of operations permitted in a transaction.")
 	fs.UintVar(&o.epsConf.MaxRequestBytes, "max-request-bytes", o.epsConf.MaxRequestBytes, "Maximum client request payload size in bytes, excluding 512 KiB of gRPC transport overhead.")
-	fs.Int64Var(&o.quotaBackendBytes, "quota-backend-bytes", o.quotaBackendBytes, "Maximum latest logical user key+value bytes in this tenant keyspace; non-positive disables. Exceeding the limit raises NOSPACE and rejects growing writes.")
+	fs.Int64Var(&o.quotaBackendBytes, "quota-backend-bytes", o.quotaBackendBytes, "Maximum latest logical user key+value bytes in this tenant keyspace; 0 uses etcd's 2 GiB default and negative disables. Exceeding the limit raises NOSPACE and rejects growing writes.")
 	fs.StringVar(&o.epsConf.AuthToken, "auth-token", o.epsConf.AuthToken, "Authentication token provider: simple or jwt with etcd-compatible options.")
 	fs.UintVar(&o.epsConf.BcryptCost, "bcrypt-cost", o.epsConf.BcryptCost, "Bcrypt cost factor for hashing authentication passwords; out-of-range values use the bcrypt default.")
 	fs.UintVar(&o.epsConf.AuthTokenTTL, "auth-token-ttl", o.epsConf.AuthTokenTTL, "Authentication token lifetime in seconds; 0 uses the 300-second default.")
@@ -478,7 +484,7 @@ func (o *KubeBrainOption) Run(ctx context.Context) (retErr error) {
 		Identity:                    identity,
 		SkippedPrefixes:             o.SkippedPrefixes,
 		EnableEtcdCompatibility:     o.epsConf.EnableEtcdCompatibility,
-		QuotaBackendBytes:           o.quotaBackendBytes,
+		QuotaBackendBytes:           effectiveQuotaBackendBytes(o.quotaBackendBytes),
 		WatchCacheSize:              o.watchCacheSize,
 		WatchFanoutBuffer:           o.watchFanoutBuffer,
 		StorageGCLifetime:           o.storageGCLifetime,
@@ -497,4 +503,11 @@ func (o *KubeBrainOption) Run(ctx context.Context) (retErr error) {
 
 	b := backend.NewBackend(kv, config, metricsCli)
 	return endpoint.NewEndpoint(b, metricsCli, o.epsConf).Run(ctx)
+}
+
+func effectiveQuotaBackendBytes(configured int64) int64 {
+	if configured == 0 {
+		return defaultEtcdQuotaBackendBytes
+	}
+	return configured
 }

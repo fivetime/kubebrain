@@ -202,7 +202,7 @@ func TestProductionCriticalDefaultsStayPinned(t *testing.T) {
 	require.Equal(t, 10*time.Minute, o.storageGCLifetime)
 	require.False(t, o.enableCountIndex)
 	require.Equal(t, 5*1000*1000, o.countIndexMaxKeys)
-	require.Zero(t, o.quotaBackendBytes)
+	require.Equal(t, int64(-1), o.quotaBackendBytes)
 	require.Zero(t, o.autoCompactionRetention)
 	require.Equal(t, uint64(4096), o.historyScanRevBucket)
 	require.Equal(t, time.Second, o.watchProgressNotifyInterval)
@@ -349,6 +349,17 @@ func TestNegativeBackendQuotaDisablesQuota(t *testing.T) {
 	require.NoError(t, fs.Parse([]string{"--pd-addrs=127.0.0.1:2379", "--quota-backend-bytes=-1"}))
 	require.NoError(t, o.Validate())
 	require.Equal(t, int64(-1), o.quotaBackendBytes)
+}
+
+func TestBackendQuotaZeroUsesEtcdDefault(t *testing.T) {
+	o := NewOptions()
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	o.AddFlags(fs)
+	require.NoError(t, fs.Parse([]string{"--quota-backend-bytes=0"}))
+	require.Zero(t, o.quotaBackendBytes)
+	require.Equal(t, defaultEtcdQuotaBackendBytes, effectiveQuotaBackendBytes(o.quotaBackendBytes))
+	require.Equal(t, int64(-1), effectiveQuotaBackendBytes(-1))
+	require.Equal(t, int64(123), effectiveQuotaBackendBytes(123))
 }
 
 func TestTransportLimitValidationRejectsInvalidStartupFlags(t *testing.T) {
