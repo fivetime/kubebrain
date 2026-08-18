@@ -1104,7 +1104,12 @@ channel 前递增、消费者接收后递减，任一 Ready Pod `>0` 持续 5 �
 watch send-loop histogram 和 `etcd_network_server_stream_failures_total` 对账。
 lease 指标 `etcd_debugging_server_lease_expired_total`、
 `etcd_debugging_lease_granted_total`、`etcd_debugging_lease_revoked_total` 与
-`etcd_debugging_lease_renewed_total`，
+`etcd_debugging_lease_renewed_total` 在 RPC server 创建时均初始化权威 0。production 将四个 raw family 规范为
+`operation="grant|revoke|renew|expire"`，生成 60 秒新鲜的 Ready Pod UID/operation current 与 10 分钟 increase，
+分别要求 `4×Ready` 来源完整；current 必须为 `[0,2^53]` 精确整数，increase 可为分数但必须有限同范围，缺失、
+陈旧、非法或 operation 不完整 warning。它们是每进程活动 counter；leader handoff 后 revoke/expire 可以处理由
+其他 Pod grant 的 durable lease，故不能以本地 `revoke+expire<=grant` 伪造余额不变量，也不设置脱离租户负载的固定
+吞吐阈值。
 lease uncertain-commit attachment repair 另使用
 `lease_uncertain_reconcile_retry|success|err`；RPC server 创建时三条 counter 初始化权威 0。production 将三个
 raw family 规范为固定 `outcome` label，生成 60 秒新鲜的 Ready Pod UID/outcome current 与 10 分钟 increase，

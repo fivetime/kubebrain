@@ -56715,6 +56715,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   覆盖 committed uncertain、uncommitted 阻塞期间四个公开 fail-closed 面、后台成功和 leadership epoch handoff；
   server 完整包连续两次及精确 production 测试通过。需要下一生产镜像和监控发布。
 
+- A5049 闭合 upstream lease lifecycle counter 的 production 消费链。既有
+  `etcd_debugging_lease_{granted,revoked,renewed}_total` 与 `etcd_debugging_server_lease_expired_total` 已在 RPC
+  server 创建时初始化权威零值并由生命周期成功路径递增，但 production 只在文档列名，无法发现某 Ready Pod
+  family 缺失、陈旧或非法。现以 `label_replace` 规范为固定 `operation=grant|revoke|renew|expire`，生成 60 秒
+  新鲜的 Ready Pod UID/operation current 与 10 分钟 increase，要求两类均 `4×Ready` 完整；current 为
+  `[0,2^53]` 精确整数，increase 有限同范围，违反持续 2 分钟 warning。合同刻意不要求单 Pod
+  `revoke+expire<=grant`：换主后新 leader 会处理其他进程创建的 durable lease；也不凭空设置与租户负载无关的
+  固定吞吐阈值。精确 recording/alert manifest 回归和 production 完整包通过；本项只消费既有真实 counter，
+  不改变 lease RPC 语义，需要下一生产监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
