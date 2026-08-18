@@ -57577,6 +57577,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 gateway 的 size 倒置和 index/revision 独立取样。Raft term/header term、leader、版本及其他完整性门禁不变；同轮复核 Auth
   list/get 与 MemberList 的 upstream 排序合同未发现新差距。本项不改变 runtime wire、TiKV 数据路径或存储编码。
 
+- A5135 修复 production 只读发布 gate 对 upstream disabled quota sentinel 的误拒绝。对照
+  `/root/etcd/server/storage/quota.go::NewBackendQuota` 与
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status`：负 `QuotaBackendBytes` 明确禁用 quota，Status 原样公开
+  该负数；只有配置 0 才规范化为默认 2 GiB。A5125/A5126 已对齐 KubeBrain CLI/runtime，但 endpoint status jq 与 gateway
+  shell 检查仍只接受正数，因此默认 `--quota-backend-bytes=-1` 的合法实例可能无法通过 rollout。现两条路径均接受任意非零
+  整数外观，继续拒绝 0、非整数与错误 JSON 类型；正负 quota 都进入摘要。endpoint 与 generated gateway 的负 sentinel
+  正例、既有零值/布尔畸形拒绝及定向 race 固定该合同。本项不改变 runtime wire、配额执行或存储编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -4540,6 +4540,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   强制等同于 header MVCC revision；摘要以 `raft_indexes_sampled=true` 表示字段已独立验形和采样。
   KubeBrain 接受负 `--quota-backend-bytes` 作为 upstream-compatible disabled sentinel；写 admission 不计量/限制，Status 原样返回负值。
   CLI 未配置时默认为 `-1`，显式 `0` 则在 backend 构造前规范化为 upstream 默认 2 GiB。
+  production 只读 gate 的 endpoint 与 generated gateway Status 检查因此都接受非零正/负整数并将其写入摘要；0 或非整数
+  仍 fail closed，不能把 disabled sentinel 误判为 rollout 失败。
   Hash success header current revision 必须为正。HashKV revision=0 时 HashRevision 必须等于 header current revision；
   非零请求（含负数）必须精确回显请求值。CompactRevision 不得小于 -1；正 HashRevision 时满足
   `compact_revision <= hash_revision <= header.revision`。公开 gRPC 与 peer HTTP corruption-check hedge 使用同一校验。
