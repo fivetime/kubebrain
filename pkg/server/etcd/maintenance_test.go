@@ -904,6 +904,38 @@ func TestFollowerAlarmProxiesEveryActionToLeader(t *testing.T) {
 	}, forwarded)
 }
 
+func TestFollowerRejectsInvalidAlarmProxyPayload(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		request  *etcdserverpb.AlarmRequest
+		response *etcdserverpb.AlarmResponse
+	}{
+		{name: "nil get alarm", request: &etcdserverpb.AlarmRequest{}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(2), Alarms: []*etcdserverpb.AlarmMember{nil}}},
+		{name: "get filter mismatch", request: &etcdserverpb.AlarmRequest{Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(2), Alarms: []*etcdserverpb.AlarmMember{{MemberID: 1, Alarm: etcdserverpb.AlarmType_CORRUPT}}}},
+		{name: "activate mismatch", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(2), Alarms: []*etcdserverpb.AlarmMember{{MemberID: 2, Alarm: etcdserverpb.AlarmType_NOSPACE}}}},
+		{name: "deactivate too many", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(2), Alarms: []*etcdserverpb.AlarmMember{{MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}, {MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initMaintenanceProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				alarmFn: func(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
+					return tt.response, nil
+				},
+			}
+
+			response, err := server.Alarm(context.Background(), tt.request)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCAlarm))
+		})
+	}
+}
+
 func TestFollowerUnaryMaintenanceRejectsInvalidProxyResults(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

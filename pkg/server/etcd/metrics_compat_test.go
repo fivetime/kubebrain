@@ -855,6 +855,59 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 }
 
+func TestAlarmProxyPayloadValidation(t *testing.T) {
+	alarm := func(memberID uint64, alarmType etcdserverpb.AlarmType) *etcdserverpb.AlarmMember {
+		return &etcdserverpb.AlarmMember{MemberID: memberID, Alarm: alarmType}
+	}
+	unknownAlarm := etcdserverpb.AlarmType(99)
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.AlarmRequest
+		response *etcdserverpb.AlarmResponse
+		valid    bool
+	}{
+		{name: "get empty", request: &etcdserverpb.AlarmRequest{}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1)}, valid: true},
+		{name: "get all unordered including unknown", request: &etcdserverpb.AlarmRequest{}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(2, unknownAlarm), alarm(0, etcdserverpb.AlarmType_CORRUPT), alarm(1, etcdserverpb.AlarmType_NOSPACE)}}, valid: true},
+		{name: "get filtered", request: &etcdserverpb.AlarmRequest{Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(2, etcdserverpb.AlarmType_NOSPACE), alarm(1, etcdserverpb.AlarmType_NOSPACE)}}, valid: true},
+		{name: "activate", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: 7, Alarm: etcdserverpb.AlarmType_CORRUPT}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(7, etcdserverpb.AlarmType_CORRUPT)}}, valid: true},
+		{name: "activate default owner", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(7, etcdserverpb.AlarmType_NOSPACE)}}, valid: true},
+		{name: "activate none", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1)}, valid: true},
+		{name: "deactivate absent", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: 7, Alarm: etcdserverpb.AlarmType_CORRUPT}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1)}, valid: true},
+		{name: "deactivate present", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: 7, Alarm: unknownAlarm}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(7, unknownAlarm)}}, valid: true},
+		{name: "nil get alarm", request: &etcdserverpb.AlarmRequest{}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{nil}}},
+		{name: "none get alarm", request: &etcdserverpb.AlarmRequest{}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(1, etcdserverpb.AlarmType_NONE)}}},
+		{name: "get filter mismatch", request: &etcdserverpb.AlarmRequest{Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(1, etcdserverpb.AlarmType_CORRUPT)}}},
+		{name: "duplicate get alarm", request: &etcdserverpb.AlarmRequest{}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(1, etcdserverpb.AlarmType_NOSPACE), alarm(1, etcdserverpb.AlarmType_NOSPACE)}}},
+		{name: "activate missing", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: 7, Alarm: etcdserverpb.AlarmType_CORRUPT}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1)}},
+		{name: "activate mismatch", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: 7, Alarm: etcdserverpb.AlarmType_CORRUPT}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(8, etcdserverpb.AlarmType_CORRUPT)}}},
+		{name: "deactivate too many", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: 7, Alarm: etcdserverpb.AlarmType_CORRUPT}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(7, etcdserverpb.AlarmType_CORRUPT), alarm(7, etcdserverpb.AlarmType_CORRUPT)}}},
+		{name: "deactivate wrong zero owner", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(7, etcdserverpb.AlarmType_CORRUPT)}}},
+		{name: "none mutation result", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_DEACTIVATE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1), Alarms: []*etcdserverpb.AlarmMember{alarm(0, etcdserverpb.AlarmType_NONE)}}},
+		{name: "unknown action success", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_AlarmAction(99)}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(1)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			response, err := validateAlarmProxyPayload(rec, tt.request, tt.response, nil)
+			if tt.valid {
+				require.Same(t, tt.response, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCAlarm))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCAlarm))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.AlarmResponse{}
+	response, err := validateAlarmProxyPayload(nil, &etcdserverpb.AlarmRequest{}, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initMaintenanceProxyIntegrityMetrics(rec)

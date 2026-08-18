@@ -128,6 +128,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		}
 		response, err := s.peers.Alarm(proxyCtx, req)
 		response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCAlarm, response, err)
+		response, err = validateAlarmProxyPayload(s.metricCli, req, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
