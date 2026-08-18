@@ -15,10 +15,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -177,18 +179,16 @@ func inspect(ctx context.Context, client pdAPI, o options, addrs []string, ks *c
 	if err != nil {
 		return fmt.Errorf("list TiKV stores: %w", err)
 	}
+	upStores, err := validateStoreTopology(stores)
+	if err != nil {
+		return err
+	}
 	creds, err := transportCredentials(o)
 	if err != nil {
 		return err
 	}
 	result := receipt{Format: "kubebrain.native-pitr-preflight.v1", ClusterID: clusterID, PDAddrs: addrs, Keyspace: ks.Name(), TaskName: o.task, StartKeyHex: hex.EncodeToString(ks.ObjectKeyspaceStart()), EndKeyHex: hex.EncodeToString(ks.ObjectKeyspaceEnd()), TaskInfoKey: string(infoKey), TaskRangesKey: string(rangesPrefix), OwnershipKeys: checked, TaskAvailable: true, TaskCount: 0, ReadOnly: true}
-	for _, store := range stores {
-		if store.GetState() != metapb.StoreState_Up {
-			continue
-		}
-		if store.GetAddress() == "" {
-			return fmt.Errorf("Up TiKV store %d has no address", store.GetId())
-		}
+	for _, store := range upStores {
 		if err := probeLogBackupFn(ctx, store.GetAddress(), creds); err != nil {
 			return fmt.Errorf("TiKV store %d (%s): %w", store.GetId(), store.GetAddress(), err)
 		}
@@ -205,6 +205,43 @@ func inspect(ctx context.Context, client pdAPI, o options, addrs []string, ks *c
 	b = append(b, '\n')
 	_, err = out.Write(b)
 	return err
+}
+
+func validateStoreTopology(stores []*metapb.Store) ([]*metapb.Store, error) {
+	seenIDs := make(map[uint64]struct{}, len(stores))
+	seenAddresses := make(map[string]uint64)
+	up := make([]*metapb.Store, 0, len(stores))
+	for i, store := range stores {
+		if store == nil || store.Id == 0 {
+			return nil, fmt.Errorf("PD returned an invalid TiKV store at index %d", i)
+		}
+		if _, ok := metapb.StoreState_name[int32(store.State)]; !ok {
+			return nil, fmt.Errorf("PD returned TiKV store %d with invalid state %d", store.Id, store.State)
+		}
+		if _, duplicate := seenIDs[store.Id]; duplicate {
+			return nil, fmt.Errorf("PD returned duplicate TiKV store ID %d", store.Id)
+		}
+		seenIDs[store.Id] = struct{}{}
+		if store.State != metapb.StoreState_Up {
+			continue
+		}
+		address := store.Address
+		host, portText, err := net.SplitHostPort(address)
+		port, portErr := strconv.ParseUint(portText, 10, 16)
+		if err != nil || portErr != nil || host == "" || port == 0 || strings.TrimSpace(address) != address {
+			return nil, fmt.Errorf("Up TiKV store %d has invalid address %q", store.Id, address)
+		}
+		if owner, duplicate := seenAddresses[address]; duplicate {
+			return nil, fmt.Errorf("Up TiKV stores %d and %d share address %q", owner, store.Id, address)
+		}
+		seenAddresses[address] = store.Id
+		up = append(up, store)
+	}
+	if len(up) == 0 {
+		return nil, errors.New("PD returned no Up TiKV stores")
+	}
+	sort.Slice(up, func(i, j int) bool { return up[i].Id < up[j].Id })
+	return up, nil
 }
 
 func validateEmptyMetadataGet(response *meta_storagepb.GetResponse, clusterID uint64, key []byte, prefix bool) error {
@@ -293,9 +330,22 @@ func probeLogBackup(ctx context.Context, address string, creds credentials.Trans
 		return fmt.Errorf("connect log-backup service: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, conn.Close()) }()
-	_, err = logbackuppb.NewLogBackupClient(conn).GetLastFlushTSOfRegion(ctx, &logbackuppb.GetLastFlushTSOfRegionRequest{})
+	response, err := logbackuppb.NewLogBackupClient(conn).GetLastFlushTSOfRegion(ctx, &logbackuppb.GetLastFlushTSOfRegionRequest{})
 	if err != nil {
 		return fmt.Errorf("probe log-backup service: %w", err)
+	}
+	if err := validateLogBackupProbeResponse(response); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateLogBackupProbeResponse(response *logbackuppb.GetLastFlushTSOfRegionResponse) error {
+	if response == nil {
+		return errors.New("probe log-backup service returned a nil response")
+	}
+	if len(response.Checkpoints) != 0 {
+		return fmt.Errorf("probe log-backup service returned %d checkpoints for an empty request", len(response.Checkpoints))
 	}
 	return nil
 }

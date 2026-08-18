@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	logbackuppb "github.com/pingcap/kvproto/pkg/logbackuppb"
 	meta_storagepb "github.com/pingcap/kvproto/pkg/meta_storagepb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/stretchr/testify/require"
@@ -189,4 +190,41 @@ func TestInspectRejectsMalformedEmptyMetadataResponse(t *testing.T) {
 	err := inspect(context.Background(), p, options{task: "t"}, nil, coder.DefaultKeyspace(), &bytes.Buffer{})
 	require.ErrorContains(t, err, "invalid range envelope")
 	require.True(t, p.closed)
+}
+
+func TestValidateStoreTopology(t *testing.T) {
+	stores := []*metapb.Store{
+		{Id: 9, Address: "tikv-b:20160", State: metapb.StoreState_Up},
+		{Id: 3, Address: "tikv-a:20160", State: metapb.StoreState_Up},
+		{Id: 1, Address: "", State: metapb.StoreState_Tombstone},
+	}
+	up, err := validateStoreTopology(stores)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{3, 9}, []uint64{up[0].Id, up[1].Id})
+
+	tests := [][]*metapb.Store{
+		nil,
+		{nil},
+		{{Id: 0, Address: "tikv:20160", State: metapb.StoreState_Up}},
+		{{Id: 1, Address: "tikv:20160", State: metapb.StoreState(99)}},
+		{{Id: 1, Address: "tikv:20160", State: metapb.StoreState_Up}, {Id: 1, State: metapb.StoreState_Tombstone}},
+		{{Id: 1, Address: "", State: metapb.StoreState_Up}},
+		{{Id: 1, Address: "http://tikv:20160", State: metapb.StoreState_Up}},
+		{{Id: 1, Address: "tikv:0", State: metapb.StoreState_Up}},
+		{{Id: 1, Address: " tikv:20160", State: metapb.StoreState_Up}},
+		{{Id: 1, Address: "tikv:20160", State: metapb.StoreState_Up}, {Id: 2, Address: "tikv:20160", State: metapb.StoreState_Up}},
+		{{Id: 1, State: metapb.StoreState_Tombstone}},
+	}
+	for i, stores := range tests {
+		_, err := validateStoreTopology(stores)
+		require.Error(t, err, i)
+	}
+}
+
+func TestValidateLogBackupProbeResponse(t *testing.T) {
+	require.NoError(t, validateLogBackupProbeResponse(&logbackuppb.GetLastFlushTSOfRegionResponse{}))
+	require.Error(t, validateLogBackupProbeResponse(nil))
+	require.Error(t, validateLogBackupProbeResponse(&logbackuppb.GetLastFlushTSOfRegionResponse{
+		Checkpoints: []*logbackuppb.RegionCheckpoint{nil},
+	}))
 }
