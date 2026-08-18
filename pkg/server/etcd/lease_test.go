@@ -3019,6 +3019,30 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyPayload(t *testing.T) {
 			message: "non-positive granted TTL 0",
 		},
 		{
+			name: "grant ttl below request", rpc: leaseProxyRPCGrant,
+			configure: func(peers *testPeerService) {
+				peers.leaseGrantFn = func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+					return &etcdserverpb.LeaseGrantResponse{Header: txnHeader(1), ID: -1, TTL: 29}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: -1, TTL: 30})
+			},
+			message: "granted TTL 29 below requested TTL 30",
+		},
+		{
+			name: "grant legacy error", rpc: leaseProxyRPCGrant,
+			configure: func(peers *testPeerService) {
+				peers.leaseGrantFn = func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+					return &etcdserverpb.LeaseGrantResponse{Header: txnHeader(1), ID: -1, TTL: 30, Error: "failed"}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: -1, TTL: 30})
+			},
+			message: "success with a legacy error",
+		},
+		{
 			name: "ttl keys not requested", rpc: leaseProxyRPCTimeToLive,
 			configure: func(peers *testPeerService) {
 				peers.leaseTTLFn = func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {

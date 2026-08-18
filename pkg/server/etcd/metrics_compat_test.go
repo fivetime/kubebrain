@@ -304,16 +304,39 @@ func TestLeaseProxyResponseIDValidation(t *testing.T) {
 
 func TestLeaseProxyPayloadValidation(t *testing.T) {
 	t.Run("grant", func(t *testing.T) {
-		rec := &recordingMetrics{}
-		initLeaseProxyIntegrityMetrics(rec)
-		valid := &etcdserverpb.LeaseGrantResponse{TTL: 1}
-		response, err := validateLeaseGrantProxyPayload(rec, valid, nil)
-		require.Same(t, valid, response)
-		require.NoError(t, err)
-		response, err = validateLeaseGrantProxyPayload(rec, &etcdserverpb.LeaseGrantResponse{}, nil)
-		require.Nil(t, response)
-		require.Equal(t, codes.DataLoss, status.Code(err))
-		require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
+		for _, test := range []struct {
+			name     string
+			request  *etcdserverpb.LeaseGrantRequest
+			response *etcdserverpb.LeaseGrantResponse
+			valid    bool
+		}{
+			{name: "exact TTL", request: &etcdserverpb.LeaseGrantRequest{TTL: 5}, response: &etcdserverpb.LeaseGrantResponse{TTL: 5}, valid: true},
+			{name: "server-chosen longer TTL", request: &etcdserverpb.LeaseGrantRequest{TTL: 1}, response: &etcdserverpb.LeaseGrantResponse{TTL: 5}, valid: true},
+			{name: "negative request raised to minimum", request: &etcdserverpb.LeaseGrantRequest{TTL: -1}, response: &etcdserverpb.LeaseGrantResponse{TTL: 5}, valid: true},
+			{name: "non-positive TTL", request: &etcdserverpb.LeaseGrantRequest{TTL: 1}, response: &etcdserverpb.LeaseGrantResponse{}},
+			{name: "TTL below request", request: &etcdserverpb.LeaseGrantRequest{TTL: 5}, response: &etcdserverpb.LeaseGrantResponse{TTL: 4}},
+			{name: "legacy error", request: &etcdserverpb.LeaseGrantRequest{TTL: 5}, response: &etcdserverpb.LeaseGrantResponse{TTL: 5, Error: "failed"}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				rec := &recordingMetrics{}
+				response, err := validateLeaseGrantProxyPayload(rec, test.request, test.response, nil)
+				if test.valid {
+					require.Same(t, test.response, response)
+					require.NoError(t, err)
+					require.Empty(t, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
+					return
+				}
+				require.Nil(t, response)
+				require.Equal(t, codes.DataLoss, status.Code(err))
+				require.Equal(t, []interface{}{1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
+			})
+		}
+
+		wantErr := errors.New("transport failed")
+		want := &etcdserverpb.LeaseGrantResponse{}
+		response, err := validateLeaseGrantProxyPayload(nil, &etcdserverpb.LeaseGrantRequest{}, want, wantErr)
+		require.Same(t, want, response)
+		require.ErrorIs(t, err, wantErr)
 	})
 
 	t.Run("keep alive", func(t *testing.T) {

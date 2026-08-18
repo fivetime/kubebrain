@@ -203,7 +203,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		response, err := m.srv.peers.LeaseGrant(proxyCtx, req)
 		response, err = validateLeaseProxyResult(m.srv.metricCli, leaseProxyRPCGrant, response, err)
 		response, err = validateLeaseProxyResponseID(m.srv.metricCli, leaseProxyRPCGrant, req.ID, response, err)
-		response, err = validateLeaseGrantProxyPayload(m.srv.metricCli, response, err)
+		response, err = validateLeaseGrantProxyPayload(m.srv.metricCli, req, response, err)
 		m.srv.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}

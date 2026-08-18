@@ -85,15 +85,23 @@ func validateLeaseProxyResponseID[T interface{ GetID() int64 }](metricCli metric
 	return zero, status.Errorf(codes.DataLoss, "leader lease %s proxy returned lease ID %d for request ID %d", rpc, response.GetID(), expectedID)
 }
 
-func validateLeaseGrantProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.LeaseGrantResponse, err error) (*etcdserverpb.LeaseGrantResponse, error) {
+func validateLeaseGrantProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.LeaseGrantRequest, response *etcdserverpb.LeaseGrantResponse, err error) (*etcdserverpb.LeaseGrantResponse, error) {
 	if err != nil {
 		return response, err
 	}
-	if response.GetTTL() > 0 {
-		return response, nil
+	if response.GetError() != "" {
+		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCGrant)
+		return nil, status.Error(codes.DataLoss, "leader lease grant proxy returned success with a legacy error")
 	}
-	emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCGrant)
-	return nil, status.Errorf(codes.DataLoss, "leader lease grant proxy returned non-positive granted TTL %d", response.GetTTL())
+	if response.GetTTL() <= 0 {
+		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCGrant)
+		return nil, status.Errorf(codes.DataLoss, "leader lease grant proxy returned non-positive granted TTL %d", response.GetTTL())
+	}
+	if response.GetTTL() < request.GetTTL() {
+		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCGrant)
+		return nil, status.Errorf(codes.DataLoss, "leader lease grant proxy returned granted TTL %d below requested TTL %d", response.GetTTL(), request.GetTTL())
+	}
+	return response, nil
 }
 
 func validateLeaseKeepAliveProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.LeaseKeepAliveResponse, err error) (*etcdserverpb.LeaseKeepAliveResponse, error) {
