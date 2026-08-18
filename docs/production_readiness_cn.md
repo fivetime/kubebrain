@@ -4506,8 +4506,10 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   或静默截断解释为成功快照。
 - `maintenance_proxy_integrity_failure{rpc="alarm|defragment|status|hash|hash_kv|downgrade"}` 在 RPC server 创建时
   初始化六类权威零值。所有 unary Maintenance leader-proxy 必须恰好返回 response 或 error 之一；`(nil,nil)` 与
-  response+error 混合均 DataLoss fail closed。production 要求 60 秒新鲜 Ready Pod UID current/10 分钟 increase
-  `6×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、非法、组合不完整均 critical。
+  response+error 混合均 DataLoss fail closed。Alarm/Status/Hash/HashKV/Downgrade 的 success response 还必须携带
+  mandatory `ResponseHeader`；Defragment 对齐 upstream，允许无 Header 的空成功响应。production 要求 60 秒新鲜
+  Ready Pod UID current/10 分钟 increase `6×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
+  非法、组合不完整均 critical。
 - `kv_proxy_integrity_failure{rpc="range|txn|put|delete_range|compact"}` 在 RPC server 创建时初始化五类权威零值。
   所有核心 unary KV leader-proxy 必须在 forwarded revision 观察前证明 response/error 恰有其一，且 success response
   携带 mandatory `ResponseHeader`；nil/mixed/missing-header 结果均 DataLoss fail closed。production 要求 60 秒新鲜

@@ -57128,6 +57128,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   validator 覆盖全部 action，AuthStatus/Authenticate/UserGet/UserList/RoleGet/RoleList 公开路径的表驱动回归连续十轮
   通过；需要下一生产镜像和监控发布。
 
+- A5085 将 mandatory response header 契约扩展到适用的 unary Maintenance 代理，并保留 upstream Defragment 例外。
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go`，Alarm 会补建 Header，Status/Hash/HashKV 构造 Header，
+  Downgrade 覆盖并填充 Header；Defragment 的合法成功则明确返回空 `DefragmentResponse{}`，不能机械套用统一规则。
+  现 Alarm/Status/Hash/HashKV/Downgrade 的 leader-proxy success response 必须携带 `ResponseHeader`，missing-header 与
+  nil/mixed 一样 DataLoss fail closed；Defragment 仍接受无 Header 的具体空 response。peer HTTP corruption-check 的
+  hedged HashKV 同样在本地结果竞争前把 missing-header 作为不可掩盖的终态 DataLoss。既有固定
+  `maintenance.proxy.integrity_failure{rpc}` 六标签和 critical 告警覆盖结构违例，不扩大指标基数。通用 validator、
+  公开 Alarm/Downgrade、hedged HashKV 与 Defragment 例外回归连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
