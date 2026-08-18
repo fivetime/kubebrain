@@ -481,6 +481,18 @@ spec:
           expr: count(((kubebrain_dbaas:maintenance_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:maintenance_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:maintenance_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:maintenance_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:maintenance_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:maintenance_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:maintenance_proxy_integrity_failure:current_by_pod_rpc{rpc!~"alarm|defragment|status|hash|hash_kv|downgrade"})
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:kv_proxy_integrity_failure:current_by_pod_rpc
+          expr: max by (namespace, pod, uid, rpc) (kv_proxy_integrity_failure{namespace="kubebrain-system"} and (time() - timestamp(kv_proxy_integrity_failure{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:kv_proxy_integrity_failure:increase_10m_by_pod_rpc
+          expr: max by (namespace, pod, uid, rpc) (increase(kv_proxy_integrity_failure{namespace="kubebrain-system"}[10m]) and (time() - timestamp(kv_proxy_integrity_failure{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:kv_proxy_integrity_failure_invalid_values:count
+          expr: count(((kubebrain_dbaas:kv_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:kv_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:kv_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:kv_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:kv_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:kv_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:kv_proxy_integrity_failure:current_by_pod_rpc{rpc!~"range|txn|put|delete_range|compact"})
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:read_index:current_by_pod_outcome
           expr: max by (namespace, pod, uid, outcome) (label_replace((etcd_server_slow_read_indexes_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_slow_read_indexes_total{namespace="kubebrain-system"}) <= 60)), "outcome", "slow", "namespace", ".*") or label_replace((etcd_server_read_indexes_failed_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_read_indexes_failed_total{namespace="kubebrain-system"}) <= 60)), "outcome", "failed", "namespace", ".*"))
           labels:
@@ -2241,6 +2253,22 @@ spec:
           annotations:
             summary: KubeBrain unary Maintenance proxy-integrity telemetry is incomplete
             description: "Every current Ready Pod UID must expose all six authoritative-zero rpc counters as fresh current and 10-minute-increase series. Missing, stale, invalid, unknown, or incomplete telemetry cannot prove malformed peer results are rejected before a nil success escapes."
+        - alert: KubeBrainKVProxyIntegrityFailures
+          expr: sum by (rpc) (kubebrain_dbaas:kv_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain rejected an invalid unary KV proxy result
+            description: "A current Ready replica received neither response nor error, or both response and error, from the leader proxy for {{ $labels.rpc }}. The client-visible KV RPC failed closed with DataLoss before forwarded revision observation; inspect peer adapters and transport result ownership."
+        - alert: KubeBrainKVProxyIntegrityMetricsMissing
+          expr: absent(kubebrain_dbaas:kv_proxy_integrity_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:kv_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 5 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:kv_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 5 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:kv_proxy_integrity_failure_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain unary KV proxy-integrity telemetry is incomplete
+            description: "Every current Ready Pod UID must expose all five authoritative-zero rpc counters as fresh current and 10-minute-increase series. Missing, stale, invalid, unknown, or incomplete telemetry cannot prove malformed core KV proxy results are rejected rather than acknowledged."
         - alert: KubeBrainSlowReadIndexes
           expr: sum(kubebrain_dbaas:read_index:increase_10m_by_pod_outcome{outcome="slow"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m

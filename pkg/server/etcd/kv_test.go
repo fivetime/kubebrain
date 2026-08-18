@@ -240,6 +240,110 @@ func (s testPeerService) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) 
 	return nil, nil
 }
 
+func TestFollowerUnaryKVRejectsInvalidProxyResults(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		rpc       string
+		configure func(*testPeerService, bool)
+		invoke    func(*RPCServer) (any, error)
+	}{
+		{
+			name: "range", rpc: kvProxyRPCRange,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.rangeFn = func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+					if mixed {
+						return &etcdserverpb.RangeResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("key")})
+			},
+		},
+		{
+			name: "txn", rpc: kvProxyRPCTxn,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.txnFn = func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+					if mixed {
+						return &etcdserverpb.TxnResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+					Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("value")}},
+				}}})
+			},
+		},
+		{
+			name: "put", rpc: kvProxyRPCPut,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.putFn = func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+					if mixed {
+						return &etcdserverpb.PutResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("value")})
+			},
+		},
+		{
+			name: "delete_range", rpc: kvProxyRPCDeleteRange,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.deleteRangeFn = func(context.Context, *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
+					if mixed {
+						return &etcdserverpb.DeleteRangeResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.DeleteRange(context.Background(), &etcdserverpb.DeleteRangeRequest{Key: []byte("key")})
+			},
+		},
+		{
+			name: "compact", rpc: kvProxyRPCCompact,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.compactFn = func(context.Context, *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+					if mixed {
+						return &etcdserverpb.CompactionResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 1})
+			},
+		},
+	} {
+		for _, mixed := range []bool{false, true} {
+			name := "nil"
+			if mixed {
+				name = "mixed"
+			}
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				server, closeFn := newTestRPCServer(t)
+				defer closeFn()
+				rec := &recordingMetrics{}
+				server.metricCli = rec
+				initKVProxyIntegrityMetrics(rec)
+				peers := testPeerService{isLeader: false, proxyEnabled: true}
+				tc.configure(&peers, mixed)
+				server.peers = peers
+
+				response, err := tc.invoke(server)
+				require.Nil(t, response)
+				require.Equal(t, codes.DataLoss, status.Code(err))
+				require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, tc.rpc))
+			})
+		}
+	}
+}
+
 type staleCurrentRevisionShim struct {
 	BackendShim
 	current uint64

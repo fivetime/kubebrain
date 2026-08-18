@@ -122,6 +122,44 @@ func recordedMaintenanceProxyIntegrityValues(rec *recordingMetrics, rpc string) 
 	return values
 }
 
+func recordedKVProxyIntegrityValues(rec *recordingMetrics, rpc string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == "kv.proxy.integrity_failure" && len(counter.tags) == 1 &&
+			counter.tags[0] == metrics.Tag("rpc", rpc) {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
+func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
+	rec := &recordingMetrics{}
+	initKVProxyIntegrityMetrics(rec)
+	for _, rpc := range kvProxyRPCs {
+		response, err := validateKVProxyResult[etcdserverpb.RangeResponse](rec, rpc, nil, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+
+		response, err = validateKVProxyResult(rec, rpc, &etcdserverpb.RangeResponse{}, errors.New("mixed"))
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.Equal(t, []interface{}{int64(0), 1, 1}, recordedKVProxyIntegrityValues(rec, rpc))
+	}
+
+	want := &etcdserverpb.RangeResponse{}
+	response, err := validateKVProxyResult(rec, kvProxyRPCRange, want, nil)
+	require.Same(t, want, response)
+	require.NoError(t, err)
+	wantErr := errors.New("transport failed")
+	response, err = validateKVProxyResult[etcdserverpb.RangeResponse](rec, kvProxyRPCRange, nil, wantErr)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
+}
+
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initMaintenanceProxyIntegrityMetrics(rec)
