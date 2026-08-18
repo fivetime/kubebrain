@@ -219,6 +219,9 @@ func exportLeaseRecord(id int64, ttl *clientv3.LeaseTimeToLiveResponse, snapshot
 	if ttl.ResponseHeader == nil {
 		return record.Lease{}, fmt.Errorf("lease %d TTL response omitted its header", id)
 	}
+	if ttl.ResponseHeader.Revision <= 0 {
+		return record.Lease{}, fmt.Errorf("lease %d TTL response returned invalid revision %d", id, ttl.ResponseHeader.Revision)
+	}
 	if ttl.ResponseHeader.Revision < snapshotRevision {
 		return record.Lease{}, fmt.Errorf("lease %d TTL response revision %d is behind snapshot revision %d",
 			id, ttl.ResponseHeader.Revision, snapshotRevision)
@@ -228,6 +231,9 @@ func exportLeaseRecord(id int64, ttl *clientv3.LeaseTimeToLiveResponse, snapshot
 	}
 	if ttl.GrantedTTL <= 0 || ttl.GrantedTTL > clientv3.MaxLeaseTTL {
 		return record.Lease{}, fmt.Errorf("lease %d returned invalid granted TTL %d", id, ttl.GrantedTTL)
+	}
+	if len(ttl.Keys) != 0 {
+		return record.Lease{}, fmt.Errorf("lease %d TTL response returned %d attached keys when none were requested", id, len(ttl.Keys))
 	}
 	return record.Lease{ID: id, TTL: ttl.TTL, GrantedTTL: ttl.GrantedTTL}, nil
 }

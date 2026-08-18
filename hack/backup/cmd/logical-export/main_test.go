@@ -217,6 +217,10 @@ func TestExportLeaseRecord(t *testing.T) {
 			response: &clientv3.LeaseTimeToLiveResponse{ID: 123, TTL: 30, GrantedTTL: 60},
 			wantErr:  "omitted its header",
 		},
+		"zero header revision": {
+			response: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: &etcdserverpb.ResponseHeader{}, ID: 123, TTL: 30, GrantedTTL: 60},
+			wantErr:  "invalid revision 0",
+		},
 		"stale header": {
 			response: &clientv3.LeaseTimeToLiveResponse{
 				ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 41}, ID: 123, TTL: 30, GrantedTTL: 60,
@@ -234,6 +238,12 @@ func TestExportLeaseRecord(t *testing.T) {
 		"oversized grant": {
 			response: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: header, ID: 123, TTL: 30, GrantedTTL: clientv3.MaxLeaseTTL + 1},
 			wantErr:  "invalid granted TTL 9000000001",
+		},
+		"unrequested attached keys": {
+			response: &clientv3.LeaseTimeToLiveResponse{
+				ResponseHeader: header, ID: 123, TTL: 30, GrantedTTL: 60, Keys: [][]byte{[]byte("/registry/a")},
+			},
+			wantErr: "1 attached keys when none were requested",
 		},
 	}
 	for name, tc := range tests {
