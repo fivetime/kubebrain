@@ -1138,6 +1138,13 @@ backend WatcherHub 真实状态刷新；production 只消费 60 秒内、按 Rea
 可为空，一个 stream 也可 multiplex 多个 watch，所以不错误要求 stream 与 watcher 相等。任一 Pod 的 stream
 或 watcher 超过 8000 持续 5 分钟 warning（生产 `--max-watches=10000`，native Watch 仍可能计入 backend
 watcher），slow 非零持续 5 分钟 warning；缺失、陈旧或非法 telemetry warning。
+慢消费者的历史终态另由 `watcher_hub_slow_consumer_outcome{outcome="catch_up|recovered|dropped"}` 表达，backend
+创建时三类均发布权威零值。catch_up 表示订阅缓冲已满并进入 bounded ring replay，recovered 表示追平后无 gap
+重挂 live fan-out，dropped 只表示 ring backlog 不可恢复或 reset 后干净关闭流并迫使客户端重连/re-list；客户端取消、
+deadline 和服务 shutdown 不计 dropped。production 仅消费 60 秒新鲜 Ready Pod UID/outcome current 与十分钟
+increase，要求两者均为 `3×Ready`，current 为 `[0,2^53]` 精确整数、increase 有限同范围，未知 outcome 非法；
+catch_up 或 dropped 任一增长 warning，缺失、陈旧、非法或组合不完整 warning。出现 dropped 时必须同时检查 ring
+容量、Watch send-loop、客户端流控及 re-list 放大，不能因当前 slow gauge 已回零而关闭事件。
 公开流量 admission 另由 `grpc_server_admission_inflight`、`watch_admission_active` 和固定
 `client_admission_rejection{guard="concurrency|rate|watch"}` 覆盖。RPC server 创建时先发布两个 gauge 零值及
 三类 counter 零值；legacy 带动态 method/kind 的并发/速率拒绝指标继续用于下钻，但不承担完整性证明。production

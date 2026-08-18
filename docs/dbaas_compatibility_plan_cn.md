@@ -56978,6 +56978,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   orphan `PutIfNotExist` 提交前无写释放锁并返回指定错误，确认响应 nil、错误不丢失、index 仍缺失、failed `[0,1]`；
   既有 successful heal 与跨副本 CORRUPT 排序测试保持通过。需要下一生产镜像和监控发布。
 
+- A5071 闭合 WatcherHub 慢消费者只有瞬时 gauge 和动态 legacy counter、流关闭后生产无法识别历史 re-list 放大的
+  缺口。对照 `/root/etcd/server/storage/mvcc/watchable_store.go` 的 synced/unsynced/victims 重试模型，KubeBrain 的
+  独立 TiKV 等价路径是 full subscriber 脱离 live fan-out、从 bounded watch-cache ring 无 gap replay、追平后重挂；
+  只有 backlog 已淘汰或 ring reset 才干净关闭 stream。前缀不匹配的 `route_skipped` 仅跳过无关批次，published
+  revision 在完整 fan-out 后推进且 progress marker 仍广播给 quiet watcher，因此不是事件丢失。现新增固定
+  `watcher_hub.slow_consumer.outcome{outcome="catch_up|recovered|dropped"}`，backend 创建时初始化三类权威零值；
+  catch_up/recovered 覆盖 replay 生命周期，dropped 同时覆盖未接 ring 的 legacy fallback 与 ring 不可恢复终态，
+  客户端取消和 shutdown 不污染 dropped。production 生成 60 秒新鲜 Ready Pod UID current/increase，要求各
+  `3×Ready`、值合法且未知 outcome 非法；catch_up/dropped 任一增量和 telemetry 缺失/陈旧/非法/组合不完整
+  warning。回归固定可恢复 replay 为 catch_up `[0,1]`、recovered `[0,1]`、dropped `[0]`，超 ring 为
+  catch_up `[0,1]`、dropped `[0,1]`、recovered `[0]`，并保持取消路径不计 dropped；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
