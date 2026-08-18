@@ -56965,6 +56965,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   count 不再调用 peer、两次均以本地 exact scan 成功，并观察 `[0,1]` failure/quiet_skip 与零 hit；需要下一生产
   镜像和监控发布。
 
+- A5070 修复旧版本 orphan revision index 自愈失败被伪装成普通 compare-false 的客户端语义缺口，并补全完整性
+  telemetry。对照 `/root/etcd/server/storage/mvcc/kvstore_txn.go`，upstream 的 bbolt MVCC index 与 object 在同一
+  backend transaction 更新；KubeBrain 曾有 pre-#31 compaction/retry race 可留下 live object 但缺失 revision index，
+  因而保留 revision-neutral heal。旧 Update/Delete 在 Txn guard conflict 或未删除后调用 heal，但除 CORRUPT fence 外
+  的 storage/alarm-state error 被吞掉并返回 `Succeeded=false`，把基础设施故障错误表达成业务 compare 失败。现所有
+  heal error 均直接返回；无 orphan/并发正常冲突仍返回 false，成功修复仍只重试一次。新增固定
+  `backend.orphan_index.heal_outcome{outcome="healed|concurrent|fenced|failed"}`，backend 创建时初始化四类权威零值；
+  repair 的成功、并发 repair、CORRUPT generation fence 和 storage/alarm failure 全部有终态，legacy success counter
+  保留。production 生成 60 秒新鲜 Ready Pod UID current/increase，要求各 `4×Ready`、值合法且未知 outcome 非法；
+  healed/concurrent warning，fenced/failed 与缺失/陈旧/非法/组合不完整 critical。故障注入回归让 memkv batch 在
+  orphan `PutIfNotExist` 提交前无写释放锁并返回指定错误，确认响应 nil、错误不丢失、index 仍缺失、failed `[0,1]`；
+  既有 successful heal 与跨副本 CORRUPT 排序测试保持通过。需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

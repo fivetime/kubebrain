@@ -1108,6 +1108,14 @@ object/revision-index 矛盾后才计数；普通 legacy/compacted history DataL
 新鲜的 Ready Pod UID/target/outcome current 与 10 分钟 increase，要求 `4×Ready` 完整且 counter 合法；任一
 armed/failed 增量 critical，缺失、陈旧、非法或组合不完整 critical。failed 表示 alarm persistence 或 witness
 validation 链自身失败，不能因共享 AlarmList 暂为空而解除事故。
+旧二进制 compaction/retry race 可能留下 live object 存在但 revision index 缺失的 orphan；upstream 单体 bbolt 在同一
+事务维护 MVCC index/object，不存在这条分布式修复路径。KubeBrain 的 Update/Delete 在确认 orphan 后，以 logical-write
+排他锁、leadership fence、`PutIfNotExist` 和同事务 durable CORRUPT generation guard 做 revision-neutral 修复，不分配
+用户 revision、不发 Watch event。`backend_orphan_index_heal_outcome{outcome="healed|concurrent|fenced|failed"}` 在
+backend 创建时发布四类权威零值；healed/concurrent 任一增量 warning，需排除旧 binary 或外部 writer；fenced/failed
+任一增量 critical，且 storage/alarm-state 修复错误必须原样返回写请求，不能伪装为普通 compare-false。production
+要求 60 秒新鲜 Ready Pod UID current/increase 各 `4×Ready`，current 为 `[0,2^53]` 精确整数、increase 有限同范围、
+未知 outcome 非法；缺失、陈旧、非法或组合不完整 critical。修复前必须保留 orphan 与 alarm evidence。
 写入 apply-then-ack 失败由 `write_commit_wait_failure{reason="context_done|backstop"}` 表达，backend 创建时两类
 均初始化权威零值。TiKV transaction 已确定提交、但 read-visible revision 尚未追上时，KubeBrain 返回携带
 committed revision 的 outcome-unknown etcd timeout，绝不再把未可读写入作为成功 ACK；调用方重试可能产生符合
