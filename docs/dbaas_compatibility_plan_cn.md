@@ -57535,6 +57535,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全部 frame；流式读取前 unlink 与尾部 SHA-256 契约保持不变。回归将合法 artifact metadata 改为 3.6.0，证明全部 frame 随制品
   变化，并覆盖异常制品不触发 panic。本项不改变 snapshot 存储编码，需要下一生产镜像和监控发布。
 
+- A5130 恢复 apply-visibility 加固后的基础测试与 vet 门禁可信度。A5129 全仓验证发现
+  `TestRevisionHandlerRestoresColdLeaderFromDurableRevision` 在直接构造 backend 后立即首写，没有执行生产 leader admission 前强制的
+  revision=1 初始化；事务因此分配 revision=2，而 collector 正确把缺失的 revision=1 判为洞，三秒 backstop 后拒绝把尚不可见的
+  提交伪装成成功。现夹具显式建立与生产相同的 initialized-empty baseline，再把已提交 durable revision 包装成 cold in-memory
+  backend 验证 `/revision` 恢复，连续二十轮通过；没有放宽 `TxnApply` 的 commit-wait 防线。同轮还将 HashKV follower hedge 测试中
+  对含 protobuf mutex 的 response 浅复制改为 `proto.Clone`，保留每次调用独立修改 `HashRevision` 的语义并恢复 `go vet ./...`。
+  两个受影响包完整测试及 race 通过；production 四路分片继续作为避免单包十分钟聚合超时的权威门禁。本项只修测试基线，不改变
+  etcd wire、TiKV 数据路径、revision 分配或存储编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
