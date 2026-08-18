@@ -59,6 +59,10 @@ func validateLeaseProxyResult[T any](metricCli metrics.Metrics, rpc string, resp
 				emitLeaseProxyIntegrityFailure(metricCli, rpc)
 				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader lease %s proxy returned a response without a header", rpc))
 			}
+			if headerResponse.GetHeader().GetRevision() < 0 {
+				emitLeaseProxyIntegrityFailure(metricCli, rpc)
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader lease %s proxy returned a response with a negative header revision", rpc))
+			}
 		}
 		return response, err
 	}

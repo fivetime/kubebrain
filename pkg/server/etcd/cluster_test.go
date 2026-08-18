@@ -724,7 +724,7 @@ func TestFollowerLinearizableMemberListProxiesBeforeLocalBarrier(t *testing.T) {
 }
 
 func TestFollowerLinearizableMemberListRejectsInvalidProxyResult(t *testing.T) {
-	for _, shape := range []string{"nil", "mixed", "missing_header"} {
+	for _, shape := range []string{"nil", "mixed", "missing_header", "negative_revision"} {
 		t.Run(shape, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
 			defer closeFn()
@@ -740,6 +740,9 @@ func TestFollowerLinearizableMemberListRejectsInvalidProxyResult(t *testing.T) {
 					}
 					if shape == "missing_header" {
 						return &etcdserverpb.MemberListResponse{}, nil
+					}
+					if shape == "negative_revision" {
+						return &etcdserverpb.MemberListResponse{Header: txnHeader(-1)}, nil
 					}
 					return nil, nil
 				},

@@ -190,7 +190,12 @@ func TestClusterProxyIntegrityMetricsAndValidation(t *testing.T) {
 	require.Nil(t, response)
 	require.Equal(t, codes.DataLoss, status.Code(err))
 	require.ErrorContains(t, err, "without a header")
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
+	response, err = validateClusterProxyResult(rec, clusterProxyRPCMemberList,
+		&etcdserverpb.MemberListResponse{Header: txnHeader(-1)}, nil)
+	require.Nil(t, response)
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.ErrorContains(t, err, "negative header revision")
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
 
 	want := &etcdserverpb.MemberListResponse{Header: &etcdserverpb.ResponseHeader{}}
 	response, err = validateClusterProxyResult(rec, clusterProxyRPCMemberList, want, nil)
@@ -200,7 +205,7 @@ func TestClusterProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateClusterProxyResult[etcdserverpb.MemberListResponse](rec, clusterProxyRPCMemberList, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
 }
 
 func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
@@ -219,7 +224,11 @@ func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "without a header")
-		require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, rpc))
+		response, err = validateLeaseProxyResult(rec, rpc, &etcdserverpb.LeaseGrantResponse{Header: txnHeader(-1)}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "negative header revision")
+		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, rpc))
 	}
 
 	want := &etcdserverpb.LeaseGrantResponse{Header: &etcdserverpb.ResponseHeader{}}
@@ -230,7 +239,7 @@ func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateLeaseProxyResult[etcdserverpb.LeaseGrantResponse](rec, leaseProxyRPCGrant, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
 }
 
 func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
@@ -249,7 +258,11 @@ func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "without a header")
-		require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, action))
+		response, err = validateAuthProxyResult(rec, action, &etcdserverpb.AuthStatusResponse{Header: txnHeader(-1)}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "negative header revision")
+		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, action))
 	}
 
 	want := &etcdserverpb.AuthStatusResponse{Header: &etcdserverpb.ResponseHeader{}}
@@ -260,7 +273,7 @@ func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateAuthProxyResult[etcdserverpb.AuthStatusResponse](rec, authProxyActionStatus, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
 }
 
 func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
@@ -279,7 +292,11 @@ func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "without a header")
-		require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedKVProxyIntegrityValues(rec, rpc))
+		response, err = validateKVProxyResult(rec, rpc, &etcdserverpb.RangeResponse{Header: txnHeader(-1)}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "negative header revision")
+		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedKVProxyIntegrityValues(rec, rpc))
 	}
 
 	want := &etcdserverpb.RangeResponse{Header: &etcdserverpb.ResponseHeader{}}
@@ -290,7 +307,7 @@ func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateKVProxyResult[etcdserverpb.RangeResponse](rec, kvProxyRPCRange, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
 }
 
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
@@ -311,7 +328,11 @@ func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.ErrorContains(t, err, "without a header")
-			require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
+			response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{Header: txnHeader(-1)}, nil)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, "negative header revision")
+			require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
 		} else {
 			require.Equal(t, []interface{}{int64(0), 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
 		}
@@ -325,7 +346,7 @@ func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateMaintenanceProxyResult[etcdserverpb.StatusResponse](rec, maintenanceProxyRPCStatus, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
 
 	wantDefragment := &etcdserverpb.DefragmentResponse{}
 	responseDefragment, err := validateMaintenanceProxyResult(rec, maintenanceProxyRPCDefragment, wantDefragment, nil)

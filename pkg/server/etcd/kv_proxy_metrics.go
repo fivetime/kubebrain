@@ -59,6 +59,10 @@ func validateKVProxyResult[T any](metricCli metrics.Metrics, rpc string, respons
 				emitKVProxyIntegrityFailure(metricCli, rpc)
 				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response without a header", rpc))
 			}
+			if headerResponse.GetHeader().GetRevision() < 0 {
+				emitKVProxyIntegrityFailure(metricCli, rpc)
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a negative header revision", rpc))
+			}
 		}
 		return response, err
 	}

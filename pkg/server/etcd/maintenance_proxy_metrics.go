@@ -63,6 +63,10 @@ func validateMaintenanceProxyResult[T any](
 				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
 				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response without a header", rpc))
 			}
+			if headerResponse.GetHeader().GetRevision() < 0 {
+				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a negative header revision", rpc))
+			}
 		}
 		return response, err
 	}

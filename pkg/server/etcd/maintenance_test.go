@@ -1790,7 +1790,7 @@ func TestPeerHashKVHandlerRejectsByEtcdPriority(t *testing.T) {
 }
 
 func TestHedgedPeerHashKVRejectsInvalidForwardedResult(t *testing.T) {
-	for _, shape := range []string{"nil", "mixed", "missing_header"} {
+	for _, shape := range []string{"nil", "mixed", "missing_header", "negative_revision"} {
 		t.Run(shape, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
 			defer closeFn()
@@ -1806,6 +1806,9 @@ func TestHedgedPeerHashKVRejectsInvalidForwardedResult(t *testing.T) {
 					}
 					if shape == "missing_header" {
 						return &etcdserverpb.HashKVResponse{}, nil
+					}
+					if shape == "negative_revision" {
+						return &etcdserverpb.HashKVResponse{Header: txnHeader(-1)}, nil
 					}
 					return nil, nil
 				},

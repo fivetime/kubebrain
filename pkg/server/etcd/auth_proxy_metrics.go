@@ -83,6 +83,10 @@ func validateAuthProxyResult[T any](metricCli metrics.Metrics, action string, re
 				emitAuthProxyIntegrityFailure(metricCli, action)
 				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response without a header", action))
 			}
+			if headerResponse.GetHeader().GetRevision() < 0 {
+				emitAuthProxyIntegrityFailure(metricCli, action)
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a negative header revision", action))
+			}
 		}
 		return response, err
 	}

@@ -2910,7 +2910,7 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyResults(t *testing.T) {
 }
 
 func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
-	for _, shape := range []string{"nil", "mixed", "missing_header"} {
+	for _, shape := range []string{"nil", "mixed", "missing_header", "negative_revision"} {
 		t.Run(shape, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
 			defer closeFn()
@@ -2925,6 +2925,9 @@ func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
 					}
 					if shape == "missing_header" {
 						return &etcdserverpb.LeaseKeepAliveResponse{}, nil
+					}
+					if shape == "negative_revision" {
+						return &etcdserverpb.LeaseKeepAliveResponse{Header: txnHeader(-1)}, nil
 					}
 					return nil, nil
 				},

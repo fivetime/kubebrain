@@ -40,6 +40,10 @@ func validateClusterProxyResult[T any](metricCli metrics.Metrics, rpc string, re
 				emitClusterProxyIntegrityFailure(metricCli, rpc)
 				return nil, status.Error(codes.DataLoss, "leader member_list proxy returned a response without a header")
 			}
+			if headerResponse.GetHeader().GetRevision() < 0 {
+				emitClusterProxyIntegrityFailure(metricCli, rpc)
+				return nil, status.Error(codes.DataLoss, "leader member_list proxy returned a response with a negative header revision")
+			}
 		}
 		return response, err
 	}
