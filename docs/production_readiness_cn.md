@@ -4476,8 +4476,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - `watch_backend_integrity_failure{kind="invalid_result|invalid_revision"}` 每个 RPC server 初始化两类权威零值；
   production 只消费 60 秒内 Ready Pod UID/kind current 与 10 分钟 increase，要求两类均 `2×Ready` 完整，
   current 为 `[0,2^53]` 精确整数、increase 有限同范围。任一事件或缺失、陈旧、非法、不完整 telemetry 均
-  critical：发送前 fence 虽会取消 generation 并阻止已检测到的 malformed/regressing result 上线，但必须排查
-  collector、durable replay 与 peer proxy ordering，不能把客户端收到 cancel 当成完整性已恢复。
+  critical：open 成功却给出 nil generation channel 会在首次创建时显式取消、reopen 时计 retry，而不会永久阻塞；
+  发送前 fence 也会取消 generation 并阻止已检测到的 malformed/regressing result 上线。必须排查 backend adapter、
+  collector、durable replay 与 peer proxy ordering，不能把客户端收到 cancel 或 recovery retry 当成完整性已恢复。
 - 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。
 - 任一当前 Ready Pod 的 `count_index_overflowed` 超过 60 秒未刷新，或任一新鲜 overflow gauge 为 1；
   production 每个副本都启用 count index 且每 15 秒刷新该 gauge；值必须精确为 0 或 1，缺失、NaN、

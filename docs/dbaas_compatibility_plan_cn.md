@@ -57003,6 +57003,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   第二次成功为 retry/recovered `[0,1]`，compaction 只递增 compacted，无权威来源只递增 failed；需要下一生产镜像
   和监控发布。
 
+- A5073 修复 Watch backend/peer adapter 返回 `(nil channel, nil error)` 时被当作 generation 已恢复、逻辑 Watch
+  永久阻塞的 fail-open 缺口。对照 `/root/etcd/server/storage/mvcc/watchable_store.go::NewWatchStream/watch`，upstream
+  成功创建的 WatchStream 始终拥有可读 channel；KubeBrain 因跨 local backend 与 leader proxy 抽象出额外接口，旧
+  `openWatchChannel` 只检查 error，nil channel 会通过 recovered 路径，后续 select 永远无法收到 event、close 或
+  context-independent generation transition。现 local 与 proxy 两个 open 分支都拒绝 nil channel 为
+  `errNilWatchGeneration` 并递增既有固定 `watch.backend.integrity_failure{kind="invalid_result"}`：初始创建显式取消，
+  generation reopen 则计 `watch.generation.recovery{outcome="retry"}` 并按 100ms 有界节奏重试，只有取得非 nil
+  channel 才计 recovered。production 已对 invalid_result 任一增量 critical、recovery retry warning，无需新增动态
+  taxonomy。确定性回归用接口允许的 `(nil,nil)` 固定首次 open 不成功，以及首次 nil、第二次真实 channel 时严格得到
+  invalid_result/retry/recovered 各 `[0,1]`；连续十轮通过且不再可能挂死。需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
