@@ -4523,6 +4523,7 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   并发提交窗口允许后采样的 in-use 暂时大于先采样的 allocated，
   committed/applied index 同样独立采样，并发推进窗口允许后采样的 applied 暂时大于先采样的 committed；DowngradeInfo 非 nil，Errors 不含空字符串，并且 Leader=0 当且仅当 errors 包含
   `etcdserver: no leader`。启动早期零 Raft 字段与尚未发布的空 StorageVersion 合法。
+  KubeBrain 接受负 `--quota-backend-bytes` 作为 upstream-compatible disabled sentinel；写 admission 不计量/限制，Status 原样返回负值。
   Hash success header current revision 必须为正。HashKV revision=0 时 HashRevision 必须等于 header current revision；
   非零请求（含负数）必须精确回显请求值。CompactRevision 不得小于 -1；正 HashRevision 时满足
   `compact_revision <= hash_revision <= header.revision`。公开 gRPC 与 peer HTTP corruption-check hedge 使用同一校验。

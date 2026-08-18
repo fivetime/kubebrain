@@ -6331,7 +6331,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   实现差异，只增加永久 Watch 授权状态机门禁，因此不构建镜像或滚动发布。
 
 - **Capacity A328 tenant logical quota / NOSPACE（2026-07-20）**：新增
-  `--quota-backend-bytes`（默认 0 禁用），按 keyspace 原子计量当前存活用户
+  `--quota-backend-bytes`（默认 0 禁用；A5125 起负值也按 upstream 语义禁用），按 keyspace 原子计量当前存活用户
   key+value 逻辑字节。用量元数据与用户 MVCC、event log 在同一 TiKV transaction
   CAS 提交，因此多副本和换主后保持一致；首次启用由 leader 在 readiness 前独占扫描
   存量数据并 PutIfNotExist 初始化，初始化失败时 fail closed，不会把存量误算为 0；
@@ -11797,7 +11797,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./cmd/option -run 'Test(AuthTokenValidationRejectsInvalidStartupProviders|KeyspaceValidationRejectsInvalidTenantNames)' -count=1 -v`、
   `go test ./cmd/option -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
   均通过。
-- A743 固定传输/限流启动参数校验边界：
+- A743 固定传输/限流启动参数校验边界（其中负 backend quota 拒绝已由 A5125 按 upstream disabled 语义撤销）：
   生产限流和连接老化参数必须在启动前 fail closed，不能让半配置限流、负 duration、
   启用 connection age 但没有 positive grace，或负 backend quota 进入运行期。endpoint
   config 层已有直接测试，但 CLI option 层此前未覆盖这些 flag 组合。现在新增
@@ -57489,9 +57489,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `server/etcdserver/api/v3rpc/maintenance.go::Status`：`--quota-backend-bytes` 是 signed int64；负值明确禁用 quota 并使用
   passthroughQuota，Status 会原样公开该负值。只有配置 0 会在构造响应时替换为正的默认 2 GiB。因此旧 validator 的 `<=0`
   判断把 upstream 支持的 disabled-quota endpoint 误判为 DataLoss。现只拒绝正常 success 不可能逸出的零 quota，接受任意负
-  sentinel；KubeBrain 自身 CLI 继续把负 quota 作为无效配置并以 0 表示不启用 tenant logical quota，这一部署策略不改变对
-  upstream wire contract 的兼容。validator 与公开 storage-isolated follower 负 quota 正例、公开零 quota 异常注入连续十轮
+  sentinel；本轮尚未改变 KubeBrain CLI 对负 quota 的拒绝，A5125 随后让 CLI/runtime 也支持该 sentinel。validator 与公开
+  storage-isolated follower 负 quota 正例、公开零 quota 异常注入连续十轮
   通过；不改变 TiKV quota accounting、NOSPACE 或存储格式，需要下一生产镜像和监控发布。
+
+- A5125 将 A5124 的 disabled-quota wire 兼容推进到 KubeBrain 启动和 backend runtime。对照
+  `/root/etcd/server/storage/quota.go::NewBackendQuota`：任意负 `--quota-backend-bytes` 都返回 passthroughQuota，写入不受容量
+  admission 限制，Status 保留原始负配置。KubeBrain 原先在 CLI 拒绝负值；若只删除该校验，现有 Txn admission 虽因 `>0`
+  已自然跳过 quota，`EnsureQuotaInitialized`/`QuotaStatus` 却会进入正 quota 路径并报告 ErrQuotaUninitialized 或错误 NOSPACE。
+  现 CLI 文案与验证接受 non-positive disabled，backend 初始化/status 统一以 `<=0` 分支处理并返回原始 sentinel；既有默认 0
+  disabled 与 2 GiB Status 工具兼容值保持不变。真实 flag parse、backend 1 KiB 超限写、公开 Put/Status/Alarm 三层负 quota 回归
+  连续十轮通过，证明不建立 usage 限额、不激活 NOSPACE 且 Status 返回 -1；正 quota accounting 与存储编码不变，需要下一生产
+  镜像和监控发布。
 
 ### P2：运维兼容和长期验证
 
