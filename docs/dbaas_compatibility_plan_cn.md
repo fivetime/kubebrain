@@ -57069,6 +57069,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   telemetry 缺失/陈旧/非法/组合不完整均 critical。通用 validator 覆盖五类 nil/mixed/正常 response/error，公开
   五 RPC 表驱动回归连续十轮证明无 nil success 或 mixed acknowledgement；需要下一生产镜像和监控发布。
 
+- A5079 将 unary result ownership 不变量闭合到 AuthEnable/Disable/Status、Authenticate、UserAdd/Get/List/Delete/
+  ChangePassword/GrantRole/RevokeRole 与 RoleAdd/Get/List/Delete/GrantPermission/RevokePermission 共 17 个认证管理动作。
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/auth.go` 及 auth store apply，upstream 每个成功路径都构造非 nil response；
+  KubeBrain 独有 follower peer adapter 旧实现允许 `(nil,nil)` 被解释为空 token、空查询或成功 RBAC mutation，mixed
+  response+error 也会先进入 forwarded revision observation。现所有分支统一在 header/revision 观察前要求 response/
+  error 恰有其一，nil/mixed 均 DataLoss fail closed，Authenticate 仍在返回前清除入口 request plaintext password。
+  新增固定 `auth.proxy.integrity_failure{action}`，RPC server 创建时初始化 17 类权威零值；production 生成 60 秒新鲜
+  Ready Pod UID current/increase，要求各 `17×Ready`、值合法且未知 action 非法，任一增量与 telemetry 缺失/陈旧/
+  非法/组合不完整均 critical。通用 validator 覆盖全部 action 的 nil/mixed/正常 response/error，六类公开查询/登录
+  路径的表驱动回归连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
