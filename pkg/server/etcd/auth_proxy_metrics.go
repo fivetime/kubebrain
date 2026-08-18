@@ -15,8 +15,10 @@
 package etcd
 
 import (
+	"bytes"
 	"fmt"
 
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -109,6 +111,34 @@ func validateAuthNameListProxyPayload[T any](metricCli metrics.Metrics, action s
 		if index > 0 && names[index-1] >= name {
 			emitAuthProxyIntegrityFailure(metricCli, action)
 			return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned duplicate or unsorted names", action))
+		}
+	}
+	return response, nil
+}
+
+func validateAuthRoleGetProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.AuthRoleGetRequest, response *etcdserverpb.AuthRoleGetResponse, err error) (*etcdserverpb.AuthRoleGetResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	fail := func(message string) (*etcdserverpb.AuthRoleGetResponse, error) {
+		emitAuthProxyIntegrityFailure(metricCli, authProxyActionRoleGet)
+		return nil, status.Error(codes.DataLoss, message)
+	}
+	permissions := response.GetPerm()
+	if request.GetRole() == "root" {
+		if len(permissions) != 1 || permissions[0] == nil ||
+			permissions[0].GetPermType() != authpb.READWRITE || len(permissions[0].GetKey()) != 0 ||
+			!bytes.Equal(permissions[0].GetRangeEnd(), []byte{0}) {
+			return fail("leader role_get proxy returned a non-canonical root permission")
+		}
+		return response, nil
+	}
+	for index, permission := range permissions {
+		if permission == nil || !validPermissionRange(permission.GetKey(), permission.GetRangeEnd()) {
+			return fail("leader role_get proxy returned an invalid permission range")
+		}
+		if index > 0 && bytes.Compare(permissions[index-1].GetKey(), permission.GetKey()) > 0 {
+			return fail("leader role_get proxy returned unsorted permissions")
 		}
 	}
 	return response, nil

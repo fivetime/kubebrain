@@ -504,6 +504,7 @@ func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleG
 	if proxy {
 		response, err := s.peers.RoleGet(proxyCtx, request)
 		response, err = validateAuthProxyResult(s.metricCli, authProxyActionRoleGet, response, err)
+		response, err = validateAuthRoleGetProxyPayload(s.metricCli, request, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}

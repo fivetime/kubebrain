@@ -646,6 +646,38 @@ func TestFollowerRejectsInvalidAuthNameCollectionProxyPayload(t *testing.T) {
 	}
 }
 
+func TestFollowerRejectsInvalidRoleGetProxyPayload(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		request  *etcdserverpb.AuthRoleGetRequest
+		response *etcdserverpb.AuthRoleGetResponse
+	}{
+		{name: "nil permission", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(2), Perm: []*authpb.Permission{nil}}},
+		{name: "invalid range", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(2), Perm: []*authpb.Permission{{PermType: authpb.READ, Key: []byte("z"), RangeEnd: []byte("a")}}}},
+		{name: "unsorted", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(2), Perm: []*authpb.Permission{{PermType: authpb.READ, Key: []byte("b")}, {PermType: authpb.READ, Key: []byte("a")}}}},
+		{name: "non-canonical root", request: &etcdserverpb.AuthRoleGetRequest{Role: "root"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(2), Perm: []*authpb.Permission{{PermType: authpb.READWRITE, Key: []byte("a"), RangeEnd: []byte{0}}}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initAuthProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				roleGetFn: func(context.Context, *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
+					return tt.response, nil
+				},
+			}
+
+			response, err := server.RoleGet(context.Background(), tt.request)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionRoleGet))
+		})
+	}
+}
+
 func TestFollowerAuthenticateProxiesAndClearsPassword(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

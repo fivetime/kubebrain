@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -427,6 +428,52 @@ func TestAuthNameListProxyPayloadValidation(t *testing.T) {
 	wantErr := errors.New("transport failed")
 	want := &etcdserverpb.AuthUserListResponse{}
 	response, err := validateAuthNameListProxyPayload(nil, authProxyActionUserList, []string{""}, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
+func TestAuthRoleGetProxyPayloadValidation(t *testing.T) {
+	permission := func(permissionType authpb.Permission_Type, key, end string) *authpb.Permission {
+		return &authpb.Permission{PermType: permissionType, Key: []byte(key), RangeEnd: []byte(end)}
+	}
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.AuthRoleGetRequest
+		response *etcdserverpb.AuthRoleGetResponse
+		valid    bool
+	}{
+		{name: "empty ordinary role", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1)}, valid: true},
+		{name: "sorted ordinary permissions", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1), Perm: []*authpb.Permission{permission(authpb.READ, "a", "b"), permission(authpb.WRITE, "b", ""), permission(authpb.READWRITE, "z", "\x00")}}, valid: true},
+		{name: "same key ranges", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1), Perm: []*authpb.Permission{permission(authpb.READ, "a", "b"), permission(authpb.WRITE, "a", "c")}}, valid: true},
+		{name: "unknown permission type", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1), Perm: []*authpb.Permission{permission(authpb.Permission_Type(99), "a", "")}}, valid: true},
+		{name: "canonical root", request: &etcdserverpb.AuthRoleGetRequest{Role: "root"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1), Perm: []*authpb.Permission{{PermType: authpb.READWRITE, RangeEnd: []byte{0}}}}, valid: true},
+		{name: "nil permission", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1), Perm: []*authpb.Permission{nil}}},
+		{name: "empty key", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1), Perm: []*authpb.Permission{{PermType: authpb.READ}}}},
+		{name: "reversed range", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1), Perm: []*authpb.Permission{permission(authpb.READ, "z", "a")}}},
+		{name: "unsorted permissions", request: &etcdserverpb.AuthRoleGetRequest{Role: "reader"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1), Perm: []*authpb.Permission{permission(authpb.READ, "b", ""), permission(authpb.READ, "a", "")}}},
+		{name: "empty root permissions", request: &etcdserverpb.AuthRoleGetRequest{Role: "root"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1)}},
+		{name: "non-canonical root type", request: &etcdserverpb.AuthRoleGetRequest{Role: "root"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1), Perm: []*authpb.Permission{{PermType: authpb.READ, RangeEnd: []byte{0}}}}},
+		{name: "non-canonical root key", request: &etcdserverpb.AuthRoleGetRequest{Role: "root"}, response: &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(1), Perm: []*authpb.Permission{{PermType: authpb.READWRITE, Key: []byte{0}, RangeEnd: []byte{0}}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			response, err := validateAuthRoleGetProxyPayload(rec, tt.request, tt.response, nil)
+			if tt.valid {
+				require.Same(t, tt.response, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedAuthProxyIntegrityValues(rec, authProxyActionRoleGet))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedAuthProxyIntegrityValues(rec, authProxyActionRoleGet))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.AuthRoleGetResponse{}
+	response, err := validateAuthRoleGetProxyPayload(nil, &etcdserverpb.AuthRoleGetRequest{}, want, wantErr)
 	require.Same(t, want, response)
 	require.ErrorIs(t, err, wantErr)
 }
