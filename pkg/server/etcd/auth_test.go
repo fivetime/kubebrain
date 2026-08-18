@@ -396,6 +396,122 @@ func TestFollowerAuthStatusProxiesToLeader(t *testing.T) {
 	require.Equal(t, int64(123), response.GetHeader().GetRevision())
 }
 
+func TestFollowerAuthReadsRejectInvalidProxyResults(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		action    string
+		configure func(*testPeerService, bool)
+		invoke    func(*RPCServer) (any, error)
+	}{
+		{
+			name: "auth_status", action: authProxyActionStatus,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.authStatusFn = func(context.Context, *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+					if mixed {
+						return &etcdserverpb.AuthStatusResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.AuthStatus(context.Background(), &etcdserverpb.AuthStatusRequest{})
+			},
+		},
+		{
+			name: "authenticate", action: authProxyActionAuthenticate,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.authenticateFn = func(context.Context, *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
+					if mixed {
+						return &etcdserverpb.AuthenticateResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.Authenticate(context.Background(), &etcdserverpb.AuthenticateRequest{Name: "user", Password: "secret"})
+			},
+		},
+		{
+			name: "user_get", action: authProxyActionUserGet,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.userGetFn = func(context.Context, *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
+					if mixed {
+						return &etcdserverpb.AuthUserGetResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.UserGet(context.Background(), &etcdserverpb.AuthUserGetRequest{Name: "user"})
+			},
+		},
+		{
+			name: "user_list", action: authProxyActionUserList,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.userListFn = func(context.Context, *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
+					if mixed {
+						return &etcdserverpb.AuthUserListResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.UserList(context.Background(), &etcdserverpb.AuthUserListRequest{})
+			},
+		},
+		{
+			name: "role_get", action: authProxyActionRoleGet,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.roleGetFn = func(context.Context, *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
+					if mixed {
+						return &etcdserverpb.AuthRoleGetResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.RoleGet(context.Background(), &etcdserverpb.AuthRoleGetRequest{Role: "role"})
+			},
+		},
+		{
+			name: "role_list", action: authProxyActionRoleList,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.roleListFn = func(context.Context, *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
+					if mixed {
+						return &etcdserverpb.AuthRoleListResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.RoleList(context.Background(), &etcdserverpb.AuthRoleListRequest{})
+			},
+		},
+	} {
+		for _, mixed := range []bool{false, true} {
+			name := "nil"
+			if mixed {
+				name = "mixed"
+			}
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				server, closeFn := newTestRPCServer(t)
+				defer closeFn()
+				rec := &recordingMetrics{}
+				server.metricCli = rec
+				initAuthProxyIntegrityMetrics(rec)
+				peers := testPeerService{isLeader: false, proxyEnabled: true}
+				tc.configure(&peers, mixed)
+				server.peers = peers
+
+				response, err := tc.invoke(server)
+				require.Nil(t, response)
+				require.Equal(t, codes.DataLoss, status.Code(err))
+				require.Equal(t, []interface{}{int64(0), 1}, recordedAuthProxyIntegrityValues(rec, tc.action))
+			})
+		}
+	}
+}
+
 func TestFollowerAuthReadsProxyToLeader(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
