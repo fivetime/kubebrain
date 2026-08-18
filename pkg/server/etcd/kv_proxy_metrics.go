@@ -190,6 +190,10 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
 	}
+	if validationErr := validateTxnProxyResponseHeaders(response, response.GetHeader().GetRevision(), true); validationErr != nil {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
+		return nil, status.Error(codes.DataLoss, validationErr.Error())
+	}
 	return response, nil
 }
 
@@ -232,6 +236,39 @@ func validateTxnProxyResponseTree(request *etcdserverpb.TxnRequest, response *et
 			}
 		default:
 			return fmt.Errorf("leader txn proxy selected an unknown request operation at index %d", index)
+		}
+	}
+	return nil
+}
+
+func validateTxnProxyResponseHeaders(response *etcdserverpb.TxnResponse, outerRevision int64, root bool) error {
+	if response.GetHeader() == nil {
+		return fmt.Errorf("leader txn proxy returned a txn response without a header")
+	}
+	if !root && response.GetHeader().GetRevision() != 0 {
+		return fmt.Errorf("leader txn proxy returned nested txn revision %d instead of zero", response.GetHeader().GetRevision())
+	}
+	for index, responseOp := range response.GetResponses() {
+		var header *etcdserverpb.ResponseHeader
+		switch {
+		case responseOp.GetResponseRange() != nil:
+			header = responseOp.GetResponseRange().GetHeader()
+		case responseOp.GetResponsePut() != nil:
+			header = responseOp.GetResponsePut().GetHeader()
+		case responseOp.GetResponseDeleteRange() != nil:
+			header = responseOp.GetResponseDeleteRange().GetHeader()
+		case responseOp.GetResponseTxn() != nil:
+			if err := validateTxnProxyResponseHeaders(responseOp.GetResponseTxn(), outerRevision, false); err != nil {
+				return err
+			}
+			continue
+		}
+		if header == nil {
+			return fmt.Errorf("leader txn proxy returned response operation without a header at index %d", index)
+		}
+		revision := header.GetRevision()
+		if revision <= 0 || revision > outerRevision || revision < outerRevision-1 {
+			return fmt.Errorf("leader txn proxy returned response operation revision %d outside outer revision window [%d,%d] at index %d", revision, outerRevision-1, outerRevision, index)
 		}
 	}
 	return nil
