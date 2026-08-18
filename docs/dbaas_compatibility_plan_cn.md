@@ -57802,6 +57802,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   连续二十轮、nativepitr race、完整非 production、production 326 项四分片与 vet 全部通过。本项不改变
   task receipt schema、PD metadata key/value、compare 条件、事务写集、TiKV 数据编码或在线 etcd 数据路径。
 
+- A5159 修复 native PITR preflight 把 PD MetaStorage Get 响应降格为单一 `GetCount()` 的空读证明缺口。
+  旧接口丢弃 header/error/revision、KVs 与 More，故 nil success 可 panic，`Count=0` 携带隐藏 KV、错 cluster、
+  错 key range、重复/乱序或损坏 MVCC metadata 仍可签发 `task_name_available=true`。对照 PD client
+  `meta_storage_client.go::Get`、kvproto `meta_storagepb.GetResponse` 与 etcd Range envelope，现恢复完整 protobuf
+  响应，并在任务列表及六条 ownership 路径逐次要求非 nil header、当前非零 cluster ID、正 revision、无
+  embedded error、`Count=len(Kvs)`、`More=false`、exact/prefix 边界、严格递增无重复 key，以及
+  `create>0,mod>=create,version>0`。cluster ID 在首次读取前固定；所有空集合判断只发生在准入之后。
+  header/envelope/key/MVCC 正反例、集成级假空响应连续二十轮、命令 race、完整非 production、production
+  326 项四分片与 vet 全部通过。本项不改变 preflight receipt schema、task ownership key、PD metadata、
+  TiKV log-backup probe、存储编码或在线 etcd 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

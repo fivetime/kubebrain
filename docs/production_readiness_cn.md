@@ -2322,7 +2322,11 @@ full backup/restore 命令则分别位于固定 BR 版本的专用镜像中，�
 成功输出 `kubebrain.native-pitr-preflight.v1`：绑定 PD cluster ID、排序后的 PD 地址、tenant
 完整物理 start/end key、预期 MetaStorage task/range 路径，并确认所有 `Up` TiKV store 均暴露
 `logbackup.LogBackup` gRPC 服务且任务名尚未被占用。该命令只读，不注册任务、不写备份对象、
-不建立 service GC safepoint，也不把“原语存在”宣称为可恢复 PITR。2026-08-10 已在隔离的
+不建立 service GC safepoint，也不把“原语存在”宣称为可恢复 PITR。任务列表与六条 ownership
+路径的每次空读证明都校验完整 PD MetaStorage Get response：header 必须绑定当前非零 cluster ID 和
+正 revision 且无 embedded error，`Count=len(Kvs)`、`More=false`，返回键必须落在请求的 exact/prefix
+边界内、严格升序无重复并携带合法 MVCC metadata。nil 或“Count 为零但暗藏 KV”等 malformed success
+均 fail closed，不能签发 task available receipt。2026-08-10 已在隔离的
 PD/TiKV v7.5.1 单 store 集群实际通过该预检；命名 keyspace 的输出范围为一个连续且 tenant
 隔离的区间。
 
