@@ -635,6 +635,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	initEventLogIntegrityMetrics(metricCli)
 	initReadIntegrityFenceMetrics(metricCli)
 	initCommitWaitFailureMetrics(metricCli)
+	initRangeStreamFailureMetrics(metricCli)
 	initStorageGCMetrics(metricCli)
 	initUncertainTxnMetrics(metricCli)
 	ks, ksErr := coder.NewKeyspace(config.Keyspace)
@@ -725,6 +726,13 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	b.startWorker(b.emitWatchRevisionLagMetrics)
 
 	return b
+}
+
+func initRangeStreamFailureMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("backend.list.by.stream.failed", 0)
 }
 
 func (b *backend) startWorker(run func(context.Context)) bool {

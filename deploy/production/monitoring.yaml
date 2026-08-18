@@ -409,6 +409,18 @@ spec:
           expr: count(((kubebrain_dbaas:count_index_rebuild_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:count_index_rebuild_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:count_index_rebuild_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:count_index_rebuild_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:count_index_rebuild_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:count_index_rebuild_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:range_stream_failure:current_by_pod
+          expr: max by (namespace, pod, uid) (backend_list_by_stream_failed{namespace="kubebrain-system"} and (time() - timestamp(backend_list_by_stream_failed{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:range_stream_failure:increase_10m_by_pod
+          expr: max by (namespace, pod, uid) (increase(backend_list_by_stream_failed{namespace="kubebrain-system"}[10m]) and (time() - timestamp(backend_list_by_stream_failed{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:range_stream_failure_invalid_values:count
+          expr: count(((kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:range_stream_failure:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:range_stream_failure:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:watch_revision_lag:max_by_pod
           expr: max by (namespace, pod, uid) (watch_revision_lag{namespace="kubebrain-system"} and (time() - timestamp(watch_revision_lag{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1753,6 +1765,22 @@ spec:
           annotations:
             summary: KubeBrain count-index rebuild-error telemetry is incomplete
             description: "At least one current Ready Pod UID lacks a count-index rebuild-error current or 10-minute-increase series with a sample no older than 60 seconds, the invalid-value recording is absent, or a value is invalid. Every replica initializes the counter to an authoritative zero before leadership. Current counters must be non-negative exact integers no greater than 2^53; extrapolated increases may be fractional but must be finite and within [0,2^53]. Missing, stale, or invalid telemetry must not be interpreted as zero count-index rebuild failures."
+        - alert: KubeBrainRangeStreamFailures
+          expr: sum(kubebrain_dbaas:range_stream_failure:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain backend range stream failed
+            description: "A current Ready replica reported a non-cancellation RangeStream worker failure in the last ten minutes. Large reads, watch-cache cold starts, or count-index rebuilds may have terminated early; inspect PD/TiKV availability and correlate the affected request before retrying. Caller cancellation is excluded from this counter."
+        - alert: KubeBrainRangeStreamMetricsMissing
+          expr: absent(kubebrain_dbaas:range_stream_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:range_stream_failure:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:range_stream_failure:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:range_stream_failure_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain range-stream failure telemetry is incomplete
+            description: "Every current Ready Pod UID must expose the authoritative-zero backend RangeStream failure counter as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53 and increases finite in range. Missing, stale, or invalid telemetry cannot prove that storage-backed streams are completing without worker failures."
         - alert: KubeBrainSerializableCheckpointUnavailable
           expr: absent(kubebrain_dbaas:serializable_checkpoint_invalid_values:count) == 1 or count(kubebrain_dbaas:serializable_checkpoint_available:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:serializable_checkpoint_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:serializable_checkpoint_remaining_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:serializable_checkpoint_invalid_values:count != 0 or min(kubebrain_dbaas:serializable_checkpoint_available:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 1 or min(kubebrain_dbaas:serializable_checkpoint_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0 or min(kubebrain_dbaas:serializable_checkpoint_remaining_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 60
           for: 30s
