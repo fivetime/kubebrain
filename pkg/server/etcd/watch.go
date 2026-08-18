@@ -1336,7 +1336,7 @@ watchLoop:
 			events = filterWatchEvents(events, r.Filters)
 			if !r.PrevKv {
 				events = withoutWatchPrevKvs(events)
-			} else if watchEventsHavePrevKVs(events) {
+			} else if watchEventsNeedPrevKVs(events) {
 				compactRevision, compactErr := w.backend.GetCompactRevisionFresh(ctx)
 				if compactErr != nil {
 					w.metricCli.EmitCounter("watch.prev_kv.compact_revision.err", 1)
@@ -1347,9 +1347,18 @@ watchLoop:
 				// reaches the event revision that historical read is below the
 				// watermark, so PrevKV must be nil even though KubeBrain retains
 				// the internal value needed to reconstruct the DELETE event itself.
-				// A failed Range likewise leaves PrevKV unset; fail closed here
-				// because the unknown watermark may already cover these values.
+				// A failed Range likewise leaves PrevKV unset; conservatively omit
+				// all previous values because the unknown watermark may cover them.
 				events = watchPrevKVVisibility(events, compactRevision, compactErr)
+				if compactErr == nil {
+					if prevKVErr := validateRequestedWatchPrevKVs(events, compactRevision); prevKVErr != nil {
+						emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
+						klog.ErrorS(prevKVErr, "[watch stream] cancel due to missing requested PrevKV", "watcher", w.id, "watch", id)
+						w.CancelGeneration(id, wt, prevKVErr, false)
+						cancel()
+						return
+					}
+				}
 			}
 			if r.StartRevision > 0 {
 				for _, event := range events {
@@ -1782,13 +1791,33 @@ func withoutWatchPrevKvs(events []*mvccpb.Event) []*mvccpb.Event {
 	return withoutPrev
 }
 
-func watchEventsHavePrevKVs(events []*mvccpb.Event) bool {
+func watchEventsNeedPrevKVs(events []*mvccpb.Event) bool {
 	for _, event := range events {
-		if event != nil && event.PrevKv != nil {
+		if event == nil || event.Kv == nil {
+			continue
+		}
+		if event.Type == mvccpb.DELETE || (event.Type == mvccpb.PUT && event.Kv.CreateRevision != event.Kv.ModRevision) {
 			return true
 		}
 	}
 	return false
+}
+
+func validateRequestedWatchPrevKVs(events []*mvccpb.Event, compactRevision uint64) error {
+	for i, event := range events {
+		if event == nil || event.Kv == nil {
+			continue
+		}
+		modRevision := event.Kv.ModRevision
+		if modRevision <= 0 || uint64(modRevision) <= compactRevision {
+			continue
+		}
+		needsPrevKV := event.Type == mvccpb.DELETE || (event.Type == mvccpb.PUT && event.Kv.CreateRevision != modRevision)
+		if needsPrevKV && event.PrevKv == nil {
+			return fmt.Errorf("watch backend omitted requested previous value for %s event at revision %d and index %d", event.Type, modRevision, i)
+		}
+	}
+	return nil
 }
 
 func watchPrevKVVisibility(events []*mvccpb.Event, compactRevision uint64, compactErr error) []*mvccpb.Event {

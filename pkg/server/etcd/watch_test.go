@@ -468,6 +468,60 @@ func TestWatchPrevKVVisibilityFailsClosedWhenCompactRevisionUnavailable(t *testi
 	require.NotNil(t, events[1].PrevKv, "shared source event must remain intact")
 }
 
+func TestValidateRequestedWatchPrevKVs(t *testing.T) {
+	key := []byte("/registry/watch/key")
+	previous := &mvccpb.KeyValue{Key: key, CreateRevision: 9, ModRevision: 9, Version: 1}
+	for _, test := range []struct {
+		name            string
+		events          []*mvccpb.Event
+		compactRevision uint64
+		message         string
+	}{
+		{
+			name: "create does not need previous value",
+			events: []*mvccpb.Event{{
+				Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: key, CreateRevision: 10, ModRevision: 10, Version: 1},
+			}},
+		},
+		{
+			name: "update carries previous value",
+			events: []*mvccpb.Event{{
+				Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: key, CreateRevision: 9, ModRevision: 10, Version: 2}, PrevKv: previous,
+			}},
+		},
+		{
+			name: "compacted update may omit previous value",
+			events: []*mvccpb.Event{{
+				Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: key, CreateRevision: 9, ModRevision: 10, Version: 2},
+			}},
+			compactRevision: 10,
+		},
+		{
+			name: "update misses previous value",
+			events: []*mvccpb.Event{{
+				Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: key, CreateRevision: 9, ModRevision: 10, Version: 2},
+			}},
+			message: "omitted requested previous value for PUT event at revision 10 and index 0",
+		},
+		{
+			name: "delete misses previous value",
+			events: []*mvccpb.Event{{
+				Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{Key: key, ModRevision: 10},
+			}},
+			message: "omitted requested previous value for DELETE event at revision 10 and index 0",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateRequestedWatchPrevKVs(test.events, test.compactRevision)
+			if test.message == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, test.message)
+			}
+		})
+	}
+}
+
 func TestWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -1735,6 +1789,28 @@ func TestWatchRejectsInvalidGenerationMetadataBeforePublication(t *testing.T) {
 	}
 }
 
+func TestWatchRejectsMissingRequestedPreviousValueBeforePublication(t *testing.T) {
+	for _, event := range []*mvccpb.Event{
+		{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/update"), CreateRevision: 9, ModRevision: 10, Version: 2},
+		},
+		{
+			Type: mvccpb.DELETE,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/delete"), ModRevision: 10},
+		},
+	} {
+		responses := runInjectedWatchResultWithPrevKV(t, 1, 0, true, etcdproxy.WatchResult{
+			Revision: 10,
+			Events:   []*mvccpb.Event{event},
+		})
+		require.Len(t, responses, 1)
+		require.True(t, responses[0].Canceled)
+		require.Empty(t, responses[0].Events)
+		require.Contains(t, responses[0].CancelReason, "omitted requested previous value")
+	}
+}
+
 func TestWatchRejectsInvalidPreviousRevisionBeforePublication(t *testing.T) {
 	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
 		Revision: 10,
@@ -1834,6 +1910,10 @@ func TestWatchRejectsBatchRevisionOutsideInt64(t *testing.T) {
 }
 
 func runInjectedWatchResult(t *testing.T, startRevision int64, syncedRevision uint64, result etcdproxy.WatchResult) []*etcdserverpb.WatchResponse {
+	return runInjectedWatchResultWithPrevKV(t, startRevision, syncedRevision, false, result)
+}
+
+func runInjectedWatchResultWithPrevKV(t *testing.T, startRevision int64, syncedRevision uint64, prevKV bool, result etcdproxy.WatchResult) []*etcdserverpb.WatchResponse {
 	t.Helper()
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -1854,7 +1934,7 @@ func runInjectedWatchResult(t *testing.T, startRevision int64, syncedRevision ui
 	}
 	w.wg.Add(1)
 	go w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
-		Key: []byte("/registry/watch/"), RangeEnd: []byte("/registry/watch0"), StartRevision: startRevision,
+		Key: []byte("/registry/watch/"), RangeEnd: []byte("/registry/watch0"), StartRevision: startRevision, PrevKv: prevKV,
 	})
 	require.Equal(t, uint64(startRevision), <-called)
 	results <- result
@@ -2396,6 +2476,8 @@ func TestLeaderWatchRechecksFreshnessAfterPrevKVAssemblyBeforeSend(t *testing.T)
 	proxyCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
 		Type: mvccpb.PUT,
 		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/send-fence/a"), Value: []byte("authoritative-proxy"), CreateRevision: 9, ModRevision: 10, Version: 2},
+		PrevKv: &mvccpb.KeyValue{Key: []byte("/registry/watch/send-fence/a"), Value: []byte("old"),
+			CreateRevision: 9, ModRevision: 9, Version: 1},
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
 	responses := stream.snapshot()
