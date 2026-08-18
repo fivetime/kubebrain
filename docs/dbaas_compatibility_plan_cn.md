@@ -56668,6 +56668,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `__name__`，而从保留的 namespace label 分别写入静态 outcome。权威零值单测、定向 server/etcd、精确
   manifest 与 production/observability 文档同步，测试通过；需要下一生产镜像和监控发布。
 
+- A5045 闭合 lease 后台 checkpoint 与自然过期原子删键失败的生产可见性。旧
+  `lease.checkpoint.err`、`lease.expire.delete.err` 只在首次事件后动态出现且 production 不消费；前者可能使
+  领导权切换恢复到较旧但安全的 deadline，后者会让已到期 key 暂时继续存活。现新增固定
+  `lease.background.failure{operation="checkpoint|expire_delete"}`，RPC server 创建时初始化两条权威零值，
+  两个失败路径在保留 lease 并进入既有重试的同时递增对应 operation；expire-delete 仍刻意保留 surviving
+  keys，避免事务失败后先清内存 lease 产生孤儿数据。监控生成 60 秒新鲜的 Ready Pod UID/operation current
+  与 10 分钟 increase，分别要求 `2×Ready` 来源完整；current 为 `[0,2^53]` 精确整数，increase 有限同范围。
+  checkpoint 任一增量 warning，expire-delete 任一增量 critical，缺失、陈旧、非法或 operation 不完整
+  critical。固定 operation 零值单测、精确 manifest 与定向 server/production 测试通过；需要下一生产镜像
+  和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

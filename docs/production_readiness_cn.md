@@ -1111,6 +1111,12 @@ raw family 规范为固定 `outcome` label，生成 60 秒新鲜的 Ready Pod UI
 分别要求 `3×Ready` 来源完整。current 必须为 `[0,2^53]` 精确整数，increase 可为分数但必须有限同范围；
 retry warning，需确认随后出现 success 或领导权已变更；err 表示 durable attachment 不可解析、worker 未发布
 重建 binding，立即 critical；缺失、陈旧、非法或 outcome 不完整 critical。
+lease 后台失败另由 `lease_background_failure{operation="checkpoint|expire_delete"}` 统一表达；两类 operation
+在 RPC server 创建时均发布权威零值。production 从 60 秒内样本生成 Ready Pod UID/operation current 与
+10 分钟 increase，并分别要求 `2×Ready` 来源完整；current 必须为 `[0,2^53]` 精确整数，increase 可为分数
+但必须有限同范围。checkpoint 写失败保留 lease 并重试，warning；expire-delete 原子事务失败会保留 lease
+及尚存 key 后重试，避免先删内存状态造成孤儿数据，但已延迟公开到期语义，因此立即 critical。缺失、陈旧、
+非法或 operation 不完整同样 critical。
 `promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；
