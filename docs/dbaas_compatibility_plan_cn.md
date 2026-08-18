@@ -56809,7 +56809,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   current/increase `3×Ready` 完整且值合法，缺失/陈旧/非法 critical。故障回归停止全部 backend worker、让
   memkv 原子提交真实 transaction 后删除 ring slot，证明重启 collector 从 durable event/witness 重放同 key/value/
   revision；另一回归注入 durable Iter 失败，证明 failed telemetry 出现且 committed watermark 严格不越过该
-  revision。定向 backend 与精确 production 测试通过；仍需在下一独立 TiKV/PD 故障演练中固定进程终止窗口，
+  revision。新增 opt-in `TestCollectorRecoversLostRingPublicationTiKV`，使用自动清理的唯一 named keyspace 在
+  真实 TiKV transaction 上执行同一窗口。2026-08-18 已在 cluster ID `7662961163671170154` 的独立三 PD/
+  三 TiKV 主集群内运行：PD 原生 service discovery 切到当前 leader，TiKV commit 后移除唯一 ring slot，collector
+  在 50ms recovery deadline 从 durable event/witness 重放同 key/value/revision 后才推进 watermark，0.24 秒
+  GREEN；测试结束物理清理整个 named keyspace，Pod/宿主机临时二进制与 port-forward 均已删除/停止。定向、
+  race、完整 backend 与精确 production 测试通过；仍需把该 opt-in 测试接入具备集群 DNS/路由的 release runner，
   并随生产镜像和监控发布。
 
 ### P2：运维兼容和长期验证

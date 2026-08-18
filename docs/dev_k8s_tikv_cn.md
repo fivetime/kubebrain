@@ -76,6 +76,18 @@ KubeBrain 会通过 NodePort 暴露到宿主机：
 hack/dev/smoke-etcd-client.sh
 ```
 
+event collector 的 durable exact-revision recovery 有独立真实 TiKV 测试；默认无 PD 环境时跳过。runner 必须能
+解析 PD 返回的 member/store 集群内地址（不能只从宿主机 port-forward 单一 PD），并使用测试自动生成、结束后
+物理清理的 named keyspace：
+
+```shell
+KUBEBRAIN_TIKV_PD=kb-pd.tidb-cluster.svc:2379 \
+go test ./pkg/backend -run '^TestCollectorRecoversLostRingPublicationTiKV$' -count=1 -v
+```
+
+该测试让真实 TiKV transaction 提交 object、ordered event-log 与 witness 后，刻意删除唯一进程内 ring
+publication；只有 collector 重放相同 key/value/revision、再推进 read-visible watermark 才通过。
+
 基础 smoke 默认总超时时间为 120 秒，可按环境调整：
 
 ```shell
