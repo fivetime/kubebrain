@@ -4520,7 +4520,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   所有核心 unary KV leader-proxy 必须在 forwarded revision 观察前证明 response/error 恰有其一，且 success response
   携带 mandatory `ResponseHeader` 且 revision 非负。Range success 继续绑定原请求：Count 非负且不少于 KVs 数，
   CountOnly 不得携带 KVs/More，KVs 不得为 nil、空 key、越界或重复，KeysOnly 不得泄漏 value；所有违例均
-  DataLoss fail closed。production 要求 60 秒新鲜
+  DataLoss fail closed。每个存活 KV 还必须具有 upstream 可产生的正 create/mod/version 生命周期，mod 不得超过
+  response header 或显式历史 snapshot，并满足请求的 min/max create/mod filter；signed lease ID（包括负值）保持合法。
+  production 要求 60 秒新鲜
   Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。
 - `auth_proxy_integrity_failure{action}` 在 RPC server 创建时为 auth enable/disable/status、authenticate、全部 user/role
