@@ -4537,6 +4537,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   对照 upstream 原始 protobuf，嵌套 Txn header 必须存在但 revision canonical 为 0；每个非 Txn ResponseOp header 必须
   存在，revision 只能是 outer revision（写后/无后续写）或 outer-1（同一 transaction 内先读、后续操作才首次写）。
   缺 header、非零 nested revision、future 或更旧 op revision 均拒绝。
+  每层所选 branch 的 Range ResponseOp 继续复用 unary Range 的 count/key/MVCC/snapshot/filter/sort/pagination 全合同；
+  因此嵌套 Txn 不能成为损坏或越权 Range payload 的旁路。失败只递增 `rpc="txn"`，保持固定分类和单事件计数。
   production 要求 60 秒新鲜
   Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。

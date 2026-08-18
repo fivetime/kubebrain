@@ -57303,6 +57303,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定 `kv.proxy.integrity_failure{rpc="txn"}` 并 DataLoss fail closed，不增加标签。canonical nested、pre-write window、
   损坏 header 与公开 follower 注入回归通过；需要下一生产镜像和监控发布。
 
+- A5105 将 unary Range 的请求感知 payload 完整性递归应用到 Txn response tree。对照
+  `/root/etcd/server/etcdserver/txn/txn.go::executeTxn`，Txn Range 直接调用与 unary 相同的
+  `executeRange(..., withTotalCount=true)`，所以每层所选 branch 的 Range ResponseOp 必须同样满足 count/count-only、
+  exact/range/from-key、keys-only、MVCC generation、historical snapshot、revision filter、sort、Limit 与 More 合同。
+  旧 proxy 的 A5103/A5104 仅证明 union/header，仍会确认嵌套越界 key、错误 count、损坏 metadata 或乱序分页。现递归
+  validator 复用 unary Range 校验但使用 nil metric sink，任一违例只递增一次固定
+  `kv.proxy.integrity_failure{rpc="txn"}` 并在 revision 观察前 DataLoss fail closed，不污染 range 分类。合法 historical
+  Range、signed lease、顶层/嵌套异常与公开 follower 注入回归通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
