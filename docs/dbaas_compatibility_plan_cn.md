@@ -31060,8 +31060,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `maintenance_semantics_test` 只比较 quota/term/Defragment header、未整体固定 3.7 Status
   envelope 的覆盖缺口。raw Maintenance/Status 差分现同时要求 Header 存在且 cluster/member/
   revision/term 为正，Header term 等于 Status term；Version/StorageVersion 非空，leader、
-  raft index/applied/term 为正且 applied 不领先 index；DbSize/DbSizeInUse/DbSizeQuota 为正且
-  in-use 不大于 size；普通成员 `IsLearner=false`，DowngradeInfo 存在但 disabled/空 target，
+  raft index/applied/term 为正且 applied 不领先 index；DbSize/DbSizeInUse/DbSizeQuota 为正；该次静态差分还观察到
+  in-use 不大于 size，但这不是并发采样不变量（见 A5122）；普通成员 `IsLearner=false`，DowngradeInfo 存在但 disabled/空 target，
   Errors 为空。当前 `/root/etcd` 工作树二进制自报 3.8 alpha，而 KubeBrain 支持窗口和既有单测
   固定 3.7.0，因此差分比较版本字段存在性而不错误要求字符串相等。官方自对照 20 轮
   0.116 秒、A3427 生产镜像对真实独立 3 PD/3 TiKV 双端 20 轮 0.343 秒、race 5 轮
@@ -57388,7 +57388,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
 - A5114 将 unary Maintenance leader-proxy payload 完整性扩展到 Status。对照
   `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status`：upstream success 固定返回非空 Version；backend
-  DbSize/DbSizeInUse 非负且 in-use 不大于 allocated；零 quota 被替换为正默认值；RaftAppliedIndex 不大于 committed
+  DbSize/DbSizeInUse 非负；当时还错误要求 in-use 不大于 allocated（A5122 已按 upstream 独立采样合同撤销）；零 quota 被替换为正默认值；RaftAppliedIndex 不大于 committed
   RaftIndex；DowngradeInfo 总是初始化；Leader 为 `raft.None` 当且仅当 Errors 含 `etcdserver: no leader`。KubeBrain 的 TiKV
   logical-size/1-byte sentinel、default quota、synthetic equal indexes 与 no-leader error 遵守同一合同。StorageVersion 在
   upstream 尚未发布时可空，启动期 Raft fields 可为零，不能误报。旧 hedged follower proxy 会确认空 version、负/倒置 size、
@@ -57464,6 +57464,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   GrantedTTL 区分 found/not-found：正 GrantedTTL 接受完整 signed TTL，零 GrantedTTL 只接受 canonical not-found；keys
   disclosure/非空唯一性仍强制。真实本地 expired-visible lease、公开 follower `TTL=-2/GrantedTTL=30/Keys`、canonical
   not-found 和零 GrantedTTL 异常注入连续十轮通过；不改变 TiKV lease 元数据或过期事务，需要下一生产镜像和监控发布。
+
+- A5122 修正 A5114 对 Maintenance Status size 关系的过严 proxy 门禁。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status` 与
+  `/root/etcd/server/storage/backend/backend.go::{Size,SizeInUse,commit,Defrag}`：Status 先后读取 DbSize 与 DbSizeInUse，两个 getter
+  是独立 atomic load，commit/defrag 也分别发布两个值；并发写入可让后采样的 in-use 暂时大于先采样的 allocated，这不是损坏
+  payload。旧 validator 把该合法竞态判为 DataLoss，使 storage-isolated follower 的诊断请求偶发失败。现只分别要求两个 size
+  非负，不再臆造跨采样不变量；非空 Version、正 quota、raft index、DowngradeInfo 与 leader health 门禁保持不变。validator 正例、
+  公开 follower 倒置 size 正例及两个负值异常注入连续十轮通过；不改变本地 TiKV logical-size 计算或存储格式，需要下一生产镜像
+  和监控发布。
 
 ### P2：运维兼容和长期验证
 
