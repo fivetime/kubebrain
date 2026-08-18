@@ -42,6 +42,32 @@ func validateLeaseReference(rec record.Record, leaseSpecs map[int64]int64) error
 	return nil
 }
 
+func validateRestoredLeaseGrant(sourceID, requestedTTL int64, response *clientv3.LeaseGrantResponse, seen map[clientv3.LeaseID]int64) error {
+	if response == nil {
+		return errors.New("target returned an empty lease grant response")
+	}
+	if response.ID == clientv3.NoLease {
+		return errors.New("target returned zero lease ID")
+	}
+	if response.ResponseHeader == nil || response.ResponseHeader.Revision <= 0 {
+		return errors.New("target lease grant response omitted a valid header")
+	}
+	if response.Error != "" {
+		return errors.New("target lease grant returned success with a legacy error")
+	}
+	if response.TTL < requestedTTL {
+		return fmt.Errorf("target granted TTL %d below requested TTL %d", response.TTL, requestedTTL)
+	}
+	if response.TTL > clientv3.MaxLeaseTTL {
+		return fmt.Errorf("target granted TTL %d above maximum %d", response.TTL, clientv3.MaxLeaseTTL)
+	}
+	if previousSource, exists := seen[response.ID]; exists {
+		return fmt.Errorf("target lease ID %d reused for source leases %d and %d", response.ID, previousSource, sourceID)
+	}
+	seen[response.ID] = sourceID
+	return nil
+}
+
 func validateBatchSize(batchSize, maxTxnOps int) error {
 	if maxTxnOps <= 0 {
 		return fmt.Errorf("MAX_TXN_OPS must be positive")
@@ -212,19 +238,30 @@ func run() (retErr error) {
 	cleanupTargetLeases := func() (cleanupErr error) {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
+		revoked := make(map[clientv3.LeaseID]struct{}, len(targetLeases))
 		for sourceID, id := range targetLeases {
+			if _, exists := revoked[id]; exists {
+				continue
+			}
+			revoked[id] = struct{}{}
 			if _, err := cli.Revoke(cleanupCtx, id); err != nil {
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("revoke restored lease %d: %w", sourceID, err))
 			}
 		}
 		return cleanupErr
 	}
+	seenTargetLeases := make(map[clientv3.LeaseID]int64, len(leaseSpecs))
 	for sourceID, ttl := range leaseSpecs {
 		granted, grantErr := cli.Grant(ctx, ttl)
 		if grantErr != nil {
 			return errors.Join(fmt.Errorf("restore lease %d: %w", sourceID, grantErr), cleanupTargetLeases())
 		}
-		targetLeases[sourceID] = granted.ID
+		if granted != nil && granted.ID != clientv3.NoLease {
+			targetLeases[sourceID] = granted.ID
+		}
+		if err := validateRestoredLeaseGrant(sourceID, ttl, granted, seenTargetLeases); err != nil {
+			return errors.Join(fmt.Errorf("restore lease %d: %w", sourceID, err), cleanupTargetLeases())
+		}
 	}
 	ops := make([]kvPair, 0, batchSize)
 	committed := make([]committedBatch, 0)

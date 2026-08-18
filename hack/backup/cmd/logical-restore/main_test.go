@@ -8,6 +8,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/keyrewrite"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -55,6 +56,64 @@ func TestRestorableLeaseTTL(t *testing.T) {
 			require.Equal(t, tc.want, restorableLeaseTTL(tc.lease))
 		})
 	}
+}
+
+func TestValidateRestoredLeaseGrant(t *testing.T) {
+	header := &etcdserverpb.ResponseHeader{Revision: 1}
+	tests := map[string]struct {
+		response *clientv3.LeaseGrantResponse
+		wantErr  string
+	}{
+		"exact TTL": {
+			response: &clientv3.LeaseGrantResponse{ResponseHeader: header, ID: 10, TTL: 30},
+		},
+		"server-chosen longer TTL": {
+			response: &clientv3.LeaseGrantResponse{ResponseHeader: header, ID: -10, TTL: 31},
+		},
+		"empty response": {
+			wantErr: "empty lease grant response",
+		},
+		"zero ID": {
+			response: &clientv3.LeaseGrantResponse{ResponseHeader: header, TTL: 30},
+			wantErr:  "zero lease ID",
+		},
+		"missing header": {
+			response: &clientv3.LeaseGrantResponse{ID: 10, TTL: 30},
+			wantErr:  "omitted a valid header",
+		},
+		"zero header revision": {
+			response: &clientv3.LeaseGrantResponse{ResponseHeader: &etcdserverpb.ResponseHeader{}, ID: 10, TTL: 30},
+			wantErr:  "omitted a valid header",
+		},
+		"legacy error": {
+			response: &clientv3.LeaseGrantResponse{ResponseHeader: header, ID: 10, TTL: 30, Error: "failed"},
+			wantErr:  "legacy error",
+		},
+		"TTL below request": {
+			response: &clientv3.LeaseGrantResponse{ResponseHeader: header, ID: 10, TTL: 29},
+			wantErr:  "TTL 29 below requested TTL 30",
+		},
+		"TTL above maximum": {
+			response: &clientv3.LeaseGrantResponse{ResponseHeader: header, ID: 10, TTL: clientv3.MaxLeaseTTL + 1},
+			wantErr:  "above maximum 9000000000",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := validateRestoredLeaseGrant(1, 30, tc.response, make(map[clientv3.LeaseID]int64))
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+
+	seen := map[clientv3.LeaseID]int64{10: 1}
+	err := validateRestoredLeaseGrant(2, 30, &clientv3.LeaseGrantResponse{
+		ResponseHeader: header, ID: 10, TTL: 30,
+	}, seen)
+	require.ErrorContains(t, err, "reused for source leases 1 and 2")
 }
 
 func TestValidateBatchSize(t *testing.T) {
