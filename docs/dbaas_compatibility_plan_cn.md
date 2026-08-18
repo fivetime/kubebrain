@@ -57162,6 +57162,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bounded-final-frame 扣留语义保持不变。定向回归覆盖 forwarded 负 revision、本地 nil response/header、负 revision、
   跨 revision chunk 和正常 latest/historical/premature-close 路径，连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5089 将 Watch revision 完整性从 batch/progress/event 主 watermark 扩展到事件 KeyValue 内部元数据。对照
+  `/root/etcd/server/storage/mvcc/watchable_store_txn.go` 与 watch RPC create-event 判定，CreateRevision 不得为负或
+  晚于 ModRevision，Version 不得为负；携带的 PrevKv 必须具有非负 create/mod revision 与 version，且其 ModRevision
+  必须严格早于当前事件。旧路径只验证 `event.Kv.ModRevision`，因此合法 batch header 可夹带负/future PrevKv 或
+  CreateRevision 并发布给 kube-apiserver。现这些违例在过滤、fragment 和 Send 前统一进入既有固定
+  `watch.backend.integrity_failure{kind="invalid_revision"}`，取消 generation 且不发布事件，不增加指标基数。validator
+  表驱动与公开 watch 注入回归连续十轮覆盖七类损坏元数据及正常 PrevKV/event metadata；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

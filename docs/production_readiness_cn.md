@@ -4478,7 +4478,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   current 为 `[0,2^53]` 精确整数、increase 有限同范围。任一事件或缺失、陈旧、非法、不完整 telemetry 均
   critical：raw backend→shim 或 peer open 成功却给出 nil generation channel，会在转换 goroutine 启动前被拒绝、
   首次创建时显式取消、reopen 时计 retry，而不会被非 nil wrapper channel 遮蔽并永久阻塞；
-  发送前 fence 也会取消 generation 并阻止已检测到的 malformed/regressing result 上线。必须排查 backend adapter、
+  发送前 fence 也会取消 generation 并阻止已检测到的 malformed/regressing result 上线；`invalid_revision` 同时覆盖
+  event/PrevKv 的负 create/mod revision、负 version、future create revision 与不早于事件的 PrevKv。必须排查 backend adapter、
   collector、durable replay 与 peer proxy ordering，不能把客户端收到 cancel 或 recovery retry 当成完整性已恢复。
 - 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。
 - 任一当前 Ready Pod 的 `count_index_overflowed` 超过 60 秒未刷新，或任一新鲜 overflow gauge 为 1；
