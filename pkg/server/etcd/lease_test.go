@@ -830,6 +830,75 @@ func TestUncommittedUncertainLeaseRevokeFailsClosedUntilRetrySucceeds(t *testing
 	})
 }
 
+func TestUncertainLeaseRevokeRetryStopsAtAtomicCorruptFence(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		leaseID  int64  = 2054
+		memberID uint64 = 2054
+	)
+	key := []byte("/registry/leases/uncertain-revoke-corrupt")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+	require.NoError(t, err)
+
+	base := server.backend
+	retryGate := make(chan struct{})
+	shim := &uncertainLeaseRevokeBackend{
+		BackendShim: base,
+		leaseID:     leaseID,
+		retryGate:   retryGate,
+	}
+	server.backend = shim
+	recorder := &recordingMetrics{}
+	server.metricCli = recorder
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.NoError(t, base.ArmCorrupt(ctx, memberID))
+	close(retryGate)
+
+	require.Eventually(t, func() bool {
+		recorder.mu.Lock()
+		defer recorder.mu.Unlock()
+		count := 0
+		for _, counter := range recorder.counters {
+			if counter.name == "lease.revoke_reconcile" && counter.value == 1 &&
+				len(counter.tags) == 1 && counter.tags[0] == metrics.Tag("outcome", "retry") {
+				count++
+			}
+		}
+		return count >= 2 // scheduled once, then rejected by the atomic CORRUPT guard
+	}, 5*time.Second, 10*time.Millisecond)
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1, "CORRUPT must fence the replayed user-key delete")
+	_, err = base.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err, "CORRUPT must fence the replayed lease metadata delete")
+	_, err = base.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.NoError(t, err, "CORRUPT must fence the replayed attachment delete")
+	_, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.ErrorIs(t, err, errLeaseRevokePending,
+		"the fenced lease must remain unusable while its revoke outcome is pending")
+
+	removed, err := base.DisarmCorrupt(ctx, memberID)
+	require.NoError(t, err)
+	require.True(t, removed)
+	require.Eventually(t, func() bool {
+		ttl, ttlErr := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+		return ttlErr == nil && ttl.TTL == -1
+	}, 5*time.Second, 10*time.Millisecond)
+	current, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, current.Kvs)
+	_, err = base.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	_, err = base.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}
+
 func TestUncertainLeaseRevokeHandsOffAcrossLeadershipEpoch(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

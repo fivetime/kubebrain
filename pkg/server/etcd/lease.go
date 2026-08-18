@@ -568,6 +568,11 @@ func (m *leaseManager) retryUncertainLeaseRevoke(workerCtx context.Context, id i
 		m.leaseMu.Unlock()
 		var err error
 		if stillPending {
+			// TxnApply re-reads the durable CORRUPT generation and stages its
+			// guard in the same atomic batch as every key/attachment/meta delete.
+			// The RPC-entry check may now be stale, so the retry must retain this
+			// backend boundary: an alarm armed after the uncertain response keeps
+			// the pending lease intact until an explicit disarm.
 			_, err = m.revokeLeaseLocked(ctx, id)
 		}
 		m.leaseTeardowns.Add(-1)
