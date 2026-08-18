@@ -41,6 +41,14 @@ type fakeEtcdClient struct {
 	compactRev    int64
 }
 
+func validRemediationStatus(clusterID uint64, revision int64) *clientv3.StatusResponse {
+	return &clientv3.StatusResponse{
+		Header:  &etcdserverpb.ResponseHeader{ClusterId: clusterID, MemberId: 17, Revision: revision},
+		Version: "3.7.0",
+		Leader:  17,
+	}
+}
+
 type closeErrorReader struct {
 	io.Reader
 	err error
@@ -65,7 +73,7 @@ func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
 
 func TestRunStopsBeforeSnapshotWhenStatusOutputFails(t *testing.T) {
 	writeErr := errors.New("status pipe closed")
-	client := &fakeEtcdClient{status: &clientv3.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 7301, Revision: 42}}}
+	client := &fakeEtcdClient{status: validRemediationStatus(7301, 42)}
 
 	_, code, err := runWithClient(context.Background(), Config{Action: "diagnose", Endpoint: "https://kb:2379"}, failingWriter{err: writeErr}, client)
 
@@ -77,7 +85,7 @@ func TestRunStopsBeforeSnapshotWhenStatusOutputFails(t *testing.T) {
 func (f *fakeEtcdClient) Compact(_ context.Context, revision int64, _ ...clientv3.CompactOption) (*clientv3.CompactResponse, error) {
 	f.compacted = true
 	f.compactRev = revision
-	return &clientv3.CompactResponse{Header: &etcdserverpb.ResponseHeader{Revision: revision}}, nil
+	return &clientv3.CompactResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: f.status.Header.ClusterId, MemberId: f.status.Header.MemberId, Revision: revision}}, nil
 }
 
 func TestDownloadRejectsSnapshotWhenResponseCloseFails(t *testing.T) {
@@ -94,7 +102,7 @@ func TestDownloadRejectsSnapshotWhenResponseCloseFails(t *testing.T) {
 
 func TestRunCompactsOnlyAfterExactIdentityConfirmationAndPublishes(t *testing.T) {
 	artifact := validSnapshotArtifact(t)
-	client := &fakeEtcdClient{status: &clientv3.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 18446744073709551615, Revision: 41}}, snapshotBytes: artifact}
+	client := &fakeEtcdClient{status: validRemediationStatus(18446744073709551615, 41), snapshotBytes: artifact}
 	output := filepath.Join(t.TempDir(), "snapshot.db")
 	config := Config{Action: "compact", Endpoint: "https://kb:2379", ConfirmEndpoint: "https://kb:2379",
 		ExpectedClusterID: "18446744073709551615", ExpectedRevision: "41", AllowIrreversible: true, Output: output}
@@ -110,13 +118,54 @@ func TestRunCompactsOnlyAfterExactIdentityConfirmationAndPublishes(t *testing.T)
 }
 
 func TestRunRefusesIdentityDriftBeforeCompaction(t *testing.T) {
-	client := &fakeEtcdClient{status: &clientv3.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 7301, Revision: 42}}}
+	client := &fakeEtcdClient{status: validRemediationStatus(7301, 42)}
 	config := Config{Action: "compact", Endpoint: "https://kb:2379", ConfirmEndpoint: "https://kb:2379",
 		ExpectedClusterID: "7301", ExpectedRevision: "41", AllowIrreversible: true, Output: filepath.Join(t.TempDir(), "snapshot.db")}
 	_, code, err := runWithClient(context.Background(), config, io.Discard, client)
 	require.ErrorContains(t, err, "confirmation fields")
 	require.Equal(t, 2, code)
 	require.False(t, client.compacted)
+}
+
+func TestValidateStatusResponse(t *testing.T) {
+	require.NoError(t, validateStatusResponse(validRemediationStatus(7, 11)))
+	tests := []*clientv3.StatusResponse{
+		nil,
+		{},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 0}, Version: "3.7.0", Leader: 17},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 0, MemberId: 17, Revision: 11}, Version: "3.7.0", Leader: 17},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 0, Revision: 11}, Version: "3.7.0", Leader: 17},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Leader: 17},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "not-semver", Leader: 17},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", Leader: 17, DbSize: -1},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", Leader: 17, DbSizeInUse: -1},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0"},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 11}, Version: "3.7.0", Leader: 17, Errors: []string{"unhealthy"}},
+	}
+	for i, status := range tests {
+		require.Error(t, validateStatusResponse(status), i)
+	}
+}
+
+func TestValidateCompactResponse(t *testing.T) {
+	require.NoError(t, validateCompactResponse(&clientv3.CompactResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 12}}, 7, 11))
+	for i, response := range []*clientv3.CompactResponse{
+		nil,
+		{},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 8, MemberId: 17, Revision: 11}},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 0, Revision: 11}},
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 17, Revision: 10}},
+	} {
+		require.Error(t, validateCompactResponse(response, 7, 11), i)
+	}
+}
+
+func TestRunRejectsMalformedStatusBeforeSnapshot(t *testing.T) {
+	client := &fakeEtcdClient{}
+	_, code, err := runWithClient(context.Background(), Config{Action: "diagnose", Endpoint: "https://kb:2379"}, io.Discard, client)
+	require.ErrorContains(t, err, "invalid status response header")
+	require.Equal(t, 1, code)
+	require.Zero(t, client.snapshotCalls)
 }
 
 func TestConfigFromEnvRejectsMultipleOrUnsafeEndpoints(t *testing.T) {

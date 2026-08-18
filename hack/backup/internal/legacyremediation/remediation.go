@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -121,6 +122,9 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 	if err != nil {
 		return result, 1, fmt.Errorf("endpoint status: %w", err)
 	}
+	if err := validateStatusResponse(status); err != nil {
+		return result, 1, err
+	}
 	result.ClusterID = fmt.Sprint(status.Header.ClusterId)
 	result.Revision = fmt.Sprint(status.Header.Revision)
 	if !positiveDecimal.MatchString(result.ClusterID) || !positiveDecimal.MatchString(result.Revision) {
@@ -188,8 +192,13 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 		return result, 2, errors.New("OUTPUT parent directory does not exist")
 	}
 	revision := compactRevision
-	if _, err = cli.Compact(ctx, revision, clientv3.WithCompactPhysical()); err != nil {
+	compactResponse, compactErr := cli.Compact(ctx, revision, clientv3.WithCompactPhysical())
+	if compactErr != nil {
+		err = compactErr
 		return result, 1, fmt.Errorf("physical compact: %w", err)
+	}
+	if err = validateCompactResponse(compactResponse, status.Header.ClusterId, revision); err != nil {
+		return result, 1, err
 	}
 	candidate, err := os.CreateTemp(parent, ".kubebrain-post-remediation.*.db")
 	if err != nil {
@@ -234,6 +243,32 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 		return result, 1, fmt.Errorf("write remediation status: %w", err)
 	}
 	return result, 0, nil
+}
+
+func validateStatusResponse(status *clientv3.StatusResponse) error {
+	if status == nil || status.Header == nil || status.Header.ClusterId == 0 || status.Header.MemberId == 0 || status.Header.Revision <= 0 {
+		return errors.New("endpoint returned an invalid status response header")
+	}
+	if status.Version == "" {
+		return errors.New("endpoint returned an empty server version")
+	}
+	if _, err := semver.StrictNewVersion(status.Version); err != nil {
+		return errors.New("endpoint returned an invalid server version")
+	}
+	if status.DbSize < 0 || status.DbSizeInUse < 0 {
+		return errors.New("endpoint returned invalid database sizes")
+	}
+	if status.Leader == 0 || len(status.Errors) != 0 {
+		return errors.New("endpoint status reports an unhealthy leader")
+	}
+	return nil
+}
+
+func validateCompactResponse(response *clientv3.CompactResponse, clusterID uint64, compactRevision int64) error {
+	if response == nil || response.Header == nil || response.Header.ClusterId != clusterID || response.Header.MemberId == 0 || response.Header.Revision < compactRevision {
+		return errors.New("physical compact returned an invalid acknowledgement")
+	}
+	return nil
 }
 
 func downloadAndValidate(ctx context.Context, cli etcdClient, path string) (retErr error) {
