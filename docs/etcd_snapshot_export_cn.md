@@ -84,7 +84,8 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 - 精确的全 keyspace 前缀 `/`，避免把局部备份伪装成完整 etcd snapshot；
 - 每个 lease 都含正 `granted_ttl`，且不得超过 upstream
   `MaxLeaseTTL=9,000,000,000`；当前 exporter 已拒绝 ID 错配、缺失/落后于 snapshot 的 header、非正或超限 grant，通用 logical.v2 验读也会在转换前拒绝超限 grant；
-- create/mod revision、version 和 snapshot revision 之间关系可成立的记录；
+- create/mod revision、version 和 snapshot revision 之间关系可成立的记录；该约束已由通用 logical
+  reader 执行，转换器复用同一校验；
 - 操作者显式传入 `--acknowledge-auth-disabled`。
 
 输出保证：

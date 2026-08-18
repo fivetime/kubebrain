@@ -4656,7 +4656,9 @@ no-clobber 发布并同步父目录；验证失败或中断不会把不完整内
 验证，并按 `BATCH_SIZE` 把 compare 与 Put 放入同一个 Txn，使单批冲突不会部分落盘。
 header、record、lease 和 footer 行均使用严格 JSON schema 解码，拒绝未知字段和同一行内
 拼接的第二个 JSON 值；扩展逻辑备份格式必须先升级 format/schema，不能把额外字段混入
-现有 `kubebrain.logical.v2` 制品。
+现有 `kubebrain.logical.v2` 制品。v1/v2 record 还统一要求非空 key、正 create/mod/version、
+`create<=mod<=snapshot`，且单 key version 不得超过 `mod-create+1`；status、restore、verify 与
+snapshot converter 不再对不可能由 etcd MVCC 产生的元数据给出不同准入结果。
 恢复为每个源 lease 生成新目标 ID并保留多 key 共享关系。目标 LeaseGrant 使用导出时 remaining TTL；若
 promotion grace 令 remaining 高于正 `granted_ttl`，则规范化回 grant，缺 grant 的旧 v2 制品则最多使用
 官方 `MaxLeaseTTL`，避免合法制品因目标不可授予的 TTL 在写入前失败。v1 无 lease 制品继续可恢复；

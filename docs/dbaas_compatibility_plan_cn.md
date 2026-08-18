@@ -57674,6 +57674,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非 production、production 326 项四分片与 vet 全部通过。本项保持 hard-link no-clobber、logical.v2 schema、
   在线 lease 与 TiKV 数据路径不变。
 
+- A5147 把仅存在于 logical→etcd snapshot converter 的 KV 约束提升到 v1/v2 共同 artifact reader。
+  两代格式从首次引入就都携带 create/mod/version，但旧 `OpenVerified` 只检查 base64、prefix、唯一性与 lease
+  引用，故 status、logical restore、object upload 和 cold witness 可接受空 key 或不可能的 MVCC tuple，直到
+  converter 才失败。现共同校验要求 key 非空、create/mod/version 为正、`create<=mod<=snapshot`，并按 etcd
+  单 key 每 revision 最多增长一次的可观察语义要求 `version<=mod-create+1`；converter 调用同一函数，移除重复
+  边界。摘要有效反例覆盖空 key、零 create、mod<create、mod>snapshot、零 version 与 impossible version；定向
+  二十轮、backupfile/converter race、完整非 production、production 326 项四分片与 vet 全部通过。本项不改变
+  logical schema、合法历史制品、restore 写入模型、在线 MVCC 或 TiKV 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
