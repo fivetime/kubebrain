@@ -303,6 +303,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initEtcdClientGRPCBytesCounters(metricCli)
 	initEtcdServerStreamFailureCounters(metricCli)
 	initRangeStreamFailureMetrics(metricCli)
+	initSnapshotFailureMetrics(metricCli)
 	initClientAdmissionMetrics(metricCli)
 	initDeleteRangeAdmissionMetrics(metricCli)
 	initCountProxyMetrics(metricCli)

@@ -431,6 +431,8 @@ func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer)
 	return streamSnapshotFile(path, stream)
 }
 
+var errSnapshotSend = errors.New("maintenance snapshot send failed")
+
 func streamSnapshotFile(path string, stream etcdserverpb.Maintenance_SnapshotServer) (retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -465,10 +467,13 @@ func streamSnapshotFile(path string, stream etcdserverpb.Maintenance_SnapshotSer
 		if err = stream.Send(&etcdserverpb.SnapshotResponse{
 			RemainingBytes: uint64(total - sent), Blob: buf[:n], Version: Version,
 		}); err != nil {
-			return err
+			return errors.Join(errSnapshotSend, err)
 		}
 	}
-	return stream.Send(&etcdserverpb.SnapshotResponse{
+	if err := stream.Send(&etcdserverpb.SnapshotResponse{
 		RemainingBytes: 0, Blob: hash.Sum(nil), Version: Version,
-	})
+	}); err != nil {
+		return errors.Join(errSnapshotSend, err)
+	}
+	return nil
 }

@@ -94,6 +94,30 @@ func recordedWatchBackendIntegrityValues(rec *recordingMetrics, kind string) []i
 	return values
 }
 
+func recordedSnapshotFailureValues(rec *recordingMetrics, stage string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == "maintenance.snapshot.failure" && len(counter.tags) == 1 &&
+			counter.tags[0] == metrics.Tag("stage", stage) {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
+func TestSnapshotFailureMetricsInitializeFixedStages(t *testing.T) {
+	rec := &recordingMetrics{}
+	initSnapshotFailureMetrics(rec)
+	for _, stage := range snapshotFailureStages {
+		emitSnapshotFailure(rec, stage)
+	}
+	for _, stage := range snapshotFailureStages {
+		require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, stage))
+	}
+}
+
 func TestWatchGenerationRecoveryMetricsInitializeFixedOutcomes(t *testing.T) {
 	rec := &recordingMetrics{}
 	initWatchGenerationRecoveryMetrics(rec)

@@ -933,10 +933,20 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 	}
 	err = s.sendSnapshot(stream)
 	if errors.Is(err, errSnapshotHistoryStreamProtocol) {
+		emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 		// The local capture stream has already crossed its fixed-revision
 		// integrity boundary. Missing, duplicate, or out-of-order termination is
 		// the leader-side equivalent of a malformed proxied Snapshot stream.
 		return status.Error(codes.DataLoss, err.Error())
+	}
+	if err != nil && ctx.Err() == nil {
+		if errors.Is(err, errSnapshotSend) {
+			if shouldCountServerStreamFailure(stream.Context(), err) {
+				emitSnapshotFailure(s.metricCli, snapshotFailureSend)
+			}
+		} else {
+			emitSnapshotFailure(s.metricCli, snapshotFailureSource)
+		}
 	}
 	if errors.Is(err, errSnapshotHistoricalLeaseUnknown) || errors.Is(err, etcdsnapshot.ErrInvalidRetainedHistory) ||
 		errors.Is(err, etcdsnapshot.ErrInvalidSnapshotMetadata) || errors.Is(err, backend.ErrInvalidMVCCMetadata) {
@@ -981,9 +991,13 @@ func (s *RPCServer) forwardSnapshot(
 	defer cancelProxy()
 	responses, err := s.peers.Snapshot(proxyCtx, request)
 	if err != nil {
+		if ctx.Err() == nil {
+			emitSnapshotFailure(s.metricCli, snapshotFailureProxy)
+		}
 		return snapshotForwardError(ctx, err)
 	}
 	if responses == nil {
+		emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 		return status.Error(codes.DataLoss, "leader snapshot proxy returned a nil result channel")
 	}
 	awaitingChecksum := false
@@ -993,36 +1007,51 @@ func (s *RPCServer) forwardSnapshot(
 	var snapshotVersion string
 	haveData := false
 	for result := range responses {
+		if result.Err != nil && result.Response != nil {
+			emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
+			return status.Error(codes.DataLoss, "leader snapshot proxy returned a mixed response and error")
+		}
 		if result.Err != nil {
+			if ctx.Err() == nil {
+				emitSnapshotFailure(s.metricCli, snapshotFailureProxy)
+			}
 			return snapshotForwardError(ctx, result.Err)
 		}
 		if result.Response == nil {
+			emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 			return status.Error(codes.DataLoss, "leader snapshot proxy returned an empty response")
 		}
 		if complete {
+			emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 			return status.Error(codes.DataLoss, "leader snapshot proxy returned data after checksum")
 		}
 		if awaitingChecksum {
 			if result.Response.GetRemainingBytes() != 0 || len(result.Response.GetBlob()) != sha256.Size {
+				emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 				return status.Error(codes.DataLoss, "leader snapshot proxy returned an invalid checksum frame")
 			}
 			if result.Response.GetVersion() != snapshotVersion {
+				emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 				return status.Error(codes.DataLoss, "leader snapshot proxy changed storage version")
 			}
 			if !bytes.Equal(result.Response.GetBlob(), hash.Sum(nil)) {
+				emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 				return status.Error(codes.DataLoss, "leader snapshot proxy checksum mismatch")
 			}
 			complete = true
 		} else {
 			blob := result.Response.GetBlob()
 			if len(blob) == 0 {
+				emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 				return status.Error(codes.DataLoss, "leader snapshot proxy returned an empty data frame")
 			}
 			if haveData {
 				if uint64(len(blob)) > remaining || result.Response.GetRemainingBytes() != remaining-uint64(len(blob)) {
+					emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 					return status.Error(codes.DataLoss, "leader snapshot proxy returned discontinuous remaining bytes")
 				}
 				if result.Response.GetVersion() != snapshotVersion {
+					emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 					return status.Error(codes.DataLoss, "leader snapshot proxy changed storage version")
 				}
 			} else {
@@ -1034,10 +1063,16 @@ func (s *RPCServer) forwardSnapshot(
 			awaitingChecksum = remaining == 0
 		}
 		if err = stream.Send(result.Response); err != nil {
+			if shouldCountServerStreamFailure(stream.Context(), err) {
+				emitSnapshotFailure(s.metricCli, snapshotFailureSend)
+			}
 			return err
 		}
 	}
 	if !complete {
+		if ctx.Err() == nil {
+			emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
+		}
 		return status.Error(codes.DataLoss, "leader snapshot proxy stream ended before checksum")
 	}
 	return nil

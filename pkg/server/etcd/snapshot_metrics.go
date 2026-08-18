@@ -22,6 +22,20 @@ import (
 
 const etcdBackendSnapshotDurationMetric = "etcd.disk.backend_snapshot_duration_seconds"
 
+const (
+	snapshotFailureSource   = "source"
+	snapshotFailureProxy    = "proxy"
+	snapshotFailureSend     = "send"
+	snapshotFailureProtocol = "protocol"
+)
+
+var snapshotFailureStages = []string{
+	snapshotFailureSource,
+	snapshotFailureProxy,
+	snapshotFailureSend,
+	snapshotFailureProtocol,
+}
+
 func initEtcdBackendSnapshotDuration(metricCli metrics.Metrics) {
 	if registrar, ok := metricCli.(metrics.HistogramRegistrar); ok {
 		_ = registrar.RegisterHistogram(etcdBackendSnapshotDurationMetric)
@@ -33,4 +47,20 @@ func emitEtcdBackendSnapshotDuration(metricCli metrics.Metrics, duration time.Du
 		return
 	}
 	_ = metricCli.EmitHistogram(etcdBackendSnapshotDurationMetric, duration.Seconds())
+}
+
+func initSnapshotFailureMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, stage := range snapshotFailureStages {
+		_ = metricCli.EmitCounter("maintenance.snapshot.failure", int64(0), metrics.Tag("stage", stage))
+	}
+}
+
+func emitSnapshotFailure(metricCli metrics.Metrics, stage string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("maintenance.snapshot.failure", 1, metrics.Tag("stage", stage))
 }

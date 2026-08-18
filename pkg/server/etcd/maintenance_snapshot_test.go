@@ -246,6 +246,7 @@ func TestMaintenanceSnapshotDurationObservedForSuccessAndSendFailure(t *testing.
 	defer closeFn()
 	rec := &recordingMetrics{}
 	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
 
 	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{},
 		&maintenanceSnapshotServer{ctx: context.Background()}))
@@ -255,6 +256,7 @@ func TestMaintenanceSnapshotDurationObservedForSuccessAndSendFailure(t *testing.
 		err:                       sendErr,
 	})
 	require.ErrorIs(t, err, sendErr)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, snapshotFailureSend))
 
 	var samples []recordedHistogram
 	for _, histogram := range rec.histograms {
@@ -536,6 +538,9 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 func TestMaintenanceSnapshotFollowerMapsInternalProxyCancellationToLeaderChanged(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
 	server.peers = testPeerService{
 		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
 			results := make(chan etcdproxy.SnapshotResult, 1)
@@ -548,11 +553,15 @@ func TestMaintenanceSnapshotFollowerMapsInternalProxyCancellationToLeaderChanged
 	err := server.forwardSnapshot(ctx, &etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: ctx})
 	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
 	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, snapshotFailureProxy))
 }
 
 func TestMaintenanceSnapshotFollowerPreservesCallerCancellation(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
 	server.peers = testPeerService{
 		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
 			results := make(chan etcdproxy.SnapshotResult, 1)
@@ -565,6 +574,7 @@ func TestMaintenanceSnapshotFollowerPreservesCallerCancellation(t *testing.T) {
 	cancel()
 	err := server.forwardSnapshot(ctx, &etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: ctx})
 	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, []interface{}{int64(0)}, recordedSnapshotFailureValues(rec, snapshotFailureProxy))
 }
 
 func TestMaintenanceSnapshotFollowerRejectsProxyStreamWithoutChecksum(t *testing.T) {
@@ -660,6 +670,9 @@ func testMaintenanceSnapshotUsesProtectedCheckpointAfterProbeFailure(t *testing.
 func TestMaintenanceSnapshotFollowerRejectsNilProxyResultChannel(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
 	server.peers = testPeerService{
 		isLeader: false, proxyEnabled: true,
 		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
@@ -674,6 +687,7 @@ func TestMaintenanceSnapshotFollowerRejectsNilProxyResultChannel(t *testing.T) {
 	case err := <-done:
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "nil result channel")
+		require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, snapshotFailureProtocol))
 	case <-time.After(100 * time.Millisecond):
 		require.Fail(t, "nil leader snapshot result channel blocked the follower RPC")
 	}
@@ -682,6 +696,9 @@ func TestMaintenanceSnapshotFollowerRejectsNilProxyResultChannel(t *testing.T) {
 func TestMaintenanceSnapshotFollowerCancelsLeaderStreamOnDownstreamSendFailure(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
 	callerCtx, cancelCaller := context.WithCancel(context.Background())
 	defer cancelCaller()
 	leaderCanceled := make(chan struct{})
@@ -704,12 +721,38 @@ func TestMaintenanceSnapshotFollowerCancelsLeaderStreamOnDownstreamSendFailure(t
 		err:                       errors.New("snapshot send failed"),
 	})
 	require.ErrorContains(t, err, "snapshot send failed")
+	require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, snapshotFailureSend))
 	select {
 	case <-leaderCanceled:
 	case <-time.After(100 * time.Millisecond):
 		cancelCaller()
 		require.Fail(t, "leader snapshot context was not canceled when downstream send failed")
 	}
+}
+
+func TestMaintenanceSnapshotFollowerRejectsMixedProxyResult(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			results := make(chan etcdproxy.SnapshotResult, 1)
+			results <- etcdproxy.SnapshotResult{
+				Response: &etcdserverpb.SnapshotResponse{Blob: []byte("db")},
+				Err:      errors.New("leader stream failed"),
+			}
+			close(results)
+			return results, nil
+		},
+	}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: context.Background()})
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.ErrorContains(t, err, "mixed response and error")
+	require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, snapshotFailureProtocol))
 }
 
 func TestMaintenanceSnapshotFollowerRejectsMalformedProxyTermination(t *testing.T) {
