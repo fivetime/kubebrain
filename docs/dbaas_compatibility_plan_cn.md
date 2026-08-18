@@ -57231,6 +57231,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不增加标签。通用 found/not-found/异常域、公开 follower Grant/TTL、streaming KeepAlive 及正常 signed-ID 回归连续十轮
   通过；需要下一生产镜像和监控发布。
 
+- A5097 将 Lease leader-proxy payload 完整性扩展到集合元素。对照 `/root/etcd/server/lease/lease.go` 与
+  `lessor.go`，TimeToLive keys 来自 `Lease.itemSet` map，天然唯一，且 Put 的非空 key 验证保证元素非空；LeaseLeases 来自
+  lessor `leaseMap`，status 非 nil、ID 非零且唯一，同时继续允许 upstream 支持的负 ID。旧代理只约束是否请求 Keys，不拒绝
+  空/重复 key，也会把 nil status、reserved ID=0 或重复 lease ID 返回客户端。现 TimeToLive found payload 和 LeaseLeases
+  success payload 在 forwarded revision 观察前完成非空/非零/去重校验，违例复用固定
+  `lease.proxy.integrity_failure{rpc="time_to_live|leases"}` 并 DataLoss fail closed，不增加标签。通用空/重复/nil/零值、公开
+  follower TTL/Leases、合法空集合及 MinInt64/MaxInt64 ID 回归连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
