@@ -57552,6 +57552,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client/v3 Status、raw gRPC Snapshot 及直接 bbolt schema 读取三层回归证明 Status.StorageVersion、artifact metadata 与每个
   data/digest frame 一致；定向二十轮和 race 通过。本项不改变当前 3.7.0 wire 值或存储编码，需要下一生产镜像发布。
 
+- A5132 收紧 storage-isolated follower 对 Maintenance Status 版本字段的完整性门禁。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status` 与 version monitor：upstream `Version` 是合法 server semver；
+  `StorageVersion` 在 pre-3.6 backend 可为空，非空时一定来自已解析 schema version 的 `String()`。旧 validator 只拒绝空
+  Version，会把 leader adapter 注入的 `not-semver` server/storage version 原样暴露给客户端；A5131 后该值又直接参与 schema
+  预检。现 Version 必须通过 strict semver，非空 StorageVersion 同样验证；合法 prerelease/build metadata 和空 legacy storage
+  version 保持接受。validator 与公开 follower hedge 对两种畸形字段均 DataLoss fail closed，定向二十轮及 race 通过。Watch 的
+  fragment/filters/progress/显式 ID 同轮复核已有 raw gRPC 与官方 client 回归，无新差距。本项不改变 leader 正常响应或存储编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

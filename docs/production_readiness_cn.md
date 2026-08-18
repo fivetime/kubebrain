@@ -4531,7 +4531,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   Status success 必须有非空 Version，DbSize/DbSizeInUse 非负，DbSizeQuota 非零；upstream 用负 quota 表示禁用 quota，0 则在响应前替换为默认值；两种 size 在 upstream 中独立采样，
   并发提交窗口允许后采样的 in-use 暂时大于先采样的 allocated，
   committed/applied index 同样独立采样，并发推进窗口允许后采样的 applied 暂时大于先采样的 committed；DowngradeInfo 非 nil，Errors 不含空字符串，并且 Leader=0 当且仅当 errors 包含
-  `etcdserver: no leader`。启动早期零 Raft 字段与尚未发布的空 StorageVersion 合法。
+  `etcdserver: no leader`。启动早期零 Raft 字段与 pre-3.6 backend 的空 StorageVersion 合法；Version 与任一非空
+  StorageVersion 必须为合法 semver，畸形 peer payload 必须以 DataLoss fail closed 并增加 status 完整性计数。
   KubeBrain 接受负 `--quota-backend-bytes` 作为 upstream-compatible disabled sentinel；写 admission 不计量/限制，Status 原样返回负值。
   CLI 未配置时默认为 `-1`，显式 `0` 则在 backend 构造前规范化为 upstream 默认 2 GiB。
   Hash success header current revision 必须为正。HashKV revision=0 时 HashRevision 必须等于 header current revision；
