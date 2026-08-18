@@ -4665,7 +4665,11 @@ promotion grace 令 remaining 高于正 `granted_ttl`，则规范化回 grant，
 遍历完整 artifact，拒绝 rewrite 产生空 key 或把两个源 key 合并为同一目标；logical verify 使用同一 rewrite
 实现与唯一性门禁。每次目标 LeaseGrant 成功响应还必须含 signed nonzero 唯一 ID、正 revision header、空 legacy
 error，且实际 TTL 位于 `[requested, MaxLeaseTTL]`；server-chosen 更长 TTL 合法，异常响应携带的非零 lease 会与
-此前 grants 一并按 ID 去重 revoke，任何 Put 都不会执行。v1 无 lease 制品继续可恢复；
+此前 grants 一并按 ID 去重 revoke，任何 Put 都不会执行。每个 restore Put batch 的成功 Txn 还必须返回正的
+outer revision、与请求等量且类型均为 Put 的 response；每个 Put response 必须带与 outer revision 相同的 header，
+且不能夹带未请求的 PrevKV。该门禁同时适用于默认 no-overwrite 与 `ALLOW_OVERWRITE=true`；异常发生在 RPC
+返回后，按既有错误路径清理新建 lease，并在 no-overwrite 模式回滚已记录批次，但覆盖模式无法保证撤销服务端
+已经提交的永久键或旧值。v1 无 lease 制品继续可恢复；
 v1 中记录非零 lease 时因缺少 TTL 元数据会在任何写入前拒绝。没有 manifest/footer 的
 旧 JSONL 无法证明完整性，同样明确拒绝。
 

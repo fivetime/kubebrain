@@ -57701,6 +57701,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   error、缩短/超限 TTL、重复 ID 反例连续二十轮，包级 race、完整非 production、production 326 项四分片与
   vet 全部通过。本项不改变正常 LeaseGrant、restore ID 重映射、artifact、在线 lease 或 TiKV 数据路径。
 
+- A5150 修复 logical restore 对目标 Put Txn malformed success 的盲信。旧路径只检查 `Succeeded`，且
+  `ALLOW_OVERWRITE=true` 时连 response header 都不检查，因而可能把 nil/零 revision、少返回 operation、错误
+  operation 类型或畸形 Put payload 当成完整恢复。对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go::Txn` 的
+  Txn response 结构与 `pkg/server/etcd/kv_proxy_metrics.go` 的代理 payload 门禁，现所有模式统一要求 response
+  非 nil、`Succeeded=true`、outer revision 为正、response 数量与 Put 数量精确相等、每项确为 Put、内层 header
+  revision 等于 outer revision，且未请求 PrevKV 时不得夹带 `PrevKv`。有效双 Put 与 nil、compare failure、坏
+  header、数量/类型错误、内层 revision 缺失或错配、残余 PrevKV 反例连续二十轮，包级 race、完整非 production、
+  production 326 项四分片与 vet 全部通过。异常响应会进入现有 lease 清理与 no-overwrite 回滚；因 Txn 可能已经
+  在服务端提交，本项不承诺覆盖模式可恢复旧值，也不改变正常 batch、artifact、在线 KV/lease 或 TiKV 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
