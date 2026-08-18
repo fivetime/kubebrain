@@ -27,6 +27,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/server/v3/lease/leasepb"
 	mvcc "go.etcd.io/etcd/server/v3/storage/mvcc"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 	"google.golang.org/grpc/codes"
@@ -1777,6 +1778,41 @@ func TestMaintenanceSnapshotClassifiesOversizedLeaseTTL(t *testing.T) {
 	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidSnapshotMetadata.Error())
 	require.ErrorContains(t, err, "decode lease metadata: lease ttl 9000000001 exceeds maximum 9000000000")
 	require.Empty(t, stream.responses)
+}
+
+func TestMaintenanceSnapshotCanonicalizesPromotionLeaseGrace(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		leaseID    = int64(4215)
+		grantedTTL = int64(60)
+	)
+	data, err := json.Marshal(leaseRecord{
+		ID:               leaseID,
+		TTL:              grantedTTL,
+		DeadlineUnixNano: time.Now().Add(2 * time.Minute).UnixNano(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(leaseID), data))
+
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, server.buildSnapshot(ctx, path),
+		"promotion grace above the grant must not make an upstream snapshot unrepresentable")
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		var got leasepb.Lease
+		require.NoError(t, tx.Bucket(schema.Lease.Name()).ForEach(func(_, value []byte) error {
+			return proto.Unmarshal(value, &got)
+		}))
+		require.Equal(t, leaseID, got.ID)
+		require.Equal(t, grantedTTL, got.TTL)
+		require.Equal(t, grantedTTL, got.RemainingTTL,
+			"upstream snapshots never persist promotion grace above the granted TTL")
+		return nil
+	}))
 }
 
 func TestMaintenanceSnapshotClassifiesReservedZeroLeaseID(t *testing.T) {

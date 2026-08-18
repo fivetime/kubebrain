@@ -368,6 +368,12 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 		} else if remaining <= 0 {
 			remaining = record.TTL
 		}
+		// Upstream persists only checkpoints below the granted TTL. Promotion
+		// extends the live expiry by an election grace period, but that transient
+		// extension is never encoded as RemainingTTL in a backend snapshot.
+		if remaining > record.TTL {
+			remaining = record.TTL
+		}
 		leaseIDs[record.ID] = struct{}{}
 		state.Leases = append(state.Leases, production.Lease{
 			ID: record.ID, GrantedTTL: record.TTL, RemainingTTL: remaining,
