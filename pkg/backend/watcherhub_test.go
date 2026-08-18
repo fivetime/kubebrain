@@ -420,6 +420,10 @@ func TestDeleteWatcherDuringCatchUpClosesChan(t *testing.T) {
 	require.Equal(t, 1, hub.catchingUpCount())
 
 	cancel() // watcher gone: the AddWatcher goroutine runs DeleteWatcher
+	require.Eventually(t, func() bool {
+		return hub.catchingUpCount() == 0
+	}, 5*time.Second, 5*time.Millisecond,
+		"the context deletion path must detach catch-up before the consumer resumes draining")
 
 	require.Eventually(t, func() bool {
 		// Drain until close; the channel must close without delivering a gap.
@@ -434,7 +438,6 @@ func TestDeleteWatcherDuringCatchUpClosesChan(t *testing.T) {
 			}
 		}
 	}, 5*time.Second, 5*time.Millisecond, "DeleteWatcher must close a catching-up sub")
-	require.Equal(t, 0, hub.catchingUpCount())
 	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeCatchUp))
 	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeRecovered))
 	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeDropped))
