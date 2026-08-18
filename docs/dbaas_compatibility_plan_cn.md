@@ -57059,6 +57059,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   值合法且未知 rpc 非法，任一增量与 telemetry 缺失/陈旧/非法/组合不完整均 critical。通用回归覆盖六类 nil/mixed/
   正常 response/正常 error，公开 Alarm/Downgrade follower 路径同时证明 nil/mixed 不再成功；需要下一生产镜像和监控发布。
 
+- A5078 将 A5077 的 unary result ownership 不变量闭合到 Kubernetes 数据面核心 Range、Txn、Put、DeleteRange、
+  Compact。审计发现这些 RPC 的十条 follower/历史读/失败回退代理分支都直接观察 `response.GetHeader()` 后返回，
+  interface 允许的 `(nil,nil)` 会被公开 handler 当作成功，mixed result 还可能先污染本地 forwarded revision；真实
+  grpc-go generated client 虽保证 error 时返回 nil response，但 DBaaS peer adapter 是额外抽象，必须在边界验证。
+  现所有分支在 header/revision 观察前统一要求 response/error 恰有其一，nil/mixed 均 DataLoss fail closed。新增固定
+  `kv.proxy.integrity_failure{rpc="range|txn|put|delete_range|compact"}`，RPC server 创建时初始化五类权威零值；
+  production 生成 60 秒新鲜 Ready Pod UID current/increase，要求各 `5×Ready`、值合法且未知 rpc 非法，任一增量与
+  telemetry 缺失/陈旧/非法/组合不完整均 critical。通用 validator 覆盖五类 nil/mixed/正常 response/error，公开
+  五 RPC 表驱动回归连续十轮证明无 nil success 或 mixed acknowledgement；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
