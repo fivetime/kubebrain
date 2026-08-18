@@ -57424,6 +57424,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `cluster.proxy.integrity_failure{rpc="member_list"}` 并 DataLoss fail closed。合法空/未启动成员、transport error 与公开
   三类异常注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5118 将 LeaseGrant leader-proxy payload 完整性扩展到请求 TTL 与 legacy Error。对照
+  `/root/etcd/server/etcdserver/{v3_server.go::LeaseGrant,apply/backend.go::LeaseGrant}` 与
+  `server/lease/lessor.go::Grant`：apply error 经 gRPC error 返回，正常 success 的 protobuf Error 字段始终为空；granted TTL
+  是 server-chosen advisory TTL，当前实现至少为 `max(request TTL, minLeaseTTL)`，未来也允许因负载选择更长值，不能错误
+  要求精确相等。旧 follower proxy 只要求正 TTL，会确认低于请求的缩短租约或同时携带 legacy error 的伪成功，导致客户端
+  按错误期限安排续租。现 Grant 在 ID 校验后继续要求 Error 为空、TTL 正且不低于请求，违例复用固定
+  `lease.proxy.integrity_failure{rpc="grant"}` 并在 forwarded revision 观察前 DataLoss fail closed。精确/更长/负请求提升
+  正例、transport error 与公开低 TTL/legacy error 注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
