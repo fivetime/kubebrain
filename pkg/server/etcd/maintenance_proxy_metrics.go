@@ -177,6 +177,47 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	return response, nil
 }
 
+func validateHashProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.HashResponse, err error) (*etcdserverpb.HashResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	if response.GetHeader().GetRevision() <= 0 {
+		emitMaintenanceProxyIntegrityFailure(metricCli, maintenanceProxyRPCHash)
+		return nil, status.Error(codes.DataLoss, "leader hash proxy returned a non-positive current revision")
+	}
+	return response, nil
+}
+
+func validateHashKVProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.HashKVRequest, response *etcdserverpb.HashKVResponse, err error) (*etcdserverpb.HashKVResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	fail := func(message string) (*etcdserverpb.HashKVResponse, error) {
+		emitMaintenanceProxyIntegrityFailure(metricCli, maintenanceProxyRPCHashKV)
+		return nil, status.Error(codes.DataLoss, message)
+	}
+	currentRevision := response.GetHeader().GetRevision()
+	if currentRevision <= 0 {
+		return fail("leader hash_kv proxy returned a non-positive current revision")
+	}
+	hashRevision := response.GetHashRevision()
+	if request.GetRevision() == 0 {
+		if hashRevision != currentRevision {
+			return fail("leader hash_kv proxy returned a latest hash revision different from current revision")
+		}
+	} else if hashRevision != request.GetRevision() {
+		return fail("leader hash_kv proxy returned a hash revision different from the request")
+	}
+	compactRevision := response.GetCompactRevision()
+	if compactRevision < -1 {
+		return fail("leader hash_kv proxy returned a compact revision below -1")
+	}
+	if hashRevision > 0 && (hashRevision > currentRevision || compactRevision > hashRevision) {
+		return fail("leader hash_kv proxy returned inconsistent revision chronology")
+	}
+	return response, nil
+}
+
 func emitMaintenanceProxyIntegrityFailure(metricCli metrics.Metrics, rpc string) {
 	if metricCli != nil {
 		_ = metricCli.EmitCounter("maintenance.proxy.integrity_failure", 1, metrics.Tag("rpc", rpc))

@@ -969,6 +969,77 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 }
 
+func TestHashProxyPayloadValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		response *etcdserverpb.HashResponse
+		valid    bool
+	}{
+		{name: "positive current revision", response: &etcdserverpb.HashResponse{Header: txnHeader(1)}, valid: true},
+		{name: "zero current revision", response: &etcdserverpb.HashResponse{Header: txnHeader(0)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			response, err := validateHashProxyPayload(rec, tt.response, nil)
+			if tt.valid {
+				require.Same(t, tt.response, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCHash))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCHash))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.HashResponse{}
+	response, err := validateHashProxyPayload(nil, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
+func TestHashKVProxyPayloadValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		request  *etcdserverpb.HashKVRequest
+		response *etcdserverpb.HashKVResponse
+		valid    bool
+	}{
+		{name: "latest", request: &etcdserverpb.HashKVRequest{}, response: &etcdserverpb.HashKVResponse{Header: txnHeader(7), HashRevision: 7, CompactRevision: -1}, valid: true},
+		{name: "historical", request: &etcdserverpb.HashKVRequest{Revision: 5}, response: &etcdserverpb.HashKVResponse{Header: txnHeader(7), HashRevision: 5, CompactRevision: 3}, valid: true},
+		{name: "negative empty hash", request: &etcdserverpb.HashKVRequest{Revision: -1}, response: &etcdserverpb.HashKVResponse{Header: txnHeader(7), HashRevision: -1, CompactRevision: 3}, valid: true},
+		{name: "zero current revision", request: &etcdserverpb.HashKVRequest{}, response: &etcdserverpb.HashKVResponse{Header: txnHeader(0), HashRevision: 0, CompactRevision: -1}},
+		{name: "latest mismatch", request: &etcdserverpb.HashKVRequest{}, response: &etcdserverpb.HashKVResponse{Header: txnHeader(7), HashRevision: 6, CompactRevision: -1}},
+		{name: "historical mismatch", request: &etcdserverpb.HashKVRequest{Revision: 5}, response: &etcdserverpb.HashKVResponse{Header: txnHeader(7), HashRevision: 4, CompactRevision: 3}},
+		{name: "compact below sentinel", request: &etcdserverpb.HashKVRequest{Revision: -1}, response: &etcdserverpb.HashKVResponse{Header: txnHeader(7), HashRevision: -1, CompactRevision: -2}},
+		{name: "hash ahead of current", request: &etcdserverpb.HashKVRequest{Revision: 8}, response: &etcdserverpb.HashKVResponse{Header: txnHeader(7), HashRevision: 8, CompactRevision: 3}},
+		{name: "compact ahead of hash", request: &etcdserverpb.HashKVRequest{Revision: 5}, response: &etcdserverpb.HashKVResponse{Header: txnHeader(7), HashRevision: 5, CompactRevision: 6}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			response, err := validateHashKVProxyPayload(rec, tt.request, tt.response, nil)
+			if tt.valid {
+				require.Same(t, tt.response, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCHashKV))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCHashKV))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.HashKVResponse{}
+	response, err := validateHashKVProxyPayload(nil, &etcdserverpb.HashKVRequest{}, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initMaintenanceProxyIntegrityMetrics(rec)

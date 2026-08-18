@@ -726,7 +726,13 @@ func TestFollowerHashesHedgeIsolatedStorageAndPreserveRevision(t *testing.T) {
 			} else {
 				require.Same(t, hashKVRequest, got)
 			}
-			return hashKVResponse, nil
+			response := *hashKVResponse
+			if got.GetRevision() == 0 {
+				response.HashRevision = response.GetHeader().GetRevision()
+			} else {
+				response.HashRevision = got.GetRevision()
+			}
+			return &response, nil
 		},
 	}
 
@@ -737,7 +743,7 @@ func TestFollowerHashesHedgeIsolatedStorageAndPreserveRevision(t *testing.T) {
 
 	gotHashKV, err := server.HashKV(context.Background(), hashKVRequest)
 	require.NoError(t, err)
-	require.Same(t, hashKVResponse, gotHashKV)
+	require.Equal(t, hashKVResponse, gotHashKV)
 	require.Equal(t, 1, hashKVCalls)
 	require.Equal(t, int64(42), gotHashKV.GetHashRevision())
 	require.Equal(t, int64(10), gotHashKV.GetCompactRevision())
@@ -745,10 +751,54 @@ func TestFollowerHashesHedgeIsolatedStorageAndPreserveRevision(t *testing.T) {
 
 	got, err := server.HashKV(context.Background(), &etcdserverpb.HashKVRequest{})
 	require.NoError(t, err)
-	require.Same(t, hashKVResponse, got)
+	require.Equal(t, int64(77), got.GetHashRevision())
 	got, err = server.HashKV(context.Background(), &etcdserverpb.HashKVRequest{Revision: -1})
 	require.NoError(t, err)
-	require.Same(t, hashKVResponse, got)
+	require.Equal(t, int64(-1), got.GetHashRevision())
+}
+
+func TestFollowerHashesHedgeRejectsInvalidProxyPayload(t *testing.T) {
+	t.Run("hash zero current revision", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		rec := &recordingMetrics{}
+		server.metricCli = rec
+		initMaintenanceProxyIntegrityMetrics(rec)
+		server.backend = &maintenanceHashTrapBackendShim{BackendShim: server.backend, err: errors.New("local storage unavailable")}
+		server.peers = testPeerService{
+			isLeader: false, proxyEnabled: true,
+			epochFn: func() (uint64, bool) { return 7, false },
+			hashFn: func(context.Context, *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+				return &etcdserverpb.HashResponse{Header: txnHeader(0)}, nil
+			},
+		}
+
+		response, err := server.Hash(context.Background(), &etcdserverpb.HashRequest{})
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.Equal(t, []interface{}{int64(0), 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCHash))
+	})
+
+	t.Run("hash kv revision mismatch", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		rec := &recordingMetrics{}
+		server.metricCli = rec
+		initMaintenanceProxyIntegrityMetrics(rec)
+		server.backend = &maintenanceHashTrapBackendShim{BackendShim: server.backend, err: errors.New("local storage unavailable")}
+		server.peers = testPeerService{
+			isLeader: false, proxyEnabled: true,
+			epochFn: func() (uint64, bool) { return 7, false },
+			hashKVFn: func(context.Context, *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+				return &etcdserverpb.HashKVResponse{Header: txnHeader(7), HashRevision: 4, CompactRevision: 3}, nil
+			},
+		}
+
+		response, err := server.HashKV(context.Background(), &etcdserverpb.HashKVRequest{Revision: 5})
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.Equal(t, []interface{}{int64(0), 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCHashKV))
+	})
 }
 
 func TestFollowerHashesHedgeIsolatedLeaderWithLocalStorage(t *testing.T) {
@@ -1865,7 +1915,7 @@ func TestPeerHashKVHandlerRejectsByEtcdPriority(t *testing.T) {
 }
 
 func TestHedgedPeerHashKVRejectsInvalidForwardedResult(t *testing.T) {
-	for _, shape := range []string{"nil", "mixed", "missing_header", "negative_revision"} {
+	for _, shape := range []string{"nil", "mixed", "missing_header", "negative_revision", "payload"} {
 		t.Run(shape, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
 			defer closeFn()
@@ -1884,6 +1934,9 @@ func TestHedgedPeerHashKVRejectsInvalidForwardedResult(t *testing.T) {
 					}
 					if shape == "negative_revision" {
 						return &etcdserverpb.HashKVResponse{Header: txnHeader(-1)}, nil
+					}
+					if shape == "payload" {
+						return &etcdserverpb.HashKVResponse{Header: txnHeader(7), HashRevision: 6, CompactRevision: -1}, nil
 					}
 					return nil, nil
 				},

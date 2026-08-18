@@ -754,7 +754,8 @@ func (s *RPCServer) hedgedMaintenanceHash(ctx context.Context, req *etcdserverpb
 				return nil, err
 			}
 			response, err := s.peers.Hash(proxyCtx, req)
-			return validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCHash, response, err)
+			response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCHash, response, err)
+			return validateHashProxyPayload(s.metricCli, response, err)
 		},
 		func(response *etcdserverpb.HashResponse, err error) {
 			s.observeForwardedRevision(response.GetHeader(), err)
@@ -789,7 +790,8 @@ func (s *RPCServer) hedgedMaintenanceHashKV(
 				return nil, err
 			}
 			response, err := s.peers.HashKV(proxyCtx, req)
-			return validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCHashKV, response, err)
+			response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCHashKV, response, err)
+			return validateHashKVProxyPayload(s.metricCli, req, response, err)
 		},
 		func(response *etcdserverpb.HashKVResponse, err error) {
 			s.observeForwardedRevision(response.GetHeader(), err)
