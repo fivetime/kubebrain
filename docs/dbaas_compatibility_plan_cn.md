@@ -57286,6 +57286,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kv.proxy.integrity_failure{rpc="delete_range"}` 并 DataLoss fail closed；signed lease ID（含 MinInt64）保持合法，不增加
   标签。通用空/范围/异常 payload 与公开 follower 注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5103 将核心 KV leader-proxy payload 完整性扩展到递归 Txn response tree。对照
+  `/root/etcd/server/etcdserver/txn/txn.go::newTxnResp/executeTxn`，upstream 在每层按 compare path 设置 Succeeded 并选择
+  Success/Failure branch，预分配与所选 RequestOp 等长、同序且 union 类型一一对应的 ResponseOp；嵌套 Txn 递归遵守
+  同一合同。旧 follower proxy 只校验顶层 response/header，会确认 revision=0、缺失/多余/nil op、range/put/delete/txn
+  类型错配、typed nil 或嵌套错误分支。现五个 Txn 转发出口均在 forwarded revision 观察前递归验证整个响应树，违例
+  复用固定 `kv.proxy.integrity_failure{rpc="txn"}` 并 DataLoss fail closed，不增加标签。通用 success/failure、多类型、
+  嵌套异常与公开 follower 注入回归通过，既有无 compare/多层 Txn 保持兼容；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -4531,6 +4531,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   DeleteRange success 同样必须有正 revision 与非负 Deleted；PrevKv=false 不得回传前值，PrevKv=true 时 PrevKvs 数量
   必须精确等于 Deleted。每项必须非 nil、位于 exact/range/from-key 请求边界、按 key 严格升序、generation 合法且
   mod revision 早于删除 revision；负 lease ID 不误报损坏。
+  Txn success 的顶层 revision 必须为正；validator 按每一层 response.Succeeded 选择原请求 Success/Failure branch，
+  递归验证 ResponseOp 数量与顺序，以及 range/put/delete/txn union 和 typed payload 与对应 RequestOp 一一匹配。
+  任一 nil、缺失、多余、错类型或嵌套分支错配都在 forwarded revision 观察前 DataLoss fail closed。
   production 要求 60 秒新鲜
   Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。
