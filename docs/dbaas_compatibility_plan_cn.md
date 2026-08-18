@@ -57649,6 +57649,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   expired、零 grant、超限 grant 的 fail-closed 反例。定向二十轮、包级 race、完整非 production、production
   326 项四分片与 vet 全部通过。本项不改变旧 artifact reader、logical.v2 schema、在线 lease 或 TiKV 数据路径。
 
+- A5144 将 A5143 的 lease 字段校验补成导出点时序证据。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go::LeaseTimeToLive`，upstream 在返回前通过 header filler 写入
+  当前 KV revision；KubeBrain leader 也用 backend current revision，故 attached lease 的 TTL 响应不得缺 header，
+  且 revision 不得早于首次 Range 固定的 logical snapshot revision。旧 exporter 忽略 header，会把 stale
+  follower/proxy 观测与较新的 KV snapshot 组合为摘要正确的制品。现等于或晚于 snapshot 均合法，缺 header 与
+  `snapshot-1` 明确 fail closed；定向二十轮、包级 race、完整非 production、production 326 项四分片与 vet
+  全部通过。本项不要求导出期间 revision 停止推进，也不改变 artifact schema、服务端 header、在线 lease 或 TiKV 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
