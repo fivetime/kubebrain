@@ -57722,6 +57722,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race、完整非 production、production 326 项四分片与 vet 全部通过。本项不替代写入 Txn 的原子 version compare，
   不影响 `ALLOW_OVERWRITE=true`（其不执行预检），也不改变 artifact、在线 KV/lease 或 TiKV 数据路径。
 
+- A5152 补齐 logical restore 失败补偿的 success response 准入。旧 lease cleanup 丢弃 Revoke response，只看 RPC
+  error；旧 no-overwrite rollback 只读 `Succeeded`，nil response 会 panic，少/错 Delete response、坏 revision、
+  `Deleted!=1` 或未请求 PrevKV 都会被误报为“committed batches were rolled back”。对照
+  `/root/etcd/server/etcdserver/{apply/backend.go,api/v3rpc/lease.go}` 与 KubeBrain lease/Txn proxy validator，现每次
+  Revoke 要求非 nil response 与正 revision header；每批 rollback Txn 要求非 nil、success branch、正 outer
+  revision、逐 key 等量 Delete response、内层 revision 等于 outer、每项精确删除一个 key 且无 PrevKV。异常
+  Revoke 合并进 cleanup error，异常 rollback 进入既有 `rollback incomplete`，不再把无法证明的补偿当成成功。
+  Revoke nil/坏 header，rollback 有效双 Delete 与 nil、compare failure、坏 header、数量/类型错误、revision 错配、
+  零/多删和残余 PrevKV 反例连续二十轮，包级 race、完整非 production、production 326 项四分片与 vet 全部通过。
+  本项不改变补偿顺序、并发修改保护、覆盖模式限制、artifact、正常在线 KV/lease 或 TiKV 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

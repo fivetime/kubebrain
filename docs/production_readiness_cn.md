@@ -4672,7 +4672,10 @@ error，且实际 TTL 位于 `[requested, MaxLeaseTTL]`；server-chosen 更长 T
 outer revision、与请求等量且类型均为 Put 的 response；每个 Put response 必须带与 outer revision 相同的 header，
 且不能夹带未请求的 PrevKV。该门禁同时适用于默认 no-overwrite 与 `ALLOW_OVERWRITE=true`；异常发生在 RPC
 返回后，按既有错误路径清理新建 lease，并在 no-overwrite 模式回滚已记录批次，但覆盖模式无法保证撤销服务端
-已经提交的永久键或旧值。v1 无 lease 制品继续可恢复；
+已经提交的永久键或旧值。lease cleanup 的每次成功 Revoke 必须返回正 revision header；no-overwrite rollback
+的每批 Txn 必须选择 success branch、返回正 outer revision 和逐 key 等量 Delete response，每项内层 revision
+等于 outer、`Deleted=1` 且无未请求 PrevKV。RPC error 或畸形 success 都会明确报告 cleanup/rollback incomplete，
+不会误报补偿完成。v1 无 lease 制品继续可恢复；
 v1 中记录非零 lease 时因缺少 TTL 元数据会在任何写入前拒绝。没有 manifest/footer 的
 旧 JSONL 无法证明完整性，同样明确拒绝。
 
