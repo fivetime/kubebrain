@@ -97,6 +97,23 @@ func validateAuthProxyResult[T any](metricCli metrics.Metrics, action string, re
 	return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned both response and error", action))
 }
 
+func validateAuthNameListProxyPayload[T any](metricCli metrics.Metrics, action string, names []string, response *T, err error) (*T, error) {
+	if err != nil {
+		return response, err
+	}
+	for index, name := range names {
+		if name == "" {
+			emitAuthProxyIntegrityFailure(metricCli, action)
+			return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned an empty name", action))
+		}
+		if index > 0 && names[index-1] >= name {
+			emitAuthProxyIntegrityFailure(metricCli, action)
+			return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned duplicate or unsorted names", action))
+		}
+	}
+	return response, nil
+}
+
 func emitAuthProxyIntegrityFailure(metricCli metrics.Metrics, action string) {
 	if metricCli != nil {
 		_ = metricCli.EmitCounter("auth.proxy.integrity_failure", 1, metrics.Tag("action", action))

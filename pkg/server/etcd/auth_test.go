@@ -565,6 +565,65 @@ func TestFollowerAuthReadsProxyToLeader(t *testing.T) {
 	require.Equal(t, []string{"user-get:u", "user-list", "role-get:r", "role-list"}, calls)
 }
 
+func TestFollowerRejectsInvalidAuthListProxyPayload(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		action    string
+		configure func(*testPeerService)
+		invoke    func(*RPCServer) (any, error)
+	}{
+		{
+			name: "empty user", action: authProxyActionUserList,
+			configure: func(peers *testPeerService) {
+				peers.userListFn = func(context.Context, *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
+					return &etcdserverpb.AuthUserListResponse{Header: txnHeader(2), Users: []string{""}}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.UserList(context.Background(), &etcdserverpb.AuthUserListRequest{})
+			},
+		},
+		{
+			name: "duplicate role", action: authProxyActionRoleList,
+			configure: func(peers *testPeerService) {
+				peers.roleListFn = func(context.Context, *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
+					return &etcdserverpb.AuthRoleListResponse{Header: txnHeader(2), Roles: []string{"reader", "reader"}}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.RoleList(context.Background(), &etcdserverpb.AuthRoleListRequest{})
+			},
+		},
+		{
+			name: "unsorted users", action: authProxyActionUserList,
+			configure: func(peers *testPeerService) {
+				peers.userListFn = func(context.Context, *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
+					return &etcdserverpb.AuthUserListResponse{Header: txnHeader(2), Users: []string{"root", "alice"}}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.UserList(context.Background(), &etcdserverpb.AuthUserListRequest{})
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initAuthProxyIntegrityMetrics(rec)
+			peers := testPeerService{isLeader: false, proxyEnabled: true}
+			tt.configure(&peers)
+			server.peers = peers
+
+			response, err := tt.invoke(server)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedAuthProxyIntegrityValues(rec, tt.action))
+		})
+	}
+}
+
 func TestFollowerAuthenticateProxiesAndClearsPassword(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

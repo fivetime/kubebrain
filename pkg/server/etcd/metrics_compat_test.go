@@ -390,6 +390,43 @@ func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
 	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
 }
 
+func TestAuthNameListProxyPayloadValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		action string
+		names  []string
+		valid  bool
+	}{
+		{name: "empty list", action: authProxyActionUserList, valid: true},
+		{name: "sorted users", action: authProxyActionUserList, names: []string{"alice", "root"}, valid: true},
+		{name: "sorted roles", action: authProxyActionRoleList, names: []string{"reader", "root", "writer"}, valid: true},
+		{name: "empty user", action: authProxyActionUserList, names: []string{""}},
+		{name: "duplicate role", action: authProxyActionRoleList, names: []string{"reader", "reader"}},
+		{name: "unsorted user", action: authProxyActionUserList, names: []string{"root", "alice"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			want := &etcdserverpb.AuthUserListResponse{Header: txnHeader(1)}
+			response, err := validateAuthNameListProxyPayload(rec, tt.action, tt.names, want, nil)
+			if tt.valid {
+				require.Same(t, want, response)
+				require.NoError(t, err)
+				require.Empty(t, recordedAuthProxyIntegrityValues(rec, tt.action))
+				return
+			}
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Equal(t, []interface{}{1}, recordedAuthProxyIntegrityValues(rec, tt.action))
+		})
+	}
+
+	wantErr := errors.New("transport failed")
+	want := &etcdserverpb.AuthUserListResponse{}
+	response, err := validateAuthNameListProxyPayload(nil, authProxyActionUserList, []string{""}, want, wantErr)
+	require.Same(t, want, response)
+	require.ErrorIs(t, err, wantErr)
+}
+
 func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initKVProxyIntegrityMetrics(rec)

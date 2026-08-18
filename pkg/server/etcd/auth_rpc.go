@@ -324,6 +324,7 @@ func (s *RPCServer) UserList(ctx context.Context, request *etcdserverpb.AuthUser
 	if proxy {
 		response, err := s.peers.UserList(proxyCtx, request)
 		response, err = validateAuthProxyResult(s.metricCli, authProxyActionUserList, response, err)
+		response, err = validateAuthNameListProxyPayload(s.metricCli, authProxyActionUserList, response.GetUsers(), response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -540,6 +541,7 @@ func (s *RPCServer) RoleList(ctx context.Context, request *etcdserverpb.AuthRole
 	if proxy {
 		response, err := s.peers.RoleList(proxyCtx, request)
 		response, err = validateAuthProxyResult(s.metricCli, authProxyActionRoleList, response, err)
+		response, err = validateAuthNameListProxyPayload(s.metricCli, authProxyActionRoleList, response.GetRoles(), response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
