@@ -3499,7 +3499,10 @@ arbitrary-range task 的安全创建入口现为：
   --ca=/tls/ca.crt --cert=/tls/tls.crt --key=/tls/tls.key
 ```
 
-`start-ts=0` 会取得新的 PD TSO。命令先注册 operation UUID 唯一、TTL 两小时的 bootstrap
+`start-ts=0` 会取得新的 PD TSO。PD 返回的 signed physical/logical 分量必须满足 18-bit logical
+布局、无负值或移位溢出，组合后的非零 TSO 还必须可逆地还原同一分量；相同准入也用于 metadata
+提交后的 fresh TSO。异常 start TSO 在写入前失败，异常 post-commit TSO 保留已创建 task 与 guard
+但不输出 receipt。命令先注册 operation UUID 唯一、TTL 两小时的 bootstrap
 service safepoint；如果全局 GC 已越过该 TSO，立即失败并只清理自己的 safepoint。随后一条 etcd
 transaction 同时比较全局 `/kubebrain/native-pitr/owner`、全局 task info 前缀，以及该 task 的
 ranges/checkpoint/storage-checkpoint/last-error 前缀均为空，再原子写 owner record、

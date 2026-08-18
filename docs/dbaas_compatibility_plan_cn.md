@@ -57824,6 +57824,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   326 项四分片与 vet 全部通过。本项不改变 preflight receipt schema、PD topology、探针 RPC、task metadata、
   TiKV 存储编码或在线 etcd 数据路径。
 
+- A5161 修复 native PITR task create 两处 PD `GetTS` 直接调用 `oracle.ComposeTS` 的时间语义缺口。
+  client-go 的 ComposeTS 只是 `(physical<<18)+logical`，不拒绝负分量、logical 越过 18-bit 或 signed shift
+  溢出；旧自动 start TSO 可把异常结果交给任务创建，post-commit TSO 甚至可能在组合后落入 interval 并写入
+  receipt。对照 client-go `oracle/oracle.go` 与 PD TSO 布局，新增共享 `ComposePDTS`：physical/logical 必须
+  非负，physical 不得超过安全左移上限，logical 必须 `<2^18`，组合结果非零且 ExtractPhysical/
+  ExtractLogical 必须精确回环。自动 start 与 metadata commit 后 fresh TSO 都复用该准入；前者在任何任务
+  mutation 前失败，后者保留已提交 metadata/bootstrap guard 且不签发 receipt，遵循既有孤儿修复合同。
+  logical 两端与真实毫秒 physical 正例、零/负/越界/溢出反例、post-commit 异常连续二十轮、两包 race、
+  完整非 production、production 326 项四分片与 vet 全部通过。本项不改变 TSO wire layout、task receipt
+  schema、safepoint、metadata、TiKV 编码或在线 etcd 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
