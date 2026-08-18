@@ -57137,6 +57137,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `maintenance.proxy.integrity_failure{rpc}` 六标签和 critical 告警覆盖结构违例，不扩大指标基数。通用 validator、
   公开 Alarm/Downgrade、hedged HashKV 与 Defragment 例外回归连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5086 将 mandatory response header 契约闭合到线性化 MemberList leader-proxy。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/member.go`，upstream `ClusterServer.MemberList` 成功路径始终返回
+  `Header: cs.header()`，其中携带 cluster ID、member ID 与 raft term；非 nil response 携带 nil Header 会让 DBaaS
+  客户端失去成员发现的 cluster identity。现 follower linearizable MemberList 在 revision 观察前验证 success response
+  的 `ResponseHeader` 非 nil，missing-header 与 nil/mixed 一样 DataLoss fail closed。既有固定
+  `cluster.proxy.integrity_failure{rpc="member_list"}` 单标签和 critical 告警覆盖结构违例，不增加指标基数。通用
+  validator 与公开路径表驱动回归连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
