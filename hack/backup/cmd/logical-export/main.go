@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -62,6 +63,7 @@ func run() (retErr error) {
 	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
 	total := 0
 	var snapshotRevision int64
+	expectedPageCount := int64(-1)
 	var writer *backupfile.AtomicWriter
 	exportedLeases := make(map[int64]struct{})
 	defer func() {
@@ -81,9 +83,11 @@ func run() (retErr error) {
 		if err != nil {
 			return err
 		}
-		if err := validateExportPage(resp, snapshotRevision); err != nil {
+		remaining, err := validateExportPage(resp, snapshotRevision, start, end, batchSize, expectedPageCount)
+		if err != nil {
 			return err
 		}
+		expectedPageCount = remaining
 		if snapshotRevision == 0 {
 			snapshotRevision = resp.Header.Revision
 			writer, err = backupfile.NewAtomicWriter(output, prefix, snapshotRevision)
@@ -154,24 +158,55 @@ func run() (retErr error) {
 	return err
 }
 
-func validateExportPage(response *clientv3.GetResponse, snapshotRevision int64) error {
+func validateExportPage(response *clientv3.GetResponse, snapshotRevision int64, start, end []byte, limit, expectedCount int64) (int64, error) {
 	if response == nil {
-		return errors.New("range returned an empty response")
+		return 0, errors.New("range returned an empty response")
 	}
 	if response.Header == nil {
-		return errors.New("range response omitted its header")
+		return 0, errors.New("range response omitted its header")
 	}
 	if response.Header.Revision <= 0 {
-		return fmt.Errorf("range response returned invalid revision %d", response.Header.Revision)
+		return 0, fmt.Errorf("range response returned invalid revision %d", response.Header.Revision)
 	}
 	if snapshotRevision > 0 && response.Header.Revision < snapshotRevision {
-		return fmt.Errorf("range response revision %d is behind snapshot revision %d",
+		return 0, fmt.Errorf("range response revision %d is behind snapshot revision %d",
 			response.Header.Revision, snapshotRevision)
 	}
-	if response.More && len(response.Kvs) == 0 {
-		return errors.New("range response indicated more records after an empty page")
+	if response.Count < 0 || response.Count < int64(len(response.Kvs)) {
+		return 0, fmt.Errorf("range response returned count %d for %d records", response.Count, len(response.Kvs))
 	}
-	return nil
+	if expectedCount >= 0 && response.Count != expectedCount {
+		return 0, fmt.Errorf("range response count %d does not continue previous remaining count %d", response.Count, expectedCount)
+	}
+	if int64(len(response.Kvs)) > limit {
+		return 0, fmt.Errorf("range response returned %d records above page limit %d", len(response.Kvs), limit)
+	}
+	if response.More != (response.Count > int64(len(response.Kvs))) {
+		return 0, errors.New("range response returned inconsistent count/more metadata")
+	}
+	if response.More && int64(len(response.Kvs)) != limit {
+		return 0, errors.New("range response indicated more records after a non-full page")
+	}
+	effectiveSnapshot := snapshotRevision
+	if effectiveSnapshot == 0 {
+		effectiveSnapshot = response.Header.Revision
+	}
+	for i, kv := range response.Kvs {
+		if kv == nil {
+			return 0, fmt.Errorf("range response returned a nil record at index %d", i)
+		}
+		if len(kv.Key) == 0 || bytes.Compare(kv.Key, start) < 0 || (!bytes.Equal(end, []byte{0}) && bytes.Compare(kv.Key, end) >= 0) {
+			return 0, fmt.Errorf("range response returned key %q outside requested range [%q,%q)", kv.Key, start, end)
+		}
+		if i > 0 && bytes.Compare(response.Kvs[i-1].Key, kv.Key) >= 0 {
+			return 0, errors.New("range response records are not in strict ascending key order")
+		}
+		rec := record.Record{CreateRevision: kv.CreateRevision, ModRevision: kv.ModRevision, Version: kv.Version}
+		if err := backupfile.ValidateRecordMetadata(rec, effectiveSnapshot); err != nil {
+			return 0, fmt.Errorf("range response record %q: %w", kv.Key, err)
+		}
+	}
+	return response.Count - int64(len(response.Kvs)), nil
 }
 
 func exportLeaseRecord(id int64, ttl *clientv3.LeaseTimeToLiveResponse, snapshotRevision int64) (record.Lease, error) {

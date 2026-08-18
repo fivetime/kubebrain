@@ -19,52 +19,170 @@ func TestNextKeyDoesNotMutateInput(t *testing.T) {
 }
 
 func TestValidateExportPage(t *testing.T) {
+	validKV := func(key string) *mvccpb.KeyValue {
+		return &mvccpb.KeyValue{Key: []byte(key), CreateRevision: 1, ModRevision: 2, Version: 1}
+	}
 	tests := map[string]struct {
-		response *clientv3.GetResponse
-		fixed    int64
-		wantErr  string
+		response      *clientv3.GetResponse
+		fixed         int64
+		start         string
+		end           string
+		limit         int64
+		expectedCount int64
+		wantRemaining int64
+		wantErr       string
 	}{
 		"initial empty snapshot": {
-			response: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}},
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}},
+			start:         "/registry/",
+			end:           "/registry0",
+			limit:         2,
+			expectedCount: -1,
 		},
 		"continued snapshot": {
 			response: &clientv3.GetResponse{
 				Header: &etcdserverpb.ResponseHeader{Revision: 43},
-				Kvs:    []*mvccpb.KeyValue{{Key: []byte("/registry/a")}},
+				Kvs:    []*mvccpb.KeyValue{validKV("/registry/a")},
+				Count:  2,
 				More:   true,
 			},
-			fixed: 42,
+			fixed:         42,
+			start:         "/registry/",
+			end:           "/registry0",
+			limit:         1,
+			expectedCount: 2,
+			wantRemaining: 1,
+		},
+		"unbounded from-key range": {
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 1, Kvs: []*mvccpb.KeyValue{validKV("b")}},
+			start:         "a",
+			end:           "\x00",
+			limit:         1,
+			expectedCount: -1,
 		},
 		"empty response": {
-			wantErr: "empty response",
+			limit:         2,
+			expectedCount: -1,
+			wantErr:       "empty response",
 		},
 		"missing header": {
-			response: &clientv3.GetResponse{},
-			wantErr:  "omitted its header",
+			response:      &clientv3.GetResponse{},
+			limit:         2,
+			expectedCount: -1,
+			wantErr:       "omitted its header",
 		},
 		"zero initial revision": {
-			response: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{}},
-			wantErr:  "invalid revision 0",
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{}},
+			limit:         2,
+			expectedCount: -1,
+			wantErr:       "invalid revision 0",
 		},
 		"stale continued revision": {
-			response: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 41}},
-			fixed:    42,
-			wantErr:  "revision 41 is behind snapshot revision 42",
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 41}},
+			fixed:         42,
+			limit:         2,
+			expectedCount: -1,
+			wantErr:       "revision 41 is behind snapshot revision 42",
 		},
 		"empty continuation page": {
-			response: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, More: true},
-			fixed:    42,
-			wantErr:  "more records after an empty page",
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 1, More: true},
+			fixed:         42,
+			limit:         2,
+			expectedCount: -1,
+			wantErr:       "non-full page",
+		},
+		"count below records": {
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Kvs: []*mvccpb.KeyValue{validKV("a")}},
+			start:         "a",
+			end:           "z",
+			limit:         2,
+			expectedCount: -1,
+			wantErr:       "count 0 for 1 records",
+		},
+		"broken count continuity": {
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 2, More: true, Kvs: []*mvccpb.KeyValue{validKV("a")}},
+			start:         "a",
+			end:           "z",
+			limit:         1,
+			expectedCount: 3,
+			wantErr:       "does not continue previous remaining count 3",
+		},
+		"above page limit": {
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a"), validKV("b")}},
+			start:         "a",
+			end:           "z",
+			limit:         1,
+			expectedCount: -1,
+			wantErr:       "above page limit 1",
+		},
+		"inconsistent more": {
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a")}},
+			start:         "a",
+			end:           "z",
+			limit:         1,
+			expectedCount: -1,
+			wantErr:       "inconsistent count/more metadata",
+		},
+		"nil record": {
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 1, Kvs: []*mvccpb.KeyValue{nil}},
+			start:         "a",
+			end:           "z",
+			limit:         1,
+			expectedCount: -1,
+			wantErr:       "nil record at index 0",
+		},
+		"key below start": {
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}},
+			start:         "b",
+			end:           "z",
+			limit:         1,
+			expectedCount: -1,
+			wantErr:       "outside requested range",
+		},
+		"key at end": {
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 1, Kvs: []*mvccpb.KeyValue{validKV("z")}},
+			start:         "a",
+			end:           "z",
+			limit:         1,
+			expectedCount: -1,
+			wantErr:       "outside requested range",
+		},
+		"descending records": {
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 2, Kvs: []*mvccpb.KeyValue{validKV("b"), validKV("a")}},
+			start:         "a",
+			end:           "z",
+			limit:         2,
+			expectedCount: -1,
+			wantErr:       "not in strict ascending",
+		},
+		"duplicate records": {
+			response:      &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a"), validKV("a")}},
+			start:         "a",
+			end:           "z",
+			limit:         2,
+			expectedCount: -1,
+			wantErr:       "not in strict ascending",
+		},
+		"invalid MVCC metadata": {
+			response: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 1, Kvs: []*mvccpb.KeyValue{{
+				Key: []byte("a"), CreateRevision: 1, ModRevision: 43, Version: 1,
+			}}},
+			start:         "a",
+			end:           "z",
+			limit:         1,
+			expectedCount: -1,
+			wantErr:       "invalid MVCC metadata",
 		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			err := validateExportPage(tc.response, tc.fixed)
+			remaining, err := validateExportPage(tc.response, tc.fixed, []byte(tc.start), []byte(tc.end), tc.limit, tc.expectedCount)
 			if tc.wantErr != "" {
 				require.ErrorContains(t, err, tc.wantErr)
 				return
 			}
 			require.NoError(t, err)
+			require.Equal(t, tc.wantRemaining, remaining)
 		})
 	}
 }
