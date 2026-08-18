@@ -57213,6 +57213,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   查询失败保持 upstream Range error→nil PrevKv 语义并沿用 `watch.prev_kv.compact_revision.err`。创建、压缩边界、缺失 PUT/
   DELETE、混合 PrevKv 订阅隔离、leader send fence 与正常 PrevKV 回归连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5095 将 Lease leader-proxy 完整性从 response shape/header 扩展到请求身份绑定。对照
+  `/root/etcd/server/etcdserver/v3_server.go` 与 `api/v3rpc/lease.go`：LeaseGrant 在自动分配或显式 ID 确定后回传同一 ID；
+  KeepAlive 每条 response 直接取对应 request.ID；TimeToLive 成功和 not-found `TTL=-1` 都回显 request.ID。旧 follower proxy
+  只校验 response/error/header/revision，会在 Grant/TTL unary revision 观察前或 KeepAlive downstream Send 前接受另一个 lease
+  的结果。现三类 success response 必须与请求 ID 按完整 signed int64 域精确相等，否则复用固定
+  `lease.proxy.integrity_failure{rpc="grant|keep_alive|time_to_live"}` 并 DataLoss fail closed，不增加标签；Revoke/Leases 无单一
+  response ID，保持原合同。通用 validator、负/MinInt64 ID、公开 follower Grant/TTL 及 streaming KeepAlive 错配与正常代理
+  回归连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
