@@ -57049,6 +57049,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非法；source/proxy/send warning，protocol 与 telemetry 缺失/陈旧/非法/组合不完整 critical。确定性回归覆盖本地和
   forwarded send、internal proxy cancel、caller cancel、nil/mixed result 及固定零值；需要下一生产镜像和监控发布。
 
+- A5077 修复六类 unary Maintenance leader-proxy 接受 `(nil response,nil error)` 为成功、hedged path 可能让该结果
+  抢赢本地真实响应的 fail-open 缺口。对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go`，upstream handler
+  对 Defragment/Status/Hash/HashKV/Alarm/Downgrade 的成功路径始终构造非 nil protobuf；KubeBrain 独有的跨 member
+  adapter 旧实现未约束 result ownership，response+error 混合也可能携带不可信 header 进入 revision observation。
+  现六个 remote closure/直接代理统一要求 response 与 error 恰有其一，`(nil,nil)` 和 mixed 均在观察 header 前返回
+  DataLoss。新增固定 `maintenance.proxy.integrity_failure{rpc="alarm|defragment|status|hash|hash_kv|downgrade"}`，RPC
+  server 创建时初始化六类权威零值；production 生成 60 秒新鲜 Ready Pod UID current/increase，要求各 `6×Ready`、
+  值合法且未知 rpc 非法，任一增量与 telemetry 缺失/陈旧/非法/组合不完整均 critical。通用回归覆盖六类 nil/mixed/
+  正常 response/正常 error，公开 Alarm/Downgrade follower 路径同时证明 nil/mixed 不再成功；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
