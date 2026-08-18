@@ -40,6 +40,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	etcdcompat "github.com/kubewharf/kubebrain/pkg/server/etcd"
@@ -1099,7 +1100,7 @@ func TestInfoHTTPVersionHandlerExposeEtcdCORSOptions(t *testing.T) {
 	versionHandler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/version", nil))
 	require.Equal(t, http.StatusOK, get.Code)
 	require.Contains(t, get.Body.String(), `"etcdserver"`)
-	require.Contains(t, get.Body.String(), `"storage":"3.7.0"`)
+	require.Contains(t, get.Body.String(), `"storage":"`+etcdsnapshot.StorageVersion+`"`)
 	require.Equal(t, "*", get.Header().Get("Access-Control-Allow-Origin"))
 }
 
