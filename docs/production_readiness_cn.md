@@ -4663,7 +4663,9 @@ snapshot converter 不再对不可能由 etcd MVCC 产生的元数据给出不�
 promotion grace 令 remaining 高于正 `granted_ttl`，则规范化回 grant，缺 grant 的旧 v2 制品则最多使用
 官方 `MaxLeaseTTL`，避免合法制品因目标不可授予的 TTL 在写入前失败。restore 在创建任何目标 lease 前还会
 遍历完整 artifact，拒绝 rewrite 产生空 key 或把两个源 key 合并为同一目标；logical verify 使用同一 rewrite
-实现与唯一性门禁。v1 无 lease 制品继续可恢复；
+实现与唯一性门禁。每次目标 LeaseGrant 成功响应还必须含 signed nonzero 唯一 ID、正 revision header、空 legacy
+error，且实际 TTL 位于 `[requested, MaxLeaseTTL]`；server-chosen 更长 TTL 合法，异常响应携带的非零 lease 会与
+此前 grants 一并按 ID 去重 revoke，任何 Put 都不会执行。v1 无 lease 制品继续可恢复；
 v1 中记录非零 lease 时因缺少 TTL 元数据会在任何写入前拒绝。没有 manifest/footer 的
 旧 JSONL 无法证明完整性，同样明确拒绝。
 

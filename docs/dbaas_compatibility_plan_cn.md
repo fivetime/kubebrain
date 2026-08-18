@@ -57692,6 +57692,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race、完整非 production、production 326 项四分片与 vet 全部通过。本项不改变无碰撞 rewrite、artifact、
   在线 KV/lease 或 TiKV 数据路径。
 
+- A5149 修复 logical restore 对目标 LeaseGrant malformed success 的盲信。旧路径只检查 RPC error 后直接使用
+  response ID；`ID=0` 会让后续 `WithLease(0)` 把 leased key 静默恢复为永久 key，两个 source lease 收到同一
+  target ID 则会被错误合并。对照 `/root/etcd/server/lease/lessor.go::Grant` 与 KubeBrain proxy validator，现要求
+  响应非 nil、signed ID 非零且跨 source 唯一、header revision 为正、legacy error 为空，并允许 min-lease-TTL
+  产生的 server-chosen 更长 TTL，但拒绝低于 request 或超过 `MaxLeaseTTL`。异常响应的非零 ID 先纳入清理集合；
+  cleanup 按 target ID 去重，全部发生在 Put 前。精确/更长 TTL 与负 ID 正例，以及 nil、零 ID、坏 header、legacy
+  error、缩短/超限 TTL、重复 ID 反例连续二十轮，包级 race、完整非 production、production 326 项四分片与
+  vet 全部通过。本项不改变正常 LeaseGrant、restore ID 重映射、artifact、在线 lease 或 TiKV 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
