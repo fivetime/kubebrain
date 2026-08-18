@@ -2280,7 +2280,7 @@ spec:
             severity: critical
           annotations:
             summary: KubeBrain rejected an invalid unary Maintenance proxy result
-            description: "A current Ready replica received neither response nor error, both response and error, or—except for Defragment—a success response without its mandatory header from the leader proxy for {{ $labels.rpc }}. The RPC failed closed with DataLoss; inspect peer adapters and transport response integrity before trusting Maintenance diagnostics."
+            description: "A current Ready replica received neither response nor error, both response and error, or—except for Defragment—a success response with a missing header or negative revision from the leader proxy for {{ $labels.rpc }}. The RPC failed closed with DataLoss; inspect peer adapters and transport response integrity before trusting Maintenance diagnostics."
         - alert: KubeBrainMaintenanceProxyIntegrityMetricsMissing
           expr: absent(kubebrain_dbaas:maintenance_proxy_integrity_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:maintenance_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 6 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:maintenance_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 6 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:maintenance_proxy_integrity_failure_invalid_values:count != 0
           for: 2m
@@ -2296,7 +2296,7 @@ spec:
             severity: critical
           annotations:
             summary: KubeBrain rejected an invalid unary KV proxy result
-            description: "A current Ready replica received neither response nor error, both response and error, or a success response without its mandatory header from the leader proxy for {{ $labels.rpc }}. The client-visible KV RPC failed closed with DataLoss before forwarded revision observation; inspect peer adapters and transport response integrity."
+            description: "A current Ready replica received neither response nor error, both response and error, or a success response with a missing header or negative revision from the leader proxy for {{ $labels.rpc }}. The client-visible KV RPC failed closed with DataLoss before forwarded revision observation; inspect peer adapters and transport response integrity."
         - alert: KubeBrainKVProxyIntegrityMetricsMissing
           expr: absent(kubebrain_dbaas:kv_proxy_integrity_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:kv_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 5 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:kv_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 5 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:kv_proxy_integrity_failure_invalid_values:count != 0
           for: 2m
@@ -2312,7 +2312,7 @@ spec:
             severity: critical
           annotations:
             summary: KubeBrain rejected an invalid Auth proxy result
-            description: "A current Ready replica received neither response nor error, both response and error, or a success response without its mandatory header from the leader proxy for {{ $labels.action }}. The authentication or RBAC operation failed closed with DataLoss before forwarded revision observation; inspect peer adapters immediately."
+            description: "A current Ready replica received neither response nor error, both response and error, or a success response with a missing header or negative revision from the leader proxy for {{ $labels.action }}. The authentication or RBAC operation failed closed with DataLoss before forwarded revision observation; inspect peer adapters immediately."
         - alert: KubeBrainAuthProxyIntegrityMetricsMissing
           expr: absent(kubebrain_dbaas:auth_proxy_integrity_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:auth_proxy_integrity_failure:current_by_pod_action * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 17 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:auth_proxy_integrity_failure:increase_10m_by_pod_action * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 17 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:auth_proxy_integrity_failure_invalid_values:count != 0
           for: 2m
@@ -2328,7 +2328,7 @@ spec:
             severity: critical
           annotations:
             summary: KubeBrain rejected an invalid Lease proxy result
-            description: "A current Ready replica received neither response nor error, both response and error, or a success response without its mandatory header from the leader proxy for Lease {{ $labels.rpc }}. Unary RPCs and KeepAlive fail closed with DataLoss before revision observation or downstream send; inspect peer adapters immediately."
+            description: "A current Ready replica received neither response nor error, both response and error, or a success response with a missing header or negative revision from the leader proxy for Lease {{ $labels.rpc }}. Unary RPCs and KeepAlive fail closed with DataLoss before revision observation or downstream send; inspect peer adapters immediately."
         - alert: KubeBrainLeaseProxyIntegrityMetricsMissing
           expr: absent(kubebrain_dbaas:lease_proxy_integrity_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:lease_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 5 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:lease_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 5 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:lease_proxy_integrity_failure_invalid_values:count != 0
           for: 2m
@@ -2344,7 +2344,7 @@ spec:
             severity: critical
           annotations:
             summary: KubeBrain rejected an invalid MemberList proxy result
-            description: "A current Ready replica received neither response nor error, both response and error, or a success response without its mandatory header from the leader MemberList proxy. The linearizable cluster-discovery RPC failed closed with DataLoss before revision observation."
+            description: "A current Ready replica received neither response nor error, both response and error, or a success response with a missing header or negative revision from the leader MemberList proxy. The linearizable cluster-discovery RPC failed closed with DataLoss before revision observation."
         - alert: KubeBrainClusterProxyIntegrityMetricsMissing
           expr: absent(kubebrain_dbaas:cluster_proxy_integrity_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:cluster_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:cluster_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:cluster_proxy_integrity_failure_invalid_values:count != 0
           for: 2m

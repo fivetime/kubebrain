@@ -4507,26 +4507,27 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - `maintenance_proxy_integrity_failure{rpc="alarm|defragment|status|hash|hash_kv|downgrade"}` 在 RPC server 创建时
   初始化六类权威零值。所有 unary Maintenance leader-proxy 必须恰好返回 response 或 error 之一；`(nil,nil)` 与
   response+error 混合均 DataLoss fail closed。Alarm/Status/Hash/HashKV/Downgrade 的 success response 还必须携带
-  mandatory `ResponseHeader`；Defragment 对齐 upstream，允许无 Header 的空成功响应。production 要求 60 秒新鲜
+  mandatory `ResponseHeader` 且 revision 非负；Defragment 对齐 upstream，允许无 Header 的空成功响应。production 要求 60 秒新鲜
   Ready Pod UID current/10 分钟 increase `6×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。
 - `kv_proxy_integrity_failure{rpc="range|txn|put|delete_range|compact"}` 在 RPC server 创建时初始化五类权威零值。
   所有核心 unary KV leader-proxy 必须在 forwarded revision 观察前证明 response/error 恰有其一，且 success response
-  携带 mandatory `ResponseHeader`；nil/mixed/missing-header 结果均 DataLoss fail closed。production 要求 60 秒新鲜
+  携带 mandatory `ResponseHeader` 且 revision 非负；nil/mixed/missing-header/negative-revision 结果均 DataLoss fail closed。production 要求 60 秒新鲜
   Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。
 - `auth_proxy_integrity_failure{action}` 在 RPC server 创建时为 auth enable/disable/status、authenticate、全部 user/role
   动作初始化 17 类权威零值。所有 Auth leader-proxy 必须在 forwarded revision 观察前证明 response/error 恰有其一，
-  且 success response 携带 mandatory `ResponseHeader`；nil/mixed/missing-header 均 DataLoss fail closed。production 要求
+  且 success response 携带 mandatory `ResponseHeader` 与非负 revision；nil/mixed/missing-header/negative-revision 均 DataLoss fail closed。production 要求
   60 秒新鲜 Ready Pod UID current/10 分钟 increase `17×Ready` 完整、值合法且拒绝未知 action；任一事件或 telemetry
   缺失、陈旧、非法、组合不完整均 critical。
 - `lease_proxy_integrity_failure{rpc="grant|revoke|keep_alive|time_to_live|leases"}` 在 RPC server 创建时初始化五类
   权威零值。所有 Lease unary/read fallback 与 streaming KeepAlive leader-proxy 必须在 revision 观察或 downstream
-  send 前证明 response/error 恰有其一，且 success response 携带 mandatory `ResponseHeader`；nil/mixed/missing-header
-  均 DataLoss fail closed。production 要求 60 秒新鲜 Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值
+  send 前证明 response/error 恰有其一，且 success response 携带 mandatory `ResponseHeader` 与非负 revision；
+  nil/mixed/missing-header/negative-revision 均 DataLoss fail closed。production 要求 60 秒新鲜 Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值
   合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、非法、组合不完整均 critical。
 - `cluster_proxy_integrity_failure{rpc="member_list"}` 在 RPC server 创建时初始化权威零值；线性化 MemberList
-  leader-proxy 的 success response 必须携带 mandatory `ResponseHeader`，nil/mixed/missing-header 结果都必须在 revision
+  leader-proxy 的 success response 必须携带 mandatory `ResponseHeader` 与非负 revision，nil/mixed/missing-header/
+  negative-revision 结果都必须在 revision
   观察前 DataLoss fail closed。production 要求每个 Ready Pod UID 都有 60 秒新鲜 current/10 分钟 increase 且值合法、
   无未知 rpc；事件或 telemetry 缺失/陈旧/非法均 critical。
   peer HTTP corruption-check HashKV 的 hedged leader 旁路复用 `maintenance_proxy_integrity_failure{rpc="hash_kv"}`，其

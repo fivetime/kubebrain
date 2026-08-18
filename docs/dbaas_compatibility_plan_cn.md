@@ -57145,6 +57145,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `cluster.proxy.integrity_failure{rpc="member_list"}` 单标签和 critical 告警覆盖结构违例，不增加指标基数。通用
   validator 与公开路径表驱动回归连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5087 将代理 Header 完整性从“存在”收紧到 revision 可表示语义。对照 upstream MVCC/Auth/Lease/Cluster/Maintenance
+  header 来源，公开 `ResponseHeader.Revision` 不会为负；旧 KubeBrain validator 会接受负 revision，随后
+  `observeForwardedRevision` 仅跳过 watermark 更新却仍把损坏响应返回客户端，使客户端观察到 etcd revision 域之外的
+  值。现 KV 五类、Auth 17 类、Lease 五类、MemberList 以及除 Defragment 外的五类 Maintenance success response 均
+  要求 header revision 非负，negative-revision 在任何 forwarded revision 观察或 downstream send 前 DataLoss fail
+  closed，并复用各自既有固定完整性指标与 critical 告警，不增加标签。Defragment 的 upstream nil Header 例外保持不变。
+  通用 validator 全分类、streaming KeepAlive、hedged HashKV 与线性化 MemberList 回归连续十轮通过；需要下一生产镜像
+  和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
