@@ -57568,6 +57568,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   限制/CORS 及 schema 值不变形；同轮确认 MemberList 严格 ID 排序来自 upstream `RaftCluster.Members()` 的显式 sort，不是过严
   follower 门禁。本项当前 wire 值仍为 3.7.0，不改变存储编码，需要下一生产镜像发布。
 
+- A5134 修复 production 只读发布 gate 与 upstream `Maintenance.Status` 独立采样合同的冲突。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status`：DbSize 与 DbSizeInUse、committed 与 applied index
+  都是先后独立读取，header revision 又属于 MVCC 域；并发推进时后采样值可以暂时更大，Raft index 也不要求等于 MVCC
+  revision。A5122/A5123 已让 runtime follower 完整性门禁接受这些合法响应，但发布脚本仍拒绝 size/index 倒置并强制两个
+  Raft index 等于 header revision，可能误挡兼容 rollout。现 endpoint status 与 gateway status 只保留成对存在、JSON integer、
+  非负等单字段约束，摘要改为 `raft_indexes_sampled=true`/`gateway_raft_indexes_sampled=true`；四个正向回归分别固定 endpoint
+  与 gateway 的 size 倒置和 index/revision 独立取样。Raft term/header term、leader、版本及其他完整性门禁不变；同轮复核 Auth
+  list/get 与 MemberList 的 upstream 排序合同未发现新差距。本项不改变 runtime wire、TiKV 数据路径或存储编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -1297,14 +1297,15 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时�
 `info_debug_vars=ok`、
 `client_debug_vars=404`、`debug_vars_method_headers=ok`、`client_pprof=404`、
 `info_pprof=404`、`health=true`、`serializable_health=true`、
-`status_errors=empty`、`raft_indexes_match_revision=true`、
+`status_errors=empty`、`raft_indexes_sampled=true`、
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、
 `version_etcdserver=<semver>`、`version_storage=<semver>`、`info_version_storage=<semver>`、
 `gateway_auth_enabled=<bool>`、`gateway_alarms=empty`、`gateway_hashkv_hash=<n>`、
 `gateway_hashkv_revisions_match=true`、`revisions_match=true`、`hashkv_raft_terms=<unique>` 和
 `raft_terms_match=true` 等证据；
-其中 Status/HashKV/gateway HashKV revision 与 raft term 交叉一致性用于证明本次只读诊断
-来自同一个静态 MVCC/Raft 观察边界。若这些摘要字段缺失或不为 true，不能把该次
+其中 HashKV/gateway HashKV revision 与 raft term 交叉一致性用于证明本次只读诊断
+来自同一个静态 MVCC/Raft 观察边界；Status 的 MVCC revision、committed/applied index
+和两种 size 则按 upstream 独立采样，只分别验证类型、范围和存在性。若这些摘要字段缺失或不为 true，不能把该次
 输出当作完整只读 gate 通过证据。
 
 生产必须使用 image digest；脚本做精确字符串比较，允许本地验证使用不可变测试 tag，
@@ -4535,6 +4536,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   committed/applied index 同样独立采样，并发推进窗口允许后采样的 applied 暂时大于先采样的 committed；DowngradeInfo 非 nil，Errors 不含空字符串，并且 Leader=0 当且仅当 errors 包含
   `etcdserver: no leader`。启动早期零 Raft 字段与 pre-3.6 backend 的空 StorageVersion 合法；Version 与任一非空
   StorageVersion 必须为合法 semver，畸形 peer payload 必须以 DataLoss fail closed 并增加 status 完整性计数。
+  发布只读 gate 同样不得要求 `DbSizeInUse<=DbSize`、`raftAppliedIndex<=raftIndex`，也不得把任一 Raft index
+  强制等同于 header MVCC revision；摘要以 `raft_indexes_sampled=true` 表示字段已独立验形和采样。
   KubeBrain 接受负 `--quota-backend-bytes` 作为 upstream-compatible disabled sentinel；写 admission 不计量/限制，Status 原样返回负值。
   CLI 未配置时默认为 `-1`，显式 `0` 则在 backend 构造前规范化为 upstream 默认 2 GiB。
   Hash success header current revision 必须为正。HashKV revision=0 时 HashRevision 必须等于 header current revision；
