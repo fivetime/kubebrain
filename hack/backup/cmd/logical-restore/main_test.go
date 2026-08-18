@@ -298,6 +298,107 @@ func TestValidateRestorePreflightTxnResponse(t *testing.T) {
 	}
 }
 
+func TestValidateRestoreLeaseRevokeResponse(t *testing.T) {
+	require.NoError(t, validateRestoreLeaseRevokeResponse(&clientv3.LeaseRevokeResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 5},
+	}))
+	require.ErrorContains(t, validateRestoreLeaseRevokeResponse(nil), "empty revoke response")
+	require.ErrorContains(t, validateRestoreLeaseRevokeResponse(&clientv3.LeaseRevokeResponse{}), "no valid response revision")
+	require.ErrorContains(t, validateRestoreLeaseRevokeResponse(&clientv3.LeaseRevokeResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: -1},
+	}), "no valid response revision")
+}
+
+func TestValidateRestoreRollbackTxnResponse(t *testing.T) {
+	header := func(revision int64) *etcdserverpb.ResponseHeader {
+		return &etcdserverpb.ResponseHeader{Revision: revision}
+	}
+	deleted := func(revision, count int64) *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{
+			ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: header(revision), Deleted: count},
+		}}
+	}
+	tests := map[string]struct {
+		response *clientv3.TxnResponse
+		expected int
+		wantErr  string
+	}{
+		"valid": {
+			response: &clientv3.TxnResponse{Header: header(6), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{deleted(6, 1), deleted(6, 1)}},
+			expected: 2,
+		},
+		"empty response": {expected: 1, wantErr: "empty transaction response"},
+		"compare failed": {
+			response: &clientv3.TxnResponse{Header: header(6)},
+			expected: 1,
+			wantErr:  "changed after commit",
+		},
+		"missing outer header": {
+			response: &clientv3.TxnResponse{Succeeded: true, Responses: []*etcdserverpb.ResponseOp{deleted(6, 1)}},
+			expected: 1,
+			wantErr:  "without a valid response revision",
+		},
+		"wrong response count": {
+			response: &clientv3.TxnResponse{Header: header(6), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{deleted(6, 1)}},
+			expected: 2,
+			wantErr:  "1 responses for 2 deletes",
+		},
+		"nil operation": {
+			response: &clientv3.TxnResponse{Header: header(6), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{nil}},
+			expected: 1,
+			wantErr:  "not a delete response",
+		},
+		"wrong operation type": {
+			response: &clientv3.TxnResponse{Header: header(6), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: header(6)}},
+			}}},
+			expected: 1,
+			wantErr:  "not a delete response",
+		},
+		"missing delete header": {
+			response: &clientv3.TxnResponse{Header: header(6), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Deleted: 1}},
+			}}},
+			expected: 1,
+			wantErr:  "delete response 0 has revision 0",
+		},
+		"mismatched delete revision": {
+			response: &clientv3.TxnResponse{Header: header(6), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{deleted(5, 1)}},
+			expected: 1,
+			wantErr:  "revision 5, transaction revision is 6",
+		},
+		"zero deleted": {
+			response: &clientv3.TxnResponse{Header: header(6), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{deleted(6, 0)}},
+			expected: 1,
+			wantErr:  "deleted 0 keys instead of 1",
+		},
+		"multiple deleted": {
+			response: &clientv3.TxnResponse{Header: header(6), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{deleted(6, 2)}},
+			expected: 1,
+			wantErr:  "deleted 2 keys instead of 1",
+		},
+		"unrequested previous key": {
+			response: &clientv3.TxnResponse{Header: header(6), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+					Header: header(6), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{{Key: []byte("a")}},
+				}},
+			}}},
+			expected: 1,
+			wantErr:  "unrequested previous keys",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := validateRestoreRollbackTxnResponse(tc.response, tc.expected)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidateBatchSize(t *testing.T) {
 	require.NoError(t, validateBatchSize(128, 128))
 	require.ErrorContains(t, validateBatchSize(129, 128), "exceeds")

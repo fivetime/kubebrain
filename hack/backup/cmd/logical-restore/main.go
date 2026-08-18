@@ -130,6 +130,48 @@ func validateRestorePreflightTxnResponse(response *clientv3.TxnResponse, keys []
 	return nil
 }
 
+func validateRestoreLeaseRevokeResponse(response *clientv3.LeaseRevokeResponse) error {
+	if response == nil {
+		return errors.New("lease cleanup returned an empty revoke response")
+	}
+	if response.Header == nil || response.Header.Revision <= 0 {
+		return errors.New("lease cleanup returned no valid response revision")
+	}
+	return nil
+}
+
+func validateRestoreRollbackTxnResponse(response *clientv3.TxnResponse, expectedDeletes int) error {
+	if response == nil {
+		return errors.New("restore rollback returned an empty transaction response")
+	}
+	if !response.Succeeded {
+		return errors.New("one or more restored keys changed after commit; refusing to delete concurrent data")
+	}
+	if response.Header == nil || response.Header.Revision <= 0 {
+		return errors.New("restore rollback committed without a valid response revision")
+	}
+	if len(response.Responses) != expectedDeletes {
+		return fmt.Errorf("restore rollback returned %d responses for %d deletes", len(response.Responses), expectedDeletes)
+	}
+	for i, op := range response.Responses {
+		if op == nil || op.GetResponseDeleteRange() == nil {
+			return fmt.Errorf("restore rollback response %d is not a delete response", i)
+		}
+		deleted := op.GetResponseDeleteRange()
+		if deleted.Header == nil || deleted.Header.Revision != response.Header.Revision {
+			return fmt.Errorf("restore rollback delete response %d has revision %d, transaction revision is %d",
+				i, deleted.GetHeader().GetRevision(), response.Header.Revision)
+		}
+		if deleted.Deleted != 1 {
+			return fmt.Errorf("restore rollback delete response %d deleted %d keys instead of 1", i, deleted.Deleted)
+		}
+		if len(deleted.PrevKvs) != 0 {
+			return fmt.Errorf("restore rollback delete response %d returned unrequested previous keys", i)
+		}
+	}
+	return nil
+}
+
 func validateBatchSize(batchSize, maxTxnOps int) error {
 	if maxTxnOps <= 0 {
 		return fmt.Errorf("MAX_TXN_OPS must be positive")
@@ -297,7 +339,12 @@ func run() (retErr error) {
 				continue
 			}
 			revoked[id] = struct{}{}
-			if _, err := cli.Revoke(cleanupCtx, id); err != nil {
+			response, err := cli.Revoke(cleanupCtx, id)
+			if err != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("revoke restored lease %d: %w", sourceID, err))
+				continue
+			}
+			if err := validateRestoreLeaseRevokeResponse(response); err != nil {
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("revoke restored lease %d: %w", sourceID, err))
 			}
 		}
@@ -407,10 +454,7 @@ func run() (retErr error) {
 				if txnErr != nil {
 					return txnErr
 				}
-				if !resp.Succeeded {
-					return errors.New("one or more restored keys changed after commit; refusing to delete concurrent data")
-				}
-				return nil
+				return validateRestoreRollbackTxnResponse(resp, len(deletes))
 			})
 		}
 		cleanupErr := cleanupTargetLeases()
