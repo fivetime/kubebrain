@@ -161,6 +161,13 @@ func exportLeaseRecord(id int64, ttl *clientv3.LeaseTimeToLiveResponse, snapshot
 	if int64(ttl.ID) != id {
 		return record.Lease{}, fmt.Errorf("lease %d TTL response returned mismatched ID %d", id, ttl.ID)
 	}
+	if ttl.ResponseHeader == nil {
+		return record.Lease{}, fmt.Errorf("lease %d TTL response omitted its header", id)
+	}
+	if ttl.ResponseHeader.Revision < snapshotRevision {
+		return record.Lease{}, fmt.Errorf("lease %d TTL response revision %d is behind snapshot revision %d",
+			id, ttl.ResponseHeader.Revision, snapshotRevision)
+	}
 	if ttl.TTL <= 0 {
 		return record.Lease{}, fmt.Errorf("lease %d expired while exporting snapshot revision %d", id, snapshotRevision)
 	}

@@ -5,6 +5,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -17,40 +18,51 @@ func TestNextKeyDoesNotMutateInput(t *testing.T) {
 }
 
 func TestExportLeaseRecord(t *testing.T) {
+	header := &etcdserverpb.ResponseHeader{Revision: 42}
 	tests := map[string]struct {
 		response *clientv3.LeaseTimeToLiveResponse
 		want     record.Lease
 		wantErr  string
 	}{
 		"current lease": {
-			response: &clientv3.LeaseTimeToLiveResponse{ID: 123, TTL: 30, GrantedTTL: 60},
+			response: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: header, ID: 123, TTL: 30, GrantedTTL: 60},
 			want:     record.Lease{ID: 123, TTL: 30, GrantedTTL: 60},
 		},
 		"promotion extension": {
-			response: &clientv3.LeaseTimeToLiveResponse{ID: 123, TTL: 63, GrantedTTL: 60},
+			response: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: header, ID: 123, TTL: 63, GrantedTTL: 60},
 			want:     record.Lease{ID: 123, TTL: 63, GrantedTTL: 60},
 		},
 		"exact maximum": {
-			response: &clientv3.LeaseTimeToLiveResponse{ID: 123, TTL: clientv3.MaxLeaseTTL, GrantedTTL: clientv3.MaxLeaseTTL},
+			response: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: header, ID: 123, TTL: clientv3.MaxLeaseTTL, GrantedTTL: clientv3.MaxLeaseTTL},
 			want:     record.Lease{ID: 123, TTL: clientv3.MaxLeaseTTL, GrantedTTL: clientv3.MaxLeaseTTL},
 		},
 		"empty response": {
 			wantErr: "empty TTL response",
 		},
 		"mismatched ID": {
-			response: &clientv3.LeaseTimeToLiveResponse{ID: 124, TTL: 30, GrantedTTL: 60},
+			response: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: header, ID: 124, TTL: 30, GrantedTTL: 60},
 			wantErr:  "mismatched ID 124",
 		},
+		"missing header": {
+			response: &clientv3.LeaseTimeToLiveResponse{ID: 123, TTL: 30, GrantedTTL: 60},
+			wantErr:  "omitted its header",
+		},
+		"stale header": {
+			response: &clientv3.LeaseTimeToLiveResponse{
+				ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 41}, ID: 123, TTL: 30, GrantedTTL: 60,
+			},
+			wantErr: "revision 41 is behind snapshot revision 42",
+		},
 		"expired": {
-			response: &clientv3.LeaseTimeToLiveResponse{ID: 123, TTL: 0, GrantedTTL: 60},
+			response: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: header, ID: 123, TTL: 0, GrantedTTL: 60},
 			wantErr:  "expired while exporting snapshot revision 42",
 		},
 		"missing grant": {
-			response: &clientv3.LeaseTimeToLiveResponse{ID: 123, TTL: 30},
+			response: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: header, ID: 123, TTL: 30},
 			wantErr:  "invalid granted TTL 0",
 		},
 		"oversized grant": {
-			response: &clientv3.LeaseTimeToLiveResponse{ID: 123, TTL: 30, GrantedTTL: clientv3.MaxLeaseTTL + 1},
+			response: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: header, ID: 123, TTL: 30, GrantedTTL: clientv3.MaxLeaseTTL + 1},
 			wantErr:  "invalid granted TTL 9000000001",
 		},
 	}
