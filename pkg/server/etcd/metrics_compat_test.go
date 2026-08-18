@@ -148,6 +148,44 @@ func recordedAuthProxyIntegrityValues(rec *recordingMetrics, action string) []in
 	return values
 }
 
+func recordedLeaseProxyIntegrityValues(rec *recordingMetrics, rpc string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == "lease.proxy.integrity_failure" && len(counter.tags) == 1 &&
+			counter.tags[0] == metrics.Tag("rpc", rpc) {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
+func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
+	rec := &recordingMetrics{}
+	initLeaseProxyIntegrityMetrics(rec)
+	for _, rpc := range leaseProxyRPCs {
+		response, err := validateLeaseProxyResult[etcdserverpb.LeaseGrantResponse](rec, rpc, nil, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+
+		response, err = validateLeaseProxyResult(rec, rpc, &etcdserverpb.LeaseGrantResponse{}, errors.New("mixed"))
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.Equal(t, []interface{}{int64(0), 1, 1}, recordedLeaseProxyIntegrityValues(rec, rpc))
+	}
+
+	want := &etcdserverpb.LeaseGrantResponse{}
+	response, err := validateLeaseProxyResult(rec, leaseProxyRPCGrant, want, nil)
+	require.Same(t, want, response)
+	require.NoError(t, err)
+	wantErr := errors.New("transport failed")
+	response, err = validateLeaseProxyResult[etcdserverpb.LeaseGrantResponse](rec, leaseProxyRPCGrant, nil, wantErr)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
+}
+
 func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initAuthProxyIntegrityMetrics(rec)

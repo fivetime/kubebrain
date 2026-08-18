@@ -2813,6 +2813,126 @@ func TestLeaseFollowerProxiesUnaryGrant(t *testing.T) {
 	require.Equal(t, request.ID, resp.ID)
 }
 
+func TestLeaseFollowerRejectsInvalidUnaryProxyResults(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		rpc       string
+		configure func(*testPeerService, bool)
+		invoke    func(*RPCServer) (any, error)
+	}{
+		{
+			name: "grant", rpc: leaseProxyRPCGrant,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.leaseGrantFn = func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+					if mixed {
+						return &etcdserverpb.LeaseGrantResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 30})
+			},
+		},
+		{
+			name: "revoke", rpc: leaseProxyRPCRevoke,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.leaseRevokeFn = func(context.Context, *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
+					if mixed {
+						return &etcdserverpb.LeaseRevokeResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseRevoke(context.Background(), &etcdserverpb.LeaseRevokeRequest{ID: 1})
+			},
+		},
+		{
+			name: "time_to_live", rpc: leaseProxyRPCTimeToLive,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.leaseTTLFn = func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+					if mixed {
+						return &etcdserverpb.LeaseTimeToLiveResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: 1})
+			},
+		},
+		{
+			name: "leases", rpc: leaseProxyRPCLeases,
+			configure: func(peers *testPeerService, mixed bool) {
+				peers.leaseLeasesFn = func(context.Context, *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
+					if mixed {
+						return &etcdserverpb.LeaseLeasesResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseLeases(context.Background(), &etcdserverpb.LeaseLeasesRequest{})
+			},
+		},
+	} {
+		for _, mixed := range []bool{false, true} {
+			name := "nil"
+			if mixed {
+				name = "mixed"
+			}
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				server, closeFn := newTestRPCServer(t)
+				defer closeFn()
+				rec := &recordingMetrics{}
+				server.metricCli = rec
+				initLeaseProxyIntegrityMetrics(rec)
+				peers := testPeerService{isLeader: false, proxyEnabled: true}
+				tc.configure(&peers, mixed)
+				server.peers = peers
+
+				response, err := tc.invoke(server)
+				require.Nil(t, response)
+				require.Equal(t, codes.DataLoss, status.Code(err))
+				require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, tc.rpc))
+			})
+		}
+	}
+}
+
+func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		name := "nil"
+		if mixed {
+			name = "mixed"
+		}
+		t.Run(name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initLeaseProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				leaseKeepAliveFn: func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
+					if mixed {
+						return &etcdserverpb.LeaseKeepAliveResponse{}, errors.New("mixed")
+					}
+					return nil, nil
+				},
+			}
+			stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: 1}}}
+
+			err := server.LeaseKeepAlive(stream)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Empty(t, stream.sent)
+			require.Equal(t, []interface{}{int64(0), 1},
+				recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCKeepAlive))
+		})
+	}
+}
+
 func TestLeaseFollowerProxiesKeepAlive(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)

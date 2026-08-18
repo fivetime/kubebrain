@@ -161,7 +161,15 @@ func TestFollowerLeaseReadsProxyWhenEnabled(t *testing.T) {
 	metrics := mock.NewMinimalMetrics(ctrl)
 	kv := memkv.NewKvStorage()
 	b := backend.NewBackend(kv, backend.Config{Identity: "follower-proxy-peer", EnableEtcdCompatibility: true}, metrics)
-	server := New(b, metrics, testPeerService{isLeader: false, proxyEnabled: true})
+	server := New(b, metrics, testPeerService{
+		isLeader: false, proxyEnabled: true,
+		leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+			return &etcdserverpb.LeaseTimeToLiveResponse{ID: 1, TTL: 30, GrantedTTL: 30}, nil
+		},
+		leaseLeasesFn: func(context.Context, *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
+			return &etcdserverpb.LeaseLeasesResponse{Leases: []*etcdserverpb.LeaseStatus{{ID: 1}}}, nil
+		},
+	})
 	defer func() {
 		server.stopLeases()
 		require.NoError(t, kv.Close())
@@ -169,12 +177,15 @@ func TestFollowerLeaseReadsProxyWhenEnabled(t *testing.T) {
 	}()
 	ctx := context.Background()
 
-	// The proxy stub returns (nil, nil); the point is that it did not error out
-	// of the requireLeaseLeader branch by serving local state.
-	_, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: 1})
+	// A successful peer adapter returns a concrete protobuf, matching grpc-go's
+	// unary result ownership contract. The values prove the follower did not
+	// answer from its empty local lease snapshot.
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: 1})
 	require.NoError(t, err)
-	_, err = server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.Equal(t, int64(30), ttl.GetTTL())
+	leases, err := server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
 	require.NoError(t, err)
+	require.Equal(t, int64(1), leases.GetLeases()[0].GetID())
 }
 
 // TestStopLeasesClearsSnapshot pins #57: StopLeases (called on losing leadership)

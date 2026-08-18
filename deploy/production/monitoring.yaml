@@ -505,6 +505,18 @@ spec:
           expr: count(((kubebrain_dbaas:auth_proxy_integrity_failure:current_by_pod_action * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:auth_proxy_integrity_failure:current_by_pod_action * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:auth_proxy_integrity_failure:current_by_pod_action * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:auth_proxy_integrity_failure:current_by_pod_action * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:auth_proxy_integrity_failure:increase_10m_by_pod_action * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:auth_proxy_integrity_failure:increase_10m_by_pod_action * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:auth_proxy_integrity_failure:current_by_pod_action{action!~"auth_enable|auth_disable|auth_status|authenticate|user_add|user_get|user_list|user_delete|user_change_password|user_grant_role|user_revoke_role|role_add|role_get|role_list|role_delete|role_grant_permission|role_revoke_permission"})
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:lease_proxy_integrity_failure:current_by_pod_rpc
+          expr: max by (namespace, pod, uid, rpc) (lease_proxy_integrity_failure{namespace="kubebrain-system"} and (time() - timestamp(lease_proxy_integrity_failure{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:lease_proxy_integrity_failure:increase_10m_by_pod_rpc
+          expr: max by (namespace, pod, uid, rpc) (increase(lease_proxy_integrity_failure{namespace="kubebrain-system"}[10m]) and (time() - timestamp(lease_proxy_integrity_failure{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:lease_proxy_integrity_failure_invalid_values:count
+          expr: count(((kubebrain_dbaas:lease_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:lease_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:lease_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:lease_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:lease_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:lease_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:lease_proxy_integrity_failure:current_by_pod_rpc{rpc!~"grant|revoke|keep_alive|time_to_live|leases"})
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:read_index:current_by_pod_outcome
           expr: max by (namespace, pod, uid, outcome) (label_replace((etcd_server_slow_read_indexes_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_slow_read_indexes_total{namespace="kubebrain-system"}) <= 60)), "outcome", "slow", "namespace", ".*") or label_replace((etcd_server_read_indexes_failed_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_server_read_indexes_failed_total{namespace="kubebrain-system"}) <= 60)), "outcome", "failed", "namespace", ".*"))
           labels:
@@ -2297,6 +2309,22 @@ spec:
           annotations:
             summary: KubeBrain Auth proxy-integrity telemetry is incomplete
             description: "Every current Ready Pod UID must expose all seventeen authoritative-zero action counters as fresh current and 10-minute-increase series. Missing, stale, invalid, unknown, or incomplete telemetry cannot prove malformed authentication and RBAC proxy results are rejected rather than acknowledged."
+        - alert: KubeBrainLeaseProxyIntegrityFailures
+          expr: sum by (rpc) (kubebrain_dbaas:lease_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain rejected an invalid Lease proxy result
+            description: "A current Ready replica received neither response nor error, or both response and error, from the leader proxy for Lease {{ $labels.rpc }}. Unary RPCs and KeepAlive fail closed with DataLoss before revision observation or downstream send; inspect peer adapters immediately."
+        - alert: KubeBrainLeaseProxyIntegrityMetricsMissing
+          expr: absent(kubebrain_dbaas:lease_proxy_integrity_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:lease_proxy_integrity_failure:current_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 5 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:lease_proxy_integrity_failure:increase_10m_by_pod_rpc * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 5 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:lease_proxy_integrity_failure_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain Lease proxy-integrity telemetry is incomplete
+            description: "Every current Ready Pod UID must expose all five authoritative-zero rpc counters as fresh current and 10-minute-increase series. Missing, stale, invalid, unknown, or incomplete telemetry cannot prove malformed Lease proxy results are rejected rather than acknowledged or sent."
         - alert: KubeBrainSlowReadIndexes
           expr: sum(kubebrain_dbaas:read_index:increase_10m_by_pod_outcome{outcome="slow"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m

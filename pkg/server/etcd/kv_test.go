@@ -79,6 +79,7 @@ type testPeerService struct {
 	roleListFn       func(context.Context, *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error)
 	watchFn          func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error)
 	leaseGrantFn     func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error)
+	leaseRevokeFn    func(context.Context, *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error)
 	leaseKeepAliveFn func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
 	leaseTTLFn       func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error)
 	leaseLeasesFn    func(context.Context, *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error)
@@ -804,7 +805,10 @@ func (s testPeerService) LeaseGrant(ctx context.Context, req *etcdserverpb.Lease
 	return nil, nil
 }
 
-func (testPeerService) LeaseRevoke(context.Context, *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
+func (s testPeerService) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
+	if s.leaseRevokeFn != nil {
+		return s.leaseRevokeFn(ctx, req)
+	}
 	return nil, nil
 }
 
