@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
@@ -27,6 +28,11 @@ var allKeysRangeBoundary = []byte{0}
 
 func initEtcdMVCCKeysGauge(metricCli metrics.Metrics) {
 	emitEtcdMVCCKeysGauge(metricCli, 0)
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("mvcc.keys_total.refresh.miss", int64(0))
+	_ = metricCli.EmitGauge("mvcc.keys_total.refresh.last_success_timestamp_seconds", int64(0))
 }
 
 func emitEtcdMVCCKeysGauge(metricCli metrics.Metrics, value int64) {
@@ -51,5 +57,8 @@ func (s *RPCServer) RefreshMVCCKeysMetric(ctx context.Context) bool {
 		return false
 	}
 	emitEtcdMVCCKeysGauge(s.metricCli, count)
+	if s.metricCli != nil {
+		_ = s.metricCli.EmitGauge("mvcc.keys_total.refresh.last_success_timestamp_seconds", time.Now().Unix())
+	}
 	return true
 }

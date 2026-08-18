@@ -553,8 +553,12 @@ func TestEtcdMVCCKeysGaugeUsesUpstreamMetricName(t *testing.T) {
 
 	require.Equal(t, []recordedGauge{
 		{name: "etcd_debugging.mvcc.keys_total", value: int64(0)},
+		{name: "mvcc.keys_total.refresh.last_success_timestamp_seconds", value: int64(0)},
 		{name: "etcd_debugging.mvcc.keys_total", value: int64(7)},
 	}, rec.gauges)
+	require.Equal(t, []recordedCounter{
+		{name: "mvcc.keys_total.refresh.miss", value: int64(0)},
+	}, rec.counters)
 }
 
 func TestEtcdMVCCPutSizeGaugeUsesUpstreamMetricName(t *testing.T) {
@@ -598,9 +602,11 @@ func TestRefreshMVCCKeysMetricUsesCountIndexOnly(t *testing.T) {
 	require.Equal(t, []byte{0}, backend.key)
 	require.Equal(t, []byte{0}, backend.end)
 	require.Zero(t, backend.rev)
-	require.Equal(t, []recordedGauge{
-		{name: "etcd_debugging.mvcc.keys_total", value: int64(3)},
-	}, rec.gauges)
+	require.Len(t, rec.gauges, 2)
+	require.Equal(t, recordedGauge{name: "etcd_debugging.mvcc.keys_total", value: int64(3)}, rec.gauges[0])
+	require.Equal(t, "mvcc.keys_total.refresh.last_success_timestamp_seconds", rec.gauges[1].name)
+	require.IsType(t, int64(0), rec.gauges[1].value)
+	require.Positive(t, rec.gauges[1].value)
 	require.Empty(t, rec.counters)
 }
 
