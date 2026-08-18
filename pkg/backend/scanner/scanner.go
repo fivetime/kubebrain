@@ -1129,6 +1129,7 @@ func (w *worker) flushDeletes(ctx context.Context) {
 		return
 	}
 	w.metricCli.EmitCounter("compact.batch.err", 1)
+	w.metricCli.EmitCounter("storage.compaction.failure", 1, metrics.Tag("stage", "batch"))
 	for i := range w.pendingDeletes {
 		pd := w.pendingDeletes[i]
 		deleteStart := time.Now()
@@ -1139,6 +1140,7 @@ func (w *worker) flushDeletes(ctx context.Context) {
 		)
 		if err != nil {
 			w.metricCli.EmitCounter("compact.err", 1)
+			w.metricCli.EmitCounter("storage.compaction.failure", 1, metrics.Tag("stage", "key_delete"))
 			w.updateSkippedRawKey(pd.userKey, pd.rev, err)
 		} else {
 			w.metricCli.EmitCounter("compact", 1)

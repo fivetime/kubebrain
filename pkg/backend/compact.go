@@ -359,6 +359,7 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) error {
 			// no incremental pass would ever revisit.
 			atomic.StoreUint64(&b.physicalBaseRev, 0)
 			b.metricCli.EmitCounter("backend.compact.scan.err", 1)
+			emitCompactionFailure(b.metricCli, "full_scan")
 			klog.ErrorS(err, "physical compaction scan failed; garbage will be reclaimed on a later compaction", "revision", revision)
 			compactErr = err
 		} else {
@@ -428,6 +429,7 @@ func (b *backend) tryIncrementalCompact(ctx context.Context, revision uint64) bo
 	if len(keys) > 0 {
 		if err := b.scanner.CompactKeys(ctx, keys, revision); err != nil {
 			b.metricCli.EmitCounter("backend.compact.incremental.err", 1)
+			emitCompactionFailure(b.metricCli, "incremental")
 			klog.ErrorS(err, "incremental compaction failed; falling back to full scan", "revision", revision, "keys", len(keys))
 			return false
 		}
@@ -598,6 +600,7 @@ func (b *backend) runAutoCompactor(workerCtx context.Context) {
 		got, err := b.CompactAsync(workerCtx, target)
 		if err != nil {
 			b.metricCli.EmitCounter("backend.auto_compact.err", 1)
+			emitCompactionFailure(b.metricCli, "auto")
 			klog.ErrorS(err, "auto-compaction safety net failed", "target", target)
 			continue
 		}
@@ -702,6 +705,7 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 		}
 		klog.ErrorS(err, "set compact key failed", "revision", revision)
 		b.metricCli.EmitCounter("backend.set_compact_revision.err", 1)
+		emitCompactionFailure(b.metricCli, "watermark")
 		return false, err
 	}
 	// This node just advanced the watermark; make the cache reflect it eagerly so

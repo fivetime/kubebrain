@@ -517,6 +517,18 @@ spec:
           expr: count(((kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) or ((kubebrain_dbaas:storage_gc_driver_started_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > time() + 300)) + count(((kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) or ((kubebrain_dbaas:storage_gc_last_success_timestamp_seconds:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > time() + 300))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_compaction_failure:current_by_pod_stage
+          expr: max by (namespace, pod, uid, stage) (storage_compaction_failure{namespace="kubebrain-system",stage=~"full_scan|incremental|auto|watermark|batch|key_delete"} and (time() - timestamp(storage_compaction_failure{namespace="kubebrain-system",stage=~"full_scan|incremental|auto|watermark|batch|key_delete"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_compaction_failure:increase_10m_by_pod_stage
+          expr: max by (namespace, pod, uid, stage) (increase(storage_compaction_failure{namespace="kubebrain-system",stage=~"full_scan|incremental|auto|watermark|batch|key_delete"}[10m]) and (time() - timestamp(storage_compaction_failure{namespace="kubebrain-system",stage=~"full_scan|incremental|auto|watermark|batch|key_delete"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_compaction_failure_invalid_values:count
+          expr: count(((kubebrain_dbaas:storage_compaction_failure:current_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:storage_compaction_failure:current_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:storage_compaction_failure:current_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:storage_compaction_failure:current_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:storage_compaction_failure:increase_10m_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:storage_compaction_failure:increase_10m_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:lease_lifecycle:current_by_pod_operation
           expr: max by (namespace, pod, uid, operation) (label_replace((etcd_debugging_lease_granted_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_lease_granted_total{namespace="kubebrain-system"}) <= 60)), "operation", "grant", "namespace", ".*") or label_replace((etcd_debugging_lease_revoked_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_lease_revoked_total{namespace="kubebrain-system"}) <= 60)), "operation", "revoke", "namespace", ".*") or label_replace((etcd_debugging_lease_renewed_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_lease_renewed_total{namespace="kubebrain-system"}) <= 60)), "operation", "renew", "namespace", ".*") or label_replace((etcd_debugging_server_lease_expired_total{namespace="kubebrain-system"} and (time() - timestamp(etcd_debugging_server_lease_expired_total{namespace="kubebrain-system"}) <= 60)), "operation", "expire", "namespace", ".*"))
           labels:
@@ -1153,6 +1165,22 @@ spec:
           annotations:
             summary: KubeBrain storage GC progress telemetry is incomplete or invalid
             description: "Every Ready KubeBrain replica must expose fresh driver-started and last-success timestamp gauges. Driver-started must be a positive exact Unix second, last-success may be authoritative zero on followers or before the first run, and neither may be fractional, above 2^53, or more than five minutes in the future. Missing, stale, or invalid telemetry cannot prove safepoint progress."
+        - alert: KubeBrainStorageCompactionFailures
+          expr: sum by (stage) (kubebrain_dbaas:storage_compaction_failure:increase_10m_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain storage compaction stage failed
+            description: "A current Ready replica reported {{ $value }} {{ $labels.stage }} compaction failures in ten minutes. full_scan/incremental/batch/key_delete leave physical MVCC garbage for a later pass; watermark prevents logical compact progress; auto means the retention safety net could not advance. Inspect TiKV errors and verify both the compact watermark and physical storage growth recover."
+        - alert: KubeBrainStorageCompactionFailureMetricsMissing
+          expr: absent(kubebrain_dbaas:storage_compaction_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:storage_compaction_failure:current_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 6 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:storage_compaction_failure:increase_10m_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 6 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:storage_compaction_failure_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain storage compaction failure telemetry is incomplete
+            description: "Every Ready Pod UID must expose all six authoritative-zero stages: full_scan, incremental, auto, watermark, batch, and key_delete. Current samples must be fresh non-negative exact integers within 2^53 and ten-minute increases finite in range. Missing, stale, invalid, or incomplete stage telemetry cannot prove that logical and physical compaction failures are observable."
         - alert: KubeBrainUncertainTransactionResolution
           expr: sum by (outcome) (kubebrain_dbaas:uncertain_txn_resolution:increase_10m_by_pod_outcome{outcome=~"retry|committed|not_committed"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
           for: 0m

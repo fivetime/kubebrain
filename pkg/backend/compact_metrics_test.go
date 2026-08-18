@@ -77,6 +77,12 @@ func TestEtcdMVCCCompactionMetricsUseUpstreamNames(t *testing.T) {
 	require.Equal(t, []compactMetricRecord{
 		{kind: "gauge", name: "etcd_debugging.mvcc.db_compaction_last", value: int64(0)},
 		{kind: "counter", name: "etcd_debugging.mvcc.db_compaction_keys_total", value: int64(0)},
+		{kind: "counter", name: "storage.compaction.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "full_scan")}},
+		{kind: "counter", name: "storage.compaction.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "incremental")}},
+		{kind: "counter", name: "storage.compaction.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "auto")}},
+		{kind: "counter", name: "storage.compaction.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "watermark")}},
+		{kind: "counter", name: "storage.compaction.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "batch")}},
+		{kind: "counter", name: "storage.compaction.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "key_delete")}},
 		{kind: "histogram", name: "etcd_debugging.mvcc.db_compaction_total_duration_milliseconds", value: 1500.0},
 		{kind: "gauge", name: "etcd_debugging.mvcc.db_compaction_last", value: int64(123)},
 		{kind: "histogram", name: "etcd_debugging.mvcc.index_compaction_pause_duration_milliseconds", value: 250.0},

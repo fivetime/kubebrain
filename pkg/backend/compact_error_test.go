@@ -140,6 +140,8 @@ func TestCompactSurfacesScanError(t *testing.T) {
 
 	require.GreaterOrEqual(t, rec.get("backend.compact.scan.err"), 1.0,
 		"a failed physical GC scan must be surfaced via a metric, not swallowed")
+	require.GreaterOrEqual(t, rec.get("storage.compaction.failure"), 1.0,
+		"a failed physical GC scan must also enter the fixed production taxonomy")
 
 	atomic.StoreInt32(&fkv.armed, 0)
 	require.Eventually(t, func() bool {

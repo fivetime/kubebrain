@@ -20,9 +20,31 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
+var compactionFailureStages = []string{
+	"full_scan",
+	"incremental",
+	"auto",
+	"watermark",
+	"batch",
+	"key_delete",
+}
+
 func initEtcdMVCCCompactionMetrics(metricCli metrics.Metrics) {
 	emitEtcdMVCCDBCompactionLast(metricCli, 0)
 	emitEtcdMVCCDBCompactionKeys(metricCli, 0)
+	if metricCli == nil {
+		return
+	}
+	for _, stage := range compactionFailureStages {
+		_ = metricCli.EmitCounter("storage.compaction.failure", int64(0), metrics.Tag("stage", stage))
+	}
+}
+
+func emitCompactionFailure(metricCli metrics.Metrics, stage string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("storage.compaction.failure", 1, metrics.Tag("stage", stage))
 }
 
 func emitEtcdMVCCDBCompactionTotalDuration(metricCli metrics.Metrics, duration time.Duration) {
