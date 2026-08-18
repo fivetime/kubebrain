@@ -57526,6 +57526,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两份精确重复结果，并用公开 follower proxy 与 validator 正例证明同 key 多 range、精确重复及未知 enum 均被接受；nil、非法
   range、key 逆序与非 canonical root 仍拒绝。三层回归连续十轮通过；不改变 auth 存储编码、授权求值或生产指标 schema。
 
+- A5129 修正 Maintenance Snapshot wire version 与实际制品 metadata 之间的潜在漂移。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Snapshot` 与
+  `/root/etcd/server/storage/schema/version.go::ReadStorageVersion`：upstream 从当前 backend 的
+  `meta/storageVersion` 读取版本，并在每个 data/checksum `SnapshotResponse` 上发送。KubeBrain 的 bbolt writer 已拥有独立
+  storage version，但发送路径此前复用服务端 `Version` 常量；两者当前同为 3.7.0，未来 schema 与 server 独立升级时却会静默
+  声明错误版本。现 build 完成后重新只读打开 artifact，缺失 meta bucket 时 fail closed，并把实际 storage version 稳定发送到
+  全部 frame；流式读取前 unlink 与尾部 SHA-256 契约保持不变。回归将合法 artifact metadata 改为 3.6.0，证明全部 frame 随制品
+  变化，并覆盖异常制品不触发 panic。本项不改变 snapshot 存储编码，需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -3160,7 +3160,9 @@ hack/backup/run-native-pitr-full-restore-integration.sh
 同一门禁还覆盖 Maintenance Snapshot：PD 无多数派时 SnapshotWithVersion 必须在 5 秒内以
 `DeadlineExceeded`/`Unavailable` 结束，禁止保存该失败流；恢复后 artifact 必须同时通过 clientv3
 版本检查、尾部 SHA-256、官方 `etcdutl snapshot status`，并在 bbolt MVCC bucket 中包含故障前后探针
-key。2026-08-11 加强后的全用例 28.79 秒通过。runner 默认使用 `/root/etcd/bin/etcdutl`，不同环境必须
+key。每个 data/checksum frame 的 `Version` 必须等于该 artifact 的 `meta/storageVersion`，禁止从服务端
+`Status.Version` 推导；否则 schema 与 server 独立升级会向客户端下载一个带错误版本声明的有效制品。
+2026-08-11 加强后的全用例 28.79 秒通过。runner 默认使用 `/root/etcd/bin/etcdutl`，不同环境必须
 通过 `KUBEBRAIN_ETCDUTL_BIN` 指向经过版本管理的可执行文件；工具缺失时门禁 fail closed。该验证不能
 替代大数据量 snapshot 的慢客户端取消、恢复演练或对象存储不可变性检查。
 
