@@ -56902,6 +56902,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   storage failure 固定“先 0、预算耗尽后 +1”，并证明 uncertain nil 不进入 cache、恢复后同一事件可取回真实
   previous value；transient recovery 与 shim shutdown 取消边界保持通过。需要下一生产镜像和监控发布。
 
+- A5064 修正 A5063 源端分类中被新增回归捕获的 shutdown 误报。`previousEtcdKv` 的 timeout context 同时继承
+  resolver lifecycle；旧 `readCtx.Done()` 分支不区分内部五秒 budget deadline 与 parent cancellation，因而
+  `backendShim.Close()` 取消在途 TiKV retry 时也递增 `watch.prev_kv.budget_exhausted` 并记录“full retry budget”
+  错误日志。production rollout 会由此制造并不存在的存储退化告警。现仅当 parent context 仍有效、内部 timeout
+  自己到期时递增；shim shutdown 或更短的 parent deadline 只终止 lookup，不冒充预算耗尽。确定性 RED 在持久
+  storage failure 中进入 retry 后关闭 shim，旧结果为 counter `[0,1]`，修复后严格保持 `[0]` 并在 250ms 内结束；
+  同组真实 budget exhaustion 仍为 `[0,1]`，transient recovery 仍返回真实 previous value。需要下一生产镜像，
+  A5063 production 规则无需变化。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
