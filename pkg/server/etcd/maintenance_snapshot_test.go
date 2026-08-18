@@ -279,7 +279,8 @@ func TestSnapshotFileIsUnlinkedBeforeFirstStreamResponse(t *testing.T) {
 		maintenanceSnapshotServer: &maintenanceSnapshotServer{ctx: context.Background()},
 		path:                      path,
 	}
-	require.NoError(t, streamSnapshotFile(path, stream))
+	const storageVersion = "3.6.0"
+	require.NoError(t, streamSnapshotFile(path, storageVersion, stream))
 	require.True(t, stream.checked)
 	require.GreaterOrEqual(t, len(stream.responses), 2)
 
@@ -290,6 +291,40 @@ func TestSnapshotFileIsUnlinkedBeforeFirstStreamResponse(t *testing.T) {
 	require.Equal(t, want, got)
 	wantHash := sha256.Sum256(want)
 	require.Equal(t, wantHash[:], stream.responses[len(stream.responses)-1].Blob)
+	for _, response := range stream.responses {
+		require.Equal(t, storageVersion, response.Version)
+	}
+}
+
+func TestSnapshotStreamVersionComesFromArtifactMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, etcdsnapshot.WriteBackend(path, etcdsnapshot.State{Revision: 1}))
+	db, err := bolt.Open(path, 0o600, nil)
+	require.NoError(t, err)
+	require.NoError(t, db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(schema.Meta.Name()).Put(schema.MetaStorageVersionName, []byte("3.6.0"))
+	}))
+	require.NoError(t, db.Close())
+
+	storageVersion, err := snapshotArtifactStorageVersion(path)
+	require.NoError(t, err)
+	require.Equal(t, "3.6.0", storageVersion)
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+	require.NoError(t, streamSnapshotFile(path, storageVersion, stream))
+	require.GreaterOrEqual(t, len(stream.responses), 2)
+	for _, response := range stream.responses {
+		require.Equal(t, "3.6.0", response.Version)
+	}
+}
+
+func TestSnapshotArtifactStorageVersionRejectsMissingMetaBucket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	db, err := bolt.Open(path, 0o600, nil)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = snapshotArtifactStorageVersion(path)
+	require.ErrorContains(t, err, "missing meta bucket")
 }
 
 func TestMaintenanceSnapshotRemainsAvailableUnderNoSpaceAndCorruptAlarmsLikeEtcd(t *testing.T) {

@@ -15,8 +15,10 @@ import (
 	"sort"
 	"time"
 
+	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/server/v3/storage/schema"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	production "github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
@@ -428,12 +430,35 @@ func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer)
 	if err = s.buildSnapshot(stream.Context(), path); err != nil {
 		return err
 	}
-	return streamSnapshotFile(path, stream)
+	storageVersion, err := snapshotArtifactStorageVersion(path)
+	if err != nil {
+		return err
+	}
+	return streamSnapshotFile(path, storageVersion, stream)
 }
 
 var errSnapshotSend = errors.New("maintenance snapshot send failed")
 
-func streamSnapshotFile(path string, stream etcdserverpb.Maintenance_SnapshotServer) (retErr error) {
+func snapshotArtifactStorageVersion(path string) (storageVersion string, retErr error) {
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	if err != nil {
+		return "", err
+	}
+	defer func() { retErr = errors.Join(retErr, db.Close()) }()
+	err = db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket(schema.Meta.Name()) == nil {
+			return fmt.Errorf("etcd snapshot artifact is missing meta bucket")
+		}
+		version := schema.ReadStorageVersionFromSnapshot(tx)
+		if version != nil {
+			storageVersion = version.String()
+		}
+		return nil
+	})
+	return storageVersion, err
+}
+
+func streamSnapshotFile(path, storageVersion string, stream etcdserverpb.Maintenance_SnapshotServer) (retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -465,13 +490,13 @@ func streamSnapshotFile(path string, stream etcdserverpb.Maintenance_SnapshotSer
 		sent += int64(n)
 		_, _ = hash.Write(buf[:n])
 		if err = stream.Send(&etcdserverpb.SnapshotResponse{
-			RemainingBytes: uint64(total - sent), Blob: buf[:n], Version: Version,
+			RemainingBytes: uint64(total - sent), Blob: buf[:n], Version: storageVersion,
 		}); err != nil {
 			return errors.Join(errSnapshotSend, err)
 		}
 	}
 	if err := stream.Send(&etcdserverpb.SnapshotResponse{
-		RemainingBytes: 0, Blob: hash.Sum(nil), Version: Version,
+		RemainingBytes: 0, Blob: hash.Sum(nil), Version: storageVersion,
 	}); err != nil {
 		return errors.Join(errSnapshotSend, err)
 	}
