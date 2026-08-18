@@ -2742,7 +2742,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		`sum(kubebrain_dbaas:client_range_stream_failure:increase_10m_by_pod_stage{stage="protocol"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`,
 		clientRangeStreamProtocolRule["expr"])
 	require.Equal(t, "critical", clientRangeStreamProtocolRule["labels"].(map[string]any)["severity"])
-	require.Contains(t, clientRangeStreamProtocolRule["annotations"].(map[string]any)["description"], "withheld its buffered final data chunk")
+	require.Contains(t, clientRangeStreamProtocolRule["annotations"].(map[string]any)["description"], "terminal-only aggregate violations require clients to discard any validated prefix")
 	clientRangeStreamMissingRule := prometheusRuleByAlert(t, groups, "KubeBrainClientRangeStreamMetricsMissing")
 	require.Equal(t,
 		`absent(kubebrain_dbaas:client_range_stream_failure_invalid_values:count) == 1 or count(kubebrain_dbaas:client_range_stream_failure:current_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:client_range_stream_failure:increase_10m_by_pod_stage * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:client_range_stream_failure_invalid_values:count != 0`,

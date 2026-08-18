@@ -57433,6 +57433,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `lease.proxy.integrity_failure{rpc="grant"}` 并在 forwarded revision 观察前 DataLoss fail closed。精确/更长/负请求提升
   正例、transport error 与公开低 TTL/legacy error 注入连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5119 将 follower RangeStream 完整性从 result/terminal shape 扩展到跨帧请求语义。对照 KubeBrain local
+  `rangeStreamOnce/splitRangeStreamResponse` 与 upstream unary Range 的 MVCC 合同：非 terminal frame 不携带 Count/More，
+  terminal header revision 为正且不低于显式历史请求；所有 KV 必须非 nil、位于请求范围、跨 frame 按 key 严格递增、
+  generation 合法且不晚于请求 snapshot，KeysOnly 不泄漏 value。CountOnly 不携带 KV/More；聚合 Count 不小于已发数，
+  `More == (Count > sent)`，more=true 时必须发满正 Limit，无限流不得 more。旧 follower 只检查终止 frame，会让大范围读取
+  绕过 unary Range 已闭合的数据合同并确认错序、越界、未来版本或伪分页结果。现每个 forwarded frame 在发送前进入有界
+  状态 validator，仅保留 previous key、sent count 与 max mod revision；违例递增固定
+  `read.range_stream.failure{stage="protocol"}` 并 DataLoss fail closed。若 Count/snapshot 违例只能在 terminal 得知，最终
+  RPC error 要求客户端丢弃已收前缀，不尝试跨 leader 拼接。canonical empty/multi-frame/limited/CountOnly/KeysOnly 正例及
+  十一类公开异常注入连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

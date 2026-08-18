@@ -4503,8 +4503,10 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   要求 `3×Ready` 完整、current 为 `[0,2^53]` 精确整数、increase 有限同范围且拒绝未知 stage。backend/send
   事件 warning，其中 backend 同时覆盖 raw backend→shim nil stream、local scanner 与 follower proxy open/result error，send 在 local/proxy 两路
   都排除客户端取消；protocol 表示 local 或 forwarded stream 返回 nil/empty/mixed result、缺 mandatory terminal
-  metadata、terminal 后继续、missing header、负 revision，或 local chunk revision 偏离 pinned snapshot。相关帧在
-  发送前 DataLoss fail closed，local 路径仍扣留最终数据帧；事件及 telemetry 缺失、陈旧、非法或组合不完整均 critical。
+  metadata、terminal 后继续、missing header、非正/错 pinned revision，或 forwarded payload 违反 key range、跨帧严格
+  升序、KV lifecycle/snapshot、KeysOnly/CountOnly、Limit/Count/More 合同。相关帧在发送前 DataLoss fail closed；只能由
+  terminal 聚合元数据发现的违例会以最终错误要求客户端丢弃已收前缀，local 路径仍扣留最终数据帧。事件及 telemetry
+  缺失、陈旧、非法或组合不完整均 critical。
 - `maintenance_snapshot_failure{stage="source|proxy|send|protocol"}` 在 RPC server 创建时初始化四类权威零值。
   production 只消费 60 秒新鲜 Ready Pod UID current/10 分钟 increase，要求 `4×Ready` 完整并拒绝未知 stage；
   source/proxy/send 增量 warning，protocol 增量以及 telemetry 缺失、陈旧、非法或组合不完整 critical。send 排除
