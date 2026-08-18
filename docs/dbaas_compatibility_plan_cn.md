@@ -56934,6 +56934,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   restoration 与缺失/陈旧/非法/组合不完整 critical。回归通过真实 epoch 切换、successor 获取 storage lease 和
   restoration token 变更验证零值到拒绝增量；需要下一生产镜像和监控发布。
 
+- A5067 闭合原子范围删除事务规模保护只有动态事件指标、无拒绝时生产无法区分零值与 telemetry 缺失的缺口。
+  对照 upstream 不限量的原子 DeleteRange 语义，KubeBrain 默认 `--max-delete-range-keys=0` 保持兼容；独立 TiKV
+  生产配置用 1024 约束单事务 materialization，普通与 nested `Txn(DeleteRange)` 均先扫描 `limit+1`，超限返回
+  标准 ResourceExhausted，且不分配 revision、不提交部分 tombstone/attachment/event。现由 RPC server 启动时发布
+  `delete_range.admission.rejected=0`，两个真实拒绝出口复用统一 emitter。production 生成 60 秒新鲜 Ready Pod UID
+  current 与 10 分钟 increase，要求 `1×Ready` 完整、current 为 `[0,2^53]` 精确整数、increase 有限同范围；任一
+  增量 warning，缺失/陈旧/非法/来源不完整 warning。回归固定零值到拒绝增量，并重跑普通与 Txn 写前拒绝、零
+  mutation 合同；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

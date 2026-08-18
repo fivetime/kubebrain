@@ -3592,7 +3592,7 @@ hack/dev/verify.sh
 
 该路径会通过 k3s apiserver 创建一批带 label 的 ConfigMap，执行 `delete configmap -l ...`，确认 list 结果清空，并直连 TiKV 校验首尾对象的 revision index 已变为 tombstone。当前本地已通过 8 个对象和 24 个对象多轮验证；最近一次在最新 KubeBrain 镜像上验证 24 个 ConfigMap 删除成功，首尾对象 tombstone 可从 TiKV 直读，随后完成 KubeBrain rolling restart、k3s restart 和保留对象读回。
 
-范围删除使用单个 `TxnApply` 提交，普通 key tombstone、lease attachment 和 watch event 全部共享一个 TiKV 事务与一个 MVCC revision；提交失败不会暴露已删除的前缀。生产环境通过 `--max-delete-range-keys=1024` 在写入前约束事务规模，超限只扫描 `limit+1` 个 key 后返回标准 `ResourceExhausted`，不分配 revision。默认 `0` 保持 etcd 不限 key 数的兼容行为。watch ring 已从“一 revision 一事件槽位”改为同一 revision 可承载多个事件，批量删除能通过 watch cache 一次返回多个同 revision DELETE 事件。
+范围删除使用单个 `TxnApply` 提交，普通 key tombstone、lease attachment 和 watch event 全部共享一个 TiKV 事务与一个 MVCC revision；提交失败不会暴露已删除的前缀。生产环境通过 `--max-delete-range-keys=1024` 在写入前约束事务规模，超限只扫描 `limit+1` 个 key 后返回标准 `ResourceExhausted`，不分配 revision。默认 `0` 保持 etcd 不限 key 数的兼容行为。`delete_range_admission_rejected` 在 RPC server 创建时发布权威零值，普通与 Txn 内范围删除共用该计数；production 生成 60 秒新鲜的 Ready Pod UID current 与 10 分钟 increase，分别要求 `1×Ready` 完整，current 为 `[0,2^53]` 精确整数、increase 有限同范围。任一增量 warning，需排查无界 prefix 删除；缺失、陈旧、非法或来源不完整也 warning，但不等同于 guard 已失效。watch ring 已从“一 revision 一事件槽位”改为同一 revision 可承载多个事件，批量删除能通过 watch cache 一次返回多个同 revision DELETE 事件。
 
 storage `BatchWrite.Atomic` 提供提交事务内的动态读写：回调读取同一 batch 已 staged 的值，并可据此生成
 新的 key/value；回调错误必须使静态和动态写整体回滚。memkv、Badger、TiKV 及 metrics wrapper 使用同一

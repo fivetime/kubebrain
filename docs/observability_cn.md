@@ -61,7 +61,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `grpc_server_rate_limit_rejected` counter(labels: `method`,`kind`) | `--max-request-rate` token bucket 超限数；`kind=unary` 统计 unary RPC，`kind=stream_message` 统计 Watch/KeepAlive 等每条入站消息。 |
 | `etcd_network_client_grpc_received_bytes_total` / `etcd_network_client_grpc_sent_bytes_total` counter | etcd upstream 兼容的公开 client gRPC payload 字节数；只统计 client listener，不统计 peer forwarding listener。 |
 | `etcd_network_server_stream_failures_total{API,Type}` counter | etcd upstream 兼容的 Watch / LeaseKeepAlive 服务端长流失败，固定四组合 `API=watch|lease-keepalive` × `Type=receive|send` 并在 RPC server 创建时初始化为 0；正常客户端取消、deadline、EOF 和常见 gRPC CANCEL 不计事故。production 将标签规范为 `api` / `failure_type`，要求 Ready Pod UID current/increase `4×Ready` 完整；事件 warning，缺失、陈旧、非法或未知 taxonomy warning。 |
-| `delete_range_admission_rejected` counter | `DeleteRange` 命中 `--max-delete-range-keys` 上限的前置拒绝数；拒绝不会分配 revision 或部分删除。 |
+| `delete_range_admission_rejected` counter | `DeleteRange` 或 `Txn(DeleteRange)` 命中 `--max-delete-range-keys` 上限的前置拒绝数；RPC server 创建时初始化为 0，拒绝不会分配 revision 或部分删除。production 要求每个 Ready Pod UID 的 current/increase 序列完整、新鲜且值合法。 |
 | `watch_admission_active` gauge | 当前进程已接纳的逻辑 Watch 数；同一 gRPC stream 内 multiplexed Watch 逐个计数。 |
 | `watch_admission_rejected` counter | `--max-watches` 超限拒绝的 Watch create 数；持续增长表示 Watch 负载超过实例预算或限额过低。 |
 | `etcd_debugging_server_watch_send_loop_watch_stream_duration_seconds` / `etcd_debugging_server_watch_send_loop_watch_stream_duration_per_event_seconds` histogram | etcd upstream 兼容的 Watch data response 发送耗时；watch cache init 或大批事件发送慢时用它区分 server send loop 与后端事件采集。 |
@@ -147,7 +147,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   配额保护或明确的平台替代能力。
 - **client admission 饱和**:`grpc_server_admission_inflight` 长期贴近配置上限且 `rate(grpc_server_admission_rejected[5m]) > 0`。先按 method/kind 区分长 watch 与 unary 洪峰，再扩容或调整经压测证明的限额。
 - **client 请求速率饱和**:`rate(grpc_server_rate_limit_rejected[5m]) > 0`。按 method/kind 判断 unary 洪峰或单条 multiplexed stream 消息洪峰；确认不是异常客户端后，再扩容或按 TiKV 延迟和实例 CPU 压测调整 rate/burst。
-- **范围删除超限**:`rate(delete_range_admission_rejected[5m]) > 0`。确认调用方是否误用了无界前缀删除；确需调大时先按 key/value 大小在独立 TiKV 上验证事务大小和 p99。
+- **范围删除超限**:`increase(delete_range_admission_rejected[10m]) > 0`。production 只消费 60 秒内 Ready Pod UID recording；任一增量 warning，缺失、陈旧、非法或副本来源不完整也 warning。确认调用方是否误用了无界前缀删除；确需调大时先按 key/value 大小在独立 TiKV 上验证事务大小和 p99。
 - **logical watch admission 饱和**:`watch_admission_active` 长期贴近 `--max-watches` 且 `rate(watch_admission_rejected[5m]) > 0`。先排查客户端重复建立/未取消 Watch，再扩容或按内存与事件延迟压测调整限额。
 - **watch-cache 冻结**:apiserver 侧 `Too large resource version` / `Unable to sync caches`(进度通知已修,应为 0);KubeBrain 侧 `watch.collector.stalled` > 0。
   `watch_revision_lag` 使用本 Pod 已实际入 ring 的最高 revision 减去 collector 连续游标；入队和 collector
