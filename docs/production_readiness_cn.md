@@ -4545,6 +4545,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   Hash success header current revision 必须为正。HashKV revision=0 时 HashRevision 必须等于 header current revision；
   非零请求（含负数）必须精确回显请求值。CompactRevision 不得小于 -1；正 HashRevision 时满足
   `compact_revision <= hash_revision <= header.revision`。公开 gRPC 与 peer HTTP corruption-check hedge 使用同一校验。
+  production 只读 gate 的 etcdctl endpoint 与 generated gateway HashKV 检查同样接受 `CompactRevision=-1`，并在首次
+  compact 前将该 sentinel 写入摘要；`<-1`、非整数、越过 hash revision 或两条观测路径不一致仍 fail closed。
   Downgrade 仅允许 VALIDATE/ENABLE/CANCEL action 成功，且三者 response Version 都必须精确等于当前 `ClusterVersion`；
   空值、目标版本回显和未知 action 伪成功均 DataLoss fail closed。
   Ready Pod UID current/10 分钟 increase `6×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、

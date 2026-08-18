@@ -57585,6 +57585,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   整数外观，继续拒绝 0、非整数与错误 JSON 类型；正负 quota 都进入摘要。endpoint 与 generated gateway 的负 sentinel
   正例、既有零值/布尔畸形拒绝及定向 race 固定该合同。本项不改变 runtime wire、配额执行或存储编码。
 
+- A5136 修复 production HashKV 发布 gate 对合法未压缩 sentinel 的误拒绝。upstream `etcdctl endpoint hashkv` 文档与
+  robustness model 均以 `CompactRevision=-1` 表示尚未发生 MVCC compact；KubeBrain backend hash、公开 client 与
+  maintenance proxy 完整性门禁也已按该合同返回/接受 `-1`。发布脚本却在 etcdctl endpoint 汇总和 generated gateway
+  两处强制 compact revision 非负，使新建、尚未首次 compact 的实例无法 rollout。现两条路径接受 `-1` 或非负整数，继续
+  拒绝 `<-1`、非整数、compact 大于 hash revision 以及 endpoint/gateway 水位不一致。正向回归同时令 etcdctl 与 gateway
+  返回 `-1` 并要求完整摘要，两个 `<-1` 负例分别固定 fail closed；定向十轮与 race 通过。本项不改变 runtime wire、hash
+  算法、compact 执行或存储编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
