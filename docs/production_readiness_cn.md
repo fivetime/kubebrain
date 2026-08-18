@@ -1141,7 +1141,10 @@ production 生成 Ready Pod UID/outcome current 与 10 分钟 increase，要求 
 RPC server 创建时发布权威零值。原请求仍返回 Unavailable，但对应内存 lease 立即进入 revoke-pending；TTL/List、
 KeepAlive 与新 key attachment 在终态前 fail closed，不能继续使用一个 durable 状态未知的 lease。同 leader epoch
 和 lease generation 的后台 worker 以 100ms→1s 有界指数退避重试完整原子 revoke；成功或确认 lease 不存在产生
-success，领导权、generation 或 pending state 变化产生 handoff，由 authoritative reload 或其他请求接管。production
+success，领导权、generation 或 pending state 变化产生 handoff，由 authoritative reload 或其他请求接管。每次
+重试的 TxnApply 都重新读取 durable CORRUPT generation，并在同一原子事务中 guard 用户 key、attachment 和 lease
+metadata 删除；因此原 RPC 返回 uncertain 后新 arm 的 CORRUPT 仍会阻塞重放，三类数据与 pending 状态保留到显式
+disarm，不能只依赖已经过时的 RPC 入口检查。production
 生成 Ready Pod UID/outcome current 与 10 分钟 increase，要求 `3×Ready` 完整及合法 counter；retry 任一增量
 warning，缺失、陈旧、非法或 outcome 不完整 critical。
 `promhttp_metric_handler_requests_in_flight` 和

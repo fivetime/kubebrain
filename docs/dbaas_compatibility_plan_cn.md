@@ -56725,6 +56725,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定吞吐阈值。精确 recording/alert manifest 回归和 production 完整包通过；本项只消费既有真实 counter，
   不改变 lease RPC 语义，需要下一生产监控发布。
 
+- A5050 固定 uncertain LeaseRevoke 后台重放与 CORRUPT alarm 的原子边界。A5048 已让不确定 revoke 进入
+  pending 并重试，但 RPC 入口的 `rejectCorrupt` 发生在原始请求之前，无法证明响应丢失后新 arm 的 CORRUPT 会
+  阻止 worker 删除用户 key。复核 backend `TxnApply` 确认每次尝试都会重新读取 durable alarm member/generation，
+  并把 generation CAS 与用户 key、lease attachment、metadata 删除放入同一 TiKV transaction；因此不存在
+  check→commit 窗口。现以回归固定完整时序：uncommitted uncertain 后 arm CORRUPT，再释放后台重试；至少一次
+  retry 必须被 atomic guard 拒绝，三类 durable 数据均保留，TTL 继续以 revoke-pending Unavailable fail closed；
+  disarm 后同一 worker 自动原子删除三者并返回 TTL=-1。实现注释同时把不可降级为入口 precheck 的约束钉在重试
+  调用点。定向与完整 server/etcd 测试通过；本项不改变公开 RPC/metric taxonomy，需要下一生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
