@@ -33,6 +33,16 @@ func initWatchMetrics(metricCli metrics.Metrics) {
 	_ = metricCli.EmitCounter("watch.event.buffer.full", int64(0))
 	_ = metricCli.EmitCounter("watch.collector.stalled", int64(0))
 	_ = metricCli.EmitCounter("watch.collector.skipped_revision", int64(0))
+	for _, outcome := range []string{"replayed", "empty", "failed"} {
+		_ = metricCli.EmitCounter("watch.collector.recovery", int64(0), metrics.Tag("outcome", outcome))
+	}
+}
+
+func emitWatchCollectorRecovery(metricCli metrics.Metrics, outcome string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("watch.collector.recovery", 1, metrics.Tag("outcome", outcome))
 }
 
 // This file holds the watch-event RING: the per-revision slot buffer and the

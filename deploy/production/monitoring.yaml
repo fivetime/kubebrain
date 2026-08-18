@@ -457,6 +457,18 @@ spec:
           expr: count(((kubebrain_dbaas:watch_collector_stalled:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_collector_stalled:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_collector_stalled:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_collector_stalled:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_collector_stalled:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_collector_stalled:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(((kubebrain_dbaas:watch_collector_skipped_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_collector_skipped_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_collector_skipped_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_collector_skipped_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_collector_skipped_revision:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_collector_skipped_revision:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_collector_recovery:current_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (watch_collector_recovery{namespace="kubebrain-system",outcome=~"replayed|empty|failed"} and (time() - timestamp(watch_collector_recovery{namespace="kubebrain-system",outcome=~"replayed|empty|failed"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_collector_recovery:increase_10m_by_pod_outcome
+          expr: max by (namespace, pod, uid, outcome) (increase(watch_collector_recovery{namespace="kubebrain-system",outcome=~"replayed|empty|failed"}[10m]) and (time() - timestamp(watch_collector_recovery{namespace="kubebrain-system",outcome=~"replayed|empty|failed"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_collector_recovery_invalid_values:count
+          expr: count(((kubebrain_dbaas:watch_collector_recovery:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_collector_recovery:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_collector_recovery:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_collector_recovery:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_collector_recovery:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_collector_recovery:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:durable_revision_persist_err:current_by_pod
           expr: max by (namespace, pod, uid) (revision_durable_persist_err{namespace="kubebrain-system"} and (time() - timestamp(revision_durable_persist_err{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1100,7 +1112,31 @@ spec:
             severity: critical
           annotations:
             summary: KubeBrain watch collector skipped an abandoned revision
-            description: "KubeBrain watch collector skipped {{ $value }} abandoned revisions in the last 10 minutes after the writer exceeded the bounded publication deadline. Verify write-path termination, durable revision continuity, and watch delivery before declaring the instance healthy."
+            description: "KubeBrain watch collector skipped {{ $value }} abandoned eventless revisions in the last 10 minutes after exact durable recovery found no replayable event. Verify write-path termination, durable revision continuity, and watch delivery before declaring the instance healthy."
+        - alert: KubeBrainWatchCollectorDurableReplay
+          expr: sum(kubebrain_dbaas:watch_collector_recovery:increase_10m_by_pod_outcome{outcome="replayed"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain recovered a committed watch revision from TiKV
+            description: "The collector found a TiKV-committed event-log/witness revision whose in-memory ring publication was lost and replayed it before advancing the read-visible watermark. Watch continuity was preserved, but inspect write goroutine termination and commit-wait timeout evidence."
+        - alert: KubeBrainWatchCollectorRecoveryFailed
+          expr: sum(kubebrain_dbaas:watch_collector_recovery:increase_10m_by_pod_outcome{outcome="failed"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain could not recover a stalled committed revision
+            description: "Exact durable event-log recovery failed, so the collector kept the revision unreadable and did not skip it. Inspect TiKV availability and event/object/witness integrity; preserve any CORRUPT alarm evidence and do not bypass the stalled watermark."
+        - alert: KubeBrainWatchCollectorRecoveryMetricsMissing
+          expr: absent(kubebrain_dbaas:watch_collector_recovery_invalid_values:count) == 1 or count(kubebrain_dbaas:watch_collector_recovery:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_collector_recovery:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 3 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:watch_collector_recovery_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain watch collector recovery telemetry is incomplete
+            description: "Every Ready Pod UID must expose authoritative-zero replayed, empty and failed outcomes. Current samples must be fresh non-negative exact integers within 2^53 and ten-minute increases finite in range. Missing, stale, invalid or incomplete telemetry cannot prove a stalled committed revision is replayed or safely classified before watermark advancement."
         - alert: KubeBrainWatchCollectorMetricsMissing
           expr: absent(kubebrain_dbaas:watch_collector_invalid_values:count) == 1 or count(kubebrain_dbaas:watch_collector_stalled:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_collector_stalled:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_collector_skipped_revision:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_collector_skipped_revision:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:watch_collector_invalid_values:count != 0
           for: 2m

@@ -17,6 +17,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -31,6 +32,27 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type collectorRecoveryFailStorage struct {
+	storage.KvStorage
+	failIter bool
+}
+
+func compactMetricRecordsContain(records []compactMetricRecord, want compactMetricRecord) bool {
+	for _, record := range records {
+		if reflect.DeepEqual(record, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *collectorRecoveryFailStorage) Iter(ctx context.Context, start, end []byte, timestamp, limit uint64) (storage.Iter, error) {
+	if s.failIter {
+		return nil, fmt.Errorf("injected durable recovery scan failure")
+	}
+	return s.KvStorage.Iter(ctx, start, end, timestamp, limit)
+}
 
 // TestWriteThenReadSeesOwnWrite pins #35 (apply-then-ack): once a write RPC
 // returns, the committed (read-visible) revision has reached the write's
@@ -164,4 +186,69 @@ func TestTxnApplyDoesNotAcknowledgeBeforeCommittedRevisionIsVisible(t *testing.T
 	require.NotZero(t, revision, "preserve the committed revision for caller reconciliation")
 	require.Nil(t, results, "an unreadable committed revision must never be acknowledged with write results")
 	require.Less(t, b.GetCurrentRevision(), revision)
+
+	// Simulate the exact crash window: TiKV committed the transaction and its
+	// event witness, but the in-memory ring publication was lost. The restarted
+	// collector must replay the durable event rather than skip the revision.
+	require.NotEmpty(t, b.watchEventsRingBuffer[revision%watchersChanCapacity].take(revision))
+	b.collectorStallWarnAfter = time.Millisecond
+	b.collectorStallSkipAfter = 5 * time.Millisecond
+	collectorCtx, cancelCollector := context.WithCancel(context.Background())
+	collectorDone := make(chan struct{})
+	go func() {
+		defer close(collectorDone)
+		b.collectStorageWriteEvents(collectorCtx)
+	}()
+	select {
+	case batch := <-b.watchChan:
+		require.Len(t, batch, 1)
+		require.Equal(t, []byte(prefix+"/commit-wait/stalled"), batch[0].Kv.Key)
+		require.Equal(t, []byte("durable"), StripInlineValue(batch[0].Kv.Value))
+		require.Equal(t, revision, batch[0].Revision)
+	case <-time.After(time.Second):
+		t.Fatal("collector did not replay the durable stalled revision")
+	}
+	require.Equal(t, revision, b.GetCurrentRevision())
+	require.Contains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "watch.collector.recovery", value: 1,
+		tags: []metrics.T{metrics.Tag("outcome", "replayed")},
+	})
+	cancelCollector()
+	<-collectorDone
+}
+
+func TestCollectorRecoveryFailureDoesNotAdvanceCommittedRevision(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	raw := imemkv.NewKvStorage()
+	store := &collectorRecoveryFailStorage{KvStorage: raw}
+	defer func() { require.NoError(t, raw.Close()) }()
+	b := NewBackend(store, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, recorder).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	b.commitWaitBackstop = 10 * time.Millisecond
+	b.stopWorkers()
+
+	_, revision, err := b.TxnApply(context.Background(), []TxnWriteOp{{
+		Key: []byte(prefix + "/commit-wait/recovery-failure"), Value: []byte("durable"),
+	}}, nil)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.NotEmpty(t, b.watchEventsRingBuffer[revision%watchersChanCapacity].take(revision))
+	store.failIter = true
+	b.collectorStallWarnAfter = time.Millisecond
+	b.collectorStallSkipAfter = 5 * time.Millisecond
+	collectorCtx, cancelCollector := context.WithCancel(context.Background())
+	collectorDone := make(chan struct{})
+	go func() {
+		defer close(collectorDone)
+		b.collectStorageWriteEvents(collectorCtx)
+	}()
+
+	require.Eventually(t, func() bool {
+		return compactMetricRecordsContain(recorder.snapshot(), compactMetricRecord{
+			kind: "counter", name: "watch.collector.recovery", value: 1,
+			tags: []metrics.T{metrics.Tag("outcome", "failed")},
+		})
+	}, time.Second, time.Millisecond)
+	require.Less(t, b.GetCurrentRevision(), revision, "failed durable recovery must not skip the committed revision")
+	cancelCollector()
+	<-collectorDone
 }

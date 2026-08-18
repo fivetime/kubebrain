@@ -532,6 +532,10 @@ type backend struct {
 	// commitWaitBackstop is fixed to defaultCommitWaitBackstop in production and
 	// shortened only by package tests that exercise a stalled collector.
 	commitWaitBackstop time.Duration
+	// Collector stall deadlines use production defaults and are shortened only
+	// by package tests that exercise durable exact-revision recovery.
+	collectorStallWarnAfter time.Duration
+	collectorStallSkipAfter time.Duration
 
 	workerCtx    context.Context
 	workerCancel context.CancelFunc
@@ -674,11 +678,13 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			newSerializableCheckpointServiceID(config.Keyspace, config.Identity),
 			newSerializableCheckpointServiceID(config.Keyspace, config.Identity),
 		},
-		compactSignal:      make(chan struct{}, 1),
-		metricCli:          metricCli,
-		commitWaitBackstop: defaultCommitWaitBackstop,
-		workerCtx:          workerCtx,
-		workerCancel:       workerCancel,
+		compactSignal:           make(chan struct{}, 1),
+		metricCli:               metricCli,
+		commitWaitBackstop:      defaultCommitWaitBackstop,
+		collectorStallWarnAfter: collectorStallWarnAfter,
+		collectorStallSkipAfter: collectorStallSkipAfter,
+		workerCtx:               workerCtx,
+		workerCancel:            workerCancel,
 	}
 	b.compactCtx.Store(compactContextHolder{ctx: workerCtx})
 	b.corruptAlarmFenceShard.Store(corruptAlarmFenceShardOffset(config.Identity))
@@ -832,14 +838,36 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 					// the ring); on a follower the collector idles while peer-sync
 					// advances the revision, so never treat a follower's empty slot
 					// as a stall.
-					warn, skip := stall.note(nextRevision, b.tso.Dealt(), b.leadingFresh(), time.Now(), collectorStallWarnAfter, collectorStallSkipAfter)
+					warn, skip := stall.note(nextRevision, b.tso.Dealt(), b.leadingFresh(), time.Now(), b.collectorStallWarnAfter, b.collectorStallSkipAfter)
 					if skip {
-						// > the bounded write RPC timeout: the revision's writer is
-						// provably dead (a live one would have notified, valid or
-						// invalid, long ago). Advance past the hole; it carried no
-						// event, so no watcher loses one.
-						klog.Errorf("event collector skipping abandoned revision %d (dealt=%d) after stall; a writer died between deal and notify", nextRevision, b.tso.Dealt())
-						b.metricCli.EmitCounter("watch.collector.skipped_revision", 1)
+						// The writer is dead, but its TiKV transaction may have
+						// committed object, event-log and witness atomically before it
+						// lost the in-memory ring publication. Recover the exact
+						// revision before considering it an eventless hole; otherwise
+						// existing watchers would silently miss a durable mutation.
+						recovered, served, recoverErr := b.eventLogWatchEvents(ctx, "", nextRevision, nextRevision)
+						if recoverErr != nil {
+							emitWatchCollectorRecovery(b.metricCli, "failed")
+							klog.ErrorS(recoverErr, "event collector failed to recover stalled durable revision",
+								"revision", nextRevision, "dealt", b.tso.Dealt())
+							continue
+						}
+						if served && len(recovered) > 0 {
+							emitWatchCollectorRecovery(b.metricCli, "replayed")
+							for _, event := range recovered {
+								if b.countIndex != nil && event.Kv != nil {
+									b.countIndex.Apply(event.Kv.Key, nextRevision, event.Type == proto.Event_DELETE)
+								}
+								b.watchCache.Add(event)
+								events = append(events, event)
+							}
+							klog.ErrorS(nil, "event collector replayed stalled durable revision",
+								"revision", nextRevision, "events", len(recovered), "dealt", b.tso.Dealt())
+						} else {
+							emitWatchCollectorRecovery(b.metricCli, "empty")
+							klog.Errorf("event collector skipping abandoned eventless revision %d (dealt=%d) after durable recovery", nextRevision, b.tso.Dealt())
+							b.metricCli.EmitCounter("watch.collector.skipped_revision", 1)
+						}
 						if !b.ensureDurableRevision(ctx, nextRevision) {
 							return
 						}

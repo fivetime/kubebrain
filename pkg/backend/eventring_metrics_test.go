@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
 func TestWatchMetricsInitializeAuthoritativeZero(t *testing.T) {
@@ -19,5 +21,8 @@ func TestWatchMetricsInitializeAuthoritativeZero(t *testing.T) {
 		{kind: "counter", name: "watch.event.buffer.full", value: int64(0)},
 		{kind: "counter", name: "watch.collector.stalled", value: int64(0)},
 		{kind: "counter", name: "watch.collector.skipped_revision", value: int64(0)},
+		{kind: "counter", name: "watch.collector.recovery", value: int64(0), tags: []metrics.T{metrics.Tag("outcome", "replayed")}},
+		{kind: "counter", name: "watch.collector.recovery", value: int64(0), tags: []metrics.T{metrics.Tag("outcome", "empty")}},
+		{kind: "counter", name: "watch.collector.recovery", value: int64(0), tags: []metrics.T{metrics.Tag("outcome", "failed")}},
 	}, recorder.records)
 }
