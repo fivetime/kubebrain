@@ -57609,6 +57609,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TTL=60/deadline≈120s` 的真实 metadata 生成 bbolt，并验证 lease protobuf 为 `TTL=60/RemainingTTL=60`；定向十轮、
   完整 etcd 包及 race 通过。本项不改变 TiKV lease metadata、过期调度、MVCC revision 或 wire API。
 
+- A5139 修复 `TestDeleteWatcherDuringCatchUpClosesChan` 自身的取消/drain 竞态。旧测试在 `cancel()` 后立即
+  排空满 subscriber channel，可能先解除 catch-up send 阻塞，使 goroutine 合法完成 reattach/recovered 指标，随后
+  context 删除路径才运行；这不代表生产事件 gap，却连续两轮令全量门禁红灯。现测试先等待 `DeleteWatcher` 从
+  `catchingUp` 集合完成摘除，再排空并验证 channel 关闭与零 recovered/dropped outcome，精确固定原注释声明的
+  shutdown handoff。普通 100 轮、race 20 轮、完整非 production 集合、production 326 项四分片及 vet 全部通过。
+  本项不改变 watcherhub 生产状态机、wire、TiKV 数据路径或指标语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

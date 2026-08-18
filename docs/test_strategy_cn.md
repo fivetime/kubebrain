@@ -37,6 +37,7 @@ KubeBrain 的目标不是"内部函数看起来对"，而是**"对 Kubernetes �
 
 - **适用场景**：修订号流水线卡死、goroutine 泄漏、nil panic、watcherhub 跳批、compact 水位倒退等——这些依赖内部时序/失败注入，黑盒难以稳定触发。
 - **要求**：单测应能**证明修复前失败、修复后通过**（提交前用 `git stash` 或临时回退验证过），并在涉及并发时跑 `-race`。
+- **并发等待**：测试若要解除某个阻塞条件（例如开始 drain 满 channel），必须先观察到被测取消/删除路径已经完成其状态迁移；不能把 goroutine 在 `cancel()` 后立即获调度当作保证，否则测试自身会让另一条合法分支先完成。
 - 现有示例：`pkg/backend/revision_leak_test.go`、`pkg/backend/watcherhub_test.go`、`pkg/backend/processevents_leak_test.go`、`pkg/backend/compact_regress_test.go`、`pkg/storage/tikv/batch_test.go`、`pkg/server/etcd/{watch,maintenance}_test.go`。
 
 ### 4. mock / 故障注入（最窄用途）
@@ -65,7 +66,7 @@ hack/production/test-shard.sh 0 4 # shard index 为 0..3
 分片不是手工维护的测试前缀 allowlist。脚本读取 `go test -list '^Test'`，以完整顶层测试名的
 SHA-256 对 shard 总数取模；新增或改名测试会自动且只进入一个 shard。`--verify` 要求发现至少一个
 测试、每片非空并报告精确计数，仓库测试还固定 workflow 必须排除单包全量执行并配置 0–3 四片。
-本地仍可用 `go test ./hack/production -count=1 -timeout=20m` 做串行总门禁；325 个顶层测试的四片测试时间
+本地仍可用 `go test ./hack/production -count=1 -timeout=20m` 做串行总门禁；326 个顶层测试的四片测试时间
 合计已接近 15 分钟，15 分钟不再为编译和进程调度保留可靠余量。分片只缩短 wall time，
 不减少断言、子测试或故障场景。
 
