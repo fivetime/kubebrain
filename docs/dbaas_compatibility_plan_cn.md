@@ -57091,6 +57091,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   增量与 telemetry 缺失/陈旧/非法/组合不完整均 critical。四类 unary 与 KeepAlive nil/mixed 表驱动回归连续十轮
   通过，且 malformed response 从未发送给客户端；需要下一生产镜像和监控发布。
 
+- A5081 完成 `s.peers.*` unary 结果所有权审计的最后两条旁路：线性化 MemberList 与 peer HTTP corruption-check
+  HashKV。对照 upstream `EtcdServer.MemberList`/cluster gRPC wrapper，成功 MemberList 始终返回具体 response；旧
+  follower 路径允许 nil success 或 mixed header 进入 revision observation。现新增固定
+  `cluster.proxy.integrity_failure{rpc="member_list"}` 并在 RPC server 创建时初始化权威零值，nil/mixed 在观察前
+  DataLoss fail closed；production 生成 60 秒新鲜 Ready Pod UID current/increase，要求每 Pod 一条、值合法且未知
+  rpc 非法，事件与 telemetry 缺失/陈旧/非法均 critical。另审计 `/root/etcd/server/etcdserver/corrupt.go` 对每个 peer
+  HashKV 的具体响应要求：KubeBrain `hedgedPeerHashKV` 现复用 A5077 的
+  `maintenance.proxy.integrity_failure{rpc="hash_kv"}` 校验 leader 结果，并把该 DataLoss 作为 hedge 终态，不能被
+  local TiKV hash 的成功或更早 storage error 掩盖。MemberList 与 peer HashKV nil/mixed 回归连续十轮通过；需要下一
+  生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
