@@ -56866,6 +56866,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   首次与幂等二次 Close 都保留同一错误。定向与完整 backend 测试通过；本项需要下一生产镜像，不新增依赖退出期
   scrape 的 Prometheus 假证据。
 
+- A5061 闭合 upstream-compatible read-index failure counter 已正确生产却完全未被 production 消费的线性读
+  诊断缺口。对照 `/root/etcd/server/etcdserver/v3_server.go` 的 linearizable ReadIndex barrier，KubeBrain
+  中央 `SyncReadRevision` 已在 revision syncer 创建时初始化
+  `etcd_server_slow_read_indexes_total` / `etcd_server_read_indexes_failed_total`：deadline/transport timeout 计入
+  slow，stale local leader、leader change、非法 leader `/status` 等非 timeout 终止计入 failed；客户端主动取消
+  不制造事故，任一失败都不推进 follower revision。旧 production 没有 recording/alert，因而无法区分权威零值、
+  停止 scrape 或非法 counter。现以 `label_replace` 规范固定 `outcome="slow|failed"`，从 60 秒新鲜 raw sample
+  生成 Ready Pod UID/outcome current 与 10 分钟 increase，要求两类 `2×Ready` 完整；current 为 `[0,2^53]`
+  精确整数、increase 有限同范围。slow/failed 事件 warning，缺失/陈旧/非法/组合不完整 critical，明确 telemetry
+  缺口不能证明 unsafe barrier 没有被绕过。既有回归固定 stale leader 增加 failed 且 revision 不推进、deadline
+  增加 slow、client cancellation 不误报；本轮精确 production 测试通过。本项只消费已有真实源端合同，需要下一
+  生产监控发布，不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

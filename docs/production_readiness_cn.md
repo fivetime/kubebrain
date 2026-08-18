@@ -4413,6 +4413,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   证明共享 CORRUPT write fence 已落盘；failed 证明 alarm persistence 失败且 leadership 初始化保持阻断，不能因
   AlarmList 为空恢复写入。缺失、陈旧、非法或 outcome 不完整同样不能作为 witness/fence 健康证据。
 - watch revision lag 过高。
+- upstream-compatible `etcd_server_{slow_read_indexes,read_indexes_failed}_total` 在 revision syncer 创建时初始化
+  权威零值；production 规范为 `outcome=slow|failed`，只消费 60 秒新鲜的 Ready Pod UID current/10 分钟
+  increase，要求两类各 `2×Ready` 完整。current 必须是 `[0,2^53]` 精确整数、increase 有限同范围；slow
+  表示 deadline/transport timeout，failed 表示 stale leader、leader change 或非法 leader status，两者都已让
+  请求 fail closed。事件 warning，缺失、陈旧、非法或 outcome 不完整 critical，不能据此假定 read barrier 被执行。
 - `watch_backend_integrity_failure{kind="invalid_result|invalid_revision"}` 每个 RPC server 初始化两类权威零值；
   production 只消费 60 秒内 Ready Pod UID/kind current 与 10 分钟 increase，要求两类均 `2×Ready` 完整，
   current 为 `[0,2^53]` 精确整数、increase 有限同范围。任一事件或缺失、陈旧、非法、不完整 telemetry 均
