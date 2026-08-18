@@ -4483,7 +4483,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   PUT 缺失的正 CreateRevision/Version、version 1 不在 create revision、version 超出 create→mod revision 窗口，
   以及 PrevKv 的非正/future revision、不可能生命周期、跨 generation 或非连续版本；DELETE 当前 Kv 仍允许零
   CreateRevision/Version，且必须仅含 Key+ModRevision（Value/CreateRevision/Version/Lease 均为零值）；PrevKv Lease ID
-  仍允许 etcd 支持的负值。必须排查 backend adapter、
+  仍允许 etcd 支持的负值。`PrevKv=true` 时，未被 compaction 覆盖的 update/delete 必须携带前值；只有 create、已覆盖
+  的历史 revision 或压缩水位读取失败可按 upstream 语义返回 nil PrevKv。必须排查 backend adapter、
   collector、durable replay 与 peer proxy ordering，不能把客户端收到 cancel 或 recovery retry 当成完整性已恢复。
 - 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。
 - 任一当前 Ready Pod 的 `count_index_overflowed` 超过 60 秒未刷新，或任一新鲜 overflow gauge 为 1；

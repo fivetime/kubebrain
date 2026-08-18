@@ -57204,6 +57204,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   generation metadata 和 upstream 支持的 signed lease ID（含负值）。shape/public 注入、canonical DELETE、PrevKV 与真实事件
   metadata 回归连续十轮通过；需要下一生产镜像和监控发布。
 
+- A5094 闭合 `WatchCreateRequest.PrevKv=true` 的前值存在性合同。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go`，upstream 对非 create event 在 `ModRevision-1` 做 lazy Range：创建 PUT
+  没有 PrevKv；更新/删除在该历史 revision 未被 compaction 覆盖且 Range 成功时必须返回前值。旧 KubeBrain 只有在批次
+  已携带至少一个 PrevKv 时才读取压缩水位，因此 backend/peer 丢失整个批次前值会静默发布 nil。现经过 range/filter 后只要
+  存在可见 update/delete 就总是取得 fresh compact revision、按既有规则剥离已压缩前值，并在水位未覆盖却仍缺 PrevKv 时于
+  fragment/Send 前进入固定 `watch.backend.integrity_failure{kind="invalid_result"}`、取消 generation，不增加标签。压缩水位
+  查询失败保持 upstream Range error→nil PrevKv 语义并沿用 `watch.prev_kv.compact_revision.err`。创建、压缩边界、缺失 PUT/
+  DELETE、混合 PrevKv 订阅隔离、leader send fence 与正常 PrevKV 回归连续十轮通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
