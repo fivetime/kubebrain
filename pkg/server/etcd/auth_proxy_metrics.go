@@ -155,6 +155,17 @@ func validateAuthStatusProxyPayload(metricCli metrics.Metrics, response *etcdser
 	return response, nil
 }
 
+func validateAuthenticateProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.AuthenticateResponse, err error) (*etcdserverpb.AuthenticateResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	if response.GetToken() == "" {
+		emitAuthProxyIntegrityFailure(metricCli, authProxyActionAuthenticate)
+		return nil, status.Error(codes.DataLoss, "leader authenticate proxy returned an empty token")
+	}
+	return response, nil
+}
+
 func emitAuthProxyIntegrityFailure(metricCli metrics.Metrics, action string) {
 	if metricCli != nil {
 		_ = metricCli.EmitCounter("auth.proxy.integrity_failure", 1, metrics.Tag("action", action))

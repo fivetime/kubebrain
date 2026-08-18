@@ -185,6 +185,7 @@ func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.Auth
 		}()
 		response, err := s.peers.Authenticate(proxyCtx, request)
 		response, err = validateAuthProxyResult(s.metricCli, authProxyActionAuthenticate, response, err)
+		response, err = validateAuthenticateProxyPayload(s.metricCli, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}

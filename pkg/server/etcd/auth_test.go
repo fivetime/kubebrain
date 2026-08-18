@@ -721,6 +721,27 @@ func TestFollowerAuthenticateProxiesAndClearsPassword(t *testing.T) {
 	require.Empty(t, request.GetPassword())
 }
 
+func TestFollowerRejectsEmptyAuthenticateProxyToken(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initAuthProxyIntegrityMetrics(rec)
+	request := &etcdserverpb.AuthenticateRequest{Name: "alice", Password: "secret"}
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		authenticateFn: func(context.Context, *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
+			return &etcdserverpb.AuthenticateResponse{Header: txnHeader(2)}, nil
+		},
+	}
+
+	response, err := server.Authenticate(context.Background(), request)
+	require.Nil(t, response)
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.Empty(t, request.Password)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionAuthenticate))
+}
+
 func TestBearerPrefixedAuthTokenMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
