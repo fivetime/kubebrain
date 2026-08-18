@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	logbackuppb "github.com/pingcap/kvproto/pkg/logbackuppb"
+	meta_storagepb "github.com/pingcap/kvproto/pkg/meta_storagepb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	pingcaplog "github.com/pingcap/log"
 	pd "github.com/tikv/pd/client"
@@ -74,17 +76,13 @@ type receipt struct {
 type pdAPI interface {
 	GetClusterID(context.Context) uint64
 	GetAllStores(context.Context, ...pd.GetStoreOption) ([]*metapb.Store, error)
-	Get(context.Context, []byte, ...pd.OpOption) (interfaceGetResponse, error)
+	Get(context.Context, []byte, ...pd.OpOption) (*meta_storagepb.GetResponse, error)
 	Close()
 }
 
-// interfaceGetResponse is kept out of the production path; the concrete PD
-// response is adapted below so unit tests need no generated protobuf fixtures.
-type interfaceGetResponse interface{ GetCount() int64 }
-
 type pdAdapter struct{ pd.Client }
 
-func (p pdAdapter) Get(ctx context.Context, key []byte, opts ...pd.OpOption) (interfaceGetResponse, error) {
+func (p pdAdapter) Get(ctx context.Context, key []byte, opts ...pd.OpOption) (*meta_storagepb.GetResponse, error) {
 	return p.Client.Get(ctx, key, opts...)
 }
 
@@ -130,6 +128,10 @@ func execute(parent context.Context, o options, out interface{ Write([]byte) (in
 
 func inspect(ctx context.Context, client pdAPI, o options, addrs []string, ks *coder.Keyspace, out interface{ Write([]byte) (int, error) }) error {
 	defer client.Close()
+	clusterID := client.GetClusterID(ctx)
+	if clusterID == 0 {
+		return errors.New("PD returned zero cluster ID")
+	}
 	infoKey := []byte(metaPrefix + "/info/" + o.task)
 	rangesPrefix := []byte(metaPrefix + "/ranges/" + o.task + "/")
 	ownership := []struct {
@@ -148,6 +150,9 @@ func inspect(ctx context.Context, client pdAPI, o options, addrs []string, ks *c
 	if err != nil {
 		return fmt.Errorf("read backup-stream task list: %w", err)
 	}
+	if err := validateEmptyMetadataGet(allTasks, clusterID, []byte(metaPrefix+"/info/"), true); err != nil {
+		return fmt.Errorf("validate backup-stream task list: %w", err)
+	}
 	if allTasks.GetCount() != 0 {
 		return fmt.Errorf("backup-stream already has %d task(s); TiKV v7.5.1 supports one", allTasks.GetCount())
 	}
@@ -159,6 +164,9 @@ func inspect(ctx context.Context, client pdAPI, o options, addrs []string, ks *c
 		got, err := client.Get(ctx, []byte(item.key), opts...)
 		if err != nil {
 			return fmt.Errorf("read task ownership path %q: %w", item.key, err)
+		}
+		if err := validateEmptyMetadataGet(got, clusterID, []byte(item.key), item.prefix); err != nil {
+			return fmt.Errorf("validate task ownership path %q: %w", item.key, err)
 		}
 		if got.GetCount() != 0 {
 			return fmt.Errorf("backup-stream task %q already has metadata at %q; refusing ambiguous ownership", o.task, item.key)
@@ -172,10 +180,6 @@ func inspect(ctx context.Context, client pdAPI, o options, addrs []string, ks *c
 	creds, err := transportCredentials(o)
 	if err != nil {
 		return err
-	}
-	clusterID := client.GetClusterID(ctx)
-	if clusterID == 0 {
-		return errors.New("PD returned zero cluster ID")
 	}
 	result := receipt{Format: "kubebrain.native-pitr-preflight.v1", ClusterID: clusterID, PDAddrs: addrs, Keyspace: ks.Name(), TaskName: o.task, StartKeyHex: hex.EncodeToString(ks.ObjectKeyspaceStart()), EndKeyHex: hex.EncodeToString(ks.ObjectKeyspaceEnd()), TaskInfoKey: string(infoKey), TaskRangesKey: string(rangesPrefix), OwnershipKeys: checked, TaskAvailable: true, TaskCount: 0, ReadOnly: true}
 	for _, store := range stores {
@@ -201,6 +205,30 @@ func inspect(ctx context.Context, client pdAPI, o options, addrs []string, ks *c
 	b = append(b, '\n')
 	_, err = out.Write(b)
 	return err
+}
+
+func validateEmptyMetadataGet(response *meta_storagepb.GetResponse, clusterID uint64, key []byte, prefix bool) error {
+	if response == nil || response.Header == nil || response.Header.ClusterId != clusterID || response.Header.Revision <= 0 || response.Header.Error != nil {
+		return errors.New("PD meta-storage returned an invalid response header")
+	}
+	if response.Count < 0 || response.Count != int64(len(response.Kvs)) || response.More {
+		return errors.New("PD meta-storage returned an invalid range envelope")
+	}
+	for i, kv := range response.Kvs {
+		if kv == nil || len(kv.Key) == 0 || (!prefix && !bytes.Equal(kv.Key, key)) || (prefix && !bytes.HasPrefix(kv.Key, key)) {
+			return errors.New("PD meta-storage returned a key outside the requested range")
+		}
+		if kv.CreateRevision <= 0 || kv.ModRevision < kv.CreateRevision || kv.Version <= 0 {
+			return errors.New("PD meta-storage returned invalid key metadata")
+		}
+		if i > 0 && bytes.Compare(response.Kvs[i-1].Key, kv.Key) >= 0 {
+			return errors.New("PD meta-storage returned unordered or duplicate keys")
+		}
+	}
+	if !prefix && len(response.Kvs) > 1 {
+		return errors.New("PD meta-storage returned multiple values for an exact key")
+	}
+	return nil
 }
 
 func validateOptions(o options) ([]string, error) {

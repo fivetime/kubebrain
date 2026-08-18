@@ -10,20 +10,18 @@ import (
 	"testing"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	meta_storagepb "github.com/pingcap/kvproto/pkg/meta_storagepb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/stretchr/testify/require"
 	pd "github.com/tikv/pd/client"
 	"google.golang.org/grpc/credentials"
 )
 
-type fakeGet int64
-
-func (f fakeGet) GetCount() int64 { return int64(f) }
-
 type fakePD struct {
 	clusterID uint64
 	stores    []*metapb.Store
 	counts    map[string]int64
+	responses map[string]*meta_storagepb.GetResponse
 	getErr    error
 	storesErr error
 	closed    bool
@@ -33,8 +31,16 @@ func (f *fakePD) GetClusterID(context.Context) uint64 { return f.clusterID }
 func (f *fakePD) GetAllStores(context.Context, ...pd.GetStoreOption) ([]*metapb.Store, error) {
 	return f.stores, f.storesErr
 }
-func (f *fakePD) Get(_ context.Context, key []byte, _ ...pd.OpOption) (interfaceGetResponse, error) {
-	return fakeGet(f.counts[string(key)]), f.getErr
+func (f *fakePD) Get(_ context.Context, key []byte, _ ...pd.OpOption) (*meta_storagepb.GetResponse, error) {
+	if response, ok := f.responses[string(key)]; ok {
+		return response, f.getErr
+	}
+	count := f.counts[string(key)]
+	response := &meta_storagepb.GetResponse{Header: &meta_storagepb.ResponseHeader{ClusterId: f.clusterID, Revision: 1}, Count: count}
+	for range count {
+		response.Kvs = append(response.Kvs, &meta_storagepb.KeyValue{Key: append([]byte(nil), key...), CreateRevision: 1, ModRevision: 1, Version: 1})
+	}
+	return response, f.getErr
 }
 func (f *fakePD) Close() { f.closed = true }
 
@@ -131,4 +137,56 @@ func TestInspectFailsClosed(t *testing.T) {
 		err := inspect(context.Background(), p, options{task: "t"}, nil, ks, &bytes.Buffer{})
 		require.ErrorContains(t, err, "no Up TiKV stores")
 	})
+}
+
+func TestValidateEmptyMetadataGet(t *testing.T) {
+	valid := func(keys ...string) *meta_storagepb.GetResponse {
+		response := &meta_storagepb.GetResponse{Header: &meta_storagepb.ResponseHeader{ClusterId: 7, Revision: 9}, Count: int64(len(keys))}
+		for _, key := range keys {
+			response.Kvs = append(response.Kvs, &meta_storagepb.KeyValue{Key: []byte(key), CreateRevision: 2, ModRevision: 3, Version: 2})
+		}
+		return response
+	}
+	require.NoError(t, validateEmptyMetadataGet(valid(), 7, []byte("prefix/"), true))
+	require.NoError(t, validateEmptyMetadataGet(valid("prefix/a", "prefix/b"), 7, []byte("prefix/"), true))
+	require.NoError(t, validateEmptyMetadataGet(valid("exact"), 7, []byte("exact"), false))
+
+	badCount := valid()
+	badCount.Count = 1
+	negativeCount := valid()
+	negativeCount.Count = -1
+	more := valid()
+	more.More = true
+	nilKV := valid("prefix/a")
+	nilKV.Kvs[0] = nil
+	badMetadata := valid("prefix/a")
+	badMetadata.Kvs[0].Version = 0
+	tests := []*meta_storagepb.GetResponse{
+		nil,
+		{},
+		{Header: &meta_storagepb.ResponseHeader{ClusterId: 8, Revision: 9}},
+		{Header: &meta_storagepb.ResponseHeader{ClusterId: 7}},
+		{Header: &meta_storagepb.ResponseHeader{ClusterId: 7, Revision: 9, Error: &meta_storagepb.Error{}}},
+		badCount,
+		negativeCount,
+		more,
+		nilKV,
+		badMetadata,
+		valid("outside"),
+		valid("prefix/b", "prefix/a"),
+		valid("exact", "exact"),
+	}
+	for i, response := range tests {
+		require.Error(t, validateEmptyMetadataGet(response, 7, []byte("prefix/"), true), i)
+	}
+	require.Error(t, validateEmptyMetadataGet(valid("exact", "exact"), 7, []byte("exact"), false))
+}
+
+func TestInspectRejectsMalformedEmptyMetadataResponse(t *testing.T) {
+	p := &fakePD{clusterID: 7, responses: map[string]*meta_storagepb.GetResponse{
+		metaPrefix + "/info/": {Header: &meta_storagepb.ResponseHeader{ClusterId: 7, Revision: 1}, Count: 0, Kvs: []*meta_storagepb.KeyValue{{Key: []byte(metaPrefix + "/info/hidden"), CreateRevision: 1, ModRevision: 1, Version: 1}}},
+	}}
+	err := inspect(context.Background(), p, options{task: "t"}, nil, coder.DefaultKeyspace(), &bytes.Buffer{})
+	require.ErrorContains(t, err, "invalid range envelope")
+	require.True(t, p.closed)
 }
