@@ -252,6 +252,18 @@ func (r *healthMetricRecorder) gaugeValues(name string) []interface{} {
 	return values
 }
 
+func (r *healthMetricRecorder) gaugeEvents(name string) []healthMetricEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var events []healthMetricEvent
+	for _, event := range r.events {
+		if event.kind == "gauge" && event.name == name {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
 func (s *healthStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if s.fail {
 		return nil, errors.New("storage unavailable")
@@ -502,8 +514,8 @@ func TestQuotaMetricsRefreshBoundsBlockedStorageRead(t *testing.T) {
 }
 
 func TestFDMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
-	metrics := &healthMetricRecorder{}
-	s := &server{metricCli: metrics}
+	recorder := &healthMetricRecorder{}
+	s := &server{metricCli: recorder}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -511,16 +523,23 @@ func TestFDMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
 		s.runFDMetricsRefresh(ctx, time.Millisecond)
 	}()
 	require.Eventually(t, func() bool {
-		return metrics.countGauge("os.fd.used") >= 2 && metrics.countGauge("os.fd.limit") >= 2
+		return recorder.countGauge("os.fd.used") >= 2 && recorder.countGauge("os.fd.limit") >= 2 &&
+			recorder.countGauge("fd.refresh.last_success_timestamp_seconds") >= 4
 	}, time.Second, time.Millisecond)
 
 	for _, name := range []string{"os.fd.used", "os.fd.limit"} {
-		values := metrics.gaugeValues(name)
+		values := recorder.gaugeValues(name)
 		require.NotEmpty(t, values)
 		for _, value := range values {
 			require.IsType(t, uint64(0), value)
 			require.Positive(t, value)
 		}
+	}
+	for _, event := range recorder.gaugeEvents("fd.refresh.last_success_timestamp_seconds") {
+		require.IsType(t, int64(0), event.value)
+		require.Positive(t, event.value)
+		require.Len(t, event.tags, 1)
+		require.Contains(t, []metrics.T{metrics.Tag("type", "used"), metrics.Tag("type", "limit")}, event.tags[0])
 	}
 
 	cancel()
@@ -529,11 +548,24 @@ func TestFDMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("fd metrics refresh did not stop after context cancellation")
 	}
-	stoppedAtUsed := metrics.countGauge("os.fd.used")
-	stoppedAtLimit := metrics.countGauge("os.fd.limit")
+	stoppedAtUsed := recorder.countGauge("os.fd.used")
+	stoppedAtLimit := recorder.countGauge("os.fd.limit")
 	time.Sleep(5 * time.Millisecond)
-	require.Equal(t, stoppedAtUsed, metrics.countGauge("os.fd.used"))
-	require.Equal(t, stoppedAtLimit, metrics.countGauge("os.fd.limit"))
+	require.Equal(t, stoppedAtUsed, recorder.countGauge("os.fd.used"))
+	require.Equal(t, stoppedAtLimit, recorder.countGauge("os.fd.limit"))
+}
+
+func TestFDMetricsInitializeAuthoritativeZero(t *testing.T) {
+	recorder := &healthMetricRecorder{}
+	s := &server{metricCli: recorder}
+	s.initFDMetrics()
+
+	require.Equal(t, []healthMetricEvent{
+		{kind: "counter", name: "fd.refresh.err", value: int64(0), tags: []metrics.T{metrics.Tag("type", "used")}},
+		{kind: "gauge", name: "fd.refresh.last_success_timestamp_seconds", value: int64(0), tags: []metrics.T{metrics.Tag("type", "used")}},
+		{kind: "counter", name: "fd.refresh.err", value: int64(0), tags: []metrics.T{metrics.Tag("type", "limit")}},
+		{kind: "gauge", name: "fd.refresh.last_success_timestamp_seconds", value: int64(0), tags: []metrics.T{metrics.Tag("type", "limit")}},
+	}, recorder.events)
 }
 
 func TestServerStateMetricsRefreshEmitsLeaderAndLearnerState(t *testing.T) {

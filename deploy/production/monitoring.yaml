@@ -209,6 +209,30 @@ spec:
           expr: count(((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:mvcc_compact_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > on(namespace, pod, uid) (kubebrain_dbaas:mvcc_current_revision:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) + count(((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:mvcc_compact_revision_refresh_err:current_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:mvcc_compact_revision_refresh_err:increase_10m_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:fd_used:max_by_pod
+          expr: max by (namespace, pod, uid) (os_fd_used{namespace="kubebrain-system"} and (time() - timestamp(os_fd_used{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:fd_limit:max_by_pod
+          expr: max by (namespace, pod, uid) (os_fd_limit{namespace="kubebrain-system"} and (time() - timestamp(os_fd_limit{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:fd_refresh_err:current_by_pod_type
+          expr: max by (namespace, pod, uid, type) (fd_refresh_err{namespace="kubebrain-system",type=~"used|limit"} and (time() - timestamp(fd_refresh_err{namespace="kubebrain-system",type=~"used|limit"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:fd_refresh_err:increase_30m_by_pod_type
+          expr: max by (namespace, pod, uid, type) (increase(fd_refresh_err{namespace="kubebrain-system",type=~"used|limit"}[30m]) and (time() - timestamp(fd_refresh_err{namespace="kubebrain-system",type=~"used|limit"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:fd_refresh_last_success_timestamp_seconds:current_by_pod_type
+          expr: max by (namespace, pod, uid, type) (fd_refresh_last_success_timestamp_seconds{namespace="kubebrain-system",type=~"used|limit"} and (time() - timestamp(fd_refresh_last_success_timestamp_seconds{namespace="kubebrain-system",type=~"used|limit"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:fd_invalid_values:count
+          expr: count(((kubebrain_dbaas:fd_used:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:fd_used:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:fd_used:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:fd_used:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count(((kubebrain_dbaas:fd_limit:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:fd_limit:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:fd_limit:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:fd_limit:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:fd_used:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > on(namespace, pod, uid) (kubebrain_dbaas:fd_limit:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)) + count(((kubebrain_dbaas:fd_refresh_err:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:fd_refresh_err:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:fd_refresh_err:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:fd_refresh_err:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:fd_refresh_err:increase_30m_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:fd_refresh_err:increase_30m_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(((kubebrain_dbaas:fd_refresh_last_success_timestamp_seconds:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) <= 0) or ((kubebrain_dbaas:fd_refresh_last_success_timestamp_seconds:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:fd_refresh_last_success_timestamp_seconds:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > time() + 300) or ((kubebrain_dbaas:fd_refresh_last_success_timestamp_seconds:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:fd_refresh_last_success_timestamp_seconds:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current)))
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:leader_election_lost:current_by_pod
           expr: sum by (namespace, pod, uid) (max by (namespace, pod, uid, addr) (leader_election_lost{namespace="kubebrain-system"} and (time() - timestamp(leader_election_lost{namespace="kubebrain-system"}) <= 60)))
           labels:
@@ -1097,6 +1121,38 @@ spec:
           annotations:
             summary: KubeBrain MVCC revision telemetry is incomplete or contradictory
             description: "Every Ready Pod UID must expose fresh current/compact revisions and authoritative-zero compact-refresh error current/increase. Current must be a positive exact integer, compact a non-negative exact integer no greater than that Pod's current revision, values must not exceed 2^53, and the shared compact watermark must converge across replicas. Current revisions may transiently differ on followers. Missing, stale, invalid, or persistently divergent compact telemetry cannot prove etcd revision semantics."
+        - alert: KubeBrainFileDescriptorUsageHigh
+          expr: max((kubebrain_dbaas:fd_used:max_by_pod / on(namespace, pod, uid) kubebrain_dbaas:fd_limit:max_by_pod) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0.8
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain file descriptor usage is high
+            description: "A current Ready replica has used more than 80% of its process file descriptor limit for five minutes. Inspect connection/watch growth and operating-system limits before descriptor exhaustion disrupts client, peer, or TiKV traffic."
+        - alert: KubeBrainFileDescriptorRefreshFailures
+          expr: sum by (type) (kubebrain_dbaas:fd_refresh_err:increase_30m_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain failed to refresh file descriptor telemetry
+            description: "A current Ready replica failed to read its file descriptor {{ $labels.type }} value during the last 30 minutes. The process retains its last exported value; inspect procfs/runtime access before trusting that snapshot."
+        - alert: KubeBrainFileDescriptorRefreshStalled
+          expr: (time() - kubebrain_dbaas:fd_refresh_last_success_timestamp_seconds:current_by_pod_type) * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current > 1200
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain file descriptor refresh is stalled
+            description: "A current Ready replica has not successfully refreshed its file descriptor {{ $labels.type }} value for more than 20 minutes, twice the scheduled interval. Scrape timestamps only show that the exporter still serves a retained gauge; this last-success timestamp proves whether the underlying refresh advanced."
+        - alert: KubeBrainFileDescriptorMetricsInconsistent
+          expr: absent(kubebrain_dbaas:fd_invalid_values:count) == 1 or count(kubebrain_dbaas:fd_used:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:fd_limit:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:fd_refresh_err:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:fd_refresh_err:increase_30m_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:fd_refresh_last_success_timestamp_seconds:current_by_pod_type * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:fd_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain file descriptor telemetry is incomplete or contradictory
+            description: "Every Ready Pod UID must expose fresh used/limit gauges plus exactly one used and one limit refresh-error and last-success series. Used must be a non-negative exact integer no greater than the positive exact limit, counters and timestamps must be valid values within 2^53, and timestamps cannot be more than five minutes in the future. Missing, stale, invalid, or incomplete telemetry cannot prove descriptor headroom."
         - alert: KubeBrainRevisionLagHigh
           expr: max(kubebrain_dbaas:watch_revision_lag:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 10000
           for: 5m

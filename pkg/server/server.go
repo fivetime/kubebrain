@@ -267,6 +267,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.initQuotaMetrics()
 	s.initCountIndexMetrics()
 	s.initMVCCRevisionRefreshMetrics()
+	s.initFDMetrics()
 	go func() {
 		defer close(s.campaignDone)
 		peerService.Campaign(campaignCtx)
@@ -295,6 +296,16 @@ func (s *server) initMVCCRevisionRefreshMetrics() {
 		return
 	}
 	_ = s.metricCli.EmitCounter("mvcc.compact_revision.refresh.err", int64(0))
+}
+
+func (s *server) initFDMetrics() {
+	if s == nil || s.metricCli == nil {
+		return
+	}
+	for _, metricType := range []string{"used", "limit"} {
+		_ = s.metricCli.EmitCounter("fd.refresh.err", int64(0), metrics.Tag("type", metricType))
+		_ = s.metricCli.EmitGauge("fd.refresh.last_success_timestamp_seconds", int64(0), metrics.Tag("type", metricType))
+	}
 }
 
 const quotaMetricsRefreshInterval = 15 * time.Second
@@ -428,6 +439,7 @@ func (s *server) refreshFDMetrics() {
 		return
 	}
 	s.metricCli.EmitGauge("os.fd.used", used)
+	s.metricCli.EmitGauge("fd.refresh.last_success_timestamp_seconds", time.Now().Unix(), metrics.Tag("type", "used"))
 
 	limit, err := runtimeutil.FDLimit()
 	if err != nil {
@@ -436,6 +448,7 @@ func (s *server) refreshFDMetrics() {
 		return
 	}
 	s.metricCli.EmitGauge("os.fd.limit", limit)
+	s.metricCli.EmitGauge("fd.refresh.last_success_timestamp_seconds", time.Now().Unix(), metrics.Tag("type", "limit"))
 }
 
 func (s *server) runFDMetricsRefresh(ctx context.Context, interval time.Duration) {
