@@ -57178,6 +57178,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不增加指标基数。shape validator 与公开 watch 注入回归连续十轮通过，正常 PrevKV/event metadata 保持兼容；需要
   下一生产镜像和监控发布。
 
+- A5091 将 Watch KeyValue revision 校验从“拒绝负值”收紧为 upstream 的完整 generation metadata。对照
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go`，PUT event 的 CreateRevision/Version 必为正；KubeBrain collector 的
+  inline/legacy 转换也会补齐这两个字段。DELETE 当前 Kv 仍按 upstream 只要求 key+delete ModRevision；但非 nil PrevKv
+  表示真实历史对象，必须具有正 create/mod revision 与 version，不能用全零 protobuf 占位。现缺 CreateRevision 或
+  Version 的 PUT、以及任一不完整 PrevKv 都在过滤/fragment/Send 前进入既有固定
+  `watch.backend.integrity_failure{kind="invalid_revision"}` 并取消 generation，不增加标签。表驱动回归覆盖缺失 PUT
+  metadata 与空 PrevKv，同时连续十轮验证正常 collector、PrevKV 和 event metadata；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
