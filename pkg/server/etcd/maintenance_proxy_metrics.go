@@ -159,9 +159,6 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	if response.GetDbSizeQuota() <= 0 {
 		return fail("leader status proxy returned a non-positive database quota")
 	}
-	if response.GetRaftAppliedIndex() > response.GetRaftIndex() {
-		return fail("leader status proxy returned an applied index above its committed index")
-	}
 	if response.GetDowngradeInfo() == nil {
 		return fail("leader status proxy returned no downgrade information")
 	}
