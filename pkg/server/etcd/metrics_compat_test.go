@@ -267,6 +267,27 @@ func TestDeleteRangeAdmissionMetricsInitializeAuthoritativeZero(t *testing.T) {
 	}, rec.counters)
 }
 
+func TestClientAdmissionMetricsInitializeFixedGuardsAndActiveGauges(t *testing.T) {
+	rec := &recordingMetrics{}
+	initClientAdmissionMetrics(rec)
+	for _, guard := range clientAdmissionGuards {
+		emitClientAdmissionRejection(rec, guard)
+	}
+
+	require.Equal(t, []recordedGauge{
+		{name: "grpc.server.admission.inflight", value: int64(0)},
+		{name: "watch.admission.active", value: int64(0)},
+	}, rec.gauges)
+	require.Equal(t, []recordedCounter{
+		{name: "client.admission.rejection", value: int64(0), tags: []metrics.T{metrics.Tag("guard", "concurrency")}},
+		{name: "client.admission.rejection", value: int64(0), tags: []metrics.T{metrics.Tag("guard", "rate")}},
+		{name: "client.admission.rejection", value: int64(0), tags: []metrics.T{metrics.Tag("guard", "watch")}},
+		{name: "client.admission.rejection", value: 1, tags: []metrics.T{metrics.Tag("guard", "concurrency")}},
+		{name: "client.admission.rejection", value: 1, tags: []metrics.T{metrics.Tag("guard", "rate")}},
+		{name: "client.admission.rejection", value: 1, tags: []metrics.T{metrics.Tag("guard", "watch")}},
+	}, rec.counters)
+}
+
 func TestEmitEtcdApplyDurationUsesCompleteUpstreamV3LabelMatrix(t *testing.T) {
 	rec := &recordingMetrics{}
 	ops := []string{

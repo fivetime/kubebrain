@@ -314,6 +314,7 @@ func (s *RPCServer) acquireRequest(method, kind string) bool {
 	if s.requestsInFlight >= admissionLimit {
 		s.metricCli.EmitCounter("grpc.server.admission.rejected", 1,
 			metrics.Tag("method", method), metrics.Tag("kind", kind))
+		emitClientAdmissionRejection(s.metricCli, clientAdmissionGuardConcurrency)
 		return false
 	}
 	if s.requestsInFlight >= limit {
@@ -348,6 +349,7 @@ func (s *RPCServer) allowRequestRate(method, kind string) bool {
 	}
 	s.metricCli.EmitCounter("grpc.server.rate_limit.rejected", 1,
 		metrics.Tag("method", method), metrics.Tag("kind", kind))
+	emitClientAdmissionRejection(s.metricCli, clientAdmissionGuardRate)
 	return false
 }
 

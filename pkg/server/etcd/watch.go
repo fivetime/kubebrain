@@ -930,6 +930,7 @@ func (s *RPCServer) acquireWatch() bool {
 	defer s.watchQuotaMu.Unlock()
 	if s.activeWatches >= int64(s.maxWatches) {
 		s.metricCli.EmitCounter("watch.admission.rejected", 1)
+		emitClientAdmissionRejection(s.metricCli, clientAdmissionGuardWatch)
 		return false
 	}
 	s.activeWatches++
