@@ -4418,6 +4418,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   increase，要求两类各 `2×Ready` 完整。current 必须是 `[0,2^53]` 精确整数、increase 有限同范围；slow
   表示 deadline/transport timeout，failed 表示 stale leader、leader change 或非法 leader status，两者都已让
   请求 fail closed。事件 warning，缺失、陈旧、非法或 outcome 不完整 critical，不能据此假定 read barrier 被执行。
+- upstream-compatible `etcd_network_server_stream_failures_total{API,Type}` 在 RPC server 创建时初始化
+  `watch|lease-keepalive` × `receive|send` 四类权威零值；production 规范为小写 `api` / `failure_type`，只消费
+  60 秒新鲜的 Ready Pod UID current/10 分钟 increase，并要求 `4×Ready` 完整。current 必须是 `[0,2^53]`
+  精确整数、increase 有限同范围，未知 API/Type 也视为 taxonomy 损坏。非客户端取消的任一事件 warning；缺失、
+  陈旧、非法或组合不完整同样 warning，不能据此假定 Watch 交付与 LeaseKeepAlive 续租长连接健康。
 - `watch_backend_integrity_failure{kind="invalid_result|invalid_revision"}` 每个 RPC server 初始化两类权威零值；
   production 只消费 60 秒内 Ready Pod UID/kind current 与 10 分钟 increase，要求两类均 `2×Ready` 完整，
   current 为 `[0,2^53]` 精确整数、increase 有限同范围。任一事件或缺失、陈旧、非法、不完整 telemetry 均

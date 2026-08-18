@@ -56879,6 +56879,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   增加 slow、client cancellation 不误报；本轮精确 production 测试通过。本项只消费已有真实源端合同，需要下一
   生产监控发布，不重建数据面镜像。
 
+- A5062 闭合 upstream-compatible server stream failure counter 已有权威四组合、production 却不消费的长连接
+  诊断缺口。对照 `/root/etcd/server/etcdserver/api/v3rpc/{metrics,watch,lease}.go`，KubeBrain 已在 RPC server
+  创建时初始化 `etcd_network_server_stream_failures_total{API="watch|lease-keepalive",Type="receive|send"}`，
+  并在 Watch Recv/Send 与 LeaseKeepAlive Recv/Send 的非客户端取消错误出口递增；EOF、context cancellation、
+  deadline 与常见 gRPC CANCEL 不制造事故。现 production 以 `label_replace` 将 upstream 大写标签规范为
+  `api` / `failure_type`，从 60 秒新鲜 raw sample 生成 Ready Pod UID 级 current 与 10 分钟 increase，要求
+  `4×Ready` 完整；current 为 `[0,2^53]` 精确整数、increase 有限同范围，未知 API/Type 显式计为非法，不能用
+  恰好相同的 series 数隐藏 taxonomy drift。任一失败按 api/type 保留标签并 warning，缺失、陈旧、非法或组合
+  不完整也 warning；Watch 失败可能中断 event delivery，LeaseKeepAlive 失败会消耗 client reconnect budget 并
+  可能使 lease 到期。既有回归已固定四类零值、真实 send/receive 错误与取消过滤；精确 production 测试通过。
+  本项只消费已有数据面合同，需要下一生产监控发布，不重建数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
