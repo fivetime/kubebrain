@@ -26,7 +26,9 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -103,7 +105,7 @@ func TestWaitCommittedRevisionWakesAndBounds(t *testing.T) {
 		b.SetCurrentRevision(base + 10)
 	}()
 	start := time.Now()
-	b.waitCommittedRevision(context.Background(), base+10)
+	require.NoError(t, b.waitCommittedRevision(context.Background(), base+10))
 	require.GreaterOrEqual(t, b.GetCurrentRevision(), base+10, "wait must return only once committed reached the target")
 	require.Less(t, time.Since(start), 3*time.Second, "wake must be prompt, not backstop-bound")
 	<-done
@@ -112,6 +114,54 @@ func TestWaitCommittedRevisionWakesAndBounds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start = time.Now()
-	b.waitCommittedRevision(ctx, base+1000)
+	require.ErrorIs(t, b.waitCommittedRevision(ctx, base+1000), context.DeadlineExceeded)
 	require.Less(t, time.Since(start), time.Second, "ctx expiry must unblock the waiter")
+}
+
+func TestWaitCommittedRevisionBackstopReturnsErrorAndEmitsFixedMetrics(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, recorder).(*backend)
+	base := uint64(time.Now().UnixNano())
+	b.SetCurrentRevision(base)
+
+	require.ErrorIs(t, b.waitCommittedRevisionUntil(context.Background(), base+1, 10*time.Millisecond), errCommitWaitBackstop)
+	require.Contains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "write.commit_wait.failure", value: 1,
+		tags: []metrics.T{metrics.Tag("reason", "backstop")},
+	})
+}
+
+func TestCommitWaitFailureMetricsInitializeFixedReasons(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	initCommitWaitFailureMetrics(recorder)
+	emitCommitWaitFailure(recorder, "context_done")
+
+	require.Equal(t, []compactMetricRecord{
+		{kind: "counter", name: "write.commit_wait.failure", value: int64(0), tags: []metrics.T{metrics.Tag("reason", "context_done")}},
+		{kind: "counter", name: "write.commit_wait.failure", value: int64(0), tags: []metrics.T{metrics.Tag("reason", "backstop")}},
+		{kind: "counter", name: "write.commit_wait.failure", value: 1, tags: []metrics.T{metrics.Tag("reason", "context_done")}},
+	}, recorder.records)
+}
+
+func TestTxnApplyDoesNotAcknowledgeBeforeCommittedRevisionIsVisible(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, recorder).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	b.commitWaitBackstop = 10 * time.Millisecond
+	// Model a collector that has stopped advancing the read-visible watermark
+	// while TiKV remains writable.
+	b.stopWorkers()
+
+	results, revision, err := b.TxnApply(context.Background(), []TxnWriteOp{{
+		Key: []byte(prefix + "/commit-wait/stalled"), Value: []byte("durable"),
+	}}, nil)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.ErrorIs(t, err, errCommitWaitBackstop)
+	require.NotZero(t, revision, "preserve the committed revision for caller reconciliation")
+	require.Nil(t, results, "an unreadable committed revision must never be acknowledged with write results")
+	require.Less(t, b.GetCurrentRevision(), revision)
 }

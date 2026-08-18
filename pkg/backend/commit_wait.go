@@ -16,18 +16,41 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"k8s.io/klog/v2"
+
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
-// commitWaitBackstop bounds how long a write blocks waiting for the committed
-// revision to reach it before giving up and answering anyway. It only fires if
-// the event collector stalls (in which case the whole cluster is degraded);
-// answering with the old early-ACK behavior keeps writes available instead of
-// timing them out — the write itself is already durable.
-const commitWaitBackstop = 3 * time.Second
+// defaultCommitWaitBackstop bounds how long a write blocks waiting for the
+// committed revision to become read-visible. It should only fire if the event
+// collector stalls (in which case the whole cluster is degraded); the write is
+// already durable, so expiry returns an outcome-unknown error rather than a
+// false success or a definite failure.
+const defaultCommitWaitBackstop = 3 * time.Second
+
+var errCommitWaitBackstop = errors.New("committed revision wait backstop expired")
+
+var commitWaitFailureReasons = []string{"context_done", "backstop"}
+
+func initCommitWaitFailureMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, reason := range commitWaitFailureReasons {
+		_ = metricCli.EmitCounter("write.commit_wait.failure", int64(0), metrics.Tag("reason", reason))
+	}
+}
+
+func emitCommitWaitFailure(metricCli metrics.Metrics, reason string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("write.commit_wait.failure", 1, metrics.Tag("reason", reason))
+}
 
 // commitNotify wakes waiters when the committed revision advances. advance is
 // called from SetCurrentRevision — the single funnel every committed-revision
@@ -74,15 +97,20 @@ func (c *commitNotify) waitChan() <-chan struct{} {
 // contain the write: the "read version X is not as new as written version Y"
 // staleness storms seen at 500k objects (#35).
 //
-// On ctx cancellation or backstop expiry it returns without error: the write
-// is already durable, and failing it would make the client retry a committed
-// write (a CAS conflict at best). Both exits are counted for observability.
-func (b *backend) waitCommittedRevision(ctx context.Context, revision uint64) {
+// On ctx cancellation or backstop expiry it returns an error. The caller must
+// report an outcome-unknown timeout: the write is already durable, but ACKing
+// success before its revision is read-visible would violate etcd's
+// apply-then-ack contract. Both exits are counted for observability.
+func (b *backend) waitCommittedRevision(ctx context.Context, revision uint64) error {
+	return b.waitCommittedRevisionUntil(ctx, revision, b.commitWaitBackstop)
+}
+
+func (b *backend) waitCommittedRevisionUntil(ctx context.Context, revision uint64, backstopDuration time.Duration) error {
 	if revision == 0 || b.tso.GetRevision() >= revision {
-		return
+		return nil
 	}
 	start := time.Now()
-	backstop := time.NewTimer(commitWaitBackstop)
+	backstop := time.NewTimer(backstopDuration)
 	defer backstop.Stop()
 	for {
 		// Grab the wait channel BEFORE re-checking: an advance between the check
@@ -90,18 +118,20 @@ func (b *backend) waitCommittedRevision(ctx context.Context, revision uint64) {
 		ch := b.commitNotify.waitChan()
 		if b.tso.GetRevision() >= revision {
 			b.metricCli.EmitHistogram("write.commit_wait", time.Since(start).Milliseconds())
-			return
+			return nil
 		}
 		select {
 		case <-ch:
 		case <-ctx.Done():
 			b.metricCli.EmitCounter("write.commit_wait.ctx_done", 1)
-			return
+			emitCommitWaitFailure(b.metricCli, "context_done")
+			return ctx.Err()
 		case <-backstop.C:
 			b.metricCli.EmitCounter("write.commit_wait.backstop", 1)
+			emitCommitWaitFailure(b.metricCli, "backstop")
 			klog.ErrorS(nil, "commit wait backstop fired; collector stalled?",
 				"revision", revision, "committed", b.tso.GetRevision(), "waited", time.Since(start))
-			return
+			return errCommitWaitBackstop
 		}
 	}
 }

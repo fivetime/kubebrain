@@ -529,6 +529,9 @@ type backend struct {
 	fenceFn atomic.Value
 
 	metricCli metrics.Metrics
+	// commitWaitBackstop is fixed to defaultCommitWaitBackstop in production and
+	// shortened only by package tests that exercise a stalled collector.
+	commitWaitBackstop time.Duration
 
 	workerCtx    context.Context
 	workerCancel context.CancelFunc
@@ -627,6 +630,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	initDurableRevisionMetrics(metricCli)
 	initEventLogIntegrityMetrics(metricCli)
 	initReadIntegrityFenceMetrics(metricCli)
+	initCommitWaitFailureMetrics(metricCli)
 	initStorageGCMetrics(metricCli)
 	initUncertainTxnMetrics(metricCli)
 	ks, ksErr := coder.NewKeyspace(config.Keyspace)
@@ -670,10 +674,11 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			newSerializableCheckpointServiceID(config.Keyspace, config.Identity),
 			newSerializableCheckpointServiceID(config.Keyspace, config.Identity),
 		},
-		compactSignal: make(chan struct{}, 1),
-		metricCli:     metricCli,
-		workerCtx:     workerCtx,
-		workerCancel:  workerCancel,
+		compactSignal:      make(chan struct{}, 1),
+		metricCli:          metricCli,
+		commitWaitBackstop: defaultCommitWaitBackstop,
+		workerCtx:          workerCtx,
+		workerCancel:       workerCancel,
 	}
 	b.compactCtx.Store(compactContextHolder{ctx: workerCtx})
 	b.corruptAlarmFenceShard.Store(corruptAlarmFenceShardOffset(config.Identity))

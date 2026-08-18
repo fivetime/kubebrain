@@ -848,7 +848,13 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	if b.config.QuotaBackendBytes > 0 {
 		b.metricCli.EmitGauge("quota.logical_usage_bytes", nextQuotaUsage)
 	}
-	b.waitCommittedRevision(ctx, newRevision) // apply-then-ack (#35)
+	if waitErr := b.waitCommittedRevision(ctx, newRevision); waitErr != nil {
+		// The TiKV transaction and its event witness are durable, but the
+		// collector has not made this revision readable. Never ACK success before
+		// apply visibility; expose etcd's outcome-unknown timeout contract while
+		// preserving the committed revision for lease reconciliation.
+		return nil, newRevision, false, storage.NewErrUncertainResult(waitErr)
+	}
 	return results, newRevision, false, nil
 }
 

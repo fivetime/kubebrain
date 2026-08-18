@@ -19,7 +19,6 @@ func (b *backend) transactionalCreate(ctx context.Context, put *proto.CreateRequ
 	if err != nil {
 		return nil, err
 	}
-	b.waitCommittedRevision(ctx, revision)
 	return &proto.CreateResponse{Header: responseHeader(revision), Succeeded: true}, nil
 }
 
@@ -74,7 +73,6 @@ func (b *backend) transactionalUpdateOnce(ctx context.Context, request *proto.Up
 	if err != nil {
 		return nil, err
 	}
-	b.waitCommittedRevision(ctx, revision)
 	return &proto.UpdateResponse{Header: responseHeader(revision), Succeeded: true}, nil
 }
 
@@ -120,7 +118,6 @@ func (b *backend) transactionalDeleteOnce(ctx context.Context, request *proto.De
 			return nil, healErr
 		}
 	}
-	b.waitCommittedRevision(ctx, revision)
 	response := &proto.DeleteResponse{Header: responseHeader(revision)}
 	if len(results) == 1 && results[0].Deleted {
 		response.Succeeded = true

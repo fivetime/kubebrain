@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/binary"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
@@ -150,6 +151,7 @@ func TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing(t *testing.T) {
 	kv := memkv.NewKvStorage()
 	defer func() { require.NoError(t, kv.Close()) }()
 	b := backend.NewBackend(kv, backend.Config{Identity: "test", EnableEtcdCompatibility: true}, m)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
 	shim := NewBackendShim(b, m).(*backendShim)
 	ctx := context.Background()
 
@@ -199,6 +201,7 @@ func TestWatchDeleteEventKeepsGenerationMetadataOnlyInPrevKV(t *testing.T) {
 	kv := memkv.NewKvStorage()
 	defer func() { require.NoError(t, kv.Close()) }()
 	b := backend.NewBackend(kv, backend.Config{Identity: "test", EnableEtcdCompatibility: true}, m)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
 	shim := NewBackendShim(b, m).(*backendShim)
 
 	key := []byte("/lease/expired")

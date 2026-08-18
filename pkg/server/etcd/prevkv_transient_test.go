@@ -81,6 +81,7 @@ func newPrevKvTestShim(t *testing.T) (*backendShim, backend.Backend, *flakyKV) {
 	kv := &flakyKV{KvStorage: memkv.NewKvStorage()}
 	t.Cleanup(func() { require.NoError(t, kv.Close()) })
 	b := backend.NewBackend(kv, backend.Config{Identity: "test", EnableEtcdCompatibility: true}, m)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
 	return NewBackendShim(b, m).(*backendShim), b, kv
 }
 

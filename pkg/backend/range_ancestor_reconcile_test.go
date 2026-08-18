@@ -116,6 +116,7 @@ func TestDecodedRangeExactKeysUseSnapshotBatchesAndBoundedParallelFallback(t *te
 	b := NewBackend(store, Config{
 		Prefix: "/kubebrain/range-ancestor-parallel", Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
 	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
 	ctx := context.Background()
 	keys := make([][]byte, maxDecodedRangeExactReadWorkers+1)
 	for index := range keys {
