@@ -2910,7 +2910,7 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyResults(t *testing.T) {
 }
 
 func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
-	for _, shape := range []string{"nil", "mixed", "missing_header", "negative_revision", "mismatched_id"} {
+	for _, shape := range []string{"nil", "mixed", "missing_header", "negative_revision", "mismatched_id", "negative_ttl"} {
 		t.Run(shape, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
 			defer closeFn()
@@ -2931,6 +2931,9 @@ func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
 					}
 					if shape == "mismatched_id" {
 						return &etcdserverpb.LeaseKeepAliveResponse{Header: txnHeader(1), ID: 2, TTL: 30}, nil
+					}
+					if shape == "negative_ttl" {
+						return &etcdserverpb.LeaseKeepAliveResponse{Header: txnHeader(1), ID: 1, TTL: -1}, nil
 					}
 					return nil, nil
 				},
@@ -2990,6 +2993,70 @@ func TestLeaseFollowerRejectsMismatchedUnaryProxyResponseID(t *testing.T) {
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.ErrorContains(t, err, "for request ID")
+			require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, test.rpc))
+		})
+	}
+}
+
+func TestLeaseFollowerRejectsInvalidUnaryProxyPayload(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		rpc       string
+		configure func(*testPeerService)
+		invoke    func(*RPCServer) (any, error)
+		message   string
+	}{
+		{
+			name: "grant non-positive ttl", rpc: leaseProxyRPCGrant,
+			configure: func(peers *testPeerService) {
+				peers.leaseGrantFn = func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+					return &etcdserverpb.LeaseGrantResponse{Header: txnHeader(1), ID: -1, TTL: 0}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: -1, TTL: 30})
+			},
+			message: "non-positive granted TTL 0",
+		},
+		{
+			name: "ttl keys not requested", rpc: leaseProxyRPCTimeToLive,
+			configure: func(peers *testPeerService) {
+				peers.leaseTTLFn = func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+					return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: math.MinInt64, TTL: 1, GrantedTTL: 30, Keys: [][]byte{[]byte("secret")}}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: math.MinInt64})
+			},
+			message: "returned keys when none were requested",
+		},
+		{
+			name: "malformed ttl not found", rpc: leaseProxyRPCTimeToLive,
+			configure: func(peers *testPeerService) {
+				peers.leaseTTLFn = func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+					return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: math.MinInt64, TTL: -1, GrantedTTL: 30}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: math.MinInt64, Keys: true})
+			},
+			message: "malformed not-found payload",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initLeaseProxyIntegrityMetrics(rec)
+			peers := testPeerService{isLeader: false, proxyEnabled: true}
+			test.configure(&peers)
+			server.peers = peers
+
+			response, err := test.invoke(server)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, test.message)
 			require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, test.rpc))
 		})
 	}

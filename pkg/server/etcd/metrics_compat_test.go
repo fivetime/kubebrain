@@ -265,6 +265,65 @@ func TestLeaseProxyResponseIDValidation(t *testing.T) {
 	require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
 }
 
+func TestLeaseProxyPayloadValidation(t *testing.T) {
+	t.Run("grant", func(t *testing.T) {
+		rec := &recordingMetrics{}
+		initLeaseProxyIntegrityMetrics(rec)
+		valid := &etcdserverpb.LeaseGrantResponse{TTL: 1}
+		response, err := validateLeaseGrantProxyPayload(rec, valid, nil)
+		require.Same(t, valid, response)
+		require.NoError(t, err)
+		response, err = validateLeaseGrantProxyPayload(rec, &etcdserverpb.LeaseGrantResponse{}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
+	})
+
+	t.Run("keep alive", func(t *testing.T) {
+		rec := &recordingMetrics{}
+		initLeaseProxyIntegrityMetrics(rec)
+		valid := &etcdserverpb.LeaseKeepAliveResponse{TTL: 0}
+		response, err := validateLeaseKeepAliveProxyPayload(rec, valid, nil)
+		require.Same(t, valid, response)
+		require.NoError(t, err)
+		response, err = validateLeaseKeepAliveProxyPayload(rec, &etcdserverpb.LeaseKeepAliveResponse{TTL: -1}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCKeepAlive))
+	})
+
+	t.Run("time to live", func(t *testing.T) {
+		for _, test := range []struct {
+			name          string
+			keysRequested bool
+			response      *etcdserverpb.LeaseTimeToLiveResponse
+			valid         bool
+		}{
+			{name: "found", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 0, GrantedTTL: 1, Keys: [][]byte{[]byte("key")}}, valid: true},
+			{name: "not found", response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -1}, valid: true},
+			{name: "keys not requested", response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 1, GrantedTTL: 1, Keys: [][]byte{[]byte("key")}}},
+			{name: "ttl below not found", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -2}},
+			{name: "found without granted ttl", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: 0}},
+			{name: "malformed not found", keysRequested: true, response: &etcdserverpb.LeaseTimeToLiveResponse{TTL: -1, GrantedTTL: 1}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				rec := &recordingMetrics{}
+				initLeaseProxyIntegrityMetrics(rec)
+				response, err := validateLeaseTimeToLiveProxyPayload(rec, test.keysRequested, test.response, nil)
+				if test.valid {
+					require.Same(t, test.response, response)
+					require.NoError(t, err)
+					require.Equal(t, []interface{}{int64(0)}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCTimeToLive))
+				} else {
+					require.Nil(t, response)
+					require.Equal(t, codes.DataLoss, status.Code(err))
+					require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCTimeToLive))
+				}
+			})
+		}
+	})
+}
+
 func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
 	initAuthProxyIntegrityMetrics(rec)

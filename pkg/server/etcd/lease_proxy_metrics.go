@@ -85,6 +85,50 @@ func validateLeaseProxyResponseID[T interface{ GetID() int64 }](metricCli metric
 	return zero, status.Errorf(codes.DataLoss, "leader lease %s proxy returned lease ID %d for request ID %d", rpc, response.GetID(), expectedID)
 }
 
+func validateLeaseGrantProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.LeaseGrantResponse, err error) (*etcdserverpb.LeaseGrantResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	if response.GetTTL() > 0 {
+		return response, nil
+	}
+	emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCGrant)
+	return nil, status.Errorf(codes.DataLoss, "leader lease grant proxy returned non-positive granted TTL %d", response.GetTTL())
+}
+
+func validateLeaseKeepAliveProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.LeaseKeepAliveResponse, err error) (*etcdserverpb.LeaseKeepAliveResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	if response.GetTTL() >= 0 {
+		return response, nil
+	}
+	emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCKeepAlive)
+	return nil, status.Errorf(codes.DataLoss, "leader lease keep_alive proxy returned negative TTL %d", response.GetTTL())
+}
+
+func validateLeaseTimeToLiveProxyPayload(metricCli metrics.Metrics, keysRequested bool, response *etcdserverpb.LeaseTimeToLiveResponse, err error) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+	if err != nil {
+		return response, err
+	}
+	if !keysRequested && len(response.GetKeys()) != 0 {
+		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCTimeToLive)
+		return nil, status.Error(codes.DataLoss, "leader lease time_to_live proxy returned keys when none were requested")
+	}
+	if response.GetTTL() == -1 {
+		if response.GetGrantedTTL() == 0 && len(response.GetKeys()) == 0 {
+			return response, nil
+		}
+		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCTimeToLive)
+		return nil, status.Errorf(codes.DataLoss, "leader lease time_to_live proxy returned malformed not-found payload with granted TTL %d and %d keys", response.GetGrantedTTL(), len(response.GetKeys()))
+	}
+	if response.GetTTL() >= 0 && response.GetGrantedTTL() > 0 {
+		return response, nil
+	}
+	emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCTimeToLive)
+	return nil, status.Errorf(codes.DataLoss, "leader lease time_to_live proxy returned invalid TTL %d and granted TTL %d", response.GetTTL(), response.GetGrantedTTL())
+}
+
 func emitLeaseProxyIntegrityFailure(metricCli metrics.Metrics, rpc string) {
 	if metricCli != nil {
 		_ = metricCli.EmitCounter("lease.proxy.integrity_failure", 1, metrics.Tag("rpc", rpc))

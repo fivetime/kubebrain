@@ -505,7 +505,7 @@ func TestAuthFollowerLeaseTimeToLiveFinalFenceTracksAuthEnableDisableLikeEtcd(t 
 			isLeader: false, proxyEnabled: true,
 			leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
 				require.NoError(t, server.auth.disable(context.Background()))
-				return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: 123, TTL: 30}, nil
+				return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: 123, TTL: 30, GrantedTTL: 30}, nil
 			},
 		}
 

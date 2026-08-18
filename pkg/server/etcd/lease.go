@@ -203,6 +203,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		response, err := m.srv.peers.LeaseGrant(proxyCtx, req)
 		response, err = validateLeaseProxyResult(m.srv.metricCli, leaseProxyRPCGrant, response, err)
 		response, err = validateLeaseProxyResponseID(m.srv.metricCli, leaseProxyRPCGrant, req.ID, response, err)
+		response, err = validateLeaseGrantProxyPayload(m.srv.metricCli, response, err)
 		m.srv.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -650,6 +651,7 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 					resp, keepAliveErr := m.srv.peers.LeaseKeepAlive(proxyCtx, req)
 					resp, keepAliveErr = validateLeaseProxyResult(m.srv.metricCli, leaseProxyRPCKeepAlive, resp, keepAliveErr)
 					resp, keepAliveErr = validateLeaseProxyResponseID(m.srv.metricCli, leaseProxyRPCKeepAlive, req.ID, resp, keepAliveErr)
+					resp, keepAliveErr = validateLeaseKeepAliveProxyPayload(m.srv.metricCli, resp, keepAliveErr)
 					if keepAliveErr == nil {
 						m.srv.observeForwardedRevision(resp.GetHeader(), nil)
 						return m.sendLeaseKeepAliveResponse(stream, resp)
@@ -865,6 +867,7 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 		response, err := m.srv.peers.LeaseTimeToLive(proxyCtx, req)
 		response, err = validateLeaseProxyResult(m.srv.metricCli, leaseProxyRPCTimeToLive, response, err)
 		response, err = validateLeaseProxyResponseID(m.srv.metricCli, leaseProxyRPCTimeToLive, req.ID, response, err)
+		response, err = validateLeaseTimeToLiveProxyPayload(m.srv.metricCli, req.Keys, response, err)
 		m.srv.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -896,6 +899,7 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 		response, forwardErr := m.srv.peers.LeaseTimeToLive(proxyCtx, req)
 		response, forwardErr = validateLeaseProxyResult(m.srv.metricCli, leaseProxyRPCTimeToLive, response, forwardErr)
 		response, forwardErr = validateLeaseProxyResponseID(m.srv.metricCli, leaseProxyRPCTimeToLive, req.ID, response, forwardErr)
+		response, forwardErr = validateLeaseTimeToLiveProxyPayload(m.srv.metricCli, req.Keys, response, forwardErr)
 		m.srv.observeForwardedRevision(response.GetHeader(), forwardErr)
 		return finish(response, forwardErr)
 	}
