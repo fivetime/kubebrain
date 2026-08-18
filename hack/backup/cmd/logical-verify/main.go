@@ -17,6 +17,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/restorereceipt"
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -78,6 +79,7 @@ func run() (retErr error) {
 	seenTargetKeys := make(map[string]struct{})
 	targetLeaseBySource := make(map[int64]int64)
 	sourceLeaseByTarget := make(map[int64]int64)
+	targetLeaseMinRevision := make(map[int64]int64)
 	err = verified.Records(func(rec record.Record) error {
 		key, err := base64.StdEncoding.DecodeString(rec.Key)
 		if err != nil {
@@ -96,13 +98,14 @@ func run() (retErr error) {
 		if err != nil {
 			return err
 		}
-		if len(resp.Kvs) != 1 {
-			return fmt.Errorf("expected restored key %q exactly once, got %d", string(key), len(resp.Kvs))
+		kv, responseRevision, err := validateTargetGetResponse(resp, key)
+		if err != nil {
+			return err
 		}
-		if !bytes.Equal(resp.Kvs[0].Value, value) {
+		if !bytes.Equal(kv.Value, value) {
 			return fmt.Errorf("restored value mismatch for key %q", string(key))
 		}
-		targetLease := resp.Kvs[0].Lease
+		targetLease := kv.Lease
 		if rec.Lease == 0 {
 			if targetLease != 0 {
 				return fmt.Errorf("restored permanent key %q unexpectedly has lease %d", string(key), targetLease)
@@ -119,6 +122,9 @@ func run() (retErr error) {
 			}
 			targetLeaseBySource[rec.Lease] = targetLease
 			sourceLeaseByTarget[targetLease] = rec.Lease
+			if responseRevision > targetLeaseMinRevision[targetLease] {
+				targetLeaseMinRevision[targetLease] = responseRevision
+			}
 		}
 		total++
 		return nil
@@ -131,8 +137,8 @@ func run() (retErr error) {
 		if err != nil {
 			return fmt.Errorf("read restored lease for source %d: %w", sourceID, err)
 		}
-		if ttl.TTL <= 0 {
-			return fmt.Errorf("restored lease for source %d is expired", sourceID)
+		if err := validateTargetLeaseTTLResponse(sourceID, targetID, ttl, targetLeaseMinRevision[targetID]); err != nil {
+			return err
 		}
 	}
 	clientCloseErr := cli.Close()
@@ -158,6 +164,59 @@ func run() (retErr error) {
 	_, err = fmt.Fprintf(os.Stderr, "verified %d restored records and %d leases from %s (snapshot revision %d, sha256 %s)\n",
 		total, len(targetLeaseBySource), input, status.Revision, status.SHA256)
 	return err
+}
+
+func validateTargetGetResponse(response *clientv3.GetResponse, key []byte) (*mvccpb.KeyValue, int64, error) {
+	if response == nil {
+		return nil, 0, fmt.Errorf("target key %q returned an empty range response", key)
+	}
+	if response.Header == nil || response.Header.Revision <= 0 {
+		return nil, 0, fmt.Errorf("target key %q returned no valid response revision", key)
+	}
+	if response.More || response.Count != int64(len(response.Kvs)) {
+		return nil, 0, fmt.Errorf("target key %q returned inconsistent count/more metadata", key)
+	}
+	if len(response.Kvs) != 1 {
+		return nil, 0, fmt.Errorf("expected restored key %q exactly once, got %d", key, len(response.Kvs))
+	}
+	kv := response.Kvs[0]
+	if kv == nil {
+		return nil, 0, fmt.Errorf("target key %q returned a nil key-value", key)
+	}
+	if !bytes.Equal(kv.Key, key) {
+		return nil, 0, fmt.Errorf("target key %q returned mismatched key %q", key, kv.Key)
+	}
+	rec := record.Record{CreateRevision: kv.CreateRevision, ModRevision: kv.ModRevision, Version: kv.Version}
+	if err := backupfile.ValidateRecordMetadata(rec, response.Header.Revision); err != nil {
+		return nil, 0, fmt.Errorf("target key %q returned invalid MVCC metadata: %w", key, err)
+	}
+	return kv, response.Header.Revision, nil
+}
+
+func validateTargetLeaseTTLResponse(sourceID, targetID int64, response *clientv3.LeaseTimeToLiveResponse, minRevision int64) error {
+	if response == nil {
+		return fmt.Errorf("restored lease for source %d returned an empty TTL response", sourceID)
+	}
+	if int64(response.ID) != targetID {
+		return fmt.Errorf("restored lease for source %d expected target ID %d, got %d", sourceID, targetID, response.ID)
+	}
+	if response.ResponseHeader == nil || response.ResponseHeader.Revision <= 0 {
+		return fmt.Errorf("restored lease for source %d returned no valid response revision", sourceID)
+	}
+	if response.ResponseHeader.Revision < minRevision {
+		return fmt.Errorf("restored lease for source %d returned revision %d behind key observation revision %d",
+			sourceID, response.ResponseHeader.Revision, minRevision)
+	}
+	if response.TTL <= 0 {
+		return fmt.Errorf("restored lease for source %d is expired", sourceID)
+	}
+	if response.GrantedTTL <= 0 || response.GrantedTTL > clientv3.MaxLeaseTTL {
+		return fmt.Errorf("restored lease for source %d returned invalid granted TTL %d", sourceID, response.GrantedTTL)
+	}
+	if len(response.Keys) != 0 {
+		return fmt.Errorf("restored lease for source %d returned %d attached keys when none were requested", sourceID, len(response.Keys))
+	}
+	return nil
 }
 
 func receiptTargetPrefix(sourcePrefix, rewriteFrom, rewriteTo string) (string, error) {
