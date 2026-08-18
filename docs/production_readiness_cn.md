@@ -3163,6 +3163,8 @@ hack/backup/run-native-pitr-full-restore-integration.sh
 key。每个 data/checksum frame 的 `Version` 必须等于该 artifact 的 `meta/storageVersion`，禁止从服务端
 `Status.Version` 推导；`Status.StorageVersion` 必须使用同一个 writer schema 权威值。否则 schema 与 server
 独立升级会向客户端下载一个带错误版本声明的有效制品，或让预检看到与制品不一致的 backend 版本。
+client/info/peer 三个 HTTP `/version` surface 的 `storage` 字段也必须等于该 schema 权威值，不能回退为
+`etcdserver` 字段；发布前需同时检查 gRPC Status、Snapshot frame、artifact meta 和 HTTP JSON。
 2026-08-11 加强后的全用例 28.79 秒通过。runner 默认使用 `/root/etcd/bin/etcdutl`，不同环境必须
 通过 `KUBEBRAIN_ETCDUTL_BIN` 指向经过版本管理的可执行文件；工具缺失时门禁 fail closed。该验证不能
 替代大数据量 snapshot 的慢客户端取消、恢复演练或对象存储不可变性检查。

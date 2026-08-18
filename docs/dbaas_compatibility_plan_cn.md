@@ -57560,6 +57560,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   version 保持接受。validator 与公开 follower hedge 对两种畸形字段均 DataLoss fail closed，定向二十轮及 race 通过。Watch 的
   fragment/filters/progress/显式 ID 同轮复核已有 raw gRPC 与官方 client 回归，无新差距。本项不改变 leader 正常响应或存储编码。
 
+- A5133 补齐 A5131 遗漏的 HTTP `/version` storage schema 解耦。对照
+  `/root/etcd/server/etcdserver/api/etcdhttp/version.go::serveVersion`：peer/client HTTP 响应分别公开 server、cluster、storage
+  三个版本；storage 来自独立 backend schema monitor。KubeBrain 注释虽承诺与 `Status.StorageVersion` 对齐，实际仍把
+  `storage` 写成 server `Version`，测试也把该耦合固定为期望。现所有 client/info/peer handler 统一返回
+  `pkg/etcdsnapshot.StorageVersion`；server 与 cluster 字段保持独立。三种 HTTP surface 定向二十轮和 race 证明 JSON shape、方法
+  限制/CORS 及 schema 值不变形；同轮确认 MemberList 严格 ID 排序来自 upstream `RaftCluster.Members()` 的显式 sort，不是过严
+  follower 门禁。本项当前 wire 值仍为 3.7.0，不改变存储编码，需要下一生产镜像发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
