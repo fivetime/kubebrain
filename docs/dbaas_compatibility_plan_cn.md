@@ -40,7 +40,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
-| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
+| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、server version、独立 backend storage version、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
@@ -57543,6 +57543,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对含 protobuf mutex 的 response 浅复制改为 `proto.Clone`，保留每次调用独立修改 `HashRevision` 的语义并恢复 `go vet ./...`。
   两个受影响包完整测试及 race 通过；production 四路分片继续作为避免单包十分钟聚合超时的权威门禁。本项只修测试基线，不改变
   etcd wire、TiKV 数据路径、revision 分配或存储编码。
+
+- A5131 将 Maintenance Status 的 backend storage version 与服务端协议版本解耦。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status`：upstream 的 `Version` 来自 server binary，
+  `StorageVersion` 则来自独立 version monitor/backend schema。KubeBrain 此前把两字段都设为 `Version`；当前虽同为 3.7.0，未来
+  server 与 snapshot schema 独立升级时会让 Status 声明与实际导出制品不一致。现 `pkg/etcdsnapshot.StorageVersion` 成为 writer
+  `meta/storageVersion` 和 Status 的单一权威来源，server `Version` 仍独立服务 kube-apiserver capability negotiation。官方
+  client/v3 Status、raw gRPC Snapshot 及直接 bbolt schema 读取三层回归证明 Status.StorageVersion、artifact metadata 与每个
+  data/digest frame 一致；定向二十轮和 race 通过。本项不改变当前 3.7.0 wire 值或存储编码，需要下一生产镜像发布。
 
 ### P2：运维兼容和长期验证
 
