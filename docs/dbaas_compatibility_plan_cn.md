@@ -57294,6 +57294,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   复用固定 `kv.proxy.integrity_failure{rpc="txn"}` 并 DataLoss fail closed，不增加标签。通用 success/failure、多类型、
   嵌套异常与公开 follower 注入回归通过，既有无 compare/多层 Txn 保持兼容；需要下一生产镜像和监控发布。
 
+- A5104 将 Txn proxy 响应树校验扩展到 upstream header revision chronology。对照
+  `/root/etcd/server/etcdserver/txn/txn.go::txn/executeTxn`、`storage/mvcc/kvstore_txn.go::Rev/Put/DeleteRange` 及现有
+  `TestRawGRPCTxnNestedResponseHeadersMatchEtcd`：顶层 Txn revision 为最终 shared write transaction revision；嵌套 Txn
+  header 存在但 revision canonical 为 0；Range/Put/DeleteRange op header 存在，写后为 outer revision，而在本 Txn 尚未
+  发生 mutation 时先执行的 Range/零删除可为 outer-1（后续操作首次写）。旧 proxy 会确认缺 op/nested header、非零
+  nested revision、future 或早于 outer-1 的 op revision。现五个 Txn 转发出口在 tree shape 后递归验证 header，违例复用
+  固定 `kv.proxy.integrity_failure{rpc="txn"}` 并 DataLoss fail closed，不增加标签。canonical nested、pre-write window、
+  损坏 header 与公开 follower 注入回归通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

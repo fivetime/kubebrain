@@ -4534,6 +4534,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   Txn success 的顶层 revision 必须为正；validator 按每一层 response.Succeeded 选择原请求 Success/Failure branch，
   递归验证 ResponseOp 数量与顺序，以及 range/put/delete/txn union 和 typed payload 与对应 RequestOp 一一匹配。
   任一 nil、缺失、多余、错类型或嵌套分支错配都在 forwarded revision 观察前 DataLoss fail closed。
+  对照 upstream 原始 protobuf，嵌套 Txn header 必须存在但 revision canonical 为 0；每个非 Txn ResponseOp header 必须
+  存在，revision 只能是 outer revision（写后/无后续写）或 outer-1（同一 transaction 内先读、后续操作才首次写）。
+  缺 header、非零 nested revision、future 或更旧 op revision 均拒绝。
   production 要求 60 秒新鲜
   Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。
