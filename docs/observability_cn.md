@@ -29,6 +29,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `count_index.keys` / `count_index.overflowed` gauge | leader 活跃 key 数与索引是否超过 `--count-index-max-keys`；overflow 后 List/count 回退 TiKV 全扫，decoded-boundary RangeStream 改走本地有界外排，延迟均会明显恶化。followers 的 keys=0 是正常值。 |
 | `backend.range_stream.decoded_spill` counter；`backend.range_stream.decoded_spill_{bytes,keys}` gauge；`backend.range_stream.decoded_spill_latency_seconds` histogram | decoded-boundary RangeStream 无法使用内存排序 index 时的外排次数、最近一次最终有序 run 大小/观察键数和端到端外排耗时。正常应接近 0；持续增长先检查 count-index overflow/rebuild 和 `TMPDIR` emptyDir 容量。每副本只允许一个外排，等待会计入 RPC 延迟。 |
 | `count_index.rebuild.err` counter | leader 切换时索引快照重建失败次数；非零表示 CountOnly 暂时回退 TiKV 全扫。 |
+| `count.proxy.outcome{outcome}` counter | follower exact CountOnly 的 leader-index proxy 结果，固定 `hit|failure|quiet_skip`，RPC server 创建时三类均初始化 0。failure 表示五秒内 peer error 或 nil response，随后三秒 quiet window；quiet_skip 表示窗口内跳过 peer。两者都安全回退本地精确扫描，但可能把分页 list 放大为 O(keyspace) TiKV 读取。legacy `count.proxy.hit/err` 保留诊断。 |
 | `backend.list.by.stream.failed` counter | 底层 RangeStream worker 的非取消失败；每个 backend 初始化权威零值。非零表示大范围读取、watch-cache 冷启动或 count-index 重建至少一条流因 PD/TiKV/scan 错误提前终止。调用方取消单独计入 `backend.list.by.stream.canceled`，不进入该故障合同。 |
 | `read.range_stream.failure{stage}` counter | 公开 RangeStream 的 client-visible failure，RPC server 初始化 `backend`、`send`、`protocol` 三类权威零值。backend 覆盖 scanner/chunk/逐帧 compaction check，send 只统计非客户端取消的 wire failure，protocol 表示 backend 未发送 mandatory terminal metadata 就关闭；后者会扣留最后一个 bounded data chunk 并 fail closed。production 对 backend/send warning、protocol critical，三类缺失/陈旧/非法同样 critical。 |
 | `watch.collector.stalled` / `watch.collector.skipped_revision` / `watch.collector.recovery{outcome}` counter | 事件收集器发现 deal↔notify 空洞及 durable exact-revision 自愈；recovery 固定 `replayed|empty|failed`。replayed 表示从 TiKV event-log/witness 重放后才推进，empty 才允许 eventless skip，failed 保持 watermark 不动。全部在 backend 创建时初始化权威零值。 |
@@ -193,7 +194,10 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   `[0,2^53]` 内精确整数，外推 increase 可为分数但必须有限且同范围；缺失、陈旧或非法值不能解释为零
   rebuild failure。overflow 时应同时提高实例内存规格和
   `--count-index-max-keys`，不能只放大 key cap；重建失败先检查 TiKV scan 错误、PD
-  可用性和 leader 切换频率。不要用 `count_index_keys == 0` 告警，followers 正常为 0。
+  可用性和 leader 切换频率。另监控 `count.proxy.outcome{outcome=~"failure|quiet_skip"}` 的 10 分钟增量；
+  任一增长 warning，持续增长说明 follower 正从 leader index 退化为本地 exact scan。production 要求每个
+  Ready Pod UID 三类 current/increase 各 `3×Ready` 完整、新鲜、值合法且无未知 outcome，缺失或非法 warning。
+  不要用 `count_index_keys == 0` 告警，followers 正常为 0。
 - **租户逻辑容量**：启用 `--quota-backend-bytes` 后，监控
   `quota.logical_usage_bytes / quota.backend_bytes`，建议在 80% 和 90% 分级告警；
   `quota.nospace == 1` 表示已触发持久 NOSPACE。告警激活后所有 Put（包括缩小

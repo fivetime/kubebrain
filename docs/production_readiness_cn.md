@@ -1065,6 +1065,13 @@ live-key、miss current/10 分钟 increase 与 last-success recording，要求�
 必须为 `[0,2^53]` 精确整数，increase 有限同范围，last-success 为正精确 Unix 秒且未来偏差不超过 5 分钟。
 任一 miss warning，超过 2 分钟未成功刷新并持续 2 分钟 warning，缺失/陈旧/非法 critical。持续 mutation 与
 各 Pod scrape/refresh 时点偏移可令精确 count 短暂或长期不同，production 不错误要求跨副本值相等。
+follower 的 exact CountOnly 先尝试 leader count index；该分布式优化由固定
+`count_proxy_outcome{outcome="hit|failure|quiet_skip"}` 观察，RPC server 创建时发布三类权威零值。failure 表示
+五秒 bounded peer 请求失败或返回 nil，并打开三秒 quiet window；quiet_skip 表示窗口内避免重复访问故障 peer。
+两者都继续本地 exact scan，结果正确性不降级，但 paginated list 可能恢复 O(keyspace) 读放大。production 只消费
+60 秒新鲜 Ready Pod UID current 与 10 分钟 increase，要求各 `3×Ready`，current 为 `[0,2^53]` 精确整数、
+increase 有限同范围、未知 outcome 非法；failure/quiet_skip 任一增量 warning，缺失、陈旧、非法或组合不完整
+warning。leader 正常保持三类零值，不能要求 hit 非零。
 MVCC put size 累计指标 `etcd_debugging_mvcc_total_put_size_in_bytes`，
 MVCC current revision 指标 `etcd_debugging_mvcc_current_revision`，
 MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，

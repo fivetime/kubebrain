@@ -56954,6 +56954,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   任一拒绝立即 warning，容量达到 90% 五分钟 warning，telemetry 缺失/陈旧/非法/不完整 warning。回归覆盖固定
   初始化、跨连接并发、request-message rate 与 multiplexed Watch admission；需要下一生产镜像和监控发布。
 
+- A5069 闭合 follower exact CountOnly 的 leader-index proxy 降级会静默恢复 O(keyspace) 本地扫描的生产缺口。
+  对照 `/root/etcd/server/etcdserver/v3_server.go`，upstream CountOnly 直接在本地 MVCC range 计数；KubeBrain 的
+  count index 是 leader-only，因此额外使用 local index→bounded leader proxy→local exact scan 梯子，并在失败后
+  三秒 quiet 以免每个分页请求重复等待故障 peer。旧 `count.proxy.hit/err` 动态出现且不覆盖 quiet skip。现新增固定
+  `count.proxy.outcome{outcome="hit|failure|quiet_skip"}`，RPC server 创建时初始化三类权威零值；eligible follower
+  proxy 成功、五秒内 error/nil、quiet-window skip 分别计数，leader/disabled 路径不伪造结果。production 生成
+  60 秒新鲜 Ready Pod UID current 与 10 分钟 increase，要求各 `3×Ready`、值合法且未知 outcome 非法；failure
+  与 quiet_skip 任一增量 warning，缺失/陈旧/非法/组合不完整 warning。真实回归固定首个 peer failure 后第二次
+  count 不再调用 peer、两次均以本地 exact scan 成功，并观察 `[0,1]` failure/quiet_skip 与零 hit；需要下一生产
+  镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
