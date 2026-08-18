@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"sync"
@@ -240,6 +241,28 @@ func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
 	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
+}
+
+func TestLeaseProxyResponseIDValidation(t *testing.T) {
+	rec := &recordingMetrics{}
+	initLeaseProxyIntegrityMetrics(rec)
+
+	grant := &etcdserverpb.LeaseGrantResponse{Header: txnHeader(1), ID: math.MinInt64}
+	response, err := validateLeaseProxyResponseID(rec, leaseProxyRPCGrant, int64(math.MinInt64), grant, nil)
+	require.Same(t, grant, response)
+	require.NoError(t, err)
+
+	response, err = validateLeaseProxyResponseID(rec, leaseProxyRPCGrant, -1, grant, nil)
+	require.Nil(t, response)
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.ErrorContains(t, err, "lease ID -9223372036854775808 for request ID -1")
+	require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
+
+	wantErr := errors.New("transport failed")
+	response, err = validateLeaseProxyResponseID(rec, leaseProxyRPCGrant, -1, (*etcdserverpb.LeaseGrantResponse)(nil), wantErr)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
 }
 
 func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {

@@ -73,6 +73,18 @@ func validateLeaseProxyResult[T any](metricCli metrics.Metrics, rpc string, resp
 	return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader lease %s proxy returned both response and error", rpc))
 }
 
+func validateLeaseProxyResponseID[T interface{ GetID() int64 }](metricCli metrics.Metrics, rpc string, expectedID int64, response T, err error) (T, error) {
+	if err != nil {
+		return response, err
+	}
+	if response.GetID() == expectedID {
+		return response, nil
+	}
+	emitLeaseProxyIntegrityFailure(metricCli, rpc)
+	var zero T
+	return zero, status.Errorf(codes.DataLoss, "leader lease %s proxy returned lease ID %d for request ID %d", rpc, response.GetID(), expectedID)
+}
+
 func emitLeaseProxyIntegrityFailure(metricCli metrics.Metrics, rpc string) {
 	if metricCli != nil {
 		_ = metricCli.EmitCounter("lease.proxy.integrity_failure", 1, metrics.Tag("rpc", rpc))

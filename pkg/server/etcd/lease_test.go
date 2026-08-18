@@ -2910,7 +2910,7 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyResults(t *testing.T) {
 }
 
 func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
-	for _, shape := range []string{"nil", "mixed", "missing_header", "negative_revision"} {
+	for _, shape := range []string{"nil", "mixed", "missing_header", "negative_revision", "mismatched_id"} {
 		t.Run(shape, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
 			defer closeFn()
@@ -2929,6 +2929,9 @@ func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
 					if shape == "negative_revision" {
 						return &etcdserverpb.LeaseKeepAliveResponse{Header: txnHeader(-1)}, nil
 					}
+					if shape == "mismatched_id" {
+						return &etcdserverpb.LeaseKeepAliveResponse{Header: txnHeader(1), ID: 2, TTL: 30}, nil
+					}
 					return nil, nil
 				},
 			}
@@ -2939,6 +2942,55 @@ func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
 			require.Empty(t, stream.sent)
 			require.Equal(t, []interface{}{int64(0), 1},
 				recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCKeepAlive))
+		})
+	}
+}
+
+func TestLeaseFollowerRejectsMismatchedUnaryProxyResponseID(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		rpc       string
+		configure func(*testPeerService)
+		invoke    func(*RPCServer) (any, error)
+	}{
+		{
+			name: "grant", rpc: leaseProxyRPCGrant,
+			configure: func(peers *testPeerService) {
+				peers.leaseGrantFn = func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+					return &etcdserverpb.LeaseGrantResponse{Header: txnHeader(1), ID: -2, TTL: 30}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: -1, TTL: 30})
+			},
+		},
+		{
+			name: "time_to_live", rpc: leaseProxyRPCTimeToLive,
+			configure: func(peers *testPeerService) {
+				peers.leaseTTLFn = func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+					return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: math.MaxInt64, TTL: -1}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: math.MinInt64})
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initLeaseProxyIntegrityMetrics(rec)
+			peers := testPeerService{isLeader: false, proxyEnabled: true}
+			test.configure(&peers)
+			server.peers = peers
+
+			response, err := test.invoke(server)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, "for request ID")
+			require.Equal(t, []interface{}{int64(0), 1}, recordedLeaseProxyIntegrityValues(rec, test.rpc))
 		})
 	}
 }
