@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -100,6 +101,7 @@ func (b *leadershipFencedBatch) Commit(ctx context.Context) error {
 		current, getErr := b.storage.KvStorage.Get(ctx, restorationKey)
 		if errors.Is(getErr, storage.ErrKeyNotFound) || (getErr == nil && !bytes.Equal(current, restorationToken)) {
 			b.storage.backend.metricCli.EmitCounter("write.restoration_fence.reject", 1)
+			emitWriteFenceRejection(b.storage.backend.metricCli, writeFenceRejectionRestoration)
 			return ErrRestorationFenced
 		}
 	}
@@ -112,6 +114,7 @@ func (b *leadershipFencedBatch) Commit(ctx context.Context) error {
 	current, getErr := b.storage.KvStorage.Get(ctx, key)
 	if errors.Is(getErr, storage.ErrKeyNotFound) || (getErr == nil && !bytes.Equal(current, token)) {
 		b.storage.backend.metricCli.EmitCounter("write.fence.reject", 1)
+		emitWriteFenceRejection(b.storage.backend.metricCli, writeFenceRejectionLeadership)
 		return ErrLeadershipFenced
 	}
 	return err
@@ -120,6 +123,32 @@ func (b *leadershipFencedBatch) Commit(ctx context.Context) error {
 // leadershipEpochKey is the context key carrying the leadership epoch a write was
 // admitted under, from the RPC gate down to fenceAdmit.
 type leadershipEpochKey struct{}
+
+const (
+	writeFenceRejectionLeadership  = "leadership"
+	writeFenceRejectionRestoration = "restoration"
+)
+
+var writeFenceRejectionKinds = []string{
+	writeFenceRejectionLeadership,
+	writeFenceRejectionRestoration,
+}
+
+func initWriteFenceRejectionMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	for _, kind := range writeFenceRejectionKinds {
+		_ = metricCli.EmitCounter("write.fence.rejection", int64(0), metrics.Tag("kind", kind))
+	}
+}
+
+func emitWriteFenceRejection(metricCli metrics.Metrics, kind string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("write.fence.rejection", 1, metrics.Tag("kind", kind))
+}
 
 // WithLeadershipEpoch stamps the admit-time leadership epoch onto the context so
 // fenceAdmit re-checks it just before the batch is opened. The write RPC
@@ -213,6 +242,7 @@ func (b *backend) fenceAdmit(ctx context.Context) error {
 	curEpoch, leadingFresh := h.fn()
 	if !leadingFresh || curEpoch != admitEpoch {
 		b.metricCli.EmitCounter("write.fence.reject", 1)
+		emitWriteFenceRejection(b.metricCli, writeFenceRejectionLeadership)
 		return ErrLeadershipFenced
 	}
 	return nil

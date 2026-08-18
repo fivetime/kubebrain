@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
 	backendelection "github.com/kubewharf/kubebrain/pkg/backend/election"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -74,19 +75,33 @@ func newFenceTestBackend(t *testing.T) (*backend, storage.KvStorage, func()) {
 	return b, kv, closer
 }
 
+func writeFenceRejectionValues(rec *compactMetricRecorder, kind string) []interface{} {
+	var values []interface{}
+	for _, record := range rec.snapshot() {
+		if record.kind == "counter" && record.name == "write.fence.rejection" &&
+			len(record.tags) == 1 && record.tags[0] == metrics.Tag("kind", kind) {
+			values = append(values, record.value)
+		}
+	}
+	return values
+}
+
 // TestFenceAdmitRejectsOnEpochChange verifies that when the leadership epoch at
 // commit time differs from the epoch the write was admitted under, fenceAdmit
 // rejects with ErrLeadershipFenced (so the caller never opens the batch).
 func TestFenceAdmitRejectsOnEpochChange(t *testing.T) {
 	ast := assert.New(t)
-	b, _, closer := newFenceTestBackend(t)
-	defer closer()
+	rec := &compactMetricRecorder{}
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity()}, rec).(*backend)
 
 	// admitted under epoch 7, but the node is now in epoch 8 (a successor bumped it)
 	b.SetLeadershipFence(func() (uint64, bool) { return 8, true })
 	ctx := WithLeadershipEpoch(context.Background(), 7)
 
 	ast.ErrorIs(b.fenceAdmit(ctx), ErrLeadershipFenced)
+	require.Equal(t, []interface{}{int64(0), 1}, writeFenceRejectionValues(rec, writeFenceRejectionLeadership))
 }
 
 // TestFenceAdmitRejectsWhenNotLeadingFresh verifies that even at the same epoch,
@@ -211,8 +226,7 @@ func TestFencedCreateRejectsWithoutRevisionGap(t *testing.T) {
 
 func TestFencedCreateCannotCommitAfterSuccessorAcquiresStorageLease(t *testing.T) {
 	ast := assert.New(t)
-	ctrl := gomock.NewController(t)
-	m := mock.NewMinimalMetrics(ctrl)
+	rec := &compactMetricRecorder{}
 	base := newBadgerStorage(t, ast)
 	t.Cleanup(func() { require.NoError(t, base.Close()) })
 	kv := &blockBeforeCommitStorage{
@@ -220,7 +234,7 @@ func TestFencedCreateCannotCommitAfterSuccessorAcquiresStorageLease(t *testing.T
 		entered:   make(chan struct{}),
 		release:   make(chan struct{}),
 	}
-	b := NewBackend(kv, Config{Prefix: prefix, Identity: "old-leader"}, m).(*backend)
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: "old-leader"}, rec).(*backend)
 	b.SetCurrentRevision(1000)
 	b.SetLeadershipFence(func() (uint64, bool) { return 7, true })
 
@@ -269,15 +283,15 @@ func TestFencedCreateCannotCommitAfterSuccessorAcquiresStorageLease(t *testing.T
 	}
 	_, err = base.Get(context.Background(), b.coder.EncodeRevisionKey([]byte(key)))
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	require.Equal(t, []interface{}{int64(0), 1}, writeFenceRejectionValues(rec, writeFenceRejectionLeadership))
 }
 
 func TestRestorationFenceRejectsInflightWriteStorageAtomically(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	m := mock.NewMinimalMetrics(ctrl)
+	rec := &compactMetricRecorder{}
 	base := newBadgerStorage(t, assert.New(t))
 	t.Cleanup(func() { require.NoError(t, base.Close()) })
 	kv := &blockBeforeCommitStorage{KvStorage: base, entered: make(chan struct{}), release: make(chan struct{})}
-	b := NewBackend(kv, Config{Prefix: prefix, Identity: "leader"}, m).(*backend)
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: "leader"}, rec).(*backend)
 	b.SetLeadershipFence(func() (uint64, bool) { return 7, true })
 	record := resourcelock.LeaderElectionRecord{HolderIdentity: "leader", LeaseDurationSeconds: 8}
 	require.NoError(t, b.GetResourceLock().Create(context.Background(), record))
@@ -306,6 +320,7 @@ func TestRestorationFenceRejectsInflightWriteStorageAtomically(t *testing.T) {
 	require.ErrorIs(t, <-errCh, ErrRestorationFenced)
 	_, err := base.Get(context.Background(), key)
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	require.Equal(t, []interface{}{int64(0), 1}, writeFenceRejectionValues(rec, writeFenceRejectionRestoration))
 }
 
 func TestStorageFencePreservesOrdinaryUserCASConflict(t *testing.T) {

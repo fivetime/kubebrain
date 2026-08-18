@@ -597,6 +597,18 @@ spec:
           expr: count(((kubebrain_dbaas:commit_wait_failure:current_by_pod_reason * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:commit_wait_failure:current_by_pod_reason * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:commit_wait_failure:current_by_pod_reason * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:commit_wait_failure:current_by_pod_reason * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:commit_wait_failure:increase_10m_by_pod_reason * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:commit_wait_failure:increase_10m_by_pod_reason * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992))
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:write_fence_rejection:current_by_pod_kind
+          expr: max by (namespace, pod, uid, kind) (write_fence_rejection{namespace="kubebrain-system"} and (time() - timestamp(write_fence_rejection{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:write_fence_rejection:increase_10m_by_pod_kind
+          expr: max by (namespace, pod, uid, kind) (increase(write_fence_rejection{namespace="kubebrain-system"}[10m]) and (time() - timestamp(write_fence_rejection{namespace="kubebrain-system"}) <= 60))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:write_fence_rejection_invalid_values:count
+          expr: count(((kubebrain_dbaas:write_fence_rejection:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:write_fence_rejection:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:write_fence_rejection:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:write_fence_rejection:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:write_fence_rejection:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:write_fence_rejection:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:write_fence_rejection:current_by_pod_kind{kind!~"leadership|restoration"})
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_gc_enabled:max_by_pod
           expr: max by (namespace, pod, uid) (storage_gc_enabled{namespace="kubebrain-system"} and (time() - timestamp(storage_gc_enabled{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1325,6 +1337,30 @@ spec:
           annotations:
             summary: KubeBrain commit-wait failure telemetry is incomplete
             description: "Every Ready Pod UID must expose authoritative-zero context_done and backstop counters. Current samples must be fresh non-negative exact integers within 2^53 and ten-minute increases finite in range. Missing, stale, invalid or incomplete telemetry cannot prove apply-then-ack failures are surfaced rather than falsely acknowledged."
+        - alert: KubeBrainLeadershipWriteFenceRejections
+          expr: sum(kubebrain_dbaas:write_fence_rejection:increase_10m_by_pod_kind{kind="leadership"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain rejected writes from a stale leadership epoch
+            description: "Current Ready replicas rejected writes whose admitted leadership epoch or atomic storage fence token was stale. A small count during failover is safe fence behavior; sustained growth indicates leader churn, lease-freshness loss, or clients repeatedly targeting a demoted endpoint."
+        - alert: KubeBrainRestorationWriteFenceRejections
+          expr: sum(kubebrain_dbaas:write_fence_rejection:increase_10m_by_pod_kind{kind="restoration"} * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain restoration fence rejected live writes
+            description: "A durable restoration fence changed while a Ready replica had writes in flight, and the atomic storage guard rejected them. Confirm the restore Operation and admission window are intentional; do not reopen traffic until the target-generation receipt and fence release are verified."
+        - alert: KubeBrainWriteFenceMetricsMissing
+          expr: absent(kubebrain_dbaas:write_fence_rejection_invalid_values:count) == 1 or count(kubebrain_dbaas:write_fence_rejection:current_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:write_fence_rejection:increase_10m_by_pod_kind * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 2 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:write_fence_rejection_invalid_values:count != 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain atomic write-fence telemetry is incomplete
+            description: "Every current Ready Pod UID must expose both authoritative-zero kind=leadership|restoration counters as fresh current and 10-minute-increase series. Current values must be non-negative exact integers within 2^53, increases finite in range, and unknown kinds invalid. Missing, stale, invalid, or incomplete telemetry cannot prove stale-term and restoration-window writes are rejected by their atomic guards."
         - alert: KubeBrainStorageGCDriverUnavailable
           expr: min(kubebrain_dbaas:storage_gc_enabled:max_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 1
           for: 2m

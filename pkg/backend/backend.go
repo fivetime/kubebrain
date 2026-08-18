@@ -640,6 +640,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	initStorageGCMetrics(metricCli)
 	initUncertainTxnMetrics(metricCli)
 	initRestartWitnessCorruptionMetrics(metricCli)
+	initWriteFenceRejectionMetrics(metricCli)
 	ks, ksErr := coder.NewKeyspace(config.Keyspace)
 	if ksErr != nil {
 		// Validated at flag parsing; reaching here is a programming error, and
