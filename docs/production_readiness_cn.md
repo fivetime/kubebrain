@@ -4530,7 +4530,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   权威零值。所有 Lease unary/read fallback 与 streaming KeepAlive leader-proxy 必须在 revision 观察或 downstream
   send 前证明 response/error 恰有其一，且 success response 携带 mandatory `ResponseHeader` 与非负 revision；
   Grant/KeepAlive/TimeToLive response ID 还必须与请求 ID 按 signed int64 精确相等；nil/mixed/missing-header/
-  negative-revision/mismatched-ID 均 DataLoss fail closed。production 要求 60 秒新鲜 Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值
+  negative-revision/mismatched-ID 均 DataLoss fail closed。Grant TTL 必须为正、KeepAlive TTL 非负；TimeToLive 必须是
+  found `TTL>=0, GrantedTTL>0` 或 canonical not-found `TTL=-1, GrantedTTL=0, Keys=[]`，且未请求 Keys 时不得返回 key。
+  payload 违例同样 DataLoss。production 要求 60 秒新鲜 Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值
   合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、非法、组合不完整均 critical。
 - `cluster_proxy_integrity_failure{rpc="member_list"}` 在 RPC server 创建时初始化权威零值；线性化 MemberList
   leader-proxy 的 success response 必须携带 mandatory `ResponseHeader` 与非负 revision，nil/mixed/missing-header/
