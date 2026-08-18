@@ -57119,6 +57119,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   覆盖该结构违例，不扩大指标基数。通用 validator、四类公开 unary 与 KeepAlive 表驱动回归连续十轮通过；需要下一
   生产镜像和监控发布。
 
+- A5084 将 mandatory response header 契约扩展到 AuthEnable/Disable/Status、Authenticate 与全部 user/role 管理动作。
+  对照 `/root/etcd/server/etcdserver/apply/backend.go`，upstream `applierV3backend` 为 17 类成功 apply response 统一设置
+  `resp.Header = a.newHeader()`；这不仅提供 cluster identity/revision，也使 Authenticate token 和 RBAC mutation 可绑定
+  到已提交状态。现全部 Auth leader-proxy 在 forwarded revision 观察前验证 success response 的 `ResponseHeader` 非 nil，
+  missing-header 与 nil/mixed 一样 DataLoss fail closed，Authenticate 仍在返回前清除入口 request 的明文 password。
+  既有固定 `auth.proxy.integrity_failure{action}` 17 标签和 critical 告警直接覆盖结构违例，不扩大指标基数。通用
+  validator 覆盖全部 action，AuthStatus/Authenticate/UserGet/UserList/RoleGet/RoleList 公开路径的表驱动回归连续十轮
+  通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

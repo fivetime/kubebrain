@@ -4514,9 +4514,10 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。
 - `auth_proxy_integrity_failure{action}` 在 RPC server 创建时为 auth enable/disable/status、authenticate、全部 user/role
-  动作初始化 17 类权威零值。所有 Auth leader-proxy 必须在 forwarded revision 观察前证明 response/error 恰有其一；
-  nil/mixed 均 DataLoss fail closed。production 要求 60 秒新鲜 Ready Pod UID current/10 分钟 increase `17×Ready`
-  完整、值合法且拒绝未知 action；任一事件或 telemetry 缺失、陈旧、非法、组合不完整均 critical。
+  动作初始化 17 类权威零值。所有 Auth leader-proxy 必须在 forwarded revision 观察前证明 response/error 恰有其一，
+  且 success response 携带 mandatory `ResponseHeader`；nil/mixed/missing-header 均 DataLoss fail closed。production 要求
+  60 秒新鲜 Ready Pod UID current/10 分钟 increase `17×Ready` 完整、值合法且拒绝未知 action；任一事件或 telemetry
+  缺失、陈旧、非法、组合不完整均 critical。
 - `lease_proxy_integrity_failure{rpc="grant|revoke|keep_alive|time_to_live|leases"}` 在 RPC server 创建时初始化五类
   权威零值。所有 Lease unary/read fallback 与 streaming KeepAlive leader-proxy 必须在 revision 观察或 downstream
   send 前证明 response/error 恰有其一，且 success response 携带 mandatory `ResponseHeader`；nil/mixed/missing-header
