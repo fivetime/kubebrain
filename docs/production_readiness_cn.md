@@ -4575,8 +4575,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   且 success response 携带 mandatory `ResponseHeader` 与非负 revision。UserGet 的 Roles 及 UserList/RoleList success
   名称集合必须无空值并按 UTF-8 字节字典序严格递增，重复或乱序同样 DataLoss fail closed；
   RoleGet 普通角色的每项权限必须非 nil、key/range 合法且按 key 非递减；root 角色必须精确返回唯一
-  `READWRITE key=[] range_end=[0]` canonical 权限。普通角色同 key 多 range 与未知 permission enum 是 upstream 可产生值，
-  不得误报。
+  `READWRITE key=[] range_end=[0]` canonical 权限。普通角色同 key 多 range、重授非首 range 后产生的精确重复权限与未知
+  permission enum 都是 upstream 可产生值，不得误报。
   AuthStatus 的 `AuthRevision` 必须非零；enabled/disabled 均可合法携带任意正 auth revision，且该独立计数器不能与
   KV header revision 比较。
   Authenticate success 必须携带非空 token；token 格式保持 opaque（simple/JWT 均可），payload 拒绝路径仍必须清除

@@ -57518,6 +57518,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   始终终止并等待兄弟 child。success、TiKV status=23 和 clean early-exit 三路径连续十轮通过，全仓、vet 与四路 production shards
   全部 GREEN。该项不改变 etcd 客户端可观察语义或 TiKV 数据路径，只恢复组合后端故障门禁的可信执行证据。
 
+- A5128 为 AuthRoleGet follower payload 门禁补充 upstream 合法精确重复权限的永久正例。对照
+  `/root/etcd/server/auth/store.go::{permSlice.Less,RoleGrantPermission,RoleGet}`：权限只按 key 排序；grant 用第一个
+  `key>=request.key` 的位置同时比较 range_end。一个 key 已有多个 range 时，再 grant 非首 range 可能找不到旧项并 append，
+  因而 RoleGet 合法返回两个完全相同的 `(type,key,range_end)`。这不是存储损坏，也不能为了常规去重直觉在 follower 上
+  DataLoss fail closed。当前 validator 本就只要求 key 非递减，本轮用官方 client/v3 真实 RoleAdd→三次 Grant→RoleGet 固定
+  两份精确重复结果，并用公开 follower proxy 与 validator 正例证明同 key 多 range、精确重复及未知 enum 均被接受；nil、非法
+  range、key 逆序与非 canonical root 仍拒绝。三层回归连续十轮通过；不改变 auth 存储编码、授权求值或生产指标 schema。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
