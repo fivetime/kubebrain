@@ -6,6 +6,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -15,6 +16,57 @@ func TestNextKeyDoesNotMutateInput(t *testing.T) {
 
 	require.Equal(t, []byte("abc"), in)
 	require.Equal(t, []byte{'a', 'b', 'c', 0}, out)
+}
+
+func TestValidateExportPage(t *testing.T) {
+	tests := map[string]struct {
+		response *clientv3.GetResponse
+		fixed    int64
+		wantErr  string
+	}{
+		"initial empty snapshot": {
+			response: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}},
+		},
+		"continued snapshot": {
+			response: &clientv3.GetResponse{
+				Header: &etcdserverpb.ResponseHeader{Revision: 43},
+				Kvs:    []*mvccpb.KeyValue{{Key: []byte("/registry/a")}},
+				More:   true,
+			},
+			fixed: 42,
+		},
+		"empty response": {
+			wantErr: "empty response",
+		},
+		"missing header": {
+			response: &clientv3.GetResponse{},
+			wantErr:  "omitted its header",
+		},
+		"zero initial revision": {
+			response: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{}},
+			wantErr:  "invalid revision 0",
+		},
+		"stale continued revision": {
+			response: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 41}},
+			fixed:    42,
+			wantErr:  "revision 41 is behind snapshot revision 42",
+		},
+		"empty continuation page": {
+			response: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, More: true},
+			fixed:    42,
+			wantErr:  "more records after an empty page",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := validateExportPage(tc.response, tc.fixed)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestExportLeaseRecord(t *testing.T) {

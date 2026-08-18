@@ -81,15 +81,15 @@ func run() (retErr error) {
 		if err != nil {
 			return err
 		}
-		if snapshotRevision == 0 && resp.Header != nil {
+		if err := validateExportPage(resp, snapshotRevision); err != nil {
+			return err
+		}
+		if snapshotRevision == 0 {
 			snapshotRevision = resp.Header.Revision
 			writer, err = backupfile.NewAtomicWriter(output, prefix, snapshotRevision)
 			if err != nil {
 				return err
 			}
-		}
-		if writer == nil {
-			return errors.New("range response did not contain a revision")
 		}
 		for _, kv := range resp.Kvs {
 			if kv.Lease != 0 {
@@ -121,7 +121,7 @@ func run() (retErr error) {
 			}
 			total++
 		}
-		if !resp.More || len(resp.Kvs) == 0 {
+		if !resp.More {
 			break
 		}
 		start = nextKey(resp.Kvs[len(resp.Kvs)-1].Key)
@@ -152,6 +152,26 @@ func run() (retErr error) {
 	_, err = fmt.Fprintf(os.Stderr, "exported %d records and %d leases from %s at revision %d to %s (sha256 %s)\n",
 		total, status.Leases, prefix, snapshotRevision, output, status.SHA256)
 	return err
+}
+
+func validateExportPage(response *clientv3.GetResponse, snapshotRevision int64) error {
+	if response == nil {
+		return errors.New("range returned an empty response")
+	}
+	if response.Header == nil {
+		return errors.New("range response omitted its header")
+	}
+	if response.Header.Revision <= 0 {
+		return fmt.Errorf("range response returned invalid revision %d", response.Header.Revision)
+	}
+	if snapshotRevision > 0 && response.Header.Revision < snapshotRevision {
+		return fmt.Errorf("range response revision %d is behind snapshot revision %d",
+			response.Header.Revision, snapshotRevision)
+	}
+	if response.More && len(response.Kvs) == 0 {
+		return errors.New("range response indicated more records after an empty page")
+	}
+	return nil
 }
 
 func exportLeaseRecord(id int64, ttl *clientv3.LeaseTimeToLiveResponse, snapshotRevision int64) (record.Lease, error) {
