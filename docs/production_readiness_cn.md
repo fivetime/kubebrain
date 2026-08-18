@@ -4522,6 +4522,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   CountOnly 不得携带 KVs/More，KVs 不得为 nil、空 key、越界或重复，KeysOnly 不得泄漏 value；所有违例均
   DataLoss fail closed。每个存活 KV 还必须具有 upstream 可产生的正 create/mod/version 生命周期，mod 不得超过
   response header 或显式历史 snapshot，并满足请求的 min/max create/mod filter；signed lease ID（包括负值）保持合法。
+  非 CountOnly payload 必须服从 upstream 的 KEY/VALUE/VERSION/CREATE/MOD 升降序（NONE 按 upstream 归一为升序），
+  不得超过正 Limit；More 只允许完整 Limit page，且无 revision filter 时必须与 Count 是否大于已返回数一致。
+  KeysOnly+VALUE 在 value 投影前排序，无法从响应重建，保留其他全部边界校验。
   production 要求 60 秒新鲜
   Ready Pod UID current/10 分钟 increase `5×Ready` 完整、值合法且拒绝未知 rpc；任一事件或 telemetry 缺失、陈旧、
   非法、组合不完整均 critical。

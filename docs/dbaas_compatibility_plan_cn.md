@@ -57258,6 +57258,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   signed lease ID（含 MinInt64）保持合法，不增加标签。通用 metadata/snapshot/filter 与公开 follower 异常注入回归通过；
   需要下一生产镜像和监控发布。
 
+- A5100 闭合 unary Range proxy 的排序与分页请求合同。对照
+  `/root/etcd/server/etcdserver/txn/range.go::sortRangeResults/assembleRangeResponse`，upstream 对 KEY/VALUE/VERSION/
+  CREATE/MOD 执行请求升降序，NONE 对 KEY 保持存储 key 升序、对其他 target 归一为升序；正 Limit 最多返回 Limit
+  个 KVs，More 只来自 Limit+1 lookahead 且截断后必为完整页，无 filter 时 Count 与 More 精确对应。旧 proxy 会把乱序、
+  超限、unlimited More、非满页 More 或不一致 Count/More 返回客户端，破坏 etcdctl pagination 与 Kubernetes list
+  continue 假设。现这些违例在 afterRead/revision 观察前复用固定 `kv.proxy.integrity_failure{rpc="range"}` 并 DataLoss
+  fail closed。KeysOnly+VALUE 在 upstream 投影前排序，response 已丢弃 value，故仅跳过不可重建的 comparator 复验，
+  其余边界仍强制。五类 target、三类 order、合法投影与公开 follower 异常注入回归通过；需要下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
