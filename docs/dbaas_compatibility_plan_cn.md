@@ -57170,6 +57170,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `watch.backend.integrity_failure{kind="invalid_revision"}`，取消 generation 且不发布事件，不增加指标基数。validator
   表驱动与公开 watch 注入回归连续十轮覆盖七类损坏元数据及正常 PrevKV/event metadata；需要下一生产镜像和监控发布。
 
+- A5090 将 Watch event 的非 revision 结构完整性闭合到 key identity。upstream mutation API 禁止空 key，MVCC watch
+  event 的可选 PrevKv 描述同一对象；WatchCreateRequest 的空 key 作为最小 key 仍是独立且合法的请求语义。旧 backend/
+  peer result validator 只检查 event/Kv 非 nil 与枚举类型，因而会发布空 event key 或把另一个 key 的 PrevKv 附在当前
+  事件上，破坏 Kubernetes cacher 的 previous-object 语义。现这两类违例在 revision validation、range filter、fragment
+  与 Send 前统一进入既有固定 `watch.backend.integrity_failure{kind="invalid_result"}`，取消 generation 且不发布事件，
+  不增加指标基数。shape validator 与公开 watch 注入回归连续十轮通过，正常 PrevKV/event metadata 保持兼容；需要
+  下一生产镜像和监控发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
