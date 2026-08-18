@@ -57767,6 +57767,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   声称为同一 MVCC snapshot；receipt 仍证明验证窗口内的观测，且不改变 artifact/receipt schema、在线 KV/lease
   或 TiKV 数据路径。
 
+- A5156 同时加固 cold CSI restore 与 native PITR semantic verify 的共享目标观测。两者旧代码复制同一
+  `fetchRange`/`verifyLeases`：nil/坏 header、空 continuation、Count 跳跃、越界/乱序/坏 MVCC 均可能进入最终
+  compare；更关键的是 revision=0 的 current 多页扫描没有在首屏后固定 revision，会把并发变化的多个快照拼成
+  一份“current exact”证据。现抽取 `hack/backup/internal/targetverify`，current 首屏取得正 revision 后所有 continuation
+  都以 `WithRev` 固定；历史/当前页统一校验 header、Count/More/limit、跨页 remaining、range、严格 key 顺序和
+  snapshot MVCC。带 `WithAttachedKeys` 的 TTL 还要求非 nil、ID/granted TTL 精确、正 TTL、header 不早于 current
+  scan revision，并拒绝空/重复或与 witness 不同的附件键。共享 range current/historical/from-key/满页正例与
+  envelope、计数连续性、limit、nil/越界/重复 KV、未来 MVCC 反例，以及 TTL promotion/乱序 keys 正例和
+  nil/错 ID/header/revision/TTL/grant/空重复错 keys 反例连续二十轮；三包 race、完整非 production、production
+  326 项四分片与 vet 全部通过。本项不改变 witness/receipt schema、historical revision、watch probe、在线
+  KV/lease 或 TiKV 数据路径；两条门禁现在共享同一准入，避免安全语义再次漂移。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
