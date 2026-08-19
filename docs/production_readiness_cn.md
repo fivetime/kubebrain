@@ -940,6 +940,16 @@ Service label/owner、ports 以及每个 endpoint 的 conditions/targetRef/addre
 从门禁网络不可达都会 fail closed。脚本使用可覆盖的 `JQ`（默认 `jq`）结构化解析 JSON，
 不得用文本匹配替代成员身份和 URL 集合检查。
 
+受控滚动期间的 `run-kubebrain-rollout-availability.sh` 还会运行 native availability probe。probe 不把
+clientv3 的 `err=nil` 单独视为成功：首次 prefix cleanup 固定非零 cluster ID，后续 Delete/Grant/Put、
+Put 不确定结果的 linearizable Get、Watch created/event、KeepAlive、TimeToLive、Revoke 与最终 cleanup Get
+都必须携带同一 cluster、非零 member、合法且不回退的 revision，并校验 Count/More/PrevKV、lease ID/TTL/
+attached key 及完整 MVCC 元数据；Watch PUT 必须与刚确认的 Put revision 精确一致。异步 KeepAlive 使用独立
+单调 revision watermark，允许合法的 buffered response 早于刚完成的 Put，再以最大值并入全局 watermark，
+不能误杀健康滚动或让全局版本回退。backend preflight 同时拒绝越过 PD TSO 18-bit logical/安全 physical
+边界的时间戳，以及重复 store ID/address、非 `host:port`、非 Up 或 heartbeat 过期的 TiKV topology。
+任一 malformed success 都阻断 rollout，不能仅凭 Pod Ready 或一条看似正确的 Watch value 放行。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 

@@ -57880,6 +57880,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全部通过。本项不改变 ACTION/TLS/不可逆确认字段、compact boundary、snapshot artifact、Operation executor、
   MVCC 存储或在线 etcd RPC 语义。
 
+- A5166 修复 `kubebrain-rollout-availability-probe` 只检查 clientv3 transport error、可由 malformed success
+  放行生产滚动的缺口。旧 probe 丢弃 prefix Delete、lease-bound Put、循环 Put 和 cleanup Revoke/Delete
+  response；Grant/KeepAlive/TTL 只看少数字段，Put timeout 对账 Get 与 Watch event 也未校验 header/envelope/
+  MVCC revision，因此 nil、错 cluster、零 member、旧 revision、隐藏 KV/PrevKV、错误 lease identity 或未绑定
+  Put 的 Watch 均可能计入 `PROBE_SUMMARY fail=0`。对照 `/root/etcd/server/etcdserver/apply/backend.go`、
+  `api/v3rpc/{key,lease,watch}.go` 的 response/header 生成，现首次 cleanup 固定 cluster ID，整条
+  Delete→Grant→KeepAlive→lease Put→Watch created→循环 Put/Get reconciliation/Watch→TTL→Revoke/Delete/Get
+  链要求同 cluster、非零 member、正且不回退的 revision及各自严格 envelope；mutation revision 必须推进，
+  Watch PUT 的 type/key/value/无 PrevKV/lease=0/create/mod/version 精确绑定已确认 Put。异步 KeepAlive 单独维护
+  单调 watermark 后以 max 合并，既拒绝自身回退，也不因合法 buffered response 早于最新 Put 而误杀 rollout。
+  同一 backend preflight 还补齐 PD TSO logical 18-bit/physical overflow 边界，以及 TiKV store ID/address 唯一、
+  `host:1..65535`、Up 与 heartbeat freshness。响应、Watch、TSO、重复 topology 正反例连续二十轮、目标 race、
+  完整非 production、production 324 项四分片（147.320/241.317/175.727/458.508 秒）、diff check 与 vet
+  全部通过。本项不改变 probe CLI/summary、SLO 阈值、rollout mutation、数据编码或在线 etcd RPC 语义；尚未
+  用新 binary 重跑真实 Kubernetes 受控滚动，不能把确定性响应测试冒充现场发布成功。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
