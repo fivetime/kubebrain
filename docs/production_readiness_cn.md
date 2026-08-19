@@ -4710,7 +4710,7 @@ MVCC 元数据。跨页要求下一页 `Count` 精确等于上一页 `Count-len(
 `MaxLeaseTTL=9,000,000,000` 均 fail closed；精确最大值合法，旧 v2 制品缺省的
 `granted_ttl=0` 继续兼容，promotion grace 导致的 remaining TTL 高于 grant 也不会被误拒绝。restore 在任何 etcd 写入前完成
 验证；默认 no-overwrite 模式的目标存在性预检还要求 read-only Txn 选择 success branch、含正 outer revision、
-逐 key 返回等量 Range response、内层 revision 位于 outer 的当前/前一 revision 窗口，且 `Count==len(Kvs)`、
+逐 key 返回等量 Range response、存在时的内层 revision 与 outer 精确相同，且 `Count==len(Kvs)`、
 `More=false`，防止畸形空 payload 隐藏已有键。随后按 `BATCH_SIZE` 把 compare 与 Put 放入同一个 Txn，使预检后的
 并发写冲突仍不会导致单批部分落盘。
 header、record、lease 和 footer 行均使用严格 JSON schema 解码，拒绝未知字段和同一行内
@@ -4725,12 +4725,18 @@ promotion grace 令 remaining 高于正 `granted_ttl`，则规范化回 grant，
 实现与唯一性门禁。每次目标 LeaseGrant 成功响应还必须含 signed nonzero 唯一 ID、正 revision header、空 legacy
 error，且实际 TTL 位于 `[requested, MaxLeaseTTL]`；server-chosen 更长 TTL 合法，异常响应携带的非零 lease 会与
 此前 grants 一并按 ID 去重 revoke，任何 Put 都不会执行。每个 restore Put batch 的成功 Txn 还必须返回正的
-outer revision、与请求等量且类型均为 Put 的 response；每个 Put response 必须带与 outer revision 相同的 header，
-且不能夹带未请求的 PrevKV。该门禁同时适用于默认 no-overwrite 与 `ALLOW_OVERWRITE=true`；异常发生在 RPC
+outer revision、与请求等量且类型均为 Put 的 response；每个 Put response 若携带 header，其 revision 必须与
+outer 精确相同，且不能夹带未请求的 PrevKV。Txn nested header 兼容官方 etcd 的省略形态或仅 revision、零
+cluster/member 形态；若携带完整 identity，则 cluster/member 必须与同一 outer header 精确一致。跨 preflight、
+Grant、Put、rollback 与 Revoke 的有状态 admission 固定首次非零 cluster ID，要求每个 outer header 有非零
+member、revision 单调不退，Put/rollback mutation 还必须严格推进 revision。该门禁同时适用于默认 no-overwrite
+与 `ALLOW_OVERWRITE=true`；异常发生在 RPC
 返回后，按既有错误路径清理新建 lease，并在 no-overwrite 模式回滚已记录批次，但覆盖模式无法保证撤销服务端
 已经提交的永久键或旧值。lease cleanup 的每次成功 Revoke 必须返回正 revision header；no-overwrite rollback
 的每批 Txn 必须选择 success branch、返回正 outer revision 和逐 key 等量 Delete response，每项内层 revision
-等于 outer、`Deleted=1` 且无未请求 PrevKV。RPC error 或畸形 success 都会明确报告 cleanup/rollback incomplete，
+若存在则等于 outer、`Deleted=1` 且无未请求 PrevKV。Put 顶层已经证明 Succeeded 且 operation shape 完整后，
+即使随后 identity admission 失败，该批也会先登记为可能已提交并进入 ModRevision compare-fenced rollback，
+不能因 malformed acknowledgement 遗留未跟踪数据。RPC error 或畸形 success 都会明确报告 cleanup/rollback incomplete，
 不会误报补偿完成。v1 无 lease 制品继续可恢复；
 v1 中记录非零 lease 时因缺少 TTL 元数据会在任何写入前拒绝。没有 manifest/footer 的
 旧 JSONL 无法证明完整性，同样明确拒绝。

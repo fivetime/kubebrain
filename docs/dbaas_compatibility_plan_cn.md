@@ -57912,6 +57912,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   audit prefix/nonce、窗口/SLO、Operation receipt、数据编码或在线 etcd RPC 语义；未用新 binary 重跑真实
   Kubernetes post-restore 一小时窗口，不能据此声称现场持续审计完成。
 
+- A5168 为 `logical-restore` 的多阶段写入/补偿建立跨调用响应身份链。旧 validator 已检查大部分 Txn shape，
+  但每次独立只看正 revision，不绑定 cluster/member 或跨批单调性；preflight 甚至容许 nested Range 比 outer
+  早一 revision，Grant/Put/rollback/Revoke 可来自不同 cluster，mutation 也可回显未推进 revision。现有状态
+  admission 由首个成功响应固定非零 cluster ID，要求所有 outer header member 非零、revision 单调不退，
+  Put/rollback 严格推进；所有 nested Range/Put/Delete header 若存在则 revision exact，官方 etcd 的 nil 或
+  `{cluster=0,member=0,revision=outer}` 形态合法，完整 identity 则必须与同一 Txn outer cluster/member 一致。
+  Grant mixed response/error 的非零 lease ID 会先纳入去重 cleanup；Put 顶层 Succeeded 且 operation shape 完整后
+  即使 identity admission 失败，也先登记当前 keys/revision，使 no-overwrite 错误路径执行 ModRevision-fenced
+  rollback，不遗留未跟踪的可能提交批。对照 `/root/etcd/server/etcdserver/apply/backend.go` 与
+  `api/v3rpc/{key,lease}.go`，临时 reference etcd 的带 lease 两记录、BATCH_SIZE=1 export→rewrite restore 通过，
+  目标 revision 6/7 且 lease binding 保留；`FAIL_AFTER_BATCHES=1` 则真实回滚到目标 0 key、lease inventory
+  前后均为 1（只保留源 lease），实例、artifact 与数据目录均已清理。有状态身份/嵌套 header/异常 committed
+  登记正反例连续二十轮、目标 race、完整非 production、production 324 项四分片
+  （142.902/249.447/168.737/476.047 秒）、diff check 与 vet 全部通过。本项不改变 logical v2 artifact、
+  rewrite/overwrite 合同、batch size、stdout、verify receipt、数据编码或在线 etcd RPC 语义；reference 证明
+  upstream 兼容与补偿路径，不替代真实 TiKV/PD 大制品恢复和中途网络不确定结果演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
