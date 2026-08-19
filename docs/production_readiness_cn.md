@@ -3217,7 +3217,8 @@ multipart abort 演练。
 `FailedPrecondition` 返回包含 key/revision 的 provenance 诊断，不能导出把未知历史 lease 伪装为 0 的
 artifact。对当前 revision 执行 physical Compact 后，当前 v2 值仍可读，快照恢复并通过 3.7.0 version、
 SHA-256、官方 etcdutl 和 bbolt 检查；真实运行 2.88 秒通过。现场可使用
-`hack/backup/remediate-legacy-snapshot-history.sh` 做相同的 preflight/compact/verify，但 physical compact
+`hack/backup/remediate-legacy-snapshot-history.sh` 只分派到同一个预编译 native helper（源码 checkout 会先
+临时编译该 helper），由其做相同的 preflight/compact/verify；不存在另一套 etcdctl 实现，但 physical compact
 不可逆地删除旧 watch 历史：必须先确认受影响 keyspace、备份与 watcher 容忍窗口，且只能在诊断精确匹配
 该 legacy provenance 错误时执行。runner 对该门禁缺少 etcdutl 会直接失败，不能用 skip 充当验证成功。
 
@@ -4386,7 +4387,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   已发现 legacy 行，也会先用不可发布的占位 lease 完整跑完其余 MVCC/order/metadata 校验；后部 corruption
   优先返回，不能被 legacy remediation 掩盖。其他 Snapshot
   失败和已健康实例均拒绝 mutation；压缩提交后才下载新制品，并通过官方 `etcdutl snapshot status`
-  才原子发布 `OUTPUT`。上述直调只用于 break-glass；生产默认入口是持久审批 Operation：
+  才原子发布 `OUTPUT`。上述脚本是 native `kubebrain-legacy-snapshot-remediation` 的薄包装器：发布环境优先
+  查找该预编译 binary，源码 checkout 才临时编译并保留 native 退出码；它不再接受 `ETCDCTL_BIN`/`ETCDUTL_BIN`
+  或维护独立的 Status/Snapshot/Compact 流程，因而不能绕过上述响应准入。可用
+  `KUBEBRAIN_LEGACY_REMEDIATION_COMMAND` 显式指定测试/开发 binary。上述直调只用于 break-glass；生产默认
+  入口是持久审批 Operation：
 
   ```shell
   kubectl apply -f deploy/production/kubebrain-legacy-snapshot-remediation-requester-admission.yaml

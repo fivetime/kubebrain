@@ -57869,6 +57869,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全部通过。本项不改变 snapshot wire frames、SHA-256/bbolt 校验、compact boundary、OUTPUT 发布、receipt schema、
   MVCC 存储或在线 etcd RPC 语义。
 
+- A5165 消除 legacy snapshot history remediation 的 break-glass 路径分叉。生产 executor 已调用预编译
+  `kubebrain-legacy-snapshot-remediation`，但手册仍直调一份独立 shell 实现；后者用 `etcdctl endpoint status`
+  只解析 cluster/revision，再自行执行 snapshot/compact/etcdutl，因而绕过 A5163/A5164 的完整 Status、Compact
+  acknowledgement 与 SnapshotWithVersion 准入。现 `remediate-legacy-snapshot-history.sh` 只负责帮助和 native
+  命令发现：显式开发 override、已安装发布 binary、源码 checkout 临时编译三条路径最终都执行同一个 Go
+  实现，并保留 diagnose 退出码 3；脚本不再接受 CLI binary override 或包含任何独立 etcd mutation。包装器
+  分派/环境透传/缺失 override/help 正反例连续二十轮、legacyremediation 十轮、目标 race、完整非 production、
+  production 324 项四分片（151.907/241.895/177.441/485.589 秒）、ShellCheck、bash syntax、diff check 与 vet
+  全部通过。本项不改变 ACTION/TLS/不可逆确认字段、compact boundary、snapshot artifact、Operation executor、
+  MVCC 存储或在线 etcd RPC 语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
