@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -87,6 +88,10 @@ func TestSamplePDTimestampRejectsInvalidTimestamp(t *testing.T) {
 	require.ErrorContains(t, err, "invalid timestamp")
 	_, err = samplePDTimestamp(context.Background(), fakePDTimestampClient{physical: 1, logical: -1}, time.Second)
 	require.ErrorContains(t, err, "invalid timestamp")
+	_, err = samplePDTimestamp(context.Background(), fakePDTimestampClient{physical: 1, logical: 1 << 18}, time.Second)
+	require.ErrorContains(t, err, "invalid timestamp")
+	_, err = samplePDTimestamp(context.Background(), fakePDTimestampClient{physical: math.MaxInt64>>18 + 1}, time.Second)
+	require.ErrorContains(t, err, "invalid timestamp")
 }
 
 func TestReadPDLeaderFallsBackAndValidatesIdentity(t *testing.T) {
@@ -124,6 +129,23 @@ func TestVerifyPDStoresAcceptsExactHealthySet(t *testing.T) {
 	}))
 	defer server.Close()
 	require.NoError(t, verifyPDStores(context.Background(), []string{server.URL}, time.Second, 20*time.Second, 1))
+}
+
+func TestVerifyPDStoresRejectsDuplicateIdentityAndMalformedAddress(t *testing.T) {
+	heartbeat := time.Now().UTC().Format(time.RFC3339Nano)
+	for name, stores := range map[string]string{
+		"duplicate id":      `[{"store":{"id":1,"address":"tikv-0:20160","state_name":"Up"},"status":{"last_heartbeat_ts":"` + heartbeat + `"}},{"store":{"id":1,"address":"tikv-1:20160","state_name":"Up"},"status":{"last_heartbeat_ts":"` + heartbeat + `"}}]`,
+		"duplicate address": `[{"store":{"id":1,"address":"tikv-0:20160","state_name":"Up"},"status":{"last_heartbeat_ts":"` + heartbeat + `"}},{"store":{"id":2,"address":"tikv-0:20160","state_name":"Up"},"status":{"last_heartbeat_ts":"` + heartbeat + `"}}]`,
+		"invalid port":      `[{"store":{"id":1,"address":"tikv-0:0","state_name":"Up"},"status":{"last_heartbeat_ts":"` + heartbeat + `"}},{"store":{"id":2,"address":"tikv-1:20160","state_name":"Up"},"status":{"last_heartbeat_ts":"` + heartbeat + `"}}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"count":2,"stores":` + stores + `}`))
+			}))
+			defer server.Close()
+			require.ErrorContains(t, verifyPDStores(context.Background(), []string{server.URL}, time.Second, 20*time.Second, 2), "TiKV store unhealthy")
+		})
+	}
 }
 
 func TestConfigValidation(t *testing.T) {
