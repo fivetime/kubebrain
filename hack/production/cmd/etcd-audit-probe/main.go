@@ -53,6 +53,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("grant audit lease: %v", err)
 	}
+	clusterID, leaseID, grantedTTL, grantRevision, err := validateAuditGrant(lease, 60)
+	if err != nil {
+		log.Fatalf("grant audit lease: %v", err)
+	}
 	revoked := false
 	defer func() {
 		if revoked {
@@ -60,29 +64,34 @@ func main() {
 		}
 		revokeCtx, revokeCancel := context.WithTimeout(context.Background(), timeout)
 		defer revokeCancel()
-		if _, revokeErr := client.Revoke(revokeCtx, lease.ID); revokeErr != nil {
-			log.Printf("revoke audit lease %d: %v", lease.ID, revokeErr)
+		revokeResponse, revokeErr := client.Revoke(revokeCtx, leaseID)
+		if revokeErr == nil {
+			revokeErr = validateAuditRevoke(revokeResponse, clusterID, grantRevision)
+		}
+		if revokeErr != nil {
+			log.Printf("revoke audit lease %d: %v", leaseID, revokeErr)
 		}
 	}()
 
 	put, err := client.Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).
-		Then(clientv3.OpPut(key, token, clientv3.WithLease(lease.ID))).
+		Then(clientv3.OpPut(key, token, clientv3.WithLease(leaseID))).
 		Commit()
 	if err != nil {
 		log.Fatalf("conditionally create audit key: %v", err)
 	}
-	if !put.Succeeded || put.Header == nil || put.Header.Revision <= 0 {
-		log.Fatal("audit key unexpectedly existed or put returned no revision")
+	putRevision, err := validateAuditPut(put, clusterID, grantRevision)
+	if err != nil {
+		log.Fatalf("conditionally create audit key: %v", err)
 	}
 
 	read, err := client.Get(ctx, key)
 	if err != nil {
 		log.Fatalf("linearizable read audit key: %v", err)
 	}
-	if read.Header == nil || read.Header.Revision < put.Header.Revision || len(read.Kvs) != 1 ||
-		string(read.Kvs[0].Value) != token || read.Kvs[0].Lease != int64(lease.ID) {
-		log.Fatal("audit read did not observe the leased value written by the probe")
+	readRevision, err := validateAuditRead(read, clusterID, putRevision, []byte(key), []byte(token), leaseID)
+	if err != nil {
+		log.Fatalf("linearizable read audit key: %v", err)
 	}
 
 	deleteResponse, err := client.Txn(ctx).
@@ -92,27 +101,31 @@ func main() {
 	if err != nil {
 		log.Fatalf("conditionally delete audit key: %v", err)
 	}
-	if !deleteResponse.Succeeded || deleteResponse.Header == nil ||
-		deleteResponse.Header.Revision < read.Header.Revision {
-		log.Fatal("audit delete compare failed or returned an invalid revision")
+	deleteRevision, err := validateAuditDelete(deleteResponse, clusterID, readRevision)
+	if err != nil {
+		log.Fatalf("conditionally delete audit key: %v", err)
 	}
 	absent, err := client.Get(ctx, key)
 	if err != nil {
 		log.Fatalf("confirm audit key deletion: %v", err)
 	}
-	if len(absent.Kvs) != 0 || absent.Header == nil ||
-		absent.Header.Revision < deleteResponse.Header.Revision {
-		log.Fatal("audit key remained visible after conditional deletion")
+	absentRevision, err := validateAuditAbsent(absent, clusterID, deleteRevision)
+	if err != nil {
+		log.Fatalf("confirm audit key deletion: %v", err)
 	}
-	if _, err := client.Revoke(ctx, lease.ID); err != nil {
+	revokeResponse, err := client.Revoke(ctx, leaseID)
+	if err != nil {
+		log.Fatalf("revoke audit lease: %v", err)
+	}
+	if err := validateAuditRevoke(revokeResponse, clusterID, absentRevision); err != nil {
 		log.Fatalf("revoke audit lease: %v", err)
 	}
 	revoked = true
 
 	output := result{
-		Format: "kubebrain.etcd-audit-probe.v1", PutRevision: put.Header.Revision,
-		ReadRevision: read.Header.Revision, DeleteRevision: deleteResponse.Header.Revision,
-		LeaseTTL: lease.TTL,
+		Format: "kubebrain.etcd-audit-probe.v1", PutRevision: putRevision,
+		ReadRevision: readRevision, DeleteRevision: deleteRevision,
+		LeaseTTL: grantedTTL,
 	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetEscapeHTML(false)
