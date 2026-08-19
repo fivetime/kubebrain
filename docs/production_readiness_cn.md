@@ -4705,6 +4705,9 @@ no-clobber 发布并同步父目录；验证失败或中断不会把不完整内
 还必须非 nil、位于当前 `[start,end)`（`end=\x00` 按 from-key 无上界处理）、按 key 严格递增并含有效 snapshot
 MVCC 元数据。跨页要求下一页 `Count` 精确等于上一页 `Count-len(Kvs)`，从而拒绝游标跳跃造成的静默截断；
 空 keyspace 或正常末页仍可为空。
+首次 Range header 还固定非零源 cluster ID；后续 historical Range 和穿插的 LeaseTimeToLive 必须保持同一
+cluster、携带非零 member，且观察到的 header revision 跨响应单调不退。snapshot revision 仍固定为首屏版本，
+后续 header 可因无关并发写而高于它，但不能把另一 cluster、零 member 或旧响应拼进同一 artifact。
 `logical-status.sh`、restore 和 verify 都会先复制并验证完整文件，缺 footer、记录数
 不符、内容篡改、footer 后附加数据或 `granted_ttl` 超过 upstream
 `MaxLeaseTTL=9,000,000,000` 均 fail closed；精确最大值合法，旧 v2 制品缺省的

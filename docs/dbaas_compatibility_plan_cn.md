@@ -57929,6 +57929,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   rewrite/overwrite 合同、batch size、stdout、verify receipt、数据编码或在线 etcd RPC 语义；reference 证明
   upstream 兼容与补偿路径，不替代真实 TiKV/PD 大制品恢复和中途网络不确定结果演练。
 
+- A5169 为 logical exporter 的多页 Range 与穿插 LeaseTimeToLive 建立同源响应 admission。A5145/A5153/A5154
+  已固定 pagination envelope、KV/MVCC、count continuity 与 TTL payload，但各调用仍只独立要求正 revision；
+  错 cluster、零 member 或在 TTL 后回退的下一页可被拼接进一个 schema/digest 均合法的 artifact。现首次
+  Range 固定非零 cluster ID；所有后续 Range/TTL 必须同 cluster、member 非零且 header revision 跨响应单调
+  不退。首屏 snapshot revision 继续固定 KV 视图，historical Range header 因无关并发写高于 snapshot 合法，
+  不能把“响应观察 watermark”错误收紧为所有 header exact snapshot。对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go`
+  与 `lease.go`，临时 reference etcd 以 BATCH_SIZE=1 导出三页、其中一键带 lease，成功得到 revision 4、
+  3 records/1 lease artifact 并通过 logical-status，实例、artifact 与数据目录均已清理。跨 member 正例及 nil/
+  零 identity/错 cluster/revision 回退反例连续二十轮、目标 race、完整非 production、production 324 项四分片
+  （145.385/234.567/170.202/499.719 秒）、diff check 与 vet 全部通过。本项不改变 logical v2 schema/digest、
+  snapshot/pagination/TTL payload、metrics、数据编码或在线 etcd RPC 语义；reference 小制品不替代真实 TiKV/PD
+  大 keyspace、lease churn 与导出期间故障演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
