@@ -57896,6 +57896,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全部通过。本项不改变 probe CLI/summary、SLO 阈值、rollout mutation、数据编码或在线 etcd RPC 语义；尚未
   用新 binary 重跑真实 Kubernetes 受控滚动，不能把确定性响应测试冒充现场发布成功。
 
+- A5167 修复 post-restore 持续审计的 `kubebrain-etcd-audit-probe` 可把 malformed clientv3 success 编码成
+  `kubebrain.etcd-audit-probe.v1` evidence 的缺口。旧路径在 nil Txn 上直接解引用，Grant/Range/Txn 只检查
+  少数字段并完全丢弃 Revoke response；错 cluster/零 member、隐藏 KV、Count/More 不自洽、错随机 key、坏
+  create/mod/version、缺少或错误 Txn operation、Delete count 不为 1、PrevKV 泄漏及 cleanup 假成功均可能
+  被记录。对照 `/root/etcd/server/etcdserver/apply/backend.go` 与 `api/v3rpc/{key,lease}.go`，现
+  Grant→conditional Put→linearizable Range→conditional Delete→absence Range→Revoke 全链绑定首次非零
+  cluster ID、非零 member、正且不回退的 revision、lease ID/TTL 和严格 envelope/MVCC identity；Put/Delete
+  mutation 必须推进 revision。reference `/root/etcd/bin/etcd` 首次真实运行还纠正了过严假设：官方 Txn
+  nested Put/Delete header 可只含 revision 且 cluster/member 为零。因此顶层 header 保持权威，嵌套 header
+  允许省略或官方零 identity，若携带 identity 则必须与顶层一致，revision 始终必须 exact；修正后临时
+  reference etcd 真实输出 put/read/delete revision `6/6/7`、TTL 60，实例和数据目录均已清理。各阶段
+  malformed success 正反例连续二十轮、目标 race、恢复审计 runner、完整非 production、production 324 项
+  四分片（145.648/247.968/172.988/484.892 秒）、diff check 与 vet 全部通过。本项不改变 evidence v1 schema、
+  audit prefix/nonce、窗口/SLO、Operation receipt、数据编码或在线 etcd RPC 语义；未用新 binary 重跑真实
+  Kubernetes post-restore 一小时窗口，不能据此声称现场持续审计完成。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

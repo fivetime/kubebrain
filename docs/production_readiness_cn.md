@@ -4827,6 +4827,12 @@ Pod name/UID/restart/Ready 快照和 EndpointSlice targetRef UID 集。每个样
 value 条件 Delete、删除确认和 lease revoke；探针 key 使用加密随机 nonce，失败时也由
 lease 限制残留时间。直接审计入口会在任何拓扑或探针操作前拒绝含控制字符、DEL、引号或反斜杠的
 public endpoint。跨样本 revision 必须单调不降，持续时间使用单调时钟计算。
+探针不会把 `err=nil` 直接编码成审计 evidence：Grant 固定非零 cluster/member、lease ID、合法 TTL 和
+revision，后续条件 Put/Range/条件 Delete/absence Range/Revoke 必须保持同一 cluster、合法且不回退的
+revision，并严格核对 Txn operation shape、Succeeded、Count/More、PrevKV、Deleted，以及随机 key/value、
+lease binding、create/mod revision 和 version。Txn 顶层 header 是身份权威；兼容官方 etcd 的嵌套
+Put/Delete header 省略 cluster/member（只带同一 revision）或完全省略 header，若嵌套 identity 存在则必须
+与顶层一致。nil、隐藏 KV、错 key、错误 MVCC metadata 或 malformed cleanup acknowledgement 均不得发布样本。
 
 窗口内任一拓扑或数据检查失败都不发布成功凭据。完整持续时间及最少样本均满足后，才以
 0600、file/directory `fsync`、不可覆盖 hard-link 发布
