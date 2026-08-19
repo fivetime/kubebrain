@@ -86,9 +86,9 @@ func validateRestorePutTxnResponse(response *clientv3.TxnResponse, expectedPuts 
 			return 0, fmt.Errorf("restore batch response %d is not a put response", i)
 		}
 		put := op.GetResponsePut()
-		if put.Header == nil || put.Header.Revision != response.Header.Revision {
+		if put.Header != nil && put.Header.Revision != response.Header.Revision {
 			return 0, fmt.Errorf("restore batch put response %d has revision %d, transaction revision is %d",
-				i, put.GetHeader().GetRevision(), response.Header.Revision)
+				i, put.Header.Revision, response.Header.Revision)
 		}
 		if put.PrevKv != nil {
 			return 0, fmt.Errorf("restore batch put response %d returned an unrequested previous key", i)
@@ -115,10 +115,9 @@ func validateRestorePreflightTxnResponse(response *clientv3.TxnResponse, keys []
 			return fmt.Errorf("target preflight response %d is not a range response", i)
 		}
 		ranged := op.GetResponseRange()
-		revision := ranged.GetHeader().GetRevision()
-		if ranged.Header == nil || revision <= 0 || revision > response.Header.Revision || revision < response.Header.Revision-1 {
-			return fmt.Errorf("target preflight range response %d has revision %d outside transaction revision window [%d,%d]",
-				i, revision, response.Header.Revision-1, response.Header.Revision)
+		if ranged.Header != nil && ranged.Header.Revision != response.Header.Revision {
+			return fmt.Errorf("target preflight range response %d has revision %d, transaction revision is %d",
+				i, ranged.Header.Revision, response.Header.Revision)
 		}
 		if ranged.More || ranged.Count != int64(len(ranged.Kvs)) {
 			return fmt.Errorf("target preflight range response %d has inconsistent count/more metadata", i)
@@ -158,9 +157,9 @@ func validateRestoreRollbackTxnResponse(response *clientv3.TxnResponse, expected
 			return fmt.Errorf("restore rollback response %d is not a delete response", i)
 		}
 		deleted := op.GetResponseDeleteRange()
-		if deleted.Header == nil || deleted.Header.Revision != response.Header.Revision {
+		if deleted.Header != nil && deleted.Header.Revision != response.Header.Revision {
 			return fmt.Errorf("restore rollback delete response %d has revision %d, transaction revision is %d",
-				i, deleted.GetHeader().GetRevision(), response.Header.Revision)
+				i, deleted.Header.Revision, response.Header.Revision)
 		}
 		if deleted.Deleted != 1 {
 			return fmt.Errorf("restore rollback delete response %d deleted %d keys instead of 1", i, deleted.Deleted)
@@ -262,6 +261,7 @@ func run() (retErr error) {
 	defer stop()
 	ctx, cancel := context.WithTimeout(rootCtx, timeout)
 	defer cancel()
+	responseAdmission := &restoreResponseAdmission{}
 
 	type kvPair struct {
 		key   []byte
@@ -307,6 +307,9 @@ func run() (retErr error) {
 			if err := validateRestorePreflightTxnResponse(resp, keys); err != nil {
 				return err
 			}
+			if err := responseAdmission.admitPreflight(resp); err != nil {
+				return fmt.Errorf("target preflight response admission: %w", err)
+			}
 			keys = keys[:0]
 			return nil
 		}
@@ -346,6 +349,10 @@ func run() (retErr error) {
 			}
 			if err := validateRestoreLeaseRevokeResponse(response); err != nil {
 				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("revoke restored lease %d: %w", sourceID, err))
+				continue
+			}
+			if err := responseAdmission.admitRevoke(response); err != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("revoke restored lease %d response admission: %w", sourceID, err))
 			}
 		}
 		return cleanupErr
@@ -353,14 +360,17 @@ func run() (retErr error) {
 	seenTargetLeases := make(map[clientv3.LeaseID]int64, len(leaseSpecs))
 	for sourceID, ttl := range leaseSpecs {
 		granted, grantErr := cli.Grant(ctx, ttl)
-		if grantErr != nil {
-			return errors.Join(fmt.Errorf("restore lease %d: %w", sourceID, grantErr), cleanupTargetLeases())
-		}
 		if granted != nil && granted.ID != clientv3.NoLease {
 			targetLeases[sourceID] = granted.ID
 		}
+		if grantErr != nil {
+			return errors.Join(fmt.Errorf("restore lease %d: %w", sourceID, grantErr), cleanupTargetLeases())
+		}
 		if err := validateRestoredLeaseGrant(sourceID, ttl, granted, seenTargetLeases); err != nil {
 			return errors.Join(fmt.Errorf("restore lease %d: %w", sourceID, err), cleanupTargetLeases())
+		}
+		if err := responseAdmission.admitGrant(granted); err != nil {
+			return errors.Join(fmt.Errorf("restore lease %d response admission: %w", sourceID, err), cleanupTargetLeases())
 		}
 	}
 	ops := make([]kvPair, 0, batchSize)
@@ -396,16 +406,16 @@ func run() (retErr error) {
 		if err != nil {
 			return err
 		}
-		responseRevision, err := validateRestorePutTxnResponse(resp, len(puts))
+		keys := make([]string, 0, len(ops))
+		for _, op := range ops {
+			keys = append(keys, string(op.key))
+		}
+		// Succeeded plus the exact Put response shape proves that this batch
+		// may have committed even when identity admission fails. The helper
+		// records it first so the outer path performs compare-fenced rollback.
+		_, err = validateAndAdmitRestorePut(resp, len(puts), keys, !allowOverwrite, &committed, responseAdmission)
 		if err != nil {
 			return err
-		}
-		if !allowOverwrite {
-			keys := make([]string, 0, len(ops))
-			for _, op := range ops {
-				keys = append(keys, string(op.key))
-			}
-			committed = append(committed, committedBatch{keys: keys, revision: responseRevision})
 		}
 		committedCount++
 		if failAfterBatches > 0 && committedCount >= failAfterBatches {
@@ -454,7 +464,10 @@ func run() (retErr error) {
 				if txnErr != nil {
 					return txnErr
 				}
-				return validateRestoreRollbackTxnResponse(resp, len(deletes))
+				if err := validateRestoreRollbackTxnResponse(resp, len(deletes)); err != nil {
+					return err
+				}
+				return responseAdmission.admitRollback(resp)
 			})
 		}
 		cleanupErr := cleanupTargetLeases()

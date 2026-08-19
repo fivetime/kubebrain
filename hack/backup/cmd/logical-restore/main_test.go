@@ -169,9 +169,11 @@ func TestValidateRestorePutTxnResponse(t *testing.T) {
 			wantErr:  "response 0 is not a put response",
 		},
 		"missing put header": {
-			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{put(0)}},
+			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{}},
+			}}},
 			expected: 1,
-			wantErr:  "put response 0 has revision 0",
+			wantRev:  5,
 		},
 		"mismatched put revision": {
 			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{put(4)}},
@@ -222,6 +224,7 @@ func TestValidateRestorePreflightTxnResponse(t *testing.T) {
 		"previous revision window": {
 			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(4, 0, false)}},
 			keys:     []string{"a"},
+			wantErr:  "revision 4, transaction revision is 5",
 		},
 		"empty transaction response": {keys: []string{"a"}, wantErr: "empty transaction response"},
 		"failure branch": {
@@ -255,18 +258,17 @@ func TestValidateRestorePreflightTxnResponse(t *testing.T) {
 			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
 				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{}},
 			}}},
-			keys:    []string{"a"},
-			wantErr: "revision 0 outside",
+			keys: []string{"a"},
 		},
 		"stale range revision": {
 			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(3, 0, false)}},
 			keys:     []string{"a"},
-			wantErr:  "outside transaction revision window [4,5]",
+			wantErr:  "revision 3, transaction revision is 5",
 		},
 		"future range revision": {
 			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(6, 0, false)}},
 			keys:     []string{"a"},
-			wantErr:  "outside transaction revision window [4,5]",
+			wantErr:  "revision 6, transaction revision is 5",
 		},
 		"hidden existing key": {
 			response: &clientv3.TxnResponse{Header: header(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{ranged(5, 1, false)}},
@@ -360,7 +362,6 @@ func TestValidateRestoreRollbackTxnResponse(t *testing.T) {
 				Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Deleted: 1}},
 			}}},
 			expected: 1,
-			wantErr:  "delete response 0 has revision 0",
 		},
 		"mismatched delete revision": {
 			response: &clientv3.TxnResponse{Header: header(6), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{deleted(5, 1)}},
