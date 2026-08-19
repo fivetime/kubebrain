@@ -64,6 +64,7 @@ func run() (retErr error) {
 	total := 0
 	var snapshotRevision int64
 	expectedPageCount := int64(-1)
+	responseAdmission := &exportResponseAdmission{}
 	var writer *backupfile.AtomicWriter
 	exportedLeases := make(map[int64]struct{})
 	defer func() {
@@ -87,6 +88,9 @@ func run() (retErr error) {
 		if err != nil {
 			return err
 		}
+		if err := responseAdmission.admitRange(resp); err != nil {
+			return err
+		}
 		expectedPageCount = remaining
 		if snapshotRevision == 0 {
 			snapshotRevision = resp.Header.Revision
@@ -104,6 +108,9 @@ func run() (retErr error) {
 					}
 					lease, err := exportLeaseRecord(kv.Lease, ttl, snapshotRevision)
 					if err != nil {
+						return err
+					}
+					if err := responseAdmission.admitLease(ttl, kv.Lease); err != nil {
 						return err
 					}
 					if err := writer.AddLease(lease); err != nil {
