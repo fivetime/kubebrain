@@ -58558,6 +58558,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   清单确认 406 项并按 96/109/101/100 四片全部通过（180.131/285.730/213.487/491.176 秒）。本项不改变
   参数或 Secret schema、幂等摘要语义、审批/restore、在线 etcd RPC 或 TiKV 编码。
 
+- A5212 将相同的精确 87389-byte 既有参数 Secret 响应门禁补到 ColdPhysicalSnapshot requester。旧实现
+  直接把 jsonpath 响应装入 shell 变量；87390-byte 响应会被完整读取后才报告 Secret 非 immutable
+  （RED 0.618 秒）。现成功响应先写入 0600 私有文件并检查大小，再读入标量、检查 immutable、解码并比对
+  摘要；超限时不触达 Operation API。测试以精确 65536-byte 参数构造 87389-byte 有效响应，证明边界仍能
+  幂等提交。主测试连续二十轮 20.814 秒、race 2.018 秒，完整相关 requester 测试 4.137 秒，bash syntax、
+  diff check 与全仓 vet 通过。production 清单确认 407 项并按 97/109/101/100 四片全部通过
+  （171.494/298.562/205.304/479.069 秒）。本项不改变参数或 Secret schema、证据冻结与幂等摘要语义、
+  审批/snapshot、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -5001,6 +5001,8 @@ ColdPhysicalRestore requester 的 kube-system 与 tidb-cluster namespace UID jso
 ColdPhysicalRestore requester 查询既有 immutable 参数 Secret 时，jsonpath 响应限制为 87389 bytes：这是
 `true`、一个 tab 与 65536-byte canonical 参数的标准 base64 编码之和。响应必须先写入 0600 私有文件并
 检查大小，再读入标量和解码验摘要；超限响应不得触达 Operation API，精确上界的有效响应仍必须幂等提交。
+ColdPhysicalSnapshot requester 的同格式既有参数 Secret 查询采用相同的 87389-byte 上界和 0600 文件捕获
+顺序；超限响应必须在 immutable/摘要检查前拒绝，精确上界的有效响应仍可幂等提交。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
