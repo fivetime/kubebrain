@@ -57994,6 +57994,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   随机唯一 key、TiKV 直读和 restart runner 的连续 revision 监控组成；本轮未执行破坏性 Kubernetes
   3/3/3 滚动重启。
 
+- A5173 加固破坏性 3/3/3 滚动重启资格测试 `TestReplicatedRestartPreservesState` 的响应证据链。
+  旧测试虽检查业务值、部分 revision 与事件数，但 Put/Delete/Grant/TTL/Status/Alarm/Revoke 的成功
+  response envelope 多数未验证，Range/Watch 也未完整绑定 header、Count/More 与 KV MVCC；malformed
+  success 因而可能跨过 KubeBrain、PD、TiKV 各三 Pod 的昂贵重启门禁。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/{key.go,lease.go,maintenance.go,watch.go}`、
+  `server/etcdserver/apply/backend.go` 与 `server/lease/lessor.go`，现测试内单一 admission 链从首次 Put
+  固定非零 cluster ID，允许请求落到不同非零 member，但要求 revision 正且单调不退、确定 mutation
+  严格推进。Put/Delete、point Range、Grant/TTL、Status/Alarm/Revoke 均验证 canonical envelope 和负载；
+  重启期间持续读取 exact durable key/value/create/mod/version/lease，恢复后的 current/historical/leased
+  Range 继续同链。普通及含 NUL/0xff key 的历史 Watch 必须逐事件 exact 绑定 key/value/create/mod/
+  version/lease，且拒绝 created/canceled/compact/error、PrevKV 和空事件响应。独立 disposable reference etcd
+  生命周期 Put→Delete→Grant→leased Put→历史 Watch/Range→TTL/Status→Revoke 通过（0.12s）；目标正反例
+  二十轮（0.491s）、race（1.360s）、最终兼容模块全测（6.192s）、完整非 production（2m50.424s）、
+  production 324 项四分片（141.961/227.090/172.934/441.813 秒）与 vet（2.078s）全部通过。
+  本项仅修改资格测试，不改变在线 etcd RPC、数据编码或重启顺序；reference 生命周期可通过
+  `REFERENCE_RESTART_ADMISSION_ENDPOINT` 显式启用。本轮没有可授权的 live context，未实际执行破坏性
+  Kubernetes 3/3/3 滚动重启，不能用静态/参考门禁替代该发布演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

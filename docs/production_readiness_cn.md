@@ -790,8 +790,12 @@ hack/dev/verify.sh
 ```
 
 测试使用官方 `client/v3` 在重启前写入普通 key、已删除 key、长 TTL lease 附属 key
-和 watch 历史；重启期间持续读取并拒绝成功响应的 revision 回退，恢复后验证当前值、
-tombstone 与历史值、lease/附属 key、watch 历史回放，以及新写入 revision 严格增长。
+和 watch 历史；同一条 response admission 链从首次写入固定非零 cluster ID，要求所有 member
+非零、revision 正且单调不退，确定成功的 mutation 严格推进。重启期间持续读取 exact key/value/MVCC，
+允许负载均衡后的 member 改变但拒绝 cluster 漂移和 revision 回退；恢复后以 canonical point-Range
+envelope 验证当前值、tombstone、历史值与 lease 附属 key，并校验 TTL、Status、Alarm、Revoke
+响应。普通和二进制 key 的 watch 历史回放还必须逐事件匹配 exact key/value/create/mod/version/lease，
+最后的新写入 revision 必须严格增长，不能把 malformed success 当成 3/3/3 重启持久性证据。
 `tikv-persistence-smoke` helper 自身也不再只检查 client transport error 与 `len(Kvs)`：write 的 Put
 acknowledgement 必须有非零 cluster/member、正 revision 且无未请求 PrevKV，紧随的 Get 必须保持
 同一 cluster、revision 不退、`Count==len(Kvs)<=1`、`More=false`。返回 KV 时必须是 exact key，
