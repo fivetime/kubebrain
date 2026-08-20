@@ -5437,6 +5437,10 @@ cutover、verified 和 rollback marker 在接管判定或最终提交 succeed �
 单行封闭 schema 校验；cutover state header 的 source/target prefix 必须继续是绝对且不同的
 key prefix，不能仅凭文件存在推进 operation。heartbeat fencing 时旧 worker
 终止子进程且不再回滚或提交，由新 owner/attempt 接管。
+最终 cutover receipt 的 runner 校验还必须独立提取 cutover marker、verified marker 和 receipt
+`completed_at_unix`；三者都限制为 `1..MaxInt64`，并要求
+`cutover_at <= verified_at <= completed_at_unix`。仅有格式合法的单份 marker 不能证明阶段发生顺序，
+可替换子命令产出的倒序时间链或溢出时间不得提交 Operation Succeeded。
 A189 rollback 允许仅凭 prepare state 运行：这覆盖 Service JSON Patch 已提交、但等待
 EndpointSlice 失败而尚未生成 cutover marker 的窗口；rollback 仍用 UID/resourceVersion
 CAS 并要求源 Pod UID 集恢复。

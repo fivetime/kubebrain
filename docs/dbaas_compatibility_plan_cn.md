@@ -58283,6 +58283,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   2.384 秒。本轮未执行真实切流；状态机测试不替代经审批演练。本项不改变 artifact/restore/cutover schema、
   在线 etcd RPC、Service selector CAS 或 TiKV 编码，只把既有内容身份不变量前移并增加独立消费者验证。
 
+- A5190 封闭 RestoreCutover Operation runner 只逐份验证 cutover/verified marker 与最终 receipt schema、
+  不独立验证阶段时间顺序的接管缺口。直接 `switch-restore-traffic.sh` 已要求
+  `cutover_at <= verified_at <= completed_at_unix`，但可替换 `CUTOVER_COMMAND` 可产出字段均为正整数、摘要和
+  身份均自洽却时间倒序的三份证据，runner 仍会提交 Succeeded。修复前新增“verified 早于 cutover”和
+  “completed 早于 verified”两条反例，均错误成功并使聚焦测试确定性 RED（2.986 秒）。现 runner 在最终
+  receipt 校验中独立提取两个 marker 时间和冻结 receipt 完成时间，全部限制到 `1..MaxInt64` 后再做 Bash
+  算术比较，并在 jq 严格 schema 门禁中再次要求 completed 不早于 verified；避免超大十进制触发有符号溢出。
+  回归覆盖两类倒序以及 cutover/verified/completed 三个 `MaxInt64+1` 边界，五类反例连续二十轮
+  154.979 秒、race 9.505 秒，全部 `TestRestoreCutoverOperation*` 53.736 秒，bash syntax 与 diff check
+  通过。完整非 production 全绿，其中 `pkg/server/etcd` 151.493 秒、总计 158.747 秒；production 清单确认
+  364 项并按 83/101/89/91 四分片全部通过（153.515/260.916/183.937/447.284 秒），全仓 vet 2.327 秒。
+  本轮未执行真实切流；状态机测试不替代经审批演练。本项不改变 marker/receipt schema、在线 etcd RPC、
+  Service selector CAS 或 TiKV 编码，只让 Operation 消费者独立执行生产者已有的 chronology 合同。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
