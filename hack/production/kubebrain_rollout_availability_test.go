@@ -89,6 +89,24 @@ func TestRolloutAvailabilityRunnerBoundsRuntimeEvidence(t *testing.T) {
 	}
 }
 
+func TestRolloutAvailabilityRunnerBoundsProbePhaseResponse(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	phaseState := filepath.Join(filepath.Dir(statePath), "phase-state")
+	base := append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath, "FAKE_PHASE_STATE="+phaseState, "FAKE_PHASE_RESPONSE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3")
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(base, "FAKE_PHASE_BYTES=4097")
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "probe phase response exceeds 4096 bytes")
+	require.NoError(t, os.RemoveAll(statePath))
+	require.NoError(t, os.RemoveAll(phaseState))
+	command = exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(base, "FAKE_PHASE_BYTES=4096")
+	boundaryOutput, boundaryErr := command.CombinedOutput()
+	require.NoError(t, boundaryErr, string(boundaryOutput))
+	require.Contains(t, string(boundaryOutput), "rollout availability gate passed")
+}
+
 func TestRolloutAvailabilityRunnerFailsFastWhenProbeFails(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -126,16 +144,17 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
   printf '%s' "$payload"; [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" != statefulset ]] || head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
-elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.status.phase} "* ]] &&
-  [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then
-  printf Failed
+elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.status.phase} "* ]]; then
+  if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then printf Failed
+  elif [[ "${FAKE_PHASE_RESPONSE:-false}" == true ]]; then printf Running; head -c "$((FAKE_PHASE_BYTES-7))" /dev/zero | tr '\0' ' '
+  else printf Running; fi
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe "* ]]; then
   exit 1
 elif [[ " $* " == *" rollout restart statefulset/kubebrain "* ]]; then
   : >"$FAKE_KUBECTL_STATE"
-elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]] &&
-  [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then
-  exit 1
+elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
+  if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
+  if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
   payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34\n'
   printf '%s' "$payload"; [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" != probe-log ]] || head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '

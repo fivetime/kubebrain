@@ -23,6 +23,7 @@ ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
 MAX_RUNTIME_EVIDENCE_BYTES=1048576
+MAX_PROBE_PHASE_RESPONSE_BYTES=4096
 
 if [[ "$ALLOW_MUTATING_KUBEBRAIN_ROLLOUT" != true ]]; then
   echo "refusing mutating KubeBrain rollout: set ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true" >&2
@@ -80,6 +81,17 @@ capture_runtime_evidence() {
   size="$(stat -Lc '%s' -- "$destination")" || return 1
   if ! [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_RUNTIME_EVIDENCE_BYTES" ]]; then
     echo "runtime evidence exceeds ${MAX_RUNTIME_EVIDENCE_BYTES} bytes" >&2
+    exit 1
+  fi
+}
+capture_probe_phase_response() {
+  local destination="$1" size
+  shift
+  "$@" >"$destination" || return 1
+  chmod 600 "$destination" || return 1
+  size="$(stat -Lc '%s' -- "$destination")" || return 1
+  if ! [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_PROBE_PHASE_RESPONSE_BYTES" ]]; then
+    echo "probe phase response exceeds ${MAX_PROBE_PHASE_RESPONSE_BYTES} bytes" >&2
     exit 1
   fi
 }
@@ -171,8 +183,15 @@ case "$PROBE_COMPLETE_TIMEOUT" in
   *m) probe_complete_seconds=$(( ${PROBE_COMPLETE_TIMEOUT%m} * 60 )) ;;
 esac
 probe_complete_deadline=$((SECONDS + probe_complete_seconds))
+probe_phase_attempt=0
 while ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$PROBE_POD" --timeout=1s >/dev/null 2>&1; do
-  probe_phase="$(kctl get pod "$PROBE_POD" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  ((probe_phase_attempt+=1))
+  probe_phase_file="$runtime_evidence_dir/probe-phase-${probe_phase_attempt}.txt"
+  if capture_probe_phase_response "$probe_phase_file" kctl get pod "$PROBE_POD" -o jsonpath='{.status.phase}'; then
+    probe_phase="$(<"$probe_phase_file")"
+  else
+    probe_phase=""
+  fi
   if [[ "$probe_phase" == Failed ]]; then
     capture_runtime_evidence "$runtime_evidence_dir/probe-failed.log" kctl logs "$PROBE_POD" && cat "$runtime_evidence_dir/probe-failed.log" >&2 || true
     echo "availability probe failed" >&2
