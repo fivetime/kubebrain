@@ -58141,6 +58141,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （2.193 秒）全部通过。本项不改变 audit probe、审计窗口、post-restore audit receipt schema、在线 etcd RPC
   或 TiKV 编码；v1 在途证据继续兼容，v2 成为新恢复链的完整输入。
 
+- A5182 修复 revision-bound v2 恢复证据仍可在公开切流重验处发生时点倒退的缺口。A5179/A5180 已把
+  prepare 时的 `initial_verified_target_revision` 与 complete 时的
+  `public_verified_target_revision` 签入最终 receipt，但生成端及切流 runner、直接持续审计、审计 runner
+  四个消费者都只要求后者为正整数；因此一个数值合法但小于初始验证点的 malformed success 仍可发布并进入
+  post-restore audit。对照 etcd 线性化 latest Range 的单调 MVCC revision 合同，v2 complete 现在发布前要求
+  public revision 为正十进制整数且 `public >= initial`，失败时不创建 receipt；四个 receipt parser 同步执行
+  相同约束，既拒绝新生成错误，也拒绝外部替换或历史坏证据。v1 在途 state/receipt 没有该字段，继续按原合同
+  兼容。生成端无制品回归和四层正数倒退反例连续二十轮通过（124.730 秒），聚焦 race 6.806 秒、bash syntax
+  与 diff check 通过。完整 `hack/production` 单包首次在 Go 默认十分钟上限停于无调用关系的
+  `TestRunTiKVTransactionRecoveryOperation`，该用例随后独立 7.178 秒通过；非 production 聚合首跑又在
+  `pkg/server/etcd` 152.846 秒发生未保留具体用例名的非确定性 RED，该核心包随后以 JSON fail-event 过滤完整
+  复跑通过，其余包首跑通过。规范 production 门禁确认 335 项并以 77/92/81/85 四分片全部 GREEN
+  （152.508/253.987/173.367/470.259 秒），全仓 vet 2.173 秒通过；当前执行环境没有 `shellcheck`，故只记录
+  已实际运行的 shell syntax 门禁。本项不改变 receipt schema、Service selector CAS、公开数据重验内容、在线
+  etcd RPC 或 TiKV 编码，也不把确定性状态机测试冒充真实切流或一小时持续审计。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

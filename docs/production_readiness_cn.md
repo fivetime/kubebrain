@@ -4867,7 +4867,8 @@ verify 和 complete 都通过公开 Service endpoint 对完整 logical artifact 
 target revision 可以合法推进，但必须重新写入 v2 receipt。complete 才签发不可
 覆盖的 cutover receipt：v1 state 延续 `kubebrain.restore-cutover.receipt.v1`；v2 state 签发
 `kubebrain.restore-cutover.receipt.v2`，同时绑定初始 restore receipt 摘要/target revision 与 complete 阶段
-公开 Service 重验的正 target revision。receipt 还包含 cutover state 文件
+公开 Service 重验的正 target revision；后者必须大于等于初始 target revision，任何倒退都在发布前失败且不创建
+receipt。切流 Operation runner 和后续两层审计也执行相同单调约束，防止被替换的坏 receipt 进入证据链。receipt 还包含 cutover state 文件
 SHA-256，将冻结的 Service/Pod UID 行和绝对且不同的 source/target prefix 绑定到完成证据。
 rollback 使用相同 CAS 从目标切回源，并
 要求 EndpointSlice 精确恢复到冻结的源 Pod UID 集；已 complete 的 operation 禁止回滚，
@@ -4891,7 +4892,8 @@ lease 限制残留时间。直接审计入口会在任何拓扑或探针操作�
 public endpoint。跨样本 revision 必须单调不降，持续时间使用单调时钟计算。
 审计入口和 PostRestoreAudit Operation runner 都支持成对的 v1 state/receipt 与 v2 state/receipt。v2 路径
 额外要求 state 中的 restore receipt format/SHA-256/初始 target revision 与 cutover receipt 完全一致，且
-公开 Service 重验 target revision 为正；版本混搭、缺字段或 revision/digest 漂移均在首个探针前拒绝。
+公开 Service 重验 target revision 为正且不早于初始 target revision；版本混搭、缺字段、revision 倒退或
+revision/digest 漂移均在首个探针前拒绝。
 探针不会把 `err=nil` 直接编码成审计 evidence：Grant 固定非零 cluster/member、lease ID、合法 TTL 和
 revision，后续条件 Put/Range/条件 Delete/absence Range/Revoke 必须保持同一 cluster、合法且不回退的
 revision，并严格核对 Txn operation shape、Succeeded、Count/More、PrevKV、Deleted，以及随机 key/value、
