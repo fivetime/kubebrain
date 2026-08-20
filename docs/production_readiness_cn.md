@@ -973,6 +973,8 @@ attached key 及完整 MVCC 元数据；Watch PUT 必须与刚确认的 Put revi
 rollout runner 的初始/终态 StatefulSet JSON、每次 probe 启动屏障日志、失败/超时诊断日志和最终 summary
 日志各自限制为 1 MiB。每份证据先写入独立 0600 文件并检查大小，再由 jq/grep 消费；超限日志必须明确
 报告资源门禁，不能误报为缺少启动屏障，精确 1 MiB 的合法证据仍可完成滚动演练。
+等待 probe 完成时读取的 Pod phase jsonpath 响应还采用独立 4096-byte 上界；每次重试写入独立 0600
+文件后才读入标量，超限 phase 不能借下一次 wait 成功而放行，精确边界仍可继续等待并完成演练。
 
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：

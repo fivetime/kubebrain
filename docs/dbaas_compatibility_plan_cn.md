@@ -58650,6 +58650,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （165.894/267.901/223.537/446.852 秒）。本项不改变 rollout mutation approval、drain/修订 fencing、
   availability probe 的 etcd/PD/TiKV 语义或 TiKV 编码。
 
+- A5221 为 rollout availability runner 完成等待循环中的 Pod phase jsonpath 响应建立逐次 4096-byte 门禁。
+  旧实现把 phase 直接装入 shell 变量；第一次 wait 失败后返回 4097-byte phase、第二次 wait 成功时，runner
+  会忽略超大响应并错误通过完整滚动（RED 1.012 秒）。现每次 phase 查询写入按尝试编号区分的 0600 文件，
+  确认 kubectl 成功并检查不超过 4096 bytes 后才读入标量；超限立即失败。测试同时模拟一次 wait 重试，
+  证明精确 4096-byte 响应不会阻断后续成功。主测试连续二十轮 13.719 秒、race 1.735 秒，完整 rollout
+  runner 测试 2.599 秒，bash syntax、diff check 与全仓 vet 通过。production 清单确认 414 项并按
+  98/113/103/100 四片全部通过（170.752/280.319/231.377/470.436 秒）。本项不新增 phase 格式假设，也
+  不改变 wait deadline、Failed 诊断、rollout fencing、availability probe 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
