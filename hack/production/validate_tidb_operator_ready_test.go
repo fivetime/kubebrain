@@ -2,12 +2,45 @@ package production_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestValidateTiDBOperatorReadyBoundsControlPlaneResponses(t *testing.T) {
+	deployment := fakeOperatorDeploymentJSON("uid-operator", "pingcap/tidb-operator:v1.6.5", true)
+	replicaSets := fakeOperatorReplicaSetsJSON("uid-operator", "pingcap/tidb-operator:v1.6.5")
+	pods := fakeOperatorPodsJSON("docker-pullable://pingcap/tidb-operator@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true)
+	for _, target := range []string{"deployment-initial", "replicasets", "pods", "deployment-final"} {
+		t.Run(target, func(t *testing.T) {
+			dir := t.TempDir()
+			controlLog := filepath.Join(dir, "control.log")
+			callCount := filepath.Join(dir, "deployment-calls")
+			kubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(kubectl, []byte(fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+emit() { local payload="$1" stage="$2"; printf '%%s\n' "$stage" >>%q; printf '%%s' "$payload"; if [[ "$CONTROL_TARGET" == "$stage" ]]; then head -c "$((CONTROL_BYTES-${#payload}))" /dev/zero | tr '\0' ' '; fi; }
+case "$*" in
+  *"get deployment tidb-controller-manager -o json"*) count=0; [[ ! -f %q ]] || count="$(<%q)"; printf '%%s' "$((count+1))" >%q; if ((count==0)); then emit %q deployment-initial; else emit %q deployment-final; fi ;;
+  *"get replicasets -o json"*) emit %q replicasets ;;
+  *"get pods -o json"*) emit %q pods ;;
+  *) exit 1 ;;
+esac
+`, controlLog, callCount, callCount, callCount, deployment, deployment, replicaSets, pods)), 0o755))
+			base := []string{"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "JQ=jq", "EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID=uid-operator", "EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5", "EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH=abc", "CONTROL_TARGET=" + target}
+			output, err := runProductionScriptCommand(t, "validate-tidb-operator-ready.sh", append(base, "CONTROL_BYTES=1048577"))
+			require.Error(t, err)
+			require.Contains(t, string(output), "control-plane response exceeds 1048576 bytes")
+			require.NoError(t, os.RemoveAll(callCount))
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "validate-tidb-operator-ready.sh", append(base, "CONTROL_BYTES=1048576"))
+			require.NoError(t, boundaryErr, string(boundaryOutput))
+			require.Contains(t, string(boundaryOutput), "release gate passed")
+		})
+	}
+}
 
 func TestValidateTiDBOperatorReadyFailsClosed(t *testing.T) {
 	dir := t.TempDir()
