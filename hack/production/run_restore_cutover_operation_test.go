@@ -2,6 +2,7 @@ package production_test
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,24 +30,63 @@ func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 
 func TestRestoreCutoverOperationAcceptsRevisionBoundV2Evidence(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
+	promoteCutoverRunnerRestoreReceipt(t, f, 2, 0)
 	f.run(t, true, "V2_EVIDENCE=true")
 	require.Contains(t, f.log(t), "--action succeed")
 }
 
 func TestRestoreCutoverOperationAcceptsClusterBoundV3Evidence(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
+	promoteCutoverRunnerRestoreReceipt(t, f, 3, 7)
 	f.run(t, true, "V3_EVIDENCE=true")
 	require.Contains(t, f.log(t), "--action succeed")
 }
 
 func TestRestoreCutoverOperationRejectsClusterBoundV3Drift(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
+	promoteCutoverRunnerRestoreReceipt(t, f, 3, 7)
 	f.run(t, false, "V3_EVIDENCE=true\nCUTOVER_CLUSTER_ID=8", "invalid receipt")
 	require.Contains(t, f.log(t), "--action fail")
 }
 
+func TestRestoreCutoverOperationRejectsStateDifferentFromFrozenV3Receipt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+	}{
+		{name: "cluster", env: "CUTOVER_STATE_CLUSTER_ID=8\nCUTOVER_CLUSTER_ID=8"},
+		{name: "artifact", env: "CUTOVER_STATE_ARTIFACT_SHA=" + strings.Repeat("9", 64)},
+		{name: "target revision", env: "CUTOVER_STATE_TARGET_REVISION=74"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCutoverRunnerFixture(t)
+			promoteCutoverRunnerRestoreReceipt(t, f, 3, 7)
+			f.run(t, false, "V3_EVIDENCE=true\n"+tc.env,
+				"state does not match frozen restore receipt")
+			log := f.log(t)
+			require.Contains(t, log, "--action retry")
+			require.NotContains(t, log, "phase cutover")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
+func TestRestoreCutoverOperationRejectsMalformedFrozenRestoreReceipt(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.restoreReceipt), &receipt))
+	receipt["unexpected"] = true
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.restoreReceipt, append(data, '\n'), 0o600))
+	refreshCutoverRunnerReceiptParameter(t, f)
+	f.run(t, false, "", "receipt input has invalid schema")
+	require.NotContains(t, f.log(t), "phase prepare")
+}
+
 func TestRestoreCutoverOperationRejectsPublicRevisionPredatingInitial(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
+	promoteCutoverRunnerRestoreReceipt(t, f, 2, 0)
 	f.run(t, false, "V2_EVIDENCE=true\nPUBLIC_VERIFIED_TARGET_REVISION=72", "invalid receipt")
 	log := f.log(t)
 	require.Contains(t, log, "--action fail")
@@ -55,6 +95,7 @@ func TestRestoreCutoverOperationRejectsPublicRevisionPredatingInitial(t *testing
 
 func TestRestoreCutoverOperationRejectsRevisionAboveInt64(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
+	promoteCutoverRunnerRestoreReceipt(t, f, 2, 0)
 	f.run(t, false, "V2_EVIDENCE=true\nPUBLIC_VERIFIED_TARGET_REVISION=9223372036854775808", "invalid receipt")
 	log := f.log(t)
 	require.Contains(t, log, "--action fail")
@@ -433,6 +474,37 @@ type cutoverRunnerFixture struct {
 	env                                     []string
 }
 
+func promoteCutoverRunnerRestoreReceipt(t *testing.T, f *cutoverRunnerFixture, version int, clusterID uint64) {
+	t.Helper()
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.restoreReceipt), &receipt))
+	receipt["format"] = fmt.Sprintf("kubebrain.restore-verification.v%d", version)
+	receipt["verified_target_revision"] = float64(73)
+	if version == 3 {
+		receipt["verified_target_cluster_id"] = clusterID
+	}
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.restoreReceipt, append(data, '\n'), 0o600))
+	refreshCutoverRunnerReceiptParameter(t, f)
+}
+
+func refreshCutoverRunnerReceiptParameter(t *testing.T, f *cutoverRunnerFixture) {
+	t.Helper()
+	var parameters map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+	parameters["restore_receipt_sha256"] = fileDigest(t, f.restoreReceipt)
+	data, err := json.Marshal(parameters)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.parameters, append(data, '\n'), 0o600))
+	digest := fileDigest(t, f.parameters)
+	for i, value := range f.env {
+		if strings.HasPrefix(value, "PARAMETERS_DIGEST=") {
+			f.env[i] = "PARAMETERS_DIGEST=" + digest
+		}
+	}
+}
+
 func newCutoverRunnerFixture(t *testing.T) *cutoverRunnerFixture {
 	t.Helper()
 	dir := t.TempDir()
@@ -445,7 +517,7 @@ func newCutoverRunnerFixture(t *testing.T) *cutoverRunnerFixture {
 	  "artifact_sha256":"%s","snapshot_revision":42,"source_prefix":"/registry",
 	  "target_prefix":"/restored","records":2,"artifact_leases":1,
 	  "verified_target_leases":1,"verified_at_unix":200
-	}`+"\n", restoreArtifactSHA256)), 0o600))
+	}`+"\n", runnerCutoverArtifactSHA256)), 0o600))
 	require.NoError(t, os.WriteFile(backup, []byte("backup\n"), 0o600))
 	require.NoError(t, os.WriteFile(parameters, []byte(fmt.Sprintf(`{
 	  "state_dir":%q,"restore_receipt_input":%q,"restore_receipt_sha256":%q,
@@ -496,10 +568,12 @@ mkdir -p "$STATE_DIR"
 case "$ACTION" in
   prepare)
     {
+      state_artifact_sha="${CUTOVER_STATE_ARTIFACT_SHA:-`+runnerCutoverArtifactSHA256+`}"
+      state_target_revision="${CUTOVER_STATE_TARGET_REVISION:-73}"
       if [[ "${V3_EVIDENCE:-false}" == true ]]; then
         restore_sha="$(sha256sum "$RESTORE_RECEIPT_INPUT" | cut -d ' ' -f1)"
-        printf 'HEADER\tkubebrain.restore-cutover.state.v3\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\tkubebrain.restore-verification.v3\t73\t%s\t7\n' \
-          "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`" "$restore_sha"
+        printf 'HEADER\tkubebrain.restore-cutover.state.v3\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\tkubebrain.restore-verification.v3\t%s\t%s\t%s\n' \
+          "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$state_artifact_sha" "$state_target_revision" "$restore_sha" "${CUTOVER_STATE_CLUSTER_ID:-7}"
       elif [[ "${V2_EVIDENCE:-false}" == true ]]; then
         restore_sha="$(sha256sum "$RESTORE_RECEIPT_INPUT" | cut -d ' ' -f1)"
         printf 'HEADER\tkubebrain.restore-cutover.state.v2\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\tkubebrain.restore-verification.v2\t73\t%s\n' \

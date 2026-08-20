@@ -250,10 +250,60 @@ capture_evidence() {
   esac
 }
 
+restore_receipt_fields() {
+  "$JQ" -er '
+    select(type == "object") |
+    select(
+      (keys == ["artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases"] or
+       keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases"] or
+       keys == ["artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases","verified_target_revision"] or
+       keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases","verified_target_revision"] or
+       keys == ["artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_cluster_id","verified_target_leases","verified_target_revision"] or
+       keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_cluster_id","verified_target_leases","verified_target_revision"]) and
+      ((.format == "kubebrain.restore-verification.v1" and
+        (has("verified_target_revision") | not) and (has("verified_target_cluster_id") | not)) or
+       (.format == "kubebrain.restore-verification.v2" and
+        (has("verified_target_cluster_id") | not) and
+        (.verified_target_revision | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor)) or
+       (.format == "kubebrain.restore-verification.v3" and
+        (.verified_target_revision | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) and
+        (.verified_target_cluster_id | type == "number" and . > 0 and . <= 18446744073709551615 and . == floor))) and
+      (.artifact_format | test("^kubebrain\\.logical\\.v[12]$")) and
+      (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+      (.snapshot_revision | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) and
+      (.source_prefix | type == "string" and startswith("/") and
+       (explode | all(. >= 32 and . != 127))) and
+      (.target_prefix | type == "string" and startswith("/") and
+       (explode | all(. >= 32 and . != 127))) and
+      .source_prefix != .target_prefix and
+      (.records | type == "number" and . >= 0 and . == floor) and
+      (.artifact_leases | type == "number" and . >= 0 and . == floor) and
+      (.verified_target_leases | type == "number" and . >= 0 and . == floor) and
+      (.verified_at_unix | type == "number" and . > 0 and . == floor) and
+      ((has("artifact_created_at_unix") | not) or
+       (.artifact_created_at_unix | type == "number" and . > 0 and . == floor) and
+       .verified_at_unix >= .artifact_created_at_unix)
+    ) |
+    [.format,.artifact_sha256,(.snapshot_revision|tostring),.source_prefix,.target_prefix,
+     (if has("verified_target_revision") then (.verified_target_revision|tostring) else "0" end),
+     (if has("verified_target_cluster_id") then (.verified_target_cluster_id|tostring) else "0" end)] | @tsv
+  ' "$restore_receipt"
+}
+
 capture_evidence restore_receipt "$restore_receipt" "$restore_receipt_sha" \
   restore-receipt.json "restore receipt"
 capture_evidence backup_input "$backup_input" "$backup_file_sha" \
   backup.jsonl "backup input"
+
+restore_binding="$(restore_receipt_fields)" || {
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "restore cutover receipt input has invalid schema" >/dev/null
+  echo "restore cutover receipt input has invalid schema" >&2
+  exit 1
+}
+IFS=$'\t' read -r expected_restore_format expected_artifact_sha expected_snapshot_revision \
+  expected_source_prefix expected_target_prefix expected_target_revision expected_target_cluster_id <<<"$restore_binding"
+expected_restore_receipt_sha="$restore_receipt_sha"
 
 cutover_env=(
   "OPERATION_ID=${operation_id}" "INSTANCE=${instance}" "STATE_DIR=${state_dir}"
@@ -399,6 +449,45 @@ validate_cutover_state_schema() {
   ' "$path"
 }
 
+validate_cutover_state_binding() {
+  local kind format state_instance state_operation state_namespace state_service source_state
+  local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
+  local receipt_format target_revision receipt_sha target_cluster_id
+  validate_cutover_state_schema "$state_file" || return 1
+  IFS=$'\t' read -r kind format state_instance state_operation state_namespace state_service \
+    source_state state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix \
+    receipt_format target_revision receipt_sha target_cluster_id <"$state_file"
+  [[ "$kind" == "HEADER" && "$state_instance" == "$instance" && "$state_operation" == "$operation_id" &&
+    "$state_namespace" == "$service_namespace" && "$state_service" == "$service_name" &&
+    "$source_state" == "$source_instance" && "$state_target" == "$target_instance" &&
+    -n "$state_service_uid" && "$artifact_sha" == "$expected_artifact_sha" &&
+    "$snapshot_revision" == "$expected_snapshot_revision" && "$source_prefix" == "$expected_source_prefix" &&
+    "$target_prefix" == "$expected_target_prefix" ]] || return 1
+  is_positive_etcd_revision "$snapshot_revision" || return 1
+  case "$expected_restore_format" in
+    kubebrain.restore-verification.v1)
+      [[ "$format" == "kubebrain.restore-cutover.state.v1" && -z "$receipt_format" &&
+        -z "$target_revision" && -z "$receipt_sha" && -z "$target_cluster_id" ]]
+      ;;
+    kubebrain.restore-verification.v2)
+      [[ "$format" == "kubebrain.restore-cutover.state.v2" &&
+        "$receipt_format" == "$expected_restore_format" && "$target_revision" == "$expected_target_revision" &&
+        "$receipt_sha" == "$expected_restore_receipt_sha" && -z "$target_cluster_id" ]] &&
+        is_positive_etcd_revision "$target_revision"
+      ;;
+    kubebrain.restore-verification.v3)
+      [[ ( "$format" == "kubebrain.restore-cutover.state.v2" ||
+           "$format" == "kubebrain.restore-cutover.state.v3" ) &&
+        "$receipt_format" == "$expected_restore_format" && "$target_revision" == "$expected_target_revision" &&
+        "$receipt_sha" == "$expected_restore_receipt_sha" ]] &&
+        is_positive_etcd_revision "$target_revision" &&
+        { [[ "$format" == "kubebrain.restore-cutover.state.v2" && -z "$target_cluster_id" ]] ||
+          { [[ "$target_cluster_id" == "$expected_target_cluster_id" ]] && is_positive_uint64 "$target_cluster_id"; }; }
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 validate_restore_cutover_marker() {
   local path="$1" kind="$2" expected_instance="${3:-}"
   awk -F '\t' -v kind="$kind" -v expected="$expected_instance" '
@@ -440,7 +529,7 @@ validate_cutover_receipt() {
   local kind format state_instance state_operation state_namespace state_service source_state
   local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
   local restore_receipt_format initial_target_revision restore_receipt_sha target_cluster_id state_sha
-  validate_cutover_state_schema "$state_file" || return 1
+  validate_cutover_state_binding || return 1
   validate_restore_cutover_marker "$cutover_file" CUTOVER "$target_instance" || return 1
   validate_restore_cutover_marker "$verified_file" VERIFIED || return 1
   [[ -f "$state_file" ]] || return 1
@@ -572,6 +661,20 @@ else
     exit 1
   fi
   phases=(cutover verify complete)
+fi
+
+if ! validate_cutover_state_binding; then
+  renew_terminal_lease || exit 1
+  if [[ -e "$cutover_file" ]]; then
+    run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+      --message "restore cutover state does not match frozen restore receipt" >/dev/null
+    echo "restore cutover state does not match frozen restore receipt after traffic change" >&2
+  else
+    run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+      --message "restore cutover state does not match frozen restore receipt" >/dev/null
+    echo "restore cutover state does not match frozen restore receipt" >&2
+  fi
+  exit 1
 fi
 
 failure_phase=""
