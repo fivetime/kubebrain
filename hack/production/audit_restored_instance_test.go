@@ -54,6 +54,7 @@ func TestPostRestoreAuditRejectsMalformedV2CutoverEvidence(t *testing.T) {
 	}{
 		{name: "initial revision", field: "initial_verified_target_revision", value: float64(74)},
 		{name: "public revision", field: "public_verified_target_revision", value: float64(0)},
+		{name: "public revision predates initial", field: "public_verified_target_revision", value: float64(72)},
 		{name: "restore receipt digest", field: "restore_receipt_sha256", value: strings.Repeat("4", 64)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

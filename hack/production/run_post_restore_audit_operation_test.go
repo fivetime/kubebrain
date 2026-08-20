@@ -36,6 +36,21 @@ func TestPostRestoreAuditOperationAcceptsRevisionBoundV2CutoverEvidence(t *testi
 	require.Contains(t, f.log(t), "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsPublicRevisionPredatingInitial(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	promoteOperationAuditCutoverEvidenceToV2(t, f)
+	receipt := strings.Replace(string(mustRead(t, f.cutoverReceipt)), `"public_verified_target_revision":84`, `"public_verified_target_revision":72`, 1)
+	require.NoError(t, os.WriteFile(f.cutoverReceipt, []byte(receipt), 0o600))
+	newReceiptSHA := fileDigest(t, f.cutoverReceipt)
+	parameters := strings.Replace(string(mustRead(t, f.parameters)), f.cutoverReceiptSHA, newReceiptSHA, 1)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestPostRestoreAuditOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL=true", "final heartbeat failed; post-restore audit worker was fenced")

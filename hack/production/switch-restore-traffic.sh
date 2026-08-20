@@ -498,7 +498,7 @@ validate_existing_cutover_receipt() {
         .format == "kubebrain.restore-cutover.receipt.v2" and
         .restore_receipt_format == $restore_format and .restore_receipt_sha256 == $restore_sha and
         .initial_verified_target_revision == $initial_target_revision and
-        (.public_verified_target_revision | type == "number" and . > 0 and . == floor))) and
+        (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . == floor))) and
       .operation_id == $operation and .instance == $instance and
       .service_namespace == $namespace and .service_name == $service and
       .service_uid == $uid and .source_instance == $source and
@@ -642,6 +642,12 @@ case "$ACTION" in
     [[ "$state_format" == "kubebrain.restore-cutover.state.v1" ]] || receipt_format="kubebrain.restore-cutover.receipt.v2"
     initial_target_revision="$(state_value HEADER 15)"
     [[ -n "$initial_target_revision" ]] || initial_target_revision=0
+    public_target_revision="${LAST_VERIFIED_TARGET_REVISION:-0}"
+    if [[ "$receipt_format" == "kubebrain.restore-cutover.receipt.v2" ]]; then
+      [[ "$public_target_revision" =~ ^[1-9][0-9]*$ ]] &&
+        (( public_target_revision >= initial_target_revision )) ||
+        { echo "public verification revision predates the initial verification revision" >&2; exit 1; }
+    fi
     "$JQ" -cnS \
       --arg format "$receipt_format" --arg operation_id "$OPERATION_ID" \
       --arg instance "$INSTANCE" --arg namespace "$SERVICE_NAMESPACE" --arg service "$SERVICE_NAME" \
@@ -652,7 +658,7 @@ case "$ACTION" in
       --arg restore_receipt_format "$(state_value HEADER 14)" \
       --arg restore_receipt_sha256 "$(state_value HEADER 16)" \
       --argjson initial_verified_target_revision "$initial_target_revision" \
-      --argjson public_verified_target_revision "${LAST_VERIFIED_TARGET_REVISION:-0}" \
+      --argjson public_verified_target_revision "$public_target_revision" \
       --argjson completed_at_unix "$completed_at" \
       '{format:$format,operation_id:$operation_id,instance:$instance,service_namespace:$namespace,
         service_name:$service,service_uid:$service_uid,source_instance:$source_instance,

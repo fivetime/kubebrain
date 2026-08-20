@@ -192,6 +192,16 @@ func TestRestoreTrafficCutoverV2EvidenceChain(t *testing.T) {
 	require.Equal(t, float64(84), cutoverReceipt["public_verified_target_revision"])
 }
 
+func TestRestoreTrafficCutoverDoesNotPublishRegressedPublicRevision(t *testing.T) {
+	f := newTrafficFixture(t)
+	promoteTrafficRestoreReceiptToV2(t, f, 73)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "")
+	f.run(t, "complete", false, "VERIFY_TARGET_REVISION=72", "public verification revision predates")
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.receipt.json"))
+}
+
 func TestRestoreTrafficCutoverRejectsTamperedV2EvidenceChain(t *testing.T) {
 	t.Run("state target revision", func(t *testing.T) {
 		f := newTrafficFixture(t)
@@ -212,6 +222,19 @@ func TestRestoreTrafficCutoverRejectsTamperedV2EvidenceChain(t *testing.T) {
 		f.run(t, "complete", true, "")
 		receiptPath := filepath.Join(f.state, "restore-1.receipt.json")
 		receipt := strings.Replace(string(mustRead(t, receiptPath)), `"public_verified_target_revision":84`, `"public_verified_target_revision":0`, 1)
+		require.NoError(t, os.WriteFile(receiptPath, []byte(receipt), 0o600))
+		f.run(t, "complete", false, "", "existing restore cutover receipt does not match")
+	})
+
+	t.Run("final public revision predates initial", func(t *testing.T) {
+		f := newTrafficFixture(t)
+		promoteTrafficRestoreReceiptToV2(t, f, 73)
+		f.run(t, "prepare", true, "")
+		f.run(t, "cutover", true, "")
+		f.run(t, "verify", true, "")
+		f.run(t, "complete", true, "")
+		receiptPath := filepath.Join(f.state, "restore-1.receipt.json")
+		receipt := strings.Replace(string(mustRead(t, receiptPath)), `"public_verified_target_revision":84`, `"public_verified_target_revision":72`, 1)
 		require.NoError(t, os.WriteFile(receiptPath, []byte(receipt), 0o600))
 		f.run(t, "complete", false, "", "existing restore cutover receipt does not match")
 	})
@@ -541,7 +564,7 @@ if [[ "${ASSERT_FROZEN_BACKUP_INPUT:-false}" == true ]]; then
   cmp -s "$INPUT" "$TRAFFIC_BACKUP_SOURCE" || { echo frozen backup input content mismatch >&2; exit 1; }
 fi
 cat >"$RECEIPT_OUTPUT" <<EOF
-{"format":"kubebrain.restore-verification.v2","artifact_format":"kubebrain.logical.v2","artifact_sha256":"`+restoreArtifactSHA256+`","snapshot_revision":42,"source_prefix":"/registry","target_prefix":"/restored","records":2,"artifact_leases":1,"verified_target_leases":1,"verified_target_revision":84,"verified_at_unix":200}
+{"format":"kubebrain.restore-verification.v2","artifact_format":"kubebrain.logical.v2","artifact_sha256":"`+restoreArtifactSHA256+`","snapshot_revision":42,"source_prefix":"/registry","target_prefix":"/restored","records":2,"artifact_leases":1,"verified_target_leases":1,"verified_target_revision":${VERIFY_TARGET_REVISION:-84},"verified_at_unix":200}
 EOF
 chmod 600 "$RECEIPT_OUTPUT"
 `)

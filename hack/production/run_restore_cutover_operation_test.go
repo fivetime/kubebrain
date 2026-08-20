@@ -33,6 +33,14 @@ func TestRestoreCutoverOperationAcceptsRevisionBoundV2Evidence(t *testing.T) {
 	require.Contains(t, f.log(t), "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsPublicRevisionPredatingInitial(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "V2_EVIDENCE=true\nPUBLIC_VERIFIED_TARGET_REVISION=72", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestRestoreCutoverOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL=true", "final heartbeat failed; restore cutover worker was fenced")
@@ -499,8 +507,8 @@ case "$ACTION" in
     state_sha="$(sha256sum "$state_file" | cut -d ' ' -f1)"
     if [[ "${V2_EVIDENCE:-false}" == true ]]; then
       restore_sha="$(cut -f16 "$state_file")"
-      printf '{"format":"kubebrain.restore-cutover.receipt.v2","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100,"restore_receipt_format":"kubebrain.restore-verification.v2","restore_receipt_sha256":"%s","initial_verified_target_revision":73,"public_verified_target_revision":84}\n' \
-        "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" "$restore_sha" >"$RECEIPT_OUTPUT"
+      printf '{"format":"kubebrain.restore-cutover.receipt.v2","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100,"restore_receipt_format":"kubebrain.restore-verification.v2","restore_receipt_sha256":"%s","initial_verified_target_revision":73,"public_verified_target_revision":%s}\n' \
+        "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" "$restore_sha" "${PUBLIC_VERIFIED_TARGET_REVISION:-84}" >"$RECEIPT_OUTPUT"
     else
       printf '{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}\n' \
         "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" >"$RECEIPT_OUTPUT"

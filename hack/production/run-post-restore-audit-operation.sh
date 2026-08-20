@@ -388,7 +388,7 @@ validate_source_cutover_receipt() {
       .format == "kubebrain.restore-cutover.receipt.v2" and
       .restore_receipt_format == $restore_format and .restore_receipt_sha256 == $restore_sha and
       .initial_verified_target_revision == $initial_target_revision and
-      (.public_verified_target_revision | type == "number" and . > 0 and . == floor))) and
+      (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . == floor))) and
     .operation_id == $operation and .instance == $instance and
     .service_namespace == $namespace and .service_name == $service and
     .service_uid == $uid and .source_instance == $source and .target_instance == $target and
