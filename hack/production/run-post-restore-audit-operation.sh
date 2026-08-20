@@ -300,8 +300,15 @@ validate_cutover_state_schema() {
       exit 1
     }
     $1 == "HEADER" {
-      if (NF != 13) {
-        bad = "HEADER row must have 13 fields"
+      if (($2 == "kubebrain.restore-cutover.state.v1" && NF != 13) ||
+          ($2 == "kubebrain.restore-cutover.state.v2" && NF != 16) ||
+          ($2 != "kubebrain.restore-cutover.state.v1" && $2 != "kubebrain.restore-cutover.state.v2")) {
+        bad = "HEADER row has invalid version or field count"
+        exit 1
+      }
+      if ($2 == "kubebrain.restore-cutover.state.v2" &&
+          ($14 != "kubebrain.restore-verification.v2" || $15 !~ /^[1-9][0-9]*$/ || $16 !~ /^[a-f0-9]{64}$/)) {
+        bad = "v2 HEADER row has invalid restore receipt binding"
         exit 1
       }
       header++
@@ -365,13 +372,23 @@ cutover_state_digest_matches() {
 validate_source_cutover_receipt() {
   local state_sha="$1" cutover_operation="$2" source_instance="$3"
   local state_service_uid="$4" artifact_sha="$5" snapshot_revision="$6"
+  local state_format="$7" restore_receipt_format="$8" initial_target_revision="$9" restore_receipt_sha="${10}"
   "$JQ" -e --arg operation "$cutover_operation" --arg instance "$instance" \
     --arg namespace "$service_namespace" --arg service "$service_name" \
     --arg uid "$state_service_uid" --arg source "$source_instance" \
     --arg target "$target_instance" --arg sha "$artifact_sha" \
-    --arg state_sha "$state_sha" --argjson revision "$snapshot_revision" '
-    select(keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","instance","operation_id","pod_uids_unchanged","public_data_verified","replicas","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
-    .format == "kubebrain.restore-cutover.receipt.v1" and
+    --arg state_sha "$state_sha" --arg state_format "$state_format" \
+    --arg restore_format "$restore_receipt_format" --arg restore_sha "$restore_receipt_sha" \
+    --argjson initial_target_revision "$initial_target_revision" --argjson revision "$snapshot_revision" '
+    select((($state_format == "kubebrain.restore-cutover.state.v1" and
+      keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","instance","operation_id","pod_uids_unchanged","public_data_verified","replicas","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
+      .format == "kubebrain.restore-cutover.receipt.v1") or
+     ($state_format == "kubebrain.restore-cutover.state.v2" and
+      keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","initial_verified_target_revision","instance","operation_id","pod_uids_unchanged","public_data_verified","public_verified_target_revision","replicas","restore_receipt_format","restore_receipt_sha256","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
+      .format == "kubebrain.restore-cutover.receipt.v2" and
+      .restore_receipt_format == $restore_format and .restore_receipt_sha256 == $restore_sha and
+      .initial_verified_target_revision == $initial_target_revision and
+      (.public_verified_target_revision | type == "number" and . > 0 and . == floor))) and
     .operation_id == $operation and .instance == $instance and
     .service_namespace == $namespace and .service_name == $service and
     .service_uid == $uid and .source_instance == $source and .target_instance == $target and
@@ -388,13 +405,16 @@ validate_source_cutover_receipt() {
 validated_source_cutover_receipt_digest() {
   local state_sha="$1" cutover_operation="$2" source_instance="$3"
   local state_service_uid="$4" artifact_sha="$5" snapshot_revision="$6"
+  local state_format="$7" restore_receipt_format="$8" initial_target_revision="$9" restore_receipt_sha="${10}"
   local first second
   validate_source_cutover_receipt "$state_sha" "$cutover_operation" "$source_instance" \
-    "$state_service_uid" "$artifact_sha" "$snapshot_revision" || return 1
+    "$state_service_uid" "$artifact_sha" "$snapshot_revision" "$state_format" \
+    "$restore_receipt_format" "$initial_target_revision" "$restore_receipt_sha" || return 1
   first="$(sha256sum "$cutover_receipt" | cut -d ' ' -f1)" || return 1
   [[ "$first" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_source_cutover_receipt "$state_sha" "$cutover_operation" "$source_instance" \
-    "$state_service_uid" "$artifact_sha" "$snapshot_revision" || return 1
+    "$state_service_uid" "$artifact_sha" "$snapshot_revision" "$state_format" \
+    "$restore_receipt_format" "$initial_target_revision" "$restore_receipt_sha" || return 1
   second="$(sha256sum "$cutover_receipt" | cut -d ' ' -f1)" || return 1
   [[ "$second" == "$first" ]] || return 1
   printf '%s\n' "$first"
@@ -403,20 +423,28 @@ validated_source_cutover_receipt_digest() {
 validate_audit_receipt() {
   local kind format state_instance cutover_operation state_namespace state_service source_instance
   local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
+  local restore_receipt_format initial_target_revision restore_receipt_sha
   local state_sha cutover_receipt_sha cutover_completed_at
   state_sha="$(validated_cutover_state_digest)" || return 1
   IFS=$'\t' read -r kind format state_instance cutover_operation state_namespace state_service \
     source_instance state_target state_service_uid artifact_sha snapshot_revision source_prefix \
-    target_prefix <"$cutover_state"
-  [[ "$kind" == "HEADER" && "$format" == "kubebrain.restore-cutover.state.v1" &&
+    target_prefix restore_receipt_format initial_target_revision restore_receipt_sha <"$cutover_state"
+  [[ "$kind" == "HEADER" && "$format" =~ ^kubebrain\.restore-cutover\.state\.v[12]$ &&
     "$state_instance" == "$instance" && "$state_namespace" == "$service_namespace" &&
     "$state_service" == "$service_name" && "$state_target" == "$target_instance" &&
     -n "$state_service_uid" && "$artifact_sha" =~ ^[a-f0-9]{64}$ &&
     "$snapshot_revision" =~ ^[1-9][0-9]*$ &&
-    "$source_prefix" == /* && "$target_prefix" == /* && "$source_prefix" != "$target_prefix" ]] || return 1
+    "$source_prefix" == /* && "$target_prefix" == /* && "$source_prefix" != "$target_prefix" &&
+    (( "$format" == "kubebrain.restore-cutover.state.v1" && -z "$restore_receipt_format" &&
+       -z "$initial_target_revision" && -z "$restore_receipt_sha" ) ||
+     ( "$format" == "kubebrain.restore-cutover.state.v2" &&
+       "$restore_receipt_format" == "kubebrain.restore-verification.v2" &&
+       "$initial_target_revision" =~ ^[1-9][0-9]*$ && "$restore_receipt_sha" =~ ^[a-f0-9]{64}$ )) ]] || return 1
+  [[ -n "$initial_target_revision" ]] || initial_target_revision=0
   cutover_state_digest_matches "$state_sha" || return 1
   cutover_receipt_sha="$(validated_source_cutover_receipt_digest "$state_sha" "$cutover_operation" \
-    "$source_instance" "$state_service_uid" "$artifact_sha" "$snapshot_revision")" || return 1
+    "$source_instance" "$state_service_uid" "$artifact_sha" "$snapshot_revision" "$format" \
+    "$restore_receipt_format" "$initial_target_revision" "$restore_receipt_sha")" || return 1
   cutover_completed_at="$("$JQ" -er \
     '.completed_at_unix | select(type == "number" and . > 0 and . == floor)' \
     "$cutover_receipt")" || return 1

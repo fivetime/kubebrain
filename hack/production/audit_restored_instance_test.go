@@ -35,6 +35,44 @@ func TestPostRestoreAuditPublishesReceiptAndRechecksOnRetry(t *testing.T) {
 	require.GreaterOrEqual(t, len(strings.Split(strings.TrimSpace(string(probes)), "\n")), 3)
 }
 
+func TestPostRestoreAuditAcceptsRevisionBoundV2CutoverEvidence(t *testing.T) {
+	f := newAuditFixture(t)
+	promoteAuditCutoverEvidenceToV2(t, f.dir)
+	f.run(t, true, "")
+
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, filepath.Join(f.state, "audit-1.receipt.json")), &receipt))
+	require.Equal(t, fileDigest(t, filepath.Join(f.dir, "cutover.state")), receipt["cutover_state_sha256"])
+	require.Equal(t, fileDigest(t, filepath.Join(f.dir, "cutover.json")), receipt["cutover_receipt_sha256"])
+}
+
+func TestPostRestoreAuditRejectsMalformedV2CutoverEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		field string
+		value any
+	}{
+		{name: "initial revision", field: "initial_verified_target_revision", value: float64(74)},
+		{name: "public revision", field: "public_verified_target_revision", value: float64(0)},
+		{name: "restore receipt digest", field: "restore_receipt_sha256", value: strings.Repeat("4", 64)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAuditFixture(t)
+			promoteAuditCutoverEvidenceToV2(t, f.dir)
+			path := filepath.Join(f.dir, "cutover.json")
+			var receipt map[string]any
+			require.NoError(t, json.Unmarshal(mustRead(t, path), &receipt))
+			receipt[tc.field] = tc.value
+			data, err := json.Marshal(receipt)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+
+			f.run(t, false, "", "cutover receipt does not match the frozen state")
+			require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+		})
+	}
+}
+
 func TestPostRestoreAuditTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
 	f := newAuditFixture(t)
 	f.run(t, true, "PUBLISH_RECEIPT_DURING_PROBE=true")
@@ -195,6 +233,28 @@ func TestPostRestoreAuditRejectsUnsafePublicEndpoint(t *testing.T) {
 type auditFixture struct {
 	dir, state string
 	env        []string
+}
+
+func promoteAuditCutoverEvidenceToV2(t *testing.T, dir string) {
+	t.Helper()
+	statePath := filepath.Join(dir, "cutover.state")
+	state := strings.Replace(string(mustRead(t, statePath)),
+		"kubebrain.restore-cutover.state.v1", "kubebrain.restore-cutover.state.v2", 1)
+	state = strings.Replace(state, "\t/registry\t/restored\n", "\t/registry\t/restored\tkubebrain.restore-verification.v2\t73\t"+strings.Repeat("3", 64)+"\n", 1)
+	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+
+	receiptPath := filepath.Join(dir, "cutover.json")
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &receipt))
+	receipt["format"] = "kubebrain.restore-cutover.receipt.v2"
+	receipt["cutover_state_sha256"] = fileDigest(t, statePath)
+	receipt["restore_receipt_format"] = "kubebrain.restore-verification.v2"
+	receipt["restore_receipt_sha256"] = strings.Repeat("3", 64)
+	receipt["initial_verified_target_revision"] = float64(73)
+	receipt["public_verified_target_revision"] = float64(84)
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(receiptPath, append(data, '\n'), 0o600))
 }
 
 func newAuditFixture(t *testing.T) *auditFixture {

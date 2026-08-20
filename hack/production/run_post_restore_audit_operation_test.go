@@ -29,6 +29,13 @@ func TestPostRestoreAuditOperationCompletesAndBindsReceipt(t *testing.T) {
 	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
 }
 
+func TestPostRestoreAuditOperationAcceptsRevisionBoundV2CutoverEvidence(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	promoteOperationAuditCutoverEvidenceToV2(t, f)
+	f.run(t, true, "")
+	require.Contains(t, f.log(t), "--action succeed")
+}
+
 func TestPostRestoreAuditOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL=true", "final heartbeat failed; post-restore audit worker was fenced")
@@ -387,6 +394,26 @@ func TestPostRestoreAuditOperationRejectsUnsafeAuditPrefix(t *testing.T) {
 type operationRunnerFixture struct {
 	dir, parameters, cutoverState, cutoverReceipt, cutoverStateSHA, cutoverReceiptSHA string
 	env                                                                               []string
+}
+
+func promoteOperationAuditCutoverEvidenceToV2(t *testing.T, f *operationRunnerFixture) {
+	t.Helper()
+	promoteAuditCutoverEvidenceToV2(t, f.dir)
+	f.cutoverStateSHA = fileDigest(t, f.cutoverState)
+	f.cutoverReceiptSHA = fileDigest(t, f.cutoverReceipt)
+	var parameters map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+	parameters["cutover_state_sha256"] = f.cutoverStateSHA
+	parameters["cutover_receipt_sha256"] = f.cutoverReceiptSHA
+	data, err := json.Marshal(parameters)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.parameters, append(data, '\n'), 0o600))
+	digest := fmt.Sprintf("%x", sha256.Sum256(append(data, '\n')))
+	for i, value := range f.env {
+		if strings.HasPrefix(value, "PARAMETERS_DIGEST=") {
+			f.env[i] = "PARAMETERS_DIGEST=" + digest
+		}
+	}
 }
 
 func newOperationRunnerFixture(t *testing.T) *operationRunnerFixture {
