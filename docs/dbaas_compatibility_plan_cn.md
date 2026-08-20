@@ -58012,6 +58012,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `REFERENCE_RESTART_ADMISSION_ENDPOINT` 显式启用。本轮没有可授权的 live context，未实际执行破坏性
   Kubernetes 3/3/3 滚动重启，不能用静态/参考门禁替代该发布演练。
 
+- A5174 闭合生产恢复演练与发布只读检查共用 `prefix-tool` 的跨调用响应身份缺口。A5162 已验证
+  count/delete/put/lease-put 的单响应 shape，但 header 仍只要求正 revision，Grant→multi-Put Txn→异常
+  Revoke 也没有固定同一集群；零 cluster/member、跨 cluster success 或 stale cleanup 因而仍可能成为
+  count、破坏性清理或 lease 演练证据。对照 `/root/etcd/server/etcdserver/api/v3rpc/{key.go,lease.go}`
+  的统一 header fill，现每个 action 要求非零 cluster/member；lease-put 从 Grant 固定 cluster ID，允许
+  member 随 client 负载均衡改变，但 Txn/Revoke revision 不得回退，实际 Put Txn 必须严格推进。Txn 顶层
+  header 在 payload shape 校验前先进入 admission，使“实际已提交但 nested payload malformed”的失败路径
+  仍能以已观察 revision 约束补偿 Revoke；无 attached key 的 Revoke 不强求 KV revision 推进，符合 etcd
+  lessor 语义。身份/回退/推进正反例连续二十轮（0.025s）、race（1.061s），disposable reference etcd 的
+  Grant→双 Put Txn→Revoke 生命周期通过（0.02s）；production 324 项四分片（142/244/173/499 秒）和
+  vet（2 秒）通过。首次聚合 `go test ./...` 的 `hack/production` 在 10 分钟上限卡于既有
+  `TestRestoreCutoverOperationTurnsExistingRollbackIntoTerminalFailure` runner；该目标单测随后独立复跑
+  0.40 秒通过，规范四分片也全部 GREEN，故记录为与本改动无调用关系的累积时序 flake，而不隐去首次 RED。
+  本项不改变 stdout/env、prefix/key/value、正常 lease 生命周期、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
