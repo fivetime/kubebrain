@@ -54,6 +54,31 @@ func TestRestoreTrafficCutoverRejectsVerifiedMarkerBeforeCutover(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.receipt.json"))
 }
 
+func TestRestoreTrafficCutoverRejectsCutoverBeforeRestoreVerification(t *testing.T) {
+	for _, version := range []int{1, 2, 3} {
+		t.Run(strconv.Itoa(version), func(t *testing.T) {
+			f := newTrafficFixture(t)
+			if version == 2 {
+				promoteTrafficRestoreReceiptToV2(t, f, 73)
+			} else if version == 3 {
+				promoteTrafficRestoreReceiptToV3(t, f, 73, 7)
+			}
+			path := filepath.Join(f.dir, "restore.json")
+			var receipt map[string]any
+			require.NoError(t, json.Unmarshal(mustRead(t, path), &receipt))
+			receipt["verified_at_unix"] = float64(4102444800)
+			data, err := json.Marshal(receipt)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+
+			f.run(t, "prepare", true, "")
+			f.run(t, "cutover", false, "", "restore verification occurred after cutover")
+			require.NoFileExists(t, filepath.Join(f.dir, "selector-target"))
+			require.NoFileExists(t, filepath.Join(f.state, "restore-1.cutover"))
+		})
+	}
+}
+
 func TestRestoreTrafficCutoverTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
 	f := newTrafficFixture(t)
 	f.run(t, "prepare", true, "")
@@ -158,6 +183,17 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithUnknownFields(t *testing.
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
 }
 
+func TestRestoreTrafficCutoverRejectsRestoreVerificationTimeAboveInt64(t *testing.T) {
+	f := newTrafficFixture(t)
+	path := filepath.Join(f.dir, "restore.json")
+	receipt := strings.Replace(string(mustRead(t, path)), `"verified_at_unix":100`,
+		`"verified_at_unix":9223372036854775808`, 1)
+	require.NoError(t, os.WriteFile(path, []byte(receipt), 0o600))
+
+	f.run(t, "prepare", false, "", "restore verification receipt is invalid")
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+}
+
 func TestRestoreTrafficCutoverRejectsBackupDifferentFromRestoreReceipt(t *testing.T) {
 	f := newTrafficFixture(t)
 	path := filepath.Join(f.dir, "restore.json")
@@ -238,8 +274,9 @@ func TestRestoreTrafficCutoverV3RejectsStateClusterDrift(t *testing.T) {
 	statePath := filepath.Join(f.state, "restore-1.state")
 	state := strings.Replace(string(mustRead(t, statePath)), "\t7\n", "\t8\n", 1)
 	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
-	f.run(t, "cutover", true, "")
-	f.run(t, "verify", false, "", "does not match cluster-bound cutover state")
+	f.run(t, "cutover", false, "", "restore verification receipt does not match prepared cutover state")
+	require.NoFileExists(t, filepath.Join(f.dir, "selector-target"))
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.cutover"))
 }
 
 func TestRestoreTrafficCutoverV3RejectsExistingReceiptClusterDrift(t *testing.T) {

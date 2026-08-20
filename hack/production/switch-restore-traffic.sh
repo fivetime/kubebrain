@@ -128,7 +128,7 @@ freeze_input() {
     { echo "${label} changed while being captured" >&2; exit 1; }
 }
 
-if [[ "$ACTION" =~ ^(prepare|verify|complete)$ ]]; then
+if [[ "$ACTION" =~ ^(prepare|cutover|verify|complete)$ ]]; then
   [[ -f "$RESTORE_RECEIPT_INPUT" ]] ||
     { echo "RESTORE_RECEIPT_INPUT does not exist" >&2; exit 2; }
   freeze_input "$RESTORE_RECEIPT_INPUT" "${input_capture_dir}/restore-receipt.json" \
@@ -194,7 +194,7 @@ receipt_fields() {
       (.records | type == "number" and . >= 0 and . == floor) and
       (.artifact_leases | type == "number" and . >= 0 and . == floor) and
       (.verified_target_leases | type == "number" and . >= 0 and . == floor) and
-      (.verified_at_unix | type == "number" and . > 0 and . == floor) and
+      (.verified_at_unix | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) and
       ((has("artifact_created_at_unix") | not) or
         .verified_at_unix >= .artifact_created_at_unix)
     ) | [
@@ -359,6 +359,45 @@ state_value() {
   awk -F '\t' -v type="$type" -v column="$column" '$1 == type { print $column; exit }' "$state_file"
 }
 
+restore_receipt_verified_at_for_state() {
+  local receipt format artifact_format artifact_sha snapshot_revision source_prefix target_prefix
+  local records artifact_leases target_leases target_revision target_cluster_id verified_at
+  local state_format state_receipt_format state_target_revision state_receipt_sha state_cluster_id
+  receipt="$(receipt_fields "$RESTORE_RECEIPT_INPUT")" || return 1
+  IFS=$'\t' read -r format artifact_format artifact_sha snapshot_revision source_prefix target_prefix \
+    records artifact_leases target_leases target_revision target_cluster_id verified_at <<<"$receipt"
+  state_format="$(state_value HEADER 2)"
+  [[ "$artifact_sha" == "$(state_value HEADER 10)" &&
+    "$snapshot_revision" == "$(state_value HEADER 11)" &&
+    "$source_prefix" == "$(state_value HEADER 12)" &&
+    "$target_prefix" == "$(state_value HEADER 13)" ]] || return 1
+  is_positive_etcd_revision "$verified_at" || return 1
+  case "$state_format" in
+    kubebrain.restore-cutover.state.v1)
+      [[ "$format" == "kubebrain.restore-verification.v1" && "$target_revision" == 0 &&
+        "$target_cluster_id" == 0 ]] || return 1
+      ;;
+    kubebrain.restore-cutover.state.v2)
+      state_receipt_format="$(state_value HEADER 14)"
+      state_target_revision="$(state_value HEADER 15)"
+      state_receipt_sha="$(state_value HEADER 16)"
+      [[ "$format" == "$state_receipt_format" && "$target_revision" == "$state_target_revision" &&
+        "$(file_sha256 "$RESTORE_RECEIPT_INPUT")" == "$state_receipt_sha" ]] || return 1
+      ;;
+    kubebrain.restore-cutover.state.v3)
+      state_receipt_format="$(state_value HEADER 14)"
+      state_target_revision="$(state_value HEADER 15)"
+      state_receipt_sha="$(state_value HEADER 16)"
+      state_cluster_id="$(state_value HEADER 17)"
+      [[ "$format" == "$state_receipt_format" && "$target_revision" == "$state_target_revision" &&
+        "$target_cluster_id" == "$state_cluster_id" &&
+        "$(file_sha256 "$RESTORE_RECEIPT_INPUT")" == "$state_receipt_sha" ]] || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$verified_at"
+}
+
 assert_pods_unchanged() {
   local role="$1" instance="$2" current expected
   current="$(pod_snapshot "$instance")"
@@ -518,9 +557,11 @@ marker_timestamp() {
 }
 
 validate_cutover_chronology() {
-  local completed_at="${1:-}" cutover_at verified_at
+  local completed_at="${1:-}" restore_verified_at cutover_at verified_at
+  restore_verified_at="$(restore_receipt_verified_at_for_state)" || return 1
   cutover_at="$(marker_timestamp "$cutover_file" CUTOVER "$TARGET_INSTANCE")" || return 1
   verified_at="$(marker_timestamp "$verified_file" VERIFIED)" || return 1
+  (( cutover_at >= restore_verified_at )) || return 1
   (( verified_at >= cutover_at )) || return 1
   [[ -z "$completed_at" ]] || (( completed_at >= verified_at ))
 }
@@ -639,8 +680,19 @@ case "$ACTION" in
     state_header
     state_sha="$(validated_cutover_state_digest)" ||
       { echo "restore cutover state has invalid schema" >&2; exit 1; }
+    restore_verified_at="$(restore_receipt_verified_at_for_state)" ||
+      { echo "restore verification receipt does not match prepared cutover state" >&2; exit 1; }
     [[ ! -e "$rollback_file" ]] || { echo "operation was rolled back" >&2; exit 1; }
-    [[ ! -e "$cutover_file" ]] || validate_existing_marker "$cutover_file" CUTOVER "$TARGET_INSTANCE"
+    if [[ -e "$cutover_file" ]]; then
+      cutover_at="$(marker_timestamp "$cutover_file" CUTOVER "$TARGET_INSTANCE")" ||
+        { echo "restore cutover chronology is invalid" >&2; exit 1; }
+      (( cutover_at >= restore_verified_at )) ||
+        { echo "restore verification occurred after cutover" >&2; exit 1; }
+    else
+      current_time="$(date +%s)"
+      is_positive_etcd_revision "$current_time" && (( current_time >= restore_verified_at )) ||
+        { echo "restore verification occurred after cutover" >&2; exit 1; }
+    fi
     assert_pods_unchanged source "$SOURCE_INSTANCE"
     assert_pods_unchanged target "$TARGET_INSTANCE"
     current_selector="$(service_snapshot | cut -f4)"
@@ -649,7 +701,10 @@ case "$ACTION" in
     reuse_marker "$cutover_file" CUTOVER "$TARGET_INSTANCE" && exit 0
     require_cutover_state_digest "$state_sha"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.cutover.XXXXXX")"
-    printf 'CUTOVER\tkubebrain.restore-cutover.marker.v1\t%s\t%s\n' "$TARGET_INSTANCE" "$(date +%s)" >"$temporary"
+    cutover_at="$(date +%s)"
+    is_positive_etcd_revision "$cutover_at" && (( cutover_at >= restore_verified_at )) ||
+      { rm -f "$temporary"; echo "restore verification occurred after cutover" >&2; exit 1; }
+    printf 'CUTOVER\tkubebrain.restore-cutover.marker.v1\t%s\t%s\n' "$TARGET_INSTANCE" "$cutover_at" >"$temporary"
     atomic_publish "$temporary" "$cutover_file"
     ;;
   verify)
