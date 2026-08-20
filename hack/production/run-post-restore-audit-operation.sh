@@ -15,6 +15,7 @@ KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
 MAX_ETCD_REVISION=9223372036854775807
 MAX_UINT64=18446744073709551615
+MAX_CONTROL_EVIDENCE_BYTES=4194304
 
 is_positive_etcd_revision() {
   local value="$1"
@@ -61,6 +62,7 @@ heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
   { echo "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
+command -v stat >/dev/null || { echo "stat is required" >&2; exit 2; }
 require_executable_file() {
   local name="$1"
   local path="$2"
@@ -83,6 +85,12 @@ file_sha256() {
   digest="$(sha256sum "$1" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   printf '%s' "$digest"
+}
+
+control_evidence_size_ok() {
+  local size
+  size="$(stat -Lc '%s' -- "$1")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_CONTROL_EVIDENCE_BYTES" ]]
 }
 
 contains_unsupported_endpoint_characters() {
@@ -258,12 +266,15 @@ done
 
 freeze_evidence() {
   local source="$1" expected="$2" evidence_name="$3" destination source_digest captured_digest current_digest
+  control_evidence_size_ok "$source" || return 3
   source_digest="$(file_sha256 "$source")" || return 1
   [[ "$source_digest" == "$expected" ]] || return 2
   destination="${parameter_capture_dir}/${evidence_name}"
   cp -- "$source" "$destination" || return 1
   chmod 600 "$destination"
+  control_evidence_size_ok "$destination" || return 3
   captured_digest="$(file_sha256 "$destination")" || return 1
+  control_evidence_size_ok "$source" || return 3
   current_digest="$(file_sha256 "$source")" || return 1
   [[ "$captured_digest" == "$expected" && "$current_digest" == "$expected" ]] || return 1
   printf '%s\n' "$destination"
@@ -283,6 +294,12 @@ capture_evidence() {
       run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
         --message "post-restore audit ${label} digest mismatch" >/dev/null
       echo "post-restore audit ${label} bytes do not match the immutable parameter digest" >&2
+      exit 1
+      ;;
+    3)
+      run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+        --message "post-restore audit ${label} exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >/dev/null
+      echo "${label} exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >&2
       exit 1
       ;;
     *)
@@ -555,10 +572,22 @@ validated_audit_receipt_digest() {
 freeze_audit_receipt() {
   local frozen_receipt source_digest captured_digest current_digest
   frozen_receipt="${parameter_capture_dir}/audit-receipt.json"
+  control_evidence_size_ok "$receipt_output" || {
+    echo "audit receipt exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >&2
+    return 1
+  }
   source_digest="$(file_sha256 "$receipt_output")" || return 1
   cp -- "$receipt_output" "$frozen_receipt" || return 1
   chmod 600 "$frozen_receipt"
+  control_evidence_size_ok "$frozen_receipt" || {
+    echo "audit receipt exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >&2
+    return 1
+  }
   captured_digest="$(file_sha256 "$frozen_receipt")" || return 1
+  control_evidence_size_ok "$receipt_output" || {
+    echo "audit receipt exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >&2
+    return 1
+  }
   current_digest="$(file_sha256 "$receipt_output")" || return 1
   [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] ||
     return 1

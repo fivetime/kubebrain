@@ -107,6 +107,42 @@ func TestPostRestoreAuditOperationRejectsInvalidReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsOversizedCutoverReceipt(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	receipt := append(mustRead(t, f.cutoverReceipt), []byte(strings.Repeat(" ", 4*1024*1024))...)
+	require.NoError(t, os.WriteFile(f.cutoverReceipt, receipt, 0o600))
+	parameters := strings.Replace(string(mustRead(t, f.parameters)), f.cutoverReceiptSHA,
+		fileDigest(t, f.cutoverReceipt), 1)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "cutover receipt exceeds 4194304 bytes")
+	require.NoFileExists(t, filepath.Join(f.dir, "audit.log"))
+}
+
+func TestPostRestoreAuditOperationRejectsOversizedCutoverState(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	state := strings.Replace(string(mustRead(t, f.cutoverState)), "SERVICE\tuid-service\t10\n",
+		"SERVICE\tuid-service\t"+strings.Repeat("1", 4*1024*1024)+"\n", 1)
+	require.NoError(t, os.WriteFile(f.cutoverState, []byte(state), 0o600))
+	stateSHA := fileDigest(t, f.cutoverState)
+	receipt := strings.Replace(string(mustRead(t, f.cutoverReceipt)), f.cutoverStateSHA, stateSHA, 1)
+	require.NoError(t, os.WriteFile(f.cutoverReceipt, []byte(receipt), 0o600))
+	parameters := strings.ReplaceAll(string(mustRead(t, f.parameters)), f.cutoverStateSHA, stateSHA)
+	parameters = strings.ReplaceAll(parameters, f.cutoverReceiptSHA, fileDigest(t, f.cutoverReceipt))
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "cutover state exceeds 4194304 bytes")
+	require.NoFileExists(t, filepath.Join(f.dir, "audit.log"))
+}
+
+func TestPostRestoreAuditOperationRejectsOversizedAuditReceipt(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	f.run(t, false, "OVERSIZED_AUDIT_RECEIPT=true", "audit receipt exceeds 4194304 bytes")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestPostRestoreAuditOperationRejectsMalformedClusterBoundReceipt(t *testing.T) {
 	for _, clusterID := range []string{"0", "18446744073709551616"} {
 		t.Run(clusterID, func(t *testing.T) {
@@ -559,6 +595,7 @@ started_at=100; completed_at=101
 if [[ "${INVALID_AUDIT_CHRONOLOGY:-false}" == true ]]; then started_at=1; completed_at=2; fi
 printf '{"format":"kubebrain.post-restore-audit.receipt.v2","operation_id":"%s","instance":"%s","cutover_operation_id":"cutover-1","service_uid":"uid-service","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","cutover_receipt_sha256":"%s","snapshot_revision":42,"replicas":%s,"duration_seconds":%s,"interval_seconds":%s,"samples":%s,"first_probe_revision":%s,"last_probe_revision":%s,"verified_target_cluster_id":%s,"topology_unchanged":true,"all_probes_succeeded":true,"completed":true,"started_at_unix":%s,"completed_at_unix":%s}\n' \
   "$OPERATION_ID" "$INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$cutover_state_sha" "$cutover_receipt_sha" "$EXPECTED_REPLICAS" "$AUDIT_DURATION_SECONDS" "$AUDIT_INTERVAL_SECONDS" "$MIN_SAMPLES" "${AUDIT_FIRST_REVISION:-1}" "${AUDIT_LAST_REVISION:-2}" "${AUDIT_CLUSTER_ID:-7}" "$started_at" "$completed_at" >"$RECEIPT_OUTPUT"
+[[ "${OVERSIZED_AUDIT_RECEIPT:-false}" != true ]] || printf '%4194305s' '' >>"$RECEIPT_OUTPUT"
 chmod 600 "$RECEIPT_OUTPUT"
 [[ "${TAMPER_CUTOVER_STATE_AFTER_AUDIT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$CUTOVER_STATE_INPUT"
 [[ "${TAMPER_CUTOVER_RECEIPT_AFTER_AUDIT:-false}" != true ]] || printf ' ' >>"$CUTOVER_RECEIPT_INPUT"

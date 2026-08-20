@@ -56,6 +56,44 @@ func TestPostRestoreAuditAcceptsClusterBoundV3CutoverEvidence(t *testing.T) {
 	require.Contains(t, receipt, `"verified_target_cluster_id":7`)
 }
 
+func TestPostRestoreAuditRejectsOversizedCutoverReceipt(t *testing.T) {
+	f := newAuditFixture(t)
+	path := filepath.Join(f.dir, "cutover.json")
+	receipt := append(mustRead(t, path), []byte(strings.Repeat(" ", 4*1024*1024))...)
+	require.NoError(t, os.WriteFile(path, receipt, 0o600))
+
+	f.run(t, false, "", "cutover receipt exceeds 4194304 bytes")
+	require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+}
+
+func TestPostRestoreAuditRejectsOversizedCutoverState(t *testing.T) {
+	f := newAuditFixture(t)
+	statePath := filepath.Join(f.dir, "cutover.state")
+	state := strings.Replace(string(mustRead(t, statePath)), "SERVICE\tuid-service\t10\n",
+		"SERVICE\tuid-service\t"+strings.Repeat("1", 4*1024*1024)+"\n", 1)
+	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+	receiptPath := filepath.Join(f.dir, "cutover.json")
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &receipt))
+	receipt["cutover_state_sha256"] = fileDigest(t, statePath)
+	encoded, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(receiptPath, append(encoded, '\n'), 0o600))
+
+	f.run(t, false, "", "cutover state exceeds 4194304 bytes")
+	require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+}
+
+func TestPostRestoreAuditRejectsOversizedExistingAuditReceipt(t *testing.T) {
+	f := newAuditFixture(t)
+	f.run(t, true, "")
+	path := filepath.Join(f.state, "audit-1.receipt.json")
+	receipt := append(mustRead(t, path), []byte(strings.Repeat(" ", 4*1024*1024))...)
+	require.NoError(t, os.WriteFile(path, receipt, 0o600))
+
+	f.run(t, false, "", "audit receipt exceeds 4194304 bytes")
+}
+
 func TestPostRestoreAuditRejectsClusterDifferentFromV3Cutover(t *testing.T) {
 	f := newAuditFixture(t)
 	promoteAuditCutoverEvidenceToV3(t, f.dir)

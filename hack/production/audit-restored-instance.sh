@@ -25,6 +25,7 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 MAX_ETCD_REVISION=9223372036854775807
 MAX_UINT64=18446744073709551615
+MAX_CONTROL_EVIDENCE_BYTES=4194304
 
 is_positive_etcd_revision() {
   local value="$1"
@@ -104,6 +105,7 @@ validate_audit_prefix "$AUDIT_PREFIX"
   { echo "cutover state and receipt inputs must exist" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
+command -v stat >/dev/null || { echo "stat is required" >&2; exit 2; }
 
 umask 077
 mkdir -p "$STATE_DIR"
@@ -125,12 +127,22 @@ file_sha256() {
   printf '%s\n' "$digest"
 }
 
+require_control_evidence_size() {
+  local path="$1" label="$2" size
+  size="$(stat -Lc '%s' -- "$path")" || { echo "inspect ${label} size failed" >&2; exit 1; }
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_CONTROL_EVIDENCE_BYTES" ]] ||
+    { echo "${label} exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >&2; exit 1; }
+}
+
 freeze_input() {
   local source="$1" destination="$2" label="$3" source_before captured source_after
+  require_control_evidence_size "$source" "$label"
   source_before="$(file_sha256 "$source")" || { echo "${label} digest is invalid" >&2; exit 1; }
   cp -- "$source" "$destination" || { echo "capture ${label} failed" >&2; exit 1; }
   chmod 600 "$destination"
+  require_control_evidence_size "$destination" "$label"
   captured="$(file_sha256 "$destination")" || { echo "${label} digest is invalid" >&2; exit 1; }
+  require_control_evidence_size "$source" "$label"
   source_after="$(file_sha256 "$source")" || { echo "${label} digest is invalid" >&2; exit 1; }
   [[ "$captured" == "$source_before" && "$source_after" == "$source_before" ]] ||
     { echo "${label} changed while being captured" >&2; exit 1; }
@@ -418,6 +430,7 @@ run_probe() {
 }
 
 validate_existing_audit_receipt() {
+  require_control_evidence_size "$receipt_file" "audit receipt"
   cutover_state_digest_matches "$cutover_state_sha" || return 1
   cutover_receipt_digest_matches "$cutover_receipt_sha" || return 1
   "$JQ" -e --arg operation "$OPERATION_ID" --arg instance "$INSTANCE" \
@@ -529,6 +542,7 @@ temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
     verified_target_cluster_id:$verified_target_cluster_id,
     topology_unchanged:true,all_probes_succeeded:true,completed:true,
     started_at_unix:$started_at_unix,completed_at_unix:$completed_at_unix}' >"$temporary"
+require_control_evidence_size "$temporary" "audit receipt"
 require_cutover_state_digest "$cutover_state_sha"
 require_cutover_receipt_digest "$cutover_receipt_sha"
 atomic_publish "$temporary" "$receipt_file"
