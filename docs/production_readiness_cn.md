@@ -4968,6 +4968,11 @@ NativePITRTargetRetirement runner 也采用 64 KiB 上限，并在首次摘要�
 FullBackup 的 pre-side-effect 超限沿用 Retry；其余三类不可变审批参数沿用 Fail。门禁发生在 BR、target
 provisioning、UID retirement 和 durable receipt reconciliation 之前，恰好 65536 bytes 仍合法。至此本段
 列举的核心、transaction、cold physical、legacy remediation 与 Native PITR operation 参数大小差距已清零。
+NativePITRTargetProvisioning 与 NativePITRTargetRetirement requester 对外部 `PARAMETERS_FILE` 采用同一
+64 KiB 输入边界：在任何 jq canonicalization 或 Kubernetes/Operation API 调用前检查原文件，复制为 0600
+私有文件后复检副本与原路径，后续只解析冻结副本。恰好 65536 bytes 合法；超限输入不得创建 Secret 或
+Pending Operation。该提交端门禁补充 executor 侧门禁，不能用 executor 最终会拒绝来容忍控制面预先处理
+无界审批文件。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约

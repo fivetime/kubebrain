@@ -58444,6 +58444,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Native PITR 的副作用/终态合同、在线 etcd RPC 或 TiKV 编码；A5197-A5200 明确列举的 operation 参数大小
   差距至此清零。
 
+- A5201 把 64 KiB 资源边界前移到 NativePITRTargetProvisioning 与 NativePITRTargetRetirement 提交端。
+  旧 requester 会让 jq 完整读取合法 JSON 后追加空白形成的 65537-byte `PARAMETERS_FILE`，随后创建 immutable
+  Secret 并提交 Pending Operation；两个 RED 反例均错误成功（0.189 秒）。现原文件在解析或任何控制面调用前
+  使用 `stat -L` 检查，复制为 0600 私有文件后同时复检冻结副本和原路径，canonicalization 只读取冻结副本。
+  测试覆盖两条显式超限、可替换 `cp` 在复制时放大冻结副本的 TOCTOU 反例，以及恰好 65536 bytes 的提交
+  正例；三组测试连续二十轮 14.476 秒、race 1.445 秒，完整 target request/operation 测试族 2.700 秒，
+  bash syntax 与 diff check 通过。production 清单确认 391 项并按 91/106/98/96 四片全部通过
+  （186.948/310.240/218.912/514.544 秒），全仓 vet 2.057 秒。本项不改变 canonical parameter schema、
+  Secret/Operation identity、审批语义、在线 etcd RPC 或 TiKV 编码，只阻止提交端预先处理和持久化无界审批
+  文件。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
