@@ -58189,6 +58189,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   2.196 秒。本项不改变 receipt schema、合法 revision、在线 etcd RPC、Service selector CAS 或 TiKV 编码，
   也不替代真实切流与持续审计。
 
+- A5185 将恢复验证证据从 revision-bound 扩展为 target-cluster-bound。旧 v2 receipt 虽然由
+  `logical-verify` 的响应准入器在单次执行中固定非零 cluster ID 并拒绝漂移，却没有序列化该身份；prepare 与
+  公开 Service complete 重验可能分别在两个数据相同、revision 合法的集群上成功。现 producer 只签发
+  `kubebrain.restore-verification.v3`，增加必需的非零 `verified_target_cluster_id`，值直接取自已覆盖 Count、
+  point Get 与 lease TTL 响应的同一准入链。切流入口严格区分 v1/v2/v3 精确字段集合与数值域：v2 禁止夹带
+  cluster ID，v3 要求 `1..MaxUint64`；complete 的公开重验必须产出 v3。v3 prepare state 继续使用既有
+  16-field `restore-cutover.state.v2`，通过 receipt format、完整文件 SHA-256 与初始 target revision 冻结整张
+  v3 receipt；complete 在发布前要求公开 v3 cluster ID 与初始值精确相等。cutover runner、直接 audit 与 audit
+  runner 均接受 state v2 绑定的 v2/v3 restore format，最终 cutover receipt v2 和 post-restore audit receipt
+  schema 不变，后者继续以源证据 SHA 闭合传播。历史 v1/v2 restore receipt 仍可作为在途 prepare 输入，但因其
+  本来没有 cluster ID，只获得公开重验为 v3 的保证，不能声称跨 prepare/complete 的集群连续性。开发中首轮
+  production fixture 仍模拟 v2 producer，因 complete 正确拒绝“未发布 cluster-bound v3 receipt”而 RED；升级
+  fixture 后相关全链通过，未将该开发 RED 改写为产品回归。producer 与 receipt race 分别 1.071/1.048 秒，
+  6 条 v3 跨脚本 race 15.736 秒，v3 聚焦连续二十轮 producer 0.029/0.033 秒、production 226.914 秒，Shell
+  syntax 与 diff check 通过。完整非 production 全绿，其中 `pkg/server/etcd` 153.602 秒、总计 162.009 秒；
+  production 清单确认 349 项并按 78/97/86/88 四分片全部通过
+  （161.926/288.145/177.441/463.797 秒），全仓 vet 2.084 秒。本轮没有执行会改变业务路由的真实切流，也不把
+  状态机测试冒充经审批的恢复演练。本项不改变 logical artifact、Service selector CAS、在线 etcd RPC、最终
+  cutover/audit receipt schema 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
