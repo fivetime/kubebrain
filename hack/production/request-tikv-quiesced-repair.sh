@@ -15,6 +15,7 @@ REPAIR_COOLDOWN_SECONDS="${REPAIR_COOLDOWN_SECONDS:-3600}"
 KUBECTL="${KUBECTL:-kubectl}"
 OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 JQ="${JQ:-jq}"
+MAX_CONTROL_PLANE_RESPONSE_BYTES=1048576
 
 die() { echo "$*" >&2; exit 1; }
 [[ "$REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "REQUEST_ID must be a DNS-compatible external repair decision ID"
@@ -28,39 +29,48 @@ for value in "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$TIDB_NAMESPACE" "
 done
 command -v "$JQ" >/dev/null || die "jq is required"
 command -v sha256sum >/dev/null || die "sha256sum is required"
+command -v stat >/dev/null || die "stat is required"
 [[ -x "$OPERATIONCTL" ]] || die "OPERATIONCTL must be executable"
+temp_dir="$(mktemp -d)"
+trap 'rm -rf -- "$temp_dir"' EXIT
+control_response_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ ]] && ((size <= MAX_CONTROL_PLANE_RESPONSE_BYTES)); }
 
 context_args=()
 [[ "$KUBE_CONTEXT" == "in-cluster" ]] || context_args=(--context "$KUBE_CONTEXT")
 kctl() { "$KUBECTL" "${context_args[@]}" "$@"; }
 
-statefulset="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o json)"
-kb_uid="$($JQ -er 'select(.spec.replicas == 0 and (.status.readyReplicas // 0) == 0) | .metadata.uid | select(type == "string" and length > 0)' <<<"$statefulset")" ||
+statefulset="$temp_dir/statefulset.json"
+kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o json >"$statefulset" || die "cannot read KubeBrain StatefulSet"
+chmod 600 "$statefulset"; control_response_is_valid "$statefulset" || die "control-plane response exceeds ${MAX_CONTROL_PLANE_RESPONSE_BYTES} bytes"
+kb_uid="$($JQ -er 'select(.spec.replicas == 0 and (.status.readyReplicas // 0) == 0) | .metadata.uid | select(type == "string" and length > 0)' "$statefulset")" ||
   die "quiesced repair request requires the live KubeBrain StatefulSet to be exactly zero replicas"
-tidbcluster="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"
+tidbcluster="$temp_dir/tidbcluster.json"
+kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json >"$tidbcluster" || die "cannot read TidbCluster"
+chmod 600 "$tidbcluster"; control_response_is_valid "$tidbcluster" || die "control-plane response exceeds ${MAX_CONTROL_PLANE_RESPONSE_BYTES} bytes"
 cluster_identity="$($JQ -er '
   select(.spec.pd.replicas == 3 and .spec.tikv.replicas == 3) |
   select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) |
   [.metadata.uid, (.status.clusterID|tostring)] | select(all(.[]; type == "string" and length > 0)) | @tsv
-' <<<"$tidbcluster")" || die "quiesced repair request requires a Ready 3 PD/3 TiKV TidbCluster identity"
+' "$tidbcluster")" || die "quiesced repair request requires a Ready 3 PD/3 TiKV TidbCluster identity"
 IFS=$'\t' read -r tidb_uid cluster_id <<<"$cluster_identity"
 [[ "$cluster_id" =~ ^[1-9][0-9]*$ ]] || die "live cluster ID is invalid"
 
 pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
-pending_json="$(kctl get --raw "${pd_proxy}/regions/check/pending-peer")"
-down_json="$(kctl get --raw "${pd_proxy}/regions/check/down-peer")"
+pending_json="$temp_dir/pending-peer.json"; down_json="$temp_dir/down-peer.json"
+kctl get --raw "${pd_proxy}/regions/check/pending-peer" >"$pending_json" || die "cannot read PD pending-peer report"
+kctl get --raw "${pd_proxy}/regions/check/down-peer" >"$down_json" || die "cannot read PD down-peer report"
+chmod 600 "$pending_json" "$down_json"
+control_response_is_valid "$pending_json" && control_response_is_valid "$down_json" || die "control-plane response exceeds ${MAX_CONTROL_PLANE_RESPONSE_BYTES} bytes"
 abnormal_store_ids="$($JQ -sce '
   select(all(.[]; (.count | type == "number" and . >= 0) and (.regions | type == "array"))) |
   [.[] | .regions[]? | (.pending_peers[]?.store_id), (.down_peers[]?.peer.store_id)] |
   unique | select(length > 0) | select(all(.[]; type == "number" and . == floor and . > 0))
-' <<<"$pending_json"$'\n'"$down_json")" || die "PD must report at least one valid pending/down store target"
+' "$pending_json" "$down_json")" || die "PD must report at least one valid pending/down store target"
 abnormal_store_csv="$($JQ -r 'map(tostring)|join(",")' <<<"$abnormal_store_ids")"
 
 request_hash="$(printf '%s\n%s\n%s\n%s\n%s\n' "$REQUEST_ID" "$kb_uid" "$tidb_uid" "$cluster_id" "$abnormal_store_csv" | sha256sum | cut -c1-20)"
 operation_name="tikv-quiesced-repair-${request_hash}"
 secret_name="${operation_name}-parameters"
-temp_dir="$(mktemp -d)"
-trap 'rm -rf -- "$temp_dir"' EXIT
 parameters_file="$temp_dir/parameters.json"
 $JQ -cnS \
   --arg endpoint "$ENDPOINT" --arg kbns "$KUBEBRAIN_NAMESPACE" --arg kbsts "$KUBEBRAIN_STATEFULSET" \
