@@ -1188,8 +1188,11 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string, adm
 	value := "cold-restore-semantic-probe:" + token
 	watch := cli.Watch(ctx, key, clientv3.WithCreatedNotify())
 	created, ok := <-watch
-	if !ok || created.Err() != nil || !created.Created {
+	if !ok {
 		return 0, 0, errors.New("watch did not acknowledge creation")
+	}
+	if err := targetverify.ValidateProbeWatchCreated(created); err != nil {
+		return 0, 0, err
 	}
 	if err := admission.AdmitWatch(created); err != nil {
 		return 0, 0, err
@@ -1239,7 +1242,7 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string, adm
 	if err != nil {
 		return 0, 0, err
 	}
-	if err := expectWatchEvent(watch, mvccpb.PUT, []byte(key), putRevision, admission); err != nil {
+	if err := expectWatchEvent(watch, mvccpb.PUT, []byte(key), []byte(value), leaseID, putRevision, admission); err != nil {
 		return 0, 0, err
 	}
 	read, err := cli.Get(ctx, key)
@@ -1267,7 +1270,7 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string, adm
 	if err != nil {
 		return 0, 0, err
 	}
-	if err := expectWatchEvent(watch, mvccpb.DELETE, []byte(key), deleteRevision, admission); err != nil {
+	if err := expectWatchEvent(watch, mvccpb.DELETE, []byte(key), nil, clientv3.NoLease, deleteRevision, admission); err != nil {
 		return 0, 0, err
 	}
 	revoke, err := cli.Revoke(ctx, leaseID)
@@ -1318,19 +1321,15 @@ func randomHex(bytesCount int) (string, error) {
 	return hex.EncodeToString(token), nil
 }
 
-func expectWatchEvent(watch clientv3.WatchChan, eventType mvccpb.Event_EventType, key []byte, revision int64, admission *targetverify.ResponseAdmission) error {
+func expectWatchEvent(watch clientv3.WatchChan, eventType mvccpb.Event_EventType, key, value []byte, leaseID clientv3.LeaseID, revision int64, admission *targetverify.ResponseAdmission) error {
 	for response := range watch {
-		if err := response.Err(); err != nil {
+		if err := targetverify.ValidateProbeWatchEvent(response, eventType, key, value, leaseID, revision); err != nil {
 			return err
 		}
 		if err := admission.AdmitWatch(response); err != nil {
 			return err
 		}
-		for _, event := range response.Events {
-			if event.Type == eventType && bytes.Equal(event.Kv.Key, key) && event.Kv.ModRevision == revision {
-				return nil
-			}
-		}
+		return nil
 	}
 	return errors.New("watch closed before expected event")
 }

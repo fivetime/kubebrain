@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -77,6 +78,7 @@ func TestResponseAdmissionReferenceSemanticLifecycle(t *testing.T) {
 	watch := cli.Watch(ctx, prefix+"probe", clientv3.WithCreatedNotify())
 	created := <-watch
 	require.True(t, created.Created)
+	require.NoError(t, ValidateProbeWatchCreated(created))
 	require.NoError(t, a.AdmitWatch(created))
 	grant, err := cli.Grant(ctx, 60)
 	require.NoError(t, err)
@@ -90,6 +92,7 @@ func TestResponseAdmissionReferenceSemanticLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, a.AdmitTxn(put, true))
 	putWatch := <-watch
+	require.NoError(t, ValidateProbeWatchEvent(putWatch, mvccpb.PUT, []byte(prefix+"probe"), []byte("value"), grant.ID, put.Header.Revision))
 	require.NoError(t, a.AdmitWatch(putWatch))
 	read, err := cli.Get(ctx, prefix+"probe")
 	require.NoError(t, err)
@@ -98,6 +101,7 @@ func TestResponseAdmissionReferenceSemanticLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, a.AdmitTxn(deleted, true))
 	deleteWatch := <-watch
+	require.NoError(t, ValidateProbeWatchEvent(deleteWatch, mvccpb.DELETE, []byte(prefix+"probe"), nil, clientv3.NoLease, deleted.Header.Revision))
 	require.NoError(t, a.AdmitWatch(deleteWatch))
 	revoke, err := cli.Revoke(ctx, grant.ID)
 	require.NoError(t, err)
