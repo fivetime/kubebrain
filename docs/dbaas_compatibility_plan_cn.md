@@ -58509,6 +58509,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   operation 参数文件的 production requester 均在摘要和控制面持久化前执行最终 64 KiB 检查。本项不改变
   参数 schema、诊断/告警/PD 探测、审批/repair 语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5207 为 LegacySnapshotHistoryRemediation requester 捕获的只读 diagnosis stdout/stderr 分别建立 1 MiB
+  门禁。旧实现把诊断输出写入临时文件后无界交给 sed，合法身份行后填充到 1048577 bytes 仍会创建 Secret
+  和 Operation（RED 0.614 秒）；失败命令的超大 stderr 还会被原样回显。现诊断返回后立即将两个捕获文件
+  chmod 0600，并在任何 `cat`/`sed` 前分别检查不超过 1048576 bytes；超限 stdout 或 stderr 都不触达控制面，
+  stderr 也不回显。测试证明精确 1 MiB stdout 仍可提交，并覆盖 stdout/stderr 超限。两项主测试连续二十轮
+  7.075 秒、race 1.700 秒，完整 legacy requester 测试 1.019 秒，bash syntax、diff check 与全仓 vet 通过。
+  production 清单确认 402 项并按 94/108/101/99 四片全部通过
+  （184.231/313.799/215.771/545.768 秒）。该门禁发生在捕获完成后、解析或回显前，不把它误报为内核级文件
+  写入配额；本项不改变诊断退出码/身份语义、参数 schema、审批/remediation、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
