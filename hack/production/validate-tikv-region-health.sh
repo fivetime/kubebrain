@@ -17,6 +17,7 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECTL="${KUBECTL:-kubectl}"
 TIMEOUT_CMD="${TIMEOUT_CMD:-timeout}"
 JQ="${JQ:-jq}"
+MAX_PD_RESPONSE_BYTES=1048576
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -36,6 +37,7 @@ done
 [[ "$TIKV_DATA_DIR" == /* && "$TIKV_DATA_DIR" != *[[:cntrl:]]* ]] || die "TIKV_DATA_DIR must be an absolute path"
 [[ "$PD_DATA_DIR" == /* && "$PD_DATA_DIR" != *[[:cntrl:]]* ]] || die "PD_DATA_DIR must be an absolute path"
 [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]] || die "PROBE_TIMEOUT must be a positive duration ending in ms, s, or m"
+command -v stat >/dev/null || die "stat is required"
 
 context_args=()
 [[ "$KUBE_CONTEXT" == "in-cluster" ]] || context_args=(--context "$KUBE_CONTEXT")
@@ -44,6 +46,17 @@ health_errors=()
 declare -A seen_pv_uids=()
 declare -A seen_volume_handles=()
 record_health_error() { health_errors+=("$1"); }
+response_dir="$(mktemp -d)"
+trap 'rm -rf -- "$response_dir"' EXIT
+capture_pd_response() {
+  local destination="$1" size
+  shift
+  kctl "$@" >"$destination" || return 1
+  chmod 600 "$destination" || return 1
+  size="$(stat -Lc '%s' -- "$destination")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_PD_RESPONSE_BYTES" ]] ||
+    die "PD response exceeds ${MAX_PD_RESPONSE_BYTES} bytes"
+}
 quantity_to_kib() {
   local quantity="$1" value unit multiplier
   if [[ "$quantity" =~ ^([1-9][0-9]*)(Ki|Mi|Gi|Ti)$ ]]; then
@@ -76,13 +89,14 @@ ready_pd_count="$(awk -F '\t' 'NF == 3 && $2 == "True" && $3 != "" {count++} END
 (( ready_pd_count == EXPECTED_PD_MEMBERS )) || die "PD Pod/PVC health mismatch: expected ${EXPECTED_PD_MEMBERS} Ready members, got ${ready_pd_count}; rows=${pd_rows//$'\n'/,}"
 
 pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
-stores_json="$(kctl get --raw "${pd_proxy}/stores")"
+stores_json="$response_dir/stores.json"
+capture_pd_response "$stores_json" get --raw "${pd_proxy}/stores" || die "cannot read PD stores response"
 if ! "$JQ" -e --argjson expected "$EXPECTED_TIKV_STORES" '
   .count == $expected and
   (.stores | length == $expected) and
   all(.stores[]; .store.id > 0 and .store.state_name == "Up")
-' >/dev/null <<<"$stores_json"; then
-  summary="$("$JQ" -c '[.stores[]? | {id:.store.id,address:.store.address,state:.store.state_name}]' <<<"$stores_json" 2>/dev/null || printf 'malformed')"
+' "$stores_json" >/dev/null; then
+  summary="$("$JQ" -c '[.stores[]? | {id:.store.id,address:.store.address,state:.store.state_name}]' "$stores_json" 2>/dev/null || printf 'malformed')"
   record_health_error "PD store health mismatch: expected ${EXPECTED_TIKV_STORES} Up stores; stores=${summary}"
 fi
 
@@ -91,9 +105,10 @@ last_region_errors=()
 for ((sample=1; sample<=MAX_REGION_HEALTH_SAMPLES; sample++)); do
   sample_region_errors=()
   for check in pending-peer down-peer miss-peer extra-peer learner-peer; do
-    check_json="$(kctl get --raw "${pd_proxy}/regions/check/${check}")"
-    if ! "$JQ" -e '.count == 0 and (.regions | type == "array") and (.regions | length == 0)' >/dev/null <<<"$check_json"; then
-      region_summary="$("$JQ" -c '[.regions[]? | {id,leader_store_id:(.leader.store_id // 0),pending_store_ids:[.pending_peers[]?.store_id],down_store_ids:[.down_peers[]?.peer.store_id]}]' <<<"$check_json" 2>/dev/null || printf 'malformed')"
+    check_json="$response_dir/check-${sample}-${check}.json"
+    capture_pd_response "$check_json" get --raw "${pd_proxy}/regions/check/${check}" || die "cannot read PD ${check} response"
+    if ! "$JQ" -e '.count == 0 and (.regions | type == "array") and (.regions | length == 0)' "$check_json" >/dev/null; then
+      region_summary="$("$JQ" -c '[.regions[]? | {id,leader_store_id:(.leader.store_id // 0),pending_store_ids:[.pending_peers[]?.store_id],down_store_ids:[.down_peers[]?.peer.store_id]}]' "$check_json" 2>/dev/null || printf 'malformed')"
       sample_region_errors+=("PD ${check} region health mismatch: regions=${region_summary}")
     fi
   done

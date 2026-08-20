@@ -22,16 +22,17 @@ if [[ "$args" == *"get pods -l"* ]]; then
     printf 'kb-tikv-0\tTrue\ttikv-kb-tikv-0\nkb-tikv-1\tTrue\ttikv-kb-tikv-1\nkb-tikv-2\tTrue\ttikv-kb-tikv-2\n'
   fi
 elif [[ "$args" == *"/stores"* ]]; then
-  printf '{"count":3,"stores":[{"store":{"id":1001,"address":"tikv-0:20160","state_name":"Up"}},{"store":{"id":1004,"address":"tikv-1:20160","state_name":"Up"}},{"store":{"id":1005,"address":"tikv-2:20160","state_name":"Up"}}]}'
+  payload='{"count":3,"stores":[{"store":{"id":1001,"address":"tikv-0:20160","state_name":"Up"}},{"store":{"id":1004,"address":"tikv-1:20160","state_name":"Up"}},{"store":{"id":1005,"address":"tikv-2:20160","state_name":"Up"}}]}'
+  printf '%s' "$payload"; [[ "${FAKE_PD_RESPONSE_TARGET:-}" != stores ]] || head -c "$((FAKE_PD_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"/regions/check/pending-peer"* ]]; then
   if [[ "${FAKE_PENDING_REGION:-false}" == "true" || ( "${FAKE_TRANSIENT_PENDING:-false}" == "true" && ! -e "$FAKE_REGION_STATE" ) ]]; then
     [[ "${FAKE_TRANSIENT_PENDING:-false}" != "true" ]] || : >"$FAKE_REGION_STATE"
     printf '{"count":1,"regions":[{"id":76009,"leader":{"store_id":1001},"pending_peers":[{"store_id":1005}],"down_peers":[{"peer":{"store_id":1005}}]}]}'
   else
-    printf '{"count":0,"regions":[]}'
+    payload='{"count":0,"regions":[]}'; printf '%s' "$payload"; [[ "${FAKE_PD_RESPONSE_TARGET:-}" != check ]] || head -c "$((FAKE_PD_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
   fi
 elif [[ "$args" == *"/regions/check/"* ]]; then
-  printf '{"count":0,"regions":[]}'
+  payload='{"count":0,"regions":[]}'; printf '%s' "$payload"; [[ "${FAKE_PD_RESPONSE_TARGET:-}" != check ]] || head -c "$((FAKE_PD_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"get pvc "* ]]; then
   pvc="${args#*get pvc }"
   pvc="${pvc%% *}"
@@ -74,6 +75,15 @@ fi
 	output, err := runProductionScriptCommand(t, "validate-tikv-region-health.sh", env)
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(output), "TiKV/PD region health gate passed")
+
+	for _, target := range []string{"stores", "check"} {
+		output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_PD_RESPONSE_TARGET="+target, "FAKE_PD_RESPONSE_BYTES=1048577"))
+		require.Error(t, err)
+		require.Contains(t, string(output), "PD response exceeds 1048576 bytes")
+		output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_PD_RESPONSE_TARGET="+target, "FAKE_PD_RESPONSE_BYTES=1048576"))
+		require.NoError(t, err, string(output))
+		require.Contains(t, string(output), "TiKV/PD region health gate passed")
+	}
 
 	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh",
 		append(baseEnv, "FAKE_PVC_CAPACITY=5G", "FAKE_DISK_CAPACITY_KIB=4882813"))
