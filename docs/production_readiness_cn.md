@@ -233,6 +233,9 @@ hack/production/validate-tikv-region-health.sh
 该门禁读取的 PD `/stores` 与每轮 pending/down/miss/extra/learner peer check JSON 各自限制为 1 MiB。
 每次响应必须先写入 0600 私有文件并检查大小，再交给 jq；不同采样轮次和 check 使用独立文件。超限响应
 立即失败，精确 1 MiB 的语义合法响应仍可参与连续健康采样。
+每个 Ready TiKV/PD Pod 对应的 PVC 与 PV JSON 也各自限制为 1 MiB，并按组件与 Pod 写入独立 0600 文件
+后再验证 binding、claimRef、CSI driver/volumeHandle、容量与全局唯一性。超限存储响应不得进入身份或容量判断，
+精确 1 MiB 的语义合法响应仍可完成门禁。
 
 TiDB Operator 子门禁可独立执行：
 

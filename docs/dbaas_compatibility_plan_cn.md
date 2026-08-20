@@ -58629,6 +58629,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （175.143/288.052/219.733/468.384 秒）。本项不改变 PD store/region 健康语义、连续采样策略、PVC/PV
   身份与容量门禁、在线 etcd RPC 或 TiKV 编码。
 
+- A5219 为同一 region-health 门禁中每个 Ready TiKV/PD Pod 的 PVC 与 PV JSON 建立逐对象 1 MiB 门禁。
+  旧实现把两类 kubectl 响应直接装入 shell 变量；1048577-byte 语义合法 PVC JSON 仍会完成全部 binding、
+  容量与 CSI 身份检查并通过门禁（RED 17.621 秒）。现 PVC/PV 响应分别按组件和 Pod 写入独立文件，确认
+  kubectl 成功、chmod 0600、用 stat 检查不超过 1048576 bytes 后才交给 jq；不同 Pod 的存储证据不会
+  互相覆盖。测试覆盖 PVC/PV 超限拒绝，并证明两类精确 1 MiB 合法响应仍可通过。完整测试 57.793 秒，
+  连续三轮 173.959 秒、race 58.135 秒，完整相关回归 57.176 秒，bash syntax、diff check 与全仓 vet 通过。
+  production 清单保持 412 项并按 98/111/103/100 四片全部通过
+  （193.669/314.172/258.683/502.508 秒）。本项不改变 PVC binding、PV claimRef/CSI/唯一性、文件系统容量
+  或磁盘压力语义，也不改变在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
