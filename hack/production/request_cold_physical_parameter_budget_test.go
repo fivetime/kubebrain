@@ -200,6 +200,45 @@ cat >/dev/null
 	require.Contains(t, string(mustReadProductionFile(t, controlLog)), "operationctl")
 }
 
+func TestColdPhysicalSnapshotRequesterBoundsExistingSecretResponse(t *testing.T) {
+	dir := t.TempDir()
+	preflight := filepath.Join(dir, "preflight.json")
+	require.NoError(t, os.WriteFile(preflight, []byte(`{"format":"kubebrain.cold-physical-snapshot-preflight.v2","kubebrain":{"namespace":"kubebrain-system","statefulset":"kubebrain","uid":"kb-uid"},"storage":{"namespace":"tidb-cluster","tidb_cluster":"kb","uid":"tc-uid","cluster_id":"7671"}}`), 0o600))
+	witness := filepath.Join(dir, "witness.jsonl")
+	require.NoError(t, os.WriteFile(witness, []byte("verified-witness\n"), 0o600))
+	canonical := filepath.Join(dir, "canonical.json")
+	jq := filepath.Join(dir, "jq")
+	writeExecutable(t, jq, fmt.Sprintf(`#!/usr/bin/env bash
+tmp="$(mktemp)"; trap 'rm -f -- "$tmp"' EXIT
+/usr/bin/jq "$@" >"$tmp" || exit $?
+if [[ " ${*} " == *" -cnS "* ]]; then
+  size="$(stat -Lc '%%s' -- "$tmp")"; head -c "$((65536-size))" /dev/zero | tr '\0' ' ' >>"$tmp"
+  cp -- "$tmp" %q
+fi
+cat "$tmp"
+`, canonical))
+	controlLog := filepath.Join(dir, "control.log")
+	kubectl := filepath.Join(dir, "kubectl")
+	writeExecutable(t, kubectl, fmt.Sprintf(`#!/usr/bin/env bash
+printf 'kubectl %%s\n' "$*" >>%q
+if [[ "$*" == *"get secret "* ]]; then
+  if [[ "$SECRET_RESPONSE" == oversized ]]; then head -c 87390 /dev/zero | tr '\0' k; else printf 'true\t'; base64 -w0 %q; fi
+  exit 0
+fi
+cat >/dev/null
+`, controlLog, canonical))
+	operationctl := filepath.Join(dir, "operationctl")
+	writeExecutable(t, operationctl, fmt.Sprintf("#!/usr/bin/env bash\nprintf 'operationctl %%s\\n' \"$*\" >>%q\n", controlLog))
+	base := []string{"REQUEST_ID=change-snapshot-secret-response-budget", "PREFLIGHT_FILE=" + preflight, "SEMANTIC_WITNESS_FILE=" + witness, "EXPECTED_WITNESS_PREFIX=/", "KUBE_CONTEXT=in-cluster", "KUBECTL=" + kubectl, "OPERATIONCTL=" + operationctl, "JQ=" + jq}
+	output, runErr := runProductionScriptCommand(t, "request-cold-physical-snapshot.sh", append(base, "SECRET_RESPONSE=oversized"))
+	require.Error(t, runErr)
+	require.Contains(t, string(output), "existing Secret response exceeds 87389 bytes")
+	require.NotContains(t, string(mustReadProductionFile(t, controlLog)), "operationctl")
+	boundaryOutput, boundaryErr := runProductionScriptCommand(t, "request-cold-physical-snapshot.sh", append(base, "SECRET_RESPONSE=boundary"))
+	require.NoError(t, boundaryErr, string(boundaryOutput))
+	require.Contains(t, string(mustReadProductionFile(t, controlLog)), "operationctl")
+}
+
 func writeOversizedCanonicalJQ(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "jq")
