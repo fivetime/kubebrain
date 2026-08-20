@@ -4985,6 +4985,9 @@ restore 同样冻结 source receipt；复制后复检冻结副本和原路径，
 TiKVTransactionRepair requester 接收的 Alertmanager envelope 上限为 1 MiB。它必须在 jq 前检查原文件，复制为
 0600 私有文件后复检冻结副本与原路径，并只解析冻结副本；超限告警不得触达 Kubernetes。该 envelope 上限
 与生成的 64 KiB operation 参数上限是两个不同层次的合同。
+LegacySnapshotHistoryRemediation、TiKVTransactionRecovery、TiKVTransactionRepair 与 quiesced repair
+requester 生成最终 canonical 参数后，也必须在首次摘要和 Secret 查询前检查 65536-byte executor 合同。
+外部 endpoint、诊断或集群身份能放大参数时，不得创建 executor 必然拒绝的 immutable Operation。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约

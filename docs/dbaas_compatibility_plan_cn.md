@@ -58498,6 +58498,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   operation 参数仍受独立 64 KiB executor 合同；本项不改变告警选择语义、参数 schema、repair 审批/执行、
   在线 etcd RPC 或 TiKV 编码。
 
+- A5206 补齐剩余四条生成型 requester 的最终 64 KiB 参数门禁：LegacySnapshotHistoryRemediation、
+  TiKVTransactionRecovery、TiKVTransactionRepair 与 quiesced TiKV repair 旧实现都会在 jq 生成
+  `parameters.json` 后直接摘要并创建 Secret；约 70 KiB endpoint 可让四者提交对应 executor 必然拒绝的
+  immutable Operation，四条 RED 均越过预期门禁（1.189 秒，修正夹具后 transaction repair 同样错误成功）。
+  现最终 canonical 参数在首次 SHA-256、Secret 查询和 Operation submit 前统一检查不超过 65536 bytes。
+  表驱动测试同时让 jq 精确生成 65536-byte JSON，证明四条包含边界仍可提交。主测试连续二十轮 38.911 秒、
+  race 3.008 秒，相关 requester 测试 1.488 秒，bash syntax、diff check 与全仓 vet 通过。production 清单
+  达到 400 项并按 92/108/101/99 四片全部通过（170.417/272.897/204.441/489.147 秒）。至此当前所有生成
+  operation 参数文件的 production requester 均在摘要和控制面持久化前执行最终 64 KiB 检查。本项不改变
+  参数 schema、诊断/告警/PD 探测、审批/repair 语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
