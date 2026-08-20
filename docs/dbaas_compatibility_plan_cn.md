@@ -58598,6 +58598,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （169.826/272.910/205.594/450.893 秒）。本项不改变参数或 Secret schema、target replacement/retirement
   证据与审批语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5216 为最后一条直接捕获既有参数 Secret 的 LegacySnapshotHistoryRemediation requester 建立精确
+  87389-byte 两字段响应门禁。旧实现直接把 jsonpath 响应装入 shell 变量；87390-byte 响应会完整读取后才
+  报告 immutable 参数 Secret 摘要漂移（RED 0.455 秒）。现成功响应先写入 0600 私有文件并检查大小，再
+  读入标量、检查 immutable、解码并比对摘要；超限时不触达 Operation API。测试以精确 65536-byte
+  canonical 参数构造 87389-byte 有效响应，证明边界仍可幂等提交。主测试连续二十轮 9.101 秒、race
+  1.497 秒，完整 legacy requester 测试 0.949 秒，bash syntax、diff check 与全仓 vet 通过。production
+  清单确认 411 项并按 98/110/103/100 四片全部通过（176.492/287.326/214.215/488.321 秒）。源码重新枚举
+  已不存在 requester 以命令替换直接接收 `get secret` 的路径；两字段与包含 `Opaque` type 的三字段响应
+  分别受 87389/87396-byte 精确上界保护。本项不改变参数或 Secret schema、诊断/幂等/审批/remediation、
+  在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

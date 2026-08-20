@@ -5011,6 +5011,9 @@ NativePITRFullBackup 与 NativePITRFullRestore requester 的既有参数 Secret 
 同样必须先写入 0600 私有文件并检查大小，再执行 type/immutable/摘要校验。
 NativePITRTargetProvisioning 与 NativePITRTargetRetirement requester 的同格式既有参数 Secret 查询采用
 相同的 87396-byte 上界和文件捕获顺序；超限响应不得触达 Operation API，精确上界仍可幂等提交。
+LegacySnapshotHistoryRemediation requester 的两字段既有参数 Secret 查询采用 87389-byte 上界和 0600
+文件捕获顺序。至此 production requester 不再通过命令替换直接接收既有参数 Secret 响应；两字段与包含
+`Opaque` type 的三字段协议分别受 87389/87396-byte 精确上界保护。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
