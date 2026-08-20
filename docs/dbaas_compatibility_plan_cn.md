@@ -57978,6 +57978,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   best-effort 异常旧 lease cleanup 仍不是可持久补偿 receipt，也尚未以新 binary 重跑真实 Kubernetes/PD
   分区下的 full/PITR 恢复。
 
+- A5172 加固独立 TiKV/PD 持久性与 k3s datastore 验收直接构建的 `hack/tikv-persistence-smoke`。
+  旧 write 路径丢弃 Put response，所有 point Get 只用 `len(Kvs)` 判断存在/删除；nil/零 header、
+  错 cluster/member、revision 回退、Put 夹带 PrevKV、Range `Count`/payload/`More` 不自洽、错 key 或
+  损坏 MVCC metadata 均可继续进入 TiKV revision-index/object 比对，并在特定内容恰好吻合时误报
+  smoke 成功。对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 与 `server/etcdserver/apply/backend.go`，
+  现 write 进程从 Put 开始固定非零 cluster ID，要求每个 header member 非零、revision 正且不退；
+  Put 不得返回未请求 PrevKV，后续 Get 不得早于 Put。write/read/deleted/dump 的 point Get 统一要求
+  `Count==len(Kvs)<=1`、`More=false`；非空时必须 exact key，且 `create>0`、`create<=mod<=header`、
+  `version>0` 并不超过 `mod-create+1`。embedded-etcd 真实 Put→Get→Delete→empty Get 生命周期与
+  header/Put/Range/MVCC 正反例连续二十轮（14.494s）、目标 race（2.320s）、完整非 production
+  （2m37.391s）、production 324 项四分片（133.414/230.877/164.487/444.521 秒）、diff check 与 vet
+  全部通过。本项不改变 CLI/stdout、TiKV key encoding、revision-index/object 物理核对、重启顺序
+  或在线 etcd RPC 语义；write/read 两 Pod 之间仍不共享内存 response admission，跨重启证据继续由
+  随机唯一 key、TiKV 直读和 restart runner 的连续 revision 监控组成；本轮未执行破坏性 Kubernetes
+  3/3/3 滚动重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

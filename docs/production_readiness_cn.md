@@ -792,6 +792,13 @@ hack/dev/verify.sh
 测试使用官方 `client/v3` 在重启前写入普通 key、已删除 key、长 TTL lease 附属 key
 和 watch 历史；重启期间持续读取并拒绝成功响应的 revision 回退，恢复后验证当前值、
 tombstone 与历史值、lease/附属 key、watch 历史回放，以及新写入 revision 严格增长。
+`tikv-persistence-smoke` helper 自身也不再只检查 client transport error 与 `len(Kvs)`：write 的 Put
+acknowledgement 必须有非零 cluster/member、正 revision 且无未请求 PrevKV，紧随的 Get 必须保持
+同一 cluster、revision 不退、`Count==len(Kvs)<=1`、`More=false`。返回 KV 时必须是 exact key，
+并满足 `create>0`、`create<=mod<=header revision`、`version>0` 及可能的 MVCC version 上界；
+deleted/dump 路径也复用同一 point-Range 准入。这保证每个 helper 进程不会把 malformed success 当成
+持久性证据；write/read 位于两个 Pod 时的跨进程连续性仍由唯一随机 key、TiKV revision-index/object
+直读及 runner 的持续 revision 监控共同证明，不把进程内 response admission 误报为跨重启 cluster 绑定。
 runner 必须显式指定 Kubernetes context 并确认破坏性操作；测试内部只接受结构化的两个
 namespace 与三组各三个 Pod 名，不执行调用方提供的任意 shell command。runner 在执行前后
 校验 endpoint health、Alarm、compat prefix、Lease 集合及 TidbCluster Ready。
