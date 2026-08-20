@@ -81,6 +81,7 @@ func run(stdout io.Writer) (retErr error) {
 	ctx, cancel := context.WithTimeout(rootCtx, timeout)
 	defer cancel()
 
+	responseAdmission := &prefixResponseAdmission{}
 	var result any
 	switch action {
 	case "count":
@@ -89,6 +90,9 @@ func run(stdout io.Writer) (retErr error) {
 			return err
 		}
 		if err := validateCountResponse(resp); err != nil {
+			return err
+		}
+		if err := responseAdmission.admitCount(resp); err != nil {
 			return err
 		}
 		result = resp.Count
@@ -100,6 +104,9 @@ func run(stdout io.Writer) (retErr error) {
 		if err := validateDeleteResponse(resp); err != nil {
 			return err
 		}
+		if err := responseAdmission.admitDelete(resp); err != nil {
+			return err
+		}
 		result = resp.Deleted
 	case "put":
 		response, err := cli.Put(ctx, prefix+keySuffix, value)
@@ -107,6 +114,9 @@ func run(stdout io.Writer) (retErr error) {
 			return err
 		}
 		if err := validatePutResponse(response); err != nil {
+			return err
+		}
+		if err := responseAdmission.admitPut(response); err != nil {
 			return err
 		}
 	case "lease-put":
@@ -120,7 +130,10 @@ func run(stdout io.Writer) (retErr error) {
 		}
 		leaseID, validationErr := targetverify.ValidateProbeGrant(lease, leaseTTL)
 		if validationErr != nil {
-			return errors.Join(validationErr, cleanupLease(cli, cleanupLeaseID))
+			return errors.Join(validationErr, cleanupLease(cli, cleanupLeaseID, responseAdmission))
+		}
+		if err := responseAdmission.admitGrant(lease); err != nil {
+			return errors.Join(err, cleanupLease(cli, cleanupLeaseID, responseAdmission))
 		}
 		ops := make([]clientv3.Op, 0, len(leaseSuffixes))
 		for _, suffix := range leaseSuffixes {
@@ -128,10 +141,13 @@ func run(stdout io.Writer) (retErr error) {
 		}
 		response, err := cli.Txn(ctx).Then(ops...).Commit()
 		if err == nil {
+			err = responseAdmission.admitLeasePut(response)
+		}
+		if err == nil {
 			err = validateLeasePutTxnResponse(response, len(ops))
 		}
 		if err != nil {
-			return errors.Join(err, cleanupLease(cli, cleanupLeaseID))
+			return errors.Join(err, cleanupLease(cli, cleanupLeaseID, responseAdmission))
 		}
 		result = leaseID
 	}
@@ -147,7 +163,7 @@ func run(stdout io.Writer) (retErr error) {
 	return nil
 }
 
-func cleanupLease(cli *clientv3.Client, id clientv3.LeaseID) error {
+func cleanupLease(cli *clientv3.Client, id clientv3.LeaseID, admission *prefixResponseAdmission) error {
 	if id == 0 {
 		return nil
 	}
@@ -157,5 +173,8 @@ func cleanupLease(cli *clientv3.Client, id clientv3.LeaseID) error {
 	if err != nil {
 		return err
 	}
-	return targetverify.ValidateProbeRevoke(response, 0)
+	if err := targetverify.ValidateProbeRevoke(response, 0); err != nil {
+		return err
+	}
+	return admission.admitRevoke(response)
 }
