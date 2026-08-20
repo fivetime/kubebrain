@@ -58519,6 +58519,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （184.231/313.799/215.771/545.768 秒）。该门禁发生在捕获完成后、解析或回显前，不把它误报为内核级文件
   写入配额；本项不改变诊断退出码/身份语义、参数 schema、审批/remediation、在线 etcd RPC 或 TiKV 编码。
 
+- A5208 为 TiKVTransactionRecovery 与 quiesced repair requester 的结构化控制面响应建立逐文件 1 MiB
+  门禁。旧实现把 StatefulSet/TidbCluster JSON 直接装入无界 shell 变量，quiesced repair 还同样处理 PD
+  pending/down peer 报告；语义合法、尾随空白扩到 1048577 bytes 的 StatefulSet JSON 仍被两条旧 requester
+  完整解析并提交（RED 0.995 秒）。现两者在首次控制面读取前创建私有临时目录，每次 kubectl/PD 调用先把
+  响应写入文件并确认命令成功，再 chmod 0600、用 `stat -L` 检查不超过 1048576 bytes，最后才让 jq 读取；
+  quiesced repair 的四份响应逐一受控。测试同时证明精确 1 MiB StatefulSet JSON 仍可完成提交。主测试连续
+  二十轮 13.120 秒、race 2.075 秒，完整相关 requester 测试 1.109 秒，bash syntax、diff check 与全仓 vet
+  通过。production 清单确认 403 项并按 95/108/101/99 四片全部通过
+  （177.803/304.986/213.298/516.540 秒）。本项不改变 Kubernetes/PD 选择语义、参数 schema、审批/repair、
+  在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

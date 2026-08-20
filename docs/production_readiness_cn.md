@@ -4990,6 +4990,9 @@ requester 生成最终 canonical 参数后，也必须在首次摘要和 Secret 
 外部 endpoint、诊断或集群身份能放大参数时，不得创建 executor 必然拒绝的 immutable Operation。
 LegacySnapshotHistoryRemediation requester 捕获的只读 diagnosis stdout/stderr 各自限制为 1 MiB，并在捕获后
 立即 chmod 0600、在任何回显或 sed 解析前检查；超限诊断不得触达 Kubernetes，超限 stderr 也不得回显。
+TiKVTransactionRecovery 与 quiesced repair requester 的 StatefulSet、TidbCluster 结构化 JSON，以及 quiesced
+repair 的 PD pending/down peer 报告，也分别限制为 1 MiB。每次响应必须先确认命令成功，写入 0600 私有文件
+并检查大小，再交给 jq；不得先装入无界 shell 变量。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
