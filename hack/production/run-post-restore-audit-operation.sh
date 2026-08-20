@@ -424,7 +424,7 @@ validate_audit_receipt() {
   local kind format state_instance cutover_operation state_namespace state_service source_instance
   local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
   local restore_receipt_format initial_target_revision restore_receipt_sha
-  local state_sha cutover_receipt_sha cutover_completed_at
+  local state_sha cutover_receipt_sha cutover_completed_at minimum_probe_revision
   state_sha="$(validated_cutover_state_digest)" || return 1
   IFS=$'\t' read -r kind format state_instance cutover_operation state_namespace state_service \
     source_instance state_target state_service_uid artifact_sha snapshot_revision source_prefix \
@@ -448,13 +448,20 @@ validate_audit_receipt() {
   cutover_completed_at="$("$JQ" -er \
     '.completed_at_unix | select(type == "number" and . > 0 and . == floor)' \
     "$cutover_receipt")" || return 1
+  minimum_probe_revision=0
+  if [[ "$format" == "kubebrain.restore-cutover.state.v2" ]]; then
+    minimum_probe_revision="$("$JQ" -er \
+      '.public_verified_target_revision | select(type == "number" and . > 0 and . == floor)' \
+      "$cutover_receipt")" || return 1
+  fi
   "$JQ" -e --arg operation "$operation_id" --arg instance "$instance" \
     --arg cutover "$cutover_operation" --arg service_uid "$state_service_uid" \
     --arg target "$target_instance" --arg artifact_sha "$artifact_sha" \
     --arg cutover_state_sha "$state_sha" --arg cutover_receipt_sha "$cutover_receipt_sha" \
     --argjson snapshot "$snapshot_revision" --argjson replicas "$expected_replicas" \
     --argjson duration "$duration" --argjson interval "$interval" \
-    --argjson min_samples "$min_samples" --argjson cutover_completed_at "$cutover_completed_at" '
+    --argjson min_samples "$min_samples" --argjson cutover_completed_at "$cutover_completed_at" \
+    --argjson minimum_probe_revision "$minimum_probe_revision" '
     select((keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"] or
     keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","cutover_receipt_sha256","cutover_state_sha256","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"]) and
     .format == "kubebrain.post-restore-audit.receipt.v1" and
@@ -469,7 +476,7 @@ validate_audit_receipt() {
     .interval_seconds == $interval and .topology_unchanged == true and
     .all_probes_succeeded == true and .completed == true and
     (.samples | type == "number" and . >= $min_samples and . == floor) and
-    (.first_probe_revision | type == "number" and . > 0 and . == floor) and
+    (.first_probe_revision | type == "number" and . > 0 and . >= $minimum_probe_revision and . == floor) and
     (.last_probe_revision | type == "number" and . > 0 and . == floor) and
     .last_probe_revision >= .first_probe_revision and
     (.started_at_unix | type == "number" and . > 0 and . == floor) and

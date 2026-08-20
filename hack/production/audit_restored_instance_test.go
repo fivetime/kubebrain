@@ -44,6 +44,24 @@ func TestPostRestoreAuditAcceptsRevisionBoundV2CutoverEvidence(t *testing.T) {
 	require.NoError(t, json.Unmarshal(mustRead(t, filepath.Join(f.state, "audit-1.receipt.json")), &receipt))
 	require.Equal(t, fileDigest(t, filepath.Join(f.dir, "cutover.state")), receipt["cutover_state_sha256"])
 	require.Equal(t, fileDigest(t, filepath.Join(f.dir, "cutover.json")), receipt["cutover_receipt_sha256"])
+	require.GreaterOrEqual(t, receipt["first_probe_revision"].(float64), float64(84))
+}
+
+func TestPostRestoreAuditRejectsProbeRevisionPredatingCutover(t *testing.T) {
+	f := newAuditFixture(t)
+	promoteAuditCutoverEvidenceToV2(t, f.dir)
+	f.run(t, false, "PROBE_BELOW_CUTOVER=true", "probe revision predates cutover verification")
+	require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+}
+
+func TestPostRestoreAuditRejectsExistingReceiptPredatingCutover(t *testing.T) {
+	f := newAuditFixture(t)
+	promoteAuditCutoverEvidenceToV2(t, f.dir)
+	f.run(t, true, "")
+	receiptPath := filepath.Join(f.state, "audit-1.receipt.json")
+	receipt := strings.Replace(string(mustRead(t, receiptPath)), `"first_probe_revision":84`, `"first_probe_revision":83`, 1)
+	require.NoError(t, os.WriteFile(receiptPath, []byte(receipt), 0o600))
+	f.run(t, false, "", "existing post-restore audit receipt does not match")
 }
 
 func TestPostRestoreAuditRejectsMalformedV2CutoverEvidence(t *testing.T) {
@@ -256,6 +274,7 @@ func promoteAuditCutoverEvidenceToV2(t *testing.T, dir string) {
 	data, err := json.Marshal(receipt)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(receiptPath, append(data, '\n'), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "v2-evidence"), []byte("1"), 0o600))
 }
 
 func newAuditFixture(t *testing.T) *auditFixture {
@@ -327,6 +346,8 @@ if [[ ("${PUBLISH_RECEIPT_DURING_PROBE:-false}" == true ||
   chmod 600 "$STATE_DIR/$OPERATION_ID.receipt.json"
 fi
 if [[ -f "$FAKE_DIR/probe-backwards" ]]; then count=$((100-count)); fi
+if [[ -f "$FAKE_DIR/v2-evidence" ]]; then count=$((count+83)); fi
+if [[ "${PROBE_BELOW_CUTOVER:-false}" == true ]]; then count=83; fi
 printf '{"format":"kubebrain.etcd-audit-probe.v1","put_revision":%d,"read_revision":%d,"delete_revision":%d,"lease_ttl":60}\n' "$count" "$count" "$count"
 `)
 	realSHA256Sum, err := exec.LookPath("sha256sum")

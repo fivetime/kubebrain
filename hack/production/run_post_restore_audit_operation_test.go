@@ -36,6 +36,15 @@ func TestPostRestoreAuditOperationAcceptsRevisionBoundV2CutoverEvidence(t *testi
 	require.Contains(t, f.log(t), "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsAuditReceiptPredatingCutover(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	promoteOperationAuditCutoverEvidenceToV2(t, f)
+	f.run(t, false, "AUDIT_FIRST_REVISION=83\nAUDIT_LAST_REVISION=85", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestPostRestoreAuditOperationRejectsPublicRevisionPredatingInitial(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	promoteOperationAuditCutoverEvidenceToV2(t, f)
@@ -429,6 +438,7 @@ func promoteOperationAuditCutoverEvidenceToV2(t *testing.T, f *operationRunnerFi
 			f.env[i] = "PARAMETERS_DIGEST=" + digest
 		}
 	}
+	f.env = append(f.env, "AUDIT_FIRST_REVISION=84", "AUDIT_LAST_REVISION=85")
 }
 
 func newOperationRunnerFixture(t *testing.T) *operationRunnerFixture {
@@ -492,8 +502,8 @@ cutover_state_sha="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d ' ' -f1)"
 cutover_receipt_sha="$(sha256sum "$CUTOVER_RECEIPT_INPUT" | cut -d ' ' -f1)"
 started_at=100; completed_at=101
 if [[ "${INVALID_AUDIT_CHRONOLOGY:-false}" == true ]]; then started_at=1; completed_at=2; fi
-printf '{"format":"kubebrain.post-restore-audit.receipt.v1","operation_id":"%s","instance":"%s","cutover_operation_id":"cutover-1","service_uid":"uid-service","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","cutover_receipt_sha256":"%s","snapshot_revision":42,"replicas":%s,"duration_seconds":%s,"interval_seconds":%s,"samples":%s,"first_probe_revision":1,"last_probe_revision":2,"topology_unchanged":true,"all_probes_succeeded":true,"completed":true,"started_at_unix":%s,"completed_at_unix":%s}\n' \
-  "$OPERATION_ID" "$INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$cutover_state_sha" "$cutover_receipt_sha" "$EXPECTED_REPLICAS" "$AUDIT_DURATION_SECONDS" "$AUDIT_INTERVAL_SECONDS" "$MIN_SAMPLES" "$started_at" "$completed_at" >"$RECEIPT_OUTPUT"
+printf '{"format":"kubebrain.post-restore-audit.receipt.v1","operation_id":"%s","instance":"%s","cutover_operation_id":"cutover-1","service_uid":"uid-service","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","cutover_receipt_sha256":"%s","snapshot_revision":42,"replicas":%s,"duration_seconds":%s,"interval_seconds":%s,"samples":%s,"first_probe_revision":%s,"last_probe_revision":%s,"topology_unchanged":true,"all_probes_succeeded":true,"completed":true,"started_at_unix":%s,"completed_at_unix":%s}\n' \
+  "$OPERATION_ID" "$INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$cutover_state_sha" "$cutover_receipt_sha" "$EXPECTED_REPLICAS" "$AUDIT_DURATION_SECONDS" "$AUDIT_INTERVAL_SECONDS" "$MIN_SAMPLES" "${AUDIT_FIRST_REVISION:-1}" "${AUDIT_LAST_REVISION:-2}" "$started_at" "$completed_at" >"$RECEIPT_OUTPUT"
 chmod 600 "$RECEIPT_OUTPUT"
 [[ "${TAMPER_CUTOVER_STATE_AFTER_AUDIT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$CUTOVER_STATE_INPUT"
 [[ "${TAMPER_CUTOVER_RECEIPT_AFTER_AUDIT:-false}" != true ]] || printf ' ' >>"$CUTOVER_RECEIPT_INPUT"

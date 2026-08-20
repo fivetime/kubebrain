@@ -299,6 +299,13 @@ cutover_receipt_sha="$(validated_cutover_receipt_digest)" ||
 cutover_completed_at="$("$JQ" -er '.completed_at_unix | select(type == "number" and . > 0 and . == floor)' \
   "$CUTOVER_RECEIPT_INPUT")" ||
   { echo "cutover receipt does not match the frozen state" >&2; exit 1; }
+minimum_probe_revision=0
+if [[ "$state_format" == "kubebrain.restore-cutover.state.v2" ]]; then
+  minimum_probe_revision="$("$JQ" -er \
+    '.public_verified_target_revision | select(type == "number" and . > 0 and . == floor)' \
+    "$CUTOVER_RECEIPT_INPUT")" ||
+    { echo "cutover receipt does not match the frozen state" >&2; exit 1; }
+fi
 require_cutover_state_digest "$cutover_state_sha"
 
 expected_pods="$(awk -F '\t' '$1 == "POD" && $2 == "target" {print $3 "\t" $4 "\t" $5}' \
@@ -367,7 +374,8 @@ validate_existing_audit_receipt() {
     --arg cutover_state_sha "$cutover_state_sha" --arg cutover_receipt_sha "$cutover_receipt_sha" \
     --argjson snapshot "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" \
     --argjson duration "$AUDIT_DURATION_SECONDS" --argjson interval "$AUDIT_INTERVAL_SECONDS" \
-    --argjson min_samples "$MIN_SAMPLES" --argjson cutover_completed_at "$cutover_completed_at" '
+    --argjson min_samples "$MIN_SAMPLES" --argjson cutover_completed_at "$cutover_completed_at" \
+    --argjson minimum_probe_revision "$minimum_probe_revision" '
       (keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"] or
        keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","cutover_receipt_sha256","cutover_state_sha256","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"]) and
       .format == "kubebrain.post-restore-audit.receipt.v1" and
@@ -383,7 +391,7 @@ validate_existing_audit_receipt() {
       .topology_unchanged == true and .all_probes_succeeded == true and
       .completed == true and
       (.samples | type == "number" and . >= $min_samples and . == floor) and
-      (.first_probe_revision | type == "number" and . > 0 and . == floor) and
+      (.first_probe_revision | type == "number" and . > 0 and . >= $minimum_probe_revision and . == floor) and
       (.last_probe_revision | type == "number" and . > 0 and . == floor) and
       (.last_probe_revision >= .first_probe_revision) and
       (.started_at_unix | type == "number" and . > 0 and . == floor) and
@@ -412,6 +420,8 @@ while true; do
   fence_topology
   revision="$(run_probe)"
   fence_topology
+  (( revision >= minimum_probe_revision )) ||
+    { echo "etcd audit probe revision predates cutover verification" >&2; exit 1; }
   (( last_revision == 0 || revision >= last_revision )) ||
     { echo "etcd audit probe revision moved backwards" >&2; exit 1; }
   ((samples += 1))
