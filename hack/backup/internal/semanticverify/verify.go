@@ -82,14 +82,15 @@ func Verify(ctx context.Context, cli *clientv3.Client, verified *backupfile.Veri
 			return Observation{}, fmt.Errorf("witness lease %d lacks granted_ttl", id)
 		}
 	}
-	historical, historicalRevision, err := fetchRange(ctx, cli, status.Prefix, status.Revision)
+	responseAdmission := &targetverify.ResponseAdmission{}
+	historical, historicalRevision, err := fetchRange(ctx, cli, status.Prefix, status.Revision, responseAdmission)
 	if err != nil {
 		return Observation{}, fmt.Errorf("read witness revision %d: %w", status.Revision, err)
 	}
 	if err := compareKVs(expected, historical); err != nil {
 		return Observation{}, fmt.Errorf("historical witness mismatch: %w", err)
 	}
-	current, currentRevision, err := fetchRange(ctx, cli, status.Prefix, 0)
+	current, currentRevision, err := fetchRange(ctx, cli, status.Prefix, 0, responseAdmission)
 	if err != nil {
 		return Observation{}, fmt.Errorf("read current range: %w", err)
 	}
@@ -99,10 +100,10 @@ func Verify(ctx context.Context, cli *clientv3.Client, verified *backupfile.Veri
 	if err := compareKVs(expected, current); err != nil {
 		return Observation{}, fmt.Errorf("current witness mismatch: %w", err)
 	}
-	if err := verifyLeases(ctx, cli, leases, leaseKeys, currentRevision); err != nil {
+	if err := verifyLeases(ctx, cli, leases, leaseKeys, currentRevision, responseAdmission); err != nil {
 		return Observation{}, err
 	}
-	putRevision, deleteRevision, probeKey, probeValue, probeLeaseID, err := runWatchProbe(ctx, cli, probePrefix)
+	putRevision, deleteRevision, probeKey, probeValue, probeLeaseID, err := runWatchProbe(ctx, cli, probePrefix, responseAdmission)
 	if err != nil {
 		return Observation{}, err
 	}
@@ -139,8 +140,8 @@ func loadWitness(verified *backupfile.Verified) (map[string]expectedKV, map[int6
 	return expected, leases, leaseKeys, nil
 }
 
-func fetchRange(ctx context.Context, cli *clientv3.Client, prefix string, revision int64) ([]*mvccpb.KeyValue, int64, error) {
-	return targetverify.FetchPrefix(ctx, cli, prefix, revision)
+func fetchRange(ctx context.Context, cli *clientv3.Client, prefix string, revision int64, admission *targetverify.ResponseAdmission) ([]*mvccpb.KeyValue, int64, error) {
+	return targetverify.FetchPrefix(ctx, cli, prefix, revision, admission)
 }
 
 func compareKVs(expected map[string]expectedKV, actual []*mvccpb.KeyValue) error {
@@ -164,7 +165,7 @@ func compareKVs(expected map[string]expectedKV, actual []*mvccpb.KeyValue) error
 	return nil
 }
 
-func verifyLeases(ctx context.Context, cli *clientv3.Client, leases map[int64]record.Lease, expectedKeys map[int64][]string, minRevision int64) error {
+func verifyLeases(ctx context.Context, cli *clientv3.Client, leases map[int64]record.Lease, expectedKeys map[int64][]string, minRevision int64, admission *targetverify.ResponseAdmission) error {
 	for id, expected := range leases {
 		response, err := cli.TimeToLive(ctx, clientv3.LeaseID(id), clientv3.WithAttachedKeys())
 		if err != nil {
@@ -173,11 +174,14 @@ func verifyLeases(ctx context.Context, cli *clientv3.Client, leases map[int64]re
 		if err := targetverify.ValidateLease(response, id, expected.GrantedTTL, minRevision, expectedKeys[id]); err != nil {
 			return err
 		}
+		if err := admission.AdmitLeaseTTL(response); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (putRevision int64, deleteRevision int64, keyBytes []byte, valueBytes []byte, leaseID int64, retErr error) {
+func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string, admission *targetverify.ResponseAdmission) (putRevision int64, deleteRevision int64, keyBytes []byte, valueBytes []byte, leaseID int64, retErr error) {
 	token, err := randomHex(24)
 	if err != nil {
 		return 0, 0, nil, nil, 0, err
@@ -187,6 +191,9 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (pu
 	created, ok := <-watch
 	if !ok || created.Err() != nil || !created.Created {
 		return 0, 0, nil, nil, 0, errors.New("watch did not acknowledge creation")
+	}
+	if err := admission.AdmitWatch(created); err != nil {
+		return 0, 0, nil, nil, 0, err
 	}
 	lease, err := cli.Grant(ctx, 60)
 	if err != nil {
@@ -204,10 +211,16 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (pu
 				if err != nil {
 					return err
 				}
-				return targetverify.ValidateProbeRevoke(response, 0)
+				if err := targetverify.ValidateProbeRevoke(response, 0); err != nil {
+					return err
+				}
+				return admission.AdmitRevoke(response)
 			}))
 		}
 	}()
+	if err := admission.AdmitGrant(lease); err != nil {
+		return 0, 0, nil, nil, 0, err
+	}
 	probeLeaseID, err := targetverify.ValidateProbeGrant(lease, 60)
 	if err != nil {
 		return 0, 0, nil, nil, 0, err
@@ -216,11 +229,14 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (pu
 	if err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
+	if err := admission.AdmitTxn(put, true); err != nil {
+		return 0, 0, nil, nil, 0, err
+	}
 	putRevision, err = targetverify.ValidateProbePutTxn(put)
 	if err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
-	if err := expectWatchEvent(watch, mvccpb.PUT, []byte(key), putRevision); err != nil {
+	if err := expectWatchEvent(watch, mvccpb.PUT, []byte(key), putRevision, admission); err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
 	read, err := cli.Get(ctx, key)
@@ -231,15 +247,21 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (pu
 	if err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
+	if err := admission.AdmitRange(read); err != nil {
+		return 0, 0, nil, nil, 0, err
+	}
 	deleted, err := cli.Txn(ctx).If(clientv3.Compare(clientv3.Value(key), "=", value)).Then(clientv3.OpDelete(key)).Commit()
 	if err != nil {
+		return 0, 0, nil, nil, 0, err
+	}
+	if err := admission.AdmitTxn(deleted, true); err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
 	deleteRevision, err = targetverify.ValidateProbeDeleteTxn(deleted, readRevision)
 	if err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
-	if err := expectWatchEvent(watch, mvccpb.DELETE, []byte(key), deleteRevision); err != nil {
+	if err := expectWatchEvent(watch, mvccpb.DELETE, []byte(key), deleteRevision, admission); err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
 	revoke, err := cli.Revoke(ctx, probeLeaseID)
@@ -247,6 +269,9 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (pu
 		return 0, 0, nil, nil, 0, err
 	}
 	if err := targetverify.ValidateProbeRevoke(revoke, deleteRevision); err != nil {
+		return 0, 0, nil, nil, 0, err
+	}
+	if err := admission.AdmitRevoke(revoke); err != nil {
 		return 0, 0, nil, nil, 0, err
 	}
 	revoked = true
@@ -280,9 +305,12 @@ func randomHex(n int) (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
-func expectWatchEvent(watch clientv3.WatchChan, typ mvccpb.Event_EventType, key []byte, revision int64) error {
+func expectWatchEvent(watch clientv3.WatchChan, typ mvccpb.Event_EventType, key []byte, revision int64, admission *targetverify.ResponseAdmission) error {
 	for response := range watch {
 		if err := response.Err(); err != nil {
+			return err
+		}
+		if err := admission.AdmitWatch(response); err != nil {
 			return err
 		}
 		for _, event := range response.Events {

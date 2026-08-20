@@ -17,7 +17,7 @@ const rangePageLimit int64 = 1000
 
 // FetchPrefix reads one coherent prefix snapshot. A current read pins the
 // first page's revision for every continuation request.
-func FetchPrefix(ctx context.Context, cli *clientv3.Client, prefix string, revision int64) ([]*mvccpb.KeyValue, int64, error) {
+func FetchPrefix(ctx context.Context, cli *clientv3.Client, prefix string, revision int64, admission *ResponseAdmission) ([]*mvccpb.KeyValue, int64, error) {
 	start := []byte(prefix)
 	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
 	var result []*mvccpb.KeyValue
@@ -30,6 +30,9 @@ func FetchPrefix(ctx context.Context, cli *clientv3.Client, prefix string, revis
 		}
 		response, err := cli.Get(ctx, string(start), opts...)
 		if err != nil {
+			return nil, 0, err
+		}
+		if err := admission.AdmitRange(response); err != nil {
 			return nil, 0, err
 		}
 		pinnedRevision, remaining, err := ValidateRangePage(response, snapshotRevision, start, end, expectedCount)
