@@ -16,7 +16,7 @@ func TestWriteAtomicPublishesCompleteReceipt(t *testing.T) {
 		Format: Format, ArtifactFormat: "kubebrain.logical.v2",
 		ArtifactSHA256: "abc", SnapshotRevision: 42, ArtifactCreatedAtUnix: 100,
 		SourcePrefix: "/registry", TargetPrefix: "/restored", Records: 7,
-		ArtifactLeases: 2, VerifiedTargetLeases: 2, VerifiedAtUnix: 200,
+		ArtifactLeases: 2, VerifiedTargetLeases: 2, VerifiedTargetRevision: 84, VerifiedAtUnix: 200,
 	}
 
 	require.NoError(t, WriteAtomic(path, receipt))
@@ -44,6 +44,18 @@ func TestWriteAtomicRejectsIncompleteReceiptWithoutReplacingEvidence(t *testing.
 	require.Equal(t, "previous\n", string(data))
 }
 
+func TestWriteAtomicRequiresTargetRevisionBinding(t *testing.T) {
+	receipt := Receipt{
+		Format: Format, ArtifactFormat: "kubebrain.logical.v2", ArtifactSHA256: "abc",
+		SnapshotRevision: 42, SourcePrefix: "/source", TargetPrefix: "/target",
+		Records: 1, VerifiedAtUnix: 100,
+	}
+	require.ErrorContains(t, WriteAtomic(filepath.Join(t.TempDir(), "receipt.json"), receipt), "incomplete")
+	receipt.Format = LegacyFormat
+	receipt.VerifiedTargetRevision = 84
+	require.ErrorContains(t, WriteAtomic(filepath.Join(t.TempDir(), "legacy.json"), receipt), "incomplete")
+}
+
 func TestWriteAtomicRejectsVerificationBeforeArtifactCreation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "restore-receipt.json")
@@ -51,7 +63,7 @@ func TestWriteAtomicRejectsVerificationBeforeArtifactCreation(t *testing.T) {
 		Format: Format, ArtifactFormat: "kubebrain.logical.v2",
 		ArtifactSHA256: "abc", SnapshotRevision: 42, ArtifactCreatedAtUnix: 201,
 		SourcePrefix: "/source", TargetPrefix: "/target", Records: 1,
-		VerifiedAtUnix: 200,
+		VerifiedTargetRevision: 84, VerifiedAtUnix: 200,
 	}
 
 	require.ErrorContains(t, WriteAtomic(path, receipt), "verification predates artifact creation")
@@ -66,7 +78,7 @@ func TestWriteAtomicRejectsNegativeArtifactCreationTime(t *testing.T) {
 		Format: Format, ArtifactFormat: "kubebrain.logical.v2",
 		ArtifactSHA256: "abc", SnapshotRevision: 42, ArtifactCreatedAtUnix: -1,
 		SourcePrefix: "/source", TargetPrefix: "/target", Records: 1,
-		VerifiedAtUnix: 200,
+		VerifiedTargetRevision: 84, VerifiedAtUnix: 200,
 	}
 
 	require.ErrorContains(t, WriteAtomic(path, receipt), "restore verification receipt is incomplete")
@@ -81,7 +93,7 @@ func TestWriteAtomicAllowsVerificationAtArtifactCreationSecond(t *testing.T) {
 		Format: Format, ArtifactFormat: "kubebrain.logical.v2",
 		ArtifactSHA256: "abc", SnapshotRevision: 42, ArtifactCreatedAtUnix: 200,
 		SourcePrefix: "/source", TargetPrefix: "/target", Records: 1,
-		VerifiedAtUnix: 200,
+		VerifiedTargetRevision: 84, VerifiedAtUnix: 200,
 	}
 
 	require.NoError(t, WriteAtomic(path, receipt))
@@ -93,7 +105,7 @@ func TestWriteAtomicDoesNotReplacePublishedReceipt(t *testing.T) {
 	first := Receipt{
 		Format: Format, ArtifactFormat: "kubebrain.logical.v2", ArtifactSHA256: "first",
 		SnapshotRevision: 42, SourcePrefix: "/source", TargetPrefix: "/target",
-		Records: 1, VerifiedAtUnix: 100,
+		Records: 1, VerifiedTargetRevision: 84, VerifiedAtUnix: 100,
 	}
 	require.NoError(t, WriteAtomic(path, first))
 

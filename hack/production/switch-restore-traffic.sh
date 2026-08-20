@@ -147,11 +147,16 @@ atomic_publish() {
 }
 
 receipt_fields() {
+  local input="${1:-$RESTORE_RECEIPT_INPUT}"
   "$JQ" -er '
     select(
       (keys == ["artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases"] or
-       keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases"]) and
-      .format == "kubebrain.restore-verification.v1" and
+       keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases"] or
+       keys == ["artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases","verified_target_revision"] or
+       keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases","verified_target_revision"]) and
+      ((.format == "kubebrain.restore-verification.v1" and (has("verified_target_revision") | not)) or
+       (.format == "kubebrain.restore-verification.v2" and
+        (.verified_target_revision | type == "number" and . > 0 and . == floor))) and
       (.artifact_format | test("^kubebrain\\.logical\\.v[12]$")) and
       (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
       (.snapshot_revision | type == "number" and . > 0 and . == floor) and
@@ -172,8 +177,9 @@ receipt_fields() {
     .format, .artifact_format, .artifact_sha256, (.snapshot_revision|tostring),
     .source_prefix, .target_prefix, (.records|tostring),
     (.artifact_leases|tostring), (.verified_target_leases|tostring),
+    (if has("verified_target_revision") then (.verified_target_revision|tostring) else "0" end),
     (.verified_at_unix|tostring)
-  ] | @tsv' "$RESTORE_RECEIPT_INPUT"
+  ] | @tsv' "$input"
 }
 
 validate_cutover_state_schema() {
@@ -356,19 +362,21 @@ wait_endpoints() {
 
 verify_data() {
   [[ -n "$PUBLIC_ENDPOINT" ]] || { echo "PUBLIC_ENDPOINT is required for ${ACTION}" >&2; exit 2; }
-  local source_prefix target_prefix temporary before after
+  local source_prefix target_prefix temporary before after after_format after_target_revision
   source_prefix="$(state_value HEADER 12)"
   target_prefix="$(state_value HEADER 13)"
   temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.verify.XXXXXX")"
   rm -f "$temporary"
   ENDPOINT="$PUBLIC_ENDPOINT" INPUT="$BACKUP_INPUT" REWRITE_FROM="$source_prefix" REWRITE_TO="$target_prefix" \
     RECEIPT_OUTPUT="$temporary" "$LOGICAL_VERIFY"
-  before="$(receipt_fields)"
-  after="$("$JQ" -er '[.format,.artifact_format,.artifact_sha256,(.snapshot_revision|tostring),
-    .source_prefix,.target_prefix,(.records|tostring),(.artifact_leases|tostring),
-    (.verified_target_leases|tostring),(.verified_at_unix|tostring)] | @tsv' "$temporary")"
+  before="$(receipt_fields "$RESTORE_RECEIPT_INPUT")"
+  after="$(receipt_fields "$temporary")"
   rm -f "$temporary"
-  [[ "$(cut -f1-9 <<<"$before")" == "$(cut -f1-9 <<<"$after")" ]] ||
+  after_format="$(cut -f1 <<<"$after")"
+  after_target_revision="$(cut -f10 <<<"$after")"
+  [[ "$after_format" == "kubebrain.restore-verification.v2" && "$after_target_revision" =~ ^[1-9][0-9]*$ ]] ||
+    { echo "public endpoint verification did not publish a revision-bound v2 receipt" >&2; exit 1; }
+  [[ "$(cut -f2-9 <<<"$before")" == "$(cut -f2-9 <<<"$after")" ]] ||
     { echo "public endpoint verification does not match prepared restore receipt" >&2; exit 1; }
 }
 
@@ -478,11 +486,13 @@ case "$ACTION" in
       { echo "RESTORE_RECEIPT_INPUT does not exist" >&2; exit 2; }
     receipt="$(receipt_fields)" || { echo "restore verification receipt is invalid" >&2; exit 1; }
     IFS=$'\t' read -r format artifact_format sha revision source_prefix target_prefix records \
-      artifact_leases target_leases verified_at <<<"$receipt"
-    [[ "$format" == "kubebrain.restore-verification.v1" &&
+      artifact_leases target_leases target_revision verified_at <<<"$receipt"
+    [[ "$format" =~ ^kubebrain\.restore-verification\.v[12]$ &&
       "$artifact_format" =~ ^kubebrain\.logical\.v[12]$ && "$sha" =~ ^[a-f0-9]{64}$ &&
       "$revision" =~ ^[1-9][0-9]*$ && "$records" =~ ^[0-9]+$ &&
       "$artifact_leases" =~ ^[0-9]+$ && "$target_leases" =~ ^[0-9]+$ &&
+      (( "$format" == "kubebrain.restore-verification.v1" && "$target_revision" == 0 ) ||
+       ( "$format" == "kubebrain.restore-verification.v2" && "$target_revision" =~ ^[1-9][0-9]*$ )) &&
       "$verified_at" =~ ^[1-9][0-9]*$ ]] ||
       { echo "restore verification receipt is incomplete" >&2; exit 1; }
     service="$(service_snapshot)"

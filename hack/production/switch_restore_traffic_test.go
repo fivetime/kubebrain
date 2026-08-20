@@ -158,6 +158,51 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithUnknownFields(t *testing.
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
 }
 
+func TestRestoreTrafficCutoverAcceptsRevisionBoundV2Receipt(t *testing.T) {
+	f := newTrafficFixture(t)
+	path := filepath.Join(f.dir, "restore.json")
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, path), &receipt))
+	receipt["format"] = "kubebrain.restore-verification.v2"
+	receipt["verified_target_revision"] = float64(84)
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+
+	f.run(t, "prepare", true, "")
+}
+
+func TestRestoreTrafficCutoverRejectsMalformedRevisionBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		format string
+		value  any
+	}{
+		{name: "v2 missing revision", format: "kubebrain.restore-verification.v2"},
+		{name: "v2 zero revision", format: "kubebrain.restore-verification.v2", value: float64(0)},
+		{name: "v1 carrying v2 field", format: "kubebrain.restore-verification.v1", value: float64(84)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrafficFixture(t)
+			path := filepath.Join(f.dir, "restore.json")
+			var receipt map[string]any
+			require.NoError(t, json.Unmarshal(mustRead(t, path), &receipt))
+			receipt["format"] = tc.format
+			if tc.value == nil {
+				delete(receipt, "verified_target_revision")
+			} else {
+				receipt["verified_target_revision"] = tc.value
+			}
+			data, err := json.Marshal(receipt)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+
+			f.run(t, "prepare", false, "", "restore verification receipt is invalid")
+			require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+		})
+	}
+}
+
 func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidDigest(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -438,7 +483,7 @@ if [[ "${ASSERT_FROZEN_BACKUP_INPUT:-false}" == true ]]; then
   cmp -s "$INPUT" "$TRAFFIC_BACKUP_SOURCE" || { echo frozen backup input content mismatch >&2; exit 1; }
 fi
 cat >"$RECEIPT_OUTPUT" <<EOF
-{"format":"kubebrain.restore-verification.v1","artifact_format":"kubebrain.logical.v2","artifact_sha256":"`+restoreArtifactSHA256+`","snapshot_revision":42,"source_prefix":"/registry","target_prefix":"/restored","records":2,"artifact_leases":1,"verified_target_leases":1,"verified_at_unix":200}
+{"format":"kubebrain.restore-verification.v2","artifact_format":"kubebrain.logical.v2","artifact_sha256":"`+restoreArtifactSHA256+`","snapshot_revision":42,"source_prefix":"/registry","target_prefix":"/restored","records":2,"artifact_leases":1,"verified_target_leases":1,"verified_target_revision":84,"verified_at_unix":200}
 EOF
 chmod 600 "$RECEIPT_OUTPUT"
 `)
