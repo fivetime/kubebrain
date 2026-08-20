@@ -5,11 +5,13 @@ PARAMETERS_FILE="${PARAMETERS_FILE:-}"; KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"
 KUBECTL="${KUBECTL:-kubectl}"; OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
+MAX_EXISTING_SECRET_RESPONSE_BYTES=87396
 die() { echo "$*" >&2; exit 1; }
 resolve_executable() { local value="$1"; if [[ "$value" == */* ]]; then [[ -x "$value" ]] || return 1; printf '%s' "$value"; else command -v "$value"; fi; }
 [[ -f "$PARAMETERS_FILE" && -n "$KUBE_CONTEXT" && "$OPERATION_NAMESPACE" == kubebrain-operations ]] || die "PARAMETERS_FILE, KUBE_CONTEXT, and the fixed operation namespace are required"
 command -v stat >/dev/null || die "stat is required"
 parameters_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ ]] && ((size <= MAX_OPERATION_PARAMETERS_BYTES)); }
+existing_secret_response_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ ]] && ((size <= MAX_EXISTING_SECRET_RESPONSE_BYTES)); }
 parameters_size_is_valid "$PARAMETERS_FILE" || die "native PITR restore parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes"
 KUBECTL="$(resolve_executable "$KUBECTL")" || die "KUBECTL must be executable"
 OPERATIONCTL="$(resolve_executable "$OPERATIONCTL")" || die "OPERATIONCTL must be executable"
@@ -45,7 +47,11 @@ parameters_sha="$(sha256sum "$parameters_file" | cut -d ' ' -f1)"
 operation_name="native-pitr-restore-${parameters_sha:0:20}"; secret_name="${operation_name}-parameters"
 context_args=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context_args=(--context "$KUBE_CONTEXT")
 kctl() { "$KUBECTL" "${context_args[@]}" "$@"; }
-if existing="$(kctl -n "$OPERATION_NAMESPACE" get secret "$secret_name" -o 'jsonpath={.immutable}{"\t"}{.type}{"\t"}{.data.parameters\.json}' 2>/dev/null)"; then
+existing_secret_file="$temp_dir/existing-secret.response"
+if kctl -n "$OPERATION_NAMESPACE" get secret "$secret_name" -o 'jsonpath={.immutable}{"\t"}{.type}{"\t"}{.data.parameters\.json}' >"$existing_secret_file" 2>/dev/null; then
+  chmod 600 "$existing_secret_file"
+  existing_secret_response_is_valid "$existing_secret_file" || die "existing Secret response exceeds ${MAX_EXISTING_SECRET_RESPONSE_BYTES} bytes"
+  existing="$(<"$existing_secret_file")"
   IFS=$'\t' read -r immutable secret_type encoded <<<"$existing"
   [[ "$immutable" == true && "$secret_type" == Opaque && "$(printf '%s' "$encoded" | base64 -d | sha256sum | cut -d ' ' -f1)" == "$parameters_sha" ]] || die "existing native PITR restore parameter Secret drifted"
 else
