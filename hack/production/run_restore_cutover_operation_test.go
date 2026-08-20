@@ -39,6 +39,12 @@ func TestRestoreCutoverOperationAcceptsClusterBoundV3Evidence(t *testing.T) {
 	require.Contains(t, f.log(t), "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsClusterBoundV3Drift(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "V3_EVIDENCE=true\nCUTOVER_CLUSTER_ID=8", "invalid receipt")
+	require.Contains(t, f.log(t), "--action fail")
+}
+
 func TestRestoreCutoverOperationRejectsPublicRevisionPredatingInitial(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "V2_EVIDENCE=true\nPUBLIC_VERIFIED_TARGET_REVISION=72", "invalid receipt")
@@ -490,12 +496,14 @@ mkdir -p "$STATE_DIR"
 case "$ACTION" in
   prepare)
     {
-      if [[ "${V2_EVIDENCE:-false}" == true || "${V3_EVIDENCE:-false}" == true ]]; then
+      if [[ "${V3_EVIDENCE:-false}" == true ]]; then
         restore_sha="$(sha256sum "$RESTORE_RECEIPT_INPUT" | cut -d ' ' -f1)"
-        restore_format=kubebrain.restore-verification.v2
-        [[ "${V3_EVIDENCE:-false}" != true ]] || restore_format=kubebrain.restore-verification.v3
-        printf 'HEADER\tkubebrain.restore-cutover.state.v2\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\t%s\t73\t%s\n' \
-          "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`" "$restore_format" "$restore_sha"
+        printf 'HEADER\tkubebrain.restore-cutover.state.v3\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\tkubebrain.restore-verification.v3\t73\t%s\t7\n' \
+          "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`" "$restore_sha"
+      elif [[ "${V2_EVIDENCE:-false}" == true ]]; then
+        restore_sha="$(sha256sum "$RESTORE_RECEIPT_INPUT" | cut -d ' ' -f1)"
+        printf 'HEADER\tkubebrain.restore-cutover.state.v2\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\tkubebrain.restore-verification.v2\t73\t%s\n' \
+          "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`" "$restore_sha"
       else
         printf 'HEADER\tkubebrain.restore-cutover.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\n' \
           "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`"
@@ -521,12 +529,14 @@ case "$ACTION" in
     [[ "${TAMPER_CUTOVER_MARKER_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$OPERATION_ID.cutover"
     [[ "${TAMPER_VERIFIED_MARKER_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$OPERATION_ID.verified"
     state_sha="$(sha256sum "$state_file" | cut -d ' ' -f1)"
-    if [[ "${V2_EVIDENCE:-false}" == true || "${V3_EVIDENCE:-false}" == true ]]; then
+    if [[ "${V3_EVIDENCE:-false}" == true ]]; then
       restore_sha="$(cut -f16 "$state_file")"
-      restore_format="$(cut -f14 "$state_file")"
+      printf '{"format":"kubebrain.restore-cutover.receipt.v3","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100,"restore_receipt_format":"kubebrain.restore-verification.v3","restore_receipt_sha256":"%s","initial_verified_target_revision":73,"public_verified_target_revision":%s,"verified_target_cluster_id":%s}\n' \
+        "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" "$restore_sha" "${PUBLIC_VERIFIED_TARGET_REVISION:-84}" "${CUTOVER_CLUSTER_ID:-7}" >"$RECEIPT_OUTPUT"
+    elif [[ "${V2_EVIDENCE:-false}" == true ]]; then
+      restore_sha="$(cut -f16 "$state_file")"
       printf '{"format":"kubebrain.restore-cutover.receipt.v2","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100,"restore_receipt_format":"kubebrain.restore-verification.v2","restore_receipt_sha256":"%s","initial_verified_target_revision":73,"public_verified_target_revision":%s}\n' \
         "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" "$restore_sha" "${PUBLIC_VERIFIED_TARGET_REVISION:-84}" >"$RECEIPT_OUTPUT"
-      sed -i "s#kubebrain.restore-verification.v2#${restore_format}#" "$RECEIPT_OUTPUT"
     else
       printf '{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}\n' \
         "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" >"$RECEIPT_OUTPUT"

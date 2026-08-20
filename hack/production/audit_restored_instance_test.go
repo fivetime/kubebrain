@@ -52,6 +52,15 @@ func TestPostRestoreAuditAcceptsClusterBoundV3CutoverEvidence(t *testing.T) {
 	f := newAuditFixture(t)
 	promoteAuditCutoverEvidenceToV3(t, f.dir)
 	f.run(t, true, "")
+	receipt := string(mustRead(t, filepath.Join(f.state, "audit-1.receipt.json")))
+	require.Contains(t, receipt, `"verified_target_cluster_id":7`)
+}
+
+func TestPostRestoreAuditRejectsClusterDifferentFromV3Cutover(t *testing.T) {
+	f := newAuditFixture(t)
+	promoteAuditCutoverEvidenceToV3(t, f.dir)
+	f.run(t, false, "PROBE_CLUSTER_ID=8", "probe cluster ID changed")
+	require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
 }
 
 func TestPostRestoreAuditRejectsProbeRevisionPredatingCutover(t *testing.T) {
@@ -324,13 +333,17 @@ func promoteAuditCutoverEvidenceToV3(t *testing.T, dir string) {
 	t.Helper()
 	promoteAuditCutoverEvidenceToV2(t, dir)
 	statePath := filepath.Join(dir, "cutover.state")
-	state := strings.Replace(string(mustRead(t, statePath)), "kubebrain.restore-verification.v2", "kubebrain.restore-verification.v3", 1)
+	state := strings.Replace(string(mustRead(t, statePath)), "kubebrain.restore-cutover.state.v2", "kubebrain.restore-cutover.state.v3", 1)
+	state = strings.Replace(state, "kubebrain.restore-verification.v2", "kubebrain.restore-verification.v3", 1)
+	state = strings.Replace(state, strings.Repeat("3", 64)+"\n", strings.Repeat("3", 64)+"\t7\n", 1)
 	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
 	receiptPath := filepath.Join(dir, "cutover.json")
 	var receipt map[string]any
 	require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &receipt))
 	receipt["cutover_state_sha256"] = fileDigest(t, statePath)
+	receipt["format"] = "kubebrain.restore-cutover.receipt.v3"
 	receipt["restore_receipt_format"] = "kubebrain.restore-verification.v3"
+	receipt["verified_target_cluster_id"] = float64(7)
 	data, err := json.Marshal(receipt)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(receiptPath, append(data, '\n'), 0o600))

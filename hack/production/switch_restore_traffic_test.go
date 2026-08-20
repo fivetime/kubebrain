@@ -201,8 +201,15 @@ func TestRestoreTrafficCutoverV3BindsTargetCluster(t *testing.T) {
 	f.run(t, "complete", true, "")
 
 	stateHeader := strings.Split(strings.SplitN(string(mustRead(t, filepath.Join(f.state, "restore-1.state"))), "\n", 2)[0], "\t")
-	require.Equal(t, "kubebrain.restore-cutover.state.v2", stateHeader[1])
+	require.Len(t, stateHeader, 17)
+	require.Equal(t, "kubebrain.restore-cutover.state.v3", stateHeader[1])
 	require.Equal(t, "kubebrain.restore-verification.v3", stateHeader[13])
+	require.Equal(t, "7", stateHeader[16])
+
+	var cutoverReceipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, filepath.Join(f.state, "restore-1.receipt.json")), &cutoverReceipt))
+	require.Equal(t, "kubebrain.restore-cutover.receipt.v3", cutoverReceipt["format"])
+	require.Equal(t, float64(7), cutoverReceipt["verified_target_cluster_id"])
 }
 
 func TestRestoreTrafficCutoverV3RejectsTargetClusterDrift(t *testing.T) {
@@ -212,6 +219,39 @@ func TestRestoreTrafficCutoverV3RejectsTargetClusterDrift(t *testing.T) {
 	f.run(t, "cutover", true, "")
 	f.run(t, "verify", false, "VERIFY_TARGET_CLUSTER_ID=8", "changed target cluster ID")
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.verified"))
+}
+
+func TestRestoreTrafficCutoverV3RejectsStateClusterDrift(t *testing.T) {
+	f := newTrafficFixture(t)
+	promoteTrafficRestoreReceiptToV3(t, f, 73, 7)
+	f.run(t, "prepare", true, "")
+	statePath := filepath.Join(f.state, "restore-1.state")
+	state := strings.Replace(string(mustRead(t, statePath)), "\t7\n", "\t8\n", 1)
+	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", false, "", "does not match cluster-bound cutover state")
+}
+
+func TestRestoreTrafficCutoverV3RejectsExistingReceiptClusterDrift(t *testing.T) {
+	f := newTrafficFixture(t)
+	promoteTrafficRestoreReceiptToV3(t, f, 73, 7)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "")
+	f.run(t, "complete", true, "")
+	receiptPath := filepath.Join(f.state, "restore-1.receipt.json")
+	receipt := strings.Replace(string(mustRead(t, receiptPath)), `"verified_target_cluster_id":7`, `"verified_target_cluster_id":8`, 1)
+	require.NoError(t, os.WriteFile(receiptPath, []byte(receipt), 0o600))
+	f.run(t, "complete", false, "", "existing restore cutover receipt does not match")
+}
+
+func TestRestoreTrafficCutoverV3AcceptsMaxUint64ClusterID(t *testing.T) {
+	f := newTrafficFixture(t)
+	promoteTrafficRestoreReceiptToV3(t, f, 73, ^uint64(0))
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "VERIFY_TARGET_CLUSTER_ID=18446744073709551615")
+	f.run(t, "complete", true, "VERIFY_TARGET_CLUSTER_ID=18446744073709551615")
 }
 
 func TestRestoreTrafficCutoverDoesNotPublishRegressedPublicRevision(t *testing.T) {

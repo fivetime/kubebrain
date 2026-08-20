@@ -24,6 +24,7 @@ LOGICAL_VERIFY="${LOGICAL_VERIFY:-${ROOT_DIR}/hack/backup/logical-verify.sh}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 MAX_ETCD_REVISION=9223372036854775807
+MAX_UINT64=18446744073709551615
 
 is_positive_etcd_revision() {
   local value="$1"
@@ -31,6 +32,14 @@ is_positive_etcd_revision() {
   (( ${#value} < ${#MAX_ETCD_REVISION} )) && return 0
   (( ${#value} == ${#MAX_ETCD_REVISION} )) &&
     [[ "$value" == "$MAX_ETCD_REVISION" || "$value" < "$MAX_ETCD_REVISION" ]]
+}
+
+is_positive_uint64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || return 1
+  (( ${#value} < ${#MAX_UINT64} )) && return 0
+  (( ${#value} == ${#MAX_UINT64} )) &&
+    [[ "$value" == "$MAX_UINT64" || "$value" < "$MAX_UINT64" ]]
 }
 
 usage() {
@@ -199,7 +208,7 @@ receipt_fields() {
 }
 
 validate_cutover_state_schema() {
-  local kind format c3 c4 c5 c6 c7 c8 c9 c10 snapshot_revision c12 c13 c14 target_revision c16
+  local kind format c3 c4 c5 c6 c7 c8 c9 c10 snapshot_revision c12 c13 c14 target_revision c16 target_cluster_id
   awk -F '\t' -v expected="$EXPECTED_REPLICAS" '
     $0 == "" {
       bad = "empty row"
@@ -208,13 +217,21 @@ validate_cutover_state_schema() {
     $1 == "HEADER" {
       if (($2 == "kubebrain.restore-cutover.state.v1" && NF != 13) ||
           ($2 == "kubebrain.restore-cutover.state.v2" && NF != 16) ||
-          ($2 != "kubebrain.restore-cutover.state.v1" && $2 != "kubebrain.restore-cutover.state.v2")) {
+          ($2 == "kubebrain.restore-cutover.state.v3" && NF != 17) ||
+          ($2 != "kubebrain.restore-cutover.state.v1" && $2 != "kubebrain.restore-cutover.state.v2" &&
+           $2 != "kubebrain.restore-cutover.state.v3")) {
         bad = "HEADER row has invalid version or field count"
         exit 1
       }
       if ($2 == "kubebrain.restore-cutover.state.v2" &&
           (($14 != "kubebrain.restore-verification.v2" && $14 != "kubebrain.restore-verification.v3") || $15 !~ /^[1-9][0-9]*$/ || $16 !~ /^[a-f0-9]{64}$/)) {
         bad = "v2 HEADER row has invalid restore receipt binding"
+        exit 1
+      }
+      if ($2 == "kubebrain.restore-cutover.state.v3" &&
+          ($14 != "kubebrain.restore-verification.v3" || $15 !~ /^[1-9][0-9]*$/ ||
+           $16 !~ /^[a-f0-9]{64}$/ || $17 !~ /^[1-9][0-9]*$/)) {
+        bad = "v3 HEADER row has invalid cluster-bound restore receipt binding"
         exit 1
       }
       header++
@@ -256,10 +273,10 @@ validate_cutover_state_schema() {
       }
     }
   ' "$state_file" || return 1
-  IFS=$'\t' read -r kind format c3 c4 c5 c6 c7 c8 c9 c10 snapshot_revision c12 c13 c14 target_revision c16 <"$state_file"
+  IFS=$'\t' read -r kind format c3 c4 c5 c6 c7 c8 c9 c10 snapshot_revision c12 c13 c14 target_revision c16 target_cluster_id <"$state_file"
   is_positive_etcd_revision "$snapshot_revision" || return 1
-  [[ "$format" == "kubebrain.restore-cutover.state.v1" ]] ||
-    is_positive_etcd_revision "$target_revision"
+  [[ "$format" == "kubebrain.restore-cutover.state.v1" ]] || is_positive_etcd_revision "$target_revision" || return 1
+  [[ "$format" != "kubebrain.restore-cutover.state.v3" ]] || is_positive_uint64 "$target_cluster_id"
 }
 
 require_cutover_state_schema() {
@@ -314,11 +331,11 @@ pod_snapshot() {
 
 state_header() {
   local kind format state_instance state_operation namespace service source target service_uid
-  local restore_sha restore_revision source_prefix target_prefix receipt_format target_revision receipt_sha
+  local restore_sha restore_revision source_prefix target_prefix receipt_format target_revision receipt_sha target_cluster_id
   require_cutover_state_schema
   IFS=$'\t' read -r kind format state_instance state_operation namespace service source target service_uid \
-    restore_sha restore_revision source_prefix target_prefix receipt_format target_revision receipt_sha <"$state_file"
-  [[ "$kind" == "HEADER" && "$format" =~ ^kubebrain\.restore-cutover\.state\.v[12]$ &&
+    restore_sha restore_revision source_prefix target_prefix receipt_format target_revision receipt_sha target_cluster_id <"$state_file"
+  [[ "$kind" == "HEADER" && "$format" =~ ^kubebrain\.restore-cutover\.state\.v[123]$ &&
     "$state_instance" == "$INSTANCE" && "$state_operation" == "$OPERATION_ID" &&
     "$namespace" == "$SERVICE_NAMESPACE" && "$service" == "$SERVICE_NAME" &&
     "$source" == "$SOURCE_INSTANCE" && "$target" == "$TARGET_INSTANCE" &&
@@ -326,11 +343,14 @@ state_header() {
     -n "$source_prefix" && -n "$target_prefix" &&
     (( "$format" == "kubebrain.restore-cutover.state.v1" && -z "$receipt_format" && -z "$target_revision" && -z "$receipt_sha" ) ||
      ( "$format" == "kubebrain.restore-cutover.state.v2" && "$receipt_format" =~ ^kubebrain\.restore-verification\.v[23]$ &&
-       "$target_revision" =~ ^[1-9][0-9]*$ && "$receipt_sha" =~ ^[a-f0-9]{64}$ )) ]] ||
+       "$target_revision" =~ ^[1-9][0-9]*$ && "$receipt_sha" =~ ^[a-f0-9]{64}$ && -z "$target_cluster_id" ) ||
+     ( "$format" == "kubebrain.restore-cutover.state.v3" && "$receipt_format" == "kubebrain.restore-verification.v3" &&
+       "$target_revision" =~ ^[1-9][0-9]*$ && "$receipt_sha" =~ ^[a-f0-9]{64}$ &&
+       "$target_cluster_id" =~ ^[1-9][0-9]*$ )) ]] ||
     { echo "restore cutover state does not match the requested operation" >&2; exit 1; }
   is_positive_etcd_revision "$restore_revision" &&
-    { [[ "$format" == "kubebrain.restore-cutover.state.v1" ]] ||
-      is_positive_etcd_revision "$target_revision"; } ||
+    { [[ "$format" == "kubebrain.restore-cutover.state.v1" ]] || is_positive_etcd_revision "$target_revision"; } &&
+    { [[ "$format" != "kubebrain.restore-cutover.state.v3" ]] || is_positive_uint64 "$target_cluster_id"; } ||
     { echo "restore cutover state contains an out-of-range etcd revision" >&2; exit 1; }
 }
 
@@ -417,7 +437,7 @@ verify_data() {
     { echo "public endpoint verification did not publish a cluster-bound v3 receipt" >&2; exit 1; }
   [[ "$(cut -f2-9 <<<"$before")" == "$(cut -f2-9 <<<"$after")" ]] ||
     { echo "public endpoint verification does not match prepared restore receipt" >&2; exit 1; }
-  if [[ "$(state_value HEADER 2)" == "kubebrain.restore-cutover.state.v2" ]]; then
+  if [[ "$(state_value HEADER 2)" =~ ^kubebrain\.restore-cutover\.state\.v[23]$ ]]; then
     [[ "$(cut -f1 <<<"$before")" == "$(state_value HEADER 14)" &&
       "$(cut -f10 <<<"$before")" == "$(state_value HEADER 15)" &&
       "$(file_sha256 "$RESTORE_RECEIPT_INPUT")" == "$(state_value HEADER 16)" ]] ||
@@ -428,7 +448,13 @@ verify_data() {
     echo "public endpoint verification changed target cluster ID" >&2
     exit 1
   fi
+  if [[ "$(state_value HEADER 2)" == "kubebrain.restore-cutover.state.v3" &&
+    "$after_cluster_id" != "$(state_value HEADER 17)" ]]; then
+    echo "public endpoint verification does not match cluster-bound cutover state" >&2
+    exit 1
+  fi
   LAST_VERIFIED_TARGET_REVISION="$after_target_revision"
+  LAST_VERIFIED_TARGET_CLUSTER_ID="$after_cluster_id"
 }
 
 validate_restore_cutover_marker() {
@@ -501,7 +527,7 @@ validate_cutover_chronology() {
 
 validate_existing_cutover_receipt() {
   local expected_state_sha="${1:-}" state_sha service_uid artifact_sha snapshot_revision verified_at
-  local state_format restore_receipt_format restore_receipt_sha initial_target_revision
+  local state_format restore_receipt_format restore_receipt_sha initial_target_revision target_cluster_id
   state_sha="$(validated_cutover_state_digest)" || return 1
   [[ -z "$expected_state_sha" || "$state_sha" == "$expected_state_sha" ]] || return 1
   service_uid="$(state_value SERVICE 2)"
@@ -511,7 +537,9 @@ validate_existing_cutover_receipt() {
   restore_receipt_format="$(state_value HEADER 14)"
   initial_target_revision="$(state_value HEADER 15)"
   restore_receipt_sha="$(state_value HEADER 16)"
+  target_cluster_id="$(state_value HEADER 17)"
   [[ -n "$initial_target_revision" ]] || initial_target_revision=0
+  [[ -n "$target_cluster_id" ]] || target_cluster_id=0
   verified_at="$(marker_timestamp "$verified_file" VERIFIED)" || return 1
   validate_cutover_chronology || return 1
   cutover_state_digest_matches "$state_sha" || return 1
@@ -522,6 +550,7 @@ validate_existing_cutover_receipt() {
     --arg sha "$artifact_sha" --arg state_sha "$state_sha" \
     --arg state_format "$state_format" --arg restore_format "$restore_receipt_format" \
     --arg restore_sha "$restore_receipt_sha" --argjson initial_target_revision "$initial_target_revision" \
+    --argjson target_cluster_id "$target_cluster_id" \
     --argjson snapshot_revision "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" \
     --argjson verified_at "$verified_at" '
       (($state_format == "kubebrain.restore-cutover.state.v1" and
@@ -533,7 +562,15 @@ validate_existing_cutover_receipt() {
         .restore_receipt_format == $restore_format and .restore_receipt_sha256 == $restore_sha and
         .initial_verified_target_revision == $initial_target_revision and
         (.initial_verified_target_revision | type == "number" and . <= 9223372036854775807) and
-        (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . <= 9223372036854775807 and . == floor))) and
+        (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . <= 9223372036854775807 and . == floor)) or
+       ($state_format == "kubebrain.restore-cutover.state.v3" and
+        keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","initial_verified_target_revision","instance","operation_id","pod_uids_unchanged","public_data_verified","public_verified_target_revision","replicas","restore_receipt_format","restore_receipt_sha256","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance","verified_target_cluster_id"] and
+        .format == "kubebrain.restore-cutover.receipt.v3" and
+        .restore_receipt_format == $restore_format and .restore_receipt_sha256 == $restore_sha and
+        .initial_verified_target_revision == $initial_target_revision and
+        (.initial_verified_target_revision | type == "number" and . <= 9223372036854775807) and
+        (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . <= 9223372036854775807 and . == floor) and
+        .verified_target_cluster_id == $target_cluster_id)) and
       .operation_id == $operation and .instance == $instance and
       .service_namespace == $namespace and .service_name == $service and
       .service_uid == $uid and .source_instance == $source and
@@ -571,7 +608,14 @@ case "$ACTION" in
     source_pods="$(pod_snapshot "$SOURCE_INSTANCE")"
     target_pods="$(pod_snapshot "$TARGET_INSTANCE")"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.state.XXXXXX")"
-    if [[ "$format" =~ ^kubebrain\.restore-verification\.v[23]$ ]]; then
+    if [[ "$format" == "kubebrain.restore-verification.v3" ]]; then
+      restore_receipt_sha="$(file_sha256 "$RESTORE_RECEIPT_INPUT")" ||
+        { echo "restore verification receipt digest is invalid" >&2; exit 1; }
+      printf 'HEADER\tkubebrain.restore-cutover.state.v3\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" \
+        "$TARGET_INSTANCE" "$service_uid" "$sha" "$revision" "$source_prefix" "$target_prefix" \
+        "$format" "$target_revision" "$restore_receipt_sha" "$target_cluster_id" >"$temporary"
+    elif [[ "$format" == "kubebrain.restore-verification.v2" ]]; then
       restore_receipt_sha="$(file_sha256 "$RESTORE_RECEIPT_INPUT")" ||
         { echo "restore verification receipt digest is invalid" >&2; exit 1; }
       printf 'HEADER\tkubebrain.restore-cutover.state.v2\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -677,14 +721,22 @@ case "$ACTION" in
     state_format="$(state_value HEADER 2)"
     receipt_format="kubebrain.restore-cutover.receipt.v1"
     [[ "$state_format" == "kubebrain.restore-cutover.state.v1" ]] || receipt_format="kubebrain.restore-cutover.receipt.v2"
+    [[ "$state_format" != "kubebrain.restore-cutover.state.v3" ]] || receipt_format="kubebrain.restore-cutover.receipt.v3"
     initial_target_revision="$(state_value HEADER 15)"
     [[ -n "$initial_target_revision" ]] || initial_target_revision=0
     public_target_revision="${LAST_VERIFIED_TARGET_REVISION:-0}"
-    if [[ "$receipt_format" == "kubebrain.restore-cutover.receipt.v2" ]]; then
+    target_cluster_id="$(state_value HEADER 17)"
+    [[ -n "$target_cluster_id" ]] || target_cluster_id=0
+    public_target_cluster_id="${LAST_VERIFIED_TARGET_CLUSTER_ID:-0}"
+    if [[ "$receipt_format" =~ ^kubebrain\.restore-cutover\.receipt\.v[23]$ ]]; then
       is_positive_etcd_revision "$initial_target_revision" &&
         is_positive_etcd_revision "$public_target_revision" &&
         (( public_target_revision >= initial_target_revision )) ||
         { echo "public verification revision predates the initial verification revision" >&2; exit 1; }
+    fi
+    if [[ "$receipt_format" == "kubebrain.restore-cutover.receipt.v3" ]]; then
+      is_positive_uint64 "$target_cluster_id" && [[ "$public_target_cluster_id" == "$target_cluster_id" ]] ||
+        { echo "public verification cluster ID does not match the initial verification cluster ID" >&2; exit 1; }
     fi
     "$JQ" -cnS \
       --arg format "$receipt_format" --arg operation_id "$OPERATION_ID" \
@@ -697,6 +749,7 @@ case "$ACTION" in
       --arg restore_receipt_sha256 "$(state_value HEADER 16)" \
       --argjson initial_verified_target_revision "$initial_target_revision" \
       --argjson public_verified_target_revision "$public_target_revision" \
+      --argjson verified_target_cluster_id "$target_cluster_id" \
       --argjson completed_at_unix "$completed_at" \
       '{format:$format,operation_id:$operation_id,instance:$instance,service_namespace:$namespace,
         service_name:$service,service_uid:$service_uid,source_instance:$source_instance,
@@ -704,10 +757,12 @@ case "$ACTION" in
         cutover_state_sha256:$cutover_state_sha256,
         snapshot_revision:$snapshot_revision,replicas:$replicas,pod_uids_unchanged:true,
         endpoint_uids_matched:true,public_data_verified:true,completed_at_unix:$completed_at_unix}
-       + (if $format == "kubebrain.restore-cutover.receipt.v2" then
+       + (if ($format == "kubebrain.restore-cutover.receipt.v2" or $format == "kubebrain.restore-cutover.receipt.v3") then
           {restore_receipt_format:$restore_receipt_format,restore_receipt_sha256:$restore_receipt_sha256,
            initial_verified_target_revision:$initial_verified_target_revision,
-           public_verified_target_revision:$public_verified_target_revision} else {} end)' >"$temporary"
+           public_verified_target_revision:$public_verified_target_revision} else {} end)
+       + (if $format == "kubebrain.restore-cutover.receipt.v3" then
+          {verified_target_cluster_id:$verified_target_cluster_id} else {} end)' >"$temporary"
     require_cutover_state_digest "$state_sha"
     atomic_publish "$temporary" "$receipt_file"
     ;;

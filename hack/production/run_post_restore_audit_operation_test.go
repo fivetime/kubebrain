@@ -43,6 +43,13 @@ func TestPostRestoreAuditOperationAcceptsClusterBoundV3CutoverEvidence(t *testin
 	require.Contains(t, f.log(t), "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsClusterDifferentFromV3Cutover(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	promoteOperationAuditCutoverEvidenceToV3(t, f)
+	f.run(t, false, "AUDIT_CLUSTER_ID=8", "invalid receipt")
+	require.Contains(t, f.log(t), "--action retry")
+}
+
 func TestPostRestoreAuditOperationRejectsAuditReceiptPredatingCutover(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	promoteOperationAuditCutoverEvidenceToV2(t, f)
