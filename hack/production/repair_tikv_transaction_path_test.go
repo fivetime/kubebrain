@@ -3,6 +3,7 @@ package production_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -99,16 +100,18 @@ elif [[ "$args" == *"/pd/api/v1/regions/check/"* ]]; then
   check="${args##*/regions/check/}"
   if [[ -n "$ordinal" && "$check" == "pending-peer" && ( "${FAKE_PERSISTENT_ABNORMAL_REGION:-false}" == "true" || ! -e "$FAKE_STATE/replaced-$ordinal" ) ]]; then
     case "$ordinal" in 0) store_id=1001;; 1) store_id=1004;; 2) store_id=1005;; *) exit 98;; esac
-    printf '{"count":1,"regions":[{"id":76009,"leader":{"store_id":1001},"pending_peers":[{"store_id":%s}],"down_peers":[]}]}' "$store_id"
+    printf -v payload '{"count":1,"regions":[{"id":76009,"leader":{"store_id":1001},"pending_peers":[{"store_id":%s}],"down_peers":[]}]}' "$store_id"
   else
-    printf '{"count":0,"regions":[]}'
+    payload='{"count":0,"regions":[]}'
   fi
+  printf '%s' "$payload"; [[ "${FAKE_PD_RESPONSE_TARGET:-}" != check ]] || head -c "$((FAKE_PD_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"/pd/api/v1/stores"* ]]; then
   store_state=Up
   if [[ "${FAKE_PD_STORE_DOWN_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
     store_state=Down
   fi
-  printf '{"count":3,"stores":[{"store":{"id":1001,"address":"kb-tikv-0:20160","state_name":"Up"}},{"store":{"id":1004,"address":"kb-tikv-1:20160","state_name":"Up"}},{"store":{"id":1005,"address":"kb-tikv-2:20160","state_name":"%s"}}]}' "$store_state"
+  printf -v payload '{"count":3,"stores":[{"store":{"id":1001,"address":"kb-tikv-0:20160","state_name":"Up"}},{"store":{"id":1004,"address":"kb-tikv-1:20160","state_name":"Up"}},{"store":{"id":1005,"address":"kb-tikv-2:20160","state_name":"%s"}}]}' "$store_state"
+  printf '%s' "$payload"; [[ "${FAKE_PD_RESPONSE_TARGET:-}" != stores ]] || head -c "$((FAKE_PD_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"get pvc "* ]]; then
   pvc="${args#*get pvc }"
   pvc="${pvc%% *}"
@@ -198,6 +201,38 @@ fi
 		"tidb_cluster_uid":"tc-uid",
 		"transaction_verified":true
 	}`, string(receipt))
+
+	for _, target := range []string{"check", "stores"} {
+		for _, size := range []int{1048577, 1048576} {
+			caseState := filepath.Join(tempDir, "pd-response-"+target+"-"+strconv.Itoa(size))
+			require.NoError(t, os.Mkdir(caseState, 0o755))
+			caseReceipt := filepath.Join(caseState, "receipt.json")
+			caseLog := filepath.Join(caseState, "kubectl.log")
+			caseEnv := append([]string(nil), env...)
+			caseEnv = append(caseEnv,
+				"FAKE_STATE="+caseState,
+				"FAKE_LOG="+caseLog,
+				"RECEIPT_OUTPUT="+caseReceipt,
+				"FAKE_PD_RESPONSE_TARGET="+target,
+				"FAKE_PD_RESPONSE_BYTES="+strconv.Itoa(size),
+			)
+			if target == "stores" {
+				caseEnv = append(caseEnv, "FAKE_ABNORMAL_STORE_ORDINAL=0")
+			}
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+			if size > 1048576 {
+				require.Error(t, boundaryErr)
+				require.Contains(t, string(boundaryOutput), "PD response exceeds 1048576 bytes")
+				require.NoFileExists(t, caseReceipt)
+				caseLogData, readErr := os.ReadFile(caseLog)
+				require.NoError(t, readErr)
+				require.NotContains(t, string(caseLogData), "delete pod kb-tikv-")
+			} else {
+				require.NoError(t, boundaryErr, string(boundaryOutput))
+				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+			}
+		}
+	}
 
 	for ordinal := 0; ordinal < 3; ordinal++ {
 		require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-"+string(rune('0'+ordinal)))))

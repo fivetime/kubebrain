@@ -36,6 +36,7 @@ KUBECTL="${KUBECTL:-kubectl}"
 COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-timeout}"
 DATE="${DATE:-date}"
 JQ="${JQ:-jq}"
+MAX_PD_RESPONSE_BYTES=1048576
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -121,6 +122,7 @@ kctl -n "$REPAIR_STATE_NAMESPACE" create configmap "$repair_lock" \
 attempt_record="kubebrain-tikv-repair-${REPAIR_ATTEMPT_ID}"
 repair_phase="preflight"
 receipt_created=false
+response_dir=""
 cleanup_repair() {
   local status="$?"
   if [[ "$receipt_created" == "true" && "$repair_phase" != "completed" ]]; then
@@ -128,9 +130,12 @@ cleanup_repair() {
       -p "{\"data\":{\"phase\":\"$repair_phase\",\"finished-at-unix\":\"$($DATE +%s)\"}}" >/dev/null 2>&1 || true
   fi
   kctl -n "$REPAIR_STATE_NAMESPACE" delete configmap "$repair_lock" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  [[ -z "$response_dir" ]] || rm -rf -- "$response_dir"
   return "$status"
 }
 trap cleanup_repair EXIT
+response_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-tikv-repair-responses.XXXXXX")" || die "cannot create private PD response directory"
+chmod 700 "$response_dir" || die "cannot protect private PD response directory"
 kctl -n "$REPAIR_STATE_NAMESPACE" create configmap "$attempt_record" \
   --from-literal="attempt-id=$REPAIR_ATTEMPT_ID" \
   --from-literal="tidb-cluster-uid=$EXPECTED_TIDB_CLUSTER_UID" \
@@ -143,6 +148,18 @@ persist_phase() {
   kctl -n "$REPAIR_STATE_NAMESPACE" patch configmap "$attempt_record" --type=merge \
     -p "{\"data\":{\"phase\":\"$next_phase\"}}" >/dev/null
   repair_phase="$next_phase"
+}
+capture_pd_response() {
+  local response size
+  response="$(mktemp "$response_dir/pd-response.XXXXXX")" || return 1
+  kctl "$@" >"$response" || return 1
+  chmod 600 "$response" || return 1
+  size="$(stat -Lc '%s' -- "$response")" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_PD_RESPONSE_BYTES" ]]; then
+    echo "PD response exceeds ${MAX_PD_RESPONSE_BYTES} bytes" >&2
+    return 1
+  fi
+  printf '%s\n' "$response"
 }
 quantity_to_kib() {
   local quantity="$1" value unit multiplier
@@ -202,22 +219,22 @@ validate_tidb_cluster_identity() {
   [[ "$identity" == "$expected_cluster_identity" ]]
 }
 validate_pd_stores_up() {
-  local pd_proxy stores_json summary
+  local pd_proxy stores_response summary
   local consecutive=0
   pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
   for ((sample=1; sample<=MAX_STORE_HEALTH_SAMPLES; sample++)); do
-    stores_json="$(kctl get --raw "${pd_proxy}/stores")" || return 1
+    stores_response="$(capture_pd_response get --raw "${pd_proxy}/stores")" || return 1
     if "$JQ" -e --argjson expected 3 '
       .count == $expected and (.stores | length == $expected) and
       all(.stores[]; .store.id > 0 and .store.state_name == "Up")
-    ' >/dev/null <<<"$stores_json"; then
+    ' "$stores_response" >/dev/null; then
       ((consecutive+=1))
       if (( consecutive >= REQUIRED_HEALTHY_STORE_SAMPLES )); then
         return 0
       fi
     else
       consecutive=0
-      summary="$("$JQ" -c '[.stores[]? | {id:.store.id,address:.store.address,state:.store.state_name}]' <<<"$stores_json" 2>/dev/null || printf 'malformed')"
+      summary="$("$JQ" -c '[.stores[]? | {id:.store.id,address:.store.address,state:.store.state_name}]' "$stores_response" 2>/dev/null || printf 'malformed')"
       echo "PD store health has not converged: ${summary}" >&2
     fi
     (( sample == MAX_STORE_HEALTH_SAMPLES )) || sleep "$STORE_HEALTH_INTERVAL_SECONDS"
@@ -225,16 +242,16 @@ validate_pd_stores_up() {
   return 1
 }
 validate_pd_regions_healthy() {
-  local pd_proxy check check_json summary
+  local pd_proxy check check_response summary
   local consecutive=0 sample_healthy
   pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
   for ((sample=1; sample<=MAX_REGION_HEALTH_SAMPLES; sample++)); do
     sample_healthy=true
     for check in pending-peer down-peer miss-peer extra-peer learner-peer; do
-      check_json="$(kctl get --raw "${pd_proxy}/regions/check/${check}")" || return 1
-      if ! "$JQ" -e '.count == 0 and (.regions | type == "array") and (.regions | length == 0)' >/dev/null <<<"$check_json"; then
+      check_response="$(capture_pd_response get --raw "${pd_proxy}/regions/check/${check}")" || return 1
+      if ! "$JQ" -e '.count == 0 and (.regions | type == "array") and (.regions | length == 0)' "$check_response" >/dev/null; then
         sample_healthy=false
-        summary="$("$JQ" -c '[.regions[]? | {id,leader_store_id:(.leader.store_id // 0),pending_store_ids:[.pending_peers[]?.store_id],down_store_ids:[.down_peers[]?.peer.store_id]}]' <<<"$check_json" 2>/dev/null || printf 'malformed')"
+        summary="$("$JQ" -c '[.regions[]? | {id,leader_store_id:(.leader.store_id // 0),pending_store_ids:[.pending_peers[]?.store_id],down_store_ids:[.down_peers[]?.peer.store_id]}]' "$check_response" 2>/dev/null || printf 'malformed')"
         echo "PD ${check} Region health has not converged: ${summary}" >&2
       fi
     done
@@ -251,19 +268,19 @@ validate_pd_regions_healthy() {
   return 1
 }
 read_abnormal_store_ids() {
-  local pd_proxy check check_json
+  local pd_proxy check check_response
   local -A ids=()
   pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
   for check in pending-peer down-peer; do
-    check_json="$(kctl get --raw "${pd_proxy}/regions/check/${check}")" || return 1
+    check_response="$(capture_pd_response get --raw "${pd_proxy}/regions/check/${check}")" || return 1
     "$JQ" -e '
       (.count | type == "number" and . >= 0) and (.regions | type == "array") and
       all(.regions[]?; all(.pending_peers[]?; .store_id > 0) and all(.down_peers[]?; .peer.store_id > 0))
-    ' >/dev/null <<<"$check_json" || return 1
+    ' "$check_response" >/dev/null || return 1
     while IFS= read -r store_id; do
       [[ "$store_id" =~ ^[1-9][0-9]*$ ]] || return 1
       ids[$store_id]=1
-    done < <("$JQ" -r '[.regions[]? | (.pending_peers[]?.store_id), (.down_peers[]?.peer.store_id)] | unique | .[]' <<<"$check_json")
+    done < <("$JQ" -r '[.regions[]? | (.pending_peers[]?.store_id), (.down_peers[]?.peer.store_id)] | unique | .[]' "$check_response")
   done
   if (( ${#ids[@]} > 0 )); then
     printf '%s\n' "${!ids[@]}" | sort -n
@@ -449,11 +466,11 @@ done <<<"$initial_abnormal_store_ids"
 replacement_ordinals=()
 targeted_replacement_count=0
 if (( ${#abnormal_store_ids[@]} > 0 )); then
-  stores_json="$(kctl get --raw "${pd_proxy}/stores")" || die "cannot map abnormal PD stores before repair"
+  stores_response="$(capture_pd_response get --raw "${pd_proxy}/stores")" || die "cannot map abnormal PD stores before repair"
   "$JQ" -e '
     (.count | type == "number" and . >= 0) and (.stores | type == "array") and
     all(.stores[]?; .store.id > 0 and (.store.address | type == "string" and length > 0))
-  ' >/dev/null <<<"$stores_json" || die "PD stores response is malformed while mapping abnormal stores"
+  ' "$stores_response" >/dev/null || die "PD stores response is malformed while mapping abnormal stores"
   declare -A abnormal_ordinals=()
   declare -A abnormal_store_ordinals_by_id=()
   mapped_abnormal_stores=0
@@ -466,7 +483,7 @@ if (( ${#abnormal_store_ids[@]} > 0 )); then
     else
       die "abnormal PD store ${store_id} address cannot be mapped to an expected TiKV Pod: ${address}"
     fi
-  done < <("$JQ" -r '.stores[]? | [.store.id, .store.address] | @tsv' <<<"$stores_json")
+  done < <("$JQ" -r '.stores[]? | [.store.id, .store.address] | @tsv' "$stores_response")
   (( mapped_abnormal_stores == ${#abnormal_store_ids[@]} )) || die "not every abnormal PD store maps to an expected TiKV Pod"
   for ordinal in 2 1 0; do
     if [[ -n "${abnormal_ordinals[$ordinal]:-}" ]]; then
