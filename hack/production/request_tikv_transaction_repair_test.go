@@ -117,3 +117,49 @@ func TestRequestTiKVTransactionRepairRejectsResolvedAlertBeforeKubernetes(t *tes
 	require.Contains(t, string(output), "exactly one matching firing")
 	require.NoFileExists(t, logPath)
 }
+
+func TestRequestTiKVTransactionRepairRejectsOversizedAlertBeforeParsing(t *testing.T) {
+	tempDir := t.TempDir()
+	base := `{"alerts":[]}`
+	alertPath := filepath.Join(tempDir, "alert.json")
+	require.NoError(t, os.WriteFile(alertPath, []byte(base+strings.Repeat(" ", 1048577-len(base))), 0o600))
+	output, err := runProductionScriptCommand(t, "request-tikv-transaction-repair.sh", []string{
+		"ALERT_INPUT=" + alertPath, "KUBE_CONTEXT=in-cluster", "ENDPOINT=http://kubebrain:3379",
+		"NOW_UNIX=1786252000", "KUBECTL=/bin/true", "OPERATIONCTL=/bin/true",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "alert payload exceeds 1048576 bytes")
+}
+
+func TestRequestTiKVTransactionRepairRejectsOversizedFrozenAlertBeforeParsing(t *testing.T) {
+	tempDir := t.TempDir()
+	alertPath := filepath.Join(tempDir, "alert.json")
+	require.NoError(t, os.WriteFile(alertPath, []byte(`{"alerts":[{"status":"firing","labels":{"alertname":"KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane","namespace":"kubebrain-system","statefulset":"kubebrain"},"startsAt":"2026-08-09T05:00:00Z","fingerprint":"abcdef0123456789"}]}`), 0o600))
+	cpWrapper := filepath.Join(tempDir, "cp")
+	require.NoError(t, os.WriteFile(cpWrapper, []byte("#!/usr/bin/env bash\n/bin/cp \"$@\"\ndest=\"${@: -1}\"\nhead -c 1048577 /dev/zero >>\"$dest\"\n"), 0o755))
+	output, err := runProductionScriptCommand(t, "request-tikv-transaction-repair.sh", []string{
+		"PATH=" + tempDir + ":" + os.Getenv("PATH"), "ALERT_INPUT=" + alertPath,
+		"KUBE_CONTEXT=in-cluster", "ENDPOINT=http://kubebrain:3379", "NOW_UNIX=1",
+		"KUBECTL=/bin/true", "OPERATIONCTL=/bin/true",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "alert payload exceeds 1048576 bytes")
+}
+
+func TestRequestTiKVTransactionRepairAcceptsAlertAtSizeLimit(t *testing.T) {
+	tempDir := t.TempDir()
+	base := `{"alerts":[{"status":"firing","labels":{"alertname":"KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane","namespace":"kubebrain-system","statefulset":"kubebrain"},"startsAt":"2026-08-09T05:00:00Z","fingerprint":"abcdef0123456789"}]}`
+	alertPath := filepath.Join(tempDir, "alert.json")
+	require.NoError(t, os.WriteFile(alertPath, []byte(base+strings.Repeat(" ", 1048576-len(base))), 0o600))
+	logPath := filepath.Join(tempDir, "kubectl.log")
+	kubectl := filepath.Join(tempDir, "kubectl")
+	require.NoError(t, os.WriteFile(kubectl, []byte("#!/usr/bin/env bash\nprintf called >>\"$KUBECTL_LOG\"\n"), 0o755))
+	output, err := runProductionScriptCommand(t, "request-tikv-transaction-repair.sh", []string{
+		"ALERT_INPUT=" + alertPath, "KUBE_CONTEXT=in-cluster", "ENDPOINT=http://kubebrain:3379",
+		"NOW_UNIX=1", "KUBECTL=" + kubectl, "KUBECTL_LOG=" + logPath, "OPERATIONCTL=/bin/true",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "alert startsAt is in the future")
+	require.NotContains(t, string(output), "alert payload exceeds")
+	require.NoFileExists(t, logPath)
+}

@@ -15,9 +15,13 @@ KUBECTL="${KUBECTL:-kubectl}"
 OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 JQ="${JQ:-jq}"
 DATE="${DATE:-date}"
+MAX_ALERT_INPUT_BYTES=1048576
 
 die() { echo "$*" >&2; exit 1; }
 [[ -f "$ALERT_INPUT" ]] || die "ALERT_INPUT is required and must exist"
+command -v stat >/dev/null || die "stat is required"
+alert_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ ]] && ((size <= MAX_ALERT_INPUT_BYTES)); }
+alert_size_is_valid "$ALERT_INPUT" || die "alert payload exceeds ${MAX_ALERT_INPUT_BYTES} bytes"
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required (use in-cluster for service-account credentials)"
 [[ "$ENDPOINT" =~ ^https?://[^[:space:],]+$ ]] || die "ENDPOINT must be exactly one HTTP(S) URL"
 [[ "$MIN_FIRING_SECONDS" =~ ^[1-9][0-9]*$ && "$NOW_UNIX" =~ ^[1-9][0-9]*$ ]] || die "firing duration and current time must be positive integers"
@@ -27,6 +31,11 @@ done
 command -v "$JQ" >/dev/null || die "jq is required"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 [[ -x "$OPERATIONCTL" ]] || die "OPERATIONCTL must be executable"
+temp_dir="$(mktemp -d)"
+trap 'rm -rf -- "$temp_dir"' EXIT
+frozen_alert="$temp_dir/alert.json"
+cp -- "$ALERT_INPUT" "$frozen_alert"; chmod 600 "$frozen_alert"
+alert_size_is_valid "$frozen_alert" && alert_size_is_valid "$ALERT_INPUT" || die "alert payload exceeds ${MAX_ALERT_INPUT_BYTES} bytes"
 
 context_args=()
 [[ "$KUBE_CONTEXT" == "in-cluster" ]] || context_args=(--context "$KUBE_CONTEXT")
@@ -39,7 +48,7 @@ alert="$($JQ -cer --arg ns "$KUBEBRAIN_NAMESPACE" --arg sts "$KUBEBRAIN_STATEFUL
     .labels.namespace == $ns and .labels.statefulset == $sts
   )] | select(length == 1) | .[0] |
   select(.fingerprint | type == "string" and test("^[a-f0-9]{16,64}$")) |
-  select(.startsAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))' "$ALERT_INPUT")" ||
+  select(.startsAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))' "$frozen_alert")" ||
   die "payload must contain exactly one matching firing transaction-path alert"
 fingerprint="$($JQ -r '.fingerprint' <<<"$alert")"
 starts_at="$($JQ -r '.startsAt' <<<"$alert")"
@@ -56,8 +65,6 @@ cluster_id="${cluster_identity#*$'\t'}"
 occurrence_id="$(printf '%s\n%s\n' "$fingerprint" "$starts_at" | sha256sum | cut -c1-20)"
 operation_name="tikv-repair-${occurrence_id}"
 secret_name="${operation_name}-parameters"
-temp_dir="$(mktemp -d)"
-trap 'rm -rf -- "$temp_dir"' EXIT
 parameters_file="$temp_dir/parameters.json"
 $JQ -cnS \
   --arg endpoint "$ENDPOINT" --arg kbns "$KUBEBRAIN_NAMESPACE" --arg kbsts "$KUBEBRAIN_STATEFULSET" \
