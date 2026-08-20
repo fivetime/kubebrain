@@ -58127,6 +58127,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项不改变 logical artifact、在线 etcd RPC、Service selector CAS 语义或 TiKV 编码；最终 target revision 仍是
   complete 时点证据，切流后的持续审计仍负责发现后续漂移。
 
+- A5181 修复 A5180 正常 v2 cutover 输出无法进入 post-restore audit 的迁移断点。直接
+  `audit-restored-instance.sh` 与 `run-post-restore-audit-operation.sh` 都把 state 限死为 13-field v1 HEADER、
+  cutover receipt 限死为 v1 精确 JSON 字段，因此新 v2 恢复会在持续审计首个探针前被拒绝。现两层消费者均
+  严格接受成对 v1/v1 或 v2/v2：v2 state 必须是 16-field HEADER，并携带 v2 restore receipt format、正初始
+  target revision 与小写 SHA-256；v2 cutover receipt 必须逐项回显这些绑定并含正公开重验 revision。版本混搭、
+  初始 revision 不同、公开 revision 为零、restore receipt digest 漂移或未知字段均 fail closed。post-restore
+  audit receipt schema 不变，因为其既有 `cutover_state_sha256` 与 `cutover_receipt_sha256` 已完整绑定 v2 证据，
+  避免重复字段产生第二份权威。直接审计与 Operation runner v2 正反例连续二十轮 104.823 秒、race 6.002 秒，
+  bash syntax、ShellCheck 与 diff check 通过。本轮没有执行真实切流或一小时持续审计；状态机 fixture 覆盖严格
+  Service/Pod/EndpointSlice 身份和 probe receipt 链，不能替代经审批的生产演练。完整非 production 通过，其中
+  `pkg/server/etcd` 158.599 秒；production 332 项四分片（141.139/232.926/165.190/430.363 秒）与全仓 vet
+  （2.193 秒）全部通过。本项不改变 audit probe、审计窗口、post-restore audit receipt schema、在线 etcd RPC
+  或 TiKV 编码；v1 在途证据继续兼容，v2 成为新恢复链的完整输入。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
