@@ -36,7 +36,8 @@ elif [[ "$args" == *"/regions/check/"* ]]; then
 elif [[ "$args" == *"get pvc "* ]]; then
   pvc="${args#*get pvc }"
   pvc="${pvc%% *}"
-  printf '{"metadata":{"name":"%s","uid":"pvc-uid-%s"},"spec":{"volumeName":"pv-%s"},"status":{"phase":"Bound","capacity":{"storage":"%s"}}}' "$pvc" "$pvc" "$pvc" "${FAKE_PVC_CAPACITY:-5Gi}"
+  printf -v payload '{"metadata":{"name":"%s","uid":"pvc-uid-%s"},"spec":{"volumeName":"pv-%s"},"status":{"phase":"Bound","capacity":{"storage":"%s"}}}' "$pvc" "$pvc" "$pvc" "${FAKE_PVC_CAPACITY:-5Gi}"
+  printf '%s' "$payload"; [[ "${FAKE_STORAGE_RESPONSE_TARGET:-}" != pvc ]] || head -c "$((FAKE_STORAGE_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"get pv pv-"* ]]; then
   pv="${args#*get pv }"
   pv="${pv%% *}"
@@ -46,7 +47,8 @@ elif [[ "$args" == *"get pv pv-"* ]]; then
   else
     handle="volume-$pvc"
     [[ "${FAKE_DUPLICATE_HANDLE:-false}" != "true" ]] || handle="volume-shared"
-    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"pvc-uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$pv" "$pvc" "$pvc" "$pvc" "$handle"
+    printf -v payload '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"pvc-uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$pv" "$pvc" "$pvc" "$pvc" "$handle"
+    printf '%s' "$payload"; [[ "${FAKE_STORAGE_RESPONSE_TARGET:-}" != pv ]] || head -c "$((FAKE_STORAGE_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
   fi
 elif [[ "$args" == *" exec "* && "$args" == *" df -P "* ]]; then
   if [[ "$args" == *"exec kb-pd-"* ]]; then
@@ -81,6 +83,14 @@ fi
 		require.Error(t, err)
 		require.Contains(t, string(output), "PD response exceeds 1048576 bytes")
 		output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_PD_RESPONSE_TARGET="+target, "FAKE_PD_RESPONSE_BYTES=1048576"))
+		require.NoError(t, err, string(output))
+		require.Contains(t, string(output), "TiKV/PD region health gate passed")
+	}
+	for _, target := range []string{"pvc", "pv"} {
+		output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_STORAGE_RESPONSE_TARGET="+target, "FAKE_STORAGE_RESPONSE_BYTES=1048577"))
+		require.Error(t, err)
+		require.Contains(t, string(output), "storage response exceeds 1048576 bytes")
+		output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_STORAGE_RESPONSE_TARGET="+target, "FAKE_STORAGE_RESPONSE_BYTES=1048576"))
 		require.NoError(t, err, string(output))
 		require.Contains(t, string(output), "TiKV/PD region health gate passed")
 	}
