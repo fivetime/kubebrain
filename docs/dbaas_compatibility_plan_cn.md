@@ -58062,6 +58062,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   production 324 项四分片（138/236/166/475 秒）与 vet（2 秒）全部通过。该首次 RED 未被改写为成功；
   本项不改变 receipt schema、probe 操作序列、在线 Watch RPC 或 TiKV 编码，也不替代真实 CSI/PITR restore。
 
+- A5177 收紧不可逆 legacy snapshot history remediation 的 endpoint 身份连续性。旧流程只在开头读取一次
+  Status；SnapshotWithVersion 本身没有 response header，Compact acknowledgement 也只需不早于较旧的
+  compact boundary，因此 Status→Snapshot→Compact→Snapshot 期间切换 cluster、版本或返回落后于最新
+  Status 的成功回执，仍可能发布来自错误端点的合法 bbolt 制品。对照 upstream Maintenance Status、Compact
+  与 Snapshot 合同，现健康诊断执行 Status→Snapshot→Status；legacy 路径执行 Status→失败诊断→Status→
+  Compact→Snapshot→Status。所有续查均固定初始 cluster 与 server/storage version、要求 revision 不回退，
+  同时允许负载均衡切换 member；Compact header 必须至少追上 mutation 前最新 Status，最后一次 Status 必须
+  至少追上 Compact header，之后才 hard-link 发布 OUTPUT。cluster/version/revision 漂移、stale Compact ack
+  与 post-Snapshot 漂移的确定性回归还证明失败时不发布输出；changing-member 正例保持可用。目标包连续二十轮
+  （0.212 秒）与 race（1.106 秒）通过；disposable reference etcd 的只读 Status→Snapshot→Status 通过
+  （0.02 秒），真实独立 TiKV/PD 上经三副本 KubeBrain Service 的同一只读链通过（0.73 秒），endpoint health
+  为 17.828ms。完整非 production 161.293 秒、production 324 项四分片（136/241/167/479 秒）与 vet（2 秒）
+  全部通过。本轮没有在真实集群执行不可逆 Compact；负例由合成响应覆盖，不能替代经审批的 remediation 演练。
+  本项不改变 compact boundary、确认字段、snapshot 格式、receipt schema、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
