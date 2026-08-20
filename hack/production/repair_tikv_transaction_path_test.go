@@ -117,18 +117,20 @@ elif [[ "$args" == *"get pvc "* ]]; then
   pvc="${pvc%% *}"
   capacity="${FAKE_PVC_CAPACITY:-5Gi}"
   [[ "$pvc" != pd-* ]] || capacity="${FAKE_PD_PVC_CAPACITY:-2Gi}"
-  printf '{"metadata":{"name":"%s","uid":"pvc-uid-%s"},"spec":{"volumeName":"pv-%s"},"status":{"phase":"Bound","capacity":{"storage":"%s"}}}' "$pvc" "$pvc" "$pvc" "$capacity"
+  printf -v payload '{"metadata":{"name":"%s","uid":"pvc-uid-%s"},"spec":{"volumeName":"pv-%s"},"status":{"phase":"Bound","capacity":{"storage":"%s"}}}' "$pvc" "$pvc" "$pvc" "$capacity"
+  printf '%s' "$payload"; [[ "${FAKE_STORAGE_RESPONSE_TARGET:-}" != pvc ]] || head -c "$((FAKE_STORAGE_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"get pv pv-"* ]]; then
   pv="${args#*get pv }"
   pv="${pv%% *}"
   pvc="${pv#pv-}"
   if [[ "${FAKE_HOSTPATH_PV:-false}" == "true" ]]; then
-    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"pvc-uid-%s"},"hostPath":{"path":"/data/%s"}},"status":{"phase":"Bound"}}' "$pv" "$pvc" "$pvc" "$pvc" "$pvc"
+    printf -v payload '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"pvc-uid-%s"},"hostPath":{"path":"/data/%s"}},"status":{"phase":"Bound"}}' "$pv" "$pvc" "$pvc" "$pvc" "$pvc"
   else
     handle="volume-$pvc"
     [[ "${FAKE_DUPLICATE_HANDLE:-false}" != "true" ]] || handle="volume-shared"
-    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"pvc-uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$pv" "$pvc" "$pvc" "$pvc" "$handle"
+    printf -v payload '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"pvc-uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$pv" "$pvc" "$pvc" "$pvc" "$handle"
   fi
+  printf '%s' "$payload"; [[ "${FAKE_STORAGE_RESPONSE_TARGET:-}" != pv ]] || head -c "$((FAKE_STORAGE_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"get pod kb-tikv-"* ]]; then
   ordinal="${args#*get pod kb-tikv-}"
   ordinal="${ordinal%% *}"
@@ -223,6 +225,34 @@ fi
 			if size > 1048576 {
 				require.Error(t, boundaryErr)
 				require.Contains(t, string(boundaryOutput), "PD response exceeds 1048576 bytes")
+				require.NoFileExists(t, caseReceipt)
+				caseLogData, readErr := os.ReadFile(caseLog)
+				require.NoError(t, readErr)
+				require.NotContains(t, string(caseLogData), "delete pod kb-tikv-")
+			} else {
+				require.NoError(t, boundaryErr, string(boundaryOutput))
+				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+			}
+		}
+	}
+	for _, target := range []string{"pvc", "pv"} {
+		for _, size := range []int{1048577, 1048576} {
+			caseState := filepath.Join(tempDir, "storage-response-"+target+"-"+strconv.Itoa(size))
+			require.NoError(t, os.Mkdir(caseState, 0o755))
+			caseReceipt := filepath.Join(caseState, "receipt.json")
+			caseLog := filepath.Join(caseState, "kubectl.log")
+			caseEnv := append([]string(nil), env...)
+			caseEnv = append(caseEnv,
+				"FAKE_STATE="+caseState,
+				"FAKE_LOG="+caseLog,
+				"RECEIPT_OUTPUT="+caseReceipt,
+				"FAKE_STORAGE_RESPONSE_TARGET="+target,
+				"FAKE_STORAGE_RESPONSE_BYTES="+strconv.Itoa(size),
+			)
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+			if size > 1048576 {
+				require.Error(t, boundaryErr)
+				require.Contains(t, string(boundaryOutput), "storage response exceeds 1048576 bytes")
 				require.NoFileExists(t, caseReceipt)
 				caseLogData, readErr := os.ReadFile(caseLog)
 				require.NoError(t, readErr)

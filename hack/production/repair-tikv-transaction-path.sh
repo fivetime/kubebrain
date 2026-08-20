@@ -37,6 +37,7 @@ COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-timeout}"
 DATE="${DATE:-date}"
 JQ="${JQ:-jq}"
 MAX_PD_RESPONSE_BYTES=1048576
+MAX_STORAGE_RESPONSE_BYTES=1048576
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -157,6 +158,18 @@ capture_pd_response() {
   size="$(stat -Lc '%s' -- "$response")" || return 1
   if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_PD_RESPONSE_BYTES" ]]; then
     echo "PD response exceeds ${MAX_PD_RESPONSE_BYTES} bytes" >&2
+    return 1
+  fi
+  printf '%s\n' "$response"
+}
+capture_storage_response() {
+  local response size
+  response="$(mktemp "$response_dir/storage-response.XXXXXX")" || return 1
+  kctl "$@" >"$response" || return 1
+  chmod 600 "$response" || return 1
+  size="$(stat -Lc '%s' -- "$response")" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_STORAGE_RESPONSE_BYTES" ]]; then
+    echo "storage response exceeds ${MAX_STORAGE_RESPONSE_BYTES} bytes" >&2
     return 1
   fi
   printf '%s\n' "$response"
@@ -378,7 +391,7 @@ disk_pd_rows="$(pd_status)" || die "cannot refresh PD topology before storage-sa
 validate_storage_safety() {
   local component="$1" container="$2" data_dir="$3" rows="$4"
   local pod pod_uid ready pvc disk_row capacity_kib available_kib used_percent_text used_percent
-  local pvc_json pvc_uid pv pvc_capacity pvc_capacity_kib pv_json pv_uid csi_driver volume_handle volume_identity
+  local pvc_response pvc_uid pv pvc_capacity pvc_capacity_kib pv_response pv_uid csi_driver volume_handle volume_identity
 while IFS=$'\t' read -r pod pod_uid ready pvc; do
   [[ -n "$pod" && -n "$pod_uid" && "$ready" == "True" && -n "$pvc" ]] || continue
   disk_row="$($COMMAND_TIMEOUT --signal=TERM "${PROBE_TIMEOUT_SECONDS}s" \
@@ -389,37 +402,39 @@ while IFS=$'\t' read -r pod pod_uid ready pvc; do
   used_percent="${used_percent_text%%%}"
   [[ "$capacity_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+$ ]] || \
     die "${component} disk usage response is malformed for ${pod}: ${disk_row}"
-  pvc_json="$(kctl -n "$TIDB_NAMESPACE" get pvc "$pvc" -o json)"
+  pvc_response="$(capture_storage_response -n "$TIDB_NAMESPACE" get pvc "$pvc" -o json)" || \
+    die "cannot read ${component} PVC response for ${pod}/${pvc}"
   if ! "$JQ" -e --arg name "$pvc" '
     .metadata.name == $name and (.metadata.uid | type == "string" and length > 0) and
     .status.phase == "Bound" and (.spec.volumeName | type == "string" and length > 0) and
     (.status.capacity.storage | type == "string" and length > 0)
-  ' >/dev/null <<<"$pvc_json"; then
+  ' "$pvc_response" >/dev/null; then
     die "${component} PVC binding is malformed for ${pod}/${pvc}"
   fi
-  pvc_uid="$("$JQ" -r '.metadata.uid' <<<"$pvc_json")"
-  pv="$("$JQ" -r '.spec.volumeName' <<<"$pvc_json")"
-  pvc_capacity="$("$JQ" -r '.status.capacity.storage' <<<"$pvc_json")"
+  pvc_uid="$("$JQ" -r '.metadata.uid' "$pvc_response")"
+  pv="$("$JQ" -r '.spec.volumeName' "$pvc_response")"
+  pvc_capacity="$("$JQ" -r '.status.capacity.storage' "$pvc_response")"
   pvc_capacity_kib="$(quantity_to_kib "$pvc_capacity")" || \
     die "${component} PVC capacity is unsupported or malformed for ${pod}/${pvc}: ${pvc_capacity:-missing}"
   if (( capacity_kib * 100 > pvc_capacity_kib * MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT )); then
     capacity_isolation_mismatch=true
     disk_errors+=("component=${component} pod=${pod} pvc=${pvc} declared=${pvc_capacity} filesystem_capacity_kib=${capacity_kib} allowed_percent=${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT}%")
   fi
-  pv_json="$(kctl get pv "$pv" -o json)"
+  pv_response="$(capture_storage_response get pv "$pv" -o json)" || \
+    die "cannot read ${component} PV response for ${pod}/${pvc}/${pv}"
   if ! "$JQ" -e --arg namespace "$TIDB_NAMESPACE" --arg pvc "$pvc" --arg pvc_uid "$pvc_uid" '
     .status.phase == "Bound" and (.metadata.uid | type == "string" and length > 0) and
     .spec.claimRef.apiVersion == "v1" and .spec.claimRef.kind == "PersistentVolumeClaim" and
     .spec.claimRef.namespace == $namespace and .spec.claimRef.name == $pvc and .spec.claimRef.uid == $pvc_uid and
     (.spec.csi.driver | type == "string" and length > 0) and
     (.spec.csi.volumeHandle | type == "string" and length > 0)
-  ' >/dev/null <<<"$pv_json"; then
+  ' "$pv_response" >/dev/null; then
     storage_identity_mismatch=true
     disk_errors+=("component=${component} pod=${pod} pvc=${pvc} pv=${pv} is not an exactly bound CSI volume")
   else
-    pv_uid="$("$JQ" -r '.metadata.uid' <<<"$pv_json")"
-    csi_driver="$("$JQ" -r '.spec.csi.driver' <<<"$pv_json")"
-    volume_handle="$("$JQ" -r '.spec.csi.volumeHandle' <<<"$pv_json")"
+    pv_uid="$("$JQ" -r '.metadata.uid' "$pv_response")"
+    csi_driver="$("$JQ" -r '.spec.csi.driver' "$pv_response")"
+    volume_handle="$("$JQ" -r '.spec.csi.volumeHandle' "$pv_response")"
     volume_identity="${csi_driver}"$'\x1f'"${volume_handle}"
     if [[ -n "${seen_pv_uids[$pv_uid]:-}" ]]; then
       storage_identity_mismatch=true
