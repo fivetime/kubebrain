@@ -4973,6 +4973,9 @@ NativePITRTargetProvisioning 与 NativePITRTargetRetirement requester 对外部 
 私有文件后复检副本与原路径，后续只解析冻结副本。恰好 65536 bytes 合法；超限输入不得创建 Secret 或
 Pending Operation。该提交端门禁补充 executor 侧门禁，不能用 executor 最终会拒绝来容忍控制面预先处理
 无界审批文件。
+NativePITRFullBackup 与 NativePITRFullRestore requester 也不得只做一次长度检查后让 jq 重新打开可变原路径。
+两者在初次 `stat -L` 后复制为 0600 私有文件，复检冻结副本和原路径，且 canonicalization 只读取冻结副本；
+超限或复制阶段膨胀必须发生在 Secret/Operation API 调用前。恰好 65536 bytes 仍合法。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约

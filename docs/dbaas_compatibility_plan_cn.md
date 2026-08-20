@@ -58455,6 +58455,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Secret/Operation identity、审批语义、在线 etcd RPC 或 TiKV 编码，只阻止提交端预先处理和持久化无界审批
   文件。
 
+- A5202 关闭 NativePITRFullBackup 与 NativePITRFullRestore requester 的检查后重开原文件竞态。旧实现虽用
+  `wc -c` 做 64 KiB 初检，却让 jq 随后直接重新打开 `PARAMETERS_FILE`，也没有 0600 冻结快照；注入可替换
+  `cp` 的两个 RED 反例因旧代码根本不复制而继续创建 Secret、提交 Operation（0.228 秒）。现两条 requester
+  在解析前使用 `stat -L` 初检，复制为 0600 私有文件后复检冻结副本与原路径，canonicalization 仅打开冻结
+  副本。测试覆盖两类冻结副本膨胀、原文件 65537-byte 超限及恰好 65536-byte 正例；三组测试连续二十轮
+  8.594 秒、race 1.496 秒，相关完整 requester 测试 3.139 秒，bash syntax、diff check 与全仓 vet 通过。
+  production 清单确认 394 项并按 91/106/100/97 四片全部通过
+  （176.279/285.266/213.073/506.238 秒）。本项不改变 canonical schema、operation identity、immutable
+  Secret、审批/重试语义、在线 etcd RPC 或 TiKV 编码，只确保提交摘要和 Secret 来自大小受限的稳定输入快照。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
