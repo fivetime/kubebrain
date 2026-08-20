@@ -179,8 +179,9 @@ func run() (retErr error) {
 			ArtifactCreatedAtUnix: status.CreatedAtUnix,
 			SourcePrefix:          status.Prefix, TargetPrefix: targetPrefix, Records: total,
 			ArtifactLeases: status.Leases, VerifiedTargetLeases: len(targetLeaseBySource),
-			VerifiedTargetRevision: verificationRevision,
-			VerifiedAtUnix:         time.Now().UTC().Unix(),
+			VerifiedTargetRevision:  verificationRevision,
+			VerifiedTargetClusterID: responseAdmission.ClusterID(),
+			VerifiedAtUnix:          time.Now().UTC().Unix(),
 		}
 		if err := restorereceipt.WriteAtomic(receiptOutput, receipt); err != nil {
 			return fmt.Errorf("publish restore verification receipt: %w", err)

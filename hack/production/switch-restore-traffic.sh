@@ -162,10 +162,16 @@ receipt_fields() {
       (keys == ["artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases"] or
        keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases"] or
        keys == ["artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases","verified_target_revision"] or
-       keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases","verified_target_revision"]) and
+       keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases","verified_target_revision"] or
+       keys == ["artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_cluster_id","verified_target_leases","verified_target_revision"] or
+       keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_cluster_id","verified_target_leases","verified_target_revision"]) and
       ((.format == "kubebrain.restore-verification.v1" and (has("verified_target_revision") | not)) or
        (.format == "kubebrain.restore-verification.v2" and
-        (.verified_target_revision | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor))) and
+        (has("verified_target_cluster_id") | not) and
+        (.verified_target_revision | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor)) or
+       (.format == "kubebrain.restore-verification.v3" and
+        (.verified_target_revision | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) and
+        (.verified_target_cluster_id | type == "number" and . > 0 and . <= 18446744073709551615 and . == floor))) and
       (.artifact_format | test("^kubebrain\\.logical\\.v[12]$")) and
       (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
       (.snapshot_revision | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) and
@@ -187,6 +193,7 @@ receipt_fields() {
     .source_prefix, .target_prefix, (.records|tostring),
     (.artifact_leases|tostring), (.verified_target_leases|tostring),
     (if has("verified_target_revision") then (.verified_target_revision|tostring) else "0" end),
+    (if has("verified_target_cluster_id") then (.verified_target_cluster_id|tostring) else "0" end),
     (.verified_at_unix|tostring)
   ] | @tsv' "$input"
 }
@@ -206,7 +213,7 @@ validate_cutover_state_schema() {
         exit 1
       }
       if ($2 == "kubebrain.restore-cutover.state.v2" &&
-          ($14 != "kubebrain.restore-verification.v2" || $15 !~ /^[1-9][0-9]*$/ || $16 !~ /^[a-f0-9]{64}$/)) {
+          (($14 != "kubebrain.restore-verification.v2" && $14 != "kubebrain.restore-verification.v3") || $15 !~ /^[1-9][0-9]*$/ || $16 !~ /^[a-f0-9]{64}$/)) {
         bad = "v2 HEADER row has invalid restore receipt binding"
         exit 1
       }
@@ -318,7 +325,7 @@ state_header() {
     -n "$service_uid" && -n "$restore_sha" && "$restore_revision" =~ ^[1-9][0-9]*$ &&
     -n "$source_prefix" && -n "$target_prefix" &&
     (( "$format" == "kubebrain.restore-cutover.state.v1" && -z "$receipt_format" && -z "$target_revision" && -z "$receipt_sha" ) ||
-     ( "$format" == "kubebrain.restore-cutover.state.v2" && "$receipt_format" == "kubebrain.restore-verification.v2" &&
+     ( "$format" == "kubebrain.restore-cutover.state.v2" && "$receipt_format" =~ ^kubebrain\.restore-verification\.v[23]$ &&
        "$target_revision" =~ ^[1-9][0-9]*$ && "$receipt_sha" =~ ^[a-f0-9]{64}$ )) ]] ||
     { echo "restore cutover state does not match the requested operation" >&2; exit 1; }
   is_positive_etcd_revision "$restore_revision" &&
@@ -391,6 +398,7 @@ wait_endpoints() {
 verify_data() {
   [[ -n "$PUBLIC_ENDPOINT" ]] || { echo "PUBLIC_ENDPOINT is required for ${ACTION}" >&2; exit 2; }
   local source_prefix target_prefix temporary before after after_format after_target_revision
+  local before_cluster_id after_cluster_id
   source_prefix="$(state_value HEADER 12)"
   target_prefix="$(state_value HEADER 13)"
   temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.verify.XXXXXX")"
@@ -402,8 +410,11 @@ verify_data() {
   rm -f "$temporary"
   after_format="$(cut -f1 <<<"$after")"
   after_target_revision="$(cut -f10 <<<"$after")"
-  [[ "$after_format" == "kubebrain.restore-verification.v2" && "$after_target_revision" =~ ^[1-9][0-9]*$ ]] ||
-    { echo "public endpoint verification did not publish a revision-bound v2 receipt" >&2; exit 1; }
+  before_cluster_id="$(cut -f11 <<<"$before")"
+  after_cluster_id="$(cut -f11 <<<"$after")"
+  [[ "$after_format" == "kubebrain.restore-verification.v3" && "$after_target_revision" =~ ^[1-9][0-9]*$ &&
+    "$after_cluster_id" =~ ^[1-9][0-9]*$ ]] ||
+    { echo "public endpoint verification did not publish a cluster-bound v3 receipt" >&2; exit 1; }
   [[ "$(cut -f2-9 <<<"$before")" == "$(cut -f2-9 <<<"$after")" ]] ||
     { echo "public endpoint verification does not match prepared restore receipt" >&2; exit 1; }
   if [[ "$(state_value HEADER 2)" == "kubebrain.restore-cutover.state.v2" ]]; then
@@ -411,6 +422,11 @@ verify_data() {
       "$(cut -f10 <<<"$before")" == "$(state_value HEADER 15)" &&
       "$(file_sha256 "$RESTORE_RECEIPT_INPUT")" == "$(state_value HEADER 16)" ]] ||
       { echo "prepared restore receipt does not match revision-bound cutover state" >&2; exit 1; }
+  fi
+  if [[ "$(cut -f1 <<<"$before")" == "kubebrain.restore-verification.v3" &&
+    "$after_cluster_id" != "$before_cluster_id" ]]; then
+    echo "public endpoint verification changed target cluster ID" >&2
+    exit 1
   fi
   LAST_VERIFIED_TARGET_REVISION="$after_target_revision"
 }
@@ -537,13 +553,15 @@ case "$ACTION" in
       { echo "RESTORE_RECEIPT_INPUT does not exist" >&2; exit 2; }
     receipt="$(receipt_fields)" || { echo "restore verification receipt is invalid" >&2; exit 1; }
     IFS=$'\t' read -r format artifact_format sha revision source_prefix target_prefix records \
-      artifact_leases target_leases target_revision verified_at <<<"$receipt"
-    [[ "$format" =~ ^kubebrain\.restore-verification\.v[12]$ &&
+      artifact_leases target_leases target_revision target_cluster_id verified_at <<<"$receipt"
+    [[ "$format" =~ ^kubebrain\.restore-verification\.v[123]$ &&
       "$artifact_format" =~ ^kubebrain\.logical\.v[12]$ && "$sha" =~ ^[a-f0-9]{64}$ &&
       "$revision" =~ ^[1-9][0-9]*$ && "$records" =~ ^[0-9]+$ &&
       "$artifact_leases" =~ ^[0-9]+$ && "$target_leases" =~ ^[0-9]+$ &&
       (( "$format" == "kubebrain.restore-verification.v1" && "$target_revision" == 0 ) ||
-       ( "$format" == "kubebrain.restore-verification.v2" && "$target_revision" =~ ^[1-9][0-9]*$ )) &&
+       ( "$format" == "kubebrain.restore-verification.v2" && "$target_revision" =~ ^[1-9][0-9]*$ && "$target_cluster_id" == 0 ) ||
+       ( "$format" == "kubebrain.restore-verification.v3" && "$target_revision" =~ ^[1-9][0-9]*$ &&
+         "$target_cluster_id" =~ ^[1-9][0-9]*$ )) &&
       "$verified_at" =~ ^[1-9][0-9]*$ ]] ||
       { echo "restore verification receipt is incomplete" >&2; exit 1; }
     service="$(service_snapshot)"
@@ -553,7 +571,7 @@ case "$ACTION" in
     source_pods="$(pod_snapshot "$SOURCE_INSTANCE")"
     target_pods="$(pod_snapshot "$TARGET_INSTANCE")"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.state.XXXXXX")"
-    if [[ "$format" == "kubebrain.restore-verification.v2" ]]; then
+    if [[ "$format" =~ ^kubebrain\.restore-verification\.v[23]$ ]]; then
       restore_receipt_sha="$(file_sha256 "$RESTORE_RECEIPT_INPUT")" ||
         { echo "restore verification receipt digest is invalid" >&2; exit 1; }
       printf 'HEADER\tkubebrain.restore-cutover.state.v2\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \

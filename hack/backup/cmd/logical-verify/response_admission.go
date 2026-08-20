@@ -13,6 +13,10 @@ type verifyResponseAdmission struct {
 	revision  int64
 }
 
+func (a *verifyResponseAdmission) ClusterID() uint64 {
+	return a.clusterID
+}
+
 func (a *verifyResponseAdmission) admitHeader(header *etcdserverpb.ResponseHeader) error {
 	if header == nil || header.ClusterId == 0 || header.MemberId == 0 || header.Revision <= 0 || header.Revision < a.revision {
 		return errors.New("response returned an invalid or stale header")

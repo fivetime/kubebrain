@@ -192,6 +192,28 @@ func TestRestoreTrafficCutoverV2EvidenceChain(t *testing.T) {
 	require.Equal(t, float64(84), cutoverReceipt["public_verified_target_revision"])
 }
 
+func TestRestoreTrafficCutoverV3BindsTargetCluster(t *testing.T) {
+	f := newTrafficFixture(t)
+	promoteTrafficRestoreReceiptToV3(t, f, 73, 7)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "")
+	f.run(t, "complete", true, "")
+
+	stateHeader := strings.Split(strings.SplitN(string(mustRead(t, filepath.Join(f.state, "restore-1.state"))), "\n", 2)[0], "\t")
+	require.Equal(t, "kubebrain.restore-cutover.state.v2", stateHeader[1])
+	require.Equal(t, "kubebrain.restore-verification.v3", stateHeader[13])
+}
+
+func TestRestoreTrafficCutoverV3RejectsTargetClusterDrift(t *testing.T) {
+	f := newTrafficFixture(t)
+	promoteTrafficRestoreReceiptToV3(t, f, 73, 7)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", false, "VERIFY_TARGET_CLUSTER_ID=8", "changed target cluster ID")
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.verified"))
+}
+
 func TestRestoreTrafficCutoverDoesNotPublishRegressedPublicRevision(t *testing.T) {
 	f := newTrafficFixture(t)
 	promoteTrafficRestoreReceiptToV2(t, f, 73)
@@ -285,6 +307,38 @@ func TestRestoreTrafficCutoverRejectsMalformedRevisionBinding(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
 
+			f.run(t, "prepare", false, "", "restore verification receipt is invalid")
+			require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+		})
+	}
+}
+
+func TestRestoreTrafficCutoverRejectsMalformedClusterBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		format    string
+		clusterID any
+	}{
+		{name: "v3 missing cluster", format: "kubebrain.restore-verification.v3"},
+		{name: "v3 zero cluster", format: "kubebrain.restore-verification.v3", clusterID: float64(0)},
+		{name: "v3 cluster above uint64", format: "kubebrain.restore-verification.v3", clusterID: json.Number("18446744073709551616")},
+		{name: "v2 carrying cluster", format: "kubebrain.restore-verification.v2", clusterID: float64(7)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrafficFixture(t)
+			path := filepath.Join(f.dir, "restore.json")
+			var receipt map[string]any
+			require.NoError(t, json.Unmarshal(mustRead(t, path), &receipt))
+			receipt["format"] = tc.format
+			receipt["verified_target_revision"] = float64(84)
+			if tc.clusterID == nil {
+				delete(receipt, "verified_target_cluster_id")
+			} else {
+				receipt["verified_target_cluster_id"] = tc.clusterID
+			}
+			data, err := json.Marshal(receipt)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
 			f.run(t, "prepare", false, "", "restore verification receipt is invalid")
 			require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
 		})
@@ -509,6 +563,19 @@ func promoteTrafficRestoreReceiptToV2(t *testing.T, f *trafficFixture, revision 
 	return path
 }
 
+func promoteTrafficRestoreReceiptToV3(t *testing.T, f *trafficFixture, revision int64, clusterID uint64) string {
+	t.Helper()
+	path := promoteTrafficRestoreReceiptToV2(t, f, revision)
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, path), &receipt))
+	receipt["format"] = "kubebrain.restore-verification.v3"
+	receipt["verified_target_cluster_id"] = clusterID
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+	return path
+}
+
 func (f *trafficFixture) stateDir() string {
 	return f.state
 }
@@ -584,7 +651,7 @@ if [[ "${ASSERT_FROZEN_BACKUP_INPUT:-false}" == true ]]; then
   cmp -s "$INPUT" "$TRAFFIC_BACKUP_SOURCE" || { echo frozen backup input content mismatch >&2; exit 1; }
 fi
 cat >"$RECEIPT_OUTPUT" <<EOF
-{"format":"kubebrain.restore-verification.v2","artifact_format":"kubebrain.logical.v2","artifact_sha256":"`+restoreArtifactSHA256+`","snapshot_revision":42,"source_prefix":"/registry","target_prefix":"/restored","records":2,"artifact_leases":1,"verified_target_leases":1,"verified_target_revision":${VERIFY_TARGET_REVISION:-84},"verified_at_unix":200}
+{"format":"kubebrain.restore-verification.v3","artifact_format":"kubebrain.logical.v2","artifact_sha256":"`+restoreArtifactSHA256+`","snapshot_revision":42,"source_prefix":"/registry","target_prefix":"/restored","records":2,"artifact_leases":1,"verified_target_leases":1,"verified_target_revision":${VERIFY_TARGET_REVISION:-84},"verified_target_cluster_id":${VERIFY_TARGET_CLUSTER_ID:-7},"verified_at_unix":200}
 EOF
 chmod 600 "$RECEIPT_OUTPUT"
 `)

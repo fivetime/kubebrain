@@ -19,6 +19,7 @@ func TestVerifyResponseAdmissionAcceptsSameClusterAcrossMembers(t *testing.T) {
 	require.NoError(t, a.admitGet(&clientv3.GetResponse{Header: verifyHeader(7, 11, 11)}, []byte("b")))
 	require.NoError(t, a.admitLease(&clientv3.LeaseTimeToLiveResponse{ResponseHeader: verifyHeader(7, 9, 11)}, 42))
 	require.Equal(t, uint64(7), a.clusterID)
+	require.Equal(t, uint64(7), a.ClusterID())
 	require.Equal(t, int64(11), a.revision)
 }
 

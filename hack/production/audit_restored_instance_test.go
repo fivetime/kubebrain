@@ -47,6 +47,12 @@ func TestPostRestoreAuditAcceptsRevisionBoundV2CutoverEvidence(t *testing.T) {
 	require.GreaterOrEqual(t, receipt["first_probe_revision"].(float64), float64(84))
 }
 
+func TestPostRestoreAuditAcceptsClusterBoundV3CutoverEvidence(t *testing.T) {
+	f := newAuditFixture(t)
+	promoteAuditCutoverEvidenceToV3(t, f.dir)
+	f.run(t, true, "")
+}
+
 func TestPostRestoreAuditRejectsProbeRevisionPredatingCutover(t *testing.T) {
 	f := newAuditFixture(t)
 	promoteAuditCutoverEvidenceToV2(t, f.dir)
@@ -289,6 +295,22 @@ func promoteAuditCutoverEvidenceToV2(t *testing.T, dir string) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(receiptPath, append(data, '\n'), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "v2-evidence"), []byte("1"), 0o600))
+}
+
+func promoteAuditCutoverEvidenceToV3(t *testing.T, dir string) {
+	t.Helper()
+	promoteAuditCutoverEvidenceToV2(t, dir)
+	statePath := filepath.Join(dir, "cutover.state")
+	state := strings.Replace(string(mustRead(t, statePath)), "kubebrain.restore-verification.v2", "kubebrain.restore-verification.v3", 1)
+	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+	receiptPath := filepath.Join(dir, "cutover.json")
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &receipt))
+	receipt["cutover_state_sha256"] = fileDigest(t, statePath)
+	receipt["restore_receipt_format"] = "kubebrain.restore-verification.v3"
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(receiptPath, append(data, '\n'), 0o600))
 }
 
 func newAuditFixture(t *testing.T) *auditFixture {

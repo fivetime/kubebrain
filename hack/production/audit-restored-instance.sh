@@ -163,7 +163,7 @@ validate_cutover_state_schema() {
         exit 1
       }
       if ($2 == "kubebrain.restore-cutover.state.v2" &&
-          ($14 != "kubebrain.restore-verification.v2" || $15 !~ /^[1-9][0-9]*$/ || $16 !~ /^[a-f0-9]{64}$/)) {
+          (($14 != "kubebrain.restore-verification.v2" && $14 != "kubebrain.restore-verification.v3") || $15 !~ /^[1-9][0-9]*$/ || $16 !~ /^[a-f0-9]{64}$/)) {
         bad = "v2 HEADER row has invalid restore receipt binding"
         exit 1
       }
@@ -300,7 +300,7 @@ require_cutover_state_digest "$cutover_state_sha"
   (( "$state_format" == "kubebrain.restore-cutover.state.v1" && -z "$restore_receipt_format" &&
      -z "$initial_target_revision" && -z "$restore_receipt_sha" ) ||
    ( "$state_format" == "kubebrain.restore-cutover.state.v2" &&
-     "$restore_receipt_format" == "kubebrain.restore-verification.v2" &&
+     "$restore_receipt_format" =~ ^kubebrain\.restore-verification\.v[23]$ &&
      "$initial_target_revision" =~ ^[1-9][0-9]*$ && "$restore_receipt_sha" =~ ^[a-f0-9]{64}$ )) ]] ||
   { echo "cutover state does not match the audit operation" >&2; exit 1; }
 is_positive_etcd_revision "$snapshot_revision" &&

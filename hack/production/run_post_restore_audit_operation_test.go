@@ -36,6 +36,13 @@ func TestPostRestoreAuditOperationAcceptsRevisionBoundV2CutoverEvidence(t *testi
 	require.Contains(t, f.log(t), "--action succeed")
 }
 
+func TestPostRestoreAuditOperationAcceptsClusterBoundV3CutoverEvidence(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	promoteOperationAuditCutoverEvidenceToV3(t, f)
+	f.run(t, true, "")
+	require.Contains(t, f.log(t), "--action succeed")
+}
+
 func TestPostRestoreAuditOperationRejectsAuditReceiptPredatingCutover(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	promoteOperationAuditCutoverEvidenceToV2(t, f)
@@ -431,6 +438,27 @@ type operationRunnerFixture struct {
 func promoteOperationAuditCutoverEvidenceToV2(t *testing.T, f *operationRunnerFixture) {
 	t.Helper()
 	promoteAuditCutoverEvidenceToV2(t, f.dir)
+	f.cutoverStateSHA = fileDigest(t, f.cutoverState)
+	f.cutoverReceiptSHA = fileDigest(t, f.cutoverReceipt)
+	var parameters map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+	parameters["cutover_state_sha256"] = f.cutoverStateSHA
+	parameters["cutover_receipt_sha256"] = f.cutoverReceiptSHA
+	data, err := json.Marshal(parameters)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.parameters, append(data, '\n'), 0o600))
+	digest := fmt.Sprintf("%x", sha256.Sum256(append(data, '\n')))
+	for i, value := range f.env {
+		if strings.HasPrefix(value, "PARAMETERS_DIGEST=") {
+			f.env[i] = "PARAMETERS_DIGEST=" + digest
+		}
+	}
+	f.env = append(f.env, "AUDIT_FIRST_REVISION=84", "AUDIT_LAST_REVISION=85")
+}
+
+func promoteOperationAuditCutoverEvidenceToV3(t *testing.T, f *operationRunnerFixture) {
+	t.Helper()
+	promoteAuditCutoverEvidenceToV3(t, f.dir)
 	f.cutoverStateSHA = fileDigest(t, f.cutoverState)
 	f.cutoverReceiptSHA = fileDigest(t, f.cutoverReceipt)
 	var parameters map[string]any
