@@ -154,6 +154,18 @@ func TestRestoreTrafficCutoverRejectsStateDriftDuringReceiptPublish(t *testing.T
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.receipt.json"))
 }
 
+func TestRestoreTrafficCutoverRejectsOversizedPreparedState(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", true, "")
+	statePath := filepath.Join(f.state, "restore-1.state")
+	state := strings.Replace(string(mustRead(t, statePath)), "SERVICE\tuid-service\t10\n",
+		"SERVICE\tuid-service\t10"+strings.Repeat("x", (4<<20)+1)+"\n", 1)
+	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+
+	f.run(t, "cutover", false, "", "restore cutover state has invalid schema")
+	require.NoFileExists(t, filepath.Join(f.dir, "selector-target"))
+}
+
 func TestRestoreTrafficCutoverRejectsInputDriftDuringCapture(t *testing.T) {
 	t.Run("restore receipt", func(t *testing.T) {
 		f := newTrafficFixture(t)

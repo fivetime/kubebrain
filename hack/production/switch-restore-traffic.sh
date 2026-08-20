@@ -25,7 +25,7 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 MAX_ETCD_REVISION=9223372036854775807
 MAX_UINT64=18446744073709551615
-MAX_SMALL_JSON_BYTES=4194304
+MAX_CONTROL_EVIDENCE_BYTES=4194304
 
 is_positive_etcd_revision() {
   local value="$1"
@@ -119,10 +119,10 @@ file_sha256() {
   printf '%s\n' "$digest"
 }
 
-small_json_size_is_valid() {
+control_evidence_size_is_valid() {
   local path="$1" size
   size="$(stat -Lc %s -- "$path")" || return 1
-  [[ "$size" =~ ^[0-9]+$ ]] && (( size <= MAX_SMALL_JSON_BYTES ))
+  [[ "$size" =~ ^[0-9]+$ ]] && (( size <= MAX_CONTROL_EVIDENCE_BYTES ))
 }
 
 freeze_input() {
@@ -139,13 +139,13 @@ freeze_input() {
 if [[ "$ACTION" =~ ^(prepare|cutover|verify|complete)$ ]]; then
   [[ -f "$RESTORE_RECEIPT_INPUT" ]] ||
     { echo "RESTORE_RECEIPT_INPUT does not exist" >&2; exit 2; }
-  small_json_size_is_valid "$RESTORE_RECEIPT_INPUT" ||
-    { echo "restore verification receipt exceeds ${MAX_SMALL_JSON_BYTES} bytes" >&2; exit 1; }
+  control_evidence_size_is_valid "$RESTORE_RECEIPT_INPUT" ||
+    { echo "restore verification receipt exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >&2; exit 1; }
   freeze_input "$RESTORE_RECEIPT_INPUT" "${input_capture_dir}/restore-receipt.json" \
     "restore verification receipt"
   RESTORE_RECEIPT_INPUT="${input_capture_dir}/restore-receipt.json"
-  small_json_size_is_valid "$RESTORE_RECEIPT_INPUT" ||
-    { echo "restore verification receipt exceeds ${MAX_SMALL_JSON_BYTES} bytes" >&2; exit 1; }
+  control_evidence_size_is_valid "$RESTORE_RECEIPT_INPUT" ||
+    { echo "restore verification receipt exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >&2; exit 1; }
   export RESTORE_RECEIPT_INPUT
 fi
 if [[ "$ACTION" =~ ^(verify|complete)$ ]]; then
@@ -221,6 +221,7 @@ receipt_fields() {
 
 validate_cutover_state_schema() {
   local kind format c3 c4 c5 c6 c7 c8 c9 c10 snapshot_revision c12 c13 c14 target_revision c16 target_cluster_id
+  control_evidence_size_is_valid "$state_file" || return 1
   awk -F '\t' -v expected="$EXPECTED_REPLICAS" '
     $0 == "" {
       bad = "empty row"
@@ -510,6 +511,7 @@ verify_data() {
 
 validate_restore_cutover_marker() {
   local path="$1" kind="$2" expected_instance="${3:-}"
+  control_evidence_size_is_valid "$path" || return 1
   awk -F '\t' -v kind="$kind" -v expected="$expected_instance" '
     NR == 1 {
       if ($1 != kind || $2 != "kubebrain.restore-cutover.marker.v1") {
@@ -583,7 +585,7 @@ validate_cutover_chronology() {
 validate_existing_cutover_receipt() {
   local expected_state_sha="${1:-}" state_sha service_uid artifact_sha snapshot_revision verified_at
   local state_format restore_receipt_format restore_receipt_sha initial_target_revision target_cluster_id
-  small_json_size_is_valid "$receipt_file" || return 1
+  control_evidence_size_is_valid "$receipt_file" || return 1
   state_sha="$(validated_cutover_state_digest)" || return 1
   [[ -z "$expected_state_sha" || "$state_sha" == "$expected_state_sha" ]] || return 1
   service_uid="$(state_value SERVICE 2)"

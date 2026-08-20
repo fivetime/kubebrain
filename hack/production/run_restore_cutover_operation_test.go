@@ -71,6 +71,14 @@ func TestRestoreCutoverOperationRejectsStateDifferentFromFrozenV3Receipt(t *test
 	}
 }
 
+func TestRestoreCutoverOperationRejectsOversizedPreparedState(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "OVERSIZED_CUTOVER_STATE=true", "state does not match frozen restore receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "phase cutover")
+}
+
 func TestRestoreCutoverOperationRejectsMalformedFrozenRestoreReceipt(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	var receipt map[string]any
@@ -672,7 +680,11 @@ case "$ACTION" in
         printf 'HEADER\tkubebrain.restore-cutover.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\n' \
           "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`"
       fi
-      printf 'SERVICE\tuid-service\t10\n'
+      printf 'SERVICE\tuid-service\t10'
+      if [[ "${OVERSIZED_CUTOVER_STATE:-false}" == true ]]; then
+        head -c 4194305 /dev/zero | tr '\0' x
+      fi
+      printf '\n'
       printf 'POD\tsource\tkb-source-0\tuid-source-0\t0\n'
       printf 'POD\tsource\tkb-source-1\tuid-source-1\t0\n'
       printf 'POD\ttarget\tkb-target-0\tuid-target-0\t0\n'

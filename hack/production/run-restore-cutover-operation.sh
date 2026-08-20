@@ -15,7 +15,7 @@ KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
 MAX_ETCD_REVISION=9223372036854775807
 MAX_UINT64=18446744073709551615
-MAX_SMALL_JSON_BYTES=4194304
+MAX_CONTROL_EVIDENCE_BYTES=4194304
 
 is_positive_etcd_revision() {
   local value="$1"
@@ -87,10 +87,10 @@ file_sha256() {
   printf '%s' "$digest"
 }
 
-small_json_size_is_valid() {
+control_evidence_size_is_valid() {
   local path="$1" size
   size="$(stat -Lc %s -- "$path")" || return 1
-  [[ "$size" =~ ^[0-9]+$ ]] && (( size <= MAX_SMALL_JSON_BYTES ))
+  [[ "$size" =~ ^[0-9]+$ ]] && (( size <= MAX_CONTROL_EVIDENCE_BYTES ))
 }
 
 contains_unsupported_endpoint_characters() {
@@ -219,10 +219,10 @@ done
 for path in "$restore_receipt" "$backup_input"; do
   [[ -f "$path" ]] || { echo "cutover evidence is missing: ${path}" >&2; exit 2; }
 done
-if ! small_json_size_is_valid "$restore_receipt"; then
+if ! control_evidence_size_is_valid "$restore_receipt"; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
-    --message "restore cutover restore receipt exceeds ${MAX_SMALL_JSON_BYTES} bytes" >/dev/null
-  echo "restore cutover restore receipt exceeds ${MAX_SMALL_JSON_BYTES} bytes" >&2
+    --message "restore cutover restore receipt exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >/dev/null
+  echo "restore cutover restore receipt exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >&2
   exit 1
 fi
 
@@ -307,10 +307,10 @@ restore_receipt_fields() {
 
 capture_evidence restore_receipt "$restore_receipt" "$restore_receipt_sha" \
   restore-receipt.json "restore receipt"
-if ! small_json_size_is_valid "$restore_receipt"; then
+if ! control_evidence_size_is_valid "$restore_receipt"; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
-    --message "restore cutover restore receipt exceeds ${MAX_SMALL_JSON_BYTES} bytes" >/dev/null
-  echo "restore cutover restore receipt exceeds ${MAX_SMALL_JSON_BYTES} bytes" >&2
+    --message "restore cutover restore receipt exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >/dev/null
+  echo "restore cutover restore receipt exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >&2
   exit 1
 fi
 capture_evidence backup_input "$backup_input" "$backup_file_sha" \
@@ -411,6 +411,7 @@ receipt_input="$receipt_output"
 
 validate_cutover_state_schema() {
   local path="$1"
+  control_evidence_size_is_valid "$path" || return 1
   awk -F '\t' -v expected="$expected_replicas" '
     $0 == "" {
       bad = "empty row"
@@ -518,6 +519,7 @@ validate_cutover_state_binding() {
 
 validate_restore_cutover_marker() {
   local path="$1" kind="$2" expected_instance="${3:-}"
+  control_evidence_size_is_valid "$path" || return 1
   awk -F '\t' -v kind="$kind" -v expected="$expected_instance" '
     NR == 1 {
       if ($1 != kind || $2 != "kubebrain.restore-cutover.marker.v1") {
@@ -665,11 +667,11 @@ validated_cutover_receipt_digest() {
 freeze_cutover_receipt() {
   local frozen_receipt source_digest captured_digest current_digest
   frozen_receipt="${parameter_capture_dir}/cutover-receipt.json"
-  small_json_size_is_valid "$receipt_output" || return 1
+  control_evidence_size_is_valid "$receipt_output" || return 1
   source_digest="$(file_sha256 "$receipt_output")" || return 1
   cp -- "$receipt_output" "$frozen_receipt" || return 1
   chmod 600 "$frozen_receipt"
-  small_json_size_is_valid "$frozen_receipt" || return 1
+  control_evidence_size_is_valid "$frozen_receipt" || return 1
   captured_digest="$(file_sha256 "$frozen_receipt")" || return 1
   current_digest="$(file_sha256 "$receipt_output")" || return 1
   [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] ||
