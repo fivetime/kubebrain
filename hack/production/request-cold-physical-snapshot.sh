@@ -27,20 +27,25 @@ resolve_executable() {
 [[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*(s|m|h)$ && "$FENCE_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || die "snapshot timeout parameters are invalid"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a DNS label"
 OPERATIONCTL="$(resolve_executable "$OPERATIONCTL")" || die "OPERATIONCTL must be executable"
+temp_dir="$(mktemp -d)"; trap 'rm -rf -- "$temp_dir"' EXIT
+frozen_preflight="$temp_dir/preflight.json"; frozen_witness="$temp_dir/witness.jsonl"
+cp -- "$PREFLIGHT_FILE" "$frozen_preflight"; cp -- "$SEMANTIC_WITNESS_FILE" "$frozen_witness"
+chmod 600 "$frozen_preflight" "$frozen_witness"
+[[ "$(wc -c <"$frozen_preflight")" -le 524288 && "$(wc -c <"$frozen_witness")" -le 524288 &&
+   "$(wc -c <"$PREFLIGHT_FILE")" -le 524288 && "$(wc -c <"$SEMANTIC_WITNESS_FILE")" -le 524288 ]] || die "snapshot evidence exceeds the immutable parameter budget"
 
-inventory="$($JQ -ceS 'select(.format == "kubebrain.cold-physical-snapshot-preflight.v2")' "$PREFLIGHT_FILE")" || die "preflight inventory format is invalid"
+inventory="$($JQ -ceS 'select(.format == "kubebrain.cold-physical-snapshot-preflight.v2")' "$frozen_preflight")" || die "preflight inventory format is invalid"
 identity="$($JQ -er '[.kubebrain.namespace,.kubebrain.statefulset,.kubebrain.uid,.storage.namespace,.storage.tidb_cluster,.storage.uid,(.storage.cluster_id|tostring)] | select(all(.[]; type == "string" and length > 0)) | @tsv' <<<"$inventory")" || die "preflight inventory identity is incomplete"
 IFS=$'\t' read -r kb_namespace instance kb_uid tidb_namespace tidb_cluster tidb_uid cluster_id <<<"$identity"
 [[ "$kb_namespace" == kubebrain-system && "$instance" == kubebrain && "$tidb_namespace" == tidb-cluster &&
    "$tidb_cluster" == kb && "$cluster_id" =~ ^[1-9][0-9]*$ ]] || die "preflight inventory is outside the production RBAC scope"
-witness_sha="$(sha256sum "$SEMANTIC_WITNESS_FILE" | cut -d ' ' -f1)"
+witness_sha="$(sha256sum "$frozen_witness" | cut -d ' ' -f1)"
 request_hash="$(printf '%s\n%s\n%s\n%s\n%s\n' "$REQUEST_ID" "$kb_uid" "$tidb_uid" "$cluster_id" "$witness_sha" | sha256sum | cut -c1-20)"
 operation_name="cold-snapshot-${request_hash}"
 secret_name="${operation_name}-parameters"
-temp_dir="$(mktemp -d)"; trap 'rm -rf -- "$temp_dir"' EXIT
 parameters_file="$temp_dir/parameters.json"
 $JQ -cnS --arg request_id "$REQUEST_ID" --argjson inventory "$inventory" \
-  --rawfile witness "$SEMANTIC_WITNESS_FILE" --arg witness_sha "$witness_sha" \
+  --rawfile witness "$frozen_witness" --arg witness_sha "$witness_sha" \
   --arg prefix "$EXPECTED_WITNESS_PREFIX" --argjson max_age "$WITNESS_MAX_AGE_SECONDS" \
   --arg wait_timeout "$WAIT_TIMEOUT" --argjson settle "$FENCE_SETTLE_SECONDS" '
   {request_id:$request_id,inventory:$inventory,semantic_witness:$witness,

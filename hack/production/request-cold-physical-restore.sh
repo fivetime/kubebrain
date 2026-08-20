@@ -18,21 +18,24 @@ resolve_executable() {
 OPERATIONCTL="$(resolve_executable "$OPERATIONCTL")" || die "operationctl must be executable"
 COLD_RESTORE_RENDER="$(resolve_executable "$COLD_RESTORE_RENDER")" || die "cold restore renderer must be executable"
 [[ "$(wc -c <"$RECEIPT_FILE")" -le 524288 ]] || die "cold snapshot receipt exceeds the immutable parameter budget"
-$JQ -e '.format == "kubebrain.cold-physical-snapshot.v2" and (.operation_id|test("^cold-snapshot-[a-f0-9]{20}$")) and .inventory.storage.namespace == "tidb-cluster" and .inventory.storage.tidb_cluster == "kb"' "$RECEIPT_FILE" >/dev/null || die "source receipt is outside the supported restore scope"
+temp_dir="$(mktemp -d)"; trap 'rm -rf -- "$temp_dir"' EXIT
+frozen_receipt="$temp_dir/source-receipt.json"
+cp -- "$RECEIPT_FILE" "$frozen_receipt"; chmod 600 "$frozen_receipt"
+[[ "$(wc -c <"$frozen_receipt")" -le 524288 && "$(wc -c <"$RECEIPT_FILE")" -le 524288 ]] || die "cold snapshot receipt exceeds the immutable parameter budget"
+$JQ -e '.format == "kubebrain.cold-physical-snapshot.v2" and (.operation_id|test("^cold-snapshot-[a-f0-9]{20}$")) and .inventory.storage.namespace == "tidb-cluster" and .inventory.storage.tidb_cluster == "kb"' "$frozen_receipt" >/dev/null || die "source receipt is outside the supported restore scope"
 context_args=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context_args=(--context "$KUBE_CONTEXT")
 kctl() { "$KUBECTL" "${context_args[@]}" "$@"; }
 target_kube_uid="$(kctl get namespace kube-system -o jsonpath='{.metadata.uid}')"
 target_namespace_uid="$(kctl get namespace tidb-cluster -o jsonpath='{.metadata.uid}')"
 [[ -n "$target_kube_uid" && -n "$target_namespace_uid" ]] || die "isolated target namespace identity is incomplete"
-temp_dir="$(mktemp -d)"; trap 'rm -rf -- "$temp_dir"' EXIT
 manifest="$temp_dir/restore-manifest.json"
-"$COLD_RESTORE_RENDER" --receipt "$RECEIPT_FILE" --target-snapshot-class "$TARGET_SNAPSHOT_CLASS" \
+"$COLD_RESTORE_RENDER" --receipt "$frozen_receipt" --target-snapshot-class "$TARGET_SNAPSHOT_CLASS" \
   --target-storage-class "$TARGET_STORAGE_CLASS" --output "$manifest" --confirm-isolated-target
 [[ "$(wc -c <"$manifest")" -le 524288 ]] || die "restore manifest exceeds the immutable parameter budget"
-source_sha="$(sha256sum "$RECEIPT_FILE" | cut -d ' ' -f1)"; manifest_sha="$(sha256sum "$manifest" | cut -d ' ' -f1)"
+source_sha="$(sha256sum "$frozen_receipt" | cut -d ' ' -f1)"; manifest_sha="$(sha256sum "$manifest" | cut -d ' ' -f1)"
 request_hash="$(printf '%s\n%s\n%s\n%s\n%s\n' "$REQUEST_ID" "$source_sha" "$manifest_sha" "$target_kube_uid" "$target_namespace_uid" | sha256sum | cut -c1-20)"
 name="cold-restore-${request_hash}"; secret="${name}-parameters"; parameters="$temp_dir/parameters.json"
-$JQ -cnS --arg request_id "$REQUEST_ID" --rawfile receipt "$RECEIPT_FILE" --rawfile manifest "$manifest" \
+$JQ -cnS --arg request_id "$REQUEST_ID" --rawfile receipt "$frozen_receipt" --rawfile manifest "$manifest" \
   --arg source_sha "$source_sha" --arg manifest_sha "$manifest_sha" --arg kube_uid "$target_kube_uid" \
   --arg namespace_uid "$target_namespace_uid" --arg wait_timeout "$WAIT_TIMEOUT" '
   {request_id:$request_id,source_receipt:$receipt,source_receipt_sha256:$source_sha,

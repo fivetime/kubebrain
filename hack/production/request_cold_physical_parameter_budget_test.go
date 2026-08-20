@@ -66,6 +66,60 @@ func TestColdPhysicalRequestersRejectExecutorIncompatibleParameters(t *testing.T
 	})
 }
 
+func TestColdPhysicalRequestersRejectOversizedFrozenEvidenceBeforeControlPlane(t *testing.T) {
+	t.Run("snapshot", func(t *testing.T) {
+		dir := t.TempDir()
+		preflight := filepath.Join(dir, "preflight.json")
+		require.NoError(t, os.WriteFile(preflight, []byte(`{"format":"kubebrain.cold-physical-snapshot-preflight.v2","kubebrain":{"namespace":"kubebrain-system","statefulset":"kubebrain","uid":"kb-uid"},"storage":{"namespace":"tidb-cluster","tidb_cluster":"kb","uid":"tc-uid","cluster_id":"7671"}}`), 0o600))
+		witness := filepath.Join(dir, "witness.jsonl")
+		require.NoError(t, os.WriteFile(witness, []byte("verified-witness\n"), 0o600))
+		writeInflatingColdRequesterCP(t, dir)
+		kubectl, operationctl, controlLog := writeColdRequesterControls(t, dir, false)
+		output, err := runProductionScriptCommand(t, "request-cold-physical-snapshot.sh", []string{
+			"PATH=" + dir + ":" + os.Getenv("PATH"), "REQUEST_ID=change-frozen-snapshot",
+			"PREFLIGHT_FILE=" + preflight, "SEMANTIC_WITNESS_FILE=" + witness, "EXPECTED_WITNESS_PREFIX=/",
+			"KUBE_CONTEXT=in-cluster", "KUBECTL=" + kubectl, "OPERATIONCTL=" + operationctl,
+		})
+		require.Error(t, err)
+		require.Contains(t, string(output), "snapshot evidence exceeds the immutable parameter budget")
+		if calls, readErr := os.ReadFile(controlLog); readErr == nil {
+			require.NotContains(t, string(calls), "create secret")
+			require.NotContains(t, string(calls), "operationctl")
+		}
+	})
+
+	t.Run("restore", func(t *testing.T) {
+		dir := t.TempDir()
+		var source map[string]any
+		require.NoError(t, json.Unmarshal(coldRestoreSnapshotReceipt(t), &source))
+		source["operation_id"] = "cold-snapshot-0123456789abcdefabcd"
+		data, err := json.Marshal(source)
+		require.NoError(t, err)
+		receipt := filepath.Join(dir, "receipt.json")
+		require.NoError(t, os.WriteFile(receipt, data, 0o600))
+		renderer := filepath.Join(dir, "renderer")
+		writeExecutable(t, renderer, "#!/usr/bin/env bash\nout=\"\"; while [[ $# -gt 0 ]]; do [[ $1 == --output ]] && { out=$2; shift 2; continue; }; shift; done\nprintf '{\"apiVersion\":\"v1\",\"kind\":\"List\",\"items\":[]}\\n' >\"$out\"\n")
+		writeInflatingColdRequesterCP(t, dir)
+		kubectl, operationctl, controlLog := writeColdRequesterControls(t, dir, true)
+		output, runErr := runProductionScriptCommand(t, "request-cold-physical-restore.sh", []string{
+			"PATH=" + dir + ":" + os.Getenv("PATH"), "REQUEST_ID=change-frozen-restore", "RECEIPT_FILE=" + receipt,
+			"KUBE_CONTEXT=in-cluster", "TARGET_SNAPSHOT_CLASS=retained", "TARGET_STORAGE_CLASS=fast",
+			"KUBECTL=" + kubectl, "OPERATIONCTL=" + operationctl, "COLD_RESTORE_RENDER=" + renderer,
+		})
+		require.Error(t, runErr)
+		require.Contains(t, string(output), "cold snapshot receipt exceeds the immutable parameter budget")
+		if calls, readErr := os.ReadFile(controlLog); readErr == nil {
+			require.NotContains(t, string(calls), "create secret")
+			require.NotContains(t, string(calls), "operationctl")
+		}
+	})
+}
+
+func writeInflatingColdRequesterCP(t *testing.T, dir string) {
+	t.Helper()
+	writeExecutable(t, filepath.Join(dir, "cp"), "#!/usr/bin/env bash\n/bin/cp \"$@\"\ndest=\"${@: -1}\"\nhead -c 524289 /dev/zero >>\"$dest\"\n")
+}
+
 func writeOversizedCanonicalJQ(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "jq")
