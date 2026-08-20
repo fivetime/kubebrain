@@ -279,14 +279,15 @@ restore_receipt_fields() {
       (.records | type == "number" and . >= 0 and . == floor) and
       (.artifact_leases | type == "number" and . >= 0 and . == floor) and
       (.verified_target_leases | type == "number" and . >= 0 and . == floor) and
-      (.verified_at_unix | type == "number" and . > 0 and . == floor) and
+      (.verified_at_unix | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) and
       ((has("artifact_created_at_unix") | not) or
        (.artifact_created_at_unix | type == "number" and . > 0 and . == floor) and
        .verified_at_unix >= .artifact_created_at_unix)
     ) |
     [.format,.artifact_sha256,(.snapshot_revision|tostring),.source_prefix,.target_prefix,
      (if has("verified_target_revision") then (.verified_target_revision|tostring) else "0" end),
-     (if has("verified_target_cluster_id") then (.verified_target_cluster_id|tostring) else "0" end)] | @tsv
+     (if has("verified_target_cluster_id") then (.verified_target_cluster_id|tostring) else "0" end),
+     (.verified_at_unix|tostring)] | @tsv
   ' "$restore_receipt"
 }
 
@@ -302,7 +303,8 @@ restore_binding="$(restore_receipt_fields)" || {
   exit 1
 }
 IFS=$'\t' read -r expected_restore_format expected_artifact_sha expected_snapshot_revision \
-  expected_source_prefix expected_target_prefix expected_target_revision expected_target_cluster_id <<<"$restore_binding"
+  expected_source_prefix expected_target_prefix expected_target_revision expected_target_cluster_id \
+  expected_restore_verified_at <<<"$restore_binding"
 expected_restore_receipt_sha="$restore_receipt_sha"
 if [[ "$backup_file_sha" != "$expected_artifact_sha" ]]; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
@@ -551,6 +553,8 @@ validate_cutover_receipt() {
   validate_cutover_state_binding || return 1
   cutover_at="$(restore_cutover_marker_timestamp "$cutover_file" CUTOVER "$target_instance")" || return 1
   verified_at="$(restore_cutover_marker_timestamp "$verified_file" VERIFIED)" || return 1
+  is_positive_etcd_revision "$expected_restore_verified_at" || return 1
+  (( cutover_at >= expected_restore_verified_at )) || return 1
   (( verified_at >= cutover_at )) || return 1
   completed_at="$("$JQ" -er '
     .completed_at_unix |

@@ -220,6 +220,27 @@ func TestRestoreCutoverOperationRejectsReversedEvidenceChronology(t *testing.T) 
 	}
 }
 
+func TestRestoreCutoverOperationRejectsCutoverBeforeRestoreVerification(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	setCutoverRunnerRestoreVerifiedAt(t, f, "101")
+
+	f.run(t, false, "COMPLETED_AT_UNIX=102", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestRestoreCutoverOperationRejectsRestoreVerificationTimeAboveInt64(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	setCutoverRunnerRestoreVerifiedAt(t, f, "9223372036854775808")
+
+	f.run(t, false, "", "receipt input has invalid schema")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "phase prepare")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestRestoreCutoverOperationRequeuesPrepareFailure(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "FAIL_PHASE=prepare", "prepare failed and was requeued")
@@ -543,6 +564,17 @@ func refreshCutoverRunnerReceiptParameter(t *testing.T, f *cutoverRunnerFixture)
 	}
 }
 
+func setCutoverRunnerRestoreVerifiedAt(t *testing.T, f *cutoverRunnerFixture, verifiedAt json.Number) {
+	t.Helper()
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.restoreReceipt), &receipt))
+	receipt["verified_at_unix"] = verifiedAt
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.restoreReceipt, append(data, '\n'), 0o600))
+	refreshCutoverRunnerReceiptParameter(t, f)
+}
+
 func newCutoverRunnerFixture(t *testing.T) *cutoverRunnerFixture {
 	t.Helper()
 	dir := t.TempDir()
@@ -554,7 +586,7 @@ func newCutoverRunnerFixture(t *testing.T) *cutoverRunnerFixture {
 	  "format":"kubebrain.restore-verification.v1","artifact_format":"kubebrain.logical.v2",
 	  "artifact_sha256":"%s","snapshot_revision":42,"source_prefix":"/registry",
 	  "target_prefix":"/restored","records":2,"artifact_leases":1,
-	  "verified_target_leases":1,"verified_at_unix":200
+	  "verified_target_leases":1,"verified_at_unix":99
 	}`+"\n", runnerCutoverArtifactSHA256)), 0o600))
 	require.NoError(t, os.WriteFile(backup, []byte("backup\n"), 0o600))
 	require.NoError(t, os.WriteFile(parameters, []byte(fmt.Sprintf(`{
