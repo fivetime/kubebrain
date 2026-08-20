@@ -6,6 +6,7 @@ OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"; KUBE_CONTEXT
 KUBECTL="${KUBECTL:-kubectl}"; OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 DIAGNOSE_COMMAND="${DIAGNOSE_COMMAND:-kubebrain-legacy-snapshot-remediation}"; JQ="${JQ:-jq}"
 MAX_DIAGNOSIS_OUTPUT_BYTES=1048576
+MAX_EXISTING_SECRET_RESPONSE_BYTES=87389
 die() { echo "$*" >&2; exit 1; }
 resolve() { if [[ "$1" == */* ]]; then [[ -x "$1" ]] || return 1; printf '%s' "$1"; else command -v "$1"; fi; }
 [[ "$REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "REQUEST_ID must identify the external approved maintenance proposal"
@@ -36,7 +37,11 @@ $JQ -cnS --arg request_id "$REQUEST_ID" --arg endpoint "$ENDPOINT" --arg cluster
   '{request_id:$request_id,endpoint:$endpoint,cluster_id:$cluster_id,revision:$revision,compact_revision:$compact_revision}' >"$params"
 [[ "$(wc -c <"$params")" -le 65536 ]] || die "operation parameters exceed 65536 bytes"
 sha="$(sha256sum "$params" | cut -d ' ' -f1)"; context=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context=(--context "$KUBE_CONTEXT")
-if existing="$($KUBECTL "${context[@]}" -n "$OPERATION_NAMESPACE" get secret "$secret" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' 2>/dev/null)"; then
+existing_secret_file="$temp/existing-secret.response"
+if $KUBECTL "${context[@]}" -n "$OPERATION_NAMESPACE" get secret "$secret" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' >"$existing_secret_file" 2>/dev/null; then
+  chmod 600 "$existing_secret_file"
+  [[ "$(wc -c <"$existing_secret_file")" -le "$MAX_EXISTING_SECRET_RESPONSE_BYTES" ]] || die "existing Secret response exceeds ${MAX_EXISTING_SECRET_RESPONSE_BYTES} bytes"
+  existing="$(<"$existing_secret_file")"
   [[ "${existing%%$'\t'*}" == true && "$(printf '%s' "${existing#*$'\t'}" | base64 -d | sha256sum | cut -d ' ' -f1)" == "$sha" ]] || die "existing immutable parameter Secret drifted"
 else
   $KUBECTL "${context[@]}" -n "$OPERATION_NAMESPACE" create secret generic "$secret" --from-file="parameters.json=$params" --dry-run=client -o json |

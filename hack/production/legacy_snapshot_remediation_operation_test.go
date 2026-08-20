@@ -104,6 +104,40 @@ func TestRequestLegacySnapshotRemediationBoundsDiagnosisErrorOutput(t *testing.T
 	require.NoFileExists(t, marker)
 }
 
+func TestRequestLegacySnapshotRemediationBoundsExistingSecretResponse(t *testing.T) {
+	dir := t.TempDir()
+	diagnose := writeLegacyExecutable(t, dir, "diagnose", "#!/usr/bin/env bash\nprintf 'cluster_id=7671\\nrevision=41\\nminimum_compact_revision=3\\nsnapshot_status=legacy_lease_history_ambiguous\\n'\nexit 3\n")
+	canonical := filepath.Join(dir, "canonical.json")
+	jq := filepath.Join(dir, "jq")
+	writeLegacyExecutable(t, dir, "jq", fmt.Sprintf(`#!/usr/bin/env bash
+tmp="$(mktemp)"; trap 'rm -f -- "$tmp"' EXIT
+/usr/bin/jq "$@" >"$tmp" || exit $?
+if [[ " ${*} " == *" -cnS "* ]]; then
+  size="$(stat -Lc '%%s' -- "$tmp")"; head -c "$((65536-size))" /dev/zero | tr '\0' ' ' >>"$tmp"
+  cp -- "$tmp" %q
+fi
+cat "$tmp"
+`, canonical))
+	controlLog := filepath.Join(dir, "control.log")
+	kubectl := writeLegacyExecutable(t, dir, "kubectl", fmt.Sprintf(`#!/usr/bin/env bash
+printf 'kubectl %%s\n' "$*" >>%q
+if [[ "$*" == *" get secret "* ]]; then
+  if [[ "$SECRET_RESPONSE" == oversized ]]; then head -c 87390 /dev/zero | tr '\0' k; else printf 'true\t'; base64 -w0 %q; fi
+  exit 0
+fi
+cat >/dev/null
+`, controlLog, canonical))
+	operationctl := writeLegacyExecutable(t, dir, "operationctl", fmt.Sprintf("#!/usr/bin/env bash\nprintf 'operationctl %%s\\n' \"$*\" >>%q\n", controlLog))
+	base := []string{"REQUEST_ID=change-legacy-secret-budget", "ENDPOINT=https://kubebrain:2379", "KUBE_CONTEXT=in-cluster", "DIAGNOSE_COMMAND=" + diagnose, "KUBECTL=" + kubectl, "OPERATIONCTL=" + operationctl, "JQ=" + jq}
+	output, err := runProductionScriptCommand(t, "request-legacy-snapshot-remediation.sh", append(base, "SECRET_RESPONSE=oversized"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "existing Secret response exceeds 87389 bytes")
+	require.NotContains(t, string(requireFile(t, controlLog)), "operationctl")
+	boundaryOutput, boundaryErr := runProductionScriptCommand(t, "request-legacy-snapshot-remediation.sh", append(base, "SECRET_RESPONSE=boundary"))
+	require.NoError(t, boundaryErr, string(boundaryOutput))
+	require.Contains(t, string(requireFile(t, controlLog)), "operationctl")
+}
+
 func TestRunLegacySnapshotRemediationOperationBindsAndPublishesReceipt(t *testing.T) {
 	dir := t.TempDir()
 	params := []byte(`{"cluster_id":"7301","compact_revision":"3","endpoint":"https://kubebrain:2379","request_id":"change-4312","revision":"41"}` + "\n")
