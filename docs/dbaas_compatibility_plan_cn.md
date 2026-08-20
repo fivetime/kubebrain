@@ -58488,6 +58488,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四片全部通过（186.811/314.457/221.432/520.304 秒）。本项不改变证据/参数 schema、renderer 合同、
   operation identity、审批/恢复语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5205 为 TiKVTransactionRepair requester 的 Alertmanager envelope 建立 1 MiB 读取边界与稳定快照。旧实现
+  直接让 jq 完整解析无上限 `ALERT_INPUT`；1048577-byte 合法 JSON 会在读完后才报告告警语义错误，可替换
+  `cp` 放大未来冻结副本时也不会触发资源门禁（RED 0.141 秒）。现原文件在任何 jq/Kubernetes 调用前通过
+  `stat -L` 检查，复制为 0600 私有文件后复检冻结副本与原路径，后续只解析冻结告警。测试覆盖原文件超限、
+  冻结副本膨胀和恰好 1048576 bytes 正例；三项连续二十轮 4.579 秒、race 1.320 秒，完整 requester 测试
+  0.786 秒，bash syntax、diff check 与全仓 vet 通过。production 清单确认 399 项并按 92/108/101/98
+  四片全部通过（186.732/315.209/220.552/523.100 秒）。1 MiB 是外层 Alertmanager payload 预算，生成的
+  operation 参数仍受独立 64 KiB executor 合同；本项不改变告警选择语义、参数 schema、repair 审批/执行、
+  在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

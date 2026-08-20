@@ -4982,6 +4982,9 @@ ColdPhysicalSnapshot 与 ColdPhysicalRestore requester 可分别对原始 witnes
 上述原始 cold 证据还必须冻结后再消费：snapshot 将 preflight 与 semantic witness 复制为 0600 私有文件，
 restore 同样冻结 source receipt；复制后复检冻结副本和原路径，后续 jq、renderer、摘要和参数嵌入只读取
 冻结路径。输入预算初检不能替代稳定快照。
+TiKVTransactionRepair requester 接收的 Alertmanager envelope 上限为 1 MiB。它必须在 jq 前检查原文件，复制为
+0600 私有文件后复检冻结副本与原路径，并只解析冻结副本；超限告警不得触达 Kubernetes。该 envelope 上限
+与生成的 64 KiB operation 参数上限是两个不同层次的合同。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
