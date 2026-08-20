@@ -19,6 +19,7 @@ TIMEOUT_CMD="${TIMEOUT_CMD:-timeout}"
 JQ="${JQ:-jq}"
 MAX_PD_RESPONSE_BYTES=1048576
 MAX_STORAGE_RESPONSE_BYTES=1048576
+MAX_POD_INVENTORY_RESPONSE_BYTES=1048576
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -67,6 +68,15 @@ capture_storage_response() {
   [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_STORAGE_RESPONSE_BYTES" ]] ||
     die "storage response exceeds ${MAX_STORAGE_RESPONSE_BYTES} bytes"
 }
+capture_pod_inventory() {
+  local destination="$1" size
+  shift
+  kctl "$@" >"$destination" || return 1
+  chmod 600 "$destination" || return 1
+  size="$(stat -Lc '%s' -- "$destination")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_POD_INVENTORY_RESPONSE_BYTES" ]] ||
+    die "Pod inventory response exceeds ${MAX_POD_INVENTORY_RESPONSE_BYTES} bytes"
+}
 quantity_to_kib() {
   local quantity="$1" value unit multiplier
   if [[ "$quantity" =~ ^([1-9][0-9]*)(Ki|Mi|Gi|Ti)$ ]]; then
@@ -87,14 +97,20 @@ quantity_to_kib() {
 }
 
 selector="app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=tikv"
-tikv_rows="$(kctl -n "$TIDB_NAMESPACE" get pods -l "$selector" \
-  -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}{"\n"}{end}' | sort)"
+tikv_inventory="$response_dir/tikv-pods.raw"
+capture_pod_inventory "$tikv_inventory" -n "$TIDB_NAMESPACE" get pods -l "$selector" \
+  -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}{"\n"}{end}' || die "cannot read TiKV Pod inventory"
+tikv_inventory_sorted="$response_dir/tikv-pods.sorted"; sort "$tikv_inventory" >"$tikv_inventory_sorted"; chmod 600 "$tikv_inventory_sorted"
+tikv_rows="$(<"$tikv_inventory_sorted")"
 ready_count="$(awk -F '\t' 'NF == 3 && $2 == "True" && $3 != "" {count++} END {print count+0}' <<<"$tikv_rows")"
 (( ready_count == EXPECTED_TIKV_STORES )) || die "TiKV Pod/PVC health mismatch: expected ${EXPECTED_TIKV_STORES} Ready stores, got ${ready_count}; rows=${tikv_rows//$'\n'/,}"
 
 pd_selector="app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=pd"
-pd_rows="$(kctl -n "$TIDB_NAMESPACE" get pods -l "$pd_selector" \
-  -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.spec.volumes[?(@.name=="pd")].persistentVolumeClaim.claimName}{"\n"}{end}' | sort)"
+pd_inventory="$response_dir/pd-pods.raw"
+capture_pod_inventory "$pd_inventory" -n "$TIDB_NAMESPACE" get pods -l "$pd_selector" \
+  -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.spec.volumes[?(@.name=="pd")].persistentVolumeClaim.claimName}{"\n"}{end}' || die "cannot read PD Pod inventory"
+pd_inventory_sorted="$response_dir/pd-pods.sorted"; sort "$pd_inventory" >"$pd_inventory_sorted"; chmod 600 "$pd_inventory_sorted"
+pd_rows="$(<"$pd_inventory_sorted")"
 ready_pd_count="$(awk -F '\t' 'NF == 3 && $2 == "True" && $3 != "" {count++} END {print count+0}' <<<"$pd_rows")"
 (( ready_pd_count == EXPECTED_PD_MEMBERS )) || die "PD Pod/PVC health mismatch: expected ${EXPECTED_PD_MEMBERS} Ready members, got ${ready_pd_count}; rows=${pd_rows//$'\n'/,}"
 

@@ -112,6 +112,8 @@ func TestReleaseGateScriptTestsUseBoundedCommandHelper(t *testing.T) {
 				require.Contains(t, text, `runProductionScriptCommand(t, "validate-storage-latency-slo.sh", base)`)
 			case "validate-tidb-operator-ready.sh":
 				require.Contains(t, text, `runProductionScriptCommand(t, "validate-tidb-operator-ready.sh", base)`)
+			case "validate-tikv-region-health.sh":
+				require.Contains(t, text, `runProductionScriptCommandWithTimeout(t, "validate-tikv-region-health.sh", env, 60*time.Second)`)
 			case "validate-certificate-rotation.sh":
 				require.Contains(t, text, `runValidateCertificateRotation(t, env)`)
 			default:
