@@ -50,23 +50,29 @@ elif [[ "$args" == *"get configmap kubebrain-tikv-transaction-repair-last-succes
 elif [[ "$args" == *" create configmap "* || "$args" == *" patch configmap "* || "$args" == *" delete configmap kubebrain-tikv-transaction-repair-lock "* ]]; then
   :
 elif [[ "$args" == *"get pods -l"* && "$args" == *"component=tikv"* ]]; then
+  payload=""
   for ordinal in 0 1 2; do
     generation=old
     [[ -e "$FAKE_STATE/replaced-$ordinal" ]] && generation=new
-    printf 'kb-tikv-%s\tuid-%s-%s\tTrue\ttikv-kb-tikv-%s\n' "$ordinal" "$generation" "$ordinal" "$ordinal"
+    printf -v row 'kb-tikv-%s\tuid-%s-%s\tTrue\ttikv-kb-tikv-%s\n' "$ordinal" "$generation" "$ordinal" "$ordinal"
+    payload+="$row"
   done
+  printf '%s' "$payload"; [[ "${FAKE_POD_INVENTORY_TARGET:-}" != tikv ]] || head -c "$((FAKE_POD_INVENTORY_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"get pods -l"* && "$args" == *"component=pd"* ]]; then
   ready="${FAKE_PD_READY:-True}"
   if [[ "${FAKE_PD_FAIL_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
     ready=False
   fi
+  payload=""
   for ordinal in 0 1 2; do
     generation=old
     if [[ "${FAKE_PD_REPLACE_AFTER_TIKV_REPLACEMENT:-false}" == "true" && "$ordinal" == "1" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
       generation=new
     fi
-    printf 'kb-pd-%s\tuid-pd-%s-%s\t%s\tpd-kb-pd-%s\n' "$ordinal" "$generation" "$ordinal" "$ready" "$ordinal"
+    printf -v row 'kb-pd-%s\tuid-pd-%s-%s\t%s\tpd-kb-pd-%s\n' "$ordinal" "$generation" "$ordinal" "$ready" "$ordinal"
+    payload+="$row"
   done
+  printf '%s' "$payload"; [[ "${FAKE_POD_INVENTORY_TARGET:-}" != pd ]] || head -c "$((FAKE_POD_INVENTORY_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"containers"* ]]; then
   printf '%s\n' '--advertise-client-urls=http://kubebrain-client.kubebrain-system.svc:3379'
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"readyReplicas"* ]]; then
@@ -253,6 +259,34 @@ fi
 			if size > 1048576 {
 				require.Error(t, boundaryErr)
 				require.Contains(t, string(boundaryOutput), "storage response exceeds 1048576 bytes")
+				require.NoFileExists(t, caseReceipt)
+				caseLogData, readErr := os.ReadFile(caseLog)
+				require.NoError(t, readErr)
+				require.NotContains(t, string(caseLogData), "delete pod kb-tikv-")
+			} else {
+				require.NoError(t, boundaryErr, string(boundaryOutput))
+				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+			}
+		}
+	}
+	for _, target := range []string{"tikv", "pd"} {
+		for _, size := range []int{1048577, 1048576} {
+			caseState := filepath.Join(tempDir, "pod-inventory-"+target+"-"+strconv.Itoa(size))
+			require.NoError(t, os.Mkdir(caseState, 0o755))
+			caseReceipt := filepath.Join(caseState, "receipt.json")
+			caseLog := filepath.Join(caseState, "kubectl.log")
+			caseEnv := append([]string(nil), env...)
+			caseEnv = append(caseEnv,
+				"FAKE_STATE="+caseState,
+				"FAKE_LOG="+caseLog,
+				"RECEIPT_OUTPUT="+caseReceipt,
+				"FAKE_POD_INVENTORY_TARGET="+target,
+				"FAKE_POD_INVENTORY_BYTES="+strconv.Itoa(size),
+			)
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+			if size > 1048576 {
+				require.Error(t, boundaryErr)
+				require.Contains(t, string(boundaryOutput), "Pod inventory response exceeds 1048576 bytes")
 				require.NoFileExists(t, caseReceipt)
 				caseLogData, readErr := os.ReadFile(caseLog)
 				require.NoError(t, readErr)

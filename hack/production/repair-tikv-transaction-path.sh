@@ -38,6 +38,7 @@ DATE="${DATE:-date}"
 JQ="${JQ:-jq}"
 MAX_PD_RESPONSE_BYTES=1048576
 MAX_STORAGE_RESPONSE_BYTES=1048576
+MAX_POD_INVENTORY_RESPONSE_BYTES=1048576
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -174,6 +175,20 @@ capture_storage_response() {
   fi
   printf '%s\n' "$response"
 }
+capture_pod_inventory() {
+  local raw sorted size
+  raw="$(mktemp "$response_dir/pod-inventory-raw.XXXXXX")" || return 1
+  sorted="$(mktemp "$response_dir/pod-inventory-sorted.XXXXXX")" || return 1
+  kctl "$@" >"$raw" || return 1
+  chmod 600 "$raw" "$sorted" || return 1
+  size="$(stat -Lc '%s' -- "$raw")" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_POD_INVENTORY_RESPONSE_BYTES" ]]; then
+    echo "Pod inventory response exceeds ${MAX_POD_INVENTORY_RESPONSE_BYTES} bytes" >&2
+    return 1
+  fi
+  sort "$raw" >"$sorted" || return 1
+  cat "$sorted"
+}
 quantity_to_kib() {
   local quantity="$1" value unit multiplier
   if [[ "$quantity" =~ ^([1-9][0-9]*)(Ki|Mi|Gi|Ti)$ ]]; then
@@ -194,14 +209,14 @@ quantity_to_kib() {
 }
 
 tikv_status() {
-  kctl -n "$TIDB_NAMESPACE" get pods \
+  capture_pod_inventory -n "$TIDB_NAMESPACE" get pods \
     -l "app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=tikv" \
-    -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.metadata.uid}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}{"\n"}{end}' | sort
+    -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.metadata.uid}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}{"\n"}{end}'
 }
 pd_status() {
-  kctl -n "$TIDB_NAMESPACE" get pods \
+  capture_pod_inventory -n "$TIDB_NAMESPACE" get pods \
     -l "app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=pd" \
-    -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.metadata.uid}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.spec.volumes[?(@.name=="pd")].persistentVolumeClaim.claimName}{"\n"}{end}' | sort
+    -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.metadata.uid}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.spec.volumes[?(@.name=="pd")].persistentVolumeClaim.claimName}{"\n"}{end}'
 }
 
 expected_tikv_names="$(printf '%s\n' "${TIDB_CLUSTER}-tikv-0" "${TIDB_CLUSTER}-tikv-1" "${TIDB_CLUSTER}-tikv-2")"
