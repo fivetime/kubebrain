@@ -58312,6 +58312,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   经审批演练。本项不改变任何 evidence schema、在线 etcd RPC、Service selector CAS 或 TiKV 编码，只补齐
   Operation 消费者的跨制品时间连续性。
 
+- A5192 把 A5191 的 restore→cutover 时间连续性从 Operation runner 下沉到可独立调用的直接状态机入口。
+  旧 `switch-restore-traffic.sh ACTION=cutover` 不冻结或解析 restore receipt，只相信 prepare state；未来时间
+  receipt 可正常 prepare，随后直接入口仍修改 Service selector 并发布 cutover marker。v1 基线反例在旧实现上
+  确定性错误成功且实际生成 selector-target（RED 0.756 秒）。现 cutover 也把 receipt 捕获到 0600 私有副本；
+  新 helper 严格解析并把 artifact SHA、snapshot revision、source/target prefix 与 state 对齐，v2/v3 额外比较
+  receipt format、target revision、完整 receipt SHA 和 v3 cluster ID。任何 selector 写入前先要求当前时间不早于
+  restore verified；复用 marker、verify 与 complete 的共享 chronology 也要求 marker 不早于该时间，发布 marker
+  前再次检查时钟没有倒退。历史 v1 state 本来不含 receipt SHA，仅按已有 format/artifact/revision/prefix 关联，
+  不追溯声称完整 receipt 身份。`verified_at_unix` 同步限制到 `1..MaxInt64`。v1/v2/v3 未来时间、超界时间及
+  v3 state cluster 篡改反例连续二十轮 51.004 秒、race 3.625 秒，全部 RestoreTrafficCutover 82.727 秒，bash
+  syntax 与 diff check 通过。开发中旧 cluster 篡改测试仍期待先切流再由 verify 拒绝，首轮集合正确在 cutover
+  提前失败；更新为“selector 未改变”断言后全绿，未把 fixture 预期迁移记作产品基线回归。完整非 production
+  全绿，其中 `pkg/server/etcd` 147.450 秒、总计 154.008 秒；production 清单确认 368 项并按
+  83/102/91/92 四分片全部通过（153.960/279.761/187.889/492.272 秒），全仓 vet 2.301 秒。本轮未执行真实
+  切流；状态机测试不替代经审批演练。本项不改变 evidence schema、在线 etcd RPC、Service selector CAS 或
+  TiKV 编码，只让直接入口在副作用前执行已有跨制品身份和时间合同。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

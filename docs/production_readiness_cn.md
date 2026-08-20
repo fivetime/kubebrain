@@ -5442,6 +5442,11 @@ key prefix，不能仅凭文件存在推进 operation。heartbeat fencing 时旧
 `1..MaxInt64`，并要求
 `restore_verified_at <= cutover_at <= verified_at <= completed_at_unix`。仅有格式合法的单份 marker 不能证明阶段发生顺序，
 可替换子命令产出的倒序时间链或溢出时间不得提交 Operation Succeeded。
+直接 `switch-restore-traffic.sh cutover` 同样必须先冻结 restore receipt，并在任何 Service selector 写入前
+把 receipt 的 artifact SHA、snapshot revision、prefix 与 prepared state 对齐；v2/v3 还要求 format、
+target revision、完整 receipt SHA 以及 v3 cluster ID 一致。新切流先确认当前时间不早于 restore verified，
+复用 marker、verify 和 complete 则比较冻结 receipt 时间与已发布 cutover marker。历史 v1 state 没有完整
+receipt SHA，只能按其已有字段关联，不得声称追溯性完整 receipt 身份。
 A189 rollback 允许仅凭 prepare state 运行：这覆盖 Service JSON Patch 已提交、但等待
 EndpointSlice 失败而尚未生成 cutover marker 的窗口；rollback 仍用 UID/resourceVersion
 CAS 并要求源 Pod UID 集恢复。
