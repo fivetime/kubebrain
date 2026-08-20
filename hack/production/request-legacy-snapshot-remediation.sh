@@ -30,6 +30,7 @@ name="legacy-snapshot-remediation-${hash}"; secret="${name}-parameters"; params=
 $JQ -cnS --arg request_id "$REQUEST_ID" --arg endpoint "$ENDPOINT" --arg cluster_id "$cluster_id" --arg revision "$revision" \
   --arg compact_revision "$compact_revision" \
   '{request_id:$request_id,endpoint:$endpoint,cluster_id:$cluster_id,revision:$revision,compact_revision:$compact_revision}' >"$params"
+[[ "$(wc -c <"$params")" -le 65536 ]] || die "operation parameters exceed 65536 bytes"
 sha="$(sha256sum "$params" | cut -d ' ' -f1)"; context=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context=(--context "$KUBE_CONTEXT")
 if existing="$($KUBECTL "${context[@]}" -n "$OPERATION_NAMESPACE" get secret "$secret" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' 2>/dev/null)"; then
   [[ "${existing%%$'\t'*}" == true && "$(printf '%s' "${existing#*$'\t'}" | base64 -d | sha256sum | cut -d ' ' -f1)" == "$sha" ]] || die "existing immutable parameter Secret drifted"

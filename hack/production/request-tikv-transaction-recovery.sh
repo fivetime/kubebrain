@@ -64,6 +64,7 @@ $JQ -cnS \
    expected_kubebrain_statefulset_uid:$kbuid,expected_tidb_cluster_uid:$tidbuid,
    expected_cluster_id:$cluster,probe_timeout_seconds:$probe_timeout,
    pod_ready_timeout_seconds:$pod_timeout,request_id:$request_id}' >"$parameters_file"
+[[ "$(wc -c <"$parameters_file")" -le 65536 ]] || die "operation parameters exceed 65536 bytes"
 parameters_sha="$(sha256sum "$parameters_file" | cut -d ' ' -f1)"
 
 if existing_data="$(kctl -n "$OPERATION_NAMESPACE" get secret "$secret_name" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' 2>/dev/null)"; then
