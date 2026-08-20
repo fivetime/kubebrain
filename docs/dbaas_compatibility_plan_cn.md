@@ -58385,6 +58385,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   恢复后长窗口审计；状态机测试不替代经审批演练。本项不改变 evidence schema、在线 etcd RPC、审计持续时间
   或 TiKV 编码，只封闭恢复后控制证据的无界资源消耗。
 
+- A5197 为六类核心 Operation runner 建立统一的 64 KiB 参数文件上限。Backup、BackupDeletion、
+  RestoreCutover、PostRestoreAudit、CertificateRotation 与 Destroy 此前只校验 immutable SHA-256，随后会在
+  限制长度前完整读取、复制并多次交给 jq；在合法 JSON 后追加 64 KiB 空白并同步 claim digest 时，六类旧
+  runner 均错误完成（RED 8.126 秒）。该上限与外部 Operation API 请求体及已有 PITR requester 的 65536-byte
+  合同一致。现显式 `PARAMETERS_INPUT` 与 parameter broker 拉取结果都在首次 SHA-256 前使用 `stat -L` 检查，
+  复制后同时复检 0600 冻结副本和原路径以关闭 stat→copy TOCTOU；已 claim 的超限 operation 写 Retry，不启动
+  业务子命令。七个显式/managed 超限反例和恰好 65536-byte 正例连续二十轮 56.045 秒、race 2.886 秒；六类
+  runner 完整测试族 247.199 秒，加入新边界后的合集 261.845 秒，bash syntax 与 diff check 通过。完整非
+  production 全绿，其中 `pkg/server/etcd` 153.791 秒、总计 160.757 秒；production 清单确认 384 项并按
+  91/104/96/93 四分片全部通过（174.741/282.369/211.103/512.524 秒），全仓 vet 2.314 秒。本项不改变
+  parameter JSON schema、Operation CRD、在线 etcd RPC 或 TiKV 编码。Native PITR、cold physical、transaction
+  recovery/repair 等后续专用 runner 尚未纳入本轮六类门禁，继续作为明确兼容差距，不把核心 executor 覆盖
+  误报为全仓完成。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -4950,6 +4950,12 @@ Operation、读取参数和 claim 候选时也会重新要求当前 `apiVersion/
 所有 shell operation runner 在把参数 JSON 转成 TSV 环境变量前，必须先拒绝空必填字段；
 可选 kube context/path 或 metrics output 使用哨兵占位，避免 Bash whitespace IFS 把中间空
 字段左移并误绑定后续参数。
+Backup、BackupDeletion、RestoreCutover、PostRestoreAudit、CertificateRotation 与 Destroy 六类核心
+runner 还必须把 operation 参数文件限制为 64 KiB，与外部 Operation API 的请求体边界一致。显式
+`PARAMETERS_INPUT` 和 parameter broker 拉取结果都在 SHA-256 前检查；复制到 0600 私有文件后必须同时
+复检冻结副本与原路径，超限 operation 进入 Retry 且不得启动子命令。该合同目前只覆盖这六类核心
+executor；Native PITR、cold physical、transaction recovery/repair 等专用 runner 仍须按各自参数合同
+单独完成同类审计，不能据此声称全体 operation runner 已统一。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
