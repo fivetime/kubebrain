@@ -58413,6 +58413,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   repair/recovery 副作用、Operation CRD、在线 etcd RPC 或 TiKV 编码。Native PITR、cold physical 与 legacy
   remediation runner 仍未纳入，继续作为明确资源边界差距。
 
+- A5199 将 64 KiB 参数门禁扩展到 ColdPhysicalSnapshot、ColdPhysicalRestore 与
+  LegacySnapshotHistoryRemediation 三条 Fail 语义 runner。旧 cold snapshot/restore 会接受合法 JSON 后追加
+  64 KiB 空白的参数并继续完成；legacy remediation 会先完整摘要、复制和 jq 解析同类超限参数，直到已有
+  artifact 碰撞才失败，三类基线均越过预期资源门禁（RED 8.434 秒）。现显式或 broker 拉取参数在首次
+  SHA-256 前使用 `stat -L` 检查，复制后同时复检 0600 冻结副本和原路径；超限沿用审批制品永久无效的
+  Operation Fail，且发生在 snapshot、restore、compact primitive 及已有 receipt 接管之前。代表性测试额外
+  覆盖 managed 超限、可替换 `cp` 在复制后放大冻结副本的 TOCTOU 反例和恰好 65536 bytes 正例。三类主测试
+  连续二十轮 180.051 秒、race 9.666 秒，完整 cold/legacy runner 集合 8.618 秒，bash syntax 与 diff check
+  通过。默认全包并发的 non-production 门禁再次在 `pkg/backend` 大量预期 watch 日志截断后失败（该包
+  59.192 秒，无法定位测试名）；隔离 `pkg/backend -count=5` 250.113 秒全绿，随后 `go test -p 1` 完整
+  non-production 全绿，其中 backend 50.070 秒、`pkg/server/etcd` 156.296 秒、总计 394.793 秒。这延续
+  A5198 已观察到的跨包并发资源/时序敏感信号，不隐藏异常，也不把无依赖 shell 改动归因为 backend 修复。
+  production 清单确认 384 项并按 91/104/96/93 四分片全部通过
+  （182.702/298.860/216.325/513.798 秒），全仓 vet 2.040 秒。本项不改变参数 schema、不可逆操作语义、
+  Operation CRD、在线 etcd RPC 或 TiKV 编码；剩余参数大小差距为四条 Native PITR runner。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

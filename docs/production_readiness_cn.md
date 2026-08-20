@@ -4959,7 +4959,11 @@ executor；Native PITR、cold physical、legacy remediation 等专用 runner 仍
 TiKVTransactionRecovery 与 TiKVTransactionRepair runner 已按同一 64 KiB 合同补齐：显式或 broker
 拉取参数在摘要前检查，复制后复检冻结副本和原路径，超限时使用这两类可重试 pre-side-effect 阶段已有的
 Retry 语义。该门禁发生在 recovery/repair primitive、已有 receipt 接管和参数 schema 解析之前；恰好
-65536 bytes 仍合法。Native PITR、cold physical 与 legacy remediation runner 仍是后续差距。
+65536 bytes 仍合法。Native PITR full backup/restore 与 target retirement/provisioning runner 仍是后续差距。
+ColdPhysicalSnapshot、ColdPhysicalRestore 与 LegacySnapshotHistoryRemediation runner 也已采用相同上限，
+但沿用其审批制品永久无效的 Fail 终态语义。三者在首次摘要前、0600 冻结副本及复制后的原路径上检查；
+超限时不得进入 snapshot、restore 或不可逆 compact primitive。至此该段剩余未覆盖项仅为 Native PITR
+full backup/restore 与 target retirement/provisioning runner。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
