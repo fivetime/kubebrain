@@ -13,6 +13,15 @@ CUTOVER_COMMAND="${CUTOVER_COMMAND:-${ROOT_DIR}/hack/production/switch-restore-t
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
+MAX_ETCD_REVISION=9223372036854775807
+
+is_positive_etcd_revision() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || return 1
+  (( ${#value} < ${#MAX_ETCD_REVISION} )) && return 0
+  (( ${#value} == ${#MAX_ETCD_REVISION} )) &&
+    [[ "$value" == "$MAX_ETCD_REVISION" || "$value" < "$MAX_ETCD_REVISION" ]]
+}
 
 usage() {
   cat >&2 <<'EOF'
@@ -433,6 +442,9 @@ validate_cutover_receipt() {
      ( "$format" == "kubebrain.restore-cutover.state.v2" &&
        "$restore_receipt_format" == "kubebrain.restore-verification.v2" &&
        "$initial_target_revision" =~ ^[1-9][0-9]*$ && "$restore_receipt_sha" =~ ^[a-f0-9]{64}$ )) ]] || return 1
+  is_positive_etcd_revision "$snapshot_revision" || return 1
+  [[ "$format" == "kubebrain.restore-cutover.state.v1" ]] ||
+    is_positive_etcd_revision "$initial_target_revision" || return 1
   [[ -n "$initial_target_revision" ]] || initial_target_revision=0
   state_sha="$(sha256sum "$state_file" | cut -d ' ' -f1)"
   "$JQ" -e --arg operation "$operation_id" --arg instance "$instance" \
@@ -451,7 +463,8 @@ validate_cutover_receipt() {
       .format == "kubebrain.restore-cutover.receipt.v2" and
       .restore_receipt_format == $restore_format and .restore_receipt_sha256 == $restore_sha and
       .initial_verified_target_revision == $initial_target_revision and
-      (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . == floor))) and
+      (.initial_verified_target_revision | type == "number" and . <= 9223372036854775807) and
+      (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . <= 9223372036854775807 and . == floor))) and
     .operation_id == $operation and .instance == $instance and
     .service_namespace == $namespace and .service_name == $service and
     .service_uid == $uid and .source_instance == $source and .target_instance == $target and

@@ -23,6 +23,15 @@ JQ="${JQ:-jq}"
 LOGICAL_VERIFY="${LOGICAL_VERIFY:-${ROOT_DIR}/hack/backup/logical-verify.sh}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
+MAX_ETCD_REVISION=9223372036854775807
+
+is_positive_etcd_revision() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || return 1
+  (( ${#value} < ${#MAX_ETCD_REVISION} )) && return 0
+  (( ${#value} == ${#MAX_ETCD_REVISION} )) &&
+    [[ "$value" == "$MAX_ETCD_REVISION" || "$value" < "$MAX_ETCD_REVISION" ]]
+}
 
 usage() {
   cat >&2 <<'EOF'
@@ -156,10 +165,10 @@ receipt_fields() {
        keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases","verified_target_revision"]) and
       ((.format == "kubebrain.restore-verification.v1" and (has("verified_target_revision") | not)) or
        (.format == "kubebrain.restore-verification.v2" and
-        (.verified_target_revision | type == "number" and . > 0 and . == floor))) and
+        (.verified_target_revision | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor))) and
       (.artifact_format | test("^kubebrain\\.logical\\.v[12]$")) and
       (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
-      (.snapshot_revision | type == "number" and . > 0 and . == floor) and
+      (.snapshot_revision | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) and
       ((has("artifact_created_at_unix") | not) or
         (.artifact_created_at_unix | type == "number" and . > 0 and . == floor)) and
       (.source_prefix | type == "string" and startswith("/") and
@@ -183,6 +192,7 @@ receipt_fields() {
 }
 
 validate_cutover_state_schema() {
+  local kind format c3 c4 c5 c6 c7 c8 c9 c10 snapshot_revision c12 c13 c14 target_revision c16
   awk -F '\t' -v expected="$EXPECTED_REPLICAS" '
     $0 == "" {
       bad = "empty row"
@@ -238,7 +248,11 @@ validate_cutover_state_schema() {
         exit 1
       }
     }
-  ' "$state_file"
+  ' "$state_file" || return 1
+  IFS=$'\t' read -r kind format c3 c4 c5 c6 c7 c8 c9 c10 snapshot_revision c12 c13 c14 target_revision c16 <"$state_file"
+  is_positive_etcd_revision "$snapshot_revision" || return 1
+  [[ "$format" == "kubebrain.restore-cutover.state.v1" ]] ||
+    is_positive_etcd_revision "$target_revision"
 }
 
 require_cutover_state_schema() {
@@ -307,6 +321,10 @@ state_header() {
      ( "$format" == "kubebrain.restore-cutover.state.v2" && "$receipt_format" == "kubebrain.restore-verification.v2" &&
        "$target_revision" =~ ^[1-9][0-9]*$ && "$receipt_sha" =~ ^[a-f0-9]{64}$ )) ]] ||
     { echo "restore cutover state does not match the requested operation" >&2; exit 1; }
+  is_positive_etcd_revision "$restore_revision" &&
+    { [[ "$format" == "kubebrain.restore-cutover.state.v1" ]] ||
+      is_positive_etcd_revision "$target_revision"; } ||
+    { echo "restore cutover state contains an out-of-range etcd revision" >&2; exit 1; }
 }
 
 state_value() {
@@ -498,7 +516,8 @@ validate_existing_cutover_receipt() {
         .format == "kubebrain.restore-cutover.receipt.v2" and
         .restore_receipt_format == $restore_format and .restore_receipt_sha256 == $restore_sha and
         .initial_verified_target_revision == $initial_target_revision and
-        (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . == floor))) and
+        (.initial_verified_target_revision | type == "number" and . <= 9223372036854775807) and
+        (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . <= 9223372036854775807 and . == floor))) and
       .operation_id == $operation and .instance == $instance and
       .service_namespace == $namespace and .service_name == $service and
       .service_uid == $uid and .source_instance == $source and
@@ -644,7 +663,8 @@ case "$ACTION" in
     [[ -n "$initial_target_revision" ]] || initial_target_revision=0
     public_target_revision="${LAST_VERIFIED_TARGET_REVISION:-0}"
     if [[ "$receipt_format" == "kubebrain.restore-cutover.receipt.v2" ]]; then
-      [[ "$public_target_revision" =~ ^[1-9][0-9]*$ ]] &&
+      is_positive_etcd_revision "$initial_target_revision" &&
+        is_positive_etcd_revision "$public_target_revision" &&
         (( public_target_revision >= initial_target_revision )) ||
         { echo "public verification revision predates the initial verification revision" >&2; exit 1; }
     fi

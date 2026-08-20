@@ -45,6 +45,14 @@ func TestPostRestoreAuditOperationRejectsAuditReceiptPredatingCutover(t *testing
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsAuditRevisionAboveInt64(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	f.run(t, false, "AUDIT_FIRST_REVISION=9223372036854775808\nAUDIT_LAST_REVISION=9223372036854775808", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestPostRestoreAuditOperationRejectsPublicRevisionPredatingInitial(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	promoteOperationAuditCutoverEvidenceToV2(t, f)

@@ -23,6 +23,15 @@ JQ="${JQ:-jq}"
 PROBE="${PROBE:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
+MAX_ETCD_REVISION=9223372036854775807
+
+is_positive_etcd_revision() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || return 1
+  (( ${#value} < ${#MAX_ETCD_REVISION} )) && return 0
+  (( ${#value} == ${#MAX_ETCD_REVISION} )) &&
+    [[ "$value" == "$MAX_ETCD_REVISION" || "$value" < "$MAX_ETCD_REVISION" ]]
+}
 
 usage() {
   cat >&2 <<'EOF'
@@ -238,7 +247,8 @@ validate_cutover_receipt() {
         .format == "kubebrain.restore-cutover.receipt.v2" and
         .restore_receipt_format == $restore_format and .restore_receipt_sha256 == $restore_sha and
         .initial_verified_target_revision == $initial_target_revision and
-        (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . == floor))) and
+        (.initial_verified_target_revision | type == "number" and . <= 9223372036854775807) and
+        (.public_verified_target_revision | type == "number" and . >= $initial_target_revision and . <= 9223372036854775807 and . == floor))) and
       .operation_id == $operation and .instance == $instance and
       .service_namespace == $namespace and .service_name == $service and
       .service_uid == $uid and .source_instance == $source and .target_instance == $target and
@@ -293,6 +303,10 @@ require_cutover_state_digest "$cutover_state_sha"
      "$restore_receipt_format" == "kubebrain.restore-verification.v2" &&
      "$initial_target_revision" =~ ^[1-9][0-9]*$ && "$restore_receipt_sha" =~ ^[a-f0-9]{64}$ )) ]] ||
   { echo "cutover state does not match the audit operation" >&2; exit 1; }
+is_positive_etcd_revision "$snapshot_revision" &&
+  { [[ "$state_format" == "kubebrain.restore-cutover.state.v1" ]] ||
+    is_positive_etcd_revision "$initial_target_revision"; } ||
+  { echo "cutover state contains an out-of-range etcd revision" >&2; exit 1; }
 [[ -n "$initial_target_revision" ]] || initial_target_revision=0
 cutover_receipt_sha="$(validated_cutover_receipt_digest)" ||
   { echo "cutover receipt does not match the frozen state" >&2; exit 1; }
@@ -302,7 +316,7 @@ cutover_completed_at="$("$JQ" -er '.completed_at_unix | select(type == "number" 
 minimum_probe_revision=0
 if [[ "$state_format" == "kubebrain.restore-cutover.state.v2" ]]; then
   minimum_probe_revision="$("$JQ" -er \
-    '.public_verified_target_revision | select(type == "number" and . > 0 and . == floor)' \
+    '.public_verified_target_revision | select(type == "number" and . > 0 and . <= 9223372036854775807 and . == floor)' \
     "$CUTOVER_RECEIPT_INPUT")" ||
     { echo "cutover receipt does not match the frozen state" >&2; exit 1; }
 fi
@@ -359,8 +373,10 @@ run_probe() {
   fi
   "$JQ" -e '
     .format == "kubebrain.etcd-audit-probe.v1" and
-    (.put_revision > 0) and (.read_revision >= .put_revision) and
-    (.delete_revision >= .read_revision) and (.lease_ttl > 0)' <<<"$output" >/dev/null ||
+    (.put_revision > 0 and .put_revision <= 9223372036854775807 and .put_revision == (.put_revision | floor)) and
+    (.read_revision >= .put_revision and .read_revision <= 9223372036854775807 and .read_revision == (.read_revision | floor)) and
+    (.delete_revision >= .read_revision and .delete_revision <= 9223372036854775807 and .delete_revision == (.delete_revision | floor)) and
+    (.lease_ttl > 0)' <<<"$output" >/dev/null ||
     { echo "etcd audit probe returned invalid evidence" >&2; exit 1; }
   "$JQ" -r '.delete_revision' <<<"$output"
 }
@@ -391,8 +407,8 @@ validate_existing_audit_receipt() {
       .topology_unchanged == true and .all_probes_succeeded == true and
       .completed == true and
       (.samples | type == "number" and . >= $min_samples and . == floor) and
-      (.first_probe_revision | type == "number" and . > 0 and . >= $minimum_probe_revision and . == floor) and
-      (.last_probe_revision | type == "number" and . > 0 and . == floor) and
+      (.first_probe_revision | type == "number" and . > 0 and . >= $minimum_probe_revision and . <= 9223372036854775807 and . == floor) and
+      (.last_probe_revision | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) and
       (.last_probe_revision >= .first_probe_revision) and
       (.started_at_unix | type == "number" and . > 0 and . == floor) and
       (.completed_at_unix | type == "number" and . > 0 and . == floor) and

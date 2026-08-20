@@ -202,6 +202,15 @@ func TestRestoreTrafficCutoverDoesNotPublishRegressedPublicRevision(t *testing.T
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.receipt.json"))
 }
 
+func TestRestoreTrafficCutoverAcceptsMaxInt64Revision(t *testing.T) {
+	f := newTrafficFixture(t)
+	promoteTrafficRestoreReceiptToV2(t, f, 9223372036854775807)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "VERIFY_TARGET_REVISION=9223372036854775807")
+	f.run(t, "complete", true, "VERIFY_TARGET_REVISION=9223372036854775807")
+}
+
 func TestRestoreTrafficCutoverRejectsTamperedV2EvidenceChain(t *testing.T) {
 	t.Run("state target revision", func(t *testing.T) {
 		f := newTrafficFixture(t)
@@ -209,6 +218,16 @@ func TestRestoreTrafficCutoverRejectsTamperedV2EvidenceChain(t *testing.T) {
 		f.run(t, "prepare", true, "")
 		statePath := filepath.Join(f.state, "restore-1.state")
 		state := strings.Replace(string(mustRead(t, statePath)), "\t73\t", "\t0\t", 1)
+		require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+		f.run(t, "cutover", false, "", "invalid schema")
+	})
+
+	t.Run("state target revision above int64", func(t *testing.T) {
+		f := newTrafficFixture(t)
+		promoteTrafficRestoreReceiptToV2(t, f, 73)
+		f.run(t, "prepare", true, "")
+		statePath := filepath.Join(f.state, "restore-1.state")
+		state := strings.Replace(string(mustRead(t, statePath)), "\t73\t", "\t9223372036854775808\t", 1)
 		require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
 		f.run(t, "cutover", false, "", "invalid schema")
 	})
@@ -248,6 +267,7 @@ func TestRestoreTrafficCutoverRejectsMalformedRevisionBinding(t *testing.T) {
 	}{
 		{name: "v2 missing revision", format: "kubebrain.restore-verification.v2"},
 		{name: "v2 zero revision", format: "kubebrain.restore-verification.v2", value: float64(0)},
+		{name: "v2 revision above int64", format: "kubebrain.restore-verification.v2", value: json.Number("9223372036854775808")},
 		{name: "v1 carrying v2 field", format: "kubebrain.restore-verification.v1", value: float64(84)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -54,6 +54,19 @@ func TestPostRestoreAuditRejectsProbeRevisionPredatingCutover(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
 }
 
+func TestPostRestoreAuditRejectsProbeRevisionAboveInt64(t *testing.T) {
+	f := newAuditFixture(t)
+	f.run(t, false, "PROBE_REVISION_OVERRIDE=9223372036854775808", "probe returned invalid evidence")
+	require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+}
+
+func TestPostRestoreAuditAcceptsMaxInt64ProbeRevision(t *testing.T) {
+	f := newAuditFixture(t)
+	f.run(t, true, "PROBE_REVISION_OVERRIDE=9223372036854775807")
+	receipt := string(mustRead(t, filepath.Join(f.state, "audit-1.receipt.json")))
+	require.Contains(t, receipt, `"first_probe_revision":9223372036854775807`)
+}
+
 func TestPostRestoreAuditRejectsExistingReceiptPredatingCutover(t *testing.T) {
 	f := newAuditFixture(t)
 	promoteAuditCutoverEvidenceToV2(t, f.dir)
@@ -73,6 +86,7 @@ func TestPostRestoreAuditRejectsMalformedV2CutoverEvidence(t *testing.T) {
 		{name: "initial revision", field: "initial_verified_target_revision", value: float64(74)},
 		{name: "public revision", field: "public_verified_target_revision", value: float64(0)},
 		{name: "public revision predates initial", field: "public_verified_target_revision", value: float64(72)},
+		{name: "public revision above int64", field: "public_verified_target_revision", value: json.Number("9223372036854775808")},
 		{name: "restore receipt digest", field: "restore_receipt_sha256", value: strings.Repeat("4", 64)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -348,7 +362,8 @@ fi
 if [[ -f "$FAKE_DIR/probe-backwards" ]]; then count=$((100-count)); fi
 if [[ -f "$FAKE_DIR/v2-evidence" ]]; then count=$((count+83)); fi
 if [[ "${PROBE_BELOW_CUTOVER:-false}" == true ]]; then count=83; fi
-printf '{"format":"kubebrain.etcd-audit-probe.v1","put_revision":%d,"read_revision":%d,"delete_revision":%d,"lease_ttl":60}\n' "$count" "$count" "$count"
+if [[ -n "${PROBE_REVISION_OVERRIDE:-}" ]]; then count="$PROBE_REVISION_OVERRIDE"; fi
+printf '{"format":"kubebrain.etcd-audit-probe.v1","put_revision":%s,"read_revision":%s,"delete_revision":%s,"lease_ttl":60}\n' "$count" "$count" "$count"
 `)
 	realSHA256Sum, err := exec.LookPath("sha256sum")
 	require.NoError(t, err)

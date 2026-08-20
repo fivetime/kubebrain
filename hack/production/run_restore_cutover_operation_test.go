@@ -41,6 +41,14 @@ func TestRestoreCutoverOperationRejectsPublicRevisionPredatingInitial(t *testing
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsRevisionAboveInt64(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "V2_EVIDENCE=true\nPUBLIC_VERIFIED_TARGET_REVISION=9223372036854775808", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestRestoreCutoverOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL=true", "final heartbeat failed; restore cutover worker was fenced")
