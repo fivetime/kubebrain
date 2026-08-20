@@ -58659,6 +58659,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/113/103/100 四片全部通过（170.752/280.319/231.377/470.436 秒）。本项不新增 phase 格式假设，也
   不改变 wait deadline、Failed 诊断、rollout fencing、availability probe 或 TiKV 编码。
 
+- A5222 为 TiKV/PD region-health 门禁的两类 Pod inventory jsonpath 响应分别建立 1 MiB 门禁。旧实现把
+  kubectl 输出直接经 sort 装入 shell 变量，1048577-byte TiKV inventory 仍会通过完整门禁（RED 32.626 秒）。
+  现每类原始响应先写入独立文件、chmod 0600、用 stat 检查不超过 1048576 bytes，再排序到另一份 0600
+  文件并读入有界标量；超限在 Ready/PVC 身份判断前失败。测试覆盖 TiKV 与 PD 超限拒绝，并证明两类精确
+  1 MiB 合法响应仍可通过。随着该测试扩展到六类大型边界，专用 helper 给每次 region-health 脚本调用
+  60 秒预算，其他 production 脚本仍保持默认 30 秒；静态门禁同时确认该显式有界 helper。聚焦测试
+  120.546 秒，连续两轮 237.388 秒、race 120.223 秒，完整相关回归 119.417 秒，bash syntax、diff check
+  与全仓 vet 通过。production 清单保持 414 项并按 98/113/103/100 四片全部通过
+  （178.601/307.125/299.743/476.458 秒）。本项不改变 Pod/PVC 身份、PD store/region、PVC/PV/CSI、容量或
+  磁盘压力语义，也不改变在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
