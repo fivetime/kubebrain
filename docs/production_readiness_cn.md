@@ -4993,6 +4993,8 @@ LegacySnapshotHistoryRemediation requester 捕获的只读 diagnosis stdout/stde
 TiKVTransactionRecovery 与 quiesced repair requester 的 StatefulSet、TidbCluster 结构化 JSON，以及 quiesced
 repair 的 PD pending/down peer 报告，也分别限制为 1 MiB。每次响应必须先确认命令成功，写入 0600 私有文件
 并检查大小，再交给 jq；不得先装入无界 shell 变量。
+TiKVTransactionRepair requester 的 StatefulSet UID 与 TidbCluster UID/clusterID jsonpath 响应分别限制为
+4096 bytes，同样先写入 0600 文件并确认命令成功、检查大小后才读入标量。该门禁不额外假设 UID 格式。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约

@@ -58530,6 +58530,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （177.803/304.986/213.298/516.540 秒）。本项不改变 Kubernetes/PD 选择语义、参数 schema、审批/repair、
   在线 etcd RPC 或 TiKV 编码。
 
+- A5209 为 TiKVTransactionRepair requester 的两条 identity jsonpath 响应建立逐文件 4096-byte 门禁。旧实现
+  直接把 StatefulSet UID 与 TidbCluster UID/clusterID 装入 shell 变量，只检查非空；4097-byte StatefulSet
+  UID 仍被写入参数并完成提交（RED 0.424 秒）。现两个 kubectl 调用分别先写入私有临时文件并确认命令成功，
+  chmod 0600、用 `stat -L` 检查不超过 4096 bytes 后才读入标量；超限首个身份时不再查询 TidbCluster 或
+  触达 Operation API。测试同时证明精确 4096-byte 响应仍可提交。主测试连续二十轮 8.319 秒、race
+  1.463 秒，完整 requester 测试 0.904 秒，bash syntax、diff check 与全仓 vet 通过。production 清单确认
+  404 项并按 96/108/101/99 四片全部通过（187.926/295.232/221.289/496.598 秒）。该响应预算不新增 UID
+  格式假设，也不改变参数 schema、告警/身份选择、审批/repair、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
