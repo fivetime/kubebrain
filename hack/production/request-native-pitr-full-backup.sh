@@ -7,6 +7,7 @@ OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"
 KUBECTL="${KUBECTL:-kubectl}"
 OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 JQ="${JQ:-jq}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 
 die() { echo "$*" >&2; exit 1; }
 resolve_executable() {
@@ -14,7 +15,9 @@ resolve_executable() {
   if [[ "$value" == */* ]]; then [[ -x "$value" ]] || return 1; printf '%s' "$value"; else command -v "$value"; fi
 }
 [[ -f "$PARAMETERS_FILE" ]] || die "PARAMETERS_FILE is required"
-[[ "$(wc -c <"$PARAMETERS_FILE")" -le 65536 ]] || die "native PITR parameters exceed 65536 bytes"
+command -v stat >/dev/null || die "stat is required"
+parameters_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ ]] && ((size <= MAX_OPERATION_PARAMETERS_BYTES)); }
+parameters_size_is_valid "$PARAMETERS_FILE" || die "native PITR parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes"
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required (use in-cluster for service-account credentials)"
 [[ "$OPERATION_NAMESPACE" == kubebrain-operations ]] || die "native PITR requests are restricted to kubebrain-operations"
 KUBECTL="$(resolve_executable "$KUBECTL")" || die "KUBECTL must be executable"
@@ -23,6 +26,9 @@ JQ="$(resolve_executable "$JQ")" || die "JQ must be executable"
 
 temp_dir="$(mktemp -d)"; trap 'rm -rf -- "$temp_dir"' EXIT
 parameters_file="$temp_dir/parameters.json"
+frozen_parameters="$temp_dir/input.json"
+cp -- "$PARAMETERS_FILE" "$frozen_parameters"; chmod 600 "$frozen_parameters"
+parameters_size_is_valid "$frozen_parameters" && parameters_size_is_valid "$PARAMETERS_FILE" || die "native PITR parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes"
 "$JQ" -ceS '
   select(keys == ["backup_ts","pd_addrs","storage_prefix"] or
     keys == ["backup_ts","cipher_method","encryption_key_id","pd_addrs","storage_prefix"]) |
@@ -42,7 +48,7 @@ parameters_file="$temp_dir/parameters.json"
     (.cipher_method == "aes256-ctr" and
       (.encryption_key_id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}$")))) |
   .pd_addrs |= sort
-' "$PARAMETERS_FILE" >"$parameters_file" || die "native PITR parameter schema is invalid"
+' "$frozen_parameters" >"$parameters_file" || die "native PITR parameter schema is invalid"
 parameters_sha="$(sha256sum "$parameters_file" | cut -d ' ' -f1)"
 [[ "$parameters_sha" =~ ^[a-f0-9]{64}$ ]] || die "cannot calculate canonical parameter digest"
 operation_name="native-pitr-full-${parameters_sha:0:20}"

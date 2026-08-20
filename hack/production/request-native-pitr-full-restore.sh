@@ -4,16 +4,22 @@ set -euo pipefail
 PARAMETERS_FILE="${PARAMETERS_FILE:-}"; KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"
 KUBECTL="${KUBECTL:-kubectl}"; OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; JQ="${JQ:-jq}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 die() { echo "$*" >&2; exit 1; }
 resolve_executable() { local value="$1"; if [[ "$value" == */* ]]; then [[ -x "$value" ]] || return 1; printf '%s' "$value"; else command -v "$value"; fi; }
 [[ -f "$PARAMETERS_FILE" && -n "$KUBE_CONTEXT" && "$OPERATION_NAMESPACE" == kubebrain-operations ]] || die "PARAMETERS_FILE, KUBE_CONTEXT, and the fixed operation namespace are required"
-[[ "$(wc -c <"$PARAMETERS_FILE")" -le 65536 ]] || die "native PITR restore parameters exceed 65536 bytes"
+command -v stat >/dev/null || die "stat is required"
+parameters_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ ]] && ((size <= MAX_OPERATION_PARAMETERS_BYTES)); }
+parameters_size_is_valid "$PARAMETERS_FILE" || die "native PITR restore parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes"
 KUBECTL="$(resolve_executable "$KUBECTL")" || die "KUBECTL must be executable"
 OPERATIONCTL="$(resolve_executable "$OPERATIONCTL")" || die "OPERATIONCTL must be executable"
 JQ="$(resolve_executable "$JQ")" || die "JQ must be executable"
 
 temp_dir="$(mktemp -d)"; trap 'rm -rf -- "$temp_dir"' EXIT
 parameters_file="$temp_dir/parameters.json"
+frozen_parameters="$temp_dir/input.json"
+cp -- "$PARAMETERS_FILE" "$frozen_parameters"; chmod 600 "$frozen_parameters"
+parameters_size_is_valid "$frozen_parameters" && parameters_size_is_valid "$PARAMETERS_FILE" || die "native PITR restore parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes"
 "$JQ" -ceS '
   select(has("admission") and has("approve_plan_sha256") and has("artifact_root") and has("full_artifacts") and has("full_snapshot") and has("pd_addrs") and has("plan") and has("remote_inventory") and has("source_range_exclusive") and has("target_provisioning") and has("target_provisioning_sha256") and has("target_qualification") and has("target_qualification_sha256") and has("target_snapshot_empty") and has("target_writer_exclusion") and has("target_writer_exclusion_sha256")) |
   select((keys-["admission","approve_plan_sha256","artifact_root","cipher_method","encryption_key_id","full_artifacts","full_snapshot","old_restore_admission","old_restore_admission_sha256","old_target_provisioning","old_target_provisioning_sha256","old_target_retirement","old_target_retirement_sha256","old_target_snapshot_empty","old_target_snapshot_empty_sha256","pd_addrs","plan","remote_inventory","source_range_exclusive","target_provisioning","target_provisioning_sha256","target_qualification","target_qualification_sha256","target_replacement_handoff","target_replacement_handoff_sha256","target_snapshot_empty","target_writer_exclusion","target_writer_exclusion_sha256"]|length)==0) |
@@ -34,7 +40,7 @@ parameters_file="$temp_dir/parameters.json"
   select((has("old_target_retirement_sha256")|not) or (.old_target_retirement_sha256|type=="string" and test("^[a-f0-9]{64}$"))) |
   select((has("old_restore_admission_sha256")|not) or (.old_restore_admission_sha256|type=="string" and test("^[a-f0-9]{64}$"))) |
   .pd_addrs |= sort
-' "$PARAMETERS_FILE" >"$parameters_file" || die "native PITR restore parameter schema is invalid"
+' "$frozen_parameters" >"$parameters_file" || die "native PITR restore parameter schema is invalid"
 parameters_sha="$(sha256sum "$parameters_file" | cut -d ' ' -f1)"
 operation_name="native-pitr-restore-${parameters_sha:0:20}"; secret_name="${operation_name}-parameters"
 context_args=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context_args=(--context "$KUBE_CONTEXT")
