@@ -58172,6 +58172,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   probe 操作序列/窗口、Service/Pod/EndpointSlice fence、在线 etcd RPC 或 TiKV 编码，也不替代真实切流后的
   一小时持续审计。
 
+- A5184 封闭恢复 revision 证据超过 etcd protobuf `int64` 后绕过单调门禁的数值域缺口。先以本机生产依赖
+  `jq 1.8.1` 复核真实 TiKV revision `468126003565970383/384/385`，确认其十进制实现可逐一分辨且
+  `tostring` 不丢精度，因此没有把旧 jq 的 IEEE-754 风险误报为当前缺陷。真实问题是四个脚本只要求 revision
+  为正整数：JSON/TSV 可接受 `9223372036854775808`，而 etcd Range/Txn/Watch protobuf revision 均为 signed
+  `int64`；一旦该值进入 Bash `(( ))`，会溢出成负值并可能让 A5182/A5183 的上下界比较失真。现 restore
+  verification 的 source/target revision、cutover state 的 snapshot/initial target revision、v2 cutover receipt
+  的 initial/public revision、实时 audit probe 的 put/read/delete revision，以及 post-restore audit receipt 的
+  first/last revision 全部限制在 `1..9223372036854775807`。JSON 由精确 jq 数值比较准入；TSV state 使用位数加
+  等长十进制字典序，不在验证前执行机器整数算术。direct cutover、两个 Operation runner 与 direct audit 各自
+  独立复核，外部替换不能依赖上游入口。MaxInt64 cutover/audit 正例与 `2^63` restore receipt、state、cutover
+  receipt、probe、audit receipt 六类反例连续二十轮 194.346 秒、race 14.915 秒、bash syntax 与 diff check
+  通过。开发中首版 probe fixture 自身用 `%d` 先截断超界输入，导致反例假绿；改为 `%s` 原样注入后产品门禁
+  正确拒绝，最终边界集合 23.191 秒通过。完整非 production 全绿，其中 `pkg/server/etcd` 149.498 秒；
+  production 343 项按 78/96/84/85 四分片全部通过（144.097/247.151/171.997/451.097 秒），全仓 vet
+  2.196 秒。本项不改变 receipt schema、合法 revision、在线 etcd RPC、Service selector CAS 或 TiKV 编码，
+  也不替代真实切流与持续审计。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

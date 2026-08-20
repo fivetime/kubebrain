@@ -4898,6 +4898,10 @@ revision/digest 漂移均在首个探针前拒绝。
 `first_probe_revision`，以及 Operation runner 接收的 audit receipt 首 revision 都必须大于等于它。v1 cutover
 没有该字段，仍只执行正 revision 与样本间单调检查。这样切流完成证据与后续审计之间不会留下一个可接受倒退的
 跨阶段窗口。
+所有参与该链的 snapshot、initial/public target、probe put/read/delete 及 audit first/last revision 还必须位于
+etcd protobuf 的 signed `int64` 正数域 `1..9223372036854775807`。JSON 使用 jq 精确整数比较；TSV state 在进入
+Bash 算术前按十进制位数和等长字典序校验。不得仅检查“无小数且大于零”，否则外部制品中的 `2^63` 会在 shell
+算术中溢出并破坏单调门禁。
 探针不会把 `err=nil` 直接编码成审计 evidence：Grant 固定非零 cluster/member、lease ID、合法 TTL 和
 revision，后续条件 Put/Range/条件 Delete/absence Range/Revoke 必须保持同一 cluster、合法且不回退的
 revision，并严格核对 Txn operation shape、Succeeded、Count/More、PrevKV、Deleted，以及随机 key/value、
