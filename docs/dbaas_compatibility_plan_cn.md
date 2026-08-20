@@ -58157,6 +58157,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已实际运行的 shell syntax 门禁。本项不改变 receipt schema、Service selector CAS、公开数据重验内容、在线
   etcd RPC 或 TiKV 编码，也不把确定性状态机测试冒充真实切流或一小时持续审计。
 
+- A5183 将 A5182 的单调时点链延伸到 post-restore audit 首个真实数据探针。旧审计只要求每个 probe 自身
+  `put <= read <= delete`、样本间 revision 不倒退，既有 audit receipt 和 Operation runner 也只要求
+  `last_probe_revision >= first_probe_revision > 0`；因此 v2 cutover 已证明 public revision=84 时，首样本=83
+  仍可签发或复用。对照 etcd 线性化 latest 读在同一集群不得早于已完成读的 MVCC 合同，直接审计现在从已严格
+  验证的 v2 cutover receipt 提取 `public_verified_target_revision` 作为 `minimum_probe_revision`：每个实时
+  probe（因而首个样本）必须不早于该下界，已有 post-restore audit receipt 的首 revision 也必须满足同一约束。
+  审计 Operation runner 在验证源 cutover state/receipt 摘要和 schema 后独立提取同一下界，再拒绝由外部 audit
+  command 生成的倒退 receipt。v1 cutover 没有 public target revision，继续以 0 为下界保持在途兼容。v2 正链
+  固定首样本从 84 开始；实时 probe=83、已有 receipt 首样本=83、runner receipt 首样本=83 三类 RED 连续二十轮
+  110.933 秒、race 6.683 秒、bash syntax 与 diff check 通过。完整非 production 全绿，其中
+  `pkg/server/etcd` 152.933 秒；production 338 项按 77/93/83/85 四分片全部通过
+  （146.934/243.307/176.629/457.675 秒），全仓 vet 2.162 秒。本项不改变 post-restore audit receipt schema、
+  probe 操作序列/窗口、Service/Pod/EndpointSlice fence、在线 etcd RPC 或 TiKV 编码，也不替代真实切流后的
+  一小时持续审计。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -4894,6 +4894,10 @@ public endpoint。跨样本 revision 必须单调不降，持续时间使用单�
 额外要求 state 中的 restore receipt format/SHA-256/初始 target revision 与 cutover receipt 完全一致，且
 公开 Service 重验 target revision 为正且不早于初始 target revision；版本混搭、缺字段、revision 倒退或
 revision/digest 漂移均在首个探针前拒绝。
+该 public target revision 同时是持续审计的最小观测点：v2 路径的每个实时 probe、已有 audit receipt 的
+`first_probe_revision`，以及 Operation runner 接收的 audit receipt 首 revision 都必须大于等于它。v1 cutover
+没有该字段，仍只执行正 revision 与样本间单调检查。这样切流完成证据与后续审计之间不会留下一个可接受倒退的
+跨阶段窗口。
 探针不会把 `err=nil` 直接编码成审计 evidence：Grant 固定非零 cluster/member、lease ID、合法 TTL 和
 revision，后续条件 Put/Range/条件 Delete/absence Range/Revoke 必须保持同一 cluster、合法且不回退的
 revision，并严格核对 Txn operation shape、Succeeded、Count/More、PrevKV、Deleted，以及随机 key/value、
