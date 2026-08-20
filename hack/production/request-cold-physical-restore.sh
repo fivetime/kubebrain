@@ -6,6 +6,7 @@ TARGET_SNAPSHOT_CLASS="${TARGET_SNAPSHOT_CLASS:-}"; TARGET_STORAGE_CLASS="${TARG
 OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"; WAIT_TIMEOUT="${WAIT_TIMEOUT:-15m}"
 KUBECTL="${KUBECTL:-kubectl}"; OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 COLD_RESTORE_RENDER="${COLD_RESTORE_RENDER:-kubebrain-cold-restore-render}"; JQ="${JQ:-jq}"
+MAX_IDENTITY_RESPONSE_BYTES=4096
 die() { echo "$*" >&2; exit 1; }
 resolve_executable() {
   local value="$1"
@@ -25,8 +26,16 @@ cp -- "$RECEIPT_FILE" "$frozen_receipt"; chmod 600 "$frozen_receipt"
 $JQ -e '.format == "kubebrain.cold-physical-snapshot.v2" and (.operation_id|test("^cold-snapshot-[a-f0-9]{20}$")) and .inventory.storage.namespace == "tidb-cluster" and .inventory.storage.tidb_cluster == "kb"' "$frozen_receipt" >/dev/null || die "source receipt is outside the supported restore scope"
 context_args=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context_args=(--context "$KUBE_CONTEXT")
 kctl() { "$KUBECTL" "${context_args[@]}" "$@"; }
-target_kube_uid="$(kctl get namespace kube-system -o jsonpath='{.metadata.uid}')"
-target_namespace_uid="$(kctl get namespace tidb-cluster -o jsonpath='{.metadata.uid}')"
+target_kube_uid_file="$temp_dir/target-kube-system.uid"
+kctl get namespace kube-system -o jsonpath='{.metadata.uid}' >"$target_kube_uid_file" || die "cannot read target kube-system namespace identity"
+chmod 600 "$target_kube_uid_file"
+[[ "$(wc -c <"$target_kube_uid_file")" -le "$MAX_IDENTITY_RESPONSE_BYTES" ]] || die "identity response exceeds ${MAX_IDENTITY_RESPONSE_BYTES} bytes"
+target_kube_uid="$(<"$target_kube_uid_file")"
+target_namespace_uid_file="$temp_dir/target-tidb-namespace.uid"
+kctl get namespace tidb-cluster -o jsonpath='{.metadata.uid}' >"$target_namespace_uid_file" || die "cannot read target storage namespace identity"
+chmod 600 "$target_namespace_uid_file"
+[[ "$(wc -c <"$target_namespace_uid_file")" -le "$MAX_IDENTITY_RESPONSE_BYTES" ]] || die "identity response exceeds ${MAX_IDENTITY_RESPONSE_BYTES} bytes"
+target_namespace_uid="$(<"$target_namespace_uid_file")"
 [[ -n "$target_kube_uid" && -n "$target_namespace_uid" ]] || die "isolated target namespace identity is incomplete"
 manifest="$temp_dir/restore-manifest.json"
 "$COLD_RESTORE_RENDER" --receipt "$frozen_receipt" --target-snapshot-class "$TARGET_SNAPSHOT_CLASS" \

@@ -120,6 +120,40 @@ func writeInflatingColdRequesterCP(t *testing.T, dir string) {
 	writeExecutable(t, filepath.Join(dir, "cp"), "#!/usr/bin/env bash\n/bin/cp \"$@\"\ndest=\"${@: -1}\"\nhead -c 524289 /dev/zero >>\"$dest\"\n")
 }
 
+func TestColdPhysicalRestoreRequesterBoundsNamespaceIdentityResponses(t *testing.T) {
+	dir := t.TempDir()
+	var source map[string]any
+	require.NoError(t, json.Unmarshal(coldRestoreSnapshotReceipt(t), &source))
+	source["operation_id"] = "cold-snapshot-0123456789abcdefabcd"
+	data, err := json.Marshal(source)
+	require.NoError(t, err)
+	receipt := filepath.Join(dir, "receipt.json")
+	require.NoError(t, os.WriteFile(receipt, data, 0o600))
+	renderer := filepath.Join(dir, "renderer")
+	writeExecutable(t, renderer, "#!/usr/bin/env bash\nout=\"\"; while [[ $# -gt 0 ]]; do [[ $1 == --output ]] && { out=$2; shift 2; continue; }; shift; done\nprintf '{\"apiVersion\":\"v1\",\"kind\":\"List\",\"items\":[]}\\n' >\"$out\"\n")
+	controlLog := filepath.Join(dir, "control.log")
+	kubectl := filepath.Join(dir, "kubectl")
+	writeExecutable(t, kubectl, fmt.Sprintf(`#!/usr/bin/env bash
+printf 'kubectl %%s\n' "$*" >>%q
+if [[ "$*" == *"get namespace kube-system"* ]]; then head -c "$UID_BYTES" /dev/zero | tr '\0' k; exit 0; fi
+if [[ "$*" == *"get namespace tidb-cluster"* ]]; then printf target-namespace-uid; exit 0; fi
+if [[ "$*" == *"get secret "* ]]; then exit 1; fi
+if [[ "$*" == *"create secret generic"* ]]; then printf '%%s\n' '{"kind":"Secret"}'; else cat >/dev/null; fi
+`, controlLog))
+	operationctl := filepath.Join(dir, "operationctl")
+	writeExecutable(t, operationctl, fmt.Sprintf("#!/usr/bin/env bash\nprintf 'operationctl %%s\\n' \"$*\" >>%q\n", controlLog))
+	base := []string{"REQUEST_ID=change-uid-budget", "RECEIPT_FILE=" + receipt, "KUBE_CONTEXT=in-cluster", "TARGET_SNAPSHOT_CLASS=retained", "TARGET_STORAGE_CLASS=fast", "KUBECTL=" + kubectl, "OPERATIONCTL=" + operationctl, "COLD_RESTORE_RENDER=" + renderer}
+	output, runErr := runProductionScriptCommand(t, "request-cold-physical-restore.sh", append(base, "UID_BYTES=4097"))
+	require.Error(t, runErr)
+	require.Contains(t, string(output), "identity response exceeds 4096 bytes")
+	calls := string(mustReadProductionFile(t, controlLog))
+	require.NotContains(t, calls, "get namespace tidb-cluster")
+	require.NotContains(t, calls, "operationctl")
+	boundaryOutput, boundaryErr := runProductionScriptCommand(t, "request-cold-physical-restore.sh", append(base, "UID_BYTES=4096"))
+	require.NoError(t, boundaryErr, string(boundaryOutput))
+	require.Contains(t, string(mustReadProductionFile(t, controlLog)), "operationctl")
+}
+
 func writeOversizedCanonicalJQ(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "jq")
