@@ -5421,6 +5421,15 @@ lease；失败时不写 terminal 状态，成功后才紧邻执行 owner+attempt
 
 worker 接管时依据 A189 持久证据恢复：只有 state 从 cutover 继续，有 cutover marker 从
 verify 继续，已有 receipt 则重做 complete 在线复检后提交；rollback marker 直接记 Failed。
+runner 不把可替换 `CUTOVER_COMMAND` 生成的 state 当作 restore 输入绑定的自证材料：它先把参数指定的
+restore receipt 捕获为 0600 私有冻结副本，按 v1/v2/v3 精确字段集合、数值域、绝对且不同的 prefix、
+artifact SHA-256 和时间/计数约束独立解析，再要求 state 的 artifact SHA-256、snapshot revision、
+source/target prefix 与该副本一致。v2/v3 链还必须绑定 restore format、完整冻结 receipt SHA-256 和
+初始 target revision；新 state v3 还必须绑定同一个 target cluster ID。A5185 期间已生成的
+state v2+restore v3 继续按历史合同接管，但不追溯性声称 state 内含 cluster identity。
+该绑定在任何 cutover/verify/complete 阶段前执行，并在最终 cutover receipt 校验时再次执行；流量尚未
+变更时，畸形或不匹配输入只允许 Retry，已有 cutover marker 时则 fail closed 为 Failed，禁止凭不可信
+state 继续切流或在线完成。
 cutover、verified 和 rollback marker 在接管判定或最终提交 succeed 前都必须通过 A189
 单行封闭 schema 校验；cutover state header 的 source/target prefix 必须继续是绝对且不同的
 key prefix，不能仅凭文件存在推进 operation。heartbeat fencing 时旧 worker

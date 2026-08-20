@@ -58250,6 +58250,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   持续审计，状态机测试不能替代经审批演练。本项不改变 logical artifact、在线 etcd RPC、Service selector CAS、
   probe 操作序列或 TiKV 编码；改变的是新建 v3 cutover state/receipt schema 与四层严格消费者。
 
+- A5188 封闭 RestoreCutover Operation runner 对冻结 restore receipt 只算摘要、不独立验证其与子命令产出
+  state 一致的输入替换缺口。此前恶意或损坏的 `CUTOVER_COMMAND` 可在参数冻结 receipt 指向 cluster 7 时，
+  自行产出内部一致的 state v3 与 cutover receipt v3、把 cluster 写成 8，runner 仍会接受；artifact、revision
+  和 prefix 也存在同类问题。现 runner 在调用任何 phase 前严格解析冻结 receipt 的 v1/v2/v3 精确 schema，
+  验证 artifact format/SHA-256、snapshot revision、绝对且不同且无控制字符的 prefix、记录/lease/时间字段，
+  并提取目标 revision 与 v3 cluster ID。随后独立要求 state 的 artifact SHA、snapshot revision、source/target
+  prefix 与冻结输入相等；v2/v3 还必须匹配 format、完整 receipt SHA 与 target revision，state v3 必须再匹配
+  cluster ID。历史 state v2+restore v3 保持兼容，不追溯增加 cluster identity 保证。该门禁在首次 phase、接管
+  和最终 receipt 校验前均执行：流量未变更时 mismatch 只 Retry，已有 cutover marker 时终态 fail closed，禁止
+  继续消费不可信 state。新增 cluster/artifact/target revision 三类绑定反例及未知字段 receipt 反例；开发首轮
+  正例暴露旧 fixture 的 restore artifact SHA 与 fake state artifact SHA 本就不一致而确定性 RED，修正 fixture
+  后聚焦反例连续二十轮 183.160 秒，全部 `TestRestoreCutoverOperation*` 53.346 秒，race 10.311 秒，补充畸形/
+  绑定集合 6.166 秒，Shell syntax 与 diff check 通过。完整非 production 全绿，其中 `pkg/server/etcd`
+  151.805 秒、总计 160.363 秒；production 清单确认 361 项并按 81/101/89/90 四分片全部通过
+  （149.917/302.910/186.280/445.775 秒），全仓 vet 2.150 秒。本轮没有执行真实流量切换；状态机测试不替代
+  经审批演练。本项不改变 restore/cutover schema、在线 etcd RPC、Service selector CAS 或 TiKV 编码，只强化
+  Operation 消费者对既有端到端证据链的独立验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
