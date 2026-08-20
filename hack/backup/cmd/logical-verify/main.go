@@ -81,6 +81,20 @@ func run() (retErr error) {
 	sourceLeaseByTarget := make(map[int64]int64)
 	targetLeaseMinRevision := make(map[int64]int64)
 	responseAdmission := &verifyResponseAdmission{}
+	verificationRevision := int64(0)
+	if receiptOutput != "" {
+		count, err := cli.Get(ctx, targetPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+		if err != nil {
+			return fmt.Errorf("pin verified target prefix %q: %w", targetPrefix, err)
+		}
+		if err := validateTargetPrefixCount(count, targetPrefix, int64(status.Records)); err != nil {
+			return err
+		}
+		if err := responseAdmission.admitGet(count, []byte(targetPrefix)); err != nil {
+			return err
+		}
+		verificationRevision = count.Header.Revision
+	}
 	err = verified.Records(func(rec record.Record) error {
 		key, err := base64.StdEncoding.DecodeString(rec.Key)
 		if err != nil {
@@ -95,11 +109,11 @@ func run() (retErr error) {
 			return err
 		}
 
-		resp, err := cli.Get(ctx, string(key))
+		resp, err := cli.Get(ctx, string(key), targetReadOptions(verificationRevision)...)
 		if err != nil {
 			return err
 		}
-		kv, responseRevision, err := validateTargetGetResponse(resp, key)
+		kv, responseRevision, err := validateTargetGetResponse(resp, key, verificationRevision)
 		if err != nil {
 			return err
 		}
@@ -148,17 +162,8 @@ func run() (retErr error) {
 			return err
 		}
 	}
-	if receiptOutput != "" {
-		count, err := cli.Get(ctx, targetPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
-		if err != nil {
-			return fmt.Errorf("count verified target prefix %q: %w", targetPrefix, err)
-		}
-		if err := validateTargetPrefixCount(count, targetPrefix, int64(total)); err != nil {
-			return err
-		}
-		if err := responseAdmission.admitGet(count, []byte(targetPrefix)); err != nil {
-			return err
-		}
+	if total != status.Records {
+		return fmt.Errorf("verified artifact record count changed from %d to %d", status.Records, total)
 	}
 	clientCloseErr := cli.Close()
 	clientClosed = true
@@ -185,12 +190,22 @@ func run() (retErr error) {
 	return err
 }
 
-func validateTargetGetResponse(response *clientv3.GetResponse, key []byte) (*mvccpb.KeyValue, int64, error) {
+func targetReadOptions(revision int64) []clientv3.OpOption {
+	if revision <= 0 {
+		return nil
+	}
+	return []clientv3.OpOption{clientv3.WithRev(revision)}
+}
+
+func validateTargetGetResponse(response *clientv3.GetResponse, key []byte, snapshotRevision int64) (*mvccpb.KeyValue, int64, error) {
 	if response == nil {
 		return nil, 0, fmt.Errorf("target key %q returned an empty range response", key)
 	}
 	if response.Header == nil || response.Header.Revision <= 0 {
 		return nil, 0, fmt.Errorf("target key %q returned no valid response revision", key)
+	}
+	if snapshotRevision > 0 && response.Header.Revision < snapshotRevision {
+		return nil, 0, fmt.Errorf("target key %q response revision %d is behind pinned verification revision %d", key, response.Header.Revision, snapshotRevision)
 	}
 	if response.More || response.Count != int64(len(response.Kvs)) {
 		return nil, 0, fmt.Errorf("target key %q returned inconsistent count/more metadata", key)
@@ -206,7 +221,11 @@ func validateTargetGetResponse(response *clientv3.GetResponse, key []byte) (*mvc
 		return nil, 0, fmt.Errorf("target key %q returned mismatched key %q", key, kv.Key)
 	}
 	rec := record.Record{CreateRevision: kv.CreateRevision, ModRevision: kv.ModRevision, Version: kv.Version}
-	if err := backupfile.ValidateRecordMetadata(rec, response.Header.Revision); err != nil {
+	metadataRevision := response.Header.Revision
+	if snapshotRevision > 0 {
+		metadataRevision = snapshotRevision
+	}
+	if err := backupfile.ValidateRecordMetadata(rec, metadataRevision); err != nil {
 		return nil, 0, fmt.Errorf("target key %q returned invalid MVCC metadata: %w", key, err)
 	}
 	return kv, response.Header.Revision, nil

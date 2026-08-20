@@ -79,7 +79,7 @@ func TestValidateTargetGetResponse(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, revision, err := validateTargetGetResponse(tc.response, []byte("a"))
+			got, revision, err := validateTargetGetResponse(tc.response, []byte("a"), 0)
 			if tc.wantErr != "" {
 				require.ErrorContains(t, err, tc.wantErr)
 				return
@@ -89,6 +89,27 @@ func TestValidateTargetGetResponse(t *testing.T) {
 			require.Equal(t, tc.wantRev, revision)
 		})
 	}
+}
+
+func TestPinnedTargetReadContract(t *testing.T) {
+	require.Empty(t, targetReadOptions(0))
+	op := clientv3.OpGet("a", targetReadOptions(7)...)
+	require.Equal(t, int64(7), op.Rev())
+
+	valid := &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 9}, Count: 1, Kvs: []*mvccpb.KeyValue{{
+		Key: []byte("a"), CreateRevision: 1, ModRevision: 7, Version: 1,
+	}}}
+	_, _, err := validateTargetGetResponse(valid, []byte("a"), 7)
+	require.NoError(t, err)
+
+	valid.Header.Revision = 6
+	_, _, err = validateTargetGetResponse(valid, []byte("a"), 7)
+	require.ErrorContains(t, err, "behind pinned verification revision")
+
+	valid.Header.Revision = 9
+	valid.Kvs[0].ModRevision = 8
+	_, _, err = validateTargetGetResponse(valid, []byte("a"), 7)
+	require.ErrorContains(t, err, "invalid MVCC metadata")
 }
 
 func TestValidateTargetLeaseTTLResponse(t *testing.T) {
