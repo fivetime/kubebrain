@@ -4827,13 +4827,14 @@ RECEIPT_OUTPUT=/audit/restore-operation-123.json \
 ```
 
 只有 artifact 完整性、每个目标 key/value、永久/lease 绑定关系和目标 lease 正 TTL
-全部通过后，工具才原子发布 `kubebrain.restore-verification.v1`。工具先以一次线性化 prefix Count
+全部通过后，工具才原子发布 `kubebrain.restore-verification.v2`。工具先以一次线性化 prefix Count
 固定目标 verification revision，并用 artifact footer 的 records 校验无额外 key；全部 point Get 随后使用
 `WithRev` 在该 revision 读取，MVCC metadata 上界也绑定该固定 revision。即使 artifact 为空也必须完成这次
 目标 RPC，不能把零次读取当作验证成功。每个 point Get 还必须含正 revision header、
 自洽的 `Count/More`、精确请求 key 与有效 MVCC metadata；每个未请求 keys 的 TimeToLive 必须回显目标 ID、
 正且不早于该 lease 所有已验证 KV 的最高观察 revision、正 TTL/合法 granted TTL，并且 keys 为空。receipt 绑定 artifact
-format/SHA-256/snapshot revision/创建时间、源/目标 prefix、record/lease count 和验证
+format/SHA-256/snapshot revision/创建时间、源/目标 prefix、record/lease count、固定目标
+`verified_target_revision` 和验证
 时间，不记录 endpoint 或证书。当前制品携带创建时间时必须满足
 `artifact_created_at_unix <= verified_at_unix`；二者均为秒级时间，允许相等，早期没有创建时间的
 合法 v1/v2 制品继续兼容。源/目标 prefix 必须是绝对 key prefix、不能包含换行/回车/tab，
@@ -4851,14 +4852,17 @@ receipt 使用同目录临时文件、`fsync`、原子 hard-link 和目录 `fsyn
 `rollback`。prepare 先按严格 JSON 顶层字段集合、类型和值复核 restore verification
 receipt，再要求 Service selector 恰好为
 `app.kubernetes.io/name=kubebrain` 与源 instance，冻结 Service UID/resourceVersion、
-源和目标全部 Ready Pod 的 name/UID/restart count，以及
-`kubebrain.restore-verification.v1` 的 artifact hash/revision/prefix。cutover 使用
+源和目标全部 Ready Pod 的 name/UID/restart count，以及 restore receipt 的 artifact
+hash/revision/prefix。prepare 可读取没有 target revision 的历史 v1 receipt；新 verifier 和公开 Service
+重验必须生成携带正 `verified_target_revision` 的 v2，v1 携带 v2 字段或 v2 缺失/零 target revision
+均按 schema 错误拒绝。cutover 使用
 JSON Patch `test` 同时比较 Service UID、resourceVersion 和旧 instance selector，再
 原子替换 selector；随后要求 EndpointSlice 由同一 Service UID 控制，全部 endpoint
 Ready/Serving/非 Terminating，且 targetRef Pod UID 集精确等于冻结的目标 Pod UID 集。
 
 verify 和 complete 都通过公开 Service endpoint 对完整 logical artifact 再做逐 key/value
-及 lease 校验，结果的前九个稳定字段必须与 prepare receipt 一致。complete 才签发不可
+及 lease 校验，artifact、prefix、record/lease count 等稳定身份必须与 prepare receipt 一致；现场重验的
+target revision 可以合法推进，但必须重新写入 v2 receipt。complete 才签发不可
 覆盖的 `kubebrain.restore-cutover.receipt.v1`；receipt 还包含 cutover state 文件
 SHA-256，将冻结的 Service/Pod UID 行和绝对且不同的 source/target prefix 绑定到完成证据。
 rollback 使用相同 CAS 从目标切回源，并

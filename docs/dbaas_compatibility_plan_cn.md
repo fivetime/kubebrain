@@ -58094,6 +58094,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   schema、artifact 格式、rewrite 规则、在线 etcd Range 语义或 TiKV 编码；receipt 仍只证明 verification revision
   上的目标状态，不替代发布后的持续审计。
 
+- A5179 将 A5178 已固定但未序列化的目标 MVCC 时点纳入恢复证据。旧
+  `kubebrain.restore-verification.v1` 只记录源 artifact `snapshot_revision`，无法让后续 cutover 或审计方区分
+  “源备份 revision”与“目标验证 revision”；简单给 v1 增字段又会违反严格顶层字段合同。现新 producer 只签发
+  `kubebrain.restore-verification.v2`，强制正 `verified_target_revision`，值来自 prefix Count 固定的同一
+  verification snapshot；缺失/零值或试图用 v1 携带 v2 字段均拒绝且不发布文件。生产 cutover parser 严格接受
+  历史无该字段的 v1 和完整 v2，继续支持在途旧证据；公开 Service 现场重验必须产出 revision-bound v2。
+  重验只要求 artifact format/hash/source snapshot、prefix 和 record/lease count 与 prepare 稳定相等，不要求
+  target revision 数字相等，因为正常全局写入会推进后续验证时点。producer/v1-v2 schema 正反例连续二十轮
+  （0.041/0.063/14.680 秒），相关 race（1.053/1.071/1.801 秒）、bash syntax、ShellCheck 通过；累计十轮
+  cutover+runner 聚合首次在 Go 默认 10 分钟上限超时，停在既有 final-heartbeat fencing 用例，该用例随后独立
+  5.503 秒 GREEN，新增 schema 二十轮和 race 均 GREEN，故未把该累计超时写成成功。disposable reference etcd
+  实际签发 1-record v2 且 `verified_target_revision=2`；真实独立 TiKV/PD 上经三副本 KubeBrain Service 签发
+  v2，目标 revision `468126003565970384`，验证 0.047 秒，测试前缀终态为空。完整非 production 通过，其中
+  `pkg/server/etcd` 169.775 秒；production 326 项四分片（133.920/227.962/161.753/485.282 秒）与全仓 vet
+  （2.075 秒）全部通过。本项不改变 artifact 格式、restore/cutover state schema、在线 etcd RPC 或 TiKV 编码；
+  v2 target revision 是一致验证时点证据，不保证该时点之后没有写入，持续审计与切流 fencing 仍不可省略。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
