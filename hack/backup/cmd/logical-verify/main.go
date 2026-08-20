@@ -80,6 +80,7 @@ func run() (retErr error) {
 	targetLeaseBySource := make(map[int64]int64)
 	sourceLeaseByTarget := make(map[int64]int64)
 	targetLeaseMinRevision := make(map[int64]int64)
+	responseAdmission := &verifyResponseAdmission{}
 	err = verified.Records(func(rec record.Record) error {
 		key, err := base64.StdEncoding.DecodeString(rec.Key)
 		if err != nil {
@@ -100,6 +101,9 @@ func run() (retErr error) {
 		}
 		kv, responseRevision, err := validateTargetGetResponse(resp, key)
 		if err != nil {
+			return err
+		}
+		if err := responseAdmission.admitGet(resp, key); err != nil {
 			return err
 		}
 		if !bytes.Equal(kv.Value, value) {
@@ -138,6 +142,21 @@ func run() (retErr error) {
 			return fmt.Errorf("read restored lease for source %d: %w", sourceID, err)
 		}
 		if err := validateTargetLeaseTTLResponse(sourceID, targetID, ttl, targetLeaseMinRevision[targetID]); err != nil {
+			return err
+		}
+		if err := responseAdmission.admitLease(ttl, sourceID); err != nil {
+			return err
+		}
+	}
+	if receiptOutput != "" {
+		count, err := cli.Get(ctx, targetPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+		if err != nil {
+			return fmt.Errorf("count verified target prefix %q: %w", targetPrefix, err)
+		}
+		if err := validateTargetPrefixCount(count, targetPrefix, int64(total)); err != nil {
+			return err
+		}
+		if err := responseAdmission.admitGet(count, []byte(targetPrefix)); err != nil {
 			return err
 		}
 	}
