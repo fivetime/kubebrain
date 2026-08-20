@@ -58609,6 +58609,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分别受 87389/87396-byte 精确上界保护。本项不改变参数或 Secret schema、诊断/幂等/审批/remediation、
   在线 etcd RPC 或 TiKV 编码。
 
+- A5217 为 TiDB Operator readiness 验证器的四份 Kubernetes 控制面 JSON 建立逐文件 1 MiB 门禁。旧实现
+  把 Deployment 初读、ReplicaSet 列表、Pod 列表和 Deployment 终态直接装入 shell 变量；四种
+  1048577-byte 语义合法 JSON 都会被接受并通过整个 release gate（四条 RED 合计 1.322 秒）。现验证器
+  创建私有临时目录，每次 kubectl 成功响应分别写入文件、chmod 0600、用 stat 检查不超过 1048576 bytes，
+  再直接交给 jq；Deployment 初始与终态保留独立快照。表驱动测试同时证明四个位置精确 1 MiB 响应仍可
+  完成门禁。主测试连续二十轮 31.026 秒、race 2.521 秒，完整 validator 测试 2.494 秒，bash syntax、
+  diff check 与全仓 vet 通过。production 清单确认 412 项并按 98/111/103/100 四片全部通过
+  （178.413/308.720/216.355/504.400 秒）。本项不改变 Deployment/ReplicaSet/Pod 发布身份、rollout fencing、
+  TiDB Operator 配置、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
