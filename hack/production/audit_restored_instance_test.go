@@ -24,7 +24,8 @@ func TestPostRestoreAuditPublishesReceiptAndRechecksOnRetry(t *testing.T) {
 	require.NoError(t, err)
 	var receipt map[string]any
 	require.NoError(t, json.Unmarshal(data, &receipt))
-	require.Equal(t, "kubebrain.post-restore-audit.receipt.v1", receipt["format"])
+	require.Equal(t, "kubebrain.post-restore-audit.receipt.v2", receipt["format"])
+	require.Equal(t, float64(7), receipt["verified_target_cluster_id"])
 	require.Equal(t, true, receipt["topology_unchanged"])
 	require.GreaterOrEqual(t, receipt["samples"].(float64), float64(2))
 	require.Equal(t, fileDigest(t, filepath.Join(f.dir, "cutover.state")), receipt["cutover_state_sha256"])
@@ -64,6 +65,28 @@ func TestPostRestoreAuditRejectsProbeRevisionAboveInt64(t *testing.T) {
 	f := newAuditFixture(t)
 	f.run(t, false, "PROBE_REVISION_OVERRIDE=9223372036854775808", "probe returned invalid evidence")
 	require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+}
+
+func TestPostRestoreAuditRejectsProbeClusterDrift(t *testing.T) {
+	f := newAuditFixture(t)
+	f.run(t, false, "PROBE_CLUSTER_DRIFT=true", "probe cluster ID changed")
+	require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+}
+
+func TestPostRestoreAuditRejectsClusterDriftWhenReusingReceipt(t *testing.T) {
+	f := newAuditFixture(t)
+	f.run(t, true, "")
+	f.run(t, false, "PROBE_CLUSTER_ID=8", "probe cluster ID changed")
+}
+
+func TestPostRestoreAuditRejectsMalformedProbeClusterID(t *testing.T) {
+	for _, clusterID := range []string{"0", "18446744073709551616"} {
+		t.Run(clusterID, func(t *testing.T) {
+			f := newAuditFixture(t)
+			f.run(t, false, "PROBE_CLUSTER_ID="+clusterID, "probe returned invalid evidence")
+			require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+		})
+	}
 }
 
 func TestPostRestoreAuditAcceptsMaxInt64ProbeRevision(t *testing.T) {
@@ -385,7 +408,9 @@ if [[ -f "$FAKE_DIR/probe-backwards" ]]; then count=$((100-count)); fi
 if [[ -f "$FAKE_DIR/v2-evidence" ]]; then count=$((count+83)); fi
 if [[ "${PROBE_BELOW_CUTOVER:-false}" == true ]]; then count=83; fi
 if [[ -n "${PROBE_REVISION_OVERRIDE:-}" ]]; then count="$PROBE_REVISION_OVERRIDE"; fi
-printf '{"format":"kubebrain.etcd-audit-probe.v1","put_revision":%s,"read_revision":%s,"delete_revision":%s,"lease_ttl":60}\n' "$count" "$count" "$count"
+cluster_id="${PROBE_CLUSTER_ID:-7}"
+if [[ "${PROBE_CLUSTER_DRIFT:-false}" == true && "$count" != 1 ]]; then cluster_id=8; fi
+printf '{"format":"kubebrain.etcd-audit-probe.v2","cluster_id":%s,"put_revision":%s,"read_revision":%s,"delete_revision":%s,"lease_ttl":60}\n' "$cluster_id" "$count" "$count" "$count"
 `)
 	realSHA256Sum, err := exec.LookPath("sha256sum")
 	require.NoError(t, err)
@@ -412,7 +437,7 @@ fi
 	writeTrafficExecutable(t, jq, `#!/usr/bin/env bash
 set -euo pipefail
 "$REAL_JQ" "$@"
-if [[ " $* " == *" -cnS "* && " $* " == *" kubebrain.post-restore-audit.receipt.v1 "* ]]; then
+if [[ " $* " == *" -cnS "* && " $* " == *" kubebrain.post-restore-audit.receipt.v2 "* ]]; then
   [[ "${TAMPER_CUTOVER_STATE_DURING_AUDIT_RECEIPT_JQ:-false}" != true ]] ||
     printf 'UNKNOWN\trow\n' >>"$CUTOVER_STATE_INPUT"
   [[ "${TAMPER_CUTOVER_RECEIPT_DURING_AUDIT_RECEIPT_JQ:-false}" != true ]] ||

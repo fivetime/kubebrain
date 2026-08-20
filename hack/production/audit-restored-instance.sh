@@ -372,13 +372,15 @@ run_probe() {
       go run ./hack/production/cmd/etcd-audit-probe)"
   fi
   "$JQ" -e '
-    .format == "kubebrain.etcd-audit-probe.v1" and
+    keys == ["cluster_id","delete_revision","format","lease_ttl","put_revision","read_revision"] and
+    .format == "kubebrain.etcd-audit-probe.v2" and
+    (.cluster_id | type == "number" and . > 0 and . <= 18446744073709551615 and . == floor) and
     (.put_revision > 0 and .put_revision <= 9223372036854775807 and .put_revision == (.put_revision | floor)) and
     (.read_revision >= .put_revision and .read_revision <= 9223372036854775807 and .read_revision == (.read_revision | floor)) and
     (.delete_revision >= .read_revision and .delete_revision <= 9223372036854775807 and .delete_revision == (.delete_revision | floor)) and
     (.lease_ttl > 0)' <<<"$output" >/dev/null ||
     { echo "etcd audit probe returned invalid evidence" >&2; exit 1; }
-  "$JQ" -r '.delete_revision' <<<"$output"
+  "$JQ" -r '[.cluster_id,.delete_revision] | @tsv' <<<"$output"
 }
 
 validate_existing_audit_receipt() {
@@ -392,9 +394,13 @@ validate_existing_audit_receipt() {
     --argjson duration "$AUDIT_DURATION_SECONDS" --argjson interval "$AUDIT_INTERVAL_SECONDS" \
     --argjson min_samples "$MIN_SAMPLES" --argjson cutover_completed_at "$cutover_completed_at" \
     --argjson minimum_probe_revision "$minimum_probe_revision" '
-      (keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"] or
-       keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","cutover_receipt_sha256","cutover_state_sha256","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"]) and
-      .format == "kubebrain.post-restore-audit.receipt.v1" and
+      (((keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"] or
+         keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","cutover_receipt_sha256","cutover_state_sha256","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"]) and
+        .format == "kubebrain.post-restore-audit.receipt.v1") or
+       ((keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged","verified_target_cluster_id"] or
+         keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","cutover_receipt_sha256","cutover_state_sha256","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged","verified_target_cluster_id"]) and
+        .format == "kubebrain.post-restore-audit.receipt.v2" and
+        (.verified_target_cluster_id | type == "number" and . > 0 and . <= 18446744073709551615 and . == floor))) and
       .operation_id == $operation and .instance == $instance and
       .cutover_operation_id == $cutover and .service_uid == $uid and
       .target_instance == $target and
@@ -420,7 +426,11 @@ if [[ -e "$receipt_file" ]]; then
   validate_existing_audit_receipt ||
     { echo "existing post-restore audit receipt does not match the operation" >&2; exit 1; }
   fence_topology
-  run_probe >/dev/null
+  probe_result="$(run_probe)"
+  if [[ "$("$JQ" -r '.format' "$receipt_file")" == "kubebrain.post-restore-audit.receipt.v2" ]]; then
+    [[ "${probe_result%%$'\t'*}" == "$("$JQ" -r '.verified_target_cluster_id' "$receipt_file")" ]] ||
+      { echo "etcd audit probe cluster ID changed" >&2; exit 1; }
+  fi
   exit 0
 fi
 
@@ -432,15 +442,20 @@ deadline_monotonic=$((started_monotonic + AUDIT_DURATION_SECONDS))
 samples=0
 first_revision=0
 last_revision=0
+verified_target_cluster_id=0
 while true; do
   fence_topology
-  revision="$(run_probe)"
+  probe_result="$(run_probe)"
+  IFS=$'\t' read -r cluster_id revision <<<"$probe_result"
   fence_topology
+  [[ "$verified_target_cluster_id" == 0 || "$cluster_id" == "$verified_target_cluster_id" ]] ||
+    { echo "etcd audit probe cluster ID changed" >&2; exit 1; }
   (( revision >= minimum_probe_revision )) ||
     { echo "etcd audit probe revision predates cutover verification" >&2; exit 1; }
   (( last_revision == 0 || revision >= last_revision )) ||
     { echo "etcd audit probe revision moved backwards" >&2; exit 1; }
   ((samples += 1))
+  [[ "$verified_target_cluster_id" != 0 ]] || verified_target_cluster_id="$cluster_id"
   (( first_revision == 0 )) && first_revision="$revision"
   last_revision="$revision"
   if (( SECONDS >= deadline_monotonic && samples >= MIN_SAMPLES )); then
@@ -455,7 +470,7 @@ require_cutover_state_digest "$cutover_state_sha"
 require_cutover_receipt_digest "$cutover_receipt_sha"
 
 temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
-"$JQ" -cnS --arg format "kubebrain.post-restore-audit.receipt.v1" \
+"$JQ" -cnS --arg format "kubebrain.post-restore-audit.receipt.v2" \
   --arg operation_id "$OPERATION_ID" --arg instance "$INSTANCE" \
   --arg cutover_operation_id "$cutover_operation" --arg service_uid "$state_service_uid" \
   --arg target_instance "$TARGET_INSTANCE" --arg artifact_sha256 "$artifact_sha" \
@@ -465,6 +480,7 @@ temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
   --argjson samples "$samples" --argjson first_revision "$first_revision" \
   --argjson last_revision "$last_revision" --argjson started_at_unix "$started_at" \
   --argjson completed_at_unix "$completed_at" \
+  --argjson verified_target_cluster_id "$verified_target_cluster_id" \
   '{format:$format,operation_id:$operation_id,instance:$instance,
     cutover_operation_id:$cutover_operation_id,service_uid:$service_uid,
     cutover_state_sha256:$cutover_state_sha256,cutover_receipt_sha256:$cutover_receipt_sha256,
@@ -472,6 +488,7 @@ temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
     snapshot_revision:$snapshot_revision,replicas:$replicas,
     duration_seconds:$duration_seconds,interval_seconds:$interval_seconds,samples:$samples,
     first_probe_revision:$first_revision,last_probe_revision:$last_revision,
+    verified_target_cluster_id:$verified_target_cluster_id,
     topology_unchanged:true,all_probes_succeeded:true,completed:true,
     started_at_unix:$started_at_unix,completed_at_unix:$completed_at_unix}' >"$temporary"
 require_cutover_state_digest "$cutover_state_sha"

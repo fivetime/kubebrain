@@ -16,6 +16,7 @@ import (
 
 type result struct {
 	Format         string `json:"format"`
+	ClusterID      uint64 `json:"cluster_id"`
 	PutRevision    int64  `json:"put_revision"`
 	ReadRevision   int64  `json:"read_revision"`
 	DeleteRevision int64  `json:"delete_revision"`
@@ -123,7 +124,7 @@ func main() {
 	revoked = true
 
 	output := result{
-		Format: "kubebrain.etcd-audit-probe.v1", PutRevision: putRevision,
+		Format: "kubebrain.etcd-audit-probe.v2", ClusterID: clusterID, PutRevision: putRevision,
 		ReadRevision: readRevision, DeleteRevision: deleteRevision,
 		LeaseTTL: grantedTTL,
 	}
