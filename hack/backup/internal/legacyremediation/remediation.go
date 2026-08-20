@@ -147,6 +147,9 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 	probe := filepath.Join(probeDir, "preflight.db")
 	err = downloadAndValidate(ctx, cli, probe, status.StorageVersion)
 	if err == nil {
+		if _, statusErr := continuationStatus(ctx, cli, c.Endpoint, status, status.Header.Revision); statusErr != nil {
+			return result, 1, statusErr
+		}
 		result.SnapshotStatus = "healthy"
 		if _, err = fmt.Fprintln(out, "snapshot_status=healthy"); err != nil {
 			return result, 1, fmt.Errorf("write snapshot status: %w", err)
@@ -159,7 +162,12 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 	if !strings.Contains(err.Error(), LegacyDiagnostic) {
 		return result, 1, fmt.Errorf("refusing legacy-history remediation: Snapshot failed for a different reason: %w", err)
 	}
-	match := compactRevisionDiagnostic.FindStringSubmatch(err.Error())
+	diagnosticErr := err
+	continuedStatus, err := continuationStatus(ctx, cli, c.Endpoint, status, status.Header.Revision)
+	if err != nil {
+		return result, 1, err
+	}
+	match := compactRevisionDiagnostic.FindStringSubmatch(diagnosticErr.Error())
 	if len(match) != 2 {
 		return result, 1, errors.New("refusing legacy-history remediation: Snapshot diagnostic has no safe compact revision")
 	}
@@ -197,7 +205,7 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 		err = compactErr
 		return result, 1, fmt.Errorf("physical compact: %w", err)
 	}
-	if err = validateCompactResponse(compactResponse, status.Header.ClusterId, revision); err != nil {
+	if err = validateCompactResponse(compactResponse, status.Header.ClusterId, continuedStatus.Header.Revision); err != nil {
 		return result, 1, err
 	}
 	candidate, err := os.CreateTemp(parent, ".kubebrain-post-remediation.*.db")
@@ -216,6 +224,9 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 	}()
 	if err = downloadAndValidate(ctx, cli, candidatePath, status.StorageVersion); err != nil {
 		return result, 1, fmt.Errorf("post-compaction snapshot: %w", err)
+	}
+	if _, err = continuationStatus(ctx, cli, c.Endpoint, status, compactResponse.Header.Revision); err != nil {
+		return result, 1, fmt.Errorf("post-compaction endpoint identity: %w", err)
 	}
 	if err = os.Link(candidatePath, c.Output); err != nil {
 		return result, 1, fmt.Errorf("publish snapshot without overwrite: %w", err)
@@ -268,6 +279,23 @@ func validateStatusResponse(status *clientv3.StatusResponse) error {
 		return errors.New("endpoint status reports an unhealthy leader")
 	}
 	return nil
+}
+
+func continuationStatus(ctx context.Context, cli etcdClient, endpoint string, initial *clientv3.StatusResponse, minRevision int64) (*clientv3.StatusResponse, error) {
+	status, err := cli.Status(ctx, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("recheck endpoint status: %w", err)
+	}
+	if err := validateStatusResponse(status); err != nil {
+		return nil, err
+	}
+	if status.Header.ClusterId != initial.Header.ClusterId || status.Header.Revision < minRevision {
+		return nil, errors.New("endpoint identity changed or revision regressed during snapshot remediation")
+	}
+	if status.Version != initial.Version || status.StorageVersion != initial.StorageVersion {
+		return nil, errors.New("endpoint version changed during snapshot remediation")
+	}
+	return status, nil
 }
 
 func validateCompactResponse(response *clientv3.CompactResponse, clusterID uint64, compactRevision int64) error {

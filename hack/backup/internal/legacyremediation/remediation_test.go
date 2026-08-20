@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
@@ -34,6 +35,8 @@ func TestConfigFromEnvPreservesExactIdentityInputs(t *testing.T) {
 
 type fakeEtcdClient struct {
 	status        *clientv3.StatusResponse
+	statuses      []*clientv3.StatusResponse
+	statusCalls   int
 	snapshotBytes []byte
 	snapshotClose error
 	snapshotCalls int
@@ -42,6 +45,7 @@ type fakeEtcdClient struct {
 	snapshotRaw   bool
 	compacted     bool
 	compactRev    int64
+	compactReply  *clientv3.CompactResponse
 }
 
 func validRemediationStatus(clusterID uint64, revision int64) *clientv3.StatusResponse {
@@ -60,6 +64,15 @@ type closeErrorReader struct {
 func (r closeErrorReader) Close() error { return r.err }
 
 func (f *fakeEtcdClient) Status(context.Context, string) (*clientv3.StatusResponse, error) {
+	if len(f.statuses) != 0 {
+		index := f.statusCalls
+		if index >= len(f.statuses) {
+			index = len(f.statuses) - 1
+		}
+		f.statusCalls++
+		return f.statuses[index], nil
+	}
+	f.statusCalls++
 	return f.status, nil
 }
 func (f *fakeEtcdClient) SnapshotWithVersion(context.Context) (*clientv3.SnapshotResponse, error) {
@@ -91,7 +104,10 @@ func TestRunStopsBeforeSnapshotWhenStatusOutputFails(t *testing.T) {
 func (f *fakeEtcdClient) Compact(_ context.Context, revision int64, _ ...clientv3.CompactOption) (*clientv3.CompactResponse, error) {
 	f.compacted = true
 	f.compactRev = revision
-	return &clientv3.CompactResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: f.status.Header.ClusterId, MemberId: f.status.Header.MemberId, Revision: revision}}, nil
+	if f.compactReply != nil {
+		return f.compactReply, nil
+	}
+	return &clientv3.CompactResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: f.status.Header.ClusterId, MemberId: f.status.Header.MemberId, Revision: f.status.Header.Revision}}, nil
 }
 
 func TestDownloadRejectsSnapshotWhenResponseCloseFails(t *testing.T) {
@@ -160,6 +176,35 @@ func TestRunRefusesIdentityDriftBeforeCompaction(t *testing.T) {
 	require.False(t, client.compacted)
 }
 
+func TestRunRefusesEndpointDriftAroundCompactionAndSnapshot(t *testing.T) {
+	initial := validRemediationStatus(7301, 41)
+	drifted := validRemediationStatus(7302, 42)
+	config := Config{Action: "compact", Endpoint: "https://kb:2379", ConfirmEndpoint: "https://kb:2379",
+		ExpectedClusterID: "7301", ExpectedRevision: "41", AllowIrreversible: true, Output: filepath.Join(t.TempDir(), "snapshot.db")}
+
+	client := &fakeEtcdClient{status: initial, statuses: []*clientv3.StatusResponse{initial, drifted}}
+	_, code, err := runWithClient(context.Background(), config, io.Discard, client)
+	require.ErrorContains(t, err, "identity changed")
+	require.Equal(t, 1, code)
+	require.False(t, client.compacted)
+
+	client = &fakeEtcdClient{status: initial, snapshotBytes: validSnapshotArtifact(t), compactReply: &clientv3.CompactResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 7301, MemberId: 17, Revision: 40},
+	}}
+	_, code, err = runWithClient(context.Background(), config, io.Discard, client)
+	require.ErrorContains(t, err, "invalid acknowledgement")
+	require.Equal(t, 1, code)
+
+	output := filepath.Join(t.TempDir(), "snapshot.db")
+	config.Output = output
+	client = &fakeEtcdClient{status: initial, statuses: []*clientv3.StatusResponse{initial, initial, drifted}, snapshotBytes: validSnapshotArtifact(t)}
+	_, code, err = runWithClient(context.Background(), config, io.Discard, client)
+	require.ErrorContains(t, err, "post-compaction endpoint identity")
+	require.Equal(t, 1, code)
+	_, statErr := os.Stat(output)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 func TestValidateStatusResponse(t *testing.T) {
 	require.NoError(t, validateStatusResponse(validRemediationStatus(7, 11)))
 	tests := []*clientv3.StatusResponse{
@@ -193,6 +238,46 @@ func TestValidateCompactResponse(t *testing.T) {
 	} {
 		require.Error(t, validateCompactResponse(response, 7, 11), i)
 	}
+}
+
+func TestContinuationStatusRejectsIdentityRevisionAndVersionDrift(t *testing.T) {
+	initial := validRemediationStatus(7, 11)
+	for name, next := range map[string]*clientv3.StatusResponse{
+		"cluster":         validRemediationStatus(8, 12),
+		"revision":        validRemediationStatus(7, 10),
+		"server version":  validRemediationStatus(7, 12),
+		"storage version": validRemediationStatus(7, 12),
+	} {
+		if name == "server version" {
+			next.Version = "3.7.1"
+		}
+		if name == "storage version" {
+			next.StorageVersion = "3.6.0"
+		}
+		t.Run(name, func(t *testing.T) {
+			_, err := continuationStatus(context.Background(), &fakeEtcdClient{status: next}, "https://kb:2379", initial, 11)
+			require.Error(t, err)
+		})
+	}
+	next := validRemediationStatus(7, 12)
+	next.Header.MemberId = 19
+	_, err := continuationStatus(context.Background(), &fakeEtcdClient{status: next}, "https://kb:2379", initial, 11)
+	require.NoError(t, err)
+}
+
+func TestReferenceSnapshotStatusContinuity(t *testing.T) {
+	endpoint := os.Getenv("REFERENCE_LEGACY_REMEDIATION_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set REFERENCE_LEGACY_REMEDIATION_ENDPOINT to a disposable reference etcd")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	result, code, err := Run(ctx, Config{Action: "diagnose", Endpoint: endpoint, Timeout: 30 * time.Second}, io.Discard)
+	require.NoError(t, err)
+	require.Zero(t, code)
+	require.Equal(t, "healthy", result.SnapshotStatus)
+	require.NotEmpty(t, result.ClusterID)
+	require.NotEmpty(t, result.Revision)
 }
 
 func TestRunRejectsMalformedStatusBeforeSnapshot(t *testing.T) {
