@@ -54,6 +54,37 @@ func TestRestoreTrafficCutoverRejectsVerifiedMarkerBeforeCutover(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.receipt.json"))
 }
 
+func TestRestoreTrafficCutoverRejectsMarkerTimestampAboveInt64(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	require.NoError(t, os.WriteFile(
+		filepath.Join(f.state, "restore-1.cutover"),
+		[]byte("CUTOVER\tkubebrain.restore-cutover.marker.v1\ttarget\t9223372036854775808\n"),
+		0o600,
+	))
+
+	f.run(t, "verify", false, "", "restore cutover chronology is invalid")
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.verified"))
+}
+
+func TestRestoreTrafficCutoverRejectsReceiptTimestampAboveInt64(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "")
+	f.run(t, "complete", true, "")
+	receiptPath := filepath.Join(f.state, "restore-1.receipt.json")
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &receipt))
+	receipt["completed_at_unix"] = json.Number("9223372036854775808")
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(receiptPath, append(data, '\n'), 0o600))
+
+	f.run(t, "complete", false, "", "existing restore cutover receipt does not match")
+}
+
 func TestRestoreTrafficCutoverRejectsCutoverBeforeRestoreVerification(t *testing.T) {
 	for _, version := range []int{1, 2, 3} {
 		t.Run(strconv.Itoa(version), func(t *testing.T) {

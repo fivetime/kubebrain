@@ -547,13 +547,15 @@ reuse_marker() {
 }
 
 marker_timestamp() {
-  local path="$1" kind="$2"
+  local path="$1" kind="$2" timestamp
   validate_restore_cutover_marker "$path" "$kind" "${3:-}" || return 1
   if [[ "$kind" == "VERIFIED" ]]; then
-    awk -F '\t' 'NR == 1 {print $3}' "$path"
+    timestamp="$(awk -F '\t' 'NR == 1 {print $3}' "$path")" || return 1
   else
-    awk -F '\t' 'NR == 1 {print $4}' "$path"
+    timestamp="$(awk -F '\t' 'NR == 1 {print $4}' "$path")" || return 1
   fi
+  is_positive_etcd_revision "$timestamp" || return 1
+  printf '%s\n' "$timestamp"
 }
 
 validate_cutover_chronology() {
@@ -621,7 +623,7 @@ validate_existing_cutover_receipt() {
       .pod_uids_unchanged == true and
       .endpoint_uids_matched == true and
       .public_data_verified == true and
-      (.completed_at_unix | type == "number" and . > 0 and . == floor) and
+      (.completed_at_unix | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) and
       .completed_at_unix >= $verified_at' "$receipt_file" >/dev/null
 }
 
@@ -724,6 +726,8 @@ case "$ACTION" in
     require_cutover_state_digest "$state_sha"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.verified.XXXXXX")"
     verified_at="$(date +%s)"
+    is_positive_etcd_revision "$verified_at" ||
+      { echo "restore cutover chronology is invalid" >&2; exit 1; }
     cutover_at="$(marker_timestamp "$cutover_file" CUTOVER "$TARGET_INSTANCE")" ||
       { echo "restore cutover chronology is invalid" >&2; exit 1; }
     (( verified_at >= cutover_at )) || { echo "restore cutover chronology is invalid" >&2; exit 1; }
@@ -772,6 +776,8 @@ case "$ACTION" in
     verified_at="$(marker_timestamp "$verified_file" VERIFIED)" ||
       { echo "restore cutover chronology is invalid" >&2; exit 1; }
     completed_at="$(date +%s)"
+    is_positive_etcd_revision "$completed_at" ||
+      { echo "restore cutover chronology is invalid" >&2; exit 1; }
     (( completed_at >= verified_at )) || { echo "restore cutover chronology is invalid" >&2; exit 1; }
     require_cutover_state_digest "$state_sha"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
