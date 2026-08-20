@@ -417,6 +417,10 @@ Pod/UID/PVC 拓扑，并逐 Pod 检查 `/var/lib/pd`、`/var/lib/tikv` 的真实
 系统时记录 `refused-storage-safety`。同 PVC 重启不会释放共享宿主文件系统空间，也不会恢复容量隔离。
 同一 preflight 还会检查 PVC→PV claimRef、Bound phase、CSI driver/volumeHandle，以及整组六卷 PV UID
 和 `(CSI driver, volumeHandle)` 唯一性；hostPath 或身份碰撞同样记录 `refused-storage-safety` 并禁止进入缩容阶段。
+TiKV 与 PD 的 Pod/UID/PVC inventory jsonpath 原始响应分别限制为 1 MiB。每次查询先写入独立 0600
+原始文件并检查大小，再排序到另一份 0600 文件，最后才读入有界 shell 标量；该路径覆盖初始 quorum、
+存储检查和每次替换后的 TiKV/PD 身份复核。超限 inventory 必须在任何 Pod 删除前失败，精确 1 MiB
+的合法 inventory 仍可参与冻结与比较。
 每个 Ready PD/TiKV Pod 对应的 PVC 与 PV JSON 还分别受逐对象 1 MiB 门禁保护：响应写入同一 0700
 临时目录中的独立 0600 文件并检查大小，之后 jq 直接读取文件。超限 PVC/PV 响应不得进入 binding、容量、
 claimRef、CSI 或唯一性判断，并必须在任何 TiKV Pod 删除前失败；精确 1 MiB 的合法对象仍可通过。

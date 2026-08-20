@@ -58693,6 +58693,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （185.071/334.514/311.856/478.822 秒）。本项不改变 PVC binding、PV claimRef、CSI/容量/唯一性、
   repair 目标选择、同 PVC Pod replacement、最终事务验证、在线 etcd RPC 或 TiKV 编码。
 
+- A5225 为同一 repair 原语的 TiKV/PD Pod inventory jsonpath 响应分别建立 1 MiB 门禁。旧实现把
+  kubectl 输出直接经 sort 装入 shell 变量；1048577-byte TiKV inventory 仍会通过 quorum、存储身份和
+  replacement 栅栏并完成修复（RED 31.229 秒）。现每次查询先写入新的 0600 原始文件、用 stat 检查
+  不超过 1048576 bytes，再排序到独立 0600 文件并读入有界标量；原始响应在 sort 前即受限。该路径
+  覆盖初始 TiKV/PD quorum、冻结的 PD UID/PVC 快照、storage-safety 刷新和每次 replacement 后复核。
+  测试覆盖 TiKV/PD 超限拒绝并确认任何 TiKV Pod delete 尚未发生，也证明两类精确 1 MiB 合法 inventory
+  仍可完成修复。聚焦测试 88.059 秒，连续两轮 185.027 秒、race 87.905 秒，完整相关回归 91.127 秒，
+  bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按 98/113/103/100 四片全部通过
+  （208.758/396.932/333.972/518.876 秒）。本项不改变 Pod/UID/PVC 拓扑语义、PD 身份冻结、存储门禁、
+  replacement 顺序、最终事务验证、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
