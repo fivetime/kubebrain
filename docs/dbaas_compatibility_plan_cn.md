@@ -58229,6 +58229,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不漂移，不宣称 restore→cutover→audit 全链身份已闭合。该显式传播是后续差距。本项不改变在线 etcd RPC、
   probe 操作序列、Service/Pod/EndpointSlice fence 或 TiKV 编码。
 
+- A5187 闭合 A5185 restore v3 与 A5186 audit v2 之间仍靠 SHA 间接关联、消费者无法独立比较 cluster ID 的最后
+  一段证据链。旧新建 v3 restore prepare 仍生成 16-field `restore-cutover.state.v2`，最终只签发没有 cluster
+  字段的 `restore-cutover.receipt.v2`；即使切流脚本曾比较 prepare/public cluster，独立 cutover runner、直接
+  audit 和 audit runner 只能信任生成端，无法证明 audit probe cluster 等于 restore cluster。现新的 v3 restore
+  输入生成 17-field `kubebrain.restore-cutover.state.v3`，HEADER 在完整 restore receipt SHA、format、初始 target
+  revision 后显式冻结 `verified_target_cluster_id`。complete 仍要求公开 Service v3 重验与 prepare cluster 精确
+  相等，并签发严格字段集合的 `kubebrain.restore-cutover.receipt.v3`；切流 Operation runner 独立复核 state v3、
+  receipt v3 与 cluster 字段相等。直接 audit 和 PostRestoreAudit runner 只接受成对 v3/v3，将该 ID 作为必需
+  audit cluster：首个及后续实时 probe、最终 `post-restore-audit.receipt.v2` 和 receipt 重用 probe 全部必须相等。
+  v1/v2 既有链继续兼容；A5185 期间已落盘的 state v2+restore v3 仍按旧 v2 cutover 合同完成，但因 state 没有
+  可提取 cluster 字段，不追溯性声称全链身份保证。所有 TSV cluster ID 在 Bash 算术前以十进制长度/字典序限制
+  到 `1..MaxUint64`；MaxUint64 正链通过，`2^64` 继续 fail closed。state cluster 篡改、public reverify 漂移、
+  已有 cutover receipt 漂移、cutover runner 漂移、直接 audit 与 audit runner 漂移等 11 条 v3 正反例连续二十轮
+  477.020 秒，race 20.389 秒；完整 restore cutover/post-restore audit 兼容集合 195.024 秒，bash syntax 与 diff
+  check 通过。开发中首次 v3 正例因旧测试仍期待 state v2 确定性 RED，升级 schema 断言后同链 GREEN，未将该
+  fixture 迁移错误记作产品基线回归。完整非 production 全绿，其中 `pkg/server/etcd` 152.432 秒、总计
+  160.835 秒；production 清单确认 359 项并按 80/101/89/89 四分片全部通过
+  （151.503/279.027/188.170/442.733 秒），全仓 vet 2.268 秒。本轮未执行会改变业务路由的真实切流或一小时
+  持续审计，状态机测试不能替代经审批演练。本项不改变 logical artifact、在线 etcd RPC、Service selector CAS、
+  probe 操作序列或 TiKV 编码；改变的是新建 v3 cutover state/receipt schema 与四层严格消费者。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

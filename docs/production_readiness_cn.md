@@ -4856,9 +4856,10 @@ receipt，再要求 Service selector 恰好为
 hash/revision/prefix。prepare 可读取没有 target revision 的历史 v1 receipt 和只有 target revision 的历史 v2
 receipt；新 verifier 和公开 Service 重验必须生成同时携带正 `verified_target_revision` 与非零
 `verified_target_cluster_id` 的 v3。旧版本夹带新字段、v2 缺失/零 target revision，或 v3 缺失/零/超出
-`uint64` 的 cluster ID 均按 schema 错误拒绝。v2/v3 输入都会生成 `kubebrain.restore-cutover.state.v2`，额外
-冻结完整 restore receipt SHA-256、receipt format 与初始 target revision；历史 v1 输入继续生成 v1 state，
-保证在途 operation 可恢复。
+`uint64` 的 cluster ID 均按 schema 错误拒绝。v2 输入生成 `kubebrain.restore-cutover.state.v2`，额外冻结
+完整 restore receipt SHA-256、receipt format 与初始 target revision；新 v3 输入生成 17-field
+`kubebrain.restore-cutover.state.v3`，再显式冻结 `verified_target_cluster_id`。历史 v1 输入继续生成 v1 state；
+A5185 已生成的 state v2+restore v3 也继续按旧合同消费，保证在途 operation 可恢复。
 cutover 使用
 JSON Patch `test` 同时比较 Service UID、resourceVersion 和旧 instance selector，再
 原子替换 selector；随后要求 EndpointSlice 由同一 Service UID 控制，全部 endpoint
@@ -4872,7 +4873,9 @@ target revision 可以合法推进，但必须重新写入 cluster-bound v3 rece
 覆盖的 cutover receipt：v1 state 延续 `kubebrain.restore-cutover.receipt.v1`；v2 state 签发
 `kubebrain.restore-cutover.receipt.v2`，同时绑定初始 restore receipt 摘要/format/target revision 与 complete 阶段
 公开 Service 重验的正 target revision；后者必须大于等于初始 target revision，任何倒退都在发布前失败且不创建
-receipt。切流 Operation runner 和后续两层审计也执行相同单调约束，防止被替换的坏 receipt 进入证据链。receipt 还包含 cutover state 文件
+receipt。state v3 签发 `kubebrain.restore-cutover.receipt.v3`，在 v2 字段之外显式携带与 prepare、公开重验均
+相等的 `verified_target_cluster_id`。切流 Operation runner 和后续两层审计独立执行相同 revision 与 cluster
+约束，防止被替换的坏 receipt 进入证据链。receipt 还包含 cutover state 文件
 SHA-256，将冻结的 Service/Pod UID 行和绝对且不同的 source/target prefix 绑定到完成证据。
 rollback 使用相同 CAS 从目标切回源，并
 要求 EndpointSlice 精确恢复到冻结的源 Pod UID 集；已 complete 的 operation 禁止回滚，
@@ -4894,10 +4897,13 @@ Pod name/UID/restart/Ready 快照和 EndpointSlice targetRef UID 集。每个样
 value 条件 Delete、删除确认和 lease revoke；探针 key 使用加密随机 nonce，失败时也由
 lease 限制残留时间。直接审计入口会在任何拓扑或探针操作前拒绝含控制字符、DEL、引号或反斜杠的
 public endpoint。跨样本 revision 必须单调不降，持续时间使用单调时钟计算。
-审计入口和 PostRestoreAudit Operation runner 都支持成对的 v1 state/receipt 与 v2 state/receipt。v2 路径
+审计入口和 PostRestoreAudit Operation runner 都支持成对的 v1、v2 或 v3 cutover state/receipt。v2 路径
 额外要求 state 中的 restore receipt format/SHA-256/初始 target revision 与 cutover receipt 完全一致，且
 公开 Service 重验 target revision 为正且不早于初始 target revision；版本混搭、缺字段、revision 倒退或
 revision/digest 漂移均在首个探针前拒绝。
+v3 路径还要求 state 与 cutover receipt 的 restore format、cluster ID 和精确字段集合一致，并要求每个实时
+probe 以及最终 audit receipt v2 的 `verified_target_cluster_id` 等于该 ID；因此 prepare verification、公开
+Service complete 重验、整个 audit window 和 receipt 重用形成同一 cluster 身份链。
 该 public target revision 同时是持续审计的最小观测点：v2 路径的每个实时 probe、已有 audit receipt 的
 `first_probe_revision`，以及 Operation runner 接收的 audit receipt 首 revision 都必须大于等于它。v1 cutover
 没有该字段，仍只执行正 revision 与样本间单调检查。这样切流完成证据与后续审计之间不会留下一个可接受倒退的
@@ -4922,8 +4928,7 @@ put/read/delete revision 一同交给审计状态机。整个观察窗口的每�
 `kubebrain.post-restore-audit.receipt.v2`，记录 cutover operation、artifact/state 身份、
 窗口、样本数、首末 revision 及整个窗口固定的 cluster ID，并通过完整 cutover state/receipt SHA-256 间接绑定
 上述 cutover revision 证据。历史 v1 audit receipt 仍可按原 schema 消费，但因没有 cluster 字段，不具备重用
-时的身份连续性证明。当前 cutover receipt v2 尚未显式携带 restore v3 的 cluster ID，因此本门禁只证明 audit
-window 自身不跨集群，不能替代 restore→cutover→audit 全链 cluster 相等门禁。
+时的身份连续性证明；只有新 state/receipt v3 cutover 链能把该身份追溯到 restore prepare。
 已有 receipt 的重试仍会重新执行一次完整拓扑检查与真实
 数据探针，并按严格 JSON 顶层字段集合、类型和值复核原 receipt。KubeBrain 网关共享同一
 TiKV MVCC 后端，不存在 etcd 各成员独立 backend；
