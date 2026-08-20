@@ -4827,7 +4827,10 @@ RECEIPT_OUTPUT=/audit/restore-operation-123.json \
 ```
 
 只有 artifact 完整性、每个目标 key/value、永久/lease 绑定关系和目标 lease 正 TTL
-全部通过后，工具才原子发布 `kubebrain.restore-verification.v1`。每个 point Get 还必须含正 revision header、
+全部通过后，工具才原子发布 `kubebrain.restore-verification.v1`。工具先以一次线性化 prefix Count
+固定目标 verification revision，并用 artifact footer 的 records 校验无额外 key；全部 point Get 随后使用
+`WithRev` 在该 revision 读取，MVCC metadata 上界也绑定该固定 revision。即使 artifact 为空也必须完成这次
+目标 RPC，不能把零次读取当作验证成功。每个 point Get 还必须含正 revision header、
 自洽的 `Count/More`、精确请求 key 与有效 MVCC metadata；每个未请求 keys 的 TimeToLive 必须回显目标 ID、
 正且不早于该 lease 所有已验证 KV 的最高观察 revision、正 TTL/合法 granted TTL，并且 keys 为空。receipt 绑定 artifact
 format/SHA-256/snapshot revision/创建时间、源/目标 prefix、record/lease count 和验证
@@ -4838,8 +4841,9 @@ format/SHA-256/snapshot revision/创建时间、源/目标 prefix、record/lease
 禁止对子树验证后声称完成整份恢复。
 
 receipt 使用同目录临时文件、`fsync`、原子 hard-link 和目录 `fsync`，目标已存在时拒绝
-覆盖；控制面必须把 operation ID receipt 写入不可变审计存储。receipt 证明
-`verified_at_unix` 时刻的状态，不保证目标之后未被其他客户端修改；切换业务流量前仍应
+覆盖；控制面必须把 operation ID receipt 写入不可变审计存储。receipt 证明固定 verification revision
+上的一致目标状态；lease TTL 仍是验证时点状态，因为 etcd 不提供历史 lease 查询。它不保证目标之后未被
+其他客户端修改；切换业务流量前仍应
 执行访问冻结或 revision fencing。
 
 恢复实例进入业务流量前使用 `hack/production/switch-restore-traffic.sh`。该门禁按

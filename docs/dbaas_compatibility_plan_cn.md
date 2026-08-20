@@ -58077,6 +58077,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全部通过。本轮没有在真实集群执行不可逆 Compact；负例由合成响应覆盖，不能替代经审批的 remediation 演练。
   本项不改变 compact boundary、确认字段、snapshot 格式、receipt schema、在线 etcd RPC 或 TiKV 编码。
 
+- A5178 修复 `logical-verify` 的恢复 receipt 可由跨 revision 拼接观察签发。旧流程逐条 latest Get，最后才执行
+  latest prefix Count；虽然 header cluster 固定且 revision 单调，但并发 Put/Delete 可让各 key 与 Count 来自不同
+  数据状态，空 artifact 甚至零次目标读取也能发布 receipt。对照 clientv3 `KV.Get` 的 `WithRev` 合同及 upstream
+  MVCC Range，现启用 `RECEIPT_OUTPUT` 时先执行一次线性化 prefix Count，以 artifact footer 的 records 精确校验
+  无额外 key 并固定 verification revision；随后全部 key 使用 `WithRev` 读取。KV create/mod/version 的上界绑定该
+  固定 revision，而非可能更新的 response header；header 必须至少覆盖固定 revision，并继续满足同 cluster、非零
+  member、全链单调准入。artifact 实际遍历数还要再次等于已完整校验的 footer。lease TTL 继续按验证时点读取，
+  因为 etcd 没有历史 lease 查询；未请求 attached keys、过期或身份漂移仍 fail closed。目标包连续二十轮
+  （0.050 秒）、race（1.100 秒）和 vet 通过；disposable reference etcd 的 2-record 与 0-record artifact→receipt
+  均通过。真实独立 TiKV/PD 上经三副本 KubeBrain Service 的 2-record export→固定 revision verify 最终干净复跑
+  0.070 秒通过，测试前缀终态为空。首次 live 核心 verify 已成功，但尾部用不受支持的 `etcdctl --count-only`
+  输出组合使 harness 退出 128；第二次又在 verify 前因环境没有 `/usr/bin/time` 退出 127，均未被计作门禁成功，
+  第三次改用 shell time 后完整 GREEN。完整非 production 通过，其中 `pkg/server/etcd` 152.512 秒；production
+  324 项四分片（131.268/217.586/163.108/458.135 秒）与全仓 vet（1.996 秒）全部通过。本项不改变 receipt
+  schema、artifact 格式、rewrite 规则、在线 etcd Range 语义或 TiKV 编码；receipt 仍只证明 verification revision
+  上的目标状态，不替代发布后的持续审计。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
