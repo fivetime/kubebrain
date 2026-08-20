@@ -531,13 +531,33 @@ validate_restore_cutover_marker() {
   ' "$path"
 }
 
+restore_cutover_marker_timestamp() {
+  local path="$1" kind="$2" expected_instance="${3:-}" timestamp
+  validate_restore_cutover_marker "$path" "$kind" "$expected_instance" || return 1
+  if [[ "$kind" == "VERIFIED" ]]; then
+    timestamp="$(awk -F '\t' 'NR == 1 {print $3}' "$path")" || return 1
+  else
+    timestamp="$(awk -F '\t' 'NR == 1 {print $4}' "$path")" || return 1
+  fi
+  is_positive_etcd_revision "$timestamp" || return 1
+  printf '%s\n' "$timestamp"
+}
+
 validate_cutover_receipt() {
   local kind format state_instance state_operation state_namespace state_service source_state
   local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
   local restore_receipt_format initial_target_revision restore_receipt_sha target_cluster_id state_sha
+  local cutover_at verified_at completed_at
   validate_cutover_state_binding || return 1
-  validate_restore_cutover_marker "$cutover_file" CUTOVER "$target_instance" || return 1
-  validate_restore_cutover_marker "$verified_file" VERIFIED || return 1
+  cutover_at="$(restore_cutover_marker_timestamp "$cutover_file" CUTOVER "$target_instance")" || return 1
+  verified_at="$(restore_cutover_marker_timestamp "$verified_file" VERIFIED)" || return 1
+  (( verified_at >= cutover_at )) || return 1
+  completed_at="$("$JQ" -er '
+    .completed_at_unix |
+    select(type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) |
+    tostring' "$receipt_input")" || return 1
+  is_positive_etcd_revision "$completed_at" || return 1
+  (( completed_at >= verified_at )) || return 1
   [[ -f "$state_file" ]] || return 1
   IFS=$'\t' read -r kind format state_instance state_operation state_namespace state_service \
     source_state state_target state_service_uid artifact_sha snapshot_revision source_prefix \
@@ -574,6 +594,7 @@ validate_cutover_receipt() {
     --arg restore_format "$restore_receipt_format" --arg restore_sha "$restore_receipt_sha" \
     --argjson initial_target_revision "$initial_target_revision" --argjson revision "$snapshot_revision" \
     --argjson target_cluster_id "$target_cluster_id" \
+    --argjson verified_at "$verified_at" \
     --argjson replicas "$expected_replicas" '
     select((($state_format == "kubebrain.restore-cutover.state.v1" and
       keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","instance","operation_id","pod_uids_unchanged","public_data_verified","replicas","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
@@ -601,7 +622,8 @@ validate_cutover_receipt() {
     .cutover_state_sha256 == $state_sha and .replicas == $replicas and
     .pod_uids_unchanged == true and .endpoint_uids_matched == true and
     .public_data_verified == true and
-    (.completed_at_unix | type == "number" and . > 0 and . == floor))' \
+    (.completed_at_unix | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor) and
+    .completed_at_unix >= $verified_at)' \
     "$receipt_input" >/dev/null
 }
 
