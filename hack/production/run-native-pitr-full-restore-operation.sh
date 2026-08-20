@@ -14,6 +14,7 @@ WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; TLS_DIR="${TLS_DIR:-/var/r
 ENCRYPTION_DIR="${ENCRYPTION_DIR:-/var/run/secrets/kubebrain-native-pitr-encryption}"
 INPUT_ROOT="${INPUT_ROOT:-/var/lib/kubebrain-operation/inputs}"
 JQ="${JQ:-jq}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ && "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "worker identity or lease is invalid"
 if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then HEARTBEAT_INTERVAL_SECONDS=$((LEASE_SECONDS / 3)); fi
@@ -25,9 +26,18 @@ if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then HEARTBEAT_INTERVAL_SECONDS=$((LE
   die "WRITER_CHECK_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
 [[ "$ADMISSION_CHECK_INTERVAL" =~ ^([1-9][0-9]*)(ms|s|m)$ ]] || die "ADMISSION_CHECK_INTERVAL must be a positive Go duration using ms, s, or m"
 [[ -x "$OPERATIONCTL" && -x "$RESTORE_COMMAND" && -x "$RECEIPT_VERIFY" && -x "$BR_BINARY" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
+command -v stat >/dev/null || die "stat is required"
 [[ "$INPUT_ROOT" == /* && "$INPUT_ROOT" != *".."* ]] || die "INPUT_ROOT must be an absolute traversal-free directory"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
 sha() { sha256sum "$1" | cut -d ' ' -f1; }
+operation_parameters_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_OPERATION_PARAMETERS_BYTES" ]]; }
+require_operation_parameters_size() {
+  operation_parameters_size_is_valid "$1" || {
+    runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >/dev/null
+    echo "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >&2
+    exit 1
+  }
+}
 
 claim="$(runctl --action claim --owner "$WORKER_ID" --type NativePITRFullRestore --lease "${LEASE_SECONDS}s")"
 identity="$($JQ -er '[.namespace,.name,.operation_id,.instance,.type,.requested_by,.owner,.parameters_secret,.parameters_key,(.attempt|tostring),.parameters_sha256]|@tsv' <<<"$claim")" || die "native PITR restore claim is incomplete"
@@ -44,8 +54,13 @@ kill_background_group() { local pid="$1"; [[ $pid == 0 ]] || kill -- "-$pid" 2>/
 cleanup() { kill_restore_group; kill_background_group "$heartbeat"; kill_background_group "$writer_monitor"; rm -rf -- "$capture"; }
 trap cleanup EXIT INT TERM
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
-[[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR restore parameters digest mismatch" >/dev/null; exit 1; }
+[[ -f "$PARAMETERS_INPUT" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR restore parameters digest mismatch" >/dev/null; exit 1; }
+require_operation_parameters_size "$PARAMETERS_INPUT"
+[[ "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR restore parameters digest mismatch" >/dev/null; exit 1; }
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
+require_operation_parameters_size "$params"
+require_operation_parameters_size "$PARAMETERS_INPUT"
+[[ "$(sha "$params")" == "$expected_sha" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || die "native PITR restore parameters changed during capture"
 $JQ -e --arg input_root "$INPUT_ROOT" '(has("admission") and has("approve_plan_sha256") and has("artifact_root") and has("full_artifacts") and has("full_snapshot") and has("pd_addrs") and has("plan") and has("remote_inventory") and has("source_range_exclusive") and has("target_provisioning") and has("target_provisioning_sha256") and has("target_qualification") and has("target_qualification_sha256") and has("target_snapshot_empty") and has("target_writer_exclusion") and has("target_writer_exclusion_sha256")) and
   ((keys-["admission","approve_plan_sha256","artifact_root","cipher_method","encryption_key_id","full_artifacts","full_snapshot","old_restore_admission","old_restore_admission_sha256","old_target_provisioning","old_target_provisioning_sha256","old_target_retirement","old_target_retirement_sha256","old_target_snapshot_empty","old_target_snapshot_empty_sha256","pd_addrs","plan","remote_inventory","source_range_exclusive","target_provisioning","target_provisioning_sha256","target_qualification","target_qualification_sha256","target_replacement_handoff","target_replacement_handoff_sha256","target_snapshot_empty","target_writer_exclusion","target_writer_exclusion_sha256"]|length)==0) and
   (has("cipher_method")==has("encryption_key_id")) and

@@ -9,6 +9,7 @@ BR_BINARY="${BR_BINARY:-/usr/local/bin/br}"; PARAMETERS_INPUT="${PARAMETERS_INPU
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; TLS_DIR="${TLS_DIR:-/var/run/secrets/kubebrain-native-pitr-tls}"
 ENCRYPTION_DIR="${ENCRYPTION_DIR:-/var/run/secrets/kubebrain-native-pitr-encryption}"
 JQ="${JQ:-jq}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ && "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "worker identity or lease is invalid"
 if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then HEARTBEAT_INTERVAL_SECONDS=$((LEASE_SECONDS / 3)); fi
@@ -16,8 +17,17 @@ if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then HEARTBEAT_INTERVAL_SECONDS=$((LE
   awk -v heartbeat="$HEARTBEAT_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
   die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
 [[ -x "$OPERATIONCTL" && -x "$BACKUP_COMMAND" && -x "$BR_BINARY" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
+command -v stat >/dev/null || die "stat is required"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
 sha() { sha256sum "$1" | cut -d ' ' -f1; }
+operation_parameters_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_OPERATION_PARAMETERS_BYTES" ]]; }
+require_operation_parameters_size() {
+  operation_parameters_size_is_valid "$1" || {
+    runctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >/dev/null
+    echo "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >&2
+    exit 1
+  }
+}
 
 claim="$(runctl --action claim --owner "$WORKER_ID" --type NativePITRFullBackup --lease "${LEASE_SECONDS}s")"
 identity="$($JQ -er '[.namespace,.name,.operation_id,.instance,.type,.requested_by,.owner,.parameters_secret,.parameters_key,(.attempt|tostring),.parameters_sha256]|@tsv' <<<"$claim")" || die "native PITR claim is incomplete"
@@ -43,8 +53,13 @@ finalize_heartbeat() {
   }
 }
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
-[[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR parameters digest mismatch" >/dev/null; exit 1; }
+[[ -f "$PARAMETERS_INPUT" ]] || { runctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR parameters digest mismatch" >/dev/null; exit 1; }
+require_operation_parameters_size "$PARAMETERS_INPUT"
+[[ "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR parameters digest mismatch" >/dev/null; exit 1; }
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
+require_operation_parameters_size "$params"
+require_operation_parameters_size "$PARAMETERS_INPUT"
+[[ "$(sha "$params")" == "$expected_sha" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || die "native PITR parameters changed during capture"
 $JQ -e '(keys==["backup_ts","pd_addrs","storage_prefix"] or
   keys==["backup_ts","cipher_method","encryption_key_id","pd_addrs","storage_prefix"]) and
   (.backup_ts|type=="string" and test("^[1-9][0-9]*$")) and

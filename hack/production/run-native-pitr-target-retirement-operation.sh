@@ -7,16 +7,23 @@ OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; RETIRE_AUTHORIZE="${RETI
 UID_DELETE="${UID_DELETE:-kubebrain-uid-delete}"; RETIRE_INSPECT="${RETIRE_INSPECT:-/opt/kubebrain/hack/production/inspect-native-pitr-target-retirement.sh}"
 RECEIPT_VERIFY="${RECEIPT_VERIFY:-kubebrain-native-pitr-target-retirement-receipt}"; KUBECTL="${KUBECTL:-kubectl}"; JQ="${JQ:-jq}"; KUBE_CONTEXT="${KUBE_CONTEXT:-in-cluster}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-300}"; WAIT_INTERVAL_SECONDS="${WAIT_INTERVAL_SECONDS:-2}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 die(){ echo "$*" >&2; exit 1; }; sha(){ sha256sum "$1"|cut -d ' ' -f1; }; runctl(){ "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
 [[ -n "$WORKER_ID" && "$WAIT_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ && "$WAIT_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "WORKER_ID and positive wait bounds are required"
+command -v stat >/dev/null || die "stat is required"
 claim="$(runctl --action claim --owner "$WORKER_ID" --type NativePITRTargetRetirement --lease "${LEASE_SECONDS}s")"
 name="$($JQ -er .name <<<"$claim")"; operation_id="$($JQ -er .operation_id <<<"$claim")"; instance="$($JQ -er .instance <<<"$claim")"; type="$($JQ -er .type <<<"$claim")"; requester="$($JQ -er .requested_by <<<"$claim")"; attempt="$($JQ -er .attempt <<<"$claim")"; expected_sha="$($JQ -er .parameters_sha256 <<<"$claim")"
 [[ "$name" == "$operation_id" && "$instance" == kubebrain && "$type" == NativePITRTargetRetirement && "$requester" == platform:native-pitr-target-retirement && "$attempt" =~ ^[12]$ && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "claimed target retirement operation identity is invalid"
 [[ -n "$EXPECTED_DIGEST" ]] && [[ "$EXPECTED_DIGEST" == "$expected_sha" ]] || EXPECTED_DIGEST="$expected_sha"
 capture="$(mktemp -d)"; trap 'rm -rf -- "$capture"' EXIT
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
-[[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$EXPECTED_DIGEST" ]] || die "target retirement parameters digest mismatch"
+require_parameters_size(){ local size; size="$(stat -Lc '%s' -- "$1")" || true; if [[ ! "$size" =~ ^[0-9]+$ ]] || ((size>MAX_OPERATION_PARAMETERS_BYTES)); then runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >/dev/null; die "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes"; fi; }
+[[ -f "$PARAMETERS_INPUT" ]] || die "target retirement parameters digest mismatch"
+require_parameters_size "$PARAMETERS_INPUT"
+[[ "$(sha "$PARAMETERS_INPUT")" == "$EXPECTED_DIGEST" ]] || die "target retirement parameters digest mismatch"
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
+require_parameters_size "$params"; require_parameters_size "$PARAMETERS_INPUT"
+[[ "$(sha "$params")" == "$EXPECTED_DIGEST" && "$(sha "$PARAMETERS_INPUT")" == "$EXPECTED_DIGEST" ]] || die "target retirement parameters changed during capture"
 $JQ -e --arg root "$INPUT_ROOT" '
   keys==["failed_operation_audit","failed_operation_audit_sha256","failed_operation_parameters","failed_operation_parameters_sha256","old_plan","old_plan_sha256","old_restore_admission","old_restore_admission_sha256","old_target_provisioning","old_target_provisioning_sha256","old_target_snapshot_empty","old_target_snapshot_empty_sha256"] and
   ([.failed_operation_audit,.failed_operation_parameters,.old_plan,.old_restore_admission,.old_target_provisioning,.old_target_snapshot_empty]|all(.[];type=="string" and startswith($root+"/") and length<=4096 and (contains("/../")|not) and (endswith("/..")|not))) and

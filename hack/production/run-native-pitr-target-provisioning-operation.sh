@@ -4,16 +4,23 @@ set -euo pipefail
 WORKER_ID="${WORKER_ID:-}"; PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"; EXPECTED_DIGEST="${EXPECTED_DIGEST:-}"; OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"; TLS_DIR="${TLS_DIR:-/var/run/secrets/kubebrain-native-pitr-tls}"
 LEASE_SECONDS="${LEASE_SECONDS:-120}"; WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; INPUT_ROOT="${INPUT_ROOT:-$WORK_DIR/inputs}"
 OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; JQ="${JQ:-jq}"; PROVISION="${PROVISION:-/opt/kubebrain/hack/production/provision-native-pitr-replacement-target.sh}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 die(){ echo "$*" >&2; exit 1; }; sha(){ sha256sum "$1"|cut -d ' ' -f1; }; runctl(){ "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
 [[ -n "$WORKER_ID" ]]||die "WORKER_ID is required"
+command -v stat >/dev/null||die "stat is required"
 claim="$(runctl --action claim --owner "$WORKER_ID" --type NativePITRTargetProvisioning --lease "${LEASE_SECONDS}s")"
 name="$($JQ -er .name<<<"$claim")"; operation_id="$($JQ -er .operation_id<<<"$claim")"; instance="$($JQ -er .instance<<<"$claim")"; type="$($JQ -er .type<<<"$claim")"; requester="$($JQ -er .requested_by<<<"$claim")"; attempt="$($JQ -er .attempt<<<"$claim")"; expected_sha="$($JQ -er .parameters_sha256<<<"$claim")"
 [[ "$name" == "$operation_id" && "$instance" == kubebrain && "$type" == NativePITRTargetProvisioning && "$requester" == platform:native-pitr-target-provisioning && "$attempt" =~ ^[12]$ && "$expected_sha" =~ ^[a-f0-9]{64}$ ]]||die "claimed target provisioning operation identity is invalid"
 [[ -n "$EXPECTED_DIGEST" ]]&&[[ "$EXPECTED_DIGEST" == "$expected_sha" ]]||EXPECTED_DIGEST="$expected_sha"
 capture="$(mktemp -d)"; trap 'rm -rf -- "$capture"' EXIT
 if [[ -z "$PARAMETERS_INPUT" ]];then PARAMETERS_INPUT="$capture/input.json";runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt">"$PARAMETERS_INPUT";fi
-[[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$EXPECTED_DIGEST" ]]||die "target provisioning parameters digest mismatch"
+require_parameters_size(){ local size; size="$(stat -Lc '%s' -- "$1")"||true; if [[ ! "$size" =~ ^[0-9]+$ ]]||((size>MAX_OPERATION_PARAMETERS_BYTES));then runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes">/dev/null;die "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes";fi; }
+[[ -f "$PARAMETERS_INPUT" ]]||die "target provisioning parameters digest mismatch"
+require_parameters_size "$PARAMETERS_INPUT"
+[[ "$(sha "$PARAMETERS_INPUT")" == "$EXPECTED_DIGEST" ]]||die "target provisioning parameters digest mismatch"
 params="$capture/parameters.json";cp -- "$PARAMETERS_INPUT" "$params";chmod 600 "$params"
+require_parameters_size "$params";require_parameters_size "$PARAMETERS_INPUT"
+[[ "$(sha "$params")" == "$EXPECTED_DIGEST" && "$(sha "$PARAMETERS_INPUT")" == "$EXPECTED_DIGEST" ]]||die "target provisioning parameters changed during capture"
 "$JQ" -e --arg root "$INPUT_ROOT" '
  keys==["manifest","manifest_sha256","old_target_provisioning","old_target_provisioning_sha256","retirement","retirement_sha256"] and
  ([.manifest,.old_target_provisioning,.retirement]|all(.[];type=="string" and startswith($root+"/") and length<=4096 and (contains("/../")|not) and (endswith("/..")|not))) and
