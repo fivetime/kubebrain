@@ -58268,6 +58268,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   经审批演练。本项不改变 restore/cutover schema、在线 etcd RPC、Service selector CAS 或 TiKV 编码，只强化
   Operation 消费者对既有端到端证据链的独立验证。
 
+- A5189 封闭冻结 logical artifact 与 restore receipt 之间只分别验参数摘要、未在切流前交叉绑定的缺口。
+  此前直接 `switch-restore-traffic.sh prepare` 从 receipt 读取 `artifact_sha256` 写入 state，却不计算本次
+  `BACKUP_INPUT` 的摘要；差异只能在 Service 已切到 target 后由公开 `logical-verify` 间接发现并回滚。
+  RestoreCutover Operation runner 虽分别冻结 backup/receipt 并核对各自在参数中的摘要，也未要求二者相等，
+  因而可替换子命令忽略该关系时仍可生成自洽 state/receipt。现直接 prepare 在读取 Service 或发布 state 前，
+  要求冻结 backup 的 SHA-256 精确等于严格 receipt 的 artifact SHA；runner 在调用任何 phase 前独立要求已验证
+  的 `backup_file_sha256` 等于 receipt 声明值，不匹配只允许 Retry。两条反例都构造“backup 参数摘要正确、
+  receipt 参数摘要也正确、唯有交叉关系错误”的输入，并断言不产生 state、不调用 prepare、不进入切流。
+  原正例 fixture 改为真实 backup 字节摘要，避免伪造 digest 掩盖合同。完整 RestoreTrafficCutover/
+  RestoreCutoverOperation 聚焦集合 122.437 秒；两条反例连续二十轮 11.450 秒、race 1.627 秒，bash syntax 与
+  diff check 通过。完整非 production 全绿，其中 `pkg/server/etcd` 157.453 秒、总计 165.107 秒；production
+  清单确认 363 项并按 82/101/89/91 四分片全部通过（147.319/270.040/183.392/464.686 秒），全仓 vet
+  2.384 秒。本轮未执行真实切流；状态机测试不替代经审批演练。本项不改变 artifact/restore/cutover schema、
+  在线 etcd RPC、Service selector CAS 或 TiKV 编码，只把既有内容身份不变量前移并增加独立消费者验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

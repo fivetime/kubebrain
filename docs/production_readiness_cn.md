@@ -5427,6 +5427,9 @@ artifact SHA-256 和时间/计数约束独立解析，再要求 state 的 artifa
 source/target prefix 与该副本一致。v2/v3 链还必须绑定 restore format、完整冻结 receipt SHA-256 和
 初始 target revision；新 state v3 还必须绑定同一个 target cluster ID。A5185 期间已生成的
 state v2+restore v3 继续按历史合同接管，但不追溯性声称 state 内含 cluster identity。
+runner 同时要求已按参数摘要冻结的 logical artifact SHA-256 等于 restore receipt 声明的
+`artifact_sha256`，且在启动 prepare 前完成；直接 `switch-restore-traffic.sh prepare` 也对自己的冻结
+backup 做同一校验。两个入口都不得把该交叉绑定推迟到流量切换后的公开数据 verify。
 该绑定在任何 cutover/verify/complete 阶段前执行，并在最终 cutover receipt 校验时再次执行；流量尚未
 变更时，畸形或不匹配输入只允许 Retry，已有 cutover marker 时则 fail closed 为 Failed，禁止凭不可信
 state 继续切流或在线完成。
