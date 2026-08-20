@@ -27,6 +27,12 @@ func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
 }
 
+func TestRestoreCutoverOperationAcceptsRevisionBoundV2Evidence(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, true, "V2_EVIDENCE=true")
+	require.Contains(t, f.log(t), "--action succeed")
+}
+
 func TestRestoreCutoverOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL=true", "final heartbeat failed; restore cutover worker was fenced")
@@ -462,8 +468,14 @@ mkdir -p "$STATE_DIR"
 case "$ACTION" in
   prepare)
     {
-      printf 'HEADER\tkubebrain.restore-cutover.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\n' \
-        "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`"
+      if [[ "${V2_EVIDENCE:-false}" == true ]]; then
+        restore_sha="$(sha256sum "$RESTORE_RECEIPT_INPUT" | cut -d ' ' -f1)"
+        printf 'HEADER\tkubebrain.restore-cutover.state.v2\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\tkubebrain.restore-verification.v2\t73\t%s\n' \
+          "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`" "$restore_sha"
+      else
+        printf 'HEADER\tkubebrain.restore-cutover.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\n' \
+          "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`"
+      fi
       printf 'SERVICE\tuid-service\t10\n'
       printf 'POD\tsource\tkb-source-0\tuid-source-0\t0\n'
       printf 'POD\tsource\tkb-source-1\tuid-source-1\t0\n'
@@ -485,8 +497,14 @@ case "$ACTION" in
     [[ "${TAMPER_CUTOVER_MARKER_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$OPERATION_ID.cutover"
     [[ "${TAMPER_VERIFIED_MARKER_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$OPERATION_ID.verified"
     state_sha="$(sha256sum "$state_file" | cut -d ' ' -f1)"
-    printf '{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}\n' \
-      "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" >"$RECEIPT_OUTPUT"
+    if [[ "${V2_EVIDENCE:-false}" == true ]]; then
+      restore_sha="$(cut -f16 "$state_file")"
+      printf '{"format":"kubebrain.restore-cutover.receipt.v2","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100,"restore_receipt_format":"kubebrain.restore-verification.v2","restore_receipt_sha256":"%s","initial_verified_target_revision":73,"public_verified_target_revision":84}\n' \
+        "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" "$restore_sha" >"$RECEIPT_OUTPUT"
+    else
+      printf '{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}\n' \
+        "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" >"$RECEIPT_OUTPUT"
+    fi
     chmod 600 "$RECEIPT_OUTPUT"
     ;;
 esac

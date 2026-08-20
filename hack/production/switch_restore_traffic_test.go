@@ -160,16 +160,61 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithUnknownFields(t *testing.
 
 func TestRestoreTrafficCutoverAcceptsRevisionBoundV2Receipt(t *testing.T) {
 	f := newTrafficFixture(t)
-	path := filepath.Join(f.dir, "restore.json")
-	var receipt map[string]any
-	require.NoError(t, json.Unmarshal(mustRead(t, path), &receipt))
-	receipt["format"] = "kubebrain.restore-verification.v2"
-	receipt["verified_target_revision"] = float64(84)
-	data, err := json.Marshal(receipt)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+	promoteTrafficRestoreReceiptToV2(t, f, 84)
 
 	f.run(t, "prepare", true, "")
+}
+
+func TestRestoreTrafficCutoverV2EvidenceChain(t *testing.T) {
+	f := newTrafficFixture(t)
+	path := promoteTrafficRestoreReceiptToV2(t, f, 73)
+	restoreReceiptSHA := fileDigest(t, path)
+
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "")
+	f.run(t, "complete", true, "")
+	f.run(t, "complete", true, "")
+
+	stateHeader := strings.Split(strings.SplitN(string(mustRead(t, filepath.Join(f.state, "restore-1.state"))), "\n", 2)[0], "\t")
+	require.Len(t, stateHeader, 16)
+	require.Equal(t, "kubebrain.restore-cutover.state.v2", stateHeader[1])
+	require.Equal(t, "kubebrain.restore-verification.v2", stateHeader[13])
+	require.Equal(t, "73", stateHeader[14])
+	require.Equal(t, restoreReceiptSHA, stateHeader[15])
+
+	var cutoverReceipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, filepath.Join(f.state, "restore-1.receipt.json")), &cutoverReceipt))
+	require.Equal(t, "kubebrain.restore-cutover.receipt.v2", cutoverReceipt["format"])
+	require.Equal(t, "kubebrain.restore-verification.v2", cutoverReceipt["restore_receipt_format"])
+	require.Equal(t, restoreReceiptSHA, cutoverReceipt["restore_receipt_sha256"])
+	require.Equal(t, float64(73), cutoverReceipt["initial_verified_target_revision"])
+	require.Equal(t, float64(84), cutoverReceipt["public_verified_target_revision"])
+}
+
+func TestRestoreTrafficCutoverRejectsTamperedV2EvidenceChain(t *testing.T) {
+	t.Run("state target revision", func(t *testing.T) {
+		f := newTrafficFixture(t)
+		promoteTrafficRestoreReceiptToV2(t, f, 73)
+		f.run(t, "prepare", true, "")
+		statePath := filepath.Join(f.state, "restore-1.state")
+		state := strings.Replace(string(mustRead(t, statePath)), "\t73\t", "\t0\t", 1)
+		require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+		f.run(t, "cutover", false, "", "invalid schema")
+	})
+
+	t.Run("final public revision", func(t *testing.T) {
+		f := newTrafficFixture(t)
+		promoteTrafficRestoreReceiptToV2(t, f, 73)
+		f.run(t, "prepare", true, "")
+		f.run(t, "cutover", true, "")
+		f.run(t, "verify", true, "")
+		f.run(t, "complete", true, "")
+		receiptPath := filepath.Join(f.state, "restore-1.receipt.json")
+		receipt := strings.Replace(string(mustRead(t, receiptPath)), `"public_verified_target_revision":84`, `"public_verified_target_revision":0`, 1)
+		require.NoError(t, os.WriteFile(receiptPath, []byte(receipt), 0o600))
+		f.run(t, "complete", false, "", "existing restore cutover receipt does not match")
+	})
 }
 
 func TestRestoreTrafficCutoverRejectsMalformedRevisionBinding(t *testing.T) {
@@ -406,6 +451,19 @@ func TestRestoreTrafficRollbackRecoversPatchBeforeCutoverMarker(t *testing.T) {
 type trafficFixture struct {
 	dir, state string
 	env        []string
+}
+
+func promoteTrafficRestoreReceiptToV2(t *testing.T, f *trafficFixture, revision int64) string {
+	t.Helper()
+	path := filepath.Join(f.dir, "restore.json")
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, path), &receipt))
+	receipt["format"] = "kubebrain.restore-verification.v2"
+	receipt["verified_target_revision"] = revision
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+	return path
 }
 
 func (f *trafficFixture) stateDir() string {
