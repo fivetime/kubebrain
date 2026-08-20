@@ -11,6 +11,7 @@ OPERATIONCTL="${OPERATIONCTL:-}"
 RECOVERY_COMMAND="${RECOVERY_COMMAND:-${ROOT_DIR}/hack/production/recover-kubebrain-after-tikv-repair.sh}"
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 JQ="${JQ:-jq}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
@@ -20,6 +21,7 @@ die() { echo "$*" >&2; exit 2; }
 [[ -f "$RECOVERY_COMMAND" && -x "$RECOVERY_COMMAND" ]] || die "RECOVERY_COMMAND is required and must be an executable file"
 command -v "$JQ" >/dev/null || die "jq is required"
 command -v sha256sum >/dev/null || die "sha256sum is required"
+command -v stat >/dev/null || die "stat is required"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
 [[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
   awk -v heartbeat="$heartbeat_interval" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
@@ -40,6 +42,19 @@ run_operationctl() {
   fi
 }
 file_sha256() { sha256sum "$1" | cut -d ' ' -f1; }
+operation_parameters_size_is_valid() {
+  local size
+  size="$(stat -Lc '%s' -- "$1")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_OPERATION_PARAMETERS_BYTES" ]]
+}
+require_operation_parameters_size() {
+  operation_parameters_size_is_valid "$1" || {
+    run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+      --message "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >/dev/null
+    echo "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >&2
+    exit 1
+  }
+}
 
 claim="$(run_operationctl --action claim --owner "$WORKER_ID" --type TiKVTransactionRecovery --lease "${LEASE_SECONDS}s")"
 claim_identity="$($JQ -er '[.namespace,.type,.requested_by,.owner,.parameters_secret,.parameters_key] |
@@ -91,6 +106,7 @@ if [[ -z "$PARAMETERS_INPUT" ]]; then
   run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"
 fi
 [[ -f "$PARAMETERS_INPUT" ]] || die "PARAMETERS_INPUT does not exist"
+require_operation_parameters_size "$PARAMETERS_INPUT"
 [[ "$(file_sha256 "$PARAMETERS_INPUT")" == "$expected_digest" ]] || {
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "parameters digest mismatch" >/dev/null
   exit 1
@@ -98,6 +114,8 @@ fi
 frozen_parameters="$capture_dir/parameters.json"
 cp -- "$PARAMETERS_INPUT" "$frozen_parameters"
 chmod 0600 "$frozen_parameters"
+require_operation_parameters_size "$frozen_parameters"
+require_operation_parameters_size "$PARAMETERS_INPUT"
 [[ "$(file_sha256 "$frozen_parameters")" == "$expected_digest" && "$(file_sha256 "$PARAMETERS_INPUT")" == "$expected_digest" ]] || {
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "parameters changed during capture" >/dev/null
   exit 1

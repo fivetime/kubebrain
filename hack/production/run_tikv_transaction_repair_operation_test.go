@@ -169,6 +169,24 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 	claimDriftRepairData, err := os.ReadFile(repairLog)
 	require.NoError(t, err)
 	require.Empty(t, claimDriftRepairData, "claim type drift must fail before starting the repair primitive")
+
+	oversizedBytes := append(append([]byte{}, parameterBytes...), []byte(strings.Repeat(" ", 65536))...)
+	require.NoError(t, os.WriteFile(parameters, oversizedBytes, 0o600))
+	oversizedDigest := fmt.Sprintf("%x", sha256.Sum256(oversizedBytes))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
+	oversizedOutput, oversizedErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-oversized", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + oversizedDigest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+	})
+	require.Error(t, oversizedErr)
+	require.Contains(t, string(oversizedOutput), "operation parameters exceed 65536 bytes")
+	oversizedOperations := string(mustRead(t, operationLog))
+	require.Contains(t, oversizedOperations, "--action retry")
+	require.NotContains(t, oversizedOperations, "--action succeed")
+	require.Empty(t, mustRead(t, repairLog))
 }
 
 func TestRunTiKVQuiescedRepairOperation(t *testing.T) {

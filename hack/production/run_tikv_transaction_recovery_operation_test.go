@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +30,8 @@ if [[ "$*" == *"--action claim"* ]]; then
     "${CLAIM_TYPE:-TiKVTransactionRecovery}" "$EXPECTED_DIGEST" "${CLAIM_OWNER:-$WORKER_ID}"
 elif [[ "$*" == *"--action heartbeat"* ]]; then
   [[ "${FAIL_HEARTBEAT:-false}" != true ]] || exit 1
+elif [[ "$*" == *"--action parameters"* ]]; then
+  cat "$PARAMETERS_SOURCE"
 fi
 `), 0o755))
 	recovery := filepath.Join(dir, "recovery")
@@ -39,12 +42,23 @@ env | sort >"$RECOVERY_LOG"
 printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786380000,"format":"kubebrain.tikv-repair-recovery.receipt.v1","kubebrain_statefulset_uid":"%s","ready_replicas":3,"request_id":"%s","storage_health_verified":true,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
   "$RECOVERY_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$RECOVERY_REQUEST_ID" "$EXPECTED_TIDB_CLUSTER_UID" >"$RECEIPT_OUTPUT"
 `), 0o755))
+	realCP, err := exec.LookPath("cp")
+	require.NoError(t, err)
+	cp := filepath.Join(dir, "cp")
+	writeTrafficExecutable(t, cp, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_CP" "$@"
+if [[ "${TAMPER_FROZEN_PARAMETERS_SIZE:-false}" == true && "$#" == 3 && "$1" == -- ]]; then
+  printf '%65536s' '' >>"$3"
+fi
+`)
 
 	baseEnv := []string{
 		"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters,
 		"OPERATIONCTL=" + operationctl, "RECOVERY_COMMAND=" + recovery, "WORK_DIR=" + dir,
 		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + digest,
 		"OPERATION_LOG=" + operationLog, "RECOVERY_LOG=" + recoveryLog,
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"), "REAL_CP=" + realCP,
 	}
 	output, err := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", baseEnv)
 	require.NoError(t, err, string(output))
@@ -124,6 +138,59 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786380000,"forma
 	driftRecovery, err := os.ReadFile(recoveryLog)
 	require.NoError(t, err)
 	require.Empty(t, driftRecovery, "a replaced request ID must fail before scaling")
+
+	oversizedBytes := append(append([]byte{}, parameterBytes...), []byte(strings.Repeat(" ", 65536))...)
+	require.NoError(t, os.WriteFile(parameters, oversizedBytes, 0o600))
+	oversizedDigest := fmt.Sprintf("%x", sha256.Sum256(oversizedBytes))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	require.NoError(t, os.WriteFile(recoveryLog, nil, 0o600))
+	oversizedOutput, oversizedErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", []string{
+		"WORKER_ID=worker-oversized", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "RECOVERY_COMMAND=" + recovery, "WORK_DIR=" + dir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + oversizedDigest,
+		"OPERATION_LOG=" + operationLog, "RECOVERY_LOG=" + recoveryLog,
+	})
+	require.Error(t, oversizedErr)
+	require.Contains(t, string(oversizedOutput), "operation parameters exceed 65536 bytes")
+	oversizedOperations := string(mustRead(t, operationLog))
+	require.Contains(t, oversizedOperations, "--action retry")
+	require.NotContains(t, oversizedOperations, "--action succeed")
+	require.Empty(t, mustRead(t, recoveryLog))
+
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	managedOutput, managedErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", []string{
+		"WORKER_ID=worker-managed-oversized", "OPERATIONCTL=" + operationctl,
+		"RECOVERY_COMMAND=" + recovery, "WORK_DIR=" + dir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
+		"EXPECTED_DIGEST=" + oversizedDigest, "PARAMETERS_SOURCE=" + parameters,
+		"OPERATION_LOG=" + operationLog, "RECOVERY_LOG=" + recoveryLog,
+	})
+	require.Error(t, managedErr)
+	require.Contains(t, string(managedOutput), "operation parameters exceed 65536 bytes")
+	require.Contains(t, string(mustRead(t, operationLog)), "--action parameters")
+
+	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	tamperOutput, tamperErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv,
+		"WORKER_ID=worker-frozen-oversized", "TAMPER_FROZEN_PARAMETERS_SIZE=true"))
+	require.Error(t, tamperErr)
+	require.Contains(t, string(tamperOutput), "operation parameters exceed 65536 bytes")
+	tamperOperations := string(mustRead(t, operationLog))
+	require.Contains(t, tamperOperations, "--action retry")
+	require.NotContains(t, tamperOperations, "--action succeed")
+
+	exactBytes := append(append([]byte{}, parameterBytes...), []byte(strings.Repeat(" ", 65536-len(parameterBytes)))...)
+	require.Len(t, exactBytes, 65536)
+	require.NoError(t, os.WriteFile(parameters, exactBytes, 0o600))
+	exactDigest := fmt.Sprintf("%x", sha256.Sum256(exactBytes))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	exactOutput, exactErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", []string{
+		"WORKER_ID=worker-exact-limit", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "RECOVERY_COMMAND=" + recovery, "WORK_DIR=" + dir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + exactDigest,
+		"OPERATION_LOG=" + operationLog, "RECOVERY_LOG=" + recoveryLog,
+	})
+	require.NoError(t, exactErr, string(exactOutput))
+	require.Contains(t, string(mustRead(t, operationLog)), "--action succeed")
 }
 
 func TestRunTiKVTransactionRecoveryOperationRejectsInvalidClaimNamespace(t *testing.T) {
