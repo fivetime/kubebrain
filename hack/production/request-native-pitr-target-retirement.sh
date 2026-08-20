@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 PARAMETERS_FILE="${PARAMETERS_FILE:-}"; KUBE_CONTEXT="${KUBE_CONTEXT:-}"; OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"; KUBECTL="${KUBECTL:-kubectl}"; OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; JQ="${JQ:-jq}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 die(){ echo "$*" >&2; exit 1; }; resolve(){ [[ "$1" == */* ]] && { [[ -x "$1" ]]&&printf %s "$1"; } || command -v "$1"; }
 [[ -f "$PARAMETERS_FILE" && -n "$KUBE_CONTEXT" && "$OPERATION_NAMESPACE" == kubebrain-operations ]] || die "PARAMETERS_FILE, KUBE_CONTEXT, and fixed operation namespace are required"
+command -v stat >/dev/null || die "stat is required"
+parameters_size_is_valid(){ local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ ]] && ((size<=MAX_OPERATION_PARAMETERS_BYTES)); }
+parameters_size_is_valid "$PARAMETERS_FILE" || die "target retirement parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes"
 KUBECTL="$(resolve "$KUBECTL")"; OPERATIONCTL="$(resolve "$OPERATIONCTL")"; JQ="$(resolve "$JQ")" || die "required executable is unavailable"
-temp="$(mktemp -d)"; trap 'rm -rf -- "$temp"' EXIT; canonical="$temp/parameters.json"
+temp="$(mktemp -d)"; trap 'rm -rf -- "$temp"' EXIT; canonical="$temp/parameters.json"; frozen="$temp/input.json"
+cp -- "$PARAMETERS_FILE" "$frozen"; chmod 600 "$frozen"
+parameters_size_is_valid "$frozen" && parameters_size_is_valid "$PARAMETERS_FILE" || die "target retirement parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes"
 "$JQ" -ceS '
  keys==["failed_operation_audit","failed_operation_audit_sha256","failed_operation_parameters","failed_operation_parameters_sha256","old_plan","old_plan_sha256","old_restore_admission","old_restore_admission_sha256","old_target_provisioning","old_target_provisioning_sha256","old_target_snapshot_empty","old_target_snapshot_empty_sha256"] and
  ([.failed_operation_audit,.failed_operation_parameters,.old_plan,.old_restore_admission,.old_target_provisioning,.old_target_snapshot_empty]|all(.[];type=="string" and startswith("/var/lib/kubebrain-operation/inputs/") and length<=4096 and (contains("/../")|not) and (endswith("/..")|not))) and
- ([.failed_operation_audit_sha256,.failed_operation_parameters_sha256,.old_plan_sha256,.old_restore_admission_sha256,.old_target_provisioning_sha256,.old_target_snapshot_empty_sha256]|all(.[];type=="string" and test("^[a-f0-9]{64}$")))' "$PARAMETERS_FILE" >"$canonical" || die "target retirement parameter schema is invalid"
+ ([.failed_operation_audit_sha256,.failed_operation_parameters_sha256,.old_plan_sha256,.old_restore_admission_sha256,.old_target_provisioning_sha256,.old_target_snapshot_empty_sha256]|all(.[];type=="string" and test("^[a-f0-9]{64}$")))' "$frozen" >"$canonical" || die "target retirement parameter schema is invalid"
 digest="$(sha256sum "$canonical"|cut -d ' ' -f1)"; name="native-pitr-retire-${digest:0:20}"; secret="${name}-parameters"; args=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || args=(--context "$KUBE_CONTEXT")
 if existing="$($KUBECTL "${args[@]}" -n "$OPERATION_NAMESPACE" get secret "$secret" -o 'jsonpath={.immutable}{"\t"}{.type}{"\t"}{.data.parameters\.json}' 2>/dev/null)"; then IFS=$'\t' read -r immutable type encoded <<<"$existing"; [[ "$immutable" == true && "$type" == Opaque && "$(printf %s "$encoded"|base64 -d|sha256sum|cut -d ' ' -f1)" == "$digest" ]] || die "existing retirement parameter Secret drifted"
 else "$KUBECTL" "${args[@]}" -n "$OPERATION_NAMESPACE" create secret generic "$secret" --from-file="parameters.json=$canonical" --dry-run=client -o json|"$JQ" '.immutable=true'|"$KUBECTL" "${args[@]}" -n "$OPERATION_NAMESPACE" create -f - >/dev/null; fi
