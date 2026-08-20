@@ -16,6 +16,7 @@ KUBECTL="${KUBECTL:-kubectl}"
 OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 JQ="${JQ:-jq}"
 MAX_CONTROL_PLANE_RESPONSE_BYTES=1048576
+MAX_EXISTING_SECRET_RESPONSE_BYTES=87389
 
 die() { echo "$*" >&2; exit 1; }
 [[ "$REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "REQUEST_ID must be a DNS-compatible external repair decision ID"
@@ -86,7 +87,12 @@ $JQ -cnS \
 [[ "$(wc -c <"$parameters_file")" -le 65536 ]] || die "operation parameters exceed 65536 bytes"
 parameters_sha="$(sha256sum "$parameters_file" | cut -d ' ' -f1)"
 
-if existing_data="$(kctl -n "$OPERATION_NAMESPACE" get secret "$secret_name" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' 2>/dev/null)"; then
+existing_secret_file="$temp_dir/existing-secret.response"
+if kctl -n "$OPERATION_NAMESPACE" get secret "$secret_name" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' >"$existing_secret_file" 2>/dev/null; then
+  chmod 600 "$existing_secret_file"
+  control_response_size="$(stat -Lc '%s' -- "$existing_secret_file")" || die "cannot inspect existing Secret response"
+  [[ "$control_response_size" =~ ^[0-9]+$ && "$control_response_size" -le "$MAX_EXISTING_SECRET_RESPONSE_BYTES" ]] || die "existing Secret response exceeds ${MAX_EXISTING_SECRET_RESPONSE_BYTES} bytes"
+  existing_data="$(<"$existing_secret_file")"
   immutable="${existing_data%%$'\t'*}"
   encoded="${existing_data#*$'\t'}"
   [[ "$immutable" == "true" ]] || die "existing quiesced repair parameter Secret is not immutable"
