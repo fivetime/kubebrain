@@ -58465,6 +58465,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （176.279/285.266/213.073/506.238 秒）。本项不改变 canonical schema、operation identity、immutable
   Secret、审批/重试语义、在线 etcd RPC 或 TiKV 编码，只确保提交摘要和 Secret 来自大小受限的稳定输入快照。
 
+- A5203 对齐 ColdPhysicalSnapshot/ColdPhysicalRestore requester 与 executor 的最终参数预算。旧 snapshot
+  requester 允许嵌入最多 512 KiB witness 且不检查生成参数，旧 restore requester 更把最终参数上限设为
+  900000 bytes；两者都能创建 immutable Secret 和 Pending Operation，而对应 executor 会在 65536 bytes
+  拒绝，形成永久不可执行的审批制品。通过测试 jq 精确生成 70000-byte 合法 canonical JSON，两个 RED 反例
+  均错误提交（0.453 秒）。现保留原始 receipt/witness/manifest 各自 512 KiB 证据预算，但最终写入 Secret 的
+  operation 参数统一限制为 65536 bytes，并在摘要、Secret 与 Operation API 前拒绝。测试同时证明精确
+  65536-byte 参数仍可提交；主测试连续二十轮 21.612 秒、race 2.331 秒，完整 cold requester 测试族
+  2.273 秒，bash syntax、diff check 与全仓 vet 通过。production 清单确认 395 项并按 91/107/100/97
+  四片全部通过（182.962/290.782/216.810/494.713 秒）。本项不缩减原始证据文件独立预算，不改变参数
+  schema、审批/恢复语义、在线 etcd RPC 或 TiKV 编码，只禁止控制面创建 executor 合同内必然无法消费的
+  Operation。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
