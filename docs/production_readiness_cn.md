@@ -4998,6 +4998,9 @@ TiKVTransactionRepair requester 的 StatefulSet UID 与 TidbCluster UID/clusterI
 ColdPhysicalRestore requester 的 kube-system 与 tidb-cluster namespace UID jsonpath 响应也分别限制为
 4096 bytes，并逐个写入 0600 私有文件、确认命令成功和检查大小后才读入标量；首个身份超限时不得继续查询
 第二个 namespace 或触达 Operation API。该门禁同样不额外假设 UID 格式。
+ColdPhysicalRestore requester 查询既有 immutable 参数 Secret 时，jsonpath 响应限制为 87389 bytes：这是
+`true`、一个 tab 与 65536-byte canonical 参数的标准 base64 编码之和。响应必须先写入 0600 私有文件并
+检查大小，再读入标量和解码验摘要；超限响应不得触达 Operation API，精确上界的有效响应仍必须幂等提交。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约

@@ -58549,6 +58549,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace UID 格式假设，也不改变 receipt/参数 schema、隔离目标身份语义、审批/restore、在线 etcd RPC
   或 TiKV 编码。
 
+- A5211 为 ColdPhysicalRestore requester 的既有参数 Secret jsonpath 响应建立精确 87389-byte 门禁。
+  该上界由 immutable `true`、一个 tab 与最大 65536-byte canonical 参数的标准 base64 编码组成。旧实现
+  直接把响应装入 shell 变量；87390-byte 响应会被完整读取后才报告 Secret 漂移（RED 0.622 秒）。现 kubectl
+  成功响应先写入 0600 私有文件并检查大小，再读入标量、解码和比对摘要；超限时不触达 Operation API。
+  测试以精确 65536-byte 参数构造 87389-byte 有效响应，证明边界仍能幂等提交。主测试连续二十轮 17.399 秒、
+  race 1.707 秒，完整相关 requester 测试 2.713 秒，bash syntax、diff check 与全仓 vet 通过。production
+  清单确认 406 项并按 96/109/101/100 四片全部通过（180.131/285.730/213.487/491.176 秒）。本项不改变
+  参数或 Secret schema、幂等摘要语义、审批/restore、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
