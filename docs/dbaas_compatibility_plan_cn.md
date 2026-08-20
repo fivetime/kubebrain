@@ -58588,6 +58588,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （188.739/317.526/221.708/504.045 秒）。本项不改变参数或 Secret schema、PITR 证据/审批/执行语义、
   在线 etcd RPC 或 TiKV 编码。
 
+- A5215 将精确 87396-byte 三字段 Secret 响应门禁补到 NativePITRTargetProvisioning 与
+  NativePITRTargetRetirement requester。两条旧实现都直接把 jsonpath 响应装入 shell 变量；87397-byte
+  响应会完整读取后才报告参数 Secret 摘要漂移（两条 RED 合计 0.382 秒）。现成功响应先写入 0600 私有文件
+  并检查大小，再读入标量、检查 immutable/type、解码并比对摘要；超限时不触达 Operation API。表驱动
+  测试以精确 65536-byte canonical 参数构造 87396-byte 有效响应，证明两条边界仍可幂等提交。主测试连续
+  二十轮 15.150 秒、race 1.815 秒，完整 target requester 测试 1.023 秒，bash syntax、diff check 与全仓
+  vet 通过。production 清单确认 410 项并按 97/110/103/100 四片全部通过
+  （169.826/272.910/205.594/450.893 秒）。本项不改变参数或 Secret schema、target replacement/retirement
+  证据与审批语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

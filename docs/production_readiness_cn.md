@@ -5009,6 +5009,8 @@ TiKVTransactionRecovery、TiKVTransactionRepair 与 quiesced repair requester �
 NativePITRFullBackup 与 NativePITRFullRestore requester 的既有参数 Secret jsonpath 还包含 type 字段，因此
 精确响应上界为 87396 bytes：`true`、两个 tab、`Opaque` 与 65536-byte 参数的标准 base64 编码之和。响应
 同样必须先写入 0600 私有文件并检查大小，再执行 type/immutable/摘要校验。
+NativePITRTargetProvisioning 与 NativePITRTargetRetirement requester 的同格式既有参数 Secret 查询采用
+相同的 87396-byte 上界和文件捕获顺序；超限响应不得触达 Operation API，精确上界仍可幂等提交。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
