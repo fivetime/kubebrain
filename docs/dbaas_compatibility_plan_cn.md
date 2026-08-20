@@ -58567,6 +58567,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （171.494/298.562/205.304/479.069 秒）。本项不改变参数或 Secret schema、证据冻结与幂等摘要语义、
   审批/snapshot、在线 etcd RPC 或 TiKV 编码。
 
+- A5213 将精确 87389-byte 既有参数 Secret 响应门禁一次补齐到 TiKVTransactionRecovery、告警驱动的
+  TiKVTransactionRepair 与 quiesced repair requester。三条旧实现都直接把 jsonpath 响应装入 shell 变量；
+  87390-byte 响应分别在完整读取后才报告 Secret 非 immutable（RED 4.54/4.78/4.62 秒，合计 13.949 秒）。
+  现每条成功响应先写入 0600 私有文件并检查大小，再读入标量、检查 immutable、解码并比对摘要；超限时
+  不触达 Operation API。表驱动测试以精确 65536-byte 参数为每条路径构造 87389-byte 有效响应，证明边界
+  仍能幂等提交。主测试连续二十轮 47.000 秒、race 3.268 秒，相关 transaction requester 测试 5.259 秒，
+  bash syntax、diff check 与全仓 vet 通过。production 清单确认 408 项并按 97/110/101/100 四片全部通过
+  （179.437/300.486/213.596/495.932 秒）。本项不改变参数或 Secret schema、告警/身份/PD 选择、幂等摘要、
+  审批/recovery/repair、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

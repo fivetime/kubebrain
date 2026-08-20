@@ -5003,6 +5003,9 @@ ColdPhysicalRestore requester 查询既有 immutable 参数 Secret 时，jsonpat
 检查大小，再读入标量和解码验摘要；超限响应不得触达 Operation API，精确上界的有效响应仍必须幂等提交。
 ColdPhysicalSnapshot requester 的同格式既有参数 Secret 查询采用相同的 87389-byte 上界和 0600 文件捕获
 顺序；超限响应必须在 immutable/摘要检查前拒绝，精确上界的有效响应仍可幂等提交。
+TiKVTransactionRecovery、TiKVTransactionRepair 与 quiesced repair requester 的同格式既有参数 Secret
+查询也采用 87389-byte 上界。每条响应先写入 0600 私有文件、检查大小后才读入标量并执行 immutable/摘要
+校验；超限响应不得触达 Operation API，精确上界的有效响应仍可幂等提交。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
