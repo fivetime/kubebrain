@@ -58477,6 +58477,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   schema、审批/恢复语义、在线 etcd RPC 或 TiKV 编码，只禁止控制面创建 executor 合同内必然无法消费的
   Operation。
 
+- A5204 冻结 ColdPhysicalSnapshot/ColdPhysicalRestore requester 的原始证据输入。旧 snapshot 在 512 KiB
+  初检后分别重开 preflight 与 semantic witness 做 jq、摘要和 rawfile 嵌入；旧 restore 对 source receipt
+  依次重开做 scope 校验、renderer 输入、摘要和 rawfile 嵌入。注入可替换 `cp` 放大未来冻结副本时，两条旧
+  requester 因根本不复制而继续提交（RED 0.422 秒）。现 snapshot 在任何解析前复制 preflight/witness，
+  restore 在任何 jq、renderer 或 Kubernetes 查询前复制 receipt；副本均 chmod 0600，复制后同时复检冻结
+  副本与原路径的 512 KiB 预算，后续所有解析、摘要和嵌入只用冻结路径。冻结与 A5203 的最终 64 KiB 参数
+  门禁各自独立。两类 cold 边界测试连续二十轮 39.178 秒、race 2.523 秒，完整 cold requester 测试族
+  1.973 秒，bash syntax、diff check 与全仓 vet 通过。production 清单确认 396 项并按 91/107/100/98
+  四片全部通过（186.811/314.457/221.432/520.304 秒）。本项不改变证据/参数 schema、renderer 合同、
+  operation identity、审批/恢复语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

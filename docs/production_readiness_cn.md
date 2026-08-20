@@ -4979,6 +4979,9 @@ NativePITRFullBackup 与 NativePITRFullRestore requester 也不得只做一次�
 ColdPhysicalSnapshot 与 ColdPhysicalRestore requester 可分别对原始 witness、receipt、rendered manifest 保留
 独立的 512 KiB 证据预算，但嵌入后的最终 operation 参数必须不超过 executor 的 65536-byte 合同。最终参数
 超限时不得创建 immutable Secret 或 Pending Operation；Kubernetes Secret 理论容量不能替代 executor 上限。
+上述原始 cold 证据还必须冻结后再消费：snapshot 将 preflight 与 semantic witness 复制为 0600 私有文件，
+restore 同样冻结 source receipt；复制后复检冻结副本和原路径，后续 jq、renderer、摘要和参数嵌入只读取
+冻结路径。输入预算初检不能替代稳定快照。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
