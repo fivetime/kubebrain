@@ -58044,6 +58044,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （148/254/176/468 秒）与 vet（3 秒）全部通过。本项不改变 witness/receipt schema、probe key/value/TTL、
   在线 etcd RPC 或 TiKV 编码，也不替代真实 CSI/PITR restore 演练。
 
+- A5176 补齐同一 cold/native semantic restore watch probe 的 event payload 完整性。旧 `expectWatchEvent`
+  逐帧遍历，只要后来出现 type/key/modRevision 匹配的事件就成功；它会忽略额外/错误事件、未请求 PrevKV、
+  错 value/create/version/lease，nil event/KV 还会 panic。Created acknowledgement 也只检查 `Created=true`，
+  未拒绝夹带 event、cancel 或 compact。对照
+  `/root/etcd/server/storage/mvcc/{watchable_store.go,watchable_store_test.go}`、
+  `tests/integration/clientv3/watch/v3_watch_test.go` 与
+  `server/etcdserver/api/v3rpc/watch.go`，现共享 validator 要求 Created frame 无 error/cancel/compact/event；
+  PUT/DELETE 各自只能收到单帧单事件且不是 progress/created/canceled/compacted response。两类 event 均需
+  non-nil、exact type/key/modRevision、PrevKV 为空；PUT 还精确绑定 probe value、`create=mod=putRevision`、
+  `version=1` 与 lease ID，DELETE 则要求除 key/modRevision 外的 value/create/version/lease 全为零值。
+  malformed created/envelope/nil/wrong type/key/value/MVCC/lease/PrevKV/delete payload 正反例与三包连续二十轮
+  （0.094/0.088/0.706 秒）、race（1.090/1.270/1.353 秒）通过。disposable reference etcd 生命周期
+  通过（0.05 秒）；真实独立 TiKV/PD 上经三副本 KubeBrain 同链通过（0.24 秒），endpoint proposal health
+  49.798ms、测试前缀终态为空。分层非 production 首跑中仅 `pkg/server/etcd` 在 153.897 秒发生未定位的
+  非确定性 package RED（并行日志被截断），该包随后独立完整复跑 160 秒 GREEN；其余 package 首跑通过。
+  production 324 项四分片（138/236/166/475 秒）与 vet（2 秒）全部通过。该首次 RED 未被改写为成功；
+  本项不改变 receipt schema、probe 操作序列、在线 Watch RPC 或 TiKV 编码，也不替代真实 CSI/PITR restore。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

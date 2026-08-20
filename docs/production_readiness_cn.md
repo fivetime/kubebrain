@@ -1720,7 +1720,10 @@ ETCDCTL_CACERT=<ca> ETCDCTL_CERT=<client-cert> ETCDCTL_KEY=<client-key> \
 TTL 为正；带 keys 的 TTL 响应 revision 不得早于当前扫描，附件键不得为空或重复。最后以 CreatedNotify watch 建立探针，执行附 lease 的 Put、线性读、Delete、两次精确 watch
 event 和 Revoke。探针 Grant 必须返回非零 ID、正 header 和不短于请求的合法 TTL；单 Put/Delete Txn 必须各返回
 一个同 outer revision 的对应 response，Get 必须证明精确新键的 value/lease 与 `create=mod=putRevision,version=1`，
-Delete revision 必须晚于 Get，Revoke header 不得早于 Delete。任一步 malformed success 都 fail closed，异常 Grant
+Delete revision 必须晚于 Get，Revoke header 不得早于 Delete。Created acknowledgement 必须无 error/cancel/
+compact/event；随后每个 Watch frame 必须恰有一个事件、不得是 progress/created/canceled/compacted response，
+且不得携带未请求 PrevKV。PUT event 必须精确匹配 key/value/create/mod/version/lease；DELETE event 只能携带
+exact key 与 delete ModRevision，其 value/create/version/lease 必须为零值。任一步 malformed success 都 fail closed，异常 Grant
 携带的非零 lease 仍进入带响应校验的 defer cleanup。整个 historical/current 多页 Range→全部 TTL→Created Watch→
 Grant→Put Txn→PUT Watch→Get→Delete Txn→DELETE Watch→Revoke 还共用一条 response admission 链：每个
 header 必须有非零 cluster/member，cluster ID 全程固定且 revision 单调不退，确定写入/删除 Txn 必须严格推进；
