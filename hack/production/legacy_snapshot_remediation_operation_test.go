@@ -88,6 +88,21 @@ printf 'compacted_revision=3\n'
 	require.Contains(t, receipt, `"format":"kubebrain.legacy-snapshot-remediation.v1"`)
 	require.Contains(t, receipt, `"compacted_revision":"3"`)
 	require.FileExists(t, filepath.Join(dir, name+".snapshot.db"))
+
+	oversized := append(append([]byte{}, params...), []byte(strings.Repeat(" ", 65536))...)
+	require.NoError(t, os.WriteFile(paramsPath, oversized, 0o600))
+	oversizedDigest := fmt.Sprintf("%x", sha256.Sum256(oversized))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	oversizedOut, oversizedErr := runProductionScriptCommand(t, "run-legacy-snapshot-remediation-operation.sh", []string{
+		"WORKER_ID=worker-1", "OPERATIONCTL=" + operationctl, "REMEDIATION_COMMAND=" + remediation,
+		"PARAMETERS_INPUT=" + paramsPath, "WORK_DIR=" + dir, "OPERATION_LOG=" + operationLog,
+		"OPERATION_NAME=" + name, "EXPECTED_SHA=" + oversizedDigest, "HEARTBEAT_INTERVAL_SECONDS=60", "PATH=" + dir + ":" + os.Getenv("PATH"),
+	})
+	require.Error(t, oversizedErr)
+	require.Contains(t, string(oversizedOut), "operation parameters exceed 65536 bytes")
+	oversizedOperations := string(requireFile(t, operationLog))
+	require.Contains(t, oversizedOperations, "--action fail")
+	require.NotContains(t, oversizedOperations, "--action succeed")
 }
 
 func TestRunLegacySnapshotRemediationOperationFailureIsTerminal(t *testing.T) {

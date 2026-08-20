@@ -6,6 +6,7 @@ OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"; LEASE_SECOND
 HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"; PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
 OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; RESTORE_COMMAND="${RESTORE_COMMAND:-${ROOT_DIR}/hack/backup/cold-restore-execute.sh}"
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; JQ="${JQ:-jq}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ && "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "worker identity or lease is invalid"
 if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then
@@ -15,7 +16,16 @@ fi
   awk -v heartbeat="$HEARTBEAT_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
   die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ && -x "$OPERATIONCTL" && -x "$RESTORE_COMMAND" && -d "$WORK_DIR" ]] || die "restore worker configuration is invalid"
+command -v stat >/dev/null || die "stat is required"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }; sha() { sha256sum "$1" | cut -d ' ' -f1; }
+operation_parameters_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_OPERATION_PARAMETERS_BYTES" ]]; }
+require_operation_parameters_size() {
+  operation_parameters_size_is_valid "$1" || {
+    runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >/dev/null
+    echo "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >&2
+    exit 1
+  }
+}
 claim="$(runctl --action claim --owner "$WORKER_ID" --type ColdPhysicalRestore --lease "${LEASE_SECONDS}s")"
 identity="$($JQ -er '[.namespace,.name,.operation_id,.instance,.type,.requested_by,.owner,.parameters_secret,.parameters_key,(.attempt|tostring),.parameters_sha256]|@tsv' <<<"$claim")" || die "restore claim is incomplete"
 IFS=$'\t' read -r namespace name operation_id instance type requester owner secret key attempt expected_sha <<<"$identity"
@@ -36,8 +46,12 @@ finalize_heartbeat() {
   }
 }
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
-[[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "restore parameters digest mismatch" >/dev/null; exit 1; }
+[[ -f "$PARAMETERS_INPUT" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "restore parameters digest mismatch" >/dev/null; exit 1; }
+require_operation_parameters_size "$PARAMETERS_INPUT"
+[[ "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "restore parameters digest mismatch" >/dev/null; exit 1; }
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
+require_operation_parameters_size "$params"
+require_operation_parameters_size "$PARAMETERS_INPUT"
 [[ "$(sha "$params")" == "$expected_sha" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || die "restore parameters changed during capture"
 $JQ -e 'keys == ["request_id","restore_manifest","restore_manifest_sha256","source_receipt","source_receipt_sha256","target_kube_system_uid","target_namespace_uid","wait_timeout"]' "$params" >/dev/null || die "restore parameter schema is invalid"
 request_id="$($JQ -er '.request_id|select(test("^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$"))' "$params")"; wait_timeout="$($JQ -er '.wait_timeout|select(test("^[1-9][0-9]*(s|m|h)$"))' "$params")"

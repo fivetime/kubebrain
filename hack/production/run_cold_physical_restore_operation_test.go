@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -64,4 +65,16 @@ jq -cn --arg source "$SOURCE_OPERATION" --arg sha "$EXPECTED_SOURCE_SHA" --arg k
 	failureOperations := string(mustRead(t, operationLog))
 	require.Contains(t, failureOperations, "--action fail")
 	require.NotContains(t, failureOperations, "--action retry")
+
+	oversized := append(append([]byte{}, parameterBytes...), []byte(strings.Repeat(" ", 65536))...)
+	require.NoError(t, os.WriteFile(parameters, oversized, 0o600))
+	oversizedDigest := fmt.Sprintf("%x", sha256.Sum256(oversized))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	oversizedOutput, oversizedErr := runProductionScriptCommand(t, "run-cold-physical-restore-operation.sh", append(env,
+		"WORKER_ID=worker-oversized", "EXPECTED_DIGEST="+oversizedDigest))
+	require.Error(t, oversizedErr)
+	require.Contains(t, string(oversizedOutput), "operation parameters exceed 65536 bytes")
+	oversizedOperations := string(mustRead(t, operationLog))
+	require.Contains(t, oversizedOperations, "--action fail")
+	require.NotContains(t, oversizedOperations, "--action succeed")
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,6 +37,8 @@ elif [[ "$*" == *"--action succeed"* ]]; then
  touch "$SUCCEED_ACTIVE"
  sleep 0.3
  rm -f "$SUCCEED_ACTIVE"
+elif [[ "$*" == *"--action parameters"* ]]; then
+ cat "$PARAMETERS_SOURCE"
 fi
 `), 0o755))
 	snapshotLog := filepath.Join(dir, "snapshot.log")
@@ -46,11 +49,22 @@ env | sort >"$SNAPSHOT_LOG"
 [[ "${FAIL_SNAPSHOT:-false}" != true ]] || exit 9
 jq -cn --arg id "$OPERATION_ID" --arg witness "$EXPECTED_WITNESS_SHA" '{format:"kubebrain.cold-physical-snapshot.v2",operation_id:$id,created_at:"2026-08-10T00:00:00Z",inventory:{kubebrain:{uid:"kb-uid"},storage:{uid:"tc-uid"},pd_pvcs:[{}],tikv_pvcs:[{}]},snapshots:[{},{}],semantic_witness:{file_sha256:$witness}}' >"$RECEIPT_FILE"
 `), 0o755))
+	realCP, err := exec.LookPath("cp")
+	require.NoError(t, err)
+	cp := filepath.Join(dir, "cp")
+	writeTrafficExecutable(t, cp, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_CP" "$@"
+if [[ "${TAMPER_FROZEN_PARAMETERS_SIZE:-false}" == true && "$#" == 3 && "$1" == -- ]]; then
+  printf '%65536s' '' >>"$3"
+fi
+`)
 	env := []string{"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters, "OPERATIONCTL=" + operationctl,
 		"SNAPSHOT_COMMAND=" + snapshot, "WORK_DIR=" + dir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
 		"EXPECTED_DIGEST=" + digest, "OPERATION_NAME=" + name, "OPERATION_LOG=" + operationLog,
 		"SNAPSHOT_LOG=" + snapshotLog, "EXPECTED_WITNESS_SHA=" + witnessSHA}
 	env = append(env, "SUCCEED_ACTIVE="+filepath.Join(dir, "succeed-active"), "HEARTBEAT_DURING_SUCCEED="+filepath.Join(dir, "heartbeat-during-succeed"))
+	env = append(env, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "REAL_CP="+realCP)
 	output, err := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", env)
 	require.NoError(t, err, string(output))
 	operations, err := os.ReadFile(operationLog)
@@ -85,4 +99,48 @@ jq -cn --arg id "$OPERATION_ID" --arg witness "$EXPECTED_WITNESS_SHA" '{format:"
 	require.NoError(t, err)
 	require.NotContains(t, string(heartbeatFailureOperations), "--action succeed")
 	require.NotContains(t, string(heartbeatFailureOperations), "--action fail")
+
+	oversized := append(append([]byte{}, parameterBytes...), []byte(strings.Repeat(" ", 65536))...)
+	require.NoError(t, os.WriteFile(parameters, oversized, 0o600))
+	oversizedDigest := fmt.Sprintf("%x", sha256.Sum256(oversized))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	oversizedOutput, oversizedErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env,
+		"WORKER_ID=worker-oversized", "EXPECTED_DIGEST="+oversizedDigest))
+	require.Error(t, oversizedErr)
+	require.Contains(t, string(oversizedOutput), "operation parameters exceed 65536 bytes")
+	oversizedOperations := string(mustRead(t, operationLog))
+	require.Contains(t, oversizedOperations, "--action fail")
+	require.NotContains(t, oversizedOperations, "--action succeed")
+
+	managedEnv := make([]string, 0, len(env)+3)
+	for _, value := range env {
+		if !strings.HasPrefix(value, "PARAMETERS_INPUT=") {
+			managedEnv = append(managedEnv, value)
+		}
+	}
+	managedEnv = append(managedEnv, "WORKER_ID=worker-managed-oversized", "EXPECTED_DIGEST="+oversizedDigest,
+		"PARAMETERS_SOURCE="+parameters)
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	managedOutput, managedErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", managedEnv)
+	require.Error(t, managedErr)
+	require.Contains(t, string(managedOutput), "operation parameters exceed 65536 bytes")
+	require.Contains(t, string(mustRead(t, operationLog)), "--action parameters")
+
+	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	tamperOutput, tamperErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env,
+		"WORKER_ID=worker-frozen-oversized", "TAMPER_FROZEN_PARAMETERS_SIZE=true"))
+	require.Error(t, tamperErr)
+	require.Contains(t, string(tamperOutput), "operation parameters exceed 65536 bytes")
+	require.Contains(t, string(mustRead(t, operationLog)), "--action fail")
+
+	exact := append(append([]byte{}, parameterBytes...), []byte(strings.Repeat(" ", 65536-len(parameterBytes)))...)
+	require.Len(t, exact, 65536)
+	require.NoError(t, os.WriteFile(parameters, exact, 0o600))
+	exactDigest := fmt.Sprintf("%x", sha256.Sum256(exact))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	exactOutput, exactErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env,
+		"WORKER_ID=worker-exact-limit", "EXPECTED_DIGEST="+exactDigest))
+	require.NoError(t, exactErr, string(exactOutput))
+	require.Contains(t, string(mustRead(t, operationLog)), "--action succeed")
 }

@@ -5,6 +5,7 @@ WORKER_ID="${WORKER_ID:-}"; OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrai
 LEASE_SECONDS="${LEASE_SECONDS:-120}"; HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
 OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
 REMEDIATION_COMMAND="${REMEDIATION_COMMAND:-kubebrain-legacy-snapshot-remediation}"; WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; JQ="${JQ:-jq}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ && "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "worker identity or lease is invalid"
 if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then
@@ -14,7 +15,16 @@ fi
   awk -v heartbeat="$HEARTBEAT_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
   die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
 [[ -x "$OPERATIONCTL" && -x "$REMEDIATION_COMMAND" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
+command -v stat >/dev/null || die "stat is required"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }; sha() { sha256sum "$1" | cut -d ' ' -f1; }
+operation_parameters_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_OPERATION_PARAMETERS_BYTES" ]]; }
+require_operation_parameters_size() {
+  operation_parameters_size_is_valid "$1" || {
+    runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >/dev/null
+    echo "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >&2
+    exit 1
+  }
+}
 claim="$(runctl --action claim --owner "$WORKER_ID" --type LegacySnapshotHistoryRemediation --lease "${LEASE_SECONDS}s")"
 identity="$($JQ -er '[.namespace,.name,.operation_id,.instance,.type,.requested_by,.owner,.parameters_secret,.parameters_key,(.attempt|tostring),.parameters_sha256]|@tsv' <<<"$claim")" || die "remediation claim is incomplete"
 IFS=$'\t' read -r namespace name operation_id instance type requester owner secret key attempt expected_sha <<<"$identity"
@@ -38,8 +48,12 @@ finalize_heartbeat() {
   }
 }
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
-[[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation parameters digest mismatch" >/dev/null; exit 1; }
+[[ -f "$PARAMETERS_INPUT" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation parameters digest mismatch" >/dev/null; exit 1; }
+require_operation_parameters_size "$PARAMETERS_INPUT"
+[[ "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation parameters digest mismatch" >/dev/null; exit 1; }
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
+require_operation_parameters_size "$params"
+require_operation_parameters_size "$PARAMETERS_INPUT"
 $JQ -e 'keys==["cluster_id","compact_revision","endpoint","request_id","revision"] and (.cluster_id|test("^[1-9][0-9]*$")) and (.revision|test("^[1-9][0-9]*$")) and (.compact_revision|test("^[1-9][0-9]*$")) and (.endpoint|type=="string" and length>0) and (.request_id|test("^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$"))' "$params" >/dev/null || die "remediation parameter schema is invalid"
 request_id="$($JQ -r .request_id "$params")"; endpoint="$($JQ -r .endpoint "$params")"; cluster_id="$($JQ -r .cluster_id "$params")"; revision="$($JQ -r .revision "$params")"; compact_revision="$($JQ -r .compact_revision "$params")"
 request_hash="$(printf '%s\n%s\n%s\n%s\n%s\n' "$request_id" "$endpoint" "$cluster_id" "$revision" "$compact_revision" | sha256sum | cut -c1-20)"
