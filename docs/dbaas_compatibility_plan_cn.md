@@ -58370,6 +58370,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   演练。本项不改变 evidence schema、在线 etcd RPC、Service selector CAS 或 TiKV 编码，只统一小型控制文件
   的资源边界。
 
+- A5196 将 4 MiB control evidence 资源边界沿恢复链延伸到 PostRestoreAudit。旧 direct audit 与 Operation
+  runner 虽会冻结并复算 cutover state/receipt 摘要，但会在限制长度前完整复制、SHA-256、awk/jq 解析；runner
+  对可替换 `AUDIT_COMMAND` 产出的最终 receipt 也没有长度上限。在合法 cutover receipt 或 audit receipt 后追加
+  超过 4 MiB 空白仍满足严格 JSON schema，SERVICE resourceVersion 扩展到 4 MiB 也保持合法 state 字段数；
+  direct 输入、runner 输入与 runner 输出三条基线在旧实现上均错误成功（RED 8.662 秒）。现 direct audit 在
+  cutover state/receipt 复制前、0600 冻结副本及原路径复检时统一执行 4 MiB `stat -L` 门禁；已有或新生成的
+  audit receipt 在解析/发布前使用同一上限。Operation runner 在 cutover 证据源文件、冻结副本、复制后原路径
+  以及 audit receipt 源文件/冻结副本上重复检查，关闭 stat→copy TOCTOU；超限输入在审计前 Retry，超限输出
+  不得提交 Succeeded。logical artifact 和数据面 keyspace 不受该小型控制文件上限。六类超限反例连续二十轮
+  123.683 秒、race 7.309 秒，完整 PostRestoreAudit 测试族 97.134 秒，bash syntax 与 diff check 通过。完整
+  非 production 全绿，其中 `pkg/server/etcd` 168.106 秒、总计 174.593 秒；production 清单确认 382 项并按
+  90/104/96/92 四分片全部通过（169.387/278.388/207.892/489.782 秒），全仓 vet 1.749 秒。本轮未执行真实
+  恢复后长窗口审计；状态机测试不替代经审批演练。本项不改变 evidence schema、在线 etcd RPC、审计持续时间
+  或 TiKV 编码，只封闭恢复后控制证据的无界资源消耗。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -5461,6 +5461,11 @@ CAS 并要求源 Pod UID 集恢复。
 PostRestoreAudit runner 在子脚本返回后会重新冻结并双重校验 cutover state、cutover receipt 和 audit
 receipt，独立要求 `cutover completed_at_unix <= audit started_at_unix <= audit completed_at_unix`；
 倒序票据只允许进入 Retry，不能提交 Succeeded。该检查不依赖直接审计脚本已经执行过同一门禁。
+cutover state、cutover receipt 与 post-restore audit receipt 都属于小型 control evidence，单文件上限
+4 MiB。直接审计在复制输入前、0600 冻结副本及原路径复检时执行该门禁，并在幂等复用已有 audit
+receipt 或发布新 receipt 前检查同一上限；Operation runner 同样检查 cutover 证据源文件、冻结副本以及
+可替换 `AUDIT_COMMAND` 产出的 receipt 源文件和冻结副本。超限输入必须在启动审计前 Retry，超限输出不得
+提交 Succeeded。该上限不适用于 logical backup artifact 或数据面 keyspace。
 
 `hack/production/run-certificate-rotation-operation.sh` 接入 CertificateRotation。
 参数同时绑定旧/新/overlap CA、client cert/key 路径及每个文件的 SHA-256，executor 在
