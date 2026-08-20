@@ -57958,6 +57958,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确集合结论仍受
   已有写流量冻结/fence 与验证窗口边界限制，reference 小制品不替代真实 TiKV/PD 大制品恢复。
 
+- A5171 加固 native restore 与所有 TiKV-mode KubeBrain writer 共用的 PD embedded-etcd admission fence。
+  旧 `Acquire/Verify/Release/VerifyOpen` 及 session Grant/register/KeepAlive/Close 基本只检查 transport error、
+  `Succeeded`、KV 数或非 nil keepalive；nil/零/错 cluster header、少/错 Txn operation、hidden Range payload、
+  损坏 gate MVCC、错 lease ID/TTL 或回退 revision 都可能关闭/打开 restore gate、伪造零 active session，
+  或刷新数据面写权限的 freshness。对照 `/root/etcd/server/etcdserver/{apply/backend.go,api/v3rpc/key.go,api/v3rpc/lease.go}`
+  与 `server/lease/lessor.go::Renew`，现每条操作链以首个响应固定非零 etcd cluster ID，要求所有
+  member 非零、revision 正且单调不退，成功 mutation 严格推进。Txn success/failure branch 必须返回
+  精确 Put operation 数、无 PrevKV，nested revision exact；gate Get 必须 exact key/value、`Count=1`、
+  `More=false`、无 lease 且 MVCC metadata 合法，session empty scan 不得夹带 KV/More。Grant 必须返回
+  正 lease ID、空 legacy error 及 `[requested,MaxLeaseTTL]` 内 TTL；KeepAlive 必须回显同 ID 且 TTL
+  与 Grant exact，异常响应先清零 freshness，再执行最多两秒的旧 lease cleanup 并进入重注册；正常 Close
+  Revoke 也继续同一 cluster/revision 链。embedded-etcd 生命周期还证明 PD client cluster ID 与 etcd
+  response cluster ID 是独立身份域；前者继续由 plan/receipt 单独绑定，后者只在响应链内同源。
+  header/Txn/Range/lease 正反例、active/closed/race/re-register 集成与 malformed keepalive 立即失效回归
+  连续二十轮，目标 race、完整非 production（2m45.832s）、production 324 项四分片
+  （135.049/235.362/165.631/463.783 秒）、diff check 与 vet 全部通过。本项不改变 gate/token/session
+  key schema、TTL/freshness 预算、transaction compare、receipt schema、TiKV 数据编码或正常在线 etcd 语义；
+  best-effort 异常旧 lease cleanup 仍不是可持久补偿 receipt，也尚未以新 binary 重跑真实 Kubernetes/PD
+  分区下的 full/PITR 恢复。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -3497,7 +3497,18 @@ TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导�
 在 PD 可能删除 session、恢复方可能取得 gate 之前先停止写入。Badger 本地模式不启用该外部原语。
 
 该 PD admission 原语已通过真实 embedded-etcd 的 active-session/closed-gate、20 轮并发注册与 acquire
-单赢家、freshness 提前失效及 race 测试。restore CLI 现已完成 acquire-before-BR、BR 前后复核、与 TiKV
+单赢家、freshness 提前失效及 race 测试。Acquire/Release/session-register 的 Txn 响应还必须含
+非零 cluster/member、正且跨调用不退的 revision，并与实际 success/failure branch 返回精确数量的
+Put response；成功 mutation 必须推进 revision，nested header 兼容官方的 nil/零 identity 形态，但
+revision 必须与 outer exact。Verify/VerifyOpen 的 gate Get 要求 exact key/value、`Count=1`、
+`More=false`、无 lease 且 MVCC metadata 合法；session prefix 必须是无 hidden payload 的 canonical empty Range。
+session Grant 要求 server-chosen 正 ID、无 legacy error 且 TTL 合法；KeepAlive 必须回显同一 ID，且按
+upstream `lessor.Renew` 语义回显与 Grant 完全相同的 TTL。nil、错 identity、revision 回退、错 ID/TTL
+或非 canonical payload 不得刷新 freshness；检出异常时先原子清零 freshness，再尝试 revoke 旧 lease 与重建
+session，不让 cleanup 等待期间继续拥有写准入。正常 Close 的 Revoke acknowledgement 也必须延续同一响应身份链。
+PD client 返回的 PD cluster ID 与 embedded-etcd `ResponseHeader.ClusterId` 是两个独立身份域：receipt/plan
+继续单独校验前者，响应 admission 仅在每条 etcd 操作链内固定后者，不得将二者直接比较。
+restore CLI 现已完成 acquire-before-BR、BR 前后复核、与 TiKV
 restoration fence 的 receipt 化交接，并由最终 semantic receipt 绑定；full-only 与 stream-log 双集群演练
 均通过。生产仍需由 DBaaS 控制面保证只有受审恢复身份持有 operation token，并持续执行版本矩阵、故障注入
 与规模验证。
