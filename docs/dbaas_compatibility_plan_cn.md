@@ -58342,6 +58342,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   演练。本项不改变 evidence schema、在线 etcd RPC、Service selector CAS 或 TiKV 编码，只统一直接入口所有
   chronology 数值的安全域。
 
+- A5194 为 logical RestoreCutover 的小型 JSON 证据补齐资源上限。此前 Operation runner 与直接
+  `switch-restore-traffic.sh` 都会先完整复制、SHA-256 并交给 jq；在合法 JSON 后追加任意空白不会破坏严格
+  schema，却可无界放大 worker 磁盘读取、临时目录和 jq 资源。restore receipt 输入的两条 4 MiB+空白基线
+  在旧实现上均错误成功（RED 2.387 秒）。现两个入口统一使用 4 MiB 上限和 `stat -L` 的真实逻辑长度：
+  restore receipt 在复制前及 0600 冻结副本上双检查，关闭 stat→copy TOCTOU；Operation runner 的最终
+  cutover receipt 在源文件和冻结副本上双检查，直接入口在幂等复用 existing receipt 前检查。logical
+  artifact 不套用该限制。输入/输出四类超限反例连续二十轮 116.720 秒、race 7.038 秒，两个完整
+  RestoreCutover 测试族 154.980 秒，冻结副本复检后的单轮/race 5.560/6.736 秒，bash syntax 与 diff check
+  通过。非 production 首轮中与本次 shell 改动无依赖的 `pkg/server/etcd` 单次失败，但日志被大量预期 watch
+  输出截断而无法定位测试名；该包隔离重跑 152.463 秒通过，随后完整非 production 重跑全绿，其中该包
+  165.821 秒、总计 172.189 秒，不把首次失败隐藏或改写为产品回归。production 清单确认 374 项并按
+  86/104/92/92 四分片全部通过（165.168/294.398/202.693/499.634 秒），全仓 vet 2.369 秒。本轮未执行
+  真实切流；状态机测试不替代经审批演练。本项不改变 evidence schema、在线 etcd RPC、Service selector CAS
+  或 TiKV 编码，只限制小型控制证据的资源消耗。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

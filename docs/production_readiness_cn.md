@@ -5430,6 +5430,9 @@ state v2+restore v3 继续按历史合同接管，但不追溯性声称 state �
 runner 同时要求已按参数摘要冻结的 logical artifact SHA-256 等于 restore receipt 声明的
 `artifact_sha256`，且在启动 prepare 前完成；直接 `switch-restore-traffic.sh prepare` 也对自己的冻结
 backup 做同一校验。两个入口都不得把该交叉绑定推迟到流量切换后的公开数据 verify。
+restore verification receipt 与最终 cutover receipt 属于小型 JSON，单文件上限 4 MiB；Operation runner
+和直接状态机都必须在复制前及 0600 冻结副本上检查真实文件长度，最终 receipt 在冻结或幂等复用前也做
+同一检查。logical artifact 可随 keyspace 放大，不套用该小型 JSON 上限。
 该绑定在任何 cutover/verify/complete 阶段前执行，并在最终 cutover receipt 校验时再次执行；流量尚未
 变更时，畸形或不匹配输入只允许 Retry，已有 cutover marker 时则 fail closed 为 Failed，禁止凭不可信
 state 继续切流或在线完成。
