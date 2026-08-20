@@ -58619,6 +58619,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （178.413/308.720/216.355/504.400 秒）。本项不改变 Deployment/ReplicaSet/Pod 发布身份、rollout fencing、
   TiDB Operator 配置、在线 etcd RPC 或 TiKV 编码。
 
+- A5218 为 TiKV/PD region-health 门禁的 PD `/stores` 与五类 region-check JSON 建立逐调用 1 MiB 门禁。
+  旧实现把 stores 和每轮 pending/down/miss/extra/learner peer 响应直接装入 shell 变量；1048577-byte
+  语义合法 stores JSON 仍会通过完整门禁（RED 7.452 秒）。现门禁创建私有响应目录，每个 PD 调用先写入
+  独立文件、chmod 0600、用 stat 检查不超过 1048576 bytes，再直接交给 jq；采样轮次与 check 名进入
+  文件名，避免响应互相覆盖。测试覆盖 stores 与 region-check 超限拒绝，并证明两类精确 1 MiB 合法响应
+  仍可完成门禁。完整测试 44.583 秒，连续五轮 224.945 秒、race 46.313 秒，完整相关回归 45.044 秒，
+  bash syntax、diff check 与全仓 vet 通过。production 清单保持 412 项并按 98/111/103/100 四片全部通过
+  （175.143/288.052/219.733/468.384 秒）。本项不改变 PD store/region 健康语义、连续采样策略、PVC/PV
+  身份与容量门禁、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
