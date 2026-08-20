@@ -22,6 +22,7 @@ PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
+MAX_RUNTIME_EVIDENCE_BYTES=1048576
 
 if [[ "$ALLOW_MUTATING_KUBEBRAIN_ROLLOUT" != true ]]; then
   echo "refusing mutating KubeBrain rollout: set ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true" >&2
@@ -69,14 +70,32 @@ kctl() {
   "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" "$@"
 }
 
-statefulset_json="$(kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json)"
-replicas="$(jq -r '.spec.replicas // 0' <<<"$statefulset_json")"
-ready="$(jq -r '.status.readyReplicas // 0' <<<"$statefulset_json")"
-current_revision="$(jq -r '.status.currentRevision // ""' <<<"$statefulset_json")"
-update_revision="$(jq -r '.status.updateRevision // ""' <<<"$statefulset_json")"
-image="$(jq -r '.spec.template.spec.containers[] | select(.name == "kubebrain") | .image' <<<"$statefulset_json")"
-retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_RETRY_PERIOD}" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(. == $expected)] | length' <<<"$statefulset_json")"
-pd_addrs="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(startswith("--pd-addrs=")) | sub("^--pd-addrs="; "")] | if length == 1 then .[0] else "" end' <<<"$statefulset_json")"
+runtime_evidence_dir="$(mktemp -d)"
+trap 'rm -rf -- "$runtime_evidence_dir"' EXIT
+capture_runtime_evidence() {
+  local destination="$1" size
+  shift
+  "$@" >"$destination" || return 1
+  chmod 600 "$destination" || return 1
+  size="$(stat -Lc '%s' -- "$destination")" || return 1
+  if ! [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_RUNTIME_EVIDENCE_BYTES" ]]; then
+    echo "runtime evidence exceeds ${MAX_RUNTIME_EVIDENCE_BYTES} bytes" >&2
+    exit 1
+  fi
+}
+
+statefulset_json="$runtime_evidence_dir/statefulset-initial.json"
+capture_runtime_evidence "$statefulset_json" kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json || {
+  echo "failed to read KubeBrain StatefulSet" >&2
+  exit 1
+}
+replicas="$(jq -r '.spec.replicas // 0' "$statefulset_json")"
+ready="$(jq -r '.status.readyReplicas // 0' "$statefulset_json")"
+current_revision="$(jq -r '.status.currentRevision // ""' "$statefulset_json")"
+update_revision="$(jq -r '.status.updateRevision // ""' "$statefulset_json")"
+image="$(jq -r '.spec.template.spec.containers[] | select(.name == "kubebrain") | .image' "$statefulset_json")"
+retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_RETRY_PERIOD}" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(. == $expected)] | length' "$statefulset_json")"
+pd_addrs="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(startswith("--pd-addrs=")) | sub("^--pd-addrs="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
 pd_endpoints=""
 IFS=',' read -r -a pd_addr_items <<<"$pd_addrs"
 for pd_addr in "${pd_addr_items[@]}"; do
@@ -86,7 +105,7 @@ for pd_addr in "${pd_addr_items[@]}"; do
   fi
   pd_endpoints="${pd_endpoints:+${pd_endpoints},}${pd_addr}"
 done
-prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' <<<"$statefulset_json")"
+prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' "$statefulset_json")"
 expected_prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
 
 if [[ "$replicas" != "$EXPECTED_REPLICAS" || "$ready" != "$EXPECTED_REPLICAS" ]]; then
@@ -108,6 +127,7 @@ fi
 
 cleanup() {
   kctl delete pod "$PROBE_POD" --ignore-not-found=true --wait=true >/dev/null || true
+  rm -rf -- "$runtime_evidence_dir"
 }
 trap cleanup EXIT
 
@@ -130,8 +150,9 @@ kctl run "$PROBE_POD" --image="$image" --restart=Never --command -- \
 kctl wait --for=condition=Ready "pod/$PROBE_POD" --timeout="$PROBE_READY_TIMEOUT" >/dev/null
 
 started=false
-for _ in $(seq 1 50); do
-  if kctl logs "$PROBE_POD" 2>/dev/null | grep -qx PROBE_STARTED; then
+for attempt in $(seq 1 50); do
+  probe_start_log="$runtime_evidence_dir/probe-start-${attempt}.log"
+  if capture_runtime_evidence "$probe_start_log" kctl logs "$PROBE_POD" && grep -qx PROBE_STARTED "$probe_start_log"; then
     started=true
     break
   fi
@@ -153,31 +174,39 @@ probe_complete_deadline=$((SECONDS + probe_complete_seconds))
 while ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$PROBE_POD" --timeout=1s >/dev/null 2>&1; do
   probe_phase="$(kctl get pod "$PROBE_POD" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
   if [[ "$probe_phase" == Failed ]]; then
-    kctl logs "$PROBE_POD" >&2 || true
+    capture_runtime_evidence "$runtime_evidence_dir/probe-failed.log" kctl logs "$PROBE_POD" && cat "$runtime_evidence_dir/probe-failed.log" >&2 || true
     echo "availability probe failed" >&2
     exit 1
   fi
   if (( SECONDS >= probe_complete_deadline )); then
-    kctl logs "$PROBE_POD" >&2 || true
+    capture_runtime_evidence "$runtime_evidence_dir/probe-timeout.log" kctl logs "$PROBE_POD" && cat "$runtime_evidence_dir/probe-timeout.log" >&2 || true
     echo "availability probe did not complete within ${PROBE_COMPLETE_TIMEOUT}" >&2
     exit 1
   fi
 done
-probe_log="$(kctl logs "$PROBE_POD")"
-printf '%s\n' "$probe_log"
-summary="$(grep '^PROBE_SUMMARY ' <<<"$probe_log" || true)"
+probe_log="$runtime_evidence_dir/probe-final.log"
+capture_runtime_evidence "$probe_log" kctl logs "$PROBE_POD" || {
+  echo "failed to read availability probe log" >&2
+  exit 1
+}
+cat "$probe_log"
+summary="$(grep '^PROBE_SUMMARY ' "$probe_log" || true)"
 if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ lease=alive\ max_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
   echo "availability probe summary mismatch" >&2
   exit 1
 fi
 
-final_json="$(kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json)"
-final_ready="$(jq -r '.status.readyReplicas // 0' <<<"$final_json")"
-final_current_revision="$(jq -r '.status.currentRevision // ""' <<<"$final_json")"
-final_update_revision="$(jq -r '.status.updateRevision // ""' <<<"$final_json")"
-final_image="$(jq -r '.spec.template.spec.containers[] | select(.name == "kubebrain") | .image' <<<"$final_json")"
-final_retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_RETRY_PERIOD}" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(. == $expected)] | length' <<<"$final_json")"
-final_prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' <<<"$final_json")"
+final_json="$runtime_evidence_dir/statefulset-final.json"
+capture_runtime_evidence "$final_json" kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json || {
+  echo "failed to read final KubeBrain StatefulSet" >&2
+  exit 1
+}
+final_ready="$(jq -r '.status.readyReplicas // 0' "$final_json")"
+final_current_revision="$(jq -r '.status.currentRevision // ""' "$final_json")"
+final_update_revision="$(jq -r '.status.updateRevision // ""' "$final_json")"
+final_image="$(jq -r '.spec.template.spec.containers[] | select(.name == "kubebrain") | .image' "$final_json")"
+final_retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_RETRY_PERIOD}" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(. == $expected)] | length' "$final_json")"
+final_prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' "$final_json")"
 if [[ "$final_ready" != "$EXPECTED_REPLICAS" || -z "$final_current_revision" ||
   "$final_current_revision" != "$final_update_revision" || "$final_current_revision" == "$current_revision" ||
   "$final_image" != "$image" || "$final_retry_count" != 1 || "$final_prestop" != "$expected_prestop" ]]; then

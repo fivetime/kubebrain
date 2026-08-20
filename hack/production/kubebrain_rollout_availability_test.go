@@ -69,6 +69,26 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
 }
 
+func TestRolloutAvailabilityRunnerBoundsRuntimeEvidence(t *testing.T) {
+	for _, target := range []string{"statefulset", "probe-log"} {
+		t.Run(target, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			base := append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "FAKE_RUNTIME_RESPONSE_TARGET="+target)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(base, "FAKE_RUNTIME_RESPONSE_BYTES=1048577")
+			output, err := command.CombinedOutput()
+			require.Error(t, err)
+			require.Contains(t, string(output), "runtime evidence exceeds 1048576 bytes")
+			require.NoError(t, os.RemoveAll(statePath))
+			command = exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(base, "FAKE_RUNTIME_RESPONSE_BYTES=1048576")
+			boundaryOutput, boundaryErr := command.CombinedOutput()
+			require.NoError(t, boundaryErr, string(boundaryOutput))
+			require.Contains(t, string(boundaryOutput), "rollout availability gate passed")
+		})
+	}
+}
+
 func TestRolloutAvailabilityRunnerFailsFastWhenProbeFails(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -101,10 +121,11 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   [[ -e "$FAKE_KUBECTL_STATE" ]] && revision=revision-new
   prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
   [[ "${FAKE_BAD_PRESTOP:-false}" == true ]] && prestop='["/bin/sleep","5"]'
-  jq -cn --arg revision "$revision" --argjson prestop "$prestop" '{
+  payload="$(jq -cn --arg revision "$revision" --argjson prestop "$prestop" '{
     spec:{replicas:3,template:{spec:{containers:[{name:"kubebrain",image:"kubebrain:test",args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
-  '
+  ')"
+  printf '%s' "$payload"; [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" != statefulset ]] || head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.status.phase} "* ]] &&
   [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then
   printf Failed
@@ -116,7 +137,8 @@ elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]] &&
   [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then
   exit 1
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
-  printf '%s\n' PROBE_STARTED 'PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34'
+  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  printf '%s' "$payload"; [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" != probe-log ]] || head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 fi
 `
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
