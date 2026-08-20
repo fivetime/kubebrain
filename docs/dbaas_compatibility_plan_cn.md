@@ -58329,6 +58329,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   切流；状态机测试不替代经审批演练。本项不改变 evidence schema、在线 etcd RPC、Service selector CAS 或
   TiKV 编码，只让直接入口在副作用前执行已有跨制品身份和时间合同。
 
+- A5193 封闭直接状态机 chronology 在 Bash 有符号算术前未限制 marker/receipt 时间上界的溢出缺口。
+  `validate_restore_cutover_marker` 旧实现只接受正十进制，`marker_timestamp` 原样返回；cutover marker 写成
+  `MaxInt64+1` 后，Bash 将其回绕为负数，verify 仍认为当前时间更晚并发布 VERIFIED。已有 cutover receipt 的
+  `completed_at_unix` 同样只要求正整数，jq 会接受超界时间并允许幂等复用。两条基线反例均错误成功（RED
+  5.191 秒）。现共享 marker timestamp 提取器在返回前执行 `1..MaxInt64` 十进制长度/字典序门禁；新生成的
+  verified/completed 时间也先过同一门禁再参与算术；existing receipt 严格 jq schema 增加 MaxInt64 上界。
+  marker 与 receipt 两类反例连续二十轮 119.058 秒、race 6.424 秒，全部 RestoreTrafficCutover 76.320 秒，
+  bash syntax 与 diff check 通过。完整非 production 全绿，其中 `pkg/server/etcd` 160.584 秒、总计
+  167.050 秒；production 清单确认 370 项并按 84/102/92/92 四分片全部通过
+  （165.567/279.164/201.414/487.114 秒），全仓 vet 2.217 秒。本轮未执行真实切流；状态机测试不替代经审批
+  演练。本项不改变 evidence schema、在线 etcd RPC、Service selector CAS 或 TiKV 编码，只统一直接入口所有
+  chronology 数值的安全域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

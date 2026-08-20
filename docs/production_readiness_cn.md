@@ -5447,6 +5447,9 @@ key prefix，不能仅凭文件存在推进 operation。heartbeat fencing 时旧
 target revision、完整 receipt SHA 以及 v3 cluster ID 一致。新切流先确认当前时间不早于 restore verified，
 复用 marker、verify 和 complete 则比较冻结 receipt 时间与已发布 cutover marker。历史 v1 state 没有完整
 receipt SHA，只能按其已有字段关联，不得声称追溯性完整 receipt 身份。
+直接入口解析或生成的 restore verified、cutover marker、verified marker 和 cutover receipt completed 时间
+全部必须位于 `1..MaxInt64`；任何 Bash 算术比较都只能在该域校验成功后执行，避免超大十进制按有符号
+64 位回绕并伪造合法 chronology。
 A189 rollback 允许仅凭 prepare state 运行：这覆盖 Service JSON Patch 已提交、但等待
 EndpointSlice 失败而尚未生成 cutover marker 的窗口；rollback 仍用 UID/resourceVersion
 CAS 并要求源 Pod UID 集恢复。
