@@ -58683,6 +58683,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain quiesce、同 PVC Pod replacement、PD/Region 收敛或最终 transaction receipt 语义，也不改变
   在线 etcd RPC 或 TiKV 编码。
 
+- A5224 为同一 repair 原语中六个 Ready PD/TiKV Pod 的 PVC 与 PV JSON 建立逐对象 1 MiB 门禁。
+  旧实现把 Kubernetes 存储对象直接装入 shell 变量；1048577-byte 语义合法 PVC JSON 仍会完成 binding、
+  容量和 CSI 身份门禁并进入修复流程（RED 20.009 秒）。现每次 PVC/PV 响应写入 repair 私有目录中的新
+  0600 文件、用 stat 检查不超过 1048576 bytes，再由 jq 直接读取；对象间不会覆盖证据。测试覆盖 PVC/PV
+  超限拒绝并确认任何 TiKV Pod delete 尚未发生，也证明两类精确 1 MiB 合法响应仍可完成 transaction
+  repair。聚焦测试 69.570 秒，连续两轮 136.978 秒、race 69.751 秒，完整相关回归 69.242 秒，bash
+  syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按 98/113/103/100 四片全部通过
+  （185.071/334.514/311.856/478.822 秒）。本项不改变 PVC binding、PV claimRef、CSI/容量/唯一性、
+  repair 目标选择、同 PVC Pod replacement、最终事务验证、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
