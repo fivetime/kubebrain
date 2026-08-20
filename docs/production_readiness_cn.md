@@ -4725,7 +4725,13 @@ snapshot converter 不再对不可能由 etcd MVCC 产生的元数据给出不�
 promotion grace 令 remaining 高于正 `granted_ttl`，则规范化回 grant，缺 grant 的旧 v2 制品则最多使用
 官方 `MaxLeaseTTL`，避免合法制品因目标不可授予的 TTL 在写入前失败。restore 在创建任何目标 lease 前还会
 遍历完整 artifact，拒绝 rewrite 产生空 key 或把两个源 key 合并为同一目标；logical verify 使用同一 rewrite
-实现与唯一性门禁。每次目标 LeaseGrant 成功响应还必须含 signed nonzero 唯一 ID、正 revision header、空 legacy
+实现与唯一性门禁。logical verify 还会在逐 key Get 与逐 lease TTL 间固定首个非零目标
+cluster ID，要求每个响应的 member 非零且 revision 跨调用单调不退。当请求生成 restore receipt 时，
+在签发前额外对完整目标前缀执行一次 `WithPrefix()+WithCountOnly()`：响应必须保持同一 cluster、
+空 KV payload、`More=false`，且 `Count` 精确等于 artifact record 数。因而“artifact 内每个目标 key
+逐一存在”与“目标前缀总数精确相等”共同拒绝多余 key；零记录 artifact 也必须完成真实目标 RPC，
+不能在未观测 endpoint 时签发 receipt。这仍是验证窗口内的证据，不是同一 MVCC snapshot；生产签发期间仍需
+按既有合同冻结或 fence 目标写流量。每次目标 LeaseGrant 成功响应还必须含 signed nonzero 唯一 ID、正 revision header、空 legacy
 error，且实际 TTL 位于 `[requested, MaxLeaseTTL]`；server-chosen 更长 TTL 合法，异常响应携带的非零 lease 会与
 此前 grants 一并按 ID 去重 revoke，任何 Put 都不会执行。每个 restore Put batch 的成功 Txn 还必须返回正的
 outer revision、与请求等量且类型均为 Put 的 response；每个 Put response 若携带 header，其 revision 必须与

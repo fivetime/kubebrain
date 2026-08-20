@@ -57942,6 +57942,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   snapshot/pagination/TTL payload、metrics、数据编码或在线 etcd RPC 语义；reference 小制品不替代真实 TiKV/PD
   大 keyspace、lease churn 与导出期间故障演练。
 
+- A5170 将 logical verify 的 restore receipt 从“artifact 键均能逐一读回”收紧为“验证窗口内
+  目标前缀精确对应 artifact”。A5155 已校验单次 Get/TTL payload，但跨调用仍可混入另一 cluster、
+  零 member 或回退 revision，且多余目标 key 不在 artifact 遍历范围内；零记录 artifact 甚至可在没有
+  任何目标 RPC 时签发 receipt。现以有状态 admission 固定首个非零 cluster ID，要求每个 Get/TTL
+  及最终 count response 的 member 非零、revision 正且单调不退；仅当请求 `RECEIPT_OUTPUT` 时，签发前
+  对 target prefix 追加 `WithPrefix()+WithCountOnly()`，要求 `Count==artifact records`、KVs 为空且
+  `More=false`。对照 `/root/etcd/server/etcdserver/api/v3rpc/{key.go,lease.go}` 及 clientv3 Range/count-only 合同，
+  临时 reference etcd 上两记录/一 lease 的 export→rewrite restore 后，注入额外 key 会以目标 3 键、
+  期望 2 键 fail closed 且不产生 receipt；删除额外 key 后成功签发 2 records/1 lease receipt，另一
+  零记录/零 lease artifact 也在完成 count RPC 后成功签发，实例、artifact 与数据目录均已清理。
+  身份/单调与 exact count 正反例连续二十轮、目标 race、完整非 production、production 324 项四分片
+  （143.038/248.478/174.271/478.454 秒）、diff check 与 vet 全部通过。本项不改变 artifact/receipt schema、
+  rewrite/lease 合同、数据编码或在线 etcd RPC 语义，未请求 receipt 时不追加 prefix count RPC；
+  精确集合结论仍受
+  已有写流量冻结/fence 与验证窗口边界限制，reference 小制品不替代真实 TiKV/PD 大制品恢复。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
