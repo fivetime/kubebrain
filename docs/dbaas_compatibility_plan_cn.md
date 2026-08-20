@@ -58399,6 +58399,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   recovery/repair 等后续专用 runner 尚未纳入本轮六类门禁，继续作为明确兼容差距，不把核心 executor 覆盖
   误报为全仓完成。
 
+- A5198 把 A5197 的 64 KiB 参数资源合同扩展到 TiKVTransactionRecovery 与 TiKVTransactionRepair 两条专用
+  runner。旧实现对显式或 broker 拉取参数先完整 SHA-256、复制并 jq 解析；在合法 transaction JSON 后追加
+  64 KiB 空白并同步 claim digest，两条 runner 都错误成功（RED 14.052 秒）。现参数源文件在首次摘要前通过
+  `stat -L` 检查，复制后同时复检 0600 冻结副本和原路径；超限在任何 recovery/repair primitive、receipt
+  接管或 schema 解析前写 Retry。测试覆盖两条显式超限、managed 超限、可替换 `cp` 在复制后放大冻结副本的
+  TOCTOU 反例，以及恰好 65536 bytes 正例。两个主测试连续二十轮 305.434 秒、race 18.119 秒，完整
+  transaction recovery/repair/quiesced 集合 16.241 秒，bash syntax 与 diff check 通过。首轮完整非
+  production 的 `pkg/backend` 在大量预期 watch 日志截断后失败，无法定位具体测试名；本轮 shell 改动与该包
+  无依赖，隔离重跑 50.520 秒通过，随后完整非 production 重跑全绿，其中 `pkg/server/etcd` 169.908 秒、
+  总计 176.365 秒，不隐藏首次异常。production 清单确认 384 项并按 91/104/96/93 四分片全部通过
+  （172.668/300.574/205.584/497.067 秒），全仓 vet 2.089 秒。本项不改变 transaction 参数 schema、
+  repair/recovery 副作用、Operation CRD、在线 etcd RPC 或 TiKV 编码。Native PITR、cold physical 与 legacy
+  remediation runner 仍未纳入，继续作为明确资源边界差距。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

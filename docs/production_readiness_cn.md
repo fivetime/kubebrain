@@ -4954,8 +4954,12 @@ Backup、BackupDeletion、RestoreCutover、PostRestoreAudit、CertificateRotatio
 runner 还必须把 operation 参数文件限制为 64 KiB，与外部 Operation API 的请求体边界一致。显式
 `PARAMETERS_INPUT` 和 parameter broker 拉取结果都在 SHA-256 前检查；复制到 0600 私有文件后必须同时
 复检冻结副本与原路径，超限 operation 进入 Retry 且不得启动子命令。该合同目前只覆盖这六类核心
-executor；Native PITR、cold physical、transaction recovery/repair 等专用 runner 仍须按各自参数合同
+executor；Native PITR、cold physical、legacy remediation 等专用 runner 仍须按各自参数合同
 单独完成同类审计，不能据此声称全体 operation runner 已统一。
+TiKVTransactionRecovery 与 TiKVTransactionRepair runner 已按同一 64 KiB 合同补齐：显式或 broker
+拉取参数在摘要前检查，复制后复检冻结副本和原路径，超限时使用这两类可重试 pre-side-effect 阶段已有的
+Retry 语义。该门禁发生在 recovery/repair primitive、已有 receipt 接管和参数 schema 解析之前；恰好
+65536 bytes 仍合法。Native PITR、cold physical 与 legacy remediation runner 仍是后续差距。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
