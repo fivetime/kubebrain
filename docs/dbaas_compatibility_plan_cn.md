@@ -58209,6 +58209,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   状态机测试冒充经审批的恢复演练。本项不改变 logical artifact、Service selector CAS、在线 etcd RPC、最终
   cutover/audit receipt schema 或 TiKV 编码。
 
+- A5186 封闭 post-restore audit 可在不同 etcd cluster 间拼接成功样本的身份缺口。旧 audit probe 的 Grant→
+  conditional Put→linearizable Get→conditional Delete→absence Get→Revoke 已在单次进程内固定 response header
+  cluster ID，但 `kubebrain.etcd-audit-probe.v1` 只输出 revision/TTL；脚本只比较跨样本 revision 单调，因此
+  cluster 7 的首样本和 revision 更高的 cluster 8 后续样本仍可签发成功 receipt。对照 upstream
+  `server/etcdserver/api/v3rpc/header.go`、`watch.go` 与 protobuf `ResponseHeader.cluster_id` 的集群身份合同，现
+  probe 只输出严格字段集合的 `kubebrain.etcd-audit-probe.v2`，增加从同一 Grant 准入链取得的非零
+  `cluster_id`。直接审计固定首样本 cluster，后续每个样本必须精确相等；新签发的
+  `kubebrain.post-restore-audit.receipt.v2` 记录 `verified_target_cluster_id`，已有 v2 receipt 幂等复用前仍做实时
+  probe 并与该字段比较。Operation runner 严格区分历史 v1 与新 v2 receipt 的精确字段集合，v2 的 cluster ID
+  必须为 `1..MaxUint64`；v1 在途证据继续兼容，但没有身份连续性保证。跨样本漂移、receipt 重用漂移、零值及
+  `2^64` probe/runner receipt 反例连续二十轮 202.550 秒，probe race 1.066 秒、跨脚本 race 19.607 秒，全部
+  `TestPostRestoreAudit*` 79.040 秒、Shell syntax 与 diff check 通过。实现期首轮 runner validator 因 jq
+  `select` 括号提前闭合确定性 RED，修正后同一集合全绿，未将该开发错误改写为产品基线回归。完整非 production
+  全绿，其中 `pkg/server/etcd` 148.791 秒、总计 157.401 秒；production 清单确认 353 项并按
+  78/100/87/88 四分片全部通过（144.908/264.762/189.320/432.530 秒），全仓 vet 2.143 秒。本轮未执行真实
+  一小时审计；状态机测试不能替代生产演练。当前 cutover receipt v2 仍只通过 restore receipt SHA 间接冻结 v3
+  cluster ID，尚未把它暴露给 audit validator；因此本项只证明 audit window 与 v2 receipt 重用期间 cluster
+  不漂移，不宣称 restore→cutover→audit 全链身份已闭合。该显式传播是后续差距。本项不改变在线 etcd RPC、
+  probe 操作序列、Service/Pod/EndpointSlice fence 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

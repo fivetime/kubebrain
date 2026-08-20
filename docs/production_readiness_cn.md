@@ -4912,11 +4912,18 @@ revision，并严格核对 Txn operation shape、Succeeded、Count/More、PrevKV
 lease binding、create/mod revision 和 version。Txn 顶层 header 是身份权威；兼容官方 etcd 的嵌套
 Put/Delete header 省略 cluster/member（只带同一 revision）或完全省略 header，若嵌套 identity 存在则必须
 与顶层一致。nil、隐藏 KV、错 key、错误 MVCC metadata 或 malformed cleanup acknowledgement 均不得发布样本。
+新 probe 输出严格字段集合的 `kubebrain.etcd-audit-probe.v2`，把该调用固定的非零 `cluster_id` 与
+put/read/delete revision 一同交给审计状态机。整个观察窗口的每个样本必须保持同一 cluster ID；已有
+`kubebrain.post-restore-audit.receipt.v2` 被幂等复用时，还会再执行实时 probe 并与 receipt 中的
+`verified_target_cluster_id` 精确比较。
 
 窗口内任一拓扑或数据检查失败都不发布成功凭据。完整持续时间及最少样本均满足后，才以
 0600、file/directory `fsync`、不可覆盖 hard-link 发布
-`kubebrain.post-restore-audit.receipt.v1`，记录 cutover operation、artifact/state 身份、
-窗口、样本数及首末 revision，并通过完整 cutover state/receipt SHA-256 间接绑定上述 v2 revision 证据。
+`kubebrain.post-restore-audit.receipt.v2`，记录 cutover operation、artifact/state 身份、
+窗口、样本数、首末 revision 及整个窗口固定的 cluster ID，并通过完整 cutover state/receipt SHA-256 间接绑定
+上述 cutover revision 证据。历史 v1 audit receipt 仍可按原 schema 消费，但因没有 cluster 字段，不具备重用
+时的身份连续性证明。当前 cutover receipt v2 尚未显式携带 restore v3 的 cluster ID，因此本门禁只证明 audit
+window 自身不跨集群，不能替代 restore→cutover→audit 全链 cluster 相等门禁。
 已有 receipt 的重试仍会重新执行一次完整拓扑检查与真实
 数据探针，并按严格 JSON 顶层字段集合、类型和值复核原 receipt。KubeBrain 网关共享同一
 TiKV MVCC 后端，不存在 etcd 各成员独立 backend；
