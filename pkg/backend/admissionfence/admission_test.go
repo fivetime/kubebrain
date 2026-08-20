@@ -1,6 +1,7 @@
 package admissionfence
 
 import (
+	"context"
 	"net"
 	"net/url"
 	"testing"
@@ -72,6 +73,20 @@ func TestConcurrentSessionRegistrationAndAcquireHaveSingleWinner(t *testing.T) {
 func TestSessionFreshnessExpiresBeforeLease(t *testing.T) {
 	s := &Session{ttl: 6 * time.Second}
 	s.lastAck.Store(time.Now().Add(-4 * time.Second).UnixNano())
+	require.False(t, s.Fresh())
+}
+
+func TestMalformedKeepAliveMakesSessionStale(t *testing.T) {
+	cli := testClient(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	keepalive := make(chan *clientv3.LeaseKeepAliveResponse, 1)
+	keepalive <- nil
+	close(keepalive)
+	s := &Session{cli: cli, ttl: 6 * time.Second, done: make(chan struct{})}
+	s.leaseID.Store(123)
+	s.lastAck.Store(time.Now().UnixNano())
+	s.run(ctx, "malformed", "replica:2380", keepalive, newResponseAdmission(0))
 	require.False(t, s.Fresh())
 }
 

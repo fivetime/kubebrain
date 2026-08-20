@@ -90,6 +90,7 @@ func Acquire(ctx context.Context, cli *clientv3.Client, keyspace string, token T
 		return false, errors.New("restore admission token keyspace mismatch")
 	}
 	tokenBytes, _ := token.Bytes()
+	admission := newResponseAdmission(0)
 	noSessions := clientv3.Compare(clientv3.Version(SessionsPrefix(keyspace)), "=", 0).WithPrefix()
 	for _, attempt := range []struct {
 		cmp     clientv3.Cmp
@@ -103,7 +104,11 @@ func Acquire(ctx context.Context, cli *clientv3.Client, keyspace string, token T
 		if err != nil {
 			return false, fmt.Errorf("acquire restore admission: %w", err)
 		}
-		if resp.Succeeded {
+		succeeded, err := admission.admitPutTxn(resp, 1, "acquire restore admission")
+		if err != nil {
+			return false, err
+		}
+		if succeeded {
 			return attempt.resumed, nil
 		}
 	}
@@ -118,19 +123,20 @@ func Verify(ctx context.Context, cli *clientv3.Client, keyspace string, token To
 	if err != nil {
 		return err
 	}
+	admission := newResponseAdmission(0)
 	resp, err := cli.Get(ctx, GateKey(keyspace))
 	if err != nil {
 		return err
 	}
-	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != string(b) {
-		return errors.New("restore admission ownership lost")
+	if err := admission.admitExactGet(resp, GateKey(keyspace), string(b), "restore admission ownership"); err != nil {
+		return err
 	}
 	sessions, err := cli.Get(ctx, SessionsPrefix(keyspace), clientv3.WithPrefix(), clientv3.WithLimit(1))
 	if err != nil {
 		return err
 	}
-	if sessions.Count != 0 {
-		return errors.New("restore admission has active KubeBrain sessions")
+	if err := admission.admitEmptyGet(sessions, "restore admission sessions"); err != nil {
+		return err
 	}
 	return nil
 }
@@ -143,25 +149,31 @@ func Release(ctx context.Context, cli *clientv3.Client, keyspace string, token T
 	if err != nil {
 		return err
 	}
+	admission := newResponseAdmission(0)
 	resp, err := cli.Txn(ctx).If(clientv3.Compare(clientv3.Value(GateKey(keyspace)), "=", string(b))).Then(clientv3.OpPut(GateKey(keyspace), Open)).Commit()
 	if err != nil {
 		return fmt.Errorf("release restore admission: %w", err)
 	}
-	if !resp.Succeeded {
+	succeeded, err := admission.admitPutTxn(resp, 1, "release restore admission")
+	if err != nil {
+		return err
+	}
+	if !succeeded {
 		return errors.New("restore admission release lost ownership")
 	}
-	return VerifyOpen(ctx, cli, keyspace)
+	return verifyOpen(ctx, cli, keyspace, admission)
 }
 
 func VerifyOpen(ctx context.Context, cli *clientv3.Client, keyspace string) error {
+	return verifyOpen(ctx, cli, keyspace, newResponseAdmission(0))
+}
+
+func verifyOpen(ctx context.Context, cli *clientv3.Client, keyspace string, admission *responseAdmission) error {
 	resp, err := cli.Get(ctx, GateKey(keyspace))
 	if err != nil {
 		return err
 	}
-	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != Open {
-		return errors.New("restore admission is not open")
-	}
-	return nil
+	return admission.admitExactGet(resp, GateKey(keyspace), Open, "open restore admission")
 }
 
 // Session is a leased process registration. Fresh becomes false well before
@@ -170,6 +182,7 @@ func VerifyOpen(ctx context.Context, cli *clientv3.Client, keyspace string) erro
 type Session struct {
 	cli     *clientv3.Client
 	leaseID atomic.Int64
+	admit   atomic.Pointer[responseAdmission]
 	ttl     time.Duration
 	lastAck atomic.Int64
 	cancel  context.CancelFunc
@@ -181,22 +194,31 @@ func StartSession(ctx context.Context, cli *clientv3.Client, keyspace, identity 
 		return nil, errors.New("invalid restore admission session parameters")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	leaseID, keepalive, err := establishSession(runCtx, cli, keyspace, identity, ttl)
+	leaseID, keepalive, admission, err := establishSession(runCtx, cli, keyspace, identity, ttl)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
 	s := &Session{cli: cli, ttl: ttl, cancel: cancel, done: make(chan struct{})}
 	s.leaseID.Store(int64(leaseID))
+	s.admit.Store(admission)
 	s.lastAck.Store(time.Now().UnixNano())
-	go s.run(runCtx, keyspace, identity, keepalive)
+	go s.run(runCtx, keyspace, identity, keepalive, admission)
 	return s, nil
 }
 
-func establishSession(ctx context.Context, cli *clientv3.Client, keyspace, identity string, ttl time.Duration) (clientv3.LeaseID, <-chan *clientv3.LeaseKeepAliveResponse, error) {
-	grant, err := cli.Grant(ctx, int64(ttl/time.Second))
+func establishSession(ctx context.Context, cli *clientv3.Client, keyspace, identity string, ttl time.Duration) (clientv3.LeaseID, <-chan *clientv3.LeaseKeepAliveResponse, *responseAdmission, error) {
+	requestedTTL := int64(ttl / time.Second)
+	grant, err := cli.Grant(ctx, requestedTTL)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
+	}
+	admission := newResponseAdmission(0)
+	if err := admission.admitGrant(grant, requestedTTL); err != nil {
+		if grant != nil && grant.ID != clientv3.NoLease {
+			revokeBestEffort(cli, grant.ID)
+		}
+		return 0, nil, nil, err
 	}
 	register := func(gateCmp clientv3.Cmp, initialize bool) (bool, error) {
 		ops := []clientv3.Op{clientv3.OpPut(SessionKey(keyspace, identity), identity, clientv3.WithLease(grant.ID))}
@@ -204,7 +226,10 @@ func establishSession(ctx context.Context, cli *clientv3.Client, keyspace, ident
 			ops = append([]clientv3.Op{clientv3.OpPut(GateKey(keyspace), Open)}, ops...)
 		}
 		resp, err := cli.Txn(ctx).If(gateCmp, clientv3.Compare(clientv3.Version(SessionKey(keyspace, identity)), "=", 0)).Then(ops...).Commit()
-		return err == nil && resp.Succeeded, err
+		if err != nil {
+			return false, err
+		}
+		return admission.admitPutTxn(resp, len(ops), "register restore admission session")
 	}
 	ok, err := register(clientv3.Compare(clientv3.Value(GateKey(keyspace)), "=", Open), false)
 	if err == nil && !ok {
@@ -213,16 +238,16 @@ func establishSession(ctx context.Context, cli *clientv3.Client, keyspace, ident
 	if err != nil || !ok {
 		revokeBestEffort(cli, grant.ID)
 		if err != nil {
-			return 0, nil, fmt.Errorf("register restore admission session: %w", err)
+			return 0, nil, nil, fmt.Errorf("register restore admission session: %w", err)
 		}
-		return 0, nil, errors.New("restore admission is closed or this process identity is already active")
+		return 0, nil, nil, errors.New("restore admission is closed or this process identity is already active")
 	}
 	keepalive, err := cli.KeepAlive(ctx, grant.ID)
 	if err != nil {
 		revokeBestEffort(cli, grant.ID)
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
-	return grant.ID, keepalive, nil
+	return grant.ID, keepalive, admission, nil
 }
 
 func revokeBestEffort(cli *clientv3.Client, leaseID clientv3.LeaseID) {
@@ -231,13 +256,18 @@ func revokeBestEffort(cli *clientv3.Client, leaseID clientv3.LeaseID) {
 	_, _ = cli.Revoke(ctx, leaseID)
 }
 
-func (s *Session) run(ctx context.Context, keyspace, identity string, keepalive <-chan *clientv3.LeaseKeepAliveResponse) {
+func (s *Session) run(ctx context.Context, keyspace, identity string, keepalive <-chan *clientv3.LeaseKeepAliveResponse, admission *responseAdmission) {
 	defer close(s.done)
 	for {
+	keepaliveLoop:
 		for response := range keepalive {
-			if response != nil {
-				s.lastAck.Store(time.Now().UnixNano())
+			leaseID := clientv3.LeaseID(s.leaseID.Load())
+			if err := admission.admitKeepAlive(response, leaseID); err != nil {
+				s.lastAck.Store(0)
+				revokeBestEffort(s.cli, leaseID)
+				break keepaliveLoop
 			}
+			s.lastAck.Store(time.Now().UnixNano())
 		}
 		// The stream ending is an uncertainty boundary. Stop admitting writes
 		// immediately; a replacement registration will mark the session fresh.
@@ -246,11 +276,13 @@ func (s *Session) run(ctx context.Context, keyspace, identity string, keepalive 
 			if ctx.Err() != nil {
 				return
 			}
-			leaseID, next, err := establishSession(ctx, s.cli, keyspace, identity, s.ttl)
+			leaseID, next, nextAdmission, err := establishSession(ctx, s.cli, keyspace, identity, s.ttl)
 			if err == nil {
 				s.leaseID.Store(int64(leaseID))
 				s.lastAck.Store(time.Now().UnixNano())
 				keepalive = next
+				admission = nextAdmission
+				s.admit.Store(nextAdmission)
 				break
 			}
 			timer := time.NewTimer(500 * time.Millisecond)
@@ -278,6 +310,13 @@ func (s *Session) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	_, err := s.cli.Revoke(ctx, clientv3.LeaseID(s.leaseID.Load()))
-	return err
+	response, err := s.cli.Revoke(ctx, clientv3.LeaseID(s.leaseID.Load()))
+	if err != nil {
+		return err
+	}
+	admission := s.admit.Load()
+	if admission == nil {
+		return errors.New("restore admission session has no response identity")
+	}
+	return admission.admitRevoke(response, "close restore admission session")
 }
