@@ -16,6 +16,7 @@ JQ="${JQ:-jq}"
 MAX_ETCD_REVISION=9223372036854775807
 MAX_UINT64=18446744073709551615
 MAX_CONTROL_EVIDENCE_BYTES=4194304
+MAX_OPERATION_PARAMETERS_BYTES=65536
 
 is_positive_etcd_revision() {
   local value="$1"
@@ -93,6 +94,21 @@ control_evidence_size_ok() {
   [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_CONTROL_EVIDENCE_BYTES" ]]
 }
 
+operation_parameters_size_is_valid() {
+  local size
+  size="$(stat -Lc '%s' -- "$1")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_OPERATION_PARAMETERS_BYTES" ]]
+}
+
+require_operation_parameters_size() {
+  operation_parameters_size_is_valid "$1" || {
+    run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+      --message "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >/dev/null
+    echo "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >&2
+    exit 1
+  }
+}
+
 contains_unsupported_endpoint_characters() {
   local value="$1"
   [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
@@ -144,6 +160,7 @@ if [[ -z "$PARAMETERS_INPUT" ]]; then
   run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" \
     --attempt "$attempt" >"$PARAMETERS_INPUT"
 fi
+require_operation_parameters_size "$PARAMETERS_INPUT"
 actual_digest="$(file_sha256 "$PARAMETERS_INPUT")" || actual_digest=""
 if [[ "$actual_digest" != "$expected_digest" ]]; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
@@ -155,6 +172,8 @@ frozen_parameters="${parameter_capture_dir}/parameters.json"
 cp -- "$PARAMETERS_INPUT" "$frozen_parameters" ||
   { echo "capture operation parameters failed" >&2; exit 2; }
 chmod 600 "$frozen_parameters"
+require_operation_parameters_size "$frozen_parameters"
+require_operation_parameters_size "$PARAMETERS_INPUT"
 captured_digest="$(file_sha256 "$frozen_parameters")" || captured_digest=""
 current_digest="$(file_sha256 "$PARAMETERS_INPUT")" || current_digest=""
 if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expected_digest" ]]; then

@@ -15,6 +15,7 @@ OBJECT_COMMAND="${OBJECT_COMMAND:-${ROOT_DIR}/hack/backup/logical-object.sh}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
+MAX_OPERATION_PARAMETERS_BYTES=65536
 
 usage() {
   cat >&2 <<'EOF'
@@ -45,6 +46,7 @@ heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
   { echo "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
+command -v stat >/dev/null || { echo "stat is required" >&2; exit 2; }
 require_executable_file() {
   local name="$1"
   local path="$2"
@@ -70,6 +72,21 @@ file_sha256() {
   digest="$(sha256sum "$1" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   printf '%s' "$digest"
+}
+
+operation_parameters_size_is_valid() {
+  local size
+  size="$(stat -Lc '%s' -- "$1")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_OPERATION_PARAMETERS_BYTES" ]]
+}
+
+require_operation_parameters_size() {
+  operation_parameters_size_is_valid "$1" || {
+    run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+      --message "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >/dev/null
+    echo "operation parameters exceed ${MAX_OPERATION_PARAMETERS_BYTES} bytes" >&2
+    exit 1
+  }
 }
 
 operationctl=()
@@ -116,6 +133,7 @@ if [[ -z "$PARAMETERS_INPUT" ]]; then
   run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" \
     --attempt "$attempt" >"$PARAMETERS_INPUT"
 fi
+require_operation_parameters_size "$PARAMETERS_INPUT"
 actual_digest="$(file_sha256 "$PARAMETERS_INPUT")" || actual_digest=""
 if [[ "$actual_digest" != "$expected_digest" ]]; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
@@ -127,6 +145,8 @@ frozen_parameters="${parameter_capture_dir}/parameters.json"
 cp -- "$PARAMETERS_INPUT" "$frozen_parameters" ||
   { echo "capture operation parameters failed" >&2; exit 2; }
 chmod 600 "$frozen_parameters"
+require_operation_parameters_size "$frozen_parameters"
+require_operation_parameters_size "$PARAMETERS_INPUT"
 captured_digest="$(file_sha256 "$frozen_parameters")" || captured_digest=""
 current_digest="$(file_sha256 "$PARAMETERS_INPUT")" || current_digest=""
 if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expected_digest" ]]; then
