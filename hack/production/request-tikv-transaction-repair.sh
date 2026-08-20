@@ -16,11 +16,13 @@ OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 JQ="${JQ:-jq}"
 DATE="${DATE:-date}"
 MAX_ALERT_INPUT_BYTES=1048576
+MAX_IDENTITY_RESPONSE_BYTES=4096
 
 die() { echo "$*" >&2; exit 1; }
 [[ -f "$ALERT_INPUT" ]] || die "ALERT_INPUT is required and must exist"
 command -v stat >/dev/null || die "stat is required"
 alert_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ ]] && ((size <= MAX_ALERT_INPUT_BYTES)); }
+identity_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ ]] && ((size <= MAX_IDENTITY_RESPONSE_BYTES)); }
 alert_size_is_valid "$ALERT_INPUT" || die "alert payload exceeds ${MAX_ALERT_INPUT_BYTES} bytes"
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required (use in-cluster for service-account credentials)"
 [[ "$ENDPOINT" =~ ^https?://[^[:space:],]+$ ]] || die "ENDPOINT must be exactly one HTTP(S) URL"
@@ -56,8 +58,14 @@ started_unix="$($DATE -u -d "$starts_at" +%s 2>/dev/null)" || die "alert startsA
 (( started_unix <= NOW_UNIX )) || die "alert startsAt is in the future"
 (( NOW_UNIX - started_unix >= MIN_FIRING_SECONDS )) || die "alert has not fired for the required duration"
 
-kb_uid="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}')"
-cluster_identity="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o 'jsonpath={.metadata.uid}{"\t"}{.status.clusterID}')"
+kb_uid_file="$temp_dir/kubebrain-statefulset.uid"
+kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}' >"$kb_uid_file" || die "cannot read KubeBrain StatefulSet identity"
+chmod 600 "$kb_uid_file"; identity_size_is_valid "$kb_uid_file" || die "identity response exceeds ${MAX_IDENTITY_RESPONSE_BYTES} bytes"
+kb_uid="$(<"$kb_uid_file")"
+cluster_identity_file="$temp_dir/tidbcluster.identity"
+kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o 'jsonpath={.metadata.uid}{"\t"}{.status.clusterID}' >"$cluster_identity_file" || die "cannot read TidbCluster identity"
+chmod 600 "$cluster_identity_file"; identity_size_is_valid "$cluster_identity_file" || die "identity response exceeds ${MAX_IDENTITY_RESPONSE_BYTES} bytes"
+cluster_identity="$(<"$cluster_identity_file")"
 tidb_uid="${cluster_identity%%$'\t'*}"
 cluster_id="${cluster_identity#*$'\t'}"
 [[ -n "$kb_uid" && -n "$tidb_uid" && "$cluster_id" =~ ^[1-9][0-9]*$ ]] || die "live instance identity is incomplete"
