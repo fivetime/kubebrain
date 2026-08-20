@@ -58670,6 +58670,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （178.601/307.125/299.743/476.458 秒）。本项不改变 Pod/PVC 身份、PD store/region、PVC/PV/CSI、容量或
   磁盘压力语义，也不改变在线 etcd RPC 或 TiKV 编码。
 
+- A5223 为破坏性 TiKV transaction/quiesced repair 原语的全部 PD JSON 响应建立逐调用 1 MiB 门禁。
+  旧实现把 `/stores` 和 pending/down/miss/extra/learner peer 响应直接装入 shell 变量；1048577-byte
+  语义合法 region-check 仍会完成目标判断并进入修复流程（RED 6.683 秒）。现修复锁生命周期内创建
+  0700 私有目录，每次 PD 调用写入新的 0600 文件、用 stat 检查不超过 1048576 bytes，再由 jq 直接
+  读取；退出 trap 清理目录。该统一路径覆盖初始 abnormal store 识别、quiesce 后目标稳定、`/stores`
+  映射、每次替换后的 store Up 采样和最终五类 Region 收敛。测试覆盖 stores/check 超限拒绝并确认在
+  任何 TiKV Pod delete 前失败，也证明两类精确 1 MiB 合法响应仍可完成修复。聚焦测试 50.263 秒，
+  连续两轮 101.637 秒、race 52.924 秒，完整相关回归 60.030 秒，bash syntax、diff check 与全仓 vet
+  通过。production 清单保持 414 项并按 98/113/103/100 四片全部通过
+  （168.493/308.616/296.377/474.120 秒）。本项不改变 repair approval/lock/cooldown、异常 store 映射、
+  KubeBrain quiesce、同 PVC Pod replacement、PD/Region 收敛或最终 transaction receipt 语义，也不改变
+  在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -417,6 +417,10 @@ Pod/UID/PVC 拓扑，并逐 Pod 检查 `/var/lib/pd`、`/var/lib/tikv` 的真实
 系统时记录 `refused-storage-safety`。同 PVC 重启不会释放共享宿主文件系统空间，也不会恢复容量隔离。
 同一 preflight 还会检查 PVC→PV claimRef、Bound phase、CSI driver/volumeHandle，以及整组六卷 PV UID
 和 `(CSI driver, volumeHandle)` 唯一性；hostPath 或身份碰撞同样记录 `refused-storage-safety` 并禁止进入缩容阶段。
+脚本读取的 PD `/stores` 以及 pending/down/miss/extra/learner peer 响应每次各自限制为 1 MiB。修复锁
+持有期间，每次响应先写入 0700 临时目录内的新 0600 文件并检查大小，再由 jq 直接读取；退出 trap 会
+清理整个目录。超限响应必须在异常 store 映射、Pod 删除或后续替换前 fail closed，精确 1 MiB 的语义
+合法响应仍可参与目标选择、连续 store 健康采样和 Region 收敛判断。
 
 该脚本是 controller 可调用的执行原语，不是完整自动 controller：调用方仍须持久化告警首次
 发生时间、修复冷却时间、attempt receipt 和人工/策略审批。其 ServiceAccount 只应获得目标两个
