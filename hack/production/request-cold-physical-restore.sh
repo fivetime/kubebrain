@@ -7,6 +7,7 @@ OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"; WAIT_TIMEOUT
 KUBECTL="${KUBECTL:-kubectl}"; OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 COLD_RESTORE_RENDER="${COLD_RESTORE_RENDER:-kubebrain-cold-restore-render}"; JQ="${JQ:-jq}"
 MAX_IDENTITY_RESPONSE_BYTES=4096
+MAX_EXISTING_SECRET_RESPONSE_BYTES=87389
 die() { echo "$*" >&2; exit 1; }
 resolve_executable() {
   local value="$1"
@@ -52,7 +53,11 @@ $JQ -cnS --arg request_id "$REQUEST_ID" --rawfile receipt "$frozen_receipt" --ra
    target_namespace_uid:$namespace_uid,wait_timeout:$wait_timeout}' >"$parameters"
 [[ "$(wc -c <"$parameters")" -le 65536 ]] || die "operation parameters exceed 65536 bytes"
 parameters_sha="$(sha256sum "$parameters" | cut -d ' ' -f1)"
-if existing="$(kctl -n "$OPERATION_NAMESPACE" get secret "$secret" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' 2>/dev/null)"; then
+existing_secret_file="$temp_dir/existing-secret.response"
+if kctl -n "$OPERATION_NAMESPACE" get secret "$secret" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' >"$existing_secret_file" 2>/dev/null; then
+  chmod 600 "$existing_secret_file"
+  [[ "$(wc -c <"$existing_secret_file")" -le "$MAX_EXISTING_SECRET_RESPONSE_BYTES" ]] || die "existing Secret response exceeds ${MAX_EXISTING_SECRET_RESPONSE_BYTES} bytes"
+  existing="$(<"$existing_secret_file")"
   [[ "${existing%%$'\t'*}" == true && "$(printf '%s' "${existing#*$'\t'}" | base64 -d | sha256sum | cut -d ' ' -f1)" == "$parameters_sha" ]] || die "existing restore parameter Secret drifted"
 else
   kctl -n "$OPERATION_NAMESPACE" create secret generic "$secret" --from-file="parameters.json=$parameters" --dry-run=client -o json |

@@ -154,6 +154,52 @@ if [[ "$*" == *"create secret generic"* ]]; then printf '%%s\n' '{"kind":"Secret
 	require.Contains(t, string(mustReadProductionFile(t, controlLog)), "operationctl")
 }
 
+func TestColdPhysicalRestoreRequesterBoundsExistingSecretResponse(t *testing.T) {
+	dir := t.TempDir()
+	var source map[string]any
+	require.NoError(t, json.Unmarshal(coldRestoreSnapshotReceipt(t), &source))
+	source["operation_id"] = "cold-snapshot-0123456789abcdefabcd"
+	data, err := json.Marshal(source)
+	require.NoError(t, err)
+	receipt := filepath.Join(dir, "receipt.json")
+	require.NoError(t, os.WriteFile(receipt, data, 0o600))
+	renderer := filepath.Join(dir, "renderer")
+	writeExecutable(t, renderer, "#!/usr/bin/env bash\nout=\"\"; while [[ $# -gt 0 ]]; do [[ $1 == --output ]] && { out=$2; shift 2; continue; }; shift; done\nprintf '{\"apiVersion\":\"v1\",\"kind\":\"List\",\"items\":[]}\\n' >\"$out\"\n")
+	canonical := filepath.Join(dir, "canonical.json")
+	jq := filepath.Join(dir, "jq")
+	writeExecutable(t, jq, fmt.Sprintf(`#!/usr/bin/env bash
+tmp="$(mktemp)"; trap 'rm -f -- "$tmp"' EXIT
+/usr/bin/jq "$@" >"$tmp" || exit $?
+if [[ " ${*} " == *" -cnS "* ]]; then
+  size="$(stat -Lc '%%s' -- "$tmp")"; head -c "$((65536-size))" /dev/zero | tr '\0' ' ' >>"$tmp"
+  cp -- "$tmp" %q
+fi
+cat "$tmp"
+`, canonical))
+	controlLog := filepath.Join(dir, "control.log")
+	kubectl := filepath.Join(dir, "kubectl")
+	writeExecutable(t, kubectl, fmt.Sprintf(`#!/usr/bin/env bash
+printf 'kubectl %%s\n' "$*" >>%q
+if [[ "$*" == *"get namespace kube-system"* ]]; then printf target-kube-uid; exit 0; fi
+if [[ "$*" == *"get namespace tidb-cluster"* ]]; then printf target-namespace-uid; exit 0; fi
+if [[ "$*" == *"get secret "* ]]; then
+  if [[ "$SECRET_RESPONSE" == oversized ]]; then head -c 87390 /dev/zero | tr '\0' k; else printf 'true\t'; base64 -w0 %q; fi
+  exit 0
+fi
+cat >/dev/null
+`, controlLog, canonical))
+	operationctl := filepath.Join(dir, "operationctl")
+	writeExecutable(t, operationctl, fmt.Sprintf("#!/usr/bin/env bash\nprintf 'operationctl %%s\\n' \"$*\" >>%q\n", controlLog))
+	base := []string{"REQUEST_ID=change-secret-response-budget", "RECEIPT_FILE=" + receipt, "KUBE_CONTEXT=in-cluster", "TARGET_SNAPSHOT_CLASS=retained", "TARGET_STORAGE_CLASS=fast", "KUBECTL=" + kubectl, "OPERATIONCTL=" + operationctl, "COLD_RESTORE_RENDER=" + renderer, "JQ=" + jq}
+	output, runErr := runProductionScriptCommand(t, "request-cold-physical-restore.sh", append(base, "SECRET_RESPONSE=oversized"))
+	require.Error(t, runErr)
+	require.Contains(t, string(output), "existing Secret response exceeds 87389 bytes")
+	require.NotContains(t, string(mustReadProductionFile(t, controlLog)), "operationctl")
+	boundaryOutput, boundaryErr := runProductionScriptCommand(t, "request-cold-physical-restore.sh", append(base, "SECRET_RESPONSE=boundary"))
+	require.NoError(t, boundaryErr, string(boundaryOutput))
+	require.Contains(t, string(mustReadProductionFile(t, controlLog)), "operationctl")
+}
+
 func writeOversizedCanonicalJQ(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "jq")
