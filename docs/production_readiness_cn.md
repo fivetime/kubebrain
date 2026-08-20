@@ -4953,17 +4953,21 @@ Operation、读取参数和 claim 候选时也会重新要求当前 `apiVersion/
 Backup、BackupDeletion、RestoreCutover、PostRestoreAudit、CertificateRotation 与 Destroy 六类核心
 runner 还必须把 operation 参数文件限制为 64 KiB，与外部 Operation API 的请求体边界一致。显式
 `PARAMETERS_INPUT` 和 parameter broker 拉取结果都在 SHA-256 前检查；复制到 0600 私有文件后必须同时
-复检冻结副本与原路径，超限 operation 进入 Retry 且不得启动子命令。该合同目前只覆盖这六类核心
-executor；Native PITR、cold physical、legacy remediation 等专用 runner 仍须按各自参数合同
-单独完成同类审计，不能据此声称全体 operation runner 已统一。
+复检冻结副本与原路径，超限 operation 进入 Retry 且不得启动子命令。这六类核心 executor 之外，
+transaction、cold physical、legacy remediation 与 Native PITR 专用 runner 已按各自终态语义完成同类审计；
+不能把 Retry/Fail 的差异错误抹平成单一终态合同。
 TiKVTransactionRecovery 与 TiKVTransactionRepair runner 已按同一 64 KiB 合同补齐：显式或 broker
 拉取参数在摘要前检查，复制后复检冻结副本和原路径，超限时使用这两类可重试 pre-side-effect 阶段已有的
 Retry 语义。该门禁发生在 recovery/repair primitive、已有 receipt 接管和参数 schema 解析之前；恰好
-65536 bytes 仍合法。Native PITR full backup/restore 与 target retirement/provisioning runner 仍是后续差距。
+65536 bytes 仍合法。
 ColdPhysicalSnapshot、ColdPhysicalRestore 与 LegacySnapshotHistoryRemediation runner 也已采用相同上限，
 但沿用其审批制品永久无效的 Fail 终态语义。三者在首次摘要前、0600 冻结副本及复制后的原路径上检查；
-超限时不得进入 snapshot、restore 或不可逆 compact primitive。至此该段剩余未覆盖项仅为 Native PITR
-full backup/restore 与 target retirement/provisioning runner。
+超限时不得进入 snapshot、restore 或不可逆 compact primitive。
+NativePITRFullBackup、NativePITRFullRestore、NativePITRTargetProvisioning 与
+NativePITRTargetRetirement runner 也采用 64 KiB 上限，并在首次摘要前及 0600 冻结复制后检查。
+FullBackup 的 pre-side-effect 超限沿用 Retry；其余三类不可变审批参数沿用 Fail。门禁发生在 BR、target
+provisioning、UID retirement 和 durable receipt reconciliation 之前，恰好 65536 bytes 仍合法。至此本段
+列举的核心、transaction、cold physical、legacy remediation 与 Native PITR operation 参数大小差距已清零。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约

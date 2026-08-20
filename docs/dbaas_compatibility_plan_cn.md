@@ -58429,6 +58429,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （182.702/298.860/216.325/513.798 秒），全仓 vet 2.040 秒。本项不改变参数 schema、不可逆操作语义、
   Operation CRD、在线 etcd RPC 或 TiKV 编码；剩余参数大小差距为四条 Native PITR runner。
 
+- A5200 封闭剩余四条 Native PITR runner 的 64 KiB 参数资源边界：NativePITRFullBackup、
+  NativePITRFullRestore、NativePITRTargetProvisioning 与 NativePITRTargetRetirement 现在都在首次
+  SHA-256 前通过 `stat -L` 检查显式或 broker 拉取参数，并在复制、`chmod 600` 后同时复检冻结副本与原路径、
+  重新验证两份摘要。FullBackup 保留 pre-side-effect Retry；full restore、target provisioning 与 target
+  retirement 对不可变审批参数写 Fail。所有门禁均位于 BR、replacement provisioning、UID delete、已有
+  durable receipt reconciliation 和 schema 解析之前。新增表驱动反例证明四类 65537-byte 合法 JSON 均不
+  启动 producer，并覆盖 managed 拉取、可替换 `cp` 放大冻结副本的 TOCTOU 反例及恰好 65536-byte 正例。
+  Native PITR 完整测试族 14.416 秒，边界测试连续二十轮 18.140 秒、race 1.908 秒，bash syntax 与 diff
+  check 通过。直接运行完整 production 包因仓库 10 分钟包级超时，在既有
+  `TestRestoreCutoverOperationAcceptsRevisionBoundV2Evidence` 执行期间于 600.028 秒终止；该测试隔离连续五轮
+  8.041 秒全绿。按仓库规定分片后，清单确认 388 项并按 91/106/98/93 四片全部通过
+  （180.095/281.549/210.329/474.705 秒），全仓 vet 2.102 秒。本项不改变参数 schema、Operation CRD、
+  Native PITR 的副作用/终态合同、在线 etcd RPC 或 TiKV 编码；A5197-A5200 明确列举的 operation 参数大小
+  差距至此清零。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
