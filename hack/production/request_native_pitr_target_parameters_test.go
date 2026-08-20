@@ -35,6 +35,47 @@ if [[ "$*" == *" create secret generic "* ]]; then printf '%%s\n' '{"kind":"Secr
 	return kubectl, operationctl, controlLog
 }
 
+func TestNativePITRTargetRequestersBoundExistingSecretResponses(t *testing.T) {
+	for _, tt := range nativePITRTargetRequesterCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			parameters := filepath.Join(dir, "parameters.json")
+			require.NoError(t, os.WriteFile(parameters, []byte(tt.payload), 0o600))
+			canonical := filepath.Join(dir, "canonical.json")
+			jq := filepath.Join(dir, "jq")
+			writeExecutable(t, jq, fmt.Sprintf(`#!/usr/bin/env bash
+tmp="$(mktemp)"; trap 'rm -f -- "$tmp"' EXIT
+/usr/bin/jq "$@" >"$tmp" || exit $?
+if [[ " ${*} " == *" -ceS "* ]]; then
+  size="$(stat -Lc '%%s' -- "$tmp")"; head -c "$((65536-size))" /dev/zero | tr '\0' ' ' >>"$tmp"
+  cp -- "$tmp" %q
+fi
+cat "$tmp"
+`, canonical))
+			controlLog := filepath.Join(dir, "control.log")
+			kubectl := filepath.Join(dir, "kubectl")
+			writeExecutable(t, kubectl, fmt.Sprintf(`#!/usr/bin/env bash
+printf 'kubectl %%s\n' "$*" >>%q
+if [[ "$*" == *" get secret "* ]]; then
+  if [[ "$SECRET_RESPONSE" == oversized ]]; then head -c 87397 /dev/zero | tr '\0' k; else printf 'true\tOpaque\t'; base64 -w0 %q; fi
+  exit 0
+fi
+cat >/dev/null
+`, controlLog, canonical))
+			operationctl := filepath.Join(dir, "operationctl")
+			writeExecutable(t, operationctl, fmt.Sprintf("#!/usr/bin/env bash\nprintf 'operationctl %%s\\n' \"$*\" >>%q\n", controlLog))
+			base := []string{"PARAMETERS_FILE=" + parameters, "KUBE_CONTEXT=in-cluster", "KUBECTL=" + kubectl, "OPERATIONCTL=" + operationctl, "JQ=" + jq}
+			output, err := runProductionScriptCommand(t, tt.script, append(base, "SECRET_RESPONSE=oversized"))
+			require.Error(t, err)
+			require.Contains(t, string(output), "existing Secret response exceeds 87396 bytes")
+			require.NotContains(t, string(mustReadProductionFile(t, controlLog)), "operationctl")
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, tt.script, append(base, "SECRET_RESPONSE=boundary"))
+			require.NoError(t, boundaryErr, string(boundaryOutput))
+			require.Contains(t, string(mustReadProductionFile(t, controlLog)), "operationctl")
+		})
+	}
+}
+
 func TestNativePITRTargetRequestersRejectOversizedParametersBeforeKubernetes(t *testing.T) {
 	for _, tt := range nativePITRTargetRequesterCases() {
 		t.Run(tt.name, func(t *testing.T) {
