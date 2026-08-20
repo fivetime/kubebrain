@@ -58111,6 +58111,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （2.075 秒）全部通过。本项不改变 artifact 格式、restore/cutover state schema、在线 etcd RPC 或 TiKV 编码；
   v2 target revision 是一致验证时点证据，不保证该时点之后没有写入，持续审计与切流 fencing 仍不可省略。
 
+- A5180 闭合 A5179 v2 restore receipt 在 cutover 入口校验后丢失的证据传播。旧 prepare state 只冻结 artifact
+  hash/source revision/prefix，final `kubebrain.restore-cutover.receipt.v1` 也只携带这些字段；因此即使输入已是
+  revision-bound v2，最终独立审计仍无法证明使用了哪张 restore receipt、初始 target revision 或公开 Service
+  重验 revision。现 v2 输入生成 `kubebrain.restore-cutover.state.v2`，HEADER 在既有 Service/Pod/artifact
+  身份之外冻结 restore receipt format、正 `verified_target_revision` 与完整文件 SHA-256；verify/complete 每次
+  都重新核对捕获 receipt 与 state 三字段。complete 的公开 endpoint 重验必须产出 v2，并将其正 target revision
+  与初始 receipt SHA/revision 一同签入 `kubebrain.restore-cutover.receipt.v2`。Operation runner 对 state/final receipt
+  两种 v2 schema、字段集合、摘要和 revision 做同样严格复核。为不中断在途恢复，v1 receipt 仍只生成 v1 state/final
+  receipt，并由原验证路径消费；版本和字段数混搭 fail closed。v2 正链、state revision 篡改、final public revision
+  篡改和 runner 消费连续十轮 91.946 秒、race 10.851 秒通过，bash syntax、ShellCheck 与 diff check 通过。
+  本轮未对真实 Service 执行切流；该操作会改变业务路由，证据由包含 Service UID/Pod UID/EndpointSlice CAS 的生产
+  state-machine tests 覆盖，不能冒充经审批的真实恢复演练。完整非 production 通过，其中 `pkg/server/etcd`
+  151.841 秒；production 329 项四分片（138.121/234.466/170.058/442.195 秒）与全仓 vet（2.221 秒）全部通过。
+  本项不改变 logical artifact、在线 etcd RPC、Service selector CAS 语义或 TiKV 编码；最终 target revision 仍是
+  complete 时点证据，切流后的持续审计仍负责发现后续漂移。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -4855,7 +4855,9 @@ receipt，再要求 Service selector 恰好为
 源和目标全部 Ready Pod 的 name/UID/restart count，以及 restore receipt 的 artifact
 hash/revision/prefix。prepare 可读取没有 target revision 的历史 v1 receipt；新 verifier 和公开 Service
 重验必须生成携带正 `verified_target_revision` 的 v2，v1 携带 v2 字段或 v2 缺失/零 target revision
-均按 schema 错误拒绝。cutover 使用
+均按 schema 错误拒绝。v2 输入会生成 `kubebrain.restore-cutover.state.v2`，额外冻结完整 restore receipt
+SHA-256、receipt format 与初始 target revision；历史 v1 输入继续生成 v1 state，保证在途 operation 可恢复。
+cutover 使用
 JSON Patch `test` 同时比较 Service UID、resourceVersion 和旧 instance selector，再
 原子替换 selector；随后要求 EndpointSlice 由同一 Service UID 控制，全部 endpoint
 Ready/Serving/非 Terminating，且 targetRef Pod UID 集精确等于冻结的目标 Pod UID 集。
@@ -4863,7 +4865,9 @@ Ready/Serving/非 Terminating，且 targetRef Pod UID 集精确等于冻结的�
 verify 和 complete 都通过公开 Service endpoint 对完整 logical artifact 再做逐 key/value
 及 lease 校验，artifact、prefix、record/lease count 等稳定身份必须与 prepare receipt 一致；现场重验的
 target revision 可以合法推进，但必须重新写入 v2 receipt。complete 才签发不可
-覆盖的 `kubebrain.restore-cutover.receipt.v1`；receipt 还包含 cutover state 文件
+覆盖的 cutover receipt：v1 state 延续 `kubebrain.restore-cutover.receipt.v1`；v2 state 签发
+`kubebrain.restore-cutover.receipt.v2`，同时绑定初始 restore receipt 摘要/target revision 与 complete 阶段
+公开 Service 重验的正 target revision。receipt 还包含 cutover state 文件
 SHA-256，将冻结的 Service/Pod UID 行和绝对且不同的 source/target prefix 绑定到完成证据。
 rollback 使用相同 CAS 从目标切回源，并
 要求 EndpointSlice 精确恢复到冻结的源 Pod UID 集；已 complete 的 operation 禁止回滚，
