@@ -58639,6 +58639,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （193.669/314.172/258.683/502.508 秒）。本项不改变 PVC binding、PV claimRef/CSI/唯一性、文件系统容量
   或磁盘压力语义，也不改变在线 etcd RPC 或 TiKV 编码。
 
+- A5220 为 mutating rollout availability runner 的 StatefulSet 与 probe log 运行证据建立逐文件 1 MiB 门禁。
+  旧实现把初始/终态 StatefulSet JSON 和最终 probe log 直接装入 shell 变量，启动屏障还把 log 直接管给
+  grep；1048577-byte StatefulSet JSON 仍会通过完整滚动演练，而同尺寸 probe log 只因管道/SIGPIPE 被误报
+  为“未发布启动屏障”，没有资源错误（两条 RED 合计 8.277 秒）。现 runner 创建私有证据目录，初始/终态
+  StatefulSet、每次启动轮询、失败/超时诊断和最终 summary 日志分别写入 0600 文件并检查不超过
+  1048576 bytes，再由 jq/grep/cat 消费；cleanup 同时删除 probe Pod 和证据目录。测试证明两类精确 1 MiB
+  合法证据仍可完成滚动。主测试连续二十轮 27.511 秒、race 2.435 秒，完整 rollout runner 测试 1.930 秒，
+  bash syntax、diff check 与全仓 vet 通过。production 清单确认 413 项并按 98/112/103/100 四片全部通过
+  （165.894/267.901/223.537/446.852 秒）。本项不改变 rollout mutation approval、drain/修订 fencing、
+  availability probe 的 etcd/PD/TiKV 语义或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

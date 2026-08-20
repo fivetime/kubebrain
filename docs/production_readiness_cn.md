@@ -970,6 +970,9 @@ attached key 及完整 MVCC 元数据；Watch PUT 必须与刚确认的 Put revi
 不能误杀健康滚动或让全局版本回退。backend preflight 同时拒绝越过 PD TSO 18-bit logical/安全 physical
 边界的时间戳，以及重复 store ID/address、非 `host:port`、非 Up 或 heartbeat 过期的 TiKV topology。
 任一 malformed success 都阻断 rollout，不能仅凭 Pod Ready 或一条看似正确的 Watch value 放行。
+rollout runner 的初始/终态 StatefulSet JSON、每次 probe 启动屏障日志、失败/超时诊断日志和最终 summary
+日志各自限制为 1 MiB。每份证据先写入独立 0600 文件并检查大小，再由 jq/grep 消费；超限日志必须明确
+报告资源门禁，不能误报为缺少启动屏障，精确 1 MiB 的合法证据仍可完成滚动演练。
 
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
