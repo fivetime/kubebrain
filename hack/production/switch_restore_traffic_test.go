@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const restoreArtifactSHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const restoreArtifactSHA256 = "54d00d867758cef816bc4685f58e327b949712b07ebd17c3485f3ffc9e9f5133"
 
 func TestRestoreTrafficCutoverLifecycleAndRollback(t *testing.T) {
 	f := newTrafficFixture(t)
@@ -155,6 +155,16 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithUnknownFields(t *testing.
 	require.NoError(t, os.WriteFile(path, []byte(receipt), 0o600))
 
 	f.run(t, "prepare", false, "", "restore verification receipt is invalid")
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+}
+
+func TestRestoreTrafficCutoverRejectsBackupDifferentFromRestoreReceipt(t *testing.T) {
+	f := newTrafficFixture(t)
+	path := filepath.Join(f.dir, "restore.json")
+	receipt := strings.ReplaceAll(string(mustRead(t, path)), restoreArtifactSHA256, strings.Repeat("9", 64))
+	require.NoError(t, os.WriteFile(path, []byte(receipt), 0o600))
+
+	f.run(t, "prepare", false, "", "backup input does not match restore verification receipt artifact digest")
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
 }
 

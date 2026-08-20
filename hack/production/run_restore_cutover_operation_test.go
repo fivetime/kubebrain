@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const runnerCutoverArtifactSHA256 = "2222222222222222222222222222222222222222222222222222222222222222"
+const runnerCutoverArtifactSHA256 = "e19f16fcd9610bca7d026b4673f1cb06cc89e6d8134e091a2deade1af28e4cf6"
 
 func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
@@ -82,6 +82,23 @@ func TestRestoreCutoverOperationRejectsMalformedFrozenRestoreReceipt(t *testing.
 	refreshCutoverRunnerReceiptParameter(t, f)
 	f.run(t, false, "", "receipt input has invalid schema")
 	require.NotContains(t, f.log(t), "phase prepare")
+}
+
+func TestRestoreCutoverOperationRejectsBackupDifferentFromFrozenRestoreReceipt(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.restoreReceipt), &receipt))
+	receipt["artifact_sha256"] = strings.Repeat("9", 64)
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.restoreReceipt, append(data, '\n'), 0o600))
+	refreshCutoverRunnerReceiptParameter(t, f)
+
+	f.run(t, false, "", "backup does not match frozen restore receipt artifact digest")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "phase prepare")
+	require.NotContains(t, log, "--action succeed")
 }
 
 func TestRestoreCutoverOperationRejectsPublicRevisionPredatingInitial(t *testing.T) {

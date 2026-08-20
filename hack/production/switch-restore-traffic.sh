@@ -601,6 +601,8 @@ case "$ACTION" in
          "$target_cluster_id" =~ ^[1-9][0-9]*$ )) &&
       "$verified_at" =~ ^[1-9][0-9]*$ ]] ||
       { echo "restore verification receipt is incomplete" >&2; exit 1; }
+    [[ "$(file_sha256 "$BACKUP_INPUT")" == "$sha" ]] ||
+      { echo "backup input does not match restore verification receipt artifact digest" >&2; exit 1; }
     service="$(service_snapshot)"
     IFS=$'\t' read -r service_uid service_rv service_app selector <<<"$service"
     [[ "$service_app" == "kubebrain" && "$selector" == "$SOURCE_INSTANCE" ]] ||

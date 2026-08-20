@@ -304,6 +304,12 @@ restore_binding="$(restore_receipt_fields)" || {
 IFS=$'\t' read -r expected_restore_format expected_artifact_sha expected_snapshot_revision \
   expected_source_prefix expected_target_prefix expected_target_revision expected_target_cluster_id <<<"$restore_binding"
 expected_restore_receipt_sha="$restore_receipt_sha"
+if [[ "$backup_file_sha" != "$expected_artifact_sha" ]]; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "restore cutover backup does not match restore receipt artifact digest" >/dev/null
+  echo "restore cutover backup does not match frozen restore receipt artifact digest" >&2
+  exit 1
+fi
 
 cutover_env=(
   "OPERATION_ID=${operation_id}" "INSTANCE=${instance}" "STATE_DIR=${state_dir}"
