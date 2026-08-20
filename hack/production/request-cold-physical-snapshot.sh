@@ -46,6 +46,7 @@ $JQ -cnS --arg request_id "$REQUEST_ID" --argjson inventory "$inventory" \
   {request_id:$request_id,inventory:$inventory,semantic_witness:$witness,
    semantic_witness_sha256:$witness_sha,expected_witness_prefix:$prefix,
    witness_max_age_seconds:$max_age,wait_timeout:$wait_timeout,fence_settle_seconds:$settle}' >"$parameters_file"
+[[ "$(wc -c <"$parameters_file")" -le 65536 ]] || die "operation parameters exceed 65536 bytes"
 parameters_sha="$(sha256sum "$parameters_file" | cut -d ' ' -f1)"
 context_args=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context_args=(--context "$KUBE_CONTEXT")
 if existing="$($KUBECTL "${context_args[@]}" -n "$OPERATION_NAMESPACE" get secret "$secret_name" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' 2>/dev/null)"; then

@@ -38,7 +38,7 @@ $JQ -cnS --arg request_id "$REQUEST_ID" --rawfile receipt "$RECEIPT_FILE" --rawf
   {request_id:$request_id,source_receipt:$receipt,source_receipt_sha256:$source_sha,
    restore_manifest:$manifest,restore_manifest_sha256:$manifest_sha,target_kube_system_uid:$kube_uid,
    target_namespace_uid:$namespace_uid,wait_timeout:$wait_timeout}' >"$parameters"
-[[ "$(wc -c <"$parameters")" -le 900000 ]] || die "restore parameters exceed the Kubernetes Secret budget"
+[[ "$(wc -c <"$parameters")" -le 65536 ]] || die "operation parameters exceed 65536 bytes"
 parameters_sha="$(sha256sum "$parameters" | cut -d ' ' -f1)"
 if existing="$(kctl -n "$OPERATION_NAMESPACE" get secret "$secret" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' 2>/dev/null)"; then
   [[ "${existing%%$'\t'*}" == true && "$(printf '%s' "${existing#*$'\t'}" | base64 -d | sha256sum | cut -d ' ' -f1)" == "$parameters_sha" ]] || die "existing restore parameter Secret drifted"
