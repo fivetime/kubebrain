@@ -5,6 +5,7 @@ REQUEST_ID="${REQUEST_ID:-}"; ENDPOINT="${ENDPOINT:-}"; INSTANCE="${INSTANCE:-ku
 OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"; KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECTL="${KUBECTL:-kubectl}"; OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 DIAGNOSE_COMMAND="${DIAGNOSE_COMMAND:-kubebrain-legacy-snapshot-remediation}"; JQ="${JQ:-jq}"
+MAX_DIAGNOSIS_OUTPUT_BYTES=1048576
 die() { echo "$*" >&2; exit 1; }
 resolve() { if [[ "$1" == */* ]]; then [[ -x "$1" ]] || return 1; printf '%s' "$1"; else command -v "$1"; fi; }
 [[ "$REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "REQUEST_ID must identify the external approved maintenance proposal"
@@ -18,6 +19,9 @@ set +e
 ACTION=diagnose ENDPOINT="$ENDPOINT" "$DIAGNOSE_COMMAND" >"$temp/diagnosis" 2>"$temp/diagnosis.err"
 rc=$?
 set -e
+chmod 600 "$temp/diagnosis" "$temp/diagnosis.err"
+[[ "$(wc -c <"$temp/diagnosis")" -le "$MAX_DIAGNOSIS_OUTPUT_BYTES" &&
+   "$(wc -c <"$temp/diagnosis.err")" -le "$MAX_DIAGNOSIS_OUTPUT_BYTES" ]] || die "diagnosis output exceeds ${MAX_DIAGNOSIS_OUTPUT_BYTES} bytes"
 if [[ $rc != 3 ]]; then cat "$temp/diagnosis.err" >&2; die "read-only diagnosis did not prove ambiguous legacy lease history (exit=$rc)"; fi
 cluster_id="$(sed -n 's/^cluster_id=//p' "$temp/diagnosis")"
 revision="$(sed -n 's/^revision=//p' "$temp/diagnosis")"

@@ -53,6 +53,57 @@ func TestRequestLegacySnapshotRemediationRejectsHealthySnapshotBeforeKubernetes(
 	require.NoFileExists(t, marker)
 }
 
+func TestRequestLegacySnapshotRemediationBoundsDiagnosisOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		size int
+		ok   bool
+	}{{"at limit", 1048576, true}, {"over limit", 1048577, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			base := "cluster_id=7671\nrevision=41\nminimum_compact_revision=3\nsnapshot_status=legacy_lease_history_ambiguous\n"
+			diagnosis := filepath.Join(dir, "diagnosis.input")
+			require.NoError(t, os.WriteFile(diagnosis, []byte(base+strings.Repeat(" ", tc.size-len(base))), 0o600))
+			diagnose := writeLegacyExecutable(t, dir, "diagnose", "#!/usr/bin/env bash\ncat \"$DIAGNOSIS_INPUT\"\nexit 3\n")
+			controlLog := filepath.Join(dir, "control.log")
+			kubectl := writeLegacyExecutable(t, dir, "kubectl", `#!/usr/bin/env bash
+printf 'kubectl %s\n' "$*" >>"$CONTROL_LOG"
+if [[ "$*" == *" get secret "* ]]; then exit 1; fi
+if [[ "$*" == *"--dry-run=client"* ]]; then printf '{"kind":"Secret"}\n'; else cat >/dev/null; fi
+`)
+			operationctl := writeLegacyExecutable(t, dir, "operationctl", "#!/usr/bin/env bash\nprintf 'operationctl %s\\n' \"$*\" >>\"$CONTROL_LOG\"\n")
+			output, err := runProductionScriptCommand(t, "request-legacy-snapshot-remediation.sh", []string{
+				"REQUEST_ID=change-diagnosis-budget", "ENDPOINT=https://kubebrain:2379", "KUBE_CONTEXT=in-cluster",
+				"DIAGNOSE_COMMAND=" + diagnose, "DIAGNOSIS_INPUT=" + diagnosis, "KUBECTL=" + kubectl,
+				"OPERATIONCTL=" + operationctl, "CONTROL_LOG=" + controlLog,
+			})
+			if tc.ok {
+				require.NoError(t, err, string(output))
+				require.Contains(t, string(requireFile(t, controlLog)), "operationctl")
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, string(output), "diagnosis output exceeds 1048576 bytes")
+			require.NoFileExists(t, controlLog)
+		})
+	}
+}
+
+func TestRequestLegacySnapshotRemediationBoundsDiagnosisErrorOutput(t *testing.T) {
+	dir := t.TempDir()
+	diagnose := writeLegacyExecutable(t, dir, "diagnose", "#!/usr/bin/env bash\nhead -c 1048577 /dev/zero | tr '\\0' x >&2\nexit 2\n")
+	marker := filepath.Join(dir, "mutation")
+	control := writeLegacyExecutable(t, dir, "control", "#!/usr/bin/env bash\ntouch \"$MUTATION_MARKER\"\n")
+	output, err := runProductionScriptCommand(t, "request-legacy-snapshot-remediation.sh", []string{
+		"REQUEST_ID=change-diagnosis-error-budget", "ENDPOINT=https://kubebrain:2379", "KUBE_CONTEXT=in-cluster",
+		"DIAGNOSE_COMMAND=" + diagnose, "KUBECTL=" + control, "OPERATIONCTL=" + control, "MUTATION_MARKER=" + marker,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "diagnosis output exceeds 1048576 bytes")
+	require.Less(t, len(output), 4096, "oversized diagnosis stderr must not be echoed")
+	require.NoFileExists(t, marker)
+}
+
 func TestRunLegacySnapshotRemediationOperationBindsAndPublishesReceipt(t *testing.T) {
 	dir := t.TempDir()
 	params := []byte(`{"cluster_id":"7301","compact_revision":"3","endpoint":"https://kubebrain:2379","request_id":"change-4312","revision":"41"}` + "\n")
