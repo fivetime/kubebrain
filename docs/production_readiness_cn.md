@@ -5006,6 +5006,9 @@ ColdPhysicalSnapshot requester 的同格式既有参数 Secret 查询采用相�
 TiKVTransactionRecovery、TiKVTransactionRepair 与 quiesced repair requester 的同格式既有参数 Secret
 查询也采用 87389-byte 上界。每条响应先写入 0600 私有文件、检查大小后才读入标量并执行 immutable/摘要
 校验；超限响应不得触达 Operation API，精确上界的有效响应仍可幂等提交。
+NativePITRFullBackup 与 NativePITRFullRestore requester 的既有参数 Secret jsonpath 还包含 type 字段，因此
+精确响应上界为 87396 bytes：`true`、两个 tab、`Opaque` 与 65536-byte 参数的标准 base64 编码之和。响应
+同样必须先写入 0600 私有文件并检查大小，再执行 type/immutable/摘要校验。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约

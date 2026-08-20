@@ -58577,6 +58577,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （179.437/300.486/213.596/495.932 秒）。本项不改变参数或 Secret schema、告警/身份/PD 选择、幂等摘要、
   审批/recovery/repair、在线 etcd RPC 或 TiKV 编码。
 
+- A5214 为 NativePITRFullBackup 与 NativePITRFullRestore requester 的既有参数 Secret jsonpath 响应建立
+  精确 87396-byte 门禁。它们比前述格式多一个 `Opaque` type 字段，上界由 `true`、两个 tab、`Opaque` 与
+  最大 65536-byte canonical 参数的 87384-byte 标准 base64 编码组成。旧实现直接装入 shell 变量；
+  87397-byte 响应会完整读取后才进入 immutable/type 或摘要漂移校验（两条 RED 合计 0.399 秒）。现成功响应
+  先写入 0600 私有文件并检查大小，再读入标量、检查 immutable/type、解码并比对摘要；超限时不触达
+  Operation API。表驱动测试为两条路径构造精确 87396-byte 有效响应，证明边界仍可幂等提交。主测试连续
+  二十轮 15.175 秒、race 1.822 秒，相关 native PITR requester 测试 2.342 秒，bash syntax、diff check 与
+  全仓 vet 通过。production 清单确认 409 项并按 97/110/102/100 四片全部通过
+  （188.739/317.526/221.708/504.045 秒）。本项不改变参数或 Secret schema、PITR 证据/审批/执行语义、
+  在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
