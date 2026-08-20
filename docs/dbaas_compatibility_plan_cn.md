@@ -58357,6 +58357,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   真实切流；状态机测试不替代经审批演练。本项不改变 evidence schema、在线 etcd RPC、Service selector CAS
   或 TiKV 编码，只限制小型控制证据的资源消耗。
 
+- A5195 将 A5194 的 receipt 特例提升为所有 RestoreCutover 小型 control evidence 的统一 4 MiB 上限。
+  prepared state 与 phase marker 同样由可替换子命令或持久卷提供，旧 awk schema 没有长度门禁；在 SERVICE
+  resourceVersion 字段追加 4 MiB 数据仍保持合法字段数，而该字段在后续身份校验中不参与比较，Operation
+  runner 与直接状态机两条基线都错误完成（RED 4.197 秒，direct 可继续进入切流路径）。现共享 helper 更名为
+  `control_evidence_size_is_valid`，restore/cutover receipt、state 和 marker 全部在 schema 解析入口使用同一
+  `stat -L` 逻辑长度门禁；receipt 保留复制前与冻结副本双检查。logical artifact 继续不受此上限。两条超大
+  state 反例连续二十轮 39.830 秒、race 3.141 秒，两个完整 RestoreCutover 测试族 197.457 秒，bash syntax
+  与 diff check 通过。完整非 production 全绿，其中 `pkg/server/etcd` 163.482 秒、总计 170.115 秒；
+  production 清单确认 376 项并按 88/104/92/92 四分片全部通过
+  （171.097/297.632/204.493/528.798 秒），全仓 vet 2.332 秒。本轮未执行真实切流；状态机测试不替代经审批
+  演练。本项不改变 evidence schema、在线 etcd RPC、Service selector CAS 或 TiKV 编码，只统一小型控制文件
+  的资源边界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
