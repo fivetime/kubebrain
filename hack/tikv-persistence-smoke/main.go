@@ -56,6 +56,7 @@ func main() {
 		fatalf("create etcd client: %v", err)
 	}
 	defer cli.Close()
+	responseAdmission := &smokeResponseAdmission{}
 
 	if mode == "heal" {
 		// Offline repair for an existing orphan (object present, revision-index
@@ -74,19 +75,27 @@ func main() {
 		if gerr != nil {
 			fatalf("etcd get: %v", gerr)
 		}
-		if len(gr.Kvs) == 1 {
+		etcdKV, admissionErr := responseAdmission.admitPointGet(gr, key)
+		if admissionErr != nil {
+			fatalf("etcd get response: %v", admissionErr)
+		}
+		if etcdKV != nil {
 			fmt.Printf("etcd: create=%d mod=%d ver=%d val-bytes=%d\n",
-				gr.Kvs[0].CreateRevision, gr.Kvs[0].ModRevision, gr.Kvs[0].Version, len(gr.Kvs[0].Value))
+				etcdKV.CreateRevision, etcdKV.ModRevision, etcdKV.Version, len(etcdKV.Value))
 		} else {
-			fmt.Printf("etcd: %d kvs (key not visible via etcd)\n", len(gr.Kvs))
+			fmt.Printf("etcd: 0 kvs (key not visible via etcd)\n")
 		}
 		dumpTiKV(ctx, pdAddrsRaw, key)
 		return
 	}
 
 	if mode == "write" {
-		if _, err := cli.Put(ctx, key, value); err != nil {
+		putResponse, err := cli.Put(ctx, key, value)
+		if err != nil {
 			fatalf("etcd put: %v", err)
+		}
+		if err := responseAdmission.admitPut(putResponse); err != nil {
+			fatalf("etcd put response: %v", err)
 		}
 	} else if mode != "read" && mode != "deleted" {
 		fatalf("invalid --mode %q", mode)
@@ -96,17 +105,20 @@ func main() {
 	if err != nil {
 		fatalf("etcd get: %v", err)
 	}
+	etcdKV, err := responseAdmission.admitPointGet(getResp, key)
+	if err != nil {
+		fatalf("etcd get response: %v", err)
+	}
 	if mode == "deleted" {
-		if len(getResp.Kvs) != 0 {
-			fatalf("expected deleted etcd key, got %d kvs", len(getResp.Kvs))
+		if etcdKV != nil {
+			fatalf("expected deleted etcd key, got one kv")
 		}
 		verifyDeletedTiKV(ctx, pdAddrsRaw, key)
 		return
 	}
-	if len(getResp.Kvs) != 1 {
-		fatalf("expected one etcd kv, got %d", len(getResp.Kvs))
+	if etcdKV == nil {
+		fatalf("expected one etcd kv, got none")
 	}
-	etcdKV := getResp.Kvs[0]
 	if value != "" && string(etcdKV.Value) != value {
 		fatalf("unexpected etcd value %q, want %q", string(etcdKV.Value), value)
 	}
