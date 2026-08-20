@@ -63,41 +63,58 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 		append(append([]byte(nil), binaryPrefix...), 0),
 		append(append([]byte(nil), binaryPrefix...), 1),
 	}
+	responseAdmission := &restartResponseAdmission{}
 
 	durablePut, err := cli.Put(ctx, durableKey, "before-restart")
 	require.NoError(t, err)
+	_, err = responseAdmission.admitPut(durablePut)
+	require.NoError(t, err)
 	deletedPut, err := cli.Put(ctx, deletedKey, "must-not-return")
+	require.NoError(t, err)
+	_, err = responseAdmission.admitPut(deletedPut)
 	require.NoError(t, err)
 	deleted, err := cli.Delete(ctx, deletedKey)
 	require.NoError(t, err)
-	require.Equal(t, int64(1), deleted.Deleted)
+	_, err = responseAdmission.admitDelete(deleted, 1)
+	require.NoError(t, err)
 
 	lease, err := cli.Grant(ctx, 900)
 	require.NoError(t, err)
+	require.NoError(t, responseAdmission.admitGrant(lease, 900))
 	leasedPut, err := cli.Put(ctx, leasedKey, "leased-before-restart", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+	_, err = responseAdmission.admitPut(leasedPut)
 	require.NoError(t, err)
 	historyPut, err := cli.Put(ctx, historyKey, "replay-after-restart")
 	require.NoError(t, err)
+	_, err = responseAdmission.admitPut(historyPut)
+	require.NoError(t, err)
 	beforeRevision := historyPut.Header.Revision
 	var binaryStartRevision int64
+	binaryPutRevisions := make([]int64, 0, len(binaryKeys))
 	for i, key := range binaryKeys {
 		put, putErr := cli.Put(ctx, string(key), fmt.Sprintf("binary-%d", i))
 		require.NoError(t, putErr)
+		_, putAdmissionErr := responseAdmission.admitPut(put)
+		require.NoError(t, putAdmissionErr)
 		if i == 0 {
 			binaryStartRevision = put.Header.Revision
 		}
+		binaryPutRevisions = append(binaryPutRevisions, put.Header.Revision)
 	}
 	maintenance := etcdserverpb.NewMaintenanceClient(cli.ActiveConnection())
 	statusResponse, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
+	require.NoError(t, responseAdmission.admitStatus(statusResponse))
 	alarmMemberID := statusResponse.Header.MemberId
 	require.NotZero(t, alarmMemberID)
-	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+	activated, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
 		Alarm:    etcdserverpb.AlarmType_CORRUPT,
 		MemberID: alarmMemberID,
 	})
 	require.NoError(t, err)
+	require.NoError(t, responseAdmission.admitAlarm(activated))
 	t.Cleanup(func() {
 		require.Eventually(t, func() bool {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -143,6 +160,20 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 					return
 				}
 			} else {
+				_, admissionErr := responseAdmission.admitRange(response, restartRangeExpectation{
+					key:              []byte(durableKey),
+					value:            []byte("before-restart"),
+					present:          true,
+					exactCreate:      durablePut.Header.Revision,
+					exactModRevision: durablePut.Header.Revision,
+				})
+				if admissionErr != nil {
+					select {
+					case errCh <- admissionErr:
+					default:
+					}
+					return
+				}
 				if response.Header.Revision < previousRevision {
 					select {
 					case errCh <- fmt.Errorf("revision regressed from %d to %d", previousRevision, response.Header.Revision):
@@ -179,6 +210,7 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 		Alarm:  etcdserverpb.AlarmType_CORRUPT,
 	})
 	require.NoError(t, err)
+	require.NoError(t, responseAdmission.admitAlarm(alarms))
 	require.Equal(t, []*etcdserverpb.AlarmMember{{
 		MemberID: alarmMemberID, Alarm: etcdserverpb.AlarmType_CORRUPT,
 	}}, alarms.Alarms)
@@ -196,40 +228,53 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 		MemberID: alarmMemberID,
 	})
 	require.NoError(t, err)
+	require.NoError(t, responseAdmission.admitAlarm(deactivated))
 	require.Equal(t, alarms.Alarms, deactivated.Alarms)
 
 	durable, err := cli.Get(ctx, durableKey)
 	require.NoError(t, err)
-	require.Len(t, durable.Kvs, 1)
-	require.Equal(t, "before-restart", string(durable.Kvs[0].Value))
-	require.GreaterOrEqual(t, durable.Header.Revision, beforeRevision)
+	_, err = responseAdmission.admitRange(durable, restartRangeExpectation{
+		key: []byte(durableKey), value: []byte("before-restart"), present: true,
+		exactCreate: durablePut.Header.Revision, exactModRevision: durablePut.Header.Revision,
+	})
+	require.NoError(t, err)
 
 	tombstone, err := cli.Get(ctx, deletedKey)
 	require.NoError(t, err)
-	require.Empty(t, tombstone.Kvs)
+	_, err = responseAdmission.admitRange(tombstone, restartRangeExpectation{key: []byte(deletedKey)})
+	require.NoError(t, err)
 	historicalDeleted, err := cli.Get(ctx, deletedKey, clientv3.WithRev(deletedPut.Header.Revision))
 	require.NoError(t, err)
-	require.Len(t, historicalDeleted.Kvs, 1)
-	require.Equal(t, "must-not-return", string(historicalDeleted.Kvs[0].Value))
+	_, err = responseAdmission.admitRange(historicalDeleted, restartRangeExpectation{
+		key: []byte(deletedKey), value: []byte("must-not-return"), present: true,
+		maxKVRevision: deletedPut.Header.Revision, exactCreate: deletedPut.Header.Revision, exactModRevision: deletedPut.Header.Revision,
+	})
+	require.NoError(t, err)
 
 	leased, err := cli.Get(ctx, leasedKey)
 	require.NoError(t, err)
-	require.Len(t, leased.Kvs, 1)
-	require.Equal(t, leasedPut.Header.Revision, leased.Kvs[0].CreateRevision)
-	require.Equal(t, int64(lease.ID), leased.Kvs[0].Lease)
+	_, err = responseAdmission.admitRange(leased, restartRangeExpectation{
+		key: []byte(leasedKey), value: []byte("leased-before-restart"), present: true, leaseID: lease.ID,
+		exactCreate: leasedPut.Header.Revision, exactModRevision: leasedPut.Header.Revision,
+	})
+	require.NoError(t, err)
 	ttl, err := cli.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
 	require.NoError(t, err)
-	require.Positive(t, ttl.TTL)
-	require.Contains(t, ttl.Keys, []byte(leasedKey))
+	require.NoError(t, responseAdmission.admitTTL(ttl, lease.ID, lease.TTL, [][]byte{[]byte(leasedKey)}))
 
 	watchCtx, watchCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer watchCancel()
 	watch := cli.Watch(watchCtx, historyKey, clientv3.WithRev(historyPut.Header.Revision))
 	select {
 	case response := <-watch:
-		require.NoError(t, response.Err())
+		require.NoError(t, responseAdmission.admitWatch(response))
 		require.Len(t, response.Events, 1)
+		require.Equal(t, []byte(historyKey), response.Events[0].Kv.Key)
 		require.Equal(t, "replay-after-restart", string(response.Events[0].Kv.Value))
+		require.Equal(t, historyPut.Header.Revision, response.Events[0].Kv.CreateRevision)
+		require.Equal(t, historyPut.Header.Revision, response.Events[0].Kv.ModRevision)
+		require.Equal(t, int64(1), response.Events[0].Kv.Version)
+		require.Zero(t, response.Events[0].Kv.Lease)
 	case <-watchCtx.Done():
 		t.Fatal("timed out replaying persisted watch history")
 	}
@@ -244,7 +289,7 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 	for len(binaryEvents) < len(binaryKeys) {
 		select {
 		case response := <-binaryWatch:
-			require.NoError(t, response.Err())
+			require.NoError(t, responseAdmission.admitWatch(response))
 			binaryEvents = append(binaryEvents, response.Events...)
 		case <-binaryWatchCtx.Done():
 			t.Fatalf("timed out replaying binary prefix history; got %d events", len(binaryEvents))
@@ -254,16 +299,23 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 	for i := range binaryKeys {
 		require.Equal(t, binaryKeys[i], binaryEvents[i].Kv.Key)
 		require.Equal(t, fmt.Sprintf("binary-%d", i), string(binaryEvents[i].Kv.Value))
+		require.Equal(t, binaryPutRevisions[i], binaryEvents[i].Kv.CreateRevision)
+		require.Equal(t, binaryPutRevisions[i], binaryEvents[i].Kv.ModRevision)
+		require.Equal(t, int64(1), binaryEvents[i].Kv.Version)
+		require.Zero(t, binaryEvents[i].Kv.Lease)
 	}
 
 	after, err := cli.Put(ctx, durableKey, "after-restart")
+	require.NoError(t, err)
+	_, err = responseAdmission.admitPut(after)
 	require.NoError(t, err)
 	require.Greater(t, after.Header.Revision, beforeRevision)
 	require.Greater(t, after.Header.Revision, durablePut.Header.Revision)
 	require.Greater(t, after.Header.Revision, deleted.Header.Revision)
 
-	_, err = cli.Revoke(ctx, lease.ID)
+	revoked, err := cli.Revoke(ctx, lease.ID)
 	require.NoError(t, err)
+	require.NoError(t, responseAdmission.admitRevoke(revoked))
 }
 
 func replaceCompatPod(t *testing.T, ctx context.Context, kubeContext, namespace, pod string) {
