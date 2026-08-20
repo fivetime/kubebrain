@@ -85,6 +85,19 @@ func TestRestoreTrafficCutoverRejectsReceiptTimestampAboveInt64(t *testing.T) {
 	f.run(t, "complete", false, "", "existing restore cutover receipt does not match")
 }
 
+func TestRestoreTrafficCutoverRejectsOversizedExistingCutoverReceipt(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "")
+	f.run(t, "complete", true, "")
+	receiptPath := filepath.Join(f.state, "restore-1.receipt.json")
+	receipt := append(mustRead(t, receiptPath), []byte(strings.Repeat(" ", (4<<20)+1))...)
+	require.NoError(t, os.WriteFile(receiptPath, receipt, 0o600))
+
+	f.run(t, "complete", false, "", "existing restore cutover receipt does not match")
+}
+
 func TestRestoreTrafficCutoverRejectsCutoverBeforeRestoreVerification(t *testing.T) {
 	for _, version := range []int{1, 2, 3} {
 		t.Run(strconv.Itoa(version), func(t *testing.T) {
@@ -211,6 +224,16 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithUnknownFields(t *testing.
 	require.NoError(t, os.WriteFile(path, []byte(receipt), 0o600))
 
 	f.run(t, "prepare", false, "", "restore verification receipt is invalid")
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+}
+
+func TestRestoreTrafficCutoverRejectsOversizedRestoreReceipt(t *testing.T) {
+	f := newTrafficFixture(t)
+	path := filepath.Join(f.dir, "restore.json")
+	receipt := append(mustRead(t, path), []byte(strings.Repeat(" ", (4<<20)+1))...)
+	require.NoError(t, os.WriteFile(path, receipt, 0o600))
+
+	f.run(t, "prepare", false, "", "restore verification receipt exceeds 4194304 bytes")
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
 }
 

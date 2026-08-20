@@ -84,6 +84,18 @@ func TestRestoreCutoverOperationRejectsMalformedFrozenRestoreReceipt(t *testing.
 	require.NotContains(t, f.log(t), "phase prepare")
 }
 
+func TestRestoreCutoverOperationRejectsOversizedRestoreReceipt(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	receipt := append(mustRead(t, f.restoreReceipt), []byte(strings.Repeat(" ", (4<<20)+1))...)
+	require.NoError(t, os.WriteFile(f.restoreReceipt, receipt, 0o600))
+	refreshCutoverRunnerReceiptParameter(t, f)
+
+	f.run(t, false, "", "restore receipt exceeds 4194304 bytes")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "phase prepare")
+}
+
 func TestRestoreCutoverOperationRejectsBackupDifferentFromFrozenRestoreReceipt(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	var receipt map[string]any
@@ -140,6 +152,14 @@ func TestRestoreCutoverOperationPassesFrozenEvidenceToPhases(t *testing.T) {
 func TestRestoreCutoverOperationRejectsInvalidReceipt(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "INVALID_CUTOVER_RECEIPT=true", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestRestoreCutoverOperationRejectsOversizedCutoverReceipt(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "OVERSIZED_CUTOVER_RECEIPT=true", "invalid receipt")
 	log := f.log(t)
 	require.Contains(t, log, "--action fail")
 	require.NotContains(t, log, "--action succeed")
@@ -684,6 +704,9 @@ case "$ACTION" in
     else
       printf '{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":%s}\n' \
         "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" "${COMPLETED_AT_UNIX:-100}" >"$RECEIPT_OUTPUT"
+    fi
+    if [[ "${OVERSIZED_CUTOVER_RECEIPT:-false}" == true ]]; then
+      head -c 4194305 /dev/zero | tr '\0' ' ' >>"$RECEIPT_OUTPUT"
     fi
     chmod 600 "$RECEIPT_OUTPUT"
     ;;
