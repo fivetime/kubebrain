@@ -1721,7 +1721,11 @@ TTL 为正；带 keys 的 TTL 响应 revision 不得早于当前扫描，附件�
 event 和 Revoke。探针 Grant 必须返回非零 ID、正 header 和不短于请求的合法 TTL；单 Put/Delete Txn 必须各返回
 一个同 outer revision 的对应 response，Get 必须证明精确新键的 value/lease 与 `create=mod=putRevision,version=1`，
 Delete revision 必须晚于 Get，Revoke header 不得早于 Delete。任一步 malformed success 都 fail closed，异常 Grant
-携带的非零 lease 仍进入带响应校验的 defer cleanup；成功才原子发布 `kubebrain.cold-physical-semantic-verify.v1`。这仍不能替代真实
+携带的非零 lease 仍进入带响应校验的 defer cleanup。整个 historical/current 多页 Range→全部 TTL→Created Watch→
+Grant→Put Txn→PUT Watch→Get→Delete Txn→DELETE Watch→Revoke 还共用一条 response admission 链：每个
+header 必须有非零 cluster/member，cluster ID 全程固定且 revision 单调不退，确定写入/删除 Txn 必须严格推进；
+member 可随负载均衡改变。Txn 顶层身份在 nested shape 前接纳，使已提交但 payload 损坏的失败路径仍以实际
+revision 约束补偿 Revoke。成功才原子发布 `kubebrain.cold-physical-semantic-verify.v1`。这仍不能替代真实
 CSI restore 演练，但它是物理恢复完成门禁，而不是普通 endpoint health 检查。
 语义门禁读取 snapshot/restore receipt 链时同样使用严格单 JSON 值解析，拒绝未知字段和
 尾随 JSON。snapshot receipt schema 必须完整包含 preflight recovery blueprint、PD/TiKV source PVC

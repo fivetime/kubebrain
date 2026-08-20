@@ -58027,6 +58027,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   0.40 秒通过，规范四分片也全部 GREEN，故记录为与本改动无调用关系的累积时序 flake，而不隐去首次 RED。
   本项不改变 stdout/env、prefix/key/value、正常 lease 生命周期、在线 etcd RPC 或 TiKV 编码。
 
+- A5175 将 cold CSI 与 native PITR 共用的 semantic restore verifier 从局部 payload validator 提升为
+  全生命周期响应身份链。A5156/A5157 已固定 current 分页 snapshot 并校验 Range/TTL/probe shape，但
+  historical/current 各页、多个 TTL、Created Watch、Grant、Put/Get/Delete Watch 与 Revoke 之间没有固定
+  cluster；零 cluster/member、跨集群 success 或后段 revision 回退仍可能签发物理语义 receipt。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/{key.go,lease.go,watch.go}` 的统一 header fill，现共享
+  `targetverify.ResponseAdmission` 要求所有 header 的 cluster/member/revision 非零，首次历史 Range 固定
+  cluster ID，允许负载均衡切换 member，但后续 current 分页、LeaseTimeToLive、watch probe 和异常 cleanup
+  都不得切换 cluster 或回退 revision；确定 Put/Delete Txn 必须严格推进。Txn outer header 先于 nested shape
+  准入，使已提交但 payload malformed 的失败路径仍用实际 revision 约束 Revoke；无 attached key 的 Revoke
+  不错误要求 KV revision 推进。身份/回退/推进正反例及三包连续二十轮（0.079/0.084/0.707 秒）、race
+  （1.090/1.277/1.334 秒），disposable reference etcd 完整生命周期通过（0.03 秒）。本地真实独立 TiKV/PD
+  上经三副本 KubeBrain Service 重跑同一历史/当前 Range→Created Watch→Grant/TTL→Put/Get/Delete Watch→
+  Revoke 链通过（0.25 秒），endpoint proposal health 18.970ms、测试前缀终态为空，主 PD/TiKV 3/3 Ready。
+  完整非 production（将 `hack/production` 留给规范分片）181.124 秒、production 324 项四分片
+  （148/254/176/468 秒）与 vet（3 秒）全部通过。本项不改变 witness/receipt schema、probe key/value/TTL、
+  在线 etcd RPC 或 TiKV 编码，也不替代真实 CSI/PITR restore 演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
