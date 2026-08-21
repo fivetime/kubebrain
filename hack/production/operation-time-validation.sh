@@ -30,6 +30,14 @@ operation_is_positive_uint64() {
   fi
 }
 
+operation_is_nonnegative_uint64() {
+  local value="$1"
+  [[ "$value" =~ ^(0|[1-9][0-9]{0,19})$ ]] || return 1
+  if (( ${#value} == 20 )) && [[ "$value" > "$OPERATION_MAX_UINT64" ]]; then
+    return 1
+  fi
+}
+
 operation_is_nonnegative_uint32() {
   local value="$1"
   [[ "$value" =~ ^(0|[1-9][0-9]{0,9})$ ]] || return 1

@@ -228,13 +228,17 @@ for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS; do
     exit 2
   fi
 done
-for variable in EXPECTED_BCRYPT_COST EXPECTED_AUTH_TOKEN_TTL EXPECTED_LOG_VERBOSITY; do
+for variable in EXPECTED_BCRYPT_COST EXPECTED_AUTH_TOKEN_TTL; do
   value="${!variable}"
-  if ! [[ "$value" =~ ^[0-9]+$ ]]; then
-    echo "${variable} must be a non-negative integer" >&2
+  if ! operation_is_nonnegative_uint64 "$value"; then
+    echo "${variable} must be a canonical non-negative Go uint" >&2
     exit 2
   fi
 done
+if ! [[ "$EXPECTED_LOG_VERBOSITY" =~ ^[0-9]+$ ]]; then
+  echo "EXPECTED_LOG_VERBOSITY must be a non-negative integer" >&2
+  exit 2
+fi
 for variable in EXPECTED_LEADER_LEASE_DURATION EXPECTED_LEADER_RENEW_DEADLINE EXPECTED_LEADER_RETRY_PERIOD EXPECTED_GRPC_KEEPALIVE_MIN_TIME EXPECTED_GRPC_KEEPALIVE_INTERVAL EXPECTED_GRPC_KEEPALIVE_TIMEOUT EXPECTED_AUTH_TOKEN; do
   value="${!variable}"
   if [[ -z "$value" ]]; then
