@@ -1572,6 +1572,11 @@ KubeBrain StatefulSet 缩到 0，并等待 ready replicas 与实例 Pod 都归�
 时，控制面必须先 fence 客户流量，在停写窗口导出最终 artifact，再调用 prepare。
 
 `destroy` 再次核对所有仍存在资源的 UID，并拒绝任何新出现或同名换 UID 的实例 PVC。
+Destroy 的数值控制在 Operation worker 与直接 `destroy-instance.sh` 两层准入：backup max age 与
+timeout 必须是规范正 int64；backup minimum records、expected PVCs 和 poll 必须是规范非负 int64；
+timeout 不超过 86400 且 `poll <= timeout`。worker 必须在启动 prepare primitive 前拒绝，直接入口必须在
+验证备份、写入 durable state 或访问 Kubernetes 前拒绝。该边界既保持可配置备份 RPO，也保证 logical-status
+的 Go int64、PVC 清单比较以及两处 `SECONDS + timeout` 删除 deadline 使用一致数值域。
 删除由 `hack/production/cmd/uid-delete` 直接发送 Kubernetes
 `DeleteOptions.preconditions.uid` 与 foreground propagation；中断重试允许资源已经
 不存在，但名称复用立即失败。该工具在构造 dynamic client 请求前校验 apiVersion、resource

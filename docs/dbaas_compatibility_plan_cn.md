@@ -59096,6 +59096,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （140.972/507.401/273.948/487.624 秒）。本项不改变合法审计证据、cutover 绑定、fencing 或在线
   etcd/TiKV 语义，只使声明观察窗口成为真实上界。
 
+- A5261 封闭 Destroy 不可逆执行链的 worker/primitive 数值域。旧两层只用无界数字正则接收 backup max age、
+  minimum records、expected PVCs、timeout 与 poll；direct primitive 把 timeout 用于两处
+  `SECONDS + TIMEOUT_SECONDS` deadline 和 uid-delete timeout，越界可回绕，且 jq/awk/Go backup verifier
+  对同一冻结参数可能产生不同解释。现两层要求 max age/timeout 为正 int64，records/PVCs/poll 为非负
+  int64，并限制 `poll <= timeout <= 86400`；不额外缩窄可配置 backup RPO。worker 七类回归证明不启动任何
+  prepare/quiesce/destroy/complete phase，direct primitive 同组回归证明不写 durable destroy evidence；正常
+  四阶段不可逆生命周期保持通过。聚焦连续两轮 5.562 秒、race 3.887 秒，bash syntax、diff check 与全仓
+  vet 通过；production 清单增至 436 项并按 100/121/111/104 四片全部通过
+  （144.148/527.730/283.701/509.073 秒）。本项不改变合法 RPO、UID-precondition delete、receipt/fencing 或
+  在线 etcd/TiKV 数据语义，只让删除前证据与等待算术共享精确域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
