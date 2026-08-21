@@ -16,8 +16,14 @@ OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 JQ="${JQ:-jq}"
 MAX_CONTROL_PLANE_RESPONSE_BYTES=1048576
 MAX_EXISTING_SECRET_RESPONSE_BYTES=87389
+MAX_UINT64=18446744073709551615
 
 die() { echo "$*" >&2; exit 1; }
+is_positive_uint64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
+  if (( ${#value} == 20 )) && [[ "$value" > "$MAX_UINT64" ]]; then return 1; fi
+}
 [[ "$REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "REQUEST_ID must be a DNS-compatible external recovery decision ID"
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required (use in-cluster for service-account credentials)"
 [[ "$ENDPOINT" =~ ^https?://[^[:space:],]+$ ]] || die "ENDPOINT must be exactly one HTTP(S) URL"
@@ -27,6 +33,8 @@ for value in "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$TIDB_NAMESPACE" "
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "resource identity must be a DNS label"
 done
 command -v "$JQ" >/dev/null || die "jq is required"
+[[ "$("$JQ" -jn --arg value "$MAX_UINT64" '$value | tonumber | tostring' 2>/dev/null)" == "$MAX_UINT64" ]] ||
+  die "jq must preserve unsigned 64-bit decimal identities"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 command -v stat >/dev/null || die "stat is required"
 [[ -x "$OPERATIONCTL" ]] || die "OPERATIONCTL must be executable"
@@ -55,7 +63,7 @@ cluster_identity="$($JQ -er '
   select(all(.[]; type == "string" and length > 0)) | @tsv
 ' "$tidbcluster")" || die "recovery request requires a Ready 3 PD/3 TiKV TidbCluster identity"
 IFS=$'\t' read -r tidb_uid cluster_id <<<"$cluster_identity"
-[[ "$cluster_id" =~ ^[1-9][0-9]*$ ]] || die "live cluster ID is invalid"
+is_positive_uint64 "$cluster_id" || die "live cluster ID must be a positive uint64"
 
 request_hash="$(printf '%s\n%s\n%s\n%s\n' "$REQUEST_ID" "$kb_uid" "$tidb_uid" "$cluster_id" | sha256sum | cut -c1-20)"
 operation_name="tikv-recovery-${request_hash}"

@@ -12,14 +12,22 @@ RECOVERY_COMMAND="${RECOVERY_COMMAND:-${ROOT_DIR}/hack/production/recover-kubebr
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
+MAX_UINT64=18446744073709551615
 
 die() { echo "$*" >&2; exit 2; }
+is_positive_uint64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
+  if (( ${#value} == 20 )) && [[ "$value" > "$MAX_UINT64" ]]; then return 1; fi
+}
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a DNS label"
 [[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] || die "LEASE_SECONDS must be at least 6"
 [[ -d "$WORK_DIR" && -w "$WORK_DIR" ]] || die "WORK_DIR must be a writable directory"
 [[ -f "$RECOVERY_COMMAND" && -x "$RECOVERY_COMMAND" ]] || die "RECOVERY_COMMAND is required and must be an executable file"
 command -v "$JQ" >/dev/null || die "jq is required"
+[[ "$("$JQ" -jn --arg value "$MAX_UINT64" '$value | tonumber | tostring' 2>/dev/null)" == "$MAX_UINT64" ]] ||
+  die "jq must preserve unsigned 64-bit decimal identities"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 command -v stat >/dev/null || die "stat is required"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
@@ -139,8 +147,8 @@ for value in "$kb_namespace" "$kb_statefulset" "$tidb_namespace" "$tidb_cluster"
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "recovery resource identity is invalid"
 done
 [[ "$endpoint" =~ ^https?://[^[:space:],]+$ ]] || die "recovery endpoint is invalid"
-[[ "$expected_cluster_id" =~ ^[1-9][0-9]*$ && "$probe_timeout" =~ ^[1-9][0-9]*$ &&
-  "$pod_timeout" =~ ^[1-9][0-9]*$ ]] || die "recovery numeric parameter is invalid"
+is_positive_uint64 "$expected_cluster_id" || die "recovery cluster identity is not a positive uint64"
+[[ "$probe_timeout" =~ ^[1-9][0-9]*$ && "$pod_timeout" =~ ^[1-9][0-9]*$ ]] || die "recovery numeric parameter is invalid"
 [[ "$request_id" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "recovery request identity is invalid"
 request_hash="$(printf '%s\n%s\n%s\n%s\n' "$request_id" "$expected_kb_uid" "$expected_tidb_uid" "$expected_cluster_id" | sha256sum | cut -c1-20)"
 [[ "$name" == "tikv-recovery-${request_hash}" && "$operation_id" == "$name" ]] ||

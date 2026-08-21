@@ -25,9 +25,10 @@ func TestRunTiKVTransactionRecoveryOperation(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
-  printf '{"namespace":"%s","name":"tikv-recovery-dbea00c4a1e7fae49690","operation_id":"tikv-recovery-dbea00c4a1e7fae49690","requested_by":"%s","instance":"kubebrain","type":"%s","parameters_sha256":"%s","parameters_secret":"tikv-recovery-dbea00c4a1e7fae49690-parameters","parameters_key":"parameters.json","owner":"%s","attempt":2}\n' \
-    "${CLAIM_NAMESPACE:-kubebrain-repair-operations}" "${CLAIM_REQUESTER:-platform:tikv-repair-recovery}" \
-    "${CLAIM_TYPE:-TiKVTransactionRecovery}" "$EXPECTED_DIGEST" "${CLAIM_OWNER:-$WORKER_ID}"
+  claim_name="${CLAIM_NAME:-tikv-recovery-dbea00c4a1e7fae49690}"
+  printf '{"namespace":"%s","name":"%s","operation_id":"%s","requested_by":"%s","instance":"kubebrain","type":"%s","parameters_sha256":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","owner":"%s","attempt":2}\n' \
+    "${CLAIM_NAMESPACE:-kubebrain-repair-operations}" "$claim_name" "$claim_name" "${CLAIM_REQUESTER:-platform:tikv-repair-recovery}" \
+    "${CLAIM_TYPE:-TiKVTransactionRecovery}" "$EXPECTED_DIGEST" "$claim_name" "${CLAIM_OWNER:-$WORKER_ID}"
 elif [[ "$*" == *"--action heartbeat"* ]]; then
   [[ "${FAIL_HEARTBEAT:-false}" != true ]] || exit 1
 elif [[ "$*" == *"--action parameters"* ]]; then
@@ -191,6 +192,40 @@ fi
 	})
 	require.NoError(t, exactErr, string(exactOutput))
 	require.Contains(t, string(mustRead(t, operationLog)), "--action succeed")
+
+	maxBytes := []byte(strings.Replace(string(parameterBytes), `"expected_cluster_id":7671`, `"expected_cluster_id":18446744073709551615`, 1))
+	require.NoError(t, os.WriteFile(parameters, maxBytes, 0o600))
+	maxDigest := fmt.Sprintf("%x", sha256.Sum256(maxBytes))
+	for _, receipt := range receipts {
+		_ = os.Remove(receipt)
+	}
+	require.NoError(t, os.WriteFile(recoveryLog, nil, 0o600))
+	maxOutput, maxErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", []string{
+		"WORKER_ID=worker-max", "PARAMETERS_INPUT=" + parameters, "OPERATIONCTL=" + operationctl,
+		"RECOVERY_COMMAND=" + recovery, "WORK_DIR=" + dir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
+		"EXPECTED_DIGEST=" + maxDigest, "OPERATION_LOG=" + operationLog, "RECOVERY_LOG=" + recoveryLog,
+		"CLAIM_NAME=tikv-recovery-6c91f9b2718f23c8950e",
+	})
+	require.NoError(t, maxErr, string(maxOutput))
+	require.Contains(t, string(mustRead(t, recoveryLog)), "EXPECTED_CLUSTER_ID=18446744073709551615")
+
+	maxReceipts, err := filepath.Glob(filepath.Join(dir, "tikv-recovery-*.receipt.json"))
+	require.NoError(t, err)
+	require.Len(t, maxReceipts, 1)
+	require.Contains(t, string(mustRead(t, maxReceipts[0])), `"cluster_id":18446744073709551615`)
+	require.NoError(t, os.Remove(maxReceipts[0]))
+	overflowBytes := []byte(strings.Replace(string(parameterBytes), `"expected_cluster_id":7671`, `"expected_cluster_id":18446744073709551616`, 1))
+	require.NoError(t, os.WriteFile(parameters, overflowBytes, 0o600))
+	overflowDigest := fmt.Sprintf("%x", sha256.Sum256(overflowBytes))
+	require.NoError(t, os.WriteFile(recoveryLog, nil, 0o600))
+	overflowOutput, overflowErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", []string{
+		"WORKER_ID=worker-overflow", "PARAMETERS_INPUT=" + parameters, "OPERATIONCTL=" + operationctl,
+		"RECOVERY_COMMAND=" + recovery, "WORK_DIR=" + dir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
+		"EXPECTED_DIGEST=" + overflowDigest, "OPERATION_LOG=" + operationLog, "RECOVERY_LOG=" + recoveryLog,
+	})
+	require.Error(t, overflowErr)
+	require.Contains(t, string(overflowOutput), "cluster identity is not a positive uint64")
+	require.Empty(t, mustRead(t, recoveryLog))
 }
 
 func TestRunTiKVTransactionRecoveryOperationRejectsInvalidClaimNamespace(t *testing.T) {

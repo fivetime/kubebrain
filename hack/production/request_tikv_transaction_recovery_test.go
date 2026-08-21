@@ -19,7 +19,7 @@ printf '%s\n' "$*" >>"$KUBECTL_LOG"
 if [[ "$*" == *"get statefulset kubebrain -o json"* ]]; then
   printf '{"metadata":{"uid":"kb-uid"},"spec":{"replicas":0},"status":{}}\n'
 elif [[ "$*" == *"get tidbcluster kb -o json"* ]]; then
-  printf '{"metadata":{"uid":"tc-uid"},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":7671,"conditions":[{"type":"Ready","status":"True"}]}}\n'
+  printf '{"metadata":{"uid":"tc-uid"},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":%s,"conditions":[{"type":"Ready","status":"True"}]}}\n' "${FAKE_CLUSTER_ID:-7671}"
 elif [[ "$*" == *"get secret tikv-recovery-"* ]]; then
   exit 1
 elif [[ "$*" == *"create secret generic"* ]]; then
@@ -63,6 +63,29 @@ fi
 	require.NotContains(t, string(kubectlData), "scale")
 	require.NotContains(t, string(kubectlData), "exec")
 	require.NotContains(t, string(kubectlData), "delete")
+
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	maxOutput, maxErr := runProductionScriptCommand(t, "request-tikv-transaction-recovery.sh", []string{
+		"REQUEST_ID=change-2026-001", "KUBE_CONTEXT=test-context",
+		"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379",
+		"KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+		"OPERATIONCTL=" + operationctl, "OPERATION_LOG=" + operationLog,
+		"FAKE_CLUSTER_ID=18446744073709551615",
+	})
+	require.NoError(t, maxErr, string(maxOutput))
+	require.Contains(t, string(mustRead(t, operationLog)), "--name tikv-recovery-6c91f9b2718f23c8950e")
+
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	overflowOutput, overflowErr := runProductionScriptCommand(t, "request-tikv-transaction-recovery.sh", []string{
+		"REQUEST_ID=change-2026-001", "KUBE_CONTEXT=test-context",
+		"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379",
+		"KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+		"OPERATIONCTL=" + operationctl, "OPERATION_LOG=" + operationLog,
+		"FAKE_CLUSTER_ID=18446744073709551616",
+	})
+	require.Error(t, overflowErr)
+	require.Contains(t, string(overflowOutput), "positive uint64")
+	require.Empty(t, mustRead(t, operationLog))
 }
 
 func TestRequestTiKVTransactionRecoveryRejectsNonZeroDataPlaneBeforeWrites(t *testing.T) {

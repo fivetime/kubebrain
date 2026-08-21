@@ -24,6 +24,25 @@ func TestRecoverKubeBrainAfterTiKVRepair(t *testing.T) {
 		require.NotContains(t, log, "--replicas=0")
 	})
 
+	t.Run("MaxUint64 cluster identity remains exact", func(t *testing.T) {
+		env, _ := recoveryFixture(t)
+		env = append(env, "EXPECTED_CLUSTER_ID=18446744073709551615", "FAKE_CLUSTER_ID=18446744073709551615")
+		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+		require.NoError(t, err, string(output))
+		receipt := string(mustRead(t, recoveryEnvValue(env, "RECEIPT_OUTPUT")))
+		require.Contains(t, receipt, `"cluster_id":18446744073709551615`)
+		require.NotContains(t, receipt, "18446744073709552000")
+	})
+
+	t.Run("overflow cluster identity fails before Kubernetes access", func(t *testing.T) {
+		env, logPath := recoveryFixture(t)
+		env = append(env, "EXPECTED_CLUSTER_ID=18446744073709551616")
+		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+		require.Error(t, err)
+		require.Contains(t, string(output), "positive uint64")
+		require.NoFileExists(t, logPath)
+	})
+
 	t.Run("storage failure has no scale side effect", func(t *testing.T) {
 		env, logPath := recoveryFixture(t)
 		env = append(env, "FAKE_REGION_FAIL_AT=1")
@@ -107,7 +126,7 @@ elif [[ "$args" == *" get statefulset kubebrain -o jsonpath={.metadata.uid} "* ]
 elif [[ "$args" == *" get statefulset kubebrain -o jsonpath="* ]]; then
   printf ''
 elif [[ "$args" == *" get tidbcluster kb -o json "* ]]; then
-  printf '{"metadata":{"uid":"tc-uid"},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":7671,"conditions":[{"type":"Ready","status":"True"}]}}\n'
+  printf '{"metadata":{"uid":"tc-uid"},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":%s,"conditions":[{"type":"Ready","status":"True"}]}}\n' "${FAKE_CLUSTER_ID:-7671}"
 elif [[ "$args" == *" scale statefulset kubebrain --replicas="* ]]; then
   replicas="${args##*--replicas=}"
   replicas="${replicas%% *}"

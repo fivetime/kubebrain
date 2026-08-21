@@ -22,14 +22,20 @@ JQ="${JQ:-jq}"
 DATE="${DATE:-date}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REGION_HEALTH_COMMAND="${REGION_HEALTH_COMMAND:-${SCRIPT_DIR}/validate-tikv-region-health.sh}"
+MAX_UINT64=18446744073709551615
 
 die() { echo "$*" >&2; exit 1; }
+is_positive_uint64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
+  if (( ${#value} == 20 )) && [[ "$value" > "$MAX_UINT64" ]]; then return 1; fi
+}
 
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required"
 [[ "$ALLOW_KUBEBRAIN_RECOVERY" == "true" ]] || die "refusing KubeBrain recovery without ALLOW_KUBEBRAIN_RECOVERY=true"
 [[ -n "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]] || die "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required"
 [[ -n "$EXPECTED_TIDB_CLUSTER_UID" ]] || die "EXPECTED_TIDB_CLUSTER_UID is required"
-[[ "$EXPECTED_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]] || die "EXPECTED_CLUSTER_ID must be a positive integer"
+is_positive_uint64 "$EXPECTED_CLUSTER_ID" || die "EXPECTED_CLUSTER_ID must be a positive uint64"
 [[ "$ENDPOINT" =~ ^https?://[^[:space:],]+$ ]] || die "ENDPOINT must be exactly one HTTP(S) URL"
 [[ "$RECOVERY_ATTEMPT_ID" =~ ^[a-z0-9]([-a-z0-9]{0,28}[a-z0-9])?$ ]] || die "RECOVERY_ATTEMPT_ID must be a DNS label of at most 30 characters"
 [[ "$RECOVERY_REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "RECOVERY_REQUEST_ID must be a DNS-compatible external decision ID"
@@ -43,6 +49,8 @@ die() { echo "$*" >&2; exit 1; }
 for variable in KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET TIDB_NAMESPACE TIDB_CLUSTER; do
   [[ "${!variable}" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "$variable must be a DNS label"
 done
+[[ "$("$JQ" -jn --arg value "$MAX_UINT64" '$value | tonumber | tostring' 2>/dev/null)" == "$MAX_UINT64" ]] ||
+  die "jq must preserve unsigned 64-bit decimal identities"
 
 context_args=()
 [[ "$KUBE_CONTEXT" == "in-cluster" ]] || context_args=(--context "$KUBE_CONTEXT")
