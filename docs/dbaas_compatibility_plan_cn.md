@@ -59315,6 +59315,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   102/127/113/106 四片在最终代码状态全部通过（138.713/467.175/261.220/458.338 秒）。本项不改变合法
   etcd keepalive 默认值、0 禁用或 gRPC transport 语义，只让发布期望在首次外部访问前具备精确可表示域。
 
+- A5283 将组合实例 release gate 的 auth-token provider 结构对齐 KubeBrain 的 etcd-compatible startup
+  validator。旧门禁只检查非空，unsupported provider、无 `=`/多 `=` 选项、重复键、JWT 不支持算法或缺少
+  相应 key 选项都会进入 Kubernetes/args 核验。现 runner 在首次 kubectl 前复现这些不依赖文件的约束，
+  同时保留 etcd 对 simple unknown `key=value` 选项的兼容行为；JWT PEM 内容、public/private 匹配和 1MiB
+  上限因只有 Pod Secret 挂载环境可见，仍由 KubeBrain 启动校验权威执行。回归证明 bearer、畸形 simple
+  option、重复 option 与无 key 的 RS256 均零 kubectl 拒绝，并以结构合法 RS256 public-key spec 证明进入
+  参数一致性核验。聚焦单轮 124.796 秒、连续两轮 246.285 秒、race 123.455 秒，bash syntax、diff check
+  与全仓 vet 通过；production 清单保持 448 项并按 102/127/113/106 四片在最终代码状态全部通过
+  （139.674/467.883/264.195/461.130 秒）。本项不改变 simple/JWT token、key rotation 或认证 revision
+  语义，只把可在发布 runner 中证明的 provider 结构错误前移到首次外部访问之前。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

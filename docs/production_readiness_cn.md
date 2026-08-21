@@ -1042,6 +1042,9 @@ Go duration 格式且可由 `time.Duration` 表示；非法、前导零或溢出
 满足 `retry < renew < lease`，由 KubeBrain 配置校验最终强制执行。
 gRPC keepalive min-time、interval 与 timeout 必须是精确 `0`（禁用）或正整数加 `ms`、`s`、`m`、`h` 的
 生产 Go duration，且可由 `time.Duration` 表示；负数、前导零、非法或溢出值必须在 kubectl 前拒绝。
+auth token provider 必须是 etcd 兼容的 `simple`，或具有唯一 `key=value` 选项、受支持签名算法及相应
+pub-key/priv-key 路径的结构合法 `jwt`。不依赖 Pod 文件的语法错误必须在 kubectl 前拒绝；密钥 PEM、匹配性
+和 1MiB 上限继续由 KubeBrain 启动时在 Secret 挂载命名空间内 fail closed 校验。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，
