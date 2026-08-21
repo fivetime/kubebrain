@@ -76,6 +76,7 @@ EXPECTED_TRUSTED_CA_FILE="${EXPECTED_TRUSTED_CA_FILE:-}"
 EXPECTED_CLIENT_CRL_FILE="${EXPECTED_CLIENT_CRL_FILE:-}"
 EXPECTED_TLS_SERVER_NAME="${EXPECTED_TLS_SERVER_NAME:-}"
 EXPECTED_CLIENT_CERT_AUTH="${EXPECTED_CLIENT_CERT_AUTH:-}"
+EXPECTED_CLIENT_CERT_ALLOWED_HOSTNAMES="${EXPECTED_CLIENT_CERT_ALLOWED_HOSTNAMES:-}"
 EXPECTED_PEER_CERT_FILE="${EXPECTED_PEER_CERT_FILE:-}"
 EXPECTED_PEER_KEY_FILE="${EXPECTED_PEER_KEY_FILE:-}"
 EXPECTED_PEER_CLIENT_CERT_FILE="${EXPECTED_PEER_CLIENT_CERT_FILE:-}"
@@ -84,6 +85,8 @@ EXPECTED_PEER_TRUSTED_CA_FILE="${EXPECTED_PEER_TRUSTED_CA_FILE:-}"
 EXPECTED_PEER_CRL_FILE="${EXPECTED_PEER_CRL_FILE:-}"
 EXPECTED_PEER_TLS_SERVER_NAME="${EXPECTED_PEER_TLS_SERVER_NAME:-}"
 EXPECTED_PEER_CLIENT_CERT_AUTH="${EXPECTED_PEER_CLIENT_CERT_AUTH:-}"
+EXPECTED_PEER_CERT_ALLOWED_CNS="${EXPECTED_PEER_CERT_ALLOWED_CNS:-}"
+EXPECTED_PEER_CERT_ALLOWED_HOSTNAMES="${EXPECTED_PEER_CERT_ALLOWED_HOSTNAMES:-}"
 EXPECTED_INFO_CERT_FILE="${EXPECTED_INFO_CERT_FILE:-}"
 EXPECTED_INFO_KEY_FILE="${EXPECTED_INFO_KEY_FILE:-}"
 EXPECTED_INFO_TRUSTED_CA_FILE="${EXPECTED_INFO_TRUSTED_CA_FILE:-}"
@@ -360,6 +363,31 @@ if ! validate_host_allowlist "$EXPECTED_HOST_WHITELIST"; then
   echo "EXPECTED_HOST_WHITELIST must be empty or a unique comma-separated hostname/IP allowlist without wildcard or port" >&2
   exit 2
 fi
+if ! validate_host_allowlist "$EXPECTED_CLIENT_CERT_ALLOWED_HOSTNAMES"; then
+  echo "EXPECTED_CLIENT_CERT_ALLOWED_HOSTNAMES must be empty or a unique comma-separated hostname/IP allowlist without wildcard or port" >&2
+  exit 2
+fi
+if ! validate_host_allowlist "$EXPECTED_PEER_CERT_ALLOWED_HOSTNAMES"; then
+  echo "EXPECTED_PEER_CERT_ALLOWED_HOSTNAMES must be empty or a unique comma-separated hostname/IP allowlist without wildcard or port" >&2
+  exit 2
+fi
+validate_unique_noncontrol_list() {
+  local value="$1" item
+  local -a items
+  local -A seen=()
+  [[ -z "$value" ]] && return 0
+  [[ "$value" != ,* && "$value" != *, && "$value" != *,,* ]] || return 1
+  IFS=',' read -r -a items <<<"$value"
+  for item in "${items[@]}"; do
+    [[ -n "$item" && ! "$item" =~ [[:cntrl:]] ]] || return 1
+    [[ -z "${seen[$item]+present}" ]] || return 1
+    seen[$item]=1
+  done
+}
+if ! validate_unique_noncontrol_list "$EXPECTED_PEER_CERT_ALLOWED_CNS"; then
+  echo "EXPECTED_PEER_CERT_ALLOWED_CNS must be empty or a unique comma-separated CN allowlist without empty or control-character values" >&2
+  exit 2
+fi
 validate_skip_key_prefixes() {
   local value="$1" prefix existing
   local -a prefixes accepted=()
@@ -533,6 +561,20 @@ validate_tls_expectation_group() {
 }
 validate_tls_expectation_group "client" "$EXPECTED_CERT_FILE" "$EXPECTED_KEY_FILE" "$EXPECTED_CLIENT_CERT_FILE" "$EXPECTED_CLIENT_KEY_FILE" "$EXPECTED_TRUSTED_CA_FILE" "$EXPECTED_CLIENT_CRL_FILE" "$EXPECTED_TLS_SERVER_NAME" "$EXPECTED_CLIENT_CERT_AUTH" || exit 2
 validate_tls_expectation_group "peer" "$EXPECTED_PEER_CERT_FILE" "$EXPECTED_PEER_KEY_FILE" "$EXPECTED_PEER_CLIENT_CERT_FILE" "$EXPECTED_PEER_CLIENT_KEY_FILE" "$EXPECTED_PEER_TRUSTED_CA_FILE" "$EXPECTED_PEER_CRL_FILE" "$EXPECTED_PEER_TLS_SERVER_NAME" "$EXPECTED_PEER_CLIENT_CERT_AUTH" || exit 2
+if [[ -n "$EXPECTED_CLIENT_CERT_ALLOWED_HOSTNAMES" ]] &&
+  { [[ "$EXPECTED_CLIENT_CERT_AUTH" != "true" ]] || [[ -z "$EXPECTED_TRUSTED_CA_FILE" ]]; }; then
+  echo "client TLS certificate hostname allowlist requires client cert auth and a trusted CA" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_PEER_CERT_ALLOWED_CNS" && -n "$EXPECTED_PEER_CERT_ALLOWED_HOSTNAMES" ]]; then
+  echo "peer TLS certificate CN and hostname allowlists are mutually exclusive" >&2
+  exit 2
+fi
+if { [[ -n "$EXPECTED_PEER_CERT_ALLOWED_CNS" ]] || [[ -n "$EXPECTED_PEER_CERT_ALLOWED_HOSTNAMES" ]]; } &&
+  { [[ "$EXPECTED_PEER_CLIENT_CERT_AUTH" != "true" ]] || [[ -z "$EXPECTED_PEER_TRUSTED_CA_FILE" ]]; }; then
+  echo "peer TLS certificate identity allowlist requires client cert auth and a trusted CA" >&2
+  exit 2
+fi
 validate_info_tls_expectations() {
   if { [[ -n "$EXPECTED_INFO_CERT_FILE" ]] && [[ -z "$EXPECTED_INFO_KEY_FILE" ]]; } ||
     { [[ -z "$EXPECTED_INFO_CERT_FILE" ]] && [[ -n "$EXPECTED_INFO_KEY_FILE" ]]; }; then
@@ -1176,6 +1218,7 @@ check_optional_kubebrain_arg "trusted-ca-file" "$EXPECTED_TRUSTED_CA_FILE" "clie
 check_optional_kubebrain_arg "client-crl-file" "$EXPECTED_CLIENT_CRL_FILE" "client TLS CRL file"
 check_optional_kubebrain_arg "tls-server-name" "$EXPECTED_TLS_SERVER_NAME" "client TLS server name"
 check_optional_kubebrain_arg "client-cert-auth" "$EXPECTED_CLIENT_CERT_AUTH" "client certificate auth"
+check_optional_kubebrain_arg "client-cert-allowed-hostname" "$EXPECTED_CLIENT_CERT_ALLOWED_HOSTNAMES" "client certificate hostname allowlist"
 check_optional_kubebrain_arg "peer-cert-file" "$EXPECTED_PEER_CERT_FILE" "peer TLS cert file"
 check_optional_kubebrain_arg "peer-key-file" "$EXPECTED_PEER_KEY_FILE" "peer TLS key file"
 check_optional_kubebrain_arg "peer-client-cert-file" "$EXPECTED_PEER_CLIENT_CERT_FILE" "peer outbound TLS cert file"
@@ -1184,6 +1227,8 @@ check_optional_kubebrain_arg "peer-trusted-ca-file" "$EXPECTED_PEER_TRUSTED_CA_F
 check_optional_kubebrain_arg "peer-crl-file" "$EXPECTED_PEER_CRL_FILE" "peer TLS CRL file"
 check_optional_kubebrain_arg "peer-tls-server-name" "$EXPECTED_PEER_TLS_SERVER_NAME" "peer TLS server name"
 check_optional_kubebrain_arg "peer-client-cert-auth" "$EXPECTED_PEER_CLIENT_CERT_AUTH" "peer client certificate auth"
+check_optional_kubebrain_arg "peer-cert-allowed-cn" "$EXPECTED_PEER_CERT_ALLOWED_CNS" "peer certificate CN allowlist"
+check_optional_kubebrain_arg "peer-cert-allowed-hostname" "$EXPECTED_PEER_CERT_ALLOWED_HOSTNAMES" "peer certificate hostname allowlist"
 check_optional_kubebrain_arg "info-cert-file" "$EXPECTED_INFO_CERT_FILE" "info TLS cert file"
 check_optional_kubebrain_arg "info-key-file" "$EXPECTED_INFO_KEY_FILE" "info TLS key file"
 check_optional_kubebrain_arg "info-trusted-ca-file" "$EXPECTED_INFO_TRUSTED_CA_FILE" "info TLS CA file"
