@@ -59165,6 +59165,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （136.527/463.974/264.196/443.820 秒）。本项不改变合法实例拓扑、rollout/runtime identity 或 etcd/TiKV
   数据语义，只使三层期望基数与 Kubernetes API 类型一致。
 
+- A5268 将只读数据面 release gate 的配置数值对齐实际 Kubernetes/etcd/Go 类型。旧入口用无界正则接收
+  Ready Pod 数、prefix count、cluster ID、HashKV hash 与 probe timeout，超大值可能进入 Bash、GNU timeout、
+  Go `time.ParseDuration` 或跨 gRPC/gateway 字符串比较。共享 helper 新增精确正 uint64、非负 uint32 和含小时
+  的 Go duration 校验；入口分别要求 Ready Pods 为正 int32、count 为非负 int64、cluster ID 为正 uint64、
+  hash 为非负 uint32，duration 不超过 `time.Duration`（整小时最大 `2562047h`）。五类越界回归均证明零
+  timeout/kubectl/curl/go/etcdctl 调用，正常只读门禁保持通过；兼容错误前缀继续保留。聚焦连续两轮 0.808 秒、
+  race 1.721 秒，bash syntax、diff check 与全仓 vet 通过；production 清单保持 441 项并按 100/123/112/106
+  四片在最终代码状态全部通过（137.800/465.386/264.878/447.954 秒）。本项不改变合法只读诊断语义、
+  endpoint 集合或 HashKV 一致性合同，只让配置预期在首次外部探针前具有协议精确域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

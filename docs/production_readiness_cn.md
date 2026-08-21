@@ -1409,7 +1409,10 @@ revision 链。malformed success 不得成为只读、写入、清理或 lease �
 `Endpoint` 集合与请求集合完全一致、member ID 集合无重复；空 endpoint 或重复 endpoint
 会在调用 `etcdctl` 前 fail closed。`kubectl`、`curl`、`prefix-tool` 和 `etcdctl` 调用都由
 `TIMEOUT_CMD`（默认 `timeout`）按 `PROBE_TIMEOUT` 包裹；`PROBE_TIMEOUT` 必须是正数
-duration，单位为 `ms`、`s`、`m` 或 `h`。配置 `EXPECTED_HASHKV_HASH` 时还会运行
+duration，单位为 `ms`、`s`、`m` 或 `h`，并且换算后不得超过 Go `time.Duration`。
+数值期望必须与实际协议类型一致：Ready Pod 数为正 int32，prefix count 为非负 int64，
+cluster ID 为正 uint64，HashKV hash 为非负 uint32；所有字段要求规范十进制表示，越界或
+前导零在任何探针命令前拒绝。配置 `EXPECTED_HASHKV_HASH` 时还会运行
 `etcdctl endpoint hashkv -w json`；该变量必须与 `EXPECTED_STATUS_CLUSTER_ID` 同时
 配置。完整 HashKV 增强门禁还会读取 `/readyz?verbose`，要求包含
 `data_corruption`、`serializable_read`、`linearizable_read` 和 `non_learner` 四个 `ok`
