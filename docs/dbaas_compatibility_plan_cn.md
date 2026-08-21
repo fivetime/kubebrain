@@ -58944,6 +58944,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （210.408/582.954/348.196/572.129 秒）。本项不改变合法 timeout/receipt、Operation/recovery 语义、
   在线 etcd RPC 或 TiKV 编码。
 
+- A5247 收紧 `TiKVTransactionRepair`/`TiKVTransactionRecovery` 两个高风险 worker 的 lease 数值域。旧实现
+  仅用全数字 regex 后直接执行 Bash `>=6` 与默认 heartbeat `/3` 算术，超 int64 lease 可回绕并影响 claim、
+  heartbeat 与最终 fencing。现两条 runner 都在任何算术和 operationctl 调用前使用字符串级正 int64 helper，
+  再检查至少 6 秒；repair runner 新增与 recovery 共用的 MaxInt64 常量/门禁。独立回归证明精确
+  `9223372036854775807` 能安全计算默认 heartbeat 并以原值进入 claim，MaxInt64+1 在 operationctl 前拒绝。
+  聚焦连续两轮 0.320 秒、race 1.200 秒，bash syntax、diff check 与全仓 vet 通过。production 清单增至
+  416 项并按 98/114/103/101 四片全部通过（208.836/587.012/337.220/577.065 秒）。本项不改变合法
+  lease/heartbeat、Operation claim/fencing、repair/recovery 或在线 etcd/TiKV 语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

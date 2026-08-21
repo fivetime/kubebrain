@@ -579,6 +579,9 @@ requester 要求 KubeBrain desired/Ready 精确为 0、TidbCluster 3 PD/3 TiKV R
 quiesced schema，重算 Operation 名，只允许原语修复已审批 store；receipt 还必须逐项返回相同
 `repaired_store_ids`。worker 接管只复验已有 receipt，不会重复删除 TiKV Pod。修复成功后 KubeBrain
 仍保持 0 副本，必须再走下文独立的 `TiKVTransactionRecovery` 请求和审批，不能由 repair 自动恢复流量。
+repair/recovery 两个高风险 worker 的 `LEASE_SECONDS` 都必须在任何 Bash 算术、claim 或 heartbeat 前通过
+正 int64 校验，再要求至少 6 秒；默认 heartbeat interval 才可由 lease `/3` 计算。MaxInt64 合法，
+MaxInt64+1 不得调用 operationctl，避免 fencing 周期因整数回绕失真。
 
 在 Operation CRD、managed-namespace RBAC、worker/audit Admission 和 parameter broker 就绪后，静默
 修复路径还必须应用以下清单；Admission 必须早于授予 requester 身份实际凭据：
