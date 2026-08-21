@@ -59466,6 +59466,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （147.101/474.242/274.203/487.151 秒）。本项不改变已验证的 compaction border 编码与 skipped-key
   过滤语义，只让任何长期保留例外成为显式、可审计的 DBaaS 决策。
 
+- A5297 补齐独立 TiKV/PD 数据路径 mTLS flags 与组合实例 release gate 的覆盖差距。服务端已要求
+  `--tikv-ca-file`、`--tikv-cert-file`、`--tikv-key-file` 全有或全无，并要求 `--tikv-verify-cn` 只能随
+  TLS 使用；原 gate 只核验 PD 地址，不检查这四项，无法证明实例按发布意图使用 plaintext 或 mTLS。
+  现四个 optional 期望与唯一 Pod args 精确匹配，三文件组在首次 kubectl 前执行 all-or-none 校验，CN
+  allowlist 还要求非空、无控制字符、无重复项且必须有完整 TLS 组。回归证明缺 key 的半组和无 TLS 的 CN
+  在 Kubernetes 访问前拒绝，完整 CA/cert/key + `pd,tikv` 进入 args 核验；全空则明确拒绝未声明的 backend
+  TLS flags。bash syntax、diff check 与全仓 vet 通过；实例 gate 单轮 145.453 秒、连续两轮 286.391 秒、
+  race 149.903 秒。production 清单保持 448 项并按 102/127/113/106 四片在最终代码提交上全部通过
+  （146.984/473.797/269.468/486.911 秒）。本项不把示例 NetworkPolicy-isolated plaintext 清单冒充 mTLS，
+  也不替代启动时真实 PEM/keypair/CN 验证，只使传输模式成为明确发布契约。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
