@@ -1081,6 +1081,11 @@ timeout 共八个 duration，必须在第一次 Kubernetes 调用前通过 Go `t
 这也保证 completion duration 转秒并与 Bash `SECONDS` 组成 deadline 时不会溢出。尤其
 `PROBE_READY_TIMEOUT` 与 `ROLLOUT_TIMEOUT` 不得作为未校验环境变量进入已创建 probe Pod 或已触发
 StatefulSet restart 后的等待窗口。
+同一 mutation 前 admission 还按 probe Go flag 类型约束非 duration 控制：`EXPECTED_REPLICAS`、
+`PROBE_ITERATIONS`、`PROBE_LEASE_TTL` 必须是规范正 int64，client port 必须位于 `1..65535`；
+`PROBE_INTERVAL` 是追加 `s` 后缀的规范正十进制秒，最多 9 位小数且不得超过
+`9223372036.854775807`。零 interval、MaxInt64+1 整数或超范围端口不得等到 probe Pod 内的 Go flag
+parser/配置校验才失败，避免产生无效 Pod 和错误的滚动演练窗口。
 
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：

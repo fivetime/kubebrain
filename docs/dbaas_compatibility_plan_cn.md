@@ -59063,6 +59063,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （161.175/531.032/281.410/502.302 秒）。本项不改变合法 rollout/probe 默认值、数据面语义或发布拓扑，
   只让 mutation 前的时间预算具有与实际 Go probe 一致的可表示域。
 
+- A5258 将 rollout availability 的 mutation 前数值域对齐 native probe 的实际 Go flags。旧 runner 对 replicas、
+  iterations、lease TTL 只做无界正数字正则，client port 不限制到 65535，interval 甚至接受 `0` 和超出
+  `time.Duration` 的十进制秒；错误值会先创建 probe Pod，之后才由 Go flag/config 或网络栈拒绝。现前三项
+  统一要求规范正 int64，port 限制为 `1..65535`，新增字符串精确 decimal-seconds helper，接受最多 9 位
+  小数且上限为 `9223372036.854775807`。六类拒绝回归覆盖三项 MaxInt64+1、端口 65536、零 interval 与
+  最大 duration+1ns，全部证明首次 kubectl 前 fail closed；合法端口 65535、MaxInt64 lease TTL 和精确最大
+  interval 仍通过 fake rollout。聚焦连续两轮 1.911 秒、race 2.019 秒，bash syntax、diff check 与全仓 vet
+  通过；production 清单增至 430 项并按 100/119/107/104 四片全部通过
+  （166.184/556.673/299.237/555.732 秒）。本项不改变默认 rollout/probe 参数或在线 etcd/TiKV 语义，
+  只把配置错误前移到 mutation 之前。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
