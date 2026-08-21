@@ -1972,6 +1972,10 @@ claim 返回的 operation ID 和 instance 身份；二者必须匹配受控资�
 etcd endpoint 与 S3 endpoint 也会在任何导出或对象上传前拒绝控制字符、DEL、引号和
 反斜杠。非法 claim 或 endpoint 身份不会启动逻辑导出、artifact status 或对象上传，
 也不会被误记录为可重试备份失败。
+Backup 参数的数值域也必须与后续 Go 命令一致：`batch_size`、`retain_until_unix` 和
+`max_age_seconds` 只接受规范正 `int64`，`min_records` 只接受规范非负 `int64`。超出
+MaxInt64 的值必须在 export、artifact status 和 Object Lock executor 启动前失败，且不得
+留下 artifact 或 receipt；不能依赖 jq、shell 和 Go 对超大 JSON 数字的不同解释来延后拒绝。
 `hack/production/run-backup-deletion-operation.sh` 对 BackupDeletion claim 使用同一身份
 边界；参数中的 S3 endpoint 在任何 inventory/delete 对象工作流前执行同一字符门禁。
 非法 operation ID、instance 或 endpoint 不会进入对象工作流，也不会发布 operation

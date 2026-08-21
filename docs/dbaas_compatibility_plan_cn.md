@@ -59107,6 +59107,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （144.148/527.730/283.701/509.073 秒）。本项不改变合法 RPO、UID-precondition delete、receipt/fencing 或
   在线 etcd/TiKV 数据语义，只让删除前证据与等待算术共享精确域。
 
+- A5262 封闭受保护 Backup worker 的数值入口。旧 runner 只用无界数字正则接收 `batch_size`、
+  `retain_until_unix`、`min_records` 和 `max_age_seconds`，随后又把同一 JSON 数字分别交给 jq 与 Go
+  `strconv.ParseInt`，MaxInt64+1 可能在各层得到不一致解释。现前三项要求规范正 int64，minimum records
+  要求规范非负 int64，并在 export、artifact status 或 Object Lock executor 启动前完成校验；不额外缩窄
+  retention/RPO 等业务策略。表驱动回归逐项注入 MaxInt64+1，证明零 export/status/object 调用且不生成
+  artifact 或 receipt；正常受保护上传保持通过。聚焦连续两轮 3.830 秒、race 5.763 秒，bash syntax、
+  diff check 与全仓 vet 通过；production 清单增至 437 项并按 100/122/111/104 四片全部通过
+  （176.227/528.191/296.860/493.908 秒）。本项不改变合法备份格式、Object Lock receipt、owner fencing
+  或在线 etcd/TiKV 数据语义，只使 worker admission 与实际 Go 消费端共享精确可表示域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
