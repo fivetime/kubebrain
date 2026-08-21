@@ -238,6 +238,30 @@ fi
 		"transaction_verified":true
 	}`, string(receipt))
 
+	symlinkState := filepath.Join(tempDir, "receipt-symlink")
+	require.NoError(t, os.Mkdir(symlinkState, 0o755))
+	symlinkLog := filepath.Join(symlinkState, "kubectl.log")
+	symlinkReceipt := filepath.Join(symlinkState, "receipt.json")
+	symlinkVictim := filepath.Join(symlinkState, "victim")
+	predictableTemp := symlinkReceipt + ".tmp.repair-test-1"
+	require.NoError(t, os.WriteFile(symlinkVictim, []byte("sentinel\n"), 0o600))
+	require.NoError(t, os.Symlink(symlinkVictim, predictableTemp))
+	symlinkEnv := append([]string(nil), env...)
+	symlinkEnv = append(symlinkEnv,
+		"FAKE_STATE="+symlinkState,
+		"FAKE_LOG="+symlinkLog,
+		"RECEIPT_OUTPUT="+symlinkReceipt,
+	)
+	symlinkOutput, symlinkErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", symlinkEnv)
+	require.NoError(t, symlinkErr, string(symlinkOutput))
+	victimData, err := os.ReadFile(symlinkVictim)
+	require.NoError(t, err)
+	require.Equal(t, "sentinel\n", string(victimData))
+	receiptInfo, err := os.Lstat(symlinkReceipt)
+	require.NoError(t, err)
+	require.Zero(t, receiptInfo.Mode()&os.ModeSymlink)
+	require.FileExists(t, predictableTemp)
+
 	lockConflictState := filepath.Join(tempDir, "lock-conflict")
 	require.NoError(t, os.Mkdir(lockConflictState, 0o755))
 	lockConflictLog := filepath.Join(lockConflictState, "kubectl.log")

@@ -124,6 +124,7 @@ repair_phase="preflight"
 receipt_created=false
 repair_lock_acquired=false
 response_dir=""
+receipt_tmp=""
 capture_unix_time() {
   local response size value
   response="$(mktemp "$response_dir/unix-time.XXXXXX")" || return 1
@@ -155,6 +156,7 @@ cleanup_repair() {
   if [[ "$repair_lock_acquired" == "true" ]]; then
     kctl -n "$REPAIR_STATE_NAMESPACE" delete configmap "$repair_lock" --ignore-not-found --wait=true >/dev/null 2>&1 || true
   fi
+  [[ -z "$receipt_tmp" ]] || rm -f -- "$receipt_tmp" || true
   [[ -z "$response_dir" ]] || rm -rf -- "$response_dir"
   return "$status"
 }
@@ -754,8 +756,9 @@ if ! kctl -n "$REPAIR_STATE_NAMESPACE" create configmap "$cooldown_record" \
 fi
 persist_phase "completed"
 
-receipt_tmp="${RECEIPT_OUTPUT}.tmp.${REPAIR_ATTEMPT_ID}"
 umask 077
+receipt_tmp="$(mktemp "${RECEIPT_OUTPUT}.tmp.${REPAIR_ATTEMPT_ID}.XXXXXX")" || die "cannot create private repair receipt"
+chmod 600 "$receipt_tmp" || die "cannot protect private repair receipt"
 if [[ "$REPAIR_MODE" == "transaction" ]]; then
   printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-transaction-repair.receipt.v1","kubebrain_statefulset_uid":"%s","pvc_preserved":true,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
     "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
@@ -769,7 +772,9 @@ else
     "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$repaired_store_ids_json" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
     die "cannot write quiesced repair receipt"
 fi
-mv -f -- "$receipt_tmp" "$RECEIPT_OUTPUT" || die "cannot publish repair receipt"
+ln -- "$receipt_tmp" "$RECEIPT_OUTPUT" || die "cannot publish repair receipt"
+rm -f -- "$receipt_tmp" || die "cannot remove private repair receipt temporary file"
+receipt_tmp=""
 
 if [[ "$REPAIR_MODE" == "transaction" ]]; then
   echo "TiKV transaction-path repair succeeded: every Pod retained its PVC and end-to-end Put/Get/Delete recovered"
