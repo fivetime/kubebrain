@@ -12,6 +12,14 @@ operation_is_positive_int64() {
   fi
 }
 
+operation_is_nonnegative_int64() {
+  local value="$1"
+  [[ "$value" =~ ^(0|[1-9][0-9]{0,18})$ ]] || return 1
+  if (( ${#value} == 19 )) && [[ "$value" > "$OPERATION_MAX_INT64" ]]; then
+    return 1
+  fi
+}
+
 operation_is_decimal_int64() {
   local value="$1" whole
   [[ "$value" =~ ^(0|[1-9][0-9]{0,18})([.][0-9]{1,9})?$ ]] || return 1

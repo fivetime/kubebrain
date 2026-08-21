@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PRODUCTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "${PRODUCTION_DIR}/operation-time-validation.sh"
+
 REQUEST_ID="${REQUEST_ID:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
@@ -30,9 +33,9 @@ is_positive_uint64() {
 [[ "$REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "REQUEST_ID must be a DNS-compatible external repair decision ID"
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required (use in-cluster for service-account credentials)"
 [[ "$ENDPOINT" =~ ^https?://[^[:space:],]+$ ]] || die "ENDPOINT must be exactly one HTTP(S) URL"
-[[ "$PROBE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ && "$PROBE_TIMEOUT_SECONDS" -le 60 ]] || die "PROBE_TIMEOUT_SECONDS must be between 1 and 60"
-[[ "$POD_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ && "$POD_READY_TIMEOUT_SECONDS" -le 1800 ]] || die "POD_READY_TIMEOUT_SECONDS must be between 1 and 1800"
-[[ "$REPAIR_COOLDOWN_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "REPAIR_COOLDOWN_SECONDS must be a positive integer"
+operation_is_positive_int64 "$PROBE_TIMEOUT_SECONDS" && (( PROBE_TIMEOUT_SECONDS <= 60 )) || die "PROBE_TIMEOUT_SECONDS must be a positive int64 between 1 and 60"
+operation_is_positive_int64 "$POD_READY_TIMEOUT_SECONDS" && (( POD_READY_TIMEOUT_SECONDS <= 1800 )) || die "POD_READY_TIMEOUT_SECONDS must be a positive int64 between 1 and 1800"
+operation_is_positive_int64 "$REPAIR_COOLDOWN_SECONDS" || die "REPAIR_COOLDOWN_SECONDS must be a positive int64"
 for value in "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$TIDB_NAMESPACE" "$TIDB_CLUSTER" "$OPERATION_NAMESPACE"; do
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "resource identity must be a DNS label"
 done

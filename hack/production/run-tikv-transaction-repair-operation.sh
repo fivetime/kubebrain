@@ -192,10 +192,15 @@ for value in "$kb_namespace" "$kb_statefulset" "$tidb_namespace" "$tidb_cluster"
 done
 [[ "$endpoint" =~ ^https?://[^[:space:],]+$ ]] || die "repair endpoint is invalid"
 is_positive_uint64 "$expected_cluster_id" || die "repair cluster identity is not a positive uint64"
-[[ "$required_failed_probes" =~ ^[1-9][0-9]*$ && "$probe_interval" =~ ^[0-9]+$ && "$probe_timeout" =~ ^[1-9][0-9]*$ && "$pod_timeout" =~ ^[1-9][0-9]*$ && "$cooldown" =~ ^[1-9][0-9]*$ ]] || die "repair numeric parameter is invalid"
-if [[ "$repair_flow" == "quiesced" && ( "$probe_timeout" -gt 60 || "$pod_timeout" -gt 1800 ) ]]; then
-  die "quiesced repair timeout parameter exceeds the requester bound"
-fi
+operation_is_positive_int64 "$required_failed_probes" || die "repair required failed probes is not a positive int64"
+operation_is_nonnegative_int64 "$probe_interval" || die "repair probe interval is not a non-negative int64"
+operation_is_positive_int64 "$probe_timeout" || die "repair probe timeout is not a positive int64"
+operation_is_positive_int64 "$pod_timeout" || die "repair Pod timeout is not a positive int64"
+operation_is_positive_int64 "$cooldown" || die "repair cooldown is not a positive int64"
+(( required_failed_probes <= 20 )) || die "repair required failed probes exceeds 20"
+(( probe_interval <= 60 )) || die "repair probe interval exceeds 60 seconds"
+(( probe_timeout <= 60 )) || die "repair probe timeout exceeds 60 seconds"
+(( pod_timeout <= 1800 )) || die "repair Pod timeout exceeds 1800 seconds"
 if [[ "$repair_flow" == "transaction" ]]; then
   [[ "$alert_fingerprint" =~ ^[a-f0-9]{16,64}$ && "$alert_starts_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T && "$alert_occurrence_id" =~ ^[a-f0-9]{20}$ ]] || die "repair alert occurrence identity is invalid"
   computed_occurrence_id="$(printf '%s\n%s\n' "$alert_fingerprint" "$alert_starts_at" | sha256sum | cut -c1-20)"

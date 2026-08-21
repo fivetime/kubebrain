@@ -90,6 +90,35 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 	require.NoError(t, err)
 	require.Empty(t, takeoverRepairData, "takeover must verify the durable receipt without repairing TiKV twice")
 
+	for _, tc := range []struct {
+		old, replacement, want string
+	}{
+		{old: `"required_failed_probes":3`, replacement: `"required_failed_probes":9223372036854775808`, want: "repair required failed probes is not a positive int64"},
+		{old: `"probe_interval_seconds":5`, replacement: `"probe_interval_seconds":9223372036854775808`, want: "repair probe interval is not a non-negative int64"},
+		{old: `"probe_timeout_seconds":10`, replacement: `"probe_timeout_seconds":9223372036854775808`, want: "repair probe timeout is not a positive int64"},
+		{old: `"pod_ready_timeout_seconds":300`, replacement: `"pod_ready_timeout_seconds":9223372036854775808`, want: "repair Pod timeout is not a positive int64"},
+		{old: `"repair_cooldown_seconds":3600`, replacement: `"repair_cooldown_seconds":9223372036854775808`, want: "repair cooldown is not a positive int64"},
+		{old: `"required_failed_probes":3`, replacement: `"required_failed_probes":21`, want: "repair required failed probes exceeds 20"},
+		{old: `"probe_interval_seconds":5`, replacement: `"probe_interval_seconds":61`, want: "repair probe interval exceeds 60 seconds"},
+		{old: `"probe_timeout_seconds":10`, replacement: `"probe_timeout_seconds":61`, want: "repair probe timeout exceeds 60 seconds"},
+		{old: `"pod_ready_timeout_seconds":300`, replacement: `"pod_ready_timeout_seconds":1801`, want: "repair Pod timeout exceeds 1800 seconds"},
+	} {
+		overflowBytes := []byte(strings.Replace(string(parameterBytes), tc.old, tc.replacement, 1))
+		require.NoError(t, os.WriteFile(parameters, overflowBytes, 0o600))
+		overflowDigest := fmt.Sprintf("%x", sha256.Sum256(overflowBytes))
+		require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
+		overflowOutput, overflowErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+			"WORKER_ID=worker-numeric-overflow", "PARAMETERS_INPUT=" + parameters,
+			"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+			"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + overflowDigest,
+			"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+		})
+		require.Error(t, overflowErr)
+		require.Contains(t, string(overflowOutput), tc.want)
+		require.Empty(t, mustRead(t, repairLog), "overflow must fail before the destructive primitive")
+	}
+	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
+
 	receipts, err := filepath.Glob(filepath.Join(tempDir, "tikv-repair-*.receipt.json"))
 	require.NoError(t, err)
 	require.Len(t, receipts, 1)

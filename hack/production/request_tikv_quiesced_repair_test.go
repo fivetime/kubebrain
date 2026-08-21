@@ -158,6 +158,26 @@ fi
 	require.False(t, strings.Contains(string(logData), "secret"))
 }
 
+func TestRequestTiKVQuiescedRepairRejectsNumericOverflowBeforeKubernetes(t *testing.T) {
+	for _, tc := range []struct {
+		name, variable, value, want string
+	}{
+		{name: "probe timeout overflow", variable: "PROBE_TIMEOUT_SECONDS", value: "9223372036854775808", want: "PROBE_TIMEOUT_SECONDS must be a positive int64"},
+		{name: "Pod timeout overflow", variable: "POD_READY_TIMEOUT_SECONDS", value: "9223372036854775808", want: "POD_READY_TIMEOUT_SECONDS must be a positive int64"},
+		{name: "cooldown overflow", variable: "REPAIR_COOLDOWN_SECONDS", value: "9223372036854775808", want: "REPAIR_COOLDOWN_SECONDS must be a positive int64"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := runProductionScriptCommand(t, "request-tikv-quiesced-repair.sh", []string{
+				"REQUEST_ID=change-2026-overflow", "KUBE_CONTEXT=production",
+				"ENDPOINT=https://kubebrain.example:3379", tc.variable + "=" + tc.value,
+			})
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.want)
+			require.NotContains(t, string(output), "kubectl")
+		})
+	}
+}
+
 func TestProductionRunbookUsesAuthorizedTiKVQuiescedRepairPath(t *testing.T) {
 	docPath := filepath.Join("..", "..", "docs", "production_readiness_cn.md")
 	data, err := os.ReadFile(docPath)
