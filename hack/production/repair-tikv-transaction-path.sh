@@ -44,6 +44,8 @@ MAX_CONTROL_PLANE_SCALAR_RESPONSE_BYTES=4096
 MAX_CONTAINER_ARGS_RESPONSE_BYTES=65536
 MAX_DISK_USAGE_RESPONSE_BYTES=65536
 MAX_TRANSACTION_PROBE_RESPONSE_BYTES=65536
+MAX_UNIX_TIME_RESPONSE_BYTES=20
+MAX_UNIX_TIME=9223372036854775807
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -100,11 +102,33 @@ repair_phase="preflight"
 receipt_created=false
 repair_lock_acquired=false
 response_dir=""
+capture_unix_time() {
+  local response size value
+  response="$(mktemp "$response_dir/unix-time.XXXXXX")" || return 1
+  "$DATE" +%s >"$response" || return 1
+  chmod 600 "$response" || return 1
+  size="$(stat -Lc '%s' -- "$response")" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_UNIX_TIME_RESPONSE_BYTES" ]]; then
+    echo "completion time response is invalid" >&2
+    return 1
+  fi
+  value="$(cat "$response")" || return 1
+  if [[ ! "$value" =~ ^[1-9][0-9]{0,18}$ ]] ||
+     { (( ${#value} == 19 )) && [[ "$value" > "$MAX_UNIX_TIME" ]]; }; then
+    echo "completion time response is invalid" >&2
+    return 1
+  fi
+  printf '%s\n' "$value"
+}
 cleanup_repair() {
-  local status="$?"
+  local status="$?" finished_at_unix patch
   if [[ "$receipt_created" == "true" && "$repair_phase" != "completed" ]]; then
+    patch="{\"data\":{\"phase\":\"$repair_phase\"}}"
+    if finished_at_unix="$(capture_unix_time 2>/dev/null)"; then
+      patch="{\"data\":{\"phase\":\"$repair_phase\",\"finished-at-unix\":\"$finished_at_unix\"}}"
+    fi
     kctl -n "$REPAIR_STATE_NAMESPACE" patch configmap "$attempt_record" --type=merge \
-      -p "{\"data\":{\"phase\":\"$repair_phase\",\"finished-at-unix\":\"$($DATE +%s)\"}}" >/dev/null 2>&1 || true
+      -p "$patch" >/dev/null 2>&1 || true
   fi
   if [[ "$repair_lock_acquired" == "true" ]]; then
     kctl -n "$REPAIR_STATE_NAMESPACE" delete configmap "$repair_lock" --ignore-not-found --wait=true >/dev/null 2>&1 || true
@@ -690,7 +714,13 @@ else
 fi
 
 persist_phase "persisting-cooldown"
-completed_at_unix="$($DATE +%s)"
+completed_at_unix="$(capture_unix_time)" || {
+  repair_phase="failed-completion-time"
+  if [[ "$REPAIR_MODE" == "transaction" ]]; then
+    kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null 2>&1 || true
+  fi
+  die "completion time response is invalid; transaction mode was returned to zero replicas"
+}
 if ! kctl -n "$REPAIR_STATE_NAMESPACE" create configmap "$cooldown_record" \
   --from-literal="tidb-cluster-uid=$EXPECTED_TIDB_CLUSTER_UID" \
   --from-literal="cluster-id=$EXPECTED_CLUSTER_ID" \

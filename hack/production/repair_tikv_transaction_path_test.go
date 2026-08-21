@@ -18,7 +18,7 @@ func TestRepairTiKVTransactionPath(t *testing.T) {
 	stateDir := filepath.Join(tempDir, "state")
 	receiptPath := filepath.Join(tempDir, "repair-receipt.json")
 	require.NoError(t, os.Mkdir(stateDir, 0o755))
-	require.NoError(t, os.WriteFile(fakeDate, []byte("#!/usr/bin/env bash\nprintf '1786250000\\n'\n"), 0o755))
+	require.NoError(t, os.WriteFile(fakeDate, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"${FAKE_DATE_OUTPUT:-1786250000}\"\n"), 0o755))
 	require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_LOG"
@@ -368,6 +368,37 @@ fi
 		} else {
 			require.NoError(t, boundaryErr, string(boundaryOutput))
 			require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+		}
+	}
+	for _, dateOutput := range []string{"100000000000000000000", "9223372036854775807"} {
+		caseState := filepath.Join(tempDir, "completion-time-"+dateOutput)
+		require.NoError(t, os.Mkdir(caseState, 0o755))
+		caseReceipt := filepath.Join(caseState, "receipt.json")
+		caseLog := filepath.Join(caseState, "kubectl.log")
+		caseEnv := append([]string(nil), env...)
+		caseEnv = append(caseEnv,
+			"FAKE_STATE="+caseState,
+			"FAKE_LOG="+caseLog,
+			"RECEIPT_OUTPUT="+caseReceipt,
+			"FAKE_DATE_OUTPUT="+dateOutput,
+		)
+		boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+		if dateOutput == "100000000000000000000" {
+			require.Error(t, boundaryErr)
+			require.Contains(t, string(boundaryOutput), "completion time response is invalid")
+			require.NoFileExists(t, caseReceipt)
+			caseLogData, readErr := os.ReadFile(caseLog)
+			require.NoError(t, readErr)
+			caseLogText := string(caseLogData)
+			require.Equal(t, 3, strings.Count(caseLogText, "delete pod kb-tikv-"), caseLogText)
+			require.Equal(t, 2, strings.Count(caseLogText, "scale statefulset kubebrain --replicas=0"), caseLogText)
+			require.NotContains(t, caseLogText, "create configmap kubebrain-tikv-transaction-repair-last-success")
+		} else {
+			require.NoError(t, boundaryErr, string(boundaryOutput))
+			require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+			receiptData, readErr := os.ReadFile(caseReceipt)
+			require.NoError(t, readErr)
+			require.Contains(t, string(receiptData), `"completed_at_unix":9223372036854775807`)
 		}
 	}
 	for _, target := range []string{"pd", "tikv"} {
