@@ -58932,6 +58932,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/113/103/100 四片全部通过（183.243/502.259/309.034/492.572 秒）。本项不改变合法 Kubernetes/
   etcdctl 响应、identity/receipt、扩容/回退与事务语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5246 把 A5244 的 recovery 数值域门禁前移到 requester/worker，并收紧 durable receipt takeover。旧
+  requester 在 `[[ ... -le ... ]]` 中直接比较无界全数字 timeout，共享 worker 只验证正十进制且不复核
+  60/1800 上限；两者可冻结、审批并领取最终必被 primitive 拒绝的超 int64 参数。worker 对已有 receipt 的
+  `completed_at_unix` 也只要求正整数。现 requester 与 worker 均用字符串级正 int64 helper 先 admission，再
+  执行 60/1800 秒上限；worker 在启动 primitive 前完成检查，receipt verifier 额外要求完成时间不超过
+  `9223372036854775807`。测试证明两个 requester timeout 的 MaxInt64+1 在首次 Kubernetes 调用前拒绝，
+  worker 参数 overflow 在启动 primitive 前拒绝；strict takeover 接受精确 MaxInt64 receipt 并拒绝
+  MaxInt64+1。相关测试连续两轮 22.567 秒、race 11.416 秒，bash syntax、diff check 与全仓 vet 通过。
+  production 清单增至 415 项并按 98/114/103/100 四片全部通过
+  （210.408/582.954/348.196/572.129 秒）。本项不改变合法 timeout/receipt、Operation/recovery 语义、
+  在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

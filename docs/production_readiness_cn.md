@@ -545,6 +545,9 @@ StatefulSet UID 仍匹配时把数据面回滚到 0。目录 sync 失败后已�
 `PROBE_TIMEOUT_SECONDS` 与 `POD_READY_TIMEOUT_SECONDS` 必须在参与 Bash 算术或构造 timeout 参数前通过正
 int64 校验，再执行既有 60/1800 秒上限。最终 completion time 通过私有 0600 临时文件捕获，响应最多
 20 bytes 且值必须是正 int64；越界、超限或命令失败均不得发布 receipt，并须按相同 UID 回滚到 0。
+同一 timeout 契约必须由 recovery requester 在创建参数 Secret/提交 Operation 前执行，并由 worker 在启动
+primitive 前再次执行；不能审批一个必然被 primitive 拒绝的数值。worker 接管已有 receipt 时还必须要求
+`completed_at_unix <= MaxInt64`，精确 MaxInt64 合法，MaxInt64+1 不得完成 Operation。
 recovery 消费的每次 StatefulSet/TidbCluster JSON 各限制为 1 MiB，容器参数与 Put/Get probe stdout 各限制
 为 64 KiB，失败回退 UID 限制为 4096 bytes。所有输出先进入独立私有 0600 临时文件并检查大小，再进入
 shell/jq；超限身份不得授权扩容或按名称回滚，超限参数/probe 必须回滚已扩容的数据面。精确边界仍参与
