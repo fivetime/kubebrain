@@ -59186,6 +59186,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过（136.500/466.780/277.270/448.803 秒，其中 shard 2 因原会话退出证据不可读取而重新完整执行）。
   本项不改变合法 CNI 探针拓扑或 TCP allow/deny 语义，只限制发布门禁的资源寿命和等待上界。
 
+- A5270 将 restore cutover 与 post-restore audit 的期望副本数对齐 Kubernetes int32 域。两条直接 primitive
+  和两条持久 Operation worker 旧入口都只要求正 int64，但该值随后参与 Pod/EndpointSlice 拓扑计数、awk
+  schema 校验、jq JSON 数字和 worker→primitive 环境传递；int32+1 虽不可能成为 Kubernetes replicas，却会
+  被推进恢复工作流。现四层都要求规范正整数且不超过 `2147483647`。回归在每层覆盖 int32+1 与 int64+1：
+  primitive 在首次 Kubernetes 调用或状态写入前拒绝，worker 在启动子状态机前拒绝；另以 int32 最大值证明
+  四层均完成 admission 并进入后续冻结证据/拓扑一致性检查，而不是误拒合法边界。聚焦单轮 6.092 秒、连续
+  两轮 11.621 秒、race 6.851 秒，bash syntax、diff check 与全仓 vet 通过；production 清单增至 446 项并按
+  101/126/113/106 四片在最终代码状态全部通过（138.066/466.680/266.237/447.933 秒）。本项不改变合法
+  cutover、rollback、持续审计或 receipt 语义，只让恢复链的期望拓扑基数与 Kubernetes wire/API 类型一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

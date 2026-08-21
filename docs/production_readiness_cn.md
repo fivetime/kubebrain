@@ -5683,7 +5683,7 @@ receipt SHA，只能按其已有字段关联，不得声称追溯性完整 recei
 直接入口解析或生成的 restore verified、cutover marker、verified marker 和 cutover receipt completed 时间
 全部必须位于 `1..MaxInt64`；任何 Bash 算术比较都只能在该域校验成功后执行，避免超大十进制按有符号
 64 位回绕并伪造合法 chronology。
-切流等待控制也在 Operation worker 与直接状态机两层验证：`EXPECTED_REPLICAS` 必须是规范正 int64；
+切流等待控制也在 Operation worker 与直接状态机两层验证：`EXPECTED_REPLICAS` 必须是规范正 int32；
 `TIMEOUT_SECONDS` 必须是正 int64 且不超过 86400；`POLL_INTERVAL_SECONDS` 必须是非负 int64 且不大于
 timeout。worker 必须在启动 prepare primitive 前拒绝，直接 `switch-restore-traffic.sh` 必须在创建任何
 state/marker 或访问 Kubernetes 前拒绝。该边界保证 `SECONDS + TIMEOUT_SECONDS` deadline 不回绕，并避免
@@ -5695,9 +5695,9 @@ CAS 并要求源 Pod UID 集恢复。
 PostRestoreAudit runner 在子脚本返回后会重新冻结并双重校验 cutover state、cutover receipt 和 audit
 receipt，独立要求 `cutover completed_at_unix <= audit started_at_unix <= audit completed_at_unix`；
 倒序票据只允许进入 Retry，不能提交 Succeeded。该检查不依赖直接审计脚本已经执行过同一门禁。
-审计数值控制在 Operation worker 与直接 `audit-restored-instance.sh` 两层准入：expected replicas、
-duration、minimum samples 必须是规范正 int64，duration 不超过 86400；interval 必须是非负 int64 且不大于
-duration。以 `max(interval,1)` 作为最小有效采样间隔，`MIN_SAMPLES` 还不得超过
+审计数值控制在 Operation worker 与直接 `audit-restored-instance.sh` 两层准入：expected replicas 必须是
+规范正 int32；duration、minimum samples 必须是规范正 int64，duration 不超过 86400；interval
+必须是非负 int64 且不大于 duration。以 `max(interval,1)` 作为最小有效采样间隔，`MIN_SAMPLES` 还不得超过
 `duration/effective_interval + 1`，保证循环不会在声明观察窗口结束后继续无限补样本。worker 在启动 audit
 primitive 前拒绝，直接入口在写 receipt/state 或访问 Kubernetes/公开数据面前拒绝。
 cutover state、cutover receipt 与 post-restore audit receipt 都属于小型 control evidence，单文件上限
