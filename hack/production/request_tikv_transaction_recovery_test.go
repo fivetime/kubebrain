@@ -110,3 +110,20 @@ printf '{"metadata":{"uid":"kb-uid"},"spec":{"replicas":3},"status":{"readyRepli
 	require.NoError(t, readErr)
 	require.NotContains(t, string(data), "secret")
 }
+
+func TestRequestTiKVTransactionRecoveryRejectsNumericOverflowBeforeKubernetes(t *testing.T) {
+	for _, variable := range []string{"PROBE_TIMEOUT_SECONDS", "POD_READY_TIMEOUT_SECONDS"} {
+		dir := t.TempDir()
+		logPath := filepath.Join(dir, "kubectl.log")
+		kubectl := filepath.Join(dir, "kubectl")
+		require.NoError(t, os.WriteFile(kubectl, []byte("#!/usr/bin/env bash\nprintf called >\"$KUBECTL_LOG\"\n"), 0o755))
+		output, err := runProductionScriptCommand(t, "request-tikv-transaction-recovery.sh", []string{
+			"REQUEST_ID=change-2026-001", "KUBE_CONTEXT=test-context", "ENDPOINT=http://kubebrain:3379",
+			"KUBECTL=" + kubectl, "KUBECTL_LOG=" + logPath, "OPERATIONCTL=/bin/true",
+			variable + "=9223372036854775808",
+		})
+		require.Error(t, err)
+		require.Contains(t, string(output), variable+" must be a positive int64")
+		require.NoFileExists(t, logPath)
+	}
+}

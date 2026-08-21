@@ -40,8 +40,8 @@ fi
 set -euo pipefail
 env | sort >"$RECOVERY_LOG"
 [[ "${FAKE_RECOVERY_FAIL:-false}" != "true" ]] || exit 9
-printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786380000,"format":"kubebrain.tikv-repair-recovery.receipt.v1","kubebrain_statefulset_uid":"%s","ready_replicas":3,"request_id":"%s","storage_health_verified":true,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
-  "$RECOVERY_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$RECOVERY_REQUEST_ID" "$EXPECTED_TIDB_CLUSTER_UID" >"$RECEIPT_OUTPUT"
+printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-repair-recovery.receipt.v1","kubebrain_statefulset_uid":"%s","ready_replicas":3,"request_id":"%s","storage_health_verified":true,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
+  "$RECOVERY_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "${FAKE_COMPLETED_AT_UNIX:-1786380000}" "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$RECOVERY_REQUEST_ID" "$EXPECTED_TIDB_CLUSTER_UID" >"$RECEIPT_OUTPUT"
 `), 0o755))
 	realCP, err := exec.LookPath("cp")
 	require.NoError(t, err)
@@ -226,6 +226,43 @@ fi
 	require.Error(t, overflowErr)
 	require.Contains(t, string(overflowOutput), "cluster identity is not a positive uint64")
 	require.Empty(t, mustRead(t, recoveryLog))
+
+	for _, field := range []string{"probe_timeout_seconds", "pod_ready_timeout_seconds"} {
+		overflowNumeric := []byte(strings.Replace(string(parameterBytes), `"`+field+`":`+map[string]string{
+			"probe_timeout_seconds": "10", "pod_ready_timeout_seconds": "300",
+		}[field], `"`+field+`":9223372036854775808`, 1))
+		require.NoError(t, os.WriteFile(parameters, overflowNumeric, 0o600))
+		numericDigest := fmt.Sprintf("%x", sha256.Sum256(overflowNumeric))
+		require.NoError(t, os.WriteFile(recoveryLog, nil, 0o600))
+		numericOutput, numericErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", []string{
+			"WORKER_ID=worker-" + field, "PARAMETERS_INPUT=" + parameters, "OPERATIONCTL=" + operationctl,
+			"RECOVERY_COMMAND=" + recovery, "WORK_DIR=" + dir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
+			"EXPECTED_DIGEST=" + numericDigest, "OPERATION_LOG=" + operationLog, "RECOVERY_LOG=" + recoveryLog,
+		})
+		require.Error(t, numericErr)
+		require.Contains(t, string(numericOutput), "not a positive int64")
+		require.Empty(t, mustRead(t, recoveryLog))
+	}
+
+	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
+	for _, receipt := range maxReceipts {
+		_ = os.Remove(receipt)
+	}
+	require.NoError(t, os.WriteFile(recoveryLog, nil, 0o600))
+	maxReceiptTimeOutput, maxReceiptTimeErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv,
+		"WORKER_ID=worker-max-receipt-time", "FAKE_COMPLETED_AT_UNIX=9223372036854775807"))
+	require.NoError(t, maxReceiptTimeErr, string(maxReceiptTimeOutput))
+	timeReceipts, err := filepath.Glob(filepath.Join(dir, "tikv-recovery-*.receipt.json"))
+	require.NoError(t, err)
+	require.Len(t, timeReceipts, 1)
+	require.Contains(t, string(mustRead(t, timeReceipts[0])), `"completed_at_unix":9223372036854775807`)
+	require.NoError(t, os.Remove(timeReceipts[0]))
+	require.NoError(t, os.WriteFile(recoveryLog, nil, 0o600))
+	receiptTimeOutput, receiptTimeErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv,
+		"WORKER_ID=worker-receipt-time", "FAKE_COMPLETED_AT_UNIX=9223372036854775808"))
+	require.Error(t, receiptTimeErr)
+	require.Empty(t, receiptTimeOutput)
+	require.Contains(t, string(mustRead(t, operationLog)), "recovery receipt invalid")
 }
 
 func TestRunTiKVTransactionRecoveryOperationRejectsInvalidClaimNamespace(t *testing.T) {

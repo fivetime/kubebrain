@@ -13,12 +13,18 @@ WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
 MAX_UINT64=18446744073709551615
+MAX_INT64=9223372036854775807
 
 die() { echo "$*" >&2; exit 2; }
 is_positive_uint64() {
   local value="$1"
   [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
   if (( ${#value} == 20 )) && [[ "$value" > "$MAX_UINT64" ]]; then return 1; fi
+}
+is_positive_int64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,18}$ ]] || return 1
+  if (( ${#value} == 19 )) && [[ "$value" > "$MAX_INT64" ]]; then return 1; fi
 }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a DNS label"
@@ -148,7 +154,10 @@ for value in "$kb_namespace" "$kb_statefulset" "$tidb_namespace" "$tidb_cluster"
 done
 [[ "$endpoint" =~ ^https?://[^[:space:],]+$ ]] || die "recovery endpoint is invalid"
 is_positive_uint64 "$expected_cluster_id" || die "recovery cluster identity is not a positive uint64"
-[[ "$probe_timeout" =~ ^[1-9][0-9]*$ && "$pod_timeout" =~ ^[1-9][0-9]*$ ]] || die "recovery numeric parameter is invalid"
+is_positive_int64 "$probe_timeout" || die "recovery probe timeout is not a positive int64"
+is_positive_int64 "$pod_timeout" || die "recovery Pod timeout is not a positive int64"
+(( probe_timeout <= 60 )) || die "recovery probe timeout exceeds 60 seconds"
+(( pod_timeout <= 1800 )) || die "recovery Pod timeout exceeds 1800 seconds"
 [[ "$request_id" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "recovery request identity is invalid"
 request_hash="$(printf '%s\n%s\n%s\n%s\n' "$request_id" "$expected_kb_uid" "$expected_tidb_uid" "$expected_cluster_id" | sha256sum | cut -c1-20)"
 [[ "$name" == "tikv-recovery-${request_hash}" && "$operation_id" == "$name" ]] ||
@@ -206,7 +215,7 @@ $JQ -e --arg attempt_id "$recovery_attempt_id" --arg request_id "$request_id" --
   .request_id == $request_id and
   .ready_replicas == 3 and .storage_health_verified == true and
   .transaction_verified == true and
-  (.completed_at_unix | type == "number" and . > 0 and . == floor)
+  (.completed_at_unix | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor)
 ' "$receipt_output" >/dev/null || {
   finalize_heartbeat || exit 1
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "recovery receipt invalid; a new approved operation is required" >/dev/null

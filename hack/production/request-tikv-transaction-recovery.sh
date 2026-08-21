@@ -17,6 +17,7 @@ JQ="${JQ:-jq}"
 MAX_CONTROL_PLANE_RESPONSE_BYTES=1048576
 MAX_EXISTING_SECRET_RESPONSE_BYTES=87389
 MAX_UINT64=18446744073709551615
+MAX_INT64=9223372036854775807
 
 die() { echo "$*" >&2; exit 1; }
 is_positive_uint64() {
@@ -24,11 +25,18 @@ is_positive_uint64() {
   [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
   if (( ${#value} == 20 )) && [[ "$value" > "$MAX_UINT64" ]]; then return 1; fi
 }
+is_positive_int64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,18}$ ]] || return 1
+  if (( ${#value} == 19 )) && [[ "$value" > "$MAX_INT64" ]]; then return 1; fi
+}
 [[ "$REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "REQUEST_ID must be a DNS-compatible external recovery decision ID"
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required (use in-cluster for service-account credentials)"
 [[ "$ENDPOINT" =~ ^https?://[^[:space:],]+$ ]] || die "ENDPOINT must be exactly one HTTP(S) URL"
-[[ "$PROBE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ && "$PROBE_TIMEOUT_SECONDS" -le 60 ]] || die "PROBE_TIMEOUT_SECONDS must be between 1 and 60"
-[[ "$POD_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ && "$POD_READY_TIMEOUT_SECONDS" -le 1800 ]] || die "POD_READY_TIMEOUT_SECONDS must be between 1 and 1800"
+is_positive_int64 "$PROBE_TIMEOUT_SECONDS" || die "PROBE_TIMEOUT_SECONDS must be a positive int64"
+(( PROBE_TIMEOUT_SECONDS <= 60 )) || die "PROBE_TIMEOUT_SECONDS must be at most 60"
+is_positive_int64 "$POD_READY_TIMEOUT_SECONDS" || die "POD_READY_TIMEOUT_SECONDS must be a positive int64"
+(( POD_READY_TIMEOUT_SECONDS <= 1800 )) || die "POD_READY_TIMEOUT_SECONDS must be at most 1800"
 for value in "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$TIDB_NAMESPACE" "$TIDB_CLUSTER" "$OPERATION_NAMESPACE"; do
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "resource identity must be a DNS label"
 done
