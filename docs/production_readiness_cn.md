@@ -1044,6 +1044,8 @@ gRPC keepalive min-time、interval 与 timeout 必须是精确 `0`（禁用）�
 生产 Go duration，且可由 `time.Duration` 表示；负数、前导零、非法或溢出值必须在 kubectl 前拒绝。
 可选 gRPC max connection age/grace 必须为空、精确 `0`，或可表示的正整数 `ms/s/m/h` production duration；
 启用 connection age 时 grace 必须为正。非法、负数、前导零、溢出或组合不一致必须在 kubectl 前拒绝。
+可选 watch cache size 与 watch fanout buffer 非空时必须是生产 amd64/arm64 上的规范非负 Go `int`，即
+`0..9223372036854775807`；前导零、负数或越界值必须在 kubectl 前拒绝。
 auth token provider 必须是 etcd 兼容的 `simple`，或具有唯一 `key=value` 选项、受支持签名算法及相应
 pub-key/priv-key 路径的结构合法 `jwt`。不依赖 Pod 文件的语法错误必须在 kubectl 前拒绝；密钥 PEM、匹配性
 和 1MiB 上限继续由 KubeBrain 启动时在 Secret 挂载命名空间内 fail closed 校验。

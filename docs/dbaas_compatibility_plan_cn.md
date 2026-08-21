@@ -59337,6 +59337,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （140.236/467.019/266.626/462.174 秒）。本项不改变合法 TLS rotation、GOAWAY 或 drain grace 语义，
   只让发布期望与 endpoint config 的时钟及组合约束一致。
 
+- A5285 将组合实例 release gate 的 optional watch-cache-size 与 watch-fanout-buffer 对齐生产 64 位 Go
+  `int` 域。两项由 `IntVar` 解析且服务端拒绝负值；空期望保留“不要求该参数”，旧 gate 对非空值只做 args
+  字符串比较，前导零和 MaxInt64+1 会进入 Kubernetes。现非空值统一要求规范
+  `0..9223372036854775807`。回归证明 cache 前导零与 MaxInt64+1、fanout MaxInt64+1 均在首次 kubectl 前
+  拒绝，并以两项同时为 MaxInt64 证明精确边界进入参数一致性核验。聚焦单轮 127.782 秒、连续两轮
+  251.557 秒、race 126.422 秒，bash syntax、diff check 与全仓 vet 通过；production 清单保持 448 项并按
+  102/127/113/106 四片在最终代码状态全部通过（139.577/466.286/266.451/462.143 秒）。本项不改变合法
+  watch replay、cache fallback 或 fanout overrun 语义，只让 optional 发布期望与 Go flag 可表示域一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
