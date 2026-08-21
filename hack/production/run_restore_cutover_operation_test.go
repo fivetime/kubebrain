@@ -28,6 +28,30 @@ func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
 }
 
+func TestRestoreCutoverOperationRejectsNumericOverflowBeforePrimitive(t *testing.T) {
+	for _, tc := range []struct{ name, old, replacement, want string }{
+		{name: "replicas overflow", old: `"expected_replicas":2`, replacement: `"expected_replicas":9223372036854775808`, want: "cutover expected replicas must be a positive int64"},
+		{name: "timeout overflow", old: `"timeout_seconds":30`, replacement: `"timeout_seconds":9223372036854775808`, want: "cutover wait bounds require"},
+		{name: "timeout above one day", old: `"timeout_seconds":30`, replacement: `"timeout_seconds":86401`, want: "cutover wait bounds require"},
+		{name: "poll overflow", old: `"poll_interval_seconds":0`, replacement: `"poll_interval_seconds":9223372036854775808`, want: "cutover wait bounds require"},
+		{name: "poll above timeout", old: `"poll_interval_seconds":0`, replacement: `"poll_interval_seconds":31`, want: "cutover wait bounds require"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCutoverRunnerFixture(t)
+			parameters := []byte(strings.Replace(string(mustRead(t, f.parameters)), tc.old, tc.replacement, 1))
+			require.NoError(t, os.WriteFile(f.parameters, parameters, 0o600))
+			digest := fmt.Sprintf("%x", sha256.Sum256(parameters))
+			for i, value := range f.env {
+				if strings.HasPrefix(value, "PARAMETERS_DIGEST=") {
+					f.env[i] = "PARAMETERS_DIGEST=" + digest
+				}
+			}
+			f.run(t, false, "", tc.want)
+			require.NotContains(t, f.log(t), "phase ")
+		})
+	}
+}
+
 func TestRestoreCutoverOperationAcceptsRevisionBoundV2Evidence(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	promoteCutoverRunnerRestoreReceipt(t, f, 2, 0)

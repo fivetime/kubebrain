@@ -698,6 +698,24 @@ func TestRestoreTrafficRollbackRecoversPatchBeforeCutoverMarker(t *testing.T) {
 	require.Contains(t, string(data), "ROLLBACK")
 }
 
+func TestRestoreTrafficRejectsNumericOverflowBeforeKubernetes(t *testing.T) {
+	for _, tc := range []struct{ name, setting, want string }{
+		{name: "replicas overflow", setting: "EXPECTED_REPLICAS=9223372036854775808", want: "EXPECTED_REPLICAS must be a positive int64"},
+		{name: "timeout overflow", setting: "TIMEOUT_SECONDS=9223372036854775808", want: "restore traffic wait bounds require"},
+		{name: "timeout above one day", setting: "TIMEOUT_SECONDS=86401", want: "restore traffic wait bounds require"},
+		{name: "poll overflow", setting: "POLL_INTERVAL_SECONDS=9223372036854775808", want: "restore traffic wait bounds require"},
+		{name: "poll above timeout", setting: "POLL_INTERVAL_SECONDS=2", want: "restore traffic wait bounds require"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrafficFixture(t)
+			f.run(t, "prepare", false, tc.setting, tc.want)
+			entries, err := os.ReadDir(f.stateDir())
+			require.NoError(t, err)
+			require.Empty(t, entries, "numeric admission must fail before writing cutover state")
+		})
+	}
+}
+
 type trafficFixture struct {
 	dir, state string
 	env        []string

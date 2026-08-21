@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
 
 ACTION="${ACTION:-}"
 OPERATION_ID="${OPERATION_ID:-}"
@@ -85,11 +86,11 @@ done
   { echo "SERVICE_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
 [[ "$SOURCE_INSTANCE" != "$TARGET_INSTANCE" ]] ||
   { echo "SOURCE_INSTANCE and TARGET_INSTANCE must differ" >&2; exit 2; }
-for variable in EXPECTED_REPLICAS TIMEOUT_SECONDS; do
-  [[ "${!variable}" =~ ^[1-9][0-9]*$ ]] || { echo "${variable} must be a positive integer" >&2; exit 2; }
-done
-[[ "$POLL_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] ||
-  { echo "POLL_INTERVAL_SECONDS must be a non-negative integer" >&2; exit 2; }
+operation_is_positive_int64 "$EXPECTED_REPLICAS" ||
+  { echo "EXPECTED_REPLICAS must be a positive int64" >&2; exit 2; }
+operation_is_positive_int64 "$TIMEOUT_SECONDS" && (( TIMEOUT_SECONDS <= 86400 )) &&
+  operation_is_nonnegative_int64 "$POLL_INTERVAL_SECONDS" && (( POLL_INTERVAL_SECONDS <= TIMEOUT_SECONDS )) ||
+  { echo "restore traffic wait bounds require non-negative int64 poll <= positive int64 timeout <= 86400" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 command -v stat >/dev/null || { echo "stat is required" >&2; exit 2; }

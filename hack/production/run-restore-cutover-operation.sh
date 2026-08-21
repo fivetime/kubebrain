@@ -210,12 +210,11 @@ IFS=$'\t' read -r state_dir restore_receipt restore_receipt_sha backup_input bac
   poll_seconds data_context data_kubeconfig <<<"$parameters"
 [[ "$data_context" == "-" ]] && data_context=""
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
-for value in "$expected_replicas" "$timeout_seconds"; do
-  [[ "$value" =~ ^[1-9][0-9]*$ ]] ||
-    { echo "cutover parameters contain an invalid positive integer" >&2; exit 2; }
-done
-[[ "$poll_seconds" =~ ^[0-9]+$ ]] ||
-  { echo "cutover poll interval must be a non-negative integer" >&2; exit 2; }
+operation_is_positive_int64 "$expected_replicas" ||
+  { echo "cutover expected replicas must be a positive int64" >&2; exit 2; }
+operation_is_positive_int64 "$timeout_seconds" && (( timeout_seconds <= 86400 )) &&
+  operation_is_nonnegative_int64 "$poll_seconds" && (( poll_seconds <= timeout_seconds )) ||
+  { echo "cutover wait bounds require non-negative int64 poll <= positive int64 timeout <= 86400" >&2; exit 2; }
 for value in "$state_dir" "$restore_receipt" "$backup_input" "$service_namespace" \
   "$service_name" "$source_instance" "$target_instance" "$public_endpoint" "$receipt_output"; do
   [[ -n "$value" ]] || { echo "cutover parameters contain an empty required field" >&2; exit 2; }
