@@ -542,6 +542,9 @@ recovery primitive 还必须在首次 kubectl 前把两个 expected Kubernetes U
 最终 receipt 在目标同目录以不可预测 0600 `mktemp` 创建，先同步文件，再以 hard-link no-clobber 发布，删除
 私有临时链接后同步目录。并发出现的最终目标不得被覆盖；文件或目录 sync 失败都不得宣告恢复成功，并在
 StatefulSet UID 仍匹配时把数据面回滚到 0。目录 sync 失败后已可见的 receipt 保留供人工/reconcile 核查。
+`PROBE_TIMEOUT_SECONDS` 与 `POD_READY_TIMEOUT_SECONDS` 必须在参与 Bash 算术或构造 timeout 参数前通过正
+int64 校验，再执行既有 60/1800 秒上限。最终 completion time 通过私有 0600 临时文件捕获，响应最多
+20 bytes 且值必须是正 int64；越界、超限或命令失败均不得发布 receipt，并须按相同 UID 回滚到 0。
 
 如果 KubeBrain 已是 0 副本而 PD 仍有 pending/down Region，不能直接进入上述 recovery，因为 storage
 gate 必须拒绝；普通 transaction repair 也不能临时扩容数据面来制造失败探针。底层

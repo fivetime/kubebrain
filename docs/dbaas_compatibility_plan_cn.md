@@ -58910,6 +58910,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/113/103/100 四片全部通过（184.273/575.535/316.915/538.198 秒）。本项不改变合法 receipt schema、
   recovery identity、扩容/回退与事务验证语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5244 补齐 recovery primitive 数值控制与完成时间 evidence 的先验边界。旧 timeout 仅做全数字 regex 后
+  直接进入 Bash `((...))` 上限判断，超出 int64 的值可能回绕；`date +%s` 则由无界 command substitution
+  捕获，只要全数字就直接进入 receipt。现 `PROBE_TIMEOUT_SECONDS`/`POD_READY_TIMEOUT_SECONDS` 先通过
+  字符串级正 int64 helper，再执行既有 60/1800 上限与 `+10` rollout 算术。completion time 在私有 0600
+  临时文件中捕获，先限制到 20 bytes，再验证正 int64，所有路径由 subshell trap 清理。测试证明两个 timeout
+  的 MaxInt64+1 在首次 kubectl 前拒绝，completion MaxInt64 精确写入 durable receipt，MaxInt64+1 与 21-byte
+  响应均在发布前失败并按相同 StatefulSet UID 回滚到 0。聚焦连续两轮 45.511 秒、race 23.459 秒，bash
+  syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按 98/113/103/100 四片全部通过
+  （255.306/657.773/379.920/631.494 秒）。本项不改变合法 timeout/completion time、receipt schema、
+  recovery 扩容/回退语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
