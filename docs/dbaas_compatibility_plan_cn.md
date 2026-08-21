@@ -59175,6 +59175,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四片在最终代码状态全部通过（137.800/465.386/264.878/447.954 秒）。本项不改变合法只读诊断语义、
   endpoint 集合或 HashKV 一致性合同，只让配置预期在首次外部探针前具有协议精确域。
 
+- A5269 收紧 NetworkPolicy CNI enforcement 门禁的三个时间控制量。旧入口仅以无界数字/单位正则接收
+  probe TTL、连接 timeout 与 Pod Ready timeout，超大值可能进入 Bash 比较、GNU timeout、Pod
+  `activeDeadlineSeconds` 或 kubectl 的 Go duration 解析。现要求 TTL 为正 int64 且不超过 86400 秒，连接
+  timeout 为正 int64 且不超过 TTL，Ready timeout 为 `s`/`m`/`h` 整数形式、可由 Go `time.Duration`
+  表示且不超过 24 小时；所有校验都发生在首次 namespace 读取或 Pod 创建前。回归覆盖两个 int64/Go
+  duration 溢出、TTL/Ready 超过一天和连接 timeout 超过 TTL，均证明零 kubectl 调用；同时用
+  86400/86400/24h 证明精确上界仍完成正常门禁。聚焦连续两轮 2.391 秒、race 2.388 秒，bash syntax、
+  diff check 与全仓 vet 通过；production 清单增至 442 项并按 100/124/112/106 四片在最终代码状态全部
+  通过（136.500/466.780/277.270/448.803 秒，其中 shard 2 因原会话退出证据不可读取而重新完整执行）。
+  本项不改变合法 CNI 探针拓扑或 TCP allow/deny 语义，只限制发布门禁的资源寿命和等待上界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

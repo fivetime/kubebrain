@@ -59,6 +59,11 @@ DENIED_NAMESPACE=network-policy-negative-probe \
   hack/production/validate-network-policy.sh
 ```
 
+`PROBE_TTL_SECONDS` 必须是正 int64 且不超过 86400；`CONNECT_TIMEOUT_SECONDS` 必须是
+正 int64 且不超过该 TTL；`POD_READY_TIMEOUT` 只接受 `s`、`m`、`h` 整数形式的正 Go
+duration，且不超过 24 小时。脚本必须在读取 namespace 或创建任何探针 Pod 前完成这些校验，
+避免溢出值、超长资源存活期或连接等待进入 Kubernetes/CNI 门禁。
+
 脚本不修改 namespace 标签；它创建三个临时非重启 Pod，验证 client 3379、monitoring
 3378/2379/20180、KubeBrain 到 PD 2379/TiKV 20160 均可达，再验证未标记 namespace 到
 KubeBrain/PD/TiKV 均不可达。任何失败都返回非零，trap 清理所有已创建 Pod；已有同名 Pod
