@@ -454,6 +454,9 @@ receipt；transaction 模式必须把已恢复的 KubeBrain 再次缩到零并�
 cooldown ConfigMap 的 `completed-at-unix` 在 UID 代际分支和任何比较/减法前也必须通过同一正 int64 门禁；
 `2^64` 等可在 Bash 算术中回绕的全数字值必须被视为 malformed，并在 repair lock create 前 fail closed。
 不同 TidbCluster UID 的合法 MaxInt64 记录仍按既有代际语义忽略，不阻止新集群 repair。
+`EXPECTED_CLUSTER_ID` 必须是规范正 uint64，并在首次 Kubernetes 调用前验证；上限与 upstream etcd
+protobuf `ClusterID uint64`/Go `types.ID uint64` 一致。`2^64` 及更大值不得进入 TidbCluster identity fence、
+probe key、ConfigMap 或最终 receipt；精确 MaxUint64 必须保留十进制文本并可通过完整 repair。
 修复锁建立后的 KubeBrain `UID/desired/ready` quiesce identity、TidbCluster `UID/clusterID/PD/TiKV replicas`
 identity 及失败回退 UID 重读同样各自限制为 4096 bytes，并通过独立 0600 文件消费。超限时不得开始或
 继续 TiKV Pod 删除；精确 4096-byte 响应仍须满足原有 identity/topology 等值判断。

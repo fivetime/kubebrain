@@ -58815,6 +58815,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   414 项并按 98/113/103/100 四片全部通过（188.494/517.625/312.328/514.033 秒）。本项不改变合法 cooldown
   窗口、跨 TidbCluster 代际行为、repair/receipt 语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5236 将 repair 的 `EXPECTED_CLUSTER_ID` 数值域对齐 upstream etcd：`etcdserver.proto` 将 ClusterID 定义为
+  `uint64`，`client/pkg/types.ID` 也是 `uint64`。旧实现只用全数字 regex；当 fake TidbCluster 返回同一
+  `18446744073709551616`（2^64）时，identity fence 仍通过并完成 repair，把越界值写入 probe key、ConfigMap
+  与最终 JSON receipt（RED 16.43 秒）。现新增字符串级规范正 uint64 helper，20 位值通过字典序限制到
+  `18446744073709551615`，并在任何 kubectl 前验证。测试证明 2^64 不创建 fake kubectl 日志或 receipt，
+  精确 MaxUint64 可通过完整 TidbCluster identity fence、完成 transaction repair，并以原始十进制精度写入
+  receipt。聚焦测试 226.460 秒，连续两轮 454.938 秒、race 231.455 秒，完整相关回归 227.712 秒，bash
+  syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按 98/113/103/100 四片全部通过
+  （188.903/546.694/311.974/539.686 秒）。本项不改变合法 cluster ID、identity/probe/receipt 语义、在线
+  etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
