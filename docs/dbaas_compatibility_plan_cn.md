@@ -58963,6 +58963,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （205.998/559.670/312.546/524.745 秒；第 2 片首次夹具响应瞬态耗尽，原样重跑通过）。本项不改变合法
   heartbeat/lease、Operation claim/fencing、repair/recovery 或在线 etcd/TiKV 语义。
 
+- A5249 将 A5247/A5248 的精确时间 admission 扩展到全部 13 个 durable Operation heartbeat runner。其余
+  11 条 runner 仍允许无界全数字 lease 进入 Bash `/3`、`>=6` 等有符号算术，并以 awk/IEEE-754 double
+  比较显式 interval；native PITR restore 的 writer-check 也有相同浮点缺口。现新增随镜像交付的共享
+  `operation-time-validation.sh`，统一验证正 int64 lease、规范正 decimal-int64 interval，并用字符串精确
+  比较 interval 严格小于 lease；通用 executor 与两个独立 native PITR 镜像均显式携带该 helper。所有
+  runner 的表驱动回归证明 MaxInt64 lease 加 `9223372036854775806.999999999` 实际到达 operationctl，
+  MaxInt64+1 lease，以及 MaxInt64+1、`.1`、`01`、`1.`、十位小数 interval 均在 claim 前拒绝；restore
+  writer-check overflow 同样 fail closed。聚焦连续两轮 31.838 秒、race 13.337 秒，相关 worker 生命周期
+  回归 258.762 秒，bash syntax、diff check 与全仓 vet 通过。production 清单增至 419 项并按
+  98/116/103/102 四片全部通过（236.671/587.555/356.090/525.166 秒）。本项不改变合法 lease/interval、
+  Operation claim/fencing、备份/恢复/销毁/证书轮换/TiKV 修复流程或在线 etcd/TiKV 语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

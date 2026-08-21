@@ -5660,9 +5660,13 @@ A185 也支持显式 `KUBECONFIG_PATH`。
 工作结束后终止 heartbeat，涉及后续 terminal 提交的 worker 还会执行同步最终续租。续租失败时 heartbeat
 杀掉尚未完成的工作进程并返回 fencing 状态。禁止
 使用 `kill -0` 轮询工作进程完成，因为未 wait 的 zombie 仍可能返回存在并造成无限续租。
-全部 11 个 heartbeat worker 都在 claim 前要求 `0 < HEARTBEAT_INTERVAL_SECONDS < LEASE_SECONDS`；
-小数 interval 用数值比较而非字符串比较。等于或大于 lease 的配置无法保证首次续租前所有权仍有效，必须
-fail closed，不能依赖 terminal 前的最终同步续租补救执行期间已经存在的 takeover 窗口。
+全部 13 个 heartbeat worker 都在任何 Bash 算术和 claim 前通过共享
+`operation-time-validation.sh` 要求 lease 是正 int64，并要求显式 interval 是规范正 decimal-int64 秒且
+`HEARTBEAT_INTERVAL_SECONDS < LEASE_SECONDS`。比较按十进制字符串精确执行，禁止 awk/IEEE-754 浮点；
+MaxInt64 lease 与 `MaxInt64-0.000000001` interval 必须保持精确，整数溢出、前导零、`.1`、尾随小数点及
+超过 9 位小数必须 fail closed。native PITR restore 的 writer-check interval 使用同一契约。
+共享 helper 必须同时进入通用 executor 镜像和两个独立 native PITR 镜像。等于或大于 lease 的配置无法
+保证首次续租前所有权仍有效，不能依赖 terminal 前的最终同步续租补救执行期间已经存在的 takeover 窗口。
 
 参数读取服务使用
 `deploy/production/kubebrain-operation-parameter-broker.yaml`，默认零副本。先签发服务端
