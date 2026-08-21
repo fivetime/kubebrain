@@ -1040,6 +1040,8 @@ kubectl 前拒绝，并与容器唯一 `--v` 参数精确一致。
 leader lease duration、renew deadline 与 retry period 必须使用正整数加 `ms`、`s`、`m` 或 `h` 的生产
 Go duration 格式且可由 `time.Duration` 表示；非法、前导零或溢出值必须在 kubectl 前拒绝。运行时仍必须
 满足 `retry < renew < lease`，由 KubeBrain 配置校验最终强制执行。
+gRPC keepalive min-time、interval 与 timeout 必须是精确 `0`（禁用）或正整数加 `ms`、`s`、`m`、`h` 的
+生产 Go duration，且可由 `time.Duration` 表示；负数、前导零、非法或溢出值必须在 kubectl 前拒绝。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，

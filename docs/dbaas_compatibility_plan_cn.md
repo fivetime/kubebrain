@@ -59305,6 +59305,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （137.864/465.177/261.701/454.333 秒）。本项不改变合法 leader election、write fence 或 lease expiry
   extension 语义，只让生产发布期望在首次外部访问前具备有界、可审计的时钟格式。
 
+- A5282 将组合实例 release gate 的 gRPC keepalive min-time、interval 与 timeout 对齐 KubeBrain/etcd 的
+  transport policy。两者都只在 min-time `>0` 时启用 enforcement，并仅在 interval/timeout 同时 `>0` 时启用
+  server ping；`0` 是明确禁用值。旧门禁只检查非空，负数、非法格式、前导零和 `time.Duration` 溢出值会
+  进入 Kubernetes/args 核验。现三项统一要求精确 `0` 或正整数加 `ms`、`s`、`m`、`h`，并校验 Go duration
+  上界。回归证明负 min-time、溢出 interval 与前导零 timeout 均在首次 kubectl 前拒绝；三项同时为 0 和
+  interval 最大整小时 `2562047h` 均完成 admission、进入运行参数核验。聚焦单轮 123.220 秒、连续两轮
+  242.392 秒、race 121.834 秒，bash syntax、diff check 与全仓 vet 通过；production 清单保持 448 项并按
+  102/127/113/106 四片在最终代码状态全部通过（138.713/467.175/261.220/458.338 秒）。本项不改变合法
+  etcd keepalive 默认值、0 禁用或 gRPC transport 语义，只让发布期望在首次外部访问前具备精确可表示域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
