@@ -138,8 +138,8 @@ if [[ -z "$EXPECTED_PD_ADDRS" ]]; then
   echo "EXPECTED_PD_ADDRS is required" >&2
   exit 2
 fi
-if ! [[ "$EXPECTED_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]]; then
-  echo "EXPECTED_CLUSTER_ID is required and must be a positive integer" >&2
+if ! operation_is_positive_uint64 "$EXPECTED_CLUSTER_ID"; then
+  echo "EXPECTED_CLUSTER_ID is required and must be a canonical positive uint64" >&2
   exit 2
 fi
 if [[ -z "$EXPECTED_TIDB_CLUSTER_UID" ]]; then
