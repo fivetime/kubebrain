@@ -43,12 +43,12 @@ $JQ -e --arg root "$INPUT_ROOT" '
 for key in failed_operation_audit failed_operation_parameters old_plan old_restore_admission old_target_provisioning old_target_snapshot_empty; do path="$($JQ -r ".$key" "$params")"; [[ -f "$path" && "$(sha "$path")" == "$($JQ -r ".${key}_sha256" "$params")" ]] || die "$key digest mismatch"; done
 receipt="$WORK_DIR/${name}.native-pitr-target-retirement.json"
 verify_receipt(){ "$RECEIPT_VERIFY" --verify-only --input="$receipt" --old-target-provisioning="$($JQ -r .old_target_provisioning "$params")" --old-target-snapshot-empty="$($JQ -r .old_target_snapshot_empty "$params")" --old-restore-admission="$($JQ -r .old_restore_admission "$params")"; }
-if [[ "$attempt" == 2 ]]; then
-  if [[ -s "$receipt" ]] && verify_receipt; then runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$(sha "$receipt")" --message "reconciled verified durable target retirement receipt" >/dev/null; exit 0; fi
-  runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "previous retirement attempt has no valid durable receipt; inspect old target state manually" >/dev/null; exit 1
-fi
 heartbeat(){ runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; }
 run_retirement() {
+if [[ "$attempt" == 2 ]]; then
+  [[ -s "$receipt" ]] && verify_receipt
+  return
+fi
 authorization="$capture/authorization.json"
 "$RETIRE_AUTHORIZE" --failed-operation-audit="$($JQ -r .failed_operation_audit "$params")" --failed-operation-parameters="$($JQ -r .failed_operation_parameters "$params")" --old-plan="$($JQ -r .old_plan "$params")" --old-target-snapshot-empty="$($JQ -r .old_target_snapshot_empty "$params")" --old-target-provisioning="$($JQ -r .old_target_provisioning "$params")" --old-restore-admission="$($JQ -r .old_restore_admission "$params")" --output="$authorization"
 namespace="$($JQ -er .namespace "$authorization")"; cluster="$($JQ -er .tidb_cluster "$authorization")"; cluster_uid="$($JQ -er .tidb_cluster_uid "$authorization")"
@@ -87,6 +87,14 @@ wait "$heartbeat_pid"; heartbeat_rc=$?
 heartbeat_pid=0
 set -e
 [[ "$heartbeat_rc" -ne 75 ]] || die "target retirement ownership was fenced"
-[[ "$retirement_rc" -eq 0 ]] || exit "$retirement_rc"
 heartbeat || die "target retirement ownership was fenced"
+if [[ "$attempt" == 2 ]]; then
+  if [[ "$retirement_rc" -eq 0 ]]; then
+    runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$(sha "$receipt")" --message "reconciled verified durable target retirement receipt" >/dev/null
+    exit 0
+  fi
+  runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "previous retirement attempt has no valid durable receipt; inspect old target state manually" >/dev/null
+  exit 1
+fi
+[[ "$retirement_rc" -eq 0 ]] || exit "$retirement_rc"
 runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$(sha "$receipt")" --message "retired exact failed native PITR target" >/dev/null

@@ -82,6 +82,19 @@ func TestRunNativePITRFullRestoreOperationReconcilesReceiptWithoutBR(t *testing.
 	operations := string(mustReadProductionFile(t, operationLog))
 	require.Contains(t, operations, "reconciled verified durable native PITR full restore receipt without re-executing BR")
 	require.NoFileExists(t, restoreLog)
+
+	require.NoError(t, os.Remove(operationLog))
+	marker := filepath.Join(dir, "blocked-reconciliation")
+	output, err = runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
+		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=/bin/true",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "OPERATION_LOG=" + operationLog, "RESTORE_LOG=" + restoreLog, "ATTEMPT=2",
+		"HEARTBEAT_INTERVAL_SECONDS=0.05", "RECONCILE_BLOCK_MARKER=" + marker,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "native PITR restore reconciliation was fenced")
+	require.Equal(t, "terminated", string(mustReadProductionFile(t, marker)))
+	require.NotContains(t, string(mustReadProductionFile(t, operationLog)), "--action succeed")
 }
 
 func TestNativePITRReplacementRestorePassesHandoffToVerifier(t *testing.T) {
@@ -396,6 +409,8 @@ if [[ "$*" == *"--action claim"* ]]; then
 elif [[ "$*" == *"--action heartbeat"* && "${BLOCK_FINAL_HEARTBEAT:-false}" == true && -s "${DURABLE_RECEIPT:-/nonexistent}" ]]; then
   : >"$BLOCK_MARKER"
   sleep 30
+elif [[ "$*" == *"--action heartbeat"* && -s "${RECONCILE_BLOCK_MARKER:-/nonexistent}" ]]; then
+  exit 1
 fi
 `), 0o755))
 	return path
@@ -408,7 +423,13 @@ func writeNativeRestoreVerifier(t *testing.T, dir string, success bool) string {
 	if success {
 		exit = "0"
 	}
-	require.NoError(t, os.WriteFile(path, []byte("#!/usr/bin/env sh\nexit "+exit+"\n"), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(`#!/usr/bin/env sh
+if [ -n "${RECONCILE_BLOCK_MARKER:-}" ]; then
+  printf started >"$RECONCILE_BLOCK_MARKER"
+  trap 'printf terminated >"$RECONCILE_BLOCK_MARKER"; exit 143' TERM
+  while :; do sleep 0.05; done
+fi
+exit `+exit+"\n"), 0o755))
 	return path
 }
 

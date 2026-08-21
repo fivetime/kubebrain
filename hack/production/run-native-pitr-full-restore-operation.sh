@@ -110,7 +110,26 @@ if $JQ -e 'has("target_replacement_handoff")' "$params" >/dev/null; then
   verify_args+=(--target-replacement-handoff="$replacement_handoff" --old-target-snapshot-empty="$old_target" --old-target-provisioning="$old_provisioning" --old-target-retirement="$old_retirement" --old-restore-admission="$old_admission")
 fi
 if [[ "$attempt" == 2 ]]; then
-  if [[ -s "$receipt" ]] && "$RECEIPT_VERIFY" --receipt="$receipt" "${verify_args[@]}"; then
+  runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { echo "reconciliation heartbeat failed; native PITR restore worker was fenced" >&2; exit 1; }
+  verify_rc=1; hrc=0
+  if [[ -s "$receipt" ]]; then
+    heartbeat_fifo="$capture/reconciliation-heartbeat.stop"; mkfifo "$heartbeat_fifo"; exec {heartbeat_control_fd}<>"$heartbeat_fifo"
+    set -m
+    "$RECEIPT_VERIFY" --receipt="$receipt" "${verify_args[@]}" & child=$!
+    set +m
+    (
+      while ! IFS= read -r -t "$HEARTBEAT_INTERVAL_SECONDS" _ <&"$heartbeat_control_fd"; do
+        runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { kill_restore_group; exit 75; }
+      done
+    ) & heartbeat=$!
+    set +e; wait "$child"; verify_rc=$?; set -e; child=0
+    printf '\n' >&"$heartbeat_control_fd"
+    set +e; wait "$heartbeat"; hrc=$?; set -e; heartbeat=0
+    exec {heartbeat_control_fd}>&-
+  fi
+  [[ "$hrc" != 75 ]] || { echo "operation heartbeat failed; native PITR restore reconciliation was fenced" >&2; exit 1; }
+  runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { echo "final reconciliation heartbeat failed; native PITR restore worker was fenced" >&2; exit 1; }
+  if [[ "$verify_rc" == 0 ]]; then
     receipt_sha="$(sha "$receipt")"
     runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "reconciled verified durable native PITR full restore receipt without re-executing BR" >/dev/null
     exit 0

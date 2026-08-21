@@ -74,13 +74,33 @@ func TestNativePITRTargetRetirementSecondAttemptOnlyReconcilesReceipt(t *testing
 	operationctl := writeRetirementExecutable(t, dir, "operationctl", fmt.Sprintf(`#!/usr/bin/env bash
 printf 'ctl %%s\n' "$*" >>"$RETIRE_LOG"
 if [[ "$*" == *"--action claim"* ]]; then printf '%s\n' '{"name":"%s","operation_id":"%s","instance":"kubebrain","type":"NativePITRTargetRetirement","requested_by":"platform:native-pitr-target-retirement","attempt":2,"parameters_sha256":"%s"}'; fi
+if [[ "$*" == *"--action heartbeat"* && -s "${RECONCILE_BLOCK_MARKER:-/nonexistent}" ]]; then exit 1; fi
 `, "%s", name, name, digest))
 	verifier := writeRetirementExecutable(t, dir, "verify", `#!/usr/bin/env sh
+if [ -n "${RECONCILE_BLOCK_MARKER:-}" ]; then
+  printf started >"$RECONCILE_BLOCK_MARKER"
+  trap 'printf terminated >"$RECONCILE_BLOCK_MARKER"; exit 143' TERM
+  while :; do sleep 0.05; done
+fi
 exit 0
 `)
 	output, err := runProductionScriptCommand(t, "run-native-pitr-target-retirement-operation.sh", []string{"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest, "INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl, "RECEIPT_VERIFY=" + verifier, "RETIRE_AUTHORIZE=/bin/false", "UID_DELETE=/bin/false", "RETIRE_INSPECT=/bin/false", "KUBECTL=/bin/false", "RETIRE_LOG=" + log})
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(mustReadProductionFile(t, log)), "reconciled verified durable target retirement receipt")
+
+	require.NoError(t, os.Remove(log))
+	marker := filepath.Join(dir, "blocked-reconciliation")
+	output, err = runProductionScriptCommand(t, "run-native-pitr-target-retirement-operation.sh", []string{
+		"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
+		"INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl,
+		"RECEIPT_VERIFY=" + verifier, "RETIRE_AUTHORIZE=/bin/false", "UID_DELETE=/bin/false",
+		"RETIRE_INSPECT=/bin/false", "KUBECTL=/bin/false", "RETIRE_LOG=" + log,
+		"HEARTBEAT_INTERVAL_SECONDS=0.05", "RECONCILE_BLOCK_MARKER=" + marker,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "target retirement ownership was fenced")
+	require.Equal(t, "terminated", string(mustReadProductionFile(t, marker)))
+	require.NotContains(t, string(mustReadProductionFile(t, log)), "--action succeed")
 }
 
 func TestRequestNativePITRTargetRetirementIsApprovalBound(t *testing.T) {
