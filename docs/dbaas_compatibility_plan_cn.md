@@ -59367,6 +59367,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （138.232/466.808/261.800/466.868 秒）。本项不改变合法 safepoint 推进、0 禁用或历史读取语义，只让
   optional 发布期望与 Go flag/启动校验一致。
 
+- A5288 修复 watch progress notify interval 的真实安全上限偏差，并把组合实例 release gate 对齐同一
+  契约。Kubernetes apiserver 的 watch progress fallback margin 要求 cadence 严格小于 2.5 秒；服务端原
+  注释虽写 `<2.5s`，校验却只拒绝 `>2.5s`，因而错误接受精确 `2500ms`。现服务端以 `>=2.5s` 拒绝，发布
+  期望允许为空、精确 `0`（默认 1 秒），或严格小于 2.5 秒的规范正整数 `ms/s`；负数、前导零、非法值和
+  `2500ms` 均在首次 kubectl 前失败。正值低于 100ms 继续按既有语义 clamp 到 100ms。回归证明 `2500ms`
+  被拒绝、`2499ms` 被接受，并分别证明 release gate 的拒绝发生在 Kubernetes 访问前、0/2499ms 可进入
+  参数一致性核验。聚焦单轮 133.267 秒、连续两轮 263.517 秒、race 132.251 秒，bash syntax、diff check
+  与全仓 vet 通过；production 清单保持 448 项并按 102/127/113/106 四片在最终代码状态全部通过
+  （146.989/475.172/273.607/478.312 秒）。本项不改变默认 cadence、100ms clamp、显式 progress request
+  或事件交付语义，只关闭精确安全边界并防止发布配置绕过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
