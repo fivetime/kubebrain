@@ -59286,6 +59286,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   状态全部通过（139.215/463.017/264.507/452.569 秒）。本项不改变合法配额、NOSPACE 或 maintenance
   DbSizeQuota 语义，只让生产发布期望与 Go/etcd 配额类型一致。
 
+- A5280 将组合实例 release gate 的 log verbosity 对齐当前 `k8s.io/klog/v2@v2.140.0` 的真实解析域。
+  klog `Level` 是 int32，`Set` 明确用 `strconv.ParseInt(value, 10, 32)`；旧门禁却只要求无界非负数字，
+  前导零和 int32+1 会进入 Kubernetes/args 核验。共享数值 helper 现补充规范非负 int32 校验，发布期望要求
+  `0..2147483647`。回归证明前导零与 int32+1 在首次 kubectl 前拒绝，并以 int32 最大值证明 admission 后
+  进入唯一 `--v` 参数一致性核验。聚焦单轮 119.256 秒、连续两轮 234.817 秒、race 117.708 秒，bash
+  syntax、diff check 与全仓 vet 通过；production 清单保持 448 项并按 102/127/113/106 四片在最终代码状态
+  全部通过（136.411/464.878/262.249/455.033 秒）。本项不改变合法日志等级或运行日志语义，只让发布期望
+  与 klog flag parser 的可表示域一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
