@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
 
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_LABEL_SELECTOR="${KUBEBRAIN_LABEL_SELECTOR:-app.kubernetes.io/name=kubebrain}"
@@ -33,24 +34,24 @@ STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 ETCDCTL_USER="${ETCDCTL_USER:-}"
 ETCDCTL_PASSWORD="${ETCDCTL_PASSWORD:-}"
 
-if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "EXPECTED_READY_PODS must be a positive integer" >&2
+if ! operation_is_positive_int64 "$EXPECTED_READY_PODS" || (( EXPECTED_READY_PODS > 2147483647 )); then
+  echo "EXPECTED_READY_PODS must be a canonical positive int32" >&2
   exit 2
 fi
-if [[ -n "$EXPECTED_PREFIX_COUNT" && ! "$EXPECTED_PREFIX_COUNT" =~ ^[0-9]+$ ]]; then
-  echo "EXPECTED_PREFIX_COUNT must be empty or a non-negative integer" >&2
+if [[ -n "$EXPECTED_PREFIX_COUNT" ]] && ! operation_is_nonnegative_int64 "$EXPECTED_PREFIX_COUNT"; then
+  echo "EXPECTED_PREFIX_COUNT must be empty or a canonical non-negative int64" >&2
   exit 2
 fi
-if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" && ! "$EXPECTED_STATUS_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]]; then
-  echo "EXPECTED_STATUS_CLUSTER_ID must be empty or a positive integer" >&2
+if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]] && ! operation_is_positive_uint64 "$EXPECTED_STATUS_CLUSTER_ID"; then
+  echo "EXPECTED_STATUS_CLUSTER_ID must be empty or a canonical positive uint64" >&2
   exit 2
 fi
 if [[ -n "$EXPECTED_STATUS_VERSION" && ! "$EXPECTED_STATUS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
   echo "EXPECTED_STATUS_VERSION must be empty or a semver string" >&2
   exit 2
 fi
-if [[ -n "$EXPECTED_HASHKV_HASH" && ! "$EXPECTED_HASHKV_HASH" =~ ^[0-9]+$ ]]; then
-  echo "EXPECTED_HASHKV_HASH must be empty or a non-negative integer" >&2
+if [[ -n "$EXPECTED_HASHKV_HASH" ]] && ! operation_is_nonnegative_uint32 "$EXPECTED_HASHKV_HASH"; then
+  echo "EXPECTED_HASHKV_HASH must be empty or a canonical non-negative uint32" >&2
   exit 2
 fi
 if [[ -n "$EXPECTED_READYZ_NAMED_CHECKS" && "$EXPECTED_READYZ_NAMED_CHECKS" != "1" ]]; then
@@ -85,8 +86,8 @@ if [[ -n "$EXPECTED_PPROF_DISABLED_CHECKS" && "$EXPECTED_PPROF_DISABLED_CHECKS" 
   echo "EXPECTED_PPROF_DISABLED_CHECKS must be empty or 1" >&2
   exit 2
 fi
-if ! [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m|h)$ ]]; then
-  echo "PROBE_TIMEOUT must be a positive duration ending in ms, s, m, or h" >&2
+if ! operation_is_positive_go_duration_hms "$PROBE_TIMEOUT"; then
+  echo "PROBE_TIMEOUT must be a positive duration within Go time.Duration ending in ms, s, m, or h" >&2
   exit 2
 fi
 if [[ -n "$EXPECTED_HASHKV_HASH" && -z "$EXPECTED_STATUS_CLUSTER_ID" ]]; then

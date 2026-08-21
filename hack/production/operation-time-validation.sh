@@ -3,6 +3,8 @@
 # Shared exact-decimal admission for durable Operation worker lease clocks.
 # Callers must validate before any Bash arithmetic or operationctl invocation.
 OPERATION_MAX_INT64=9223372036854775807
+OPERATION_MAX_UINT64=18446744073709551615
+OPERATION_MAX_UINT32=4294967295
 
 operation_is_positive_int64() {
   local value="$1"
@@ -16,6 +18,22 @@ operation_is_nonnegative_int64() {
   local value="$1"
   [[ "$value" =~ ^(0|[1-9][0-9]{0,18})$ ]] || return 1
   if (( ${#value} == 19 )) && [[ "$value" > "$OPERATION_MAX_INT64" ]]; then
+    return 1
+  fi
+}
+
+operation_is_positive_uint64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
+  if (( ${#value} == 20 )) && [[ "$value" > "$OPERATION_MAX_UINT64" ]]; then
+    return 1
+  fi
+}
+
+operation_is_nonnegative_uint32() {
+  local value="$1"
+  [[ "$value" =~ ^(0|[1-9][0-9]{0,9})$ ]] || return 1
+  if (( ${#value} == 10 )) && [[ "$value" > "$OPERATION_MAX_UINT32" ]]; then
     return 1
   fi
 }
@@ -41,6 +59,17 @@ operation_is_positive_go_duration() {
   else
     [[ "$magnitude" < "$maximum" || "$magnitude" == "$maximum" ]]
   fi
+}
+
+operation_is_positive_go_duration_hms() {
+  local value="$1" magnitude
+  if [[ "$value" == *h ]]; then
+    magnitude="${value%h}"
+    operation_is_positive_int64 "$magnitude" || return 1
+    (( magnitude <= 2562047 ))
+    return
+  fi
+  operation_is_positive_go_duration "$value"
 }
 
 operation_is_positive_go_seconds_decimal() {

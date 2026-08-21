@@ -43,9 +43,60 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		clientPprof       string
 		extraEnv          []string
 		wantTimeout       []string
+		wantNoCommands    bool
 		wantOK            bool
 		wantOutput        string
 	}{
+		{
+			name:           "rejects ready Pod count above int32 before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[]`,
+			extraEnv:       []string{"EXPECTED_READY_PODS=2147483648"},
+			wantNoCommands: true,
+			wantOutput:     "EXPECTED_READY_PODS must be a canonical positive int32",
+		},
+		{
+			name:           "rejects prefix count overflow before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[]`,
+			extraEnv:       []string{"EXPECTED_PREFIX_COUNT=9223372036854775808"},
+			wantNoCommands: true,
+			wantOutput:     "EXPECTED_PREFIX_COUNT must be empty or a canonical non-negative int64",
+		},
+		{
+			name:           "rejects cluster ID overflow before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[]`,
+			extraEnv:       []string{"EXPECTED_STATUS_CLUSTER_ID=18446744073709551616"},
+			wantNoCommands: true,
+			wantOutput:     "EXPECTED_STATUS_CLUSTER_ID must be empty or a canonical positive uint64",
+		},
+		{
+			name:           "rejects HashKV hash overflow before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[]`,
+			extraEnv:       []string{"EXPECTED_STATUS_CLUSTER_ID=1", "EXPECTED_HASHKV_HASH=4294967296"},
+			wantNoCommands: true,
+			wantOutput:     "EXPECTED_HASHKV_HASH must be empty or a canonical non-negative uint32",
+		},
+		{
+			name:           "rejects probe duration overflow before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[]`,
+			extraEnv:       []string{"PROBE_TIMEOUT=2562048h"},
+			wantNoCommands: true,
+			wantOutput:     "PROBE_TIMEOUT must be a positive duration within Go time.Duration",
+		},
 		{
 			name: "passes read only dataplane gate",
 			podsJSON: `{"items":[
@@ -4590,6 +4641,9 @@ exec "$@"
 				for _, want := range tc.wantTimeout {
 					require.Contains(t, string(timeoutBytes), want)
 				}
+			}
+			if tc.wantNoCommands {
+				require.NoFileExists(t, timeoutLog)
 			}
 		})
 	}
