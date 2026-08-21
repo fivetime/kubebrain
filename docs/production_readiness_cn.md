@@ -428,6 +428,9 @@ TiKV 与 PD 的 Pod/UID/PVC inventory jsonpath 原始响应分别限制为 1 MiB
 任何 repair lock/API mutation 前分别受 4096-byte 门禁保护。0700 私有响应目录和退出清理在首次
 Kubernetes 读取前建立；cleanup 只有在本进程成功创建锁并设置 ownership 标志后才允许删除锁，锁冲突
 或初始 admission 失败只能清理本地目录，不能删除另一执行者的锁。
+初始 desired/Ready replicas、失败事务探针后的 Ready replicas 与 cooldown `TidbCluster UID/completed-at`
+也使用同一逐调用 4096-byte scalar 门禁。cooldown 查询使用 `--ignore-not-found`：对象确实不存在时得到空值，
+查询失败、权限错误或超限不得再被 `|| true` 伪装成“没有冷却记录”，且都必须在 lock create 前失败。
 修复锁建立后的 KubeBrain `UID/desired/ready` quiesce identity、TidbCluster `UID/clusterID/PD/TiKV replicas`
 identity 及失败回退 UID 重读同样各自限制为 4096 bytes，并通过独立 0600 文件消费。超限时不得开始或
 继续 TiKV Pod 删除；精确 4096-byte 响应仍须满足原有 identity/topology 等值判断。

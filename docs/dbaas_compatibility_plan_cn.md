@@ -58738,6 +58738,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lock/attempt receipt 或 repair 语义；初始 desired/ready replicas 与 cooldown 标量仍需后续独立门禁。
   在线 etcd RPC 与 TiKV 编码不变。
 
+- A5229 将 control-plane helper 泛化为逐调用 4096-byte scalar 门禁，覆盖初始 desired replicas、quiesced
+  Ready replicas、连续事务失败后的 Ready replicas、全部 identity，以及 cooldown `TidbCluster UID/completed-at`。
+  旧实现直接读取 replicas，4097-byte 响应的尾随换行会被 shell 静默剥离并继续完成修复
+  （RED 20.389 秒）。现每个标量先写入新 0600 文件并检查大小；replicas/cooldown 超限均在 lock create
+  和任何 mutation 前失败，精确 4096-byte 响应仍可完成修复。cooldown 改用 `--ignore-not-found` 表达真正
+  缺失，其他 kubectl/权限/资源错误与超限都 fail closed，不再被 `|| true` 吞掉。聚焦测试 156.823 秒，
+  连续两轮 307.167 秒、race 153.758 秒，完整相关回归 152.230 秒，bash syntax、diff check 与全仓 vet
+  通过。production 清单保持 414 项并按 98/113/103/100 四片全部通过
+  （207.653/459.147/321.140/522.997 秒）。本项不改变 replica/cooldown/identity/repair 语义；多行
+  KubeBrain container args inventory 仍需独立容量门禁。在线 etcd RPC 与 TiKV 编码不变。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
