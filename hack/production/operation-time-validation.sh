@@ -4,6 +4,7 @@
 # Callers must validate before any Bash arithmetic or operationctl invocation.
 OPERATION_MAX_INT64=9223372036854775807
 OPERATION_MAX_UINT64=18446744073709551615
+OPERATION_MAX_INT32=2147483647
 OPERATION_MAX_UINT32=4294967295
 
 operation_is_positive_int64() {
@@ -42,6 +43,14 @@ operation_is_nonnegative_uint32() {
   local value="$1"
   [[ "$value" =~ ^(0|[1-9][0-9]{0,9})$ ]] || return 1
   if (( ${#value} == 10 )) && [[ "$value" > "$OPERATION_MAX_UINT32" ]]; then
+    return 1
+  fi
+}
+
+operation_is_nonnegative_int32() {
+  local value="$1"
+  [[ "$value" =~ ^(0|[1-9][0-9]{0,9})$ ]] || return 1
+  if (( ${#value} == 10 )) && [[ "$value" > "$OPERATION_MAX_INT32" ]]; then
     return 1
   fi
 }
