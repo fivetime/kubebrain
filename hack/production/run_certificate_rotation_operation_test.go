@@ -29,21 +29,26 @@ func TestCertificateRotationOperationCompletesLifecycle(t *testing.T) {
 	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
 }
 
-func TestCertificateRotationOperationRejectsReplicaOverflowBeforeSteps(t *testing.T) {
+func TestCertificateRotationOperationRejectsReplicaBoundsBeforeSteps(t *testing.T) {
+	for _, replacement := range []string{`"expected_replicas":2147483648`, `"expected_replicas":9223372036854775808`} {
+		f := newRotationRunnerFixture(t)
+		parameters := []byte(strings.Replace(string(mustRead(t, f.parameters)), `"expected_replicas":3`, replacement, 1))
+		require.NoError(t, os.WriteFile(f.parameters, parameters, 0o600))
+		f.run(t, false, "CLAIM_DIGEST="+fmt.Sprintf("%x", sha256.Sum256(parameters)), "expected_replicas must be a canonical positive int32")
+		log := f.log(t)
+		require.NotContains(t, log, "gate ")
+		require.NotContains(t, log, "hook ")
+		require.NotContains(t, log, "--action retry")
+		require.NotContains(t, log, "--action succeed")
+	}
+}
+
+func TestCertificateRotationOperationAcceptsMaximumInt32Replicas(t *testing.T) {
 	f := newRotationRunnerFixture(t)
-	parameters := []byte(strings.Replace(
-		string(mustRead(t, f.parameters)),
-		`"expected_replicas":3`,
-		`"expected_replicas":9223372036854775808`,
-		1,
-	))
+	parameters := []byte(strings.Replace(string(mustRead(t, f.parameters)), `"expected_replicas":3`, `"expected_replicas":2147483647`, 1))
 	require.NoError(t, os.WriteFile(f.parameters, parameters, 0o600))
-	f.run(t, false, "CLAIM_DIGEST="+fmt.Sprintf("%x", sha256.Sum256(parameters)), "expected_replicas must be a positive int64")
-	log := f.log(t)
-	require.NotContains(t, log, "gate ")
-	require.NotContains(t, log, "hook ")
-	require.NotContains(t, log, "--action retry")
-	require.NotContains(t, log, "--action succeed")
+	f.run(t, false, "CLAIM_DIGEST="+fmt.Sprintf("%x", sha256.Sum256(parameters)), "expected=2147483647")
+	require.Contains(t, f.log(t), "gate begin")
 }
 
 func TestCertificateRotationOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {

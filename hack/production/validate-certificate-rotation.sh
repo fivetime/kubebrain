@@ -68,8 +68,8 @@ if contains_unsafe_endpoint_char "$ENDPOINT"; then
   echo "ENDPOINT must not contain control characters, quotes, or backslashes" >&2
   exit 2
 fi
-if ! operation_is_positive_int64 "$EXPECTED_REPLICAS"; then
-  echo "EXPECTED_REPLICAS must be a positive int64" >&2
+if ! operation_is_positive_int64 "$EXPECTED_REPLICAS" || (( EXPECTED_REPLICAS > 2147483647 )); then
+  echo "EXPECTED_REPLICAS must be a canonical positive int32" >&2
   exit 2
 fi
 for variable in OLD_CACERT OLD_CERT OLD_KEY NEW_CACERT NEW_CERT NEW_KEY; do

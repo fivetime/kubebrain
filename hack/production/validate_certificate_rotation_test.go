@@ -165,12 +165,20 @@ func TestValidateCertificateRotationFailsClosed(t *testing.T) {
 	}
 }
 
-func TestValidateCertificateRotationRejectsReplicaOverflowBeforeKubernetesOrState(t *testing.T) {
+func TestValidateCertificateRotationRejectsReplicaBoundsBeforeKubernetesOrState(t *testing.T) {
+	for _, setting := range []string{"EXPECTED_REPLICAS=2147483648", "EXPECTED_REPLICAS=9223372036854775808"} {
+		fixture := newRotationFixture(t)
+		fixture.run(t, "begin", false, setting, "EXPECTED_REPLICAS must be a canonical positive int32")
+		require.NoFileExists(t, filepath.Join(fixture.stateDir, "kubectl.log"))
+		require.NoFileExists(t, filepath.Join(fixture.stateDir, "rotation-1.state"))
+		require.NoFileExists(t, filepath.Join(fixture.stateDir, "rotation-1.receipt.json"))
+	}
+}
+
+func TestValidateCertificateRotationAcceptsMaximumInt32ReplicasBeforeTopologyCheck(t *testing.T) {
 	fixture := newRotationFixture(t)
-	fixture.run(t, "begin", false, "EXPECTED_REPLICAS=9223372036854775808", "EXPECTED_REPLICAS must be a positive int64")
-	require.NoFileExists(t, filepath.Join(fixture.stateDir, "kubectl.log"))
-	require.NoFileExists(t, filepath.Join(fixture.stateDir, "rotation-1.state"))
-	require.NoFileExists(t, filepath.Join(fixture.stateDir, "rotation-1.receipt.json"))
+	fixture.run(t, "begin", false, "EXPECTED_REPLICAS=2147483647", "expected 2147483647 KubeBrain Pods")
+	require.FileExists(t, filepath.Join(fixture.stateDir, "kubectl.log"))
 }
 
 func TestValidateCertificateRotationRejectsUnsafeEvidenceFields(t *testing.T) {
