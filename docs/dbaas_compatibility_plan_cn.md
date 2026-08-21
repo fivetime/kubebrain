@@ -59216,6 +59216,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   102/127/113/106 四片在最终代码状态全部通过（139.009/466.607/263.975/445.485 秒）。本项不改变合法
   TidbCluster 收敛、readiness probe 或逐 TiKV Debug gRPC 语义，只让控制面响应解析与 Kubernetes 类型一致。
 
+- A5273 修复组合实例 release gate 在验证前执行 request-size 算术的顺序缺口。旧入口先用
+  `EXPECTED_MAX_REQUEST_BYTES + 64` 比较 TiKV physical key 上限，之后才以无界数字正则检查 request 值；
+  非数字或 int64 溢出会先进入 Bash 算术并被重解释，而且门禁没有复现 KubeBrain endpoint config 的
+  `MaxRequestBytes <= math.MaxInt-512KiB` 约束。现 request bytes 先要求规范非负 int64 且不超过 64 位生产
+  平台的 `9223372036854251519`，TiKV max-key-size 再要求规范正 int64，最后才执行安全的 `+64` 比较。
+  回归证明非数字、平台上限+1、int64+1 以及 TiKV size int64+1 均在首次 kubectl 前拒绝，并以 request 精确
+  上界及 `+64` TiKV size 证明可进入 Kubernetes/运行参数核验。聚焦单轮 110.297 秒、连续两轮 218.902 秒、
+  race 109.172 秒，bash syntax、diff check 与全仓 vet 通过；production 清单保持 448 项并按
+  102/127/113/106 四片在最终代码状态全部通过（137.784/464.768/263.444/445.038 秒）。本项不改变合法
+  request admission 或 TiKV key 编码语义，只使发布门禁与 Go endpoint 配置及有符号 Bash 算术域一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

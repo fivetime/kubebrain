@@ -1017,6 +1017,10 @@ replicas 和 revision 全部收敛，确认 StatefulSet 已渲染固定 20160 TC
 都必须是规范正整数且不超过 Kubernetes replicas 的 `int32` 上限 `2147483647`。前导零、
 int32+1 或更大值必须在 readiness 子脚本或任何 kubectl 调用前拒绝，不能进入 Bash ordinal
 循环或 jq `--argjson`；int32 最大值仍属于合法 admission，由后续实际拓扑比对决定是否通过。
+`EXPECTED_MAX_REQUEST_BYTES` 必须先按生产 amd64/arm64 的非负 Go `int` 域校验，且不超过
+`MaxInt-512KiB`，与服务端为 gRPC transport overhead 保留的空间一致；
+`EXPECTED_TIKV_MAX_KEY_SIZE` 必须是正 int64，并至少比 request 上限多 64 字节物理 key 开销。
+两项都必须在任何 Bash 加法或 kubectl 调用前完成校验，禁止溢出后再比较。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，
