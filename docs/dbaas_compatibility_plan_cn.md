@@ -58898,6 +58898,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/113/103/100 四片全部通过（168.446/548.528/290.493/503.025 秒）。本项不改变合法 recovery
   identity、Operation/receipt schema、扩容/回退语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5243 修复 recovery durable receipt 落后于 repair publisher 的三项缺口。旧 primitive 在 identity fence
+  已匹配后仍把两个 Kubernetes `types.UID` 直接插入手写双引号，quote/backslash 会生成非法 JSON；同时使用
+  attempt 派生固定临时名和 `mv -f`，可覆盖并发出现的最终目标，且未同步文件内容或目录项就宣告恢复成功。
+  现于首次 kubectl 前把两个 UID 分别冻结为 jq JSON string token；receipt 在目标同目录用不可预测 0600
+  `mktemp` 独占创建，`sync -f` 文件后以 hard-link no-clobber 发布，删除私有临时链接并 `sync -f` 目录。
+  rollback trap 只清理本进程取得的临时文件；任一发布门禁失败都不设置 completed，并在相同 StatefulSet UID
+  下回滚到 0。测试证明特殊 UID strict JSON round-trip，并发目标保持 `concurrent-owner` 不被覆盖，第一次
+  sync 失败不发布 receipt，第二次目录 sync 失败保留已可见 evidence 但仍回滚且不宣告成功。聚焦连续两轮
+  32.637 秒、race 17.358 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按
+  98/113/103/100 四片全部通过（184.273/575.535/316.915/538.198 秒）。本项不改变合法 receipt schema、
+  recovery identity、扩容/回退与事务验证语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
