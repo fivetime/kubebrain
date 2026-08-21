@@ -477,8 +477,9 @@ ConfigMap、删除指定 TiKV Pod 所需的最小权限；不得获得 PVC delet
 两个 UID、cluster ID、attempt ID、完成时间、实际 1–3 个 repaired TiKV Pod、PVC preserved 与
 transaction verified，可被 Operation wrapper 重读并计算 SHA-256。
 最终 receipt 必须先在目标同目录用不可预测 `mktemp` 独占创建 0600 文件，再以 no-clobber hard-link 原子
-发布并删除私有临时链接；不得使用 attempt 派生的固定临时名，也不得覆盖并发出现的最终目标。退出 trap
-只能删除本进程由 mktemp 返回的路径，预置 symlink 或其他执行者文件不属于 cleanup 范围。
+发布并删除私有临时链接；发布前必须 `sync -f` 完整临时文件，发布并删除临时链接后必须 `sync -f` 目标
+目录，两个同步门禁都通过后才允许输出成功。不得使用 attempt 派生的固定临时名，也不得覆盖并发出现的
+最终目标。退出 trap 只能删除本进程由 mktemp 返回的路径，预置 symlink 或其他执行者文件不属于 cleanup 范围。
 每次调用还会创建不可复用的 `ConfigMap/kubebrain-tikv-repair-${REPAIR_ATTEMPT_ID}`，持续写入 `preflight`、
 `refused-healthy`、`refused-disk-pressure`、`refused-storage-safety`、`quiescing-kubebrain`、`replacing-tikv-N`、`restoring-kubebrain`、
 `persisting-cooldown` 或 `completed` 阶段；异常退出会把当时阶段和完成时间留在 receipt 中，

@@ -58836,6 +58836,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四片全部通过（174.380/545.656/343.987/540.293 秒）。本项不改变 receipt schema/content、repair 语义、
   在线 etcd RPC 或 TiKV 编码。
 
+- A5238 为 A5237 的原子 no-clobber receipt publisher 补齐掉电持久化顺序。旧实现完整写入随机 0600 文件后
+  直接 hard-link、删除临时链接并输出成功，没有同步文件内容或目录项；注入第一次 sync 失败时仍在 16.37 秒
+  内成功（RED）。现发布前执行 `sync -f` 私有临时文件，hard-link 并删除临时链接后执行 `sync -f` 目标目录，
+  两者都成功后才输出 repair succeeded。测试证明第一次同步失败不创建最终 receipt；第二次目录同步失败时
+  已原子可见的 receipt 保留供上层重读/reconcile，但本次执行不宣告成功。聚焦测试 244.113 秒，连续两轮
+  531.700 秒、race 285.265 秒，完整相关回归 247.642 秒，bash syntax、diff check 与全仓 vet 通过。
+  production 清单保持 414 项并按 98/113/103/100 四片全部通过
+  （177.894/505.416/304.513/476.098 秒）。本项不改变 receipt schema/content、no-clobber、repair 语义、
+  在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
