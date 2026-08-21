@@ -59445,6 +59445,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   代码提交上全部通过（147.698/475.474/275.282/484.861 秒）。本项不删除兼容开关，只将生产默认和任何
   例外都变为可审计发布决定。
 
+- A5295 将组合实例 release gate 的 TLS 期望组合约束对齐 endpoint `SecurityConfig.init`，避免错误期望
+  先进入 Kubernetes 再依赖 Pod crash 暴露。现 client/peer 两组均要求 cert/key 同时存在或同时为空；
+  trusted CA、server-name 或 client-cert-auth=true 要求同组 keypair，client-cert-auth=true 还必须有
+  trusted CA。回归证明 client cert 缺 key、peer server-name 无 keypair、client auth 无 CA 均在首次
+  kubectl 前拒绝，完整生产 mTLS 组继续进入 args 与实际 Secret 内容核验。审计未从示例 Secret 找到可证明
+  的固定 leaf CN/SAN，因此没有臆造 `client-cert-allowed-hostname` 或 peer CN allowlist；该身份收紧仍需
+  平台签发策略提供权威值后实施并纳入 rotation receipt。bash syntax、diff check 与全仓 vet 通过；实例
+  gate 单轮 139.978 秒、连续两轮 278.188 秒、race 144.771 秒。production 清单保持 448 项并按
+  102/127/113/106 四片在最终代码提交上全部通过（145.620/473.680/272.132/482.838 秒）。本项不替代
+  启动时 PEM、keypair、CA bundle、CRL 和 hostname 的真实密码学验证，只把可静态判定的组合错误前移。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

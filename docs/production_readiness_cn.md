@@ -1081,6 +1081,10 @@ surface 的专用实例必须显式更改 release 期望，并另行验证 `/v3/
 client/peer `allow-insecure` 与 `enable-pprof` 必须使用显式布尔值并分别与唯一 Pod 参数匹配；两份生产
 清单统一固定为 `false`。TLS 实例不得在同一 listener 接受明文降级，info 端口也不得因镜像默认变化暴露
 `/debug/pprof/*`。临时启用任何一项都必须同步更改 release 期望、限定网络面并在排障后重新发布为 false。
+release TLS 期望还必须在 kubectl 前满足服务端组合约束：client/peer cert 与 key 必须成对出现；trusted
+CA、server-name 或启用 client-cert-auth 时必须已有同组 cert/key；client-cert-auth=true 还必须有 trusted
+CA。证书 leaf 的 CN/SAN allowlist 只能在签发策略提供不可变身份后设置，不能根据 Secret 名称猜测；一旦
+平台声明该约束，也必须把对应 allowlist 纳入发布期望和轮换门禁。
 启用 gateway 的生产实例必须显式设置唯一 CORS Origin allowlist，禁止 `*`、重复值、凭据、路径、query
 或 fragment；每项只能是规范 HTTP(S) Origin。plaintext client 入口还必须设置唯一 Host hostname/IP
 allowlist，禁止 `*` 与带端口值，以阻断 DNS rebinding。TLS 请求按 etcd 语义不依赖 Host allowlist。
