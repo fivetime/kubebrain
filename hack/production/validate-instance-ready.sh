@@ -253,13 +253,38 @@ for variable in EXPECTED_GRPC_KEEPALIVE_MIN_TIME EXPECTED_GRPC_KEEPALIVE_INTERVA
     exit 2
   fi
 done
-for variable in EXPECTED_AUTH_TOKEN; do
-  value="${!variable}"
-  if [[ -z "$value" ]]; then
-    echo "${variable} must be non-empty" >&2
-    exit 2
-  fi
-done
+validate_auth_token_provider_syntax() {
+  local spec="$1" provider option key value method="" public_key="" private_key=""
+  local -a parts
+  local -A seen=()
+  IFS=',' read -r -a parts <<<"$spec"
+  provider="${parts[0]:-}"
+  [[ "$provider" == simple || "$provider" == jwt ]] || return 1
+  for option in "${parts[@]:1}"; do
+    [[ "$option" =~ ^[^=]*=[^=]*$ ]] || return 1
+    key="${option%%=*}"
+    value="${option#*=}"
+    [[ -z "${seen["key:${key}"]+present}" ]] || return 1
+    seen["key:${key}"]=1
+    case "$key" in
+      sign-method) method="$value" ;;
+      pub-key) public_key="$value" ;;
+      priv-key) private_key="$value" ;;
+    esac
+  done
+  [[ "$provider" == simple ]] && return 0
+  case "$method" in
+    HS256|HS384|HS512) [[ -n "$private_key" ]] ;;
+    RS256|RS384|RS512|PS256|PS384|PS512|ES256|ES384|ES512|EdDSA)
+      [[ -n "$public_key" || -n "$private_key" ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+if ! validate_auth_token_provider_syntax "$EXPECTED_AUTH_TOKEN"; then
+  echo "EXPECTED_AUTH_TOKEN must be a supported simple or structurally valid jwt provider" >&2
+  exit 2
+fi
 for variable in EXPECTED_COMPATIBLE_WITH_ETCD EXPECTED_ENABLE_COUNT_INDEX EXPECTED_ENABLE_STORAGE_METRICS; do
   value="${!variable}"
   if [[ "$value" != "true" && "$value" != "false" ]]; then
