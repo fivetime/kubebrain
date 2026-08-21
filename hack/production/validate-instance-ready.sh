@@ -284,6 +284,26 @@ if [[ -n "$EXPECTED_STORAGE_GC_LIFETIME" ]] &&
   echo "EXPECTED_STORAGE_GC_LIFETIME must be empty, 0, or a positive production Go duration using an integer ms, s, m, or h unit" >&2
   exit 2
 fi
+validate_watch_progress_notify_interval() {
+  local value="$1" magnitude
+  [[ "$value" == 0 ]] && return 0
+  case "$value" in
+    *ms)
+      magnitude="${value%ms}"
+      operation_is_positive_int64 "$magnitude" && (( magnitude < 2500 ))
+      ;;
+    *s)
+      magnitude="${value%s}"
+      operation_is_positive_int64 "$magnitude" && (( magnitude < 3 ))
+      ;;
+    *) return 1 ;;
+  esac
+}
+if [[ -n "$EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL" ]] &&
+  ! validate_watch_progress_notify_interval "$EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL"; then
+  echo "EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL must be empty, 0, or a positive integer ms/s duration below 2.5s" >&2
+  exit 2
+fi
 validate_auth_token_provider_syntax() {
   local spec="$1" provider option key value method="" public_key="" private_key=""
   local -a parts

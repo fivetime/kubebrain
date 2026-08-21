@@ -120,6 +120,42 @@ func TestValidateInstanceReady(t *testing.T) {
 		wantOutput               string
 	}{
 		{
+			name:          "watch progress interval is negative",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL=-1s"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL must be empty, 0, or a positive integer ms/s duration below 2.5s",
+		},
+		{
+			name:          "watch progress interval reaches safety cap",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL=2500ms"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL must be empty, 0, or a positive integer ms/s duration below 2.5s",
+		},
+		{
+			name:        "default watch progress interval reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL=0"},
+			wantKubectl: true,
+			wantOutput:  "watch progress notify interval configuration mismatch",
+		},
+		{
+			name:        "maximum production watch progress interval reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL=2499ms"},
+			wantKubectl: true,
+			wantOutput:  "watch progress notify interval configuration mismatch",
+		},
+		{
 			name:          "storage GC lifetime is negative",
 			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

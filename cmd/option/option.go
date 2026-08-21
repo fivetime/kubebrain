@@ -373,7 +373,7 @@ func (o *KubeBrainOption) Validate() error {
 	}
 
 	const watchProgressNotifyIntervalMax = 2500 * time.Millisecond
-	if o.watchProgressNotifyInterval > watchProgressNotifyIntervalMax {
+	if o.watchProgressNotifyInterval >= watchProgressNotifyIntervalMax {
 		return fmt.Errorf("--watch-progress-notify-interval %v is too large: must be < %v (kube-apiserver blocks consistent reads on progress for only 3s before falling back to a full storage LIST)",
 			o.watchProgressNotifyInterval, watchProgressNotifyIntervalMax)
 	}

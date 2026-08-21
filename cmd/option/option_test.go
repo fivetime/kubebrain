@@ -234,6 +234,16 @@ func TestWatchProgressNotifyIntervalValidation(t *testing.T) {
 	require.Error(t, err, ">=2.5s must be rejected")
 	require.Contains(t, err.Error(), "watch-progress-notify-interval")
 
+	o = newValid()
+	o.watchProgressNotifyInterval = 2500 * time.Millisecond
+	err = o.Validate()
+	require.Error(t, err, "exactly 2.5s must be rejected")
+	require.Contains(t, err.Error(), "watch-progress-notify-interval")
+
+	o = newValid()
+	o.watchProgressNotifyInterval = 2499 * time.Millisecond
+	require.NoError(t, o.Validate(), "2.499s remains below the cap")
+
 	// <=0 keeps the "use built-in default" semantic and must stay accepted.
 	o = newValid()
 	o.watchProgressNotifyInterval = 0
