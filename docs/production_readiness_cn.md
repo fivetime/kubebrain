@@ -1008,6 +1008,10 @@ ETCDCTL_KEY=/run/secrets/client.key \
 门禁先要求 TidbCluster `Ready=True` 且 PD/TiKV StatefulSet generation、ready/updated
 replicas 和 revision 全部收敛，确认 StatefulSet 已渲染固定 20160 TCP readiness，并逐 Pod
 请求 TiKV 20160 gRPC 服务，再校验期望 PD/TiKV 数量；
+`EXPECTED_KUBEBRAIN_REPLICAS`、`EXPECTED_PD_REPLICAS` 和 `EXPECTED_TIKV_REPLICAS`
+都必须是规范正整数且不超过 Kubernetes replicas 的 `int32` 上限 `2147483647`。前导零、
+int32+1 或更大值必须在 readiness 子脚本或任何 kubectl 调用前拒绝，不能进入 Bash ordinal
+循环或 jq `--argjson`；int32 最大值仍属于合法 admission，由后续实际拓扑比对决定是否通过。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，

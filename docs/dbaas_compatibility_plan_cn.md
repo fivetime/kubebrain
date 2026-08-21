@@ -59155,6 +59155,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （135.516/464.100/266.397/443.164 秒）。本项不改变合法 Operator topology、rollout fencing 或 TiKV/PD
   数据面语义，只让控制面期望基数与 Kubernetes wire/API 类型精确一致。
 
+- A5267 将组合实例 release gate 的 KubeBrain/PD/TiKV 三组期望副本数统一到 Kubernetes int32 域。旧入口只
+  要求无界正数字，后续同一值分别进入 StatefulSet/TidbCluster 比较、Bash ordinal 循环和 jq `--argjson`，
+  超大值可能产生回绕、长循环或浮点舍入。现三项都要求规范正整数且不超过 `2147483647`。回归分别覆盖
+  KubeBrain int32+1、PD 前导零和 TiKV int64+1，均以完整 fixture 的调用日志证明首次 kubectl 前 fail closed；
+  KubeBrain int32 最大值通过 admission、完成 TidbCluster readiness 后由真实 StatefulSet topology mismatch
+  拒绝，正常组合收敛路径保持通过。聚焦连续两轮 4.286 秒、race 3.407 秒，bash syntax、diff check 与全仓
+  vet 通过；production 清单保持 441 项并按 100/123/112/106 四片全部通过
+  （136.527/463.974/264.196/443.820 秒）。本项不改变合法实例拓扑、rollout/runtime identity 或 etcd/TiKV
+  数据语义，只使三层期望基数与 Kubernetes API 类型一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
