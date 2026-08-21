@@ -120,6 +120,42 @@ func TestValidateInstanceReady(t *testing.T) {
 		wantOutput               string
 	}{
 		{
+			name:          "watch cache size is not canonical",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_WATCH_CACHE_SIZE=01"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_WATCH_CACHE_SIZE must be empty or a canonical non-negative Go int",
+		},
+		{
+			name:          "watch cache size overflows Go int",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_WATCH_CACHE_SIZE=9223372036854775808"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_WATCH_CACHE_SIZE must be empty or a canonical non-negative Go int",
+		},
+		{
+			name:          "watch fanout buffer overflows Go int",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_WATCH_FANOUT_BUFFER=9223372036854775808"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_WATCH_FANOUT_BUFFER must be empty or a canonical non-negative Go int",
+		},
+		{
+			name:        "maximum Go int watch buffers reach Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_WATCH_CACHE_SIZE=9223372036854775807", "EXPECTED_WATCH_FANOUT_BUFFER=9223372036854775807"},
+			wantKubectl: true,
+			wantOutput:  "watch cache size configuration mismatch",
+		},
+		{
 			name:          "gRPC max connection age is malformed",
 			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

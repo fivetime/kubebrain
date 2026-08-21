@@ -228,6 +228,13 @@ for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS; do
     exit 2
   fi
 done
+for variable in EXPECTED_WATCH_CACHE_SIZE EXPECTED_WATCH_FANOUT_BUFFER; do
+  value="${!variable}"
+  if [[ -n "$value" ]] && ! operation_is_nonnegative_int64 "$value"; then
+    echo "${variable} must be empty or a canonical non-negative Go int" >&2
+    exit 2
+  fi
+done
 for variable in EXPECTED_BCRYPT_COST EXPECTED_AUTH_TOKEN_TTL; do
   value="${!variable}"
   if ! operation_is_nonnegative_uint64 "$value"; then
