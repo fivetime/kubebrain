@@ -437,6 +437,25 @@ if [[ -n "$EXPECTED_PEER_CLIENT_CERT_AUTH" && "$EXPECTED_PEER_CLIENT_CERT_AUTH" 
   echo "EXPECTED_PEER_CLIENT_CERT_AUTH must be empty, true, or false" >&2
   exit 2
 fi
+validate_tls_expectation_group() {
+  local label="$1" cert_file="$2" key_file="$3" ca_file="$4" server_name="$5" client_auth="$6"
+  if { [[ -n "$cert_file" ]] && [[ -z "$key_file" ]]; } ||
+    { [[ -z "$cert_file" ]] && [[ -n "$key_file" ]]; }; then
+    echo "${label} TLS cert and key expectations must both be present or both be empty" >&2
+    return 1
+  fi
+  if { [[ -n "$ca_file" ]] || [[ -n "$server_name" ]] || [[ "$client_auth" == "true" ]]; } &&
+    { [[ -z "$cert_file" ]] || [[ -z "$key_file" ]]; }; then
+    echo "${label} TLS CA, server name, or client auth expectation requires both cert and key" >&2
+    return 1
+  fi
+  if [[ "$client_auth" == "true" && -z "$ca_file" ]]; then
+    echo "${label} TLS client certificate auth requires a trusted CA" >&2
+    return 1
+  fi
+}
+validate_tls_expectation_group "client" "$EXPECTED_CERT_FILE" "$EXPECTED_KEY_FILE" "$EXPECTED_TRUSTED_CA_FILE" "$EXPECTED_TLS_SERVER_NAME" "$EXPECTED_CLIENT_CERT_AUTH" || exit 2
+validate_tls_expectation_group "peer" "$EXPECTED_PEER_CERT_FILE" "$EXPECTED_PEER_KEY_FILE" "$EXPECTED_PEER_TRUSTED_CA_FILE" "$EXPECTED_PEER_TLS_SERVER_NAME" "$EXPECTED_PEER_CLIENT_CERT_AUTH" || exit 2
 if [[ -z "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" ]]; then
   echo "EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID is required" >&2
   exit 2
