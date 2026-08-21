@@ -58780,6 +58780,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   414 项并按 98/113/103/100 四片全部通过（226.061/512.869/353.010/531.913 秒）。本项不改变 probe
   key/value、put/get/delete 语义、timeout、最终失败回退、repair/receipt 语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5233 闭合 repair completion/cleanup 时间进入 durable evidence 前的无界、非规范输入缺口。旧实现把
+  `$DATE +%s` 输出直接装入 shell 变量并插入 cooldown ConfigMap 参数和 JSON receipt；21 位值
+  `100000000000000000000` 仍会完成 repair 并发布超出 int64 的证据（RED 45.31 秒），异常 cleanup 也会把
+  未验证值直接拼入 patch JSON。现统一 helper 将每次 date 输出写入 repair 既有 0700 私有目录中的新 0600
+  文件，限制原始响应不超过 20 bytes，并要求规范正整数不超过 `9223372036854775807`。最终采集失败时 phase
+  变为 `failed-completion-time`，transaction 模式把已恢复 KubeBrain 再缩到零，不创建 cooldown、不发布最终
+  receipt；cleanup 取不到合法时间时只持久化 phase。测试证明 21 位响应走上述隔离路径，20-byte MaxInt64
+  响应仍可完成 repair 并精确写入 receipt。聚焦测试 207.166 秒，连续两轮 454.623 秒、race 249.204 秒，
+  完整相关回归 206.129 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按
+  98/113/103/100 四片全部通过（217.483/543.631/351.343/556.789 秒）。本项不改变正常 completion time、
+  cooldown/receipt schema、replacement 或在线 etcd RPC/TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

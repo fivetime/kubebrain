@@ -443,6 +443,10 @@ Kubernetes 读取前建立；cleanup 只有在本进程成功创建锁并设置 
 非零命令退出码也必须先检查文件大小：只有大小合法的 RPC/语义失败可计入连续失败样本；响应超限或本地
 采集失败使用独立 fatal 状态，必须在任何 scale/delete 前终止，不能成为 destructive repair 的授权证据。
 最终恢复后的事务验证也复用该门禁，任何失败仍按既有合同把 KubeBrain 返回零副本。
+完成时间和失败 cleanup 时间统一通过私有 0600 文件采集 `date +%s`：原始响应最多 20 bytes，解析值必须是
+规范正整数且不超过 int64 上限 `9223372036854775807`。最终时间无效时不得创建 cooldown 或发布最终
+receipt；transaction 模式必须把已恢复的 KubeBrain 再次缩到零并把 attempt phase 标为
+`failed-completion-time`。cleanup 若无法取得合法时间，只更新 phase，不得把无效 finished time 插入证据。
 修复锁建立后的 KubeBrain `UID/desired/ready` quiesce identity、TidbCluster `UID/clusterID/PD/TiKV replicas`
 identity 及失败回退 UID 重读同样各自限制为 4096 bytes，并通过独立 0600 文件消费。超限时不得开始或
 继续 TiKV Pod 删除；精确 4096-byte 响应仍须满足原有 identity/topology 等值判断。
