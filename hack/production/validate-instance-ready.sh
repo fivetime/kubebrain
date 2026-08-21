@@ -70,12 +70,18 @@ EXPECTED_HOST_WHITELIST="${EXPECTED_HOST_WHITELIST:-}"
 EXPECTED_SKIP_KEY_PREFIXES="${EXPECTED_SKIP_KEY_PREFIXES:-}"
 EXPECTED_CERT_FILE="${EXPECTED_CERT_FILE:-}"
 EXPECTED_KEY_FILE="${EXPECTED_KEY_FILE:-}"
+EXPECTED_CLIENT_CERT_FILE="${EXPECTED_CLIENT_CERT_FILE:-}"
+EXPECTED_CLIENT_KEY_FILE="${EXPECTED_CLIENT_KEY_FILE:-}"
 EXPECTED_TRUSTED_CA_FILE="${EXPECTED_TRUSTED_CA_FILE:-}"
+EXPECTED_CLIENT_CRL_FILE="${EXPECTED_CLIENT_CRL_FILE:-}"
 EXPECTED_TLS_SERVER_NAME="${EXPECTED_TLS_SERVER_NAME:-}"
 EXPECTED_CLIENT_CERT_AUTH="${EXPECTED_CLIENT_CERT_AUTH:-}"
 EXPECTED_PEER_CERT_FILE="${EXPECTED_PEER_CERT_FILE:-}"
 EXPECTED_PEER_KEY_FILE="${EXPECTED_PEER_KEY_FILE:-}"
+EXPECTED_PEER_CLIENT_CERT_FILE="${EXPECTED_PEER_CLIENT_CERT_FILE:-}"
+EXPECTED_PEER_CLIENT_KEY_FILE="${EXPECTED_PEER_CLIENT_KEY_FILE:-}"
 EXPECTED_PEER_TRUSTED_CA_FILE="${EXPECTED_PEER_TRUSTED_CA_FILE:-}"
+EXPECTED_PEER_CRL_FILE="${EXPECTED_PEER_CRL_FILE:-}"
 EXPECTED_PEER_TLS_SERVER_NAME="${EXPECTED_PEER_TLS_SERVER_NAME:-}"
 EXPECTED_PEER_CLIENT_CERT_AUTH="${EXPECTED_PEER_CLIENT_CERT_AUTH:-}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
@@ -494,15 +500,21 @@ if [[ -n "$EXPECTED_PEER_CLIENT_CERT_AUTH" && "$EXPECTED_PEER_CLIENT_CERT_AUTH" 
   exit 2
 fi
 validate_tls_expectation_group() {
-  local label="$1" cert_file="$2" key_file="$3" ca_file="$4" server_name="$5" client_auth="$6"
+  local label="$1" cert_file="$2" key_file="$3" client_cert_file="$4" client_key_file="$5"
+  local ca_file="$6" crl_file="$7" server_name="$8" client_auth="$9"
   if { [[ -n "$cert_file" ]] && [[ -z "$key_file" ]]; } ||
     { [[ -z "$cert_file" ]] && [[ -n "$key_file" ]]; }; then
     echo "${label} TLS cert and key expectations must both be present or both be empty" >&2
     return 1
   fi
-  if { [[ -n "$ca_file" ]] || [[ -n "$server_name" ]] || [[ "$client_auth" == "true" ]]; } &&
+  if { [[ -n "$client_cert_file" ]] && [[ -z "$client_key_file" ]]; } ||
+    { [[ -z "$client_cert_file" ]] && [[ -n "$client_key_file" ]]; }; then
+    echo "${label} outbound TLS cert and key expectations must both be present or both be empty" >&2
+    return 1
+  fi
+  if { [[ -n "$client_cert_file" ]] || [[ -n "$crl_file" ]] || [[ -n "$ca_file" ]] || [[ -n "$server_name" ]] || [[ "$client_auth" == "true" ]]; } &&
     { [[ -z "$cert_file" ]] || [[ -z "$key_file" ]]; }; then
-    echo "${label} TLS CA, server name, or client auth expectation requires both cert and key" >&2
+    echo "${label} TLS outbound identity, CRL, CA, server name, or client auth expectation requires both server cert and key" >&2
     return 1
   fi
   if [[ "$client_auth" == "true" && -z "$ca_file" ]]; then
@@ -510,8 +522,8 @@ validate_tls_expectation_group() {
     return 1
   fi
 }
-validate_tls_expectation_group "client" "$EXPECTED_CERT_FILE" "$EXPECTED_KEY_FILE" "$EXPECTED_TRUSTED_CA_FILE" "$EXPECTED_TLS_SERVER_NAME" "$EXPECTED_CLIENT_CERT_AUTH" || exit 2
-validate_tls_expectation_group "peer" "$EXPECTED_PEER_CERT_FILE" "$EXPECTED_PEER_KEY_FILE" "$EXPECTED_PEER_TRUSTED_CA_FILE" "$EXPECTED_PEER_TLS_SERVER_NAME" "$EXPECTED_PEER_CLIENT_CERT_AUTH" || exit 2
+validate_tls_expectation_group "client" "$EXPECTED_CERT_FILE" "$EXPECTED_KEY_FILE" "$EXPECTED_CLIENT_CERT_FILE" "$EXPECTED_CLIENT_KEY_FILE" "$EXPECTED_TRUSTED_CA_FILE" "$EXPECTED_CLIENT_CRL_FILE" "$EXPECTED_TLS_SERVER_NAME" "$EXPECTED_CLIENT_CERT_AUTH" || exit 2
+validate_tls_expectation_group "peer" "$EXPECTED_PEER_CERT_FILE" "$EXPECTED_PEER_KEY_FILE" "$EXPECTED_PEER_CLIENT_CERT_FILE" "$EXPECTED_PEER_CLIENT_KEY_FILE" "$EXPECTED_PEER_TRUSTED_CA_FILE" "$EXPECTED_PEER_CRL_FILE" "$EXPECTED_PEER_TLS_SERVER_NAME" "$EXPECTED_PEER_CLIENT_CERT_AUTH" || exit 2
 if [[ -z "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" ]]; then
   echo "EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID is required" >&2
   exit 2
@@ -1132,12 +1144,18 @@ check_optional_kubebrain_arg "host-whitelist" "$EXPECTED_HOST_WHITELIST" "HTTP H
 check_optional_kubebrain_arg "skip-key-prefix" "$EXPECTED_SKIP_KEY_PREFIXES" "physical compaction skipped prefixes"
 check_optional_kubebrain_arg "cert-file" "$EXPECTED_CERT_FILE" "client TLS cert file"
 check_optional_kubebrain_arg "key-file" "$EXPECTED_KEY_FILE" "client TLS key file"
+check_optional_kubebrain_arg "client-cert-file" "$EXPECTED_CLIENT_CERT_FILE" "client outbound TLS cert file"
+check_optional_kubebrain_arg "client-key-file" "$EXPECTED_CLIENT_KEY_FILE" "client outbound TLS key file"
 check_optional_kubebrain_arg "trusted-ca-file" "$EXPECTED_TRUSTED_CA_FILE" "client TLS CA file"
+check_optional_kubebrain_arg "client-crl-file" "$EXPECTED_CLIENT_CRL_FILE" "client TLS CRL file"
 check_optional_kubebrain_arg "tls-server-name" "$EXPECTED_TLS_SERVER_NAME" "client TLS server name"
 check_optional_kubebrain_arg "client-cert-auth" "$EXPECTED_CLIENT_CERT_AUTH" "client certificate auth"
 check_optional_kubebrain_arg "peer-cert-file" "$EXPECTED_PEER_CERT_FILE" "peer TLS cert file"
 check_optional_kubebrain_arg "peer-key-file" "$EXPECTED_PEER_KEY_FILE" "peer TLS key file"
+check_optional_kubebrain_arg "peer-client-cert-file" "$EXPECTED_PEER_CLIENT_CERT_FILE" "peer outbound TLS cert file"
+check_optional_kubebrain_arg "peer-client-key-file" "$EXPECTED_PEER_CLIENT_KEY_FILE" "peer outbound TLS key file"
 check_optional_kubebrain_arg "peer-trusted-ca-file" "$EXPECTED_PEER_TRUSTED_CA_FILE" "peer TLS CA file"
+check_optional_kubebrain_arg "peer-crl-file" "$EXPECTED_PEER_CRL_FILE" "peer TLS CRL file"
 check_optional_kubebrain_arg "peer-tls-server-name" "$EXPECTED_PEER_TLS_SERVER_NAME" "peer TLS server name"
 check_optional_kubebrain_arg "peer-client-cert-auth" "$EXPECTED_PEER_CLIENT_CERT_AUTH" "peer client certificate auth"
 
