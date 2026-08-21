@@ -59126,6 +59126,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （132.909/462.937/262.494/441.422 秒）。本项不改变合法副本数、证书发布顺序、receipt/fencing 或在线
   etcd/TiKV TLS 语义，只让副本基数在首次外部副作用前具有一致可表示域。
 
+- A5264 封闭 TidbCluster readiness 的等待算术与 controller 数值域。旧等待器只用无界数字正则接收总超时、
+  poll 和 TiKV Debug RPC timeout，随后直接执行 `SECONDS + TIMEOUT_SECONDS`、sleep 与 GNU timeout；同时把
+  StatefulSet generation/observedGeneration/desired replicas 直接交给 Bash 算术。现总等待和单次 RPC timeout
+  要求规范正 int64 且不超过 86400 秒，poll 要求规范非负 int64 且不超过总等待；Kubernetes 三类状态值也
+  先按 int64 域校验。六类非法控制值回归证明首次 kubectl 前 fail closed，MaxInt64+1 generation/replicas
+  只判未收敛且不进入 TiKV exec，三项 86400 最大合法边界仍完成收敛。聚焦连续两轮 17.865 秒、race
+  10.040 秒，bash syntax、diff check 与全仓 vet 通过；production 清单保持 439 项并按 100/123/112/104
+  四片全部通过（136.834/463.391/263.445/441.491 秒）。本项不改变合法 rollout、TiDB Operator 状态合同、
+  TiKV Debug RPC 或后续 etcd 事务门禁，只让 readiness 时间预算与 Kubernetes 数值状态具有一致可表示域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
