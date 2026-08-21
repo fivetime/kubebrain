@@ -15,6 +15,10 @@ EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
 EXPECTED_KEYSPACE="${EXPECTED_KEYSPACE:-}"
 EXPECTED_PD_ADDRS="${EXPECTED_PD_ADDRS:-}"
 EXPECTED_TIKV_CLIENT_NUM="${EXPECTED_TIKV_CLIENT_NUM:-16}"
+EXPECTED_TIKV_CA_FILE="${EXPECTED_TIKV_CA_FILE:-}"
+EXPECTED_TIKV_CERT_FILE="${EXPECTED_TIKV_CERT_FILE:-}"
+EXPECTED_TIKV_KEY_FILE="${EXPECTED_TIKV_KEY_FILE:-}"
+EXPECTED_TIKV_VERIFY_CN="${EXPECTED_TIKV_VERIFY_CN:-}"
 EXPECTED_CLUSTER_ID="${EXPECTED_CLUSTER_ID:-}"
 EXPECTED_INITIAL_CLUSTER="${EXPECTED_INITIAL_CLUSTER:-}"
 EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
@@ -356,6 +360,34 @@ validate_skip_key_prefixes() {
 }
 if ! validate_skip_key_prefixes "$EXPECTED_SKIP_KEY_PREFIXES"; then
   echo "EXPECTED_SKIP_KEY_PREFIXES must be empty or a comma-separated list of non-empty, non-overlapping prefixes without trailing slash or control characters" >&2
+  exit 2
+fi
+validate_tikv_tls_expectations() {
+  local configured=0 value cn
+  local -a cns
+  local -A seen=()
+  for value in "$EXPECTED_TIKV_CA_FILE" "$EXPECTED_TIKV_CERT_FILE" "$EXPECTED_TIKV_KEY_FILE"; do
+    [[ -n "$value" ]] && configured=$((configured + 1))
+  done
+  if (( configured != 0 && configured != 3 )); then
+    echo "TiKV TLS expectations require all or none of EXPECTED_TIKV_CA_FILE, EXPECTED_TIKV_CERT_FILE, and EXPECTED_TIKV_KEY_FILE" >&2
+    return 1
+  fi
+  if [[ -n "$EXPECTED_TIKV_VERIFY_CN" && -z "$EXPECTED_TIKV_CA_FILE" ]]; then
+    echo "EXPECTED_TIKV_VERIFY_CN requires TiKV TLS expectations" >&2
+    return 1
+  fi
+  [[ -z "$EXPECTED_TIKV_VERIFY_CN" ]] && return 0
+  [[ "$EXPECTED_TIKV_VERIFY_CN" != ,* && "$EXPECTED_TIKV_VERIFY_CN" != *, && "$EXPECTED_TIKV_VERIFY_CN" != *,,* ]] || return 1
+  IFS=',' read -r -a cns <<<"$EXPECTED_TIKV_VERIFY_CN"
+  for cn in "${cns[@]}"; do
+    [[ -n "$cn" && ! "$cn" =~ [[:cntrl:]] ]] || return 1
+    [[ -z "${seen[$cn]+present}" ]] || return 1
+    seen[$cn]=1
+  done
+}
+if ! validate_tikv_tls_expectations; then
+  echo "EXPECTED_TIKV_VERIFY_CN must be empty or a unique comma-separated CN allowlist without empty or control-character values" >&2
   exit 2
 fi
 for variable in EXPECTED_LEADER_LEASE_DURATION EXPECTED_LEADER_RENEW_DEADLINE EXPECTED_LEADER_RETRY_PERIOD; do
@@ -1058,6 +1090,10 @@ check_exact_kubebrain_arg "compatible-with-etcd" "$EXPECTED_COMPATIBLE_WITH_ETCD
 check_exact_kubebrain_arg "enable-count-index" "$EXPECTED_ENABLE_COUNT_INDEX" "count index enablement"
 check_exact_kubebrain_arg "count-index-max-keys" "$EXPECTED_COUNT_INDEX_MAX_KEYS" "count index key cap"
 check_exact_kubebrain_arg "tikv-client-num" "$EXPECTED_TIKV_CLIENT_NUM" "TiKV client pool size"
+check_optional_kubebrain_arg "tikv-ca-file" "$EXPECTED_TIKV_CA_FILE" "TiKV TLS CA file"
+check_optional_kubebrain_arg "tikv-cert-file" "$EXPECTED_TIKV_CERT_FILE" "TiKV TLS cert file"
+check_optional_kubebrain_arg "tikv-key-file" "$EXPECTED_TIKV_KEY_FILE" "TiKV TLS key file"
+check_optional_kubebrain_arg "tikv-verify-cn" "$EXPECTED_TIKV_VERIFY_CN" "TiKV TLS CN allowlist"
 check_exact_kubebrain_arg "enable-storage-metrics" "$EXPECTED_ENABLE_STORAGE_METRICS" "storage metrics enablement"
 check_exact_kubebrain_arg "enable-grpc-gateway" "$EXPECTED_ENABLE_GRPC_GATEWAY" "gRPC gateway enablement"
 check_exact_kubebrain_arg "allow-insecure" "$EXPECTED_ALLOW_INSECURE" "client insecure access"
