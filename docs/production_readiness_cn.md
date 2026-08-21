@@ -987,6 +987,7 @@ EXPECTED_GRPC_MAX_CONNECTION_AGE=1h \
 EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=5m \
 EXPECTED_TLS_MIN_VERSION=TLS1.2 \
 EXPECTED_TLS_MAX_VERSION=TLS1.3 \
+EXPECTED_CIPHER_SUITES=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 \
 EXPECTED_CERT_FILE=/etc/kubebrain/client-tls/tls.crt \
 EXPECTED_KEY_FILE=/etc/kubebrain/client-tls/tls.key \
 EXPECTED_TRUSTED_CA_FILE=/etc/kubebrain/client-tls/ca.crt \
@@ -1052,6 +1053,10 @@ gRPC keepalive min-time、interval 与 timeout 必须是精确 `0`（禁用）�
 TLS 生产清单必须显式固定 `--tls-min-version=TLS1.2` 与 `--tls-max-version=TLS1.3`；release gate
 期望值只能为空、`TLS1.2` 或 `TLS1.3`，且非空最小版本不得高于非空最大版本。非法枚举或倒置窗口必须
 在 kubectl 前拒绝，两个参数还必须分别唯一并与 Pod args 精确一致，不能依赖镜像所用 Go 版本的默认上限。
+TLS 1.2 cipher suites 也必须显式固定为生产清单中的 ECDHE + AES-GCM/ChaCha20-Poly1305 六套件列表；
+release gate 只允许这些安全名称的非空唯一子集，并与唯一 `--cipher-suites` 参数精确一致。未知、重复、
+空元素以及 TLS1.3-only 窗口仍配置 TLS 1.2 suites 的情况必须在 kubectl 前拒绝；TLS 1.3 suites 继续由
+Go 按协议规定选择，不能写入该参数。
 可选 watch cache size 与 watch fanout buffer 非空时必须是生产 amd64/arm64 上的规范非负 Go `int`，即
 `0..9223372036854775807`；前导零、负数或越界值必须在 kubectl 前拒绝。
 可选 auto-compaction retention revisions 与 watch-history scan revision bucket 非空时必须是规范非负

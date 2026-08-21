@@ -59400,6 +59400,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （144.128/472.506/270.111/477.789 秒）。本项不删除 TLS1.2 compatibility，也不改变 cipher suite
   选择语义，只将发布协议窗口从隐式 runtime default 变为可审计契约。
 
+- A5291 将官方 etcd 可配置 cipher-suite 兼容面收敛为生产可审计的 TLS 1.2 安全列表。对照
+  `/root/etcd` 的全局 `--cipher-suites` 及 e2e 列表，KubeBrain 原已把同一配置应用到 client、peer 与
+  info listeners，但生产 mTLS 清单和 release gate 都留空，实际 TLS 1.2 套件会随 Go runtime 默认漂移。
+  现清单固定官方 e2e 同类的六个 ECDHE + AES-GCM/ChaCha20-Poly1305 RSA/ECDSA 套件；release gate 允许
+  其唯一非空子集，在首次 kubectl 前拒绝未知 CBC suite、重复/空元素，以及 TLS1.3-only 窗口附带可配置
+  TLS 1.2 suites，并要求唯一 Pod arg 与期望顺序和值精确一致。TLS 1.3 suites 仍按 Go/协议不可配置。
+  相关 manifest 契约、bash syntax、diff check 与全仓 vet 通过；实例 gate 单轮 137.421 秒、连续两轮
+  266.765 秒、race 140.033 秒。production 清单保持 448 项并按 102/127/113/106 四片在最终代码提交上
+  全部通过（145.195/473.233/271.004/476.436 秒）。本项保留 etcd 的空列表兼容入口供非生产使用，
+  但生产 TLS 发布不再依赖 runtime 自动填充。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
