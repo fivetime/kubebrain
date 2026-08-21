@@ -27,6 +27,22 @@ operation_is_positive_int64_duration() {
   operation_is_positive_int64 "$magnitude"
 }
 
+operation_is_positive_go_duration() {
+  local value="$1" magnitude maximum
+  case "$value" in
+    *ms) magnitude="${value%ms}"; maximum=9223372036854 ;;
+    *s) magnitude="${value%s}"; maximum=9223372036 ;;
+    *m) magnitude="${value%m}"; maximum=153722867 ;;
+    *) return 1 ;;
+  esac
+  operation_is_positive_int64 "$magnitude" || return 1
+  if (( ${#magnitude} != ${#maximum} )); then
+    (( ${#magnitude} < ${#maximum} ))
+  else
+    [[ "$magnitude" < "$maximum" || "$magnitude" == "$maximum" ]]
+  fi
+}
+
 operation_is_decimal_int64() {
   local value="$1" whole
   [[ "$value" =~ ^(0|[1-9][0-9]{0,18})([.][0-9]{1,9})?$ ]] || return 1

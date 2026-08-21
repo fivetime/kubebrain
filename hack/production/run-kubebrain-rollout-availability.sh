@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PRODUCTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "${PRODUCTION_DIR}/operation-time-validation.sh"
+
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-}"
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
@@ -47,17 +50,18 @@ if [[ "$EXPECTED_REPLICAS" -lt 3 ]]; then
   echo "rollout availability gate requires at least three replicas" >&2
   exit 2
 fi
-if ! [[ "$KUBEBRAIN_CLIENT_PORT" =~ ^[1-9][0-9]*$ ]] ||
-  ! [[ "$PROBE_INTERVAL" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
-  ! [[ "$PROBE_COMMAND_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
-  ! [[ "$PROBE_DIAL_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
-  ! [[ "$PROBE_MAX_OPERATION_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
-  ! [[ "$PROBE_MAX_PD_TSO_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
-  ! [[ "$PROBE_MAX_TIKV_REGION_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
-  ! [[ "$PROBE_COMPLETE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]]; then
-  echo "probe port, interval, and timeout values are invalid" >&2
+if ! [[ "$KUBEBRAIN_CLIENT_PORT" =~ ^[1-9][0-9]*$ ]] || ! [[ "$PROBE_INTERVAL" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "probe port and interval values are invalid" >&2
   exit 2
 fi
+for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LATENCY \
+  PROBE_MAX_PD_TSO_LATENCY PROBE_MAX_TIKV_REGION_LATENCY PROBE_READY_TIMEOUT \
+  PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT; do
+  operation_is_positive_go_duration "${!variable}" || {
+    echo "${variable} must be a positive ms, s, or m duration representable by Go time.Duration" >&2
+    exit 2
+  }
+done
 if ! [[ "$PROBE_POD" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
   echo "PROBE_POD must be a DNS label" >&2
   exit 2

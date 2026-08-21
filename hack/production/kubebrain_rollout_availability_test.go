@@ -21,6 +21,41 @@ func TestRolloutAvailabilityRunnerRequiresExplicitMutationApproval(t *testing.T)
 	require.ErrorIs(t, statErr, os.ErrNotExist, "kubectl must not run before mutation approval")
 }
 
+func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *testing.T) {
+	for _, variable := range []string{
+		"PROBE_COMMAND_TIMEOUT", "PROBE_DIAL_TIMEOUT", "PROBE_MAX_OPERATION_LATENCY",
+		"PROBE_MAX_PD_TSO_LATENCY", "PROBE_MAX_TIKV_REGION_LATENCY", "PROBE_READY_TIMEOUT",
+		"PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT",
+	} {
+		t.Run(variable, func(t *testing.T) {
+			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", variable+"=9223372036854775808s")
+			output, err := command.CombinedOutput()
+			require.Error(t, err)
+			require.Contains(t, string(output), variable+" must be a positive ms, s, or m duration representable by Go time.Duration")
+			require.NoFileExists(t, logPath)
+		})
+	}
+}
+
+func TestRolloutAvailabilityRunnerAcceptsDurationBoundary(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+		"PROBE_COMMAND_TIMEOUT=9223372036854ms", "PROBE_DIAL_TIMEOUT=9223372036s",
+		"PROBE_MAX_OPERATION_LATENCY=153722867m", "PROBE_MAX_PD_TSO_LATENCY=9223372036854ms",
+		"PROBE_MAX_TIKV_REGION_LATENCY=9223372036s", "PROBE_READY_TIMEOUT=153722867m",
+		"PROBE_COMPLETE_TIMEOUT=153722867m", "ROLLOUT_TIMEOUT=9223372036854ms",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "rollout availability gate passed")
+}
+
 func TestRolloutAvailabilityRunnerRejectsMissingDrainBeforeMutation(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
