@@ -59357,6 +59357,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   合法 compaction safety-net、watch history singleflight 或 0 默认语义，只让 optional 发布期望与 uint64
   revision 域一致。
 
+- A5287 将组合实例 release gate 的 optional storage-gc-lifetime 对齐 KubeBrain 的 `DurationVar` 与启动
+  校验。空期望保留“不要求该参数”，`0` 明确禁用 TiKV MVCC GC driver，正值设置 safepoint retention；
+  服务端拒绝负值。旧 gate 对非空值只做 args 字符串比较，负数、非法格式和 `time.Duration` 溢出会进入
+  Kubernetes。现非空值要求精确 `0` 或正整数 `ms/s/m/h`，并校验 Go duration 可表示上界。回归证明负值
+  与 `2562048h` 在首次 kubectl 前拒绝，并以 0 和最大整小时 `2562047h` 证明禁用值及精确边界均进入参数
+  一致性核验。聚焦单轮 131.442 秒、连续两轮 260.710 秒、race 130.776 秒，bash syntax、diff check 与
+  全仓 vet 通过；production 清单保持 448 项并按 102/127/113/106 四片在最终代码状态全部通过
+  （138.232/466.808/261.800/466.868 秒）。本项不改变合法 safepoint 推进、0 禁用或历史读取语义，只让
+  optional 发布期望与 Go flag/启动校验一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
