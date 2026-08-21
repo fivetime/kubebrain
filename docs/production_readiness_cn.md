@@ -1037,6 +1037,9 @@ kubectl 前拒绝，并与 TidbCluster status、PD/TiKV 响应及实例创建 re
 零、负数或越界值必须在 kubectl 前拒绝。服务端的 0=默认、负数=禁用兼容语义不扩大生产发布策略。
 log verbosity 必须是规范非负 klog int32 level，即 `0..2147483647`；前导零、负数或越界值必须在
 kubectl 前拒绝，并与容器唯一 `--v` 参数精确一致。
+leader lease duration、renew deadline 与 retry period 必须使用正整数加 `ms`、`s`、`m` 或 `h` 的生产
+Go duration 格式且可由 `time.Duration` 表示；非法、前导零或溢出值必须在 kubectl 前拒绝。运行时仍必须
+满足 `retry < renew < lease`，由 KubeBrain 配置校验最终强制执行。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，

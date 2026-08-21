@@ -59295,6 +59295,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全部通过（136.411/464.878/262.249/455.033 秒）。本项不改变合法日志等级或运行日志语义，只让发布期望
   与 klog flag parser 的可表示域一致。
 
+- A5281 收紧组合实例 release gate 的 leader election 三个时钟。服务端以 `DurationVar` 解析 lease、renew、
+  retry，并强制 `retry < renew < lease`；旧门禁却只检查非空，非法文本、前导零和 `time.Duration` 溢出值会
+  进入 Kubernetes/args 核验。现三项采用仓库既有生产规范：正整数加 `ms`、`s`、`m` 或 `h`，并校验对应
+  Go duration 可表示上界；组合顺序继续由 KubeBrain 配置校验权威执行。回归证明非法 lease、溢出 renew
+  与前导零 retry 均在首次 kubectl 前拒绝，并以最大整小时 `2562047h` 证明 lease 精确边界完成 admission、
+  进入运行参数核验。聚焦单轮 119.947 秒、连续两轮 238.372 秒、race 120.063 秒，bash syntax、diff check
+  与全仓 vet 通过；production 清单保持 448 项并按 102/127/113/106 四片在最终代码状态全部通过
+  （137.864/465.177/261.701/454.333 秒）。本项不改变合法 leader election、write fence 或 lease expiry
+  extension 语义，只让生产发布期望在首次外部访问前具备有界、可审计的时钟格式。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
