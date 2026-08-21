@@ -120,6 +120,42 @@ func TestValidateInstanceReady(t *testing.T) {
 		wantOutput               string
 	}{
 		{
+			name:          "auto compaction retention is not canonical",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_AUTO_COMPACTION_RETENTION_REVISIONS=01"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_AUTO_COMPACTION_RETENTION_REVISIONS must be empty or a canonical non-negative uint64",
+		},
+		{
+			name:          "auto compaction retention overflows uint64",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_AUTO_COMPACTION_RETENTION_REVISIONS=18446744073709551616"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_AUTO_COMPACTION_RETENTION_REVISIONS must be empty or a canonical non-negative uint64",
+		},
+		{
+			name:          "watch history scan bucket overflows uint64",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_WATCH_HISTORY_SCAN_REV_BUCKET=18446744073709551616"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_WATCH_HISTORY_SCAN_REV_BUCKET must be empty or a canonical non-negative uint64",
+		},
+		{
+			name:        "maximum uint64 revision controls reach Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_AUTO_COMPACTION_RETENTION_REVISIONS=18446744073709551615", "EXPECTED_WATCH_HISTORY_SCAN_REV_BUCKET=18446744073709551615"},
+			wantKubectl: true,
+			wantOutput:  "auto-compaction retention configuration mismatch",
+		},
+		{
 			name:          "watch cache size is not canonical",
 			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
