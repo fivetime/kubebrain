@@ -28,7 +28,8 @@ is_positive_int64() {
 }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a DNS label"
-[[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] || die "LEASE_SECONDS must be at least 6"
+is_positive_int64 "$LEASE_SECONDS" || die "LEASE_SECONDS must be a positive int64"
+(( LEASE_SECONDS >= 6 )) || die "LEASE_SECONDS must be at least 6"
 [[ -d "$WORK_DIR" && -w "$WORK_DIR" ]] || die "WORK_DIR must be a writable directory"
 [[ -f "$RECOVERY_COMMAND" && -x "$RECOVERY_COMMAND" ]] || die "RECOVERY_COMMAND is required and must be an executable file"
 command -v "$JQ" >/dev/null || die "jq is required"

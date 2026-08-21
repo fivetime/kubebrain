@@ -13,6 +13,7 @@ WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
 MAX_UINT64=18446744073709551615
+MAX_INT64=9223372036854775807
 
 die() { echo "$*" >&2; exit 2; }
 is_positive_uint64() {
@@ -22,9 +23,15 @@ is_positive_uint64() {
     return 1
   fi
 }
+is_positive_int64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,18}$ ]] || return 1
+  if (( ${#value} == 19 )) && [[ "$value" > "$MAX_INT64" ]]; then return 1; fi
+}
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a DNS label"
-[[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] || die "LEASE_SECONDS must be at least 6"
+is_positive_int64 "$LEASE_SECONDS" || die "LEASE_SECONDS must be a positive int64"
+(( LEASE_SECONDS >= 6 )) || die "LEASE_SECONDS must be at least 6"
 [[ -d "$WORK_DIR" && -w "$WORK_DIR" ]] || die "WORK_DIR must be a writable directory"
 [[ -f "$REPAIR_COMMAND" && -x "$REPAIR_COMMAND" ]] || die "REPAIR_COMMAND is required and must be an executable file"
 command -v "$JQ" >/dev/null || die "jq is required"
