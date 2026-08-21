@@ -59227,6 +59227,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   102/127/113/106 四片在最终代码状态全部通过（137.784/464.768/263.444/445.038 秒）。本项不改变合法
   request admission 或 TiKV key 编码语义，只使发布门禁与 Go endpoint 配置及有符号 Bash 算术域一致。
 
+- A5274 将组合实例 release gate 的三个 listener port 从无界非负数字收紧到真实网络与 endpoint config
+  语义。旧门禁会接受 client/peer 为 0、任一端口大于 65535，以及 client/peer/info 冲突；这些期望不可能由
+  可绑定的生产 KubeBrain 实例满足，却会进入 readiness 和 Kubernetes 查询。现 client/peer 必须是规范
+  `1..65535`，info 必须是规范 `0..65535`（0 保留禁用语义），启用后的三端口必须互异。回归证明 client=0、
+  peer/info=65536 和 client/peer 冲突均在首次 kubectl 前拒绝；client=65535 与 info=0 则完成 admission 并
+  进入 Service/运行参数核验。聚焦单轮 113.833 秒、连续两轮 225.188 秒、race 112.690 秒，bash syntax、
+  diff check 与全仓 vet 通过；production 清单保持 448 项并按 102/127/113/106 四片在最终代码状态全部通过
+  （138.866/469.090/264.385/452.925 秒）。本项不改变合法 listener、Service 或 advertised endpoint 语义，
+  只让发布期望与 Go endpoint 配置及 TCP 端口域一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

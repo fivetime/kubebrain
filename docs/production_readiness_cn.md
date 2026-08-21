@@ -1021,6 +1021,9 @@ int32+1 或更大值必须在 readiness 子脚本或任何 kubectl 调用前拒�
 `MaxInt-512KiB`，与服务端为 gRPC transport overhead 保留的空间一致；
 `EXPECTED_TIKV_MAX_KEY_SIZE` 必须是正 int64，并至少比 request 上限多 64 字节物理 key 开销。
 两项都必须在任何 Bash 加法或 kubectl 调用前完成校验，禁止溢出后再比较。
+client/peer listener port 必须是 `1..65535` 的规范整数，info listener port 必须是
+`0..65535` 的规范整数，其中 0 表示禁用；client、peer 和启用后的 info port 必须互异。
+非法范围或冲突必须在任何 kubectl 调用前拒绝，不能依赖运行中 Pod 已经碰巧证明可绑定。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，
