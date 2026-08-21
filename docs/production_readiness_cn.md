@@ -545,6 +545,10 @@ StatefulSet UID 仍匹配时把数据面回滚到 0。目录 sync 失败后已�
 `PROBE_TIMEOUT_SECONDS` 与 `POD_READY_TIMEOUT_SECONDS` 必须在参与 Bash 算术或构造 timeout 参数前通过正
 int64 校验，再执行既有 60/1800 秒上限。最终 completion time 通过私有 0600 临时文件捕获，响应最多
 20 bytes 且值必须是正 int64；越界、超限或命令失败均不得发布 receipt，并须按相同 UID 回滚到 0。
+recovery 消费的每次 StatefulSet/TidbCluster JSON 各限制为 1 MiB，容器参数与 Put/Get probe stdout 各限制
+为 64 KiB，失败回退 UID 限制为 4096 bytes。所有输出先进入独立私有 0600 临时文件并检查大小，再进入
+shell/jq；超限身份不得授权扩容或按名称回滚，超限参数/probe 必须回滚已扩容的数据面。精确边界仍参与
+原有语义判断，不得因预算实现而被误拒绝。
 
 如果 KubeBrain 已是 0 副本而 PD 仍有 pending/down Region，不能直接进入上述 recovery，因为 storage
 gate 必须拒绝；普通 transaction repair 也不能临时扩容数据面来制造失败探针。底层

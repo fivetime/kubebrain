@@ -58921,6 +58921,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （255.306/657.773/379.920/631.494 秒）。本项不改变合法 timeout/completion time、receipt schema、
   recovery 扩容/回退语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5245 为 recovery primitive 的全部 Kubernetes/exec stdout 消费点增加逐响应预算。旧实现用无界 command
+  substitution 读取每轮 StatefulSet/TidbCluster JSON、容器 args、Put/Get probe stdout 与失败回退 UID；
+  超大 API/容器输出可在 identity 判断前占用内存，回退 UID 还可能错误参与按名称 mutation。现统一经私有
+  0600 临时文件捕获并先检查字节数：两类 control-plane JSON 各 1 MiB，container args 与 transaction probe
+  各 64 KiB，rollback scalar 4096 bytes。超限 JSON 在扩容前失败；超限 args/probe 在扩容后触发同 UID
+  回滚；超限 rollback UID 被视为未知身份，绝不授权 `--replicas=0`。测试同时证明 1 MiB/64 KiB 精确边界
+  可完成完整 recovery，所有边界+1 均在对应安全阶段 fail closed。聚焦 51.475 秒、连续两轮 95.078 秒、
+  race 47.177 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按
+  98/113/103/100 四片全部通过（183.243/502.259/309.034/492.572 秒）。本项不改变合法 Kubernetes/
+  etcdctl 响应、identity/receipt、扩容/回退与事务语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
