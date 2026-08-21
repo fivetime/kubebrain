@@ -97,7 +97,14 @@ elif [[ "$args" == *"exec kubebrain-0"* ]]; then
   if [[ -n "${FAKE_ABNORMAL_STORE_ORDINAL:-}" && -e "$FAKE_STATE/replaced-${FAKE_ABNORMAL_STORE_ORDINAL}" && "${FAKE_PERSISTENT_ABNORMAL_REGION:-false}" != "true" ]]; then
     target_repaired=true
   fi
-  [[ "${FAKE_HEALTHY_BEFORE:-false}" == "true" || "$target_repaired" == "true" || ( -e "$FAKE_STATE/replaced-0" && -e "$FAKE_STATE/replaced-1" && -e "$FAKE_STATE/replaced-2" ) ]] || exit 1
+  fully_repaired=false
+  if [[ -e "$FAKE_STATE/replaced-0" && -e "$FAKE_STATE/replaced-1" && -e "$FAKE_STATE/replaced-2" ]]; then
+    fully_repaired=true
+  fi
+  if [[ "${FAKE_HEALTHY_BEFORE:-false}" != "true" && "$target_repaired" != "true" && "$fully_repaired" != "true" ]]; then
+    [[ -z "${FAKE_TRANSACTION_PROBE_BYTES:-}" ]] || head -c "$FAKE_TRANSACTION_PROBE_BYTES" /dev/zero | tr '\0' ' '
+    exit 1
+  fi
   if [[ "$args" == *" put "* ]]; then
     printf 'OK\n'
   elif [[ "$args" == *" get "* ]]; then
@@ -327,6 +334,32 @@ fi
 		if size > 65536 {
 			require.Error(t, boundaryErr)
 			require.Contains(t, string(boundaryOutput), "container args response exceeds 65536 bytes")
+			require.NoFileExists(t, caseReceipt)
+			caseLogData, readErr := os.ReadFile(caseLog)
+			require.NoError(t, readErr)
+			require.NotContains(t, string(caseLogData), " scale statefulset ")
+			require.NotContains(t, string(caseLogData), "delete pod kb-tikv-")
+		} else {
+			require.NoError(t, boundaryErr, string(boundaryOutput))
+			require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+		}
+	}
+	for _, size := range []int{65537, 65536} {
+		caseState := filepath.Join(tempDir, "transaction-probe-response-"+strconv.Itoa(size))
+		require.NoError(t, os.Mkdir(caseState, 0o755))
+		caseReceipt := filepath.Join(caseState, "receipt.json")
+		caseLog := filepath.Join(caseState, "kubectl.log")
+		caseEnv := append([]string(nil), env...)
+		caseEnv = append(caseEnv,
+			"FAKE_STATE="+caseState,
+			"FAKE_LOG="+caseLog,
+			"RECEIPT_OUTPUT="+caseReceipt,
+			"FAKE_TRANSACTION_PROBE_BYTES="+strconv.Itoa(size),
+		)
+		boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+		if size > 65536 {
+			require.Error(t, boundaryErr)
+			require.Contains(t, string(boundaryOutput), "transaction probe response exceeds 65536 bytes")
 			require.NoFileExists(t, caseReceipt)
 			caseLogData, readErr := os.ReadFile(caseLog)
 			require.NoError(t, readErr)

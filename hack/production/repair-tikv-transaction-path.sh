@@ -43,6 +43,7 @@ MAX_POD_IDENTITY_RESPONSE_BYTES=4096
 MAX_CONTROL_PLANE_SCALAR_RESPONSE_BYTES=4096
 MAX_CONTAINER_ARGS_RESPONSE_BYTES=65536
 MAX_DISK_USAGE_RESPONSE_BYTES=65536
+MAX_TRANSACTION_PROBE_RESPONSE_BYTES=65536
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -252,6 +253,20 @@ capture_disk_usage_response() {
   fi
   printf '%s\n' "$response"
 }
+capture_transaction_probe_output() {
+  local response size command_status=0
+  response="$(mktemp "$response_dir/transaction-probe.XXXXXX")" || return 2
+  "$COMMAND_TIMEOUT" --signal=TERM "${PROBE_TIMEOUT_SECONDS}s" \
+    "$KUBECTL" "${kubectl_context_args[@]}" "$@" >"$response" 2>/dev/null || command_status=$?
+  chmod 600 "$response" || return 2
+  size="$(stat -Lc '%s' -- "$response")" || return 2
+  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_TRANSACTION_PROBE_RESPONSE_BYTES" ]]; then
+    echo "transaction probe response exceeds ${MAX_TRANSACTION_PROBE_RESPONSE_BYTES} bytes" >&2
+    return 2
+  fi
+  (( command_status == 0 )) || return 1
+  cat "$response" || return 2
+}
 quantity_to_kib() {
   local quantity="$1" value unit multiplier
   if [[ "$quantity" =~ ^([1-9][0-9]*)(Ki|Mi|Gi|Ti)$ ]]; then
@@ -428,18 +443,21 @@ fi
 probe_key="/kubebrain-internal/transaction-repair-probe/${EXPECTED_CLUSTER_ID}"
 probe_value="repair-${EXPECTED_TIDB_CLUSTER_UID}"
 transaction_probe() {
-  local output
-  output="$($COMMAND_TIMEOUT --signal=TERM "${PROBE_TIMEOUT_SECONDS}s" \
-    "$KUBECTL" "${kubectl_context_args[@]}" -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
-    etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" put "$probe_key" "$probe_value" 2>/dev/null)" || return 1
+  local output status
+  output="$(capture_transaction_probe_output -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
+    etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" put "$probe_key" "$probe_value")" || {
+      status=$?
+      return "$status"
+    }
   [[ "$output" == *"OK"* ]] || return 1
-  output="$($COMMAND_TIMEOUT --signal=TERM "${PROBE_TIMEOUT_SECONDS}s" \
-    "$KUBECTL" "${kubectl_context_args[@]}" -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
-    etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" get "$probe_key" --print-value-only 2>/dev/null)" || return 1
+  output="$(capture_transaction_probe_output -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
+    etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" get "$probe_key" --print-value-only)" || {
+      status=$?
+      return "$status"
+    }
   [[ "$output" == "$probe_value" ]] || return 1
-  $COMMAND_TIMEOUT --signal=TERM "${PROBE_TIMEOUT_SECONDS}s" \
-    "$KUBECTL" "${kubectl_context_args[@]}" -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
-    etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" del "$probe_key" >/dev/null 2>&1
+  capture_transaction_probe_output -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
+    etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" del "$probe_key" >/dev/null
 }
 
 if [[ "$REPAIR_MODE" == "transaction" ]]; then
@@ -447,6 +465,9 @@ if [[ "$REPAIR_MODE" == "transaction" ]]; then
     if transaction_probe; then
       persist_phase "refused-healthy"
       die "transaction probe ${probe} succeeded; refusing repair of a healthy data plane"
+    else
+      probe_status=$?
+      (( probe_status == 1 )) || die "cannot safely capture transaction probe response"
     fi
     (( probe == REQUIRED_FAILED_PROBES )) || sleep "$PROBE_INTERVAL_SECONDS"
   done
