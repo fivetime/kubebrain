@@ -59248,6 +59248,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   102/127/113/106 四片在最终代码状态全部通过（139.519/468.580/262.348/451.487 秒）。本项不改变合法
   请求 admission、watch/delete-range quota 或 token bucket 语义，只让发布期望与 Go uint32/组合校验一致。
 
+- A5276 将组合实例 release gate 的 count-index-max-keys 与 max-txn-ops 对齐生产 64 位 Go `int` 域。
+  前者由 `pflag.IntVar` 直接写入 `int`，后者虽由 `UintVar` 解析，但 endpoint `Validate` 明确拒绝大于
+  `math.MaxInt`；旧门禁只要求无界数字，前导零和 MaxInt+1 会进入 Kubernetes/args 核验。现两项统一要求
+  规范 `0..9223372036854775807`。回归证明 count-index 前导零与 int64+1、max-txn MaxInt+1 均在首次
+  kubectl 前拒绝，并以两项同时为 MaxInt 证明精确边界完成 admission、进入运行参数核验。聚焦单轮
+  114.606 秒、连续两轮 227.257 秒、race 114.827 秒，bash syntax、diff check 与全仓 vet 通过；production
+  清单保持 448 项并按 102/127/113/106 四片在最终代码状态全部通过
+  （138.213/466.086/263.777/452.520 秒）。本项不改变合法 count index fallback 或 Txn operation limit
+  语义，只让发布期望与 Go flag 解析及 endpoint 平台上限一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
