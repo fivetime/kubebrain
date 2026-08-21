@@ -986,6 +986,7 @@ EXPECTED_AUTH_TOKEN_TTL=300 \
 EXPECTED_GRPC_MAX_CONNECTION_AGE=1h \
 EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=5m \
 EXPECTED_TLS_MIN_VERSION=TLS1.2 \
+EXPECTED_TLS_MAX_VERSION=TLS1.3 \
 EXPECTED_CERT_FILE=/etc/kubebrain/client-tls/tls.crt \
 EXPECTED_KEY_FILE=/etc/kubebrain/client-tls/tls.key \
 EXPECTED_TRUSTED_CA_FILE=/etc/kubebrain/client-tls/ca.crt \
@@ -1048,6 +1049,9 @@ gRPC keepalive min-time、interval 与 timeout 必须是精确 `0`（禁用）�
 生产 Go duration，且可由 `time.Duration` 表示；负数、前导零、非法或溢出值必须在 kubectl 前拒绝。
 可选 gRPC max connection age/grace 必须为空、精确 `0`，或可表示的正整数 `ms/s/m/h` production duration；
 启用 connection age 时 grace 必须为正。非法、负数、前导零、溢出或组合不一致必须在 kubectl 前拒绝。
+TLS 生产清单必须显式固定 `--tls-min-version=TLS1.2` 与 `--tls-max-version=TLS1.3`；release gate
+期望值只能为空、`TLS1.2` 或 `TLS1.3`，且非空最小版本不得高于非空最大版本。非法枚举或倒置窗口必须
+在 kubectl 前拒绝，两个参数还必须分别唯一并与 Pod args 精确一致，不能依赖镜像所用 Go 版本的默认上限。
 可选 watch cache size 与 watch fanout buffer 非空时必须是生产 amd64/arm64 上的规范非负 Go `int`，即
 `0..9223372036854775807`；前导零、负数或越界值必须在 kubectl 前拒绝。
 可选 auto-compaction retention revisions 与 watch-history scan revision bucket 非空时必须是规范非负

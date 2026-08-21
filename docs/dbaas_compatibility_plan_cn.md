@@ -59389,6 +59389,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   102/127/113/106 四片在最终代码提交上全部通过（144.378/473.867/274.478/477.772 秒）。本项不改变
   16-client 默认负载分布或轮询语义，只防止隐式默认漂移与启动期资源爆炸。
 
+- A5290 固定 TLS 生产协议窗口，不再只声明下限而把上限交给构建镜像所用 Go runtime。服务端原已支持
+  `TLS1.2/TLS1.3` 枚举及 `min <= max` 校验，但 mTLS StatefulSet 仅显式 `--tls-min-version=TLS1.2`，
+  release gate 也没有 `tls-max-version` 期望；runtime 默认变化可在门禁绿色时改变 client、peer 与 info
+  listener 的共同协议面。现 TLS 清单显式固定 `TLS1.2..TLS1.3`，release gate 对 min/max 分别要求为空、
+  TLS1.2 或 TLS1.3，在首次 kubectl 前拒绝 TLS1.4 与倒置的 TLS1.3..TLS1.2，并要求两个 Pod args 各自
+  唯一且精确匹配；生产运行示例同步声明 `EXPECTED_TLS_MAX_VERSION=TLS1.3`。相关 manifest 契约、bash
+  syntax、diff check 与全仓 vet 通过；实例 gate 单轮 137.297 秒、连续两轮 266.441 秒、race 138.965 秒。
+  production 清单保持 448 项并按 102/127/113/106 四片在最终代码提交上全部通过
+  （144.128/472.506/270.111/477.789 秒）。本项不删除 TLS1.2 compatibility，也不改变 cipher suite
+  选择语义，只将发布协议窗口从隐式 runtime default 变为可审计契约。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
