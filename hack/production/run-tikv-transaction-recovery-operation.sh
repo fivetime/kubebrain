@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
 WORKER_ID="${WORKER_ID:-}"
 PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
 OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"
@@ -13,7 +14,6 @@ WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
 MAX_UINT64=18446744073709551615
-MAX_INT64=9223372036854775807
 
 die() { echo "$*" >&2; exit 2; }
 is_positive_uint64() {
@@ -21,29 +21,9 @@ is_positive_uint64() {
   [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
   if (( ${#value} == 20 )) && [[ "$value" > "$MAX_UINT64" ]]; then return 1; fi
 }
-is_positive_int64() {
-  local value="$1"
-  [[ "$value" =~ ^[1-9][0-9]{0,18}$ ]] || return 1
-  if (( ${#value} == 19 )) && [[ "$value" > "$MAX_INT64" ]]; then return 1; fi
-}
-is_decimal_int64() {
-  local value="$1" whole
-  [[ "$value" =~ ^(0|[1-9][0-9]{0,18})([.][0-9]{1,9})?$ ]] || return 1
-  whole="${value%%.*}"
-  if (( ${#whole} == 19 )) && [[ "$whole" > "$MAX_INT64" ]]; then return 1; fi
-}
-is_positive_decimal_less_than_int() {
-  local value="$1" upper="$2" whole fraction=""
-  is_decimal_int64 "$value" || return 1
-  whole="${value%%.*}"
-  [[ "$value" != *.* ]] || fraction="${value#*.}"
-  [[ "$whole" != "0" || "$fraction" =~ [1-9] ]] || return 1
-  (( ${#whole} < ${#upper} )) && return 0
-  (( ${#whole} == ${#upper} )) && [[ "$whole" < "$upper" ]]
-}
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a DNS label"
-is_positive_int64 "$LEASE_SECONDS" || die "LEASE_SECONDS must be a positive int64"
+operation_is_positive_int64 "$LEASE_SECONDS" || die "LEASE_SECONDS must be a positive int64"
 (( LEASE_SECONDS >= 6 )) || die "LEASE_SECONDS must be at least 6"
 [[ -d "$WORK_DIR" && -w "$WORK_DIR" ]] || die "WORK_DIR must be a writable directory"
 [[ -f "$RECOVERY_COMMAND" && -x "$RECOVERY_COMMAND" ]] || die "RECOVERY_COMMAND is required and must be an executable file"
@@ -53,7 +33,7 @@ command -v "$JQ" >/dev/null || die "jq is required"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 command -v stat >/dev/null || die "stat is required"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
-is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECONDS" ||
+operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECONDS" ||
   die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64"
 
 operationctl=()
@@ -169,8 +149,8 @@ for value in "$kb_namespace" "$kb_statefulset" "$tidb_namespace" "$tidb_cluster"
 done
 [[ "$endpoint" =~ ^https?://[^[:space:],]+$ ]] || die "recovery endpoint is invalid"
 is_positive_uint64 "$expected_cluster_id" || die "recovery cluster identity is not a positive uint64"
-is_positive_int64 "$probe_timeout" || die "recovery probe timeout is not a positive int64"
-is_positive_int64 "$pod_timeout" || die "recovery Pod timeout is not a positive int64"
+operation_is_positive_int64 "$probe_timeout" || die "recovery probe timeout is not a positive int64"
+operation_is_positive_int64 "$pod_timeout" || die "recovery Pod timeout is not a positive int64"
 (( probe_timeout <= 60 )) || die "recovery probe timeout exceeds 60 seconds"
 (( pod_timeout <= 1800 )) || die "recovery Pod timeout exceeds 1800 seconds"
 [[ "$request_id" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "recovery request identity is invalid"

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PRODUCTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "${PRODUCTION_DIR}/operation-time-validation.sh"
+
 WORKER_ID="${WORKER_ID:-}"; OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"
 LEASE_SECONDS="${LEASE_SECONDS:-120}"; HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
 WRITER_CHECK_INTERVAL_SECONDS="${WRITER_CHECK_INTERVAL_SECONDS:-5}"
@@ -16,14 +19,12 @@ INPUT_ROOT="${INPUT_ROOT:-/var/lib/kubebrain-operation/inputs}"
 JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
 die() { echo "$*" >&2; exit 2; }
-[[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ && "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "worker identity or lease is invalid"
+[[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] && operation_is_positive_int64 "$LEASE_SECONDS" || die "worker identity or lease is invalid"
 if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then HEARTBEAT_INTERVAL_SECONDS=$((LEASE_SECONDS / 3)); fi
-[[ "$HEARTBEAT_INTERVAL_SECONDS" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
-  awk -v heartbeat="$HEARTBEAT_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
-  die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
-[[ "$WRITER_CHECK_INTERVAL_SECONDS" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
-  awk -v interval="$WRITER_CHECK_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(interval > 0 && interval < lease) }' ||
-  die "WRITER_CHECK_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
+operation_is_positive_decimal_less_than_int "$HEARTBEAT_INTERVAL_SECONDS" "$LEASE_SECONDS" ||
+  die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64"
+operation_is_positive_decimal_less_than_int "$WRITER_CHECK_INTERVAL_SECONDS" "$LEASE_SECONDS" ||
+  die "WRITER_CHECK_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64"
 [[ "$ADMISSION_CHECK_INTERVAL" =~ ^([1-9][0-9]*)(ms|s|m)$ ]] || die "ADMISSION_CHECK_INTERVAL must be a positive Go duration using ms, s, or m"
 [[ -x "$OPERATIONCTL" && -x "$RESTORE_COMMAND" && -x "$RECEIPT_VERIFY" && -x "$BR_BINARY" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
 command -v stat >/dev/null || die "stat is required"

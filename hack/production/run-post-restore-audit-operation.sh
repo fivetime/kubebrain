@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
 
 WORKER_ID="${WORKER_ID:-}"
 PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
@@ -53,14 +54,13 @@ EOF
   { echo "WORKER_ID contains unsupported characters" >&2; exit 2; }
 [[ -z "$PARAMETERS_INPUT" || -f "$PARAMETERS_INPUT" ]] ||
   { echo "PARAMETERS_INPUT must exist when provided" >&2; exit 2; }
-[[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] ||
-  { echo "LEASE_SECONDS must be an integer of at least 6" >&2; exit 2; }
+operation_is_positive_int64 "$LEASE_SECONDS" && (( LEASE_SECONDS >= 6 )) ||
+  { echo "LEASE_SECONDS must be an integer of at least 6; value must be a positive int64" >&2; exit 2; }
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
   { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
-[[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
-  awk -v heartbeat="$heartbeat_interval" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
-  { echo "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS" >&2; exit 2; }
+operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECONDS" ||
+  { echo "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 command -v stat >/dev/null || { echo "stat is required" >&2; exit 2; }

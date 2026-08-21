@@ -31,6 +31,34 @@ func TestOperationRunnersExposeHeartbeatIntervalOverride(t *testing.T) {
 	}
 }
 
+func TestHeartbeatOperationRunnersUseExactSharedTimeValidation(t *testing.T) {
+	for _, script := range []string{
+		"run-backup-operation.sh",
+		"run-backup-deletion-operation.sh",
+		"run-certificate-rotation-operation.sh",
+		"run-cold-physical-restore-operation.sh",
+		"run-cold-physical-snapshot-operation.sh",
+		"run-destroy-operation.sh",
+		"run-legacy-snapshot-remediation-operation.sh",
+		"run-native-pitr-full-backup-operation.sh",
+		"run-native-pitr-full-restore-operation.sh",
+		"run-post-restore-audit-operation.sh",
+		"run-restore-cutover-operation.sh",
+		"run-tikv-transaction-recovery-operation.sh",
+		"run-tikv-transaction-repair-operation.sh",
+	} {
+		t.Run(script, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(".", script))
+			require.NoError(t, err)
+			text := string(data)
+			require.Contains(t, text, "operation-time-validation.sh")
+			require.Contains(t, text, "operation_is_positive_int64")
+			require.Contains(t, text, "operation_is_positive_decimal_less_than_int")
+			require.NotContains(t, text, "awk -v heartbeat=")
+		})
+	}
+}
+
 func TestOperationRunnerTestsUseBoundedCommandHelper(t *testing.T) {
 	for _, tc := range []struct {
 		testFile string

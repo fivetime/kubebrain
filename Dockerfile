@@ -124,7 +124,7 @@ COPY --from=build /src/bin/kubebrain-native-pitr-full-backup /usr/local/bin/kube
 COPY --from=build /src/bin/kubebrain-operation-worker /usr/local/bin/kubebrain-operation-worker
 COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-operationctl
 COPY --from=br-v751 /br /usr/local/bin/br
-COPY hack/production/run-native-pitr-full-backup-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-backup-operation.sh
+COPY hack/production/run-native-pitr-full-backup-operation.sh hack/production/operation-time-validation.sh /opt/kubebrain/hack/production/
 
 ARG KUBEBRAIN_VERSION
 ARG KUBEBRAIN_GIT_SHA
@@ -160,7 +160,7 @@ COPY --from=build /src/bin/kubebrain-operation-worker /usr/local/bin/kubebrain-o
 COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-operationctl
 COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl
 COPY --from=br-v751 /br /usr/local/bin/br
-COPY hack/production/run-native-pitr-full-restore-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-restore-operation.sh
+COPY hack/production/run-native-pitr-full-restore-operation.sh hack/production/operation-time-validation.sh /opt/kubebrain/hack/production/
 
 ARG KUBEBRAIN_VERSION
 ARG KUBEBRAIN_GIT_SHA
