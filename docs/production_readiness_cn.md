@@ -424,6 +424,10 @@ TiKV 与 PD 的 Pod/UID/PVC inventory jsonpath 原始响应分别限制为 1 MiB
 每个 TiKV replacement 前后的单 Pod `UID<TAB>PVC` jsonpath 原始响应还分别限制为 4096 bytes，并先
 写入独立 0600 文件。旧 identity 超限时不得删除目标 Pod；新 identity 超限时必须停止且不得继续删除
 后续 Pod。精确 4096-byte 响应在 shell 去除尾随换行后仍须通过同 UID 变化、同 PVC 保留栅栏。
+初始 KubeBrain StatefulSet UID 与 TidbCluster `UID/clusterID/PD/TiKV replicas` admission identity 也在
+任何 repair lock/API mutation 前分别受 4096-byte 门禁保护。0700 私有响应目录和退出清理在首次
+Kubernetes 读取前建立；cleanup 只有在本进程成功创建锁并设置 ownership 标志后才允许删除锁，锁冲突
+或初始 admission 失败只能清理本地目录，不能删除另一执行者的锁。
 修复锁建立后的 KubeBrain `UID/desired/ready` quiesce identity、TidbCluster `UID/clusterID/PD/TiKV replicas`
 identity 及失败回退 UID 重读同样各自限制为 4096 bytes，并通过独立 0600 文件消费。超限时不得开始或
 继续 TiKV Pod 删除；精确 4096-byte 响应仍须满足原有 identity/topology 等值判断。

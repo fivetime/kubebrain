@@ -58726,6 +58726,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   quiesce、TidbCluster topology、replacement 或 receipt 语义；修复锁建立前的初始 admission 标量读取
   尚未纳入本门禁，继续作为后续生命周期重构项。在线 etcd RPC 与 TiKV 编码不变。
 
+- A5228 把同一 4096-byte control-plane identity 门禁前移到 repair 锁前的初始 KubeBrain StatefulSet UID
+  与 TidbCluster `UID/clusterID/PD/TiKV replicas` admission。旧实现的 4097-byte 初始 KubeBrain UID 尾随
+  换行会被 shell 静默剥离并继续完成修复（RED 9.406 秒）。现 0700 响应目录、0600 文件 helper 与退出
+  trap 在首次 Kubernetes 调用前建立；超限在 lock create、attempt receipt 或任何 mutation 前失败，精确
+  4096-byte 两类 identity 仍可通过。为避免 early exit/锁冲突误删另一执行者的锁，cleanup 只在成功
+  create 后设置的 `repair_lock_acquired=true` 时执行 lock delete；测试显式模拟 create 冲突并证明只有
+  create 调用、没有 delete 或最终 receipt。聚焦测试 139.179 秒，连续两轮 278.866 秒、race 150.107 秒，
+  完整相关回归 136.688 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按
+  98/113/103/100 四片全部通过（193.338/409.198/313.729/486.502 秒）。本项不改变 identity/topology、
+  lock/attempt receipt 或 repair 语义；初始 desired/ready replicas 与 cooldown 标量仍需后续独立门禁。
+  在线 etcd RPC 与 TiKV 编码不变。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
