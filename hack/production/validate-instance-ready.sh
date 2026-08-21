@@ -185,8 +185,8 @@ if [[ -z "$EXPECTED_INITIAL_CLUSTER" ]]; then
   echo "EXPECTED_INITIAL_CLUSTER is required" >&2
   exit 2
 fi
-if ! [[ "$EXPECTED_QUOTA_BACKEND_BYTES" =~ ^[1-9][0-9]*$ ]]; then
-  echo "EXPECTED_QUOTA_BACKEND_BYTES is required and must be a positive integer" >&2
+if ! operation_is_positive_int64 "$EXPECTED_QUOTA_BACKEND_BYTES"; then
+  echo "EXPECTED_QUOTA_BACKEND_BYTES is required and must be a canonical positive int64" >&2
   exit 2
 fi
 if [[ -z "$EXPECTED_ADVERTISE_CLIENT_URLS" ]]; then
