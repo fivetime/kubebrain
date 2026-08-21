@@ -31,6 +31,7 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--enable-count-index=true\n" +
 		"--count-index-max-keys=5000000\n" +
 		"--enable-storage-metrics=true\n" +
+		"--enable-grpc-gateway=true\n" +
 		"--max-txn-ops=128\n" +
 		"--max-request-bytes=1572864\n" +
 		"--max-concurrent-streams=4294967295\n" +
@@ -556,6 +557,24 @@ func TestValidateInstanceReady(t *testing.T) {
 			extraEnv:    []string{"EXPECTED_BCRYPT_COST=18446744073709551615", "EXPECTED_AUTH_TOKEN_TTL=18446744073709551615"},
 			wantKubectl: true,
 			wantOutput:  "bcrypt cost",
+		},
+		{
+			name:          "gRPC gateway enablement is not boolean",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_ENABLE_GRPC_GATEWAY=1"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_ENABLE_GRPC_GATEWAY must be true or false",
+		},
+		{
+			name:        "disabled gRPC gateway reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_ENABLE_GRPC_GATEWAY=false"},
+			wantKubectl: true,
+			wantOutput:  "gRPC gateway enablement",
 		},
 		{
 			name:          "TLS cipher suite is unsupported",

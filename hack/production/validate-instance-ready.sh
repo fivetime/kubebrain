@@ -30,6 +30,7 @@ EXPECTED_COMPATIBLE_WITH_ETCD="${EXPECTED_COMPATIBLE_WITH_ETCD:-true}"
 EXPECTED_ENABLE_COUNT_INDEX="${EXPECTED_ENABLE_COUNT_INDEX:-true}"
 EXPECTED_COUNT_INDEX_MAX_KEYS="${EXPECTED_COUNT_INDEX_MAX_KEYS:-5000000}"
 EXPECTED_ENABLE_STORAGE_METRICS="${EXPECTED_ENABLE_STORAGE_METRICS:-true}"
+EXPECTED_ENABLE_GRPC_GATEWAY="${EXPECTED_ENABLE_GRPC_GATEWAY:-true}"
 EXPECTED_STORAGE_GC_LIFETIME="${EXPECTED_STORAGE_GC_LIFETIME:-}"
 EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL="${EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL:-}"
 EXPECTED_WATCH_CACHE_SIZE="${EXPECTED_WATCH_CACHE_SIZE:-}"
@@ -381,7 +382,7 @@ if ! validate_auth_token_provider_syntax "$EXPECTED_AUTH_TOKEN"; then
   echo "EXPECTED_AUTH_TOKEN must be a supported simple or structurally valid jwt provider" >&2
   exit 2
 fi
-for variable in EXPECTED_COMPATIBLE_WITH_ETCD EXPECTED_ENABLE_COUNT_INDEX EXPECTED_ENABLE_STORAGE_METRICS; do
+for variable in EXPECTED_COMPATIBLE_WITH_ETCD EXPECTED_ENABLE_COUNT_INDEX EXPECTED_ENABLE_STORAGE_METRICS EXPECTED_ENABLE_GRPC_GATEWAY; do
   value="${!variable}"
   if [[ "$value" != "true" && "$value" != "false" ]]; then
     echo "${variable} must be true or false" >&2
@@ -980,6 +981,7 @@ check_exact_kubebrain_arg "enable-count-index" "$EXPECTED_ENABLE_COUNT_INDEX" "c
 check_exact_kubebrain_arg "count-index-max-keys" "$EXPECTED_COUNT_INDEX_MAX_KEYS" "count index key cap"
 check_exact_kubebrain_arg "tikv-client-num" "$EXPECTED_TIKV_CLIENT_NUM" "TiKV client pool size"
 check_exact_kubebrain_arg "enable-storage-metrics" "$EXPECTED_ENABLE_STORAGE_METRICS" "storage metrics enablement"
+check_exact_kubebrain_arg "enable-grpc-gateway" "$EXPECTED_ENABLE_GRPC_GATEWAY" "gRPC gateway enablement"
 check_optional_kubebrain_arg "storage-gc-lifetime" "$EXPECTED_STORAGE_GC_LIFETIME" "storage GC lifetime"
 check_optional_kubebrain_arg "watch-progress-notify-interval" "$EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL" "watch progress notify interval"
 check_optional_kubebrain_arg "watch-cache-size" "$EXPECTED_WATCH_CACHE_SIZE" "watch cache size"

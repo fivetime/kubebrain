@@ -127,6 +127,7 @@ spec:
             - --enable-count-index=true
             - --count-index-max-keys=5000000
             - --enable-storage-metrics=true
+            - --enable-grpc-gateway=true
             - --quota-backend-bytes=429496729600
             # Cover TiKV's default 10-20s Region election window without
             # admitting a successor before the old leader self-fences.

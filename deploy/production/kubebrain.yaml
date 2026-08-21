@@ -127,6 +127,7 @@ spec:
             - --enable-count-index=true
             - --count-index-max-keys=5000000
             - --enable-storage-metrics=true
+            - --enable-grpc-gateway=true
             - --quota-backend-bytes=429496729600
             # A TiKV Region leader election takes 10-20s with upstream defaults.
             # Stay authoritative across that bounded storage failover so etcd's

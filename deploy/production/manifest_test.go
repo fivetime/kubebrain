@@ -109,6 +109,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Contains(t, args, "--count-index-max-keys=5000000")
 			require.Contains(t, args, "--tikv-client-num=16")
 			require.Contains(t, args, "--enable-storage-metrics=true")
+			require.Contains(t, args, "--enable-grpc-gateway=true")
 			quotaArgs := 0
 			for _, arg := range args {
 				if strings.HasPrefix(arg, "--quota-backend-bytes=") {
@@ -218,6 +219,7 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 		"--enable-count-index=true",
 		"--count-index-max-keys=5000000",
 		"--enable-storage-metrics=true",
+		"--enable-grpc-gateway=true",
 		"--quota-backend-bytes=429496729600",
 		"--leader-lease-duration=30s",
 		"--leader-renew-deadline=25s",
