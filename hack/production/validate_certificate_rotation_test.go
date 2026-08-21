@@ -165,6 +165,14 @@ func TestValidateCertificateRotationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestValidateCertificateRotationRejectsReplicaOverflowBeforeKubernetesOrState(t *testing.T) {
+	fixture := newRotationFixture(t)
+	fixture.run(t, "begin", false, "EXPECTED_REPLICAS=9223372036854775808", "EXPECTED_REPLICAS must be a positive int64")
+	require.NoFileExists(t, filepath.Join(fixture.stateDir, "kubectl.log"))
+	require.NoFileExists(t, filepath.Join(fixture.stateDir, "rotation-1.state"))
+	require.NoFileExists(t, filepath.Join(fixture.stateDir, "rotation-1.receipt.json"))
+}
+
 func TestValidateCertificateRotationRejectsUnsafeEvidenceFields(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -196,6 +204,7 @@ func newRotationFixture(t *testing.T) *rotationFixture {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(name), 0o600))
 	}
 	writeExecutable(t, filepath.Join(dir, "kubectl"), `#!/usr/bin/env bash
+printf 'kubectl\n' >>"$FAKE_STATE_DIR/kubectl.log"
 printf '%b\n' "${FAKE_PODS:-kubebrain-0\tuid-0\t0\ttrue\nkubebrain-1\tuid-1\t0\ttrue\nkubebrain-2\tuid-2\t0\ttrue}"
 `)
 	writeExecutable(t, filepath.Join(dir, "openssl"), `#!/usr/bin/env bash

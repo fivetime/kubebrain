@@ -29,6 +29,23 @@ func TestCertificateRotationOperationCompletesLifecycle(t *testing.T) {
 	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
 }
 
+func TestCertificateRotationOperationRejectsReplicaOverflowBeforeSteps(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	parameters := []byte(strings.Replace(
+		string(mustRead(t, f.parameters)),
+		`"expected_replicas":3`,
+		`"expected_replicas":9223372036854775808`,
+		1,
+	))
+	require.NoError(t, os.WriteFile(f.parameters, parameters, 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fmt.Sprintf("%x", sha256.Sum256(parameters)), "expected_replicas must be a positive int64")
+	log := f.log(t)
+	require.NotContains(t, log, "gate ")
+	require.NotContains(t, log, "hook ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestCertificateRotationOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL_AFTER_COMPLETE=true", "final heartbeat failed; certificate rotation worker was fenced")

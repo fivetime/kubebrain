@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
+
 ACTION="${ACTION:-}"
 ROTATION_ID="${ROTATION_ID:-}"
 INSTANCE="${INSTANCE:-}"
@@ -65,8 +68,8 @@ if contains_unsafe_endpoint_char "$ENDPOINT"; then
   echo "ENDPOINT must not contain control characters, quotes, or backslashes" >&2
   exit 2
 fi
-if ! [[ "$EXPECTED_REPLICAS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "EXPECTED_REPLICAS must be a positive integer" >&2
+if ! operation_is_positive_int64 "$EXPECTED_REPLICAS"; then
+  echo "EXPECTED_REPLICAS must be a positive int64" >&2
   exit 2
 fi
 for variable in OLD_CACERT OLD_CERT OLD_KEY NEW_CACERT NEW_CERT NEW_KEY; do

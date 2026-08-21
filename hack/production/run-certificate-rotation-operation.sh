@@ -203,8 +203,8 @@ receipt_input="$receipt_output"
   { echo "rotation namespace or endpoint identity is invalid" >&2; exit 2; }
 ! contains_unsupported_endpoint_characters "$endpoint" ||
   { echo "rotation namespace or endpoint identity is invalid" >&2; exit 2; }
-[[ "$expected_replicas" =~ ^[1-9][0-9]*$ ]] ||
-  { echo "expected_replicas must be a positive integer" >&2; exit 2; }
+operation_is_positive_int64 "$expected_replicas" ||
+  { echo "expected_replicas must be a positive int64" >&2; exit 2; }
 for file in "$old_ca" "$old_cert" "$old_key" "$new_ca" "$new_cert" "$new_key" "$overlap_ca"; do
   [[ -f "$file" ]] || { echo "rotation credential does not exist: ${file}" >&2; exit 2; }
 done
