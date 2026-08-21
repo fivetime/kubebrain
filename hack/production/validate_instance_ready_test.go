@@ -120,6 +120,42 @@ func TestValidateInstanceReady(t *testing.T) {
 		wantOutput               string
 	}{
 		{
+			name:          "leader lease duration is malformed",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_LEADER_LEASE_DURATION=forever"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_LEADER_LEASE_DURATION must be a positive production Go duration",
+		},
+		{
+			name:          "leader renew deadline overflows Go duration",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_LEADER_RENEW_DEADLINE=2562048h"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_LEADER_RENEW_DEADLINE must be a positive production Go duration",
+		},
+		{
+			name:          "leader retry period is not canonical",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_LEADER_RETRY_PERIOD=0500ms"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_LEADER_RETRY_PERIOD must be a positive production Go duration",
+		},
+		{
+			name:        "maximum whole-hour leader lease reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_LEADER_LEASE_DURATION=2562047h"},
+			wantKubectl: true,
+			wantOutput:  "leader election lease duration configuration mismatch",
+		},
+		{
 			name:          "log verbosity is not canonical",
 			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

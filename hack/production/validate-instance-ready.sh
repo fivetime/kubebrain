@@ -239,7 +239,14 @@ if ! operation_is_nonnegative_int32 "$EXPECTED_LOG_VERBOSITY"; then
   echo "EXPECTED_LOG_VERBOSITY must be a canonical non-negative klog int32 level" >&2
   exit 2
 fi
-for variable in EXPECTED_LEADER_LEASE_DURATION EXPECTED_LEADER_RENEW_DEADLINE EXPECTED_LEADER_RETRY_PERIOD EXPECTED_GRPC_KEEPALIVE_MIN_TIME EXPECTED_GRPC_KEEPALIVE_INTERVAL EXPECTED_GRPC_KEEPALIVE_TIMEOUT EXPECTED_AUTH_TOKEN; do
+for variable in EXPECTED_LEADER_LEASE_DURATION EXPECTED_LEADER_RENEW_DEADLINE EXPECTED_LEADER_RETRY_PERIOD; do
+  value="${!variable}"
+  if ! operation_is_positive_go_duration_hms "$value"; then
+    echo "${variable} must be a positive production Go duration using an integer ms, s, m, or h unit" >&2
+    exit 2
+  fi
+done
+for variable in EXPECTED_GRPC_KEEPALIVE_MIN_TIME EXPECTED_GRPC_KEEPALIVE_INTERVAL EXPECTED_GRPC_KEEPALIVE_TIMEOUT EXPECTED_AUTH_TOKEN; do
   value="${!variable}"
   if [[ -z "$value" ]]; then
     echo "${variable} must be non-empty" >&2
