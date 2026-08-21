@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PRODUCTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "${PRODUCTION_DIR}/operation-time-validation.sh"
+
 ALERT_INPUT="${ALERT_INPUT:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
@@ -35,7 +38,8 @@ identity_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return
 alert_size_is_valid "$ALERT_INPUT" || die "alert payload exceeds ${MAX_ALERT_INPUT_BYTES} bytes"
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required (use in-cluster for service-account credentials)"
 [[ "$ENDPOINT" =~ ^https?://[^[:space:],]+$ ]] || die "ENDPOINT must be exactly one HTTP(S) URL"
-[[ "$MIN_FIRING_SECONDS" =~ ^[1-9][0-9]*$ && "$NOW_UNIX" =~ ^[1-9][0-9]*$ ]] || die "firing duration and current time must be positive integers"
+operation_is_positive_int64 "$MIN_FIRING_SECONDS" || die "MIN_FIRING_SECONDS must be a positive int64"
+operation_is_positive_int64 "$NOW_UNIX" || die "NOW_UNIX must be a positive int64 Unix timestamp"
 for value in "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$TIDB_NAMESPACE" "$TIDB_CLUSTER" "$OPERATION_NAMESPACE"; do
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "resource identity must be a DNS label"
 done
@@ -66,6 +70,7 @@ alert="$($JQ -cer --arg ns "$KUBEBRAIN_NAMESPACE" --arg sts "$KUBEBRAIN_STATEFUL
 fingerprint="$($JQ -r '.fingerprint' <<<"$alert")"
 starts_at="$($JQ -r '.startsAt' <<<"$alert")"
 started_unix="$($DATE -u -d "$starts_at" +%s 2>/dev/null)" || die "alert startsAt is invalid"
+operation_is_positive_int64 "$started_unix" || die "alert startsAt must resolve to a positive int64 Unix timestamp"
 (( started_unix <= NOW_UNIX )) || die "alert startsAt is in the future"
 (( NOW_UNIX - started_unix >= MIN_FIRING_SECONDS )) || die "alert has not fired for the required duration"
 

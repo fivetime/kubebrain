@@ -142,6 +142,38 @@ func TestRequestTiKVTransactionRepairRejectsResolvedAlertBeforeKubernetes(t *tes
 	require.NoFileExists(t, logPath)
 }
 
+func TestRequestTiKVTransactionRepairRejectsTimeOverflowBeforeKubernetes(t *testing.T) {
+	tempDir := t.TempDir()
+	alertPath := filepath.Join(tempDir, "alert.json")
+	require.NoError(t, os.WriteFile(alertPath, []byte(`{"alerts":[{"status":"firing","labels":{"alertname":"KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane","namespace":"kubebrain-system","statefulset":"kubebrain"},"startsAt":"2026-08-09T05:00:00Z","fingerprint":"abcdef0123456789"}]}`), 0o600))
+	kubectlLog := filepath.Join(tempDir, "kubectl.log")
+	kubectl := filepath.Join(tempDir, "kubectl")
+	require.NoError(t, os.WriteFile(kubectl, []byte("#!/usr/bin/env bash\nprintf called >>\"$KUBECTL_LOG\"\n"), 0o755))
+	overflowDate := filepath.Join(tempDir, "date")
+	require.NoError(t, os.WriteFile(overflowDate, []byte("#!/usr/bin/env bash\nprintf '9223372036854775808\\n'\n"), 0o755))
+
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{name: "minimum firing duration", env: []string{"MIN_FIRING_SECONDS=9223372036854775808", "NOW_UNIX=1786252000"}, want: "MIN_FIRING_SECONDS must be a positive int64"},
+		{name: "current time", env: []string{"NOW_UNIX=9223372036854775808"}, want: "NOW_UNIX must be a positive int64 Unix timestamp"},
+		{name: "parsed alert time", env: []string{"NOW_UNIX=1786252000", "DATE=" + overflowDate}, want: "alert startsAt must resolve to a positive int64 Unix timestamp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := runProductionScriptCommand(t, "request-tikv-transaction-repair.sh", append([]string{
+				"ALERT_INPUT=" + alertPath, "KUBE_CONTEXT=test-context",
+				"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379",
+				"KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog, "OPERATIONCTL=/bin/true",
+			}, tc.env...))
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.want)
+			require.NoFileExists(t, kubectlLog)
+		})
+	}
+}
+
 func TestRequestTiKVTransactionRepairRejectsOversizedAlertBeforeParsing(t *testing.T) {
 	tempDir := t.TempDir()
 	base := `{"alerts":[]}`
