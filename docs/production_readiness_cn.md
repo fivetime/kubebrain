@@ -5102,6 +5102,10 @@ ColdPhysicalSnapshot 的 `witness_max_age_seconds`、`wait_timeout` 数值部分
 requester 在任何 Kubernetes 调用前执行，Operation worker 在读取冻结参数且启动 primitive 前重验，
 `cold-snapshot-execute.sh` 直接调用入口再独立验证。MaxInt64+1 不得通过 jq JSON number、immutable Secret
 或直接 primitive 调用进入 witness freshness、kubectl wait 或已暂停 TidbCluster 后的 sleep。
+ColdPhysicalRestore 的 `wait_timeout` 使用同一三层合同：requester 必须在读取目标 namespace 身份前拒绝，
+Operation worker 必须在启动 restore primitive 前重验，`cold-restore-execute.sh` 必须在任何目标 Kubernetes
+访问前再次验证。其数值部分必须是正 int64 且后缀只能为 `s|m|h`；MaxInt64+1 不得进入 PVC/TidbCluster
+创建、Ready wait 或 rollout status 窗口。
 TiKVTransactionRepair requester 接收的 Alertmanager envelope 上限为 1 MiB。它必须在 jq 前检查原文件，复制为
 0600 私有文件后复检冻结副本与原路径，并只解析冻结副本；超限告警不得触达 Kubernetes。该 envelope 上限
 与生成的 64 KiB operation 参数上限是两个不同层次的合同。

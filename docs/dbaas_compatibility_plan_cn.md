@@ -59041,6 +59041,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （198.886/557.386/317.537/536.539 秒）。本项不改变合法 witness freshness、wait/settle 默认值、Operation
   状态合同或在线 etcd/TiKV 语义，只封闭冻结参数与直接执行入口的数值域。
 
+- A5256 将 A5255 的精确 duration 合同扩展到 ColdPhysicalRestore。旧 requester、Operation worker 与
+  `cold-restore-execute.sh` 都只用 `^[1-9][0-9]*(s|m|h)$` 接受 `WAIT_TIMEOUT`；MaxInt64+1 数值部分可写入
+  immutable 参数并传到会创建 PVC/TidbCluster、执行 Ready wait 与 rollout status 的 primitive。现三层统一
+  复用带后缀正 int64 helper：requester 在读取目标 namespace 身份前拒绝，worker 在启动 destructive restore
+  前重验，direct primitive 在任何目标 Kubernetes 调用前再验。三条行为回归均注入
+  `9223372036854775808s/m`，分别证明零 target kubectl、零 restore primitive 和零 Kubernetes 访问；正常
+  worker 终态保持不变。聚焦连续两轮 2.148 秒、race 2.155 秒，bash syntax、diff check 与全仓 vet 通过；
+  production 清单增至 427 项并按 99/119/106/103 四片全部通过
+  （214.365/588.093/363.754/586.802 秒）。本项不改变合法 restore 参数、隔离目标门禁、Operation 状态合同
+  或在线 etcd/TiKV 语义，只封闭恢复等待窗口的数值域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
