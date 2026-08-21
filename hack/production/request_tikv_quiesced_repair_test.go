@@ -24,17 +24,17 @@ if [[ "$args" == *"get statefulset kubebrain -o json"* ]]; then
 elif [[ "$args" == *"get tidbcluster kb -o json"* ]]; then
   printf '{"metadata":{"uid":"tc-uid"},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":7671,"conditions":[{"type":"Ready","status":"True"}]}}'
 elif [[ "$args" == *"pending-peer"* ]]; then
-  printf '{"count":1,"regions":[{"pending_peers":[{"store_id":1005}],"down_peers":[]}]}'
+  printf '{"count":1,"regions":[{"pending_peers":[{"store_id":%s}],"down_peers":[]}]}' "${FAKE_STORE_ID:-1005}"
 elif [[ "$args" == *"down-peer"* ]]; then
-  printf '{"count":1,"regions":[{"pending_peers":[],"down_peers":[{"peer":{"store_id":1005}}]}]}'
-elif [[ "$args" == *"get secret tikv-quiesced-repair-55b125a68aa87753e96b-parameters"* ]]; then
+  printf '{"count":1,"regions":[{"pending_peers":[],"down_peers":[{"peer":{"store_id":%s}}]}]}' "${FAKE_STORE_ID:-1005}"
+elif [[ "$args" == *"get secret ${EXPECTED_OPERATION_NAME:-tikv-quiesced-repair-55b125a68aa87753e96b}-parameters"* ]]; then
   exit 1
-elif [[ "$args" == *"create secret generic tikv-quiesced-repair-55b125a68aa87753e96b-parameters"* ]]; then
+elif [[ "$args" == *"create secret generic ${EXPECTED_OPERATION_NAME:-tikv-quiesced-repair-55b125a68aa87753e96b}-parameters"* ]]; then
   parameters_file=""
   for arg in "$@"; do
     [[ "$arg" == --from-file=parameters.json=* ]] && parameters_file="${arg#--from-file=parameters.json=}"
   done
-  jq -e 'keys == ["endpoint","expected_abnormal_store_ids","expected_cluster_id","expected_kubebrain_statefulset_uid","expected_tidb_cluster_uid","kubebrain_namespace","kubebrain_statefulset","pod_ready_timeout_seconds","probe_timeout_seconds","repair_cooldown_seconds","request_id","tidb_cluster","tidb_namespace"] and .expected_abnormal_store_ids == [1005] and .request_id == "change-2026-002"' "$parameters_file" >/dev/null
+  jq -e --argjson store "${FAKE_STORE_ID:-1005}" 'keys == ["endpoint","expected_abnormal_store_ids","expected_cluster_id","expected_kubebrain_statefulset_uid","expected_tidb_cluster_uid","kubebrain_namespace","kubebrain_statefulset","pod_ready_timeout_seconds","probe_timeout_seconds","repair_cooldown_seconds","request_id","tidb_cluster","tidb_namespace"] and .expected_abnormal_store_ids == [$store] and .request_id == "change-2026-002"' "$parameters_file" >/dev/null
   printf '{"apiVersion":"v1","kind":"Secret","metadata":{"name":"probe"},"type":"Opaque","data":{}}\n'
 elif [[ "$args" == *"create -f -"* ]]; then
   payload="$(cat)"
@@ -68,6 +68,35 @@ fi
 	for _, forbidden := range []string{"delete", " scale ", " exec ", " patch "} {
 		require.NotContains(t, string(kubectlData), forbidden)
 	}
+
+	require.NoError(t, os.WriteFile(kubectlLog, nil, 0o600))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	maxStoreID := "18446744073709551615"
+	maxOperationName := "tikv-quiesced-repair-e9e8b3003c163ddc35ad"
+	maxOutput, maxErr := runProductionScriptCommand(t, "request-tikv-quiesced-repair.sh", []string{
+		"REQUEST_ID=change-2026-002", "KUBE_CONTEXT=test-context",
+		"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379",
+		"KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+		"OPERATIONCTL=" + operationctl, "OPERATION_LOG=" + operationLog,
+		"FAKE_STORE_ID=" + maxStoreID, "EXPECTED_OPERATION_NAME=" + maxOperationName,
+	})
+	require.NoError(t, maxErr, string(maxOutput))
+	require.Contains(t, string(maxOutput), "approved stores="+maxStoreID)
+	require.Contains(t, string(mustRead(t, operationLog)), "--name "+maxOperationName)
+
+	require.NoError(t, os.WriteFile(kubectlLog, nil, 0o600))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	overflowOutput, overflowErr := runProductionScriptCommand(t, "request-tikv-quiesced-repair.sh", []string{
+		"REQUEST_ID=change-2026-002", "KUBE_CONTEXT=test-context",
+		"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379",
+		"KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+		"OPERATIONCTL=" + operationctl, "OPERATION_LOG=" + operationLog,
+		"FAKE_STORE_ID=18446744073709551616",
+	})
+	require.Error(t, overflowErr)
+	require.Contains(t, string(overflowOutput), "store target is not a positive uint64")
+	require.NotContains(t, string(mustRead(t, kubectlLog)), " secret ")
+	require.Empty(t, mustRead(t, operationLog))
 }
 
 func TestRequestTiKVQuiescedRepairRejectsHealthyRegionsBeforeSubmission(t *testing.T) {

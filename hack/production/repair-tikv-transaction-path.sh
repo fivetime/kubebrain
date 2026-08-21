@@ -73,7 +73,11 @@ is_positive_uint64() {
 [[ "$REPAIR_MODE" == "transaction" || "$REPAIR_MODE" == "quiesced" ]] || die "REPAIR_MODE must be transaction or quiesced"
 if [[ "$REPAIR_MODE" == "quiesced" ]]; then
   [[ "$EXPECTED_ABNORMAL_STORE_IDS" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] ||
-    die "EXPECTED_ABNORMAL_STORE_IDS must be a comma-separated list of positive store IDs in quiesced mode"
+    die "EXPECTED_ABNORMAL_STORE_IDS must be a comma-separated list of positive uint64 store IDs in quiesced mode"
+  while IFS= read -r store_id; do
+    is_positive_uint64 "$store_id" ||
+      die "EXPECTED_ABNORMAL_STORE_IDS must contain only positive uint64 store IDs"
+  done < <(tr ',' '\n' <<<"$EXPECTED_ABNORMAL_STORE_IDS")
   normalized_expected_abnormal_store_ids="$(tr ',' '\n' <<<"$EXPECTED_ABNORMAL_STORE_IDS" | sort -n -u | paste -sd, -)"
   [[ "$normalized_expected_abnormal_store_ids" == "$EXPECTED_ABNORMAL_STORE_IDS" ]] ||
     die "EXPECTED_ABNORMAL_STORE_IDS must be sorted and unique"
@@ -113,6 +117,8 @@ is_nonnegative_int64 "$PROBE_INTERVAL_SECONDS" || die "PROBE_INTERVAL_SECONDS mu
 for variable in KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET TIDB_NAMESPACE TIDB_CLUSTER REPAIR_STATE_NAMESPACE; do
   [[ "${!variable}" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "$variable must be a DNS label"
 done
+[[ "$("$JQ" -jn --arg value "$MAX_UINT64" '$value | tonumber | tostring' 2>/dev/null)" == "$MAX_UINT64" ]] ||
+  die "jq must preserve unsigned 64-bit decimal identities"
 expected_kb_uid_json="$("$JQ" -cn --arg value "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" '$value')" ||
   die "cannot encode expected KubeBrain StatefulSet UID"
 expected_tidb_uid_json="$("$JQ" -cn --arg value "$EXPECTED_TIDB_CLUSTER_UID" '$value')" ||
@@ -437,7 +443,7 @@ read_abnormal_store_ids() {
       all(.regions[]?; all(.pending_peers[]?; .store_id > 0) and all(.down_peers[]?; .peer.store_id > 0))
     ' "$check_response" >/dev/null || return 1
     while IFS= read -r store_id; do
-      [[ "$store_id" =~ ^[1-9][0-9]*$ ]] || return 1
+      is_positive_uint64 "$store_id" || return 1
       ids[$store_id]=1
     done < <("$JQ" -r '[.regions[]? | (.pending_peers[]?.store_id), (.down_peers[]?.peer.store_id)] | unique | .[]' "$check_response")
   done
@@ -770,8 +776,7 @@ if [[ "$REPAIR_MODE" == "transaction" ]]; then
     "$expected_kb_uid_json" "${#replacement_ordinals[@]}" "$expected_tidb_uid_json" >"$receipt_tmp" ||
     die "cannot write repair receipt"
 else
-  repaired_store_ids_json="$(printf '%s\n' "$EXPECTED_ABNORMAL_STORE_IDS" | "$JQ" -Rce 'split(",") | map(tonumber)')" ||
-    die "cannot encode repaired store identities"
+  repaired_store_ids_json="[${EXPECTED_ABNORMAL_STORE_IDS}]"
   printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-quiesced-repair.receipt.v1","kubebrain_quiesced":true,"kubebrain_statefulset_uid":%s,"pvc_preserved":true,"regions_verified":true,"repaired_store_ids":%s,"repaired_tikv_pods":%s,"tidb_cluster_uid":%s}\n' \
     "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
     "$expected_kb_uid_json" "$repaired_store_ids_json" "${#replacement_ordinals[@]}" "$expected_tidb_uid_json" >"$receipt_tmp" ||

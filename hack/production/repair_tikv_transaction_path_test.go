@@ -151,6 +151,7 @@ elif [[ "$args" == *"/pd/api/v1/regions/check/"* ]]; then
   check="${args##*/regions/check/}"
   if [[ -n "$ordinal" && "$check" == "pending-peer" && ( "${FAKE_PERSISTENT_ABNORMAL_REGION:-false}" == "true" || ! -e "$FAKE_STATE/replaced-$ordinal" ) ]]; then
     case "$ordinal" in 0) store_id=1001;; 1) store_id=1004;; 2) store_id=1005;; *) exit 98;; esac
+    store_id="${FAKE_ABNORMAL_STORE_ID:-$store_id}"
     printf -v payload '{"count":1,"regions":[{"id":76009,"leader":{"store_id":1001},"pending_peers":[{"store_id":%s}],"down_peers":[]}]}' "$store_id"
   else
     payload='{"count":0,"regions":[]}'
@@ -161,7 +162,8 @@ elif [[ "$args" == *"/pd/api/v1/stores"* ]]; then
   if [[ "${FAKE_PD_STORE_DOWN_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
     store_state=Down
   fi
-  printf -v payload '{"count":3,"stores":[{"store":{"id":1001,"address":"kb-tikv-0:20160","state_name":"Up"}},{"store":{"id":1004,"address":"kb-tikv-1:20160","state_name":"Up"}},{"store":{"id":1005,"address":"kb-tikv-2:20160","state_name":"%s"}}]}' "$store_state"
+  abnormal_store_id="${FAKE_ABNORMAL_STORE_ID:-1005}"
+  printf -v payload '{"count":3,"stores":[{"store":{"id":1001,"address":"kb-tikv-0:20160","state_name":"Up"}},{"store":{"id":1004,"address":"kb-tikv-1:20160","state_name":"Up"}},{"store":{"id":%s,"address":"kb-tikv-2:20160","state_name":"%s"}}]}' "$abnormal_store_id" "$store_state"
   printf '%s' "$payload"; [[ "${FAKE_PD_RESPONSE_TARGET:-}" != stores ]] || head -c "$((FAKE_PD_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"get pvc "* ]]; then
   pvc="${args#*get pvc }"
@@ -800,6 +802,25 @@ fi
 	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
 	require.NoError(t, os.Remove(receiptPath))
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	maxStoreID := "18446744073709551615"
+	maxStoreOutput, maxStoreErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "REPAIR_MODE=quiesced", "EXPECTED_ABNORMAL_STORE_IDS="+maxStoreID,
+			"FAKE_INITIAL_KB_REPLICAS=0", "FAKE_ABNORMAL_STORE_ORDINAL=2", "FAKE_ABNORMAL_STORE_ID="+maxStoreID))
+	require.NoError(t, maxStoreErr, string(maxStoreOutput))
+	maxStoreReceipt, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.Contains(t, string(maxStoreReceipt), `"repaired_store_ids":[18446744073709551615]`)
+	require.NotContains(t, string(maxStoreReceipt), "18446744073709552000")
+	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
+	require.NoError(t, os.Remove(receiptPath))
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	overflowOutput, overflowErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "REPAIR_MODE=quiesced", "EXPECTED_ABNORMAL_STORE_IDS=18446744073709551616",
+			"FAKE_INITIAL_KB_REPLICAS=0"))
+	require.Error(t, overflowErr)
+	require.Contains(t, string(overflowOutput), "must contain only positive uint64 store IDs")
+	require.Empty(t, mustRead(t, logPath), "overflowing store identity must fail before Kubernetes access")
+	require.NoFileExists(t, receiptPath)
 	quiescedHealthyOutput, quiescedHealthyErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
 		append(env, "REPAIR_MODE=quiesced", "EXPECTED_ABNORMAL_STORE_IDS=1005", "FAKE_INITIAL_KB_REPLICAS=0"))
 	require.Error(t, quiescedHealthyErr)

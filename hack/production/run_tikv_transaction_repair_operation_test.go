@@ -202,15 +202,16 @@ func TestRunTiKVQuiescedRepairOperation(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
-  printf '{"namespace":"kubebrain-repair-operations","name":"tikv-quiesced-repair-55b125a68aa87753e96b","operation_id":"tikv-quiesced-repair-55b125a68aa87753e96b","requested_by":"platform:tikv-quiesced-repair","instance":"kubebrain","type":"TiKVTransactionRepair","parameters_sha256":"%s","parameters_secret":"tikv-quiesced-repair-55b125a68aa87753e96b-parameters","parameters_key":"parameters.json","owner":"%s","attempt":2}\n' "$EXPECTED_DIGEST" "$WORKER_ID"
+  claim_name="${CLAIM_NAME:-tikv-quiesced-repair-55b125a68aa87753e96b}"
+  printf '{"namespace":"kubebrain-repair-operations","name":"%s","operation_id":"%s","requested_by":"platform:tikv-quiesced-repair","instance":"kubebrain","type":"TiKVTransactionRepair","parameters_sha256":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","owner":"%s","attempt":2}\n' "$claim_name" "$claim_name" "$EXPECTED_DIGEST" "$claim_name" "$WORKER_ID"
 fi
 `), 0o755))
 	repair := filepath.Join(dir, "repair")
 	require.NoError(t, os.WriteFile(repair, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 env | sort >"$REPAIR_LOG"
-printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786381000,"format":"kubebrain.tikv-quiesced-repair.receipt.v1","kubebrain_quiesced":true,"kubebrain_statefulset_uid":"%s","pvc_preserved":true,"regions_verified":true,"repaired_store_ids":[1005],"repaired_tikv_pods":1,"tidb_cluster_uid":"%s"}\n' \
-  "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$EXPECTED_TIDB_CLUSTER_UID" >"$RECEIPT_OUTPUT"
+printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786381000,"format":"kubebrain.tikv-quiesced-repair.receipt.v1","kubebrain_quiesced":true,"kubebrain_statefulset_uid":"%s","pvc_preserved":true,"regions_verified":true,"repaired_store_ids":[%s],"repaired_tikv_pods":1,"tidb_cluster_uid":"%s"}\n' \
+  "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$EXPECTED_ABNORMAL_STORE_IDS" "$EXPECTED_TIDB_CLUSTER_UID" >"$RECEIPT_OUTPUT"
 `), 0o755))
 	env := []string{
 		"WORKER_ID=worker-q1", "PARAMETERS_INPUT=" + parameters,
@@ -265,6 +266,43 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786381000,"forma
 	})
 	require.Error(t, driftErr)
 	require.Contains(t, string(driftOutput), "quiesced repair request identity does not match the operation")
+
+	for _, receipt := range receipts {
+		_ = os.Remove(receipt)
+	}
+	require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
+	maxStoreID := "18446744073709551615"
+	maxParameters := []byte(strings.Replace(string(parameterBytes), `"expected_abnormal_store_ids":[1005]`, `"expected_abnormal_store_ids":[`+maxStoreID+`]`, 1))
+	require.NoError(t, os.WriteFile(parameters, maxParameters, 0o600))
+	maxDigest := fmt.Sprintf("%x", sha256.Sum256(maxParameters))
+	maxOutput, maxErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-q5", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + dir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + maxDigest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+		"CLAIM_NAME=tikv-quiesced-repair-e9e8b3003c163ddc35ad",
+	})
+	require.NoError(t, maxErr, string(maxOutput))
+	require.Contains(t, string(mustRead(t, repairLog)), "EXPECTED_ABNORMAL_STORE_IDS="+maxStoreID)
+
+	maxReceipts, err := filepath.Glob(filepath.Join(dir, "tikv-repair-*.receipt.json"))
+	require.NoError(t, err)
+	require.Len(t, maxReceipts, 1)
+	require.Contains(t, string(mustRead(t, maxReceipts[0])), `"repaired_store_ids":[`+maxStoreID+`]`)
+	require.NoError(t, os.Remove(maxReceipts[0]))
+	require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
+	overflowParameters := []byte(strings.Replace(string(parameterBytes), `"expected_abnormal_store_ids":[1005]`, `"expected_abnormal_store_ids":[18446744073709551616]`, 1))
+	require.NoError(t, os.WriteFile(parameters, overflowParameters, 0o600))
+	overflowDigest := fmt.Sprintf("%x", sha256.Sum256(overflowParameters))
+	overflowOutput, overflowErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-q6", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + dir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + overflowDigest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+	})
+	require.Error(t, overflowErr)
+	require.Contains(t, string(overflowOutput), "store identity is not a positive uint64")
+	require.Empty(t, mustRead(t, repairLog))
 }
 
 func TestRunTiKVTransactionRepairOperationRejectsInvalidClaimNamespace(t *testing.T) {

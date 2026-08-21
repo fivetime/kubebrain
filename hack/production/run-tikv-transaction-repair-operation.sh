@@ -12,14 +12,24 @@ REPAIR_COMMAND="${REPAIR_COMMAND:-${ROOT_DIR}/hack/production/repair-tikv-transa
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
+MAX_UINT64=18446744073709551615
 
 die() { echo "$*" >&2; exit 2; }
+is_positive_uint64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
+  if (( ${#value} == 20 )) && [[ "$value" > "$MAX_UINT64" ]]; then
+    return 1
+  fi
+}
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a DNS label"
 [[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] || die "LEASE_SECONDS must be at least 6"
 [[ -d "$WORK_DIR" && -w "$WORK_DIR" ]] || die "WORK_DIR must be a writable directory"
 [[ -f "$REPAIR_COMMAND" && -x "$REPAIR_COMMAND" ]] || die "REPAIR_COMMAND is required and must be an executable file"
 command -v "$JQ" >/dev/null || die "jq is required"
+[[ "$("$JQ" -jn --arg value "$MAX_UINT64" '$value | tonumber | tostring' 2>/dev/null)" == "$MAX_UINT64" ]] ||
+  die "jq must preserve unsigned 64-bit decimal identities"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 command -v stat >/dev/null || die "stat is required"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
@@ -172,6 +182,9 @@ else
     probe_timeout pod_timeout cooldown request_id <<<"$parameters"
   required_failed_probes=1
   probe_interval=0
+  while IFS= read -r store_id; do
+    is_positive_uint64 "$store_id" || die "quiesced repair store identity is not a positive uint64"
+  done < <(tr ',' '\n' <<<"$expected_abnormal_store_ids")
 fi
 for value in "$kb_namespace" "$kb_statefulset" "$tidb_namespace" "$tidb_cluster"; do
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "repair resource identity is invalid"
@@ -259,7 +272,7 @@ if [[ "$repair_flow" == "transaction" ]]; then
   fi
 else
   expected_target_count="$(tr ',' '\n' <<<"$expected_abnormal_store_ids" | wc -l | tr -d ' ')"
-  expected_target_ids="$($JQ -cn --arg ids "$expected_abnormal_store_ids" '$ids | split(",") | map(tonumber)')"
+  expected_target_ids="[${expected_abnormal_store_ids}]"
   if $JQ -e --arg attempt_id "$repair_attempt_id" --arg kb_uid "$expected_kb_uid" --arg tidb_uid "$expected_tidb_uid" --argjson cluster_id "$expected_cluster_id" --argjson target_count "$expected_target_count" --argjson target_ids "$expected_target_ids" '
     keys == ["attempt_id","cluster_id","completed_at_unix","format","kubebrain_quiesced","kubebrain_statefulset_uid","pvc_preserved","regions_verified","repaired_store_ids","repaired_tikv_pods","tidb_cluster_uid"] and
     .format == "kubebrain.tikv-quiesced-repair.receipt.v1" and
