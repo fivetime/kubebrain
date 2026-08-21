@@ -58997,6 +58997,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/117/103/102 四片全部通过（193.614/570.610/329.475/559.540 秒）。本项不重跑 BR、不重复删除 target，
   不改变合法 durable receipt、Operation 接管合同或在线 etcd/TiKV 数据语义。
 
+- A5252 将进程组级 fencing 扩展到剩余 12 个长任务 heartbeat runner。旧实现后台启动工作 shell 与 monitor，
+  失租和 cleanup 只 `kill $child`/`kill $heartbeat_pid`；子脚本派生的 kubectl、BR、存储 helper 等后代可在直接
+  shell 退出后继续副作用，monitor 内 sleep 也可能短暂成为孤儿。现 12 条 runner 都在 job-control 下分别创建
+  child/monitor 独立进程组，并通过共享 `operation_kill_process_group` 在 heartbeat failure、cleanup 和正常
+  monitor 回收时优先按 PGID 终止，单 PID 仅作兜底；加上 A5250/A5251 已处理的三个 runner，全部 15 条长任务
+  路径都具备完整后代 fencing。确定性回归让 native PITR backup 工作脚本再派生一个阻塞孙进程，失租后证明
+  孙进程收到 TERM、写出 terminated 且 Operation 不 succeed；静态门禁覆盖全部 12 条迁移 runner。相关生命周期
+  回归 186.308 秒、race 2.056 秒，bash syntax、diff check 与全仓 vet 通过。production 清单增至 421 项并按
+  98/118/103/102 四片全部通过（139.608/525.151/288.174/509.803 秒）。本项不改变合法工作流、receipt、
+  Operation 状态合同或在线 etcd/TiKV 数据语义，只收紧失租/退出后的进程边界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

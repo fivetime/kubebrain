@@ -5658,7 +5658,10 @@ A185 也支持显式 `KUBECONFIG_PATH`。
 
 所有 operation executor 的 heartbeat 均使用独立续租进程，主进程直接 `wait` 工作子进程；
 工作结束后终止 heartbeat，涉及后续 terminal 提交的 worker 还会执行同步最终续租。续租失败时 heartbeat
-杀掉尚未完成的工作进程并返回 fencing 状态。禁止
+杀掉尚未完成的工作进程并返回 fencing 状态。所有会派生长任务的 runner 必须在 Bash job-control 下分别为
+工作 child 与 heartbeat monitor 建立独立进程组；cleanup、正常 monitor 回收和失租路径都按 PGID 终止，PID
+kill 只能作为组不存在时的兜底。这样可同时终止子脚本派生的 kubectl/BR/helper 后代，并回收 monitor 内的 sleep，
+不能只杀直接 shell 后让旧 owner 的后代继续产生副作用。禁止
 使用 `kill -0` 轮询工作进程完成，因为未 wait 的 zombie 仍可能返回存在并造成无限续租。
 全部 15 个 heartbeat worker 都在任何 Bash 算术和 claim 前通过共享
 `operation-time-validation.sh` 要求 lease 是正 int64，并要求显式 interval 是规范正 decimal-int64 秒且
