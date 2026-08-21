@@ -253,6 +253,18 @@ for variable in EXPECTED_GRPC_KEEPALIVE_MIN_TIME EXPECTED_GRPC_KEEPALIVE_INTERVA
     exit 2
   fi
 done
+for variable in EXPECTED_GRPC_MAX_CONNECTION_AGE EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE; do
+  value="${!variable}"
+  if [[ -n "$value" ]] && ! operation_is_nonnegative_go_duration_hms "$value"; then
+    echo "${variable} must be empty, 0, or a positive production Go duration using an integer ms, s, m, or h unit" >&2
+    exit 2
+  fi
+done
+if [[ -n "$EXPECTED_GRPC_MAX_CONNECTION_AGE" && "$EXPECTED_GRPC_MAX_CONNECTION_AGE" != 0 ]] &&
+  { [[ -z "$EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE" ]] || [[ "$EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE" == 0 ]]; }; then
+  echo "EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE must be positive when connection aging is enabled" >&2
+  exit 2
+fi
 validate_auth_token_provider_syntax() {
   local spec="$1" provider option key value method="" public_key="" private_key=""
   local -a parts
