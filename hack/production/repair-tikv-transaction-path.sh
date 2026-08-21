@@ -90,9 +90,46 @@ kubectl_context_args=()
 [[ "$KUBE_CONTEXT" == "in-cluster" ]] || kubectl_context_args=(--context "$KUBE_CONTEXT")
 kctl() { "$KUBECTL" "${kubectl_context_args[@]}" "$@"; }
 
-actual_kb_uid="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}')"
+repair_lock="kubebrain-tikv-transaction-repair-lock"
+cooldown_record="kubebrain-tikv-transaction-repair-last-success"
+attempt_record="kubebrain-tikv-repair-${REPAIR_ATTEMPT_ID}"
+repair_phase="preflight"
+receipt_created=false
+repair_lock_acquired=false
+response_dir=""
+cleanup_repair() {
+  local status="$?"
+  if [[ "$receipt_created" == "true" && "$repair_phase" != "completed" ]]; then
+    kctl -n "$REPAIR_STATE_NAMESPACE" patch configmap "$attempt_record" --type=merge \
+      -p "{\"data\":{\"phase\":\"$repair_phase\",\"finished-at-unix\":\"$($DATE +%s)\"}}" >/dev/null 2>&1 || true
+  fi
+  if [[ "$repair_lock_acquired" == "true" ]]; then
+    kctl -n "$REPAIR_STATE_NAMESPACE" delete configmap "$repair_lock" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  fi
+  [[ -z "$response_dir" ]] || rm -rf -- "$response_dir"
+  return "$status"
+}
+trap cleanup_repair EXIT
+response_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-tikv-repair-responses.XXXXXX")" || die "cannot create private response directory"
+chmod 700 "$response_dir" || die "cannot protect private response directory"
+capture_control_plane_identity() {
+  local response size
+  response="$(mktemp "$response_dir/control-plane-identity.XXXXXX")" || return 1
+  kctl "$@" >"$response" || return 1
+  chmod 600 "$response" || return 1
+  size="$(stat -Lc '%s' -- "$response")" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_CONTROL_PLANE_IDENTITY_RESPONSE_BYTES" ]]; then
+    echo "control-plane identity response exceeds ${MAX_CONTROL_PLANE_IDENTITY_RESPONSE_BYTES} bytes" >&2
+    return 1
+  fi
+  cat "$response"
+}
+
+actual_kb_uid="$(capture_control_plane_identity -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}')" ||
+  die "cannot read initial KubeBrain StatefulSet identity"
 [[ "$actual_kb_uid" == "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]] || die "KubeBrain StatefulSet UID fence failed"
-actual_cluster_identity="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o jsonpath='{.metadata.uid}{"\t"}{.status.clusterID}{"\t"}{.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}')"
+actual_cluster_identity="$(capture_control_plane_identity -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o jsonpath='{.metadata.uid}{"\t"}{.status.clusterID}{"\t"}{.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}')" ||
+  die "cannot read initial TidbCluster identity/topology"
 expected_cluster_identity="$EXPECTED_TIDB_CLUSTER_UID"$'\t'"$EXPECTED_CLUSTER_ID"$'\t3\t3'
 [[ "$actual_cluster_identity" == "$expected_cluster_identity" ]] || die "TidbCluster identity/topology fence failed"
 original_kb_replicas="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.spec.replicas}')"
@@ -104,8 +141,6 @@ else
   [[ -z "$validate_quiesced_ready" || "$validate_quiesced_ready" == "0" ]] || die "quiesced repair requires exactly 0 Ready KubeBrain replicas"
 fi
 
-repair_lock="kubebrain-tikv-transaction-repair-lock"
-cooldown_record="kubebrain-tikv-transaction-repair-last-success"
 last_success="$(kctl -n "$REPAIR_STATE_NAMESPACE" get configmap "$cooldown_record" \
   -o 'jsonpath={.data.tidb-cluster-uid}{"\t"}{.data.completed-at-unix}' 2>/dev/null || true)"
 if [[ -n "$last_success" ]]; then
@@ -119,27 +154,12 @@ if [[ -n "$last_success" ]]; then
   fi
 fi
 
-kctl -n "$REPAIR_STATE_NAMESPACE" create configmap "$repair_lock" \
+if ! kctl -n "$REPAIR_STATE_NAMESPACE" create configmap "$repair_lock" \
   --from-literal="attempt-id=$REPAIR_ATTEMPT_ID" \
-  --from-literal="tidb-cluster-uid=$EXPECTED_TIDB_CLUSTER_UID" >/dev/null ||
+  --from-literal="tidb-cluster-uid=$EXPECTED_TIDB_CLUSTER_UID" >/dev/null; then
   die "another TiKV transaction-path repair holds $REPAIR_STATE_NAMESPACE/$repair_lock"
-attempt_record="kubebrain-tikv-repair-${REPAIR_ATTEMPT_ID}"
-repair_phase="preflight"
-receipt_created=false
-response_dir=""
-cleanup_repair() {
-  local status="$?"
-  if [[ "$receipt_created" == "true" && "$repair_phase" != "completed" ]]; then
-    kctl -n "$REPAIR_STATE_NAMESPACE" patch configmap "$attempt_record" --type=merge \
-      -p "{\"data\":{\"phase\":\"$repair_phase\",\"finished-at-unix\":\"$($DATE +%s)\"}}" >/dev/null 2>&1 || true
-  fi
-  kctl -n "$REPAIR_STATE_NAMESPACE" delete configmap "$repair_lock" --ignore-not-found --wait=true >/dev/null 2>&1 || true
-  [[ -z "$response_dir" ]] || rm -rf -- "$response_dir"
-  return "$status"
-}
-trap cleanup_repair EXIT
-response_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-tikv-repair-responses.XXXXXX")" || die "cannot create private PD response directory"
-chmod 700 "$response_dir" || die "cannot protect private PD response directory"
+fi
+repair_lock_acquired=true
 kctl -n "$REPAIR_STATE_NAMESPACE" create configmap "$attempt_record" \
   --from-literal="attempt-id=$REPAIR_ATTEMPT_ID" \
   --from-literal="tidb-cluster-uid=$EXPECTED_TIDB_CLUSTER_UID" \
@@ -199,18 +219,6 @@ capture_pod_identity() {
   size="$(stat -Lc '%s' -- "$response")" || return 1
   if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_POD_IDENTITY_RESPONSE_BYTES" ]]; then
     echo "Pod identity response exceeds ${MAX_POD_IDENTITY_RESPONSE_BYTES} bytes" >&2
-    return 1
-  fi
-  cat "$response"
-}
-capture_control_plane_identity() {
-  local response size
-  response="$(mktemp "$response_dir/control-plane-identity.XXXXXX")" || return 1
-  kctl "$@" >"$response" || return 1
-  chmod 600 "$response" || return 1
-  size="$(stat -Lc '%s' -- "$response")" || return 1
-  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_CONTROL_PLANE_IDENTITY_RESPONSE_BYTES" ]]; then
-    echo "control-plane identity response exceeds ${MAX_CONTROL_PLANE_IDENTITY_RESPONSE_BYTES} bytes" >&2
     return 1
   fi
   cat "$response"

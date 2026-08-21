@@ -33,7 +33,8 @@ if [[ "$args" == *"get statefulset kubebrain"* && "$args" == *".metadata.uid"* &
   printf -v payload 'kb-uid\t%s\t%s' "$desired" "$ready"
   printf '%s' "$payload"; [[ "${FAKE_CONTROL_IDENTITY_TARGET:-}" != kubebrain ]] || head -c "$((FAKE_CONTROL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
 elif [[ "$args" == *"get statefulset kubebrain -o jsonpath={.metadata.uid}"* ]]; then
-  printf 'kb-uid'
+  payload='kb-uid'; printf '%s' "$payload"
+  [[ "${FAKE_INITIAL_IDENTITY_TARGET:-}" != kubebrain ]] || head -c "$((FAKE_INITIAL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
 elif [[ "$args" == *"get tidbcluster kb"* ]]; then
   tikv_replicas=3
   if [[ "${FAKE_TIDB_TOPOLOGY_DRIFT_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
@@ -41,6 +42,9 @@ elif [[ "$args" == *"get tidbcluster kb"* ]]; then
   fi
   printf -v payload 'tc-uid\t7671\t3\t%s' "$tikv_replicas"
   printf '%s' "$payload"
+  if [[ "${FAKE_INITIAL_IDENTITY_TARGET:-}" == tidbcluster && ! -e "$FAKE_STATE/quiesced" ]]; then
+    head -c "$((FAKE_INITIAL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
+  fi
   if [[ "${FAKE_CONTROL_IDENTITY_TARGET:-}" == tidbcluster && -e "$FAKE_STATE/quiesced" ]]; then
     head -c "$((FAKE_CONTROL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
   fi
@@ -52,6 +56,8 @@ elif [[ "$args" == *"get configmap kubebrain-tikv-transaction-repair-last-succes
   else
     exit 1
   fi
+elif [[ "$args" == *"create configmap kubebrain-tikv-transaction-repair-lock"* && "${FAKE_LOCK_CONFLICT:-false}" == "true" ]]; then
+  exit 1
 elif [[ "$args" == *" create configmap "* || "$args" == *" patch configmap "* || "$args" == *" delete configmap kubebrain-tikv-transaction-repair-lock "* ]]; then
   :
 elif [[ "$args" == *"get pods -l"* && "$args" == *"component=tikv"* ]]; then
@@ -215,6 +221,56 @@ fi
 		"tidb_cluster_uid":"tc-uid",
 		"transaction_verified":true
 	}`, string(receipt))
+
+	lockConflictState := filepath.Join(tempDir, "lock-conflict")
+	require.NoError(t, os.Mkdir(lockConflictState, 0o755))
+	lockConflictLog := filepath.Join(lockConflictState, "kubectl.log")
+	lockConflictReceipt := filepath.Join(lockConflictState, "receipt.json")
+	lockConflictEnv := append([]string(nil), env...)
+	lockConflictEnv = append(lockConflictEnv,
+		"FAKE_STATE="+lockConflictState,
+		"FAKE_LOG="+lockConflictLog,
+		"RECEIPT_OUTPUT="+lockConflictReceipt,
+		"FAKE_LOCK_CONFLICT=true",
+	)
+	lockConflictOutput, lockConflictErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", lockConflictEnv)
+	require.Error(t, lockConflictErr)
+	require.Contains(t, string(lockConflictOutput), "another TiKV transaction-path repair holds")
+	lockConflictLogData, err := os.ReadFile(lockConflictLog)
+	require.NoError(t, err)
+	require.Contains(t, string(lockConflictLogData), "create configmap kubebrain-tikv-transaction-repair-lock")
+	require.NotContains(t, string(lockConflictLogData), "delete configmap kubebrain-tikv-transaction-repair-lock")
+	require.NoFileExists(t, lockConflictReceipt)
+
+	for _, target := range []string{"kubebrain", "tidbcluster"} {
+		for _, size := range []int{4097, 4096} {
+			caseState := filepath.Join(tempDir, "initial-identity-"+target+"-"+strconv.Itoa(size))
+			require.NoError(t, os.Mkdir(caseState, 0o755))
+			caseReceipt := filepath.Join(caseState, "receipt.json")
+			caseLog := filepath.Join(caseState, "kubectl.log")
+			caseEnv := append([]string(nil), env...)
+			caseEnv = append(caseEnv,
+				"FAKE_STATE="+caseState,
+				"FAKE_LOG="+caseLog,
+				"RECEIPT_OUTPUT="+caseReceipt,
+				"FAKE_INITIAL_IDENTITY_TARGET="+target,
+				"FAKE_INITIAL_IDENTITY_BYTES="+strconv.Itoa(size),
+			)
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+			if size > 4096 {
+				require.Error(t, boundaryErr)
+				require.Contains(t, string(boundaryOutput), "control-plane identity response exceeds 4096 bytes")
+				require.NoFileExists(t, caseReceipt)
+				caseLogData, readErr := os.ReadFile(caseLog)
+				require.NoError(t, readErr)
+				require.NotContains(t, string(caseLogData), "create configmap kubebrain-tikv-transaction-repair-lock")
+				require.NotContains(t, string(caseLogData), "delete configmap kubebrain-tikv-transaction-repair-lock")
+			} else {
+				require.NoError(t, boundaryErr, string(boundaryOutput))
+				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+			}
+		}
+	}
 
 	for _, target := range []string{"check", "stores"} {
 		for _, size := range []int{1048577, 1048576} {
