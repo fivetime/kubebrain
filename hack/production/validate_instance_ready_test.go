@@ -12,6 +12,7 @@ import (
 )
 
 const fakeInitialCluster = "kb-0=peer-0,kb-1=peer-1,kb-2=peer-2"
+const productionCipherSuites = "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
 
 func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 	return "--port=3379\n" +
@@ -53,6 +54,7 @@ func fakeTLSKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--grpc-max-connection-age-grace=5m\n" +
 		"--tls-min-version=TLS1.2\n" +
 		"--tls-max-version=TLS1.3\n" +
+		"--cipher-suites=" + productionCipherSuites + "\n" +
 		"--cert-file=/etc/kubebrain/client-tls/tls.crt\n" +
 		"--key-file=/etc/kubebrain/client-tls/tls.key\n" +
 		"--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt\n" +
@@ -71,6 +73,7 @@ func expectedTLSGateEnv() []string {
 		"EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=5m",
 		"EXPECTED_TLS_MIN_VERSION=TLS1.2",
 		"EXPECTED_TLS_MAX_VERSION=TLS1.3",
+		"EXPECTED_CIPHER_SUITES=" + productionCipherSuites,
 		"EXPECTED_CERT_FILE=/etc/kubebrain/client-tls/tls.crt",
 		"EXPECTED_KEY_FILE=/etc/kubebrain/client-tls/tls.key",
 		"EXPECTED_TRUSTED_CA_FILE=/etc/kubebrain/client-tls/ca.crt",
@@ -553,6 +556,33 @@ func TestValidateInstanceReady(t *testing.T) {
 			extraEnv:    []string{"EXPECTED_BCRYPT_COST=18446744073709551615", "EXPECTED_AUTH_TOKEN_TTL=18446744073709551615"},
 			wantKubectl: true,
 			wantOutput:  "bcrypt cost",
+		},
+		{
+			name:          "TLS cipher suite is unsupported",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_CIPHER_SUITES=TLS_RSA_WITH_AES_128_CBC_SHA"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_CIPHER_SUITES must be empty or a unique comma-separated list",
+		},
+		{
+			name:          "TLS cipher suites contain a duplicate",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_CIPHER_SUITES=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_CIPHER_SUITES must be empty or a unique comma-separated list",
+		},
+		{
+			name:          "TLS 1.3 only window cannot configure cipher suites",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_TLS_MIN_VERSION=TLS1.3", "EXPECTED_TLS_MAX_VERSION=TLS1.3", "EXPECTED_CIPHER_SUITES=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_CIPHER_SUITES must be empty when only TLS1.3 is enabled",
 		},
 		{
 			name:          "TLS maximum version is unsupported",

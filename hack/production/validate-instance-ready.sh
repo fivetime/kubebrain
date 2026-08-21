@@ -55,6 +55,7 @@ EXPECTED_GRPC_MAX_CONNECTION_AGE="${EXPECTED_GRPC_MAX_CONNECTION_AGE:-}"
 EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE="${EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE:-}"
 EXPECTED_TLS_MIN_VERSION="${EXPECTED_TLS_MIN_VERSION:-}"
 EXPECTED_TLS_MAX_VERSION="${EXPECTED_TLS_MAX_VERSION:-}"
+EXPECTED_CIPHER_SUITES="${EXPECTED_CIPHER_SUITES:-}"
 EXPECTED_CERT_FILE="${EXPECTED_CERT_FILE:-}"
 EXPECTED_KEY_FILE="${EXPECTED_KEY_FILE:-}"
 EXPECTED_TRUSTED_CA_FILE="${EXPECTED_TRUSTED_CA_FILE:-}"
@@ -268,6 +269,33 @@ for variable in EXPECTED_TLS_MIN_VERSION EXPECTED_TLS_MAX_VERSION; do
 done
 if [[ "$EXPECTED_TLS_MIN_VERSION" == "TLS1.3" && "$EXPECTED_TLS_MAX_VERSION" == "TLS1.2" ]]; then
   echo "EXPECTED_TLS_MIN_VERSION must not exceed EXPECTED_TLS_MAX_VERSION" >&2
+  exit 2
+fi
+validate_cipher_suites() {
+  local value="$1" suite
+  local -a suites
+  local -A seen=()
+  [[ -z "$value" ]] && return 0
+  [[ "$value" != ,* && "$value" != *, && "$value" != *,,* ]] || return 1
+  IFS=',' read -r -a suites <<<"$value"
+  [[ ${#suites[@]} -gt 0 ]] || return 1
+  for suite in "${suites[@]}"; do
+    case "$suite" in
+      TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256|TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256|\
+      TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384|TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384|\
+      TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256|TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256) ;;
+      *) return 1 ;;
+    esac
+    [[ -z "${seen[$suite]+present}" ]] || return 1
+    seen[$suite]=1
+  done
+}
+if ! validate_cipher_suites "$EXPECTED_CIPHER_SUITES"; then
+  echo "EXPECTED_CIPHER_SUITES must be empty or a unique comma-separated list of supported TLS 1.2 ECDHE AEAD suites" >&2
+  exit 2
+fi
+if [[ "$EXPECTED_TLS_MIN_VERSION" == "TLS1.3" && -n "$EXPECTED_CIPHER_SUITES" ]]; then
+  echo "EXPECTED_CIPHER_SUITES must be empty when only TLS1.3 is enabled" >&2
   exit 2
 fi
 for variable in EXPECTED_LEADER_LEASE_DURATION EXPECTED_LEADER_RENEW_DEADLINE EXPECTED_LEADER_RETRY_PERIOD; do
@@ -973,6 +1001,7 @@ check_optional_kubebrain_arg "grpc-max-connection-age" "$EXPECTED_GRPC_MAX_CONNE
 check_optional_kubebrain_arg "grpc-max-connection-age-grace" "$EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE" "gRPC max connection age grace"
 check_optional_kubebrain_arg "tls-min-version" "$EXPECTED_TLS_MIN_VERSION" "TLS min version"
 check_optional_kubebrain_arg "tls-max-version" "$EXPECTED_TLS_MAX_VERSION" "TLS max version"
+check_optional_kubebrain_arg "cipher-suites" "$EXPECTED_CIPHER_SUITES" "TLS cipher suites"
 check_optional_kubebrain_arg "cert-file" "$EXPECTED_CERT_FILE" "client TLS cert file"
 check_optional_kubebrain_arg "key-file" "$EXPECTED_KEY_FILE" "client TLS key file"
 check_optional_kubebrain_arg "trusted-ca-file" "$EXPECTED_TRUSTED_CA_FILE" "client TLS CA file"
