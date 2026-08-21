@@ -58769,6 +58769,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/113/103/100 四片全部通过（195.334/462.096/318.903/490.193 秒）。本项不改变 timeout、df 数值解析、
   PVC/PV 容量与身份门禁、repair/receipt 语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5232 为 repair 的 etcdctl put/get/delete 事务探针 stdout 建立逐调用 64 KiB 门禁，并把普通探针失败与
+  采集完整性失败分流。旧实现直接把 stdout 装入 shell 变量；失败 put 即使输出 65537 bytes 后非零退出，
+  仍会被累计为一次连续事务失败并最终完成 destructive repair（RED 48.28 秒）。现每次带 timeout 的 exec
+  先写入 repair 既有 0700 私有目录中的新 0600 文件，即使命令失败也先 stat；不超过 65536 bytes 的命令/RPC
+  失败返回普通状态 1，响应超限或 mktemp/chmod/stat/cat 失败返回 fatal 状态 2。preflight 只允许状态 1
+  累计，其他状态立即终止。测试证明 65537-byte 失败 put 在任何 scale/delete 前 fail closed、没有最终 receipt，
+  精确 65536-byte 失败 put 仍可进入既有连续失败与 repair 流程。聚焦测试 203.285 秒，连续两轮 397.741 秒、
+  race 205.486 秒，完整相关回归 198.565 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持
+  414 项并按 98/113/103/100 四片全部通过（226.061/512.869/353.010/531.913 秒）。本项不改变 probe
+  key/value、put/get/delete 语义、timeout、最终失败回退、repair/receipt 语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
