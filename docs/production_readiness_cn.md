@@ -1098,6 +1098,10 @@ CA。证书 leaf 的 CN/SAN allowlist 只能在签发策略提供不可变身份
 `EXPECTED_PEER_CLIENT_*` 与唯一参数匹配；未设置时明确复用同组 server keypair。可选 client/peer CRL
 路径必须由 release 期望显式声明，并要求同组 server cert/key 已存在；CRL 可配合显式 CA 或系统 roots，
 gate 不额外强制 CA，但启动和每次握手仍必须执行 16MiB 上限、DER 解析、签名及吊销验证。
+info/metrics listener 的 TLS 也属于 release contract：`EXPECTED_INFO_CERT_FILE` 与
+`EXPECTED_INFO_KEY_FILE` 必须同时为空或同时存在，CA、CRL 或 `EXPECTED_INFO_CLIENT_CERT_AUTH=true`
+都要求该 server keypair，client auth 还必须有 `EXPECTED_INFO_TRUSTED_CA_FILE`。五项期望分别与唯一
+`--info-*` 参数精确匹配；全空明确固定 plaintext info port，并拒绝 Pod args 中未声明的 TLS/mTLS 漂移。
 KubeBrain→TiKV/PD TLS 期望由 `EXPECTED_TIKV_CA_FILE`、`EXPECTED_TIKV_CERT_FILE`、
 `EXPECTED_TIKV_KEY_FILE` 三项全有或全无地声明，并分别匹配唯一 `--tikv-*-file` 参数；可选
 `EXPECTED_TIKV_VERIFY_CN` 只有在完整 mTLS 组存在时才允许使用，必须是无空项、控制字符和重复值的单个

@@ -59501,6 +59501,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （145.563/474.638/270.054/491.688 秒）。本项不替代启动/握手时的 bounded PEM、DER CRL、签名和吊销
   验证，只让身份复用、独立身份与 CRL 启停成为明确发布决定。
 
+- A5300 补齐独立 info/metrics listener TLS 的组合实例发布契约。KubeBrain 已支持
+  `--info-cert-file/--info-key-file/--info-trusted-ca-file/--info-crl-file/--info-client-cert-auth`，并把
+  metrics、health 与可选 pprof 隔离在 info port；原 gate 却完全不检查这五项，info endpoint 可在发布
+  绿色时从 plaintext 漂移到 TLS、从 TLS 漂移到 mTLS，或丢失 CRL。现 info server cert/key 要求全有或
+  全无；CA、CRL 或 client-auth=true 都要求 server keypair，client auth 还要求 trusted CA，并由 optional
+  期望与唯一 Pod args 精确匹配。全空期望明确拒绝任何未声明的 info TLS flags。回归证明缺 key、client
+  auth 缺 CA 均在首次 kubectl 前拒绝，完整 cert/key/CA/CRL/auth 组进入参数一致性核验。bash syntax、
+  diff check 与全仓 vet 通过；实例 gate 单轮 151.456 秒、连续两轮 293.553 秒、race 152.997 秒。
+  production 清单保持 448 项并按 102/127/113/106 四片在最终代码提交上全部通过
+  （137.990/463.630/261.225/482.783 秒）。本项只固定发布意图，不替代真实 Secret 内容、证书轮换、
+  Prometheus scrape identity 与 info endpoint 握手演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
