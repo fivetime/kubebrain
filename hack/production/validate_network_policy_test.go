@@ -17,8 +17,9 @@ func TestValidateNetworkPolicy(t *testing.T) {
 		wantOutput  string
 		wantDeletes int
 		wantRuns    int
+		extraEnv    []string
 	}{
-		{name: "all allowed and denied paths enforced", mode: "success", wantOK: true, wantOutput: "release gate passed", wantDeletes: 3, wantRuns: 3},
+		{name: "all allowed and denied paths enforced", mode: "success", wantOK: true, wantOutput: "release gate passed", wantDeletes: 3, wantRuns: 3, extraEnv: []string{"CONNECT_TIMEOUT_SECONDS=86400", "PROBE_TTL_SECONDS=86400", "POD_READY_TIMEOUT=24h"}},
 		{name: "denied path reachable", mode: "denied-reachable", wantOutput: "denied network path was reachable", wantDeletes: 3, wantRuns: 3},
 		{name: "allowed path blocked", mode: "allowed-blocked", wantOutput: "allowed network path failed", wantDeletes: 3, wantRuns: 3},
 		{name: "client namespace label missing", mode: "wrong-label", wantOutput: "client namespace must have", wantDeletes: 0, wantRuns: 0},
@@ -74,6 +75,7 @@ exit 0
 				"FAKE_MODE=" + tc.mode,
 				"FAKE_LOG=" + logPath,
 			}
+			env = append(env, tc.extraEnv...)
 			output, err := runProductionScriptCommand(t, "validate-network-policy.sh", env)
 			if tc.wantOK {
 				require.NoError(t, err, string(output))
@@ -92,6 +94,40 @@ exit 0
 			if log != "" {
 				require.Contains(t, log, "--context production")
 			}
+		})
+	}
+}
+
+func TestValidateNetworkPolicyRejectsInvalidNumericControlsBeforeKubectl(t *testing.T) {
+	for _, tc := range []struct {
+		name, setting, want string
+	}{
+		{name: "TTL overflow", setting: "PROBE_TTL_SECONDS=9223372036854775808", want: "PROBE_TTL_SECONDS must be a positive int64"},
+		{name: "TTL above one day", setting: "PROBE_TTL_SECONDS=86401", want: "PROBE_TTL_SECONDS must be a positive int64"},
+		{name: "connect overflow", setting: "CONNECT_TIMEOUT_SECONDS=9223372036854775808", want: "CONNECT_TIMEOUT_SECONDS must be a positive int64"},
+		{name: "connect above TTL", setting: "CONNECT_TIMEOUT_SECONDS=601", want: "CONNECT_TIMEOUT_SECONDS must be a positive int64"},
+		{name: "ready duration overflow", setting: "POD_READY_TIMEOUT=2562048h", want: "POD_READY_TIMEOUT must be a positive Go duration"},
+		{name: "ready duration above one day", setting: "POD_READY_TIMEOUT=1441m", want: "POD_READY_TIMEOUT must be a positive Go duration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "kubectl.log")
+			fakeKubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(fakeKubectl, []byte("#!/usr/bin/env bash\nprintf called >>\"$FAKE_LOG\"\n"), 0o755))
+			env := []string{
+				"KUBECTL=" + fakeKubectl,
+				"PROBE_ID=probe1",
+				"PROBE_IMAGE=registry.example/probe@sha256:" + strings.Repeat("a", 64),
+				"CLIENT_NAMESPACE=client-ns",
+				"MONITORING_NAMESPACE=monitor-ns",
+				"DENIED_NAMESPACE=denied-ns",
+				"FAKE_LOG=" + logPath,
+				tc.setting,
+			}
+			output, err := runProductionScriptCommand(t, "validate-network-policy.sh", env)
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), tc.want)
+			require.NoFileExists(t, logPath)
 		})
 	}
 }

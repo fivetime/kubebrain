@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
+
 PROBE_ID="${PROBE_ID:-}"
 PROBE_IMAGE="${PROBE_IMAGE:-}"
 CLIENT_NAMESPACE="${CLIENT_NAMESPACE:-}"
@@ -64,12 +67,27 @@ for variable in KUBEBRAIN_CLIENT_HOST KUBEBRAIN_INFO_HOST PD_HOST TIKV_CLIENT_HO
     exit 2
   fi
 done
-if ! [[ "$CONNECT_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ && "$PROBE_TTL_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "CONNECT_TIMEOUT_SECONDS and PROBE_TTL_SECONDS must be positive integers" >&2
+if ! operation_is_positive_int64 "$PROBE_TTL_SECONDS" || (( PROBE_TTL_SECONDS > 86400 )); then
+  echo "PROBE_TTL_SECONDS must be a positive int64 not greater than 86400" >&2
   exit 2
 fi
-if ! [[ "$POD_READY_TIMEOUT" =~ ^[1-9][0-9]*[smh]$ ]]; then
-  echo "POD_READY_TIMEOUT must be a positive Kubernetes duration in s, m, or h" >&2
+if ! operation_is_positive_int64 "$CONNECT_TIMEOUT_SECONDS" || (( CONNECT_TIMEOUT_SECONDS > PROBE_TTL_SECONDS )); then
+  echo "CONNECT_TIMEOUT_SECONDS must be a positive int64 not greater than PROBE_TTL_SECONDS" >&2
+  exit 2
+fi
+if ! [[ "$POD_READY_TIMEOUT" =~ ^[1-9][0-9]*(s|m|h)$ ]] ||
+  ! operation_is_positive_go_duration_hms "$POD_READY_TIMEOUT"; then
+  echo "POD_READY_TIMEOUT must be a positive Go duration in s, m, or h not greater than 24h" >&2
+  exit 2
+fi
+pod_ready_magnitude="${POD_READY_TIMEOUT%?}"
+case "$POD_READY_TIMEOUT" in
+  *s) pod_ready_timeout_seconds="$pod_ready_magnitude" ;;
+  *m) pod_ready_timeout_seconds=$((pod_ready_magnitude * 60)) ;;
+  *h) pod_ready_timeout_seconds=$((pod_ready_magnitude * 3600)) ;;
+esac
+if (( pod_ready_timeout_seconds > 86400 )); then
+  echo "POD_READY_TIMEOUT must be a positive Go duration in s, m, or h not greater than 24h" >&2
   exit 2
 fi
 
