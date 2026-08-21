@@ -18,6 +18,7 @@ func TestWaitTidbClusterReady(t *testing.T) {
 		tikvStatus string
 		tikvProbe  string
 		tikvRPC    bool
+		controls   []string
 		wantOK     bool
 		wantOutput string
 	}{
@@ -28,6 +29,11 @@ func TestWaitTidbClusterReady(t *testing.T) {
 			tikvStatus: "7\t7\t3\t3\t3\ttikv-new\ttikv-new",
 			tikvProbe:  "20160\t10\t5",
 			tikvRPC:    true,
+			controls: []string{
+				"TIMEOUT_SECONDS=86400",
+				"POLL_INTERVAL_SECONDS=86400",
+				"TIKV_RPC_PROBE_TIMEOUT_SECONDS=86400",
+			},
 			wantOK:     true,
 			wantOutput: "converged",
 		},
@@ -61,6 +67,21 @@ func TestWaitTidbClusterReady(t *testing.T) {
 			wantOutput: "timed out",
 		},
 		{
+			name:       "generation overflow is not complete",
+			ready:      "True",
+			pdStatus:   "9223372036854775808\t9223372036854775808\t3\t3\t3\tpd-new\tpd-new",
+			tikvStatus: "7\t7\t3\t3\t3\ttikv-new\ttikv-new",
+			wantOutput: "timed out",
+		},
+		{
+			name:       "desired replicas overflow is not complete",
+			ready:      "True",
+			pdStatus:   "5\t5\t3\t3\t3\tpd-new\tpd-new",
+			tikvStatus: "7\t7\t9223372036854775808\t9223372036854775808\t9223372036854775808\ttikv-new\ttikv-new",
+			tikvProbe:  "20160\t10\t5",
+			wantOutput: "TiKV-Debug-RPC=not-checked",
+		},
+		{
 			name:       "cluster ready is required",
 			ready:      "False",
 			pdStatus:   "5\t5\t3\t3\t3\tpd-new\tpd-new",
@@ -70,6 +91,7 @@ func TestWaitTidbClusterReady(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakeKubectl := filepath.Join(t.TempDir(), "kubectl")
+			tikvRPCLog := filepath.Join(t.TempDir(), "tikv-rpc.log")
 			require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$*" == *"get tidbcluster"* && "$*" == *"jsonpath="* ]]; then
@@ -101,8 +123,9 @@ fi
 				"FAKE_TIKV_STATUS=" + tc.tikvStatus,
 				"FAKE_TIKV_PROBE=" + tc.tikvProbe,
 				"FAKE_TIKV_RPC_READY=" + strconv.FormatBool(tc.tikvRPC),
-				"TIKV_RPC_LOG=" + filepath.Join(t.TempDir(), "tikv-rpc.log"),
+				"TIKV_RPC_LOG=" + tikvRPCLog,
 			}
+			env = append(env, tc.controls...)
 			output, err := runProductionScriptCommand(t, "wait-tidbcluster-ready.sh", env)
 			if tc.wantOK {
 				require.NoError(t, err, string(output))
@@ -111,7 +134,7 @@ fi
 			}
 			require.Contains(t, strings.TrimSpace(string(output)), tc.wantOutput)
 			if tc.wantOK {
-				probeLog, readErr := os.ReadFile(strings.TrimPrefix(env[len(env)-1], "TIKV_RPC_LOG="))
+				probeLog, readErr := os.ReadFile(tikvRPCLog)
 				require.NoError(t, readErr)
 				require.Len(t, strings.Split(strings.TrimSpace(string(probeLog)), "\n"), 3,
 					"every desired TiKV pod must receive a 20160 Debug RPC probe")
@@ -139,8 +162,14 @@ func TestWaitTidbClusterReadyRejectsInvalidInputsBeforeKubectl(t *testing.T) {
 		{
 			name:       "rpc timeout",
 			env:        "TIKV_RPC_PROBE_TIMEOUT_SECONDS=0",
-			wantOutput: "TIKV_RPC_PROBE_TIMEOUT_SECONDS must be a positive integer",
+			wantOutput: "TIKV_RPC_PROBE_TIMEOUT_SECONDS must be a positive int64",
 		},
+		{name: "timeout overflow", env: "TIMEOUT_SECONDS=9223372036854775808", wantOutput: "TIMEOUT_SECONDS must be a positive int64"},
+		{name: "timeout above one day", env: "TIMEOUT_SECONDS=86401", wantOutput: "TIMEOUT_SECONDS must be a positive int64"},
+		{name: "poll overflow", env: "POLL_INTERVAL_SECONDS=9223372036854775808", wantOutput: "POLL_INTERVAL_SECONDS must be a non-negative int64"},
+		{name: "poll above timeout", env: "POLL_INTERVAL_SECONDS=2", wantOutput: "POLL_INTERVAL_SECONDS must be a non-negative int64"},
+		{name: "rpc timeout overflow", env: "TIKV_RPC_PROBE_TIMEOUT_SECONDS=9223372036854775808", wantOutput: "TIKV_RPC_PROBE_TIMEOUT_SECONDS must be a positive int64"},
+		{name: "rpc timeout above one day", env: "TIKV_RPC_PROBE_TIMEOUT_SECONDS=86401", wantOutput: "TIKV_RPC_PROBE_TIMEOUT_SECONDS must be a positive int64"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tempDir := t.TempDir()

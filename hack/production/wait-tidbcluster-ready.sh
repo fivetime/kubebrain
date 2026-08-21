@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
+
 NAMESPACE="${NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
@@ -10,16 +13,16 @@ KUBECTL="${KUBECTL:-kubectl}"
 COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-timeout}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 
-if ! [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "TIMEOUT_SECONDS must be a positive integer" >&2
+if ! operation_is_positive_int64 "$TIMEOUT_SECONDS" || (( TIMEOUT_SECONDS > 86400 )); then
+  echo "TIMEOUT_SECONDS must be a positive int64 not greater than 86400" >&2
   exit 2
 fi
-if ! [[ "$POLL_INTERVAL_SECONDS" =~ ^[0-9]+$ ]]; then
-  echo "POLL_INTERVAL_SECONDS must be a non-negative integer" >&2
+if ! operation_is_nonnegative_int64 "$POLL_INTERVAL_SECONDS" || (( POLL_INTERVAL_SECONDS > TIMEOUT_SECONDS )); then
+  echo "POLL_INTERVAL_SECONDS must be a non-negative int64 not greater than TIMEOUT_SECONDS" >&2
   exit 2
 fi
-if ! [[ "$TIKV_RPC_PROBE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "TIKV_RPC_PROBE_TIMEOUT_SECONDS must be a positive integer" >&2
+if ! operation_is_positive_int64 "$TIKV_RPC_PROBE_TIMEOUT_SECONDS" || (( TIKV_RPC_PROBE_TIMEOUT_SECONDS > 86400 )); then
+  echo "TIKV_RPC_PROBE_TIMEOUT_SECONDS must be a positive int64 not greater than 86400" >&2
   exit 2
 fi
 for variable in NAMESPACE TIDB_CLUSTER; do
@@ -50,14 +53,14 @@ statefulset_converged() {
   local status="$1"
   local generation observed desired ready updated current_revision update_revision
   IFS=$'\t' read -r generation observed desired ready updated current_revision update_revision <<<"$status"
-  [[ "$generation" =~ ^[0-9]+$ &&
-    "$observed" =~ ^[0-9]+$ &&
-    "$desired" =~ ^[1-9][0-9]*$ &&
-    "$ready" == "$desired" &&
+  [[ "$ready" == "$desired" &&
     "$updated" == "$desired" &&
-    "$observed" -ge "$generation" &&
     -n "$current_revision" &&
-    "$current_revision" == "$update_revision" ]]
+    "$current_revision" == "$update_revision" ]] &&
+    operation_is_nonnegative_int64 "$generation" &&
+    operation_is_nonnegative_int64 "$observed" &&
+    operation_is_positive_int64 "$desired" &&
+    (( observed >= generation ))
 }
 
 tikv_readiness_probe() {
@@ -69,7 +72,7 @@ tikv_debug_rpc_ready() {
   local status="$1"
   local _generation _observed desired _ready _updated _current_revision _update_revision
   IFS=$'\t' read -r _generation _observed desired _ready _updated _current_revision _update_revision <<<"$status"
-  [[ "$desired" =~ ^[1-9][0-9]*$ ]] || return 1
+  operation_is_positive_int64 "$desired" || return 1
 
   local selector="app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=tikv"
   local pod_output
