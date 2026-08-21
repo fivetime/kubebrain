@@ -58858,6 +58858,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四片全部通过（171.257/509.941/296.317/465.229 秒）。本项不改变 UID identity fence、receipt schema、
   repair 语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5240 将 quiesced repair 的异常 store identity 数值域对齐 TiKV/PD upstream：kvproto
+  `metapb.Store.id` 与 peer `store_id` 均为 `uint64`。旧 requester、worker 和 repair primitive 只验证正整数，
+  receipt 还通过 jq `tonumber` 重建数组；因此 `2^64` 可进入审批或 repair，而不具备精确十进制后端的 jq
+  构建可能在 PD JSON→shell→receipt 链路舍入大 ID。现三层均用字符串级规范正 uint64 helper 逐项门禁，
+  并在启动时要求 jq 的 MaxUint64 string→number→string 精确 round-trip。requester 冻结 PD pending/down
+  MaxUint64，worker 解冻 immutable 参数并复验 receipt，primitive 在多次 Region 重采样、stores→Pod 映射、
+  replacement 收敛后都保持 `18446744073709551615`；最终 receipt 直接从已验证的排序去重十进制序列构造
+  JSON number array。测试证明 MaxUint64 完成三层全生命周期且 receipt 不出现 `18446744073709552000`，
+  `18446744073709551616` 在 requester 提交 Secret/Operation、worker 启动 repair、primitive 首次 kubectl 前
+  分别 fail closed。primitive 聚焦生命周期 258.535 秒，三条相关测试连续两轮 542.438 秒、race
+  275.972 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按
+  98/113/103/100 四片全部通过（180.162/528.837/310.009/485.475 秒）。本项不改变合法 store target
+  集合、Operation/receipt schema、repair replacement 语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

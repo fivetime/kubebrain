@@ -457,6 +457,12 @@ cooldown ConfigMap 的 `completed-at-unix` 在 UID 代际分支和任何比较/�
 `EXPECTED_CLUSTER_ID` 必须是规范正 uint64，并在首次 Kubernetes 调用前验证；上限与 upstream etcd
 protobuf `ClusterID uint64`/Go `types.ID uint64` 一致。`2^64` 及更大值不得进入 TidbCluster identity fence、
 probe key、ConfigMap 或最终 receipt；精确 MaxUint64 必须保留十进制文本并可通过完整 repair。
+quiesced repair 的 `EXPECTED_ABNORMAL_STORE_IDS` 每项也必须是规范正 uint64；该边界与 TiKV/PD
+`metapb.Store.id uint64` 一致。requester 从 PD pending/down 响应冻结目标、Operation worker 解冻参数、repair
+反复读取 Region/store 映射和最终校验 receipt 的整条链路都必须保持 MaxUint64 十进制精度，`2^64` 必须在
+各自破坏性动作前 fail closed。三个入口启动时还会验证 jq 能精确完成 MaxUint64 string→number→string；
+不具备精确十进制后端的 jq 构建不得参与 store identity 决策。receipt 直接从已验证、排序去重的十进制
+序列构造 JSON number array，不再执行无必要的浮点式二次转换。
 修复锁建立后的 KubeBrain `UID/desired/ready` quiesce identity、TidbCluster `UID/clusterID/PD/TiKV replicas`
 identity 及失败回退 UID 重读同样各自限制为 4096 bytes，并通过独立 0600 文件消费。超限时不得开始或
 继续 TiKV Pod 删除；精确 4096-byte 响应仍须满足原有 identity/topology 等值判断。
@@ -531,7 +537,7 @@ Put/Get/Delete。扩容后的任一 gate、身份或事务失败都会在 UID �
 gate 必须拒绝；普通 transaction repair 也不能临时扩容数据面来制造失败探针。底层
 `repair-tikv-transaction-path.sh` 因而支持显式 `REPAIR_MODE=quiesced`：只接受目标 StatefulSet
 desired/Ready=0，跳过 endpoint transaction probe 和 scale-to-zero，要求审批参数中的
-`EXPECTED_ABNORMAL_STORE_IDS` 是排序去重的正整数集合且与 PD 初始 pending/down store 快照完全一致，
+`EXPECTED_ABNORMAL_STORE_IDS` 是排序去重的规范正 uint64 集合且与 PD 初始 pending/down store 快照完全一致，
 只重建映射到这些 store 的 TiKV Pod。它继续执行既有 PD 身份、三 store Up、六卷 CSI/PVC/PV、磁盘、
 target drift 和连续 Region 收敛栅栏；成功后要求 KubeBrain 仍为相同 UID 的 0 副本，输出独立
 `kubebrain.tikv-quiesced-repair.receipt.v1`，不执行 recovery 或伪造 transaction verified。
