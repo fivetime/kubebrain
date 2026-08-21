@@ -86,8 +86,8 @@ done
   { echo "SERVICE_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
 [[ "$SOURCE_INSTANCE" != "$TARGET_INSTANCE" ]] ||
   { echo "SOURCE_INSTANCE and TARGET_INSTANCE must differ" >&2; exit 2; }
-operation_is_positive_int64 "$EXPECTED_REPLICAS" ||
-  { echo "EXPECTED_REPLICAS must be a positive int64" >&2; exit 2; }
+operation_is_positive_int64 "$EXPECTED_REPLICAS" && (( EXPECTED_REPLICAS <= 2147483647 )) ||
+  { echo "EXPECTED_REPLICAS must be a canonical positive int32" >&2; exit 2; }
 operation_is_positive_int64 "$TIMEOUT_SECONDS" && (( TIMEOUT_SECONDS <= 86400 )) &&
   operation_is_nonnegative_int64 "$POLL_INTERVAL_SECONDS" && (( POLL_INTERVAL_SECONDS <= TIMEOUT_SECONDS )) ||
   { echo "restore traffic wait bounds require non-negative int64 poll <= positive int64 timeout <= 86400" >&2; exit 2; }

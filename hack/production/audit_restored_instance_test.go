@@ -341,7 +341,8 @@ func TestPostRestoreAuditRejectsUnsafePublicEndpoint(t *testing.T) {
 
 func TestAuditRestoredInstanceRejectsNumericBoundsBeforeKubernetes(t *testing.T) {
 	for _, tc := range []struct{ name, setting, want string }{
-		{name: "replicas overflow", setting: "EXPECTED_REPLICAS=9223372036854775808", want: "EXPECTED_REPLICAS must be a positive int64"},
+		{name: "replicas above int32", setting: "EXPECTED_REPLICAS=2147483648", want: "EXPECTED_REPLICAS must be a canonical positive int32"},
+		{name: "replicas overflow", setting: "EXPECTED_REPLICAS=9223372036854775808", want: "EXPECTED_REPLICAS must be a canonical positive int32"},
 		{name: "duration overflow", setting: "AUDIT_DURATION_SECONDS=9223372036854775808", want: "audit bounds require"},
 		{name: "duration above one day", setting: "AUDIT_DURATION_SECONDS=86401", want: "audit bounds require"},
 		{name: "interval overflow", setting: "AUDIT_INTERVAL_SECONDS=9223372036854775808", want: "audit bounds require"},
@@ -356,6 +357,11 @@ func TestAuditRestoredInstanceRejectsNumericBoundsBeforeKubernetes(t *testing.T)
 			require.NoFileExists(t, filepath.Join(f.dir, "probes"))
 		})
 	}
+}
+
+func TestAuditRestoredInstanceAcceptsMaximumInt32ReplicasBeforeTopologyCheck(t *testing.T) {
+	f := newAuditFixture(t)
+	f.run(t, false, "EXPECTED_REPLICAS=2147483647", "expected=2147483647")
 }
 
 type auditFixture struct {

@@ -240,8 +240,8 @@ IFS=$'\t' read -r state_dir cutover_state cutover_state_sha cutover_receipt cuto
 receipt_input="$receipt_output"
 [[ "$data_context" == "-" ]] && data_context=""
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
-operation_is_positive_int64 "$expected_replicas" ||
-  { echo "audit expected replicas must be a positive int64" >&2; exit 2; }
+operation_is_positive_int64 "$expected_replicas" && (( expected_replicas <= 2147483647 )) ||
+  { echo "audit expected replicas must be a canonical positive int32" >&2; exit 2; }
 operation_is_positive_int64 "$duration" && (( duration <= 86400 )) &&
   operation_is_nonnegative_int64 "$interval" && (( interval <= duration )) &&
   operation_is_positive_int64 "$min_samples" ||

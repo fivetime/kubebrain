@@ -700,7 +700,8 @@ func TestRestoreTrafficRollbackRecoversPatchBeforeCutoverMarker(t *testing.T) {
 
 func TestRestoreTrafficRejectsNumericOverflowBeforeKubernetes(t *testing.T) {
 	for _, tc := range []struct{ name, setting, want string }{
-		{name: "replicas overflow", setting: "EXPECTED_REPLICAS=9223372036854775808", want: "EXPECTED_REPLICAS must be a positive int64"},
+		{name: "replicas above int32", setting: "EXPECTED_REPLICAS=2147483648", want: "EXPECTED_REPLICAS must be a canonical positive int32"},
+		{name: "replicas overflow", setting: "EXPECTED_REPLICAS=9223372036854775808", want: "EXPECTED_REPLICAS must be a canonical positive int32"},
 		{name: "timeout overflow", setting: "TIMEOUT_SECONDS=9223372036854775808", want: "restore traffic wait bounds require"},
 		{name: "timeout above one day", setting: "TIMEOUT_SECONDS=86401", want: "restore traffic wait bounds require"},
 		{name: "poll overflow", setting: "POLL_INTERVAL_SECONDS=9223372036854775808", want: "restore traffic wait bounds require"},
@@ -714,6 +715,12 @@ func TestRestoreTrafficRejectsNumericOverflowBeforeKubernetes(t *testing.T) {
 			require.Empty(t, entries, "numeric admission must fail before writing cutover state")
 		})
 	}
+}
+
+func TestRestoreTrafficAcceptsMaximumInt32ReplicasBeforeTopologyCheck(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", false, "EXPECTED_REPLICAS=2147483647")
+	require.FileExists(t, filepath.Join(f.dir, "kubectl-called"))
 }
 
 type trafficFixture struct {
@@ -769,6 +776,7 @@ func newTrafficFixture(t *testing.T) *trafficFixture {
 	kubectl := filepath.Join(dir, "kubectl")
 	writeTrafficExecutable(t, kubectl, `#!/usr/bin/env bash
 set -euo pipefail
+touch "$FAKE_DIR/kubectl-called"
 if [[ " $* " == *" patch service "* ]]; then
   [[ -f "$FAKE_DIR/cas-conflict" ]] && { echo conflict >&2; exit 1; }
   if [[ " $* " == *'"op":"replace"'*'"value":"target"'* ]]; then

@@ -77,8 +77,8 @@ for variable in OPERATION_ID INSTANCE SERVICE_NAMESPACE SERVICE_NAME TARGET_INST
 done
 [[ "$SERVICE_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
   { echo "SERVICE_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
-operation_is_positive_int64 "$EXPECTED_REPLICAS" ||
-  { echo "EXPECTED_REPLICAS must be a positive int64" >&2; exit 2; }
+operation_is_positive_int64 "$EXPECTED_REPLICAS" && (( EXPECTED_REPLICAS <= 2147483647 )) ||
+  { echo "EXPECTED_REPLICAS must be a canonical positive int32" >&2; exit 2; }
 operation_is_positive_int64 "$AUDIT_DURATION_SECONDS" && (( AUDIT_DURATION_SECONDS <= 86400 )) &&
   operation_is_nonnegative_int64 "$AUDIT_INTERVAL_SECONDS" && (( AUDIT_INTERVAL_SECONDS <= AUDIT_DURATION_SECONDS )) &&
   operation_is_positive_int64 "$MIN_SAMPLES" ||

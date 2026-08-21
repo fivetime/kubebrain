@@ -210,8 +210,8 @@ IFS=$'\t' read -r state_dir restore_receipt restore_receipt_sha backup_input bac
   poll_seconds data_context data_kubeconfig <<<"$parameters"
 [[ "$data_context" == "-" ]] && data_context=""
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
-operation_is_positive_int64 "$expected_replicas" ||
-  { echo "cutover expected replicas must be a positive int64" >&2; exit 2; }
+operation_is_positive_int64 "$expected_replicas" && (( expected_replicas <= 2147483647 )) ||
+  { echo "cutover expected replicas must be a canonical positive int32" >&2; exit 2; }
 operation_is_positive_int64 "$timeout_seconds" && (( timeout_seconds <= 86400 )) &&
   operation_is_nonnegative_int64 "$poll_seconds" && (( poll_seconds <= timeout_seconds )) ||
   { echo "cutover wait bounds require non-negative int64 poll <= positive int64 timeout <= 86400" >&2; exit 2; }
