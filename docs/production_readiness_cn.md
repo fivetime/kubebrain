@@ -1029,6 +1029,10 @@ active watches 必须分别是规范非负 uint32；request rate 与 burst 必�
 uint32 上限 `4294967295` 属于合法配置，越界或组合不一致必须在 kubectl 前拒绝。
 count-index max keys 与 max transaction operations 必须是生产 amd64/arm64 上的规范非负
 Go `int`，即不超过 `9223372036854775807`；前导零或越界值必须在 kubectl 前拒绝。
+每个 KubeBrain Pod 的 TiKV client pool 必须显式固定；生产清单使用 `--tikv-client-num=16`，release
+gate 期望值必须是 `1..128` 的规范整数并与唯一参数精确一致。每个 client 都持有独立 PD connections、
+Region cache 和 TSO stream，CLI 与底层 TiKV storage API 均在创建切片、goroutine 或连接前拒绝超过
+128 的值；不得把 Go `int` 的理论上限当作可部署资源规模。
 bcrypt cost 与 auth token TTL 必须是生产 amd64/arm64 上的规范非负 Go `uint`，即不超过
 `18446744073709551615`；前导零或越界值必须在 kubectl 前拒绝。
 TiKV/PD cluster ID 必须是规范正 uint64，即 `1..18446744073709551615`；前导零、零或越界值必须在

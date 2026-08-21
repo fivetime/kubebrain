@@ -59378,6 +59378,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （146.989/475.172/273.607/478.312 秒）。本项不改变默认 cadence、100ms clamp、显式 progress request
   或事件交付语义，只关闭精确安全边界并防止发布配置绕过。
 
+- A5289 固定独立 TiKV/PD 数据面的每进程 client pool 资源边界。`--tikv-client-num` 的默认值虽为 16，
+  但原生产清单没有显式参数，组合实例 release gate 也未核验；镜像默认漂移可在门禁绿色时改变每个 Pod
+  的 PD connections、Region cache 和 TSO stream 数量。进一步审计发现只按正 Go `int` 校验仍不安全：
+  storage 会按该值直接分配 clients/errors 切片并并发创建 goroutine，MaxInt 可在服务启动前耗尽资源。现
+  CLI 与底层 TiKV storage API 都在分配和拨号前强制 `1..128`，生产明文/mTLS StatefulSet 显式固定 16，
+  release gate 在首次 kubectl 前拒绝 0、非规范值和 129，并以 128 证明精确边界进入唯一参数一致性核验。
+  CLI/storage 单元测试和 race（8.743 秒）、相关 manifest 契约、bash syntax、diff check 与全仓 vet 通过；
+  实例 gate 单轮 136.233 秒、连续两轮 266.438 秒、race 139.677 秒。production 清单保持 448 项并按
+  102/127/113/106 四片在最终代码提交上全部通过（144.378/473.867/274.478/477.772 秒）。本项不改变
+  16-client 默认负载分布或轮询语义，只防止隐式默认漂移与启动期资源爆炸。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
