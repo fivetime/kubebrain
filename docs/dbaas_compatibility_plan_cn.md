@@ -59146,6 +59146,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四片全部通过（136.223/458.232/262.953/437.484 秒）。本项不改变确认令牌、UID fencing、destroy receipt
   或清理范围，只使不可逆外围资源删除与完成等待共享有界数值域。
 
+- A5266 将 TiDB Operator release gate 的期望副本数对齐 Kubernetes API 真实类型。旧入口接受任意长度正数字，
+  随后多次交给 jq `--argjson` 与 Deployment/ReplicaSet/Pod 数值比较；超大值可能先经 jq 舍入才失败。现要求
+  规范正整数且不超过 DeploymentSpec.replicas 的 int32 上限 `2147483647`。回归证明前导零、int32+1 和
+  int64+1 均在首次 kubectl 前 fail closed，而 int32 最大值通过 admission 并进入 Deployment 读取；正常完整
+  Operator UID/image/template-hash/runtime-digest 门禁保持通过。聚焦连续两轮 2.379 秒、race 2.458 秒，bash
+  syntax、diff check 与全仓 vet 通过；production 清单增至 441 项并按 100/123/112/106 四片全部通过
+  （135.516/464.100/266.397/443.164 秒）。本项不改变合法 Operator topology、rollout fencing 或 TiKV/PD
+  数据面语义，只让控制面期望基数与 Kubernetes wire/API 类型精确一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

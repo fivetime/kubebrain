@@ -268,7 +268,9 @@ Pod 或 digest 任一漂移均 fail closed；Pod 校验后还会重读 Deploymen
 template image 与起始快照相同，拒绝门禁执行中启动的新 rollout。仅有 Helm release 名称或 CRD 可用不能替代该运行身份链。
 Deployment 初始/终态、ReplicaSet 列表和 Pod 列表四份 Kubernetes JSON 响应各自限制为 1 MiB；每份响应
 先写入 0600 私有文件并检查大小，再交给 jq。超限响应不得进入发布身份判断，精确 1 MiB 合法 JSON 仍可
-完成门禁。
+完成门禁。`EXPECTED_TIDB_OPERATOR_REPLICAS` 必须是规范正整数且不超过 Kubernetes
+Deployment `int32` 上限 `2147483647`；前导零、int32+1 或更大值在首次 kubectl 前拒绝，
+不能依赖 jq `--argjson` 对超大数字的解释。
 组合入口在所有数据面检查后再次执行完整 Operator 门禁，防止控制器只在流水线开始时健康、随后于较慢的
 Region/Prometheus 检查期间进入 rollout 或失去 Ready。
 
