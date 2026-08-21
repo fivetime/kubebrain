@@ -896,6 +896,41 @@ fi
 	cooldownLogData, err := os.ReadFile(logPath)
 	require.NoError(t, err)
 	require.NotContains(t, string(cooldownLogData), " create configmap ")
+
+	for _, tc := range []struct {
+		name     string
+		cooldown string
+		now      string
+		wantErr  bool
+	}{
+		{name: "overflow", cooldown: "tc-uid\t18446744073709551616", now: "1786254000", wantErr: true},
+		{name: "max-int64-other-generation", cooldown: "other-tc-uid\t9223372036854775807", now: "9223372036854775807"},
+	} {
+		caseState := filepath.Join(tempDir, "cooldown-timestamp-"+tc.name)
+		require.NoError(t, os.Mkdir(caseState, 0o755))
+		caseLog := filepath.Join(caseState, "kubectl.log")
+		caseReceipt := filepath.Join(caseState, "receipt.json")
+		caseEnv := append([]string(nil), env...)
+		caseEnv = append(caseEnv,
+			"FAKE_STATE="+caseState,
+			"FAKE_LOG="+caseLog,
+			"RECEIPT_OUTPUT="+caseReceipt,
+			"FAKE_COOLDOWN="+tc.cooldown,
+			"NOW_UNIX="+tc.now,
+		)
+		caseOutput, caseErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+		if tc.wantErr {
+			require.Error(t, caseErr)
+			require.Contains(t, string(caseOutput), "repair cooldown record is malformed")
+			require.NoFileExists(t, caseReceipt)
+			caseLogData, readErr := os.ReadFile(caseLog)
+			require.NoError(t, readErr)
+			require.NotContains(t, string(caseLogData), "create configmap kubebrain-tikv-transaction-repair-lock")
+		} else {
+			require.NoError(t, caseErr, string(caseOutput))
+			require.Contains(t, string(caseOutput), "transaction-path repair succeeded")
+		}
+	}
 }
 
 func TestRepairTiKVTransactionPathRequiresExplicitAuthorizationBeforeKubectl(t *testing.T) {

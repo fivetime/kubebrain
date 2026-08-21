@@ -189,7 +189,7 @@ last_success="$(capture_control_plane_scalar -n "$REPAIR_STATE_NAMESPACE" get co
 if [[ -n "$last_success" ]]; then
   last_uid="${last_success%%$'\t'*}"
   last_completed="${last_success#*$'\t'}"
-  [[ "$last_completed" =~ ^[1-9][0-9]*$ ]] || die "repair cooldown record is malformed"
+  is_positive_int64 "$last_completed" || die "repair cooldown record is malformed"
   if [[ "$last_uid" == "$EXPECTED_TIDB_CLUSTER_UID" ]]; then
     (( NOW_UNIX >= last_completed )) || die "repair cooldown record is from the future"
     elapsed=$((NOW_UNIX - last_completed))
