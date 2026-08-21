@@ -5660,7 +5660,7 @@ A185 也支持显式 `KUBECONFIG_PATH`。
 工作结束后终止 heartbeat，涉及后续 terminal 提交的 worker 还会执行同步最终续租。续租失败时 heartbeat
 杀掉尚未完成的工作进程并返回 fencing 状态。禁止
 使用 `kill -0` 轮询工作进程完成，因为未 wait 的 zombie 仍可能返回存在并造成无限续租。
-全部 13 个 heartbeat worker 都在任何 Bash 算术和 claim 前通过共享
+全部 15 个 heartbeat worker 都在任何 Bash 算术和 claim 前通过共享
 `operation-time-validation.sh` 要求 lease 是正 int64，并要求显式 interval 是规范正 decimal-int64 秒且
 `HEARTBEAT_INTERVAL_SECONDS < LEASE_SECONDS`。比较按十进制字符串精确执行，禁止 awk/IEEE-754 浮点；
 MaxInt64 lease 与 `MaxInt64-0.000000001` interval 必须保持精确，整数溢出、前导零、`.1`、尾随小数点及
@@ -5868,6 +5868,10 @@ admission 后规范身份一致。server dry-run receipt 必须先于真实 crea
 缺少 dry-run receipt、摘要漂移或同名 PVC 碰撞时仍须停止并人工核查，不得删除同名对象后盲目重试。成功 receipt 还必须证明新旧 cluster ID、
 TidbCluster UID、PVC/PV UID 和 CSI volume identity 全部不相交。该门禁不能证明 CSI provider 的两个不同 handle 没有共享
 底层克隆，生产启用前仍需 provider 级审计和真实集群演练。
+target retirement/provisioning executor 的外部 authorize/delete/poll/inspect/provision workflow 必须在独立
+进程组内运行，并由可唤醒的持续 heartbeat monitor 覆盖；失租须终止整个进程组且不得提交 Succeeded。
+monitor 停止使用 FIFO+Bash 内建超时，不得遗留仍持有 worker 管道的孤儿 sleep。retirement 的轮询 interval/timeout
+必须先验证为正 int64，并满足 `interval <= timeout <= 86400`，再参与 `SECONDS+timeout` 算术。
 
 replacement provisioning 前必须由外部受控流程将 `kubebrain-system/kubebrain` 缩容到 0；provisioning executor 没有缩容
 权限，只会检查 StatefulSet desired/current/ready replicas 和匹配 Pod count 均为 0。新 TiKV/PD Ready 后，执行器用 mTLS

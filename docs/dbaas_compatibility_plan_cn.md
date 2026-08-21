@@ -58975,6 +58975,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/116/103/102 四片全部通过（236.671/587.555/356.090/525.166 秒）。本项不改变合法 lease/interval、
   Operation claim/fencing、备份/恢复/销毁/证书轮换/TiKV 修复流程或在线 etcd/TiKV 语义。
 
+- A5250 补齐未被 A5249 纳入的 `NativePITRTargetProvisioning`/`NativePITRTargetRetirement` lease fencing。
+  两条 runner 旧实现把未校验的 lease 直接交给 operationctl；provisioning 在整个长 provision 子流程期间不续租，
+  retirement 只在外部 authorize/delete/poll/inspect 调用之间同步 heartbeat，任一调用跨越租期时旧 owner 仍可能
+  继续创建或删除基础设施。现两者都加入共享正 int64 lease/规范 decimal interval admission，长 workflow 在独立
+  进程组中执行，由持续 monitor 续租；失租会终止完整进程组且不提交 Succeeded。monitor 以 FIFO 和 Bash 内建
+  timeout 实现可唤醒等待，正常结束不遗留持有管道的 sleep。retirement wait bounds 还要求正 int64 且
+  `interval <= timeout <= 86400`，再执行 deadline 算术。确定性回归在 provision/authorize 已阻塞后注入 heartbeat
+  失败，证明子进程收到 TERM、记录 terminated 且无 succeed；全部 15 个 runner 的 MaxInt64/非规范时间表驱动契约
+  同步通过。聚焦连续两轮 15.798 秒、race 3.601 秒，bash syntax、diff check 与全仓 vet 通过。production 清单
+  增至 420 项并按 98/117/103/102 四片全部通过（189.643/533.454/319.631/522.859 秒）。本项不改变合法
+  target parameters/receipt、replacement identity、Operation 状态或在线 etcd/TiKV 数据语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
