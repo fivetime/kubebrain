@@ -266,12 +266,12 @@ child=0
 heartbeat_pid=0
 fenced=false
 cleanup() {
-  if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
-    kill "$child" 2>/dev/null || true
+  if [[ "$child" -gt 0 ]]; then
+    operation_kill_process_group "$child"
     wait "$child" 2>/dev/null || true
   fi
-  if [[ "$heartbeat_pid" -gt 0 ]] && kill -0 "$heartbeat_pid" 2>/dev/null; then
-    kill "$heartbeat_pid" 2>/dev/null || true
+  if [[ "$heartbeat_pid" -gt 0 ]]; then
+    operation_kill_process_group "$heartbeat_pid"
     wait "$heartbeat_pid" 2>/dev/null || true
   fi
   rm -rf "$capture_dir"
@@ -291,6 +291,7 @@ renew_terminal_lease() {
 run_phase() {
   local phase="$1" phase_rc
   rm -f "$capture_dir/child.done"
+  set -m
   env "${destroy_env[@]}" ACTION="$phase" "$DESTROY_COMMAND" &
   child=$!
   (
@@ -298,17 +299,18 @@ run_phase() {
       sleep "$heartbeat_interval"
       if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
         --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
-        [[ -e "$capture_dir/child.done" ]] || kill "$child" 2>/dev/null || true
+        [[ -e "$capture_dir/child.done" ]] || operation_kill_process_group "$child"
         exit 75
       fi
     done
   ) &
   heartbeat_pid=$!
+  set +m
   set +e
   wait "$child"
   phase_rc=$?
   : >"$capture_dir/child.done"
-  kill "$heartbeat_pid" 2>/dev/null
+  operation_kill_process_group "$heartbeat_pid"
   wait "$heartbeat_pid"
   heartbeat_rc=$?
   set -e

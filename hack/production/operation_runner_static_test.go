@@ -61,6 +61,33 @@ func TestHeartbeatOperationRunnersUseExactSharedTimeValidation(t *testing.T) {
 	}
 }
 
+func TestLongOperationRunnersFenceWholeProcessGroups(t *testing.T) {
+	for _, script := range []string{
+		"run-backup-operation.sh",
+		"run-backup-deletion-operation.sh",
+		"run-certificate-rotation-operation.sh",
+		"run-cold-physical-restore-operation.sh",
+		"run-cold-physical-snapshot-operation.sh",
+		"run-destroy-operation.sh",
+		"run-legacy-snapshot-remediation-operation.sh",
+		"run-native-pitr-full-backup-operation.sh",
+		"run-post-restore-audit-operation.sh",
+		"run-restore-cutover-operation.sh",
+		"run-tikv-transaction-recovery-operation.sh",
+		"run-tikv-transaction-repair-operation.sh",
+	} {
+		t.Run(script, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(".", script))
+			require.NoError(t, err)
+			text := string(data)
+			require.Contains(t, text, "set -m")
+			require.Contains(t, text, "set +m")
+			require.Contains(t, text, `operation_kill_process_group "$child"`)
+			require.Contains(t, text, "operation_kill_process_group \"$heartbeat")
+		})
+	}
+}
+
 func TestOperationRunnerTestsUseBoundedCommandHelper(t *testing.T) {
 	for _, tc := range []struct {
 		testFile string

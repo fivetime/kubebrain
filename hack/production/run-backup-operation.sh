@@ -379,12 +379,12 @@ freeze_object_receipt() {
 child=0
 heartbeat_pid=0
 cleanup() {
-  if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
-    kill "$child" 2>/dev/null || true
+  if [[ "$child" -gt 0 ]]; then
+    operation_kill_process_group "$child"
     wait "$child" 2>/dev/null || true
   fi
-  if [[ "$heartbeat_pid" -gt 0 ]] && kill -0 "$heartbeat_pid" 2>/dev/null; then
-    kill "$heartbeat_pid" 2>/dev/null || true
+  if [[ "$heartbeat_pid" -gt 0 ]]; then
+    operation_kill_process_group "$heartbeat_pid"
     wait "$heartbeat_pid" 2>/dev/null || true
   fi
   rm -rf "$parameter_capture_dir"
@@ -394,7 +394,7 @@ trap cleanup EXIT INT TERM
 finalize_heartbeat() {
   local heartbeat_rc=0
   if [[ "$heartbeat_pid" -gt 0 ]]; then
-    kill "$heartbeat_pid" 2>/dev/null || true
+    operation_kill_process_group "$heartbeat_pid"
     set +e
     wait "$heartbeat_pid"
     heartbeat_rc=$?
@@ -411,6 +411,7 @@ finalize_heartbeat() {
     return 1
   }
 }
+set -m
 run_backup &
 child=$!
 (
@@ -418,12 +419,13 @@ child=$!
     sleep "$heartbeat_interval"
     if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
       --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
-      [[ -e "$parameter_capture_dir/child.done" ]] || kill "$child" 2>/dev/null || true
+      [[ -e "$parameter_capture_dir/child.done" ]] || operation_kill_process_group "$child"
       exit 75
     fi
   done
 ) &
 heartbeat_pid=$!
+set +m
 set +e
 wait "$child"
 backup_rc=$?

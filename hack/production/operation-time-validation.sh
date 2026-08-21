@@ -30,3 +30,9 @@ operation_is_positive_decimal_less_than_int() {
   (( ${#whole} < ${#upper} )) && return 0
   (( ${#whole} == ${#upper} )) && [[ "$whole" < "$upper" ]]
 }
+
+operation_kill_process_group() {
+  local pid="$1"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+}

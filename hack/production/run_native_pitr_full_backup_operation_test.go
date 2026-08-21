@@ -34,6 +34,14 @@ fi
 	require.NoError(t, os.WriteFile(backup, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >"$BACKUP_LOG"
+if [[ -n "${FENCED_DESCENDANT_MARKER:-}" ]]; then
+  (
+    trap 'printf terminated >"$FENCED_DESCENDANT_MARKER"; exit 143' TERM
+    printf started >"$FENCED_DESCENDANT_MARKER"
+    while :; do sleep 0.05; done
+  ) &
+  wait
+fi
 sleep 0.2
 for arg in "$@"; do case "$arg" in --attestation-output=*) output="${arg#*=}";; esac; done
 printf '{"format":"kubebrain.native-pitr-full-backup-attestation.v2"}\n' >"$output"
@@ -91,9 +99,12 @@ printf '{"format":"kubebrain.native-pitr-full-backup-attestation.v2"}\n' >"$outp
 	require.Contains(t, string(identityOutput), "operation name does not bind the parameter digest")
 	require.NoFileExists(t, backupLog)
 	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
-	fencedOutput, fencedErr := runProductionScriptCommand(t, "run-native-pitr-full-backup-operation.sh", append(base, "FAIL_HEARTBEAT=true"))
+	descendantMarker := filepath.Join(dir, "fenced-descendant")
+	fencedOutput, fencedErr := runProductionScriptCommand(t, "run-native-pitr-full-backup-operation.sh", append(base,
+		"FAIL_HEARTBEAT=true", "FENCED_DESCENDANT_MARKER="+descendantMarker))
 	require.Error(t, fencedErr)
 	require.Contains(t, string(fencedOutput), "native PITR worker was fenced")
+	require.Equal(t, "terminated", string(mustReadProductionFile(t, descendantMarker)))
 	fencedOperations, err := os.ReadFile(operationLog)
 	require.NoError(t, err)
 	require.NotContains(t, string(fencedOperations), "--action succeed")

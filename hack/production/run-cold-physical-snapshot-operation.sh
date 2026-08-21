@@ -40,12 +40,12 @@ OPERATION_NAMESPACE="$namespace"
    "$requester" == platform:cold-physical-snapshot && "$owner" == "$WORKER_ID" && "$secret" == "${name}-parameters" &&
    "$key" == parameters.json && "$attempt" == 1 && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "snapshot claim identity is invalid"
 capture="$(mktemp -d "$WORK_DIR/cold-snapshot.XXXXXX")"; child=0; heartbeat=0
-cleanup() { [[ $child == 0 ]] || kill "$child" 2>/dev/null || true; [[ $heartbeat == 0 ]] || kill "$heartbeat" 2>/dev/null || true; rm -rf -- "$capture"; }
+cleanup() { [[ $child == 0 ]] || operation_kill_process_group "$child"; [[ $heartbeat == 0 ]] || operation_kill_process_group "$heartbeat"; rm -rf -- "$capture"; }
 trap cleanup EXIT INT TERM
 finalize_heartbeat() {
   local hrc=0
   if [[ $heartbeat != 0 ]]; then
-    kill "$heartbeat" 2>/dev/null || true
+    operation_kill_process_group "$heartbeat"
     set +e; wait "$heartbeat"; hrc=$?; set -e; heartbeat=0
     [[ $hrc != 75 ]] || { echo "operation heartbeat failed; snapshot worker was fenced" >&2; return 1; }
   fi
@@ -75,11 +75,13 @@ request_hash="$(printf '%s\n%s\n%s\n%s\n%s\n' "$request_id" "$kb_uid" "$tidb_uid
 [[ "$name" == "cold-snapshot-${request_hash}" && "$instance" == "$kb_name" ]] || die "snapshot request does not bind the operation"
 receipt="$WORK_DIR/${name}.receipt.json"
 if [[ ! -e "$receipt" ]]; then
+  set -m
   env PREFLIGHT_FILE="$inventory" OPERATION_ID="$name" RECEIPT_FILE="$receipt" SEMANTIC_WITNESS_FILE="$witness" \
     EXPECTED_WITNESS_PREFIX="$prefix" KUBE_CONTEXT=in-cluster ALLOW_COLD_PHYSICAL_SNAPSHOT=true WITNESS_MAX_AGE_SECONDS="$max_age" \
     WAIT_TIMEOUT="$wait_timeout" FENCE_SETTLE_SECONDS="$settle" LOGICAL_STATUS_COMMAND=/usr/local/bin/kubebrain-logical-status \
     COLD_SNAPSHOT_RECEIPT_COMMAND=/usr/local/bin/kubebrain-cold-snapshot-receipt "$SNAPSHOT_COMMAND" & child=$!
-  ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
+  ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || operation_kill_process_group "$child"; exit 75; }; done ) & heartbeat=$!
+  set +m
   set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
   [[ $rc == 0 ]] || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold snapshot exited ${rc}; inspect retained snapshots before a new approved operation" >/dev/null; exit 1; }
 fi

@@ -41,12 +41,12 @@ IFS=$'\t' read -r namespace name operation_id instance type requester owner secr
 [[ "$name" == "native-pitr-full-${expected_sha:0:20}" ]] || die "native PITR operation name does not bind the parameter digest"
 
 capture="$(mktemp -d "$WORK_DIR/native-pitr-full.XXXXXX")"; child=0; heartbeat=0
-cleanup() { [[ $child == 0 ]] || kill "$child" 2>/dev/null || true; [[ $heartbeat == 0 ]] || kill "$heartbeat" 2>/dev/null || true; rm -rf -- "$capture"; }
+cleanup() { [[ $child == 0 ]] || operation_kill_process_group "$child"; [[ $heartbeat == 0 ]] || operation_kill_process_group "$heartbeat"; rm -rf -- "$capture"; }
 trap cleanup EXIT INT TERM
 finalize_heartbeat() {
   local hrc=0
   if [[ $heartbeat != 0 ]]; then
-    kill "$heartbeat" 2>/dev/null || true
+    operation_kill_process_group "$heartbeat"
     set +e; wait "$heartbeat"; hrc=$?; set -e; heartbeat=0
     [[ $hrc != 75 ]] || { echo "operation heartbeat failed; native PITR worker was fenced" >&2; return 1; }
   fi
@@ -83,11 +83,13 @@ attestation="$WORK_DIR/${name}.native-pitr-full-backup-attestation.json"
 [[ ! -e "$attestation" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR attestation already exists; inspect before retry" >/dev/null; exit 1; }
 for file in ca.crt tls.crt tls.key; do [[ -f "$TLS_DIR/$file" ]] || die "native PITR TLS file $file is required"; done
 
+set -m
 "$BACKUP_COMMAND" --br-binary="$BR_BINARY" --pd-addrs="$pd_addrs" --storage-prefix="$storage_prefix" \
   --backup-ts="$backup_ts" --ca="$TLS_DIR/ca.crt" --cert="$TLS_DIR/tls.crt" --key="$TLS_DIR/tls.key" \
   "${encryption_args[@]}" \
   --attestation-output="$attestation" >"$capture/backup.log" 2>&1 & child=$!
-( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
+( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || operation_kill_process_group "$child"; exit 75; }; done ) & heartbeat=$!
+set +m
 set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
 [[ $rc == 0 && -s "$attestation" ]] || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR full backup exited ${rc}; inspect immutable prefix before a new operation" >/dev/null; exit 1; }
 receipt_sha="$(sha "$attestation")"; finalize_heartbeat || exit 1
