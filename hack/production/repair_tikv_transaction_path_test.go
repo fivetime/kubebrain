@@ -49,12 +49,14 @@ elif [[ "$args" == *"get tidbcluster kb"* ]]; then
     head -c "$((FAKE_CONTROL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
   fi
 elif [[ "$args" == *"get statefulset kubebrain -o jsonpath={.spec.replicas}"* ]]; then
-  printf '%s' "${FAKE_INITIAL_KB_REPLICAS:-3}"
+  payload="${FAKE_INITIAL_KB_REPLICAS:-3}"; printf '%s' "$payload"
+  [[ "${FAKE_CONTROL_SCALAR_TARGET:-}" != replicas ]] || head -c "$((FAKE_CONTROL_SCALAR_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
 elif [[ "$args" == *"get configmap kubebrain-tikv-transaction-repair-last-success"* ]]; then
   if [[ -n "${FAKE_COOLDOWN:-}" ]]; then
-    printf '%s' "$FAKE_COOLDOWN"
+    payload="$FAKE_COOLDOWN"; printf '%s' "$payload"
+    [[ "${FAKE_CONTROL_SCALAR_TARGET:-}" != cooldown ]] || head -c "$((FAKE_CONTROL_SCALAR_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
   else
-    exit 1
+    [[ "$args" == *"--ignore-not-found"* ]] || exit 1
   fi
 elif [[ "$args" == *"create configmap kubebrain-tikv-transaction-repair-lock"* && "${FAKE_LOCK_CONFLICT:-false}" == "true" ]]; then
   exit 1
@@ -259,7 +261,39 @@ fi
 			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
 			if size > 4096 {
 				require.Error(t, boundaryErr)
-				require.Contains(t, string(boundaryOutput), "control-plane identity response exceeds 4096 bytes")
+				require.Contains(t, string(boundaryOutput), "control-plane scalar response exceeds 4096 bytes")
+				require.NoFileExists(t, caseReceipt)
+				caseLogData, readErr := os.ReadFile(caseLog)
+				require.NoError(t, readErr)
+				require.NotContains(t, string(caseLogData), "create configmap kubebrain-tikv-transaction-repair-lock")
+				require.NotContains(t, string(caseLogData), "delete configmap kubebrain-tikv-transaction-repair-lock")
+			} else {
+				require.NoError(t, boundaryErr, string(boundaryOutput))
+				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+			}
+		}
+	}
+	for _, target := range []string{"replicas", "cooldown"} {
+		for _, size := range []int{4097, 4096} {
+			caseState := filepath.Join(tempDir, "control-scalar-"+target+"-"+strconv.Itoa(size))
+			require.NoError(t, os.Mkdir(caseState, 0o755))
+			caseReceipt := filepath.Join(caseState, "receipt.json")
+			caseLog := filepath.Join(caseState, "kubectl.log")
+			caseEnv := append([]string(nil), env...)
+			caseEnv = append(caseEnv,
+				"FAKE_STATE="+caseState,
+				"FAKE_LOG="+caseLog,
+				"RECEIPT_OUTPUT="+caseReceipt,
+				"FAKE_CONTROL_SCALAR_TARGET="+target,
+				"FAKE_CONTROL_SCALAR_BYTES="+strconv.Itoa(size),
+			)
+			if target == "cooldown" {
+				caseEnv = append(caseEnv, "FAKE_COOLDOWN=tc-uid\t1786240000")
+			}
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+			if size > 4096 {
+				require.Error(t, boundaryErr)
+				require.Contains(t, string(boundaryOutput), "control-plane scalar response exceeds 4096 bytes")
 				require.NoFileExists(t, caseReceipt)
 				caseLogData, readErr := os.ReadFile(caseLog)
 				require.NoError(t, readErr)
@@ -408,7 +442,7 @@ fi
 			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
 			if size > 4096 {
 				require.Error(t, boundaryErr)
-				require.Contains(t, string(boundaryOutput), "control-plane identity response exceeds 4096 bytes")
+				require.Contains(t, string(boundaryOutput), "control-plane scalar response exceeds 4096 bytes")
 				require.NoFileExists(t, caseReceipt)
 				caseLogData, readErr := os.ReadFile(caseLog)
 				require.NoError(t, readErr)
