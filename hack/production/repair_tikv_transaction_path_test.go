@@ -30,7 +30,8 @@ if [[ "$args" == *"get statefulset kubebrain"* && "$args" == *".metadata.uid"* &
     desired=1
     ready=1
   fi
-  printf 'kb-uid\t%s\t%s' "$desired" "$ready"
+  printf -v payload 'kb-uid\t%s\t%s' "$desired" "$ready"
+  printf '%s' "$payload"; [[ "${FAKE_CONTROL_IDENTITY_TARGET:-}" != kubebrain ]] || head -c "$((FAKE_CONTROL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
 elif [[ "$args" == *"get statefulset kubebrain -o jsonpath={.metadata.uid}"* ]]; then
   printf 'kb-uid'
 elif [[ "$args" == *"get tidbcluster kb"* ]]; then
@@ -38,7 +39,11 @@ elif [[ "$args" == *"get tidbcluster kb"* ]]; then
   if [[ "${FAKE_TIDB_TOPOLOGY_DRIFT_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
     tikv_replicas=4
   fi
-  printf 'tc-uid\t7671\t3\t%s' "$tikv_replicas"
+  printf -v payload 'tc-uid\t7671\t3\t%s' "$tikv_replicas"
+  printf '%s' "$payload"
+  if [[ "${FAKE_CONTROL_IDENTITY_TARGET:-}" == tidbcluster && -e "$FAKE_STATE/quiesced" ]]; then
+    head -c "$((FAKE_CONTROL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
+  fi
 elif [[ "$args" == *"get statefulset kubebrain -o jsonpath={.spec.replicas}"* ]]; then
   printf '%s' "${FAKE_INITIAL_KB_REPLICAS:-3}"
 elif [[ "$args" == *"get configmap kubebrain-tikv-transaction-repair-last-success"* ]]; then
@@ -324,6 +329,34 @@ fi
 					expectedDeletes = 1
 				}
 				require.Equal(t, expectedDeletes, strings.Count(string(caseLogData), "delete pod kb-tikv-"))
+			} else {
+				require.NoError(t, boundaryErr, string(boundaryOutput))
+				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+			}
+		}
+	}
+	for _, target := range []string{"kubebrain", "tidbcluster"} {
+		for _, size := range []int{4097, 4096} {
+			caseState := filepath.Join(tempDir, "control-identity-"+target+"-"+strconv.Itoa(size))
+			require.NoError(t, os.Mkdir(caseState, 0o755))
+			caseReceipt := filepath.Join(caseState, "receipt.json")
+			caseLog := filepath.Join(caseState, "kubectl.log")
+			caseEnv := append([]string(nil), env...)
+			caseEnv = append(caseEnv,
+				"FAKE_STATE="+caseState,
+				"FAKE_LOG="+caseLog,
+				"RECEIPT_OUTPUT="+caseReceipt,
+				"FAKE_CONTROL_IDENTITY_TARGET="+target,
+				"FAKE_CONTROL_IDENTITY_BYTES="+strconv.Itoa(size),
+			)
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+			if size > 4096 {
+				require.Error(t, boundaryErr)
+				require.Contains(t, string(boundaryOutput), "control-plane identity response exceeds 4096 bytes")
+				require.NoFileExists(t, caseReceipt)
+				caseLogData, readErr := os.ReadFile(caseLog)
+				require.NoError(t, readErr)
+				require.NotContains(t, string(caseLogData), "delete pod kb-tikv-")
 			} else {
 				require.NoError(t, boundaryErr, string(boundaryOutput))
 				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")

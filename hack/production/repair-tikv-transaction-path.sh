@@ -40,6 +40,7 @@ MAX_PD_RESPONSE_BYTES=1048576
 MAX_STORAGE_RESPONSE_BYTES=1048576
 MAX_POD_INVENTORY_RESPONSE_BYTES=1048576
 MAX_POD_IDENTITY_RESPONSE_BYTES=4096
+MAX_CONTROL_PLANE_IDENTITY_RESPONSE_BYTES=4096
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -202,6 +203,18 @@ capture_pod_identity() {
   fi
   cat "$response"
 }
+capture_control_plane_identity() {
+  local response size
+  response="$(mktemp "$response_dir/control-plane-identity.XXXXXX")" || return 1
+  kctl "$@" >"$response" || return 1
+  chmod 600 "$response" || return 1
+  size="$(stat -Lc '%s' -- "$response")" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_CONTROL_PLANE_IDENTITY_RESPONSE_BYTES" ]]; then
+    echo "control-plane identity response exceeds ${MAX_CONTROL_PLANE_IDENTITY_RESPONSE_BYTES} bytes" >&2
+    return 1
+  fi
+  cat "$response"
+}
 quantity_to_kib() {
   local quantity="$1" value unit multiplier
   if [[ "$quantity" =~ ^([1-9][0-9]*)(Ki|Mi|Gi|Ti)$ ]]; then
@@ -256,7 +269,7 @@ validate_pd_ready() {
 validate_pd_ready || die "PD quorum/PVC fence failed before repair"
 validate_tidb_cluster_identity() {
   local identity
-  identity="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o jsonpath='{.metadata.uid}{"\t"}{.status.clusterID}{"\t"}{.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}')" || return 1
+  identity="$(capture_control_plane_identity -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o jsonpath='{.metadata.uid}{"\t"}{.status.clusterID}{"\t"}{.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}')" || return 1
   [[ "$identity" == "$expected_cluster_identity" ]]
 }
 validate_pd_stores_up() {
@@ -347,7 +360,7 @@ wait_for_abnormal_store_ids() {
 }
 validate_kubebrain_quiesced() {
   local identity actual_uid desired ready
-  identity="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}')" || return 1
+  identity="$(capture_control_plane_identity -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}')" || return 1
   IFS=$'\t' read -r actual_uid desired ready <<<"$identity"
   [[ "$actual_uid" == "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" && "$desired" == "0" && ( -z "$ready" || "$ready" == "0" ) ]]
 }
@@ -356,7 +369,7 @@ require_kubebrain_quiesced() {
   if validate_kubebrain_quiesced; then
     return 0
   fi
-  live_uid="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+  live_uid="$(capture_control_plane_identity -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
   if [[ "$live_uid" == "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
     kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null 2>&1 || true
   fi
