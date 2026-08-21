@@ -1031,6 +1031,8 @@ count-index max keys 与 max transaction operations 必须是生产 amd64/arm64 
 Go `int`，即不超过 `9223372036854775807`；前导零或越界值必须在 kubectl 前拒绝。
 bcrypt cost 与 auth token TTL 必须是生产 amd64/arm64 上的规范非负 Go `uint`，即不超过
 `18446744073709551615`；前导零或越界值必须在 kubectl 前拒绝。
+TiKV/PD cluster ID 必须是规范正 uint64，即 `1..18446744073709551615`；前导零、零或越界值必须在
+kubectl 前拒绝，并与 TidbCluster status、PD/TiKV 响应及实例创建 receipt 中的不可变身份精确一致。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，

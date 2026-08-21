@@ -59268,6 +59268,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （140.575/471.808/267.353/457.374 秒）。本项不改变合法认证参数或 bcrypt 越界成本回退语义，只让发布
   期望与生产 Go flag 的可表示域一致。
 
+- A5278 将组合实例 release gate 的 TiKV/PD cluster ID 对齐协议真实的非零 uint64 身份域。该身份在 TiKV
+  client、etcd `ResponseHeader.ClusterId`、TidbCluster status 以及备份/恢复 receipt 中均以 uint64 消费；旧
+  门禁却只要求无界正数字，前导零和 MaxUint64+1 会进入 readiness/Kubernetes 查询。现统一要求规范
+  `1..18446744073709551615`。回归证明前导零与 MaxUint64+1 在首次 kubectl 前拒绝，并以精确 MaxUint64
+  证明 admission 后进入 TidbCluster storage identity 核验。聚焦单轮 117.589 秒、连续两轮 231.061 秒、
+  race 116.145 秒，bash syntax、diff check 与全仓 vet 通过；production 清单保持 448 项并按
+  102/127/113/106 四片在最终代码状态全部通过（138.955/468.042/265.113/455.106 秒）。本项不改变合法
+  cluster identity fencing 或在线 etcd/TiKV 数据语义，只让发布期望在首次外部访问前具备协议精确域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
