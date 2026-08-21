@@ -108,11 +108,15 @@ elif [[ "$args" == *"exec kubebrain-0"* ]]; then
 elif [[ "$args" == *"exec kb-tikv-"* && "$args" == *" df -P /var/lib/tikv"* ]]; then
   used="${FAKE_DISK_USED_PERCENT:-42}"
   capacity="${FAKE_DISK_CAPACITY_KIB:-5242880}"
-  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/tikv\n' "$capacity" "$used"
+  printf -v payload 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/tikv\n' "$capacity" "$used"
+  printf '%s' "$payload"
+  [[ "${FAKE_DISK_RESPONSE_TARGET:-}" != tikv ]] || head -c "$((FAKE_DISK_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"exec kb-pd-"* && "$args" == *" df -P /var/lib/pd"* ]]; then
   used="${FAKE_PD_DISK_USED_PERCENT:-42}"
   capacity="${FAKE_PD_DISK_CAPACITY_KIB:-2097152}"
-  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/pd\n' "$capacity" "$used"
+  printf -v payload 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/pd\n' "$capacity" "$used"
+  printf '%s' "$payload"
+  [[ "${FAKE_DISK_RESPONSE_TARGET:-}" != pd ]] || head -c "$((FAKE_DISK_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"/pd/api/v1/regions/check/"* ]]; then
   ordinal="${FAKE_ABNORMAL_STORE_ORDINAL:-}"
   if [[ "${FAKE_ABNORMAL_DRIFT_AFTER_QUIESCE:-false}" == "true" && -e "$FAKE_STATE/quiesced" ]]; then
@@ -331,6 +335,35 @@ fi
 		} else {
 			require.NoError(t, boundaryErr, string(boundaryOutput))
 			require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+		}
+	}
+	for _, target := range []string{"pd", "tikv"} {
+		for _, size := range []int{65537, 65536} {
+			caseState := filepath.Join(tempDir, "disk-response-"+target+"-"+strconv.Itoa(size))
+			require.NoError(t, os.Mkdir(caseState, 0o755))
+			caseReceipt := filepath.Join(caseState, "receipt.json")
+			caseLog := filepath.Join(caseState, "kubectl.log")
+			caseEnv := append([]string(nil), env...)
+			caseEnv = append(caseEnv,
+				"FAKE_STATE="+caseState,
+				"FAKE_LOG="+caseLog,
+				"RECEIPT_OUTPUT="+caseReceipt,
+				"FAKE_DISK_RESPONSE_TARGET="+target,
+				"FAKE_DISK_RESPONSE_BYTES="+strconv.Itoa(size),
+			)
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+			if size > 65536 {
+				require.Error(t, boundaryErr)
+				require.Contains(t, string(boundaryOutput), "disk usage response exceeds 65536 bytes")
+				require.NoFileExists(t, caseReceipt)
+				caseLogData, readErr := os.ReadFile(caseLog)
+				require.NoError(t, readErr)
+				require.NotContains(t, string(caseLogData), " scale statefulset ")
+				require.NotContains(t, string(caseLogData), "delete pod kb-tikv-")
+			} else {
+				require.NoError(t, boundaryErr, string(boundaryOutput))
+				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+			}
 		}
 	}
 

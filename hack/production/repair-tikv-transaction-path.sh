@@ -42,6 +42,7 @@ MAX_POD_INVENTORY_RESPONSE_BYTES=1048576
 MAX_POD_IDENTITY_RESPONSE_BYTES=4096
 MAX_CONTROL_PLANE_SCALAR_RESPONSE_BYTES=4096
 MAX_CONTAINER_ARGS_RESPONSE_BYTES=65536
+MAX_DISK_USAGE_RESPONSE_BYTES=65536
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -237,6 +238,19 @@ capture_container_args() {
     return 1
   fi
   cat "$response"
+}
+capture_disk_usage_response() {
+  local response size
+  response="$(mktemp "$response_dir/disk-usage.XXXXXX")" || return 1
+  "$COMMAND_TIMEOUT" --signal=TERM "${PROBE_TIMEOUT_SECONDS}s" \
+    "$KUBECTL" "${kubectl_context_args[@]}" "$@" >"$response" || return 1
+  chmod 600 "$response" || return 1
+  size="$(stat -Lc '%s' -- "$response")" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_DISK_USAGE_RESPONSE_BYTES" ]]; then
+    echo "disk usage response exceeds ${MAX_DISK_USAGE_RESPONSE_BYTES} bytes" >&2
+    return 1
+  fi
+  printf '%s\n' "$response"
 }
 quantity_to_kib() {
   local quantity="$1" value unit multiplier
@@ -456,14 +470,15 @@ disk_pd_rows="$(pd_status)" || die "cannot refresh PD topology before storage-sa
 [[ "$disk_pd_rows" == "$expected_pd_status" ]] || die "PD identity/quorum/PVC fence changed before storage-safety check"
 validate_storage_safety() {
   local component="$1" container="$2" data_dir="$3" rows="$4"
-  local pod pod_uid ready pvc disk_row capacity_kib available_kib used_percent_text used_percent
+  local pod pod_uid ready pvc disk_response disk_row capacity_kib available_kib used_percent_text used_percent
   local pvc_response pvc_uid pv pvc_capacity pvc_capacity_kib pv_response pv_uid csi_driver volume_handle volume_identity
 while IFS=$'\t' read -r pod pod_uid ready pvc; do
   [[ -n "$pod" && -n "$pod_uid" && "$ready" == "True" && -n "$pvc" ]] || continue
-  disk_row="$($COMMAND_TIMEOUT --signal=TERM "${PROBE_TIMEOUT_SECONDS}s" \
-    "$KUBECTL" "${kubectl_context_args[@]}" -n "$TIDB_NAMESPACE" exec "$pod" -c "$container" -- \
-    df -P "$data_dir" | awk 'NR == 2 {print $2 "\t" $4 "\t" $5}')" || \
+  disk_response="$(capture_disk_usage_response -n "$TIDB_NAMESPACE" exec "$pod" -c "$container" -- \
+    df -P "$data_dir")" || \
     die "cannot read ${component} disk usage for ${pod}"
+  disk_row="$(awk 'NR == 2 {print $2 "\t" $4 "\t" $5}' "$disk_response")" || \
+    die "cannot parse ${component} disk usage for ${pod}"
   IFS=$'\t' read -r capacity_kib available_kib used_percent_text <<<"$disk_row"
   used_percent="${used_percent_text%%%}"
   [[ "$capacity_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+$ ]] || \
