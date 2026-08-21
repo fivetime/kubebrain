@@ -58826,6 +58826,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （188.903/546.694/311.974/539.686 秒）。本项不改变合法 cluster ID、identity/probe/receipt 语义、在线
   etcd RPC 或 TiKV 编码。
 
+- A5237 修复 repair 最终 receipt 的 predictable temporary symlink overwrite 与目标覆盖风险。旧实现固定使用
+  `${RECEIPT_OUTPUT}.tmp.${REPAIR_ATTEMPT_ID}` 并以 shell 重定向写入；测试预置该路径指向 sentinel 文件的
+  symlink，脚本在 10.78 秒内把 sentinel 覆盖为 receipt 后继续成功。现先设置 umask 077，在目标同目录用
+  `mktemp ...XXXXXX` 独占创建随机 0600 文件，完整写入后以 hard-link no-clobber 原子发布，删除私有临时链接；
+  trap 只清理本进程实际取得的随机路径。测试证明 sentinel 保持原文、最终 receipt 是普通文件、预置固定名
+  symlink 仍归原所有者。聚焦测试 228.320 秒，连续两轮 498.139 秒、race 256.901 秒，完整相关回归
+  232.320 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按 98/113/103/100
+  四片全部通过（174.380/545.656/343.987/540.293 秒）。本项不改变 receipt schema/content、repair 语义、
+  在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
