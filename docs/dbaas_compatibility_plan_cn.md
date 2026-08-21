@@ -58846,6 +58846,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （177.894/505.416/304.513/476.098 秒）。本项不改变 receipt schema/content、no-clobber、repair 语义、
   在线 etcd RPC 或 TiKV 编码。
 
+- A5239 修复 repair durable JSON 直接插值 Kubernetes UID 的结构注入/损坏缺口。Kubernetes `types.UID` 是
+  string，旧 transaction/quiesced receipt 的 `printf` 和 cooldown create→patch fallback 都把两个 expected UID
+  放在手写双引号中；当真实 identity fence 匹配包含 quote/backslash 的 UID 时，repair 仍完成但最终 receipt
+  无法 strict JSON 解析（RED 16.65 秒），fallback patch 同样会变成非法 JSON。现于任何 kubectl 前分别用 jq
+  把 KubeBrain StatefulSet UID 与 TidbCluster UID 冻结为 JSON string token，receipt 两模式和 cooldown patch
+  复用 token，其他身份比较、ConfigMap literal 与 probe value 仍使用原字符串。测试覆盖正常 cooldown create
+  与强制 create 失败后的 patch 两条路径，receipt 均 strict JSON round-trip 到原 quote/backslash UID，patch
+  也通过真实 jq 结构校验。聚焦测试 254.142 秒，连续两轮 544.228 秒、race 283.316 秒，完整相关回归
+  252.276 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按 98/113/103/100
+  四片全部通过（171.257/509.941/296.317/465.229 秒）。本项不改变 UID identity fence、receipt schema、
+  repair 语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

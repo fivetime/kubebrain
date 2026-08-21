@@ -476,6 +476,9 @@ ConfigMap、删除指定 TiKV Pod 所需的最小权限；不得获得 PVC delet
 每次调用要求一个尚不存在的绝对 `RECEIPT_OUTPUT`，成功时原子发布严格 JSON receipt；文件绑定
 两个 UID、cluster ID、attempt ID、完成时间、实际 1–3 个 repaired TiKV Pod、PVC preserved 与
 transaction verified，可被 Operation wrapper 重读并计算 SHA-256。
+两个 expected Kubernetes UID 在首次 kubectl 前必须分别编码为冻结 JSON string token；transaction/quiesced
+receipt 和 cooldown create→patch fallback 都复用该 token，禁止把原始 `types.UID` 字符串直接拼入 JSON。
+quote、backslash 等字符必须 strict JSON round-trip 到原 UID，编码失败不得进入 repair mutation。
 最终 receipt 必须先在目标同目录用不可预测 `mktemp` 独占创建 0600 文件，再以 no-clobber hard-link 原子
 发布并删除私有临时链接；发布前必须 `sync -f` 完整临时文件，发布并删除临时链接后必须 `sync -f` 目标
 目录，两个同步门禁都通过后才允许输出成功。不得使用 attempt 派生的固定临时名，也不得覆盖并发出现的
