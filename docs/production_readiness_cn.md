@@ -457,6 +457,9 @@ cooldown ConfigMap 的 `completed-at-unix` 在 UID 代际分支和任何比较/�
 `EXPECTED_CLUSTER_ID` 必须是规范正 uint64，并在首次 Kubernetes 调用前验证；上限与 upstream etcd
 protobuf `ClusterID uint64`/Go `types.ID uint64` 一致。`2^64` 及更大值不得进入 TidbCluster identity fence、
 probe key、ConfigMap 或最终 receipt；精确 MaxUint64 必须保留十进制文本并可通过完整 repair。
+该边界也适用于 transaction/quiesced 两个 requester 冻结的 live TidbCluster cluster ID，以及共享 Operation
+worker 解冻的 `expected_cluster_id`：requester 必须在创建参数 Secret/提交 Operation 前拒绝越界身份，worker
+必须在启动 repair primitive 前再次拒绝。两种模式的 MaxUint64 参数和 receipt 比较均须保持原始十进制精度。
 quiesced repair 的 `EXPECTED_ABNORMAL_STORE_IDS` 每项也必须是规范正 uint64；该边界与 TiKV/PD
 `metapb.Store.id uint64` 一致。requester 从 PD pending/down 响应冻结目标、Operation worker 解冻参数、repair
 反复读取 Region/store 映射和最终校验 receipt 的整条链路都必须保持 MaxUint64 十进制精度，`2^64` 必须在

@@ -58872,6 +58872,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/113/103/100 四片全部通过（180.162/528.837/310.009/485.475 秒）。本项不改变合法 store target
   集合、Operation/receipt schema、repair replacement 语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5241 把 A5236 的 `EXPECTED_CLUSTER_ID` 正 uint64 门禁前移到 repair 控制面。旧 transaction/quiesced
+  requester 对 live TidbCluster cluster ID 只做正十进制 regex，共享 worker 对 immutable
+  `expected_cluster_id` 也只做相同检查；因此 `2^64` 可被写入参数 Secret、进入人工审批并被 worker 领取，
+  最终才由 primitive 拒绝，形成必然失败的已审批破坏性 Operation。现 transaction requester 新增字符串级
+  正 uint64 helper 和 jq MaxUint64 精度自检，quiesced requester 复用 A5240 helper；两者都在参数 Secret/
+  Operation submit 前验证 live cluster ID。共享 worker 在 operation identity/hash 校验和启动 primitive 前再次
+  验证两种模式的 cluster ID。测试覆盖 transaction/quiesced requester 与 worker 四条路径：精确
+  `18446744073709551615` 可冻结、解冻、传给 primitive 并由 strict receipt 校验保留；
+  `18446744073709551616` 分别在 requester 创建 Secret/提交 Operation 和 worker 启动 primitive 前 fail closed。
+  四条相关测试连续两轮 25.812 秒、race 13.866 秒，bash syntax、diff check 与全仓 vet 通过。production
+  清单保持 414 项并按 98/113/103/100 四片全部通过
+  （175.338/527.507/322.165/484.135 秒）。本项不改变合法 cluster ID、Operation/receipt schema、审批与
+  repair 语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
