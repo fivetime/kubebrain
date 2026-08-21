@@ -1075,6 +1075,12 @@ rollout runner 的初始/终态 StatefulSet JSON、每次 probe 启动屏障日�
 报告资源门禁，不能误报为缺少启动屏障，精确 1 MiB 的合法证据仍可完成滚动演练。
 等待 probe 完成时读取的 Pod phase jsonpath 响应还采用独立 4096-byte 上界；每次重试写入独立 0600
 文件后才读入标量，超限 phase 不能借下一次 wait 成功而放行，精确边界仍可继续等待并完成演练。
+runner 的 command/dial timeout、三类最大延迟、probe Ready/completion timeout 和 StatefulSet rollout
+timeout 共八个 duration，必须在第一次 Kubernetes 调用前通过 Go `time.Duration` 可表示域校验；只允许
+正整数加 `ms|s|m`，对应最大 magnitude 为 `9223372036854ms`、`9223372036s`、`153722867m`。
+这也保证 completion duration 转秒并与 Bash `SECONDS` 组成 deadline 时不会溢出。尤其
+`PROBE_READY_TIMEOUT` 与 `ROLLOUT_TIMEOUT` 不得作为未校验环境变量进入已创建 probe Pod 或已触发
+StatefulSet restart 后的等待窗口。
 
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：

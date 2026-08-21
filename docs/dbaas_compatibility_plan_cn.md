@@ -59052,6 +59052,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （214.365/588.093/363.754/586.802 秒）。本项不改变合法 restore 参数、隔离目标门禁、Operation 状态合同
   或在线 etcd/TiKV 语义，只封闭恢复等待窗口的数值域。
 
+- A5257 封闭 mutating rollout availability gate 的 duration 溢出与无校验等待窗口。旧 runner 对 command/
+  dial timeout、三类 latency 和 completion timeout 只做无界 `ms|s|m` 正则，后者还转秒进入 Bash deadline；
+  `PROBE_READY_TIMEOUT` 与 `ROLLOUT_TIMEOUT` 则完全未校验，分别可在创建 probe Pod、触发 StatefulSet restart
+  后制造无界等待。现共享 helper 按 Go `time.Duration` 纳秒上限精确限制三种单位，八个 duration 全部在首次
+  kubectl 前统一准入；合法最大值为 `9223372036854ms`、`9223372036s`、`153722867m`，因而 completion
+  分钟转秒也处于安全算术域。表驱动回归逐项注入 MaxInt64+1 秒并证明零 Kubernetes 调用，混合三种单位的
+  最大合法边界仍完成 fake rollout。聚焦连续两轮 1.993 秒、race 2.088 秒，bash syntax、diff check 与全仓
+  vet 通过；production 清单增至 429 项并按 99/119/107/104 四片全部通过
+  （161.175/531.032/281.410/502.302 秒）。本项不改变合法 rollout/probe 默认值、数据面语义或发布拓扑，
+  只让 mutation 前的时间预算具有与实际 Go probe 一致的可表示域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
