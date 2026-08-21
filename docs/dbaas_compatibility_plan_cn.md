@@ -59326,6 +59326,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （139.674/467.883/264.195/461.130 秒）。本项不改变 simple/JWT token、key rotation 或认证 revision
   语义，只把可在发布 runner 中证明的 provider 结构错误前移到首次外部访问之前。
 
+- A5284 将组合实例 release gate 的 gRPC max connection age/grace 对齐 endpoint connection draining
+  校验。两项是可选 `DurationVar`：空表示 release gate 不要求该参数，`0` 保留禁用语义；endpoint 拒绝负值，
+  且 age `>0` 时要求 grace `>0`。旧门禁只做 optional args 字符串比较，非法/负 duration、Go duration 溢出
+  和启用 age 但空/零 grace 会进入 Kubernetes。现非空值要求精确 `0` 或正整数 `ms/s/m/h` 并校验可表示
+  上界，同时前置 enabled-age/positive-grace 组合。回归证明负 age、溢出 grace 与 age=1h/grace=0 均在
+  首次 kubectl 前拒绝；两项为 0 和同时为最大整小时 `2562047h` 均完成 admission、进入参数核验。聚焦
+  单轮 128.102 秒、连续两轮 251.009 秒、race 126.170 秒，bash syntax、diff check 与全仓 vet 通过；
+  production 清单保持 448 项并按 102/127/113/106 四片在最终代码状态全部通过
+  （140.236/467.019/266.626/462.174 秒）。本项不改变合法 TLS rotation、GOAWAY 或 drain grace 语义，
+  只让发布期望与 endpoint config 的时钟及组合约束一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
