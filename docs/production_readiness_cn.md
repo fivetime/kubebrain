@@ -655,7 +655,10 @@ hack/production/request-tikv-transaction-repair.sh
 runner 只接受恰好一个 `status=firing`、alertname 精确等于
 `KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane`，且 namespace/StatefulSet 标签与
 目标实例相等的 alert；fingerprint 必须为 16–64 位小写十六进制，`startsAt` 必须可解析、不能在
-未来并默认已持续至少 120 秒。通过后重新读取实时 KubeBrain StatefulSet UID、TidbCluster UID
+未来并默认已持续至少 120 秒。`MIN_FIRING_SECONDS`、当前 Unix 时间和 `startsAt` 解析结果都必须是
+规范正 int64，并在任何 Kubernetes 调用前完成验证；MaxInt64+1、零、负数或非规范文本不得进入
+`NOW_UNIX - started_unix` 算术，避免回绕后把过新的告警误判为已满足持续时间。通过后重新读取实时
+KubeBrain StatefulSet UID、TidbCluster UID
 和 cluster ID，以 alert fingerprint 与本次 `startsAt` 的 SHA-256 派生确定性
 Operation/immutable Secret 名，生成规范参数 JSON
 和 SHA-256，并幂等提交 `maxAttempts: 1` 的 Pending Operation。已存在 Secret 必须 immutable 且

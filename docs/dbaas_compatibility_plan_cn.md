@@ -59020,6 +59020,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （187.623/568.549/304.593/557.037 秒）。本项不改变合法 repair 参数、Operation 状态合同或在线
   etcd/TiKV 数据语义，只把既有 primitive 边界前移并在执行层重验。
 
+- A5254 封闭 transaction repair 告警持续时间授权的 Bash int64 回绕。旧 requester 对
+  `MIN_FIRING_SECONDS` 和 `NOW_UNIX` 只做无界正数字正则，且不验证 `date` 解析出的 `startsAt` Unix 值；
+  MaxInt64+1 的最短持续时间会在 `NOW_UNIX - started_unix >= MIN_FIRING_SECONDS` 中回绕为负数，使过新的
+  firing 告警错误通过策略门禁。现 requester 复用共享精确时间 helper，在任何 Kubernetes 调用前要求上述
+  两个配置及解析结果均为规范正 int64，再执行 future/持续时间比较。表驱动回归覆盖三处 MaxInt64+1，证明
+  全部 fail closed 且不触达 kubectl；正常 Pending/unapproved 提交流程保持不变。聚焦连续两轮 2.613 秒、
+  race 2.434 秒，bash syntax、diff check 与全仓 vet 通过；production 清单增至 423 项并按
+  98/118/104/103 四片全部通过（148.288/491.825/274.010/473.959 秒）。本项不改变合法告警策略、人工审批、
+  repair 参数或在线 etcd/TiKV 数据语义，只修复策略时间证据的先验数值域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
