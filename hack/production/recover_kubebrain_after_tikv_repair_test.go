@@ -1,6 +1,7 @@
 package production_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,52 @@ func TestRecoverKubeBrainAfterTiKVRepair(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, string(output), "positive uint64")
 		require.NoFileExists(t, logPath)
+	})
+
+	t.Run("UID evidence is strict JSON", func(t *testing.T) {
+		env, _ := recoveryFixture(t)
+		kbUID := `kb-uid"\evidence`
+		tidbUID := `tc-uid"\evidence`
+		require.NoError(t, os.WriteFile(recoveryEnvValue(env, "RECOVERY_UID"), []byte(kbUID), 0o600))
+		env = append(env, "EXPECTED_KUBEBRAIN_STATEFULSET_UID="+kbUID,
+			"EXPECTED_TIDB_CLUSTER_UID="+tidbUID, "FAKE_TC_UID="+tidbUID)
+		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+		require.NoError(t, err, string(output))
+		var receipt map[string]any
+		require.NoError(t, json.Unmarshal(mustRead(t, recoveryEnvValue(env, "RECEIPT_OUTPUT")), &receipt))
+		require.Equal(t, kbUID, receipt["kubebrain_statefulset_uid"])
+		require.Equal(t, tidbUID, receipt["tidb_cluster_uid"])
+	})
+
+	t.Run("concurrent receipt target is never overwritten", func(t *testing.T) {
+		env, logPath := recoveryFixture(t)
+		receiptPath := recoveryEnvValue(env, "RECEIPT_OUTPUT")
+		env = append(env, "FAKE_SYNC_CREATE_TARGET_AT=1", "FAKE_SYNC_TARGET="+receiptPath)
+		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+		require.Error(t, err)
+		require.Contains(t, string(output), "cannot publish recovery receipt")
+		require.Equal(t, "concurrent-owner\n", string(mustRead(t, receiptPath)))
+		require.Contains(t, readRecoveryLog(t, logPath), "scale statefulset kubebrain --replicas=0")
+	})
+
+	t.Run("receipt file sync failure rolls back without publishing", func(t *testing.T) {
+		env, logPath := recoveryFixture(t)
+		env = append(env, "FAKE_SYNC_FAIL_AT=1")
+		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+		require.Error(t, err)
+		require.Contains(t, string(output), "cannot sync private recovery receipt")
+		require.NoFileExists(t, recoveryEnvValue(env, "RECEIPT_OUTPUT"))
+		require.Contains(t, readRecoveryLog(t, logPath), "scale statefulset kubebrain --replicas=0")
+	})
+
+	t.Run("receipt directory sync failure leaves evidence but rolls back", func(t *testing.T) {
+		env, logPath := recoveryFixture(t)
+		env = append(env, "FAKE_SYNC_FAIL_AT=2")
+		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+		require.Error(t, err)
+		require.Contains(t, string(output), "cannot sync recovery receipt directory")
+		require.FileExists(t, recoveryEnvValue(env, "RECEIPT_OUTPUT"))
+		require.Contains(t, readRecoveryLog(t, logPath), "scale statefulset kubebrain --replicas=0")
 	})
 
 	t.Run("storage failure has no scale side effect", func(t *testing.T) {
@@ -111,6 +158,19 @@ func recoveryFixture(t *testing.T) ([]string, string) {
 	require.NoError(t, os.WriteFile(uidPath, []byte("kb-uid"), 0o600))
 	dateCommand := filepath.Join(dir, "date")
 	require.NoError(t, os.WriteFile(dateCommand, []byte("#!/usr/bin/env bash\nprintf '1786380000\\n'\n"), 0o755))
+	syncCommand := filepath.Join(dir, "sync")
+	require.NoError(t, os.WriteFile(syncCommand, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+count_file="$RECOVERY_SYNC_COUNT"
+count=0
+[[ ! -e "$count_file" ]] || count="$(<"$count_file")"
+count=$((count + 1))
+printf '%s' "$count" >"$count_file"
+if [[ "${FAKE_SYNC_CREATE_TARGET_AT:-0}" == "$count" ]]; then
+  printf 'concurrent-owner\n' >"$FAKE_SYNC_TARGET"
+fi
+[[ "${FAKE_SYNC_FAIL_AT:-0}" != "$count" ]]
+`), 0o755))
 
 	fakeKubectl := filepath.Join(dir, "kubectl")
 	require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
@@ -120,13 +180,13 @@ args=" $* "
 if [[ "$args" == *" get statefulset kubebrain -o json "* ]]; then
   replicas="$(<"$RECOVERY_STATE")"
   uid="$(<"$RECOVERY_UID")"
-  printf '{"metadata":{"uid":"%s"},"spec":{"replicas":%s},"status":{"readyReplicas":%s}}\n' "$uid" "$replicas" "$replicas"
+  printf '{"metadata":{"uid":%s},"spec":{"replicas":%s},"status":{"readyReplicas":%s}}\n' "$(jq -cn --arg uid "$uid" '$uid')" "$replicas" "$replicas"
 elif [[ "$args" == *" get statefulset kubebrain -o jsonpath={.metadata.uid} "* ]]; then
   cat "$RECOVERY_UID"
 elif [[ "$args" == *" get statefulset kubebrain -o jsonpath="* ]]; then
   printf ''
 elif [[ "$args" == *" get tidbcluster kb -o json "* ]]; then
-  printf '{"metadata":{"uid":"tc-uid"},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":%s,"conditions":[{"type":"Ready","status":"True"}]}}\n' "${FAKE_CLUSTER_ID:-7671}"
+  printf '{"metadata":{"uid":%s},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":%s,"conditions":[{"type":"Ready","status":"True"}]}}\n' "$(jq -cn --arg uid "${FAKE_TC_UID:-tc-uid}" '$uid')" "${FAKE_CLUSTER_ID:-7671}"
 elif [[ "$args" == *" scale statefulset kubebrain --replicas="* ]]; then
   replicas="${args##*--replicas=}"
   replicas="${replicas%% *}"
@@ -138,7 +198,7 @@ elif [[ "$args" == *" exec kubebrain-0 -c kubebrain -- etcdctl "* ]]; then
     [[ "${FAKE_TRANSACTION_FAIL:-false}" != "true" ]] || exit 9
     printf 'OK\n'
   elif [[ "$args" == *" get "* ]]; then
-    printf 'recovered-tc-uid\n'
+    printf 'recovered-%s\n' "${FAKE_TC_UID:-tc-uid}"
   elif [[ "$args" == *" del "* ]]; then
     printf '1\n'
   fi
@@ -174,12 +234,14 @@ fi
 		"RECOVERY_REQUEST_ID=change-2026-001",
 		"RECEIPT_OUTPUT=" + receiptPath,
 		"DATE=" + dateCommand,
+		"SYNC=" + syncCommand,
 		"KUBECTL=" + fakeKubectl,
 		"REGION_HEALTH_COMMAND=" + regionGate,
 		"RECOVERY_LOG=" + logPath,
 		"RECOVERY_STATE=" + statePath,
 		"RECOVERY_UID=" + uidPath,
 		"REGION_COUNT=" + regionCountPath,
+		"RECOVERY_SYNC_COUNT=" + filepath.Join(dir, "sync-count"),
 	}, logPath
 }
 

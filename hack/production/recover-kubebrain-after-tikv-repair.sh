@@ -20,6 +20,7 @@ KUBECTL="${KUBECTL:-kubectl}"
 COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-timeout}"
 JQ="${JQ:-jq}"
 DATE="${DATE:-date}"
+SYNC="${SYNC:-sync}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REGION_HEALTH_COMMAND="${REGION_HEALTH_COMMAND:-${SCRIPT_DIR}/validate-tikv-region-health.sh}"
 MAX_UINT64=18446744073709551615
@@ -51,6 +52,10 @@ for variable in KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET TIDB_NAMESPACE TIDB_CL
 done
 [[ "$("$JQ" -jn --arg value "$MAX_UINT64" '$value | tonumber | tostring' 2>/dev/null)" == "$MAX_UINT64" ]] ||
   die "jq must preserve unsigned 64-bit decimal identities"
+expected_kb_uid_json="$("$JQ" -cn --arg value "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" '$value')" ||
+  die "cannot encode expected KubeBrain StatefulSet UID"
+expected_tidb_uid_json="$("$JQ" -cn --arg value "$EXPECTED_TIDB_CLUSTER_UID" '$value')" ||
+  die "cannot encode expected TidbCluster UID"
 
 context_args=()
 [[ "$KUBE_CONTEXT" == "in-cluster" ]] || context_args=(--context "$KUBE_CONTEXT")
@@ -94,8 +99,10 @@ require_tidb_identity || die "TidbCluster identity/topology changed after the st
 
 scaled=false
 completed=false
+receipt_tmp=""
 rollback_on_failure() {
   local status="$?"
+  [[ -z "$receipt_tmp" ]] || rm -f -- "$receipt_tmp"
   if [[ "$scaled" == "true" && "$completed" != "true" ]]; then
     live_uid="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
     if [[ "$live_uid" == "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
@@ -144,12 +151,17 @@ probe || die "KubeBrain recovery transaction verification failed; data plane was
 
 completed_at_unix="$($DATE +%s)"
 [[ "$completed_at_unix" =~ ^[1-9][0-9]*$ ]] || die "completion time is invalid"
-receipt_tmp="${RECEIPT_OUTPUT}.tmp.${RECOVERY_ATTEMPT_ID}"
 umask 077
-printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-repair-recovery.receipt.v1","kubebrain_statefulset_uid":"%s","ready_replicas":3,"request_id":"%s","storage_health_verified":true,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
+receipt_tmp="$(mktemp "${RECEIPT_OUTPUT}.tmp.${RECOVERY_ATTEMPT_ID}.XXXXXX")" || die "cannot create private recovery receipt"
+chmod 600 "$receipt_tmp" || die "cannot protect private recovery receipt"
+printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-repair-recovery.receipt.v1","kubebrain_statefulset_uid":%s,"ready_replicas":3,"request_id":"%s","storage_health_verified":true,"tidb_cluster_uid":%s,"transaction_verified":true}\n' \
   "$RECOVERY_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
-  "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$RECOVERY_REQUEST_ID" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" || \
+  "$expected_kb_uid_json" "$RECOVERY_REQUEST_ID" "$expected_tidb_uid_json" >"$receipt_tmp" || \
   die "cannot write recovery receipt"
-mv -f -- "$receipt_tmp" "$RECEIPT_OUTPUT" || die "cannot publish recovery receipt"
+"$SYNC" -f "$receipt_tmp" || die "cannot sync private recovery receipt"
+ln -- "$receipt_tmp" "$RECEIPT_OUTPUT" || die "cannot publish recovery receipt"
+rm -f -- "$receipt_tmp" || die "cannot remove private recovery receipt temporary file"
+receipt_tmp=""
+"$SYNC" -f "$(dirname "$RECEIPT_OUTPUT")" || die "cannot sync recovery receipt directory"
 completed=true
 echo "KubeBrain recovery succeeded: three replicas are Ready, storage health is stable, and Put/Get/Delete passed"
