@@ -197,8 +197,8 @@ hack/production/wait-tidbcluster-ready.sh
 `TIDB_CLUSTER`，避免错误发布参数进入集群操作阶段。总等待时间和单次 TiKV Debug RPC
 超时必须是规范正 `int64` 且不超过 86400 秒；轮询间隔必须是规范非负 `int64` 且不超过
 总等待时间。这些值在 deadline/sleep/`timeout` 前完成校验。StatefulSet generation、
-observedGeneration 和 desired replicas 也按 Kubernetes 的 `int64` 域解析；越界状态只能判定
-未收敛，不能进入 Bash 算术或触发 Pod exec。
+observedGeneration 按 Kubernetes 的 `int64` 域解析，desired replicas 按正 `int32` 域解析；
+越界状态只能判定未收敛，不能进入 Bash 算术、Pod 数量比较或触发 Pod exec。
 生产 `TidbCluster.spec.tikv.readinessProbe` 固定为 `type: tcp`、
 `initialDelaySeconds: 10`、`periodSeconds: 5`。TiDB Operator v1.6.5 对 TiKV 的 `command`
 类型仍只渲染同一个 20160 TCP socket handler，不能把它描述成业务 RPC；因此 TCP probe

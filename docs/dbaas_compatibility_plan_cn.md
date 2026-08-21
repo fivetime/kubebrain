@@ -59206,6 +59206,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （137.606/466.156/263.262/445.153 秒）。本项不改变合法 CA overlap、leaf 切换、旧证书拒绝或 durable
   receipt 语义，只让轮换链的期望 Pod 基数与 Kubernetes wire/API 类型一致。
 
+- A5272 收紧 TiDB/TiKV readiness 对 StatefulSet 状态响应的副本域。旧 `statefulset_converged` 和后续
+  TiKV Debug RPC 枚举都只要求 `.spec.replicas` 为正 int64；异常或伪造 API 响应若把 desired/ready/updated
+  同时设为 int32 以上的相同值，会先被判为收敛，再进入 Bash 数组长度比较，尽管 Kubernetes wire 字段无法
+  表示该拓扑。现两个消费点都要求 desired 为规范正 int32；ready/updated 必须与已验证 desired 精确相等。
+  回归用 int32+1 和 int64+1 证明越界状态保持 `TiKV-Debug-RPC=not-checked`，再用 int32 最大值证明准入后会
+  进入 Pod/RPC 拓扑检查并报告 `not-ready`，没有误拒精确边界。聚焦单轮 11.213 秒、连续两轮 22.348 秒、
+  race 11.101 秒，bash syntax、diff check 与全仓 vet 通过；production 清单保持 448 项并按
+  102/127/113/106 四片在最终代码状态全部通过（139.009/466.607/263.975/445.485 秒）。本项不改变合法
+  TidbCluster 收敛、readiness probe 或逐 TiKV Debug gRPC 语义，只让控制面响应解析与 Kubernetes 类型一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
