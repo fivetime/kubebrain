@@ -582,6 +582,9 @@ quiesced schema，重算 Operation 名，只允许原语修复已审批 store；
 repair/recovery 两个高风险 worker 的 `LEASE_SECONDS` 都必须在任何 Bash 算术、claim 或 heartbeat 前通过
 正 int64 校验，再要求至少 6 秒；默认 heartbeat interval 才可由 lease `/3` 计算。MaxInt64 合法，
 MaxInt64+1 不得调用 operationctl，避免 fencing 周期因整数回绕失真。
+显式 `HEARTBEAT_INTERVAL_SECONDS` 还必须是规范正 decimal-int64 秒：整数部分位于 `0..MaxInt64`、
+没有前导零，小数部分可省略或为 1–9 位，并且值严格小于已经验证的 lease。比较须按十进制字符串精确执行，
+不能交给 awk/IEEE-754 double；`.1`、`01`、`1.`、超过 9 位小数、零值和整数部分溢出都必须在 claim 前拒绝。
 
 在 Operation CRD、managed-namespace RBAC、worker/audit Admission 和 parameter broker 就绪后，静默
 修复路径还必须应用以下清单；Admission 必须早于授予 requester 身份实际凭据：

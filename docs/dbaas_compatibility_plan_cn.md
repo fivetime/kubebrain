@@ -58953,6 +58953,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   416 项并按 98/114/103/101 四片全部通过（208.836/587.012/337.220/577.065 秒）。本项不改变合法
   lease/heartbeat、Operation claim/fencing、repair/recovery 或在线 etcd/TiKV 语义。
 
+- A5248 收紧上述两个高风险 worker 的显式 heartbeat interval admission。旧实现接受任意长度的十进制与
+  `.1` 等非规范形式，再交给 awk/IEEE-754 double 判断大小；在 MaxInt64 附近会丢失整数精度，无法可靠区分
+  interval 与 lease。现两条 runner 都只接受规范正 decimal-int64 秒：无前导零，整数部分不超过 MaxInt64，
+  可带 1–9 位小数，并以十进制字符串精确证明其严格小于已验证 lease，不再依赖浮点比较。边界回归证明
+  `9223372036854775806.999999999` 配合 MaxInt64 lease 可进入 claim，而 MaxInt64+1、`.1`、`01`、`1.` 与
+  十位小数均在 operationctl 前拒绝；既有错误文案前缀保持兼容。聚焦连续两轮 1.309 秒、race 1.732 秒，
+  bash syntax、diff check 与全仓 vet 通过。production 清单保持 416 项并按 98/114/103/101 四片全部通过
+  （205.998/559.670/312.546/524.745 秒；第 2 片首次夹具响应瞬态耗尽，原样重跑通过）。本项不改变合法
+  heartbeat/lease、Operation claim/fencing、repair/recovery 或在线 etcd/TiKV 语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
