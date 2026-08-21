@@ -58759,6 +58759,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   414 项并按 98/113/103/100 四片全部通过（228.437/480.019/372.361/544.866 秒）。本项不改变 TLS
   参数提取、事务探针、replacement/receipt 语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5231 为 repair storage-safety fence 对 3 个 PD 与 3 个 TiKV Pod 执行的 `df -P` 原始 stdout 建立逐调用
+  64 KiB 门禁。旧实现把远端输出直接送入 awk，65537-byte PD 响应仍会通过存储检查并完成 repair
+  （RED 37.21 秒）。现带 timeout 的 kubectl exec 先把每次响应写入 repair 既有 0700 私有目录中的新 0600
+  文件，以 stat 拒绝超过 65536 bytes 的响应，再由本地 awk 提取第二行的容量、可用量与使用率。测试覆盖
+  PD/TiKV 两类 65537-byte 响应均在任何 scale/delete 前 fail closed、没有最终 receipt，并证明两类精确
+  65536-byte 响应仍可完成 repair。聚焦测试 184.320 秒，连续两轮 379.816 秒、race 192.562 秒，完整相关
+  回归 191.105 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按
+  98/113/103/100 四片全部通过（195.334/462.096/318.903/490.193 秒）。本项不改变 timeout、df 数值解析、
+  PVC/PV 容量与身份门禁、repair/receipt 语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

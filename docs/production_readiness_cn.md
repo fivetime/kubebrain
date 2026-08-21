@@ -435,6 +435,10 @@ Kubernetes 读取前建立；cleanup 只有在本进程成功创建锁并设置 
 0700 私有目录中的新 0600 文件并以 stat 检查大小，之后才读入并解析 `--cert-file`、`--key-file` 和
 `--trusted-ca-file`；65537-byte 响应必须在事务探针和任何数据面 mutation 前失败，不得 scale KubeBrain、
 删除 TiKV Pod 或发布最终 receipt，精确 65536-byte 响应仍可按既有 TLS 参数语义进入后续流程。
+对 3 个 PD 与 3 个 TiKV Pod 执行的 `df -P` 原始 stdout 也逐调用限制为 65536 bytes。带 timeout 的 exec
+直接写入 0700 私有目录中的新 0600 文件，stat 通过后才由本地 awk 提取容量、可用量和使用率；任一响应
+超限必须在 storage-safety 判断及任何 scale/delete 前失败，精确 65536-byte 响应仍须通过原有数值、PVC
+容量隔离和磁盘水位门禁。
 修复锁建立后的 KubeBrain `UID/desired/ready` quiesce identity、TidbCluster `UID/clusterID/PD/TiKV replicas`
 identity 及失败回退 UID 重读同样各自限制为 4096 bytes，并通过独立 0600 文件消费。超限时不得开始或
 继续 TiKV Pod 删除；精确 4096-byte 响应仍须满足原有 identity/topology 等值判断。
