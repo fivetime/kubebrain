@@ -1024,6 +1024,9 @@ int32+1 或更大值必须在 readiness 子脚本或任何 kubectl 调用前拒�
 client/peer listener port 必须是 `1..65535` 的规范整数，info listener port 必须是
 `0..65535` 的规范整数，其中 0 表示禁用；client、peer 和启用后的 info port 必须互异。
 非法范围或冲突必须在任何 kubectl 调用前拒绝，不能依赖运行中 Pod 已经碰巧证明可绑定。
+max concurrent streams、inflight requests、request rate、rate burst、delete-range keys 和
+active watches 必须分别是规范非负 uint32；request rate 与 burst 必须同时为 0（禁用）或同时为正。
+uint32 上限 `4294967295` 属于合法配置，越界或组合不一致必须在 kubectl 前拒绝。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，

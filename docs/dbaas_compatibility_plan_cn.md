@@ -59237,6 +59237,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （138.866/469.090/264.385/452.925 秒）。本项不改变合法 listener、Service 或 advertised endpoint 语义，
   只让发布期望与 Go endpoint 配置及 TCP 端口域一致。
 
+- A5275 将组合实例 release gate 的六个请求/流控期望对齐 Go endpoint config 的 uint32 字段：
+  max-concurrent-streams、max-requests-inflight、max-request-rate、request-rate-burst、
+  max-delete-range-keys 与 max-watches。旧入口只要求无界非负数字，uint32+1、int64+1 和前导零仍会进入
+  Kubernetes/args 核验；同时没有复现服务端 rate/burst 必须同时禁用或同时启用的组合约束。现六项统一要求
+  规范 `0..4294967295`，并在安全算术前要求 rate/burst 同为 0 或同为正。回归覆盖 uint32+1、int64+1、
+  前导零及两种单边启用，均证明首次 kubectl 前拒绝；正常 converged release 固定
+  `max-concurrent-streams=4294967295`，证明精确上界保持通过。聚焦单轮 115.000 秒、连续两轮
+  224.903 秒、race 112.965 秒，bash syntax、diff check 与全仓 vet 通过；production 清单保持 448 项并按
+  102/127/113/106 四片在最终代码状态全部通过（139.519/468.580/262.348/451.487 秒）。本项不改变合法
+  请求 admission、watch/delete-range quota 或 token bucket 语义，只让发布期望与 Go uint32/组合校验一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
