@@ -279,6 +279,11 @@ if [[ -n "$EXPECTED_GRPC_MAX_CONNECTION_AGE" && "$EXPECTED_GRPC_MAX_CONNECTION_A
   echo "EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE must be positive when connection aging is enabled" >&2
   exit 2
 fi
+if [[ -n "$EXPECTED_STORAGE_GC_LIFETIME" ]] &&
+  ! operation_is_nonnegative_go_duration_hms "$EXPECTED_STORAGE_GC_LIFETIME"; then
+  echo "EXPECTED_STORAGE_GC_LIFETIME must be empty, 0, or a positive production Go duration using an integer ms, s, m, or h unit" >&2
+  exit 2
+fi
 validate_auth_token_provider_syntax() {
   local spec="$1" provider option key value method="" public_key="" private_key=""
   local -a parts

@@ -120,6 +120,42 @@ func TestValidateInstanceReady(t *testing.T) {
 		wantOutput               string
 	}{
 		{
+			name:          "storage GC lifetime is negative",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_STORAGE_GC_LIFETIME=-1s"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_STORAGE_GC_LIFETIME must be empty, 0, or a positive production Go duration",
+		},
+		{
+			name:          "storage GC lifetime overflows Go duration",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_STORAGE_GC_LIFETIME=2562048h"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_STORAGE_GC_LIFETIME must be empty, 0, or a positive production Go duration",
+		},
+		{
+			name:        "disabled storage GC lifetime reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_STORAGE_GC_LIFETIME=0"},
+			wantKubectl: true,
+			wantOutput:  "storage GC lifetime configuration mismatch",
+		},
+		{
+			name:        "maximum whole-hour storage GC lifetime reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_STORAGE_GC_LIFETIME=2562047h"},
+			wantKubectl: true,
+			wantOutput:  "storage GC lifetime configuration mismatch",
+		},
+		{
 			name:          "auto compaction retention is not canonical",
 			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
