@@ -421,6 +421,9 @@ TiKV 与 PD 的 Pod/UID/PVC inventory jsonpath 原始响应分别限制为 1 MiB
 原始文件并检查大小，再排序到另一份 0600 文件，最后才读入有界 shell 标量；该路径覆盖初始 quorum、
 存储检查和每次替换后的 TiKV/PD 身份复核。超限 inventory 必须在任何 Pod 删除前失败，精确 1 MiB
 的合法 inventory 仍可参与冻结与比较。
+每个 TiKV replacement 前后的单 Pod `UID<TAB>PVC` jsonpath 原始响应还分别限制为 4096 bytes，并先
+写入独立 0600 文件。旧 identity 超限时不得删除目标 Pod；新 identity 超限时必须停止且不得继续删除
+后续 Pod。精确 4096-byte 响应在 shell 去除尾随换行后仍须通过同 UID 变化、同 PVC 保留栅栏。
 每个 Ready PD/TiKV Pod 对应的 PVC 与 PV JSON 还分别受逐对象 1 MiB 门禁保护：响应写入同一 0700
 临时目录中的独立 0600 文件并检查大小，之后 jq 直接读取文件。超限 PVC/PV 响应不得进入 binding、容量、
 claimRef、CSI 或唯一性判断，并必须在任何 TiKV Pod 删除前失败；精确 1 MiB 的合法对象仍可通过。

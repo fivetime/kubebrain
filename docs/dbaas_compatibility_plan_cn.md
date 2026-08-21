@@ -58704,6 +58704,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （208.758/396.932/333.972/518.876 秒）。本项不改变 Pod/UID/PVC 拓扑语义、PD 身份冻结、存储门禁、
   replacement 顺序、最终事务验证、在线 etcd RPC 或 TiKV 编码。
 
+- A5226 为每次 TiKV replacement 前后的单 Pod `UID<TAB>PVC` jsonpath 响应分别建立 4096-byte 门禁。
+  旧实现直接使用命令替换，4097-byte old identity 的尾随换行会被 shell 静默剥离，随后仍完成修复
+  （RED 47.504 秒）。现 old/new 响应各自先写入新 0600 文件、用 stat 检查不超过 4096 bytes，再读入
+  有界标量；old 超限在目标 Pod delete 前失败，new 超限在已替换一个 Pod 后停止且不会继续删除后续
+  Pod。测试也证明两类精确 4096-byte 响应仍通过 UID 变化与 PVC 保留栅栏。聚焦测试 104.379 秒，
+  连续两轮 206.521 秒、race 103.619 秒，完整相关回归 108.478 秒，bash syntax、diff check 与全仓 vet
+  通过。测试夹具的外部 probe 预算从 1 秒调为 2 秒以避免 race/并发负载抖动，生产默认 10 秒不变。
+  production 清单保持 414 项并按 98/113/103/100 四片全部通过
+  （208.089/382.468/321.017/492.319 秒）。本项不改变 replacement 顺序、UID/PVC 判定、quorum/PD/存储
+  门禁、最终事务验证、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
