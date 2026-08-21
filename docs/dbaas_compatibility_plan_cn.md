@@ -59456,6 +59456,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   102/127/113/106 四片在最终代码提交上全部通过（145.620/473.680/272.132/482.838 秒）。本项不替代
   启动时 PEM、keypair、CA bundle、CRL 和 hostname 的真实密码学验证，只把可静态判定的组合错误前移。
 
+- A5296 将非 upstream wire contract 的 `--skip-key-prefix` 纳入生产 release gate，重点固定默认“无物理
+  compaction carve-out”。该参数会让命中用户 prefix 的历史版本跳过 TiKV 物理清理；原生产清单虽未设置，
+  gate 却不会拒绝 Pod args 中意外新增的排除项。现空期望要求参数完全不存在；受控非空期望必须是单个
+  逗号列表，各 prefix 非空、不以 `/` 结尾、无控制字符且两两不互为前缀，并与唯一 Pod arg 精确一致。
+  回归证明尾斜杠与 `/registry`/`/registry/pods` 重叠在首次 kubectl 前拒绝，两个不相交 prefix 可进入
+  args 核验。bash syntax、diff check 与全仓 vet 通过；实例 gate 单轮 142.562 秒、连续两轮 283.503 秒、
+  race 148.069 秒。production 清单保持 448 项并按 102/127/113/106 四片在最终代码提交上全部通过
+  （147.101/474.242/274.203/487.151 秒）。本项不改变已验证的 compaction border 编码与 skipped-key
+  过滤语义，只让任何长期保留例外成为显式、可审计的 DBaaS 决策。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -1072,6 +1072,10 @@ uint64，即 `0..18446744073709551615`；前导零、负数或越界值必须在
 规范正整数 `ms/s` production duration；负数、前导零、非法值及大于等于 2.5 秒的值必须在
 kubectl 前拒绝。显式正值小于 100ms 时服务端仍会 clamp 到 100ms，不得把发布参数字符串误当作
 实际运行 cadence。
+生产默认 `EXPECTED_SKIP_KEY_PREFIXES` 必须为空，并确认 Pod 不含 `--skip-key-prefix`；否则意外
+carve-out 会让对应用户 key 的 superseded versions 永久绕过物理 compaction。受控例外必须使用单个
+逗号分隔参数，所有 prefix 非空、不以 `/` 结尾、无控制字符且彼此不重叠，并由 release gate 与 Pod args
+精确匹配；启用前还必须评估长期版本增长、备份和租户销毁责任。
 auth token provider 必须是 etcd 兼容的 `simple`，或具有唯一 `key=value` 选项、受支持签名算法及相应
 pub-key/priv-key 路径的结构合法 `jwt`。不依赖 Pod 文件的语法错误必须在 kubectl 前拒绝；密钥 PEM、匹配性
 和 1MiB 上限继续由 KubeBrain 启动时在 Secret 挂载命名空间内 fail closed 校验。
