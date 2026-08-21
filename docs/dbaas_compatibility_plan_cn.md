@@ -59513,6 +59513,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （137.990/463.630/261.225/482.783 秒）。本项只固定发布意图，不替代真实 Secret 内容、证书轮换、
   Prometheus scrape identity 与 info endpoint 握手演练。
 
+- A5301 补齐 upstream etcd 同类的 inbound certificate identity allowlist 发布契约。对照
+  `/root/etcd/client/pkg/transport/listener.go` 与 KubeBrain `SecurityConfig.init`，client hostname、peer CN
+  或 peer hostname 过滤都必须建立在 CA-verified client auth 上，且 peer CN/hostname 两种策略互斥。原
+  release gate 不检查三个 flags，无法拒绝身份约束被删除、替换或意外加入。现 hostname/IP 列表要求无
+  wildcard、port、空项、控制字符和重复值；CN 列表要求非空、无控制字符且唯一。任一 allowlist 都要求
+  同组 client-cert-auth=true 与 trusted CA，并与唯一 Pod arg 精确匹配；全空明确固定“不声明身份过滤”。
+  回归证明 client hostname 无 auth、peer CN/hostname 冲突、重复 peer CN 均在首次 kubectl 前拒绝，完整
+  client cert/key/CA/auth + hostname/IP allowlist 进入参数核验。bash syntax、diff check 与全仓 vet 通过；
+  实例 gate 单轮 153.546 秒、连续两轮 298.590 秒、race 155.003 秒。production 清单保持 448 项并按
+  102/127/113/106 四片在最终代码提交上全部通过（139.001/464.696/262.410/485.324 秒）。生产示例仍不
+  臆造 leaf CN/SAN；平台签发策略提供稳定权威身份后才能填入这些期望并完成真实证书轮换与握手演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

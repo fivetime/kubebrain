@@ -1094,6 +1094,10 @@ release TLS 期望还必须在 kubectl 前满足服务端组合约束：client/p
 CA、server-name 或启用 client-cert-auth 时必须已有同组 cert/key；client-cert-auth=true 还必须有 trusted
 CA。证书 leaf 的 CN/SAN allowlist 只能在签发策略提供不可变身份后设置，不能根据 Secret 名称猜测；一旦
 平台声明该约束，也必须把对应 allowlist 纳入发布期望和轮换门禁。
+release gate 通过 `EXPECTED_CLIENT_CERT_ALLOWED_HOSTNAMES`、`EXPECTED_PEER_CERT_ALLOWED_CNS` 与
+`EXPECTED_PEER_CERT_ALLOWED_HOSTNAMES` 提供该能力：列表必须非空项、无重复或控制字符，hostname 还必须
+是无 wildcard/port 的 DNS/IP；peer CN 与 hostname 策略互斥。任一身份 allowlist 都要求同组
+client-cert-auth=true 与 trusted CA，并与唯一 Pod arg 精确匹配；三项全空则拒绝未声明的身份过滤参数。
 可选 client/peer outbound cert/key 也必须分别成对，并通过 `EXPECTED_CLIENT_*` 或
 `EXPECTED_PEER_CLIENT_*` 与唯一参数匹配；未设置时明确复用同组 server keypair。可选 client/peer CRL
 路径必须由 release 期望显式声明，并要求同组 server cert/key 已存在；CRL 可配合显式 CA 或系统 roots，
