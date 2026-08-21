@@ -59008,6 +59008,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/118/103/102 四片全部通过（139.608/525.151/288.174/509.803 秒）。本项不改变合法工作流、receipt、
   Operation 状态合同或在线 etcd/TiKV 数据语义，只收紧失租/退出后的进程边界。
 
+- A5253 闭合 TiKV repair 数值控制只在 primitive 完整校验、上游入口与共享 worker 仍可先发生 Bash 有符号
+  溢出的分层 admission 缺口。quiesced requester 旧实现用无界全数字正则配合 `-le` 检查 timeout，
+  MaxInt64+1 可回绕后通过；transaction/quiesced worker 也只验证数字形状，并仅对 quiesced timeout 做部分
+  上限检查。现共享时间 helper 增加规范非负 int64 校验，requester 在任何 Kubernetes 调用前限制 probe
+  timeout、Pod Ready timeout 与 cooldown；worker 在 claim、receipt reconciliation 和 repair primitive 前
+  对失败探针数、probe interval、两个 timeout 与 cooldown 二次执行精确 int64 准入及 `20/60/60/1800`
+  业务上限。回归逐项注入 MaxInt64+1 和超上限值，证明 requester 不触达 kubectl、worker 不触达破坏性
+  repair primitive。聚焦连续两轮 10.197 秒、race 6.223 秒，bash syntax、diff check 与全仓 vet 通过；
+  production 清单增至 422 项并按 98/118/103/103 四片全部通过
+  （187.623/568.549/304.593/557.037 秒）。本项不改变合法 repair 参数、Operation 状态合同或在线
+  etcd/TiKV 数据语义，只把既有 primitive 边界前移并在执行层重验。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

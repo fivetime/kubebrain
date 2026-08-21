@@ -451,6 +451,11 @@ receipt；transaction 模式必须把已恢复的 KubeBrain 再次缩到零并�
 可能先溢出的 `((...))` 判断。`NOW_UNIX` 与 cooldown 为正 int64；失败探针最多 20 次，probe interval
 最多 60 秒，单次 probe timeout 最多 60 秒，Pod Ready timeout 最多 1800 秒。store/Region 样本、间隔和
 磁盘阈值也先经过同一正/非负 int64 门禁，再执行既有 20/60/90/125 上限判断。
+该控制量合同同时在 quiesced requester 和共享 transaction/quiesced Operation worker 重复执行：requester
+必须在任何 Kubernetes 查询前拒绝 probe timeout、Pod Ready timeout 或 cooldown 的 MaxInt64+1；worker
+必须在 claim、durable receipt reconciliation 和 repair primitive 前拒绝失败探针数、probe interval、两个
+timeout 或 cooldown 的非规范/越界值，并再次执行 `20/60/60/1800` 业务上限。immutable 参数 Secret、摘要
+或受信控制面不能替代 worker 侧的独立数值 admission。
 cooldown ConfigMap 的 `completed-at-unix` 在 UID 代际分支和任何比较/减法前也必须通过同一正 int64 门禁；
 `2^64` 等可在 Bash 算术中回绕的全数字值必须被视为 malformed，并在 repair lock create 前 fail closed。
 不同 TidbCluster UID 的合法 MaxInt64 记录仍按既有代际语义忽略，不阻止新集群 repair。
