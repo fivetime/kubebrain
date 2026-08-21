@@ -257,6 +257,50 @@ fi
 	require.NotContains(t, string(lockConflictLogData), "delete configmap kubebrain-tikv-transaction-repair-lock")
 	require.NoFileExists(t, lockConflictReceipt)
 
+	for _, tc := range []struct {
+		name    string
+		setting string
+		want    string
+	}{
+		{name: "now overflow", setting: "NOW_UNIX=9223372036854775808", want: "NOW_UNIX must be a positive int64 Unix timestamp"},
+		{name: "cooldown overflow", setting: "REPAIR_COOLDOWN_SECONDS=9223372036854775808", want: "REPAIR_COOLDOWN_SECONDS must be a positive int64"},
+		{name: "failed probes", setting: "REQUIRED_FAILED_PROBES=21", want: "REQUIRED_FAILED_PROBES must be at most 20"},
+		{name: "probe interval", setting: "PROBE_INTERVAL_SECONDS=61", want: "PROBE_INTERVAL_SECONDS must be at most 60"},
+		{name: "probe timeout", setting: "PROBE_TIMEOUT_SECONDS=61", want: "PROBE_TIMEOUT_SECONDS must be at most 60"},
+		{name: "pod timeout", setting: "POD_READY_TIMEOUT_SECONDS=1801", want: "POD_READY_TIMEOUT_SECONDS must be at most 1800"},
+	} {
+		t.Run("numeric admission "+tc.name, func(t *testing.T) {
+			caseState := filepath.Join(tempDir, "numeric-admission-"+strings.ReplaceAll(tc.name, " ", "-"))
+			require.NoError(t, os.Mkdir(caseState, 0o755))
+			caseLog := filepath.Join(caseState, "kubectl.log")
+			caseEnv := append([]string(nil), env...)
+			caseEnv = append(caseEnv,
+				"FAKE_STATE="+caseState,
+				"FAKE_LOG="+caseLog,
+				"RECEIPT_OUTPUT="+filepath.Join(caseState, "receipt.json"),
+				tc.setting,
+			)
+			admissionOutput, admissionErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+			require.Error(t, admissionErr)
+			require.Contains(t, string(admissionOutput), tc.want)
+			require.NoFileExists(t, caseLog)
+		})
+	}
+
+	numericBoundaryState := filepath.Join(tempDir, "numeric-admission-boundaries")
+	require.NoError(t, os.Mkdir(numericBoundaryState, 0o755))
+	numericBoundaryOutput, numericBoundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env,
+			"FAKE_STATE="+numericBoundaryState,
+			"FAKE_LOG="+filepath.Join(numericBoundaryState, "kubectl.log"),
+			"RECEIPT_OUTPUT="+filepath.Join(numericBoundaryState, "receipt.json"),
+			"REPAIR_MODE=quiesced", "EXPECTED_ABNORMAL_STORE_IDS=1005", "FAKE_INITIAL_KB_REPLICAS=0",
+			"FAKE_ABNORMAL_STORE_ORDINAL=2", "NOW_UNIX=9223372036854775807",
+			"REPAIR_COOLDOWN_SECONDS=9223372036854775807", "REQUIRED_FAILED_PROBES=20",
+			"PROBE_INTERVAL_SECONDS=60", "PROBE_TIMEOUT_SECONDS=60", "POD_READY_TIMEOUT_SECONDS=1800"))
+	require.NoError(t, numericBoundaryErr, string(numericBoundaryOutput))
+	require.Contains(t, string(numericBoundaryOutput), "quiesced repair succeeded")
+
 	for _, target := range []string{"kubebrain", "tidbcluster"} {
 		for _, size := range []int{4097, 4096} {
 			caseState := filepath.Join(tempDir, "initial-identity-"+target+"-"+strconv.Itoa(size))

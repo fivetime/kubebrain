@@ -48,6 +48,16 @@ MAX_UNIX_TIME_RESPONSE_BYTES=20
 MAX_UNIX_TIME=9223372036854775807
 
 die() { echo "$*" >&2; exit 1; }
+is_positive_int64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,18}$ ]] || return 1
+  if (( ${#value} == 19 )) && [[ "$value" > "$MAX_UNIX_TIME" ]]; then
+    return 1
+  fi
+}
+is_nonnegative_int64() {
+  [[ "$1" == "0" ]] || is_positive_int64 "$1"
+}
 
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required"
 [[ "$ALLOW_TIKV_POD_REPAIR" == "true" ]] || die "refusing TiKV Pod repair without ALLOW_TIKV_POD_REPAIR=true"
@@ -66,27 +76,31 @@ fi
 [[ "$REPAIR_ATTEMPT_ID" =~ ^[a-z0-9]([-a-z0-9]{0,28}[a-z0-9])?$ ]] || die "REPAIR_ATTEMPT_ID must be a DNS label of at most 30 characters"
 [[ -n "$RECEIPT_OUTPUT" && "$RECEIPT_OUTPUT" == /* ]] || die "RECEIPT_OUTPUT must be an absolute path"
 [[ ! -e "$RECEIPT_OUTPUT" ]] || die "RECEIPT_OUTPUT already exists"
-[[ "$REPAIR_COOLDOWN_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "REPAIR_COOLDOWN_SECONDS must be a positive integer"
-[[ "$NOW_UNIX" =~ ^[1-9][0-9]*$ ]] || die "NOW_UNIX must be a positive Unix timestamp"
+is_positive_int64 "$REPAIR_COOLDOWN_SECONDS" || die "REPAIR_COOLDOWN_SECONDS must be a positive int64"
+is_positive_int64 "$NOW_UNIX" || die "NOW_UNIX must be a positive int64 Unix timestamp"
 for variable in REQUIRED_FAILED_PROBES PROBE_TIMEOUT_SECONDS POD_READY_TIMEOUT_SECONDS REQUIRED_HEALTHY_STORE_SAMPLES MAX_STORE_HEALTH_SAMPLES REQUIRED_HEALTHY_REGION_SAMPLES MAX_REGION_HEALTH_SAMPLES; do
-  [[ "${!variable}" =~ ^[1-9][0-9]*$ ]] || die "$variable must be a positive integer"
+  is_positive_int64 "${!variable}" || die "$variable must be a positive int64"
 done
-[[ "$STORE_HEALTH_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || die "STORE_HEALTH_INTERVAL_SECONDS must be a non-negative integer"
+(( REQUIRED_FAILED_PROBES <= 20 )) || die "REQUIRED_FAILED_PROBES must be at most 20"
+(( PROBE_TIMEOUT_SECONDS <= 60 )) || die "PROBE_TIMEOUT_SECONDS must be at most 60"
+(( POD_READY_TIMEOUT_SECONDS <= 1800 )) || die "POD_READY_TIMEOUT_SECONDS must be at most 1800"
+is_nonnegative_int64 "$STORE_HEALTH_INTERVAL_SECONDS" || die "STORE_HEALTH_INTERVAL_SECONDS must be a non-negative int64"
 (( REQUIRED_HEALTHY_STORE_SAMPLES <= MAX_STORE_HEALTH_SAMPLES )) || die "REQUIRED_HEALTHY_STORE_SAMPLES must not exceed MAX_STORE_HEALTH_SAMPLES"
 (( MAX_STORE_HEALTH_SAMPLES <= 20 )) || die "MAX_STORE_HEALTH_SAMPLES must be at most 20"
 (( STORE_HEALTH_INTERVAL_SECONDS <= 60 )) || die "STORE_HEALTH_INTERVAL_SECONDS must be at most 60"
-[[ "$REGION_HEALTH_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || die "REGION_HEALTH_INTERVAL_SECONDS must be a non-negative integer"
+is_nonnegative_int64 "$REGION_HEALTH_INTERVAL_SECONDS" || die "REGION_HEALTH_INTERVAL_SECONDS must be a non-negative int64"
 (( REQUIRED_HEALTHY_REGION_SAMPLES <= MAX_REGION_HEALTH_SAMPLES )) || die "REQUIRED_HEALTHY_REGION_SAMPLES must not exceed MAX_REGION_HEALTH_SAMPLES"
 (( MAX_REGION_HEALTH_SAMPLES <= 20 )) || die "MAX_REGION_HEALTH_SAMPLES must be at most 20"
 (( REGION_HEALTH_INTERVAL_SECONDS <= 60 )) || die "REGION_HEALTH_INTERVAL_SECONDS must be at most 60"
-[[ "$MAX_TIKV_DISK_USED_PERCENT" =~ ^[1-9][0-9]*$ ]] || die "MAX_TIKV_DISK_USED_PERCENT must be a positive integer"
+is_positive_int64 "$MAX_TIKV_DISK_USED_PERCENT" || die "MAX_TIKV_DISK_USED_PERCENT must be a positive int64"
 (( MAX_TIKV_DISK_USED_PERCENT <= 90 )) || die "MAX_TIKV_DISK_USED_PERCENT must be at most 90"
-[[ "$MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT" =~ ^[1-9][0-9]*$ ]] || die "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be a positive integer"
+is_positive_int64 "$MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT" || die "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be a positive int64"
 (( MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT >= 100 && MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT <= 125 )) || \
   die "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be between 100 and 125"
 [[ "$TIKV_DATA_DIR" == /* && "$TIKV_DATA_DIR" != *[[:cntrl:]]* ]] || die "TIKV_DATA_DIR must be an absolute path"
 [[ "$PD_DATA_DIR" == /* && "$PD_DATA_DIR" != *[[:cntrl:]]* ]] || die "PD_DATA_DIR must be an absolute path"
-[[ "$PROBE_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || die "PROBE_INTERVAL_SECONDS must be a non-negative integer"
+is_nonnegative_int64 "$PROBE_INTERVAL_SECONDS" || die "PROBE_INTERVAL_SECONDS must be a non-negative int64"
+(( PROBE_INTERVAL_SECONDS <= 60 )) || die "PROBE_INTERVAL_SECONDS must be at most 60"
 for variable in KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET TIDB_NAMESPACE TIDB_CLUSTER REPAIR_STATE_NAMESPACE; do
   [[ "${!variable}" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "$variable must be a DNS label"
 done
