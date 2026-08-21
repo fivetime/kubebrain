@@ -59488,6 +59488,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （145.539/471.264/269.280/486.360 秒）。本项不把 metrics label 冒充租户隔离；真实数据边界仍只由
   keyspace、TiKV/PD cluster identity 和实例 receipts 证明。
 
+- A5299 补齐 upstream etcd 同类的 endpoint outbound client identity 与 CRL 参数发布契约。KubeBrain
+  client/peer SecurityConfig 允许用独立 `client-cert-file/client-key-file` 与
+  `peer-client-cert-file/peer-client-key-file` 发起内部 TLS，未设置时复用 server keypair；CRL 则同时约束
+  inbound/outbound handshakes 并逐次重载。原 gate 不检查六个 flags，无法发现身份或吊销策略漂移。现
+  client/peer outbound keypair 分别要求全有或全无；任一 outbound identity、CRL、CA、server-name 或
+  client-auth 期望都要求同组 server keypair，并由 optional 期望与唯一 args 精确匹配。CRL 不被错误强制
+  配置 CA，保留系统 roots 的服务端兼容语义。回归证明 peer outbound cert 缺 key、client CRL 无 server
+  keypair 在首次 kubectl 前拒绝，完整 server+outbound+CRL 组进入 outbound arg 核验。bash syntax、diff
+  check 与全仓 vet 通过；实例 gate 单轮 150.006 秒、连续两轮 291.605 秒、race 152.352 秒。production
+  清单保持 448 项并按 102/127/113/106 四片在最终代码提交上全部通过
+  （145.563/474.638/270.054/491.688 秒）。本项不替代启动/握手时的 bounded PEM、DER CRL、签名和吊销
+  验证，只让身份复用、独立身份与 CRL 启停成为明确发布决定。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

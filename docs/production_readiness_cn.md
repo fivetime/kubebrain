@@ -1094,6 +1094,10 @@ release TLS 期望还必须在 kubectl 前满足服务端组合约束：client/p
 CA、server-name 或启用 client-cert-auth 时必须已有同组 cert/key；client-cert-auth=true 还必须有 trusted
 CA。证书 leaf 的 CN/SAN allowlist 只能在签发策略提供不可变身份后设置，不能根据 Secret 名称猜测；一旦
 平台声明该约束，也必须把对应 allowlist 纳入发布期望和轮换门禁。
+可选 client/peer outbound cert/key 也必须分别成对，并通过 `EXPECTED_CLIENT_*` 或
+`EXPECTED_PEER_CLIENT_*` 与唯一参数匹配；未设置时明确复用同组 server keypair。可选 client/peer CRL
+路径必须由 release 期望显式声明，并要求同组 server cert/key 已存在；CRL 可配合显式 CA 或系统 roots，
+gate 不额外强制 CA，但启动和每次握手仍必须执行 16MiB 上限、DER 解析、签名及吊销验证。
 KubeBrain→TiKV/PD TLS 期望由 `EXPECTED_TIKV_CA_FILE`、`EXPECTED_TIKV_CERT_FILE`、
 `EXPECTED_TIKV_KEY_FILE` 三项全有或全无地声明，并分别匹配唯一 `--tikv-*-file` 参数；可选
 `EXPECTED_TIKV_VERIFY_CN` 只有在完整 mTLS 组存在时才允许使用，必须是无空项、控制字符和重复值的单个
