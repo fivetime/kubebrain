@@ -5872,6 +5872,9 @@ target retirement/provisioning executor 的外部 authorize/delete/poll/inspect/
 进程组内运行，并由可唤醒的持续 heartbeat monitor 覆盖；失租须终止整个进程组且不得提交 Succeeded。
 monitor 停止使用 FIFO+Bash 内建超时，不得遗留仍持有 worker 管道的孤儿 sleep。retirement 的轮询 interval/timeout
 必须先验证为正 int64，并满足 `interval <= timeout <= 86400`，再参与 `SECONDS+timeout` 算术。
+target retirement attempt 2 的 durable receipt verifier 也必须复用同一 monitor；即使该路径不再删除资源，仍须在
+verifier 全程持有 owner lease，并在提交 succeed/fail 前同步 heartbeat。失租时只允许终止 verifier 并退出，禁止旧
+owner 根据过期验证结果提交终态。
 
 replacement provisioning 前必须由外部受控流程将 `kubebrain-system/kubebrain` 缩容到 0；provisioning executor 没有缩容
 权限，只会检查 StatefulSet desired/current/ready replicas 和匹配 Pod count 均为 0。新 TiKV/PD Ready 后，执行器用 mTLS
@@ -5888,6 +5891,9 @@ full-restore 在 BR import 期间还会按 `WRITER_CHECK_INTERVAL_SECONDS=5` 持
 restore/BR 整个进程组并要求重建 target；不得把该轮询调到不小于 Operation lease，也不得把其作为 admission fence 的替代品。
 CLI 同时以 `ADMISSION_CHECK_INTERVAL=5s` 持续验证 PD-backed admission fence；查询失败或 token/gate/session 漂移会取消 BR
 context 且不签发 receipt。取消不具备事务回滚能力，失败目标一律视为可能部分写入并走 retirement/replacement，禁止原地重试。
+attempt 2 对既有 durable restore receipt 的 reconciliation 同样在独立 verifier 进程组和持续 heartbeat monitor 下执行；
+monitor 失租须终止 verifier，成功或无效 receipt 的终态提交前都必须再同步续租。只读验证不能作为绕过 owner/attempt
+fencing 的理由，也不能在 verifier 跨越 lease 后由旧 worker 提交 Succeeded 或 Failed。
 
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：

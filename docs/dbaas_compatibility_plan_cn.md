@@ -58987,6 +58987,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   增至 420 项并按 98/117/103/102 四片全部通过（189.643/533.454/319.631/522.859 秒）。本项不改变合法
   target parameters/receipt、replacement identity、Operation 状态或在线 etcd/TiKV 数据语义。
 
+- A5251 封闭 native PITR durable receipt 接管路径绕过持续 lease 的缺口。`NativePITRTargetRetirement` attempt 2
+  旧实现会在 monitor 创建前同步调用可替换 verifier；`NativePITRFullRestore` attempt 2 也直接验证 receipt 后提交
+  Succeeded。verifier 若跨越 lease，旧 owner 可在 takeover 后依据过期结果提交终态。现两条 reconciliation 都把
+  verifier 放入独立进程组并在全程运行可唤醒 heartbeat monitor；失租终止完整 verifier 组且不写终态，验证成功或
+  失败后均先做同步最终 heartbeat，再提交 succeed/fail。确定性测试在两个 attempt-2 verifier 已阻塞后注入失租，
+  均证明进程收到 TERM、留下 terminated 证据且 Operation 日志不含 succeed。相关 restore/retirement 回归连续两轮
+  14.894 秒、race 2.735 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 420 项并按
+  98/117/103/102 四片全部通过（193.614/570.610/329.475/559.540 秒）。本项不重跑 BR、不重复删除 target，
+  不改变合法 durable receipt、Operation 接管合同或在线 etcd/TiKV 数据语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
