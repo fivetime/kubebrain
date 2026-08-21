@@ -59434,6 +59434,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全部通过（147.721/476.480/274.626/484.642 秒）。本项保留服务端 `*` 兼容能力，但生产清单与声明了
   allowlist 的 release 不再接受开放默认。
 
+- A5294 将三项危险布尔开关从服务端默认提升为生产不可漂移契约。KubeBrain 与 upstream etcd 的 pprof
+  默认均为 false，client/peer mixed TLS/plaintext 也默认关闭，但原生产清单未显式传入
+  `--allow-insecure=false`、`--peer-allow-insecure=false` 或 `--enable-pprof=false`，release gate 同样不
+  核验；默认漂移会让 TLS listener 接受明文或在 info 端口暴露 runtime profile。现明文/mTLS 清单都固定
+  三项 false，gate 只接受规范布尔并要求各自唯一参数匹配。回归证明非布尔 peer 值在首次 kubectl 前拒绝，
+  client insecure/pprof 的显式 true 只有同步声明 release 期望后才进入 args 核验，便于受控临时诊断而不
+  静默放开。相关 manifest 契约、bash syntax、diff check 与全仓 vet 通过；实例 gate 单轮 143.314 秒、
+  连续两轮 281.398 秒、race 148.194 秒。production 清单保持 448 项并按 102/127/113/106 四片在最终
+  代码提交上全部通过（147.698/475.474/275.282/484.861 秒）。本项不删除兼容开关，只将生产默认和任何
+  例外都变为可审计发布决定。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
