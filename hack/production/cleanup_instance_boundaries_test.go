@@ -40,6 +40,32 @@ func TestBoundaryCleanupLifecycleIsRetrySafe(t *testing.T) {
 	}
 }
 
+func TestBoundaryCleanupValidatesWaitBoundsBeforeKubernetes(t *testing.T) {
+	for _, tc := range []struct {
+		name, setting, want string
+	}{
+		{name: "timeout overflow", setting: "TIMEOUT_SECONDS=9223372036854775808", want: "boundary cleanup timeout must be a positive int64"},
+		{name: "timeout above one day", setting: "TIMEOUT_SECONDS=86401", want: "boundary cleanup timeout must be a positive int64"},
+		{name: "poll overflow", setting: "POLL_INTERVAL_SECONDS=9223372036854775808", want: "boundary cleanup poll must be a non-negative int64"},
+		{name: "poll above timeout", setting: "POLL_INTERVAL_SECONDS=3", want: "boundary cleanup poll must be a non-negative int64"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBoundaryCleanupFixture(t)
+			f.run(t, "prepare", false, tc.setting, tc.want)
+			require.NoFileExists(t, filepath.Join(f.dir, "kubectl.log"))
+			require.NoFileExists(t, filepath.Join(f.stateDir, "cleanup-1.boundaries"))
+			require.NoFileExists(t, filepath.Join(f.stateDir, "cleanup-1.receipt.json"))
+		})
+	}
+
+	t.Run("maximum legal boundary", func(t *testing.T) {
+		f := newBoundaryCleanupFixture(t)
+		f.run(t, "prepare", true, "TIMEOUT_SECONDS=86400\nPOLL_INTERVAL_SECONDS=86400")
+		require.FileExists(t, filepath.Join(f.stateDir, "cleanup-1.boundaries"))
+		require.FileExists(t, filepath.Join(f.dir, "kubectl.log"))
+	})
+}
+
 func TestBoundaryCleanupTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
 	f := newBoundaryCleanupFixture(t)
 	f.run(t, "prepare", true, "")
@@ -204,6 +230,7 @@ func newBoundaryCleanupFixture(t *testing.T) *boundaryCleanupFixture {
 	kubectl := filepath.Join(dir, "kubectl")
 	writeDestroyExecutable(t, kubectl, `#!/usr/bin/env bash
 set -euo pipefail
+printf 'kubectl %s\n' "$*" >>"$FAKE_RESOURCE_DIR/kubectl.log"
 namespace=
 kind=
 name=
@@ -319,8 +346,10 @@ func (f *boundaryCleanupFixture) run(t *testing.T, action string, success bool, 
 	t.Helper()
 	env := append([]string{}, f.env...)
 	env = append(env, "ACTION="+action)
-	if extraEnv != "" {
-		env = append(env, extraEnv)
+	for _, item := range strings.Split(extraEnv, "\n") {
+		if item != "" {
+			env = append(env, item)
+		}
 	}
 	output, err := runBoundaryCleanup(t, env)
 	if success {

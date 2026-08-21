@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
 
 ACTION="${ACTION:-}"
 CLEANUP_ID="${CLEANUP_ID:-}"
@@ -41,10 +42,10 @@ done
 [[ "$CREDENTIAL_NAMESPACE" != "$KUBEBRAIN_NAMESPACE" &&
   "$CREDENTIAL_NAMESPACE" != "$TIDB_NAMESPACE" ]] ||
   { echo "credential secrets must live outside the dedicated data namespaces" >&2; exit 2; }
-[[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
-  { echo "TIMEOUT_SECONDS must be positive" >&2; exit 2; }
-[[ "$POLL_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] ||
-  { echo "POLL_INTERVAL_SECONDS must be non-negative" >&2; exit 2; }
+operation_is_positive_int64 "$TIMEOUT_SECONDS" && (( TIMEOUT_SECONDS <= 86400 )) ||
+  { echo "boundary cleanup timeout must be a positive int64 not greater than 86400" >&2; exit 2; }
+operation_is_nonnegative_int64 "$POLL_INTERVAL_SECONDS" && (( POLL_INTERVAL_SECONDS <= TIMEOUT_SECONDS )) ||
+  { echo "boundary cleanup poll must be a non-negative int64 not greater than timeout" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 
 IFS=',' read -r -a credential_secrets <<<"$CREDENTIAL_SECRETS"
