@@ -29,6 +29,32 @@ func TestDestroyOperationCompletesLifecycle(t *testing.T) {
 	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
 }
 
+func TestDestroyOperationRejectsNumericBoundsBeforePrimitive(t *testing.T) {
+	for _, tc := range []struct{ name, old, replacement, want string }{
+		{name: "backup age overflow", old: `"backup_max_age_seconds":3600`, replacement: `"backup_max_age_seconds":9223372036854775808`, want: "destroy backup max age must be a positive int64"},
+		{name: "minimum records overflow", old: `"backup_min_records":1`, replacement: `"backup_min_records":9223372036854775808`, want: "must be non-negative int64 values"},
+		{name: "PVC count overflow", old: `"expected_pvcs":2`, replacement: `"expected_pvcs":9223372036854775808`, want: "must be non-negative int64 values"},
+		{name: "timeout overflow", old: `"timeout_seconds":30`, replacement: `"timeout_seconds":9223372036854775808`, want: "destroy wait bounds require"},
+		{name: "timeout above one day", old: `"timeout_seconds":30`, replacement: `"timeout_seconds":86401`, want: "destroy wait bounds require"},
+		{name: "poll overflow", old: `"poll_interval_seconds":0`, replacement: `"poll_interval_seconds":9223372036854775808`, want: "destroy wait bounds require"},
+		{name: "poll above timeout", old: `"poll_interval_seconds":0`, replacement: `"poll_interval_seconds":31`, want: "destroy wait bounds require"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDestroyRunnerFixture(t, true)
+			parameters := []byte(strings.Replace(string(mustRead(t, f.parameters)), tc.old, tc.replacement, 1))
+			require.NoError(t, os.WriteFile(f.parameters, parameters, 0o600))
+			digest := fmt.Sprintf("%x", sha256.Sum256(parameters))
+			for i, value := range f.env {
+				if strings.HasPrefix(value, "PARAMETERS_DIGEST=") {
+					f.env[i] = "PARAMETERS_DIGEST=" + digest
+				}
+			}
+			f.run(t, false, "", tc.want)
+			require.NotContains(t, f.log(t), "phase ")
+		})
+	}
+}
+
 func TestDestroyOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
 	f := newDestroyRunnerFixture(t, true)
 	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL_AFTER_COMPLETE=true", "final heartbeat failed; destroy worker was fenced")

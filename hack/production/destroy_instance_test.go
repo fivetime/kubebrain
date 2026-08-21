@@ -39,6 +39,26 @@ func TestDestroyInstanceLifecycleIsRetrySafe(t *testing.T) {
 	require.Contains(t, string(deleteLog), "--uid uid-kb-sts")
 }
 
+func TestDestroyInstanceRejectsNumericBoundsBeforeKubernetes(t *testing.T) {
+	for _, tc := range []struct{ name, setting, want string }{
+		{name: "backup age overflow", setting: "BACKUP_MAX_AGE_SECONDS=9223372036854775808", want: "BACKUP_MAX_AGE_SECONDS must be a positive int64"},
+		{name: "minimum records overflow", setting: "BACKUP_MIN_RECORDS=9223372036854775808", want: "must be non-negative int64 values"},
+		{name: "PVC count overflow", setting: "EXPECTED_PVCS=9223372036854775808", want: "must be non-negative int64 values"},
+		{name: "timeout overflow", setting: "TIMEOUT_SECONDS=9223372036854775808", want: "destroy wait bounds require"},
+		{name: "timeout above one day", setting: "TIMEOUT_SECONDS=86401", want: "destroy wait bounds require"},
+		{name: "poll overflow", setting: "POLL_INTERVAL_SECONDS=9223372036854775808", want: "destroy wait bounds require"},
+		{name: "poll above timeout", setting: "POLL_INTERVAL_SECONDS=3", want: "destroy wait bounds require"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newDestroyFixture(t)
+			fixture.run(t, "prepare", false, tc.setting, tc.want)
+			entries, err := os.ReadDir(fixture.stateDir)
+			require.NoError(t, err)
+			require.Empty(t, entries, "numeric admission must fail before durable destroy evidence or Kubernetes access")
+		})
+	}
+}
+
 func TestDestroyInstanceTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
 	fixture := newDestroyFixture(t)
 	fixture.run(t, "prepare", true, "")

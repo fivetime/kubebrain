@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
 
 ACTION="${ACTION:-}"
 OPERATION_ID="${OPERATION_ID:-}"
@@ -67,18 +68,13 @@ for variable in KUBEBRAIN_NAMESPACE TIDB_NAMESPACE; do
     exit 2
   fi
 done
-for variable in BACKUP_MAX_AGE_SECONDS TIMEOUT_SECONDS; do
-  if ! [[ "${!variable}" =~ ^[1-9][0-9]*$ ]]; then
-    echo "${variable} must be a positive integer" >&2
-    exit 2
-  fi
-done
-for variable in BACKUP_MIN_RECORDS EXPECTED_PVCS POLL_INTERVAL_SECONDS; do
-  if ! [[ "${!variable}" =~ ^[0-9]+$ ]]; then
-    echo "${variable} must be a non-negative integer" >&2
-    exit 2
-  fi
-done
+operation_is_positive_int64 "$BACKUP_MAX_AGE_SECONDS" ||
+  { echo "BACKUP_MAX_AGE_SECONDS must be a positive int64" >&2; exit 2; }
+operation_is_nonnegative_int64 "$BACKUP_MIN_RECORDS" && operation_is_nonnegative_int64 "$EXPECTED_PVCS" ||
+  { echo "BACKUP_MIN_RECORDS and EXPECTED_PVCS must be non-negative int64 values" >&2; exit 2; }
+operation_is_positive_int64 "$TIMEOUT_SECONDS" && (( TIMEOUT_SECONDS <= 86400 )) &&
+  operation_is_nonnegative_int64 "$POLL_INTERVAL_SECONDS" && (( POLL_INTERVAL_SECONDS <= TIMEOUT_SECONDS )) ||
+  { echo "destroy wait bounds require non-negative int64 poll <= positive int64 timeout <= 86400" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 
 umask 077

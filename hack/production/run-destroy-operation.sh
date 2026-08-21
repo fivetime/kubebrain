@@ -202,14 +202,13 @@ IFS=$'\t' read -r state_dir backup_input backup_file_sha backup_prefix backup_ma
   data_kubeconfig <<<"$parameters"
 [[ "$data_context" == "-" ]] && data_context=""
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
-for value in "$backup_max_age" "$timeout_seconds"; do
-  [[ "$value" =~ ^[1-9][0-9]*$ ]] ||
-    { echo "destroy parameters contain an invalid positive integer" >&2; exit 2; }
-done
-for value in "$backup_min_records" "$expected_pvcs" "$poll_seconds"; do
-  [[ "$value" =~ ^[0-9]+$ ]] ||
-    { echo "destroy parameters contain an invalid non-negative integer" >&2; exit 2; }
-done
+operation_is_positive_int64 "$backup_max_age" ||
+  { echo "destroy backup max age must be a positive int64" >&2; exit 2; }
+operation_is_nonnegative_int64 "$backup_min_records" && operation_is_nonnegative_int64 "$expected_pvcs" ||
+  { echo "destroy backup min records and expected PVCs must be non-negative int64 values" >&2; exit 2; }
+operation_is_positive_int64 "$timeout_seconds" && (( timeout_seconds <= 86400 )) &&
+  operation_is_nonnegative_int64 "$poll_seconds" && (( poll_seconds <= timeout_seconds )) ||
+  { echo "destroy wait bounds require non-negative int64 poll <= positive int64 timeout <= 86400" >&2; exit 2; }
 for value in "$kubebrain_namespace" "$tidb_namespace"; do
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
     { echo "destroy namespace or resource identity is invalid" >&2; exit 2; }
