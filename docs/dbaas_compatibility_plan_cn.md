@@ -58715,6 +58715,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （208.089/382.468/321.017/492.319 秒）。本项不改变 replacement 顺序、UID/PVC 判定、quorum/PD/存储
   门禁、最终事务验证、在线 etcd RPC 或 TiKV 编码。
 
+- A5227 为 repair 锁建立后的 destructive phase control-plane identity 重读建立逐调用 4096-byte 门禁。
+  旧实现把 KubeBrain `UID/desired/ready` 与 TidbCluster `UID/clusterID/PD/TiKV replicas` jsonpath 直接装入
+  shell 变量；4097-byte KubeBrain quiesce identity 的尾随换行会被静默剥离并继续完成修复
+  （RED 62.309 秒）。现两类 identity 及失败回退 KubeBrain UID 每次写入新的 0600 文件、用 stat 检查
+  不超过 4096 bytes，再读入有界标量。测试覆盖 KubeBrain/TidbCluster 超限在首个 TiKV Pod delete 前
+  拒绝，并证明两类精确 4096-byte 响应仍可完成修复。聚焦测试 127.558 秒，连续两轮 261.678 秒、
+  race 124.939 秒，完整相关回归 124.452 秒，bash syntax、diff check 与全仓 vet 通过。production 清单
+  保持 414 项并按 98/113/103/100 四片全部通过（205.428/407.521/314.125/491.620 秒）。本项不改变
+  quiesce、TidbCluster topology、replacement 或 receipt 语义；修复锁建立前的初始 admission 标量读取
+  尚未纳入本门禁，继续作为后续生命周期重构项。在线 etcd RPC 与 TiKV 编码不变。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
