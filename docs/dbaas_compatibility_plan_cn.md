@@ -59346,6 +59346,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   102/127/113/106 四片在最终代码状态全部通过（139.577/466.286/266.451/462.143 秒）。本项不改变合法
   watch replay、cache fallback 或 fanout overrun 语义，只让 optional 发布期望与 Go flag 可表示域一致。
 
+- A5286 将组合实例 release gate 的 optional auto-compaction-retention-revisions 与
+  watch-history-scan-rev-bucket 对齐 KubeBrain 的 `Uint64Var` 域。两项都是 revision 数：0 分别关闭 safety-net
+  与选择默认 scan bucket，不等同于 etcd 可按 periodic/revision 解释的字符串型 `auto-compaction-retention`。
+  旧 gate 对非空值只做 args 字符串比较，前导零和 MaxUint64+1 会进入 Kubernetes。现非空值统一要求规范
+  `0..18446744073709551615`。回归证明 retention 前导零与 MaxUint64+1、scan bucket MaxUint64+1 均在首次
+  kubectl 前拒绝，并以两项同时为 MaxUint64 证明精确边界进入参数一致性核验。聚焦单轮 128.394 秒、连续
+  两轮 254.545 秒、race 127.563 秒，bash syntax、diff check 与全仓 vet 通过；production 清单保持 448 项
+  并按 102/127/113/106 四片在最终代码状态全部通过（141.592/468.375/264.120/465.608 秒）。本项不改变
+  合法 compaction safety-net、watch history singleflight 或 0 默认语义，只让 optional 发布期望与 uint64
+  revision 域一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
