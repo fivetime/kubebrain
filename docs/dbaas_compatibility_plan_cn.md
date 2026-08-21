@@ -59422,6 +59422,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （146.997/473.924/270.071/480.461 秒）。本项不改变 gateway 路由、认证、限流或内部 mTLS 语义，只消除
   发布对服务端默认值的隐式依赖。
 
+- A5293 收紧 etcd-compatible HTTP access controller 的生产默认，不再让 CORS 与 plaintext Host 沿用
+  `*`。明文清单现把 CORS 绑定 `http://kubebrain-client.kubebrain-system.svc:3379`，并把 Host allowlist
+  绑定去端口的 Service DNS；mTLS 清单把 CORS 绑定对应 HTTPS Origin，TLS Host 仍按 etcd 语义不检查。
+  release gate 对可选期望执行唯一列表和结构校验，拒绝 wildcard、空/重复项、CORS credentials/path/
+  query/fragment、越界端口及 Host 端口，并要求唯一 args 精确匹配。实现时同时发现 plaintext kubelet
+  探针原用 client PodIP，启用 Host 防护后会持续收到 421；readiness/liveness/startup 现与 TLS 清单一致
+  迁移到独立 HTTP info 端口，并由 manifest 回归固定。普通无 Origin etcd/gRPC 请求不受 CORS 影响。
+  相关 manifest 契约、bash syntax、diff check 与全仓 vet 通过；实例 gate 单轮 142.321 秒、连续两轮
+  276.108 秒、race 144.720 秒。production 清单保持 448 项并按 102/127/113/106 四片在最终代码提交上
+  全部通过（147.721/476.480/274.626/484.642 秒）。本项保留服务端 `*` 兼容能力，但生产清单与声明了
+  allowlist 的 release 不再接受开放默认。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

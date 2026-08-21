@@ -984,6 +984,7 @@ EXPECTED_AUTH_TOKEN=simple \
 EXPECTED_BCRYPT_COST=10 \
 EXPECTED_AUTH_TOKEN_TTL=300 \
 EXPECTED_ENABLE_GRPC_GATEWAY=true \
+EXPECTED_CORS=https://instance-a.example:2379 \
 EXPECTED_GRPC_MAX_CONNECTION_AGE=1h \
 EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=5m \
 EXPECTED_TLS_MIN_VERSION=TLS1.2 \
@@ -1074,6 +1075,12 @@ pub-key/priv-key 路径的结构合法 `jwt`。不依赖 Pod 文件的语法错�
 gRPC gateway 模式必须是显式 `true` 或 `false` 并与唯一 `--enable-grpc-gateway` Pod 参数精确一致；
 通用 etcd 兼容生产清单固定为 `true`，保证 v3 JSON/HTTP API 不依赖镜像默认。选择 `false` 缩小 HTTP
 surface 的专用实例必须显式更改 release 期望，并另行验证 `/v3/*` 为 404、健康端点仍可用。
+启用 gateway 的生产实例必须显式设置唯一 CORS Origin allowlist，禁止 `*`、重复值、凭据、路径、query
+或 fragment；每项只能是规范 HTTP(S) Origin。plaintext client 入口还必须设置唯一 Host hostname/IP
+allowlist，禁止 `*` 与带端口值，以阻断 DNS rebinding。TLS 请求按 etcd 语义不依赖 Host allowlist。
+release gate 通过 `EXPECTED_CORS`/`EXPECTED_HOST_WHITELIST` 精确核验；示例清单分别绑定 client Service
+URL 与 DNS。plaintext Pod 的 readiness/liveness/startup probe 必须走独立 info 端口，不能用 PodIP Host
+探测受限 client 端口而制造 421 假故障。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，
