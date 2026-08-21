@@ -431,6 +431,10 @@ Kubernetes 读取前建立；cleanup 只有在本进程成功创建锁并设置 
 初始 desired/Ready replicas、失败事务探针后的 Ready replicas 与 cooldown `TidbCluster UID/completed-at`
 也使用同一逐调用 4096-byte scalar 门禁。cooldown 查询使用 `--ignore-not-found`：对象确实不存在时得到空值，
 查询失败、权限错误或超限不得再被 `|| true` 伪装成“没有冷却记录”，且都必须在 lock create 前失败。
+用于解析 KubeBrain TLS 证书路径的 container args jsonpath 原始响应独立限制为 65536 bytes。响应先写入
+0700 私有目录中的新 0600 文件并以 stat 检查大小，之后才读入并解析 `--cert-file`、`--key-file` 和
+`--trusted-ca-file`；65537-byte 响应必须在事务探针和任何数据面 mutation 前失败，不得 scale KubeBrain、
+删除 TiKV Pod 或发布最终 receipt，精确 65536-byte 响应仍可按既有 TLS 参数语义进入后续流程。
 修复锁建立后的 KubeBrain `UID/desired/ready` quiesce identity、TidbCluster `UID/clusterID/PD/TiKV replicas`
 identity 及失败回退 UID 重读同样各自限制为 4096 bytes，并通过独立 0600 文件消费。超限时不得开始或
 继续 TiKV Pod 删除；精确 4096-byte 响应仍须满足原有 identity/topology 等值判断。

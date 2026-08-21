@@ -58749,6 +58749,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （207.653/459.147/321.140/522.997 秒）。本项不改变 replica/cooldown/identity/repair 语义；多行
   KubeBrain container args inventory 仍需独立容量门禁。在线 etcd RPC 与 TiKV 编码不变。
 
+- A5230 为 repair 用于 TLS 探针路径提取的 KubeBrain container args jsonpath 原始响应建立独立 64 KiB
+  门禁。旧实现直接把多行响应读入 shell 变量，65537-byte 响应仍会完成 repair（RED 32.520 秒）。现每次
+  查询先写入 repair 既有 0700 私有目录中的新 0600 文件，以 stat 拒绝超过 65536 bytes 的响应，再把有界
+  内容交给既有 `--cert-file`、`--key-file`、`--trusted-ca-file` 解析。测试证明越界响应可在 lock/attempt
+  receipt 建立后、事务探针和任何数据面 mutation 前 fail closed，不会 scale StatefulSet、删除 TiKV Pod
+  或发布最终 receipt；精确 65536-byte 响应仍可完成 repair。聚焦测试 166.031 秒，连续两轮 330.427 秒、
+  race 162.873 秒，完整相关回归 160.121 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持
+  414 项并按 98/113/103/100 四片全部通过（228.437/480.019/372.361/544.866 秒）。本项不改变 TLS
+  参数提取、事务探针、replacement/receipt 语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
