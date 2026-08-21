@@ -5097,6 +5097,11 @@ ColdPhysicalSnapshot 与 ColdPhysicalRestore requester 可分别对原始 witnes
 上述原始 cold 证据还必须冻结后再消费：snapshot 将 preflight 与 semantic witness 复制为 0600 私有文件，
 restore 同样冻结 source receipt；复制后复检冻结副本和原路径，后续 jq、renderer、摘要和参数嵌入只读取
 冻结路径。输入预算初检不能替代稳定快照。
+ColdPhysicalSnapshot 的 `witness_max_age_seconds`、`wait_timeout` 数值部分和
+`fence_settle_seconds` 还必须分别是正 int64、带 `s|m|h` 后缀的正 int64、非负 int64。该合同由
+requester 在任何 Kubernetes 调用前执行，Operation worker 在读取冻结参数且启动 primitive 前重验，
+`cold-snapshot-execute.sh` 直接调用入口再独立验证。MaxInt64+1 不得通过 jq JSON number、immutable Secret
+或直接 primitive 调用进入 witness freshness、kubectl wait 或已暂停 TidbCluster 后的 sleep。
 TiKVTransactionRepair requester 接收的 Alertmanager envelope 上限为 1 MiB。它必须在 jq 前检查原文件，复制为
 0600 私有文件后复检冻结副本与原路径，并只解析冻结副本；超限告警不得触达 Kubernetes。该 envelope 上限
 与生成的 64 KiB operation 参数上限是两个不同层次的合同。

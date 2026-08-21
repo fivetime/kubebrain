@@ -59030,6 +59030,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/118/104/103 四片全部通过（148.288/491.825/274.010/473.959 秒）。本项不改变合法告警策略、人工审批、
   repair 参数或在线 etcd/TiKV 数据语义，只修复策略时间证据的先验数值域。
 
+- A5255 将精确数值 admission 扩展到 ColdPhysicalSnapshot 的三层执行链。旧 requester、Operation worker 和
+  destructive primitive 对 `witness_max_age_seconds`、kubectl `wait_timeout` 数值部分及
+  `fence_settle_seconds` 仅验证无界数字形状；参数可经 jq JSON number 与 immutable Secret 进入执行器，超大
+  settle 甚至会在 TidbCluster 已 pause 后进入无界 sleep。现共享 helper 新增带 `s|m|h` 后缀的正 int64
+  duration 验证，三层分别要求 witness age 为正 int64、wait magnitude 为正 int64、settle 为非负 int64。
+  requester 回归证明三种 MaxInt64+1 在任何 kubectl 前拒绝；worker 回归证明不启动 snapshot primitive；直接
+  primitive 回归同样证明不触达 Kubernetes。聚焦连续两轮 7.590 秒、race 4.397 秒，bash syntax、diff check
+  与全仓 vet 通过；production 清单增至 425 项并按 99/119/104/103 四片全部通过
+  （198.886/557.386/317.537/536.539 秒）。本项不改变合法 witness freshness、wait/settle 默认值、Operation
+  状态合同或在线 etcd/TiKV 语义，只封闭冻结参数与直接执行入口的数值域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
