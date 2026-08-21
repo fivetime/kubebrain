@@ -1603,7 +1603,10 @@ fencing 误杀已退出且 PID 可能复用的进程；任一 post-phase retry �
 边界清理读取 destroy receipt 时同样要求严格 JSON 顶层字段集合、类型和值匹配，并要求
 持久 boundaries state 精确包含 1 个 HEADER 和按 `CREDENTIAL_SECRETS` 顺序排列的全部
 SECRET UID 行；未知行、额外列、缺失凭据行或顺序漂移都 fail closed，不能漏删凭据后
-发布 cleanup receipt。
+发布 cleanup receipt。边界清理的 delete timeout 必须是规范正 `int64` 且不超过 86400 秒，
+poll 必须是规范非负 `int64` 且不超过 timeout；两项在任何 Kubernetes 查询、UID-precondition
+delete 或 state/receipt 写入前完成校验，保证 uid-delete timeout 与 complete absence deadline
+使用同一个有界等待合同。
 
 ## 备份恢复生产边界
 

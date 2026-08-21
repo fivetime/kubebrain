@@ -59136,6 +59136,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四片全部通过（136.834/463.391/263.445/441.491 秒）。本项不改变合法 rollout、TiDB Operator 状态合同、
   TiKV Debug RPC 或后续 etcd 事务门禁，只让 readiness 时间预算与 Kubernetes 数值状态具有一致可表示域。
 
+- A5265 封闭 destroy 后实例边界清理的等待算术。旧 `cleanup-instance-boundaries.sh` 只用无界数字正则接收
+  timeout/poll，前者同时传给 UID-precondition delete 并参与 complete 的 `SECONDS + timeout` deadline，后者
+  可大于 timeout 让 absence gate 越过声明期限。现 timeout 要求规范正 int64 且不超过 86400 秒，poll 要求
+  规范非负 int64 且不超过 timeout，并在 prepare/delete/complete 的任何 Kubernetes、删除或证据写入前校验。
+  四类非法值回归以 kubectl 调用日志证明零外部访问且不写 state/receipt，timeout/poll 同为 86400 的最大合法
+  边界仍完成 prepare；正常幂等 prepare/delete/complete 生命周期保持通过。聚焦连续两轮 3.944 秒、race
+  3.307 秒，bash syntax、diff check 与全仓 vet 通过；production 清单增至 440 项并按 100/123/112/105
+  四片全部通过（136.223/458.232/262.953/437.484 秒）。本项不改变确认令牌、UID fencing、destroy receipt
+  或清理范围，只使不可逆外围资源删除与完成等待共享有界数值域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
