@@ -142,7 +142,8 @@ elif [[ "$args" == *"get pod kb-tikv-"* ]]; then
   ordinal="${ordinal%% *}"
   generation=old
   [[ -e "$FAKE_STATE/replaced-$ordinal" ]] && generation=new
-  printf 'uid-%s-%s\ttikv-kb-tikv-%s' "$generation" "$ordinal" "$ordinal"
+  printf -v payload 'uid-%s-%s\ttikv-kb-tikv-%s' "$generation" "$ordinal" "$ordinal"
+  printf '%s' "$payload"; [[ "${FAKE_POD_IDENTITY_TARGET:-}" != "$generation" ]] || head -c "$((FAKE_POD_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
 elif [[ "$args" == *"delete pod kb-tikv-"* ]]; then
   ordinal="${args#*delete pod kb-tikv-}"
   ordinal="${ordinal%% *}"
@@ -176,7 +177,7 @@ fi
 		"NOW_UNIX=1786254000",
 		"REQUIRED_FAILED_PROBES=3",
 		"PROBE_INTERVAL_SECONDS=0",
-		"PROBE_TIMEOUT_SECONDS=1",
+		"PROBE_TIMEOUT_SECONDS=2",
 		"POD_READY_TIMEOUT_SECONDS=1",
 		"REQUIRED_HEALTHY_STORE_SAMPLES=1",
 		"MAX_STORE_HEALTH_SAMPLES=1",
@@ -291,6 +292,38 @@ fi
 				caseLogData, readErr := os.ReadFile(caseLog)
 				require.NoError(t, readErr)
 				require.NotContains(t, string(caseLogData), "delete pod kb-tikv-")
+			} else {
+				require.NoError(t, boundaryErr, string(boundaryOutput))
+				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
+			}
+		}
+	}
+	for _, target := range []string{"old", "new"} {
+		for _, size := range []int{4097, 4096} {
+			caseState := filepath.Join(tempDir, "pod-identity-"+target+"-"+strconv.Itoa(size))
+			require.NoError(t, os.Mkdir(caseState, 0o755))
+			caseReceipt := filepath.Join(caseState, "receipt.json")
+			caseLog := filepath.Join(caseState, "kubectl.log")
+			caseEnv := append([]string(nil), env...)
+			caseEnv = append(caseEnv,
+				"FAKE_STATE="+caseState,
+				"FAKE_LOG="+caseLog,
+				"RECEIPT_OUTPUT="+caseReceipt,
+				"FAKE_POD_IDENTITY_TARGET="+target,
+				"FAKE_POD_IDENTITY_BYTES="+strconv.Itoa(size),
+			)
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+			if size > 4096 {
+				require.Error(t, boundaryErr)
+				require.Contains(t, string(boundaryOutput), "Pod identity response exceeds 4096 bytes")
+				require.NoFileExists(t, caseReceipt)
+				caseLogData, readErr := os.ReadFile(caseLog)
+				require.NoError(t, readErr)
+				expectedDeletes := 0
+				if target == "new" {
+					expectedDeletes = 1
+				}
+				require.Equal(t, expectedDeletes, strings.Count(string(caseLogData), "delete pod kb-tikv-"))
 			} else {
 				require.NoError(t, boundaryErr, string(boundaryOutput))
 				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")

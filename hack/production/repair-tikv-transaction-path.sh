@@ -39,6 +39,7 @@ JQ="${JQ:-jq}"
 MAX_PD_RESPONSE_BYTES=1048576
 MAX_STORAGE_RESPONSE_BYTES=1048576
 MAX_POD_INVENTORY_RESPONSE_BYTES=1048576
+MAX_POD_IDENTITY_RESPONSE_BYTES=4096
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -188,6 +189,18 @@ capture_pod_inventory() {
   fi
   sort "$raw" >"$sorted" || return 1
   cat "$sorted"
+}
+capture_pod_identity() {
+  local response size
+  response="$(mktemp "$response_dir/pod-identity.XXXXXX")" || return 1
+  kctl "$@" >"$response" || return 1
+  chmod 600 "$response" || return 1
+  size="$(stat -Lc '%s' -- "$response")" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_POD_IDENTITY_RESPONSE_BYTES" ]]; then
+    echo "Pod identity response exceeds ${MAX_POD_IDENTITY_RESPONSE_BYTES} bytes" >&2
+    return 1
+  fi
+  cat "$response"
 }
 quantity_to_kib() {
   local quantity="$1" value unit multiplier
@@ -551,14 +564,16 @@ for ordinal in "${replacement_ordinals[@]}"; do
   pod="${TIDB_CLUSTER}-tikv-${ordinal}"
   require_kubebrain_quiesced "KubeBrain isolation identity/replica fence changed before replacing $pod"
   validate_tidb_cluster_identity || die "TidbCluster identity/topology changed before replacing $pod"
-  old_identity="$(kctl -n "$TIDB_NAMESPACE" get pod "$pod" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}')"
+  old_identity="$(capture_pod_identity -n "$TIDB_NAMESPACE" get pod "$pod" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}')" || \
+    die "cannot read pre-replacement identity for $pod"
   old_uid="${old_identity%%$'\t'*}"
   old_pvc="${old_identity#*$'\t'}"
   [[ -n "$old_uid" && -n "$old_pvc" ]] || die "$pod identity/PVC is incomplete"
   echo "rebuilding $pod on retained PVC $old_pvc"
   kctl -n "$TIDB_NAMESPACE" delete pod "$pod" --wait=true >/dev/null
   kctl -n "$TIDB_NAMESPACE" wait --for=condition=Ready "pod/$pod" --timeout="${POD_READY_TIMEOUT_SECONDS}s" >/dev/null
-  new_identity="$(kctl -n "$TIDB_NAMESPACE" get pod "$pod" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}')"
+  new_identity="$(capture_pod_identity -n "$TIDB_NAMESPACE" get pod "$pod" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}')" || \
+    die "cannot read post-replacement identity for $pod"
   new_uid="${new_identity%%$'\t'*}"
   new_pvc="${new_identity#*$'\t'}"
   [[ "$new_uid" != "$old_uid" && "$new_pvc" == "$old_pvc" ]] || die "$pod same-PVC replacement fence failed"
