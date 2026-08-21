@@ -1525,6 +1525,8 @@ client 凭据都能通过 overlap bundle 提交 proposal。`complete` 再次固�
 重启计数，要求新凭据成功、旧凭据失败，随后立刻用新凭据复检；因此 endpoint outage
 不能冒充旧证书撤销。任一阶段次序错误、rotation 参数/证书指纹变化、Pod 替换/重启、
 副本不 Ready 或证据冲突都 fail closed。
+`EXPECTED_REPLICAS` 必须是规范正 int32；直接 gate 在任何 Kubernetes 查询或 durable
+state 写入前拒绝越界值，避免把 Kubernetes 不可表示的副本基数推进 Pod 快照和 receipt。
 
 完成后原子发布 `kubebrain.certificate-rotation.receipt.v1`，绑定 instance、
 rotation ID、endpoint、replicas、旧/新证书 SHA-256、完成时间，并明确记录
@@ -5714,7 +5716,7 @@ worker 镜像配置受控、可执行且必须幂等的 `PUBLISH_OVERLAP_COMMAND
 还会在任何 gate 或 hook 前独立校验数据面 namespace 是 DNS label，且 endpoint 不含
 控制字符、DEL、引号或反斜杠；claim 返回的 rotation ID 和 instance 也必须匹配受控资源
 标识格式。`expected_replicas` 在 worker 与直接 rotation gate 两层都必须是规范正
-`int64`；越界值必须在 gate/hook、Kubernetes 查询或 durable state 写入前拒绝，不能交给
+`int32`；越界值必须在 gate/hook、Kubernetes 查询或 durable state 写入前拒绝，不能交给
 awk、jq 或 shell 数值比较产生不同解释。该边界不依赖可替换的 rotation 子命令自行实现。
 
 完整顺序为 begin gate、发布双 CA、overlap gate、发布仅新 CA/叶证书、complete gate。

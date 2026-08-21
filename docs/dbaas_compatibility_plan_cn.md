@@ -59196,6 +59196,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   101/126/113/106 四片在最终代码状态全部通过（138.066/466.680/266.237/447.933 秒）。本项不改变合法
   cutover、rollback、持续审计或 receipt 语义，只让恢复链的期望拓扑基数与 Kubernetes wire/API 类型一致。
 
+- A5271 将 certificate rotation 的直接三阶段 gate 与持久 Operation worker 副本数对齐 Kubernetes int32
+  域。旧两层仅拒绝 int64 溢出，`2147483648..MaxInt64` 仍会进入 Pod 快照计数、awk state schema、jq
+  receipt 和 worker→gate 传递，尽管 Kubernetes replicas 无法表示。现两层都要求规范正整数且不超过
+  `2147483647`。回归覆盖 int32+1 与 int64+1，证明直接 gate 在首次 Kubernetes 查询/state 写入前拒绝，
+  worker 在任何 gate/hook 前拒绝；另以 int32 最大值证明两层均完成 admission 并进入真实 gate/拓扑证据
+  检查。聚焦单轮 2.408 秒、连续两轮 4.812 秒、race 3.582 秒，bash syntax、diff check 与全仓 vet 通过；
+  production 清单增至 448 项并按 102/127/113/106 四片在最终代码状态全部通过
+  （137.606/466.156/263.262/445.153 秒）。本项不改变合法 CA overlap、leaf 切换、旧证书拒绝或 durable
+  receipt 语义，只让轮换链的期望 Pod 基数与 Kubernetes wire/API 类型一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
