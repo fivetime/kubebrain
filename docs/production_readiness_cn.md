@@ -447,6 +447,10 @@ Kubernetes 读取前建立；cleanup 只有在本进程成功创建锁并设置 
 规范正整数且不超过 int64 上限 `9223372036854775807`。最终时间无效时不得创建 cooldown 或发布最终
 receipt；transaction 模式必须把已恢复的 KubeBrain 再次缩到零并把 attempt phase 标为
 `failed-completion-time`。cleanup 若无法取得合法时间，只更新 phase，不得把无效 finished time 插入证据。
+所有参与 Bash 算术的 repair 控制量必须在首次 Kubernetes 调用前通过字符串级规范 int64 校验，禁止依赖
+可能先溢出的 `((...))` 判断。`NOW_UNIX` 与 cooldown 为正 int64；失败探针最多 20 次，probe interval
+最多 60 秒，单次 probe timeout 最多 60 秒，Pod Ready timeout 最多 1800 秒。store/Region 样本、间隔和
+磁盘阈值也先经过同一正/非负 int64 门禁，再执行既有 20/60/90/125 上限判断。
 修复锁建立后的 KubeBrain `UID/desired/ready` quiesce identity、TidbCluster `UID/clusterID/PD/TiKV replicas`
 identity 及失败回退 UID 重读同样各自限制为 4096 bytes，并通过独立 0600 文件消费。超限时不得开始或
 继续 TiKV Pod 删除；精确 4096-byte 响应仍须满足原有 identity/topology 等值判断。

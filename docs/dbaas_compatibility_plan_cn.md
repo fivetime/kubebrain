@@ -58792,6 +58792,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   98/113/103/100 四片全部通过（217.483/543.631/351.343/556.789 秒）。本项不改变正常 completion time、
   cooldown/receipt schema、replacement 或在线 etcd RPC/TiKV 编码。
 
+- A5234 闭合 repair 调用方数值控制量可在 Bash 算术前溢出或制造无界运行窗口的 admission 缺口。旧实现
+  仅用全数字 regex 接受 `NOW_UNIX=9223372036854775808`，随后仍完成 repair（RED 子测试 5.30 秒；含前置
+  单体矩阵 211.00 秒）；相同问题覆盖 cooldown、探针/Ready timeout、失败探针数、probe/store/Region
+  interval、样本数和磁盘阈值。现统一字符串长度与字典序 helper 验证规范正/非负 int64，所有 Bash 算术
+  均在验证后执行；另将 `REQUIRED_FAILED_PROBES` 限为 20、`PROBE_INTERVAL_SECONDS` 与
+  `PROBE_TIMEOUT_SECONDS` 限为 60、`POD_READY_TIMEOUT_SECONDS` 限为 1800，与既有 recovery/健康采样
+  合同对齐。测试覆盖 NOW/cooldown int64 overflow 及四类超上限控制量全部在首次 kubectl 前拒绝，并用
+  MaxInt64 NOW/cooldown、20 probes、60 秒 interval/timeout、1800 秒 Ready timeout 的组合证明精确边界仍可
+  完成 quiesced repair。聚焦测试 219.725 秒，连续两轮 443.408 秒、race 224.699 秒，完整相关回归
+  215.922 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按 98/113/103/100
+  四片全部通过（179.959/469.693/300.184/472.080 秒）。本项不改变合法控制量、repair/receipt 语义、
+  在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
