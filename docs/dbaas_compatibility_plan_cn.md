@@ -59074,6 +59074,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （166.184/556.673/299.237/555.732 秒）。本项不改变默认 rollout/probe 参数或在线 etcd/TiKV 语义，
   只把配置错误前移到 mutation 之前。
 
+- A5259 封闭 RestoreCutover 的 worker/primitive 等待算术域。旧 Operation runner 与
+  `switch-restore-traffic.sh` 都只用无界数字正则接收 expected replicas、timeout、poll；primitive 随后用
+  `SECONDS + TIMEOUT_SECONDS` 构造 deadline，并可能在 Service selector 已切换后等待 EndpointSlice，超大值
+  可回绕或制造无界流量窗口。现两层统一要求 replicas 为正 int64、timeout 为正 int64 且不超过 86400、
+  poll 为非负 int64 且 `poll <= timeout`，沿用 target retirement 已建立的一天最长等待合同。worker 表驱动
+  回归覆盖 MaxInt64+1、86401 和 poll 超 timeout，均证明不启动任何 phase；direct primitive 同组回归证明
+  不写 state/marker 且不访问 Kubernetes。正常 prepare→cutover→verify→complete 保持通过。聚焦连续两轮
+  5.208 秒、race 3.697 秒，bash syntax、diff check 与全仓 vet 通过；production 清单增至 432 项并按
+  100/120/108/104 四片全部通过（140.905/551.984/287.859/534.794 秒）。本项不改变合法切流状态机、
+  rollback/fencing 或在线 etcd/TiKV 数据语义，只封闭流量切换等待控制的数值域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

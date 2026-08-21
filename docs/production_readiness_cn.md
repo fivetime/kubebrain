@@ -5653,6 +5653,11 @@ receipt SHA，只能按其已有字段关联，不得声称追溯性完整 recei
 直接入口解析或生成的 restore verified、cutover marker、verified marker 和 cutover receipt completed 时间
 全部必须位于 `1..MaxInt64`；任何 Bash 算术比较都只能在该域校验成功后执行，避免超大十进制按有符号
 64 位回绕并伪造合法 chronology。
+切流等待控制也在 Operation worker 与直接状态机两层验证：`EXPECTED_REPLICAS` 必须是规范正 int64；
+`TIMEOUT_SECONDS` 必须是正 int64 且不超过 86400；`POLL_INTERVAL_SECONDS` 必须是非负 int64 且不大于
+timeout。worker 必须在启动 prepare primitive 前拒绝，直接 `switch-restore-traffic.sh` 必须在创建任何
+state/marker 或访问 Kubernetes 前拒绝。该边界保证 `SECONDS + TIMEOUT_SECONDS` deadline 不回绕，并避免
+selector 已切换后的 EndpointSlice 等待成为无界窗口。
 A189 rollback 允许仅凭 prepare state 运行：这覆盖 Service JSON Patch 已提交、但等待
 EndpointSlice 失败而尚未生成 cutover marker 的窗口；rollback 仍用 UID/resourceVersion
 CAS 并要求源 Pod UID 集恢复。
