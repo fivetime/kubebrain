@@ -5665,6 +5665,11 @@ CAS 并要求源 Pod UID 集恢复。
 PostRestoreAudit runner 在子脚本返回后会重新冻结并双重校验 cutover state、cutover receipt 和 audit
 receipt，独立要求 `cutover completed_at_unix <= audit started_at_unix <= audit completed_at_unix`；
 倒序票据只允许进入 Retry，不能提交 Succeeded。该检查不依赖直接审计脚本已经执行过同一门禁。
+审计数值控制在 Operation worker 与直接 `audit-restored-instance.sh` 两层准入：expected replicas、
+duration、minimum samples 必须是规范正 int64，duration 不超过 86400；interval 必须是非负 int64 且不大于
+duration。以 `max(interval,1)` 作为最小有效采样间隔，`MIN_SAMPLES` 还不得超过
+`duration/effective_interval + 1`，保证循环不会在声明观察窗口结束后继续无限补样本。worker 在启动 audit
+primitive 前拒绝，直接入口在写 receipt/state 或访问 Kubernetes/公开数据面前拒绝。
 cutover state、cutover receipt 与 post-restore audit receipt 都属于小型 control evidence，单文件上限
 4 MiB。直接审计在复制输入前、0600 冻结副本及原路径复检时执行该门禁，并在幂等复用已有 audit
 receipt 或发布新 receipt 前检查同一上限；Operation runner 同样检查 cutover 证据源文件、冻结副本以及

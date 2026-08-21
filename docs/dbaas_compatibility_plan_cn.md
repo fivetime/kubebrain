@@ -59085,6 +59085,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   100/120/108/104 四片全部通过（140.905/551.984/287.859/534.794 秒）。本项不改变合法切流状态机、
   rollback/fencing 或在线 etcd/TiKV 数据语义，只封闭流量切换等待控制的数值域。
 
+- A5260 封闭 PostRestoreAudit 的 worker/primitive 观察窗口与样本预算。旧两层仅以无界数字正则接收
+  replicas、duration、interval、minimum samples；primitive 用 `started_monotonic + duration` 构造 deadline，
+  且退出条件是 deadline 已到并且 samples 达标，因此 MaxInt64+1 可回绕，超大 min samples 还会让审计越过
+  声明 duration 持续运行。现两层要求 replicas/duration/samples 为正 int64、duration 不超过 86400、interval
+  为非负 int64 且不大于 duration，并以 `max(interval,1)` 计算可达预算，要求
+  `samples <= duration/effective_interval + 1`。worker 七类回归证明不启动 audit primitive，direct primitive
+  同组回归证明零 Kubernetes/零 probe；正常 receipt 绑定保持通过。聚焦连续两轮 6.986 秒、race 5.737 秒，
+  bash syntax、diff check 与全仓 vet 通过；production 清单增至 434 项并按 100/121/109/104 四片全部通过
+  （140.972/507.401/273.948/487.624 秒）。本项不改变合法审计证据、cutover 绑定、fencing 或在线
+  etcd/TiKV 语义，只使声明观察窗口成为真实上界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
