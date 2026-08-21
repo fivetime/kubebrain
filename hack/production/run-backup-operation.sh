@@ -250,11 +250,14 @@ IFS=$'\t' read -r endpoint prefix artifact_output batch_size metrics_output back
   retention_mode retain_until min_records max_age receipt_output <<<"$parameters"
 receipt_input="$receipt_output"
 [[ "$metrics_output" == "-" ]] && metrics_output=""
-for value in "$batch_size" "$retain_until" "$max_age"; do
-  [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "backup parameters contain an invalid positive integer" >&2; exit 2; }
-done
-[[ "$min_records" =~ ^[0-9]+$ ]] ||
-  { echo "backup min_records must be a non-negative integer" >&2; exit 2; }
+operation_is_positive_int64 "$batch_size" ||
+  { echo "backup batch_size must be a positive int64" >&2; exit 2; }
+operation_is_positive_int64 "$retain_until" ||
+  { echo "backup retain_until_unix must be a positive int64" >&2; exit 2; }
+operation_is_positive_int64 "$max_age" ||
+  { echo "backup max_age_seconds must be a positive int64" >&2; exit 2; }
+operation_is_nonnegative_int64 "$min_records" ||
+  { echo "backup min_records must be a non-negative int64" >&2; exit 2; }
 [[ "$force_path_style" == true || "$force_path_style" == false ]] ||
   { echo "s3_force_path_style must be boolean" >&2; exit 2; }
 [[ "$retention_mode" == COMPLIANCE || "$retention_mode" == GOVERNANCE ]] ||

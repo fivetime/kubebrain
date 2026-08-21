@@ -37,6 +37,34 @@ func TestBackupOperationCompletesProtectedUpload(t *testing.T) {
 	require.FileExists(t, f.receipt)
 }
 
+func TestBackupOperationRejectsNumericOverflowBeforeArtifactCommands(t *testing.T) {
+	for _, tc := range []struct{ name, old, replacement, want string }{
+		{name: "batch size", old: `"batch_size":100`, replacement: `"batch_size":9223372036854775808`, want: "backup batch_size must be a positive int64"},
+		{name: "retention timestamp", old: `"retain_until_unix":2000000000`, replacement: `"retain_until_unix":9223372036854775808`, want: "backup retain_until_unix must be a positive int64"},
+		{name: "minimum records", old: `"min_records":1`, replacement: `"min_records":9223372036854775808`, want: "backup min_records must be a non-negative int64"},
+		{name: "maximum age", old: `"max_age_seconds":3600`, replacement: `"max_age_seconds":9223372036854775808`, want: "backup max_age_seconds must be a positive int64"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackupRunnerFixture(t, false)
+			parameters := []byte(strings.Replace(string(mustRead(t, f.parameters)), tc.old, tc.replacement, 1))
+			require.NoError(t, os.WriteFile(f.parameters, parameters, 0o600))
+			digest := fmt.Sprintf("%x", sha256.Sum256(parameters))
+			for i, value := range f.env {
+				if strings.HasPrefix(value, "PARAMETERS_DIGEST=") {
+					f.env[i] = "PARAMETERS_DIGEST=" + digest
+				}
+			}
+			f.run(t, false, "", tc.want)
+			log := f.log(t)
+			require.NotContains(t, log, "export\n")
+			require.NotContains(t, log, "status\n")
+			require.NotContains(t, log, "object\n")
+			require.NoFileExists(t, f.artifact)
+			require.NoFileExists(t, f.receipt)
+		})
+	}
+}
+
 func TestBackupOperationPassesFrozenArtifactToStatusAndObject(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	f.run(t, true, "ASSERT_FROZEN_ARTIFACT=true")
