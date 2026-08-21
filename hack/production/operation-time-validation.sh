@@ -43,6 +43,24 @@ operation_is_positive_go_duration() {
   fi
 }
 
+operation_is_positive_go_seconds_decimal() {
+  local value="$1" whole fraction maximum_whole=9223372036 maximum_fraction=854775807
+  [[ "$value" =~ ^(0|[1-9][0-9]{0,18})([.]([0-9]{1,9}))?$ ]] || return 1
+  whole="${BASH_REMATCH[1]}"
+  fraction="${BASH_REMATCH[3]:-}"
+  [[ "$whole" != 0 || ( -n "$fraction" && "$fraction" =~ [1-9] ) ]] || return 1
+  if (( ${#whole} != ${#maximum_whole} )); then
+    (( ${#whole} < ${#maximum_whole} )) || return 1
+  elif [[ "$whole" > "$maximum_whole" ]]; then
+    return 1
+  fi
+  if [[ "$whole" == "$maximum_whole" ]]; then
+    fraction="${fraction}000000000"
+    fraction="${fraction:0:9}"
+    [[ "$fraction" < "$maximum_fraction" || "$fraction" == "$maximum_fraction" ]] || return 1
+  fi
+}
+
 operation_is_decimal_int64() {
   local value="$1" whole
   [[ "$value" =~ ^(0|[1-9][0-9]{0,18})([.][0-9]{1,9})?$ ]] || return 1

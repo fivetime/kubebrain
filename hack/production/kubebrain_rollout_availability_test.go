@@ -40,12 +40,35 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 	}
 }
 
+func TestRolloutAvailabilityRunnerRejectsNumericControlsBeforeKubernetes(t *testing.T) {
+	for _, tc := range []struct{ name, setting, want string }{
+		{name: "replicas overflow", setting: "EXPECTED_REPLICAS=9223372036854775808", want: "EXPECTED_REPLICAS must be a positive int64"},
+		{name: "iterations overflow", setting: "PROBE_ITERATIONS=9223372036854775808", want: "PROBE_ITERATIONS must be a positive int64"},
+		{name: "lease TTL overflow", setting: "PROBE_LEASE_TTL=9223372036854775808", want: "PROBE_LEASE_TTL must be a positive int64"},
+		{name: "port overflow", setting: "KUBEBRAIN_CLIENT_PORT=65536", want: "KUBEBRAIN_CLIENT_PORT must be a positive int64 between 1 and 65535"},
+		{name: "zero interval", setting: "PROBE_INTERVAL=0", want: "PROBE_INTERVAL must be a canonical positive decimal seconds value"},
+		{name: "interval overflow", setting: "PROBE_INTERVAL=9223372036.854775808", want: "PROBE_INTERVAL must be a canonical positive decimal seconds value"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", tc.setting)
+			output, err := command.CombinedOutput()
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.want)
+			require.NoFileExists(t, logPath)
+		})
+	}
+}
+
 func TestRolloutAvailabilityRunnerAcceptsDurationBoundary(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+		"KUBEBRAIN_CLIENT_PORT=65535", "PROBE_INTERVAL=9223372036.854775807", "PROBE_LEASE_TTL=9223372036854775807",
 		"PROBE_COMMAND_TIMEOUT=9223372036854ms", "PROBE_DIAL_TIMEOUT=9223372036s",
 		"PROBE_MAX_OPERATION_LATENCY=153722867m", "PROBE_MAX_PD_TSO_LATENCY=9223372036854ms",
 		"PROBE_MAX_TIKV_REGION_LATENCY=9223372036s", "PROBE_READY_TIMEOUT=153722867m",

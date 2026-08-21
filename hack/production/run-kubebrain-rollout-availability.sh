@@ -40,9 +40,9 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "missing required command: jq" >&2
   exit 1
 fi
-for value in "$EXPECTED_REPLICAS" "$PROBE_ITERATIONS" "$PROBE_LEASE_TTL"; do
-  if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
-    echo "replica and probe iteration values must be positive integers" >&2
+for variable in EXPECTED_REPLICAS PROBE_ITERATIONS PROBE_LEASE_TTL; do
+  if ! operation_is_positive_int64 "${!variable}"; then
+    echo "${variable} must be a positive int64" >&2
     exit 2
   fi
 done
@@ -50,8 +50,12 @@ if [[ "$EXPECTED_REPLICAS" -lt 3 ]]; then
   echo "rollout availability gate requires at least three replicas" >&2
   exit 2
 fi
-if ! [[ "$KUBEBRAIN_CLIENT_PORT" =~ ^[1-9][0-9]*$ ]] || ! [[ "$PROBE_INTERVAL" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-  echo "probe port and interval values are invalid" >&2
+if ! operation_is_positive_int64 "$KUBEBRAIN_CLIENT_PORT" || (( KUBEBRAIN_CLIENT_PORT > 65535 )); then
+  echo "KUBEBRAIN_CLIENT_PORT must be a positive int64 between 1 and 65535" >&2
+  exit 2
+fi
+if ! operation_is_positive_go_seconds_decimal "$PROBE_INTERVAL"; then
+  echo "PROBE_INTERVAL must be a canonical positive decimal seconds value representable by Go time.Duration" >&2
   exit 2
 fi
 for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LATENCY \
