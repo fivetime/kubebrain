@@ -1,6 +1,7 @@
 package production_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -33,6 +34,8 @@ printf '%s\n' "$count" >"$count_file"
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_LOG"
 args="$*"
+kb_uid="${FAKE_KB_UID:-kb-uid}"
+tc_uid="${FAKE_TC_UID:-tc-uid}"
 if [[ "$args" == *"get statefulset kubebrain"* && "$args" == *".metadata.uid"* && "$args" == *".status.readyReplicas"* ]]; then
   desired=0
   ready=0
@@ -40,10 +43,10 @@ if [[ "$args" == *"get statefulset kubebrain"* && "$args" == *".metadata.uid"* &
     desired=1
     ready=1
   fi
-  printf -v payload 'kb-uid\t%s\t%s' "$desired" "$ready"
+  printf -v payload '%s\t%s\t%s' "$kb_uid" "$desired" "$ready"
   printf '%s' "$payload"; [[ "${FAKE_CONTROL_IDENTITY_TARGET:-}" != kubebrain ]] || head -c "$((FAKE_CONTROL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
 elif [[ "$args" == *"get statefulset kubebrain -o jsonpath={.metadata.uid}"* ]]; then
-  payload='kb-uid'; printf '%s' "$payload"
+  payload="$kb_uid"; printf '%s' "$payload"
   [[ "${FAKE_INITIAL_IDENTITY_TARGET:-}" != kubebrain ]] || head -c "$((FAKE_INITIAL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
 elif [[ "$args" == *"get tidbcluster kb"* ]]; then
   tikv_replicas=3
@@ -51,7 +54,7 @@ elif [[ "$args" == *"get tidbcluster kb"* ]]; then
     tikv_replicas=4
   fi
   cluster_id="${FAKE_CLUSTER_ID:-7671}"
-  printf -v payload 'tc-uid\t%s\t3\t%s' "$cluster_id" "$tikv_replicas"
+  printf -v payload '%s\t%s\t3\t%s' "$tc_uid" "$cluster_id" "$tikv_replicas"
   printf '%s' "$payload"
   if [[ "${FAKE_INITIAL_IDENTITY_TARGET:-}" == tidbcluster && ! -e "$FAKE_STATE/quiesced" ]]; then
     head -c "$((FAKE_INITIAL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
@@ -71,6 +74,11 @@ elif [[ "$args" == *"get configmap kubebrain-tikv-transaction-repair-last-succes
   fi
 elif [[ "$args" == *"create configmap kubebrain-tikv-transaction-repair-lock"* && "${FAKE_LOCK_CONFLICT:-false}" == "true" ]]; then
   exit 1
+elif [[ "$args" == *"create configmap kubebrain-tikv-transaction-repair-last-success"* && "${FAKE_COOLDOWN_CREATE_FAIL:-false}" == "true" ]]; then
+  exit 1
+elif [[ "$args" == *"patch configmap kubebrain-tikv-transaction-repair-last-success"* && "${FAKE_REQUIRE_VALID_PATCH:-false}" == "true" ]]; then
+  patch="${args#* -p }"
+  jq -e . >/dev/null <<<"$patch"
 elif [[ "$args" == *" create configmap "* || "$args" == *" patch configmap "* || "$args" == *" delete configmap kubebrain-tikv-transaction-repair-lock "* ]]; then
   :
 elif [[ "$args" == *"get pods -l"* && "$args" == *"component=tikv"* ]]; then
@@ -119,7 +127,7 @@ elif [[ "$args" == *"exec kubebrain-0"* ]]; then
   if [[ "$args" == *" put "* ]]; then
     printf 'OK\n'
   elif [[ "$args" == *" get "* ]]; then
-    printf 'repair-tc-uid\n'
+    printf 'repair-%s\n' "$tc_uid"
   else
     printf '1\n'
   fi
@@ -272,6 +280,38 @@ fi
 	require.NoError(t, err)
 	require.Zero(t, receiptInfo.Mode()&os.ModeSymlink)
 	require.FileExists(t, predictableTemp)
+
+	unsafeKBUID := `kb-"\uid`
+	unsafeTCUID := `tc-"\uid`
+	for _, fallback := range []bool{false, true} {
+		uidState := filepath.Join(tempDir, "receipt-uid-json-"+strconv.FormatBool(fallback))
+		require.NoError(t, os.Mkdir(uidState, 0o755))
+		uidReceipt := filepath.Join(uidState, "receipt.json")
+		uidEnv := append([]string(nil), env...)
+		uidEnv = append(uidEnv,
+			"FAKE_STATE="+uidState,
+			"FAKE_LOG="+filepath.Join(uidState, "kubectl.log"),
+			"RECEIPT_OUTPUT="+uidReceipt,
+			"EXPECTED_KUBEBRAIN_STATEFULSET_UID="+unsafeKBUID,
+			"EXPECTED_TIDB_CLUSTER_UID="+unsafeTCUID,
+			"FAKE_KB_UID="+unsafeKBUID,
+			"FAKE_TC_UID="+unsafeTCUID,
+		)
+		if fallback {
+			uidEnv = append(uidEnv, "FAKE_COOLDOWN_CREATE_FAIL=true", "FAKE_REQUIRE_VALID_PATCH=true")
+		}
+		uidOutput, uidErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", uidEnv)
+		require.NoError(t, uidErr, string(uidOutput))
+		uidReceiptData, readErr := os.ReadFile(uidReceipt)
+		require.NoError(t, readErr)
+		var uidEvidence struct {
+			KubeBrainUID string `json:"kubebrain_statefulset_uid"`
+			TiDBUID      string `json:"tidb_cluster_uid"`
+		}
+		require.NoError(t, json.Unmarshal(uidReceiptData, &uidEvidence))
+		require.Equal(t, unsafeKBUID, uidEvidence.KubeBrainUID)
+		require.Equal(t, unsafeTCUID, uidEvidence.TiDBUID)
+	}
 
 	for _, failAt := range []int{1, 2} {
 		syncState := filepath.Join(tempDir, "receipt-sync-failure-"+strconv.Itoa(failAt))

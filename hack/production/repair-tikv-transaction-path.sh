@@ -113,6 +113,10 @@ is_nonnegative_int64 "$PROBE_INTERVAL_SECONDS" || die "PROBE_INTERVAL_SECONDS mu
 for variable in KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET TIDB_NAMESPACE TIDB_CLUSTER REPAIR_STATE_NAMESPACE; do
   [[ "${!variable}" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "$variable must be a DNS label"
 done
+expected_kb_uid_json="$("$JQ" -cn --arg value "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" '$value')" ||
+  die "cannot encode expected KubeBrain StatefulSet UID"
+expected_tidb_uid_json="$("$JQ" -cn --arg value "$EXPECTED_TIDB_CLUSTER_UID" '$value')" ||
+  die "cannot encode expected TidbCluster UID"
 
 kubectl_context_args=()
 [[ "$KUBE_CONTEXT" == "in-cluster" ]] || kubectl_context_args=(--context "$KUBE_CONTEXT")
@@ -752,7 +756,7 @@ if ! kctl -n "$REPAIR_STATE_NAMESPACE" create configmap "$cooldown_record" \
   --from-literal="attempt-id=$REPAIR_ATTEMPT_ID" \
   --from-literal="completed-at-unix=$completed_at_unix" >/dev/null 2>&1; then
   kctl -n "$REPAIR_STATE_NAMESPACE" patch configmap "$cooldown_record" --type=merge \
-    -p "{\"data\":{\"tidb-cluster-uid\":\"$EXPECTED_TIDB_CLUSTER_UID\",\"cluster-id\":\"$EXPECTED_CLUSTER_ID\",\"attempt-id\":\"$REPAIR_ATTEMPT_ID\",\"completed-at-unix\":\"$completed_at_unix\"}}" >/dev/null ||
+    -p "{\"data\":{\"tidb-cluster-uid\":$expected_tidb_uid_json,\"cluster-id\":\"$EXPECTED_CLUSTER_ID\",\"attempt-id\":\"$REPAIR_ATTEMPT_ID\",\"completed-at-unix\":\"$completed_at_unix\"}}" >/dev/null ||
     die "repair succeeded but cooldown receipt could not be persisted"
 fi
 persist_phase "completed"
@@ -761,16 +765,16 @@ umask 077
 receipt_tmp="$(mktemp "${RECEIPT_OUTPUT}.tmp.${REPAIR_ATTEMPT_ID}.XXXXXX")" || die "cannot create private repair receipt"
 chmod 600 "$receipt_tmp" || die "cannot protect private repair receipt"
 if [[ "$REPAIR_MODE" == "transaction" ]]; then
-  printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-transaction-repair.receipt.v1","kubebrain_statefulset_uid":"%s","pvc_preserved":true,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
+  printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-transaction-repair.receipt.v1","kubebrain_statefulset_uid":%s,"pvc_preserved":true,"repaired_tikv_pods":%s,"tidb_cluster_uid":%s,"transaction_verified":true}\n' \
     "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
-    "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
+    "$expected_kb_uid_json" "${#replacement_ordinals[@]}" "$expected_tidb_uid_json" >"$receipt_tmp" ||
     die "cannot write repair receipt"
 else
   repaired_store_ids_json="$(printf '%s\n' "$EXPECTED_ABNORMAL_STORE_IDS" | "$JQ" -Rce 'split(",") | map(tonumber)')" ||
     die "cannot encode repaired store identities"
-  printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-quiesced-repair.receipt.v1","kubebrain_quiesced":true,"kubebrain_statefulset_uid":"%s","pvc_preserved":true,"regions_verified":true,"repaired_store_ids":%s,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s"}\n' \
+  printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-quiesced-repair.receipt.v1","kubebrain_quiesced":true,"kubebrain_statefulset_uid":%s,"pvc_preserved":true,"regions_verified":true,"repaired_store_ids":%s,"repaired_tikv_pods":%s,"tidb_cluster_uid":%s}\n' \
     "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
-    "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$repaired_store_ids_json" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
+    "$expected_kb_uid_json" "$repaired_store_ids_json" "${#replacement_ordinals[@]}" "$expected_tidb_uid_json" >"$receipt_tmp" ||
     die "cannot write quiesced repair receipt"
 fi
 "$SYNC" -f "$receipt_tmp" || die "cannot sync private repair receipt"
