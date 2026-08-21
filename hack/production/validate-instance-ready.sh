@@ -221,7 +221,14 @@ if (( (EXPECTED_MAX_REQUEST_RATE == 0) != (EXPECTED_REQUEST_RATE_BURST == 0) ));
   echo "EXPECTED_MAX_REQUEST_RATE and EXPECTED_REQUEST_RATE_BURST must both be zero or both be positive" >&2
   exit 2
 fi
-for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS EXPECTED_BCRYPT_COST EXPECTED_AUTH_TOKEN_TTL EXPECTED_LOG_VERBOSITY; do
+for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS; do
+  value="${!variable}"
+  if ! operation_is_nonnegative_int64 "$value"; then
+    echo "${variable} must be a canonical non-negative Go int" >&2
+    exit 2
+  fi
+done
+for variable in EXPECTED_BCRYPT_COST EXPECTED_AUTH_TOKEN_TTL EXPECTED_LOG_VERBOSITY; do
   value="${!variable}"
   if ! [[ "$value" =~ ^[0-9]+$ ]]; then
     echo "${variable} must be a non-negative integer" >&2
