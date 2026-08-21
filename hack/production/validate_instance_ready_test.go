@@ -52,6 +52,7 @@ func fakeTLSKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--grpc-max-connection-age=1h\n" +
 		"--grpc-max-connection-age-grace=5m\n" +
 		"--tls-min-version=TLS1.2\n" +
+		"--tls-max-version=TLS1.3\n" +
 		"--cert-file=/etc/kubebrain/client-tls/tls.crt\n" +
 		"--key-file=/etc/kubebrain/client-tls/tls.key\n" +
 		"--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt\n" +
@@ -69,6 +70,7 @@ func expectedTLSGateEnv() []string {
 		"EXPECTED_GRPC_MAX_CONNECTION_AGE=1h",
 		"EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=5m",
 		"EXPECTED_TLS_MIN_VERSION=TLS1.2",
+		"EXPECTED_TLS_MAX_VERSION=TLS1.3",
 		"EXPECTED_CERT_FILE=/etc/kubebrain/client-tls/tls.crt",
 		"EXPECTED_KEY_FILE=/etc/kubebrain/client-tls/tls.key",
 		"EXPECTED_TRUSTED_CA_FILE=/etc/kubebrain/client-tls/ca.crt",
@@ -551,6 +553,24 @@ func TestValidateInstanceReady(t *testing.T) {
 			extraEnv:    []string{"EXPECTED_BCRYPT_COST=18446744073709551615", "EXPECTED_AUTH_TOKEN_TTL=18446744073709551615"},
 			wantKubectl: true,
 			wantOutput:  "bcrypt cost",
+		},
+		{
+			name:          "TLS maximum version is unsupported",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_TLS_MAX_VERSION=TLS1.4"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_TLS_MAX_VERSION must be empty, TLS1.2, or TLS1.3",
+		},
+		{
+			name:          "TLS version window is inverted",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_TLS_MIN_VERSION=TLS1.3", "EXPECTED_TLS_MAX_VERSION=TLS1.2"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_TLS_MIN_VERSION must not exceed EXPECTED_TLS_MAX_VERSION",
 		},
 		{
 			name:          "TiKV client pool size is not positive",

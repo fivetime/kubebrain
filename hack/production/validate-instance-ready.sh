@@ -54,6 +54,7 @@ EXPECTED_LOG_VERBOSITY="${EXPECTED_LOG_VERBOSITY:-2}"
 EXPECTED_GRPC_MAX_CONNECTION_AGE="${EXPECTED_GRPC_MAX_CONNECTION_AGE:-}"
 EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE="${EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE:-}"
 EXPECTED_TLS_MIN_VERSION="${EXPECTED_TLS_MIN_VERSION:-}"
+EXPECTED_TLS_MAX_VERSION="${EXPECTED_TLS_MAX_VERSION:-}"
 EXPECTED_CERT_FILE="${EXPECTED_CERT_FILE:-}"
 EXPECTED_KEY_FILE="${EXPECTED_KEY_FILE:-}"
 EXPECTED_TRUSTED_CA_FILE="${EXPECTED_TRUSTED_CA_FILE:-}"
@@ -256,6 +257,17 @@ for variable in EXPECTED_BCRYPT_COST EXPECTED_AUTH_TOKEN_TTL; do
 done
 if ! operation_is_nonnegative_int32 "$EXPECTED_LOG_VERBOSITY"; then
   echo "EXPECTED_LOG_VERBOSITY must be a canonical non-negative klog int32 level" >&2
+  exit 2
+fi
+for variable in EXPECTED_TLS_MIN_VERSION EXPECTED_TLS_MAX_VERSION; do
+  value="${!variable}"
+  if [[ -n "$value" && "$value" != "TLS1.2" && "$value" != "TLS1.3" ]]; then
+    echo "${variable} must be empty, TLS1.2, or TLS1.3" >&2
+    exit 2
+  fi
+done
+if [[ "$EXPECTED_TLS_MIN_VERSION" == "TLS1.3" && "$EXPECTED_TLS_MAX_VERSION" == "TLS1.2" ]]; then
+  echo "EXPECTED_TLS_MIN_VERSION must not exceed EXPECTED_TLS_MAX_VERSION" >&2
   exit 2
 fi
 for variable in EXPECTED_LEADER_LEASE_DURATION EXPECTED_LEADER_RENEW_DEADLINE EXPECTED_LEADER_RETRY_PERIOD; do
@@ -960,6 +972,7 @@ check_exact_kubebrain_arg "v" "$EXPECTED_LOG_VERBOSITY" "log verbosity"
 check_optional_kubebrain_arg "grpc-max-connection-age" "$EXPECTED_GRPC_MAX_CONNECTION_AGE" "gRPC max connection age"
 check_optional_kubebrain_arg "grpc-max-connection-age-grace" "$EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE" "gRPC max connection age grace"
 check_optional_kubebrain_arg "tls-min-version" "$EXPECTED_TLS_MIN_VERSION" "TLS min version"
+check_optional_kubebrain_arg "tls-max-version" "$EXPECTED_TLS_MAX_VERSION" "TLS max version"
 check_optional_kubebrain_arg "cert-file" "$EXPECTED_CERT_FILE" "client TLS cert file"
 check_optional_kubebrain_arg "key-file" "$EXPECTED_KEY_FILE" "client TLS key file"
 check_optional_kubebrain_arg "trusted-ca-file" "$EXPECTED_TRUSTED_CA_FILE" "client TLS CA file"
