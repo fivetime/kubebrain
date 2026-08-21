@@ -15,6 +15,11 @@ func TestNativePITRTargetRetirementDeletesOnlyAuthorizedUIDsAndPublishesReceipt(
 	parameters, digest := writeRetirementParameters(t, dir)
 	log := filepath.Join(dir, "log")
 	authorize := writeRetirementExecutable(t, dir, "authorize", `#!/usr/bin/env sh
+if [ -n "${BLOCK_MARKER:-}" ]; then
+  printf started >"$BLOCK_MARKER"
+  trap 'printf terminated >"$BLOCK_MARKER"; exit 143' TERM
+  while :; do sleep 0.05; done
+fi
 out=""; for arg in "$@"; do case "$arg" in --output=*) out="${arg#*=}";; esac; done
 printf '%s' '{"namespace":"tidb-cluster","tidb_cluster":"kb","tidb_cluster_uid":"tc-old","volumes":[{"pvc_name":"pd-kb-pd-0","pvc_uid":"pvc-pd"},{"pvc_name":"tikv-kb-tikv-0","pvc_uid":"pvc-tikv"}]}' >"$out"
 `)
@@ -33,6 +38,7 @@ exit 0
 	operationctl := writeRetirementExecutable(t, dir, "operationctl", `#!/usr/bin/env bash
 printf 'ctl %s\n' "$*" >>"$RETIRE_LOG"
 if [[ "$*" == *"--action claim"* ]]; then printf '{"name":"native-pitr-retire-%s","operation_id":"native-pitr-retire-%s","instance":"kubebrain","type":"NativePITRTargetRetirement","requested_by":"platform:native-pitr-target-retirement","attempt":1,"parameters_sha256":"%s"}\n' "${EXPECTED_DIGEST:0:20}" "${EXPECTED_DIGEST:0:20}" "$EXPECTED_DIGEST"; fi
+if [[ "$*" == *"--action heartbeat"* && -s "${BLOCK_MARKER:-/nonexistent}" ]]; then exit 1; fi
 `)
 	output, err := runProductionScriptCommand(t, "run-native-pitr-target-retirement-operation.sh", []string{"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest, "INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl, "RETIRE_AUTHORIZE=" + authorize, "UID_DELETE=" + uidDelete, "KUBECTL=" + kubectl, "RETIRE_INSPECT=" + inspector, "RECEIPT_VERIFY=" + verifier, "RETIRE_LOG=" + log})
 	require.NoError(t, err, string(output))
@@ -41,6 +47,19 @@ if [[ "$*" == *"--action claim"* ]]; then printf '{"name":"native-pitr-retire-%s
 	require.Contains(t, text, "--name=pd-kb-pd-0 --uid=pvc-pd")
 	require.Contains(t, text, "--name=tikv-kb-tikv-0 --uid=pvc-tikv")
 	require.Contains(t, text, "--action succeed")
+	require.NoError(t, os.Remove(log))
+	marker := filepath.Join(dir, "blocked-retirement")
+	output, err = runProductionScriptCommand(t, "run-native-pitr-target-retirement-operation.sh", []string{
+		"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
+		"INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl,
+		"RETIRE_AUTHORIZE=" + authorize, "UID_DELETE=" + uidDelete, "KUBECTL=" + kubectl,
+		"RETIRE_INSPECT=" + inspector, "RECEIPT_VERIFY=" + verifier, "RETIRE_LOG=" + log,
+		"HEARTBEAT_INTERVAL_SECONDS=0.05", "BLOCK_MARKER=" + marker,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "target retirement ownership was fenced")
+	require.Equal(t, "terminated", string(mustReadProductionFile(t, marker)))
+	require.NotContains(t, string(mustReadProductionFile(t, log)), "--action succeed")
 	output, err = runProductionScriptCommand(t, "run-native-pitr-target-retirement-operation.sh", []string{"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest, "INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl, "RETIRE_AUTHORIZE=" + authorize, "UID_DELETE=" + uidDelete, "KUBECTL=" + kubectl, "RETIRE_INSPECT=" + inspector, "RECEIPT_VERIFY=" + verifier, "RETIRE_LOG=" + log, "RETIRE_REPLACED_UID=true"})
 	require.Error(t, err, string(output))
 	require.Contains(t, string(output), "name was replaced")

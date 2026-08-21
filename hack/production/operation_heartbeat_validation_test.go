@@ -71,6 +71,8 @@ func TestDurableOperationWorkersRejectHeartbeatAtLeaseBeforeClaim(t *testing.T) 
 		{name: "legacy remediation", script: "run-legacy-snapshot-remediation-operation.sh", env: []string{"REMEDIATION_COMMAND=" + executable, "WORK_DIR=" + dir}},
 		{name: "native PITR backup", script: "run-native-pitr-full-backup-operation.sh", env: []string{"BACKUP_COMMAND=" + executable, "BR_BINARY=" + executable, "WORK_DIR=" + dir}},
 		{name: "native PITR restore", script: "run-native-pitr-full-restore-operation.sh", env: []string{"RESTORE_COMMAND=" + executable, "RECEIPT_VERIFY=" + executable, "BR_BINARY=" + executable, "WORK_DIR=" + dir, "INPUT_ROOT=" + dir}},
+		{name: "native PITR target provisioning", script: "run-native-pitr-target-provisioning-operation.sh"},
+		{name: "native PITR target retirement", script: "run-native-pitr-target-retirement-operation.sh"},
 		{name: "TiKV recovery", script: "run-tikv-transaction-recovery-operation.sh", env: []string{"RECOVERY_COMMAND=" + executable, "WORK_DIR=" + dir}},
 		{name: "TiKV repair", script: "run-tikv-transaction-repair-operation.sh", env: []string{"REPAIR_COMMAND=" + executable, "WORK_DIR=" + dir}},
 	} {
@@ -105,6 +107,8 @@ func TestHeartbeatOperationWorkersRejectNonCanonicalTimeBeforeClaim(t *testing.T
 		"run-legacy-snapshot-remediation-operation.sh",
 		"run-native-pitr-full-backup-operation.sh",
 		"run-native-pitr-full-restore-operation.sh",
+		"run-native-pitr-target-provisioning-operation.sh",
+		"run-native-pitr-target-retirement-operation.sh",
 		"run-post-restore-audit-operation.sh",
 		"run-restore-cutover-operation.sh",
 		"run-tikv-transaction-recovery-operation.sh",
@@ -119,6 +123,8 @@ func TestHeartbeatOperationWorkersRejectNonCanonicalTimeBeforeClaim(t *testing.T
 				"SNAPSHOT_COMMAND=" + executable, "RESTORE_COMMAND=" + executable, "REMEDIATION_COMMAND=" + executable,
 				"BACKUP_COMMAND=" + executable, "RECEIPT_VERIFY=" + executable, "BR_BINARY=" + executable,
 				"RECOVERY_COMMAND=" + executable, "REPAIR_COMMAND=" + executable,
+				"PROVISION=" + executable, "RETIRE_AUTHORIZE=" + executable, "UID_DELETE=" + executable,
+				"RETIRE_INSPECT=" + executable,
 			}
 			for _, invalid := range []string{"9223372036854775808", ".1", "01", "1.", "0.0000000001"} {
 				require.NoError(t, os.RemoveAll(called))
@@ -175,4 +181,26 @@ func TestNativePITRRestoreRejectsNonCanonicalWriterCheckBeforeClaim(t *testing.T
 	require.Contains(t, string(output), "WRITER_CHECK_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS")
 	require.Contains(t, string(output), "canonical positive decimal int64")
 	require.NoFileExists(t, called)
+}
+
+func TestNativePITRTargetRetirementRejectsUnsafeWaitBoundsBeforeClaim(t *testing.T) {
+	dir := t.TempDir()
+	called := filepath.Join(dir, "called")
+	executable := filepath.Join(dir, "operationctl")
+	require.NoError(t, os.WriteFile(executable, []byte("#!/usr/bin/env bash\nprintf called >\"$CALLED\"\nexit 0\n"), 0o755))
+
+	for _, bounds := range [][2]string{
+		{"9223372036854775808", "1"},
+		{"86401", "1"},
+		{"10", "11"},
+	} {
+		require.NoError(t, os.RemoveAll(called))
+		output, err := runProductionScriptCommand(t, "run-native-pitr-target-retirement-operation.sh", []string{
+			"WORKER_ID=worker-1", "LEASE_SECONDS=120", "OPERATIONCTL=" + executable, "CALLED=" + called,
+			"WAIT_TIMEOUT_SECONDS=" + bounds[0], "WAIT_INTERVAL_SECONDS=" + bounds[1],
+		})
+		require.Error(t, err)
+		require.Contains(t, string(output), "wait bounds must be positive int64 seconds")
+		require.NoFileExists(t, called)
+	}
 }

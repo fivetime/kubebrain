@@ -42,6 +42,8 @@ func TestHeartbeatOperationRunnersUseExactSharedTimeValidation(t *testing.T) {
 		"run-legacy-snapshot-remediation-operation.sh",
 		"run-native-pitr-full-backup-operation.sh",
 		"run-native-pitr-full-restore-operation.sh",
+		"run-native-pitr-target-provisioning-operation.sh",
+		"run-native-pitr-target-retirement-operation.sh",
 		"run-post-restore-audit-operation.sh",
 		"run-restore-cutover-operation.sh",
 		"run-tikv-transaction-recovery-operation.sh",

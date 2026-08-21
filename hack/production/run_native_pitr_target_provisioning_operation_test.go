@@ -26,15 +26,33 @@ func TestNativePITRTargetProvisioningOperationPublishesVerifiedReceipt(t *testin
 set -euo pipefail
 echo "$*" >>%q
 if [[ "$*" == *"--action claim"* ]];then printf '%%s\n' '{"name":"native-pitr-provision-%s","operation_id":"native-pitr-provision-%s","instance":"kubebrain","type":"NativePITRTargetProvisioning","requested_by":"platform:native-pitr-target-provisioning","attempt":1,"parameters_sha256":"%s"}';fi
+if [[ "$*" == *"--action heartbeat"* && -s "${BLOCK_MARKER:-/nonexistent}" ]];then exit 1;fi
 `, filepath.Join(dir, "log"), digest[:20], digest[:20], digest))
 	provision := filepath.Join(dir, "provision")
 	writeExecutable(t, provision, `#!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${BLOCK_MARKER:-}" ]]; then
+  printf started >"$BLOCK_MARKER"
+  trap 'printf terminated >"$BLOCK_MARKER"; exit 143' TERM
+  while :; do sleep 0.05; done
+fi
 printf provisioning >"$PROVISIONING_OUTPUT"; printf qualification >"$QUALIFICATION_OUTPUT"; printf target >"$TARGET_EMPTY_OUTPUT"; printf auth >"$AUTHORIZATION_OUTPUT"; printf creation >"$CREATION_OUTPUT"
 `)
 	_, err := runProductionScriptCommand(t, "run-native-pitr-target-provisioning-operation.sh", []string{"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest, "INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl, "PROVISION=" + provision})
 	require.NoError(t, err)
 	require.Contains(t, string(mustReadProductionFile(t, filepath.Join(dir, "log"))), "--action succeed")
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "log")))
+	marker := filepath.Join(dir, "blocked-provision")
+	output, err := runProductionScriptCommand(t, "run-native-pitr-target-provisioning-operation.sh", []string{
+		"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
+		"INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl, "PROVISION=" + provision,
+		"HEARTBEAT_INTERVAL_SECONDS=0.05", "BLOCK_MARKER=" + marker,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "target provisioning ownership was fenced")
+	require.Equal(t, "terminated", string(mustReadProductionFile(t, marker)))
+	require.NotContains(t, string(mustReadProductionFile(t, filepath.Join(dir, "log"))), "--action succeed")
 }
 
 func TestNativePITRTargetProvisioningSecondAttemptDelegatesDurableDryRunRecovery(t *testing.T) {
