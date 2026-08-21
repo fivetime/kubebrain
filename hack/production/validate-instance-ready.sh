@@ -62,6 +62,7 @@ EXPECTED_TLS_MAX_VERSION="${EXPECTED_TLS_MAX_VERSION:-}"
 EXPECTED_CIPHER_SUITES="${EXPECTED_CIPHER_SUITES:-}"
 EXPECTED_CORS="${EXPECTED_CORS:-}"
 EXPECTED_HOST_WHITELIST="${EXPECTED_HOST_WHITELIST:-}"
+EXPECTED_SKIP_KEY_PREFIXES="${EXPECTED_SKIP_KEY_PREFIXES:-}"
 EXPECTED_CERT_FILE="${EXPECTED_CERT_FILE:-}"
 EXPECTED_KEY_FILE="${EXPECTED_KEY_FILE:-}"
 EXPECTED_TRUSTED_CA_FILE="${EXPECTED_TRUSTED_CA_FILE:-}"
@@ -337,6 +338,24 @@ validate_host_allowlist() {
 }
 if ! validate_host_allowlist "$EXPECTED_HOST_WHITELIST"; then
   echo "EXPECTED_HOST_WHITELIST must be empty or a unique comma-separated hostname/IP allowlist without wildcard or port" >&2
+  exit 2
+fi
+validate_skip_key_prefixes() {
+  local value="$1" prefix existing
+  local -a prefixes accepted=()
+  [[ -z "$value" ]] && return 0
+  [[ "$value" != ,* && "$value" != *, && "$value" != *,,* ]] || return 1
+  IFS=',' read -r -a prefixes <<<"$value"
+  for prefix in "${prefixes[@]}"; do
+    [[ -n "$prefix" && "$prefix" != */ && ! "$prefix" =~ [[:cntrl:]] ]] || return 1
+    for existing in "${accepted[@]}"; do
+      [[ "$prefix" != "$existing"* && "$existing" != "$prefix"* ]] || return 1
+    done
+    accepted+=("$prefix")
+  done
+}
+if ! validate_skip_key_prefixes "$EXPECTED_SKIP_KEY_PREFIXES"; then
+  echo "EXPECTED_SKIP_KEY_PREFIXES must be empty or a comma-separated list of non-empty, non-overlapping prefixes without trailing slash or control characters" >&2
   exit 2
 fi
 for variable in EXPECTED_LEADER_LEASE_DURATION EXPECTED_LEADER_RENEW_DEADLINE EXPECTED_LEADER_RETRY_PERIOD; do
@@ -1068,6 +1087,7 @@ check_optional_kubebrain_arg "tls-max-version" "$EXPECTED_TLS_MAX_VERSION" "TLS 
 check_optional_kubebrain_arg "cipher-suites" "$EXPECTED_CIPHER_SUITES" "TLS cipher suites"
 check_optional_kubebrain_arg "cors" "$EXPECTED_CORS" "CORS origin allowlist"
 check_optional_kubebrain_arg "host-whitelist" "$EXPECTED_HOST_WHITELIST" "HTTP Host allowlist"
+check_optional_kubebrain_arg "skip-key-prefix" "$EXPECTED_SKIP_KEY_PREFIXES" "physical compaction skipped prefixes"
 check_optional_kubebrain_arg "cert-file" "$EXPECTED_CERT_FILE" "client TLS cert file"
 check_optional_kubebrain_arg "key-file" "$EXPECTED_KEY_FILE" "client TLS key file"
 check_optional_kubebrain_arg "trusted-ca-file" "$EXPECTED_TRUSTED_CA_FILE" "client TLS CA file"
