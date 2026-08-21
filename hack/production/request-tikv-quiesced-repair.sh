@@ -64,7 +64,7 @@ cluster_identity="$($JQ -er '
   [.metadata.uid, (.status.clusterID|tostring)] | select(all(.[]; type == "string" and length > 0)) | @tsv
 ' "$tidbcluster")" || die "quiesced repair request requires a Ready 3 PD/3 TiKV TidbCluster identity"
 IFS=$'\t' read -r tidb_uid cluster_id <<<"$cluster_identity"
-[[ "$cluster_id" =~ ^[1-9][0-9]*$ ]] || die "live cluster ID is invalid"
+is_positive_uint64 "$cluster_id" || die "live cluster ID must be a positive uint64"
 
 pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
 pending_json="$temp_dir/pending-peer.json"; down_json="$temp_dir/down-peer.json"

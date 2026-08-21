@@ -21,7 +21,7 @@ printf '%s\n' "$*" >>"$KUBECTL_LOG"
 if [[ "$*" == *"get statefulset kubebrain"* ]]; then
   printf 'kb-uid'
 elif [[ "$*" == *"get tidbcluster kb"* ]]; then
-  printf 'tc-uid\t7671'
+  printf 'tc-uid\t%s' "${FAKE_CLUSTER_ID:-7671}"
 elif [[ "$*" == *"get secret tikv-repair-"*"-parameters"* ]]; then
   exit 1
 elif [[ "$*" == *"create secret generic"* ]]; then
@@ -96,6 +96,30 @@ fi
 	require.Contains(t, operationCall, "--name tikv-repair-1bb5a469de669cd3422d")
 	require.Contains(t, operationCall, "--name tikv-repair-20592d90baca78bfdbac")
 	require.Equal(t, 2, strings.Count(operationCall, "--action submit"))
+
+	maxOutput, maxErr := runProductionScriptCommand(t, "request-tikv-transaction-repair.sh", []string{
+		"ALERT_INPUT=" + alertPath, "KUBE_CONTEXT=test-context",
+		"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379", "NOW_UNIX=1786253000",
+		"KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+		"OPERATIONCTL=" + operationctl, "OPERATION_LOG=" + operationLog,
+		"FAKE_CLUSTER_ID=18446744073709551615",
+	})
+	require.NoError(t, maxErr, string(maxOutput))
+	require.Equal(t, 3, strings.Count(string(mustRead(t, operationLog)), "--action submit"))
+
+	beforeOverflowLog := string(mustRead(t, kubectlLog))
+	overflowOutput, overflowErr := runProductionScriptCommand(t, "request-tikv-transaction-repair.sh", []string{
+		"ALERT_INPUT=" + alertPath, "KUBE_CONTEXT=test-context",
+		"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379", "NOW_UNIX=1786253000",
+		"KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+		"OPERATIONCTL=" + operationctl, "OPERATION_LOG=" + operationLog,
+		"FAKE_CLUSTER_ID=18446744073709551616",
+	})
+	require.Error(t, overflowErr)
+	require.Contains(t, string(overflowOutput), "positive uint64 cluster ID")
+	overflowKubectlLog := strings.TrimPrefix(string(mustRead(t, kubectlLog)), beforeOverflowLog)
+	require.NotContains(t, overflowKubectlLog, " secret ")
+	require.Equal(t, 3, strings.Count(string(mustRead(t, operationLog)), "--action submit"))
 }
 
 func TestRequestTiKVTransactionRepairRejectsResolvedAlertBeforeKubernetes(t *testing.T) {

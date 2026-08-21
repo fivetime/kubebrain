@@ -190,7 +190,8 @@ for value in "$kb_namespace" "$kb_statefulset" "$tidb_namespace" "$tidb_cluster"
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "repair resource identity is invalid"
 done
 [[ "$endpoint" =~ ^https?://[^[:space:],]+$ ]] || die "repair endpoint is invalid"
-[[ "$expected_cluster_id" =~ ^[1-9][0-9]*$ && "$required_failed_probes" =~ ^[1-9][0-9]*$ && "$probe_interval" =~ ^[0-9]+$ && "$probe_timeout" =~ ^[1-9][0-9]*$ && "$pod_timeout" =~ ^[1-9][0-9]*$ && "$cooldown" =~ ^[1-9][0-9]*$ ]] || die "repair numeric parameter is invalid"
+is_positive_uint64 "$expected_cluster_id" || die "repair cluster identity is not a positive uint64"
+[[ "$required_failed_probes" =~ ^[1-9][0-9]*$ && "$probe_interval" =~ ^[0-9]+$ && "$probe_timeout" =~ ^[1-9][0-9]*$ && "$pod_timeout" =~ ^[1-9][0-9]*$ && "$cooldown" =~ ^[1-9][0-9]*$ ]] || die "repair numeric parameter is invalid"
 if [[ "$repair_flow" == "quiesced" && ( "$probe_timeout" -gt 60 || "$pod_timeout" -gt 1800 ) ]]; then
   die "quiesced repair timeout parameter exceeds the requester bound"
 fi

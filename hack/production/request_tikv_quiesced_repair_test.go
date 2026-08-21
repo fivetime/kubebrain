@@ -22,7 +22,7 @@ args="$*"
 if [[ "$args" == *"get statefulset kubebrain -o json"* ]]; then
   printf '{"metadata":{"uid":"kb-uid"},"spec":{"replicas":0},"status":{"readyReplicas":0}}'
 elif [[ "$args" == *"get tidbcluster kb -o json"* ]]; then
-  printf '{"metadata":{"uid":"tc-uid"},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":7671,"conditions":[{"type":"Ready","status":"True"}]}}'
+  printf '{"metadata":{"uid":"tc-uid"},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":%s,"conditions":[{"type":"Ready","status":"True"}]}}' "${FAKE_CLUSTER_ID:-7671}"
 elif [[ "$args" == *"pending-peer"* ]]; then
   printf '{"count":1,"regions":[{"pending_peers":[{"store_id":%s}],"down_peers":[]}]}' "${FAKE_STORE_ID:-1005}"
 elif [[ "$args" == *"down-peer"* ]]; then
@@ -83,6 +83,34 @@ fi
 	require.NoError(t, maxErr, string(maxOutput))
 	require.Contains(t, string(maxOutput), "approved stores="+maxStoreID)
 	require.Contains(t, string(mustRead(t, operationLog)), "--name "+maxOperationName)
+
+	require.NoError(t, os.WriteFile(kubectlLog, nil, 0o600))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	maxClusterID := "18446744073709551615"
+	maxClusterOperation := "tikv-quiesced-repair-ddd81153220d45151bbf"
+	maxClusterOutput, maxClusterErr := runProductionScriptCommand(t, "request-tikv-quiesced-repair.sh", []string{
+		"REQUEST_ID=change-2026-002", "KUBE_CONTEXT=test-context",
+		"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379",
+		"KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+		"OPERATIONCTL=" + operationctl, "OPERATION_LOG=" + operationLog,
+		"FAKE_CLUSTER_ID=" + maxClusterID, "EXPECTED_OPERATION_NAME=" + maxClusterOperation,
+	})
+	require.NoError(t, maxClusterErr, string(maxClusterOutput))
+	require.Contains(t, string(mustRead(t, operationLog)), "--name "+maxClusterOperation)
+
+	require.NoError(t, os.WriteFile(kubectlLog, nil, 0o600))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	clusterOverflowOutput, clusterOverflowErr := runProductionScriptCommand(t, "request-tikv-quiesced-repair.sh", []string{
+		"REQUEST_ID=change-2026-002", "KUBE_CONTEXT=test-context",
+		"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379",
+		"KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+		"OPERATIONCTL=" + operationctl, "OPERATION_LOG=" + operationLog,
+		"FAKE_CLUSTER_ID=18446744073709551616",
+	})
+	require.Error(t, clusterOverflowErr)
+	require.Contains(t, string(clusterOverflowOutput), "live cluster ID must be a positive uint64")
+	require.NotContains(t, string(mustRead(t, kubectlLog)), " secret ")
+	require.Empty(t, mustRead(t, operationLog))
 
 	require.NoError(t, os.WriteFile(kubectlLog, nil, 0o600))
 	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))

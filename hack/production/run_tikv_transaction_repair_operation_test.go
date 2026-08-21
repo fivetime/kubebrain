@@ -187,6 +187,41 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 	require.Contains(t, oversizedOperations, "--action retry")
 	require.NotContains(t, oversizedOperations, "--action succeed")
 	require.Empty(t, mustRead(t, repairLog))
+
+	require.NoError(t, os.WriteFile(parameters, []byte(strings.Replace(string(parameterBytes), `"expected_cluster_id":7671`, `"expected_cluster_id":18446744073709551615`, 1)), 0o600))
+	maxClusterBytes := mustRead(t, parameters)
+	maxClusterDigest := fmt.Sprintf("%x", sha256.Sum256(maxClusterBytes))
+	for _, receipt := range receipts {
+		_ = os.Remove(receipt)
+	}
+	require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
+	maxClusterOutput, maxClusterErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-max-cluster", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + maxClusterDigest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+	})
+	require.NoError(t, maxClusterErr, string(maxClusterOutput))
+	require.Contains(t, string(mustRead(t, repairLog)), "EXPECTED_CLUSTER_ID=18446744073709551615")
+
+	maxClusterReceipts, err := filepath.Glob(filepath.Join(tempDir, "tikv-repair-*.receipt.json"))
+	require.NoError(t, err)
+	require.Len(t, maxClusterReceipts, 1)
+	require.Contains(t, string(mustRead(t, maxClusterReceipts[0])), `"cluster_id":18446744073709551615`)
+	require.NoError(t, os.Remove(maxClusterReceipts[0]))
+	overflowClusterBytes := []byte(strings.Replace(string(parameterBytes), `"expected_cluster_id":7671`, `"expected_cluster_id":18446744073709551616`, 1))
+	require.NoError(t, os.WriteFile(parameters, overflowClusterBytes, 0o600))
+	overflowClusterDigest := fmt.Sprintf("%x", sha256.Sum256(overflowClusterBytes))
+	require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
+	overflowClusterOutput, overflowClusterErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-overflow-cluster", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + overflowClusterDigest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+	})
+	require.Error(t, overflowClusterErr)
+	require.Contains(t, string(overflowClusterOutput), "cluster identity is not a positive uint64")
+	require.Empty(t, mustRead(t, repairLog))
 }
 
 func TestRunTiKVQuiescedRepairOperation(t *testing.T) {
@@ -302,6 +337,39 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786381000,"forma
 	})
 	require.Error(t, overflowErr)
 	require.Contains(t, string(overflowOutput), "store identity is not a positive uint64")
+	require.Empty(t, mustRead(t, repairLog))
+
+	maxClusterParameters := []byte(strings.Replace(string(parameterBytes), `"expected_cluster_id":7671`, `"expected_cluster_id":18446744073709551615`, 1))
+	require.NoError(t, os.WriteFile(parameters, maxClusterParameters, 0o600))
+	maxClusterDigest := fmt.Sprintf("%x", sha256.Sum256(maxClusterParameters))
+	require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
+	maxClusterOutput, maxClusterErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-q7", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + dir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + maxClusterDigest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+		"CLAIM_NAME=tikv-quiesced-repair-ddd81153220d45151bbf",
+	})
+	require.NoError(t, maxClusterErr, string(maxClusterOutput))
+	require.Contains(t, string(mustRead(t, repairLog)), "EXPECTED_CLUSTER_ID=18446744073709551615")
+	clusterReceipts, err := filepath.Glob(filepath.Join(dir, "tikv-repair-*.receipt.json"))
+	require.NoError(t, err)
+	require.Len(t, clusterReceipts, 1)
+	require.Contains(t, string(mustRead(t, clusterReceipts[0])), `"cluster_id":18446744073709551615`)
+	require.NoError(t, os.Remove(clusterReceipts[0]))
+
+	overflowClusterParameters := []byte(strings.Replace(string(parameterBytes), `"expected_cluster_id":7671`, `"expected_cluster_id":18446744073709551616`, 1))
+	require.NoError(t, os.WriteFile(parameters, overflowClusterParameters, 0o600))
+	overflowClusterDigest := fmt.Sprintf("%x", sha256.Sum256(overflowClusterParameters))
+	require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
+	overflowClusterOutput, overflowClusterErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-q8", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + dir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + overflowClusterDigest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+	})
+	require.Error(t, overflowClusterErr)
+	require.Contains(t, string(overflowClusterOutput), "cluster identity is not a positive uint64")
 	require.Empty(t, mustRead(t, repairLog))
 }
 

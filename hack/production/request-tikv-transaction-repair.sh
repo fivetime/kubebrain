@@ -18,8 +18,16 @@ DATE="${DATE:-date}"
 MAX_ALERT_INPUT_BYTES=1048576
 MAX_IDENTITY_RESPONSE_BYTES=4096
 MAX_EXISTING_SECRET_RESPONSE_BYTES=87389
+MAX_UINT64=18446744073709551615
 
 die() { echo "$*" >&2; exit 1; }
+is_positive_uint64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
+  if (( ${#value} == 20 )) && [[ "$value" > "$MAX_UINT64" ]]; then
+    return 1
+  fi
+}
 [[ -f "$ALERT_INPUT" ]] || die "ALERT_INPUT is required and must exist"
 command -v stat >/dev/null || die "stat is required"
 alert_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ ]] && ((size <= MAX_ALERT_INPUT_BYTES)); }
@@ -32,6 +40,8 @@ for value in "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$TIDB_NAMESPACE" "
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "resource identity must be a DNS label"
 done
 command -v "$JQ" >/dev/null || die "jq is required"
+[[ "$("$JQ" -jn --arg value "$MAX_UINT64" '$value | tonumber | tostring' 2>/dev/null)" == "$MAX_UINT64" ]] ||
+  die "jq must preserve unsigned 64-bit decimal identities"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 [[ -x "$OPERATIONCTL" ]] || die "OPERATIONCTL must be executable"
 temp_dir="$(mktemp -d)"
@@ -69,7 +79,8 @@ chmod 600 "$cluster_identity_file"; identity_size_is_valid "$cluster_identity_fi
 cluster_identity="$(<"$cluster_identity_file")"
 tidb_uid="${cluster_identity%%$'\t'*}"
 cluster_id="${cluster_identity#*$'\t'}"
-[[ -n "$kb_uid" && -n "$tidb_uid" && "$cluster_id" =~ ^[1-9][0-9]*$ ]] || die "live instance identity is incomplete"
+[[ -n "$kb_uid" && -n "$tidb_uid" ]] && is_positive_uint64 "$cluster_id" ||
+  die "live instance identity must contain a positive uint64 cluster ID"
 
 occurrence_id="$(printf '%s\n%s\n' "$fingerprint" "$starts_at" | sha256sum | cut -c1-20)"
 operation_name="tikv-repair-${occurrence_id}"
