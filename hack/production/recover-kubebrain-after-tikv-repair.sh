@@ -24,6 +24,8 @@ SYNC="${SYNC:-sync}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REGION_HEALTH_COMMAND="${REGION_HEALTH_COMMAND:-${SCRIPT_DIR}/validate-tikv-region-health.sh}"
 MAX_UINT64=18446744073709551615
+MAX_INT64=9223372036854775807
+MAX_UNIX_TIME_RESPONSE_BYTES=20
 
 die() { echo "$*" >&2; exit 1; }
 is_positive_uint64() {
@@ -31,6 +33,26 @@ is_positive_uint64() {
   [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
   if (( ${#value} == 20 )) && [[ "$value" > "$MAX_UINT64" ]]; then return 1; fi
 }
+is_positive_int64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,18}$ ]] || return 1
+  if (( ${#value} == 19 )) && [[ "$value" > "$MAX_INT64" ]]; then return 1; fi
+}
+capture_completion_time() (
+  local response size value
+  response="$(mktemp)" || return 1
+  trap 'rm -f -- "$response"' EXIT
+  chmod 600 "$response" || return 1
+  "$DATE" +%s >"$response" || return 1
+  size="$(stat -Lc '%s' -- "$response")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_UNIX_TIME_RESPONSE_BYTES" ]] || {
+    echo "completion time response exceeds ${MAX_UNIX_TIME_RESPONSE_BYTES} bytes" >&2
+    return 1
+  }
+  value="$(<"$response")"
+  is_positive_int64 "$value" || return 1
+  printf '%s\n' "$value"
+)
 
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required"
 [[ "$ALLOW_KUBEBRAIN_RECOVERY" == "true" ]] || die "refusing KubeBrain recovery without ALLOW_KUBEBRAIN_RECOVERY=true"
@@ -42,8 +64,8 @@ is_positive_uint64 "$EXPECTED_CLUSTER_ID" || die "EXPECTED_CLUSTER_ID must be a 
 [[ "$RECOVERY_REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "RECOVERY_REQUEST_ID must be a DNS-compatible external decision ID"
 [[ -n "$RECEIPT_OUTPUT" && "$RECEIPT_OUTPUT" == /* ]] || die "RECEIPT_OUTPUT must be an absolute path"
 [[ ! -e "$RECEIPT_OUTPUT" ]] || die "RECEIPT_OUTPUT already exists"
-[[ "$POD_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "POD_READY_TIMEOUT_SECONDS must be a positive integer"
-[[ "$PROBE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "PROBE_TIMEOUT_SECONDS must be a positive integer"
+is_positive_int64 "$POD_READY_TIMEOUT_SECONDS" || die "POD_READY_TIMEOUT_SECONDS must be a positive int64"
+is_positive_int64 "$PROBE_TIMEOUT_SECONDS" || die "PROBE_TIMEOUT_SECONDS must be a positive int64"
 (( POD_READY_TIMEOUT_SECONDS <= 1800 )) || die "POD_READY_TIMEOUT_SECONDS must be at most 1800"
 (( PROBE_TIMEOUT_SECONDS <= 60 )) || die "PROBE_TIMEOUT_SECONDS must be at most 60"
 [[ "$REGION_HEALTH_COMMAND" == /* && -x "$REGION_HEALTH_COMMAND" ]] || die "REGION_HEALTH_COMMAND must be an executable absolute path"
@@ -149,8 +171,7 @@ probe() {
 }
 probe || die "KubeBrain recovery transaction verification failed; data plane was returned to zero replicas"
 
-completed_at_unix="$($DATE +%s)"
-[[ "$completed_at_unix" =~ ^[1-9][0-9]*$ ]] || die "completion time is invalid"
+completed_at_unix="$(capture_completion_time)" || die "completion time is invalid"
 umask 077
 receipt_tmp="$(mktemp "${RECEIPT_OUTPUT}.tmp.${RECOVERY_ATTEMPT_ID}.XXXXXX")" || die "cannot create private recovery receipt"
 chmod 600 "$receipt_tmp" || die "cannot protect private recovery receipt"

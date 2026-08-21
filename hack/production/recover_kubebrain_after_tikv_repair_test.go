@@ -44,6 +44,45 @@ func TestRecoverKubeBrainAfterTiKVRepair(t *testing.T) {
 		require.NoFileExists(t, logPath)
 	})
 
+	t.Run("numeric controls reject int64 overflow before Kubernetes", func(t *testing.T) {
+		for _, variable := range []string{"POD_READY_TIMEOUT_SECONDS", "PROBE_TIMEOUT_SECONDS"} {
+			env, logPath := recoveryFixture(t)
+			env = append(env, variable+"=9223372036854775808")
+			output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+			require.Error(t, err)
+			require.Contains(t, string(output), variable+" must be a positive int64")
+			require.NoFileExists(t, logPath)
+		}
+	})
+
+	t.Run("MaxInt64 completion time remains exact", func(t *testing.T) {
+		env, _ := recoveryFixture(t)
+		env = append(env, "FAKE_DATE_OUTPUT=9223372036854775807")
+		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+		require.NoError(t, err, string(output))
+		require.Contains(t, string(mustRead(t, recoveryEnvValue(env, "RECEIPT_OUTPUT"))), `"completed_at_unix":9223372036854775807`)
+	})
+
+	t.Run("completion time int64 overflow rolls back without receipt", func(t *testing.T) {
+		env, logPath := recoveryFixture(t)
+		env = append(env, "FAKE_DATE_OUTPUT=9223372036854775808")
+		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+		require.Error(t, err)
+		require.Contains(t, string(output), "completion time is invalid")
+		require.NoFileExists(t, recoveryEnvValue(env, "RECEIPT_OUTPUT"))
+		require.Contains(t, readRecoveryLog(t, logPath), "scale statefulset kubebrain --replicas=0")
+	})
+
+	t.Run("oversized completion time response rolls back without receipt", func(t *testing.T) {
+		env, logPath := recoveryFixture(t)
+		env = append(env, "FAKE_DATE_OUTPUT=92233720368547758070")
+		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+		require.Error(t, err)
+		require.Contains(t, string(output), "completion time response exceeds 20 bytes")
+		require.NoFileExists(t, recoveryEnvValue(env, "RECEIPT_OUTPUT"))
+		require.Contains(t, readRecoveryLog(t, logPath), "scale statefulset kubebrain --replicas=0")
+	})
+
 	t.Run("UID evidence is strict JSON", func(t *testing.T) {
 		env, _ := recoveryFixture(t)
 		kbUID := `kb-uid"\evidence`
@@ -157,7 +196,7 @@ func recoveryFixture(t *testing.T) ([]string, string) {
 	require.NoError(t, os.WriteFile(statePath, []byte("0"), 0o600))
 	require.NoError(t, os.WriteFile(uidPath, []byte("kb-uid"), 0o600))
 	dateCommand := filepath.Join(dir, "date")
-	require.NoError(t, os.WriteFile(dateCommand, []byte("#!/usr/bin/env bash\nprintf '1786380000\\n'\n"), 0o755))
+	require.NoError(t, os.WriteFile(dateCommand, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"${FAKE_DATE_OUTPUT:-1786380000}\"\n"), 0o755))
 	syncCommand := filepath.Join(dir, "sync")
 	require.NoError(t, os.WriteFile(syncCommand, []byte(`#!/usr/bin/env bash
 set -euo pipefail
