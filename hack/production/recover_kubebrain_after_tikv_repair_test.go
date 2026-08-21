@@ -2,6 +2,7 @@ package production_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,6 +82,56 @@ func TestRecoverKubeBrainAfterTiKVRepair(t *testing.T) {
 		require.Contains(t, string(output), "completion time response exceeds 20 bytes")
 		require.NoFileExists(t, recoveryEnvValue(env, "RECEIPT_OUTPUT"))
 		require.Contains(t, readRecoveryLog(t, logPath), "scale statefulset kubebrain --replicas=0")
+	})
+
+	t.Run("oversized runtime responses fail within their safety phase", func(t *testing.T) {
+		cases := []struct {
+			name, target, want string
+			bytes              int
+			rolledBack         bool
+		}{
+			{"statefulset JSON", "statefulset", "control-plane JSON response exceeds 1048576 bytes", 1048577, false},
+			{"TidbCluster JSON", "tidbcluster", "control-plane JSON response exceeds 1048576 bytes", 1048577, false},
+			{"container args", "args", "container args response exceeds 65536 bytes", 65537, true},
+			{"transaction probe", "probe", "transaction probe response exceeds 65536 bytes", 65537, true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				env, logPath := recoveryFixture(t)
+				env = append(env, "FAKE_RESPONSE_TARGET="+tc.target, fmt.Sprintf("FAKE_RESPONSE_BYTES=%d", tc.bytes))
+				output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+				require.Error(t, err)
+				require.Contains(t, string(output), tc.want)
+				log := readRecoveryLog(t, logPath)
+				if tc.rolledBack {
+					require.Contains(t, log, "scale statefulset kubebrain --replicas=0")
+				} else {
+					require.NotContains(t, log, "scale statefulset")
+				}
+			})
+		}
+	})
+
+	t.Run("exact response budgets remain admissible", func(t *testing.T) {
+		for _, tc := range []struct {
+			target string
+			bytes  int
+		}{{"statefulset", 1048576}, {"tidbcluster", 1048576}, {"args", 65536}, {"probe", 65536}} {
+			env, _ := recoveryFixture(t)
+			env = append(env, "FAKE_RESPONSE_TARGET="+tc.target, fmt.Sprintf("FAKE_RESPONSE_BYTES=%d", tc.bytes))
+			output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+			require.NoError(t, err, "%s: %s", tc.target, output)
+		}
+	})
+
+	t.Run("oversized rollback UID refuses name-based rollback", func(t *testing.T) {
+		env, logPath := recoveryFixture(t)
+		env = append(env, "FAKE_REGION_FAIL_AT=2", "FAKE_RESPONSE_TARGET=rollback_uid", "FAKE_RESPONSE_BYTES=4097")
+		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
+		require.Error(t, err, string(output))
+		log := readRecoveryLog(t, logPath)
+		require.Contains(t, log, "scale statefulset kubebrain --replicas=3")
+		require.NotContains(t, log, "--replicas=0", "unbounded rollback identity must never authorize a mutation")
 	})
 
 	t.Run("UID evidence is strict JSON", func(t *testing.T) {
@@ -219,13 +270,19 @@ args=" $* "
 if [[ "$args" == *" get statefulset kubebrain -o json "* ]]; then
   replicas="$(<"$RECOVERY_STATE")"
   uid="$(<"$RECOVERY_UID")"
-  printf '{"metadata":{"uid":%s},"spec":{"replicas":%s},"status":{"readyReplicas":%s}}\n' "$(jq -cn --arg uid "$uid" '$uid')" "$replicas" "$replicas"
+  printf -v payload '{"metadata":{"uid":%s},"spec":{"replicas":%s},"status":{"readyReplicas":%s}}' "$(jq -cn --arg uid "$uid" '$uid')" "$replicas" "$replicas"
+  printf '%s' "$payload"
+  [[ "${FAKE_RESPONSE_TARGET:-}" != statefulset ]] || head -c "$((FAKE_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *" get statefulset kubebrain -o jsonpath={.metadata.uid} "* ]]; then
-  cat "$RECOVERY_UID"
+  payload="$(<"$RECOVERY_UID")"; printf '%s' "$payload"
+  [[ "${FAKE_RESPONSE_TARGET:-}" != rollback_uid ]] || head -c "$((FAKE_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *" get statefulset kubebrain -o jsonpath="* ]]; then
-  printf ''
+  payload="${FAKE_CONTAINER_ARGS:-}"; printf '%s' "$payload"
+  [[ "${FAKE_RESPONSE_TARGET:-}" != args ]] || head -c "$((FAKE_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *" get tidbcluster kb -o json "* ]]; then
-  printf '{"metadata":{"uid":%s},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":%s,"conditions":[{"type":"Ready","status":"True"}]}}\n' "$(jq -cn --arg uid "${FAKE_TC_UID:-tc-uid}" '$uid')" "${FAKE_CLUSTER_ID:-7671}"
+  printf -v payload '{"metadata":{"uid":%s},"spec":{"pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":%s,"conditions":[{"type":"Ready","status":"True"}]}}' "$(jq -cn --arg uid "${FAKE_TC_UID:-tc-uid}" '$uid')" "${FAKE_CLUSTER_ID:-7671}"
+  printf '%s' "$payload"
+  [[ "${FAKE_RESPONSE_TARGET:-}" != tidbcluster ]] || head -c "$((FAKE_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *" scale statefulset kubebrain --replicas="* ]]; then
   replicas="${args##*--replicas=}"
   replicas="${replicas%% *}"
@@ -235,7 +292,8 @@ elif [[ "$args" == *" rollout status statefulset/kubebrain "* ]]; then
 elif [[ "$args" == *" exec kubebrain-0 -c kubebrain -- etcdctl "* ]]; then
   if [[ "$args" == *" put "* ]]; then
     [[ "${FAKE_TRANSACTION_FAIL:-false}" != "true" ]] || exit 9
-    printf 'OK\n'
+    payload='OK'; printf '%s' "$payload"
+    [[ "${FAKE_RESPONSE_TARGET:-}" != probe ]] || head -c "$((FAKE_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
   elif [[ "$args" == *" get "* ]]; then
     printf 'recovered-%s\n' "${FAKE_TC_UID:-tc-uid}"
   elif [[ "$args" == *" del "* ]]; then

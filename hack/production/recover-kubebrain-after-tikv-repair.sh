@@ -26,6 +26,10 @@ REGION_HEALTH_COMMAND="${REGION_HEALTH_COMMAND:-${SCRIPT_DIR}/validate-tikv-regi
 MAX_UINT64=18446744073709551615
 MAX_INT64=9223372036854775807
 MAX_UNIX_TIME_RESPONSE_BYTES=20
+MAX_CONTROL_PLANE_JSON_RESPONSE_BYTES=1048576
+MAX_CONTROL_PLANE_SCALAR_RESPONSE_BYTES=4096
+MAX_CONTAINER_ARGS_RESPONSE_BYTES=65536
+MAX_TRANSACTION_PROBE_RESPONSE_BYTES=65536
 
 die() { echo "$*" >&2; exit 1; }
 is_positive_uint64() {
@@ -82,6 +86,20 @@ expected_tidb_uid_json="$("$JQ" -cn --arg value "$EXPECTED_TIDB_CLUSTER_UID" '$v
 context_args=()
 [[ "$KUBE_CONTEXT" == "in-cluster" ]] || context_args=(--context "$KUBE_CONTEXT")
 kctl() { "$COMMAND_TIMEOUT" --signal=TERM "${PROBE_TIMEOUT_SECONDS}s" "$KUBECTL" "${context_args[@]}" "$@"; }
+capture_kctl_output() (
+  local kind="$1" max_bytes="$2" response size
+  shift 2
+  response="$(mktemp)" || return 1
+  trap 'rm -f -- "$response"' EXIT
+  chmod 600 "$response" || return 1
+  kctl "$@" >"$response" || return 1
+  size="$(stat -Lc '%s' -- "$response")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le "$max_bytes" ]] || {
+    echo "$kind response exceeds ${max_bytes} bytes" >&2
+    return 1
+  }
+  cat "$response"
+)
 kctl_rollout() {
   "$COMMAND_TIMEOUT" --signal=TERM "$((POD_READY_TIMEOUT_SECONDS + 10))s" \
     "$KUBECTL" "${context_args[@]}" "$@"
@@ -89,7 +107,7 @@ kctl_rollout() {
 
 require_tidb_identity() {
   local cluster
-  cluster="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)" || return 1
+  cluster="$(capture_kctl_output "control-plane JSON" "$MAX_CONTROL_PLANE_JSON_RESPONSE_BYTES" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)" || return 1
   "$JQ" -e --arg uid "$EXPECTED_TIDB_CLUSTER_UID" --arg cluster_id "$EXPECTED_CLUSTER_ID" '
     .metadata.uid == $uid and
     (.status.clusterID | tostring) == $cluster_id and
@@ -100,7 +118,7 @@ require_tidb_identity() {
 
 require_kubebrain_state() {
   local desired="$1" ready="$2" statefulset
-  statefulset="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o json)" || return 1
+  statefulset="$(capture_kctl_output "control-plane JSON" "$MAX_CONTROL_PLANE_JSON_RESPONSE_BYTES" -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o json)" || return 1
   "$JQ" -e --arg uid "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" \
     --argjson desired "$desired" --argjson ready "$ready" '
     .metadata.uid == $uid and .spec.replicas == $desired and
@@ -126,7 +144,7 @@ rollback_on_failure() {
   local status="$?"
   [[ -z "$receipt_tmp" ]] || rm -f -- "$receipt_tmp"
   if [[ "$scaled" == "true" && "$completed" != "true" ]]; then
-    live_uid="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+    live_uid="$(capture_kctl_output "control-plane scalar" "$MAX_CONTROL_PLANE_SCALAR_RESPONSE_BYTES" -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
     if [[ "$live_uid" == "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
       kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null 2>&1 || true
     fi
@@ -146,7 +164,8 @@ require_kubebrain_state 3 3 || die "KubeBrain identity changed after the post-sc
 require_tidb_identity || die "TidbCluster identity/topology changed after the post-scale storage health gate"
 
 kb_pod="${KUBEBRAIN_STATEFULSET}-0"
-kb_args="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="kubebrain")].args[*]}{.}{"\n"}{end}')"
+kb_args="$(capture_kctl_output "container args" "$MAX_CONTAINER_ARGS_RESPONSE_BYTES" -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="kubebrain")].args[*]}{.}{"\n"}{end}')" ||
+  die "cannot read KubeBrain container arguments"
 etcdctl_tls_args=()
 if [[ "$ENDPOINT" == https://* ]]; then
   cert_file="$(sed -n 's/^--cert-file=//p' <<<"$kb_args")"
@@ -160,11 +179,11 @@ probe_key="/kubebrain-internal/tikv-repair-recovery/${EXPECTED_CLUSTER_ID}/${REC
 probe_value="recovered-${EXPECTED_TIDB_CLUSTER_UID}"
 probe() {
   local output
-  output="$(kctl -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
-    etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" put "$probe_key" "$probe_value" 2>/dev/null)" || return 1
+  output="$(capture_kctl_output "transaction probe" "$MAX_TRANSACTION_PROBE_RESPONSE_BYTES" -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
+    etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" put "$probe_key" "$probe_value")" || return 1
   [[ "$output" == *"OK"* ]] || return 1
-  output="$(kctl -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
-    etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" get "$probe_key" --print-value-only 2>/dev/null)" || return 1
+  output="$(capture_kctl_output "transaction probe" "$MAX_TRANSACTION_PROBE_RESPONSE_BYTES" -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
+    etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" get "$probe_key" --print-value-only)" || return 1
   [[ "$output" == "$probe_value" ]] || return 1
   kctl -n "$KUBEBRAIN_NAMESPACE" exec "$kb_pod" -c kubebrain -- \
     etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" del "$probe_key" >/dev/null 2>&1
