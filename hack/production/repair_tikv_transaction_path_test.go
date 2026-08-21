@@ -87,7 +87,9 @@ elif [[ "$args" == *"get pods -l"* && "$args" == *"component=pd"* ]]; then
   done
   printf '%s' "$payload"; [[ "${FAKE_POD_INVENTORY_TARGET:-}" != pd ]] || head -c "$((FAKE_POD_INVENTORY_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"containers"* ]]; then
-  printf '%s\n' '--advertise-client-urls=http://kubebrain-client.kubebrain-system.svc:3379'
+  payload='--advertise-client-urls=http://kubebrain-client.kubebrain-system.svc:3379'
+  printf '%s\n' "$payload"
+  [[ -z "${FAKE_CONTAINER_ARGS_BYTES:-}" ]] || head -c "$((FAKE_CONTAINER_ARGS_BYTES-${#payload}-1))" /dev/zero | tr '\0' '\n'
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"readyReplicas"* ]]; then
   printf '0'
 elif [[ "$args" == *"exec kubebrain-0"* ]]; then
@@ -303,6 +305,32 @@ fi
 				require.NoError(t, boundaryErr, string(boundaryOutput))
 				require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
 			}
+		}
+	}
+	for _, size := range []int{65537, 65536} {
+		caseState := filepath.Join(tempDir, "container-args-"+strconv.Itoa(size))
+		require.NoError(t, os.Mkdir(caseState, 0o755))
+		caseReceipt := filepath.Join(caseState, "receipt.json")
+		caseLog := filepath.Join(caseState, "kubectl.log")
+		caseEnv := append([]string(nil), env...)
+		caseEnv = append(caseEnv,
+			"FAKE_STATE="+caseState,
+			"FAKE_LOG="+caseLog,
+			"RECEIPT_OUTPUT="+caseReceipt,
+			"FAKE_CONTAINER_ARGS_BYTES="+strconv.Itoa(size),
+		)
+		boundaryOutput, boundaryErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+		if size > 65536 {
+			require.Error(t, boundaryErr)
+			require.Contains(t, string(boundaryOutput), "container args response exceeds 65536 bytes")
+			require.NoFileExists(t, caseReceipt)
+			caseLogData, readErr := os.ReadFile(caseLog)
+			require.NoError(t, readErr)
+			require.NotContains(t, string(caseLogData), " scale statefulset ")
+			require.NotContains(t, string(caseLogData), "delete pod kb-tikv-")
+		} else {
+			require.NoError(t, boundaryErr, string(boundaryOutput))
+			require.Contains(t, string(boundaryOutput), "transaction-path repair succeeded")
 		}
 	}
 

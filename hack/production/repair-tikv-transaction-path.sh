@@ -41,6 +41,7 @@ MAX_STORAGE_RESPONSE_BYTES=1048576
 MAX_POD_INVENTORY_RESPONSE_BYTES=1048576
 MAX_POD_IDENTITY_RESPONSE_BYTES=4096
 MAX_CONTROL_PLANE_SCALAR_RESPONSE_BYTES=4096
+MAX_CONTAINER_ARGS_RESPONSE_BYTES=65536
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -225,6 +226,18 @@ capture_pod_identity() {
   fi
   cat "$response"
 }
+capture_container_args() {
+  local response size
+  response="$(mktemp "$response_dir/container-args.XXXXXX")" || return 1
+  kctl "$@" >"$response" || return 1
+  chmod 600 "$response" || return 1
+  size="$(stat -Lc '%s' -- "$response")" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ || "$size" -gt "$MAX_CONTAINER_ARGS_RESPONSE_BYTES" ]]; then
+    echo "container args response exceeds ${MAX_CONTAINER_ARGS_RESPONSE_BYTES} bytes" >&2
+    return 1
+  fi
+  cat "$response"
+}
 quantity_to_kib() {
   local quantity="$1" value unit multiplier
   if [[ "$quantity" =~ ^([1-9][0-9]*)(Ki|Mi|Gi|Ti)$ ]]; then
@@ -387,7 +400,8 @@ require_kubebrain_quiesced() {
 }
 
 kb_pod="${KUBEBRAIN_STATEFULSET}-0"
-kb_args="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="kubebrain")].args[*]}{.}{"\n"}{end}')"
+kb_args="$(capture_container_args -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="kubebrain")].args[*]}{.}{"\n"}{end}')" ||
+  die "cannot read KubeBrain container args"
 etcdctl_tls_args=()
 if [[ "$ENDPOINT" == https://* ]]; then
   cert_file="$(sed -n 's/^--cert-file=//p' <<<"$kb_args")"
