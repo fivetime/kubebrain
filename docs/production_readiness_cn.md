@@ -5692,7 +5692,9 @@ worker 镜像配置受控、可执行且必须幂等的 `PUBLISH_OVERLAP_COMMAND
 `PUBLISH_FINAL_COMMAND`。hook 只接收固定 operation/instance/参数文件环境。runner
 还会在任何 gate 或 hook 前独立校验数据面 namespace 是 DNS label，且 endpoint 不含
 控制字符、DEL、引号或反斜杠；claim 返回的 rotation ID 和 instance 也必须匹配受控资源
-标识格式。该边界不依赖可替换的 rotation 子命令自行实现。
+标识格式。`expected_replicas` 在 worker 与直接 rotation gate 两层都必须是规范正
+`int64`；越界值必须在 gate/hook、Kubernetes 查询或 durable state 写入前拒绝，不能交给
+awk、jq 或 shell 数值比较产生不同解释。该边界不依赖可替换的 rotation 子命令自行实现。
 
 完整顺序为 begin gate、发布双 CA、overlap gate、发布仅新 CA/叶证书、complete gate。
 state-only 接管从双 CA 发布继续，overlap marker 从最终发布继续，已有 receipt 则重做

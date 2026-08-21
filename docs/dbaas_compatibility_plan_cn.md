@@ -59117,6 +59117,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （176.227/528.191/296.860/493.908 秒）。本项不改变合法备份格式、Object Lock receipt、owner fencing
   或在线 etcd/TiKV 数据语义，只使 worker admission 与实际 Go 消费端共享精确可表示域。
 
+- A5263 封闭 CertificateRotation 的副本数入口。旧 worker 与 direct primitive 都只用无界正数字正则接收
+  `expected_replicas`，随后同一值参与 shell 基数比较、awk 状态验证和 jq `--argjson` receipt，MaxInt64+1
+  可能在证书发布链的不同工具中得到不同解释。现两层统一要求规范正 int64；worker 回归证明不启动任何
+  begin/overlap/complete gate 或发布 hook，direct 回归用独立 kubectl 调用日志证明零 Kubernetes 查询，并
+  证明不写 state/receipt。正常三阶段证书轮换保持通过。聚焦连续两轮 8.757 秒、race 5.513 秒，bash syntax、
+  diff check 与全仓 vet 通过；production 清单增至 439 项并按 100/123/112/104 四片在最终测试状态全部通过
+  （132.909/462.937/262.494/441.422 秒）。本项不改变合法副本数、证书发布顺序、receipt/fencing 或在线
+  etcd/TiKV TLS 语义，只让副本基数在首次外部副作用前具有一致可表示域。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
