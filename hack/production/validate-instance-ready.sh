@@ -57,6 +57,8 @@ EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE="${EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE
 EXPECTED_TLS_MIN_VERSION="${EXPECTED_TLS_MIN_VERSION:-}"
 EXPECTED_TLS_MAX_VERSION="${EXPECTED_TLS_MAX_VERSION:-}"
 EXPECTED_CIPHER_SUITES="${EXPECTED_CIPHER_SUITES:-}"
+EXPECTED_CORS="${EXPECTED_CORS:-}"
+EXPECTED_HOST_WHITELIST="${EXPECTED_HOST_WHITELIST:-}"
 EXPECTED_CERT_FILE="${EXPECTED_CERT_FILE:-}"
 EXPECTED_KEY_FILE="${EXPECTED_KEY_FILE:-}"
 EXPECTED_TRUSTED_CA_FILE="${EXPECTED_TRUSTED_CA_FILE:-}"
@@ -297,6 +299,41 @@ if ! validate_cipher_suites "$EXPECTED_CIPHER_SUITES"; then
 fi
 if [[ "$EXPECTED_TLS_MIN_VERSION" == "TLS1.3" && -n "$EXPECTED_CIPHER_SUITES" ]]; then
   echo "EXPECTED_CIPHER_SUITES must be empty when only TLS1.3 is enabled" >&2
+  exit 2
+fi
+validate_cors_allowlist() {
+  local value="$1" origin
+  local -a origins
+  local -A seen=()
+  [[ -z "$value" ]] && return 0
+  [[ "$value" != "*" && "$value" != ,* && "$value" != *, && "$value" != *,,* ]] || return 1
+  IFS=',' read -r -a origins <<<"$value"
+  for origin in "${origins[@]}"; do
+    [[ "$origin" =~ ^https?://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9][A-Za-z0-9.-]*)(:([1-9][0-9]{0,4}))?$ ]] || return 1
+    [[ -z "${BASH_REMATCH[3]:-}" ]] || (( 10#${BASH_REMATCH[3]} <= 65535 )) || return 1
+    [[ -z "${seen[$origin]+present}" ]] || return 1
+    seen[$origin]=1
+  done
+}
+if ! validate_cors_allowlist "$EXPECTED_CORS"; then
+  echo "EXPECTED_CORS must be empty or a unique comma-separated HTTP(S) origin allowlist without wildcard, credentials, path, query, or fragment" >&2
+  exit 2
+fi
+validate_host_allowlist() {
+  local value="$1" host
+  local -a hosts
+  local -A seen=()
+  [[ -z "$value" ]] && return 0
+  [[ "$value" != "*" && "$value" != ,* && "$value" != *, && "$value" != *,,* ]] || return 1
+  IFS=',' read -r -a hosts <<<"$value"
+  for host in "${hosts[@]}"; do
+    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ || "$host" =~ ^[0-9A-Fa-f]*:[0-9A-Fa-f:]+$ ]] || return 1
+    [[ -z "${seen[$host]+present}" ]] || return 1
+    seen[$host]=1
+  done
+}
+if ! validate_host_allowlist "$EXPECTED_HOST_WHITELIST"; then
+  echo "EXPECTED_HOST_WHITELIST must be empty or a unique comma-separated hostname/IP allowlist without wildcard or port" >&2
   exit 2
 fi
 for variable in EXPECTED_LEADER_LEASE_DURATION EXPECTED_LEADER_RENEW_DEADLINE EXPECTED_LEADER_RETRY_PERIOD; do
@@ -1004,6 +1041,8 @@ check_optional_kubebrain_arg "grpc-max-connection-age-grace" "$EXPECTED_GRPC_MAX
 check_optional_kubebrain_arg "tls-min-version" "$EXPECTED_TLS_MIN_VERSION" "TLS min version"
 check_optional_kubebrain_arg "tls-max-version" "$EXPECTED_TLS_MAX_VERSION" "TLS max version"
 check_optional_kubebrain_arg "cipher-suites" "$EXPECTED_CIPHER_SUITES" "TLS cipher suites"
+check_optional_kubebrain_arg "cors" "$EXPECTED_CORS" "CORS origin allowlist"
+check_optional_kubebrain_arg "host-whitelist" "$EXPECTED_HOST_WHITELIST" "HTTP Host allowlist"
 check_optional_kubebrain_arg "cert-file" "$EXPECTED_CERT_FILE" "client TLS cert file"
 check_optional_kubebrain_arg "key-file" "$EXPECTED_KEY_FILE" "client TLS key file"
 check_optional_kubebrain_arg "trusted-ca-file" "$EXPECTED_TRUSTED_CA_FILE" "client TLS CA file"

@@ -56,6 +56,7 @@ func fakeTLSKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--tls-min-version=TLS1.2\n" +
 		"--tls-max-version=TLS1.3\n" +
 		"--cipher-suites=" + productionCipherSuites + "\n" +
+		"--cors=https://instance.example:2379\n" +
 		"--cert-file=/etc/kubebrain/client-tls/tls.crt\n" +
 		"--key-file=/etc/kubebrain/client-tls/tls.key\n" +
 		"--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt\n" +
@@ -75,6 +76,7 @@ func expectedTLSGateEnv() []string {
 		"EXPECTED_TLS_MIN_VERSION=TLS1.2",
 		"EXPECTED_TLS_MAX_VERSION=TLS1.3",
 		"EXPECTED_CIPHER_SUITES=" + productionCipherSuites,
+		"EXPECTED_CORS=https://instance.example:2379",
 		"EXPECTED_CERT_FILE=/etc/kubebrain/client-tls/tls.crt",
 		"EXPECTED_KEY_FILE=/etc/kubebrain/client-tls/tls.key",
 		"EXPECTED_TRUSTED_CA_FILE=/etc/kubebrain/client-tls/ca.crt",
@@ -557,6 +559,42 @@ func TestValidateInstanceReady(t *testing.T) {
 			extraEnv:    []string{"EXPECTED_BCRYPT_COST=18446744073709551615", "EXPECTED_AUTH_TOKEN_TTL=18446744073709551615"},
 			wantKubectl: true,
 			wantOutput:  "bcrypt cost",
+		},
+		{
+			name:          "CORS allowlist cannot use wildcard",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_CORS=*"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_CORS must be empty or a unique comma-separated HTTP(S) origin allowlist",
+		},
+		{
+			name:          "CORS allowlist cannot include a path",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_CORS=https://instance.example/v3"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_CORS must be empty or a unique comma-separated HTTP(S) origin allowlist",
+		},
+		{
+			name:          "Host allowlist cannot use wildcard",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_HOST_WHITELIST=*"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_HOST_WHITELIST must be empty or a unique comma-separated hostname/IP allowlist",
+		},
+		{
+			name:        "plaintext Host allowlist reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_HOST_WHITELIST=kubebrain-client.kubebrain-system.svc"},
+			wantKubectl: true,
+			wantOutput:  "HTTP Host allowlist",
 		},
 		{
 			name:          "gRPC gateway enablement is not boolean",

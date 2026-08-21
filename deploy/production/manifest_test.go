@@ -110,6 +110,10 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Contains(t, args, "--tikv-client-num=16")
 			require.Contains(t, args, "--enable-storage-metrics=true")
 			require.Contains(t, args, "--enable-grpc-gateway=true")
+			require.Contains(t, args, "--cors="+tc.scheme+"://kubebrain-client.kubebrain-system.svc:3379")
+			if tc.scheme == "http" {
+				require.Contains(t, args, "--host-whitelist=kubebrain-client.kubebrain-system.svc")
+			}
 			quotaArgs := 0
 			for _, arg := range args {
 				if strings.HasPrefix(arg, "--quota-backend-bytes=") {
@@ -126,6 +130,10 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Equal(t, "/ready", nestedString(t, containerObject, "readinessProbe", "httpGet", "path"))
 			require.Equal(t, "/ping", nestedString(t, containerObject, "livenessProbe", "httpGet", "path"))
 			require.Equal(t, "/ping", nestedString(t, containerObject, "startupProbe", "httpGet", "path"))
+			for _, probe := range []string{"readinessProbe", "livenessProbe", "startupProbe"} {
+				require.Equal(t, "HTTP", nestedString(t, containerObject, probe, "httpGet", "scheme"))
+				require.Equal(t, "info", nestedString(t, containerObject, probe, "httpGet", "port"))
+			}
 			if tc.file == "kubebrain-tls.yaml" {
 				require.Contains(t, args, "--cert-file=/etc/kubebrain/client-tls/tls.crt")
 				require.Contains(t, args, "--key-file=/etc/kubebrain/client-tls/tls.key")
@@ -220,6 +228,7 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 		"--count-index-max-keys=5000000",
 		"--enable-storage-metrics=true",
 		"--enable-grpc-gateway=true",
+		"--cors=" + scheme + "://kubebrain-client.kubebrain-system.svc:3379",
 		"--quota-backend-bytes=429496729600",
 		"--leader-lease-duration=30s",
 		"--leader-renew-deadline=25s",
@@ -257,6 +266,8 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 			"--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc.cluster.local",
 			"--peer-client-cert-auth=true",
 		)
+	} else {
+		args = append(args, "--host-whitelist=kubebrain-client.kubebrain-system.svc")
 	}
 	args = append(args, "--v=2")
 	return args
