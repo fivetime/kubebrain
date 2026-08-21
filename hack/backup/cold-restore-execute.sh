@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+PRODUCTION_DIR="${ROOT_DIR}/hack/production"
+. "${PRODUCTION_DIR}/operation-time-validation.sh"
+
 RECEIPT_FILE="${RECEIPT_FILE:-}"
 RESTORE_MANIFEST="${RESTORE_MANIFEST:-}"
 RESTORE_RECEIPT_FILE="${RESTORE_RECEIPT_FILE:-}"
@@ -22,7 +25,7 @@ fail_input() { echo "$1" >&2; exit 2; }
 [[ -n "$KUBE_CONTEXT" ]] || fail_input "KUBE_CONTEXT is required; the current context is never accepted implicitly"
 [[ -n "$EXPECTED_TARGET_KUBE_SYSTEM_UID" ]] || fail_input "EXPECTED_TARGET_KUBE_SYSTEM_UID is required"
 [[ -n "$EXPECTED_TARGET_NAMESPACE_UID" ]] || fail_input "EXPECTED_TARGET_NAMESPACE_UID is required"
-[[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*(s|m|h)$ ]] || fail_input "WAIT_TIMEOUT must be a positive kubectl duration"
+operation_is_positive_int64_duration "$WAIT_TIMEOUT" || fail_input "WAIT_TIMEOUT must contain a positive int64 followed by s, m, or h"
 command -v jq >/dev/null 2>&1 || fail_input "jq is required"
 command -v sha256sum >/dev/null 2>&1 || fail_input "sha256sum is required"
 read -r -a cold_restore_render_command <<<"$COLD_RESTORE_RENDER_COMMAND"

@@ -50,3 +50,20 @@ exit 99
 	require.NotContains(t, calls, "delete")
 	require.NotContains(t, calls, "tidbcluster")
 }
+
+func TestRequestColdPhysicalRestoreRejectsWaitOverflowBeforeKubernetes(t *testing.T) {
+	dir := t.TempDir()
+	receipt := filepath.Join(dir, "snapshot.json")
+	require.NoError(t, os.WriteFile(receipt, []byte(`{}`), 0o600))
+	kubectlLog := filepath.Join(dir, "kubectl.log")
+	kubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(kubectl, []byte("#!/usr/bin/env bash\nprintf called >>\"$KUBECTL_LOG\"\n"), 0o755))
+	output, err := runProductionScriptCommand(t, "request-cold-physical-restore.sh", []string{
+		"REQUEST_ID=change-overflow", "RECEIPT_FILE=" + receipt, "KUBE_CONTEXT=isolated",
+		"TARGET_SNAPSHOT_CLASS=retained", "TARGET_STORAGE_CLASS=fast",
+		"WAIT_TIMEOUT=9223372036854775808s", "KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "WAIT_TIMEOUT must contain a positive int64")
+	require.NoFileExists(t, kubectlLog)
+}

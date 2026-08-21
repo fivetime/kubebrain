@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PRODUCTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "${PRODUCTION_DIR}/operation-time-validation.sh"
+
 REQUEST_ID="${REQUEST_ID:-}"; RECEIPT_FILE="${RECEIPT_FILE:-}"; KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 TARGET_SNAPSHOT_CLASS="${TARGET_SNAPSHOT_CLASS:-}"; TARGET_STORAGE_CLASS="${TARGET_STORAGE_CLASS:-}"
 OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"; WAIT_TIMEOUT="${WAIT_TIMEOUT:-15m}"
@@ -15,7 +18,7 @@ resolve_executable() {
 }
 [[ "$REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "REQUEST_ID must be a DNS-compatible external restore decision ID"
 [[ -f "$RECEIPT_FILE" && -n "$KUBE_CONTEXT" && -n "$TARGET_SNAPSHOT_CLASS" && -n "$TARGET_STORAGE_CLASS" ]] || die "receipt, explicit target context, snapshot class and storage class are required"
-[[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*(s|m|h)$ ]] || die "WAIT_TIMEOUT is invalid"
+operation_is_positive_int64_duration "$WAIT_TIMEOUT" || die "WAIT_TIMEOUT must contain a positive int64 followed by s, m, or h"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE is invalid"
 OPERATIONCTL="$(resolve_executable "$OPERATIONCTL")" || die "operationctl must be executable"
 COLD_RESTORE_RENDER="$(resolve_executable "$COLD_RESTORE_RENDER")" || die "cold restore renderer must be executable"

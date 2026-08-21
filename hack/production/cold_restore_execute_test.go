@@ -278,6 +278,27 @@ func TestColdRestoreExecute(t *testing.T) {
 	}
 }
 
+func TestColdRestoreExecuteRejectsWaitOverflowBeforeTargetAccess(t *testing.T) {
+	dir := t.TempDir()
+	receipt := filepath.Join(dir, "snapshot.json")
+	manifest := filepath.Join(dir, "manifest.json")
+	require.NoError(t, os.WriteFile(receipt, []byte(`{}`), 0o600))
+	require.NoError(t, os.WriteFile(manifest, []byte(`{}`), 0o600))
+	kubectlLog := filepath.Join(dir, "kubectl.log")
+	kubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(kubectl, []byte("#!/usr/bin/env bash\nprintf called >>\"$KUBECTL_LOG\"\n"), 0o755))
+	output, err := runProductionScriptCommand(t, "../backup/cold-restore-execute.sh", []string{
+		"RECEIPT_FILE=" + receipt, "RESTORE_MANIFEST=" + manifest,
+		"RESTORE_RECEIPT_FILE=" + filepath.Join(dir, "restore-receipt.json"),
+		"KUBE_CONTEXT=isolated", "EXPECTED_TARGET_KUBE_SYSTEM_UID=kube-uid",
+		"EXPECTED_TARGET_NAMESPACE_UID=namespace-uid", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+		"WAIT_TIMEOUT=9223372036854775808s", "KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "WAIT_TIMEOUT must contain a positive int64")
+	require.NoFileExists(t, kubectlLog)
+}
+
 func TestColdRestoreExecuteRequiresExplicitAdmissionBeforeTargetAccess(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

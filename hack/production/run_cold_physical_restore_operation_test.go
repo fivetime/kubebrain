@@ -65,6 +65,16 @@ jq -cn --arg source "$SOURCE_OPERATION" --arg sha "$EXPECTED_SOURCE_SHA" --arg k
 	failureOperations := string(mustRead(t, operationLog))
 	require.Contains(t, failureOperations, "--action fail")
 	require.NotContains(t, failureOperations, "--action retry")
+	require.NoError(t, os.WriteFile(parameters, []byte(strings.Replace(string(parameterBytes), `"wait_timeout":"15m"`, `"wait_timeout":"9223372036854775808m"`, 1)), 0o600))
+	overflowBytes := mustRead(t, parameters)
+	overflowDigest := fmt.Sprintf("%x", sha256.Sum256(overflowBytes))
+	require.NoError(t, os.WriteFile(restoreLog, nil, 0o600))
+	overflowOutput, overflowErr := runProductionScriptCommand(t, "run-cold-physical-restore-operation.sh", append(env,
+		"WORKER_ID=worker-numeric-overflow", "EXPECTED_DIGEST="+overflowDigest))
+	require.Error(t, overflowErr)
+	require.Contains(t, string(overflowOutput), "restore wait timeout does not contain a positive int64 duration")
+	require.Empty(t, mustRead(t, restoreLog), "wait overflow must fail before the destructive restore primitive")
+	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
 
 	oversized := append(append([]byte{}, parameterBytes...), []byte(strings.Repeat(" ", 65536))...)
 	require.NoError(t, os.WriteFile(parameters, oversized, 0o600))
