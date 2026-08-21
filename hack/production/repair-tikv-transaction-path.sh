@@ -46,6 +46,7 @@ MAX_DISK_USAGE_RESPONSE_BYTES=65536
 MAX_TRANSACTION_PROBE_RESPONSE_BYTES=65536
 MAX_UNIX_TIME_RESPONSE_BYTES=20
 MAX_UNIX_TIME=9223372036854775807
+MAX_UINT64=18446744073709551615
 
 die() { echo "$*" >&2; exit 1; }
 is_positive_int64() {
@@ -57,6 +58,13 @@ is_positive_int64() {
 }
 is_nonnegative_int64() {
   [[ "$1" == "0" ]] || is_positive_int64 "$1"
+}
+is_positive_uint64() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]{0,19}$ ]] || return 1
+  if (( ${#value} == 20 )) && [[ "$value" > "$MAX_UINT64" ]]; then
+    return 1
+  fi
 }
 
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required"
@@ -71,7 +79,7 @@ if [[ "$REPAIR_MODE" == "quiesced" ]]; then
 fi
 [[ -n "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]] || die "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required"
 [[ -n "$EXPECTED_TIDB_CLUSTER_UID" ]] || die "EXPECTED_TIDB_CLUSTER_UID is required"
-[[ "$EXPECTED_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]] || die "EXPECTED_CLUSTER_ID must be a positive integer"
+is_positive_uint64 "$EXPECTED_CLUSTER_ID" || die "EXPECTED_CLUSTER_ID must be a positive uint64"
 [[ "$ENDPOINT" =~ ^https?://[^[:space:],]+$ ]] || die "ENDPOINT must be exactly one HTTP(S) URL"
 [[ "$REPAIR_ATTEMPT_ID" =~ ^[a-z0-9]([-a-z0-9]{0,28}[a-z0-9])?$ ]] || die "REPAIR_ATTEMPT_ID must be a DNS label of at most 30 characters"
 [[ -n "$RECEIPT_OUTPUT" && "$RECEIPT_OUTPUT" == /* ]] || die "RECEIPT_OUTPUT must be an absolute path"

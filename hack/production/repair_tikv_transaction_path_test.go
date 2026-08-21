@@ -40,7 +40,8 @@ elif [[ "$args" == *"get tidbcluster kb"* ]]; then
   if [[ "${FAKE_TIDB_TOPOLOGY_DRIFT_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
     tikv_replicas=4
   fi
-  printf -v payload 'tc-uid\t7671\t3\t%s' "$tikv_replicas"
+  cluster_id="${FAKE_CLUSTER_ID:-7671}"
+  printf -v payload 'tc-uid\t%s\t3\t%s' "$cluster_id" "$tikv_replicas"
   printf '%s' "$payload"
   if [[ "${FAKE_INITIAL_IDENTITY_TARGET:-}" == tidbcluster && ! -e "$FAKE_STATE/quiesced" ]]; then
     head -c "$((FAKE_INITIAL_IDENTITY_BYTES-${#payload}))" /dev/zero | tr '\0' '\n'
@@ -300,6 +301,34 @@ fi
 			"PROBE_INTERVAL_SECONDS=60", "PROBE_TIMEOUT_SECONDS=60", "POD_READY_TIMEOUT_SECONDS=1800"))
 	require.NoError(t, numericBoundaryErr, string(numericBoundaryOutput))
 	require.Contains(t, string(numericBoundaryOutput), "quiesced repair succeeded")
+
+	for _, clusterID := range []string{"18446744073709551616", "18446744073709551615"} {
+		caseState := filepath.Join(tempDir, "cluster-id-"+clusterID)
+		require.NoError(t, os.Mkdir(caseState, 0o755))
+		caseLog := filepath.Join(caseState, "kubectl.log")
+		caseReceipt := filepath.Join(caseState, "receipt.json")
+		caseEnv := append([]string(nil), env...)
+		caseEnv = append(caseEnv,
+			"FAKE_STATE="+caseState,
+			"FAKE_LOG="+caseLog,
+			"RECEIPT_OUTPUT="+caseReceipt,
+			"EXPECTED_CLUSTER_ID="+clusterID,
+			"FAKE_CLUSTER_ID="+clusterID,
+		)
+		caseOutput, caseErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", caseEnv)
+		if clusterID == "18446744073709551616" {
+			require.Error(t, caseErr)
+			require.Contains(t, string(caseOutput), "EXPECTED_CLUSTER_ID must be a positive uint64")
+			require.NoFileExists(t, caseLog)
+			require.NoFileExists(t, caseReceipt)
+		} else {
+			require.NoError(t, caseErr, string(caseOutput))
+			require.Contains(t, string(caseOutput), "transaction-path repair succeeded")
+			receiptData, readErr := os.ReadFile(caseReceipt)
+			require.NoError(t, readErr)
+			require.Contains(t, string(receiptData), `"cluster_id":18446744073709551615`)
+		}
+	}
 
 	for _, target := range []string{"kubebrain", "tidbcluster"} {
 		for _, size := range []int{4097, 4096} {
