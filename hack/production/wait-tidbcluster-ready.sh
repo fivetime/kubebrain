@@ -60,6 +60,7 @@ statefulset_converged() {
     operation_is_nonnegative_int64 "$generation" &&
     operation_is_nonnegative_int64 "$observed" &&
     operation_is_positive_int64 "$desired" &&
+    (( desired <= 2147483647 )) &&
     (( observed >= generation ))
 }
 
@@ -72,7 +73,7 @@ tikv_debug_rpc_ready() {
   local status="$1"
   local _generation _observed desired _ready _updated _current_revision _update_revision
   IFS=$'\t' read -r _generation _observed desired _ready _updated _current_revision _update_revision <<<"$status"
-  operation_is_positive_int64 "$desired" || return 1
+  operation_is_positive_int64 "$desired" && (( desired <= 2147483647 )) || return 1
 
   local selector="app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=tikv"
   local pod_output

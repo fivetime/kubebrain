@@ -74,6 +74,22 @@ func TestWaitTidbClusterReady(t *testing.T) {
 			wantOutput: "timed out",
 		},
 		{
+			name:       "desired replicas above int32 is not complete",
+			ready:      "True",
+			pdStatus:   "5\t5\t3\t3\t3\tpd-new\tpd-new",
+			tikvStatus: "7\t7\t2147483648\t2147483648\t2147483648\ttikv-new\ttikv-new",
+			tikvProbe:  "20160\t10\t5",
+			wantOutput: "TiKV-Debug-RPC=not-checked",
+		},
+		{
+			name:       "maximum int32 desired replicas reaches rpc topology check",
+			ready:      "True",
+			pdStatus:   "5\t5\t3\t3\t3\tpd-new\tpd-new",
+			tikvStatus: "7\t7\t2147483647\t2147483647\t2147483647\ttikv-new\ttikv-new",
+			tikvProbe:  "20160\t10\t5",
+			wantOutput: "TiKV-Debug-RPC=not-ready",
+		},
+		{
 			name:       "desired replicas overflow is not complete",
 			ready:      "True",
 			pdStatus:   "5\t5\t3\t3\t3\tpd-new\tpd-new",
