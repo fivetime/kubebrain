@@ -42,6 +42,48 @@ esac
 	}
 }
 
+func TestValidateTiDBOperatorReadyRejectsReplicaDomainBeforeKubernetes(t *testing.T) {
+	for _, value := range []string{"01", "2147483648", "9223372036854775808"} {
+		t.Run(value, func(t *testing.T) {
+			dir := t.TempDir()
+			kubectlLog := filepath.Join(dir, "kubectl.log")
+			kubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(kubectl, []byte("#!/usr/bin/env bash\nprintf 'called\\n' >>\"$KUBECTL_LOG\"\nexit 99\n"), 0o755))
+			env := []string{
+				"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+				"EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID=uid-operator",
+				"EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5",
+				"EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH=abc",
+				"EXPECTED_TIDB_OPERATOR_REPLICAS=" + value,
+			}
+			output, err := runProductionScriptCommand(t, "validate-tidb-operator-ready.sh", env)
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), "EXPECTED_TIDB_OPERATOR_REPLICAS must be a canonical positive int32")
+			require.NoFileExists(t, kubectlLog)
+		})
+	}
+
+	t.Run("maximum int32 reaches Kubernetes", func(t *testing.T) {
+		dir := t.TempDir()
+		kubectlLog := filepath.Join(dir, "kubectl.log")
+		kubectl := filepath.Join(dir, "kubectl")
+		require.NoError(t, os.WriteFile(kubectl, []byte("#!/usr/bin/env bash\nprintf 'called\\n' >>\"$KUBECTL_LOG\"\nexit 99\n"), 0o755))
+		env := []string{
+			"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+			"EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID=uid-operator",
+			"EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5",
+			"EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH=abc",
+			"EXPECTED_TIDB_OPERATOR_REPLICAS=2147483647",
+		}
+		output, err := runProductionScriptCommand(t, "validate-tidb-operator-ready.sh", env)
+		require.Error(t, err, string(output))
+		require.Contains(t, string(output), "failed to read TiDB Operator Deployment")
+		require.FileExists(t, kubectlLog)
+	})
+}
+
 func TestValidateTiDBOperatorReadyFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	kubectl := filepath.Join(dir, "kubectl")

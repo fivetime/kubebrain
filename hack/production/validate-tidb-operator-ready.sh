@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
+
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 TIDB_OPERATOR_NAMESPACE="${TIDB_OPERATOR_NAMESPACE:-tidb-admin}"
 TIDB_OPERATOR_DEPLOYMENT="${TIDB_OPERATOR_DEPLOYMENT:-tidb-controller-manager}"
@@ -27,7 +30,9 @@ done
   die "EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST must be sha256:<64 lowercase hex>"
 [[ "$EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || \
   die "EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH must be a DNS label"
-[[ "$EXPECTED_TIDB_OPERATOR_REPLICAS" =~ ^[1-9][0-9]*$ ]] || die "EXPECTED_TIDB_OPERATOR_REPLICAS must be a positive integer"
+operation_is_positive_int64 "$EXPECTED_TIDB_OPERATOR_REPLICAS" &&
+  (( EXPECTED_TIDB_OPERATOR_REPLICAS <= 2147483647 )) ||
+  die "EXPECTED_TIDB_OPERATOR_REPLICAS must be a canonical positive int32"
 command -v stat >/dev/null || die "stat is required"
 
 capture_dir="$(mktemp -d)"
