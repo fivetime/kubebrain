@@ -14,11 +14,21 @@ func TestRepairTiKVTransactionPath(t *testing.T) {
 	tempDir := t.TempDir()
 	fakeKubectl := filepath.Join(tempDir, "kubectl")
 	fakeDate := filepath.Join(tempDir, "date")
+	fakeSync := filepath.Join(tempDir, "sync")
 	logPath := filepath.Join(tempDir, "kubectl.log")
 	stateDir := filepath.Join(tempDir, "state")
 	receiptPath := filepath.Join(tempDir, "repair-receipt.json")
 	require.NoError(t, os.Mkdir(stateDir, 0o755))
 	require.NoError(t, os.WriteFile(fakeDate, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"${FAKE_DATE_OUTPUT:-1786250000}\"\n"), 0o755))
+	require.NoError(t, os.WriteFile(fakeSync, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+count_file="$FAKE_STATE/sync-count"
+count=0
+[[ ! -e "$count_file" ]] || read -r count <"$count_file"
+count=$((count + 1))
+printf '%s\n' "$count" >"$count_file"
+[[ "${FAKE_SYNC_FAIL_AT:-0}" != "$count" ]] || exit 1
+`), 0o755))
 	require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_LOG"
@@ -192,6 +202,7 @@ fi
 	env := []string{
 		"KUBECTL=" + fakeKubectl,
 		"DATE=" + fakeDate,
+		"SYNC=" + fakeSync,
 		"KUBE_CONTEXT=test-context",
 		"ALLOW_TIKV_POD_REPAIR=true",
 		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=kb-uid",
@@ -261,6 +272,29 @@ fi
 	require.NoError(t, err)
 	require.Zero(t, receiptInfo.Mode()&os.ModeSymlink)
 	require.FileExists(t, predictableTemp)
+
+	for _, failAt := range []int{1, 2} {
+		syncState := filepath.Join(tempDir, "receipt-sync-failure-"+strconv.Itoa(failAt))
+		require.NoError(t, os.Mkdir(syncState, 0o755))
+		syncReceipt := filepath.Join(syncState, "receipt.json")
+		syncEnv := append([]string(nil), env...)
+		syncEnv = append(syncEnv,
+			"FAKE_STATE="+syncState,
+			"FAKE_LOG="+filepath.Join(syncState, "kubectl.log"),
+			"RECEIPT_OUTPUT="+syncReceipt,
+			"FAKE_SYNC_FAIL_AT="+strconv.Itoa(failAt),
+		)
+		syncOutput, syncErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", syncEnv)
+		require.Error(t, syncErr)
+		if failAt == 1 {
+			require.Contains(t, string(syncOutput), "cannot sync private repair receipt")
+			require.NoFileExists(t, syncReceipt)
+		} else {
+			require.Contains(t, string(syncOutput), "cannot sync repair receipt directory")
+			require.FileExists(t, syncReceipt)
+		}
+		require.NotContains(t, string(syncOutput), "transaction-path repair succeeded")
+	}
 
 	lockConflictState := filepath.Join(tempDir, "lock-conflict")
 	require.NoError(t, os.Mkdir(lockConflictState, 0o755))

@@ -36,6 +36,7 @@ KUBECTL="${KUBECTL:-kubectl}"
 COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-timeout}"
 DATE="${DATE:-date}"
 JQ="${JQ:-jq}"
+SYNC="${SYNC:-sync}"
 MAX_PD_RESPONSE_BYTES=1048576
 MAX_STORAGE_RESPONSE_BYTES=1048576
 MAX_POD_INVENTORY_RESPONSE_BYTES=1048576
@@ -772,9 +773,11 @@ else
     "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$repaired_store_ids_json" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
     die "cannot write quiesced repair receipt"
 fi
+"$SYNC" -f "$receipt_tmp" || die "cannot sync private repair receipt"
 ln -- "$receipt_tmp" "$RECEIPT_OUTPUT" || die "cannot publish repair receipt"
 rm -f -- "$receipt_tmp" || die "cannot remove private repair receipt temporary file"
 receipt_tmp=""
+"$SYNC" -f "$(dirname "$RECEIPT_OUTPUT")" || die "cannot sync repair receipt directory"
 
 if [[ "$REPAIR_MODE" == "transaction" ]]; then
   echo "TiKV transaction-path repair succeeded: every Pod retained its PVC and end-to-end Put/Get/Delete recovered"
