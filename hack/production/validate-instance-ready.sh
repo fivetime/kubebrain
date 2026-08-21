@@ -13,6 +13,7 @@ EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID="${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID:-
 EXPECTED_KUBEBRAIN_REPLICAS="${EXPECTED_KUBEBRAIN_REPLICAS:-3}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
 EXPECTED_KEYSPACE="${EXPECTED_KEYSPACE:-}"
+EXPECTED_CLUSTER_NAME="${EXPECTED_CLUSTER_NAME:-$EXPECTED_KEYSPACE}"
 EXPECTED_PD_ADDRS="${EXPECTED_PD_ADDRS:-}"
 EXPECTED_TIKV_CLIENT_NUM="${EXPECTED_TIKV_CLIENT_NUM:-16}"
 EXPECTED_TIKV_CA_FILE="${EXPECTED_TIKV_CA_FILE:-}"
@@ -150,6 +151,10 @@ if [[ -z "$EXPECTED_KEYSPACE" ]]; then
 fi
 if [[ -z "$EXPECTED_PD_ADDRS" ]]; then
   echo "EXPECTED_PD_ADDRS is required" >&2
+  exit 2
+fi
+if ! [[ "$EXPECTED_CLUSTER_NAME" =~ ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]]; then
+  echo "EXPECTED_CLUSTER_NAME must be a lowercase DBaaS metrics identity using 1-64 alphanumeric or hyphen characters" >&2
   exit 2
 fi
 if ! operation_is_positive_uint64 "$EXPECTED_CLUSTER_ID"; then
@@ -1076,6 +1081,7 @@ if [[ "$initial_cluster_arg_count" -ne 1 || "$initial_cluster_arg_mismatch" == "
 fi
 
 check_exact_kubebrain_arg "port" "$EXPECTED_PORT" "client listener port"
+check_exact_kubebrain_arg "cluster-name" "$EXPECTED_CLUSTER_NAME" "metrics cluster identity"
 check_exact_kubebrain_arg "peer-port" "$EXPECTED_PEER_PORT" "peer listener port"
 check_exact_kubebrain_arg "info-port" "$EXPECTED_INFO_PORT" "info listener port"
 check_exact_kubebrain_arg "leader-lease-duration" "$EXPECTED_LEADER_LEASE_DURATION" "leader election lease duration"

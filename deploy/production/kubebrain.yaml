@@ -123,6 +123,7 @@ spec:
             - --pd-addrs=kb-pd.tidb-cluster.svc:2379
             - --tikv-client-num=16
             - --keyspace=kubebrain-system
+            - --cluster-name=kubebrain-system
             - --compatible-with-etcd=true
             - --enable-count-index=true
             - --count-index-max-keys=5000000

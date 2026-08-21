@@ -104,6 +104,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local")
 			require.Contains(t, args, "--advertise-client-urls="+tc.scheme+"://kubebrain-client.kubebrain-system.svc:3379")
 			require.Contains(t, args, "--keyspace=kubebrain-system")
+			require.Contains(t, args, "--cluster-name=kubebrain-system")
 			require.Contains(t, args, "--initial-cluster="+expectedInitialCluster(tc.scheme))
 			require.Contains(t, args, "--enable-count-index=true")
 			require.Contains(t, args, "--count-index-max-keys=5000000")
@@ -226,6 +227,7 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 		"--pd-addrs=kb-pd.tidb-cluster.svc:2379",
 		"--tikv-client-num=16",
 		"--keyspace=kubebrain-system",
+		"--cluster-name=kubebrain-system",
 		"--compatible-with-etcd=true",
 		"--enable-count-index=true",
 		"--count-index-max-keys=5000000",

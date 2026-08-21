@@ -19,6 +19,7 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--peer-port=3380\n" +
 		"--info-port=8080\n" +
 		"--keyspace=instance-a\n" +
+		"--cluster-name=instance-a\n" +
 		"--pd-addrs=kb-pd.storage.svc:2379\n" +
 		"--tikv-client-num=16\n" +
 		"--quota-backend-bytes=429496729600\n" +
@@ -562,6 +563,24 @@ func TestValidateInstanceReady(t *testing.T) {
 			extraEnv:    []string{"EXPECTED_BCRYPT_COST=18446744073709551615", "EXPECTED_AUTH_TOKEN_TTL=18446744073709551615"},
 			wantKubectl: true,
 			wantOutput:  "bcrypt cost",
+		},
+		{
+			name:          "metrics cluster identity is not canonical",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_CLUSTER_NAME=Instance_A"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_CLUSTER_NAME must be a lowercase DBaaS metrics identity",
+		},
+		{
+			name:        "different metrics cluster identity reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_CLUSTER_NAME=tenant-a"},
+			wantKubectl: true,
+			wantOutput:  "metrics cluster identity",
 		},
 		{
 			name:          "TiKV TLS expectation is partial",
