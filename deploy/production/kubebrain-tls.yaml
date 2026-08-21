@@ -128,6 +128,9 @@ spec:
             - --count-index-max-keys=5000000
             - --enable-storage-metrics=true
             - --enable-grpc-gateway=true
+            - --allow-insecure=false
+            - --peer-allow-insecure=false
+            - --enable-pprof=false
             - --cors=https://kubebrain-client.kubebrain-system.svc:3379
             - --quota-backend-bytes=429496729600
             # Cover TiKV's default 10-20s Region election window without

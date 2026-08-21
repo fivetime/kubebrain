@@ -110,6 +110,9 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Contains(t, args, "--tikv-client-num=16")
 			require.Contains(t, args, "--enable-storage-metrics=true")
 			require.Contains(t, args, "--enable-grpc-gateway=true")
+			require.Contains(t, args, "--allow-insecure=false")
+			require.Contains(t, args, "--peer-allow-insecure=false")
+			require.Contains(t, args, "--enable-pprof=false")
 			require.Contains(t, args, "--cors="+tc.scheme+"://kubebrain-client.kubebrain-system.svc:3379")
 			if tc.scheme == "http" {
 				require.Contains(t, args, "--host-whitelist=kubebrain-client.kubebrain-system.svc")
@@ -228,6 +231,9 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 		"--count-index-max-keys=5000000",
 		"--enable-storage-metrics=true",
 		"--enable-grpc-gateway=true",
+		"--allow-insecure=false",
+		"--peer-allow-insecure=false",
+		"--enable-pprof=false",
 		"--cors=" + scheme + "://kubebrain-client.kubebrain-system.svc:3379",
 		"--quota-backend-bytes=429496729600",
 		"--leader-lease-duration=30s",

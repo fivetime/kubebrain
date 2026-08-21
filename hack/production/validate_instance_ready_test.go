@@ -32,6 +32,9 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--count-index-max-keys=5000000\n" +
 		"--enable-storage-metrics=true\n" +
 		"--enable-grpc-gateway=true\n" +
+		"--allow-insecure=false\n" +
+		"--peer-allow-insecure=false\n" +
+		"--enable-pprof=false\n" +
 		"--max-txn-ops=128\n" +
 		"--max-request-bytes=1572864\n" +
 		"--max-concurrent-streams=4294967295\n" +
@@ -559,6 +562,33 @@ func TestValidateInstanceReady(t *testing.T) {
 			extraEnv:    []string{"EXPECTED_BCRYPT_COST=18446744073709551615", "EXPECTED_AUTH_TOKEN_TTL=18446744073709551615"},
 			wantKubectl: true,
 			wantOutput:  "bcrypt cost",
+		},
+		{
+			name:          "peer insecure access is not boolean",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_PEER_ALLOW_INSECURE=0"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_PEER_ALLOW_INSECURE must be true or false",
+		},
+		{
+			name:        "client insecure access enabled reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_ALLOW_INSECURE=true"},
+			wantKubectl: true,
+			wantOutput:  "client insecure access",
+		},
+		{
+			name:        "pprof enabled reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_ENABLE_PPROF=true"},
+			wantKubectl: true,
+			wantOutput:  "pprof enablement",
 		},
 		{
 			name:          "CORS allowlist cannot use wildcard",
