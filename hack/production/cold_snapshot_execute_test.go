@@ -173,6 +173,36 @@ fi
 	}
 }
 
+func TestColdSnapshotExecuteRejectsNumericOverflowBeforeKubernetes(t *testing.T) {
+	dir := t.TempDir()
+	inventory := filepath.Join(dir, "inventory.json")
+	witness := filepath.Join(dir, "witness.jsonl")
+	require.NoError(t, os.WriteFile(inventory, []byte(`{}`), 0o600))
+	require.NoError(t, os.WriteFile(witness, []byte("witness\n"), 0o600))
+	kubectlLog := filepath.Join(dir, "kubectl.log")
+	kubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(kubectl, []byte("#!/usr/bin/env bash\nprintf called >>\"$KUBECTL_LOG\"\n"), 0o755))
+
+	for _, tc := range []struct{ name, setting, want string }{
+		{name: "witness age", setting: "WITNESS_MAX_AGE_SECONDS=9223372036854775808", want: "WITNESS_MAX_AGE_SECONDS must be a positive int64"},
+		{name: "wait timeout", setting: "WAIT_TIMEOUT=9223372036854775808s", want: "WAIT_TIMEOUT must contain a positive int64"},
+		{name: "fence settle", setting: "FENCE_SETTLE_SECONDS=9223372036854775808", want: "FENCE_SETTLE_SECONDS must be a non-negative int64"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := runProductionScriptCommand(t, "../backup/cold-snapshot-execute.sh", []string{
+				"PREFLIGHT_FILE=" + inventory, "OPERATION_ID=cold-snapshot-overflow",
+				"RECEIPT_FILE=" + filepath.Join(dir, tc.name+".receipt.json"),
+				"SEMANTIC_WITNESS_FILE=" + witness, "EXPECTED_WITNESS_PREFIX=/", "KUBE_CONTEXT=test",
+				"ALLOW_COLD_PHYSICAL_SNAPSHOT=true", "KUBECTL=" + kubectl, "KUBECTL_LOG=" + kubectlLog,
+				tc.setting,
+			})
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.want)
+			require.NoFileExists(t, kubectlLog)
+		})
+	}
+}
+
 func TestColdSnapshotExecuteRejectsWitnessDriftBeforeMutation(t *testing.T) {
 	dir := t.TempDir()
 	inventoryFile := filepath.Join(dir, "inventory.json")

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PRODUCTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "${PRODUCTION_DIR}/operation-time-validation.sh"
+
 REQUEST_ID="${REQUEST_ID:-}"
 PREFLIGHT_FILE="${PREFLIGHT_FILE:-}"
 SEMANTIC_WITNESS_FILE="${SEMANTIC_WITNESS_FILE:-}"
@@ -24,8 +27,9 @@ resolve_executable() {
 [[ -f "$PREFLIGHT_FILE" && -f "$SEMANTIC_WITNESS_FILE" ]] || die "PREFLIGHT_FILE and SEMANTIC_WITNESS_FILE are required"
 [[ "$(wc -c <"$PREFLIGHT_FILE")" -le 524288 && "$(wc -c <"$SEMANTIC_WITNESS_FILE")" -le 524288 ]] || die "snapshot evidence exceeds the immutable parameter budget"
 [[ -n "$EXPECTED_WITNESS_PREFIX" && -n "$KUBE_CONTEXT" ]] || die "EXPECTED_WITNESS_PREFIX and KUBE_CONTEXT are required"
-[[ "$WITNESS_MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "WITNESS_MAX_AGE_SECONDS must be positive"
-[[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*(s|m|h)$ && "$FENCE_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || die "snapshot timeout parameters are invalid"
+operation_is_positive_int64 "$WITNESS_MAX_AGE_SECONDS" || die "WITNESS_MAX_AGE_SECONDS must be a positive int64"
+operation_is_positive_int64_duration "$WAIT_TIMEOUT" || die "WAIT_TIMEOUT must contain a positive int64 followed by s, m, or h"
+operation_is_nonnegative_int64 "$FENCE_SETTLE_SECONDS" || die "FENCE_SETTLE_SECONDS must be a non-negative int64"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a DNS label"
 OPERATIONCTL="$(resolve_executable "$OPERATIONCTL")" || die "OPERATIONCTL must be executable"
 temp_dir="$(mktemp -d)"; trap 'rm -rf -- "$temp_dir"' EXIT

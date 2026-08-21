@@ -20,6 +20,13 @@ operation_is_nonnegative_int64() {
   fi
 }
 
+operation_is_positive_int64_duration() {
+  local value="$1" magnitude
+  [[ "$value" =~ ^[1-9][0-9]*(s|m|h)$ ]] || return 1
+  magnitude="${value%?}"
+  operation_is_positive_int64 "$magnitude"
+}
+
 operation_is_decimal_int64() {
   local value="$1" whole
   [[ "$value" =~ ^(0|[1-9][0-9]{0,18})([.][0-9]{1,9})?$ ]] || return 1

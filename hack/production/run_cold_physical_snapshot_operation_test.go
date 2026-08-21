@@ -134,6 +134,23 @@ fi
 	require.Contains(t, string(tamperOutput), "operation parameters exceed 65536 bytes")
 	require.Contains(t, string(mustRead(t, operationLog)), "--action fail")
 
+	for _, tc := range []struct{ old, replacement, want string }{
+		{old: `"witness_max_age_seconds":300`, replacement: `"witness_max_age_seconds":9223372036854775808`, want: "snapshot witness max age is not a positive int64"},
+		{old: `"wait_timeout":"10m"`, replacement: `"wait_timeout":"9223372036854775808m"`, want: "snapshot wait timeout does not contain a positive int64 duration"},
+		{old: `"fence_settle_seconds":5`, replacement: `"fence_settle_seconds":9223372036854775808`, want: "snapshot fence settle is not a non-negative int64"},
+	} {
+		overflow := []byte(strings.Replace(string(parameterBytes), tc.old, tc.replacement, 1))
+		require.NoError(t, os.WriteFile(parameters, overflow, 0o600))
+		require.NoError(t, os.WriteFile(snapshotLog, nil, 0o600))
+		overflowDigest := fmt.Sprintf("%x", sha256.Sum256(overflow))
+		overflowOutput, overflowErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env,
+			"WORKER_ID=worker-numeric-overflow", "EXPECTED_DIGEST="+overflowDigest))
+		require.Error(t, overflowErr)
+		require.Contains(t, string(overflowOutput), tc.want)
+		require.Empty(t, mustRead(t, snapshotLog), "numeric overflow must fail before the destructive snapshot primitive")
+	}
+	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
+
 	exact := append(append([]byte{}, parameterBytes...), []byte(strings.Repeat(" ", 65536-len(parameterBytes)))...)
 	require.Len(t, exact, 65536)
 	require.NoError(t, os.WriteFile(parameters, exact, 0o600))
