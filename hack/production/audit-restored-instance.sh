@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
 
 OPERATION_ID="${OPERATION_ID:-}"
 INSTANCE="${INSTANCE:-}"
@@ -76,12 +77,15 @@ for variable in OPERATION_ID INSTANCE SERVICE_NAMESPACE SERVICE_NAME TARGET_INST
 done
 [[ "$SERVICE_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
   { echo "SERVICE_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
-for variable in EXPECTED_REPLICAS AUDIT_DURATION_SECONDS MIN_SAMPLES; do
-  [[ "${!variable}" =~ ^[1-9][0-9]*$ ]] ||
-    { echo "${variable} must be a positive integer" >&2; exit 2; }
-done
-[[ "$AUDIT_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] ||
-  { echo "AUDIT_INTERVAL_SECONDS must be a non-negative integer" >&2; exit 2; }
+operation_is_positive_int64 "$EXPECTED_REPLICAS" ||
+  { echo "EXPECTED_REPLICAS must be a positive int64" >&2; exit 2; }
+operation_is_positive_int64 "$AUDIT_DURATION_SECONDS" && (( AUDIT_DURATION_SECONDS <= 86400 )) &&
+  operation_is_nonnegative_int64 "$AUDIT_INTERVAL_SECONDS" && (( AUDIT_INTERVAL_SECONDS <= AUDIT_DURATION_SECONDS )) &&
+  operation_is_positive_int64 "$MIN_SAMPLES" ||
+  { echo "audit bounds require positive int64 duration <= 86400, non-negative int64 interval <= duration, and positive int64 samples" >&2; exit 2; }
+effective_interval="$AUDIT_INTERVAL_SECONDS"; (( effective_interval > 0 )) || effective_interval=1
+(( MIN_SAMPLES <= AUDIT_DURATION_SECONDS / effective_interval + 1 )) ||
+  { echo "MIN_SAMPLES exceeds the bounded observation window" >&2; exit 2; }
 
 validate_audit_prefix() {
   local prefix="$1" trimmed

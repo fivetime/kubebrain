@@ -240,10 +240,15 @@ IFS=$'\t' read -r state_dir cutover_state cutover_state_sha cutover_receipt cuto
 receipt_input="$receipt_output"
 [[ "$data_context" == "-" ]] && data_context=""
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
-for value in "$expected_replicas" "$duration" "$min_samples"; do
-  [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "audit parameters contain an invalid positive integer" >&2; exit 2; }
-done
-[[ "$interval" =~ ^[0-9]+$ ]] || { echo "audit interval must be a non-negative integer" >&2; exit 2; }
+operation_is_positive_int64 "$expected_replicas" ||
+  { echo "audit expected replicas must be a positive int64" >&2; exit 2; }
+operation_is_positive_int64 "$duration" && (( duration <= 86400 )) &&
+  operation_is_nonnegative_int64 "$interval" && (( interval <= duration )) &&
+  operation_is_positive_int64 "$min_samples" ||
+  { echo "audit bounds require positive int64 duration <= 86400, non-negative int64 interval <= duration, and positive int64 samples" >&2; exit 2; }
+effective_interval="$interval"; (( effective_interval > 0 )) || effective_interval=1
+(( min_samples <= duration / effective_interval + 1 )) ||
+  { echo "audit minimum samples exceed the bounded observation window" >&2; exit 2; }
 for value in "$state_dir" "$cutover_state" "$cutover_receipt" "$service_namespace" \
   "$service_name" "$target_instance" "$public_endpoint" "$audit_prefix" "$receipt_output"; do
   [[ -n "$value" ]] || { echo "audit parameters contain an empty required field" >&2; exit 2; }

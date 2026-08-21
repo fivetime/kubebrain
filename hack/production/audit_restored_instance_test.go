@@ -339,6 +339,25 @@ func TestPostRestoreAuditRejectsUnsafePublicEndpoint(t *testing.T) {
 	}
 }
 
+func TestAuditRestoredInstanceRejectsNumericBoundsBeforeKubernetes(t *testing.T) {
+	for _, tc := range []struct{ name, setting, want string }{
+		{name: "replicas overflow", setting: "EXPECTED_REPLICAS=9223372036854775808", want: "EXPECTED_REPLICAS must be a positive int64"},
+		{name: "duration overflow", setting: "AUDIT_DURATION_SECONDS=9223372036854775808", want: "audit bounds require"},
+		{name: "duration above one day", setting: "AUDIT_DURATION_SECONDS=86401", want: "audit bounds require"},
+		{name: "interval overflow", setting: "AUDIT_INTERVAL_SECONDS=9223372036854775808", want: "audit bounds require"},
+		{name: "interval above duration", setting: "AUDIT_INTERVAL_SECONDS=2", want: "audit bounds require"},
+		{name: "samples overflow", setting: "MIN_SAMPLES=9223372036854775808", want: "audit bounds require"},
+		{name: "samples exceed window", setting: "MIN_SAMPLES=3", want: "MIN_SAMPLES exceeds the bounded observation window"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAuditFixture(t)
+			f.run(t, false, tc.setting, tc.want)
+			require.NoFileExists(t, filepath.Join(f.dir, "kubectl-called"))
+			require.NoFileExists(t, filepath.Join(f.dir, "probes"))
+		})
+	}
+}
+
 type auditFixture struct {
 	dir, state string
 	env        []string
@@ -416,6 +435,7 @@ func newAuditFixture(t *testing.T) *auditFixture {
 	kubectl := filepath.Join(dir, "kubectl")
 	writeTrafficExecutable(t, kubectl, `#!/usr/bin/env bash
 set -euo pipefail
+touch "$FAKE_DIR/kubectl-called"
 if [[ " $* " == *" get service "* ]]; then
   uid=uid-service; [[ -f "$FAKE_DIR/service-drift" ]] && uid=uid-new
   printf '{"metadata":{"uid":"%s"},"spec":{"selector":{"app.kubernetes.io/name":"kubebrain","app.kubernetes.io/instance":"target"}}}\n' "$uid"

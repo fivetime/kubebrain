@@ -29,6 +29,32 @@ func TestPostRestoreAuditOperationCompletesAndBindsReceipt(t *testing.T) {
 	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
 }
 
+func TestPostRestoreAuditOperationRejectsNumericBoundsBeforePrimitive(t *testing.T) {
+	for _, tc := range []struct{ name, old, replacement, want string }{
+		{name: "replicas overflow", old: `"expected_replicas":2`, replacement: `"expected_replicas":9223372036854775808`, want: "audit expected replicas must be a positive int64"},
+		{name: "duration overflow", old: `"audit_duration_seconds":1`, replacement: `"audit_duration_seconds":9223372036854775808`, want: "audit bounds require"},
+		{name: "duration above one day", old: `"audit_duration_seconds":1`, replacement: `"audit_duration_seconds":86401`, want: "audit bounds require"},
+		{name: "interval overflow", old: `"audit_interval_seconds":0`, replacement: `"audit_interval_seconds":9223372036854775808`, want: "audit bounds require"},
+		{name: "interval above duration", old: `"audit_interval_seconds":0`, replacement: `"audit_interval_seconds":2`, want: "audit bounds require"},
+		{name: "samples overflow", old: `"min_samples":1`, replacement: `"min_samples":9223372036854775808`, want: "audit bounds require"},
+		{name: "samples exceed window", old: `"min_samples":1`, replacement: `"min_samples":3`, want: "audit minimum samples exceed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOperationRunnerFixture(t)
+			parameters := []byte(strings.Replace(string(mustRead(t, f.parameters)), tc.old, tc.replacement, 1))
+			require.NoError(t, os.WriteFile(f.parameters, parameters, 0o600))
+			digest := fmt.Sprintf("%x", sha256.Sum256(parameters))
+			for i, value := range f.env {
+				if strings.HasPrefix(value, "PARAMETERS_DIGEST=") {
+					f.env[i] = "PARAMETERS_DIGEST=" + digest
+				}
+			}
+			f.run(t, false, "", tc.want)
+			require.NoFileExists(t, filepath.Join(f.dir, "audit.log"))
+		})
+	}
+}
+
 func TestPostRestoreAuditOperationAcceptsRevisionBoundV2CutoverEvidence(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	promoteOperationAuditCutoverEvidenceToV2(t, f)
