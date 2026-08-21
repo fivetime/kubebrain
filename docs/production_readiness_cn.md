@@ -535,6 +535,9 @@ repair 在 TiKV replacement 已完成但最终事务仍失败时会主动把 Kub
 且 TidbCluster Ready。脚本在扩容前运行完整 `validate-tikv-region-health.sh`，随后重新读取两类身份；
 扩到 3 Ready 后再次运行同一 Region/storage gate 并再次冻结身份，最后从 KubeBrain Pod 内执行
 Put/Get/Delete。扩容后的任一 gate、身份或事务失败都会在 UID 仍匹配时回退到 0 副本。
+recovery requester、Operation worker 和该 primitive 都把 cluster ID 作为规范正 uint64，并要求 jq 精确保留
+MaxUint64；`2^64` 必须分别在提交 Operation、启动 primitive、首次 Kubernetes 访问前失败。MaxUint64 必须
+贯穿零副本/存储 fence、扩容、事务探针及 strict receipt 校验，不能只在请求参数层接受后发生舍入。
 
 如果 KubeBrain 已是 0 副本而 PD 仍有 pending/down Region，不能直接进入上述 recovery，因为 storage
 gate 必须拒绝；普通 transaction repair 也不能临时扩容数据面来制造失败探针。底层

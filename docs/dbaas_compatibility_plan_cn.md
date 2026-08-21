@@ -58886,6 +58886,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （175.338/527.507/322.165/484.135 秒）。本项不改变合法 cluster ID、Operation/receipt schema、审批与
   repair 语义、在线 etcd RPC 或 TiKV 编码。
 
+- A5242 将同一 cluster identity 契约覆盖 repair 后独立 `TiKVTransactionRecovery` 全链路。旧 recovery
+  requester、共享 Operation worker 与 `recover-kubebrain-after-tikv-repair.sh` primitive 均只验证正十进制；
+  `2^64` 因而可进入审批并被用于 TidbCluster fence、probe key 与 JSON receipt，直到其他层偶然拒绝或发生
+  数值舍入。现三层均以字符串级正 uint64 helper 限制到 `18446744073709551615`，并在启动时验证 jq 的
+  MaxUint64 string→number→string 精度。测试证明 MaxUint64 从 live TidbCluster 经 immutable Operation 参数、
+  worker env、primitive 的恢复前/后 identity 与 storage gate、三副本 rollout、Put/Get/Delete 探针一直保持
+  精确，最终 strict receipt 仍包含原十进制；`18446744073709551616` 分别在 requester submit、worker 启动
+  primitive 和 primitive 首次 kubectl 前 fail closed。三条相关测试聚焦 17.166 秒、连续两轮 34.550 秒、
+  race 18.117 秒，bash syntax、diff check 与全仓 vet 通过。production 清单保持 414 项并按
+  98/113/103/100 四片全部通过（168.446/548.528/290.493/503.025 秒）。本项不改变合法 recovery
+  identity、Operation/receipt schema、扩容/回退语义、在线 etcd RPC 或 TiKV 编码。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
