@@ -451,6 +451,9 @@ receipt；transaction 模式必须把已恢复的 KubeBrain 再次缩到零并�
 可能先溢出的 `((...))` 判断。`NOW_UNIX` 与 cooldown 为正 int64；失败探针最多 20 次，probe interval
 最多 60 秒，单次 probe timeout 最多 60 秒，Pod Ready timeout 最多 1800 秒。store/Region 样本、间隔和
 磁盘阈值也先经过同一正/非负 int64 门禁，再执行既有 20/60/90/125 上限判断。
+cooldown ConfigMap 的 `completed-at-unix` 在 UID 代际分支和任何比较/减法前也必须通过同一正 int64 门禁；
+`2^64` 等可在 Bash 算术中回绕的全数字值必须被视为 malformed，并在 repair lock create 前 fail closed。
+不同 TidbCluster UID 的合法 MaxInt64 记录仍按既有代际语义忽略，不阻止新集群 repair。
 修复锁建立后的 KubeBrain `UID/desired/ready` quiesce identity、TidbCluster `UID/clusterID/PD/TiKV replicas`
 identity 及失败回退 UID 重读同样各自限制为 4096 bytes，并通过独立 0600 文件消费。超限时不得开始或
 继续 TiKV Pod 删除；精确 4096-byte 响应仍须满足原有 identity/topology 等值判断。
