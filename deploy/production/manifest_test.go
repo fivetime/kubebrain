@@ -107,6 +107,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Contains(t, args, "--initial-cluster="+expectedInitialCluster(tc.scheme))
 			require.Contains(t, args, "--enable-count-index=true")
 			require.Contains(t, args, "--count-index-max-keys=5000000")
+			require.Contains(t, args, "--tikv-client-num=16")
 			require.Contains(t, args, "--enable-storage-metrics=true")
 			quotaArgs := 0
 			for _, arg := range args {
@@ -211,6 +212,7 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 		"--advertise-client-urls=" + scheme + "://kubebrain-client.kubebrain-system.svc:3379",
 		"--initial-cluster=" + expectedInitialCluster(scheme),
 		"--pd-addrs=kb-pd.tidb-cluster.svc:2379",
+		"--tikv-client-num=16",
 		"--keyspace=kubebrain-system",
 		"--compatible-with-etcd=true",
 		"--enable-count-index=true",

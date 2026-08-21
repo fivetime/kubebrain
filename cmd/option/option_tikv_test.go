@@ -63,6 +63,29 @@ func TestTiKVTLSValidateRequiresAllOrNothing(t *testing.T) {
 	}
 }
 
+func TestTiKVClientNumValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		clientNum int
+		wantErr   bool
+	}{
+		{name: "zero", clientNum: 0, wantErr: true},
+		{name: "negative", clientNum: -1, wantErr: true},
+		{name: "one", clientNum: 1},
+		{name: "maximum", clientNum: 128},
+		{name: "above maximum", clientNum: 129, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&storageConfig{pdAddrs: []string{"127.0.0.1:2379"}, clientNum: tc.clientNum}).validate()
+			if tc.wantErr {
+				require.ErrorContains(t, err, "--tikv-client-num")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // The --tikv-* flags must bind to the storageConfig fields that buildStorage
 // forwards to storagetikv.Security, or a configured data-plane TLS silently
 // stays plaintext (#33).

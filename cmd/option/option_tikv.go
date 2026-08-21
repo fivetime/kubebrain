@@ -97,8 +97,8 @@ func (s *storageConfig) validate() error {
 	if len(s.pdAddrs) == 0 {
 		return fmt.Errorf("invalid param --pd-addrs")
 	}
-	if s.clientNum <= 0 {
-		return fmt.Errorf("invalid param --tikv-client-num: must be > 0")
+	if s.clientNum <= 0 || s.clientNum > storagetikv.MaxClientNum {
+		return fmt.Errorf("invalid param --tikv-client-num: must be between 1 and %d", storagetikv.MaxClientNum)
 	}
 	// TiKV/PD cluster TLS is mutual: require CA + cert + key together, so a partial
 	// config does not silently fall back to plaintext or fail deep in the client.

@@ -90,6 +90,12 @@ func NewKvStorage(pdAddrs []string, clientNum int, sec Security) (storage.KvStor
 	return NewKvStorageWithContext(context.Background(), pdAddrs, clientNum, sec)
 }
 
+// MaxClientNum bounds the independently connected TiKV clients created by one
+// KubeBrain process. Each client owns PD connections, a Region cache and a TSO
+// stream, so an unbounded flag value can exhaust memory and control-plane
+// connections before the server starts serving.
+const MaxClientNum = 128
+
 // NewKvStorageWithContext binds all parallel txn client construction to the
 // caller's startup and shutdown lifecycle.
 func NewKvStorageWithContext(ctx context.Context, pdAddrs []string, clientNum int, sec Security) (storage.KvStorage, error) {
@@ -98,6 +104,9 @@ func NewKvStorageWithContext(ctx context.Context, pdAddrs []string, clientNum in
 	}
 	if clientNum <= 0 {
 		clientNum = defaultClientNum
+	}
+	if clientNum > MaxClientNum {
+		return nil, errors.Errorf("TiKV client count %d exceeds maximum %d", clientNum, MaxClientNum)
 	}
 	// txnkv.NewClient reads config.GetGlobalConfig().Security for both the PD
 	// safepoint-etcd client and the TiKV RPC client, so applying it here secures

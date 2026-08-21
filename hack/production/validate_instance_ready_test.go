@@ -19,6 +19,7 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--info-port=8080\n" +
 		"--keyspace=instance-a\n" +
 		"--pd-addrs=kb-pd.storage.svc:2379\n" +
+		"--tikv-client-num=16\n" +
 		"--quota-backend-bytes=429496729600\n" +
 		"--leader-lease-duration=30s\n" +
 		"--leader-renew-deadline=25s\n" +
@@ -550,6 +551,33 @@ func TestValidateInstanceReady(t *testing.T) {
 			extraEnv:    []string{"EXPECTED_BCRYPT_COST=18446744073709551615", "EXPECTED_AUTH_TOKEN_TTL=18446744073709551615"},
 			wantKubectl: true,
 			wantOutput:  "bcrypt cost",
+		},
+		{
+			name:          "TiKV client pool size is not positive",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_TIKV_CLIENT_NUM=0"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_TIKV_CLIENT_NUM must be a canonical integer between 1 and 128",
+		},
+		{
+			name:          "TiKV client pool size exceeds resource bound",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_TIKV_CLIENT_NUM=129"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_TIKV_CLIENT_NUM must be a canonical integer between 1 and 128",
+		},
+		{
+			name:        "maximum safe TiKV client pool size reaches Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_TIKV_CLIENT_NUM=128"},
+			wantKubectl: true,
+			wantOutput:  "TiKV client pool size",
 		},
 		{
 			name:          "count index cap is not canonical",

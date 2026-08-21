@@ -14,6 +14,7 @@ EXPECTED_KUBEBRAIN_REPLICAS="${EXPECTED_KUBEBRAIN_REPLICAS:-3}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
 EXPECTED_KEYSPACE="${EXPECTED_KEYSPACE:-}"
 EXPECTED_PD_ADDRS="${EXPECTED_PD_ADDRS:-}"
+EXPECTED_TIKV_CLIENT_NUM="${EXPECTED_TIKV_CLIENT_NUM:-16}"
 EXPECTED_CLUSTER_ID="${EXPECTED_CLUSTER_ID:-}"
 EXPECTED_INITIAL_CLUSTER="${EXPECTED_INITIAL_CLUSTER:-}"
 EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
@@ -228,6 +229,10 @@ for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS; do
     exit 2
   fi
 done
+if ! operation_is_positive_int64 "$EXPECTED_TIKV_CLIENT_NUM" || (( EXPECTED_TIKV_CLIENT_NUM > 128 )); then
+  echo "EXPECTED_TIKV_CLIENT_NUM must be a canonical integer between 1 and 128" >&2
+  exit 2
+fi
 for variable in EXPECTED_WATCH_CACHE_SIZE EXPECTED_WATCH_FANOUT_BUFFER; do
   value="${!variable}"
   if [[ -n "$value" ]] && ! operation_is_nonnegative_int64 "$value"; then
@@ -933,6 +938,7 @@ check_exact_kubebrain_arg "max-watches" "$EXPECTED_MAX_WATCHES" "max watches"
 check_exact_kubebrain_arg "compatible-with-etcd" "$EXPECTED_COMPATIBLE_WITH_ETCD" "etcd compatibility"
 check_exact_kubebrain_arg "enable-count-index" "$EXPECTED_ENABLE_COUNT_INDEX" "count index enablement"
 check_exact_kubebrain_arg "count-index-max-keys" "$EXPECTED_COUNT_INDEX_MAX_KEYS" "count index key cap"
+check_exact_kubebrain_arg "tikv-client-num" "$EXPECTED_TIKV_CLIENT_NUM" "TiKV client pool size"
 check_exact_kubebrain_arg "enable-storage-metrics" "$EXPECTED_ENABLE_STORAGE_METRICS" "storage metrics enablement"
 check_optional_kubebrain_arg "storage-gc-lifetime" "$EXPECTED_STORAGE_GC_LIFETIME" "storage GC lifetime"
 check_optional_kubebrain_arg "watch-progress-notify-interval" "$EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL" "watch progress notify interval"

@@ -47,6 +47,12 @@ func TestNewKvStorageStartupHonorsCallerCancellation(t *testing.T) {
 	require.Less(t, time.Since(start), time.Second)
 }
 
+func TestNewKvStorageRejectsOversizedClientPoolBeforeDial(t *testing.T) {
+	store, err := NewKvStorageWithContext(context.Background(), []string{"http://127.0.0.1:1"}, MaxClientNum+1, Security{})
+	require.Nil(t, store)
+	require.ErrorContains(t, err, "exceeds maximum 128")
+}
+
 func TestSuccessfulStartupDetachesClientLifetimeFromCaller(t *testing.T) {
 	parent, cancelParent := context.WithCancel(context.Background())
 	startup, cancelStartup, detach := newDetachableStartupContext(parent)
