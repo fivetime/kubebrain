@@ -26,6 +26,21 @@ is_positive_int64() {
   [[ "$value" =~ ^[1-9][0-9]{0,18}$ ]] || return 1
   if (( ${#value} == 19 )) && [[ "$value" > "$MAX_INT64" ]]; then return 1; fi
 }
+is_decimal_int64() {
+  local value="$1" whole
+  [[ "$value" =~ ^(0|[1-9][0-9]{0,18})([.][0-9]{1,9})?$ ]] || return 1
+  whole="${value%%.*}"
+  if (( ${#whole} == 19 )) && [[ "$whole" > "$MAX_INT64" ]]; then return 1; fi
+}
+is_positive_decimal_less_than_int() {
+  local value="$1" upper="$2" whole fraction=""
+  is_decimal_int64 "$value" || return 1
+  whole="${value%%.*}"
+  [[ "$value" != *.* ]] || fraction="${value#*.}"
+  [[ "$whole" != "0" || "$fraction" =~ [1-9] ]] || return 1
+  (( ${#whole} < ${#upper} )) && return 0
+  (( ${#whole} == ${#upper} )) && [[ "$whole" < "$upper" ]]
+}
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a DNS label"
 is_positive_int64 "$LEASE_SECONDS" || die "LEASE_SECONDS must be a positive int64"
@@ -38,9 +53,8 @@ command -v "$JQ" >/dev/null || die "jq is required"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 command -v stat >/dev/null || die "stat is required"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
-[[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
-  awk -v heartbeat="$heartbeat_interval" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
-  die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
+is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECONDS" ||
+  die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64"
 
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then

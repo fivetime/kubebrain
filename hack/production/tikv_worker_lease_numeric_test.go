@@ -39,6 +39,27 @@ func TestTiKVWorkersValidateLeaseBeforeArithmetic(t *testing.T) {
 			require.Error(t, overflowErr)
 			require.Contains(t, string(overflowOutput), "LEASE_SECONDS must be a positive int64")
 			require.NoFileExists(t, logPath)
+
+			boundaryOutput, boundaryErr := runProductionScriptCommand(t, script, []string{
+				"WORKER_ID=worker-heartbeat-boundary", "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl,
+				"OPERATIONCTL_LOG=" + logPath, commandVariable, "LEASE_SECONDS=9223372036854775807",
+				"HEARTBEAT_INTERVAL_SECONDS=9223372036854775806.999999999",
+			})
+			require.Error(t, boundaryErr)
+			require.NotContains(t, string(boundaryOutput), "HEARTBEAT_INTERVAL_SECONDS")
+			require.Contains(t, string(mustRead(t, logPath)), "--lease 9223372036854775807s")
+
+			for _, invalid := range []string{"9223372036854775808", ".1", "01", "1.", "0.0000000001"} {
+				require.NoError(t, os.RemoveAll(logPath))
+				invalidOutput, invalidErr := runProductionScriptCommand(t, script, []string{
+					"WORKER_ID=worker-invalid-heartbeat", "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl,
+					"OPERATIONCTL_LOG=" + logPath, commandVariable, "LEASE_SECONDS=9223372036854775807",
+					"HEARTBEAT_INTERVAL_SECONDS=" + invalid,
+				})
+				require.Error(t, invalidErr)
+				require.Contains(t, string(invalidOutput), "canonical positive decimal int64")
+				require.NoFileExists(t, logPath)
+			}
 		})
 	}
 }
