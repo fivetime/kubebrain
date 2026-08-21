@@ -89,6 +89,11 @@ operation_is_positive_go_duration_hms() {
   operation_is_positive_go_duration "$value"
 }
 
+operation_is_nonnegative_go_duration_hms() {
+  local value="$1"
+  [[ "$value" == 0 ]] || operation_is_positive_go_duration_hms "$value"
+}
+
 operation_is_positive_go_seconds_decimal() {
   local value="$1" whole fraction maximum_whole=9223372036 maximum_fraction=854775807
   [[ "$value" =~ ^(0|[1-9][0-9]{0,18})([.]([0-9]{1,9}))?$ ]] || return 1

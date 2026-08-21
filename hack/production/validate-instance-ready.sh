@@ -246,7 +246,14 @@ for variable in EXPECTED_LEADER_LEASE_DURATION EXPECTED_LEADER_RENEW_DEADLINE EX
     exit 2
   fi
 done
-for variable in EXPECTED_GRPC_KEEPALIVE_MIN_TIME EXPECTED_GRPC_KEEPALIVE_INTERVAL EXPECTED_GRPC_KEEPALIVE_TIMEOUT EXPECTED_AUTH_TOKEN; do
+for variable in EXPECTED_GRPC_KEEPALIVE_MIN_TIME EXPECTED_GRPC_KEEPALIVE_INTERVAL EXPECTED_GRPC_KEEPALIVE_TIMEOUT; do
+  value="${!variable}"
+  if ! operation_is_nonnegative_go_duration_hms "$value"; then
+    echo "${variable} must be 0 or a positive production Go duration using an integer ms, s, m, or h unit" >&2
+    exit 2
+  fi
+done
+for variable in EXPECTED_AUTH_TOKEN; do
   value="${!variable}"
   if [[ -z "$value" ]]; then
     echo "${variable} must be non-empty" >&2
