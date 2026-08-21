@@ -948,6 +948,7 @@ EXPECTED_KUBEBRAIN_STATEFULSET_REVISION=<approved-kubebrain-controller-revision>
 EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID=<immutable-kubebrain-client-service-uid> \
 EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \
 EXPECTED_KEYSPACE=instance-a \
+EXPECTED_CLUSTER_NAME=instance-a \
 EXPECTED_PD_ADDRS=kb-pd.kubebrain-storage-a.svc:2379 \
 EXPECTED_TIDB_CLUSTER_UID=<immutable-tidbcluster-uid> \
 EXPECTED_CLUSTER_ID=<immutable-pd-cluster-id> \
@@ -1028,6 +1029,10 @@ int32+1 或更大值必须在 readiness 子脚本或任何 kubectl 调用前拒�
 `MaxInt-512KiB`，与服务端为 gRPC transport overhead 保留的空间一致；
 `EXPECTED_TIKV_MAX_KEY_SIZE` 必须是正 int64，并至少比 request 上限多 64 字节物理 key 开销。
 两项都必须在任何 Bash 加法或 kubectl 调用前完成校验，禁止溢出后再比较。
+`EXPECTED_CLUSTER_NAME` 必须是 1–64 字符的小写字母、数字或内部连字符 DBaaS metrics identity，
+并与唯一 `--cluster-name` Pod 参数精确一致；未显式提供时 gate 从已验证 keyspace 派生。该值只标记
+metrics，不提供数据隔离，但生产清单不得沿用服务端通用默认 `default`，否则多个实例会在观测系统中
+共享同一 cluster label。示例明文/mTLS 清单均固定为 `kubebrain-system`。
 client/peer listener port 必须是 `1..65535` 的规范整数，info listener port 必须是
 `0..65535` 的规范整数，其中 0 表示禁用；client、peer 和启用后的 info port 必须互异。
 非法范围或冲突必须在任何 kubectl 调用前拒绝，不能依赖运行中 Pod 已经碰巧证明可绑定。

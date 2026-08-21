@@ -59477,6 +59477,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （146.984/473.797/269.468/486.911 秒）。本项不把示例 NetworkPolicy-isolated plaintext 清单冒充 mTLS，
   也不替代启动时真实 PEM/keypair/CN 验证，只使传输模式成为明确发布契约。
 
+- A5298 固定 DBaaS metrics cluster identity，消除所有生产实例沿用 `--cluster-name=default` 的观测归属
+  漂移。该 flag 明确不参与 keyspace 隔离，但作为全局 metrics client 的 `cluster` tag 会影响监控聚合、
+  告警定位和下游计量关联；原两份生产清单未设置，release gate 也未核验。现明文/mTLS StatefulSet 显式
+  固定 `kubebrain-system`，gate 默认从已验证 keyspace 派生期望，也允许平台显式提供不同观测 identity；
+  非空值必须是 1–64 字符的小写字母、数字或内部连字符，并与唯一 Pod arg 精确匹配。回归证明
+  `Instance_A` 在首次 kubectl 前拒绝，合法 `tenant-a` 进入 args 核验。相关 manifest 契约、bash syntax、
+  diff check 与全仓 vet 通过；实例 gate 单轮 147.552 秒、连续两轮 287.871 秒、race 150.303 秒。
+  production 清单保持 448 项并按 102/127/113/106 四片在最终代码提交上全部通过
+  （145.539/471.264/269.280/486.360 秒）。本项不把 metrics label 冒充租户隔离；真实数据边界仍只由
+  keyspace、TiKV/PD cluster identity 和实例 receipts 证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
