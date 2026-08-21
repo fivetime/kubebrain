@@ -59411,6 +59411,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全部通过（145.195/473.233/271.004/476.436 秒）。本项保留 etcd 的空列表兼容入口供非生产使用，
   但生产 TLS 发布不再依赖 runtime 自动填充。
 
+- A5292 将 etcd v3 JSON/HTTP gateway 的启停从镜像默认变为生产发布契约。KubeBrain 默认
+  `EnableGRPCGateway=true` 且已覆盖 KV/Watch/Lease/Cluster/Maintenance/Auth/Lock/Election routes，但原
+  明文与 mTLS StatefulSet 均未显式传参，组合实例 release gate 也不检查；默认漂移会在门禁绿色时静默
+  删除兼容 API 或意外扩大 HTTP surface。现两份生产清单都固定 `--enable-grpc-gateway=true`，gate 只
+  接受精确布尔期望并要求唯一 Pod arg 匹配；回归证明非布尔 `1` 在首次 kubectl 前拒绝，显式 `false`
+  可进入参数一致性核验，供主动缩小 surface 的专用实例使用。相关 manifest 契约、bash syntax、diff check
+  与全仓 vet 通过；实例 gate 单轮 138.452 秒、连续两轮 270.173 秒、race 141.549 秒。production 清单
+  保持 448 项并按 102/127/113/106 四片在最终代码提交上全部通过
+  （146.997/473.924/270.071/480.461 秒）。本项不改变 gateway 路由、认证、限流或内部 mTLS 语义，只消除
+  发布对服务端默认值的隐式依赖。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

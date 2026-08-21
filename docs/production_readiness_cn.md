@@ -983,6 +983,7 @@ EXPECTED_GRPC_KEEPALIVE_TIMEOUT=20s \
 EXPECTED_AUTH_TOKEN=simple \
 EXPECTED_BCRYPT_COST=10 \
 EXPECTED_AUTH_TOKEN_TTL=300 \
+EXPECTED_ENABLE_GRPC_GATEWAY=true \
 EXPECTED_GRPC_MAX_CONNECTION_AGE=1h \
 EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=5m \
 EXPECTED_TLS_MIN_VERSION=TLS1.2 \
@@ -1070,6 +1071,9 @@ kubectl 前拒绝。显式正值小于 100ms 时服务端仍会 clamp 到 100ms�
 auth token provider 必须是 etcd 兼容的 `simple`，或具有唯一 `key=value` 选项、受支持签名算法及相应
 pub-key/priv-key 路径的结构合法 `jwt`。不依赖 Pod 文件的语法错误必须在 kubectl 前拒绝；密钥 PEM、匹配性
 和 1MiB 上限继续由 KubeBrain 启动时在 Secret 挂载命名空间内 fail closed 校验。
+gRPC gateway 模式必须是显式 `true` 或 `false` 并与唯一 `--enable-grpc-gateway` Pod 参数精确一致；
+通用 etcd 兼容生产清单固定为 `true`，保证 v3 JSON/HTTP API 不依赖镜像默认。选择 `false` 缩小 HTTP
+surface 的专用实例必须显式更改 release 期望，并另行验证 `/v3/*` 为 404、健康端点仍可用。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，
