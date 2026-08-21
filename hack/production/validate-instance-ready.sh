@@ -210,7 +210,18 @@ if [[ "$EXPECTED_PORT" == "$EXPECTED_PEER_PORT" ||
   echo "expected client, peer, and enabled info ports must be distinct" >&2
   exit 2
 fi
-for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS EXPECTED_MAX_CONCURRENT_STREAMS EXPECTED_MAX_REQUESTS_INFLIGHT EXPECTED_MAX_REQUEST_RATE EXPECTED_REQUEST_RATE_BURST EXPECTED_MAX_DELETE_RANGE_KEYS EXPECTED_MAX_WATCHES EXPECTED_BCRYPT_COST EXPECTED_AUTH_TOKEN_TTL EXPECTED_LOG_VERBOSITY; do
+for variable in EXPECTED_MAX_CONCURRENT_STREAMS EXPECTED_MAX_REQUESTS_INFLIGHT EXPECTED_MAX_REQUEST_RATE EXPECTED_REQUEST_RATE_BURST EXPECTED_MAX_DELETE_RANGE_KEYS EXPECTED_MAX_WATCHES; do
+  value="${!variable}"
+  if ! operation_is_nonnegative_uint32 "$value"; then
+    echo "${variable} must be a canonical non-negative uint32" >&2
+    exit 2
+  fi
+done
+if (( (EXPECTED_MAX_REQUEST_RATE == 0) != (EXPECTED_REQUEST_RATE_BURST == 0) )); then
+  echo "EXPECTED_MAX_REQUEST_RATE and EXPECTED_REQUEST_RATE_BURST must both be zero or both be positive" >&2
+  exit 2
+fi
+for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS EXPECTED_BCRYPT_COST EXPECTED_AUTH_TOKEN_TTL EXPECTED_LOG_VERBOSITY; do
   value="${!variable}"
   if ! [[ "$value" =~ ^[0-9]+$ ]]; then
     echo "${variable} must be a non-negative integer" >&2
