@@ -59277,6 +59277,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   102/127/113/106 四片在最终代码状态全部通过（138.955/468.042/265.113/455.106 秒）。本项不改变合法
   cluster identity fencing 或在线 etcd/TiKV 数据语义，只让发布期望在首次外部访问前具备协议精确域。
 
+- A5279 将组合实例 release gate 的 quota-backend-bytes 对齐 KubeBrain 与 etcd 共同使用的 int64 flag 域。
+  服务端保留 0 使用 2GiB 默认值、负数禁用的兼容语义，但生产发布合同原本就要求显式正配额；旧门禁只用
+  无界正数字正则，前导零和 MaxInt64+1 会进入 Kubernetes/args 核验。现保持既有策略并精确要求
+  `1..9223372036854775807`。回归证明前导零与 MaxInt64+1 在首次 kubectl 前拒绝，并以 MaxInt64 证明
+  admission 后进入真实 quota 参数一致性核验。聚焦单轮 118.790 秒、连续两轮 233.410 秒、race 117.339 秒，
+  bash syntax、diff check 与全仓 vet 通过；production 清单保持 448 项并按 102/127/113/106 四片在最终代码
+  状态全部通过（139.215/463.017/264.507/452.569 秒）。本项不改变合法配额、NOSPACE 或 maintenance
+  DbSizeQuota 语义，只让生产发布期望与 Go/etcd 配额类型一致。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
