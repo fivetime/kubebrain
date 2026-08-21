@@ -114,9 +114,47 @@ func TestValidateInstanceReady(t *testing.T) {
 		etcdctlExecPod           string
 		wantExec                 bool
 		wantClientService        string
+		wantNoKubectl            bool
+		wantKubectl              bool
 		wantOK                   bool
 		wantOutput               string
 	}{
+		{
+			name:          "KubeBrain replicas exceed int32",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_KUBEBRAIN_REPLICAS=2147483648"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_KUBEBRAIN_REPLICAS must be a canonical positive int32",
+		},
+		{
+			name:          "PD replicas are not canonical",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_PD_REPLICAS=03"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_PD_REPLICAS must be a canonical positive int32",
+		},
+		{
+			name:          "TiKV replicas overflow int64",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			extraEnv:      []string{"EXPECTED_TIKV_REPLICAS=9223372036854775808"},
+			wantNoKubectl: true,
+			wantOutput:    "EXPECTED_TIKV_REPLICAS must be a canonical positive int32",
+		},
+		{
+			name:        "maximum int32 KubeBrain replicas reach Kubernetes",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			extraEnv:    []string{"EXPECTED_KUBEBRAIN_REPLICAS=2147483647"},
+			wantKubectl: true,
+			wantOutput:  "KubeBrain StatefulSet is not the expected converged release",
+		},
 		{
 			name:              "converged release",
 			image:             "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1389,6 +1427,12 @@ exit 1
 				calls, readErr := os.ReadFile(filepath.Join(dir, "kubectl.log"))
 				require.NoError(t, readErr)
 				require.Contains(t, string(calls), "get service "+tc.wantClientService+" ")
+			}
+			if tc.wantNoKubectl {
+				require.NoFileExists(t, filepath.Join(dir, "kubectl.log"))
+			}
+			if tc.wantKubectl {
+				require.FileExists(t, filepath.Join(dir, "kubectl.log"))
 			}
 		})
 	}

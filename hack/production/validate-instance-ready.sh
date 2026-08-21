@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+. "${ROOT_DIR}/hack/production/operation-time-validation.sh"
 
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
@@ -226,8 +227,8 @@ if [[ -n "$ETCDCTL_EXEC_CONTAINER" && -z "$ETCDCTL_EXEC_POD" ]]; then
 fi
 for variable in EXPECTED_KUBEBRAIN_REPLICAS EXPECTED_PD_REPLICAS EXPECTED_TIKV_REPLICAS; do
   value="${!variable}"
-  if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
-    echo "${variable} must be a positive integer" >&2
+  if ! operation_is_positive_int64 "$value" || (( value > 2147483647 )); then
+    echo "${variable} must be a canonical positive int32" >&2
     exit 2
   fi
 done
