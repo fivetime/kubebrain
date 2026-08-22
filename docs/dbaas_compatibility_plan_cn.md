@@ -60007,6 +60007,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   versioned bucket 与独立 TiKV/PD 预生产集群演练 retention 拒绝、exact-version 恢复、worker 崩溃接管和长时间导出，并
   保持 workspace PVC/UID 与对象存储 credential 单 writer 隔离。
 
+- A5337 关闭恢复链最后一个仍无专用入口的 Operation `PostRestoreAudit`。旧 runner 已严格冻结并复验 cutover state/receipt，
+  校验 v1/v2/v3 cutover schema、restore receipt 绑定、target cluster ID、revision/chronology、拓扑和长窗口 probe receipt，
+  也有持续 heartbeat 与最终 fencing；但 claim 未绑定 type/requester/owner/参数 Secret/key，17 项参数允许未知字段、workspace
+  外证据、任意 state/receipt 路径和 data kube context/kubeconfig，通用 submitter 还可自选 maxAttempts。新增
+  `request-post-restore-audit.sh`：要求外部 request ID、实例、workspace 内 canonical 普通 non-symlink cutover state/receipt、
+  Service/目标实例/公开 endpoint、int32 副本数、安全 audit prefix 和有界 observation/sample 参数，从请求、两份证据摘要与
+  审计合同派生 `post-restore-audit-<20hex>`；state/receipt 精确由 Operation ID 派生。requester 限制证据各 4 MiB、参数
+  64 KiB，生成 canonical immutable Secret，固定 `platform:post-restore-audit`、同名 Secret/key、`maxAttempts=5` 和空 data
+  cluster override，只提交未审批 Pending。专用 SA/Role 仅有 Operation/Secret create/get；两条 `failurePolicy=Fail`
+  admission 限定所有 PostRestoreAudit 和匹配 parameter Secret 的创建身份、确定性名称与单 payload 形状。runner 现在完整
+  绑定 namespace/type/requester/owner/Secret/key/attempt 1..5，参数 keys 必须精确匹配 17 字段合同并拒绝 data cluster
+  override；executor 显式固定 WORK_DIR，两份 cutover 证据必须为 workspace 内 canonical 普通 non-symlink 文件，state/
+  receipt 必须匹配确定性路径且不得为 symlink。错误 requester、未知字段、workspace escape、输出漂移或 kube override 均在
+  audit primitive 前停止。回归覆盖正常未审批 submit、越界证据零 Kubernetes 调用、fail-closed CEL/最小权限 RBAC，以及
+  claim/schema/evidence/output/cluster drift 零 audit 动作；既有 v1/v2/v3 evidence、chronology、revision、cluster ID、receipt
+  冻结和 heartbeat 测试继续通过。Bash syntax、定向测试、完整 deploy、全仓 vet、diff check 与新增后的 515 项 inventory
+  均通过；四片 115/146/131/123 在代码提交 `7b613e71` 上全部通过（152.820/484.662/281.299/512.228 秒）。盘点现有
+  `run-*-operation.sh` 后，每个 runner 均已有对应 `request-*.sh`；这证明代码库入口覆盖齐全和提交后合同不可漂移，不证明
+  真实 apiserver admission/RBAC、独立 TiKV/PD 集群、Service/EndpointSlice 收敛、长连接或小时级观察窗口已完成生产演练。
+  上线前仍须用真实 requester 身份执行切流后长时审计、worker 崩溃接管、并发控制面变更和 target cluster 错配拒绝，并保持
+  workspace PVC/UID 与数据面 credential 单 writer 隔离。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
