@@ -59904,6 +59904,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   UID 删除在真实 apiserver/CSI 上的完整性或外部流量已停；真实 restore drill、UID-precondition 删除和 retained-volume
   审计仍是销毁前门禁，workspace PVC/UID 必须单 writer 隔离。
 
+- A5332 关闭核心破坏性 Operation `BackupDeletion` 仍依赖通用 submitter 的入口缺口。旧 runner 虽已用删除前 inventory、
+  exact-version retention delete、删除后 inventory 和 durable operation receipt 串起三道门禁，但 claim 未绑定 type、
+  requester、owner 或参数 Secret/key，15 项参数还允许任意输入/输出路径和未知顶层字段。新增
+  `request-backup-deletion.sh`：要求外部 request ID、实例、backup/object-store 身份和 executor workspace 内三份 canonical
+  普通非 symlink source receipt/pre/post manifest，从身份及三份 SHA-256 派生 `backup-delete-<20hex>`；四份输出 receipt
+  严格由该 Operation ID 派生。requester 生成不超过 64 KiB 的 canonical immutable Secret，固定
+  `platform:backup-deletion`、同名 Secret/key 与 `maxAttempts=5`，只提交未审批 Pending。专用 SA/Role 仅有 Operation 与
+  Secret create/get；两条 `failurePolicy=Fail` admission 令所有 BackupDeletion 和匹配参数 Secret 只能由该 SA 按固定
+  namespace/name/type/requester/instance/attempt/单 payload 形状创建。runner 现在要求 claim 完整匹配该合同与 attempt 1..5，
+  参数 keys 精确等于 15 项协议；executor 显式固定 WORK_DIR，三份输入必须解析为 workspace 内 canonical 普通非 symlink
+  文件，四份输出必须精确匹配 Operation 派生路径。错误 requester、未知字段和 workspace escape 均在任何 inventory/delete
+  primitive 前停止。回归覆盖正常未审批提交、workspace 外证据零 Kubernetes 调用、最小权限 RBAC、fail-closed CEL、
+  claim/schema/path drift 零对象存储动作。Bash syntax、连续两轮 requester/runner 定向测试、完整 deploy、全仓 vet、diff check
+  与新增后的 486 项 inventory 均通过；四片 107/141/121/117 在代码提交 `582ce84f` 上全部通过
+  （154.492/490.710/279.673/517.878 秒）。该入口证明删除意图、输入证据摘要、目标版本参数和输出证据位置不可在提交后
+  漂移，不证明真实 S3 versioning/Object Lock provider 已执行预期语义，也不证明 inventory observation 与 delete 之间没有
+  外部并发写；生产启用前仍须以真实 versioned bucket 演练 retention 拒绝、exact-version 删除、崩溃接管和并发 writer
+  隔离，workspace PVC/UID 必须保持单 writer。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
