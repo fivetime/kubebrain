@@ -6054,6 +6054,7 @@ worker/audit Admission 和 parameter broker 已就绪，再执行：
 ```bash
 hack/production/apply-operation-requester-guardrails.sh --verify
 KUBE_CONTEXT=production hack/production/apply-operation-requester-guardrails.sh --apply
+KUBE_CONTEXT=production hack/production/apply-operation-requester-guardrails.sh --check
 ```
 
 `--verify` 双向核对 17 个 `request-*.sh`：其中 16 个必须各有 fail-closed requester Admission 和最小权限 RBAC，
@@ -6064,6 +6065,18 @@ server-side apply 全部 16 份 Admission，全部成功后才授予 16 份 requ
 Deployment；必须按 TiKV repair 章节单独完成其清单和凭据。`--apply` 也不会创建 CRD、namespace、broker、approver、
 archiver 或 executor，不能把 guardrail 安装成功解释为整个 Operation 控制面已可用。新增 requester 时若没有同时加入
 Admission/RBAC（或显式的自包含例外），`--verify` 和生产测试 inventory 必须失败。
+
+alert receiver 已按 TiKV repair 章节单独安装后，必须以具备 17 个 ServiceAccount impersonation 权限的发布身份执行
+`--check`。它对 16 份独立 Admission 和 receiver 自包含清单做 client dry-run，并从 apiserver 读取全部 34 对
+ValidatingAdmissionPolicy/Binding：每个 policy 的 `status.observedGeneration` 必须追上当前 generation、
+`status.typeChecking` 必须存在且 `expressionWarnings` 必须为空，每个 binding 必须精确引用对应 policy 且只采用
+`Deny`。随后逐一模拟 17 个 requester 身份，验证 Operation/Secret 仅允许 create/get，明确拒绝
+list/watch/update/patch/delete，并以 server-side dry-run 证明合法 Secret/Operation 可创建、额外 Secret key、
+`requestedBy` 漂移及跨 requester 身份均被拒绝。所有探测均为 dry-run，不持久化对象；但执行者必须拥有相应
+impersonation 权限。`--check` 包含 receiver 的完整就绪判断，因此只执行 `--apply` 而未安装 receiver 时应当失败。
+ValidatingAdmissionPolicy 的 `status.typeChecking`/`expressionWarnings` 字段语义见
+[Kubernetes API reference](https://kubernetes.io/docs/reference/kubernetes-api/admissionregistration/validating-admission-policy-v1/)；
+`failurePolicy=Fail` 与 Deny binding 共同构成本发布路径的 fail-closed 要求。
 
 十六类生产 executor 模板位于
 `deploy/production/kubebrain-operation-executors.yaml`，默认全部为零副本。启用任意一类

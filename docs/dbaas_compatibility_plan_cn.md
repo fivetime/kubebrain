@@ -60045,6 +60045,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Kubernetes 版本执行 server-side dry run/隔离集群 apply、逐身份允许/拒绝矩阵和部分失败重跑，并单独部署带真实 TLS/
   Bearer 凭据的 repair alert receiver。
 
+- A5339 关闭 requester Admission 的身份匹配绕过，并把目标 apiserver 验证固化为可执行门禁。审计发现 quiesced/recovery
+  policy 仅在请求者已经是预期 ServiceAccount 时才匹配，其他身份可让 policy 根本不执行；其中
+  `TiKVTransactionRepair` 又有 quiesced requester 和 alert receiver 两个合法创建入口。现 quiesced Operation policy
+  覆盖全部该类型对象，并用一个完整 OR 合同分别绑定两种合法身份、namespace/name、requestedBy、instance、
+  maxAttempts、参数 Secret/key 和 digest；quiesced/recovery 参数 policy 以对象 scope 或合法 requester 触发并显式校验
+  身份，recovery Operation 同样以 type 或 requester 触发。receiver 两条 policy 也以名称 scope 或 receiver 身份触发，
+  防止其他主体借用合法命名绕过。`apply-operation-requester-guardrails.sh --check` 进一步从真实 apiserver 核验 34 对
+  policy/binding 已观测当前 generation、完成 type checking 且零 expression warning、binding 精确为 Deny，并对 17 个
+  ServiceAccount 执行 RBAC allow/deny 矩阵以及合法、字段漂移、跨身份 Secret/Operation 的 server dry-run；检查不持久化
+  对象，但调用者必须具备 impersonation 权限，且 alert receiver 必须已单独安装。Bash syntax、installer/TiKV Admission
+  定向回归、完整 deploy、全仓 vet、diff check 与新增后的 521 项 inventory 均通过；四片 116/147/132/126 在代码提交
+  `86b69fc5` 上全部通过（157.001/499.873/287.120/521.084 秒）。自动化回归使用 fake kubectl，只证明命令编排和失败
+  语义，不能证明某个真实集群已经通过；本轮没有目标 Kubernetes 集群凭据，尚未实际执行 `--check`。上线前剩余的
+  外部证据是：在受支持版本、已安装 receiver 且具备 impersonation 权限的目标集群执行该命令并留存结果。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
