@@ -93,14 +93,15 @@ check_cronjob() {
     .spec.concurrencyPolicy == "Forbid" and .spec.jobTemplate.spec.backoffLimit == 0 and
     .spec.jobTemplate.spec.template.spec.restartPolicy == "Never" and
     (.spec.jobTemplate.spec.template.spec.containers | length) == 1 and
-    (.spec.jobTemplate.spec.template.spec.containers[0].image | type == "string" and test("^[^[:space:]@]+@sha256:[a-f0-9]{64}$"))
+    (.spec.jobTemplate.spec.template.spec.containers[0].image | type == "string" and test("^[^[:space:]@]+@sha256:[a-f0-9]{64}$")) and
+    ([.spec.jobTemplate.spec.template.spec.containers[0].args[] | select(startswith("--max-batch="))] == ["--max-batch=256"])
   ' <<<"$cronjob" >/dev/null || die "verifier CronJob runtime contract drifted"
   verifier_image="$("$JQ" -er '.spec.jobTemplate.spec.template.spec.containers[0].image' <<<"$cronjob")"
   verifier_image_digest="${verifier_image##*@}"
 }
 
 run_manual_verification() {
-  local requested_name="$1" generate_prefix="$2" manual_job created created_identity completed pods expected_container expected_init_containers expected_service_account now
+  local requested_name="$1" generate_prefix="$2" manual_job created created_identity completed pods expected_container expected_init_containers expected_service_account logs verified_count now
   manual_job="$("$JQ" -c --arg name "$requested_name" --arg prefix "$generate_prefix" --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '
     {apiVersion:"batch/v1",kind:"Job",metadata:({namespace:$namespace,annotations:{"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry}} + if $name == "" then {generateName:$prefix} else {name:$name} end),spec:.spec.jobTemplate.spec} |
     .spec.template.metadata.annotations = {"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry} |
@@ -160,7 +161,13 @@ run_manual_verification() {
       )] | length == 1)
     end
   ' <<<"$pods" >/dev/null || die "manual verifier execution Pod owner, evidence binding, runtime, or terminal phase drifted"
-  kc logs -n "$NAMESPACE" "job/$manual_job_name" >&2 || die "cannot retain manual verifier Job logs"
+  logs="$(kc logs -n "$NAMESPACE" "job/$manual_job_name")" || die "cannot retain manual verifier Job logs"
+  if [[ "${#logs}" -lt 1 || "${#logs}" -gt 4096 || "$logs" == *$'\n'* || ! "$logs" =~ ^verified\ ([1-9][0-9]{0,2})\ released\ terminal\ operation\ archives$ ]]; then
+    die "manual verifier Job did not emit one canonical non-empty verification result"
+  fi
+  verified_count="${BASH_REMATCH[1]}"
+  [[ "$verified_count" -le 256 ]] || die "manual verifier Job reported more operations than its verified batch limit"
+  printf '%s\n' "$logs" >&2
 }
 
 [[ "$#" == 1 ]] || usage

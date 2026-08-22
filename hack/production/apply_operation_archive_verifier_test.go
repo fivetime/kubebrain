@@ -199,6 +199,35 @@ func TestOperationArchiveVerifierRejectsMutableLiveImageBeforeJob(t *testing.T) 
 	require.NotContains(t, string(mustRead(t, f.log)), "create -f")
 }
 
+func TestOperationArchiveVerifierRejectsDriftedLiveBatchLimitBeforeJob(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), "LIVE_MAX_BATCH=512"))
+	require.Error(t, err)
+	require.Contains(t, string(out), "CronJob runtime contract drifted")
+	require.NotContains(t, string(mustRead(t, f.log)), "create -f")
+}
+
+func TestOperationArchiveVerifierRejectsEmptyOrNonCanonicalSuccessLog(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		log  string
+	}{
+		{name: "zero", log: "verified 0 released terminal operation archives"},
+		{name: "too many", log: "verified 257 released terminal operation archives"},
+		{name: "malformed", log: "verification complete"},
+		{name: "multiline", log: "verified 1 released terminal operation archives\nextra"},
+		{name: "oversize", log: strings.Repeat("x", 4097)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newArchiveVerifierApplyFixture(t)
+			out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), "LOG_OUTPUT="+tc.log))
+			require.Error(t, err)
+			require.Contains(t, string(out), "manual verifier Job")
+			require.NotContains(t, string(mustRead(t, f.log)), "patch cronjob")
+		})
+	}
+}
+
 type archiveVerifierApplyFixture struct{ kubectl, log, payloadLog, jobState, state, evidence string }
 
 func newArchiveVerifierApplyFixture(t *testing.T) archiveVerifierApplyFixture {
@@ -222,12 +251,13 @@ fi
 if [[ "$args" == *" get cronjob kubebrain-operation-archive-verifier "* ]]; then
   suspend=true; binding=pending; expiry=pending; runtime_expiry=1
   image="${LIVE_IMAGE:-registry.example/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+  max_batch="${LIVE_MAX_BATCH:-256}"
   if [[ -f "$STATE_FILE" ]]; then
     suspend=false; binding="$(sha256sum "$IAM_SIMULATION_EVIDENCE" | awk '{print $1}')"
     expiry="$(jq -r .valid_until_unix "$IAM_SIMULATION_EVIDENCE")"; runtime_expiry="$expiry"
     [[ "$(<"$STATE_FILE")" != expired ]] || { expiry=1; runtime_expiry=1; }
   fi
-  printf '{"metadata":{"annotations":{"dbaas.kubebrain.io/iam-simulation-sha256":"%s","dbaas.kubebrain.io/iam-simulation-valid-until-unix":"%s"},"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"spec":{"backoffLimit":0,"template":{"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier","containers":[{"name":"verifier","image":"%s","env":[{"name":"S3_ENDPOINT"},{"name":"AWS_REGION"},{"name":"AWS_ACCESS_KEY_ID"},{"name":"AWS_SECRET_ACCESS_KEY"},{"name":"S3_FORCE_PATH_STYLE"},{"name":"OBJECT_STORE_ID"},{"name":"S3_BUCKET"},{"name":"IAM_SIMULATION_VALID_UNTIL_UNIX","value":"%s"}]}]}}}}}}\n' "$binding" "$expiry" "$suspend" "$image" "$runtime_expiry"; exit 0
+  printf '{"metadata":{"annotations":{"dbaas.kubebrain.io/iam-simulation-sha256":"%s","dbaas.kubebrain.io/iam-simulation-valid-until-unix":"%s"},"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"spec":{"backoffLimit":0,"template":{"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier","containers":[{"name":"verifier","image":"%s","args":["--max-batch=%s"],"env":[{"name":"S3_ENDPOINT"},{"name":"AWS_REGION"},{"name":"AWS_ACCESS_KEY_ID"},{"name":"AWS_SECRET_ACCESS_KEY"},{"name":"S3_FORCE_PATH_STYLE"},{"name":"OBJECT_STORE_ID"},{"name":"S3_BUCKET"},{"name":"IAM_SIMULATION_VALID_UNTIL_UNIX","value":"%s"}]}]}}}}}}\n' "$binding" "$expiry" "$suspend" "$image" "$max_batch" "$runtime_expiry"; exit 0
 fi
 if [[ "$args" == *" get job "* ]]; then
   [[ "${FINAL_JOB_MISSING:-false}" != true && -f "$JOB_STATE_FILE" ]] || exit 1
@@ -259,7 +289,7 @@ if [[ "$args" == *" get pods "* ]]; then
   exit 0
 fi
 if [[ "$args" == *" wait "* ]]; then [[ "${FAIL_JOB:-false}" != true ]]; exit; fi
-if [[ "$args" == *" logs "* ]]; then echo 'verified 2 released terminal operation archives'; exit 0; fi
+if [[ "$args" == *" logs "* ]]; then printf '%s\n' "${LOG_OUTPUT:-verified 2 released terminal operation archives}"; exit 0; fi
 if [[ "$args" == *" patch cronjob "* ]]; then printf x >"$STATE_FILE"; exit 0; fi
 if [[ "$args" == *" create -f - -o json "* ]]; then
   payload="$(cat)"; grep -q 'IAM_SIMULATION_VALID_UNTIL_UNIX' <<<"$payload"; printf '%s\n' "$payload" >>"$CREATE_PAYLOAD_LOG"
