@@ -793,7 +793,7 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.True(t, found)
-		var workspace, parameterToken, parameterCA, hooks *unstructured.Unstructured
+		var workspace, parameterToken, parameterCA, hooks, prometheusClient *unstructured.Unstructured
 		for _, raw := range volumes {
 			volume := &unstructured.Unstructured{Object: raw.(map[string]any)}
 			switch nestedString(t, volume, "name") {
@@ -805,6 +805,8 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 				parameterCA = volume
 			case "hooks":
 				hooks = volume
+			case "prometheus-client":
+				prometheusClient = volume
 			}
 		}
 		require.NotNil(t, workspace)
@@ -870,9 +872,37 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 					}
 				}
 				require.Equal(t, "/opt/kubebrain/hack/production/validate-info-scrape-recovery.sh", scrapeCommand)
+				require.NotNil(t, prometheusClient)
+				require.Equal(t, "kubebrain-info-certificate-rotation-prometheus", nestedString(t, prometheusClient, "secret", "secretName"))
+				require.EqualValues(t, 0440, nestedInt64(t, prometheusClient, "secret", "defaultMode"))
+				prometheusItems, found, err := unstructured.NestedSlice(prometheusClient.Object, "secret", "items")
+				require.NoError(t, err)
+				require.True(t, found)
+				prometheusPaths := map[string]string{}
+				for _, item := range prometheusItems {
+					itemObject := &unstructured.Unstructured{Object: item.(map[string]any)}
+					prometheusPaths[nestedString(t, itemObject, "key")] = nestedString(t, itemObject, "path")
+				}
+				require.Equal(t, map[string]string{"ca.crt": "ca.crt", "token": "token"}, prometheusPaths)
+				mounts, found, err := unstructured.NestedSlice(container.Object, "volumeMounts")
+				require.NoError(t, err)
+				require.True(t, found)
+				var prometheusMount *unstructured.Unstructured
+				for _, raw := range mounts {
+					mount := &unstructured.Unstructured{Object: raw.(map[string]any)}
+					if nestedString(t, mount, "name") == "prometheus-client" {
+						prometheusMount = mount
+					}
+				}
+				require.NotNil(t, prometheusMount)
+				require.Equal(t, "/var/run/secrets/kubebrain-prometheus", nestedString(t, prometheusMount, "mountPath"))
+				require.True(t, nestedBool(t, prometheusMount, "readOnly"))
 			}
 		} else {
 			require.Nil(t, hooks)
+		}
+		if name != "kubebrain-info-certificate-rotation-executor" {
+			require.Nil(t, prometheusClient)
 		}
 	}
 }
