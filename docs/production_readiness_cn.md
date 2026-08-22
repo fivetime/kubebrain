@@ -5978,8 +5978,11 @@ KUBE_CONTEXT=production REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM=yes \
 对 inventory 每个 namespace 要求 Operation get/list 为 yes，create/update/patch/delete/watch、Secret 读取和 Lease create
 均为 no。enable 先从 suspended CronJob 创建并保留一次手动 Job；默认使用
 `generateName: kubebrain-archive-verifier-enable-`，避免失败 Job 七天保留期间阻塞安全重试，也可通过
-`VERIFICATION_JOB_NAME` 指定唯一 DNS label 供外部审批系统关联。脚本必须从 apiserver create JSON 响应取得并校验
-namespace、DNS label 和请求的显式名称或生成前缀，不能信任本地预估名称。只有 Job complete 且日志可读，才以旧
+`VERIFICATION_JOB_NAME` 指定唯一 DNS label 供外部审批系统关联。Job metadata 必须同时持久保存本次 canonical
+evidence 的 `dbaas.kubebrain.io/iam-simulation-sha256` 与
+`dbaas.kubebrain.io/iam-simulation-valid-until-unix`，使七天保留对象可直接关联授权证据。脚本必须从 apiserver create
+JSON 响应取得并校验 namespace、DNS label、两项 annotation，以及请求的显式名称或生成前缀，不能信任本地预估名称；
+admission 删除或改写绑定时在 wait 前停止。只有 Job complete 且日志可读，才以旧
 resourceVersion 和 `suspend=true` 双 test 的 JSON Patch 改为 false；Job 失败时绝不 patch。该运行时门禁不会主动尝试
 S3 Put/Delete 来“证明拒绝”，因为误配时会产生真实副作用；必须另附 provider IAM policy lint/simulation 或审计批准，
 证明该独立 access key 仅允许 exact-version Head/Get/GetObjectRetention 和必要 bucket 配置读取。enable 通过

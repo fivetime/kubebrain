@@ -60364,6 +60364,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fake kubectl；真实 apiserver generateName、admission mutation/audit、Job 调度和保留策略需在目标 Kubernetes/S3
   环境执行至少两次连续 refresh 验证，不以本地名称生成替代服务端唯一性。
 
+- A5362 关闭 A5361 保留的手动验收 Job 无法独立证明所消费 IAM evidence 的审计缺口。旧 Job 仅把 expiry 注入容器环境，
+  metadata 没有 evidence SHA/expiry；七天保留对象和日志无法直接关联受信系统签发的 canonical 文件，admission 也可在
+  create 时删除或改写审计绑定而脚本仍继续 wait。现在 enable/refresh 生成的 Job metadata 均精确写入
+  `dbaas.kubebrain.io/iam-simulation-sha256` 和
+  `dbaas.kubebrain.io/iam-simulation-valid-until-unix`；create JSON 响应必须同时回显目标 namespace、合法 name、原 SHA
+  与原 expiry，之后才进入 wait/log。错误 SHA、错误 expiry、annotation 缺失、错误 namespace 或越界生成前缀全部在
+  CronJob patch 前 fail closed。回归同时固定请求 payload 的 SHA 为 canonical evidence 文件实际 digest，并继续覆盖显式
+  审计名称和手动 Job 失败。565 项 inventory 的四片 128/159/145/133 在代码提交 `00a311d8` 上全部通过（Go 测试
+  159.034/506.424/289.963/526.251 秒；端到端 167.869/515.162/298.793/535.163 秒）。这证明本地编排和
+  apiserver 响应验证合同，不证明真实 admission/webhook 没有异步修改 Job、Kubernetes audit sink 已留存 create/patch，
+  或 provider evidence 签发身份可信；生产需把 Job UID/resourceVersion、两项 annotation、日志和原始 simulator artifact
+  纳入同一审批记录。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
