@@ -103,10 +103,10 @@ func TestBackupOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
 
 func TestBackupOperationRejectsValidReceiptChangedAfterDigest(t *testing.T) {
 	f := newBackupRunnerFixture(t, true)
-	artifact := filepath.Join(f.dir, "artifact.jsonl")
+	artifact := f.artifact
 	tamperedReceipt := filepath.Join(f.dir, "valid-tampered-receipt.json")
 	require.NoError(t, os.WriteFile(tamperedReceipt, []byte(fmt.Sprintf(
-		`{"format":"kubebrain.object-backup.receipt.v1","instance":"instance-a","backup_id":"backup-1","object_store_id":"store-a","bucket":"backups","object_key":"instance-a/backup-1.jsonl","version_id":"version-1","artifact_file_sha256":"%s","artifact_format":"kubebrain.logical.v2","artifact_sha256":"%s","snapshot_revision":42,"created_at_unix":100,"records":2,"leases":1,"object_bytes":%d,"retention_mode":"COMPLIANCE","retain_until_unix":2000000000,"remote_verified":true,"uploaded_at_unix":1001}`+"\n",
+		`{"format":"kubebrain.object-backup.receipt.v1","instance":"instance-a","backup_id":"backup-0123456789abcdefabcd","object_store_id":"store-a","bucket":"backups","object_key":"instance-a/backup-0123456789abcdefabcd.jsonl","version_id":"version-1","artifact_file_sha256":"%s","artifact_format":"kubebrain.logical.v2","artifact_sha256":"%s","snapshot_revision":42,"created_at_unix":100,"records":2,"leases":1,"object_bytes":%d,"retention_mode":"COMPLIANCE","retain_until_unix":2000000000,"remote_verified":true,"uploaded_at_unix":1001}`+"\n",
 		fileDigest(t, artifact), backupArtifactSHA256, len(mustRead(t, artifact)),
 	)), 0o600))
 	f.env = withReceiptAfterSHA256Tamper(f.env, tamperedReceipt)
@@ -279,13 +279,13 @@ func TestBackupOperationRejectsUnsafeObjectIdentity(t *testing.T) {
 		{
 			name: "object key parent",
 			edit: func(parameters string) string {
-				return strings.Replace(parameters, `"s3_object_key":"instance-a/backup-1.jsonl"`, `"s3_object_key":"../backup-1.jsonl"`, 1)
+				return strings.Replace(parameters, `"s3_object_key":"instance-a/backup-0123456789abcdefabcd.jsonl"`, `"s3_object_key":"../backup-0123456789abcdefabcd.jsonl"`, 1)
 			},
 		},
 		{
 			name: "object key control character",
 			edit: func(parameters string) string {
-				return strings.Replace(parameters, `"s3_object_key":"instance-a/backup-1.jsonl"`, `"s3_object_key":"instance-a/backup-1\t.jsonl"`, 1)
+				return strings.Replace(parameters, `"s3_object_key":"instance-a/backup-0123456789abcdefabcd.jsonl"`, `"s3_object_key":"instance-a/backup-0123456789abcdefabcd\t.jsonl"`, 1)
 			},
 		},
 	} {
@@ -327,7 +327,7 @@ func TestBackupOperationRejectsInvalidClaimIdentityBeforeWorkflow(t *testing.T) 
 			if test.backupID != "" {
 				parameters := strings.Replace(
 					string(mustRead(t, f.parameters)),
-					`"backup_id":"backup-1"`,
+					`"backup_id":"backup-0123456789abcdefabcd"`,
 					fmt.Sprintf(`"backup_id":%q`, test.backupID),
 					1,
 				)
@@ -358,11 +358,45 @@ func TestBackupOperationRejectsInvalidClaimNamespaceBeforeWorkflow(t *testing.T)
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestBackupOperationRejectsRequesterDriftBeforeWorkflow(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.run(t, false, "CLAIM_REQUESTER=platform:other", "dedicated requester contract")
+	assertBackupWorkflowDidNotStart(t, f.log(t))
+}
+
+func TestBackupOperationRejectsUnknownParameterBeforeWorkflow(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	parameters := strings.TrimSuffix(string(mustRead(t, f.parameters)), "\n")
+	parameters = strings.TrimSuffix(parameters, "}") + `,"unexpected":true}`
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "must exactly match the dedicated requester schema")
+	assertBackupWorkflowDidNotStart(t, f.log(t))
+}
+
+func TestBackupOperationRejectsOutputPathDriftBeforeWorkflow(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	parameters := strings.Replace(
+		string(mustRead(t, f.parameters)), f.artifact, filepath.Join(f.dir, "other.jsonl"), 1,
+	)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "output paths do not match the dedicated requester contract")
+	assertBackupWorkflowDidNotStart(t, f.log(t))
+}
+
+func assertBackupWorkflowDidNotStart(t *testing.T, log string) {
+	t.Helper()
+	require.NotContains(t, log, "export\n")
+	require.NotContains(t, log, "status\n")
+	require.NotContains(t, log, "object\n")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestBackupOperationLoadsManagedParameters(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	f.env = append(f.env, "MANAGED_PARAMETERS="+f.parameters, "PARAMETERS_INPUT=")
 	f.run(t, true, "")
-	require.Contains(t, f.log(t), "--action parameters --name backup-1")
+	require.Contains(t, f.log(t), "--action parameters --name backup-0123456789abcdefabcd")
 }
 
 func TestBackupOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
@@ -391,18 +425,18 @@ type backupRunnerFixture struct {
 func newBackupRunnerFixture(t *testing.T, existingArtifact bool) *backupRunnerFixture {
 	t.Helper()
 	dir := t.TempDir()
-	artifact := filepath.Join(dir, "artifact.jsonl")
-	receipt := filepath.Join(dir, "receipt.json")
+	artifact := filepath.Join(dir, "backup-0123456789abcdefabcd.jsonl")
+	receipt := filepath.Join(dir, "backup-0123456789abcdefabcd.receipt.json")
 	parameters := filepath.Join(dir, "parameters.json")
 	require.NoError(t, os.WriteFile(parameters, []byte(fmt.Sprintf(`{
 	  "endpoint":"https://etcd:2379","prefix":"/registry","artifact_output":%q,
-	  "batch_size":100,"metrics_output":"","backup_id":"backup-1",
+	  "batch_size":100,"metrics_output":%q,"backup_id":"backup-0123456789abcdefabcd",
 	  "object_store_id":"store-a","s3_endpoint":"https://s3.example",
-	  "s3_bucket":"backups","s3_object_key":"instance-a/backup-1.jsonl",
+	  "s3_bucket":"backups","s3_object_key":"instance-a/backup-0123456789abcdefabcd.jsonl",
 	  "s3_force_path_style":false,"aws_region":"us-east-1","retention_mode":"COMPLIANCE",
 	  "retain_until_unix":2000000000,"min_records":1,"max_age_seconds":3600,
 	  "receipt_output":%q
-	}`, artifact, receipt)), 0o600))
+	}`, artifact, filepath.Join(dir, "backup-0123456789abcdefabcd.metrics"), receipt)), 0o600))
 	if existingArtifact {
 		require.NoError(t, os.WriteFile(artifact, []byte("existing"), 0o600))
 	}
@@ -416,10 +450,10 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  operation_id="${CLAIM_OPERATION_ID:-backup-1}"
+  operation_id="${CLAIM_OPERATION_ID:-backup-0123456789abcdefabcd}"
   instance="${CLAIM_INSTANCE:-instance-a}"
   namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
-  printf '{"namespace":"%s","name":"backup-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"Backup","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
+  printf '{"namespace":"%s","name":"backup-0123456789abcdefabcd","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"Backup","requested_by":"%s","parameters_sha256":"%s","parameters_secret":"backup-0123456789abcdefabcd-parameters","parameters_key":"parameters.json","owner":"%s","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "${CLAIM_REQUESTER:-platform:backup}" "$digest" "${CLAIM_OWNER:-worker-a}"
 elif [[ " $* " == *" --action parameters "* ]]; then
   cat "$MANAGED_PARAMETERS"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-false}" == true ]]; then
@@ -485,6 +519,7 @@ chmod 600 "$RECEIPT_OUTPUT"
 		"RUNNER_PARAMETERS_INPUT=" + parameters,
 		"RUNNER_BACKUP_INPUT=" + artifact,
 		"ORIGINAL_ARTIFACT_OUTPUT=" + artifact,
+		"WORK_DIR=" + dir,
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &backupRunnerFixture{

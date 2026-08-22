@@ -16,6 +16,7 @@ OBJECT_COMMAND="${OBJECT_COMMAND:-${ROOT_DIR}/hack/backup/logical-object.sh}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
+WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
 
 usage() {
@@ -47,6 +48,7 @@ operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECOND
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 command -v stat >/dev/null || { echo "stat is required" >&2; exit 2; }
+command -v realpath >/dev/null || { echo "realpath is required" >&2; exit 2; }
 require_executable_file() {
   local name="$1"
   local path="$2"
@@ -57,6 +59,7 @@ require_executable_file() {
 require_executable_file EXPORT_COMMAND "$EXPORT_COMMAND"
 require_executable_file STATUS_COMMAND "$STATUS_COMMAND"
 require_executable_file OBJECT_COMMAND "$OBJECT_COMMAND"
+[[ "$WORK_DIR" == /* && -d "$WORK_DIR" && ! -L "$WORK_DIR" && "$(realpath -e -- "$WORK_DIR")" == "$WORK_DIR" ]] || { echo "WORK_DIR must be a canonical absolute non-symlink directory" >&2; exit 2; }
 
 managed_parameters=""
 parameter_capture_dir="$(mktemp -d)"
@@ -111,13 +114,9 @@ run_operationctl() {
 }
 
 claim="$(run_operationctl --action claim --owner "$WORKER_ID" --type Backup --lease "${LEASE_SECONDS}s")"
-claimed_namespace="$("$JQ" -r '.namespace // empty' <<<"$claim")"
-if [[ -n "$claimed_namespace" ]]; then
-  [[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
-    { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
-  OPERATION_NAMESPACE="$claimed_namespace"
-  build_kube_args
-fi
+identity="$("$JQ" -er '[.namespace,.type,.requested_by,.owner,.parameters_secret,.parameters_key]|@tsv' <<<"$claim")" || { echo "backup claim identity is incomplete" >&2; exit 2; }
+IFS=$'\t' read -r claimed_namespace claimed_type claimed_requester claimed_owner claimed_secret claimed_key <<<"$identity"
+[[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }; OPERATION_NAMESPACE="$claimed_namespace"; build_kube_args
 name="$("$JQ" -er '.name' <<<"$claim")"
 operation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"
@@ -127,6 +126,7 @@ for value in "$operation_id" "$instance"; do
 done
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
+[[ "$name" =~ ^backup-[a-f0-9]{20}$ && "$operation_id" == "$name" && "$claimed_type" == Backup && "$claimed_requester" == platform:backup && "$claimed_owner" == "$WORKER_ID" && "$claimed_secret" == "${name}-parameters" && "$claimed_key" == parameters.json && "$attempt" =~ ^[1-5]$ ]] || { echo "backup claim identity does not match the dedicated requester contract" >&2; exit 2; }
 if [[ -z "$PARAMETERS_INPUT" ]]; then
   managed_parameters="${parameter_capture_dir}/managed-parameters.json"
   PARAMETERS_INPUT="$managed_parameters"
@@ -236,6 +236,8 @@ validate_object_identity() {
 validate_object_identity_json ||
   { echo "backup object identity must use safe object store scope and normalized relative key" >&2; exit 2; }
 
+"$JQ" -e '(keys|sort)==(["artifact_output","aws_region","backup_id","batch_size","endpoint","max_age_seconds","metrics_output","min_records","object_store_id","prefix","receipt_output","retain_until_unix","retention_mode","s3_bucket","s3_endpoint","s3_force_path_style","s3_object_key"]|sort)' "$PARAMETERS_INPUT" >/dev/null || { echo "backup parameters must exactly match the dedicated requester schema" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .endpoint, .prefix, .artifact_output, (.batch_size|tostring),
   (if (.metrics_output // "") == "" then "-" else .metrics_output end),
@@ -278,6 +280,8 @@ fi
 validate_object_identity "$object_store_id" "$s3_bucket" "$s3_object_key"
 [[ "$backup_id" == "$operation_id" ]] ||
   { echo "backup_id must equal the claimed operation ID" >&2; exit 2; }
+[[ "$artifact_output" == "${WORK_DIR}/${name}.jsonl" && "$metrics_output" == "${WORK_DIR}/${name}.metrics" && "$receipt_output" == "${WORK_DIR}/${name}.receipt.json" ]] || { echo "backup output paths do not match the dedicated requester contract" >&2; exit 2; }
+for path in "$artifact_output" "$metrics_output" "$receipt_output"; do [[ ! -L "$path" ]] || { echo "backup output path must not be a symlink" >&2; exit 2; }; done
 
 freeze_artifact_output() {
   local source="$1" destination="$2" source_before captured source_after

@@ -189,6 +189,7 @@ spec:
             - {name: EXPORT_COMMAND, value: /usr/local/bin/kubebrain-logical-export}
             - {name: STATUS_COMMAND, value: /usr/local/bin/kubebrain-logical-status}
             - {name: OBJECT_COMMAND, value: /usr/local/bin/kubebrain-logical-object}
+            - {name: WORK_DIR, value: /var/lib/kubebrain-operation}
           envFrom:
             - secretRef:
                 name: kubebrain-backup-executor-env
