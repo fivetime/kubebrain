@@ -59674,6 +59674,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `6cd6cc9e` 上全部通过（139.618/473.321/264.222/498.431 秒）。本项防止 argv 暴露，不替代节点 `/proc`
   hidepid、Secret 文件访问控制、curl 内存保护或 Prometheus token 最小权限/短 TTL。
 
+- A5315 消除 one-shot info scrape gate 的混合版本输入窗口。此前 TLS receipt 先从源文件计算 SHA-256、再从
+  同一路径解析字段，curl 继续引用可变化的 CA，verify 最后再次读取原 scrape receipt；Secret/PVC 更新可让
+  一次成功证据组合不同版本。gate 现在把 TLS receipt、Prometheus CA、可选 token 和 verify receipt 捕获到
+  `0600` 私有目录，每份都比较源文件复制前后 SHA-256 与副本摘要，之后 hash/JQ/curl/verify 只读快照。
+  token 读取后还要求 shell ASCII 字节数精确等于文件 size，拒绝命令替换会吞掉的尾随换行或 NUL 歧义。
+  回归让 fake curl 在 query 时改写四个源文件：complete receipt 仍绑定捕获前 TLS digest、CA/token 使用捕获
+  内容，verify 仍按捕获前 receipt 成功；另覆盖尾随换行 token 在 query 前失败。Bash syntax、定向 scrape/
+  runner、完整 deploy manifest、全仓 vet、diff check 与 473 项 inventory 均通过；四片 105/136/117/115
+  在代码提交 `c350603f` 上全部通过（141.128/474.826/266.303/499.183 秒）。本项保证单次 gate 输入一致性，
+  不替代 Kubernetes Secret resourceVersion 编排或跨多次 Operation 的版本生命周期管理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

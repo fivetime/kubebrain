@@ -32,6 +32,9 @@ token 为 16 KiB；直接 gate 还在 query 前限制 TLS receipt 为 1 MiB、ve
 Bearer token 不得展开到 curl argv：gate 只接受 RFC 6750 `b64token` 字符集，把 Authorization header 写入
 `0600` 临时文件，再用 curl `-H @<file>` 读取，并在退出时清理。进程列表、审计 argv 和测试日志中只能看到
 临时路径，不能出现 token 明文。
+直接 scrape gate 在 query 前还会把 TLS receipt、Prometheus CA、可选 token，以及 verify 模式下的既有 scrape
+receipt 复制到 `0600` 私有 capture，并比较源文件复制前后 SHA-256 与副本摘要；后续 hash、JSON 解析、curl
+和 receipt verify 只读快照。Secret/PVC 投影在一次 gate 中途变化时不得混合新旧版本形成证据。
 
 ## 关键 SLI
 
