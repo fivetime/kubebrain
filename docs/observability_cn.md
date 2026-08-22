@@ -37,7 +37,8 @@ receipt 复制到 `0600` 私有 capture，并比较源文件复制前后 SHA-256
 和 receipt verify 只读快照。Secret/PVC 投影在一次 gate 中途变化时不得混合新旧版本形成证据。
 one-shot TLS gate 同样在 complete/verify 握手前双摘要冻结 state，verify 时再冻结既有 TLS receipt；Pod
 快照、证书摘要与 receipt 字段只从私有副本读取。握手期间修改原 state/receipt 不得改变本轮判断。
-三个 gate 输出（rotation state、TLS receipt、scrape receipt）都先在目标同目录写入 `0600` 临时文件，再以
+三个 gate 输出（rotation state、TLS receipt、scrape receipt）都先用 `mktemp ...XXXXXX` 在目标同目录独占
+创建随机 `0600` 临时文件，再以
 `sync -f` 同步内容、hard-link no-clobber 原子发布、删除临时链接并 `sync -f` 目标目录；并发发布者若已经
 占有目标，后到者必须失败且不得覆盖赢家证据。文件同步失败时不发布；目录同步失败时保留已发布证据但 gate
 返回失败，接管方必须重新复验，不能把文件存在或前一次 stdout 当作成功。

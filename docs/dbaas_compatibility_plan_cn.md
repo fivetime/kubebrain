@@ -59715,6 +59715,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （140.936/474.316/268.307/502.279 秒）。本项使用 GNU/coreutils `sync -f` 语义；它不能证明特定 CSI 后端的
   stable-storage/断电承诺，也不替代 workspace 存储类验证和外部不可变审计归档。
 
+- A5319 消除 info rotation evidence 的 predictable temporary collision/symlink overwrite。此前 state、TLS
+  receipt 与 scrape receipt 都使用 `${destination}.tmp.$$` 并以 shell 重定向创建；不同节点上的 executor 可有
+  相同 PID 并同时写同一路径，RWX workspace 中预置符号链接也会在 hard-link no-clobber 之前截获内容。两个
+  gate 现在用目标同目录的 `mktemp .<basename>.tmp.XXXXXX` 独占创建随机文件，立即固定 `0600`，统一退出 trap
+  清理尚未发布的临时文件，同时完整保留 A5318 的 file-sync→link→unlink→directory-sync 顺序。回归静态禁止
+  `.tmp.$$` 并要求随机模板/MKTEMP 路径，运行时覆盖文件同步和目录同步失败后无私有临时文件残留。
+  Bash syntax、定向 TLS/scrape/runner、完整 deploy manifest、全仓 vet、diff check 与 476 项 inventory 均通过；
+  四片 107/136/117/116 在代码提交 `1641a70e` 上全部通过
+  （139.655/473.333/264.946/502.069 秒）。独占创建防止名字碰撞和预置 symlink，不隔离能在创建后修改目录项
+  或 inode 的同 UID workspace 写者；专用 PVC 挂载、executor 身份隔离与 CSI 权限仍是生产前提。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
