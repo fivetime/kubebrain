@@ -879,6 +879,9 @@ spec:
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: ROTATION_COMMAND, value: /opt/kubebrain/hack/production/validate-info-certificate-rotation.sh}
             - {name: SCRAPE_COMMAND, value: /opt/kubebrain/hack/production/validate-info-scrape-recovery.sh}
+            - {name: EXPECTED_PROMETHEUS_URL, value: "https://prometheus-operated.kubebrain-system.svc.cluster.local:9090"}
+            - {name: PROMETHEUS_CA_SOURCE, value: /var/run/secrets/kubebrain-prometheus/ca.crt}
+            - {name: PROMETHEUS_TOKEN_SOURCE, value: /var/run/secrets/kubebrain-prometheus/token}
             - {name: PUBLISH_COMMAND, value: /opt/kubebrain-executor-hooks/publish}
           envFrom: [{secretRef: {name: kubebrain-info-certificate-rotation-executor-env}}]
           resources:

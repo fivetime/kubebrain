@@ -102,6 +102,32 @@ func TestInfoCertificateRotationOperationDoesNotSucceedAfterFinalFence(t *testin
 	require.NotContains(t, string(mustRead(t, f.log)), "--action succeed")
 }
 
+func TestInfoCertificateRotationOperationRejectsCredentialPathEscape(t *testing.T) {
+	for _, tc := range []struct{ name, wanted string }{
+		{"URL", "prometheus_url must use the trusted deployment endpoint"},
+		{"CA", "prometheus_ca_file must use the dedicated Prometheus credential mount"},
+		{"token", "prometheus_bearer_token_file must use the dedicated Prometheus credential mount"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInfoRotationRunnerFixture(t)
+			parameters := string(mustRead(t, f.parameters))
+			if tc.name == "URL" {
+				parameters = strings.Replace(parameters, `"prometheus_url":"https://prometheus.example"`, `"prometheus_url":"https://collector.attacker.example"`, 1)
+			} else if tc.name == "CA" {
+				old := fmt.Sprintf(`"prometheus_ca_file":%q`, filepath.Join(f.dir, "prometheus-ca"))
+				parameters = strings.Replace(parameters, old, `"prometheus_ca_file":"/var/run/secrets/kubebrain-parameter/token"`, 1)
+			} else {
+				old := `"recovery_timeout_seconds":`
+				replacement := `"prometheus_bearer_token_file":"/var/run/secrets/kubebrain-parameter/token","prometheus_bearer_token_sha256":"` + strings.Repeat("0", 64) + `","recovery_timeout_seconds":`
+				parameters = strings.Replace(parameters, old, replacement, 1)
+			}
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+			f.run(t, false, tc.wanted)
+			require.NotContains(t, string(mustRead(t, f.log)), "gate ")
+		})
+	}
+}
+
 type infoRotationRunnerFixture struct {
 	dir, parameters, operationctl, rotation, publish, scrape, log, stateDir, receipt, scrapeReceipt string
 }
@@ -186,7 +212,7 @@ fi
 func (f *infoRotationRunnerFixture) run(t *testing.T, success bool, extra ...string) {
 	t.Helper()
 	digest := sha256.Sum256(mustRead(t, f.parameters))
-	env := []string{"WORKER_ID=worker-a", "OPERATION_NAMESPACE=ops", "PARAMETERS_INPUT=" + f.parameters, "OPERATIONCTL=" + f.operationctl, "ROTATION_COMMAND=" + f.rotation, "SCRAPE_COMMAND=" + f.scrape, "PUBLISH_COMMAND=" + f.publish, "TEST_LOG=" + f.log, "RECEIPT_OUTPUT=" + f.receipt, "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=5", "CLAIM_DIGEST=" + fmt.Sprintf("%x", digest)}
+	env := []string{"WORKER_ID=worker-a", "OPERATION_NAMESPACE=ops", "PARAMETERS_INPUT=" + f.parameters, "OPERATIONCTL=" + f.operationctl, "ROTATION_COMMAND=" + f.rotation, "SCRAPE_COMMAND=" + f.scrape, "PUBLISH_COMMAND=" + f.publish, "EXPECTED_PROMETHEUS_URL=https://prometheus.example", "PROMETHEUS_CA_SOURCE=" + filepath.Join(f.dir, "prometheus-ca"), "PROMETHEUS_TOKEN_SOURCE=" + filepath.Join(f.dir, "prometheus-token"), "TEST_LOG=" + f.log, "RECEIPT_OUTPUT=" + f.receipt, "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=5", "CLAIM_DIGEST=" + fmt.Sprintf("%x", digest)}
 	var wanted string
 	for _, value := range extra {
 		if strings.Contains(value, "=") {

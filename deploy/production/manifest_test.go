@@ -864,14 +864,17 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 				env, found, err := unstructured.NestedSlice(container.Object, "env")
 				require.NoError(t, err)
 				require.True(t, found)
-				var scrapeCommand string
+				envByName := map[string]string{}
 				for _, raw := range env {
 					entry := &unstructured.Unstructured{Object: raw.(map[string]any)}
-					if nestedString(t, entry, "name") == "SCRAPE_COMMAND" {
-						scrapeCommand = nestedString(t, entry, "value")
+					if value, found, err := unstructured.NestedString(entry.Object, "value"); err == nil && found {
+						envByName[nestedString(t, entry, "name")] = value
 					}
 				}
-				require.Equal(t, "/opt/kubebrain/hack/production/validate-info-scrape-recovery.sh", scrapeCommand)
+				require.Equal(t, "/opt/kubebrain/hack/production/validate-info-scrape-recovery.sh", envByName["SCRAPE_COMMAND"])
+				require.Equal(t, "https://prometheus-operated.kubebrain-system.svc.cluster.local:9090", envByName["EXPECTED_PROMETHEUS_URL"])
+				require.Equal(t, "/var/run/secrets/kubebrain-prometheus/ca.crt", envByName["PROMETHEUS_CA_SOURCE"])
+				require.Equal(t, "/var/run/secrets/kubebrain-prometheus/token", envByName["PROMETHEUS_TOKEN_SOURCE"])
 				require.NotNil(t, prometheusClient)
 				require.Equal(t, "kubebrain-info-certificate-rotation-prometheus", nestedString(t, prometheusClient, "secret", "secretName"))
 				require.EqualValues(t, 0440, nestedInt64(t, prometheusClient, "secret", "defaultMode"))
