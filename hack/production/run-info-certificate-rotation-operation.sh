@@ -38,8 +38,11 @@ command -v "$JQ" >/dev/null || die "jq is required"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 command -v stat >/dev/null || die "stat is required"
 command -v realpath >/dev/null || die "realpath is required"
+command -v id >/dev/null || die "id is required"
 workspace_root="$(realpath -m -- "$WORK_DIR")" || die "WORK_DIR cannot be resolved"
 [[ "$workspace_root" == /* && -d "$workspace_root" ]] || die "WORK_DIR must resolve to an existing absolute directory"
+executor_uid="$(id -u)"
+[[ "$executor_uid" =~ ^[0-9]+$ ]] || die "cannot determine executor uid"
 
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then operationctl=("$OPERATIONCTL"); else operationctl=(go run ./hack/production/cmd/operationctl); fi
@@ -137,6 +140,12 @@ paths_alias() {
   local left="$1" right="$2"
   [[ "$left" == "$right" ]] || [[ -e "$left" && -e "$right" && "$left" -ef "$right" ]]
 }
+evidence_file_secure() {
+  local path="$1" attributes
+  [[ -f "$path" ]] || return 1
+  attributes="$(stat -Lc '%a:%u:%h' -- "$path")" || return 1
+  [[ "$attributes" == "600:${executor_uid}:1" ]]
+}
 if paths_alias "$state_file" "$receipt_output" ||
   paths_alias "$state_file" "$scrape_receipt_output" ||
   paths_alias "$receipt_output" "$scrape_receipt_output"; then
@@ -203,7 +212,7 @@ run_gate() { run_step "$1 gate" env "${rotation_env[@]}" ACTION="$1" "$ROTATION_
 state_old_fingerprint=""
 state_new_fingerprint=""
 validate_state() {
-  [[ -f "$state_file" ]] || return 1
+  evidence_file_secure "$state_file" || return 1
   awk -F '\t' -v instance="$instance" -v rotation="$rotation_id" -v endpoint="$endpoint" -v expected="$replicas" '
     NR == 1 {
       if (NF != 6 || $1 != "kubebrain.info-certificate-rotation.state.v1" || $2 != instance || $3 != rotation || $4 != endpoint || $5 !~ /^[a-f0-9]{64}$/ || $6 !~ /^[a-f0-9]{64}$/ || $5 == $6) exit 1
@@ -215,8 +224,9 @@ validate_state() {
   ' "$state_file" || return 1
   IFS=$'\t' read -r _ _ _ _ state_old_fingerprint state_new_fingerprint <"$state_file"
 }
-if [[ -e "$state_file" ]]; then validate_state || die "info certificate rotation state is invalid"; fi
+if [[ -e "$state_file" ]]; then validate_state || die "info certificate rotation state or security attributes are invalid"; fi
 if [[ -e "$receipt_output" ]]; then
+  evidence_file_secure "$receipt_output" || die "info certificate rotation TLS receipt security attributes are invalid"
   [[ -e "$state_file" ]] || die "info certificate rotation receipt has no durable state"
   steps=(verify)
 elif [[ -e "$state_file" ]]; then steps=(publish complete); else steps=(begin publish complete); fi
@@ -232,6 +242,7 @@ for step in "${steps[@]}"; do
 done
 
 [[ -f "$receipt_output" ]] || { renew_terminal_lease || exit 1; retry_and_exit "info certificate rotation receipt missing"; }
+evidence_file_secure "$receipt_output" || { renew_terminal_lease || exit 1; retry_and_exit "info certificate rotation TLS receipt security attributes are invalid"; }
 validate_receipt() {
   validate_state || return 1
   "$JQ" -e --arg instance "$instance" --arg rotation "$rotation_id" --arg endpoint "$endpoint" --arg old "$state_old_fingerprint" --arg new "$state_new_fingerprint" --argjson replicas "$replicas" --argjson required "$require_rejection" '
@@ -253,7 +264,10 @@ tls_completed_at="$("$JQ" -er '.completed_at_unix | select(type == "number" and 
 scrape_env=("TLS_RECEIPT_INPUT=$receipt_input" "SCRAPE_RECEIPT_OUTPUT=$scrape_receipt_output" "PROMETHEUS_URL=$prometheus_url" "PROMETHEUS_CA_FILE=$prometheus_ca" "KUBEBRAIN_NAMESPACE=$namespace" "KUBEBRAIN_SERVICE=$service" "EXPECTED_REPLICAS=$replicas" "RECOVERY_TIMEOUT_SECONDS=$recovery_timeout" "POLL_INTERVAL_SECONDS=$poll_interval" "QUERY_TIMEOUT_SECONDS=$query_timeout" "MAX_CLOCK_SKEW_SECONDS=$max_clock_skew" "MAX_SAMPLE_AGE_SECONDS=$max_sample_age")
 [[ -z "$prometheus_token" ]] || scrape_env+=("PROMETHEUS_BEARER_TOKEN_FILE=$prometheus_token")
 scrape_action=complete
-[[ ! -e "$scrape_receipt_output" ]] || scrape_action=verify
+if [[ -e "$scrape_receipt_output" ]]; then
+  evidence_file_secure "$scrape_receipt_output" || die "info scrape recovery receipt security attributes are invalid"
+  scrape_action=verify
+fi
 if run_step "info scrape recovery ${scrape_action}" env "${scrape_env[@]}" ACTION="$scrape_action" "$SCRAPE_COMMAND"; then
   :
 else
@@ -263,6 +277,7 @@ else
   retry_and_exit "info scrape recovery ${scrape_action} exited ${rc}"
 fi
 [[ -f "$scrape_receipt_output" ]] || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt missing"; }
+evidence_file_secure "$scrape_receipt_output" || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt security attributes are invalid"; }
 [[ "$(file_sha256 "$receipt_input")" == "$receipt_digest" ]] && validate_receipt || { renew_terminal_lease || exit 1; retry_and_exit "info certificate rotation receipt changed during scrape recovery"; }
 scrape_receipt_size="$(stat -Lc '%s' -- "$scrape_receipt_output")" || scrape_receipt_size=""
 [[ "$scrape_receipt_size" =~ ^[0-9]+$ ]] && (( scrape_receipt_size <= MAX_SCRAPE_RECEIPT_BYTES )) || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt exceeds ${MAX_SCRAPE_RECEIPT_BYTES} bytes"; }

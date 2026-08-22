@@ -189,6 +189,39 @@ func TestInfoCertificateRotationOperationRejectsEvidenceHardLinkAlias(t *testing
 	require.NotContains(t, string(mustRead(t, f.log)), "gate ")
 }
 
+func TestInfoCertificateRotationOperationRejectsInsecureEvidenceFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name, evidence, wanted string
+		prepare                func(*testing.T, *infoRotationRunnerFixture)
+	}{
+		{"state mode", "state", "state or security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
+			require.NoError(t, os.Chmod(filepath.Join(f.stateDir, "rotation-1.info.state"), 0o640))
+		}},
+		{"TLS receipt mode", "receipt", "TLS receipt security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
+			require.NoError(t, os.Chmod(f.receipt, 0o660))
+		}},
+		{"scrape receipt mode", "scrape", "scrape recovery receipt security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
+			require.NoError(t, os.Chmod(f.scrapeReceipt, 0o644))
+		}},
+		{"unrelated state hard link", "state", "state or security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
+			require.NoError(t, os.Link(filepath.Join(f.stateDir, "rotation-1.info.state"), filepath.Join(f.dir, "unrelated-state-link")))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInfoRotationRunnerFixture(t)
+			f.publishEvidence(t, tc.evidence)
+			tc.prepare(t, f)
+			f.run(t, false, tc.wanted)
+			log := string(mustRead(t, f.log))
+			if tc.evidence == "scrape" {
+				require.NotContains(t, log, "scrape ")
+			} else {
+				require.NotContains(t, log, "gate ")
+			}
+		})
+	}
+}
+
 type infoRotationRunnerFixture struct {
 	dir, parameters, operationctl, rotation, publish, scrape, log, stateDir, receipt, scrapeReceipt string
 }
@@ -245,6 +278,8 @@ elif [[ "$ACTION" == complete ]]; then
     printf '{"completed_at_unix":123,"format":"kubebrain.info-certificate-rotation.receipt.v1","info_endpoint":"%s","instance":"%s","new_certificate_sha256":"%064d","old_ca_rejected":true,"old_ca_rejection_required":true,"old_certificate_sha256":"%064d","pods_unchanged":true,"replicas":3,"rotation_id":"%s"}\n' "$INFO_ENDPOINT" "$INSTANCE" 2 1 "$ROTATION_ID" >"$RECEIPT_OUTPUT"
   fi
 fi
+[[ ! -e "$state" ]] || chmod 600 "$state"
+[[ ! -e "$RECEIPT_OUTPUT" ]] || chmod 600 "$RECEIPT_OUTPUT"
 `
 	publish := `#!/usr/bin/env bash
 set -euo pipefail
@@ -262,6 +297,7 @@ if [[ "$ACTION" == complete ]]; then
   fi
   [[ "${TAMPER_TLS_RECEIPT:-false}" != true ]] || printf changed >"$TLS_RECEIPT_INPUT"
 fi
+[[ ! -e "$SCRAPE_RECEIPT_OUTPUT" ]] || chmod 600 "$SCRAPE_RECEIPT_OUTPUT"
 `
 	require.NoError(t, os.WriteFile(f.operationctl, []byte(opctl), 0o755))
 	require.NoError(t, os.WriteFile(f.rotation, []byte(rotation), 0o755))
