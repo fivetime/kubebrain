@@ -6021,6 +6021,10 @@ fencing，RWO 卷或节点本地卷不能满足跨节点接管。参数里的 ar
 失败。规范化后派生的 `${state_dir}/${operation_id}.info.state`、TLS receipt 和 scrape receipt 还必须两两
 不同；若对应文件已存在，runner 同时用 inode 等价检查拒绝硬链接别名。不要依赖路径字符串看似不同或看似
 以 workspace 开头，也不要用 `*-executor-env` 改写 `WORK_DIR`。
+runner 在新建后和 takeover 前还要求三份 evidence 是当前 executor UID 所有、精确 mode `0600`、link count
+为 1 的普通文件；group/world 可读写、不同 owner 或存在任意额外硬链接都会 fail closed。该检查不能隔离另一
+个同 UID 且拥有同一 RWX 卷写权限的 Pod，因此 PVC/CSI 访问范围必须只授予该专用 executor，不能跨 Operation
+类型复用卷。
 executor 访问 parameter broker 的 projected ServiceAccount token 固定挂载为
 `/var/run/secrets/kubebrain-parameter/token`，audience 为
 `kubebrain-operation-parameters`，expiration 为 3600 秒，文件 mode 为 `0440`；不得复用

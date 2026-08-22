@@ -59630,6 +59630,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `dda4068d` 上全部通过（139.500/471.169/266.901/496.822 秒）。本项不防御同一高权限外部流程在校验后
   恶意替换目录项；publish hook 和 workspace 写权限仍必须限制在受审计执行器身份内。
 
+- A5311 将 info rotation gate 的 `0600` 发布约定提升为 runner takeover 信任条件。此前 state 与两份 receipt
+  内容和摘要可通过，但 runner 不验证 owner、mode 或总 link count；RWX workspace 中权限过宽、非 executor
+  所有或另有未列入 A5310 三路径的硬链接文件仍可能在接管期间被旁路修改。统一
+  `evidence_file_secure` 现在要求普通文件的 `stat` 属性精确为 `600:<current executor uid>:1`；state validation、
+  既有 TLS/scrape receipt 在各自在线 verifier 前，以及 gate 新建文件返回后都执行该检查。回归覆盖 state
+  `0640`、TLS receipt `0660`、scrape receipt `0644` 和 state 指向未列入参数的额外硬链接，均不得进入对应
+  gate/scrape 阶段。Bash syntax、定向 runner、完整 deploy manifest、全仓 vet、diff check 与 466 项 inventory
+  均通过；四片 104/133/117/112 在代码提交 `a6695baf` 上全部通过
+  （139.857/471.894/265.328/495.853 秒）。所有生产 executor 当前同为 UID 65532；本项不替代专用 PVC/CSI
+  访问隔离，其他同 UID Pod 不得获得该 workspace 的挂载权限。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
