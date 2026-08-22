@@ -16,6 +16,13 @@ spec:
   endpoints:
     - port: info
       path: /metrics
+      scheme: https
+      tlsConfig:
+        ca:
+          secret:
+            name: kubebrain-info-tls
+            key: ca.crt
+        serverName: kubebrain-peer.kubebrain-system.svc.cluster.local
       interval: 15s
       scrapeTimeout: 10s
       relabelings:

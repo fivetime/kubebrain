@@ -85,7 +85,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Len(t, containers, 1)
 			container := containers[0].(map[string]any)
 			containerObject := &unstructured.Unstructured{Object: container}
-			require.Equal(t, []string{"/bin/sh", "-c", "curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"}, nestedStringSlice(t, containerObject,
+			require.Equal(t, []string{"/bin/sh", "-c", "curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5"}, nestedStringSlice(t, containerObject,
 				"lifecycle", "preStop", "exec", "command"))
 			require.False(t, nestedBool(t, containerObject, "securityContext", "allowPrivilegeEscalation"))
 			require.True(t, nestedBool(t, containerObject, "securityContext", "readOnlyRootFilesystem"))
@@ -135,9 +135,17 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Equal(t, "/ping", nestedString(t, containerObject, "livenessProbe", "httpGet", "path"))
 			require.Equal(t, "/ping", nestedString(t, containerObject, "startupProbe", "httpGet", "path"))
 			for _, probe := range []string{"readinessProbe", "livenessProbe", "startupProbe"} {
-				require.Equal(t, "HTTP", nestedString(t, containerObject, probe, "httpGet", "scheme"))
+				require.Equal(t, "HTTPS", nestedString(t, containerObject, probe, "httpGet", "scheme"))
 				require.Equal(t, "info", nestedString(t, containerObject, probe, "httpGet", "port"))
 			}
+			certificateSecretItems := map[string]string{
+				"ca.crt":  "ca.crt",
+				"tls.crt": "tls.crt",
+				"tls.key": "tls.key",
+			}
+			assertReadOnlySecretVolume(t, pod, containerObject,
+				"info-tls", "kubebrain-info-tls", "/etc/kubebrain/info-tls", 0440,
+				certificateSecretItems)
 			if tc.file == "kubebrain-tls.yaml" {
 				require.Contains(t, args, "--cert-file=/etc/kubebrain/client-tls/tls.crt")
 				require.Contains(t, args, "--key-file=/etc/kubebrain/client-tls/tls.key")
@@ -145,11 +153,6 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 				require.Contains(t, args, "--peer-cert-file=/etc/kubebrain/peer-tls/tls.crt")
 				require.Contains(t, args, "--peer-key-file=/etc/kubebrain/peer-tls/tls.key")
 				require.Contains(t, args, "--peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt")
-				certificateSecretItems := map[string]string{
-					"ca.crt":  "ca.crt",
-					"tls.crt": "tls.crt",
-					"tls.key": "tls.key",
-				}
 				assertReadOnlySecretVolume(t, pod, containerObject,
 					"client-tls", "kubebrain-client-tls", "/etc/kubebrain/client-tls", 0440,
 					certificateSecretItems)
@@ -221,6 +224,8 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 		"--port=3379",
 		"--peer-port=3380",
 		"--info-port=8080",
+		"--info-cert-file=/etc/kubebrain/info-tls/tls.crt",
+		"--info-key-file=/etc/kubebrain/info-tls/tls.key",
 		"--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local",
 		"--advertise-client-urls=" + scheme + "://kubebrain-client.kubebrain-system.svc:3379",
 		"--initial-cluster=" + expectedInitialCluster(scheme),
@@ -315,6 +320,16 @@ func TestRuntimeReleaseGateDefaultsMatchProductionKubeBrainArgs(t *testing.T) {
 		require.True(t, ok, "runtime release gate exact arg %q must be present in production KubeBrain args", name)
 		actual, ok := defaults[variable]
 		require.True(t, ok, "runtime release gate exact arg %q must use a defaulted %s", name, variable)
+		if strings.HasPrefix(actual, "$") {
+			derivedVariable := strings.TrimPrefix(actual, "$")
+			derivedArg := strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(derivedVariable, "EXPECTED_"), "_", "-"))
+			if productionValue, exists := productionArgs[derivedArg]; exists {
+				actual = productionValue
+			} else {
+				actual, ok = defaults[derivedVariable]
+				require.True(t, ok, "runtime release gate default for --%s derives from unknown %s", name, derivedVariable)
+			}
+		}
 		require.Equal(t, expected, actual, "runtime release gate default for --%s must match production manifest", name)
 	}
 }
@@ -1028,7 +1043,7 @@ func TestNativePITRFullRestoreHasPinnedIsolatedRuntimeImage(t *testing.T) {
 		"COPY --from=build /src/bin/kubebrain-native-pitr-full-restore /usr/local/bin/kubebrain-native-pitr-full-restore",
 		"COPY --from=build /src/bin/kubebrain-native-pitr-full-restore-receipt-verify /usr/local/bin/kubebrain-native-pitr-full-restore-receipt-verify",
 		"COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl",
-		"COPY hack/production/run-native-pitr-full-restore-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-restore-operation.sh",
+		"COPY hack/production/run-native-pitr-full-restore-operation.sh hack/production/operation-time-validation.sh /opt/kubebrain/hack/production/",
 	} {
 		require.Contains(t, text, expected)
 	}
@@ -1117,7 +1132,7 @@ func TestNativePITRFullBackupHasPinnedIsolatedRuntimeImage(t *testing.T) {
 	require.Contains(t, text, "COPY --from=br-v751 /br /usr/local/bin/br")
 	require.Contains(t, text, "COPY --from=build /src/bin/kubebrain-operation-worker /usr/local/bin/kubebrain-operation-worker")
 	require.Contains(t, text, "COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-operationctl")
-	require.Contains(t, text, "COPY hack/production/run-native-pitr-full-backup-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-backup-operation.sh")
+	require.Contains(t, text, "COPY hack/production/run-native-pitr-full-backup-operation.sh hack/production/operation-time-validation.sh /opt/kubebrain/hack/production/")
 	require.Contains(t, text, "USER 65532:65532\nENTRYPOINT [\"/usr/local/bin/kubebrain-native-pitr-full-backup\"]")
 
 	backupTarget := strings.Index(text, " AS native-pitr-full-backup")
@@ -1940,6 +1955,11 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	endpoints, found, err := unstructured.NestedSlice(monitor.Object, "spec", "endpoints")
 	require.NoError(t, err)
 	require.True(t, found)
+	endpoint := &unstructured.Unstructured{Object: endpoints[0].(map[string]any)}
+	require.Equal(t, "https", nestedString(t, endpoint, "scheme"))
+	require.Equal(t, "kubebrain-info-tls", nestedString(t, endpoint, "tlsConfig", "ca", "secret", "name"))
+	require.Equal(t, "ca.crt", nestedString(t, endpoint, "tlsConfig", "ca", "secret", "key"))
+	require.Equal(t, "kubebrain-peer.kubebrain-system.svc.cluster.local", nestedString(t, endpoint, "tlsConfig", "serverName"))
 	require.Equal(t, []any{map[string]any{
 		"action": "replace", "sourceLabels": []any{"__meta_kubernetes_pod_uid"}, "targetLabel": "uid",
 	}}, endpoints[0].(map[string]any)["relabelings"])

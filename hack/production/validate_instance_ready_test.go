@@ -18,6 +18,8 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 	return "--port=3379\n" +
 		"--peer-port=3380\n" +
 		"--info-port=8080\n" +
+		"--info-cert-file=/etc/kubebrain/info-tls/tls.crt\n" +
+		"--info-key-file=/etc/kubebrain/info-tls/tls.key\n" +
 		"--keyspace=instance-a\n" +
 		"--cluster-name=instance-a\n" +
 		"--pd-addrs=kb-pd.storage.svc:2379\n" +
@@ -91,6 +93,8 @@ func expectedTLSGateEnv() []string {
 		"EXPECTED_PEER_TRUSTED_CA_FILE=/etc/kubebrain/peer-tls/ca.crt",
 		"EXPECTED_PEER_TLS_SERVER_NAME=kubebrain-peer.kubebrain-system.svc.cluster.local",
 		"EXPECTED_PEER_CLIENT_CERT_AUTH=true",
+		"EXPECTED_INFO_CERT_FILE=/etc/kubebrain/info-tls/tls.crt",
+		"EXPECTED_INFO_KEY_FILE=/etc/kubebrain/info-tls/tls.key",
 	}
 }
 
@@ -597,7 +601,7 @@ func TestValidateInstanceReady(t *testing.T) {
 			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			topology:      "3\t3",
-			extraEnv:      []string{"EXPECTED_INFO_CERT_FILE=/info/tls.crt"},
+			extraEnv:      []string{"EXPECTED_INFO_CERT_FILE=/info/tls.crt", "EXPECTED_INFO_KEY_FILE="},
 			wantNoKubectl: true,
 			wantOutput:    "info TLS cert and key expectations must both be present or both be empty",
 		},
@@ -2354,6 +2358,8 @@ exit 1
 				"EXPECTED_REQUEST_RATE_BURST=4000",
 				"EXPECTED_MAX_DELETE_RANGE_KEYS=1024",
 				"EXPECTED_MAX_WATCHES=10000",
+				"EXPECTED_INFO_CERT_FILE=/etc/kubebrain/info-tls/tls.crt",
+				"EXPECTED_INFO_KEY_FILE=/etc/kubebrain/info-tls/tls.key",
 				"ENDPOINT=https://instance.example:2379",
 				"TIMEOUT_SECONDS=1",
 				"POLL_INTERVAL_SECONDS=0",

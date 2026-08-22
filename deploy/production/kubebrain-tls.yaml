@@ -105,7 +105,7 @@ spec:
                 command:
                   - /bin/sh
                   - -c
-                  - curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5
+                  - curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5
           resources:
             requests:
               cpu: 500m
@@ -117,6 +117,8 @@ spec:
             - --port=3379
             - --peer-port=3380
             - --info-port=8080
+            - --info-cert-file=/etc/kubebrain/info-tls/tls.crt
+            - --info-key-file=/etc/kubebrain/info-tls/tls.key
             - --advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local
             - --advertise-client-urls=https://kubebrain-client.kubebrain-system.svc:3379
             - --initial-cluster=kubebrain-0=https://kubebrain-0.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-1=https://kubebrain-1.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-2=https://kubebrain-2.kubebrain-peer.kubebrain-system.svc.cluster.local:3380
@@ -185,7 +187,7 @@ spec:
               containerPort: 8080
           readinessProbe:
             httpGet:
-              scheme: HTTP
+              scheme: HTTPS
               path: /ready
               port: info
             initialDelaySeconds: 5
@@ -197,7 +199,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              scheme: HTTP
+              scheme: HTTPS
               path: /ping
               port: info
             initialDelaySeconds: 15
@@ -206,7 +208,7 @@ spec:
             failureThreshold: 3
           startupProbe:
             httpGet:
-              scheme: HTTP
+              scheme: HTTPS
               path: /ping
               port: info
             periodSeconds: 5
@@ -220,6 +222,9 @@ spec:
               readOnly: true
             - name: peer-tls
               mountPath: /etc/kubebrain/peer-tls
+              readOnly: true
+            - name: info-tls
+              mountPath: /etc/kubebrain/info-tls
               readOnly: true
       volumes:
         - name: snapshot-tmp
@@ -239,6 +244,17 @@ spec:
         - name: peer-tls
           secret:
             secretName: kubebrain-peer-tls
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: info-tls
+          secret:
+            secretName: kubebrain-info-tls
             defaultMode: 0440
             items:
               - key: ca.crt
