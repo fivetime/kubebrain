@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -41,6 +43,9 @@ func main() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path; empty uses in-cluster credentials")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
 	flag.Parse()
+	if err := validateIAMSimulationExpiry(os.Getenv("IAM_SIMULATION_VALID_UNTIL_UNIX"), time.Now()); err != nil {
+		log.Fatal(err)
+	}
 	if inventoryName == "" || objectStoreID == "" || bucket == "" || maxBatch <= 0 {
 		log.Fatal("namespace-inventory-configmap, object-store-id, bucket, and positive max-batch are required")
 	}
@@ -82,6 +87,17 @@ func main() {
 		os.Exit(1)
 	}
 	log.Printf("verified %d released terminal operation archives", verified)
+}
+
+func validateIAMSimulationExpiry(raw string, now time.Time) error {
+	validUntil, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || validUntil <= 0 {
+		return fmt.Errorf("IAM_SIMULATION_VALID_UNTIL_UNIX must be a positive Unix timestamp")
+	}
+	if now.Unix() >= validUntil {
+		return fmt.Errorf("IAM simulation evidence expired at Unix timestamp %d", validUntil)
+	}
+	return nil
 }
 
 func clientConfig(kubeconfig, contextName string) (*rest.Config, error) {

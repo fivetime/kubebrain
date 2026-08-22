@@ -43,6 +43,7 @@ metadata:
   namespace: kubebrain-operations
   annotations:
     dbaas.kubebrain.io/iam-simulation-sha256: pending
+    dbaas.kubebrain.io/iam-simulation-valid-until-unix: pending
   labels:
     app.kubernetes.io/name: kubebrain-operation-archive-verifier
     app.kubernetes.io/part-of: kubebrain
@@ -98,6 +99,7 @@ spec:
                 - {name: S3_FORCE_PATH_STYLE, valueFrom: {secretKeyRef: {name: kubebrain-operation-archive-verifier-object-store, key: force-path-style}}}
                 - {name: OBJECT_STORE_ID, valueFrom: {secretKeyRef: {name: kubebrain-operation-archive-verifier-object-store, key: object-store-id}}}
                 - {name: S3_BUCKET, valueFrom: {secretKeyRef: {name: kubebrain-operation-archive-verifier-object-store, key: bucket}}}
+                - {name: IAM_SIMULATION_VALID_UNTIL_UNIX, value: "1"}
               resources:
                 requests: {cpu: 25m, memory: 64Mi}
                 limits: {cpu: "1", memory: 256Mi}
