@@ -8,7 +8,7 @@ spec:
       - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
   matchConditions:
     - name: legacy-remediation-scope
-      expression: 'object.spec.type == "LegacySnapshotHistoryRemediation" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-legacy-snapshot-remediation-requester"'
+      expression: '(object.spec.type == "LegacySnapshotHistoryRemediation" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-legacy-snapshot-remediation-requester"'
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-legacy-snapshot-remediation-requester"', message: legacy remediation operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: legacy remediation requester is restricted to the production operation queue}

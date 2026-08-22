@@ -2093,6 +2093,30 @@ func TestPostRestoreAuditRequesterIsFailClosedAndLeastPrivilege(t *testing.T) {
 
 func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-api.yaml")
+	admissionObjects := decodeManifest(t, "kubebrain-operation-api-admission.yaml")
+	policy := objectByKindAndName(t, admissionObjects, "ValidatingAdmissionPolicy", "kubebrain-operation-api-submit")
+	require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+	conditions, found, err := unstructured.NestedSlice(policy.Object, "spec", "matchConditions")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, conditions, 1)
+	require.Contains(t, conditions[0].(map[string]any)["expression"], "kubebrain-operation-api")
+	validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, validations, 5)
+	validationText := fmt.Sprint(validations)
+	require.Contains(t, validationText, "object.spec.operationID == object.metadata.name")
+	require.Contains(t, validationText, "has(object.spec.parametersSecretRef)")
+	require.Contains(t, validationText, "params-l")
+	require.Contains(t, validationText, "parameters.json")
+	binding := objectByKindAndName(t, admissionObjects, "ValidatingAdmissionPolicyBinding", "kubebrain-operation-api-submit")
+	require.Equal(t, "kubebrain-operation-api-submit", nestedString(t, binding, "spec", "policyName"))
+	actions, found, err := unstructured.NestedStringSlice(binding.Object, "spec", "validationActions")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{"Deny"}, actions)
+
 	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-operation-api")
 	require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "replicas"))
 	require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
@@ -2145,6 +2169,18 @@ func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 
 	pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kubebrain-operation-api")
 	require.EqualValues(t, 1, nestedInt64(t, pdb, "spec", "maxUnavailable"))
+}
+
+func TestDedicatedRequesterAdmissionsDelegateOnlyOperationAPIIdentity(t *testing.T) {
+	files, err := filepath.Glob("kubebrain-*-requester-admission.yaml")
+	require.NoError(t, err)
+	require.Len(t, files, 16)
+	const exclusion = "&& request.userInfo.username != \"system:serviceaccount:kubebrain-operations:kubebrain-operation-api\""
+	for _, file := range files {
+		contents, readErr := os.ReadFile(file)
+		require.NoError(t, readErr)
+		require.Equal(t, 1, strings.Count(string(contents), exclusion), "%s must delegate exactly its Operation scope", file)
+	}
 }
 
 func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {

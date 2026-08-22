@@ -4,7 +4,7 @@ metadata: {name: kubebrain-native-pitr-target-retirement-request-operation}
 spec:
   failurePolicy: Fail
   matchConstraints: {resourceRules: [{apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}]}
-  matchConditions: [{name: retirement-scope, expression: 'object.spec.type == "NativePITRTargetRetirement" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-target-retirement-requester"'}]
+  matchConditions: [{name: retirement-scope, expression: '(object.spec.type == "NativePITRTargetRetirement" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-target-retirement-requester"'}]
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-target-retirement-requester"', message: target retirement requires its dedicated requester}
     - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^native-pitr-retire-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: target retirement identity is digest-bound}

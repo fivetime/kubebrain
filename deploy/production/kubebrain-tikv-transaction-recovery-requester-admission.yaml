@@ -13,7 +13,7 @@ spec:
         scope: Namespaced
   matchConditions:
     - name: recovery-scope
-      expression: 'object.spec.type == "TiKVTransactionRecovery" || request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
+      expression: '(object.spec.type == "TiKVTransactionRecovery" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
   validations:
     - expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
       message: recovery operations require the dedicated requester identity

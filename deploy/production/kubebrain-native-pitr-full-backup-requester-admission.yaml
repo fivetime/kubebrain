@@ -8,7 +8,7 @@ spec:
       - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
   matchConditions:
     - name: native-pitr-full-backup-scope
-      expression: 'object.spec.type == "NativePITRFullBackup" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-backup-requester"'
+      expression: '(object.spec.type == "NativePITRFullBackup" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-backup-requester"'
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-backup-requester"', message: native PITR full backup operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: native PITR full backup requester is restricted to the production operation queue}

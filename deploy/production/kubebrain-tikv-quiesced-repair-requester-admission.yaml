@@ -13,7 +13,7 @@ spec:
         scope: Namespaced
   matchConditions:
     - name: transaction-repair-requester-fence
-      expression: 'object.spec.type == "TiKVTransactionRepair" || request.userInfo.username in ["system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester", "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"]'
+      expression: '(object.spec.type == "TiKVTransactionRepair" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username in ["system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester", "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"]'
   validations:
     - expression: |
         (request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester" &&

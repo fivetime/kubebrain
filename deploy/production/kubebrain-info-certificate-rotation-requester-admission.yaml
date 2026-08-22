@@ -6,7 +6,7 @@ spec:
   matchConstraints:
     resourceRules: [{apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}]
   matchConditions:
-    - {name: info-certificate-rotation-scope, expression: 'object.spec.type == "InfoCertificateRotation" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-info-certificate-rotation-requester"'}
+    - {name: info-certificate-rotation-scope, expression: '(object.spec.type == "InfoCertificateRotation" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-info-certificate-rotation-requester"'}
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-info-certificate-rotation-requester"', message: info certificate rotation operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: info certificate rotation requester is restricted to the production operation queue}

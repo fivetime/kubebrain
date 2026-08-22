@@ -4,7 +4,7 @@ metadata: {name: kubebrain-backup-request-operation}
 spec:
   failurePolicy: Fail
   matchConstraints: {resourceRules: [{apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}]}
-  matchConditions: [{name: backup-scope, expression: 'object.spec.type == "Backup" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-backup-requester"'}]
+  matchConditions: [{name: backup-scope, expression: '(object.spec.type == "Backup" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-backup-requester"'}]
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-backup-requester"', message: backups require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^backup-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: backup identity must be deterministic}

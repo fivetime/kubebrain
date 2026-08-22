@@ -1,0 +1,41 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubebrain-operation-api-submit
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-api
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [dbaas.kubebrain.io]
+        apiVersions: [v1alpha1]
+        operations: [CREATE]
+        resources: [kubebrainoperations]
+        scope: Namespaced
+  matchConditions:
+    - name: operation-api-identity
+      expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-api"'
+  validations:
+    - expression: 'object.metadata.namespace == "kubebrain-operations"'
+      message: operation API submissions are restricted to the primary operation queue
+    - expression: 'object.spec.operationID == object.metadata.name'
+      message: operation API submissions require operationID to equal the object name
+    - expression: 'has(object.spec.tenant) && has(object.spec.requestedBy) && has(object.spec.parametersSecretRef)'
+      message: operation API submissions require tenant, requester, and a parameter Secret
+    - expression: 'object.spec.parametersSecretRef.key == "parameters.json"'
+      message: operation API submissions require the canonical parameter Secret key
+    - expression: 'object.spec.parametersSecretRef.name.startsWith("params-l" + string(size(object.spec.tenant)) + "-" + object.spec.tenant + "-")'
+      message: operation API parameter Secrets must be bound to the authenticated tenant namespace
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubebrain-operation-api-submit
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-api
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  policyName: kubebrain-operation-api-submit
+  validationActions: [Deny]

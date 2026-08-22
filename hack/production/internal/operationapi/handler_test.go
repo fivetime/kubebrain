@@ -110,6 +110,7 @@ func TestHandlerSubmitsImmutableTenantIdentityAndReturnsSanitizedObject(t *testi
 	body := `{
 		"name":"backup-1","operation_id":"backup-1","tenant":"tenant-a",
 		"instance":"instance-a","type":"Backup",
+		"parameters_secret":"params-l8-tenant-a-backup","parameters_key":"parameters.json",
 		"parameters_sha256":"` + strings.Repeat("a", 64) + `","max_attempts":3
 	}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/operations", strings.NewReader(body))
@@ -127,6 +128,46 @@ func TestHandlerSubmitsImmutableTenantIdentityAndReturnsSanitizedObject(t *testi
 	require.Equal(t, "user-123", result.RequestedBy)
 	require.NotContains(t, response.Body.String(), "parameters_secret")
 	require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+}
+
+func TestHandlerRejectsMissingParameterSecretBeforeSubmission(t *testing.T) {
+	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
+	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store, time.Second)
+	require.NoError(t, err)
+	body := `{
+		"name":"backup-1","operation_id":"backup-1","tenant":"tenant-a",
+		"instance":"instance-a","type":"Backup",
+		"parameters_sha256":"` + strings.Repeat("a", 64) + `","max_attempts":3
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/operations", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	require.Empty(t, store.spec.OperationID)
+}
+
+func TestHandlerRejectsOperationIDDriftBeforeAuthentication(t *testing.T) {
+	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
+	authenticator := &countingAuthenticator{principal: authorizedPrincipal()}
+	handler, err := NewHandler(authenticator, store, time.Second)
+	require.NoError(t, err)
+	body := `{
+		"name":"backup-1","operation_id":"backup-2","tenant":"tenant-a",
+		"instance":"instance-a","type":"Backup",
+		"parameters_secret":"params-l8-tenant-a-backup","parameters_key":"parameters.json",
+		"parameters_sha256":"` + strings.Repeat("a", 64) + `","max_attempts":3
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/operations", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	require.Equal(t, 0, authenticator.calls)
+	require.Empty(t, store.spec.OperationID)
 }
 
 func TestHandlerSubmitsLengthBoundParameterSecret(t *testing.T) {
@@ -519,6 +560,7 @@ func TestHTTPSAPIAuthenticatesOIDCTokenAndSubmitsOperation(t *testing.T) {
 	body := `{
 		"name":"backup-1","operation_id":"backup-1","tenant":"tenant-a",
 		"instance":"instance-a","type":"Backup",
+		"parameters_secret":"params-l8-tenant-a-backup","parameters_key":"parameters.json",
 		"parameters_sha256":"` + strings.Repeat("a", 64) + `","max_attempts":3
 	}`
 	request, err := http.NewRequest(http.MethodPost, apiServer.URL+"/v1/operations", strings.NewReader(body))

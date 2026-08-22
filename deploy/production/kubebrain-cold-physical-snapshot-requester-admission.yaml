@@ -8,7 +8,7 @@ spec:
       - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
   matchConditions:
     - name: cold-snapshot-scope
-      expression: 'object.spec.type == "ColdPhysicalSnapshot" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-snapshot-requester"'
+      expression: '(object.spec.type == "ColdPhysicalSnapshot" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-snapshot-requester"'
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-snapshot-requester"', message: cold snapshot operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: cold snapshot requester is restricted to the production operation queue}

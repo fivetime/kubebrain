@@ -8,7 +8,7 @@ spec:
       - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
   matchConditions:
     - name: native-pitr-full-restore-scope
-      expression: 'object.spec.type == "NativePITRFullRestore" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-restore-requester"'
+      expression: '(object.spec.type == "NativePITRFullRestore" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-restore-requester"'
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-restore-requester"', message: native PITR full restore operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^native-pitr-restore-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: native PITR full restore operation identity is digest-bound}

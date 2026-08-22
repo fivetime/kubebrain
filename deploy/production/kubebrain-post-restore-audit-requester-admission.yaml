@@ -4,7 +4,7 @@ metadata: {name: kubebrain-post-restore-audit-request-operation}
 spec:
   failurePolicy: Fail
   matchConstraints: {resourceRules: [{apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}]}
-  matchConditions: [{name: post-restore-audit-scope, expression: 'object.spec.type == "PostRestoreAudit" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-post-restore-audit-requester"'}]
+  matchConditions: [{name: post-restore-audit-scope, expression: '(object.spec.type == "PostRestoreAudit" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-post-restore-audit-requester"'}]
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-post-restore-audit-requester"', message: post-restore audits require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^post-restore-audit-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: post-restore audit identity must be deterministic}

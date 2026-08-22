@@ -8,7 +8,7 @@ spec:
       - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
   matchConditions:
     - name: restore-cutover-scope
-      expression: 'object.spec.type == "RestoreCutover" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-restore-cutover-requester"'
+      expression: '(object.spec.type == "RestoreCutover" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-restore-cutover-requester"'
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-restore-cutover-requester"', message: restore cutover operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: restore cutover requester is restricted to the production operation queue}

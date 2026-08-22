@@ -144,6 +144,10 @@ func (h *Handler) submit(response http.ResponseWriter, request *http.Request) {
 	if !validateRequestOperationName(response, input.Name) {
 		return
 	}
+	if input.OperationID != input.Name {
+		writeJSON(response, http.StatusBadRequest, errorResponse{Error: "operation ID must equal operation name"})
+		return
+	}
 	principal, ok := h.principal(response, request)
 	if !ok {
 		return
@@ -203,9 +207,6 @@ func decodeSubmitRequest(response http.ResponseWriter, request *http.Request) (s
 }
 
 func authorizedParametersSecret(input submitRequest, tenant string) bool {
-	if input.ParametersSecret == "" && input.ParametersKey == "" {
-		return true
-	}
 	return input.ParametersSecret != "" &&
 		input.ParametersKey == "parameters.json" &&
 		strings.HasPrefix(input.ParametersSecret, authorizedParameterSecretPrefix(tenant)) &&

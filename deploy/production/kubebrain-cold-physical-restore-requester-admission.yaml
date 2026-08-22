@@ -7,7 +7,7 @@ spec:
     resourceRules:
       - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
   matchConditions:
-    - {name: cold-restore-scope, expression: 'object.spec.type == "ColdPhysicalRestore" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-requester"'}
+    - {name: cold-restore-scope, expression: '(object.spec.type == "ColdPhysicalRestore" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-requester"'}
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-requester"', message: cold restore operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: cold restore requester is restricted to the isolated target operation queue}
