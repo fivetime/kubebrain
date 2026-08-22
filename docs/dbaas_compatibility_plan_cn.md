@@ -60174,6 +60174,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   凭据或真实证书，未执行实际 Secret 轮换。上线仍须按运行手册保留 capture/verify、Secret resourceVersion、审批、
   CA 双信任发布顺序和失败恢复证据。
 
+- A5349 将 parameter broker TokenReview 依赖故障从人工建议固化为可恢复、零 Pod 重启的生产演练门禁。新增
+  `drill-operation-parameter-broker-tokenreview-recovery.sh`：要求显式 context、CA/token 和
+  `CONFIRM_PARAMETER_BROKER_TOKENREVIEW_DRILL=yes`，先执行完整 `--check-enabled`，验证 ClusterRoleBinding
+  精确 roleRef/唯一 broker subject 并冻结 binding UID/resourceVersion 与两个 Ready Pod name/UID。撤权使用带旧
+  resourceVersion test 的 JSON Patch 将 subjects 置空，必须观测 broker SA TokenReview create 的确定性 `no`、两个
+  原 Pod `Ready=False` 和逐 Pod 生产 DNS TLS `/readyz=503`；恢复前重新校验同 binding UID、roleRef、空 subjects，
+  再用当前 resourceVersion test 恢复原 subject，并要求 RBAC `yes`、相同 Pod UID 的 `Ready=True` 和逐 Pod 204。
+  EXIT/INT/TERM 自动恢复，隧道由独立子 shell trap 有界回收；并发控制面改变受保护字段时不会被静默覆盖并输出
+  CRITICAL 人工恢复指令。回归覆盖完整 204→503/NotReady→204/Ready、探测失败后的自动恢复，以及未确认时零
+  Kubernetes 调用；Bash syntax、broker 安装/TLS/演练定向测试、完整 cmd/pkg、全仓 vet、diff check 与新增后的
+  546 项 inventory 均通过。四片 122/155/138/131 在代码提交 `495e014d` 上全部通过
+  （153.125/504.089/280.151/526.146 秒）。自动化仅使用 fake kubectl/curl，本轮没有目标集群凭据，未修改真实
+  ClusterRoleBinding；上线仍须在无参数读取流量的维护窗口执行，留存授权变更、EndpointSlice、Pod event/probe、
+  逐 Pod 503/204、UID 和异常恢复证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

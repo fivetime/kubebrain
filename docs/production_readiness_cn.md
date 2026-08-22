@@ -6145,7 +6145,24 @@ NotFound/未认证结果表示 API 路径可用，transport、discovery、超时
 并把 Pod 摘出 Service。`/healthz` 仍只表示进程存活，不能作为接流条件。业务参数请求也
 使用相同 deadline，Kubernetes API 故障时不得让 handler 无界堆积。上线后应临时撤销并
 恢复 broker 的 TokenReview 权限，确认所有副本按 `204 -> 503/NotReady -> 204/Ready`
-变化，且 UID 不变、零重启。
+变化，且 UID 不变、零重启。不要手工删除 ClusterRoleBinding；在维护窗口执行受控门禁：
+
+```bash
+KUBE_CONTEXT=production \
+BROKER_CA_FILE=/secure/run/broker-ca.crt \
+BROKER_TOKEN_FILE=/secure/run/broker-smoke-token \
+CONFIRM_PARAMETER_BROKER_TOKENREVIEW_DRILL=yes \
+  hack/production/drill-operation-parameter-broker-tokenreview-recovery.sh
+```
+
+脚本先完整执行 `--check-enabled` 并冻结两个 Pod name/UID；只在显式确认后，以包含原
+`resourceVersion` test 的 JSON Patch 暂时把精确 TokenReview ClusterRoleBinding subjects 置空。它要求 RBAC
+拒绝已生效、两个原 Pod 均变为 `Ready=False` 且逐 Pod 直连 `/readyz=503`，随后恢复原唯一 subject，并要求
+RBAC allow、相同 Pod UID 的 `Ready=True` 与逐 Pod 204 全部恢复。EXIT/INT/TERM 均触发恢复；恢复前还校验
+binding UID、roleRef 和空 subjects，并用当前 resourceVersion test 防止覆盖并发控制面变更。若自动恢复输出
+`CRITICAL`，必须立即按变更记录人工恢复 binding，且在恢复验证前冻结所有 Operation 发布。该演练会短暂摘除
+全部 broker endpoint，必须在无新 Operation 参数读取的维护窗口执行，并由调用者具备 ClusterRoleBinding patch、
+impersonation、Pod get/list/portforward 权限。
 
 broker 每 30 秒重新读取 mounted TLS Secret。新 `tls.crt`/`tls.key` 只有在公私钥匹配、
 叶证书已生效且未过期时才会原子接管新握手；无效更新保留上一份有效证书并记录错误。
