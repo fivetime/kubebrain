@@ -60476,6 +60476,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   审批及七项 Kubernetes binding。信任根轮换须暂停 schedule、由独立发布流程重置全部 binding 后重新 enable，不能借
   `--refresh-iam` 偷换 key。
 
+- A5370 关闭 A5369 `--check-enabled` 只验证 annotation 为 64 位十六进制和本地公钥匹配、却不重新消费 retained signed
+  evidence 的审计空洞。外部主体可把已启用 CronJob 的 evidence/signature SHA、expiry 和三层 template binding 一起 patch
+  成任意自洽值；旧检查没有 evidence/signature 输入，无法证明这些值由 pinned Ed25519 key 签发。现在 check-enabled 必须
+  同时提供 `IAM_SIMULATION_EVIDENCE`、`IAM_SIMULATION_EVIDENCE_SIGNATURE` 和 `IAM_SIMULATION_TRUSTED_PUBLIC_KEY`，完整重跑
+  v2 exact-key schema、credential UID/data SHA、AWS allow/deny matrix、canonical single-line、文件安全、Ed25519 exact-byte
+  signature 与三文件 TOCTOU fence；随后以实际计算的 evidence SHA/signature SHA/expiry/trust SHA 和当前 Secret 三项身份
+  逐字段核对 CronJob metadata、周期 Job template、Pod template 及两个 runtime sentinel。为保持生命周期语义，统一 verifier
+  增加显式时间策略：enable/refresh 仍要求 checked-at 最近 3600 秒且至少剩余 3600 秒；check-enabled 允许已签证据 checked-at
+  最多 86400 秒，只要求至少剩余 1 秒，同时继续限制 valid-until 不超过 checked-at+86400。回归证明外部伪造 binding、语义
+  合法但签名伪造的 enabled evidence 和过期/运行时漂移均失败；同一份 checked-at 已两小时、只剩五分钟的有效签名证据被
+  enable 拒绝但 check-enabled 接受，避免把审计误写成续签。新增后 580 项 inventory；四片 130/165/147/138 在代码提交
+  `169f1e61` 上全部通过（Go 测试 163.192/509.762/292.469/545.909 秒；端到端
+  172.287/518.842/301.556/555.052 秒）。本地 fake apiserver 与真实 OpenSSL 证明 retained artifact→CronJob binding 的检查链，
+  不证明生产审计存储未被同一主体同时改写、签发私钥由 HSM 隔离或 AWS simulation 输入真实完整；目标环境必须把三份 retained
+  文件置于不可变/WORM 审计存储，独立定时运行 check-enabled，并将失败与现有 critical 告警及 S3/Kubernetes audit trail 对账。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

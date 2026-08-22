@@ -5972,6 +5972,8 @@ KUBE_CONTEXT=production ENABLE_OPERATION_ARCHIVE_VERIFIER=yes \
   IAM_SIMULATION_TRUSTED_PUBLIC_KEY=/secure/trust/verifier-iam-ed25519-public.pem \
   hack/production/apply-operation-archive-verifier.sh --enable
 KUBE_CONTEXT=production \
+  IAM_SIMULATION_EVIDENCE=/secure/audit/verifier-iam.json \
+  IAM_SIMULATION_EVIDENCE_SIGNATURE=/secure/audit/verifier-iam.sig \
   IAM_SIMULATION_TRUSTED_PUBLIC_KEY=/secure/trust/verifier-iam-ed25519-public.pem \
   hack/production/apply-operation-archive-verifier.sh --check-enabled
 
@@ -6033,8 +6035,12 @@ annotation 同步逐键写入 CronJob metadata、周期 Job template metadata �
 annotation，不能先启用再补证据。每个 verifier 进程在创建 Kubernetes client 或访问 S3 前先检查
 `IAM_SIMULATION_VALID_UNTIL_UNIX`，再把 kubelet 实际解析的七个 object-store 环境值按 Secret key 映射、标准 base64 和
 排序紧凑 JSON 重建 `.data` SHA-256，并与 `CREDENTIAL_SECRET_DATA_SHA256` 常量时间比较；expiry 过期、字段为空或凭据
-字节替换均非零退出并触发现有 critical Job 告警。`--check-enabled` 同时要求三层 annotation、两个运行时值与当前 Secret
-逐字一致且 evidence 仍有效。`--refresh-iam` 只接受已启用的 CronJob，默认以
+字节替换均非零退出并触发现有 critical Job 告警。`--check-enabled` 必须重新消费留存的 evidence、detached signature 和
+预钉公钥，重复执行 canonical schema/credential scope/decision/Ed25519/exact-byte/TOCTOU 验证，再要求计算所得 evidence
+SHA、signature SHA、expiry、trust SHA、三项 Secret binding 与 CronJob/Job template/Pod template 七项 annotation 和两个
+运行时值逐字一致。它不再接受只有 64 位形状、却无 retained signed artifact 支持的 annotation。新 enable/refresh 仍要求
+checked-at 最近一小时且 valid-until 至少剩余一小时；check-enabled 对已绑定证据允许 checked-at 最多 24 小时，只要求
+valid-until 严格位于未来，因而临近到期检查不会错误要求重新 enable，同时过期边界仍 fail closed。`--refresh-iam` 只接受已启用的 CronJob，默认以
 `generateName: kubebrain-archive-verifier-iam-` 用新 expiry 创建并完成一次性只读 Job，再以 resourceVersion、
 `suspend=false`、三层旧 evidence/signature/trust/expiry/credential binding 和两个旧运行时值的 CAS 原子轮换；Job
 失败或并发漂移均保留旧绑定。受信 CI/审批系统必须至少按日续签并在到期前留出一次完整手动 Job 和故障处置预算。
