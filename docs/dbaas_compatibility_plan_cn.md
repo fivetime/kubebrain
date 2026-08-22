@@ -59695,6 +59695,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （139.762/475.308/264.749/498.970 秒）。本项保证单次直接 gate 的输入一致，不授权忽略源文件随后变化；
   控制面仍须在提交 Operation 终态前依赖 runner 的冻结、在线复验和 heartbeat fencing。
 
+- A5317 消除 info rotation 三类 evidence 的 check-then-overwrite 发布窗口。此前 state、TLS receipt 与 scrape
+  receipt 虽会先检查目标不存在，却最终用 `mv -f` 发布；两个 executor 或接管边界并发通过检查时，后到者可
+  覆盖先到证据。两个 one-shot gate 现在都在目标同目录写 `0600` 临时文件，以 hard-link no-clobber 原子发布，
+  成功后删除临时链接；若目标已经存在则只清理本方临时文件并失败，绝不覆盖赢家。竞争回归通过可替换 `ln`
+  在发布瞬间注入赢家，分别证明 rotation state、TLS receipt 和 scrape receipt 的输家失败且赢家字节保持不变。
+  Bash syntax、定向 TLS/scrape/runner、完整 deploy manifest、全仓 vet、diff check 与 474 项 inventory 均通过；
+  四片 105/136/117/116 在代码提交 `3c6ed497` 上全部通过
+  （140.062/472.476/265.719/497.889 秒）。临时文件与目标相邻保证同一文件系统，但本项不替代发布前文件
+  `fsync`、目录项持久化、CSI 断电语义或外部不可变审计归档；生产存储仍须单独验证这些 durable 边界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

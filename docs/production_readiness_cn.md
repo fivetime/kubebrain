@@ -6040,6 +6040,10 @@ one-shot scrape gate 会先对 TLS receipt、Prometheus CA/token 和 verify rece
 one-shot TLS gate 对旧/新 CA/leaf 之外，还会在 complete/verify 前双摘要冻结 state，并在 verify 前冻结既有
 TLS receipt；后续握手、Pod snapshot 对比和 JSON 校验只使用 `0600` 私有副本，避免同一轮混合两个 durable
 版本。
+rotation state、TLS receipt 与 scrape receipt 的 complete 路径都在目标同目录生成 `0600` 临时文件，并以
+hard-link no-clobber 发布；链接失败会删除本方临时文件并终止，不得用 check-then-`mv -f` 覆盖并发赢家。
+同目录是硬链接原子发布的文件系统前提；workspace/PVC 必须支持普通硬链接。发布后 runner 仍要求最终文件
+link count 为 1，并执行内容、摘要和在线状态复验；该机制不替代 CSI 持久性保证或外部不可变审计归档。
 executor 访问 parameter broker 的 projected ServiceAccount token 固定挂载为
 `/var/run/secrets/kubebrain-parameter/token`，audience 为
 `kubebrain-operation-parameters`，expiration 为 3600 秒，文件 mode 为 `0440`；不得复用
