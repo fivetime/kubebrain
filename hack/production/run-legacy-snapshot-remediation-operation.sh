@@ -8,7 +8,9 @@ WORKER_ID="${WORKER_ID:-}"; OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrai
 LEASE_SECONDS="${LEASE_SECONDS:-120}"; HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
 OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
 REMEDIATION_COMMAND="${REMEDIATION_COMMAND:-kubebrain-legacy-snapshot-remediation}"; WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; JQ="${JQ:-jq}"
+LN="${LN:-ln}"; SYNC="${SYNC:-sync}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
+MAX_REMEDIATION_RECEIPT_BYTES=1048576
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] && operation_is_positive_int64 "$LEASE_SECONDS" || die "worker identity or lease is invalid"
 if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then
@@ -18,6 +20,9 @@ operation_is_positive_decimal_less_than_int "$HEARTBEAT_INTERVAL_SECONDS" "$LEAS
   die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64"
 [[ -x "$OPERATIONCTL" && -x "$REMEDIATION_COMMAND" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
 command -v stat >/dev/null || die "stat is required"
+command -v id >/dev/null || die "id is required"
+command -v "$LN" >/dev/null || die "ln is required"
+command -v "$SYNC" >/dev/null || die "sync is required"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }; sha() { sha256sum "$1" | cut -d ' ' -f1; }
 operation_parameters_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_OPERATION_PARAMETERS_BYTES" ]]; }
 require_operation_parameters_size() {
@@ -33,7 +38,7 @@ IFS=$'\t' read -r namespace name operation_id instance type requester owner secr
 [[ "$namespace" == kubebrain-operations && "$namespace" == "$OPERATION_NAMESPACE" && "$name" =~ ^legacy-snapshot-remediation-[a-f0-9]{20}$ &&
   "$operation_id" == "$name" && "$instance" == kubebrain && "$type" == LegacySnapshotHistoryRemediation &&
   "$requester" == platform:legacy-snapshot-remediation && "$owner" == "$WORKER_ID" && "$secret" == "${name}-parameters" &&
-  "$key" == parameters.json && "$attempt" == 1 && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "remediation claim identity is invalid"
+  "$key" == parameters.json && "$attempt" =~ ^[12]$ && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "remediation claim identity is invalid"
 
 capture="$(mktemp -d "$WORK_DIR/legacy-remediation.XXXXXX")"; child=0; heartbeat=0
 cleanup() { [[ $child == 0 ]] || operation_kill_process_group "$child"; [[ $heartbeat == 0 ]] || operation_kill_process_group "$heartbeat"; rm -rf -- "$capture"; }
@@ -61,6 +66,42 @@ request_id="$($JQ -r .request_id "$params")"; endpoint="$($JQ -r .endpoint "$par
 request_hash="$(printf '%s\n%s\n%s\n%s\n%s\n' "$request_id" "$endpoint" "$cluster_id" "$revision" "$compact_revision" | sha256sum | cut -c1-20)"
 [[ "$name" == "legacy-snapshot-remediation-${request_hash}" ]] || die "remediation parameters do not bind the operation identity"
 artifact="$WORK_DIR/${name}.snapshot.db"; receipt="$WORK_DIR/${name}.receipt.json"
+verify_existing_receipt() {
+  local receipt_artifact receipt_sha receipt_bytes actual_bytes receipt_size receipt_attributes
+  [[ -f "$artifact" && -f "$receipt" ]] || return 1
+  receipt_size="$(stat -Lc '%s' -- "$receipt")" || return 1
+  receipt_attributes="$(stat -Lc '%a:%u:%h' -- "$receipt")" || return 1
+  [[ "$receipt_size" =~ ^[0-9]+$ && "$receipt_size" -gt 0 && "$receipt_size" -le "$MAX_REMEDIATION_RECEIPT_BYTES" ]] || return 1
+  [[ "$receipt_attributes" == "600:$(id -u):1" ]] || return 1
+  "$JQ" -e --arg operation_id "$name" --arg request_id "$request_id" --arg endpoint "$endpoint" \
+    --arg cluster_id "$cluster_id" --arg revision "$compact_revision" --arg artifact "$artifact" '
+    keys==["artifact","cluster_id","compacted_revision","completed_at_unix","endpoint","format","operation_id","request_id"] and
+    .format=="kubebrain.legacy-snapshot-remediation.v1" and .operation_id==$operation_id and
+    .request_id==$request_id and .endpoint==$endpoint and .cluster_id==$cluster_id and .compacted_revision==$revision and
+    (.completed_at_unix|type=="number" and .>0 and .==floor) and
+    (.artifact|keys==["bytes","path","sha256"]) and .artifact.path==$artifact and
+    (.artifact.bytes|type=="number" and .>0 and .==floor) and (.artifact.sha256|test("^[a-f0-9]{64}$"))' "$receipt" >/dev/null || return 1
+  receipt_artifact="$("$JQ" -r .artifact.path "$receipt")"
+  receipt_sha="$("$JQ" -r .artifact.sha256 "$receipt")"
+  receipt_bytes="$("$JQ" -r '.artifact.bytes|tostring' "$receipt")"
+  actual_bytes="$(wc -c <"$receipt_artifact" | tr -d ' ')"
+  [[ "$actual_bytes" == "$receipt_bytes" && "$(sha "$receipt_artifact")" == "$receipt_sha" ]]
+}
+if [[ "$attempt" == 2 ]]; then
+  set -m
+  verify_existing_receipt & child=$!
+  ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/verifier.done" ]] || operation_kill_process_group "$child"; exit 75; }; done ) & heartbeat=$!
+  set +m
+  set +e; wait "$child"; verify_rc=$?; set -e; : >"$capture/verifier.done"; child=0
+  finalize_heartbeat || exit 1
+  if [[ "$verify_rc" == 0 ]]; then
+    receipt_sha="$(sha "$receipt")"
+    runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "reconciled durable legacy snapshot remediation receipt without repeating compaction" >/dev/null
+    exit 0
+  fi
+  runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation exhausted without a valid durable artifact and receipt; inspect committed compaction before any new operation" >/dev/null
+  exit 1
+fi
 [[ ! -e "$artifact" && ! -e "$receipt" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation left an artifact or receipt; inspect before a new approved operation" >/dev/null; exit 1; }
 
 set -m
@@ -76,6 +117,10 @@ artifact_sha="$(sha "$artifact")"; bytes="$(wc -c <"$artifact" | tr -d ' ')"; no
 $JQ -cnS --arg operation_id "$name" --arg request_id "$request_id" --arg endpoint "$endpoint" --arg cluster_id "$cluster_id" --arg revision "$compact_revision" \
   --arg artifact "$artifact" --arg artifact_sha256 "$artifact_sha" --argjson bytes "$bytes" --argjson completed_at_unix "$now" \
   '{format:"kubebrain.legacy-snapshot-remediation.v1",operation_id:$operation_id,request_id:$request_id,endpoint:$endpoint,cluster_id:$cluster_id,compacted_revision:$revision,artifact:{path:$artifact,sha256:$artifact_sha256,bytes:$bytes},completed_at_unix:$completed_at_unix}' >"$temp_receipt"
-ln "$temp_receipt" "$receipt" || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation receipt publication failed; inspect committed artifact" >/dev/null; exit 1; }
+chmod 600 "$temp_receipt"
+"$SYNC" -f "$temp_receipt" || { echo "cannot sync private legacy remediation receipt; a later claim must inspect the committed artifact" >&2; exit 1; }
+"$LN" -- "$temp_receipt" "$receipt" || { echo "cannot publish legacy remediation receipt without overwrite; a later claim must reconcile existing evidence" >&2; exit 1; }
+rm -f -- "$temp_receipt" || { echo "cannot remove private legacy remediation receipt link; a later claim must reconcile published evidence" >&2; exit 1; }
+"$SYNC" -f "$WORK_DIR" || { echo "cannot sync legacy remediation receipt directory; a later claim must reconcile published evidence" >&2; exit 1; }
 receipt_sha="$(sha "$receipt")"; finalize_heartbeat || exit 1
 runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "legacy snapshot history remediation completed" >/dev/null

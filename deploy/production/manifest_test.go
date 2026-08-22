@@ -1324,7 +1324,7 @@ func TestLegacySnapshotRemediationRequesterAdmissionIsFailClosed(t *testing.T) {
 	operationText := fmt.Sprint(operation.Object)
 	require.Contains(t, operationText, "LegacySnapshotHistoryRemediation")
 	require.Contains(t, operationText, "kubebrain-legacy-snapshot-remediation-requester")
-	require.Contains(t, operationText, "maxAttempts == 1")
+	require.Contains(t, operationText, "maxAttempts == 2")
 	parameters := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", "kubebrain-legacy-snapshot-remediation-request-parameters")
 	parameterText := fmt.Sprint(parameters.Object)
 	require.Contains(t, parameterText, "object.immutable == true")

@@ -13,7 +13,7 @@ spec:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-legacy-snapshot-remediation-requester"', message: legacy remediation operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: legacy remediation requester is restricted to the production operation queue}
     - {expression: 'object.metadata.name.matches("^legacy-snapshot-remediation-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: legacy remediation operation identity must be deterministic}
-    - {expression: 'object.spec.type == "LegacySnapshotHistoryRemediation" && object.spec.requestedBy == "platform:legacy-snapshot-remediation" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1', message: legacy remediation operation shape is fixed}
+    - {expression: 'object.spec.type == "LegacySnapshotHistoryRemediation" && object.spec.requestedBy == "platform:legacy-snapshot-remediation" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2', message: legacy remediation operation shape is fixed}
     - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")', message: legacy remediation operation must bind its immutable parameter Secret}
 ---
 apiVersion: admissionregistration.k8s.io/v1

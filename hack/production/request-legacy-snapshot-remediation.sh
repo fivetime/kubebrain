@@ -49,5 +49,5 @@ else
 fi
 ctl=(--namespace "$OPERATION_NAMESPACE"); [[ "$KUBE_CONTEXT" == in-cluster ]] || ctl+=(--context "$KUBE_CONTEXT")
 $OPERATIONCTL "${ctl[@]}" --action submit --name "$name" --operation-id "$name" --requested-by platform:legacy-snapshot-remediation \
-  --instance "$INSTANCE" --type LegacySnapshotHistoryRemediation --parameters-sha256 "$sha" --parameters-secret "$secret" --parameters-key parameters.json --max-attempts 1 >/dev/null
+  --instance "$INSTANCE" --type LegacySnapshotHistoryRemediation --parameters-sha256 "$sha" --parameters-secret "$secret" --parameters-key parameters.json --max-attempts 2 >/dev/null
 echo "created or verified unapproved Pending LegacySnapshotHistoryRemediation ${OPERATION_NAMESPACE}/${name} at revision ${revision}, minimum compact revision ${compact_revision}"
