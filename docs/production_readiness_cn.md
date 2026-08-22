@@ -6047,6 +6047,24 @@ Pod UID，更新 Secret 后在 30 秒加 probe 容差内验证 endpoint 呈现�
 不变。轮换 CA 时必须先把旧、新 CA 同时发布到 executor trust bundle，再换 broker
 叶证书，最后确认所有 executor 使用新 CA 后撤旧；服务端热加载不能替代该双信任窗口。
 
+所有独立 Operation requester 的 Admission/RBAC 必须通过同一个受版本控制的 inventory 安装，不能从本文各章节
+挑选若干清单手工应用。先确保 Operation CRD、`kubebrain-operations`、`kubebrain-repair-operations`、全局
+worker/audit Admission 和 parameter broker 已就绪，再执行：
+
+```bash
+hack/production/apply-operation-requester-guardrails.sh --verify
+KUBE_CONTEXT=production hack/production/apply-operation-requester-guardrails.sh --apply
+```
+
+`--verify` 双向核对 17 个 `request-*.sh`：其中 16 个必须各有 fail-closed requester Admission 和最小权限 RBAC，
+`request-tikv-transaction-repair.sh` 则必须由自包含的 `kubebrain-tikv-repair-alert-receiver.yaml` 提供两条 Admission、
+receiver SA/RBAC 和工作负载。`--apply` 先确认 apiserver 暴露 ValidatingAdmissionPolicy/Binding，再以固定 field manager
+server-side apply 全部 16 份 Admission，全部成功后才授予 16 份 requester RBAC；任何一份失败都会在 RBAC 阶段前停止。
+该命令不会安装 alert receiver，因为它还依赖 receiver TLS/Bearer Secret、隔离 queue、跨 namespace 只读 RBAC 和
+Deployment；必须按 TiKV repair 章节单独完成其清单和凭据。`--apply` 也不会创建 CRD、namespace、broker、approver、
+archiver 或 executor，不能把 guardrail 安装成功解释为整个 Operation 控制面已可用。新增 requester 时若没有同时加入
+Admission/RBAC（或显式的自包含例外），`--verify` 和生产测试 inventory 必须失败。
+
 十六类生产 executor 模板位于
 `deploy/production/kubebrain-operation-executors.yaml`，默认全部为零副本。启用任意一类
 之前必须创建同名 `*-executor-env` Secret 和 `*-executor-workspace` PVC；证书轮换还必须

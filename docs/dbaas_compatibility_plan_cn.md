@@ -60029,6 +60029,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   上线前仍须用真实 requester 身份执行切流后长时审计、worker 崩溃接管、并发控制面变更和 target cluster 错配拒绝，并保持
   workspace PVC/UID 与数据面 credential 单 writer 隔离。
 
+- A5338 关闭专用 requester 文件已齐全、生产发布却只能从长文档零散挑选清单的安装缺口。此前 16 组独立 requester
+  Admission/RBAC 没有统一 apply 入口，也没有双向 inventory；新增 request 脚本完全漏建 guardrail 时，单个清单结构测试
+  无法发现。新增 `apply-operation-requester-guardrails.sh --verify/--apply`：权威清单同时枚举 17 个 request 脚本、16 组
+  独立 admission/RBAC，并显式验证 `request-tikv-transaction-repair.sh` 的 admission/RBAC/receiver 自包含例外。verify 要求
+  文件集合精确相等、无 symlink、脚本可执行、每份 admission 含 `failurePolicy=Fail` 与 Deny binding、每个 requester SA
+  禁止自动挂载 token；任何新增、删除或漏配均 fail closed。apply 强制显式 KUBE_CONTEXT，先 discovery 验证 apiserver
+  支持 ValidatingAdmissionPolicy/Binding，再用固定 field manager server-side apply 全部 admission，只有全数成功才进入
+  RBAC 阶段；缺少 API 或 context 时零 apply。它刻意不安装自包含 alert receiver，也不冒充 CRD/namespace/broker/
+  approver/archiver/executor 的完整安装器。回归覆盖 inventory、33 次调用的 context/server-side/admission-before-RBAC 顺序、
+  缺 context 零 kubectl，以及不支持 API 时仅 discovery；完整 deploy、全仓 vet、diff check 与新增后的 519 项 inventory
+  均通过，四片 116/146/131/126 在代码提交 `cd83ce03` 上全部通过
+  （158.754/494.270/284.773/522.888 秒）。该工具证明仓库发布路径不会静默漏掉已知 requester guardrail，不证明真实
+  apiserver CEL 编译、RBAC aggregation、既有 field ownership 冲突或 rollout 中途故障已被演练；生产上线前仍须在目标
+  Kubernetes 版本执行 server-side dry run/隔离集群 apply、逐身份允许/拒绝矩阵和部分失败重跑，并单独部署带真实 TLS/
+  Bearer 凭据的 repair alert receiver。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
