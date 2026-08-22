@@ -59702,8 +59702,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在发布瞬间注入赢家，分别证明 rotation state、TLS receipt 和 scrape receipt 的输家失败且赢家字节保持不变。
   Bash syntax、定向 TLS/scrape/runner、完整 deploy manifest、全仓 vet、diff check 与 474 项 inventory 均通过；
   四片 105/136/117/116 在代码提交 `3c6ed497` 上全部通过
-  （140.062/472.476/265.719/497.889 秒）。临时文件与目标相邻保证同一文件系统，但本项不替代发布前文件
-  `fsync`、目录项持久化、CSI 断电语义或外部不可变审计归档；生产存储仍须单独验证这些 durable 边界。
+  （140.062/472.476/265.719/497.889 秒）。临时文件与目标相邻保证同一文件系统，但本项当时尚未同步文件内容
+  与目录项，也不替代 CSI 断电语义或外部不可变审计归档；同步缺口由 A5318 关闭，存储边界仍须单独验证。
+
+- A5318 补齐 info rotation 三类 evidence 的断电持久发布顺序。A5317 已防并发覆盖，但临时文件写完后直接
+  hard-link、删除临时链接并报告成功，没有在发布前同步内容或在发布后同步目录项。两个 gate 现在统一执行
+  `sync -f <temporary>` → hard-link no-clobber → 删除临时链接 → `sync -f <destination-directory>`；首次同步
+  失败会清理临时文件且目标不存在，目录同步失败则保留已发布 evidence 但 gate 返回失败，要求 takeover 在线
+  复验而非误报成功。失败注入分别覆盖 rotation state 与 TLS receipt 的文件同步，以及 state/scrape receipt
+  的文件和目录同步边界。Bash syntax、定向 TLS/scrape、完整 deploy manifest、全仓 vet、diff check 与 475 项
+  inventory 均通过；四片 106/136/117/116 在代码提交 `3d9bb12c` 上全部通过
+  （140.936/474.316/268.307/502.279 秒）。本项使用 GNU/coreutils `sync -f` 语义；它不能证明特定 CSI 后端的
+  stable-storage/断电承诺，也不替代 workspace 存储类验证和外部不可变审计归档。
 
 ### P2：运维兼容和长期验证
 
