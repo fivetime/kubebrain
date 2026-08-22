@@ -2939,7 +2939,10 @@ target-empty 和 admission receipt。authorization validator 先证明这些证�
 拓扑；executor 才能用 Kubernetes UID precondition 删除 exact TidbCluster 与 PVC。它没有 KubeBrain StatefulSet、PV 或
 VolumeAttachment 删除权限；Retain PV 只读检查后交由 provider 生命周期处理。attempt 2 只能验证共享 workspace 上已有
 retirement receipt 并收敛，不能再次删除。旧 restore parameters 未携带 provisioning receipt 时不满足自动删除资格，
-必须人工核验，不能为兼容旧操作降低证据门槛。
+必须人工核验，不能为兼容旧操作降低证据门槛。首次完成和 attempt 2 都要求 receipt 是 1..8 MiB 的普通非 symlink
+文件，属性精确为 0600/current UID/link-count=1；原生 verifier 严格复核 provisioning/target-empty/admission lineage，
+runner 再在两次完整验证之间重算 raw SHA-256，只有两次摘要一致才可提交终态。权限、link count、lineage 或验证间
+字节变化任一不满足都必须 Failed，且 attempt 2 不调用 authorize、UID delete、poll 或 inspector。
 
 上述执行面现已有独立 pinned restore image 和 replicas=0、`Recreate` 的单 writer Deployment；workspace PVC
 同时承载固定在 `/var/lib/kubebrain-operation/inputs/` 的 evidence/artifact 和不可覆盖 receipt。专用 requester

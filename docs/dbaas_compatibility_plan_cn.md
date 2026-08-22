@@ -59794,6 +59794,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   2 分钟超时；四片门禁随后完整覆盖并通过。attestation 只证明受审 BR 调用成功，不证明远端对象后续未丢失；
   full artifact/inventory 门禁和真实对象存储 retention 演练仍不可省略。
 
+- A5325 加固不可逆 `NativePITRTargetRetirement` 的 attempt 2 receipt takeover。既有协议已经保证第二 claim 只
+  运行原生 receipt verifier、不再调用 authorization、UID-precondition delete、Kubernetes poll 或 retirement
+  inspector，producer 也以 file sync、exclusive hard-link、unlink 和 directory sync 持久发布；但 runner 只用
+  `-s` 判断并在单次验证后重新按路径取摘要，0600/owner/link/symlink 属性没有进入终态合同，同 UID 写者在验证与
+  status 间替换字节也可能提交另一份 digest。现在首次完成与 attempt 2 都要求 1..8 MiB 普通非 symlink 文件、
+  `0600:<current UID>:1`，并以两次完整 lineage 验证夹住两次 raw SHA-256；只有摘要稳定一致才写入私有 capture 并
+  提交 Succeeded。回归用 `/bin/false` 固定全部删除/inspect primitive，证明合法 attempt 2 零副作用重放；另覆盖
+  0640 拒绝、verifier 每次调用间修改 receipt 被拒绝，以及 reconciliation 失租终止整个 verifier process group。
+  同轮修正 A5324 fencing 回归的异步 TERM marker 竞态：有限等待 descendant trap 完成，连续 5 次定向通过。
+  Bash syntax、定向 retirement/native PITR、deploy tests、全仓 vet、diff check 与 478 项 inventory 均通过；四片
+  107/136/119/116 在代码提交 `b1b9a57e` 上全部通过（141.562/475.425/263.609/501.836 秒）。双验证减少普通
+  TOCTOU，但不隔离能在最后一次摘要后修改 inode 的同 UID workspace 写者；专用 PVC、单 writer Deployment、
+  executor UID 隔离与 CSI stable-storage/RWX coherence 仍是生产前提。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
