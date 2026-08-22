@@ -60350,6 +60350,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   simulator 证据签发身份或 AWS SCP/resource policy 在有效期内不会漂移；生产必须由受信系统至少按日重新模拟、审批并
   在到期前运行 refresh，同时保留原始 simulator 输出和手动 Job 日志。
 
+- A5361 修复 A5360 启用/续签手动 Job 使用固定默认名称、与七天 Job 保留合同冲突而无法安全重试的问题。旧 enable
+  固定 `kubebrain-operation-archive-verifier-enable`，首次手动 Job 失败后再次执行会在任何新验证前收到 AlreadyExists；
+  refresh 固定 `kubebrain-operation-archive-verifier-iam-refresh`，即使成功，下一日续签也必然撞上仍保留的 Job。现在默认
+  Job 清单分别使用 `generateName: kubebrain-archive-verifier-enable-` 与
+  `generateName: kubebrain-archive-verifier-iam-`，由 apiserver 分配唯一名称；显式 `VERIFICATION_JOB_NAME` 仍可供审批
+  系统指定唯一 DNS label。create 必须返回 JSON，脚本只接受目标 namespace、合法不超过 63 字符的 DNS label，且名称
+  必须逐字匹配显式请求或生成前缀，随后所有 wait/log 和最终证据输出均使用服务端返回身份；异常 namespace/name 在
+  wait 和 CronJob patch 前 fail closed。回归覆盖默认 enable/refresh generateName、显式审计名称、错误 namespace、越界
+  prefix、手动失败零 patch，以及既有 expiry/CAS 合同。新增后 565 项 inventory；定向测试、Bash syntax、diff check
+  和四片 128/159/145/133 在代码提交 `84c83f65` 上全部通过（Go 测试
+  157.628/506.769/288.074/527.152 秒；端到端 166.460/515.603/296.916/535.987 秒）。自动化仍使用
+  fake kubectl；真实 apiserver generateName、admission mutation/audit、Job 调度和保留策略需在目标 Kubernetes/S3
+  环境执行至少两次连续 refresh 验证，不以本地名称生成替代服务端唯一性。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

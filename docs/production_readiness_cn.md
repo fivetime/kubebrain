@@ -5976,7 +5976,10 @@ KUBE_CONTEXT=production REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM=yes \
 
 门禁要求独立 Secret 精确七个非空安全字段、HTTPS endpoint，CronJob 仍使用专用 SA、Forbid、零 backoff 和 Never；
 对 inventory 每个 namespace 要求 Operation get/list 为 yes，create/update/patch/delete/watch、Secret 读取和 Lease create
-均为 no。enable 先从 suspended CronJob 创建并保留一次手动 Job，只有 Job complete 且日志可读，才以旧
+均为 no。enable 先从 suspended CronJob 创建并保留一次手动 Job；默认使用
+`generateName: kubebrain-archive-verifier-enable-`，避免失败 Job 七天保留期间阻塞安全重试，也可通过
+`VERIFICATION_JOB_NAME` 指定唯一 DNS label 供外部审批系统关联。脚本必须从 apiserver create JSON 响应取得并校验
+namespace、DNS label 和请求的显式名称或生成前缀，不能信任本地预估名称。只有 Job complete 且日志可读，才以旧
 resourceVersion 和 `suspend=true` 双 test 的 JSON Patch 改为 false；Job 失败时绝不 patch。该运行时门禁不会主动尝试
 S3 Put/Delete 来“证明拒绝”，因为误配时会产生真实副作用；必须另附 provider IAM policy lint/simulation 或审计批准，
 证明该独立 access key 仅允许 exact-version Head/Get/GetObjectRetention 和必要 bucket 配置读取。enable 通过
@@ -5987,8 +5990,9 @@ GetBucketVersioning/GetObject/GetObjectLockConfiguration/GetObjectRetention allo
 ListBucket/ListBucketVersions denied。证据 SHA、valid-until、运行时 expiry 与 `suspend=false` 在同一
 resourceVersion/suspend/pending CAS patch 中写入 CronJob；不能先启用再补证据。每个 verifier 进程在创建 Kubernetes
 client 或访问 S3 前检查 `IAM_SIMULATION_VALID_UNTIL_UNIX`，过期即失败并触发现有 critical Job 告警；
-`--check-enabled` 同时要求 annotation、运行时值逐字相同且仍有效。`--refresh-iam` 只接受已启用的 CronJob，先用新
-expiry 创建并完成一次性只读 Job，再以 resourceVersion、`suspend=false`、旧 SHA 和旧 expiry 的 CAS 原子轮换；Job
+`--check-enabled` 同时要求 annotation、运行时值逐字相同且仍有效。`--refresh-iam` 只接受已启用的 CronJob，默认以
+`generateName: kubebrain-archive-verifier-iam-` 用新 expiry 创建并完成一次性只读 Job，再以 resourceVersion、
+`suspend=false`、旧 SHA 和旧 expiry 的 CAS 原子轮换；Job
 失败或并发漂移均保留旧绑定。受信 CI/审批系统必须至少按日续签并在到期前留出一次完整手动 Job 和故障处置预算。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
