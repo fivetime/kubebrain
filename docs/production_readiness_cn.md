@@ -5718,8 +5718,11 @@ apiserver/proxy 响应体并给 deadline 页间生效点。单页若违反 serve
 除对象数外，每个 collection 的 unstructured 对象按其 JSON 表示累计最多 64 MiB；
 scheduler/archiver/verifier 跨 namespace candidate 也共享 64 MiB JSON charge，序列化失败同样
 fail closed。该 charge 不是 Go heap 的精确硬上限：单页必须先由 client-go 解码，map/string/DeepCopy
-也有额外开销。10,000/64 MiB 当前都是随 binary 固定的默认值；生产必须结合对象大小、容器内存、
-租户配额、归档后 Operation 生命周期和大于 500 项的真实分页压测核算，不能靠提高常量替代清理或分片设计。
+也有额外开销。对象数/字节预算可分别通过 `--max-scan-items`、`--max-scan-bytes` 配置，但只接受正数；
+生产 scheduler、archiver、verifier manifests 及全部 operation executor 环境显式钉住 10,000/64 MiB，
+operationctl 读取 `OPERATION_MAX_SCAN_ITEMS`/`OPERATION_MAX_SCAN_BYTES`，显式 flags 可覆盖环境值。
+生产仍必须结合对象大小、容器内存、租户配额、归档后 Operation 生命周期和大于 500 项的真实分页压测核算，
+不能靠提高预算替代清理或分片设计。
 调用方给出的 `resourceVersion`/`resourceVersionMatch` 只用于首屏；后续 continue 请求必须清空
 这两个字段，因为 opaque token 已绑定初始快照版本，Kubernetes 不接受 continue 与显式
 resourceVersion 的组合。selector、timeout 等其余 options 保持不变，响应侧 collection

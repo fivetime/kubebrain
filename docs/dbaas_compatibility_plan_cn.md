@@ -60589,6 +60589,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   allocator 和 DeepCopy 另有开销。10,000/64 MiB 仍不可运行时配置，下一步必须把两个预算纳入受约束 CLI/deployment binding，
   并以真实大对象 page 测量 RSS/GC；历史 Operation 生命周期也仍须独立闭环。
 
+- A5379 关闭 A5378 的扫描预算只能由编译期常量决定、不同生产副本可能因隐式默认漂移的配置缺口。新增共享
+  `dynamicpagination.Budget` 与正数校验；scheduler、archiver、archive verifier、Queue 及跨 namespace claim 均在构造后持有
+  同一份 page/item/byte budget，collection List 和跨 namespace candidate charge 不再旁路回固定 item/byte 常量。四个命令新增
+  `--max-scan-items`/`--max-scan-bytes`；operationctl 还读取 `OPERATION_MAX_SCAN_ITEMS`/
+  `OPERATION_MAX_SCAN_BYTES`，flag 优先覆盖环境，并在创建 Kubernetes client 前拒绝非整数或非正预算。生产 scheduler、archiver、
+  verifier manifests 与全部 16 个 operation executor 显式钉住 10,000 项、67,108,864 bytes；manifest 回归逐个验证 executor，
+  避免 YAML 中只有首个环境块带配置而其余副本静默回退。预算默认/非法值、各 controller setter 与 operationctl 环境解析均有回归；
+  分页包及四个消费包精确代码提交 race 为 1.052/1.221/1.233/1.112/1.318 秒，根 production inventory 仍为 580 项。
+  四片 130/165/147/138 在代码提交 `a872e2d8` 上全部通过（Go 测试
+  166.826/513.357/291.028/548.965 秒；端到端 176.301/522.743/300.476/558.425 秒）。本项使预算可审计、可按容量调整，
+  但不把 JSON charge 宣称为 RSS 硬上限，也不允许靠增大预算长期保留无界终态 Operation；下一步仍是以真实大对象分页测量 RSS/GC，
+  并实现已归档终态 Operation 的 UID-fenced 生命周期。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
