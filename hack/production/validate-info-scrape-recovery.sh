@@ -55,16 +55,36 @@ operation_is_nonnegative_int64 "$MAX_CLOCK_SKEW_SECONDS" && (( MAX_CLOCK_SKEW_SE
 operation_is_positive_int64 "$MAX_SAMPLE_AGE_SECONDS" && (( MAX_SAMPLE_AGE_SECONDS <= 3600 )) || die "MAX_SAMPLE_AGE_SECONDS must be a canonical positive int64 no greater than 3600"
 command -v "$CURL" >/dev/null || die "curl is required"
 command -v "$JQ" >/dev/null || die "jq is required"
+command -v sha256sum >/dev/null || die "sha256sum is required"
 
 umask 077
 capture="$(mktemp -d)"
 trap 'rm -rf "$capture"' EXIT INT TERM
+freeze_input() {
+  local source="$1" name="$2" destination before after
+  before="$(sha256sum "$source" | cut -d ' ' -f1)" || die "cannot hash ${name} before capture"
+  destination="$capture/$name"
+  cp -- "$source" "$destination" || die "cannot capture ${name}"
+  chmod 600 "$destination"
+  after="$(sha256sum "$source" | cut -d ' ' -f1)" || die "cannot hash ${name} after capture"
+  [[ "$before" =~ ^[a-f0-9]{64}$ && "$after" == "$before" && "$(sha256sum "$destination" | cut -d ' ' -f1)" == "$before" ]] ||
+    die "${name} changed during capture"
+  printf '%s\n' "$destination"
+}
+TLS_RECEIPT_INPUT="$(freeze_input "$TLS_RECEIPT_INPUT" tls-receipt.json)"
+PROMETHEUS_CA_FILE="$(freeze_input "$PROMETHEUS_CA_FILE" prometheus-ca)"
+scrape_receipt_input="$SCRAPE_RECEIPT_OUTPUT"
+if [[ "$ACTION" == verify ]]; then
+  scrape_receipt_input="$(freeze_input "$SCRAPE_RECEIPT_OUTPUT" scrape-receipt.json)"
+fi
 authorization_header_file=""
 if [[ -n "$PROMETHEUS_BEARER_TOKEN_FILE" ]]; then
   [[ -f "$PROMETHEUS_BEARER_TOKEN_FILE" && -r "$PROMETHEUS_BEARER_TOKEN_FILE" ]] || die "PROMETHEUS_BEARER_TOKEN_FILE must be a readable regular file"
   token_size="$(stat -Lc '%s' -- "$PROMETHEUS_BEARER_TOKEN_FILE")" || die "cannot stat PROMETHEUS_BEARER_TOKEN_FILE"
   [[ "$token_size" =~ ^[0-9]+$ ]] && (( token_size > 0 && token_size <= MAX_PROMETHEUS_TOKEN_BYTES )) || die "PROMETHEUS_BEARER_TOKEN_FILE must contain 1..${MAX_PROMETHEUS_TOKEN_BYTES} bytes"
+  PROMETHEUS_BEARER_TOKEN_FILE="$(freeze_input "$PROMETHEUS_BEARER_TOKEN_FILE" prometheus-token)"
   bearer_token="$(<"$PROMETHEUS_BEARER_TOKEN_FILE")"
+  [[ "${#bearer_token}" == "$token_size" ]] || die "PROMETHEUS_BEARER_TOKEN_FILE must contain exactly one token without trailing newlines or NUL bytes"
   [[ "$bearer_token" =~ ^[A-Za-z0-9._~+/-]+=*$ ]] || die "PROMETHEUS_BEARER_TOKEN_FILE must contain one RFC 6750 b64token"
   authorization_header_file="$capture/authorization-header"
   printf 'Authorization: Bearer %s\n' "$bearer_token" >"$authorization_header_file"
@@ -151,7 +171,7 @@ while true; do
             all(.targets[]; keys == ["instance","pod","sample_unix"] and
               (.pod | type == "string" and test("^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")) and
               (.instance | type == "string" and length > 0) and
-              (.sample_unix | type == "number" and . >= $completed))' "$SCRAPE_RECEIPT_OUTPUT" >/dev/null ||
+              (.sample_unix | type == "number" and . >= $completed))' "$scrape_receipt_input" >/dev/null ||
             die "existing scrape recovery receipt does not match verified evidence"
           echo "info scrape recovery receipt verification passed: instance=${instance} rotation=${rotation_id} replicas=${EXPECTED_REPLICAS} receipt=${SCRAPE_RECEIPT_OUTPUT}"
         fi

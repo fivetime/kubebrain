@@ -121,14 +121,53 @@ func TestValidateInfoScrapeRecoveryKeepsBearerTokenOutOfCurlArguments(t *testing
 }
 
 func TestValidateInfoScrapeRecoveryRejectsNonB64BearerTokenBeforeQuery(t *testing.T) {
+	for _, tc := range []struct{ name, token, wanted string }{
+		{"invalid character", "token:with-colon", "RFC 6750 b64token"},
+		{"trailing newline", "valid-token\n", "exactly one token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInfoScrapeFixture(t)
+			token := filepath.Join(f.dir, "token")
+			require.NoError(t, os.WriteFile(token, []byte(tc.token), 0o600))
+			out, err := runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", append(f.env,
+				"PROMETHEUS_BEARER_TOKEN_FILE="+token))
+			require.Error(t, err)
+			require.Contains(t, string(out), tc.wanted)
+			require.NoFileExists(t, f.calls)
+		})
+	}
+}
+
+func TestValidateInfoScrapeRecoveryFreezesTLSAndCAInputsBeforeQuery(t *testing.T) {
 	f := newInfoScrapeFixture(t)
+	tls := mustRead(t, f.tlsReceipt)
 	token := filepath.Join(f.dir, "token")
-	require.NoError(t, os.WriteFile(token, []byte("token:with-colon"), 0o600))
+	require.NoError(t, os.WriteFile(token, []byte("frozen-token"), 0o600))
 	out, err := runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", append(f.env,
-		"PROMETHEUS_BEARER_TOKEN_FILE="+token))
-	require.Error(t, err)
-	require.Contains(t, string(out), "RFC 6750 b64token")
-	require.NoFileExists(t, f.calls)
+		"PROMETHEUS_BEARER_TOKEN_FILE="+token, "EXPECT_AUTH_TOKEN=frozen-token", "EXPECT_FROZEN_INPUTS=true",
+		"SOURCE_TLS_RECEIPT="+f.tlsReceipt, "SOURCE_PROMETHEUS_CA="+f.ca, "SOURCE_PROMETHEUS_TOKEN="+token))
+	require.NoError(t, err, string(out))
+	require.Equal(t, []byte("changed\n"), mustRead(t, f.tlsReceipt))
+	require.Equal(t, []byte("changed\n"), mustRead(t, f.ca))
+	require.Equal(t, []byte("changed\n"), mustRead(t, token))
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.output), &receipt))
+	digest := sha256.Sum256(tls)
+	require.Equal(t, fmt.Sprintf("%x", digest), receipt["tls_rotation_receipt_sha256"])
+	calls := string(mustRead(t, f.calls))
+	require.NotContains(t, calls, f.ca)
+	require.NotContains(t, calls, f.tlsReceipt)
+}
+
+func TestValidateInfoScrapeRecoveryFreezesVerifyReceiptBeforeQuery(t *testing.T) {
+	f := newInfoScrapeFixture(t)
+	out, err := runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", f.env)
+	require.NoError(t, err, string(out))
+	out, err = runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", append(f.env,
+		"ACTION=verify", "SOURCE_SCRAPE_RECEIPT="+f.output))
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "receipt verification passed")
+	require.Equal(t, []byte("changed\n"), mustRead(t, f.output))
 }
 
 type infoScrapeFixture struct {
@@ -157,6 +196,18 @@ if [[ -n "${EXPECT_AUTH_TOKEN:-}" ]]; then
   [[ -n "$header_file" && "$(stat -Lc '%a' -- "$header_file")" == 600 ]]
   [[ "$(<"$header_file")" == "Authorization: Bearer ${EXPECT_AUTH_TOKEN}" ]]
 fi
+if [[ "${EXPECT_FROZEN_INPUTS:-false}" == true ]]; then
+  ca_file=""
+  args=("$@")
+  for ((i=0; i+1<${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == --cacert ]]; then ca_file="${args[$((i+1))]}"; fi
+  done
+  [[ -n "$ca_file" && "$ca_file" != "$SOURCE_PROMETHEUS_CA" && "$(<"$ca_file")" == ca ]]
+  printf 'changed\n' >"$SOURCE_TLS_RECEIPT"
+  printf 'changed\n' >"$SOURCE_PROMETHEUS_CA"
+  [[ -z "${SOURCE_PROMETHEUS_TOKEN:-}" ]] || printf 'changed\n' >"$SOURCE_PROMETHEUS_TOKEN"
+fi
+[[ -z "${SOURCE_SCRAPE_RECEIPT:-}" ]] || printf 'changed\n' >"$SOURCE_SCRAPE_RECEIPT"
 count="$(wc -l <"$FAKE_CALLS")"
 timestamp="$(date +%s)"
 [[ "${FAKE_ALWAYS_STALE:-false}" != true ]] || timestamp=99
