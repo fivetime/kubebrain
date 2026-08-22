@@ -105,7 +105,7 @@ func contains(values []string, expected string) bool {
 
 func (p *Processor) runCommand(ctx context.Context, executable string, environment []string) error {
 	command := exec.CommandContext(ctx, executable)
-	command.Env = append(os.Environ(), environment...)
+	command.Env = mergeEnvironment(os.Environ(), environment)
 	processgroup.Configure(command)
 	command.WaitDelay = processgroup.DefaultWaitDelay
 	output, err := processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)
@@ -116,4 +116,26 @@ func (p *Processor) runCommand(ctx context.Context, executable string, environme
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func mergeEnvironment(base, overrides []string) []string {
+	values := make(map[string]string, len(base)+len(overrides))
+	order := make([]string, 0, len(base)+len(overrides))
+	for _, entries := range [][]string{base, overrides} {
+		for _, entry := range entries {
+			key, _, found := strings.Cut(entry, "=")
+			if !found || key == "" {
+				continue
+			}
+			if _, exists := values[key]; !exists {
+				order = append(order, key)
+			}
+			values[key] = entry
+		}
+	}
+	result := make([]string, 0, len(order))
+	for _, key := range order {
+		result = append(result, values[key])
+	}
+	return result
 }

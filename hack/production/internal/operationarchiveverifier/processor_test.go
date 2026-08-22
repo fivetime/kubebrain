@@ -52,6 +52,16 @@ func TestProcessorRejectsEvidenceGapAndPendingArchiveBeforeExecutor(t *testing.T
 	require.False(t, called)
 }
 
+func TestMergeEnvironmentCannotOverrideReadOnlyActionFromParent(t *testing.T) {
+	merged := environmentMap(mergeEnvironment(
+		[]string{"ACTION=archive", "VERSION_ID=wrong", "KEEP=value"},
+		[]string{"ACTION=audit-version-verify", "VERSION_ID=bound"},
+	))
+	require.Equal(t, "audit-version-verify", merged["ACTION"])
+	require.Equal(t, "bound", merged["VERSION_ID"])
+	require.Equal(t, "value", merged["KEEP"])
+}
+
 func verifierOperation(name string, completed int64, finalizer, evidence bool) *unstructured.Unstructured {
 	annotations := map[string]any{}
 	if evidence {
