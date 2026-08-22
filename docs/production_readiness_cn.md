@@ -1671,8 +1671,9 @@ begin 通过真实 TLS handshake 与 `INFO_SERVER_NAME`/CA 验证，要求 endpo
 `OLD_INFO_CERT`，并冻结三个 Pod 的 name/UID/restartCount/Ready。complete 必须呈现不同的新 leaf、Pod 快照
 完全不变，再原子发布 0600 `kubebrain.info-certificate-rotation.receipt.v1`。同 CA leaf rotation 应保持
 `REQUIRE_OLD_CA_REJECTION=false`；CA cutover 才设置 true，要求旧 CA 的握手失败。receipt 已存在时拒绝覆盖。
-该脚本目前是直接 gate，尚未接入 Operation worker 的 durable claim、heartbeat 与 archive 状态机；平台自动化
-前必须补齐该控制面编排，不能只保存 stdout。
+`ACTION=verify` 是只读接管门禁：要求 state 与 receipt 已存在，重新执行新 CA/serverName handshake、旧 CA
+撤权（若声明）、Pod 快照及 receipt 全字段校验，但绝不覆盖 receipt。生产自动化使用下文
+`InfoCertificateRotation` Operation，不能只保存直接 gate 的 stdout。
 
 ## 实例销毁状态机
 
@@ -5236,8 +5237,10 @@ TiKV MVCC 后端，不存在 etcd 各成员独立 backend；
 使用 `deploy/production/kubebrain-operation-worker-rbac.yaml`。namespaced
 `KubeBrainOperation.dbaas.kubebrain.io/v1alpha1` spec 包含稳定 operation ID、可选
 tenant/requestedBy、instance、操作类型、完整参数文件 SHA-256 和 maxAttempts，并由
-CEL 保证创建后不可变。当前类型覆盖 Backup、BackupDeletion、RestoreCutover、
-PostRestoreAudit、CertificateRotation 和 Destroy。Go 队列层也会在 submit 时拒绝
+CEL 保证创建后不可变。当前类型覆盖 Backup、NativePITRFullBackup/FullRestore、
+NativePITRTargetRetirement/TargetProvisioning、BackupDeletion、ColdPhysicalSnapshot/Restore、
+LegacySnapshotHistoryRemediation、RestoreCutover、PostRestoreAudit、CertificateRotation、
+InfoCertificateRotation、TiKVTransactionRepair/Recovery 和 Destroy。Go 队列层也会在 submit 时拒绝
 CRD enum 外的 type，要求 operation ID/instance/maxAttempts/参数 Secret 引用满足
 CRD schema，并要求参数 digest 为小写 hex SHA-256；成功 finish 同样要求 receipt
 digest 为小写 hex SHA-256，不能只依赖 apiserver admission 才发现错误。读取既有
@@ -5246,10 +5249,11 @@ Operation、读取参数和 claim 候选时也会重新要求当前 `apiVersion/
 所有 shell operation runner 在把参数 JSON 转成 TSV 环境变量前，必须先拒绝空必填字段；
 可选 kube context/path 或 metrics output 使用哨兵占位，避免 Bash whitespace IFS 把中间空
 字段左移并误绑定后续参数。
-Backup、BackupDeletion、RestoreCutover、PostRestoreAudit、CertificateRotation 与 Destroy 六类核心
+Backup、BackupDeletion、RestoreCutover、PostRestoreAudit、CertificateRotation、InfoCertificateRotation
+与 Destroy 七类核心
 runner 还必须把 operation 参数文件限制为 64 KiB，与外部 Operation API 的请求体边界一致。显式
 `PARAMETERS_INPUT` 和 parameter broker 拉取结果都在 SHA-256 前检查；复制到 0600 私有文件后必须同时
-复检冻结副本与原路径，超限 operation 进入 Retry 且不得启动子命令。这六类核心 executor 之外，
+复检冻结副本与原路径，超限 operation 进入 Retry 且不得启动子命令。这七类核心 executor 之外，
 transaction、cold physical、legacy remediation 与 Native PITR 专用 runner 已按各自终态语义完成同类审计；
 不能把 Retry/Fail 的差异错误抹平成单一终态合同。
 TiKVTransactionRecovery 与 TiKVTransactionRepair runner 已按同一 64 KiB 合同补齐：显式或 broker
@@ -5866,6 +5870,21 @@ lease，失败时不写 terminal 状态，成功后才紧邻提交 owner+attempt
 旧凭据失败及新凭据再次成功，之后 operation Succeeded 绑定 A185 receipt SHA-256。
 A185 也支持显式 `KUBECONFIG_PATH`。
 
+`hack/production/run-info-certificate-rotation-operation.sh` 接入独立的
+`InfoCertificateRotation`，不得伪装成 client `CertificateRotation`。Operation 固定
+`requestedBy=platform:info-certificate-rotation` 并属于必须审批类型；参数绑定 state/receipt、HTTPS
+authority、DNS serverName、namespace/selector/replicas、旧/新 CA 与 leaf 路径和四个文件 SHA-256，以及
+`require_old_ca_rejection`。executor 在任何 gate/hook 前冻结不超过 64 KiB 的参数和四份证书输入，并复核
+源/副本摘要；唯一 `PUBLISH_COMMAND` 必须幂等更新 `kubebrain-info-tls` 并等待 projected volume 生效。
+
+正常顺序是 begin gate、publish hook、complete gate；state-only 接管从 publish 继续。若 complete 已生成
+receipt 但 owner 在提交 Succeeded 前失租，新 owner 不重复发布，也不覆盖 receipt，而是运行上述只读 verify，
+重新证明当前 leaf、CA 策略、Pod 快照和 state/receipt 哈希一致后提交 receipt SHA-256。任一步失败 requeue；
+heartbeat fencing 会终止整个工作进程组，terminal retry/succeed 前还必须同步续租。queue 类型白名单、CRD、
+parameter broker 的 ServiceAccount→Operation 类型绑定、status admission、审批 admission、审计 artifact 和
+archive finalizer 均包含该独立类型。直接手工创建 Operation 时，parameters Secret 必须 immutable，且
+Operation 的 `parametersSHA256` 必须绑定参数文件原始字节。
+
 所有 operation executor 的 heartbeat 均使用独立续租进程，主进程直接 `wait` 工作子进程；
 工作结束后终止 heartbeat，涉及后续 terminal 提交的 worker 还会执行同步最终续租。续租失败时 heartbeat
 杀掉尚未完成的工作进程并返回 fencing 状态。所有会派生长任务的 runner 必须在 Bash job-control 下分别为
@@ -5873,7 +5892,7 @@ A185 也支持显式 `KUBECONFIG_PATH`。
 kill 只能作为组不存在时的兜底。这样可同时终止子脚本派生的 kubectl/BR/helper 后代，并回收 monitor 内的 sleep，
 不能只杀直接 shell 后让旧 owner 的后代继续产生副作用。禁止
 使用 `kill -0` 轮询工作进程完成，因为未 wait 的 zombie 仍可能返回存在并造成无限续租。
-全部 15 个 heartbeat worker 都在任何 Bash 算术和 claim 前通过共享
+全部 16 个 heartbeat worker 都在任何 Bash 算术和 claim 前通过共享
 `operation-time-validation.sh` 要求 lease 是正 int64，并要求显式 interval 是规范正 decimal-int64 秒且
 `HEARTBEAT_INTERVAL_SECONDS < LEASE_SECONDS`。比较按十进制字符串精确执行，禁止 awk/IEEE-754 浮点；
 MaxInt64 lease 与 `MaxInt64-0.000000001` interval 必须保持精确，整数溢出、前导零、`.1`、尾随小数点及
@@ -5944,12 +5963,14 @@ Pod UID，更新 Secret 后在 30 秒加 probe 容差内验证 endpoint 呈现�
 不变。轮换 CA 时必须先把旧、新 CA 同时发布到 executor trust bundle，再换 broker
 叶证书，最后确认所有 executor 使用新 CA 后撤旧；服务端热加载不能替代该双信任窗口。
 
-十一类生产 executor 模板位于
+十六类生产 executor 模板位于
 `deploy/production/kubebrain-operation-executors.yaml`，默认全部为零副本。启用任意一类
 之前必须创建同名 `*-executor-env` Secret 和 `*-executor-workspace` PVC；证书轮换还必须
 创建 `kubebrain-certificate-rotation-executor-hooks` Secret，键
 `publish-overlap`、`publish-final` 必须是可执行、幂等且受发布流程审计的程序；清单只以
-`0555` mode 挂载这两个 key，不得把额外 Secret key 暴露到 hook 目录。生产 PVC
+`0555` mode 挂载这两个 key。info 轮换还必须创建
+`kubebrain-info-certificate-rotation-executor-hooks`，且只含可执行幂等的 `publish` key；不得把额外
+Secret key 暴露到任一 hook 目录。生产 PVC
 必须支持 RWX 和 `runAsUser/fsGroup=65532`；两个副本会竞争同一队列并依赖 Lease/attempt
 fencing，RWO 卷或节点本地卷不能满足跨节点接管。参数里的 artifact、state、receipt 路径
 必须位于 `/var/lib/kubebrain-operation`，临时文件才可放 `/tmp`。
@@ -5966,7 +5987,7 @@ one-shot Operation 做 claim/heartbeat/receipt 演练，再扩到两个副本并
 滚动策略允许升级期间短暂三副本竞争，所有外部 hook 因此必须按 operation UID 和 attempt
 幂等。
 
-十一类模板使用独立 ServiceAccount。它们能读取 Operation、更新 status 和管理实例 Lease，
+十六类模板使用独立 ServiceAccount。它们能读取 Operation、更新 status 和管理实例 Lease，
 但不能调用 Secret API；动态参数只能由 broker 在验证 SA 类型、owner、attempt 和 Lease
 后返回。该边界阻断同 namespace 的跨类型 Secret 读取，但 env Secret/PVC 本身仍由 kubelet
 挂载，节点或 broker 被攻陷不在此边界内。更高等级租户仍应拆分 operation namespace、

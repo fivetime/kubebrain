@@ -59552,6 +59552,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   rotation 接入 Operation worker 的 durable claim/heartbeat/archive，也不证明真实 Kubernetes Secret 投影
   延迟或 Prometheus scrape 恢复；这些控制面与现场演练差距保持开放。
 
+- A5304 将 info server leaf rotation 接入独立 `InfoCertificateRotation` durable Operation，不与 client
+  `CertificateRotation` 的双 CA overlap 语义混用。新增 runner 冻结并双重摘要参数、旧/新 CA/leaf，执行
+  begin→幂等 publish hook→complete，在独立 heartbeat 进程下按进程组 fencing；失败 requeue，terminal
+  状态前同步续租并把严格 receipt SHA-256 交给审计归档。receipt 已生成但 Succeeded 未提交的 takeover
+  不重复发布或覆盖证据：新增只读 `verify` 会重新做 serverName/CA 握手、leaf DER、Pod 快照和 receipt/state
+  全字段绑定后才成功。CRD、queue/审批白名单、parameter broker SA→类型、status admission、RBAC、零副本
+  executor 与审计 artifact 均纳入新类型。聚焦双轮 13.856 秒、race 8.194 秒，bash syntax、diff check、全仓
+  vet 与 456 项 inventory 校验通过；四片 103/128/114/111 在代码提交 `a0f3b0a9` 上全部通过
+  （139.435/467.390/263.862/494.677 秒）。本项仍不替代真实 Kubernetes Secret 投影延迟、Prometheus
+  scrape 恢复与 CA cutover 的预生产演练；清单保持 executor 零副本，平台提供受审计 publish hook、RWX
+  workspace、immutable 参数 Secret 和审批后才能启用。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

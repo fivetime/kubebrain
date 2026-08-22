@@ -14,6 +14,8 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 
 `kubebrain-info-tls` 轮换必须运行 `hack/production/validate-info-certificate-rotation.sh`，以握手呈现的 leaf DER
 摘要和不变 Pod UID/restartCount 证明热加载；只观察 Secret resourceVersion 或 Prometheus 恢复抓取不构成证据。
+生产自动化应提交 `InfoCertificateRotation` Operation，由专用 executor 持续 heartbeat、调用幂等 Secret
+发布 hook，并把严格复验的 receipt SHA-256 归档；接管已有 receipt 时必须运行只读在线 `verify`，不能仅凭文件存在成功。
 
 ## 关键 SLI
 
