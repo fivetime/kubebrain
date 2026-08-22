@@ -4695,6 +4695,12 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   上 1..8 MiB、普通非 symlink、0600/current UID/link-count=1 的既有 receipt。它要求精确顶层/semantic witness
   schema、operation/witness/KubeBrain/TidbCluster UID 绑定和 snapshot/PVC 数量一致，并以两次完整验证夹住稳定
   SHA-256；有效时只收敛 status，缺失或无效时 Failed 并要求先盘点 Retain snapshots，绝不再次创建。
+  restore requester/admission 同样固定 `maxAttempts=2`，且只有 attempt 1 可以执行隔离目标恢复；恢复命令已按
+  0600、file sync、不可覆盖 hard-link、unlink、directory sync 的顺序发布 receipt。命令退出、receipt 验证或
+  status 提交不确定时保持非终态，attempt 2 只读核验共享 workspace 上 1..8 MiB、普通非 symlink、
+  `0600:<current UID>:1` 的既有 receipt，要求精确顶层/restore-manifest/target schema、source/manifest/目标 UID
+  绑定、非负整数清单计数及 PVC/PV/snapshot 数量一致，并以两次完整验证夹住稳定 SHA-256。有效时只收敛
+  status；缺失或无效时 Failed 并要求隔离、盘点 retained target，绝不再次执行恢复命令或原地重建目标。
   前述 snapshot/restore 以及 legacy history remediation worker 都要求
   `0 < HEARTBEAT_INTERVAL_SECONDS < LEASE_SECONDS`；默认值为 lease 的三分之一，短 lease 下至少为 1 秒，
   无法在首次 heartbeat 前保有租约的配置会在 claim 前拒绝，禁止 `sleep 0` 忙循环或过期后才续租。heartbeat

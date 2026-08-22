@@ -59837,6 +59837,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （144.542/476.400/266.948/503.376 秒）。receipt 证明 Kubernetes snapshot 对象与 frozen witness 绑定，不证明
   CSI provider 已跨所有卷形成真正一致的存储点；真实多 PVC 停机快照、断电持久性和隔离恢复演练仍是上线门禁。
 
+- A5328 为 `ColdPhysicalRestore` 建立同等级的 receipt-before-status durable reconciliation。底层 restore primitive
+  已用 0600 temporary、file sync、不可覆盖 hard-link、unlink 与 directory sync 持久发布 receipt，但旧
+  requester/admission 固定 `maxAttempts=1`，命令在发布后退出、最终 heartbeat 或 status 不确定时会自动 Failed；
+  重新申请又可能在 retained target 上重复恢复。现在固定 `maxAttempts=2`，只有 attempt 1 能执行 restore primitive，
+  启动后的非零或 receipt 验证不确定保持非终态。attempt 2 在独立 verifier process group 外持续 heartbeat，只接受
+  1..8 MiB 普通非 symlink、`0600:<current UID>:1` receipt；校验精确顶层、restore-manifest 与 target keys，绑定
+  source operation/receipt SHA、rendered manifest SHA、目标 kube-system/namespace/TidbCluster UID 和正整数 cluster ID，
+  要求所有清单计数为非负整数、恰有一个 TidbCluster、总数守恒，并核对 PVC/PV/VolumeSnapshot/VSC 数组长度。
+  两次完整校验夹住两次 raw SHA-256，只有稳定摘要才进入私有 capture 和 Succeeded；缺失或无效证据在 attempt 2
+  Failed，并要求隔离、审计 retained target，绝不再次调用 restore。回归覆盖正常接管、0640 拒绝、producer 写证后
+  退出 9 的 publication uncertainty 接管、attempt 2 零 restore 调用，以及 attempt 1 primitive 失败不提前 terminal。
+  Bash syntax、requester/admission、cold backup、全仓 vet、diff check 与 478 项 inventory 均通过；四片
+  107/136/119/116 在代码提交 `19287da9` 上全部通过（149.550/479.735/273.410/509.124 秒）。receipt 证明恢复工具
+  观察到的 Kubernetes 对象、绑定和就绪结果与冻结输入一致，不证明 CSI provider 的底层卷内容、崩溃持久性或跨卷
+  一致性；真实隔离恢复、断电和数据语义演练仍是上线门禁，无效证据只能隔离审计或重建目标，不能原地重试。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
