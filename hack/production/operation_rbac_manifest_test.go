@@ -507,6 +507,13 @@ func TestOperationArchiverRBACCanOnlyReadAndReleaseOperations(t *testing.T) {
 		Namespace: "kubebrain-operations",
 	}, binding.Subjects[0])
 	require.Equal(t, rbacParty{Kind: "Role", Name: "kubebrain-operation-archiver"}, binding.RoleRef)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Contains(t, string(data), "readinessProbe:")
+	require.Contains(t, string(data), "- ACTION=probe")
+	require.Contains(t, string(data), "- TIMEOUT=15s")
+	require.Contains(t, string(data), "- /usr/local/bin/kubebrain-logical-object")
 }
 
 func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T) {

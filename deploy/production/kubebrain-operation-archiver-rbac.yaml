@@ -158,6 +158,16 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
+          readinessProbe:
+            exec:
+              command:
+                - env
+                - ACTION=probe
+                - TIMEOUT=15s
+                - /usr/local/bin/kubebrain-logical-object
+            periodSeconds: 30
+            timeoutSeconds: 20
+            failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

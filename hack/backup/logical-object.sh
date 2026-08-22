@@ -10,7 +10,7 @@ Usage: hack/backup/logical-object.sh
 Uploads or retention-deletes a logical backup object through the S3 API.
 
 Environment:
-  ACTION                upload, delete, archive, manifest, inventory, pitr-inventory, or usage
+  ACTION                upload, delete, archive, manifest, inventory, pitr-inventory, usage, or probe
   S3_ENDPOINT           required S3-compatible endpoint URL
   OBJECT_STORE_ID       stable control-plane identifier for the S3 account
   S3_BUCKET             required bucket
@@ -44,6 +44,10 @@ PITR inventory:
 Usage:
   OBJECT_STORE_ID, S3_BUCKET, USAGE_PREFIX, ALLOWED_FORMATS_JSON,
   RECEIPT_OUTPUT
+
+Probe:
+  ACTION=probe, OBJECT_STORE_ID, S3_BUCKET. Read-only verification that bucket
+  versioning and Object Lock are both Enabled; writes canonical JSON to stdout.
 
 Manifest:
   RECEIPT_INPUTS_JSON (JSON array of backup/audit receipt paths),

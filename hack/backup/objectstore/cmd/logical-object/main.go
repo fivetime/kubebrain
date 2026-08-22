@@ -166,8 +166,18 @@ func main() {
 		if err := writeJSON(os.Stdout, receipt); err != nil {
 			log.Fatal(err)
 		}
+	case "probe":
+		probe, err := objectstore.ProbeBucket(
+			ctx, client, os.Getenv("OBJECT_STORE_ID"), os.Getenv("S3_BUCKET"), time.Time{},
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := writeJSON(os.Stdout, probe); err != nil {
+			log.Fatal(err)
+		}
 	default:
-		log.Fatal("ACTION must be upload, delete, archive, blob, blob-read, manifest, inventory, pitr-inventory, or usage")
+		log.Fatal("ACTION must be upload, delete, archive, blob, blob-read, manifest, inventory, pitr-inventory, usage, or probe")
 	}
 }
 
