@@ -240,6 +240,9 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 	}
 	lastStarted := make(map[string]int64)
 	for i := range list.Items {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		instance, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "instance")
 		started, found, _ := unstructured.NestedInt64(
 			list.Items[i].Object, "status", "startedAtUnixNano",
@@ -254,18 +257,9 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 			lastStarted[instance] = started
 		}
 	}
-	sort.Slice(list.Items, func(i, j int) bool {
-		leftInstance, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "instance")
-		rightInstance, _, _ := unstructured.NestedString(list.Items[j].Object, "spec", "instance")
-		if lastStarted[leftInstance] != lastStarted[rightInstance] {
-			return lastStarted[leftInstance] < lastStarted[rightInstance]
-		}
-		left, right := list.Items[i].GetCreationTimestamp(), list.Items[j].GetCreationTimestamp()
-		if left.Equal(&right) {
-			return list.Items[i].GetName() < list.Items[j].GetName()
-		}
-		return left.Before(&right)
-	})
+	if err := sortClaimCandidates(ctx, list.Items, lastStarted); err != nil {
+		return nil, err
+	}
 	nowTime := q.now()
 	now := nowTime.Unix()
 	var lastConflict error
@@ -509,6 +503,9 @@ func (q *Queue) lastStarted(ctx context.Context, operationType string) (int64, e
 	}
 	var latest int64
 	for i := range list.Items {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		candidateType, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "type")
 		if operationType != "" && candidateType != operationType {
 			continue
@@ -527,6 +524,69 @@ func (q *Queue) lastStarted(ctx context.Context, operationType string) (int64, e
 		}
 	}
 	return latest, nil
+}
+
+func sortClaimCandidates(ctx context.Context, items []unstructured.Unstructured, lastStarted map[string]int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(items) < 2 {
+		return nil
+	}
+	buffer := make([]unstructured.Unstructured, len(items))
+	source, destination := items, buffer
+	inBuffer := false
+	for width := 1; width < len(items); {
+		for start := 0; start < len(items); start += 2 * width {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			middle := min(start+width, len(items))
+			end := min(start+2*width, len(items))
+			left, right, output := start, middle, start
+			for left < middle || right < end {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if right >= end || (left < middle && claimCandidateLess(&source[left], &source[right], lastStarted)) {
+					destination[output] = source[left]
+					left++
+				} else {
+					destination[output] = source[right]
+					right++
+				}
+				output++
+			}
+		}
+		source, destination = destination, source
+		inBuffer = !inBuffer
+		if width > len(items)/2 {
+			break
+		}
+		width *= 2
+	}
+	if inBuffer {
+		for i := range items {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			items[i] = source[i]
+		}
+	}
+	return nil
+}
+
+func claimCandidateLess(left, right *unstructured.Unstructured, lastStarted map[string]int64) bool {
+	leftInstance, _, _ := unstructured.NestedString(left.Object, "spec", "instance")
+	rightInstance, _, _ := unstructured.NestedString(right.Object, "spec", "instance")
+	if lastStarted[leftInstance] != lastStarted[rightInstance] {
+		return lastStarted[leftInstance] < lastStarted[rightInstance]
+	}
+	leftCreated, rightCreated := left.GetCreationTimestamp(), right.GetCreationTimestamp()
+	if leftCreated.Equal(&rightCreated) {
+		return left.GetName() < right.GetName()
+	}
+	return leftCreated.Before(&rightCreated)
 }
 
 func requiresApproval(operationType string) bool {
