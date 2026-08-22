@@ -1712,14 +1712,36 @@ target 的 Pod/instance/sample timestamp 与最老样本时间。下文 durable 
 替换为 DBaaS instance ID。销毁不得调用 namespace 级泛删，也不得只按资源名称执行
 `kubectl delete`，因为后者不带 UID precondition，可能删除同名重建的新实例。
 
-控制面使用同一组参数依次执行：
+生产入口必须先把最终逻辑备份放入 destroy executor 的专用 workspace，再使用只读 requester 创建
+immutable parameter Secret 与未审批 Operation：
+
+```shell
+REQUEST_ID=change-2026-destroy-1 \
+INSTANCE=instance-a \
+WORK_DIR=/var/lib/kubebrain-operation \
+BACKUP_INPUT=/var/lib/kubebrain-operation/instance-a-final.jsonl \
+KUBE_CONTEXT=production \
+KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
+TIDB_NAMESPACE=kubebrain-storage-a \
+TIDB_CLUSTER=instance-a \
+  hack/production/request-destroy.sh
+```
+
+requester 从外部 request、实例、备份 SHA-256、KubeBrain/TiDB 身份与 PVC 数派生
+`destroy-<20hex>`，confirmation、state directory 和 receipt path 再绑定该 Operation ID。它固定
+`requestedBy=platform:destroy`、`maxAttempts=5`，只能用专用 SA 在 `kubebrain-operations` 创建/get
+Operation 和单字段 immutable Secret，没有 approve、update、delete、数据面或 Secret list/watch 权限。
+fail-closed admission 拒绝其他身份创建任何 Destroy，或创建同命名空间的 destroy parameter Secret。
+必须先应用 `kubebrain-destroy-requester-rbac.yaml` 和 `kubebrain-destroy-requester-admission.yaml`，再授予 requester 凭据。
+
+以下直接 phase 调用只用于解释 executor 内部状态机或隔离诊断，不是可绕过 Operation 审批的生产入口：
 
 ```shell
 common_env=(
-  OPERATION_ID=instance-a-delete-20260718
+  OPERATION_ID=destroy-0123456789abcdefabcd
   INSTANCE=instance-a
-  STATE_DIR=/var/lib/kubebrain-operations/destroy
-  BACKUP_INPUT=/backup/instance-a-final.jsonl
+  STATE_DIR=/var/lib/kubebrain-operation/destroy-0123456789abcdefabcd.state
+  BACKUP_INPUT=/var/lib/kubebrain-operation/instance-a-final.jsonl
   BACKUP_PREFIX=/registry
   BACKUP_MAX_AGE_SECONDS=3600
   BACKUP_MIN_RECORDS=1
@@ -1732,13 +1754,13 @@ common_env=(
 )
 env "${common_env[@]}" ACTION=prepare hack/production/destroy-instance.sh
 
-confirm=destroy:instance-a:instance-a-delete-20260718
+confirm=destroy:instance-a:destroy-0123456789abcdefabcd
 env "${common_env[@]}" ACTION=quiesce CONFIRM_DESTROY="$confirm" \
   hack/production/destroy-instance.sh
 env "${common_env[@]}" ACTION=destroy CONFIRM_DESTROY="$confirm" \
   hack/production/destroy-instance.sh
 env "${common_env[@]}" ACTION=complete CONFIRM_DESTROY="$confirm" \
-  RECEIPT_OUTPUT=/var/lib/kubebrain-operations/instance-a-delete-20260718.json \
+  RECEIPT_OUTPUT=/var/lib/kubebrain-operation/destroy-0123456789abcdefabcd.receipt.json \
   hack/production/destroy-instance.sh
 ```
 

@@ -59886,6 +59886,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   指定三副本、存储健康与一次事务探测，不证明后续流量、TiKV 磁盘/Raft 副本或长期 lease/watch 语义；真实独立
   TiKV/PD 故障恢复、持续负载和数据正确性演练仍是上线门禁，同 UID workspace 必须保持专用 PVC/UID/单 writer。
 
+- A5331 关闭最高风险核心 Operation `Destroy` 仍依赖通用 submitter 的入口缺口。旧 runner 只从 claim 读取
+  namespace/name/operation/instance/attempt/digest，未绑定 type、requester、owner 或参数 Secret/key；参数又允许任意
+  state/backup/receipt 绝对路径和未知顶层字段，通用 submitter 可选择自由 maxAttempts。新增 `request-destroy.sh`：要求
+  外部 request ID、实例、workspace 内普通非 symlink 最终 backup、KubeBrain/TiDB 身份和规范 int64 控制，从这些身份
+  派生 `destroy-<20hex>`，confirmation/state/receipt 再绑定 Operation ID；生成不超过 64 KiB 的 canonical immutable
+  Secret，固定 `platform:destroy`、同名 Secret/key 与 `maxAttempts=5`，绝不 approve。专用 SA/Role 仅有 Operation 与
+  Secret create/get；两条 failurePolicy=Fail admission 令所有 Destroy 和 destroy parameter Secret 只能由该 SA 按固定
+  namespace/name/type/requester/instance/attempt/单 payload 形状创建。runner 现在 claim 必须匹配专用合同和 attempt 1..5，
+  参数 keys 必须精确；WORK_DIR 由 executor 清单固定，state/receipt 必须精确由 Operation ID 派生，三类 evidence path
+  禁止 `..`/`.`/双斜线和 symlink。错误 requester、workspace escape、未知字段在任何 prepare/quiesce/destroy/complete
+  phase 前拒绝。回归覆盖正常未审批提交、workspace 外 backup 零 Kubernetes 调用、最小权限 RBAC、fail-closed CEL、
+  claim/path/schema drift 零 primitive。首次提交态分片还发现 WORK_DIR 检查遮蔽 namespace/heartbeat 配置错误；已把
+  纯身份和租约验证恢复到文件系统检查之前，并用相关跨 runner 合同连续两轮验证。Bash syntax、完整 deploy、全仓 vet、
+  diff check 与新增后的 481 项 inventory 均通过；最终四片 107/137/120/117 在修订代码提交 `ee87eee5` 上全部通过
+  （150.424/486.049/277.778/515.103 秒）。该入口证明审批对象、备份字节摘要和删除参数不可漂移，不证明备份可恢复、
+  UID 删除在真实 apiserver/CSI 上的完整性或外部流量已停；真实 restore drill、UID-precondition 删除和 retained-volume
+  审计仍是销毁前门禁，workspace PVC/UID 必须单 writer 隔离。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
