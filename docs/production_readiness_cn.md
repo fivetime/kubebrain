@@ -6056,6 +6056,14 @@ UID 本身不会由 kubelet 注入容器，故 binary 以 data SHA 阻断凭据�
 为 pending、更新 metadata trust SHA，再以新 key 签发的新证据重新执行 enable。签名只认证“哪个受信系统签发了这组声明”，
 不替代签发系统对原始 AWS simulator 输出、SCP/resource policy、credential→principal 映射和审批身份的验证与留存。
 
+verifier binary 不只在入口检查 `IAM_SIMULATION_VALID_UNTIL_UNIX`：它把 expiry 解析为绝对时间，拒绝已过期、非正数或
+超过当前时刻 24 小时 5 分钟的值，并在 Kubernetes/S3 client 与 controller 初始化完成后重新计算剩余时间。实际 reconcile
+父预算取 `min(--reconcile-timeout, evidence remaining)`；证据一到期，inventory/List、候选循环以及每个独立进程组中的
+对象存储 executor 都由同一 parent context 取消。因此单项 `--verify-timeout=2m` 即使长于当时剩余有效期，也不能越过证据
+deadline 继续启动或等待请求。该边界只证明本进程在 deadline 后停止继续工作；它不撤销 deadline 前已经由 provider 完成的
+远端请求，也不替代 S3 access trail 对请求完成时点的核对。目标环境必须专门安排一个 expiry 临近的手动 Job，证明容器以
+deadline exceeded 退出、未释放未完成对象的 finalizer，并把 Pod 日志与 provider access trail 对齐。
+
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
 终止卡住的对象存储子进程；超时对象不得生成 receipt、不得释放 audit finalizer，下一轮

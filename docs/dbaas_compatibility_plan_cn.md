@@ -60492,6 +60492,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不证明生产审计存储未被同一主体同时改写、签发私钥由 HSM 隔离或 AWS simulation 输入真实完整；目标环境必须把三份 retained
   文件置于不可变/WORM 审计存储，独立定时运行 check-enabled，并将失败与现有 critical 告警及 S3/Kubernetes audit trail 对账。
 
+- A5371 关闭 A5370 verifier 只在进程启动时检查 IAM evidence expiry、随后仍可按固定 15 分钟 reconcile budget 跨越证据到期点
+  继续访问 Kubernetes/S3 的时间授权缺口。binary 现在解析并保存绝对 valid-until，拒绝非正数、已过期以及超过“当前时刻+
+  24 小时 5 分钟”的 runtime 值；后一个上界与 v2 schema 的 24 小时证据有效期及允许的 5 分钟 future checked-at skew 对齐。
+  Kubernetes/S3 client 和 controller 初始化完成后再次取当前时钟，实际 reconcile parent timeout 为配置值与 evidence remaining
+  的较小者；该 context 覆盖 namespace inventory/List、候选循环和 `CommandContext` 独立进程组，所以 2 分钟单项 verify timeout
+  也不能越过更短的 evidence deadline。新增 parser/预算表驱动回归和真实 `reconcilebudget.Run` 20ms deadline 集成回归；cmd
+  子包定向测试 0.041 秒通过。根 `hack/production` inventory 仍为 580 项（分片脚本只发现该顶层 package，cmd 子包由独立测试
+  覆盖）；四片 130/165/147/138 在代码提交 `3d2f68d4` 上全部通过（Go 测试
+  166.980/512.383/291.744/546.577 秒；端到端 176.041/521.494/300.788/555.636 秒）。本地测试证明 parent context 在证据到期
+  后终止控制流，不证明 provider 在取消前已经完成的请求可回滚，也未提供真实 S3 access log 的时间边界。目标环境仍须执行
+  expiry 临近的手动 Job，把 deadline-exceeded Pod 终态、未释放 finalizer、精确对象版本和 provider access trail 联合留证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
