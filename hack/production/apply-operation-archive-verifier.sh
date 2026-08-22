@@ -11,6 +11,7 @@ IDENTITY=system:serviceaccount:kubebrain-operations:kubebrain-operation-archive-
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECTL="${KUBECTL:-kubectl}"
 JQ="${JQ:-jq}"
+OPENSSL="${OPENSSL:-openssl}"
 
 die() { echo "$*" >&2; exit 1; }
 resolve() { if [[ "$1" == */* ]]; then [[ -x "$1" ]] || return 1; printf '%s' "$1"; else command -v "$1"; fi; }
@@ -83,6 +84,36 @@ verify_secret_unchanged() {
   [[ "$digest" == "$credential_secret_data_sha" ]] || die "verifier object-store Secret data drifted"
 }
 
+check_iam_trust_anchor() {
+  local public_key="${IAM_SIMULATION_TRUSTED_PUBLIC_KEY:-}" key_stat key_uid key_mode key_links key_size actual_sha key_der_hex
+  iam_trust_public_key_sha="$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] | select(test("^[a-f0-9]{64}$"))' <<<"$cronjob")" || die "verifier IAM simulation trust root is not pinned"
+  [[ -n "$public_key" && -f "$public_key" && ! -L "$public_key" ]] || die "IAM_SIMULATION_TRUSTED_PUBLIC_KEY must be a regular file"
+  key_stat="$(stat -Lc '%u:%a:%h:%s' "$public_key")"
+  IFS=: read -r key_uid key_mode key_links key_size <<<"$key_stat"
+  [[ "$key_uid" == "$(id -u)" && "$key_mode" == 600 && "$key_links" == 1 && "$key_size" =~ ^[0-9]+$ && "$key_size" -ge 1 && "$key_size" -le 16384 ]] || die "IAM simulation trusted public key must be current-user mode 0600, single-link, and 1..16384 bytes"
+  actual_sha="$(sha256sum "$public_key" | awk '{print $1}')"
+  [[ "$actual_sha" == "$iam_trust_public_key_sha" ]] || die "IAM simulation trusted public key does not match the pinned SHA-256"
+  "$OPENSSL" pkey -pubin -in "$public_key" -noout >/dev/null 2>&1 || die "IAM simulation trusted public key is not a valid PEM public key"
+  key_der_hex="$("$OPENSSL" pkey -pubin -in "$public_key" -outform DER 2>/dev/null | od -An -tx1 | tr -d ' \n')" || die "cannot inspect IAM simulation trusted public key"
+  [[ "$key_der_hex" =~ ^302a300506032b6570032100[a-f0-9]{64}$ ]] || die "IAM simulation trusted public key must be Ed25519"
+  iam_trust_public_key="$public_key"
+}
+
+check_iam_evidence_signature() {
+  local evidence="$1" signature="${IAM_SIMULATION_EVIDENCE_SIGNATURE:-}" signature_stat signature_uid signature_mode signature_links signature_size signature_sha_before
+  [[ -n "$signature" && -f "$signature" && ! -L "$signature" ]] || die "IAM_SIMULATION_EVIDENCE_SIGNATURE must be a regular file"
+  signature_stat="$(stat -Lc '%u:%a:%h:%s' "$signature")"
+  IFS=: read -r signature_uid signature_mode signature_links signature_size <<<"$signature_stat"
+  [[ "$signature_uid" == "$(id -u)" && "$signature_mode" == 600 && "$signature_links" == 1 && "$signature_size" == 64 ]] || die "IAM simulation evidence signature must be current-user mode 0600, single-link, and exactly 64 bytes"
+  signature_sha_before="$(sha256sum "$signature" | awk '{print $1}')"
+  [[ "$signature_sha_before" =~ ^[a-f0-9]{64}$ ]] || die "cannot digest IAM simulation evidence signature"
+  "$OPENSSL" pkeyutl -verify -pubin -inkey "$iam_trust_public_key" -rawin -in "$evidence" -sigfile "$signature" >/dev/null 2>&1 || die "IAM simulation evidence signature is invalid"
+  [[ "$(sha256sum "$evidence" | awk '{print $1}')" == "$iam_evidence_sha" ]] || die "IAM simulation evidence changed during signature verification"
+  [[ "$(sha256sum "$iam_trust_public_key" | awk '{print $1}')" == "$iam_trust_public_key_sha" ]] || die "IAM simulation trusted public key changed during signature verification"
+  [[ "$(sha256sum "$signature" | awk '{print $1}')" == "$signature_sha_before" ]] || die "IAM simulation evidence signature changed during verification"
+  iam_evidence_signature_sha="$signature_sha_before"
+}
+
 check_iam_evidence() {
   local evidence="$1" now canonical expected_actions actual_sha
   [[ -n "$evidence" && -f "$evidence" && ! -L "$evidence" ]] || die "IAM_SIMULATION_EVIDENCE must be a regular file"
@@ -107,6 +138,7 @@ check_iam_evidence() {
   [[ "$actual_sha" =~ ^[a-f0-9]{64}$ ]] || die "cannot digest IAM simulation evidence"
   iam_evidence_sha="$actual_sha"
   iam_evidence_valid_until="$("$JQ" -er '.valid_until_unix | tostring' "$evidence")" || die "cannot read IAM simulation evidence expiry"
+  check_iam_evidence_signature "$evidence"
 }
 
 check_cronjob() {
@@ -128,16 +160,18 @@ check_cronjob() {
 run_manual_verification() {
   local requested_name="$1" generate_prefix="$2" manual_job created created_identity completed pods expected_container expected_init_containers expected_service_account logs verified_count now
   verify_secret_unchanged
-  manual_job="$("$JQ" -c --arg name "$requested_name" --arg prefix "$generate_prefix" --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
-    {apiVersion:"batch/v1",kind:"Job",metadata:({namespace:$namespace,annotations:{"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry,"dbaas.kubebrain.io/credential-secret-uid":$credential_uid,"dbaas.kubebrain.io/credential-secret-resource-version":$credential_rv,"dbaas.kubebrain.io/credential-secret-data-sha256":$credential_sha}} + if $name == "" then {generateName:$prefix} else {name:$name} end),spec:.spec.jobTemplate.spec} |
+  manual_job="$("$JQ" -c --arg name "$requested_name" --arg prefix "$generate_prefix" --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg signature_sha "$iam_evidence_signature_sha" --arg trust_sha "$iam_trust_public_key_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
+    {apiVersion:"batch/v1",kind:"Job",metadata:({namespace:$namespace,annotations:{"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-signature-sha256":$signature_sha,"dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256":$trust_sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry,"dbaas.kubebrain.io/credential-secret-uid":$credential_uid,"dbaas.kubebrain.io/credential-secret-resource-version":$credential_rv,"dbaas.kubebrain.io/credential-secret-data-sha256":$credential_sha}} + if $name == "" then {generateName:$prefix} else {name:$name} end),spec:.spec.jobTemplate.spec} |
     .spec.template.metadata.annotations = .metadata.annotations |
     (.spec.template.spec.containers[0].env[] | select(.name == "IAM_SIMULATION_VALID_UNTIL_UNIX") | .value) = $expiry |
     (.spec.template.spec.containers[0].env[] | select(.name == "CREDENTIAL_SECRET_DATA_SHA256") | .value) = $credential_sha
   ' <<<"$cronjob")" || die "cannot construct expiry-bound manual verifier Job"
   created="$(kc create -f - -o json <<<"$manual_job")" || die "cannot create manual verifier Job"
-  created_identity="$("$JQ" -er --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
+  created_identity="$("$JQ" -er --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg signature_sha "$iam_evidence_signature_sha" --arg trust_sha "$iam_trust_public_key_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
     select(.metadata.namespace == $namespace and
       .metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] == $signature_sha and
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] == $trust_sha and
       .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == $credential_uid and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $credential_rv and
@@ -159,14 +193,18 @@ run_manual_verification() {
   }
   completed="$(kc get job "$manual_job_name" -n "$NAMESPACE" -o json)" || die "cannot re-read completed manual verifier Job"
   now="$(date +%s)"
-  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" --argjson now "$now" '
+  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg signature_sha "$iam_evidence_signature_sha" --arg trust_sha "$iam_trust_public_key_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" --argjson now "$now" '
     .metadata.namespace == $namespace and .metadata.name == $name and .metadata.uid == $uid and
     .metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
+    .metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] == $signature_sha and
+    .metadata.annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] == $trust_sha and
     .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
     .metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == $credential_uid and
     .metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $credential_rv and
     .metadata.annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == $credential_sha and
     .spec.template.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
+    .spec.template.metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] == $signature_sha and
+    .spec.template.metadata.annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] == $trust_sha and
     .spec.template.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
     .spec.template.metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == $credential_uid and
     .spec.template.metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $credential_rv and
@@ -180,11 +218,13 @@ run_manual_verification() {
   expected_init_containers="$("$JQ" -c '(.spec.template.spec.initContainers // [])' <<<"$completed")" || die "completed manual verifier Job init container contract drifted"
   expected_service_account="$("$JQ" -er '.spec.template.spec.serviceAccountName | select(type == "string" and length > 0)' <<<"$completed")" || die "completed manual verifier Job service account drifted"
   pods="$(kc get pods -n "$NAMESPACE" -l "batch.kubernetes.io/job-name=$manual_job_name" -o json)" || die "cannot read manual verifier Job Pod"
-  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" --arg service_account "$expected_service_account" --arg image "$verifier_image" --arg digest "$verifier_image_digest" --argjson container "$expected_container" --argjson init_containers "$expected_init_containers" '
+  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg signature_sha "$iam_evidence_signature_sha" --arg trust_sha "$iam_trust_public_key_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" --arg service_account "$expected_service_account" --arg image "$verifier_image" --arg digest "$verifier_image_digest" --argjson container "$expected_container" --argjson init_containers "$expected_init_containers" '
     .items as $items | if ($items | length) != 1 then false else $items[0] as $pod |
       $pod.metadata.namespace == $namespace and
       $pod.metadata.labels["batch.kubernetes.io/job-name"] == $name and
       $pod.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
+      $pod.metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] == $signature_sha and
+      $pod.metadata.annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] == $trust_sha and
       $pod.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
       $pod.metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == $credential_uid and
       $pod.metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $credential_rv and
@@ -226,6 +266,10 @@ load_namespaces
 check_rbac
 check_secret
 check_cronjob
+if [[ "$1" != --check ]]; then
+  OPENSSL="$(resolve "$OPENSSL")" || die "OPENSSL must be executable"
+  check_iam_trust_anchor
+fi
 
 case "$1" in
   --check)
@@ -234,21 +278,25 @@ case "$1" in
     ;;
   --check-enabled)
     "$JQ" -e '.spec.suspend == false' <<<"$cronjob" >/dev/null || die "verifier CronJob is not enabled"
-    "$JQ" -e --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
-      def matches($annotations;$sha;$expiry;$uid;$secret_rv;$secret_sha):
+    "$JQ" -e --arg trust_sha "$iam_trust_public_key_sha" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
+      def matches($annotations;$sha;$signature_sha;$trust_sha;$expiry;$uid;$secret_rv;$secret_sha):
         $annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
+        $annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] == $signature_sha and
+        $annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] == $trust_sha and
         $annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
         $annotations["dbaas.kubebrain.io/credential-secret-uid"] == $uid and
         $annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $secret_rv and
         $annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == $secret_sha;
       .metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] as $sha |
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] as $signature_sha |
       .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] as $expiry |
-      ($sha | test("^[a-f0-9]{64}$")) and
+      ($sha | test("^[a-f0-9]{64}$")) and ($signature_sha | test("^[a-f0-9]{64}$")) and
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] == $trust_sha and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == $credential_uid and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $credential_rv and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == $credential_sha and
-      matches(.spec.jobTemplate.metadata.annotations;$sha;$expiry;$credential_uid;$credential_rv;$credential_sha) and
-      matches(.spec.jobTemplate.spec.template.metadata.annotations;$sha;$expiry;$credential_uid;$credential_rv;$credential_sha)
+      matches(.spec.jobTemplate.metadata.annotations;$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha) and
+      matches(.spec.jobTemplate.spec.template.metadata.annotations;$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha)
     ' <<<"$cronjob" >/dev/null || die "enabled verifier IAM or credential binding drifted"
     now="$(date +%s)"
     "$JQ" -e --argjson now "$now" '
@@ -266,13 +314,17 @@ case "$1" in
     "$JQ" -e '.spec.suspend == true' <<<"$cronjob" >/dev/null || die "verifier CronJob must be suspended before enable"
     "$JQ" -e '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == "pending"' <<<"$cronjob" >/dev/null || die "verifier IAM evidence binding is not pending"
     "$JQ" -e '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == "pending"' <<<"$cronjob" >/dev/null || die "verifier IAM evidence expiry binding is not pending"
-    "$JQ" -e '
+    "$JQ" -e --arg trust_sha "$iam_trust_public_key_sha" '
       def pending($annotations):
         $annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == "pending" and
+        $annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] == "pending" and
+        $annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] == "pending" and
         $annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == "pending" and
         $annotations["dbaas.kubebrain.io/credential-secret-uid"] == "pending" and
         $annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == "pending" and
         $annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == "pending";
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] == "pending" and
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] == $trust_sha and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == "pending" and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == "pending" and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == "pending" and
@@ -284,17 +336,17 @@ case "$1" in
     [[ -z "$job" || ( "$job" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#job}" -le 63 ) ]] || die "VERIFICATION_JOB_NAME must be a DNS label"
     run_manual_verification "$job" "kubebrain-archive-verifier-enable-"
     rv="$("$JQ" -er '.metadata.resourceVersion | select(test("^[0-9]+$"))' <<<"$cronjob")" || die "verifier CronJob resourceVersion is invalid"
-    patch="$("$JQ" -cn --arg rv "$rv" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
-      def binding_ops($op;$prefix;$sha;$expiry;$uid;$secret_rv;$secret_sha):
-        [{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-sha256"),value:$sha},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-valid-until-unix"),value:$expiry},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-uid"),value:$uid},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-resource-version"),value:$secret_rv},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-data-sha256"),value:$secret_sha}];
+    patch="$("$JQ" -cn --arg rv "$rv" --arg sha "$iam_evidence_sha" --arg signature_sha "$iam_evidence_signature_sha" --arg trust_sha "$iam_trust_public_key_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
+      def binding_ops($op;$prefix;$sha;$signature_sha;$trust_sha;$expiry;$uid;$secret_rv;$secret_sha):
+        [{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-sha256"),value:$sha},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-signature-sha256"),value:$signature_sha},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-trust-public-key-sha256"),value:$trust_sha},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-valid-until-unix"),value:$expiry},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-uid"),value:$uid},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-resource-version"),value:$secret_rv},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-data-sha256"),value:$secret_sha}];
       [{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"test","path":"/spec/suspend","value":true}] +
-      binding_ops("test";"/metadata/annotations";"pending";"pending";"pending";"pending";"pending") +
-      binding_ops("test";"/spec/jobTemplate/metadata/annotations";"pending";"pending";"pending";"pending";"pending") +
-      binding_ops("test";"/spec/jobTemplate/spec/template/metadata/annotations";"pending";"pending";"pending";"pending";"pending") +
+      binding_ops("test";"/metadata/annotations";"pending";"pending";$trust_sha;"pending";"pending";"pending";"pending") +
+      binding_ops("test";"/spec/jobTemplate/metadata/annotations";"pending";"pending";"pending";"pending";"pending";"pending";"pending") +
+      binding_ops("test";"/spec/jobTemplate/spec/template/metadata/annotations";"pending";"pending";"pending";"pending";"pending";"pending";"pending") +
       [{"op":"test","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/7/value","value":"1"},{"op":"test","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/8/value","value":"pending"}] +
-      binding_ops("replace";"/metadata/annotations";$sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
-      binding_ops("replace";"/spec/jobTemplate/metadata/annotations";$sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
-      binding_ops("replace";"/spec/jobTemplate/spec/template/metadata/annotations";$sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
+      binding_ops("replace";"/metadata/annotations";$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
+      binding_ops("replace";"/spec/jobTemplate/metadata/annotations";$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
+      binding_ops("replace";"/spec/jobTemplate/spec/template/metadata/annotations";$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
       [{"op":"replace","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/7/value","value":$expiry},{"op":"replace","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/8/value","value":$credential_sha},{"op":"replace","path":"/spec/suspend","value":false}]')"
     kc patch cronjob "$CRONJOB" -n "$NAMESPACE" --type=json -p "$patch" >/dev/null || die "manual verification passed but CronJob CAS enable failed"
     echo "enabled hourly read-only Operation archive evidence verification; retained job/$manual_job_name"
@@ -303,6 +355,8 @@ case "$1" in
     [[ "${REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM:-}" == yes ]] || die "set REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM=yes to verify and rotate the enabled schedule IAM binding"
     "$JQ" -e '.spec.suspend == false' <<<"$cronjob" >/dev/null || die "verifier CronJob must be enabled before IAM refresh"
     old_sha="$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] | select(test("^[a-f0-9]{64}$"))' <<<"$cronjob")" || die "enabled verifier IAM SHA binding is invalid"
+    old_signature_sha="$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] | select(test("^[a-f0-9]{64}$"))' <<<"$cronjob")" || die "enabled verifier IAM signature binding is invalid"
+    old_trust_sha="$iam_trust_public_key_sha"
     old_expiry="$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] | select(test("^[1-9][0-9]*$"))' <<<"$cronjob")" || die "enabled verifier IAM expiry binding is invalid"
     runtime_expiry="$("$JQ" -er '.spec.jobTemplate.spec.template.spec.containers[0].env[] | select(.name == "IAM_SIMULATION_VALID_UNTIL_UNIX") | .value' <<<"$cronjob")" || die "enabled verifier runtime IAM expiry binding is missing"
     [[ "$runtime_expiry" == "$old_expiry" ]] || die "enabled verifier runtime IAM expiry binding drifted"
@@ -311,9 +365,11 @@ case "$1" in
     old_credential_sha="$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] | select(test("^[a-f0-9]{64}$"))' <<<"$cronjob")" || die "enabled verifier credential Secret data binding is invalid"
     runtime_credential_sha="$("$JQ" -er '.spec.jobTemplate.spec.template.spec.containers[0].env[] | select(.name == "CREDENTIAL_SECRET_DATA_SHA256") | .value' <<<"$cronjob")" || die "enabled verifier runtime credential Secret data binding is missing"
     [[ "$runtime_credential_sha" == "$old_credential_sha" ]] || die "enabled verifier runtime credential Secret data binding drifted"
-    "$JQ" -e --arg sha "$old_sha" --arg expiry "$old_expiry" --arg uid "$old_credential_uid" --arg secret_rv "$old_credential_rv" --arg secret_sha "$old_credential_sha" '
+    "$JQ" -e --arg sha "$old_sha" --arg signature_sha "$old_signature_sha" --arg trust_sha "$old_trust_sha" --arg expiry "$old_expiry" --arg uid "$old_credential_uid" --arg secret_rv "$old_credential_rv" --arg secret_sha "$old_credential_sha" '
       def matches($annotations):
         $annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
+        $annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] == $signature_sha and
+        $annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] == $trust_sha and
         $annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
         $annotations["dbaas.kubebrain.io/credential-secret-uid"] == $uid and
         $annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $secret_rv and
@@ -325,17 +381,17 @@ case "$1" in
     [[ -z "$job" || ( "$job" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#job}" -le 63 ) ]] || die "VERIFICATION_JOB_NAME must be a DNS label"
     run_manual_verification "$job" "kubebrain-archive-verifier-iam-"
     rv="$("$JQ" -er '.metadata.resourceVersion | select(test("^[0-9]+$"))' <<<"$cronjob")" || die "verifier CronJob resourceVersion is invalid"
-    patch="$("$JQ" -cn --arg rv "$rv" --arg old_sha "$old_sha" --arg old_expiry "$old_expiry" --arg old_credential_uid "$old_credential_uid" --arg old_credential_rv "$old_credential_rv" --arg old_credential_sha "$old_credential_sha" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
-      def binding_ops($op;$prefix;$sha;$expiry;$uid;$secret_rv;$secret_sha):
-        [{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-sha256"),value:$sha},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-valid-until-unix"),value:$expiry},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-uid"),value:$uid},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-resource-version"),value:$secret_rv},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-data-sha256"),value:$secret_sha}];
+    patch="$("$JQ" -cn --arg rv "$rv" --arg old_sha "$old_sha" --arg old_signature_sha "$old_signature_sha" --arg old_trust_sha "$old_trust_sha" --arg old_expiry "$old_expiry" --arg old_credential_uid "$old_credential_uid" --arg old_credential_rv "$old_credential_rv" --arg old_credential_sha "$old_credential_sha" --arg sha "$iam_evidence_sha" --arg signature_sha "$iam_evidence_signature_sha" --arg trust_sha "$iam_trust_public_key_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
+      def binding_ops($op;$prefix;$sha;$signature_sha;$trust_sha;$expiry;$uid;$secret_rv;$secret_sha):
+        [{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-sha256"),value:$sha},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-signature-sha256"),value:$signature_sha},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-trust-public-key-sha256"),value:$trust_sha},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1iam-simulation-valid-until-unix"),value:$expiry},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-uid"),value:$uid},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-resource-version"),value:$secret_rv},{op:$op,path:($prefix+"/dbaas.kubebrain.io~1credential-secret-data-sha256"),value:$secret_sha}];
       [{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"test","path":"/spec/suspend","value":false}] +
-      binding_ops("test";"/metadata/annotations";$old_sha;$old_expiry;$old_credential_uid;$old_credential_rv;$old_credential_sha) +
-      binding_ops("test";"/spec/jobTemplate/metadata/annotations";$old_sha;$old_expiry;$old_credential_uid;$old_credential_rv;$old_credential_sha) +
-      binding_ops("test";"/spec/jobTemplate/spec/template/metadata/annotations";$old_sha;$old_expiry;$old_credential_uid;$old_credential_rv;$old_credential_sha) +
+      binding_ops("test";"/metadata/annotations";$old_sha;$old_signature_sha;$old_trust_sha;$old_expiry;$old_credential_uid;$old_credential_rv;$old_credential_sha) +
+      binding_ops("test";"/spec/jobTemplate/metadata/annotations";$old_sha;$old_signature_sha;$old_trust_sha;$old_expiry;$old_credential_uid;$old_credential_rv;$old_credential_sha) +
+      binding_ops("test";"/spec/jobTemplate/spec/template/metadata/annotations";$old_sha;$old_signature_sha;$old_trust_sha;$old_expiry;$old_credential_uid;$old_credential_rv;$old_credential_sha) +
       [{"op":"test","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/7/value","value":$old_expiry},{"op":"test","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/8/value","value":$old_credential_sha}] +
-      binding_ops("replace";"/metadata/annotations";$sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
-      binding_ops("replace";"/spec/jobTemplate/metadata/annotations";$sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
-      binding_ops("replace";"/spec/jobTemplate/spec/template/metadata/annotations";$sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
+      binding_ops("replace";"/metadata/annotations";$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
+      binding_ops("replace";"/spec/jobTemplate/metadata/annotations";$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
+      binding_ops("replace";"/spec/jobTemplate/spec/template/metadata/annotations";$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
       [{"op":"replace","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/7/value","value":$expiry},{"op":"replace","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/8/value","value":$credential_sha}]')"
     kc patch cronjob "$CRONJOB" -n "$NAMESPACE" --type=json -p "$patch" >/dev/null || die "manual verification passed but CronJob IAM binding CAS refresh failed"
     echo "refreshed hourly verifier IAM evidence binding; retained job/$manual_job_name"

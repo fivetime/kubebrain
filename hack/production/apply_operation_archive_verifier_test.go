@@ -1,9 +1,15 @@
 package production_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +35,8 @@ func TestOperationArchiveVerifierEnablesOnlyAfterManualSuccess(t *testing.T) {
 	evidenceSHA := sha256.Sum256(mustRead(t, f.evidence))
 	require.Contains(t, string(mustRead(t, f.payloadLog)), fmt.Sprintf(`"dbaas.kubebrain.io/iam-simulation-sha256":"%x"`, evidenceSHA))
 	require.Contains(t, string(mustRead(t, f.payloadLog)), `"dbaas.kubebrain.io/credential-secret-uid":"secret-uid-123"`)
+	require.Contains(t, string(mustRead(t, f.payloadLog)), `"dbaas.kubebrain.io/iam-simulation-signature-sha256":"`)
+	require.Contains(t, string(mustRead(t, f.payloadLog)), `"dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256":"`)
 	require.Contains(t, log, `"path":"/spec/suspend","value":false`)
 	require.Contains(t, log, `iam-simulation-valid-until-unix`)
 	require.Contains(t, log, `credential-secret-resource-version`)
@@ -55,6 +63,62 @@ func TestOperationArchiveVerifierRejectsStaleIAMEvidenceBeforeJob(t *testing.T) 
 	require.Error(t, err)
 	require.Contains(t, string(out), "IAM simulation evidence is invalid, stale")
 	require.NotContains(t, string(mustRead(t, f.log)), "create job")
+}
+
+func TestOperationArchiveVerifierRejectsForgedIAMEvidenceBeforeJob(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	forged := strings.Replace(string(mustRead(t, f.evidence)), "role/verifier", "role/forgedxx", 1)
+	require.NoError(t, os.WriteFile(f.evidence, []byte(forged), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, f.env())
+	require.Error(t, err)
+	require.Contains(t, string(out), "evidence signature is invalid")
+	require.NotContains(t, string(mustRead(t, f.log)), "create -f")
+}
+
+func TestOperationArchiveVerifierRejectsUnsafeEvidenceSignature(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	require.NoError(t, os.WriteFile(f.signature, make([]byte, 63), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, f.env())
+	require.Error(t, err)
+	require.Contains(t, string(out), "exactly 64 bytes")
+	require.NotContains(t, string(mustRead(t, f.log)), "create -f")
+}
+
+func TestOperationArchiveVerifierRejectsUnpinnedIAMTrustRoot(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), "CRON_TRUST_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"))
+	require.Error(t, err)
+	require.Contains(t, string(out), "does not match the pinned SHA-256")
+	require.NotContains(t, string(mustRead(t, f.log)), "create -f")
+}
+
+func TestOperationArchiveVerifierRejectsNonEd25519IAMTrustRoot(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	publicDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.publicKey, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, f.env())
+	require.Error(t, err)
+	require.Contains(t, string(out), "must be Ed25519")
+	require.NotContains(t, string(mustRead(t, f.log)), "create -f")
+}
+
+func TestOperationArchiveVerifierRejectsEvidenceChangedDuringSignatureVerification(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	realOpenSSL, err := exec.LookPath("openssl")
+	require.NoError(t, err)
+	wrapper := filepath.Join(t.TempDir(), "openssl")
+	writeTrafficExecutable(t, wrapper, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_OPENSSL" "$@"
+if [[ " $* " == *" pkeyutl -verify "* ]]; then printf x >>"$IAM_SIMULATION_EVIDENCE"; fi
+`)
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), "OPENSSL="+wrapper, "REAL_OPENSSL="+realOpenSSL))
+	require.Error(t, err)
+	require.Contains(t, string(out), "evidence changed during signature verification")
+	require.NotContains(t, string(mustRead(t, f.log)), "create -f")
 }
 
 func TestOperationArchiveVerifierRejectsIAMScopeAndDecisionDriftBeforeJob(t *testing.T) {
@@ -114,6 +178,8 @@ func TestOperationArchiveVerifierCheckEnabledRejectsScheduledCredentialBindingDr
 		{name: "job template", env: "CRON_JOB_CREDENTIAL_UID=other-uid"},
 		{name: "pod template", env: "CRON_POD_CREDENTIAL_UID=other-uid"},
 		{name: "runtime digest", env: "CRON_RUNTIME_CREDENTIAL_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+		{name: "job signature", env: "CRON_JOB_SIGNATURE_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+		{name: "pod trust", env: "CRON_POD_TRUST_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newArchiveVerifierApplyFixture(t)
@@ -170,6 +236,8 @@ func TestOperationArchiveVerifierRejectsUnexpectedCreatedJobIdentity(t *testing.
 		{name: "evidence expiry", env: "RETURN_JOB_EXPIRY=1"},
 		{name: "missing annotations", env: "RETURN_JOB_ANNOTATIONS=omit"},
 		{name: "credential uid", env: "RETURN_CREDENTIAL_UID=other-uid"},
+		{name: "signature sha", env: "RETURN_SIGNATURE_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+		{name: "trust sha", env: "RETURN_TRUST_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newArchiveVerifierApplyFixture(t)
@@ -196,6 +264,8 @@ func TestOperationArchiveVerifierRejectsCompletedJobDriftBeforePatch(t *testing.
 		{name: "condition", env: "FINAL_JOB_COMPLETE=false"},
 		{name: "missing", env: "FINAL_JOB_MISSING=true"},
 		{name: "credential uid", env: "FINAL_JOB_CREDENTIAL_UID=other-uid"},
+		{name: "signature sha", env: "FINAL_JOB_SIGNATURE_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+		{name: "trust sha", env: "FINAL_JOB_TRUST_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newArchiveVerifierApplyFixture(t)
@@ -232,6 +302,8 @@ func TestOperationArchiveVerifierRejectsExecutionPodDriftBeforePatch(t *testing.
 		{name: "missing", env: "FINAL_POD_COUNT=0"},
 		{name: "multiple", env: "FINAL_POD_COUNT=2"},
 		{name: "credential uid", env: "FINAL_POD_CREDENTIAL_UID=other-uid"},
+		{name: "signature sha", env: "FINAL_POD_SIGNATURE_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+		{name: "trust sha", env: "FINAL_POD_TRUST_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newArchiveVerifierApplyFixture(t)
@@ -282,14 +354,23 @@ func TestOperationArchiveVerifierRejectsEmptyOrNonCanonicalSuccessLog(t *testing
 	}
 }
 
-type archiveVerifierApplyFixture struct{ kubectl, log, payloadLog, jobState, secretCount, state, evidence string }
+type archiveVerifierApplyFixture struct {
+	kubectl, log, payloadLog, jobState, secretCount, state, evidence, signature, publicKey string
+}
 
 func newArchiveVerifierApplyFixture(t *testing.T) archiveVerifierApplyFixture {
 	t.Helper()
 	dir := t.TempDir()
-	f := archiveVerifierApplyFixture{kubectl: filepath.Join(dir, "kubectl"), log: filepath.Join(dir, "calls.log"), payloadLog: filepath.Join(dir, "payloads.log"), jobState: filepath.Join(dir, "job.json"), secretCount: filepath.Join(dir, "secret-count"), state: filepath.Join(dir, "enabled"), evidence: filepath.Join(dir, "iam.json")}
+	f := archiveVerifierApplyFixture{kubectl: filepath.Join(dir, "kubectl"), log: filepath.Join(dir, "calls.log"), payloadLog: filepath.Join(dir, "payloads.log"), jobState: filepath.Join(dir, "job.json"), secretCount: filepath.Join(dir, "secret-count"), state: filepath.Join(dir, "enabled"), evidence: filepath.Join(dir, "iam.json"), signature: filepath.Join(dir, "iam.sig"), publicKey: filepath.Join(dir, "iam-public.pem")}
 	require.NoError(t, os.WriteFile(f.payloadLog, nil, 0o600))
-	require.NoError(t, os.WriteFile(f.evidence, []byte(iamEvidenceJSON(time.Now().Unix())), 0o600))
+	evidence := []byte(iamEvidenceJSON(time.Now().Unix()))
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	publicDER, err := x509.MarshalPKIXPublicKey(publicKey)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.publicKey, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0o600))
+	require.NoError(t, os.WriteFile(f.evidence, evidence, 0o600))
+	require.NoError(t, os.WriteFile(f.signature, ed25519.Sign(privateKey, evidence), 0o600))
 	writeTrafficExecutable(t, f.kubectl, `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$CALL_LOG"
@@ -307,21 +388,26 @@ if [[ "$args" == *" get secret kubebrain-operation-archive-verifier-object-store
 fi
 if [[ "$args" == *" get cronjob kubebrain-operation-archive-verifier "* ]]; then
   suspend=true; binding=pending; expiry=pending; runtime_expiry=1
+  signature_sha=pending; trust_sha="$(sha256sum "$IAM_SIMULATION_TRUSTED_PUBLIC_KEY" | awk '{print $1}')"; template_trust_sha=pending
+  trust_sha="${CRON_TRUST_SHA:-$trust_sha}"
   credential_uid=pending; credential_rv=pending; credential_sha=pending
   image="${LIVE_IMAGE:-registry.example/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   max_batch="${LIVE_MAX_BATCH:-256}"
   if [[ -f "$STATE_FILE" ]]; then
     suspend=false; binding="$(sha256sum "$IAM_SIMULATION_EVIDENCE" | awk '{print $1}')"
+    signature_sha="$(sha256sum "$IAM_SIMULATION_EVIDENCE_SIGNATURE" | awk '{print $1}')"; template_trust_sha="$trust_sha"
     expiry="$(jq -r .valid_until_unix "$IAM_SIMULATION_EVIDENCE")"; runtime_expiry="$expiry"
     credential_uid=secret-uid-123; credential_rv=11; credential_sha="$(printf '%s' '`+verifierSecretDataJSON+`' | sha256sum | awk '{print $1}')"
     [[ "$(<"$STATE_FILE")" != expired ]] || { expiry=1; runtime_expiry=1; }
   fi
   credential_uid="${CRON_CREDENTIAL_UID:-$credential_uid}"; credential_rv="${CRON_CREDENTIAL_RV:-$credential_rv}"; credential_sha="${CRON_CREDENTIAL_SHA:-$credential_sha}"
   runtime_credential_sha="${CRON_RUNTIME_CREDENTIAL_SHA:-$credential_sha}"
-  annotations="$(jq -cn --arg sha "$binding" --arg expiry "$expiry" --arg uid "$credential_uid" --arg rv "$credential_rv" --arg secret_sha "$credential_sha" '{"example.com/managed-by":"fixture","dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry,"dbaas.kubebrain.io/credential-secret-uid":$uid,"dbaas.kubebrain.io/credential-secret-resource-version":$rv,"dbaas.kubebrain.io/credential-secret-data-sha256":$secret_sha}')"
-  job_annotations="$annotations"; pod_annotations="$annotations"
+  annotations="$(jq -cn --arg sha "$binding" --arg signature_sha "$signature_sha" --arg trust_sha "$trust_sha" --arg expiry "$expiry" --arg uid "$credential_uid" --arg rv "$credential_rv" --arg secret_sha "$credential_sha" '{"example.com/managed-by":"fixture","dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-signature-sha256":$signature_sha,"dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256":$trust_sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry,"dbaas.kubebrain.io/credential-secret-uid":$uid,"dbaas.kubebrain.io/credential-secret-resource-version":$rv,"dbaas.kubebrain.io/credential-secret-data-sha256":$secret_sha}')"
+  job_annotations="$(jq -c --arg trust_sha "$template_trust_sha" '.["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"]=$trust_sha' <<<"$annotations")"; pod_annotations="$job_annotations"
   [[ -z "${CRON_JOB_CREDENTIAL_UID:-}" ]] || job_annotations="$(jq -c --arg value "$CRON_JOB_CREDENTIAL_UID" '.["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$job_annotations")"
   [[ -z "${CRON_POD_CREDENTIAL_UID:-}" ]] || pod_annotations="$(jq -c --arg value "$CRON_POD_CREDENTIAL_UID" '.["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$pod_annotations")"
+  [[ -z "${CRON_JOB_SIGNATURE_SHA:-}" ]] || job_annotations="$(jq -c --arg value "$CRON_JOB_SIGNATURE_SHA" '.["dbaas.kubebrain.io/iam-simulation-signature-sha256"]=$value' <<<"$job_annotations")"
+  [[ -z "${CRON_POD_TRUST_SHA:-}" ]] || pod_annotations="$(jq -c --arg value "$CRON_POD_TRUST_SHA" '.["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"]=$value' <<<"$pod_annotations")"
   printf '{"metadata":{"annotations":%s,"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"metadata":{"annotations":%s},"spec":{"backoffLimit":0,"template":{"metadata":{"annotations":%s},"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier","containers":[{"name":"verifier","image":"%s","args":["--max-batch=%s"],"env":[{"name":"S3_ENDPOINT"},{"name":"AWS_REGION"},{"name":"AWS_ACCESS_KEY_ID"},{"name":"AWS_SECRET_ACCESS_KEY"},{"name":"S3_FORCE_PATH_STYLE"},{"name":"OBJECT_STORE_ID"},{"name":"S3_BUCKET"},{"name":"IAM_SIMULATION_VALID_UNTIL_UNIX","value":"%s"},{"name":"CREDENTIAL_SECRET_DATA_SHA256","value":"%s"}]}]}}}}}}\n' "$annotations" "$suspend" "$job_annotations" "$pod_annotations" "$image" "$max_batch" "$runtime_expiry" "$runtime_credential_sha"; exit 0
 fi
 if [[ "$args" == *" get job "* ]]; then
@@ -332,6 +418,8 @@ if [[ "$args" == *" get job "* ]]; then
   if [[ -n "${FINAL_JOB_SHA:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$job")"; fi
   if [[ -n "${FINAL_JOB_EXPIRY:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_EXPIRY" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$job")"; fi
   if [[ -n "${FINAL_JOB_CREDENTIAL_UID:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_CREDENTIAL_UID" '.metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$job")"; fi
+  if [[ -n "${FINAL_JOB_SIGNATURE_SHA:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_SIGNATURE_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"]=$value' <<<"$job")"; fi
+  if [[ -n "${FINAL_JOB_TRUST_SHA:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_TRUST_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"]=$value' <<<"$job")"; fi
   if [[ -n "${FINAL_RUNTIME_EXPIRY:-}" ]]; then job="$(jq -c --arg value "$FINAL_RUNTIME_EXPIRY" '(.spec.template.spec.containers[0].env[] | select(.name=="IAM_SIMULATION_VALID_UNTIL_UNIX") | .value)=$value' <<<"$job")"; fi
   if [[ -n "${FINAL_RUNTIME_CREDENTIAL_SHA:-}" ]]; then job="$(jq -c --arg value "$FINAL_RUNTIME_CREDENTIAL_SHA" '(.spec.template.spec.containers[0].env[] | select(.name=="CREDENTIAL_SECRET_DATA_SHA256") | .value)=$value' <<<"$job")"; fi
   [[ "${FINAL_JOB_COMPLETE:-true}" == true ]] || job="$(jq -c '.status.conditions[0].status="False"' <<<"$job")"
@@ -344,6 +432,8 @@ if [[ "$args" == *" get pods "* ]]; then
   if [[ -n "${FINAL_POD_SHA:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_EXPIRY:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_EXPIRY" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_CREDENTIAL_UID:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_CREDENTIAL_UID" '.metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$pod")"; fi
+  if [[ -n "${FINAL_POD_SIGNATURE_SHA:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_SIGNATURE_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"]=$value' <<<"$pod")"; fi
+  if [[ -n "${FINAL_POD_TRUST_SHA:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_TRUST_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"]=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_RUNTIME_EXPIRY:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_RUNTIME_EXPIRY" '(.spec.containers[0].env[] | select(.name=="IAM_SIMULATION_VALID_UNTIL_UNIX") | .value)=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_RUNTIME_CREDENTIAL_SHA:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_RUNTIME_CREDENTIAL_SHA" '(.spec.containers[0].env[] | select(.name=="CREDENTIAL_SECRET_DATA_SHA256") | .value)=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_PHASE:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_PHASE" '.status.phase=$value' <<<"$pod")"; fi
@@ -369,6 +459,8 @@ if [[ "$args" == *" create -f - -o json "* ]]; then
   if [[ -n "${RETURN_JOB_SHA:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_JOB_SHA" '.["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$annotations")"; fi
   if [[ -n "${RETURN_JOB_EXPIRY:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_JOB_EXPIRY" '.["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$annotations")"; fi
   if [[ -n "${RETURN_CREDENTIAL_UID:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_CREDENTIAL_UID" '.["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$annotations")"; fi
+  if [[ -n "${RETURN_SIGNATURE_SHA:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_SIGNATURE_SHA" '.["dbaas.kubebrain.io/iam-simulation-signature-sha256"]=$value' <<<"$annotations")"; fi
+  if [[ -n "${RETURN_TRUST_SHA:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_TRUST_SHA" '.["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"]=$value' <<<"$annotations")"; fi
   [[ "${RETURN_JOB_ANNOTATIONS:-}" != omit ]] || annotations=null
   created="$(jq -c --arg name "$name" --arg namespace "$namespace" --argjson annotations "$annotations" '.metadata.name=$name | .metadata.namespace=$namespace | .metadata.annotations=$annotations | .metadata.uid="verifier-uid-123" | del(.metadata.generateName)' <<<"$payload")"
   printf '%s\n' "$created" >"$JOB_STATE_FILE"; printf '%s\n' "$created"; exit 0
@@ -379,7 +471,7 @@ exit 1
 }
 
 func (f archiveVerifierApplyFixture) env() []string {
-	return []string{"KUBE_CONTEXT=production", "KUBECTL=" + f.kubectl, "CALL_LOG=" + f.log, "CREATE_PAYLOAD_LOG=" + f.payloadLog, "JOB_STATE_FILE=" + f.jobState, "SECRET_COUNT_FILE=" + f.secretCount, "STATE_FILE=" + f.state, "IAM_SIMULATION_EVIDENCE=" + f.evidence, "ENABLE_OPERATION_ARCHIVE_VERIFIER=yes"}
+	return []string{"KUBE_CONTEXT=production", "KUBECTL=" + f.kubectl, "CALL_LOG=" + f.log, "CREATE_PAYLOAD_LOG=" + f.payloadLog, "JOB_STATE_FILE=" + f.jobState, "SECRET_COUNT_FILE=" + f.secretCount, "STATE_FILE=" + f.state, "IAM_SIMULATION_EVIDENCE=" + f.evidence, "IAM_SIMULATION_EVIDENCE_SIGNATURE=" + f.signature, "IAM_SIMULATION_TRUSTED_PUBLIC_KEY=" + f.publicKey, "ENABLE_OPERATION_ARCHIVE_VERIFIER=yes"}
 }
 
 func iamEvidenceJSON(checked int64) string {

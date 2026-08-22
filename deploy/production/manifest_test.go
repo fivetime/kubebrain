@@ -4624,11 +4624,13 @@ func TestOperationArchiveVerifierIsSuspendedReadOnlyAndFailClosed(t *testing.T) 
 		require.NoError(t, err)
 		require.True(t, found)
 		require.Equal(t, map[string]string{
-			"dbaas.kubebrain.io/iam-simulation-sha256":              "pending",
-			"dbaas.kubebrain.io/iam-simulation-valid-until-unix":    "pending",
-			"dbaas.kubebrain.io/credential-secret-uid":              "pending",
-			"dbaas.kubebrain.io/credential-secret-resource-version": "pending",
-			"dbaas.kubebrain.io/credential-secret-data-sha256":      "pending",
+			"dbaas.kubebrain.io/iam-simulation-sha256":                  "pending",
+			"dbaas.kubebrain.io/iam-simulation-signature-sha256":        "pending",
+			"dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256": "pending",
+			"dbaas.kubebrain.io/iam-simulation-valid-until-unix":        "pending",
+			"dbaas.kubebrain.io/credential-secret-uid":                  "pending",
+			"dbaas.kubebrain.io/credential-secret-resource-version":     "pending",
+			"dbaas.kubebrain.io/credential-secret-data-sha256":          "pending",
 		}, annotations)
 	}
 	backoff, found, err := unstructured.NestedFieldNoCopy(job.Object, "spec", "jobTemplate", "spec", "backoffLimit")
