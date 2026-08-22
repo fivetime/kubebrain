@@ -5858,6 +5858,16 @@ kubectl -n kubebrain-operations scale deployment/kubebrain-operation-archiver --
 kubectl -n kubebrain-operations rollout status deployment/kubebrain-operation-archiver
 ```
 
+archiver Pod 的 readinessProbe 会每 30 秒以 `ACTION=probe` 调用镜像内
+`kubebrain-logical-object`，只执行 S3 `GetBucketVersioning` 和
+`GetObjectLockConfiguration`；两者必须分别精确返回 `Enabled`，否则 Pod 不进入 Ready。
+archiver 专用凭据因此除实际归档所需权限外，还必须允许读取这两项 bucket 配置。probe 输出
+`kubebrain.object-store-bucket-probe.v1` JSON，并绑定 `object_store_id`、bucket、两个 enabled
+布尔值和检查时间；不创建、覆盖、读取或删除任何对象。readiness 只能证明当前凭据、endpoint 与 bucket
+配置可读，不能证明 PutObject、精确 version、远端下载、retention 或 Object Lock 不可变性；发布仍须按下文
+执行受控终态 Operation 归档和删除本地 receipt 后的跨进程恢复演练。统一的安全 enable/check-enabled
+发布门禁尚未交付前，不得把手工 scale/rollout 视为完整生产验收。
+
 每个终态对象固定写入
 `operation-audit/<namespace>/<operation-uid>.json`；保留截止时间固定从
 `status.completedAtUnix` 加 Deployment 的 `--retention-duration` 计算，不随重试时间

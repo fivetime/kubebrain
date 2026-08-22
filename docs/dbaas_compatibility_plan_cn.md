@@ -60189,6 +60189,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ClusterRoleBinding；上线仍须在无参数读取流量的维护窗口执行，留存授权变更、EndpointSlice、Pod event/probe、
   逐 Pod 503/204、UID 和异常恢复证据。
 
+- A5350 为 Operation archiver 增加无对象写入的 Object Lock bucket readiness 基础。objectstore 独立模块新增
+  `ACTION=probe`/`ProbeBucket`，仅调用 `GetBucketVersioning` 与 `GetObjectLockConfiguration`，要求状态分别精确为
+  Enabled，并输出绑定 object-store-id、bucket、两个 enabled 布尔值和检查时间的
+  `kubebrain.object-store-bucket-probe.v1` JSON；非法 scope、versioning suspended/缺失、Object Lock 缺失及任一
+  API 拒绝均 fail closed，且 scope 无效时零 S3 调用。archiver Deployment 新增 30 秒 exec readinessProbe，使用同一
+  容器凭据、15 秒 API deadline，连续失败会从 Ready 摘除但不会因外部依赖故障触发 liveness 重启。objectstore 子模块
+  全测、根模块 archiver/RBAC/镜像静态测试、完整 cmd/pkg、全仓 vet、diff check 与 546 项 production inventory 均
+  通过；四片 122/155/138/131 在代码提交 `fef71f63` 上全部通过
+  （150.826/496.940/276.348/518.043 秒）。本轮没有 S3 或目标 Kubernetes 凭据，未执行真实 probe，也未写测试对象；
+  该只读门禁不证明 Put/version/retention/下载/跨进程幂等链。archiver 仍缺统一 `--check/--enable/--check-enabled`、
+  失败回缩和逐 Pod probe 证据，这是下一增量；真实 Object Lock 归档演练仍是上线必需外部证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
