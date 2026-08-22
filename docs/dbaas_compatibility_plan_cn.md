@@ -59988,6 +59988,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   收敛、远端写入链或告警连续性，也不证明真实 CA/SAN/EKU。生产启用前仍须真实 Prometheus + 独立 TiKV/PD 集群执行双
   信任、旧 CA 撤权、scrape 中断/恢复、告警和长时序查询演练，并隔离 workspace PVC、hook 与 Prometheus credential Secret。
 
+- A5336 关闭核心 Operation `Backup` 仍可由通用 submitter 构造、且 runner 接受宽松 claim/参数路径的入口缺口。原有
+  runner 已实现逻辑导出、artifact 冻结、status 复验、S3 Object Lock exact-version 上传和 receipt 终态校验，但 claim 只
+  绑定 namespace/name/operation/instance/attempt/digest，17 项参数仍允许未知字段和任意 artifact/metrics/receipt 路径。
+  新增 `request-backup.sh`：要求外部 request ID、实例、etcd endpoint/prefix、对象存储身份、retention 和有界导出/验收
+  参数，从请求及备份目标派生 `backup-<20hex>`；三类输出精确由 Operation ID 和 canonical executor workspace 派生。
+  requester 生成不超过 64 KiB 的 canonical immutable Secret，固定 `platform:backup`、同名 Secret/key 和
+  `maxAttempts=5`，只提交未审批 Pending。专用 SA/Role 仅有 Operation/Secret create/get；两条 `failurePolicy=Fail`
+  admission 限定所有 Backup 和匹配 parameter Secret 的创建身份、确定性名称、实例格式及单 payload 形状。runner 现在完整
+  绑定 namespace/type/requester/owner/Secret/key/attempt 1..5，参数 keys 必须精确匹配 17 字段合同；executor 显式固定
+  WORK_DIR，workspace 必须 canonical、existing、non-symlink，artifact/metrics/receipt 必须匹配确定性路径且最终路径不得为
+  symlink。错误 requester、未知字段或输出路径漂移均在 export/status/object upload 前停止。回归覆盖正常未审批 submit、
+  非法 workspace 零 Kubernetes 调用、fail-closed CEL/最小权限 RBAC，以及 claim/schema/path drift 零备份动作。Bash
+  syntax、requester/runner 定向测试、完整 deploy、全仓 vet、diff check 与新增后的 508 项 inventory 均通过；四片
+  113/145/127/123 在代码提交 `6034a7ad` 上全部通过（149.214/472.792/277.603/501.127 秒）。该入口证明提交后的备份
+  身份、对象目标、retention 参数和输出位置不可漂移，不把 DBaaS 逻辑 artifact 冒充 etcd 原生 snapshot；它仍不证明真实
+  S3 provider 的 versioning/Object Lock、跨区故障、并发 writer 隔离或独立 TiKV/PD 大规模导出行为。生产启用前须在真实
+  versioned bucket 与独立 TiKV/PD 预生产集群演练 retention 拒绝、exact-version 恢复、worker 崩溃接管和长时间导出，并
+  保持 workspace PVC/UID 与对象存储 credential 单 writer 隔离。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
