@@ -5464,7 +5464,8 @@ unknown field 或 trailing JSON 的请求体；提交 body 的 `name` 和
 或 GET body 的请求会在认证和存储访问前返回 400。畸形提交或查询不能消耗 OIDC/JWKS
 或 Operation API；畸形 Bearer header 也必须在本地拒绝，即使
 JWKS cache 已过期也不能触发 JWKS refresh。
-参数 Secret 只能引用受信控制面预置的 `params-l<tenant字节长度>-<tenant>-*` 对象
+每次提交都必须引用参数 Secret；该 Secret 只能是受信控制面预置的
+`params-l<tenant字节长度>-<tenant>-*` 对象
 （例如 `tenant-a` 使用 `params-l8-tenant-a-*`），且 key 固定为 `parameters.json`；
 API ServiceAccount 不具备 Secret 读取或写入权限。
 JWKS 默认缓存 5 分钟；并发 cache miss 合并为单次刷新，unknown `kid` 或刷新失败后
@@ -5505,14 +5506,23 @@ ServiceAccount 的 in-cluster 配置；仅在非集群本地执行且 in-cluster
 标准 kubeconfig 规则。启用示例：
 
 ```shell
+hack/production/apply-operation-api.sh --verify
+KUBE_CONTEXT=production hack/production/apply-operation-api.sh --apply
 kubectl -n kubebrain-operations create secret generic kubebrain-operation-api-oidc \
   --from-literal=issuer=https://idp.example.com \
   --from-literal=audience=kubebrain-operation-api
 kubectl -n kubebrain-operations create secret tls kubebrain-operation-api-tls \
   --cert=/path/to/tls.crt --key=/path/to/tls.key
-kubectl apply -f deploy/production/kubebrain-operation-api.yaml
-kubectl -n kubebrain-operations scale deployment/kubebrain-operation-api --replicas=2
+kubectl -n kubebrain-operations scale deployment/kubebrain-operation-api --replicas=3
 ```
+
+不能用直接 apply API 清单替代上述入口。16 类专用 requester policy 仍对除 API ServiceAccount 外的所有同类型
+创建做身份封闭；仅 API 身份委托给独立的 `kubebrain-operation-api-submit` policy。该 policy 要求主 queue、
+`operationID == metadata.name`、tenant/requestedBy、租户长度编码的参数 Secret 前缀和固定 key。安装器先完整运行
+requester `--check`，确认 34 对策略和 17 个身份均就绪，再单独 apply API policy 并等待 CEL type checking/精确
+Deny binding；之后才 apply API Role/Deployment。授权后还会证明 API 仅有 Operation create/get、对 Secret 零权限，
+并以 server dry-run 验证合法提交可通过而缺参数 Secret、跨租户 Secret 和 operation ID 漂移均被拒绝；最后要求
+Deployment 仍为零副本。`--check` 可用于后续漂移复核。只有该门禁通过后才能注入 OIDC/TLS Secret 并扩容。
 
 `hack/production/run-backup-operation.sh` 接入受保护 Backup。参数文件固定 endpoint、
 prefix、operation 专属 artifact/receipt 路径、分页大小、Object Store ID、bucket/object

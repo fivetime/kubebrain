@@ -60074,6 +60074,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （153.471/482.193/278.289/502.182 秒）。本轮未持有目标集群凭据，尚未执行真实 apply；上线仍须在受支持 Kubernetes
   版本的隔离/目标环境执行基础安装、A5339 `--check`、凭据注入和逐组件扩容演练。
 
+- A5341 修复外部 Operation API 与专用 requester Admission 互斥的入口缺口。A5336-A5339 将 16 种现有 Operation
+  全部改为类型级专用身份封闭后，API ServiceAccount 会被每一种 policy 拒绝；若为恢复 API 而放宽类型匹配，又会重新
+  允许普通 submitter 绕过。现 16 条 Operation scope 只对 API 的精确 ServiceAccount 身份做委托，其他身份仍进入原
+  专用完整合同；新增独立 fail-closed `kubebrain-operation-api-submit` policy，绑定主 queue、operationID/name、tenant、
+  requestedBy 和 `params-l<tenant长度>-<tenant>-*`/`parameters.json` 引用。API handler 同时在认证或 Kubernetes 调用前
+  拒绝 operation ID 漂移，并不再接受无参数 Secret 的、无法被现有 executor 执行的 Operation；API Role 仍对 Secret
+  零权限，参数必须由受信控制面预置。`apply-operation-api.sh --verify/--apply/--check` 强制先通过 A5339 的 34-policy/
+  17-identity live check，再安装并确认 API CEL/精确 Deny binding，最后才授予 create/get；server dry-run 覆盖合法委托、
+  缺 Secret、跨租户 Secret 和 ID 漂移，且要求 Deployment 保持零副本，凭据与扩容仍是显式后续步骤。回归覆盖入口
+  顺序、requester check 失败零 kubectl、API HTTP 本地拒绝、16 份委托唯一性、Admission/RBAC/Deployment 形状；完整
+  package/deploy、全仓 vet、diff check 与新增后的 528 项 inventory 均通过。四片 119/150/132/127 在代码提交
+  `ff53c8ab` 上全部通过（152.288/487.573/279.477/507.544 秒）。自动化 installer 测试使用 fake kubectl，本轮没有
+  目标集群凭据；受支持 Kubernetes 版本上的 CEL 编译、server dry-run、OIDC/TLS 注入、双副本 rollout 和真实 OIDC
+  submit/get 仍须按上述入口留存证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
