@@ -47,6 +47,13 @@ esac
 set -euo pipefail
 printf 'kubebrain-0\tuid-0\t0\ttrue\nkubebrain-1\tuid-1\t0\ttrue\nkubebrain-2\tuid-2\t0\ttrue\n'
 `)
+	fakeLn := filepath.Join(dir, "ln-race")
+	writeExecutable(t, fakeLn, `#!/usr/bin/env bash
+set -euo pipefail
+destination="${!#}"
+printf 'winner\n' >"$destination"
+ln "$@"
+`)
 	stateDir := filepath.Join(dir, "state")
 	receipt := filepath.Join(dir, "receipt.json")
 	common := []string{
@@ -105,6 +112,28 @@ printf 'kubebrain-0\tuid-0\t0\ttrue\nkubebrain-1\tuid-1\t0\ttrue\nkubebrain-2\tu
 	require.Contains(t, string(out), "receipt verification passed")
 	require.Equal(t, []byte("changed\n"), mustRead(t, receipt))
 	require.NoError(t, os.WriteFile(receipt, data, 0o600))
+
+	stateRaceDir := filepath.Join(dir, "state-race")
+	stateRace := filepath.Join(stateRaceDir, "rotation-state-race.info.state")
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
+		"ACTION=begin", "ROTATION_ID=rotation-state-race", "STATE_DIR="+stateRaceDir,
+		"FAKE_PRESENTED_CERT="+filepath.Join(dir, "old-cert"), "LN="+fakeLn))
+	require.Error(t, err)
+	require.Contains(t, string(out), "refusing to overwrite")
+	require.Equal(t, []byte("winner\n"), mustRead(t, stateRace))
+
+	receiptRaceDir := filepath.Join(dir, "receipt-race")
+	receiptRace := filepath.Join(dir, "receipt-race.json")
+	receiptRaceCommon := append([]string{}, common...)
+	receiptRaceCommon = append(receiptRaceCommon, "ROTATION_ID=rotation-receipt-race", "STATE_DIR="+receiptRaceDir, "RECEIPT_OUTPUT="+receiptRace)
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(receiptRaceCommon,
+		"ACTION=begin", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "old-cert")))
+	require.NoError(t, err, string(out))
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(receiptRaceCommon,
+		"ACTION=complete", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "new-cert"), "LN="+fakeLn))
+	require.Error(t, err)
+	require.Contains(t, string(out), "refusing to overwrite")
+	require.Equal(t, []byte("winner\n"), mustRead(t, receiptRace))
 
 	rejectionCommon := append([]string{}, common...)
 	rejectionCommon = append(rejectionCommon,

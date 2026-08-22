@@ -22,6 +22,7 @@ EXPECTED_REPLICAS="${EXPECTED_REPLICAS:-3}"
 KUBECTL="${KUBECTL:-kubectl}"
 OPENSSL="${OPENSSL:-openssl}"
 JQ="${JQ:-jq}"
+LN="${LN:-ln}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 MAX_CREDENTIAL_BYTES=1048576
@@ -34,6 +35,7 @@ for variable in ACTION ROTATION_ID INSTANCE STATE_DIR INFO_ENDPOINT INFO_SERVER_
     exit 2
   fi
 done
+command -v "$LN" >/dev/null || { echo "ln is required" >&2; exit 2; }
 [[ "$ACTION" == begin || "$ACTION" == complete || "$ACTION" == verify ]] || { echo "ACTION must be begin, complete, or verify" >&2; exit 2; }
 [[ "$ROTATION_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "ROTATION_ID is invalid" >&2; exit 2; }
 [[ "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "INSTANCE is invalid" >&2; exit 2; }
@@ -98,6 +100,15 @@ freeze_file() {
   [[ "$before" =~ ^[a-f0-9]{64}$ && "$after" == "$before" && "$(sha256sum "$destination" | cut -d ' ' -f1)" == "$before" ]] || return 1
   printf '%s\n' "$destination"
 }
+publish_no_replace() {
+  local source="$1" destination="$2" label="$3"
+  if ! "$LN" -- "$source" "$destination"; then
+    rm -f -- "$source"
+    echo "${label} already exists; refusing to overwrite" >&2
+    return 1
+  fi
+  rm -f -- "$source"
+}
 
 OLD_INFO_CACERT="$(freeze_file "$OLD_INFO_CACERT" old-ca)" || { echo "OLD_INFO_CACERT changed while being captured" >&2; exit 1; }
 OLD_INFO_CERT="$(freeze_file "$OLD_INFO_CERT" old-cert)" || { echo "OLD_INFO_CERT changed while being captured" >&2; exit 1; }
@@ -157,7 +168,7 @@ case "$ACTION" in
     printf 'kubebrain.info-certificate-rotation.state.v1\t%s\t%s\t%s\t%s\t%s\n%s\n' \
       "$INSTANCE" "$ROTATION_ID" "$INFO_ENDPOINT" "$old_fingerprint" "$new_fingerprint" "$snapshot" >"$tmp"
     chmod 600 "$tmp"
-    mv -f "$tmp" "$state_file"
+    publish_no_replace "$tmp" "$state_file" "info rotation state" || exit 1
     echo "info certificate rotation begin gate passed: instance=${INSTANCE} rotation=${ROTATION_ID}"
     ;;
   complete|verify)
@@ -198,7 +209,7 @@ case "$ACTION" in
           pods_unchanged:true,old_ca_rejection_required:$rejectionRequired,old_ca_rejected:$oldCARejected,
           completed_at_unix:$completed}' >"$tmp"
       chmod 600 "$tmp"
-      mv -f "$tmp" "$receipt_file"
+      publish_no_replace "$tmp" "$receipt_file" "info rotation receipt" || exit 1
       echo "info certificate rotation completion gate passed: instance=${INSTANCE} rotation=${ROTATION_ID} receipt=${receipt_file}"
     else
       "$JQ" -e --arg instance "$INSTANCE" --arg rotation "$ROTATION_ID" --arg endpoint "$INFO_ENDPOINT" \

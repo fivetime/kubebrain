@@ -25,6 +25,7 @@ MAX_PROMETHEUS_CA_BYTES=1048576
 MAX_PROMETHEUS_TOKEN_BYTES=16384
 CURL="${CURL:-curl}"
 JQ="${JQ:-jq}"
+LN="${LN:-ln}"
 
 die() { echo "$*" >&2; exit 1; }
 [[ -f "$TLS_RECEIPT_INPUT" && -r "$TLS_RECEIPT_INPUT" ]] || die "TLS_RECEIPT_INPUT must be a readable regular file"
@@ -56,6 +57,7 @@ operation_is_positive_int64 "$MAX_SAMPLE_AGE_SECONDS" && (( MAX_SAMPLE_AGE_SECON
 command -v "$CURL" >/dev/null || die "curl is required"
 command -v "$JQ" >/dev/null || die "jq is required"
 command -v sha256sum >/dev/null || die "sha256sum is required"
+command -v "$LN" >/dev/null || die "ln is required"
 
 umask 077
 capture="$(mktemp -d)"
@@ -70,6 +72,14 @@ freeze_input() {
   [[ "$before" =~ ^[a-f0-9]{64}$ && "$after" == "$before" && "$(sha256sum "$destination" | cut -d ' ' -f1)" == "$before" ]] ||
     die "${name} changed during capture"
   printf '%s\n' "$destination"
+}
+publish_no_replace() {
+  local source="$1" destination="$2"
+  if ! "$LN" -- "$source" "$destination"; then
+    rm -f -- "$source"
+    die "scrape recovery receipt already exists; refusing to overwrite"
+  fi
+  rm -f -- "$source"
 }
 TLS_RECEIPT_INPUT="$(freeze_input "$TLS_RECEIPT_INPUT" tls-receipt.json)"
 PROMETHEUS_CA_FILE="$(freeze_input "$PROMETHEUS_CA_FILE" prometheus-ca)"
@@ -150,7 +160,7 @@ while true; do
              oldest_sample_unix:$oldest,all_targets_up:true,
              targets:($response[0].data.result | sort_by(.metric.pod) | map({pod:.metric.pod,instance:.metric.instance,sample_unix:.value[0]}))}' >"$tmp"
           chmod 600 "$tmp"
-          mv -f "$tmp" "$SCRAPE_RECEIPT_OUTPUT"
+          publish_no_replace "$tmp" "$SCRAPE_RECEIPT_OUTPUT"
           echo "info scrape recovery gate passed: instance=${instance} rotation=${rotation_id} replicas=${EXPECTED_REPLICAS} receipt=${SCRAPE_RECEIPT_OUTPUT}"
         else
           "$JQ" -e --arg instance "$instance" --arg rotation "$rotation_id" --arg endpoint "$info_endpoint" \

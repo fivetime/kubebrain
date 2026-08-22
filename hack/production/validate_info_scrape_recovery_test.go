@@ -170,6 +170,21 @@ func TestValidateInfoScrapeRecoveryFreezesVerifyReceiptBeforeQuery(t *testing.T)
 	require.Equal(t, []byte("changed\n"), mustRead(t, f.output))
 }
 
+func TestValidateInfoScrapeRecoveryDoesNotOverwriteConcurrentReceipt(t *testing.T) {
+	f := newInfoScrapeFixture(t)
+	fakeLn := filepath.Join(f.dir, "ln-race")
+	writeExecutable(t, fakeLn, `#!/usr/bin/env bash
+set -euo pipefail
+destination="${!#}"
+printf 'winner\n' >"$destination"
+ln "$@"
+`)
+	out, err := runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", append(f.env, "LN="+fakeLn))
+	require.Error(t, err)
+	require.Contains(t, string(out), "refusing to overwrite")
+	require.Equal(t, []byte("winner\n"), mustRead(t, f.output))
+}
+
 type infoScrapeFixture struct {
 	dir, tlsReceipt, output, calls, ca string
 	env                                []string
