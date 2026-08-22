@@ -16,6 +16,9 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 摘要和不变 Pod UID/restartCount 证明热加载；只观察 Secret resourceVersion 或 Prometheus 恢复抓取不构成证据。
 生产自动化应提交 `InfoCertificateRotation` Operation，由专用 executor 持续 heartbeat、调用幂等 Secret
 发布 hook，并把严格复验的 receipt SHA-256 归档；接管已有 receipt 时必须运行只读在线 `verify`，不能仅凭文件存在成功。
+TLS receipt 后继续运行 `hack/production/validate-info-scrape-recovery.sh`：它要求完整 `up` target 集合的样本
+同时晚于 rotation completion 且仍在 freshness 窗口，并生成绑定 TLS receipt 摘要的独立 scrape receipt。
+旧 `up=1` 样本、target 数量正确但 Pod/instance 重复，或仅 endpoint curl 成功都不构成恢复证明。
 
 ## 关键 SLI
 

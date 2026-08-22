@@ -1675,6 +1675,31 @@ begin 通过真实 TLS handshake 与 `INFO_SERVER_NAME`/CA 验证，要求 endpo
 撤权（若声明）、Pod 快照及 receipt 全字段校验，但绝不覆盖 receipt。生产自动化使用下文
 `InfoCertificateRotation` Operation，不能只保存直接 gate 的 stdout。
 
+TLS receipt 生成后，还必须证明 Prometheus 已用新 server trust 恢复抓取，不能只观察 ServiceMonitor
+resourceVersion 或一次手工 curl：
+
+```shell
+TLS_RECEIPT_INPUT=/var/lib/kubebrain-operations/instance-a-info-20260822.json \
+SCRAPE_RECEIPT_OUTPUT=/var/lib/kubebrain-operations/instance-a-info-20260822-scrape.json \
+PROMETHEUS_URL=https://prometheus.monitoring.svc:9090 \
+PROMETHEUS_CA_FILE=/run/prometheus/ca.crt \
+PROMETHEUS_BEARER_TOKEN_FILE=/run/prometheus/token \
+KUBEBRAIN_NAMESPACE=kubebrain-system \
+KUBEBRAIN_SERVICE=kubebrain-peer \
+EXPECTED_REPLICAS=3 \
+  hack/production/validate-info-scrape-recovery.sh
+```
+
+该门禁只接受 HTTPS Prometheus API，使用显式 CA 和可选 header-safe Bearer token，轮询精确
+`up{namespace="...",service="..."}` instant vector。结果必须恰有期望副本数，所有值为 1，Pod 与 instance
+分别唯一，label 与请求 scope 完全一致；每个样本时间戳既不得早于 TLS receipt 的
+`completed_at_unix`，也必须位于默认 60 秒 freshness 窗口内且不超过有限 clock skew。这样切换前旧样本、
+重复 target、部分恢复和未来时间戳都不能放行。Prometheus 响应限制为 1 MiB，单次查询、总恢复窗口、轮询
+间隔和 clock skew 都有整数上界。成功后不可覆盖地发布 0600
+`kubebrain.info-scrape-recovery.receipt.v1`，绑定 TLS receipt SHA-256、新 leaf 摘要、查询 scope、每个
+target 的 Pod/instance/sample timestamp 与最老样本时间。该独立 receipt 尚未绑定进
+`InfoCertificateRotation` Operation 的最终 receipt digest；启用自动归档前必须补齐该最后编排步骤。
+
 ## 实例销毁状态机
 
 生产清单中的 KubeBrain 与 TidbCluster 都固定携带 `app.kubernetes.io/instance`

@@ -59564,6 +59564,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   scrape 恢复与 CA cutover 的预生产演练；清单保持 executor 零副本，平台提供受审计 publish hook、RWX
   workspace、immutable 参数 Secret 和审批后才能启用。
 
+- A5305 补齐 info TLS 切换后的 Prometheus scrape recovery 直接证据。新增 gate 解析并严格绑定
+  `kubebrain.info-certificate-rotation.receipt.v1`，通过 HTTPS+显式 CA/可选 Bearer token 轮询精确
+  namespace/service 的 `up` instant vector；要求 series 数等于 replicas、全部值为 1、Pod/instance 分别
+  唯一，且每个 sample timestamp 同时不早于 rotation completion、位于默认 60 秒 freshness 窗口并未越过
+  有限 clock skew。成功原子发布不可覆盖的 0600 `kubebrain.info-scrape-recovery.receipt.v1`，绑定 TLS
+  receipt SHA-256、新 leaf、query scope、target identities 和 sample times。响应限制 1 MiB，token 16 KiB，
+  query/总等待/轮询/clock-skew 数值均 fail closed；回归覆盖先旧后新恢复、旧样本、down target、重复 Pod、
+  未来样本和所有配置在首次 query 前拒绝。聚焦双轮 1.666 秒、race 1.913 秒，bash syntax、diff check、
+  全仓 vet 与 459 项 inventory 校验通过；四片 104/129/115/111 在代码提交 `5962f16c` 上全部通过
+  （138.148/466.845/261.677/492.151 秒）。scrape receipt 尚未纳入 `InfoCertificateRotation` worker 的
+  terminal digest/归档，真实 Prometheus CA/token、Secret 投影延迟和现场抓取恢复仍需预生产演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
