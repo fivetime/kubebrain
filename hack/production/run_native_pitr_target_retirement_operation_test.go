@@ -31,6 +31,7 @@ if [ "${RETIRE_REPLACED_UID:-false}" = true ] && echo "$*" | grep -q 'get tidbcl
 `)
 	inspector := writeRetirementExecutable(t, dir, "inspect", `#!/usr/bin/env sh
 printf '%s\n' durable >"$OUTPUT"
+chmod 600 "$OUTPUT"
 `)
 	verifier := writeRetirementExecutable(t, dir, "verify", `#!/usr/bin/env sh
 exit 0
@@ -77,6 +78,10 @@ if [[ "$*" == *"--action claim"* ]]; then printf '%s\n' '{"name":"%s","operation
 if [[ "$*" == *"--action heartbeat"* && -s "${RECONCILE_BLOCK_MARKER:-/nonexistent}" ]]; then exit 1; fi
 `, "%s", name, name, digest))
 	verifier := writeRetirementExecutable(t, dir, "verify", `#!/usr/bin/env sh
+if [ -n "${MUTATE_RECEIPT:-}" ]; then
+  input=""; for arg in "$@"; do case "$arg" in --input=*) input="${arg#*=}";; esac; done
+  printf x >>"$input"
+fi
 if [ -n "${RECONCILE_BLOCK_MARKER:-}" ]; then
   printf started >"$RECONCILE_BLOCK_MARKER"
   trap 'printf terminated >"$RECONCILE_BLOCK_MARKER"; exit 143' TERM
@@ -87,6 +92,29 @@ exit 0
 	output, err := runProductionScriptCommand(t, "run-native-pitr-target-retirement-operation.sh", []string{"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest, "INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl, "RECEIPT_VERIFY=" + verifier, "RETIRE_AUTHORIZE=/bin/false", "UID_DELETE=/bin/false", "RETIRE_INSPECT=/bin/false", "KUBECTL=/bin/false", "RETIRE_LOG=" + log})
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(mustReadProductionFile(t, log)), "reconciled verified durable target retirement receipt")
+
+	receiptPath := filepath.Join(dir, name+".native-pitr-target-retirement.json")
+	require.NoError(t, os.Chmod(receiptPath, 0o640))
+	require.NoError(t, os.WriteFile(log, nil, 0o600))
+	unsafeOutput, unsafeErr := runProductionScriptCommand(t, "run-native-pitr-target-retirement-operation.sh", []string{
+		"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
+		"INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl,
+		"RECEIPT_VERIFY=" + verifier, "RETIRE_AUTHORIZE=/bin/false", "UID_DELETE=/bin/false",
+		"RETIRE_INSPECT=/bin/false", "KUBECTL=/bin/false", "RETIRE_LOG=" + log,
+	})
+	require.Error(t, unsafeErr, string(unsafeOutput))
+	require.Contains(t, string(mustReadProductionFile(t, log)), "previous retirement attempt has no valid durable receipt")
+	require.NoError(t, os.Chmod(receiptPath, 0o600))
+	require.NoError(t, os.WriteFile(log, nil, 0o600))
+	changedOutput, changedErr := runProductionScriptCommand(t, "run-native-pitr-target-retirement-operation.sh", []string{
+		"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
+		"INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl,
+		"RECEIPT_VERIFY=" + verifier, "RETIRE_AUTHORIZE=/bin/false", "UID_DELETE=/bin/false",
+		"RETIRE_INSPECT=/bin/false", "KUBECTL=/bin/false", "RETIRE_LOG=" + log, "MUTATE_RECEIPT=true",
+	})
+	require.Error(t, changedErr, string(changedOutput))
+	require.Contains(t, string(mustReadProductionFile(t, log)), "previous retirement attempt has no valid durable receipt")
+	require.NoError(t, os.WriteFile(receiptPath, []byte("durable\n"), 0o600))
 
 	require.NoError(t, os.Remove(log))
 	marker := filepath.Join(dir, "blocked-reconciliation")

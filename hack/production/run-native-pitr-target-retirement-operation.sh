@@ -11,6 +11,7 @@ UID_DELETE="${UID_DELETE:-kubebrain-uid-delete}"; RETIRE_INSPECT="${RETIRE_INSPE
 RECEIPT_VERIFY="${RECEIPT_VERIFY:-kubebrain-native-pitr-target-retirement-receipt}"; KUBECTL="${KUBECTL:-kubectl}"; JQ="${JQ:-jq}"; KUBE_CONTEXT="${KUBE_CONTEXT:-in-cluster}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-300}"; WAIT_INTERVAL_SECONDS="${WAIT_INTERVAL_SECONDS:-2}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
+MAX_RETIREMENT_RECEIPT_BYTES=8388608
 die(){ echo "$*" >&2; exit 1; }; sha(){ sha256sum "$1"|cut -d ' ' -f1; }; runctl(){ "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
 operation_is_positive_int64 "$LEASE_SECONDS" && (( LEASE_SECONDS >= 6 )) || die "LEASE_SECONDS must be a positive int64 of at least 6"
@@ -20,6 +21,7 @@ operation_is_positive_int64 "$WAIT_TIMEOUT_SECONDS" && (( WAIT_TIMEOUT_SECONDS <
   operation_is_positive_int64 "$WAIT_INTERVAL_SECONDS" && (( WAIT_INTERVAL_SECONDS <= WAIT_TIMEOUT_SECONDS )) ||
   die "wait bounds must be positive int64 seconds with interval <= timeout <= 86400"
 command -v stat >/dev/null || die "stat is required"
+command -v id >/dev/null || die "id is required"
 claim="$(runctl --action claim --owner "$WORKER_ID" --type NativePITRTargetRetirement --lease "${LEASE_SECONDS}s")"
 name="$($JQ -er .name <<<"$claim")"; operation_id="$($JQ -er .operation_id <<<"$claim")"; instance="$($JQ -er .instance <<<"$claim")"; type="$($JQ -er .type <<<"$claim")"; requester="$($JQ -er .requested_by <<<"$claim")"; attempt="$($JQ -er .attempt <<<"$claim")"; expected_sha="$($JQ -er .parameters_sha256 <<<"$claim")"
 [[ "$name" == "$operation_id" && "$instance" == kubebrain && "$type" == NativePITRTargetRetirement && "$requester" == platform:native-pitr-target-retirement && "$attempt" =~ ^[12]$ && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "claimed target retirement operation identity is invalid"
@@ -42,11 +44,29 @@ $JQ -e --arg root "$INPUT_ROOT" '
   ([.failed_operation_audit_sha256,.failed_operation_parameters_sha256,.old_plan_sha256,.old_restore_admission_sha256,.old_target_provisioning_sha256,.old_target_snapshot_empty_sha256]|all(.[];type=="string" and test("^[a-f0-9]{64}$")))' "$params" >/dev/null || die "target retirement parameter schema is invalid"
 for key in failed_operation_audit failed_operation_parameters old_plan old_restore_admission old_target_provisioning old_target_snapshot_empty; do path="$($JQ -r ".$key" "$params")"; [[ -f "$path" && "$(sha "$path")" == "$($JQ -r ".${key}_sha256" "$params")" ]] || die "$key digest mismatch"; done
 receipt="$WORK_DIR/${name}.native-pitr-target-retirement.json"
-verify_receipt(){ "$RECEIPT_VERIFY" --verify-only --input="$receipt" --old-target-provisioning="$($JQ -r .old_target_provisioning "$params")" --old-target-snapshot-empty="$($JQ -r .old_target_snapshot_empty "$params")" --old-restore-admission="$($JQ -r .old_restore_admission "$params")"; }
+verify_receipt(){
+  local size attributes
+  [[ -f "$receipt" && ! -L "$receipt" ]] || return 1
+  size="$(stat -Lc '%s' -- "$receipt")" || return 1
+  attributes="$(stat -Lc '%a:%u:%h' -- "$receipt")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -gt 0 && "$size" -le "$MAX_RETIREMENT_RECEIPT_BYTES" ]] || return 1
+  [[ "$attributes" == "600:$(id -u):1" ]] || return 1
+  "$RECEIPT_VERIFY" --verify-only --input="$receipt" --old-target-provisioning="$($JQ -r .old_target_provisioning "$params")" --old-target-snapshot-empty="$($JQ -r .old_target_snapshot_empty "$params")" --old-restore-admission="$($JQ -r .old_restore_admission "$params")"
+}
+capture_validated_receipt_digest(){
+  local first second
+  verify_receipt || return 1
+  first="$(sha "$receipt")" || return 1
+  verify_receipt || return 1
+  second="$(sha "$receipt")" || return 1
+  [[ "$first" == "$second" ]] || return 1
+  printf '%s\n' "$first" >"$capture/receipt.sha"
+  chmod 600 "$capture/receipt.sha"
+}
 heartbeat(){ runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; }
 run_retirement() {
 if [[ "$attempt" == 2 ]]; then
-  [[ -s "$receipt" ]] && verify_receipt
+  capture_validated_receipt_digest
   return
 fi
 authorization="$capture/authorization.json"
@@ -66,7 +86,7 @@ while :; do
 done
 heartbeat
 KUBE_CONTEXT="$KUBE_CONTEXT" KUBECTL="$KUBECTL" OLD_PROVISIONING="$($JQ -r .old_target_provisioning "$params")" OLD_TARGET="$($JQ -r .old_target_snapshot_empty "$params")" OLD_ADMISSION="$($JQ -r .old_restore_admission "$params")" OUTPUT="$receipt" "$RETIRE_INSPECT"
-verify_receipt || die "published target retirement receipt failed verification"
+capture_validated_receipt_digest || die "published target retirement receipt failed verification"
 }
 heartbeat || die "target retirement ownership was fenced"
 set -m
@@ -90,11 +110,13 @@ set -e
 heartbeat || die "target retirement ownership was fenced"
 if [[ "$attempt" == 2 ]]; then
   if [[ "$retirement_rc" -eq 0 ]]; then
-    runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$(sha "$receipt")" --message "reconciled verified durable target retirement receipt" >/dev/null
+    receipt_sha="$(<"$capture/receipt.sha")"; [[ "$receipt_sha" =~ ^[a-f0-9]{64}$ ]] || die "validated target retirement receipt digest is invalid"
+    runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "reconciled verified durable target retirement receipt" >/dev/null
     exit 0
   fi
   runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "previous retirement attempt has no valid durable receipt; inspect old target state manually" >/dev/null
   exit 1
 fi
 [[ "$retirement_rc" -eq 0 ]] || exit "$retirement_rc"
-runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$(sha "$receipt")" --message "retired exact failed native PITR target" >/dev/null
+receipt_sha="$(<"$capture/receipt.sha")"; [[ "$receipt_sha" =~ ^[a-f0-9]{64}$ ]] || die "validated target retirement receipt digest is invalid"
+runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "retired exact failed native PITR target" >/dev/null

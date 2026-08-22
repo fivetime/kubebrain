@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -139,7 +140,10 @@ chmod 600 "$output"
 		"FAIL_HEARTBEAT=true", "FENCED_DESCENDANT_MARKER="+descendantMarker))
 	require.Error(t, fencedErr)
 	require.Contains(t, string(fencedOutput), "native PITR worker was fenced")
-	require.Equal(t, "terminated", string(mustReadProductionFile(t, descendantMarker)))
+	require.Eventually(t, func() bool {
+		body, readErr := os.ReadFile(descendantMarker)
+		return readErr == nil && string(body) == "terminated"
+	}, 2*time.Second, 20*time.Millisecond, "fenced descendant did not finish handling TERM")
 	fencedOperations, err := os.ReadFile(operationLog)
 	require.NoError(t, err)
 	require.NotContains(t, string(fencedOperations), "--action succeed")
