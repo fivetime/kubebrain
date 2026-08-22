@@ -49,16 +49,38 @@ check_rbac() {
 }
 
 check_secret() {
-  local secret
+  local secret identity canonical
   secret="$(kc get secret "$SECRET" -n "$NAMESPACE" -o json)" || die "cannot read verifier object-store Secret"
-  "$JQ" -e '
+  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$SECRET" '
+    .metadata.namespace == $namespace and .metadata.name == $name and .immutable == true and
     (.data | keys | sort) == ["access-key-id","bucket","endpoint","force-path-style","object-store-id","region","secret-access-key"] and
     ([.data[] | @base64d] | all(. != "" and (test("[[:space:][:cntrl:]]") | not))) and
     (.data.endpoint | @base64d | test("^https://")) and
     ((.data["force-path-style"] | @base64d) == "true" or (.data["force-path-style"] | @base64d) == "false")
   ' <<<"$secret" >/dev/null || die "verifier object-store Secret is incomplete or unsafe"
+  identity="$("$JQ" -er '
+    select(.metadata.uid | type == "string" and test("^[^[:space:][:cntrl:]]{1,128}$")) |
+    select(.metadata.resourceVersion | type == "string" and test("^[^[:space:][:cntrl:]]{1,128}$")) |
+    [.metadata.uid,.metadata.resourceVersion] | @tsv
+  ' <<<"$secret")" || die "verifier object-store Secret identity is invalid"
+  IFS=$'\t' read -r credential_secret_uid credential_secret_resource_version <<<"$identity"
+  canonical="$("$JQ" -cS '.data' <<<"$secret")" || die "cannot canonicalize verifier object-store Secret data"
+  credential_secret_data_sha="$(printf '%s' "$canonical" | sha256sum | awk '{print $1}')"
+  [[ "$credential_secret_data_sha" =~ ^[a-f0-9]{64}$ ]] || die "cannot digest verifier object-store Secret data"
   expected_store="$("$JQ" -er '.data["object-store-id"] | @base64d' <<<"$secret")"
   expected_bucket="$("$JQ" -er '.data.bucket | @base64d' <<<"$secret")"
+}
+
+verify_secret_unchanged() {
+  local secret canonical digest
+  secret="$(kc get secret "$SECRET" -n "$NAMESPACE" -o json)" || die "cannot re-read verifier object-store Secret"
+  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$SECRET" --arg uid "$credential_secret_uid" --arg rv "$credential_secret_resource_version" '
+    .metadata.namespace == $namespace and .metadata.name == $name and .metadata.uid == $uid and
+    .metadata.resourceVersion == $rv and .immutable == true
+  ' <<<"$secret" >/dev/null || die "verifier object-store Secret identity or immutability drifted"
+  canonical="$("$JQ" -cS '.data' <<<"$secret")" || die "cannot canonicalize re-read verifier object-store Secret data"
+  digest="$(printf '%s' "$canonical" | sha256sum | awk '{print $1}')"
+  [[ "$digest" == "$credential_secret_data_sha" ]] || die "verifier object-store Secret data drifted"
 }
 
 check_iam_evidence() {
@@ -69,10 +91,11 @@ check_iam_evidence() {
   [[ "$evidence_uid" == "$(id -u)" && "$evidence_mode" == 600 && "$evidence_links" == 1 && "$evidence_size" =~ ^[0-9]+$ && "$evidence_size" -ge 1 && "$evidence_size" -le 99999 ]] || die "IAM simulation evidence must be current-user mode 0600, single-link, and 1..99999 bytes"
   now="$(date +%s)"
   expected_actions='[{"action":"s3:DeleteObject","decision":"denied","resource":"object"},{"action":"s3:GetBucketVersioning","decision":"allowed","resource":"bucket"},{"action":"s3:GetObject","decision":"allowed","resource":"object"},{"action":"s3:GetObjectLockConfiguration","decision":"allowed","resource":"bucket"},{"action":"s3:GetObjectRetention","decision":"allowed","resource":"object"},{"action":"s3:ListBucket","decision":"denied","resource":"bucket"},{"action":"s3:ListBucketVersions","decision":"denied","resource":"bucket"},{"action":"s3:PutObject","decision":"denied","resource":"object"}]'
-  "$JQ" -e --arg store "$expected_store" --arg bucket "$expected_bucket" --argjson now "$now" --argjson decisions "$expected_actions" '. as $root |
-    (keys | sort) == ["bucket","checked_at_unix","decisions","format","object_store_id","principal","provider","valid_until_unix"] and
-    .format == "kubebrain.object-store-iam-simulation.v1" and .provider == "aws-s3" and
+  "$JQ" -e --arg store "$expected_store" --arg bucket "$expected_bucket" --arg credential_uid "$credential_secret_uid" --arg credential_sha "$credential_secret_data_sha" --argjson now "$now" --argjson decisions "$expected_actions" '. as $root |
+    (keys | sort) == ["bucket","checked_at_unix","credential_secret_data_sha256","credential_secret_uid","decisions","format","object_store_id","principal","provider","valid_until_unix"] and
+    .format == "kubebrain.object-store-iam-simulation.v2" and .provider == "aws-s3" and
     .object_store_id == $store and .bucket == $bucket and
+    .credential_secret_uid == $credential_uid and .credential_secret_data_sha256 == $credential_sha and
     (.principal | type == "string" and test("^[^[:space:][:cntrl:]]{1,512}$")) and
     (.checked_at_unix | type == "number" and floor == . and . > 0 and . <= $now + 300 and . >= $now - 3600) and
     (.valid_until_unix | type == "number" and floor == . and . >= $now + 3600 and . <= $root.checked_at_unix + 86400) and
@@ -102,16 +125,20 @@ check_cronjob() {
 
 run_manual_verification() {
   local requested_name="$1" generate_prefix="$2" manual_job created created_identity completed pods expected_container expected_init_containers expected_service_account logs verified_count now
-  manual_job="$("$JQ" -c --arg name "$requested_name" --arg prefix "$generate_prefix" --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '
-    {apiVersion:"batch/v1",kind:"Job",metadata:({namespace:$namespace,annotations:{"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry}} + if $name == "" then {generateName:$prefix} else {name:$name} end),spec:.spec.jobTemplate.spec} |
-    .spec.template.metadata.annotations = {"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry} |
+  verify_secret_unchanged
+  manual_job="$("$JQ" -c --arg name "$requested_name" --arg prefix "$generate_prefix" --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
+    {apiVersion:"batch/v1",kind:"Job",metadata:({namespace:$namespace,annotations:{"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry,"dbaas.kubebrain.io/credential-secret-uid":$credential_uid,"dbaas.kubebrain.io/credential-secret-resource-version":$credential_rv,"dbaas.kubebrain.io/credential-secret-data-sha256":$credential_sha}} + if $name == "" then {generateName:$prefix} else {name:$name} end),spec:.spec.jobTemplate.spec} |
+    .spec.template.metadata.annotations = .metadata.annotations |
     (.spec.template.spec.containers[0].env[] | select(.name == "IAM_SIMULATION_VALID_UNTIL_UNIX") | .value) = $expiry
   ' <<<"$cronjob")" || die "cannot construct expiry-bound manual verifier Job"
   created="$(kc create -f - -o json <<<"$manual_job")" || die "cannot create manual verifier Job"
-  created_identity="$("$JQ" -er --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '
+  created_identity="$("$JQ" -er --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
     select(.metadata.namespace == $namespace and
       .metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
-      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry) |
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
+      .metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == $credential_uid and
+      .metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $credential_rv and
+      .metadata.annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == $credential_sha) |
     select(.metadata.name | type == "string" and test("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and length <= 63) |
     select(.metadata.uid | type == "string" and test("^[^[:space:][:cntrl:]]{1,128}$")) |
     [.metadata.name,.metadata.uid] | @tsv
@@ -129,12 +156,18 @@ run_manual_verification() {
   }
   completed="$(kc get job "$manual_job_name" -n "$NAMESPACE" -o json)" || die "cannot re-read completed manual verifier Job"
   now="$(date +%s)"
-  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --argjson now "$now" '
+  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" --argjson now "$now" '
     .metadata.namespace == $namespace and .metadata.name == $name and .metadata.uid == $uid and
     .metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
     .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
+    .metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == $credential_uid and
+    .metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $credential_rv and
+    .metadata.annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == $credential_sha and
     .spec.template.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
     .spec.template.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
+    .spec.template.metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == $credential_uid and
+    .spec.template.metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $credential_rv and
+    .spec.template.metadata.annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == $credential_sha and
     ($expiry | tonumber) > $now and
     ([.spec.template.spec.containers[0].env[] | select(.name == "IAM_SIMULATION_VALID_UNTIL_UNIX") | .value] == [$expiry]) and
     ([.status.conditions[] | select(.type == "Complete" and .status == "True")] | length == 1)
@@ -143,12 +176,15 @@ run_manual_verification() {
   expected_init_containers="$("$JQ" -c '(.spec.template.spec.initContainers // [])' <<<"$completed")" || die "completed manual verifier Job init container contract drifted"
   expected_service_account="$("$JQ" -er '.spec.template.spec.serviceAccountName | select(type == "string" and length > 0)' <<<"$completed")" || die "completed manual verifier Job service account drifted"
   pods="$(kc get pods -n "$NAMESPACE" -l "batch.kubernetes.io/job-name=$manual_job_name" -o json)" || die "cannot read manual verifier Job Pod"
-  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg service_account "$expected_service_account" --arg image "$verifier_image" --arg digest "$verifier_image_digest" --argjson container "$expected_container" --argjson init_containers "$expected_init_containers" '
+  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" --arg service_account "$expected_service_account" --arg image "$verifier_image" --arg digest "$verifier_image_digest" --argjson container "$expected_container" --argjson init_containers "$expected_init_containers" '
     .items as $items | if ($items | length) != 1 then false else $items[0] as $pod |
       $pod.metadata.namespace == $namespace and
       $pod.metadata.labels["batch.kubernetes.io/job-name"] == $name and
       $pod.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
       $pod.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
+      $pod.metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == $credential_uid and
+      $pod.metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $credential_rv and
+      $pod.metadata.annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == $credential_sha and
       ([$pod.metadata.ownerReferences[] | select(.apiVersion == "batch/v1" and .kind == "Job" and .name == $name and .uid == $uid and .controller == true)] | length == 1) and
       $pod.spec.serviceAccountName == $service_account and $pod.spec.restartPolicy == "Never" and
       $pod.spec.containers == [$container] and ($pod.spec.initContainers // []) == $init_containers and
@@ -161,6 +197,7 @@ run_manual_verification() {
       )] | length == 1)
     end
   ' <<<"$pods" >/dev/null || die "manual verifier execution Pod owner, evidence binding, runtime, or terminal phase drifted"
+  verify_secret_unchanged
   logs="$(kc logs -n "$NAMESPACE" "job/$manual_job_name")" || die "cannot retain manual verifier Job logs"
   if [[ "${#logs}" -lt 1 || "${#logs}" -gt 4096 || "$logs" == *$'\n'* || ! "$logs" =~ ^verified\ ([1-9][0-9]{0,2})\ released\ terminal\ operation\ archives$ ]]; then
     die "manual verifier Job did not emit one canonical non-empty verification result"

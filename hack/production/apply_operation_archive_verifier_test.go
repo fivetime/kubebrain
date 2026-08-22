@@ -28,6 +28,7 @@ func TestOperationArchiveVerifierEnablesOnlyAfterManualSuccess(t *testing.T) {
 	require.Contains(t, string(mustRead(t, f.payloadLog)), `"generateName":"kubebrain-archive-verifier-enable-"`)
 	evidenceSHA := sha256.Sum256(mustRead(t, f.evidence))
 	require.Contains(t, string(mustRead(t, f.payloadLog)), fmt.Sprintf(`"dbaas.kubebrain.io/iam-simulation-sha256":"%x"`, evidenceSHA))
+	require.Contains(t, string(mustRead(t, f.payloadLog)), `"dbaas.kubebrain.io/credential-secret-uid":"secret-uid-123"`)
 	require.Contains(t, log, `"path":"/spec/suspend","value":false`)
 	require.Contains(t, log, `iam-simulation-valid-until-unix`)
 	out, err = runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--check-enabled"}, f.env())
@@ -54,9 +55,12 @@ func TestOperationArchiveVerifierRejectsStaleIAMEvidenceBeforeJob(t *testing.T) 
 }
 
 func TestOperationArchiveVerifierRejectsIAMScopeAndDecisionDriftBeforeJob(t *testing.T) {
+	secretSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(verifierSecretDataJSON)))
 	for _, tc := range []struct{ name, old, replacement string }{
 		{name: "bucket", old: `"bucket":"audit-bucket"`, replacement: `"bucket":"other-bucket"`},
 		{name: "put allowed", old: `"action":"s3:PutObject","decision":"denied"`, replacement: `"action":"s3:PutObject","decision":"allowed"`},
+		{name: "credential uid", old: `"credential_secret_uid":"secret-uid-123"`, replacement: `"credential_secret_uid":"other-uid"`},
+		{name: "credential digest", old: `"credential_secret_data_sha256":"` + secretSHA + `"`, replacement: `"credential_secret_data_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newArchiveVerifierApplyFixture(t)
@@ -66,6 +70,26 @@ func TestOperationArchiveVerifierRejectsIAMScopeAndDecisionDriftBeforeJob(t *tes
 			require.Error(t, err)
 			require.Contains(t, string(out), "does not prove the exact allow/deny matrix")
 			require.NotContains(t, string(mustRead(t, f.log)), "create job")
+		})
+	}
+}
+
+func TestOperationArchiveVerifierRequiresImmutableCredentialSecret(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), "SECRET_IMMUTABLE=false"))
+	require.Error(t, err)
+	require.Contains(t, string(out), "Secret is incomplete or unsafe")
+	require.NotContains(t, string(mustRead(t, f.log)), "create -f")
+}
+
+func TestOperationArchiveVerifierRejectsCredentialSecretReplacement(t *testing.T) {
+	for _, at := range []string{"2", "3"} {
+		t.Run("read-"+at, func(t *testing.T) {
+			f := newArchiveVerifierApplyFixture(t)
+			out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), "SECRET_DRIFT_AT="+at))
+			require.Error(t, err)
+			require.Contains(t, string(out), "Secret")
+			require.NotContains(t, string(mustRead(t, f.log)), "patch cronjob")
 		})
 	}
 }
@@ -120,6 +144,7 @@ func TestOperationArchiveVerifierRejectsUnexpectedCreatedJobIdentity(t *testing.
 		{name: "evidence sha", env: "RETURN_JOB_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
 		{name: "evidence expiry", env: "RETURN_JOB_EXPIRY=1"},
 		{name: "missing annotations", env: "RETURN_JOB_ANNOTATIONS=omit"},
+		{name: "credential uid", env: "RETURN_CREDENTIAL_UID=other-uid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newArchiveVerifierApplyFixture(t)
@@ -144,6 +169,7 @@ func TestOperationArchiveVerifierRejectsCompletedJobDriftBeforePatch(t *testing.
 		{name: "runtime expiry", env: "FINAL_RUNTIME_EXPIRY=1"},
 		{name: "condition", env: "FINAL_JOB_COMPLETE=false"},
 		{name: "missing", env: "FINAL_JOB_MISSING=true"},
+		{name: "credential uid", env: "FINAL_JOB_CREDENTIAL_UID=other-uid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newArchiveVerifierApplyFixture(t)
@@ -178,6 +204,7 @@ func TestOperationArchiveVerifierRejectsExecutionPodDriftBeforePatch(t *testing.
 		{name: "missing status", env: "FINAL_POD_STATUS=omit"},
 		{name: "missing", env: "FINAL_POD_COUNT=0"},
 		{name: "multiple", env: "FINAL_POD_COUNT=2"},
+		{name: "credential uid", env: "FINAL_POD_CREDENTIAL_UID=other-uid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newArchiveVerifierApplyFixture(t)
@@ -228,12 +255,12 @@ func TestOperationArchiveVerifierRejectsEmptyOrNonCanonicalSuccessLog(t *testing
 	}
 }
 
-type archiveVerifierApplyFixture struct{ kubectl, log, payloadLog, jobState, state, evidence string }
+type archiveVerifierApplyFixture struct{ kubectl, log, payloadLog, jobState, secretCount, state, evidence string }
 
 func newArchiveVerifierApplyFixture(t *testing.T) archiveVerifierApplyFixture {
 	t.Helper()
 	dir := t.TempDir()
-	f := archiveVerifierApplyFixture{kubectl: filepath.Join(dir, "kubectl"), log: filepath.Join(dir, "calls.log"), payloadLog: filepath.Join(dir, "payloads.log"), jobState: filepath.Join(dir, "job.json"), state: filepath.Join(dir, "enabled"), evidence: filepath.Join(dir, "iam.json")}
+	f := archiveVerifierApplyFixture{kubectl: filepath.Join(dir, "kubectl"), log: filepath.Join(dir, "calls.log"), payloadLog: filepath.Join(dir, "payloads.log"), jobState: filepath.Join(dir, "job.json"), secretCount: filepath.Join(dir, "secret-count"), state: filepath.Join(dir, "enabled"), evidence: filepath.Join(dir, "iam.json")}
 	require.NoError(t, os.WriteFile(f.payloadLog, nil, 0o600))
 	require.NoError(t, os.WriteFile(f.evidence, []byte(iamEvidenceJSON(time.Now().Unix())), 0o600))
 	writeTrafficExecutable(t, f.kubectl, `#!/usr/bin/env bash
@@ -246,7 +273,10 @@ if [[ "$args" == *" auth can-i "* ]]; then
 fi
 if [[ "$args" == *" get configmap kubebrain-backup-scheduler-inventory "* ]]; then echo '{"data":{"namespaces.json":"[\"tenant-a\",\"tenant-b\"]"}}'; exit 0; fi
 if [[ "$args" == *" get secret kubebrain-operation-archive-verifier-object-store "* ]]; then
-  echo '{"data":{"access-key-id":"YWNjZXNz","bucket":"YXVkaXQtYnVja2V0","endpoint":"aHR0cHM6Ly9zMy5leGFtcGxl","force-path-style":"ZmFsc2U=","object-store-id":"c3RvcmUtYQ==","region":"dXMtZWFzdC0x","secret-access-key":"c2VjcmV0"}}'; exit 0
+  count=0; [[ ! -f "$SECRET_COUNT_FILE" ]] || count="$(<"$SECRET_COUNT_FILE")"; count=$((count+1)); printf '%s' "$count" >"$SECRET_COUNT_FILE"
+  uid=secret-uid-123; rv=11; access=YWNjZXNz
+  if [[ "${SECRET_DRIFT_AT:-0}" == "$count" ]]; then uid=secret-uid-replaced; rv=12; access=ZHJpZnRlZA==; fi
+  printf '{"metadata":{"name":"kubebrain-operation-archive-verifier-object-store","namespace":"kubebrain-operations","uid":"%s","resourceVersion":"%s"},"immutable":%s,"data":{"access-key-id":"%s","bucket":"YXVkaXQtYnVja2V0","endpoint":"aHR0cHM6Ly9zMy5leGFtcGxl","force-path-style":"ZmFsc2U=","object-store-id":"c3RvcmUtYQ==","region":"dXMtZWFzdC0x","secret-access-key":"c2VjcmV0"}}\n' "$uid" "$rv" "${SECRET_IMMUTABLE:-true}" "$access"; exit 0
 fi
 if [[ "$args" == *" get cronjob kubebrain-operation-archive-verifier "* ]]; then
   suspend=true; binding=pending; expiry=pending; runtime_expiry=1
@@ -266,6 +296,7 @@ if [[ "$args" == *" get job "* ]]; then
   if [[ -n "${FINAL_JOB_UID:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_UID" '.metadata.uid=$value' <<<"$job")"; fi
   if [[ -n "${FINAL_JOB_SHA:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$job")"; fi
   if [[ -n "${FINAL_JOB_EXPIRY:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_EXPIRY" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$job")"; fi
+  if [[ -n "${FINAL_JOB_CREDENTIAL_UID:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_CREDENTIAL_UID" '.metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$job")"; fi
   if [[ -n "${FINAL_RUNTIME_EXPIRY:-}" ]]; then job="$(jq -c --arg value "$FINAL_RUNTIME_EXPIRY" '(.spec.template.spec.containers[0].env[] | select(.name=="IAM_SIMULATION_VALID_UNTIL_UNIX") | .value)=$value' <<<"$job")"; fi
   [[ "${FINAL_JOB_COMPLETE:-true}" == true ]] || job="$(jq -c '.status.conditions[0].status="False"' <<<"$job")"
   printf '%s\n' "$job"; exit 0
@@ -276,6 +307,7 @@ if [[ "$args" == *" get pods "* ]]; then
   if [[ -n "${FINAL_POD_OWNER_UID:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_OWNER_UID" '.metadata.ownerReferences[0].uid=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_SHA:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_EXPIRY:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_EXPIRY" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$pod")"; fi
+  if [[ -n "${FINAL_POD_CREDENTIAL_UID:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_CREDENTIAL_UID" '.metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_RUNTIME_EXPIRY:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_RUNTIME_EXPIRY" '(.spec.containers[0].env[] | select(.name=="IAM_SIMULATION_VALID_UNTIL_UNIX") | .value)=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_PHASE:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_PHASE" '.status.phase=$value' <<<"$pod")"; fi
   [[ "${FINAL_POD_SIDECAR:-false}" != true ]] || pod="$(jq -c '.spec.containers += [{name:"sidecar",image:"untrusted"}]' <<<"$pod")"
@@ -299,6 +331,7 @@ if [[ "$args" == *" create -f - -o json "* ]]; then
   name="${RETURN_JOB_NAME:-$name}"; namespace="${RETURN_JOB_NAMESPACE:-$namespace}"
   if [[ -n "${RETURN_JOB_SHA:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_JOB_SHA" '.["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$annotations")"; fi
   if [[ -n "${RETURN_JOB_EXPIRY:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_JOB_EXPIRY" '.["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$annotations")"; fi
+  if [[ -n "${RETURN_CREDENTIAL_UID:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_CREDENTIAL_UID" '.["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$annotations")"; fi
   [[ "${RETURN_JOB_ANNOTATIONS:-}" != omit ]] || annotations=null
   created="$(jq -c --arg name "$name" --arg namespace "$namespace" --argjson annotations "$annotations" '.metadata.name=$name | .metadata.namespace=$namespace | .metadata.annotations=$annotations | .metadata.uid="verifier-uid-123" | del(.metadata.generateName)' <<<"$payload")"
   printf '%s\n' "$created" >"$JOB_STATE_FILE"; printf '%s\n' "$created"; exit 0
@@ -309,10 +342,13 @@ exit 1
 }
 
 func (f archiveVerifierApplyFixture) env() []string {
-	return []string{"KUBE_CONTEXT=production", "KUBECTL=" + f.kubectl, "CALL_LOG=" + f.log, "CREATE_PAYLOAD_LOG=" + f.payloadLog, "JOB_STATE_FILE=" + f.jobState, "STATE_FILE=" + f.state, "IAM_SIMULATION_EVIDENCE=" + f.evidence, "ENABLE_OPERATION_ARCHIVE_VERIFIER=yes"}
+	return []string{"KUBE_CONTEXT=production", "KUBECTL=" + f.kubectl, "CALL_LOG=" + f.log, "CREATE_PAYLOAD_LOG=" + f.payloadLog, "JOB_STATE_FILE=" + f.jobState, "SECRET_COUNT_FILE=" + f.secretCount, "STATE_FILE=" + f.state, "IAM_SIMULATION_EVIDENCE=" + f.evidence, "ENABLE_OPERATION_ARCHIVE_VERIFIER=yes"}
 }
 
 func iamEvidenceJSON(checked int64) string {
 	decisions := `[{"action":"s3:DeleteObject","decision":"denied","resource":"object"},{"action":"s3:GetBucketVersioning","decision":"allowed","resource":"bucket"},{"action":"s3:GetObject","decision":"allowed","resource":"object"},{"action":"s3:GetObjectLockConfiguration","decision":"allowed","resource":"bucket"},{"action":"s3:GetObjectRetention","decision":"allowed","resource":"object"},{"action":"s3:ListBucket","decision":"denied","resource":"bucket"},{"action":"s3:ListBucketVersions","decision":"denied","resource":"bucket"},{"action":"s3:PutObject","decision":"denied","resource":"object"}]`
-	return fmt.Sprintf(`{"bucket":"audit-bucket","checked_at_unix":%d,"decisions":%s,"format":"kubebrain.object-store-iam-simulation.v1","object_store_id":"store-a","principal":"arn:aws:iam::123456789012:role/verifier","provider":"aws-s3","valid_until_unix":%d}`+"\n", checked, decisions, checked+7200)
+	secretSHA := sha256.Sum256([]byte(verifierSecretDataJSON))
+	return fmt.Sprintf(`{"bucket":"audit-bucket","checked_at_unix":%d,"credential_secret_data_sha256":"%x","credential_secret_uid":"secret-uid-123","decisions":%s,"format":"kubebrain.object-store-iam-simulation.v2","object_store_id":"store-a","principal":"arn:aws:iam::123456789012:role/verifier","provider":"aws-s3","valid_until_unix":%d}`+"\n", checked, secretSHA, decisions, checked+7200)
 }
+
+const verifierSecretDataJSON = `{"access-key-id":"YWNjZXNz","bucket":"YXVkaXQtYnVja2V0","endpoint":"aHR0cHM6Ly9zMy5leGFtcGxl","force-path-style":"ZmFsc2U=","object-store-id":"c3RvcmUtYQ==","region":"dXMtZWFzdC0x","secret-access-key":"c2VjcmV0"}`
