@@ -5952,7 +5952,12 @@ artifact，并调用只读 `ACTION=audit-version-verify`。该动作以远端 ex
 receipt，要求 artifact SHA 与 receipt SHA 分别精确等于 Kubernetes binding，再验证 HEAD metadata/size/version、完整
 GET body/digest/version 和 Object Lock mode/retain-until；整个接口不包含 `PutObject`，也不创建本地 receipt。缺失或
 部分 annotation、Operation 重建漂移、已到期 retention 或远端证据漂移必须让周期任务失败并告警。独立控制器、只读
-Secret/RBAC 和告警规则尚未接入前，不得声称已完成周期审计运行面。
+Secret/RBAC 和告警规则已以 `kubebrain-operation-archive-verifier` CronJob 接入，但清单默认 `suspend:true`。它使用独立
+ServiceAccount，只能读取中央 inventory ConfigMap，并通过每个受管 namespace 显式 RoleBinding 获得 Operation get/list；
+不得复用 archiver 的 update 权限或写入型 S3 Secret。批次起点按 UTC 小时轮转，避免每次新 Job 都从最早对象开始。
+失败 Job 不重试并保留七天，`KubeBrainOperationArchiveEvidenceVerificationFailed` 以 critical 告警。专用启用门禁尚未
+交付前禁止手工解除 suspend；门禁必须证明 Kubernetes 写动作和 S3 Put/Delete/List 均被独立身份拒绝，并先完成一次手动
+Job 全量成功证据。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并

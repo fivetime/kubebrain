@@ -60289,6 +60289,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   运行面的无写验证原语，不是已部署的周期控制器；仍需新增只读 Kubernetes SA、独立 S3 read-only Secret、跨 inventory
   公平扫描、失败指标/告警和发布门禁，且在真实 provider 上证明该 IAM 身份的 Put/Delete/List 拒绝矩阵。
 
+- A5357 交付独立 Operation archive evidence 周期运行面，但保持显式 suspended 直到启用门禁完成。新增
+  `kubebrain-operation-archive-verifier` CLI/controller：从受管 namespace inventory 只读 list Operation，只选择
+  Succeeded/Failed、正 completedAt 且已无 audit finalizer 的对象；完整 annotation 和零 annotation 都进入 processor，
+  因而证据空洞不会被筛选器静默跳过，仍有 finalizer 的待归档对象则留给 archiver。processor 重建 canonical artifact，
+  只调用 A5356 `ACTION=audit-version-verify`，不传 receipt input/output。每次 CronJob 是新进程，故控制器不能依赖内存
+  cursor；初始批次按 UTC hour 对有序候选取模轮转，测试证明三个新控制器在 batch=1 时连续三小时覆盖三个对象，单次
+  reconcile 内仍在失败后公平前进。部署新增独立 SA、中央 inventory get 和 Operation get/list Role、受管 namespace
+  get/list-only ClusterRole、独立 `kubebrain-operation-archive-verifier-object-store` Secret 引用、只读根文件系统、零 Job
+  backoff、失败 Job 七天保留及 `KubeBrainOperationArchiveEvidenceVerificationFailed` critical 告警；Docker 镜像包含新 CLI。
+  CronJob 初始 `suspend:true`，foundation apply 不会在 Secret/租户 binding 未就绪时启动。完整 verifier/controller、foundation、
+  RBAC、manifest、monitoring 定向测试，全 production/backup vet、diff check 和 555 项 inventory 均通过；四片
+  126/157/141/131 在代码提交 `e33ea7cd` 上全部通过（Go 测试
+  157.153/503.327/282.256/524.387 秒；端到端 166.042/512.101/291.143/533.285 秒）。当前仍缺
+  `--check/--enable/--check-enabled`：必须逐租户证明 verifier SA 仅 get/list、写动作全部拒绝，验证独立 Secret 七字段与
+  真实 S3 Put/Delete/List 拒绝、手动 Job 成功后才可解除 suspend；在该门禁交付和真实执行前周期核验仍未启用。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
