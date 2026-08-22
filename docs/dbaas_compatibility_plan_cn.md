@@ -60565,6 +60565,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   强一致/恢复点调用触发的共享 API 缺口；本地 recording lister 不替代真实 apiserver 对 Exact、continue expiry/410 和 audit
   query 的验证，目标环境多页门禁须同时覆盖空 RV 与显式首屏 RV 两种请求序列。
 
+- A5377 将 A5375 已明确保留的“分页后仍无界聚合”缩成显式对象数预算。旧 paginator 能把每个响应限制为 500 项，却可沿合法且
+  唯一的 continue token 无界 append；controller 随后还会跨最多 256 个 namespace 聚合 candidates，在排序前因历史 Operation
+  增长耗尽 heap。`dynamicpagination.All` 现同时要求正 page/item limit，默认单页 500、单 collection 10,000；server 返回超过
+  请求 Limit 的页或累计第 10,001 项均丢弃整批并报精确上限。backup scheduler、archiver、verifier 另在每次 DeepCopy/append 前
+  限制跨 namespace candidate 为 10,000；Queue.Claim 与 lastStarted 每个租户 collection 同样受限，因此任何超限都发生在排序、
+  Lease/status、Operation 创建和 executor 之前，不会在截断视图上产生写。回归固定单页 3>2 与两页累计 4>3 两种失败；分页包及
+  四个消费包 race 为 1.045/1.211/1.241/1.095/1.282 秒，五个命令入口测试全部通过。根 production inventory 仍为 580 项；
+  四片 130/165/147/138 在代码提交 `4dfb8f60` 上全部通过（Go 测试
+  163.697/508.798/290.353/541.785 秒；端到端 172.772/517.722/299.451/550.891 秒）。该门禁只按对象数而非 serialized bytes/heap
+  charge，10,000 当前也不可运行时配置；超过上限的长期租户会 fail closed 而不是自动删除审计对象。后续必须增加受约束的可配置
+  预算与对象字节 charge，并定义已完成且已归档 Operation 的 UID-fenced 生命周期，不得以调大常量或删除 finalizer 掩盖增长。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
