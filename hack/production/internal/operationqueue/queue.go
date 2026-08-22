@@ -95,21 +95,32 @@ type Claim struct {
 }
 
 type Queue struct {
-	namespace string
-	resource  dynamic.ResourceInterface
-	leases    dynamic.ResourceInterface
-	secrets   dynamic.ResourceInterface
-	now       func() time.Time
+	namespace  string
+	resource   dynamic.ResourceInterface
+	leases     dynamic.ResourceInterface
+	secrets    dynamic.ResourceInterface
+	now        func() time.Time
+	scanBudget dynamicpagination.Budget
 }
 
 func New(client dynamic.Interface, namespace string) *Queue {
 	return &Queue{
-		namespace: namespace,
-		resource:  client.Resource(Resource).Namespace(namespace),
-		leases:    client.Resource(LeaseResource).Namespace(namespace),
-		secrets:   client.Resource(SecretResource).Namespace(namespace),
-		now:       func() time.Time { return time.Now().UTC() },
+		namespace:  namespace,
+		resource:   client.Resource(Resource).Namespace(namespace),
+		leases:     client.Resource(LeaseResource).Namespace(namespace),
+		secrets:    client.Resource(SecretResource).Namespace(namespace),
+		now:        func() time.Time { return time.Now().UTC() },
+		scanBudget: dynamicpagination.DefaultBudget(),
 	}
+}
+
+func (q *Queue) SetScanBudget(maxItems, maxBytes int64) error {
+	budget := dynamicpagination.Budget{PageLimit: dynamicpagination.DefaultPageLimit, MaxItems: maxItems, MaxBytes: maxBytes}
+	if err := budget.Validate(); err != nil {
+		return fmt.Errorf("operation queue scan budget: %w", err)
+	}
+	q.scanBudget = budget
+	return nil
 }
 
 func (q *Queue) WithClock(now func() time.Time) *Queue {
@@ -237,8 +248,7 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 	}
 	items, err := dynamicpagination.All(
 		ctx, q.resource, metav1.ListOptions{},
-		dynamicpagination.DefaultPageLimit, dynamicpagination.DefaultMaxItems,
-		dynamicpagination.DefaultMaxBytes,
+		q.scanBudget.PageLimit, q.scanBudget.MaxItems, q.scanBudget.MaxBytes,
 	)
 	if err != nil {
 		return nil, err
@@ -446,6 +456,16 @@ func ClaimAcrossNamespaces(
 	owner, operationType string,
 	lease time.Duration,
 ) (*Claim, error) {
+	return ClaimAcrossNamespacesWithBudget(ctx, client, namespaces, owner, operationType, lease, dynamicpagination.DefaultBudget())
+}
+
+func ClaimAcrossNamespacesWithBudget(
+	ctx context.Context, client dynamic.Interface, namespaces []string,
+	owner, operationType string, lease time.Duration, budget dynamicpagination.Budget,
+) (*Claim, error) {
+	if err := budget.Validate(); err != nil {
+		return nil, fmt.Errorf("cross-namespace operation queue scan budget: %w", err)
+	}
 	if err := validateOperationTypeFilter(operationType); err != nil {
 		return nil, err
 	}
@@ -461,6 +481,7 @@ func ClaimAcrossNamespaces(
 			return nil, errors.Join(append(inspectErrs, err)...)
 		}
 		queue := New(client, namespace)
+		queue.scanBudget = budget
 		lastStarted, err := queue.lastStarted(ctx, operationType)
 		if err != nil {
 			inspectErrs = append(inspectErrs, fmt.Errorf("%s: inspect queue: %w", namespace, err))
@@ -508,8 +529,7 @@ func (q *Queue) lastStarted(ctx context.Context, operationType string) (int64, e
 	}
 	items, err := dynamicpagination.All(
 		ctx, q.resource, metav1.ListOptions{},
-		dynamicpagination.DefaultPageLimit, dynamicpagination.DefaultMaxItems,
-		dynamicpagination.DefaultMaxBytes,
+		q.scanBudget.PageLimit, q.scanBudget.MaxItems, q.scanBudget.MaxBytes,
 	)
 	if err != nil {
 		return 0, err

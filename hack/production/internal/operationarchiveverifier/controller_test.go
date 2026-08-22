@@ -100,3 +100,12 @@ func verifierClientWithNamespaces(t *testing.T, namespaces []string, operations 
 	}
 	return fake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{operationqueue.Resource: "KubeBrainOperationList"}, objects...)
 }
+
+func TestControllerSetScanBudgetRejectsInvalidLimit(t *testing.T) {
+	controller := &Controller{}
+	require.Error(t, controller.SetScanBudget(0, 1))
+	require.Error(t, controller.SetScanBudget(1, 0))
+	require.NoError(t, controller.SetScanBudget(7, 11))
+	require.Equal(t, int64(7), controller.scanBudget.MaxItems)
+	require.Equal(t, int64(11), controller.scanBudget.MaxBytes)
+}

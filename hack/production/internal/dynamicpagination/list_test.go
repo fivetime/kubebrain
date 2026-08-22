@@ -147,6 +147,21 @@ func TestChargeAccumulatesExactSerializedBytes(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestBudgetDefaultsAndValidation(t *testing.T) {
+	budget := DefaultBudget()
+	require.Equal(t, int64(500), budget.PageLimit)
+	require.Equal(t, int64(10_000), budget.MaxItems)
+	require.Equal(t, int64(64<<20), budget.MaxBytes)
+	require.NoError(t, budget.Validate())
+	for _, invalid := range []Budget{
+		{MaxItems: 1, MaxBytes: 1},
+		{PageLimit: 1, MaxBytes: 1},
+		{PageLimit: 1, MaxItems: 1},
+	} {
+		require.ErrorContains(t, invalid.Validate(), "must be positive")
+	}
+}
+
 func listPage(resourceVersion, continueToken string, names ...string) *unstructured.UnstructuredList {
 	page := &unstructured.UnstructuredList{}
 	page.SetResourceVersion(resourceVersion)

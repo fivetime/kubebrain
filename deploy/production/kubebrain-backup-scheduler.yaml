@@ -151,6 +151,8 @@ spec:
             - --poll-interval=30s
             - --reconcile-timeout=2m
             - --max-policies=256
+            - --max-scan-items=10000
+            - --max-scan-bytes=67108864
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

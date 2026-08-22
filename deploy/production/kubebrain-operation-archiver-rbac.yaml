@@ -151,6 +151,8 @@ spec:
             - --reconcile-timeout=15m
             - --archive-timeout=2m
             - --max-batch=32
+            - --max-scan-items=10000
+            - --max-scan-bytes=67108864
           resources:
             requests:
               cpu: 50m

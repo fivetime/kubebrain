@@ -676,6 +676,8 @@ func TestOperationArchiverIsFailClosedAndHardened(t *testing.T) {
 	require.Contains(t, args, "--object-store-id=$(OBJECT_STORE_ID)")
 	require.Contains(t, args, "--bucket=$(S3_BUCKET)")
 	require.Contains(t, args, "--reconcile-timeout=15m")
+	require.Contains(t, args, "--max-scan-items=10000")
+	require.Contains(t, args, "--max-scan-bytes=67108864")
 	require.Contains(t, args, "--archive-timeout=2m")
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
@@ -770,6 +772,18 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		require.True(t, found)
 		require.Len(t, containers, 1)
 		container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+		env, found, err := unstructured.NestedSlice(container.Object, "env")
+		require.NoError(t, err)
+		require.True(t, found)
+		envValues := map[string]string{}
+		for _, raw := range env {
+			entry := &unstructured.Unstructured{Object: raw.(map[string]any)}
+			if value, found, _ := unstructured.NestedString(entry.Object, "value"); found {
+				envValues[nestedString(t, entry, "name")] = value
+			}
+		}
+		require.Equal(t, "10000", envValues["OPERATION_MAX_SCAN_ITEMS"])
+		require.Equal(t, "67108864", envValues["OPERATION_MAX_SCAN_BYTES"])
 		command, found, err := unstructured.NestedStringSlice(container.Object, "command")
 		require.NoError(t, err)
 		require.True(t, found)
@@ -2258,6 +2272,8 @@ func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
 		"--requested-by=system:serviceaccount:kubebrain-operations:kubebrain-backup-scheduler")
 	require.Contains(t, args, "--reconcile-timeout=2m")
 	require.Contains(t, args, "--max-policies=256")
+	require.Contains(t, args, "--max-scan-items=10000")
+	require.Contains(t, args, "--max-scan-bytes=67108864")
 	spreads, found, err := unstructured.NestedSlice(
 		deployment.Object, "spec", "template", "spec", "topologySpreadConstraints",
 	)
@@ -4652,6 +4668,13 @@ func TestOperationArchiveVerifierIsSuspendedReadOnlyAndFailClosed(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, found)
 	env := containers[0].(map[string]any)["env"].([]any)
+	rawArgs := containers[0].(map[string]any)["args"].([]any)
+	args := make([]string, len(rawArgs))
+	for i := range rawArgs {
+		args[i] = rawArgs[i].(string)
+	}
+	require.Contains(t, args, "--max-scan-items=10000")
+	require.Contains(t, args, "--max-scan-bytes=67108864")
 	require.GreaterOrEqual(t, len(env), 2)
 	require.Equal(t, map[string]any{"name": "IAM_SIMULATION_VALID_UNTIL_UNIX", "value": "1"}, env[len(env)-2])
 	require.Equal(t, map[string]any{"name": "CREDENTIAL_SECRET_DATA_SHA256", "value": "pending"}, env[len(env)-1])

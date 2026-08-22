@@ -27,6 +27,7 @@ type Controller struct {
 	processor                                       ObjectProcessor
 	inventoryNamespace, inventoryName, inventoryKey string
 	maxBatch                                        int
+	scanBudget                                      dynamicpagination.Budget
 	now                                             func() time.Time
 	cursorMu                                        sync.Mutex
 	cursor                                          candidateCursor
@@ -46,7 +47,16 @@ func NewController(client dynamic.Interface, processor ObjectProcessor, inventor
 	if inventoryKey, err = namespaceinventory.ValidateSource(inventoryNamespace, inventoryName, inventoryKey); err != nil {
 		return nil, err
 	}
-	return &Controller{client: client, processor: processor, inventoryNamespace: inventoryNamespace, inventoryName: inventoryName, inventoryKey: inventoryKey, maxBatch: maxBatch, now: time.Now}, nil
+	return &Controller{client: client, processor: processor, inventoryNamespace: inventoryNamespace, inventoryName: inventoryName, inventoryKey: inventoryKey, maxBatch: maxBatch, scanBudget: dynamicpagination.DefaultBudget(), now: time.Now}, nil
+}
+
+func (c *Controller) SetScanBudget(maxItems, maxBytes int64) error {
+	budget := dynamicpagination.Budget{PageLimit: dynamicpagination.DefaultPageLimit, MaxItems: maxItems, MaxBytes: maxBytes}
+	if err := budget.Validate(); err != nil {
+		return fmt.Errorf("operation archive verifier scan budget: %w", err)
+	}
+	c.scanBudget = budget
+	return nil
 }
 
 func (c *Controller) Reconcile(ctx context.Context) (int, error) {
@@ -64,8 +74,7 @@ func (c *Controller) Reconcile(ctx context.Context) (int, error) {
 		items, err := dynamicpagination.All(
 			ctx, c.client.Resource(operationqueue.Resource).Namespace(namespace),
 			metav1.ListOptions{},
-			dynamicpagination.DefaultPageLimit, dynamicpagination.DefaultMaxItems,
-			dynamicpagination.DefaultMaxBytes,
+			c.scanBudget.PageLimit, c.scanBudget.MaxItems, c.scanBudget.MaxBytes,
 		)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list operations in namespace %s: %w", namespace, err))
@@ -79,14 +88,14 @@ func (c *Controller) Reconcile(ctx context.Context) (int, error) {
 				return 0, errors.Join(append(errs, err)...)
 			}
 			if needsVerification(&items[i]) {
-				if int64(len(candidates)) >= dynamicpagination.DefaultMaxItems {
+				if int64(len(candidates)) >= c.scanBudget.MaxItems {
 					return 0, errors.Join(append(errs, fmt.Errorf(
 						"operation archive verification candidates exceed the %d-item aggregate limit",
-						dynamicpagination.DefaultMaxItems,
+						c.scanBudget.MaxItems,
 					))...)
 				}
 				candidateBytes, err = dynamicpagination.Charge(
-					candidateBytes, dynamicpagination.DefaultMaxBytes, &items[i],
+					candidateBytes, c.scanBudget.MaxBytes, &items[i],
 				)
 				if err != nil {
 					return 0, errors.Join(append(errs,

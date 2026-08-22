@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/dynamicpagination"
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
@@ -41,6 +42,14 @@ func main() {
 	var inventoryName, inventoryNamespace, inventoryKey string
 	var owner, receiptSHA, message, approvalID, approvedBy, kubeconfig, contextName string
 	var maxAttempts, attempt int64
+	maxScanItems, err := envInt64OrDefault("OPERATION_MAX_SCAN_ITEMS", dynamicpagination.DefaultMaxItems)
+	if err != nil {
+		log.Fatal(err)
+	}
+	maxScanBytes, err := envInt64OrDefault("OPERATION_MAX_SCAN_BYTES", dynamicpagination.DefaultMaxBytes)
+	if err != nil {
+		log.Fatal(err)
+	}
 	var lease time.Duration
 	flag.StringVar(
 		&action, "action", "",
@@ -74,6 +83,8 @@ func main() {
 		envOrDefault("OPERATION_PARAMETERS_CA_FILE", "/var/run/secrets/kubebrain-parameter-ca/ca.crt"),
 		"parameter broker CA bundle")
 	flag.Int64Var(&maxAttempts, "max-attempts", 3, "maximum worker claims")
+	flag.Int64Var(&maxScanItems, "max-scan-items", maxScanItems, "maximum operation objects retained by one queue scan")
+	flag.Int64Var(&maxScanBytes, "max-scan-bytes", maxScanBytes, "maximum operation JSON bytes retained by one queue scan")
 	flag.StringVar(&owner, "owner", "", "worker identity")
 	flag.Int64Var(&attempt, "attempt", 0, "worker fencing attempt")
 	flag.DurationVar(&lease, "lease", 2*time.Minute, "worker claim lease")
@@ -84,6 +95,10 @@ func main() {
 	flag.StringVar(&kubeconfig, "kubeconfig", defaultKubeconfig(), "kubeconfig path")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
 	flag.Parse()
+	budget := dynamicpagination.Budget{PageLimit: dynamicpagination.DefaultPageLimit, MaxItems: maxScanItems, MaxBytes: maxScanBytes}
+	if err := budget.Validate(); err != nil {
+		log.Fatal("scan budget: ", err)
+	}
 
 	if err := namespaceinventory.ValidateOne(namespace); err != nil {
 		log.Fatal("--namespace: ", err)
@@ -106,6 +121,9 @@ func main() {
 		log.Fatal(err)
 	}
 	queue := operationqueue.New(client, namespace)
+	if err := queue.SetScanBudget(maxScanItems, maxScanBytes); err != nil {
+		log.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -127,8 +145,9 @@ func main() {
 				ctx, client, inventoryNamespace, inventoryName, inventoryKey,
 			)
 			if err == nil {
-				output, err = operationqueue.ClaimAcrossNamespaces(
+				output, err = operationqueue.ClaimAcrossNamespacesWithBudget(
 					ctx, client, namespaces, owner, operationType, lease,
+					budget,
 				)
 			}
 		}
@@ -177,6 +196,18 @@ func main() {
 	if err := encoder.Encode(output); err != nil {
 		log.Fatal(fmt.Errorf("encode result: %w", err))
 	}
+}
+
+func envInt64OrDefault(name string, fallback int64) (int64, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a base-10 integer: %w", name, err)
+	}
+	return value, nil
 }
 
 func defaultKubeconfig() string {

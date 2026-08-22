@@ -183,6 +183,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -255,6 +257,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -308,6 +312,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -365,6 +371,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -426,6 +434,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -473,6 +483,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -528,6 +540,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -589,6 +603,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -658,6 +674,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -728,6 +746,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -798,6 +818,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -879,6 +901,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -964,6 +988,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-tikv-repair-operation-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -1033,6 +1059,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-tikv-repair-operation-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -1094,6 +1122,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
@@ -1155,6 +1185,8 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_MAX_SCAN_ITEMS, value: "10000"}
+            - {name: OPERATION_MAX_SCAN_BYTES, value: "67108864"}
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}

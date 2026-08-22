@@ -113,6 +113,8 @@ spec:
                 - --reconcile-timeout=15m
                 - --verify-timeout=2m
                 - --max-batch=256
+                - --max-scan-items=10000
+                - --max-scan-bytes=67108864
               env:
                 - {name: S3_ENDPOINT, valueFrom: {secretKeyRef: {name: kubebrain-operation-archive-verifier-object-store, key: endpoint}}}
                 - {name: AWS_REGION, valueFrom: {secretKeyRef: {name: kubebrain-operation-archive-verifier-object-store, key: region}}}

@@ -54,6 +54,7 @@ type Scheduler struct {
 	inventoryKey       string
 	requester          string
 	maxPolicies        int
+	scanBudget         dynamicpagination.Budget
 	now                func() time.Time
 	reconcile          func(context.Context, string, *unstructured.Unstructured) (bool, error)
 	cursorMu           sync.Mutex
@@ -67,7 +68,7 @@ func New(client dynamic.Interface, namespace string) *Scheduler {
 func NewForNamespaces(client dynamic.Interface, namespaces []string) *Scheduler {
 	scheduler := &Scheduler{
 		client: client, staticNamespaces: append([]string(nil), namespaces...),
-		requester: DefaultRequester, maxPolicies: DefaultMaxPolicies,
+		requester: DefaultRequester, maxPolicies: DefaultMaxPolicies, scanBudget: dynamicpagination.DefaultBudget(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
 	scheduler.reconcile = scheduler.reconcilePolicy
@@ -80,7 +81,7 @@ func NewForInventory(client dynamic.Interface, namespace, name, key string) *Sch
 	}
 	scheduler := &Scheduler{
 		client: client, inventoryNamespace: namespace, inventoryName: name, inventoryKey: key,
-		requester: DefaultRequester, maxPolicies: DefaultMaxPolicies,
+		requester: DefaultRequester, maxPolicies: DefaultMaxPolicies, scanBudget: dynamicpagination.DefaultBudget(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
 	scheduler.reconcile = scheduler.reconcilePolicy
@@ -105,6 +106,15 @@ func (s *Scheduler) SetMaxPolicies(maxPolicies int) error {
 	return nil
 }
 
+func (s *Scheduler) SetScanBudget(maxItems, maxBytes int64) error {
+	budget := dynamicpagination.Budget{PageLimit: dynamicpagination.DefaultPageLimit, MaxItems: maxItems, MaxBytes: maxBytes}
+	if err := budget.Validate(); err != nil {
+		return fmt.Errorf("backup scheduler scan budget: %w", err)
+	}
+	s.scanBudget = budget
+	return nil
+}
+
 func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
 	if err := operationqueue.ValidateRequester(s.requester); err != nil {
 		return 0, err
@@ -124,8 +134,7 @@ func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
 		items, err := dynamicpagination.All(
 			ctx, s.client.Resource(PolicyResource).Namespace(namespace),
 			metav1.ListOptions{},
-			dynamicpagination.DefaultPageLimit, dynamicpagination.DefaultMaxItems,
-			dynamicpagination.DefaultMaxBytes,
+			s.scanBudget.PageLimit, s.scanBudget.MaxItems, s.scanBudget.MaxBytes,
 		)
 		if err != nil {
 			reconcileErrs = append(reconcileErrs, fmt.Errorf("%s: list policies: %w", namespace, err))
@@ -138,14 +147,14 @@ func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
 			if err := ctx.Err(); err != nil {
 				return 0, errors.Join(append(reconcileErrs, err)...)
 			}
-			if int64(len(candidates)) >= dynamicpagination.DefaultMaxItems {
+			if int64(len(candidates)) >= s.scanBudget.MaxItems {
 				return 0, errors.Join(append(reconcileErrs, fmt.Errorf(
 					"backup policy candidates exceed the %d-item aggregate limit",
-					dynamicpagination.DefaultMaxItems,
+					s.scanBudget.MaxItems,
 				))...)
 			}
 			candidateBytes, err = dynamicpagination.Charge(
-				candidateBytes, dynamicpagination.DefaultMaxBytes, &items[i],
+				candidateBytes, s.scanBudget.MaxBytes, &items[i],
 			)
 			if err != nil {
 				return 0, errors.Join(append(reconcileErrs,

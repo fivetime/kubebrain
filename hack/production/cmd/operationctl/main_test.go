@@ -338,3 +338,17 @@ users:
 `), 0o600))
 	return kubeconfig
 }
+
+func TestEnvInt64OrDefault(t *testing.T) {
+	t.Setenv("TEST_SCAN_BUDGET", "")
+	value, err := envInt64OrDefault("TEST_SCAN_BUDGET", 17)
+	require.NoError(t, err)
+	require.Equal(t, int64(17), value)
+	t.Setenv("TEST_SCAN_BUDGET", "23")
+	value, err = envInt64OrDefault("TEST_SCAN_BUDGET", 17)
+	require.NoError(t, err)
+	require.Equal(t, int64(23), value)
+	t.Setenv("TEST_SCAN_BUDGET", "invalid")
+	_, err = envInt64OrDefault("TEST_SCAN_BUDGET", 17)
+	require.ErrorContains(t, err, "must be a base-10 integer")
+}

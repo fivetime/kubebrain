@@ -15,6 +15,23 @@ const (
 	DefaultMaxBytes  int64 = 64 << 20
 )
 
+type Budget struct {
+	PageLimit int64
+	MaxItems  int64
+	MaxBytes  int64
+}
+
+func DefaultBudget() Budget {
+	return Budget{PageLimit: DefaultPageLimit, MaxItems: DefaultMaxItems, MaxBytes: DefaultMaxBytes}
+}
+
+func (b Budget) Validate() error {
+	if b.PageLimit <= 0 || b.MaxItems <= 0 || b.MaxBytes <= 0 {
+		return errors.New("scan page, item, and byte limits must be positive")
+	}
+	return nil
+}
+
 type ResourceLister interface {
 	List(context.Context, metav1.ListOptions) (*unstructured.UnstructuredList, error)
 }

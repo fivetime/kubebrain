@@ -518,6 +518,15 @@ func TestSetMaxPoliciesRejectsInvalidLimit(t *testing.T) {
 	require.ErrorContains(t, New(nil, "test").SetMaxPolicies(0), "must be positive")
 }
 
+func TestSetScanBudgetRejectsInvalidLimit(t *testing.T) {
+	scheduler := &Scheduler{}
+	require.Error(t, scheduler.SetScanBudget(0, 1))
+	require.Error(t, scheduler.SetScanBudget(1, 0))
+	require.NoError(t, scheduler.SetScanBudget(7, 11))
+	require.Equal(t, int64(7), scheduler.scanBudget.MaxItems)
+	require.Equal(t, int64(11), scheduler.scanBudget.MaxBytes)
+}
+
 func TestReconcileRejectsInvalidRequesterBeforePolicyAccess(t *testing.T) {
 	client := fakeClient()
 	count, err := New(client, "test").

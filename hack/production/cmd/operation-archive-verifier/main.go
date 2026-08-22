@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/dynamicpagination"
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationarchiver"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationarchiveverifier"
@@ -33,6 +34,7 @@ func main() {
 	var executor, objectStoreID, bucket, prefix, retentionMode, kubeconfig, contextName string
 	var retentionDuration, reconcileTimeout, verifyTimeout time.Duration
 	var maxBatch int
+	var maxScanItems, maxScanBytes int64
 	flag.StringVar(&inventoryName, "namespace-inventory-configmap", "", "ConfigMap containing the namespace allowlist")
 	flag.StringVar(&inventoryNamespace, "namespace-inventory-namespace", "kubebrain-operations", "namespace containing the inventory ConfigMap")
 	flag.StringVar(&inventoryKey, "namespace-inventory-key", "namespaces.json", "ConfigMap data key containing a JSON namespace array")
@@ -45,6 +47,8 @@ func main() {
 	flag.DurationVar(&reconcileTimeout, "reconcile-timeout", 15*time.Minute, "maximum duration of the verification batch")
 	flag.DurationVar(&verifyTimeout, "verify-timeout", 2*time.Minute, "maximum duration of one exact-version verification")
 	flag.IntVar(&maxBatch, "max-batch", 32, "maximum released terminal operations verified per run")
+	flag.Int64Var(&maxScanItems, "max-scan-items", dynamicpagination.DefaultMaxItems, "maximum objects retained by one verification scan")
+	flag.Int64Var(&maxScanBytes, "max-scan-bytes", dynamicpagination.DefaultMaxBytes, "maximum JSON bytes retained by one verification scan")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path; empty uses in-cluster credentials")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
 	flag.Parse()
@@ -63,6 +67,9 @@ func main() {
 	}
 	if reconcileTimeout <= 0 || verifyTimeout <= 0 || verifyTimeout > reconcileTimeout {
 		log.Fatal("verification timeouts are invalid")
+	}
+	if err := (dynamicpagination.Budget{PageLimit: dynamicpagination.DefaultPageLimit, MaxItems: maxScanItems, MaxBytes: maxScanBytes}).Validate(); err != nil {
+		log.Fatal("scan budget: ", err)
 	}
 	if err := processgroup.ValidateExecutable(executor); err != nil {
 		log.Fatal(err)
@@ -85,6 +92,9 @@ func main() {
 	}
 	controller, err := operationarchiveverifier.NewController(client, bounded, inventoryNamespace, inventoryName, inventoryKey, maxBatch)
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := controller.SetScanBudget(maxScanItems, maxScanBytes); err != nil {
 		log.Fatal(err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

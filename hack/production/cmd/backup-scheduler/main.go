@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/backupscheduler"
+	"github.com/kubewharf/kubebrain/hack/production/internal/dynamicpagination"
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/reconcilebudget"
 	"k8s.io/client-go/dynamic"
@@ -25,6 +26,7 @@ func main() {
 	var requester, kubeconfig, contextName string
 	var pollInterval, reconcileTimeout time.Duration
 	var maxPolicies int
+	var maxScanItems, maxScanBytes int64
 	var once bool
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "policy and operation namespace")
 	flag.StringVar(&namespacesText, "namespaces", "", "comma-separated allowlist of policy and operation namespaces; overrides --namespace")
@@ -39,6 +41,8 @@ func main() {
 		"maximum duration of one policy reconciliation")
 	flag.IntVar(&maxPolicies, "max-policies", backupscheduler.DefaultMaxPolicies,
 		"maximum backup policies attempted per reconciliation")
+	flag.Int64Var(&maxScanItems, "max-scan-items", dynamicpagination.DefaultMaxItems, "maximum objects retained by one reconciliation scan")
+	flag.Int64Var(&maxScanBytes, "max-scan-bytes", dynamicpagination.DefaultMaxBytes, "maximum JSON bytes retained by one reconciliation scan")
 	flag.BoolVar(&once, "once", false, "reconcile once and exit")
 	flag.Parse()
 	if pollInterval < 10*time.Second {
@@ -49,6 +53,9 @@ func main() {
 	}
 	if maxPolicies <= 0 {
 		log.Fatal("max-policies must be positive")
+	}
+	if err := (dynamicpagination.Budget{PageLimit: dynamicpagination.DefaultPageLimit, MaxItems: maxScanItems, MaxBytes: maxScanBytes}).Validate(); err != nil {
+		log.Fatal("scan budget: ", err)
 	}
 	if requester == "" || len(requester) > 253 {
 		log.Fatal("requested-by must contain 1 to 253 characters")
@@ -91,6 +98,9 @@ func main() {
 	}
 	scheduler.WithRequester(requester)
 	if err := scheduler.SetMaxPolicies(maxPolicies); err != nil {
+		log.Fatal(err)
+	}
+	if err := scheduler.SetScanBudget(maxScanItems, maxScanBytes); err != nil {
 		log.Fatal(err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/dynamicpagination"
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationarchiver"
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
@@ -26,6 +27,7 @@ func main() {
 	var kubeconfig, contextName string
 	var pollInterval, retentionDuration, reconcileTimeout, archiveTimeout time.Duration
 	var maxBatch int
+	var maxScanItems, maxScanBytes int64
 	var once bool
 	flag.StringVar(&inventoryName, "namespace-inventory-configmap", "", "ConfigMap containing the namespace allowlist")
 	flag.StringVar(&inventoryNamespace, "namespace-inventory-namespace", "kubebrain-operations", "namespace containing the inventory ConfigMap")
@@ -42,6 +44,8 @@ func main() {
 	flag.DurationVar(&archiveTimeout, "archive-timeout", 2*time.Minute,
 		"maximum duration of one operation archive and finalizer release")
 	flag.IntVar(&maxBatch, "max-batch", 32, "maximum terminal operations processed per reconciliation")
+	flag.Int64Var(&maxScanItems, "max-scan-items", dynamicpagination.DefaultMaxItems, "maximum objects retained by one reconciliation scan")
+	flag.Int64Var(&maxScanBytes, "max-scan-bytes", dynamicpagination.DefaultMaxBytes, "maximum JSON bytes retained by one reconciliation scan")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path; empty uses in-cluster credentials")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
 	flag.BoolVar(&once, "once", false, "reconcile once and exit")
@@ -63,6 +67,9 @@ func main() {
 	}
 	if archiveTimeout <= 0 || archiveTimeout > reconcileTimeout {
 		log.Fatal("archive-timeout must be positive and no greater than reconcile-timeout")
+	}
+	if err := (dynamicpagination.Budget{PageLimit: dynamicpagination.DefaultPageLimit, MaxItems: maxScanItems, MaxBytes: maxScanBytes}).Validate(); err != nil {
+		log.Fatal("scan budget: ", err)
 	}
 	if err := processgroup.ValidateExecutable(executor); err != nil {
 		log.Fatal(err)
@@ -89,6 +96,9 @@ func main() {
 		client, boundedProcessor, inventoryNamespace, inventoryName, inventoryKey, maxBatch,
 	)
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := controller.SetScanBudget(maxScanItems, maxScanBytes); err != nil {
 		log.Fatal(err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -2234,3 +2234,12 @@ func fakeQueueClient() *dynamicfake.FakeDynamicClient {
 		},
 	)
 }
+
+func TestSetScanBudgetRejectsInvalidLimit(t *testing.T) {
+	queue := newFakeQueue()
+	require.Error(t, queue.SetScanBudget(0, 1))
+	require.Error(t, queue.SetScanBudget(1, 0))
+	require.NoError(t, queue.SetScanBudget(7, 11))
+	require.Equal(t, int64(7), queue.scanBudget.MaxItems)
+	require.Equal(t, int64(11), queue.scanBudget.MaxBytes)
+}
