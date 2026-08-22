@@ -46,8 +46,9 @@ kubeconfig_bytes="$(stat -Lc '%s' "$KUBECONFIG_PATH")"
 [[ "$(stat -Lc '%a' "$EVIDENCE_DIR")" == 700 && "$(stat -Lc '%u' "$EVIDENCE_DIR")" == "$(id -u)" ]] || die "EVIDENCE_DIR must be current-user-owned mode 0700"
 artifact="$EVIDENCE_DIR/artifact.json"
 first_receipt="$EVIDENCE_DIR/receipt-first.json"
+peer_receipt="$EVIDENCE_DIR/receipt-concurrent-peer.json"
 recovered_receipt="$EVIDENCE_DIR/receipt-recovered.json"
-for path in "$artifact" "$first_receipt" "$recovered_receipt"; do [[ ! -e "$path" && ! -L "$path" ]] || die "archive drill evidence already exists and will not be overwritten: $path"; done
+for path in "$artifact" "$first_receipt" "$peer_receipt" "$recovered_receipt"; do [[ ! -e "$path" && ! -L "$path" ]] || die "archive drill evidence already exists and will not be overwritten: $path"; done
 
 KUBECTL="$(resolve "$KUBECTL")" || die "KUBECTL must be executable"
 JQ="$(resolve "$JQ")" || die "JQ must be executable"
@@ -78,16 +79,35 @@ audit_args=(--namespace "$OPERATION_NAMESPACE" --name "$OPERATION_NAME" --output
 "$OPERATION_AUDIT" "${audit_args[@]}" || die "capture terminal Operation audit artifact failed"
 [[ -f "$artifact" && ! -L "$artifact" && "$(stat -Lc '%a' "$artifact")" == 600 ]] || die "audit artifact must be a regular mode 0600 file"
 
-tmp="$(mktemp -d)"; trap 'rm -rf -- "$tmp"' EXIT
-receipt_tmp="$tmp/receipt.json"
+tmp="$(mktemp -d)"; archive_pids=()
+cleanup() {
+  local pid
+  for pid in "${archive_pids[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
+  done
+  rm -rf -- "$tmp"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+receipt_a="$tmp/receipt-a.json"
+receipt_b="$tmp/receipt-b.json"
+receipt_tmp="$tmp/receipt-recovery.json"
 archive_once() {
+  local output="$1"
   ACTION=archive INPUT="$artifact" OBJECT_STORE_ID="$OBJECT_STORE_ID" S3_BUCKET="$S3_BUCKET" \
     S3_OBJECT_KEY="$object_key" RETENTION_MODE="$RETENTION_MODE" RETAIN_UNTIL_UNIX="$retain_until" \
-    RECEIPT_OUTPUT="$receipt_tmp" "$LOGICAL_OBJECT" >/dev/null
+    RECEIPT_OUTPUT="$output" "$LOGICAL_OBJECT" >/dev/null
 }
-archive_once || die "initial terminal Operation Object Lock archive failed"
-cp -- "$receipt_tmp" "$first_receipt"; chmod 600 "$first_receipt"; rm -f -- "$receipt_tmp"
-archive_once || die "receipt-loss Object Lock recovery failed"
+archive_once "$receipt_a" & archive_pids+=("$!")
+archive_once "$receipt_b" & archive_pids+=("$!")
+wait "${archive_pids[0]}" || die "first concurrent terminal Operation Object Lock archive failed"
+wait "${archive_pids[1]}" || die "second concurrent terminal Operation Object Lock archive failed"
+archive_pids=()
+cmp -s "$receipt_a" "$receipt_b" || die "concurrent Object Lock archives did not converge to byte-identical canonical evidence"
+cp -- "$receipt_a" "$first_receipt"; chmod 600 "$first_receipt"
+cp -- "$receipt_b" "$peer_receipt"; chmod 600 "$peer_receipt"
+rm -f -- "$receipt_a" "$receipt_b"
+archive_once "$receipt_tmp" || die "receipt-loss Object Lock recovery failed"
 cp -- "$receipt_tmp" "$recovered_receipt"; chmod 600 "$recovered_receipt"
 cmp -s "$first_receipt" "$recovered_receipt" || die "receipt-loss recovery did not reproduce byte-identical canonical evidence"
 
@@ -112,6 +132,6 @@ released="$(kc get kubebrainoperation "$OPERATION_NAME" -n "$OPERATION_NAMESPACE
   .metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"] == $artifact and
   .metadata.annotations["dbaas.kubebrain.io/audit-version-id"] == $version
 ' <<<"$released" >/dev/null || die "released Operation does not bind the exact Object Lock evidence"
-sync -f "$artifact"; sync -f "$first_receipt"; sync -f "$recovered_receipt"; sync -f "$EVIDENCE_DIR"
+sync -f "$artifact"; sync -f "$first_receipt"; sync -f "$peer_receipt"; sync -f "$recovered_receipt"; sync -f "$EVIDENCE_DIR"
 trap - EXIT; rm -rf -- "$tmp"
-echo "verified terminal Operation Object Lock archive, byte-identical receipt-loss recovery, and UID-bound finalizer release"
+echo "verified concurrent terminal Operation Object Lock convergence, byte-identical receipt-loss recovery, and UID-bound finalizer release"

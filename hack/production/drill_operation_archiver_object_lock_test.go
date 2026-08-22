@@ -14,6 +14,8 @@ func TestOperationArchiverObjectLockDrillRecoversReceiptAndReleases(t *testing.T
 	require.NoError(t, err, string(out))
 	require.Contains(t, string(out), "byte-identical receipt-loss recovery")
 	require.Equal(t, string(mustRead(t, filepath.Join(fixture.evidence, "receipt-first.json"))),
+		string(mustRead(t, filepath.Join(fixture.evidence, "receipt-concurrent-peer.json"))))
+	require.Equal(t, string(mustRead(t, filepath.Join(fixture.evidence, "receipt-first.json"))),
 		string(mustRead(t, filepath.Join(fixture.evidence, "receipt-recovered.json"))))
 	require.FileExists(t, fixture.state)
 	require.Contains(t, string(mustRead(t, fixture.log)), "checker --check-enabled")
@@ -21,7 +23,7 @@ func TestOperationArchiverObjectLockDrillRecoversReceiptAndReleases(t *testing.T
 
 func TestOperationArchiverObjectLockDrillRejectsRecoveryDriftBeforeRelease(t *testing.T) {
 	fixture := newOperationArchiverObjectLockDrillFixture(t)
-	env := append(fixture.env(), "DRIFT_SECOND_RECEIPT=true")
+	env := append(fixture.env(), "DRIFT_RECOVERY_RECEIPT=true")
 	out, err := runProductionCommand(t, "bash", []string{"drill-operation-archiver-object-lock.sh"}, env)
 	require.Error(t, err)
 	require.Contains(t, string(out), "byte-identical canonical evidence")
@@ -59,9 +61,8 @@ printf '{"metadata":{"uid":"uid-a","finalizers":["dbaas.kubebrain.io/operation-a
 `)
 	writeTrafficExecutable(t, fixture.object, `#!/usr/bin/env bash
 set -euo pipefail
-count=0; [[ ! -f "$COUNT_FILE" ]] || count="$(cat "$COUNT_FILE")"; count=$((count + 1)); printf '%s' "$count" >"$COUNT_FILE"
-version=version-1
-if [[ "${DRIFT_SECOND_RECEIPT:-false}" == true && "$count" == 2 ]]; then version=version-2; fi
+	version=version-1
+	if [[ "${DRIFT_RECOVERY_RECEIPT:-false}" == true && "$RECEIPT_OUTPUT" == *receipt-recovery.json ]]; then version=version-2; fi
 printf '{"format":"kubebrain.object-operation-audit.receipt.v1","operation_id":"op-a","operation_uid":"uid-a","instance":"instance-a","operation_type":"Backup","phase":"Succeeded","object_store_id":"store-a","bucket":"audit-bucket","object_key":"operation-audit/kubebrain-operations/uid-a.json","version_id":"%s","artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","object_bytes":100,"retention_mode":"COMPLIANCE","retain_until_unix":%s,"remote_verified":true,"archived_at_unix":2000000100}\n' "$version" "$RETAIN_UNTIL_UNIX" >"$RECEIPT_OUTPUT"
 chmod 600 "$RECEIPT_OUTPUT"
 `)
@@ -94,6 +95,6 @@ func (f operationArchiverObjectLockDrillFixture) env() []string {
 		"OBJECT_STORE_ID=store-a", "S3_BUCKET=audit-bucket", "RETENTION_MODE=COMPLIANCE",
 		"CONFIRM_OPERATION_ARCHIVE_DRILL=yes", "KUBECTL=" + f.kubectl, "OPERATION_AUDIT=" + f.audit,
 		"LOGICAL_OBJECT=" + f.object, "ARCHIVER_CHECKER=" + f.checker, "STATE_FILE=" + f.state,
-		"CALL_LOG=" + f.log, "COUNT_FILE=" + f.count,
+		"CALL_LOG=" + f.log,
 	}
 }

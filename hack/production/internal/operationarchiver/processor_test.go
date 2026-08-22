@@ -3,22 +3,26 @@ package operationarchiver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer(t *testing.T) {
@@ -60,6 +64,93 @@ func TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, updated.GetFinalizers(), operationaudit.Finalizer)
 	require.Equal(t, "version-a", updated.GetAnnotations()[operationaudit.VersionAnnotation])
+}
+
+func TestConcurrentArchiveProcessorsConvergeWithOneCommittedFinalizerUpdate(t *testing.T) {
+	object := terminalOperation()
+	object.SetResourceVersion("1")
+	client := fake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{operationqueue.Resource: "KubeBrainOperationList"},
+		object,
+	)
+	var updateMu sync.Mutex
+	updateAttempts := 0
+	committedUpdates := 0
+	client.PrependReactor("update", "kubebrainoperations", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		update := action.(k8stesting.UpdateAction)
+		candidate := update.GetObject().(*unstructured.Unstructured).DeepCopy()
+		updateMu.Lock()
+		defer updateMu.Unlock()
+		updateAttempts++
+		if updateAttempts > 1 {
+			return true, nil, apierrors.NewConflict(
+				operationqueue.Resource.GroupResource(), candidate.GetName(), errors.New("concurrent release"),
+			)
+		}
+		candidate.SetResourceVersion("2")
+		if err := client.Tracker().Update(operationqueue.Resource, candidate, candidate.GetNamespace()); err != nil {
+			return true, nil, err
+		}
+		committedUpdates++
+		return true, candidate.DeepCopy(), nil
+	})
+
+	processors := make([]*ArchiveProcessor, 2)
+	ready := make(chan struct{}, 2)
+	release := make(chan struct{})
+	for i := range processors {
+		processor, err := NewArchiveProcessor(
+			client, "/executor", "store-a", "audit-bucket", "audit", "COMPLIANCE", 24*time.Hour,
+		)
+		require.NoError(t, err)
+		processor.now = func() time.Time { return time.Unix(110, 0) }
+		processor.run = func(_ context.Context, _ string, environment []string) error {
+			values := envMap(environment)
+			status, err := operationaudit.Inspect(values["INPUT"])
+			if err != nil {
+				return err
+			}
+			retainUntil, err := strconv.ParseInt(values["RETAIN_UNTIL_UNIX"], 10, 64)
+			if err != nil {
+				return err
+			}
+			receipt := operationaudit.ArchiveReceipt{
+				Format: operationaudit.ArchiveReceiptFormat, OperationID: status.Artifact.OperationID,
+				OperationUID: status.Artifact.UID, Instance: status.Artifact.Instance,
+				OperationType: status.Artifact.Type, Phase: status.Artifact.Phase,
+				ExecutionReceiptSHA256: status.Artifact.ReceiptSHA256,
+				ObjectStoreID:          "store-a", Bucket: "audit-bucket", ObjectKey: values["S3_OBJECT_KEY"],
+				VersionID: "shared-version", ArtifactSHA256: status.SHA256, ObjectBytes: status.Bytes,
+				RetentionMode: "COMPLIANCE", RetainUntilUnix: retainUntil,
+				RemoteVerified: true, ArchivedAtUnix: 110,
+			}
+			if err := os.WriteFile(values["RECEIPT_OUTPUT"], mustCanonicalReceipt(t, receipt), 0o600); err != nil {
+				return err
+			}
+			ready <- struct{}{}
+			<-release
+			return nil
+		}
+		processors[i] = processor
+	}
+
+	errs := make(chan error, 2)
+	for _, processor := range processors {
+		go func(processor *ArchiveProcessor) { errs <- processor.Process(context.Background(), object.DeepCopy()) }(processor)
+	}
+	<-ready
+	<-ready
+	close(release)
+	require.NoError(t, <-errs)
+	require.NoError(t, <-errs)
+	require.Equal(t, 1, committedUpdates)
+	require.GreaterOrEqual(t, updateAttempts, 1)
+	require.LessOrEqual(t, updateAttempts, 2)
+	updated, err := client.Resource(operationqueue.Resource).Namespace("tenant-a").Get(context.Background(), "operation-a", metav1.GetOptions{})
+	require.NoError(t, err)
+	require.NotContains(t, updated.GetFinalizers(), operationaudit.Finalizer)
+	require.Equal(t, "shared-version", updated.GetAnnotations()[operationaudit.VersionAnnotation])
 }
 
 func TestArchiveProcessorRejectsUnsafeObjectPrefix(t *testing.T) {
