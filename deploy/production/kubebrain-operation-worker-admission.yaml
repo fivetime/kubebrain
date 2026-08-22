@@ -40,6 +40,8 @@ spec:
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-post-restore-audit-executor") ||
         (object.spec.type == "CertificateRotation" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-certificate-rotation-executor") ||
+        (object.spec.type == "InfoCertificateRotation" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-info-certificate-rotation-executor") ||
         (object.spec.type == "TiKVTransactionRepair" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-tikv-transaction-repair-executor") ||
         (object.spec.type == "TiKVTransactionRecovery" &&

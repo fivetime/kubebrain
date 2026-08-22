@@ -229,7 +229,7 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 
 	binding := documents[3]
 	require.Equal(t, "RoleBinding", binding.Kind)
-	require.Len(t, binding.Subjects, 15)
+	require.Len(t, binding.Subjects, 16)
 	for _, name := range []string{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
 		"kubebrain-native-pitr-full-backup-executor",
@@ -241,7 +241,7 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 		"kubebrain-legacy-snapshot-remediation-executor",
 		"kubebrain-restore-cutover-executor",
 		"kubebrain-post-restore-audit-executor",
-		"kubebrain-certificate-rotation-executor", "kubebrain-destroy-executor",
+		"kubebrain-certificate-rotation-executor", "kubebrain-info-certificate-rotation-executor", "kubebrain-destroy-executor",
 		"kubebrain-tikv-transaction-repair-executor",
 		"kubebrain-tikv-transaction-recovery-executor",
 	} {
@@ -549,7 +549,7 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Contains(t, policy.Spec.Validations[3].Expression, operationaudit.VersionAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, "request.userInfo.username")
 	require.Contains(t, policy.Spec.Validations[4].Expression, "kubebrain-operation-approver")
-	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "CertificateRotation", "InfoCertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
 		require.Contains(t, policy.Spec.Validations[4].Expression, operationType)
 	}
 	require.NotContains(t, policy.Spec.Validations[4].Expression, `"Backup"`)

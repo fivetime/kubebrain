@@ -27,6 +27,14 @@ func TestOperationRunnersRejectInvalidSubcommandBeforeClaim(t *testing.T) {
 				"PUBLISH_FINAL_COMMAND={hook}",
 			},
 		},
+		{
+			name:    "info certificate rotation command",
+			script:  "run-info-certificate-rotation-operation.sh",
+			command: "ROTATION_COMMAND",
+			extraEnvs: []string{
+				"PUBLISH_COMMAND={hook}",
+			},
+		},
 		{name: "destroy command", script: "run-destroy-operation.sh", command: "DESTROY_COMMAND"},
 		{name: "TiKV repair command", script: "run-tikv-transaction-repair-operation.sh", command: "REPAIR_COMMAND"},
 		{name: "TiKV recovery command", script: "run-tikv-transaction-recovery-operation.sh", command: "RECOVERY_COMMAND"},
@@ -63,6 +71,9 @@ func replaceHookPath(value, hook string) string {
 	}
 	if value == "PUBLISH_FINAL_COMMAND={hook}" {
 		return "PUBLISH_FINAL_COMMAND=" + hook
+	}
+	if value == "PUBLISH_COMMAND={hook}" {
+		return "PUBLISH_COMMAND=" + hook
 	}
 	return value
 }

@@ -31,7 +31,7 @@ for variable in ACTION ROTATION_ID INSTANCE STATE_DIR INFO_ENDPOINT INFO_SERVER_
     exit 2
   fi
 done
-[[ "$ACTION" == begin || "$ACTION" == complete ]] || { echo "ACTION must be begin or complete" >&2; exit 2; }
+[[ "$ACTION" == begin || "$ACTION" == complete || "$ACTION" == verify ]] || { echo "ACTION must be begin, complete, or verify" >&2; exit 2; }
 [[ "$ROTATION_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "ROTATION_ID is invalid" >&2; exit 2; }
 [[ "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "INSTANCE is invalid" >&2; exit 2; }
 [[ "$KUBEBRAIN_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || { echo "KUBEBRAIN_NAMESPACE is invalid" >&2; exit 2; }
@@ -136,9 +136,13 @@ case "$ACTION" in
     mv -f "$tmp" "$state_file"
     echo "info certificate rotation begin gate passed: instance=${INSTANCE} rotation=${ROTATION_ID}"
     ;;
-  complete)
+  complete|verify)
     [[ -f "$state_file" ]] || { echo "info rotation state is missing" >&2; exit 1; }
-    [[ ! -e "$receipt_file" ]] || { echo "info rotation receipt already exists" >&2; exit 1; }
+    if [[ "$ACTION" == complete ]]; then
+      [[ ! -e "$receipt_file" ]] || { echo "info rotation receipt already exists" >&2; exit 1; }
+    else
+      [[ -f "$receipt_file" ]] || { echo "info rotation receipt is missing" >&2; exit 1; }
+    fi
     IFS=$'\t' read -r version state_instance state_rotation state_endpoint state_old state_new <"$state_file"
     [[ "$version" == kubebrain.info-certificate-rotation.state.v1 && "$state_instance" == "$INSTANCE" &&
       "$state_rotation" == "$ROTATION_ID" && "$state_endpoint" == "$INFO_ENDPOINT" &&
@@ -157,19 +161,34 @@ case "$ACTION" in
     after_snapshot="$(pod_snapshot)"
     validate_snapshot "$after_snapshot"
     [[ "$after_snapshot" == "$before_snapshot" ]] || { echo "KubeBrain Pods changed during info certificate rotation" >&2; exit 1; }
-    completed_at="$(date +%s)"
-    operation_is_nonnegative_int64 "$completed_at" || { echo "invalid completion timestamp" >&2; exit 1; }
-    tmp="${receipt_file}.tmp.$$"
-    "$JQ" -cnS --arg instance "$INSTANCE" --arg rotation "$ROTATION_ID" --arg endpoint "$INFO_ENDPOINT" \
-      --arg old "$old_fingerprint" --arg new "$new_fingerprint" --argjson replicas "$EXPECTED_REPLICAS" \
-      --argjson completed "$completed_at" --argjson rejectionRequired "$REQUIRE_OLD_CA_REJECTION" \
-      --argjson oldCARejected "$old_ca_rejected" \
-      '{format:"kubebrain.info-certificate-rotation.receipt.v1",instance:$instance,rotation_id:$rotation,
-        info_endpoint:$endpoint,replicas:$replicas,old_certificate_sha256:$old,new_certificate_sha256:$new,
-        pods_unchanged:true,old_ca_rejection_required:$rejectionRequired,old_ca_rejected:$oldCARejected,
-        completed_at_unix:$completed}' >"$tmp"
-    chmod 600 "$tmp"
-    mv -f "$tmp" "$receipt_file"
-    echo "info certificate rotation completion gate passed: instance=${INSTANCE} rotation=${ROTATION_ID} receipt=${receipt_file}"
+    if [[ "$ACTION" == complete ]]; then
+      completed_at="$(date +%s)"
+      operation_is_nonnegative_int64 "$completed_at" || { echo "invalid completion timestamp" >&2; exit 1; }
+      tmp="${receipt_file}.tmp.$$"
+      "$JQ" -cnS --arg instance "$INSTANCE" --arg rotation "$ROTATION_ID" --arg endpoint "$INFO_ENDPOINT" \
+        --arg old "$old_fingerprint" --arg new "$new_fingerprint" --argjson replicas "$EXPECTED_REPLICAS" \
+        --argjson completed "$completed_at" --argjson rejectionRequired "$REQUIRE_OLD_CA_REJECTION" \
+        --argjson oldCARejected "$old_ca_rejected" \
+        '{format:"kubebrain.info-certificate-rotation.receipt.v1",instance:$instance,rotation_id:$rotation,
+          info_endpoint:$endpoint,replicas:$replicas,old_certificate_sha256:$old,new_certificate_sha256:$new,
+          pods_unchanged:true,old_ca_rejection_required:$rejectionRequired,old_ca_rejected:$oldCARejected,
+          completed_at_unix:$completed}' >"$tmp"
+      chmod 600 "$tmp"
+      mv -f "$tmp" "$receipt_file"
+      echo "info certificate rotation completion gate passed: instance=${INSTANCE} rotation=${ROTATION_ID} receipt=${receipt_file}"
+    else
+      "$JQ" -e --arg instance "$INSTANCE" --arg rotation "$ROTATION_ID" --arg endpoint "$INFO_ENDPOINT" \
+        --arg old "$old_fingerprint" --arg new "$new_fingerprint" --argjson replicas "$EXPECTED_REPLICAS" \
+        --argjson rejectionRequired "$REQUIRE_OLD_CA_REJECTION" '
+        keys == ["completed_at_unix","format","info_endpoint","instance","new_certificate_sha256","old_ca_rejected","old_ca_rejection_required","old_certificate_sha256","pods_unchanged","replicas","rotation_id"] and
+        .format == "kubebrain.info-certificate-rotation.receipt.v1" and .instance == $instance and
+        .rotation_id == $rotation and .info_endpoint == $endpoint and .replicas == $replicas and
+        .old_certificate_sha256 == $old and .new_certificate_sha256 == $new and .pods_unchanged == true and
+        .old_ca_rejection_required == $rejectionRequired and (.old_ca_rejected | type == "boolean") and
+        (($rejectionRequired | not) or .old_ca_rejected == true) and
+        (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_file" >/dev/null ||
+        { echo "info rotation receipt does not match verified evidence" >&2; exit 1; }
+      echo "info certificate rotation receipt verification passed: instance=${INSTANCE} rotation=${ROTATION_ID} receipt=${receipt_file}"
+    fi
     ;;
 esac

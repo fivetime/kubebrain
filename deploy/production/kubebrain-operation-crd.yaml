@@ -111,6 +111,7 @@ spec:
                     - RestoreCutover
                     - PostRestoreAudit
                     - CertificateRotation
+                    - InfoCertificateRotation
                     - TiKVTransactionRepair
                     - TiKVTransactionRecovery
                     - Destroy

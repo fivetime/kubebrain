@@ -726,6 +726,10 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			"run-certificate-rotation-operation.sh", "kubebrain-certificate-rotation-executor-env",
 			"kubebrain-certificate-rotation-executor-workspace",
 		},
+		"kubebrain-info-certificate-rotation-executor": {
+			"run-info-certificate-rotation-operation.sh", "kubebrain-info-certificate-rotation-executor-env",
+			"kubebrain-info-certificate-rotation-executor-workspace",
+		},
 		"kubebrain-tikv-transaction-repair-executor": {
 			"run-tikv-transaction-repair-operation.sh", "kubebrain-tikv-transaction-repair-executor-env",
 			"kubebrain-tikv-transaction-repair-executor-workspace",
@@ -838,9 +842,9 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			nestedInt64(t, tokenSource, "serviceAccountToken", "expirationSeconds"))
 		require.Equal(t, "kubebrain-operation-parameter-broker-ca",
 			nestedString(t, parameterCA, "configMap", "name"))
-		if name == "kubebrain-certificate-rotation-executor" {
+		if name == "kubebrain-certificate-rotation-executor" || name == "kubebrain-info-certificate-rotation-executor" {
 			require.NotNil(t, hooks)
-			require.Equal(t, "kubebrain-certificate-rotation-executor-hooks",
+			require.Equal(t, name+"-hooks",
 				nestedString(t, hooks, "secret", "secretName"))
 			require.EqualValues(t, 0555, nestedInt64(t, hooks, "secret", "defaultMode"))
 			items, found, err := unstructured.NestedSlice(hooks.Object, "secret", "items")
@@ -851,10 +855,11 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 				itemObject := &unstructured.Unstructured{Object: item.(map[string]any)}
 				pathsByKey[nestedString(t, itemObject, "key")] = nestedString(t, itemObject, "path")
 			}
-			require.Equal(t, map[string]string{
-				"publish-overlap": "publish-overlap",
-				"publish-final":   "publish-final",
-			}, pathsByKey)
+			if name == "kubebrain-certificate-rotation-executor" {
+				require.Equal(t, map[string]string{"publish-overlap": "publish-overlap", "publish-final": "publish-final"}, pathsByKey)
+			} else {
+				require.Equal(t, map[string]string{"publish": "publish"}, pathsByKey)
+			}
 		} else {
 			require.Nil(t, hooks)
 		}
@@ -1250,7 +1255,7 @@ func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *tes
 		"kubebrain-cold-physical-snapshot-executor",
 		"kubebrain-cold-physical-restore-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
-		"kubebrain-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
+		"kubebrain-certificate-rotation-executor", "kubebrain-info-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
 		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-legacy-snapshot-remediation-executor", "kubebrain-destroy-executor",
 	}, values)
 
@@ -1324,7 +1329,7 @@ func TestOperationWorkerAdmissionBindsStatusUpdatesToExecutorType(t *testing.T) 
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
 		"kubebrain-native-pitr-full-backup-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
-		"kubebrain-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
+		"kubebrain-certificate-rotation-executor", "kubebrain-info-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
 		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-destroy-executor",
 	} {
 		require.Contains(t, expression, name)
@@ -1706,7 +1711,7 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)
 	require.Contains(t, approvalExpression, `object.status.phase == "Pending"`)
 	require.Contains(t, approvalExpression, `approval-id"].matches("^[a-z0-9]`)
-	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "CertificateRotation", "InfoCertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
 		require.Contains(t, approvalExpression, `"`+operationType+`"`)
 	}
 	require.NotContains(t, approvalExpression, `"Backup"`)

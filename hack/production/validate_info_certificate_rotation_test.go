@@ -73,6 +73,11 @@ printf 'kubebrain-0\tuid-0\t0\ttrue\nkubebrain-1\tuid-1\t0\ttrue\nkubebrain-2\tu
 	require.Equal(t, true, got["old_ca_rejection_required"])
 	require.Equal(t, true, got["old_ca_rejected"])
 	require.NotEqual(t, got["old_certificate_sha256"], got["new_certificate_sha256"])
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
+		"ACTION=verify", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "new-cert"),
+		"REQUIRE_OLD_CA_REJECTION=true", "FAKE_REJECT_OLD_CA=true"))
+	require.NoError(t, err, out)
+	require.Contains(t, string(out), "receipt verification passed")
 
 	rejectionCommon := append([]string{}, common...)
 	rejectionCommon = append(rejectionCommon,

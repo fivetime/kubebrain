@@ -112,6 +112,7 @@ printf 'called go %s\n' "$*" >>"$EXTERNAL_LOG"
 		"run-backup-operation.sh",
 		"run-backup-deletion-operation.sh",
 		"run-certificate-rotation-operation.sh",
+		"run-info-certificate-rotation-operation.sh",
 		"run-destroy-operation.sh",
 		"run-restore-cutover-operation.sh",
 		"run-post-restore-audit-operation.sh",
