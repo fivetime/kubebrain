@@ -185,6 +185,40 @@ ln "$@"
 	require.Equal(t, []byte("winner\n"), mustRead(t, f.output))
 }
 
+func TestValidateInfoScrapeRecoveryRequiresDurablePublication(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		failAt     string
+		want       string
+		fileExists bool
+	}{
+		{"file sync", "1", "cannot sync scrape recovery receipt before publication", false},
+		{"directory sync", "2", "cannot sync scrape recovery receipt directory after publication", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInfoScrapeFixture(t)
+			fakeSync := filepath.Join(f.dir, "sync")
+			writeExecutable(t, fakeSync, `#!/usr/bin/env bash
+set -euo pipefail
+count=0
+[[ ! -e "$FAKE_SYNC_COUNT" ]] || count="$(<"$FAKE_SYNC_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" >"$FAKE_SYNC_COUNT"
+[[ "$FAKE_SYNC_FAIL_AT" != "$count" ]]
+`)
+			out, err := runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", append(f.env,
+				"SYNC="+fakeSync, "FAKE_SYNC_COUNT="+filepath.Join(f.dir, "sync-count"), "FAKE_SYNC_FAIL_AT="+tc.failAt))
+			require.Error(t, err)
+			require.Contains(t, string(out), tc.want)
+			if tc.fileExists {
+				require.FileExists(t, f.output)
+			} else {
+				require.NoFileExists(t, f.output)
+			}
+		})
+	}
+}
+
 type infoScrapeFixture struct {
 	dir, tlsReceipt, output, calls, ca string
 	env                                []string

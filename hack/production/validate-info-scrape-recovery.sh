@@ -26,6 +26,7 @@ MAX_PROMETHEUS_TOKEN_BYTES=16384
 CURL="${CURL:-curl}"
 JQ="${JQ:-jq}"
 LN="${LN:-ln}"
+SYNC="${SYNC:-sync}"
 
 die() { echo "$*" >&2; exit 1; }
 [[ -f "$TLS_RECEIPT_INPUT" && -r "$TLS_RECEIPT_INPUT" ]] || die "TLS_RECEIPT_INPUT must be a readable regular file"
@@ -58,6 +59,7 @@ command -v "$CURL" >/dev/null || die "curl is required"
 command -v "$JQ" >/dev/null || die "jq is required"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 command -v "$LN" >/dev/null || die "ln is required"
+command -v "$SYNC" >/dev/null || die "sync is required"
 
 umask 077
 capture="$(mktemp -d)"
@@ -75,11 +77,16 @@ freeze_input() {
 }
 publish_no_replace() {
   local source="$1" destination="$2"
+  if ! "$SYNC" -f "$source"; then
+    rm -f -- "$source"
+    die "cannot sync scrape recovery receipt before publication"
+  fi
   if ! "$LN" -- "$source" "$destination"; then
     rm -f -- "$source"
     die "scrape recovery receipt already exists; refusing to overwrite"
   fi
   rm -f -- "$source"
+  "$SYNC" -f "$(dirname -- "$destination")" || die "cannot sync scrape recovery receipt directory after publication"
 }
 TLS_RECEIPT_INPUT="$(freeze_input "$TLS_RECEIPT_INPUT" tls-receipt.json)"
 PROMETHEUS_CA_FILE="$(freeze_input "$PROMETHEUS_CA_FILE" prometheus-ca)"

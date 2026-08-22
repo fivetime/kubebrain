@@ -23,6 +23,7 @@ KUBECTL="${KUBECTL:-kubectl}"
 OPENSSL="${OPENSSL:-openssl}"
 JQ="${JQ:-jq}"
 LN="${LN:-ln}"
+SYNC="${SYNC:-sync}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 MAX_CREDENTIAL_BYTES=1048576
@@ -36,6 +37,7 @@ for variable in ACTION ROTATION_ID INSTANCE STATE_DIR INFO_ENDPOINT INFO_SERVER_
   fi
 done
 command -v "$LN" >/dev/null || { echo "ln is required" >&2; exit 2; }
+command -v "$SYNC" >/dev/null || { echo "sync is required" >&2; exit 2; }
 [[ "$ACTION" == begin || "$ACTION" == complete || "$ACTION" == verify ]] || { echo "ACTION must be begin, complete, or verify" >&2; exit 2; }
 [[ "$ROTATION_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "ROTATION_ID is invalid" >&2; exit 2; }
 [[ "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "INSTANCE is invalid" >&2; exit 2; }
@@ -102,12 +104,21 @@ freeze_file() {
 }
 publish_no_replace() {
   local source="$1" destination="$2" label="$3"
+  if ! "$SYNC" -f "$source"; then
+    rm -f -- "$source"
+    echo "cannot sync ${label} before publication" >&2
+    return 1
+  fi
   if ! "$LN" -- "$source" "$destination"; then
     rm -f -- "$source"
     echo "${label} already exists; refusing to overwrite" >&2
     return 1
   fi
   rm -f -- "$source"
+  if ! "$SYNC" -f "$(dirname -- "$destination")"; then
+    echo "cannot sync ${label} directory after publication" >&2
+    return 1
+  fi
 }
 
 OLD_INFO_CACERT="$(freeze_file "$OLD_INFO_CACERT" old-ca)" || { echo "OLD_INFO_CACERT changed while being captured" >&2; exit 1; }

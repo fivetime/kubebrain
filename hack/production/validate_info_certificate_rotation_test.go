@@ -54,6 +54,15 @@ destination="${!#}"
 printf 'winner\n' >"$destination"
 ln "$@"
 `)
+	fakeSync := filepath.Join(dir, "sync")
+	writeExecutable(t, fakeSync, `#!/usr/bin/env bash
+set -euo pipefail
+count=0
+[[ ! -e "$FAKE_SYNC_COUNT" ]] || count="$(<"$FAKE_SYNC_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" >"$FAKE_SYNC_COUNT"
+[[ "${FAKE_SYNC_FAIL_AT:-0}" != "$count" ]]
+`)
 	stateDir := filepath.Join(dir, "state")
 	receipt := filepath.Join(dir, "receipt.json")
 	common := []string{
@@ -134,6 +143,40 @@ ln "$@"
 	require.Error(t, err)
 	require.Contains(t, string(out), "refusing to overwrite")
 	require.Equal(t, []byte("winner\n"), mustRead(t, receiptRace))
+
+	stateSyncDir := filepath.Join(dir, "state-sync")
+	stateSync := filepath.Join(stateSyncDir, "rotation-state-sync.info.state")
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
+		"ACTION=begin", "ROTATION_ID=rotation-state-sync", "STATE_DIR="+stateSyncDir,
+		"FAKE_PRESENTED_CERT="+filepath.Join(dir, "old-cert"), "SYNC="+fakeSync,
+		"FAKE_SYNC_COUNT="+filepath.Join(dir, "state-sync-count"), "FAKE_SYNC_FAIL_AT=1"))
+	require.Error(t, err)
+	require.Contains(t, string(out), "cannot sync info rotation state before publication")
+	require.NoFileExists(t, stateSync)
+
+	stateDirSyncDir := filepath.Join(dir, "state-directory-sync")
+	stateDirSync := filepath.Join(stateDirSyncDir, "rotation-state-directory-sync.info.state")
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
+		"ACTION=begin", "ROTATION_ID=rotation-state-directory-sync", "STATE_DIR="+stateDirSyncDir,
+		"FAKE_PRESENTED_CERT="+filepath.Join(dir, "old-cert"), "SYNC="+fakeSync,
+		"FAKE_SYNC_COUNT="+filepath.Join(dir, "state-directory-sync-count"), "FAKE_SYNC_FAIL_AT=2"))
+	require.Error(t, err)
+	require.Contains(t, string(out), "cannot sync info rotation state directory after publication")
+	require.FileExists(t, stateDirSync)
+
+	receiptSyncDir := filepath.Join(dir, "receipt-sync")
+	receiptSync := filepath.Join(dir, "receipt-sync.json")
+	receiptSyncCommon := append([]string{}, common...)
+	receiptSyncCommon = append(receiptSyncCommon, "ROTATION_ID=rotation-receipt-sync", "STATE_DIR="+receiptSyncDir, "RECEIPT_OUTPUT="+receiptSync)
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(receiptSyncCommon,
+		"ACTION=begin", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "old-cert")))
+	require.NoError(t, err, string(out))
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(receiptSyncCommon,
+		"ACTION=complete", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "new-cert"), "SYNC="+fakeSync,
+		"FAKE_SYNC_COUNT="+filepath.Join(dir, "receipt-sync-count"), "FAKE_SYNC_FAIL_AT=1"))
+	require.Error(t, err)
+	require.Contains(t, string(out), "cannot sync info rotation receipt before publication")
+	require.NoFileExists(t, receiptSync)
 
 	rejectionCommon := append([]string{}, common...)
 	rejectionCommon = append(rejectionCommon,
