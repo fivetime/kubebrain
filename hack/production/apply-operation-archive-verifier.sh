@@ -91,12 +91,16 @@ check_cronjob() {
   "$JQ" -e --arg sa "$CRONJOB" '
     .spec.jobTemplate.spec.template.spec.serviceAccountName == $sa and
     .spec.concurrencyPolicy == "Forbid" and .spec.jobTemplate.spec.backoffLimit == 0 and
-    .spec.jobTemplate.spec.template.spec.restartPolicy == "Never"
+    .spec.jobTemplate.spec.template.spec.restartPolicy == "Never" and
+    (.spec.jobTemplate.spec.template.spec.containers | length) == 1 and
+    (.spec.jobTemplate.spec.template.spec.containers[0].image | type == "string" and test("^[^[:space:]@]+@sha256:[a-f0-9]{64}$"))
   ' <<<"$cronjob" >/dev/null || die "verifier CronJob runtime contract drifted"
+  verifier_image="$("$JQ" -er '.spec.jobTemplate.spec.template.spec.containers[0].image' <<<"$cronjob")"
+  verifier_image_digest="${verifier_image##*@}"
 }
 
 run_manual_verification() {
-  local requested_name="$1" generate_prefix="$2" manual_job created created_identity completed pods expected_container expected_service_account now
+  local requested_name="$1" generate_prefix="$2" manual_job created created_identity completed pods expected_container expected_init_containers expected_service_account now
   manual_job="$("$JQ" -c --arg name "$requested_name" --arg prefix "$generate_prefix" --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '
     {apiVersion:"batch/v1",kind:"Job",metadata:({namespace:$namespace,annotations:{"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry}} + if $name == "" then {generateName:$prefix} else {name:$name} end),spec:.spec.jobTemplate.spec} |
     .spec.template.metadata.annotations = {"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry} |
@@ -135,9 +139,10 @@ run_manual_verification() {
     ([.status.conditions[] | select(.type == "Complete" and .status == "True")] | length == 1)
   ' <<<"$completed" >/dev/null || die "completed manual verifier Job identity, IAM binding, runtime expiry, or condition drifted"
   expected_container="$("$JQ" -c '.spec.template.spec.containers | select(length == 1) | .[0]' <<<"$completed")" || die "completed manual verifier Job container contract drifted"
+  expected_init_containers="$("$JQ" -c '(.spec.template.spec.initContainers // [])' <<<"$completed")" || die "completed manual verifier Job init container contract drifted"
   expected_service_account="$("$JQ" -er '.spec.template.spec.serviceAccountName | select(type == "string" and length > 0)' <<<"$completed")" || die "completed manual verifier Job service account drifted"
   pods="$(kc get pods -n "$NAMESPACE" -l "batch.kubernetes.io/job-name=$manual_job_name" -o json)" || die "cannot read manual verifier Job Pod"
-  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg service_account "$expected_service_account" --argjson container "$expected_container" '
+  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --arg service_account "$expected_service_account" --arg image "$verifier_image" --arg digest "$verifier_image_digest" --argjson container "$expected_container" --argjson init_containers "$expected_init_containers" '
     .items as $items | if ($items | length) != 1 then false else $items[0] as $pod |
       $pod.metadata.namespace == $namespace and
       $pod.metadata.labels["batch.kubernetes.io/job-name"] == $name and
@@ -145,7 +150,14 @@ run_manual_verification() {
       $pod.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
       ([$pod.metadata.ownerReferences[] | select(.apiVersion == "batch/v1" and .kind == "Job" and .name == $name and .uid == $uid and .controller == true)] | length == 1) and
       $pod.spec.serviceAccountName == $service_account and $pod.spec.restartPolicy == "Never" and
-      $pod.spec.containers == [$container] and $pod.status.phase == "Succeeded"
+      $pod.spec.containers == [$container] and ($pod.spec.initContainers // []) == $init_containers and
+      (($pod.spec.ephemeralContainers // []) | length) == 0 and $pod.status.phase == "Succeeded" and
+      ($pod.status.containerStatuses | length) == 1 and
+      ([$pod.status.containerStatuses[] | select(
+        .name == $container.name and .image == $image and
+        (.imageID | type == "string" and endswith($digest)) and
+        .restartCount == 0 and .state.terminated.exitCode == 0 and .state.terminated.reason == "Completed"
+      )] | length == 1)
     end
   ' <<<"$pods" >/dev/null || die "manual verifier execution Pod owner, evidence binding, runtime, or terminal phase drifted"
   kc logs -n "$NAMESPACE" "job/$manual_job_name" >&2 || die "cannot retain manual verifier Job logs"

@@ -170,6 +170,12 @@ func TestOperationArchiveVerifierRejectsExecutionPodDriftBeforePatch(t *testing.
 		{name: "runtime", env: "FINAL_POD_RUNTIME_EXPIRY=1"},
 		{name: "phase", env: "FINAL_POD_PHASE=Failed"},
 		{name: "sidecar", env: "FINAL_POD_SIDECAR=true"},
+		{name: "init container", env: "FINAL_POD_INIT=true"},
+		{name: "ephemeral container", env: "FINAL_POD_EPHEMERAL=true"},
+		{name: "image id", env: "FINAL_POD_IMAGE_ID=docker-pullable://registry.example/kubebrain@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		{name: "exit code", env: "FINAL_POD_EXIT_CODE=1"},
+		{name: "restart", env: "FINAL_POD_RESTART_COUNT=1"},
+		{name: "missing status", env: "FINAL_POD_STATUS=omit"},
 		{name: "missing", env: "FINAL_POD_COUNT=0"},
 		{name: "multiple", env: "FINAL_POD_COUNT=2"},
 	} {
@@ -183,6 +189,14 @@ func TestOperationArchiveVerifierRejectsExecutionPodDriftBeforePatch(t *testing.
 			require.NotContains(t, log, "patch cronjob")
 		})
 	}
+}
+
+func TestOperationArchiveVerifierRejectsMutableLiveImageBeforeJob(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), "LIVE_IMAGE=registry.example/kubebrain:latest"))
+	require.Error(t, err)
+	require.Contains(t, string(out), "CronJob runtime contract drifted")
+	require.NotContains(t, string(mustRead(t, f.log)), "create -f")
 }
 
 type archiveVerifierApplyFixture struct{ kubectl, log, payloadLog, jobState, state, evidence string }
@@ -207,12 +221,13 @@ if [[ "$args" == *" get secret kubebrain-operation-archive-verifier-object-store
 fi
 if [[ "$args" == *" get cronjob kubebrain-operation-archive-verifier "* ]]; then
   suspend=true; binding=pending; expiry=pending; runtime_expiry=1
+  image="${LIVE_IMAGE:-registry.example/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   if [[ -f "$STATE_FILE" ]]; then
     suspend=false; binding="$(sha256sum "$IAM_SIMULATION_EVIDENCE" | awk '{print $1}')"
     expiry="$(jq -r .valid_until_unix "$IAM_SIMULATION_EVIDENCE")"; runtime_expiry="$expiry"
     [[ "$(<"$STATE_FILE")" != expired ]] || { expiry=1; runtime_expiry=1; }
   fi
-  printf '{"metadata":{"annotations":{"dbaas.kubebrain.io/iam-simulation-sha256":"%s","dbaas.kubebrain.io/iam-simulation-valid-until-unix":"%s"},"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"spec":{"backoffLimit":0,"template":{"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier","containers":[{"env":[{"name":"S3_ENDPOINT"},{"name":"AWS_REGION"},{"name":"AWS_ACCESS_KEY_ID"},{"name":"AWS_SECRET_ACCESS_KEY"},{"name":"S3_FORCE_PATH_STYLE"},{"name":"OBJECT_STORE_ID"},{"name":"S3_BUCKET"},{"name":"IAM_SIMULATION_VALID_UNTIL_UNIX","value":"%s"}]}]}}}}}}\n' "$binding" "$expiry" "$suspend" "$runtime_expiry"; exit 0
+  printf '{"metadata":{"annotations":{"dbaas.kubebrain.io/iam-simulation-sha256":"%s","dbaas.kubebrain.io/iam-simulation-valid-until-unix":"%s"},"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"spec":{"backoffLimit":0,"template":{"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier","containers":[{"name":"verifier","image":"%s","env":[{"name":"S3_ENDPOINT"},{"name":"AWS_REGION"},{"name":"AWS_ACCESS_KEY_ID"},{"name":"AWS_SECRET_ACCESS_KEY"},{"name":"S3_FORCE_PATH_STYLE"},{"name":"OBJECT_STORE_ID"},{"name":"S3_BUCKET"},{"name":"IAM_SIMULATION_VALID_UNTIL_UNIX","value":"%s"}]}]}}}}}}\n' "$binding" "$expiry" "$suspend" "$image" "$runtime_expiry"; exit 0
 fi
 if [[ "$args" == *" get job "* ]]; then
   [[ "${FINAL_JOB_MISSING:-false}" != true && -f "$JOB_STATE_FILE" ]] || exit 1
@@ -227,13 +242,19 @@ if [[ "$args" == *" get job "* ]]; then
 fi
 if [[ "$args" == *" get pods "* ]]; then
   job="$(<"$JOB_STATE_FILE")"; count="${FINAL_POD_COUNT:-1}"
-  pod="$(jq -c '{metadata:{namespace:.metadata.namespace,labels:{"batch.kubernetes.io/job-name":.metadata.name},annotations:.spec.template.metadata.annotations,ownerReferences:[{apiVersion:"batch/v1",kind:"Job",name:.metadata.name,uid:.metadata.uid,controller:true}]},spec:{serviceAccountName:.spec.template.spec.serviceAccountName,restartPolicy:.spec.template.spec.restartPolicy,containers:.spec.template.spec.containers},status:{phase:"Succeeded"}}' <<<"$job")"
+  pod="$(jq -c '{metadata:{namespace:.metadata.namespace,labels:{"batch.kubernetes.io/job-name":.metadata.name},annotations:.spec.template.metadata.annotations,ownerReferences:[{apiVersion:"batch/v1",kind:"Job",name:.metadata.name,uid:.metadata.uid,controller:true}]},spec:{serviceAccountName:.spec.template.spec.serviceAccountName,restartPolicy:.spec.template.spec.restartPolicy,containers:.spec.template.spec.containers},status:{phase:"Succeeded",containerStatuses:[{name:.spec.template.spec.containers[0].name,image:.spec.template.spec.containers[0].image,imageID:("docker-pullable://"+.spec.template.spec.containers[0].image),restartCount:0,state:{terminated:{exitCode:0,reason:"Completed"}}}]}}' <<<"$job")"
   if [[ -n "${FINAL_POD_OWNER_UID:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_OWNER_UID" '.metadata.ownerReferences[0].uid=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_SHA:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_EXPIRY:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_EXPIRY" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_RUNTIME_EXPIRY:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_RUNTIME_EXPIRY" '(.spec.containers[0].env[] | select(.name=="IAM_SIMULATION_VALID_UNTIL_UNIX") | .value)=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_PHASE:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_PHASE" '.status.phase=$value' <<<"$pod")"; fi
   [[ "${FINAL_POD_SIDECAR:-false}" != true ]] || pod="$(jq -c '.spec.containers += [{name:"sidecar",image:"untrusted"}]' <<<"$pod")"
+  [[ "${FINAL_POD_INIT:-false}" != true ]] || pod="$(jq -c '.spec.initContainers = [{name:"init",image:"untrusted"}]' <<<"$pod")"
+  [[ "${FINAL_POD_EPHEMERAL:-false}" != true ]] || pod="$(jq -c '.spec.ephemeralContainers = [{name:"debug",image:"untrusted"}]' <<<"$pod")"
+  if [[ -n "${FINAL_POD_IMAGE_ID:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_IMAGE_ID" '.status.containerStatuses[0].imageID=$value' <<<"$pod")"; fi
+  if [[ -n "${FINAL_POD_EXIT_CODE:-}" ]]; then pod="$(jq -c --argjson value "$FINAL_POD_EXIT_CODE" '.status.containerStatuses[0].state.terminated.exitCode=$value' <<<"$pod")"; fi
+  if [[ -n "${FINAL_POD_RESTART_COUNT:-}" ]]; then pod="$(jq -c --argjson value "$FINAL_POD_RESTART_COUNT" '.status.containerStatuses[0].restartCount=$value' <<<"$pod")"; fi
+  [[ "${FINAL_POD_STATUS:-}" != omit ]] || pod="$(jq -c 'del(.status.containerStatuses)' <<<"$pod")"
   case "$count" in 0) echo '{"items":[]}' ;; 1) jq -cn --argjson pod "$pod" '{items:[$pod]}' ;; 2) jq -cn --argjson pod "$pod" '{items:[$pod,$pod]}' ;; *) exit 1 ;; esac
   exit 0
 fi
