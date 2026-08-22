@@ -6131,6 +6131,12 @@ bytes、无空白 Bearer-safe 文件。它扩到两个副本并要求当前 gene
 不 scale/rollout。执行者需有 Service port-forward、impersonation/RBAC 检查及相关对象只读权限；这些权限不授予
 broker 或 executor。
 
+Service smoke 后，门禁还要求恰好两个 distinct、Ready、非终止 broker Pod；按 Pod name 稳定排序，逐一通过仅监听
+`127.0.0.1` 随机端口的 `pod/<name> :8443` 隧道重复生产 DNS TLS `/readyz=204` 和 token 参数 `=403`。每个 Pod 的
+列表快照 UID、隧道前 UID 与隧道后 UID 必须一致，不能由同名替代 Pod 偷换验证结果。每条 port-forward 日志限制
+64 KiB、最多等待 10 秒并由退出 trap 清理。发布验证身份因此还需 Pod get/list 与 `pods/portforward`；broker SA 和
+executor 不需要也不得获得这些权限。
+
 broker 的 `/readyz` 只接受 GET，其他 method 在证书或依赖探测前返回 405。GET `/readyz`
 不只检查当前 TLS 证书，还会在同一个 `--kubernetes-request-timeout=5s` 预算内探测
 TokenReview create，以及两个显式 queue 各自的 Operation get 和 Secret get 实际服务路径。探测使用固定不存在的

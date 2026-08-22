@@ -60150,6 +60150,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （162.066/507.068/287.844/528.037 秒）。自动化使用 fake kubectl/curl，本轮没有真实短期 projected token、TLS/CA
   或目标集群权限，未实际扩容；上线仍须执行上述命令并留存 RBAC、rollout、204/403 和失败回缩证据。
 
+- A5347 关闭 A5346 的 Service port-forward 只能抽中一个 broker Pod、另一个副本可能只靠 kubelet probe 获得间接
+  证据的缺口。enable/check-enabled 在 Service 204/403 后，要求恰好两个 distinct Ready 非终止 Pod，按 name 排序逐一
+  建立仅 `127.0.0.1` 的随机 `pod/<name> :8443` 隧道，并分别重跑生产 DNS TLS `/readyz=204` 与 audience token 参数
+  请求 `=403`。列表 UID、隧道前 UID、隧道后 UID 三次必须一致；日志限制 64 KiB、端口/等待有界、进程由 trap 清理。
+  权限只增加到发布验证身份的 Pod get/list/portforward，不授予 broker/executor。回归新增“Service 通过而直连 Pod
+  readiness 失败”必须阻止启用并回缩，正常启用与运行态检查也覆盖两 Pod；Bash syntax、broker 定向/完整 package/
+  deploy、全仓 vet、diff check 和新增后的 540 项 inventory 均通过。四片 122/152/136/130 在代码提交
+  `b3e5e34e` 上全部通过（162.889/505.011/289.304/528.868 秒）。自动化使用 fake kubectl/curl/port-forward；本轮
+  未在真实 broker Pod 执行，目标环境仍须留存 Service 与两 Pod 的三组 204/403 输出。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
