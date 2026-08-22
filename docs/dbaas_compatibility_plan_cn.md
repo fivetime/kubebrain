@@ -60136,6 +60136,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `b5da1d95` 上全部通过（159.948/504.111/287.746/523.279 秒）。自动化仍使用 fake kubectl/openssl/port-forward；
   本轮没有目标集群权限或证书，尚未执行真实逐 Pod 握手，生产证据仍须按 A5344 两阶段命令留存。
 
+- A5346 关闭 parameter broker 仍靠手工 RBAC 抽查、scale 和 readiness 观察的启用缺口。新增
+  `apply-operation-parameter-broker.sh --verify/--check/--enable/--check-enabled`：check 对 broker 精确核验 TokenReview
+  仅 create、两个 queue 的 Operation/Secret 仅 get，并明确拒绝 create/list/watch/update/patch/delete/
+  deletecollection；16 个 executor 在对应 queue 的 Secret get/list 必须为 no，Deployment 必须为零副本。enable 要求
+  TLS Secret 精确 cert/key、CA ConfigMap 精确 ca.crt、本地 CA 与 ConfigMap SHA-256 相等，并复用 current-user 0600、
+  16 KiB、无空白 Bearer-safe 的短期 audience token 边界。门禁扩到两个副本，核验 generation 与 updated/ready/
+  available=2，通过仅 127.0.0.1 的 Service port-forward、生产 DNS TLS 校验取得 `/readyz=204`，再对固定不存在
+  Operation 发起认证参数请求并要求 403，证明 TokenReview 和参数 API 链且不读取业务 Secret；失败 best-effort 回缩
+  0。check-enabled 重跑同一矩阵/smoke 且零 scale/rollout。回归覆盖成功启用、token 不泄漏调用日志、HTTPS 失败回缩
+  和运行态无变更检查；Bash syntax、broker 定向/完整 package/deploy、全仓 vet、diff check 和新增后的 539 项 inventory
+  均通过。四片 122/152/136/129 在代码提交 `c63d546f` 上全部通过
+  （162.066/507.068/287.844/528.037 秒）。自动化使用 fake kubectl/curl，本轮没有真实短期 projected token、TLS/CA
+  或目标集群权限，未实际扩容；上线仍须执行上述命令并留存 RBAC、rollout、204/403 和失败回缩证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -6106,6 +6106,31 @@ CA bundle 超过 1 MiB 时必须 fail closed，不能把 `LimitReader` 截断结
 CA 文件。broker 未显式传入 kubeconfig 时先使用 Pod ServiceAccount 的 in-cluster 配置；
 仅在非集群本地执行且 in-cluster 不可用时才回落标准 kubeconfig 规则。
 
+不要手工 scale broker。基础层安装且 TLS Secret/CA ConfigMap 就绪后，先检查零副本权限，再用一个短期 executor
+projected token 启用：
+
+```shell
+KUBE_CONTEXT=production hack/production/apply-operation-parameter-broker.sh --check
+umask 077
+kubectl --context production -n kubebrain-operations create token kubebrain-backup-executor \
+  --audience=kubebrain-operation-parameters --duration=10m >/secure/run/broker-smoke-token
+KUBE_CONTEXT=production \
+BROKER_CA_FILE=/secure/run/broker-ca.crt \
+BROKER_TOKEN_FILE=/secure/run/broker-smoke-token \
+  hack/production/apply-operation-parameter-broker.sh --enable
+```
+
+`--check` 对 broker 身份逐项证明：cluster scope 只有 TokenReview create；主/repair queue 只有 Operation/Secret get，
+明确拒绝 create/list/watch/update/patch/delete/deletecollection；16 个 executor 在各自 queue 的 Secret get/list 均为
+`no`。`--enable` 还要求 TLS Secret 精确只含非空 cert/key，CA ConfigMap 精确只含非空 `ca.crt`，本地 1..1 MiB
+非 symlink/不可 group/world 写 CA 与 ConfigMap 内容 SHA-256 一致；token 必须为当前用户所有的 `0600`、1..16384
+bytes、无空白 Bearer-safe 文件。它扩到两个副本并要求当前 generation 的 updated/ready/available 全为 2，随后以
+只监听 `127.0.0.1` 随机端口的 Service port-forward 和生产 DNS hostname 验证 TLS `/readyz=204`，再用 token 请求固定
+不存在的 Operation 参数并要求 403，证明 TokenReview audience/身份与参数依赖链而不读取真实 Secret。token 只进入
+`0600` curl config，不出现在 argv。启用失败会 best-effort 回缩 0；运行后使用相同输入执行 `--check-enabled`，该模式
+不 scale/rollout。执行者需有 Service port-forward、impersonation/RBAC 检查及相关对象只读权限；这些权限不授予
+broker 或 executor。
+
 broker 的 `/readyz` 只接受 GET，其他 method 在证书或依赖探测前返回 405。GET `/readyz`
 不只检查当前 TLS 证书，还会在同一个 `--kubernetes-request-timeout=5s` 预算内探测
 TokenReview create，以及两个显式 queue 各自的 Operation get 和 Secret get 实际服务路径。探测使用固定不存在的
