@@ -1507,7 +1507,7 @@ func TestTiKVRepairAlertReceiverAdmissionPinsRequestShapeAndIdentity(t *testing.
 			require.True(t, found)
 			require.Len(t, conditions, 1)
 			condition := conditions[0].(map[string]any)["expression"].(string)
-			require.Contains(t, condition, `request.namespace == "kubebrain-repair-operations"`)
+			require.Contains(t, condition, `object.metadata.namespace == "kubebrain-repair-operations"`)
 			require.Contains(t, condition, `system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver`)
 
 			validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
@@ -1521,6 +1521,7 @@ func TestTiKVRepairAlertReceiverAdmissionPinsRequestShapeAndIdentity(t *testing.
 			for _, fragment := range tc.requiredFragments {
 				require.Contains(t, expressions.String(), fragment)
 			}
+			require.Contains(t, expressions.String(), `system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver`)
 
 			binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", tc.name)
 			require.Equal(t, tc.name, nestedString(t, binding, "spec", "policyName"))
@@ -1571,6 +1572,12 @@ func TestTiKVQuiescedRepairRequesterAdmissionPinsPendingRequestShape(t *testing.
 			require.Len(t, conditions, 1)
 			condition := conditions[0].(map[string]any)["expression"].(string)
 			require.Contains(t, condition, `system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester`)
+			if tc.resource == "kubebrainoperations" {
+				require.Contains(t, condition, `object.spec.type == "TiKVTransactionRepair"`)
+				require.Contains(t, condition, `kubebrain-tikv-repair-alert-receiver`)
+			} else {
+				require.Contains(t, condition, `^tikv-quiesced-repair-[a-f0-9]{20}-parameters$`)
+			}
 			validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
 			require.NoError(t, err)
 			require.True(t, found)
@@ -1617,7 +1624,13 @@ func TestTiKVRecoveryRequesterAdmissionPinsPendingRequestShape(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, found)
 			require.Len(t, conditions, 1)
-			require.Contains(t, conditions[0].(map[string]any)["expression"], "kubebrain-tikv-transaction-recovery-requester")
+			condition := conditions[0].(map[string]any)["expression"].(string)
+			require.Contains(t, condition, "kubebrain-tikv-transaction-recovery-requester")
+			if tc.resource == "kubebrainoperations" {
+				require.Contains(t, condition, `object.spec.type == "TiKVTransactionRecovery"`)
+			} else {
+				require.Contains(t, condition, `^tikv-recovery-[a-f0-9]{20}-parameters$`)
+			}
 			validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
 			require.NoError(t, err)
 			require.True(t, found)
@@ -1628,6 +1641,7 @@ func TestTiKVRecoveryRequesterAdmissionPinsPendingRequestShape(t *testing.T) {
 			for _, fragment := range tc.fragments {
 				require.Contains(t, text.String(), fragment)
 			}
+			require.Contains(t, text.String(), `system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester`)
 			binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", tc.name)
 			actions, found, err := unstructured.NestedStringSlice(binding.Object, "spec", "validationActions")
 			require.NoError(t, err)

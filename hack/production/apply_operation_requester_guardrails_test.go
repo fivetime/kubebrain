@@ -69,3 +69,75 @@ func TestOperationRequesterGuardrailsRejectUnsupportedAPIServerBeforeApply(t *te
 	require.Len(t, lines, 1)
 	require.Contains(t, lines[0], "api-resources")
 }
+
+func TestOperationRequesterGuardrailsCheckCompiledPoliciesAndIdentityMatrix(t *testing.T) {
+	dir := t.TempDir()
+	kubectl := writeGuardrailCheckKubectl(t, dir)
+	out, err := runProductionCommandWithTimeout(t, "bash", []string{"apply-operation-requester-guardrails.sh", "--check"}, []string{
+		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl,
+	}, productionScriptCommandTimeout)
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "checked 34 compiled Deny policies and 17 requester RBAC/admission identities")
+}
+
+func TestOperationRequesterGuardrailsRejectPolicyWarningsBeforeIdentityProbes(t *testing.T) {
+	dir := t.TempDir()
+	kubectl := writeGuardrailCheckKubectl(t, dir)
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-requester-guardrails.sh", "--check"}, []string{
+		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "POLICY_WARNING=true",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(out), "type checking is incomplete or has warnings")
+}
+
+func writeGuardrailCheckKubectl(t *testing.T, dir string) string {
+	t.Helper()
+	kubectl := filepath.Join(dir, "kubectl")
+	writeTrafficExecutable(t, kubectl, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == --context ]]; then shift 2; fi
+case "${1:-}" in
+  api-resources)
+    printf '%s\n' validatingadmissionpolicies.admissionregistration.k8s.io validatingadmissionpolicybindings.admissionregistration.k8s.io
+    ;;
+  create)
+    if [[ " $* " == *" --dry-run=client "* ]]; then
+      file=""
+      while [[ "$#" -gt 0 ]]; do
+        if [[ "$1" == -f ]]; then file="$2"; break; fi
+        shift
+      done
+      stem="${file##*/kubebrain-}"; stem="${stem%-requester-admission.yaml}"
+      printf 'validatingadmissionpolicy.admissionregistration.k8s.io/%s-operation\n' "$stem"
+      printf 'validatingadmissionpolicybinding.admissionregistration.k8s.io/%s-operation\n' "$stem"
+      printf 'validatingadmissionpolicy.admissionregistration.k8s.io/%s-parameters\n' "$stem"
+      printf 'validatingadmissionpolicybinding.admissionregistration.k8s.io/%s-parameters\n' "$stem"
+    else
+      payload="$(cat)"
+      [[ "$payload" != *unexpected* && "$payload" != *invalid-requester* && "$payload" != *conformance-wrong-identity* ]] || exit 1
+    fi
+    ;;
+  get)
+    kind="$2"; name="$3"
+    if [[ "$kind" == validatingadmissionpolicy ]]; then
+      if [[ "${POLICY_WARNING:-false}" == true ]]; then
+        printf '{"metadata":{"name":"%s","generation":1},"status":{"observedGeneration":1,"typeChecking":{"expressionWarnings":[{"fieldRef":"spec.validations[0].expression","warning":"bad"}]}}}\n' "$name"
+      else
+        printf '{"metadata":{"name":"%s","generation":1},"status":{"observedGeneration":1,"typeChecking":{}}}\n' "$name"
+      fi
+    else
+      printf '{"metadata":{"name":"%s"},"spec":{"policyName":"%s","validationActions":["Deny"]}}\n' "$name" "$name"
+    fi
+    ;;
+  auth)
+    verb="$3"
+    case "$verb" in
+      create|get) echo yes ;;
+      *) echo no; exit 1 ;;
+    esac
+    ;;
+  *) exit 99 ;;
+esac
+`)
+	return kubectl
+}

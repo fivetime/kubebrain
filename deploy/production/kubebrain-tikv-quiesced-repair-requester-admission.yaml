@@ -12,17 +12,25 @@ spec:
         resources: [kubebrainoperations]
         scope: Namespaced
   matchConditions:
-    - name: quiesced-repair-requester
-      expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester"'
+    - name: transaction-repair-requester-fence
+      expression: 'object.spec.type == "TiKVTransactionRepair" || request.userInfo.username in ["system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester", "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"]'
   validations:
-    - expression: 'object.metadata.namespace == "kubebrain-repair-operations"'
-      message: quiesced repair requester is restricted to the isolated repair queue
-    - expression: 'object.metadata.name.matches("^tikv-quiesced-repair-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name'
-      message: quiesced repair operation identity must be deterministic
-    - expression: 'object.spec.type == "TiKVTransactionRepair" && object.spec.requestedBy == "platform:tikv-quiesced-repair" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2'
-      message: quiesced repair operation shape is fixed
-    - expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")'
-      message: quiesced repair operation must bind its immutable parameter Secret
+    - expression: |
+        (request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester" &&
+          object.metadata.namespace == "kubebrain-repair-operations" &&
+          object.metadata.name.matches("^tikv-quiesced-repair-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name &&
+          object.spec.type == "TiKVTransactionRepair" && object.spec.requestedBy == "platform:tikv-quiesced-repair" &&
+          object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2 &&
+          object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" &&
+          object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")) ||
+        (request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver" &&
+          object.metadata.namespace == "kubebrain-repair-operations" &&
+          object.metadata.name.matches("^tikv-repair-[a-f0-9]{16,20}$") && object.spec.operationID == object.metadata.name &&
+          object.spec.type == "TiKVTransactionRepair" && object.spec.requestedBy == "alertmanager:transaction-path-policy" &&
+          object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2 &&
+          object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" &&
+          object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$"))
+      message: transaction repair operations require one of the two dedicated requester identities and its exact immutable shape
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -46,9 +54,11 @@ spec:
         resources: [secrets]
         scope: Namespaced
   matchConditions:
-    - name: quiesced-repair-requester
-      expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester"'
+    - name: quiesced-repair-parameter-scope
+      expression: '(object.metadata.namespace == "kubebrain-repair-operations" && object.metadata.name.matches("^tikv-quiesced-repair-[a-f0-9]{20}-parameters$")) || request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester"'
   validations:
+    - expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester"'
+      message: quiesced repair parameters require the dedicated requester identity
     - expression: 'object.metadata.namespace == "kubebrain-repair-operations" && object.metadata.name.matches("^tikv-quiesced-repair-[a-f0-9]{20}-parameters$")'
       message: quiesced repair parameter Secret identity is fixed
     - expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data'

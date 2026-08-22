@@ -12,9 +12,11 @@ spec:
         resources: [kubebrainoperations]
         scope: Namespaced
   matchConditions:
-    - name: recovery-requester
-      expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
+    - name: recovery-scope
+      expression: 'object.spec.type == "TiKVTransactionRecovery" || request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
   validations:
+    - expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
+      message: recovery operations require the dedicated requester identity
     - expression: 'object.metadata.namespace == "kubebrain-repair-operations"'
       message: recovery requester is restricted to the isolated repair queue
     - expression: 'object.metadata.name.matches("^tikv-recovery-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name'
@@ -46,9 +48,11 @@ spec:
         resources: [secrets]
         scope: Namespaced
   matchConditions:
-    - name: recovery-requester
-      expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
+    - name: recovery-parameter-scope
+      expression: '(object.metadata.namespace == "kubebrain-repair-operations" && object.metadata.name.matches("^tikv-recovery-[a-f0-9]{20}-parameters$")) || request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
   validations:
+    - expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
+      message: recovery parameters require the dedicated requester identity
     - expression: 'object.metadata.namespace == "kubebrain-repair-operations" && object.metadata.name.matches("^tikv-recovery-[a-f0-9]{20}-parameters$")'
       message: recovery parameter Secret identity is fixed
     - expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data'

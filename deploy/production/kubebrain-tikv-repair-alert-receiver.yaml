@@ -167,9 +167,11 @@ spec:
         resources: [kubebrainoperations]
         scope: Namespaced
   matchConditions:
-    - name: repair-alert-receiver
-      expression: 'request.namespace == "kubebrain-repair-operations" && request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"'
+    - name: repair-alert-operation-scope
+      expression: '(object.metadata.namespace == "kubebrain-repair-operations" && object.metadata.name.matches("^tikv-repair-[a-f0-9]{16,20}$")) || request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"'
   validations:
+    - expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"'
+      message: repair alert operations require the dedicated receiver identity
     - expression: 'object.metadata.name.matches("^tikv-repair-[a-f0-9]{16,20}$")'
       message: repair alert operation name must derive from an alert occurrence
     - expression: 'object.spec.type == "TiKVTransactionRepair" && object.spec.operationID == object.metadata.name && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2'
@@ -207,9 +209,11 @@ spec:
         resources: [secrets]
         scope: Namespaced
   matchConditions:
-    - name: repair-alert-receiver
-      expression: 'request.namespace == "kubebrain-repair-operations" && request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"'
+    - name: repair-alert-parameter-scope
+      expression: '(object.metadata.namespace == "kubebrain-repair-operations" && object.metadata.name.matches("^tikv-repair-[a-f0-9]{16,20}-parameters$")) || request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"'
   validations:
+    - expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"'
+      message: repair alert parameters require the dedicated receiver identity
     - expression: 'object.metadata.name.matches("^tikv-repair-[a-f0-9]{16,20}-parameters$")'
       message: repair parameter Secret name must derive from an alert occurrence
     - expression: 'has(object.immutable) && object.immutable == true && object.type == "Opaque"'
