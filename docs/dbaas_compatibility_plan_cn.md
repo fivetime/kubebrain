@@ -59853,6 +59853,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   观察到的 Kubernetes 对象、绑定和就绪结果与冻结输入一致，不证明 CSI provider 的底层卷内容、崩溃持久性或跨卷
   一致性；真实隔离恢复、断电和数据语义演练仍是上线门禁，无效证据只能隔离审计或重建目标，不能原地重试。
 
+- A5329 为 alert-driven 与人工 quiesced 两类 `TiKVTransactionRepair` 建立 receipt-before-status durable
+  reconciliation。底层 repair primitive 已将 receipt 写入 0600 随机临时文件，执行 file sync，再以不可覆盖 hard-link
+  发布、unlink 并 directory sync；但两类 requester/admission 仍固定 `maxAttempts=1`，runner 测试甚至把首次破坏性
+  执行伪装成 attempt 2。发布后退出或 status 不确定会要求新审批，而旧 runner 遇到无 receipt 的任意 attempt 都会再次
+  替换 TiKV Pod。现在两类入口统一固定 `maxAttempts=2`，claim 只接受 1/2：attempt 1 是唯一可执行 repair primitive
+  的路径，启动后的非零与 receipt 验证不确定保持非终态；attempt 2 在独立 verifier process group 外持续 heartbeat，
+  只接受 1..1 MiB 普通非 symlink、`0600:<current UID>:1` receipt。transaction/quiesced 各自要求精确顶层 schema，
+  并绑定 operation 派生 attempt ID、KubeBrain/TidbCluster UID、正 uint64 cluster/store ID、PVC preservation、事务或
+  region 验证与实际 Pod 数；两次完整 lineage 验证夹住两次 raw SHA-256，稳定摘要才进入私有 capture 和 Succeeded。
+  attempt 2 缺失、0640 或 lineage 不一致证据才 Failed 并要求隔离审计，绝不调用 repair。回归覆盖普通和 quiesced
+  takeover、producer 写证后退出 9 的 publication uncertainty 接管、0640/缺失/错误 store receipt 拒绝、attempt 2
+  零 primitive 调用及 attempt 1 primitive 失败无提前 terminal。Bash syntax、两类 requester/admission 定向测试连续
+  两轮、完整 deploy、全仓 vet、diff check 与 478 项 inventory 均通过；四片 107/136/119/116 在代码提交
+  `e4c5d988` 上全部通过（152.326/482.654/279.501/510.915 秒）。receipt 证明 runner 已观察到绑定身份的修复后
+  Kubernetes/事务或 region 门禁，不证明 TiKV 磁盘内容、Raft 副本或后续负载下的持久正确性；真实独立 TiKV/PD
+  故障注入、数据校验和人工隔离演练仍是上线门禁，同 UID workspace 写者也必须由专用 PVC/UID/单 writer 隔离。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

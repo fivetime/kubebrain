@@ -527,13 +527,16 @@ ConfigMap 默认写入 TiKV namespace；Operation executor 显式设置
 `kubebrain-operation-executors.yaml`，运行
 `run-tikv-transaction-repair-operation.sh`：领取带 lease 的任务、从隔离 queue 的 immutable Secret 获取并冻结
 参数、校验 SHA-256、在修复期间持续 heartbeat，丢失 lease 会终止子进程。wrapper 从 operation ID
-和 attempt 派生不可复用 repair attempt ID，校验严格 JSON receipt 后才向 Operation 写入
+派生不可复用 repair attempt ID，校验严格 JSON receipt 后才向 Operation 写入
 Succeeded 与 receipt SHA-256。heartbeat 继续覆盖 receipt 校验；终态前先回收后台循环并拒绝已观察到的
-fencing，再同步续租一个完整 lease，成功后才紧邻提交 owner+attempt CAS。参数下载/哈希竞态可安全 requeue；破坏性执行或 receipt 验证失败
-会把 Operation 终止为 Failed，必须提交新的审批 Operation，不能在同一不可复用 repair attempt
-上自动重试。repair attempt ID 和持久 receipt
-路径只由不可变 operation ID 派生，不随 worker claim attempt 改变，因此 worker 在修复完成、提交
-Operation 终态前崩溃时，接管者会复验同一 receipt 并完成提交，而不会再次重启 TiKV。
+fencing，再同步续租一个完整 lease，成功后才紧邻提交 owner+attempt CAS。transaction 与 quiesced requester/admission
+固定 `maxAttempts=2`，但只有 attempt 1 能启动破坏性 repair primitive；启动后的命令非零或 receipt/status
+不确定保持非终态。attempt 2 在独立 process group 中只读复核 1..1 MiB、普通非 symlink、
+`0600:<current UID>:1` 的既有 receipt，要求精确 schema、operation 派生 attempt ID、KubeBrain/TidbCluster UID、
+cluster ID 与实际 repair 结果绑定，并以两次完整验证夹住稳定 SHA-256。有效时只收敛 status；缺失或无效时
+Failed 并要求隔离审计，绝不再次替换 TiKV Pod。参数下载/哈希竞态仍可安全 requeue。repair attempt ID 和持久
+receipt 路径只由不可变 operation ID 派生，不随 worker claim attempt 改变，因此 worker 在修复完成、提交
+Operation 终态前崩溃时，接管者会复验同一 receipt 并完成提交，而不会再次修复 TiKV。
 
 部署该 executor 还必须应用
 `deploy/production/kubebrain-tikv-transaction-repair-rbac.yaml`。权限被拆成三个 namespace：
@@ -710,7 +713,7 @@ get/create 该 namespace 的 Secret 和 Operation，并只读指定 KubeBrain St
 接入，其他类型 executor 不会扫描该 inventory。receiver Deployment 默认 2 副本、PDB
 `maxUnavailable: 1`；确定性 Secret/Operation identity 保证 Alertmanager 重试幂等。
 两条 fail-closed `ValidatingAdmissionPolicy` 进一步只约束该 receiver SA 的 CREATE：Operation 必须
-使用 alert occurrence 派生名称、`TiKVTransactionRepair`、固定 requester/instance、`maxAttempts=1` 和
+使用 alert occurrence 派生名称、`TiKVTransactionRepair`、固定 requester/instance、`maxAttempts=2` 和
 同名参数引用；Secret 必须使用派生名称、`immutable=true`、`Opaque` 且只能含
 `parameters.json`。因此即使 bearer endpoint 或 receiver Pod 凭证泄露，也不能借其 RBAC 在隔离
 queue 中制造其他 operation type、可变 Secret 或任意 Secret payload。
