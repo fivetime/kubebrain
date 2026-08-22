@@ -29,6 +29,76 @@ type AuditRequest struct {
 	Now             time.Time
 }
 
+type AuditVerifyRequest struct {
+	Input           string
+	ObjectStoreID   string
+	Bucket          string
+	ObjectKey       string
+	RetentionMode   string
+	RetainUntilUnix int64
+	ReceiptInput    string
+	Now             time.Time
+}
+
+// VerifyAudit verifies immutable audit evidence using an API that has no write
+// capability. A missing receipt is an error: this path never creates evidence.
+func VerifyAudit(ctx context.Context, client AuditReadAPI, request AuditVerifyRequest) (AuditReceipt, error) {
+	if request.Input == "" || request.ObjectStoreID == "" || request.Bucket == "" ||
+		request.ObjectKey == "" || request.ReceiptInput == "" || request.RetainUntilUnix <= 0 {
+		return AuditReceipt{}, errors.New("operation audit verification request is incomplete")
+	}
+	if !validObjectRequestIdentity(request.ObjectStoreID, request.Bucket, request.ObjectKey) {
+		return AuditReceipt{}, errors.New("operation audit verification request is incomplete")
+	}
+	if _, err := objectLockMode(request.RetentionMode); err != nil {
+		return AuditReceipt{}, err
+	}
+	status, body, err := operationaudit.InspectBytes(request.Input)
+	if err != nil {
+		return AuditReceipt{}, fmt.Errorf("validate operation audit artifact: %w", err)
+	}
+	receipt, err := ReadAuditReceipt(request.ReceiptInput)
+	if err != nil {
+		return AuditReceipt{}, fmt.Errorf("read required operation audit receipt: %w", err)
+	}
+	archiveRequest := AuditRequest{
+		Input: request.Input, ObjectStoreID: request.ObjectStoreID, Bucket: request.Bucket,
+		ObjectKey: request.ObjectKey, RetentionMode: request.RetentionMode,
+		RetainUntilUnix: request.RetainUntilUnix, ReceiptOutput: request.ReceiptInput, Now: request.Now,
+	}
+	if !auditReceiptMatches(receipt, archiveRequest, status) {
+		return AuditReceipt{}, errors.New("audit receipt does not match the verification request")
+	}
+	now := request.Now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	retainUntil := time.Unix(request.RetainUntilUnix, 0).UTC()
+	if !retainUntil.After(now) {
+		return AuditReceipt{}, errors.New("audit object retention is no longer in the future")
+	}
+	head, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(request.Bucket), Key: aws.String(request.ObjectKey),
+		VersionId: aws.String(receipt.VersionID),
+	})
+	if err != nil {
+		return AuditReceipt{}, fmt.Errorf("read exact audit object metadata: %w", err)
+	}
+	if err := validateHead(head, auditMetadata(archiveRequest, status, retainUntil), status.Bytes); err != nil {
+		return AuditReceipt{}, fmt.Errorf("validate exact audit object metadata: %w", err)
+	}
+	if aws.ToString(head.VersionId) != receipt.VersionID {
+		return AuditReceipt{}, errors.New("exact audit object returned a different version ID")
+	}
+	if err := verifyAuditRemote(ctx, client, archiveRequest, receipt.VersionID, status, body); err != nil {
+		return AuditReceipt{}, err
+	}
+	if err := validateAuditRetention(ctx, client, archiveRequest, receipt.VersionID, retainUntil); err != nil {
+		return AuditReceipt{}, err
+	}
+	return receipt, nil
+}
+
 func ArchiveAudit(ctx context.Context, client S3API, request AuditRequest) (AuditReceipt, error) {
 	if request.Input == "" || request.ObjectStoreID == "" || request.Bucket == "" ||
 		request.ObjectKey == "" || request.ReceiptOutput == "" || request.RetainUntilUnix <= 0 {
@@ -158,7 +228,7 @@ func ArchiveAudit(ctx context.Context, client S3API, request AuditRequest) (Audi
 
 func verifyAuditRemote(
 	ctx context.Context,
-	client S3API,
+	client AuditReadAPI,
 	request AuditRequest,
 	versionID string,
 	expected operationaudit.Status,
@@ -172,6 +242,9 @@ func verifyAuditRemote(
 		return fmt.Errorf("download operation audit object: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, output.Body.Close()) }()
+	if aws.ToString(output.VersionId) != versionID {
+		return errors.New("downloaded audit object returned a different version ID")
+	}
 	body, err := io.ReadAll(io.LimitReader(output.Body, expected.Bytes+1))
 	if err != nil {
 		return err
@@ -191,7 +264,7 @@ func verifyAuditRemote(
 
 func validateAuditRetention(
 	ctx context.Context,
-	client S3API,
+	client AuditReadAPI,
 	request AuditRequest,
 	versionID string,
 	retainUntil time.Time,

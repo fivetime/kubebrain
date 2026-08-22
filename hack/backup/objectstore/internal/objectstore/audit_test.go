@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"github.com/stretchr/testify/require"
@@ -47,6 +48,97 @@ func TestArchiveAuditUploadsVerifiesAndRetriesExactVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, receipt, recovered)
 	require.Equal(t, 2, client.putCalls)
+}
+
+func TestVerifyAuditIsReadOnlyAndRejectsEvidenceDrift(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	newEvidence := func(t *testing.T) (AuditVerifyRequest, *fakeS3, *auditReadOnlyClient) {
+		t.Helper()
+		archiveRequest := AuditRequest{
+			Input: writeAuditArtifact(t), ObjectStoreID: "store-a", Bucket: "audits",
+			ObjectKey: "instance-a/operation-1.json", RetentionMode: "COMPLIANCE",
+			RetainUntilUnix: now.Add(time.Hour).Unix(),
+			ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+		}
+		backend := &fakeS3{}
+		_, err := ArchiveAudit(context.Background(), backend, archiveRequest)
+		require.NoError(t, err)
+		request := AuditVerifyRequest{
+			Input: archiveRequest.Input, ObjectStoreID: archiveRequest.ObjectStoreID,
+			Bucket: archiveRequest.Bucket, ObjectKey: archiveRequest.ObjectKey,
+			RetentionMode: archiveRequest.RetentionMode, RetainUntilUnix: archiveRequest.RetainUntilUnix,
+			ReceiptInput: archiveRequest.ReceiptOutput, Now: archiveRequest.Now,
+		}
+		return request, backend, &auditReadOnlyClient{backend: backend}
+	}
+
+	t.Run("success without put capability", func(t *testing.T) {
+		request, backend, client := newEvidence(t)
+		receipt, err := VerifyAudit(context.Background(), client, request)
+		require.NoError(t, err)
+		require.Equal(t, "version-1", receipt.VersionID)
+		require.Equal(t, 1, backend.putCalls)
+	})
+	t.Run("missing receipt", func(t *testing.T) {
+		request, backend, client := newEvidence(t)
+		require.NoError(t, os.Remove(request.ReceiptInput))
+		_, err := VerifyAudit(context.Background(), client, request)
+		require.ErrorContains(t, err, "required operation audit receipt")
+		require.Zero(t, client.headCalls)
+		require.Equal(t, 1, backend.putCalls)
+	})
+	t.Run("metadata drift", func(t *testing.T) {
+		request, backend, client := newEvidence(t)
+		backend.metadata["kubebrain-operation-id"] = "other"
+		_, err := VerifyAudit(context.Background(), client, request)
+		require.ErrorContains(t, err, "metadata kubebrain-operation-id differs")
+	})
+	t.Run("body drift", func(t *testing.T) {
+		request, backend, client := newEvidence(t)
+		backend.corruptGet = true
+		_, err := VerifyAudit(context.Background(), client, request)
+		require.ErrorContains(t, err, "digest differs")
+	})
+	t.Run("retention drift", func(t *testing.T) {
+		request, backend, client := newEvidence(t)
+		backend.retainUntil = backend.retainUntil.Add(time.Minute)
+		_, err := VerifyAudit(context.Background(), client, request)
+		require.ErrorContains(t, err, "retention does not match")
+	})
+	t.Run("expired retention", func(t *testing.T) {
+		request, backend, client := newEvidence(t)
+		request.Now = time.Unix(request.RetainUntilUnix, 0)
+		_, err := VerifyAudit(context.Background(), client, request)
+		require.ErrorContains(t, err, "retention is no longer in the future")
+		require.Zero(t, client.headCalls)
+		require.Equal(t, 1, backend.putCalls)
+	})
+}
+
+// auditReadOnlyClient intentionally has no PutObject method. Its successful use
+// is a compile-time proof that VerifyAudit cannot require S3 write capability.
+type auditReadOnlyClient struct {
+	backend   *fakeS3
+	headCalls int
+}
+
+func (c *auditReadOnlyClient) HeadObject(
+	ctx context.Context, input *s3.HeadObjectInput, options ...func(*s3.Options),
+) (*s3.HeadObjectOutput, error) {
+	c.headCalls++
+	return c.backend.HeadObject(ctx, input, options...)
+}
+
+func (c *auditReadOnlyClient) GetObject(
+	ctx context.Context, input *s3.GetObjectInput, options ...func(*s3.Options),
+) (*s3.GetObjectOutput, error) {
+	return c.backend.GetObject(ctx, input, options...)
+}
+
+func (c *auditReadOnlyClient) GetObjectRetention(
+	ctx context.Context, input *s3.GetObjectRetentionInput, options ...func(*s3.Options),
+) (*s3.GetObjectRetentionOutput, error) {
+	return c.backend.GetObjectRetention(ctx, input, options...)
 }
 
 func TestArchiveAuditUsesFrozenArtifactWhenSourceChangesBeforeVerify(t *testing.T) {

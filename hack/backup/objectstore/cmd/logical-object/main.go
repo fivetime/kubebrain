@@ -96,6 +96,20 @@ func main() {
 		if err := writeJSON(os.Stdout, receipt); err != nil {
 			log.Fatal(err)
 		}
+	case "audit-verify":
+		receipt, err := objectstore.VerifyAudit(ctx, client, objectstore.AuditVerifyRequest{
+			Input: os.Getenv("INPUT"), ObjectStoreID: os.Getenv("OBJECT_STORE_ID"),
+			Bucket: os.Getenv("S3_BUCKET"), ObjectKey: os.Getenv("S3_OBJECT_KEY"),
+			RetentionMode:   os.Getenv("RETENTION_MODE"),
+			RetainUntilUnix: int64Env("RETAIN_UNTIL_UNIX"),
+			ReceiptInput:    os.Getenv("RECEIPT_INPUT"),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := writeJSON(os.Stdout, receipt); err != nil {
+			log.Fatal(err)
+		}
 	case "blob":
 		receipt, err := objectstore.ArchiveBlob(ctx, client, objectstore.BlobRequest{
 			Input: os.Getenv("INPUT"), ArtifactFormat: os.Getenv("ARTIFACT_FORMAT"),
@@ -177,7 +191,7 @@ func main() {
 			log.Fatal(err)
 		}
 	default:
-		log.Fatal("ACTION must be upload, delete, archive, blob, blob-read, manifest, inventory, pitr-inventory, usage, or probe")
+		log.Fatal("ACTION must be upload, delete, archive, audit-verify, blob, blob-read, manifest, inventory, pitr-inventory, usage, or probe")
 	}
 }
 

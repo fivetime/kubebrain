@@ -118,6 +118,11 @@ cmp -s "$first_receipt" "$recovered_receipt" || die "receipt-loss recovery did n
   (.version_id | type == "string" and length > 0) and (.artifact_sha256 | test("^[a-f0-9]{64}$"))
 ' "$recovered_receipt" >/dev/null || die "recovered Object Lock receipt scope is invalid"
 
+ACTION=audit-verify INPUT="$artifact" OBJECT_STORE_ID="$OBJECT_STORE_ID" S3_BUCKET="$S3_BUCKET" \
+  S3_OBJECT_KEY="$object_key" RETENTION_MODE="$RETENTION_MODE" RETAIN_UNTIL_UNIX="$retain_until" \
+  RECEIPT_INPUT="$recovered_receipt" "$LOGICAL_OBJECT" >/dev/null || \
+  die "read-only verification of recovered Object Lock evidence failed"
+
 release_args=(--action release --namespace "$OPERATION_NAMESPACE" --name "$OPERATION_NAME" --output "$artifact" --receipt "$recovered_receipt" --kubeconfig "$KUBECONFIG_PATH" --object-store-id "$OBJECT_STORE_ID" --bucket "$S3_BUCKET" --object-key "$object_key" --retention-mode "$RETENTION_MODE" --retain-until-unix "$retain_until")
 [[ -n "$KUBE_CONTEXT" ]] && release_args+=(--context "$KUBE_CONTEXT")
 "$OPERATION_AUDIT" "${release_args[@]}" || die "release terminal Operation audit finalizer failed"
@@ -134,4 +139,4 @@ released="$(kc get kubebrainoperation "$OPERATION_NAME" -n "$OPERATION_NAMESPACE
 ' <<<"$released" >/dev/null || die "released Operation does not bind the exact Object Lock evidence"
 sync -f "$artifact"; sync -f "$first_receipt"; sync -f "$peer_receipt"; sync -f "$recovered_receipt"; sync -f "$EVIDENCE_DIR"
 trap - EXIT; rm -rf -- "$tmp"
-echo "verified concurrent terminal Operation Object Lock convergence, byte-identical receipt-loss recovery, and UID-bound finalizer release"
+echo "verified concurrent terminal Operation Object Lock convergence, read-only evidence integrity, byte-identical receipt-loss recovery, and UID-bound finalizer release"
