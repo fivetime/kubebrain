@@ -59870,6 +59870,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Kubernetes/事务或 region 门禁，不证明 TiKV 磁盘内容、Raft 副本或后续负载下的持久正确性；真实独立 TiKV/PD
   故障注入、数据校验和人工隔离演练仍是上线门禁，同 UID workspace 写者也必须由专用 PVC/UID/单 writer 隔离。
 
+- A5330 为 `TiKVTransactionRecovery` 建立 receipt-before-status durable reconciliation。底层 recovery primitive
+  已将 3 Ready、双次 storage health、transaction verified 与 request/cluster lineage 写入 0600 随机临时 receipt，
+  执行 file sync、不可覆盖 hard-link 发布、unlink 和 directory sync；但 requester/admission 仍固定
+  `maxAttempts=1`，runner 测试也把首次 scale/probe 伪装成 attempt 2。现在固定 `maxAttempts=2` 且 claim 仅接受
+  1/2：只有 attempt 1 能启动 recovery，命令非零或 receipt/status 不确定保持非终态；attempt 2 在独立 verifier
+  process group 外持续 heartbeat，只接受 1..1 MiB 普通非 symlink、`0600:<current UID>:1` receipt。精确 schema
+  绑定 operation 派生 attempt ID、外部 request ID、KubeBrain/TidbCluster UID、正 uint64 cluster ID、3 Ready、
+  storage health 与 transaction verified；两次完整验证夹住两次 raw SHA-256，稳定摘要才进入私有 capture 和
+  Succeeded。attempt 2 缺失、0640 或 lineage 不一致证据才 Failed 并要求隔离审计，绝不再次 scale/probe。
+  回归覆盖正常 takeover、producer 写证后退出 9 的 publication uncertainty 接管、0640/缺失 receipt 拒绝、
+  attempt 2 零 recovery 调用、attempt 1 primitive 失败及非法完成时间不提前 terminal。Bash syntax、runner/requester
+  定向测试连续两轮、完整 deploy、全仓 vet、diff check 与 478 项 inventory 均通过；四片 107/136/119/116 在代码
+  提交 `39647d06` 上全部通过（150.927/480.312/278.299/510.429 秒）。receipt 证明 recovery runner 已观察到
+  指定三副本、存储健康与一次事务探测，不证明后续流量、TiKV 磁盘/Raft 副本或长期 lease/watch 语义；真实独立
+  TiKV/PD 故障恢复、持续负载和数据正确性演练仍是上线门禁，同 UID workspace 必须保持专用 PVC/UID/单 writer。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

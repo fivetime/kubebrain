@@ -593,7 +593,7 @@ hack/production/request-tikv-quiesced-repair.sh
 requester 要求 KubeBrain desired/Ready 精确为 0、TidbCluster 3 PD/3 TiKV Ready，且 PD 至少报告一个
 有效 pending/down store；它不会执行 scale、Pod delete、exec 或 approve。Operation 名同时绑定外部
 `REQUEST_ID`、两个 UID、cluster ID 和排序去重后的 store IDs，参数 Secret 为 immutable 且
-`maxAttempts: 1`。平台 approver 必须核对外部变更单与冻结 store 集合后写入独立 approval ID，才能将
+`maxAttempts: 2`。平台 approver 必须核对外部变更单与冻结 store 集合后写入独立 approval ID，才能将
 既有 `kubebrain-tikv-transaction-repair-executor` 从 0 扩为 1。runner 按 requester 身份选择严格的
 quiesced schema，重算 Operation 名，只允许原语修复已审批 store；receipt 还必须逐项返回相同
 `repaired_store_ids`。worker 接管只复验已有 receipt，不会重复删除 TiKV Pod。修复成功后 KubeBrain
@@ -637,7 +637,7 @@ hack/production/request-tikv-transaction-recovery.sh
 
 requester 要求 KubeBrain desired/Ready 都为 0、TidbCluster UID/cluster ID 完整且 3 PD/3 TiKV Ready，
 将外部 `REQUEST_ID`、两个 UID、cluster ID、endpoint 和有界 timeout 写入规范 immutable Secret；
-Operation 名由这些身份共同散列得到。它只提交 `maxAttempts: 1`、requestedBy 固定为
+Operation 名由这些身份共同散列得到。它只提交 `maxAttempts: 2`、requestedBy 固定为
 `platform:tikv-repair-recovery` 的未审批 Pending `TiKVTransactionRecovery`，绝不调用 approve。
 AdmissionPolicy 把 requester 身份限制为该 Operation/Secret 的固定名称和形状。平台 approver 必须像
 其他高风险操作一样写入独立、不可变 approval ID 后，才可把
@@ -647,9 +647,11 @@ runner 再校验参数 SHA-256、严格 11 字段 schema、claim namespace/type/
 instance，并用 `request_id + StatefulSet UID + TidbCluster UID + cluster ID` 重算 Operation 名。
 原语成功时原子发布 receipt，固定 request/attempt ID、两个 UID、cluster ID、3 Ready、双次 storage
 health 与 transaction verified。worker 的 heartbeat 覆盖 receipt 复验，并在 terminal CAS 前完成与 repair
-相同的后台回收、fencing 检查和最终同步续租。worker 若在成功后、提交 Operation 终态前崩溃，接管者只复验同一
-receipt 并提交 Succeeded，不会再次 scale；原语失败或 receipt 不合法则 Operation 终止为 Failed，
-必须创建新的外部请求和审批。
+相同的后台回收、fencing 检查和最终同步续租。只有 attempt 1 可以执行 scale/probe recovery primitive；启动后
+命令非零、receipt 验证或 status 不确定保持非终态。attempt 2 只读复核 1..1 MiB、普通非 symlink、
+`0600:<current UID>:1` 的既有 receipt，要求精确 schema、request/operation 派生 attempt ID、两个 UID、cluster ID、
+3 Ready、storage health 与 transaction verified 绑定，并用两次完整验证夹住稳定 SHA-256。有效时只提交 Succeeded，
+不会再次 scale；缺失或不合法时才 Failed 并要求隔离审计，不能原地重复 recovery。
 
 部署需同时应用 `kubebrain-tikv-transaction-recovery-requester-rbac.yaml`、
 `kubebrain-tikv-transaction-recovery-requester-admission.yaml`、
@@ -675,7 +677,7 @@ runner 只接受恰好一个 `status=firing`、alertname 精确等于
 KubeBrain StatefulSet UID、TidbCluster UID
 和 cluster ID，以 alert fingerprint 与本次 `startsAt` 的 SHA-256 派生确定性
 Operation/immutable Secret 名，生成规范参数 JSON
-和 SHA-256，并幂等提交 `maxAttempts: 1` 的 Pending Operation。已存在 Secret 必须 immutable 且
+和 SHA-256，并幂等提交 `maxAttempts: 2` 的 Pending Operation。已存在 Secret 必须 immutable 且
 内容摘要完全相同，否则 fail closed。参数 JSON 同时冻结原始 fingerprint、`startsAt` 和派生
 occurrence ID；repair executor 会重新计算 occurrence hash，并要求 Operation name/operation ID 与其一致，
 因此即使参数内容和 parameters SHA 被一起替换，也不能把一次告警的审批用于另一次 occurrence。
@@ -1991,11 +1993,11 @@ TARGET_STORAGE_CLASS=encrypted-csi \
 ```
 
 requester 只读取 `kube-system`/`tidb-cluster` UID，并创建 immutable parameter Secret 与未审批、
-`maxAttempts: 1` 的 `ColdPhysicalRestore` Operation；它不会创建、patch 或删除任何数据资源。
+`maxAttempts: 2` 的 `ColdPhysicalRestore` Operation；它不会创建、patch 或删除任何数据资源。
 专用 approver 核对外部变更单、source receipt SHA-256、rendered manifest SHA-256 和目标 UID 后，
 才能把默认零副本的 restore executor 扩为 1。runner 只能在目标集群使用 in-cluster service account，
-不能挂载生产集群管理员 kubeconfig；丢失 Operation heartbeat 会终止子进程，执行失败直接进入
-`Failed`，因为目标可能已经存在部分 retained 对象，禁止同一 operation 自动重试。
+不能挂载生产集群管理员 kubeconfig；丢失 Operation heartbeat 会终止子进程。只有 attempt 1 可以执行恢复；
+启动后的失败或结果不确定交给 attempt 2 只读核验 durable receipt，绝不在可能已有 retained 对象的目标上重放。
 
 执行器先用同一 renderer 重新生成并规范化比对 manifest，验证 kube-system/目标 namespace UID、
 VolumeSnapshot/TidbCluster API、snapshot class 的 driver+Retain policy、storage class provisioner，
