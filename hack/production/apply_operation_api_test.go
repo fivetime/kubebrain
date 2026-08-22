@@ -108,6 +108,56 @@ func TestOperationAPIInstallerRollsBackWhenHTTPSSmokeFails(t *testing.T) {
 	require.Contains(t, string(mustRead(t, logPath)), "scale deployment/kubebrain-operation-api --replicas=0")
 }
 
+func TestOperationAPIInstallerChecksEnabledStateWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	logPath, scaleMarker := filepath.Join(dir, "calls.log"), filepath.Join(dir, "scaled")
+	require.NoError(t, os.WriteFile(scaleMarker, []byte("3"), 0o600))
+	guardrails := filepath.Join(dir, "guardrails")
+	writeTrafficExecutable(t, guardrails, "#!/usr/bin/env bash\nexit 0\n")
+	kubectl := writeOperationAPIKubectl(t, dir)
+	curl := writeOperationAPICurl(t, dir)
+	caFile, tokenFile := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(caFile, []byte("test-ca"), 0o600))
+	require.NoError(t, os.WriteFile(tokenFile, []byte("header.payload.signature"), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-api.sh", "--check-enabled"}, []string{
+		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "CURL=" + curl,
+		"REQUESTER_GUARDRAILS=" + guardrails, "CALL_LOG=" + logPath, "SCALE_MARKER=" + scaleMarker,
+		"OPERATION_API_ENDPOINT=https://operation-api.example.test", "OPERATION_API_CA_FILE=" + caFile,
+		"OPERATION_API_TOKEN_FILE=" + tokenFile,
+	})
+	require.NoError(t, err, string(out))
+	log := string(mustRead(t, logPath))
+	require.NotContains(t, log, " scale ")
+	require.NotContains(t, log, " rollout ")
+	require.Contains(t, log, "/readyz")
+	require.Contains(t, log, "/v1/operations/api-auth-conformance-missing")
+	require.Contains(t, string(out), "checked three ready Operation API replicas")
+}
+
+func TestOperationAPIInstallerDoesNotScaleOnEnabledCheckFailure(t *testing.T) {
+	dir := t.TempDir()
+	logPath, scaleMarker := filepath.Join(dir, "calls.log"), filepath.Join(dir, "scaled")
+	require.NoError(t, os.WriteFile(scaleMarker, []byte("3"), 0o600))
+	guardrails := filepath.Join(dir, "guardrails")
+	writeTrafficExecutable(t, guardrails, "#!/usr/bin/env bash\nexit 0\n")
+	kubectl := writeOperationAPIKubectl(t, dir)
+	curl := writeOperationAPICurl(t, dir)
+	caFile, tokenFile := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(caFile, []byte("test-ca"), 0o600))
+	require.NoError(t, os.WriteFile(tokenFile, []byte("header.payload.signature"), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-api.sh", "--check-enabled"}, []string{
+		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "CURL=" + curl, "CURL_FAIL=true",
+		"REQUESTER_GUARDRAILS=" + guardrails, "CALL_LOG=" + logPath, "SCALE_MARKER=" + scaleMarker,
+		"OPERATION_API_ENDPOINT=https://operation-api.example.test", "OPERATION_API_CA_FILE=" + caFile,
+		"OPERATION_API_TOKEN_FILE=" + tokenFile,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(out), "readiness did not return 204")
+	log := string(mustRead(t, logPath))
+	require.NotContains(t, log, " scale ")
+	require.NotContains(t, log, " rollout ")
+}
+
 func writeOperationAPIKubectl(t *testing.T, dir string) string {
 	t.Helper()
 	kubectl := filepath.Join(dir, "kubectl")

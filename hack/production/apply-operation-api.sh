@@ -59,7 +59,7 @@ wait_for_policy() {
 }
 
 check_live_contract() {
-  local valid invalid deployment_json
+  local expected_replicas="$1" valid invalid deployment_json
   for verb in create get; do check_can_i yes "$verb" kubebrainoperations.dbaas.kubebrain.io; done
   for verb in list watch update patch delete; do check_can_i no "$verb" kubebrainoperations.dbaas.kubebrain.io; done
   for verb in create get list watch update patch delete; do check_can_i no "$verb" secrets; done
@@ -78,11 +78,11 @@ check_live_contract() {
     die "Operation API admission allowed operationID drift"
   fi
   deployment_json="$("$KUBECTL" "${context[@]}" get deployment kubebrain-operation-api -n "$NAMESPACE" -o json)" || die "Operation API Deployment is missing"
-  "$JQ" -e '.spec.replicas == 0' <<<"$deployment_json" >/dev/null || die "Operation API was enabled before credential and rollout checks"
+  "$JQ" -e --argjson replicas "$expected_replicas" '.spec.replicas == $replicas' <<<"$deployment_json" >/dev/null || die "Operation API Deployment replica target does not match the requested check mode"
 }
 
 enable_api() {
-  local oidc_json tls_json deployment_json token token_bytes ca_bytes ca_mode ready_code auth_code enable_tmp curl_config
+  local should_scale="$1" oidc_json tls_json deployment_json token token_bytes ca_bytes ca_mode ready_code auth_code enable_tmp curl_config
   [[ "$OPERATION_API_ENDPOINT" =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[1-9][0-9]{0,4})?$ ]] || die "OPERATION_API_ENDPOINT must be an HTTPS origin without path, query, fragment, userinfo, or unsafe characters"
   [[ -f "$OPERATION_API_CA_FILE" && ! -L "$OPERATION_API_CA_FILE" ]] || die "OPERATION_API_CA_FILE must be a regular non-symlink file"
   ca_bytes="$(stat -Lc '%s' "$OPERATION_API_CA_FILE")"
@@ -123,9 +123,11 @@ enable_api() {
   printf 'header = "Authorization: Bearer %s"\n' "$token" >"$curl_config"
   chmod 600 "$curl_config"
 
-  "$KUBECTL" "${context[@]}" scale deployment/kubebrain-operation-api --replicas=3 -n "$NAMESPACE"
-  enable_scaled=true
-  "$KUBECTL" "${context[@]}" rollout status deployment/kubebrain-operation-api --timeout=5m -n "$NAMESPACE"
+  if [[ "$should_scale" == true ]]; then
+    "$KUBECTL" "${context[@]}" scale deployment/kubebrain-operation-api --replicas=3 -n "$NAMESPACE"
+    enable_scaled=true
+    "$KUBECTL" "${context[@]}" rollout status deployment/kubebrain-operation-api --timeout=5m -n "$NAMESPACE"
+  fi
   deployment_json="$("$KUBECTL" "${context[@]}" get deployment kubebrain-operation-api -n "$NAMESPACE" -o json)" || die "Operation API Deployment disappeared after rollout"
   "$JQ" -e '.spec.replicas == 3 and .status.observedGeneration >= .metadata.generation and .status.updatedReplicas == 3 and .status.readyReplicas == 3 and .status.availableReplicas == 3 and ((.status.unavailableReplicas // 0) == 0)' <<<"$deployment_json" >/dev/null || die "Operation API Deployment did not converge to three ready replicas"
   ready_code="$("$CURL" --silent --show-error --output /dev/null --write-out '%{http_code}' --proto '=https' --tlsv1.2 --connect-timeout 5 --max-time 15 --cacert "$OPERATION_API_CA_FILE" "${OPERATION_API_ENDPOINT}/readyz")" || die "Operation API HTTPS readiness request failed"
@@ -135,23 +137,27 @@ enable_api() {
   enable_succeeded=true
   trap - EXIT
   rm -rf -- "$enable_tmp"
-  echo "enabled three ready Operation API replicas and verified HTTPS/OIDC dependency smoke"
+  if [[ "$should_scale" == true ]]; then
+    echo "enabled three ready Operation API replicas and verified HTTPS/OIDC dependency smoke"
+  else
+    echo "checked three ready Operation API replicas and HTTPS/OIDC dependency smoke"
+  fi
 }
 
-usage() { echo "Usage: $0 --verify | --apply | --check | --enable" >&2; exit 2; }
+usage() { echo "Usage: $0 --verify | --apply | --check | --enable | --check-enabled" >&2; exit 2; }
 
 [[ "$#" == 1 ]] || usage
 case "$1" in
   --verify)
     verify_inventory
     ;;
-  --apply|--check|--enable)
+  --apply|--check|--enable|--check-enabled)
     mode="$1"
     verify_inventory >/dev/null
     [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required for production ${mode#--}"
     KUBECTL="$(resolve "$KUBECTL")" || die "KUBECTL must be executable"
     JQ="$(resolve "$JQ")" || die "JQ must be executable"
-    if [[ "$mode" == --enable ]]; then CURL="$(resolve "$CURL")" || die "CURL must be executable"; fi
+    if [[ "$mode" == --enable || "$mode" == --check-enabled ]]; then CURL="$(resolve "$CURL")" || die "CURL must be executable"; fi
     REQUESTER_GUARDRAILS="$(resolve "$REQUESTER_GUARDRAILS")" || die "requester guardrail checker must be executable"
     context=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context=(--context "$KUBE_CONTEXT")
     KUBE_CONTEXT="$KUBE_CONTEXT" KUBECTL="$KUBECTL" JQ="$JQ" "$REQUESTER_GUARDRAILS" --check
@@ -162,9 +168,15 @@ case "$1" in
     else
       wait_for_policy
     fi
-    check_live_contract
+    if [[ "$mode" == --check-enabled ]]; then
+      check_live_contract 3
+    else
+      check_live_contract 0
+    fi
     if [[ "$mode" == --enable ]]; then
-      enable_api
+      enable_api true
+    elif [[ "$mode" == --check-enabled ]]; then
+      enable_api false
     else
       echo "checked fail-closed Operation API delegation with the workload disabled"
     fi
