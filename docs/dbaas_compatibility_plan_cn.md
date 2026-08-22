@@ -60541,6 +60541,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的时延上界，也不回滚 deadline 前已提交的 API/provider 副作用；生产仍须用大 inventory/List 与 apiserver latency 注入验证
   Pod deadline、CPU/内存曲线和下一轮游标恢复。
 
+- A5375 修复 A5374 仍以一个无 `Limit` 请求读取整个 Kubernetes Policy/Operation collection 的控制面规模缺口。大型租户可能让
+  单次 apiserver/proxy response 超限或产生瞬时内存峰值；context-aware 扫描/排序只有在响应已经完整解码后才能生效。新增共享
+  `internal/dynamicpagination.All`，固定默认每页 500 项，保留 caller selector/resourceVersion 等 options，只设置 Limit 与 opaque
+  Continue；每页前后检查 context，要求所有页 list resourceVersion 与第一页逐字一致，并用 seen-token 集合拒绝直接或非连续
+  continue loop。任一页错误、nil response、版本漂移、token 重复或“响应成功但 context 已取消”均丢弃整批结果，绝不把部分集合
+  交给写侧。backup scheduler 的 Policy List、archiver/verifier 的 Operation List、Queue.Claim 与跨 namespace lastStarted 共五条
+  路径已迁移。分页回归覆盖 selector/Limit/Continue 精确传播、多页有序聚合、版本漂移、token loop、取消、错误和无效输入；分页
+  包及四个消费包普通测试分别为 0.014/0.051/0.123/0.020/0.071 秒，精确代码提交上的 race 为
+  1.055/1.183/1.234/1.105/1.294 秒。根 production inventory 仍为 580 项；四片 130/165/147/138 在代码提交 `1e43bf85` 上全部
+  通过（Go 测试 165.298/511.833/291.514/546.870 秒；端到端 174.337/520.968/300.558/555.884 秒）。分页限制单个响应而非总候选
+  数：当前公平排序仍聚合所有页，因此不宣称总内存有硬上限，也未用真实 apiserver 验证 continue token/RV 行为。目标环境须以
+  每 namespace 超过 500 个对象的受控负载，留存多页 audit request、稳定 RV、deadline 中断、内存峰值与下一轮公平恢复证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

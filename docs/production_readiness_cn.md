@@ -5708,6 +5708,12 @@ API endpoint 黑洞、网络分区或 admission 卡顿必须在 deadline 后记�
 判定失败。调整 namespace/policy 规模时可显式增加预算，但禁止设为零或依赖 Pod 重启
 终止挂起调用。
 
+Policy/Operation collection List 统一以 `limit=500` 逐页读取，并只沿 apiserver 返回的 opaque
+continue token 前进。所有页面必须保持同一个 list resourceVersion；token 重复、任一页错误、
+nil response 或响应返回时 context 已取消都会丢弃整批集合，不使用部分候选。分页限制单个
+apiserver/proxy 响应体并给 deadline 页间生效点，但当前 controller 仍会聚合完整候选集合后做
+全局公平排序，因此它不是总对象数或总内存上限；生产必须结合租户配额和大于 500 项的压测核算。
+
 scheduler 每轮最多实际尝试 `--max-policies=256` 个 Policy，该上限作用于 inventory
 内所有 namespace 的全局候选集合。每个 List 返回对象的候选构建逐项检查 parent context，
 候选按 `namespace/name` 使用可取消的稳定归并排序；游标仅在一次
@@ -5790,6 +5796,8 @@ Operation；上述依赖故障退出 1，供 supervisor 使用 failure backoff �
 也不会进入 Lease/status 写阶段。取消返回 `context deadline exceeded/canceled`，不得降级为
 `ErrNoOperation`。这只约束本进程尚未开始的工作；已经提交但响应未知的 Lease/status 写入
 仍必须走下述独立 5 秒 outcome reconciliation/cleanup，而不能假定 context 取消等于未提交。
+租户内 Claim List 与跨租户 `lastStarted` List 均复用上述 500 项分页和 resourceVersion/token
+门禁；任一 namespace 的任一页失败都会保持全局 claim fail closed，不在部分队列上抢占 Lease。
 
 实例 claim 是 Lease 与 Operation status 的两阶段提交。Lease create/update 成功后，
 status CAS 若冲突、超时或失败，worker 必须用脱离原请求取消信号但最多 5 秒的 cleanup
@@ -6078,6 +6086,7 @@ parent context。deadline/cancel 一旦发生，controller 立即返回已聚合
 返回的大 List 上继续做本地候选构建；不能仅依赖 client-go 是否及时响应取消来满足整轮预算。该提前返回发生在任何候选执行
 之前，故 processed/verified 计数为零，且不推进公平游标；下一轮仍可从原位置安全重试。候选构建完成后的
 `completedAtUnix/namespace/name` 排序同样使用共享可取消稳定归并，不会在 deadline 后完成剩余 CPU 排序再退出。
+每个 namespace 的 Operation List 同样使用 500 项一致快照分页；中途页失败不会验证、归档或释放任何从部分集合选择出的对象。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
