@@ -13,6 +13,7 @@ import (
 )
 
 const runnerCutoverArtifactSHA256 = "e19f16fcd9610bca7d026b4673f1cb06cc89e6d8134e091a2deade1af28e4cf6"
+const restoreCutoverOperationName = "restore-cutover-0123456789abcdefabcd"
 
 func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
@@ -494,6 +495,65 @@ func TestRestoreCutoverOperationRejectsInvalidClaimNamespaceBeforePhases(t *test
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsDedicatedRequesterDriftBeforePhases(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "CLAIM_REQUESTER=platform:other", "dedicated requester contract")
+	log := f.log(t)
+	require.NotContains(t, log, "phase ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestRestoreCutoverOperationRejectsUnknownParameterBeforePhases(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	parameters := strings.TrimSpace(string(mustRead(t, f.parameters)))
+	parameters = strings.TrimSuffix(parameters, "}") + `,"unexpected":"value"}`
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "in-cluster dedicated requester schema")
+	log := f.log(t)
+	require.NotContains(t, log, "phase ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestRestoreCutoverOperationRejectsEvidenceOutsideWorkspaceBeforePhases(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	outside := filepath.Join(t.TempDir(), "restore.json")
+	require.NoError(t, os.WriteFile(outside, mustRead(t, f.restoreReceipt), 0o600))
+	parameters := strings.Replace(
+		string(mustRead(t, f.parameters)),
+		fmt.Sprintf(`"restore_receipt_input":%q`, f.restoreReceipt),
+		fmt.Sprintf(`"restore_receipt_input":%q`, outside),
+		1,
+	)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "canonical regular non-symlink file in WORK_DIR")
+	log := f.log(t)
+	require.NotContains(t, log, "phase ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestRestoreCutoverOperationRejectsStatePathDriftBeforePhases(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	parameters := strings.Replace(
+		string(mustRead(t, f.parameters)),
+		fmt.Sprintf(`"state_dir":%q`, filepath.Join(f.dir, restoreCutoverOperationName+".state")),
+		fmt.Sprintf(`"state_dir":%q`, filepath.Join(f.dir, "other.state")),
+		1,
+	)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "state and receipt paths do not match")
+	log := f.log(t)
+	require.NotContains(t, log, "phase ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestRestoreCutoverOperationRejectsInvalidPublicEndpointBeforePhases(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -584,7 +644,7 @@ func TestRestoreCutoverOperationRejectsInvalidRollbackEvidence(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.publishEvidence(t, "rollback")
 	require.NoError(t, os.WriteFile(
-		filepath.Join(f.dir, "state", "cutover-1.rollback"),
+		filepath.Join(f.dir, restoreCutoverOperationName+".state", restoreCutoverOperationName+".rollback"),
 		[]byte("ROLLBACK\tkubebrain.restore-cutover.marker.v1\tsource\t100\textra\n"),
 		0o600,
 	))
@@ -647,7 +707,7 @@ func newCutoverRunnerFixture(t *testing.T) *cutoverRunnerFixture {
 	parameters := filepath.Join(dir, "parameters.json")
 	restoreReceipt := filepath.Join(dir, "restore.json")
 	backup := filepath.Join(dir, "backup.jsonl")
-	receipt := filepath.Join(dir, "receipt.json")
+	receipt := filepath.Join(dir, restoreCutoverOperationName+".receipt.json")
 	require.NoError(t, os.WriteFile(restoreReceipt, []byte(fmt.Sprintf(`{
 	  "format":"kubebrain.restore-verification.v1","artifact_format":"kubebrain.logical.v2",
 	  "artifact_sha256":"%s","snapshot_revision":42,"source_prefix":"/registry",
@@ -660,8 +720,9 @@ func newCutoverRunnerFixture(t *testing.T) *cutoverRunnerFixture {
 	  "backup_input":%q,"backup_file_sha256":%q,
 	  "service_namespace":"ns-a","service_name":"kubebrain","source_instance":"source",
 	  "target_instance":"target","expected_replicas":2,"public_endpoint":"https://service:2379",
-	  "receipt_output":%q,"timeout_seconds":30,"poll_interval_seconds":0
-	}`, filepath.Join(dir, "state"), restoreReceipt, fileDigest(t, restoreReceipt),
+	  "receipt_output":%q,"timeout_seconds":30,"poll_interval_seconds":0,
+	  "data_kube_context":"","data_kubeconfig_path":""
+	}`, filepath.Join(dir, restoreCutoverOperationName+".state"), restoreReceipt, fileDigest(t, restoreReceipt),
 		backup, fileDigest(t, backup), receipt)), 0o600))
 	data, err := os.ReadFile(parameters)
 	require.NoError(t, err)
@@ -673,10 +734,10 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  operation_id="${CLAIM_OPERATION_ID:-cutover-1}"
+  operation_id="${CLAIM_OPERATION_ID:-restore-cutover-0123456789abcdefabcd}"
   instance="${CLAIM_INSTANCE:-instance-a}"
   namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
-  printf '{"namespace":"%s","name":"cutover-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"RestoreCutover","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
+  printf '{"namespace":"%s","name":"restore-cutover-0123456789abcdefabcd","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"%s","requested_by":"%s","parameters_sha256":"%s","parameters_secret":"restore-cutover-0123456789abcdefabcd-parameters","parameters_key":"parameters.json","owner":"%s","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "${CLAIM_TYPE:-RestoreCutover}" "${CLAIM_REQUESTER:-platform:restore-cutover}" "$digest" "${CLAIM_OWNER:-worker-a}"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-false}" == true ]]; then
   exit 1
 else
@@ -771,6 +832,7 @@ esac
 		"RUNNER_EVIDENCE_INPUT=" + restoreReceipt,
 		"ORIGINAL_RESTORE_RECEIPT_INPUT=" + restoreReceipt,
 		"ORIGINAL_BACKUP_INPUT=" + backup,
+		"WORK_DIR=" + dir,
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &cutoverRunnerFixture{
@@ -807,9 +869,9 @@ func (f *cutoverRunnerFixture) log(t *testing.T) string {
 
 func (f *cutoverRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	t.Helper()
-	stateDir := filepath.Join(f.dir, "state")
+	stateDir := filepath.Join(f.dir, restoreCutoverOperationName+".state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o700))
-	statePath := filepath.Join(stateDir, "cutover-1.state")
+	statePath := filepath.Join(stateDir, "restore-cutover-0123456789abcdefabcd.state")
 	if kind == "state" || kind == "cutover" || kind == "receipt" {
 		require.NoError(t, os.WriteFile(statePath, []byte(cutoverRunnerState()), 0o600))
 	}
@@ -818,14 +880,14 @@ func (f *cutoverRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	}
 	if kind == "rollback" {
 		require.NoError(t, os.WriteFile(
-			filepath.Join(stateDir, "cutover-1.rollback"),
+			filepath.Join(stateDir, "restore-cutover-0123456789abcdefabcd.rollback"),
 			[]byte("ROLLBACK\tkubebrain.restore-cutover.marker.v1\tsource\t100\n"),
 			0o600,
 		))
 		return
 	}
 	require.NoError(t, os.WriteFile(
-		filepath.Join(stateDir, "cutover-1.cutover"),
+		filepath.Join(stateDir, "restore-cutover-0123456789abcdefabcd.cutover"),
 		[]byte("CUTOVER\tkubebrain.restore-cutover.marker.v1\ttarget\t100\n"),
 		0o600,
 	))
@@ -833,15 +895,15 @@ func (f *cutoverRunnerFixture) publishEvidence(t *testing.T, kind string) {
 		return
 	}
 	require.NoError(t, os.WriteFile(
-		filepath.Join(stateDir, "cutover-1.verified"),
+		filepath.Join(stateDir, "restore-cutover-0123456789abcdefabcd.verified"),
 		[]byte("VERIFIED\tkubebrain.restore-cutover.marker.v1\t100\n"),
 		0o600,
 	))
-	require.NoError(t, os.WriteFile(filepath.Join(f.dir, "receipt.json"), []byte(cutoverRunnerReceipt()), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(f.dir, restoreCutoverOperationName+".receipt.json"), []byte(cutoverRunnerReceipt()), 0o600))
 }
 
 func cutoverRunnerState() string {
-	return "HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\tcutover-1\tns-a\tkubebrain\tsource\ttarget\tuid-service\t" + runnerCutoverArtifactSHA256 + "\t42\t/registry\t/restored\n" +
+	return "HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\trestore-cutover-0123456789abcdefabcd\tns-a\tkubebrain\tsource\ttarget\tuid-service\t" + runnerCutoverArtifactSHA256 + "\t42\t/registry\t/restored\n" +
 		"SERVICE\tuid-service\t10\n" +
 		"POD\tsource\tkb-source-0\tuid-source-0\t0\n" +
 		"POD\tsource\tkb-source-1\tuid-source-1\t0\n" +
@@ -851,7 +913,7 @@ func cutoverRunnerState() string {
 
 func cutoverRunnerReceipt() string {
 	stateSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(cutoverRunnerState())))
-	return fmt.Sprintf(`{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"cutover-1","instance":"instance-a","service_namespace":"ns-a","service_name":"kubebrain","service_uid":"uid-service","source_instance":"source","target_instance":"target","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":2,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}`+"\n", runnerCutoverArtifactSHA256, stateSHA)
+	return fmt.Sprintf(`{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"restore-cutover-0123456789abcdefabcd","instance":"instance-a","service_namespace":"ns-a","service_name":"kubebrain","service_uid":"uid-service","source_instance":"source","target_instance":"target","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":2,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}`+"\n", runnerCutoverArtifactSHA256, stateSHA)
 }
 
 func requireOrdered(t *testing.T, text string, values ...string) {

@@ -662,6 +662,7 @@ spec:
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: CUTOVER_COMMAND, value: /opt/kubebrain/hack/production/switch-restore-traffic.sh}
             - {name: LOGICAL_VERIFY, value: /usr/local/bin/kubebrain-logical-verify}
+            - {name: WORK_DIR, value: /var/lib/kubebrain-operation}
           envFrom: [{secretRef: {name: kubebrain-restore-cutover-executor-env}}]
           resources:
             requests: {cpu: 50m, memory: 96Mi}

@@ -1,0 +1,43 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-restore-cutover-request-operation}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
+  matchConditions:
+    - name: restore-cutover-scope
+      expression: 'object.spec.type == "RestoreCutover" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-restore-cutover-requester"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-restore-cutover-requester"', message: restore cutover operations require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: restore cutover requester is restricted to the production operation queue}
+    - {expression: 'object.metadata.name.matches("^restore-cutover-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: restore cutover operation identity must be deterministic}
+    - {expression: 'object.spec.type == "RestoreCutover" && object.spec.requestedBy == "platform:restore-cutover" && object.spec.instance.matches("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$") && object.spec.maxAttempts == 5', message: restore cutover operation shape is fixed}
+    - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")', message: restore cutover operation must bind its immutable parameter Secret}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-restore-cutover-request-operation}
+spec: {policyName: kubebrain-restore-cutover-request-operation, validationActions: [Deny]}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-restore-cutover-request-parameters}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [secrets], scope: Namespaced}
+  matchConditions:
+    - name: restore-cutover-parameter-scope
+      expression: '(object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^restore-cutover-[a-f0-9]{20}-parameters$")) || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-restore-cutover-requester"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-restore-cutover-requester"', message: restore cutover parameter Secrets require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^restore-cutover-[a-f0-9]{20}-parameters$")', message: restore cutover parameter Secret identity is fixed}
+    - {expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data', message: restore cutover parameters must be one immutable opaque payload}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-restore-cutover-request-parameters}
+spec: {policyName: kubebrain-restore-cutover-request-parameters, validationActions: [Deny]}

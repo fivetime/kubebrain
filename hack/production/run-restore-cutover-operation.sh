@@ -14,6 +14,7 @@ CUTOVER_COMMAND="${CUTOVER_COMMAND:-${ROOT_DIR}/hack/production/switch-restore-t
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
+WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 MAX_ETCD_REVISION=9223372036854775807
 MAX_UINT64=18446744073709551615
 MAX_CONTROL_EVIDENCE_BYTES=4194304
@@ -64,6 +65,7 @@ operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECOND
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 command -v stat >/dev/null || { echo "stat is required" >&2; exit 2; }
+command -v realpath >/dev/null || { echo "realpath is required" >&2; exit 2; }
 require_executable_file() {
   local name="$1"
   local path="$2"
@@ -72,6 +74,12 @@ require_executable_file() {
 }
 [[ -z "$OPERATIONCTL" ]] || require_executable_file OPERATIONCTL "$OPERATIONCTL"
 require_executable_file CUTOVER_COMMAND "$CUTOVER_COMMAND"
+[[ "$WORK_DIR" == /* && -d "$WORK_DIR" && ! -L "$WORK_DIR" ]] ||
+  { echo "WORK_DIR must be an absolute non-symlink directory" >&2; exit 2; }
+canonical_work_dir="$(realpath -e -- "$WORK_DIR")" ||
+  { echo "WORK_DIR cannot be resolved" >&2; exit 2; }
+[[ "$canonical_work_dir" == "$WORK_DIR" ]] ||
+  { echo "WORK_DIR must be canonical" >&2; exit 2; }
 
 managed_parameters=""
 parameter_capture_dir="$(mktemp -d)"
@@ -137,13 +145,14 @@ run_operationctl() {
 
 claim="$(run_operationctl --action claim --owner "$WORKER_ID" \
   --type RestoreCutover --lease "${LEASE_SECONDS}s")"
-claimed_namespace="$("$JQ" -r '.namespace // empty' <<<"$claim")"
-if [[ -n "$claimed_namespace" ]]; then
-  [[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
-    { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
-  OPERATION_NAMESPACE="$claimed_namespace"
-  build_kube_args
-fi
+claim_identity="$("$JQ" -er '[.namespace,.type,.requested_by,.owner,.parameters_secret,.parameters_key] |
+  select(length == 6 and all(.[]; type == "string" and length > 0)) | @tsv' <<<"$claim")" ||
+  { echo "restore cutover claim identity is incomplete" >&2; exit 2; }
+IFS=$'\t' read -r claimed_namespace claimed_type claimed_requester claimed_owner claimed_secret claimed_key <<<"$claim_identity"
+[[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+  { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
+OPERATION_NAMESPACE="$claimed_namespace"
+build_kube_args
 name="$("$JQ" -er '.name' <<<"$claim")"
 operation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"
@@ -153,6 +162,10 @@ for value in "$operation_id" "$instance"; do
 done
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
+[[ "$name" =~ ^restore-cutover-[a-f0-9]{20}$ && "$operation_id" == "$name" && "$claimed_type" == RestoreCutover &&
+   "$claimed_requester" == platform:restore-cutover && "$claimed_owner" == "$WORKER_ID" &&
+   "$claimed_secret" == "${name}-parameters" && "$claimed_key" == parameters.json && "$attempt" =~ ^[1-5]$ ]] ||
+  { echo "restore cutover claim identity does not match the dedicated requester contract" >&2; exit 2; }
 if [[ -z "$PARAMETERS_INPUT" ]]; then
   managed_parameters="${parameter_capture_dir}/managed-parameters.json"
   PARAMETERS_INPUT="$managed_parameters"
@@ -194,6 +207,15 @@ validate_cutover_endpoint_json() {
 validate_cutover_endpoint_json ||
   { echo "cutover public_endpoint identity is invalid" >&2; exit 2; }
 
+"$JQ" -e '
+  (keys | sort) == ([
+    "backup_file_sha256", "backup_input", "data_kube_context", "data_kubeconfig_path",
+    "expected_replicas", "poll_interval_seconds", "public_endpoint", "receipt_output",
+    "restore_receipt_input", "restore_receipt_sha256", "service_name", "service_namespace",
+    "source_instance", "state_dir", "target_instance", "timeout_seconds"
+  ] | sort) and .data_kube_context == "" and .data_kubeconfig_path == ""' "$PARAMETERS_INPUT" >/dev/null ||
+  { echo "restore cutover parameters must exactly match the in-cluster dedicated requester schema" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .state_dir, .restore_receipt_input, .restore_receipt_sha256,
   .backup_input, .backup_file_sha256,
@@ -234,9 +256,25 @@ for digest in "$restore_receipt_sha" "$backup_file_sha"; do
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] ||
     { echo "cutover evidence digest is invalid" >&2; exit 2; }
 done
+require_workspace_input() {
+  local path="$1" resolved
+  [[ "$path" == "$WORK_DIR"/* && "$path" != *//* && "$path" != */../* && "$path" != */./* && ! -L "$path" ]] || return 1
+  resolved="$(realpath -e -- "$path")" || return 1
+  [[ "$resolved" == "$path" && "$resolved" == "$WORK_DIR"/* && -f "$resolved" ]]
+}
 for path in "$restore_receipt" "$backup_input"; do
-  [[ -f "$path" ]] || { echo "cutover evidence is missing: ${path}" >&2; exit 2; }
+  require_workspace_input "$path" || { echo "restore cutover evidence must be a canonical regular non-symlink file in WORK_DIR: ${path}" >&2; exit 2; }
 done
+[[ "$state_dir" == "${WORK_DIR}/${name}.state" && "$receipt_output" == "${WORK_DIR}/${name}.receipt.json" ]] ||
+  { echo "restore cutover state and receipt paths do not match the dedicated requester contract" >&2; exit 2; }
+if [[ -e "$state_dir" ]]; then
+  [[ -d "$state_dir" && ! -L "$state_dir" && "$(realpath -e -- "$state_dir")" == "$state_dir" ]] ||
+    { echo "restore cutover state path must be a canonical non-symlink directory" >&2; exit 2; }
+fi
+if [[ -e "$receipt_output" ]]; then
+  [[ -f "$receipt_output" && ! -L "$receipt_output" && "$(realpath -e -- "$receipt_output")" == "$receipt_output" ]] ||
+    { echo "restore cutover receipt path must be a canonical non-symlink file" >&2; exit 2; }
+fi
 if ! control_evidence_size_is_valid "$restore_receipt"; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "restore cutover restore receipt exceeds ${MAX_CONTROL_EVIDENCE_BYTES} bytes" >/dev/null
