@@ -11,6 +11,7 @@ OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; PARAMETERS_INPUT="${PARA
 SNAPSHOT_COMMAND="${SNAPSHOT_COMMAND:-${ROOT_DIR}/hack/backup/cold-snapshot-execute.sh}"
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
+MAX_SNAPSHOT_RECEIPT_BYTES=8388608
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] && operation_is_positive_int64 "$LEASE_SECONDS" || die "worker identity or lease is invalid"
 if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then
@@ -21,6 +22,7 @@ operation_is_positive_decimal_less_than_int "$HEARTBEAT_INTERVAL_SECONDS" "$LEAS
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "operation namespace is invalid"
 [[ -x "$OPERATIONCTL" && -x "$SNAPSHOT_COMMAND" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
 command -v stat >/dev/null || die "stat is required"
+command -v id >/dev/null || die "id is required"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
 sha() { sha256sum "$1" | cut -d ' ' -f1; }
 operation_parameters_size_is_valid() { local size; size="$(stat -Lc '%s' -- "$1")" || return 1; [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_OPERATION_PARAMETERS_BYTES" ]]; }
@@ -38,7 +40,7 @@ IFS=$'\t' read -r namespace name operation_id instance type requester owner secr
 OPERATION_NAMESPACE="$namespace"
 [[ "$name" =~ ^cold-snapshot-[a-f0-9]{20}$ && "$operation_id" == "$name" && "$type" == ColdPhysicalSnapshot &&
    "$requester" == platform:cold-physical-snapshot && "$owner" == "$WORKER_ID" && "$secret" == "${name}-parameters" &&
-   "$key" == parameters.json && "$attempt" == 1 && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "snapshot claim identity is invalid"
+   "$key" == parameters.json && "$attempt" =~ ^[12]$ && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "snapshot claim identity is invalid"
 capture="$(mktemp -d "$WORK_DIR/cold-snapshot.XXXXXX")"; child=0; heartbeat=0
 cleanup() { [[ $child == 0 ]] || operation_kill_process_group "$child"; [[ $heartbeat == 0 ]] || operation_kill_process_group "$heartbeat"; rm -rf -- "$capture"; }
 trap cleanup EXIT INT TERM
@@ -77,6 +79,46 @@ IFS=$'\t' read -r kb_namespace kb_name kb_uid tidb_namespace tidb_cluster tidb_u
 request_hash="$(printf '%s\n%s\n%s\n%s\n%s\n' "$request_id" "$kb_uid" "$tidb_uid" "$cluster_id" "$witness_sha" | sha256sum | cut -c1-20)"
 [[ "$name" == "cold-snapshot-${request_hash}" && "$instance" == "$kb_name" ]] || die "snapshot request does not bind the operation"
 receipt="$WORK_DIR/${name}.receipt.json"
+verify_receipt() {
+  local size attributes
+  [[ -f "$receipt" && ! -L "$receipt" ]] || return 1
+  size="$(stat -Lc '%s' -- "$receipt")" || return 1
+  attributes="$(stat -Lc '%a:%u:%h' -- "$receipt")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -gt 0 && "$size" -le "$MAX_SNAPSHOT_RECEIPT_BYTES" ]] || return 1
+  [[ "$attributes" == "600:$(id -u):1" ]] || return 1
+  "$JQ" -e --arg id "$name" --arg witness_sha "$witness_sha" --arg kb_uid "$kb_uid" --arg tidb_uid "$tidb_uid" '
+   keys==["created_at","format","inventory","operation_id","semantic_witness","snapshots"] and
+   .format=="kubebrain.cold-physical-snapshot.v2" and .operation_id==$id and
+   (.created_at|type=="string" and length>0) and
+   (.semantic_witness|keys==["created_at_unix","file_sha256","format","leases","prefix","records","revision","sha256"]) and
+   .semantic_witness.file_sha256==$witness_sha and .inventory.kubebrain.uid==$kb_uid and .inventory.storage.uid==$tidb_uid and
+   (.snapshots|type=="array") and (.snapshots|length) == ((.inventory.pd_pvcs|length)+(.inventory.tikv_pvcs|length))' "$receipt" >/dev/null
+}
+capture_validated_receipt_digest() {
+  local first second
+  verify_receipt || return 1
+  first="$(sha "$receipt")" || return 1
+  verify_receipt || return 1
+  second="$(sha "$receipt")" || return 1
+  [[ "$first" == "$second" ]] || return 1
+  printf '%s\n' "$second" >"$capture/receipt.sha"; chmod 600 "$capture/receipt.sha"
+}
+if [[ "$attempt" == 2 ]]; then
+  set -m
+  capture_validated_receipt_digest & child=$!
+  ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/verifier.done" ]] || operation_kill_process_group "$child"; exit 75; }; done ) & heartbeat=$!
+  set +m
+  set +e; wait "$child"; verify_rc=$?; set -e; : >"$capture/verifier.done"; child=0
+  finalize_heartbeat || exit 1
+  if [[ "$verify_rc" == 0 ]]; then
+    receipt_sha="$(<"$capture/receipt.sha")"; [[ "$receipt_sha" =~ ^[a-f0-9]{64}$ ]] || die "validated cold snapshot receipt digest is invalid"
+    runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "reconciled durable cold physical snapshot receipt without repeating CSI snapshots" >/dev/null
+    exit 0
+  fi
+  runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold snapshot exhausted without a valid durable receipt; inspect retained snapshots before any new operation" >/dev/null
+  exit 1
+fi
+[[ ! -e "$receipt" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold snapshot receipt already exists before attempt 1; inspect retained snapshots" >/dev/null; exit 1; }
 if [[ ! -e "$receipt" ]]; then
   set -m
   env PREFLIGHT_FILE="$inventory" OPERATION_ID="$name" RECEIPT_FILE="$receipt" SEMANTIC_WITNESS_FILE="$witness" \
@@ -86,11 +128,9 @@ if [[ ! -e "$receipt" ]]; then
   ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || operation_kill_process_group "$child"; exit 75; }; done ) & heartbeat=$!
   set +m
   set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
-  [[ $rc == 0 ]] || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold snapshot exited ${rc}; inspect retained snapshots before a new approved operation" >/dev/null; exit 1; }
+  [[ $rc == 0 ]] || { finalize_heartbeat || exit 1; echo "cold snapshot exited ${rc}; a later claim must inspect retained snapshots and durable receipt" >&2; exit 1; }
 fi
-$JQ -e --arg id "$name" --arg witness_sha "$witness_sha" --arg kb_uid "$kb_uid" --arg tidb_uid "$tidb_uid" '
- .format=="kubebrain.cold-physical-snapshot.v2" and .operation_id==$id and
- .semantic_witness.file_sha256==$witness_sha and .inventory.kubebrain.uid==$kb_uid and .inventory.storage.uid==$tidb_uid and
- (.snapshots|type=="array") and (.snapshots|length) == ((.inventory.pd_pvcs|length)+(.inventory.tikv_pvcs|length))' "$receipt" >/dev/null || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold snapshot receipt is invalid" >/dev/null; exit 1; }
-receipt_sha="$(sha "$receipt")"; finalize_heartbeat || exit 1
+capture_validated_receipt_digest || { finalize_heartbeat || exit 1; echo "cold snapshot receipt is invalid; a later claim must inspect retained snapshots" >&2; exit 1; }
+receipt_sha="$(<"$capture/receipt.sha")"; [[ "$receipt_sha" =~ ^[a-f0-9]{64}$ ]] || die "validated cold snapshot receipt digest is invalid"
+finalize_heartbeat || exit 1
 runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "cold physical snapshot completed" >/dev/null

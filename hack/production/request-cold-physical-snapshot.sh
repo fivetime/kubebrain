@@ -73,5 +73,5 @@ fi
 ctl_args=(--namespace "$OPERATION_NAMESPACE"); [[ "$KUBE_CONTEXT" == in-cluster ]] || ctl_args+=(--context "$KUBE_CONTEXT")
 $OPERATIONCTL "${ctl_args[@]}" --action submit --name "$operation_name" --operation-id "$operation_name" \
   --requested-by platform:cold-physical-snapshot --instance "$instance" --type ColdPhysicalSnapshot \
-  --parameters-sha256 "$parameters_sha" --parameters-secret "$secret_name" --parameters-key parameters.json --max-attempts 1 >/dev/null
+  --parameters-sha256 "$parameters_sha" --parameters-secret "$secret_name" --parameters-key parameters.json --max-attempts 2 >/dev/null
 echo "created or verified unapproved Pending ColdPhysicalSnapshot ${OPERATION_NAMESPACE}/${operation_name} for request ${REQUEST_ID}"

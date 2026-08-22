@@ -13,7 +13,7 @@ spec:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-snapshot-requester"', message: cold snapshot operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: cold snapshot requester is restricted to the production operation queue}
     - {expression: 'object.metadata.name.matches("^cold-snapshot-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: cold snapshot operation identity must be deterministic}
-    - {expression: 'object.spec.type == "ColdPhysicalSnapshot" && object.spec.requestedBy == "platform:cold-physical-snapshot" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1', message: cold snapshot operation shape is fixed}
+    - {expression: 'object.spec.type == "ColdPhysicalSnapshot" && object.spec.requestedBy == "platform:cold-physical-snapshot" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2', message: cold snapshot operation shape is fixed}
     - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")', message: cold snapshot operation must bind its immutable parameter Secret}
 ---
 apiVersion: admissionregistration.k8s.io/v1

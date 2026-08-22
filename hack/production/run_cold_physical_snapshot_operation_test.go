@@ -29,7 +29,7 @@ func TestRunColdPhysicalSnapshotOperationIsBoundAndTerminal(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
- printf '{"namespace":"kubebrain-operations","name":"%s","operation_id":"%s","instance":"kubebrain","type":"ColdPhysicalSnapshot","requested_by":"platform:cold-physical-snapshot","owner":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","attempt":1,"parameters_sha256":"%s"}\n' "$OPERATION_NAME" "$OPERATION_NAME" "$WORKER_ID" "$OPERATION_NAME" "$EXPECTED_DIGEST"
+ printf '{"namespace":"kubebrain-operations","name":"%s","operation_id":"%s","instance":"kubebrain","type":"ColdPhysicalSnapshot","requested_by":"platform:cold-physical-snapshot","owner":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","attempt":%s,"parameters_sha256":"%s"}\n' "$OPERATION_NAME" "$OPERATION_NAME" "$WORKER_ID" "$OPERATION_NAME" "${ATTEMPT:-1}" "$EXPECTED_DIGEST"
 elif [[ "$*" == *"--action heartbeat"* ]]; then
  [[ ! -f "$SUCCEED_ACTIVE" ]] || touch "$HEARTBEAT_DURING_SUCCEED"
  [[ "${FAIL_HEARTBEAT:-false}" != true ]] || exit 1
@@ -47,7 +47,9 @@ fi
 set -euo pipefail
 env | sort >"$SNAPSHOT_LOG"
 [[ "${FAIL_SNAPSHOT:-false}" != true ]] || exit 9
-jq -cn --arg id "$OPERATION_ID" --arg witness "$EXPECTED_WITNESS_SHA" '{format:"kubebrain.cold-physical-snapshot.v2",operation_id:$id,created_at:"2026-08-10T00:00:00Z",inventory:{kubebrain:{uid:"kb-uid"},storage:{uid:"tc-uid"},pd_pvcs:[{}],tikv_pvcs:[{}]},snapshots:[{},{}],semantic_witness:{file_sha256:$witness}}' >"$RECEIPT_FILE"
+jq -cn --arg id "$OPERATION_ID" --arg witness "$EXPECTED_WITNESS_SHA" '{format:"kubebrain.cold-physical-snapshot.v2",operation_id:$id,created_at:"2026-08-10T00:00:00Z",inventory:{kubebrain:{uid:"kb-uid"},storage:{uid:"tc-uid"},pd_pvcs:[{}],tikv_pvcs:[{}]},snapshots:[{},{}],semantic_witness:{format:"kubebrain.logical.v2",prefix:"/",revision:1,created_at_unix:1,records:0,leases:0,sha256:$witness,file_sha256:$witness}}' >"$RECEIPT_FILE"
+chmod 600 "$RECEIPT_FILE"
+[[ "${EXIT_AFTER_RECEIPT:-0}" == 0 ]] || exit "$EXIT_AFTER_RECEIPT"
 `), 0o755))
 	realCP, err := exec.LookPath("cp")
 	require.NoError(t, err)
@@ -80,14 +82,41 @@ fi
 	require.NoError(t, err)
 	require.Contains(t, string(snapshotEnvironment), "ALLOW_COLD_PHYSICAL_SNAPSHOT=true")
 	require.Contains(t, string(snapshotEnvironment), "KUBE_CONTEXT=in-cluster")
+	receiptPath := filepath.Join(dir, name+".receipt.json")
 
-	require.NoError(t, os.Remove(filepath.Join(dir, name+".receipt.json")))
+	require.NoError(t, os.Remove(snapshotLog))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	reconcileOutput, reconcileErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env, "ATTEMPT=2"))
+	require.NoError(t, reconcileErr, string(reconcileOutput))
+	require.NoFileExists(t, snapshotLog, "attempt 2 must not repeat CSI snapshot creation")
+	require.Contains(t, string(mustRead(t, operationLog)), "reconciled durable cold physical snapshot receipt without repeating CSI snapshots")
+	require.NoError(t, os.Chmod(receiptPath, 0o640))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	unsafeOutput, unsafeErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env, "ATTEMPT=2"))
+	require.Error(t, unsafeErr, string(unsafeOutput))
+	require.Contains(t, string(mustRead(t, operationLog)), "cold snapshot exhausted without a valid durable receipt")
+	require.NoError(t, os.Chmod(receiptPath, 0o600))
+
+	require.NoError(t, os.Remove(receiptPath))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	uncertainOutput, uncertainErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env, "EXIT_AFTER_RECEIPT=9"))
+	require.Error(t, uncertainErr)
+	require.Contains(t, string(uncertainOutput), "later claim must inspect retained snapshots")
+	require.NotContains(t, string(mustRead(t, operationLog)), "--action fail")
+	require.FileExists(t, receiptPath)
+	require.NoError(t, os.Remove(snapshotLog))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	uncertainReconcileOutput, uncertainReconcileErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env, "ATTEMPT=2"))
+	require.NoError(t, uncertainReconcileErr, string(uncertainReconcileOutput))
+	require.NoFileExists(t, snapshotLog, "publication uncertainty takeover must not repeat CSI snapshot creation")
+	require.NoError(t, os.Remove(receiptPath))
+
 	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
 	failure, failureErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env, "FAIL_SNAPSHOT=true"))
 	require.Error(t, failureErr, string(failure))
 	failureOperations, err := os.ReadFile(operationLog)
 	require.NoError(t, err)
-	require.Contains(t, string(failureOperations), "--action fail")
+	require.NotContains(t, string(failureOperations), "--action fail")
 	require.NotContains(t, string(failureOperations), "--action retry")
 
 	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
@@ -99,6 +128,7 @@ fi
 	require.NoError(t, err)
 	require.NotContains(t, string(heartbeatFailureOperations), "--action succeed")
 	require.NotContains(t, string(heartbeatFailureOperations), "--action fail")
+	require.NoError(t, os.Remove(receiptPath))
 
 	oversized := append(append([]byte{}, parameterBytes...), []byte(strings.Repeat(" ", 65536))...)
 	require.NoError(t, os.WriteFile(parameters, oversized, 0o600))

@@ -38,7 +38,7 @@ exit 99
 	require.NoError(t, err)
 	require.Contains(t, string(operation), "--requested-by platform:cold-physical-snapshot")
 	require.Contains(t, string(operation), "--type ColdPhysicalSnapshot")
-	require.Contains(t, string(operation), "--max-attempts 1")
+	require.Contains(t, string(operation), "--max-attempts 2")
 	require.NotContains(t, string(operation), "approve")
 	kubectlCalls, err := os.ReadFile(kubectlLog)
 	require.NoError(t, err)

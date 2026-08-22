@@ -1418,7 +1418,7 @@ func TestColdPhysicalSnapshotRequesterAdmissionIsFailClosed(t *testing.T) {
 	}
 	require.Contains(t, expressions, `object.spec.type == "ColdPhysicalSnapshot"`)
 	require.Contains(t, expressions, `request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-snapshot-requester"`)
-	require.Contains(t, expressions, `object.spec.maxAttempts == 1`)
+	require.Contains(t, expressions, `object.spec.maxAttempts == 2`)
 	require.Contains(t, expressions, `object.spec.parametersSecretRef.name == object.metadata.name + "-parameters"`)
 }
 
