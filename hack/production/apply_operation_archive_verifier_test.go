@@ -159,6 +159,32 @@ func TestOperationArchiveVerifierRejectsCompletedJobDriftBeforePatch(t *testing.
 	}
 }
 
+func TestOperationArchiveVerifierRejectsExecutionPodDriftBeforePatch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+	}{
+		{name: "owner", env: "FINAL_POD_OWNER_UID=other-uid"},
+		{name: "sha", env: "FINAL_POD_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+		{name: "expiry", env: "FINAL_POD_EXPIRY=1"},
+		{name: "runtime", env: "FINAL_POD_RUNTIME_EXPIRY=1"},
+		{name: "phase", env: "FINAL_POD_PHASE=Failed"},
+		{name: "sidecar", env: "FINAL_POD_SIDECAR=true"},
+		{name: "missing", env: "FINAL_POD_COUNT=0"},
+		{name: "multiple", env: "FINAL_POD_COUNT=2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newArchiveVerifierApplyFixture(t)
+			out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), tc.env))
+			require.Error(t, err)
+			require.Contains(t, string(out), "execution Pod")
+			log := string(mustRead(t, f.log))
+			require.NotContains(t, log, " logs ")
+			require.NotContains(t, log, "patch cronjob")
+		})
+	}
+}
+
 type archiveVerifierApplyFixture struct{ kubectl, log, payloadLog, jobState, state, evidence string }
 
 func newArchiveVerifierApplyFixture(t *testing.T) archiveVerifierApplyFixture {
@@ -198,6 +224,18 @@ if [[ "$args" == *" get job "* ]]; then
   if [[ -n "${FINAL_RUNTIME_EXPIRY:-}" ]]; then job="$(jq -c --arg value "$FINAL_RUNTIME_EXPIRY" '(.spec.template.spec.containers[0].env[] | select(.name=="IAM_SIMULATION_VALID_UNTIL_UNIX") | .value)=$value' <<<"$job")"; fi
   [[ "${FINAL_JOB_COMPLETE:-true}" == true ]] || job="$(jq -c '.status.conditions[0].status="False"' <<<"$job")"
   printf '%s\n' "$job"; exit 0
+fi
+if [[ "$args" == *" get pods "* ]]; then
+  job="$(<"$JOB_STATE_FILE")"; count="${FINAL_POD_COUNT:-1}"
+  pod="$(jq -c '{metadata:{namespace:.metadata.namespace,labels:{"batch.kubernetes.io/job-name":.metadata.name},annotations:.spec.template.metadata.annotations,ownerReferences:[{apiVersion:"batch/v1",kind:"Job",name:.metadata.name,uid:.metadata.uid,controller:true}]},spec:{serviceAccountName:.spec.template.spec.serviceAccountName,restartPolicy:.spec.template.spec.restartPolicy,containers:.spec.template.spec.containers},status:{phase:"Succeeded"}}' <<<"$job")"
+  if [[ -n "${FINAL_POD_OWNER_UID:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_OWNER_UID" '.metadata.ownerReferences[0].uid=$value' <<<"$pod")"; fi
+  if [[ -n "${FINAL_POD_SHA:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$pod")"; fi
+  if [[ -n "${FINAL_POD_EXPIRY:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_EXPIRY" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$pod")"; fi
+  if [[ -n "${FINAL_POD_RUNTIME_EXPIRY:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_RUNTIME_EXPIRY" '(.spec.containers[0].env[] | select(.name=="IAM_SIMULATION_VALID_UNTIL_UNIX") | .value)=$value' <<<"$pod")"; fi
+  if [[ -n "${FINAL_POD_PHASE:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_PHASE" '.status.phase=$value' <<<"$pod")"; fi
+  [[ "${FINAL_POD_SIDECAR:-false}" != true ]] || pod="$(jq -c '.spec.containers += [{name:"sidecar",image:"untrusted"}]' <<<"$pod")"
+  case "$count" in 0) echo '{"items":[]}' ;; 1) jq -cn --argjson pod "$pod" '{items:[$pod]}' ;; 2) jq -cn --argjson pod "$pod" '{items:[$pod,$pod]}' ;; *) exit 1 ;; esac
+  exit 0
 fi
 if [[ "$args" == *" wait "* ]]; then [[ "${FAIL_JOB:-false}" != true ]]; exit; fi
 if [[ "$args" == *" logs "* ]]; then echo 'verified 2 released terminal operation archives'; exit 0; fi
