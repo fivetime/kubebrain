@@ -6028,6 +6028,9 @@ runner 在新建后和 takeover 前还要求三份 evidence 是当前 executor U
 首次执行 `awk`/`jq` 或在线 scrape verifier 前，runner 还限制 state 为 2 MiB、TLS receipt 为 1 MiB、scrape
 receipt 为 2 MiB；gate 新建文件返回后重复检查。超限文件不得以“稍后 JSON 校验会失败”为理由进入解析器，
 避免 takeover 被异常 evidence 拖入无界 I/O 或内存消耗。
+旧/新 info CA 与 leaf、Prometheus CA 均最多 1 MiB且不得为空，Bearer token 为 1..16384 bytes；runner 在
+`sha256sum`/`cp` 前检查。两个 one-shot gate 同样在 OpenSSL、JSON 解析或 Prometheus query 前限制这些输入，
+并对直接 verify 的 state/TLS/scrape receipt 使用上述 evidence 上限，不能通过绕开 Operation runner 放大输入。
 executor 访问 parameter broker 的 projected ServiceAccount token 固定挂载为
 `/var/run/secrets/kubebrain-parameter/token`，audience 为
 `kubebrain-operation-parameters`，expiration 为 3600 秒，文件 mode 为 `0440`；不得复用

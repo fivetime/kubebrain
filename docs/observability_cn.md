@@ -26,6 +26,9 @@ executor Secret API 权限；Operation 参数必须引用固定挂载路径并�
 `prometheus_url` 绑定到 Deployment 显式声明的 `EXPECTED_PROMETHEUS_URL`，并只接受专用挂载中的 CA/token
 路径，避免参数把 broker ServiceAccount token 等任意可读文件作为 Bearer 凭据发往可改写的 HTTPS 地址。
 更换 Prometheus 地址必须修改受信 Deployment 配置并重新走清单审计，不能只改 Operation 参数。
+durable runner 与直接 scrape recovery gate 都在首次 hash/copy/curl 前限制 Prometheus CA 为 1 MiB、Bearer
+token 为 16 KiB；直接 gate 还在 query 前限制 TLS receipt 为 1 MiB、verify scrape receipt 为 2 MiB。
+超限输入必须作为配置错误处理，不能依赖 curl 或 jq 自行失败。
 
 ## 关键 SLI
 

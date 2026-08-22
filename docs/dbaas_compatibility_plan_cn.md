@@ -59652,6 +59652,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （138.256/476.318/264.837/497.641 秒）。上限是 worker 防御，不替代 workspace 容量、inode quota、PVC
   监控和存储侧拒绝服务隔离。
 
+- A5313 将 A5312 的有界输入原则扩展到证书/Prometheus 凭据和两个可直接运行的 gate。此前 runner 会先对
+  参数指定的旧/新 info CA/leaf、Prometheus CA/token 执行 `sha256sum`/`cp`；one-shot TLS gate 会先把无界
+  凭据交给 OpenSSL，scrape gate 则会先 hash/解析 TLS receipt 或让 curl 读取 CA。现在四份 info 凭据和
+  Prometheus CA 均要求 1..1048576 bytes，Bearer token 要求 1..16384 bytes，且 runner 在摘要/复制前拒绝；
+  TLS one-shot gate 另在解析前限制 state 2 MiB 和 verify receipt 1 MiB，scrape one-shot gate 在 query 前限制
+  TLS receipt 1 MiB、CA 1 MiB、token 16 KiB、verify receipt 2 MiB。回归覆盖 runner 的 info credential/CA/
+  token 及直接 gate 的 credential/state/TLS receipt/scrape receipt 超限，证明不调用对应 OpenSSL/Kubernetes/
+  Prometheus 路径。Bash syntax、定向 runner/gate、完整 deploy manifest、全仓 vet、diff check 与 469 项
+  inventory 均通过；四片 104/134/117/114 在代码提交 `82944a71` 上全部通过
+  （138.765/471.871/264.734/496.442 秒）。固定上限不验证 PEM 证书链政策或 token 权限范围；这些仍由 TLS
+  解析、专用 Secret 和 Prometheus RBAC 约束。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
