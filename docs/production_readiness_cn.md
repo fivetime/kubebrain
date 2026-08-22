@@ -5556,6 +5556,38 @@ observed/updated/ready/available 收敛，以及 HTTPS 204/OIDC 404；它不执�
 Secret 热轮换期间 Pod UID 未变或 endpoint 已呈现指定新证书；证书轮换仍须记录轮换前 UID/证书指纹和轮换后同 UID/
 新指纹的两阶段证据。
 
+TLS Secret 更新前先捕获不可覆盖基线：
+
+```shell
+KUBE_CONTEXT=production \
+OPERATION_API_ENDPOINT=https://operation-api.example.com \
+OPERATION_API_CA_FILE=/path/to/current-or-dual-trust-ca.crt \
+OPERATION_API_TOKEN_FILE=/path/to/oidc-smoke-token \
+OPERATION_API_TLS_BASELINE_FILE=/secure/audit/operation-api-tls-baseline.json \
+  hack/production/check-operation-api-tls-rotation.sh --capture
+```
+
+按 CA 双信任顺序更新 `kubebrain-operation-api-tls` 后，以最终信任 bundle 和预期新 leaf 验证：
+
+```shell
+KUBE_CONTEXT=production \
+OPERATION_API_ENDPOINT=https://operation-api.example.com \
+OPERATION_API_CA_FILE=/path/to/current-or-dual-trust-ca.crt \
+OPERATION_API_TOKEN_FILE=/path/to/oidc-smoke-token \
+OPERATION_API_TLS_BASELINE_FILE=/secure/audit/operation-api-tls-baseline.json \
+OPERATION_API_EXPECTED_TLS_CERT_FILE=/path/to/new-tls.crt \
+  hack/production/check-operation-api-tls-rotation.sh --verify
+```
+
+两个阶段都先运行完整 `--check-enabled`。capture 绑定 context、实际 namespace UID、三个 distinct/Ready/非终止 Pod
+UID 和连续 12 次受 CA 验证且完全一致的 endpoint leaf SHA-256；基线在非 symlink 目录用 `0600` 临时文件、不可覆盖
+hard-link、file/directory sync 发布。verify 要求该基线仍为当前用户所有、`0600`、单链接、1..64 KiB 且 schema/key
+集合精确，namespace/endpoint/context 未漂移；预期新证书为 1..1 MiB 普通非 symlink、不可 group/world 写并可由
+OpenSSL 解析。三个 Pod UID 必须逐项不变，新指纹必须不同于旧指纹，连续 12 次新握手必须全部精确呈现预期指纹。
+脚本不修改 Secret、Deployment 或 Pod；更新和回滚仍由外部证书发布流程负责。12 次负载均衡采样能发现常见混合证书
+窗口，但不能严格证明每个后端必然被命中；高保证环境仍应补每 Pod 直连握手证据。验证后的 baseline 应连同 Secret
+resourceVersion、证书发布审批和命令输出进入不可变审计存储，不要覆盖后复用于下一轮。
+
 `hack/production/run-backup-operation.sh` 接入受保护 Backup。参数文件固定 endpoint、
 prefix、operation 专属 artifact/receipt 路径、分页大小、Object Store ID、bucket/object
 key、绝对 retain-until、retention mode 与 completion gate；prefix 必须是绝对 key

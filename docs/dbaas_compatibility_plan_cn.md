@@ -60114,6 +60114,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   kubectl/curl，本轮未在真实 endpoint 执行。该周期检查只证明当前证书被指定 CA 信任；热轮换的轮换前 Pod UID/证书
   指纹与轮换后同 UID/指定新指纹两阶段证据尚未固化，是下一项生产门禁。
 
+- A5344 将 Operation API TLS 热轮换的 UID/指纹证据固化为两阶段只读门禁。新增
+  `check-operation-api-tls-rotation.sh --capture/--verify`，两阶段均先执行 A5343 完整 enabled check。capture 将 context、
+  实际 namespace UID、3 个 distinct Ready 非终止 Pod UID 和 12 次受 CA 验证的一致 endpoint leaf SHA-256 写入
+  current-user 0600、单链接、不可覆盖 hard-link 发布并 file/directory sync 的 v1 基线；verify 对基线做 64 KiB
+  schema/key/scope/owner/mode/link fence，对预期新 leaf 做 1 MiB/non-symlink/non-writable/parse fence，并要求 namespace
+  UID 与三个 Pod UID 不变、新旧指纹不同、12 次握手全部等于指定新指纹。脚本不 apply Secret、不重启或缩放 Pod，
+  轮换本身仍由外部双信任发布流程控制。回归覆盖正常旧→新指纹和 UID 稳定链，以及新证书已呈现但任一 Pod UID 变化
+  必须失败；Bash syntax、定向与完整 package/deploy、全仓 vet、diff check 和新增后的 534 项 inventory 均通过。
+  四片 122/151/134/127 在代码提交 `e909126b` 上全部通过（161.561/502.336/286.276/523.921 秒）。自动化使用
+  fake kubectl/openssl，本轮没有真实 endpoint/Secret/Pod，未执行实际轮换。12 次负载均衡握手不是每 Pod 必达证明；
+  目标环境仍须执行两阶段命令、留存 Secret resourceVersion/审批，并在可达拓扑补每 Pod 直连新指纹证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
