@@ -29,6 +29,9 @@ executor Secret API 权限；Operation 参数必须引用固定挂载路径并�
 durable runner 与直接 scrape recovery gate 都在首次 hash/copy/curl 前限制 Prometheus CA 为 1 MiB、Bearer
 token 为 16 KiB；直接 gate 还在 query 前限制 TLS receipt 为 1 MiB、verify scrape receipt 为 2 MiB。
 超限输入必须作为配置错误处理，不能依赖 curl 或 jq 自行失败。
+Bearer token 不得展开到 curl argv：gate 只接受 RFC 6750 `b64token` 字符集，把 Authorization header 写入
+`0600` 临时文件，再用 curl `-H @<file>` 读取，并在退出时清理。进程列表、审计 argv 和测试日志中只能看到
+临时路径，不能出现 token 明文。
 
 ## 关键 SLI
 

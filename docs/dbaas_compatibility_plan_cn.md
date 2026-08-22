@@ -59664,6 +59664,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （138.765/471.871/264.734/496.442 秒）。固定上限不验证 PEM 证书链政策或 token 权限范围；这些仍由 TLS
   解析、专用 Secret 和 Prometheus RBAC 约束。
 
+- A5314 消除 info scrape recovery Bearer token 的进程参数泄露。此前 gate 读取 token 后构造 curl
+  `-H "Authorization: Bearer <token>"`，同节点 `/proc`、进程审计或测试 command log 可观察完整凭据；仅限制
+  文件 mode 和长度不能保护 argv。gate 现在按 RFC 6750 `b64token` 字符集校验 token，将完整 Authorization
+  header 写入 `mktemp` capture 下的 `0600` 文件，unset shell token 变量，并只向 curl 传
+  `-H @<header-file>`；统一 trap 在退出时删除 capture。回归 fake curl 在调用期间核对 header 文件 mode/内容，
+  同时证明 argv 不含 secret；含冒号的非 b64token 在首次 query 前拒绝。Bash syntax、定向 scrape/runner、
+  完整 deploy manifest、全仓 vet、diff check 与 471 项 inventory 均通过；四片 104/135/117/115 在代码提交
+  `6cd6cc9e` 上全部通过（139.618/473.321/264.222/498.431 秒）。本项防止 argv 暴露，不替代节点 `/proc`
+  hidepid、Secret 文件访问控制、curl 内存保护或 Prometheus token 最小权限/短 TTL。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
