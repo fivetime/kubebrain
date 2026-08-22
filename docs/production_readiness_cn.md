@@ -2894,7 +2894,10 @@ PD member replacement 或 worker crash/reconcile。
 
 native PITR full restore 的 durable Operation 起点是 `NativePITRFullRestore`。它必须带平台 immutable approval，
 parameter Secret 绑定 exact plan、artifact receipts/local mirror、source/target/admission receipts、目标 PD 与 plan
-SHA；生产 runner 先发布 0600 不可覆盖 receipt 再提交 operation 成功。`maxAttempts=2` 只允许第二 claim 在已有
+SHA；生产 runner 先把已验证的私有 receipt 固定为 0600，执行 file `sync -f`、hard-link no-clobber、删除私有
+链接和 `WORK_DIR` directory `sync -f`，完成后才允许最终 heartbeat 与 operation 成功。文件同步失败时不得出现
+目标；链接竞争或目录同步失败时不得提交 Failed/Succeeded，由 lease takeover 的第二 claim 在线复验已有目标，
+或在无有效 receipt 时按既有协议要求重建 target。`maxAttempts=2` 只允许第二 claim 在已有
 durable receipt 时收敛 status，禁止再次调用 BR；没有 receipt 时终态失败、保持 admission fence，并要求重建
 target。固定 BR v7.5.1 没有 transactional restore checkpoint 参数，因此不得把该 fail-closed 协议描述成
 中途 import 自动 resume。A4549 已补 executor Deployment/镜像、requester admission 和进程级 worker-kill；

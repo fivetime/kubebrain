@@ -59751,6 +59751,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （142.107/477.669/267.176/508.043 秒）。该 preflight 证明当前挂载的即时语义，不模拟节点断电、CSI failover
   或跨节点 RWX cache coherence；这些仍须真实 StorageClass 故障演练。
 
+- A5322 补齐 `NativePITRFullRestore` 最终 receipt 的 durable publication 顺序。全局 evidence 审计发现该灾备
+  runner 虽在 workspace 随机 capture 中生成并验证 receipt、用 hard-link 防覆盖，却未同步文件内容、未删除
+  私有链接、未同步目标目录就执行 final heartbeat/Succeeded；断电可能留下已成功 Operation 但不存在或内容未
+  落盘的 receipt。现在发布严格执行 chmod 0600 → file `sync -f` → hard-link no-clobber → unlink capture source
+  → `WORK_DIR` directory `sync -f`，之后才计算最终摘要和提交终态。file sync 失败保持目标不存在；并发目标和
+  directory sync 失败保留可复验目标但不提交 Failed/Succeeded，使 lease takeover/attempt 2 成为唯一收敛路径。
+  回归记录两次 sync 顺序和最终 link count=1，分别注入首次/第二次 sync 失败，并在 link 瞬间注入 concurrent
+  owner，证明赢家字节不被覆盖且三条不确定路径都无 terminal 状态。Bash syntax、定向 Native PITR restore、
+  build/deploy tests、全仓 vet、diff check 与 478 项 inventory 均通过；四片 108/136/118/116 在代码提交
+  `8d4a2c47` 上全部通过（144.367/477.580/269.741/505.111 秒）。`sync -f` 仍依赖 CSI stable-storage 语义；
+  receipt 持久不代表 BR import 可事务回滚，receipt 前失败目标继续必须 retirement/replacement。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
