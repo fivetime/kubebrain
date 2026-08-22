@@ -5973,7 +5973,13 @@ KUBE_CONTEXT=production hack/production/apply-operation-archive-verifier.sh --ch
 均为 no。enable 先从 suspended CronJob 创建并保留一次手动 Job，只有 Job complete 且日志可读，才以旧
 resourceVersion 和 `suspend=true` 双 test 的 JSON Patch 改为 false；Job 失败时绝不 patch。该运行时门禁不会主动尝试
 S3 Put/Delete 来“证明拒绝”，因为误配时会产生真实副作用；必须另附 provider IAM policy lint/simulation 或审计批准，
-证明该独立 access key 仅允许 exact-version Head/Get/GetObjectRetention 和必要 bucket 配置读取。
+证明该独立 access key 仅允许 exact-version Head/Get/GetObjectRetention 和必要 bucket 配置读取。enable 通过
+`IAM_SIMULATION_EVIDENCE=/secure/audit/verifier-iam.json` 强制消费该证据：文件必须为当前用户 0600 单链接 canonical
+单行 JSON，格式 `kubebrain.object-store-iam-simulation.v1`，object-store-id/bucket 与 Secret 相同，checked-at 不早于
+一小时前且不晚于当前时间五分钟，valid-until 位于当前之后且不超过检查后 24 小时。decisions 必须精确证明
+GetBucketVersioning/GetObject/GetObjectLockConfiguration/GetObjectRetention allowed，以及 PutObject/DeleteObject/
+ListBucket/ListBucketVersions denied。证据 SHA 与 `suspend=false` 在同一 resourceVersion/suspend/pending CAS patch 中写入
+CronJob `dbaas.kubebrain.io/iam-simulation-sha256` annotation；不能先启用再补证据。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并

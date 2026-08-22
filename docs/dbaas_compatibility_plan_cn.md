@@ -60319,6 +60319,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   删除证据。上线仍须附 provider policy lint/simulation/审批，证明独立 key 对 Put/Delete/List 拒绝，只允许 bucket
   readiness 与 exact-version Head/Get/GetRetention；本轮无真实凭据，未解除任何集群 CronJob suspend。
 
+- A5359 将 A5358 的外部 provider IAM 审批从文字前提提升为可验证且与启用原子绑定的证据。CronJob 源清单新增
+  `dbaas.kubebrain.io/iam-simulation-sha256: pending`；enable 强制要求 `IAM_SIMULATION_EVIDENCE` 是当前用户所有、0600、
+  单链接、1..99999 byte 的 canonical 单行 `kubebrain.object-store-iam-simulation.v1`。证据 provider 固定 `aws-s3`，
+  principal 为安全非空 identity，store/bucket 精确匹配独立 Secret，checked-at 位于最近一小时且最多未来五分钟，
+  valid-until 必须仍有效且不超过检查后 24 小时。排序后的八项 decision 必须精确为 GetBucketVersioning/GetObject/
+  GetObjectLockConfiguration/GetObjectRetention allowed，PutObject/DeleteObject/ListBucket/ListBucketVersions denied；任何额外、
+  缺失、scope/decision 漂移均拒绝。手动只读 Job 成功后，CAS patch 同时 test resourceVersion、suspend=true、binding=pending，
+  replace evidence SHA 并解除 suspend；check-enabled 要求 64 位 SHA binding。回归覆盖成功绑定、过期证据、bucket 漂移和
+  Put 被误报 allowed，所有负例均在 create Job 前停止。新增后 560 项 inventory、定向 production/deploy、vet、Bash 与
+  diff 门禁均通过；四片 127/158/143/132 在代码提交 `80733fa4` 上全部通过（Go 测试
+  156.738/503.168/283.404/523.071 秒；端到端 165.323/511.814/292.093/531.623 秒）。该 schema 规范化并绑定
+  provider simulation 结果，但自动化未调用 AWS IAM API、未验证证据签发者真实性；生产流程仍须由受信 CI/审批系统生成
+  0600 文件并留存原始 simulator 输出、principal policy version、SCP/resource policy 上下文和审批身份。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
