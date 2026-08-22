@@ -244,6 +244,9 @@ COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl
 COPY hack/backup/logical-export.sh hack/backup/logical-status.sh hack/backup/logical-verify.sh hack/backup/cold-snapshot-preflight.sh hack/backup/cold-snapshot-execute.sh hack/backup/cold-restore-execute.sh /opt/kubebrain/hack/backup/
 COPY hack/production/*.sh /opt/kubebrain/hack/production/
 
+RUN REQUIRE_INFO_EXECUTOR_BINARIES=true \
+    /opt/kubebrain/hack/production/validate-info-executor-runtime.sh
+
 ARG KUBEBRAIN_VERSION
 ARG KUBEBRAIN_GIT_SHA
 ARG KUBEBRAIN_BUILD_DATE

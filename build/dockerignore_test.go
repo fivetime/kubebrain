@@ -66,6 +66,19 @@ func TestDockerfilePinsEveryExplicitRuntimePackage(t *testing.T) {
 		"runtime package additions and upgrades must pin exact versions")
 }
 
+func TestDockerfileExecutesInfoExecutorRuntimeContract(t *testing.T) {
+	dockerfile, err := os.ReadFile("../Dockerfile")
+	require.NoError(t, err)
+	content := string(dockerfile)
+	require.Contains(t, content, "COPY hack/production/*.sh /opt/kubebrain/hack/production/")
+	require.Contains(t, content, "RUN REQUIRE_INFO_EXECUTOR_BINARIES=true \\")
+	require.Contains(t, content, "/opt/kubebrain/hack/production/validate-info-executor-runtime.sh")
+
+	contract, err := os.ReadFile("../hack/production/validate-info-executor-runtime.sh")
+	require.NoError(t, err)
+	require.Contains(t, string(contract), "required_commands+=(kubectl kubebrain-operationctl kubebrain-operation-worker)")
+}
+
 func TestDockerignoreExcludesLocalBuildArtifacts(t *testing.T) {
 	file, err := os.Open("../.dockerignore")
 	require.NoError(t, err)
