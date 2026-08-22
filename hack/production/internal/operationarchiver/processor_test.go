@@ -37,9 +37,16 @@ func TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer(t *testing.T) {
 	)
 	require.NoError(t, err)
 	processor.now = func() time.Time { return time.Unix(110, 0) }
+	var actions []string
 	processor.run = func(_ context.Context, executable string, environment []string) error {
 		require.Equal(t, "/executor", executable)
 		values := envMap(environment)
+		actions = append(actions, values["ACTION"])
+		if values["ACTION"] == "audit-verify" {
+			require.FileExists(t, values["RECEIPT_INPUT"])
+			require.Empty(t, values["RECEIPT_OUTPUT"])
+			return nil
+		}
 		require.Equal(t, "audit/tenant-a/uid-a.json", values["S3_OBJECT_KEY"])
 		require.Equal(t, strconv.FormatInt(100+int64((24*time.Hour)/time.Second), 10), values["RETAIN_UNTIL_UNIX"])
 		status, err := operationaudit.Inspect(values["INPUT"])
@@ -64,6 +71,73 @@ func TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, updated.GetFinalizers(), operationaudit.Finalizer)
 	require.Equal(t, "version-a", updated.GetAnnotations()[operationaudit.VersionAnnotation])
+	require.Equal(t, []string{"archive", "audit-verify"}, actions)
+}
+
+func TestArchiveProcessorRetainsUnannotatedFinalizerUntilExecutorRecovery(t *testing.T) {
+	object := terminalOperation()
+	client := fake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{operationqueue.Resource: "KubeBrainOperationList"},
+		object,
+	)
+	processor, err := NewArchiveProcessor(
+		client, "/executor", "store-a", "audit-bucket", "audit", "COMPLIANCE", 24*time.Hour,
+	)
+	require.NoError(t, err)
+	processor.now = func() time.Time { return time.Unix(110, 0) }
+	archiveAttempts := 0
+	verifyAttempts := 0
+	processor.run = func(_ context.Context, _ string, environment []string) error {
+		values := envMap(environment)
+		if values["ACTION"] == "audit-verify" {
+			verifyAttempts++
+			if verifyAttempts == 1 {
+				return errors.New("remote exact-version retention verification unavailable")
+			}
+			require.FileExists(t, values["RECEIPT_INPUT"])
+			return nil
+		}
+		archiveAttempts++
+		status, err := operationaudit.Inspect(values["INPUT"])
+		if err != nil {
+			return err
+		}
+		retainUntil, err := strconv.ParseInt(values["RETAIN_UNTIL_UNIX"], 10, 64)
+		if err != nil {
+			return err
+		}
+		receipt := operationaudit.ArchiveReceipt{
+			Format: operationaudit.ArchiveReceiptFormat, OperationID: status.Artifact.OperationID,
+			OperationUID: status.Artifact.UID, Instance: status.Artifact.Instance,
+			OperationType: status.Artifact.Type, Phase: status.Artifact.Phase,
+			ExecutionReceiptSHA256: status.Artifact.ReceiptSHA256,
+			ObjectStoreID:          "store-a", Bucket: "audit-bucket", ObjectKey: values["S3_OBJECT_KEY"],
+			VersionID: "recovered-version", ArtifactSHA256: status.SHA256, ObjectBytes: status.Bytes,
+			RetentionMode: "COMPLIANCE", RetainUntilUnix: retainUntil,
+			RemoteVerified: true, ArchivedAtUnix: 110,
+		}
+		return os.WriteFile(values["RECEIPT_OUTPUT"], mustCanonicalReceipt(t, receipt), 0o600)
+	}
+
+	err = processor.Process(context.Background(), object.DeepCopy())
+	require.ErrorContains(t, err, "retention verification unavailable")
+	failed, err := client.Resource(operationqueue.Resource).Namespace("tenant-a").
+		Get(context.Background(), "operation-a", metav1.GetOptions{})
+	require.NoError(t, err)
+	require.Equal(t, []string{operationaudit.Finalizer}, failed.GetFinalizers())
+	require.NotContains(t, failed.GetAnnotations(), operationaudit.ReceiptSHAAnnotation)
+	require.NotContains(t, failed.GetAnnotations(), operationaudit.ArtifactSHAAnnotation)
+	require.NotContains(t, failed.GetAnnotations(), operationaudit.VersionAnnotation)
+
+	require.NoError(t, processor.Process(context.Background(), failed.DeepCopy()))
+	recovered, err := client.Resource(operationqueue.Resource).Namespace("tenant-a").
+		Get(context.Background(), "operation-a", metav1.GetOptions{})
+	require.NoError(t, err)
+	require.NotContains(t, recovered.GetFinalizers(), operationaudit.Finalizer)
+	require.Equal(t, "recovered-version", recovered.GetAnnotations()[operationaudit.VersionAnnotation])
+	require.Equal(t, 2, archiveAttempts)
+	require.Equal(t, 2, verifyAttempts)
 }
 
 func TestConcurrentArchiveProcessorsConvergeWithOneCommittedFinalizerUpdate(t *testing.T) {
@@ -107,6 +181,10 @@ func TestConcurrentArchiveProcessorsConvergeWithOneCommittedFinalizerUpdate(t *t
 		processor.now = func() time.Time { return time.Unix(110, 0) }
 		processor.run = func(_ context.Context, _ string, environment []string) error {
 			values := envMap(environment)
+			if values["ACTION"] == "audit-verify" {
+				require.FileExists(t, values["RECEIPT_INPUT"])
+				return nil
+			}
 			status, err := operationaudit.Inspect(values["INPUT"])
 			if err != nil {
 				return err
@@ -298,6 +376,9 @@ func TestArchiveProcessorRejectsReceiptRetentionDriftBeforeRelease(t *testing.T)
 	processor.now = func() time.Time { return time.Unix(110, 0) }
 	processor.run = func(_ context.Context, _ string, environment []string) error {
 		values := envMap(environment)
+		if values["ACTION"] == "audit-verify" {
+			return nil
+		}
 		status, err := operationaudit.Inspect(values["INPUT"])
 		require.NoError(t, err)
 		retainUntil, err := strconv.ParseInt(values["RETAIN_UNTIL_UNIX"], 10, 64)
@@ -337,6 +418,9 @@ func TestArchiveProcessorRejectsReceiptObjectDriftBeforeRelease(t *testing.T) {
 	processor.now = func() time.Time { return time.Unix(110, 0) }
 	processor.run = func(_ context.Context, _ string, environment []string) error {
 		values := envMap(environment)
+		if values["ACTION"] == "audit-verify" {
+			return nil
+		}
 		status, err := operationaudit.Inspect(values["INPUT"])
 		require.NoError(t, err)
 		retainUntil, err := strconv.ParseInt(values["RETAIN_UNTIL_UNIX"], 10, 64)

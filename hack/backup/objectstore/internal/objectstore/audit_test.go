@@ -213,6 +213,83 @@ func TestArchiveAuditRejectsConflictCorruptionAndRetentionDrift(t *testing.T) {
 	})
 }
 
+func TestArchiveAuditRecoversSameVersionAfterVerificationAPIFailure(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	for _, tc := range []struct {
+		name      string
+		configure func(*fakeS3)
+		want      string
+	}{
+		{
+			name: "exact version head", want: "read exact object metadata",
+			configure: func(client *fakeS3) {
+				client.headErrors = []error{errors.New("injected head outage")}
+			},
+		},
+		{
+			name: "exact version get", want: "download operation audit object",
+			configure: func(client *fakeS3) {
+				client.getErrors = []error{errors.New("injected get outage")}
+			},
+		},
+		{
+			name: "retention read", want: "read remote audit retention",
+			configure: func(client *fakeS3) {
+				client.retentionErrors = []error{errors.New("injected retention outage")}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := AuditRequest{
+				Input: writeAuditArtifact(t), ObjectStoreID: "store-a", Bucket: "audits",
+				ObjectKey: "instance-a/operation-1.json", RetentionMode: "COMPLIANCE",
+				RetainUntilUnix: now.Add(time.Hour).Unix(),
+				ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+			}
+			client := &fakeS3{}
+			tc.configure(client)
+
+			_, err := ArchiveAudit(context.Background(), client, request)
+			require.ErrorContains(t, err, tc.want)
+			require.Equal(t, "version-1", client.versionID)
+			_, statErr := os.Stat(request.ReceiptOutput)
+			require.ErrorIs(t, statErr, os.ErrNotExist)
+
+			receipt, err := ArchiveAudit(context.Background(), client, request)
+			require.NoError(t, err)
+			require.Equal(t, "version-1", receipt.VersionID)
+			require.Equal(t, 2, client.putCalls)
+			persisted, err := ReadAuditReceipt(request.ReceiptOutput)
+			require.NoError(t, err)
+			require.Equal(t, receipt, persisted)
+		})
+	}
+}
+
+func TestArchiveAuditRetriesAfterUncommittedPutFailure(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	request := AuditRequest{
+		Input: writeAuditArtifact(t), ObjectStoreID: "store-a", Bucket: "audits",
+		ObjectKey: "instance-a/operation-1.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(time.Hour).Unix(),
+		ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	}
+	client := &fakeS3{putErr: errors.New("injected put outage"), putWithoutCommit: true}
+
+	_, err := ArchiveAudit(context.Background(), client, request)
+	require.ErrorContains(t, err, "conditional audit object upload")
+	require.Empty(t, client.versionID)
+	_, statErr := os.Stat(request.ReceiptOutput)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+
+	client.putErr = nil
+	client.putWithoutCommit = false
+	receipt, err := ArchiveAudit(context.Background(), client, request)
+	require.NoError(t, err)
+	require.Equal(t, "version-1", receipt.VersionID)
+	require.Equal(t, 2, client.putCalls)
+}
+
 func TestArchiveAuditRejectsRemoteBodyCloseFailure(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
 	closeErr := errors.New("audit response close failed")

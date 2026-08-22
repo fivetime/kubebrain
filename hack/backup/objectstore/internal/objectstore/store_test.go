@@ -414,6 +414,9 @@ type fakeS3 struct {
 	putWithoutCommit          bool
 	putCancel                 context.CancelFunc
 	beforePut                 func()
+	headErrors                []error
+	getErrors                 []error
+	retentionErrors           []error
 }
 
 type errorReadCloser struct {
@@ -453,6 +456,13 @@ func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...fun
 }
 
 func (f *fakeS3) HeadObject(ctx context.Context, input *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	if len(f.headErrors) > 0 {
+		err := f.headErrors[0]
+		f.headErrors = f.headErrors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if f.heads != nil {
 		if output, ok := f.heads[aws.ToString(input.Key)+"\x00"+aws.ToString(input.VersionId)]; ok {
 			return output, nil
@@ -480,6 +490,13 @@ func (f *fakeS3) HeadObject(ctx context.Context, input *s3.HeadObjectInput, _ ..
 }
 
 func (f *fakeS3) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	if len(f.getErrors) > 0 {
+		err := f.getErrors[0]
+		f.getErrors = f.getErrors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	body := f.body
 	if f.corruptGet {
 		body = append([]byte(nil), body...)
@@ -495,6 +512,13 @@ func (f *fakeS3) GetObjectRetention(
 	input *s3.GetObjectRetentionInput,
 	_ ...func(*s3.Options),
 ) (*s3.GetObjectRetentionOutput, error) {
+	if len(f.retentionErrors) > 0 {
+		err := f.retentionErrors[0]
+		f.retentionErrors = f.retentionErrors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if f.retentions != nil {
 		if output, ok := f.retentions[aws.ToString(input.Key)+"\x00"+aws.ToString(input.VersionId)]; ok {
 			return output, nil

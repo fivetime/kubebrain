@@ -128,6 +128,19 @@ func (p *ArchiveProcessor) Process(ctx context.Context, object *unstructured.Uns
 	if err := p.run(ctx, p.executor, environment); err != nil {
 		return err
 	}
+	verificationEnvironment := []string{
+		"ACTION=audit-verify",
+		"INPUT=" + artifactPath,
+		"OBJECT_STORE_ID=" + p.objectStoreID,
+		"S3_BUCKET=" + p.bucket,
+		"S3_OBJECT_KEY=" + objectKey,
+		"RETENTION_MODE=" + p.retentionMode,
+		"RETAIN_UNTIL_UNIX=" + strconv.FormatInt(retainUntil, 10),
+		"RECEIPT_INPUT=" + receiptPath,
+	}
+	if err := p.run(ctx, p.executor, verificationEnvironment); err != nil {
+		return fmt.Errorf("read-only operation archive verification failed: %w", err)
+	}
 	_, err = operationauditrelease.ReleaseWithExpectedReceipt(
 		ctx, p.client, artifact.Namespace, artifact.Name, artifactPath, receiptPath,
 		operationauditrelease.ExpectedArchiveReceipt{
