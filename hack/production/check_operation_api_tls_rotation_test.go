@@ -62,6 +62,31 @@ func TestOperationAPITLSRotationRejectsPodRestart(t *testing.T) {
 	require.Contains(t, string(out), "Pod UIDs changed during TLS rotation")
 }
 
+func TestOperationAPITLSRotationRejectsDirectPodCertificateDrift(t *testing.T) {
+	dir := t.TempDir()
+	baseline := filepath.Join(dir, "baseline.json")
+	caFile, tokenFile, expectedCert := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "token"), filepath.Join(dir, "new.crt")
+	require.NoError(t, os.WriteFile(caFile, []byte("ca"), 0o600))
+	require.NoError(t, os.WriteFile(tokenFile, []byte("token"), 0o600))
+	require.NoError(t, os.WriteFile(expectedCert, []byte("NEWCERT"), 0o600))
+	checker, kubectl, openssl, timeout := writeOperationAPITLSRotationFakes(t, dir)
+	oldFingerprint, newFingerprint, wrongFingerprint := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	baseEnv := []string{
+		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "OPENSSL=" + openssl, "TIMEOUT=" + timeout,
+		"OPERATION_API_CHECKER=" + checker, "OPERATION_API_ENDPOINT=https://operation-api.example.test",
+		"OPERATION_API_CA_FILE=" + caFile, "OPERATION_API_TOKEN_FILE=" + tokenFile,
+		"OPERATION_API_TLS_BASELINE_FILE=" + baseline, "EXPECTED_FP=" + newFingerprint, "UID_SET=old",
+	}
+	_, err := runProductionCommand(t, "bash", []string{"check-operation-api-tls-rotation.sh", "--capture"}, append(baseEnv,
+		"PRESENTED_FP="+oldFingerprint))
+	require.NoError(t, err)
+	out, err := runProductionCommand(t, "bash", []string{"check-operation-api-tls-rotation.sh", "--verify"}, append(baseEnv,
+		"PRESENTED_FP="+newFingerprint, "POD_PRESENTED_FP="+wrongFingerprint,
+		"OPERATION_API_EXPECTED_TLS_CERT_FILE="+expectedCert))
+	require.Error(t, err)
+	require.Contains(t, string(out), "Pod does not present the expected rotated certificate")
+}
+
 func mustStat(t *testing.T, path string) os.FileInfo {
 	t.Helper()
 	info, err := os.Stat(path)
@@ -81,16 +106,25 @@ if [[ "$2" == namespace ]]; then
   printf '{"metadata":{"uid":"namespace-uid"}}\n'
   exit 0
 fi
-[[ "$1" == get && "$2" == pods ]] || exit 99
 if [[ "${UID_SET:-old}" == old ]]; then
   uids=(uid-a uid-b uid-c)
 else
   uids=(uid-a uid-b uid-new)
 fi
+if [[ "$1" == get && "$2" == pod ]]; then
+  case "$3" in api-0) uid="${uids[0]}" ;; api-1) uid="${uids[1]}" ;; api-2) uid="${uids[2]}" ;; *) exit 99 ;; esac
+  printf '{"metadata":{"uid":"%s"}}\n' "$uid"
+  exit 0
+fi
+if [[ "$1" == port-forward ]]; then
+  printf 'Forwarding from 127.0.0.1:45678 -> 8443\n'
+  while true; do sleep 1; done
+fi
+[[ "$1" == get && "$2" == pods ]] || exit 99
 printf '{"items":['
 for i in 0 1 2; do
   ((i == 0)) || printf ','
-  printf '{"metadata":{"uid":"%s"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}' "${uids[$i]}"
+  printf '{"metadata":{"name":"api-%s","uid":"%s"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}' "$i" "${uids[$i]}"
 done
 printf ']}\n'
 `)
@@ -99,7 +133,9 @@ printf ']}\n'
 set -euo pipefail
 case "$1" in
   s_client)
-    printf 'FAKE-CERT %s\n' "$PRESENTED_FP"
+    fp="$PRESENTED_FP"
+    if [[ "$*" == *"-connect 127.0.0.1:"* && -n "${POD_PRESENTED_FP:-}" ]]; then fp="$POD_PRESENTED_FP"; fi
+    printf 'FAKE-CERT %s\n' "$fp"
     ;;
   x509)
     file=""

@@ -64,13 +64,11 @@ certificate_file_fingerprint() {
   normalize_fingerprint "$line"
 }
 
-endpoint_fingerprint_once() {
-  local output_file="$1" host_port host port line bytes
-  host_port="${OPERATION_API_ENDPOINT#https://}"
-  host="${host_port%%:*}"
-  if [[ "$host_port" == *:* ]]; then port="${host_port##*:}"; else port=443; fi
-  "$TIMEOUT" 15s "$OPENSSL" s_client -connect "${host}:${port}" -servername "$host" \
-    -CAfile "$OPERATION_API_CA_FILE" -verify_return_error -showcerts </dev/null >"$output_file" 2>/dev/null || die "Operation API TLS handshake or trust verification failed"
+tls_fingerprint_once() {
+  local connect_host="$1" connect_port="$2" server_name="$3" output_file="$4" line bytes
+  "$TIMEOUT" 15s "$OPENSSL" s_client -connect "${connect_host}:${connect_port}" -servername "$server_name" \
+    -verify_hostname "$server_name" -CAfile "$OPERATION_API_CA_FILE" -verify_return_error -showcerts \
+    </dev/null >"$output_file" 2>/dev/null || die "Operation API TLS handshake, hostname, or trust verification failed"
   bytes="$(stat -Lc '%s' "$output_file")"
   [[ "$bytes" =~ ^[0-9]+$ && "$bytes" -ge 1 && "$bytes" -le 1048576 ]] || die "Operation API TLS handshake output exceeded its 1 MiB evidence bound"
   line="$("$OPENSSL" x509 -in "$output_file" -noout -fingerprint -sha256)" || die "Operation API endpoint did not present a parseable leaf certificate"
@@ -78,16 +76,65 @@ endpoint_fingerprint_once() {
 }
 
 stable_endpoint_fingerprint() (
-  local tmp first current sample
+  local tmp first current sample host_port host port
   tmp="$(mktemp -d)"
   cleanup_fingerprint_tmp() { rm -rf -- "$tmp"; }
   trap cleanup_fingerprint_tmp EXIT
+  host_port="${OPERATION_API_ENDPOINT#https://}"
+  host="${host_port%%:*}"
+  if [[ "$host_port" == *:* ]]; then port="${host_port##*:}"; else port=443; fi
   first=""
   for ((sample = 1; sample <= TLS_SAMPLES; sample++)); do
-    current="$(endpoint_fingerprint_once "${tmp}/handshake-${sample}.pem")"
+    current="$(tls_fingerprint_once "$host" "$port" "$host" "${tmp}/handshake-${sample}.pem")"
     if [[ -z "$first" ]]; then first="$current"; else [[ "$current" == "$first" ]] || die "Operation API endpoint presented mixed TLS leaf certificates"; fi
   done
   printf '%s' "$first"
+)
+
+pod_uid() {
+  local pod="$1" pod_json uid
+  pod_json="$("$KUBECTL" "${context[@]}" get pod "$pod" -n "$NAMESPACE" -o json)" || die "cannot read Operation API Pod identity: ${pod}"
+  uid="$("$JQ" -er '.metadata.uid | select(type == "string" and length > 0)' <<<"$pod_json")" || die "Operation API Pod UID is missing: ${pod}"
+  printf '%s' "$uid"
+}
+
+verify_each_pod_fingerprint() (
+  local expected="$1" baseline_uids="$2" pods_json pod uid_before uid_after port_forward_pid port_log port attempt line fingerprint tmp host_port server_name
+  pods_json="$("$KUBECTL" "${context[@]}" get pods -n "$NAMESPACE" -l app.kubernetes.io/name=kubebrain-operation-api -o json)" || die "cannot list Operation API Pods for direct TLS verification"
+  mapfile -t pod_names < <("$JQ" -er '.items|sort_by(.metadata.name)|.[].metadata.name' <<<"$pods_json")
+  [[ "${#pod_names[@]}" == 3 ]] || die "direct TLS verification requires exactly three Operation API Pods"
+  host_port="${OPERATION_API_ENDPOINT#https://}"
+  server_name="${host_port%%:*}"
+  tmp="$(mktemp -d)"
+  port_forward_pid=""
+  cleanup_pod_forward() {
+    if [[ -n "$port_forward_pid" ]] && kill -0 "$port_forward_pid" 2>/dev/null; then kill "$port_forward_pid" 2>/dev/null || true; wait "$port_forward_pid" 2>/dev/null || true; fi
+    rm -rf -- "$tmp"
+  }
+  trap cleanup_pod_forward EXIT
+  for pod in "${pod_names[@]}"; do
+    uid_before="$(pod_uid "$pod")"
+    "$JQ" -e --arg uid "$uid_before" 'index($uid) != null' <<<"$baseline_uids" >/dev/null || die "Operation API Pod is not present in the TLS rotation baseline: ${pod}"
+    port_log="${tmp}/${pod}.port-forward.log"
+    "$KUBECTL" "${context[@]}" port-forward --address 127.0.0.1 -n "$NAMESPACE" "pod/${pod}" :8443 >"$port_log" 2>&1 &
+    port_forward_pid=$!
+    port=""
+    for ((attempt = 1; attempt <= 100; attempt++)); do
+      kill -0 "$port_forward_pid" 2>/dev/null || die "kubectl port-forward exited before becoming ready: ${pod}"
+      [[ "$(stat -Lc '%s' "$port_log")" -le 65536 ]] || die "kubectl port-forward log exceeded 64 KiB: ${pod}"
+      line="$(grep -m1 -E '^Forwarding from 127\.0\.0\.1:[0-9]+ -> 8443$' "$port_log" || true)"
+      if [[ -n "$line" ]]; then port="${line#*:}"; port="${port%% *}"; break; fi
+      sleep 0.1
+    done
+    [[ "$port" =~ ^[1-9][0-9]{0,4}$ && "$port" -le 65535 ]] || die "kubectl port-forward did not report a valid local IPv4 port: ${pod}"
+    fingerprint="$(tls_fingerprint_once 127.0.0.1 "$port" "$server_name" "${tmp}/${pod}.pem")"
+    [[ "$fingerprint" == "$expected" ]] || die "Operation API Pod does not present the expected rotated certificate: ${pod}"
+    uid_after="$(pod_uid "$pod")"
+    [[ "$uid_after" == "$uid_before" ]] || die "Operation API Pod changed during direct TLS verification: ${pod}"
+    kill "$port_forward_pid" 2>/dev/null || true
+    wait "$port_forward_pid" 2>/dev/null || true
+    port_forward_pid=""
+  done
 )
 
 [[ "$#" == 1 ]] || usage
@@ -147,5 +194,6 @@ else
   [[ "$pod_uids" == "$baseline_uids" ]] || die "Operation API Pod UIDs changed during TLS rotation"
   [[ "$expected_fingerprint" != "$baseline_fingerprint" ]] || die "expected TLS certificate is identical to the rotation baseline"
   [[ "$presented_fingerprint" == "$expected_fingerprint" ]] || die "Operation API endpoint does not consistently present the expected rotated certificate"
-  echo "verified Operation API TLS hot rotation across unchanged Pod UIDs and ${TLS_SAMPLES} consistent handshakes"
+  verify_each_pod_fingerprint "$expected_fingerprint" "$baseline_uids"
+  echo "verified Operation API TLS hot rotation across unchanged Pod UIDs, ${TLS_SAMPLES} endpoint handshakes, and three direct Pod handshakes"
 fi
