@@ -51,6 +51,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-operation-worker ./hack/production/cmd/operation-worker \
     && go build -trimpath -o /src/bin/kubebrain-operation-parameter-broker ./hack/production/cmd/operation-parameter-broker \
     && go build -trimpath -o /src/bin/kubebrain-operation-archiver ./hack/production/cmd/operation-archiver \
+    && go build -trimpath -o /src/bin/kubebrain-operation-archive-verifier ./hack/production/cmd/operation-archive-verifier \
     && go build -trimpath -o /src/bin/kubebrain-operation-audit ./hack/production/cmd/operation-audit \
     && go build -trimpath -o /src/bin/kubebrain-tikv-repair-alert-receiver ./hack/production/cmd/tikv-repair-alert-receiver \
     && go build -trimpath -o /src/bin/kubebrain-rollout-availability-probe ./hack/production/cmd/rollout-availability-probe \
@@ -193,6 +194,7 @@ COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-opera
 COPY --from=build /src/bin/kubebrain-operation-worker /usr/local/bin/kubebrain-operation-worker
 COPY --from=build /src/bin/kubebrain-operation-parameter-broker /usr/local/bin/kubebrain-operation-parameter-broker
 COPY --from=build /src/bin/kubebrain-operation-archiver /usr/local/bin/kubebrain-operation-archiver
+COPY --from=build /src/bin/kubebrain-operation-archive-verifier /usr/local/bin/kubebrain-operation-archive-verifier
 COPY --from=build /src/bin/kubebrain-operation-audit /usr/local/bin/kubebrain-operation-audit
 COPY --from=build /src/bin/kubebrain-tikv-repair-alert-receiver /usr/local/bin/kubebrain-tikv-repair-alert-receiver
 COPY --from=build /src/bin/kubebrain-rollout-availability-probe /usr/local/bin/kubebrain-rollout-availability-probe

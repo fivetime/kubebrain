@@ -4240,6 +4240,7 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"kube_pod_container_resource_limits",
 		"kube_pod_spec_volumes_persistentvolumeclaims_info",
 		"kube_pod_status_ready",
+		"kube_job_status_failed",
 		"kube_persistentvolumeclaim_info",
 		"kube_persistentvolumeclaim_resource_requests_storage_bytes",
 		"kube_statefulset_replicas",
@@ -4583,6 +4584,47 @@ func TestMeteringArchiveCronJobIsFailClosedAndImmutable(t *testing.T) {
 		"go build -trimpath -o /src/bin/kubebrain-metering-archive ./hack/production/cmd/metering-archive")
 	require.Contains(t, string(dockerfile),
 		"COPY --from=build /src/bin/kubebrain-metering-archive /usr/local/bin/kubebrain-metering-archive")
+}
+
+func TestOperationArchiveVerifierIsSuspendedReadOnlyAndFailClosed(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-operation-archive-verifier.yaml")
+	role := objectByKindAndName(t, objects, "Role", "kubebrain-operation-archive-verifier")
+	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, rules, 2)
+	require.Equal(t, []any{"get"}, rules[0].(map[string]any)["verbs"])
+	require.Equal(t, []any{"get", "list"}, rules[1].(map[string]any)["verbs"])
+	for _, rule := range rules {
+		verbs := rule.(map[string]any)["verbs"].([]any)
+		require.NotContains(t, verbs, "create")
+		require.NotContains(t, verbs, "update")
+		require.NotContains(t, verbs, "patch")
+		require.NotContains(t, verbs, "delete")
+	}
+	job := objectByKindAndName(t, objects, "CronJob", "kubebrain-operation-archive-verifier")
+	suspended, found, err := unstructured.NestedBool(job.Object, "spec", "suspend")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.True(t, suspended)
+	backoff, found, err := unstructured.NestedFieldNoCopy(job.Object, "spec", "jobTemplate", "spec", "backoffLimit")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, float64(0), backoff)
+	command, found, err := unstructured.NestedStringSlice(job.Object, "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command")
+	if err != nil || !found {
+		containers, _, nestedErr := unstructured.NestedSlice(job.Object, "spec", "jobTemplate", "spec", "template", "spec", "containers")
+		require.NoError(t, nestedErr)
+		rawCommand := containers[0].(map[string]any)["command"].([]any)
+		command = make([]string, len(rawCommand))
+		for i := range rawCommand {
+			command[i] = rawCommand[i].(string)
+		}
+	}
+	require.Equal(t, []string{"/usr/local/bin/kubebrain-operation-archive-verifier"}, command)
+	data, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
+	require.NoError(t, err)
+	require.Contains(t, string(data), "kubebrain-operation-archive-verifier")
 }
 
 func TestMeteringRollupCronJobRequiresCompleteImmutableDay(t *testing.T) {

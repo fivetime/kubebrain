@@ -2652,3 +2652,11 @@ spec:
           annotations:
             summary: KubeBrain data-plane network packets were dropped
             description: "Pod {{ $labels.pod }} dropped {{ $value }} RX/TX packets on {{ $labels.interface }} in 10 minutes."
+        - alert: KubeBrainOperationArchiveEvidenceVerificationFailed
+          expr: max_over_time(kube_job_status_failed{namespace="kubebrain-operations",job_name=~"kubebrain-operation-archive-verifier-.*"}[2h]) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain immutable Operation archive evidence verification failed
+            description: "The read-only hourly verifier found missing or drifted Kubernetes evidence, an expired retention window, or an exact-version S3 metadata/body/Object Lock mismatch. Keep the verifier suspended only during controlled bootstrap; inspect the failed Job before deleting its retained logs."

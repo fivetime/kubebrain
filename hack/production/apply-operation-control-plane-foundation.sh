@@ -17,6 +17,7 @@ foundation_manifests=(
   kubebrain-operation-managed-namespace-rbac.yaml
   kubebrain-operation-approver-rbac.yaml
   kubebrain-operation-archiver-rbac.yaml
+  kubebrain-operation-archive-verifier.yaml
   kubebrain-operation-parameter-broker.yaml
   kubebrain-operation-executors.yaml
 )
@@ -39,7 +40,7 @@ verify_inventory() {
       die "foundation admission binding does not deny: ${file}"
     fi
   done
-  for file in kubebrain-operation-archiver-rbac.yaml kubebrain-operation-parameter-broker.yaml kubebrain-operation-executors.yaml; do
+  for file in kubebrain-operation-archiver-rbac.yaml kubebrain-operation-archive-verifier.yaml kubebrain-operation-parameter-broker.yaml kubebrain-operation-executors.yaml; do
     if grep -Eq '^[[:space:]]+replicas:[[:space:]]+[1-9]' "${DEPLOY_DIR}/${file}"; then
       die "foundation workload must remain disabled until its credentials and runtime dependencies are ready: ${file}"
     fi

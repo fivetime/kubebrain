@@ -596,7 +596,7 @@ func TestManagedNamespaceRBACDefinesUnboundLeastPrivilegeRoles(t *testing.T) {
 		"..", "..", "deploy", "production", "kubebrain-operation-managed-namespace-rbac.yaml",
 	)
 	documents := decodeRBACManifest(t, path)
-	require.Len(t, documents, 4)
+	require.Len(t, documents, 5)
 	for _, document := range documents {
 		require.Equal(t, "ClusterRole", document.Kind)
 		require.Empty(t, document.Metadata.Namespace)
@@ -643,6 +643,12 @@ func TestManagedNamespaceRBACDefinesUnboundLeastPrivilegeRoles(t *testing.T) {
 		Resources: []string{"kubebrainoperations"},
 		Verbs:     []string{"get", "list", "update"},
 	}}, documents[3].Rules)
+	require.Equal(t, "kubebrain-operation-archive-verifier-managed-namespace", documents[4].Metadata.Name)
+	require.Equal(t, []rbacRule{{
+		APIGroups: []string{"dbaas.kubebrain.io"},
+		Resources: []string{"kubebrainoperations"},
+		Verbs:     []string{"get", "list"},
+	}}, documents[4].Rules)
 }
 
 func decodeRBACManifest(t *testing.T, path string) []rbacManifest {
