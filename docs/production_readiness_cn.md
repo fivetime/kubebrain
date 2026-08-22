@@ -6064,6 +6064,11 @@ deadline 继续启动或等待请求。该边界只证明本进程在 deadline �
 远端请求，也不替代 S3 access trail 对请求完成时点的核对。目标环境必须专门安排一个 expiry 临近的手动 Job，证明容器以
 deadline exceeded 退出、未释放未完成对象的 finalizer，并把 Pod 日志与 provider access trail 对齐。
 
+archiver 与 verifier 的 namespace inventory 扫描也在每个 namespace List 前、List 错误后和每个返回对象进入候选集合前检查
+parent context。deadline/cancel 一旦发生，controller 立即返回已聚合错误，不再向后续 namespace 发 API 请求，也不在一个已
+返回的大 List 上继续做本地候选构建；不能仅依赖 client-go 是否及时响应取消来满足整轮预算。该提前返回发生在任何候选执行
+之前，故 processed/verified 计数为零，且不推进公平游标；下一轮仍可从原位置安全重试。
+
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
 终止卡住的对象存储子进程；超时对象不得生成 receipt、不得释放 audit finalizer，下一轮

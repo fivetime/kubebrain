@@ -60504,6 +60504,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后终止控制流，不证明 provider 在取消前已经完成的请求可回滚，也未提供真实 S3 access log 的时间边界。目标环境仍须执行
   expiry 临近的手动 Job，把 deadline-exceeded Pod 终态、未释放 finalizer、精确对象版本和 provider access trail 联合留证。
 
+- A5372 修复 A5371 仍把“带 canceled context 调用 client-go”误当作“controller 已停止”的扫描预算缺口。operation archiver 和
+  archive verifier 原先只在候选执行循环检查 `ctx.Err()`；namespace inventory 最多允许 256 个租户，若首个 List 期间 deadline
+  到期而 fake/代理 client 对取消快速返回或忽略 context，controller 仍会继续访问其余 namespace、聚合错误并遍历已返回的大
+  Operation List。现在两个 controller 均在每个 namespace List 前、List 错误后以及每个对象加入候选集合前检查 parent context，
+  取消后立即以零 processed/verified 返回已有错误链，不推进尚未尝试候选的公平游标。两个回归在首个 namespace List reactor
+  返回时同步 cancel，固定第二个 namespace 的 List 调用数为零；archiver/verifier 子包分别在 0.130/0.023 秒通过。根 production
+  inventory 仍为 580 项（新增测试位于 internal 子包）；四片 130/165/147/138 在代码提交 `8b326846` 上全部通过（Go 测试
+  166.300/512.295/292.208/549.006 秒；端到端 175.517/521.394/301.418/558.128 秒）。该回归证明 controller 自身不在取消后
+  继续租户/对象扫描，不证明 apiserver 或外部 executor 能回滚 deadline 前已经完成的副作用；真实 expiry-near Job 与 access
+  trail 对账仍是目标环境门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
