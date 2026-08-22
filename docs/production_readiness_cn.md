@@ -5977,6 +5977,10 @@ KUBE_CONTEXT=production REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM=yes \
 门禁要求独立 Secret 精确七个非空安全字段、HTTPS endpoint，CronJob 仍使用专用 SA、Forbid、零 backoff 和 Never；
 live CronJob 的唯一 verifier image 必须是 `registry/path@sha256:<64 lowercase hex>`。源码中的 `kubebrain:dev` 仅用于
 suspended foundation 占位，发布系统必须在执行 `--check/--enable` 前以受审构建 digest 替换；可变 tag 无法通过门禁。
+live 参数还必须精确保留 `--max-batch=256`。启用或续签前，inventory 中必须至少存在一个已释放 audit finalizer、三项
+archive annotation 完整且远端 exact version/retention 可读的终态 Operation 作为验收样本；空 inventory 不能证明 S3
+权限。成功 Job 日志必须是唯一一行 `verified N released terminal operation archives`，其中 N 为 1..256，且整行不超过
+4096 字节；zero、超批次、额外行或任意非 canonical 输出都不得 patch CronJob。
 对 inventory 每个 namespace 要求 Operation get/list 为 yes，create/update/patch/delete/watch、Secret 读取和 Lease create
 均为 no。enable 先从 suspended CronJob 创建并保留一次手动 Job；默认使用
 `generateName: kubebrain-archive-verifier-enable-`，避免失败 Job 七天保留期间阻塞安全重试，也可通过

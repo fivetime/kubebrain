@@ -60415,6 +60415,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   runtime 只证明 digest/termination 比较合同，不证明镜像签名、SBOM/provenance、registry transparency 或节点 runtime
   实际内容可信；生产仍须把发布 digest、签名验证、Pod imageID/containerID/termination 与构建 attestation 纳入同一证据。
 
+- A5366 关闭 A5358–A5365 手动 Job 可在零候选时成功、从未触达 exact-version S3 API 仍解除 suspend 的验收假阳性。
+  verifier controller 合法地对空 inventory 输出 `verified 0 released terminal operation archives` 并以 0 退出；旧门禁只要求
+  Complete、Pod runtime 与日志可读，不能证明 read-only credential 实际完成 Head/Get/GetRetention。现在 live CronJob
+  同时固定唯一 `--max-batch=256`，防止输出上界与执行合同漂移；Job/Pod 全部最终态门禁之后，脚本捕获而非仅打印日志，
+  要求 1..4096 字节、无换行且精确匹配 `verified N released terminal operation archives`，N 必须为 1..256。zero、257、
+  malformed、多行和超长日志全部在 CronJob patch 前 fail closed。新增后 570 项 inventory；四片 129/159/145/137 在
+  代码提交 `8d1118de` 上全部通过（Go 测试 160.577/497.985/288.122/533.256 秒；端到端
+  169.351/506.774/296.880/541.931 秒）。生产启用/每日 refresh 前必须保留至少一个已完成、已释放 audit finalizer 且
+  annotation/远端 version 完整的受控样本，让验收真实调用 exact-version Head/Get/GetRetention；canonical count 仍不证明
+  provider access log 或每个 API 调用身份，须把 Job/Pod/log 与 S3 access trail 对账留存。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
