@@ -60377,6 +60377,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   或 provider evidence 签发身份可信；生产需把 Job UID/resourceVersion、两项 annotation、日志和原始 simulator artifact
   纳入同一审批记录。
 
+- A5363 关闭 A5362 只验证 create 响应、未覆盖 Job 运行期间异步漂移的 TOCTOU 窗口。旧路径收到正确 name/annotation
+  后等待 Complete 并读取日志，但不冻结 UID、不重读最终对象；高权限控制器或 webhook 后续改写 evidence annotation、
+  runtime expiry，甚至同名对象替换时仍可能放行 CronJob。现在 create 响应必须含 1..128 字节无空白/控制字符 UID；脚本
+  冻结 name+UID，wait 完成后重新 GET Job，并要求 namespace/name/UID、SHA annotation、expiry annotation、容器中唯一
+  `IAM_SIMULATION_VALID_UNTIL_UNIX`、唯一 `Complete=True` condition 全部精确一致，同时用最终时钟再次证明 expiry
+  尚未到期。对象消失、UID/SHA/annotation/runtime/condition 任一漂移均在 logs 和 CronJob patch 前 fail closed。新增
+  表驱动回归覆盖六类完成态故障，并保留 create-time identity/binding 与失败 Job 零 patch 矩阵。新增后 566 项 inventory；
+  四片 129/159/145/133 在代码提交 `ba1fee51` 上全部通过（Go 测试
+  161.070/504.662/289.226/525.553 秒；端到端 169.828/513.425/297.953/534.326 秒）。fake kubectl
+  证明状态机检查顺序，不证明真实 Job UID/admission mutation、Pod 实际使用的 resolved env 或 audit sink 持久性；生产需
+  留存 create 与最终 GET 的 UID/resourceVersion、Pod spec、condition、日志和对应 IAM artifact，并验证 webhook 漂移会被
+  目标 apiserver 拒绝或被本门禁识别。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
