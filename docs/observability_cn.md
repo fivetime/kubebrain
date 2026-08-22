@@ -19,6 +19,8 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 TLS receipt 后继续运行 `hack/production/validate-info-scrape-recovery.sh`：它要求完整 `up` target 集合的样本
 同时晚于 rotation completion 且仍在 freshness 窗口，并生成绑定 TLS receipt 摘要的独立 scrape receipt。
 旧 `up=1` 样本、target 数量正确但 Pod/instance 重复，或仅 endpoint curl 成功都不构成恢复证明。
+`InfoCertificateRotation` executor 已把该 gate 纳入 heartbeat/fencing 状态机；Operation terminal
+`receiptSHA256` 指向 scrape receipt，而 scrape receipt 再绑定 TLS receipt，审计归档因而覆盖完整证据链。
 
 ## 关键 SLI
 

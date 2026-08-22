@@ -1697,8 +1697,8 @@ EXPECTED_REPLICAS=3 \
 重复 target、部分恢复和未来时间戳都不能放行。Prometheus 响应限制为 1 MiB，单次查询、总恢复窗口、轮询
 间隔和 clock skew 都有整数上界。成功后不可覆盖地发布 0600
 `kubebrain.info-scrape-recovery.receipt.v1`，绑定 TLS receipt SHA-256、新 leaf 摘要、查询 scope、每个
-target 的 Pod/instance/sample timestamp 与最老样本时间。该独立 receipt 尚未绑定进
-`InfoCertificateRotation` Operation 的最终 receipt digest；启用自动归档前必须补齐该最后编排步骤。
+target 的 Pod/instance/sample timestamp 与最老样本时间。下文 durable runner 已把该 receipt 纳入
+`InfoCertificateRotation` 的最终 digest；直接 gate 仅用于 one-shot 诊断。
 
 ## 实例销毁状态机
 
@@ -5900,11 +5900,17 @@ A185 也支持显式 `KUBECONFIG_PATH`。
 `requestedBy=platform:info-certificate-rotation` 并属于必须审批类型；参数绑定 state/receipt、HTTPS
 authority、DNS serverName、namespace/selector/replicas、旧/新 CA 与 leaf 路径和四个文件 SHA-256，以及
 `require_old_ca_rejection`。executor 在任何 gate/hook 前冻结不超过 64 KiB 的参数和四份证书输入，并复核
-源/副本摘要；唯一 `PUBLISH_COMMAND` 必须幂等更新 `kubebrain-info-tls` 并等待 projected volume 生效。
+源/副本摘要；同时冻结 Prometheus CA 与可选 Bearer token，并要求参数绑定对应 SHA-256、HTTPS base URL、
+Service label、恢复/轮询/query timeout、sample freshness 与 clock-skew 上界。唯一 `PUBLISH_COMMAND` 必须
+幂等更新 `kubebrain-info-tls` 并等待 projected volume 生效。
 
 正常顺序是 begin gate、publish hook、complete gate；state-only 接管从 publish 继续。若 complete 已生成
 receipt 但 owner 在提交 Succeeded 前失租，新 owner 不重复发布，也不覆盖 receipt，而是运行上述只读 verify，
-重新证明当前 leaf、CA 策略、Pod 快照和 state/receipt 哈希一致后提交 receipt SHA-256。任一步失败 requeue；
+重新证明当前 leaf、CA 策略、Pod 快照和 state/receipt 哈希一致。随后 runner 执行 scrape recovery：无 scrape
+receipt 时 complete，已有时在线重查完整 `up` target 集合并 verify，但不覆盖原证据。scrape receipt 上限
+2 MiB；子进程返回后 runner 重新证明冻结 TLS receipt 未被修改，独立校验两份 receipt 的 SHA-256 反向绑定、
+leaf/operation/scope/replicas/timestamps/targets，再冻结 scrape receipt。Succeeded 与审计归档最终绑定 scrape
+receipt SHA-256，因为它已传递绑定 TLS receipt SHA-256；只归档 TLS receipt 不满足成功合同。任一步失败 requeue；
 heartbeat fencing 会终止整个工作进程组，terminal retry/succeed 前还必须同步续租。queue 类型白名单、CRD、
 parameter broker 的 ServiceAccount→Operation 类型绑定、status admission、审批 admission、审计 artifact 和
 archive finalizer 均包含该独立类型。直接手工创建 Operation 时，parameters Secret 必须 immutable，且

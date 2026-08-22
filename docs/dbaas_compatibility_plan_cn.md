@@ -59576,6 +59576,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （138.148/466.845/261.677/492.151 秒）。scrape receipt 尚未纳入 `InfoCertificateRotation` worker 的
   terminal digest/归档，真实 Prometheus CA/token、Secret 投影延迟和现场抓取恢复仍需预生产演练。
 
+- A5306 将 A5305 scrape receipt 纳入 `InfoCertificateRotation` terminal/归档合同。runner 参数新增
+  scrape receipt 路径、Prometheus HTTPS base、CA 与可选 token 路径及内容 SHA-256、Service scope 和五项
+  bounded timing/freshness 控制；输入在 publish 前校验并冻结。TLS complete/verify 后，以同一 heartbeat/
+  fencing 机制执行 scrape complete；receipt 已存在则在线重查并严格 verify，覆盖“仅 TLS receipt 已生成”
+  和“两份 receipt 都已生成”的 takeover 窗口。scrape 返回后重新证明冻结 TLS receipt 未被子进程修改，
+  限制 scrape receipt 为 2 MiB，双重校验并冻结后以其 SHA-256 提交 Succeeded；该 receipt 反向绑定 TLS
+  receipt SHA-256，archive 因而覆盖 leaf 与监控恢复完整链。回归证明 malformed scrape receipt、TLS receipt
+  子进程篡改、scrape 失败和最终 heartbeat fencing 均不得成功。聚焦双轮 21.223 秒、race 11.791 秒，
+  bash syntax、diff check、全仓 vet 与 461 项 inventory 通过；四片 104/130/116/111 在代码提交
+  `37ee3aa0` 上全部通过（139.698/468.324/264.803/494.396 秒）。真实 Prometheus CA/token、Kubernetes
+  Secret 投影延迟、ServiceMonitor reload 与现场 CA cutover 仍需预生产演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
