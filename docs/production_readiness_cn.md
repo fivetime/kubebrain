@@ -1004,6 +1004,8 @@ EXPECTED_PEER_KEY_FILE=/etc/kubebrain/peer-tls/tls.key \
 EXPECTED_PEER_TRUSTED_CA_FILE=/etc/kubebrain/peer-tls/ca.crt \
 EXPECTED_PEER_TLS_SERVER_NAME=kubebrain-peer.kubebrain-system.svc.cluster.local \
 EXPECTED_PEER_CLIENT_CERT_AUTH=true \
+EXPECTED_INFO_CERT_FILE=/etc/kubebrain/info-tls/tls.crt \
+EXPECTED_INFO_KEY_FILE=/etc/kubebrain/info-tls/tls.key \
 TIDB_NAMESPACE=kubebrain-storage-a \
 TIDB_CLUSTER=kb \
 EXPECTED_KUBEBRAIN_REPLICAS=3 \
@@ -1115,8 +1117,9 @@ plaintext storage path；不能把未声明的参数存在或缺失解释为已�
 或 fragment；每项只能是规范 HTTP(S) Origin。plaintext client 入口还必须设置唯一 Host hostname/IP
 allowlist，禁止 `*` 与带端口值，以阻断 DNS rebinding。TLS 请求按 etcd 语义不依赖 Host allowlist。
 release gate 通过 `EXPECTED_CORS`/`EXPECTED_HOST_WHITELIST` 精确核验；示例清单分别绑定 client Service
-URL 与 DNS。plaintext Pod 的 readiness/liveness/startup probe 必须走独立 info 端口，不能用 PodIP Host
-探测受限 client 端口而制造 421 假故障。
+URL 与 DNS。client-plaintext Pod 的 readiness/liveness/startup probe 必须走独立 HTTPS info 端口，不能用
+PodIP Host 探测受限 client 端口而制造 421 假故障；client-mTLS Pod 同样不能把无证书的 kubelet probe 指向
+client 端口。
 TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
 唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
 实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，
@@ -1584,10 +1587,15 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时�
 但不会替控制面判断 tag 是否可变。该门禁可关闭创建/扩缩/升级的“数据面已就绪”阶段，
 不能替代备份、恢复和销毁各自的幂等状态机与回滚证据。
 
-TLS 生产基线使用 `deploy/production/kubebrain-tls.yaml`。`kubebrain-client-tls` 和
-`kubebrain-peer-tls` Secret 只接受 `ca.crt`、`tls.crt`、`tls.key` 三个 key，并以
-`0440` 只读 mode 挂载到对应 client/peer TLS 目录；不得把额外 Secret key 暴露进
-数据面 Pod，也不得依赖 Secret 默认 mode 表达证书权限。
+TLS client 数据面基线使用 `deploy/production/kubebrain-tls.yaml`；无论 client 数据端口选择 plaintext
+还是 mTLS，两份生产清单的 info/metrics 端口都使用独立 `kubebrain-info-tls` server certificate 提供 HTTPS。
+`kubebrain-client-tls`、`kubebrain-peer-tls` 和 `kubebrain-info-tls` Secret 只接受 `ca.crt`、`tls.crt`、
+`tls.key` 三个 key，并以 `0440` 只读 mode 挂载到对应目录；info leaf 必须包含
+`kubebrain-peer.kubebrain-system.svc.cluster.local` SAN。kubelet readiness/liveness/startup probe 使用 HTTPS，
+本机 preStop drain 使用 loopback HTTPS，ServiceMonitor 使用 Secret CA 与固定 serverName 验证。info listener
+不设置 trusted CA/client-auth；Kubernetes 原生 HTTP probe 无法携带 client certificate，如需 info mTLS，
+必须先把三个 probe 改为受审计的 exec client 并同步配置 Prometheus client identity。不得把额外 Secret key
+暴露进数据面 Pod，也不得依赖 Secret 默认 mode 表达证书权限。
 
 ## 证书轮换完成门禁
 

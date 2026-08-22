@@ -59525,6 +59525,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   102/127/113/106 四片在最终代码提交上全部通过（139.001/464.696/262.410/485.324 秒）。生产示例仍不
   臆造 leaf CN/SAN；平台签发策略提供稳定权威身份后才能填入这些期望并完成真实证书轮换与握手演练。
 
+- A5302 将生产 info/metrics 传输从“支持 TLS 但两份清单均为 plaintext”提升为统一 HTTPS 基线。仅给
+  `--info-cert-file/--info-key-file` 加参数会同时破坏 kubelet probes、preStop drain 与 Prometheus scrape；
+  现 client-plaintext 和 client-mTLS 两份 StatefulSet 都挂载独立 `kubebrain-info-tls` 的精确三 key、0440
+  只读投影，显式传入 info server cert/key，并把 readiness/liveness/startup 改为 HTTPS。本机 drain 改用
+  loopback HTTPS；ServiceMonitor 固定 `scheme=https`，从同一 Secret 读取 CA 并校验
+  `kubebrain-peer.kubebrain-system.svc.cluster.local`。info listener 未设置 trusted CA/client-auth，因为原生
+  kubelet HTTP probe 无法提供客户端证书；若平台需要 info mTLS，必须先交付 exec probe 与 Prometheus client
+  identity 的完整契约。精确 manifest 测试固定 args、probe、Secret 与 scrape transport，并修正派生 gate
+  default 和已合并 Docker COPY 的旧测试断言。完整 deploy/production 包、diff check 与全仓 vet 通过；实例
+  gate 单轮 154.471 秒、连续两轮 300.082 秒、race 156.294 秒。production 清单保持 448 项并按
+  102/127/113/106 四片在最终代码提交上全部通过（137.152/466.368/263.169/488.209 秒）。本项不证明
+  `kubebrain-info-tls` 的真实签发、Secret 轮换或 Prometheus 现场握手，平台必须签发包含固定 peer Service SAN
+  的 server leaf 并在预生产执行 scrape/rotation 演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
