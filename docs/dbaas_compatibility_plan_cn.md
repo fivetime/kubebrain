@@ -59763,6 +59763,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `8d4a2c47` 上全部通过（144.367/477.580/269.741/505.111 秒）。`sync -f` 仍依赖 CSI stable-storage 语义；
   receipt 持久不代表 BR import 可事务回滚，receipt 前失败目标继续必须 retirement/replacement。
 
+- A5323 为不可逆 `LegacySnapshotHistoryRemediation` 建立 durable receipt reconciliation。旧 runner 在 JSON
+  生成后直接 hard-link，既没有 file/directory sync 和私有链接清理，又固定 `maxAttempts=1`；compact 已提交而
+  receipt 发布或终态提交不确定时无法安全收敛。requester 与 admission 现在固定 `maxAttempts=2`，且只有 attempt 1
+  可以调用 compact primitive；其 receipt 严格执行 chmod 0600 → file `sync -f` → hard-link no-clobber → unlink
+  私有链接 → `WORK_DIR` directory `sync -f`，所有发布不确定路径均不提交 Failed/Succeeded。lease takeover 的
+  attempt 2 在独立 verifier process group 外持续 heartbeat，并用 verifier completed marker 避免停止阶段 PID
+  复用；它要求制品和 receipt 都是普通文件，receipt 为 1..1 MiB、0600/current UID/link-count=1、精确 JSON schema
+  和冻结 operation/request/endpoint/cluster/compact revision/path 绑定，再重算制品 bytes 与小写 SHA-256。有效证据
+  直接 Succeeded 且 compact 零重放；缺失、不安全或不一致证据才终态 Failed，并要求人工检查已提交 compact 后再
+  决策。回归覆盖 file sync 失败、directory sync 失败后的正向接管、并发 hard-link 赢家、0640 receipt 拒绝及所有
+  attempt 2 路径不重复 remediation。Bash syntax、定向 requester/runner、完整 build/deploy tests、全仓 vet、diff
+  check 与 478 项 inventory 均通过；四片 108/136/118/116 在代码提交 `43341c04` 上全部通过
+  （140.723/472.967/268.025/498.173 秒）。即时 `sync -f` 仍依赖生产 CSI 的 stable-storage 与 RWX coherence；
+  durable receipt 只证明既有 compact 结果，不能令 compaction 可回滚。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

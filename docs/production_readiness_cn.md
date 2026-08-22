@@ -4775,11 +4775,15 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   ```
 
   requester 只运行原生只读诊断并创建 immutable parameter Secret 和未审批 Pending
-  `LegacySnapshotHistoryRemediation(maxAttempts=1)`；专用 approver 核对冻结的 endpoint、cluster ID、
+  `LegacySnapshotHistoryRemediation(maxAttempts=2)`；专用 approver 核对冻结的 endpoint、cluster ID、
   当前 revision、最小 compact revision 和外部变更单后才能批准。operation identity、immutable 参数、
   executor 实际输出与最终 receipt 都绑定该 compact 边界。专用 executor 默认 0 副本，使用预编译 clientv3 helper，持续
-  heartbeat；失败直接终止且明确提示 compaction 可能已提交，禁止自动重试。成功制品和 receipt 位于
-  专用 RWX workspace。executor env Secret 只挂 TLS/root etcd 凭据，不得把凭据写入 Operation 参数。
+  heartbeat。只有 attempt 1 可以执行不可逆 compact；成功制品和 receipt 在专用 RWX workspace 中按
+  receipt file `sync -f`、hard-link no-clobber、删除私有链接、workspace directory `sync -f` 的顺序持久发布。
+  发布结果不确定时 runner 不提交 Failed/Succeeded，由 lease takeover 进入 attempt 2；attempt 2 持续 heartbeat，
+  严格复核 receipt 的 1 MiB 上限、0600/current UID/link-count=1、精确 schema 与所有冻结身份，再重算制品大小和
+  SHA-256，只收敛既有持久证据，绝不再次 compact。证据缺失或无效时才以“先检查已提交 compaction、不得新建
+  operation”语义终止。executor env Secret 只挂 TLS/root etcd 凭据，不得把凭据写入 Operation 参数。
   该操作不可回滚且不能修复 corruption，也不等价于 TiKV/PD 物理 PITR。
 - `hack/backup/logical-export.sh` / `logical-restore.sh` 是当前生产备份与隔离恢复入口；上线
   前必须按本节后文完成 artifact 完整性、Object Lock、恢复 receipt 和持续审计门禁，不能
