@@ -21,6 +21,8 @@ TLS receipt 后继续运行 `hack/production/validate-info-scrape-recovery.sh`�
 旧 `up=1` 样本、target 数量正确但 Pod/instance 重复，或仅 endpoint curl 成功都不构成恢复证明。
 `InfoCertificateRotation` executor 已把该 gate 纳入 heartbeat/fencing 状态机；Operation terminal
 `receiptSHA256` 指向 scrape receipt，而 scrape receipt 再绑定 TLS receipt，审计归档因而覆盖完整证据链。
+生产清单从专用 `kubebrain-info-certificate-rotation-prometheus` Secret 只读挂载 `ca.crt`/`token`，不授予
+executor Secret API 权限；Operation 参数必须引用固定挂载路径并绑定文件摘要。
 
 ## 关键 SLI
 

@@ -6001,7 +6001,12 @@ Pod UID，更新 Secret 后在 30 秒加 probe 容差内验证 endpoint 呈现�
 `publish-overlap`、`publish-final` 必须是可执行、幂等且受发布流程审计的程序；清单只以
 `0555` mode 挂载这两个 key。info 轮换还必须创建
 `kubebrain-info-certificate-rotation-executor-hooks`，且只含可执行幂等的 `publish` key；不得把额外
-Secret key 暴露到任一 hook 目录。生产 PVC
+Secret key 暴露到任一 hook 目录。该 executor 还要求
+`kubebrain-info-certificate-rotation-prometheus` Secret 精确包含 `ca.crt` 和 `token`：kubelet 以 `0440`
+只读投影到 `/var/run/secrets/kubebrain-prometheus/{ca.crt,token}`，Operation 参数中的
+`prometheus_ca_file`/`prometheus_bearer_token_file` 必须使用这两个路径并绑定实际文件 SHA-256。不要把
+Bearer token 放入 `*-executor-env`，也不得因此授予 executor Secret get/list/watch；专用 Secret 的缺失或
+key 不完整应让零副本模板扩容 fail closed。生产 PVC
 必须支持 RWX 和 `runAsUser/fsGroup=65532`；两个副本会竞争同一队列并依赖 Lease/attempt
 fencing，RWO 卷或节点本地卷不能满足跨节点接管。参数里的 artifact、state、receipt 路径
 必须位于 `/var/lib/kubebrain-operation`，临时文件才可放 `/tmp`。

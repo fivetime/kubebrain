@@ -59588,6 +59588,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `37ee3aa0` 上全部通过（139.698/468.324/264.803/494.396 秒）。真实 Prometheus CA/token、Kubernetes
   Secret 投影延迟、ServiceMonitor reload 与现场 CA cutover 仍需预生产演练。
 
+- A5307 修复 A5306 零副本 executor 清单没有提供强制 Prometheus CA/token 文件的部署断点。专用
+  `kubebrain-info-certificate-rotation-prometheus` Secret 现在只投影 `ca.crt`、`token` 两个精确 key，
+  defaultMode 0440，只读挂载到 `/var/run/secrets/kubebrain-prometheus`；平台参数使用固定文件路径并绑定
+  SHA-256。executor 继续没有 Secret get/list/watch 权限，凭据不进入 envFrom 或通用 parameter Secret，
+  其他十五类 executor 也不得看到该 volume。精确 manifest 回归固定 Secret 名、key/path 集、mode、mount
+  path/readOnly 和隔离范围；deploy production 完整测试、diff check、全仓 vet 与 461 项 inventory 通过。
+  四片 104/130/116/111 在代码提交 `89b0e4f8` 上全部通过
+  （139.080/467.039/263.047/493.267 秒）。本项使模板可实际读取 scrape 凭据，不替代真实 ServiceAccount
+  token 发放、Prometheus RBAC、网络可达性或现场轮换演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
