@@ -5584,9 +5584,12 @@ UID 和连续 12 次受 CA 验证且完全一致的 endpoint leaf SHA-256；基�
 hard-link、file/directory sync 发布。verify 要求该基线仍为当前用户所有、`0600`、单链接、1..64 KiB 且 schema/key
 集合精确，namespace/endpoint/context 未漂移；预期新证书为 1..1 MiB 普通非 symlink、不可 group/world 写并可由
 OpenSSL 解析。三个 Pod UID 必须逐项不变，新指纹必须不同于旧指纹，连续 12 次新握手必须全部精确呈现预期指纹。
-脚本不修改 Secret、Deployment 或 Pod；更新和回滚仍由外部证书发布流程负责。12 次负载均衡采样能发现常见混合证书
-窗口，但不能严格证明每个后端必然被命中；高保证环境仍应补每 Pod 直连握手证据。验证后的 baseline 应连同 Secret
-resourceVersion、证书发布审批和命令输出进入不可变审计存储，不要覆盖后复用于下一轮。
+verify 随后按 Pod name 稳定排序，对三个 Pod 逐一建立只监听 `127.0.0.1` 随机端口的 `kubectl port-forward`，以生产
+hostname 做 SNI、hostname 和 CA 校验，并要求直连 leaf 也精确等于新指纹；每个隧道前后重读 UID，Pod 不能在验证中
+被同名替换。port-forward 日志限制 64 KiB，100 次 100 ms 内必须发布合法 IPv4 端口，隧道与临时证据由退出 trap
+清理。执行者因此还必须具备三个 API Pod 的 get/list 和 `pods/portforward` 权限；这些权限不得授予 API
+ServiceAccount。脚本不修改 Secret、Deployment 或 Pod，更新和回滚仍由外部证书发布流程负责。验证后的 baseline
+应连同 Secret resourceVersion、证书发布审批和命令输出进入不可变审计存储，不要覆盖后复用于下一轮。
 
 `hack/production/run-backup-operation.sh` 接入受保护 Backup。参数文件固定 endpoint、
 prefix、operation 专属 artifact/receipt 路径、分页大小、Object Store ID、bucket/object

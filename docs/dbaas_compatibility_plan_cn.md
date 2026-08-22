@@ -60126,6 +60126,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fake kubectl/openssl，本轮没有真实 endpoint/Secret/Pod，未执行实际轮换。12 次负载均衡握手不是每 Pod 必达证明；
   目标环境仍须执行两阶段命令、留存 Secret resourceVersion/审批，并在可达拓扑补每 Pod 直连新指纹证据。
 
+- A5345 关闭 A5344 的 12 次负载均衡握手不能证明每个后端均已热加载新 leaf 的剩余证据缺口。verify 在 endpoint
+  一致性通过后，按 Pod name 排序逐个建立仅监听 `127.0.0.1` 随机端口的 `kubectl port-forward :8443`；每条隧道
+  使用生产 hostname 做 SNI/hostname/CA 校验并要求 leaf SHA-256 精确等于预期新证书。每 Pod 在隧道前后重读 UID，
+  必须仍属于 baseline UID 集合且不能在握手期间同名替换；port-forward 进程、日志和证据均由有界等待/size/trap
+  清理。该能力要求发布验证身份拥有 Pod get/list 与 `pods/portforward`，不扩大 API ServiceAccount 权限。回归新增
+  “endpoint 已呈现新证书但直连 Pod 指纹漂移”必失败，并继续覆盖成功轮换与 UID 重启拒绝；Bash syntax、定向与完整
+  package/deploy、全仓 vet、diff check 和新增后的 535 项 inventory 均通过。四片 122/151/135/127 在代码提交
+  `b5da1d95` 上全部通过（159.948/504.111/287.746/523.279 秒）。自动化仍使用 fake kubectl/openssl/port-forward；
+  本轮没有目标集群权限或证书，尚未执行真实逐 Pod 握手，生产证据仍须按 A5344 两阶段命令留存。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
