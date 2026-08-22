@@ -60442,6 +60442,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   simulator 输出、Job/Pod、日志及 S3 access trail。固定 Secret 名称下的删除/重建需要独立维护窗口或冗余设计，本轮不声称
   凭据轮换零停机。
 
+- A5368 关闭 A5367 仅保护手动验收 Job、却未约束随后周期 CronJob 实际解析凭据的运行期窗口。不可变 Secret 仍可被删除并
+  以同名新对象重建；旧 CronJob 只保存 IAM SHA/expiry，kubelet 会把新 access key 注入下一次 Pod，使其在旧 simulation
+  有效期内继续访问 S3。现在源 CronJob 的 metadata、`jobTemplate.metadata` 与 Pod template metadata 均以五项 pending
+  binding fail closed；enable/refresh 通过 resourceVersion、suspend、三层旧键及两个 runtime sentinel 的逐键 JSON Patch
+  test/replace 原子写入 evidence SHA/expiry 和 Secret UID/resourceVersion/data SHA，且不会拒绝或删除其他控制器的无关
+  annotation。`--check-enabled` 把三层绑定及 runtime 值与当前不可变 Secret 重新比对。更重要的是周期容器新增
+  `CREDENTIAL_SECRET_DATA_SHA256`：binary 在创建 Kubernetes config/client 或 S3 processor 前，从 kubelet 实际解析的七个
+  环境值按 Secret key 重建标准 base64 canonical `.data` JSON，计算 SHA-256 并常量时间比较；字段为空、非 lowercase digest
+  或任何凭据字节替换立即非零退出。手动 Job、完成态 Job 和实际 Pod 同样校验该 runtime digest，admission 单独改写也不得
+  进入 logs/CronJob patch。新增后 573 项 inventory；四片 129/160/147/137 在代码提交 `64c32663` 上全部通过（Go 测试
+  159.901/495.421/286.135/528.652 秒；端到端 168.822/504.274/294.986/537.595 秒）。本地测试证明 canonical 重建、CAS
+  payload 和 drift 拒绝，不证明真实 kubelet 的 Secret env snapshot、CronJob controller annotation 传播或 provider principal
+  映射；目标环境仍须在旧/新 Secret 轮换窗口实际创建周期 Job，证明旧 digest 下新凭据启动失败、新 v2 evidence refresh 后
+  成功，并留存 Secret/CronJob/Job/Pod、容器退出原因及 S3 access trail。Secret UID 不在容器环境内，运行时阻断依赖 data
+  SHA；同字节新 UID 由三层审计绑定和持续 `--check-enabled` 识别。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

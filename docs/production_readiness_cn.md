@@ -6010,18 +6010,24 @@ S3 Put/Delete 来“证明拒绝”，因为误配时会产生真实副作用；
 `credential_secret_data_sha256`，分别等于本次冻结的 Secret UID 和 canonical `.data` SHA-256；object-store-id/bucket 与 Secret 相同，checked-at 不早于
 一小时前且不晚于当前时间五分钟，valid-until 至少比当前时间晚一小时且不超过检查后 24 小时。decisions 必须精确证明
 GetBucketVersioning/GetObject/GetObjectLockConfiguration/GetObjectRetention allowed，以及 PutObject/DeleteObject/
-ListBucket/ListBucketVersions denied。证据 SHA、valid-until、运行时 expiry 与 `suspend=false` 在同一
-resourceVersion/suspend/pending CAS patch 中写入 CronJob；不能先启用再补证据。每个 verifier 进程在创建 Kubernetes
-client 或访问 S3 前检查 `IAM_SIMULATION_VALID_UNTIL_UNIX`，过期即失败并触发现有 critical Job 告警；
-`--check-enabled` 同时要求 annotation、运行时值逐字相同且仍有效。`--refresh-iam` 只接受已启用的 CronJob，默认以
+ListBucket/ListBucketVersions denied。证据 SHA、valid-until、Secret UID/resourceVersion/data SHA、运行时 expiry、
+运行时 credential data SHA 与 `suspend=false` 在同一 resourceVersion/suspend/pending CAS patch 中写入 CronJob；五项
+annotation 同步逐键写入 CronJob metadata、周期 Job template metadata 和 Pod template metadata，保留发布系统的无关
+annotation，不能先启用再补证据。每个 verifier 进程在创建 Kubernetes client 或访问 S3 前先检查
+`IAM_SIMULATION_VALID_UNTIL_UNIX`，再把 kubelet 实际解析的七个 object-store 环境值按 Secret key 映射、标准 base64 和
+排序紧凑 JSON 重建 `.data` SHA-256，并与 `CREDENTIAL_SECRET_DATA_SHA256` 常量时间比较；expiry 过期、字段为空或凭据
+字节替换均非零退出并触发现有 critical Job 告警。`--check-enabled` 同时要求三层 annotation、两个运行时值与当前 Secret
+逐字一致且 evidence 仍有效。`--refresh-iam` 只接受已启用的 CronJob，默认以
 `generateName: kubebrain-archive-verifier-iam-` 用新 expiry 创建并完成一次性只读 Job，再以 resourceVersion、
-`suspend=false`、旧 SHA 和旧 expiry 的 CAS 原子轮换；Job
+`suspend=false`、三层旧 SHA/expiry/credential binding 和两个旧运行时值的 CAS 原子轮换；Job
 失败或并发漂移均保留旧绑定。受信 CI/审批系统必须至少按日续签并在到期前留出一次完整手动 Job 和故障处置预算。
 门禁在构造手动 Job 前、以及完成态 Job/Pod 校验后再次 GET Secret；任一次读取只要 UID、resourceVersion、
 `immutable:true` 或 canonical `.data` SHA 漂移，均在日志验收和 CronJob patch 前失败。凭据轮换不得原地修改该 Secret：应按
 Kubernetes 不可变 Secret 流程协调删除并以同名新对象重建，取得新 UID/data SHA 后重新执行 provider simulation、签发 v2
 证据并运行 `--refresh-iam`。轮换窗口内旧证据不得用于新 Secret；生产记录应共同留存 Secret UID/resourceVersion/data SHA、
-canonical IAM 文件、Job/Pod 五项 annotation、日志和 provider access trail。该流程不宣称 Secret 重建本身零停机，必须按
+canonical IAM 文件、CronJob/Job/Pod 五项 annotation、运行时 credential digest、日志和 provider access trail。Secret
+UID 本身不会由 kubelet 注入容器，故 binary 以 data SHA 阻断凭据字节替换，UID 替换仍由三层审计绑定和持续
+`--check-enabled` 检测；该流程不宣称 Secret 重建本身零停机，必须按
 目标集群调度与凭据切换策略预先设计维护窗口或冗余。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
