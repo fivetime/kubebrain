@@ -45,7 +45,7 @@ command -v stat >/dev/null || die "stat is required"
 command -v realpath >/dev/null || die "realpath is required"
 command -v id >/dev/null || die "id is required"
 workspace_root="$(realpath -m -- "$WORK_DIR")" || die "WORK_DIR cannot be resolved"
-[[ "$workspace_root" == /* && -d "$workspace_root" ]] || die "WORK_DIR must resolve to an existing absolute directory"
+[[ "$workspace_root" == "$WORK_DIR" && "$workspace_root" == /* && -d "$workspace_root" && ! -L "$workspace_root" ]] || die "WORK_DIR must be a canonical existing absolute non-symlink directory"
 executor_uid="$(id -u)"
 [[ "$executor_uid" =~ ^[0-9]+$ ]] || die "cannot determine executor uid"
 runtime_contract="${ROOT_DIR}/hack/production/validate-info-executor-runtime.sh"
@@ -66,20 +66,17 @@ run_operationctl() {
 }
 
 claim="$(run_operationctl --action claim --owner "$WORKER_ID" --type InfoCertificateRotation --lease "${LEASE_SECONDS}s")"
-claimed_namespace="$("$JQ" -r '.namespace // empty' <<<"$claim")"
-if [[ -n "$claimed_namespace" ]]; then
-  [[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "claimed operation namespace is invalid"
-  OPERATION_NAMESPACE="$claimed_namespace"
-  build_kube_args
-fi
+identity="$("$JQ" -er '[.namespace,.type,.requested_by,.owner,.parameters_secret,.parameters_key] | select(length == 6 and all(.[]; type == "string" and length > 0)) | @tsv' <<<"$claim")" || die "claimed info certificate rotation identity is incomplete"
+IFS=$'\t' read -r claimed_namespace type requester claimed_owner claimed_secret claimed_key <<<"$identity"
+[[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "claimed operation namespace is invalid"
+OPERATION_NAMESPACE="$claimed_namespace"
+build_kube_args
 name="$("$JQ" -er '.name' <<<"$claim")"
 rotation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"
-type="$("$JQ" -er '.type' <<<"$claim")"
-requester="$("$JQ" -er '.requested_by' <<<"$claim")"
 attempt="$("$JQ" -er '.attempt | select(type == "number" and . > 0 and . == floor)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
-[[ "$name" == "$rotation_id" && "$type" == InfoCertificateRotation && "$requester" == platform:info-certificate-rotation ]] || die "claimed info certificate rotation identity is invalid"
+[[ "$name" =~ ^info-cert-rotate-[a-f0-9]{20}$ && "$name" == "$rotation_id" && "$type" == InfoCertificateRotation && "$requester" == platform:info-certificate-rotation && "$claimed_owner" == "$WORKER_ID" && "$claimed_secret" == "${name}-parameters" && "$claimed_key" == parameters.json && "$attempt" =~ ^[1-5]$ ]] || die "claimed info certificate rotation identity does not match the dedicated requester contract"
 for value in "$rotation_id" "$instance"; do [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "claimed info certificate rotation identity is invalid"; done
 
 capture="$(mktemp -d)"
@@ -113,6 +110,8 @@ cp -- "$PARAMETERS_INPUT" "$frozen_parameters"
 chmod 600 "$frozen_parameters"
 [[ "$(file_sha256 "$frozen_parameters")" == "$expected_digest" && "$(file_sha256 "$PARAMETERS_INPUT")" == "$expected_digest" ]] || retry_and_exit "parameters changed during capture"
 PARAMETERS_INPUT="$frozen_parameters"
+
+"$JQ" -e '(keys | sort) == (["data_kube_context","data_kubeconfig_path","expected_replicas","info_endpoint","info_server_name","kubebrain_namespace","kubebrain_service","max_clock_skew_seconds","max_sample_age_seconds","new_info_cacert","new_info_cacert_sha256","new_info_cert","new_info_cert_sha256","old_info_cacert","old_info_cacert_sha256","old_info_cert","old_info_cert_sha256","pod_selector","poll_interval_seconds","prometheus_bearer_token_file","prometheus_bearer_token_sha256","prometheus_ca_file","prometheus_ca_sha256","prometheus_url","query_timeout_seconds","receipt_output","recovery_timeout_seconds","require_old_ca_rejection","scrape_receipt_output","state_dir"] | sort) and .data_kube_context == "" and .data_kubeconfig_path == ""' "$PARAMETERS_INPUT" >/dev/null || die "info rotation parameters must exactly match the in-cluster dedicated requester schema"
 
 parameters="$("$JQ" -er '[.state_dir,.info_endpoint,.info_server_name,.old_info_cacert,.old_info_cert,.new_info_cacert,.new_info_cert,.receipt_output,.scrape_receipt_output,.kubebrain_namespace,.pod_selector,.kubebrain_service,(.expected_replicas|tostring),(.require_old_ca_rejection|tostring),.old_info_cacert_sha256,.old_info_cert_sha256,.new_info_cacert_sha256,.new_info_cert_sha256,.prometheus_url,.prometheus_ca_file,.prometheus_ca_sha256,(if (.prometheus_bearer_token_file // "") == "" then "-" else .prometheus_bearer_token_file end),(if (.prometheus_bearer_token_sha256 // "") == "" then "-" else .prometheus_bearer_token_sha256 end),(.recovery_timeout_seconds|tostring),(.poll_interval_seconds|tostring),(.query_timeout_seconds|tostring),(.max_clock_skew_seconds|tostring),(.max_sample_age_seconds|tostring),(if (.data_kube_context // "") == "" then "-" else .data_kube_context end),(if (.data_kubeconfig_path // "") == "" then "-" else .data_kubeconfig_path end)] | select(length == 30 and all(. != null and . != "")) | @tsv' "$PARAMETERS_INPUT")" || die "info rotation parameters contain an empty required field"
 IFS=$'\t' read -r state_dir endpoint server_name old_ca old_cert new_ca new_cert receipt_output scrape_receipt_output namespace selector service replicas require_rejection old_ca_sha old_cert_sha new_ca_sha new_cert_sha prometheus_url prometheus_ca prometheus_ca_sha prometheus_token prometheus_token_sha recovery_timeout poll_interval query_timeout max_clock_skew max_sample_age data_context data_kubeconfig <<<"$parameters"
@@ -165,6 +164,7 @@ if paths_alias "$state_file" "$receipt_output" ||
   paths_alias "$receipt_output" "$scrape_receipt_output"; then
   die "state, TLS receipt, and scrape receipt paths must be distinct files"
 fi
+[[ "$state_dir" == "$workspace_root/${name}.state" && "$receipt_output" == "$workspace_root/${name}.receipt.json" && "$scrape_receipt_output" == "$workspace_root/${name}.scrape.receipt.json" ]] || die "info rotation state and receipt paths do not match the dedicated requester contract"
 receipt_input="$receipt_output"
 
 sources=("$old_ca" "$old_cert" "$new_ca" "$new_cert")
@@ -172,6 +172,8 @@ hashes=("$old_ca_sha" "$old_cert_sha" "$new_ca_sha" "$new_cert_sha")
 names=(old-ca old-cert new-ca new-cert)
 frozen=()
 for index in "${!sources[@]}"; do
+  source_path="$(realpath -e -- "${sources[$index]}")" || die "info rotation credential cannot be resolved"
+  [[ "$source_path" == "${sources[$index]}" && "$source_path" == "$workspace_root/"* && ! -L "$source_path" ]] || die "info rotation credential must be a canonical non-symlink file in WORK_DIR"
   evidence_size_valid "${sources[$index]}" "$MAX_INFO_CREDENTIAL_BYTES" || die "info rotation credential must contain 1..${MAX_INFO_CREDENTIAL_BYTES} bytes"
   [[ -f "${sources[$index]}" && "${hashes[$index]}" =~ ^[a-f0-9]{64}$ ]] || die "info rotation credential or SHA-256 is invalid"
   [[ "$(file_sha256 "${sources[$index]}")" == "${hashes[$index]}" ]] || retry_and_exit "info rotation credential content digest mismatch"

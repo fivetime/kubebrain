@@ -1963,6 +1963,38 @@ func TestCertificateRotationRequesterIsFailClosedAndLeastPrivilege(t *testing.T)
 	}
 }
 
+func TestInfoCertificateRotationRequesterIsFailClosedAndLeastPrivilege(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-info-certificate-rotation-requester-admission.yaml")
+	for _, name := range []string{"kubebrain-info-certificate-rotation-request-operation", "kubebrain-info-certificate-rotation-request-parameters"} {
+		policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", name)
+		require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+		binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", name)
+		require.Equal(t, []string{"Deny"}, nestedStringSlice(t, binding, "spec", "validationActions"))
+		text := fmt.Sprintf("%v", policy.Object)
+		require.Contains(t, text, "kubebrain-info-certificate-rotation-requester")
+		require.Contains(t, text, "parameters.json")
+		if strings.HasSuffix(name, "operation") {
+			require.Contains(t, text, `^info-cert-rotate-[a-f0-9]{20}$`)
+			require.Contains(t, text, "platform:info-certificate-rotation")
+			require.Contains(t, text, "maxAttempts == 5")
+		} else {
+			require.Contains(t, text, `^info-cert-rotate-[a-f0-9]{20}-parameters$`)
+			require.Contains(t, text, "object.immutable == true")
+		}
+	}
+	rbac := decodeManifest(t, "kubebrain-info-certificate-rotation-requester-rbac.yaml")
+	account := objectByKindAndName(t, rbac, "ServiceAccount", "kubebrain-info-certificate-rotation-requester")
+	require.False(t, nestedBool(t, account, "automountServiceAccountToken"))
+	role := objectByKindAndName(t, rbac, "Role", "kubebrain-info-certificate-rotation-requester")
+	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, rules, 2)
+	for _, rule := range rules {
+		require.Equal(t, []any{"create", "get"}, rule.(map[string]any)["verbs"].([]any))
+	}
+}
+
 func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-api.yaml")
 	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-operation-api")

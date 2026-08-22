@@ -111,6 +111,44 @@ func TestInfoCertificateRotationOperationRejectsInvalidClaimNamespace(t *testing
 	require.NotContains(t, log, "hook ")
 }
 
+func TestInfoCertificateRotationOperationRejectsDedicatedRequesterDrift(t *testing.T) {
+	f := newInfoRotationRunnerFixture(t)
+	f.run(t, false, "CLAIM_REQUESTER=platform:other", "dedicated requester contract")
+	log := string(mustRead(t, f.log))
+	require.NotContains(t, log, "gate ")
+	require.NotContains(t, log, "hook ")
+}
+
+func TestInfoCertificateRotationOperationRejectsUnknownParameterBeforeSteps(t *testing.T) {
+	f := newInfoRotationRunnerFixture(t)
+	var parameters map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+	parameters["unexpected"] = "value"
+	encoded, err := json.Marshal(parameters)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.parameters, append(encoded, '\n'), 0o600))
+	f.run(t, false, "in-cluster dedicated requester schema")
+	log := string(mustRead(t, f.log))
+	require.NotContains(t, log, "gate ")
+	require.NotContains(t, log, "hook ")
+}
+
+func TestInfoCertificateRotationOperationRejectsCredentialOutsideWorkspaceBeforeSteps(t *testing.T) {
+	f := newInfoRotationRunnerFixture(t)
+	outside := filepath.Join(t.TempDir(), "old-ca")
+	require.NoError(t, os.WriteFile(outside, mustRead(t, filepath.Join(f.dir, "old-ca")), 0o600))
+	var parameters map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+	parameters["old_info_cacert"] = outside
+	encoded, err := json.Marshal(parameters)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.parameters, append(encoded, '\n'), 0o600))
+	f.run(t, false, "canonical non-symlink file in WORK_DIR")
+	log := string(mustRead(t, f.log))
+	require.NotContains(t, log, "gate ")
+	require.NotContains(t, log, "hook ")
+}
+
 func TestInfoCertificateRotationOperationDoesNotSucceedAfterFinalFence(t *testing.T) {
 	f := newInfoRotationRunnerFixture(t)
 	f.run(t, false, "FAIL_FINAL_HEARTBEAT=true", "final heartbeat failed")
@@ -184,7 +222,7 @@ func TestInfoCertificateRotationOperationRejectsEvidenceAliases(t *testing.T) {
 			if tc.field == "receipt_pair" {
 				parameters["scrape_receipt_output"] = f.receipt
 			} else {
-				parameters[tc.field] = filepath.Join(f.stateDir, "rotation-1.info.state")
+				parameters[tc.field] = filepath.Join(f.stateDir, "info-cert-rotate-0123456789abcdefabcd.info.state")
 			}
 			encoded, err := json.Marshal(parameters)
 			require.NoError(t, err)
@@ -209,7 +247,7 @@ func TestInfoCertificateRotationOperationRejectsInsecureEvidenceFiles(t *testing
 		prepare                func(*testing.T, *infoRotationRunnerFixture)
 	}{
 		{"state mode", "state", "state, size, or security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
-			require.NoError(t, os.Chmod(filepath.Join(f.stateDir, "rotation-1.info.state"), 0o640))
+			require.NoError(t, os.Chmod(filepath.Join(f.stateDir, "info-cert-rotate-0123456789abcdefabcd.info.state"), 0o640))
 		}},
 		{"TLS receipt mode", "receipt", "TLS receipt security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
 			require.NoError(t, os.Chmod(f.receipt, 0o660))
@@ -218,7 +256,7 @@ func TestInfoCertificateRotationOperationRejectsInsecureEvidenceFiles(t *testing
 			require.NoError(t, os.Chmod(f.scrapeReceipt, 0o644))
 		}},
 		{"unrelated state hard link", "state", "state, size, or security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
-			require.NoError(t, os.Link(filepath.Join(f.stateDir, "rotation-1.info.state"), filepath.Join(f.dir, "unrelated-state-link")))
+			require.NoError(t, os.Link(filepath.Join(f.stateDir, "info-cert-rotate-0123456789abcdefabcd.info.state"), filepath.Join(f.dir, "unrelated-state-link")))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,7 +288,7 @@ func TestInfoCertificateRotationOperationRejectsOversizedEvidenceBeforeParsing(t
 			f := newInfoRotationRunnerFixture(t)
 			f.publishEvidence(t, tc.evidence)
 			paths := map[string]string{
-				"state":   filepath.Join(f.stateDir, "rotation-1.info.state"),
+				"state":   filepath.Join(f.stateDir, "info-cert-rotate-0123456789abcdefabcd.info.state"),
 				"receipt": f.receipt, "scrape": f.scrapeReceipt,
 			}
 			require.NoError(t, os.Truncate(paths[tc.path], tc.size))
@@ -300,17 +338,19 @@ type infoRotationRunnerFixture struct {
 	dir, parameters, operationctl, rotation, publish, scrape, log, stateDir, receipt, scrapeReceipt string
 }
 
+const infoCertificateRotationOperationName = "info-cert-rotate-0123456789abcdefabcd"
+
 func newInfoRotationRunnerFixture(t *testing.T) *infoRotationRunnerFixture {
 	t.Helper()
 	dir := t.TempDir()
-	f := &infoRotationRunnerFixture{dir: dir, log: filepath.Join(dir, "operations.log"), stateDir: filepath.Join(dir, "state")}
+	f := &infoRotationRunnerFixture{dir: dir, log: filepath.Join(dir, "operations.log"), stateDir: filepath.Join(dir, infoCertificateRotationOperationName+".state")}
 	f.parameters = filepath.Join(dir, "parameters.json")
 	f.operationctl = filepath.Join(dir, "operationctl")
 	f.rotation = filepath.Join(dir, "rotation")
 	f.publish = filepath.Join(dir, "publish")
 	f.scrape = filepath.Join(dir, "scrape")
-	f.receipt = filepath.Join(dir, "receipt.json")
-	f.scrapeReceipt = filepath.Join(dir, "scrape-receipt.json")
+	f.receipt = filepath.Join(dir, infoCertificateRotationOperationName+".receipt.json")
+	f.scrapeReceipt = filepath.Join(dir, infoCertificateRotationOperationName+".scrape.receipt.json")
 	require.NoError(t, os.Mkdir(f.stateDir, 0o700))
 	credentials := make([]string, 4)
 	hashes := make([]string, 4)
@@ -325,7 +365,7 @@ func newInfoRotationRunnerFixture(t *testing.T) *infoRotationRunnerFixture {
 	prometheusCAData := []byte("prometheus-ca\n")
 	require.NoError(t, os.WriteFile(prometheusCA, prometheusCAData, 0o600))
 	prometheusCAHash := sha256.Sum256(prometheusCAData)
-	parameters := fmt.Sprintf(`{"state_dir":%q,"info_endpoint":"https://info.example:9090","info_server_name":"info.example","old_info_cacert":%q,"old_info_cert":%q,"new_info_cacert":%q,"new_info_cert":%q,"receipt_output":%q,"scrape_receipt_output":%q,"kubebrain_namespace":"kubebrain-system","pod_selector":"app=kubebrain","kubebrain_service":"kubebrain-peer","expected_replicas":3,"require_old_ca_rejection":true,"old_info_cacert_sha256":%q,"old_info_cert_sha256":%q,"new_info_cacert_sha256":%q,"new_info_cert_sha256":%q,"prometheus_url":"https://prometheus.example","prometheus_ca_file":%q,"prometheus_ca_sha256":"%x","recovery_timeout_seconds":120,"poll_interval_seconds":5,"query_timeout_seconds":10,"max_clock_skew_seconds":5,"max_sample_age_seconds":60}`+"\n", f.stateDir, credentials[0], credentials[1], credentials[2], credentials[3], f.receipt, f.scrapeReceipt, hashes[0], hashes[1], hashes[2], hashes[3], prometheusCA, prometheusCAHash)
+	parameters := fmt.Sprintf(`{"state_dir":%q,"info_endpoint":"https://info.example:9090","info_server_name":"info.example","old_info_cacert":%q,"old_info_cert":%q,"new_info_cacert":%q,"new_info_cert":%q,"receipt_output":%q,"scrape_receipt_output":%q,"kubebrain_namespace":"kubebrain-system","pod_selector":"app=kubebrain","kubebrain_service":"kubebrain-peer","expected_replicas":3,"require_old_ca_rejection":true,"old_info_cacert_sha256":%q,"old_info_cert_sha256":%q,"new_info_cacert_sha256":%q,"new_info_cert_sha256":%q,"prometheus_url":"https://prometheus.example","prometheus_ca_file":%q,"prometheus_ca_sha256":"%x","prometheus_bearer_token_file":"","prometheus_bearer_token_sha256":"","recovery_timeout_seconds":120,"poll_interval_seconds":5,"query_timeout_seconds":10,"max_clock_skew_seconds":5,"max_sample_age_seconds":60,"data_kube_context":"","data_kubeconfig_path":""}`+"\n", f.stateDir, credentials[0], credentials[1], credentials[2], credentials[3], f.receipt, f.scrapeReceipt, hashes[0], hashes[1], hashes[2], hashes[3], prometheusCA, prometheusCAHash)
 	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
 
 	opctl := `#!/usr/bin/env bash
@@ -333,7 +373,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$TEST_LOG"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$(sha256sum "$PARAMETERS_INPUT" | cut -d ' ' -f1)}"
-  printf '{"namespace":"%s","name":"rotation-1","operation_id":"rotation-1","instance":"instance-a","type":"InfoCertificateRotation","requested_by":"platform:info-certificate-rotation","owner":"worker-a","attempt":1,"parameters_sha256":"%s"}\n' "${CLAIM_NAMESPACE:-tenant-a-operations}" "$digest"
+  printf '{"namespace":"%s","name":"info-cert-rotate-0123456789abcdefabcd","operation_id":"info-cert-rotate-0123456789abcdefabcd","instance":"instance-a","type":"InfoCertificateRotation","requested_by":"%s","owner":"%s","attempt":1,"parameters_sha256":"%s","parameters_secret":"info-cert-rotate-0123456789abcdefabcd-parameters","parameters_key":"parameters.json"}\n' "${CLAIM_NAMESPACE:-tenant-a-operations}" "${CLAIM_REQUESTER:-platform:info-certificate-rotation}" "${CLAIM_OWNER:-worker-a}" "$digest"
 elif [[ " $* " == *" --action heartbeat "* && "${FAIL_FINAL_HEARTBEAT:-false}" == true && -e "$RECEIPT_OUTPUT" ]]; then
   exit 1
 fi
@@ -367,7 +407,7 @@ printf 'scrape %s\n' "$ACTION" >>"$TEST_LOG"
 if [[ "$ACTION" == complete ]]; then
   tls_digest="$(sha256sum "$TLS_RECEIPT_INPUT" | cut -d ' ' -f1)"
   if [[ "${INVALID_SCRAPE_RECEIPT:-false}" == true ]]; then printf '{"format":"wrong"}\n' >"$SCRAPE_RECEIPT_OUTPUT"; else
-    jq -cnS --arg digest "$tls_digest" --arg certificate "$(printf '%064d' 2)" '{all_targets_up:true,format:"kubebrain.info-scrape-recovery.receipt.v1",info_endpoint:"https://info.example:9090",instance:"instance-a",namespace:"kubebrain-system",new_certificate_sha256:$certificate,observed_at_unix:124,oldest_sample_unix:124,prometheus_query:"up{namespace=\"kubebrain-system\",service=\"kubebrain-peer\"}",replicas:3,rotation_id:"rotation-1",service:"kubebrain-peer",targets:[{instance:"i0",pod:"pod-0",sample_unix:124},{instance:"i1",pod:"pod-1",sample_unix:124},{instance:"i2",pod:"pod-2",sample_unix:124}],tls_rotation_completed_at_unix:123,tls_rotation_receipt_sha256:$digest}' >"$SCRAPE_RECEIPT_OUTPUT"
+    jq -cnS --arg digest "$tls_digest" --arg certificate "$(printf '%064d' 2)" '{all_targets_up:true,format:"kubebrain.info-scrape-recovery.receipt.v1",info_endpoint:"https://info.example:9090",instance:"instance-a",namespace:"kubebrain-system",new_certificate_sha256:$certificate,observed_at_unix:124,oldest_sample_unix:124,prometheus_query:"up{namespace=\"kubebrain-system\",service=\"kubebrain-peer\"}",replicas:3,rotation_id:"info-cert-rotate-0123456789abcdefabcd",service:"kubebrain-peer",targets:[{instance:"i0",pod:"pod-0",sample_unix:124},{instance:"i1",pod:"pod-1",sample_unix:124},{instance:"i2",pod:"pod-2",sample_unix:124}],tls_rotation_completed_at_unix:123,tls_rotation_receipt_sha256:$digest}' >"$SCRAPE_RECEIPT_OUTPUT"
   fi
   [[ "${TAMPER_TLS_RECEIPT:-false}" != true ]] || printf changed >"$TLS_RECEIPT_INPUT"
 fi
@@ -403,15 +443,15 @@ func (f *infoRotationRunnerFixture) run(t *testing.T, success bool, extra ...str
 
 func (f *infoRotationRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	t.Helper()
-	state := "kubebrain.info-certificate-rotation.state.v1\tinstance-a\trotation-1\thttps://info.example:9090\t" + strings.Repeat("0", 63) + "1\t" + strings.Repeat("0", 63) + "2\n" +
+	state := "kubebrain.info-certificate-rotation.state.v1\tinstance-a\tinfo-cert-rotate-0123456789abcdefabcd\thttps://info.example:9090\t" + strings.Repeat("0", 63) + "1\t" + strings.Repeat("0", 63) + "2\n" +
 		"pod-0\tuid-0\t0\ttrue\npod-1\tuid-1\t0\ttrue\npod-2\tuid-2\t0\ttrue\n"
-	require.NoError(t, os.WriteFile(filepath.Join(f.stateDir, "rotation-1.info.state"), []byte(state), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(f.stateDir, "info-cert-rotate-0123456789abcdefabcd.info.state"), []byte(state), 0o600))
 	if kind == "receipt" || kind == "scrape" {
-		receipt := `{"completed_at_unix":123,"format":"kubebrain.info-certificate-rotation.receipt.v1","info_endpoint":"https://info.example:9090","instance":"instance-a","new_certificate_sha256":"0000000000000000000000000000000000000000000000000000000000000002","old_ca_rejected":true,"old_ca_rejection_required":true,"old_certificate_sha256":"0000000000000000000000000000000000000000000000000000000000000001","pods_unchanged":true,"replicas":3,"rotation_id":"rotation-1"}` + "\n"
+		receipt := `{"completed_at_unix":123,"format":"kubebrain.info-certificate-rotation.receipt.v1","info_endpoint":"https://info.example:9090","instance":"instance-a","new_certificate_sha256":"0000000000000000000000000000000000000000000000000000000000000002","old_ca_rejected":true,"old_ca_rejection_required":true,"old_certificate_sha256":"0000000000000000000000000000000000000000000000000000000000000001","pods_unchanged":true,"replicas":3,"rotation_id":"info-cert-rotate-0123456789abcdefabcd"}` + "\n"
 		require.NoError(t, os.WriteFile(f.receipt, []byte(receipt), 0o600))
 		if kind == "scrape" {
 			digest := sha256.Sum256([]byte(receipt))
-			scrapeReceipt := fmt.Sprintf(`{"all_targets_up":true,"format":"kubebrain.info-scrape-recovery.receipt.v1","info_endpoint":"https://info.example:9090","instance":"instance-a","namespace":"kubebrain-system","new_certificate_sha256":"0000000000000000000000000000000000000000000000000000000000000002","observed_at_unix":124,"oldest_sample_unix":124,"prometheus_query":"up{namespace=\"kubebrain-system\",service=\"kubebrain-peer\"}","replicas":3,"rotation_id":"rotation-1","service":"kubebrain-peer","targets":[{"instance":"i0","pod":"pod-0","sample_unix":124},{"instance":"i1","pod":"pod-1","sample_unix":124},{"instance":"i2","pod":"pod-2","sample_unix":124}],"tls_rotation_completed_at_unix":123,"tls_rotation_receipt_sha256":"%x"}`+"\n", digest)
+			scrapeReceipt := fmt.Sprintf(`{"all_targets_up":true,"format":"kubebrain.info-scrape-recovery.receipt.v1","info_endpoint":"https://info.example:9090","instance":"instance-a","namespace":"kubebrain-system","new_certificate_sha256":"0000000000000000000000000000000000000000000000000000000000000002","observed_at_unix":124,"oldest_sample_unix":124,"prometheus_query":"up{namespace=\"kubebrain-system\",service=\"kubebrain-peer\"}","replicas":3,"rotation_id":"info-cert-rotate-0123456789abcdefabcd","service":"kubebrain-peer","targets":[{"instance":"i0","pod":"pod-0","sample_unix":124},{"instance":"i1","pod":"pod-1","sample_unix":124},{"instance":"i2","pod":"pod-2","sample_unix":124}],"tls_rotation_completed_at_unix":123,"tls_rotation_receipt_sha256":"%x"}`+"\n", digest)
 			require.NoError(t, os.WriteFile(f.scrapeReceipt, []byte(scrapeReceipt), 0o600))
 		}
 	}
