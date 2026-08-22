@@ -133,12 +133,38 @@ func TestOperationArchiveVerifierRejectsUnexpectedCreatedJobIdentity(t *testing.
 	}
 }
 
-type archiveVerifierApplyFixture struct{ kubectl, log, payloadLog, state, evidence string }
+func TestOperationArchiveVerifierRejectsCompletedJobDriftBeforePatch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+	}{
+		{name: "uid", env: "FINAL_JOB_UID=other-uid"},
+		{name: "sha", env: "FINAL_JOB_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+		{name: "expiry", env: "FINAL_JOB_EXPIRY=1"},
+		{name: "runtime expiry", env: "FINAL_RUNTIME_EXPIRY=1"},
+		{name: "condition", env: "FINAL_JOB_COMPLETE=false"},
+		{name: "missing", env: "FINAL_JOB_MISSING=true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newArchiveVerifierApplyFixture(t)
+			out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), tc.env))
+			require.Error(t, err)
+			require.NotContains(t, string(mustRead(t, f.log)), "patch cronjob")
+			if tc.name == "missing" {
+				require.Contains(t, string(out), "cannot re-read completed")
+			} else {
+				require.Contains(t, string(out), "completed manual verifier Job")
+			}
+		})
+	}
+}
+
+type archiveVerifierApplyFixture struct{ kubectl, log, payloadLog, jobState, state, evidence string }
 
 func newArchiveVerifierApplyFixture(t *testing.T) archiveVerifierApplyFixture {
 	t.Helper()
 	dir := t.TempDir()
-	f := archiveVerifierApplyFixture{kubectl: filepath.Join(dir, "kubectl"), log: filepath.Join(dir, "calls.log"), payloadLog: filepath.Join(dir, "payloads.log"), state: filepath.Join(dir, "enabled"), evidence: filepath.Join(dir, "iam.json")}
+	f := archiveVerifierApplyFixture{kubectl: filepath.Join(dir, "kubectl"), log: filepath.Join(dir, "calls.log"), payloadLog: filepath.Join(dir, "payloads.log"), jobState: filepath.Join(dir, "job.json"), state: filepath.Join(dir, "enabled"), evidence: filepath.Join(dir, "iam.json")}
 	require.NoError(t, os.WriteFile(f.payloadLog, nil, 0o600))
 	require.NoError(t, os.WriteFile(f.evidence, []byte(iamEvidenceJSON(time.Now().Unix())), 0o600))
 	writeTrafficExecutable(t, f.kubectl, `#!/usr/bin/env bash
@@ -162,6 +188,17 @@ if [[ "$args" == *" get cronjob kubebrain-operation-archive-verifier "* ]]; then
   fi
   printf '{"metadata":{"annotations":{"dbaas.kubebrain.io/iam-simulation-sha256":"%s","dbaas.kubebrain.io/iam-simulation-valid-until-unix":"%s"},"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"spec":{"backoffLimit":0,"template":{"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier","containers":[{"env":[{"name":"S3_ENDPOINT"},{"name":"AWS_REGION"},{"name":"AWS_ACCESS_KEY_ID"},{"name":"AWS_SECRET_ACCESS_KEY"},{"name":"S3_FORCE_PATH_STYLE"},{"name":"OBJECT_STORE_ID"},{"name":"S3_BUCKET"},{"name":"IAM_SIMULATION_VALID_UNTIL_UNIX","value":"%s"}]}]}}}}}}\n' "$binding" "$expiry" "$suspend" "$runtime_expiry"; exit 0
 fi
+if [[ "$args" == *" get job "* ]]; then
+  [[ "${FINAL_JOB_MISSING:-false}" != true && -f "$JOB_STATE_FILE" ]] || exit 1
+  job="$(<"$JOB_STATE_FILE")"
+  job="$(jq -c '.status.conditions=[{"type":"Complete","status":"True"}]' <<<"$job")"
+  if [[ -n "${FINAL_JOB_UID:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_UID" '.metadata.uid=$value' <<<"$job")"; fi
+  if [[ -n "${FINAL_JOB_SHA:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_SHA" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$job")"; fi
+  if [[ -n "${FINAL_JOB_EXPIRY:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_EXPIRY" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$job")"; fi
+  if [[ -n "${FINAL_RUNTIME_EXPIRY:-}" ]]; then job="$(jq -c --arg value "$FINAL_RUNTIME_EXPIRY" '(.spec.template.spec.containers[0].env[] | select(.name=="IAM_SIMULATION_VALID_UNTIL_UNIX") | .value)=$value' <<<"$job")"; fi
+  [[ "${FINAL_JOB_COMPLETE:-true}" == true ]] || job="$(jq -c '.status.conditions[0].status="False"' <<<"$job")"
+  printf '%s\n' "$job"; exit 0
+fi
 if [[ "$args" == *" wait "* ]]; then [[ "${FAIL_JOB:-false}" != true ]]; exit; fi
 if [[ "$args" == *" logs "* ]]; then echo 'verified 2 released terminal operation archives'; exit 0; fi
 if [[ "$args" == *" patch cronjob "* ]]; then printf x >"$STATE_FILE"; exit 0; fi
@@ -174,7 +211,8 @@ if [[ "$args" == *" create -f - -o json "* ]]; then
   if [[ -n "${RETURN_JOB_SHA:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_JOB_SHA" '.["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$annotations")"; fi
   if [[ -n "${RETURN_JOB_EXPIRY:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_JOB_EXPIRY" '.["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$annotations")"; fi
   [[ "${RETURN_JOB_ANNOTATIONS:-}" != omit ]] || annotations=null
-  jq -cn --arg name "$name" --arg namespace "$namespace" --argjson annotations "$annotations" '{metadata:{name:$name,namespace:$namespace,annotations:$annotations}}'; exit 0
+  created="$(jq -c --arg name "$name" --arg namespace "$namespace" --argjson annotations "$annotations" '.metadata.name=$name | .metadata.namespace=$namespace | .metadata.annotations=$annotations | .metadata.uid="verifier-uid-123" | del(.metadata.generateName)' <<<"$payload")"
+  printf '%s\n' "$created" >"$JOB_STATE_FILE"; printf '%s\n' "$created"; exit 0
 fi
 exit 1
 `)
@@ -182,7 +220,7 @@ exit 1
 }
 
 func (f archiveVerifierApplyFixture) env() []string {
-	return []string{"KUBE_CONTEXT=production", "KUBECTL=" + f.kubectl, "CALL_LOG=" + f.log, "CREATE_PAYLOAD_LOG=" + f.payloadLog, "STATE_FILE=" + f.state, "IAM_SIMULATION_EVIDENCE=" + f.evidence, "ENABLE_OPERATION_ARCHIVE_VERIFIER=yes"}
+	return []string{"KUBE_CONTEXT=production", "KUBECTL=" + f.kubectl, "CALL_LOG=" + f.log, "CREATE_PAYLOAD_LOG=" + f.payloadLog, "JOB_STATE_FILE=" + f.jobState, "STATE_FILE=" + f.state, "IAM_SIMULATION_EVIDENCE=" + f.evidence, "ENABLE_OPERATION_ARCHIVE_VERIFIER=yes"}
 }
 
 func iamEvidenceJSON(checked int64) string {

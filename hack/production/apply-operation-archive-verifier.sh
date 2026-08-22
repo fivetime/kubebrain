@@ -96,19 +96,21 @@ check_cronjob() {
 }
 
 run_manual_verification() {
-  local requested_name="$1" generate_prefix="$2" manual_job created expected_name
+  local requested_name="$1" generate_prefix="$2" manual_job created created_identity completed now
   manual_job="$("$JQ" -c --arg name "$requested_name" --arg prefix "$generate_prefix" --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '
     {apiVersion:"batch/v1",kind:"Job",metadata:({namespace:$namespace,annotations:{"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry}} + if $name == "" then {generateName:$prefix} else {name:$name} end),spec:.spec.jobTemplate.spec} |
     (.spec.template.spec.containers[0].env[] | select(.name == "IAM_SIMULATION_VALID_UNTIL_UNIX") | .value) = $expiry
   ' <<<"$cronjob")" || die "cannot construct expiry-bound manual verifier Job"
   created="$(kc create -f - -o json <<<"$manual_job")" || die "cannot create manual verifier Job"
-  manual_job_name="$("$JQ" -er --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '
+  created_identity="$("$JQ" -er --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '
     select(.metadata.namespace == $namespace and
       .metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
       .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry) |
-    .metadata.name |
-    select(type == "string" and test("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and length <= 63)
+    select(.metadata.name | type == "string" and test("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and length <= 63) |
+    select(.metadata.uid | type == "string" and test("^[^[:space:][:cntrl:]]{1,128}$")) |
+    [.metadata.name,.metadata.uid] | @tsv
   ' <<<"$created")" || die "apiserver returned an invalid manual verifier Job identity or IAM evidence binding"
+  IFS=$'\t' read -r manual_job_name manual_job_uid <<<"$created_identity"
   if [[ -n "$requested_name" && "$manual_job_name" != "$requested_name" ]]; then
     die "apiserver returned a different manual verifier Job name"
   fi
@@ -119,6 +121,16 @@ run_manual_verification() {
     kc logs -n "$NAMESPACE" "job/$manual_job_name" >&2 || true
     die "manual verifier Job failed; CronJob IAM binding was not changed"
   }
+  completed="$(kc get job "$manual_job_name" -n "$NAMESPACE" -o json)" || die "cannot re-read completed manual verifier Job"
+  now="$(date +%s)"
+  "$JQ" -e --arg namespace "$NAMESPACE" --arg name "$manual_job_name" --arg uid "$manual_job_uid" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" --argjson now "$now" '
+    .metadata.namespace == $namespace and .metadata.name == $name and .metadata.uid == $uid and
+    .metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
+    .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
+    ($expiry | tonumber) > $now and
+    ([.spec.template.spec.containers[0].env[] | select(.name == "IAM_SIMULATION_VALID_UNTIL_UNIX") | .value] == [$expiry]) and
+    ([.status.conditions[] | select(.type == "Complete" and .status == "True")] | length == 1)
+  ' <<<"$completed" >/dev/null || die "completed manual verifier Job identity, IAM binding, runtime expiry, or condition drifted"
   kc logs -n "$NAMESPACE" "job/$manual_job_name" >&2 || die "cannot retain manual verifier Job logs"
 }
 
