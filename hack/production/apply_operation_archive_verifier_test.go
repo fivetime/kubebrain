@@ -21,9 +21,10 @@ func TestOperationArchiveVerifierEnablesOnlyAfterManualSuccess(t *testing.T) {
 	f := newArchiveVerifierApplyFixture(t)
 	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, f.env())
 	require.NoError(t, err, string(out))
-	require.Contains(t, string(out), "retained job/kubebrain-operation-archive-verifier-enable")
+	require.Contains(t, string(out), "retained job/kubebrain-archive-verifier-enable-abcde")
 	log := string(mustRead(t, f.log))
-	require.Contains(t, log, "create -f -")
+	require.Contains(t, log, "create -f - -o json")
+	require.Contains(t, string(mustRead(t, f.payloadLog)), `"generateName":"kubebrain-archive-verifier-enable-"`)
 	require.Contains(t, log, `"path":"/spec/suspend","value":false`)
 	require.Contains(t, log, `iam-simulation-valid-until-unix`)
 	out, err = runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--check-enabled"}, f.env())
@@ -81,7 +82,8 @@ func TestOperationArchiveVerifierRefreshesEnabledIAMBindingAfterManualSuccess(t 
 	require.NoError(t, err, string(out))
 	require.Contains(t, string(out), "refreshed hourly verifier IAM evidence binding")
 	log := string(mustRead(t, f.log))
-	require.Contains(t, log, "create -f -")
+	require.Contains(t, log, "create -f - -o json")
+	require.Contains(t, string(mustRead(t, f.payloadLog)), `"generateName":"kubebrain-archive-verifier-iam-"`)
 	require.Contains(t, log, `"path":"/spec/suspend","value":false`)
 	require.Contains(t, log, `"op":"test","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-valid-until-unix"`)
 }
@@ -95,12 +97,43 @@ func TestOperationArchiveVerifierRefreshFailurePreservesOldBinding(t *testing.T)
 	require.NotContains(t, string(mustRead(t, f.log)), "patch cronjob")
 }
 
-type archiveVerifierApplyFixture struct{ kubectl, log, state, evidence string }
+func TestOperationArchiveVerifierAcceptsExplicitAuditJobName(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), "VERIFICATION_JOB_NAME=audit-verifier-20260822"))
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "retained job/audit-verifier-20260822")
+	payload := string(mustRead(t, f.payloadLog))
+	require.Contains(t, payload, `"name":"audit-verifier-20260822"`)
+	require.NotContains(t, payload, `"generateName"`)
+}
+
+func TestOperationArchiveVerifierRejectsUnexpectedCreatedJobIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+	}{
+		{name: "namespace", env: "RETURN_JOB_NAMESPACE=other"},
+		{name: "generated prefix", env: "RETURN_JOB_NAME=untrusted-job"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newArchiveVerifierApplyFixture(t)
+			out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, append(f.env(), tc.env))
+			require.Error(t, err)
+			require.Contains(t, string(out), "manual verifier Job")
+			log := string(mustRead(t, f.log))
+			require.NotContains(t, log, " wait ")
+			require.NotContains(t, log, "patch cronjob")
+		})
+	}
+}
+
+type archiveVerifierApplyFixture struct{ kubectl, log, payloadLog, state, evidence string }
 
 func newArchiveVerifierApplyFixture(t *testing.T) archiveVerifierApplyFixture {
 	t.Helper()
 	dir := t.TempDir()
-	f := archiveVerifierApplyFixture{kubectl: filepath.Join(dir, "kubectl"), log: filepath.Join(dir, "calls.log"), state: filepath.Join(dir, "enabled"), evidence: filepath.Join(dir, "iam.json")}
+	f := archiveVerifierApplyFixture{kubectl: filepath.Join(dir, "kubectl"), log: filepath.Join(dir, "calls.log"), payloadLog: filepath.Join(dir, "payloads.log"), state: filepath.Join(dir, "enabled"), evidence: filepath.Join(dir, "iam.json")}
+	require.NoError(t, os.WriteFile(f.payloadLog, nil, 0o600))
 	require.NoError(t, os.WriteFile(f.evidence, []byte(iamEvidenceJSON(time.Now().Unix())), 0o600))
 	writeTrafficExecutable(t, f.kubectl, `#!/usr/bin/env bash
 set -euo pipefail
@@ -126,14 +159,20 @@ fi
 if [[ "$args" == *" wait "* ]]; then [[ "${FAIL_JOB:-false}" != true ]]; exit; fi
 if [[ "$args" == *" logs "* ]]; then echo 'verified 2 released terminal operation archives'; exit 0; fi
 if [[ "$args" == *" patch cronjob "* ]]; then printf x >"$STATE_FILE"; exit 0; fi
-if [[ "$args" == *" create -f - "* ]]; then grep -q 'IAM_SIMULATION_VALID_UNTIL_UNIX'; exit 0; fi
+if [[ "$args" == *" create -f - -o json "* ]]; then
+  payload="$(cat)"; grep -q 'IAM_SIMULATION_VALID_UNTIL_UNIX' <<<"$payload"; printf '%s\n' "$payload" >>"$CREATE_PAYLOAD_LOG"
+  name="$(jq -r '.metadata.name // (.metadata.generateName + "abcde")' <<<"$payload")"
+  namespace="$(jq -r '.metadata.namespace' <<<"$payload")"
+  name="${RETURN_JOB_NAME:-$name}"; namespace="${RETURN_JOB_NAMESPACE:-$namespace}"
+  printf '{"metadata":{"name":"%s","namespace":"%s"}}\n' "$name" "$namespace"; exit 0
+fi
 exit 1
 `)
 	return f
 }
 
 func (f archiveVerifierApplyFixture) env() []string {
-	return []string{"KUBE_CONTEXT=production", "KUBECTL=" + f.kubectl, "CALL_LOG=" + f.log, "STATE_FILE=" + f.state, "IAM_SIMULATION_EVIDENCE=" + f.evidence, "ENABLE_OPERATION_ARCHIVE_VERIFIER=yes"}
+	return []string{"KUBE_CONTEXT=production", "KUBECTL=" + f.kubectl, "CALL_LOG=" + f.log, "CREATE_PAYLOAD_LOG=" + f.payloadLog, "STATE_FILE=" + f.state, "IAM_SIMULATION_EVIDENCE=" + f.evidence, "ENABLE_OPERATION_ARCHIVE_VERIFIER=yes"}
 }
 
 func iamEvidenceJSON(checked int64) string {

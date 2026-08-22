@@ -96,17 +96,27 @@ check_cronjob() {
 }
 
 run_manual_verification() {
-  local job="$1" manual_job
-  manual_job="$("$JQ" -c --arg name "$job" --arg namespace "$NAMESPACE" --arg expiry "$iam_evidence_valid_until" '
-    {apiVersion:"batch/v1",kind:"Job",metadata:{name:$name,namespace:$namespace},spec:.spec.jobTemplate.spec} |
+  local requested_name="$1" generate_prefix="$2" manual_job created expected_name
+  manual_job="$("$JQ" -c --arg name "$requested_name" --arg prefix "$generate_prefix" --arg namespace "$NAMESPACE" --arg expiry "$iam_evidence_valid_until" '
+    {apiVersion:"batch/v1",kind:"Job",metadata:({namespace:$namespace} + if $name == "" then {generateName:$prefix} else {name:$name} end),spec:.spec.jobTemplate.spec} |
     (.spec.template.spec.containers[0].env[] | select(.name == "IAM_SIMULATION_VALID_UNTIL_UNIX") | .value) = $expiry
   ' <<<"$cronjob")" || die "cannot construct expiry-bound manual verifier Job"
-  kc create -f - <<<"$manual_job" >/dev/null || die "cannot create manual verifier Job"
-  kc wait -n "$NAMESPACE" --for=condition=complete --timeout=20m "job/$job" >/dev/null || {
-    kc logs -n "$NAMESPACE" "job/$job" >&2 || true
+  created="$(kc create -f - -o json <<<"$manual_job")" || die "cannot create manual verifier Job"
+  manual_job_name="$("$JQ" -er --arg namespace "$NAMESPACE" '
+    select(.metadata.namespace == $namespace) | .metadata.name |
+    select(type == "string" and test("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and length <= 63)
+  ' <<<"$created")" || die "apiserver returned an invalid manual verifier Job identity"
+  if [[ -n "$requested_name" && "$manual_job_name" != "$requested_name" ]]; then
+    die "apiserver returned a different manual verifier Job name"
+  fi
+  if [[ -z "$requested_name" && "$manual_job_name" != "$generate_prefix"* ]]; then
+    die "apiserver returned a manual verifier Job outside the requested generated-name prefix"
+  fi
+  kc wait -n "$NAMESPACE" --for=condition=complete --timeout=20m "job/$manual_job_name" >/dev/null || {
+    kc logs -n "$NAMESPACE" "job/$manual_job_name" >&2 || true
     die "manual verifier Job failed; CronJob IAM binding was not changed"
   }
-  kc logs -n "$NAMESPACE" "job/$job" >&2 || die "cannot retain manual verifier Job logs"
+  kc logs -n "$NAMESPACE" "job/$manual_job_name" >&2 || die "cannot retain manual verifier Job logs"
 }
 
 [[ "$#" == 1 ]] || usage
@@ -148,13 +158,13 @@ case "$1" in
     "$JQ" -e '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == "pending"' <<<"$cronjob" >/dev/null || die "verifier IAM evidence binding is not pending"
     "$JQ" -e '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == "pending"' <<<"$cronjob" >/dev/null || die "verifier IAM evidence expiry binding is not pending"
     check_iam_evidence "${IAM_SIMULATION_EVIDENCE:-}"
-    job="${VERIFICATION_JOB_NAME:-kubebrain-operation-archive-verifier-enable}"
-    [[ "$job" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#job}" -le 63 ]] || die "VERIFICATION_JOB_NAME must be a DNS label"
-    run_manual_verification "$job"
+    job="${VERIFICATION_JOB_NAME:-}"
+    [[ -z "$job" || ( "$job" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#job}" -le 63 ) ]] || die "VERIFICATION_JOB_NAME must be a DNS label"
+    run_manual_verification "$job" "kubebrain-archive-verifier-enable-"
     rv="$("$JQ" -er '.metadata.resourceVersion | select(test("^[0-9]+$"))' <<<"$cronjob")" || die "verifier CronJob resourceVersion is invalid"
     patch="$("$JQ" -cn --arg rv "$rv" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '[{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"test","path":"/spec/suspend","value":true},{"op":"test","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-sha256","value":"pending"},{"op":"test","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-valid-until-unix","value":"pending"},{"op":"test","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/7/value","value":"1"},{"op":"replace","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-sha256","value":$sha},{"op":"replace","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-valid-until-unix","value":$expiry},{"op":"replace","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/7/value","value":$expiry},{"op":"replace","path":"/spec/suspend","value":false}]')"
     kc patch cronjob "$CRONJOB" -n "$NAMESPACE" --type=json -p "$patch" >/dev/null || die "manual verification passed but CronJob CAS enable failed"
-    echo "enabled hourly read-only Operation archive evidence verification; retained job/$job"
+    echo "enabled hourly read-only Operation archive evidence verification; retained job/$manual_job_name"
     ;;
   --refresh-iam)
     [[ "${REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM:-}" == yes ]] || die "set REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM=yes to verify and rotate the enabled schedule IAM binding"
@@ -164,12 +174,12 @@ case "$1" in
     runtime_expiry="$("$JQ" -er '.spec.jobTemplate.spec.template.spec.containers[0].env[] | select(.name == "IAM_SIMULATION_VALID_UNTIL_UNIX") | .value' <<<"$cronjob")" || die "enabled verifier runtime IAM expiry binding is missing"
     [[ "$runtime_expiry" == "$old_expiry" ]] || die "enabled verifier runtime IAM expiry binding drifted"
     check_iam_evidence "${IAM_SIMULATION_EVIDENCE:-}"
-    job="${VERIFICATION_JOB_NAME:-kubebrain-operation-archive-verifier-iam-refresh}"
-    [[ "$job" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#job}" -le 63 ]] || die "VERIFICATION_JOB_NAME must be a DNS label"
-    run_manual_verification "$job"
+    job="${VERIFICATION_JOB_NAME:-}"
+    [[ -z "$job" || ( "$job" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#job}" -le 63 ) ]] || die "VERIFICATION_JOB_NAME must be a DNS label"
+    run_manual_verification "$job" "kubebrain-archive-verifier-iam-"
     rv="$("$JQ" -er '.metadata.resourceVersion | select(test("^[0-9]+$"))' <<<"$cronjob")" || die "verifier CronJob resourceVersion is invalid"
     patch="$("$JQ" -cn --arg rv "$rv" --arg old_sha "$old_sha" --arg old_expiry "$old_expiry" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '[{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"test","path":"/spec/suspend","value":false},{"op":"test","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-sha256","value":$old_sha},{"op":"test","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-valid-until-unix","value":$old_expiry},{"op":"test","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/7/value","value":$old_expiry},{"op":"replace","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-sha256","value":$sha},{"op":"replace","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-valid-until-unix","value":$expiry},{"op":"replace","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/7/value","value":$expiry}]')"
     kc patch cronjob "$CRONJOB" -n "$NAMESPACE" --type=json -p "$patch" >/dev/null || die "manual verification passed but CronJob IAM binding CAS refresh failed"
-    echo "refreshed hourly verifier IAM evidence binding; retained job/$job"
+    echo "refreshed hourly verifier IAM evidence binding; retained job/$manual_job_name"
     ;;
 esac
