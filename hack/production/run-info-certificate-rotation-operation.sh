@@ -132,6 +132,16 @@ workspace_path() {
 state_dir="$(workspace_path "$state_dir" state_dir)"
 receipt_output="$(workspace_path "$receipt_output" receipt_output)"
 scrape_receipt_output="$(workspace_path "$scrape_receipt_output" scrape_receipt_output)"
+state_file="$state_dir/$rotation_id.info.state"
+paths_alias() {
+  local left="$1" right="$2"
+  [[ "$left" == "$right" ]] || [[ -e "$left" && -e "$right" && "$left" -ef "$right" ]]
+}
+if paths_alias "$state_file" "$receipt_output" ||
+  paths_alias "$state_file" "$scrape_receipt_output" ||
+  paths_alias "$receipt_output" "$scrape_receipt_output"; then
+  die "state, TLS receipt, and scrape receipt paths must be distinct files"
+fi
 receipt_input="$receipt_output"
 
 sources=("$old_ca" "$old_cert" "$new_ca" "$new_cert")
@@ -190,7 +200,6 @@ run_step() {
 renew_terminal_lease() { run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { echo "final heartbeat failed; info certificate rotation worker was fenced" >&2; return 1; }; }
 run_gate() { run_step "$1 gate" env "${rotation_env[@]}" ACTION="$1" "$ROTATION_COMMAND"; }
 
-state_file="$state_dir/$rotation_id.info.state"
 state_old_fingerprint=""
 state_new_fingerprint=""
 validate_state() {

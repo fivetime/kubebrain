@@ -157,6 +157,38 @@ func TestInfoCertificateRotationOperationRejectsWorkspaceEscape(t *testing.T) {
 	}
 }
 
+func TestInfoCertificateRotationOperationRejectsEvidenceAliases(t *testing.T) {
+	for _, tc := range []struct{ name, field string }{
+		{"TLS receipt aliases state", "receipt_output"},
+		{"scrape receipt aliases state", "scrape_receipt_output"},
+		{"scrape receipt aliases TLS receipt", "receipt_pair"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInfoRotationRunnerFixture(t)
+			var parameters map[string]any
+			require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+			if tc.field == "receipt_pair" {
+				parameters["scrape_receipt_output"] = f.receipt
+			} else {
+				parameters[tc.field] = filepath.Join(f.stateDir, "rotation-1.info.state")
+			}
+			encoded, err := json.Marshal(parameters)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(f.parameters, append(encoded, '\n'), 0o600))
+			f.run(t, false, "state, TLS receipt, and scrape receipt paths must be distinct files")
+			require.NotContains(t, string(mustRead(t, f.log)), "gate ")
+		})
+	}
+}
+
+func TestInfoCertificateRotationOperationRejectsEvidenceHardLinkAlias(t *testing.T) {
+	f := newInfoRotationRunnerFixture(t)
+	require.NoError(t, os.WriteFile(f.receipt, []byte("existing\n"), 0o600))
+	require.NoError(t, os.Link(f.receipt, f.scrapeReceipt))
+	f.run(t, false, "state, TLS receipt, and scrape receipt paths must be distinct files")
+	require.NotContains(t, string(mustRead(t, f.log)), "gate ")
+}
+
 type infoRotationRunnerFixture struct {
 	dir, parameters, operationctl, rotation, publish, scrape, log, stateDir, receipt, scrapeReceipt string
 }
