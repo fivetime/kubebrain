@@ -12,7 +12,7 @@ spec:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-requester"', message: cold restore operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: cold restore requester is restricted to the isolated target operation queue}
     - {expression: 'object.metadata.name.matches("^cold-restore-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: cold restore operation identity must be deterministic}
-    - {expression: 'object.spec.type == "ColdPhysicalRestore" && object.spec.requestedBy == "platform:cold-physical-restore" && object.spec.instance == "kb" && object.spec.maxAttempts == 1', message: cold restore operation shape is fixed}
+    - {expression: 'object.spec.type == "ColdPhysicalRestore" && object.spec.requestedBy == "platform:cold-physical-restore" && object.spec.instance == "kb" && object.spec.maxAttempts == 2', message: cold restore operation shape is fixed}
     - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")', message: cold restore operation must bind its immutable parameter Secret}
 ---
 apiVersion: admissionregistration.k8s.io/v1

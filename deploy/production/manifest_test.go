@@ -1438,7 +1438,7 @@ func TestColdPhysicalRestoreRequesterAdmissionIsFailClosed(t *testing.T) {
 	for _, raw := range validations {
 		expressions += raw.(map[string]any)["expression"].(string)
 	}
-	require.Contains(t, expressions, `object.spec.maxAttempts == 1`)
+	require.Contains(t, expressions, `object.spec.maxAttempts == 2`)
 	require.Contains(t, expressions, `request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-requester"`)
 	for _, name := range []string{"kubebrain-cold-restore-request-operation", "kubebrain-cold-restore-request-parameters"} {
 		binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", name)

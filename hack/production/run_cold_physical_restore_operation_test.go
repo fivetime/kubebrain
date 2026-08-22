@@ -36,7 +36,7 @@ func TestRunColdPhysicalRestoreOperationIsBoundAndTerminal(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
- printf '{"namespace":"kubebrain-operations","name":"%s","operation_id":"%s","instance":"kb","type":"ColdPhysicalRestore","requested_by":"platform:cold-physical-restore","owner":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","attempt":1,"parameters_sha256":"%s"}\n' "$OPERATION_NAME" "$OPERATION_NAME" "$WORKER_ID" "$OPERATION_NAME" "$EXPECTED_DIGEST"
+ printf '{"namespace":"kubebrain-operations","name":"%s","operation_id":"%s","instance":"kb","type":"ColdPhysicalRestore","requested_by":"platform:cold-physical-restore","owner":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","attempt":%s,"parameters_sha256":"%s"}\n' "$OPERATION_NAME" "$OPERATION_NAME" "$WORKER_ID" "$OPERATION_NAME" "${ATTEMPT:-1}" "$EXPECTED_DIGEST"
 fi
 `), 0o755))
 	restoreLog := filepath.Join(dir, "restore.log")
@@ -45,11 +45,13 @@ fi
 set -euo pipefail
 env | sort >"$RESTORE_LOG"
 [[ "${FAIL_RESTORE:-false}" != true ]] || exit 9
-jq -cn --arg source "$SOURCE_OPERATION" --arg sha "$EXPECTED_SOURCE_SHA" --arg kube "$EXPECTED_TARGET_KUBE_SYSTEM_UID" --arg ns "$EXPECTED_TARGET_NAMESPACE_UID" '{format:"kubebrain.cold-physical-restore.v1",operation_id:$source,source_receipt_sha256:$sha,target:{kube_system_uid:$kube,namespace_uid:$ns,namespace:"tidb-cluster",tidb_cluster:"kb",cluster_id:"12345"}}' >"$RESTORE_RECEIPT_FILE"
+jq -cn --arg source "$SOURCE_OPERATION" --arg sha "$EXPECTED_SOURCE_SHA" --arg manifest "$EXPECTED_MANIFEST_SHA" --arg kube "$EXPECTED_TARGET_KUBE_SYSTEM_UID" --arg ns "$EXPECTED_TARGET_NAMESPACE_UID" '{format:"kubebrain.cold-physical-restore.v1",operation_id:$source,source_receipt_sha256:$sha,restore_manifest:{format:"kubernetes-list.canonical-json.v1",sha256:$manifest,item_count:1,volume_snapshot_contents:0,volume_snapshots:0,persistent_volume_claims:0,tidbclusters:1},target:{kube_system_uid:$kube,namespace_uid:$ns,namespace:"tidb-cluster",tidb_cluster:"kb",tidb_cluster_uid:"tc-restored",cluster_id:"12345"},volume_snapshots:[],volume_snapshot_contents:[],pvs:[],pvcs:[],completed_at:"2026-08-22T00:00:00Z"}' >"$RESTORE_RECEIPT_FILE"
+chmod 600 "$RESTORE_RECEIPT_FILE"
+[[ "${EXIT_AFTER_RECEIPT:-0}" == 0 ]] || exit "$EXIT_AFTER_RECEIPT"
 `), 0o755))
 	env := []string{"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters, "OPERATIONCTL=" + operationctl, "RESTORE_COMMAND=" + restore,
 		"WORK_DIR=" + dir, "HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + digest, "OPERATION_NAME=" + name,
-		"OPERATION_LOG=" + operationLog, "RESTORE_LOG=" + restoreLog, "SOURCE_OPERATION=cold-snapshot-0123456789abcdefabcd", "EXPECTED_SOURCE_SHA=" + sourceSHA}
+		"OPERATION_LOG=" + operationLog, "RESTORE_LOG=" + restoreLog, "SOURCE_OPERATION=cold-snapshot-0123456789abcdefabcd", "EXPECTED_SOURCE_SHA=" + sourceSHA, "EXPECTED_MANIFEST_SHA=" + manifestSHA}
 	output, err := runProductionScriptCommand(t, "run-cold-physical-restore-operation.sh", env)
 	require.NoError(t, err, string(output))
 	operations := string(mustRead(t, operationLog))
@@ -58,12 +60,37 @@ jq -cn --arg source "$SOURCE_OPERATION" --arg sha "$EXPECTED_SOURCE_SHA" --arg k
 	restoreEnvironment := string(mustRead(t, restoreLog))
 	require.Contains(t, restoreEnvironment, "ALLOW_COLD_PHYSICAL_RESTORE=true")
 	require.Contains(t, restoreEnvironment, "KUBE_CONTEXT=in-cluster")
-	require.NoError(t, os.Remove(filepath.Join(dir, name+".receipt.json")))
+	receiptPath := filepath.Join(dir, name+".receipt.json")
+	require.NoError(t, os.Remove(restoreLog))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	reconcileOutput, reconcileErr := runProductionScriptCommand(t, "run-cold-physical-restore-operation.sh", append(env, "ATTEMPT=2"))
+	require.NoError(t, reconcileErr, string(reconcileOutput))
+	require.NoFileExists(t, restoreLog, "attempt 2 must not recreate target resources")
+	require.Contains(t, string(mustRead(t, operationLog)), "reconciled durable cold physical restore receipt without recreating target resources")
+	require.NoError(t, os.Chmod(receiptPath, 0o640))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	unsafeOutput, unsafeErr := runProductionScriptCommand(t, "run-cold-physical-restore-operation.sh", append(env, "ATTEMPT=2"))
+	require.Error(t, unsafeErr, string(unsafeOutput))
+	require.Contains(t, string(mustRead(t, operationLog)), "cold restore exhausted without a valid durable receipt")
+	require.NoError(t, os.Chmod(receiptPath, 0o600))
+	require.NoError(t, os.Remove(receiptPath))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	uncertainOutput, uncertainErr := runProductionScriptCommand(t, "run-cold-physical-restore-operation.sh", append(env, "EXIT_AFTER_RECEIPT=9"))
+	require.Error(t, uncertainErr)
+	require.Contains(t, string(uncertainOutput), "later claim must inspect durable receipt")
+	require.NotContains(t, string(mustRead(t, operationLog)), "--action fail")
+	require.FileExists(t, receiptPath)
+	require.NoError(t, os.Remove(restoreLog))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	uncertainReconcileOutput, uncertainReconcileErr := runProductionScriptCommand(t, "run-cold-physical-restore-operation.sh", append(env, "ATTEMPT=2"))
+	require.NoError(t, uncertainReconcileErr, string(uncertainReconcileOutput))
+	require.NoFileExists(t, restoreLog, "publication uncertainty takeover must not recreate target resources")
+	require.NoError(t, os.Remove(receiptPath))
 	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
 	failure, failureErr := runProductionScriptCommand(t, "run-cold-physical-restore-operation.sh", append(env, "FAIL_RESTORE=true"))
 	require.Error(t, failureErr, string(failure))
 	failureOperations := string(mustRead(t, operationLog))
-	require.Contains(t, failureOperations, "--action fail")
+	require.NotContains(t, failureOperations, "--action fail")
 	require.NotContains(t, failureOperations, "--action retry")
 	require.NoError(t, os.WriteFile(parameters, []byte(strings.Replace(string(parameterBytes), `"wait_timeout":"15m"`, `"wait_timeout":"9223372036854775808m"`, 1)), 0o600))
 	overflowBytes := mustRead(t, parameters)

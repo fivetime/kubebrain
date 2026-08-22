@@ -43,7 +43,7 @@ exit 99
 	operation := string(mustRead(t, operationLog))
 	require.Contains(t, operation, "--requested-by platform:cold-physical-restore")
 	require.Contains(t, operation, "--type ColdPhysicalRestore")
-	require.Contains(t, operation, "--max-attempts 1")
+	require.Contains(t, operation, "--max-attempts 2")
 	require.NotContains(t, operation, "approve")
 	calls := string(mustRead(t, kubectlLog))
 	require.NotContains(t, calls, "patch")

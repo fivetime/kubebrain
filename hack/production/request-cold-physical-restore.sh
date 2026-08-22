@@ -69,5 +69,5 @@ fi
 ctl_args=(--namespace "$OPERATION_NAMESPACE"); [[ "$KUBE_CONTEXT" == in-cluster ]] || ctl_args+=(--context "$KUBE_CONTEXT")
 "$OPERATIONCTL" "${ctl_args[@]}" --action submit --name "$name" --operation-id "$name" \
   --requested-by platform:cold-physical-restore --instance kb --type ColdPhysicalRestore \
-  --parameters-sha256 "$parameters_sha" --parameters-secret "$secret" --parameters-key parameters.json --max-attempts 1 >/dev/null
+  --parameters-sha256 "$parameters_sha" --parameters-secret "$secret" --parameters-key parameters.json --max-attempts 2 >/dev/null
 echo "created or verified unapproved Pending ColdPhysicalRestore ${OPERATION_NAMESPACE}/${name} for isolated target ${target_kube_uid}/${target_namespace_uid}"
