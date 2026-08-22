@@ -14,6 +14,7 @@ DESTROY_COMMAND="${DESTROY_COMMAND:-${ROOT_DIR}/hack/production/destroy-instance
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
+WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
 
 usage() {
@@ -52,6 +53,8 @@ require_executable_file DESTROY_COMMAND "$DESTROY_COMMAND"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
 operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECONDS" ||
   { echo "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64" >&2; exit 2; }
+[[ "$WORK_DIR" == /* && -d "$WORK_DIR" && -w "$WORK_DIR" ]] ||
+  { echo "WORK_DIR must be an absolute writable directory" >&2; exit 2; }
 
 managed_parameters=""
 managed_backup=""
@@ -103,13 +106,13 @@ run_operationctl() {
 }
 
 claim="$(run_operationctl --action claim --owner "$WORKER_ID" --type Destroy --lease "${LEASE_SECONDS}s")"
-claimed_namespace="$("$JQ" -r '.namespace // empty' <<<"$claim")"
-if [[ -n "$claimed_namespace" ]]; then
-  [[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
-    { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
-  OPERATION_NAMESPACE="$claimed_namespace"
-  build_kube_args
-fi
+claim_identity="$("$JQ" -er '[.namespace,.type,.requested_by,.owner,.parameters_secret,.parameters_key] |
+  select(length == 6 and all(.[]; type == "string" and length > 0)) | @tsv' <<<"$claim")" ||
+  { echo "destroy claim identity is incomplete" >&2; exit 2; }
+IFS=$'\t' read -r claimed_namespace claimed_type claimed_requester claimed_owner claimed_secret claimed_key <<<"$claim_identity"
+[[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+  { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
+OPERATION_NAMESPACE="$claimed_namespace"; build_kube_args
 name="$("$JQ" -er '.name' <<<"$claim")"
 operation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"
@@ -119,6 +122,10 @@ for value in "$operation_id" "$instance"; do
 done
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
+[[ "$name" =~ ^destroy-[a-f0-9]{20}$ && "$operation_id" == "$name" && "$claimed_type" == Destroy &&
+   "$claimed_requester" == platform:destroy && "$claimed_owner" == "$WORKER_ID" &&
+   "$claimed_secret" == "${name}-parameters" && "$claimed_key" == parameters.json && "$attempt" =~ ^[1-5]$ ]] ||
+  { echo "destroy claim identity does not match the dedicated requester contract" >&2; exit 2; }
 if [[ -z "$PARAMETERS_INPUT" ]]; then
   managed_parameters="${capture_dir}/managed-parameters.json"
   PARAMETERS_INPUT="$managed_parameters"
@@ -185,6 +192,11 @@ validate_destroy_identity_json() {
 
 validate_destroy_identity_json ||
   { echo "destroy namespace or resource identity is invalid" >&2; exit 2; }
+"$JQ" -e 'keys == [
+  "backup_file_sha256","backup_input","backup_max_age_seconds","backup_min_records","backup_prefix",
+  "confirm_destroy","expected_pvcs","kubebrain_namespace","kubebrain_statefulset","poll_interval_seconds",
+  "receipt_output","state_dir","tidb_cluster","tidb_namespace","timeout_seconds"
+]' "$PARAMETERS_INPUT" >/dev/null || { echo "destroy parameter schema is invalid" >&2; exit 2; }
 
 parameters="$("$JQ" -er '[
   .state_dir, .backup_input, .backup_file_sha256, .backup_prefix,
@@ -202,6 +214,16 @@ IFS=$'\t' read -r state_dir backup_input backup_file_sha backup_prefix backup_ma
   data_kubeconfig <<<"$parameters"
 [[ "$data_context" == "-" ]] && data_context=""
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
+path_is_in_workspace() {
+  local value="$1"
+  [[ "$value" == "$WORK_DIR"/* && "$value" != *'//'* && "$value" != *'/../'* && "$value" != */.. && "$value" != *'/./'* && "$value" != */. ]]
+}
+path_is_in_workspace "$state_dir" && path_is_in_workspace "$backup_input" && path_is_in_workspace "$receipt_output" ||
+  { echo "destroy state, backup, and receipt paths must stay in WORK_DIR" >&2; exit 2; }
+[[ "$state_dir" == "${WORK_DIR}/${name}.state" && "$receipt_output" == "${WORK_DIR}/${name}.receipt.json" ]] ||
+  { echo "destroy state and receipt paths must be derived from the operation" >&2; exit 2; }
+[[ ! -L "$state_dir" && ! -L "$backup_input" && ! -L "$receipt_output" ]] ||
+  { echo "destroy workspace evidence paths must not be symlinks" >&2; exit 2; }
 operation_is_positive_int64 "$backup_max_age" ||
   { echo "destroy backup max age must be a positive int64" >&2; exit 2; }
 operation_is_nonnegative_int64 "$backup_min_records" && operation_is_nonnegative_int64 "$expected_pvcs" ||

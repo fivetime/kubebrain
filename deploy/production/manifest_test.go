@@ -1797,6 +1797,49 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 	require.Equal(t, []string{"Deny"}, actions)
 }
 
+func TestDestroyRequesterIsFailClosedAndLeastPrivilege(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-destroy-requester-admission.yaml")
+	for _, tc := range []struct {
+		name, resource string
+		fragments      []string
+	}{
+		{name: "kubebrain-destroy-request-operation", resource: "kubebrainoperations", fragments: []string{"kubebrain-destroy-requester", `^destroy-[a-f0-9]{20}$`, `platform:destroy`, `maxAttempts == 5`, `parameters.json`}},
+		{name: "kubebrain-destroy-request-parameters", resource: "secrets", fragments: []string{"kubebrain-destroy-requester", `^destroy-[a-f0-9]{20}-parameters$`, `object.immutable == true`, `size(object.data) == 1`, `parameters.json`}},
+	} {
+		policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", tc.name)
+		require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+		rules, found, err := unstructured.NestedSlice(policy.Object, "spec", "matchConstraints", "resourceRules")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, []any{tc.resource}, rules[0].(map[string]any)["resources"].([]any))
+		validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
+		require.NoError(t, err)
+		require.True(t, found)
+		var text strings.Builder
+		for _, validation := range validations {
+			text.WriteString(validation.(map[string]any)["expression"].(string))
+		}
+		for _, fragment := range tc.fragments {
+			require.Contains(t, text.String(), fragment)
+		}
+		binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", tc.name)
+		require.Equal(t, []string{"Deny"}, nestedStringSlice(t, binding, "spec", "validationActions"))
+	}
+
+	rbac := decodeManifest(t, "kubebrain-destroy-requester-rbac.yaml")
+	account := objectByKindAndName(t, rbac, "ServiceAccount", "kubebrain-destroy-requester")
+	require.False(t, nestedBool(t, account, "automountServiceAccountToken"))
+	role := objectByKindAndName(t, rbac, "Role", "kubebrain-destroy-requester")
+	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, rules, 2)
+	for _, rule := range rules {
+		verbs := rule.(map[string]any)["verbs"].([]any)
+		require.Equal(t, []any{"create", "get"}, verbs)
+	}
+}
+
 func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-api.yaml")
 	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-operation-api")

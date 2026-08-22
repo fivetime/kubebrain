@@ -1,0 +1,43 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-destroy-request-operation}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
+  matchConditions:
+    - name: destroy-scope
+      expression: 'object.spec.type == "Destroy" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-destroy-requester"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-destroy-requester"', message: destroy operations require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: destroy requester is restricted to the production operation queue}
+    - {expression: 'object.metadata.name.matches("^destroy-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: destroy operation identity must be deterministic}
+    - {expression: 'object.spec.type == "Destroy" && object.spec.requestedBy == "platform:destroy" && object.spec.instance.matches("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$") && object.spec.maxAttempts == 5', message: destroy operation shape is fixed}
+    - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")', message: destroy operation must bind its immutable parameter Secret}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-destroy-request-operation}
+spec: {policyName: kubebrain-destroy-request-operation, validationActions: [Deny]}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-destroy-request-parameters}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [secrets], scope: Namespaced}
+  matchConditions:
+    - name: destroy-parameter-scope
+      expression: '(object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^destroy-[a-f0-9]{20}-parameters$")) || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-destroy-requester"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-destroy-requester"', message: destroy parameter Secrets require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^destroy-[a-f0-9]{20}-parameters$")', message: destroy parameter Secret identity is fixed}
+    - {expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data', message: destroy parameters must be one immutable opaque payload}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-destroy-request-parameters}
+spec: {policyName: kubebrain-destroy-request-parameters, validationActions: [Deny]}

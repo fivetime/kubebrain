@@ -1154,6 +1154,7 @@ spec:
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: DESTROY_COMMAND, value: /opt/kubebrain/hack/production/destroy-instance.sh}
+            - {name: WORK_DIR, value: /var/lib/kubebrain-operation}
             - {name: UID_DELETE, value: /usr/local/bin/kubebrain-uid-delete}
             - {name: LOGICAL_STATUS, value: /usr/local/bin/kubebrain-logical-status}
           envFrom: [{secretRef: {name: kubebrain-destroy-executor-env}}]

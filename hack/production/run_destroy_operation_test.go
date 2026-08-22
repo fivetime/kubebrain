@@ -14,6 +14,7 @@ import (
 const (
 	destroyLogicalSHA      = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	destroyLogicalRevision = 101
+	destroyOperationName   = "destroy-0123456789abcdefabcd"
 )
 
 func TestDestroyOperationCompletesLifecycle(t *testing.T) {
@@ -53,6 +54,24 @@ func TestDestroyOperationRejectsNumericBoundsBeforePrimitive(t *testing.T) {
 			require.NotContains(t, f.log(t), "phase ")
 		})
 	}
+}
+
+func TestDestroyOperationRejectsClaimAndWorkspaceDriftBeforePrimitive(t *testing.T) {
+	f := newDestroyRunnerFixture(t, true)
+	f.run(t, false, "CLAIM_REQUESTER=platform:other", "dedicated requester contract")
+	require.NotContains(t, f.log(t), "phase ")
+
+	f = newDestroyRunnerFixture(t, true)
+	parameters := []byte(strings.Replace(string(mustRead(t, f.parameters)), `"state_dir":"`+filepath.Join(f.dir, destroyOperationName+".state")+`"`, `"state_dir":"/tmp/escaped"`, 1))
+	require.NoError(t, os.WriteFile(f.parameters, parameters, 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "must stay in WORK_DIR")
+	require.NotContains(t, f.log(t), "phase ")
+
+	f = newDestroyRunnerFixture(t, true)
+	parameters = []byte(strings.TrimSuffix(strings.TrimSpace(string(mustRead(t, f.parameters))), "}") + `,"unreviewed":true}`)
+	require.NoError(t, os.WriteFile(f.parameters, parameters, 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "parameter schema is invalid")
+	require.NotContains(t, f.log(t), "phase ")
 }
 
 func TestDestroyOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
@@ -273,7 +292,7 @@ func TestDestroyOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
 func TestDestroyOperationRejectsValidReceiptChangedAfterDigest(t *testing.T) {
 	f := newDestroyRunnerFixture(t, true)
 	tamperedReceipt := filepath.Join(f.dir, "valid-tampered-receipt.json")
-	receipt := fmt.Sprintf(`{"backup_revision":%d,"backup_sha256":%q,"completed_at_unix":124,"format":"kubebrain.destroy.receipt.v1","instance":"instance-a","kubebrain_namespace":"instance-a","operation_id":"destroy-1","resources_absent":true,"tidb_cluster":"kb","tidb_namespace":"storage-a"}`+"\n", destroyLogicalRevision, destroyLogicalSHA)
+	receipt := fmt.Sprintf(`{"backup_revision":%d,"backup_sha256":%q,"completed_at_unix":124,"format":"kubebrain.destroy.receipt.v1","instance":"instance-a","kubebrain_namespace":"instance-a","operation_id":%q,"resources_absent":true,"tidb_cluster":"kb","tidb_namespace":"storage-a"}`+"\n", destroyLogicalRevision, destroyLogicalSHA, destroyOperationName)
 	require.NoError(t, os.WriteFile(tamperedReceipt, []byte(receipt), 0o600))
 	f.env = withReceiptAfterSHA256Tamper(f.env, tamperedReceipt)
 
@@ -312,19 +331,19 @@ func newDestroyRunnerFixture(t *testing.T, validConfirmation bool) *destroyRunne
 	require.NoError(t, os.WriteFile(backup, []byte("backup"), 0o600))
 	backupData, err := os.ReadFile(backup)
 	require.NoError(t, err)
-	confirmation := "destroy:instance-a:destroy-1"
+	confirmation := "destroy:instance-a:" + destroyOperationName
 	if !validConfirmation {
 		confirmation = "destroy:wrong"
 	}
 	parameters := filepath.Join(dir, "parameters.json")
-	receipt := filepath.Join(dir, "receipt.json")
+	receipt := filepath.Join(dir, destroyOperationName+".receipt.json")
 	require.NoError(t, os.WriteFile(parameters, []byte(fmt.Sprintf(`{
 	  "state_dir":%q,"backup_input":%q,"backup_file_sha256":"%x",
 	  "backup_prefix":"/registry","backup_max_age_seconds":3600,"backup_min_records":1,
 	  "confirm_destroy":%q,"receipt_output":%q,"kubebrain_namespace":"instance-a",
 	  "kubebrain_statefulset":"kubebrain","tidb_namespace":"storage-a","tidb_cluster":"kb",
 	  "expected_pvcs":2,"timeout_seconds":30,"poll_interval_seconds":0
-	}`, filepath.Join(dir, "state"), backup, sha256.Sum256(backupData), confirmation, receipt)), 0o600))
+	}`, filepath.Join(dir, destroyOperationName+".state"), backup, sha256.Sum256(backupData), confirmation, receipt)), 0o600))
 	data, err := os.ReadFile(parameters)
 	require.NoError(t, err)
 	digest := fmt.Sprintf("%x", sha256.Sum256(data))
@@ -335,10 +354,10 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  operation_id="${CLAIM_OPERATION_ID:-destroy-1}"
+  operation_id="${CLAIM_OPERATION_ID:-destroy-0123456789abcdefabcd}"
   instance="${CLAIM_INSTANCE:-instance-a}"
   namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
-  printf '{"namespace":"%s","name":"destroy-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"Destroy","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
+  printf '{"namespace":"%s","name":"destroy-0123456789abcdefabcd","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"%s","requested_by":"%s","parameters_sha256":"%s","parameters_secret":"destroy-0123456789abcdefabcd-parameters","parameters_key":"parameters.json","owner":"%s","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "${CLAIM_TYPE:-Destroy}" "${CLAIM_REQUESTER:-platform:destroy}" "$digest" "${CLAIM_OWNER:-worker-a}"
 elif [[ " $* " == *" --action heartbeat "* ]]; then
   if [[ -n "${SLEEP_PHASE:-}" ]] ||
     { [[ "${HEARTBEAT_FAIL_AFTER_COMPLETE:-false}" == true ]] && grep -Fxq 'phase complete' "$FAKE_DIR/actions.log"; }; then
@@ -390,7 +409,7 @@ case "$ACTION" in
 esac
 `)
 	env := []string{
-		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
+		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters, "WORK_DIR=" + dir,
 		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=0.02",
 		"OPERATIONCTL=" + operationctl, "DESTROY_COMMAND=" + destroy,
 		"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
@@ -433,9 +452,9 @@ func (f *destroyRunnerFixture) log(t *testing.T) string {
 
 func (f *destroyRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	t.Helper()
-	stateDir := filepath.Join(f.dir, "state")
+	stateDir := filepath.Join(f.dir, destroyOperationName+".state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o700))
-	statePath := filepath.Join(stateDir, "destroy-1.state")
+	statePath := filepath.Join(stateDir, destroyOperationName+".state")
 	stateContent := destroyRunnerState()
 	if kind == "state" {
 		require.NoError(t, os.WriteFile(statePath, []byte(stateContent), 0o600))
@@ -443,25 +462,25 @@ func (f *destroyRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	}
 	require.NoError(t, os.WriteFile(statePath, []byte(stateContent), 0o600))
 	if kind == "receipt" {
-		require.NoError(t, os.WriteFile(filepath.Join(stateDir, "destroy-1.quiesced"), []byte("kubebrain.destroy.quiesced.v1\tinstance-a\tdestroy-1\n"), 0o600))
-		require.NoError(t, os.WriteFile(filepath.Join(stateDir, "destroy-1.destroyed"), []byte("kubebrain.destroy.resources-absent.v1\tinstance-a\tdestroy-1\n"), 0o600))
-		receipt := fmt.Sprintf(`{"backup_revision":%d,"backup_sha256":%q,"completed_at_unix":123,"format":"kubebrain.destroy.receipt.v1","instance":"instance-a","kubebrain_namespace":"instance-a","operation_id":"destroy-1","resources_absent":true,"tidb_cluster":"kb","tidb_namespace":"storage-a"}`+"\n", destroyLogicalRevision, destroyLogicalSHA)
-		require.NoError(t, os.WriteFile(filepath.Join(f.dir, "receipt.json"), []byte(receipt), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(stateDir, destroyOperationName+".quiesced"), []byte("kubebrain.destroy.quiesced.v1\tinstance-a\t"+destroyOperationName+"\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(stateDir, destroyOperationName+".destroyed"), []byte("kubebrain.destroy.resources-absent.v1\tinstance-a\t"+destroyOperationName+"\n"), 0o600))
+		receipt := fmt.Sprintf(`{"backup_revision":%d,"backup_sha256":%q,"completed_at_unix":123,"format":"kubebrain.destroy.receipt.v1","instance":"instance-a","kubebrain_namespace":"instance-a","operation_id":%q,"resources_absent":true,"tidb_cluster":"kb","tidb_namespace":"storage-a"}`+"\n", destroyLogicalRevision, destroyLogicalSHA, destroyOperationName)
+		require.NoError(t, os.WriteFile(filepath.Join(f.dir, destroyOperationName+".receipt.json"), []byte(receipt), 0o600))
 		return
 	}
 	marker := "evidence\n"
 	if kind == "quiesced" {
-		marker = "kubebrain.destroy.quiesced.v1\tinstance-a\tdestroy-1\n"
+		marker = "kubebrain.destroy.quiesced.v1\tinstance-a\t" + destroyOperationName + "\n"
 	}
 	if kind == "destroyed" {
-		require.NoError(t, os.WriteFile(filepath.Join(stateDir, "destroy-1.quiesced"), []byte("kubebrain.destroy.quiesced.v1\tinstance-a\tdestroy-1\n"), 0o600))
-		marker = "kubebrain.destroy.resources-absent.v1\tinstance-a\tdestroy-1\n"
+		require.NoError(t, os.WriteFile(filepath.Join(stateDir, destroyOperationName+".quiesced"), []byte("kubebrain.destroy.quiesced.v1\tinstance-a\t"+destroyOperationName+"\n"), 0o600))
+		marker = "kubebrain.destroy.resources-absent.v1\tinstance-a\t" + destroyOperationName + "\n"
 	}
-	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "destroy-1."+kind), []byte(marker), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, destroyOperationName+"."+kind), []byte(marker), 0o600))
 }
 
 func destroyRunnerState() string {
-	return fmt.Sprintf("HEADER\tkubebrain.destroy.state.v1\tinstance-a\tdestroy-1\tinstance-a\tkubebrain\tstorage-a\tkb\t%s\t%d\n", destroyLogicalSHA, destroyLogicalRevision) +
+	return fmt.Sprintf("HEADER\tkubebrain.destroy.state.v1\tinstance-a\t%s\tinstance-a\tkubebrain\tstorage-a\tkb\t%s\t%d\n", destroyOperationName, destroyLogicalSHA, destroyLogicalRevision) +
 		"RESOURCE\tapps/v1\tstatefulsets\tstatefulset\tinstance-a\tkubebrain\tuid-kb-sts\n" +
 		"RESOURCE\tv1\tservices\tservice\tinstance-a\tkubebrain-client\tuid-kb-client\n" +
 		"RESOURCE\tv1\tservices\tservice\tinstance-a\tkubebrain-peer\tuid-kb-peer\n" +
