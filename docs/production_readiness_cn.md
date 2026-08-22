@@ -6100,6 +6100,37 @@ ValidatingAdmissionPolicy 将 DELETE 限制为 verifier ServiceAccount、已释�
 生产启用前必须在隔离 namespace 证明：年轻/未归档/仍有 finalizer/远端版本漂移对象不删除，resourceVersion 竞态失败，
 同名新 UID 保留，以及成功对象在 API audit 中携带两个 precondition。
 
+仓库提供 opt-in 的真实 apiserver DELETE contract 演练：
+
+```shell
+KUBEBRAIN_RETENTION_APISERVER_TEST=1 \
+  go test ./hack/production/internal/operationretention \
+  -run '^TestRetentionDeleteAdmissionAgainstAPIServer$' -count=1 -v
+```
+
+测试只创建带唯一后缀的临时 namespace、namespaceSelector-scoped ValidatingAdmissionPolicy/Binding、只允许该 verifier SA
+删除 ConfigMap 的 Role/RoleBinding；先等待 type-check，再用错误身份 DELETE 探测到 admission dispatcher 已实际开始 Deny，
+之后验证缺少 precondition、错误 UID、错误 resourceVersion 都不能删除，精确 UID+RV 才成功。defer 先删除 binding/policy，
+再删除 namespace，且清理 context 最多 30 秒；创建中途失败也会进入清理。本地 `kind-kubebrain-dbaas` 实跑 1.01 秒通过且
+复查无 `kb-retention-*` namespace/policy 残留。该 ConfigMap 演练证明 Kubernetes request.options/oldObject/impersonation/RBAC
+的真实 DELETE 行为；它不替代真实 KubeBrainOperation、远端 S3 Object Lock 和 provider trail 的端到端演练。
+
+扫描内存基准使用 500 个各自独立的 120 KiB payload（非共享 string），总 JSON charge 58.65 MiB，逼近生产 64 MiB budget：
+
+```shell
+go test ./hack/production/internal/dynamicpagination -run '^$' \
+  -bench '^BenchmarkAllNearByteBudgetPage$' -benchmem -benchtime=1x
+go test ./hack/production/internal/operationretention -run '^$' \
+  -bench '^BenchmarkChargeAndDeepCopyNearByteBudgetCandidates$' -benchmem -benchtime=1x
+```
+
+2026-08-22 在 linux/amd64、Intel Xeon Platinum 8167M 上的独立预编译测试进程分别为 166.8/169.2 ms、
+66,033,160/66,373,000 B/op、7,032/9,527 allocs/op；以 `/proc/<pid>/status` 的 VmHWM 5ms 采样得到
+118,568/134,772 KiB 峰值 RSS。数字包含测试进程与已解码 fixture，不包含真实 client-go HTTP buffer、日志、并发 reconcile
+或对象存储子进程，不能作为通用硬上限。它已证明 scheduler 原 128 MiB limit 没有安全余量，因此生产 request/limit 提高为
+64/256 MiB；verifier 维持 256 MiB、archiver 维持 512 MiB。每次改变 scan budget、page size、对象 schema 或 Go/client-go
+版本都必须重跑 benchmark 和 Pod 级 cgroup/RSS/GC 压测。
+
 verifier binary 不只在入口检查 `IAM_SIMULATION_VALID_UNTIL_UNIX`：它把 expiry 解析为绝对时间，拒绝已过期、非正数或
 超过当前时刻 24 小时 5 分钟的值，并在 Kubernetes/S3 client 与 controller 初始化完成后重新计算剩余时间。实际 reconcile
 父预算取 `min(--reconcile-timeout, evidence remaining)`；证据一到期，inventory/List、候选循环以及每个独立进程组中的

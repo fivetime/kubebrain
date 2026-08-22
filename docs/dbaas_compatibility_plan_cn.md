@@ -60619,6 +60619,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   真实 apiserver audit/provider access trail：下一步须在隔离受管 namespace 演练年轻对象、归档空洞、远端 version 漂移、
   同 UID RV 竞态、同名 replacement 与成功删除，并继续用大对象分页测 RSS/GC。
 
+- A5381 将 A5380 的 DELETE CEL server dry-run 与“小对象单测”推进为真实 apiserver 行为和近 byte-budget 内存量测。新增默认
+  skip、显式 `KUBEBRAIN_RETENTION_APISERVER_TEST=1` 才运行的集成测试：在当前 kubeconfig 建立唯一临时 namespace、仅匹配其
+  label 的 ConfigMap DELETE policy/binding，以及仅给中央 verifier SA 授予该 namespace ConfigMap delete 的 RoleBinding；policy
+  type-check 完成后继续用错误身份探测，直到 admission dispatcher 实际 Deny，避免 status ready 到生效之间约百毫秒传播窗造成
+  假阳性。真实 `kind-kubebrain-dbaas` 依次证明错误身份、无 preconditions、错误 UID、错误 resourceVersion 均不能删除，只有
+  impersonated verifier 携带与 oldObject 精确相同 UID+RV 才成功；1.01 秒通过，binding/policy/namespace 按安全顺序清理且复查
+  零残留。该测试使用 core ConfigMap 隔离验证 request.options CEL/RBAC，不伪称已覆盖真实 Operation/S3/provider trail。
+  同时新增两个 1x benchmark，以 500 个独立 120 KiB payload 构造 58.65 MiB JSON charge：paginator 为 166.8 ms、
+  66,033,160 B/op、7,032 allocs，charge+DeepCopy candidate 为 169.2 ms、66,373,000 B/op、9,527 allocs；独立预编译进程
+  `/proc` VmHWM 5ms 采样分别为 118,568/134,772 KiB（linux/amd64 Xeon 8167M）。该值不含真实网络 buffer/并发/外部 executor，
+  但已反证 scheduler 原 128 MiB limit 的余量假设，故生产 request/limit 从 32/128 MiB 提到 64/256 MiB 并由 manifest 回归固定；
+  verifier/archiver 保持 256/512 MiB。dynamicpagination/retention race 为 1.051/1.147 秒，根 inventory 仍为 580 项；
+  四片 130/165/147/138 在代码提交 `9033ed3c` 上通过（Go 测试 165.531/512.547/290.969/548.414 秒；端到端
+  174.582/521.626/299.931/557.549 秒）。下一步仍须以真实 KubeBrainOperation+S3 Object Lock 跑完整 deletion trail，
+  并在生产同规格 Pod cgroup 下测多页/多 namespace RSS、GC pause 与 OOM 行为。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
