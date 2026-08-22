@@ -228,6 +228,65 @@ func TestCertificateRotationOperationRejectsInvalidClaimNamespaceBeforeSteps(t *
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestCertificateRotationOperationRejectsDedicatedRequesterDriftBeforeSteps(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	f.run(t, false, "CLAIM_REQUESTER=platform:other", "dedicated requester contract")
+	log := f.log(t)
+	require.NotContains(t, log, "gate ")
+	require.NotContains(t, log, "hook ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestCertificateRotationOperationRejectsUnknownParameterBeforeSteps(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	parameters := strings.TrimSpace(string(mustRead(t, f.parameters)))
+	parameters = strings.TrimSuffix(parameters, "}") + `,"unexpected":"value"}`
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "in-cluster dedicated requester schema")
+	log := f.log(t)
+	require.NotContains(t, log, "gate ")
+	require.NotContains(t, log, "hook ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestCertificateRotationOperationRejectsCredentialOutsideWorkspaceBeforeSteps(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	outside := filepath.Join(t.TempDir(), "old-key")
+	require.NoError(t, os.WriteFile(outside, mustRead(t, filepath.Join(f.dir, "old-key")), 0o600))
+	parameters := strings.Replace(
+		string(mustRead(t, f.parameters)),
+		fmt.Sprintf(`"old_key":%q`, filepath.Join(f.dir, "old-key")),
+		fmt.Sprintf(`"old_key":%q`, outside),
+		1,
+	)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "canonical regular non-symlink file in WORK_DIR")
+	log := f.log(t)
+	require.NotContains(t, log, "gate ")
+	require.NotContains(t, log, "hook ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestCertificateRotationOperationRejectsStatePathDriftBeforeSteps(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	parameters := strings.Replace(
+		string(mustRead(t, f.parameters)),
+		fmt.Sprintf(`"state_dir":%q`, filepath.Join(f.dir, certificateRotationOperationName+".state")),
+		fmt.Sprintf(`"state_dir":%q`, filepath.Join(f.dir, "other.state")),
+		1,
+	)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "state and receipt paths do not match")
+	log := f.log(t)
+	require.NotContains(t, log, "gate ")
+	require.NotContains(t, log, "hook ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestCertificateRotationOperationRejectsInvalidReceipt(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	f.run(t, false, "INVALID_RECEIPT=1", "invalid receipt")
@@ -247,7 +306,7 @@ func TestCertificateRotationOperationRejectsReceiptTamperedDuringDigest(t *testi
 func TestCertificateRotationOperationRejectsValidReceiptChangedAfterDigest(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	tamperedReceipt := filepath.Join(f.dir, "valid-tampered-receipt.json")
-	receipt := fmt.Sprintf(`{"completed_at_unix":124,"endpoint":"https://instance.example:2379","format":"kubebrain.certificate-rotation.receipt.v1","instance":"instance-a","new_certificate_sha256":%q,"old_certificate_rejected":true,"old_certificate_sha256":%q,"pods_unchanged":true,"replicas":3,"rotation_id":"rotation-1"}`+"\n", rotationNewFingerprint, rotationOldFingerprint)
+	receipt := fmt.Sprintf(`{"completed_at_unix":124,"endpoint":"https://instance.example:2379","format":"kubebrain.certificate-rotation.receipt.v1","instance":"instance-a","new_certificate_sha256":%q,"old_certificate_rejected":true,"old_certificate_sha256":%q,"pods_unchanged":true,"replicas":3,"rotation_id":"cert-rotate-0123456789abcdefabcd"}`+"\n", rotationNewFingerprint, rotationOldFingerprint)
 	require.NoError(t, os.WriteFile(tamperedReceipt, []byte(receipt), 0o600))
 	f.env = withReceiptAfterSHA256Tamper(f.env, tamperedReceipt)
 
@@ -279,6 +338,8 @@ type rotationRunnerFixture struct {
 	env             []string
 }
 
+const certificateRotationOperationName = "cert-rotate-0123456789abcdefabcd"
+
 func newRotationRunnerFixture(t *testing.T) *rotationRunnerFixture {
 	t.Helper()
 	dir := t.TempDir()
@@ -290,7 +351,7 @@ func newRotationRunnerFixture(t *testing.T) *rotationRunnerFixture {
 		hashes[name] = fmt.Sprintf("%x", sha256.Sum256(content))
 	}
 	parameters := filepath.Join(dir, "parameters.json")
-	receipt := filepath.Join(dir, "receipt.json")
+	receipt := filepath.Join(dir, certificateRotationOperationName+".receipt.json")
 	require.NoError(t, os.WriteFile(parameters, []byte(fmt.Sprintf(`{
 	  "state_dir":%q,"endpoint":"https://instance.example:2379",
 	  "old_cacert":%q,"old_cert":%q,"old_key":%q,
@@ -299,8 +360,8 @@ func newRotationRunnerFixture(t *testing.T) *rotationRunnerFixture {
 	  "pod_selector":"app.kubernetes.io/name=kubebrain","expected_replicas":3,
 	  "old_cacert_sha256":%q,"old_cert_sha256":%q,"old_key_sha256":%q,
 	  "new_cacert_sha256":%q,"new_cert_sha256":%q,"new_key_sha256":%q,
-	  "overlap_cacert_sha256":%q
-	}`, filepath.Join(dir, "state"), filepath.Join(dir, "old-ca"), filepath.Join(dir, "old-cert"),
+	  "overlap_cacert_sha256":%q,"data_kube_context":"","data_kubeconfig_path":""
+	}`, filepath.Join(dir, certificateRotationOperationName+".state"), filepath.Join(dir, "old-ca"), filepath.Join(dir, "old-cert"),
 		filepath.Join(dir, "old-key"), filepath.Join(dir, "new-ca"), filepath.Join(dir, "new-cert"),
 		filepath.Join(dir, "new-key"), filepath.Join(dir, "overlap-ca"), receipt,
 		hashes["old-ca"], hashes["old-cert"], hashes["old-key"], hashes["new-ca"],
@@ -315,10 +376,10 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  operation_id="${CLAIM_OPERATION_ID:-rotation-1}"
+  operation_id="${CLAIM_OPERATION_ID:-cert-rotate-0123456789abcdefabcd}"
   instance="${CLAIM_INSTANCE:-instance-a}"
   namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
-  printf '{"namespace":"%s","name":"rotation-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"CertificateRotation","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
+  printf '{"namespace":"%s","name":"cert-rotate-0123456789abcdefabcd","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"%s","requested_by":"%s","parameters_sha256":"%s","parameters_secret":"cert-rotate-0123456789abcdefabcd-parameters","parameters_key":"parameters.json","owner":"%s","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "${CLAIM_TYPE:-CertificateRotation}" "${CLAIM_REQUESTER:-platform:certificate-rotation}" "$digest" "${CLAIM_OWNER:-worker-a}"
 elif [[ " $* " == *" --action heartbeat "* ]]; then
   if [[ "${HEARTBEAT_FAIL:-false}" == true || -n "${SLEEP_STEP:-}" ]] ||
     { [[ "${HEARTBEAT_FAIL_AFTER_COMPLETE:-false}" == true ]] && grep -Fxq 'gate complete' "$FAKE_DIR/actions.log"; }; then
@@ -396,6 +457,7 @@ printf 'hook final\n' >>"$FAKE_DIR/actions.log"
 		"RUNNER_PARAMETERS_INPUT=" + parameters,
 		"ROTATION_OLD_FINGERPRINT=" + rotationOldFingerprint,
 		"ROTATION_NEW_FINGERPRINT=" + rotationNewFingerprint,
+		"WORK_DIR=" + dir,
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &rotationRunnerFixture{
@@ -432,31 +494,31 @@ func (f *rotationRunnerFixture) log(t *testing.T) string {
 
 func (f *rotationRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	t.Helper()
-	stateDir := filepath.Join(f.dir, "state")
+	stateDir := filepath.Join(f.dir, certificateRotationOperationName+".state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o700))
-	statePath := filepath.Join(stateDir, "rotation-1.state")
+	statePath := filepath.Join(stateDir, "cert-rotate-0123456789abcdefabcd.state")
 	state := rotationStateEvidence()
 	if kind == "state" {
 		require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
 		return
 	}
 	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
-	overlapPath := filepath.Join(stateDir, "rotation-1.overlap")
+	overlapPath := filepath.Join(stateDir, "cert-rotate-0123456789abcdefabcd.overlap")
 	if kind == "overlap" {
-		require.NoError(t, os.WriteFile(overlapPath, []byte("kubebrain.certificate-rotation.overlap.v1\tinstance-a\trotation-1\n"), 0o600))
+		require.NoError(t, os.WriteFile(overlapPath, []byte("kubebrain.certificate-rotation.overlap.v1\tinstance-a\tcert-rotate-0123456789abcdefabcd\n"), 0o600))
 		return
 	}
 	if kind == "receipt" {
-		require.NoError(t, os.WriteFile(overlapPath, []byte("kubebrain.certificate-rotation.overlap.v1\tinstance-a\trotation-1\n"), 0o600))
-		receipt := fmt.Sprintf(`{"completed_at_unix":123,"endpoint":"https://instance.example:2379","format":"kubebrain.certificate-rotation.receipt.v1","instance":"instance-a","new_certificate_sha256":%q,"old_certificate_rejected":true,"old_certificate_sha256":%q,"pods_unchanged":true,"replicas":3,"rotation_id":"rotation-1"}`+"\n", rotationNewFingerprint, rotationOldFingerprint)
-		require.NoError(t, os.WriteFile(filepath.Join(f.dir, "receipt.json"), []byte(receipt), 0o600))
+		require.NoError(t, os.WriteFile(overlapPath, []byte("kubebrain.certificate-rotation.overlap.v1\tinstance-a\tcert-rotate-0123456789abcdefabcd\n"), 0o600))
+		receipt := fmt.Sprintf(`{"completed_at_unix":123,"endpoint":"https://instance.example:2379","format":"kubebrain.certificate-rotation.receipt.v1","instance":"instance-a","new_certificate_sha256":%q,"old_certificate_rejected":true,"old_certificate_sha256":%q,"pods_unchanged":true,"replicas":3,"rotation_id":"cert-rotate-0123456789abcdefabcd"}`+"\n", rotationNewFingerprint, rotationOldFingerprint)
+		require.NoError(t, os.WriteFile(filepath.Join(f.dir, certificateRotationOperationName+".receipt.json"), []byte(receipt), 0o600))
 		return
 	}
-	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "rotation-1."+kind), []byte("evidence\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "cert-rotate-0123456789abcdefabcd."+kind), []byte("evidence\n"), 0o600))
 }
 
 func rotationStateEvidence() string {
-	return fmt.Sprintf("kubebrain.certificate-rotation.state.v1\tinstance-a\trotation-1\thttps://instance.example:2379\t%s\t%s\n", rotationOldFingerprint, rotationNewFingerprint) +
+	return fmt.Sprintf("kubebrain.certificate-rotation.state.v1\tinstance-a\tcert-rotate-0123456789abcdefabcd\thttps://instance.example:2379\t%s\t%s\n", rotationOldFingerprint, rotationNewFingerprint) +
 		"pod-a\tuid-a\t0\ttrue\n" +
 		"pod-b\tuid-b\t0\ttrue\n" +
 		"pod-c\tuid-c\t0\ttrue\n"

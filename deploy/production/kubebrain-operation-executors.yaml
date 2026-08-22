@@ -802,6 +802,7 @@ spec:
             - {name: ROTATION_COMMAND, value: /opt/kubebrain/hack/production/validate-certificate-rotation.sh}
             - {name: PUBLISH_OVERLAP_COMMAND, value: /opt/kubebrain-executor-hooks/publish-overlap}
             - {name: PUBLISH_FINAL_COMMAND, value: /opt/kubebrain-executor-hooks/publish-final}
+            - {name: WORK_DIR, value: /var/lib/kubebrain-operation}
           envFrom: [{secretRef: {name: kubebrain-certificate-rotation-executor-env}}]
           resources:
             requests: {cpu: 50m, memory: 96Mi}

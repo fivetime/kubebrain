@@ -1922,6 +1922,47 @@ func TestRestoreCutoverRequesterIsFailClosedAndLeastPrivilege(t *testing.T) {
 	}
 }
 
+func TestCertificateRotationRequesterIsFailClosedAndLeastPrivilege(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-certificate-rotation-requester-admission.yaml")
+	for _, tc := range []struct {
+		name, resource string
+		fragments      []string
+	}{
+		{name: "kubebrain-certificate-rotation-request-operation", resource: "kubebrainoperations", fragments: []string{"kubebrain-certificate-rotation-requester", `^cert-rotate-[a-f0-9]{20}$`, `platform:certificate-rotation`, `maxAttempts == 5`, `parameters.json`}},
+		{name: "kubebrain-certificate-rotation-request-parameters", resource: "secrets", fragments: []string{"kubebrain-certificate-rotation-requester", `^cert-rotate-[a-f0-9]{20}-parameters$`, `object.immutable == true`, `size(object.data) == 1`, `parameters.json`}},
+	} {
+		policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", tc.name)
+		require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+		rules, found, err := unstructured.NestedSlice(policy.Object, "spec", "matchConstraints", "resourceRules")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, []any{tc.resource}, rules[0].(map[string]any)["resources"].([]any))
+		validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
+		require.NoError(t, err)
+		require.True(t, found)
+		var validationText strings.Builder
+		for _, validation := range validations {
+			validationText.WriteString(validation.(map[string]any)["expression"].(string))
+		}
+		for _, fragment := range tc.fragments {
+			require.Contains(t, validationText.String(), fragment)
+		}
+		binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", tc.name)
+		require.Equal(t, []string{"Deny"}, nestedStringSlice(t, binding, "spec", "validationActions"))
+	}
+	rbac := decodeManifest(t, "kubebrain-certificate-rotation-requester-rbac.yaml")
+	account := objectByKindAndName(t, rbac, "ServiceAccount", "kubebrain-certificate-rotation-requester")
+	require.False(t, nestedBool(t, account, "automountServiceAccountToken"))
+	role := objectByKindAndName(t, rbac, "Role", "kubebrain-certificate-rotation-requester")
+	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, rules, 2)
+	for _, rule := range rules {
+		require.Equal(t, []any{"create", "get"}, rule.(map[string]any)["verbs"].([]any))
+	}
+}
+
 func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-api.yaml")
 	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-operation-api")

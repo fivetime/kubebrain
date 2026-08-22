@@ -16,6 +16,7 @@ PUBLISH_FINAL_COMMAND="${PUBLISH_FINAL_COMMAND:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
+WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
 
 usage() {
@@ -49,6 +50,7 @@ operation_is_positive_int64 "$LEASE_SECONDS" && (( LEASE_SECONDS >= 6 )) ||
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 command -v stat >/dev/null || { echo "stat is required" >&2; exit 2; }
+command -v realpath >/dev/null || { echo "realpath is required" >&2; exit 2; }
 require_executable_file() {
   local name="$1"
   local path="$2"
@@ -61,6 +63,12 @@ require_executable_file ROTATION_COMMAND "$ROTATION_COMMAND"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
 operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECONDS" ||
   { echo "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64" >&2; exit 2; }
+[[ "$WORK_DIR" == /* && -d "$WORK_DIR" && ! -L "$WORK_DIR" ]] ||
+  { echo "WORK_DIR must be an absolute non-symlink directory" >&2; exit 2; }
+canonical_work_dir="$(realpath -e -- "$WORK_DIR")" ||
+  { echo "WORK_DIR cannot be resolved" >&2; exit 2; }
+[[ "$canonical_work_dir" == "$WORK_DIR" ]] ||
+  { echo "WORK_DIR must be canonical" >&2; exit 2; }
 
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then
@@ -85,13 +93,14 @@ run_operationctl() {
 
 claim="$(run_operationctl --action claim --owner "$WORKER_ID" \
   --type CertificateRotation --lease "${LEASE_SECONDS}s")"
-claimed_namespace="$("$JQ" -r '.namespace // empty' <<<"$claim")"
-if [[ -n "$claimed_namespace" ]]; then
-  [[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
-    { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
-  OPERATION_NAMESPACE="$claimed_namespace"
-  build_kube_args
-fi
+claim_identity="$("$JQ" -er '[.namespace,.type,.requested_by,.owner,.parameters_secret,.parameters_key] |
+  select(length == 6 and all(.[]; type == "string" and length > 0)) | @tsv' <<<"$claim")" ||
+  { echo "certificate rotation claim identity is incomplete" >&2; exit 2; }
+IFS=$'\t' read -r claimed_namespace claimed_type claimed_requester claimed_owner claimed_secret claimed_key <<<"$claim_identity"
+[[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+  { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
+OPERATION_NAMESPACE="$claimed_namespace"
+build_kube_args
 name="$("$JQ" -er '.name' <<<"$claim")"
 rotation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"
@@ -101,6 +110,10 @@ for value in "$rotation_id" "$instance"; do
 done
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
+[[ "$name" =~ ^cert-rotate-[a-f0-9]{20}$ && "$rotation_id" == "$name" && "$claimed_type" == CertificateRotation &&
+   "$claimed_requester" == platform:certificate-rotation && "$claimed_owner" == "$WORKER_ID" &&
+   "$claimed_secret" == "${name}-parameters" && "$claimed_key" == parameters.json && "$attempt" =~ ^[1-5]$ ]] ||
+  { echo "certificate rotation claim identity does not match the dedicated requester contract" >&2; exit 2; }
 managed_parameters=""
 managed_credentials_dir="$(mktemp -d)"
 managed_rotation_parameters=""
@@ -174,12 +187,25 @@ validate_rotation_identity_json() {
       test("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")) and
     (.endpoint |
       type == "string" and
+      all(explode[]; . >= 32 and . != 127 and . != 34 and . != 92)) and
+    (.pod_selector |
+      type == "string" and length > 0 and
       all(explode[]; . >= 32 and . != 127 and . != 34 and . != 92))' \
     "$PARAMETERS_INPUT" >/dev/null
 }
 
 validate_rotation_identity_json ||
   { echo "rotation namespace or endpoint identity is invalid" >&2; exit 2; }
+
+"$JQ" -e '
+  (keys | sort) == ([
+    "data_kube_context", "data_kubeconfig_path", "endpoint", "expected_replicas",
+    "kubebrain_namespace", "new_cacert", "new_cacert_sha256", "new_cert",
+    "new_cert_sha256", "new_key", "new_key_sha256", "old_cacert", "old_cacert_sha256",
+    "old_cert", "old_cert_sha256", "old_key", "old_key_sha256", "overlap_cacert",
+    "overlap_cacert_sha256", "pod_selector", "receipt_output", "state_dir"
+  ] | sort) and .data_kube_context == "" and .data_kubeconfig_path == ""' "$PARAMETERS_INPUT" >/dev/null ||
+  { echo "certificate rotation parameters must exactly match the in-cluster dedicated requester schema" >&2; exit 2; }
 
 parameters="$("$JQ" -er '[
   .state_dir, .endpoint, .old_cacert, .old_cert, .old_key,
@@ -203,11 +229,29 @@ receipt_input="$receipt_output"
   { echo "rotation namespace or endpoint identity is invalid" >&2; exit 2; }
 ! contains_unsupported_endpoint_characters "$endpoint" ||
   { echo "rotation namespace or endpoint identity is invalid" >&2; exit 2; }
+[[ -n "$pod_selector" ]] && ! contains_unsupported_endpoint_characters "$pod_selector" ||
+  { echo "rotation pod selector identity is invalid" >&2; exit 2; }
 operation_is_positive_int64 "$expected_replicas" && (( expected_replicas <= 2147483647 )) ||
   { echo "expected_replicas must be a canonical positive int32" >&2; exit 2; }
+require_workspace_credential() {
+  local path="$1" resolved
+  [[ "$path" == "$WORK_DIR"/* && "$path" != *//* && "$path" != */../* && "$path" != */./* && ! -L "$path" ]] || return 1
+  resolved="$(realpath -e -- "$path")" || return 1
+  [[ "$resolved" == "$path" && "$resolved" == "$WORK_DIR"/* && -f "$resolved" ]]
+}
 for file in "$old_ca" "$old_cert" "$old_key" "$new_ca" "$new_cert" "$new_key" "$overlap_ca"; do
-  [[ -f "$file" ]] || { echo "rotation credential does not exist: ${file}" >&2; exit 2; }
+  require_workspace_credential "$file" || { echo "rotation credential must be a canonical regular non-symlink file in WORK_DIR: ${file}" >&2; exit 2; }
 done
+[[ "$state_dir" == "${WORK_DIR}/${name}.state" && "$receipt_output" == "${WORK_DIR}/${name}.receipt.json" ]] ||
+  { echo "certificate rotation state and receipt paths do not match the dedicated requester contract" >&2; exit 2; }
+if [[ -e "$state_dir" ]]; then
+  [[ -d "$state_dir" && ! -L "$state_dir" && "$(realpath -e -- "$state_dir")" == "$state_dir" ]] ||
+    { echo "certificate rotation state path must be a canonical non-symlink directory" >&2; exit 2; }
+fi
+if [[ -e "$receipt_output" ]]; then
+  [[ -f "$receipt_output" && ! -L "$receipt_output" && "$(realpath -e -- "$receipt_output")" == "$receipt_output" ]] ||
+    { echo "certificate rotation receipt path must be a canonical non-symlink file" >&2; exit 2; }
+fi
 expected_hashes=("$old_ca_sha" "$old_cert_sha" "$old_key_sha" "$new_ca_sha" "$new_cert_sha" "$new_key_sha" "$overlap_ca_sha")
 credential_files=("$old_ca" "$old_cert" "$old_key" "$new_ca" "$new_cert" "$new_key" "$overlap_ca")
 for index in "${!credential_files[@]}"; do
