@@ -5985,7 +5985,11 @@ JSON 响应取得并校验 namespace、DNS label、两项 annotation，以及请
 admission 删除或改写绑定时在 wait 前停止。create 返回的非空安全 UID 同样被冻结；wait 报告完成后必须重新 GET 同名
 Job，要求 namespace/name/UID、两项 evidence annotation、唯一 runtime expiry 和唯一 `Complete=True` condition 全部一致，
 且 expiry 在最终检查时仍位于未来。对象消失或任一异步漂移都不得读取成功日志或 patch CronJob。只有最终态复验通过且
-日志可读，才以旧
+实际执行 Pod 也必须可核验：Job template 把同一 SHA/expiry annotation 传播给 Pod；完成后按
+`batch.kubernetes.io/job-name` 只允许一个 Pod，要求 namespace/label、指向冻结 Job name+UID 的 controller owner、两项
+annotation、ServiceAccount、Never restartPolicy、完整单 verifier container spec 与 Job template 逐字一致，且 phase 为
+Succeeded。Pod 缺失/重复、sidecar 或容器字段注入、owner/annotation/runtime/phase 漂移都在日志和 patch 前失败。只有
+Job 与 Pod 最终态均通过且日志可读，才以旧
 resourceVersion 和 `suspend=true` 双 test 的 JSON Patch 改为 false；Job 失败时绝不 patch。该运行时门禁不会主动尝试
 S3 Put/Delete 来“证明拒绝”，因为误配时会产生真实副作用；必须另附 provider IAM policy lint/simulation 或审计批准，
 证明该独立 access key 仅允许 exact-version Head/Get/GetObjectRetention 和必要 bucket 配置读取。enable 通过

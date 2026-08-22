@@ -60390,6 +60390,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   留存 create 与最终 GET 的 UID/resourceVersion、Pod spec、condition、日志和对应 IAM artifact，并验证 webhook 漂移会被
   目标 apiserver 拒绝或被本门禁识别。
 
+- A5364 关闭 A5363 把正确 Job template 等同于实际执行 Pod 的 admission 漂移缺口。Pod admission 可在 Job 创建后注入
+  sidecar、改写环境或身份；旧门禁只重读 Job，即使运行的并非获批 verifier 容器也可能凭 Complete 放行。现在手动 Job
+  template 同步传播 evidence SHA/expiry annotation；完成态 Job 通过后，脚本按标准
+  `batch.kubernetes.io/job-name` selector 读取 Pod，并精确要求一个 Succeeded Pod。该 Pod 必须位于目标 namespace、label
+  匹配 Job name，且有唯一指向冻结 Job name+UID 的 `batch/v1 Job controller=true` owner；两项 evidence annotation、
+  ServiceAccount、Never restartPolicy 与完整单容器 spec 必须和最终 Job template 一致。0/2 Pod、错误 owner/SHA/expiry、
+  runtime expiry 漂移、Failed phase 或 sidecar 注入全部在 logs 和 CronJob patch 前 fail closed。新增后 567 项 inventory；
+  四片 129/159/145/134 在代码提交 `52daac3d` 上全部通过（Go 测试
+  160.925/501.924/288.471/529.261 秒；端到端 169.651/510.801/297.332/538.079 秒）。fake kubectl
+  证明查询/比较顺序，不证明真实 Pod admission、镜像拉取与 runtime 最终执行镜像 digest；目标环境仍须留存 Job/Pod UID、
+  owner、完整 container/security context、imageID、termination status、日志和 Kubernetes audit 事件，并验证 sidecar
+  injector 对该 namespace 的策略符合 fail-closed 发布合同。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
