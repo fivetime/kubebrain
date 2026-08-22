@@ -17,6 +17,8 @@ WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; TLS_DIR="${TLS_DIR:-/var/r
 ENCRYPTION_DIR="${ENCRYPTION_DIR:-/var/run/secrets/kubebrain-native-pitr-encryption}"
 INPUT_ROOT="${INPUT_ROOT:-/var/lib/kubebrain-operation/inputs}"
 JQ="${JQ:-jq}"
+LN="${LN:-ln}"
+SYNC="${SYNC:-sync}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] && operation_is_positive_int64 "$LEASE_SECONDS" || die "worker identity or lease is invalid"
@@ -28,6 +30,8 @@ operation_is_positive_decimal_less_than_int "$WRITER_CHECK_INTERVAL_SECONDS" "$L
 [[ "$ADMISSION_CHECK_INTERVAL" =~ ^([1-9][0-9]*)(ms|s|m)$ ]] || die "ADMISSION_CHECK_INTERVAL must be a positive Go duration using ms, s, or m"
 [[ -x "$OPERATIONCTL" && -x "$RESTORE_COMMAND" && -x "$RECEIPT_VERIFY" && -x "$BR_BINARY" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
 command -v stat >/dev/null || die "stat is required"
+command -v "$LN" >/dev/null || die "ln is required"
+command -v "$SYNC" >/dev/null || die "sync is required"
 [[ "$INPUT_ROOT" == /* && "$INPUT_ROOT" != *".."* ]] || die "INPUT_ROOT must be an absolute traversal-free directory"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
 sha() { sha256sum "$1" | cut -d ' ' -f1; }
@@ -188,7 +192,11 @@ kill_background_group "$writer_monitor"; set +e; wait "$writer_monitor"; wrc=$?;
 [[ ! -e "$capture/writer-exclusion-lost" && $wrc != 76 ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "KubeBrain writer exclusion changed during native PITR import; restore was terminated and the target must be rebuilt" >/dev/null; exit 1; }
 [[ $rc == 0 && -s "$capture/receipt.json" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR full restore exited ${rc}; keep admission fence closed and rebuild target before retry" >/dev/null; exit 1; }
 "$RECEIPT_VERIFY" --receipt="$capture/receipt.json" "${verify_args[@]}" || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR full restore produced an invalid operation-bound receipt; keep admission fence closed" >/dev/null; exit 1; }
-chmod 600 "$capture/receipt.json"; ln "$capture/receipt.json" "$receipt" || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cannot publish durable restore receipt without overwrite" >/dev/null; exit 1; }
+chmod 600 "$capture/receipt.json"
+"$SYNC" -f "$capture/receipt.json" || { echo "cannot sync private native PITR restore receipt; a later claim must rebuild the target" >&2; exit 1; }
+"$LN" -- "$capture/receipt.json" "$receipt" || { echo "cannot publish native PITR restore receipt without overwrite; a later claim must reconcile the existing target" >&2; exit 1; }
+rm -f -- "$capture/receipt.json" || { echo "cannot remove private native PITR restore receipt link; a later claim must reconcile the published receipt" >&2; exit 1; }
+"$SYNC" -f "$WORK_DIR" || { echo "cannot sync native PITR restore receipt directory; a later claim must reconcile the published receipt" >&2; exit 1; }
 receipt_sha="$(sha "$receipt")"
 runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { echo "final heartbeat failed after durable receipt publication; a later claim may reconcile without BR" >&2; exit 1; }
 runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "native PITR full restore completed" >/dev/null

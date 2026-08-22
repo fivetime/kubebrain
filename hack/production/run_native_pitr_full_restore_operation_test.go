@@ -41,12 +41,26 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 		require.NoError(t, os.WriteFile(filepath.Join(tlsDir, name), []byte("test"), 0o600))
 	}
 	kubectl, control := writeNativeRestoreWriterTools(t, dir, true)
+	syncLog := filepath.Join(dir, "sync.log")
+	syncCount := filepath.Join(dir, "sync.count")
+	fakeSync := filepath.Join(dir, "sync")
+	writeExecutable(t, fakeSync, `#!/usr/bin/env bash
+set -euo pipefail
+count=0
+[[ ! -e "$SYNC_COUNT" ]] || count="$(<"$SYNC_COUNT")"
+count=$((count + 1))
+printf '%s' "$count" >"$SYNC_COUNT"
+printf '%s\n' "$*" >>"$SYNC_LOG"
+[[ "${SYNC_FAIL_AT:-0}" != "$count" ]] || exit 1
+sync "$@"
+`)
 	base := []string{
 		"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
 		"OPERATIONCTL=" + operationctl, "RESTORE_COMMAND=" + restore, "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=" + br,
 		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "TLS_DIR=" + tlsDir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
 		"KUBECTL=" + kubectl, "CONTROL=" + control,
 		"OPERATION_LOG=" + operationLog, "RESTORE_LOG=" + restoreLog, "ATTEMPT=1",
+		"SYNC=" + fakeSync, "SYNC_LOG=" + syncLog, "SYNC_COUNT=" + syncCount,
 	}
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", base)
 	require.NoError(t, err, string(output))
@@ -64,6 +78,57 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 	info, err := os.Stat(receipt)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	require.Equal(t, uint64(1), info.Sys().(*syscall.Stat_t).Nlink)
+	syncCalls := strings.Split(strings.TrimSpace(string(mustReadProductionFile(t, syncLog))), "\n")
+	require.Len(t, syncCalls, 2)
+	require.Contains(t, syncCalls[0], "-f ")
+	require.Equal(t, "-f "+dir, syncCalls[1])
+
+	for _, tc := range []struct {
+		name, failAt, wanted string
+		published            bool
+	}{
+		{"file sync", "1", "cannot sync private native PITR restore receipt", false},
+		{"directory sync", "2", "cannot sync native PITR restore receipt directory", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_ = os.Remove(receipt)
+			for _, path := range []string{operationLog, syncLog, syncCount} {
+				_ = os.Remove(path)
+			}
+			failureEnv := append(append([]string{}, base...), "SYNC_FAIL_AT="+tc.failAt)
+			failureOutput, failureErr := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", failureEnv)
+			require.Error(t, failureErr)
+			require.Contains(t, string(failureOutput), tc.wanted)
+			if tc.published {
+				require.FileExists(t, receipt)
+			} else {
+				require.NoFileExists(t, receipt)
+			}
+			operations := string(mustReadProductionFile(t, operationLog))
+			require.NotContains(t, operations, "--action succeed")
+			require.NotContains(t, operations, "--action fail")
+		})
+	}
+
+	require.NoError(t, os.Remove(receipt))
+	for _, path := range []string{operationLog, syncLog, syncCount} {
+		_ = os.Remove(path)
+	}
+	fakeLn := filepath.Join(dir, "ln-race")
+	writeExecutable(t, fakeLn, `#!/usr/bin/env bash
+set -euo pipefail
+destination="${!#}"
+printf 'concurrent-owner\n' >"$destination"
+ln "$@"
+`)
+	raceOutput, raceErr := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", append(append([]string{}, base...), "LN="+fakeLn))
+	require.Error(t, raceErr)
+	require.Contains(t, string(raceOutput), "cannot publish native PITR restore receipt without overwrite")
+	require.Equal(t, "concurrent-owner\n", string(mustReadProductionFile(t, receipt)))
+	operations = string(mustReadProductionFile(t, operationLog))
+	require.NotContains(t, operations, "--action succeed")
+	require.NotContains(t, operations, "--action fail")
 }
 
 func TestRunNativePITRFullRestoreOperationReconcilesReceiptWithoutBR(t *testing.T) {
