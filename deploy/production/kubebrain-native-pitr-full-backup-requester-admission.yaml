@@ -13,7 +13,7 @@ spec:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-backup-requester"', message: native PITR full backup operations require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: native PITR full backup requester is restricted to the production operation queue}
     - {expression: 'object.metadata.name == "native-pitr-full-" + object.spec.parametersSHA256.substring(0, 20) && object.spec.operationID == object.metadata.name', message: native PITR full backup operation identity must derive from the parameter digest}
-    - {expression: 'object.spec.type == "NativePITRFullBackup" && object.spec.requestedBy == "platform:native-pitr-full-backup" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1', message: native PITR full backup operation shape is fixed}
+    - {expression: 'object.spec.type == "NativePITRFullBackup" && object.spec.requestedBy == "platform:native-pitr-full-backup" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2', message: native PITR full backup operation shape is fixed}
     - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")', message: native PITR full backup operation must bind its immutable parameter Secret}
     - {expression: 'has(object.metadata.finalizers) && size(object.metadata.finalizers) == 1 && object.metadata.finalizers[0] == "dbaas.kubebrain.io/operation-audit"', message: native PITR full backup operation requires the sole audit archive finalizer}
 ---

@@ -61,7 +61,7 @@ if [[ -n "${FAIL_ONCE_FILE:-}" && ! -f "$FAIL_ONCE_FILE" ]]; then touch "$FAIL_O
 		"--action submit", "--name " + operationName, "--operation-id " + operationName,
 		"--type NativePITRFullBackup", "--requested-by platform:native-pitr-full-backup",
 		"--parameters-sha256 " + digest, "--parameters-secret " + operationName + "-parameters",
-		"--max-attempts 1",
+		"--max-attempts 2",
 	} {
 		require.Contains(t, operation, expected)
 	}

@@ -1340,7 +1340,7 @@ func TestNativePITRFullBackupRequesterAdmissionIsFailClosed(t *testing.T) {
 	for _, expected := range []string{
 		"NativePITRFullBackup", "kubebrain-native-pitr-full-backup-requester",
 		`parametersSHA256.substring(0, 20)`, "platform:native-pitr-full-backup",
-		"maxAttempts == 1", `parametersSecretRef.name == object.metadata.name + "-parameters"`,
+		"maxAttempts == 2", `parametersSecretRef.name == object.metadata.name + "-parameters"`,
 		`size(object.metadata.finalizers) == 1`, `dbaas.kubebrain.io/operation-audit`,
 	} {
 		require.Contains(t, operationText, expected)

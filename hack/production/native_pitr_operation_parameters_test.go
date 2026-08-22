@@ -109,7 +109,7 @@ func TestNativePITRFullBackupAcceptsParametersAtSizeLimit(t *testing.T) {
 	claim := fmt.Sprintf(`{"namespace":"kubebrain-operations","name":%q,"operation_id":%q,"instance":"kubebrain","type":"NativePITRFullBackup","requested_by":"platform:native-pitr-full-backup","owner":"worker","parameters_secret":%q,"parameters_key":"parameters.json","attempt":1,"parameters_sha256":%q}`, name, name, name+"-parameters", digest)
 	writeExecutable(t, operationctl, fmt.Sprintf("#!/usr/bin/env bash\nprintf '%%s\\n' \"$*\" >>%q\nif [[ \"$*\" == *\"--action claim\"* ]]; then printf '%%s\\n' %q; fi\n", logPath, claim))
 	producer := filepath.Join(dir, "backup")
-	writeExecutable(t, producer, "#!/usr/bin/env bash\nfor arg in \"$@\"; do case \"$arg\" in --attestation-output=*) printf receipt >\"${arg#*=}\";; esac; done\n")
+	writeExecutable(t, producer, "#!/usr/bin/env bash\nfor arg in \"$@\"; do case \"$arg\" in --verify-attestation=*) exit 0;; --attestation-output=*) printf '%s\\n' \"$ATTESTATION_CONTENT\" >\"${arg#*=}\"; chmod 600 \"${arg#*=}\";; esac; done\n")
 	tlsDir := filepath.Join(dir, "tls")
 	require.NoError(t, os.Mkdir(tlsDir, 0o700))
 	for _, file := range []string{"ca.crt", "tls.crt", "tls.key"} {
@@ -119,6 +119,7 @@ func TestNativePITRFullBackupAcceptsParametersAtSizeLimit(t *testing.T) {
 		"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "OPERATIONCTL=" + operationctl,
 		"WORK_DIR=" + dir, "BACKUP_COMMAND=" + producer, "BR_BINARY=/bin/true", "TLS_DIR=" + tlsDir,
 		"HEARTBEAT_INTERVAL_SECONDS=0.1",
+		"ATTESTATION_CONTENT=" + validFullBackupAttestation(t, "1", "s3://bucket/full", []string{"pd:2379"}, "plaintext", ""),
 	})
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(mustReadProductionFile(t, logPath)), "--action succeed")

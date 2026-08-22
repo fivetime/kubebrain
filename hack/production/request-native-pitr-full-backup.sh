@@ -78,5 +78,5 @@ ctl_args=(--namespace "$OPERATION_NAMESPACE"); [[ "$KUBE_CONTEXT" == in-cluster 
 "$OPERATIONCTL" "${ctl_args[@]}" --action submit --name "$operation_name" --operation-id "$operation_name" \
   --requested-by platform:native-pitr-full-backup --instance kubebrain --type NativePITRFullBackup \
   --parameters-sha256 "$parameters_sha" --parameters-secret "$secret_name" \
-  --parameters-key parameters.json --max-attempts 1 >/dev/null
+  --parameters-key parameters.json --max-attempts 2 >/dev/null
 echo "created or verified Pending NativePITRFullBackup ${OPERATION_NAMESPACE}/${operation_name}"

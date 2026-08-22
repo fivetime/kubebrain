@@ -29,6 +29,7 @@ import (
 
 type options struct {
 	brBinary, pdAddrs, storage, ca, cert, key, output string
+	verifyAttestation                                 string
 	cipherMethod, encryptionKeyID, encryptionKeyFile  string
 	backupTS                                          uint64
 	timeout                                           time.Duration
@@ -86,6 +87,7 @@ func main() {
 	flag.StringVar(&o.cert, "cert", "", "source client certificate")
 	flag.StringVar(&o.key, "key", "", "source client private key")
 	flag.StringVar(&o.output, "attestation-output", "", "new full-backup attestation output file")
+	flag.StringVar(&o.verifyAttestation, "verify-attestation", "", "verify an existing full-backup attestation against the supplied backup identity without running BR")
 	flag.StringVar(&o.cipherMethod, "crypter-method", nativepitr.CipherMethodPlaintext, "plaintext or aes256-ctr")
 	flag.StringVar(&o.encryptionKeyID, "encryption-key-id", "", "immutable non-secret encryption key version ID")
 	flag.StringVar(&o.encryptionKeyFile, "encryption-key-file", "", "file containing the 64-character hexadecimal AES-256 key")
@@ -100,6 +102,9 @@ func main() {
 }
 
 func execute(parent context.Context, o options, runner commandRunner, logs io.Writer, now func() time.Time) (retErr error) {
+	if o.verifyAttestation != "" {
+		return verifyAttestation(o)
+	}
 	if o.backupTS == 0 || o.output == "" || o.timeout <= 0 || o.timeout > 24*time.Hour {
 		return errors.New("backup-ts, attestation-output, and a positive timeout no greater than 24h are required")
 	}
@@ -188,6 +193,49 @@ func execute(parent context.Context, o options, runner commandRunner, logs io.Wr
 		return err
 	}
 	return writeReceiptAtomic(o.output, receipt)
+}
+
+func verifyAttestation(o options) (retErr error) {
+	if o.output != "" || o.backupTS == 0 || o.storage == "" || o.pdAddrs == "" {
+		return errors.New("verify-attestation requires backup-ts, storage-prefix, and pd-addrs, and forbids attestation-output")
+	}
+	file, err := os.Open(o.verifyAttestation)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	receipt, err := nativepitr.DecodeFullBackupAttestation(io.LimitReader(file, (1<<20)+1))
+	if err != nil {
+		return err
+	}
+	if receipt.Format != nativepitr.FullBackupAttestationFormat {
+		return errors.New("existing full-backup attestation must use the current format")
+	}
+	_, pdSHA, err := canonicalPDAddresses(o.pdAddrs)
+	if err != nil {
+		return err
+	}
+	if o.cipherMethod == "" {
+		o.cipherMethod = nativepitr.CipherMethodPlaintext
+	}
+	encryption := nativepitr.EncryptionIdentity{Method: o.cipherMethod, KeyID: o.encryptionKeyID}
+	if err := encryption.Validate(); err != nil {
+		return err
+	}
+	expectedArgs := []string{"backup", "txn", "--storage=" + o.storage, "--backupts=" + strconv.FormatUint(o.backupTS, 10), "--crypter.method=" + encryption.Method}
+	if encryption.Method == nativepitr.CipherMethodAES256CTR {
+		expectedArgs = append(expectedArgs, "--crypter.key-id="+encryption.KeyID)
+	}
+	if receipt.BackupTS != o.backupTS || receipt.StoragePrefix != o.storage || receipt.PDAddressesSHA256 != pdSHA ||
+		receipt.CipherMethod != encryption.Method || receipt.EncryptionKeyID != encryption.KeyID || len(receipt.CanonicalArgs) != len(expectedArgs) {
+		return errors.New("full-backup attestation does not match the approved backup identity")
+	}
+	for i := range expectedArgs {
+		if receipt.CanonicalArgs[i] != expectedArgs[i] {
+			return errors.New("full-backup attestation does not match the approved backup identity")
+		}
+	}
+	return nil
 }
 
 func canonicalPDAddresses(raw string) ([]string, string, error) {

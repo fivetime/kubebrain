@@ -82,6 +82,24 @@ func TestExecuteRunsCanonicalPlaintextBackupAndAttestsSuccess(t *testing.T) {
 	require.Equal(t, pinnedBRVersion, receipt.BRVersion)
 }
 
+func TestVerifyAttestationPreservesExactUint64BackupIdentity(t *testing.T) {
+	dir := t.TempDir()
+	br := filepath.Join(dir, "br")
+	require.NoError(t, os.WriteFile(br, []byte("pinned-br-binary"), 0o700))
+	output := filepath.Join(dir, "attestation.json")
+	const backupTS = uint64(468294813545660418)
+	create := options{brBinary: br, pdAddrs: "pd-b:2379,pd-a:2379", storage: "s3://bucket/immutable/full-a", backupTS: backupTS, output: output, timeout: time.Minute}
+	require.NoError(t, execute(context.Background(), create, &fakeRunner{}, io.Discard, func() time.Time { return time.Unix(2_000_000_000, 0) }))
+
+	verify := options{verifyAttestation: output, pdAddrs: "pd-b:2379,pd-a:2379", storage: create.storage, backupTS: backupTS}
+	require.NoError(t, execute(context.Background(), verify, &fakeRunner{err: errors.New("must not run")}, io.Discard, time.Now))
+	verify.backupTS++
+	require.ErrorContains(t, execute(context.Background(), verify, &fakeRunner{}, io.Discard, time.Now), "does not match")
+	verify.backupTS = backupTS
+	verify.pdAddrs = "pd-a:2379,pd-c:2379"
+	require.ErrorContains(t, execute(context.Background(), verify, &fakeRunner{}, io.Discard, time.Now), "does not match")
+}
+
 func TestExecuteRunsAES256BackupWithoutAttestingKeyMaterial(t *testing.T) {
 	dir := t.TempDir()
 	br := filepath.Join(dir, "br")
