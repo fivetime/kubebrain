@@ -60060,6 +60060,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   语义，不能证明某个真实集群已经通过；本轮没有目标 Kubernetes 集群凭据，尚未实际执行 `--check`。上线前剩余的
   外部证据是：在受支持版本、已安装 receiver 且具备 impersonation 权限的目标集群执行该命令并留存结果。
 
+- A5340 关闭 Operation 控制面基础对象只能从长文档手工选取、且 RBAC 可能早于全局 Admission 生效的发布窗口。新增
+  `apply-operation-control-plane-foundation.sh --verify/--apply`：受版本控制的 inventory 固定 CRD、两条全局
+  Admission 和六份无创建入口的基础清单；apply 先做 API discovery，安装 CRD 并等待 Established，单独建立
+  namespace，再安装 worker type/audit policy。两条 policy 必须已观测当前 generation、完成 CEL type checking、零
+  expression warning 且 binding 精确 Deny，之后才授予 worker/approver/archiver/parameter broker 权限并落地零副本
+  archiver/broker/executor 模板。verify 同时拒绝清单缺失、symlink、Admission 非 fail-closed 或依赖型 Deployment
+  预先扩容。权限复核中特别排除了通用 submitter RBAC 和外部 Operation API：即使 Deployment 为零副本，RoleBinding
+  也已构成真实授权，二者必须在 requester guardrail/receiver 完整就绪后按专章启用；脚本同样不创建凭据、PVC、动态
+  tenant binding 或 repair receiver。回归覆盖完整 inventory、CRD→Established→namespace→Admission 编译→RBAC 的
+  16 次调用顺序、缺 context 零 kubectl，以及 Admission apply 失败时零基础 RBAC；Bash syntax、定向测试、完整 deploy、
+  全仓 vet、diff check 与新增后的 525 项 inventory 均通过。四片 118/148/132/127 在代码提交 `b6a74228` 上全部通过
+  （153.471/482.193/278.289/502.182 秒）。本轮未持有目标集群凭据，尚未执行真实 apply；上线仍须在受支持 Kubernetes
+  版本的隔离/目标环境执行基础安装、A5339 `--check`、凭据注入和逐组件扩容演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

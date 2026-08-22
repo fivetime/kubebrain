@@ -6047,6 +6047,26 @@ Pod UID，更新 Secret 后在 30 秒加 probe 容差内验证 endpoint 呈现�
 不变。轮换 CA 时必须先把旧、新 CA 同时发布到 executor trust bundle，再换 broker
 叶证书，最后确认所有 executor 使用新 CA 后撤旧；服务端热加载不能替代该双信任窗口。
 
+Operation 控制面基础层不得按本文各章节任意顺序手工 apply。先执行：
+
+```bash
+hack/production/apply-operation-control-plane-foundation.sh --verify
+KUBE_CONTEXT=production hack/production/apply-operation-control-plane-foundation.sh --apply
+```
+
+`--apply` 要求显式 context，并先确认 apiserver 支持 ValidatingAdmissionPolicy/Binding；随后只安装 Operation CRD，
+等待 `Established`，单独建立 `kubebrain-operations` namespace，再安装 worker type 与 audit 两条全局 Admission。
+只有两条 policy 的 `status.observedGeneration` 已追上 generation、`status.typeChecking` 已产生且无
+`expressionWarnings`，并且 binding 精确为 `Deny` 后，才应用 worker/managed-namespace/approver/archiver/
+parameter-broker RBAC 和 executor 模板。archiver、broker 及全部 executor Deployment 在基础层仍必须为零副本；
+inventory 校验会拒绝缺失、symlink、非 fail-closed Admission 或预先启用的工作负载。
+
+基础层刻意不安装通用 submitter RBAC、外部 Operation API、任何 requester Admission/RBAC 或 TiKV repair alert
+receiver。零副本不能撤销 RoleBinding 已授予的权限，因此通用创建入口不得在 requester guardrail 前预授；必须先按
+下文完成专属 guardrail/receiver，再按各自章节创建凭据、应用 submitter/API 清单和扩容。该入口也不创建
+TLS/OIDC/Object Store/hook Secret、PVC、动态 tenant RoleBinding 或 inventory ConfigMap，基础安装成功不表示任何
+业务 Operation 已可执行。
+
 所有独立 Operation requester 的 Admission/RBAC 必须通过同一个受版本控制的 inventory 安装，不能从本文各章节
 挑选若干清单手工应用。先确保 Operation CRD、`kubebrain-operations`、`kubebrain-repair-operations`、全局
 worker/audit Admission 和 parameter broker 已就绪，再执行：
