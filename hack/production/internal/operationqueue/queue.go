@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/contextsort"
+	"github.com/kubewharf/kubebrain/hack/production/internal/dynamicpagination"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -234,22 +235,24 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 	if err := validateStatusOwner(owner); err != nil {
 		return nil, err
 	}
-	list, err := q.resource.List(ctx, metav1.ListOptions{})
+	items, err := dynamicpagination.All(
+		ctx, q.resource, metav1.ListOptions{}, dynamicpagination.DefaultPageLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
 	lastStarted := make(map[string]int64)
-	for i := range list.Items {
+	for i := range items {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		instance, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "instance")
+		instance, _, _ := unstructured.NestedString(items[i].Object, "spec", "instance")
 		started, found, _ := unstructured.NestedInt64(
-			list.Items[i].Object, "status", "startedAtUnixNano",
+			items[i].Object, "status", "startedAtUnixNano",
 		)
 		if !found {
 			seconds, _, _ := unstructured.NestedInt64(
-				list.Items[i].Object, "status", "startedAtUnix",
+				items[i].Object, "status", "startedAtUnix",
 			)
 			started = seconds * int64(time.Second)
 		}
@@ -257,7 +260,7 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 			lastStarted[instance] = started
 		}
 	}
-	if err := contextsort.Slice(ctx, list.Items, func(left, right unstructured.Unstructured) bool {
+	if err := contextsort.Slice(ctx, items, func(left, right unstructured.Unstructured) bool {
 		return claimCandidateLess(&left, &right, lastStarted)
 	}); err != nil {
 		return nil, err
@@ -266,11 +269,11 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 	now := nowTime.Unix()
 	var lastConflict error
 	var lastInvalid error
-	for i := range list.Items {
+	for i := range items {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		candidate := &list.Items[i]
+		candidate := &items[i]
 		spec := specFromObject(candidate)
 		if operationType != "" && spec.Type != operationType {
 			continue
@@ -501,25 +504,27 @@ func (q *Queue) lastStarted(ctx context.Context, operationType string) (int64, e
 	if err := validateOperationTypeFilter(operationType); err != nil {
 		return 0, err
 	}
-	list, err := q.resource.List(ctx, metav1.ListOptions{})
+	items, err := dynamicpagination.All(
+		ctx, q.resource, metav1.ListOptions{}, dynamicpagination.DefaultPageLimit,
+	)
 	if err != nil {
 		return 0, err
 	}
 	var latest int64
-	for i := range list.Items {
+	for i := range items {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		candidateType, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "type")
+		candidateType, _, _ := unstructured.NestedString(items[i].Object, "spec", "type")
 		if operationType != "" && candidateType != operationType {
 			continue
 		}
 		started, found, _ := unstructured.NestedInt64(
-			list.Items[i].Object, "status", "startedAtUnixNano",
+			items[i].Object, "status", "startedAtUnixNano",
 		)
 		if !found {
 			seconds, _, _ := unstructured.NestedInt64(
-				list.Items[i].Object, "status", "startedAtUnix",
+				items[i].Object, "status", "startedAtUnix",
 			)
 			started = seconds * int64(time.Second)
 		}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/contextsort"
+	"github.com/kubewharf/kubebrain/hack/production/internal/dynamicpagination"
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -119,8 +120,10 @@ func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
 			reconcileErrs = append(reconcileErrs, err)
 			break
 		}
-		list, err := s.client.Resource(PolicyResource).Namespace(namespace).
-			List(ctx, metav1.ListOptions{})
+		items, err := dynamicpagination.All(
+			ctx, s.client.Resource(PolicyResource).Namespace(namespace),
+			metav1.ListOptions{}, dynamicpagination.DefaultPageLimit,
+		)
 		if err != nil {
 			reconcileErrs = append(reconcileErrs, fmt.Errorf("%s: list policies: %w", namespace, err))
 			if ctx.Err() != nil {
@@ -128,13 +131,13 @@ func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		for i := range list.Items {
+		for i := range items {
 			if err := ctx.Err(); err != nil {
 				return 0, errors.Join(append(reconcileErrs, err)...)
 			}
 			candidates = append(candidates, policyCandidate{
 				namespace: namespace,
-				object:    list.Items[i].DeepCopy(),
+				object:    items[i].DeepCopy(),
 			})
 		}
 	}

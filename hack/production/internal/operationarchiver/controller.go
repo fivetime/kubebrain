@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/contextsort"
+	"github.com/kubewharf/kubebrain/hack/production/internal/dynamicpagination"
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
@@ -76,8 +77,10 @@ func (c *Controller) Reconcile(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return 0, errors.Join(append(errs, err)...)
 		}
-		list, err := c.client.Resource(operationqueue.Resource).Namespace(namespace).
-			List(ctx, metav1.ListOptions{})
+		items, err := dynamicpagination.All(
+			ctx, c.client.Resource(operationqueue.Resource).Namespace(namespace),
+			metav1.ListOptions{}, dynamicpagination.DefaultPageLimit,
+		)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list operations in namespace %s: %w", namespace, err))
 			if ctx.Err() != nil {
@@ -85,12 +88,12 @@ func (c *Controller) Reconcile(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		for i := range list.Items {
+		for i := range items {
 			if err := ctx.Err(); err != nil {
 				return 0, errors.Join(append(errs, err)...)
 			}
-			if needsArchive(&list.Items[i]) {
-				candidates = append(candidates, list.Items[i].DeepCopy())
+			if needsArchive(&items[i]) {
+				candidates = append(candidates, items[i].DeepCopy())
 			}
 		}
 	}
