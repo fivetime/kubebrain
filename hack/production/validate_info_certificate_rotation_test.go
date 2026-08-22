@@ -54,10 +54,24 @@ printf 'kubebrain-0\tuid-0\t0\ttrue\nkubebrain-1\tuid-1\t0\ttrue\nkubebrain-2\tu
 		"OLD_INFO_CERT=" + filepath.Join(dir, "old-cert"), "NEW_INFO_CACERT=" + filepath.Join(dir, "new-ca"),
 		"NEW_INFO_CERT=" + filepath.Join(dir, "new-cert"), "OPENSSL=" + fakeOpenSSL, "KUBECTL=" + fakeKubectl,
 	}
+	require.NoError(t, os.Truncate(filepath.Join(dir, "old-ca"), 1048577))
 	out, err := runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
+		"ACTION=begin", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "old-cert")))
+	require.Error(t, err)
+	require.Contains(t, string(out), "OLD_INFO_CACERT must contain 1..1048576 bytes")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "old-ca"), []byte("old-ca"), 0o600))
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
 		"ACTION=begin", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "old-cert")))
 	require.NoError(t, err, out)
 	require.Contains(t, string(out), "begin gate passed")
+	statePath := filepath.Join(stateDir, "rotation-1.info.state")
+	stateData := mustRead(t, statePath)
+	require.NoError(t, os.Truncate(statePath, 2097153))
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
+		"ACTION=complete", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "new-cert")))
+	require.Error(t, err)
+	require.Contains(t, string(out), "info rotation state must contain 1..2097152 bytes")
+	require.NoError(t, os.WriteFile(statePath, stateData, 0o600))
 	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
 		"ACTION=complete", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "new-cert"),
 		"REQUIRE_OLD_CA_REJECTION=true", "FAKE_REJECT_OLD_CA=true"))
@@ -66,6 +80,13 @@ printf 'kubebrain-0\tuid-0\t0\ttrue\nkubebrain-1\tuid-1\t0\ttrue\nkubebrain-2\tu
 
 	data, err := os.ReadFile(receipt)
 	require.NoError(t, err)
+	require.NoError(t, os.Truncate(receipt, 1048577))
+	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
+		"ACTION=verify", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "new-cert"),
+		"REQUIRE_OLD_CA_REJECTION=true", "FAKE_REJECT_OLD_CA=true"))
+	require.Error(t, err)
+	require.Contains(t, string(out), "info rotation receipt must contain 1..1048576 bytes")
+	require.NoError(t, os.WriteFile(receipt, data, 0o600))
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(data, &got))
 	require.Equal(t, "kubebrain.info-certificate-rotation.receipt.v1", got["format"])

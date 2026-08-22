@@ -19,6 +19,10 @@ QUERY_TIMEOUT_SECONDS="${QUERY_TIMEOUT_SECONDS:-10}"
 MAX_CLOCK_SKEW_SECONDS="${MAX_CLOCK_SKEW_SECONDS:-5}"
 MAX_SAMPLE_AGE_SECONDS="${MAX_SAMPLE_AGE_SECONDS:-60}"
 MAX_RESPONSE_BYTES=1048576
+MAX_TLS_RECEIPT_BYTES=1048576
+MAX_SCRAPE_RECEIPT_BYTES=2097152
+MAX_PROMETHEUS_CA_BYTES=1048576
+MAX_PROMETHEUS_TOKEN_BYTES=16384
 CURL="${CURL:-curl}"
 JQ="${JQ:-jq}"
 
@@ -33,6 +37,14 @@ else
 fi
 [[ "$PROMETHEUS_URL" == https://* && "$PROMETHEUS_URL" != *[[:space:]]* && "$PROMETHEUS_URL" != *'?'* && "$PROMETHEUS_URL" != *'#'* ]] || die "PROMETHEUS_URL must be an absolute HTTPS base URL without query, fragment, or whitespace"
 [[ -f "$PROMETHEUS_CA_FILE" && -r "$PROMETHEUS_CA_FILE" ]] || die "PROMETHEUS_CA_FILE must be a readable regular file"
+tls_receipt_size="$(stat -Lc '%s' -- "$TLS_RECEIPT_INPUT")" || die "cannot stat TLS_RECEIPT_INPUT"
+[[ "$tls_receipt_size" =~ ^[0-9]+$ ]] && (( tls_receipt_size > 0 && tls_receipt_size <= MAX_TLS_RECEIPT_BYTES )) || die "TLS_RECEIPT_INPUT must contain 1..${MAX_TLS_RECEIPT_BYTES} bytes"
+prometheus_ca_size="$(stat -Lc '%s' -- "$PROMETHEUS_CA_FILE")" || die "cannot stat PROMETHEUS_CA_FILE"
+[[ "$prometheus_ca_size" =~ ^[0-9]+$ ]] && (( prometheus_ca_size > 0 && prometheus_ca_size <= MAX_PROMETHEUS_CA_BYTES )) || die "PROMETHEUS_CA_FILE must contain 1..${MAX_PROMETHEUS_CA_BYTES} bytes"
+if [[ "$ACTION" == verify ]]; then
+  scrape_receipt_size="$(stat -Lc '%s' -- "$SCRAPE_RECEIPT_OUTPUT")" || die "cannot stat SCRAPE_RECEIPT_OUTPUT"
+  [[ "$scrape_receipt_size" =~ ^[0-9]+$ ]] && (( scrape_receipt_size > 0 && scrape_receipt_size <= MAX_SCRAPE_RECEIPT_BYTES )) || die "SCRAPE_RECEIPT_OUTPUT must contain 1..${MAX_SCRAPE_RECEIPT_BYTES} bytes"
+fi
 [[ "$KUBEBRAIN_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "KUBEBRAIN_NAMESPACE must be a DNS label"
 [[ "$KUBEBRAIN_SERVICE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "KUBEBRAIN_SERVICE must be a DNS label"
 operation_is_positive_int64 "$EXPECTED_REPLICAS" && (( EXPECTED_REPLICAS <= 2147483647 )) || die "EXPECTED_REPLICAS must be a canonical positive int32"
@@ -47,7 +59,7 @@ command -v "$JQ" >/dev/null || die "jq is required"
 if [[ -n "$PROMETHEUS_BEARER_TOKEN_FILE" ]]; then
   [[ -f "$PROMETHEUS_BEARER_TOKEN_FILE" && -r "$PROMETHEUS_BEARER_TOKEN_FILE" ]] || die "PROMETHEUS_BEARER_TOKEN_FILE must be a readable regular file"
   token_size="$(stat -Lc '%s' -- "$PROMETHEUS_BEARER_TOKEN_FILE")" || die "cannot stat PROMETHEUS_BEARER_TOKEN_FILE"
-  [[ "$token_size" =~ ^[0-9]+$ ]] && (( token_size > 0 && token_size <= 16384 )) || die "PROMETHEUS_BEARER_TOKEN_FILE must contain 1..16384 bytes"
+  [[ "$token_size" =~ ^[0-9]+$ ]] && (( token_size > 0 && token_size <= MAX_PROMETHEUS_TOKEN_BYTES )) || die "PROMETHEUS_BEARER_TOKEN_FILE must contain 1..${MAX_PROMETHEUS_TOKEN_BYTES} bytes"
   bearer_token="$(<"$PROMETHEUS_BEARER_TOKEN_FILE")"
   [[ "$bearer_token" != *[[:space:]]* ]] || die "PROMETHEUS_BEARER_TOKEN_FILE must contain one header-safe token without whitespace"
 fi

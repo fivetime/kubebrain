@@ -24,6 +24,9 @@ MAX_OPERATION_PARAMETERS_BYTES=65536
 MAX_STATE_BYTES=2097152
 MAX_TLS_RECEIPT_BYTES=1048576
 MAX_SCRAPE_RECEIPT_BYTES=2097152
+MAX_INFO_CREDENTIAL_BYTES=1048576
+MAX_PROMETHEUS_CA_BYTES=1048576
+MAX_PROMETHEUS_TOKEN_BYTES=16384
 
 die() { echo "$*" >&2; exit 2; }
 [[ -n "$WORKER_ID" && "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
@@ -151,7 +154,7 @@ evidence_file_secure() {
 evidence_size_valid() {
   local path="$1" maximum="$2" size
   size="$(stat -Lc '%s' -- "$path")" || return 1
-  [[ "$size" =~ ^[0-9]+$ ]] && (( size <= maximum ))
+  [[ "$size" =~ ^[0-9]+$ ]] && (( size > 0 && size <= maximum ))
 }
 if paths_alias "$state_file" "$receipt_output" ||
   paths_alias "$state_file" "$scrape_receipt_output" ||
@@ -165,6 +168,7 @@ hashes=("$old_ca_sha" "$old_cert_sha" "$new_ca_sha" "$new_cert_sha")
 names=(old-ca old-cert new-ca new-cert)
 frozen=()
 for index in "${!sources[@]}"; do
+  evidence_size_valid "${sources[$index]}" "$MAX_INFO_CREDENTIAL_BYTES" || die "info rotation credential must contain 1..${MAX_INFO_CREDENTIAL_BYTES} bytes"
   [[ -f "${sources[$index]}" && "${hashes[$index]}" =~ ^[a-f0-9]{64}$ ]] || die "info rotation credential or SHA-256 is invalid"
   [[ "$(file_sha256 "${sources[$index]}")" == "${hashes[$index]}" ]] || retry_and_exit "info rotation credential content digest mismatch"
   destination="$capture/${names[$index]}"
@@ -175,7 +179,8 @@ for index in "${!sources[@]}"; do
 done
 old_ca="${frozen[0]}"; old_cert="${frozen[1]}"; new_ca="${frozen[2]}"; new_cert="${frozen[3]}"
 freeze_scrape_credential() {
-  local source="$1" expected="$2" name="$3" destination
+  local source="$1" expected="$2" name="$3" maximum="$4" label="$5" destination
+  evidence_size_valid "$source" "$maximum" || die "Prometheus ${label} must contain 1..${maximum} bytes"
   [[ -f "$source" && "$expected" =~ ^[a-f0-9]{64}$ ]] || die "Prometheus credential or SHA-256 is invalid"
   [[ "$(file_sha256 "$source")" == "$expected" ]] || retry_and_exit "Prometheus credential content digest mismatch"
   destination="$capture/$name"
@@ -183,9 +188,9 @@ freeze_scrape_credential() {
   [[ "$(file_sha256 "$destination")" == "$expected" && "$(file_sha256 "$source")" == "$expected" ]] || retry_and_exit "Prometheus credential changed during capture"
   printf '%s\n' "$destination"
 }
-prometheus_ca="$(freeze_scrape_credential "$prometheus_ca" "$prometheus_ca_sha" prometheus-ca)"
+prometheus_ca="$(freeze_scrape_credential "$prometheus_ca" "$prometheus_ca_sha" prometheus-ca "$MAX_PROMETHEUS_CA_BYTES" CA)"
 if [[ "$prometheus_token" != - ]]; then
-  prometheus_token="$(freeze_scrape_credential "$prometheus_token" "$prometheus_token_sha" prometheus-token)"
+  prometheus_token="$(freeze_scrape_credential "$prometheus_token" "$prometheus_token_sha" prometheus-token "$MAX_PROMETHEUS_TOKEN_BYTES" 'bearer token')"
 else
   prometheus_token=""
 fi

@@ -251,6 +251,37 @@ func TestInfoCertificateRotationOperationRejectsOversizedEvidenceBeforeParsing(t
 	}
 }
 
+func TestInfoCertificateRotationOperationRejectsOversizedCredentialsBeforeCapture(t *testing.T) {
+	for _, tc := range []struct{ name, wanted string }{
+		{"info credential", "info rotation credential must contain 1..1048576 bytes"},
+		{"Prometheus CA", "Prometheus CA must contain 1..1048576 bytes"},
+		{"Prometheus token", "Prometheus bearer token must contain 1..16384 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInfoRotationRunnerFixture(t)
+			var parameters map[string]any
+			require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+			switch tc.name {
+			case "info credential":
+				require.NoError(t, os.Truncate(parameters["old_info_cacert"].(string), 1048577))
+			case "Prometheus CA":
+				require.NoError(t, os.Truncate(parameters["prometheus_ca_file"].(string), 1048577))
+			case "Prometheus token":
+				token := filepath.Join(f.dir, "prometheus-token")
+				require.NoError(t, os.WriteFile(token, []byte("x"), 0o600))
+				require.NoError(t, os.Truncate(token, 16385))
+				parameters["prometheus_bearer_token_file"] = token
+				parameters["prometheus_bearer_token_sha256"] = strings.Repeat("0", 64)
+				encoded, err := json.Marshal(parameters)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(f.parameters, append(encoded, '\n'), 0o600))
+			}
+			f.run(t, false, tc.wanted)
+			require.NotContains(t, string(mustRead(t, f.log)), "gate ")
+		})
+	}
+}
+
 type infoRotationRunnerFixture struct {
 	dir, parameters, operationctl, rotation, publish, scrape, log, stateDir, receipt, scrapeReceipt string
 }

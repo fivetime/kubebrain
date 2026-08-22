@@ -24,6 +24,9 @@ OPENSSL="${OPENSSL:-openssl}"
 JQ="${JQ:-jq}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
+MAX_CREDENTIAL_BYTES=1048576
+MAX_STATE_BYTES=2097152
+MAX_RECEIPT_BYTES=1048576
 
 for variable in ACTION ROTATION_ID INSTANCE STATE_DIR INFO_ENDPOINT INFO_SERVER_NAME OLD_INFO_CACERT OLD_INFO_CERT NEW_INFO_CACERT NEW_INFO_CERT; do
   if [[ -z "${!variable:-}" ]]; then
@@ -59,6 +62,9 @@ fi
   { echo "INFO_SERVER_NAME must be a DNS name" >&2; exit 2; }
 for variable in OLD_INFO_CACERT OLD_INFO_CERT NEW_INFO_CACERT NEW_INFO_CERT; do
   [[ -f "${!variable}" ]] || { echo "${variable} does not exist: ${!variable}" >&2; exit 2; }
+  credential_size="$(stat -Lc '%s' -- "${!variable}")" || { echo "cannot stat ${variable}" >&2; exit 2; }
+  [[ "$credential_size" =~ ^[0-9]+$ ]] && (( credential_size > 0 && credential_size <= MAX_CREDENTIAL_BYTES )) ||
+    { echo "${variable} must contain 1..${MAX_CREDENTIAL_BYTES} bytes" >&2; exit 2; }
 done
 
 kubectl_args=()
@@ -69,6 +75,16 @@ umask 077
 mkdir -p "$STATE_DIR"
 state_file="${STATE_DIR}/${ROTATION_ID}.info.state"
 receipt_file="${RECEIPT_OUTPUT:-${STATE_DIR}/${ROTATION_ID}.info.receipt.json}"
+if [[ "$ACTION" != begin ]]; then
+  state_size="$(stat -Lc '%s' -- "$state_file")" || { echo "cannot stat info rotation state" >&2; exit 1; }
+  [[ "$state_size" =~ ^[0-9]+$ ]] && (( state_size > 0 && state_size <= MAX_STATE_BYTES )) ||
+    { echo "info rotation state must contain 1..${MAX_STATE_BYTES} bytes" >&2; exit 1; }
+fi
+if [[ "$ACTION" == verify ]]; then
+  receipt_size="$(stat -Lc '%s' -- "$receipt_file")" || { echo "cannot stat info rotation receipt" >&2; exit 1; }
+  [[ "$receipt_size" =~ ^[0-9]+$ ]] && (( receipt_size > 0 && receipt_size <= MAX_RECEIPT_BYTES )) ||
+    { echo "info rotation receipt must contain 1..${MAX_RECEIPT_BYTES} bytes" >&2; exit 1; }
+fi
 credential_tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$credential_tmp_dir"' EXIT INT TERM
 

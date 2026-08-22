@@ -75,9 +75,42 @@ func TestValidateInfoScrapeRecoveryRejectsUnsafeInputsBeforeQuery(t *testing.T) 
 	}
 }
 
+func TestValidateInfoScrapeRecoveryRejectsOversizedFileInputsBeforeQuery(t *testing.T) {
+	for _, tc := range []struct{ name, wanted string }{
+		{"TLS receipt", "TLS_RECEIPT_INPUT must contain 1..1048576 bytes"},
+		{"Prometheus CA", "PROMETHEUS_CA_FILE must contain 1..1048576 bytes"},
+		{"Prometheus token", "PROMETHEUS_BEARER_TOKEN_FILE must contain 1..16384 bytes"},
+		{"scrape receipt", "SCRAPE_RECEIPT_OUTPUT must contain 1..2097152 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInfoScrapeFixture(t)
+			env := append([]string{}, f.env...)
+			switch tc.name {
+			case "TLS receipt":
+				require.NoError(t, os.Truncate(f.tlsReceipt, 1048577))
+			case "Prometheus CA":
+				require.NoError(t, os.Truncate(f.ca, 1048577))
+			case "Prometheus token":
+				token := filepath.Join(f.dir, "token")
+				require.NoError(t, os.WriteFile(token, []byte("x"), 0o600))
+				require.NoError(t, os.Truncate(token, 16385))
+				env = append(env, "PROMETHEUS_BEARER_TOKEN_FILE="+token)
+			case "scrape receipt":
+				require.NoError(t, os.WriteFile(f.output, []byte("x"), 0o600))
+				require.NoError(t, os.Truncate(f.output, 2097153))
+				env = append(env, "ACTION=verify")
+			}
+			out, err := runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", env)
+			require.Error(t, err)
+			require.Contains(t, string(out), tc.wanted)
+			require.NoFileExists(t, f.calls)
+		})
+	}
+}
+
 type infoScrapeFixture struct {
-	dir, tlsReceipt, output, calls string
-	env                            []string
+	dir, tlsReceipt, output, calls, ca string
+	env                                []string
 }
 
 func newInfoScrapeFixture(t *testing.T) *infoScrapeFixture {
@@ -86,8 +119,8 @@ func newInfoScrapeFixture(t *testing.T) *infoScrapeFixture {
 	f := &infoScrapeFixture{dir: dir, tlsReceipt: filepath.Join(dir, "tls.json"), output: filepath.Join(dir, "scrape.json"), calls: filepath.Join(dir, "calls")}
 	tls := `{"completed_at_unix":100,"format":"kubebrain.info-certificate-rotation.receipt.v1","info_endpoint":"https://info.example:8080","instance":"instance-a","new_certificate_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","old_ca_rejected":true,"old_ca_rejection_required":true,"old_certificate_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pods_unchanged":true,"replicas":3,"rotation_id":"rotation-1"}` + "\n"
 	require.NoError(t, os.WriteFile(f.tlsReceipt, []byte(tls), 0o600))
-	ca := filepath.Join(dir, "ca.crt")
-	require.NoError(t, os.WriteFile(ca, []byte("ca"), 0o600))
+	f.ca = filepath.Join(dir, "ca.crt")
+	require.NoError(t, os.WriteFile(f.ca, []byte("ca"), 0o600))
 	curl := filepath.Join(dir, "curl")
 	writeExecutable(t, curl, `#!/usr/bin/env bash
 set -euo pipefail
@@ -110,7 +143,7 @@ printf ']}}\n'
 `)
 	f.env = []string{
 		"TLS_RECEIPT_INPUT=" + f.tlsReceipt, "SCRAPE_RECEIPT_OUTPUT=" + f.output,
-		"PROMETHEUS_URL=https://prometheus.example", "PROMETHEUS_CA_FILE=" + ca,
+		"PROMETHEUS_URL=https://prometheus.example", "PROMETHEUS_CA_FILE=" + f.ca,
 		"KUBEBRAIN_NAMESPACE=kubebrain-system", "KUBEBRAIN_SERVICE=kubebrain-peer", "EXPECTED_REPLICAS=3",
 		"CURL=" + curl, "JQ=jq", "FAKE_CALLS=" + f.calls, "MAX_CLOCK_SKEW_SECONDS=300",
 	}
