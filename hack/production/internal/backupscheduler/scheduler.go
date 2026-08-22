@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/contextsort"
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -128,15 +129,20 @@ func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
 			continue
 		}
 		for i := range list.Items {
+			if err := ctx.Err(); err != nil {
+				return 0, errors.Join(append(reconcileErrs, err)...)
+			}
 			candidates = append(candidates, policyCandidate{
 				namespace: namespace,
 				object:    list.Items[i].DeepCopy(),
 			})
 		}
 	}
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidateKey(candidates[i]) < candidateKey(candidates[j])
-	})
+	if err := contextsort.Slice(ctx, candidates, func(left, right policyCandidate) bool {
+		return candidateKey(left) < candidateKey(right)
+	}); err != nil {
+		return 0, errors.Join(append(reconcileErrs, err)...)
+	}
 	candidates = s.nextBatch(candidates)
 	submitted := 0
 	for _, candidate := range candidates {

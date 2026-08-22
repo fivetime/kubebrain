@@ -547,30 +547,6 @@ func TestClaimAcrossNamespacesStopsInspectionWhenContextIsCanceled(t *testing.T)
 	require.Equal(t, []string{"tenant-a"}, inspected)
 }
 
-func TestClaimCandidateSortStopsDuringCancellation(t *testing.T) {
-	items := make([]unstructured.Unstructured, 64)
-	for i := range items {
-		items[i].SetName(fmt.Sprintf("operation-%03d", len(items)-i))
-	}
-	ctx := &cancelAfterErrChecks{Context: context.Background(), remaining: 5}
-
-	err := sortClaimCandidates(ctx, items, map[string]int64{})
-	require.ErrorIs(t, err, context.Canceled)
-}
-
-type cancelAfterErrChecks struct {
-	context.Context
-	remaining int
-}
-
-func (c *cancelAfterErrChecks) Err() error {
-	c.remaining--
-	if c.remaining <= 0 {
-		return context.Canceled
-	}
-	return nil
-}
-
 func TestClaimAcrossNamespacesDoesNotSkipClaimFailure(t *testing.T) {
 	client := fakeQueueClient()
 	ctx := context.Background()

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/contextsort"
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
@@ -75,7 +76,9 @@ func (c *Controller) Reconcile(ctx context.Context) (int, error) {
 			}
 		}
 	}
-	sort.Slice(candidates, func(i, j int) bool { return candidateLess(candidates[i], candidates[j]) })
+	if err := contextsort.Slice(ctx, candidates, candidateLess); err != nil {
+		return 0, errors.Join(append(errs, err)...)
+	}
 	candidates = c.nextBatch(candidates)
 	verified := 0
 	for _, candidate := range candidates {

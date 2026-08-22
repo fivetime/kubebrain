@@ -6,13 +6,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/contextsort"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -257,7 +257,9 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 			lastStarted[instance] = started
 		}
 	}
-	if err := sortClaimCandidates(ctx, list.Items, lastStarted); err != nil {
+	if err := contextsort.Slice(ctx, list.Items, func(left, right unstructured.Unstructured) bool {
+		return claimCandidateLess(&left, &right, lastStarted)
+	}); err != nil {
 		return nil, err
 	}
 	nowTime := q.now()
@@ -469,12 +471,14 @@ func ClaimAcrossNamespaces(
 	if len(inspectErrs) != 0 {
 		return nil, errors.Join(inspectErrs...)
 	}
-	sort.Slice(queues, func(i, j int) bool {
-		if queues[i].lastStarted != queues[j].lastStarted {
-			return queues[i].lastStarted < queues[j].lastStarted
+	if err := contextsort.Slice(ctx, queues, func(left, right namespaceQueue) bool {
+		if left.lastStarted != right.lastStarted {
+			return left.lastStarted < right.lastStarted
 		}
-		return queues[i].namespace < queues[j].namespace
-	})
+		return left.namespace < right.namespace
+	}); err != nil {
+		return nil, err
+	}
 	for _, candidate := range queues {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -524,56 +528,6 @@ func (q *Queue) lastStarted(ctx context.Context, operationType string) (int64, e
 		}
 	}
 	return latest, nil
-}
-
-func sortClaimCandidates(ctx context.Context, items []unstructured.Unstructured, lastStarted map[string]int64) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if len(items) < 2 {
-		return nil
-	}
-	buffer := make([]unstructured.Unstructured, len(items))
-	source, destination := items, buffer
-	inBuffer := false
-	for width := 1; width < len(items); {
-		for start := 0; start < len(items); start += 2 * width {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			middle := min(start+width, len(items))
-			end := min(start+2*width, len(items))
-			left, right, output := start, middle, start
-			for left < middle || right < end {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				if right >= end || (left < middle && claimCandidateLess(&source[left], &source[right], lastStarted)) {
-					destination[output] = source[left]
-					left++
-				} else {
-					destination[output] = source[right]
-					right++
-				}
-				output++
-			}
-		}
-		source, destination = destination, source
-		inBuffer = !inBuffer
-		if width > len(items)/2 {
-			break
-		}
-		width *= 2
-	}
-	if inBuffer {
-		for i := range items {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			items[i] = source[i]
-		}
-	}
-	return nil
 }
 
 func claimCandidateLess(left, right *unstructured.Unstructured, lastStarted map[string]int64) bool {
