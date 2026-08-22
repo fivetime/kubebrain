@@ -490,6 +490,70 @@ func TestPostRestoreAuditOperationRejectsInvalidClaimNamespaceBeforeAudit(t *tes
 	require.NoFileExists(t, filepath.Join(f.dir, "audit.log"))
 }
 
+func TestPostRestoreAuditOperationRejectsRequesterDriftBeforeAudit(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	f.run(t, false, "CLAIM_REQUESTER=platform:other", "dedicated requester contract")
+	assertPostRestoreAuditDidNotStart(t, f)
+}
+
+func TestPostRestoreAuditOperationRejectsUnknownParameterBeforeAudit(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	var parameters map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+	parameters["unexpected"] = true
+	data, err := json.Marshal(parameters)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.parameters, append(data, '\n'), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "must exactly match the dedicated requester schema")
+	assertPostRestoreAuditDidNotStart(t, f)
+}
+
+func TestPostRestoreAuditOperationRejectsOutputPathDriftBeforeAudit(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	var parameters map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+	parameters["receipt_output"] = filepath.Join(f.dir, "other.json")
+	data, err := json.Marshal(parameters)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.parameters, append(data, '\n'), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "output paths do not match the dedicated requester contract")
+	assertPostRestoreAuditDidNotStart(t, f)
+}
+
+func TestPostRestoreAuditOperationRejectsDataClusterOverrideBeforeAudit(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	var parameters map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+	parameters["kube_context"] = "other-cluster"
+	data, err := json.Marshal(parameters)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.parameters, append(data, '\n'), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "data cluster override must be empty")
+	assertPostRestoreAuditDidNotStart(t, f)
+}
+
+func TestPostRestoreAuditOperationRejectsEvidenceOutsideWorkspaceBeforeAudit(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	outside := filepath.Join(t.TempDir(), "cutover.state")
+	require.NoError(t, os.WriteFile(outside, mustRead(t, f.cutoverState), 0o600))
+	var parameters map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+	parameters["cutover_state_input"] = outside
+	data, err := json.Marshal(parameters)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.parameters, append(data, '\n'), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "canonical regular non-symlink file in WORK_DIR")
+	assertPostRestoreAuditDidNotStart(t, f)
+}
+
+func assertPostRestoreAuditDidNotStart(t *testing.T, f *operationRunnerFixture) {
+	t.Helper()
+	log := f.log(t)
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+	require.NoFileExists(t, filepath.Join(f.dir, "audit.log"))
+}
+
 func TestPostRestoreAuditOperationLoadsManagedParameters(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	env := make([]string, 0, len(f.env))
@@ -576,7 +640,8 @@ func newOperationRunnerFixture(t *testing.T) *operationRunnerFixture {
 	t.Helper()
 	dir := t.TempDir()
 	parameters := filepath.Join(dir, "parameters.json")
-	receipt := filepath.Join(dir, "receipt.json")
+	operationName := "post-restore-audit-0123456789abcdefabcd"
+	receipt := filepath.Join(dir, operationName+".receipt.json")
 	cutoverState := filepath.Join(dir, "cutover.state")
 	cutoverReceipt := filepath.Join(dir, "cutover.json")
 	require.NoError(t, os.WriteFile(cutoverState, []byte(operationAuditCutoverState()), 0o600))
@@ -589,8 +654,9 @@ func newOperationRunnerFixture(t *testing.T) *operationRunnerFixture {
 	  "service_namespace":"ns-a","service_name":"kubebrain","target_instance":"target",
 	  "expected_replicas":2,"public_endpoint":"https://service:2379",
 	  "audit_duration_seconds":1,"audit_interval_seconds":0,"min_samples":1,
-	  "audit_prefix":"/audit","receipt_output":%q
-	}`, filepath.Join(dir, "state"), cutoverState, cutoverStateSHA,
+	  "audit_prefix":"/audit","receipt_output":%q,
+	  "kube_context":"","kubeconfig_path":""
+	}`, filepath.Join(dir, operationName+".state"), cutoverState, cutoverStateSHA,
 		cutoverReceipt, cutoverReceiptSHA, receipt)), 0o600))
 	data, err := os.ReadFile(parameters)
 	require.NoError(t, err)
@@ -602,10 +668,10 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_DIR/operationctl.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  operation_id="${CLAIM_OPERATION_ID:-audit-1}"
+  operation_id="${CLAIM_OPERATION_ID:-post-restore-audit-0123456789abcdefabcd}"
   instance="${CLAIM_INSTANCE:-instance-a}"
   namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
-  printf '{"namespace":"%s","name":"audit-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"PostRestoreAudit","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
+  printf '{"namespace":"%s","name":"post-restore-audit-0123456789abcdefabcd","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"PostRestoreAudit","requested_by":"%s","parameters_sha256":"%s","parameters_secret":"post-restore-audit-0123456789abcdefabcd-parameters","parameters_key":"parameters.json","owner":"%s","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "${CLAIM_REQUESTER:-platform:post-restore-audit}" "$digest" "${CLAIM_OWNER:-worker-a}"
 elif [[ " $* " == *" --action parameters "* ]]; then
   cat "$MANAGED_PARAMETERS"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-false}" == true ]]; then
@@ -649,6 +715,7 @@ chmod 600 "$RECEIPT_OUTPUT"
 		"RUNNER_PARAMETERS_INPUT=" + parameters,
 		"ORIGINAL_CUTOVER_STATE_INPUT=" + cutoverState,
 		"ORIGINAL_CUTOVER_RECEIPT_INPUT=" + cutoverReceipt,
+		"WORK_DIR=" + dir,
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &operationRunnerFixture{

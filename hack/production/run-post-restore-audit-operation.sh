@@ -14,6 +14,7 @@ AUDIT_COMMAND="${AUDIT_COMMAND:-${ROOT_DIR}/hack/production/audit-restored-insta
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
+WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 MAX_ETCD_REVISION=9223372036854775807
 MAX_UINT64=18446744073709551615
 MAX_CONTROL_EVIDENCE_BYTES=4194304
@@ -64,6 +65,7 @@ operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECOND
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 command -v stat >/dev/null || { echo "stat is required" >&2; exit 2; }
+command -v realpath >/dev/null || { echo "realpath is required" >&2; exit 2; }
 require_executable_file() {
   local name="$1"
   local path="$2"
@@ -72,6 +74,7 @@ require_executable_file() {
 }
 [[ -z "$OPERATIONCTL" ]] || require_executable_file OPERATIONCTL "$OPERATIONCTL"
 require_executable_file AUDIT_COMMAND "$AUDIT_COMMAND"
+[[ "$WORK_DIR" == /* && -d "$WORK_DIR" && ! -L "$WORK_DIR" && "$(realpath -e -- "$WORK_DIR")" == "$WORK_DIR" ]] || { echo "WORK_DIR must be a canonical absolute non-symlink directory" >&2; exit 2; }
 
 managed_parameters=""
 parameter_capture_dir="$(mktemp -d)"
@@ -138,13 +141,10 @@ run_operationctl() {
 
 claim="$(run_operationctl --action claim --owner "$WORKER_ID" \
   --type PostRestoreAudit --lease "${LEASE_SECONDS}s")"
-claimed_namespace="$("$JQ" -r '.namespace // empty' <<<"$claim")"
-if [[ -n "$claimed_namespace" ]]; then
-  [[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
-    { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
-  OPERATION_NAMESPACE="$claimed_namespace"
-  build_kube_args
-fi
+identity="$("$JQ" -er '[.namespace,.type,.requested_by,.owner,.parameters_secret,.parameters_key]|@tsv' <<<"$claim")" || { echo "post-restore audit claim identity is incomplete" >&2; exit 2; }
+IFS=$'\t' read -r claimed_namespace claimed_type claimed_requester claimed_owner claimed_secret claimed_key <<<"$identity"
+[[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
+OPERATION_NAMESPACE="$claimed_namespace"; build_kube_args
 name="$("$JQ" -er '.name' <<<"$claim")"
 operation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"
@@ -154,6 +154,7 @@ for value in "$operation_id" "$instance"; do
 done
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
+[[ "$name" =~ ^post-restore-audit-[a-f0-9]{20}$ && "$operation_id" == "$name" && "$claimed_type" == PostRestoreAudit && "$claimed_requester" == platform:post-restore-audit && "$claimed_owner" == "$WORKER_ID" && "$claimed_secret" == "${name}-parameters" && "$claimed_key" == parameters.json && "$attempt" =~ ^[1-5]$ ]] || { echo "post-restore audit claim identity does not match the dedicated requester contract" >&2; exit 2; }
 if [[ -z "$PARAMETERS_INPUT" ]]; then
   managed_parameters="${parameter_capture_dir}/managed-parameters.json"
   PARAMETERS_INPUT="$managed_parameters"
@@ -222,6 +223,8 @@ validate_audit_endpoint_json() {
 validate_audit_endpoint_json ||
   { echo "audit public_endpoint identity is invalid" >&2; exit 2; }
 
+"$JQ" -e '(keys|sort)==(["audit_duration_seconds","audit_interval_seconds","audit_prefix","cutover_receipt_input","cutover_receipt_sha256","cutover_state_input","cutover_state_sha256","expected_replicas","kube_context","kubeconfig_path","min_samples","public_endpoint","receipt_output","service_name","service_namespace","state_dir","target_instance"]|sort)' "$PARAMETERS_INPUT" >/dev/null || { echo "audit parameters must exactly match the dedicated requester schema" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .state_dir, .cutover_state_input, .cutover_state_sha256,
   .cutover_receipt_input, .cutover_receipt_sha256,
@@ -240,6 +243,7 @@ IFS=$'\t' read -r state_dir cutover_state cutover_state_sha cutover_receipt cuto
 receipt_input="$receipt_output"
 [[ "$data_context" == "-" ]] && data_context=""
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
+[[ -z "$data_context" && -z "$data_kubeconfig" ]] || { echo "post-restore audit data cluster override must be empty" >&2; exit 2; }
 operation_is_positive_int64 "$expected_replicas" && (( expected_replicas <= 2147483647 )) ||
   { echo "audit expected replicas must be a canonical positive int32" >&2; exit 2; }
 operation_is_positive_int64 "$duration" && (( duration <= 86400 )) &&
@@ -285,8 +289,10 @@ for digest in "$cutover_state_sha" "$cutover_receipt_sha"; do
     { echo "audit evidence digest is invalid" >&2; exit 2; }
 done
 for path in "$cutover_state" "$cutover_receipt"; do
-  [[ -f "$path" ]] || { echo "audit evidence is missing: ${path}" >&2; exit 2; }
+  [[ "$path" == "$WORK_DIR"/* && -f "$path" && ! -L "$path" && "$(realpath -e -- "$path")" == "$path" ]] || { echo "audit evidence must be a canonical regular non-symlink file in WORK_DIR: ${path}" >&2; exit 2; }
 done
+[[ "$state_dir" == "${WORK_DIR}/${name}.state" && "$receipt_output" == "${WORK_DIR}/${name}.receipt.json" ]] || { echo "audit output paths do not match the dedicated requester contract" >&2; exit 2; }
+[[ ! -L "$state_dir" && ! -L "$receipt_output" ]] || { echo "audit output path must not be a symlink" >&2; exit 2; }
 
 freeze_evidence() {
   local source="$1" expected="$2" evidence_name="$3" destination source_digest captured_digest current_digest
@@ -349,8 +355,6 @@ audit_env=(
   "AUDIT_INTERVAL_SECONDS=${interval}" "MIN_SAMPLES=${min_samples}"
   "AUDIT_PREFIX=${audit_prefix}" "RECEIPT_OUTPUT=${receipt_output}"
 )
-[[ -n "$data_context" ]] && audit_env+=("KUBE_CONTEXT=${data_context}")
-[[ -n "$data_kubeconfig" ]] && audit_env+=("KUBECONFIG_PATH=${data_kubeconfig}")
 
 validate_cutover_state_schema() {
   awk -F '\t' -v expected="$expected_replicas" '

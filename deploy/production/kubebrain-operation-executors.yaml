@@ -733,6 +733,7 @@ spec:
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: AUDIT_COMMAND, value: /opt/kubebrain/hack/production/audit-restored-instance.sh}
             - {name: PROBE, value: /usr/local/bin/kubebrain-etcd-audit-probe}
+            - {name: WORK_DIR, value: /var/lib/kubebrain-operation}
           envFrom: [{secretRef: {name: kubebrain-post-restore-audit-executor-env}}]
           resources:
             requests: {cpu: 50m, memory: 96Mi}
