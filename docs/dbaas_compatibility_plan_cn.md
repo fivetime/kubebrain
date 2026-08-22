@@ -60458,6 +60458,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成功，并留存 Secret/CronJob/Job/Pod、容器退出原因及 S3 access trail。Secret UID 不在容器环境内，运行时阻断依赖 data
   SHA；同字节新 UID 由三层审计绑定和持续 `--check-enabled` 识别。
 
+- A5369 将 A5359–A5368 仍依赖文字约定的“IAM evidence 由受信系统签发”提升为密码学门禁。此前 canonical v2 JSON 即使
+  scope、时效、decision 和 credential binding 全部合法，任何能准备 enable 输入文件的主体仍可自行构造 allowed/denied
+  结论；SHA 只能证明文件未变，不能认证签发者。现在独立 foundation/release overlay 必须预先把 exact PEM public-key SHA
+  只钉入 suspended CronJob metadata，源码及 Job/Pod template 保持 pending；enable 不能自行选择信任根。门禁要求当前用户
+  0600、单链接、1..16384-byte 公钥文件，OpenSSL 解析后的 DER SPKI 必须精确匹配 Ed25519 OID+32-byte key；evidence 的 detached
+  raw signature 同样须为当前用户 0600 单链接且精确 64 byte，并以 pinned key 验证 evidence 文件的 exact bytes。语义解析、
+  evidence SHA、验签跨多次文件读取后再次重算 evidence/signature/key 三份摘要，同行程用户在 OpenSSL 返回后替换 evidence
+  的回归证明 Job 不会创建。CronJob、周期 Job template、Pod template、手动 Job 和实际 Pod 新增 signature SHA/trust SHA，
+  与原五项组成七项审计绑定；enable/refresh 对三层旧值逐键 CAS，保留无关 annotation，refresh 不得轮换 trust root。回归
+  使用真实 Go Ed25519 key/signature 与系统 OpenSSL，覆盖语义合法但伪造的 evidence、63-byte signature、未钉 key、已正确
+  钉 SHA 的 RSA key、验签中 TOCTOU，以及 create/completed Job/Pod/scheduled template 的 signature/trust 漂移。新增后 578
+  项 inventory；四片 130/163/147/138 在代码提交 `c7c8f6e0` 上全部通过（Go 测试
+  158.723/500.363/287.651/538.074 秒；端到端 167.742/509.467/296.729/547.173 秒）。该门禁证明 exact evidence 由 pinned
+  Ed25519 key 持有者签发，不证明签发服务正确调用 AWS API、credential 对应 principal、SCP/resource policy 上下文完整，
+  也不证明私钥由 HSM/KMS 隔离；生产必须保留原始 simulator 输出、签发审计、key version/HSM attestation、公钥 release
+  审批及七项 Kubernetes binding。信任根轮换须暂停 schedule、由独立发布流程重置全部 binding 后重新 enable，不能借
+  `--refresh-iam` 偷换 key。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

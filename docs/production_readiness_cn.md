@@ -5963,14 +5963,23 @@ suspend；专用门禁必须证明 Kubernetes 写动作和 S3 Put/Delete/List �
 
 ```bash
 KUBE_CONTEXT=production hack/production/apply-operation-archive-verifier.sh --check
+
+# 独立发布 overlay 必须预先把 CronJob metadata 的 trust-public-key SHA 从 pending 替换为
+# sha256sum /secure/trust/verifier-iam-ed25519-public.pem 的精确值；Job/Pod template 此时仍保持 pending。
 KUBE_CONTEXT=production ENABLE_OPERATION_ARCHIVE_VERIFIER=yes \
   IAM_SIMULATION_EVIDENCE=/secure/audit/verifier-iam.json \
+  IAM_SIMULATION_EVIDENCE_SIGNATURE=/secure/audit/verifier-iam.sig \
+  IAM_SIMULATION_TRUSTED_PUBLIC_KEY=/secure/trust/verifier-iam-ed25519-public.pem \
   hack/production/apply-operation-archive-verifier.sh --enable
-KUBE_CONTEXT=production hack/production/apply-operation-archive-verifier.sh --check-enabled
+KUBE_CONTEXT=production \
+  IAM_SIMULATION_TRUSTED_PUBLIC_KEY=/secure/trust/verifier-iam-ed25519-public.pem \
+  hack/production/apply-operation-archive-verifier.sh --check-enabled
 
 # 到期前使用受信系统签发的新证据续签；CronJob 保持启用，先验收手动 Job，再 CAS 轮换绑定。
 KUBE_CONTEXT=production REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM=yes \
   IAM_SIMULATION_EVIDENCE=/secure/audit/verifier-iam-renewed.json \
+  IAM_SIMULATION_EVIDENCE_SIGNATURE=/secure/audit/verifier-iam-renewed.sig \
+  IAM_SIMULATION_TRUSTED_PUBLIC_KEY=/secure/trust/verifier-iam-ed25519-public.pem \
   hack/production/apply-operation-archive-verifier.sh --refresh-iam
 ```
 
@@ -5987,15 +5996,17 @@ archive annotation 完整且远端 exact version/retention 可读的终态 Opera
 `generateName: kubebrain-archive-verifier-enable-`，避免失败 Job 七天保留期间阻塞安全重试，也可通过
 `VERIFICATION_JOB_NAME` 指定唯一 DNS label 供外部审批系统关联。Job metadata 必须同时持久保存本次 canonical
 evidence 的 `dbaas.kubebrain.io/iam-simulation-sha256`、
+`dbaas.kubebrain.io/iam-simulation-signature-sha256`、预钉的
+`dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256`、
 `dbaas.kubebrain.io/iam-simulation-valid-until-unix`，以及冻结凭据的
 `dbaas.kubebrain.io/credential-secret-uid`、`dbaas.kubebrain.io/credential-secret-resource-version` 和
 `dbaas.kubebrain.io/credential-secret-data-sha256`，使七天保留对象可直接关联授权证据与实际凭据版本。脚本必须从 apiserver create
-JSON 响应取得并校验 namespace、DNS label、五项 annotation，以及请求的显式名称或生成前缀，不能信任本地预估名称；
+JSON 响应取得并校验 namespace、DNS label、七项 annotation，以及请求的显式名称或生成前缀，不能信任本地预估名称；
 admission 删除或改写绑定时在 wait 前停止。create 返回的非空安全 UID 同样被冻结；wait 报告完成后必须重新 GET 同名
-Job，要求 namespace/name/UID、五项 evidence/credential annotation、Pod template 绑定、唯一 runtime expiry 和唯一 `Complete=True` condition 全部一致，
+Job，要求 namespace/name/UID、七项 evidence/signature/trust/credential annotation、Pod template 绑定、唯一 runtime expiry 和唯一 `Complete=True` condition 全部一致，
 且 expiry 在最终检查时仍位于未来。对象消失或任一异步漂移都不得读取成功日志或 patch CronJob。只有最终态复验通过且
-实际执行 Pod 也必须可核验：Job template 把同一 evidence SHA/expiry 与 Secret UID/resourceVersion/data SHA annotation 传播给 Pod；完成后按
-`batch.kubernetes.io/job-name` 只允许一个 Pod，要求 namespace/label、指向冻结 Job name+UID 的 controller owner、五项
+实际执行 Pod 也必须可核验：Job template 把同一 evidence/signature/trust SHA、expiry 与 Secret UID/resourceVersion/data SHA annotation 传播给 Pod；完成后按
+`batch.kubernetes.io/job-name` 只允许一个 Pod，要求 namespace/label、指向冻结 Job name+UID 的 controller owner、七项
 annotation、ServiceAccount、Never restartPolicy、完整单 verifier container spec 与 Job template 逐字一致，且 phase 为
 Succeeded。唯一 `containerStatuses` 还必须 name/image 匹配，runtime `imageID` 以批准的 sha256 digest 结尾，零重启且
 terminated exitCode=0/reason=Completed；init containers 必须与 Job template 一致，并禁止 ephemeral container。Pod
@@ -6010,8 +6021,14 @@ S3 Put/Delete 来“证明拒绝”，因为误配时会产生真实副作用；
 `credential_secret_data_sha256`，分别等于本次冻结的 Secret UID 和 canonical `.data` SHA-256；object-store-id/bucket 与 Secret 相同，checked-at 不早于
 一小时前且不晚于当前时间五分钟，valid-until 至少比当前时间晚一小时且不超过检查后 24 小时。decisions 必须精确证明
 GetBucketVersioning/GetObject/GetObjectLockConfiguration/GetObjectRetention allowed，以及 PutObject/DeleteObject/
-ListBucket/ListBucketVersions denied。证据 SHA、valid-until、Secret UID/resourceVersion/data SHA、运行时 expiry、
-运行时 credential data SHA 与 `suspend=false` 在同一 resourceVersion/suspend/pending CAS patch 中写入 CronJob；五项
+ListBucket/ListBucketVersions denied。受信签发系统必须用离线保护的 Ed25519 私钥对 evidence 文件精确字节（包括 canonical
+单行后的换行）生成 detached raw signature；私钥不得复制到发布/运维主机。门禁只接受当前用户 0600 单链接、精确 64-byte
+签名和 1..16384-byte 的 0600 单链接 PEM 公钥，后者 DER SPKI 必须精确为 Ed25519。公钥文件 SHA 必须在 foundation 发布
+overlay 中预先只钉入 CronJob metadata；源码和 Job/Pod template 保持 `pending`，未预钉、由 enable 临时选择的 key、RSA/
+ECDSA key、错误签名或公钥 SHA 漂移全部在创建 Job 前失败。语义解析、摘要和 OpenSSL 验签分次读取的 evidence/signature/key
+在验签后全部重算摘要，阻断同用户并发替换的 TOCTOU。
+证据 SHA、签名 SHA、信任公钥 SHA、valid-until、Secret UID/resourceVersion/data SHA、运行时 expiry、
+运行时 credential data SHA 与 `suspend=false` 在同一 resourceVersion/suspend/pending CAS patch 中写入 CronJob；七项
 annotation 同步逐键写入 CronJob metadata、周期 Job template metadata 和 Pod template metadata，保留发布系统的无关
 annotation，不能先启用再补证据。每个 verifier 进程在创建 Kubernetes client 或访问 S3 前先检查
 `IAM_SIMULATION_VALID_UNTIL_UNIX`，再把 kubelet 实际解析的七个 object-store 环境值按 Secret key 映射、标准 base64 和
@@ -6019,16 +6036,19 @@ annotation，不能先启用再补证据。每个 verifier 进程在创建 Kuber
 字节替换均非零退出并触发现有 critical Job 告警。`--check-enabled` 同时要求三层 annotation、两个运行时值与当前 Secret
 逐字一致且 evidence 仍有效。`--refresh-iam` 只接受已启用的 CronJob，默认以
 `generateName: kubebrain-archive-verifier-iam-` 用新 expiry 创建并完成一次性只读 Job，再以 resourceVersion、
-`suspend=false`、三层旧 SHA/expiry/credential binding 和两个旧运行时值的 CAS 原子轮换；Job
+`suspend=false`、三层旧 evidence/signature/trust/expiry/credential binding 和两个旧运行时值的 CAS 原子轮换；Job
 失败或并发漂移均保留旧绑定。受信 CI/审批系统必须至少按日续签并在到期前留出一次完整手动 Job 和故障处置预算。
 门禁在构造手动 Job 前、以及完成态 Job/Pod 校验后再次 GET Secret；任一次读取只要 UID、resourceVersion、
 `immutable:true` 或 canonical `.data` SHA 漂移，均在日志验收和 CronJob patch 前失败。凭据轮换不得原地修改该 Secret：应按
 Kubernetes 不可变 Secret 流程协调删除并以同名新对象重建，取得新 UID/data SHA 后重新执行 provider simulation、签发 v2
 证据并运行 `--refresh-iam`。轮换窗口内旧证据不得用于新 Secret；生产记录应共同留存 Secret UID/resourceVersion/data SHA、
-canonical IAM 文件、CronJob/Job/Pod 五项 annotation、运行时 credential digest、日志和 provider access trail。Secret
+canonical IAM 文件、detached signature、精确 PEM 公钥、CronJob/Job/Pod 七项 annotation、运行时 credential digest、日志和 provider access trail。Secret
 UID 本身不会由 kubelet 注入容器，故 binary 以 data SHA 阻断凭据字节替换，UID 替换仍由三层审计绑定和持续
 `--check-enabled` 检测；该流程不宣称 Secret 重建本身零停机，必须按
 目标集群调度与凭据切换策略预先设计维护窗口或冗余。
+`--refresh-iam` 不允许轮换 trust root；公钥轮换必须先暂停 schedule，由独立发布审批原子重置全部 evidence/runtime binding
+为 pending、更新 metadata trust SHA，再以新 key 签发的新证据重新执行 enable。签名只认证“哪个受信系统签发了这组声明”，
+不替代签发系统对原始 AWS simulator 输出、SCP/resource policy、credential→principal 映射和审批身份的验证与留存。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
