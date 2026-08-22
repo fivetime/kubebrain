@@ -75,6 +75,23 @@ func TestOperationParameterBrokerInstallerChecksEnabledWithoutMutation(t *testin
 	require.Contains(t, string(out), "checked two ready parameter broker replicas")
 }
 
+func TestOperationParameterBrokerInstallerRejectsUnreadyDirectPod(t *testing.T) {
+	dir := t.TempDir()
+	logPath, marker := filepath.Join(dir, "calls.log"), filepath.Join(dir, "scaled")
+	kubectl := writeParameterBrokerKubectl(t, dir)
+	curl := writeParameterBrokerCurl(t, dir)
+	caFile, tokenFile := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(caFile, []byte("ca"), 0o600))
+	require.NoError(t, os.WriteFile(tokenFile, []byte("projected.token"), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-parameter-broker.sh", "--enable"}, []string{
+		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "CURL=" + curl, "CURL_FAIL_POD=true", "CALL_LOG=" + logPath,
+		"SCALE_MARKER=" + marker, "BROKER_CA_FILE=" + caFile, "BROKER_TOKEN_FILE=" + tokenFile,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(out), "Pod HTTPS readiness did not return 204")
+	require.Contains(t, string(mustRead(t, logPath)), "--replicas=0")
+}
+
 func writeParameterBrokerKubectl(t *testing.T, dir string) string {
 	t.Helper()
 	kubectl := filepath.Join(dir, "kubectl")
@@ -99,6 +116,11 @@ case "$1" in
         ;;
       secret) printf '{"type":"kubernetes.io/tls","data":{"tls.crt":"Y2VydA==","tls.key":"a2V5"}}\n' ;;
       configmap) printf '{"data":{"ca.crt":"ca"}}\n' ;;
+      pods) printf '{"items":[{"metadata":{"name":"broker-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"broker-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}\n' ;;
+      pod)
+        case "$3" in broker-0) uid=uid-0 ;; broker-1) uid=uid-1 ;; *) exit 99 ;; esac
+        printf '{"metadata":{"uid":"%s"}}\n' "$uid"
+        ;;
       *) exit 99 ;;
     esac
     ;;
@@ -107,7 +129,7 @@ case "$1" in
     ;;
   rollout) ;;
   port-forward)
-    printf 'Forwarding from 127.0.0.1:45679 -> 443\n'
+    if [[ "$*" == *"pod/"* ]]; then printf 'Forwarding from 127.0.0.1:45680 -> 8443\n'; else printf 'Forwarding from 127.0.0.1:45679 -> 443\n'; fi
     while true; do sleep 1; done
     ;;
   *) exit 99 ;;
@@ -123,7 +145,7 @@ func writeParameterBrokerCurl(t *testing.T, dir string) string {
 set -euo pipefail
 printf 'curl %s\n' "$*" >>"$CALL_LOG"
 if [[ "$*" == *readyz ]]; then
-  if [[ "${CURL_FAIL:-false}" == true ]]; then printf 500; else printf 204; fi
+  if [[ "${CURL_FAIL:-false}" == true || ( "${CURL_FAIL_POD:-false}" == true && "$*" == *":45680/readyz"* ) ]]; then printf 500; else printf 204; fi
 else
   printf 403
 fi

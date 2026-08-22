@@ -74,7 +74,7 @@ check_deployment() {
 }
 
 runtime_smoke() (
-  local should_scale="$1" tls_json ca_json token token_bytes ca_bytes ca_mode tmp ca_from_config curl_config port_log port_forward_pid port attempt line ready_code auth_code
+  local should_scale="$1" tls_json ca_json pods_json pod_json token token_bytes ca_bytes ca_mode tmp ca_from_config curl_config port_log port_forward_pid port attempt line ready_code auth_code pod uid_listed uid_before uid_after
   [[ -f "$BROKER_CA_FILE" && ! -L "$BROKER_CA_FILE" ]] || die "BROKER_CA_FILE must be a regular non-symlink file"
   ca_bytes="$(stat -Lc '%s' "$BROKER_CA_FILE")"; ca_mode="$(stat -Lc '%a' "$BROKER_CA_FILE")"
   [[ "$ca_bytes" =~ ^[0-9]+$ && "$ca_bytes" -ge 1 && "$ca_bytes" -le 1048576 ]] || die "broker CA bundle must be 1..1048576 bytes"
@@ -124,6 +124,36 @@ runtime_smoke() (
   [[ "$ready_code" == 204 ]] || die "broker HTTPS readiness did not return 204"
   auth_code="$("$CURL" --silent --show-error --output /dev/null --write-out '%{http_code}' --noproxy '*' --proto '=https' --tlsv1.2 --connect-timeout 5 --max-time 15 --cacert "$BROKER_CA_FILE" --resolve "${BROKER_HOST}:${port}:127.0.0.1" --config "$curl_config" "https://${BROKER_HOST}:${port}/v1/parameters?namespace=kubebrain-operations&name=broker-smoke-missing&owner=worker-a&attempt=1")" || die "broker authenticated parameter request failed"
   [[ "$auth_code" == 403 ]] || die "broker authenticated missing-operation request did not return 403"
+  kill "$port_forward_pid" 2>/dev/null || true; wait "$port_forward_pid" 2>/dev/null || true; port_forward_pid=""
+
+  pods_json="$("$KUBECTL" "${context[@]}" get pods -n "$NAMESPACE" -l app.kubernetes.io/name=kubebrain-operation-parameter-broker -o json)" || die "cannot list parameter broker Pods"
+  "$JQ" -e '(.items|length) == 2 and all(.items[]; (.metadata.name|type == "string" and length > 0) and (.metadata.uid|type == "string" and length > 0) and ((.metadata.deletionTimestamp // "") == "") and any(.status.conditions[]?; .type == "Ready" and .status == "True")) and ([.items[].metadata.uid]|unique|length) == 2' <<<"$pods_json" >/dev/null || die "parameter broker must have exactly two distinct non-terminating Ready Pods"
+  mapfile -t pod_names < <("$JQ" -er '.items|sort_by(.metadata.name)|.[].metadata.name' <<<"$pods_json")
+  for pod in "${pod_names[@]}"; do
+    uid_listed="$("$JQ" -er --arg pod "$pod" '.items[] | select(.metadata.name == $pod) | .metadata.uid' <<<"$pods_json")"
+    pod_json="$("$KUBECTL" "${context[@]}" get pod "$pod" -n "$NAMESPACE" -o json)" || die "cannot read parameter broker Pod identity: ${pod}"
+    uid_before="$("$JQ" -er '.metadata.uid | select(type == "string" and length > 0)' <<<"$pod_json")" || die "parameter broker Pod UID is missing: ${pod}"
+    [[ "$uid_before" == "$uid_listed" ]] || die "parameter broker Pod changed before direct smoke: ${pod}"
+    port_log="${tmp}/${pod}.port-forward.log"
+    "$KUBECTL" "${context[@]}" port-forward --address 127.0.0.1 -n "$NAMESPACE" "pod/${pod}" :8443 >"$port_log" 2>&1 & port_forward_pid=$!
+    port=""
+    for ((attempt = 1; attempt <= 100; attempt++)); do
+      kill -0 "$port_forward_pid" 2>/dev/null || die "broker Pod port-forward exited before becoming ready: ${pod}"
+      [[ "$(stat -Lc '%s' "$port_log")" -le 65536 ]] || die "broker Pod port-forward log exceeded 64 KiB: ${pod}"
+      line="$(grep -m1 -E '^Forwarding from 127\.0\.0\.1:[0-9]+ -> 8443$' "$port_log" || true)"
+      if [[ -n "$line" ]]; then port="${line#*:}"; port="${port%% *}"; break; fi
+      sleep 0.1
+    done
+    [[ "$port" =~ ^[1-9][0-9]{0,4}$ && "$port" -le 65535 ]] || die "broker Pod port-forward did not report a valid local IPv4 port: ${pod}"
+    ready_code="$("$CURL" --silent --show-error --output /dev/null --write-out '%{http_code}' --noproxy '*' --proto '=https' --tlsv1.2 --connect-timeout 5 --max-time 15 --cacert "$BROKER_CA_FILE" --resolve "${BROKER_HOST}:${port}:127.0.0.1" "https://${BROKER_HOST}:${port}/readyz")" || die "broker Pod HTTPS readiness request failed: ${pod}"
+    [[ "$ready_code" == 204 ]] || die "broker Pod HTTPS readiness did not return 204: ${pod}"
+    auth_code="$("$CURL" --silent --show-error --output /dev/null --write-out '%{http_code}' --noproxy '*' --proto '=https' --tlsv1.2 --connect-timeout 5 --max-time 15 --cacert "$BROKER_CA_FILE" --resolve "${BROKER_HOST}:${port}:127.0.0.1" --config "$curl_config" "https://${BROKER_HOST}:${port}/v1/parameters?namespace=kubebrain-operations&name=broker-smoke-missing&owner=worker-a&attempt=1")" || die "broker Pod authenticated parameter request failed: ${pod}"
+    [[ "$auth_code" == 403 ]] || die "broker Pod authenticated missing-operation request did not return 403: ${pod}"
+    pod_json="$("$KUBECTL" "${context[@]}" get pod "$pod" -n "$NAMESPACE" -o json)" || die "cannot reread parameter broker Pod identity: ${pod}"
+    uid_after="$("$JQ" -er '.metadata.uid' <<<"$pod_json")"
+    [[ "$uid_after" == "$uid_before" ]] || die "parameter broker Pod changed during direct smoke: ${pod}"
+    kill "$port_forward_pid" 2>/dev/null || true; wait "$port_forward_pid" 2>/dev/null || true; port_forward_pid=""
+  done
   smoke_succeeded=true
   if [[ "$should_scale" == true ]]; then echo "enabled two ready parameter broker replicas and verified HTTPS/TokenReview smoke"; else echo "checked two ready parameter broker replicas and HTTPS/TokenReview smoke"; fi
 )
