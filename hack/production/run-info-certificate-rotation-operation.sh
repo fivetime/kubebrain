@@ -21,6 +21,8 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
+MAX_STATE_BYTES=2097152
+MAX_TLS_RECEIPT_BYTES=1048576
 MAX_SCRAPE_RECEIPT_BYTES=2097152
 
 die() { echo "$*" >&2; exit 2; }
@@ -146,6 +148,11 @@ evidence_file_secure() {
   attributes="$(stat -Lc '%a:%u:%h' -- "$path")" || return 1
   [[ "$attributes" == "600:${executor_uid}:1" ]]
 }
+evidence_size_valid() {
+  local path="$1" maximum="$2" size
+  size="$(stat -Lc '%s' -- "$path")" || return 1
+  [[ "$size" =~ ^[0-9]+$ ]] && (( size <= maximum ))
+}
 if paths_alias "$state_file" "$receipt_output" ||
   paths_alias "$state_file" "$scrape_receipt_output" ||
   paths_alias "$receipt_output" "$scrape_receipt_output"; then
@@ -213,6 +220,7 @@ state_old_fingerprint=""
 state_new_fingerprint=""
 validate_state() {
   evidence_file_secure "$state_file" || return 1
+  evidence_size_valid "$state_file" "$MAX_STATE_BYTES" || return 1
   awk -F '\t' -v instance="$instance" -v rotation="$rotation_id" -v endpoint="$endpoint" -v expected="$replicas" '
     NR == 1 {
       if (NF != 6 || $1 != "kubebrain.info-certificate-rotation.state.v1" || $2 != instance || $3 != rotation || $4 != endpoint || $5 !~ /^[a-f0-9]{64}$/ || $6 !~ /^[a-f0-9]{64}$/ || $5 == $6) exit 1
@@ -224,9 +232,10 @@ validate_state() {
   ' "$state_file" || return 1
   IFS=$'\t' read -r _ _ _ _ state_old_fingerprint state_new_fingerprint <"$state_file"
 }
-if [[ -e "$state_file" ]]; then validate_state || die "info certificate rotation state or security attributes are invalid"; fi
+if [[ -e "$state_file" ]]; then validate_state || die "info certificate rotation state, size, or security attributes are invalid"; fi
 if [[ -e "$receipt_output" ]]; then
   evidence_file_secure "$receipt_output" || die "info certificate rotation TLS receipt security attributes are invalid"
+  evidence_size_valid "$receipt_output" "$MAX_TLS_RECEIPT_BYTES" || die "info certificate rotation TLS receipt exceeds ${MAX_TLS_RECEIPT_BYTES} bytes"
   [[ -e "$state_file" ]] || die "info certificate rotation receipt has no durable state"
   steps=(verify)
 elif [[ -e "$state_file" ]]; then steps=(publish complete); else steps=(begin publish complete); fi
@@ -243,6 +252,7 @@ done
 
 [[ -f "$receipt_output" ]] || { renew_terminal_lease || exit 1; retry_and_exit "info certificate rotation receipt missing"; }
 evidence_file_secure "$receipt_output" || { renew_terminal_lease || exit 1; retry_and_exit "info certificate rotation TLS receipt security attributes are invalid"; }
+evidence_size_valid "$receipt_output" "$MAX_TLS_RECEIPT_BYTES" || { renew_terminal_lease || exit 1; retry_and_exit "info certificate rotation TLS receipt exceeds ${MAX_TLS_RECEIPT_BYTES} bytes"; }
 validate_receipt() {
   validate_state || return 1
   "$JQ" -e --arg instance "$instance" --arg rotation "$rotation_id" --arg endpoint "$endpoint" --arg old "$state_old_fingerprint" --arg new "$state_new_fingerprint" --argjson replicas "$replicas" --argjson required "$require_rejection" '
@@ -266,6 +276,7 @@ scrape_env=("TLS_RECEIPT_INPUT=$receipt_input" "SCRAPE_RECEIPT_OUTPUT=$scrape_re
 scrape_action=complete
 if [[ -e "$scrape_receipt_output" ]]; then
   evidence_file_secure "$scrape_receipt_output" || die "info scrape recovery receipt security attributes are invalid"
+  evidence_size_valid "$scrape_receipt_output" "$MAX_SCRAPE_RECEIPT_BYTES" || die "info scrape recovery receipt exceeds ${MAX_SCRAPE_RECEIPT_BYTES} bytes"
   scrape_action=verify
 fi
 if run_step "info scrape recovery ${scrape_action}" env "${scrape_env[@]}" ACTION="$scrape_action" "$SCRAPE_COMMAND"; then
@@ -278,9 +289,9 @@ else
 fi
 [[ -f "$scrape_receipt_output" ]] || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt missing"; }
 evidence_file_secure "$scrape_receipt_output" || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt security attributes are invalid"; }
+evidence_size_valid "$scrape_receipt_output" "$MAX_SCRAPE_RECEIPT_BYTES" || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt exceeds ${MAX_SCRAPE_RECEIPT_BYTES} bytes"; }
 [[ "$(file_sha256 "$receipt_input")" == "$receipt_digest" ]] && validate_receipt || { renew_terminal_lease || exit 1; retry_and_exit "info certificate rotation receipt changed during scrape recovery"; }
 scrape_receipt_size="$(stat -Lc '%s' -- "$scrape_receipt_output")" || scrape_receipt_size=""
-[[ "$scrape_receipt_size" =~ ^[0-9]+$ ]] && (( scrape_receipt_size <= MAX_SCRAPE_RECEIPT_BYTES )) || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt exceeds ${MAX_SCRAPE_RECEIPT_BYTES} bytes"; }
 validate_scrape_receipt() {
   "$JQ" -e --arg instance "$instance" --arg rotation "$rotation_id" --arg endpoint "$endpoint" --arg namespace "$namespace" --arg service "$service" --arg tlsDigest "$receipt_digest" --arg certificate "$state_new_fingerprint" --arg query "up{namespace=\"${namespace}\",service=\"${service}\"}" --argjson replicas "$replicas" --argjson completed "$tls_completed_at" '
     keys == ["all_targets_up","format","info_endpoint","instance","namespace","new_certificate_sha256","observed_at_unix","oldest_sample_unix","prometheus_query","replicas","rotation_id","service","targets","tls_rotation_completed_at_unix","tls_rotation_receipt_sha256"] and

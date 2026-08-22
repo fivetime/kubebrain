@@ -194,7 +194,7 @@ func TestInfoCertificateRotationOperationRejectsInsecureEvidenceFiles(t *testing
 		name, evidence, wanted string
 		prepare                func(*testing.T, *infoRotationRunnerFixture)
 	}{
-		{"state mode", "state", "state or security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
+		{"state mode", "state", "state, size, or security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
 			require.NoError(t, os.Chmod(filepath.Join(f.stateDir, "rotation-1.info.state"), 0o640))
 		}},
 		{"TLS receipt mode", "receipt", "TLS receipt security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
@@ -203,7 +203,7 @@ func TestInfoCertificateRotationOperationRejectsInsecureEvidenceFiles(t *testing
 		{"scrape receipt mode", "scrape", "scrape recovery receipt security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
 			require.NoError(t, os.Chmod(f.scrapeReceipt, 0o644))
 		}},
-		{"unrelated state hard link", "state", "state or security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
+		{"unrelated state hard link", "state", "state, size, or security attributes are invalid", func(t *testing.T, f *infoRotationRunnerFixture) {
 			require.NoError(t, os.Link(filepath.Join(f.stateDir, "rotation-1.info.state"), filepath.Join(f.dir, "unrelated-state-link")))
 		}},
 	} {
@@ -211,6 +211,35 @@ func TestInfoCertificateRotationOperationRejectsInsecureEvidenceFiles(t *testing
 			f := newInfoRotationRunnerFixture(t)
 			f.publishEvidence(t, tc.evidence)
 			tc.prepare(t, f)
+			f.run(t, false, tc.wanted)
+			log := string(mustRead(t, f.log))
+			if tc.evidence == "scrape" {
+				require.NotContains(t, log, "scrape ")
+			} else {
+				require.NotContains(t, log, "gate ")
+			}
+		})
+	}
+}
+
+func TestInfoCertificateRotationOperationRejectsOversizedEvidenceBeforeParsing(t *testing.T) {
+	for _, tc := range []struct {
+		name, evidence, path string
+		size                 int64
+		wanted               string
+	}{
+		{"state", "state", "state", 2097153, "state, size, or security attributes are invalid"},
+		{"TLS receipt", "receipt", "receipt", 1048577, "TLS receipt exceeds 1048576 bytes"},
+		{"scrape receipt", "scrape", "scrape", 2097153, "scrape recovery receipt exceeds 2097152 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInfoRotationRunnerFixture(t)
+			f.publishEvidence(t, tc.evidence)
+			paths := map[string]string{
+				"state":   filepath.Join(f.stateDir, "rotation-1.info.state"),
+				"receipt": f.receipt, "scrape": f.scrapeReceipt,
+			}
+			require.NoError(t, os.Truncate(paths[tc.path], tc.size))
 			f.run(t, false, tc.wanted)
 			log := string(mustRead(t, f.log))
 			if tc.evidence == "scrape" {
