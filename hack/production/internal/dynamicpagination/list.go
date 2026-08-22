@@ -9,20 +9,24 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-const DefaultPageLimit int64 = 500
+const (
+	DefaultPageLimit int64 = 500
+	DefaultMaxItems  int64 = 10_000
+)
 
 type ResourceLister interface {
 	List(context.Context, metav1.ListOptions) (*unstructured.UnstructuredList, error)
 }
 
-// All follows Kubernetes continue tokens and rejects token loops or a changing
-// list resourceVersion. The caller still owns any aggregate item-count policy.
-func All(ctx context.Context, resource ResourceLister, options metav1.ListOptions, pageLimit int64) ([]unstructured.Unstructured, error) {
+// All follows Kubernetes continue tokens and rejects token loops, a changing
+// list resourceVersion, oversized pages, or an oversized collection. A caller
+// aggregating multiple collections must enforce its own global item limit.
+func All(ctx context.Context, resource ResourceLister, options metav1.ListOptions, pageLimit, maxItems int64) ([]unstructured.Unstructured, error) {
 	if ctx == nil || resource == nil {
 		return nil, errors.New("list context and resource are required")
 	}
-	if pageLimit <= 0 || options.Limit != 0 || options.Continue != "" {
-		return nil, errors.New("page limit must be positive and list options must not predefine limit or continue")
+	if pageLimit <= 0 || maxItems <= 0 || options.Limit != 0 || options.Continue != "" {
+		return nil, errors.New("page and item limits must be positive and list options must not predefine limit or continue")
 	}
 	var items []unstructured.Unstructured
 	seenTokens := map[string]struct{}{}
@@ -52,6 +56,13 @@ func All(ctx context.Context, resource ResourceLister, options metav1.ListOption
 		}
 		if page == nil {
 			return nil, fmt.Errorf("list page %d returned a nil response", pageNumber)
+		}
+		pageItems := int64(len(page.Items))
+		if pageItems > pageLimit {
+			return nil, fmt.Errorf("list page %d returned %d items above the %d-item page limit", pageNumber, pageItems, pageLimit)
+		}
+		if int64(len(items)) > maxItems-pageItems {
+			return nil, fmt.Errorf("list exceeds the %d-item aggregate limit", maxItems)
 		}
 		if pageNumber == 1 {
 			resourceVersion = page.GetResourceVersion()

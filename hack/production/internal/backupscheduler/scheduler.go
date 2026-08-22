@@ -122,7 +122,8 @@ func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
 		}
 		items, err := dynamicpagination.All(
 			ctx, s.client.Resource(PolicyResource).Namespace(namespace),
-			metav1.ListOptions{}, dynamicpagination.DefaultPageLimit,
+			metav1.ListOptions{},
+			dynamicpagination.DefaultPageLimit, dynamicpagination.DefaultMaxItems,
 		)
 		if err != nil {
 			reconcileErrs = append(reconcileErrs, fmt.Errorf("%s: list policies: %w", namespace, err))
@@ -134,6 +135,12 @@ func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
 		for i := range items {
 			if err := ctx.Err(); err != nil {
 				return 0, errors.Join(append(reconcileErrs, err)...)
+			}
+			if int64(len(candidates)) >= dynamicpagination.DefaultMaxItems {
+				return 0, errors.Join(append(reconcileErrs, fmt.Errorf(
+					"backup policy candidates exceed the %d-item aggregate limit",
+					dynamicpagination.DefaultMaxItems,
+				))...)
 			}
 			candidates = append(candidates, policyCandidate{
 				namespace: namespace,

@@ -38,7 +38,7 @@ func TestAllFollowsConsistentPages(t *testing.T) {
 		LabelSelector:        "managed=true",
 		ResourceVersion:      "7",
 		ResourceVersionMatch: metav1.ResourceVersionMatchExact,
-	}, 2)
+	}, 2, 3)
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "b", "c"}, itemNames(items))
 	require.Equal(t, []metav1.ListOptions{
@@ -57,7 +57,7 @@ func TestAllFailsClosedOnPaginationDriftAndLoops(t *testing.T) {
 		{name: "continue loop", pages: []*unstructured.UnstructuredList{listPage("7", "next"), listPage("7", "next")}, want: "repeated a continue token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := All(context.Background(), &recordingLister{pages: tc.pages}, metav1.ListOptions{}, 2)
+			_, err := All(context.Background(), &recordingLister{pages: tc.pages}, metav1.ListOptions{}, 2, 10)
 			require.ErrorContains(t, err, tc.want)
 		})
 	}
@@ -66,9 +66,9 @@ func TestAllFailsClosedOnPaginationDriftAndLoops(t *testing.T) {
 func TestAllPropagatesCancellationAndListErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := All(ctx, &recordingLister{}, metav1.ListOptions{}, 2)
+	_, err := All(ctx, &recordingLister{}, metav1.ListOptions{}, 2, 10)
 	require.ErrorIs(t, err, context.Canceled)
-	_, err = All(context.Background(), &recordingLister{err: errors.New("unavailable")}, metav1.ListOptions{}, 2)
+	_, err = All(context.Background(), &recordingLister{err: errors.New("unavailable")}, metav1.ListOptions{}, 2, 10)
 	require.ErrorContains(t, err, "list page 1: unavailable")
 }
 
@@ -82,21 +82,35 @@ func TestAllRejectsAPageReturnedAfterCancellation(t *testing.T) {
 			}
 		},
 	}
-	items, err := All(ctx, lister, metav1.ListOptions{}, 1)
+	items, err := All(ctx, lister, metav1.ListOptions{}, 1, 10)
 	require.ErrorIs(t, err, context.Canceled)
 	require.Nil(t, items)
 	require.Len(t, lister.options, 1)
 }
 
 func TestAllRejectsInvalidInputs(t *testing.T) {
-	_, err := All(nil, &recordingLister{}, metav1.ListOptions{}, 2)
+	_, err := All(nil, &recordingLister{}, metav1.ListOptions{}, 2, 10)
 	require.Error(t, err)
-	_, err = All(context.Background(), nil, metav1.ListOptions{}, 2)
+	_, err = All(context.Background(), nil, metav1.ListOptions{}, 2, 10)
 	require.Error(t, err)
-	_, err = All(context.Background(), &recordingLister{}, metav1.ListOptions{Limit: 1}, 2)
+	_, err = All(context.Background(), &recordingLister{}, metav1.ListOptions{Limit: 1}, 2, 10)
 	require.Error(t, err)
-	_, err = All(context.Background(), &recordingLister{}, metav1.ListOptions{}, 0)
+	_, err = All(context.Background(), &recordingLister{}, metav1.ListOptions{}, 0, 10)
 	require.Error(t, err)
+	_, err = All(context.Background(), &recordingLister{}, metav1.ListOptions{}, 2, 0)
+	require.Error(t, err)
+}
+
+func TestAllRejectsPageAndAggregateItemLimitViolations(t *testing.T) {
+	_, err := All(context.Background(), &recordingLister{pages: []*unstructured.UnstructuredList{
+		listPage("7", "", "a", "b", "c"),
+	}}, metav1.ListOptions{}, 2, 10)
+	require.ErrorContains(t, err, "above the 2-item page limit")
+
+	_, err = All(context.Background(), &recordingLister{pages: []*unstructured.UnstructuredList{
+		listPage("7", "next", "a", "b"), listPage("7", "", "c", "d"),
+	}}, metav1.ListOptions{}, 2, 3)
+	require.ErrorContains(t, err, "exceeds the 3-item aggregate limit")
 }
 
 func listPage(resourceVersion, continueToken string, names ...string) *unstructured.UnstructuredList {

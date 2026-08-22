@@ -79,7 +79,8 @@ func (c *Controller) Reconcile(ctx context.Context) (int, error) {
 		}
 		items, err := dynamicpagination.All(
 			ctx, c.client.Resource(operationqueue.Resource).Namespace(namespace),
-			metav1.ListOptions{}, dynamicpagination.DefaultPageLimit,
+			metav1.ListOptions{},
+			dynamicpagination.DefaultPageLimit, dynamicpagination.DefaultMaxItems,
 		)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list operations in namespace %s: %w", namespace, err))
@@ -93,6 +94,12 @@ func (c *Controller) Reconcile(ctx context.Context) (int, error) {
 				return 0, errors.Join(append(errs, err)...)
 			}
 			if needsArchive(&items[i]) {
+				if int64(len(candidates)) >= dynamicpagination.DefaultMaxItems {
+					return 0, errors.Join(append(errs, fmt.Errorf(
+						"operation archive candidates exceed the %d-item aggregate limit",
+						dynamicpagination.DefaultMaxItems,
+					))...)
+				}
 				candidates = append(candidates, items[i].DeepCopy())
 			}
 		}

@@ -236,7 +236,8 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 		return nil, err
 	}
 	items, err := dynamicpagination.All(
-		ctx, q.resource, metav1.ListOptions{}, dynamicpagination.DefaultPageLimit,
+		ctx, q.resource, metav1.ListOptions{},
+		dynamicpagination.DefaultPageLimit, dynamicpagination.DefaultMaxItems,
 	)
 	if err != nil {
 		return nil, err
@@ -505,7 +506,8 @@ func (q *Queue) lastStarted(ctx context.Context, operationType string) (int64, e
 		return 0, err
 	}
 	items, err := dynamicpagination.All(
-		ctx, q.resource, metav1.ListOptions{}, dynamicpagination.DefaultPageLimit,
+		ctx, q.resource, metav1.ListOptions{},
+		dynamicpagination.DefaultPageLimit, dynamicpagination.DefaultMaxItems,
 	)
 	if err != nil {
 		return 0, err
