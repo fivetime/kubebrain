@@ -6018,7 +6018,9 @@ fencing，RWO 卷或节点本地卷不能满足跨节点接管。参数里的 ar
 `InfoCertificateRotation` runner 会用 `realpath -m` 解析 `state_dir`、TLS `receipt_output` 和
 `scrape_receipt_output` 的既有符号链接及 `..`，要求规范结果仍位于 Deployment 显式固定的 `WORK_DIR`；
 相对路径、仅字符串前缀相似的相邻目录和指向 workspace 外部的符号链接都会在 publish/rotation/scrape 前
-失败。不要依赖路径字符串看似以 workspace 开头，也不要用 `*-executor-env` 改写 `WORK_DIR`。
+失败。规范化后派生的 `${state_dir}/${operation_id}.info.state`、TLS receipt 和 scrape receipt 还必须两两
+不同；若对应文件已存在，runner 同时用 inode 等价检查拒绝硬链接别名。不要依赖路径字符串看似不同或看似
+以 workspace 开头，也不要用 `*-executor-env` 改写 `WORK_DIR`。
 executor 访问 parameter broker 的 projected ServiceAccount token 固定挂载为
 `/var/run/secrets/kubebrain-parameter/token`，audience 为
 `kubebrain-operation-parameters`，expiration 为 3600 秒，文件 mode 为 `0440`；不得复用

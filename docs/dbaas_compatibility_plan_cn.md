@@ -59620,6 +59620,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （139.789/469.130/267.912/495.472 秒）。本项限制 durable executor 的输出边界，不替代 RWX PVC 权限、
   CSI 持久性、Operation 间目录配额或不可变外部审计归档。
 
+- A5310 禁止 `InfoCertificateRotation` 的 state、TLS receipt 与 scrape receipt 在 workspace 内互相别名。
+  A5309 只证明路径不逃出挂载；参数仍可把两份 receipt 配成同一路径，或让任一 receipt 覆盖派生的
+  `${state_dir}/${operation_id}.info.state`，导致 TLS 证据被当作 scrape 证据、状态损坏或永久 requeue。
+  runner 现在在冻结任何凭据和调用任何 gate/hook 前，对三条规范路径做两两互斥检查；当双方已存在时还用
+  `-ef` 比较底层 device/inode，拒绝路径字符串不同但共享 inode 的硬链接。回归覆盖 TLS→state、scrape→state、
+  scrape→TLS 三种规范路径重合及现存 TLS/scrape 硬链接，全部不得进入 gate。Bash syntax、定向 runner、完整
+  deploy manifest、全仓 vet、diff check 与 465 项 inventory 均通过；四片 104/132/117/112 在代码提交
+  `dda4068d` 上全部通过（139.500/471.169/266.901/496.822 秒）。本项不防御同一高权限外部流程在校验后
+  恶意替换目录项；publish hook 和 workspace 写权限仍必须限制在受审计执行器身份内。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
