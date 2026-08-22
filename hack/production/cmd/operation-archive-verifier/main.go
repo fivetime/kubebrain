@@ -48,7 +48,8 @@ func main() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path; empty uses in-cluster credentials")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
 	flag.Parse()
-	if err := validateIAMSimulationExpiry(os.Getenv("IAM_SIMULATION_VALID_UNTIL_UNIX"), time.Now()); err != nil {
+	iamValidUntil, err := parseIAMSimulationExpiry(os.Getenv("IAM_SIMULATION_VALID_UNTIL_UNIX"), time.Now())
+	if err != nil {
 		log.Fatal(err)
 	}
 	if err := validateCredentialSecretDataDigest(os.Getenv("CREDENTIAL_SECRET_DATA_SHA256"), os.Getenv); err != nil {
@@ -57,7 +58,6 @@ func main() {
 	if inventoryName == "" || objectStoreID == "" || bucket == "" || maxBatch <= 0 {
 		log.Fatal("namespace-inventory-configmap, object-store-id, bucket, and positive max-batch are required")
 	}
-	var err error
 	if inventoryKey, err = namespaceinventory.ValidateSource(inventoryNamespace, inventoryName, inventoryKey); err != nil {
 		log.Fatal(err)
 	}
@@ -89,7 +89,11 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	verified, err := reconcilebudget.Run(ctx, reconcileTimeout, controller.Reconcile)
+	effectiveReconcileTimeout, err := evidenceBoundReconcileTimeout(reconcileTimeout, iamValidUntil, time.Now())
+	if err != nil {
+		log.Fatal(err)
+	}
+	verified, err := reconcilebudget.Run(ctx, effectiveReconcileTimeout, controller.Reconcile)
 	if err != nil {
 		log.Printf("archive evidence verification failed after verifying %d operations: %v", verified, err)
 		os.Exit(1)
@@ -130,15 +134,32 @@ func validateCredentialSecretDataDigest(expected string, getenv func(string) str
 	return nil
 }
 
-func validateIAMSimulationExpiry(raw string, now time.Time) error {
+func parseIAMSimulationExpiry(raw string, now time.Time) (time.Time, error) {
 	validUntil, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || validUntil <= 0 {
-		return fmt.Errorf("IAM_SIMULATION_VALID_UNTIL_UNIX must be a positive Unix timestamp")
+		return time.Time{}, fmt.Errorf("IAM_SIMULATION_VALID_UNTIL_UNIX must be a positive Unix timestamp")
 	}
 	if now.Unix() >= validUntil {
-		return fmt.Errorf("IAM simulation evidence expired at Unix timestamp %d", validUntil)
+		return time.Time{}, fmt.Errorf("IAM simulation evidence expired at Unix timestamp %d", validUntil)
 	}
-	return nil
+	if validUntil > now.Add(24*time.Hour+5*time.Minute).Unix() {
+		return time.Time{}, fmt.Errorf("IAM simulation evidence expiry exceeds the 24-hour window plus clock-skew allowance")
+	}
+	return time.Unix(validUntil, 0), nil
+}
+
+func evidenceBoundReconcileTimeout(configured time.Duration, validUntil, now time.Time) (time.Duration, error) {
+	if configured <= 0 {
+		return 0, fmt.Errorf("reconcile timeout must be positive")
+	}
+	remaining := validUntil.Sub(now)
+	if remaining <= 0 {
+		return 0, fmt.Errorf("IAM simulation evidence expired before reconciliation")
+	}
+	if remaining < configured {
+		return remaining, nil
+	}
+	return configured, nil
 }
 
 func clientConfig(kubeconfig, contextName string) (*rest.Config, error) {

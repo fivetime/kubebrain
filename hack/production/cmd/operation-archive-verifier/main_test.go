@@ -1,22 +1,69 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/reconcilebudget"
 	"github.com/stretchr/testify/require"
 )
 
-func TestValidateIAMSimulationExpiry(t *testing.T) {
+func TestParseIAMSimulationExpiry(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	require.NoError(t, validateIAMSimulationExpiry("1700000001", now))
-	for _, raw := range []string{"", "pending", "0", "1699999999", "1700000000"} {
+	validUntil, err := parseIAMSimulationExpiry("1700000001", now)
+	require.NoError(t, err)
+	require.Equal(t, time.Unix(1_700_000_001, 0), validUntil)
+	validUntil, err = parseIAMSimulationExpiry("1700086700", now)
+	require.NoError(t, err)
+	require.Equal(t, time.Unix(1_700_086_700, 0), validUntil)
+	for _, raw := range []string{"", "pending", "0", "1699999999", "1700000000", "1700086701"} {
 		t.Run(raw, func(t *testing.T) {
-			require.Error(t, validateIAMSimulationExpiry(raw, now))
+			_, err := parseIAMSimulationExpiry(raw, now)
+			require.Error(t, err)
 		})
 	}
+}
+
+func TestEvidenceBoundReconcileTimeout(t *testing.T) {
+	now := time.Unix(1_700_000_000, 500_000_000)
+	for _, tc := range []struct {
+		name       string
+		configured time.Duration
+		validUntil time.Time
+		want       time.Duration
+		wantErr    bool
+	}{
+		{name: "configured budget first", configured: 15 * time.Minute, validUntil: now.Add(time.Hour), want: 15 * time.Minute},
+		{name: "evidence expiry first", configured: 15 * time.Minute, validUntil: now.Add(45 * time.Second), want: 45 * time.Second},
+		{name: "equal", configured: time.Minute, validUntil: now.Add(time.Minute), want: time.Minute},
+		{name: "expired", configured: time.Minute, validUntil: now, wantErr: true},
+		{name: "invalid configured", configured: 0, validUntil: now.Add(time.Minute), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := evidenceBoundReconcileTimeout(tc.configured, tc.validUntil, now)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestEvidenceBoundReconcileTimeoutCancelsRunAtExpiry(t *testing.T) {
+	now := time.Now()
+	timeout, err := evidenceBoundReconcileTimeout(time.Minute, now.Add(20*time.Millisecond), now)
+	require.NoError(t, err)
+	require.Less(t, timeout, time.Minute)
+	_, err = reconcilebudget.Run(context.Background(), timeout, func(ctx context.Context) (int, error) {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestValidateCredentialSecretDataDigest(t *testing.T) {
