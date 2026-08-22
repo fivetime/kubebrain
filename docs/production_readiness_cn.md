@@ -5513,7 +5513,12 @@ kubectl -n kubebrain-operations create secret generic kubebrain-operation-api-oi
   --from-literal=audience=kubebrain-operation-api
 kubectl -n kubebrain-operations create secret tls kubebrain-operation-api-tls \
   --cert=/path/to/tls.crt --key=/path/to/tls.key
-kubectl -n kubebrain-operations scale deployment/kubebrain-operation-api --replicas=3
+chmod 0600 /path/to/oidc-smoke-token
+KUBE_CONTEXT=production \
+OPERATION_API_ENDPOINT=https://operation-api.example.com \
+OPERATION_API_CA_FILE=/path/to/ca.crt \
+OPERATION_API_TOKEN_FILE=/path/to/oidc-smoke-token \
+  hack/production/apply-operation-api.sh --enable
 ```
 
 不能用直接 apply API 清单替代上述入口。16 类专用 requester policy 仍对除 API ServiceAccount 外的所有同类型
@@ -5522,7 +5527,17 @@ kubectl -n kubebrain-operations scale deployment/kubebrain-operation-api --repli
 requester `--check`，确认 34 对策略和 17 个身份均就绪，再单独 apply API policy 并等待 CEL type checking/精确
 Deny binding；之后才 apply API Role/Deployment。授权后还会证明 API 仅有 Operation create/get、对 Secret 零权限，
 并以 server dry-run 验证合法提交可通过而缺参数 Secret、跨租户 Secret 和 operation ID 漂移均被拒绝；最后要求
-Deployment 仍为零副本。`--check` 可用于后续漂移复核。只有该门禁通过后才能注入 OIDC/TLS Secret 并扩容。
+Deployment 仍为零副本。`--check` 用于零副本启用前的漂移复核；只有该门禁通过后才能注入 OIDC/TLS Secret 并扩容。
+
+`--enable` 会重新执行上述全套 guardrail，并要求 OIDC Secret 精确且只含非空 `issuer`/`audience`，TLS Secret
+类型为 `kubernetes.io/tls` 且精确只含非空 `tls.crt`/`tls.key`。外部 endpoint 必须是无 path/query/fragment/
+userinfo 的 HTTPS origin；CA bundle 必须是 1..1 MiB 的普通非 symlink 文件且不能被 group/world 写，OIDC smoke
+token 必须由当前用户持有、精确 mode `0600`、1..16384 bytes、无空白且只含 Bearer-safe 字符。token 写入 `0600`
+临时 curl config，不出现在 curl argv 或命令日志。门禁把 Deployment 扩到 3 副本，等待 rollout，并精确要求当前
+generation 的 updated/ready/available 都为 3、unavailable 为 0；随后用指定 CA 请求 `/readyz` 并要求 204，再用
+OIDC token GET 固定不存在的 Operation 并要求 404。该 GET 不创建业务对象，同时证明 TLS、OIDC、API RBAC 和
+Kubernetes 依赖链。扩容后的任一步失败都会请求回缩到 0 并等待缩容 rollout；仍应对回滚命令本身失败设置发布告警，
+不能仅凭脚本退出码推断远端一定已缩容。
 
 `hack/production/run-backup-operation.sh` 接入受保护 Backup。参数文件固定 endpoint、
 prefix、operation 专属 artifact/receipt 路径、分页大小、Object Store ID、bucket/object

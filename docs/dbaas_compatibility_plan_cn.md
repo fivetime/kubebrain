@@ -60089,6 +60089,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   目标集群凭据；受支持 Kubernetes 版本上的 CEL 编译、server dry-run、OIDC/TLS 注入、双副本 rollout 和真实 OIDC
   submit/get 仍须按上述入口留存证据。
 
+- A5342 关闭 API guardrail 安装后仍需人工注入凭据、直接 scale、且没有端到端接流或失败回缩门禁的缺口。
+  `apply-operation-api.sh --enable` 现在先重跑 A5341 的 requester/API policy、RBAC 和 server-dry-run 全套检查，再要求
+  OIDC Secret 精确只含非空 issuer/audience、TLS Secret 精确只含非空 cert/key；HTTPS origin 不允许 path/query/
+  fragment/userinfo，CA 为 1..1 MiB 非 symlink 且不可 group/world 写，OIDC token 为当前用户拥有的精确 0600、
+  1..16384-byte、无空白 Bearer-safe 文件。token 只进入 0600 临时 curl config，不出现在 argv。门禁扩到 3 副本，
+  等待 rollout 并核验 observed generation、updated/ready/available=3、unavailable=0，再要求真实 `/readyz` 返回 204、
+  携 OIDC token 查询固定不存在对象返回 404；该只读 smoke 同时证明 TLS trust、OIDC 验签、API RBAC 和 Kubernetes
+  GET 依赖，且不制造业务 Operation。rollout/HTTPS/OIDC 任一步失败都会 best-effort 回缩 0 并等待缩容，日志明确要求
+  发布系统继续监控回滚是否成功。回归覆盖成功扩容、token 不出现在调用日志、HTTPS 失败回缩，以及 A5341 既有安装/
+  前置失败路径；Bash syntax、定向与完整 package/deploy、全仓 vet、diff check 和新增后的 530 项 inventory 均通过。
+  四片 120/151/132/127 在代码提交 `22126879` 上全部通过（154.029/491.171/279.059/509.553 秒）。自动化测试使用
+  fake kubectl/curl，本轮没有真实 endpoint、CA、OIDC token 或目标集群凭据，因此未实际扩容；上线仍须执行
+  `--enable` 并留存 rollout、204/404 与失败回缩演练证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
