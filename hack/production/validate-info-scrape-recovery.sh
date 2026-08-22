@@ -56,12 +56,20 @@ operation_is_positive_int64 "$MAX_SAMPLE_AGE_SECONDS" && (( MAX_SAMPLE_AGE_SECON
 command -v "$CURL" >/dev/null || die "curl is required"
 command -v "$JQ" >/dev/null || die "jq is required"
 
+umask 077
+capture="$(mktemp -d)"
+trap 'rm -rf "$capture"' EXIT INT TERM
+authorization_header_file=""
 if [[ -n "$PROMETHEUS_BEARER_TOKEN_FILE" ]]; then
   [[ -f "$PROMETHEUS_BEARER_TOKEN_FILE" && -r "$PROMETHEUS_BEARER_TOKEN_FILE" ]] || die "PROMETHEUS_BEARER_TOKEN_FILE must be a readable regular file"
   token_size="$(stat -Lc '%s' -- "$PROMETHEUS_BEARER_TOKEN_FILE")" || die "cannot stat PROMETHEUS_BEARER_TOKEN_FILE"
   [[ "$token_size" =~ ^[0-9]+$ ]] && (( token_size > 0 && token_size <= MAX_PROMETHEUS_TOKEN_BYTES )) || die "PROMETHEUS_BEARER_TOKEN_FILE must contain 1..${MAX_PROMETHEUS_TOKEN_BYTES} bytes"
   bearer_token="$(<"$PROMETHEUS_BEARER_TOKEN_FILE")"
-  [[ "$bearer_token" != *[[:space:]]* ]] || die "PROMETHEUS_BEARER_TOKEN_FILE must contain one header-safe token without whitespace"
+  [[ "$bearer_token" =~ ^[A-Za-z0-9._~+/-]+=*$ ]] || die "PROMETHEUS_BEARER_TOKEN_FILE must contain one RFC 6750 b64token"
+  authorization_header_file="$capture/authorization-header"
+  printf 'Authorization: Bearer %s\n' "$bearer_token" >"$authorization_header_file"
+  chmod 600 "$authorization_header_file"
+  unset bearer_token
 fi
 
 tls_receipt_sha="$(sha256sum "$TLS_RECEIPT_INPUT" | cut -d ' ' -f1)"
@@ -76,13 +84,10 @@ IFS=$'\t' read -r instance rotation_id info_endpoint completed_at tls_replicas n
 [[ "$instance" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$rotation_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$new_certificate_sha" =~ ^[a-f0-9]{64}$ ]] || die "TLS receipt identity or certificate digest is invalid"
 [[ "$tls_replicas" == "$EXPECTED_REPLICAS" ]] || die "EXPECTED_REPLICAS does not match TLS receipt"
 
-umask 077
-capture="$(mktemp -d)"
-trap 'rm -rf "$capture"' EXIT INT TERM
 query_url="${PROMETHEUS_URL%/}/api/v1/query"
 selector="up{namespace=\"${KUBEBRAIN_NAMESPACE}\",service=\"${KUBEBRAIN_SERVICE}\"}"
 curl_args=(--fail-with-body --silent --show-error --max-time "$QUERY_TIMEOUT_SECONDS" --max-filesize "$MAX_RESPONSE_BYTES" --cacert "$PROMETHEUS_CA_FILE" --get -H 'Accept: application/json')
-[[ -z "$PROMETHEUS_BEARER_TOKEN_FILE" ]] || curl_args+=(-H "Authorization: Bearer ${bearer_token}")
+[[ -z "$authorization_header_file" ]] || curl_args+=(-H "@${authorization_header_file}")
 deadline=$((SECONDS + RECOVERY_TIMEOUT_SECONDS))
 attempt=0
 last_reason="no query attempted"

@@ -108,6 +108,29 @@ func TestValidateInfoScrapeRecoveryRejectsOversizedFileInputsBeforeQuery(t *test
 	}
 }
 
+func TestValidateInfoScrapeRecoveryKeepsBearerTokenOutOfCurlArguments(t *testing.T) {
+	f := newInfoScrapeFixture(t)
+	token := filepath.Join(f.dir, "token")
+	require.NoError(t, os.WriteFile(token, []byte("secret.token-123"), 0o600))
+	out, err := runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", append(f.env,
+		"PROMETHEUS_BEARER_TOKEN_FILE="+token, "EXPECT_AUTH_TOKEN=secret.token-123"))
+	require.NoError(t, err, string(out))
+	calls := string(mustRead(t, f.calls))
+	require.NotContains(t, calls, "secret.token-123")
+	require.Contains(t, calls, "-H @")
+}
+
+func TestValidateInfoScrapeRecoveryRejectsNonB64BearerTokenBeforeQuery(t *testing.T) {
+	f := newInfoScrapeFixture(t)
+	token := filepath.Join(f.dir, "token")
+	require.NoError(t, os.WriteFile(token, []byte("token:with-colon"), 0o600))
+	out, err := runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", append(f.env,
+		"PROMETHEUS_BEARER_TOKEN_FILE="+token))
+	require.Error(t, err)
+	require.Contains(t, string(out), "RFC 6750 b64token")
+	require.NoFileExists(t, f.calls)
+}
+
 type infoScrapeFixture struct {
 	dir, tlsReceipt, output, calls, ca string
 	env                                []string
@@ -125,6 +148,15 @@ func newInfoScrapeFixture(t *testing.T) *infoScrapeFixture {
 	writeExecutable(t, curl, `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_CALLS"
+if [[ -n "${EXPECT_AUTH_TOKEN:-}" ]]; then
+  header_file=""
+  args=("$@")
+  for ((i=0; i+1<${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == -H && "${args[$((i+1))]}" == @* ]]; then header_file="${args[$((i+1))]#@}"; fi
+  done
+  [[ -n "$header_file" && "$(stat -Lc '%a' -- "$header_file")" == 600 ]]
+  [[ "$(<"$header_file")" == "Authorization: Bearer ${EXPECT_AUTH_TOKEN}" ]]
+fi
 count="$(wc -l <"$FAKE_CALLS")"
 timestamp="$(date +%s)"
 [[ "${FAKE_ALWAYS_STALE:-false}" != true ]] || timestamp=99
