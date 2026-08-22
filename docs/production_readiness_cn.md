@@ -5709,7 +5709,8 @@ API endpoint 黑洞、网络分区或 admission 卡顿必须在 deadline 后记�
 终止挂起调用。
 
 scheduler 每轮最多实际尝试 `--max-policies=256` 个 Policy，该上限作用于 inventory
-内所有 namespace 的全局候选集合。候选按 `namespace/name` 稳定排序；游标仅在一次
+内所有 namespace 的全局候选集合。每个 List 返回对象的候选构建逐项检查 parent context，
+候选按 `namespace/name` 使用可取消的稳定归并排序；游标仅在一次
 Policy reconcile 实际返回后推进，整轮 context 取消后立即停止，下一轮从最后尝试身份的
 后继恢复。游标是单进程吞吐公平状态，Pod 重启后从排序起点重新开始；双副本 correctness
 仍由确定性的 slot Operation ID、immutable parameters Secret 内容校验和 Kubernetes
@@ -5783,7 +5784,7 @@ Operation；上述依赖故障退出 1，供 supervisor 使用 failure backoff �
 控制面故障。
 
 每个 namespace 的 `lastStarted` 统计和目标 queue 的候选预扫描都会逐 Operation 检查
-30 秒 operationctl parent context。候选公平排序使用可取消的自底向上归并排序，仍严格按
+30 秒 operationctl parent context。候选公平排序使用共享的可取消稳定归并排序，仍严格按
 实例最近启动时间、Operation 创建时间、名称排序，但在每个 merge block、每次元素选择和
 最终 copy-back 检查取消；deadline 后不会为一个无界 Operation List 完成剩余 CPU 排序，
 也不会进入 Lease/status 写阶段。取消返回 `context deadline exceeded/canceled`，不得降级为
@@ -6075,7 +6076,8 @@ deadline exceeded 退出、未释放未完成对象的 finalizer，并把 Pod �
 archiver 与 verifier 的 namespace inventory 扫描也在每个 namespace List 前、List 错误后和每个返回对象进入候选集合前检查
 parent context。deadline/cancel 一旦发生，controller 立即返回已聚合错误，不再向后续 namespace 发 API 请求，也不在一个已
 返回的大 List 上继续做本地候选构建；不能仅依赖 client-go 是否及时响应取消来满足整轮预算。该提前返回发生在任何候选执行
-之前，故 processed/verified 计数为零，且不推进公平游标；下一轮仍可从原位置安全重试。
+之前，故 processed/verified 计数为零，且不推进公平游标；下一轮仍可从原位置安全重试。候选构建完成后的
+`completedAtUnix/namespace/name` 排序同样使用共享可取消稳定归并，不会在 deadline 后完成剩余 CPU 排序再退出。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并

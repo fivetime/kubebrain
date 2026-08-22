@@ -60527,6 +60527,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   caller deadline，不证明 deadline 前已提交但响应丢失的 Lease/status 写未发生；后者仍依赖既有独立 5 秒 outcome
   reconciliation/UID-fenced cleanup，并须在真实 apiserver 延迟与响应丢失演练中留证。
 
+- A5374 关闭 A5372/A5373 只修局部循环、其余 controller 仍可能卡在不可中断 `sort.Slice` 的共同缺口。backup scheduler、operation
+  archiver 和 archive verifier 都会从最多 256 个 namespace 聚合无界 Kubernetes List；即使逐 namespace/对象扫描已响应
+  deadline，候选集合构建完成后仍须把整份 slice 排完才会看见取消。现抽取泛型 `internal/contextsort.Slice`：自底向上稳定归并
+  在入口、每个 merge block、每次元素选择和最终 copy-back 检查 context，保留相同比较键和等值输入顺序；nil context/comparator
+  fail closed。scheduler 同时补齐单个 Policy List 的逐对象取消检查，并把 namespace/name 排序迁移；archiver/verifier 的
+  completedAt/namespace/name 排序、Operation queue 的租户内候选排序与最多 256 个 namespace queue 排序也统一迁移，移除 A5373
+  私有实现。共享原语的稳定顺序、排序中途取消和无效输入回归通过；五个 internal 包普通测试分别为
+  0.010/0.055/0.136/0.019/0.062 秒，race 为 1.038/1.184/1.232/1.095/1.307 秒，五个对应命令入口测试也全部通过。根 production
+  inventory 仍为 580 项；四片 130/165/147/138 在代码提交 `4bab555a` 上全部通过（Go 测试
+  163.884/511.919/290.677/546.148 秒；端到端 173.076/521.130/299.742/555.288 秒）。剩余 metering artifact 排序均位于已有
+  输入字节/记录数上限的同步规范化路径，不消费无界 Kubernetes List。本项不证明 runtime 在极端内存压力下分配 merge buffer
+  的时延上界，也不回滚 deadline 前已提交的 API/provider 副作用；生产仍须用大 inventory/List 与 apiserver latency 注入验证
+  Pod deadline、CPU/内存曲线和下一轮游标恢复。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
