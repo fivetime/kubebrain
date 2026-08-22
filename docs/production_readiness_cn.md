@@ -6025,6 +6025,9 @@ runner 在新建后和 takeover 前还要求三份 evidence 是当前 executor U
 为 1 的普通文件；group/world 可读写、不同 owner 或存在任意额外硬链接都会 fail closed。该检查不能隔离另一
 个同 UID 且拥有同一 RWX 卷写权限的 Pod，因此 PVC/CSI 访问范围必须只授予该专用 executor，不能跨 Operation
 类型复用卷。
+首次执行 `awk`/`jq` 或在线 scrape verifier 前，runner 还限制 state 为 2 MiB、TLS receipt 为 1 MiB、scrape
+receipt 为 2 MiB；gate 新建文件返回后重复检查。超限文件不得以“稍后 JSON 校验会失败”为理由进入解析器，
+避免 takeover 被异常 evidence 拖入无界 I/O 或内存消耗。
 executor 访问 parameter broker 的 projected ServiceAccount token 固定挂载为
 `/var/run/secrets/kubebrain-parameter/token`，audience 为
 `kubebrain-operation-parameters`，expiration 为 3600 秒，文件 mode 为 `0440`；不得复用

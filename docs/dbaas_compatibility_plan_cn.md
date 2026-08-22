@@ -59641,6 +59641,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （139.857/471.894/265.328/495.853 秒）。所有生产 executor 当前同为 UID 65532；本项不替代专用 PVC/CSI
   访问隔离，其他同 UID Pod 不得获得该 workspace 的挂载权限。
 
+- A5312 为 `InfoCertificateRotation` 的三类 durable evidence 增加解析前体积上限。此前仅 scrape receipt
+  在 gate 返回后限制 2 MiB；takeover 会先让在线 scrape verifier 读取既有文件，state 与 TLS receipt 更会在
+  无上限下直接进入 `awk`/`jq`，异常 RWX 文件可造成 worker I/O/内存拒绝服务。runner 现在统一在首次内容解析
+  或在线 verifier 前要求 state ≤2 MiB、TLS receipt ≤1 MiB、scrape receipt ≤2 MiB；begin/complete 新生成
+  evidence 返回后也重复检查，再进行摘要冻结。回归把三类合法 evidence 稀疏扩展到各自上限加 1 byte，证明
+  state 不进入 TLS gate、TLS receipt 不进入在线 verify、scrape receipt 不进入 scrape verifier。Bash syntax、
+  定向 runner、完整 deploy manifest、全仓 vet、diff check 与 467 项 inventory 均通过；四片
+  104/134/117/112 在代码提交 `dadaaa2c` 上全部通过
+  （138.256/476.318/264.837/497.641 秒）。上限是 worker 防御，不替代 workspace 容量、inode quota、PVC
+  监控和存储侧拒绝服务隔离。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
