@@ -59808,6 +59808,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TOCTOU，但不隔离能在最后一次摘要后修改 inode 的同 UID workspace 写者；专用 PVC、单 writer Deployment、
   executor UID 隔离与 CSI stable-storage/RWX coherence 仍是生产前提。
 
+- A5326 封闭 `NativePITRTargetProvisioning` resumable workflow 到 Operation 终态之间的 evidence gap。该流程的
+  attempt 2 有意复用 authorization/dry-run/creation checkpoint：只有 durable dry-run 与现存对象规范 UID/摘要一致
+  时才重建 creation receipt，不是盲目重复 create；但旧 runner 在整个 workflow 返回 0 后停止 heartbeat，直接按
+  qualification 路径取 SHA，未检查任何最终文件属性，也未证明摘要仍对应刚验证的 lineage。现在 authorization、new
+  provisioning、writer exclusion、target-empty、qualification 五份证据都必须为 1..8 MiB 普通非 symlink 文件，
+  属性精确 `0600:<current UID>:1`。runner 从 authorization 的 namespace/cluster/PD replica 数派生精确稳定 PD Pod
+  DNS，用现有原生 control `verify-qualification` 连续两次复核 provisioning/whole transactional empty scan/writer
+  exclusion 绑定，并比较五份文件的两组 SHA-256；第二组中已验证的 qualification digest 直接进入 status，不再第三次
+  打开可变路径。整个 resume/create/qualification/双验证在同一 process group 和可唤醒 heartbeat monitor 下运行，失租
+  会终止验证且不能 Succeeded。回归覆盖两次 verifier 调用、0640 qualification 拒绝、两轮间修改 qualification 被拒绝、
+  attempt 2 checkpoint delegation，以及异步 TERM trap 有限等待；定向用例连续 3 次通过。全仓 vet、control/deploy、
+  diff check 与 478 项 inventory 均通过；四片 107/136/119/116 在代码提交 `ae16aeb1` 上全部通过
+  （146.313/479.198/266.478/506.881 秒）。五文件双读仍不能防御在第二组摘要完成后修改 inode 的同 UID workspace
+  写者；Recreate 单 writer、专用 UID/PVC 和 CSI/RWX 隔离仍是生产前提，provider volume alias 仍须外部证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

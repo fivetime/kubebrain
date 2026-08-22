@@ -6201,7 +6201,11 @@ admission 后规范身份一致。server dry-run receipt 必须先于真实 crea
 自动重试只能在现存对象 UID 不同于旧目标且规范摘要与 durable dry-run 完全一致时重建 creation receipt，不得再次 create。
 缺少 dry-run receipt、摘要漂移或同名 PVC 碰撞时仍须停止并人工核查，不得删除同名对象后盲目重试。成功 receipt 还必须证明新旧 cluster ID、
 TidbCluster UID、PVC/PV UID 和 CSI volume identity 全部不相交。该门禁不能证明 CSI provider 的两个不同 handle 没有共享
-底层克隆，生产启用前仍需 provider 级审计和真实集群演练。
+底层克隆，生产启用前仍需 provider 级审计和真实集群演练。runner 不得仅因 resumable workflow 退出 0 就按路径读取
+qualification 摘要：authorization、new provisioning、writer exclusion、target-empty 与 qualification 五份最终证据
+都必须是 1..8 MiB 的普通非 symlink 文件，属性为 0600/current UID/link-count=1；在持续 heartbeat 覆盖的同一子进程中，
+原生 control verifier 必须按 authorization 派生的精确 PD Pod DNS 连续执行两次完整 qualification lineage 验证，并比较
+五份文件的两组 SHA-256。只有全部稳定一致时，第二组 qualification digest 才能进入 Succeeded status。
 target retirement/provisioning executor 的外部 authorize/delete/poll/inspect/provision workflow 必须在独立
 进程组内运行，并由可唤醒的持续 heartbeat monitor 覆盖；失租须终止整个进程组且不得提交 Succeeded。
 monitor 停止使用 FIFO+Bash 内建超时，不得遗留仍持有 worker 管道的孤儿 sleep。retirement 的轮询 interval/timeout
