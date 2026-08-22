@@ -48,6 +48,10 @@ workspace_root="$(realpath -m -- "$WORK_DIR")" || die "WORK_DIR cannot be resolv
 [[ "$workspace_root" == /* && -d "$workspace_root" ]] || die "WORK_DIR must resolve to an existing absolute directory"
 executor_uid="$(id -u)"
 [[ "$executor_uid" =~ ^[0-9]+$ ]] || die "cannot determine executor uid"
+runtime_contract="${ROOT_DIR}/hack/production/validate-info-executor-runtime.sh"
+[[ -f "$runtime_contract" && -x "$runtime_contract" ]] || die "info executor runtime contract is missing"
+INFO_EXECUTOR_PROBE_PARENT="$workspace_root" "$runtime_contract" >/dev/null ||
+  die "WORK_DIR does not support the required durable evidence semantics"
 
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then operationctl=("$OPERATIONCTL"); else operationctl=(go run ./hack/production/cmd/operationctl); fi

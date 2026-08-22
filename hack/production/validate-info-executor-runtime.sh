@@ -20,9 +20,24 @@ for command_name in "${required_commands[@]}"; do
 done
 
 umask 077
-probe_dir="$(mktemp -d)"
-cleanup() { rm -rf -- "$probe_dir"; }
-trap cleanup EXIT INT TERM
+probe_parent="${INFO_EXECUTOR_PROBE_PARENT:-}"
+sync_probe_parent=false
+if [[ -n "$probe_parent" ]]; then
+  [[ "$probe_parent" == /* && -d "$probe_parent" ]] || {
+    echo "INFO_EXECUTOR_PROBE_PARENT must be an existing absolute directory" >&2
+    exit 2
+  }
+  probe_parent="$(realpath -e -- "$probe_parent")"
+  probe_dir="$(mktemp -d "${probe_parent}/.info-executor-runtime.XXXXXX")"
+  sync_probe_parent=true
+else
+  probe_dir="$(mktemp -d)"
+fi
+cleanup() {
+  rm -rf -- "$probe_dir"
+  [[ "$sync_probe_parent" != true ]] || sync -f "$probe_parent"
+}
+trap 'cleanup || true' EXIT INT TERM
 
 temporary="$(mktemp "${probe_dir}/.evidence.tmp.XXXXXX")"
 printf 'kubebrain-info-executor-runtime\n' >"$temporary"
@@ -52,4 +67,9 @@ sync -f "$probe_dir"
   exit 1
 }
 
+cleanup || {
+  echo "cannot durably remove info executor runtime probe" >&2
+  exit 1
+}
+trap - EXIT INT TERM
 echo "info executor runtime tool contract passed"

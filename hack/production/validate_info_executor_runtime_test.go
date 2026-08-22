@@ -9,9 +9,15 @@ import (
 )
 
 func TestValidateInfoExecutorRuntimeContract(t *testing.T) {
-	out, err := runProductionScriptCommand(t, "validate-info-executor-runtime.sh", nil)
+	workspace := t.TempDir()
+	out, err := runProductionScriptCommand(t, "validate-info-executor-runtime.sh", []string{
+		"INFO_EXECUTOR_PROBE_PARENT=" + workspace,
+	})
 	require.NoError(t, err, string(out))
 	require.Contains(t, string(out), "runtime tool contract passed")
+	probes, err := filepath.Glob(filepath.Join(workspace, ".info-executor-runtime.*"))
+	require.NoError(t, err)
+	require.Empty(t, probes)
 
 	out, err = runProductionScriptCommand(t, "validate-info-executor-runtime.sh", []string{
 		"PATH=" + filepath.Join(t.TempDir(), "missing-tools"),
@@ -24,6 +30,12 @@ func TestValidateInfoExecutorRuntimeContract(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, string(out), "must be true or false")
+
+	out, err = runProductionScriptCommand(t, "validate-info-executor-runtime.sh", []string{
+		"INFO_EXECUTOR_PROBE_PARENT=relative",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(out), "must be an existing absolute directory")
 
 	data, err := os.ReadFile("validate-info-executor-runtime.sh")
 	require.NoError(t, err)

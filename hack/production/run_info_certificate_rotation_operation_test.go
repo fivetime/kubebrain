@@ -21,6 +21,20 @@ func TestInfoCertificateRotationOperationCompletesLifecycle(t *testing.T) {
 	scrapeDigest := sha256.Sum256(mustRead(t, f.scrapeReceipt))
 	require.Contains(t, log, "--receipt-sha256 "+fmt.Sprintf("%x", scrapeDigest))
 	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
+	probes, err := filepath.Glob(filepath.Join(f.dir, ".info-executor-runtime.*"))
+	require.NoError(t, err)
+	require.Empty(t, probes)
+}
+
+func TestInfoCertificateRotationOperationRejectsUnsupportedWorkspaceBeforeClaim(t *testing.T) {
+	f := newInfoRotationRunnerFixture(t)
+	commands := t.TempDir()
+	writeExecutable(t, filepath.Join(commands, "sync"), "#!/usr/bin/env bash\nexit 1\n")
+	f.run(t, false, "PATH="+commands+":"+os.Getenv("PATH"), "WORK_DIR does not support the required durable evidence semantics")
+	require.NoFileExists(t, f.log)
+	probes, err := filepath.Glob(filepath.Join(f.dir, ".info-executor-runtime.*"))
+	require.NoError(t, err)
+	require.Empty(t, probes)
 }
 
 func TestInfoCertificateRotationOperationResumesFromDurableEvidence(t *testing.T) {
