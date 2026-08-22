@@ -4615,6 +4615,22 @@ func TestOperationArchiveVerifierIsSuspendedReadOnlyAndFailClosed(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, "pending", iamExpiry)
+	for _, path := range [][]string{
+		{"metadata", "annotations"},
+		{"spec", "jobTemplate", "metadata", "annotations"},
+		{"spec", "jobTemplate", "spec", "template", "metadata", "annotations"},
+	} {
+		annotations, found, err := unstructured.NestedStringMap(job.Object, path...)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, map[string]string{
+			"dbaas.kubebrain.io/iam-simulation-sha256":              "pending",
+			"dbaas.kubebrain.io/iam-simulation-valid-until-unix":    "pending",
+			"dbaas.kubebrain.io/credential-secret-uid":              "pending",
+			"dbaas.kubebrain.io/credential-secret-resource-version": "pending",
+			"dbaas.kubebrain.io/credential-secret-data-sha256":      "pending",
+		}, annotations)
+	}
 	backoff, found, err := unstructured.NestedFieldNoCopy(job.Object, "spec", "jobTemplate", "spec", "backoffLimit")
 	require.NoError(t, err)
 	require.True(t, found)
@@ -4634,7 +4650,9 @@ func TestOperationArchiveVerifierIsSuspendedReadOnlyAndFailClosed(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, found)
 	env := containers[0].(map[string]any)["env"].([]any)
-	require.Equal(t, map[string]any{"name": "IAM_SIMULATION_VALID_UNTIL_UNIX", "value": "1"}, env[len(env)-1])
+	require.GreaterOrEqual(t, len(env), 2)
+	require.Equal(t, map[string]any{"name": "IAM_SIMULATION_VALID_UNTIL_UNIX", "value": "1"}, env[len(env)-2])
+	require.Equal(t, map[string]any{"name": "CREDENTIAL_SECRET_DATA_SHA256", "value": "pending"}, env[len(env)-1])
 	data, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
 	require.NoError(t, err)
 	require.Contains(t, string(data), "kubebrain-operation-archive-verifier")

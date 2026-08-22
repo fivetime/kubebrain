@@ -31,6 +31,9 @@ func TestOperationArchiveVerifierEnablesOnlyAfterManualSuccess(t *testing.T) {
 	require.Contains(t, string(mustRead(t, f.payloadLog)), `"dbaas.kubebrain.io/credential-secret-uid":"secret-uid-123"`)
 	require.Contains(t, log, `"path":"/spec/suspend","value":false`)
 	require.Contains(t, log, `iam-simulation-valid-until-unix`)
+	require.Contains(t, log, `credential-secret-resource-version`)
+	require.Contains(t, log, `"path":"/spec/jobTemplate/metadata/annotations/dbaas.kubebrain.io~1credential-secret-uid"`)
+	require.Contains(t, log, `"path":"/spec/jobTemplate/spec/template/metadata/annotations/dbaas.kubebrain.io~1credential-secret-uid"`)
 	out, err = runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--check-enabled"}, f.env())
 	require.NoError(t, err, string(out))
 }
@@ -102,6 +105,26 @@ func TestOperationArchiveVerifierCheckEnabledRejectsExpiredRuntimeBinding(t *tes
 	require.Contains(t, string(out), "expired or its runtime binding drifted")
 }
 
+func TestOperationArchiveVerifierCheckEnabledRejectsScheduledCredentialBindingDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+	}{
+		{name: "cronjob", env: "CRON_CREDENTIAL_UID=other-uid"},
+		{name: "job template", env: "CRON_JOB_CREDENTIAL_UID=other-uid"},
+		{name: "pod template", env: "CRON_POD_CREDENTIAL_UID=other-uid"},
+		{name: "runtime digest", env: "CRON_RUNTIME_CREDENTIAL_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newArchiveVerifierApplyFixture(t)
+			require.NoError(t, os.WriteFile(f.state, []byte("enabled"), 0o600))
+			out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--check-enabled"}, append(f.env(), tc.env))
+			require.Error(t, err)
+			require.Contains(t, string(out), "binding drifted")
+		})
+	}
+}
+
 func TestOperationArchiveVerifierRefreshesEnabledIAMBindingAfterManualSuccess(t *testing.T) {
 	f := newArchiveVerifierApplyFixture(t)
 	require.NoError(t, os.WriteFile(f.state, []byte("enabled"), 0o600))
@@ -112,7 +135,9 @@ func TestOperationArchiveVerifierRefreshesEnabledIAMBindingAfterManualSuccess(t 
 	require.Contains(t, log, "create -f - -o json")
 	require.Contains(t, string(mustRead(t, f.payloadLog)), `"generateName":"kubebrain-archive-verifier-iam-"`)
 	require.Contains(t, log, `"path":"/spec/suspend","value":false`)
-	require.Contains(t, log, `"op":"test","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-valid-until-unix"`)
+	require.Contains(t, log, `"op":"test","path":"/metadata/annotations/dbaas.kubebrain.io~1credential-secret-uid"`)
+	require.Contains(t, log, `"path":"/spec/jobTemplate/metadata/annotations/dbaas.kubebrain.io~1credential-secret-uid"`)
+	require.Contains(t, log, `"path":"/spec/jobTemplate/spec/template/metadata/annotations/dbaas.kubebrain.io~1credential-secret-uid"`)
 }
 
 func TestOperationArchiveVerifierRefreshFailurePreservesOldBinding(t *testing.T) {
@@ -167,6 +192,7 @@ func TestOperationArchiveVerifierRejectsCompletedJobDriftBeforePatch(t *testing.
 		{name: "sha", env: "FINAL_JOB_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
 		{name: "expiry", env: "FINAL_JOB_EXPIRY=1"},
 		{name: "runtime expiry", env: "FINAL_RUNTIME_EXPIRY=1"},
+		{name: "runtime credential digest", env: "FINAL_RUNTIME_CREDENTIAL_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
 		{name: "condition", env: "FINAL_JOB_COMPLETE=false"},
 		{name: "missing", env: "FINAL_JOB_MISSING=true"},
 		{name: "credential uid", env: "FINAL_JOB_CREDENTIAL_UID=other-uid"},
@@ -194,6 +220,7 @@ func TestOperationArchiveVerifierRejectsExecutionPodDriftBeforePatch(t *testing.
 		{name: "sha", env: "FINAL_POD_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
 		{name: "expiry", env: "FINAL_POD_EXPIRY=1"},
 		{name: "runtime", env: "FINAL_POD_RUNTIME_EXPIRY=1"},
+		{name: "runtime credential digest", env: "FINAL_POD_RUNTIME_CREDENTIAL_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
 		{name: "phase", env: "FINAL_POD_PHASE=Failed"},
 		{name: "sidecar", env: "FINAL_POD_SIDECAR=true"},
 		{name: "init container", env: "FINAL_POD_INIT=true"},
@@ -280,14 +307,22 @@ if [[ "$args" == *" get secret kubebrain-operation-archive-verifier-object-store
 fi
 if [[ "$args" == *" get cronjob kubebrain-operation-archive-verifier "* ]]; then
   suspend=true; binding=pending; expiry=pending; runtime_expiry=1
+  credential_uid=pending; credential_rv=pending; credential_sha=pending
   image="${LIVE_IMAGE:-registry.example/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   max_batch="${LIVE_MAX_BATCH:-256}"
   if [[ -f "$STATE_FILE" ]]; then
     suspend=false; binding="$(sha256sum "$IAM_SIMULATION_EVIDENCE" | awk '{print $1}')"
     expiry="$(jq -r .valid_until_unix "$IAM_SIMULATION_EVIDENCE")"; runtime_expiry="$expiry"
+    credential_uid=secret-uid-123; credential_rv=11; credential_sha="$(printf '%s' '`+verifierSecretDataJSON+`' | sha256sum | awk '{print $1}')"
     [[ "$(<"$STATE_FILE")" != expired ]] || { expiry=1; runtime_expiry=1; }
   fi
-  printf '{"metadata":{"annotations":{"dbaas.kubebrain.io/iam-simulation-sha256":"%s","dbaas.kubebrain.io/iam-simulation-valid-until-unix":"%s"},"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"spec":{"backoffLimit":0,"template":{"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier","containers":[{"name":"verifier","image":"%s","args":["--max-batch=%s"],"env":[{"name":"S3_ENDPOINT"},{"name":"AWS_REGION"},{"name":"AWS_ACCESS_KEY_ID"},{"name":"AWS_SECRET_ACCESS_KEY"},{"name":"S3_FORCE_PATH_STYLE"},{"name":"OBJECT_STORE_ID"},{"name":"S3_BUCKET"},{"name":"IAM_SIMULATION_VALID_UNTIL_UNIX","value":"%s"}]}]}}}}}}\n' "$binding" "$expiry" "$suspend" "$image" "$max_batch" "$runtime_expiry"; exit 0
+  credential_uid="${CRON_CREDENTIAL_UID:-$credential_uid}"; credential_rv="${CRON_CREDENTIAL_RV:-$credential_rv}"; credential_sha="${CRON_CREDENTIAL_SHA:-$credential_sha}"
+  runtime_credential_sha="${CRON_RUNTIME_CREDENTIAL_SHA:-$credential_sha}"
+  annotations="$(jq -cn --arg sha "$binding" --arg expiry "$expiry" --arg uid "$credential_uid" --arg rv "$credential_rv" --arg secret_sha "$credential_sha" '{"example.com/managed-by":"fixture","dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry,"dbaas.kubebrain.io/credential-secret-uid":$uid,"dbaas.kubebrain.io/credential-secret-resource-version":$rv,"dbaas.kubebrain.io/credential-secret-data-sha256":$secret_sha}')"
+  job_annotations="$annotations"; pod_annotations="$annotations"
+  [[ -z "${CRON_JOB_CREDENTIAL_UID:-}" ]] || job_annotations="$(jq -c --arg value "$CRON_JOB_CREDENTIAL_UID" '.["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$job_annotations")"
+  [[ -z "${CRON_POD_CREDENTIAL_UID:-}" ]] || pod_annotations="$(jq -c --arg value "$CRON_POD_CREDENTIAL_UID" '.["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$pod_annotations")"
+  printf '{"metadata":{"annotations":%s,"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"metadata":{"annotations":%s},"spec":{"backoffLimit":0,"template":{"metadata":{"annotations":%s},"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier","containers":[{"name":"verifier","image":"%s","args":["--max-batch=%s"],"env":[{"name":"S3_ENDPOINT"},{"name":"AWS_REGION"},{"name":"AWS_ACCESS_KEY_ID"},{"name":"AWS_SECRET_ACCESS_KEY"},{"name":"S3_FORCE_PATH_STYLE"},{"name":"OBJECT_STORE_ID"},{"name":"S3_BUCKET"},{"name":"IAM_SIMULATION_VALID_UNTIL_UNIX","value":"%s"},{"name":"CREDENTIAL_SECRET_DATA_SHA256","value":"%s"}]}]}}}}}}\n' "$annotations" "$suspend" "$job_annotations" "$pod_annotations" "$image" "$max_batch" "$runtime_expiry" "$runtime_credential_sha"; exit 0
 fi
 if [[ "$args" == *" get job "* ]]; then
   [[ "${FINAL_JOB_MISSING:-false}" != true && -f "$JOB_STATE_FILE" ]] || exit 1
@@ -298,6 +333,7 @@ if [[ "$args" == *" get job "* ]]; then
   if [[ -n "${FINAL_JOB_EXPIRY:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_EXPIRY" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$job")"; fi
   if [[ -n "${FINAL_JOB_CREDENTIAL_UID:-}" ]]; then job="$(jq -c --arg value "$FINAL_JOB_CREDENTIAL_UID" '.metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$job")"; fi
   if [[ -n "${FINAL_RUNTIME_EXPIRY:-}" ]]; then job="$(jq -c --arg value "$FINAL_RUNTIME_EXPIRY" '(.spec.template.spec.containers[0].env[] | select(.name=="IAM_SIMULATION_VALID_UNTIL_UNIX") | .value)=$value' <<<"$job")"; fi
+  if [[ -n "${FINAL_RUNTIME_CREDENTIAL_SHA:-}" ]]; then job="$(jq -c --arg value "$FINAL_RUNTIME_CREDENTIAL_SHA" '(.spec.template.spec.containers[0].env[] | select(.name=="CREDENTIAL_SECRET_DATA_SHA256") | .value)=$value' <<<"$job")"; fi
   [[ "${FINAL_JOB_COMPLETE:-true}" == true ]] || job="$(jq -c '.status.conditions[0].status="False"' <<<"$job")"
   printf '%s\n' "$job"; exit 0
 fi
@@ -309,6 +345,7 @@ if [[ "$args" == *" get pods "* ]]; then
   if [[ -n "${FINAL_POD_EXPIRY:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_EXPIRY" '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_CREDENTIAL_UID:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_CREDENTIAL_UID" '.metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_RUNTIME_EXPIRY:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_RUNTIME_EXPIRY" '(.spec.containers[0].env[] | select(.name=="IAM_SIMULATION_VALID_UNTIL_UNIX") | .value)=$value' <<<"$pod")"; fi
+  if [[ -n "${FINAL_POD_RUNTIME_CREDENTIAL_SHA:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_RUNTIME_CREDENTIAL_SHA" '(.spec.containers[0].env[] | select(.name=="CREDENTIAL_SECRET_DATA_SHA256") | .value)=$value' <<<"$pod")"; fi
   if [[ -n "${FINAL_POD_PHASE:-}" ]]; then pod="$(jq -c --arg value "$FINAL_POD_PHASE" '.status.phase=$value' <<<"$pod")"; fi
   [[ "${FINAL_POD_SIDECAR:-false}" != true ]] || pod="$(jq -c '.spec.containers += [{name:"sidecar",image:"untrusted"}]' <<<"$pod")"
   [[ "${FINAL_POD_INIT:-false}" != true ]] || pod="$(jq -c '.spec.initContainers = [{name:"init",image:"untrusted"}]' <<<"$pod")"

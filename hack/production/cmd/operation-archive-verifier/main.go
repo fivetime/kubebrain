@@ -2,6 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -46,6 +51,9 @@ func main() {
 	if err := validateIAMSimulationExpiry(os.Getenv("IAM_SIMULATION_VALID_UNTIL_UNIX"), time.Now()); err != nil {
 		log.Fatal(err)
 	}
+	if err := validateCredentialSecretDataDigest(os.Getenv("CREDENTIAL_SECRET_DATA_SHA256"), os.Getenv); err != nil {
+		log.Fatal(err)
+	}
 	if inventoryName == "" || objectStoreID == "" || bucket == "" || maxBatch <= 0 {
 		log.Fatal("namespace-inventory-configmap, object-store-id, bucket, and positive max-batch are required")
 	}
@@ -87,6 +95,39 @@ func main() {
 		os.Exit(1)
 	}
 	log.Printf("verified %d released terminal operation archives", verified)
+}
+
+func validateCredentialSecretDataDigest(expected string, getenv func(string) string) error {
+	decoded, err := hex.DecodeString(expected)
+	if err != nil || len(decoded) != sha256.Size || expected != fmt.Sprintf("%x", decoded) {
+		return fmt.Errorf("CREDENTIAL_SECRET_DATA_SHA256 must be 64 lowercase hexadecimal characters")
+	}
+	fields := map[string]string{
+		"access-key-id":     "AWS_ACCESS_KEY_ID",
+		"bucket":            "S3_BUCKET",
+		"endpoint":          "S3_ENDPOINT",
+		"force-path-style":  "S3_FORCE_PATH_STYLE",
+		"object-store-id":   "OBJECT_STORE_ID",
+		"region":            "AWS_REGION",
+		"secret-access-key": "AWS_SECRET_ACCESS_KEY",
+	}
+	data := make(map[string]string, len(fields))
+	for key, env := range fields {
+		value := getenv(env)
+		if value == "" {
+			return fmt.Errorf("credential environment %s is empty", env)
+		}
+		data[key] = base64.StdEncoding.EncodeToString([]byte(value))
+	}
+	canonical, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("canonicalize credential Secret data: %w", err)
+	}
+	actual := sha256.Sum256(canonical)
+	if subtle.ConstantTimeCompare(decoded, actual[:]) != 1 {
+		return fmt.Errorf("resolved credential Secret data does not match its approved SHA-256 binding")
+	}
+	return nil
 }
 
 func validateIAMSimulationExpiry(raw string, now time.Time) error {

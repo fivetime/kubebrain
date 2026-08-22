@@ -44,6 +44,9 @@ metadata:
   annotations:
     dbaas.kubebrain.io/iam-simulation-sha256: pending
     dbaas.kubebrain.io/iam-simulation-valid-until-unix: pending
+    dbaas.kubebrain.io/credential-secret-uid: pending
+    dbaas.kubebrain.io/credential-secret-resource-version: pending
+    dbaas.kubebrain.io/credential-secret-data-sha256: pending
   labels:
     app.kubernetes.io/name: kubebrain-operation-archive-verifier
     app.kubernetes.io/part-of: kubebrain
@@ -55,12 +58,25 @@ spec:
   failedJobsHistoryLimit: 10
   startingDeadlineSeconds: 900
   jobTemplate:
+    metadata:
+      annotations:
+        dbaas.kubebrain.io/iam-simulation-sha256: pending
+        dbaas.kubebrain.io/iam-simulation-valid-until-unix: pending
+        dbaas.kubebrain.io/credential-secret-uid: pending
+        dbaas.kubebrain.io/credential-secret-resource-version: pending
+        dbaas.kubebrain.io/credential-secret-data-sha256: pending
     spec:
       backoffLimit: 0
       activeDeadlineSeconds: 1200
       ttlSecondsAfterFinished: 604800
       template:
         metadata:
+          annotations:
+            dbaas.kubebrain.io/iam-simulation-sha256: pending
+            dbaas.kubebrain.io/iam-simulation-valid-until-unix: pending
+            dbaas.kubebrain.io/credential-secret-uid: pending
+            dbaas.kubebrain.io/credential-secret-resource-version: pending
+            dbaas.kubebrain.io/credential-secret-data-sha256: pending
           labels:
             app.kubernetes.io/name: kubebrain-operation-archive-verifier
             app.kubernetes.io/part-of: kubebrain
@@ -100,6 +116,7 @@ spec:
                 - {name: OBJECT_STORE_ID, valueFrom: {secretKeyRef: {name: kubebrain-operation-archive-verifier-object-store, key: object-store-id}}}
                 - {name: S3_BUCKET, valueFrom: {secretKeyRef: {name: kubebrain-operation-archive-verifier-object-store, key: bucket}}}
                 - {name: IAM_SIMULATION_VALID_UNTIL_UNIX, value: "1"}
+                - {name: CREDENTIAL_SECRET_DATA_SHA256, value: pending}
               resources:
                 requests: {cpu: 25m, memory: 64Mi}
                 limits: {cpu: "1", memory: 256Mi}
