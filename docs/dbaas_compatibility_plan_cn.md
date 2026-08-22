@@ -60201,6 +60201,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该只读门禁不证明 Put/version/retention/下载/跨进程幂等链。archiver 仍缺统一 `--check/--enable/--check-enabled`、
   失败回缩和逐 Pod probe 证据，这是下一增量；真实 Object Lock 归档演练仍是上线必需外部证据。
 
+- A5351 关闭 Operation archiver 仍靠手工 Secret 抽查、scale/rollout 且无法证明每个副本对象存储可读的发布缺口。
+  新增 `apply-operation-archiver.sh --verify/--check/--enable/--check-enabled`：check 要求 audit Admission 已观测当前
+  generation、完成 type checking、零 warning 且 binding 精确 Deny；逐项证明 archiver 只可 get 指定 inventory
+  ConfigMap、对 Operation 主资源 get/list/update，并拒绝泛化 ConfigMap get、Operation create/watch/patch/delete、
+  status、Secret 和 Lease 全动作，Deployment 必须为零副本。enable 要求对象存储 Secret 精确七个非空 key、HTTPS
+  endpoint、规范布尔值及无 whitespace/control 的 store/bucket，inventory 是 1..256 个唯一 DNS label；再对 inventory
+  每个 namespace 验证 get/list/update 和完整 deny 矩阵，漏建 managed RoleBinding 时零 scale。门禁扩到两副本，核验
+  observed generation 与 updated/ready/available 精确为 2，再逐 Pod exec A5350 只读 probe，要求 1..64 KiB 精确
+  v1 JSON、store/bucket/enabled flags/正整数时间匹配且 UID 前后不变。rollout/probe 失败 best-effort 回缩 0；
+  check-enabled 重跑相同链且零 scale/rollout。回归覆盖成功双 Pod probe、单 Pod probe 失败回缩、运行态无变更检查、
+  未绑定 tenant RBAC 在 scale 前拒绝和 inventory 静态检查；Bash syntax、archiver/audit 定向测试、完整 cmd/pkg、全仓
+  vet、diff check 与新增后的 551 项 inventory 均通过。四片 124/157/139/131 在代码提交 `7048f6a2` 上全部通过
+  （154.245/500.632/277.366/521.306 秒）。自动化使用 fake kubectl，本轮没有真实 Kubernetes/S3 凭据，未扩容或
+  exec 真实 Pod；只读 probe 仍不证明 Put/version/retention/下载/跨进程幂等，真实受控终态归档与异常恢复是上线
+  必需外部证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

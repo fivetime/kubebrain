@@ -5851,12 +5851,24 @@ kubectl -n kubebrain-operations create secret generic \
   --from-literal=bucket=kubebrain-operation-audit
 ```
 
-先用零副本 Deployment 做清单和 Secret 引用检查，再显式扩为两个副本：
+先保持零副本并执行基础检查，再通过统一门禁扩为两个副本：
 
 ```shell
-kubectl -n kubebrain-operations scale deployment/kubebrain-operation-archiver --replicas=2
-kubectl -n kubebrain-operations rollout status deployment/kubebrain-operation-archiver
+KUBE_CONTEXT=production hack/production/apply-operation-archiver.sh --check
+KUBE_CONTEXT=production hack/production/apply-operation-archiver.sh --enable
 ```
+
+`--check` 要求 audit ValidatingAdmissionPolicy 已观测当前 generation、完成 type checking、零 warning，binding
+精确为 Deny；archiver 只能读取指定 inventory ConfigMap，并在中央 queue 对 Operation 主资源 get/list/update，
+明确拒绝泛化 ConfigMap get、Operation create/watch/patch/delete、status、Secret 和 Lease 全部动作，且 Deployment
+仍为零副本。`--enable` 进一步要求对象存储 Secret 精确包含七个非空 key、HTTPS endpoint、布尔
+force-path-style 和安全 object-store-id/bucket；inventory 必须是 1..256 个唯一 DNS label。它对 inventory 中每个
+namespace 重跑 Operation get/list/update 与 status/Secret/Lease deny 矩阵，任一租户漏建 managed RoleBinding 都在
+scale 前失败。随后扩到两副本并核验 generation、updated/ready/available 精确收敛，再按 Pod name 排序，以
+`kubectl exec` 在每个 Pod 内运行只读 `ACTION=probe`；输出限制 64 KiB，schema/store/bucket/enabled flags/正整数时间
+必须精确匹配 Secret，且探测前后 Pod UID 不变。rollout 或任一 probe 失败会 best-effort 回缩零副本并等待回缩；
+运行后用 `--check-enabled` 重跑相同检查，该模式绝不 scale/rollout。发布身份需要 Admission/Deployment/Secret/
+ConfigMap/Pod 只读、impersonation、pods/exec 和 Deployment scale/rollout 权限；这些权限不授予 archiver SA。
 
 archiver Pod 的 readinessProbe 会每 30 秒以 `ACTION=probe` 调用镜像内
 `kubebrain-logical-object`，只执行 S3 `GetBucketVersioning` 和
@@ -5865,8 +5877,8 @@ archiver 专用凭据因此除实际归档所需权限外，还必须允许读�
 `kubebrain.object-store-bucket-probe.v1` JSON，并绑定 `object_store_id`、bucket、两个 enabled
 布尔值和检查时间；不创建、覆盖、读取或删除任何对象。readiness 只能证明当前凭据、endpoint 与 bucket
 配置可读，不能证明 PutObject、精确 version、远端下载、retention 或 Object Lock 不可变性；发布仍须按下文
-执行受控终态 Operation 归档和删除本地 receipt 后的跨进程恢复演练。统一的安全 enable/check-enabled
-发布门禁尚未交付前，不得把手工 scale/rollout 视为完整生产验收。
+执行受控终态 Operation 归档和删除本地 receipt 后的跨进程恢复演练。即使
+`--enable`/`--check-enabled` 通过，也不得把只读 probe 视为完整生产归档验收。
 
 每个终态对象固定写入
 `operation-audit/<namespace>/<operation-uid>.json`；保留截止时间固定从
