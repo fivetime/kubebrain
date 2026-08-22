@@ -34,6 +34,8 @@ case "$1" in
     while (($#)); do
       if [[ "$1" == -CAfile ]]; then ca="$2"; shift 2; else shift; fi
     done
+    [[ -z "${MUTATE_STATE_FILE:-}" ]] || printf 'changed\n' >"$MUTATE_STATE_FILE"
+    [[ -z "${MUTATE_RECEIPT_FILE:-}" ]] || printf 'changed\n' >"$MUTATE_RECEIPT_FILE"
     if [[ "${FAKE_REJECT_OLD_CA:-false}" == true && "$(cat "$ca")" == old-ca ]]; then exit 1; fi
     cat "$FAKE_PRESENTED_CERT"
     ;;
@@ -74,9 +76,11 @@ printf 'kubebrain-0\tuid-0\t0\ttrue\nkubebrain-1\tuid-1\t0\ttrue\nkubebrain-2\tu
 	require.NoError(t, os.WriteFile(statePath, stateData, 0o600))
 	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
 		"ACTION=complete", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "new-cert"),
-		"REQUIRE_OLD_CA_REJECTION=true", "FAKE_REJECT_OLD_CA=true"))
+		"REQUIRE_OLD_CA_REJECTION=true", "FAKE_REJECT_OLD_CA=true", "MUTATE_STATE_FILE="+statePath))
 	require.NoError(t, err, out)
 	require.Contains(t, string(out), "completion gate passed")
+	require.Equal(t, []byte("changed\n"), mustRead(t, statePath))
+	require.NoError(t, os.WriteFile(statePath, stateData, 0o600))
 
 	data, err := os.ReadFile(receipt)
 	require.NoError(t, err)
@@ -96,9 +100,11 @@ printf 'kubebrain-0\tuid-0\t0\ttrue\nkubebrain-1\tuid-1\t0\ttrue\nkubebrain-2\tu
 	require.NotEqual(t, got["old_certificate_sha256"], got["new_certificate_sha256"])
 	out, err = runProductionScriptCommand(t, "validate-info-certificate-rotation.sh", append(common,
 		"ACTION=verify", "FAKE_PRESENTED_CERT="+filepath.Join(dir, "new-cert"),
-		"REQUIRE_OLD_CA_REJECTION=true", "FAKE_REJECT_OLD_CA=true"))
+		"REQUIRE_OLD_CA_REJECTION=true", "FAKE_REJECT_OLD_CA=true", "MUTATE_RECEIPT_FILE="+receipt))
 	require.NoError(t, err, out)
 	require.Contains(t, string(out), "receipt verification passed")
+	require.Equal(t, []byte("changed\n"), mustRead(t, receipt))
+	require.NoError(t, os.WriteFile(receipt, data, 0o600))
 
 	rejectionCommon := append([]string{}, common...)
 	rejectionCommon = append(rejectionCommon,

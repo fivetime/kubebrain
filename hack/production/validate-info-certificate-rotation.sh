@@ -103,6 +103,14 @@ OLD_INFO_CACERT="$(freeze_file "$OLD_INFO_CACERT" old-ca)" || { echo "OLD_INFO_C
 OLD_INFO_CERT="$(freeze_file "$OLD_INFO_CERT" old-cert)" || { echo "OLD_INFO_CERT changed while being captured" >&2; exit 1; }
 NEW_INFO_CACERT="$(freeze_file "$NEW_INFO_CACERT" new-ca)" || { echo "NEW_INFO_CACERT changed while being captured" >&2; exit 1; }
 NEW_INFO_CERT="$(freeze_file "$NEW_INFO_CERT" new-cert)" || { echo "NEW_INFO_CERT changed while being captured" >&2; exit 1; }
+state_input="$state_file"
+receipt_input="$receipt_file"
+if [[ "$ACTION" != begin ]]; then
+  state_input="$(freeze_file "$state_file" info-state)" || { echo "info rotation state changed while being captured" >&2; exit 1; }
+fi
+if [[ "$ACTION" == verify ]]; then
+  receipt_input="$(freeze_file "$receipt_file" info-receipt)" || { echo "info rotation receipt changed while being captured" >&2; exit 1; }
+fi
 
 certificate_fingerprint() {
   local digest
@@ -159,12 +167,12 @@ case "$ACTION" in
     else
       [[ -f "$receipt_file" ]] || { echo "info rotation receipt is missing" >&2; exit 1; }
     fi
-    IFS=$'\t' read -r version state_instance state_rotation state_endpoint state_old state_new <"$state_file"
+    IFS=$'\t' read -r version state_instance state_rotation state_endpoint state_old state_new <"$state_input"
     [[ "$version" == kubebrain.info-certificate-rotation.state.v1 && "$state_instance" == "$INSTANCE" &&
       "$state_rotation" == "$ROTATION_ID" && "$state_endpoint" == "$INFO_ENDPOINT" &&
       "$state_old" == "$old_fingerprint" && "$state_new" == "$new_fingerprint" ]] ||
       { echo "info rotation state does not match this operation" >&2; exit 1; }
-    before_snapshot="$(tail -n +2 "$state_file")"
+    before_snapshot="$(tail -n +2 "$state_input")"
     validate_snapshot "$before_snapshot"
     observed="$(presented_fingerprint "$NEW_INFO_CACERT")" || { echo "new info TLS handshake failed" >&2; exit 1; }
     [[ "$observed" == "$new_fingerprint" ]] || { echo "info endpoint does not present NEW_INFO_CERT" >&2; exit 1; }
@@ -202,7 +210,7 @@ case "$ACTION" in
         .old_certificate_sha256 == $old and .new_certificate_sha256 == $new and .pods_unchanged == true and
         .old_ca_rejection_required == $rejectionRequired and (.old_ca_rejected | type == "boolean") and
         (($rejectionRequired | not) or .old_ca_rejected == true) and
-        (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_file" >/dev/null ||
+        (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_input" >/dev/null ||
         { echo "info rotation receipt does not match verified evidence" >&2; exit 1; }
       echo "info certificate rotation receipt verification passed: instance=${INSTANCE} rotation=${ROTATION_ID} receipt=${receipt_file}"
     fi
