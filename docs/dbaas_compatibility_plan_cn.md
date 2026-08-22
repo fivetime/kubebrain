@@ -60260,6 +60260,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   也不替代真实 Object Lock 演练及远端访问日志审计。生产应为周期检查配置只含 Head/Get/GetRetention 的独立凭据，
   并对任何证据漂移或临近到期触发告警，禁止让 verifier 使用归档写角色。
 
+- A5355 把 A5354 从一次性演练门禁下沉到常驻 Operation archiver 的每次 release 路径。`ArchiveProcessor`
+  现在先以 `ACTION=archive` 产生已完成远端复核的临时 receipt，再以同一 frozen artifact、scope、retention 和
+  `RECEIPT_INPUT` 启动独立 `ACTION=audit-verify`；第二阶段失败会包装为 read-only verification failure，绝不进入
+  Kubernetes release。processor 恢复回归模拟首次只读 exact-version/retention API 不可用，证明失败后 audit
+  finalizer 仍唯一存在、receipt/artifact/version 三项 annotation 均未出现；下一轮 archive 恢复后再次只读验证，
+  才绑定 recovered version 并释放。objectstore 另覆盖未提交 Put 故障后重新上传，以及对象已经写入但 exact-version
+  Head、Get 或 GetObjectRetention 暂时失败：首轮均不发布本地 receipt，恢复后条件写冲突必须收敛到原
+  `version-1` 而非创建替代 key/version。两个恢复/并发集合在 race detector 下各连续 20 次通过；嵌套模块全测、
+  archiver/release 与根 production 定向测试、backup cmd/pkg、vet、diff check 和 555 项 production inventory 均
+  通过。四片 126/157/141/131 在代码提交 `4215b1ab` 上全部通过（Go 测试
+  155.982/504.594/282.021/523.108 秒；端到端 164.851/513.190/290.821/531.825 秒）。本轮仍没有真实
+  Kubernetes/S3 凭据；fake S3 证明状态机和调用顺序，但不证明供应商在跨区网络抖动、IAM 临时拒绝或 Object Lock
+  控制面降级时的具体错误/可见性语义。上线演练仍须注入 Put/Head/Get/GetRetention 各阶段故障，留存同一 version、
+  finalizer/annotation 前后状态、S3 access log 和恢复轮次证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -5886,7 +5886,10 @@ archiver 专用凭据因此除实际归档所需权限外，还必须允许读�
 滑动。多副本可安全竞争同一对象：Object Lock executor 只接受同 body/metadata/retention
 的 exact-version 恢复；archiver 在释放 audit finalizer 前还会独立检查 receipt 回显的
 object store ID、bucket、object key、retention mode 和 retain-until 等于本次请求，
-并在远端下载和 retention 复核后才释放 audit finalizer。若终态
+并在 archive 动作成功后再启动一次严格只读 `ACTION=audit-verify`，用刚生成的 artifact/receipt 重新执行 exact-version
+HEAD、下载和 retention 复核，之后才释放 audit finalizer。写入已提交但任一验证 API 暂时失败时不得发布新 receipt；
+下一轮必须以相同 key/retention 恢复同一 version、重新通过只读阶段，且在此之前 finalizer 和三项 archive annotation
+保持原状。若终态
 已晚于完整保留窗口，archiver 会 fail closed，必须按审计事件处置，禁止缩短保留期或手工
 移除 finalizer。手工 `archive-operation-audit.sh` 也必须把相同 object store ID、bucket、
 object key、retention mode 和 retain-until 透传给 release 步骤，缺少或漂移时不得释放
