@@ -60305,6 +60305,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `--check/--enable/--check-enabled`：必须逐租户证明 verifier SA 仅 get/list、写动作全部拒绝，验证独立 Secret 七字段与
   真实 S3 Put/Delete/List 拒绝、手动 Job 成功后才可解除 suspend；在该门禁交付和真实执行前周期核验仍未启用。
 
+- A5358 为 A5357 增加显式 `--verify/--check/--enable/--check-enabled` 安全启用门禁。check 读取 1..256 个规范
+  inventory namespace，逐一要求 verifier SA 的 Operation get/list 为 yes，create/update/patch/delete/watch、Secret get
+  和 Lease create 为 no；中央 inventory 只允许 resourceName get。独立 object-store Secret 必须精确七个 base64 后非空、
+  无 whitespace/control 的字段，endpoint 为 HTTPS、path-style 为规范布尔值；CronJob 必须保持专用 SA、Forbid、零
+  backoff、Never。enable 额外要求 `ENABLE_OPERATION_ARCHIVE_VERIFIER=yes`，从 suspended CronJob 创建命名手动 Job，
+  等待 20 分钟内 complete 并要求日志可读；只有成功后才用旧 resourceVersion 与 `suspend=true` 双 test JSON Patch
+  原子解除 suspend，Job 失败测试证明零 patch 且状态文件不存在，成功 Job 保留为验收证据。verifier 子进程环境也改为
+  key 去重覆盖，测试证明父环境中的恶意 `ACTION=archive`/错误 version 不能抢先于只读 override。新增后 558 项
+  inventory、完整 verifier/production 定向测试、vet、Bash syntax 和 diff check 均通过；四片 127/157/142/132 在代码
+  提交 `c59fdded` 上全部通过（Go 测试 157.647/502.931/282.186/523.619 秒；端到端
+  166.224/511.443/290.778/532.204 秒）。门禁有意不发送 Put/Delete 探针：若 IAM 误配，该测试本身会留下真实对象或
+  删除证据。上线仍须附 provider policy lint/simulation/审批，证明独立 key 对 Put/Delete/List 拒绝，只允许 bucket
+  readiness 与 exact-version Head/Get/GetRetention；本轮无真实凭据，未解除任何集群 CronJob suspend。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

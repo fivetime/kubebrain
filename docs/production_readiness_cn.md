@@ -5959,6 +5959,22 @@ ServiceAccount，只能读取中央 inventory ConfigMap，并通过每个受管 
 交付前禁止手工解除 suspend；门禁必须证明 Kubernetes 写动作和 S3 Put/Delete/List 均被独立身份拒绝，并先完成一次手动
 Job 全量成功证据。
 
+启用前使用统一门禁，不得直接 patch CronJob：
+
+```bash
+KUBE_CONTEXT=production hack/production/apply-operation-archive-verifier.sh --check
+KUBE_CONTEXT=production ENABLE_OPERATION_ARCHIVE_VERIFIER=yes \
+  hack/production/apply-operation-archive-verifier.sh --enable
+KUBE_CONTEXT=production hack/production/apply-operation-archive-verifier.sh --check-enabled
+```
+
+门禁要求独立 Secret 精确七个非空安全字段、HTTPS endpoint，CronJob 仍使用专用 SA、Forbid、零 backoff 和 Never；
+对 inventory 每个 namespace 要求 Operation get/list 为 yes，create/update/patch/delete/watch、Secret 读取和 Lease create
+均为 no。enable 先从 suspended CronJob 创建并保留一次手动 Job，只有 Job complete 且日志可读，才以旧
+resourceVersion 和 `suspend=true` 双 test 的 JSON Patch 改为 false；Job 失败时绝不 patch。该运行时门禁不会主动尝试
+S3 Put/Delete 来“证明拒绝”，因为误配时会产生真实副作用；必须另附 provider IAM policy lint/simulation 或审计批准，
+证明该独立 access key 仅允许 exact-version Head/Get/GetObjectRetention 和必要 bucket 配置读取。
+
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
 终止卡住的对象存储子进程；超时对象不得生成 receipt、不得释放 audit finalizer，下一轮
