@@ -5955,17 +5955,23 @@ GET body/digest/version 和 Object Lock mode/retain-until；整个接口不包�
 Secret/RBAC 和告警规则已以 `kubebrain-operation-archive-verifier` CronJob 接入，但清单默认 `suspend:true`。它使用独立
 ServiceAccount，只能读取中央 inventory ConfigMap，并通过每个受管 namespace 显式 RoleBinding 获得 Operation get/list；
 不得复用 archiver 的 update 权限或写入型 S3 Secret。批次起点按 UTC 小时轮转，避免每次新 Job 都从最早对象开始。
-失败 Job 不重试并保留七天，`KubeBrainOperationArchiveEvidenceVerificationFailed` 以 critical 告警。专用启用门禁尚未
-交付前禁止手工解除 suspend；门禁必须证明 Kubernetes 写动作和 S3 Put/Delete/List 均被独立身份拒绝，并先完成一次手动
-Job 全量成功证据。
+失败 Job 不重试并保留七天，`KubeBrainOperationArchiveEvidenceVerificationFailed` 以 critical 告警。禁止手工解除
+suspend；专用门禁必须证明 Kubernetes 写动作和 S3 Put/Delete/List 均被独立身份拒绝，并先完成一次手动 Job 全量成功
+证据。
 
 启用前使用统一门禁，不得直接 patch CronJob：
 
 ```bash
 KUBE_CONTEXT=production hack/production/apply-operation-archive-verifier.sh --check
 KUBE_CONTEXT=production ENABLE_OPERATION_ARCHIVE_VERIFIER=yes \
+  IAM_SIMULATION_EVIDENCE=/secure/audit/verifier-iam.json \
   hack/production/apply-operation-archive-verifier.sh --enable
 KUBE_CONTEXT=production hack/production/apply-operation-archive-verifier.sh --check-enabled
+
+# 到期前使用受信系统签发的新证据续签；CronJob 保持启用，先验收手动 Job，再 CAS 轮换绑定。
+KUBE_CONTEXT=production REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM=yes \
+  IAM_SIMULATION_EVIDENCE=/secure/audit/verifier-iam-renewed.json \
+  hack/production/apply-operation-archive-verifier.sh --refresh-iam
 ```
 
 门禁要求独立 Secret 精确七个非空安全字段、HTTPS endpoint，CronJob 仍使用专用 SA、Forbid、零 backoff 和 Never；
@@ -5976,10 +5982,14 @@ S3 Put/Delete 来“证明拒绝”，因为误配时会产生真实副作用；
 证明该独立 access key 仅允许 exact-version Head/Get/GetObjectRetention 和必要 bucket 配置读取。enable 通过
 `IAM_SIMULATION_EVIDENCE=/secure/audit/verifier-iam.json` 强制消费该证据：文件必须为当前用户 0600 单链接 canonical
 单行 JSON，格式 `kubebrain.object-store-iam-simulation.v1`，object-store-id/bucket 与 Secret 相同，checked-at 不早于
-一小时前且不晚于当前时间五分钟，valid-until 位于当前之后且不超过检查后 24 小时。decisions 必须精确证明
+一小时前且不晚于当前时间五分钟，valid-until 至少比当前时间晚一小时且不超过检查后 24 小时。decisions 必须精确证明
 GetBucketVersioning/GetObject/GetObjectLockConfiguration/GetObjectRetention allowed，以及 PutObject/DeleteObject/
-ListBucket/ListBucketVersions denied。证据 SHA 与 `suspend=false` 在同一 resourceVersion/suspend/pending CAS patch 中写入
-CronJob `dbaas.kubebrain.io/iam-simulation-sha256` annotation；不能先启用再补证据。
+ListBucket/ListBucketVersions denied。证据 SHA、valid-until、运行时 expiry 与 `suspend=false` 在同一
+resourceVersion/suspend/pending CAS patch 中写入 CronJob；不能先启用再补证据。每个 verifier 进程在创建 Kubernetes
+client 或访问 S3 前检查 `IAM_SIMULATION_VALID_UNTIL_UNIX`，过期即失败并触发现有 critical Job 告警；
+`--check-enabled` 同时要求 annotation、运行时值逐字相同且仍有效。`--refresh-iam` 只接受已启用的 CronJob，先用新
+expiry 创建并完成一次性只读 Job，再以 resourceVersion、`suspend=false`、旧 SHA 和旧 expiry 的 CAS 原子轮换；Job
+失败或并发漂移均保留旧绑定。受信 CI/审批系统必须至少按日续签并在到期前留出一次完整手动 Job 和故障处置预算。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并

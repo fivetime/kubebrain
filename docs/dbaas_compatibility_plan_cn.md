@@ -60333,6 +60333,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   provider simulation 结果，但自动化未调用 AWS IAM API、未验证证据签发者真实性；生产流程仍须由受信 CI/审批系统生成
   0600 文件并留存原始 simulator 输出、principal policy version、SCP/resource policy 上下文和审批身份。
 
+- A5360 关闭 A5359 的 IAM simulation 证据过期后周期 verifier 仍可继续成功运行的时间窗口。此前 CronJob 只绑定证据
+  SHA，`valid_until_unix` 最多 24 小时却未进入 Job runtime；长期运行会把过期授权证明误当成当前只读边界。现在源清单
+  同时以 pending expiry annotation 和 fail-closed runtime sentinel 启动；enable 只接受至少剩余一小时、最多自检查起
+  24 小时的证据，用注入新 expiry 的内存 Job 清单先完成一次手动只读验收，再以 resourceVersion、suspend、旧 SHA、旧
+  expiry 和旧 runtime 值的单次 JSON Patch 同时绑定 SHA/expiry 并解除 suspend。verifier binary 在创建 Kubernetes client
+  或 S3 调用前要求正 Unix timestamp 且当前时间严格早于 expiry；过期 Job 非零退出并进入既有 critical 告警。
+  `--check-enabled` 要求 annotation/runtime expiry 逐字相同且仍有效。新增 `--refresh-iam` 保持 schedule 启用，消费新
+  canonical evidence、先跑 expiry-bound 手动 Job，再以 resourceVersion、`suspend=false` 和全部旧绑定 CAS 原子轮换；
+  手动失败或并发漂移零 patch。回归覆盖 binary 的缺失/非法/边界过期、启用绑定、运行态过期拒绝、续签成功和续签 Job
+  失败保留旧绑定；定向 cmd/production/deploy、Bash syntax、diff check 与新增后的 563 项 inventory 均通过。四片
+  128/158/144/133 在代码提交 `226bc766` 上全部通过（Go 测试
+  154.809/501.207/283.949/523.408 秒；端到端 163.526/509.906/292.611/532.000 秒）。未分片的
+  `go test ./hack/production/... ./deploy/production -count=1` 在 10 分钟 package 总预算内停于无关的
+  `TestRepairTiKVTransactionPath`，新增与 deploy 包均在超时前 GREEN；权威四片随后全部通过。本项仍不验证 IAM
+  simulator 证据签发身份或 AWS SCP/resource policy 在有效期内不会漂移；生产必须由受信系统至少按日重新模拟、审批并
+  在到期前运行 refresh，同时保留原始 simulator 输出和手动 Job 日志。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
