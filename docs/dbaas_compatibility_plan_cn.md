@@ -60160,6 +60160,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `b3e5e34e` 上全部通过（162.889/505.011/289.304/528.868 秒）。自动化使用 fake kubectl/curl/port-forward；本轮
   未在真实 broker Pod 执行，目标环境仍须留存 Service 与两 Pod 的三组 204/403 输出。
 
+- A5348 固化 parameter broker TLS 热轮换的逐 Pod、UID 绑定两阶段证据。新增
+  `check-operation-parameter-broker-tls-rotation.sh --capture/--verify`，两阶段均先执行 A5347 完整
+  `--check-enabled`，再要求恰好两个 distinct Ready 非终止 Pod，逐个以仅监听 `127.0.0.1` 的随机
+  port-forward 和生产 DNS SNI/hostname/CA 校验读取 leaf SHA-256。capture 要求两 Pod 指纹一致，将 context、
+  namespace UID 与排序后的 Pod name/UID/指纹写入 current-user 0600、单链接、不可覆盖 hard-link 发布并同步的
+  64 KiB 有界 v1 基线；verify 对基线 schema/key/scope/owner/mode/link、预期证书 non-symlink/size/mode/parse 做
+  fail-closed 校验，要求相同 Pod name/UID 均呈现指定且不同于旧证书的新指纹。每次握手前后重读 Pod UID，隧道日志
+  与证书输出均有界并由 trap 回收；脚本不 apply Secret、不重启或缩放 Pod。回归覆盖正常两 Pod 旧→新热加载、任一
+  Pod 重建拒绝和单 Pod 仍呈现旧/错误证书拒绝；Bash syntax、相邻 broker/API TLS 定向测试、完整 cmd/pkg 测试、
+  全仓 vet、diff check 与新增后的 543 项 inventory 均通过。四片 122/155/136/130 在代码提交 `c0058d60` 上全部
+  通过（153.568/496.179/278.101/515.109 秒）。自动化使用 fake kubectl/openssl/port-forward；本轮没有目标集群
+  凭据或真实证书，未执行实际 Secret 轮换。上线仍须按运行手册保留 capture/verify、Secret resourceVersion、审批、
+  CA 双信任发布顺序和失败恢复证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

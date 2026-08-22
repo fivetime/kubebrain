@@ -6155,6 +6155,33 @@ Pod UID，更新 Secret 后在 30 秒加 probe 容差内验证 endpoint 呈现�
 不变。轮换 CA 时必须先把旧、新 CA 同时发布到 executor trust bundle，再换 broker
 叶证书，最后确认所有 executor 使用新 CA 后撤旧；服务端热加载不能替代该双信任窗口。
 
+实际轮换必须用两阶段只读门禁留存每个 broker Pod 的 UID 和 leaf SHA-256。轮换前执行：
+
+```bash
+KUBE_CONTEXT=production \
+BROKER_CA_FILE=/secure/run/broker-ca-bundle.crt \
+BROKER_TOKEN_FILE=/secure/run/broker-smoke-token \
+BROKER_TLS_BASELINE_FILE=/secure/audit/parameter-broker-tls-baseline.json \
+  hack/production/check-operation-parameter-broker-tls-rotation.sh --capture
+```
+
+按上述同 CA 或 CA 双信任顺序更新 Secret，等待 reload 窗口后，以最终 trust bundle 和预期新 leaf 执行：
+
+```bash
+KUBE_CONTEXT=production \
+BROKER_CA_FILE=/secure/run/broker-final-ca-bundle.crt \
+BROKER_TOKEN_FILE=/secure/run/broker-smoke-token \
+BROKER_TLS_BASELINE_FILE=/secure/audit/parameter-broker-tls-baseline.json \
+BROKER_EXPECTED_TLS_CERT_FILE=/secure/release/broker-new-tls.crt \
+  hack/production/check-operation-parameter-broker-tls-rotation.sh --verify
+```
+
+两阶段均先完整执行 `--check-enabled`。capture 要求两个 Ready、非终止 Pod 直接握手呈现同一旧证书，并把
+namespace UID、排序后的 Pod name/UID/leaf 指纹写入当前用户所有、`0600`、单硬链接且不可覆盖的基线；verify
+要求相同 Pod name/UID 均经生产 DNS SNI/hostname/CA 校验呈现指定新证书，并拒绝新旧指纹相同。脚本只建立
+`127.0.0.1` port-forward 并读取对象，不修改 Secret、不重启或缩放 Pod；发布系统仍须另行保留 Secret
+resourceVersion、变更审批和 CA 双信任顺序证据。
+
 Operation 控制面基础层不得按本文各章节任意顺序手工 apply。先执行：
 
 ```bash
