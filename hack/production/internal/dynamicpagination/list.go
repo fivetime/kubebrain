@@ -12,6 +12,7 @@ import (
 const (
 	DefaultPageLimit int64 = 500
 	DefaultMaxItems  int64 = 10_000
+	DefaultMaxBytes  int64 = 64 << 20
 )
 
 type ResourceLister interface {
@@ -20,19 +21,21 @@ type ResourceLister interface {
 
 // All follows Kubernetes continue tokens and rejects token loops, a changing
 // list resourceVersion, oversized pages, or an oversized collection. A caller
-// aggregating multiple collections must enforce its own global item limit.
-func All(ctx context.Context, resource ResourceLister, options metav1.ListOptions, pageLimit, maxItems int64) ([]unstructured.Unstructured, error) {
+// aggregating multiple collections must enforce its own global item and byte
+// limits.
+func All(ctx context.Context, resource ResourceLister, options metav1.ListOptions, pageLimit, maxItems, maxBytes int64) ([]unstructured.Unstructured, error) {
 	if ctx == nil || resource == nil {
 		return nil, errors.New("list context and resource are required")
 	}
-	if pageLimit <= 0 || maxItems <= 0 || options.Limit != 0 || options.Continue != "" {
-		return nil, errors.New("page and item limits must be positive and list options must not predefine limit or continue")
+	if pageLimit <= 0 || maxItems <= 0 || maxBytes <= 0 || options.Limit != 0 || options.Continue != "" {
+		return nil, errors.New("page, item, and byte limits must be positive and list options must not predefine limit or continue")
 	}
 	var items []unstructured.Unstructured
 	seenTokens := map[string]struct{}{}
 	resourceVersion := ""
 	pageNumber := 0
 	continueToken := ""
+	aggregateBytes := int64(0)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -69,6 +72,15 @@ func All(ctx context.Context, resource ResourceLister, options metav1.ListOption
 		} else if page.GetResourceVersion() != resourceVersion {
 			return nil, fmt.Errorf("list resourceVersion changed between pages %d and %d", pageNumber-1, pageNumber)
 		}
+		for i := range page.Items {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			aggregateBytes, err = Charge(aggregateBytes, maxBytes, &page.Items[i])
+			if err != nil {
+				return nil, fmt.Errorf("charge list page %d item %d: %w", pageNumber, i, err)
+			}
+		}
 		items = append(items, page.Items...)
 		next := page.GetContinue()
 		if next == "" {
@@ -80,4 +92,20 @@ func All(ctx context.Context, resource ResourceLister, options metav1.ListOption
 		seenTokens[next] = struct{}{}
 		continueToken = next
 	}
+}
+
+// Charge adds one object's JSON representation to a bounded aggregate.
+func Charge(current, maxBytes int64, item *unstructured.Unstructured) (int64, error) {
+	if current < 0 || maxBytes <= 0 || item == nil {
+		return 0, errors.New("byte charge, limit, and object are invalid")
+	}
+	encoded, err := item.MarshalJSON()
+	if err != nil {
+		return 0, fmt.Errorf("serialize object for byte charge: %w", err)
+	}
+	size := int64(len(encoded))
+	if current > maxBytes-size {
+		return 0, fmt.Errorf("objects exceed the %d-byte aggregate limit", maxBytes)
+	}
+	return current + size, nil
 }
