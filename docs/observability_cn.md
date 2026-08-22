@@ -35,6 +35,8 @@ Bearer token 不得展开到 curl argv：gate 只接受 RFC 6750 `b64token` 字�
 直接 scrape gate 在 query 前还会把 TLS receipt、Prometheus CA、可选 token，以及 verify 模式下的既有 scrape
 receipt 复制到 `0600` 私有 capture，并比较源文件复制前后 SHA-256 与副本摘要；后续 hash、JSON 解析、curl
 和 receipt verify 只读快照。Secret/PVC 投影在一次 gate 中途变化时不得混合新旧版本形成证据。
+one-shot TLS gate 同样在 complete/verify 握手前双摘要冻结 state，verify 时再冻结既有 TLS receipt；Pod
+快照、证书摘要与 receipt 字段只从私有副本读取。握手期间修改原 state/receipt 不得改变本轮判断。
 
 ## 关键 SLI
 

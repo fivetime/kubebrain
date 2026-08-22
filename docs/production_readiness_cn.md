@@ -6037,6 +6037,9 @@ Prometheus token 必须符合 RFC 6750 `b64token`；scrape gate 不把它拼入 
 one-shot scrape gate 会先对 TLS receipt、Prometheus CA/token 和 verify receipt 做复制前后双 SHA-256
 捕获，私有副本 mode 为 `0600`，后续摘要、字段解析、curl 与 verify 均只使用该批快照。token 文件必须精确
 包含一个 b64token，尾随换行或 NUL 截断造成的字节数不一致也会拒绝。
+one-shot TLS gate 对旧/新 CA/leaf 之外，还会在 complete/verify 前双摘要冻结 state，并在 verify 前冻结既有
+TLS receipt；后续握手、Pod snapshot 对比和 JSON 校验只使用 `0600` 私有副本，避免同一轮混合两个 durable
+版本。
 executor 访问 parameter broker 的 projected ServiceAccount token 固定挂载为
 `/var/run/secrets/kubebrain-parameter/token`，audience 为
 `kubebrain-operation-parameters`，expiration 为 3600 秒，文件 mode 为 `0440`；不得复用

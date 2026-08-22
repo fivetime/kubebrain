@@ -59685,6 +59685,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在代码提交 `c350603f` 上全部通过（141.128/474.826/266.303/499.183 秒）。本项保证单次 gate 输入一致性，
   不替代 Kubernetes Secret resourceVersion 编排或跨多次 Operation 的版本生命周期管理。
 
+- A5316 将双摘要输入快照扩展到 one-shot info TLS gate 的 durable state/receipt。此前四份 CA/leaf 已冻结，
+  但 complete/verify 在 TLS handshake 前后继续从原 state 路径读取 header/Pod snapshot，verify 最后从原
+  receipt 路径跑 JQ；并发 PVC 修改可能混合不同版本。gate 现在在 complete/verify 前用既有 `freeze_file`
+  捕获 state，verify 同时捕获 receipt，比较源复制前后和副本 SHA-256、固定 `0600`，所有字段与 snapshot
+  只读捕获文件。回归让 fake OpenSSL 在握手时覆写原 state 或 receipt，complete/verify 仍按握手前证据成功，
+  且原文件变化可观测。Bash syntax、定向 TLS/scrape/runner、完整 deploy manifest、全仓 vet、diff check 与
+  473 项 inventory 均通过；四片 105/136/117/115 在代码提交 `87b66888` 上全部通过
+  （139.762/475.308/264.749/498.970 秒）。本项保证单次直接 gate 的输入一致，不授权忽略源文件随后变化；
+  控制面仍须在提交 Operation 终态前依赖 runner 的冻结、在线复验和 heartbeat fencing。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
