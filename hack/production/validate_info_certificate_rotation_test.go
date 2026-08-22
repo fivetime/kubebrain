@@ -153,6 +153,9 @@ printf '%s' "$count" >"$FAKE_SYNC_COUNT"
 	require.Error(t, err)
 	require.Contains(t, string(out), "cannot sync info rotation state before publication")
 	require.NoFileExists(t, stateSync)
+	stateTemps, err := filepath.Glob(filepath.Join(stateSyncDir, ".*.tmp.*"))
+	require.NoError(t, err)
+	require.Empty(t, stateTemps)
 
 	stateDirSyncDir := filepath.Join(dir, "state-directory-sync")
 	stateDirSync := filepath.Join(stateDirSyncDir, "rotation-state-directory-sync.info.state")
@@ -163,6 +166,9 @@ printf '%s' "$count" >"$FAKE_SYNC_COUNT"
 	require.Error(t, err)
 	require.Contains(t, string(out), "cannot sync info rotation state directory after publication")
 	require.FileExists(t, stateDirSync)
+	stateDirTemps, err := filepath.Glob(filepath.Join(stateDirSyncDir, ".*.tmp.*"))
+	require.NoError(t, err)
+	require.Empty(t, stateDirTemps)
 
 	receiptSyncDir := filepath.Join(dir, "receipt-sync")
 	receiptSync := filepath.Join(dir, "receipt-sync.json")
@@ -177,6 +183,9 @@ printf '%s' "$count" >"$FAKE_SYNC_COUNT"
 	require.Error(t, err)
 	require.Contains(t, string(out), "cannot sync info rotation receipt before publication")
 	require.NoFileExists(t, receiptSync)
+	receiptTemps, err := filepath.Glob(filepath.Join(dir, ".receipt-sync.json.tmp.*"))
+	require.NoError(t, err)
+	require.Empty(t, receiptTemps)
 
 	rejectionCommon := append([]string{}, common...)
 	rejectionCommon = append(rejectionCommon,

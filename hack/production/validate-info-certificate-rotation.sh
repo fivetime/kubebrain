@@ -24,6 +24,7 @@ OPENSSL="${OPENSSL:-openssl}"
 JQ="${JQ:-jq}"
 LN="${LN:-ln}"
 SYNC="${SYNC:-sync}"
+MKTEMP="${MKTEMP:-mktemp}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 MAX_CREDENTIAL_BYTES=1048576
@@ -38,6 +39,7 @@ for variable in ACTION ROTATION_ID INSTANCE STATE_DIR INFO_ENDPOINT INFO_SERVER_
 done
 command -v "$LN" >/dev/null || { echo "ln is required" >&2; exit 2; }
 command -v "$SYNC" >/dev/null || { echo "sync is required" >&2; exit 2; }
+command -v "$MKTEMP" >/dev/null || { echo "mktemp is required" >&2; exit 2; }
 [[ "$ACTION" == begin || "$ACTION" == complete || "$ACTION" == verify ]] || { echo "ACTION must be begin, complete, or verify" >&2; exit 2; }
 [[ "$ROTATION_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "ROTATION_ID is invalid" >&2; exit 2; }
 [[ "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "INSTANCE is invalid" >&2; exit 2; }
@@ -89,8 +91,13 @@ if [[ "$ACTION" == verify ]]; then
   [[ "$receipt_size" =~ ^[0-9]+$ ]] && (( receipt_size > 0 && receipt_size <= MAX_RECEIPT_BYTES )) ||
     { echo "info rotation receipt must contain 1..${MAX_RECEIPT_BYTES} bytes" >&2; exit 1; }
 fi
-credential_tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$credential_tmp_dir"' EXIT INT TERM
+credential_tmp_dir="$("$MKTEMP" -d)"
+publication_tmp=""
+cleanup() {
+  rm -rf -- "$credential_tmp_dir"
+  [[ -z "$publication_tmp" ]] || rm -f -- "$publication_tmp"
+}
+trap cleanup EXIT INT TERM
 
 freeze_file() {
   local source="$1" name="$2" destination before after
@@ -106,19 +113,29 @@ publish_no_replace() {
   local source="$1" destination="$2" label="$3"
   if ! "$SYNC" -f "$source"; then
     rm -f -- "$source"
+    publication_tmp=""
     echo "cannot sync ${label} before publication" >&2
     return 1
   fi
   if ! "$LN" -- "$source" "$destination"; then
     rm -f -- "$source"
+    publication_tmp=""
     echo "${label} already exists; refusing to overwrite" >&2
     return 1
   fi
   rm -f -- "$source"
+  publication_tmp=""
   if ! "$SYNC" -f "$(dirname -- "$destination")"; then
     echo "cannot sync ${label} directory after publication" >&2
     return 1
   fi
+}
+new_publication_tmp() {
+  local destination="$1" directory basename
+  directory="$(dirname -- "$destination")"
+  basename="$(basename -- "$destination")"
+  publication_tmp="$("$MKTEMP" "${directory}/.${basename}.tmp.XXXXXX")" || return 1
+  chmod 600 "$publication_tmp"
 }
 
 OLD_INFO_CACERT="$(freeze_file "$OLD_INFO_CACERT" old-ca)" || { echo "OLD_INFO_CACERT changed while being captured" >&2; exit 1; }
@@ -175,7 +192,8 @@ case "$ACTION" in
     [[ "$observed" == "$old_fingerprint" ]] || { echo "info endpoint does not present OLD_INFO_CERT" >&2; exit 1; }
     snapshot="$(pod_snapshot)"
     validate_snapshot "$snapshot"
-    tmp="${state_file}.tmp.$$"
+    new_publication_tmp "$state_file" || { echo "cannot create private info rotation state" >&2; exit 1; }
+    tmp="$publication_tmp"
     printf 'kubebrain.info-certificate-rotation.state.v1\t%s\t%s\t%s\t%s\t%s\n%s\n' \
       "$INSTANCE" "$ROTATION_ID" "$INFO_ENDPOINT" "$old_fingerprint" "$new_fingerprint" "$snapshot" >"$tmp"
     chmod 600 "$tmp"
@@ -210,7 +228,8 @@ case "$ACTION" in
     if [[ "$ACTION" == complete ]]; then
       completed_at="$(date +%s)"
       operation_is_nonnegative_int64 "$completed_at" || { echo "invalid completion timestamp" >&2; exit 1; }
-      tmp="${receipt_file}.tmp.$$"
+      new_publication_tmp "$receipt_file" || { echo "cannot create private info rotation receipt" >&2; exit 1; }
+      tmp="$publication_tmp"
       "$JQ" -cnS --arg instance "$INSTANCE" --arg rotation "$ROTATION_ID" --arg endpoint "$INFO_ENDPOINT" \
         --arg old "$old_fingerprint" --arg new "$new_fingerprint" --argjson replicas "$EXPECTED_REPLICAS" \
         --argjson completed "$completed_at" --argjson rejectionRequired "$REQUIRE_OLD_CA_REJECTION" \

@@ -215,7 +215,21 @@ printf '%s' "$count" >"$FAKE_SYNC_COUNT"
 			} else {
 				require.NoFileExists(t, f.output)
 			}
+			temps, globErr := filepath.Glob(filepath.Join(f.dir, ".scrape.json.tmp.*"))
+			require.NoError(t, globErr)
+			require.Empty(t, temps)
 		})
+	}
+}
+
+func TestInfoEvidencePublicationUsesExclusiveTemporaryFiles(t *testing.T) {
+	for _, script := range []string{"validate-info-certificate-rotation.sh", "validate-info-scrape-recovery.sh"} {
+		data, err := os.ReadFile(script)
+		require.NoError(t, err)
+		source := string(data)
+		require.NotContains(t, source, `.tmp.$$`)
+		require.Contains(t, source, `.tmp.XXXXXX`)
+		require.Contains(t, source, `MKTEMP`)
 	}
 }
 
