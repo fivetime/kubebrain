@@ -60426,6 +60426,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   annotation/远端 version 完整的受控样本，让验收真实调用 exact-version Head/Get/GetRetention；canonical count 仍不证明
   provider access log 或每个 API 调用身份，须把 Job/Pod/log 与 S3 access trail 对账留存。
 
+- A5367 关闭 IAM simulation 只绑定 object-store-id/bucket、却未绑定实际 Kubernetes Secret 对象与凭据字节的替换窗口。
+  旧门禁允许同名 Secret 在 simulation 后被替换，只要 store/bucket 不变，新 access key 即可借用旧 principal 的 allow/deny
+  结论完成手动 Job 并解除或续签 CronJob。现在 Secret 必须精确命中名称/namespace、`immutable:true` 和七个唯一安全字段；
+  脚本冻结非空安全 UID/resourceVersion，并对 key 排序紧凑编码的 `.data` JSON 计算 SHA-256。IAM evidence 升级为 exact-key
+  `kubebrain.object-store-iam-simulation.v2`，新增 `credential_secret_uid` 与 `credential_secret_data_sha256`，必须匹配冻结对象；
+  v1 或任一 credential binding 漂移均在创建 Job 前拒绝。手动 Job metadata、Pod template 与实际成功 Pod 同时携带 evidence
+  SHA/expiry 和 Secret UID/resourceVersion/data SHA；create 响应、完成态 Job 和实际 Pod 逐层复验。脚本还在构造 Job 前、
+  完成态 Pod 后重读 Secret，要求 UID/resourceVersion/immutable/data SHA 全部未变，因此 simulation 后替换、运行期间替换及
+  annotation admission 漂移都在 logs 与 CronJob CAS patch 前 fail closed。新增后 572 项 inventory；四片
+  129/159/147/137 在代码提交 `2410c3b4` 上全部通过（Go 测试
+  160.102/498.606/291.947/533.663 秒；端到端 169.063/507.485/300.771/542.607 秒）。本地 fake kubectl 证明状态机、摘要与
+  比较顺序，不证明真实 Kubernetes kubelet 的 Secret env 解析，也不证明 provider access key 必然对应 simulation principal；
+  目标环境必须用不可变 Secret 的新 UID 与新 v2 evidence 完成轮换，联合留存 Secret UID/resourceVersion/data SHA、原始 IAM
+  simulator 输出、Job/Pod、日志及 S3 access trail。固定 Secret 名称下的删除/重建需要独立维护窗口或冗余设计，本轮不声称
+  凭据轮换零停机。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

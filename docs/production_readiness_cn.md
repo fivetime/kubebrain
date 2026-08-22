@@ -5974,7 +5974,8 @@ KUBE_CONTEXT=production REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM=yes \
   hack/production/apply-operation-archive-verifier.sh --refresh-iam
 ```
 
-门禁要求独立 Secret 精确七个非空安全字段、HTTPS endpoint，CronJob 仍使用专用 SA、Forbid、零 backoff 和 Never；
+门禁要求独立 Secret 名称/namespace 精确匹配、`immutable:true`，且 `.data` 只有七个非空安全字段、HTTPS endpoint；脚本冻结
+Secret UID、resourceVersion，并对 `.data` 的 key 排序紧凑 JSON（保留 Kubernetes base64 值）计算 SHA-256。CronJob 仍使用专用 SA、Forbid、零 backoff 和 Never；
 live CronJob 的唯一 verifier image 必须是 `registry/path@sha256:<64 lowercase hex>`。源码中的 `kubebrain:dev` 仅用于
 suspended foundation 占位，发布系统必须在执行 `--check/--enable` 前以受审构建 digest 替换；可变 tag 无法通过门禁。
 live 参数还必须精确保留 `--max-batch=256`。启用或续签前，inventory 中必须至少存在一个已释放 audit finalizer、三项
@@ -5985,14 +5986,16 @@ archive annotation 完整且远端 exact version/retention 可读的终态 Opera
 均为 no。enable 先从 suspended CronJob 创建并保留一次手动 Job；默认使用
 `generateName: kubebrain-archive-verifier-enable-`，避免失败 Job 七天保留期间阻塞安全重试，也可通过
 `VERIFICATION_JOB_NAME` 指定唯一 DNS label 供外部审批系统关联。Job metadata 必须同时持久保存本次 canonical
-evidence 的 `dbaas.kubebrain.io/iam-simulation-sha256` 与
-`dbaas.kubebrain.io/iam-simulation-valid-until-unix`，使七天保留对象可直接关联授权证据。脚本必须从 apiserver create
-JSON 响应取得并校验 namespace、DNS label、两项 annotation，以及请求的显式名称或生成前缀，不能信任本地预估名称；
+evidence 的 `dbaas.kubebrain.io/iam-simulation-sha256`、
+`dbaas.kubebrain.io/iam-simulation-valid-until-unix`，以及冻结凭据的
+`dbaas.kubebrain.io/credential-secret-uid`、`dbaas.kubebrain.io/credential-secret-resource-version` 和
+`dbaas.kubebrain.io/credential-secret-data-sha256`，使七天保留对象可直接关联授权证据与实际凭据版本。脚本必须从 apiserver create
+JSON 响应取得并校验 namespace、DNS label、五项 annotation，以及请求的显式名称或生成前缀，不能信任本地预估名称；
 admission 删除或改写绑定时在 wait 前停止。create 返回的非空安全 UID 同样被冻结；wait 报告完成后必须重新 GET 同名
-Job，要求 namespace/name/UID、两项 evidence annotation、唯一 runtime expiry 和唯一 `Complete=True` condition 全部一致，
+Job，要求 namespace/name/UID、五项 evidence/credential annotation、Pod template 绑定、唯一 runtime expiry 和唯一 `Complete=True` condition 全部一致，
 且 expiry 在最终检查时仍位于未来。对象消失或任一异步漂移都不得读取成功日志或 patch CronJob。只有最终态复验通过且
-实际执行 Pod 也必须可核验：Job template 把同一 SHA/expiry annotation 传播给 Pod；完成后按
-`batch.kubernetes.io/job-name` 只允许一个 Pod，要求 namespace/label、指向冻结 Job name+UID 的 controller owner、两项
+实际执行 Pod 也必须可核验：Job template 把同一 evidence SHA/expiry 与 Secret UID/resourceVersion/data SHA annotation 传播给 Pod；完成后按
+`batch.kubernetes.io/job-name` 只允许一个 Pod，要求 namespace/label、指向冻结 Job name+UID 的 controller owner、五项
 annotation、ServiceAccount、Never restartPolicy、完整单 verifier container spec 与 Job template 逐字一致，且 phase 为
 Succeeded。唯一 `containerStatuses` 还必须 name/image 匹配，runtime `imageID` 以批准的 sha256 digest 结尾，零重启且
 terminated exitCode=0/reason=Completed；init containers 必须与 Job template 一致，并禁止 ephemeral container。Pod
@@ -6003,7 +6006,8 @@ resourceVersion 和 `suspend=true` 双 test 的 JSON Patch 改为 false；Job �
 S3 Put/Delete 来“证明拒绝”，因为误配时会产生真实副作用；必须另附 provider IAM policy lint/simulation 或审计批准，
 证明该独立 access key 仅允许 exact-version Head/Get/GetObjectRetention 和必要 bucket 配置读取。enable 通过
 `IAM_SIMULATION_EVIDENCE=/secure/audit/verifier-iam.json` 强制消费该证据：文件必须为当前用户 0600 单链接 canonical
-单行 JSON，格式 `kubebrain.object-store-iam-simulation.v1`，object-store-id/bucket 与 Secret 相同，checked-at 不早于
+单行 JSON，格式 `kubebrain.object-store-iam-simulation.v2`，除原有字段外必须精确包含 `credential_secret_uid` 与
+`credential_secret_data_sha256`，分别等于本次冻结的 Secret UID 和 canonical `.data` SHA-256；object-store-id/bucket 与 Secret 相同，checked-at 不早于
 一小时前且不晚于当前时间五分钟，valid-until 至少比当前时间晚一小时且不超过检查后 24 小时。decisions 必须精确证明
 GetBucketVersioning/GetObject/GetObjectLockConfiguration/GetObjectRetention allowed，以及 PutObject/DeleteObject/
 ListBucket/ListBucketVersions denied。证据 SHA、valid-until、运行时 expiry 与 `suspend=false` 在同一
@@ -6013,6 +6017,12 @@ client 或访问 S3 前检查 `IAM_SIMULATION_VALID_UNTIL_UNIX`，过期即失�
 `generateName: kubebrain-archive-verifier-iam-` 用新 expiry 创建并完成一次性只读 Job，再以 resourceVersion、
 `suspend=false`、旧 SHA 和旧 expiry 的 CAS 原子轮换；Job
 失败或并发漂移均保留旧绑定。受信 CI/审批系统必须至少按日续签并在到期前留出一次完整手动 Job 和故障处置预算。
+门禁在构造手动 Job 前、以及完成态 Job/Pod 校验后再次 GET Secret；任一次读取只要 UID、resourceVersion、
+`immutable:true` 或 canonical `.data` SHA 漂移，均在日志验收和 CronJob patch 前失败。凭据轮换不得原地修改该 Secret：应按
+Kubernetes 不可变 Secret 流程协调删除并以同名新对象重建，取得新 UID/data SHA 后重新执行 provider simulation、签发 v2
+证据并运行 `--refresh-iam`。轮换窗口内旧证据不得用于新 Secret；生产记录应共同留存 Secret UID/resourceVersion/data SHA、
+canonical IAM 文件、Job/Pod 五项 annotation、日志和 provider access trail。该流程不宣称 Secret 重建本身零停机，必须按
+目标集群调度与凭据切换策略预先设计维护窗口或冗余。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
