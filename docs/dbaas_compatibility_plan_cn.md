@@ -59944,6 +59944,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   draining 或客户端 watch/lease 连续性；生产启用前仍须在独立 TiKV/PD 预生产集群执行真实切流、故障回滚、并发控制面
   写入和长连接观测，workspace PVC/UID 与 requester 身份必须保持隔离。
 
+- A5334 关闭会替换服务端信任链并触发实例 rollout 的核心 Operation `CertificateRotation` 仍依赖通用 submitter 的入口
+  缺口。旧 runner 已按 SHA-256 冻结 old/new CA、client cert/key 与 overlap CA，执行 begin→overlap publish→overlap gate→
+  final publish→complete、持续 heartbeat、durable state/marker/receipt 接管，但 claim 未绑定 type、requester、owner 或参数
+  Secret/key；22 项参数允许任意凭据/state/receipt 路径、未知字段和任意 data kube context/kubeconfig，通用 submitter 还可
+  自选 maxAttempts。新增 `request-certificate-rotation.sh`：要求外部 request ID、实例、workspace 内七份 canonical 普通
+  non-symlink 凭据、endpoint、namespace、Pod selector 和期望副本，从请求/发布身份及七份 SHA-256 派生
+  `cert-rotate-<20hex>`；state/receipt 精确由 Operation ID 派生。requester 生成不超过 64 KiB 的 canonical immutable
+  Secret，固定 `platform:certificate-rotation`、同名 Secret/key、`maxAttempts=5` 和空 data cluster override，只提交未审批
+  Pending。专用 SA/Role 仅有 Operation 与 Secret create/get；两条 `failurePolicy=Fail` admission 令所有
+  CertificateRotation 和匹配 parameter Secret 只能由该 SA 按固定 namespace/name/type/requester/instance/attempt/单 payload
+  形状创建。runner 现在 claim 必须匹配专用合同和 attempt 1..5，参数 keys 精确且只允许 executor in-cluster 身份；
+  WORK_DIR 由 executor 固定，七份凭据必须解析为 workspace 内 canonical 普通 non-symlink 文件，state/receipt 及既有路径
+  必须匹配确定性合同并禁止 symlink，Pod selector 也拒绝控制字符/quote/backslash。错误 requester、未知字段、workspace
+  外私钥或 state drift 均在任何 gate/hook 前停止。回归覆盖正常未审批提交、越界凭据零 Kubernetes 调用、最小权限 RBAC、
+  fail-closed CEL、claim/schema/credential/output drift 零发布动作。扩展合同首轮发现 WORK_DIR 检查遮蔽非法 heartbeat interval；
+  已恢复纯租约配置先于文件系统检查的错误顺序并重跑。Bash syntax、连续两轮 requester/runner 定向测试、完整 deploy、全仓
+  vet、diff check 与新增后的 498 项 inventory 均通过；四片 112/142/124/120 在代码提交 `a26384e9` 上全部通过
+  （148.088/477.487/276.765/504.432 秒）。该入口证明审批对象、七份凭据摘要和发布目标在提交后不可漂移，不证明 CA/
+  leaf 证书扩展、SAN/EKU/有效期由真实签发系统正确生成，也不证明 Secret 原子发布、rollout、旧证书拒绝和现存 mTLS/watch/
+  lease 长连接在真实 apiserver 与独立 TiKV/PD 集群上连续；生产启用前仍须执行真实双信任窗口、逐 Pod rollout、旧 CA
+  撤权、连接重建和回滚演练，并保持 workspace PVC/UID 与 hook Secret 单 writer 隔离。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
