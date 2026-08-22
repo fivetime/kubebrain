@@ -5934,9 +5934,12 @@ Succeeded/Failed、`completedAtUnix`、唯一 audit finalizer 和零 archive ann
 并固定 `operation-audit/<namespace>/<uid>.json`。脚本先同时启动两个独立 logical-object 进程竞争同一远端 key，
 冻结两份 receipt 并要求逐字节相同；随后删除两份临时 receipt，再启动第三个独立进程。只有并发竞争和 receipt-loss
 恢复都经远端 exact-version/metadata/body/retention 复核生成逐字节相同的 canonical receipt，才使用
-专用 archiver 身份释放 finalizer。最后重新读取同 UID Operation，要求 finalizer 消失且 receipt SHA、artifact SHA、
+恢复 receipt 作为只读 `ACTION=audit-verify` 的输入。该动作要求本地 artifact/receipt 均已存在，并以不含
+`PutObject` 的窄 S3 接口重新检查 receipt scope、尚未到期的保留窗口、精确 version HEAD metadata/size、下载
+version/body/digest/bytes 和 Object Lock mode/retain-until；缺失或任一漂移都不得创建/修复 receipt，也不得释放
+finalizer。只有该只读检查通过，脚本才使用专用 archiver 身份释放 finalizer。最后重新读取同 UID Operation，要求 finalizer 消失且 receipt SHA、artifact SHA、
 version annotations 精确绑定冻结证据，并同步 artifact、两份并发 receipt、恢复 receipt 和目录。任一并发归档、
-恢复或证据比较失败时保留 finalizer；
+恢复、证据比较或只读复核失败时保留 finalizer；
 演练已经可能写入不可删除的 Object Lock version，因此只能使用经审批的一次性终态对象，且不得重复选择不同 UID 复用
 同一远端 key。
 

@@ -60245,6 +60245,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证明真实 S3 在同时 `If-None-Match:*`、跨区域延迟或 generic Put 响应丢失下返回同一 exact version；仍须运行升级后的
   真实 A5352 演练并保留三份 receipt、远端访问日志和单次 finalizer 更新审计。
 
+- A5354 为 Operation audit archive 增加显式、严格只读的周期证据核验路径。objectstore 新增
+  `AuditReadAPI`，只暴露 `HeadObject`、`GetObject` 和 `GetObjectRetention`；`VerifyAudit`/CLI
+  `ACTION=audit-verify` 只接受已有 canonical artifact 与 `RECEIPT_INPUT`，因此缺失 receipt 不会退化成上传或本地
+  修复。验证要求请求 scope 与 receipt 全字段一致、retain-until 在检查时仍位于未来，并用 receipt 的 exact version
+  逐项核对 HEAD version/size/全部业务 metadata、GET 返回 version/逐字节 body/digest/size，以及 Object Lock
+  mode/retain-until。测试用一个没有 `PutObject` 方法的 client 直接调用该 API，提供编译期无写能力证明，并覆盖
+  receipt 缺失、metadata/body/retention 漂移和保留到期。A5352 演练在三进程 byte-identical 恢复之后、finalizer
+  release 之前强制执行该只读动作；失败回归证明不会提交 release。objectstore 子模块全测、定向生产测试、完整
+  backup cmd/pkg、vet、Bash syntax、diff check、race detector 连续 20 次及 555 项 production inventory 均通过；
+  四片 126/157/141/131 在代码提交 `38682c9c` 上全部通过（Go 测试
+  155.539/504.321/284.906/525.978 秒；端到端 164.152/512.931/293.477/534.627 秒）。本轮仍无真实
+  Kubernetes/S3 凭据；自动化证明调用图与 fail-closed 编排，不证明 provider IAM 已把周期 verifier 配置成只读，
+  也不替代真实 Object Lock 演练及远端访问日志审计。生产应为周期检查配置只含 Head/Get/GetRetention 的独立凭据，
+  并对任何证据漂移或临近到期触发告警，禁止让 verifier 使用归档写角色。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
