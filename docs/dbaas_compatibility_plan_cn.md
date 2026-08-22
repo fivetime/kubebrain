@@ -60515,6 +60515,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   继续租户/对象扫描，不证明 apiserver 或外部 executor 能回滚 deadline 前已经完成的副作用；真实 expiry-near Job 与 access
   trail 对账仍是目标环境门禁。
 
+- A5373 将 A5372 的取消边界推进到写侧全局 claim。`operationctl` 有 30 秒 parent deadline，但 `Queue.Claim` 过去在 List 返回后
+  无检查地扫描全部 Operation 建立 instance→lastStarted，再用不可中断的 `sort.Slice` 完成整个公平排序；跨 namespace
+  `lastStarted` 统计也会完整遍历单个大 List。deadline 已到时仍可能长期占用 CPU，延迟退出并扩大误判 worker 健康的窗口。
+  现在两类线性扫描逐对象检查 context，候选排序改为带 context 检查的自底向上归并排序；比较键仍为实例最近启动时间、创建
+  时间、名称，检查覆盖每个 merge block、元素选择和最终 copy-back，取消后在任何 Lease/status 写前原样返回 canceled/deadline
+  error，不冒充 `ErrNoOperation`。确定性回归用第 5 次 `Err()` 检查才取消的 context 固定排序中途退出，既有跨租户公平、Lease
+  fencing 和冲突回归全部通过；operationqueue 普通测试 0.065 秒、race 1.276 秒，operationctl/worker 集成测试分别
+  2.316/0.643 秒。根 production inventory 仍为 580 项；四片 130/165/147/138 在代码提交 `8a992a37` 上全部通过（Go 测试
+  165.693/514.729/290.853/550.222 秒；端到端 174.498/523.538/299.680/559.045 秒）。该门禁证明未开始的本地扫描/排序不会越过
+  caller deadline，不证明 deadline 前已提交但响应丢失的 Lease/status 写未发生；后者仍依赖既有独立 5 秒 outcome
+  reconciliation/UID-fenced cleanup，并须在真实 apiserver 延迟与响应丢失演练中留证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

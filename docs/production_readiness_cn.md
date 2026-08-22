@@ -5782,6 +5782,14 @@ inventory 无效时 claim 在读取任何 Operation 前 fail closed。中央 wor
 Operation；上述依赖故障退出 1，供 supervisor 使用 failure backoff 和告警区分空闲与
 控制面故障。
 
+每个 namespace 的 `lastStarted` 统计和目标 queue 的候选预扫描都会逐 Operation 检查
+30 秒 operationctl parent context。候选公平排序使用可取消的自底向上归并排序，仍严格按
+实例最近启动时间、Operation 创建时间、名称排序，但在每个 merge block、每次元素选择和
+最终 copy-back 检查取消；deadline 后不会为一个无界 Operation List 完成剩余 CPU 排序，
+也不会进入 Lease/status 写阶段。取消返回 `context deadline exceeded/canceled`，不得降级为
+`ErrNoOperation`。这只约束本进程尚未开始的工作；已经提交但响应未知的 Lease/status 写入
+仍必须走下述独立 5 秒 outcome reconciliation/cleanup，而不能假定 context 取消等于未提交。
+
 实例 claim 是 Lease 与 Operation status 的两阶段提交。Lease create/update 成功后，
 status CAS 若冲突、超时或失败，worker 必须用脱离原请求取消信号但最多 5 秒的 cleanup
 context，按 holder identity 和 Lease UID precondition 释放刚取得的实例锁。status 主错误
