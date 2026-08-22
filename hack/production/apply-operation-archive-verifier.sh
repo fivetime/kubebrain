@@ -27,7 +27,7 @@ verify_static() {
 kc() { "$KUBECTL" "${context[@]}" "$@"; }
 can() { kc auth can-i "$1" "$2" "${@:3}" --as="$IDENTITY"; }
 require_no() { [[ "$(can "$@")" == no ]] || die "verifier identity must be denied: $*"; }
-require_yes() { [[ "$(can "$@")" == yes ]] || die "verifier identity lacks required read: $*"; }
+require_yes() { [[ "$(can "$@")" == yes ]] || die "verifier identity lacks required permission: $*"; }
 
 load_namespaces() {
   local inventory
@@ -43,7 +43,8 @@ check_rbac() {
   for namespace in "${namespaces[@]}"; do
     require_yes get kubebrainoperations.dbaas.kubebrain.io -n "$namespace"
     require_yes list kubebrainoperations.dbaas.kubebrain.io -n "$namespace"
-    for verb in create update patch delete watch; do require_no "$verb" kubebrainoperations.dbaas.kubebrain.io -n "$namespace"; done
+    require_yes delete kubebrainoperations.dbaas.kubebrain.io -n "$namespace"
+    for verb in create update patch watch; do require_no "$verb" kubebrainoperations.dbaas.kubebrain.io -n "$namespace"; done
     require_no get secrets -n "$namespace"
     require_no create leases.coordination.k8s.io -n "$namespace"
   done
@@ -151,6 +152,8 @@ check_cronjob() {
     (.spec.jobTemplate.spec.template.spec.containers | length) == 1 and
     (.spec.jobTemplate.spec.template.spec.containers[0].image | type == "string" and test("^[^[:space:]@]+@sha256:[a-f0-9]{64}$")) and
     ([.spec.jobTemplate.spec.template.spec.containers[0].args[] | select(startswith("--max-batch="))] == ["--max-batch=256"]) and
+    ([.spec.jobTemplate.spec.template.spec.containers[0].args[] | select(startswith("--delete-after="))] == ["--delete-after=720h"]) and
+    ([.spec.jobTemplate.spec.template.spec.containers[0].args[] | select(startswith("--max-delete-batch="))] == ["--max-delete-batch=32"]) and
     .spec.jobTemplate.spec.template.spec.containers[0].env[7].name == "IAM_SIMULATION_VALID_UNTIL_UNIX" and
     .spec.jobTemplate.spec.template.spec.containers[0].env[8].name == "CREDENTIAL_SECRET_DATA_SHA256"
   ' <<<"$cronjob" >/dev/null || die "verifier CronJob runtime contract drifted"
@@ -244,17 +247,19 @@ run_manual_verification() {
   ' <<<"$pods" >/dev/null || die "manual verifier execution Pod owner, evidence binding, runtime, or terminal phase drifted"
   verify_secret_unchanged
   logs="$(kc logs -n "$NAMESPACE" "job/$manual_job_name")" || die "cannot retain manual verifier Job logs"
-  if [[ "${#logs}" -lt 1 || "${#logs}" -gt 4096 || "$logs" == *$'\n'* || ! "$logs" =~ ^verified\ ([1-9][0-9]{0,2})\ released\ terminal\ operation\ archives$ ]]; then
+	if [[ "${#logs}" -lt 1 || "${#logs}" -gt 4096 || "$logs" == *$'\n'* || ! "$logs" =~ ^verified\ ([1-9][0-9]{0,2})\ released\ terminal\ operation\ archives\;\ deleted\ ([0-9]{1,2})\ expired\ remotely\ verified\ operation\ records$ ]]; then
     die "manual verifier Job did not emit one canonical non-empty verification result"
   fi
   verified_count="${BASH_REMATCH[1]}"
+	deleted_count="${BASH_REMATCH[2]}"
   [[ "$verified_count" -le 256 ]] || die "manual verifier Job reported more operations than its verified batch limit"
+	[[ "$deleted_count" -le 32 ]] || die "manual verifier Job reported more deletions than its retention batch limit"
   printf '%s\n' "$logs" >&2
 }
 
 [[ "$#" == 1 ]] || usage
 case "$1" in
-  --verify) verify_static; echo "verified suspended read-only Operation archive verifier manifest"; exit 0 ;;
+  --verify) verify_static; echo "verified suspended Operation archive verifier and UID-fenced retention manifest"; exit 0 ;;
   --check|--enable|--refresh-iam|--check-enabled) ;;
   *) usage ;;
 esac
@@ -308,7 +313,7 @@ case "$1" in
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] ==
         (.spec.jobTemplate.spec.template.spec.containers[0].env[] | select(.name == "CREDENTIAL_SECRET_DATA_SHA256") | .value)
     ' <<<"$cronjob" >/dev/null || die "enabled verifier IAM simulation evidence is expired or its runtime binding drifted"
-    echo "verified enabled read-only Operation archive verifier"
+    echo "verified enabled Operation archive verifier and UID-fenced retention"
     ;;
   --enable)
     [[ "${ENABLE_OPERATION_ARCHIVE_VERIFIER:-}" == yes ]] || die "set ENABLE_OPERATION_ARCHIVE_VERIFIER=yes to run a manual verification and enable the schedule"
@@ -350,7 +355,7 @@ case "$1" in
       binding_ops("replace";"/spec/jobTemplate/spec/template/metadata/annotations";$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha) +
       [{"op":"replace","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/7/value","value":$expiry},{"op":"replace","path":"/spec/jobTemplate/spec/template/spec/containers/0/env/8/value","value":$credential_sha},{"op":"replace","path":"/spec/suspend","value":false}]')"
     kc patch cronjob "$CRONJOB" -n "$NAMESPACE" --type=json -p "$patch" >/dev/null || die "manual verification passed but CronJob CAS enable failed"
-    echo "enabled hourly read-only Operation archive evidence verification; retained job/$manual_job_name"
+    echo "enabled hourly Operation archive verification and UID-fenced retention; retained job/$manual_job_name"
     ;;
   --refresh-iam)
     [[ "${REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM:-}" == yes ]] || die "set REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM=yes to verify and rotate the enabled schedule IAM binding"

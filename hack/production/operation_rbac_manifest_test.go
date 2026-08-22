@@ -531,14 +531,17 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	rule := policy.Spec.MatchConstraints.ResourceRules[0]
 	require.Equal(t, []string{"dbaas.kubebrain.io"}, rule.APIGroups)
 	require.Equal(t, []string{"v1alpha1"}, rule.APIVersions)
-	require.Equal(t, []string{"CREATE", "UPDATE"}, rule.Operations)
+	require.Equal(t, []string{"CREATE", "UPDATE", "DELETE"}, rule.Operations)
 	require.Equal(t, []string{"kubebrainoperations"}, rule.Resources)
 	require.Equal(t, "Namespaced", rule.Scope)
-	require.Len(t, policy.Spec.Validations, 8)
+	require.Len(t, policy.Spec.Validations, 9)
 	require.Contains(t, policy.Spec.Validations[0].Expression, operationaudit.Finalizer)
 	require.Contains(t, policy.Spec.Validations[0].Expression, "size(object.metadata.finalizers) == 1")
 	require.Contains(t, policy.Spec.Validations[0].Expression, `request.operation != "UPDATE"`)
 	require.Contains(t, policy.Spec.Validations[0].Expression, "object.metadata.finalizers.all")
+	require.Equal(t, "deleting an operation requires the retention controller identity, terminal archive evidence, and exact UID/resourceVersion preconditions", policy.Spec.Validations[8].Message)
+	require.Contains(t, policy.Spec.Validations[8].Expression, "request.options.preconditions.uid == oldObject.metadata.uid")
+	require.Contains(t, policy.Spec.Validations[8].Expression, "request.options.preconditions.resourceVersion == oldObject.metadata.resourceVersion")
 	require.Contains(t, policy.Spec.Validations[1].Expression, operationaudit.ApprovedByAnnotation)
 	require.Equal(t, "operations cannot be created pre-archived", policy.Spec.Validations[2].Message)
 	require.Contains(t, policy.Spec.Validations[2].Expression, operationaudit.ReceiptSHAAnnotation)
@@ -647,7 +650,7 @@ func TestManagedNamespaceRBACDefinesUnboundLeastPrivilegeRoles(t *testing.T) {
 	require.Equal(t, []rbacRule{{
 		APIGroups: []string{"dbaas.kubebrain.io"},
 		Resources: []string{"kubebrainoperations"},
-		Verbs:     []string{"get", "list"},
+		Verbs:     []string{"get", "list", "delete"},
 	}}, documents[4].Rules)
 }
 

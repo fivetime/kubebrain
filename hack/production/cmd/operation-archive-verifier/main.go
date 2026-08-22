@@ -20,6 +20,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationarchiver"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationarchiveverifier"
+	"github.com/kubewharf/kubebrain/hack/production/internal/operationretention"
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 	"github.com/kubewharf/kubebrain/hack/production/internal/reconcilebudget"
 	"k8s.io/client-go/dynamic"
@@ -32,8 +33,8 @@ var inClusterConfig = rest.InClusterConfig
 func main() {
 	var inventoryName, inventoryNamespace, inventoryKey string
 	var executor, objectStoreID, bucket, prefix, retentionMode, kubeconfig, contextName string
-	var retentionDuration, reconcileTimeout, verifyTimeout time.Duration
-	var maxBatch int
+	var retentionDuration, deleteAfter, reconcileTimeout, verifyTimeout time.Duration
+	var maxBatch, maxDeleteBatch int
 	var maxScanItems, maxScanBytes int64
 	flag.StringVar(&inventoryName, "namespace-inventory-configmap", "", "ConfigMap containing the namespace allowlist")
 	flag.StringVar(&inventoryNamespace, "namespace-inventory-namespace", "kubebrain-operations", "namespace containing the inventory ConfigMap")
@@ -44,9 +45,11 @@ func main() {
 	flag.StringVar(&prefix, "object-prefix", "operation-audit", "archive object key prefix")
 	flag.StringVar(&retentionMode, "retention-mode", "COMPLIANCE", "COMPLIANCE or GOVERNANCE")
 	flag.DurationVar(&retentionDuration, "retention-duration", 8760*time.Hour, "retention measured from terminal completion time")
+	flag.DurationVar(&deleteAfter, "delete-after", 0, "delete released Kubernetes operations after this age; zero disables deletion")
 	flag.DurationVar(&reconcileTimeout, "reconcile-timeout", 15*time.Minute, "maximum duration of the verification batch")
 	flag.DurationVar(&verifyTimeout, "verify-timeout", 2*time.Minute, "maximum duration of one exact-version verification")
 	flag.IntVar(&maxBatch, "max-batch", 32, "maximum released terminal operations verified per run")
+	flag.IntVar(&maxDeleteBatch, "max-delete-batch", 32, "maximum expired operations deleted per run")
 	flag.Int64Var(&maxScanItems, "max-scan-items", dynamicpagination.DefaultMaxItems, "maximum objects retained by one verification scan")
 	flag.Int64Var(&maxScanBytes, "max-scan-bytes", dynamicpagination.DefaultMaxBytes, "maximum JSON bytes retained by one verification scan")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path; empty uses in-cluster credentials")
@@ -67,6 +70,9 @@ func main() {
 	}
 	if reconcileTimeout <= 0 || verifyTimeout <= 0 || verifyTimeout > reconcileTimeout {
 		log.Fatal("verification timeouts are invalid")
+	}
+	if err := validateRetentionConfiguration(retentionDuration, deleteAfter, maxDeleteBatch); err != nil {
+		log.Fatal(err)
 	}
 	if err := (dynamicpagination.Budget{PageLimit: dynamicpagination.DefaultPageLimit, MaxItems: maxScanItems, MaxBytes: maxScanBytes}).Validate(); err != nil {
 		log.Fatal("scan budget: ", err)
@@ -108,7 +114,27 @@ func main() {
 		log.Printf("archive evidence verification failed after verifying %d operations: %v", verified, err)
 		os.Exit(1)
 	}
-	log.Printf("verified %d released terminal operation archives", verified)
+	if deleteAfter == 0 {
+		log.Printf("verified %d released terminal operation archives", verified)
+		return
+	}
+	reaper, err := operationretention.New(client, bounded, inventoryNamespace, inventoryName, inventoryKey, deleteAfter, maxDeleteBatch)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := reaper.SetScanBudget(maxScanItems, maxScanBytes); err != nil {
+		log.Fatal(err)
+	}
+	effectiveReconcileTimeout, err = evidenceBoundReconcileTimeout(reconcileTimeout, iamValidUntil, time.Now())
+	if err != nil {
+		log.Fatal(err)
+	}
+	deleted, err := reconcilebudget.Run(ctx, effectiveReconcileTimeout, reaper.Reconcile)
+	if err != nil {
+		log.Printf("operation retention failed after deleting %d operations: %v", deleted, err)
+		os.Exit(1)
+	}
+	log.Printf("verified %d released terminal operation archives; deleted %d expired remotely verified operation records", verified, deleted)
 }
 
 func validateCredentialSecretDataDigest(expected string, getenv func(string) string) error {
@@ -140,6 +166,14 @@ func validateCredentialSecretDataDigest(expected string, getenv func(string) str
 	actual := sha256.Sum256(canonical)
 	if subtle.ConstantTimeCompare(decoded, actual[:]) != 1 {
 		return fmt.Errorf("resolved credential Secret data does not match its approved SHA-256 binding")
+	}
+	return nil
+}
+
+func validateRetentionConfiguration(retentionDuration, deleteAfter time.Duration, maxDeleteBatch int) error {
+	if retentionDuration <= 0 || deleteAfter < 0 || maxDeleteBatch <= 0 ||
+		(deleteAfter > 0 && deleteAfter >= retentionDuration) {
+		return fmt.Errorf("retention-duration and max-delete-batch must be positive; delete-after must be zero or positive and less than retention-duration")
 	}
 	return nil
 }

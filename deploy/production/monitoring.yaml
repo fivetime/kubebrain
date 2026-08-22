@@ -2658,5 +2658,5 @@ spec:
           labels:
             severity: critical
           annotations:
-            summary: KubeBrain immutable Operation archive evidence verification failed
-            description: "The read-only hourly verifier found missing or drifted Kubernetes evidence, an expired retention window, or an exact-version S3 metadata/body/Object Lock mismatch. Keep the verifier suspended only during controlled bootstrap; inspect the failed Job before deleting its retained logs."
+            summary: KubeBrain Operation archive verification or UID-fenced retention failed
+            description: "The hourly verifier found missing or drifted Kubernetes evidence, an expired retention window, an exact-version S3 metadata/body/Object Lock mismatch, or a UID/resourceVersion-fenced retention deletion failure. No retention delete runs after a batch verification error, and every eligible record is remotely reverified immediately before deletion. Keep the job suspended only during controlled bootstrap; inspect the failed Job before deleting its retained logs."

@@ -21,7 +21,7 @@ import (
 func TestOperationArchiveVerifierManifestIsSuspended(t *testing.T) {
 	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--verify"}, nil)
 	require.NoError(t, err, string(out))
-	require.Contains(t, string(out), "verified suspended read-only")
+	require.Contains(t, string(out), "verified suspended Operation archive verifier and UID-fenced retention")
 }
 
 func TestOperationArchiveVerifierEnablesOnlyAfterManualSuccess(t *testing.T) {
@@ -364,8 +364,9 @@ func TestOperationArchiveVerifierRejectsEmptyOrNonCanonicalSuccessLog(t *testing
 		name string
 		log  string
 	}{
-		{name: "zero", log: "verified 0 released terminal operation archives"},
-		{name: "too many", log: "verified 257 released terminal operation archives"},
+		{name: "zero", log: "verified 0 released terminal operation archives; deleted 0 expired remotely verified operation records"},
+		{name: "too many", log: "verified 257 released terminal operation archives; deleted 0 expired remotely verified operation records"},
+		{name: "too many deletes", log: "verified 2 released terminal operation archives; deleted 33 expired remotely verified operation records"},
 		{name: "malformed", log: "verification complete"},
 		{name: "multiline", log: "verified 1 released terminal operation archives\nextra"},
 		{name: "oversize", log: strings.Repeat("x", 4097)},
@@ -404,7 +405,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$CALL_LOG"
 args=" $* "
 if [[ "$args" == *" auth can-i "* ]]; then
-  if [[ "$args" == *" get configmap/kubebrain-backup-scheduler-inventory "* || "$args" == *" get kubebrainoperations.dbaas.kubebrain.io "* || "$args" == *" list kubebrainoperations.dbaas.kubebrain.io "* ]]; then echo yes; else echo no; fi
+  if [[ "$args" == *" get configmap/kubebrain-backup-scheduler-inventory "* || "$args" == *" get kubebrainoperations.dbaas.kubebrain.io "* || "$args" == *" list kubebrainoperations.dbaas.kubebrain.io "* || "$args" == *" delete kubebrainoperations.dbaas.kubebrain.io "* ]]; then echo yes; else echo no; fi
   exit 0
 fi
 if [[ "$args" == *" get configmap kubebrain-backup-scheduler-inventory "* ]]; then echo '{"data":{"namespaces.json":"[\"tenant-a\",\"tenant-b\"]"}}'; exit 0; fi
@@ -437,7 +438,7 @@ if [[ "$args" == *" get cronjob kubebrain-operation-archive-verifier "* ]]; then
   [[ -z "${CRON_POD_CREDENTIAL_UID:-}" ]] || pod_annotations="$(jq -c --arg value "$CRON_POD_CREDENTIAL_UID" '.["dbaas.kubebrain.io/credential-secret-uid"]=$value' <<<"$pod_annotations")"
   [[ -z "${CRON_JOB_SIGNATURE_SHA:-}" ]] || job_annotations="$(jq -c --arg value "$CRON_JOB_SIGNATURE_SHA" '.["dbaas.kubebrain.io/iam-simulation-signature-sha256"]=$value' <<<"$job_annotations")"
   [[ -z "${CRON_POD_TRUST_SHA:-}" ]] || pod_annotations="$(jq -c --arg value "$CRON_POD_TRUST_SHA" '.["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"]=$value' <<<"$pod_annotations")"
-  printf '{"metadata":{"annotations":%s,"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"metadata":{"annotations":%s},"spec":{"backoffLimit":0,"template":{"metadata":{"annotations":%s},"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier","containers":[{"name":"verifier","image":"%s","args":["--max-batch=%s"],"env":[{"name":"S3_ENDPOINT"},{"name":"AWS_REGION"},{"name":"AWS_ACCESS_KEY_ID"},{"name":"AWS_SECRET_ACCESS_KEY"},{"name":"S3_FORCE_PATH_STYLE"},{"name":"OBJECT_STORE_ID"},{"name":"S3_BUCKET"},{"name":"IAM_SIMULATION_VALID_UNTIL_UNIX","value":"%s"},{"name":"CREDENTIAL_SECRET_DATA_SHA256","value":"%s"}]}]}}}}}}\n' "$annotations" "$suspend" "$job_annotations" "$pod_annotations" "$image" "$max_batch" "$runtime_expiry" "$runtime_credential_sha"; exit 0
+  printf '{"metadata":{"annotations":%s,"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"metadata":{"annotations":%s},"spec":{"backoffLimit":0,"template":{"metadata":{"annotations":%s},"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier","containers":[{"name":"verifier","image":"%s","args":["--max-batch=%s","--delete-after=720h","--max-delete-batch=32"],"env":[{"name":"S3_ENDPOINT"},{"name":"AWS_REGION"},{"name":"AWS_ACCESS_KEY_ID"},{"name":"AWS_SECRET_ACCESS_KEY"},{"name":"S3_FORCE_PATH_STYLE"},{"name":"OBJECT_STORE_ID"},{"name":"S3_BUCKET"},{"name":"IAM_SIMULATION_VALID_UNTIL_UNIX","value":"%s"},{"name":"CREDENTIAL_SECRET_DATA_SHA256","value":"%s"}]}]}}}}}}\n' "$annotations" "$suspend" "$job_annotations" "$pod_annotations" "$image" "$max_batch" "$runtime_expiry" "$runtime_credential_sha"; exit 0
 fi
 if [[ "$args" == *" get job "* ]]; then
   [[ "${FINAL_JOB_MISSING:-false}" != true && -f "$JOB_STATE_FILE" ]] || exit 1
@@ -477,7 +478,7 @@ if [[ "$args" == *" get pods "* ]]; then
   exit 0
 fi
 if [[ "$args" == *" wait "* ]]; then [[ "${FAIL_JOB:-false}" != true ]]; exit; fi
-if [[ "$args" == *" logs "* ]]; then printf '%s\n' "${LOG_OUTPUT:-verified 2 released terminal operation archives}"; exit 0; fi
+if [[ "$args" == *" logs "* ]]; then printf '%s\n' "${LOG_OUTPUT:-verified 2 released terminal operation archives; deleted 1 expired remotely verified operation records}"; exit 0; fi
 if [[ "$args" == *" patch cronjob "* ]]; then printf x >"$STATE_FILE"; exit 0; fi
 if [[ "$args" == *" create -f - -o json "* ]]; then
   payload="$(cat)"; grep -q 'IAM_SIMULATION_VALID_UNTIL_UNIX' <<<"$payload"; printf '%s\n' "$payload" >>"$CREATE_PAYLOAD_LOG"

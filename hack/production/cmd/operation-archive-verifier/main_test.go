@@ -27,6 +27,23 @@ func TestParseIAMSimulationExpiry(t *testing.T) {
 	}
 }
 
+func TestValidateRetentionConfiguration(t *testing.T) {
+	require.NoError(t, validateRetentionConfiguration(365*24*time.Hour, 30*24*time.Hour, 32))
+	require.NoError(t, validateRetentionConfiguration(365*24*time.Hour, 0, 32))
+	for _, tc := range []struct {
+		retention, deleteAfter time.Duration
+		batch                  int
+	}{
+		{0, 0, 1},
+		{time.Hour, -time.Second, 1},
+		{time.Hour, time.Hour, 1},
+		{time.Hour, 2 * time.Hour, 1},
+		{time.Hour, 0, 0},
+	} {
+		require.Error(t, validateRetentionConfiguration(tc.retention, tc.deleteAfter, tc.batch))
+	}
+}
+
 func TestEvidenceBoundReconcileTimeout(t *testing.T) {
 	now := time.Unix(1_700_000_000, 500_000_000)
 	for _, tc := range []struct {

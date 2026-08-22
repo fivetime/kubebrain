@@ -41,6 +41,15 @@ const (
 	ApprovalIDAnnotation  = "dbaas.kubebrain.io/approval-id"
 )
 
+func ValidateArchiveEvidenceAnnotations(annotations map[string]string) error {
+	if !validSHA256(annotations[ReceiptSHAAnnotation]) ||
+		!validSHA256(annotations[ArtifactSHAAnnotation]) ||
+		!validReceiptScopeValue(annotations[VersionAnnotation]) {
+		return errors.New("released terminal operation is missing complete archive evidence annotations")
+	}
+	return nil
+}
+
 type Artifact struct {
 	Format             string `json:"format"`
 	APIVersion         string `json:"api_version"`

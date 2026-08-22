@@ -60,12 +60,12 @@ func (p *Processor) Process(ctx context.Context, object *unstructured.Unstructur
 		return errors.New("operation still has the audit finalizer")
 	}
 	annotations := object.GetAnnotations()
+	if err := operationaudit.ValidateArchiveEvidenceAnnotations(annotations); err != nil {
+		return err
+	}
 	receiptSHA := annotations[operationaudit.ReceiptSHAAnnotation]
 	artifactSHA := annotations[operationaudit.ArtifactSHAAnnotation]
 	versionID := annotations[operationaudit.VersionAnnotation]
-	if receiptSHA == "" || artifactSHA == "" || versionID == "" {
-		return errors.New("released terminal operation is missing complete archive evidence annotations")
-	}
 	retainUntil := time.Unix(artifact.CompletedAtUnix, 0).Add(p.retentionDuration).Unix()
 	if retainUntil <= p.now().Unix() {
 		return errors.New("operation archive retention deadline is not in the future")

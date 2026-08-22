@@ -1733,19 +1733,23 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 	resourceRule := &unstructured.Unstructured{Object: resourceRules[0].(map[string]any)}
 	require.Equal(t, []string{"dbaas.kubebrain.io"}, nestedStringSlice(t, resourceRule, "apiGroups"))
 	require.Equal(t, []string{"v1alpha1"}, nestedStringSlice(t, resourceRule, "apiVersions"))
-	require.Equal(t, []string{"CREATE", "UPDATE"}, nestedStringSlice(t, resourceRule, "operations"))
+	require.Equal(t, []string{"CREATE", "UPDATE", "DELETE"}, nestedStringSlice(t, resourceRule, "operations"))
 	require.Equal(t, []string{"kubebrainoperations"}, nestedStringSlice(t, resourceRule, "resources"))
 	require.Equal(t, "Namespaced", nestedString(t, resourceRule, "scope"))
 
 	validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Len(t, validations, 8)
+	require.Len(t, validations, 9)
 	expressionsByMessage := map[string]string{}
 	for _, raw := range validations {
 		validation := raw.(map[string]any)
 		expressionsByMessage[validation["message"].(string)] = validation["expression"].(string)
 	}
+	deleteExpression := expressionsByMessage["deleting an operation requires the retention controller identity, terminal archive evidence, and exact UID/resourceVersion preconditions"]
+	require.Contains(t, deleteExpression, "kubebrain-operation-archive-verifier")
+	require.Contains(t, deleteExpression, "request.options.preconditions.uid == oldObject.metadata.uid")
+	require.Contains(t, deleteExpression, "request.options.preconditions.resourceVersion == oldObject.metadata.resourceVersion")
 	require.Contains(t,
 		expressionsByMessage["operations may only use the audit archive finalizer"],
 		`"dbaas.kubebrain.io/operation-audit"`)
@@ -4602,7 +4606,7 @@ func TestMeteringArchiveCronJobIsFailClosedAndImmutable(t *testing.T) {
 		"COPY --from=build /src/bin/kubebrain-metering-archive /usr/local/bin/kubebrain-metering-archive")
 }
 
-func TestOperationArchiveVerifierIsSuspendedReadOnlyAndFailClosed(t *testing.T) {
+func TestOperationArchiveVerifierAndRetentionAreSuspendedAndFailClosed(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-archive-verifier.yaml")
 	role := objectByKindAndName(t, objects, "Role", "kubebrain-operation-archive-verifier")
 	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
@@ -4610,13 +4614,12 @@ func TestOperationArchiveVerifierIsSuspendedReadOnlyAndFailClosed(t *testing.T) 
 	require.True(t, found)
 	require.Len(t, rules, 2)
 	require.Equal(t, []any{"get"}, rules[0].(map[string]any)["verbs"])
-	require.Equal(t, []any{"get", "list"}, rules[1].(map[string]any)["verbs"])
+	require.Equal(t, []any{"get", "list", "delete"}, rules[1].(map[string]any)["verbs"])
 	for _, rule := range rules {
 		verbs := rule.(map[string]any)["verbs"].([]any)
 		require.NotContains(t, verbs, "create")
 		require.NotContains(t, verbs, "update")
 		require.NotContains(t, verbs, "patch")
-		require.NotContains(t, verbs, "delete")
 	}
 	job := objectByKindAndName(t, objects, "CronJob", "kubebrain-operation-archive-verifier")
 	suspended, found, err := unstructured.NestedBool(job.Object, "spec", "suspend")
@@ -4675,6 +4678,8 @@ func TestOperationArchiveVerifierIsSuspendedReadOnlyAndFailClosed(t *testing.T) 
 	}
 	require.Contains(t, args, "--max-scan-items=10000")
 	require.Contains(t, args, "--max-scan-bytes=67108864")
+	require.Contains(t, args, "--delete-after=720h")
+	require.Contains(t, args, "--max-delete-batch=32")
 	require.GreaterOrEqual(t, len(env), 2)
 	require.Equal(t, map[string]any{"name": "IAM_SIMULATION_VALID_UNTIL_UNIX", "value": "1"}, env[len(env)-2])
 	require.Equal(t, map[string]any{"name": "CREDENTIAL_SECRET_DATA_SHA256", "value": "pending"}, env[len(env)-1])

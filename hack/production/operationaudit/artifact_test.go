@@ -556,3 +556,22 @@ func terminalArtifact() Artifact {
 		ReceiptSHA256: strings.Repeat("b", 64), Message: "done",
 	}
 }
+
+func TestValidateArchiveEvidenceAnnotations(t *testing.T) {
+	valid := map[string]string{
+		ReceiptSHAAnnotation: strings.Repeat("a", 64), ArtifactSHAAnnotation: strings.Repeat("b", 64), VersionAnnotation: "version-1",
+	}
+	require.NoError(t, ValidateArchiveEvidenceAnnotations(valid))
+	for _, mutate := range []func(map[string]string){
+		func(values map[string]string) { delete(values, ReceiptSHAAnnotation) },
+		func(values map[string]string) { values[ArtifactSHAAnnotation] = strings.Repeat("A", 64) },
+		func(values map[string]string) { values[VersionAnnotation] = "bad\nversion" },
+	} {
+		candidate := map[string]string{}
+		for key, value := range valid {
+			candidate[key] = value
+		}
+		mutate(candidate)
+		require.Error(t, ValidateArchiveEvidenceAnnotations(candidate))
+	}
+}

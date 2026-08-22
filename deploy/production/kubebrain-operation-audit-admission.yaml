@@ -16,6 +16,7 @@ spec:
         operations:
           - CREATE
           - UPDATE
+          - DELETE
         resources:
           - kubebrainoperations
         scope: Namespaced
@@ -126,6 +127,24 @@ spec:
             !("dbaas.kubebrain.io/audit-version-id" in oldObject.metadata.annotations) ||
             object.metadata.annotations["dbaas.kubebrain.io/audit-version-id"] == oldObject.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]))
       message: removing the audit finalizer requires terminal archive evidence
+    - expression: |
+        request.operation != "DELETE" ||
+        (request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-archive-verifier" &&
+          oldObject.status.phase in ["Succeeded", "Failed"] &&
+          (!has(oldObject.metadata.finalizers) || size(oldObject.metadata.finalizers) == 0) &&
+          has(oldObject.metadata.annotations) &&
+          "dbaas.kubebrain.io/audit-receipt-sha256" in oldObject.metadata.annotations &&
+          oldObject.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"].matches("^[a-f0-9]{64}$") &&
+          "dbaas.kubebrain.io/audit-artifact-sha256" in oldObject.metadata.annotations &&
+          oldObject.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"].matches("^[a-f0-9]{64}$") &&
+          "dbaas.kubebrain.io/audit-version-id" in oldObject.metadata.annotations &&
+          size(oldObject.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]) > 0 &&
+          has(request.options.preconditions) &&
+          has(request.options.preconditions.uid) &&
+          request.options.preconditions.uid == oldObject.metadata.uid &&
+          has(request.options.preconditions.resourceVersion) &&
+          request.options.preconditions.resourceVersion == oldObject.metadata.resourceVersion)
+      message: deleting an operation requires the retention controller identity, terminal archive evidence, and exact UID/resourceVersion preconditions
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
