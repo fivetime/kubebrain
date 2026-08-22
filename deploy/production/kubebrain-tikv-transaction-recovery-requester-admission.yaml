@@ -19,7 +19,7 @@ spec:
       message: recovery requester is restricted to the isolated repair queue
     - expression: 'object.metadata.name.matches("^tikv-recovery-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name'
       message: recovery operation identity must be deterministic
-    - expression: 'object.spec.type == "TiKVTransactionRecovery" && object.spec.requestedBy == "platform:tikv-repair-recovery" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1'
+    - expression: 'object.spec.type == "TiKVTransactionRecovery" && object.spec.requestedBy == "platform:tikv-repair-recovery" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2'
       message: recovery operation shape is fixed
     - expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")'
       message: recovery operation must bind its immutable parameter Secret

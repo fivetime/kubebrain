@@ -115,5 +115,5 @@ operationctl_args=(--namespace "$OPERATION_NAMESPACE")
   --operation-id "$operation_name" --requested-by platform:tikv-repair-recovery \
   --instance "$KUBEBRAIN_STATEFULSET" --type TiKVTransactionRecovery \
   --parameters-sha256 "$parameters_sha" --parameters-secret "$secret_name" \
-  --parameters-key parameters.json --max-attempts 1 >/dev/null
+  --parameters-key parameters.json --max-attempts 2 >/dev/null
 echo "created or verified unapproved Pending TiKVTransactionRecovery ${OPERATION_NAMESPACE}/${operation_name} for request ${REQUEST_ID}"

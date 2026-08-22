@@ -13,6 +13,7 @@ RECOVERY_COMMAND="${RECOVERY_COMMAND:-${ROOT_DIR}/hack/production/recover-kubebr
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
+MAX_RECOVERY_RECEIPT_BYTES=1048576
 MAX_UINT64=18446744073709551615
 
 die() { echo "$*" >&2; exit 2; }
@@ -32,6 +33,7 @@ command -v "$JQ" >/dev/null || die "jq is required"
   die "jq must preserve unsigned 64-bit decimal identities"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 command -v stat >/dev/null || die "stat is required"
+command -v id >/dev/null || die "id is required"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
 operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECONDS" ||
   die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64"
@@ -80,7 +82,7 @@ instance="$($JQ -er '.instance' <<<"$claim")"
 attempt="$($JQ -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$($JQ -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
 [[ "$name" =~ ^tikv-recovery-[a-f0-9]{20}$ && "$operation_id" == "$name" &&
-  "$instance" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "recovery claim identity is invalid"
+  "$instance" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$attempt" =~ ^[12]$ ]] || die "recovery claim identity is invalid"
 
 capture_dir="$(mktemp -d "$WORK_DIR/tikv-recovery.XXXXXX")"
 child=0
@@ -176,6 +178,72 @@ recovery_env=(
   "PROBE_TIMEOUT_SECONDS=$probe_timeout" "POD_READY_TIMEOUT_SECONDS=$pod_timeout"
 )
 
+verify_recovery_receipt() {
+  local size attributes
+  [[ -f "$receipt_output" && ! -L "$receipt_output" ]] || return 1
+  size="$(stat -Lc '%s' -- "$receipt_output")" || return 1
+  attributes="$(stat -Lc '%a:%u:%h' -- "$receipt_output")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -gt 0 && "$size" -le "$MAX_RECOVERY_RECEIPT_BYTES" ]] || return 1
+  [[ "$attributes" == "600:$(id -u):1" ]] || return 1
+  "$JQ" -e --arg attempt_id "$recovery_attempt_id" --arg request_id "$request_id" --arg kb_uid "$expected_kb_uid" --arg tidb_uid "$expected_tidb_uid" --argjson cluster_id "$expected_cluster_id" '
+    keys == ["attempt_id","cluster_id","completed_at_unix","format","kubebrain_statefulset_uid","ready_replicas","request_id","storage_health_verified","tidb_cluster_uid","transaction_verified"] and
+    .format == "kubebrain.tikv-repair-recovery.receipt.v1" and
+    .attempt_id == $attempt_id and .kubebrain_statefulset_uid == $kb_uid and
+    .tidb_cluster_uid == $tidb_uid and .cluster_id == $cluster_id and
+    .request_id == $request_id and
+    .ready_replicas == 3 and .storage_health_verified == true and
+    .transaction_verified == true and
+    (.completed_at_unix | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor)
+  ' "$receipt_output" >/dev/null
+}
+capture_validated_recovery_digest() {
+  local first second
+  verify_recovery_receipt || return 1
+  first="$(file_sha256 "$receipt_output")" || return 1
+  verify_recovery_receipt || return 1
+  second="$(file_sha256 "$receipt_output")" || return 1
+  [[ "$first" == "$second" ]] || return 1
+  printf '%s\n' "$second" >"$capture_dir/recovery-receipt.sha"
+  chmod 600 "$capture_dir/recovery-receipt.sha"
+}
+if [[ "$attempt" == 2 ]]; then
+  set -m
+  capture_validated_recovery_digest &
+  child=$!
+  (
+    while true; do
+      sleep "$heartbeat_interval"
+      run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+        [[ -e "$capture_dir/verifier.done" ]] || operation_kill_process_group "$child"
+        exit 75
+      }
+    done
+  ) &
+  heartbeat_pid=$!
+  set +m
+  set +e
+  wait "$child"
+  verify_rc=$?
+  set -e
+  : >"$capture_dir/verifier.done"
+  child=0
+  finalize_heartbeat || exit 1
+  if [[ "$verify_rc" == 0 ]]; then
+    receipt_digest="$(<"$capture_dir/recovery-receipt.sha")"
+    [[ "$receipt_digest" =~ ^[a-f0-9]{64}$ ]] || die "validated recovery receipt digest is invalid"
+    run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+      --receipt-sha256 "$receipt_digest" --message "reconciled durable TiKV transaction recovery receipt without repeating recovery" >/dev/null
+    exit 0
+  fi
+  run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "TiKV transaction recovery exhausted without a valid durable receipt; isolate and audit retained resources" >/dev/null
+  exit 1
+fi
+[[ ! -e "$receipt_output" ]] || {
+  run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "recovery receipt already exists before attempt 1; isolate and audit retained resources" >/dev/null
+  exit 1
+}
 if [[ ! -e "$receipt_output" ]]; then
   set -m
   env "${recovery_env[@]}" "$RECOVERY_COMMAND" &
@@ -199,27 +267,18 @@ if [[ ! -e "$receipt_output" ]]; then
   child=0
   if [[ "$recovery_rc" -ne 0 ]]; then
     finalize_heartbeat || exit 1
-    run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "TiKV transaction recovery exited ${recovery_rc}; a new approved operation is required" >/dev/null
+    echo "TiKV transaction recovery exited ${recovery_rc}; a later claim must inspect durable receipt and retained resources" >&2
     exit 1
   fi
 fi
 
-$JQ -e --arg attempt_id "$recovery_attempt_id" --arg request_id "$request_id" --arg kb_uid "$expected_kb_uid" --arg tidb_uid "$expected_tidb_uid" --argjson cluster_id "$expected_cluster_id" '
-  keys == ["attempt_id","cluster_id","completed_at_unix","format","kubebrain_statefulset_uid","ready_replicas","request_id","storage_health_verified","tidb_cluster_uid","transaction_verified"] and
-  .format == "kubebrain.tikv-repair-recovery.receipt.v1" and
-  .attempt_id == $attempt_id and .kubebrain_statefulset_uid == $kb_uid and
-  .tidb_cluster_uid == $tidb_uid and .cluster_id == $cluster_id and
-  .request_id == $request_id and
-  .ready_replicas == 3 and .storage_health_verified == true and
-  .transaction_verified == true and
-  (.completed_at_unix | type == "number" and . > 0 and . <= 9223372036854775807 and . == floor)
-' "$receipt_output" >/dev/null || {
+capture_validated_recovery_digest || {
   finalize_heartbeat || exit 1
-  run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "recovery receipt invalid; a new approved operation is required" >/dev/null
+  echo "recovery receipt is invalid; a later claim must audit retained resources" >&2
   exit 1
 }
-receipt_digest="$(file_sha256 "$receipt_output")"
-[[ "$receipt_digest" =~ ^[a-f0-9]{64}$ ]] || die "recovery receipt digest is invalid"
+receipt_digest="$(<"$capture_dir/recovery-receipt.sha")"
+[[ "$receipt_digest" =~ ^[a-f0-9]{64}$ ]] || die "validated recovery receipt digest is invalid"
 finalize_heartbeat || exit 1
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "TiKV transaction recovery completed" >/dev/null

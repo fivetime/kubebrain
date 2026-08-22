@@ -26,9 +26,9 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
   claim_name="${CLAIM_NAME:-tikv-recovery-dbea00c4a1e7fae49690}"
-  printf '{"namespace":"%s","name":"%s","operation_id":"%s","requested_by":"%s","instance":"kubebrain","type":"%s","parameters_sha256":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","owner":"%s","attempt":2}\n' \
+  printf '{"namespace":"%s","name":"%s","operation_id":"%s","requested_by":"%s","instance":"kubebrain","type":"%s","parameters_sha256":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","owner":"%s","attempt":%s}\n' \
     "${CLAIM_NAMESPACE:-kubebrain-repair-operations}" "$claim_name" "$claim_name" "${CLAIM_REQUESTER:-platform:tikv-repair-recovery}" \
-    "${CLAIM_TYPE:-TiKVTransactionRecovery}" "$EXPECTED_DIGEST" "$claim_name" "${CLAIM_OWNER:-$WORKER_ID}"
+    "${CLAIM_TYPE:-TiKVTransactionRecovery}" "$EXPECTED_DIGEST" "$claim_name" "${CLAIM_OWNER:-$WORKER_ID}" "${ATTEMPT:-1}"
 elif [[ "$*" == *"--action heartbeat"* ]]; then
   [[ "${FAIL_HEARTBEAT:-false}" != true ]] || exit 1
 elif [[ "$*" == *"--action parameters"* ]]; then
@@ -42,6 +42,8 @@ env | sort >"$RECOVERY_LOG"
 [[ "${FAKE_RECOVERY_FAIL:-false}" != "true" ]] || exit 9
 printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-repair-recovery.receipt.v1","kubebrain_statefulset_uid":"%s","ready_replicas":3,"request_id":"%s","storage_health_verified":true,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
   "$RECOVERY_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "${FAKE_COMPLETED_AT_UNIX:-1786380000}" "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$RECOVERY_REQUEST_ID" "$EXPECTED_TIDB_CLUSTER_UID" >"$RECEIPT_OUTPUT"
+chmod 600 "$RECEIPT_OUTPUT"
+[[ "${EXIT_AFTER_RECEIPT:-0}" == 0 ]] || exit "$EXIT_AFTER_RECEIPT"
 `), 0o755))
 	realCP, err := exec.LookPath("cp")
 	require.NoError(t, err)
@@ -81,7 +83,7 @@ fi
 	require.Contains(t, recoveryEnv, "RECOVERY_REQUEST_ID=change-2026-001")
 
 	require.NoError(t, os.WriteFile(recoveryLog, nil, 0o600))
-	takeoverOutput, takeoverErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv, "WORKER_ID=worker-2"))
+	takeoverOutput, takeoverErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv, "WORKER_ID=worker-2", "ATTEMPT=2"))
 	require.NoError(t, takeoverErr, string(takeoverOutput))
 	takeoverRecovery, err := os.ReadFile(recoveryLog)
 	require.NoError(t, err)
@@ -90,13 +92,42 @@ fi
 	receipts, err := filepath.Glob(filepath.Join(dir, "tikv-recovery-*.receipt.json"))
 	require.NoError(t, err)
 	require.Len(t, receipts, 1)
+	require.NoError(t, os.Chmod(receipts[0], 0o640))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	unsafeOutput, unsafeErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv,
+		"WORKER_ID=worker-unsafe", "ATTEMPT=2"))
+	require.Error(t, unsafeErr, string(unsafeOutput))
+	require.Contains(t, string(mustRead(t, operationLog)), "recovery exhausted without a valid durable receipt")
+	require.NoError(t, os.Chmod(receipts[0], 0o600))
 	require.NoError(t, os.Remove(receipts[0]))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	uncertainOutput, uncertainErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv,
+		"WORKER_ID=worker-uncertain", "EXIT_AFTER_RECEIPT=9"))
+	require.Error(t, uncertainErr, string(uncertainOutput))
+	require.Contains(t, string(uncertainOutput), "later claim must inspect durable receipt")
+	require.NotContains(t, string(mustRead(t, operationLog)), "--action fail")
+	require.NoError(t, os.Remove(recoveryLog))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	uncertainTakeoverOutput, uncertainTakeoverErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv,
+		"WORKER_ID=worker-uncertain-takeover", "ATTEMPT=2"))
+	require.NoError(t, uncertainTakeoverErr, string(uncertainTakeoverOutput))
+	require.NoFileExists(t, recoveryLog, "publication uncertainty takeover must not repeat recovery")
+	uncertainReceipts, globErr := filepath.Glob(filepath.Join(dir, "tikv-recovery-*.receipt.json"))
+	require.NoError(t, globErr)
+	require.Len(t, uncertainReceipts, 1)
+	require.NoError(t, os.Remove(uncertainReceipts[0]))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	missingOutput, missingErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv,
+		"WORKER_ID=worker-missing", "ATTEMPT=2"))
+	require.Error(t, missingErr, string(missingOutput))
+	require.NoFileExists(t, recoveryLog, "attempt 2 with missing evidence must not invoke recovery")
+	require.Contains(t, string(mustRead(t, operationLog)), "recovery exhausted without a valid durable receipt")
 	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
 	failureOutput, failureErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv, "WORKER_ID=worker-3", "FAKE_RECOVERY_FAIL=true"))
 	require.Error(t, failureErr, string(failureOutput))
 	failureOperations, err := os.ReadFile(operationLog)
 	require.NoError(t, err)
-	require.Contains(t, string(failureOperations), "--action fail")
+	require.NotContains(t, string(failureOperations), "--action fail")
 	require.NotContains(t, string(failureOperations), "--action retry")
 
 	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
@@ -108,6 +139,10 @@ fi
 	require.NoError(t, err)
 	require.NotContains(t, string(heartbeatOperations), "--action succeed")
 	require.NotContains(t, string(heartbeatOperations), "--action fail")
+	heartbeatReceipts, globErr := filepath.Glob(filepath.Join(dir, "tikv-recovery-*.receipt.json"))
+	require.NoError(t, globErr)
+	require.Len(t, heartbeatReceipts, 1)
+	require.NoError(t, os.Remove(heartbeatReceipts[0]))
 
 	extraBytes := []byte(strings.TrimSuffix(string(parameterBytes), "}") + `,"unreviewed":true}`)
 	require.NoError(t, os.WriteFile(parameters, extraBytes, 0o600))
@@ -261,8 +296,8 @@ fi
 	receiptTimeOutput, receiptTimeErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv,
 		"WORKER_ID=worker-receipt-time", "FAKE_COMPLETED_AT_UNIX=9223372036854775808"))
 	require.Error(t, receiptTimeErr)
-	require.Empty(t, receiptTimeOutput)
-	require.Contains(t, string(mustRead(t, operationLog)), "recovery receipt invalid")
+	require.Contains(t, string(receiptTimeOutput), "recovery receipt is invalid")
+	require.NotContains(t, string(mustRead(t, operationLog)), "--action fail")
 }
 
 func TestRunTiKVTransactionRecoveryOperationRejectsInvalidClaimNamespace(t *testing.T) {

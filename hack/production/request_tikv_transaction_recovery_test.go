@@ -54,7 +54,7 @@ fi
 	operationCall := string(operationData)
 	require.Contains(t, operationCall, "--requested-by platform:tikv-repair-recovery")
 	require.Contains(t, operationCall, "--type TiKVTransactionRecovery")
-	require.Contains(t, operationCall, "--max-attempts 1")
+	require.Contains(t, operationCall, "--max-attempts 2")
 	require.Contains(t, operationCall, "--name tikv-recovery-dbea00c4a1e7fae49690")
 	require.Regexp(t, regexp.MustCompile(`--name tikv-recovery-[a-f0-9]{20}`), operationCall)
 	require.NotContains(t, operationCall, "approve")

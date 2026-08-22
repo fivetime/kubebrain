@@ -1602,7 +1602,7 @@ func TestTiKVRecoveryRequesterAdmissionPinsPendingRequestShape(t *testing.T) {
 		{
 			name: "kubebrain-tikv-recovery-request-operation", resource: "kubebrainoperations",
 			fragments: []string{`^tikv-recovery-[a-f0-9]{20}$`, `TiKVTransactionRecovery`,
-				`platform:tikv-repair-recovery`, `maxAttempts == 1`, `parameters.json`},
+				`platform:tikv-repair-recovery`, `maxAttempts == 2`, `parameters.json`},
 		},
 		{
 			name: "kubebrain-tikv-recovery-request-parameters", resource: "secrets",
