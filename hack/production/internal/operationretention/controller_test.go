@@ -162,6 +162,41 @@ func TestControllerRejectsInvalidConfigurationAndBudget(t *testing.T) {
 	require.NoError(t, controller.SetScanBudget(7, 11))
 }
 
+func TestReapOneRequiresExactIdentityEligibilityAndVerification(t *testing.T) {
+	object := retainedOperation("one", 1, "Succeeded", false, true)
+	client := retentionClient(t, object)
+	verifier := &recordingVerifier{}
+	err := ReapOne(context.Background(), client, verifier, "tenant-a", "one", object.GetUID(), object.GetResourceVersion(), time.Second, time.Unix(100, 0))
+	require.NoError(t, err)
+	require.Equal(t, []string{"tenant-a/one"}, verifier.names)
+	_, err = client.Resource(operationqueue.Resource).Namespace("tenant-a").Get(context.Background(), "one", metav1.GetOptions{})
+	require.True(t, apierrors.IsNotFound(err))
+
+	for _, tc := range []struct {
+		name      string
+		uid       types.UID
+		rv        string
+		completed int64
+		verifyErr error
+		want      string
+	}{
+		{name: "uid", uid: "wrong", rv: "rv-candidate", completed: 1, want: "identity changed"},
+		{name: "resource version", uid: "uid-candidate", rv: "wrong", completed: 1, want: "identity changed"},
+		{name: "young", uid: "uid-candidate", rv: "rv-candidate", completed: 100, want: "not an expired"},
+		{name: "verify", uid: "uid-candidate", rv: "rv-candidate", completed: 1, verifyErr: errors.New("remote mismatch"), want: "remote mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := retainedOperation("candidate", tc.completed, "Succeeded", false, true)
+			candidateClient := retentionClient(t, candidate)
+			candidateVerifier := &recordingVerifier{err: tc.verifyErr}
+			err := ReapOne(context.Background(), candidateClient, candidateVerifier, "tenant-a", "candidate", tc.uid, tc.rv, time.Second, time.Unix(100, 0))
+			require.ErrorContains(t, err, tc.want)
+			_, getErr := candidateClient.Resource(operationqueue.Resource).Namespace("tenant-a").Get(context.Background(), "candidate", metav1.GetOptions{})
+			require.NoError(t, getErr)
+		})
+	}
+}
+
 func retentionClient(t *testing.T, objects ...runtime.Object) *fake.FakeDynamicClient {
 	t.Helper()
 	return fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{

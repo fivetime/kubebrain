@@ -66,6 +66,38 @@ func (c *Controller) SetScanBudget(maxItems, maxBytes int64) error {
 	return nil
 }
 
+func ReapOne(
+	ctx context.Context, client dynamic.Interface, verifier Verifier,
+	namespace, name string, expectedUID types.UID, expectedResourceVersion string,
+	deleteAfter time.Duration, now time.Time,
+) error {
+	if ctx == nil || client == nil || verifier == nil || deleteAfter <= 0 || now.IsZero() ||
+		expectedUID == "" || expectedResourceVersion == "" {
+		return errors.New("single operation retention request is incomplete")
+	}
+	if err := namespaceinventory.ValidateOne(namespace); err != nil {
+		return fmt.Errorf("operation retention namespace: %w", err)
+	}
+	if err := operationqueue.ValidateOperationName(name); err != nil {
+		return err
+	}
+	object, err := client.Resource(operationqueue.Resource).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if object.GetUID() != expectedUID || object.GetResourceVersion() != expectedResourceVersion {
+		return errors.New("operation identity changed before retention verification")
+	}
+	if !eligible(object, now.UTC().Add(-deleteAfter).Unix()) {
+		return errors.New("operation is not an expired released archive eligible for retention deletion")
+	}
+	if err := verifier.Process(ctx, object); err != nil {
+		return fmt.Errorf("verify retained operation archive: %w", err)
+	}
+	controller := &Controller{client: client}
+	return controller.deleteExact(ctx, object)
+}
+
 func (c *Controller) Reconcile(ctx context.Context) (int, error) {
 	namespaces, err := namespaceinventory.Load(ctx, c.client, c.inventoryNamespace, c.inventoryName, c.inventoryKey)
 	if err != nil {

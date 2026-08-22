@@ -28,6 +28,30 @@ func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
 	require.Contains(t, string(output), "invalid namespace ops.ns")
 }
 
+func TestMainRejectsInvalidReapContractBeforeKubeconfig(t *testing.T) {
+	base := []string{
+		"--action", "reap", "--namespace", "ops", "--name", "backup-1",
+		"--object-store-id", "store-a", "--bucket", "audit", "--retention-mode", "GOVERNANCE",
+		"--expected-uid", "uid-1", "--expected-resource-version", "7",
+	}
+	for _, tc := range []struct {
+		name  string
+		extra []string
+		want  string
+	}{
+		{name: "equal retention", extra: []string{"--delete-after", "8760h"}, want: "delete-after < retention-duration"},
+		{name: "zero timeout", extra: []string{"--timeout", "0s"}, want: "positive timeout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"."}, base...)
+			args = append(args, tc.extra...)
+			output, err := testcommand.GoRun(t, args...)
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.want)
+		})
+	}
+}
+
 func TestClientConfigPrefersInClusterWhenKubeconfigIsEmpty(t *testing.T) {
 	t.Setenv("KUBECONFIG", writeKubeconfig(t, "https://ambient.example.invalid"))
 	original := inClusterConfig
