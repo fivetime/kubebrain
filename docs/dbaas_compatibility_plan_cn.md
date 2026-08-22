@@ -59923,6 +59923,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   外部并发写；生产启用前仍须以真实 versioned bucket 演练 retention 拒绝、exact-version 删除、崩溃接管和并发 writer
   隔离，workspace PVC/UID 必须保持单 writer。
 
+- A5333 关闭会直接改变服务流量的核心 Operation `RestoreCutover` 仍依赖通用 submitter 的入口缺口。旧 runner 已有
+  prepare/cutover/verify/complete、持续 heartbeat、失败 rollback 和 durable state/marker/receipt 校验，但 claim 仅绑定
+  namespace/name/operation/instance/attempt/digest，未绑定 type、requester、owner 或参数 Secret/key；16 项参数允许任意
+  state/receipt/evidence 路径、未知字段和任意 data kube context/kubeconfig，通用 submitter 也可自由选择 maxAttempts。
+  新增 `request-restore-cutover.sh`：要求外部 request ID、实例、workspace 内 canonical 普通非 symlink restore receipt 与
+  backup、Service/源目标实例/副本/公开 endpoint 和有界 wait 参数，从请求、两份 SHA-256 与切流身份派生
+  `restore-cutover-<20hex>`；state 目录和最终 receipt 精确由 Operation ID 派生。requester 生成不超过 64 KiB 的 canonical
+  immutable Secret，固定 `platform:restore-cutover`、同名 Secret/key、`maxAttempts=5` 和空 data kube context/kubeconfig，
+  令 executor 只能使用自身 in-cluster 身份，绝不 approve。专用 SA/Role 仅有 Operation 与 Secret create/get；两条
+  `failurePolicy=Fail` admission 令所有 RestoreCutover 和匹配 parameter Secret 只能由该 SA 按固定 namespace/name/type/
+  requester/instance/attempt/单 payload 形状创建。runner 现在 claim 必须完整匹配该合同和 attempt 1..5，参数 keys 必须
+  精确且 data cluster override 必须为空；WORK_DIR 由 executor 清单固定，两份输入必须解析为 workspace 内 canonical 普通
+  non-symlink 文件，state/receipt 必须匹配确定性路径，既有路径也不得是 symlink。错误 requester、未知字段、workspace
+  escape 或 state path drift 均在 prepare/cutover/rollback 前停止。回归覆盖正常未审批提交、workspace 外证据零 Kubernetes
+  调用、最小权限 RBAC、fail-closed CEL、claim/schema/input/output drift 零 phase。Bash syntax、连续两轮 requester/runner
+  定向测试、完整 deploy、全仓 vet、diff check 与新增后的 492 项 inventory 均通过；四片 107/142/123/120 在代码提交
+  `f48079ca` 上全部通过（153.637/483.104/278.929/511.691 秒）。该入口证明审批对象、恢复证据摘要、Service 和源/目标
+  切流意图在提交后不可漂移，不证明真实 apiserver 上 Service selector/resourceVersion 竞争、EndpointSlice 收敛、连接
+  draining 或客户端 watch/lease 连续性；生产启用前仍须在独立 TiKV/PD 预生产集群执行真实切流、故障回滚、并发控制面
+  写入和长连接观测，workspace PVC/UID 与 requester 身份必须保持隔离。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
