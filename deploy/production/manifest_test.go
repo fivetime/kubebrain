@@ -1480,7 +1480,7 @@ func TestTiKVRepairAlertReceiverAdmissionPinsRequestShapeAndIdentity(t *testing.
 			resource: "kubebrainoperations",
 			requiredFragments: []string{
 				`^tikv-repair-[a-f0-9]{16,20}$`, `TiKVTransactionRepair`,
-				`alertmanager:transaction-path-policy`, `parameters.json`, `maxAttempts == 1`,
+				`alertmanager:transaction-path-policy`, `parameters.json`, `maxAttempts == 2`,
 			},
 		},
 		{
@@ -1544,7 +1544,7 @@ func TestTiKVQuiescedRepairRequesterAdmissionPinsPendingRequestShape(t *testing.
 			resource: "kubebrainoperations",
 			requiredFragments: []string{
 				`^tikv-quiesced-repair-[a-f0-9]{20}$`, `TiKVTransactionRepair`,
-				`platform:tikv-quiesced-repair`, `parameters.json`, `maxAttempts == 1`,
+				`platform:tikv-quiesced-repair`, `parameters.json`, `maxAttempts == 2`,
 			},
 		},
 		{

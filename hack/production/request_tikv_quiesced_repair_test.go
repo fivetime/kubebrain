@@ -61,7 +61,7 @@ fi
 	require.Contains(t, operationCall, "--name tikv-quiesced-repair-55b125a68aa87753e96b")
 	require.Contains(t, operationCall, "--requested-by platform:tikv-quiesced-repair")
 	require.Contains(t, operationCall, "--type TiKVTransactionRepair")
-	require.Contains(t, operationCall, "--max-attempts 1")
+	require.Contains(t, operationCall, "--max-attempts 2")
 	require.NotContains(t, operationCall, "approve")
 	kubectlData, err := os.ReadFile(kubectlLog)
 	require.NoError(t, err)

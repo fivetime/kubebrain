@@ -19,7 +19,7 @@ spec:
       message: quiesced repair requester is restricted to the isolated repair queue
     - expression: 'object.metadata.name.matches("^tikv-quiesced-repair-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name'
       message: quiesced repair operation identity must be deterministic
-    - expression: 'object.spec.type == "TiKVTransactionRepair" && object.spec.requestedBy == "platform:tikv-quiesced-repair" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1'
+    - expression: 'object.spec.type == "TiKVTransactionRepair" && object.spec.requestedBy == "platform:tikv-quiesced-repair" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2'
       message: quiesced repair operation shape is fixed
     - expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")'
       message: quiesced repair operation must bind its immutable parameter Secret

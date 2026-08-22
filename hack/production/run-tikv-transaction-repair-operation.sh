@@ -13,6 +13,7 @@ REPAIR_COMMAND="${REPAIR_COMMAND:-${ROOT_DIR}/hack/production/repair-tikv-transa
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
+MAX_REPAIR_RECEIPT_BYTES=1048576
 MAX_UINT64=18446744073709551615
 
 die() { echo "$*" >&2; exit 2; }
@@ -34,6 +35,7 @@ command -v "$JQ" >/dev/null || die "jq is required"
   die "jq must preserve unsigned 64-bit decimal identities"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 command -v stat >/dev/null || die "stat is required"
+command -v id >/dev/null || die "id is required"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
 operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECONDS" ||
   die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64"
@@ -81,7 +83,7 @@ operation_id="$($JQ -er '.operation_id' <<<"$claim")"
 instance="$($JQ -er '.instance' <<<"$claim")"
 attempt="$($JQ -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$($JQ -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
-[[ "$operation_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$instance" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "repair claim identity is invalid"
+[[ "$operation_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$instance" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$attempt" =~ ^[12]$ ]] || die "repair claim identity is invalid"
 
 capture_dir="$(mktemp -d "$WORK_DIR/tikv-repair.XXXXXX")"
 child=0
@@ -239,6 +241,84 @@ if [[ "$repair_flow" == "quiesced" ]]; then
   repair_env+=("REPAIR_MODE=quiesced" "EXPECTED_ABNORMAL_STORE_IDS=$expected_abnormal_store_ids")
 fi
 
+verify_repair_receipt() {
+  local size attributes
+  [[ -f "$receipt_output" && ! -L "$receipt_output" ]] || return 1
+  size="$(stat -Lc '%s' -- "$receipt_output")" || return 1
+  attributes="$(stat -Lc '%a:%u:%h' -- "$receipt_output")" || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -gt 0 && "$size" -le "$MAX_REPAIR_RECEIPT_BYTES" ]] || return 1
+  [[ "$attributes" == "600:$(id -u):1" ]] || return 1
+  if [[ "$repair_flow" == "transaction" ]]; then
+    "$JQ" -e --arg attempt_id "$repair_attempt_id" --arg kb_uid "$expected_kb_uid" --arg tidb_uid "$expected_tidb_uid" --argjson cluster_id "$expected_cluster_id" '
+      keys == ["attempt_id","cluster_id","completed_at_unix","format","kubebrain_statefulset_uid","pvc_preserved","repaired_tikv_pods","tidb_cluster_uid","transaction_verified"] and
+      .format == "kubebrain.tikv-transaction-repair.receipt.v1" and
+      .attempt_id == $attempt_id and .kubebrain_statefulset_uid == $kb_uid and
+      .tidb_cluster_uid == $tidb_uid and .cluster_id == $cluster_id and .pvc_preserved == true and
+      (.repaired_tikv_pods | type == "number" and . == floor and . >= 1 and . <= 3) and
+      .transaction_verified == true and
+      (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_output" >/dev/null
+    return
+  fi
+  local expected_target_count expected_target_ids
+  expected_target_count="$(tr ',' '\n' <<<"$expected_abnormal_store_ids" | wc -l | tr -d ' ')"
+  expected_target_ids="[${expected_abnormal_store_ids}]"
+  "$JQ" -e --arg attempt_id "$repair_attempt_id" --arg kb_uid "$expected_kb_uid" --arg tidb_uid "$expected_tidb_uid" --argjson cluster_id "$expected_cluster_id" --argjson target_count "$expected_target_count" --argjson target_ids "$expected_target_ids" '
+    keys == ["attempt_id","cluster_id","completed_at_unix","format","kubebrain_quiesced","kubebrain_statefulset_uid","pvc_preserved","regions_verified","repaired_store_ids","repaired_tikv_pods","tidb_cluster_uid"] and
+    .format == "kubebrain.tikv-quiesced-repair.receipt.v1" and
+    .attempt_id == $attempt_id and .kubebrain_statefulset_uid == $kb_uid and
+    .tidb_cluster_uid == $tidb_uid and .cluster_id == $cluster_id and
+    .kubebrain_quiesced == true and .pvc_preserved == true and .regions_verified == true and .repaired_store_ids == $target_ids and
+    .repaired_tikv_pods == $target_count and
+    (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_output" >/dev/null
+}
+capture_validated_repair_digest() {
+  local first second
+  verify_repair_receipt || return 1
+  first="$(file_sha256 "$receipt_output")" || return 1
+  verify_repair_receipt || return 1
+  second="$(file_sha256 "$receipt_output")" || return 1
+  [[ "$first" == "$second" ]] || return 1
+  printf '%s\n' "$second" >"$capture_dir/repair-receipt.sha"
+  chmod 600 "$capture_dir/repair-receipt.sha"
+}
+if [[ "$attempt" == 2 ]]; then
+  set -m
+  capture_validated_repair_digest &
+  child=$!
+  (
+    while true; do
+      sleep "$heartbeat_interval"
+      run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+        [[ -e "$capture_dir/verifier.done" ]] || operation_kill_process_group "$child"
+        exit 75
+      }
+    done
+  ) &
+  heartbeat_pid=$!
+  set +m
+  set +e
+  wait "$child"
+  verify_rc=$?
+  set -e
+  : >"$capture_dir/verifier.done"
+  child=0
+  finalize_heartbeat || exit 1
+  if [[ "$verify_rc" == 0 ]]; then
+    receipt_digest="$(<"$capture_dir/repair-receipt.sha")"
+    [[ "$receipt_digest" =~ ^[a-f0-9]{64}$ ]] || die "validated repair receipt digest is invalid"
+    run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+      --receipt-sha256 "$receipt_digest" --message "reconciled durable TiKV ${repair_flow} repair receipt without repeating repair" >/dev/null
+    exit 0
+  fi
+  run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "TiKV ${repair_flow} repair exhausted without a valid durable receipt; isolate and audit retained resources" >/dev/null
+  exit 1
+fi
+[[ ! -e "$receipt_output" ]] || {
+  run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "repair receipt already exists before attempt 1; isolate and audit retained resources" >/dev/null
+  exit 1
+}
 if [[ ! -e "$receipt_output" ]]; then
   set -m
   env "${repair_env[@]}" "$REPAIR_COMMAND" &
@@ -262,44 +342,18 @@ if [[ ! -e "$receipt_output" ]]; then
   child=0
   if [[ "$repair_rc" -ne 0 ]]; then
     finalize_heartbeat || exit 1
-    run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "TiKV ${repair_flow} repair exited ${repair_rc}; a new approved operation is required" >/dev/null
+    echo "TiKV ${repair_flow} repair exited ${repair_rc}; a later claim must inspect durable receipt and retained resources" >&2
     exit 1
   fi
 fi
 
-receipt_valid=false
-if [[ "$repair_flow" == "transaction" ]]; then
-  if $JQ -e --arg attempt_id "$repair_attempt_id" --arg kb_uid "$expected_kb_uid" --arg tidb_uid "$expected_tidb_uid" --argjson cluster_id "$expected_cluster_id" '
-    keys == ["attempt_id","cluster_id","completed_at_unix","format","kubebrain_statefulset_uid","pvc_preserved","repaired_tikv_pods","tidb_cluster_uid","transaction_verified"] and
-    .format == "kubebrain.tikv-transaction-repair.receipt.v1" and
-    .attempt_id == $attempt_id and .kubebrain_statefulset_uid == $kb_uid and
-    .tidb_cluster_uid == $tidb_uid and .cluster_id == $cluster_id and .pvc_preserved == true and
-    (.repaired_tikv_pods | type == "number" and . == floor and . >= 1 and . <= 3) and
-    .transaction_verified == true and
-    (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_output" >/dev/null; then
-    receipt_valid=true
-  fi
-else
-  expected_target_count="$(tr ',' '\n' <<<"$expected_abnormal_store_ids" | wc -l | tr -d ' ')"
-  expected_target_ids="[${expected_abnormal_store_ids}]"
-  if $JQ -e --arg attempt_id "$repair_attempt_id" --arg kb_uid "$expected_kb_uid" --arg tidb_uid "$expected_tidb_uid" --argjson cluster_id "$expected_cluster_id" --argjson target_count "$expected_target_count" --argjson target_ids "$expected_target_ids" '
-    keys == ["attempt_id","cluster_id","completed_at_unix","format","kubebrain_quiesced","kubebrain_statefulset_uid","pvc_preserved","regions_verified","repaired_store_ids","repaired_tikv_pods","tidb_cluster_uid"] and
-    .format == "kubebrain.tikv-quiesced-repair.receipt.v1" and
-    .attempt_id == $attempt_id and .kubebrain_statefulset_uid == $kb_uid and
-    .tidb_cluster_uid == $tidb_uid and .cluster_id == $cluster_id and
-    .kubebrain_quiesced == true and .pvc_preserved == true and .regions_verified == true and .repaired_store_ids == $target_ids and
-    .repaired_tikv_pods == $target_count and
-    (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_output" >/dev/null; then
-    receipt_valid=true
-  fi
-fi
-[[ "$receipt_valid" == "true" ]] || {
+capture_validated_repair_digest || {
   finalize_heartbeat || exit 1
-  run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "repair receipt invalid; a new approved operation is required" >/dev/null
+  echo "repair receipt is invalid; a later claim must audit retained resources" >&2
   exit 1
 }
-receipt_digest="$(file_sha256 "$receipt_output")"
-[[ "$receipt_digest" =~ ^[a-f0-9]{64}$ ]] || die "repair receipt digest is invalid"
+receipt_digest="$(<"$capture_dir/repair-receipt.sha")"
+[[ "$receipt_digest" =~ ^[a-f0-9]{64}$ ]] || die "validated repair receipt digest is invalid"
 finalize_heartbeat || exit 1
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "TiKV ${repair_flow} repair completed" >/dev/null

@@ -172,7 +172,7 @@ spec:
   validations:
     - expression: 'object.metadata.name.matches("^tikv-repair-[a-f0-9]{16,20}$")'
       message: repair alert operation name must derive from an alert occurrence
-    - expression: 'object.spec.type == "TiKVTransactionRepair" && object.spec.operationID == object.metadata.name && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1'
+    - expression: 'object.spec.type == "TiKVTransactionRepair" && object.spec.operationID == object.metadata.name && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2'
       message: repair alert operations require the fixed type, identity, instance, and attempt limit
     - expression: 'has(object.spec.requestedBy) && object.spec.requestedBy == "alertmanager:transaction-path-policy"'
       message: repair alert operations require the fixed policy requester

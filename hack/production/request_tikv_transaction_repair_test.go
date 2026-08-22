@@ -69,7 +69,7 @@ fi
 	operationCall := string(operationData)
 	require.Contains(t, operationCall, "--action submit")
 	require.Contains(t, operationCall, "--type TiKVTransactionRepair")
-	require.Contains(t, operationCall, "--max-attempts 1")
+	require.Contains(t, operationCall, "--max-attempts 2")
 	require.Contains(t, operationCall, "--name tikv-repair-1bb5a469de669cd3422d")
 	require.NotContains(t, operationCall, "approve")
 	require.NotContains(t, operationCall, "approved-by")

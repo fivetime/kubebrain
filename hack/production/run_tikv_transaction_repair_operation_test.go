@@ -23,9 +23,9 @@ func TestRunTiKVTransactionRepairOperation(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
-  printf '{"namespace":"%s","name":"tikv-repair-1bb5a469de669cd3422d","operation_id":"tikv-repair-1bb5a469de669cd3422d","requested_by":"%s","instance":"%s","type":"%s","parameters_sha256":"%s","parameters_secret":"tikv-repair-1bb5a469de669cd3422d-parameters","parameters_key":"parameters.json","owner":"%s","attempt":2}\n' \
+  printf '{"namespace":"%s","name":"tikv-repair-1bb5a469de669cd3422d","operation_id":"tikv-repair-1bb5a469de669cd3422d","requested_by":"%s","instance":"%s","type":"%s","parameters_sha256":"%s","parameters_secret":"tikv-repair-1bb5a469de669cd3422d-parameters","parameters_key":"parameters.json","owner":"%s","attempt":%s}\n' \
     "${CLAIM_NAMESPACE:-kubebrain-operations}" "${CLAIM_REQUESTER:-alertmanager:transaction-path-policy}" \
-    "${CLAIM_INSTANCE:-kubebrain}" "${CLAIM_TYPE:-TiKVTransactionRepair}" "$EXPECTED_DIGEST" "${CLAIM_OWNER:-$WORKER_ID}"
+    "${CLAIM_INSTANCE:-kubebrain}" "${CLAIM_TYPE:-TiKVTransactionRepair}" "$EXPECTED_DIGEST" "${CLAIM_OWNER:-$WORKER_ID}" "${ATTEMPT:-1}"
 elif [[ "$*" == *"--action heartbeat"* ]]; then
   [[ "${FAIL_HEARTBEAT:-false}" != true ]] || exit 1
 fi
@@ -37,6 +37,8 @@ set -euo pipefail
 env | sort >"$REPAIR_LOG"
 [[ "${FAKE_REPAIR_FAIL:-false}" != "true" ]] || exit 9
 printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"format":"kubebrain.tikv-transaction-repair.receipt.v1","kubebrain_statefulset_uid":"%s","pvc_preserved":true,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s","transaction_verified":true}\n' "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "${FAKE_REPAIRED_TIKV_PODS:-3}" "$EXPECTED_TIDB_CLUSTER_UID" >"$RECEIPT_OUTPUT"
+chmod 600 "$RECEIPT_OUTPUT"
+[[ "${EXIT_AFTER_RECEIPT:-0}" == 0 ]] || exit "$EXIT_AFTER_RECEIPT"
 `), 0o755))
 
 	output, err := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
@@ -84,6 +86,7 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 		"EXPECTED_DIGEST=" + digest,
 		"OPERATION_LOG=" + operationLog,
 		"REPAIR_LOG=" + repairLog,
+		"ATTEMPT=2",
 	})
 	require.NoError(t, takeoverErr, string(takeoverOutput))
 	takeoverRepairData, err := os.ReadFile(repairLog)
@@ -122,7 +125,53 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 	receipts, err := filepath.Glob(filepath.Join(tempDir, "tikv-repair-*.receipt.json"))
 	require.NoError(t, err)
 	require.Len(t, receipts, 1)
+	require.NoError(t, os.Chmod(receipts[0], 0o640))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	unsafeOutput, unsafeErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-unsafe", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + digest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog, "ATTEMPT=2",
+	})
+	require.Error(t, unsafeErr, string(unsafeOutput))
+	require.Contains(t, string(mustRead(t, operationLog)), "repair exhausted without a valid durable receipt")
+	require.NoError(t, os.Chmod(receipts[0], 0o600))
 	require.NoError(t, os.Remove(receipts[0]))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	uncertainOutput, uncertainErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-uncertain", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + digest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+		"FAKE_REPAIRED_TIKV_PODS=1", "EXIT_AFTER_RECEIPT=9",
+	})
+	require.Error(t, uncertainErr, string(uncertainOutput))
+	require.Contains(t, string(uncertainOutput), "later claim must inspect durable receipt")
+	require.NotContains(t, string(mustRead(t, operationLog)), "--action fail")
+	require.NoError(t, os.Remove(repairLog))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	uncertainTakeoverOutput, uncertainTakeoverErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-uncertain-takeover", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + digest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog, "ATTEMPT=2",
+	})
+	require.NoError(t, uncertainTakeoverErr, string(uncertainTakeoverOutput))
+	require.NoFileExists(t, repairLog, "publication uncertainty takeover must not repeat TiKV repair")
+	uncertainReceipts, globErr := filepath.Glob(filepath.Join(tempDir, "tikv-repair-*.receipt.json"))
+	require.NoError(t, globErr)
+	require.Len(t, uncertainReceipts, 1)
+	require.NoError(t, os.Remove(uncertainReceipts[0]))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	missingOutput, missingErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-missing", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + digest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog, "ATTEMPT=2",
+	})
+	require.Error(t, missingErr, string(missingOutput))
+	require.NoFileExists(t, repairLog, "attempt 2 with missing evidence must not invoke repair")
+	require.Contains(t, string(mustRead(t, operationLog)), "repair exhausted without a valid durable receipt")
 	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
 	failureOutput, failureErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
 		"WORKER_ID=worker-3", "PARAMETERS_INPUT=" + parameters,
@@ -133,7 +182,7 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 	require.Error(t, failureErr, string(failureOutput))
 	failureOperationData, err := os.ReadFile(operationLog)
 	require.NoError(t, err)
-	require.Contains(t, string(failureOperationData), "--action fail")
+	require.NotContains(t, string(failureOperationData), "--action fail")
 	require.NotContains(t, string(failureOperationData), "--action retry")
 
 	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
@@ -267,7 +316,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
   claim_name="${CLAIM_NAME:-tikv-quiesced-repair-55b125a68aa87753e96b}"
-  printf '{"namespace":"kubebrain-repair-operations","name":"%s","operation_id":"%s","requested_by":"platform:tikv-quiesced-repair","instance":"kubebrain","type":"TiKVTransactionRepair","parameters_sha256":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","owner":"%s","attempt":2}\n' "$claim_name" "$claim_name" "$EXPECTED_DIGEST" "$claim_name" "$WORKER_ID"
+  printf '{"namespace":"kubebrain-repair-operations","name":"%s","operation_id":"%s","requested_by":"platform:tikv-quiesced-repair","instance":"kubebrain","type":"TiKVTransactionRepair","parameters_sha256":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","owner":"%s","attempt":%s}\n' "$claim_name" "$claim_name" "$EXPECTED_DIGEST" "$claim_name" "$WORKER_ID" "${ATTEMPT:-1}"
 fi
 `), 0o755))
 	repair := filepath.Join(dir, "repair")
@@ -276,6 +325,7 @@ set -euo pipefail
 env | sort >"$REPAIR_LOG"
 printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786381000,"format":"kubebrain.tikv-quiesced-repair.receipt.v1","kubebrain_quiesced":true,"kubebrain_statefulset_uid":"%s","pvc_preserved":true,"regions_verified":true,"repaired_store_ids":[%s],"repaired_tikv_pods":1,"tidb_cluster_uid":"%s"}\n' \
   "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$EXPECTED_ABNORMAL_STORE_IDS" "$EXPECTED_TIDB_CLUSTER_UID" >"$RECEIPT_OUTPUT"
+chmod 600 "$RECEIPT_OUTPUT"
 `), 0o755))
 	env := []string{
 		"WORKER_ID=worker-q1", "PARAMETERS_INPUT=" + parameters,
@@ -296,7 +346,7 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786381000,"forma
 	require.Contains(t, string(operationData), "TiKV quiesced repair completed")
 
 	require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
-	takeoverOutput, takeoverErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", append(env, "WORKER_ID=worker-q2"))
+	takeoverOutput, takeoverErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", append(env, "WORKER_ID=worker-q2", "ATTEMPT=2"))
 	require.NoError(t, takeoverErr, string(takeoverOutput))
 	takeoverRepair, err := os.ReadFile(repairLog)
 	require.NoError(t, err)
@@ -309,12 +359,12 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786381000,"forma
 	require.NoError(t, err)
 	badReceipt := strings.Replace(string(receiptData), `"repaired_store_ids":[1005]`, `"repaired_store_ids":[1004]`, 1)
 	require.NoError(t, os.WriteFile(receipts[0], []byte(badReceipt), 0o600))
-	badReceiptOutput, badReceiptErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", append(env, "WORKER_ID=worker-q3"))
+	badReceiptOutput, badReceiptErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", append(env, "WORKER_ID=worker-q3", "ATTEMPT=2"))
 	require.Error(t, badReceiptErr)
 	require.Empty(t, badReceiptOutput)
 	operationData, err = os.ReadFile(operationLog)
 	require.NoError(t, err)
-	require.Contains(t, string(operationData), "repair receipt invalid; a new approved operation is required")
+	require.Contains(t, string(operationData), "repair exhausted without a valid durable receipt")
 	badReceiptRepair, err := os.ReadFile(repairLog)
 	require.NoError(t, err)
 	require.Empty(t, badReceiptRepair, "a receipt for a different store must fail without another replacement")
