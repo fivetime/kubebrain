@@ -10,7 +10,7 @@ Usage: hack/backup/logical-object.sh
 Uploads or retention-deletes a logical backup object through the S3 API.
 
 Environment:
-  ACTION                upload, delete, archive, audit-verify, manifest, inventory, pitr-inventory, usage, or probe
+  ACTION                upload, delete, archive, audit-verify, audit-version-verify, manifest, inventory, pitr-inventory, usage, or probe
   S3_ENDPOINT           required S3-compatible endpoint URL
   OBJECT_STORE_ID       stable control-plane identifier for the S3 account
   S3_BUCKET             required bucket
@@ -36,6 +36,11 @@ Archive:
 Audit verify:
   ACTION=audit-verify, INPUT, RETENTION_MODE, RETAIN_UNTIL_UNIX, RECEIPT_INPUT.
   Strictly read-only; verifies the receipt's exact object version, bytes, metadata, and retention.
+
+Audit version verify:
+  ACTION=audit-version-verify, INPUT, VERSION_ID, EXPECTED_RECEIPT_SHA256, EXPECTED_ARTIFACT_SHA256,
+  RETENTION_MODE, RETAIN_UNTIL_UNIX. Reconstructs the canonical receipt from
+  exact-version read APIs and verifies its digest without a local receipt file.
 
 Inventory:
   INVENTORY_INPUT (kubebrain.object-inventory-manifest.v1),

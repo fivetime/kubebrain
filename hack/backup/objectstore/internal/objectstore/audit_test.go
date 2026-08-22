@@ -2,7 +2,9 @@ package objectstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +114,63 @@ func TestVerifyAuditIsReadOnlyAndRejectsEvidenceDrift(t *testing.T) {
 		require.ErrorContains(t, err, "retention is no longer in the future")
 		require.Zero(t, client.headCalls)
 		require.Equal(t, 1, backend.putCalls)
+	})
+}
+
+func TestVerifyAuditVersionReconstructsReceiptWithoutLocalEvidence(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	archiveRequest := AuditRequest{
+		Input: writeAuditArtifact(t), ObjectStoreID: "store-a", Bucket: "audits",
+		ObjectKey: "instance-a/operation-1.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(time.Hour).Unix(),
+		ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	}
+	backend := &fakeS3{}
+	archived, err := ArchiveAudit(context.Background(), backend, archiveRequest)
+	require.NoError(t, err)
+	receiptBytes, err := os.ReadFile(archiveRequest.ReceiptOutput)
+	require.NoError(t, err)
+	receiptSum := sha256.Sum256(receiptBytes)
+	require.NoError(t, os.Remove(archiveRequest.ReceiptOutput))
+	request := AuditVersionVerifyRequest{
+		Input: archiveRequest.Input, ObjectStoreID: archiveRequest.ObjectStoreID,
+		Bucket: archiveRequest.Bucket, ObjectKey: archiveRequest.ObjectKey,
+		VersionID: archived.VersionID, ExpectedReceiptSHA256: fmt.Sprintf("%x", receiptSum[:]),
+		ExpectedArtifactSHA256: archived.ArtifactSHA256,
+		RetentionMode:          archiveRequest.RetentionMode, RetainUntilUnix: archiveRequest.RetainUntilUnix,
+		Now: archiveRequest.Now,
+	}
+	client := &auditReadOnlyClient{backend: backend}
+
+	reconstructed, err := VerifyAuditVersion(context.Background(), client, request)
+	require.NoError(t, err)
+	require.Equal(t, archived, reconstructed)
+	require.Equal(t, 1, backend.putCalls)
+	require.NoFileExists(t, archiveRequest.ReceiptOutput)
+
+	t.Run("binding digest drift", func(t *testing.T) {
+		drifted := request
+		drifted.ExpectedReceiptSHA256 = strings.Repeat("0", 64)
+		_, err := VerifyAuditVersion(context.Background(), client, drifted)
+		require.ErrorContains(t, err, "digest differs from the Kubernetes binding")
+	})
+	t.Run("artifact binding drift", func(t *testing.T) {
+		drifted := request
+		drifted.ExpectedArtifactSHA256 = strings.Repeat("0", 64)
+		_, err := VerifyAuditVersion(context.Background(), client, drifted)
+		require.ErrorContains(t, err, "artifact digest differs from the Kubernetes binding")
+	})
+	t.Run("version drift", func(t *testing.T) {
+		drifted := request
+		drifted.VersionID = "other-version"
+		_, err := VerifyAuditVersion(context.Background(), client, drifted)
+		require.ErrorContains(t, err, "different version ID")
+	})
+	t.Run("remote body drift", func(t *testing.T) {
+		backend.corruptGet = true
+		defer func() { backend.corruptGet = false }()
+		_, err := VerifyAuditVersion(context.Background(), client, request)
+		require.ErrorContains(t, err, "digest differs")
 	})
 }
 

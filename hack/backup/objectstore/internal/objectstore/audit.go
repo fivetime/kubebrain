@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +40,103 @@ type AuditVerifyRequest struct {
 	RetainUntilUnix int64
 	ReceiptInput    string
 	Now             time.Time
+}
+
+type AuditVersionVerifyRequest struct {
+	Input                  string
+	ObjectStoreID          string
+	Bucket                 string
+	ObjectKey              string
+	VersionID              string
+	ExpectedReceiptSHA256  string
+	ExpectedArtifactSHA256 string
+	RetentionMode          string
+	RetainUntilUnix        int64
+	Now                    time.Time
+}
+
+// VerifyAuditVersion reconstructs canonical receipt evidence from an exact
+// immutable version and verifies that its digest matches the Kubernetes binding.
+func VerifyAuditVersion(
+	ctx context.Context, client AuditReadAPI, request AuditVersionVerifyRequest,
+) (AuditReceipt, error) {
+	if request.Input == "" || request.ObjectStoreID == "" || request.Bucket == "" ||
+		request.ObjectKey == "" || request.VersionID == "" || request.RetainUntilUnix <= 0 ||
+		!validHexSHA256(request.ExpectedReceiptSHA256) ||
+		!validHexSHA256(request.ExpectedArtifactSHA256) ||
+		!validObjectRequestIdentity(request.ObjectStoreID, request.Bucket, request.ObjectKey) ||
+		!validObjectScopeValue(request.VersionID) {
+		return AuditReceipt{}, errors.New("operation audit version verification request is incomplete")
+	}
+	if _, err := objectLockMode(request.RetentionMode); err != nil {
+		return AuditReceipt{}, err
+	}
+	status, body, err := operationaudit.InspectBytes(request.Input)
+	if err != nil {
+		return AuditReceipt{}, fmt.Errorf("validate operation audit artifact: %w", err)
+	}
+	if status.SHA256 != request.ExpectedArtifactSHA256 {
+		return AuditReceipt{}, errors.New("operation audit artifact digest differs from the Kubernetes binding")
+	}
+	now := request.Now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	retainUntil := time.Unix(request.RetainUntilUnix, 0).UTC()
+	if !retainUntil.After(now) {
+		return AuditReceipt{}, errors.New("audit object retention is no longer in the future")
+	}
+	archiveRequest := AuditRequest{
+		Input: request.Input, ObjectStoreID: request.ObjectStoreID, Bucket: request.Bucket,
+		ObjectKey: request.ObjectKey, RetentionMode: request.RetentionMode,
+		RetainUntilUnix: request.RetainUntilUnix, Now: request.Now,
+	}
+	head, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(request.Bucket), Key: aws.String(request.ObjectKey),
+		VersionId: aws.String(request.VersionID),
+	})
+	if err != nil {
+		return AuditReceipt{}, fmt.Errorf("read exact audit object metadata: %w", err)
+	}
+	if err := validateHead(head, auditMetadata(archiveRequest, status, retainUntil), status.Bytes); err != nil {
+		return AuditReceipt{}, fmt.Errorf("validate exact audit object metadata: %w", err)
+	}
+	if aws.ToString(head.VersionId) != request.VersionID {
+		return AuditReceipt{}, errors.New("exact audit object returned a different version ID")
+	}
+	archivedAt := aws.ToTime(head.LastModified).UTC()
+	if archivedAt.Unix() <= 0 || !archivedAt.Before(retainUntil) {
+		return AuditReceipt{}, errors.New("exact audit object has an invalid last-modified timestamp")
+	}
+	artifact := status.Artifact
+	receipt := AuditReceipt{
+		Format: AuditReceiptFormat, OperationID: artifact.OperationID, OperationUID: artifact.UID,
+		Instance: artifact.Instance, OperationType: artifact.Type, Phase: artifact.Phase,
+		ExecutionReceiptSHA256: artifact.ReceiptSHA256, ObjectStoreID: request.ObjectStoreID,
+		Bucket: request.Bucket, ObjectKey: request.ObjectKey, VersionID: request.VersionID,
+		ArtifactSHA256: status.SHA256, ObjectBytes: status.Bytes,
+		RetentionMode: request.RetentionMode, RetainUntilUnix: request.RetainUntilUnix,
+		RemoteVerified: true, ArchivedAtUnix: archivedAt.Unix(),
+	}
+	if err := receipt.Validate(); err != nil {
+		return AuditReceipt{}, err
+	}
+	canonical, err := json.Marshal(receipt)
+	if err != nil {
+		return AuditReceipt{}, err
+	}
+	canonical = append(canonical, '\n')
+	sum := sha256.Sum256(canonical)
+	if hex.EncodeToString(sum[:]) != request.ExpectedReceiptSHA256 {
+		return AuditReceipt{}, errors.New("reconstructed audit receipt digest differs from the Kubernetes binding")
+	}
+	if err := verifyAuditRemote(ctx, client, archiveRequest, request.VersionID, status, body); err != nil {
+		return AuditReceipt{}, err
+	}
+	if err := validateAuditRetention(ctx, client, archiveRequest, request.VersionID, retainUntil); err != nil {
+		return AuditReceipt{}, err
+	}
+	return receipt, nil
 }
 
 // VerifyAudit verifies immutable audit evidence using an API that has no write
