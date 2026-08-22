@@ -1644,6 +1644,36 @@ rotation ID、endpoint、replicas、旧/新证书 SHA-256、完成时间，并�
 必须位于持久、受访问控制的操作记录卷，完成后再归档到不可变审计存储。该门禁验证
 数据面完成条件，不替控制面实现 Secret 发布超时、阶段回滚或跨实例任务调度。
 
+独立 info HTTPS server leaf 使用 `hack/production/validate-info-certificate-rotation.sh` 验证，不能复用上述
+client credential receipt。控制面先准备旧/新 CA 与 server leaf，然后执行：
+
+```shell
+common_info_env=(
+  ROTATION_ID=instance-a-info-20260822
+  INSTANCE=instance-a
+  STATE_DIR=/var/lib/kubebrain-operations/info-certificate-rotations
+  INFO_ENDPOINT=https://kubebrain-peer.kubebrain-system.svc.cluster.local:8080
+  INFO_SERVER_NAME=kubebrain-peer.kubebrain-system.svc.cluster.local
+  OLD_INFO_CACERT=/run/info-rotation/old-ca.crt
+  OLD_INFO_CERT=/run/info-rotation/old-tls.crt
+  NEW_INFO_CACERT=/run/info-rotation/new-ca.crt
+  NEW_INFO_CERT=/run/info-rotation/new-tls.crt
+  EXPECTED_REPLICAS=3
+  RECEIPT_OUTPUT=/var/lib/kubebrain-operations/instance-a-info-20260822.json
+)
+env "${common_info_env[@]}" ACTION=begin hack/production/validate-info-certificate-rotation.sh
+# 更新 kubebrain-info-tls，并等待 projected volume 与握手呈现新 leaf。
+env "${common_info_env[@]}" ACTION=complete REQUIRE_OLD_CA_REJECTION=true \
+  hack/production/validate-info-certificate-rotation.sh
+```
+
+begin 通过真实 TLS handshake 与 `INFO_SERVER_NAME`/CA 验证，要求 endpoint 呈现的 leaf DER SHA-256 等于
+`OLD_INFO_CERT`，并冻结三个 Pod 的 name/UID/restartCount/Ready。complete 必须呈现不同的新 leaf、Pod 快照
+完全不变，再原子发布 0600 `kubebrain.info-certificate-rotation.receipt.v1`。同 CA leaf rotation 应保持
+`REQUIRE_OLD_CA_REJECTION=false`；CA cutover 才设置 true，要求旧 CA 的握手失败。receipt 已存在时拒绝覆盖。
+该脚本目前是直接 gate，尚未接入 Operation worker 的 durable claim、heartbeat 与 archive 状态机；平台自动化
+前必须补齐该控制面编排，不能只保存 stdout。
+
 ## 实例销毁状态机
 
 生产清单中的 KubeBrain 与 TidbCluster 都固定携带 `app.kubernetes.io/instance`

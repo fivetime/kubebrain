@@ -59539,6 +59539,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain-info-tls` 的真实签发、Secret 轮换或 Prometheus 现场握手，平台必须签发包含固定 peer Service SAN
   的 server leaf 并在预生产执行 scrape/rotation 演练。
 
+- A5303 为 A5302 的独立 `kubebrain-info-tls` 补齐在线 server leaf rotation gate。既有
+  `validate-certificate-rotation.sh` 证明的是 client mTLS credential/CA cutover，不能证明 info listener 实际
+  呈现新证书。新增两阶段脚本冻结旧/新 CA 与 leaf 文件，要求规范 HTTPS authority、显式 1–65535 端口和
+  DNS serverName；begin 用 `openssl s_client -verify_return_error` 取得握手 leaf DER SHA-256，并冻结精确
+  replicas 的 Pod name/UID/restartCount/Ready。complete 要求不同的新 leaf 已呈现、Pod 快照逐字不变，并原子
+  发布 0600 `kubebrain.info-certificate-rotation.receipt.v1`；receipt 已存在时拒绝覆盖。same-CA leaf rotation
+  可保留旧 CA 验证，CA cutover 则用 `REQUIRE_OLD_CA_REJECTION=true` 强制反向握手失败。回归覆盖完整 begin→
+  complete receipt 和“声明撤权但旧 CA 仍成功”的 fail-closed 分支；聚焦单轮 1.729 秒、连续两轮 3.058 秒、
+  race 2.718 秒，bash syntax、diff check 与全仓 vet 通过。production 清单增至 449 项并按
+  102/127/113/107 四片在最终代码提交上全部通过（139.341/465.813/261.994/488.085 秒）。本项尚未把 info
+  rotation 接入 Operation worker 的 durable claim/heartbeat/archive，也不证明真实 Kubernetes Secret 投影
+  延迟或 Prometheus scrape 恢复；这些控制面与现场演练差距保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

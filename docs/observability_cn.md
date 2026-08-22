@@ -12,6 +12,9 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 
 > **要点:不要让 KubeBrain 的监控依赖它自己服务的那个 apiserver。** 首选带外(方式 1),否则 KubeBrain 一挂你恰好在最需要 metrics 时瞎了。生产 info 端口统一使用独立 server TLS；ServiceMonitor 从 `kubebrain-info-tls` 读取 CA 并校验固定 serverName。服务端也支持 client-cert(`#32`)，但启用前必须把原生 kubelet HTTPS probe 改为可携带身份的受审计 exec probe。
 
+`kubebrain-info-tls` 轮换必须运行 `hack/production/validate-info-certificate-rotation.sh`，以握手呈现的 leaf DER
+摘要和不变 Pod UID/restartCount 证明热加载；只观察 Secret resourceVersion 或 Prometheus 恢复抓取不构成证据。
+
 ## 关键 SLI
 
 | 指标 | 含义 / 用途 |
