@@ -878,6 +878,7 @@ spec:
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: ROTATION_COMMAND, value: /opt/kubebrain/hack/production/validate-info-certificate-rotation.sh}
+            - {name: SCRAPE_COMMAND, value: /opt/kubebrain/hack/production/validate-info-scrape-recovery.sh}
             - {name: PUBLISH_COMMAND, value: /opt/kubebrain-executor-hooks/publish}
           envFrom: [{secretRef: {name: kubebrain-info-certificate-rotation-executor-env}}]
           resources:

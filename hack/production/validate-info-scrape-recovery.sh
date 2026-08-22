@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 . "${ROOT_DIR}/hack/production/operation-time-validation.sh"
 
 TLS_RECEIPT_INPUT="${TLS_RECEIPT_INPUT:-}"
+ACTION="${ACTION:-complete}"
 SCRAPE_RECEIPT_OUTPUT="${SCRAPE_RECEIPT_OUTPUT:-}"
 PROMETHEUS_URL="${PROMETHEUS_URL:-}"
 PROMETHEUS_CA_FILE="${PROMETHEUS_CA_FILE:-}"
@@ -23,7 +24,13 @@ JQ="${JQ:-jq}"
 
 die() { echo "$*" >&2; exit 1; }
 [[ -f "$TLS_RECEIPT_INPUT" && -r "$TLS_RECEIPT_INPUT" ]] || die "TLS_RECEIPT_INPUT must be a readable regular file"
-[[ -n "$SCRAPE_RECEIPT_OUTPUT" && ! -e "$SCRAPE_RECEIPT_OUTPUT" ]] || die "SCRAPE_RECEIPT_OUTPUT is required and must not already exist"
+[[ "$ACTION" == complete || "$ACTION" == verify ]] || die "ACTION must be complete or verify"
+[[ -n "$SCRAPE_RECEIPT_OUTPUT" ]] || die "SCRAPE_RECEIPT_OUTPUT is required"
+if [[ "$ACTION" == complete ]]; then
+  [[ ! -e "$SCRAPE_RECEIPT_OUTPUT" ]] || die "SCRAPE_RECEIPT_OUTPUT must not already exist"
+else
+  [[ -f "$SCRAPE_RECEIPT_OUTPUT" && -r "$SCRAPE_RECEIPT_OUTPUT" ]] || die "SCRAPE_RECEIPT_OUTPUT must be a readable existing receipt for verify"
+fi
 [[ "$PROMETHEUS_URL" == https://* && "$PROMETHEUS_URL" != *[[:space:]]* && "$PROMETHEUS_URL" != *'?'* && "$PROMETHEUS_URL" != *'#'* ]] || die "PROMETHEUS_URL must be an absolute HTTPS base URL without query, fragment, or whitespace"
 [[ -f "$PROMETHEUS_CA_FILE" && -r "$PROMETHEUS_CA_FILE" ]] || die "PROMETHEUS_CA_FILE must be a readable regular file"
 [[ "$KUBEBRAIN_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "KUBEBRAIN_NAMESPACE must be a DNS label"
@@ -92,21 +99,45 @@ while true; do
         ([.data.result[].metric.instance] | unique | length) == $expected
       ' "$response" >/dev/null 2>&1; then
         oldest_sample="$("$JQ" -r '[.data.result[].value[0]] | min' "$response")"
-        tmp="${SCRAPE_RECEIPT_OUTPUT}.tmp.$$"
-        "$JQ" -cnS --arg instance "$instance" --arg rotation "$rotation_id" --arg endpoint "$info_endpoint" \
-          --arg namespace "$KUBEBRAIN_NAMESPACE" --arg service "$KUBEBRAIN_SERVICE" --arg tlsDigest "$tls_receipt_sha" \
-          --arg certificate "$new_certificate_sha" --arg query "$selector" --argjson replicas "$EXPECTED_REPLICAS" \
-          --argjson completed "$completed_at" --argjson observed "$observed_at" --argjson oldest "$oldest_sample" \
-          --slurpfile response "$response" '
-          {format:"kubebrain.info-scrape-recovery.receipt.v1",instance:$instance,rotation_id:$rotation,
-           info_endpoint:$endpoint,namespace:$namespace,service:$service,replicas:$replicas,
-           tls_rotation_completed_at_unix:$completed,tls_rotation_receipt_sha256:$tlsDigest,
-           new_certificate_sha256:$certificate,prometheus_query:$query,observed_at_unix:$observed,
-           oldest_sample_unix:$oldest,all_targets_up:true,
-           targets:($response[0].data.result | sort_by(.metric.pod) | map({pod:.metric.pod,instance:.metric.instance,sample_unix:.value[0]}))}' >"$tmp"
-        chmod 600 "$tmp"
-        mv -f "$tmp" "$SCRAPE_RECEIPT_OUTPUT"
-        echo "info scrape recovery gate passed: instance=${instance} rotation=${rotation_id} replicas=${EXPECTED_REPLICAS} receipt=${SCRAPE_RECEIPT_OUTPUT}"
+        if [[ "$ACTION" == complete ]]; then
+          tmp="${SCRAPE_RECEIPT_OUTPUT}.tmp.$$"
+          "$JQ" -cnS --arg instance "$instance" --arg rotation "$rotation_id" --arg endpoint "$info_endpoint" \
+            --arg namespace "$KUBEBRAIN_NAMESPACE" --arg service "$KUBEBRAIN_SERVICE" --arg tlsDigest "$tls_receipt_sha" \
+            --arg certificate "$new_certificate_sha" --arg query "$selector" --argjson replicas "$EXPECTED_REPLICAS" \
+            --argjson completed "$completed_at" --argjson observed "$observed_at" --argjson oldest "$oldest_sample" \
+            --slurpfile response "$response" '
+            {format:"kubebrain.info-scrape-recovery.receipt.v1",instance:$instance,rotation_id:$rotation,
+             info_endpoint:$endpoint,namespace:$namespace,service:$service,replicas:$replicas,
+             tls_rotation_completed_at_unix:$completed,tls_rotation_receipt_sha256:$tlsDigest,
+             new_certificate_sha256:$certificate,prometheus_query:$query,observed_at_unix:$observed,
+             oldest_sample_unix:$oldest,all_targets_up:true,
+             targets:($response[0].data.result | sort_by(.metric.pod) | map({pod:.metric.pod,instance:.metric.instance,sample_unix:.value[0]}))}' >"$tmp"
+          chmod 600 "$tmp"
+          mv -f "$tmp" "$SCRAPE_RECEIPT_OUTPUT"
+          echo "info scrape recovery gate passed: instance=${instance} rotation=${rotation_id} replicas=${EXPECTED_REPLICAS} receipt=${SCRAPE_RECEIPT_OUTPUT}"
+        else
+          "$JQ" -e --arg instance "$instance" --arg rotation "$rotation_id" --arg endpoint "$info_endpoint" \
+            --arg namespace "$KUBEBRAIN_NAMESPACE" --arg service "$KUBEBRAIN_SERVICE" --arg tlsDigest "$tls_receipt_sha" \
+            --arg certificate "$new_certificate_sha" --arg query "$selector" --argjson replicas "$EXPECTED_REPLICAS" \
+            --argjson completed "$completed_at" '
+            keys == ["all_targets_up","format","info_endpoint","instance","namespace","new_certificate_sha256","observed_at_unix","oldest_sample_unix","prometheus_query","replicas","rotation_id","service","targets","tls_rotation_completed_at_unix","tls_rotation_receipt_sha256"] and
+            .format == "kubebrain.info-scrape-recovery.receipt.v1" and .instance == $instance and
+            .rotation_id == $rotation and .info_endpoint == $endpoint and .namespace == $namespace and
+            .service == $service and .replicas == $replicas and .tls_rotation_completed_at_unix == $completed and
+            .tls_rotation_receipt_sha256 == $tlsDigest and .new_certificate_sha256 == $certificate and
+            .prometheus_query == $query and .all_targets_up == true and
+            (.observed_at_unix | type == "number" and . >= $completed and . == floor) and
+            (.oldest_sample_unix | type == "number" and . >= $completed) and
+            (.targets | type == "array" and length == $replicas) and
+            ([.targets[].pod] | unique | length) == $replicas and
+            ([.targets[].instance] | unique | length) == $replicas and
+            all(.targets[]; keys == ["instance","pod","sample_unix"] and
+              (.pod | type == "string" and test("^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")) and
+              (.instance | type == "string" and length > 0) and
+              (.sample_unix | type == "number" and . >= $completed))' "$SCRAPE_RECEIPT_OUTPUT" >/dev/null ||
+            die "existing scrape recovery receipt does not match verified evidence"
+          echo "info scrape recovery receipt verification passed: instance=${instance} rotation=${rotation_id} replicas=${EXPECTED_REPLICAS} receipt=${SCRAPE_RECEIPT_OUTPUT}"
+        fi
         exit 0
       fi
       last_reason="Prometheus up vector is incomplete, stale, pre-rotation, malformed, duplicated, or not all up"

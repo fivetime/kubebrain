@@ -33,6 +33,7 @@ func TestOperationRunnersRejectInvalidSubcommandBeforeClaim(t *testing.T) {
 			command: "ROTATION_COMMAND",
 			extraEnvs: []string{
 				"PUBLISH_COMMAND={hook}",
+				"SCRAPE_COMMAND={hook}",
 			},
 		},
 		{name: "destroy command", script: "run-destroy-operation.sh", command: "DESTROY_COMMAND"},
@@ -74,6 +75,9 @@ func replaceHookPath(value, hook string) string {
 	}
 	if value == "PUBLISH_COMMAND={hook}" {
 		return "PUBLISH_COMMAND=" + hook
+	}
+	if value == "SCRAPE_COMMAND={hook}" {
+		return "SCRAPE_COMMAND=" + hook
 	}
 	return value
 }

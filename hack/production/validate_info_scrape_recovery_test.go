@@ -28,10 +28,18 @@ func TestValidateInfoScrapeRecoveryBindsPostRotationSamples(t *testing.T) {
 	require.Equal(t, fmt.Sprintf("%x", digest), receipt["tls_rotation_receipt_sha256"])
 	require.Len(t, receipt["targets"], 3)
 	require.Equal(t, 2, strings.Count(string(mustRead(t, f.calls)), "query="))
+	out, err = runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", append(f.env, "ACTION=verify"))
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "receipt verification passed")
 
 	out, err = runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", f.env)
 	require.Error(t, err)
 	require.Contains(t, string(out), "must not already exist")
+	tampered := strings.Replace(string(mustRead(t, f.output)), `"service":"kubebrain-peer"`, `"service":"other"`, 1)
+	require.NoError(t, os.WriteFile(f.output, []byte(tampered), 0o600))
+	out, err = runProductionScriptCommand(t, "validate-info-scrape-recovery.sh", append(f.env, "ACTION=verify"))
+	require.Error(t, err)
+	require.Contains(t, string(out), "does not match verified evidence")
 }
 
 func TestValidateInfoScrapeRecoveryRejectsPreRotationAndInvalidVectors(t *testing.T) {

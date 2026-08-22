@@ -859,6 +859,17 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 				require.Equal(t, map[string]string{"publish-overlap": "publish-overlap", "publish-final": "publish-final"}, pathsByKey)
 			} else {
 				require.Equal(t, map[string]string{"publish": "publish"}, pathsByKey)
+				env, found, err := unstructured.NestedSlice(container.Object, "env")
+				require.NoError(t, err)
+				require.True(t, found)
+				var scrapeCommand string
+				for _, raw := range env {
+					entry := &unstructured.Unstructured{Object: raw.(map[string]any)}
+					if nestedString(t, entry, "name") == "SCRAPE_COMMAND" {
+						scrapeCommand = nestedString(t, entry, "value")
+					}
+				}
+				require.Equal(t, "/opt/kubebrain/hack/production/validate-info-scrape-recovery.sh", scrapeCommand)
 			}
 		} else {
 			require.Nil(t, hooks)

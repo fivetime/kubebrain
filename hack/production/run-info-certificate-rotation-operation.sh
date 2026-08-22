@@ -11,11 +11,13 @@ LEASE_SECONDS="${LEASE_SECONDS:-120}"
 HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
 OPERATIONCTL="${OPERATIONCTL:-}"
 ROTATION_COMMAND="${ROTATION_COMMAND:-${ROOT_DIR}/hack/production/validate-info-certificate-rotation.sh}"
+SCRAPE_COMMAND="${SCRAPE_COMMAND:-${ROOT_DIR}/hack/production/validate-info-scrape-recovery.sh}"
 PUBLISH_COMMAND="${PUBLISH_COMMAND:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 JQ="${JQ:-jq}"
 MAX_OPERATION_PARAMETERS_BYTES=65536
+MAX_SCRAPE_RECEIPT_BYTES=2097152
 
 die() { echo "$*" >&2; exit 2; }
 [[ -n "$WORKER_ID" && "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || die "WORKER_ID is required and contains unsupported characters"
@@ -23,6 +25,7 @@ die() { echo "$*" >&2; exit 2; }
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters"
 [[ -f "$PUBLISH_COMMAND" && -x "$PUBLISH_COMMAND" ]] || die "PUBLISH_COMMAND is required and must be an executable file"
 [[ -f "$ROTATION_COMMAND" && -x "$ROTATION_COMMAND" ]] || die "ROTATION_COMMAND is required and must be an executable file"
+[[ -f "$SCRAPE_COMMAND" && -x "$SCRAPE_COMMAND" ]] || die "SCRAPE_COMMAND is required and must be an executable file"
 [[ -z "$OPERATIONCTL" || (-f "$OPERATIONCTL" && -x "$OPERATIONCTL") ]] || die "OPERATIONCTL must be an executable file when provided"
 operation_is_positive_int64 "$LEASE_SECONDS" && (( LEASE_SECONDS >= 6 )) || die "LEASE_SECONDS must be an integer of at least 6; value must be a positive int64"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
@@ -92,14 +95,22 @@ chmod 600 "$frozen_parameters"
 [[ "$(file_sha256 "$frozen_parameters")" == "$expected_digest" && "$(file_sha256 "$PARAMETERS_INPUT")" == "$expected_digest" ]] || retry_and_exit "parameters changed during capture"
 PARAMETERS_INPUT="$frozen_parameters"
 
-parameters="$("$JQ" -er '[.state_dir,.info_endpoint,.info_server_name,.old_info_cacert,.old_info_cert,.new_info_cacert,.new_info_cert,.receipt_output,.kubebrain_namespace,.pod_selector,(.expected_replicas|tostring),(.require_old_ca_rejection|tostring),.old_info_cacert_sha256,.old_info_cert_sha256,.new_info_cacert_sha256,.new_info_cert_sha256,(if (.data_kube_context // "") == "" then "-" else .data_kube_context end),(if (.data_kubeconfig_path // "") == "" then "-" else .data_kubeconfig_path end)] | select(length == 18 and all(. != null and . != "")) | @tsv' "$PARAMETERS_INPUT")" || die "info rotation parameters contain an empty required field"
-IFS=$'\t' read -r state_dir endpoint server_name old_ca old_cert new_ca new_cert receipt_output namespace selector replicas require_rejection old_ca_sha old_cert_sha new_ca_sha new_cert_sha data_context data_kubeconfig <<<"$parameters"
+parameters="$("$JQ" -er '[.state_dir,.info_endpoint,.info_server_name,.old_info_cacert,.old_info_cert,.new_info_cacert,.new_info_cert,.receipt_output,.scrape_receipt_output,.kubebrain_namespace,.pod_selector,.kubebrain_service,(.expected_replicas|tostring),(.require_old_ca_rejection|tostring),.old_info_cacert_sha256,.old_info_cert_sha256,.new_info_cacert_sha256,.new_info_cert_sha256,.prometheus_url,.prometheus_ca_file,.prometheus_ca_sha256,(if (.prometheus_bearer_token_file // "") == "" then "-" else .prometheus_bearer_token_file end),(if (.prometheus_bearer_token_sha256 // "") == "" then "-" else .prometheus_bearer_token_sha256 end),(.recovery_timeout_seconds|tostring),(.poll_interval_seconds|tostring),(.query_timeout_seconds|tostring),(.max_clock_skew_seconds|tostring),(.max_sample_age_seconds|tostring),(if (.data_kube_context // "") == "" then "-" else .data_kube_context end),(if (.data_kubeconfig_path // "") == "" then "-" else .data_kubeconfig_path end)] | select(length == 30 and all(. != null and . != "")) | @tsv' "$PARAMETERS_INPUT")" || die "info rotation parameters contain an empty required field"
+IFS=$'\t' read -r state_dir endpoint server_name old_ca old_cert new_ca new_cert receipt_output scrape_receipt_output namespace selector service replicas require_rejection old_ca_sha old_cert_sha new_ca_sha new_cert_sha prometheus_url prometheus_ca prometheus_ca_sha prometheus_token prometheus_token_sha recovery_timeout poll_interval query_timeout max_clock_skew max_sample_age data_context data_kubeconfig <<<"$parameters"
 receipt_input="$receipt_output"
 [[ "$data_context" == - ]] && data_context=""
 [[ "$data_kubeconfig" == - ]] && data_kubeconfig=""
 [[ "$namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "info rotation namespace is invalid"
+[[ "$service" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "info rotation service is invalid"
+[[ "$prometheus_url" == https://* && "$prometheus_url" != *[[:space:]]* && "$prometheus_url" != *'?'* && "$prometheus_url" != *'#'* ]] || die "prometheus_url must be an absolute HTTPS base URL"
 operation_is_positive_int64 "$replicas" && (( replicas <= 2147483647 )) || die "expected_replicas must be a canonical positive int32"
 [[ "$require_rejection" == true || "$require_rejection" == false ]] || die "require_old_ca_rejection must be true or false"
+operation_is_nonnegative_int64 "$recovery_timeout" && (( recovery_timeout <= 86400 )) || die "recovery_timeout_seconds must be a canonical non-negative int64 no greater than 86400"
+operation_is_nonnegative_int64 "$poll_interval" && (( poll_interval <= recovery_timeout )) || die "poll_interval_seconds must be canonical, non-negative, and no greater than recovery_timeout_seconds"
+operation_is_positive_int64 "$query_timeout" && (( query_timeout <= 300 )) || die "query_timeout_seconds must be a canonical positive int64 no greater than 300"
+operation_is_nonnegative_int64 "$max_clock_skew" && (( max_clock_skew <= 300 )) || die "max_clock_skew_seconds must be a canonical non-negative int64 no greater than 300"
+operation_is_positive_int64 "$max_sample_age" && (( max_sample_age <= 3600 )) || die "max_sample_age_seconds must be a canonical positive int64 no greater than 3600"
+[[ ("$prometheus_token" == - && "$prometheus_token_sha" == -) || ("$prometheus_token" != - && "$prometheus_token_sha" != -) ]] || die "Prometheus bearer token path and SHA-256 must be both present or both absent"
 
 sources=("$old_ca" "$old_cert" "$new_ca" "$new_cert")
 hashes=("$old_ca_sha" "$old_cert_sha" "$new_ca_sha" "$new_cert_sha")
@@ -115,6 +126,21 @@ for index in "${!sources[@]}"; do
   frozen+=("$destination")
 done
 old_ca="${frozen[0]}"; old_cert="${frozen[1]}"; new_ca="${frozen[2]}"; new_cert="${frozen[3]}"
+freeze_scrape_credential() {
+  local source="$1" expected="$2" name="$3" destination
+  [[ -f "$source" && "$expected" =~ ^[a-f0-9]{64}$ ]] || die "Prometheus credential or SHA-256 is invalid"
+  [[ "$(file_sha256 "$source")" == "$expected" ]] || retry_and_exit "Prometheus credential content digest mismatch"
+  destination="$capture/$name"
+  cp -- "$source" "$destination"; chmod 600 "$destination"
+  [[ "$(file_sha256 "$destination")" == "$expected" && "$(file_sha256 "$source")" == "$expected" ]] || retry_and_exit "Prometheus credential changed during capture"
+  printf '%s\n' "$destination"
+}
+prometheus_ca="$(freeze_scrape_credential "$prometheus_ca" "$prometheus_ca_sha" prometheus-ca)"
+if [[ "$prometheus_token" != - ]]; then
+  prometheus_token="$(freeze_scrape_credential "$prometheus_token" "$prometheus_token_sha" prometheus-token)"
+else
+  prometheus_token=""
+fi
 
 rotation_env=("ROTATION_ID=$rotation_id" "INSTANCE=$instance" "STATE_DIR=$state_dir" "RECEIPT_OUTPUT=$receipt_output" "INFO_ENDPOINT=$endpoint" "INFO_SERVER_NAME=$server_name" "OLD_INFO_CACERT=$old_ca" "OLD_INFO_CERT=$old_cert" "NEW_INFO_CACERT=$new_ca" "NEW_INFO_CERT=$new_cert" "REQUIRE_OLD_CA_REJECTION=$require_rejection" "KUBEBRAIN_NAMESPACE=$namespace" "POD_SELECTOR=$selector" "EXPECTED_REPLICAS=$replicas")
 [[ -z "$data_context" ]] || rotation_env+=("KUBE_CONTEXT=$data_context")
@@ -192,7 +218,44 @@ cp -- "$receipt_output" "$frozen_receipt"; chmod 600 "$frozen_receipt"
 receipt_input="$frozen_receipt"
 validate_receipt || { renew_terminal_lease || exit 1; retry_and_exit "info certificate rotation receipt invalid"; }
 receipt_digest="$(file_sha256 "$receipt_input")"
+tls_completed_at="$("$JQ" -er '.completed_at_unix | select(type == "number" and . > 0 and . == floor)' "$receipt_input")"
+scrape_env=("TLS_RECEIPT_INPUT=$receipt_input" "SCRAPE_RECEIPT_OUTPUT=$scrape_receipt_output" "PROMETHEUS_URL=$prometheus_url" "PROMETHEUS_CA_FILE=$prometheus_ca" "KUBEBRAIN_NAMESPACE=$namespace" "KUBEBRAIN_SERVICE=$service" "EXPECTED_REPLICAS=$replicas" "RECOVERY_TIMEOUT_SECONDS=$recovery_timeout" "POLL_INTERVAL_SECONDS=$poll_interval" "QUERY_TIMEOUT_SECONDS=$query_timeout" "MAX_CLOCK_SKEW_SECONDS=$max_clock_skew" "MAX_SAMPLE_AGE_SECONDS=$max_sample_age")
+[[ -z "$prometheus_token" ]] || scrape_env+=("PROMETHEUS_BEARER_TOKEN_FILE=$prometheus_token")
+scrape_action=complete
+[[ ! -e "$scrape_receipt_output" ]] || scrape_action=verify
+if run_step "info scrape recovery ${scrape_action}" env "${scrape_env[@]}" ACTION="$scrape_action" "$SCRAPE_COMMAND"; then
+  :
+else
+  rc=$?
+  [[ "$fenced" == true ]] && exit 1
+  renew_terminal_lease || exit 1
+  retry_and_exit "info scrape recovery ${scrape_action} exited ${rc}"
+fi
+[[ -f "$scrape_receipt_output" ]] || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt missing"; }
+[[ "$(file_sha256 "$receipt_input")" == "$receipt_digest" ]] && validate_receipt || { renew_terminal_lease || exit 1; retry_and_exit "info certificate rotation receipt changed during scrape recovery"; }
+scrape_receipt_size="$(stat -Lc '%s' -- "$scrape_receipt_output")" || scrape_receipt_size=""
+[[ "$scrape_receipt_size" =~ ^[0-9]+$ ]] && (( scrape_receipt_size <= MAX_SCRAPE_RECEIPT_BYTES )) || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt exceeds ${MAX_SCRAPE_RECEIPT_BYTES} bytes"; }
+validate_scrape_receipt() {
+  "$JQ" -e --arg instance "$instance" --arg rotation "$rotation_id" --arg endpoint "$endpoint" --arg namespace "$namespace" --arg service "$service" --arg tlsDigest "$receipt_digest" --arg certificate "$state_new_fingerprint" --arg query "up{namespace=\"${namespace}\",service=\"${service}\"}" --argjson replicas "$replicas" --argjson completed "$tls_completed_at" '
+    keys == ["all_targets_up","format","info_endpoint","instance","namespace","new_certificate_sha256","observed_at_unix","oldest_sample_unix","prometheus_query","replicas","rotation_id","service","targets","tls_rotation_completed_at_unix","tls_rotation_receipt_sha256"] and
+    .format == "kubebrain.info-scrape-recovery.receipt.v1" and .instance == $instance and .rotation_id == $rotation and .info_endpoint == $endpoint and .namespace == $namespace and .service == $service and .replicas == $replicas and
+    .tls_rotation_receipt_sha256 == $tlsDigest and .new_certificate_sha256 == $certificate and .prometheus_query == $query and .all_targets_up == true and
+    .tls_rotation_completed_at_unix == $completed and (.observed_at_unix | type == "number" and . >= $completed and . == floor) and
+    (.oldest_sample_unix | type == "number" and . >= $completed) and (.targets | type == "array" and length == $replicas) and
+    ([.targets[].pod] | unique | length) == $replicas and ([.targets[].instance] | unique | length) == $replicas and
+    all(.targets[]; keys == ["instance","pod","sample_unix"] and (.pod | type == "string" and length > 0) and (.instance | type == "string" and length > 0) and (.sample_unix | type == "number" and . >= $completed))' "$scrape_receipt_input" >/dev/null
+}
+scrape_receipt_input="$scrape_receipt_output"
+validate_scrape_receipt || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt invalid"; }
+scrape_source_digest="$(file_sha256 "$scrape_receipt_output")"
+frozen_scrape_receipt="$capture/scrape-receipt.json"
+cp -- "$scrape_receipt_output" "$frozen_scrape_receipt"; chmod 600 "$frozen_scrape_receipt"
+[[ "$(file_sha256 "$frozen_scrape_receipt")" == "$scrape_source_digest" && "$(file_sha256 "$scrape_receipt_output")" == "$scrape_source_digest" ]] || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt changed during capture"; }
+[[ "$(stat -Lc '%s' -- "$frozen_scrape_receipt")" == "$scrape_receipt_size" ]] || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt changed during capture"; }
+scrape_receipt_input="$frozen_scrape_receipt"
+validate_scrape_receipt || { renew_terminal_lease || exit 1; retry_and_exit "info scrape recovery receipt invalid"; }
+receipt_digest="$(file_sha256 "$scrape_receipt_input")"
 renew_terminal_lease || exit 1
-run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_digest" --message "info certificate rotation completed" >/dev/null
+run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_digest" --message "info certificate rotation and scrape recovery completed" >/dev/null
 trap - EXIT INT TERM
 rm -rf -- "$capture"
