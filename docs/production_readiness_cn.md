@@ -6087,6 +6087,19 @@ UID 本身不会由 kubelet 注入容器，故 binary 以 data SHA 阻断凭据�
 为 pending、更新 metadata trust SHA，再以新 key 签发的新证据重新执行 enable。签名只认证“哪个受信系统签发了这组声明”，
 不替代签发系统对原始 AWS simulator 输出、SCP/resource policy、credential→principal 映射和审批身份的验证与留存。
 
+同一个受控 CronJob 还承担已归档 Kubernetes Operation 的保留期清理。生产显式设置
+`--delete-after=720h`、`--max-delete-batch=32`，且 delete-after 必须为零（禁用）或严格小于
+对象存储 `--retention-duration=8760h`。每轮必须先完成原有 released Operation 验证批次；该批次任一错误时不进入删除阶段。
+删除候选必须已超过 30 天、处于 Succeeded/Failed、没有任何 finalizer、UID/resourceVersion 非空且三项归档 annotation
+格式完整。即使本轮前段已验证过，retention controller 仍会针对候选重建 artifact，并再次执行 exact-version body/receipt/
+Object Lock 验证；只有紧邻的复验成功才提交 Kubernetes DELETE。DELETE 同时携带 UID 和 resourceVersion precondition，
+对象在远端验证期间发生同 UID 更新会失败并留到下一轮重新验证；同名对象被替换时旧 UID 的模糊成功对新对象无影响。
+ValidatingAdmissionPolicy 将 DELETE 限制为 verifier ServiceAccount、已释放的终态归档对象和与 oldObject 精确相等的双 precondition；
+该身份没有 create/update/patch/watch 权限，对象存储 IAM 仍保持 Get/Head/retention-only 并拒绝 S3 Put/Delete/List。
+30 天只控制 Kubernetes 控制面记录，远端 Object Lock 仍保留到完成时间后一年；不得把删除 Kubernetes 对象误解为缩短审计保留。
+生产启用前必须在隔离 namespace 证明：年轻/未归档/仍有 finalizer/远端版本漂移对象不删除，resourceVersion 竞态失败，
+同名新 UID 保留，以及成功对象在 API audit 中携带两个 precondition。
+
 verifier binary 不只在入口检查 `IAM_SIMULATION_VALID_UNTIL_UNIX`：它把 expiry 解析为绝对时间，拒绝已过期、非正数或
 超过当前时刻 24 小时 5 分钟的值，并在 Kubernetes/S3 client 与 controller 初始化完成后重新计算剩余时间。实际 reconcile
 父预算取 `min(--reconcile-timeout, evidence remaining)`；证据一到期，inventory/List、候选循环以及每个独立进程组中的
@@ -6142,6 +6155,9 @@ kubectl -n "$NS" create rolebinding kubebrain-operation-approver \
 kubectl -n "$NS" create rolebinding kubebrain-operation-archiver \
   --clusterrole=kubebrain-operation-archiver-managed-namespace \
   --serviceaccount=kubebrain-operations:kubebrain-operation-archiver
+kubectl -n "$NS" create rolebinding kubebrain-operation-archive-verifier \
+  --clusterrole=kubebrain-operation-archive-verifier-managed-namespace \
+  --serviceaccount=kubebrain-operations:kubebrain-operation-archive-verifier
 ```
 
 namespace 下线顺序必须是：先 suspend/delete BackupPolicy，停止新提交；等待所有 Operation

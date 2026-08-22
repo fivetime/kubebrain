@@ -60602,6 +60602,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但不把 JSON charge 宣称为 RSS 硬上限，也不允许靠增大预算长期保留无界终态 Operation；下一步仍是以真实大对象分页测量 RSS/GC，
   并实现已归档终态 Operation 的 UID-fenced 生命周期。
 
+- A5380 关闭 A5379 遗留的已归档终态 Operation 无界增长缺口。新增 `internal/operationretention.Controller`：只选择超过
+  `--delete-after`、Succeeded/Failed、finalizer 为空、UID/resourceVersion 非空且三项 archive annotation 通过共享严格校验的
+  对象；跨 namespace 扫描继续使用 A5379 的 item/JSON byte budget、context-aware sort、公平游标与小批量上限。没有另开未经
+  审批的对象存储凭据入口，而是在原受 signed IAM evidence、immutable Secret UID/RV/data SHA 和 pinned image 约束的 hourly
+  archive-verifier 中先跑完整验证批次；任一验证失败就不进入 retention。每个删除候选随后再次执行 exact version artifact/body/
+  receipt/Object Lock 验证，紧邻 DELETE 同时携带 UID 与 resourceVersion precondition。删除错误会在不继承已取消 parent 的 5 秒
+  窗口内 GET：NotFound 或同名新 UID 证明原对象已消失，返回成功；同 UID resourceVersion 漂移仍返回错误，下一轮必须重验，
+  不会误删 replacement。生产设置 30 天 Kubernetes retention、每轮最多 32 个，且配置校验强制 0=禁用或 delete-after 严格小于
+  一年 Object Lock retention。ValidatingAdmissionPolicy 已覆盖 DELETE，只允许 verifier SA 对无 finalizer 的归档终态对象提交与
+  oldObject 精确相等的 UID/RV preconditions；RBAC 仅新增 Operation delete，仍拒绝 create/update/patch/watch，S3 IAM 继续只读。
+  apply/enable 门禁的 canonical 单行日志现在同时绑定 verified/deleted 计数并拒绝超过 256/32；server-side dry-run 已由本地
+  `kind-kubebrain-dbaas` API 接受更新后的 CEL/schema。retention/verifier/audit race 为 1.098/1.127/1.191 秒，根 production
+  inventory 仍为 580 项；四片 130/165/147/138 在代码提交 `75374940` 上全部通过（Go 测试
+  166.869/514.247/292.735/548.797 秒；端到端 176.086/523.421/301.872/557.920 秒）。本地 fake client 和 server dry-run 不替代
+  真实 apiserver audit/provider access trail：下一步须在隔离受管 namespace 演练年轻对象、归档空洞、远端 version 漂移、
+  同 UID RV 竞态、同名 replacement 与成功删除，并继续用大对象分页测 RSS/GC。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
