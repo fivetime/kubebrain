@@ -60635,6 +60635,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   174.582/521.626/299.931/557.549 秒）。下一步仍须以真实 KubeBrainOperation+S3 Object Lock 跑完整 deletion trail，
   并在生产同规格 Pod cgroup 下测多页/多 namespace RSS、GC pause 与 OOM 行为。
 
+- A5382 为 A5381 尚缺的真实 Operation retention trail 增加可执行且不混淆权限边界的单对象演练入口。新增
+  `operation-audit --action reap` 与 `operationretention.ReapOne`：先以 operator 提供的精确 UID/resourceVersion GET，要求对象已超过
+  720h、终态、无 finalizer 且 archive annotation 完整，随后复用生产 verifier 重建 artifact 并执行 exact-version body/receipt/
+  Object Lock 验证，最后 DELETE 同时携带原 UID/RV precondition。身份或版本漂移、对象过新、证据/远端验证失败均不进入删除。
+  `drill-operation-retention-object-lock.sh` 刻意不扩展 archiver 演练：控制面 kubeconfig 只运行已有 `--check-enabled` 签名 IAM/Secret/
+  RBAC 门禁；另一份 mode-0600 kubeconfig 必须由 `kubectl auth whoami` 证明实际为专用 verifier SA，且运行环境使用其只读对象存储
+  凭据，避免用 archiver 的 Kubernetes 身份或 PutObject 凭据伪称 retention 证据。脚本再次固定生产 720h/8760h、精确目标双身份和
+  删除后 NotFound。回归覆盖成功、错误实际身份、年轻/RV 漂移/finalizer、远端失败与缺少显式确认；retention/verifier/audit race
+  全部通过。根 production inventory 增至 585 项；四片 132/166/149/138 在代码提交 `0ab9045e` 上全部通过（Go 测试
+  165.948/509.897/293.072/545.493 秒；端到端 174.966/518.905/302.184/554.520 秒）。当前 kind 虽有另一用途 MinIO，但没有
+  verifier object-store Secret/CronJob 或已归档 Operation，因此本轮明确未执行真实 Object Lock 删除。下一步必须在隔离目标环境
+  配置只读 verifier 凭据并保留 Operation JSON、check-enabled、DELETE apiserver audit 与 provider exact-version access trail；
+  同时继续 A5381 的生产同规格 Pod cgroup 多页/多 namespace RSS、GC pause/OOM 压测。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

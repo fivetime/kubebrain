@@ -6115,6 +6115,33 @@ KUBEBRAIN_RETENTION_APISERVER_TEST=1 \
 复查无 `kb-retention-*` namespace/policy 残留。该 ConfigMap 演练证明 Kubernetes request.options/oldObject/impersonation/RBAC
 的真实 DELETE 行为；它不替代真实 KubeBrainOperation、远端 S3 Object Lock 和 provider trail 的端到端演练。
 
+真实 Operation 保留期删除必须与归档写入演练分开执行，不能复用 archiver 的 Kubernetes 身份或可写对象存储凭据。仓库提供
+`drill-operation-retention-object-lock.sh`：`CONTROL_KUBECONFIG_PATH` 仅供受控发布身份运行
+`apply-operation-archive-verifier.sh --check-enabled`，重新验证已启用 CronJob、RBAC、immutable Secret binding 和留存的签名
+IAM allow/deny 证据；`KUBECONFIG_PATH` 则必须通过 `kubectl auth whoami` 证明实际身份恰为
+`system:serviceaccount:kubebrain-operations:kubebrain-operation-archive-verifier`。脚本运行环境必须注入该 verifier Secret 对应的
+只读 S3 凭据，不得继承 archiver 的 PutObject 权限。操作员还必须从审批证据逐字提供目标 namespace/name/UID/resourceVersion；
+脚本先 GET 并检查双身份、30 天年龄、终态、空 finalizer 与三项 archive annotation，再由 `operation-audit --action reap` 重建
+artifact、远端验证 exact version/body/receipt/Object Lock，最终以同一 UID/resourceVersion precondition DELETE 并 GET 确认消失。
+
+示例（所有值均须来自本次受控演练，不得照抄占位符）：
+
+```shell
+CONFIRM_OPERATION_RETENTION_REAP=yes \
+OPERATION_NAMESPACE=tenant-a OPERATION_NAME=operation-a \
+EXPECTED_OPERATION_UID='<uid>' EXPECTED_OPERATION_RESOURCE_VERSION='<resource-version>' \
+KUBECONFIG_PATH=/run/kubebrain/verifier.kubeconfig KUBE_CONTEXT=verifier \
+CONTROL_KUBECONFIG_PATH=/run/kubebrain/control.kubeconfig CONTROL_KUBE_CONTEXT=production \
+OBJECT_STORE_ID=production-a S3_BUCKET=kubebrain-operation-audit RETENTION_MODE=COMPLIANCE \
+hack/production/drill-operation-retention-object-lock.sh
+```
+
+两份 kubeconfig 都必须是当前用户持有、mode 0600、单 hard link 的绝对普通文件；确认开关、生产 720h/8760h 策略、精确 verifier
+身份或任何对象漂移均在删除前失败。2026-08-22 当前本地 kind 仅存在另一演练使用的 MinIO，缺少
+`kubebrain-operation-archive-verifier-object-store` Secret、已启用 verifier CronJob 和可选择的归档 Operation，故本轮没有执行、
+也不宣称真实 Object Lock retention DELETE 成功。目标环境仍须用隔离 GOVERNANCE/COMPLIANCE bucket 跑上述路径，并共同留存
+Operation 前后 JSON、verifier/check-enabled 输出、DELETE API audit、exact-version provider access trail 与 Object Lock retention。
+
 扫描内存基准使用 500 个各自独立的 120 KiB payload（非共享 string），总 JSON charge 58.65 MiB，逼近生产 64 MiB budget：
 
 ```shell
