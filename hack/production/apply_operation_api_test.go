@@ -59,6 +59,55 @@ func TestOperationAPIInstallerStopsBeforeKubectlWhenRequesterCheckFails(t *testi
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestOperationAPIInstallerEnablesAndSmokesThreeReplicas(t *testing.T) {
+	dir := t.TempDir()
+	logPath, scaleMarker := filepath.Join(dir, "calls.log"), filepath.Join(dir, "scaled")
+	guardrails := filepath.Join(dir, "guardrails")
+	writeTrafficExecutable(t, guardrails, "#!/usr/bin/env bash\nprintf 'guardrails %s\\n' \"$*\" >>\"$CALL_LOG\"\n")
+	kubectl := writeOperationAPIKubectl(t, dir)
+	curl := writeOperationAPICurl(t, dir)
+	caFile, tokenFile := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(caFile, []byte("test-ca"), 0o600))
+	require.NoError(t, os.WriteFile(tokenFile, []byte("header.payload.signature"), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-api.sh", "--enable"}, []string{
+		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "CURL=" + curl,
+		"REQUESTER_GUARDRAILS=" + guardrails, "CALL_LOG=" + logPath, "SCALE_MARKER=" + scaleMarker,
+		"OPERATION_API_ENDPOINT=https://operation-api.example.test", "OPERATION_API_CA_FILE=" + caFile,
+		"OPERATION_API_TOKEN_FILE=" + tokenFile,
+	})
+	require.NoError(t, err, string(out))
+	log := string(mustRead(t, logPath))
+	require.Contains(t, log, "scale deployment/kubebrain-operation-api --replicas=3")
+	require.Contains(t, log, "rollout status deployment/kubebrain-operation-api")
+	require.Contains(t, log, "/readyz")
+	require.Contains(t, log, "/v1/operations/api-auth-conformance-missing")
+	require.NotContains(t, log, "header.payload.signature")
+	require.NotContains(t, log, "--replicas=0")
+	require.Contains(t, string(out), "enabled three ready Operation API replicas")
+}
+
+func TestOperationAPIInstallerRollsBackWhenHTTPSSmokeFails(t *testing.T) {
+	dir := t.TempDir()
+	logPath, scaleMarker := filepath.Join(dir, "calls.log"), filepath.Join(dir, "scaled")
+	guardrails := filepath.Join(dir, "guardrails")
+	writeTrafficExecutable(t, guardrails, "#!/usr/bin/env bash\nexit 0\n")
+	kubectl := writeOperationAPIKubectl(t, dir)
+	curl := writeOperationAPICurl(t, dir)
+	caFile, tokenFile := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(caFile, []byte("test-ca"), 0o600))
+	require.NoError(t, os.WriteFile(tokenFile, []byte("header.payload.signature"), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-api.sh", "--enable"}, []string{
+		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "CURL=" + curl, "CURL_FAIL=true",
+		"REQUESTER_GUARDRAILS=" + guardrails, "CALL_LOG=" + logPath, "SCALE_MARKER=" + scaleMarker,
+		"OPERATION_API_ENDPOINT=https://operation-api.example.test", "OPERATION_API_CA_FILE=" + caFile,
+		"OPERATION_API_TOKEN_FILE=" + tokenFile,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(out), "readiness did not return 204")
+	require.Contains(t, string(out), "requested rollback to zero replicas")
+	require.Contains(t, string(mustRead(t, logPath)), "scale deployment/kubebrain-operation-api --replicas=0")
+}
+
 func writeOperationAPIKubectl(t *testing.T, dir string) string {
 	t.Helper()
 	kubectl := filepath.Join(dir, "kubectl")
@@ -77,7 +126,18 @@ case "${1:-}" in
         printf '{"spec":{"policyName":"kubebrain-operation-api-submit","validationActions":["Deny"]}}\n'
         ;;
       deployment)
-        printf '{"spec":{"replicas":0}}\n'
+        if [[ -n "${SCALE_MARKER:-}" && -f "$SCALE_MARKER" ]]; then
+          printf '{"metadata":{"generation":2},"spec":{"replicas":3},"status":{"observedGeneration":2,"updatedReplicas":3,"readyReplicas":3,"availableReplicas":3}}\n'
+        else
+          printf '{"metadata":{"generation":1},"spec":{"replicas":0},"status":{"observedGeneration":1}}\n'
+        fi
+        ;;
+      secret)
+        if [[ "$3" == kubebrain-operation-api-oidc ]]; then
+          printf '{"type":"Opaque","data":{"issuer":"aHR0cHM6Ly9pZHAuZXhhbXBsZS50ZXN0","audience":"a3ViZWJyYWluLW9wZXJhdGlvbi1hcGk="}}\n'
+        else
+          printf '{"type":"kubernetes.io/tls","data":{"tls.crt":"Y2VydA==","tls.key":"a2V5"}}\n'
+        fi
         ;;
       *) exit 99 ;;
     esac
@@ -95,8 +155,31 @@ case "${1:-}" in
     payload="$(cat)"
     [[ "$payload" == *parametersSecretRef* && "$payload" != *tenant-b-backup* && "$payload" != *api-conformance-bbbbbbbb* ]] || exit 1
     ;;
+  scale)
+    if [[ "$*" == *"--replicas=3"* ]]; then
+      : >"$SCALE_MARKER"
+    else
+      rm -f -- "$SCALE_MARKER"
+    fi
+    ;;
+  rollout) ;;
   *) exit 99 ;;
 esac
 `)
 	return kubectl
+}
+
+func writeOperationAPICurl(t *testing.T, dir string) string {
+	t.Helper()
+	curl := filepath.Join(dir, "curl")
+	writeTrafficExecutable(t, curl, `#!/usr/bin/env bash
+set -euo pipefail
+printf 'curl %s\n' "$*" >>"$CALL_LOG"
+if [[ "$*" == *"/readyz" ]]; then
+  if [[ "${CURL_FAIL:-false}" == true ]]; then printf 500; else printf 204; fi
+else
+  printf 404
+fi
+`)
+	return curl
 }
