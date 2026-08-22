@@ -2,6 +2,7 @@ package production_test
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -128,6 +129,34 @@ func TestInfoCertificateRotationOperationRejectsCredentialPathEscape(t *testing.
 	}
 }
 
+func TestInfoCertificateRotationOperationRejectsWorkspaceEscape(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		value       func(*infoRotationRunnerFixture) string
+		wanted      string
+	}{
+		{"relative state", "state_dir", func(*infoRotationRunnerFixture) string { return "relative/state" }, "state_dir must be an absolute path inside WORK_DIR"},
+		{"prefix collision receipt", "receipt_output", func(f *infoRotationRunnerFixture) string { return f.dir + "-other/receipt.json" }, "receipt_output must resolve inside WORK_DIR"},
+		{"symlink scrape receipt", "scrape_receipt_output", func(f *infoRotationRunnerFixture) string { return filepath.Join(f.dir, "escape", "scrape.json") }, "scrape_receipt_output must resolve inside WORK_DIR"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInfoRotationRunnerFixture(t)
+			if tc.name == "symlink scrape receipt" {
+				outside := t.TempDir()
+				require.NoError(t, os.Symlink(outside, filepath.Join(f.dir, "escape")))
+			}
+			var parameters map[string]any
+			require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+			parameters[tc.field] = tc.value(f)
+			encoded, err := json.Marshal(parameters)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(f.parameters, append(encoded, '\n'), 0o600))
+			f.run(t, false, tc.wanted)
+			require.NotContains(t, string(mustRead(t, f.log)), "gate ")
+		})
+	}
+}
+
 type infoRotationRunnerFixture struct {
 	dir, parameters, operationctl, rotation, publish, scrape, log, stateDir, receipt, scrapeReceipt string
 }
@@ -212,7 +241,7 @@ fi
 func (f *infoRotationRunnerFixture) run(t *testing.T, success bool, extra ...string) {
 	t.Helper()
 	digest := sha256.Sum256(mustRead(t, f.parameters))
-	env := []string{"WORKER_ID=worker-a", "OPERATION_NAMESPACE=ops", "PARAMETERS_INPUT=" + f.parameters, "OPERATIONCTL=" + f.operationctl, "ROTATION_COMMAND=" + f.rotation, "SCRAPE_COMMAND=" + f.scrape, "PUBLISH_COMMAND=" + f.publish, "EXPECTED_PROMETHEUS_URL=https://prometheus.example", "PROMETHEUS_CA_SOURCE=" + filepath.Join(f.dir, "prometheus-ca"), "PROMETHEUS_TOKEN_SOURCE=" + filepath.Join(f.dir, "prometheus-token"), "TEST_LOG=" + f.log, "RECEIPT_OUTPUT=" + f.receipt, "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=5", "CLAIM_DIGEST=" + fmt.Sprintf("%x", digest)}
+	env := []string{"WORKER_ID=worker-a", "OPERATION_NAMESPACE=ops", "PARAMETERS_INPUT=" + f.parameters, "OPERATIONCTL=" + f.operationctl, "WORK_DIR=" + f.dir, "ROTATION_COMMAND=" + f.rotation, "SCRAPE_COMMAND=" + f.scrape, "PUBLISH_COMMAND=" + f.publish, "EXPECTED_PROMETHEUS_URL=https://prometheus.example", "PROMETHEUS_CA_SOURCE=" + filepath.Join(f.dir, "prometheus-ca"), "PROMETHEUS_TOKEN_SOURCE=" + filepath.Join(f.dir, "prometheus-token"), "TEST_LOG=" + f.log, "RECEIPT_OUTPUT=" + f.receipt, "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=5", "CLAIM_DIGEST=" + fmt.Sprintf("%x", digest)}
 	var wanted string
 	for _, value := range extra {
 		if strings.Contains(value, "=") {

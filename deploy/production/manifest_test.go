@@ -872,6 +872,7 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 					}
 				}
 				require.Equal(t, "/opt/kubebrain/hack/production/validate-info-scrape-recovery.sh", envByName["SCRAPE_COMMAND"])
+				require.Equal(t, "/var/lib/kubebrain-operation", envByName["WORK_DIR"])
 				require.Equal(t, "https://prometheus-operated.kubebrain-system.svc.cluster.local:9090", envByName["EXPECTED_PROMETHEUS_URL"])
 				require.Equal(t, "/var/run/secrets/kubebrain-prometheus/ca.crt", envByName["PROMETHEUS_CA_SOURCE"])
 				require.Equal(t, "/var/run/secrets/kubebrain-prometheus/token", envByName["PROMETHEUS_TOKEN_SOURCE"])

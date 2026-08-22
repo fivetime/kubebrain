@@ -877,6 +877,7 @@ spec:
             - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
+            - {name: WORK_DIR, value: /var/lib/kubebrain-operation}
             - {name: ROTATION_COMMAND, value: /opt/kubebrain/hack/production/validate-info-certificate-rotation.sh}
             - {name: SCRAPE_COMMAND, value: /opt/kubebrain/hack/production/validate-info-scrape-recovery.sh}
             - {name: EXPECTED_PROMETHEUS_URL, value: "https://prometheus-operated.kubebrain-system.svc.cluster.local:9090"}

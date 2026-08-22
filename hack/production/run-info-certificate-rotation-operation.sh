@@ -10,6 +10,7 @@ OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"
 LEASE_SECONDS="${LEASE_SECONDS:-120}"
 HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
 OPERATIONCTL="${OPERATIONCTL:-}"
+WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 ROTATION_COMMAND="${ROTATION_COMMAND:-${ROOT_DIR}/hack/production/validate-info-certificate-rotation.sh}"
 SCRAPE_COMMAND="${SCRAPE_COMMAND:-${ROOT_DIR}/hack/production/validate-info-scrape-recovery.sh}"
 EXPECTED_PROMETHEUS_URL="${EXPECTED_PROMETHEUS_URL:-https://prometheus-operated.kubebrain-system.svc.cluster.local:9090}"
@@ -36,6 +37,9 @@ operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECOND
 command -v "$JQ" >/dev/null || die "jq is required"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 command -v stat >/dev/null || die "stat is required"
+command -v realpath >/dev/null || die "realpath is required"
+workspace_root="$(realpath -m -- "$WORK_DIR")" || die "WORK_DIR cannot be resolved"
+[[ "$workspace_root" == /* && -d "$workspace_root" ]] || die "WORK_DIR must resolve to an existing absolute directory"
 
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then operationctl=("$OPERATIONCTL"); else operationctl=(go run ./hack/production/cmd/operationctl); fi
@@ -117,6 +121,18 @@ operation_is_nonnegative_int64 "$max_clock_skew" && (( max_clock_skew <= 300 )) 
 operation_is_positive_int64 "$max_sample_age" && (( max_sample_age <= 3600 )) || die "max_sample_age_seconds must be a canonical positive int64 no greater than 3600"
 [[ ("$prometheus_token" == - && "$prometheus_token_sha" == -) || ("$prometheus_token" != - && "$prometheus_token_sha" != -) ]] || die "Prometheus bearer token path and SHA-256 must be both present or both absent"
 [[ "$prometheus_token" == - || "$prometheus_token" == "$PROMETHEUS_TOKEN_SOURCE" ]] || die "prometheus_bearer_token_file must use the dedicated Prometheus credential mount"
+
+workspace_path() {
+  local candidate="$1" field="$2" resolved
+  [[ "$candidate" == /* ]] || die "$field must be an absolute path inside WORK_DIR"
+  resolved="$(realpath -m -- "$candidate")" || die "$field cannot be resolved"
+  [[ "$resolved" == "$workspace_root" || "$resolved" == "$workspace_root/"* ]] || die "$field must resolve inside WORK_DIR"
+  printf '%s\n' "$resolved"
+}
+state_dir="$(workspace_path "$state_dir" state_dir)"
+receipt_output="$(workspace_path "$receipt_output" receipt_output)"
+scrape_receipt_output="$(workspace_path "$scrape_receipt_output" scrape_receipt_output)"
+receipt_input="$receipt_output"
 
 sources=("$old_ca" "$old_cert" "$new_ca" "$new_cert")
 hashes=("$old_ca_sha" "$old_cert_sha" "$new_ca_sha" "$new_cert_sha")
