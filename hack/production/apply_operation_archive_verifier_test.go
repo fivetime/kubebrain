@@ -1,6 +1,7 @@
 package production_test
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,8 @@ func TestOperationArchiveVerifierEnablesOnlyAfterManualSuccess(t *testing.T) {
 	log := string(mustRead(t, f.log))
 	require.Contains(t, log, "create -f - -o json")
 	require.Contains(t, string(mustRead(t, f.payloadLog)), `"generateName":"kubebrain-archive-verifier-enable-"`)
+	evidenceSHA := sha256.Sum256(mustRead(t, f.evidence))
+	require.Contains(t, string(mustRead(t, f.payloadLog)), fmt.Sprintf(`"dbaas.kubebrain.io/iam-simulation-sha256":"%x"`, evidenceSHA))
 	require.Contains(t, log, `"path":"/spec/suspend","value":false`)
 	require.Contains(t, log, `iam-simulation-valid-until-unix`)
 	out, err = runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--check-enabled"}, f.env())
@@ -114,6 +117,9 @@ func TestOperationArchiveVerifierRejectsUnexpectedCreatedJobIdentity(t *testing.
 	}{
 		{name: "namespace", env: "RETURN_JOB_NAMESPACE=other"},
 		{name: "generated prefix", env: "RETURN_JOB_NAME=untrusted-job"},
+		{name: "evidence sha", env: "RETURN_JOB_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+		{name: "evidence expiry", env: "RETURN_JOB_EXPIRY=1"},
+		{name: "missing annotations", env: "RETURN_JOB_ANNOTATIONS=omit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newArchiveVerifierApplyFixture(t)
@@ -163,8 +169,12 @@ if [[ "$args" == *" create -f - -o json "* ]]; then
   payload="$(cat)"; grep -q 'IAM_SIMULATION_VALID_UNTIL_UNIX' <<<"$payload"; printf '%s\n' "$payload" >>"$CREATE_PAYLOAD_LOG"
   name="$(jq -r '.metadata.name // (.metadata.generateName + "abcde")' <<<"$payload")"
   namespace="$(jq -r '.metadata.namespace' <<<"$payload")"
+  annotations="$(jq -c '.metadata.annotations' <<<"$payload")"
   name="${RETURN_JOB_NAME:-$name}"; namespace="${RETURN_JOB_NAMESPACE:-$namespace}"
-  printf '{"metadata":{"name":"%s","namespace":"%s"}}\n' "$name" "$namespace"; exit 0
+  if [[ -n "${RETURN_JOB_SHA:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_JOB_SHA" '.["dbaas.kubebrain.io/iam-simulation-sha256"]=$value' <<<"$annotations")"; fi
+  if [[ -n "${RETURN_JOB_EXPIRY:-}" ]]; then annotations="$(jq -c --arg value "$RETURN_JOB_EXPIRY" '.["dbaas.kubebrain.io/iam-simulation-valid-until-unix"]=$value' <<<"$annotations")"; fi
+  [[ "${RETURN_JOB_ANNOTATIONS:-}" != omit ]] || annotations=null
+  jq -cn --arg name "$name" --arg namespace "$namespace" --argjson annotations "$annotations" '{metadata:{name:$name,namespace:$namespace,annotations:$annotations}}'; exit 0
 fi
 exit 1
 `)

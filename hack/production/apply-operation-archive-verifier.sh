@@ -97,15 +97,18 @@ check_cronjob() {
 
 run_manual_verification() {
   local requested_name="$1" generate_prefix="$2" manual_job created expected_name
-  manual_job="$("$JQ" -c --arg name "$requested_name" --arg prefix "$generate_prefix" --arg namespace "$NAMESPACE" --arg expiry "$iam_evidence_valid_until" '
-    {apiVersion:"batch/v1",kind:"Job",metadata:({namespace:$namespace} + if $name == "" then {generateName:$prefix} else {name:$name} end),spec:.spec.jobTemplate.spec} |
+  manual_job="$("$JQ" -c --arg name "$requested_name" --arg prefix "$generate_prefix" --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '
+    {apiVersion:"batch/v1",kind:"Job",metadata:({namespace:$namespace,annotations:{"dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry}} + if $name == "" then {generateName:$prefix} else {name:$name} end),spec:.spec.jobTemplate.spec} |
     (.spec.template.spec.containers[0].env[] | select(.name == "IAM_SIMULATION_VALID_UNTIL_UNIX") | .value) = $expiry
   ' <<<"$cronjob")" || die "cannot construct expiry-bound manual verifier Job"
   created="$(kc create -f - -o json <<<"$manual_job")" || die "cannot create manual verifier Job"
-  manual_job_name="$("$JQ" -er --arg namespace "$NAMESPACE" '
-    select(.metadata.namespace == $namespace) | .metadata.name |
+  manual_job_name="$("$JQ" -er --arg namespace "$NAMESPACE" --arg sha "$iam_evidence_sha" --arg expiry "$iam_evidence_valid_until" '
+    select(.metadata.namespace == $namespace and
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry) |
+    .metadata.name |
     select(type == "string" and test("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and length <= 63)
-  ' <<<"$created")" || die "apiserver returned an invalid manual verifier Job identity"
+  ' <<<"$created")" || die "apiserver returned an invalid manual verifier Job identity or IAM evidence binding"
   if [[ -n "$requested_name" && "$manual_job_name" != "$requested_name" ]]; then
     die "apiserver returned a different manual verifier Job name"
   fi
