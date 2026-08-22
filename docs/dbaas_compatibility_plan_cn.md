@@ -60222,15 +60222,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   archiver kubeconfig、0700 空证据目录和生产 store/bucket；先执行 A5351 完整 check-enabled，再要求同 UID Operation
   为非删除 Succeeded/Failed、正且有界 completedAt、唯一 audit finalizer、零三项 archive annotation。object key 精确为
   `operation-audit/<namespace>/<uid>.json`，retain-until 固定 completedAt+生产 8760h，不能由演练缩短。脚本 capture
-  canonical artifact，第一次 Object Lock archive 后冻结 receipt，删除临时 receipt，再启动第二个独立 logical-object
-  进程；只有两份 receipt 逐字节相同且恢复证据的 UID/store/bucket/key/mode/retain/version/artifact digest/remote_verified
+  canonical artifact，先并行启动两个独立 logical-object 进程竞争同一 key，冻结并要求两份 receipt 逐字节相同；删除
+  两份临时 receipt 后再启动第三个独立进程。只有三份 receipt 逐字节相同且恢复证据的
+  UID/store/bucket/key/mode/retain/version/artifact digest/remote_verified
   合同完整，才调用专用 archiver 身份 release。最后重读同 UID 对象，要求 finalizer 已移除，三项 annotation 精确绑定
-  recovered receipt SHA、artifact SHA 和 version ID，并同步三份证据及目录。回归覆盖成功恢复/释放、第二次 receipt 漂移
+  recovered receipt SHA、artifact SHA 和 version ID，并同步 artifact、三份 receipt 及目录。回归覆盖成功恢复/释放、恢复 receipt 漂移
   时不释放，以及未确认零动作；Bash syntax、archiver enable/audit capture-release/演练定向测试、完整 cmd/pkg、全仓 vet、
   diff check 与新增后的 554 项 inventory 均通过。四片 125/157/141/131 在代码提交 `eefd7f0a` 上全部通过
   （155.640/502.990/280.729/524.153 秒）。自动化使用 fake Kubernetes/Object Store；本轮没有真实凭据，未写真实
   Object Lock version 或释放真实 finalizer。上线仍须在受控一次性终态对象上执行并留存远端 exact version、retention、
-  下载复核、两份 receipt、Operation annotations 和审批记录；该演练具有真实不可变写副作用，不能当作周期性健康检查。
+  下载复核、三份 receipt、Operation annotations 和审批记录；该演练具有真实不可变写副作用，不能当作周期性健康检查。
+
+- A5353 补齐 archiver 双副本不是 leader/claim 接管、而是确定性幂等竞争的直接证据。processor 并发回归让两个独立
+  `ArchiveProcessor` 对同一终态对象同时生成相同 artifact/key/retain 合同和 shared Object Lock version，并发进入
+  release；测试 client 只允许一次 finalizer Update 真正提交，另一 processor 必须通过 release 前读取或冲突后回读的
+  当前对象上精确 receipt SHA/artifact SHA/version annotations 收敛成功。race detector 连续 20 次和演练 fake 环境
+  连续 10 次均通过。
+  A5352 生产脚本同步升级为两个并行归档进程、两份 byte-identical receipt、删除临时 receipt 后第三进程恢复、再释放
+  finalizer；任一 child 失败由 trap 回收其并发 peer，四份证据均持久化并 sync。完整 archiver/audit 定向测试、cmd/pkg、
+  vet、diff check 和 554 项 inventory 均通过；四片 125/157/141/131 在代码提交 `2dfa11e7` 上全部通过
+  （155.995/501.835/283.013/522.179 秒）。这些 fake/client-go 证据证明本地并发编排和 Kubernetes CAS 收敛合同，尚不
+  证明真实 S3 在同时 `If-None-Match:*`、跨区域延迟或 generic Put 响应丢失下返回同一 exact version；仍须运行升级后的
+  真实 A5352 演练并保留三份 receipt、远端访问日志和单次 finalizer 更新审计。
 
 ### P2：运维兼容和长期验证
 
