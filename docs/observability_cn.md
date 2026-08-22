@@ -43,6 +43,9 @@ one-shot TLS gate 同样在 complete/verify 握手前双摘要冻结 state，ver
 占有目标，后到者必须失败且不得覆盖赢家证据。文件同步失败时不发布；目录同步失败时保留已发布证据但 gate
 返回失败，接管方必须重新复验，不能把文件存在或前一次 stdout 当作成功。
 因此“文件存在”仍不是成功信号，接管方必须按上述在线 verifier 和 runner evidence 属性门禁重新证明内容。
+production image 构建会运行 `validate-info-executor-runtime.sh`，枚举 info runner/gate 依赖的命令，并在本地
+文件系统真实执行随机 `0600` 文件、`stat -L`、`realpath -m`、file sync、hard-link、unlink 与 directory sync
+探针；任一工具或语义缺失都会让镜像构建失败。部署前也可在候选镜像默认 UID 65532 下重复运行该脚本。
 
 ## 关键 SLI
 

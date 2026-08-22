@@ -59726,6 +59726,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （139.655/473.333/264.946/502.069 秒）。独占创建防止名字碰撞和预置 symlink，不隔离能在创建后修改目录项
   或 inode 的同 UID workspace 写者；专用 PVC 挂载、executor 身份隔离与 CSI 权限仍是生产前提。
 
+- A5320 将 info executor 的用户态工具与文件系统语义提升为 production image build contract。最终镜像虽固定
+  `coreutils=9.8-r1`，但此前只测试 APK 顶层包集合；包拆分、COPY/target 重构或不兼容实现可让 `mktemp`、
+  `realpath -m`、`stat -L`、hard-link 或 `sync -f` 到运行时才失败。新增
+  `validate-info-executor-runtime.sh` 枚举 runner/gate 所需 shell/coreutils、curl/JQ/OpenSSL，以及构建模式下的
+  kubectl/operationctl/worker；随后在私有目录真实执行随机 0600 evidence 创建、owner/mode/link/size stat、
+  workspace realpath、file sync、hard-link no-clobber、unlink、directory sync 与内容复核。Dockerfile 在所有
+  scripts/binaries COPY 后强制运行该合同，缺工具负向回归 fail closed，构建门禁固定其顺序。完整 TiKV image
+  实际构建通过，probe 层明确输出成功；候选 image digest
+  `sha256:ec7ff45eafebf807fecbd390acd2f48844517864974ce3ef9acb097e278be791`，并以默认 `65532:65532`
+  用户再次运行合同成功。Bash syntax、build/deploy tests、定向 info runner/gates、全仓 vet、diff check 与 477 项
+  inventory 均通过；四片 108/136/117/116 在代码提交 `cc7d6381` 上全部通过
+  （141.846/475.036/269.973/501.273 秒）。本地 overlayfs 探针不证明生产 CSI 的断电持久性或 hard-link 支持；
+  候选 StorageClass/PVC 仍须在预生产环境执行同等语义验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

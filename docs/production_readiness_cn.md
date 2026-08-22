@@ -6049,6 +6049,12 @@ rotation state、TLS receipt 与 scrape receipt 的 complete 路径都用 `mktem
 之类可预测名字，否则跨 Pod 相同 PID 会共享临时路径，预置符号链接也可能把 evidence 写到非预期 inode。
 同目录是硬链接原子发布的文件系统前提；workspace/PVC 必须支持普通硬链接。发布后 runner 仍要求最终文件
 link count 为 1，并执行内容、摘要和在线状态复验；该机制不替代 CSI 持久性保证或外部不可变审计归档。
+Dockerfile 在复制所有 production scripts 和 executor 二进制后，以
+`REQUIRE_INFO_EXECUTOR_BINARIES=true` 执行 `validate-info-executor-runtime.sh`。该合同不仅枚举
+info runner/gate 使用的 shell/coreutils、curl/JQ/OpenSSL、kubectl、operationctl 和 worker，还在构建文件系统
+真实执行随机私有文件创建、`stat -L` 属性、`realpath -m`、`sync -f`、hard-link no-clobber、unlink 和目录同步。
+任一步失败必须阻断镜像构建；发布候选镜像还应以默认 `65532:65532` 用户重跑同一探针，不能用 APK 包名存在
+代替实际二进制和文件系统语义验证。
 executor 访问 parameter broker 的 projected ServiceAccount token 固定挂载为
 `/var/run/secrets/kubebrain-parameter/token`，audience 为
 `kubebrain-operation-parameters`，expiration 为 3600 秒，文件 mode 为 `0440`；不得复用
