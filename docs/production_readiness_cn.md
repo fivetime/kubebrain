@@ -5539,6 +5539,23 @@ OIDC token GET 固定不存在的 Operation 并要求 404。该 GET 不创建业
 Kubernetes 依赖链。扩容后的任一步失败都会请求回缩到 0 并等待缩容 rollout；仍应对回滚命令本身失败设置发布告警，
 不能仅凭脚本退出码推断远端一定已缩容。
 
+接流后应以相同 endpoint、CA 和短期 OIDC smoke token 周期执行：
+
+```shell
+KUBE_CONTEXT=production \
+OPERATION_API_ENDPOINT=https://operation-api.example.com \
+OPERATION_API_CA_FILE=/path/to/ca.crt \
+OPERATION_API_TOKEN_FILE=/path/to/oidc-smoke-token \
+  hack/production/apply-operation-api.sh --check-enabled
+```
+
+该模式重跑 requester/API Admission 编译状态、RBAC allow/deny、server dry-run、Secret shape、三副本
+observed/updated/ready/available 收敛，以及 HTTPS 204/OIDC 404；它不执行 apply、scale 或 rollout。运行态检查失败只应
+告警并阻止后续发布，不会自动缩容正在接流的健康副本。OIDC token 应由短期、只授权固定 smoke tenant/instance 的
+身份签发并按过期时间提前轮换，不能把长期管理员 token 留给周期任务。该检查验证当前证书受指定 CA 信任，但不证明
+Secret 热轮换期间 Pod UID 未变或 endpoint 已呈现指定新证书；证书轮换仍须记录轮换前 UID/证书指纹和轮换后同 UID/
+新指纹的两阶段证据。
+
 `hack/production/run-backup-operation.sh` 接入受保护 Backup。参数文件固定 endpoint、
 prefix、operation 专属 artifact/receipt 路径、分页大小、Object Store ID、bucket/object
 key、绝对 retain-until、retention mode 与 completion gate；prefix 必须是绝对 key

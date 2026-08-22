@@ -60103,6 +60103,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fake kubectl/curl，本轮没有真实 endpoint、CA、OIDC token 或目标集群凭据，因此未实际扩容；上线仍须执行
   `--enable` 并留存 rollout、204/404 与失败回缩演练证据。
 
+- A5343 关闭 A5342 只验证首次接流、运行后没有无变更周期门禁的缺口。新增
+  `apply-operation-api.sh --check-enabled`：复用同一显式 context、34-policy/17-identity requester check、API policy
+  CEL/Deny、RBAC allow/deny、合法/非法 server dry-run、OIDC/TLS Secret shape、CA/token 文件边界和 HTTPS/OIDC
+  smoke，但要求 Deployment 已保持 observed generation 收敛且 updated/ready/available 精确为 3、unavailable=0。
+  与 `--enable` 不同，该模式无论成功或失败都不调用 apply/scale/rollout，不因临时 IdP、TLS 或 Kubernetes GET 故障
+  自动摘除正在接流的 API；调用方应告警并冻结后续发布。回归分别证明健康运行态只读通过，以及 HTTPS 失败时零 scale/
+  rollout；Bash syntax、定向与完整 package/deploy、全仓 vet、diff check 和新增后的 532 项 inventory 均通过。四片
+  121/151/133/127 在代码提交 `844201df` 上全部通过（154.509/498.304/283.575/517.125 秒）。自动化仍使用 fake
+  kubectl/curl，本轮未在真实 endpoint 执行。该周期检查只证明当前证书被指定 CA 信任；热轮换的轮换前 Pod UID/证书
+  指纹与轮换后同 UID/指定新指纹两阶段证据尚未固化，是下一项生产门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
