@@ -60275,6 +60275,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   控制面降级时的具体错误/可见性语义。上线演练仍须注入 Put/Head/Get/GetRetention 各阶段故障，留存同一 version、
   finalizer/annotation 前后状态、S3 access log 和恢复轮次证据。
 
+- A5356 解决周期核验不能复用 archiver 临时 receipt 的证据来源问题。objectstore 新增严格只读
+  `VerifyAuditVersion`/CLI `ACTION=audit-version-verify`：输入 canonical Operation artifact、Kubernetes annotation
+  绑定的 expected artifact SHA、expected receipt SHA、exact version ID 与固定 scope/retention；先要求本地重建
+  artifact digest 匹配 binding，再用 exact-version HEAD 的 metadata/size/version/LastModified 构造原始
+  `kubebrain.object-operation-audit.receipt.v1`，canonical 编码 SHA 必须等于 receipt annotation。之后完整下载同一
+  version，逐字节复核 body/digest/size，并核对 Object Lock mode/retain-until。该 API 只接受 A5354 的
+  `AuditReadAPI`，不需要本地 receipt、不写输出文件，也无法调用 Put。回归先真实走模块内 archive 产生 version/receipt，
+  删除 receipt 后用没有 `PutObject` 方法的 client 重建出逐字段相同证据；另覆盖 artifact/receipt binding、version 和
+  remote body 漂移，race detector 连续 20 次通过。嵌套 objectstore 全测、根 production/backup/vet/Bash/diff 门禁及
+  555 项 inventory 均通过；四片 126/157/141/131 在代码提交 `5155dac0` 上全部通过（Go 测试
+  157.772/505.606/280.091/524.516 秒；端到端 166.484/514.242/288.747/533.204 秒）。当前交付的是独立
+  运行面的无写验证原语，不是已部署的周期控制器；仍需新增只读 Kubernetes SA、独立 S3 read-only Secret、跨 inventory
+  公平扫描、失败指标/告警和发布门禁，且在真实 provider 上证明该 IAM 身份的 Put/Delete/List 拒绝矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

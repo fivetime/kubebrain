@@ -5946,6 +5946,14 @@ version annotations 精确绑定冻结证据，并同步 artifact、两份并发
 演练已经可能写入不可删除的 Object Lock version，因此只能使用经审批的一次性终态对象，且不得重复选择不同 UID 复用
 同一远端 key。
 
+周期检查不能依赖 archiver 临时目录中的 receipt，因为每个处理轮次结束后该目录必须删除。独立 verifier 应从终态
+Operation 的三项 archive annotation 读取 receipt SHA、artifact SHA 和 exact version ID，重建 canonical audit
+artifact，并调用只读 `ACTION=audit-version-verify`。该动作以远端 exact-version HEAD 的 LastModified 重建 canonical
+receipt，要求 artifact SHA 与 receipt SHA 分别精确等于 Kubernetes binding，再验证 HEAD metadata/size/version、完整
+GET body/digest/version 和 Object Lock mode/retain-until；整个接口不包含 `PutObject`，也不创建本地 receipt。缺失或
+部分 annotation、Operation 重建漂移、已到期 retention 或远端证据漂移必须让周期任务失败并告警。独立控制器、只读
+Secret/RBAC 和告警规则尚未接入前，不得声称已完成周期审计运行面。
+
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
 终止卡住的对象存储子进程；超时对象不得生成 receipt、不得释放 audit finalizer，下一轮
