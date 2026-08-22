@@ -6055,6 +6055,10 @@ info runner/gate 使用的 shell/coreutils、curl/JQ/OpenSSL、kubectl、operati
 真实执行随机私有文件创建、`stat -L` 属性、`realpath -m`、`sync -f`、hard-link no-clobber、unlink 和目录同步。
 任一步失败必须阻断镜像构建；发布候选镜像还应以默认 `65532:65532` 用户重跑同一探针，不能用 APK 包名存在
 代替实际二进制和文件系统语义验证。
+同一 runner 在首次 queue claim 前还以规范 `WORK_DIR` 为 `INFO_EXECUTOR_PROBE_PARENT` 执行合同：随机探针目录
+必须能在实际 workspace/PVC 中完成私有文件、hard-link、file/directory sync，随后删除探针并同步父目录。
+任何失败都在取得 Operation owner/attempt 之前终止，因此不能产生 heartbeat、Secret publish 或 terminal
+状态；不要通过关闭该 preflight 让不支持所需语义的 StorageClass 承载 info rotation evidence。
 executor 访问 parameter broker 的 projected ServiceAccount token 固定挂载为
 `/var/run/secrets/kubebrain-parameter/token`，audience 为
 `kubebrain-operation-parameters`，expiration 为 3600 秒，文件 mode 为 `0440`；不得复用

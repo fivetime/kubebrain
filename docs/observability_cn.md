@@ -46,6 +46,9 @@ one-shot TLS gate 同样在 complete/verify 握手前双摘要冻结 state，ver
 production image 构建会运行 `validate-info-executor-runtime.sh`，枚举 info runner/gate 依赖的命令，并在本地
 文件系统真实执行随机 `0600` 文件、`stat -L`、`realpath -m`、file sync、hard-link、unlink 与 directory sync
 探针；任一工具或语义缺失都会让镜像构建失败。部署前也可在候选镜像默认 UID 65532 下重复运行该脚本。
+`InfoCertificateRotation` runner 还会在首次 Operation claim 前把规范 `WORK_DIR` 作为 probe parent 再运行同一
+合同；这样验证的是实际 workspace/PVC，而不是镜像 overlayfs。探针目录会删除并同步父目录；失败时不得 claim、
+heartbeat、调用 publish hook 或遗留探针目录，应按 PVC/CSI 不兼容处理，而不是持续重试业务轮换。
 
 ## 关键 SLI
 

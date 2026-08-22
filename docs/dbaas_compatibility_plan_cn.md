@@ -59738,7 +59738,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   用户再次运行合同成功。Bash syntax、build/deploy tests、定向 info runner/gates、全仓 vet、diff check 与 477 项
   inventory 均通过；四片 108/136/117/116 在代码提交 `cc7d6381` 上全部通过
   （141.846/475.036/269.973/501.273 秒）。本地 overlayfs 探针不证明生产 CSI 的断电持久性或 hard-link 支持；
-  候选 StorageClass/PVC 仍须在预生产环境执行同等语义验证。
+  实际 workspace 运行时语义由 A5321 补齐，断电持久性仍须预生产验证。
+
+- A5321 将 A5320 合同从 image overlayfs 延伸到 `InfoCertificateRotation` 的实际 workspace/PVC。runtime probe
+  新增 `INFO_EXECUTOR_PROBE_PARENT`：要求现存绝对目录，在其中独占创建随机探针目录，完成 0600 evidence、
+  stat/realpath、file sync、hard-link、unlink、directory sync 与内容复核，最后删除探针并同步父目录。runner
+  在首次 operationctl claim 前以规范 `WORK_DIR` 调用该合同；任一步失败立即退出，不取得 owner/attempt，不启动
+  heartbeat，也不调用 gate/hook。回归证明正常 lifecycle 后零探针残留，并通过 PATH 注入失败 `sync` 证明日志中
+  连 claim 都不存在且失败清理完成。当前脚本另挂载到固定 Alpine 候选镜像，在 UID/GID 65532 和独立 volume
+  mount 上执行成功、退出后卷为空。Bash syntax、build/deploy tests、定向 info runner/contract、全仓 vet、
+  diff check 与 478 项 inventory 均通过；四片 108/136/118/116 在代码提交 `d56b6eaa` 上全部通过
+  （142.107/477.669/267.176/508.043 秒）。该 preflight 证明当前挂载的即时语义，不模拟节点断电、CSI failover
+  或跨节点 RWX cache coherence；这些仍须真实 StorageClass 故障演练。
 
 ### P2：运维兼容和长期验证
 
