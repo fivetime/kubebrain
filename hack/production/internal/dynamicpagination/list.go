@@ -37,6 +37,12 @@ func All(ctx context.Context, resource ResourceLister, options metav1.ListOption
 		pageOptions := options
 		pageOptions.Limit = pageLimit
 		pageOptions.Continue = continueToken
+		if continueToken != "" {
+			// The continue token already binds the snapshot resourceVersion.
+			// Kubernetes rejects a continuation request that also specifies one.
+			pageOptions.ResourceVersion = ""
+			pageOptions.ResourceVersionMatch = ""
+		}
 		page, err := resource.List(ctx, pageOptions)
 		if err != nil {
 			return nil, fmt.Errorf("list page %d: %w", pageNumber, err)

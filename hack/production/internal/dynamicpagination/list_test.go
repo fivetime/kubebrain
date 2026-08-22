@@ -34,11 +34,15 @@ func TestAllFollowsConsistentPages(t *testing.T) {
 	lister := &recordingLister{pages: []*unstructured.UnstructuredList{
 		listPage("7", "next", "a", "b"), listPage("7", "", "c"),
 	}}
-	items, err := All(context.Background(), lister, metav1.ListOptions{LabelSelector: "managed=true"}, 2)
+	items, err := All(context.Background(), lister, metav1.ListOptions{
+		LabelSelector:        "managed=true",
+		ResourceVersion:      "7",
+		ResourceVersionMatch: metav1.ResourceVersionMatchExact,
+	}, 2)
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "b", "c"}, itemNames(items))
 	require.Equal(t, []metav1.ListOptions{
-		{LabelSelector: "managed=true", Limit: 2},
+		{LabelSelector: "managed=true", ResourceVersion: "7", ResourceVersionMatch: metav1.ResourceVersionMatchExact, Limit: 2},
 		{LabelSelector: "managed=true", Limit: 2, Continue: "next"},
 	}, lister.options)
 }
