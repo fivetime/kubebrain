@@ -5975,6 +5975,8 @@ KUBE_CONTEXT=production REFRESH_OPERATION_ARCHIVE_VERIFIER_IAM=yes \
 ```
 
 门禁要求独立 Secret 精确七个非空安全字段、HTTPS endpoint，CronJob 仍使用专用 SA、Forbid、零 backoff 和 Never；
+live CronJob 的唯一 verifier image 必须是 `registry/path@sha256:<64 lowercase hex>`。源码中的 `kubebrain:dev` 仅用于
+suspended foundation 占位，发布系统必须在执行 `--check/--enable` 前以受审构建 digest 替换；可变 tag 无法通过门禁。
 对 inventory 每个 namespace 要求 Operation get/list 为 yes，create/update/patch/delete/watch、Secret 读取和 Lease create
 均为 no。enable 先从 suspended CronJob 创建并保留一次手动 Job；默认使用
 `generateName: kubebrain-archive-verifier-enable-`，避免失败 Job 七天保留期间阻塞安全重试，也可通过
@@ -5988,7 +5990,10 @@ Job，要求 namespace/name/UID、两项 evidence annotation、唯一 runtime ex
 实际执行 Pod 也必须可核验：Job template 把同一 SHA/expiry annotation 传播给 Pod；完成后按
 `batch.kubernetes.io/job-name` 只允许一个 Pod，要求 namespace/label、指向冻结 Job name+UID 的 controller owner、两项
 annotation、ServiceAccount、Never restartPolicy、完整单 verifier container spec 与 Job template 逐字一致，且 phase 为
-Succeeded。Pod 缺失/重复、sidecar 或容器字段注入、owner/annotation/runtime/phase 漂移都在日志和 patch 前失败。只有
+Succeeded。唯一 `containerStatuses` 还必须 name/image 匹配，runtime `imageID` 以批准的 sha256 digest 结尾，零重启且
+terminated exitCode=0/reason=Completed；init containers 必须与 Job template 一致，并禁止 ephemeral container。Pod
+缺失/重复、sidecar/init/ephemeral 或容器字段注入、owner/annotation/runtime/imageID/termination/phase 漂移都在日志和
+patch 前失败。只有
 Job 与 Pod 最终态均通过且日志可读，才以旧
 resourceVersion 和 `suspend=true` 双 test 的 JSON Patch 改为 false；Job 失败时绝不 patch。该运行时门禁不会主动尝试
 S3 Put/Delete 来“证明拒绝”，因为误配时会产生真实副作用；必须另附 provider IAM policy lint/simulation 或审计批准，

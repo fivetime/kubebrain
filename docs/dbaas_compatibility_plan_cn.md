@@ -60403,6 +60403,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   owner、完整 container/security context、imageID、termination status、日志和 Kubernetes audit 事件，并验证 sidecar
   injector 对该 namespace 的策略符合 fail-closed 发布合同。
 
+- A5365 关闭 A5364 仍允许 live verifier CronJob 使用可变 image tag、且不核对容器运行字节的供应链缺口。Job 与 Pod
+  spec 即使逐字相等，`kubebrain:dev` 仍可在两次拉取间指向不同镜像；Succeeded phase 也未证明批准容器以零退出完成。
+  现在所有 `--check/--enable/--refresh-iam/--check-enabled` 路径要求 live CronJob 精确一个容器，image 必须匹配
+  `^[^[:space:]@]+@sha256:<64 lowercase hex>$`；source manifest 的 `:dev` 仅是 suspend=true foundation 占位，生产发布系统
+  必须先替换为受审 digest。实际 Pod 除 spec 相等外，必须精确一个 containerStatus，name/image 匹配，imageID 以同一
+  `sha256:` digest 结尾，restartCount=0 且 terminated exitCode=0/reason=Completed。initContainers 必须与最终 Job
+  template 一致，ephemeralContainers 必须为空；sidecar/init/ephemeral 注入、错误 imageID、非零退出、重启或 status
+  缺失全部零 patch。新增后 568 项 inventory；四片 129/159/145/135 在代码提交 `e9198016` 上全部通过（Go 测试
+  159.408/498.749/289.684/531.429 秒；端到端 168.205/507.679/298.531/540.281 秒）。本地 fake
+  runtime 只证明 digest/termination 比较合同，不证明镜像签名、SBOM/provenance、registry transparency 或节点 runtime
+  实际内容可信；生产仍须把发布 digest、签名验证、Pod imageID/containerID/termination 与构建 attestation 纳入同一证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
