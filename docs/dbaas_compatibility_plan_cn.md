@@ -59608,6 +59608,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （138.016/468.478/262.330/494.686 秒）。本项不证明 Prometheus RBAC、NetworkPolicy/CNI 实际可达性、
   Secret 投影延迟或现场 CA cutover；这些仍须在预生产环境验证。
 
+- A5309 将 `InfoCertificateRotation` 的 durable evidence 输出限制到专用 workspace。此前生产文档要求
+  state/TLS receipt/scrape receipt 位于持久操作卷，但 runner 只冻结参数而不验证路径；错误参数可写入容器内
+  其他可写位置，字符串前缀检查也无法阻止相邻目录或既有符号链接逃逸。runner 现在解析 Deployment 显式固定
+  的 `WORK_DIR=/var/lib/kubebrain-operation`，以 `realpath -m` 规范化 `state_dir`、`receipt_output` 和
+  `scrape_receipt_output` 后再用于任何子命令，并要求结果等于 workspace 或位于其路径分隔边界内。回归覆盖
+  相对 state 路径、同前缀相邻目录中的 TLS receipt，以及 workspace 内符号链接指向外部的 scrape receipt，
+  三者均在 publish/rotation/scrape 前 fail closed；manifest 回归固定 `WORK_DIR` 为显式 env，使 envFrom
+  Secret 无法覆盖。Bash syntax、定向 runner、完整 deploy manifest、全仓 vet、diff check 与 463 项 inventory
+  均通过；四片 104/131/117/111 在代码提交 `c154f25b` 上全部通过
+  （139.789/469.130/267.912/495.472 秒）。本项限制 durable executor 的输出边界，不替代 RWX PVC 权限、
+  CSI 持久性、Operation 间目录配额或不可变外部审计归档。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

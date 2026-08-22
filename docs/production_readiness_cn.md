@@ -6015,6 +6015,10 @@ key 不完整应让零副本模板扩容 fail closed。生产 PVC
 必须支持 RWX 和 `runAsUser/fsGroup=65532`；两个副本会竞争同一队列并依赖 Lease/attempt
 fencing，RWO 卷或节点本地卷不能满足跨节点接管。参数里的 artifact、state、receipt 路径
 必须位于 `/var/lib/kubebrain-operation`，临时文件才可放 `/tmp`。
+`InfoCertificateRotation` runner 会用 `realpath -m` 解析 `state_dir`、TLS `receipt_output` 和
+`scrape_receipt_output` 的既有符号链接及 `..`，要求规范结果仍位于 Deployment 显式固定的 `WORK_DIR`；
+相对路径、仅字符串前缀相似的相邻目录和指向 workspace 外部的符号链接都会在 publish/rotation/scrape 前
+失败。不要依赖路径字符串看似以 workspace 开头，也不要用 `*-executor-env` 改写 `WORK_DIR`。
 executor 访问 parameter broker 的 projected ServiceAccount token 固定挂载为
 `/var/run/secrets/kubebrain-parameter/token`，audience 为
 `kubebrain-operation-parameters`，expiration 为 3600 秒，文件 mode 为 `0440`；不得复用
