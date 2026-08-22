@@ -60577,6 +60577,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   charge，10,000 当前也不可运行时配置；超过上限的长期租户会 fail closed 而不是自动删除审计对象。后续必须增加受约束的可配置
   预算与对象字节 charge，并定义已完成且已归档 Operation 的 UID-fenced 生命周期，不得以调大常量或删除 finalizer 掩盖增长。
 
+- A5378 关闭 A5377 只按对象计数、少量超大 CRD 仍可耗尽 controller heap 的剩余边界。paginator 现在除 10,000 项外还要求正
+  max-bytes，默认 64 MiB；每页逐对象调用 unstructured JSON serializer，以溢出安全的 `current > limit-size` 累计，序列化失败、
+  第一个对象已超限或后续累计超限均丢弃整批。scheduler/archiver/verifier 在跨 namespace candidate DeepCopy 前重复使用共享
+  `Charge`，因此每个 collection 与全局候选各自受 64 MiB JSON budget；Queue.Claim/lastStarted 也受单租户 collection budget。
+  回归固定精确到 limit 的两次累计成功、第三次失败、1-byte 上限拒绝真实对象、负 charge/nil object 和不可 JSON 序列化类型；
+  分页包及四个消费包普通测试 0.020/0.058/0.130/0.019/0.062 秒，精确代码提交 race 为
+  1.053/1.201/1.251/1.108/1.294 秒。根 production inventory 仍为 580 项；四片 130/165/147/138 在代码提交 `88fd12b3` 上全部
+  通过（Go 测试 168.401/517.561/294.347/552.859 秒；端到端 177.488/526.534/303.394/561.864 秒）。JSON charge 对动态 API
+  wire 大小有稳定解释，但不等于精确 Go heap：一个最多 500 项的 page 已在 charge 前由 client-go 解码，map/string headers、
+  allocator 和 DeepCopy 另有开销。10,000/64 MiB 仍不可运行时配置，下一步必须把两个预算纳入受约束 CLI/deployment binding，
+  并以真实大对象 page 测量 RSS/GC；历史 Operation 生命周期也仍须独立闭环。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

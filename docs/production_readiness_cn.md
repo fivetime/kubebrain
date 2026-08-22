@@ -5715,9 +5715,11 @@ apiserver/proxy 响应体并给 deadline 页间生效点。单页若违反 serve
 或单个 collection 聚合超过 10,000 项，整轮立即失败；scheduler/archiver/verifier 跨 namespace
 候选集合也最多 10,000 项，Queue claim 的每个 namespace 同样受 collection 上限约束。上限发生在
 任何排序、Lease/status、Operation 创建或对象存储 executor 之前，禁止从截断集合继续工作。
-该对象数门禁不是序列化字节/Go heap 上限，10,000 当前也是随 binary 固定的默认值；生产必须结合
-对象大小、租户配额、归档后 Operation 生命周期和大于 500 项的真实分页压测核算，不能靠提高常量
-替代清理或分片设计。
+除对象数外，每个 collection 的 unstructured 对象按其 JSON 表示累计最多 64 MiB；
+scheduler/archiver/verifier 跨 namespace candidate 也共享 64 MiB JSON charge，序列化失败同样
+fail closed。该 charge 不是 Go heap 的精确硬上限：单页必须先由 client-go 解码，map/string/DeepCopy
+也有额外开销。10,000/64 MiB 当前都是随 binary 固定的默认值；生产必须结合对象大小、容器内存、
+租户配额、归档后 Operation 生命周期和大于 500 项的真实分页压测核算，不能靠提高常量替代清理或分片设计。
 调用方给出的 `resourceVersion`/`resourceVersionMatch` 只用于首屏；后续 continue 请求必须清空
 这两个字段，因为 opaque token 已绑定初始快照版本，Kubernetes 不接受 continue 与显式
 resourceVersion 的组合。selector、timeout 等其余 options 保持不变，响应侧 collection
@@ -6098,6 +6100,7 @@ parent context。deadline/cancel 一旦发生，controller 立即返回已聚合
 每个 namespace 的 Operation List 同样使用 500 项一致快照分页；中途页失败不会验证、归档或释放任何从部分集合选择出的对象。
 若单 namespace Operation 总数或跨 namespace 待归档/待验证候选超过 10,000，controller 会 fail closed；
 operator 必须先按已归档证据和 UID fence 执行受控生命周期处置，不能绕过 finalizer 或只扩大 Pod 内存后重试。
+同一路径在 collection 或跨 namespace candidates 的 JSON charge 超过 64 MiB 时也以相同方式失败。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
