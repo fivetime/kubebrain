@@ -72,13 +72,22 @@ func (c *Controller) Reconcile(ctx context.Context) (int, error) {
 	var candidates []*unstructured.Unstructured
 	var errs []error
 	for _, namespace := range namespaces {
+		if err := ctx.Err(); err != nil {
+			return 0, errors.Join(append(errs, err)...)
+		}
 		list, err := c.client.Resource(operationqueue.Resource).Namespace(namespace).
 			List(ctx, metav1.ListOptions{})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list operations in namespace %s: %w", namespace, err))
+			if ctx.Err() != nil {
+				return 0, errors.Join(errs...)
+			}
 			continue
 		}
 		for i := range list.Items {
+			if err := ctx.Err(); err != nil {
+				return 0, errors.Join(append(errs, err)...)
+			}
 			if needsArchive(&list.Items[i]) {
 				candidates = append(candidates, list.Items[i].DeepCopy())
 			}

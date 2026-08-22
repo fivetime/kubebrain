@@ -2,7 +2,9 @@ package operationarchiveverifier
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 type recordingVerifier struct {
@@ -63,11 +66,35 @@ func TestFreshHourlyControllersRotateReadOnlyBatchWithoutPersistentCursor(t *tes
 	require.Equal(t, []string{"a", "b", "c"}, processor.names)
 }
 
+func TestControllerStopsNamespaceInventoryScanAfterCancellation(t *testing.T) {
+	client := verifierClientWithNamespaces(t, []string{"tenant-a", "tenant-b"})
+	ctx, cancel := context.WithCancel(context.Background())
+	var lists atomic.Int32
+	client.PrependReactor("list", operationqueue.Resource.Resource, func(k8stesting.Action) (bool, runtime.Object, error) {
+		lists.Add(1)
+		cancel()
+		return false, nil, nil
+	})
+	controller, err := NewController(client, &recordingVerifier{fail: map[string]error{}}, "control", "inventory", "namespaces.json", 2)
+	require.NoError(t, err)
+
+	verified, err := controller.Reconcile(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Zero(t, verified)
+	require.Equal(t, int32(1), lists.Load())
+}
+
 func verifierClient(t *testing.T, operations ...*unstructured.Unstructured) *fake.FakeDynamicClient {
+	return verifierClientWithNamespaces(t, []string{"tenant-a"}, operations...)
+}
+
+func verifierClientWithNamespaces(t *testing.T, namespaces []string, operations ...*unstructured.Unstructured) *fake.FakeDynamicClient {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	objects := []runtime.Object{&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "inventory", Namespace: "control"}, Data: map[string]string{"namespaces.json": `["tenant-a"]`}}}
+	raw, err := json.Marshal(namespaces)
+	require.NoError(t, err)
+	objects := []runtime.Object{&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "inventory", Namespace: "control"}, Data: map[string]string{"namespaces.json": string(raw)}}}
 	for _, operation := range operations {
 		objects = append(objects, operation)
 	}

@@ -3,6 +3,7 @@ package operationarchiver
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 type recordingProcessor struct {
@@ -137,6 +139,24 @@ func TestControllerResumesAfterLastAttemptWhenReconcileDeadlineExpires(t *testin
 	require.NoError(t, err)
 	require.Equal(t, 2, processed)
 	require.Equal(t, []string{"blocked", "following", "last"}, processor.names)
+}
+
+func TestControllerStopsNamespaceInventoryScanAfterCancellation(t *testing.T) {
+	client := fakeClient(t, inventory("tenant-a", "tenant-b"))
+	ctx, cancel := context.WithCancel(context.Background())
+	var lists atomic.Int32
+	client.PrependReactor("list", operationqueue.Resource.Resource, func(k8stesting.Action) (bool, runtime.Object, error) {
+		lists.Add(1)
+		cancel()
+		return false, nil, nil
+	})
+	controller, err := New(client, &recordingProcessor{fail: map[string]error{}}, "control", "inventory", "", 2)
+	require.NoError(t, err)
+
+	processed, err := controller.Reconcile(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Zero(t, processed)
+	require.Equal(t, int32(1), lists.Load())
 }
 
 func TestArchiveTimeoutRejectsInvalidConfiguration(t *testing.T) {
