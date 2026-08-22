@@ -59823,6 +59823,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （146.313/479.198/266.478/506.881 秒）。五文件双读仍不能防御在第二组摘要完成后修改 inode 的同 UID workspace
   写者；Recreate 单 writer、专用 UID/PVC 和 CSI/RWX 隔离仍是生产前提，provider volume alias 仍须外部证明。
 
+- A5327 为 `ColdPhysicalSnapshot` 建立 receipt-before-status durable reconciliation。底层 snapshot primitive 已
+  对 receipt 执行 0600、file sync、exclusive hard-link、unlink 和 directory sync，VolumeSnapshotClass 又固定
+  Retain；但 requester/admission 仍固定 `maxAttempts=1`，producer 已持久发布或最终 heartbeat/status 不确定时只能
+  自动 Failed，重新申请则可能重复创建一组 CSI snapshots。现在固定 `maxAttempts=2` 且只有 attempt 1 能启动 cold
+  snapshot primitive；任何启动后的非零/receipt 验证不确定都保持非终态。attempt 2 在独立 verifier process group
+  外持续 heartbeat，只接受 1..8 MiB 普通非 symlink、`0600:<current UID>:1` receipt，要求精确顶层与 semantic
+  witness schema、operation ID、witness SHA、KubeBrain/TidbCluster UID 和 snapshot/PVC 数量绑定，再以双重完整验证
+  夹住稳定 raw SHA-256。有效证据直接 Succeeded 且 CSI snapshot 零重放；缺失/不安全/不一致证据才 Failed，并要求
+  先盘点 retained snapshots。回归覆盖正常接管、0640 拒绝、producer 写证后退出 9 的正向接管、attempt 2 不调用
+  primitive，以及首次失败无提前 terminal。Bash syntax、requester/admission、cold receipt、全仓 vet、diff check 与
+  478 项 inventory 均通过；四片 107/136/119/116 在代码提交 `b757f2b1` 上全部通过
+  （144.542/476.400/266.948/503.376 秒）。receipt 证明 Kubernetes snapshot 对象与 frozen witness 绑定，不证明
+  CSI provider 已跨所有卷形成真正一致的存储点；真实多 PVC 停机快照、断电持久性和隔离恢复演练仍是上线门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

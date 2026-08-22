@@ -4690,6 +4690,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   冷 CSI 多 PVC full snapshot 已具备默认停用、单次审批、参数摘要/集群身份/语义 witness 绑定的持久
   `ColdPhysicalSnapshot` Operation executor；隔离目标也具备 source/manifest/target UID 绑定、
   单次审批和 fail-closed target admission 的 `ColdPhysicalRestore` Operation executor。上线声明
+  中 snapshot requester/admission 固定 `maxAttempts=2`，但只有 attempt 1 可以创建 CSI VolumeSnapshot；
+  receipt-before-status 或 producer 发布结果不确定时保持非终态，attempt 2 持续 heartbeat，只复核共享 workspace
+  上 1..8 MiB、普通非 symlink、0600/current UID/link-count=1 的既有 receipt。它要求精确顶层/semantic witness
+  schema、operation/witness/KubeBrain/TidbCluster UID 绑定和 snapshot/PVC 数量一致，并以两次完整验证夹住稳定
+  SHA-256；有效时只收敛 status，缺失或无效时 Failed 并要求先盘点 Retain snapshots，绝不再次创建。
   前述 snapshot/restore 以及 legacy history remediation worker 都要求
   `0 < HEARTBEAT_INTERVAL_SECONDS < LEASE_SECONDS`；默认值为 lease 的三分之一，短 lease 下至少为 1 秒，
   无法在首次 heartbeat 前保有租约的配置会在 claim 前拒绝，禁止 `sleep 0` 忙循环或过期后才续租。heartbeat
