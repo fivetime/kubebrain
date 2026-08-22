@@ -59966,6 +59966,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease 长连接在真实 apiserver 与独立 TiKV/PD 集群上连续；生产启用前仍须执行真实双信任窗口、逐 Pod rollout、旧 CA
   撤权、连接重建和回滚演练，并保持 workspace PVC/UID 与 hook Secret 单 writer 隔离。
 
+- A5335 关闭 `InfoCertificateRotation` 虽在 runner 内检查 requester 字符串、却仍可由通用 submitter 构造的入口缺口。
+  该 runner 已有严格 runtime filesystem probe、0600/current UID/link-count=1 evidence、TLS rotation receipt 与后续
+  Prometheus scrape recovery receipt 双重门禁，并固定 Prometheus URL/CA/token mount；但 claim 未绑定 owner、参数
+  Secret/key 或 attempt 上限，30 项参数仍允许未知字段、workspace 外四份 info TLS 凭据、自由 state/receipt 路径和 data
+  kube override。新增 `request-info-certificate-rotation.sh`：要求外部 request ID、实例、workspace 内 old/new CA+cert、info
+  endpoint/server identity、实例 topology、恢复采样边界，以及固定 Prometheus CA/可选 token，从请求、发布身份、四份 TLS
+  摘要和 scrape credential 摘要派生 `info-cert-rotate-<20hex>`；state、TLS receipt、scrape receipt 精确由 Operation ID
+  派生。requester 生成 canonical immutable Secret，固定 `platform:info-certificate-rotation`、同名 Secret/key、
+  `maxAttempts=5` 和空 data cluster override，只提交未审批 Pending。专用 SA/Role 仅有 Operation/Secret create/get；两条
+  `failurePolicy=Fail` admission 限定所有 InfoCertificateRotation 和匹配 Secret 的创建身份与固定形状。runner 现在完整
+  绑定 namespace/type/requester/owner/Secret/key/attempt 1..5，参数 keys 必须精确且只允许 in-cluster 数据面；WORK_DIR 必须
+  canonical、existing、non-symlink 并继续通过 durable runtime probe，四份 TLS 凭据必须为 workspace 内 canonical
+  non-symlink 文件，三类输出必须匹配确定性路径。Prometheus CA/token 仍只能来自 deployment 专用只读 mount，绝不复制到
+  parameters/workspace。错误 requester、未知字段或 workspace 外凭据在 gate/publish/scrape 前停止。回归覆盖正常未审批
+  submit、越界凭据零 Kubernetes 调用、fail-closed CEL/RBAC、claim/schema/path drift。首轮发现确定性路径错误遮蔽更具体的
+  state/TLS/scrape alias 诊断；已恢复 alias 检查优先级且不放宽任一条件。Bash syntax、连续两轮定向测试、完整 deploy、全仓
+  vet、diff check 与新增后的 503 项 inventory 均通过；四片 113/145/125/120 在代码提交 `520b30f6` 上全部通过
+  （149.457/474.414/278.109/499.555 秒）。TLS receipt 证明 info endpoint gate 观察到证书轮换，最终 scrape receipt 证明
+  Prometheus 查询在 TLS 完成时间后观察到全部目标；它们不证明真实 Prometheus operator reload、ServiceMonitor/EndpointSlice
+  收敛、远端写入链或告警连续性，也不证明真实 CA/SAN/EKU。生产启用前仍须真实 Prometheus + 独立 TiKV/PD 集群执行双
+  信任、旧 CA 撤权、scrape 中断/恢复、告警和长时序查询演练，并隔离 workspace PVC、hook 与 Prometheus credential Secret。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
