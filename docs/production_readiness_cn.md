@@ -6005,6 +6005,11 @@ Secret key 暴露到任一 hook 目录。该 executor 还要求
 `kubebrain-info-certificate-rotation-prometheus` Secret 精确包含 `ca.crt` 和 `token`：kubelet 以 `0440`
 只读投影到 `/var/run/secrets/kubebrain-prometheus/{ca.crt,token}`，Operation 参数中的
 `prometheus_ca_file`/`prometheus_bearer_token_file` 必须使用这两个路径并绑定实际文件 SHA-256。不要把
+参数 broker token、默认 ServiceAccount token 或系统 CA bundle 指作 scrape 凭据；runner 会在任何 publish/
+rotation/scrape 步骤前拒绝非专用路径。`prometheus_url` 必须精确等于 executor Deployment 的
+`EXPECTED_PROMETHEUS_URL`（生产基线为
+`https://prometheus-operated.kubebrain-system.svc.cluster.local:9090`），因此 Operation 参数不能把专用 token
+外发到任意 HTTPS 目的地；平台变更 Prometheus 地址时必须先更新并审计 Deployment，再签发对应参数。不要把
 Bearer token 放入 `*-executor-env`，也不得因此授予 executor Secret get/list/watch；专用 Secret 的缺失或
 key 不完整应让零副本模板扩容 fail closed。生产 PVC
 必须支持 RWX 和 `runAsUser/fsGroup=65532`；两个副本会竞争同一队列并依赖 Lease/attempt

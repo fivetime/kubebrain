@@ -59598,6 +59598,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （139.080/467.039/263.047/493.267 秒）。本项使模板可实际读取 scrape 凭据，不替代真实 ServiceAccount
   token 发放、Prometheus RBAC、网络可达性或现场轮换演练。
 
+- A5308 封闭 `InfoCertificateRotation` scrape 参数跨越 executor 凭据边界的路径。此前参数虽然要求 HTTPS
+  和文件摘要，但可把 URL 改为任意 HTTPS 目的地，并把 CA/token 路径指向容器内其他可读文件；这会允许错误
+  或恶意参数将 parameter-broker 的投影 token 当成 Bearer 凭据外发。runner 现在要求 `prometheus_url`
+  精确等于 Deployment 显式固定的 `EXPECTED_PROMETHEUS_URL`，CA 必须来自专用
+  `/var/run/secrets/kubebrain-prometheus/ca.crt`，可选 token 若提供则只能来自同挂载的 `token`；三种逃逸均在
+  publish/rotation/scrape 前 fail closed。manifest 回归固定生产 Prometheus endpoint，runner 回归覆盖 URL、
+  CA 和 token 替换。462 项 inventory 分为 104/131/116/111；四片在代码提交 `ad28c2aa` 上全部通过
+  （138.016/468.478/262.330/494.686 秒）。本项不证明 Prometheus RBAC、NetworkPolicy/CNI 实际可达性、
+  Secret 投影延迟或现场 CA cutover；这些仍须在预生产环境验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

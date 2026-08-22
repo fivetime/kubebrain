@@ -22,7 +22,10 @@ TLS receipt 后继续运行 `hack/production/validate-info-scrape-recovery.sh`�
 `InfoCertificateRotation` executor 已把该 gate 纳入 heartbeat/fencing 状态机；Operation terminal
 `receiptSHA256` 指向 scrape receipt，而 scrape receipt 再绑定 TLS receipt，审计归档因而覆盖完整证据链。
 生产清单从专用 `kubebrain-info-certificate-rotation-prometheus` Secret 只读挂载 `ca.crt`/`token`，不授予
-executor Secret API 权限；Operation 参数必须引用固定挂载路径并绑定文件摘要。
+executor Secret API 权限；Operation 参数必须引用固定挂载路径并绑定文件摘要。executor 还把
+`prometheus_url` 绑定到 Deployment 显式声明的 `EXPECTED_PROMETHEUS_URL`，并只接受专用挂载中的 CA/token
+路径，避免参数把 broker ServiceAccount token 等任意可读文件作为 Bearer 凭据发往可改写的 HTTPS 地址。
+更换 Prometheus 地址必须修改受信 Deployment 配置并重新走清单审计，不能只改 Operation 参数。
 
 ## 关键 SLI
 
