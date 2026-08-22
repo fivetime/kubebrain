@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const backupDeletionOperationName = "backup-delete-0123456789abcdefabcd"
+
 func TestBackupDeletionOperationCompletesThreeGatesAndRetries(t *testing.T) {
 	f := newBackupDeletionFixture(t)
 	f.run(t, true, "")
@@ -449,6 +451,45 @@ func TestBackupDeletionOperationRejectsInvalidClaimNamespaceBeforeWorkflow(t *te
 	require.NoFileExists(t, f.operationReceipt)
 }
 
+func TestBackupDeletionOperationRejectsDedicatedRequesterDriftBeforeWorkflow(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	f.run(t, false, "CLAIM_REQUESTER=platform:other", "dedicated requester contract")
+	log := f.log(t)
+	require.NotContains(t, log, "object ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestBackupDeletionOperationRejectsUnknownParameterBeforeWorkflow(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	parameters := strings.TrimSpace(string(mustRead(t, f.parameters)))
+	parameters = strings.TrimSuffix(parameters, "}") + `,"unexpected":"value"}`
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "", "exactly the dedicated requester keys")
+	log := f.log(t)
+	require.NotContains(t, log, "object ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestBackupDeletionOperationRejectsEvidenceOutsideWorkspaceBeforeWorkflow(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	outside := filepath.Join(t.TempDir(), "source.json")
+	require.NoError(t, os.WriteFile(outside, mustRead(t, f.sourceReceipt), 0o600))
+	parameters := strings.Replace(
+		string(mustRead(t, f.parameters)),
+		fmt.Sprintf(`"source_receipt_input":%q`, f.sourceReceipt),
+		fmt.Sprintf(`"source_receipt_input":%q`, outside),
+		1,
+	)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "", "canonical regular non-symlink file in WORK_DIR")
+	log := f.log(t)
+	require.NotContains(t, log, "object ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 type backupDeletionFixture struct {
 	dir, parameters, sourceReceipt, preManifest, postManifest  string
 	preInventoryReceipt, deletionReceipt, postInventoryReceipt string
@@ -465,10 +506,10 @@ func newBackupDeletionFixture(t *testing.T) *backupDeletionFixture {
 		sourceReceipt:        filepath.Join(dir, "source.json"),
 		preManifest:          filepath.Join(dir, "pre-manifest.json"),
 		postManifest:         filepath.Join(dir, "post-manifest.json"),
-		preInventoryReceipt:  filepath.Join(dir, "pre-inventory.json"),
-		deletionReceipt:      filepath.Join(dir, "deletion.json"),
-		postInventoryReceipt: filepath.Join(dir, "post-inventory.json"),
-		operationReceipt:     filepath.Join(dir, "operation-receipt.json"),
+		preInventoryReceipt:  filepath.Join(dir, backupDeletionOperationName+".pre-inventory.receipt.json"),
+		deletionReceipt:      filepath.Join(dir, backupDeletionOperationName+".deletion.receipt.json"),
+		postInventoryReceipt: filepath.Join(dir, backupDeletionOperationName+".post-inventory.receipt.json"),
+		operationReceipt:     filepath.Join(dir, backupDeletionOperationName+".receipt.json"),
 	}
 	require.NoError(t, os.WriteFile(f.sourceReceipt, []byte(`{"format":"kubebrain.object-backup.receipt.v1","instance":"instance-a","backup_id":"backup-1","object_store_id":"store-a","bucket":"backups","object_key":"instance-a/backup-1.jsonl","version_id":"version-1","artifact_format":"kubebrain.logical.v2","artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshot_revision":1,"created_at_unix":1,"records":1,"leases":0,"object_bytes":1,"retention_mode":"COMPLIANCE","retain_until_unix":2,"remote_verified":true,"uploaded_at_unix":1}
 `), 0o600))
@@ -487,10 +528,10 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  operation_id="${CLAIM_OPERATION_ID:-delete-1}"
+  operation_id="${CLAIM_OPERATION_ID:-backup-delete-0123456789abcdefabcd}"
   instance="${CLAIM_INSTANCE:-instance-a}"
   namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
-  printf '{"namespace":"%s","name":"delete-1","operation_id":"%s","instance":"%s","parameters_sha256":"%s","attempt":1}\n' "$namespace" "$operation_id" "$instance" "$digest"
+  printf '{"namespace":"%s","name":"backup-delete-0123456789abcdefabcd","operation_id":"%s","instance":"%s","type":"%s","requested_by":"%s","parameters_sha256":"%s","parameters_secret":"backup-delete-0123456789abcdefabcd-parameters","parameters_key":"parameters.json","owner":"%s","attempt":1}\n' "$namespace" "$operation_id" "$instance" "${CLAIM_TYPE:-BackupDeletion}" "${CLAIM_REQUESTER:-platform:backup-deletion}" "$digest" "${CLAIM_OWNER:-worker-a}"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-false}" == true ]]; then
   exit 1
 else
@@ -575,10 +616,11 @@ fi
 		"OPERATION_RECEIPT_OUTPUT=" + f.operationReceipt,
 		"SOURCE_RECEIPT_INPUT=" + f.sourceReceipt,
 		"TAMPERED_SOURCE_RECEIPT=" + tamperedSourceReceipt,
-		"BACKUP_DELETION_OPERATION_ID=delete-1", "BACKUP_DELETION_INSTANCE=instance-a",
+		"BACKUP_DELETION_OPERATION_ID=" + backupDeletionOperationName, "BACKUP_DELETION_INSTANCE=instance-a",
 		"BACKUP_DELETION_OBJECT_KEY=instance-a/backup-1.jsonl",
 		"BACKUP_DELETION_VERSION_ID=version-1",
 		"RUNNER_PARAMETERS_INPUT=" + f.parameters,
+		"WORK_DIR=" + dir,
 	}
 	f.env = append(f.env, receiptDigestTamperEnv(t, dir, f.operationReceipt)...)
 	return f
