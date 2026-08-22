@@ -2789,9 +2789,14 @@ update/patch/delete 或 status 权限；它不能修改已提交参数、批准�
 任何额外 finalizer，queue 在 submit reconcile 和 claim 时再次 fail closed。只有 archiver 写入 terminal archive
 三项证据后才能移除该 finalizer，避免外部 finalizer 让已归档 operation 永久滞留。
 
-开始 BR 前的参数摘要漂移会 requeue；BR 一旦启动，任何非零退出都 terminal fail 并要求先核查 immutable
-prefix，禁止自动重试不确定的部分写入。成功 attestation 已存在、最终心跳失去 fencing 或 receipt status
-提交失败时同样不得由新 operation 覆盖证据。镜像入口点也可在隔离演练中直接运行：
+开始 BR 前的参数摘要漂移会 requeue。requester/admission 固定 `maxAttempts=2`，但只有 attempt 1 可以启动 BR；
+BR 启动后的非零退出、attestation 发布结果不确定、最终心跳失去 fencing 或 status 提交失败均不提交终态，
+由 lease takeover 进入 attempt 2。attempt 2 持续 heartbeat，只复验 workspace 中的既有 attestation，绝不再次
+调用 BR：文件必须是 1..1 MiB 的普通非 symlink 文件，属性为 0600/current UID/link-count=1，并通过精确 v3
+schema、pinned BR、canonical args、排序 PD endpoint 摘要、storage prefix、cipher/key version 与 approved
+`backup_ts` 绑定。`backup_ts` 由同一 Go binary 以 `uint64` 精确比较，不能用 jq 浮点数近似；runner 在两次完整
+验证之间稳定取文件 SHA-256。有效证据收敛为 Succeeded；缺失或无效证据才 terminal fail，并要求先人工核查
+immutable prefix，禁止创建新 operation 自动覆盖不确定写入。镜像入口点也可在隔离演练中直接运行：
 
 ```shell
 /usr/local/bin/kubebrain-native-pitr-full-backup \

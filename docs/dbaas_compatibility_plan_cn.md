@@ -59778,6 +59778,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （140.723/472.967/268.025/498.173 秒）。即时 `sync -f` 仍依赖生产 CSI 的 stable-storage 与 RWX coherence；
   durable receipt 只证明既有 compact 结果，不能令 compaction 可回滚。
 
+- A5324 为 `NativePITRFullBackup` 建立 durable attestation reconciliation。底层 Go producer 已按 0600、file
+  sync、hard-link no-clobber、unlink 私有链接和 directory sync 发布 attestation，但旧 operation 固定
+  `maxAttempts=1`，runner 只检查非空文件后取摘要；producer 已持久发布、退出/status/最终 heartbeat 不确定时，
+  immutable S3 prefix 无法安全收敛。requester 与 admission 现固定 `maxAttempts=2`，只有 attempt 1 能调用 BR；
+  BR 启动后的任何不确定结果均保持非终态。attempt 2 在独立 verifier process group 外持续 heartbeat，只验证
+  既有 1..1 MiB 普通非 symlink attestation 的 0600/current UID/link-count=1、精确 v3 schema、pinned BR、
+  canonical args/digest、排序 PD 地址摘要、storage、cipher/key version 和 approved backup TSO，再以双重完整验证
+  夹住稳定 raw file SHA-256，绝不重复 BR。现有 producer binary 新增只读 `--verify-attestation` 模式，使用 Go
+  `uint64` 精确比较大于 `2^53` 的 TSO，避免 jq number 将相邻 revision 舍入成相同；单测明确拒绝相邻 TSO 和
+  PD 身份漂移。回归还覆盖 producer 写证后非零退出的正向接管、attempt 2 零 BR 调用、0640 证据拒绝和参数上界。
+  定向 backup/production/deploy、全仓 vet、diff check 与 478 项 inventory 均通过；四片 107/136/119/116 在
+  代码提交 `1d0f12b3` 上全部通过（142.219/473.031/266.035/499.704 秒）。一次非分片聚合 production 测试在
+  既有 `TestRepairTiKVTransactionPath` shell 子进程持续等待并触发 10 分钟 Go timeout，独立复跑同一路径亦在
+  2 分钟超时；四片门禁随后完整覆盖并通过。attestation 只证明受审 BR 调用成功，不证明远端对象后续未丢失；
+  full artifact/inventory 门禁和真实对象存储 retention 演练仍不可省略。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
