@@ -3,6 +3,8 @@ package dynamicpagination
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,6 +17,35 @@ type recordingLister struct {
 	pages   []*unstructured.UnstructuredList
 	err     error
 	onList  func(int)
+}
+
+type staticLister struct {
+	page *unstructured.UnstructuredList
+}
+
+func (l staticLister) List(context.Context, metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	return l.page, nil
+}
+
+func BenchmarkAllNearByteBudgetPage(b *testing.B) {
+	payload := strings.Repeat("x", 120<<10)
+	page := &unstructured.UnstructuredList{}
+	page.SetResourceVersion("7")
+	for i := 0; i < 500; i++ {
+		page.Items = append(page.Items, unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "dbaas.kubebrain.io/v1alpha1", "kind": "KubeBrainOperation",
+			"metadata": map[string]any{"name": fmt.Sprintf("operation-%03d", i)},
+			"payload":  fmt.Sprintf("%03d%s", i, payload),
+		}})
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		items, err := All(context.Background(), staticLister{page: page}, metav1.ListOptions{}, 500, 10_000, 64<<20)
+		if err != nil || len(items) != 500 {
+			b.Fatalf("All() = %d items, %v", len(items), err)
+		}
+	}
 }
 
 func (l *recordingLister) List(_ context.Context, options metav1.ListOptions) (*unstructured.UnstructuredList, error) {

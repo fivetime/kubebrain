@@ -2278,6 +2278,9 @@ func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
 	require.Contains(t, args, "--max-policies=256")
 	require.Contains(t, args, "--max-scan-items=10000")
 	require.Contains(t, args, "--max-scan-bytes=67108864")
+	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+	require.Equal(t, "64Mi", nestedString(t, container, "resources", "requests", "memory"))
+	require.Equal(t, "256Mi", nestedString(t, container, "resources", "limits", "memory"))
 	spreads, found, err := unstructured.NestedSlice(
 		deployment.Object, "spec", "template", "spec", "topologySpreadConstraints",
 	)

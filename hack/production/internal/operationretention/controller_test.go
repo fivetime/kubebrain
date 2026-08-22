@@ -3,9 +3,12 @@ package operationretention
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/dynamicpagination"
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
@@ -23,6 +26,36 @@ import (
 type recordingVerifier struct {
 	names []string
 	err   error
+}
+
+var retainedCandidateSink []*unstructured.Unstructured
+
+func BenchmarkChargeAndDeepCopyNearByteBudgetCandidates(b *testing.B) {
+	payload := strings.Repeat("x", 120<<10)
+	items := make([]unstructured.Unstructured, 500)
+	for i := range items {
+		items[i] = unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "dbaas.kubebrain.io/v1alpha1", "kind": "KubeBrainOperation",
+			"metadata": map[string]any{"name": fmt.Sprintf("operation-%03d", i)},
+			"payload":  fmt.Sprintf("%03d%s", i, payload),
+		}}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for iteration := 0; iteration < b.N; iteration++ {
+		charged := int64(0)
+		candidates := make([]*unstructured.Unstructured, 0, len(items))
+		for i := range items {
+			var err error
+			charged, err = dynamicpagination.Charge(charged, 64<<20, &items[i])
+			if err != nil {
+				b.Fatal(err)
+			}
+			candidates = append(candidates, items[i].DeepCopy())
+		}
+		retainedCandidateSink = candidates
+		b.ReportMetric(float64(charged)/(1<<20), "charged-MiB/op")
+	}
 }
 
 func (v *recordingVerifier) Process(_ context.Context, object *unstructured.Unstructured) error {
