@@ -73,6 +73,10 @@ func TestOperationArchiveVerifierRejectsForgedIAMEvidenceBeforeJob(t *testing.T)
 	require.Error(t, err)
 	require.Contains(t, string(out), "evidence signature is invalid")
 	require.NotContains(t, string(mustRead(t, f.log)), "create -f")
+	require.NoError(t, os.WriteFile(f.state, []byte("enabled"), 0o600))
+	out, err = runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--check-enabled"}, f.env())
+	require.Error(t, err)
+	require.Contains(t, string(out), "evidence signature is invalid")
 }
 
 func TestOperationArchiveVerifierRejectsUnsafeEvidenceSignature(t *testing.T) {
@@ -166,7 +170,29 @@ func TestOperationArchiveVerifierCheckEnabledRejectsExpiredRuntimeBinding(t *tes
 	require.NoError(t, os.WriteFile(f.state, []byte("expired"), 0o600))
 	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--check-enabled"}, f.env())
 	require.Error(t, err)
-	require.Contains(t, string(out), "expired or its runtime binding drifted")
+	require.Contains(t, string(out), "retained signed IAM evidence")
+}
+
+func TestOperationArchiveVerifierCheckEnabledRejectsBindingNotBackedByRetainedEvidence(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	require.NoError(t, os.WriteFile(f.state, []byte("enabled"), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--check-enabled"}, append(f.env(), "CRON_BINDING_SHA=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"))
+	require.Error(t, err)
+	require.Contains(t, string(out), "retained signed IAM evidence")
+}
+
+func TestOperationArchiveVerifierCheckEnabledAcceptsAgingStillValidSignedEvidence(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	now := time.Now().Unix()
+	evidence := []byte(iamEvidenceJSONWindow(now-7200, now+300))
+	require.NoError(t, os.WriteFile(f.evidence, evidence, 0o600))
+	require.NoError(t, os.WriteFile(f.signature, ed25519.Sign(f.privateKey, evidence), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, f.env())
+	require.Error(t, err)
+	require.Contains(t, string(out), "invalid, stale")
+	require.NoError(t, os.WriteFile(f.state, []byte("enabled"), 0o600))
+	out, err = runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--check-enabled"}, f.env())
+	require.NoError(t, err, string(out))
 }
 
 func TestOperationArchiveVerifierCheckEnabledRejectsScheduledCredentialBindingDrift(t *testing.T) {
@@ -186,7 +212,7 @@ func TestOperationArchiveVerifierCheckEnabledRejectsScheduledCredentialBindingDr
 			require.NoError(t, os.WriteFile(f.state, []byte("enabled"), 0o600))
 			out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--check-enabled"}, append(f.env(), tc.env))
 			require.Error(t, err)
-			require.Contains(t, string(out), "binding drifted")
+			require.Contains(t, string(out), "binding")
 		})
 	}
 }
@@ -356,6 +382,7 @@ func TestOperationArchiveVerifierRejectsEmptyOrNonCanonicalSuccessLog(t *testing
 
 type archiveVerifierApplyFixture struct {
 	kubectl, log, payloadLog, jobState, secretCount, state, evidence, signature, publicKey string
+	privateKey                                                                             ed25519.PrivateKey
 }
 
 func newArchiveVerifierApplyFixture(t *testing.T) archiveVerifierApplyFixture {
@@ -371,6 +398,7 @@ func newArchiveVerifierApplyFixture(t *testing.T) archiveVerifierApplyFixture {
 	require.NoError(t, os.WriteFile(f.publicKey, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0o600))
 	require.NoError(t, os.WriteFile(f.evidence, evidence, 0o600))
 	require.NoError(t, os.WriteFile(f.signature, ed25519.Sign(privateKey, evidence), 0o600))
+	f.privateKey = privateKey
 	writeTrafficExecutable(t, f.kubectl, `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$CALL_LOG"
@@ -401,6 +429,7 @@ if [[ "$args" == *" get cronjob kubebrain-operation-archive-verifier "* ]]; then
     [[ "$(<"$STATE_FILE")" != expired ]] || { expiry=1; runtime_expiry=1; }
   fi
   credential_uid="${CRON_CREDENTIAL_UID:-$credential_uid}"; credential_rv="${CRON_CREDENTIAL_RV:-$credential_rv}"; credential_sha="${CRON_CREDENTIAL_SHA:-$credential_sha}"
+  binding="${CRON_BINDING_SHA:-$binding}"; signature_sha="${CRON_SIGNATURE_SHA:-$signature_sha}"
   runtime_credential_sha="${CRON_RUNTIME_CREDENTIAL_SHA:-$credential_sha}"
   annotations="$(jq -cn --arg sha "$binding" --arg signature_sha "$signature_sha" --arg trust_sha "$trust_sha" --arg expiry "$expiry" --arg uid "$credential_uid" --arg rv "$credential_rv" --arg secret_sha "$credential_sha" '{"example.com/managed-by":"fixture","dbaas.kubebrain.io/iam-simulation-sha256":$sha,"dbaas.kubebrain.io/iam-simulation-signature-sha256":$signature_sha,"dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256":$trust_sha,"dbaas.kubebrain.io/iam-simulation-valid-until-unix":$expiry,"dbaas.kubebrain.io/credential-secret-uid":$uid,"dbaas.kubebrain.io/credential-secret-resource-version":$rv,"dbaas.kubebrain.io/credential-secret-data-sha256":$secret_sha}')"
   job_annotations="$(jq -c --arg trust_sha "$template_trust_sha" '.["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"]=$trust_sha' <<<"$annotations")"; pod_annotations="$job_annotations"
@@ -475,9 +504,13 @@ func (f archiveVerifierApplyFixture) env() []string {
 }
 
 func iamEvidenceJSON(checked int64) string {
+	return iamEvidenceJSONWindow(checked, checked+7200)
+}
+
+func iamEvidenceJSONWindow(checked, validUntil int64) string {
 	decisions := `[{"action":"s3:DeleteObject","decision":"denied","resource":"object"},{"action":"s3:GetBucketVersioning","decision":"allowed","resource":"bucket"},{"action":"s3:GetObject","decision":"allowed","resource":"object"},{"action":"s3:GetObjectLockConfiguration","decision":"allowed","resource":"bucket"},{"action":"s3:GetObjectRetention","decision":"allowed","resource":"object"},{"action":"s3:ListBucket","decision":"denied","resource":"bucket"},{"action":"s3:ListBucketVersions","decision":"denied","resource":"bucket"},{"action":"s3:PutObject","decision":"denied","resource":"object"}]`
 	secretSHA := sha256.Sum256([]byte(verifierSecretDataJSON))
-	return fmt.Sprintf(`{"bucket":"audit-bucket","checked_at_unix":%d,"credential_secret_data_sha256":"%x","credential_secret_uid":"secret-uid-123","decisions":%s,"format":"kubebrain.object-store-iam-simulation.v2","object_store_id":"store-a","principal":"arn:aws:iam::123456789012:role/verifier","provider":"aws-s3","valid_until_unix":%d}`+"\n", checked, secretSHA, decisions, checked+7200)
+	return fmt.Sprintf(`{"bucket":"audit-bucket","checked_at_unix":%d,"credential_secret_data_sha256":"%x","credential_secret_uid":"secret-uid-123","decisions":%s,"format":"kubebrain.object-store-iam-simulation.v2","object_store_id":"store-a","principal":"arn:aws:iam::123456789012:role/verifier","provider":"aws-s3","valid_until_unix":%d}`+"\n", checked, secretSHA, decisions, validUntil)
 }
 
 const verifierSecretDataJSON = `{"access-key-id":"YWNjZXNz","bucket":"YXVkaXQtYnVja2V0","endpoint":"aHR0cHM6Ly9zMy5leGFtcGxl","force-path-style":"ZmFsc2U=","object-store-id":"c3RvcmUtYQ==","region":"dXMtZWFzdC0x","secret-access-key":"c2VjcmV0"}`

@@ -115,21 +115,22 @@ check_iam_evidence_signature() {
 }
 
 check_iam_evidence() {
-  local evidence="$1" now canonical expected_actions actual_sha
+  local evidence="$1" min_remaining="$2" max_age="$3" now canonical expected_actions actual_sha
+  [[ "$min_remaining" =~ ^[1-9][0-9]*$ && "$max_age" =~ ^[1-9][0-9]*$ ]] || die "internal IAM evidence time policy is invalid"
   [[ -n "$evidence" && -f "$evidence" && ! -L "$evidence" ]] || die "IAM_SIMULATION_EVIDENCE must be a regular file"
   evidence_stat="$(stat -Lc '%u:%a:%h:%s' "$evidence")"
   IFS=: read -r evidence_uid evidence_mode evidence_links evidence_size <<<"$evidence_stat"
   [[ "$evidence_uid" == "$(id -u)" && "$evidence_mode" == 600 && "$evidence_links" == 1 && "$evidence_size" =~ ^[0-9]+$ && "$evidence_size" -ge 1 && "$evidence_size" -le 99999 ]] || die "IAM simulation evidence must be current-user mode 0600, single-link, and 1..99999 bytes"
   now="$(date +%s)"
   expected_actions='[{"action":"s3:DeleteObject","decision":"denied","resource":"object"},{"action":"s3:GetBucketVersioning","decision":"allowed","resource":"bucket"},{"action":"s3:GetObject","decision":"allowed","resource":"object"},{"action":"s3:GetObjectLockConfiguration","decision":"allowed","resource":"bucket"},{"action":"s3:GetObjectRetention","decision":"allowed","resource":"object"},{"action":"s3:ListBucket","decision":"denied","resource":"bucket"},{"action":"s3:ListBucketVersions","decision":"denied","resource":"bucket"},{"action":"s3:PutObject","decision":"denied","resource":"object"}]'
-  "$JQ" -e --arg store "$expected_store" --arg bucket "$expected_bucket" --arg credential_uid "$credential_secret_uid" --arg credential_sha "$credential_secret_data_sha" --argjson now "$now" --argjson decisions "$expected_actions" '. as $root |
+  "$JQ" -e --arg store "$expected_store" --arg bucket "$expected_bucket" --arg credential_uid "$credential_secret_uid" --arg credential_sha "$credential_secret_data_sha" --argjson now "$now" --argjson min_remaining "$min_remaining" --argjson max_age "$max_age" --argjson decisions "$expected_actions" '. as $root |
     (keys | sort) == ["bucket","checked_at_unix","credential_secret_data_sha256","credential_secret_uid","decisions","format","object_store_id","principal","provider","valid_until_unix"] and
     .format == "kubebrain.object-store-iam-simulation.v2" and .provider == "aws-s3" and
     .object_store_id == $store and .bucket == $bucket and
     .credential_secret_uid == $credential_uid and .credential_secret_data_sha256 == $credential_sha and
     (.principal | type == "string" and test("^[^[:space:][:cntrl:]]{1,512}$")) and
-    (.checked_at_unix | type == "number" and floor == . and . > 0 and . <= $now + 300 and . >= $now - 3600) and
-    (.valid_until_unix | type == "number" and floor == . and . >= $now + 3600 and . <= $root.checked_at_unix + 86400) and
+    (.checked_at_unix | type == "number" and floor == . and . > 0 and . <= $now + 300 and . >= $now - $max_age) and
+    (.valid_until_unix | type == "number" and floor == . and . >= $now + $min_remaining and . <= $root.checked_at_unix + 86400) and
     .decisions == $decisions
   ' "$evidence" >/dev/null || die "IAM simulation evidence is invalid, stale, or does not prove the exact allow/deny matrix"
   canonical="$("$JQ" -cS . "$evidence")" || die "cannot canonicalize IAM simulation evidence"
@@ -278,7 +279,8 @@ case "$1" in
     ;;
   --check-enabled)
     "$JQ" -e '.spec.suspend == false' <<<"$cronjob" >/dev/null || die "verifier CronJob is not enabled"
-    "$JQ" -e --arg trust_sha "$iam_trust_public_key_sha" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
+    check_iam_evidence "${IAM_SIMULATION_EVIDENCE:-}" 1 86400
+    "$JQ" -e --arg sha "$iam_evidence_sha" --arg signature_sha "$iam_evidence_signature_sha" --arg trust_sha "$iam_trust_public_key_sha" --arg expiry "$iam_evidence_valid_until" --arg credential_uid "$credential_secret_uid" --arg credential_rv "$credential_secret_resource_version" --arg credential_sha "$credential_secret_data_sha" '
       def matches($annotations;$sha;$signature_sha;$trust_sha;$expiry;$uid;$secret_rv;$secret_sha):
         $annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
         $annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] == $signature_sha and
@@ -287,17 +289,16 @@ case "$1" in
         $annotations["dbaas.kubebrain.io/credential-secret-uid"] == $uid and
         $annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $secret_rv and
         $annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == $secret_sha;
-      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] as $sha |
-      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] as $signature_sha |
-      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] as $expiry |
-      ($sha | test("^[a-f0-9]{64}$")) and ($signature_sha | test("^[a-f0-9]{64}$")) and
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == $sha and
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-signature-sha256"] == $signature_sha and
+      .metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] == $expiry and
       .metadata.annotations["dbaas.kubebrain.io/iam-simulation-trust-public-key-sha256"] == $trust_sha and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-uid"] == $credential_uid and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-resource-version"] == $credential_rv and
       .metadata.annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == $credential_sha and
       matches(.spec.jobTemplate.metadata.annotations;$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha) and
       matches(.spec.jobTemplate.spec.template.metadata.annotations;$sha;$signature_sha;$trust_sha;$expiry;$credential_uid;$credential_rv;$credential_sha)
-    ' <<<"$cronjob" >/dev/null || die "enabled verifier IAM or credential binding drifted"
+    ' <<<"$cronjob" >/dev/null || die "enabled verifier binding does not match the retained signed IAM evidence, trust root, or credential Secret"
     now="$(date +%s)"
     "$JQ" -e --argjson now "$now" '
       (.metadata.annotations["dbaas.kubebrain.io/iam-simulation-valid-until-unix"] | tonumber) > $now and
@@ -331,7 +332,7 @@ case "$1" in
       pending(.spec.jobTemplate.metadata.annotations) and
       pending(.spec.jobTemplate.spec.template.metadata.annotations)
     ' <<<"$cronjob" >/dev/null || die "verifier scheduled Job credential bindings are not pending"
-    check_iam_evidence "${IAM_SIMULATION_EVIDENCE:-}"
+    check_iam_evidence "${IAM_SIMULATION_EVIDENCE:-}" 3600 3600
     job="${VERIFICATION_JOB_NAME:-}"
     [[ -z "$job" || ( "$job" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#job}" -le 63 ) ]] || die "VERIFICATION_JOB_NAME must be a DNS label"
     run_manual_verification "$job" "kubebrain-archive-verifier-enable-"
@@ -376,7 +377,7 @@ case "$1" in
         $annotations["dbaas.kubebrain.io/credential-secret-data-sha256"] == $secret_sha;
       matches(.spec.jobTemplate.metadata.annotations) and matches(.spec.jobTemplate.spec.template.metadata.annotations)
     ' <<<"$cronjob" >/dev/null || die "enabled verifier scheduled Job IAM or credential binding drifted"
-    check_iam_evidence "${IAM_SIMULATION_EVIDENCE:-}"
+    check_iam_evidence "${IAM_SIMULATION_EVIDENCE:-}" 3600 3600
     job="${VERIFICATION_JOB_NAME:-}"
     [[ -z "$job" || ( "$job" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#job}" -le 63 ) ]] || die "VERIFICATION_JOB_NAME must be a DNS label"
     run_manual_verification "$job" "kubebrain-archive-verifier-iam-"
