@@ -60543,7 +60543,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
 - A5375 修复 A5374 仍以一个无 `Limit` 请求读取整个 Kubernetes Policy/Operation collection 的控制面规模缺口。大型租户可能让
   单次 apiserver/proxy response 超限或产生瞬时内存峰值；context-aware 扫描/排序只有在响应已经完整解码后才能生效。新增共享
-  `internal/dynamicpagination.All`，固定默认每页 500 项，保留 caller selector/resourceVersion 等 options，只设置 Limit 与 opaque
+  `internal/dynamicpagination.All`，固定默认每页 500 项，首屏保留 caller selector/resourceVersion 等 options，并设置 Limit 与 opaque
   Continue；每页前后检查 context，要求所有页 list resourceVersion 与第一页逐字一致，并用 seen-token 集合拒绝直接或非连续
   continue loop。任一页错误、nil response、版本漂移、token 重复或“响应成功但 context 已取消”均丢弃整批结果，绝不把部分集合
   交给写侧。backup scheduler 的 Policy List、archiver/verifier 的 Operation List、Queue.Claim 与跨 namespace lastStarted 共五条
@@ -60553,6 +60553,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过（Go 测试 165.298/511.833/291.514/546.870 秒；端到端 174.337/520.968/300.558/555.884 秒）。分页限制单个响应而非总候选
   数：当前公平排序仍聚合所有页，因此不宣称总内存有硬上限，也未用真实 apiserver 验证 continue token/RV 行为。目标环境须以
   每 namespace 超过 500 个对象的受控负载，留存多页 audit request、稳定 RV、deadline 中断、内存峰值与下一轮公平恢复证据。
+
+- A5376 修复 A5375 共享 paginator 对非空 caller `resourceVersion` 的潜在续页协议错误。首屏带 `resourceVersion=7` 和
+  `resourceVersionMatch=Exact` 合法，但旧实现复制整份 ListOptions 到第二页，只覆盖 Limit/Continue；Kubernetes continuation
+  token 已编码初始快照 RV，continue 请求再携带显式 RV 属于无效组合并会收到 400。现仅首屏保留 caller RV/match；任一非空
+  continue token 页面先清空两字段，同时继续保留 selector/timeout 等其他 options，并仍要求响应 collection RV 与首屏完全一致。
+  两页回归精确固定首屏 selector+RV+Exact+limit、续页 selector+limit+continue 且 RV/match 为空；dynamicpagination race 1.047 秒，
+  分页包及四个消费包普通测试 0.014/0.066/0.129/0.036/0.059 秒、五个命令入口测试全部通过。根 production inventory 仍为
+  580 项；四片 130/165/147/138 在代码提交 `495d65f4` 上全部通过（Go 测试
+  165.830/513.625/292.606/550.498 秒；端到端 175.048/522.774/301.792/559.667 秒）。当前生产调用方使用空 RV，故这是防止未来
+  强一致/恢复点调用触发的共享 API 缺口；本地 recording lister 不替代真实 apiserver 对 Exact、continue expiry/410 和 audit
+  query 的验证，目标环境多页门禁须同时覆盖空 RV 与显式首屏 RV 两种请求序列。
 
 ### P2：运维兼容和长期验证
 

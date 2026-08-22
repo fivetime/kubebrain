@@ -5713,6 +5713,10 @@ continue token 前进。所有页面必须保持同一个 list resourceVersion�
 nil response 或响应返回时 context 已取消都会丢弃整批集合，不使用部分候选。分页限制单个
 apiserver/proxy 响应体并给 deadline 页间生效点，但当前 controller 仍会聚合完整候选集合后做
 全局公平排序，因此它不是总对象数或总内存上限；生产必须结合租户配额和大于 500 项的压测核算。
+调用方给出的 `resourceVersion`/`resourceVersionMatch` 只用于首屏；后续 continue 请求必须清空
+这两个字段，因为 opaque token 已绑定初始快照版本，Kubernetes 不接受 continue 与显式
+resourceVersion 的组合。selector、timeout 等其余 options 保持不变，响应侧 collection
+resourceVersion 仍须逐页等于首屏。
 
 scheduler 每轮最多实际尝试 `--max-policies=256` 个 Policy，该上限作用于 inventory
 内所有 namespace 的全局候选集合。每个 List 返回对象的候选构建逐项检查 parent context，
