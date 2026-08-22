@@ -5909,6 +5909,35 @@ Put 返回 generic 错误时使用与 backup 相同的独立 30 分钟完整证�
 精确 version metadata、完整审计 artifact 和 Object Lock retention 全部匹配才可恢复。
 该预算覆盖大对象下载，不能缩成只够一次 Head 的管理写对账窗口。
 
+选择一个明确的一次性终态 Operation，在执行前人工核对 name/UID、未进入删除、仍只有 audit finalizer 且没有
+archive annotations。使用只含 archiver SA 权限的独立 kubeconfig，并在包含生产版
+`kubebrain-operation-audit`、`kubebrain-logical-object` 及 S3 环境变量的受控发布容器中执行：
+
+```bash
+umask 077
+mkdir -m 0700 /secure/audit/operation-archive-drill-20260822
+KUBE_CONTEXT=production \
+OPERATION_NAMESPACE=kubebrain-operations \
+OPERATION_NAME='<terminal-operation-name>' \
+EXPECTED_OPERATION_UID='<verified-operation-uid>' \
+KUBECONFIG_PATH=/secure/run/operation-archiver.kubeconfig \
+EVIDENCE_DIR=/secure/audit/operation-archive-drill-20260822 \
+OBJECT_STORE_ID=operations-audit-primary \
+S3_BUCKET=kubebrain-operation-audit \
+CONFIRM_OPERATION_ARCHIVE_DRILL=yes \
+  hack/production/drill-operation-archiver-object-lock.sh
+```
+
+脚本先完整执行 `apply-operation-archiver.sh --check-enabled`。专用 kubeconfig 必须为当前用户所有、`0600`、单链接、
+1..1 MiB；证据目录必须为当前用户所有的 `0700` 非 symlink，三个输出不得预存。脚本重新读取并绑定 Operation UID、
+Succeeded/Failed、`completedAtUnix`、唯一 audit finalizer 和零 archive annotation，按生产固定 8760h 计算 retain-until
+并固定 `operation-audit/<namespace>/<uid>.json`。第一次归档后冻结 receipt，删除临时 receipt，再启动第二个独立
+logical-object 进程；只有远端 exact-version/metadata/body/retention 复核生成逐字节相同的 canonical receipt，才使用
+专用 archiver 身份释放 finalizer。最后重新读取同 UID Operation，要求 finalizer 消失且 receipt SHA、artifact SHA、
+version annotations 精确绑定冻结证据，并同步 artifact/两份 receipt/目录。第二次恢复或证据比较失败时保留 finalizer；
+演练已经可能写入不可删除的 Object Lock version，因此只能使用经审批的一次性终态对象，且不得重复选择不同 UID 复用
+同一远端 key。
+
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
 终止卡住的对象存储子进程；超时对象不得生成 receipt、不得释放 audit finalizer，下一轮
