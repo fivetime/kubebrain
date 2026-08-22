@@ -57,6 +57,32 @@ check_secret() {
     (.data.endpoint | @base64d | test("^https://")) and
     ((.data["force-path-style"] | @base64d) == "true" or (.data["force-path-style"] | @base64d) == "false")
   ' <<<"$secret" >/dev/null || die "verifier object-store Secret is incomplete or unsafe"
+  expected_store="$("$JQ" -er '.data["object-store-id"] | @base64d' <<<"$secret")"
+  expected_bucket="$("$JQ" -er '.data.bucket | @base64d' <<<"$secret")"
+}
+
+check_iam_evidence() {
+  local evidence="$1" now canonical expected_actions actual_sha
+  [[ -n "$evidence" && -f "$evidence" && ! -L "$evidence" ]] || die "IAM_SIMULATION_EVIDENCE must be a regular file"
+  evidence_stat="$(stat -Lc '%u:%a:%h:%s' "$evidence")"
+  IFS=: read -r evidence_uid evidence_mode evidence_links evidence_size <<<"$evidence_stat"
+  [[ "$evidence_uid" == "$(id -u)" && "$evidence_mode" == 600 && "$evidence_links" == 1 && "$evidence_size" =~ ^[0-9]+$ && "$evidence_size" -ge 1 && "$evidence_size" -le 99999 ]] || die "IAM simulation evidence must be current-user mode 0600, single-link, and 1..99999 bytes"
+  now="$(date +%s)"
+  expected_actions='[{"action":"s3:DeleteObject","decision":"denied","resource":"object"},{"action":"s3:GetBucketVersioning","decision":"allowed","resource":"bucket"},{"action":"s3:GetObject","decision":"allowed","resource":"object"},{"action":"s3:GetObjectLockConfiguration","decision":"allowed","resource":"bucket"},{"action":"s3:GetObjectRetention","decision":"allowed","resource":"object"},{"action":"s3:ListBucket","decision":"denied","resource":"bucket"},{"action":"s3:ListBucketVersions","decision":"denied","resource":"bucket"},{"action":"s3:PutObject","decision":"denied","resource":"object"}]'
+  "$JQ" -e --arg store "$expected_store" --arg bucket "$expected_bucket" --argjson now "$now" --argjson decisions "$expected_actions" '. as $root |
+    (keys | sort) == ["bucket","checked_at_unix","decisions","format","object_store_id","principal","provider","valid_until_unix"] and
+    .format == "kubebrain.object-store-iam-simulation.v1" and .provider == "aws-s3" and
+    .object_store_id == $store and .bucket == $bucket and
+    (.principal | type == "string" and test("^[^[:space:][:cntrl:]]{1,512}$")) and
+    (.checked_at_unix | type == "number" and floor == . and . > 0 and . <= $now + 300 and . >= $now - 3600) and
+    (.valid_until_unix | type == "number" and floor == . and . > $now and . <= $root.checked_at_unix + 86400) and
+    .decisions == $decisions
+  ' "$evidence" >/dev/null || die "IAM simulation evidence is invalid, stale, or does not prove the exact allow/deny matrix"
+  canonical="$("$JQ" -cS . "$evidence")" || die "cannot canonicalize IAM simulation evidence"
+  [[ "$(wc -l <"$evidence")" == 1 && "$(<"$evidence")" == "$canonical" ]] || die "IAM simulation evidence is not canonical single-line JSON"
+  actual_sha="$(sha256sum "$evidence" | awk '{print $1}')"
+  [[ "$actual_sha" =~ ^[a-f0-9]{64}$ ]] || die "cannot digest IAM simulation evidence"
+  iam_evidence_sha="$actual_sha"
 }
 
 check_cronjob() {
@@ -91,11 +117,14 @@ case "$1" in
     ;;
   --check-enabled)
     "$JQ" -e '.spec.suspend == false' <<<"$cronjob" >/dev/null || die "verifier CronJob is not enabled"
+    "$JQ" -e '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] | test("^[a-f0-9]{64}$")' <<<"$cronjob" >/dev/null || die "enabled verifier is missing its IAM simulation evidence binding"
     echo "verified enabled read-only Operation archive verifier"
     ;;
   --enable)
     [[ "${ENABLE_OPERATION_ARCHIVE_VERIFIER:-}" == yes ]] || die "set ENABLE_OPERATION_ARCHIVE_VERIFIER=yes to run a manual verification and enable the schedule"
     "$JQ" -e '.spec.suspend == true' <<<"$cronjob" >/dev/null || die "verifier CronJob must be suspended before enable"
+    "$JQ" -e '.metadata.annotations["dbaas.kubebrain.io/iam-simulation-sha256"] == "pending"' <<<"$cronjob" >/dev/null || die "verifier IAM evidence binding is not pending"
+    check_iam_evidence "${IAM_SIMULATION_EVIDENCE:-}"
     job="${VERIFICATION_JOB_NAME:-kubebrain-operation-archive-verifier-enable}"
     [[ "$job" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "${#job}" -le 63 ]] || die "VERIFICATION_JOB_NAME must be a DNS label"
     kc create job "$job" -n "$NAMESPACE" --from="cronjob/$CRONJOB" >/dev/null || die "cannot create manual verifier Job"
@@ -105,7 +134,7 @@ case "$1" in
     }
     kc logs -n "$NAMESPACE" "job/$job" >&2 || die "cannot retain manual verifier Job logs"
     rv="$("$JQ" -er '.metadata.resourceVersion | select(test("^[0-9]+$"))' <<<"$cronjob")" || die "verifier CronJob resourceVersion is invalid"
-    patch="$("$JQ" -cn --arg rv "$rv" '[{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"test","path":"/spec/suspend","value":true},{"op":"replace","path":"/spec/suspend","value":false}]')"
+    patch="$("$JQ" -cn --arg rv "$rv" --arg sha "$iam_evidence_sha" '[{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"test","path":"/spec/suspend","value":true},{"op":"test","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-sha256","value":"pending"},{"op":"replace","path":"/metadata/annotations/dbaas.kubebrain.io~1iam-simulation-sha256","value":$sha},{"op":"replace","path":"/spec/suspend","value":false}]')"
     kc patch cronjob "$CRONJOB" -n "$NAMESPACE" --type=json -p "$patch" >/dev/null || die "manual verification passed but CronJob CAS enable failed"
     echo "enabled hourly read-only Operation archive evidence verification; retained job/$job"
     ;;

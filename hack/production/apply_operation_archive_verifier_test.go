@@ -1,9 +1,12 @@
 package production_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -36,12 +39,39 @@ func TestOperationArchiveVerifierManualFailureKeepsScheduleSuspended(t *testing.
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
-type archiveVerifierApplyFixture struct{ kubectl, log, state string }
+func TestOperationArchiveVerifierRejectsStaleIAMEvidenceBeforeJob(t *testing.T) {
+	f := newArchiveVerifierApplyFixture(t)
+	require.NoError(t, os.WriteFile(f.evidence, []byte(iamEvidenceJSON(1)), 0o600))
+	out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, f.env())
+	require.Error(t, err)
+	require.Contains(t, string(out), "IAM simulation evidence is invalid, stale")
+	require.NotContains(t, string(mustRead(t, f.log)), "create job")
+}
+
+func TestOperationArchiveVerifierRejectsIAMScopeAndDecisionDriftBeforeJob(t *testing.T) {
+	for _, tc := range []struct{ name, old, replacement string }{
+		{name: "bucket", old: `"bucket":"audit-bucket"`, replacement: `"bucket":"other-bucket"`},
+		{name: "put allowed", old: `"action":"s3:PutObject","decision":"denied"`, replacement: `"action":"s3:PutObject","decision":"allowed"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newArchiveVerifierApplyFixture(t)
+			data := strings.Replace(string(mustRead(t, f.evidence)), tc.old, tc.replacement, 1)
+			require.NoError(t, os.WriteFile(f.evidence, []byte(data), 0o600))
+			out, err := runProductionCommand(t, "bash", []string{"apply-operation-archive-verifier.sh", "--enable"}, f.env())
+			require.Error(t, err)
+			require.Contains(t, string(out), "does not prove the exact allow/deny matrix")
+			require.NotContains(t, string(mustRead(t, f.log)), "create job")
+		})
+	}
+}
+
+type archiveVerifierApplyFixture struct{ kubectl, log, state, evidence string }
 
 func newArchiveVerifierApplyFixture(t *testing.T) archiveVerifierApplyFixture {
 	t.Helper()
 	dir := t.TempDir()
-	f := archiveVerifierApplyFixture{kubectl: filepath.Join(dir, "kubectl"), log: filepath.Join(dir, "calls.log"), state: filepath.Join(dir, "enabled")}
+	f := archiveVerifierApplyFixture{kubectl: filepath.Join(dir, "kubectl"), log: filepath.Join(dir, "calls.log"), state: filepath.Join(dir, "enabled"), evidence: filepath.Join(dir, "iam.json")}
+	require.NoError(t, os.WriteFile(f.evidence, []byte(iamEvidenceJSON(time.Now().Unix())), 0o600))
 	writeTrafficExecutable(t, f.kubectl, `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$CALL_LOG"
@@ -55,8 +85,9 @@ if [[ "$args" == *" get secret kubebrain-operation-archive-verifier-object-store
   echo '{"data":{"access-key-id":"YWNjZXNz","bucket":"YXVkaXQtYnVja2V0","endpoint":"aHR0cHM6Ly9zMy5leGFtcGxl","force-path-style":"ZmFsc2U=","object-store-id":"c3RvcmUtYQ==","region":"dXMtZWFzdC0x","secret-access-key":"c2VjcmV0"}}'; exit 0
 fi
 if [[ "$args" == *" get cronjob kubebrain-operation-archive-verifier "* ]]; then
-  suspend=true; [[ ! -f "$STATE_FILE" ]] || suspend=false
-  printf '{"metadata":{"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"spec":{"backoffLimit":0,"template":{"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier"}}}}}}\n' "$suspend"; exit 0
+  suspend=true; binding=pending
+  if [[ -f "$STATE_FILE" ]]; then suspend=false; binding="$(sha256sum "$IAM_SIMULATION_EVIDENCE" | awk '{print $1}')"; fi
+  printf '{"metadata":{"annotations":{"dbaas.kubebrain.io/iam-simulation-sha256":"%s"},"resourceVersion":"7"},"spec":{"concurrencyPolicy":"Forbid","suspend":%s,"jobTemplate":{"spec":{"backoffLimit":0,"template":{"spec":{"restartPolicy":"Never","serviceAccountName":"kubebrain-operation-archive-verifier"}}}}}}\n' "$binding" "$suspend"; exit 0
 fi
 if [[ "$args" == *" wait "* ]]; then [[ "${FAIL_JOB:-false}" != true ]]; exit; fi
 if [[ "$args" == *" logs "* ]]; then echo 'verified 2 released terminal operation archives'; exit 0; fi
@@ -68,5 +99,10 @@ exit 1
 }
 
 func (f archiveVerifierApplyFixture) env() []string {
-	return []string{"KUBE_CONTEXT=production", "KUBECTL=" + f.kubectl, "CALL_LOG=" + f.log, "STATE_FILE=" + f.state, "ENABLE_OPERATION_ARCHIVE_VERIFIER=yes"}
+	return []string{"KUBE_CONTEXT=production", "KUBECTL=" + f.kubectl, "CALL_LOG=" + f.log, "STATE_FILE=" + f.state, "IAM_SIMULATION_EVIDENCE=" + f.evidence, "ENABLE_OPERATION_ARCHIVE_VERIFIER=yes"}
+}
+
+func iamEvidenceJSON(checked int64) string {
+	decisions := `[{"action":"s3:DeleteObject","decision":"denied","resource":"object"},{"action":"s3:GetBucketVersioning","decision":"allowed","resource":"bucket"},{"action":"s3:GetObject","decision":"allowed","resource":"object"},{"action":"s3:GetObjectLockConfiguration","decision":"allowed","resource":"bucket"},{"action":"s3:GetObjectRetention","decision":"allowed","resource":"object"},{"action":"s3:ListBucket","decision":"denied","resource":"bucket"},{"action":"s3:ListBucketVersions","decision":"denied","resource":"bucket"},{"action":"s3:PutObject","decision":"denied","resource":"object"}]`
+	return fmt.Sprintf(`{"bucket":"audit-bucket","checked_at_unix":%d,"decisions":%s,"format":"kubebrain.object-store-iam-simulation.v1","object_store_id":"store-a","principal":"arn:aws:iam::123456789012:role/verifier","provider":"aws-s3","valid_until_unix":%d}`+"\n", checked, decisions, checked+3600)
 }

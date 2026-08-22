@@ -41,6 +41,8 @@ kind: CronJob
 metadata:
   name: kubebrain-operation-archive-verifier
   namespace: kubebrain-operations
+  annotations:
+    dbaas.kubebrain.io/iam-simulation-sha256: pending
   labels:
     app.kubernetes.io/name: kubebrain-operation-archive-verifier
     app.kubernetes.io/part-of: kubebrain
