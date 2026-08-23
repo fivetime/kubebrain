@@ -11,10 +11,12 @@ KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-kubebrain-dev-control-plane}"
 PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-60}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
 PARTITION_DIRECTION="${PARTITION_DIRECTION:-both}"
+PARTITION_DROP_PERCENT="${PARTITION_DROP_PERCENT:-100}"
 export PARTITION_DIRECTION
 partition_pod_ip=""
 partition_pod_uid=""
 partition_tag=""
+partition_probability_args=()
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -36,7 +38,7 @@ delete_current_leader() {
 }
 
 partition_current_leader() {
-  local leader_id leader_name deadline raw new_leader privileged observed_uid observed_phase dropped_packets
+  local leader_id leader_name deadline raw new_leader privileged observed_uid observed_phase dropped_packets drop_probability
   if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
     echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
     exit 1
@@ -57,6 +59,15 @@ partition_current_leader() {
       exit 1
       ;;
   esac
+  if [[ ! "$PARTITION_DROP_PERCENT" =~ ^[1-9][0-9]*$ ]] || (( PARTITION_DROP_PERCENT > 100 )); then
+    echo "PARTITION_DROP_PERCENT must be an integer in [1,100]; got $PARTITION_DROP_PERCENT" >&2
+    exit 1
+  fi
+  partition_probability_args=()
+  if (( PARTITION_DROP_PERCENT < 100 )); then
+    drop_probability="$(awk -v percent="$PARTITION_DROP_PERCENT" 'BEGIN { printf "%.6f", percent / 100 }')"
+    partition_probability_args=(-m statistic --mode random --probability "$drop_probability")
+  fi
   privileged="$(docker inspect "$KIND_NODE_CONTAINER" --format '{{.HostConfig.Privileged}}')"
   if [[ "$privileged" != "true" ]]; then
     echo "refusing network partition: node container $KIND_NODE_CONTAINER is not privileged" >&2
@@ -86,19 +97,19 @@ partition_current_leader() {
     local cleanup_failed=0
     [[ -n "$partition_pod_ip" && -n "$partition_tag" ]] || return 0
     if docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$partition_pod_ip" \
-      -m comment --comment "$partition_tag-out" -j DROP 2>/dev/null; then
+      "${partition_probability_args[@]}" -m comment --comment "$partition_tag-out" -j DROP 2>/dev/null; then
       docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -D FORWARD -s "$partition_pod_ip" \
-        -m comment --comment "$partition_tag-out" -j DROP >/dev/null || cleanup_failed=1
+        "${partition_probability_args[@]}" -m comment --comment "$partition_tag-out" -j DROP >/dev/null || cleanup_failed=1
     fi
     if docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$partition_pod_ip" \
-      -m comment --comment "$partition_tag-in" -j DROP 2>/dev/null; then
+      "${partition_probability_args[@]}" -m comment --comment "$partition_tag-in" -j DROP 2>/dev/null; then
       docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -D FORWARD -d "$partition_pod_ip" \
-        -m comment --comment "$partition_tag-in" -j DROP >/dev/null || cleanup_failed=1
+        "${partition_probability_args[@]}" -m comment --comment "$partition_tag-in" -j DROP >/dev/null || cleanup_failed=1
     fi
     if docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$partition_pod_ip" \
-      -m comment --comment "$partition_tag-out" -j DROP 2>/dev/null ||
+      "${partition_probability_args[@]}" -m comment --comment "$partition_tag-out" -j DROP 2>/dev/null ||
       docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$partition_pod_ip" \
-        -m comment --comment "$partition_tag-in" -j DROP 2>/dev/null; then
+        "${partition_probability_args[@]}" -m comment --comment "$partition_tag-in" -j DROP 2>/dev/null; then
       cleanup_failed=1
     fi
     if (( cleanup_failed != 0 )); then
@@ -111,25 +122,25 @@ partition_current_leader() {
   trap 'cleanup_partition; exit 143' TERM
   if [[ "$PARTITION_DIRECTION" == "both" || "$PARTITION_DIRECTION" == "egress" ]]; then
     docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$partition_pod_ip" \
-      -m comment --comment "$partition_tag-out" -j DROP 2>/dev/null && {
+      "${partition_probability_args[@]}" -m comment --comment "$partition_tag-out" -j DROP 2>/dev/null && {
       echo "refusing duplicate partition rule $partition_tag-out" >&2
       exit 1
     }
     docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -s "$partition_pod_ip" \
-      -m comment --comment "$partition_tag-out" -j DROP
+      "${partition_probability_args[@]}" -m comment --comment "$partition_tag-out" -j DROP
     docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$partition_pod_ip" \
-      -m comment --comment "$partition_tag-out" -j DROP
+      "${partition_probability_args[@]}" -m comment --comment "$partition_tag-out" -j DROP
   fi
   if [[ "$PARTITION_DIRECTION" == "both" || "$PARTITION_DIRECTION" == "ingress" ]]; then
     docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$partition_pod_ip" \
-      -m comment --comment "$partition_tag-in" -j DROP 2>/dev/null && {
+      "${partition_probability_args[@]}" -m comment --comment "$partition_tag-in" -j DROP 2>/dev/null && {
       echo "refusing duplicate partition rule $partition_tag-in" >&2
       exit 1
     }
     docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -d "$partition_pod_ip" \
-      -m comment --comment "$partition_tag-in" -j DROP
+      "${partition_probability_args[@]}" -m comment --comment "$partition_tag-in" -j DROP
     docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$partition_pod_ip" \
-      -m comment --comment "$partition_tag-in" -j DROP
+      "${partition_probability_args[@]}" -m comment --comment "$partition_tag-in" -j DROP
   fi
 
   deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))
@@ -150,7 +161,7 @@ partition_current_leader() {
         echo "network partition rules did not drop packets for $leader_name ($partition_tag): $dropped_packets" >&2
         return 1
       fi
-      echo "network partition changed leader: $leader_name/$leader_id -> $new_leader; direction=$PARTITION_DIRECTION pod_uid=$partition_pod_uid dropped_packets=$dropped_packets"
+      echo "network partition changed leader: $leader_name/$leader_id -> $new_leader; direction=$PARTITION_DIRECTION drop_percent=$PARTITION_DROP_PERCENT pod_uid=$partition_pod_uid dropped_packets=$dropped_packets"
       cleanup_partition
       partition_pod_ip=""
       partition_tag=""
@@ -228,7 +239,7 @@ soak_duration="${KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION:-rapid}"
 soak_audit_interval="${KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL:-auto}"
 soak_audit_max_outage="${KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE:-auto}"
 soak_audit_sample="${KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE:-auto}"
-echo "Running lease renewal soak: clients=${soak_clients} leases/client=${soak_leases_per_client} failovers=${soak_cycles} ttl=${soak_ttl}s duration=${soak_duration} mode=${FAILOVER_MODE} partition_direction=${PARTITION_DIRECTION} audit=${soak_audit_interval}/${soak_audit_max_outage} sample=${soak_audit_sample}"
+echo "Running lease renewal soak: clients=${soak_clients} leases/client=${soak_leases_per_client} failovers=${soak_cycles} ttl=${soak_ttl}s duration=${soak_duration} mode=${FAILOVER_MODE} partition_direction=${PARTITION_DIRECTION} drop_percent=${PARTITION_DROP_PERCENT} audit=${soak_audit_interval}/${soak_audit_max_outage} sample=${soak_audit_sample}"
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
