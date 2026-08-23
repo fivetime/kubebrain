@@ -185,6 +185,28 @@ if [[ -z "$image" || -z "$pd_endpoints" || "$retry_count" != 1 || "$prestop" != 
   echo "KubeBrain rollout drain contract mismatch (image/retry/preStop)" >&2
   exit 1
 fi
+declare -a original_runtime_image_ids=()
+if [[ -n "$TARGET_IMAGE" ]]; then
+  for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
+    pod_name="${KUBEBRAIN_STATEFULSET}-${ordinal}"
+    pod_json="$runtime_evidence_dir/pod-initial-${ordinal}.json"
+    capture_runtime_evidence "$pod_json" kctl get pod "$pod_name" -o json || {
+      echo "failed to read initial candidate Pod ${pod_name}" >&2
+      exit 1
+    }
+    original_runtime_image_ids[$ordinal]="$(jq -er --arg image "$image" --arg revision "$current_revision" '
+      select(.metadata.deletionTimestamp == null and .status.phase == "Running" and
+        .metadata.labels["controller-revision-hash"] == $revision and
+        ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1) |
+      [.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and
+        ((.imageID | type) == "string") and (.imageID | length > 0)) | .imageID] |
+      select(length == 1) | .[0]
+    ' "$pod_json")" || {
+      echo "initial candidate Pod runtime release mismatch: ${pod_name}" >&2
+      exit 1
+    }
+  done
+fi
 if kctl get pod "$PROBE_POD" >/dev/null 2>&1; then
   echo "probe Pod already exists: ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   exit 1
@@ -209,6 +231,24 @@ cleanup() {
       ([.spec.template.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1
     ' "$runtime_evidence_dir/statefulset-rollback.json" >/dev/null; then
       echo "CRITICAL: candidate image rollback identity mismatch: expected image=${image} revision=${current_revision} replicas=${EXPECTED_REPLICAS}" >&2
+    else
+      for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
+        pod_name="${KUBEBRAIN_STATEFULSET}-${ordinal}"
+        pod_json="$runtime_evidence_dir/pod-rollback-${ordinal}.json"
+        if ! capture_runtime_evidence "$pod_json" kctl get pod "$pod_name" -o json; then
+          echo "CRITICAL: failed to read candidate rollback Pod ${pod_name}" >&2
+          continue
+        fi
+        if ! jq -e --arg image "$image" --arg image_id "${original_runtime_image_ids[$ordinal]}" \
+          --arg revision "$current_revision" '
+          .metadata.deletionTimestamp == null and .status.phase == "Running" and
+          .metadata.labels["controller-revision-hash"] == $revision and
+          ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
+          ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and .imageID == $image_id)] | length) == 1
+        ' "$pod_json" >/dev/null; then
+          echo "CRITICAL: candidate rollback Pod runtime identity mismatch: ${pod_name} image=${image} imageID=${original_runtime_image_ids[$ordinal]} revision=${current_revision}" >&2
+        fi
+      done
     fi
   fi
   if [[ "$probe_deleted" != true ]] &&
