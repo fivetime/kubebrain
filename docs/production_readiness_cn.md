@@ -1297,6 +1297,11 @@ StatefulSet `readyReplicas` 与主 container `ready=true` 不能替代 Pod 级 r
 和失败 rollback 三个逐 Pod 检查都要求 conditions 中恰有一个 `Ready=True`；sidecar 或自定义 readiness gate 令
 Pod NotReady 时，即使 KubeBrain container 仍 Ready、聚合 readyReplicas 尚未刷新，也必须拒绝或报告 CRITICAL。
 
+candidate 与 rollback image 修改不得使用无 precondition 的 `kubectl set image`。runner 使用单次 JSON Patch 原子测试
+初始 StatefulSet UID、冻结 index 上的 container name=`kubebrain` 及预期旧 image，三项全部成立后才 replace；
+对象删除重建、container 重排或并发 image 修改均不会被本轮覆盖。final/rollback postflight 还必须重新核对同一 UID。
+若 patch 响应不确定导致保守 CRITICAL，应现场只读确认当前 UID/image，不能跳过 test 后强制覆盖同名对象。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 

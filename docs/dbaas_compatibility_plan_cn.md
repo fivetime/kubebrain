@@ -61180,6 +61180,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   112.446/325.176/214.181/339.747 秒）。这是三个离散 postflight 快照，不替代持续 readiness/EndpointSlice 监控；
   业务连续性仍由并行 availability probe 提供时间窗口证据。
 
+- A5417 关闭候选 image mutation 按 StatefulSet 名称执行、在初始审计与写入之间可命中同名替换对象的 TOCTOU。
+  旧 `kubectl set image` 没有 UID/旧 image precondition；对象被删除重建或另一发布者并发改写时，candidate 与失败
+  cleanup 都可能覆盖不属于本轮的模板。提交 `bdbb6251` 从受限 initial JSON 冻结非空 StatefulSet UID，并要求
+  `kubebrain` container 恰好一个、冻结其数组 index；candidate 与 rollback 都改用单次 RFC 6902 JSON Patch，在
+  apiserver 内原子执行三项 `test`：`metadata.uid`、该 index 的 container name=`kubebrain`、该 index 的当前 image
+  等于预期旧值，随后才 `replace` image。任一身份或并发漂移使整份 patch 原子失败，不修改同名替换对象。final 与
+  rollback StatefulSet postflight 也都要求 UID 等于初始 UID，不能仅靠 image/revision 碰巧相同放行。fake patch
+  解析并执行相同 precondition；UID 在读后、写前漂移的负测确认 candidate/rollback 均拒绝，状态文件不存在、无成功
+  receipt，且日志固定 UID/name/image JSON Pointer。rollout 全组普通/race 为 7.358/8.424 秒，vet/shell syntax
+  通过；production inventory 增至 604 项，精确提交四片 137/171/152/144 全绿（Go 测试
+  108.517/319.485/210.729/336.431 秒；端到端 114.350/325.317/216.518/342.230 秒）。若 candidate patch 的响应
+  丢失且服务端实际未应用，rollback 的“当前 image 必须为 TARGET”也会拒绝并输出 CRITICAL；这是避免覆盖并发状态
+  的保守结果，现场应读取 UID/image 后确认原 baseline 是否本已安全，而不能放宽 atomic fence。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
