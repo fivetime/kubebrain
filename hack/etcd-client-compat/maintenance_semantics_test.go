@@ -317,8 +317,8 @@ func TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction(t *testing.T) {
 }
 
 func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
-	if os.Getenv("KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE") != "1" {
-		t.Skip("set KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE=1 where advertised member endpoints are dialable")
+	if os.Getenv("KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIRECT") != "1" {
+		t.Skip("set KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIRECT=1 only where each advertised endpoint directly identifies one member")
 	}
 
 	endpoint := compatEndpoint(t)
@@ -331,11 +331,19 @@ func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
 	members, err := cli.MemberList(ctx)
 	require.NoError(t, err)
 	endpoints := make([]string, 0, len(members.Members))
+	uniqueEndpoints := make(map[string]struct{}, len(members.Members))
 	for _, member := range members.Members {
-		endpoints = append(endpoints, member.ClientURLs...)
+		for _, memberEndpoint := range member.ClientURLs {
+			endpoints = append(endpoints, memberEndpoint)
+			uniqueEndpoints[memberEndpoint] = struct{}{}
+		}
 	}
 	sort.Strings(endpoints)
 	require.NotEmpty(t, endpoints)
+	require.Len(t, endpoints, len(members.Members),
+		"direct-member HashKV verification requires exactly one advertised endpoint per member")
+	require.Len(t, uniqueEndpoints, len(endpoints),
+		"direct-member HashKV verification requires unique advertised endpoints; a shared Service URL proves Sync reachability, not member identity")
 
 	key := testPrefix(t) + "/member-hash"
 	t.Cleanup(func() {
