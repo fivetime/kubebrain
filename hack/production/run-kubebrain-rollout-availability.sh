@@ -370,7 +370,10 @@ if [[ -n "$TARGET_IMAGE" ]]; then
       ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
       ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and
         ((.imageID | type) == "string") and (.imageID as $imageID |
-          any($allowedDigests[]; . as $digest | $imageID | endswith($digest))))] | length) == 1
+          any($allowedDigests[]; . as $digest |
+            $imageID == $digest or
+            ($imageID | endswith("://" + $digest)) or
+            ($imageID | endswith("@" + $digest)))))] | length) == 1
     ' "$pod_json" >/dev/null; then
       echo "candidate Pod runtime release mismatch: ${pod_name} image=${TARGET_IMAGE} allowed_digests=${TARGET_RUNTIME_DIGESTS}" >&2
       exit 1
