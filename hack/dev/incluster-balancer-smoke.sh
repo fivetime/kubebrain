@@ -77,24 +77,27 @@ cleanup() {
 trap cleanup EXIT
 
 cat >"$workdir/Dockerfile" <<EOF
-ARG GO_IMAGE
-ARG RUNTIME_IMAGE
-FROM \${GO_IMAGE} AS build
-ARG TARGET_GOARCH
+ARG GO_IMAGE=${GO_IMAGE}
+ARG RUNTIME_IMAGE=${RUNTIME_IMAGE}
+FROM --platform=\$BUILDPLATFORM \${GO_IMAGE} AS build
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY third_party/tikv-client-go ./third_party/tikv-client-go
 RUN go mod download
 COPY hack/dev/cmd/balancer-smoke/main.go ./hack/dev/cmd/balancer-smoke/main.go
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=\${TARGET_GOARCH} go build -trimpath -o /balancer-smoke ./hack/dev/cmd/balancer-smoke
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=\${TARGETARCH} go build -trimpath -o /balancer-smoke ./hack/dev/cmd/balancer-smoke
 FROM \${RUNTIME_IMAGE}
 COPY --from=build /balancer-smoke /usr/local/bin/kubebrain-balancer-smoke
 EOF
 
 docker build -f "$workdir/Dockerfile" \
+  --platform "linux/$probe_goarch" \
   --build-arg "GO_IMAGE=$GO_IMAGE" --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE" \
-  --build-arg "TARGET_GOARCH=$probe_goarch" \
   -t "$PROBE_IMAGE" "$ROOT_DIR"
+built_platform="$(docker image inspect "$PROBE_IMAGE" --format '{{.Os}}/{{.Architecture}}')"
+[[ "$built_platform" == "$probe_goos/$probe_goarch" ]] ||
+  { echo "probe image platform mismatch: got ${built_platform}, want ${probe_goos}/${probe_goarch}" >&2; exit 1; }
 kind load docker-image "$PROBE_IMAGE" --name "$CLUSTER_NAME"
 
 endpoints=""
