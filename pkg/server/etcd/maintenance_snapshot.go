@@ -15,10 +15,8 @@ import (
 	"sort"
 	"time"
 
-	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"go.etcd.io/etcd/server/v3/storage/schema"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	production "github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
@@ -445,23 +443,8 @@ func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer)
 
 var errSnapshotSend = errors.New("maintenance snapshot send failed")
 
-func snapshotArtifactStorageVersion(path string) (storageVersion string, retErr error) {
-	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
-	if err != nil {
-		return "", err
-	}
-	defer func() { retErr = errors.Join(retErr, db.Close()) }()
-	err = db.View(func(tx *bolt.Tx) error {
-		if tx.Bucket(schema.Meta.Name()) == nil {
-			return fmt.Errorf("etcd snapshot artifact is missing meta bucket")
-		}
-		version := schema.ReadStorageVersionFromSnapshot(tx)
-		if version != nil {
-			storageVersion = version.String()
-		}
-		return nil
-	})
-	return storageVersion, err
+func snapshotArtifactStorageVersion(path string) (string, error) {
+	return production.ReadStorageVersion(path)
 }
 
 func streamSnapshotFile(path, storageVersion string, stream etcdserverpb.Maintenance_SnapshotServer) (retErr error) {

@@ -35,6 +35,27 @@ var ErrInvalidSnapshotMetadata = errors.New("snapshot metadata is inconsistent")
 // version: upstream Status and Snapshot expose the backend version separately.
 const StorageVersion = "3.7.0"
 
+// ReadStorageVersion reads the version embedded in a snapshot produced by this
+// package. Keeping this small reader beside the writer prevents dataplane code
+// from importing etcd's bbolt backend implementation, whose package init also
+// registers process-global Prometheus collectors.
+func ReadStorageVersion(path string) (storageVersion string, retErr error) {
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	if err != nil {
+		return "", err
+	}
+	defer func() { retErr = errors.Join(retErr, db.Close()) }()
+	err = db.View(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(metaBucket)
+		if meta == nil {
+			return errors.New("etcd snapshot artifact is missing meta bucket")
+		}
+		storageVersion = string(meta.Get(storageVersionKey))
+		return nil
+	})
+	return storageVersion, err
+}
+
 // ErrInvalidMVCCLifecycle is retained for callers that adopted the narrower
 // A4207 name. It aliases the broader retained-history class.
 var ErrInvalidMVCCLifecycle = ErrInvalidRetainedHistory
@@ -42,6 +63,7 @@ var ErrInvalidMVCCLifecycle = ErrInvalidRetainedHistory
 var (
 	keyBucket         = []byte("key")
 	metaBucket        = []byte("meta")
+	storageVersionKey = []byte("storageVersion")
 	leaseBucket       = []byte("lease")
 	alarmBucket       = []byte("alarm")
 	clusterBucket     = []byte("cluster")
@@ -163,7 +185,7 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 		}
 	}
 	meta := tx.Bucket(metaBucket)
-	if err := meta.Put([]byte("storageVersion"), []byte(StorageVersion)); err != nil {
+	if err := meta.Put(storageVersionKey, []byte(StorageVersion)); err != nil {
 		return err
 	}
 	one := make([]byte, 8)
