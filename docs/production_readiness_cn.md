@@ -1240,6 +1240,13 @@ digest 不能替代节点选择后的 platform manifest digest；异构集群应
 镜像，之后仍须用 `validate-instance-ready.sh` 的完整 UID/revision/config/storage/runtime release gate 做发布
 验收。`TARGET_IMAGE` 模式只改变 KubeBrain container image，不承担配置迁移。
 
+统一发布验证应通过 `hack/dev/verify.sh` 设置完整、可审计的 RUN profile，并显式启用
+`RUN_KUBEBRAIN_CANDIDATE_CANARY=true`；该开关默认关闭，且缺少 `TARGET_IMAGE` 或
+`TARGET_RUNTIME_DIGESTS` 时会在任何 Kubernetes 调用前失败。它不会替代底层 runner 的变更授权：发布环境还
+必须独立设置 `ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true`。因此候选发布需要同时满足“发布 profile 选择 canary”
+和“允许修改 StatefulSet”两道显式门禁；只设置其中一个不得产生 mutation。`verify.sh` 的其他 RUN 开关应由
+同一发布 profile 明确取值，避免继承交互式 Shell 中残留的环境变量。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 

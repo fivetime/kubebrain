@@ -61054,6 +61054,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   135/167/151/141 全绿（Go 测试 105.699/315.718/208.530/332.151 秒；端到端
   111.335/321.367/214.206/337.809 秒）。本项验证 image-only candidate rollout；配置/schema 迁移和多架构真实节点仍需独立门禁。
 
+- A5407 将 A5406 的不可变候选镜像 canary 纳入统一发布验证入口。提交 `fc2f6a0e` 在 `hack/dev/verify.sh`
+  增加默认关闭的 `RUN_KUBEBRAIN_CANDIDATE_CANARY=false`，并把它列入严格 `true|false` 的 `RUN_FLAGS`
+  校验；只有显式打开且同时提供 `TARGET_IMAGE`、`TARGET_RUNTIME_DIGESTS` 才会调度
+  `run-kubebrain-rollout-availability.sh`。缺失任一目标绑定会在调用 Kubernetes 前以 exit 2 fail closed；底层
+  runner 仍独立要求 `ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true`，因此统一入口不能凭一个 RUN flag 意外修改
+  StatefulSet。回归既固定默认值、白名单、调用顺序和 canonical runner 路径，也隔离全部继承的 RUN/TARGET
+  环境执行缺参分支，证明只输出确定错误且不触达集群。兼容模块普通测试 4.122 秒、race 7.354 秒及 vet/shell
+  syntax 通过；production inventory 保持 594 项，精确提交四片 135/167/151/141 全绿（Go 测试
+  105.729/316.990/209.895/332.277 秒；端到端 111.441/322.667/215.653/337.914 秒）。A5406 已证明的真实
+  immutable rollout/回滚语义不在本项重复实现；发布编排现在应经统一入口显式选择该门禁，不能直接绕过为
+  未受发布 profile 记录的手工脚本调用。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
