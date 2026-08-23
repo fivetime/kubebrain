@@ -61118,6 +61118,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   111.425/323.589/216.469/339.518 秒）。强制删除失败时回滚候选是有意的 fail-closed 语义；若控制面持续拒绝删除，
   外部发布系统仍须处置 CRITICAL 残留，不能仅凭原镜像已恢复关闭事故。
 
+- A5412 修复候选失败回滚只相信 `kubectl rollout status`、没有证明恢复到原发布身份的并发漂移缺口。rollout status
+  只能证明它观察到的当前 StatefulSet 已收敛；另一发布者若在 rollback 请求后改写模板，命令仍可能成功于错误
+  image/revision。提交 `fa538e99` 在回滚收敛后重新读取受 1 MiB 上界保护的 StatefulSet JSON，并精确要求
+  `spec.replicas`/`readyReplicas` 等于期望值、current/update revision 同时等于 mutation 前 revision，且恰有一个
+  `kubebrain` container 使用原 image；读取失败或任一身份漂移均输出 CRITICAL。fake apiserver 负测让原 image 的
+  set 请求与 rollout status 都成功，却继续返回 candidate image/revision，确认新 post-rollback attestation 拒绝该
+  假收敛；正常 runtime drift 和 probe-delete 故障回滚也继续 GREEN。聚焦普通 20 轮 20.613 秒、race 10 轮
+  11.256 秒，rollout 全组普通/race 为 3.270/4.302 秒，vet/shell syntax 通过；production inventory 增至 598 项，
+  精确提交四片 136/168/151/143 全绿（Go 测试 105.353/317.191/211.778/333.894 秒；端到端
+  110.998/322.896/217.527/339.606 秒）。本项证明 StatefulSet 模板与 controller revision 恢复；若原 image 本身是
+  mutable tag，它仍不能证明各 Pod 恢复到 mutation 前相同 runtime digest，该供应链边界必须由基线不可变引用或
+  独立的 rollback runtime attestation 关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

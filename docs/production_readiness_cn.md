@@ -1273,6 +1273,11 @@ candidate 尚未提交，EXIT cleanup 会恢复原镜像并再次尝试删除；
 以进程退出码、成功 receipt 缺失和 CRITICAL 日志判定失败，并检查命名 probe Pod 的实际终态；不得在存在残留
 probe 时人工把 rollout 标为成功。
 
+候选失败后的 `kubectl rollout status` 不是充分回滚证据。runner 随后必须重新读取 StatefulSet，并证明 desired/Ready
+副本数、原 spec image 以及 current/update controller revision 全部精确恢复到 mutation 前值；读取失败或并发模板
+漂移均输出 `CRITICAL`。这项检查证明 Kubernetes 模板身份，不证明可变 tag 背后的容器字节：生产基线应优先使用
+不可变 digest；仍使用 tag 时，外部发布系统必须另外保存并核验回滚前各平台 runtime imageID。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 
