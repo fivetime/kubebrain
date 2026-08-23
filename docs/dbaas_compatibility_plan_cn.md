@@ -60882,6 +60882,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   103.497/312.131/208.332/328.280 秒；端到端 109.167/317.761/213.983/333.870 秒）。该结果证明启用 AutoSync 的直连
   客户端在单 Pod 替换中保持 watch/数据面连续性；它不改变共享 Service 模式只产生一个唯一外部入口的合同。
 
+- A5398 审计 upstream `tests/common/member_test.go`、`server/etcdserver/api/v3rpc/member.go` 和 membership config-change
+  校验后，确认 KubeBrain 的 MemberAdd/Remove/Update/Promote 数据面边界无需机械实现 Raft reconfiguration：Add 的 URL 解析先于 mutation，
+  Remove/Update/Promote 的鉴权以及 member ID、跨成员 PeerURL、learner/voter 分类顺序均已有差异测试；真正的拓扑变更继续由 DBaaS 控制面
+  拥有。API surface guard 也确认没有遗漏的普通 etcd RPC。审计同时收敛 A5396/A5397 真实 RED 暴露的门禁 liveness 缺口：client 容器若在
+  写 `/state/ready` 前因发现结果错误而退出，fault 容器原先会永远等待 ready，整个 Job 只能靠 300 秒 active deadline 失败，既延迟发布
+  反馈，也掩盖“故障是否实际注入”。
+
+  提交 `9c76d10f` 让 client shell 用 EXIT trap 原子写入退出状态，fault 在 ready 前同时观察 `client-exited`；一旦出现就打印精确状态并
+  退出，且该检查严格位于 `kubectl delete pod` 前。首次实现的 heredoc 未转义 `$status`，在宿主 `set -u` 下于 apply 前失败；修复后静态
+  合同锁定 `\$?`、`\$status`、`\$(...)` 的渲染边界，防止再次把 Pod 运行时变量泄漏到宿主展开。共享 NodePort 的预期负测中，client
+  报三条重复 `.2:30079` 与三 Pod DNS 不匹配，fault 同步报告 `client exited before fault injection: status=1`，Job 创建后约 4 秒即
+  `BackoffLimitExceeded`；含镜像加载的全流程 44 秒，远低于 300 秒，`kubebrain-0` UID 始终为
+  `3c10393c-85d9-497f-8ece-021c9e4b3f1d`，证明未注入破坏。
+
+  逐成员派生模式 GREEN 继续完成显式 Sync、后台 AutoSync、20 个有序 watch 事件及全部读写/Txn，瞬时失败和额外陈旧读均为 0，victim
+  UID 从 `f56c6cf4-e5e1-4d93-aa65-b71c38f7a54e` 变为 `474149f1-233d-40bf-a340-88fd89e6665f` 并 Ready。随后恢复
+  共享 NodePort revision `kubebrain-5dbf96986b`，3/3 updated/ready，宿主 Sync smoke 0.072 秒通过。shell 语法、compat 静态合同
+  race 20 轮 1.117 秒通过；production inventory 仍为 589 项，最终四片 133/166/151/139 全绿（Go 测试
+  104.882/313.402/208.535/329.133 秒；端到端 110.453/319.074/214.148/334.754 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
