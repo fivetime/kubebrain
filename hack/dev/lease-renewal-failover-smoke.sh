@@ -11,6 +11,7 @@ KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-kubebrain-dev-control-plane}"
 PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-60}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
 partition_pod_ip=""
+partition_pod_uid=""
 partition_tag=""
 
 need() {
@@ -33,7 +34,7 @@ delete_current_leader() {
 }
 
 partition_current_leader() {
-  local leader_id leader_name attempts raw new_leader privileged
+  local leader_id leader_name attempts raw new_leader privileged observed_uid observed_phase dropped_packets
   if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
     echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
     exit 1
@@ -64,6 +65,11 @@ partition_current_leader() {
   partition_pod_ip="$(kubectl -n "$NAMESPACE" get pod "$leader_name" -o jsonpath='{.status.podIP}')"
   if [[ ! "$partition_pod_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     echo "refusing to partition leader $leader_name: invalid IPv4 Pod IP $partition_pod_ip" >&2
+    exit 1
+  fi
+  partition_pod_uid="$(kubectl -n "$NAMESPACE" get pod "$leader_name" -o jsonpath='{.metadata.uid}')"
+  if [[ ! "$partition_pod_uid" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "refusing to partition leader $leader_name: invalid Pod UID $partition_pod_uid" >&2
     exit 1
   fi
   partition_tag="kubebrain-lease-partition-${leader_name}-$$"
@@ -103,14 +109,30 @@ partition_current_leader() {
     -m comment --comment "$partition_tag-out" -j DROP
   docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -d "$partition_pod_ip" \
     -m comment --comment "$partition_tag-in" -j DROP
+  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$partition_pod_ip" \
+    -m comment --comment "$partition_tag-out" -j DROP
+  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$partition_pod_ip" \
+    -m comment --comment "$partition_tag-in" -j DROP
 
   attempts=$((PARTITION_FAILOVER_TIMEOUT_SECONDS * 2))
   for _ in $(seq 1 "$attempts"); do
     raw="$(etcdctl --command-timeout=1s --dial-timeout=1s --endpoints="$ENDPOINT" endpoint status -w json 2>/dev/null || true)"
     new_leader="$(jq -r '.[0].Status.leader // empty' <<<"$raw" 2>/dev/null || true)"
     if [[ "$new_leader" =~ ^[1-9][0-9]*$ ]] && [[ "$new_leader" != "$leader_id" ]]; then
-      echo "network partition changed leader: $leader_name/$leader_id -> $new_leader"
       sleep "$PARTITION_HOLD_SECONDS"
+      observed_uid="$(kubectl -n "$NAMESPACE" get pod "$leader_name" -o jsonpath='{.metadata.uid}')"
+      observed_phase="$(kubectl -n "$NAMESPACE" get pod "$leader_name" -o jsonpath='{.status.phase}')"
+      if [[ "$observed_uid" != "$partition_pod_uid" || "$observed_phase" != "Running" ]]; then
+        echo "partitioned leader Pod changed unexpectedly: uid=$partition_pod_uid/$observed_uid phase=$observed_phase" >&2
+        return 1
+      fi
+      dropped_packets="$(docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -L FORWARD -n -v -x | \
+        awk -v tag="$partition_tag" 'index($0, tag) { packets += $1 } END { print packets + 0 }')"
+      if [[ ! "$dropped_packets" =~ ^[1-9][0-9]*$ ]]; then
+        echo "network partition rules did not drop packets for $leader_name ($partition_tag): $dropped_packets" >&2
+        return 1
+      fi
+      echo "network partition changed leader: $leader_name/$leader_id -> $new_leader; pod_uid=$partition_pod_uid dropped_packets=$dropped_packets"
       cleanup_partition
       partition_pod_ip=""
       partition_tag=""
@@ -131,6 +153,7 @@ if [[ "${1:-}" == "--delete-current-leader" ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "--partition-current-leader" ]]; then
+  need awk
   need docker
   need etcdctl
   need jq
