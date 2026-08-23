@@ -61194,6 +61194,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   丢失且服务端实际未应用，rollback 的“当前 image 必须为 TARGET”也会拒绝并输出 CRITICAL；这是避免覆盖并发状态
   的保守结果，现场应读取 UID/image 后确认原 baseline 是否本已安全，而不能放宽 atomic fence。
 
+- A5418 修复 A5417 的 UID/name/image fence 仍允许同一 StatefulSet 其他 spec 字段在初始审计与 patch 间并发改变、
+  并把未审计模板随 candidate 一起发布的窗口。提交 `f0a01046` 冻结非空 `metadata.resourceVersion` 和 canonical
+  完整 initial spec，构造“仅把冻结 container index 的 image 改为 TARGET”的唯一 candidate spec；candidate JSON
+  Patch 新增原子 resourceVersion `test`，任何同 UID 对象更新都会令整个 patch 不落盘。final postflight 不再只抽查
+  image/retry/preStop，而要求完整 spec 精确等于 candidate spec。失败 cleanup 在写 rollback 前重新读取有界 JSON，
+  要求 UID 不变、resourceVersion 非空、完整当前 spec 精确等于本轮 candidate spec，再用该最新 resourceVersion 执行
+  原子 rollback patch；并发 spec 漂移时只输出 CRITICAL，绝不覆盖。rollback postflight 同样要求完整 spec 恢复到
+  initial spec。jq 解析异常被归一为空身份并进入 CRITICAL 分支，不会因 `set -e` 提前跳过 probe cleanup。
+  fake resourceVersion 在读后、写前漂移负测确认 patch 原子拒绝且状态未改变；聚焦普通/race 为 33.303/17.053 秒，
+  cleanup 收紧后子集为 17.429/11.095 秒，rollout 全组普通/race 为 8.508/9.601 秒，vet/shell syntax 通过。
+  production inventory 增至 605 项，精确提交四片 137/171/153/144 全绿（Go 测试
+  107.672/321.149/213.219/336.197 秒；端到端 113.493/326.965/218.963/342.049 秒）。本项有意不自动合并另一
+  发布者的 spec 变化；生产发布必须串行化，CRITICAL 后由操作者重新从新 resourceVersion 启动完整 canary。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

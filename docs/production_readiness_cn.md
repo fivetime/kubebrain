@@ -1302,6 +1302,12 @@ candidate 与 rollback image 修改不得使用无 precondition 的 `kubectl set
 对象删除重建、container 重排或并发 image 修改均不会被本轮覆盖。final/rollback postflight 还必须重新核对同一 UID。
 若 patch 响应不确定导致保守 CRITICAL，应现场只读确认当前 UID/image，不能跳过 test 后强制覆盖同名对象。
 
+UID 与 image 仍不足以隔离同一对象上的并发配置发布。runner 还会原子测试初始 `resourceVersion`，并冻结完整
+StatefulSet spec；candidate 终态必须精确等于“initial spec 仅替换 image”，rollback 终态必须精确等于 initial spec。
+cleanup 写回前会重新读取并要求当前完整 spec 仍是本轮 candidate，再以新 resourceVersion 原子 patch。任何并发
+args、volume、securityContext、updateStrategy 或其他 spec 变化都必须 CRITICAL 且拒绝覆盖；应串行化发布并从新
+resourceVersion 重新运行完整 canary，不得让 cleanup 自动合并配置。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 
