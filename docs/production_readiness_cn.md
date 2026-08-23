@@ -4357,6 +4357,12 @@ worker 节点网络命名空间验证已固化为自清理入口；它拒绝复�
 hack/dev/lease-partition-worker-node-smoke.sh
 ```
 
+完整发布验证可通过统一入口显式启用；该开关默认 `false`，默认 verify 不会创建额外 kind 集群：
+
+```shell
+RUN_LEASE_PARTITION_WORKER_NODE_SMOKE=true hack/dev/verify.sh
+```
+
 默认固定 `kindest/node:v1.36.1` 和 `registry.k8s.io/pause:3.10`，可分别通过 `KIND_NODE_IMAGE`、`POD_IMAGE` 覆盖以扩展版本矩阵；`CLUSTER_NAME` 必须是未存在的严格小写 kind 名。该入口的 leader ID 变化是与规则存在性绑定的受控元数据，不是第二套 KubeBrain 数据面。
 
 换主或重启时 `ReloadLeases` 必须从持久 lease meta 和 per-key attachment 重新构建内存索引；

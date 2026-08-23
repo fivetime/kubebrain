@@ -60802,6 +60802,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   105.164/313.137/208.009/329.430 秒；端到端 110.896/318.869/213.699/335.132 秒）。该门禁可重复证明 worker 网络路径，完整
   多节点 KubeBrain/TiKV lease 连续性、远程 runtime 和跨节点/AZ fabric 仍须独立环境验证。
 
+- A5393 将 A5392 的独立脚本接入统一 `hack/dev/verify.sh`。新增严格布尔开关
+  `RUN_LEASE_PARTITION_WORKER_NODE_SMOKE`，默认 false，并同时进入 RUN flag 白名单和唯一执行块；拼写错误继续由统一未知 flag
+  校验拒绝，默认 verify 不会创建集群。静态合同固定默认/白名单/执行三处接线及精确脚本入口，避免只声明开关却不执行或绕过白名单。
+  在关闭其他默认长门禁时运行默认 false 路径，verify 直接完成且未创建 `kubebrain-worker-drill`。
+
+  精确提交 `9b67470b` 通过统一入口只启用该开关：日志先输出 `==> lease partition worker-node smoke`，自动创建 v1.36.1 双节点 kind，
+  将 Pod 固定到 worker，实际 DROP 13 包，双节点零规则残留并删除临时集群，最后由 verify 输出全部请求步骤完成；原 context 恢复，主
+  endpoint 健康、StatefulSet 3/3。聚焦普通/race 各 20 轮、完整 compat race 7.334 秒及 vet 通过；production inventory 仍为
+  589 项，最终四片 133/166/151/139 全部通过（Go 测试 105.391/318.001/208.657/334.159 秒；端到端
+  111.146/323.778/214.455/339.891 秒）。该接入提升发布门禁可发现性，不扩大 A5392 对完整多节点数据面的证明范围。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
