@@ -120,12 +120,14 @@ kctl_mutation() {
   "${kubectl_command[@]}" --request-timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
 }
 patch_kubebrain_image() {
-  local old_image="$1" new_image="$2" patch
-  patch="$(jq -cn --arg uid "$statefulset_uid" --arg old_image "$old_image" --arg new_image "$new_image" \
+  local old_image="$1" new_image="$2" resource_version="$3" patch
+  patch="$(jq -cn --arg uid "$statefulset_uid" --arg resource_version "$resource_version" \
+    --arg old_image "$old_image" --arg new_image "$new_image" \
     --arg name_path "/spec/template/spec/containers/${kubebrain_container_index}/name" \
     --arg image_path "/spec/template/spec/containers/${kubebrain_container_index}/image" '
     [
       {op:"test",path:"/metadata/uid",value:$uid},
+      {op:"test",path:"/metadata/resourceVersion",value:$resource_version},
       {op:"test",path:$name_path,value:"kubebrain"},
       {op:"test",path:$image_path,value:$old_image},
       {op:"replace",path:$image_path,value:$new_image}
@@ -169,6 +171,10 @@ statefulset_uid="$(jq -er '.metadata.uid | select(type == "string" and length > 
   echo "KubeBrain StatefulSet UID is missing" >&2
   exit 1
 }
+statefulset_resource_version="$(jq -er '.metadata.resourceVersion | select(type == "string" and length > 0)' "$statefulset_json")" || {
+  echo "KubeBrain StatefulSet resourceVersion is missing" >&2
+  exit 1
+}
 kubebrain_container_index="$(jq -er '[.spec.template.spec.containers | to_entries[] | select(.value.name == "kubebrain") | .key] | select(length == 1) | .[0]' "$statefulset_json")" || {
   echo "KubeBrain StatefulSet must contain exactly one kubebrain container" >&2
   exit 1
@@ -177,6 +183,12 @@ ready="$(jq -r '.status.readyReplicas // 0' "$statefulset_json")"
 current_revision="$(jq -r '.status.currentRevision // ""' "$statefulset_json")"
 update_revision="$(jq -r '.status.updateRevision // ""' "$statefulset_json")"
 image="$(jq -r '.spec.template.spec.containers[] | select(.name == "kubebrain") | .image' "$statefulset_json")"
+initial_spec="$(jq -cS '.spec' "$statefulset_json")" || exit 1
+candidate_spec="$initial_spec"
+if [[ -n "$TARGET_IMAGE" ]]; then
+  candidate_spec="$(jq -cS --arg image "$TARGET_IMAGE" --argjson index "$kubebrain_container_index" \
+    '.spec | .template.spec.containers[$index].image = $image' "$statefulset_json")" || exit 1
+fi
 if [[ -n "$TARGET_IMAGE" && "$TARGET_IMAGE" == "$image" ]]; then
   echo "TARGET_IMAGE already matches the running StatefulSet image" >&2
   exit 2
@@ -241,14 +253,26 @@ probe_deleted=false
 cleanup() {
   if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
     echo "candidate rollout failed; restoring original image ${image}" >&2
-    if ! patch_kubebrain_image "$TARGET_IMAGE" "$image" >/dev/null; then
+    rollback_current_json="$runtime_evidence_dir/statefulset-rollback-current.json"
+    if ! capture_runtime_evidence "$rollback_current_json" kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
+      echo "CRITICAL: failed to read candidate state before rollback" >&2
+    else
+      rollback_current_uid="$(jq -r '.metadata.uid // ""' "$rollback_current_json" 2>/dev/null || true)"
+      rollback_current_resource_version="$(jq -r '.metadata.resourceVersion // ""' "$rollback_current_json" 2>/dev/null || true)"
+      rollback_current_spec="$(jq -cS '.spec' "$rollback_current_json" 2>/dev/null || true)"
+    fi
+    if [[ "${rollback_current_uid:-}" != "$statefulset_uid" || -z "${rollback_current_resource_version:-}" ||
+      "${rollback_current_spec:-}" != "$candidate_spec" ]]; then
+      echo "CRITICAL: candidate state drifted before rollback; refusing to overwrite concurrent StatefulSet changes" >&2
+    elif ! patch_kubebrain_image "$TARGET_IMAGE" "$image" "$rollback_current_resource_version" >/dev/null; then
       echo "CRITICAL: failed to request candidate image rollback to ${image}" >&2
     elif ! kctl rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null; then
       echo "CRITICAL: candidate image rollback did not converge within ${ROLLOUT_TIMEOUT}" >&2
     elif ! capture_runtime_evidence "$runtime_evidence_dir/statefulset-rollback.json" \
       kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
       echo "CRITICAL: failed to read candidate rollback StatefulSet identity" >&2
-    elif ! jq -e --arg uid "$statefulset_uid" --arg image "$image" --arg revision "$current_revision" --argjson replicas "$EXPECTED_REPLICAS" '
+    elif [[ "$(jq -cS '.spec' "$runtime_evidence_dir/statefulset-rollback.json")" != "$initial_spec" ]] ||
+      ! jq -e --arg uid "$statefulset_uid" --arg image "$image" --arg revision "$current_revision" --argjson replicas "$EXPECTED_REPLICAS" '
       .metadata.uid == $uid and .spec.replicas == $replicas and .status.readyReplicas == $replicas and
       .status.currentRevision == $revision and .status.updateRevision == $revision and
       ([.spec.template.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1
@@ -319,7 +343,7 @@ expected_final_image="$image"
 if [[ -n "$TARGET_IMAGE" ]]; then
   candidate_rollout_started=true
   expected_final_image="$TARGET_IMAGE"
-  patch_kubebrain_image "$image" "$TARGET_IMAGE" >/dev/null
+  patch_kubebrain_image "$image" "$TARGET_IMAGE" "$statefulset_resource_version" >/dev/null
 else
   kctl_mutation rollout restart "statefulset/$KUBEBRAIN_STATEFULSET" >/dev/null
 fi
@@ -374,7 +398,8 @@ final_image="$(jq -r '.spec.template.spec.containers[] | select(.name == "kubebr
 final_retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_RETRY_PERIOD}" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(. == $expected)] | length' "$final_json")"
 final_prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' "$final_json")"
 final_uid="$(jq -r '.metadata.uid // ""' "$final_json")"
-if [[ "$final_uid" != "$statefulset_uid" || "$final_ready" != "$EXPECTED_REPLICAS" || -z "$final_current_revision" ||
+final_spec="$(jq -cS '.spec' "$final_json")"
+if [[ "$final_uid" != "$statefulset_uid" || "$final_spec" != "$candidate_spec" || "$final_ready" != "$EXPECTED_REPLICAS" || -z "$final_current_revision" ||
   "$final_current_revision" != "$final_update_revision" || "$final_current_revision" == "$current_revision" ||
   "$final_image" != "$expected_final_image" || "$final_retry_count" != 1 || "$final_prestop" != "$expected_prestop" ]]; then
   echo "KubeBrain rollout postflight identity mismatch" >&2
