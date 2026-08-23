@@ -336,6 +336,26 @@ func TestLeaseRenewalNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestLeasePartitionWorkerNodeSmokeIsIsolatedAndRecoverable(t *testing.T) {
+	data, err := os.ReadFile("../dev/lease-partition-worker-node-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `refusing to reuse existing kind cluster`)
+	require.Contains(t, script, `original_context="$(kubectl config current-context`)
+	require.Contains(t, script, `kind delete cluster --name "$CLUSTER_NAME"`)
+	require.Contains(t, script, `kubectl config use-context "$original_context"`)
+	require.Contains(t, script, `--overrides="{\"spec\":{\"nodeName\":\"$WORKER_NODE\"}}"`)
+	require.Contains(t, script, `docker exec "$CONTROL_PLANE_NODE"`)
+	require.Contains(t, script, `docker exec "$WORKER_NODE" iptables-save`)
+	require.Contains(t, script, `node=$WORKER_NODE`)
+	require.Contains(t, script, `worker partition drill left an iptables rule behind`)
+	require.NotContains(t, script, `iptables-save | grep -q`)
+	require.Contains(t, script, `trap cleanup EXIT`)
+	require.Contains(t, script, `trap 'exit 130' INT`)
+	require.Contains(t, script, `trap 'exit 143' TERM`)
+	require.NotContains(t, script, `kind delete cluster --name "$original_context"`)
+}
+
 func TestBackendQuorumPDNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
