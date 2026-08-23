@@ -192,6 +192,7 @@ fi
 
 candidate_rollout_started=false
 candidate_rollout_succeeded=false
+probe_deleted=false
 cleanup() {
   if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
     echo "candidate rollout failed; restoring original image ${image}" >&2
@@ -201,7 +202,10 @@ cleanup() {
       echo "CRITICAL: candidate image rollback did not converge within ${ROLLOUT_TIMEOUT}" >&2
     fi
   fi
-  kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null || true
+  if [[ "$probe_deleted" != true ]] &&
+    ! kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null; then
+    echo "CRITICAL: failed to delete rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
+  fi
   rm -rf -- "$runtime_evidence_dir"
 }
 trap cleanup EXIT
@@ -324,6 +328,12 @@ if [[ -n "$TARGET_IMAGE" ]]; then
     fi
   done
 fi
+
+if ! kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null; then
+  echo "failed to delete rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
+  exit 1
+fi
+probe_deleted=true
 candidate_rollout_succeeded=true
 
 echo "KubeBrain rollout availability gate passed: namespace=${KUBEBRAIN_NAMESPACE} statefulset=${KUBEBRAIN_STATEFULSET} image=${image}->${expected_final_image} runtime_digests=${TARGET_RUNTIME_DIGESTS:-unchanged} revision=${current_revision}->${final_current_revision} probes=${PROBE_ITERATIONS}"

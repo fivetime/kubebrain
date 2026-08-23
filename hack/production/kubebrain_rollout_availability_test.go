@@ -224,6 +224,27 @@ func TestRolloutAvailabilityRunnerRestoresOriginalImageWhenCandidateFails(t *tes
 	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system set image statefulset/kubebrain kubebrain=kubebrain:test")
 }
 
+func TestRolloutAvailabilityRunnerRollsBackCandidateWhenProbeDeletionFails(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("e", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64),
+		"FAKE_DELETE_FAIL=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "failed to delete rollout availability probe Pod kubebrain-system/kubebrain-rollout-availability-probe")
+	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
+	require.Contains(t, string(output), "CRITICAL: failed to delete rollout availability probe Pod")
+	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, "set image statefulset/kubebrain kubebrain="+target)
+	require.Contains(t, log, "set image statefulset/kubebrain kubebrain=kubebrain:test")
+}
+
 func TestRolloutAvailabilityRunnerRejectsRuntimeDigestDriftAndRestoresOriginalImage(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	target := "registry.example/kubebrain@sha256:" + strings.Repeat("d", 64)
@@ -338,6 +359,8 @@ elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe "* ]]; then
 elif [[ " $* " == *" rollout restart statefulset/kubebrain "* || " $* " == *" set image statefulset/kubebrain "* ]]; then
   : >"$FAKE_KUBECTL_STATE"
 elif [[ " $* " == *" rollout status statefulset/kubebrain "* && "${FAKE_ROLLOUT_FAIL:-false}" == true ]]; then
+  exit 1
+elif [[ " $* " == *" delete pod kubebrain-rollout-availability-probe "* && "${FAKE_DELETE_FAIL:-false}" == true ]]; then
   exit 1
 elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
