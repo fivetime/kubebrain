@@ -84,7 +84,7 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 	for _, variable := range []string{
 		"PROBE_COMMAND_TIMEOUT", "PROBE_DIAL_TIMEOUT", "PROBE_MAX_OPERATION_LATENCY",
 		"PROBE_MAX_PD_TSO_LATENCY", "PROBE_MAX_TIKV_REGION_LATENCY", "PROBE_READY_TIMEOUT",
-		"PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_EVIDENCE_REQUEST_TIMEOUT",
+		"PROBE_START_TIMEOUT", "PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_EVIDENCE_REQUEST_TIMEOUT",
 		"KUBECTL_EVIDENCE_COMMAND_TIMEOUT", "KUBECTL_MUTATION_REQUEST_TIMEOUT",
 		"KUBECTL_MUTATION_COMMAND_TIMEOUT", "KUBECTL_READY_WAIT_COMMAND_TIMEOUT",
 		"KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT", "KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT",
@@ -112,6 +112,7 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 		{name: "ready wait", target: "ready", timeoutVariable: "KUBECTL_READY_WAIT_COMMAND_TIMEOUT=100ms", want: "rollout availability probe Pod did not become Ready"},
 		{name: "rollout status", target: "rollout", timeoutVariable: "KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT=100ms", want: "KubeBrain rollout did not converge"},
 		{name: "phase wait", target: "phase", timeoutVariable: "KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT=100ms", want: "availability probe did not complete", extraEnv: []string{"PROBE_COMPLETE_TIMEOUT=1s"}},
+		{name: "start barrier deadline", target: "start", timeoutVariable: "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=30s", want: "availability probe did not publish its start barrier within 1s", extraEnv: []string{"PROBE_START_TIMEOUT=1s"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
@@ -187,7 +188,7 @@ func TestRolloutAvailabilityRunnerAcceptsDurationBoundary(t *testing.T) {
 		"PROBE_COMMAND_TIMEOUT=9223372036854ms", "PROBE_DIAL_TIMEOUT=9223372036s",
 		"PROBE_MAX_OPERATION_LATENCY=153722867m", "PROBE_MAX_PD_TSO_LATENCY=9223372036854ms",
 		"PROBE_MAX_TIKV_REGION_LATENCY=9223372036s", "PROBE_READY_TIMEOUT=153722867m",
-		"PROBE_COMPLETE_TIMEOUT=153722867m", "ROLLOUT_TIMEOUT=9223372036854ms",
+		"PROBE_START_TIMEOUT=9223372036854ms", "PROBE_COMPLETE_TIMEOUT=153722867m", "ROLLOUT_TIMEOUT=9223372036854ms",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -593,6 +594,9 @@ if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == rollout && " $* " == *" rollout status 
   sleep 30
 fi
 if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == phase && " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
+  sleep 30
+fi
+if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == start && " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
   sleep 30
 fi
 if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then

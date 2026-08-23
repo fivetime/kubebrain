@@ -22,6 +22,7 @@ PROBE_MAX_PD_TSO_LATENCY="${PROBE_MAX_PD_TSO_LATENCY:-1s}"
 PROBE_MAX_TIKV_REGION_LATENCY="${PROBE_MAX_TIKV_REGION_LATENCY:-1s}"
 PROBE_LEASE_TTL="${PROBE_LEASE_TTL:-5}"
 PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
+PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-10s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KUBECTL_EVIDENCE_REQUEST_TIMEOUT="${KUBECTL_EVIDENCE_REQUEST_TIMEOUT:-10s}"
@@ -79,7 +80,7 @@ if ! operation_is_positive_go_seconds_decimal "$PROBE_INTERVAL"; then
 fi
 for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LATENCY \
   PROBE_MAX_PD_TSO_LATENCY PROBE_MAX_TIKV_REGION_LATENCY PROBE_READY_TIMEOUT \
-  PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_EVIDENCE_REQUEST_TIMEOUT \
+  PROBE_START_TIMEOUT PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_EVIDENCE_REQUEST_TIMEOUT \
   KUBECTL_EVIDENCE_COMMAND_TIMEOUT KUBECTL_MUTATION_REQUEST_TIMEOUT \
   KUBECTL_MUTATION_COMMAND_TIMEOUT KUBECTL_READY_WAIT_COMMAND_TIMEOUT \
   KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT; do
@@ -131,6 +132,13 @@ kctl_evidence() {
   "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$KUBECTL_EVIDENCE_COMMAND_TIMEOUT" \
     "${kubectl_command[@]}" --request-timeout="$KUBECTL_EVIDENCE_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
 }
+kctl_evidence_bounded() {
+  local outer_timeout="$1"
+  shift
+  "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$outer_timeout" \
+    "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$KUBECTL_EVIDENCE_COMMAND_TIMEOUT" \
+    "${kubectl_command[@]}" --request-timeout="$KUBECTL_EVIDENCE_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
+}
 kctl_mutation() {
   "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$KUBECTL_MUTATION_COMMAND_TIMEOUT" \
     "${kubectl_command[@]}" --request-timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
@@ -140,6 +148,13 @@ kctl_watch() {
   shift
   "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$command_timeout" \
     "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" "$@"
+}
+duration_ceil_seconds() {
+  case "$1" in
+    *ms) echo $(( (${1%ms} + 999) / 1000 )) ;;
+    *s) echo "${1%s}" ;;
+    *m) echo $(( ${1%m} * 60 )) ;;
+  esac
 }
 patch_kubebrain_image() {
   local old_image="$1" new_image="$2" resource_version="$3" patch
@@ -367,16 +382,23 @@ kctl_watch "$KUBECTL_READY_WAIT_COMMAND_TIMEOUT" \
 }
 
 started=false
-for attempt in $(seq 1 50); do
+probe_start_seconds="$(duration_ceil_seconds "$PROBE_START_TIMEOUT")"
+probe_start_deadline=$((SECONDS + probe_start_seconds))
+attempt=0
+while (( SECONDS < probe_start_deadline )); do
+  ((attempt+=1))
+  probe_start_remaining=$((probe_start_deadline - SECONDS))
   probe_start_log="$runtime_evidence_dir/probe-start-${attempt}.log"
-  if capture_runtime_evidence "$probe_start_log" kctl_evidence logs "$PROBE_POD" && grep -qx PROBE_STARTED "$probe_start_log"; then
+  if capture_runtime_evidence "$probe_start_log" kctl_evidence_bounded "${probe_start_remaining}s" \
+    logs "$PROBE_POD" && grep -qx PROBE_STARTED "$probe_start_log"; then
     started=true
     break
   fi
+  (( SECONDS < probe_start_deadline )) || break
   sleep 0.1
 done
 if [[ "$started" != true ]]; then
-  echo "availability probe did not publish its start barrier" >&2
+  echo "availability probe did not publish its start barrier within ${PROBE_START_TIMEOUT}" >&2
   exit 1
 fi
 
@@ -393,11 +415,7 @@ kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
   echo "KubeBrain rollout did not converge within ${ROLLOUT_TIMEOUT}" >&2
   exit 1
 }
-case "$PROBE_COMPLETE_TIMEOUT" in
-  *ms) probe_complete_seconds=$(( (${PROBE_COMPLETE_TIMEOUT%ms} + 999) / 1000 )) ;;
-  *s) probe_complete_seconds=${PROBE_COMPLETE_TIMEOUT%s} ;;
-  *m) probe_complete_seconds=$(( ${PROBE_COMPLETE_TIMEOUT%m} * 60 )) ;;
-esac
+probe_complete_seconds="$(duration_ceil_seconds "$PROBE_COMPLETE_TIMEOUT")"
 probe_complete_deadline=$((SECONDS + probe_complete_seconds))
 probe_phase_attempt=0
 while ! kctl_watch "$KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT" \
