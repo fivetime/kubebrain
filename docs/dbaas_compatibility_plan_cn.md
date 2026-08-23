@@ -61168,6 +61168,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   113.397/324.784/217.067/339.837 秒）。零重启只覆盖本轮 rollout 窗口；更长时间的 crashloop/内存泄漏仍需发布后
   soak 与监控告警承担。
 
+- A5416 修复只凭 StatefulSet `readyReplicas` 与 `kubebrain` container `ready=true`、未证明 Pod 整体 Ready 的门禁
+  缺口。StatefulSet 聚合状态可能短暂滞后；带 sidecar 或自定义 readiness gate 的 Pod 也可能保持主 container
+  Ready、但 Pod `Ready=False`。提交 `28a67df7` 在 candidate 模式的三处逐 ordinal 身份检查——mutation 前 baseline
+  冻结、候选 postflight、失败 rollback runtime attestation——均要求 Pod conditions 中恰有一个
+  `type=Ready,status=True`，并继续要求非 terminating、Running、正确 revision/spec image/container Ready/imageID；
+  因而不能用旧 readyReplicas 快照掩盖逐 Pod 漂移。fake 保持 StatefulSet readyReplicas=3 和 container ready=true，
+  仅将 candidate Pod condition 设为 false，确认 runner 拒绝、回滚且无成功 receipt。聚焦普通 20 轮 35.009 秒、
+  race 10 轮 17.922 秒，rollout 全组普通/race 为 6.320/7.393 秒，vet/shell syntax 通过；production inventory
+  增至 603 项，精确提交四片 137/171/152/143 全绿（Go 测试 106.824/319.413/208.477/334.048 秒；端到端
+  112.446/325.176/214.181/339.747 秒）。这是三个离散 postflight 快照，不替代持续 readiness/EndpointSlice 监控；
+  业务连续性仍由并行 availability probe 提供时间窗口证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

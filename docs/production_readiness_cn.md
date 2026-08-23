@@ -1293,6 +1293,10 @@ revision、使用原 spec image、Running/Ready 且非 terminating。失败回�
 kubelet 重启的 Pod 不得放行。该约束只针对新 candidate，原 baseline 或失败回滚的历史 restartCount 不作为拒绝
 理由。零重启证明的是 canary 窗口内启动稳定性，不能替代发布后的长期 crashloop、OOM 和内存泄漏监控。
 
+StatefulSet `readyReplicas` 与主 container `ready=true` 不能替代 Pod 级 readiness。baseline 冻结、candidate postflight
+和失败 rollback 三个逐 Pod 检查都要求 conditions 中恰有一个 `Ready=True`；sidecar 或自定义 readiness gate 令
+Pod NotReady 时，即使 KubeBrain container 仍 Ready、聚合 readyReplicas 尚未刷新，也必须拒绝或报告 CRITICAL。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 
