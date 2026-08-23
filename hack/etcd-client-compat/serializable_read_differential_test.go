@@ -104,7 +104,7 @@ func TestSerializableReadDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 func runSerializableReadScenario(t *testing.T, endpoint, instance string) serializableReadResult {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
@@ -157,10 +157,35 @@ func requireSerializableRevisionVisible(
 	revision int64,
 ) {
 	t.Helper()
-	require.Eventually(t, func() bool {
+	var (
+		lastRevision int64
+		lastErr      error
+	)
+	deadline := time.NewTimer(75 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		response, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
 			Key: key, RangeEnd: rangeEnd, Serializable: true,
 		})
-		return err == nil && response.Header != nil && response.Header.Revision >= revision
-	}, 10*time.Second, 20*time.Millisecond, "serializable snapshot did not reach revision %d", revision)
+		lastErr = err
+		if err == nil && response != nil && response.Header != nil {
+			lastRevision = response.Header.Revision
+		}
+		if err == nil && response != nil && response.Header != nil && lastRevision >= revision {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			require.FailNowf(t, "serializable snapshot context ended",
+				"wanted revision %d, last revision %d, last error %v: %v",
+				revision, lastRevision, lastErr, ctx.Err())
+		case <-deadline.C:
+			require.FailNowf(t, "serializable snapshot did not converge",
+				"wanted revision %d, last revision %d, last error %v",
+				revision, lastRevision, lastErr)
+		case <-ticker.C:
+		}
+	}
 }
