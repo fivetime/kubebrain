@@ -26,21 +26,39 @@ need() {
 }
 
 resolve_kind_node_container() {
-  local current_context cluster_name candidate
-  [[ -z "$KIND_NODE_CONTAINER" ]] || return 0
+  local leader_name="$1" current_context cluster_name candidate pod_node container_cluster
+  pod_node="$(kubectl -n "$NAMESPACE" get pod "$leader_name" -o jsonpath='{.spec.nodeName}')"
+  if [[ ! "$pod_node" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "cannot resolve a valid node for leader Pod $leader_name: $pod_node" >&2
+    exit 1
+  fi
   current_context="$(kubectl config current-context)"
-  if [[ "$current_context" != kind-* ]]; then
+  if [[ -z "$KIND_NODE_CONTAINER" && "$current_context" != kind-* ]]; then
     echo "KIND_NODE_CONTAINER is required when current context is not kind-*; got $current_context" >&2
     exit 1
   fi
-  cluster_name="${current_context#kind-}"
-  if [[ ! "$cluster_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
-    echo "refusing invalid kind cluster name from context: $current_context" >&2
+  candidate="${KIND_NODE_CONTAINER:-$pod_node}"
+  if [[ ! "$candidate" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "invalid KIND_NODE_CONTAINER: $candidate" >&2
     exit 1
   fi
-  candidate="${cluster_name}-control-plane"
-  if ! docker inspect "$candidate" --format '{{.Name}}' >/dev/null 2>&1; then
-    echo "cannot resolve kind control-plane container $candidate from context $current_context" >&2
+  if [[ "$current_context" == kind-* ]]; then
+    cluster_name="${current_context#kind-}"
+    if [[ ! "$cluster_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+      echo "refusing invalid kind cluster name from context: $current_context" >&2
+      exit 1
+    fi
+    if [[ "$candidate" != "$pod_node" ]]; then
+      echo "refusing kind node override $candidate: leader Pod $leader_name runs on $pod_node" >&2
+      exit 1
+    fi
+    container_cluster="$(docker inspect "$candidate" --format '{{ index .Config.Labels "io.x-k8s.kind.cluster" }}' 2>/dev/null || true)"
+    if [[ "$container_cluster" != "$cluster_name" ]]; then
+      echo "cannot resolve leader node container $candidate in kind cluster $cluster_name" >&2
+      exit 1
+    fi
+  elif ! docker inspect "$candidate" --format '{{.Name}}' >/dev/null 2>&1; then
+    echo "cannot resolve explicit node container $candidate" >&2
     exit 1
   fi
   KIND_NODE_CONTAINER="$candidate"
@@ -60,11 +78,6 @@ delete_current_leader() {
 
 partition_current_leader() {
   local leader_id leader_name deadline raw new_leader privileged observed_uid observed_phase dropped_packets drop_probability
-  resolve_kind_node_container
-  if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
-    echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
-    exit 1
-  fi
   if [[ ! "$PARTITION_FAILOVER_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
     (( PARTITION_FAILOVER_TIMEOUT_SECONDS > 300 )); then
     echo "PARTITION_FAILOVER_TIMEOUT_SECONDS must be an integer in [1,300]" >&2
@@ -90,13 +103,6 @@ partition_current_leader() {
     drop_probability="$(awk -v percent="$PARTITION_DROP_PERCENT" 'BEGIN { printf "%.6f", percent / 100 }')"
     partition_probability_args=(-m statistic --mode random --probability "$drop_probability")
   fi
-  privileged="$(docker inspect "$KIND_NODE_CONTAINER" --format '{{.HostConfig.Privileged}}')"
-  if [[ "$privileged" != "true" ]]; then
-    echo "refusing network partition: node container $KIND_NODE_CONTAINER is not privileged" >&2
-    exit 1
-  fi
-  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -S FORWARD >/dev/null
-
   leader_id="$(etcdctl --endpoints="$ENDPOINT" endpoint status -w json | jq -er '.[0].Status.leader | select(type == "number" and . > 0)')"
   leader_name="$(etcdctl --endpoints="$ENDPOINT" member list -w json | jq -er \
     --arg leader "$leader_id" '.members[] | select((.ID | tostring) == $leader) | .name')"
@@ -104,6 +110,17 @@ partition_current_leader() {
     echo "refusing to partition leader ${leader_name:-missing}: it is not a ${STATEFULSET} Pod" >&2
     exit 1
   fi
+  resolve_kind_node_container "$leader_name"
+  if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
+    exit 1
+  fi
+  privileged="$(docker inspect "$KIND_NODE_CONTAINER" --format '{{.HostConfig.Privileged}}')"
+  if [[ "$privileged" != "true" ]]; then
+    echo "refusing network partition: node container $KIND_NODE_CONTAINER is not privileged" >&2
+    exit 1
+  fi
+  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -S FORWARD >/dev/null
   partition_pod_ip="$(kubectl -n "$NAMESPACE" get pod "$leader_name" -o jsonpath='{.status.podIP}')"
   if [[ ! "$partition_pod_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     echo "refusing to partition leader $leader_name: invalid IPv4 Pod IP $partition_pod_ip" >&2
