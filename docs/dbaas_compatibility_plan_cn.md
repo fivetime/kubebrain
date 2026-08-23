@@ -60920,6 +60920,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   端到端 109.534/319.339/214.929/334.835 秒）。ARM64 路径已有交叉编译与调度合同，但尚未在真实 ARM64 node 上执行，不能把本次
   amd64 现场外推为 ARM64 运行证据。
 
+- A5400 修复 A5399 只把 Go binary 交叉编译为节点架构、没有约束最终 OCI image platform 的剩余缺口。Docker 的最终 stage 若仍按构建
+  宿主解析，即使容器内 binary 是 arm64，image manifest 也可能标为 amd64，ARM64 kubelet 会在进程启动前拒绝错误平台镜像；因此
+  A5399 的 binary/调度绑定还不足以证明可移植性。提交 `a9553961` 改用 BuildKit 原生平台合同：builder stage 固定
+  `$BUILDPLATFORM`，Go 从 `$TARGETARCH` 取目标，`docker build --platform=linux/${probe_goarch}` 同时选择目标 runtime stage 和最终
+  manifest。临时 Dockerfile 的 GO/RUNTIME ARG 带已验证默认值，消除了此前每次构建的 `InvalidDefaultArgInFrom` 警告；build 完成后还
+  用 `docker image inspect` 读取 `.Os/.Architecture`，必须精确等于 victim 节点平台，任何漂移都在 kind load 和 Job 创建前 fail closed。
+  静态合同固定 BUILDPLATFORM/TARGETARCH、target platform 参数、image inspect 及校验先于 load。
+
+  当前 linux/amd64 现场的负测构建无 Dockerfile 警告，inspect 为 `linux/amd64`；生成 Job 仍带对应 OS/arch selector，探针成功执行到
+  共享入口端点不匹配并在注入前退出，victim UID `3a903aea-7e13-47f0-928d-e46b48f8243d` 未变。逐成员 GREEN 使用同一 target-platform
+  image，显式 Sync、后台 AutoSync、20 个有序 watch 事件、线性/最终串行读及 KV/Txn 全部通过，瞬时失败和额外陈旧读均为 0，victim
+  UID 从 `069cb729-3603-4b9b-8812-d76d5a71ed34` 变为 `c91726dd-36a9-4648-b7a8-55fc235b26df`，结果绑定
+  `node_os=linux node_arch=amd64`。恢复共享 NodePort revision `kubebrain-5dbf96986b` 后 3/3 updated/ready，宿主 Sync smoke
+  0.076 秒通过。shell、compat race 20 轮 1.108 秒通过；production inventory 仍为 589 项，最终四片 133/166/151/139 全绿
+  （Go 测试 104.350/315.104/211.646/331.282 秒；端到端 109.991/320.788/217.345/336.976 秒）。代码现在闭合 binary、OCI
+  manifest 和 scheduler 三层平台一致性；真实 ARM64 node 的 runtime 证据仍未取得。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
