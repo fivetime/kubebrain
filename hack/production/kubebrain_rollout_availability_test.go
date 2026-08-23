@@ -282,6 +282,25 @@ func TestRolloutAvailabilityRunnerRejectsRuntimeDigestSuffixSpoof(t *testing.T) 
 	require.Contains(t, log, "set image statefulset/kubebrain kubebrain=kubebrain:test")
 }
 
+func TestRolloutAvailabilityRunnerRejectsRestartedCandidateContainer(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("6", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("6", 64),
+		"FAKE_CANDIDATE_RESTART_COUNT=1",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "candidate Pod runtime release mismatch: kubebrain-0")
+	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
+	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, "set image statefulset/kubebrain kubebrain=kubebrain:test")
+}
+
 func TestRolloutAvailabilityRunnerAcceptsRuntimeDigestIdentityForms(t *testing.T) {
 	for _, style := range []string{"bare", "pullable"} {
 		t.Run(style, func(t *testing.T) {
@@ -437,13 +456,15 @@ elif [[ " $* " =~ " get pod kubebrain-"[0-9]+" -o json " ]]; then
     runtime_digest="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
   fi
   runtime_image_id="containerd://$runtime_digest"
+  runtime_restart_count=0
+  [[ ! -e "$FAKE_KUBECTL_STATE" ]] || runtime_restart_count="${FAKE_CANDIDATE_RESTART_COUNT:-0}"
   [[ "${FAKE_RUNTIME_IMAGE_ID_STYLE:-}" != bare || ! -e "$FAKE_KUBECTL_STATE" ]] || runtime_image_id="$runtime_digest"
   [[ "${FAKE_RUNTIME_IMAGE_ID_STYLE:-}" != pullable || ! -e "$FAKE_KUBECTL_STATE" ]] || runtime_image_id="registry.example/kubebrain@$runtime_digest"
   [[ "${FAKE_RUNTIME_DIGEST_SUFFIX_SPOOF:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || runtime_image_id="untrusted-prefix$runtime_digest"
-  jq -cn --arg name "$ordinal" --arg image "$runtime_image" --arg imageID "$runtime_image_id" --arg revision "$runtime_revision" '{
+  jq -cn --arg name "$ordinal" --arg image "$runtime_image" --arg imageID "$runtime_image_id" --arg revision "$runtime_revision" --argjson restartCount "$runtime_restart_count" '{
     metadata:{name:$name,labels:{"controller-revision-hash":$revision}},
     spec:{containers:[{name:"kubebrain",image:$image}]},
-    status:{phase:"Running",containerStatuses:[{name:"kubebrain",ready:true,imageID:$imageID}]}}
+    status:{phase:"Running",containerStatuses:[{name:"kubebrain",ready:true,restartCount:$restartCount,imageID:$imageID}]}}
   '
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe "* ]]; then
   exit 1

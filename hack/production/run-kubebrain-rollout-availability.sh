@@ -368,7 +368,7 @@ if [[ -n "$TARGET_IMAGE" ]]; then
       .metadata.deletionTimestamp == null and .status.phase == "Running" and
       .metadata.labels["controller-revision-hash"] == $revision and
       ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
-      ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and
+      ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and .restartCount == 0 and
         ((.imageID | type) == "string") and (.imageID as $imageID |
           any($allowedDigests[]; . as $digest |
             $imageID == $digest or
