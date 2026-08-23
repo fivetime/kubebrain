@@ -34,7 +34,7 @@ delete_current_leader() {
 }
 
 partition_current_leader() {
-  local leader_id leader_name attempts raw new_leader privileged observed_uid observed_phase dropped_packets
+  local leader_id leader_name deadline raw new_leader privileged observed_uid observed_phase dropped_packets
   if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
     echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
     exit 1
@@ -114,8 +114,8 @@ partition_current_leader() {
   docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$partition_pod_ip" \
     -m comment --comment "$partition_tag-in" -j DROP
 
-  attempts=$((PARTITION_FAILOVER_TIMEOUT_SECONDS * 2))
-  for _ in $(seq 1 "$attempts"); do
+  deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
     raw="$(etcdctl --command-timeout=1s --dial-timeout=1s --endpoints="$ENDPOINT" endpoint status -w json 2>/dev/null || true)"
     new_leader="$(jq -r '.[0].Status.leader // empty' <<<"$raw" 2>/dev/null || true)"
     if [[ "$new_leader" =~ ^[1-9][0-9]*$ ]] && [[ "$new_leader" != "$leader_id" ]]; then
@@ -190,6 +190,10 @@ replicas="$(kubectl -n "$NAMESPACE" get statefulset "$STATEFULSET" \
   -o jsonpath='{.spec.replicas}/{.status.readyReplicas}')"
 if [[ "$replicas" != "3/3" ]]; then
   echo "lease renewal failover smoke requires 3 ready ${STATEFULSET} replicas; got ${replicas}" >&2
+  exit 1
+fi
+if ! etcdctl --command-timeout=3s --dial-timeout=2s --endpoints="$ENDPOINT" endpoint health >/dev/null; then
+  echo "lease renewal failover smoke requires a healthy endpoint: $ENDPOINT" >&2
   exit 1
 fi
 
