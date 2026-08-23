@@ -60701,6 +60701,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   124.456/319.342/208.992/332.935 秒；端到端 145.037/339.965/229.543/353.499 秒）。本项证明加速窗口内 response stream
   持续进展；小时级、真实半开 TCP 注入、网络分区和跨机/跨 AZ 故障仍须目标环境留证。
 
+- A5387 将 A5386 的“真实半开/网络分区待验证”推进为可审计的单宿主双向黑洞门禁，并修复演练连续暴露的四个证据/合同缺口。
+  第一，旧 helper 插入 iptables DROP 后只观察 leader ID，不证明规则命中过包或 Pod 未被替换；现在插入后精确 `-C` 双向规则，
+  以 comment 聚合 packet counter 并要求大于零，同时要求隔离前后 Pod UID 相同且 phase=Running，EXIT/INT/TERM 后再次拒绝任一规则
+  残留。第二，旧轮询按 `timeout*2` 次数估算，却漏计每次 etcdctl 1 秒 RPC，声明 60 秒实际可拖数分钟；现以 Bash `SECONDS`
+  墙钟 deadline 截止，并在创建任何 lease 前执行 endpoint health，避免本轮陈旧 `.5` 地址产生的 240 秒无效 RED。第三，对照
+  `/root/etcd@5cd9f4ee1/client/v3/lease.go::deadlineLoop` 及 upstream `TestLeaseKeepAliveInitTimeout`/
+  `TestLeaseKeepAliveTTLTimeout`，底层流无法恢复或 TTL 内无响应时 channel 关闭是官方合同；旧 soak 将其一律报错。maintainer 现以
+  100ms 可取消退避重开同 lease channel、统计 restart，仍由逐 lease response progress、TTL/key/list 审计在 outage 内 fail closed；
+  确定性回归证明首 channel 响应后关闭、第二 channel 继续响应且取消无泄漏。第四，旧配置允许默认 max-outage 45 秒大于 TTL 30 秒，
+  实际黑洞 RED 分别证明 channel 合法关闭和 45 秒无进展；现在强制 outage 严格小于 TTL，TTL=30 的默认值收紧为 29 秒，而
+  network-partition 模式默认导出 TTL=90、duration=2m、outage=75s、interval=5s、sample=64，显式配置仍优先。
+
+  最终代码提交 `a5248b38` 在独立 3 副本 TiKV/PD 本地拓扑以 8 clients×8 leases、两次当前 leader 双向分区运行：原 Pod UID 均
+  不变，DROP counter 为 3015/2696，27 个全量样本审计 1728 条 lease，response restart 为 0，最大完整样本间隔 57.789 秒、
+  最大逐 lease response 进展间隔 68.163 秒，revision 固定 `468126003565971233`，205.55 秒通过；规则零残留、endpoint 健康、
+  StatefulSet 3/3。compat 完整 race 7.115 秒，根 production inventory 仍为 589 项；最终四片 133/166/151/139 全部通过（Go
+  测试 105.353/314.081/209.815/330.629 秒；端到端 111.024/319.781/215.471/336.331 秒）。该证据关闭单宿主真实 DROP 门禁，
+  不宣称覆盖跨节点路由、跨 AZ fabric、非对称丢包/延迟或小时级资源稳定性；这些仍须在目标预生产拓扑留证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
