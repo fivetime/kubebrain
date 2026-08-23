@@ -197,12 +197,34 @@ func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(output), "image=kubebrain:test->"+target)
 	log := readOptionalFile(t, logPath)
-	require.Contains(t, log, " set image statefulset/kubebrain kubebrain="+target)
-	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system set image statefulset/kubebrain kubebrain="+target)
+	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system patch statefulset/kubebrain --type=json -p ")
+	require.Contains(t, log, `"value":"`+target+`"`)
 	require.NotContains(t, log, " rollout restart ")
 	for ordinal := 0; ordinal < 3; ordinal++ {
 		require.Contains(t, log, " get pod kubebrain-"+string(rune('0'+ordinal))+" -o json")
 	}
+}
+
+func TestRolloutAvailabilityRunnerFencesStatefulSetUIDBeforeCandidateMutation(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("4", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("4", 64),
+		"FAKE_PATCH_UID_DRIFT=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
+	require.Contains(t, string(output), "CRITICAL: failed to request candidate image rollback to kubebrain:test")
+	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
+	require.NoFileExists(t, statePath, "failed UID test must not mutate the replacement StatefulSet")
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, `"path":"/metadata/uid","value":"statefulset-uid"`)
+	require.Contains(t, log, `"path":"/spec/template/spec/containers/0/name","value":"kubebrain"`)
+	require.Contains(t, log, `"path":"/spec/template/spec/containers/0/image","value":"kubebrain:test"`)
 }
 
 func TestRolloutAvailabilityRunnerRestoresOriginalImageWhenCandidateFails(t *testing.T) {
@@ -219,9 +241,8 @@ func TestRolloutAvailabilityRunnerRestoresOriginalImageWhenCandidateFails(t *tes
 	require.Error(t, err)
 	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
 	log := readOptionalFile(t, logPath)
-	require.Contains(t, log, " set image statefulset/kubebrain kubebrain="+target)
-	require.Contains(t, log, " set image statefulset/kubebrain kubebrain=kubebrain:test")
-	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system set image statefulset/kubebrain kubebrain=kubebrain:test")
+	require.Contains(t, log, `"value":"`+target+`"`)
+	require.GreaterOrEqual(t, strings.Count(log, " patch statefulset/kubebrain --type=json -p "), 2)
 }
 
 func TestRolloutAvailabilityRunnerRollsBackCandidateWhenProbeDeletionFails(t *testing.T) {
@@ -241,8 +262,8 @@ func TestRolloutAvailabilityRunnerRollsBackCandidateWhenProbeDeletionFails(t *te
 	require.Contains(t, string(output), "CRITICAL: failed to delete rollout availability probe Pod")
 	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
 	log := readOptionalFile(t, logPath)
-	require.Contains(t, log, "set image statefulset/kubebrain kubebrain="+target)
-	require.Contains(t, log, "set image statefulset/kubebrain kubebrain=kubebrain:test")
+	require.Contains(t, log, `"value":"`+target+`"`)
+	require.GreaterOrEqual(t, strings.Count(log, " patch statefulset/kubebrain --type=json -p "), 2)
 }
 
 func TestRolloutAvailabilityRunnerRejectsRuntimeDigestDriftAndRestoresOriginalImage(t *testing.T) {
@@ -260,7 +281,7 @@ func TestRolloutAvailabilityRunnerRejectsRuntimeDigestDriftAndRestoresOriginalIm
 	require.Contains(t, string(output), "candidate Pod runtime release mismatch: kubebrain-0")
 	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
 	log := readOptionalFile(t, logPath)
-	require.Contains(t, log, " set image statefulset/kubebrain kubebrain=kubebrain:test")
+	require.GreaterOrEqual(t, strings.Count(log, " patch statefulset/kubebrain --type=json -p "), 2)
 }
 
 func TestRolloutAvailabilityRunnerRejectsRuntimeDigestSuffixSpoof(t *testing.T) {
@@ -279,7 +300,7 @@ func TestRolloutAvailabilityRunnerRejectsRuntimeDigestSuffixSpoof(t *testing.T) 
 	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
 	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
 	log := readOptionalFile(t, logPath)
-	require.Contains(t, log, "set image statefulset/kubebrain kubebrain=kubebrain:test")
+	require.GreaterOrEqual(t, strings.Count(log, " patch statefulset/kubebrain --type=json -p "), 2)
 }
 
 func TestRolloutAvailabilityRunnerRejectsRestartedCandidateContainer(t *testing.T) {
@@ -298,7 +319,7 @@ func TestRolloutAvailabilityRunnerRejectsRestartedCandidateContainer(t *testing.
 	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
 	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
 	log := readOptionalFile(t, logPath)
-	require.Contains(t, log, "set image statefulset/kubebrain kubebrain=kubebrain:test")
+	require.GreaterOrEqual(t, strings.Count(log, " patch statefulset/kubebrain --type=json -p "), 2)
 }
 
 func TestRolloutAvailabilityRunnerRejectsCandidatePodReadyConditionDrift(t *testing.T) {
@@ -317,7 +338,7 @@ func TestRolloutAvailabilityRunnerRejectsCandidatePodReadyConditionDrift(t *test
 	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
 	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
 	log := readOptionalFile(t, logPath)
-	require.Contains(t, log, "set image statefulset/kubebrain kubebrain=kubebrain:test")
+	require.GreaterOrEqual(t, strings.Count(log, " patch statefulset/kubebrain --type=json -p "), 2)
 }
 
 func TestRolloutAvailabilityRunnerAcceptsRuntimeDigestIdentityForms(t *testing.T) {
@@ -355,7 +376,7 @@ func TestRolloutAvailabilityRunnerRejectsRollbackIdentityDrift(t *testing.T) {
 	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
 	require.Contains(t, string(output), "CRITICAL: candidate image rollback identity mismatch: expected image=kubebrain:test revision=revision-old replicas=3")
 	log := readOptionalFile(t, logPath)
-	require.Contains(t, log, "set image statefulset/kubebrain kubebrain=kubebrain:test")
+	require.GreaterOrEqual(t, strings.Count(log, " patch statefulset/kubebrain --type=json -p "), 2)
 	require.Contains(t, log, "get statefulset kubebrain -o json")
 }
 
@@ -452,7 +473,10 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   [[ "${FAKE_BAD_PRESTOP:-false}" == true ]] && prestop='["/bin/sleep","5"]'
   runtime_image=kubebrain:test
   [[ -e "$FAKE_KUBECTL_STATE" && -n "${TARGET_IMAGE:-}" ]] && runtime_image="$TARGET_IMAGE"
-  payload="$(jq -cn --arg revision "$revision" --arg image "$runtime_image" --argjson prestop "$prestop" '{
+  statefulset_uid="${FAKE_STATEFULSET_UID:-statefulset-uid}"
+  [[ "${FAKE_STATEFULSET_UID_DRIFT:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || statefulset_uid=statefulset-replacement-uid
+  payload="$(jq -cn --arg uid "$statefulset_uid" --arg revision "$revision" --arg image "$runtime_image" --argjson prestop "$prestop" '{
+    metadata:{uid:$uid},
     spec:{replicas:3,template:{spec:{containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
@@ -489,8 +513,25 @@ elif [[ " $* " =~ " get pod kubebrain-"[0-9]+" -o json " ]]; then
   '
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe "* ]]; then
   exit 1
-elif [[ " $* " == *" rollout restart statefulset/kubebrain "* || " $* " == *" set image statefulset/kubebrain "* ]]; then
-  if [[ " $* " == *" set image statefulset/kubebrain kubebrain=kubebrain:test "* && "${FAKE_ROLLBACK_IDENTITY_DRIFT:-false}" != true ]]; then
+elif [[ " $* " == *" rollout restart statefulset/kubebrain "* ]]; then
+  : >"$FAKE_KUBECTL_STATE"
+elif [[ " $* " == *" patch statefulset/kubebrain --type=json -p "* ]]; then
+  patch_payload=""
+  previous=""
+  for argument in "$@"; do
+    [[ "$previous" != -p ]] || patch_payload="$argument"
+    previous="$argument"
+  done
+  expected_uid="$(jq -r '.[0].value // ""' <<<"${patch_payload:-[]}")"
+  expected_name="$(jq -r '.[1].value // ""' <<<"${patch_payload:-[]}")"
+  expected_image="$(jq -r '.[2].value // ""' <<<"${patch_payload:-[]}")"
+  new_image="$(jq -r '.[-1].value // ""' <<<"${patch_payload:-[]}")"
+  current_uid=statefulset-uid
+  [[ "${FAKE_PATCH_UID_DRIFT:-false}" != true ]] || current_uid=statefulset-replacement-uid
+  current_image=kubebrain:test
+  [[ ! -e "$FAKE_KUBECTL_STATE" || -z "${TARGET_IMAGE:-}" ]] || current_image="$TARGET_IMAGE"
+  [[ "$expected_uid" == "$current_uid" && "$expected_name" == kubebrain && "$expected_image" == "$current_image" && -n "$new_image" ]] || exit 1
+  if [[ "$new_image" == kubebrain:test && "${FAKE_ROLLBACK_IDENTITY_DRIFT:-false}" != true ]]; then
     rm -f -- "$FAKE_KUBECTL_STATE"
     [[ -z "${FAKE_ROLLBACK_MARKER:-}" ]] || : >"$FAKE_ROLLBACK_MARKER"
   else
