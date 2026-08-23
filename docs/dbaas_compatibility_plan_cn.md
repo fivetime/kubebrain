@@ -61131,6 +61131,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mutable tag，它仍不能证明各 Pod 恢复到 mutation 前相同 runtime digest，该供应链边界必须由基线不可变引用或
   独立的 rollback runtime attestation 关闭。
 
+- A5413 关闭 A5412 明确保留的 mutable baseline runtime 字节回滚缺口。提交 `263b1325` 在任何 candidate mutation
+  前逐 ordinal 读取受 1 MiB 上界保护的 Pod JSON，要求 Pod 非 terminating、Running、属于原 controller revision、
+  spec 使用原 image，且 `kubebrain` container 恰有一个 Ready、非空 runtime `imageID`，随后按 ordinal 冻结该
+  imageID。候选失败恢复原 StatefulSet identity 后，再逐 Pod 要求相同 revision/spec image/Running/Ready 和与冻结值
+  完全相同的 imageID；读取失败或 tag 重新解析到不同 digest 均输出 CRITICAL。该 admission 只在 TARGET candidate
+  模式启用，原有 current-image restart drill 不增加不相关合同。新增 fake marker 只在收到 rollback set 后注入 baseline
+  digest 漂移；首版负测曾错误地在初始冻结阶段也注入相同 digest，导致前后相等而 RED，修正为真实时序后普通 20 轮
+  8.685 秒、race 10 轮 5.414 秒全绿。rollout 全组普通/race 为 4.358/5.400 秒，vet/shell syntax 通过；production
+  inventory 增至 599 项，精确提交四片 136/168/152/143 全绿（Go 测试
+  105.552/318.219/212.028/334.369 秒；端到端 111.244/323.974/217.765/340.151 秒）。本项以 Kubernetes runtime
+  报告的完整 imageID 为权威字节身份，不能证明 registry 供应链签名、SBOM 或节点本地镜像存储未被运行时之外篡改；
+  生产仍应优先使用不可变 baseline digest。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

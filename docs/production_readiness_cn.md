@@ -1275,8 +1275,14 @@ probe 时人工把 rollout 标为成功。
 
 候选失败后的 `kubectl rollout status` 不是充分回滚证据。runner 随后必须重新读取 StatefulSet，并证明 desired/Ready
 副本数、原 spec image 以及 current/update controller revision 全部精确恢复到 mutation 前值；读取失败或并发模板
-漂移均输出 `CRITICAL`。这项检查证明 Kubernetes 模板身份，不证明可变 tag 背后的容器字节：生产基线应优先使用
-不可变 digest；仍使用 tag 时，外部发布系统必须另外保存并核验回滚前各平台 runtime imageID。
+漂移均输出 `CRITICAL`。这项 StatefulSet 检查只证明 Kubernetes 模板身份；可变 tag 背后的容器字节由下述逐 Pod
+runtime attestation 补齐，生产基线仍应优先使用不可变 digest。
+
+candidate 模式会在 mutation 前逐 ordinal 冻结原 Pod 的 runtime `imageID`，并先证明每个 Pod 属于原 controller
+revision、使用原 spec image、Running/Ready 且非 terminating。失败回滚完成 StatefulSet identity 校验后，还必须
+逐 Pod 恢复到完全相同的 imageID；tag 重新解析到另一 digest、Pod 落在错误 revision 或 container 未 Ready 都会
+输出 `CRITICAL`。因此 runner 自身已承担本轮回滚的 runtime identity 保存与核验，外部系统仍应归档这些日志并优先
+使用不可变 baseline digest；runtime imageID 不是镜像签名或 SBOM 验证的替代品。
 
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
