@@ -507,7 +507,7 @@ func runLeaseRenewalAuditor(
 			}
 			return stats
 		}
-		auditCtx, cancel := context.WithTimeout(ctx, min(config.auditMaxOutage/2, 30*time.Second))
+		auditCtx, cancel := context.WithTimeout(ctx, min(config.auditInterval, config.auditMaxOutage/2, 30*time.Second))
 		revision, err := auditLeaseRenewalSample(auditCtx, cli, leases, offset, config.auditSample, lastRevision)
 		cancel()
 		if err == nil {
@@ -555,6 +555,9 @@ func observeLeaseRenewalResponseProgress(
 				return maxGap, fmt.Errorf("lease %d keepalive response stream made no progress for %s", live.id, gap.Round(time.Millisecond))
 			}
 			continue
+		}
+		if gap >= maxOutage {
+			return maxGap, fmt.Errorf("lease %d keepalive response stream resumed after %s, exceeding %s", live.id, gap.Round(time.Millisecond), maxOutage)
 		}
 		lastCounts[index] = count
 		lastProgress[index] = now
@@ -692,9 +695,12 @@ func TestObserveLeaseRenewalResponseProgressRejectsSilentStall(t *testing.T) {
 
 	_, err = observeLeaseRenewalResponseProgress(started.Add(89*time.Second), []*leaseRenewalLiveLease{lease}, counts, progress, 45*time.Second)
 	require.ErrorContains(t, err, "made no progress for 45s")
-
-	counts[0] = 3
+	lease.responses.Store(3)
 	_, err = observeLeaseRenewalResponseProgress(started.Add(90*time.Second), []*leaseRenewalLiveLease{lease}, counts, progress, 45*time.Second)
+	require.ErrorContains(t, err, "resumed after 46s, exceeding 45s")
+
+	counts[0] = 4
+	_, err = observeLeaseRenewalResponseProgress(started.Add(91*time.Second), []*leaseRenewalLiveLease{lease}, counts, progress, 45*time.Second)
 	require.ErrorContains(t, err, "response count regressed")
 }
 
