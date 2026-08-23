@@ -53,6 +53,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-operation-archiver ./hack/production/cmd/operation-archiver \
     && go build -trimpath -o /src/bin/kubebrain-operation-archive-verifier ./hack/production/cmd/operation-archive-verifier \
     && go build -trimpath -o /src/bin/kubebrain-operation-audit ./hack/production/cmd/operation-audit \
+    && go build -trimpath -o /src/bin/kubebrain-scan-memory-probe ./hack/production/cmd/scan-memory-probe \
     && go build -trimpath -o /src/bin/kubebrain-tikv-repair-alert-receiver ./hack/production/cmd/tikv-repair-alert-receiver \
     && go build -trimpath -o /src/bin/kubebrain-rollout-availability-probe ./hack/production/cmd/rollout-availability-probe \
     && go build -trimpath -o /src/bin/kubebrain-metering-archive ./hack/production/cmd/metering-archive \
@@ -196,6 +197,7 @@ COPY --from=build /src/bin/kubebrain-operation-parameter-broker /usr/local/bin/k
 COPY --from=build /src/bin/kubebrain-operation-archiver /usr/local/bin/kubebrain-operation-archiver
 COPY --from=build /src/bin/kubebrain-operation-archive-verifier /usr/local/bin/kubebrain-operation-archive-verifier
 COPY --from=build /src/bin/kubebrain-operation-audit /usr/local/bin/kubebrain-operation-audit
+COPY --from=build /src/bin/kubebrain-scan-memory-probe /usr/local/bin/kubebrain-scan-memory-probe
 COPY --from=build /src/bin/kubebrain-tikv-repair-alert-receiver /usr/local/bin/kubebrain-tikv-repair-alert-receiver
 COPY --from=build /src/bin/kubebrain-rollout-availability-probe /usr/local/bin/kubebrain-rollout-availability-probe
 COPY --from=build /src/bin/kubebrain-metering-archive /usr/local/bin/kubebrain-metering-archive
