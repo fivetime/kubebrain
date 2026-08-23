@@ -61222,6 +61222,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   canary 非零退出，只消除错误的回滚事故等级；发布者必须修复 precondition 冲突后重跑，不能把 baseline 安全等同于
   candidate 已发布。
 
+- A5420 回到核心 etcd API 做负向差距审计，未为表面上的 `unsupported` 分支制造偏离 upstream 的实现。
+  固定 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`：第一，
+  `server/etcdserver/api/v3rpc/key.go::checkRangeStreamRequest` 与 KubeBrain 一样拒绝 custom sort 和 revision
+  filters，因此 `RangeStream` 的两类 `Unimplemented` 是 upstream 3.7 合同，不是数据面缺口；第二，
+  `backendShim.CompareDelete` 中的 `range_end` 防御拒绝不进入公开范围删除路径，`isCompareDelete` 只选择单键
+  MOD-revision CAS，带 `range_end` 的请求由 staged generic Txn 执行；第三，upstream `checkIntervals` 使用
+  `adt.NewStringAffineInterval`，只把空 end 当作无穷上界，`range_end={0}` 在 Txn overlap admission 中仍按普通
+  字节上界处理，现有顺序相关执行结果并非 KubeBrain 特有偏差。公开 Lock/Election receiver 则直接委托同版本
+  `v3lock.NewLockServer`/`v3election.NewElectionServer`，额外逻辑仅保留已有的精确 auth status 外观归一化；现有
+  ownership、等待、Observe、取消与鉴权差分未显示新的服务端 RED。聚焦六项普通/race 回归分别 0.191/1.724 秒
+  通过，覆盖上述 RangeStream、Txn fast-path/interval、Lock/Election 与公开 Unimplemented allowlist。本项没有修改
+  生产或测试代码，也不把矩阵唯一的 Snapshot legacy provenance 来源限制误报成可由在线代码恢复的差距。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
