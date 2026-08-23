@@ -6158,6 +6158,24 @@ go test ./hack/production/internal/operationretention -run '^$' \
 64/256 MiB；verifier 维持 256 MiB、archiver 维持 512 MiB。每次改变 scan budget、page size、对象 schema 或 Go/client-go
 版本都必须重跑 benchmark 和 Pod 级 cgroup/RSS/GC 压测。
 
+2026-08-23 已把上述宿主机估算推进为真实 Kubernetes/cgroup v2 演练。镜像内新增只读
+`kubebrain-scan-memory-probe`，复用生产 `dynamicpagination.All`、JSON `Charge` 与 candidate `DeepCopy`，只允许通过独立
+ServiceAccount 对两个临时 namespace 的带唯一 label ConfigMap 执行 get/list。`drill-scan-memory-cgroup.sh` 固定在首 namespace
+创建 501 项、第二个创建 2 项，每项 120,000-byte payload；因此生产 `page-limit=500` 必须实际消费 continuation，跨 namespace
+聚合 charge 又逼近 64 MiB。脚本要求显式确认、非 latest 镜像和 Pod 实际 `imageID` 摘要，检查非 root/只读根文件系统、精确
+request/limit、cgroup `memory.max/current/peak/events`、Go heap/GC/pause 和 canonical 单行结果，并用创建时 namespace UID 约束清理。
+
+同一 workload 的 256Mi limit 负向运行在约四秒后由内核终止，Pod 明确记录 exit 137、`reason: OOMKilled` 和
+`BackoffLimitExceeded`；这证明 A5381 基于宿主机 VmHWM 设置的 scheduler 256Mi limit 仍不足，而不是理论余量争议。随后把生产
+scheduler request/limit 提高到 256/512Mi。精确代码提交 `53882e9fbd4b31c0333175a5a2eb1b13c56e70aa` 构建的镜像 label 绑定同一
+SHA，kind 中 Pod 实际平台 manifest digest 为 `sha256:f6421dea29ab4a1ae0247ab3acf554c188b8e7726379b0f3410fe4955455622e`；
+最终 256/512Mi Pod 成功扫描 503 项，charge 60,666,215 bytes，cgroup peak/end 322,121,728 bytes，Go heap alloc/sys
+64,764,104/318,439,424 bytes，9 次 GC、累计 pause 1,246,148ns、elapsed 4,675ms，三类 OOM delta 均为零。Job/Pod/result
+原始证据保存于本机 mode-0700 目录 `/tmp/kubebrain-a5383-53882e9f-evidence.0Hy605`，临时 namespace 复查零残留。
+该演练使用真实 apiserver 分页、client-go 解码和生产内存原语，但 payload 是 synthetic ConfigMap，不包含 scheduler 的 Policy
+过滤/Operation 创建或对象存储 executor，并且单节点 kind 不能替代目标节点 NUMA、并发 reconcile 和长期 GC soak。发布环境仍须
+用相同脚本对候选镜像 digest 重跑，并在多 namespace、并发控制器及真实 Policy schema 下确认 request 调度余量和 512Mi limit。
+
 verifier binary 不只在入口检查 `IAM_SIMULATION_VALID_UNTIL_UNIX`：它把 expiry 解析为绝对时间，拒绝已过期、非正数或
 超过当前时刻 24 小时 5 分钟的值，并在 Kubernetes/S3 client 与 controller 初始化完成后重新计算剩余时间。实际 reconcile
 父预算取 `min(--reconcile-timeout, evidence remaining)`；证据一到期，inventory/List、候选循环以及每个独立进程组中的

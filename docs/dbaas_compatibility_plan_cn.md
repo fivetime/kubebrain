@@ -60649,6 +60649,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   配置只读 verifier 凭据并保留 Operation JSON、check-enabled、DELETE apiserver audit 与 provider exact-version access trail；
   同时继续 A5381 的生产同规格 Pod cgroup 多页/多 namespace RSS、GC pause/OOM 压测。
 
+- A5383 关闭 A5381 仅有宿主机 VmHWM、未验证生产 page=500 与 Pod limit 的内存证据缺口。新增镜像内只读
+  `scan-memory-probe` 和显式确认的 `drill-scan-memory-cgroup.sh`：两个 UID 跟踪的隔离 namespace 中创建 501+2 个各
+  120,000-byte ConfigMap，独立 get/list-only SA 以 production page-limit 500 真实触发 continuation，并复用 paginator、JSON
+  charge、跨 namespace DeepCopy；Pod 自身读取 cgroup v2 memory.max/current/peak/events 与 Go heap/GC/pause，结果、Job、Pod 以
+  mode 0600 留存。脚本固定非 root/read-only rootfs、实际 imageID digest 和精确 resource contract，失败时在 UID-guarded cleanup
+  前输出 Job/termination 诊断。相同 60.67MB charge 在 256Mi limit 下由内核 exit 137/OOMKilled，反证 A5381 scheduler limit；生产
+  scheduler 因而从 64/256Mi 提高到 256/512Mi。精确提交 `53882e9f` 的镜像 label 绑定完整 SHA，Pod 平台 manifest digest
+  `f6421dea…5622e`；最终扫描 charge 60,666,215 bytes，peak/end 322,121,728 bytes，heap alloc/sys
+  64,764,104/318,439,424 bytes，9 次 GC、1,246,148ns pause、4,675ms，OOM/kill/group delta 全零，临时 namespace 零残留。
+  probe/dynamicpagination race 通过，根 production inventory 增至 589 项；四片 133/166/151/139 在代码提交 `53882e9f` 上全部
+  通过（Go 测试 165.484/503.961/295.682/540.059 秒；端到端 174.409/512.989/304.578/548.928 秒）。该数据使用 synthetic
+  ConfigMap 与单节点 kind，不宣称覆盖真实 Policy schema、并发 reconcile、NUMA 或长期 GC soak；目标环境仍须对发布 digest
+  重跑并增加真实 Policy/Operation、并发和小时级稳定性矩阵。A5382 的真实 verifier/Object Lock deletion trail 也仍待完整环境。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
