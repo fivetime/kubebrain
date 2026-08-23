@@ -45,6 +45,7 @@ type leaseRenewalLiveLease struct {
 type leaseRenewalAuditClient interface {
 	Get(context.Context, string, ...clientv3.OpOption) (*clientv3.GetResponse, error)
 	TimeToLive(context.Context, clientv3.LeaseID, ...clientv3.LeaseOption) (*clientv3.LeaseTimeToLiveResponse, error)
+	Leases(context.Context) (*clientv3.LeaseLeasesResponse, error)
 }
 
 type leaseRenewalAuditStats struct {
@@ -430,8 +431,26 @@ func auditLeaseRenewalSample(
 	ctx context.Context, cli leaseRenewalAuditClient, leases []*leaseRenewalLiveLease, offset, sample int, lastRevision int64,
 ) (int64, error) {
 	revision := lastRevision
+	listed, err := cli.Leases(ctx)
+	if err != nil {
+		return revision, &leaseRenewalAuditError{err: fmt.Errorf("list leases: %w", err)}
+	}
+	if listed.ResponseHeader == nil || listed.ResponseHeader.Revision < revision {
+		return revision, &leaseRenewalAuditError{semantic: true, err: errors.New("list leases returned non-monotonic revision")}
+	}
+	revision = listed.ResponseHeader.Revision
+	listedIDs := make(map[clientv3.LeaseID]struct{}, len(listed.Leases))
+	for _, lease := range listed.Leases {
+		if _, duplicate := listedIDs[lease.ID]; duplicate {
+			return revision, &leaseRenewalAuditError{semantic: true, err: fmt.Errorf("list leases returned duplicate lease %d", lease.ID)}
+		}
+		listedIDs[lease.ID] = struct{}{}
+	}
 	for index := 0; index < sample; index++ {
 		live := leases[(offset+index)%len(leases)]
+		if _, ok := listedIDs[live.id]; !ok {
+			return revision, &leaseRenewalAuditError{semantic: true, err: fmt.Errorf("live lease %d missing from lease list", live.id)}
+		}
 		response, err := cli.Get(ctx, live.key)
 		if err != nil {
 			return revision, &leaseRenewalAuditError{err: fmt.Errorf("get lease %d key: %w", live.id, err)}
@@ -459,10 +478,16 @@ func auditLeaseRenewalSample(
 }
 
 type fakeLeaseRenewalAuditClient struct {
-	getResponse *clientv3.GetResponse
-	getErr      error
-	ttlResponse *clientv3.LeaseTimeToLiveResponse
-	ttlErr      error
+	listResponse *clientv3.LeaseLeasesResponse
+	listErr      error
+	getResponse  *clientv3.GetResponse
+	getErr       error
+	ttlResponse  *clientv3.LeaseTimeToLiveResponse
+	ttlErr       error
+}
+
+func (f fakeLeaseRenewalAuditClient) Leases(context.Context) (*clientv3.LeaseLeasesResponse, error) {
+	return f.listResponse, f.listErr
 }
 
 func (f fakeLeaseRenewalAuditClient) Get(context.Context, string, ...clientv3.OpOption) (*clientv3.GetResponse, error) {
@@ -476,8 +501,9 @@ func (f fakeLeaseRenewalAuditClient) TimeToLive(context.Context, clientv3.LeaseI
 func TestAuditLeaseRenewalSampleChecksBindingTTLAndRevision(t *testing.T) {
 	lease := &leaseRenewalLiveLease{id: 7, key: "/lease/key"}
 	valid := fakeLeaseRenewalAuditClient{
-		getResponse: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 11}, Kvs: []*mvccpb.KeyValue{{Key: []byte(lease.key), Value: []byte("live"), Lease: int64(lease.id)}}},
-		ttlResponse: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 12}, ID: lease.id, TTL: 20, Keys: [][]byte{[]byte(lease.key)}},
+		listResponse: &clientv3.LeaseLeasesResponse{ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 10}, Leases: []clientv3.LeaseStatus{{ID: lease.id}}},
+		getResponse:  &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 11}, Kvs: []*mvccpb.KeyValue{{Key: []byte(lease.key), Value: []byte("live"), Lease: int64(lease.id)}}},
+		ttlResponse:  &clientv3.LeaseTimeToLiveResponse{ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 12}, ID: lease.id, TTL: 20, Keys: [][]byte{[]byte(lease.key)}},
 	}
 	revision, err := auditLeaseRenewalSample(context.Background(), valid, []*leaseRenewalLiveLease{lease}, 0, 1, 10)
 	require.NoError(t, err)
@@ -489,10 +515,14 @@ func TestAuditLeaseRenewalSampleChecksBindingTTLAndRevision(t *testing.T) {
 		want     string
 		semantic bool
 	}{
-		{name: "transport", client: fakeLeaseRenewalAuditClient{getErr: context.DeadlineExceeded}, want: "deadline exceeded"},
-		{name: "revision", client: fakeLeaseRenewalAuditClient{getResponse: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 9}}}, want: "non-monotonic", semantic: true},
-		{name: "binding", client: fakeLeaseRenewalAuditClient{getResponse: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 11}}}, want: "binding changed", semantic: true},
-		{name: "ttl", client: fakeLeaseRenewalAuditClient{getResponse: valid.getResponse, ttlResponse: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 12}, ID: lease.id, TTL: -1}}, want: "TTL or attached keys", semantic: true},
+		{name: "list transport", client: fakeLeaseRenewalAuditClient{listErr: context.DeadlineExceeded}, want: "deadline exceeded"},
+		{name: "list revision", client: fakeLeaseRenewalAuditClient{listResponse: &clientv3.LeaseLeasesResponse{ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 9}}}, want: "non-monotonic", semantic: true},
+		{name: "list missing", client: fakeLeaseRenewalAuditClient{listResponse: &clientv3.LeaseLeasesResponse{ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 10}}}, want: "missing from lease list", semantic: true},
+		{name: "list duplicate", client: fakeLeaseRenewalAuditClient{listResponse: &clientv3.LeaseLeasesResponse{ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 10}, Leases: []clientv3.LeaseStatus{{ID: lease.id}, {ID: lease.id}}}}, want: "duplicate lease", semantic: true},
+		{name: "get transport", client: fakeLeaseRenewalAuditClient{listResponse: valid.listResponse, getErr: context.DeadlineExceeded}, want: "deadline exceeded"},
+		{name: "get revision", client: fakeLeaseRenewalAuditClient{listResponse: valid.listResponse, getResponse: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 9}}}, want: "non-monotonic", semantic: true},
+		{name: "binding", client: fakeLeaseRenewalAuditClient{listResponse: valid.listResponse, getResponse: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 11}}}, want: "binding changed", semantic: true},
+		{name: "ttl", client: fakeLeaseRenewalAuditClient{listResponse: valid.listResponse, getResponse: valid.getResponse, ttlResponse: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 12}, ID: lease.id, TTL: -1}}, want: "TTL or attached keys", semantic: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := auditLeaseRenewalSample(context.Background(), tc.client, []*leaseRenewalLiveLease{lease}, 0, 1, 10)
