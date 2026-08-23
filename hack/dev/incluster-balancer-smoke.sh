@@ -54,6 +54,18 @@ fi
 [[ "$RUNTIME_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$ ]] ||
   { echo "RUNTIME_IMAGE is not a safe image reference" >&2; exit 2; }
 
+victim_uid="$(kubectl -n "$NAMESPACE" get pod "$VICTIM_POD" -o jsonpath='{.metadata.uid}')"
+[[ "$victim_uid" =~ ^[A-Za-z0-9-]{1,64}$ ]] || { echo "victim Pod UID is invalid" >&2; exit 1; }
+victim_node="$(kubectl -n "$NAMESPACE" get pod "$VICTIM_POD" -o jsonpath='{.spec.nodeName}')"
+[[ -n "$victim_node" ]] || { echo "victim Pod is not assigned to a node" >&2; exit 1; }
+probe_goos="$(kubectl get node "$victim_node" -o jsonpath='{.status.nodeInfo.operatingSystem}')"
+probe_goarch="$(kubectl get node "$victim_node" -o jsonpath='{.status.nodeInfo.architecture}')"
+[[ "$probe_goos" == linux ]] || { echo "victim node operating system must be linux, got ${probe_goos}" >&2; exit 2; }
+case "$probe_goarch" in
+  amd64|arm64) ;;
+  *) echo "victim node architecture must be amd64 or arm64, got ${probe_goarch}" >&2; exit 2 ;;
+esac
+
 workdir="$(mktemp -d)"
 cleanup() {
   kubectl -n "$NAMESPACE" delete job "$JOB_NAME" --ignore-not-found --wait=false >/dev/null 2>&1 || true
@@ -68,23 +80,23 @@ cat >"$workdir/Dockerfile" <<EOF
 ARG GO_IMAGE
 ARG RUNTIME_IMAGE
 FROM \${GO_IMAGE} AS build
+ARG TARGET_GOARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY third_party/tikv-client-go ./third_party/tikv-client-go
 RUN go mod download
 COPY hack/dev/cmd/balancer-smoke/main.go ./hack/dev/cmd/balancer-smoke/main.go
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /balancer-smoke ./hack/dev/cmd/balancer-smoke
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=\${TARGET_GOARCH} go build -trimpath -o /balancer-smoke ./hack/dev/cmd/balancer-smoke
 FROM \${RUNTIME_IMAGE}
 COPY --from=build /balancer-smoke /usr/local/bin/kubebrain-balancer-smoke
 EOF
 
 docker build -f "$workdir/Dockerfile" \
   --build-arg "GO_IMAGE=$GO_IMAGE" --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE" \
+  --build-arg "TARGET_GOARCH=$probe_goarch" \
   -t "$PROBE_IMAGE" "$ROOT_DIR"
 kind load docker-image "$PROBE_IMAGE" --name "$CLUSTER_NAME"
 
-victim_uid="$(kubectl -n "$NAMESPACE" get pod "$VICTIM_POD" -o jsonpath='{.metadata.uid}')"
-[[ "$victim_uid" =~ ^[A-Za-z0-9-]{1,64}$ ]] || { echo "victim Pod UID is invalid" >&2; exit 1; }
 endpoints=""
 for ordinal in 0 1 2; do
   endpoint="http://${POD_BASENAME}-${ordinal}.${PEER_SERVICE}.${NAMESPACE}.svc.cluster.local:3379"
@@ -139,6 +151,9 @@ spec:
     spec:
       serviceAccountName: ${JOB_NAME}
       restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/os: ${probe_goos}
+        kubernetes.io/arch: ${probe_goarch}
       securityContext:
         fsGroup: 65532
       containers:
@@ -218,4 +233,4 @@ new_uid="$(kubectl -n "$NAMESPACE" get pod "$VICTIM_POD" -o jsonpath='{.metadata
 [[ -n "$new_uid" && "$new_uid" != "$victim_uid" ]] ||
   { echo "victim Pod UID did not change" >&2; exit 1; }
 kubectl -n "$NAMESPACE" rollout status "$WORKLOAD" --timeout=120s
-echo "In-cluster balancer smoke completed: victim=${VICTIM_POD} old_uid=${victim_uid} new_uid=${new_uid}"
+echo "In-cluster balancer smoke completed: victim=${VICTIM_POD} old_uid=${victim_uid} new_uid=${new_uid} node_os=${probe_goos} node_arch=${probe_goarch}"
