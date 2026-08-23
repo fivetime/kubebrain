@@ -61144,6 +61144,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   报告的完整 imageID 为权威字节身份，不能证明 registry 供应链签名、SBOM 或节点本地镜像存储未被运行时之外篡改；
   生产仍应优先使用不可变 baseline digest。
 
+- A5414 修复 candidate runtime imageID 只用字符串 `endswith(approvedDigest)` 的边界假阳性。旧 jq 允许
+  `untrusted-prefixsha256:<approved>` 这类没有 runtime scheme、`@` 或完整值边界的任意前缀通过，因而攻击或畸形
+  CRI 响应可伪装成批准的平台 manifest。提交 `6cac2a46` 将匹配收紧为且仅为三类明确身份：imageID 完全等于
+  digest、以 `://<digest>` 结尾的 runtime 形式，或以 `@<digest>` 结尾的 pullable reference；继续使用 jq 中已修正
+  的 lexical `$imageID`/`$digest` 作用域，不能退回错误 dot 自匹配。fake `untrusted-prefixsha256:...` 负测证明旧
+  endswith 会接受的值现在触发 Pod runtime mismatch、回滚原 image 且无成功 receipt；正向回归分别固定裸 digest、
+  `containerd://digest` 和 `repository@digest`，避免安全收紧破坏标准 CRI 表示。聚焦普通 20 轮 24.777 秒、race
+  10 轮 13.540 秒，rollout 全组普通/race 为 5.465/6.589 秒，vet/shell syntax 通过；production inventory 增至
+  601 项，精确提交四片 136/170/152/143 全绿（Go 测试 106.107/319.198/211.668/334.633 秒；端到端
+  111.821/324.982/217.467/340.347 秒）。该解析只确认 imageID 与发布者批准 digest 的绑定；registry hostname、
+  签名与 provenance 仍由 image policy/签名门禁负责。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

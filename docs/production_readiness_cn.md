@@ -1284,6 +1284,11 @@ revision、使用原 spec image、Running/Ready 且非 terminating。失败回�
 输出 `CRITICAL`。因此 runner 自身已承担本轮回滚的 runtime identity 保存与核验，外部系统仍应归档这些日志并优先
 使用不可变 baseline digest；runtime imageID 不是镜像签名或 SBOM 验证的替代品。
 
+候选 Pod 的 runtime imageID 只接受三种批准 digest 绑定：完整值就是 `sha256:...`、runtime 形式以
+`://sha256:...` 结尾，或 pullable reference 以 `@sha256:...` 结尾。不得用无边界的字符串 suffix 判断；例如
+`untrusted-prefixsha256:...` 即使末尾 digest 正确也必须拒绝。多平台集群仍通过
+`TARGET_RUNTIME_DIGESTS` 列出本轮批准的平台 manifest 集，但每个 Pod 的 imageID 必须匹配上述结构之一。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 
