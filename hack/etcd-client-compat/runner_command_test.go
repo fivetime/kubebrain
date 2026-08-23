@@ -354,6 +354,14 @@ func TestLeasePartitionWorkerNodeSmokeIsIsolatedAndRecoverable(t *testing.T) {
 	require.Contains(t, script, `trap 'exit 130' INT`)
 	require.Contains(t, script, `trap 'exit 143' TERM`)
 	require.NotContains(t, script, `kind delete cluster --name "$original_context"`)
+
+	verifyData, err := os.ReadFile("../dev/verify.sh")
+	require.NoError(t, err)
+	verifyScript := string(verifyData)
+	require.Contains(t, verifyScript, `RUN_LEASE_PARTITION_WORKER_NODE_SMOKE="${RUN_LEASE_PARTITION_WORKER_NODE_SMOKE:-false}"`)
+	require.Equal(t, 4, strings.Count(verifyScript, "RUN_LEASE_PARTITION_WORKER_NODE_SMOKE"))
+	require.Contains(t, verifyScript, `if [ "$RUN_LEASE_PARTITION_WORKER_NODE_SMOKE" = "true" ]; then`)
+	require.Contains(t, verifyScript, `run_step "lease partition worker-node smoke" hack/dev/lease-partition-worker-node-smoke.sh`)
 }
 
 func TestBackendQuorumPDNetworkPartitionHelperIsRecoverable(t *testing.T) {
