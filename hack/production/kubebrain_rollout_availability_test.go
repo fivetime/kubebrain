@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -47,6 +48,21 @@ func TestRolloutAvailabilityRunnerPreflightDoesNotCallKubernetes(t *testing.T) {
 	require.NoFileExists(t, logPath, "preflight must not call kubectl")
 }
 
+func TestRolloutAvailabilityRunnerRequiresTimeoutBinaryBeforeKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"TIMEOUT_BIN=/nonexistent/kubebrain-timeout",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "timeout binary is not executable")
+	require.NoFileExists(t, logPath)
+}
+
 func TestRolloutAvailabilityRunnerRejectsInvalidPreflightModeBeforeKubernetes(t *testing.T) {
 	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -67,7 +83,8 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 		"PROBE_COMMAND_TIMEOUT", "PROBE_DIAL_TIMEOUT", "PROBE_MAX_OPERATION_LATENCY",
 		"PROBE_MAX_PD_TSO_LATENCY", "PROBE_MAX_TIKV_REGION_LATENCY", "PROBE_READY_TIMEOUT",
 		"PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_EVIDENCE_REQUEST_TIMEOUT",
-		"KUBECTL_MUTATION_REQUEST_TIMEOUT",
+		"KUBECTL_EVIDENCE_COMMAND_TIMEOUT", "KUBECTL_MUTATION_REQUEST_TIMEOUT",
+		"KUBECTL_MUTATION_COMMAND_TIMEOUT",
 	} {
 		t.Run(variable, func(t *testing.T) {
 			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
@@ -78,6 +95,31 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 			require.Error(t, err)
 			require.Contains(t, string(output), variable+" must be a positive ms, s, or m duration representable by Go time.Duration")
 			require.NoFileExists(t, logPath)
+		})
+	}
+}
+
+func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
+	for _, tc := range []struct {
+		name, target, timeoutVariable, want string
+	}{
+		{name: "evidence", target: "evidence", timeoutVariable: "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=100ms", want: "failed to read KubeBrain StatefulSet"},
+		{name: "mutation", target: "mutation", timeoutVariable: "KUBECTL_MUTATION_COMMAND_TIMEOUT=100ms", want: "failed to create rollout availability probe Pod"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			env := []string{
+				"KUBECTL_BIN=" + fake, "FAKE_KUBECTL_LOG=" + logPath, "FAKE_KUBECTL_STATE=" + statePath,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+				"FAKE_KUBECTL_HANG_TARGET=" + tc.target, tc.timeoutVariable,
+			}
+			started := time.Now()
+			output, err := runProductionScriptCommandWithTimeout(t,
+				"run-kubebrain-rollout-availability.sh", env, 5*time.Second)
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.want)
+			require.Less(t, time.Since(started), 4*time.Second,
+				"the outer command timeout must terminate a kubectl process that never reaches HTTP request handling")
 		})
 	}
 }
@@ -530,6 +572,12 @@ func writeRolloutAvailabilityKubectl(t *testing.T) (fakePath, logPath, statePath
 set -euo pipefail
 printf ' %s' "$@" >>"$FAKE_KUBECTL_LOG"
 printf '\n' >>"$FAKE_KUBECTL_LOG"
+if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == evidence && " $* " == *" get statefulset kubebrain -o json "* ]]; then
+  sleep 30
+fi
+if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == mutation && " $* " == *" run kubebrain-rollout-availability-probe "* ]]; then
+  sleep 30
+fi
 if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   revision=revision-old
   [[ -e "$FAKE_KUBECTL_STATE" ]] && revision=revision-new

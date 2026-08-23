@@ -5,6 +5,7 @@ PRODUCTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "${PRODUCTION_DIR}/operation-time-validation.sh"
 
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
+TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
 KUBECTL_CONTEXT="${KUBECTL_CONTEXT:-}"
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
@@ -24,7 +25,9 @@ PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KUBECTL_EVIDENCE_REQUEST_TIMEOUT="${KUBECTL_EVIDENCE_REQUEST_TIMEOUT:-10s}"
+KUBECTL_EVIDENCE_COMMAND_TIMEOUT="${KUBECTL_EVIDENCE_COMMAND_TIMEOUT:-15s}"
 KUBECTL_MUTATION_REQUEST_TIMEOUT="${KUBECTL_MUTATION_REQUEST_TIMEOUT:-10s}"
+KUBECTL_MUTATION_COMMAND_TIMEOUT="${KUBECTL_MUTATION_COMMAND_TIMEOUT:-15s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
@@ -43,6 +46,10 @@ if [[ "$ALLOW_MUTATING_KUBEBRAIN_ROLLOUT" != true ]]; then
 fi
 if ! command -v "$KUBECTL_BIN" >/dev/null 2>&1; then
   echo "kubectl binary is not executable: $KUBECTL_BIN" >&2
+  exit 1
+fi
+if ! command -v "$TIMEOUT_BIN" >/dev/null 2>&1; then
+  echo "timeout binary is not executable: $TIMEOUT_BIN" >&2
   exit 1
 fi
 if ! command -v jq >/dev/null 2>&1; then
@@ -70,7 +77,8 @@ fi
 for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LATENCY \
   PROBE_MAX_PD_TSO_LATENCY PROBE_MAX_TIKV_REGION_LATENCY PROBE_READY_TIMEOUT \
   PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_EVIDENCE_REQUEST_TIMEOUT \
-  KUBECTL_MUTATION_REQUEST_TIMEOUT; do
+  KUBECTL_EVIDENCE_COMMAND_TIMEOUT KUBECTL_MUTATION_REQUEST_TIMEOUT \
+  KUBECTL_MUTATION_COMMAND_TIMEOUT; do
   operation_is_positive_go_duration "${!variable}" || {
     echo "${variable} must be a positive ms, s, or m duration representable by Go time.Duration" >&2
     exit 2
@@ -119,10 +127,12 @@ kctl() {
   "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" "$@"
 }
 kctl_evidence() {
-  "${kubectl_command[@]}" --request-timeout="$KUBECTL_EVIDENCE_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
+  "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$KUBECTL_EVIDENCE_COMMAND_TIMEOUT" \
+    "${kubectl_command[@]}" --request-timeout="$KUBECTL_EVIDENCE_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
 }
 kctl_mutation() {
-  "${kubectl_command[@]}" --request-timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
+  "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$KUBECTL_MUTATION_COMMAND_TIMEOUT" \
+    "${kubectl_command[@]}" --request-timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
 }
 patch_kubebrain_image() {
   local old_image="$1" new_image="$2" resource_version="$3" patch
@@ -338,7 +348,10 @@ kctl_mutation run "$PROBE_POD" --image="$image" --restart=Never --command -- \
   --pd-endpoints="$pd_endpoints" \
   --expected-up-stores=3 \
   --max-store-heartbeat-age=20s \
-  --dial-timeout="$PROBE_DIAL_TIMEOUT" >/dev/null
+  --dial-timeout="$PROBE_DIAL_TIMEOUT" >/dev/null || {
+  echo "failed to create rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
+  exit 1
+}
 kctl wait --for=condition=Ready "pod/$PROBE_POD" --timeout="$PROBE_READY_TIMEOUT" >/dev/null
 
 started=false
