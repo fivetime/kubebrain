@@ -389,6 +389,11 @@ func TestInClusterBalancerSmokeDiscoversFailoverEndpoints(t *testing.T) {
 	script := string(scriptData)
 	require.Contains(t, script, "COPY third_party/tikv-client-go ./third_party/tikv-client-go")
 	require.Less(t, strings.Index(script, "COPY third_party/tikv-client-go"), strings.Index(script, "RUN go mod download"))
+	require.Contains(t, script, `trap 'status=\$?; printf "%s\\n" "\$status" >/state/client-exited; exit "\$status"' EXIT`)
+	require.Contains(t, script, `if [[ -f /state/client-exited ]]; then`)
+	require.Contains(t, script, `status=\$(cat /state/client-exited)`)
+	require.Contains(t, script, `client exited before fault injection: status=\$status`)
+	require.Less(t, strings.Index(script, `/state/client-exited`), strings.Index(script, `kubectl -n '${NAMESPACE}' delete pod`))
 
 	data, err := os.ReadFile("../dev/cmd/balancer-smoke/main.go")
 	require.NoError(t, err)

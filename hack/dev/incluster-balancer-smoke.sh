@@ -145,7 +145,12 @@ spec:
       - name: client
         image: ${PROBE_IMAGE}
         imagePullPolicy: Never
-        command: ["/usr/local/bin/kubebrain-balancer-smoke"]
+        command:
+        - /bin/bash
+        - -ec
+        - |
+          trap 'status=\$?; printf "%s\\n" "\$status" >/state/client-exited; exit "\$status"' EXIT
+          /usr/local/bin/kubebrain-balancer-smoke
         env:
         - name: ENDPOINTS
           value: "${endpoints}"
@@ -163,7 +168,14 @@ spec:
         - /bin/bash
         - -ec
         - |
-          while [[ ! -f /state/ready ]]; do sleep 0.1; done
+          while [[ ! -f /state/ready ]]; do
+            if [[ -f /state/client-exited ]]; then
+              status=\$(cat /state/client-exited)
+              echo "client exited before fault injection: status=\$status" >&2
+              exit 1
+            fi
+            sleep 0.1
+          done
           old_uid='${victim_uid}'
           kubectl -n '${NAMESPACE}' delete pod '${VICTIM_POD}' --wait=false
           printf 'ok\n' >/state/deleted
