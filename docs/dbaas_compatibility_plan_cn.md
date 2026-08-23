@@ -60843,6 +60843,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍为 589 项，最终四片 133/166/151/139 全部通过（Go 测试 104.858/312.745/208.615/329.159 秒；端到端
   110.501/318.466/214.285/334.840 秒）。该快速 smoke 捕获 AutoSync 断连，不替代完整实例 release gate 或真正逐成员直连一致性验证。
 
+- A5396 关闭 A5395 只证明稳定入口 Sync→Put/Get、没有证明“发现出的逐成员端点在原连接 Pod 被替换后可接管流量”的缺口。复用
+  `hack/dev/incluster-balancer-smoke.sh` 的真实 StatefulSet Pod 删除场景，不再给 unary/watch 客户端手工
+  `SetEndpoints`：两个官方 clientv3 客户端都只从 victim Pod 启动并建立连接，随后分别调用 `Sync`，严格要求结果与三个预期 Pod DNS
+  完全相等且全局唯一，只有通过该门禁才允许 fault sidecar 删除 victim。替代 Pod Ready 后继续验证 20 个严格有序 watch 事件、线性读、
+  最终收敛的 serializable 读、Txn、Put/Delete，并报告瞬时失败和陈旧读次数。serializable 允许读旧快照，因此旧“立即必须读到最新值”断言
+  改为有界最终收敛；线性读仍保留即时强断言。静态合同固定两次 Sync、端点数量/唯一性、禁止恢复手工 SetEndpoints、替代 Ready 顺序及
+  本地 replace 依赖的镜像构建输入。
+
+  首次真实运行在创建 Job 前发现 Dockerfile 未复制根模块 `replace` 的 `third_party/tikv-client-go`，`go mod download` 必然报本地
+  `go.mod` 不存在；提交同步补齐该构建上下文。共享 NodePort 模式下 RED 明确得到三条重复
+  `http://172.18.0.2:30079` 并在删除 Pod 前 fail closed。将 `--advertise-client-urls` 错误替换为每 Pod 模板后仍得到三条当前响应副本
+  URL，进一步确认该参数按设计是全成员共享外部入口覆盖；逐成员模式必须省略它，让 `ParseInitialCluster` 从三个 peer host 派生 client
+  URL。按正确直连模式滚动 3/3 后，精确代码提交 `58a39723` 的真实演练从单一 `kubebrain-0` 发现三端点，删除该 Pod 后输出
+  `watch_events=20`、`transient_failures=0`、`stale_serializable_reads=0`、`replacement_ready=true`，UID 从
+  `b577b347-438f-4bef-b4ba-97d464cf4424` 变为 `02692190-0e46-4a32-8960-9d047d2b70a5`。演练后恢复共享 NodePort 参数与 revision
+  `kubebrain-5dbf96986b`，3/3 updated/ready、三 Pod 零重启，宿主 MemberList Sync→Put/Get 0.076 秒通过。
+
+  根探针 race 编译与 compat 静态合同 race 1.046 秒通过；production inventory 仍为 589 项，最终四片 133/166/151/139 全部通过
+  （Go 测试 105.316/314.034/210.862/330.702 秒；端到端 110.787/319.692/216.436/336.312 秒）。本门禁证明直连
+  MemberList Sync 后的单 Pod 替换接管；共享 Service/LB 模式由 A5395 的可达性门禁负责，二者是不同有效拓扑，不能用重复 URL 的共享
+  入口结果宣称逐成员故障切换已验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
