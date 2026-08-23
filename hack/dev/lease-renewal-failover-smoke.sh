@@ -10,6 +10,8 @@ FAILOVER_MODE="${FAILOVER_MODE:-pod-delete}"
 KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-kubebrain-dev-control-plane}"
 PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-60}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
+PARTITION_DIRECTION="${PARTITION_DIRECTION:-both}"
+export PARTITION_DIRECTION
 partition_pod_ip=""
 partition_pod_uid=""
 partition_tag=""
@@ -48,6 +50,13 @@ partition_current_leader() {
     echo "PARTITION_HOLD_SECONDS must be an integer in [0,300]" >&2
     exit 1
   fi
+  case "$PARTITION_DIRECTION" in
+    both|ingress|egress) ;;
+    *)
+      echo "PARTITION_DIRECTION must be both, ingress, or egress; got $PARTITION_DIRECTION" >&2
+      exit 1
+      ;;
+  esac
   privileged="$(docker inspect "$KIND_NODE_CONTAINER" --format '{{.HostConfig.Privileged}}')"
   if [[ "$privileged" != "true" ]]; then
     echo "refusing network partition: node container $KIND_NODE_CONTAINER is not privileged" >&2
@@ -100,19 +109,28 @@ partition_current_leader() {
   trap cleanup_partition EXIT
   trap 'cleanup_partition; exit 130' INT
   trap 'cleanup_partition; exit 143' TERM
-  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$partition_pod_ip" \
-    -m comment --comment "$partition_tag-out" -j DROP 2>/dev/null && {
-    echo "refusing duplicate partition rule $partition_tag-out" >&2
-    exit 1
-  }
-  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -s "$partition_pod_ip" \
-    -m comment --comment "$partition_tag-out" -j DROP
-  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -d "$partition_pod_ip" \
-    -m comment --comment "$partition_tag-in" -j DROP
-  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$partition_pod_ip" \
-    -m comment --comment "$partition_tag-out" -j DROP
-  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$partition_pod_ip" \
-    -m comment --comment "$partition_tag-in" -j DROP
+  if [[ "$PARTITION_DIRECTION" == "both" || "$PARTITION_DIRECTION" == "egress" ]]; then
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$partition_pod_ip" \
+      -m comment --comment "$partition_tag-out" -j DROP 2>/dev/null && {
+      echo "refusing duplicate partition rule $partition_tag-out" >&2
+      exit 1
+    }
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -s "$partition_pod_ip" \
+      -m comment --comment "$partition_tag-out" -j DROP
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$partition_pod_ip" \
+      -m comment --comment "$partition_tag-out" -j DROP
+  fi
+  if [[ "$PARTITION_DIRECTION" == "both" || "$PARTITION_DIRECTION" == "ingress" ]]; then
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$partition_pod_ip" \
+      -m comment --comment "$partition_tag-in" -j DROP 2>/dev/null && {
+      echo "refusing duplicate partition rule $partition_tag-in" >&2
+      exit 1
+    }
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -d "$partition_pod_ip" \
+      -m comment --comment "$partition_tag-in" -j DROP
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$partition_pod_ip" \
+      -m comment --comment "$partition_tag-in" -j DROP
+  fi
 
   deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))
   while (( SECONDS < deadline )); do
@@ -132,7 +150,7 @@ partition_current_leader() {
         echo "network partition rules did not drop packets for $leader_name ($partition_tag): $dropped_packets" >&2
         return 1
       fi
-      echo "network partition changed leader: $leader_name/$leader_id -> $new_leader; pod_uid=$partition_pod_uid dropped_packets=$dropped_packets"
+      echo "network partition changed leader: $leader_name/$leader_id -> $new_leader; direction=$PARTITION_DIRECTION pod_uid=$partition_pod_uid dropped_packets=$dropped_packets"
       cleanup_partition
       partition_pod_ip=""
       partition_tag=""
@@ -210,7 +228,7 @@ soak_duration="${KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION:-rapid}"
 soak_audit_interval="${KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL:-auto}"
 soak_audit_max_outage="${KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE:-auto}"
 soak_audit_sample="${KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE:-auto}"
-echo "Running lease renewal soak: clients=${soak_clients} leases/client=${soak_leases_per_client} failovers=${soak_cycles} ttl=${soak_ttl}s duration=${soak_duration} mode=${FAILOVER_MODE} audit=${soak_audit_interval}/${soak_audit_max_outage} sample=${soak_audit_sample}"
+echo "Running lease renewal soak: clients=${soak_clients} leases/client=${soak_leases_per_client} failovers=${soak_cycles} ttl=${soak_ttl}s duration=${soak_duration} mode=${FAILOVER_MODE} partition_direction=${PARTITION_DIRECTION} audit=${soak_audit_interval}/${soak_audit_max_outage} sample=${soak_audit_sample}"
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
