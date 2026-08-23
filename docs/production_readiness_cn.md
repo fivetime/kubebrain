@@ -1253,6 +1253,13 @@ watch soak 和版本矩阵等可能失败的门禁都必须先完成；不得在
 会把整体结果改为失败的后置步骤。外部发布系统后续执行独立 release gate 时仍须自行持有原 image/revision 并
 承担失败回滚，不能把统一入口的局部顺序保证解释成跨进程发布事务。
 
+统一入口在执行任何测试前，还会用同一个 rollout runner 的 `PREFLIGHT_ONLY=true` 模式校验完整候选合同：变更
+授权、`kubectl`/`jq` 可执行性、不可变 image、平台 runtime digest 集、replica/port/iteration/TTL、duration、
+interval 和 probe DNS label。该模式在创建 runtime evidence 目录或调用 Kubernetes 前退出，只用于尽早拒绝错误
+发布 profile，不读取集群状态。最终 canary 调用必须显式设置 `PREFLIGHT_ONLY=false`，不得继承调用环境中的 true；
+否则会把应执行的 StatefulSet mutation 错误降级成预检成功。预检和实际 admission 使用同一 runner，新增参数时
+必须位于 preflight 退出点之前，不能在 `verify.sh` 复制第二套格式规则。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 

@@ -61078,6 +61078,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   111.925/322.100/216.154/337.762 秒）。该顺序保证统一入口的本地事务边界，不替代外部发布系统在进程被强杀、
   节点失联或后续独立 release gate 失败时执行显式 rollback 的责任。
 
+- A5409 关闭 A5408 虽把 mutation 放到最后、却把候选配置错误也推迟到所有昂贵门禁之后才发现的 fail-fast 缺口。
+  旧统一入口只提前检查两个变量非空；mutable image tag、畸形/重复 runtime digest、duration/int64 溢出、无效 DNS
+  label、缺少 `jq`/`kubectl` 或未授权，都要等 Go test、soak 和 version matrix 全部完成后才由 runner 拒绝。提交
+  `ac36e229` 为 canonical `run-kubebrain-rollout-availability.sh` 增加严格布尔 `PREFLIGHT_ONLY`：复用同一套授权、
+  工具和全部参数校验，成功后在临时目录创建及首次 `kubectl` 前输出确定 receipt 并退出。`verify.sh` 在任何
+  `run_step` 前以解析后的绝对仓库路径强制 `PREFLIGHT_ONLY=true`，最终 commit point 则显式覆盖为 `false`；因此
+  调用环境残留的 `PREFLIGHT_ONLY=true` 不能让实际 canary 静默退化为只预检假绿。fake kubectl 回归 20 轮证明
+  合法预检零调用，非法 mode 也在 Kubernetes 前 exit 2；从 compat 子目录动态调用统一入口，mutable tag 只输出
+  canonical runner 错误且不出现任何测试横幅。首轮 RED 还确认旧出现次数断言真实捕获新增预检分支，更新为五处后
+  GREEN。rollout 全组普通/race 为 2.612/3.674 秒，兼容模块普通/race 为 4.058/7.066 秒，两包 vet 与 shell syntax
+  通过；production inventory 增至 596 项，精确提交四片 135/168/151/142 全绿（Go 测试
+  105.360/316.380/208.776/332.691 秒；端到端 111.022/322.032/214.416/338.336 秒）。预检只证明本地发布合同
+  可执行，不读取集群当前身份/健康；后者仍由最后一步实际 runner 的 mutation 前 admission 负责。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
