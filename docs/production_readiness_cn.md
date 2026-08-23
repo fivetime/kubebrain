@@ -1247,6 +1247,12 @@ digest 不能替代节点选择后的 platform manifest digest；异构集群应
 和“允许修改 StatefulSet”两道显式门禁；只设置其中一个不得产生 mutation。`verify.sh` 的其他 RUN 开关应由
 同一发布 profile 明确取值，避免继承交互式 Shell 中残留的环境变量。
 
+候选 canary 必须是统一 `verify.sh` 的最后一个执行步骤。runner 成功后会保留目标镜像，因此所有 apiserver、
+watch soak 和版本矩阵等可能失败的门禁都必须先完成；不得在 candidate canary 后追加新的 `run_step`。这样前置
+门禁失败时尚未修改 StatefulSet，canary 自身失败时由 runner 恢复原镜像，而 canary 成功后统一流水线不再存在
+会把整体结果改为失败的后置步骤。外部发布系统后续执行独立 release gate 时仍须自行持有原 image/revision 并
+承担失败回滚，不能把统一入口的局部顺序保证解释成跨进程发布事务。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 

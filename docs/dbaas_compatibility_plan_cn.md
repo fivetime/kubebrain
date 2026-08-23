@@ -61066,6 +61066,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   immutable rollout/回滚语义不在本项重复实现；发布编排现在应经统一入口显式选择该门禁，不能直接绕过为
   未受发布 profile 记录的手工脚本调用。
 
+- A5408 修复 A5407 把候选 canary 放在统一验证流水线中段的提交点缺口。底层 runner 在候选自身验证成功后会
+  有意保留目标镜像；旧顺序随后仍可执行 apiserver rollout/watch soak 和两个 version matrix，其中任一步失败都会
+  令 `verify.sh` 整体非零退出，却不会触发已经成功返回的 runner 回滚，造成“发布验证失败、候选仍驻留”的矛盾
+  终态。提交 `6dbfdd46` 将 candidate mutation 移到所有其他 `run_step` 之后，并在脚本中明确该 commit point：
+  所有可能的前置失败都发生在 StatefulSet mutation 前；canary 自身失败继续由 A5406 cleanup 回滚；canary 成功
+  后统一入口已无其他可失败步骤，只输出完成消息。回归固定 Kubernetes version matrix 先于 canary，并断言 canary
+  是脚本最后一个 `run_step`，防止未来追加检查重新打开窗口。聚焦普通 20 轮 0.428 秒、race 10 轮 1.282 秒，完整
+  兼容模块普通 4.222 秒、race 7.168 秒及 vet/shell syntax 通过；production inventory 保持 594 项，精确提交四片
+  135/167/151/141 全绿（Go 测试 106.204/316.405/210.434/332.052 秒；端到端
+  111.925/322.100/216.154/337.762 秒）。该顺序保证统一入口的本地事务边界，不替代外部发布系统在进程被强杀、
+  节点失联或后续独立 release gate 失败时执行显式 rollback 的责任。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
