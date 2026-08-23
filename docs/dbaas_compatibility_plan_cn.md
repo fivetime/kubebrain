@@ -61235,6 +61235,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过，覆盖上述 RangeStream、Txn fast-path/interval、Lock/Election 与公开 Unimplemented allowlist。本项没有修改
   生产或测试代码，也不把矩阵唯一的 Snapshot legacy provenance 来源限制误报成可由在线代码恢复的差距。
 
+- A5421 修复候选 rollout 运行证据仅在完整落盘后检查大小的资源边界。旧
+  `capture_runtime_evidence`/`capture_probe_phase_response` 虽分别声明 1 MiB/4 KiB 上限，却先把 kubectl
+  的全部 stdout 写入临时文件；失控或恶意 apiserver/log 响应仍可耗尽发布节点磁盘后才失败。提交
+  `bb382461` 抽取统一流式捕获器，只保留 `limit+1` 字节：多出的一个字节用于确定性区分合法边界与超限，
+  超限继续立即终止整个 runner，未超限时仍传播 producer/filter 的非零状态。回归把 StatefulSet 与 probe log
+  两类伪响应扩大到 64 MiB，并要求 producer 的完整响应标记始终未创建，证明消费端在 1 MiB 后主动关闭而非事后
+  统计；精确 1 MiB 与 4 KiB 边界继续 GREEN，phase 超限仍不能被下一次成功轮询掩盖。rollout runner 聚焦普通/race
+  为 9.176/10.223 秒，关联 restore-cutover 慢测隔离 0.304 秒通过；单进程全包在无关 cutover 用例处耗尽既有
+  10 分钟总 timeout，故不把该累计时长失败归因于本改动，权威非重叠四片仍在精确代码提交上覆盖全部 606 项并全绿：
+  138/171/153/144 项，Go 测试 108.952/321.394/211.234/336.054 秒，端到端
+  114.666/327.125/217.044/341.916 秒。vet、shell syntax、diff check 与预提交分片 inventory 均通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
