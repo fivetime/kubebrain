@@ -1227,6 +1227,19 @@ StatefulSet restart 后的等待窗口。
 `9223372036.854775807`。零 interval、MaxInt64+1 整数或超范围端口不得等到 probe Pod 内的 Go flag
 parser/配置校验才失败，避免产生无效 Pod 和错误的滚动演练窗口。
 
+默认模式继续用 `rollout restart` 验证当前镜像的重启可用性。发布候选镜像时必须额外设置
+`TARGET_IMAGE=<repository>@sha256:<OCI-index-or-manifest-digest>` 和
+`TARGET_RUNTIME_DIGESTS=sha256:<platform-manifest>[,sha256:<platform-manifest>...]`。runner 只接受不可变
+目标引用和无重复、规范小写的 runtime digest 集；探针发布启动屏障后使用 `kubectl set image`，而不是把
+候选误当成当前镜像 restart。滚动和完整 probe summary 通过后，还逐 ordinal 读取 Pod，要求最终 controller
+revision、Running/Ready、spec image 与 runtime `imageID` 分别绑定目标引用和允许的平台 digest。OCI index
+digest 不能替代节点选择后的 platform manifest digest；异构集群应列出本轮批准的所有平台 digest。
+
+候选 mutation 后任一步失败都会在 EXIT cleanup 中请求恢复原始 StatefulSet image 并等待回滚收敛；请求失败或
+超时会输出 `CRITICAL`，必须按发布事故处置，不能因 runner 已非零退出而忽略。成功的候选 rollout 会保留目标
+镜像，之后仍须用 `validate-instance-ready.sh` 的完整 UID/revision/config/storage/runtime release gate 做发布
+验收。`TARGET_IMAGE` 模式只改变 KubeBrain container image，不承担配置迁移。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 

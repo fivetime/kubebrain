@@ -61032,6 +61032,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍为 589 项，精确提交四片 133/166/151/139 全绿（Go 测试 105.804/314.858/209.874/331.485 秒；端到端
   111.442/320.516/215.528/337.146 秒）。该边界阻止错误实现进入二进制，但不能替代每个镜像在目标集群的启动/rollout canary。
 
+- A5406 关闭 A5405 的候选镜像 canary 缺口。既有 `run-kubebrain-rollout-availability.sh` 只对当前 image 执行
+  `rollout restart`，即使新镜像从未启动也能 GREEN；若发布者手工先 `set image`，runner 又没有失败回滚责任。提交 `c4bf46d5`
+  增加显式 `TARGET_IMAGE` 模式，只接受 `repository@sha256:<64 hex>`，在 native availability probe 输出启动屏障后才执行
+  `kubectl set image`。候选 mutation 后 rollout、probe、终态 revision/image 或 Pod runtime 任一步失败，EXIT cleanup 都恢复原始
+  image 并等待 StatefulSet；回滚请求失败或超时输出 CRITICAL。成功候选保留，默认空 TARGET 仍执行原有 restart drill。
+
+  首次真实运行提供多架构 OCI index digest 作为 TARGET；三副本启动且 600/600 KV/watch/lease/PD/TiKV probe 全绿，但终态检查把
+  Pod `imageID` 错误要求为 index digest。containerd 正确报告节点选择后的 platform manifest digest，门禁因此 RED 并自动将主实例从
+  候选 revision `kubebrain-567874f864` 恢复到原 image/revision `kubebrain:a4983-health-metrics-initialized`/
+  `kubebrain-5dbf96986b`，3/3 Ready、health 正常。不能通过删除 runtime 检查修复；提交 `78b31fe3` 改为候选必须同时显式提供
+  `TARGET_RUNTIME_DIGESTS` 唯一列表，支持异构节点，并逐 ordinal 要求 Pod 属于最终 controller revision、Running/Ready、spec image
+  等于 index 引用、runtime imageID 命中批准的平台 digest。负测覆盖 mutable/missing digest、候选 rollout 失败、runtime drift 和原镜像恢复；
+  过程中还修复 jq `any` 内错误 dot 作用域会让任意 imageID 自匹配的假绿。
+
+  绑定最终完整 SHA `78b31fe3c15a6f241ca49bab6c0aad70aa2a5d43` 的 TiKV linux/amd64 镜像以 immutable index
+  `sha256:71bb7ffb…` 和本地 runtime platform digest `sha256:7d7410c0…` 再次真实滚动。三 Pod digest/revision/Ready 全部匹配，600 次
+  KV、600 个 watch event、lease continuity、PD TSO 与 TiKV Region 拓扑检查全部通过，fail=0；合法 leader-changed 由官方 client 重试，
+  最大业务/TSO/Region 延迟为 1425/26/7ms。验证后人工恢复长期基线 image/revision，3/3 Ready、NodePort health 正常，probe Pod 已删除。
+  聚焦普通 20 轮 52.226 秒、race 10 轮 27.910 秒及 vet/shell syntax 通过；production inventory 增至 594 项，最终提交四片
+  135/167/151/141 全绿（Go 测试 105.699/315.718/208.530/332.151 秒；端到端
+  111.335/321.367/214.206/337.809 秒）。本项验证 image-only candidate rollout；配置/schema 迁移和多架构真实节点仍需独立门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
