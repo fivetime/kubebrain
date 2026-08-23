@@ -61092,6 +61092,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   105.360/316.380/208.776/332.691 秒；端到端 111.022/322.032/214.416/338.336 秒）。预检只证明本地发布合同
   可执行，不读取集群当前身份/健康；后者仍由最后一步实际 runner 的 mutation 前 admission 负责。
 
+- A5410 收紧候选 rollout 失败回滚可能无限悬挂的 Kubernetes 写请求边界。旧 cleanup 虽在 candidate 失败时调用
+  `kubectl set image` 恢复原镜像，但该请求没有 client request timeout；apiserver 半开时 runner 可永久停在 trap，
+  既不返回非零结果，也不进入带 300 秒 `ROLLOUT_TIMEOUT` 的 convergence 检查。同一问题还覆盖候选 `set image`、
+  当前镜像 `rollout restart` 和 probe Pod 删除。提交 `2c6dcb7b` 增加默认 10 秒、可配置且按 Go duration
+  representable 域校验的 `KUBECTL_MUTATION_REQUEST_TIMEOUT`，通过独立 `kctl_mutation` 给上述写/删除请求传入
+  `--request-timeout`；probe 删除同时传入同值 `--timeout`。rollout status 仍保留独立 300 秒窗口，没有把单次 API
+  写入上界错误当成三副本收敛上界。溢出回归证明新参数在 Kubernetes 前 fail closed，fake kubectl 日志固定 restart、
+  candidate set、rollback set 和 cleanup delete 均携带 10 秒合同。聚焦普通 20 轮 14.253 秒、race 10 轮 8.282 秒，
+  rollout 全组普通/race 为 2.658/3.735 秒，vet/shell syntax 通过；production inventory 保持 596 项，精确提交四片
+  135/168/151/142 全绿（Go 测试 105.748/316.812/212.487/333.676 秒；端到端
+  111.425/322.499/218.232/339.380 秒）。该上界不能恢复已失去 quorum 的 Kubernetes 控制面，也不能覆盖 SIGKILL；
+  它保证可响应控制面上的单次 mutation/cleanup 请求不会无限占住发布进程，随后成功回滚仍必须通过 rollout status。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

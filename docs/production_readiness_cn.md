@@ -1260,6 +1260,13 @@ interval 和 probe DNS label。该模式在创建 runtime evidence 目录或调�
 否则会把应执行的 StatefulSet mutation 错误降级成预检成功。预检和实际 admission 使用同一 runner，新增参数时
 必须位于 preflight 退出点之前，不能在 `verify.sh` 复制第二套格式规则。
 
+候选写入、原镜像回滚、当前镜像 restart 和 probe Pod cleanup 使用独立的
+`KUBECTL_MUTATION_REQUEST_TIMEOUT`（默认 `10s`）作为 `kubectl --request-timeout`；probe 删除还使用相同的
+`--timeout`。该参数必须是可由 Go `time.Duration` 表示的正 `ms|s|m` 值，并在首次 Kubernetes 调用前校验。
+它只限制单次控制面 mutation 请求，不能替代 `ROLLOUT_TIMEOUT`：写请求成功后仍应给 StatefulSet 足够的三副本
+收敛时间。若回滚请求超时，runner 会输出 `CRITICAL`，发布系统必须升级为事故并继续用保存的原 image/revision
+恢复；不得因为 cleanup 已有 timeout 就把未收敛状态视为安全。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 
