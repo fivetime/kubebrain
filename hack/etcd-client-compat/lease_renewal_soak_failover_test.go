@@ -115,7 +115,7 @@ func parseLeaseRenewalSoakConfig(lookup func(string) (string, bool)) (leaseRenew
 		}
 		config.auditMaxOutage = outage
 	} else if config.duration > 0 {
-		config.auditMaxOutage = 45 * time.Second
+		config.auditMaxOutage = min(45*time.Second, time.Duration(config.leaseTTL)*time.Second-time.Second)
 	}
 	if raw, configured := lookup("KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE"); configured {
 		sample, err := strconv.Atoi(strings.TrimSpace(raw))
@@ -131,6 +131,9 @@ func parseLeaseRenewalSoakConfig(lookup func(string) (string, bool)) (leaseRenew
 	}
 	if config.duration > 0 && (config.auditInterval >= config.auditMaxOutage || config.auditSample > config.clientCount*config.leasesPerClient) {
 		return leaseRenewalSoakConfig{}, errors.New("lease renewal soak requires audit interval < max outage and sample <= total leases")
+	}
+	if config.duration > 0 && config.auditMaxOutage >= time.Duration(config.leaseTTL)*time.Second {
+		return leaseRenewalSoakConfig{}, errors.New("lease renewal soak requires audit max outage < lease TTL")
 	}
 	if config.duration > 0 {
 		total := config.clientCount * config.leasesPerClient
@@ -432,6 +435,11 @@ func TestParseLeaseRenewalSoakConfig(t *testing.T) {
 		clientCount: 16, leasesPerClient: 32, failoverCycles: 6, leaseTTL: 90, duration: 2 * time.Hour,
 		auditInterval: 5 * time.Second, auditMaxOutage: 45 * time.Second, auditSample: 64,
 	}, configured)
+	defaultTTLSoak, err := parseLeaseRenewalSoakConfig(lookup(map[string]string{
+		"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "1m",
+	}))
+	require.NoError(t, err)
+	require.Equal(t, 29*time.Second, defaultTTLSoak.auditMaxOutage)
 
 	invalid := []map[string]string{
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_CLIENTS": "0"},
@@ -440,12 +448,13 @@ func TestParseLeaseRenewalSoakConfig(t *testing.T) {
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_TTL": "4"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "not-a-duration"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "2s"},
-		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "44s"},
+		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "28s"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "168h1s"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL": "1s"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL": "99ms"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE": "301s"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL": "2s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE": "2s"},
+		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "1m", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE": "30s"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE": "4097"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE": "65"},
 		{
