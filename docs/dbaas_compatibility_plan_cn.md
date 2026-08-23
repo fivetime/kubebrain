@@ -60782,8 +60782,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   实际 DROP 4951 包并完成换主；30 个完整样本审计 1920 条 lease，5 次受控传输错误，response restart 为 0，最大完整样本间隔
   31.992 秒、最大逐 lease response 进展 60 秒，revision 固定 `468126003565972257`，180.30 秒通过。规则零残留、endpoint 健康、
   StatefulSet 3/3。根 production inventory 仍为 589 项；最终四片 133/166/151/139 全部通过（Go 测试
-  103.624/312.019/207.363/328.107 秒；端到端 109.307/317.707/213.031/333.817 秒）。当前宿主只有一个 kind control-plane，
-  因此代码路径已支持 worker 但真实 worker 调度尚未留证；多节点 kind、远程 runtime 与跨节点/AZ fabric 仍是后续验证项。
+  103.624/312.019/207.363/328.107 秒；端到端 109.307/317.707/213.031/333.817 秒）。随后创建一次性 v1.36.1 双节点 kind，
+  将 Pod `kubebrain-0` 固定到 `kubebrain-worker-drill-worker`，从 control-plane 持续向 Pod IP 发真实 TCP 流量；受控 leader 元数据只在
+  worker 规则存在后从 1 切到 2。helper 从 Pod spec 自动选择 worker，ingress 规则实际 DROP 45 包，control-plane 未误加规则，结束后
+  两节点规则均为零。临时集群已删除并切回主 context。该补充证明真实 worker 调度、容器标签、跨节点包命中和 cleanup，不证明完整
+  多节点 KubeBrain/TiKV lease 连续性；远程 runtime 与跨节点/AZ fabric 仍是后续验证项。
 
 ### P2：运维兼容和长期验证
 
