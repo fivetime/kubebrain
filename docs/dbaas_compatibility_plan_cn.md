@@ -60865,6 +60865,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   MemberList Sync 后的单 Pod 替换接管；共享 Service/LB 模式由 A5395 的可达性门禁负责，二者是不同有效拓扑，不能用重复 URL 的共享
   入口结果宣称逐成员故障切换已验证。
 
+- A5397 继续关闭 A5396 只调用显式 `Sync()`、没有证明官方客户端后台 AutoSync 的缺口。对照 upstream
+  `client/v3/client.go::autoSync`：`AutoSyncInterval=0` 默认关闭，启用后按间隔用独立 5 秒 context 调用同一 `Sync` 并整体替换 resolver
+  端点；upstream `tests/e2e/etcd_grpcproxy_test.go::TestGrpcProxyAutoSync` 同样等待后台发现新端点后关闭原节点。增强后的 in-cluster balancer
+  探针保留 unary 客户端显式 Sync 作为控制组，将已在 victim 上创建 watch 的第二客户端设为 100ms `AutoSyncInterval`；探针本身不对它
+  调用 Sync/SetEndpoints，而是最多等待 10 秒，要求端点池从单 victim 自动收敛为三个完全匹配且唯一的 Pod DNS，之后才允许删除 victim。
+  输出分别报告 `synced_endpoints=3` 和 `autosynced_endpoints=3`，避免一条路径的成功掩盖另一条未运行。静态合同固定唯一一次显式 Sync、
+  AutoSync 配置、后台收敛等待、禁止手工端点注入及结果字段。
+
+  在长期三副本 TiKV/PD 环境临时省略共享 `--advertise-client-urls` 覆盖、由 `initial-cluster` 派生逐成员地址后，精确代码提交
+  `910e111e` 的真实演练由单一 `kubebrain-0` 启动两个客户端；后台 AutoSync 收敛后删除该 Pod，20 个 watch 事件、线性/最终串行读、
+  Txn、Put/Delete 全部通过，`transient_failures=0`、`stale_serializable_reads=0`，替代 UID 从
+  `755d16e1-ae54-434b-af60-961ff96047cc` 变为 `0aa017aa-7fe0-42d8-a689-32b43d6f6bce` 并 Ready。演练后恢复共享
+  NodePort 参数和 revision `kubebrain-5dbf96986b`，StatefulSet 3/3 updated/ready，宿主 Sync smoke 0.085 秒通过。根探针 race 编译、
+  compat 静态合同 race 20 轮 1.100 秒通过；production inventory 仍为 589 项，最终四片 133/166/151/139 全绿（Go 测试
+  103.497/312.131/208.332/328.280 秒；端到端 109.167/317.761/213.983/333.870 秒）。该结果证明启用 AutoSync 的直连
+  客户端在单 Pod 替换中保持 watch/数据面连续性；它不改变共享 Service 模式只产生一个唯一外部入口的合同。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
