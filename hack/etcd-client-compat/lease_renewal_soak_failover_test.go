@@ -252,7 +252,11 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 		for i := range leases {
 			baseline[i] = leases[i].responses.Load()
 		}
-		require.NoErrorf(t, waitForLeaseResponses(ctx, errs, counts, baseline, 30*time.Second),
+		freshResponseTimeout := 30 * time.Second
+		if config.auditMaxOutage > freshResponseTimeout {
+			freshResponseTimeout = config.auditMaxOutage
+		}
+		require.NoErrorf(t, waitForLeaseResponses(ctx, errs, counts, baseline, freshResponseTimeout),
 			"all leases must receive a fresh keepalive response after failover cycle %d", cycle)
 
 		got, err := clients[0].Get(ctx, prefix, clientv3.WithPrefix())
