@@ -408,9 +408,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 - **ClusterId 稳定性（2026-07-16）**：`MemberList` 不再把当前 leader 地址的
   CRC 当作 ClusterId，改为与所有其他 RPC 一致地使用 backend 从 PD/TiKV
   cluster identity 和 keyspace 派生的稳定 ID，避免换主时客户端把同一实例误判
-  为另一集群。当前 peer service 只掌握本机与 leader，尚不能枚举全部 follower；
-  因此 MemberList 仍是部分兼容，DBaaS 需要把实例副本注册表注入数据面后再宣称
-  支持 clientv3 AutoSync。
+  为另一集群。未配置 `--initial-cluster` 时 peer service 只掌握本机与 leader，因而仅返回
+  降级视图；正式 DBaaS 必须注入完整实例副本注册表。下文 A136 已完成该配置和 clientv3
+  Sync/AutoSync 验证，不能再把已配置生产拓扑绝对标记为“仍是部分兼容”。
 - **Maintenance 授权矩阵（2026-07-16）**：对齐
   `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 的
   `authMaintenanceServer`：auth 开启后，`Status` 与 `Alarm(GET)` 要求任意有效
@@ -60812,6 +60812,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   endpoint 健康、StatefulSet 3/3。聚焦普通/race 各 20 轮、完整 compat race 7.334 秒及 vet 通过；production inventory 仍为
   589 项，最终四片 133/166/151/139 全部通过（Go 测试 105.391/318.001/208.657/334.159 秒；端到端
   111.146/323.778/214.455/339.891 秒）。该接入提升发布门禁可发现性，不扩大 A5392 对完整多节点数据面的证明范围。
+
+- A5394 回到 Cluster/MemberList 核心合同并发现当前长期开发集群的真实配置漂移。宿主 kind node 已是
+  `172.18.0.2`，bootstrap `http://172.18.0.2:30079` 健康，但 StatefulSet 仍公告早已失效的
+  `http://172.18.0.3:30079`。设置 `KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE=1` 后，官方 clientv3 Sync 把健康
+  bootstrap 替换为 `.3`，Put 在 10 秒 context 内 DeadlineExceeded，cleanup 明确返回 `no route to host`，聚焦测试 15.028 秒 RED。
+  保持 StatefulSet UID、镜像、keyspace、PD 和 peer identity 不变，只把精确参数索引从 `.3` 改为 `.2`；generation 527 滚动到
+  revision `kubebrain-5dbf96986b` 后 3/3 updated/ready、三个新 Pod 零重启，运行时三成员均公告 `.2`。同一 Sync→Put/Get
+  连续 10 轮 0.535 秒通过；最终代码提交上连续 20 轮 1.044 秒通过，endpoint proposal health 正常。
+
+  同轮修复兼容夹具的拓扑语义混用。旧 `KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE` 还会启用
+  `TestMaintenanceHashKVMatchesAcrossMembers`，后者要求每个公告 URL 唯一标识一个 serving member；生产清单却有意让三成员都公告
+  同一个稳定 Service URL，三次调用可能随机命中 Pod，既会假失败也可能伪造跨成员 GREEN。提交 `e9cff8b3` 将逐成员模式拆为
+  `KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIRECT=1`，并在任何 HashKV 前要求每成员恰好一个且全局唯一 URL；共享 Service 现场确定性 fail fast
+  为 3 members/1 unique URL，而 DIALABLE 只运行 Sync 可达性。聚焦 race 20 轮 1.232 秒、完整 compat race 7.037 秒及 vet 通过；
+  production inventory 仍为 589 项，最终四片 133/166/151/139 全部通过（Go 测试
+  104.992/313.325/207.345/329.557 秒；端到端 110.582/318.976/213.023/335.165 秒）。服务端二进制未因配置漂移修改；正式发布仍由
+  `validate-instance-ready.sh` 从目标客户端网络域校验参数、运行时 MemberList 和每个广告 URL health，不能只依赖 StatefulSet Ready。
 
 ### P2：运维兼容和长期验证
 
