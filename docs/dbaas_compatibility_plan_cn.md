@@ -60741,6 +60741,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   110.328/320.811/216.234/336.008 秒）。该项覆盖单宿主 ingress/egress 非对称黑洞，不宣称覆盖跨节点真实路由、部分丢包、
   延迟/乱序/带宽退化或跨 AZ 故障域；这些仍须目标环境验证。
 
+- A5389 将 A5388 的全量黑洞扩展为可审计的部分丢包。新增 `PARTITION_DROP_PERCENT`，只接受十进制整数 1..100，0、101 与
+  非数字均在 docker/iptables mutation 前由真实脚本入口拒绝；100 保持原无 statistic 规则，1..99 规范化为六位小数并使用
+  `-m statistic --mode random --probability`。概率参数数组被逐字复用于 duplicate check、insert、存在性 check、delete 和 cleanup
+  后复查，避免创建与删除的 rule identity 漂移导致残留。direction、配置百分比、原 Pod UID 和实际 DROP packet counter 同时进入
+  canonical 日志；counter 只证明规则确实丢包，不冒充总包数或实测比例。静态回归固定默认 100、概率参数构造/传播、边界错误、
+  双方向兼容和输出字段；脚本语法、聚焦普通/race 各 20 轮、完整 compat race 7.142 秒及 vet 全部通过。
+
+  精确代码提交 `7b02bd4f` 在独立 3 副本 TiKV/PD 本地拓扑以 ingress 90% random DROP、64 lease、TTL=120、outage=90、
+  duration=90s 隔离当前 leader：原 Pod UID `a83a47be-…` 不变，规则实际 DROP 4578 包并完成换主；23 个完整样本审计 1472 条
+  lease，11 次受控 audit 传输错误，response restart 为 0，最大完整样本间隔 63.368 秒、最大逐 lease response 进展 75 秒，
+  revision 固定 `468126003565972001`，175.75 秒通过。规则零残留、endpoint 健康、StatefulSet 3/3。根 production inventory
+  仍为 589 项；最终四片 133/166/151/139 全部通过（Go 测试 108.338/317.128/211.590/333.360 秒；端到端
+  113.981/322.856/217.272/339.076 秒）。该项证明单宿主高概率随机丢包下的换主与 lease 连续性，不证明低比例长期抖动、
+  burst/Gilbert-Elliott loss、时延/乱序/带宽限制或跨节点/跨 AZ fabric；这些仍须后续矩阵覆盖。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
