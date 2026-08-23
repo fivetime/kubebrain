@@ -61247,6 +61247,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   138/171/153/144 项，Go 测试 108.952/321.394/211.234/336.054 秒，端到端
   114.666/327.125/217.044/341.916 秒。vet、shell syntax、diff check 与预提交分片 inventory 均通过。
 
+- A5422 关闭 A5421 只限制已返回字节、apiserver 接受连接后静默时证据采集仍可无限悬挂的下一层边界。
+  提交 `092d825f` 新增默认 10 秒、可独立校验的 `KUBECTL_EVIDENCE_REQUEST_TIMEOUT`，所有 12 处
+  StatefulSet/Pod `get` 与 probe `logs` 均经 `kctl_evidence --request-timeout`；probe `kubectl run` 是写操作，
+  现也经既有 `KUBECTL_MUTATION_REQUEST_TIMEOUT`，不再绕过 A5410 的 mutation 上限。`wait` 与
+  `rollout status` 刻意保留各自 60–300 秒 watch timeout，避免用单请求 10 秒上限截断合法收敛窗口。运行日志回归
+  使用非默认 7 秒证明每次当前分支读取都携带独立参数，源码结构回归同时禁止未来在 rollback/失败诊断等未选分支
+  重新引入裸 `kctl get/logs/run`；非法/溢出 evidence duration 在任何 Kubernetes 调用前失败。rollout runner
+  普通/race 为 9.230/10.359 秒，vet、shell syntax、diff check 与 607 项预提交 inventory 通过；精确代码提交
+  四片 138/171/153/145 全绿（Go 测试 107.890/323.669/211.519/338.020 秒；端到端
+  113.630/329.398/217.363/343.832 秒）。该上限约束单次 API 请求；probe start 的多次有界重试和长 watch
+  仍由现有阶段预算控制，不把短请求 timeout 误当成整个 rollout 的墙钟 deadline。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
