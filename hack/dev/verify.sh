@@ -288,14 +288,6 @@ if [ "$RUN_INCLUSTER_ROLLOUT_SMOKE" = "true" ]; then
   run_step "in-cluster rollout smoke" hack/dev/incluster-rollout-smoke.sh
 fi
 
-if [ "$RUN_KUBEBRAIN_CANDIDATE_CANARY" = "true" ]; then
-  if [ -z "${TARGET_IMAGE:-}" ] || [ -z "${TARGET_RUNTIME_DIGESTS:-}" ]; then
-    echo "candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS" >&2
-    exit 2
-  fi
-  run_step "immutable KubeBrain candidate canary" hack/production/run-kubebrain-rollout-availability.sh
-fi
-
 if [ "$RUN_APISERVER_ROLLOUT_SMOKE" = "true" ]; then
   run_step "apiserver rollout smoke" env ENDPOINT="http://${ENDPOINT}" hack/dev/apiserver-rollout-smoke.sh
 fi
@@ -318,6 +310,16 @@ fi
 
 if [ "$RUN_K8S_VERSION_MATRIX" = "true" ]; then
   run_step "Kubernetes version matrix" env RUN_K8S_VERSION_MATRIX=false hack/dev/k8s-version-matrix.sh
+fi
+
+# Keep the candidate mutation last: a successful canary deliberately retains the
+# target image, so no later verification step may fail after that commit point.
+if [ "$RUN_KUBEBRAIN_CANDIDATE_CANARY" = "true" ]; then
+  if [ -z "${TARGET_IMAGE:-}" ] || [ -z "${TARGET_RUNTIME_DIGESTS:-}" ]; then
+    echo "candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS" >&2
+    exit 2
+  fi
+  run_step "immutable KubeBrain candidate canary" hack/production/run-kubebrain-rollout-availability.sh
 fi
 
 echo

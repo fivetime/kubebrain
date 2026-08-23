@@ -395,6 +395,13 @@ func TestVerifyExposesImmutableCandidateCanaryBehindExplicitGate(t *testing.T) {
 	require.Less(t,
 		strings.Index(verifyScript, `candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS`),
 		strings.Index(verifyScript, `run_step "immutable KubeBrain candidate canary"`))
+	require.Less(t,
+		strings.Index(verifyScript, `run_step "Kubernetes version matrix"`),
+		strings.Index(verifyScript, `run_step "immutable KubeBrain candidate canary"`))
+	require.Equal(t,
+		strings.LastIndex(verifyScript, `run_step "immutable KubeBrain candidate canary"`),
+		strings.LastIndex(verifyScript, "run_step "),
+		"candidate mutation must remain the final verification step")
 
 	flagsBlock := verifyScript[strings.Index(verifyScript, "RUN_FLAGS=("):]
 	flagsBlock = flagsBlock[:strings.Index(flagsBlock, "\n)")]
