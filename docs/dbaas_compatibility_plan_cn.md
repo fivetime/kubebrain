@@ -61259,6 +61259,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   113.630/329.398/217.363/343.832 秒）。该上限约束单次 API 请求；probe start 的多次有界重试和长 watch
   仍由现有阶段预算控制，不把短请求 timeout 误当成整个 rollout 的墙钟 deadline。
 
+- A5423 修复 A5422 的 kubectl `--request-timeout` 仍不能约束本地进程启动、credential exec plugin 或请求建立前
+  卡死的进程级边界。提交 `edfa318c` 为 evidence/mutation wrapper 分别增加默认 15 秒、独立校验的 command
+  timeout，使用 GNU `timeout` 先发 TERM、1 秒后 KILL；10 秒 kubectl request timeout 继续负责 HTTP 层错误，
+  两层预算可分别调整。新依赖在任何 Kubernetes 调用前 fail closed；probe create 的 timeout 另有确定诊断，cleanup
+  仍执行。确定性测试让 fake kubectl 及其 `sleep` 子进程静默 30 秒，把两类 command timeout 降为 100ms，并用
+  5 秒外部进程组保险和 `<4s` 断言证明 evidence read 与 probe mutation 均被本层终止；若只杀父进程而遗留持有
+  stdout 的子进程，测试会在外层保险处失败。rollout 全组普通/race 为 35.582/36.621 秒；逐测试 JSON 显示增量来自
+  每个真实 wrapper 启动约 0.1 秒的 `timeout` 进程，没有单个异常悬挂，生产数分钟 rollout 接受该小幅保险开销。
+  vet、shell syntax、diff check 与 609 项预提交 inventory 通过；精确代码提交四片 139/171/153/146 全绿
+  （Go 测试 115.814/335.638/216.909/344.081 秒；端到端 121.641/341.486/222.740/349.921 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
