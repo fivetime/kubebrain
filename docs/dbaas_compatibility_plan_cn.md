@@ -61270,6 +61270,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   vet、shell syntax、diff check 与 609 项预提交 inventory 通过；精确代码提交四片 139/171/153/146 全绿
   （Go 测试 115.814/335.638/216.909/344.081 秒；端到端 121.641/341.486/222.740/349.921 秒）。
 
+- A5424 将 A5423 的进程级约束补到此前因阶段较长而保留的全部 watch 调用。提交 `453688a1` 删除最后一个裸
+  `kctl` wrapper，让 probe Ready、主 rollout status、失败 cleanup 的 rollback status 与 probe phase 轮询统一经
+  `kctl_watch`；默认 command timeout 分别为 70/310/5 秒，略宽于 60 秒 Ready、300 秒 rollout 与单次 1 秒 phase
+  API watch，既允许合法收敛，又能终止 kubectl 本地启动、credential plugin 或连接建立前的无限挂死。三个预算均在
+  首次 Kubernetes 调用前做正 Go duration/溢出校验，可独立调优；外层预算设得更小时以外层为准。Ready 与主
+  rollout 失败现有确定诊断，rollback 继续保留 CRITICAL 语义。结构测试禁止重新引入裸 `kctl wait/rollout
+  status`；fake kubectl 的三类 30 秒静默及其子进程在 100ms command timeout 下均被 5 秒进程组保险内收束，phase
+  场景还证明重复轮询服从 1 秒整体完成预算。rollout 全组普通/race 为 45.516/51.650 秒，vet、shell syntax、diff
+  check 与 609 项预提交 inventory 通过；精确代码提交四片 139/171/153/146 全绿（Go 测试
+  117.876/337.032/216.500/345.977 秒；端到端 123.680/342.883/222.310/351.842 秒）。本项收紧发布工具的可终止性，
+  不改变 etcd API、TiKV 数据语义或协议兼容矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
