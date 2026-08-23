@@ -146,6 +146,14 @@ for flag in "${RUN_FLAGS[@]}"; do
   validate_bool_flag "$flag"
 done
 
+if [ "$RUN_KUBEBRAIN_CANDIDATE_CANARY" = "true" ]; then
+  if [ -z "${TARGET_IMAGE:-}" ] || [ -z "${TARGET_RUNTIME_DIGESTS:-}" ]; then
+    echo "candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS" >&2
+    exit 2
+  fi
+  PREFLIGHT_ONLY=true "${ROOT_DIR}/hack/production/run-kubebrain-rollout-availability.sh"
+fi
+
 cd "$ROOT_DIR"
 
 if [ "$RUN_GO_TEST" = "true" ]; then
@@ -315,11 +323,7 @@ fi
 # Keep the candidate mutation last: a successful canary deliberately retains the
 # target image, so no later verification step may fail after that commit point.
 if [ "$RUN_KUBEBRAIN_CANDIDATE_CANARY" = "true" ]; then
-  if [ -z "${TARGET_IMAGE:-}" ] || [ -z "${TARGET_RUNTIME_DIGESTS:-}" ]; then
-    echo "candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS" >&2
-    exit 2
-  fi
-  run_step "immutable KubeBrain candidate canary" hack/production/run-kubebrain-rollout-availability.sh
+  run_step "immutable KubeBrain candidate canary" env PREFLIGHT_ONLY=false hack/production/run-kubebrain-rollout-availability.sh
 fi
 
 echo

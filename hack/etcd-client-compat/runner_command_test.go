@@ -388,13 +388,17 @@ func TestVerifyExposesImmutableCandidateCanaryBehindExplicitGate(t *testing.T) {
 	require.NoError(t, err)
 	verifyScript := string(verifyData)
 	require.Contains(t, verifyScript, `RUN_KUBEBRAIN_CANDIDATE_CANARY="${RUN_KUBEBRAIN_CANDIDATE_CANARY:-false}"`)
-	require.Equal(t, 4, strings.Count(verifyScript, "RUN_KUBEBRAIN_CANDIDATE_CANARY"))
+	require.Equal(t, 5, strings.Count(verifyScript, "RUN_KUBEBRAIN_CANDIDATE_CANARY"))
 	require.Contains(t, verifyScript, `if [ "$RUN_KUBEBRAIN_CANDIDATE_CANARY" = "true" ]; then`)
 	require.Contains(t, verifyScript, `candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS`)
-	require.Contains(t, verifyScript, `run_step "immutable KubeBrain candidate canary" hack/production/run-kubebrain-rollout-availability.sh`)
+	require.Contains(t, verifyScript, `run_step "immutable KubeBrain candidate canary" env PREFLIGHT_ONLY=false hack/production/run-kubebrain-rollout-availability.sh`)
+	require.Contains(t, verifyScript, `PREFLIGHT_ONLY=true "${ROOT_DIR}/hack/production/run-kubebrain-rollout-availability.sh"`)
 	require.Less(t,
 		strings.Index(verifyScript, `candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS`),
-		strings.Index(verifyScript, `run_step "immutable KubeBrain candidate canary"`))
+		strings.Index(verifyScript, `cd "$ROOT_DIR"`))
+	require.Less(t,
+		strings.Index(verifyScript, `PREFLIGHT_ONLY=true "${ROOT_DIR}/hack/production/run-kubebrain-rollout-availability.sh"`),
+		strings.Index(verifyScript, `cd "$ROOT_DIR"`))
 	require.Less(t,
 		strings.Index(verifyScript, `run_step "Kubernetes version matrix"`),
 		strings.Index(verifyScript, `run_step "immutable KubeBrain candidate canary"`))
@@ -408,7 +412,8 @@ func TestVerifyExposesImmutableCandidateCanaryBehindExplicitGate(t *testing.T) {
 	env := make([]string, 0, len(os.Environ()))
 	for _, item := range os.Environ() {
 		name := strings.SplitN(item, "=", 2)[0]
-		if !strings.HasPrefix(name, "RUN_") && name != "TARGET_IMAGE" && name != "TARGET_RUNTIME_DIGESTS" {
+		if !strings.HasPrefix(name, "RUN_") && name != "TARGET_IMAGE" && name != "TARGET_RUNTIME_DIGESTS" &&
+			name != "PREFLIGHT_ONLY" && name != "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT" && name != "KUBECTL_BIN" {
 			env = append(env, item)
 		}
 	}
@@ -424,6 +429,18 @@ func TestVerifyExposesImmutableCandidateCanaryBehindExplicitGate(t *testing.T) {
 	output, err := command.CombinedOutput()
 	require.EqualError(t, err, "exit status 2")
 	require.Equal(t, "candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS\n", string(output))
+
+	preflightEnv := append(append([]string{}, env...),
+		"TARGET_IMAGE=registry.example/kubebrain:latest",
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("a", 64),
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"KUBECTL_BIN=/bin/true",
+	)
+	command = exec.Command("bash", "../dev/verify.sh")
+	command.Env = preflightEnv
+	output, err = command.CombinedOutput()
+	require.EqualError(t, err, "exit status 2")
+	require.Equal(t, "TARGET_IMAGE must be an immutable image reference with @sha256:<64 lowercase hex digest>\n", string(output))
 }
 
 func TestInClusterBalancerSmokeDiscoversFailoverEndpoints(t *testing.T) {

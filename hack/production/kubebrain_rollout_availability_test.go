@@ -21,6 +21,38 @@ func TestRolloutAvailabilityRunnerRequiresExplicitMutationApproval(t *testing.T)
 	require.ErrorIs(t, statErr, os.ErrNotExist, "kubectl must not run before mutation approval")
 }
 
+func TestRolloutAvailabilityRunnerPreflightDoesNotCallKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"PREFLIGHT_ONLY=true",
+		"TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("a", 64),
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("b", 64),
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Equal(t, "rollout availability preflight passed\n", string(output))
+	require.NoFileExists(t, logPath, "preflight must not call kubectl")
+}
+
+func TestRolloutAvailabilityRunnerRejectsInvalidPreflightModeBeforeKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"PREFLIGHT_ONLY=1",
+	)
+	output, err := command.CombinedOutput()
+	require.EqualError(t, err, "exit status 2")
+	require.Equal(t, "PREFLIGHT_ONLY must be true or false\n", string(output))
+	require.NoFileExists(t, logPath)
+}
+
 func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *testing.T) {
 	for _, variable := range []string{
 		"PROBE_COMMAND_TIMEOUT", "PROBE_DIAL_TIMEOUT", "PROBE_MAX_OPERATION_LATENCY",

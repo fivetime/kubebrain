@@ -24,12 +24,17 @@ PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
+PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
 TARGET_RUNTIME_DIGESTS="${TARGET_RUNTIME_DIGESTS:-}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
 MAX_RUNTIME_EVIDENCE_BYTES=1048576
 MAX_PROBE_PHASE_RESPONSE_BYTES=4096
 
+if [[ "$PREFLIGHT_ONLY" != true && "$PREFLIGHT_ONLY" != false ]]; then
+  echo "PREFLIGHT_ONLY must be true or false" >&2
+  exit 2
+fi
 if [[ "$ALLOW_MUTATING_KUBEBRAIN_ROLLOUT" != true ]]; then
   echo "refusing mutating KubeBrain rollout: set ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true" >&2
   exit 1
@@ -97,6 +102,11 @@ for digest in "${target_runtime_digest_items[@]}"; do
   fi
   seen_runtime_digests[$digest]=true
 done
+
+if [[ "$PREFLIGHT_ONLY" == true ]]; then
+  echo "rollout availability preflight passed"
+  exit 0
+fi
 
 kubectl_command=("$KUBECTL_BIN")
 if [[ -n "$KUBECTL_CONTEXT" ]]; then
