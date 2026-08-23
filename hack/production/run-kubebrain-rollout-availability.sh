@@ -24,6 +24,7 @@ PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
+TARGET_IMAGE="${TARGET_IMAGE:-}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
 MAX_RUNTIME_EVIDENCE_BYTES=1048576
 MAX_PROBE_PHASE_RESPONSE_BYTES=4096
@@ -70,6 +71,10 @@ if ! [[ "$PROBE_POD" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
   echo "PROBE_POD must be a DNS label" >&2
   exit 2
 fi
+if [[ -n "$TARGET_IMAGE" && ! "$TARGET_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
+  echo "TARGET_IMAGE must be an immutable image reference with @sha256:<64 lowercase hex digest>" >&2
+  exit 2
+fi
 
 kubectl_command=("$KUBECTL_BIN")
 if [[ -n "$KUBECTL_CONTEXT" ]]; then
@@ -114,6 +119,10 @@ ready="$(jq -r '.status.readyReplicas // 0' "$statefulset_json")"
 current_revision="$(jq -r '.status.currentRevision // ""' "$statefulset_json")"
 update_revision="$(jq -r '.status.updateRevision // ""' "$statefulset_json")"
 image="$(jq -r '.spec.template.spec.containers[] | select(.name == "kubebrain") | .image' "$statefulset_json")"
+if [[ -n "$TARGET_IMAGE" && "$TARGET_IMAGE" == "$image" ]]; then
+  echo "TARGET_IMAGE already matches the running StatefulSet image" >&2
+  exit 2
+fi
 retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_RETRY_PERIOD}" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(. == $expected)] | length' "$statefulset_json")"
 pd_addrs="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(startswith("--pd-addrs=")) | sub("^--pd-addrs="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
 pd_endpoints=""
@@ -145,7 +154,17 @@ if kctl get pod "$PROBE_POD" >/dev/null 2>&1; then
   exit 1
 fi
 
+candidate_rollout_started=false
+candidate_rollout_succeeded=false
 cleanup() {
+  if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
+    echo "candidate rollout failed; restoring original image ${image}" >&2
+    if ! kctl set image "statefulset/$KUBEBRAIN_STATEFULSET" "kubebrain=$image" >/dev/null; then
+      echo "CRITICAL: failed to request candidate image rollback to ${image}" >&2
+    elif ! kctl rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null; then
+      echo "CRITICAL: candidate image rollback did not converge within ${ROLLOUT_TIMEOUT}" >&2
+    fi
+  fi
   kctl delete pod "$PROBE_POD" --ignore-not-found=true --wait=true >/dev/null || true
   rm -rf -- "$runtime_evidence_dir"
 }
@@ -183,7 +202,14 @@ if [[ "$started" != true ]]; then
   exit 1
 fi
 
-kctl rollout restart "statefulset/$KUBEBRAIN_STATEFULSET" >/dev/null
+expected_final_image="$image"
+if [[ -n "$TARGET_IMAGE" ]]; then
+  candidate_rollout_started=true
+  expected_final_image="$TARGET_IMAGE"
+  kctl set image "statefulset/$KUBEBRAIN_STATEFULSET" "kubebrain=$TARGET_IMAGE" >/dev/null
+else
+  kctl rollout restart "statefulset/$KUBEBRAIN_STATEFULSET" >/dev/null
+fi
 kctl rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null
 case "$PROBE_COMPLETE_TIMEOUT" in
   *ms) probe_complete_seconds=$(( (${PROBE_COMPLETE_TIMEOUT%ms} + 999) / 1000 )) ;;
@@ -236,9 +262,31 @@ final_retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_
 final_prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' "$final_json")"
 if [[ "$final_ready" != "$EXPECTED_REPLICAS" || -z "$final_current_revision" ||
   "$final_current_revision" != "$final_update_revision" || "$final_current_revision" == "$current_revision" ||
-  "$final_image" != "$image" || "$final_retry_count" != 1 || "$final_prestop" != "$expected_prestop" ]]; then
+  "$final_image" != "$expected_final_image" || "$final_retry_count" != 1 || "$final_prestop" != "$expected_prestop" ]]; then
   echo "KubeBrain rollout postflight identity mismatch" >&2
   exit 1
 fi
+if [[ -n "$TARGET_IMAGE" ]]; then
+  target_digest="${TARGET_IMAGE##*@}"
+  for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
+    pod_name="${KUBEBRAIN_STATEFULSET}-${ordinal}"
+    pod_json="$runtime_evidence_dir/pod-final-${ordinal}.json"
+    capture_runtime_evidence "$pod_json" kctl get pod "$pod_name" -o json || {
+      echo "failed to read candidate Pod ${pod_name}" >&2
+      exit 1
+    }
+    if ! jq -e --arg image "$TARGET_IMAGE" --arg digest "$target_digest" --arg revision "$final_current_revision" '
+      .metadata.deletionTimestamp == null and .status.phase == "Running" and
+      .metadata.labels["controller-revision-hash"] == $revision and
+      ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
+      ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and
+        ((.imageID | type) == "string") and (.imageID | endswith($digest)))] | length) == 1
+    ' "$pod_json" >/dev/null; then
+      echo "candidate Pod runtime release mismatch: ${pod_name} image=${TARGET_IMAGE} digest=${target_digest}" >&2
+      exit 1
+    fi
+  done
+fi
+candidate_rollout_succeeded=true
 
-echo "KubeBrain rollout availability gate passed: namespace=${KUBEBRAIN_NAMESPACE} statefulset=${KUBEBRAIN_STATEFULSET} image=${image} revision=${current_revision}->${final_current_revision} probes=${PROBE_ITERATIONS}"
+echo "KubeBrain rollout availability gate passed: namespace=${KUBEBRAIN_NAMESPACE} statefulset=${KUBEBRAIN_STATEFULSET} image=${image}->${expected_final_image} revision=${current_revision}->${final_current_revision} probes=${PROBE_ITERATIONS}"

@@ -62,6 +62,17 @@ func TestRolloutAvailabilityRunnerRejectsNumericControlsBeforeKubernetes(t *test
 	}
 }
 
+func TestRolloutAvailabilityRunnerRejectsMutableTargetImageBeforeKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "TARGET_IMAGE=registry.example/kubebrain:latest")
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "TARGET_IMAGE must be an immutable image reference")
+	require.NoFileExists(t, logPath)
+}
+
 func TestRolloutAvailabilityRunnerAcceptsDurationBoundary(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -125,6 +136,59 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, " rollout restart statefulset/kubebrain")
 	require.Contains(t, log, " wait --for=jsonpath={.status.phase}=Succeeded")
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
+}
+
+func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("a", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "image=kubebrain:test->"+target)
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, " set image statefulset/kubebrain kubebrain="+target)
+	require.NotContains(t, log, " rollout restart ")
+	for ordinal := 0; ordinal < 3; ordinal++ {
+		require.Contains(t, log, " get pod kubebrain-"+string(rune('0'+ordinal))+" -o json")
+	}
+}
+
+func TestRolloutAvailabilityRunnerRestoresOriginalImageWhenCandidateFails(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("b", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"FAKE_ROLLOUT_FAIL=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, " set image statefulset/kubebrain kubebrain="+target)
+	require.Contains(t, log, " set image statefulset/kubebrain kubebrain=kubebrain:test")
+}
+
+func TestRolloutAvailabilityRunnerRejectsRuntimeDigestDriftAndRestoresOriginalImage(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("d", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"FAKE_RUNTIME_DIGEST_DRIFT=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "candidate Pod runtime release mismatch: kubebrain-0")
+	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, " set image statefulset/kubebrain kubebrain=kubebrain:test")
 }
 
 func TestRolloutAvailabilityRunnerBoundsRuntimeEvidence(t *testing.T) {
@@ -197,8 +261,10 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   [[ -e "$FAKE_KUBECTL_STATE" ]] && revision=revision-new
   prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
   [[ "${FAKE_BAD_PRESTOP:-false}" == true ]] && prestop='["/bin/sleep","5"]'
-  payload="$(jq -cn --arg revision "$revision" --argjson prestop "$prestop" '{
-    spec:{replicas:3,template:{spec:{containers:[{name:"kubebrain",image:"kubebrain:test",args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
+  runtime_image=kubebrain:test
+  [[ -e "$FAKE_KUBECTL_STATE" && -n "${TARGET_IMAGE:-}" ]] && runtime_image="$TARGET_IMAGE"
+  payload="$(jq -cn --arg revision "$revision" --arg image "$runtime_image" --argjson prestop "$prestop" '{
+    spec:{replicas:3,template:{spec:{containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
   printf '%s' "$payload"; [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" != statefulset ]] || head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
@@ -206,10 +272,22 @@ elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then printf Failed
   elif [[ "${FAKE_PHASE_RESPONSE:-false}" == true ]]; then printf Running; head -c "$((FAKE_PHASE_BYTES-7))" /dev/zero | tr '\0' ' '
   else printf Running; fi
+elif [[ " $* " =~ " get pod kubebrain-"[0-9]+" -o json " ]]; then
+  ordinal="$(awk '{for (i=1;i<=NF;i++) if ($i == "pod") print $(i+1)}' <<<"$*")"
+  runtime_image="${TARGET_IMAGE:-kubebrain:test}"
+  runtime_digest="${runtime_image##*@}"
+  [[ "${FAKE_RUNTIME_DIGEST_DRIFT:-false}" != true ]] || runtime_digest="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  jq -cn --arg name "$ordinal" --arg image "$runtime_image" --arg digest "$runtime_digest" '{
+    metadata:{name:$name,labels:{"controller-revision-hash":"revision-new"}},
+    spec:{containers:[{name:"kubebrain",image:$image}]},
+    status:{phase:"Running",containerStatuses:[{name:"kubebrain",ready:true,imageID:("containerd://"+$digest)}]}}
+  '
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe "* ]]; then
   exit 1
-elif [[ " $* " == *" rollout restart statefulset/kubebrain "* ]]; then
+elif [[ " $* " == *" rollout restart statefulset/kubebrain "* || " $* " == *" set image statefulset/kubebrain "* ]]; then
   : >"$FAKE_KUBECTL_STATE"
+elif [[ " $* " == *" rollout status statefulset/kubebrain "* && "${FAKE_ROLLOUT_FAIL:-false}" == true ]]; then
+  exit 1
 elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
