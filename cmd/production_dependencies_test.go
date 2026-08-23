@@ -22,10 +22,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDataplaneDoesNotLinkUpstreamBboltBackend(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", ".").CombinedOutput()
-	require.NoError(t, err, string(out))
-	require.NotContains(t, strings.Split(string(out), "\n"),
-		"go.etcd.io/etcd/server/v3/storage/backend",
-		"linking the upstream bbolt backend registers colliding process-global etcd metrics")
+func TestDataplaneProductionBuildsExcludeForeignStorageAndRaftImplementations(t *testing.T) {
+	for _, buildTag := range []string{"tikv", "badger"} {
+		t.Run(buildTag, func(t *testing.T) {
+			out, err := exec.Command("go", "list", "-tags", buildTag, "-deps", ".").CombinedOutput()
+			require.NoError(t, err, string(out))
+			dependencies := strings.Split(string(out), "\n")
+			for dependency, reason := range map[string]string{
+				"go.etcd.io/etcd/server/v3/storage/backend":         "upstream bbolt registers colliding process-global etcd metrics",
+				"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp": "KubeBrain uses TiKV/PD and must not expose an upstream Raft transport",
+				"go.etcd.io/etcd/client/v3/leasing":                 "the experimental client cache is a consumer library, not dataplane code",
+			} {
+				require.NotContains(t, dependencies, dependency, reason)
+			}
+		})
+	}
 }
