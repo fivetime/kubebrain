@@ -197,6 +197,7 @@ if [[ -n "$TARGET_IMAGE" ]]; then
     original_runtime_image_ids[$ordinal]="$(jq -er --arg image "$image" --arg revision "$current_revision" '
       select(.metadata.deletionTimestamp == null and .status.phase == "Running" and
         .metadata.labels["controller-revision-hash"] == $revision and
+        ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and
         ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1) |
       [.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and
         ((.imageID | type) == "string") and (.imageID | length > 0)) | .imageID] |
@@ -243,6 +244,7 @@ cleanup() {
           --arg revision "$current_revision" '
           .metadata.deletionTimestamp == null and .status.phase == "Running" and
           .metadata.labels["controller-revision-hash"] == $revision and
+          ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and
           ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
           ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and .imageID == $image_id)] | length) == 1
         ' "$pod_json" >/dev/null; then
@@ -367,6 +369,7 @@ if [[ -n "$TARGET_IMAGE" ]]; then
       ($digests | split(",")) as $allowedDigests |
       .metadata.deletionTimestamp == null and .status.phase == "Running" and
       .metadata.labels["controller-revision-hash"] == $revision and
+      ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and
       ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
       ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and .restartCount == 0 and
         ((.imageID | type) == "string") and (.imageID as $imageID |
