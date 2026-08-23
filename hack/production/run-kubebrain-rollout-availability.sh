@@ -23,6 +23,7 @@ PROBE_LEASE_TTL="${PROBE_LEASE_TTL:-5}"
 PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
+KUBECTL_MUTATION_REQUEST_TIMEOUT="${KUBECTL_MUTATION_REQUEST_TIMEOUT:-10s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
@@ -67,7 +68,7 @@ if ! operation_is_positive_go_seconds_decimal "$PROBE_INTERVAL"; then
 fi
 for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LATENCY \
   PROBE_MAX_PD_TSO_LATENCY PROBE_MAX_TIKV_REGION_LATENCY PROBE_READY_TIMEOUT \
-  PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT; do
+  PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_MUTATION_REQUEST_TIMEOUT; do
   operation_is_positive_go_duration "${!variable}" || {
     echo "${variable} must be a positive ms, s, or m duration representable by Go time.Duration" >&2
     exit 2
@@ -114,6 +115,9 @@ if [[ -n "$KUBECTL_CONTEXT" ]]; then
 fi
 kctl() {
   "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" "$@"
+}
+kctl_mutation() {
+  "${kubectl_command[@]}" --request-timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
 }
 
 runtime_evidence_dir="$(mktemp -d)"
@@ -191,13 +195,13 @@ candidate_rollout_succeeded=false
 cleanup() {
   if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
     echo "candidate rollout failed; restoring original image ${image}" >&2
-    if ! kctl set image "statefulset/$KUBEBRAIN_STATEFULSET" "kubebrain=$image" >/dev/null; then
+    if ! kctl_mutation set image "statefulset/$KUBEBRAIN_STATEFULSET" "kubebrain=$image" >/dev/null; then
       echo "CRITICAL: failed to request candidate image rollback to ${image}" >&2
     elif ! kctl rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null; then
       echo "CRITICAL: candidate image rollback did not converge within ${ROLLOUT_TIMEOUT}" >&2
     fi
   fi
-  kctl delete pod "$PROBE_POD" --ignore-not-found=true --wait=true >/dev/null || true
+  kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null || true
   rm -rf -- "$runtime_evidence_dir"
 }
 trap cleanup EXIT
@@ -238,9 +242,9 @@ expected_final_image="$image"
 if [[ -n "$TARGET_IMAGE" ]]; then
   candidate_rollout_started=true
   expected_final_image="$TARGET_IMAGE"
-  kctl set image "statefulset/$KUBEBRAIN_STATEFULSET" "kubebrain=$TARGET_IMAGE" >/dev/null
+  kctl_mutation set image "statefulset/$KUBEBRAIN_STATEFULSET" "kubebrain=$TARGET_IMAGE" >/dev/null
 else
-  kctl rollout restart "statefulset/$KUBEBRAIN_STATEFULSET" >/dev/null
+  kctl_mutation rollout restart "statefulset/$KUBEBRAIN_STATEFULSET" >/dev/null
 fi
 kctl rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null
 case "$PROBE_COMPLETE_TIMEOUT" in

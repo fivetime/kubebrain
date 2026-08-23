@@ -57,7 +57,7 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 	for _, variable := range []string{
 		"PROBE_COMMAND_TIMEOUT", "PROBE_DIAL_TIMEOUT", "PROBE_MAX_OPERATION_LATENCY",
 		"PROBE_MAX_PD_TSO_LATENCY", "PROBE_MAX_TIKV_REGION_LATENCY", "PROBE_READY_TIMEOUT",
-		"PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT",
+		"PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_MUTATION_REQUEST_TIMEOUT",
 	} {
 		t.Run(variable, func(t *testing.T) {
 			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
@@ -178,7 +178,9 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, "--expected-up-stores=3")
 	require.Contains(t, log, "--max-store-heartbeat-age=20s")
 	require.Contains(t, log, " rollout restart statefulset/kubebrain")
+	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system rollout restart statefulset/kubebrain")
 	require.Contains(t, log, " wait --for=jsonpath={.status.phase}=Succeeded")
+	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system delete pod kubebrain-rollout-availability-probe --ignore-not-found=true --wait=true --timeout=10s")
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
 }
 
@@ -196,6 +198,7 @@ func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
 	require.Contains(t, string(output), "image=kubebrain:test->"+target)
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " set image statefulset/kubebrain kubebrain="+target)
+	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system set image statefulset/kubebrain kubebrain="+target)
 	require.NotContains(t, log, " rollout restart ")
 	for ordinal := 0; ordinal < 3; ordinal++ {
 		require.Contains(t, log, " get pod kubebrain-"+string(rune('0'+ordinal))+" -o json")
@@ -218,6 +221,7 @@ func TestRolloutAvailabilityRunnerRestoresOriginalImageWhenCandidateFails(t *tes
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " set image statefulset/kubebrain kubebrain="+target)
 	require.Contains(t, log, " set image statefulset/kubebrain kubebrain=kubebrain:test")
+	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system set image statefulset/kubebrain kubebrain=kubebrain:test")
 }
 
 func TestRolloutAvailabilityRunnerRejectsRuntimeDigestDriftAndRestoresOriginalImage(t *testing.T) {
