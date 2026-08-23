@@ -23,12 +23,12 @@ POD_BASENAME="${POD_BASENAME:-kubebrain}"
 VICTIM_POD="${VICTIM_POD:-kubebrain-0}"
 PEER_SERVICE="${PEER_SERVICE:-kubebrain-peer}"
 RUNTIME_IMAGE="${RUNTIME_IMAGE:-}"
-PROBE_IMAGE="${PROBE_IMAGE:-kubebrain:balancer-smoke}"
+PROBE_IMAGE="${PROBE_IMAGE:-}"
 JOB_NAME="${JOB_NAME:-kubebrain-balancer-smoke-$(date +%s)}"
 JOB_TIMEOUT_SECONDS="${JOB_TIMEOUT_SECONDS:-300}"
 GO_IMAGE="${GO_IMAGE:-golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651}"
 
-for command in docker jq kind kubectl; do
+for command in docker jq kind kubectl sha256sum; do
   command -v "$command" >/dev/null || { echo "missing required command: ${command}" >&2; exit 1; }
 done
 [[ "$JOB_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && ${#JOB_NAME} -le 63 ]] ||
@@ -41,8 +41,6 @@ done
   { echo "WORKLOAD must be a statefulset/name or deployment/name" >&2; exit 2; }
 [[ "$VICTIM_POD" =~ ^${POD_BASENAME}-[012]$ ]] ||
   { echo "VICTIM_POD must be one of ${POD_BASENAME}-0, -1, or -2" >&2; exit 2; }
-[[ "$PROBE_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$ ]] ||
-  { echo "PROBE_IMAGE is not a safe image reference" >&2; exit 2; }
 [[ "$JOB_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
   { echo "JOB_TIMEOUT_SECONDS must be a positive integer" >&2; exit 2; }
 
@@ -65,6 +63,22 @@ case "$probe_goarch" in
   amd64|arm64) ;;
   *) echo "victim node architecture must be amd64 or arm64, got ${probe_goarch}" >&2; exit 2 ;;
 esac
+
+if [[ -z "$PROBE_IMAGE" ]]; then
+  probe_source_digest="$({
+    printf '%s\0' "$GO_IMAGE" "$RUNTIME_IMAGE" "$probe_goos" "$probe_goarch"
+    sha256sum "$ROOT_DIR/hack/dev/incluster-balancer-smoke.sh" \
+      "$ROOT_DIR/hack/dev/cmd/balancer-smoke/main.go" "$ROOT_DIR/go.mod" "$ROOT_DIR/go.sum"
+    while IFS= read -r -d '' path; do
+      printf '%s\0' "${path#"$ROOT_DIR/"}"
+      sha256sum "$path"
+    done < <(find "$ROOT_DIR/third_party/tikv-client-go" -type f -print0 | sort -z)
+  } | sha256sum | cut -c1-20)"
+  [[ "$probe_source_digest" =~ ^[a-f0-9]{20}$ ]] || { echo "cannot digest probe image inputs" >&2; exit 1; }
+  PROBE_IMAGE="kubebrain:balancer-smoke-${probe_goarch}-${probe_source_digest}"
+fi
+[[ "$PROBE_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:-]{0,255}$ ]] ||
+  { echo "PROBE_IMAGE must be a safe tag reference (digests are not accepted)" >&2; exit 2; }
 
 workdir="$(mktemp -d)"
 cleanup() {
@@ -236,4 +250,4 @@ new_uid="$(kubectl -n "$NAMESPACE" get pod "$VICTIM_POD" -o jsonpath='{.metadata
 [[ -n "$new_uid" && "$new_uid" != "$victim_uid" ]] ||
   { echo "victim Pod UID did not change" >&2; exit 1; }
 kubectl -n "$NAMESPACE" rollout status "$WORKLOAD" --timeout=120s
-echo "In-cluster balancer smoke completed: victim=${VICTIM_POD} old_uid=${victim_uid} new_uid=${new_uid} node_os=${probe_goos} node_arch=${probe_goarch}"
+echo "In-cluster balancer smoke completed: victim=${VICTIM_POD} old_uid=${victim_uid} new_uid=${new_uid} node_os=${probe_goos} node_arch=${probe_goarch} probe_image=${PROBE_IMAGE}"
