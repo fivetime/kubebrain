@@ -200,6 +200,15 @@ cleanup() {
       echo "CRITICAL: failed to request candidate image rollback to ${image}" >&2
     elif ! kctl rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null; then
       echo "CRITICAL: candidate image rollback did not converge within ${ROLLOUT_TIMEOUT}" >&2
+    elif ! capture_runtime_evidence "$runtime_evidence_dir/statefulset-rollback.json" \
+      kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
+      echo "CRITICAL: failed to read candidate rollback StatefulSet identity" >&2
+    elif ! jq -e --arg image "$image" --arg revision "$current_revision" --argjson replicas "$EXPECTED_REPLICAS" '
+      .spec.replicas == $replicas and .status.readyReplicas == $replicas and
+      .status.currentRevision == $revision and .status.updateRevision == $revision and
+      ([.spec.template.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1
+    ' "$runtime_evidence_dir/statefulset-rollback.json" >/dev/null; then
+      echo "CRITICAL: candidate image rollback identity mismatch: expected image=${image} revision=${current_revision} replicas=${EXPECTED_REPLICAS}" >&2
     fi
   fi
   if [[ "$probe_deleted" != true ]] &&
