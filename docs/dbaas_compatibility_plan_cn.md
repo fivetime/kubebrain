@@ -61105,6 +61105,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   111.425/322.499/218.232/339.380 秒）。该上界不能恢复已失去 quorum 的 Kubernetes 控制面，也不能覆盖 SIGKILL；
   它保证可响应控制面上的单次 mutation/cleanup 请求不会无限占住发布进程，随后成功回滚仍必须通过 rollout status。
 
+- A5411 修复 rollout runner 把 probe Pod 清理失败吞掉后仍可 GREEN 的资源终态缺口。旧 EXIT cleanup 无条件执行
+  `kubectl delete ... || true`，而 `candidate_rollout_succeeded=true` 与成功 receipt 在 cleanup 之前完成；因此候选
+  image/revision/digest 与业务探针虽通过，删除超时、RBAC 拒绝或 apiserver 错误仍会留下 probe Pod，同时 runner
+  退出 0 并保留候选镜像。提交 `e5632337` 引入 `probe_deleted` 状态，将带 request/delete timeout 的显式删除移到
+  candidate commit point 之前；只有删除成功才同时设置 probe/candidate success 并输出 gate passed。删除失败会先
+  非零退出，由 EXIT cleanup 因 candidate 尚未提交而恢复原 image、等待旧 revision 收敛并重试清理；重试仍失败
+  输出 `CRITICAL`，不会把残留资源隐藏。fake 删除故障回归固定目标 image 先写入、原 image 随后恢复，日志包含普通
+  失败与 CRITICAL，且绝不包含成功 receipt。聚焦普通 20 轮 15.857 秒、race 10 轮 9.049 秒，rollout 全组
+  普通/race 为 3.004/4.022 秒，vet/shell syntax 通过；production inventory 增至 597 项，精确提交四片
+  136/168/151/142 全绿（Go 测试 105.210/317.423/210.183/333.271 秒；端到端
+  111.425/323.589/216.469/339.518 秒）。强制删除失败时回滚候选是有意的 fail-closed 语义；若控制面持续拒绝删除，
+  外部发布系统仍须处置 CRITICAL 残留，不能仅凭原镜像已恢复关闭事故。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

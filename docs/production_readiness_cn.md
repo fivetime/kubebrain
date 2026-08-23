@@ -1267,6 +1267,12 @@ interval 和 probe DNS label。该模式在创建 runtime evidence 目录或调�
 收敛时间。若回滚请求超时，runner 会输出 `CRITICAL`，发布系统必须升级为事故并继续用保存的原 image/revision
 恢复；不得因为 cleanup 已有 timeout 就把未收敛状态视为安全。
 
+rollout availability probe Pod 的删除属于候选发布 commit point，不是可忽略的 EXIT 清理。runner 必须在最终
+revision/image/runtime digest 校验后同步删除 probe，确认成功后才能保留候选并输出 gate passed。删除失败时
+candidate 尚未提交，EXIT cleanup 会恢复原镜像并再次尝试删除；若重试失败会输出 `CRITICAL`。因此发布系统应同时
+以进程退出码、成功 receipt 缺失和 CRITICAL 日志判定失败，并检查命名 probe Pod 的实际终态；不得在存在残留
+probe 时人工把 rollout 标为成功。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 
