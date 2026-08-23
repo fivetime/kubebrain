@@ -21,6 +21,15 @@ func TestRolloutAvailabilityRunnerRequiresExplicitMutationApproval(t *testing.T)
 	require.ErrorIs(t, statErr, os.ErrNotExist, "kubectl must not run before mutation approval")
 }
 
+func TestRolloutAvailabilityRunnerDoesNotBypassBoundedKubectlWrappers(t *testing.T) {
+	source, err := os.ReadFile("run-kubebrain-rollout-availability.sh")
+	require.NoError(t, err)
+	for _, directCall := range []string{" kctl get ", " kctl logs ", "\nkctl run "} {
+		require.NotContains(t, string(source), directCall,
+			"evidence reads and probe creation must use their request-timeout wrappers")
+	}
+}
+
 func TestRolloutAvailabilityRunnerPreflightDoesNotCallKubernetes(t *testing.T) {
 	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -57,7 +66,8 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 	for _, variable := range []string{
 		"PROBE_COMMAND_TIMEOUT", "PROBE_DIAL_TIMEOUT", "PROBE_MAX_OPERATION_LATENCY",
 		"PROBE_MAX_PD_TSO_LATENCY", "PROBE_MAX_TIKV_REGION_LATENCY", "PROBE_READY_TIMEOUT",
-		"PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_MUTATION_REQUEST_TIMEOUT",
+		"PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_EVIDENCE_REQUEST_TIMEOUT",
+		"KUBECTL_MUTATION_REQUEST_TIMEOUT",
 	} {
 		t.Run(variable, func(t *testing.T) {
 			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
@@ -161,6 +171,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 		"FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
 		"PROBE_ITERATIONS=3",
+		"KUBECTL_EVIDENCE_REQUEST_TIMEOUT=7s",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -168,6 +179,12 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, string(output), "revision=revision-old->revision-new")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
+	for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
+		if strings.Contains(line, " get statefulset ") || strings.Contains(line, " get pod ") || strings.Contains(line, " logs ") {
+			require.Contains(t, line, "--request-timeout=7s -n kubebrain-system",
+				"every bounded evidence read must carry the dedicated request timeout")
+		}
+	}
 	require.Contains(t, log, "/usr/local/bin/kubebrain-rollout-availability-probe")
 	require.Contains(t, log, "--command-timeout=10s")
 	require.Contains(t, log, "--max-operation-latency=5s")
@@ -177,6 +194,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, "--pd-endpoints=http://pd-0:2379,http://pd-1:2379,http://pd-2:2379")
 	require.Contains(t, log, "--expected-up-stores=3")
 	require.Contains(t, log, "--max-store-heartbeat-age=20s")
+	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system run kubebrain-rollout-availability-probe")
 	require.Contains(t, log, " rollout restart statefulset/kubebrain")
 	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system rollout restart statefulset/kubebrain")
 	require.Contains(t, log, " wait --for=jsonpath={.status.phase}=Succeeded")

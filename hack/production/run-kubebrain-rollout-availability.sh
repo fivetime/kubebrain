@@ -23,6 +23,7 @@ PROBE_LEASE_TTL="${PROBE_LEASE_TTL:-5}"
 PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
+KUBECTL_EVIDENCE_REQUEST_TIMEOUT="${KUBECTL_EVIDENCE_REQUEST_TIMEOUT:-10s}"
 KUBECTL_MUTATION_REQUEST_TIMEOUT="${KUBECTL_MUTATION_REQUEST_TIMEOUT:-10s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
@@ -68,7 +69,8 @@ if ! operation_is_positive_go_seconds_decimal "$PROBE_INTERVAL"; then
 fi
 for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LATENCY \
   PROBE_MAX_PD_TSO_LATENCY PROBE_MAX_TIKV_REGION_LATENCY PROBE_READY_TIMEOUT \
-  PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_MUTATION_REQUEST_TIMEOUT; do
+  PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_EVIDENCE_REQUEST_TIMEOUT \
+  KUBECTL_MUTATION_REQUEST_TIMEOUT; do
   operation_is_positive_go_duration "${!variable}" || {
     echo "${variable} must be a positive ms, s, or m duration representable by Go time.Duration" >&2
     exit 2
@@ -115,6 +117,9 @@ if [[ -n "$KUBECTL_CONTEXT" ]]; then
 fi
 kctl() {
   "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" "$@"
+}
+kctl_evidence() {
+  "${kubectl_command[@]}" --request-timeout="$KUBECTL_EVIDENCE_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
 }
 kctl_mutation() {
   "${kubectl_command[@]}" --request-timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
@@ -169,7 +174,7 @@ capture_probe_phase_response() {
 }
 
 statefulset_json="$runtime_evidence_dir/statefulset-initial.json"
-capture_runtime_evidence "$statefulset_json" kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json || {
+capture_runtime_evidence "$statefulset_json" kctl_evidence get statefulset "$KUBEBRAIN_STATEFULSET" -o json || {
   echo "failed to read KubeBrain StatefulSet" >&2
   exit 1
 }
@@ -231,7 +236,7 @@ if [[ -n "$TARGET_IMAGE" ]]; then
   for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
     pod_name="${KUBEBRAIN_STATEFULSET}-${ordinal}"
     pod_json="$runtime_evidence_dir/pod-initial-${ordinal}.json"
-    capture_runtime_evidence "$pod_json" kctl get pod "$pod_name" -o json || {
+    capture_runtime_evidence "$pod_json" kctl_evidence get pod "$pod_name" -o json || {
       echo "failed to read initial candidate Pod ${pod_name}" >&2
       exit 1
     }
@@ -249,7 +254,7 @@ if [[ -n "$TARGET_IMAGE" ]]; then
     }
   done
 fi
-if kctl get pod "$PROBE_POD" >/dev/null 2>&1; then
+if kctl_evidence get pod "$PROBE_POD" >/dev/null 2>&1; then
   echo "probe Pod already exists: ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   exit 1
 fi
@@ -261,7 +266,7 @@ cleanup() {
   if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
     echo "candidate rollout failed; restoring original image ${image}" >&2
     rollback_current_json="$runtime_evidence_dir/statefulset-rollback-current.json"
-    if ! capture_runtime_evidence "$rollback_current_json" kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
+    if ! capture_runtime_evidence "$rollback_current_json" kctl_evidence get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
       echo "CRITICAL: failed to read candidate state before rollback" >&2
     else
       rollback_current_uid="$(jq -r '.metadata.uid // ""' "$rollback_current_json" 2>/dev/null || true)"
@@ -280,7 +285,7 @@ cleanup() {
     elif ! kctl rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null; then
       echo "CRITICAL: candidate image rollback did not converge within ${ROLLOUT_TIMEOUT}" >&2
     elif ! capture_runtime_evidence "$runtime_evidence_dir/statefulset-rollback.json" \
-      kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
+      kctl_evidence get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
       echo "CRITICAL: failed to read candidate rollback StatefulSet identity" >&2
     elif [[ "$(jq -cS '.spec' "$runtime_evidence_dir/statefulset-rollback.json")" != "$initial_spec" ]] ||
       ! jq -e --arg uid "$statefulset_uid" --arg image "$image" --arg revision "$current_revision" --argjson replicas "$EXPECTED_REPLICAS" '
@@ -293,7 +298,7 @@ cleanup() {
       for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
         pod_name="${KUBEBRAIN_STATEFULSET}-${ordinal}"
         pod_json="$runtime_evidence_dir/pod-rollback-${ordinal}.json"
-        if ! capture_runtime_evidence "$pod_json" kctl get pod "$pod_name" -o json; then
+        if ! capture_runtime_evidence "$pod_json" kctl_evidence get pod "$pod_name" -o json; then
           echo "CRITICAL: failed to read candidate rollback Pod ${pod_name}" >&2
           continue
         fi
@@ -319,7 +324,7 @@ cleanup() {
 trap cleanup EXIT
 
 endpoint="http://${KUBEBRAIN_CLIENT_SERVICE}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
-kctl run "$PROBE_POD" --image="$image" --restart=Never --command -- \
+kctl_mutation run "$PROBE_POD" --image="$image" --restart=Never --command -- \
   /usr/local/bin/kubebrain-rollout-availability-probe \
   --endpoint="$endpoint" \
   --prefix="/kubebrain-rollout-availability/${PROBE_POD}/" \
@@ -339,7 +344,7 @@ kctl wait --for=condition=Ready "pod/$PROBE_POD" --timeout="$PROBE_READY_TIMEOUT
 started=false
 for attempt in $(seq 1 50); do
   probe_start_log="$runtime_evidence_dir/probe-start-${attempt}.log"
-  if capture_runtime_evidence "$probe_start_log" kctl logs "$PROBE_POD" && grep -qx PROBE_STARTED "$probe_start_log"; then
+  if capture_runtime_evidence "$probe_start_log" kctl_evidence logs "$PROBE_POD" && grep -qx PROBE_STARTED "$probe_start_log"; then
     started=true
     break
   fi
@@ -369,24 +374,24 @@ probe_phase_attempt=0
 while ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$PROBE_POD" --timeout=1s >/dev/null 2>&1; do
   ((probe_phase_attempt+=1))
   probe_phase_file="$runtime_evidence_dir/probe-phase-${probe_phase_attempt}.txt"
-  if capture_probe_phase_response "$probe_phase_file" kctl get pod "$PROBE_POD" -o jsonpath='{.status.phase}'; then
+  if capture_probe_phase_response "$probe_phase_file" kctl_evidence get pod "$PROBE_POD" -o jsonpath='{.status.phase}'; then
     probe_phase="$(<"$probe_phase_file")"
   else
     probe_phase=""
   fi
   if [[ "$probe_phase" == Failed ]]; then
-    capture_runtime_evidence "$runtime_evidence_dir/probe-failed.log" kctl logs "$PROBE_POD" && cat "$runtime_evidence_dir/probe-failed.log" >&2 || true
+    capture_runtime_evidence "$runtime_evidence_dir/probe-failed.log" kctl_evidence logs "$PROBE_POD" && cat "$runtime_evidence_dir/probe-failed.log" >&2 || true
     echo "availability probe failed" >&2
     exit 1
   fi
   if (( SECONDS >= probe_complete_deadline )); then
-    capture_runtime_evidence "$runtime_evidence_dir/probe-timeout.log" kctl logs "$PROBE_POD" && cat "$runtime_evidence_dir/probe-timeout.log" >&2 || true
+    capture_runtime_evidence "$runtime_evidence_dir/probe-timeout.log" kctl_evidence logs "$PROBE_POD" && cat "$runtime_evidence_dir/probe-timeout.log" >&2 || true
     echo "availability probe did not complete within ${PROBE_COMPLETE_TIMEOUT}" >&2
     exit 1
   fi
 done
 probe_log="$runtime_evidence_dir/probe-final.log"
-capture_runtime_evidence "$probe_log" kctl logs "$PROBE_POD" || {
+capture_runtime_evidence "$probe_log" kctl_evidence logs "$PROBE_POD" || {
   echo "failed to read availability probe log" >&2
   exit 1
 }
@@ -398,7 +403,7 @@ if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PR
 fi
 
 final_json="$runtime_evidence_dir/statefulset-final.json"
-capture_runtime_evidence "$final_json" kctl get statefulset "$KUBEBRAIN_STATEFULSET" -o json || {
+capture_runtime_evidence "$final_json" kctl_evidence get statefulset "$KUBEBRAIN_STATEFULSET" -o json || {
   echo "failed to read final KubeBrain StatefulSet" >&2
   exit 1
 }
@@ -420,7 +425,7 @@ if [[ -n "$TARGET_IMAGE" ]]; then
   for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
     pod_name="${KUBEBRAIN_STATEFULSET}-${ordinal}"
     pod_json="$runtime_evidence_dir/pod-final-${ordinal}.json"
-    capture_runtime_evidence "$pod_json" kctl get pod "$pod_name" -o json || {
+    capture_runtime_evidence "$pod_json" kctl_evidence get pod "$pod_name" -o json || {
       echo "failed to read candidate Pod ${pod_name}" >&2
       exit 1
     }
