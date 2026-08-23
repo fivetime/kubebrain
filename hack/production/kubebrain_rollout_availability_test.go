@@ -73,6 +73,18 @@ func TestRolloutAvailabilityRunnerRejectsMutableTargetImageBeforeKubernetes(t *t
 	require.NoFileExists(t, logPath)
 }
 
+func TestRolloutAvailabilityRunnerRequiresCandidateRuntimeDigestsBeforeKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("a", 64))
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "TARGET_RUNTIME_DIGESTS is required with TARGET_IMAGE")
+	require.NoFileExists(t, logPath)
+}
+
 func TestRolloutAvailabilityRunnerAcceptsDurationBoundary(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -145,6 +157,7 @@ func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("a", 64),
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -164,6 +177,7 @@ func TestRolloutAvailabilityRunnerRestoresOriginalImageWhenCandidateFails(t *tes
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("b", 64),
 		"FAKE_ROLLOUT_FAIL=true",
 	)
 	output, err := command.CombinedOutput()
@@ -181,6 +195,7 @@ func TestRolloutAvailabilityRunnerRejectsRuntimeDigestDriftAndRestoresOriginalIm
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("d", 64),
 		"FAKE_RUNTIME_DIGEST_DRIFT=true",
 	)
 	output, err := command.CombinedOutput()
@@ -275,7 +290,7 @@ elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.
 elif [[ " $* " =~ " get pod kubebrain-"[0-9]+" -o json " ]]; then
   ordinal="$(awk '{for (i=1;i<=NF;i++) if ($i == "pod") print $(i+1)}' <<<"$*")"
   runtime_image="${TARGET_IMAGE:-kubebrain:test}"
-  runtime_digest="${runtime_image##*@}"
+  runtime_digest="${TARGET_RUNTIME_DIGESTS%%,*}"
   [[ "${FAKE_RUNTIME_DIGEST_DRIFT:-false}" != true ]] || runtime_digest="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   jq -cn --arg name "$ordinal" --arg image "$runtime_image" --arg digest "$runtime_digest" '{
     metadata:{name:$name,labels:{"controller-revision-hash":"revision-new"}},

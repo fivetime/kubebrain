@@ -25,6 +25,7 @@ PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
+TARGET_RUNTIME_DIGESTS="${TARGET_RUNTIME_DIGESTS:-}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
 MAX_RUNTIME_EVIDENCE_BYTES=1048576
 MAX_PROBE_PHASE_RESPONSE_BYTES=4096
@@ -75,6 +76,27 @@ if [[ -n "$TARGET_IMAGE" && ! "$TARGET_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]
   echo "TARGET_IMAGE must be an immutable image reference with @sha256:<64 lowercase hex digest>" >&2
   exit 2
 fi
+if [[ -n "$TARGET_IMAGE" && -z "$TARGET_RUNTIME_DIGESTS" ]]; then
+  echo "TARGET_RUNTIME_DIGESTS is required with TARGET_IMAGE" >&2
+  exit 2
+fi
+if [[ -z "$TARGET_IMAGE" && -n "$TARGET_RUNTIME_DIGESTS" ]]; then
+  echo "TARGET_RUNTIME_DIGESTS requires TARGET_IMAGE" >&2
+  exit 2
+fi
+declare -A seen_runtime_digests=()
+IFS=',' read -r -a target_runtime_digest_items <<<"$TARGET_RUNTIME_DIGESTS"
+for digest in "${target_runtime_digest_items[@]}"; do
+  if ! [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+    echo "TARGET_RUNTIME_DIGESTS must be a comma-separated unique list of sha256:<64 lowercase hex> digests" >&2
+    exit 2
+  fi
+  if [[ -n "${seen_runtime_digests[$digest]:-}" ]]; then
+    echo "TARGET_RUNTIME_DIGESTS must not contain duplicate digests" >&2
+    exit 2
+  fi
+  seen_runtime_digests[$digest]=true
+done
 
 kubectl_command=("$KUBECTL_BIN")
 if [[ -n "$KUBECTL_CONTEXT" ]]; then
@@ -267,7 +289,6 @@ if [[ "$final_ready" != "$EXPECTED_REPLICAS" || -z "$final_current_revision" ||
   exit 1
 fi
 if [[ -n "$TARGET_IMAGE" ]]; then
-  target_digest="${TARGET_IMAGE##*@}"
   for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
     pod_name="${KUBEBRAIN_STATEFULSET}-${ordinal}"
     pod_json="$runtime_evidence_dir/pod-final-${ordinal}.json"
@@ -275,18 +296,20 @@ if [[ -n "$TARGET_IMAGE" ]]; then
       echo "failed to read candidate Pod ${pod_name}" >&2
       exit 1
     }
-    if ! jq -e --arg image "$TARGET_IMAGE" --arg digest "$target_digest" --arg revision "$final_current_revision" '
+    if ! jq -e --arg image "$TARGET_IMAGE" --arg digests "$TARGET_RUNTIME_DIGESTS" --arg revision "$final_current_revision" '
+      ($digests | split(",")) as $allowedDigests |
       .metadata.deletionTimestamp == null and .status.phase == "Running" and
       .metadata.labels["controller-revision-hash"] == $revision and
       ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
       ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and
-        ((.imageID | type) == "string") and (.imageID | endswith($digest)))] | length) == 1
+        ((.imageID | type) == "string") and (.imageID as $imageID |
+          any($allowedDigests[]; . as $digest | $imageID | endswith($digest))))] | length) == 1
     ' "$pod_json" >/dev/null; then
-      echo "candidate Pod runtime release mismatch: ${pod_name} image=${TARGET_IMAGE} digest=${target_digest}" >&2
+      echo "candidate Pod runtime release mismatch: ${pod_name} image=${TARGET_IMAGE} allowed_digests=${TARGET_RUNTIME_DIGESTS}" >&2
       exit 1
     fi
   done
 fi
 candidate_rollout_succeeded=true
 
-echo "KubeBrain rollout availability gate passed: namespace=${KUBEBRAIN_NAMESPACE} statefulset=${KUBEBRAIN_STATEFULSET} image=${image}->${expected_final_image} revision=${current_revision}->${final_current_revision} probes=${PROBE_ITERATIONS}"
+echo "KubeBrain rollout availability gate passed: namespace=${KUBEBRAIN_NAMESPACE} statefulset=${KUBEBRAIN_STATEFULSET} image=${image}->${expected_final_image} runtime_digests=${TARGET_RUNTIME_DIGESTS:-unchanged} revision=${current_revision}->${final_current_revision} probes=${PROBE_ITERATIONS}"
