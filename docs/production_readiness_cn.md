@@ -1289,6 +1289,10 @@ revision、使用原 spec image、Running/Ready 且非 terminating。失败回�
 `untrusted-prefixsha256:...` 即使末尾 digest 正确也必须拒绝。多平台集群仍通过
 `TARGET_RUNTIME_DIGESTS` 列出本轮批准的平台 manifest 集，但每个 Pod 的 imageID 必须匹配上述结构之一。
 
+候选 postflight 还要求每个 `kubebrain` container 的 `restartCount` 精确为零；Ready 但在本轮 rollout 中曾崩溃并由
+kubelet 重启的 Pod 不得放行。该约束只针对新 candidate，原 baseline 或失败回滚的历史 restartCount 不作为拒绝
+理由。零重启证明的是 canary 窗口内启动稳定性，不能替代发布后的长期 crashloop、OOM 和内存泄漏监控。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 

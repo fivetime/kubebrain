@@ -61156,6 +61156,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   111.821/324.982/217.467/340.347 秒）。该解析只确认 imageID 与发布者批准 digest 的绑定；registry hostname、
   签名与 provenance 仍由 image policy/签名门禁负责。
 
+- A5415 修复候选 Pod 最终 Ready 即可放行、忽略启动期间容器崩溃重启的稳定性假阳性。三副本 availability probe
+  可由其他健康副本维持全绿；某个 candidate 进程启动后 crash、被 kubelet 拉起并最终 Ready 时，旧 runtime
+  postflight 仍会接受，掩盖 init/startup 缺陷。提交 `1158dd36` 在候选逐 ordinal containerStatus 合同中新增
+  `restartCount == 0`，与 Ready、revision、spec image 和结构化 runtime digest 同时成立才允许提交；任一候选发生
+  重启均触发 Pod runtime mismatch、恢复原 image、核验 rollback identity/runtime 且不输出成功 receipt。该条件只
+  约束本轮新 candidate，mutation 前 baseline 与失败回滚不因历史 restartCount 非零被误判。fake candidate
+  `restartCount=1` 负测固定“崩溃后恢复 Ready”仍 fail closed。聚焦普通 20 轮 30.828 秒、race 10 轮 17.636 秒，
+  rollout 全组普通/race 为 5.915/6.958 秒，vet/shell syntax 通过；production inventory 增至 602 项，精确提交
+  四片 137/170/152/143 全绿（Go 测试 107.615/318.917/211.281/334.038 秒；端到端
+  113.397/324.784/217.067/339.837 秒）。零重启只覆盖本轮 rollout 窗口；更长时间的 crashloop/内存泄漏仍需发布后
+  soak 与监控告警承担。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
