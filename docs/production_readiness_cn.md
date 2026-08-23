@@ -87,6 +87,19 @@ bootstrap 的客户端在下一次 AutoSync 后整体断连。实例发布门禁
 `KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIRECT=1` 验证逐成员 Status/HashKV。不得在共享 Service 拓扑中
 把负载均衡偶然命中不同 Pod 当成直连副本证据。
 
+开发或预生产可通过统一入口快速验证 Sync 可达性；该开关默认关闭，`ENDPOINT` 必须显式指向目标客户端
+网络域可达的 bootstrap 地址，脚本不会回退到 localhost：
+
+```shell
+ENDPOINT=http://172.18.0.2:30079 \
+RUN_MEMBERLIST_SYNC_SMOKE=true \
+hack/dev/verify.sh
+```
+
+该 smoke 调用官方 clientv3 MemberList/Sync，再使用 Sync 替换后的 endpoint 集合执行 Put/Get 与清理；它是
+完整 `validate-instance-ready.sh` 的快速补充，不能替代后者对不可变镜像、拓扑、运行时 MemberList、TLS 和
+每个广告 URL health 的发布审核。
+
 每个实例必须使用全局唯一且创建后不可变的 `--keyspace`。production 基线中的
 `kubebrain-system` 仅是清单默认值；DBaaS 控制面实例化清单时必须替换为稳定实例 ID，并
 在发布、扩缩和升级门禁中逐字校验。复用或变更 keyspace 会让实例读到其他租户数据，或让

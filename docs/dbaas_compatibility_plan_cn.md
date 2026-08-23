@@ -60830,6 +60830,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   104.992/313.325/207.345/329.557 秒；端到端 110.582/318.976/213.023/335.165 秒）。服务端二进制未因配置漂移修改；正式发布仍由
   `validate-instance-ready.sh` 从目标客户端网络域校验参数、运行时 MemberList 和每个广告 URL health，不能只依赖 StatefulSet Ready。
 
+- A5395 将 A5394 的手工环境变量调用固化为轻量 `hack/dev/memberlist-sync-smoke.sh`，并通过统一
+  `RUN_MEMBERLIST_SYNC_SMOKE` 开关接入 `hack/dev/verify.sh`。两层入口都要求显式 `KUBEBRAIN_ETCD_ENDPOINT` 或 `ENDPOINT`，缺失时
+  退出 2，不再把隐式 `127.0.0.1:3379` 的偶然进程当目标；smoke 只设置 DIALABLE 并精确运行
+  `TestMemberListSupportsOfficialClientSync`，不会误启 A5394 拆出的逐成员 DIRECT/HashKV 模式。verify 开关默认 false，进入严格 RUN
+  flag 白名单和唯一执行块；默认全关闭调用不创建外部状态。静态合同固定 endpoint 优先级、精确测试名、DIALABLE/DIRECT 隔离及 verify
+  三处接线。缺 endpoint 负测退出 2，聚焦普通 20 轮 0.027 秒、race 20 轮 1.225 秒、完整 compat race 7.219 秒及 vet 通过。
+
+  精确提交 `01bfcfaa` 在 A5394 已修复的真实三副本 TiKV/PD 数据面上，通过统一入口只启用本项：日志明确进入
+  `MemberList clientv3 Sync smoke`，官方 Sync→Put/Get/cleanup 0.072 秒通过并输出绑定的 bootstrap endpoint，verify 随后报告全部请求
+  步骤完成。运行时三成员继续公告 `http://172.18.0.2:30079`，StatefulSet 3/3 updated/ready、endpoint healthy。production inventory
+  仍为 589 项，最终四片 133/166/151/139 全部通过（Go 测试 104.858/312.745/208.615/329.159 秒；端到端
+  110.501/318.466/214.285/334.840 秒）。该快速 smoke 捕获 AutoSync 断连，不替代完整实例 release gate 或真正逐成员直连一致性验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
