@@ -53,6 +53,7 @@ type leaseRenewalAuditStats struct {
 	auditedLeases    int64
 	transientErrors  int64
 	maxSuccessGap    time.Duration
+	maxResponseGap   time.Duration
 	firstRevision    int64
 	lastRevision     int64
 }
@@ -135,6 +136,9 @@ func parseLeaseRenewalSoakConfig(lookup func(string) (string, bool)) (leaseRenew
 		minimumAuditDuration := config.auditInterval * time.Duration((total+config.auditSample-1)/config.auditSample)
 		if config.duration < minimumAuditDuration {
 			return leaseRenewalSoakConfig{}, fmt.Errorf("lease renewal soak duration must be at least %s to audit every lease once", minimumAuditDuration)
+		}
+		if config.duration < config.auditMaxOutage {
+			return leaseRenewalSoakConfig{}, fmt.Errorf("lease renewal soak duration must be at least audit max outage %s", config.auditMaxOutage)
 		}
 	}
 	return config, nil
@@ -285,8 +289,9 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 		require.GreaterOrEqual(t, stats.auditedLeases, int64(len(leases)), "duration soak must audit every lease at least once")
 		require.Positive(t, stats.firstRevision)
 		require.GreaterOrEqual(t, stats.lastRevision, stats.firstRevision)
-		t.Logf("lease renewal continuous audit: samples=%d leases=%d transient_errors=%d max_success_gap=%s revisions=%d..%d",
-			stats.completedSamples, stats.auditedLeases, stats.transientErrors, stats.maxSuccessGap.Round(time.Millisecond), stats.firstRevision, stats.lastRevision)
+		t.Logf("lease renewal continuous audit: samples=%d leases=%d transient_errors=%d max_success_gap=%s max_response_gap=%s revisions=%d..%d",
+			stats.completedSamples, stats.auditedLeases, stats.transientErrors, stats.maxSuccessGap.Round(time.Millisecond),
+			stats.maxResponseGap.Round(time.Millisecond), stats.firstRevision, stats.lastRevision)
 	}
 	readers.Wait()
 	select {
@@ -355,6 +360,7 @@ func TestParseLeaseRenewalSoakConfig(t *testing.T) {
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_TTL": "4"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "not-a-duration"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "2s"},
+		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "44s"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "168h1s"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL": "1s"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL": "99ms"},
@@ -387,12 +393,30 @@ func runLeaseRenewalAuditor(
 	ticker := time.NewTicker(config.auditInterval)
 	defer ticker.Stop()
 	lastSuccess, offset, lastRevision := time.Now(), 0, int64(0)
+	lastResponseCounts := make([]int64, len(leases))
+	lastResponseProgress := make([]time.Time, len(leases))
+	for index, live := range leases {
+		lastResponseCounts[index] = live.responses.Load()
+		lastResponseProgress[index] = lastSuccess
+	}
 	var stats leaseRenewalAuditStats
 	for {
 		select {
 		case <-ctx.Done():
 			return stats
 		case <-ticker.C:
+		}
+		now := time.Now()
+		responseGap, err := observeLeaseRenewalResponseProgress(now, leases, lastResponseCounts, lastResponseProgress, config.auditMaxOutage)
+		if responseGap > stats.maxResponseGap {
+			stats.maxResponseGap = responseGap
+		}
+		if err != nil {
+			select {
+			case errs <- err:
+			default:
+			}
+			return stats
 		}
 		auditCtx, cancel := context.WithTimeout(ctx, min(config.auditMaxOutage/2, 30*time.Second))
 		revision, err := auditLeaseRenewalSample(auditCtx, cli, leases, offset, config.auditSample, lastRevision)
@@ -425,6 +449,31 @@ func runLeaseRenewalAuditor(
 		}
 		stats.transientErrors++
 	}
+}
+
+func observeLeaseRenewalResponseProgress(
+	now time.Time, leases []*leaseRenewalLiveLease, lastCounts []int64, lastProgress []time.Time, maxOutage time.Duration,
+) (time.Duration, error) {
+	var maxGap time.Duration
+	for index, live := range leases {
+		count := live.responses.Load()
+		if count < lastCounts[index] {
+			return maxGap, fmt.Errorf("lease %d keepalive response count regressed from %d to %d", live.id, lastCounts[index], count)
+		}
+		gap := now.Sub(lastProgress[index])
+		if count == lastCounts[index] {
+			if gap >= maxOutage {
+				return maxGap, fmt.Errorf("lease %d keepalive response stream made no progress for %s", live.id, gap.Round(time.Millisecond))
+			}
+			continue
+		}
+		lastCounts[index] = count
+		lastProgress[index] = now
+		if gap > maxGap {
+			maxGap = gap
+		}
+	}
+	return maxGap, nil
 }
 
 func auditLeaseRenewalSample(
@@ -532,6 +581,32 @@ func TestAuditLeaseRenewalSampleChecksBindingTTLAndRevision(t *testing.T) {
 			require.Equal(t, tc.semantic, auditErr.semantic)
 		})
 	}
+}
+
+func TestObserveLeaseRenewalResponseProgressRejectsSilentStall(t *testing.T) {
+	started := time.Unix(1_700_000_000, 0)
+	lease := &leaseRenewalLiveLease{id: 17}
+	lease.responses.Store(1)
+	counts := []int64{1}
+	progress := []time.Time{started}
+
+	gap, err := observeLeaseRenewalResponseProgress(started.Add(44*time.Second), []*leaseRenewalLiveLease{lease}, counts, progress, 45*time.Second)
+	require.NoError(t, err)
+	require.Zero(t, gap)
+
+	lease.responses.Store(2)
+	gap, err = observeLeaseRenewalResponseProgress(started.Add(44*time.Second), []*leaseRenewalLiveLease{lease}, counts, progress, 45*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, 44*time.Second, gap)
+	require.Equal(t, []int64{2}, counts)
+	require.Equal(t, []time.Time{started.Add(44 * time.Second)}, progress)
+
+	_, err = observeLeaseRenewalResponseProgress(started.Add(89*time.Second), []*leaseRenewalLiveLease{lease}, counts, progress, 45*time.Second)
+	require.ErrorContains(t, err, "made no progress for 45s")
+
+	counts[0] = 3
+	_, err = observeLeaseRenewalResponseProgress(started.Add(90*time.Second), []*leaseRenewalLiveLease{lease}, counts, progress, 45*time.Second)
+	require.ErrorContains(t, err, "response count regressed")
 }
 
 func waitForLeaseSoakDeadline(ctx context.Context, errs <-chan error, deadline time.Time) error {
