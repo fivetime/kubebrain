@@ -60902,6 +60902,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race 20 轮 1.117 秒通过；production inventory 仍为 589 项，最终四片 133/166/151/139 全绿（Go 测试
   104.882/313.402/208.535/329.133 秒；端到端 110.453/319.074/214.148/334.754 秒）。
 
+- A5399 修复 in-cluster balancer 探针把 Go 二进制硬编码交叉编译为 `amd64`、却不约束 Job 调度架构的可移植性缺口。在 ARM64 或异构
+  Kubernetes 集群中，原实现会把 amd64 二进制装入 workload 的 runtime image，Pod 可能被调度到 ARM64 节点并最晚以
+  `exec format error` 失败；该错误既不能证明 MemberList/AutoSync，也可能被误判为数据面故障。提交 `964e5cae` 先从 victim Pod
+  `.spec.nodeName` 找到实际节点，再读取权威 `.status.nodeInfo.operatingSystem/architecture`；只接受当前探针支持的
+  `linux/{amd64,arm64}`，将 architecture 作为显式 `TARGET_GOARCH` 传入 Docker build，并给双容器 Job 同时加
+  `kubernetes.io/os`/`kubernetes.io/arch` nodeSelector。成功日志绑定所用 OS/arch，静态合同禁止恢复 `GOARCH=amd64`，并固定发现、
+  allowlist、build arg 和调度标签四层接线。
+
+  当前真实 victim 位于 `kubebrain-dbaas-control-plane`，节点报告 `linux/amd64`。共享入口负测的构建日志显示动态解析后的
+  `GOARCH=amd64`，Job describe 显示两条 node selector，探针二进制成功运行到预期端点不匹配，fail-fast 后 victim UID
+  `3340eaf9-f0ed-418c-a0fb-60a3f035e246` 未变。逐成员 GREEN 输出 `node_os=linux node_arch=amd64`，完成显式 Sync、后台
+  AutoSync、20 个有序 watch 事件和全部 KV/Txn；本次真实观察 2 次合法 serializable 陈旧读后收敛，线性读仍即时通过，victim UID
+  从 `d4bef653-3e06-4755-8ee1-9476810c2caa` 变为 `6777882e-1ca5-4158-b1d9-9799f1189d00`。恢复共享 NodePort
+  revision `kubebrain-5dbf96986b` 后 3/3 updated/ready，宿主 Sync smoke 0.070 秒通过。shell、compat race 20 轮 1.112 秒通过；
+  production inventory 仍为 589 项，最终四片 133/166/151/139 全绿（Go 测试 103.913/313.689/209.256/329.241 秒；
+  端到端 109.534/319.339/214.929/334.835 秒）。ARM64 路径已有交叉编译与调度合同，但尚未在真实 ARM64 node 上执行，不能把本次
+  amd64 现场外推为 ARM64 运行证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
