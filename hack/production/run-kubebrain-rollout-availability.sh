@@ -28,6 +28,9 @@ KUBECTL_EVIDENCE_REQUEST_TIMEOUT="${KUBECTL_EVIDENCE_REQUEST_TIMEOUT:-10s}"
 KUBECTL_EVIDENCE_COMMAND_TIMEOUT="${KUBECTL_EVIDENCE_COMMAND_TIMEOUT:-15s}"
 KUBECTL_MUTATION_REQUEST_TIMEOUT="${KUBECTL_MUTATION_REQUEST_TIMEOUT:-10s}"
 KUBECTL_MUTATION_COMMAND_TIMEOUT="${KUBECTL_MUTATION_COMMAND_TIMEOUT:-15s}"
+KUBECTL_READY_WAIT_COMMAND_TIMEOUT="${KUBECTL_READY_WAIT_COMMAND_TIMEOUT:-70s}"
+KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT="${KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT:-310s}"
+KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT="${KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT:-5s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
@@ -78,7 +81,8 @@ for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LAT
   PROBE_MAX_PD_TSO_LATENCY PROBE_MAX_TIKV_REGION_LATENCY PROBE_READY_TIMEOUT \
   PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_EVIDENCE_REQUEST_TIMEOUT \
   KUBECTL_EVIDENCE_COMMAND_TIMEOUT KUBECTL_MUTATION_REQUEST_TIMEOUT \
-  KUBECTL_MUTATION_COMMAND_TIMEOUT; do
+  KUBECTL_MUTATION_COMMAND_TIMEOUT KUBECTL_READY_WAIT_COMMAND_TIMEOUT \
+  KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT; do
   operation_is_positive_go_duration "${!variable}" || {
     echo "${variable} must be a positive ms, s, or m duration representable by Go time.Duration" >&2
     exit 2
@@ -123,9 +127,6 @@ kubectl_command=("$KUBECTL_BIN")
 if [[ -n "$KUBECTL_CONTEXT" ]]; then
   kubectl_command+=(--context "$KUBECTL_CONTEXT")
 fi
-kctl() {
-  "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" "$@"
-}
 kctl_evidence() {
   "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$KUBECTL_EVIDENCE_COMMAND_TIMEOUT" \
     "${kubectl_command[@]}" --request-timeout="$KUBECTL_EVIDENCE_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
@@ -133,6 +134,12 @@ kctl_evidence() {
 kctl_mutation() {
   "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$KUBECTL_MUTATION_COMMAND_TIMEOUT" \
     "${kubectl_command[@]}" --request-timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" -n "$KUBEBRAIN_NAMESPACE" "$@"
+}
+kctl_watch() {
+  local command_timeout="$1"
+  shift
+  "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$command_timeout" \
+    "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" "$@"
 }
 patch_kubebrain_image() {
   local old_image="$1" new_image="$2" resource_version="$3" patch
@@ -292,7 +299,8 @@ cleanup() {
       echo "CRITICAL: candidate state drifted before rollback; refusing to overwrite concurrent StatefulSet changes" >&2
     elif ! patch_kubebrain_image "$TARGET_IMAGE" "$image" "$rollback_current_resource_version" >/dev/null; then
       echo "CRITICAL: failed to request candidate image rollback to ${image}" >&2
-    elif ! kctl rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null; then
+    elif ! kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
+      rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null; then
       echo "CRITICAL: candidate image rollback did not converge within ${ROLLOUT_TIMEOUT}" >&2
     elif ! capture_runtime_evidence "$runtime_evidence_dir/statefulset-rollback.json" \
       kctl_evidence get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
@@ -352,7 +360,11 @@ kctl_mutation run "$PROBE_POD" --image="$image" --restart=Never --command -- \
   echo "failed to create rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   exit 1
 }
-kctl wait --for=condition=Ready "pod/$PROBE_POD" --timeout="$PROBE_READY_TIMEOUT" >/dev/null
+kctl_watch "$KUBECTL_READY_WAIT_COMMAND_TIMEOUT" \
+  wait --for=condition=Ready "pod/$PROBE_POD" --timeout="$PROBE_READY_TIMEOUT" >/dev/null || {
+  echo "rollout availability probe Pod did not become Ready within ${PROBE_READY_TIMEOUT}" >&2
+  exit 1
+}
 
 started=false
 for attempt in $(seq 1 50); do
@@ -376,7 +388,11 @@ if [[ -n "$TARGET_IMAGE" ]]; then
 else
   kctl_mutation rollout restart "statefulset/$KUBEBRAIN_STATEFULSET" >/dev/null
 fi
-kctl rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null
+kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
+  rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null || {
+  echo "KubeBrain rollout did not converge within ${ROLLOUT_TIMEOUT}" >&2
+  exit 1
+}
 case "$PROBE_COMPLETE_TIMEOUT" in
   *ms) probe_complete_seconds=$(( (${PROBE_COMPLETE_TIMEOUT%ms} + 999) / 1000 )) ;;
   *s) probe_complete_seconds=${PROBE_COMPLETE_TIMEOUT%s} ;;
@@ -384,7 +400,8 @@ case "$PROBE_COMPLETE_TIMEOUT" in
 esac
 probe_complete_deadline=$((SECONDS + probe_complete_seconds))
 probe_phase_attempt=0
-while ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$PROBE_POD" --timeout=1s >/dev/null 2>&1; do
+while ! kctl_watch "$KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT" \
+  wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$PROBE_POD" --timeout=1s >/dev/null 2>&1; do
   ((probe_phase_attempt+=1))
   probe_phase_file="$runtime_evidence_dir/probe-phase-${probe_phase_attempt}.txt"
   if capture_probe_phase_response "$probe_phase_file" kctl_evidence get pod "$PROBE_POD" -o jsonpath='{.status.phase}'; then

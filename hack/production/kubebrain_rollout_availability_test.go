@@ -25,9 +25,11 @@ func TestRolloutAvailabilityRunnerRequiresExplicitMutationApproval(t *testing.T)
 func TestRolloutAvailabilityRunnerDoesNotBypassBoundedKubectlWrappers(t *testing.T) {
 	source, err := os.ReadFile("run-kubebrain-rollout-availability.sh")
 	require.NoError(t, err)
-	for _, directCall := range []string{" kctl get ", " kctl logs ", "\nkctl run "} {
+	for _, directCall := range []string{
+		" kctl get ", " kctl logs ", "\nkctl run ", "\nkctl wait ", "\nkctl rollout status ", "\nkctl()",
+	} {
 		require.NotContains(t, string(source), directCall,
-			"evidence reads and probe creation must use their request-timeout wrappers")
+			"kubectl calls must use their request and process-timeout wrappers")
 	}
 }
 
@@ -84,7 +86,8 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 		"PROBE_MAX_PD_TSO_LATENCY", "PROBE_MAX_TIKV_REGION_LATENCY", "PROBE_READY_TIMEOUT",
 		"PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_EVIDENCE_REQUEST_TIMEOUT",
 		"KUBECTL_EVIDENCE_COMMAND_TIMEOUT", "KUBECTL_MUTATION_REQUEST_TIMEOUT",
-		"KUBECTL_MUTATION_COMMAND_TIMEOUT",
+		"KUBECTL_MUTATION_COMMAND_TIMEOUT", "KUBECTL_READY_WAIT_COMMAND_TIMEOUT",
+		"KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT", "KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT",
 	} {
 		t.Run(variable, func(t *testing.T) {
 			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
@@ -102,9 +105,13 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 	for _, tc := range []struct {
 		name, target, timeoutVariable, want string
+		extraEnv                            []string
 	}{
 		{name: "evidence", target: "evidence", timeoutVariable: "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=100ms", want: "failed to read KubeBrain StatefulSet"},
 		{name: "mutation", target: "mutation", timeoutVariable: "KUBECTL_MUTATION_COMMAND_TIMEOUT=100ms", want: "failed to create rollout availability probe Pod"},
+		{name: "ready wait", target: "ready", timeoutVariable: "KUBECTL_READY_WAIT_COMMAND_TIMEOUT=100ms", want: "rollout availability probe Pod did not become Ready"},
+		{name: "rollout status", target: "rollout", timeoutVariable: "KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT=100ms", want: "KubeBrain rollout did not converge"},
+		{name: "phase wait", target: "phase", timeoutVariable: "KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT=100ms", want: "availability probe did not complete", extraEnv: []string{"PROBE_COMPLETE_TIMEOUT=1s"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
@@ -113,6 +120,7 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
 				"FAKE_KUBECTL_HANG_TARGET=" + tc.target, tc.timeoutVariable,
 			}
+			env = append(env, tc.extraEnv...)
 			started := time.Now()
 			output, err := runProductionScriptCommandWithTimeout(t,
 				"run-kubebrain-rollout-availability.sh", env, 5*time.Second)
@@ -576,6 +584,15 @@ if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == evidence && " $* " == *" get statefulse
   sleep 30
 fi
 if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == mutation && " $* " == *" run kubebrain-rollout-availability-probe "* ]]; then
+  sleep 30
+fi
+if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == ready && " $* " == *" wait --for=condition=Ready "* ]]; then
+  sleep 30
+fi
+if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == rollout && " $* " == *" rollout status statefulset/kubebrain "* ]]; then
+  sleep 30
+fi
+if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == phase && " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   sleep 30
 fi
 if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
