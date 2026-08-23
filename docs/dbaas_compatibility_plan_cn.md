@@ -60937,6 +60937,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （Go 测试 104.350/315.104/211.646/331.282 秒；端到端 109.991/320.788/217.345/336.976 秒）。代码现在闭合 binary、OCI
   manifest 和 scheduler 三层平台一致性；真实 ARM64 node 的 runtime 证据仍未取得。
 
+- A5401 修复 balancer smoke 的 Job 名虽唯一、默认镜像却固定为 `kubebrain:balancer-smoke` 的并发竞态。两个发布验证若使用不同源码、
+  runtime image 或节点架构同时 build/load，同一 mutable tag 会被后完成者覆盖，Pod 在 `imagePullPolicy: Never` 下可能运行另一轮字节；
+  单轮 GREEN 也无法证明所测镜像绑定本轮输入。提交 `0d5cc4c2` 将默认 tag 改为语义内容/平台寻址：SHA-256 输入覆盖脚本自身（含临时
+  Dockerfile 逻辑）、probe `main.go`、`go.mod/go.sum`、本地 `third_party/tikv-client-go` 全部文件、GO/RUNTIME base image 以及目标
+  OS/arch，取 20 hex 并生成 `kubebrain:balancer-smoke-${arch}-${digest}`。同输入稳定复用缓存，不同代码、依赖、基镜像或平台使用不同
+  tag；显式覆盖仍可用，但收紧为 `docker build -t` 可接受的 tag，拒绝 `@digest` 形式。成功日志新增 `probe_image`，静态合同固定完整输入集、
+  NUL 分隔、digest 形状和旧固定默认值不得回归。
+
+  真实 linux/amd64 共享入口负测连续两次都解析为
+  `kubebrain:balancer-smoke-amd64-9350c3baa1ae394c8b18`，第二次所有 build layer 命中缓存；两个 Job 均引用该 tag、在端点不匹配后
+  fail-fast，victim UID `576dfddf-ead0-4759-ba01-2ef1fbb07474` 两次均未变化。BuildKit provenance 会使等价运行层的 manifest-list
+  ID 随构建变化，因此此 tag 明确是输入语义地址而不冒充 OCI content digest。逐成员 GREEN 继续用同一 tag 完成 Sync、AutoSync、20 个
+  有序 watch 事件及全部 KV/Txn，瞬时失败为 0，1 次合法 serializable 陈旧读后收敛，victim UID 从
+  `231a0aa0-9139-49d5-8500-bfb3c681dd34` 变为 `cb0dd062-2cb4-4740-9b23-d2950b2db002`。恢复共享 NodePort
+  revision `kubebrain-5dbf96986b` 后 3/3 updated/ready，宿主 Sync smoke 0.075 秒通过。shell、compat race 20 轮 1.114 秒通过；
+  production inventory 仍为 589 项，最终四片 133/166/151/139 全绿（Go 测试 105.286/314.198/208.609/331.081 秒；
+  端到端 110.977/320.011/214.337/336.814 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
