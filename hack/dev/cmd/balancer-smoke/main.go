@@ -62,7 +62,7 @@ func main() {
 	}
 	syncAndRequireEndpoints(ctx, unary, endpoints)
 
-	watchClient := newPinnedClient(victimEndpoint)
+	watchClient := newAutoSyncPinnedClient(victimEndpoint)
 	defer watchClient.Close()
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	defer watchCancel()
@@ -75,7 +75,7 @@ func main() {
 	case <-ctx.Done():
 		log.Fatalf("create pinned watch: %v", ctx.Err())
 	}
-	syncAndRequireEndpoints(ctx, watchClient, endpoints)
+	waitAndRequireAutoSyncedEndpoints(ctx, watchClient, endpoints)
 
 	writeMarker(stateDir, "ready")
 	waitMarker(ctx, stateDir, "deleted")
@@ -142,7 +142,7 @@ func main() {
 	if err != nil || deletedCount != 1 {
 		log.Fatalf("delete after failover: deleted=%d err=%v", deletedCount, err)
 	}
-	fmt.Printf("balancer smoke completed: synced_endpoints=3 watch_events=%d last_revision=%d transient_failures=%d stale_serializable_reads=%d replacement_ready=true\n",
+	fmt.Printf("balancer smoke completed: synced_endpoints=3 autosynced_endpoints=3 watch_events=%d last_revision=%d transient_failures=%d stale_serializable_reads=%d replacement_ready=true\n",
 		writes, lastRevision, transientFailures, staleSerializableReads)
 }
 
@@ -165,6 +165,37 @@ func syncAndRequireEndpoints(ctx context.Context, client *clientv3.Client, expec
 			log.Fatalf("synced endpoints are not unique: %q", got)
 		}
 	}
+}
+
+func waitAndRequireAutoSyncedEndpoints(ctx context.Context, client *clientv3.Client, expected []string) {
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	want := append([]string(nil), expected...)
+	sort.Strings(want)
+	for {
+		got := append([]string(nil), client.Endpoints()...)
+		sort.Strings(got)
+		if equalUniqueEndpoints(got, want) {
+			return
+		}
+		select {
+		case <-waitCtx.Done():
+			log.Fatalf("auto-synced endpoints did not converge: got=%q want=%q: %v", got, want, waitCtx.Err())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func equalUniqueEndpoints(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range want {
+		if got[index] != want[index] || (index > 0 && got[index] == got[index-1]) {
+			return false
+		}
+	}
+	return true
 }
 
 func createEventually(ctx context.Context, client *clientv3.Client, key, value string) int {
@@ -221,6 +252,16 @@ func serializableGetEventually(ctx context.Context, client *clientv3.Client, key
 func newPinnedClient(endpoint string) *clientv3.Client {
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	return client
+}
+
+func newAutoSyncPinnedClient(endpoint string) *clientv3.Client {
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second, AutoSyncInterval: 100 * time.Millisecond,
 	})
 	if err != nil {
 		log.Fatal(err)
