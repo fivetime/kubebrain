@@ -60720,6 +60720,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试 105.353/314.081/209.815/330.629 秒；端到端 111.024/319.781/215.471/336.331 秒）。该证据关闭单宿主真实 DROP 门禁，
   不宣称覆盖跨节点路由、跨 AZ fabric、非对称丢包/延迟或小时级资源稳定性；这些仍须在目标预生产拓扑留证。
 
+- A5388 关闭 A5387 只验证双向 DROP、不能表达非对称 ACL/路由故障的缺口。`PARTITION_DIRECTION` 现为严格
+  `both|ingress|egress` 枚举，非法值在 docker/iptables mutation 前退出；ingress 只创建 `-d leaderPodIP` 规则，egress 只创建
+  `-s leaderPodIP`，both 保持既有行为。每种方向只验证自己应有的规则，但 cleanup 仍探测并删除两个 tag，防止方向漂移或中途失败
+  留下另一侧规则；canonical 日志绑定 direction、原 Pod UID 与实际 DROP counter。静态回归固定三个枚举、两个条件分支、默认 both、
+  packet evidence 和双向清理，非法方向也以真实脚本入口验证非零退出。
+
+  演练同时暴露两个门禁时序错误。首次 egress 在 TTL=90/outage=75 下观测约 80 秒停滞；旧 progress helper 若恰在超限后看到计数
+  增长，只记录 gap 而不失败，且单次状态 audit 可阻塞 30 秒延迟判定。现恢复计数的 gap 只要达到 max-outage 也立即失败，audit RPC
+  timeout 收紧为 `min(interval,max-outage/2,30s)`。网络默认相应调整为 TTL=120/outage=90，保留 30 秒生存余量。第二次 egress 的
+  全局 monitor 仍在 90 秒预算内，换主后固定 30 秒 fresh-response wait 却提前 RED；现该局部等待为
+  `max(30s,auditMaxOutage)`，真正上限仍从最后成功 response 起由 monitor 决定，不从规则清理时重新计时。
+
+  ingress 在提交 `77b49b3e` 上以 64 lease、TTL=120、outage=90、单次当前 leader 分区运行：原 Pod UID 不变、DROP 3952 包，
+  22 个完整样本/1408 次审计、10 次受控传输错误，最大状态/响应间隔 57.981/69.999 秒，165.56 秒通过。仅增加局部等待一致性的
+  最终提交 `edc46783` 上，egress 原 Pod UID 不变、DROP 3120 包，24 个完整样本/1536 次审计、11 次受控传输错误，最大状态/
+  响应间隔 62.871/75.001 秒，revision `468126003565971833..468126003565971873`，180.51 秒通过。两次均无 channel restart、
+  规则零残留、endpoint 健康、StatefulSet 3/3。最终 compat race 7.148 秒；根 production inventory 仍为 589 项，最终提交四片
+  133/166/151/139 全部通过（Go 测试 104.691/315.179/210.582/330.398 秒；端到端
+  110.328/320.811/216.234/336.008 秒）。该项覆盖单宿主 ingress/egress 非对称黑洞，不宣称覆盖跨节点真实路由、部分丢包、
+  延迟/乱序/带宽退化或跨 AZ 故障域；这些仍须目标环境验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
