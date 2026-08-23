@@ -571,6 +571,67 @@ func TestTxnContainsPutAcrossBranchesAndNesting(t *testing.T) {
 	}}}))
 }
 
+func TestQuotaTxnCostIncludesNestedBranchesLikeEtcd(t *testing.T) {
+	put := func(key, value string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte(key), Value: []byte(value)},
+		}}
+	}
+	nested := func(txn *etcdserverpb.TxnRequest) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: txn}}
+	}
+
+	request := &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			nil,
+			put("aa", "b"), // 3 bytes at this level.
+			nested(&etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{put("abc", "12")},   // 5 bytes.
+				Failure: []*etcdserverpb.RequestOp{put("z", "123456")}, // 7 bytes wins.
+			}),
+		},
+		Failure: []*etcdserverpb.RequestOp{
+			nested(&etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				nested(&etcdserverpb.TxnRequest{Failure: []*etcdserverpb.RequestOp{
+					put("deep", "12345"), // 9 bytes through two nested levels.
+				}}),
+			}}),
+		},
+	}
+	require.EqualValues(t, 10, quotaTxnCost(request),
+		"the outer success cost is 3+max(5,7), which exceeds the deep failure cost 9")
+}
+
+func TestQuotaRejectsPutHiddenInUnselectedNestedTxnBranch(t *testing.T) {
+	server := newQuotaRPCServer(t, 5)
+	ctx := context.Background()
+	put := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+		RequestPut: &etcdserverpb.PutRequest{Key: []byte("abc"), Value: []byte("123")},
+	}}
+	nestedPut := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestTxn{
+		RequestTxn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{put}},
+	}}
+
+	// With no compares, etcd selects Success. The nested Put is deliberately in
+	// Failure, but quota admission charges the larger possible branch before
+	// execution. This six-byte Put cannot fit in the five-byte quota.
+	_, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("abc")},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{nestedPut},
+	})
+	requireQuotaNoSpaceError(t, err)
+
+	read, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("abc")})
+	require.NoError(t, err)
+	require.Empty(t, read.Kvs, "quota rejection must happen before any nested branch executes")
+	alarms, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Len(t, alarms.Alarms, 1)
+	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, alarms.Alarms[0].Alarm)
+}
+
 func requireQuotaNoSpaceError(t *testing.T, err error) {
 	t.Helper()
 	require.ErrorIs(t, err, rpctypes.ErrGRPCNoSpace)
