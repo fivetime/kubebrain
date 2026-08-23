@@ -60663,6 +60663,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ConfigMap 与单节点 kind，不宣称覆盖真实 Policy schema、并发 reconcile、NUMA 或长期 GC soak；目标环境仍须对发布 digest
   重跑并增加真实 Policy/Operation、并发和小时级稳定性矩阵。A5382 的真实 verifier/Object Lock deletion trail 也仍待完整环境。
 
+- A5384 补上小时级 lease renewal/failover 门禁只观察 KeepAlive channel、无法持续证明客户端可见 key/TTL 状态的观测缺口。
+  `KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION` 模式现在启动确定性轮转审计器：每个样本对选中的 live lease 顺序执行线性 Get 与
+  `TimeToLive(WithAttachedKeys)`，要求值仍为 `live`、key 仍绑定原 lease、TTL 为正、attached keys 只有原 key，且全部响应 header
+  revision 相对前一请求单调不减。任何成功响应中的语义破坏立即失败；gRPC/换主瞬态只有在可配置 max-outage 内重新完成整个
+  样本才被接受。interval/max-outage/sample 均有显式上下界，duration 必须足以轮转覆盖每条 lease；统计输出固定完整样本数、
+  审计 lease 数、传输错误数、最大成功间隔和 revision 区间。单元回归覆盖传输错误与 revision/binding/TTL 语义错误，compat
+  module 完整 race 10.027 秒通过。精确代码提交 `012e0044` 在独立 3 副本 TiKV/PD 本地拓扑以 8 clients×8 leases、TTL 30 秒、
+  2 分钟持续窗口和两次当前 leader Pod 删除运行；两次切换均出现 client 内部可恢复的 leader-changed/unavailable，最终完成 28 个
+  全量样本、1792 次 lease 审计、最大成功间隔 7.047 秒、revision `468126003565970465`，149.76 秒通过，StatefulSet 恢复 3/3 且
+  测试对象清理完成。根 production inventory 仍为 589 项；四片 133/166/151/139 在同一代码提交上全部通过（Go 测试
+  168.545/504.283/298.884/540.463 秒；端到端 177.347/513.038/307.706/549.260 秒）。本轮是加速门禁而非小时证明；至少一小时
+  高基数运行、真实网络分区、多机/跨 AZ TiKV/PD 故障和长期资源曲线仍须在目标环境留证，不能由 Pod 删除短跑替代。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

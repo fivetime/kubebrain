@@ -4349,6 +4349,8 @@ RUN_LEASE_RENEWAL_FAILOVER_SMOKE=true hack/dev/verify.sh
 
 该门禁要求 3/3 KubeBrain StatefulSet Ready，通过 endpoint status 与 MemberList 每轮动态识别当前 leader，并连续三次删除 leader Pod。测试期间 8 个 client 维持 64 条 `clientv3.KeepAlive` lease，每轮换主后都必须重新收到有效 TTL 响应，并确认所有 attached key 仍绑定原 lease；结束后逐 lease Revoke，要求 TTL=-1、Leases 列表和测试前缀无残留。
 
+设置 `KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION` 后，门禁还会在整个持续窗口轮转审计 live lease；默认每 5 秒抽取最多 64 条，逐条执行线性 Get 和带 attached keys 的 TimeToLive，要求值、lease ID、正 TTL、唯一 attached key 和响应 revision 单调。语义破坏立即失败，传输错误只有在 `KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE`（默认 45 秒）内恢复出完整样本才允许继续；持续时间必须足以覆盖全部 lease 一次。抽样数可用 `KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE` 调整。2026-08-23 在独立 3 副本 TiKV/PD 本地拓扑上以 64 lease、2 分钟、两次当前 leader Pod 删除运行：完成 28 个全量样本、1792 次 lease 审计，最大成功样本间隔 7.047 秒，测试 149.76 秒通过并恢复 3/3。该加速门禁不替代小时级、跨机/跨 AZ 或真实网络分区 soak。
+
 换主或重启时 `ReloadLeases` 必须从持久 lease meta 和 per-key attachment 重新构建内存索引；
 lease meta 的 legacy user-MVCC 与 internal record 都必须是严格的单一 JSON，未知字段或尾随
 拼接 JSON 应让 reload fail closed。legacy user-MVCC attachment 与 internal attachment 的
