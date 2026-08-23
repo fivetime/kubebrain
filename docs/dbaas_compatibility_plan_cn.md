@@ -60676,6 +60676,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   168.545/504.283/298.884/540.463 秒；端到端 177.347/513.038/307.706/549.260 秒）。本轮是加速门禁而非小时证明；至少一小时
   高基数运行、真实网络分区、多机/跨 AZ TiKV/PD 故障和长期资源曲线仍须在目标环境留证，不能由 Pod 删除短跑替代。
 
+- A5385 关闭 A5384 持续审计仍未覆盖公开 `Lease.Leases()` 的观测空洞。只验证 Get/TimeToLive 可以证明 lease 元数据按 ID
+  可读，却不能发现换主 reload 后 live lease 在列表索引中缺失或重复；此前列表仅在全部 Revoke 后用于残留检查。每个在线样本
+  现在先执行 LeaseLeases，要求 header revision 相对上一请求单调、响应 ID 唯一，并要求本轮抽样的每个 live lease 都在列表中，
+  再继续原有 key/value/binding/TTL/attached-key 检查。列表传输错误受同一 max-outage 恢复窗约束，成功响应中的 revision 倒退、
+  live ID 缺失或重复 ID 立即作为语义错误失败。伪 client 回归分别固定 list transport、revision、missing、duplicate，以及原有
+  Get/TTL 错误；聚焦 race 20 轮、compat module 完整 race 10.011 秒和 vet 全部通过。精确代码提交 `cf27995f` 在独立 3 副本
+  TiKV/PD 本地拓扑以 64 lease、TTL 30 秒、1 分钟持续窗口和两次当前 leader Pod 删除运行；切换期间 client 内部恢复
+  leader-changed/EOF，最终完成 15 个全量样本、960 次 lease 审计，最大完整样本间隔 6.417 秒，公开列表未缺失/重复，87.20 秒
+  通过且 StatefulSet 恢复 3/3。根 production inventory 仍为 589 项；四片 133/166/151/139 在同一代码提交上全部通过（Go 测试
+  166.152/504.455/296.632/541.086 秒；端到端 175.008/513.386/305.547/549.980 秒）。本项强化门禁而未观察到服务端差异；
+  小时级高基数、真实网络分区与跨机/跨 AZ 故障仍是目标环境证据缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
