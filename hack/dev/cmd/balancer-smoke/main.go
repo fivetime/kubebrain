@@ -20,6 +20,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -59,7 +60,7 @@ func main() {
 	if _, err := unary.Get(ctx, prefix+"pin"); err != nil {
 		log.Fatalf("pin unary connection: %v", err)
 	}
-	unary.SetEndpoints(endpoints...)
+	syncAndRequireEndpoints(ctx, unary, endpoints)
 
 	watchClient := newPinnedClient(victimEndpoint)
 	defer watchClient.Close()
@@ -74,7 +75,7 @@ func main() {
 	case <-ctx.Done():
 		log.Fatalf("create pinned watch: %v", ctx.Err())
 	}
-	watchClient.SetEndpoints(endpoints...)
+	syncAndRequireEndpoints(ctx, watchClient, endpoints)
 
 	writeMarker(stateDir, "ready")
 	waitMarker(ctx, stateDir, "deleted")
@@ -115,15 +116,13 @@ func main() {
 			log.Fatalf("waiting for failover watch events: %v", ctx.Err())
 		}
 	}
+	waitMarker(ctx, stateDir, "replaced")
 
 	getResponse, err := unary.Get(ctx, watchPrefix+"19")
 	if err != nil || len(getResponse.Kvs) != 1 || string(getResponse.Kvs[0].Value) != "value-19" {
 		log.Fatalf("linearizable get after failover: count=%d err=%v", len(getResponse.Kvs), err)
 	}
-	serializable, err := unary.Get(ctx, watchPrefix+"19", clientv3.WithSerializable())
-	if err != nil || len(serializable.Kvs) != 1 || string(serializable.Kvs[0].Value) != "value-19" {
-		log.Fatalf("serializable get after failover: count=%d err=%v", len(serializable.Kvs), err)
-	}
+	staleSerializableReads := serializableGetEventually(ctx, unary, watchPrefix+"19", "value-19")
 	txnKey := prefix + "txn"
 	txn, err := unary.Txn(ctx).
 		If(clientv3.Compare(clientv3.Version(txnKey), "=", 0)).
@@ -143,10 +142,29 @@ func main() {
 	if err != nil || deletedCount != 1 {
 		log.Fatalf("delete after failover: deleted=%d err=%v", deletedCount, err)
 	}
-	waitMarker(ctx, stateDir, "replaced")
+	fmt.Printf("balancer smoke completed: synced_endpoints=3 watch_events=%d last_revision=%d transient_failures=%d stale_serializable_reads=%d replacement_ready=true\n",
+		writes, lastRevision, transientFailures, staleSerializableReads)
+}
 
-	fmt.Printf("balancer smoke completed: endpoints=3 watch_events=%d last_revision=%d transient_failures=%d replacement_ready=true\n",
-		writes, lastRevision, transientFailures)
+func syncAndRequireEndpoints(ctx context.Context, client *clientv3.Client, expected []string) {
+	if err := client.Sync(ctx); err != nil {
+		log.Fatalf("sync advertised endpoints: %v", err)
+	}
+	want := append([]string(nil), expected...)
+	got := append([]string(nil), client.Endpoints()...)
+	sort.Strings(want)
+	sort.Strings(got)
+	if len(got) != len(want) {
+		log.Fatalf("synced endpoint count mismatch: got=%q want=%q", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			log.Fatalf("synced endpoints mismatch: got=%q want=%q", got, want)
+		}
+		if index > 0 && got[index] == got[index-1] {
+			log.Fatalf("synced endpoints are not unique: %q", got)
+		}
+	}
 }
 
 func createEventually(ctx context.Context, client *clientv3.Client, key, value string) int {
@@ -174,6 +192,27 @@ func createEventually(ctx context.Context, client *clientv3.Client, key, value s
 		select {
 		case <-ctx.Done():
 			log.Fatalf("first failover write did not recover after %d transient failures: %v", transientFailures, ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+func serializableGetEventually(ctx context.Context, client *clientv3.Client, key, value string) int {
+	staleReads := 0
+	for {
+		callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
+		response, err := client.Get(callCtx, key, clientv3.WithSerializable())
+		callCancel()
+		if err == nil && len(response.Kvs) == 1 && string(response.Kvs[0].Value) == value {
+			return staleReads
+		}
+		if err != nil && status.Code(err) != codes.Unavailable && status.Code(err) != codes.DeadlineExceeded {
+			log.Fatalf("serializable get after failover returned non-transient error: %v", err)
+		}
+		staleReads++
+		select {
+		case <-ctx.Done():
+			log.Fatalf("serializable get did not converge after %d stale/transient reads: %v", staleReads, ctx.Err())
 		case <-time.After(200 * time.Millisecond):
 		}
 	}

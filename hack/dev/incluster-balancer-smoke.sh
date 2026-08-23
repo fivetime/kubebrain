@@ -70,6 +70,7 @@ ARG RUNTIME_IMAGE
 FROM \${GO_IMAGE} AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY third_party/tikv-client-go ./third_party/tikv-client-go
 RUN go mod download
 COPY hack/dev/cmd/balancer-smoke/main.go ./hack/dev/cmd/balancer-smoke/main.go
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /balancer-smoke ./hack/dev/cmd/balancer-smoke

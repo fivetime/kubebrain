@@ -383,6 +383,28 @@ func TestMemberListSyncSmokeUsesAdvertisedEndpoints(t *testing.T) {
 	require.Contains(t, verifyScript, `run_step "MemberList clientv3 Sync smoke" env ENDPOINT="$ENDPOINT" hack/dev/memberlist-sync-smoke.sh`)
 }
 
+func TestInClusterBalancerSmokeDiscoversFailoverEndpoints(t *testing.T) {
+	scriptData, err := os.ReadFile("../dev/incluster-balancer-smoke.sh")
+	require.NoError(t, err)
+	script := string(scriptData)
+	require.Contains(t, script, "COPY third_party/tikv-client-go ./third_party/tikv-client-go")
+	require.Less(t, strings.Index(script, "COPY third_party/tikv-client-go"), strings.Index(script, "RUN go mod download"))
+
+	data, err := os.ReadFile("../dev/cmd/balancer-smoke/main.go")
+	require.NoError(t, err)
+	probe := string(data)
+	require.Equal(t, 2, strings.Count(probe, "syncAndRequireEndpoints(ctx,"))
+	require.Contains(t, probe, "client.Sync(ctx)")
+	require.Contains(t, probe, "client.Endpoints()")
+	require.Contains(t, probe, `log.Fatalf("synced endpoint count mismatch:`)
+	require.Contains(t, probe, `log.Fatalf("synced endpoints are not unique:`)
+	require.NotContains(t, probe, "SetEndpoints(endpoints...)")
+	require.Contains(t, probe, `waitMarker(ctx, stateDir, "replaced")`)
+	require.Contains(t, probe, "serializableGetEventually(ctx,")
+	require.Contains(t, probe, "clientv3.WithSerializable()")
+	require.Contains(t, probe, "stale_serializable_reads=%d")
+}
+
 func TestBackendQuorumPDNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
