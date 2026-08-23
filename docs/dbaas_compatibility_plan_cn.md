@@ -60788,6 +60788,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两节点规则均为零。临时集群已删除并切回主 context。该补充证明真实 worker 调度、容器标签、跨节点包命中和 cleanup，不证明完整
   多节点 KubeBrain/TiKV lease 连续性；远程 runtime 与跨节点/AZ fabric 仍是后续验证项。
 
+- A5392 将 A5391 的一次性人工 worker 现场步骤固化为 `hack/dev/lease-partition-worker-node-smoke.sh`。入口固定创建一 control-plane +
+  一 worker，将 `kubebrain-0` Pod 直接调度到 worker，从 control-plane 连续向 Pod IP 发真实 TCP 流量，并复用生产 helper 完成
+  ingress DROP、实际 packet counter、Pod UID/Running 和 cleanup 检查。leader ID 元数据只在 worker 规则出现后受控从 1 变为 2，
+  因此不会把它宣传为第二套数据面。脚本严格校验新 cluster 名、拒绝复用任何同名现存 kind；只有自己成功创建后才允许删除，EXIT/INT/TERM
+  均终止流量、删除临时集群并恢复原 kube context。默认 pin v1.36.1 node/pause 3.10，保留显式镜像覆盖用于版本矩阵。
+
+  首次自动运行真实暴露 `iptables-save | grep -q` 在 `pipefail` 下可能因上游 SIGPIPE 把已存在规则误判为不存在，最终按预期超时且仍自动
+  删除双节点集群、恢复主 context。修复后所有规则/集群探测都先捕获完整输出再匹配，静态回归禁止重新引入该管道。精确提交
+  `a4f021d1` 再次运行时自动选择 `kubebrain-worker-drill-worker`、真实 DROP 13 包、双节点规则零残留并删除临时集群；原 context
+  `kind-kubebrain-dbaas` 恢复，主 endpoint 健康、StatefulSet 3/3。聚焦普通/race 各 20 轮、完整 compat race 7.162 秒及 vet 通过；
+  production inventory 仍为 589 项，最终四片 133/166/151/139 全部通过（Go 测试
+  105.164/313.137/208.009/329.430 秒；端到端 110.896/318.869/213.699/335.132 秒）。该门禁可重复证明 worker 网络路径，完整
+  多节点 KubeBrain/TiKV lease 连续性、远程 runtime 和跨节点/AZ fabric 仍须独立环境验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
