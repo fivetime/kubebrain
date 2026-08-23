@@ -383,6 +383,42 @@ func TestMemberListSyncSmokeUsesAdvertisedEndpoints(t *testing.T) {
 	require.Contains(t, verifyScript, `run_step "MemberList clientv3 Sync smoke" env ENDPOINT="$ENDPOINT" hack/dev/memberlist-sync-smoke.sh`)
 }
 
+func TestVerifyExposesImmutableCandidateCanaryBehindExplicitGate(t *testing.T) {
+	verifyData, err := os.ReadFile("../dev/verify.sh")
+	require.NoError(t, err)
+	verifyScript := string(verifyData)
+	require.Contains(t, verifyScript, `RUN_KUBEBRAIN_CANDIDATE_CANARY="${RUN_KUBEBRAIN_CANDIDATE_CANARY:-false}"`)
+	require.Equal(t, 4, strings.Count(verifyScript, "RUN_KUBEBRAIN_CANDIDATE_CANARY"))
+	require.Contains(t, verifyScript, `if [ "$RUN_KUBEBRAIN_CANDIDATE_CANARY" = "true" ]; then`)
+	require.Contains(t, verifyScript, `candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS`)
+	require.Contains(t, verifyScript, `run_step "immutable KubeBrain candidate canary" hack/production/run-kubebrain-rollout-availability.sh`)
+	require.Less(t,
+		strings.Index(verifyScript, `candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS`),
+		strings.Index(verifyScript, `run_step "immutable KubeBrain candidate canary"`))
+
+	flagsBlock := verifyScript[strings.Index(verifyScript, "RUN_FLAGS=("):]
+	flagsBlock = flagsBlock[:strings.Index(flagsBlock, "\n)")]
+	env := make([]string, 0, len(os.Environ()))
+	for _, item := range os.Environ() {
+		name := strings.SplitN(item, "=", 2)[0]
+		if !strings.HasPrefix(name, "RUN_") && name != "TARGET_IMAGE" && name != "TARGET_RUNTIME_DIGESTS" {
+			env = append(env, item)
+		}
+	}
+	for _, line := range strings.Split(flagsBlock, "\n") {
+		flag := strings.TrimSpace(line)
+		if strings.HasPrefix(flag, "RUN_") {
+			env = append(env, flag+"=false")
+		}
+	}
+	env = append(env, "RUN_KUBEBRAIN_CANDIDATE_CANARY=true")
+	command := exec.Command("bash", "../dev/verify.sh")
+	command.Env = env
+	output, err := command.CombinedOutput()
+	require.EqualError(t, err, "exit status 2")
+	require.Equal(t, "candidate canary requires TARGET_IMAGE and TARGET_RUNTIME_DIGESTS\n", string(output))
+}
+
 func TestInClusterBalancerSmokeDiscoversFailoverEndpoints(t *testing.T) {
 	scriptData, err := os.ReadFile("../dev/incluster-balancer-smoke.sh")
 	require.NoError(t, err)
