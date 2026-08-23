@@ -7,7 +7,7 @@ STATEFULSET="${STATEFULSET:-kubebrain}"
 ENDPOINT="${ENDPOINT:-${KUBEBRAIN_ETCD_ENDPOINT:-127.0.0.1:3379}}"
 TIMEOUT="${TIMEOUT:-240s}"
 FAILOVER_MODE="${FAILOVER_MODE:-pod-delete}"
-KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-kubebrain-dev-control-plane}"
+KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-}"
 PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-60}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
 PARTITION_DIRECTION="${PARTITION_DIRECTION:-both}"
@@ -25,6 +25,27 @@ need() {
   fi
 }
 
+resolve_kind_node_container() {
+  local current_context cluster_name candidate
+  [[ -z "$KIND_NODE_CONTAINER" ]] || return 0
+  current_context="$(kubectl config current-context)"
+  if [[ "$current_context" != kind-* ]]; then
+    echo "KIND_NODE_CONTAINER is required when current context is not kind-*; got $current_context" >&2
+    exit 1
+  fi
+  cluster_name="${current_context#kind-}"
+  if [[ ! "$cluster_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "refusing invalid kind cluster name from context: $current_context" >&2
+    exit 1
+  fi
+  candidate="${cluster_name}-control-plane"
+  if ! docker inspect "$candidate" --format '{{.Name}}' >/dev/null 2>&1; then
+    echo "cannot resolve kind control-plane container $candidate from context $current_context" >&2
+    exit 1
+  fi
+  KIND_NODE_CONTAINER="$candidate"
+}
+
 delete_current_leader() {
   local leader_id leader_name
   leader_id="$(etcdctl --endpoints="$ENDPOINT" endpoint status -w json | jq -er '.[0].Status.leader')"
@@ -39,6 +60,7 @@ delete_current_leader() {
 
 partition_current_leader() {
   local leader_id leader_name deadline raw new_leader privileged observed_uid observed_phase dropped_packets drop_probability
+  resolve_kind_node_container
   if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
     echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
     exit 1
@@ -161,7 +183,7 @@ partition_current_leader() {
         echo "network partition rules did not drop packets for $leader_name ($partition_tag): $dropped_packets" >&2
         return 1
       fi
-      echo "network partition changed leader: $leader_name/$leader_id -> $new_leader; direction=$PARTITION_DIRECTION drop_percent=$PARTITION_DROP_PERCENT pod_uid=$partition_pod_uid dropped_packets=$dropped_packets"
+      echo "network partition changed leader: $leader_name/$leader_id -> $new_leader; node=$KIND_NODE_CONTAINER direction=$PARTITION_DIRECTION drop_percent=$PARTITION_DROP_PERCENT pod_uid=$partition_pod_uid dropped_packets=$dropped_packets"
       cleanup_partition
       partition_pod_ip=""
       partition_tag=""
