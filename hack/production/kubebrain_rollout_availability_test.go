@@ -448,12 +448,15 @@ func TestRolloutAvailabilityRunnerBoundsRuntimeEvidence(t *testing.T) {
 	for _, target := range []string{"statefulset", "probe-log"} {
 		t.Run(target, func(t *testing.T) {
 			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
-			base := append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "FAKE_RUNTIME_RESPONSE_TARGET="+target)
+			completionPath := filepath.Join(filepath.Dir(statePath), "response-completed")
+			base := append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "FAKE_RUNTIME_RESPONSE_TARGET="+target, "FAKE_RUNTIME_RESPONSE_COMPLETED="+completionPath)
 			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
-			command.Env = append(base, "FAKE_RUNTIME_RESPONSE_BYTES=1048577")
+			command.Env = append(base, "FAKE_RUNTIME_RESPONSE_BYTES=67108864")
 			output, err := command.CombinedOutput()
 			require.Error(t, err)
 			require.Contains(t, string(output), "runtime evidence exceeds 1048576 bytes")
+			require.NoFileExists(t, completionPath,
+				"the bounded consumer must stop an oversized producer before it emits the full response")
 			require.NoError(t, os.RemoveAll(statePath))
 			command = exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 			command.Env = append(base, "FAKE_RUNTIME_RESPONSE_BYTES=1048576")
@@ -527,7 +530,11 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
     spec:{replicas:$replicas,template:{spec:{containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
-  printf '%s' "$payload"; [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" != statefulset ]] || head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
+  printf '%s' "$payload"
+  if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == statefulset ]]; then
+    head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
+    [[ -z "${FAKE_RUNTIME_RESPONSE_COMPLETED:-}" ]] || : >"$FAKE_RUNTIME_RESPONSE_COMPLETED"
+  fi
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.status.phase} "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then printf Failed
   elif [[ "${FAKE_PHASE_RESPONSE:-false}" == true ]]; then printf Running; head -c "$((FAKE_PHASE_BYTES-7))" /dev/zero | tr '\0' ' '
@@ -598,7 +605,11 @@ elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
   payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34\n'
-  printf '%s' "$payload"; [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" != probe-log ]] || head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
+  printf '%s' "$payload"
+  if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == probe-log ]]; then
+    head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
+    [[ -z "${FAKE_RUNTIME_RESPONSE_COMPLETED:-}" ]] || : >"$FAKE_RUNTIME_RESPONSE_COMPLETED"
+  fi
 fi
 `
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))

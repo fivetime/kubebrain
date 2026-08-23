@@ -138,27 +138,34 @@ patch_kubebrain_image() {
 
 runtime_evidence_dir="$(mktemp -d)"
 trap 'rm -rf -- "$runtime_evidence_dir"' EXIT
-capture_runtime_evidence() {
-  local destination="$1" size
-  shift
-  "$@" >"$destination" || return 1
+capture_bounded_evidence() {
+  local destination="$1" limit="$2" overflow_message="$3" size
+  local -a pipeline_status=()
+  shift 3
+  # Retain one byte beyond the contract so an oversized response is
+  # distinguishable without first materializing an unbounded API payload.
+  "$@" | head -c "$((limit + 1))" >"$destination" || pipeline_status=("${PIPESTATUS[@]}")
   chmod 600 "$destination" || return 1
   size="$(stat -Lc '%s' -- "$destination")" || return 1
-  if ! [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_RUNTIME_EVIDENCE_BYTES" ]]; then
-    echo "runtime evidence exceeds ${MAX_RUNTIME_EVIDENCE_BYTES} bytes" >&2
+  if ! [[ "$size" =~ ^[0-9]+$ && "$size" -le "$limit" ]]; then
+    echo "$overflow_message" >&2
     exit 1
+  fi
+  if (( ${#pipeline_status[@]} != 0 )); then
+    (( pipeline_status[0] == 0 && pipeline_status[1] == 0 )) || return 1
   fi
 }
-capture_probe_phase_response() {
-  local destination="$1" size
+capture_runtime_evidence() {
+  local destination="$1"
   shift
-  "$@" >"$destination" || return 1
-  chmod 600 "$destination" || return 1
-  size="$(stat -Lc '%s' -- "$destination")" || return 1
-  if ! [[ "$size" =~ ^[0-9]+$ && "$size" -le "$MAX_PROBE_PHASE_RESPONSE_BYTES" ]]; then
-    echo "probe phase response exceeds ${MAX_PROBE_PHASE_RESPONSE_BYTES} bytes" >&2
-    exit 1
-  fi
+  capture_bounded_evidence "$destination" "$MAX_RUNTIME_EVIDENCE_BYTES" \
+    "runtime evidence exceeds ${MAX_RUNTIME_EVIDENCE_BYTES} bytes" "$@"
+}
+capture_probe_phase_response() {
+  local destination="$1"
+  shift
+  capture_bounded_evidence "$destination" "$MAX_PROBE_PHASE_RESPONSE_BYTES" \
+    "probe phase response exceeds ${MAX_PROBE_PHASE_RESPONSE_BYTES} bytes" "$@"
 }
 
 statefulset_json="$runtime_evidence_dir/statefulset-initial.json"
