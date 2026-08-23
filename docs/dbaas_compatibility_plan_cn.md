@@ -60955,6 +60955,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   production inventory 仍为 589 项，最终四片 133/166/151/139 全绿（Go 测试 105.286/314.198/208.609/331.081 秒；
   端到端 110.977/320.011/214.337/336.814 秒）。
 
+- A5402 回到 upstream 3.7 `KV.RangeStream` 语义审计。对照
+  `/root/etcd/tests/integration/v3_grpc_test.go` 的 Count、partial-then-compacted、write-between-chunks 和 large-value 四项新增集成测试，
+  确认 KubeBrain 已分别由 bounded scanner、逐 wire frame compaction fence、pinned revision 和不可拆单 KV 前进测试直接覆盖；
+  custom sort/revision filter 的 `Unimplemented` 也与
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go::checkRangeStreamRequest` 一致，因此没有为已经兼容的行为制造实现改动。
+
+  在一次性官方 etcd 与长期三副本 KubeBrain/独立 TiKV/PD 上选取七组 RangeStream oracle 差分；其中 oversize 专项因要求独立大包配置
+  endpoint 而按安全合同 Skip，decoded large-value、common shape、concurrent write、multi-frame envelope 和 validation 均 GREEN；生成差分
+  则在进入 RangeStream 前真实 RED：fixture 写到 revision
+  `468126003565972668` 后，硬编码 10 秒的 serializable 可见性等待超时。逐 Pod 诊断证明 leader 已推进，而两个 follower 仍合法返回旧
+  checkpoint；随后单键探针观察到 follower 约 33 秒完成换代。根因不是 etcd 语义差异：serializable 读本就允许陈旧；KubeBrain 为保护
+  已选旧 snapshot 的在途请求，leader 发布与 follower 本地切换各有 30 秒 generation grace，测试的 10 秒上界与生产安全合同冲突。
+
+  提交 `3de6cd98` 将共享 helper 的收敛预算改为 75 秒（覆盖两层 grace 与调度抖动），唯一 20 秒调用方扩为 90 秒；轮询改为显式
+  timer/ticker，并在 caller context 或 deadline 结束时报告真正最后观察到的 revision/error，修复 testify message 参数在轮询前求值而总是
+  打印 revision=0 的诊断缺陷。生产 checkpoint TTL、grace 和读路径均未改变。修复后原始 64-case 生成 RangeStream 差分 0.76 秒 GREEN，
+  一次性 reference 自动清理；完整 compat race 7.098 秒及 vet 通过。长期 endpoint 保持健康、三副本 Ready；production inventory 仍为
+  589 项，精确提交四片 133/166/151/139 全绿（Go 测试 104.968/313.431/208.031/329.395 秒；端到端
+  110.583/319.118/213.722/335.062 秒）。破坏性的 physical-compaction 双端 runner 继续只允许 pristine disposable KubeBrain，未在共享
+  实例上越过其安全前置条件。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
