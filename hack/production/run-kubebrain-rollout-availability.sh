@@ -262,7 +262,11 @@ cleanup() {
       rollback_current_spec="$(jq -cS '.spec' "$rollback_current_json" 2>/dev/null || true)"
     fi
     if [[ "${rollback_current_uid:-}" != "$statefulset_uid" || -z "${rollback_current_resource_version:-}" ||
-      "${rollback_current_spec:-}" != "$candidate_spec" ]]; then
+      -z "${rollback_current_spec:-}" ]]; then
+      echo "CRITICAL: candidate state identity is unreadable before rollback; refusing to overwrite" >&2
+    elif [[ "$rollback_current_spec" == "$initial_spec" ]]; then
+      echo "candidate image mutation was not observed; original StatefulSet spec remains" >&2
+    elif [[ "$rollback_current_spec" != "$candidate_spec" ]]; then
       echo "CRITICAL: candidate state drifted before rollback; refusing to overwrite concurrent StatefulSet changes" >&2
     elif ! patch_kubebrain_image "$TARGET_IMAGE" "$image" "$rollback_current_resource_version" >/dev/null; then
       echo "CRITICAL: failed to request candidate image rollback to ${image}" >&2

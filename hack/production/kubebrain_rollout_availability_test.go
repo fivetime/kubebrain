@@ -218,7 +218,8 @@ func TestRolloutAvailabilityRunnerFencesStatefulSetUIDBeforeCandidateMutation(t 
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
-	require.Contains(t, string(output), "CRITICAL: candidate state drifted before rollback; refusing to overwrite concurrent StatefulSet changes")
+	require.Contains(t, string(output), "candidate image mutation was not observed; original StatefulSet spec remains")
+	require.NotContains(t, string(output), "CRITICAL:")
 	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
 	require.NoFileExists(t, statePath, "failed UID test must not mutate the replacement StatefulSet")
 	log := readOptionalFile(t, logPath)
@@ -226,6 +227,7 @@ func TestRolloutAvailabilityRunnerFencesStatefulSetUIDBeforeCandidateMutation(t 
 	require.Contains(t, log, `"path":"/metadata/resourceVersion","value":"resource-version-old"`)
 	require.Contains(t, log, `"path":"/spec/template/spec/containers/0/name","value":"kubebrain"`)
 	require.Contains(t, log, `"path":"/spec/template/spec/containers/0/image","value":"kubebrain:test"`)
+	require.Equal(t, 1, strings.Count(log, " patch statefulset/kubebrain --type=json -p "))
 }
 
 func TestRolloutAvailabilityRunnerFencesStatefulSetResourceVersionBeforeCandidateMutation(t *testing.T) {
@@ -240,11 +242,32 @@ func TestRolloutAvailabilityRunnerFencesStatefulSetResourceVersionBeforeCandidat
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
-	require.Contains(t, string(output), "CRITICAL: candidate state drifted before rollback; refusing to overwrite concurrent StatefulSet changes")
+	require.Contains(t, string(output), "candidate image mutation was not observed; original StatefulSet spec remains")
+	require.NotContains(t, string(output), "CRITICAL:")
 	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
 	require.NoFileExists(t, statePath)
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, `"path":"/metadata/resourceVersion","value":"resource-version-old"`)
+	require.Equal(t, 1, strings.Count(log, " patch statefulset/kubebrain --type=json -p "))
+}
+
+func TestRolloutAvailabilityRunnerRefusesToOverwriteConcurrentSpecBeforeRollback(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("2", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("2", 64),
+		"FAKE_ROLLBACK_SPEC_DRIFT=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "CRITICAL: candidate state drifted before rollback; refusing to overwrite concurrent StatefulSet changes")
+	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
+	log := readOptionalFile(t, logPath)
+	require.Equal(t, 1, strings.Count(log, " patch statefulset/kubebrain --type=json -p "))
+	require.FileExists(t, statePath, "cleanup must not overwrite the concurrent candidate spec")
 }
 
 func TestRolloutAvailabilityRunnerRestoresOriginalImageWhenCandidateFails(t *testing.T) {
@@ -497,9 +520,11 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   [[ "${FAKE_STATEFULSET_UID_DRIFT:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || statefulset_uid=statefulset-replacement-uid
   resource_version=resource-version-old
   [[ ! -e "$FAKE_KUBECTL_STATE" ]] || resource_version=resource-version-new
-  payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --argjson prestop "$prestop" '{
+  spec_replicas=3
+  [[ "${FAKE_ROLLBACK_SPEC_DRIFT:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || spec_replicas=4
+  payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --argjson prestop "$prestop" --argjson replicas "$spec_replicas" '{
     metadata:{uid:$uid,resourceVersion:$resourceVersion},
-    spec:{replicas:3,template:{spec:{containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
+    spec:{replicas:$replicas,template:{spec:{containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
   printf '%s' "$payload"; [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" != statefulset ]] || head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
