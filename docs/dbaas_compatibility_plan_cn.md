@@ -60976,6 +60976,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   110.583/319.118/213.722/335.062 秒）。破坏性的 physical-compaction 双端 runner 继续只允许 pristine disposable KubeBrain，未在共享
   实例上越过其安全前置条件。
 
+- A5403 审计 `/root/etcd@5cd9f4ee1` 2026-07 的三项生产安全修复。watch exact-key 权限被 `WithFromKey` 绕过的
+  `7cf71ec9e` 已由 KubeBrain `7edde075` 的 wire RangeEnd 前置鉴权、单元/clientv3/auth differential 三层门禁闭合；lease HTTP
+  body 无界读取的 `1b01776cc` 不适用，因为 KubeBrain lease peer 转发走受 gRPC message limit 约束的 RPC，没有该 HTTP handler，唯一
+  自定义 peer request body（HashKV）已经使用 `http.MaxBytesReader`。因此不机械移植两项已覆盖或不存在的实现。
+
+  剩余 `f1f8893b1` 修复 upstream quota `costTxnReq` 忽略 nested `RequestTxn` 的资源放大风险。KubeBrain 当前
+  `quotaTxnCost` 已递归计算 nested Txn，并在每层对 success/failure 取最大成本，运行时无需修改；但此前没有直接测试，未来重构可能把深层
+  Put 从 admission 中静默漏掉。提交 `07b1151f` 新增纯成本和完整 RPC 两层门禁：纯函数覆盖 nil op、同层 Put 累加、两分支最大值与两层
+  nested Txn，固定外层成本 `3+max(5,7)=10`；RPC 在 5-byte quota 下把 6-byte Put 隐藏在无 compare 时不会选择的 Failure→nested
+  Success 中，仍必须在执行前返回标准 `ResourceExhausted/NoSpace`、业务键保持不存在并激活 NOSPACE alarm。若退回 upstream 修复前的
+  顶层-only 计算，该请求成本为零并会错误放行，因而测试具有直接判别力；覆盖也强于 upstream 原始仅一层 success/failure 的函数测试。
+
+  聚焦普通 20 轮 2.316 秒、race 10 轮 8.748 秒、server/etcd vet 通过。该提交不改变 runtime 或存储提交，不在长期共享实例上人为触发
+  NOSPACE，也无需滚动数据面；production inventory 仍为 589 项，精确提交四片 133/166/151/139 全绿（Go 测试
+  103.700/313.910/208.788/328.522 秒；端到端 109.439/319.677/214.507/334.307 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
