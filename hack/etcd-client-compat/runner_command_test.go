@@ -364,6 +364,25 @@ func TestLeasePartitionWorkerNodeSmokeIsIsolatedAndRecoverable(t *testing.T) {
 	require.Contains(t, verifyScript, `run_step "lease partition worker-node smoke" hack/dev/lease-partition-worker-node-smoke.sh`)
 }
 
+func TestMemberListSyncSmokeUsesAdvertisedEndpoints(t *testing.T) {
+	data, err := os.ReadFile("../dev/memberlist-sync-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `ENDPOINT="${KUBEBRAIN_ETCD_ENDPOINT:-${ENDPOINT:-}}"`)
+	require.Contains(t, script, `memberlist sync smoke requires KUBEBRAIN_ETCD_ENDPOINT (or ENDPOINT)`)
+	require.Contains(t, script, `KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE=1`)
+	require.Contains(t, script, `go test -count=1 -run '^TestMemberListSupportsOfficialClientSync$' .`)
+	require.NotContains(t, script, `KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIRECT`)
+
+	verifyData, err := os.ReadFile("../dev/verify.sh")
+	require.NoError(t, err)
+	verifyScript := string(verifyData)
+	require.Contains(t, verifyScript, `RUN_MEMBERLIST_SYNC_SMOKE="${RUN_MEMBERLIST_SYNC_SMOKE:-false}"`)
+	require.Equal(t, 4, strings.Count(verifyScript, "RUN_MEMBERLIST_SYNC_SMOKE"))
+	require.Contains(t, verifyScript, `if [ "$RUN_MEMBERLIST_SYNC_SMOKE" = "true" ]; then`)
+	require.Contains(t, verifyScript, `run_step "MemberList clientv3 Sync smoke" env ENDPOINT="$ENDPOINT" hack/dev/memberlist-sync-smoke.sh`)
+}
+
 func TestBackendQuorumPDNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
