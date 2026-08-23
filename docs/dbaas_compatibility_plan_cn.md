@@ -60992,6 +60992,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   NOSPACE，也无需滚动数据面；production inventory 仍为 589 项，精确提交四片 133/166/151/139 全绿（Go 测试
   103.700/313.910/208.788/328.522 秒；端到端 109.439/319.677/214.507/334.307 秒）。
 
+- A5404 对标 upstream `8e4dd0679` 的 TLS handshake timeout，并审计 KubeBrain 的完整 listener 链。HTTP server 已有
+  read-header/read/write/idle timeout，`identityTLSListener` 也已有 10 秒 handshake deadline 和 256 并发上限；但最外层 root
+  `cmux` 必须先读到 TLS ClientHello 才会把连接交给该 listener，因此完全不发送字节的 TCP 客户端能永久占住分类连接。真实 TLS
+  NodePort `172.18.0.2:30089` 的 RED 在 15 秒客户端上限后仍未收到 EOF，证明内层 deadline 没有覆盖这个阶段。提交
+  `1330def4` 让 secure service 向 root server 声明 10 秒 initial-read timeout，并把所有复用同一 root listener 的协议分类统一受该
+  最小预算约束；纯明文 root 保持原有零 cmux timeout，不会误把 HTTP 5 分钟 header budget 收紧。可注入 handshake deadline 的真实
+  TCP/TLS 回归同时证明静默握手被主动关闭，随后合法 TLS 仍可接受；root 配置测试固定 plaintext=0、secure/mixed=10s。
+
+  首次滚动该镜像又暴露独立的上线阻塞：Pod 在注册 `etcd_disk_backend_commit_duration_seconds` 时因 label 集不一致 panic。
+  根因是快照版本读取提交 `2a3b0203` 把 upstream `storage/schema` 引入生产依赖图；其传递链接 bbolt backend 并在包 `init()` 中向默认
+  Prometheus registry 注册无 `cluster` 标签的同名指标，而 KubeBrain 的 TiKV 兼容指标带全局 `cluster` 标签。恢复辅助实例原镜像后，
+  提交 `c55207dd` 把 artifact storage-version reader 收回格式所有者 `pkg/etcdsnapshot`，移除生产路径对 upstream bbolt schema/backend
+  的依赖，并以 `go list -deps ./cmd` 回归禁止 dataplane 再链接该有全局副作用的 backend；快照响应仍从 artifact 元数据读取版本，不退回
+  binary version。`cmd`、snapshot、完整 server/etcd、Prometheus 测试及 vet 均通过。
+
+  绑定完整 SHA `c55207ddaefb15ed22dbe20b4271d4b4b4a06b80` 的 TiKV linux/amd64 镜像在辅助三副本 TLS StatefulSet
+  完成 3/3 顺序滚动且二进制元数据一致，证明启动 panic 已消除。相同静默探针在 `10028ms` 收到服务端 EOF、状态非 15 秒 timeout、
+  输出 0 字节；同一 Pod 的双向 TLS `/health` 返回 `health=true`。验证后已恢复原镜像 `kubebrain:a4720-6f6e252f`，辅助实例 3/3
+  Ready；主数据面保持 3/3 Ready 且 NodePort `/health` 正常。production inventory 仍为 589 项，最终提交四片
+  133/166/151/139 全绿（Go 测试 105.463/314.446/210.002/330.458 秒；端到端
+  111.055/320.139/215.644/336.099 秒）。本项关闭零字节 TLS 分类泄漏与一次真实启动回归；slowloris 分布、长时文件描述符压力和
+  目标负载均衡器的 idle/handshake timeout 组合仍须预生产容量测试。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
