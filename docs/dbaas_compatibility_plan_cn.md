@@ -60770,6 +60770,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   105.228/312.987/209.034/328.806 秒；端到端 110.932/318.714/214.723/334.535 秒）。该项证明当前单 control-plane kind
   命名约定下不会因集群名漂移注入错误容器；多 control-plane、自定义节点名、远程 runtime 和跨节点/AZ fabric 仍须显式配置并验证。
 
+- A5391 关闭 A5390 在多节点 kind 中仍固定 `${cluster}-control-plane`、可能不命中 worker 上 leader 流量的设计缺口。helper 现在先
+  验证 etcd leader 对应预期 StatefulSet Pod，再读取该 Pod 的 `spec.nodeName` 作为权威候选；自动和 kind 显式覆盖都必须等于实际
+  调度节点。Docker 容器的 `io.x-k8s.kind.cluster` label 必须与当前 `kind-*` context 精确一致，阻断同名跨集群注入；非 kind context
+  继续要求显式且存在的容器。节点名、覆盖名、context cluster 名均在进入 Docker 参数前通过白名单，privileged/iptables 检查和所有
+  原规则清理合同保持不变。真实负测把覆盖设为 `wrong-kind-node`，在 leader 位于 `kubebrain-dbaas-control-plane` 时退出 1，规则计数保持 0。
+  脚本语法、聚焦普通/race 各 20 轮、完整 compat race 7.186 秒及 vet 全部通过。
+
+  精确代码提交 `eae2c578` 在单节点 `kind-kubebrain-dbaas` 上不传覆盖，以 egress 90% random DROP、64 lease、TTL=120、outage=90、
+  duration=90s 隔离 `kubebrain-2`：从 Pod spec 解析并经 cluster label 确认节点 `kubebrain-dbaas-control-plane`，原 Pod UID 不变、规则
+  实际 DROP 4951 包并完成换主；30 个完整样本审计 1920 条 lease，5 次受控传输错误，response restart 为 0，最大完整样本间隔
+  31.992 秒、最大逐 lease response 进展 60 秒，revision 固定 `468126003565972257`，180.30 秒通过。规则零残留、endpoint 健康、
+  StatefulSet 3/3。根 production inventory 仍为 589 项；最终四片 133/166/151/139 全部通过（Go 测试
+  103.624/312.019/207.363/328.107 秒；端到端 109.307/317.707/213.031/333.817 秒）。当前宿主只有一个 kind control-plane，
+  因此代码路径已支持 worker 但真实 worker 调度尚未留证；多节点 kind、远程 runtime 与跨节点/AZ fabric 仍是后续验证项。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
