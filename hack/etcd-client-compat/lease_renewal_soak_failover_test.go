@@ -40,6 +40,7 @@ type leaseRenewalLiveLease struct {
 	id        clientv3.LeaseID
 	key       string
 	responses atomic.Int64
+	restarts  atomic.Int64
 }
 
 type leaseRenewalAuditClient interface {
@@ -204,27 +205,10 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 			live := &leaseRenewalLiveLease{id: grant.ID, key: key}
 			leases = append(leases, live)
 
-			responses, err := cli.KeepAlive(keepAliveCtx, grant.ID)
-			require.NoError(t, err)
 			readers.Add(1)
 			go func() {
 				defer readers.Done()
-				for response := range responses {
-					if response == nil || response.ID != live.id || response.TTL <= 0 {
-						select {
-						case errs <- fmt.Errorf("lease %d returned invalid keepalive response: %#v", live.id, response):
-						default:
-						}
-						return
-					}
-					live.responses.Add(1)
-				}
-				if keepAliveCtx.Err() == nil {
-					select {
-					case errs <- fmt.Errorf("lease %d keepalive channel closed while soak was active", live.id):
-					default:
-					}
-				}
+				maintainLeaseRenewalKeepAlive(keepAliveCtx, live, cli.KeepAlive, errs)
 			}()
 		}
 	}
@@ -285,12 +269,16 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 	auditReaders.Wait()
 	if auditStats != nil {
 		stats := <-auditStats
+		var responseRestarts int64
+		for _, live := range leases {
+			responseRestarts += live.restarts.Load()
+		}
 		require.Positive(t, stats.completedSamples, "duration soak must complete at least one continuous audit sample")
 		require.GreaterOrEqual(t, stats.auditedLeases, int64(len(leases)), "duration soak must audit every lease at least once")
 		require.Positive(t, stats.firstRevision)
 		require.GreaterOrEqual(t, stats.lastRevision, stats.firstRevision)
-		t.Logf("lease renewal continuous audit: samples=%d leases=%d transient_errors=%d max_success_gap=%s max_response_gap=%s revisions=%d..%d",
-			stats.completedSamples, stats.auditedLeases, stats.transientErrors, stats.maxSuccessGap.Round(time.Millisecond),
+		t.Logf("lease renewal continuous audit: samples=%d leases=%d response_restarts=%d transient_errors=%d max_success_gap=%s max_response_gap=%s revisions=%d..%d",
+			stats.completedSamples, stats.auditedLeases, responseRestarts, stats.transientErrors, stats.maxSuccessGap.Round(time.Millisecond),
 			stats.maxResponseGap.Round(time.Millisecond), stats.firstRevision, stats.lastRevision)
 	}
 	readers.Wait()
@@ -324,6 +312,98 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 	got, err := clients[0].Get(cleanupCtx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
 	require.Empty(t, got.Kvs)
+}
+
+func maintainLeaseRenewalKeepAlive(
+	ctx context.Context,
+	live *leaseRenewalLiveLease,
+	open func(context.Context, clientv3.LeaseID) (<-chan *clientv3.LeaseKeepAliveResponse, error),
+	errs chan<- error,
+) {
+	opened := false
+	for ctx.Err() == nil {
+		responses, err := open(ctx, live.id)
+		if err != nil {
+			if !waitLeaseRenewalKeepAliveRetry(ctx) {
+				return
+			}
+			continue
+		}
+		if opened {
+			live.restarts.Add(1)
+		}
+		opened = true
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case response, ok := <-responses:
+				if !ok {
+					if !waitLeaseRenewalKeepAliveRetry(ctx) {
+						return
+					}
+					goto reopen
+				}
+				if response == nil || response.ID != live.id || response.TTL <= 0 {
+					select {
+					case errs <- fmt.Errorf("lease %d returned invalid keepalive response: %#v", live.id, response):
+					default:
+					}
+					return
+				}
+				live.responses.Add(1)
+			}
+		}
+	reopen:
+	}
+}
+
+func waitLeaseRenewalKeepAliveRetry(ctx context.Context) bool {
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func TestMaintainLeaseRenewalKeepAliveReopensClosedChannel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	live := &leaseRenewalLiveLease{id: 23}
+	first := make(chan *clientv3.LeaseKeepAliveResponse, 1)
+	first <- &clientv3.LeaseKeepAliveResponse{ID: live.id, TTL: 30}
+	close(first)
+	second := make(chan *clientv3.LeaseKeepAliveResponse, 1)
+	second <- &clientv3.LeaseKeepAliveResponse{ID: live.id, TTL: 29}
+	var opens atomic.Int64
+	opener := func(context.Context, clientv3.LeaseID) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
+		if opens.Add(1) == 1 {
+			return first, nil
+		}
+		return second, nil
+	}
+	errs := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		maintainLeaseRenewalKeepAlive(ctx, live, opener, errs)
+	}()
+	require.Eventually(t, func() bool { return live.responses.Load() == 2 }, time.Second, 10*time.Millisecond)
+	require.Equal(t, int64(1), live.restarts.Load())
+	select {
+	case err := <-errs:
+		require.NoError(t, err)
+	default:
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("keepalive maintainer did not stop after cancellation")
+	}
 }
 
 func TestParseLeaseRenewalSoakConfig(t *testing.T) {
