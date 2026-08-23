@@ -61015,6 +61015,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   111.055/320.139/215.644/336.099 秒）。本项关闭零字节 TLS 分类泄漏与一次真实启动回归；slowloris 分布、长时文件描述符压力和
   目标负载均衡器的 idle/handshake timeout 组合仍须预生产容量测试。
 
+- A5405 审计 `/root/etcd` 在 A5404 后新增及近期仍具生产含义的变更。`845cd3885` 只是把 MemberList
+  serializable/quorum 契约迁入 common framework；KubeBrain 已有官方 clientv3 黑盒以及真实 PD quorum 丧失门禁：serializable
+  MemberList 从本地已应用 membership/auth snapshot 返回，而 linearizable 请求进入 read barrier 并服从 caller deadline，恢复后重新
+  成功，因此无需修改服务端。`10ef0667c` 把 Raft snapshot message envelope 从 1 TiB 收紧到 64 MiB，但 KubeBrain 不接收 Raft HTTP
+  snapshot，数据库备份走独立 TiKV/PITR 与逻辑 snapshot 路径；`dfcbd552e` 修复的是实验 client/v3 leasing cache 并发遍历，不属于
+  dataplane；`3f1799670` 清理 etcd-dump-logs 对 legacy v2snapshot 的使用，而 KubeBrain 不生成 upstream WAL、也不随镜像交付该工具。
+  `3d7833c26` 与 `b35f739fa` 分别改善官方客户端 compare panic 和 etcdctl Txn lease 十六进制解析，前者不改变 wire/server 语义，后者已由
+  既有 hex lease Txn 门禁覆盖；最新 gRPC/Prometheus/OTLP/zap 依赖则已在主模块对齐。
+
+  审计同时强化 A5404 的启动回归防线。原 `go list -deps .` 只隐式命中默认 TiKV build，不能证明另一个实际发布 tag 不会重新引入带
+  `init()` 副作用的 foreign backend。提交 `67602dea` 现在分别以 `-tags tikv` 和 `-tags badger` 解析完整生产依赖图，并拒绝
+  upstream `storage/backend`（bbolt 全局指标注册）、`rafthttp`（不属于 TiKV/PD 数据面的 Raft transport）及 `client/v3/leasing`
+  （消费端实验 cache）。这是链接图断言，不依赖文件名或源码 grep；聚焦普通 20 轮 14.225 秒、race 10 轮 8.322 秒及 cmd vet 通过。
+  本项没有 runtime 行为修改，故不滚动长期数据面；当前 StatefulSet 3/3 updated/ready、NodePort `/health` 正常。production inventory
+  仍为 589 项，精确提交四片 133/166/151/139 全绿（Go 测试 105.804/314.858/209.874/331.485 秒；端到端
+  111.442/320.516/215.528/337.146 秒）。该边界阻止错误实现进入二进制，但不能替代每个镜像在目标集群的启动/rollout canary。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
