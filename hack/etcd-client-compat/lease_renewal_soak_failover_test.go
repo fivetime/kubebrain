@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -28,6 +31,29 @@ type leaseRenewalSoakConfig struct {
 	failoverCycles  int
 	leaseTTL        int64
 	duration        time.Duration
+	auditInterval   time.Duration
+	auditMaxOutage  time.Duration
+	auditSample     int
+}
+
+type leaseRenewalLiveLease struct {
+	id        clientv3.LeaseID
+	key       string
+	responses atomic.Int64
+}
+
+type leaseRenewalAuditClient interface {
+	Get(context.Context, string, ...clientv3.OpOption) (*clientv3.GetResponse, error)
+	TimeToLive(context.Context, clientv3.LeaseID, ...clientv3.LeaseOption) (*clientv3.LeaseTimeToLiveResponse, error)
+}
+
+type leaseRenewalAuditStats struct {
+	completedSamples int64
+	auditedLeases    int64
+	transientErrors  int64
+	maxSuccessGap    time.Duration
+	firstRevision    int64
+	lastRevision     int64
 }
 
 func parseLeaseRenewalSoakConfig(lookup func(string) (string, bool)) (leaseRenewalSoakConfig, error) {
@@ -70,6 +96,46 @@ func parseLeaseRenewalSoakConfig(lookup func(string) (string, bool)) (leaseRenew
 		}
 		config.duration = duration
 	}
+	if raw, configured := lookup("KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL"); configured {
+		interval, err := time.ParseDuration(strings.TrimSpace(raw))
+		if err != nil || interval < 100*time.Millisecond || interval > time.Minute {
+			return leaseRenewalSoakConfig{}, fmt.Errorf("KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL must be between 100ms and 1m, got %q", raw)
+		}
+		config.auditInterval = interval
+	} else if config.duration > 0 {
+		config.auditInterval = 5 * time.Second
+	}
+	if raw, configured := lookup("KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE"); configured {
+		outage, err := time.ParseDuration(strings.TrimSpace(raw))
+		if err != nil || outage < time.Second || outage > 5*time.Minute {
+			return leaseRenewalSoakConfig{}, fmt.Errorf("KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE must be between 1s and 5m, got %q", raw)
+		}
+		config.auditMaxOutage = outage
+	} else if config.duration > 0 {
+		config.auditMaxOutage = 45 * time.Second
+	}
+	if raw, configured := lookup("KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE"); configured {
+		sample, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || sample < 1 || sample > 4096 {
+			return leaseRenewalSoakConfig{}, fmt.Errorf("KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE must be an integer in [1,4096], got %q", raw)
+		}
+		config.auditSample = sample
+	} else if config.duration > 0 {
+		config.auditSample = min(64, config.clientCount*config.leasesPerClient)
+	}
+	if config.duration == 0 && (config.auditInterval != 0 || config.auditMaxOutage != 0 || config.auditSample != 0) {
+		return leaseRenewalSoakConfig{}, errors.New("lease renewal soak audit options require KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION")
+	}
+	if config.duration > 0 && (config.auditInterval >= config.auditMaxOutage || config.auditSample > config.clientCount*config.leasesPerClient) {
+		return leaseRenewalSoakConfig{}, errors.New("lease renewal soak requires audit interval < max outage and sample <= total leases")
+	}
+	if config.duration > 0 {
+		total := config.clientCount * config.leasesPerClient
+		minimumAuditDuration := config.auditInterval * time.Duration((total+config.auditSample-1)/config.auditSample)
+		if config.duration < minimumAuditDuration {
+			return leaseRenewalSoakConfig{}, fmt.Errorf("lease renewal soak duration must be at least %s to audit every lease once", minimumAuditDuration)
+		}
+	}
 	return config, nil
 }
 
@@ -88,9 +154,9 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 
 	config, err := parseLeaseRenewalSoakConfig(os.LookupEnv)
 	require.NoError(t, err)
-	t.Logf("lease renewal soak config: clients=%d leases/client=%d total=%d failovers=%d ttl=%ds duration=%s",
+	t.Logf("lease renewal soak config: clients=%d leases/client=%d total=%d failovers=%d ttl=%ds duration=%s audit=%s/%s sample=%d",
 		config.clientCount, config.leasesPerClient, config.clientCount*config.leasesPerClient,
-		config.failoverCycles, config.leaseTTL, config.duration)
+		config.failoverCycles, config.leaseTTL, config.duration, config.auditInterval, config.auditMaxOutage, config.auditSample)
 
 	testTimeout := 4 * time.Minute
 	if configuredTimeout := config.duration + time.Duration(config.failoverCycles)*time.Minute + time.Minute; configuredTimeout > testTimeout {
@@ -118,13 +184,8 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 	}()
 
 	prefix := fmt.Sprintf("/dbaas-lease-renewal-soak/%d/", time.Now().UnixNano())
-	type liveLease struct {
-		id        clientv3.LeaseID
-		key       string
-		responses atomic.Int64
-	}
 	leaseCount := config.clientCount * config.leasesPerClient
-	leases := make([]*liveLease, 0, leaseCount)
+	leases := make([]*leaseRenewalLiveLease, 0, leaseCount)
 	errs := make(chan error, leaseCount)
 	var readers sync.WaitGroup
 
@@ -135,7 +196,7 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 			key := fmt.Sprintf("%s%02d-%02d", prefix, clientIndex, leaseIndex)
 			_, err = cli.Put(ctx, key, "live", clientv3.WithLease(grant.ID))
 			require.NoError(t, err)
-			live := &liveLease{id: grant.ID, key: key}
+			live := &leaseRenewalLiveLease{id: grant.ID, key: key}
 			leases = append(leases, live)
 
 			responses, err := cli.KeepAlive(keepAliveCtx, grant.ID)
@@ -169,6 +230,18 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 	}
 	require.NoError(t, waitForLeaseResponses(ctx, errs, counts, nil, 20*time.Second),
 		"every lease must receive an initial keepalive response")
+	auditCtx, stopAudits := context.WithCancel(ctx)
+	var auditReaders sync.WaitGroup
+	var auditStats <-chan leaseRenewalAuditStats
+	if config.auditInterval > 0 {
+		stats := make(chan leaseRenewalAuditStats, 1)
+		auditStats = stats
+		auditReaders.Add(1)
+		go func() {
+			defer auditReaders.Done()
+			stats <- runLeaseRenewalAuditor(auditCtx, clients[0], leases, config, errs)
+		}()
+	}
 
 	soakStarted := time.Now()
 	for cycle := 1; cycle <= config.failoverCycles; cycle++ {
@@ -203,6 +276,17 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 	}
 
 	stopKeepAlives()
+	stopAudits()
+	auditReaders.Wait()
+	if auditStats != nil {
+		stats := <-auditStats
+		require.Positive(t, stats.completedSamples, "duration soak must complete at least one continuous audit sample")
+		require.GreaterOrEqual(t, stats.auditedLeases, int64(len(leases)), "duration soak must audit every lease at least once")
+		require.Positive(t, stats.firstRevision)
+		require.GreaterOrEqual(t, stats.lastRevision, stats.firstRevision)
+		t.Logf("lease renewal continuous audit: samples=%d leases=%d transient_errors=%d max_success_gap=%s revisions=%d..%d",
+			stats.completedSamples, stats.auditedLeases, stats.transientErrors, stats.maxSuccessGap.Round(time.Millisecond), stats.firstRevision, stats.lastRevision)
+	}
 	readers.Wait()
 	select {
 	case keepAliveErr := <-errs:
@@ -260,6 +344,7 @@ func TestParseLeaseRenewalSoakConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, leaseRenewalSoakConfig{
 		clientCount: 16, leasesPerClient: 32, failoverCycles: 6, leaseTTL: 90, duration: 2 * time.Hour,
+		auditInterval: 5 * time.Second, auditMaxOutage: 45 * time.Second, auditSample: 64,
 	}, configured)
 
 	invalid := []map[string]string{
@@ -270,6 +355,12 @@ func TestParseLeaseRenewalSoakConfig(t *testing.T) {
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "not-a-duration"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "2s"},
 		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "168h1s"},
+		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL": "1s"},
+		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL": "99ms"},
+		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE": "301s"},
+		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL": "2s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE": "2s"},
+		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE": "4097"},
+		{"KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION": "3s", "KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE": "65"},
 		{
 			"KUBEBRAIN_LEASE_RENEWAL_SOAK_CLIENTS":           "256",
 			"KUBEBRAIN_LEASE_RENEWAL_SOAK_LEASES_PER_CLIENT": "4096",
@@ -278,6 +369,138 @@ func TestParseLeaseRenewalSoakConfig(t *testing.T) {
 	for _, values := range invalid {
 		_, err := parseLeaseRenewalSoakConfig(lookup(values))
 		require.Error(t, err, values)
+	}
+}
+
+type leaseRenewalAuditError struct {
+	semantic bool
+	err      error
+}
+
+func (e *leaseRenewalAuditError) Error() string { return e.err.Error() }
+func (e *leaseRenewalAuditError) Unwrap() error { return e.err }
+
+func runLeaseRenewalAuditor(
+	ctx context.Context, cli leaseRenewalAuditClient, leases []*leaseRenewalLiveLease, config leaseRenewalSoakConfig, errs chan<- error,
+) leaseRenewalAuditStats {
+	ticker := time.NewTicker(config.auditInterval)
+	defer ticker.Stop()
+	lastSuccess, offset, lastRevision := time.Now(), 0, int64(0)
+	var stats leaseRenewalAuditStats
+	for {
+		select {
+		case <-ctx.Done():
+			return stats
+		case <-ticker.C:
+		}
+		auditCtx, cancel := context.WithTimeout(ctx, min(config.auditMaxOutage/2, 30*time.Second))
+		revision, err := auditLeaseRenewalSample(auditCtx, cli, leases, offset, config.auditSample, lastRevision)
+		cancel()
+		if err == nil {
+			now := time.Now()
+			if gap := now.Sub(lastSuccess); gap > stats.maxSuccessGap {
+				stats.maxSuccessGap = gap
+			}
+			lastSuccess, lastRevision = now, revision
+			stats.completedSamples++
+			stats.auditedLeases += int64(config.auditSample)
+			if stats.firstRevision == 0 {
+				stats.firstRevision = revision
+			}
+			stats.lastRevision = revision
+			offset = (offset + config.auditSample) % len(leases)
+			continue
+		}
+		if ctx.Err() != nil {
+			return stats
+		}
+		var auditErr *leaseRenewalAuditError
+		if (errors.As(err, &auditErr) && auditErr.semantic) || time.Since(lastSuccess) >= config.auditMaxOutage {
+			select {
+			case errs <- fmt.Errorf("continuous lease audit failed after %s without a complete sample: %w", time.Since(lastSuccess).Round(time.Millisecond), err):
+			default:
+			}
+			return stats
+		}
+		stats.transientErrors++
+	}
+}
+
+func auditLeaseRenewalSample(
+	ctx context.Context, cli leaseRenewalAuditClient, leases []*leaseRenewalLiveLease, offset, sample int, lastRevision int64,
+) (int64, error) {
+	revision := lastRevision
+	for index := 0; index < sample; index++ {
+		live := leases[(offset+index)%len(leases)]
+		response, err := cli.Get(ctx, live.key)
+		if err != nil {
+			return revision, &leaseRenewalAuditError{err: fmt.Errorf("get lease %d key: %w", live.id, err)}
+		}
+		if response.Header == nil || response.Header.Revision < revision {
+			return revision, &leaseRenewalAuditError{semantic: true, err: fmt.Errorf("get lease %d returned non-monotonic revision", live.id)}
+		}
+		revision = response.Header.Revision
+		if len(response.Kvs) != 1 || string(response.Kvs[0].Key) != live.key || string(response.Kvs[0].Value) != "live" || clientv3.LeaseID(response.Kvs[0].Lease) != live.id {
+			return revision, &leaseRenewalAuditError{semantic: true, err: fmt.Errorf("lease %d key binding changed", live.id)}
+		}
+		ttl, err := cli.TimeToLive(ctx, live.id, clientv3.WithAttachedKeys())
+		if err != nil {
+			return revision, &leaseRenewalAuditError{err: fmt.Errorf("time-to-live lease %d: %w", live.id, err)}
+		}
+		if ttl.ResponseHeader == nil || ttl.ResponseHeader.Revision < revision {
+			return revision, &leaseRenewalAuditError{semantic: true, err: fmt.Errorf("time-to-live lease %d returned non-monotonic revision", live.id)}
+		}
+		revision = ttl.ResponseHeader.Revision
+		if ttl.ID != live.id || ttl.TTL <= 0 || len(ttl.Keys) != 1 || string(ttl.Keys[0]) != live.key {
+			return revision, &leaseRenewalAuditError{semantic: true, err: fmt.Errorf("lease %d TTL or attached keys changed", live.id)}
+		}
+	}
+	return revision, nil
+}
+
+type fakeLeaseRenewalAuditClient struct {
+	getResponse *clientv3.GetResponse
+	getErr      error
+	ttlResponse *clientv3.LeaseTimeToLiveResponse
+	ttlErr      error
+}
+
+func (f fakeLeaseRenewalAuditClient) Get(context.Context, string, ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+	return f.getResponse, f.getErr
+}
+
+func (f fakeLeaseRenewalAuditClient) TimeToLive(context.Context, clientv3.LeaseID, ...clientv3.LeaseOption) (*clientv3.LeaseTimeToLiveResponse, error) {
+	return f.ttlResponse, f.ttlErr
+}
+
+func TestAuditLeaseRenewalSampleChecksBindingTTLAndRevision(t *testing.T) {
+	lease := &leaseRenewalLiveLease{id: 7, key: "/lease/key"}
+	valid := fakeLeaseRenewalAuditClient{
+		getResponse: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 11}, Kvs: []*mvccpb.KeyValue{{Key: []byte(lease.key), Value: []byte("live"), Lease: int64(lease.id)}}},
+		ttlResponse: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 12}, ID: lease.id, TTL: 20, Keys: [][]byte{[]byte(lease.key)}},
+	}
+	revision, err := auditLeaseRenewalSample(context.Background(), valid, []*leaseRenewalLiveLease{lease}, 0, 1, 10)
+	require.NoError(t, err)
+	require.Equal(t, int64(12), revision)
+
+	for _, tc := range []struct {
+		name     string
+		client   fakeLeaseRenewalAuditClient
+		want     string
+		semantic bool
+	}{
+		{name: "transport", client: fakeLeaseRenewalAuditClient{getErr: context.DeadlineExceeded}, want: "deadline exceeded"},
+		{name: "revision", client: fakeLeaseRenewalAuditClient{getResponse: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 9}}}, want: "non-monotonic", semantic: true},
+		{name: "binding", client: fakeLeaseRenewalAuditClient{getResponse: &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: 11}}}, want: "binding changed", semantic: true},
+		{name: "ttl", client: fakeLeaseRenewalAuditClient{getResponse: valid.getResponse, ttlResponse: &clientv3.LeaseTimeToLiveResponse{ResponseHeader: &etcdserverpb.ResponseHeader{Revision: 12}, ID: lease.id, TTL: -1}}, want: "TTL or attached keys", semantic: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := auditLeaseRenewalSample(context.Background(), tc.client, []*leaseRenewalLiveLease{lease}, 0, 1, 10)
+			require.ErrorContains(t, err, tc.want)
+			var auditErr *leaseRenewalAuditError
+			require.ErrorAs(t, err, &auditErr)
+			require.Equal(t, tc.semantic, auditErr.semantic)
+		})
 	}
 }
 

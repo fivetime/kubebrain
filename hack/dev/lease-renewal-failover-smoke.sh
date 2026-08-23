@@ -174,7 +174,10 @@ soak_clients="${KUBEBRAIN_LEASE_RENEWAL_SOAK_CLIENTS:-8}"
 soak_leases_per_client="${KUBEBRAIN_LEASE_RENEWAL_SOAK_LEASES_PER_CLIENT:-8}"
 soak_cycles="${KUBEBRAIN_LEASE_RENEWAL_SOAK_FAILOVER_CYCLES:-3}"
 soak_duration="${KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION:-rapid}"
-echo "Running lease renewal soak: clients=${soak_clients} leases/client=${soak_leases_per_client} failovers=${soak_cycles} duration=${soak_duration} mode=${FAILOVER_MODE}"
+soak_audit_interval="${KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_INTERVAL:-auto}"
+soak_audit_max_outage="${KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_MAX_OUTAGE:-auto}"
+soak_audit_sample="${KUBEBRAIN_LEASE_RENEWAL_SOAK_AUDIT_SAMPLE:-auto}"
+echo "Running lease renewal soak: clients=${soak_clients} leases/client=${soak_leases_per_client} failovers=${soak_cycles} duration=${soak_duration} mode=${FAILOVER_MODE} audit=${soak_audit_interval}/${soak_audit_max_outage} sample=${soak_audit_sample}"
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
