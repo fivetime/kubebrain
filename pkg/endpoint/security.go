@@ -63,6 +63,15 @@ func (t *secureServer) name() string {
 	return "tls"
 }
 
+// initialReadTimeout bounds the root cmux classification that runs before this
+// server's TLS listener. Without it, a client that sends no ClientHello bytes
+// never reaches identityTLSListener's handshake deadline and can remain open
+// forever. In dual secure/insecure mode a zero-byte connection is inherently
+// unclassifiable, so the secure admission bound applies to the shared socket.
+func (t *secureServer) initialReadTimeout() time.Duration {
+	return tlsIdentityHandshakeTimeout
+}
+
 func (t *secureServer) matchWriters() []cmux.MatchWriter {
 	return matchersToMatchWriters(cmux.TLS())
 }
@@ -70,7 +79,10 @@ func (t *secureServer) matchWriters() []cmux.MatchWriter {
 func (t *secureServer) serve(listener net.Listener) (err error) {
 
 	tlsConf := t.conf.getServerTLSConfig()
-	tlsListener := &identityTLSListener{Listener: listener, config: tlsConf, identities: t.identities}
+	tlsListener := &identityTLSListener{
+		Listener: listener, config: tlsConf, identities: t.identities,
+		handshakeTimeout: tlsIdentityHandshakeTimeout,
+	}
 	mux := cmux.New(tlsListener)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
@@ -89,14 +101,17 @@ type identityTLSListener struct {
 	net.Listener
 	config     *tls.Config
 	identities *transportidentity.Registry
-	startOnce  sync.Once
-	closeOnce  sync.Once
-	closeErr   error
-	done       chan struct{}
-	accepted   chan identityTLSAcceptResult
-	activeMu   sync.Mutex
-	active     map[net.Conn]struct{}
-	workerWG   sync.WaitGroup
+	// handshakeTimeout is injectable only for deterministic socket tests. The
+	// production secure-server constructor always sets tlsIdentityHandshakeTimeout.
+	handshakeTimeout time.Duration
+	startOnce        sync.Once
+	closeOnce        sync.Once
+	closeErr         error
+	done             chan struct{}
+	accepted         chan identityTLSAcceptResult
+	activeMu         sync.Mutex
+	active           map[net.Conn]struct{}
+	workerWG         sync.WaitGroup
 }
 
 const (
@@ -163,7 +178,11 @@ func (l *identityTLSListener) handshake(raw net.Conn) {
 		l.activeMu.Unlock()
 	}()
 	conn := tls.Server(raw, l.config)
-	err := raw.SetDeadline(time.Now().Add(tlsIdentityHandshakeTimeout))
+	timeout := l.handshakeTimeout
+	if timeout <= 0 {
+		timeout = tlsIdentityHandshakeTimeout
+	}
+	err := raw.SetDeadline(time.Now().Add(timeout))
 	if err == nil {
 		err = conn.Handshake()
 	}

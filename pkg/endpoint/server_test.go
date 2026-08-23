@@ -83,6 +83,19 @@ func TestNewHttpServerBoundsHeaderAdmission(t *testing.T) {
 	require.Zero(t, server.svr.WriteTimeout)
 }
 
+func TestRootServerBoundsProtocolClassificationForSecureEndpoints(t *testing.T) {
+	plain := newHTTPServer(http.NotFoundHandler())
+	require.Zero(t, newRootServer(2379, plain).initialReadTimeout,
+		"plaintext HTTP retains its independent five-minute header deadline")
+
+	secure := &secureServer{}
+	require.Equal(t, tlsIdentityHandshakeTimeout,
+		newRootServer(2379, secure).initialReadTimeout)
+	require.Equal(t, tlsIdentityHandshakeTimeout,
+		newRootServer(2379, secure, plain).initialReadTimeout,
+		"a zero-byte connection on a dual-mode socket cannot yet be classified as TLS or plaintext")
+}
+
 func TestHTTPServerEnforcesEtcdCompatibleHeaderLimit(t *testing.T) {
 	server := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

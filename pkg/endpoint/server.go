@@ -294,14 +294,25 @@ func grpcHandlerFunc(grpcServer *grpc.Server, httpHandler http.Handler) http.Han
 }
 
 type rootServer struct {
-	port     int
-	services []exposedServer
+	port               int
+	services           []exposedServer
+	initialReadTimeout time.Duration
 }
 
 func newRootServer(port int, ss ...exposedServer) *rootServer {
+	var initialReadTimeout time.Duration
+	for _, service := range ss {
+		if bounded, ok := service.(interface{ initialReadTimeout() time.Duration }); ok {
+			candidate := bounded.initialReadTimeout()
+			if candidate > 0 && (initialReadTimeout == 0 || candidate < initialReadTimeout) {
+				initialReadTimeout = candidate
+			}
+		}
+	}
 	return &rootServer{
-		port:     port,
-		services: ss,
+		port:               port,
+		services:           ss,
+		initialReadTimeout: initialReadTimeout,
 	}
 }
 
@@ -318,6 +329,9 @@ func (gs *rootServer) run(ctx context.Context) (err error) {
 		return err
 	}
 	mux := cmux.New(listener)
+	if gs.initialReadTimeout > 0 {
+		mux.SetReadTimeout(gs.initialReadTimeout)
+	}
 	klog.InfoS("root server start to listen", "port", gs.port)
 	return serveMuxAndServers(ctx, listener, mux, gs.services, true)
 }

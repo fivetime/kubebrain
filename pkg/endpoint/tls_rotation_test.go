@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"os"
@@ -522,6 +523,59 @@ func TestIdentityTLSListenerContinuesAfterRejectedHandshake(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("listener did not accept a valid connection after rejecting a malformed handshake")
+	}
+}
+
+func TestIdentityTLSListenerClosesSilentHandshakeAndRemainsUsable(t *testing.T) {
+	ca := newRotationCA(t)
+	dir := t.TempDir()
+	certPath, keyPath := writeRotationCertificate(t, dir, "server", ca, 602, "rotation.test")
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	require.NoError(t, err)
+	rawListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	listener := &identityTLSListener{
+		Listener: rawListener,
+		config: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+		},
+		identities:       &transportidentity.Registry{},
+		handshakeTimeout: 50 * time.Millisecond,
+	}
+	t.Cleanup(func() { require.NoError(t, listener.Close()) })
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	silent, err := net.Dial("tcp", rawListener.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = silent.Close() })
+	require.NoError(t, silent.SetReadDeadline(time.Now().Add(time.Second)))
+	oneByte := make([]byte, 1)
+	_, err = silent.Read(oneByte)
+	require.Error(t, err, "a client that sends no TLS bytes must be closed after the handshake deadline")
+	var timeout net.Error
+	if errors.As(err, &timeout) {
+		require.False(t, timeout.Timeout(), "the client deadline must not fire before the server closes the connection")
+	}
+
+	valid, err := tls.Dial("tcp", rawListener.Addr().String(), &tls.Config{InsecureSkipVerify: true}) //nolint:gosec -- listener resilience test
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, valid.Close()) })
+	select {
+	case conn := <-accepted:
+		require.NoError(t, conn.Close())
+	case err := <-acceptErr:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("listener did not accept a valid connection after expiring a silent handshake")
 	}
 }
 
