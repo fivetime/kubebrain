@@ -60756,6 +60756,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   113.981/322.856/217.272/339.076 秒）。该项证明单宿主高概率随机丢包下的换主与 lease 连续性，不证明低比例长期抖动、
   burst/Gilbert-Elliott loss、时延/乱序/带宽限制或跨节点/跨 AZ fabric；这些仍须后续矩阵覆盖。
 
+- A5390 修复 lease 网络分区 helper 将 kind 节点容器硬编码为 `kubebrain-dev-control-plane` 的环境漂移风险。未显式设置
+  `KIND_NODE_CONTAINER` 时，helper 现在读取当前 kubectl context，只接受 `kind-*`，严格校验 cluster 名后推导
+  `${cluster}-control-plane`，并要求 Docker inspect 成功才允许修改 iptables；非 kind context 或不存在的候选容器均 fail closed。
+  显式覆盖仍受原容器名校验和 privileged 检查约束。canonical 故障日志新增最终解析出的 node，使规则命中证据同时绑定注入宿主。
+  脚本语法、聚焦普通/race 各 20 轮、完整 compat race 7.014 秒及 vet 全部通过。
+
+  精确代码提交 `ef6b17f7` 在当前 context `kind-kubebrain-dbaas` 上刻意不传节点变量，以 ingress 90% random DROP、64 lease、
+  TTL=120、outage=90、duration=90s 隔离当前 leader：日志证明自动选择 `kubebrain-dbaas-control-plane`，原 Pod UID 不变、规则
+  实际 DROP 5271 包并完成换主；30 个完整样本审计 1920 条 lease，5 次受控传输错误，response restart 为 0，最大完整样本间隔
+  31.284 秒、最大逐 lease response 进展 60 秒，revision 固定 `468126003565972129`，183.10 秒通过。规则零残留、endpoint 健康、
+  StatefulSet 3/3。根 production inventory 仍为 589 项；最终四片 133/166/151/139 全部通过（Go 测试
+  105.228/312.987/209.034/328.806 秒；端到端 110.932/318.714/214.723/334.535 秒）。该项证明当前单 control-plane kind
+  命名约定下不会因集群名漂移注入错误容器；多 control-plane、自定义节点名、远程 runtime 和跨节点/AZ fabric 仍须显式配置并验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
