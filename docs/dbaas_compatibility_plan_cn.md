@@ -61208,6 +61208,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   107.672/321.149/213.219/336.197 秒；端到端 113.493/326.965/218.963/342.049 秒）。本项有意不自动合并另一
   发布者的 spec 变化；生产发布必须串行化，CRITICAL 后由操作者重新从新 resourceVersion 启动完整 canary。
 
+- A5419 修正 A5418 对 candidate JSON Patch 失败后的不确定结果一律当成并发漂移 CRITICAL 的过度告警。由于
+  `candidate_rollout_started` 必须在请求前置 true 才能覆盖“服务端已应用但响应丢失”，UID/resourceVersion 原子 test
+  明确失败、服务端未 mutation 时也会进入 cleanup；旧逻辑看到当前完整 spec 是 initial 而非 candidate，就误报
+  “refusing to overwrite concurrent changes”。提交 `220316c7` 将 cleanup 当前态严格分类：UID/resourceVersion/spec
+  不可读为 CRITICAL；完整 spec 等于 initial 表示 mutation 未观察到或已由外部安全恢复，只记录原 baseline remains、
+  不发 rollback patch；完整 spec 等于唯一 candidate spec 才用最新 resourceVersion 原子回滚；其余 spec 才是并发
+  漂移，CRITICAL 且拒绝覆盖。UID 与 resourceVersion precondition 负测现在都证明只有一次 candidate patch、状态文件
+  不存在且无 CRITICAL；另一个同 UID candidate 上把 replicas 改为 4 的负测证明第三态只有一次 patch、保留并发状态
+  且输出 CRITICAL。聚焦普通/race 为 31.064/16.637 秒，rollout 全组普通/race 为 8.884/9.926 秒，vet/shell
+  syntax 通过；production inventory 增至 606 项，精确提交四片 138/171/153/144 全绿（Go 测试
+  108.536/321.837/212.274/337.956 秒；端到端 114.348/327.587/218.052/343.783 秒）。initial-spec 分支仍使整个
+  canary 非零退出，只消除错误的回滚事故等级；发布者必须修复 precondition 冲突后重跑，不能把 baseline 安全等同于
+  candidate 已发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

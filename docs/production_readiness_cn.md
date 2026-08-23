@@ -1308,6 +1308,11 @@ cleanup 写回前会重新读取并要求当前完整 spec 仍是本轮 candidat
 args、volume、securityContext、updateStrategy 或其他 spec 变化都必须 CRITICAL 且拒绝覆盖；应串行化发布并从新
 resourceVersion 重新运行完整 canary，不得让 cleanup 自动合并配置。
 
+candidate patch 返回失败或响应不确定后，cleanup 以完整 spec 做三态判定：当前等于 initial spec 时不写回、不报
+CRITICAL，但本轮 canary 仍失败；当前等于唯一 candidate spec 时执行带最新 resourceVersion 的 rollback；其他 spec
+或身份不可读时视为并发发布事故，CRITICAL 且拒绝覆盖。不得把“original spec remains”日志解释为 candidate 成功，
+也不得在第三态绕过 fence 强制恢复旧配置。
+
 日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
 `kubectl`/`curl`/`prefix-tool` 命令：
 
