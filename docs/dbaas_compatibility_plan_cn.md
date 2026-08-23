@@ -61282,6 +61282,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   117.876/337.032/216.500/345.977 秒；端到端 123.680/342.883/222.310/351.842 秒）。本项收紧发布工具的可终止性，
   不改变 etcd API、TiKV 数据语义或协议兼容矩阵。
 
+- A5425 修复 rollout probe Ready 后等待 `PROBE_STARTED` 的计数重试不是真正阶段预算。旧代码固定 50 次、每次
+  sleep 100ms，但每个 `logs` evidence command 可等待 15 秒，credential/plugin 或 API 慢响应会把名义约 5 秒的
+  start barrier 放大到约 750 秒才拒绝发布。提交 `21ea6df5` 新增默认 10 秒且在任何 Kubernetes 调用前校验的
+  `PROBE_START_TIMEOUT`，把 ms/s/m 向上取整到 Bash 进程 elapsed `SECONDS`，每次读取以剩余阶段时间再包一层
+  TERM、1 秒后 KILL 的 GNU timeout；内部 15 秒 evidence command、10 秒 HTTP request 与 1 MiB 流式响应上限
+  继续独立生效。循环在调用前后检查 deadline，失败诊断携带配置预算，不再依赖机器速度或固定尝试数。确定性负测
+  保持内部 evidence timeout 为 30 秒并让 fake kubectl 及其 `sleep` 子进程静默 30 秒，`PROBE_START_TIMEOUT=1s`
+  仍在 5 秒进程组保险内以 start-barrier deadline 失败；正向、duration 溢出与最大 Go duration 边界继续通过。
+  rollout 全组普通/race 为 50.460/55.955 秒，vet、shell syntax、diff check 与 609 项 inventory 通过；精确代码
+  提交四片 139/171/153/146 全绿（Go 测试 118.958/341.806/216.427/351.299 秒；端到端
+  124.686/347.611/222.204/357.156 秒）。同期对 `/root/etcd@5cd9f4ee1` 的 49 项公开 RPC 分类与递归 Txn
+  `checkTxnRequest/checkRequestOp/checkIntervals` 再审计未发现可复现协议差分，故未修改 etcd/TiKV 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
