@@ -309,7 +309,11 @@ if [ "$RUN_INCLUSTER_APISERVER_ROLLOUT_SMOKE" = "true" ]; then
 fi
 
 if [ "$RUN_APISERVER_WATCH_SOAK" = "true" ]; then
-  run_step "apiserver watch soak" env ENDPOINT="http://${ENDPOINT}" hack/dev/apiserver-watch-soak.sh
+  run_step "apiserver watch soak" env \
+    ENDPOINT="http://${ENDPOINT}" \
+    ETCD_PREFIX="/registry-kubebrain-apiserver-verify-watch-$(date +%s%N)" \
+    ALLOW_MUTATING_APISERVER_WATCH_SOAK=true \
+    hack/dev/apiserver-watch-soak.sh
 fi
 
 if [ "$RUN_INCLUSTER_APISERVER_WATCH_SOAK" = "true" ]; then

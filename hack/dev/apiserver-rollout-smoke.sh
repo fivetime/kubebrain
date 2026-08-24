@@ -71,6 +71,8 @@ echo "Starting standalone kube-apiserver watch soak with pre-update pause"
   SECURE_PORT="$SECURE_PORT" \
   PRE_UPDATE_SLEEP_SECONDS="$PRE_UPDATE_SLEEP_SECONDS" \
   ALLOW_WATCH_RESTARTS=1 \
+  ETCD_PREFIX="/registry-kubebrain-apiserver-rollout-watch-$(date +%s%N)" \
+  ALLOW_MUTATING_APISERVER_WATCH_SOAK=true \
   WATCH_TIMEOUT_SECONDS="$WATCH_TIMEOUT_SECONDS" \
     "$ROOT_DIR/hack/dev/apiserver-watch-soak.sh"
 ) >"$log_file" 2>&1 &

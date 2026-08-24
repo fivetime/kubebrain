@@ -1922,7 +1922,7 @@ func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 		fields := strings.Fields(line)
 		require.Len(t, fields, 6, "owned endpoint manifest line %d", lineNumber+1)
 		caller, runFlag, defaultValue, callee, approval, resource := fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]
-		require.Equal(t, "true", defaultValue)
+		require.Contains(t, []string{"true", "false"}, defaultValue)
 		require.Equal(t, "etcd-prefix", resource)
 		require.Regexp(t, `^ALLOW_MUTATING_[A-Z0-9_]+$`, approval)
 
@@ -1944,12 +1944,19 @@ func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 		require.Contains(t, calleeContent, "baseline_lease_ids=\"$(list_lease_ids)\"")
 		require.Contains(t, calleeContent, `lease revoke "$lease_id"`)
 		require.Contains(t, calleeContent, "lease set differs from preflight after cleanup")
-		require.Contains(t, calleeContent, "refusing non-empty apiserver smoke prefix")
+		require.Contains(t, calleeContent, "refusing non-empty apiserver")
 		require.Contains(t, calleeContent, "process_owned=false")
-		require.Contains(t, calleeContent, "refusing to replace active apiserver smoke process")
+		require.Contains(t, calleeContent, "refusing to replace active apiserver")
 		contracts++
 	}
-	require.Equal(t, 3, contracts)
+	require.Equal(t, 5, contracts)
+
+	rolloutData, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "apiserver-rollout-smoke.sh"))
+	require.NoError(t, err)
+	rolloutContent := string(rolloutData)
+	require.Contains(t, rolloutContent, "hack/dev/apiserver-watch-soak.sh")
+	require.Contains(t, rolloutContent, "ALLOW_MUTATING_APISERVER_WATCH_SOAK=true")
+	require.Contains(t, rolloutContent, `ETCD_PREFIX="/registry-kubebrain-apiserver-rollout-watch-`)
 }
 
 func TestAPIServerSmokeRejectsNonEmptyPrefixWithoutDeletingIt(t *testing.T) {
@@ -1984,6 +1991,22 @@ exit 98
 	require.Error(t, err)
 	require.Contains(t, string(output), "refusing non-empty apiserver smoke prefix")
 	logData, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	require.NotContains(t, string(logData), " del ")
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	output, err = runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "apiserver-watch-soak.sh")}, []string{
+		"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+		"FAKE_ETCDCTL_LOG=" + logPath,
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=5cd9f4ee13801e18825d661e5005ae599460bc3a",
+		"ALLOW_MUTATING_APISERVER_WATCH_SOAK=true",
+		"ETCD_PREFIX=/registry-kubebrain-apiserver-occupied",
+		"WORK_DIR=" + filepath.Join(fakeBin, "watch-work"),
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing non-empty apiserver watch-soak prefix")
+	logData, readErr = os.ReadFile(logPath)
 	require.NoError(t, readErr)
 	require.NotContains(t, string(logData), " del ")
 }

@@ -117,7 +117,8 @@ for image in "${apiserver_images[@]}"; do
       APISERVER_BIN="$bin" \
       SECURE_PORT="$soak_port" \
       WORK_DIR="${WORK_DIR}/${name}/watch-soak" \
-      ETCD_PREFIX="/registry-kubebrain-apiserver-matrix-${name}-watch-soak-$(date +%s)" \
+      ETCD_PREFIX="/registry-kubebrain-apiserver-matrix-${name}-watch-soak-$(date +%s%N)" \
+      ALLOW_MUTATING_APISERVER_WATCH_SOAK=true \
       OBJECTS="$OBJECTS" \
       UPDATES="$UPDATES" \
       WATCH_TIMEOUT_SECONDS="$WATCH_TIMEOUT_SECONDS" \
