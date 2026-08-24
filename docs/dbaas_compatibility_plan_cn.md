@@ -61324,6 +61324,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四片 139/171/153/146 全绿（Go 测试 117.814/343.797/219.686/355.731 秒；端到端
   123.651/349.676/225.517/361.631 秒）。
 
+- A5428 补齐 A5427 空 key Watch 的鉴权边界。upstream `v3rpc/watch.go::recvLoop` 在 auth admission 前先把空
+  `key` 归一为 `0x00`，但保留 wire `range_end`：因此只拥有 exact NUL READ permission 的用户应能创建空 key
+  point watch，却必须被拒绝创建空 key + `range_end={0}` 的 `[0x00,+inf)` watch。KubeBrain 生产路径已有同一
+  顺序（单独构造 `authKey={0}`，用未归一化 `authRangeEnd` 授权），但此前没有永久安全回归。提交 `a9e8da7c`
+  新增有限角色 raw gRPC differential：在 disposable、初始 auth-disabled 两端建立 root 与仅有 NUL point READ
+  的 alice，启用 auth 后同一 token stream 依次创建 ID 901 point 与 ID 902 from-key；前者必须 canonical Created，
+  后者必须 ID=-1、Created+Canceled 且精确 `PermissionDenied`，同时固定 cluster/member/positive term envelope。
+  本地 KubeBrain auth server 用同一权限矩阵普通 50 轮 0.757 秒、race 50 轮 5.841 秒通过；固定
+  `/root/etcd@5cd9f4ee1` 临时单成员 auth oracle 的 reference 分支 0.373 秒通过，cleanup 先由 root 禁用 auth，
+  再停止进程并删除专用数据目录。永久 live equality 分支要求显式
+  `REFERENCE_EMPTY_KEY_AUTH_ENDPOINT`/`KUBEBRAIN_EMPTY_KEY_AUTH_ENDPOINT`，避免误改共享集群；本轮没有
+  disposable TiKV endpoint，故不声称执行该双端分支。compat/server 编译与 vet 通过，未发现产品 RED，因而不改
+  已正确的授权路径。精确测试提交的 609 项 production 四片 139/171/153/146 全绿（Go 测试
+  117.945/345.604/219.628/353.871 秒；端到端 123.721/351.500/225.483/359.723 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
