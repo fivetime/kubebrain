@@ -89,12 +89,23 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 
 	prefix := fmt.Sprintf("/dbaas-envoy-kubernetes-rollout/%d", time.Now().UnixNano())
+	leaseIDs := make([]clientv3.LeaseID, 0, 30)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		for _, leaseID := range leaseIDs {
+			_, _ = client.Revoke(cleanupCtx, leaseID)
+		}
+		_, err = client.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+		require.NoError(t, err)
+	})
 	watchKey, leaseKey := prefix+"/watch", prefix+"/lease"
 	watch := client.Watch(ctx, watchKey, clientv3.WithCreatedNotify())
 	created := receiveExternalL7WatchResponse(t, ctx, watch)
 	require.True(t, created.Created)
 	grant, err := client.Grant(ctx, envoyKubernetesRolloutLeaseTTL)
 	require.NoError(t, err)
+	leaseIDs = append(leaseIDs, grant.ID)
 	_, err = client.Put(ctx, leaseKey, "kept-alive", clientv3.WithLease(grant.ID))
 	require.NoError(t, err)
 	keepAlive, err := client.KeepAlive(ctx, grant.ID)
@@ -120,6 +131,7 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		require.True(t, cohortCreated.Created)
 		cohortGrant, grantErr := cohortClient.Grant(ctx, envoyKubernetesRolloutLeaseTTL)
 		require.NoError(t, grantErr)
+		leaseIDs = append(leaseIDs, cohortGrant.ID)
 		cohortLeaseKey := fmt.Sprintf("%s/lease-cohort-%d", prefix, member)
 		_, putErr := cohortClient.Put(ctx, cohortLeaseKey, "kept-alive", clientv3.WithLease(cohortGrant.ID))
 		require.NoError(t, putErr)
@@ -288,9 +300,9 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 				"TLS rotation command must replace the server leaf certificate observed through Envoy")
 		}
 		if rotatedClientTLS != nil {
-			assertEnvoyKubernetesTLSClientWorks(t, endpoint, rotatedClientTLS, "/dbaas-envoy-kubernetes-rotated-ca")
+			assertEnvoyKubernetesTLSClientWorks(t, endpoint, rotatedClientTLS, prefix+"/rotated-ca")
 			assertEnvoyKubernetesTLSHandshakeRejected(t, endpoint, retiredCAClientTLS)
-			assertEnvoyKubernetesTLSClientWorks(t, endpoint, rotatedClientTLS, "/dbaas-envoy-kubernetes-rotated-ca-after-rejection")
+			assertEnvoyKubernetesTLSClientWorks(t, endpoint, rotatedClientTLS, prefix+"/rotated-ca-after-rejection")
 		}
 		assertEnvoyKubernetesTLSRejectsInvalidClients(t, endpoint, clientTLS, "after-rollout")
 	}

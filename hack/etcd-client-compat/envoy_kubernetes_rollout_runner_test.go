@@ -12,6 +12,7 @@ func TestEnvoyKubernetesRolloutRunnerFailsClosed(t *testing.T) {
 	require.NoError(t, err)
 	text := string(script)
 	for _, required := range []string{
+		"ALLOW_DESTRUCTIVE_ENVOY_ROLLOUT",
 		"set KUBE_CONTEXT explicitly",
 		"exactly three Ready Envoy Pods",
 		"three distinct Kubernetes nodes",
@@ -36,9 +37,50 @@ func TestEnvoyKubernetesRolloutRunnerFailsClosed(t *testing.T) {
 		"KUBEBRAIN_ENVOY_ROLLOUT_ENDPOINT",
 		"TestEnvoyKubernetesRollout",
 		"trap cleanup EXIT",
+		"rollout gate Service already exists; refusing to delete it",
+		`if [[ "$service_created" == true ]]`,
+		"baseline_target_state=\"$(capture_target_state preflight)\"",
+		"final_target_state=\"$(capture_target_state postflight)\"",
+		`--cacert="$TLS_ROTATED_CA_FILE"`,
+		") || test_status=$?",
 	} {
 		require.Contains(t, text, required)
 	}
+}
+
+func TestEnvoyKubernetesRolloutFixturesAreOwnedAndCleaned(t *testing.T) {
+	testSource, err := os.ReadFile("envoy_kubernetes_rollout_test.go")
+	require.NoError(t, err)
+	content := string(testSource)
+	require.Contains(t, content, `prefix := fmt.Sprintf("/dbaas-envoy-kubernetes-rollout/%d", time.Now().UnixNano())`)
+	require.Contains(t, content, "leaseIDs = append(leaseIDs, grant.ID)")
+	require.Contains(t, content, "leaseIDs = append(leaseIDs, cohortGrant.ID)")
+	require.Contains(t, content, "client.Revoke(cleanupCtx, leaseID)")
+	require.Contains(t, content, "client.Delete(cleanupCtx, prefix, clientv3.WithPrefix())")
+	require.Contains(t, content, `prefix+"/rotated-ca"`)
+	require.Contains(t, content, `prefix+"/rotated-ca-after-rejection"`)
+	require.NotContains(t, content, `"/dbaas-envoy-kubernetes-rotated-ca"`)
+}
+
+func TestEnvoyKubernetesRolloutRunnerRequiresDestructiveApprovalBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-envoy-kubernetes-rollout.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBE_CONTEXT=explicit-test-context",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing destructive Envoy Kubernetes rollout without explicit approval")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestEnvoyKubernetesRolloutRunnerRejectsInvalidDestructiveApprovalBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-envoy-kubernetes-rollout.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBE_CONTEXT=explicit-test-context",
+		"ALLOW_DESTRUCTIVE_ENVOY_ROLLOUT=maybe",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "ALLOW_DESTRUCTIVE_ENVOY_ROLLOUT must be true or false")
+	require.NotContains(t, string(output), "missing required command")
 }
 
 func TestEnvoyKubernetesRolloutRunnerRejectsRotationWithoutTLS(t *testing.T) {
