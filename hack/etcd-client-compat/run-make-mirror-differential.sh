@@ -9,6 +9,7 @@ ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 REFERENCE_CLIENT_URL="${REFERENCE_MIRROR_CLIENT_URL:-http://127.0.0.1:12379}"
 REFERENCE_PEER_URL="${REFERENCE_MIRROR_PEER_URL:-http://127.0.0.1:12380}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-2m}"
+ADVERTISED_ENDPOINT_TIMEOUT="${ADVERTISED_ENDPOINT_TIMEOUT:-5s}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -53,6 +54,27 @@ if ! "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_MIRROR_ENDPOINT" endpoint health; th
   echo "disposable KubeBrain make-mirror endpoint health preflight failed: $KUBEBRAIN_MIRROR_ENDPOINT" >&2
   exit 1
 fi
+
+if ! member_list_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_MIRROR_ENDPOINT" member list -w json)"; then
+  echo "disposable KubeBrain make-mirror MemberList preflight failed: $KUBEBRAIN_MIRROR_ENDPOINT" >&2
+  exit 1
+fi
+mapfile -t advertised_client_urls < <(
+  jq -r '[.members[] | select((.name // "") != "" and ((.isLearner // false) | not)) | .clientURLs[]?] | unique[]' \
+    <<<"$member_list_json"
+)
+if [[ "${#advertised_client_urls[@]}" -eq 0 ]]; then
+  echo "disposable KubeBrain make-mirror MemberList preflight returned no advertised client URLs" >&2
+  exit 1
+fi
+for advertised_client_url in "${advertised_client_urls[@]}"; do
+  if ! "$ETCDCTL_BIN" --command-timeout="$ADVERTISED_ENDPOINT_TIMEOUT" \
+    --endpoints="$advertised_client_url" endpoint health >/dev/null; then
+    echo "disposable KubeBrain make-mirror advertised client URL is unreachable: $advertised_client_url" >&2
+    echo "publish client URLs reachable by the make-mirror differential runner before destructive approval" >&2
+    exit 1
+  fi
+done
 
 assert_clean_endpoint() {
   local phase="$1"

@@ -12,9 +12,17 @@ func TestMakeMirrorDifferentialRunnerFailsClosed(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(script), "ALLOW_DESTRUCTIVE_MIRROR_DIFFERENTIAL")
 	require.Contains(t, string(script), "auth revision must be 1")
+	require.Contains(t, string(script), "advertised client URL is unreachable")
 	require.Contains(t, string(script), "assert_clean_endpoint postflight")
 	require.Contains(t, string(script), "TestMakeMirrorAuthenticatedBidirectionalDifferential")
 	require.Contains(t, string(script), "TestMakeMirrorRevisionAndCompactionDifferential")
+}
+
+func TestMakeMirrorDifferentialRunnerRejectsUnreachableAdvertisedClientURLBeforeMutation(t *testing.T) {
+	requireRunnerRejectsUnreachableAdvertisedClientURLBeforeMutation(t,
+		"run-make-mirror-differential.sh",
+		"KUBEBRAIN_MIRROR_ETCD_ENDPOINT",
+		"make-mirror advertised client URL is unreachable")
 }
 
 func TestMakeMirrorDifferentialRunnerRejectsInvalidApprovalBeforeDependencies(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +42,54 @@ func runCompatScriptCommand(t *testing.T, script string, env []string) ([]byte, 
 		require.Failf(t, "compat script timed out", "script=%s timeout=%s output:\n%s", script, compatScriptCommandTimeout, string(output))
 	}
 	return output, err
+}
+
+func requireRunnerRejectsUnreachableAdvertisedClientURLBeforeMutation(
+	t *testing.T,
+	script, endpointEnv, expectedMessage string,
+) {
+	t.Helper()
+	dir := t.TempDir()
+	fakeEtcd := writeFakeReferenceEtcd(t, dir)
+	fakeEtcdctl := filepath.Join(dir, "etcdctl")
+	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'Git SHA: d947b2086\n'
+  exit 0
+fi
+if [[ "$*" == *"member list -w json"* ]]; then
+  printf '%s\n' '{"members":[{"name":"kubebrain-0","clientURLs":["http://internal.invalid:3379"]}]}'
+  exit 0
+fi
+if [[ "$*" == *"--endpoints=http://internal.invalid:3379"* ]]; then
+  exit 1
+fi
+if [[ "$*" == *"auth status"* || "$*" == *"endpoint status"* || "$*" == *"get '' --from-key"* || "$*" == *"user list"* || "$*" == *"role list"* || "$*" == *"lease list"* || "$*" == *"alarm list"* ]]; then
+  echo "mutation-adjacent preflight reached" >&2
+  exit 9
+fi
+if [[ "$*" == *"endpoint health"* ]]; then
+  exit 0
+fi
+exit 1
+`), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "curl"), []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
+
+	output, err := runCompatScriptCommand(t, script, []string{
+		"PATH=" + dir + ":" + os.Getenv("PATH"),
+		endpointEnv + "=127.0.0.1:24379",
+		"ALLOW_DESTRUCTIVE_AUTOMATIC_QUOTA=true",
+		"ALLOW_DESTRUCTIVE_RANGESTREAM_COMPACTION=true",
+		"ALLOW_DESTRUCTIVE_MIRROR_DIFFERENTIAL=true",
+		"REFERENCE_ETCD_BIN=" + fakeEtcd,
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=d947b2086",
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), expectedMessage)
+	require.Contains(t, string(output), "http://internal.invalid:3379")
+	require.NotContains(t, string(output), "mutation-adjacent preflight reached")
 }
 
 func runCompatShellCommandContext(t *testing.T, ctx context.Context, command string) ([]byte, error) {

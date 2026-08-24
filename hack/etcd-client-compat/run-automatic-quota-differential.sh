@@ -13,6 +13,7 @@ ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 REFERENCE_CLIENT_URL="${REFERENCE_AUTOMATIC_QUOTA_CLIENT_URL:-http://127.0.0.1:12379}"
 REFERENCE_PEER_URL="${REFERENCE_AUTOMATIC_QUOTA_PEER_URL:-http://127.0.0.1:12380}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-3m}"
+ADVERTISED_ENDPOINT_TIMEOUT="${ADVERTISED_ENDPOINT_TIMEOUT:-5s}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -82,6 +83,27 @@ if ! "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_QUOTA_ENDPOINT" endpoint health; the
   echo "disposable KubeBrain automatic-quota endpoint health preflight failed: $KUBEBRAIN_QUOTA_ENDPOINT" >&2
   exit 1
 fi
+
+if ! member_list_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_QUOTA_ENDPOINT" member list -w json)"; then
+  echo "disposable KubeBrain automatic-quota MemberList preflight failed: $KUBEBRAIN_QUOTA_ENDPOINT" >&2
+  exit 1
+fi
+mapfile -t advertised_client_urls < <(
+  jq -r '[.members[] | select((.name // "") != "" and ((.isLearner // false) | not)) | .clientURLs[]?] | unique[]' \
+    <<<"$member_list_json"
+)
+if [[ "${#advertised_client_urls[@]}" -eq 0 ]]; then
+  echo "disposable KubeBrain automatic-quota MemberList preflight returned no advertised client URLs" >&2
+  exit 1
+fi
+for advertised_client_url in "${advertised_client_urls[@]}"; do
+  if ! "$ETCDCTL_BIN" --command-timeout="$ADVERTISED_ENDPOINT_TIMEOUT" \
+    --endpoints="$advertised_client_url" endpoint health >/dev/null; then
+    echo "disposable KubeBrain automatic-quota advertised client URL is unreachable: $advertised_client_url" >&2
+    echo "publish client URLs reachable by the automatic-quota differential runner before destructive approval" >&2
+    exit 1
+  fi
+done
 
 assert_clean_endpoint() {
   local phase="$1"

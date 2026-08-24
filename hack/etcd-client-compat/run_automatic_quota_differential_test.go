@@ -14,8 +14,16 @@ func TestAutomaticQuotaDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "data revision must be 1")
 	require.Contains(t, string(script), "auth revision must be 1")
 	require.Contains(t, string(script), "does not report configured quota")
+	require.Contains(t, string(script), "advertised client URL is unreachable")
 	require.Contains(t, string(script), "assert_clean_endpoint postflight")
 	require.Contains(t, string(script), "TestAutomaticQuotaAlarmDifferentialAgainstReferenceEtcd")
+}
+
+func TestAutomaticQuotaDifferentialRunnerRejectsUnreachableAdvertisedClientURLBeforeMutation(t *testing.T) {
+	requireRunnerRejectsUnreachableAdvertisedClientURLBeforeMutation(t,
+		"run-automatic-quota-differential.sh",
+		"KUBEBRAIN_AUTOMATIC_QUOTA_ENDPOINT",
+		"automatic-quota advertised client URL is unreachable")
 }
 
 func TestAutomaticQuotaDifferentialRunnerRejectsInvalidApprovalBeforeDependencies(t *testing.T) {

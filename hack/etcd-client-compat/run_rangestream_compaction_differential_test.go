@@ -13,9 +13,17 @@ func TestRangeStreamCompactionDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "ALLOW_DESTRUCTIVE_RANGESTREAM_COMPACTION")
 	require.Contains(t, string(script), "data revision must be 1")
 	require.Contains(t, string(script), "auth revision must be 1")
+	require.Contains(t, string(script), "advertised client URL is unreachable")
 	require.Contains(t, string(script), "assert_clean_endpoint postflight")
 	require.Contains(t, string(script), "-run '^TestRangeStream(Partial|Client)CompactionDifferential$'")
 	require.Contains(t, string(script), "GO_TEST_RACE")
+}
+
+func TestRangeStreamCompactionDifferentialRunnerRejectsUnreachableAdvertisedClientURLBeforeMutation(t *testing.T) {
+	requireRunnerRejectsUnreachableAdvertisedClientURLBeforeMutation(t,
+		"run-rangestream-compaction-differential.sh",
+		"KUBEBRAIN_RANGESTREAM_COMPACTION_ENDPOINT",
+		"RangeStream advertised client URL is unreachable")
 }
 
 func TestRangeStreamCompactionDifferentialRunnerRejectsInvalidRaceBeforeDependencies(t *testing.T) {

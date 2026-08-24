@@ -10,6 +10,7 @@ REFERENCE_CLIENT_URL="${REFERENCE_RANGESTREAM_CLIENT_URL:-http://127.0.0.1:12379
 REFERENCE_PEER_URL="${REFERENCE_RANGESTREAM_PEER_URL:-http://127.0.0.1:12380}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-3m}"
 GO_TEST_RACE="${GO_TEST_RACE:-false}"
+ADVERTISED_ENDPOINT_TIMEOUT="${ADVERTISED_ENDPOINT_TIMEOUT:-5s}"
 
 case "$GO_TEST_RACE" in
   true) race_args=(-race) ;;
@@ -60,6 +61,27 @@ if ! "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_COMPACTION_ENDPOINT" endpoint health
   echo "disposable KubeBrain RangeStream endpoint health preflight failed: $KUBEBRAIN_COMPACTION_ENDPOINT" >&2
   exit 1
 fi
+
+if ! member_list_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_COMPACTION_ENDPOINT" member list -w json)"; then
+  echo "disposable KubeBrain RangeStream MemberList preflight failed: $KUBEBRAIN_COMPACTION_ENDPOINT" >&2
+  exit 1
+fi
+mapfile -t advertised_client_urls < <(
+  jq -r '[.members[] | select((.name // "") != "" and ((.isLearner // false) | not)) | .clientURLs[]?] | unique[]' \
+    <<<"$member_list_json"
+)
+if [[ "${#advertised_client_urls[@]}" -eq 0 ]]; then
+  echo "disposable KubeBrain RangeStream MemberList preflight returned no advertised client URLs" >&2
+  exit 1
+fi
+for advertised_client_url in "${advertised_client_urls[@]}"; do
+  if ! "$ETCDCTL_BIN" --command-timeout="$ADVERTISED_ENDPOINT_TIMEOUT" \
+    --endpoints="$advertised_client_url" endpoint health >/dev/null; then
+    echo "disposable KubeBrain RangeStream advertised client URL is unreachable: $advertised_client_url" >&2
+    echo "publish client URLs reachable by the RangeStream differential runner before destructive approval" >&2
+    exit 1
+  fi
+done
 
 assert_clean_endpoint() {
   local phase="$1"
