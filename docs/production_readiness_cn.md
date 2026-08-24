@@ -7422,6 +7422,32 @@ compat 全组 Go 6.139 秒、端到端 7.456 秒；611 项 production inventory 
 142.017/372.795/251.864/392.685 秒，全部通过。该门禁能发现可观察控制对象与 key 泄漏，但不能验证旧 token、
 compacted auth 历史或 TiKV 物理数据已被擦除；需要严格销毁租户时仍必须使用独立 keyspace 生命周期与后端回收流程。
 
+### A5463：disposable runner 失败后 postflight 可达性
+
+继续横向审计发现五条已有 postflight 的 runner 实际只在 GREEN 路径执行：automatic-quota、make-mirror、RangeStream
+compaction、alarm-restart 和 cold-header recovery 都在 `set -e` 下直接运行 Go 子进程，测试非零会先退出脚本。提交
+`c8e8551e` 统一先捕获 `test_status`，执行各自既有的 key/prefix、auth、lease、alarm、health 等 postflight，再传播
+原测试退出码；Auth/JWT、默认 differential、direct-replica、replica-restart 等五条已正确实现的 runner 同时纳入统一
+静态门禁，当前共 10 条 postflight runner 都必须保持“捕获失败 → postflight → 传播失败”的顺序。make-mirror 与
+RangeStream 的完整状态检查还补入此前遗漏的 alarm 集合。
+
+行为回归启动可健康探测的 fake reference、返回干净 target 状态，并令 fake `go test` 退出 23；RangeStream runner
+仍执行第二轮 `auth status` 等 postflight，最后报告并返回 23，证明不是仅靠脚本文本命中。当前代码随后在全新
+`a5463-rangestream-alarm` keyspace 上执行两项真实 partial/client compaction differential，Go 8.746 秒、端到端
+11.744 秒通过，新增 alarm postflight 同时通过；reference provenance 固定
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`。compat 全组 Go 7.095 秒、端到端 13.170 秒通过。
+
+首次切换辅助 JWT keyspace 时曾错误使用固定 args 索引 11，把 `--max-delete-range-keys=1024` 替换成第二个
+`--keyspace`；后一个 keyspace 参数虽使前轮 JWT 测试使用了预期存储，但 StatefulSet 配置已不规范。保护检查发现后，
+在继续本轮真实验证前已恢复 max-delete 参数、把索引 9 精确替换为唯一 keyspace，并用 JSON 断言固定“恰好一个
+`--keyspace` 且 max-delete 参数存在”；随后又按同一断言安全切换到最终 keyspace。未删除任何旧 TiKV keyspace。
+
+611 项 production inventory 仍为 140/171/154/146；代码提交后四片 Go 时间
+118.952/346.654/223.807/358.053 秒，端到端时间 124.974/352.648/229.869/364.075 秒，全部通过。最终
+Auth/JWT/main 三套数据面均 auth disabled，key/user/role/lease/alarm 全空；相关 9 Pod 全 Ready、restartCount 0，
+JWT args 唯一性与 digest 一致性均再次验证。该改动确保失败后执行审计，不保证测试自身 cleanup 一定成功；若 postflight
+发现污染，它会以守恒错误覆盖原测试错误，因此日志仍需同时保留原 Go 输出用于根因判断。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
