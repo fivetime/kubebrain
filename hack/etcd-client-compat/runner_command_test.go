@@ -1672,6 +1672,112 @@ func TestEveryGoTestRunnerHasSafetyContract(t *testing.T) {
 	}
 }
 
+func TestEverySharedClusterMutatingGoTestScriptHasSafetyContract(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	manifestPath := filepath.Join(repoRoot, "hack", "dev", "go-test-cluster-mutation-contracts.txt")
+	data, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+
+	contracts := make(map[string]runnerSafetyContract)
+	for lineNumber, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		require.Len(t, fields, 3, "cluster mutation manifest line %d", lineNumber+1)
+		script, approval, stateContract := fields[0], fields[1], fields[2]
+		require.Regexp(t, `^hack/[a-z0-9/-]+\.sh$`, script)
+		require.Regexp(t, `^ALLOW_DESTRUCTIVE_[A-Z0-9_]+$`, approval)
+		require.Contains(t, map[string]struct{}{
+			"baseline-prefix-control": {}, "fault-cleanup": {}, "host-fault-cleanup": {},
+		}, stateContract, "unknown state contract for %s", script)
+		require.NotContains(t, contracts, script, "duplicate cluster mutation contract for %s", script)
+		contracts[script] = runnerSafetyContract{
+			approvalVariables: []string{approval},
+			stateContract:     stateContract,
+		}
+	}
+	require.NotEmpty(t, contracts)
+
+	discovered := make(map[string]struct{})
+	err = filepath.WalkDir(filepath.Join(repoRoot, "hack"), func(path string, entry os.DirEntry, walkErr error) error {
+		require.NoError(t, walkErr)
+		if entry.IsDir() || filepath.Ext(path) != ".sh" {
+			return nil
+		}
+		relativePath, relativeErr := filepath.Rel(repoRoot, path)
+		require.NoError(t, relativeErr)
+		relativePath = filepath.ToSlash(relativePath)
+		if strings.HasPrefix(relativePath, "hack/etcd-client-compat/") {
+			return nil // Covered bidirectionally by runner-safety-contracts.txt.
+		}
+		scriptData, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		content := string(scriptData)
+		if !strings.Contains(content, "go test") {
+			return nil
+		}
+		// Direct Pod deletion, network fault injection, or an existing destructive
+		// approval marks a Go-test wrapper as a shared-cluster mutation entrypoint.
+		mutatesCluster := strings.Contains(content, " delete pod") ||
+			strings.Contains(content, "iptables -w") ||
+			strings.Contains(content, "tc qdisc") ||
+			strings.Contains(content, "ALLOW_DESTRUCTIVE_")
+		if !mutatesCluster {
+			return nil
+		}
+		script := relativePath
+		discovered[script] = struct{}{}
+		contract, ok := contracts[script]
+		require.True(t, ok, "%s mutates a shared cluster while running Go tests but has no safety contract", script)
+		approval := contract.approvalVariables[0]
+		require.Contains(t, content, approval+`="${`+approval+`:-false}"`, "%s must default %s to false", script, approval)
+		require.GreaterOrEqual(t, strings.Count(content, approval), 3,
+			"%s must validate and enforce %s in addition to declaring it", script, approval)
+		return nil
+	})
+	require.NoError(t, err)
+	for script := range contracts {
+		require.Contains(t, discovered, script, "stale cluster mutation safety contract for %s", script)
+	}
+}
+
+func TestSharedClusterMutatingGoTestScriptsFailClosedBeforeToolDiscovery(t *testing.T) {
+	for script, approval := range map[string]string{
+		"backend-quorum-fault-smoke.sh":   "ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT",
+		"lease-renewal-failover-smoke.sh": "ALLOW_DESTRUCTIVE_LEASE_RENEWAL_FAILOVER",
+	} {
+		t.Run(script, func(t *testing.T) {
+			path := filepath.Join("..", "dev", script)
+			output, err := runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{"PATH=/nonexistent"})
+			require.Error(t, err)
+			require.Contains(t, string(output), approval+"=true")
+			require.NotContains(t, string(output), "missing required command")
+
+			output, err = runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{
+				"PATH=/nonexistent",
+				approval + "=invalid",
+			})
+			require.Error(t, err)
+			require.Contains(t, string(output), approval+" must be true or false")
+			require.NotContains(t, string(output), "missing required command")
+		})
+	}
+
+	t.Run("native-pitr-host-network-fault", func(t *testing.T) {
+		path := filepath.Join("..", "backup", "run-native-pitr-full-restore-integration.sh")
+		output, err := runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{
+			"PATH=/nonexistent",
+			"KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3",
+			"KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-pd-network-quorum-loss-resume",
+		})
+		require.Error(t, err)
+		require.Contains(t, string(output), "ALLOW_DESTRUCTIVE_HOST_NETWORK_FAULT=true")
+		require.NotContains(t, string(output), "requires root")
+	})
+}
+
 func TestCompatSuiteRunnerRejectsReferenceDifferentialOptIns(t *testing.T) {
 	for _, envVar := range []string{
 		"REFERENCE_ETCD_ENDPOINT",

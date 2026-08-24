@@ -111,6 +111,7 @@ output="$(env \
   PARTITION_DROP_PERCENT=100 \
   PARTITION_HOLD_SECONDS=3 \
   PARTITION_FAILOVER_TIMEOUT_SECONDS=30 \
+  ALLOW_DESTRUCTIVE_LEASE_RENEWAL_FAILOVER=true \
   "$ROOT_DIR/hack/dev/lease-renewal-failover-smoke.sh" --partition-current-leader)"
 printf '%s\n' "$output"
 if [[ "$output" != *"node=$WORKER_NODE"* ]]; then

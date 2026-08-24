@@ -1,0 +1,5 @@
+# repository-relative script approval environment variable state contract
+hack/backup/run-native-pitr-full-restore-integration.sh ALLOW_DESTRUCTIVE_HOST_NETWORK_FAULT host-fault-cleanup
+hack/dev/backend-quorum-fault-smoke.sh ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT fault-cleanup
+hack/dev/lease-renewal-failover-smoke.sh ALLOW_DESTRUCTIVE_LEASE_RENEWAL_FAILOVER fault-cleanup
+hack/dev/restart-persistence-smoke.sh ALLOW_DESTRUCTIVE_FULL_RESTART baseline-prefix-control

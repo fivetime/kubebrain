@@ -12,6 +12,7 @@ RECOVERY_SETTLE_SECONDS="${RECOVERY_SETTLE_SECONDS:-10}"
 BACKEND_FAULT_MODE="${BACKEND_FAULT_MODE:-pod-replacement}"
 KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-kubebrain-dev-control-plane}"
 ETCDUTL_BINARY="${ETCDUTL_BINARY:-/root/etcd/bin/etcdutl}"
+ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT="${ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT:-false}"
 PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-180}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
 PD_QUORUM_PARTITION_HOLD_SECONDS="${PD_QUORUM_PARTITION_HOLD_SECONDS:-15}"
@@ -43,6 +44,16 @@ dual_partition_node_containers=()
 backend_netem_component=""
 backend_netem_nodes=()
 backend_netem_pids=()
+
+if [[ "$ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT" != true && "$ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT" != false ]]; then
+  echo "ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT must be true or false" >&2
+  exit 2
+fi
+if [[ "$ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT" != true ]]; then
+  echo "refusing shared-cluster backend fault injection without ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT=true" >&2
+  exit 1
+fi
+export ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT
 
 if ! [[ "$RECOVERY_SETTLE_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "RECOVERY_SETTLE_SECONDS must be a non-negative integer" >&2

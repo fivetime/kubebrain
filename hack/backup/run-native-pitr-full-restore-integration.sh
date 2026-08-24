@@ -9,6 +9,7 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
   exit 2
 fi
 fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
+ALLOW_DESTRUCTIVE_HOST_NETWORK_FAULT="${ALLOW_DESTRUCTIVE_HOST_NETWORK_FAULT:-false}"
 test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
 encryption=${KUBEBRAIN_NATIVE_PITR_ENCRYPTION:-plaintext}
 if [[ "$encryption" != plaintext && "$encryption" != aes256-ctr ]]; then
@@ -41,6 +42,14 @@ fi
 if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
   echo "$fault_injection requires KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3" >&2
   exit 2
+fi
+if [[ "$ALLOW_DESTRUCTIVE_HOST_NETWORK_FAULT" != true && "$ALLOW_DESTRUCTIVE_HOST_NETWORK_FAULT" != false ]]; then
+  echo "ALLOW_DESTRUCTIVE_HOST_NETWORK_FAULT must be true or false" >&2
+  exit 2
+fi
+if [[ ("$fault_injection" == target-pd-network-quorum-loss-resume || "$fault_injection" == target-pd-network-quorum-loss-during-br-resume || "$fault_injection" == target-kubebrain-pd-network-isolation-resume) && "$ALLOW_DESTRUCTIVE_HOST_NETWORK_FAULT" != true ]]; then
+  echo "refusing host OUTPUT-chain fault injection without ALLOW_DESTRUCTIVE_HOST_NETWORK_FAULT=true" >&2
+  exit 1
 fi
 etcdutl_bin=""
 if [[ "$fault_injection" == target-two-pd-enospc-resume || "$test_name" == TestNativeLegacyLeaseHistorySnapshotRealCluster ]]; then
