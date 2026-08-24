@@ -2765,9 +2765,6 @@ func TestSlowWatchCancelIsExcludedFromStreamProgress(t *testing.T) {
 	require.False(t, allEligible)
 	_, active := w.minSyncedRevision()
 	require.False(t, active)
-	_, synced := w.waitStreamProgressRevision(context.Background(), 11, time.Millisecond)
-	require.False(t, synced, "a closing-only stream must not emit WatchId=-1 progress")
-
 	w.Lock()
 	w.watches[8] = &watch{syncedRev: 15}
 	w.Unlock()
@@ -3698,20 +3695,16 @@ func TestMinSyncedRevisionReportsSlowestWatch(t *testing.T) {
 	require.Equal(t, uint64(3), rev, "must report the slowest watch, never a faster one")
 }
 
-func TestWaitStreamProgressRevisionRequiresEveryWatch(t *testing.T) {
-	w := &watcher{watches: map[int64]*watch{
-		1: {syncedRev: 9},
-		2: {syncedRev: 7},
-	}}
-	rev, ok := w.waitStreamProgressRevision(context.Background(), 7, time.Millisecond)
+func TestStreamProgressRevisionRequiresImmediateFullSynchronization(t *testing.T) {
+	revision, ok := streamProgressRevision(map[int64]uint64{1: 9, 2: 7}, true, 7)
 	require.True(t, ok)
-	require.Equal(t, uint64(7), rev)
+	require.Equal(t, uint64(7), revision)
 
-	_, ok = w.waitStreamProgressRevision(context.Background(), 8, time.Millisecond)
-	require.False(t, ok, "a stream-wide response must wait for the slowest watch")
-
-	empty := &watcher{watches: map[int64]*watch{}}
-	_, ok = empty.waitStreamProgressRevision(context.Background(), 1, time.Millisecond)
+	_, ok = streamProgressRevision(map[int64]uint64{1: 9, 2: 7}, true, 8)
+	require.False(t, ok, "a stream-wide response must not pass the slowest watch")
+	_, ok = streamProgressRevision(map[int64]uint64{1: 9}, false, 7)
+	require.False(t, ok, "an ineligible watch must suppress the stream-wide response")
+	_, ok = streamProgressRevision(nil, false, 1)
 	require.False(t, ok, "etcd emits no progress response without an active watch")
 }
 
@@ -3888,9 +3881,6 @@ func TestFutureRevisionWatchSuppressesProgressUntilDelivered(t *testing.T) {
 	snapshot, allEligible := w.progressSyncedRevSnapshot()
 	require.False(t, allEligible)
 	require.Empty(t, snapshot)
-	_, synced := w.waitStreamProgressRevision(context.Background(), 5, 10*time.Millisecond)
-	require.False(t, synced, "stream progress must not bypass a future-revision watch")
-
 	w.wg.Add(1)
 	done := make(chan struct{})
 	go func() {
@@ -4141,6 +4131,12 @@ type blockedAllSendWatchServer struct {
 	release chan struct{}
 }
 
+type thirdRequestWatchServer struct {
+	*controllableWatchServer
+	recvCount atomic.Int64
+	thirdRead chan struct{}
+}
+
 type contextIgnoringWatchServer struct {
 	*fakeWatchServer
 	entered chan struct{}
@@ -4187,6 +4183,14 @@ func (s *blockedAllSendWatchServer) Send(*etcdserverpb.WatchResponse) error {
 	case <-s.ctx.Done():
 		return s.ctx.Err()
 	}
+}
+
+func (s *thirdRequestWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
+	request, err := s.controllableWatchServer.Recv()
+	if err == nil && s.recvCount.Add(1) == 3 {
+		close(s.thirdRead)
+	}
+	return request, err
 }
 
 func goroutineStackOccurrences(needle string) int {
@@ -4645,6 +4649,45 @@ func TestFollowerCancelBacklogPrecedesLaterDuplicateControl(t *testing.T) {
 		"a later duplicate rejection must not overtake an already queued cancellation")
 	require.Equal(t, int64(-1), responses[2].WatchId)
 	require.Equal(t, int64(-1), responses[3].WatchId)
+}
+
+func TestUnsyncedProgressRequestDoesNotBlockSameStreamCancel(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &thirdRequestWatchServer{
+		controllableWatchServer: &controllableWatchServer{
+			ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 3),
+		},
+		thirdRead: make(chan struct{}),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/future-progress"), WatchId: 801, StartRevision: 100,
+		},
+	}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
+		ProgressRequest: &etcdserverpb.WatchProgressRequest{},
+	}}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+		CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 801},
+	}}
+	select {
+	case <-stream.thirdRead:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("an unsynchronized RequestProgress blocked the same-stream Cancel")
+	}
+	require.Eventually(t, func() bool {
+		responses := stream.snapshot()
+		return len(responses) == 2 && responses[1].Canceled && responses[1].WatchId == 801
+	}, time.Second, time.Millisecond)
+
+	cancel()
+	require.Error(t, <-done)
 }
 
 func TestWatchContextCancellationDoesNotWaitForBlockedRecv(t *testing.T) {

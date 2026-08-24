@@ -49,9 +49,10 @@ var (
 	errWatchInactive = errors.New("watch is no longer active")
 )
 
-const onDemandProgressSyncWait = 100 * time.Millisecond
-
-const watchCompactionProbeTimeout = 250 * time.Millisecond
+const (
+	watchCompactionProbeTimeout = 250 * time.Millisecond
+	progressRequestSyncWait     = 100 * time.Millisecond
+)
 
 func loggedWatchKey(key []byte) string {
 	return util.LoggedKey(key)
@@ -92,6 +93,11 @@ type watchReceiveResult struct {
 	err     error
 }
 
+type watchProgressRequest struct {
+	target      uint64
+	generations map[int64]*watch
+}
+
 // watcher correspond to one stream, one watcher has many watches
 type watcher struct {
 	sync.Mutex
@@ -101,9 +107,10 @@ type watcher struct {
 	directControlCh      chan watchControlResponse
 	directControlBarrier *watchControlBarrier
 
-	wg        sync.WaitGroup
-	controlWG sync.WaitGroup
-	backend   BackendShim
+	wg         sync.WaitGroup
+	controlWG  sync.WaitGroup
+	progressWG sync.WaitGroup
+	backend    BackendShim
 	// stream server
 	watchServer etcdserverpb.Watch_WatchServer
 	// gRPC server
@@ -118,7 +125,8 @@ type watcher struct {
 	// from-now proxy watches that subscribe at R+1.
 	controlRev uint64
 
-	controlCh chan watchControlResponse
+	controlCh  chan watchControlResponse
+	progressCh chan watchProgressRequest
 
 	metricCli metrics.Metrics
 
@@ -384,6 +392,70 @@ func (w *watcher) progressSyncedRevSnapshot() (snapshot map[int64]uint64, allEli
 	return snapshot, allEligible
 }
 
+func streamProgressRevision(snapshot map[int64]uint64, allEligible bool, target uint64) (uint64, bool) {
+	if !allEligible || target == 0 {
+		return 0, false
+	}
+	minRevision := uint64(0)
+	for _, revision := range snapshot {
+		if minRevision == 0 || revision < minRevision {
+			minRevision = revision
+		}
+		if revision < target {
+			return 0, false
+		}
+	}
+	return minRevision, minRevision > 0
+}
+
+func (w *watcher) captureProgressRequest(target uint64) watchProgressRequest {
+	w.Lock()
+	defer w.Unlock()
+	generations := make(map[int64]*watch, len(w.watches))
+	for id, generation := range w.watches {
+		if !generation.closing.Load() {
+			generations[id] = generation
+		}
+	}
+	return watchProgressRequest{target: target, generations: generations}
+}
+
+func (w *watcher) progressRequestRevision(request watchProgressRequest) (uint64, bool) {
+	w.Lock()
+	defer w.Unlock()
+	snapshot := make(map[int64]uint64, len(request.generations))
+	for id, generation := range request.generations {
+		if current := w.watches[id]; current != generation || generation.closing.Load() {
+			return 0, false
+		}
+		revision := atomic.LoadUint64(&generation.syncedRev)
+		if generation.progressStartRevision > revision {
+			return 0, false
+		}
+		snapshot[id] = revision
+	}
+	return streamProgressRevision(snapshot, len(snapshot) > 0, request.target)
+}
+
+func (w *watcher) waitProgressRequest(request watchProgressRequest) (uint64, bool) {
+	deadline := time.NewTimer(progressRequestSyncWait)
+	defer deadline.Stop()
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if revision, synced := w.progressRequestRevision(request); synced {
+			return revision, true
+		}
+		select {
+		case <-w.watchServer.Context().Done():
+			return 0, false
+		case <-deadline.C:
+			return 0, false
+		case <-ticker.C:
+		}
+	}
+}
+
 // minSyncedRevision returns the minimum revision delivered across all active
 // watches on the stream, and whether any watch is active.
 func (w *watcher) minSyncedRevision() (uint64, bool) {
@@ -404,43 +476,6 @@ func (w *watcher) minSyncedRevision() (uint64, bool) {
 	return minRev, found
 }
 
-// waitStreamProgressRevision returns the minimum delivered revision once every
-// active watch has caught up through target. A stream-wide WatchId=-1 progress
-// response is safe only at that floor; otherwise clientv3 would broadcast a
-// revision that a slower watch has not delivered yet.
-func (w *watcher) waitStreamProgressRevision(ctx context.Context, target uint64, timeout time.Duration) (uint64, bool) {
-	if target == 0 {
-		return 0, false
-	}
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(2 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		snapshot, allEligible := w.progressSyncedRevSnapshot()
-		var minRev uint64
-		allSynced := allEligible
-		for _, rev := range snapshot {
-			if minRev == 0 || rev < minRev {
-				minRev = rev
-			}
-			if rev < target {
-				allSynced = false
-			}
-		}
-		if allSynced {
-			return minRev, true
-		}
-		select {
-		case <-ctx.Done():
-			return 0, false
-		case <-deadline.C:
-			return 0, false
-		case <-ticker.C:
-		}
-	}
-}
-
 func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 	s.activeWatchStreams.Add(1)
 	w := &watcher{
@@ -455,6 +490,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 	w.controlWG.Add(1)
 	go w.sendControls()
 	w.startDirectControls()
+	w.startProgressRequests()
 	receiveNext := make(chan struct{})
 	receiveResults := make(chan watchReceiveResult)
 	receiveStop := make(chan struct{})
@@ -662,42 +698,17 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 		} else if msg.GetProgressRequest() != nil {
 			s.metricCli.EmitCounter("watch.progress.request", 1)
 			targetRevision := s.backend.GetCurrentRevision()
-			// Kick one immediate marker fan-out so the watermark converges NOW
-			// rather than on the next ticker beat. The snapshot answered below is
-			// still the current (possibly one-interval-stale) value — markers ride
-			// the FIFO subscriber channels — but the kicked marker advances
-			// syncedRev for the follow-up RequestProgress ~100ms later, keeping
-			// k8s 1.37 ConsistentListFromCache convergence at poll granularity
-			// instead of ticker granularity (and off its 3s LIST-fallback cliff).
+			// TiKV-backed progress markers traverse each subscriber FIFO instead of
+			// updating a local MVCC watcher set synchronously as upstream does. Freeze
+			// the request's generations now, kick a marker, and let the bounded worker
+			// wait for their watermarks without blocking later Cancel/Create requests.
 			s.backend.KickWatchProgress()
-			snapshot, allEligible := w.progressSyncedRevSnapshot()
-			if allEligible && len(snapshot) == 1 {
-				var singleRev uint64
-				for _, rev := range snapshot {
-					singleRev = rev
-				}
-				if singleRev > 0 && singleRev >= targetRevision {
-					if err := w.SendControl(&etcdserverpb.WatchResponse{
-						Header: txnHeader(int64(singleRev)), WatchId: -1,
-					}); err != nil {
-						klog.ErrorS(err, "watch send stream progress response err", "watcher", w.id)
-						return err
-					}
-					continue
-				}
-			}
-			if rev, synced := w.waitStreamProgressRevision(ws.Context(), targetRevision, onDemandProgressSyncWait); synced {
-				if err := w.SendControl(&etcdserverpb.WatchResponse{
-					Header: txnHeader(int64(rev)), WatchId: -1,
-				}); err != nil {
-					klog.ErrorS(err, "watch send stream progress response err", "watcher", w.id)
-					return err
-				}
-				continue
+			if !w.queueProgressRequest(w.captureProgressRequest(targetRevision)) {
+				return ws.Context().Err()
 			}
 			// Match etcd's progressAll/progressIfSync contract: RequestProgress
-			// is stream-wide. If any active watch has not caught up through the
-			// captured target, emit nothing; a later request may return one
+			// is stream-wide. If any captured watch has not caught up through the
+			// target before the bounded wait expires, emit nothing; a later request may return one
 			// WatchId=-1 response after every watch is synchronized. Per-watch
 			// header-only fallbacks are not protocol-compatible because clientv3
 			// treats those frames as notifications requested by that watch.
@@ -1283,6 +1294,34 @@ func (w *watcher) closeDirectControls() {
 	}
 }
 
+func (w *watcher) startProgressRequests() {
+	w.progressCh = make(chan watchProgressRequest, watchControlBuffer)
+	w.progressWG.Add(1)
+	go w.sendProgressRequests()
+}
+
+func (w *watcher) queueProgressRequest(request watchProgressRequest) bool {
+	select {
+	case w.progressCh <- request:
+		return true
+	case <-w.watchServer.Context().Done():
+		return false
+	}
+}
+
+func (w *watcher) sendProgressRequests() {
+	defer w.progressWG.Done()
+	for request := range w.progressCh {
+		if revision, synced := w.waitProgressRequest(request); synced {
+			if err := w.SendControl(&etcdserverpb.WatchResponse{
+				Header: txnHeader(int64(revision)), WatchId: -1,
+			}); err != nil && !isExpectedWatchCloseError(err) {
+				klog.ErrorS(err, "watch send stream progress response err", "watcher", w.id)
+			}
+		}
+	}
+}
+
 func (w *watcher) Close() {
 	w.metricCli.EmitCounter("watch.close", 1)
 	w.Lock()
@@ -1301,6 +1340,10 @@ func (w *watcher) Close() {
 		w.grpcServer.releaseWatch()
 	}
 	w.wg.Wait()
+	if w.progressCh != nil {
+		close(w.progressCh)
+		w.progressWG.Wait()
+	}
 	if w.controlCh != nil {
 		close(w.controlCh)
 	}
