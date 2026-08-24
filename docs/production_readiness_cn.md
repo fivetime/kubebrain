@@ -7659,6 +7659,29 @@ apiserver 启动前拒绝，且日志无 delete。真实 main 数据面使用独
 独立 destructive/context 门禁和具备目标拓扑的 live 演练。lease 差集回收同样只适用于演练窗口无其他租户并发创建
 lease 的受控 endpoint。
 
+### A5473：apiserver rollout 的 context、拓扑与 destructive 门禁
+
+完成 watch-soak 自身守恒后，其 rollout wrapper 仍会用隐式 current context 先 scale 共享 KubeBrain Deployment，再启动
+watch 并执行 rollout restart；既无 destructive approval，也未证明提取 kube-apiserver/PKI 的 Docker Kind cluster 与
+Kubernetes target 是同一集群。提交 `c7694f7a` 要求显式 `KUBE_CONTEXT`、`CLUSTER_NAME` 和默认 false 的
+`ALLOW_DESTRUCTIVE_APISERVER_ROLLOUT=true`，非法/缺失输入在工具发现前 fail closed。context 必须精确解析；kind
+context 的 suffix 必须等于 cluster name，`${CLUSTER_NAME}-control-plane` 容器的 Kind label 也必须匹配，随后所有资源
+操作统一使用固定 `kubectl --context` 数组。
+
+runner 不再 scale 或改变 desired replicas。preflight 要求目标 Deployment 已存在且 spec/Ready 均精确为
+`REPLICAS/REPLICAS`，否则在启动 standalone watch-soak 和 rollout mutation 前拒绝；成功后还要求 Deployment UID 与
+preflight 相同，防止把删除重建误当成滚动更新。`indirect-cluster-mutation-contracts.txt` 现同时登记默认 HA 与可选
+apiserver rollout 两条 verify→callee destructive 关系，并锁定各自 run flag、默认值、approval、context wrapper。
+行为负测证明缺 context 或缺授权均先于工具发现拒绝。
+
+当前 `kubebrain-dev` 只有 3/3 Ready StatefulSet，没有同名 Deployment，因此没有为了制造 GREEN 改变生产形态。真实
+显式 context/cluster/approval 负例精确返回
+`apiserver rollout requires an existing 3/3 Ready Deployment ... got missing`；StatefulSet UID、三 Pod UID/restartCount、
+apiserver prefix=0 与 lease 集合前后完全相等。compat 全组 Go 6.716 秒。611 项 inventory 仍为
+140/171/154/146；代码提交后四片 Go 时间 132.454/361.740/229.731/371.955 秒，端到端时间
+138.449/367.702/235.776/377.952 秒，全部通过。三副本 Deployment rollout、watch 连续性与最终 UID/Ready 守恒仍需
+在真实 Deployment 拓扑中执行后才能取得 live GREEN；本次只证明错误拓扑不会产生 mutation。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
