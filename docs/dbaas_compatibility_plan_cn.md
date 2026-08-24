@@ -61295,6 +61295,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   124.686/347.611/222.204/357.156 秒）。同期对 `/root/etcd@5cd9f4ee1` 的 49 项公开 RPC 分类与递归 Txn
   `checkTxnRequest/checkRequestOp/checkIntervals` 再审计未发现可复现协议差分，故未修改 etcd/TiKV 数据路径。
 
+- A5426 将 A5425 的剩余时间约束扩展到 probe completion 阶段。旧 `PROBE_COMPLETE_TIMEOUT` 只在一次 5 秒 phase
+  watch 与最长 15 秒 phase evidence 读取后检查；一旦 deadline 已过，还会启动最长 15 秒的 timeout diagnostic
+  logs，因此“180 秒完成预算”并不是 API 调用边界。提交 `59736975` 新增嵌套 `kctl_watch_bounded`，每轮在调用前
+  计算剩余秒数，让 phase watch 同时服从剩余阶段时间与自身 command timeout；失败后的 phase evidence 复用有界
+  evidence wrapper 并同样受剩余时间约束。watch 成功、watch 失败和 evidence 返回后均重新检查 deadline，deadline
+  到达即输出确定错误，不再启动新的只读 diagnostic logs；cleanup 仍执行有界 probe delete，candidate 失败时仍按
+  既有原子身份栅栏回滚，因为安全清理不属于可跳过诊断。两条负测分别让 phase watch 和 phase `get` 连同子进程
+  静默 30 秒，并把其内部 command timeout 保持为 30 秒；`PROBE_COMPLETE_TIMEOUT=1s` 均在 5 秒进程组保险内退出，
+  kubectl 日志还精确证明 deadline 后没有第二次 probe logs 请求。probe Failed 的剩余预算内日志与正常成功路径继续
+  GREEN。rollout 全组普通/race 为 55.699/60.927 秒，vet、shell syntax、diff check 与 609 项 inventory 通过；
+  精确代码提交四片 139/171/153/146 全绿（Go 测试 118.027/341.845/218.796/353.349 秒；端到端
+  123.734/347.638/224.578/359.140 秒）。本项只收紧发布阶段 liveness，不改变 etcd API 或 TiKV 数据语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
