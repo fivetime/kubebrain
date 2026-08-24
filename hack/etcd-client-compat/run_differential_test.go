@@ -203,6 +203,19 @@ func TestDifferentialRunnerSelectsScenariosNotRunnerSelfTests(t *testing.T) {
 	require.NotContains(t, string(script), "-run Differential -count=1")
 }
 
+func TestDifferentialRunnerSeparatesGRPCAuthorityFromGatewayURL(t *testing.T) {
+	script, err := os.ReadFile("run-differential.sh")
+	require.NoError(t, err)
+	content := string(script)
+	require.Contains(t, content, `KUBEBRAIN_GATEWAY_URL="$(http_endpoint_url "$KUBEBRAIN_ENDPOINT")"`)
+	require.Contains(t, content, `KUBEBRAIN_GRPC_ENDPOINT="$(grpc_endpoint_authority "$KUBEBRAIN_ENDPOINT")"`)
+	require.Contains(t, content, `http://*) endpoint="${endpoint#http://}"`)
+	require.Contains(t, content, `https://*) endpoint="${endpoint#https://}"`)
+	require.Contains(t, content, `KUBEBRAIN_ETCD_ENDPOINT="$KUBEBRAIN_GRPC_ENDPOINT"`)
+	require.Contains(t, content, `KUBEBRAIN_NO_QUOTA_ENDPOINT="$KUBEBRAIN_GRPC_ENDPOINT"`)
+	require.Contains(t, content, `KUBEBRAIN_GATEWAY_ENDPOINT="$KUBEBRAIN_GATEWAY_URL"`)
+}
+
 func TestDefaultReferenceEndpointTestsAreSelectedByDifferentialRunner(t *testing.T) {
 	files, err := filepath.Glob("*_test.go")
 	require.NoError(t, err)
@@ -269,7 +282,7 @@ func TestDifferentialRunnerEnablesHTTPGatewayScenarios(t *testing.T) {
 func TestDifferentialRunnerEnablesManualAlarmWithoutQuotaScenario(t *testing.T) {
 	script, err := os.ReadFile("run-differential.sh")
 	require.NoError(t, err)
-	require.Contains(t, string(script), `KUBEBRAIN_NO_QUOTA_ENDPOINT="$KUBEBRAIN_ENDPOINT"`)
+	require.Contains(t, string(script), `KUBEBRAIN_NO_QUOTA_ENDPOINT="$KUBEBRAIN_GRPC_ENDPOINT"`)
 }
 
 func TestDifferentialRunnerPassesOptionalMetricsEndpoints(t *testing.T) {

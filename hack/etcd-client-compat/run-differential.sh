@@ -47,6 +47,23 @@ http_endpoint_url() {
   esac
 }
 
+grpc_endpoint_authority() {
+  local endpoint="${1%/}"
+  case "$endpoint" in
+    http://*) endpoint="${endpoint#http://}" ;;
+    https://*) endpoint="${endpoint#https://}" ;;
+    *://*)
+      echo "KUBEBRAIN_ETCD_ENDPOINT uses unsupported URL scheme: $1" >&2
+      return 1
+      ;;
+  esac
+  if [[ -z "$endpoint" || "$endpoint" == */* || "$endpoint" == *\?* || "$endpoint" == *\#* ]]; then
+    echo "KUBEBRAIN_ETCD_ENDPOINT must be a TCP authority with optional http(s) scheme: $1" >&2
+    return 1
+  fi
+  printf '%s\n' "$endpoint"
+}
+
 validate_bool_flag ALLOW_DESTRUCTIVE_DIFFERENTIAL
 
 if [ -z "$KUBEBRAIN_ENDPOINT" ]; then
@@ -54,6 +71,7 @@ if [ -z "$KUBEBRAIN_ENDPOINT" ]; then
   exit 1
 fi
 KUBEBRAIN_GATEWAY_URL="$(http_endpoint_url "$KUBEBRAIN_ENDPOINT")"
+KUBEBRAIN_GRPC_ENDPOINT="$(grpc_endpoint_authority "$KUBEBRAIN_ENDPOINT")"
 if [ "$ALLOW_DESTRUCTIVE_DIFFERENTIAL" != true ]; then
   echo "refusing destructive differential suite: Compact advances the target instance's global compact revision" >&2
   echo "use a disposable KubeBrain instance and set ALLOW_DESTRUCTIVE_DIFFERENTIAL=true" >&2
@@ -198,10 +216,10 @@ fi
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_ENDPOINT="${REFERENCE_CLIENT_URL#http://}" \
-    KUBEBRAIN_ETCD_ENDPOINT="$KUBEBRAIN_ENDPOINT" \
+    KUBEBRAIN_ETCD_ENDPOINT="$KUBEBRAIN_GRPC_ENDPOINT" \
     REFERENCE_ETCD_GATEWAY_ENDPOINT="${REFERENCE_CLIENT_URL%/}" \
     KUBEBRAIN_GATEWAY_ENDPOINT="$KUBEBRAIN_GATEWAY_URL" \
-    KUBEBRAIN_NO_QUOTA_ENDPOINT="$KUBEBRAIN_ENDPOINT" \
+    KUBEBRAIN_NO_QUOTA_ENDPOINT="$KUBEBRAIN_GRPC_ENDPOINT" \
     REFERENCE_ETCD_METRICS_ENDPOINT="${REFERENCE_CLIENT_URL%/}" \
     KUBEBRAIN_METRICS_ENDPOINT="$KUBEBRAIN_METRICS_ENDPOINT" \
     KUBEBRAIN_EXPECTED_MEMBER_COUNT="$KUBEBRAIN_EXPECTED_MEMBER_COUNT" \
