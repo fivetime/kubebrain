@@ -7682,6 +7682,27 @@ apiserver prefix=0 与 lease 集合前后完全相等。compat 全组 Go 6.716 �
 138.449/367.702/235.776/377.952 秒，全部通过。三副本 Deployment rollout、watch 连续性与最终 UID/Ready 守恒仍需
 在真实 Deployment 拓扑中执行后才能取得 live GREEN；本次只证明错误拓扑不会产生 mutation。
 
+### A5474：load rollout 门禁与 in-cluster Job/ConfigMap 所有权
+
+通用 `rollout-smoke.sh` 与 `incluster-rollout-smoke.sh` 同样使用隐式 context、先 scale 共享 Deployment、无 destructive
+approval；通用版失败时还不停止后台 load。in-cluster 子 runner 使用秒级 Job 名称，以 dry-run/apply 复用 ConfigMap 和
+apply 复用 Job，EXIT 再无条件删除同名资源，存在碰撞后误删。提交 `41942e76` 为两条 rollout 分别新增默认 false 的
+`ALLOW_DESTRUCTIVE_ROLLOUT_SMOKE` 与 `ALLOW_DESTRUCTIVE_INCLUSTER_ROLLOUT`，要求显式 `KUBE_CONTEXT`，所有
+Kubernetes 操作固定到该 context。两者都移除 scale，preflight 要求目标 Deployment 已经是精确
+`REPLICAS/REPLICAS` Ready，结束要求 UID 不变；通用版也补齐后台 load 的 EXIT kill/wait。
+
+`incluster-load-smoke.sh` 改用纳秒默认名称、显式且精确解析的 context，先拒绝任何同名 Job/ConfigMap；ConfigMap 使用
+create 而不是 dry-run/apply，Job 使用 create，分别只有创建成功后才设置 ownership 标记，cleanup 仅删除本轮持有对象。
+父 rollout 显式把 context 传给子 runner。间接 destructive 清单新增 verify 的两条可选 rollout，owned Kubernetes 清单
+新增 verify→incluster-load 的 `job-configmap` 合同。fake kubectl 负测返回既有 Job，runner 在 ConfigMap 查询和任何
+create/delete 前拒绝，日志无资源 mutation；缺 context/授权的两条 rollout 也都在工具发现前 fail closed。
+
+当前无目标 Deployment，因此两条真实显式授权负例均精确报告 `requires an existing 3/3 Ready Deployment ... got missing`。
+StatefulSet UID/3/3 状态、三 Pod UID/restartCount、Job UID 集合、全量 KV 与 lease 集合前后完全相等；没有把 topology
+拒绝误称为 rollout GREEN。compat 全组 Go 6.884 秒。611 项 inventory 仍为 140/171/154/146；代码提交后四片 Go
+时间 122.917/351.313/228.794/365.866 秒，端到端时间 128.904/357.304/234.768/371.746 秒，全部通过。真实
+Deployment rollout 下的 load 连续性、Job 成功和 UID/Ready 守恒仍待具备对应拓扑后验证。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
