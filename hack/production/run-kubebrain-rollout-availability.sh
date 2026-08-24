@@ -149,6 +149,13 @@ kctl_watch() {
   "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$command_timeout" \
     "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" "$@"
 }
+kctl_watch_bounded() {
+  local outer_timeout="$1" command_timeout="$2"
+  shift 2
+  "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$outer_timeout" \
+    "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$command_timeout" \
+    "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" "$@"
+}
 duration_ceil_seconds() {
   case "$1" in
     *ms) echo $(( (${1%ms} + 999) / 1000 )) ;;
@@ -418,23 +425,35 @@ kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
 probe_complete_seconds="$(duration_ceil_seconds "$PROBE_COMPLETE_TIMEOUT")"
 probe_complete_deadline=$((SECONDS + probe_complete_seconds))
 probe_phase_attempt=0
-while ! kctl_watch "$KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT" \
-  wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$PROBE_POD" --timeout=1s >/dev/null 2>&1; do
+abort_probe_complete_timeout() {
+  echo "availability probe did not complete within ${PROBE_COMPLETE_TIMEOUT}" >&2
+  exit 1
+}
+while true; do
+  (( SECONDS < probe_complete_deadline )) || abort_probe_complete_timeout
+  probe_complete_remaining=$((probe_complete_deadline - SECONDS))
+  if kctl_watch_bounded "${probe_complete_remaining}s" "$KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT" \
+    wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$PROBE_POD" --timeout=1s >/dev/null 2>&1; then
+    (( SECONDS < probe_complete_deadline )) || abort_probe_complete_timeout
+    break
+  fi
+  (( SECONDS < probe_complete_deadline )) || abort_probe_complete_timeout
   ((probe_phase_attempt+=1))
+  probe_complete_remaining=$((probe_complete_deadline - SECONDS))
   probe_phase_file="$runtime_evidence_dir/probe-phase-${probe_phase_attempt}.txt"
-  if capture_probe_phase_response "$probe_phase_file" kctl_evidence get pod "$PROBE_POD" -o jsonpath='{.status.phase}'; then
+  if capture_probe_phase_response "$probe_phase_file" kctl_evidence_bounded "${probe_complete_remaining}s" \
+    get pod "$PROBE_POD" -o jsonpath='{.status.phase}'; then
     probe_phase="$(<"$probe_phase_file")"
   else
     probe_phase=""
   fi
+  (( SECONDS < probe_complete_deadline )) || abort_probe_complete_timeout
   if [[ "$probe_phase" == Failed ]]; then
-    capture_runtime_evidence "$runtime_evidence_dir/probe-failed.log" kctl_evidence logs "$PROBE_POD" && cat "$runtime_evidence_dir/probe-failed.log" >&2 || true
+    probe_complete_remaining=$((probe_complete_deadline - SECONDS))
+    capture_runtime_evidence "$runtime_evidence_dir/probe-failed.log" \
+      kctl_evidence_bounded "${probe_complete_remaining}s" logs "$PROBE_POD" && \
+      cat "$runtime_evidence_dir/probe-failed.log" >&2 || true
     echo "availability probe failed" >&2
-    exit 1
-  fi
-  if (( SECONDS >= probe_complete_deadline )); then
-    capture_runtime_evidence "$runtime_evidence_dir/probe-timeout.log" kctl_evidence logs "$PROBE_POD" && cat "$runtime_evidence_dir/probe-timeout.log" >&2 || true
-    echo "availability probe did not complete within ${PROBE_COMPLETE_TIMEOUT}" >&2
     exit 1
   fi
 done
