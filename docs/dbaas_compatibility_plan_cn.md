@@ -61587,6 +61587,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Go 时间 129.329/347.058/226.890/363.964 秒，端到端 135.016/352.885/232.717/369.769 秒全部通过。
   A5441 的进程 panic 与特定冷 Region 单幸存副本 RED 至此关闭；跨节点/AZ 和长时间 soak 仍保留为更高层证据缺口。
 
+- A5443 对齐健康 follower 的最新 serializable 读与 follower Watch 控制顺序。修复前，负载均衡入口把
+  serializable Range/只读 Txn 留在 follower 的受保护 checkpoint 上，即使 leader 健康也可能持续读到旧值；STM
+  delete-conflict 因而在 KubeBrain 侧执行 3083 次 apply，而参考 etcd 仅 2 次。现在持有有效 checkpoint 的 follower
+  先以 750ms 有界预算向 leader 读取最新状态，且仅在尚未向客户端发送结果并收到 Unavailable/DeadlineExceeded 时
+  回退本地受保护 checkpoint。Range、只读 Txn 和 RangeStream 三条路径都保留 etcd serializable `doSerialize` 的
+  校验、先鉴权和末尾 auth-revision fence；RangeStream 一旦发送首帧绝不重放。stale leader 继续直接使用 checkpoint，
+  不会自代理。修复后的 STM 聚焦差分稳定为 reference=2、kubebrain=2，Generated RangeStream 的 unary/stream header
+  revision 也重新一致。
+
+  follower Watch 在 leader 的 authoritative Created 尚未发送时收到同 stream Cancel，过去可能先发 Canceled，或把
+  cancel-pending watch 纳入 progress snapshot 产生额外 WatchId=-1 控制帧。现在取消等待 authoritative Created 的发送
+  barrier，再按 Created→Canceled 顺序结束同一 generation；等待期即从 progress/min-revision 快照排除。确定性单测覆盖
+  顺序、无额外 progress 和 proxy context 取消，真实 Watch control 差分为 1.17 秒 GREEN。差分 runner 新增显式
+  `TEST_RUN_PATTERN`，默认完整选择式不变，便于保留同一破坏性 preflight/cleanup 下的聚焦复现；checkpoint convergence
+  探测从 20ms 改为 250ms，避免故障恢复期 50 QPS 自激负载。
+
+  代码提交 `84636b98fb152b0ffd215847ecbe0b09d03128c0`；`pkg/server/etcd` 全包 Go 129.760 秒、墙钟
+  133.132 秒通过，独立 compat module Go 4.173 秒、墙钟 5.389 秒通过。611 项 inventory 仍为
+  140/171/154/146；精确提交四片 Go 时间 122.069/349.363/224.648/359.787 秒，端到端
+  127.858/355.203/230.447/365.578 秒，全部通过。精确镜像 `kubebrain:a5443-84636b98` 内嵌完整 SHA、
+  TiKV、Go 1.26.5，linux/amd64 本地 OCI manifest list 为
+  `sha256:c26eec76965b245a011c0b5c72e495fb7ae34bf0e393174eca05480ae645c237`；三个 Kind Pod 使用相同 runtime
+  digest `sha256:7816bc20a9a89abbffa753e9e4adc9b18637427a4ca2d7e0308040544340ce63`，rollout 后 restartCount 均为 0。
+  精确镜像聚焦差分全绿（Go 24.266 秒、端到端 26.139 秒），包括 serializable、STM、Txn compare、Generated
+  RangeStream、Watch control 与 HTTP election authorization。
+
+  精确镜像的完整差分发布证据尚未闭环。第一轮误把 endpoint 写成带 scheme 的 URL，使直接 gRPC 用例按预期拒绝
+  `too many colons in address`，该轮无判定价值；修正为 host:port 后，单节点 Kind 上共享同一 TiKV/PD 的四套三副本
+  数据面同时 NotReady，节点约 12 核满载，Store 16001 请求连续超时并使 leader election 失去续租。主三副本 UID
+  稳定、restartCount 均为 0，未改动的 auth/JWT 数据面也同步 NotReady，临时缩容额外数据面后主集群恢复，证明这是
+  共享测试后端饱和而非本提交独有崩溃；但恢复后写延迟仍达 0.8 秒并很快再次超时，故没有把无效 RED 改记为 GREEN。
+  额外三套 StatefulSet 的 desired replicas 已恢复为 3。下一发布门禁必须在 TiKV/PD 延迟恢复后的独占或多节点环境，
+  用无 scheme endpoint 从头完成完整差分；auth/JWT/quota、外部 L4/L7/Envoy、direct-replica 与 oversize 专用 endpoint
+  scope 仍按各自独立门禁记录，不能由本轮聚焦 GREEN 替代。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

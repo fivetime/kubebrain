@@ -6948,6 +6948,27 @@ UID 稳定且均为零重启，PD/TiKV 与 iptables 规则恢复。611 项 inven
 135.016/352.885/232.717/369.769 秒，全部通过。该证据关闭 A5441 两项具体 RED，但仍仅代表单节点 Kind
 上的独立 3 PD/3 TiKV 拓扑，不替代跨节点/AZ 故障和长时间 soak。
 
+### A5443：健康 follower serializable 新鲜度与 Watch 创建/取消顺序
+
+提交 `84636b98` 让持有有效受保护 checkpoint 的健康 follower 优先从 leader 获取最新 serializable Range、只读 Txn
+和 RangeStream；仅对 Unavailable/DeadlineExceeded 做有界 checkpoint 回退，且流式 RPC 在首帧后禁止重放。三条路径
+均保留本地 serializable 鉴权与末尾 auth revision fence，未认证请求不得借健康转发绕过权限检查。STM 冲突重试从
+KubeBrain 3083 次恢复为与参考 etcd 相同的 2 次，Generated RangeStream header revision 恢复一致。
+
+同提交把 follower pending-create Watch 的客户端取消固定为 authoritative Created→Canceled，取消等待期不再进入 progress
+快照。服务包、compat 工具、611 项四分片均通过；四片 Go 时间为
+122.069/349.363/224.648/359.787 秒，端到端为 127.858/355.203/230.447/365.578 秒。精确镜像
+`kubebrain:a5443-84636b98` 的 manifest list 为
+`sha256:c26eec76965b245a011c0b5c72e495fb7ae34bf0e393174eca05480ae645c237`，三 Pod runtime digest 一致为
+`sha256:7816bc20a9a89abbffa753e9e4adc9b18637427a4ca2d7e0308040544340ce63`，restartCount 全 0；精确镜像聚焦差分
+Go 24.266 秒、端到端 26.139 秒全部通过。
+
+完整差分尚不能作为本轮发布 GREEN：一次运行因错误使用带 scheme endpoint 被直接 gRPC 构造器拒绝；修正后，共享单节点
+Kind 的四套 KubeBrain 同时把 TiKV/PD 推入持续超时，未修改的 auth/JWT 数据面与主数据面同时 NotReady，节点 CPU 约 12 核
+满载，而主 Pod 无重启。临时隔离额外数据面后虽恢复 Ready，写入 health 仍约 0.8 秒并再次退化。额外 StatefulSet 已恢复原
+3 副本 desired state。发布前必须在恢复后的独占或多节点 TiKV/PD 环境重新完成完整差分；不得把本轮聚焦 GREEN 或此前
+diagnostic 镜像的 518.528 秒完整 GREEN 替代精确提交的完整门禁。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
