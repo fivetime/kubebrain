@@ -21,6 +21,8 @@ func TestDirectReplicaConsistencyRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas")
 	require.Contains(t, string(script), "TestMaintenanceHashKVSemantics")
 	require.Contains(t, string(script), "TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites")
+	require.Contains(t, string(script), "TestMaintenanceHashKVMatchesAcrossMembers")
+	require.Contains(t, string(script), "KUBEBRAIN_MEMBERLIST_DIAL_ENDPOINTS")
 	require.Contains(t, string(script), "TestHashKVCompactionConvergesAcrossKubeBrainReplicas")
 	require.Contains(t, string(script), "TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction")
 	require.Contains(t, string(script), "TestPhysicalCompactionUnderTraffic")
@@ -45,7 +47,7 @@ func TestDirectReplicaConsistencyRunnerRejectsInvalidScopeBeforeDependencies(t *
 		"TEST_SCOPE=unknown",
 	})
 	require.Error(t, err)
-	require.Contains(t, string(output), "TEST_SCOPE must be all, hashkv-compaction, or compaction")
+	require.Contains(t, string(output), "TEST_SCOPE must be all, hashkv-compaction, compaction, or memberlist-hash")
 	require.NotContains(t, string(output), "missing required command")
 }
 

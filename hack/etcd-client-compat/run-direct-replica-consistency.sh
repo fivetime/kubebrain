@@ -35,9 +35,9 @@ if [[ "$ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY" != true &&
   exit 2
 fi
 case "$TEST_SCOPE" in
-  all|hashkv-compaction|compaction) ;;
+  all|hashkv-compaction|compaction|memberlist-hash) ;;
   *)
-    echo "TEST_SCOPE must be all, hashkv-compaction, or compaction" >&2
+    echo "TEST_SCOPE must be all, hashkv-compaction, compaction, or memberlist-hash" >&2
     exit 2
     ;;
 esac
@@ -88,7 +88,7 @@ if [[ "$ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY" != true ]]; then
   echo "confirm the three direct endpoints belong to the intended cluster and set ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY=true" >&2
   exit 1
 fi
-if [[ "$TEST_SCOPE" != all &&
+if [[ ("$TEST_SCOPE" == hashkv-compaction || "$TEST_SCOPE" == compaction) &&
   "$ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY" != true ]]; then
   echo "refusing destructive direct-replica consistency scope: compaction advances the target instance's global compact revision" >&2
   echo "use a disposable KubeBrain instance and set ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY=true" >&2
@@ -163,12 +163,24 @@ case "$TEST_SCOPE" in
   compaction)
     test_pattern='^(TestHashKVCompactionConvergesAcrossKubeBrainReplicas|TestLeaseSurvivesCompaction|TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction|TestPhysicalCompactionUnderTraffic)$'
     ;;
+  memberlist-hash)
+    test_pattern='^TestMaintenanceHashKVMatchesAcrossMembers$'
+    ;;
 esac
+
+memberlist_endpoints_direct=""
+memberlist_dial_endpoints=""
+if [[ "$TEST_SCOPE" == memberlist-hash ]]; then
+  memberlist_endpoints_direct=1
+  memberlist_dial_endpoints="$(IFS=,; echo "${kubebrain_endpoints[*]}")"
+fi
 
 test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_ETCD_ENDPOINT="$service_endpoint" \
+    KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIRECT="$memberlist_endpoints_direct" \
+    KUBEBRAIN_MEMBERLIST_DIAL_ENDPOINTS="$memberlist_dial_endpoints" \
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
     KUBEBRAIN_MULTI_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
     KUBEBRAIN_MULTI_QUOTA_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \

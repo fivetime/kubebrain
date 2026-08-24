@@ -332,7 +332,9 @@ func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
 	require.NoError(t, err)
 	endpoints := make([]string, 0, len(members.Members))
 	uniqueEndpoints := make(map[string]struct{}, len(members.Members))
+	advertisedMemberIDs := make(map[uint64]struct{}, len(members.Members))
 	for _, member := range members.Members {
+		advertisedMemberIDs[member.ID] = struct{}{}
 		for _, memberEndpoint := range member.ClientURLs {
 			endpoints = append(endpoints, memberEndpoint)
 			uniqueEndpoints[memberEndpoint] = struct{}{}
@@ -344,6 +346,18 @@ func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
 		"direct-member HashKV verification requires exactly one advertised endpoint per member")
 	require.Len(t, uniqueEndpoints, len(endpoints),
 		"direct-member HashKV verification requires unique advertised endpoints; a shared Service URL proves Sync reachability, not member identity")
+	dialEndpoints := endpoints
+	if overrides := splitNonEmptyCSV(os.Getenv("KUBEBRAIN_MEMBERLIST_DIAL_ENDPOINTS")); len(overrides) > 0 {
+		require.Len(t, overrides, len(endpoints),
+			"member dial overrides must cover every advertised member")
+		uniqueOverrides := make(map[string]struct{}, len(overrides))
+		for _, override := range overrides {
+			uniqueOverrides[override] = struct{}{}
+		}
+		require.Len(t, uniqueOverrides, len(overrides),
+			"member dial overrides must be unique")
+		dialEndpoints = overrides
+	}
 
 	key := testPrefix(t) + "/member-hash"
 	t.Cleanup(func() {
@@ -356,9 +370,11 @@ func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
 
 	var wantHash, wantCluster uint64
 	memberIDs := map[uint64]struct{}{}
-	for i, ep := range endpoints {
+	for i, ep := range dialEndpoints {
 		statusResp, err := cli.Status(ctx, ep)
 		require.NoError(t, err, "status %s", ep)
+		_, advertised := advertisedMemberIDs[statusResp.Header.MemberId]
+		require.True(t, advertised, "dial endpoint %s identified an unadvertised member", ep)
 		hashResp, err := cli.HashKV(ctx, ep, put.Header.Revision)
 		require.NoError(t, err, "hashkv %s", ep)
 		if i == 0 {
@@ -370,5 +386,6 @@ func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
 		}
 		memberIDs[statusResp.Header.MemberId] = struct{}{}
 	}
-	require.Len(t, memberIDs, len(endpoints), "each configured endpoint must identify its serving member")
+	require.Equal(t, advertisedMemberIDs, memberIDs,
+		"dial endpoints must identify exactly the members returned by MemberList")
 }
