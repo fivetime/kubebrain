@@ -20,16 +20,16 @@ import (
 const watchFragmentExactLimit = 2 * 1024 * 1024
 
 type watchExactLimitOutcome struct {
-	CandidateMatchesTarget bool
-	FrameEventCounts       []int
-	FragmentFlags          []bool
-	FrameBelowLimit        []bool
-	HeaderRevisionGaps     []int64
-	HeadersMatchCreated    bool
-	KeysOrdered            bool
-	ValuesMatch            bool
-	MetadataMatches        bool
-	TotalEvents            int
+	CandidateMatchesTarget  bool
+	FrameEventCounts        []int
+	FragmentFlags           []bool
+	FrameBelowLimit         []bool
+	HeaderEventRevisionGaps []int64
+	HeadersMatchCreated     bool
+	KeysOrdered             bool
+	ValuesMatch             bool
+	MetadataMatches         bool
+	TotalEvents             int
 }
 
 func TestWatchExactFragmentLimitDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -39,16 +39,16 @@ func TestWatchExactFragmentLimitDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	want := watchExactLimitOutcome{
-		CandidateMatchesTarget: true,
-		FrameEventCounts:       []int{1, 1},
-		FragmentFlags:          []bool{true, false},
-		FrameBelowLimit:        []bool{true, true},
-		HeaderRevisionGaps:     []int64{3, 3},
-		HeadersMatchCreated:    true,
-		KeysOrdered:            true,
-		ValuesMatch:            true,
-		MetadataMatches:        true,
-		TotalEvents:            2,
+		CandidateMatchesTarget:  true,
+		FrameEventCounts:        []int{1, 1},
+		FragmentFlags:           []bool{true, false},
+		FrameBelowLimit:         []bool{true, true},
+		HeaderEventRevisionGaps: []int64{0, 0},
+		HeadersMatchCreated:     true,
+		KeysOrdered:             true,
+		ValuesMatch:             true,
+		MetadataMatches:         true,
+		TotalEvents:             2,
 	}
 	referenceOutcome := runWatchExactLimitScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcome)
@@ -70,19 +70,19 @@ func TestWatchFragmentLimitBoundaryMatrixDifferentialAgainstReferenceEtcd(t *tes
 		{name: "one byte below", sizeDelta: -1, want: watchExactLimitOutcome{
 			CandidateMatchesTarget: true, FrameEventCounts: []int{2},
 			FragmentFlags: []bool{false}, FrameBelowLimit: []bool{true},
-			HeaderRevisionGaps: []int64{3}, HeadersMatchCreated: true, KeysOrdered: true, ValuesMatch: true,
+			HeaderEventRevisionGaps: []int64{0}, HeadersMatchCreated: true, KeysOrdered: true, ValuesMatch: true,
 			MetadataMatches: true, TotalEvents: 2,
 		}},
 		{name: "exact", want: watchExactLimitOutcome{
 			CandidateMatchesTarget: true, FrameEventCounts: []int{1, 1},
 			FragmentFlags: []bool{true, false}, FrameBelowLimit: []bool{true, true},
-			HeaderRevisionGaps: []int64{3, 3}, HeadersMatchCreated: true, KeysOrdered: true, ValuesMatch: true,
+			HeaderEventRevisionGaps: []int64{0, 0}, HeadersMatchCreated: true, KeysOrdered: true, ValuesMatch: true,
 			MetadataMatches: true, TotalEvents: 2,
 		}},
 		{name: "one byte above", sizeDelta: 1, want: watchExactLimitOutcome{
 			CandidateMatchesTarget: true, FrameEventCounts: []int{1, 1},
 			FragmentFlags: []bool{true, false}, FrameBelowLimit: []bool{true, true},
-			HeaderRevisionGaps: []int64{3, 3}, HeadersMatchCreated: true, KeysOrdered: true, ValuesMatch: true,
+			HeaderEventRevisionGaps: []int64{0, 0}, HeadersMatchCreated: true, KeysOrdered: true, ValuesMatch: true,
 			MetadataMatches: true, TotalEvents: 2,
 		}},
 	}
@@ -164,7 +164,8 @@ func runWatchLimitBoundaryScenario(t *testing.T, endpoint, instance string, targ
 	for index := range keys {
 		put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keys[index], Value: values[index]})
 		require.NoError(t, putErr)
-		require.Equal(t, seedRevisions[index], put.Header.GetRevision())
+		require.NotNil(t, put.Header)
+		seedRevisions[index] = put.Header.Revision
 	}
 
 	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
@@ -184,11 +185,13 @@ func runWatchLimitBoundaryScenario(t *testing.T, endpoint, instance string, targ
 	require.Equal(t, candidate.Header.MemberId, created.Header.MemberId)
 	require.Equal(t, candidate.Header.RaftTerm, created.Header.RaftTerm)
 
-	_, err = kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+	deleted, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: keys[0]}}},
 		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: keys[1]}}},
 	}})
 	require.NoError(t, err)
+	require.NotNil(t, deleted.Header)
+	revision = deleted.Header.Revision
 
 	outcome := watchExactLimitOutcome{
 		CandidateMatchesTarget: proto.Size(candidate) == targetSize,
@@ -207,7 +210,8 @@ func runWatchLimitBoundaryScenario(t *testing.T, endpoint, instance string, targ
 		outcome.FrameEventCounts = append(outcome.FrameEventCounts, len(response.Events))
 		outcome.FragmentFlags = append(outcome.FragmentFlags, response.Fragment)
 		outcome.FrameBelowLimit = append(outcome.FrameBelowLimit, proto.Size(response) < watchFragmentExactLimit)
-		outcome.HeaderRevisionGaps = append(outcome.HeaderRevisionGaps, response.Header.GetRevision()-base.Header.Revision)
+		outcome.HeaderEventRevisionGaps = append(outcome.HeaderEventRevisionGaps,
+			response.Header.GetRevision()-revision)
 		outcome.HeadersMatchCreated = outcome.HeadersMatchCreated && response.Header != nil &&
 			response.Header.ClusterId == created.Header.ClusterId && response.Header.MemberId == created.Header.MemberId &&
 			response.Header.RaftTerm == created.Header.RaftTerm

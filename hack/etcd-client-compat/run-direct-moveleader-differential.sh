@@ -66,7 +66,7 @@ if [[ ! "$TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 case "$TEST_SCOPE" in
   all)
-    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy|KeepAliveResumesAcrossExternalL7Reset)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$|^TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential$'
+    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy|KeepAliveResumesAcrossExternalL7Reset)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$|^TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential$|^TestWatchFragmentLimitBoundaryAcrossDirectReplicas$'
     ;;
   lease-response-loss|lease-revoke-cross-replica)
     test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy|KeepAliveResumesAcrossExternalL7Reset)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$|^TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential$'
@@ -80,6 +80,9 @@ case "$TEST_SCOPE" in
   rangestream-follower)
     test_pattern='^TestRangeStreamFollowerDifferentialAgainstReferenceEtcd$|^TestDecodedBoundaryLargeValueRangeStreamDifferentialAgainstReferenceEtcd$'
     ;;
+  watch-fragment-boundary)
+    test_pattern='^TestWatchFragmentLimitBoundaryAcrossDirectReplicas$'
+    ;;
   envoy-plaintext)
     test_pattern='^TestEnvoyPlaintextProfileDifferential$'
     ;;
@@ -90,7 +93,7 @@ case "$TEST_SCOPE" in
     test_pattern='^TestEnvoyReplicaDrainDifferential$'
     ;;
   *)
-    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, lease-revoke-tls-passthrough, multiplexed-stream-l7-reset, rangestream-follower, envoy-plaintext, envoy-tls-passthrough, or envoy-replica-drain" >&2
+    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, lease-revoke-tls-passthrough, multiplexed-stream-l7-reset, rangestream-follower, watch-fragment-boundary, envoy-plaintext, envoy-tls-passthrough, or envoy-replica-drain" >&2
     exit 2
     ;;
 esac
@@ -268,6 +271,7 @@ done
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_DIRECT_ENDPOINTS="$(IFS=,; echo "${reference_client_endpoints[*]}")" \
+    REFERENCE_ETCD_ENDPOINT="${reference_client_endpoints[0]}" \
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
     EXTERNAL_TCP_SWITCH_PROXY_BINARY="$data_dir/tcp-switch-proxy" \
     EXTERNAL_GRPC_SWITCH_PROXY_BINARY="$data_dir/grpc-switch-proxy" \
