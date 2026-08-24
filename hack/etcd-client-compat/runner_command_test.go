@@ -1887,6 +1887,61 @@ func TestLoadRolloutMutationsFailClosedBeforeToolDiscovery(t *testing.T) {
 	}
 }
 
+func TestRolloutRunnersDefaultToValidatedStatefulSet(t *testing.T) {
+	fakeBin := t.TempDir()
+	commandLog := filepath.Join(t.TempDir(), "kubectl.log")
+	require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "kubectl"), []byte(`#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_COMMAND_LOG"
+if [[ "${1:-} ${2:-}" == "config get-contexts" ]]; then
+  printf '%s\n' "${3:-}"
+  exit 0
+fi
+exit 1
+`), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "docker"), []byte(`#!/usr/bin/env bash
+if [[ "${1:-}" == inspect ]]; then printf '%s\n' rollout-owned; exit 0; fi
+exit 1
+`), 0o755))
+	for _, tool := range []string{"go", "curl"} {
+		require.NoError(t, os.WriteFile(filepath.Join(fakeBin, tool), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755))
+	}
+
+	testCases := []struct {
+		script string
+		env    []string
+	}{
+		{script: "rollout-smoke.sh", env: []string{"ALLOW_DESTRUCTIVE_ROLLOUT_SMOKE=true"}},
+		{script: "incluster-rollout-smoke.sh", env: []string{"ALLOW_DESTRUCTIVE_INCLUSTER_ROLLOUT=true"}},
+		{script: "apiserver-rollout-smoke.sh", env: []string{"CLUSTER_NAME=rollout-owned", "ALLOW_DESTRUCTIVE_APISERVER_ROLLOUT=true"}},
+		{script: "incluster-apiserver-rollout-smoke.sh", env: []string{"CLUSTER_NAME=rollout-owned", "MANAGEMENT_ENDPOINT=http://172.18.0.2:30079", "ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT=true", "ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true"}},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.script, func(t *testing.T) {
+			require.NoError(t, os.WriteFile(commandLog, nil, 0o600))
+			env := []string{
+				"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+				"FAKE_COMMAND_LOG=" + commandLog,
+				"KUBE_CONTEXT=kind-rollout-owned",
+			}
+			env = append(env, tc.env...)
+			output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", tc.script)}, env)
+			require.Error(t, err)
+			require.Contains(t, string(output), "Ready workload kubebrain-dev/statefulset/kubebrain")
+			logData, readErr := os.ReadFile(commandLog)
+			require.NoError(t, readErr)
+			require.Contains(t, string(logData), "get statefulset/kubebrain")
+			require.NotContains(t, string(logData), "get deployment")
+
+			invalidEnv := append(append([]string{}, env...), "WORKLOAD=daemonset/kubebrain", "PATH=/nonexistent")
+			invalidOutput, invalidErr := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", tc.script)}, invalidEnv)
+			require.Error(t, invalidErr)
+			require.Contains(t, string(invalidOutput), "WORKLOAD must be deployment/name or statefulset/name")
+			require.NotContains(t, string(invalidOutput), "missing required command")
+		})
+	}
+}
+
 func TestDefaultOwnedKubernetesRunnersHaveSafetyContracts(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	data, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "owned-kubernetes-runner-contracts.txt"))
@@ -2133,6 +2188,7 @@ func TestInClusterAPIServerRolloutFailsClosedBeforeToolDiscovery(t *testing.T) {
 		{name: "rollout approval", env: []string{"PATH=/nonexistent", "KUBE_CONTEXT=kind-explicit", "CLUSTER_NAME=explicit"}, message: "ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT=true"},
 		{name: "invalid rollout approval", env: []string{"PATH=/nonexistent", "KUBE_CONTEXT=kind-explicit", "CLUSTER_NAME=explicit", "ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT=invalid"}, message: "ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT must be true or false"},
 		{name: "backend approval", env: []string{"PATH=/nonexistent", "KUBE_CONTEXT=kind-explicit", "CLUSTER_NAME=explicit", "ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT=true"}, message: "ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true"},
+		{name: "management endpoint", env: []string{"PATH=/nonexistent", "KUBE_CONTEXT=kind-explicit", "CLUSTER_NAME=explicit", "ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT=true", "ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true"}, message: "MANAGEMENT_ENDPOINT is required"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -2147,9 +2203,11 @@ func TestInClusterAPIServerRolloutFailsClosedBeforeToolDiscovery(t *testing.T) {
 	require.NoError(t, err)
 	content := string(data)
 	require.NotContains(t, content, " scale ")
-	require.Contains(t, content, `deployment_uid=`)
+	require.Contains(t, content, `WORKLOAD="${WORKLOAD:-statefulset/kubebrain}"`)
+	require.Contains(t, content, `workload_uid=`)
 	require.Contains(t, content, `final_uid=`)
-	require.Contains(t, content, `if [[ "$final_uid" != "$deployment_uid" ]]`)
+	require.Contains(t, content, `if [[ "$final_uid" != "$workload_uid" ]]`)
+	require.NotContains(t, content, `deployment/"$DEPLOYMENT"`)
 }
 
 func TestInClusterAPIServerWatchRejectsSharedWorkDirBeforeStartingBase(t *testing.T) {

@@ -237,20 +237,18 @@ func (h *httpServer) serve(listener net.Listener) error {
 }
 
 func (h *httpServer) close() error {
-	return h.svr.Close()
-}
-
-func closeGRPCServer(server *grpc.Server) error {
-	stopped := make(chan struct{})
-	go func() {
-		server.GracefulStop()
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-	case <-time.After(2 * time.Second):
-		server.Stop()
-		<-stopped
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := h.svr.Shutdown(ctx); err != nil {
+		// Long-lived watch/gateway requests may outlive the bounded rollout
+		// window. Force them closed after Shutdown has stopped admission and sent
+		// HTTP/2 GOAWAY; a timeout is expected in that case, while Close failures
+		// still remain observable.
+		closeErr := h.svr.Close()
+		if errors.Is(err, context.DeadlineExceeded) {
+			return closeErr
+		}
+		return errors.Join(err, closeErr)
 	}
 	return nil
 }
@@ -280,7 +278,13 @@ func (s *grpcMuxedHTTPServer) serve(listener net.Listener) error {
 }
 
 func (s *grpcMuxedHTTPServer) close() error {
-	return errors.Join(s.httpServer.close(), closeGRPCServer(s.grpcServer))
+	// grpc.Server.ServeHTTP is owned by net/http. Match upstream etcd's
+	// shutdown order: let http.Server.Shutdown send GOAWAY and drain handlers,
+	// then stop gRPC. Calling http.Server.Close first drops persistent client
+	// connections with EOF during a Kubernetes rollout.
+	httpErr := s.httpServer.close()
+	s.grpcServer.Stop()
+	return httpErr
 }
 
 func grpcHandlerFunc(grpcServer *grpc.Server, httpHandler http.Handler) http.Handler {

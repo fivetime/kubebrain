@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 NAMESPACE="${NAMESPACE:-kubebrain-dev}"
-DEPLOYMENT="${DEPLOYMENT:-kubebrain}"
+WORKLOAD="${WORKLOAD:-statefulset/kubebrain}"
 ENDPOINT="${ENDPOINT:-http://127.0.0.1:3379}"
 REPLICAS="${REPLICAS:-3}"
 OBJECTS="${OBJECTS:-12}"
@@ -28,15 +28,19 @@ if [[ -z "$CLUSTER_NAME" ]]; then
   exit 2
 fi
 if [[ "$ALLOW_DESTRUCTIVE_APISERVER_ROLLOUT" != true ]]; then
-  echo "refusing shared Deployment rollout without ALLOW_DESTRUCTIVE_APISERVER_ROLLOUT=true" >&2
+  echo "refusing shared workload rollout without ALLOW_DESTRUCTIVE_APISERVER_ROLLOUT=true" >&2
   exit 1
 fi
-for value in "$CLUSTER_NAME" "$NAMESPACE" "$DEPLOYMENT"; do
+for value in "$CLUSTER_NAME" "$NAMESPACE"; do
   if [[ ! "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
     echo "invalid apiserver rollout name: $value" >&2
     exit 2
   fi
 done
+[[ "$WORKLOAD" =~ ^(deployment|statefulset)/([a-z0-9]([-a-z0-9]*[a-z0-9])?)$ ]] || {
+  echo "WORKLOAD must be deployment/name or statefulset/name" >&2
+  exit 2
+}
 if [[ ! "$REPLICAS" =~ ^[1-9][0-9]*$ ]]; then
   echo "REPLICAS must be a positive integer" >&2
   exit 2
@@ -69,27 +73,27 @@ if [[ "$container_cluster" != "$CLUSTER_NAME" ]]; then
 fi
 KUBECTL=(kubectl --context "$KUBE_CONTEXT")
 
-if ! deployment_uid="$("${KUBECTL[@]}" -n "$NAMESPACE" get deployment "$DEPLOYMENT" -o jsonpath='{.metadata.uid}' 2>/dev/null)"; then
-  deployment_uid=""
+if ! workload_uid="$("${KUBECTL[@]}" -n "$NAMESPACE" get "$WORKLOAD" -o jsonpath='{.metadata.uid}' 2>/dev/null)"; then
+  workload_uid=""
 fi
-if ! deployment_replicas="$("${KUBECTL[@]}" -n "$NAMESPACE" get deployment "$DEPLOYMENT" -o jsonpath='{.spec.replicas}/{.status.readyReplicas}' 2>/dev/null)"; then
-  deployment_replicas=""
+if ! workload_replicas="$("${KUBECTL[@]}" -n "$NAMESPACE" get "$WORKLOAD" -o jsonpath='{.spec.replicas}/{.status.readyReplicas}' 2>/dev/null)"; then
+  workload_replicas=""
 fi
-if [[ -z "$deployment_uid" || "$deployment_replicas" != "$REPLICAS/$REPLICAS" ]]; then
-  echo "apiserver rollout requires an existing ${REPLICAS}/${REPLICAS} Ready Deployment ${NAMESPACE}/${DEPLOYMENT}; got ${deployment_replicas:-missing}" >&2
+if [[ -z "$workload_uid" || "$workload_replicas" != "$REPLICAS/$REPLICAS" ]]; then
+  echo "apiserver rollout requires an existing ${REPLICAS}/${REPLICAS} Ready workload ${NAMESPACE}/${WORKLOAD}; got ${workload_replicas:-missing}" >&2
   exit 1
 fi
 
 wait_ready() {
-  "${KUBECTL[@]}" -n "$NAMESPACE" rollout status "deployment/${DEPLOYMENT}" --timeout=180s
+  "${KUBECTL[@]}" -n "$NAMESPACE" rollout status "$WORKLOAD" --timeout=180s
   local deadline=$((SECONDS + 180))
   while true; do
     local ready replicas updated unavailable
-    ready="$("${KUBECTL[@]}" -n "$NAMESPACE" get "deployment/${DEPLOYMENT}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
-    replicas="$("${KUBECTL[@]}" -n "$NAMESPACE" get "deployment/${DEPLOYMENT}" -o jsonpath='{.status.replicas}' 2>/dev/null || true)"
-    updated="$("${KUBECTL[@]}" -n "$NAMESPACE" get "deployment/${DEPLOYMENT}" -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || true)"
-    unavailable="$("${KUBECTL[@]}" -n "$NAMESPACE" get "deployment/${DEPLOYMENT}" -o jsonpath='{.status.unavailableReplicas}' 2>/dev/null || true)"
-    echo "Deployment status: ${ready:-0}/${replicas:-0} ${updated:-0} updated ${unavailable:-0} unavailable"
+    ready="$("${KUBECTL[@]}" -n "$NAMESPACE" get "$WORKLOAD" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+    replicas="$("${KUBECTL[@]}" -n "$NAMESPACE" get "$WORKLOAD" -o jsonpath='{.status.replicas}' 2>/dev/null || true)"
+    updated="$("${KUBECTL[@]}" -n "$NAMESPACE" get "$WORKLOAD" -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || true)"
+    unavailable="$("${KUBECTL[@]}" -n "$NAMESPACE" get "$WORKLOAD" -o jsonpath='{.status.unavailableReplicas}' 2>/dev/null || true)"
+    echo "Workload status: ${ready:-0}/${replicas:-0} ${updated:-0} updated ${unavailable:-0} unavailable"
     if [ -n "$replicas" ] &&
       [ "${ready:-0}" = "$replicas" ] &&
       [ "${updated:-0}" = "$replicas" ] &&
@@ -97,8 +101,8 @@ wait_ready() {
       return 0
     fi
     if [ "$SECONDS" -ge "$deadline" ]; then
-      echo "timed out waiting for deployment ${NAMESPACE}/${DEPLOYMENT} to become ready" >&2
-      "${KUBECTL[@]}" -n "$NAMESPACE" get "deployment/${DEPLOYMENT}" >&2 || true
+      echo "timed out waiting for workload ${NAMESPACE}/${WORKLOAD} to become ready" >&2
+      "${KUBECTL[@]}" -n "$NAMESPACE" get "$WORKLOAD" >&2 || true
       "${KUBECTL[@]}" -n "$NAMESPACE" get pods -l app.kubernetes.io/name=kubebrain -o wide >&2 || true
       return 1
     fi
@@ -135,8 +139,8 @@ echo "Starting standalone kube-apiserver watch soak with pre-update pause"
 soak_pid=$!
 
 sleep 12
-echo "Restarting ${DEPLOYMENT} while apiserver watch is established"
-"${KUBECTL[@]}" -n "$NAMESPACE" rollout restart "deployment/${DEPLOYMENT}"
+echo "Restarting ${WORKLOAD} while apiserver watch is established"
+"${KUBECTL[@]}" -n "$NAMESPACE" rollout restart "$WORKLOAD"
 wait_ready
 
 if ! wait "$soak_pid"; then
@@ -146,9 +150,9 @@ if ! wait "$soak_pid"; then
 fi
 
 tail -n 30 "$log_file"
-final_uid="$("${KUBECTL[@]}" -n "$NAMESPACE" get deployment "$DEPLOYMENT" -o jsonpath='{.metadata.uid}')"
-if [[ "$final_uid" != "$deployment_uid" ]]; then
-  echo "apiserver rollout replaced the target Deployment: before=$deployment_uid after=${final_uid:-missing}" >&2
+final_uid="$("${KUBECTL[@]}" -n "$NAMESPACE" get "$WORKLOAD" -o jsonpath='{.metadata.uid}')"
+if [[ "$final_uid" != "$workload_uid" ]]; then
+  echo "apiserver rollout replaced the target workload: before=$workload_uid after=${final_uid:-missing}" >&2
   exit 1
 fi
 echo "Apiserver rollout smoke completed"

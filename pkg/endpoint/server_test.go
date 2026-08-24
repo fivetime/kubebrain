@@ -57,6 +57,57 @@ func TestNormalizeServeError(t *testing.T) {
 	require.ErrorIs(t, normalizeServeError(unexpected), unexpected)
 }
 
+func TestHTTPServerCloseDrainsInFlightRequest(t *testing.T) {
+	handlerStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	server := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(handlerStarted)
+		<-releaseHandler
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.serve(listener) }()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	t.Cleanup(client.CloseIdleConnections)
+	type requestResult struct {
+		status int
+		err    error
+	}
+	requestDone := make(chan requestResult, 1)
+	go func() {
+		response, requestErr := client.Get("http://" + listener.Addr().String())
+		if requestErr != nil {
+			requestDone <- requestResult{err: requestErr}
+			return
+		}
+		defer response.Body.Close()
+		requestDone <- requestResult{status: response.StatusCode}
+	}()
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not reach handler")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- server.close() }()
+	select {
+	case closeErr := <-closeDone:
+		t.Fatalf("close returned before the in-flight request drained: %v", closeErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseHandler)
+
+	result := <-requestDone
+	require.NoError(t, result.err)
+	require.Equal(t, http.StatusNoContent, result.status)
+	require.NoError(t, <-closeDone)
+	require.NoError(t, normalizeServeError(<-serveDone))
+}
+
 func TestSecureServerCloseNormalizesAndReturnsErrors(t *testing.T) {
 	unexpected := errors.New("close failed")
 	server := &secureServer{internalServers: []exposedServer{
