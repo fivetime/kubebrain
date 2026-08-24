@@ -7794,6 +7794,37 @@ Go 时间 134.837/371.659/239.289/382.835 秒，端到端时间 140.793/377.770/
 错误拓扑不会 mutation，不宣称 rollout/watch live GREEN；完整验证仍需在受控的三副本 Deployment 拓扑执行，并同时证明
 watch 事件连续、Deployment UID/Ready 恢复以及 A5476 的 KV/lease/临时资源守恒。
 
+### A5478：in-cluster watch wrapper 的工作目录、namespace 与子进程所有权
+
+A5477 保护 rollout mutation 后，`incluster-apiserver-watch-soak.sh` 自身仍共享固定
+`.dev/incluster-apiserver-smoke/kubeconfig` 和固定 watch 文件：旧 kubeconfig 可能被误判为本轮 base ready，并发运行会互相
+覆盖日志与事件。bootstrap/watch 日志写到 `/tmp` 后从不清理；测试 namespace 使用秒级名称，create 前不检查，cleanup 又
+只凭 `ns` 非空删除。更严重的是失败 cleanup 先 kill base apiserver，再尝试通过已经停止的 API 删除 namespace，实际删除
+通常无法发送且错误被吞掉。
+
+提交 `f1053fc7` 为每次运行使用 `${state_root}/${NAME}` 独占目录，要求其规范化路径必须是固定 state root 的严格子路径，
+拒绝复用任何已存在目录；创建成功后才设置 `work_dir_created=true`。base runner 获得本轮专属 `WORK_DIR/base`，ready 探测、
+kubeconfig、watch 数据和两类日志都只引用该目录，不再访问共享文件或 `/tmp`。EXIT 在子进程结束后只删除本轮持有且已通过
+边界校验的目录。相同名称并发会在启动 base 前拒绝；不同唯一名称的状态互不覆盖。固定 `LOCAL_PORT` 若并发竞争会使其中
+一轮安全失败并回收自有状态，不会读取另一轮 kubeconfig 或删除另一轮资源。
+
+wrapper 现在显式要求 context、cluster 和 management endpoint，并把它们连同 backend Service、Pod endpoint、prefix 与
+唯一 base workdir 逐项传递。测试 namespace 直接使用纳秒唯一 `NAME`，create 前先拒绝既有对象，只有 create 成功后才设置
+`namespace_created=true`。失败 cleanup 的顺序改为停止 watch、在 base 仍可服务时删除本轮 namespace、再停止并 wait base；
+成功路径显式删除后释放 ownership 标记。base cleanup 若任何 Service/Pod/Secret/prefix/lease 回收失败，现在无论原退出
+状态如何都返回专用状态 70；wrapper 接受正常的 SIGTERM 143，但把状态 70 或其他异常子进程状态传播为失败，避免
+APISERVER_ONLY 模式因预期终止信号掩盖清理错误。
+
+静态合同锁定唯一 workdir、base WORK_DIR 传递、namespace ownership、拒绝复用和禁止 `/tmp`；行为负测把 WORK_DIR 指向
+共享 state root，证明在启动 base 前拒绝。真实 watch soak 使用 4 个对象 × 3 次更新，12 个唯一更新全部观察到，端到端
+12 秒；结束后可见 KV、user、role、lease、alarm、既有 Kubernetes 资源 UID 集合均与运行前相等，prefix=0，本轮工作
+目录不存在，取得 watch wrapper live GREEN。
+
+脚本语法与 compat 全组通过，后者 Go 7.125 秒。611 项 production inventory 仍为 140/171/154/146；代码提交后四片
+Go 时间 121.258/351.949/229.434/367.350 秒，端到端时间 127.209/357.928/235.416/373.378 秒，全部通过。本项没有执行
+真实 Deployment rollout，因此 A5477 的 rollout/watch 连续性差距仍然存在；并发吞吐验证若要求同宿主多轮并行，应再为
+LOCAL_PORT 实现显式端口租约或由调度器分配不同端口，而不能把“安全失败”当成并发成功能力。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
