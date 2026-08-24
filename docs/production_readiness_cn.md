@@ -7325,6 +7325,43 @@ shell syntax、聚焦静态门禁和 compat 全组通过（compat Go 5.474 秒�
 本项只改变测试编排与防漏机制，不改变数据面二进制，因此沿用 A5456 精确 runtime 环境做现场验证，不新增或冒充新的
 数据面镜像证据。
 
+### A5458：默认 simple-token 完整差分发布证据闭环
+
+A5443 的精确镜像完整差分曾因单节点 Kind 上四套三副本数据面共享 TiKV/PD、后端持续超时而无法判定。本轮确认主
+数据面的 proposal health 已恢复后，先错误地把默认 reference runner 指向 `a5456-jwt-restored`：完整套件运行
+531.756 秒，仅 `TestHTTPGatewayConcurrencyAuthorizationDifferentialAgainstReferenceEtcd` RED；旧 token 在权限撤销、
+重新授予后返回 `etcdserver: revision of auth store is old`。该目标显式配置 JWT，而 runner 启动的 reference etcd 使用
+默认 simple token；JWT 按 etcd 契约把 token 绑定签发 auth revision，因此这不是同配置兼容差异，不能作为产品 RED。
+
+改用默认 simple-token 主数据面 `a5443-exact-full` 后，同一 HTTP concurrency authz 用例聚焦 Go 5.002 秒、端到端
+7.216 秒通过；随后从全新 reference etcd 重新执行默认完整差分，覆盖 runner 的全部默认选择式及其 preflight/cleanup，
+权威过滤重跑包级 `PASS`：Go 539.780 秒、端到端 542.319 秒，runner 退出码 0。reference 二进制 provenance 继续固定
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`。至此 A5443 的默认完整差分证据缺口关闭；auth、JWT、quota、外部
+L4/L7/Envoy、direct-replica、compaction 和 oversize 等输出中明确 SKIP 的专用拓扑仍必须由各自 runner 证明，不能
+由本次默认 GREEN 替代。
+
+本项没有修改数据面或测试代码，也没有生成新镜像；被测三 Pod 继续运行 A5443 精确 runtime digest。配置错误产生的
+JWT RED 被保留为证据边界，未通过放宽断言或重试旧 JWT token 改写为 GREEN。
+
+### A5459：默认差分 compat 前缀前后守恒
+
+A5458 完整 GREEN 后的独立审计发现 `/registry/etcd-client-compat/` 仍有一条 revision 2 的历史
+`TestAlarmGetDifferentialAgainstReferenceEtcd` key。其时间戳早于本轮，两次新运行生成的 key 均已由测试 cleanup 删除，
+所以它不是本轮语义失败；但默认 `run-differential.sh` 会容忍既有污染，也不会在 Go 测试失败后检查新残留，因而无法
+证明 disposable target 的前后状态守恒。该单个已精确解析、无 lease 的历史测试 artifact 已按完整 key 删除，未使用
+宽前缀删除。
+
+提交 `fb35537b` 为默认 runner 增加 `/registry/etcd-client-compat/` preflight/postflight 空检查：查询失败或 count 非零
+都 fail closed；Go 测试退出码先捕获，postflight 无论测试成功失败都执行，守恒通过后仍原样传播测试失败。行为负测
+提供完整 fake topology 并固定脏前缀必须在 reference etcd 启动前退出；静态合同同时固定两个检查点、精确查询和失败
+传播。shell syntax、runner 聚焦、compat 全组分别通过，compat Go 5.485 秒。
+
+真实默认 simple-token 主数据面在清空历史 artifact 后重跑 HTTP concurrency authz：Go 4.893 秒、端到端 7.020 秒，
+前后 prefix 检查均通过。611 项 inventory 仍为 140/171/154/146；精确代码提交后四片 Go 时间
+127.263/355.446/230.297/369.783 秒，端到端时间 133.147/361.305/236.252/375.731 秒，全部通过。
+该守恒只覆盖 canonical `/registry/etcd-client-compat/` 命名空间；使用二进制边界前缀、独立专用 keyspace 或外部
+故障拓扑的测试继续由各自 cleanup/runner 合同负责，不能据此宣称所有专用 scope 的存储状态已统一守恒。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
