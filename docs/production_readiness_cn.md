@@ -6969,6 +6969,28 @@ Kind 的四套 KubeBrain 同时把 TiKV/PD 推入持续超时，未修改的 aut
 3 副本 desired state。发布前必须在恢复后的独占或多节点 TiKV/PD 环境重新完成完整差分；不得把本轮聚焦 GREEN 或此前
 diagnostic 镜像的 518.528 秒完整 GREEN 替代精确提交的完整门禁。
 
+### A5444：差分入口规范化与精确镜像完整门禁闭环
+
+提交 `f0bb1dd6` 修正了上述 runner 缺陷：`KUBEBRAIN_ETCD_ENDPOINT` 可接收裸
+`host:port` 或 `http(s)://host:port`，HTTP gateway 保留 URL，而所有原始 gRPC client
+只接收去除 scheme 后的 authority；路径、query、fragment 和未知 scheme 均 fail closed。
+静态 runner 回归和 compat 模块全组通过，带 `http://172.18.0.2:30079` 的真实
+`TestClientAPIVersionDifferentialAgainstReferenceEtcd` 也已对 reference etcd
+`5cd9f4ee13801e18825d661e5005ae599460bc3a` 通过（Go 0.036 秒，端到端 2.342 秒）。
+
+独立 TiKV/PD 重启恢复完成后，连续三次 endpoint health 的端到端时间均为 0.106 秒，
+proposal commit 为 5.0–6.8 毫秒。随后同一精确 A5443 数据面镜像、一次性
+`a5443-exact-full` keyspace 使用带 scheme endpoint 完成完整 reference 差分：Go
+523.353 秒、端到端 525.213 秒，结果 PASS。需要独立 auth/JWT/quota、外部 Envoy/L4/L7
+代理或三条 reference 直连副本 endpoint 的专项测试仍按各自显式前置条件 SKIP，不能由本次
+主 endpoint 门禁替代；但 A5443 记录的“精确镜像完整差分未闭环”现已关闭。主数据面与三套
+辅助 StatefulSet 最终均恢复 3/3，Pod restartCount 为 0。
+
+`f0bb1dd6` 提交前 `hack/production/test-shard.sh --verify 4` inventory 为
+140/171/154/146；提交后四片 Go 时间 127.405/349.259/226.878/369.163 秒，端到端
+133.612/355.565/233.207/375.502 秒，全部通过。该结论仍只覆盖单节点 Kind 上的独立
+3 PD/3 TiKV 环境，不替代跨节点/AZ、持续负载、专项 auth/quota 和故障代理门禁。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
