@@ -61485,6 +61485,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确代码提交四片 139/171/153/146 全绿（Go 测试 118.367/346.501/217.522/353.969 秒；端到端
   124.149/352.276/223.356/359.793 秒）。
 
+- A5439 修复 future Watch 的 `RequestProgress` burst 仍会占满有界 worker、阻塞同流后续请求的活性差距。
+  对照 `/root/etcd@5cd9f4ee1/server/storage/mvcc/watchable_store.go::progressIfSync`：请求时 store revision
+  小于 watcher start revision 时立即返回 false，不等待该 watcher 日后追平；KubeBrain 此前只比较 delivered
+  watermark，每个确定不可能满足的 future 请求仍等待 100ms。连续 18 个请求会占用一个执行项和 16 个队列槽，
+  使第 18 个入队阻塞接收循环并扣留随后的 Cancel。提交 `3b295127` 在水位判断中增加 request-time target 与
+  start revision 的终态检查，并在入队前做零等待预判；真正等待 TiKV progress marker 的已开始 watcher 继续走
+  原有有界 worker，已同步请求仍产生规范 `WatchId=-1` 响应。新增确定性 RED 以 future revision 100 的 Watch、
+  18 个 Progress 和随后 Cancel 固定该窗口；修复前 50ms 内无法读取 Cancel，修复后相关普通集合连续 50 轮
+  1.875 秒、包含 clientv3 progress/水位场景的 race 集合连续 50 轮 14.009 秒通过，扩大后的 follower/权威握手/
+  progress race 集合连续 20 轮 205.367 秒、全部 Watch 连续 10 轮 112.653 秒、完整 server/proxy
+  125.303 秒/cached 通过。同期清除 A5430 遗留的 protobuf `MessageState` 锁复制：权威拒绝占位响应改用
+  `proto.Reset`/`proto.Merge`，保持指针身份与 ready 栅栏不变，server/proxy vet 与 diff check 全绿。609 项
+  production inventory 校验通过；精确代码提交四片 139/171/153/146 全绿（Go 测试
+  120.449/352.338/223.786/362.431 秒；端到端 126.316/358.200/229.626/368.269 秒）。本项不改变 TiKV
+  数据布局；本轮无 disposable TiKV/PD 双节点 endpoint，故不声称真实 follower/leader 数据面演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
