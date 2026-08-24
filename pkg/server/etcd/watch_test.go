@@ -3696,16 +3696,44 @@ func TestMinSyncedRevisionReportsSlowestWatch(t *testing.T) {
 }
 
 func TestStreamProgressRevisionRequiresImmediateFullSynchronization(t *testing.T) {
-	revision, ok := streamProgressRevision(map[int64]uint64{1: 9, 2: 7}, true, 7)
+	watches := map[int64]*watch{1: {syncedRev: 9}, 2: {syncedRev: 7}}
+	w := &watcher{watches: watches}
+	revision, ok, retry := w.progressRequestRevision(watchProgressRequest{target: 7, generations: watches})
 	require.True(t, ok)
+	require.False(t, retry)
 	require.Equal(t, uint64(7), revision)
 
-	_, ok = streamProgressRevision(map[int64]uint64{1: 9, 2: 7}, true, 8)
+	_, ok, retry = w.progressRequestRevision(watchProgressRequest{target: 8, generations: watches})
 	require.False(t, ok, "a stream-wide response must not pass the slowest watch")
-	_, ok = streamProgressRevision(map[int64]uint64{1: 9}, false, 7)
+	require.True(t, retry)
+	future := &watch{syncedRev: 9, progressStartRevision: 10}
+	w.watches = map[int64]*watch{1: future}
+	_, ok, retry = w.progressRequestRevision(watchProgressRequest{
+		target: 7, generations: map[int64]*watch{1: future},
+	})
 	require.False(t, ok, "an ineligible watch must suppress the stream-wide response")
-	_, ok = streamProgressRevision(nil, false, 1)
+	require.True(t, retry)
+	_, ok, retry = w.progressRequestRevision(watchProgressRequest{target: 1})
 	require.False(t, ok, "etcd emits no progress response without an active watch")
+	require.False(t, retry)
+}
+
+func BenchmarkHighCardinalityProgressRevisionCheck(b *testing.B) {
+	const watchCount = 10_000
+	watches := make(map[int64]*watch, watchCount)
+	for id := int64(1); id <= watchCount; id++ {
+		watches[id] = &watch{syncedRev: 50}
+	}
+	w := &watcher{watches: watches}
+	request := watchProgressRequest{target: 50, generations: watches}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		revision, synced, retry := w.progressRequestRevision(request)
+		if revision != 50 || !synced || retry {
+			panic("unexpected progress revision result")
+		}
+	}
 }
 
 // TestWatchProgressRequestNeverReportsBelowStart reproduces the progress

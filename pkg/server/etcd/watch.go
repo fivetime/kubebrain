@@ -392,22 +392,6 @@ func (w *watcher) progressSyncedRevSnapshot() (snapshot map[int64]uint64, allEli
 	return snapshot, allEligible
 }
 
-func streamProgressRevision(snapshot map[int64]uint64, allEligible bool, target uint64) (uint64, bool) {
-	if !allEligible || target == 0 {
-		return 0, false
-	}
-	minRevision := uint64(0)
-	for _, revision := range snapshot {
-		if minRevision == 0 || revision < minRevision {
-			minRevision = revision
-		}
-		if revision < target {
-			return 0, false
-		}
-	}
-	return minRevision, minRevision > 0
-}
-
 func (w *watcher) captureProgressRequest(target uint64) watchProgressRequest {
 	w.Lock()
 	defer w.Unlock()
@@ -426,7 +410,7 @@ func (w *watcher) progressRequestRevision(request watchProgressRequest) (revisio
 	}
 	w.Lock()
 	defer w.Unlock()
-	snapshot := make(map[int64]uint64, len(request.generations))
+	minRevision := uint64(0)
 	for id, generation := range request.generations {
 		if current := w.watches[id]; current != generation || generation.closing.Load() {
 			return 0, false, false
@@ -435,10 +419,14 @@ func (w *watcher) progressRequestRevision(request watchProgressRequest) (revisio
 		if generation.progressStartRevision > deliveredRevision {
 			return 0, false, true
 		}
-		snapshot[id] = deliveredRevision
+		if deliveredRevision < request.target {
+			return 0, false, true
+		}
+		if minRevision == 0 || deliveredRevision < minRevision {
+			minRevision = deliveredRevision
+		}
 	}
-	revision, synced = streamProgressRevision(snapshot, true, request.target)
-	return revision, synced, !synced
+	return minRevision, true, false
 }
 
 func (w *watcher) waitProgressRequest(request watchProgressRequest) (uint64, bool) {
