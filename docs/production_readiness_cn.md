@@ -7156,6 +7156,32 @@ Go 时间 133.112/351.949/231.642/366.686 秒，端到端时间 139.030/357.994/
 revision 均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。本轮只修复测试选择与并发
 revision oracle，不代表服务端语义变更，也不替代跨节点/AZ 或持续并发 soak。
 
+### A5451：三副本 HashKV compaction 从永久 SKIP 到破坏性专项
+
+提交 `ba6c8bb0` 关闭 `TestHashKVCompactionConvergesAcrossKubeBrainReplicas` 的 runner 选择缺口。该测试已有
+三副本直连 oracle，`run-direct-replica-consistency.sh` 也一直导出它需要的 `KUBEBRAIN_MULTI_ENDPOINTS`，
+但 runner 正则从未包含测试名，所以常规执行只会 SKIP。直接聚焦验证先证明现有服务端语义通过：三个不同副本
+依次写入、从第二个 revision compact 后，所有副本在边界 revision 可读、旧 revision 一致返回 compacted，物理
+compaction 收敛后的最新 hash/revision/watermark 完全一致；Go 1.985 秒、端到端 3.218 秒。
+
+runner 现在提供独立 `TEST_SCOPE=hashkv-compaction`。该 scope 不混入默认 `all`，因为 compact watermark 无法由
+测试 cleanup 回滚；除了既有 `ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY=true`，还必须显式设置
+`ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY=true`，否则在依赖探测、拓扑查询或数据 mutation 前 fail closed，
+并要求使用一次性实例。非法 scope 和非法布尔授权同样在依赖探测前退出。真实 runner 首轮 Go 1.982 秒、端到端
+3.614 秒通过，且既有测试 prefix、lease 与 alarm 前后守恒检查继续生效。
+
+精确提交镜像 `kubebrain:a5451-ba6c8bb0`（完整 revision
+`ba6c8bb0697bb9367fff9547c4700726529b4867`，本地 manifest list
+`sha256:b8ac5201ca15afd812defe42439deef18c50728adb14acc0586a9da9368ef6ac`，Kind runtime digest
+`sha256:b824025983db0c4b9d4be91ac02e536d4a86ee5e2e641a12d35da95a81148bf6`）在全新
+`a5451-hashkv-exact` keyspace 上完成相同专项：Go 2.745 秒、端到端 4.428 秒，reference etcd 工具
+provenance 为 `5cd9f4ee13801e18825d661e5005ae599460bc3a`。compat 全组 Go 4.734 秒、端到端
+6.009 秒；611 项 inventory 为 140/171/154/146，代码提交后四片 Go 时间
+120.908/357.814/226.244/365.627 秒，端到端时间 126.982/363.856/232.281/371.647 秒，全部通过。
+最终 JWT 数据面保持同一精确镜像并恢复到全新 `a5451-jwt-restored` keyspace，authRevision/data revision
+均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。该专项证明单次三副本 HashKV compact
+收敛，不替代高频/大历史 compaction、跨节点/AZ 或故障并发验证。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
