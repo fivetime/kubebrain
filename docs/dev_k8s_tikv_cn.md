@@ -49,14 +49,16 @@ hack/dev/version-info.sh
 需要批量验证多个 Kubernetes server 版本时，可以使用矩阵脚本。它会为每个 node image 创建独立 kind 集群并运行同一套验证：
 
 ```shell
-KIND_NODE_IMAGES="kindest/node:v1.35.4 kindest/node:v1.36.1" \
+KIND_NODE_IMAGES="kindest/node:v1.35.5 kindest/node:v1.36.1" \
 ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true \
 hack/dev/k8s-version-matrix.sh
 ```
 
 矩阵只管理本轮创建的一次性集群：启动前会拒绝任何同名 Kind 集群或 control-plane
-容器，不再静默删除既有环境；每个版本无论成功或失败都会删除本轮集群和隔离
-kubeconfig。创建/删除必须显式设置 `ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true`。
+容器，不再静默删除既有环境；`kind create cluster` 成功后才写入本轮私有目录中的
+创建证明，清理时只有证明内容与集群名精确一致才允许删除。创建失败不会产生证明，
+删除失败会保留证明供人工恢复；每个成功清理的版本同时删除隔离 kubeconfig 和证明。
+创建/删除必须显式设置 `ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true`。
 同一宿主的矩阵通过非阻塞文件锁串行使用固定 NodePort 和派生集群命名空间；并发
 运行会在访问 Docker/Kind 前 fail closed。
 

@@ -883,7 +883,7 @@ KIND_NODE_IMAGE=kindest/node:v1.36.1 KUBEBRAIN_REPLICAS=3 hack/dev/up.sh
 本地批量验证多个 Kubernetes server 版本：
 
 ```shell
-KIND_NODE_IMAGES="kindest/node:v1.35.4 kindest/node:v1.36.1" \
+KIND_NODE_IMAGES="kindest/node:v1.35.5 kindest/node:v1.36.1" \
 ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true \
 hack/dev/k8s-version-matrix.sh
 ```
@@ -892,7 +892,7 @@ hack/dev/k8s-version-matrix.sh
 
 ```shell
 RUN_K8S_VERSION_MATRIX=true \
-KIND_NODE_IMAGES="kindest/node:v1.35.4 kindest/node:v1.36.1" \
+KIND_NODE_IMAGES="kindest/node:v1.35.5 kindest/node:v1.36.1" \
 ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true \
 hack/dev/verify.sh
 ```
@@ -7990,6 +7990,29 @@ workload scale、rollout 与 readyReplicas。第三轮在连续 compact 后重�
 140/171/154/146。代码提交后四片 Go 时间 122.417/364.600/230.057/376.046 秒，端到端
 128.500/370.759/236.162/382.118 秒，全部通过。当前只证明单宿主 v1.36.1 的一次性矩阵；v1.35 回归、跨节点/AZ 与长时
 版本升级 soak 仍是独立证据缺口。
+
+### A5485：Kind 创建证明与 Kubernetes v1.35.5 真实矩阵
+
+A5484 在进入每个 matrix entry 前就把布尔 ownership 设为 true；若 `kind create cluster` 失败但外部进程在退出清理前创建
+同名集群，trap 仍可能按预期名称误删非本轮资源。提交 `690338f2` 将删除授权改为创建后的不可伪造事实：matrix 为每项创建
+077 私有临时目录并把其中尚不存在的绝对 marker 路径传给 `up.sh`；只有 `kind create cluster` 成功后，`up.sh` 才以
+noclobber 写入精确集群名。cleanup 只有在普通文件存在且内容精确匹配时才执行 `kind delete cluster`，不再依据预创建布尔值
+推断所有权。
+
+创建失败不会生成 marker；创建成功后的镜像构建失败会保留足以授权 trap 清理的 marker。若 matrix 预检与实际创建之间有
+外部同名集群出现，`up.sh` 在要求 marker 的模式下以状态 70 拒绝复用，不会在非自有集群继续部署。删除失败同样返回 70，
+保留 marker 和私有目录供人工确认与恢复；无 marker 但同名集群存在时明确拒绝删除。fake 生命周期回归覆盖 create failure、
+post-create failure、TOCTOU 既有集群、成功清理以及 delete failure 的 marker 保留，完整 compat Go 8.093 秒通过。
+
+文档曾示例 `kindest/node:v1.35.4`，但 registry manifest 实查该 tag 不存在；v1.35.0、v1.35.1、v1.35.5 可用，因此 Kind
+示例改为已验证的 v1.35.5（官方 `registry.k8s.io/kube-apiserver:v1.35.4` 是另一镜像，不受此修正影响）。真实
+v1.35.5 一次性矩阵以三副本 KubeBrain、三 PD、三 TiKV 完成基础 smoke、baseline HA 以及依次删除三个 KubeBrain Pod
+后的完整 smoke，最终 revision 206、alarm=0，总耗时 467.861 秒。退出后仅 `kubebrain-dbaas` 主集群存在，marker 无残留且
+matrix lock 可立即重取。
+
+611 项 production inventory 仍为 140/171/154/146；代码提交后四片 Go 时间
+133.598/369.448/231.892/376.237 秒，端到端 139.643/375.468/237.945/382.270 秒，全部通过。单宿主
+Kubernetes v1.35.5/v1.36.1 的基础与 HA 矩阵现已有证据；跨节点/AZ、版本间原地升级/回滚和长时 soak 仍是开放项。
 
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：

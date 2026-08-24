@@ -61636,6 +61636,21 @@ object/index 验证及最终 evidence fence 现在只覆盖 `revision > compactR
 KubeBrain Pod 后的三轮 smoke 全绿，最终 revision 206、alarm=0，矩阵退出后无临时集群。`pkg/server/etcd`、
 `pkg/backend`、compat 和代码提交后四分片全部通过；当前证据不替代 v1.35、跨节点/AZ 或长时升级 soak。
 
+### A5485：Kind cleanup 授权绑定创建完成
+
+A5484 的 pre-create ownership 布尔值仍存在失败竞态：`kind create` 没有成功时，cleanup 无法用该布尔值证明目标确由本轮
+创建。提交 `690338f2` 改用本轮 077 私有目录内的 creation marker；marker 只在 create 成功后以 noclobber 写入精确集群名，
+delete 前必须重新读取并精确匹配。create failure 不产生删除授权，delete failure 则保留 marker 并返回 70。要求 marker 的
+`up.sh` 还拒绝预检后出现的同名既有集群，关闭“不会误删但仍会部署到非自有集群”的 TOCTOU 窗口。fake 行为回归覆盖上述
+失败路径和成功回收，完整 compat 通过。
+
+真实 `kindest/node:v1.35.5` 矩阵在三 KubeBrain、三 PD、三 TiKV 上完成基础 smoke 与逐 Pod 删除 HA smoke，最终
+revision 206、alarm=0，总耗时 467.861 秒；退出后临时集群、kubeconfig 和 marker 均为 0，主集群保持存在，锁可立即重取。
+此前文档中的 `kindest/node:v1.35.4` registry tag 不存在，Kind 示例已修正为 v1.35.5；这不改变已验证的官方
+`kube-apiserver:v1.35.4` standalone 矩阵。611 项 inventory 为 140/171/154/146，精确代码提交四片 Go 时间
+133.598/369.448/231.892/376.237 秒，端到端 139.643/375.468/237.945/382.270 秒全部通过。v1.35 的单宿主基础/HA
+缺口关闭；跨节点/AZ、原地升级/回滚与长时版本 soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
