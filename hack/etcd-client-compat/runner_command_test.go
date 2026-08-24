@@ -1598,21 +1598,7 @@ func TestCompatCommandHelpersUseWaitDelay(t *testing.T) {
 }
 
 func TestRunnerPostflightsRemainReachableAfterTestFailure(t *testing.T) {
-	for _, script := range []string{
-		"run-alarm-restart-recovery.sh",
-		"run-auth-differential.sh",
-		"run-automatic-quota-differential.sh",
-		"run-cold-header-recovery.sh",
-		"run-differential.sh",
-		"run-direct-moveleader-differential.sh",
-		"run-direct-replica-consistency.sh",
-		"run-envoy-kubernetes-rollout.sh",
-		"run-jwt-differential.sh",
-		"run-make-mirror-differential.sh",
-		"run-rangestream-compaction-differential.sh",
-		"run-rangestream-oversize-differential.sh",
-		"run-replica-restart-revision.sh",
-	} {
+	for script := range readRunnerSafetyContracts(t) {
 		t.Run(script, func(t *testing.T) {
 			data, err := os.ReadFile(script)
 			require.NoError(t, err)
@@ -1624,6 +1610,65 @@ func TestRunnerPostflightsRemainReachableAfterTestFailure(t *testing.T) {
 			propagate := strings.Index(content[capture+postflight:], `if [[ "$test_status" -ne 0 ]]`)
 			require.NotEqual(t, -1, propagate, "runner must propagate the captured test failure after postflight")
 		})
+	}
+}
+
+type runnerSafetyContract struct {
+	approvalVariables []string
+	stateContract     string
+}
+
+func readRunnerSafetyContracts(t *testing.T) map[string]runnerSafetyContract {
+	t.Helper()
+	data, err := os.ReadFile("runner-safety-contracts.txt")
+	require.NoError(t, err)
+	contracts := make(map[string]runnerSafetyContract)
+	for lineNumber, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		require.Len(t, fields, 3, "runner safety manifest line %d", lineNumber+1)
+		script, approvals, stateContract := fields[0], strings.Split(fields[1], ","), fields[2]
+		require.Regexp(t, `^run-[a-z0-9-]+\.sh$`, script, "runner safety manifest line %d", lineNumber+1)
+		require.NotContains(t, contracts, script, "duplicate runner safety manifest entry %s", script)
+		require.Contains(t, map[string]struct{}{
+			"baseline-prefix-control": {}, "baseline-visible": {}, "baseline-visible-tls": {},
+			"disposable-empty": {}, "disposable-empty-owned-resources": {}, "recovery-prefix-control": {},
+		}, stateContract, "unknown state contract for %s", script)
+		contracts[script] = runnerSafetyContract{approvalVariables: approvals, stateContract: stateContract}
+	}
+	require.NotEmpty(t, contracts)
+	return contracts
+}
+
+func TestEveryGoTestRunnerHasSafetyContract(t *testing.T) {
+	contracts := readRunnerSafetyContracts(t)
+	runners, err := filepath.Glob("run-*.sh")
+	require.NoError(t, err)
+	discovered := make(map[string]struct{})
+	for _, runner := range runners {
+		data, readErr := os.ReadFile(runner)
+		require.NoError(t, readErr)
+		if !strings.Contains(string(data), "go test") {
+			continue
+		}
+		script := filepath.Base(runner)
+		discovered[script] = struct{}{}
+		contract, ok := contracts[script]
+		require.True(t, ok, "%s runs Go tests but has no runner safety contract", script)
+		content := string(data)
+		for _, approval := range contract.approvalVariables {
+			require.Regexp(t, `^ALLOW_(MUTATING|DESTRUCTIVE)_[A-Z0-9_]+$`, approval, script)
+			require.Contains(t, content, approval+`="${`+approval+`:-false}"`, "%s must default %s to false", script, approval)
+			require.GreaterOrEqual(t, strings.Count(content, approval), 3,
+				"%s must validate and enforce %s in addition to declaring it", script, approval)
+		}
+		require.NotEmpty(t, contract.stateContract)
+	}
+	for script := range contracts {
+		require.Contains(t, discovered, script, "stale runner safety contract for %s", script)
 	}
 }
 

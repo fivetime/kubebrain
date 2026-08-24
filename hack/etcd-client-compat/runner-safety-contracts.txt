@@ -1,0 +1,14 @@
+# runner approval environment variables (comma-separated) state contract
+run-alarm-restart-recovery.sh ALLOW_DESTRUCTIVE_ALARM_RESTART recovery-prefix-control
+run-auth-differential.sh ALLOW_DESTRUCTIVE_AUTH_DIFFERENTIAL disposable-empty
+run-automatic-quota-differential.sh ALLOW_DESTRUCTIVE_AUTOMATIC_QUOTA disposable-empty
+run-cold-header-recovery.sh ALLOW_DESTRUCTIVE_COLD_HEADER_RESTART recovery-prefix-control
+run-differential.sh ALLOW_DESTRUCTIVE_DIFFERENTIAL disposable-empty
+run-direct-moveleader-differential.sh ALLOW_MUTATING_DIRECT_MOVELEADER baseline-visible
+run-direct-replica-consistency.sh ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY,ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY baseline-prefix-control
+run-envoy-kubernetes-rollout.sh ALLOW_DESTRUCTIVE_ENVOY_ROLLOUT baseline-visible-tls
+run-jwt-differential.sh ALLOW_DESTRUCTIVE_JWT_DIFFERENTIAL disposable-empty
+run-make-mirror-differential.sh ALLOW_DESTRUCTIVE_MIRROR_DIFFERENTIAL disposable-empty
+run-rangestream-compaction-differential.sh ALLOW_DESTRUCTIVE_RANGESTREAM_COMPACTION disposable-empty
+run-rangestream-oversize-differential.sh ALLOW_DESTRUCTIVE_RANGESTREAM_OVERSIZE disposable-empty-owned-resources
+run-replica-restart-revision.sh ALLOW_DESTRUCTIVE_REPLICA_RESTART baseline-prefix-control
