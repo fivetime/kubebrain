@@ -1050,17 +1050,27 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 		WatchId:         id,
 		CompactRevision: compactRevision,
 	}
-	var serr error
 	if clientRequest && generation.authoritativeControl != nil {
 		// Another follower create awaiting the leader's authoritative
 		// acknowledgement can occupy a deferred slot in controlCh. Do not let it
 		// withhold cancellation of this logical watch indefinitely.
-		// Send still serializes on sendMu; closing was marked above, so no event
-		// from this generation can cross the terminal frame.
-		serr = w.Send(response)
-	} else {
-		serr = w.SendControl(response)
+		// Send still serializes on sendMu, but it must not run in the request loop:
+		// a client that stops reading can otherwise prevent the server from
+		// receiving another cancellation on the same multiplexed stream. Retain
+		// the generation in watches until Send finishes so an explicit ID cannot
+		// be reused ahead of its terminal frame. Close starts only after the
+		// request loop returns, so this Add precedes its controlWG.Wait.
+		w.controlWG.Add(1)
+		go func() {
+			defer w.controlWG.Done()
+			w.finishCancel(id, generation, w.Send(response))
+		}()
+		return
 	}
+	w.finishCancel(id, generation, w.SendControl(response))
+}
+
+func (w *watcher) finishCancel(id int64, generation *watch, serr error) {
 	// Reaching here means the terminal response is either already sent or ordered
 	// in controlCh. Only now may a create reuse this explicit ID.
 	w.Lock()

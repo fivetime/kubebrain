@@ -4124,6 +4124,15 @@ type halfClosedWatchServer struct {
 	once sync.Once
 }
 
+type blockedCancelSendWatchServer struct {
+	*controllableWatchServer
+	sendCount         atomic.Int64
+	recvCount         atomic.Int64
+	cancelSendStarted chan struct{}
+	releaseCancelSend chan struct{}
+	thirdRequestRead  chan struct{}
+}
+
 type contextIgnoringWatchServer struct {
 	*fakeWatchServer
 	entered chan struct{}
@@ -4145,6 +4154,26 @@ func (s *halfClosedWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
 		return request, nil
 	}
 	return nil, io.EOF
+}
+
+func (s *blockedCancelSendWatchServer) Send(resp *etcdserverpb.WatchResponse) error {
+	if s.sendCount.Add(1) == 2 {
+		close(s.cancelSendStarted)
+		select {
+		case <-s.releaseCancelSend:
+		case <-s.ctx.Done():
+			return s.ctx.Err()
+		}
+	}
+	return s.controllableWatchServer.Send(resp)
+}
+
+func (s *blockedCancelSendWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
+	request, err := s.controllableWatchServer.Recv()
+	if err == nil && s.recvCount.Add(1) == 3 {
+		close(s.thirdRequestRead)
+	}
+	return request, err
 }
 
 func (s *controllableWatchServer) Send(resp *etcdserverpb.WatchResponse) error {
@@ -4397,6 +4426,71 @@ func TestFollowerPendingCreateDoesNotBlockEstablishedWatchCancelResponse(t *test
 	response := stream.snapshot()[1]
 	require.True(t, response.Canceled)
 	require.Equal(t, int64(701), response.WatchId)
+
+	cancel()
+	require.Error(t, <-done)
+}
+
+func TestFollowerCancelSendBackpressureDoesNotBlockSameStreamRequests(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	results := make(chan etcdproxy.WatchResult, 1)
+	results <- etcdproxy.WatchResult{Created: true, Revision: 10}
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		watchFn: func(watchCtx context.Context, _ []byte, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			go func() {
+				<-watchCtx.Done()
+				close(results)
+			}()
+			return results, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	releaseCancelSend := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseCancelSend)
+		}
+	}()
+	stream := &blockedCancelSendWatchServer{
+		controllableWatchServer: &controllableWatchServer{
+			ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 3),
+		},
+		cancelSendStarted: make(chan struct{}),
+		releaseCancelSend: releaseCancelSend,
+		thirdRequestRead:  make(chan struct{}),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/backpressured"), WatchId: 711},
+	}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+		CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 711},
+	}}
+	select {
+	case <-stream.cancelSendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("follower cancellation response did not enter blocked Send")
+	}
+	stream.recv <- &etcdserverpb.WatchRequest{}
+	select {
+	case <-stream.thirdRequestRead:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("backpressured follower cancellation blocked the same-stream receive loop")
+	}
+
+	close(releaseCancelSend)
+	released = true
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
+	responses := stream.snapshot()
+	require.True(t, responses[1].Canceled)
+	require.Equal(t, int64(711), responses[1].WatchId)
 
 	cancel()
 	require.Error(t, <-done)
