@@ -1006,6 +1006,58 @@ func TestFollowerSerializableLatestRangeUsesProtectedCheckpoint(t *testing.T) {
 	require.Empty(t, empty.Kvs)
 }
 
+func TestFollowerSerializableLatestRangePrefersLeaderAndFallsBackToProtectedCheckpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		proxyErr     error
+		wantValue    string
+		wantRevision int64
+		wantUsed     bool
+	}{
+		{name: "healthy leader", wantValue: "leader", wantRevision: 41},
+		{name: "leader unavailable", proxyErr: status.Error(codes.Unavailable, "leader unavailable"), wantValue: "checkpoint", wantRevision: 23, wantUsed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			checkpoint := backend.SerializableCheckpoint{
+				Revision: 23, Timestamp: 99, CompactRevision: 7, ValidUntil: time.Now().Add(time.Minute),
+			}
+			shim := &checkpointRangeBackendShim{BackendShim: base.backend, checkpoint: checkpoint}
+			base.backend = shim
+			base.tokens.snapshots = newAuthSnapshotCache(shim)
+			forwarded := 0
+			base.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				rangeFn: func(_ context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+					forwarded++
+					require.True(t, request.Serializable)
+					if tc.proxyErr != nil {
+						return nil, tc.proxyErr
+					}
+					return &etcdserverpb.RangeResponse{
+						Header: txnHeader(tc.wantRevision),
+						Kvs: []*mvccpb.KeyValue{{
+							Key: append([]byte(nil), request.Key...), Value: []byte("leader"),
+							CreateRevision: tc.wantRevision, ModRevision: tc.wantRevision, Version: 1,
+						}},
+						Count: 1,
+					}, nil
+				},
+			}
+
+			response, err := base.Range(context.Background(), &etcdserverpb.RangeRequest{
+				Key: []byte("/checkpoint"), Serializable: true,
+			})
+			require.NoError(t, err)
+			require.Equal(t, 1, forwarded)
+			require.Equal(t, tc.wantUsed, shim.used)
+			require.Equal(t, tc.wantRevision, response.Header.Revision)
+			require.Equal(t, []byte(tc.wantValue), response.Kvs[0].Value)
+		})
+	}
+}
+
 func TestFreshLeaderSerializableLatestRangeFallsBackToProtectedCheckpoint(t *testing.T) {
 	base, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -1056,6 +1108,64 @@ func TestFreshLeaderSerializableReadonlyTxnFallsBackToProtectedCheckpoint(t *tes
 	require.True(t, response.Succeeded)
 	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
 	require.Equal(t, []byte("checkpoint"), response.Responses[0].GetResponseRange().Kvs[0].Value)
+}
+
+func TestFollowerSerializableReadonlyTxnPrefersLeaderAndFallsBackToProtectedCheckpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		proxyErr     error
+		wantValue    string
+		wantRevision int64
+		wantUsed     bool
+	}{
+		{name: "healthy leader", wantValue: "leader", wantRevision: 43},
+		{name: "leader unavailable", proxyErr: status.Error(codes.Unavailable, "leader unavailable"), wantValue: "checkpoint", wantRevision: 28, wantUsed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			checkpoint := backend.SerializableCheckpoint{
+				Revision: 28, Timestamp: 102, CompactRevision: 7, ValidUntil: time.Now().Add(time.Minute),
+			}
+			shim := &checkpointRangeBackendShim{BackendShim: base.backend, checkpoint: checkpoint}
+			base.backend = shim
+			base.tokens.snapshots = newAuthSnapshotCache(shim)
+			request := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+				RequestRange: &etcdserverpb.RangeRequest{Key: []byte("/success"), Serializable: true},
+			}}}}
+			forwarded := 0
+			base.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				txnFn: func(_ context.Context, got *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+					forwarded++
+					require.Equal(t, request, got)
+					if tc.proxyErr != nil {
+						return nil, tc.proxyErr
+					}
+					return &etcdserverpb.TxnResponse{
+						Header: txnHeader(tc.wantRevision), Succeeded: true,
+						Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{
+							ResponseRange: &etcdserverpb.RangeResponse{
+								Header: txnHeader(tc.wantRevision),
+								Kvs: []*mvccpb.KeyValue{{
+									Key: []byte("/success"), Value: []byte("leader"),
+									CreateRevision: tc.wantRevision, ModRevision: tc.wantRevision, Version: 1,
+								}},
+								Count: 1,
+							},
+						}}},
+					}, nil
+				},
+			}
+
+			response, err := base.Txn(context.Background(), request)
+			require.NoError(t, err)
+			require.Equal(t, 1, forwarded)
+			require.Equal(t, tc.wantUsed, shim.used)
+			require.Equal(t, tc.wantRevision, response.Header.Revision)
+			require.Equal(t, []byte(tc.wantValue), response.Responses[0].GetResponseRange().Kvs[0].Value)
+		})
+	}
 }
 
 func TestSerializableLiveReadFallbackErrors(t *testing.T) {

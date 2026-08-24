@@ -67,19 +67,66 @@ func (s *RPCServer) rangeWithAfterRead(
 	afterRead func(*etcdserverpb.RangeResponse) error,
 ) (response *etcdserverpb.RangeResponse, retErr error) {
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
-	if afterRead == nil && r != nil && r.Serializable && r.Revision <= 0 && leadingFresh {
+	if afterRead == nil && r != nil && r.Serializable && r.Revision <= 0 {
 		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
-			liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
-			response, err := s.rangeWithAfterReadOnce(liveCtx, r, nil)
-			cancel()
-			if err == nil || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
-				return response, err
+			if leadingFresh {
+				liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
+				response, err := s.rangeWithAfterReadOnce(liveCtx, r, nil)
+				cancel()
+				if err == nil || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
+					return response, err
+				}
+				s.metricCli.EmitCounter("read.serializable.checkpoint_fallback", 1)
+				return s.rangeWithAfterReadOnce(backend.WithSerializableCheckpoint(ctx, checkpoint), r, nil)
 			}
-			s.metricCli.EmitCounter("read.serializable.checkpoint_fallback", 1)
-			return s.rangeWithAfterReadOnce(backend.WithSerializableCheckpoint(ctx, checkpoint), r, nil)
+			if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
+				liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
+				response, err := s.proxyLatestSerializableRange(liveCtx, r)
+				cancel()
+				if err == nil || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
+					return response, err
+				}
+				s.metricCli.EmitCounter("read.serializable.follower_checkpoint_fallback", 1)
+				return s.rangeWithAfterReadOnce(backend.WithSerializableCheckpoint(ctx, checkpoint), r, nil)
+			}
 		}
 	}
 	return s.rangeWithAfterReadOnce(ctx, r, afterRead)
+}
+
+// proxyLatestSerializableRange preserves etcd's local serializable-read auth
+// boundary while sourcing fresher data from the leader. Unlike a linearizable
+// follower proxy, this path must authorize before forwarding and retain the
+// request-start auth-revision fence after the remote read completes.
+func (s *RPCServer) proxyLatestSerializableRange(
+	ctx context.Context,
+	r *etcdserverpb.RangeRequest,
+) (response *etcdserverpb.RangeResponse, retErr error) {
+	if err := validateRangeRequest(r); err != nil {
+		return nil, err
+	}
+	caller, err := s.authCallerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = caller.require(r.Key, r.RangeEnd, authpb.READ); err != nil {
+		return nil, err
+	}
+	defer func() {
+		authErr := s.ensureAuthRevisionAfterSerializedRead(ctx, caller)
+		if authErr != nil && (retErr == nil || errors.Is(authErr, rpctypes.ErrAuthOldRevision)) {
+			retErr = authErr
+		}
+	}()
+	proxyCtx, err := s.forwardAuthToken(ctx, caller)
+	if err != nil {
+		return nil, err
+	}
+	response, err = s.peers.Range(proxyCtx, r)
+	response, err = validateKVProxyResult(s.metricCli, kvProxyRPCRange, response, err)
+	response, err = validateRangeProxyPayload(s.metricCli, r, response, err)
+	s.observeForwardedRevision(response.GetHeader(), err)
+	return response, err
 }
 
 func (s *RPCServer) rangeWithAfterReadOnce(
@@ -269,20 +316,22 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	startTime := time.Now()
 	ctx := rs.Context()
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
-	if r != nil && r.Serializable && r.Revision <= 0 && leadingFresh {
+	if r != nil && r.Serializable && r.Revision <= 0 {
 		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
-			liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
-			liveStream := &contextRangeStreamServer{KV_RangeStreamServer: rs, ctx: liveCtx}
-			err := s.rangeStreamOnce(r, liveStream, startTime)
-			cancel()
-			if err == nil || liveStream.sent > 0 || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
-				return err
+			if leadingFresh || (!s.peers.IsLeader() && s.peers.EtcdProxyEnabled()) {
+				liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
+				liveStream := &contextRangeStreamServer{KV_RangeStreamServer: rs, ctx: liveCtx}
+				err := s.rangeStreamOnce(r, liveStream, startTime)
+				cancel()
+				if err == nil || liveStream.sent > 0 || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
+					return err
+				}
+				s.metricCli.EmitCounter("read.range_stream.checkpoint_fallback", 1)
+				return s.rangeStreamOnce(r, &contextRangeStreamServer{
+					KV_RangeStreamServer: rs,
+					ctx:                  backend.WithSerializableCheckpoint(ctx, checkpoint),
+				}, startTime)
 			}
-			s.metricCli.EmitCounter("read.range_stream.checkpoint_fallback", 1)
-			return s.rangeStreamOnce(r, &contextRangeStreamServer{
-				KV_RangeStreamServer: rs,
-				ctx:                  backend.WithSerializableCheckpoint(ctx, checkpoint),
-			}, startTime)
 		}
 	}
 	return s.rangeStreamOnce(r, &contextRangeStreamServer{KV_RangeStreamServer: rs, ctx: ctx}, startTime)
@@ -327,10 +376,33 @@ func (s *RPCServer) rangeStreamOnce(
 	if hasRangeRevisionFilters(r) {
 		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
 	}
-	if !r.Serializable && s.peers.EtcdProxyEnabled() {
+	_, protectedSerializable := backend.SerializableCheckpointFromContext(ctx)
+	proxyLatestSerializable := r.Serializable && r.Revision <= 0 && !protectedSerializable && !s.peers.IsLeader()
+	if (!r.Serializable || proxyLatestSerializable) && s.peers.EtcdProxyEnabled() {
 		_, leadingFresh := s.peers.EpochAndLeadingFresh()
 		if !leadingFresh {
-			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			proxyCtx := ctx
+			var (
+				caller *authCaller
+				err    error
+			)
+			if proxyLatestSerializable {
+				caller, err = s.authCallerFromContext(ctx)
+				if err == nil {
+					err = caller.require(r.Key, r.RangeEnd, authpb.READ)
+				}
+				if err == nil {
+					proxyCtx, err = s.forwardAuthToken(ctx, caller)
+				}
+				defer func() {
+					authErr := s.ensureAuthRevisionAfterSerializedRead(ctx, caller)
+					if authErr != nil && (retErr == nil || errors.Is(authErr, rpctypes.ErrAuthOldRevision)) {
+						retErr = authErr
+					}
+				}()
+			} else {
+				proxyCtx, err = s.forwardWriteAuthContext(ctx)
+			}
 			if err != nil {
 				return err
 			}
@@ -798,8 +870,8 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	emitEtcdMVCCTxnCounter(s.metricCli, 1)
 	if txn != nil && txnIsReadonly(txn) && txnIsSerializable(txn) {
 		_, leadingFresh := s.peers.EpochAndLeadingFresh()
-		if leadingFresh {
-			if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+			if leadingFresh {
 				liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
 				response, err := s.txnOnce(liveCtx, txn)
 				cancel()
@@ -809,9 +881,50 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 				s.metricCli.EmitCounter("read.serializable_txn.checkpoint_fallback", 1)
 				return s.txnOnce(backend.WithSerializableCheckpoint(ctx, checkpoint), txn)
 			}
+			if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
+				liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
+				response, err := s.proxyLatestSerializableTxn(liveCtx, txn)
+				cancel()
+				if err == nil || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
+					return response, err
+				}
+				s.metricCli.EmitCounter("read.serializable_txn.follower_checkpoint_fallback", 1)
+				return s.txnOnce(backend.WithSerializableCheckpoint(ctx, checkpoint), txn)
+			}
 		}
 	}
 	return s.txnOnce(ctx, txn)
+}
+
+func (s *RPCServer) proxyLatestSerializableTxn(
+	ctx context.Context,
+	txn *etcdserverpb.TxnRequest,
+) (response *etcdserverpb.TxnResponse, retErr error) {
+	if err := validateTxnRequestWithMaxOps(txn, s.maxTxnOps); err != nil {
+		return nil, err
+	}
+	caller, err := s.authCallerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.authorizeTxn(caller, txn); err != nil {
+		return nil, err
+	}
+	defer func() {
+		authErr := s.ensureAuthRevisionAfterSerializedRead(ctx, caller)
+		if authErr != nil && (retErr == nil || errors.Is(authErr, rpctypes.ErrAuthOldRevision)) {
+			retErr = authErr
+		}
+	}()
+	proxyCtx, err := s.forwardAuthToken(ctx, caller)
+	if err != nil {
+		return nil, err
+	}
+	response, err = s.peers.Txn(proxyCtx, txn)
+	response, err = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, err)
+	response, err = validateTxnProxyPayload(s.metricCli, txn, response, err)
+	s.observeForwardedRevision(response.GetHeader(), err)
+	return response, err
 }
 
 func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (response *etcdserverpb.TxnResponse, retErr error) {

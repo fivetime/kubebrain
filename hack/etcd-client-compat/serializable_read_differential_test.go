@@ -21,6 +21,14 @@ type serializableReadResult struct {
 	historyHeaderDelta int64
 }
 
+// A protected KubeBrain checkpoint is intentionally allowed to trail the
+// latest write by TiKV's resolved-ts publication interval plus the generation
+// grace that retains snapshots used by in-flight unary RPCs. Serializable etcd
+// reads permit stale data; differential scenarios that need a particular write
+// first wait for this bounded production checkpoint rather than assuming the
+// reference server's local apply latency.
+const serializableCheckpointConvergenceTimeout = 75 * time.Second
+
 func TestSerializableRangeSurvivesKubeBrainLeaderDeletion(t *testing.T) {
 	endpoint := os.Getenv("KUBEBRAIN_SERIALIZABLE_FOLLOWER_ENDPOINT")
 	leaderPod := os.Getenv("KUBEBRAIN_SERIALIZABLE_LEADER_POD")
@@ -161,9 +169,13 @@ func requireSerializableRevisionVisible(
 		lastRevision int64
 		lastErr      error
 	)
-	deadline := time.NewTimer(75 * time.Second)
+	deadline := time.NewTimer(serializableCheckpointConvergenceTimeout)
 	defer deadline.Stop()
-	ticker := time.NewTicker(20 * time.Millisecond)
+	// A temporarily unavailable protected generation must not turn one
+	// differential assertion into a 50 QPS retry storm against the same
+	// load-balanced replica. This probe measures bounded convergence; 250ms is
+	// frequent enough to observe it without starving checkpoint refresh work.
+	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		response, err := kv.Range(ctx, &etcdserverpb.RangeRequest{

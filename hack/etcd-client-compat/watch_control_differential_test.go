@@ -216,7 +216,7 @@ func runWatchInvalidControlScenario(t *testing.T, endpoint, instance string) []w
 	outcomes := make([]watchControlOutcome, 0, 3)
 	for len(outcomes) < 3 {
 		resp, recvErr := stream.Recv()
-		require.NoError(t, recvErr)
+		require.NoErrorf(t, recvErr, "received watch controls before stream failure: %+v", outcomes)
 		outcomes = append(outcomes, observeWatchControlResponse(resp, seed.Header))
 	}
 	type receiveResult struct {

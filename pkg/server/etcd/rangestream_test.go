@@ -625,6 +625,66 @@ func TestFollowerLinearizableRangeStreamProxiesBeforeLocalBarrier(t *testing.T) 
 	require.Equal(t, []*etcdserverpb.RangeStreamResponse{want}, stream.sent)
 }
 
+func TestFollowerSerializableLatestRangeStreamPrefersLeaderAndFallsBackBeforeFirstFrame(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		proxyErr  error
+		wantValue string
+		wantRev   int64
+		wantUsed  bool
+	}{
+		{name: "healthy leader", wantValue: "leader", wantRev: 47},
+		{name: "leader unavailable", proxyErr: status.Error(codes.Unavailable, "leader unavailable"), wantValue: "checkpoint", wantRev: 41, wantUsed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, cleanup := newRangeStreamTestServer(t)
+			defer cleanup()
+			checkpoint := backend.SerializableCheckpoint{
+				Revision: 41, Timestamp: 111, CompactRevision: 9, ValidUntil: time.Now().Add(time.Minute),
+			}
+			checkpointRange := &checkpointRangeBackendShim{BackendShim: server.backend, checkpoint: checkpoint}
+			checkpointStream := &checkpointRangeStreamBackendShim{checkpointRangeBackendShim: checkpointRange}
+			server.backend = checkpointStream
+			server.tokens.snapshots = newAuthSnapshotCache(checkpointStream)
+			request := &etcdserverpb.RangeRequest{
+				Key: []byte("/checkpoint/"), RangeEnd: []byte("/checkpoint0"), Serializable: true,
+			}
+			forwarded := 0
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				rangeStreamFn: func(_ context.Context, got *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+					forwarded++
+					require.Equal(t, request, got)
+					if tc.proxyErr != nil {
+						return nil, tc.proxyErr
+					}
+					results := make(chan etcdproxy.RangeStreamResult, 1)
+					results <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
+						RangeResponse: &etcdserverpb.RangeResponse{
+							Header: txnHeader(tc.wantRev), Count: 1,
+							Kvs: []*mvccpb.KeyValue{{
+								Key: []byte("/checkpoint/key"), Value: []byte("leader"),
+								CreateRevision: tc.wantRev, ModRevision: tc.wantRev, Version: 1,
+							}},
+						},
+					}}
+					close(results)
+					return results, nil
+				},
+			}
+
+			stream := &fakeRangeStreamServer{ctx: context.Background()}
+			require.NoError(t, server.RangeStream(request, stream))
+			require.Equal(t, 1, forwarded)
+			require.Equal(t, tc.wantUsed, checkpointStream.used)
+			require.NotEmpty(t, stream.sent)
+			terminal := stream.sent[len(stream.sent)-1].GetRangeResponse()
+			require.Equal(t, tc.wantRev, terminal.GetHeader().GetRevision())
+			require.Equal(t, []byte(tc.wantValue), terminal.Kvs[0].Value)
+		})
+	}
+}
+
 func TestFollowerRangeStreamRejectsInvalidProxyTermination(t *testing.T) {
 	tests := []struct {
 		name       string

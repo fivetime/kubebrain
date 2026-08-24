@@ -3258,16 +3258,24 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 	err = server.Watch(stream)
 	requireWatchStatusError(t, err, codes.Unavailable, barrierErr.Error())
 	require.Equal(t, int64(2), barrierCalls.Load(), "client cancel must not enter the read barrier")
-	require.Contains(t, []int{1, 2}, len(stream.sent), "cancel may overtake the async leader acknowledgement")
-	canceled := stream.sent[len(stream.sent)-1]
-	require.True(t, canceled.Canceled)
-	require.Empty(t, canceled.CancelReason)
-	require.Equal(t, int64(415), canceled.WatchId)
-	require.Equal(t, int64(61), canceled.Header.Revision)
-	if len(stream.sent) == 2 {
-		require.True(t, stream.sent[0].Created)
-		require.False(t, stream.sent[0].Canceled)
-		require.Equal(t, int64(415), stream.sent[0].WatchId)
+	stream.mu.Lock()
+	responses := append([]*etcdserverpb.WatchResponse(nil), stream.sent...)
+	stream.mu.Unlock()
+	// The later barrier error may terminate the whole RPC before either async
+	// control is delivered. If delivery wins that race, cancellation must never
+	// overtake the authoritative Created acknowledgement.
+	require.Contains(t, []int{0, 1, 2}, len(responses))
+	if len(responses) >= 1 {
+		require.True(t, responses[0].Created)
+		require.False(t, responses[0].Canceled)
+		require.Equal(t, int64(415), responses[0].WatchId)
+	}
+	if len(responses) == 2 {
+		canceled := responses[1]
+		require.True(t, canceled.Canceled)
+		require.Empty(t, canceled.CancelReason)
+		require.Equal(t, int64(415), canceled.WatchId)
+		require.Equal(t, int64(61), canceled.Header.Revision)
 	}
 	require.Eventually(t, func() bool {
 		select {
@@ -4372,7 +4380,7 @@ func TestFollowerWatchPublishesCreatedOnlyAfterAuthoritativeAcknowledgement(t *t
 	require.Error(t, <-done)
 }
 
-func TestFollowerPendingAuthoritativeCreateDoesNotBlockSameStreamCancel(t *testing.T) {
+func TestFollowerPendingAuthoritativeCreateOrdersCreatedBeforeCancel(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -4395,7 +4403,7 @@ func TestFollowerPendingAuthoritativeCreateDoesNotBlockSameStreamCancel(t *testi
 	defer cancel()
 	stream := &controllableWatchServer{
 		ctx:  ctx,
-		recv: make(chan *etcdserverpb.WatchRequest, 2),
+		recv: make(chan *etcdserverpb.WatchRequest, 3),
 	}
 	done := make(chan error, 1)
 	go func() { done <- server.Watch(stream) }()
@@ -4410,16 +4418,27 @@ func TestFollowerPendingAuthoritativeCreateDoesNotBlockSameStreamCancel(t *testi
 	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
 		CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 707},
 	}}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
+		ProgressRequest: &etcdserverpb.WatchProgressRequest{},
+	}}
+	require.Never(t, func() bool { return len(stream.snapshot()) != 0 }, 50*time.Millisecond, time.Millisecond,
+		"follower cancellation overtook the authoritative create acknowledgement")
+	results <- etcdproxy.WatchResult{Created: true, Revision: 99}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
+	responses := stream.snapshot()
+	require.True(t, responses[0].Created)
+	require.False(t, responses[0].Canceled)
+	require.Equal(t, int64(707), responses[0].WatchId)
+	require.True(t, responses[1].Canceled)
+	require.False(t, responses[1].Created)
+	require.Equal(t, int64(707), responses[1].WatchId)
+	require.Never(t, func() bool { return len(stream.snapshot()) > 2 }, 150*time.Millisecond, time.Millisecond,
+		"cancel-pending watch remained eligible for a stream progress response")
 	select {
 	case <-proxyCanceled:
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("pending authoritative create blocked same-stream cancel")
+	case <-time.After(time.Second):
+		t.Fatal("ordered follower cancellation did not stop the proxy watch")
 	}
-	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
-	response := stream.snapshot()[0]
-	require.True(t, response.Canceled)
-	require.Equal(t, int64(707), response.WatchId)
-	require.False(t, response.Created)
 
 	cancel()
 	require.Error(t, <-done)

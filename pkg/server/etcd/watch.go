@@ -204,6 +204,8 @@ type watch struct {
 	authoritativeControl     *etcdserverpb.WatchResponse
 	authoritativeReady       chan struct{}
 	authoritativeDone        chan error
+	authoritativeSent        chan struct{}
+	cancelPending            atomic.Bool
 }
 
 type periodicProgressState struct {
@@ -378,7 +380,7 @@ func (w *watcher) progressSyncedRevSnapshot() (snapshot map[int64]uint64, allEli
 		// as soon as cancellation begins. In particular, do not let a slow compact
 		// revision lookup manufacture a WatchId=-1 progress response for a watch
 		// that can no longer deliver events.
-		if wt.closing.Load() {
+		if wt.closing.Load() || wt.cancelPending.Load() {
 			continue
 		}
 		active++
@@ -397,7 +399,7 @@ func (w *watcher) captureProgressRequest(target uint64) watchProgressRequest {
 	defer w.Unlock()
 	generations := make(map[int64]*watch, len(w.watches))
 	for id, generation := range w.watches {
-		if !generation.closing.Load() {
+		if !generation.closing.Load() && !generation.cancelPending.Load() {
 			generations[id] = generation
 		}
 	}
@@ -412,7 +414,7 @@ func (w *watcher) progressRequestRevision(request watchProgressRequest) (revisio
 	defer w.Unlock()
 	minRevision := uint64(0)
 	for id, generation := range request.generations {
-		if current := w.watches[id]; current != generation || generation.closing.Load() {
+		if current := w.watches[id]; current != generation || generation.closing.Load() || generation.cancelPending.Load() {
 			return 0, false, false
 		}
 		// Match upstream progressIfSync's request-time revision check. A watch
@@ -467,7 +469,7 @@ func (w *watcher) minSyncedRevision() (uint64, bool) {
 	var minRev uint64
 	found := false
 	for _, wt := range w.watches {
-		if wt.closing.Load() {
+		if wt.closing.Load() || wt.cancelPending.Load() {
 			continue
 		}
 		rev := atomic.LoadUint64(&wt.syncedRev)
@@ -896,6 +898,7 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		generation.authoritativeControl = &etcdserverpb.WatchResponse{}
 		generation.authoritativeReady = make(chan struct{})
 		generation.authoritativeDone = make(chan error, 1)
+		generation.authoritativeSent = make(chan struct{})
 		select {
 		case w.controlCh <- watchControlResponse{
 			resp:       generation.authoritativeControl,
@@ -1028,6 +1031,27 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 	tags = append(tags, metrics.Tag("compact", strconv.FormatBool(compact)))
 	w.metricCli.EmitCounter("watch.cancel", 1, tags...)
 	w.Lock()
+	if clientRequest && expected == nil {
+		if generation := w.watches[id]; generation != nil && generation.authoritativeSent != nil &&
+			generation.cancelPending.CompareAndSwap(false, true) {
+			w.Unlock()
+			response := &etcdserverpb.WatchResponse{
+				Header: txnHeader(int64(w.clientCancelResponseRevision())), Canceled: true, WatchId: id,
+			}
+			if w.queueDeferredDirectControl(response, generation) {
+				return
+			}
+			select {
+			case <-generation.authoritativeSent:
+			case <-w.watchServer.Context().Done():
+				return
+			}
+			if w.beginDeferredClientCancel(id, generation) {
+				w.finishCancel(id, generation, w.Send(response))
+			}
+			return
+		}
+	}
 	found := false
 	quotaHeld := false
 	var generation *watch
@@ -1111,6 +1135,24 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 		return
 	}
 	w.finishCancel(id, generation, w.SendControl(response))
+}
+
+func (w *watcher) beginDeferredClientCancel(id int64, generation *watch) bool {
+	w.Lock()
+	if w.watches[id] != generation || !generation.closing.CompareAndSwap(false, true) {
+		w.Unlock()
+		return false
+	}
+	quotaHeld := generation.quotaHeld
+	generation.quotaHeld = false
+	if generation.cancel != nil {
+		generation.cancel()
+	}
+	w.Unlock()
+	if quotaHeld {
+		w.grpcServer.releaseWatch()
+	}
+	return true
 }
 
 func (w *watcher) finishCancel(id int64, generation *watch, serr error) {
@@ -1239,11 +1281,17 @@ func (w *watcher) sendControls() {
 				if control.done != nil {
 					control.done <- context.Canceled
 				}
+				if control.generation != nil && control.generation.authoritativeSent != nil {
+					close(control.generation.authoritativeSent)
+				}
 				continue
 			}
 			if control.generation != nil && !control.resp.Canceled && control.generation.closing.Load() {
 				if control.done != nil {
 					control.done <- context.Canceled
+				}
+				if control.generation.authoritativeSent != nil {
+					close(control.generation.authoritativeSent)
 				}
 				continue
 			}
@@ -1262,6 +1310,9 @@ func (w *watcher) sendControls() {
 		if control.done != nil {
 			control.done <- err
 		}
+		if control.ready != nil && control.generation != nil && control.generation.authoritativeSent != nil {
+			close(control.generation.authoritativeSent)
+		}
 		if err != nil {
 			if !isExpectedWatchCloseError(err) {
 				w.metricCli.EmitCounter("watch.control.send.err", 1)
@@ -1278,6 +1329,14 @@ func (w *watcher) startDirectControls() {
 }
 
 func (w *watcher) queueDirectControl(resp *etcdserverpb.WatchResponse, generation *watch) bool {
+	return w.queueDirectControlAfter(resp, generation, nil)
+}
+
+func (w *watcher) queueDeferredDirectControl(resp *etcdserverpb.WatchResponse, generation *watch) bool {
+	return w.queueDirectControlAfter(resp, generation, generation.authoritativeSent)
+}
+
+func (w *watcher) queueDirectControlAfter(resp *etcdserverpb.WatchResponse, generation *watch, ready <-chan struct{}) bool {
 	if w.directControlCh == nil {
 		return false
 	}
@@ -1285,7 +1344,7 @@ func (w *watcher) queueDirectControl(resp *etcdserverpb.WatchResponse, generatio
 	w.directControlMu.Lock()
 	defer w.directControlMu.Unlock()
 	select {
-	case w.directControlCh <- watchControlResponse{resp: resp, generation: generation, barrier: barrier}:
+	case w.directControlCh <- watchControlResponse{resp: resp, generation: generation, barrier: barrier, ready: ready}:
 		// Publishing the barrier while holding directControlMu makes every later
 		// ordinary control observe this cancellation before it can enter controlCh.
 		w.directControlBarrier = barrier
@@ -1298,6 +1357,19 @@ func (w *watcher) queueDirectControl(resp *etcdserverpb.WatchResponse, generatio
 func (w *watcher) sendDirectControls() {
 	defer w.controlWG.Done()
 	for control := range w.directControlCh {
+		if control.ready != nil {
+			select {
+			case <-control.ready:
+			case <-w.watchServer.Context().Done():
+				control.barrier.err = w.watchServer.Context().Err()
+				close(control.barrier.done)
+				continue
+			}
+			if !w.beginDeferredClientCancel(control.resp.WatchId, control.generation) {
+				close(control.barrier.done)
+				continue
+			}
+		}
 		err := w.Send(control.resp)
 		w.finishCancel(control.resp.WatchId, control.generation, err)
 		control.barrier.err = err

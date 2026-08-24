@@ -197,8 +197,9 @@ func TestDifferentialRunnerTestsUseBoundedScriptHelper(t *testing.T) {
 func TestDifferentialRunnerSelectsScenariosNotRunnerSelfTests(t *testing.T) {
 	script, err := os.ReadFile("run-differential.sh")
 	require.NoError(t, err)
-	require.Contains(t, string(script), "-run 'Differential(Against|$)'",
-		"the live runner must not inherit its own opt-in environment into runner unit tests")
+	require.Contains(t, string(script), `TEST_RUN_PATTERN="${TEST_RUN_PATTERN:-Differential(Against|$)}"`)
+	require.Contains(t, string(script), `-run "$TEST_RUN_PATTERN"`,
+		"the live runner must default to differential scenarios while allowing an explicit focused reproduction")
 	require.NotContains(t, string(script), "-run Differential -count=1")
 }
 

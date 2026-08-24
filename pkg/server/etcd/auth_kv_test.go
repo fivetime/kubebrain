@@ -130,6 +130,7 @@ func TestAuthFollowerUnaryRangeDelegatesReadBarrierBeforeAuth(t *testing.T) {
 	var barrierCalls int
 	var proxyCalls int
 	var streamProxyCalls int
+	var txnProxyCalls int
 	server.peers = testPeerService{
 		proxyEnabled: true,
 		syncReadFn: func(context.Context) error {
@@ -142,6 +143,10 @@ func TestAuthFollowerUnaryRangeDelegatesReadBarrierBeforeAuth(t *testing.T) {
 		},
 		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
 			streamProxyCalls++
+			return nil, status.Error(codes.Unavailable, barrierErr.Error())
+		},
+		txnFn: func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+			txnProxyCalls++
 			return nil, status.Error(codes.Unavailable, barrierErr.Error())
 		},
 	}
@@ -176,6 +181,15 @@ func TestAuthFollowerUnaryRangeDelegatesReadBarrierBeforeAuth(t *testing.T) {
 	require.Zero(t, barrierCalls)
 	require.Equal(t, 2, proxyCalls)
 	require.Equal(t, 1, streamProxyCalls)
+
+	_, err = server.Txn(plain, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: []byte("/allowed/a"), Serializable: true,
+		}},
+	}}})
+	requireAuthKVError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+	require.Zero(t, barrierCalls)
+	require.Zero(t, txnProxyCalls)
 }
 
 func TestAuthRangeValidationPrecedesReadBarrierAndAuthLikeEtcd(t *testing.T) {
