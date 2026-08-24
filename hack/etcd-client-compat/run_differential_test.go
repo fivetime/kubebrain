@@ -159,6 +159,26 @@ if [[ "$*" == *"get  --from-key --limit=1 -w json"* ]]; then
   printf '%s\n' '{"count":0}'
   exit 0
 fi
+if [[ "$*" == *"auth status -w json"* ]]; then
+  printf '%s\n' '{"enabled":false,"authRevision":17}'
+  exit 0
+fi
+if [[ "$*" == *"user list -w json"* ]]; then
+  printf '%s\n' '{"users":[]}'
+  exit 0
+fi
+if [[ "$*" == *"role list -w json"* ]]; then
+  printf '%s\n' '{"roles":[]}'
+  exit 0
+fi
+if [[ "$*" == *"lease list -w json"* ]]; then
+  printf '%s\n' '{"leases":[]}'
+  exit 0
+fi
+if [[ "$*" == *"alarm list -w json"* ]]; then
+  printf '%s\n' '{"alarms":[]}'
+  exit 0
+fi
 if [[ "$*" == *"endpoint health"* ]]; then
   exit 0
 fi
@@ -237,6 +257,56 @@ func TestDifferentialRunnerRequiresEntireUserKeyspaceConservation(t *testing.T) 
 	require.Contains(t, content, "assert_user_keyspace_empty preflight")
 	require.Contains(t, content, "assert_user_keyspace_empty postflight")
 	require.Contains(t, content, "get '' --from-key --limit=1 -w json")
+}
+
+func TestDifferentialRunnerRequiresDisposableControlState(t *testing.T) {
+	script, err := os.ReadFile("run-differential.sh")
+	require.NoError(t, err)
+	content := string(script)
+	require.Contains(t, content, "assert_disposable_control_state preflight")
+	require.Contains(t, content, "assert_disposable_control_state postflight")
+	for _, command := range []string{"auth status", "user list", "role list", "lease list", "alarm list"} {
+		require.Contains(t, content, command+" -w json")
+	}
+	require.Contains(t, content, "(.enabled // false) == false")
+}
+
+func TestDifferentialRunnerRejectsDirtyControlStateBeforeReferenceStart(t *testing.T) {
+	dir := t.TempDir()
+	fakeEtcd := writeFakeReferenceEtcd(t, dir)
+	fakeEtcdctl := filepath.Join(dir, "etcdctl")
+	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'Git SHA: d947b2086\n'
+  exit 0
+fi
+case "$*" in
+  *"member list -w json"*) printf '%s\n' '{"members":[{"name":"kubebrain-0","clientURLs":["http://127.0.0.1:22379"]}]}' ;;
+  *"endpoint status -w json"*) printf '%s\n' '[{"Status":{"dbSizeQuota":1073741824}}]' ;;
+  *"get /registry/etcd-client-compat/ --prefix --limit=1 -w json"*|*"get  --from-key --limit=1 -w json"*) printf '%s\n' '{"count":0}' ;;
+  *"auth status -w json"*) printf '%s\n' '{"enabled":false,"authRevision":17}' ;;
+  *"user list -w json"*) printf '%s\n' '{"users":[]}' ;;
+  *"role list -w json"*) printf '%s\n' '{"roles":[]}' ;;
+  *"lease list -w json"*) printf '%s\n' '{"leases":[{"ID":1234}]}' ;;
+  *"alarm list -w json"*) printf '%s\n' '{"alarms":[]}' ;;
+  *"endpoint health"*) ;;
+  *) exit 1 ;;
+esac
+`), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "curl"), []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
+
+	output, err := runDifferentialScript(t, []string{
+		"PATH=" + dir + ":" + os.Getenv("PATH"),
+		"KUBEBRAIN_ETCD_ENDPOINT=127.0.0.1:22379",
+		"ALLOW_DESTRUCTIVE_DIFFERENTIAL=true",
+		"REFERENCE_ETCD_BIN=" + fakeEtcd,
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=d947b2086",
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "KubeBrain lease set must be empty during preflight")
+	require.NotContains(t, string(output), "reference etcd exited before becoming healthy")
 }
 
 func TestDifferentialRunnerRejectsDirtyCompatPrefixBeforeReferenceStart(t *testing.T) {

@@ -196,6 +196,36 @@ assert_user_keyspace_empty() {
 }
 assert_user_keyspace_empty preflight
 
+assert_disposable_control_state() {
+  local phase="$1" auth_json users_json roles_json leases_json alarms_json
+  if ! auth_json="$(ETCDCTL_API=3 "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ENDPOINT" auth status -w json)" ||
+    ! jq -e '(.enabled // false) == false' >/dev/null <<<"$auth_json"; then
+    echo "KubeBrain auth must be disabled during ${phase}" >&2
+    exit 1
+  fi
+  if ! users_json="$(ETCDCTL_API=3 "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ENDPOINT" user list -w json)" ||
+    ! jq -e '(.users // []) | length == 0' >/dev/null <<<"$users_json"; then
+    echo "KubeBrain user set must be empty during ${phase}" >&2
+    exit 1
+  fi
+  if ! roles_json="$(ETCDCTL_API=3 "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ENDPOINT" role list -w json)" ||
+    ! jq -e '(.roles // []) | length == 0' >/dev/null <<<"$roles_json"; then
+    echo "KubeBrain role set must be empty during ${phase}" >&2
+    exit 1
+  fi
+  if ! leases_json="$(ETCDCTL_API=3 "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ENDPOINT" lease list -w json)" ||
+    ! jq -e '(.leases // []) | length == 0' >/dev/null <<<"$leases_json"; then
+    echo "KubeBrain lease set must be empty during ${phase}" >&2
+    exit 1
+  fi
+  if ! alarms_json="$(ETCDCTL_API=3 "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ENDPOINT" alarm list -w json)" ||
+    ! jq -e '(.alarms // []) | length == 0' >/dev/null <<<"$alarms_json"; then
+    echo "KubeBrain alarm set must be empty during ${phase}" >&2
+    exit 1
+  fi
+}
+assert_disposable_control_state preflight
+
 data_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-reference-etcd.XXXXXX")"
 reference_log="$data_dir/etcd.log"
 reference_pid=""
@@ -259,6 +289,7 @@ test_status=0
 ) || test_status=$?
 assert_compat_prefix_empty postflight
 assert_user_keyspace_empty postflight
+assert_disposable_control_state postflight
 if [[ "$test_status" -ne 0 ]]; then
   echo "differential test package failed with status $test_status" >&2
   exit "$test_status"
