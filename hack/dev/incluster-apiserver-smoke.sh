@@ -15,6 +15,7 @@ ETCD_PREFIX="${ETCD_PREFIX:-}"
 ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE="${ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE:-false}"
 LOCAL_PORT="${LOCAL_PORT:-16448}"
+PORT_LOCK_ROOT="${PORT_LOCK_ROOT:-${ROOT_DIR}/.dev/incluster-apiserver-port-locks}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-180}"
 STATE_ROOT="${ROOT_DIR}/.dev/incluster-apiserver-smoke"
 WORK_DIR="${WORK_DIR:-${STATE_ROOT}/${NAME}}"
@@ -28,6 +29,7 @@ pod_created=false
 service_created=false
 log_owned=false
 work_dir_created=false
+port_lock_owned=false
 prefix_owned=false
 baseline_lease_ids=""
 
@@ -63,6 +65,10 @@ if [[ ! "$ETCD_PREFIX" =~ ^/registry-kubebrain-incluster-apiserver-[a-z0-9-]+$ ]
 fi
 if [[ -z "$MANAGEMENT_ENDPOINT" ]]; then
   echo "MANAGEMENT_ENDPOINT is required for in-cluster apiserver backend cleanup" >&2
+  exit 2
+fi
+if [[ ! "$LOCAL_PORT" =~ ^[1-9][0-9]*$ || "$LOCAL_PORT" -gt 65535 ]]; then
+  echo "LOCAL_PORT must be an integer between 1 and 65535" >&2
   exit 2
 fi
 
@@ -185,12 +191,26 @@ cleanup() {
       cleanup_failed=1
     fi
   fi
+  if [[ "$port_lock_owned" == true ]]; then
+    flock -u "$port_lock_fd" >/dev/null 2>&1 || true
+    exec {port_lock_fd}>&-
+  fi
   if [[ "$cleanup_failed" -ne 0 ]]; then
     status=70
   fi
   exit "$status"
 }
 trap cleanup EXIT
+
+need flock
+mkdir -p "$PORT_LOCK_ROOT"
+port_lock_file="${PORT_LOCK_ROOT}/${LOCAL_PORT}.lock"
+exec {port_lock_fd}>"$port_lock_file"
+if ! flock -n "$port_lock_fd"; then
+  echo "LOCAL_PORT is already reserved by another in-cluster apiserver runner: $LOCAL_PORT" >&2
+  exit 1
+fi
+port_lock_owned=true
 
 need docker
 need kubectl

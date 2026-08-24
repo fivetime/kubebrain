@@ -2179,6 +2179,25 @@ func TestInClusterAPIServerBaseRejectsSharedWorkDirBeforeClusterAccess(t *testin
 	require.NotContains(t, string(output), "missing required command: docker")
 }
 
+func TestInClusterAPIServerBaseRejectsReservedLocalPortBeforeClusterAccess(t *testing.T) {
+	fakeBin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "flock"), []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "incluster-apiserver-smoke.sh")}, []string{
+		"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+		"ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true",
+		"ETCD_PREFIX=/registry-kubebrain-incluster-apiserver-reserved-port",
+		"MANAGEMENT_ENDPOINT=http://172.18.0.2:30079",
+		"KUBE_CONTEXT=kind-owned",
+		"CLUSTER_NAME=owned",
+		"NAME=reserved-port-base",
+		"LOCAL_PORT=26448",
+		"PORT_LOCK_ROOT=" + filepath.Join(fakeBin, "locks"),
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "LOCAL_PORT is already reserved by another in-cluster apiserver runner: 26448")
+	require.NotContains(t, string(output), "missing required command: docker")
+}
+
 func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	data, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "owned-endpoint-runner-contracts.txt"))
@@ -2269,6 +2288,10 @@ func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 	require.Contains(t, inClusterBaseContent, `if [[ "$work_dir_created" == true ]]`)
 	require.Contains(t, inClusterBaseContent, `rm -rf -- "$WORK_DIR"`)
 	require.Contains(t, inClusterBaseContent, `umask 077`)
+	require.Contains(t, inClusterBaseContent, `port_lock_owned=false`)
+	require.Contains(t, inClusterBaseContent, `flock -n "$port_lock_fd"`)
+	require.Contains(t, inClusterBaseContent, `if [[ "$port_lock_owned" == true ]]`)
+	require.Contains(t, inClusterBaseContent, `flock -u "$port_lock_fd"`)
 }
 
 func TestAPIServerSmokeRejectsNonEmptyPrefixWithoutDeletingIt(t *testing.T) {

@@ -54,13 +54,17 @@ if [[ ! "$NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
   echo "invalid in-cluster apiserver watch name: $NAME" >&2
   exit 2
 fi
-for numeric_name in LOCAL_PORT OBJECTS UPDATES WATCH_TIMEOUT_SECONDS WAIT_TIMEOUT_SECONDS; do
+for numeric_name in OBJECTS UPDATES WATCH_TIMEOUT_SECONDS WAIT_TIMEOUT_SECONDS; do
   numeric_value="${!numeric_name}"
   if [[ ! "$numeric_value" =~ ^[1-9][0-9]*$ ]]; then
     echo "${numeric_name} must be a positive integer" >&2
     exit 2
   fi
 done
+if [[ ! "$LOCAL_PORT" =~ ^[1-9][0-9]*$ || "$LOCAL_PORT" -gt 65535 ]]; then
+  echo "LOCAL_PORT must be an integer between 1 and 65535" >&2
+  exit 2
+fi
 if [[ ! "$PRE_UPDATE_SLEEP_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "PRE_UPDATE_SLEEP_SECONDS must be a non-negative integer" >&2
   exit 2
