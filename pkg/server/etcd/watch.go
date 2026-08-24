@@ -79,6 +79,12 @@ type watchControlResponse struct {
 	ready      <-chan struct{}
 	cancel     <-chan struct{}
 	generation *watch
+	barrier    *watchControlBarrier
+}
+
+type watchControlBarrier struct {
+	done chan struct{}
+	err  error
 }
 
 type watchReceiveResult struct {
@@ -91,7 +97,9 @@ type watcher struct {
 	sync.Mutex
 	sendMu sync.Mutex
 
-	directControlCh chan watchControlResponse
+	directControlMu      sync.Mutex
+	directControlCh      chan watchControlResponse
+	directControlBarrier *watchControlBarrier
 
 	wg        sync.WaitGroup
 	controlWG sync.WaitGroup
@@ -1161,6 +1169,9 @@ func (w *watcher) SendControl(resp *etcdserverpb.WatchResponse) error {
 }
 
 func (w *watcher) sendControlWithCompletion(resp *etcdserverpb.WatchResponse) (<-chan error, error) {
+	if err := w.waitDirectControlBarrier(); err != nil {
+		return nil, err
+	}
 	if w.controlCh == nil {
 		done := make(chan error, 1)
 		done <- w.Send(resp)
@@ -1172,6 +1183,21 @@ func (w *watcher) sendControlWithCompletion(resp *etcdserverpb.WatchResponse) (<
 		return done, nil
 	case <-w.watchServer.Context().Done():
 		return nil, w.watchServer.Context().Err()
+	}
+}
+
+func (w *watcher) waitDirectControlBarrier() error {
+	w.directControlMu.Lock()
+	barrier := w.directControlBarrier
+	w.directControlMu.Unlock()
+	if barrier == nil {
+		return nil
+	}
+	select {
+	case <-barrier.done:
+		return barrier.err
+	case <-w.watchServer.Context().Done():
+		return w.watchServer.Context().Err()
 	}
 }
 
@@ -1227,8 +1253,14 @@ func (w *watcher) queueDirectControl(resp *etcdserverpb.WatchResponse, generatio
 	if w.directControlCh == nil {
 		return false
 	}
+	barrier := &watchControlBarrier{done: make(chan struct{})}
+	w.directControlMu.Lock()
+	defer w.directControlMu.Unlock()
 	select {
-	case w.directControlCh <- watchControlResponse{resp: resp, generation: generation}:
+	case w.directControlCh <- watchControlResponse{resp: resp, generation: generation, barrier: barrier}:
+		// Publishing the barrier while holding directControlMu makes every later
+		// ordinary control observe this cancellation before it can enter controlCh.
+		w.directControlBarrier = barrier
 		return true
 	case <-w.watchServer.Context().Done():
 		return false
@@ -1238,7 +1270,10 @@ func (w *watcher) queueDirectControl(resp *etcdserverpb.WatchResponse, generatio
 func (w *watcher) sendDirectControls() {
 	defer w.controlWG.Done()
 	for control := range w.directControlCh {
-		w.finishCancel(control.resp.WatchId, control.generation, w.Send(control.resp))
+		err := w.Send(control.resp)
+		w.finishCancel(control.resp.WatchId, control.generation, err)
+		control.barrier.err = err
+		close(control.barrier.done)
 	}
 }
 

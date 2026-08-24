@@ -4591,6 +4591,62 @@ func TestFollowerCancelBackpressureUsesBoundedSenderGoroutines(t *testing.T) {
 	}
 }
 
+func TestFollowerCancelBacklogPrecedesLaterDuplicateControl(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	stream := &blockingFirstSendWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{
+			1: {cancel: func() {}, authoritativeControl: &etcdserverpb.WatchResponse{}},
+			2: {cancel: func() {}, authoritativeControl: &etcdserverpb.WatchResponse{}},
+		},
+		controlCh: make(chan watchControlResponse, watchControlBuffer),
+		metricCli: server.metricCli,
+	}
+	w.controlWG.Add(1)
+	go w.sendControls()
+	w.startDirectControls()
+	defer w.Close()
+
+	w.CancelRequest(1)
+	<-stream.started
+	w.CancelRequest(2)
+	controlDone := make(chan error, 2)
+	for range 2 {
+		go func() {
+			controlDone <- w.SendControl(canceledWatchCreateResponse(
+				w.responseRevision(), "mvcc: duplicate watch ID provided on the WatchStream",
+			))
+		}()
+	}
+	// Ensure the ordinary control sender is already waiting for sendMu. Holding
+	// watcherMu then pauses the direct sender in finishCancel after its first
+	// transport Send, exposing any cross-queue handoff that lets the ordinary
+	// sender acquire sendMu before the second queued cancellation.
+	time.Sleep(10 * time.Millisecond)
+	w.Lock()
+	func() {
+		defer w.Unlock()
+		close(stream.release)
+		require.Never(t, func() bool { return len(stream.snapshot()) > 1 }, 50*time.Millisecond, time.Millisecond,
+			"ordinary control overtook a queued follower cancellation")
+	}()
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 4 }, time.Second, time.Millisecond)
+	require.NoError(t, <-controlDone)
+	require.NoError(t, <-controlDone)
+	responses := stream.snapshot()
+	require.Equal(t, int64(1), responses[0].WatchId)
+	require.Equal(t, int64(2), responses[1].WatchId,
+		"a later duplicate rejection must not overtake an already queued cancellation")
+	require.Equal(t, int64(-1), responses[2].WatchId)
+	require.Equal(t, int64(-1), responses[3].WatchId)
+}
+
 func TestWatchContextCancellationDoesNotWaitForBlockedRecv(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
