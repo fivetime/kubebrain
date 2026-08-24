@@ -6923,6 +6923,31 @@ dev StatefulSet 的 probe 现在与 production 隔离原则一致：readiness/li
 为 140/171/154/146，四片 Go 时间 128.048/345.861/227.530/363.198 秒，端到端时间
 133.908/351.732/233.324/369.012 秒。上述测试通过只证明门禁实现本身稳定，不覆盖仍明确记录的 live RED。
 
+### A5442：关闭组合故障进程退出与冷 Region 单幸存副本差距
+
+首次退出日志已证明根因不是 liveness：正常 `OnStoppedLeading` 发送带 `addr` 的
+`leader.election.lost`，但启动时先以无 `addr` 标签创建同名 Prometheus CounterVec，最终因 label cardinality
+不一致 panic。`a639e671` 统一初始化/运行标签集合，并让 counter、gauge、histogram 的标签不一致返回错误而非
+调用 Prometheus `With` 触发 panic；production manifest 测试同时固定 liveness failureThreshold=3，禁止用放宽
+探针掩盖进程退出。
+
+同提交为 cache-only 请求保留每个 Store 的 bounded 失败原因，并用定向
+`TIKV_QUORUM_PARTITION_PODS` 重现 A5441 的同一拓扑。修前隔离 `kb-tikv-2/kb-tikv-0`、仅留 Store 16001 时，
+Region 282005 的终端错误只显示一次对已隔离 Store 16002 的 RPC，证明 protected route 错误冻结了活跃缓存的
+部分 Store 视图。保护阶段现在从 immutable Region metadata 和预 seed Store directory 重新构造完整非 witness
+voter 路由；缺失/未解析 voter 会在 checkpoint 发布前 fail closed，learner/witness 不进入未经 safeTS 证明的
+候选集合。确定性单测覆盖“活跃路由仅一 Store、保护后恢复三 voter”和 learner 排除。
+
+精确镜像 `kubebrain:a5442-a639e671`（完整 revision
+`a639e671fa9d5eaf18602dad429d69580226c3fb`，本地 manifest list
+`sha256:3206ed3e176e37853463972889c51c74a43b998939c144fd41bf26f142129fd4`，Kind runtime digest
+`sha256:9eaaa756180c1e54fadbad5477144902bf716cec7b917ed222c3349d391f020c`）在相同定向双 quorum
+故障中 142.18 秒 GREEN；protected serializable RangeStream/HashKV/Range/Txn 全部在完整故障窗口完成，三 Pod
+UID 稳定且均为零重启，PD/TiKV 与 iptables 规则恢复。611 项 inventory 仍为 140/171/154/146；精确代码提交
+四片 Go 时间 129.329/347.058/226.890/363.964 秒，端到端时间
+135.016/352.885/232.717/369.769 秒，全部通过。该证据关闭 A5441 两项具体 RED，但仍仅代表单节点 Kind
+上的独立 3 PD/3 TiKV 拓扑，不替代跨节点/AZ 故障和长时间 soak。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 

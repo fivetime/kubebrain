@@ -61557,6 +61557,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确代码提交四片 140/171/154/146 全绿（Go 测试 128.048/345.861/227.530/363.198 秒；端到端
   133.908/351.732/233.324/369.012 秒）。
 
+- A5442 捕获到 A5441 首次进程退出的完整直接证据：Leader 在 PD quorum 丢失后正常进入
+  `OnStoppedLeading`，随后 Prometheus 因 `leader.election.lost` 首次注册只有全局 `cluster` 标签、实际发送又增加
+  `addr` 而 panic：`inconsistent label cardinality: expected 1 label values but got 2`。提交 `a639e671` 让启动零值
+  与停止事件使用相同 `addr` 标签集合，并把 Prometheus wrapper 的 counter/gauge/histogram/RegisterHistogram
+  改为返回 conversion/label error，不再让指标错误终止数据面进程。production manifest 合同固定 liveness
+  failureThreshold=3；现场没有依赖放宽探针。
+
+  同一提交把 cache-only exhaustion 扩充为不含 key/value 的逐 Store 失败链，并为 TiKV quorum helper 增加经过
+  Up 状态、数量和唯一性校验的 `TIKV_QUORUM_PARTITION_PODS`，使特定幸存 Store 可重复覆盖。未修改保护路由的
+  diagnostic 镜像在强制隔离 `kb-tikv-2,kb-tikv-0` 后稳定 RED（140.75 秒）：Region 282005 只尝试已隔离的
+  Store 16002，错误为 `store 16002: RPC failed: wait recvLoop: context deadline exceeded`，没有尝试 Store 1 或
+  唯一幸存 Store 16001。由此排除 safeTS 猜测，并证明 `ProtectCachedRegions` 把活跃 cache 的部分 Store view
+  直接冻结成了伪完整 protected route。
+
+  修复后保护入口不再 clone 部分 view，而是从 immutable Region metadata 与 `SeedStores` 建立的 Store directory
+  重建路由；任何非 witness voter 未 seed/未 resolved 都阻止 checkpoint 发布，learner/witness 因未纳入当前
+  safeTS readiness 证明而不会成为 stale-read candidate。回归测试人为把三副本 active route 截成单 Store，旧实现
+  只能保护一个候选，新实现恢复三 voter；另固定 learner 排除和所有候选失败时的逐 Store原因。相同定向拓扑的
+  route-fix diagnostic 随即 140.88 秒 GREEN，三副本零重启。
+
+  最终精确镜像 `kubebrain:a5442-a639e671` 内嵌完整 revision
+  `a639e671fa9d5eaf18602dad429d69580226c3fb`、TiKV、Go 1.26.5；本地 manifest list 为
+  `sha256:3206ed3e176e37853463972889c51c74a43b998939c144fd41bf26f142129fd4`，三个 Kind Pod 使用相同
+  runtime digest `sha256:9eaaa756180c1e54fadbad5477144902bf716cec7b917ed222c3349d391f020c`。跨过保护代际后再次强制
+  隔离 `kb-tikv-2,kb-tikv-0` 并同时隔离 PD 两成员，完整门禁 142.18 秒 GREEN：mutation 明确不可用，
+  protected serializable RangeStream、固定 revision HashKV、Range 和只读 Txn 均在故障窗口完成；三 Pod UID
+  不变、restartCount 均为 0，后端与 iptables 全清理。611 项 inventory 为 140/171/154/146，精确代码提交四片
+  Go 时间 129.329/347.058/226.890/363.964 秒，端到端 135.016/352.885/232.717/369.769 秒全部通过。
+  A5441 的进程 panic 与特定冷 Region 单幸存副本 RED 至此关闭；跨节点/AZ 和长时间 soak 仍保留为更高层证据缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
