@@ -7526,6 +7526,26 @@ Ready、restartCount 0、各组三副本 digest 一致。三节点跨 node rollo
 Watch/KeepAlive 连续性及 TLS CA overlap/retirement 仍缺当前环境的 live GREEN，不能由本次 fail-closed 负例替代；
 需要具备三个真实 Kubernetes node 和已部署 Envoy profile 后运行该门禁。
 
+### A5467：runner safety contract 共享所有权清单
+
+A5461-A5466 逐条补齐 runner 守恒后，安全覆盖仍依赖评审者记住更新多个硬编码测试列表；未来新增一个包含 `go test` 的
+`run-*.sh` 仍可能没有显式 mutation/destructive 授权或失败路径 postflight。提交 `671ae775` 新增共享
+`runner-safety-contracts.txt`，当前逐行登记 13 条 live runner、一个或多个 `ALLOW_MUTATING_*`/`ALLOW_DESTRUCTIVE_*`
+变量，以及 `disposable-empty`、`baseline-visible`、`baseline-prefix-control`、resource ownership、recovery 或 TLS
+等状态模型。该清单描述风险合同，不把不同 runner 的状态语义强行简化成同一种空 keyspace 假设。
+
+新回归扫描 compat module 下所有 `run-*.sh`：凡包含 `go test` 都必须在清单恰好出现一次，清单也不能引用不存在或不再
+执行测试的脚本；脚本名、授权变量命名和状态模型使用闭集校验。每个授权必须显式默认 `false` 且在脚本中除声明外被
+验证/执行；每个登记 runner 必须先捕获非零测试状态、随后存在 postflight、最后传播失败。原本手写 13 项的 postflight
+测试改为直接消费同一清单，消除新增 runner 时只更新一半列表的漂移。聚焦双向 ownership 与失败路径测试逐项覆盖全部
+13 条并通过；compat 全组 Go 6.636 秒、端到端 12.663 秒通过。
+
+611 项 production inventory 仍为 140/171/154/146；代码提交后四片 Go 时间
+121.824/352.974/229.924/367.159 秒，端到端时间 127.839/359.038/235.989/373.173 秒，全部通过。本项不修改
+数据面二进制或外部资源；最终 main/Auth/JWT 仍 auth disabled、key/lease/alarm 空，oversize 与 Envoy gate 临时 Service
+均不存在。清单能阻止未登记的 shell runner 进入仓库，但不能自动证明某个状态模型实现充分；新增副作用类型时仍需先
+扩展模型闭集和相应行为负测，而不是复用语义不匹配的标签。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
