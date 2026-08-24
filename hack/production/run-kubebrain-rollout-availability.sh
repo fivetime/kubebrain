@@ -36,6 +36,7 @@ ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
 TARGET_RUNTIME_DIGESTS="${TARGET_RUNTIME_DIGESTS:-}"
+PROBE_IMAGE="${PROBE_IMAGE:-}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
 MAX_RUNTIME_EVIDENCE_BYTES=1048576
 MAX_PROBE_PHASE_RESPONSE_BYTES=4096
@@ -95,6 +96,10 @@ if ! [[ "$PROBE_POD" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
 fi
 if [[ -n "$TARGET_IMAGE" && ! "$TARGET_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
   echo "TARGET_IMAGE must be an immutable image reference with @sha256:<64 lowercase hex digest>" >&2
+  exit 2
+fi
+if [[ -n "$PROBE_IMAGE" && ! "$PROBE_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
+  echo "PROBE_IMAGE must be an immutable image reference with @sha256:<64 lowercase hex digest>" >&2
   exit 2
 fi
 if [[ -n "$TARGET_IMAGE" && -z "$TARGET_RUNTIME_DIGESTS" ]]; then
@@ -364,7 +369,11 @@ cleanup() {
 trap cleanup EXIT
 
 endpoint="http://${KUBEBRAIN_CLIENT_SERVICE}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
-kctl_mutation run "$PROBE_POD" --image="$image" --restart=Never --command -- \
+probe_image="$image"
+if [[ -n "$PROBE_IMAGE" ]]; then
+  probe_image="$PROBE_IMAGE"
+fi
+kctl_mutation run "$PROBE_POD" --image="$probe_image" --restart=Never --command -- \
   /usr/local/bin/kubebrain-rollout-availability-probe \
   --endpoint="$endpoint" \
   --prefix="/kubebrain-rollout-availability/${PROBE_POD}/" \
@@ -522,4 +531,4 @@ fi
 probe_deleted=true
 candidate_rollout_succeeded=true
 
-echo "KubeBrain rollout availability gate passed: namespace=${KUBEBRAIN_NAMESPACE} statefulset=${KUBEBRAIN_STATEFULSET} image=${image}->${expected_final_image} runtime_digests=${TARGET_RUNTIME_DIGESTS:-unchanged} revision=${current_revision}->${final_current_revision} probes=${PROBE_ITERATIONS}"
+echo "KubeBrain rollout availability gate passed: namespace=${KUBEBRAIN_NAMESPACE} statefulset=${KUBEBRAIN_STATEFULSET} image=${image}->${expected_final_image} runtime_digests=${TARGET_RUNTIME_DIGESTS:-unchanged} probe_image=${probe_image} revision=${current_revision}->${final_current_revision} probes=${PROBE_ITERATIONS}"

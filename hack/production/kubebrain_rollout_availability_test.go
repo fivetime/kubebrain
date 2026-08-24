@@ -174,6 +174,17 @@ func TestRolloutAvailabilityRunnerRejectsMutableTargetImageBeforeKubernetes(t *t
 	require.NoFileExists(t, logPath)
 }
 
+func TestRolloutAvailabilityRunnerRejectsMutableProbeImageBeforeKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_IMAGE=registry.example/kubebrain:latest")
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "PROBE_IMAGE must be an immutable image reference")
+	require.NoFileExists(t, logPath)
+}
+
 func TestRolloutAvailabilityRunnerRequiresCandidateRuntimeDigestsBeforeKubernetes(t *testing.T) {
 	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -280,6 +291,21 @@ func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
 	for ordinal := 0; ordinal < 3; ordinal++ {
 		require.Contains(t, log, " get pod kubebrain-"+string(rune('0'+ordinal))+" -o json")
 	}
+}
+
+func TestRolloutAvailabilityRunnerUsesExplicitImmutableProbeImage(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	probe := "registry.example/rollout-probe@sha256:" + strings.Repeat("c", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "PROBE_IMAGE="+probe,
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "probe_image="+probe)
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, " run kubebrain-rollout-availability-probe --image="+probe+" ")
 }
 
 func TestRolloutAvailabilityRunnerFencesStatefulSetUIDBeforeCandidateMutation(t *testing.T) {
