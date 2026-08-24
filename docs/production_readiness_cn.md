@@ -7182,6 +7182,28 @@ provenance 为 `5cd9f4ee13801e18825d661e5005ae599460bc3a`。compat 全组 Go 4.7
 均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。该专项证明单次三副本 HashKV compact
 收敛，不替代高频/大历史 compaction、跨节点/AZ 或故障并发验证。
 
+### A5452：物理 compaction 期间 HashKV 稳定性纳入专项
+
+提交 `c1564c48` 继续关闭同一破坏性 scope 内的选择缺口。`TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction`
+不以 `Differential` 命名，主差分 runner 不会选择；A5451 的 `hashkv-compaction` scope 起初也只包含三副本收敛
+测试。该 oracle 独立验证：连续覆盖写后，逻辑 compact 必须移除历史版本并改变最新 hash，而后续异步物理 GC
+进度不得再次改变逻辑 hash 或 compact watermark，且 HashRevision 始终对应响应 header revision。直接聚焦验证
+Go 1.362 秒、端到端 2.622 秒通过。
+
+`TEST_SCOPE=hashkv-compaction` 现在以两个完整、可静态审计的测试名同时选择三副本收敛与物理 compaction 稳定性；
+双重 mutation/destructive 授权、一次性实例要求以及 prefix/lease/alarm 前后守恒门禁均未放宽。修复后真实 runner
+两项均实际执行，Go 3.381 秒、端到端 4.998 秒。精确提交镜像 `kubebrain:a5452-c1564c48`（完整 revision
+`c1564c4831de5abbd1faf5dd7c384ee276841140`，本地 manifest list
+`sha256:82aec579c4ba17a1b8a2a903ed97d44ba8d339dab70ad5c6e4f33db59a452271`，Kind runtime digest
+`sha256:7b03bc4ada56d04deed29d8acd5cb1288807ecfe3b2e9f959a216ffc8d583464`）在全新
+`a5452-hash-exact` keyspace 上再次通过两项：Go 3.382 秒、端到端 5.080 秒。
+
+compat 全组 Go 4.570 秒、端到端 5.895 秒；611 项 inventory 为 140/171/154/146，代码提交后四片
+Go 时间 123.359/346.967/223.114/360.465 秒，端到端时间 129.345/353.018/229.150/366.489 秒，
+全部通过。最终 JWT 数据面保持同一精确镜像并恢复到全新 `a5452-jwt-restored` keyspace，authRevision/data
+revision 均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。本轮仍为测试选择修复，
+不代表新增服务端行为，也不替代高频、大历史或故障并发 compaction 验证。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
