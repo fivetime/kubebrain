@@ -7253,6 +7253,31 @@ Go 4.696 秒、端到端 5.976 秒；611 项 inventory 为 140/171/154/146，代
 均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。该证据仍不替代 lease expiry/revoke
 与 compact 并发、超大 attached-key 集合、长时高频 compact 或 backend fault 重叠验证。
 
+### A5455：非破坏性 HashKV live 语义进入默认直连门禁
+
+提交 `4605670b` 将 `TestMaintenanceHashKVSemantics` 与
+`TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites` 从无 runner 入口状态纳入默认直连 `all`。
+前者固定历史 revision hash 的重复稳定性、latest hash 对数据变化敏感、负 revision 语义和历史快照不可变；后者
+在 25 次并发写期间连续 25 次要求 `HashKV(0)` 的 `HashRevision == Header.Revision`，禁止响应 header 漂到实际
+hash snapshot 之后。两项原始聚焦运行均实际通过：Go 0.848 秒、端到端 2.115 秒。
+
+它们只写入并清理现有 compat 前缀，不推进 compact watermark，因此不要求 destructive 授权；既有默认
+mutation 授权、三直连成员身份、metrics 可达性、prefix/lease/alarm 前后守恒均继续生效。包含 metrics 专项的
+默认直连门禁由 12 项增至 14 项，修复后 Go 6.887 秒、端到端 8.614 秒全部通过。要求 MemberList 中每个广告
+ClientURL 直接标识唯一成员的 `TestMaintenanceHashKVMatchesAcrossMembers` 没有被强行加入：当前辅助数据面三个成员
+均广告同一个外部 NodePort，虽然显式三直连 endpoint 已证明 replica hash 一致，却不能冒充官方 client 通过
+MemberList 发现的逐成员身份；该前提仍作为独立广告拓扑差距保留。
+
+精确提交镜像 `kubebrain:a5455-4605670b`（完整 revision
+`4605670bf73eef2cf852260340ee0b3014a25d54`，本地 manifest list
+`sha256:d13cb8e70680b56487c6ea7fe458ed2419b5304ef47301b44e6079cd63a951a1`，Kind runtime digest
+`sha256:e5220ed7a1e9baeccaaf41a6fb9a782bfe6449b2c2cb9ad65f6e027255e03f21`）在全新
+`a5455-hash-exact` keyspace 上再次通过全部 14 项：Go 6.721 秒、端到端 8.500 秒。compat 全组
+Go 4.721 秒、端到端 6.081 秒；611 项 inventory 为 140/171/154/146，代码提交后四片 Go 时间
+131.027/358.014/235.823/373.725 秒，端到端时间 137.064/364.133/241.871/379.767 秒，全部通过。
+最终 JWT 数据面保持同一精确镜像并恢复到全新 `a5455-jwt-restored` keyspace，authRevision/data revision
+均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
