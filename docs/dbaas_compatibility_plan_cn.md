@@ -61396,6 +61396,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四片 139/171/153/146 全绿（Go 测试 118.482/342.675/219.680/353.686 秒；端到端
   124.396/348.611/225.494/359.548 秒）。
 
+- A5433 修复 A5432 旁路在客户端输出背压下造成的接收侧活性退化。A5432 为绕过另一 pending follower Create
+  占据的 control FIFO，曾直接在 Watch 请求主循环中同步发送已建立 follower Watch 的 cancellation；若客户端停止
+  读取、gRPC `Send` 被流控阻塞，该主循环就无法继续接收同一 multiplexed stream 上的其他请求。提交 `96631a96`
+  将这类终止帧改为受 `controlWG` 管理的异步直发：仍由全局 `sendMu` 与事件及其他控制帧串行，原 generation 在
+  `Send` 完成前继续占用显式 Watch ID，因此新 Create 不会反超未发送的终止帧；stream 关闭则等待发送协程退出，
+  避免 watcher 生命周期外访问。新增确定性背压 RED：首个 follower Watch 权威 Created 后阻塞第二次 wire Send，
+  再投递第三个请求；旧实现 100ms 内从不读取第三个请求，修复后可继续接收，解除背压后仅输出原 Created 与
+  Canceled。该用例与 A5431/A5432 相关取消集合在 race 下连续 20 轮通过（3.317 秒），全部 Watch 测试连续 10 轮
+  通过（115.141 秒），完整 server/proxy 包通过（124.537 秒/proxy cached），diff check 与 609 项 inventory 校验
+  通过。本项修复 follower Watch stream 的传输背压隔离，不改变 TiKV 数据布局；本轮没有可用的 disposable
+  TiKV/PD 双节点 endpoint，故不声称真实 follower/leader 数据面演练。精确代码提交四片 139/171/153/146 全绿
+  （Go 测试 118.099/341.726/219.930/356.398 秒；端到端 123.939/347.626/225.831/362.287 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
