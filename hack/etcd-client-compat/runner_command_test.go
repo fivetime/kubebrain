@@ -1839,6 +1839,12 @@ func TestDefaultHAIndirectMutationFailsClosedBeforeToolDiscovery(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, string(output), "ALLOW_DESTRUCTIVE_HA_SMOKE must be true or false")
 	require.NotContains(t, string(output), "missing required command")
+
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	content, readErr := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "ha-smoke.sh"))
+	require.NoError(t, readErr)
+	require.Contains(t, string(content), `WORKLOAD="${WORKLOAD:-statefulset/kubebrain}"`)
+	require.NotContains(t, string(content), `deployment/"$DEPLOYMENT"`)
 }
 
 func TestAPIServerRolloutMutationFailsClosedBeforeToolDiscovery(t *testing.T) {
@@ -2291,6 +2297,40 @@ func TestAPIServerVersionMatrixRejectsConcurrentCacheOwnerBeforeDocker(t *testin
 	require.Contains(t, content, `image-ref`)
 	require.Contains(t, content, "APISERVER_IMAGES produce a duplicate cache name")
 	require.Contains(t, content, "secure port range exceeds 65535")
+}
+
+func TestKubernetesVersionMatrixRequiresOwnershipAndRejectsConcurrentOwner(t *testing.T) {
+	path := filepath.Join("..", "dev", "k8s-version-matrix.sh")
+
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{
+		"PATH=" + os.Getenv("PATH"),
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true")
+	require.NotContains(t, string(output), "missing required command: kind")
+
+	fakeBin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "flock"), []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
+	output, err = runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{
+		"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+		"ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true",
+		"MATRIX_LOCK_ROOT=" + filepath.Join(fakeBin, "locks"),
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "another Kubernetes version matrix owns the shared kind ports and cluster namespace")
+	require.NotContains(t, string(output), "missing required command: kind")
+
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	data, readErr := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "k8s-version-matrix.sh"))
+	require.NoError(t, readErr)
+	content := string(data)
+	require.NotContains(t, content, `hack/dev/down.sh`)
+	require.Contains(t, content, "refusing to replace pre-existing kind cluster")
+	require.Contains(t, content, "refusing to replace pre-existing kind node container")
+	require.Contains(t, content, "KIND_NODE_IMAGES produce a duplicate cluster name")
+	require.Contains(t, content, `KUBECONFIG="$current_kubeconfig"`)
+	require.Contains(t, content, `KUBE_CONTEXT="$kube_context"`)
+	require.Contains(t, content, `if [[ "$current_cluster_owned" == true`)
 }
 
 func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {

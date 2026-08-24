@@ -348,6 +348,27 @@ func TestLeadershipRevisionIndexValidationIgnoresCompactedCleanupWindow(t *testi
 	require.Empty(t, members, "planned physical GC below the compact watermark is not corruption")
 }
 
+func TestLeadershipRevisionIndexValidationIgnoresCompactionWatermarkCleanup(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/restart-witness/index-at-compaction-watermark")
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+	require.NoError(t, err)
+
+	// A revision equal to the compact watermark is already unavailable to etcd
+	// clients. Physical GC may therefore remove its latest tombstone/index before
+	// the corresponding witness cleanup batch reaches the seal.
+	compact := b.kv.BeginBatchWrite()
+	compact.Put(getCompactKey(b.config.Prefix), uint64ToBytes(revision), 0)
+	compact.Del(b.coder.EncodeRevisionKey(key))
+	compact.Del(b.coder.EncodeObjectKey(key, revision))
+	require.NoError(t, compact.Commit(ctx))
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	members, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, members, "physical GC at the compact watermark is not corruption")
+}
+
 func TestLeadershipRevisionIndexValidationUsesBoundedBatchGets(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)

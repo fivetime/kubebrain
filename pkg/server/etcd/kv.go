@@ -1198,14 +1198,6 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 		} else {
 			s.unbindKeyFromLease(ctx, string(sh.key))
 		}
-	} else if sh, ok := isDelete(txn); ok && !s.writeShapeTouchesLease(sh) {
-		response, err = s.backend.Delete(ctx, sh.key, sh.rev, sh.includeFailure)
-		methodTag = metrics.Tag("method", "delete")
-		if err != nil || !response.Succeeded {
-			failedKey = string(sh.key)
-		} else {
-			s.unbindKeyFromLease(ctx, string(sh.key))
-		}
 	} else if sh, ok := isUpdate(txn); ok && !s.writeShapeTouchesLease(sh) {
 		var put *etcdserverpb.PutRequest
 		put, err = s.putWithEffectiveOptions(ctx, sh.put)
@@ -2042,20 +2034,6 @@ func isCreate(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
 		txn.Success[0].GetRequestPut() != nil &&
 		bytes.Equal(txn.Compare[0].Key, txn.Success[0].GetRequestPut().Key) {
 		return writeShape{put: txn.Success[0].GetRequestPut(), includeFailure: len(txn.Failure) == 1}, true
-	}
-	return writeShape{}, false
-}
-
-func isDelete(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
-	if len(txn.Compare) == 0 &&
-		len(txn.Failure) == 0 &&
-		len(txn.Success) == 2 &&
-		txn.Success[0].GetRequestRange() != nil &&
-		txn.Success[1].GetRequestDeleteRange() != nil {
-		rng := txn.Success[1].GetRequestDeleteRange()
-		if len(rng.RangeEnd) == 0 {
-			return writeShape{key: rng.Key, includeFailure: true}, true
-		}
 	}
 	return writeShape{}, false
 }

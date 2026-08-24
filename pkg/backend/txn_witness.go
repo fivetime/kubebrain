@@ -333,7 +333,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 		for attempts := 0; len(pendingIndexes) != 0 && attempts <= len(pendingIndexes); attempts++ {
 			retained := pendingIndexes[:0]
 			for i := range pendingIndexes {
-				if pendingIndexes[i].revision >= compactRevision {
+				if pendingIndexes[i].revision > compactRevision {
 					retained = append(retained, pendingIndexes[i])
 				}
 			}
@@ -364,7 +364,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 				return refreshErr
 			}
 			compactRevision = max(compactRevision, refreshed)
-			if !present || evidence.revision < compactRevision {
+			if !present || evidence.revision <= compactRevision {
 				filtered := pendingIndexes[:0]
 				for i := range pendingIndexes {
 					if pendingIndexes[i].revision != evidence.revision {
@@ -516,7 +516,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 							userKey: append([]byte(nil), eventUserKey...), revision: revision, verb: verb,
 						})
 					}
-					if verifyObjects && revision >= compactRevision && referenceErr == nil {
+					if verifyObjects && revision > compactRevision && referenceErr == nil {
 						objectKey := b.coder.EncodeObjectKey(eventUserKey, valueRevision)
 						if _, duplicate := seenObjects[string(objectKey)]; !duplicate {
 							objectID := string(objectKey)
@@ -537,7 +537,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 				cause = fmt.Errorf("%w: persisted witness object reference at revision %d: %v",
 					ErrTxnWitnessCorrupt, revision, referenceErr)
 			}
-			if cause == nil && verifyObjects && revision >= compactRevision {
+			if cause == nil && verifyObjects && revision > compactRevision {
 				values, incomplete, loadErr := b.loadEventValues(ctx, objectKeys)
 				if loadErr != nil {
 					return loadErr
@@ -550,7 +550,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 						return refreshErr
 					}
 					compactRevision = max(compactRevision, refreshed)
-					if revision >= compactRevision {
+					if revision > compactRevision {
 						cause = fmt.Errorf("%w: persisted witness at revision %d references a missing object version",
 							ErrTxnWitnessCorrupt, revision)
 					}
@@ -571,7 +571,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 							return refreshErr
 						}
 						compactRevision = max(compactRevision, refreshed)
-						if revision >= compactRevision {
+						if revision > compactRevision {
 							cause = fmt.Errorf("%w: persisted witness at revision %d references an invalid object value: %v",
 								ErrTxnWitnessCorrupt, revision, validationErr)
 						}
@@ -579,7 +579,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 					}
 				}
 			}
-			if cause == nil && revision >= compactRevision {
+			if cause == nil && revision > compactRevision {
 				if queueErr := queueIndexes(indexExpectations, key, raw, revision); queueErr != nil {
 					return queueErr
 				}
@@ -773,7 +773,7 @@ func (b *backend) persistWitnessedObjectCorruption(
 		return cause
 	}
 	compactRevision, err := b.GetCompactRevisionFresh(ctx)
-	if err != nil || (compactRevision > 0 && revision < compactRevision) {
+	if err != nil || (compactRevision > 0 && revision <= compactRevision) {
 		return cause
 	}
 
@@ -832,7 +832,7 @@ func (b *backend) persistWitnessedObjectCorruption(
 		return cause
 	}
 	compactRevision, err = b.GetCompactRevisionFresh(ctx)
-	if err != nil || (compactRevision > 0 && revision < compactRevision) {
+	if err != nil || (compactRevision > 0 && revision <= compactRevision) {
 		return cause
 	}
 	present, err := b.txnWitnessStillPresent(ctx, witnessKey, witnessRaw)

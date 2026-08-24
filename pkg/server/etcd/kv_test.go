@@ -6080,6 +6080,33 @@ func TestTxnCompareValueRunsFailureBranch(t *testing.T) {
 	require.Equal(t, int64(1), deleteResp.Deleted)
 }
 
+func TestTxnUnconditionalGetThenDeleteReturnsBothResponses(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/generic-txn/get-then-delete")
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: key}}},
+		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: key}}},
+	}})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+	require.Len(t, resp.Responses, 2)
+	rangeResp := resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.Len(t, rangeResp.Kvs, 1)
+	require.Equal(t, []byte("value"), rangeResp.Kvs[0].Value)
+	deleteResp := resp.Responses[1].GetResponseDeleteRange()
+	require.NotNil(t, deleteResp)
+	require.Equal(t, int64(1), deleteResp.Deleted)
+	require.Equal(t, resp.Header.Revision-1, rangeResp.Header.Revision)
+	require.Equal(t, resp.Header.Revision, deleteResp.Header.Revision)
+}
+
 func TestTxnCompareValueAlwaysFailsForAbsentKey(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
