@@ -7762,6 +7762,38 @@ fake Service/docker/etcdctl 回归证明非空 prefix 在任何 Kubernetes creat
 要求受控演练窗口不存在其他租户并发创建 lease。下一步应先为 in-cluster apiserver rollout 增加显式 context、cluster
 身份、Deployment 拓扑/UID 守恒和独立 destructive approval，再在匹配拓扑中验证 watch 连续性。
 
+### A5477：in-cluster kube-apiserver rollout 的 destructive/context/topology 门禁
+
+A5476 完成 base runner 的后端守恒后，`incluster-apiserver-rollout-smoke.sh` 仍使用隐式 current context，先把共享
+Deployment scale 到期望副本，再启动 watch 并 rollout restart；它没有独立 destructive approval、Kind cluster 身份绑定
+或 Deployment UID 守恒。提交 `c94a65a5` 新增默认 false 的
+`ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT`，并保留独立的
+`ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE` 后端写授权。两者分别校验 true/false，且必须同时显式允许；缺
+`KUBE_CONTEXT`、缺 `CLUSTER_NAME`、缺任一授权或非法值都在 kubectl/docker 工具发现前 fail closed。
+
+context 必须精确解析；kind context suffix、cluster name 和 `${CLUSTER_NAME}-control-plane` 容器的 Kind label 必须一致，
+之后所有 Kubernetes 操作都固定到 `kubectl --context` 数组。runner 删除 scale，不再改变 desired replicas；preflight
+要求目标 Deployment 已存在、UID 非空且 spec/Ready 精确为 `REPLICAS/REPLICAS`，否则在启动 in-cluster watch 和任何
+rollout mutation 前拒绝。成功路径结束时再次读取 UID，若 Deployment 被删除重建则失败。context 与 cluster identity 也
+显式传入 watch 子 runner，后端 prefix/lease 守恒继续由 A5476 的 base ownership 负责。
+
+间接 mutation 清单新增 verify→in-cluster apiserver rollout 合同，静态测试锁定显式 context wrapper、独立 approval、
+禁止 scale 以及前后 UID 比较；行为测试覆盖缺 context、缺 cluster、缺/非法 destructive approval 和缺后端写授权，均先于
+工具发现拒绝。首次完整 compat 还发现 verify 自动设置 destructive approval 会使其本身成为未登记的共享 mutation
+入口；正确修复不是放宽扫描器或新增自动授权清单，而是删除该自动赋值。合同进一步禁止 caller 出现
+`${approval}=true`，所以启用可选 run flag 仍必须由操作者单独授权破坏性 rollout。
+
+当前 `kubebrain-dev` 只有 3/3 Ready StatefulSet，没有同名 Deployment。真实负例显式提供 context、cluster、后端管理
+endpoint 和两道授权，runner 精确返回
+`in-cluster apiserver rollout requires an existing 3/3 Ready Deployment ... got missing`。StatefulSet UID/spec/Ready、
+三 Pod UID/restartCount、全量可见 KV、lease 集合前后完全相等，临时 in-cluster apiserver 资源为 0；没有为了制造 GREEN
+改变当前生产拓扑。
+
+脚本语法与 compat 全组通过，后者 Go 7.113 秒。611 项 production inventory 仍为 140/171/154/146；代码提交后四片
+Go 时间 134.837/371.659/239.289/382.835 秒，端到端时间 140.793/377.770/245.263/388.905 秒，全部通过。本项只证明
+错误拓扑不会 mutation，不宣称 rollout/watch live GREEN；完整验证仍需在受控的三副本 Deployment 拓扑执行，并同时证明
+watch 事件连续、Deployment UID/Ready 恢复以及 A5476 的 KV/lease/临时资源守恒。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
