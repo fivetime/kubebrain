@@ -7570,6 +7570,26 @@ A5467 的双向清单独立覆盖），凡同时执行 Go 测试且直接删除 
 四片。该静态发现覆盖现有危险 token，但不能从任意 shell 语义自动推导所有间接副作用；新增故障执行机制时仍需扩展
 发现规则与状态合同，显式授权也不替代 cleanup trap、资源所有权和运行后的现场审计。
 
+### A5469：默认 verify HA 间接 mutation 门禁
+
+A5468 继续沿 shell 调用图向上审计后，backend fault 的递归 helper 已继承导出的授权，worker-node lease drill 也只在拒绝
+复用既有 Kind 集群并成功创建一次性集群后向子命令局部授权；但 `hack/dev/verify.sh` 的 `RUN_HA_SMOKE` 默认为 true，
+其 callee `ha-smoke.sh` 会先 scale 共享 Deployment，再枚举并逐个删除全部 KubeBrain Pod。该默认执行链此前既使用隐式
+current context，也没有 destructive approval，因此运行普通 verify 可能意外重启当前 context 中的工作负载。
+
+提交 `ce9137ce` 要求 `ha-smoke.sh` 同时提供非空 `KUBE_CONTEXT` 与 `ALLOW_DESTRUCTIVE_HA_SMOKE=true`；授权值只接受
+true/false，缺 context、缺授权或非法值都在 kubectl/go 依赖发现和任何 scale/delete 前 fail closed。脚本全部 Kubernetes
+读写统一改用 `kubectl --context "$KUBE_CONTEXT"` 数组，静态合同禁止重新出现裸 `kubectl` 旁路。新增
+`indirect-cluster-mutation-contracts.txt` 将 caller、默认启用 flag、默认值、callee 与 approval 绑定；回归同时验证文件路径、
+默认 flag 声明、调用关系、callee 默认 false 授权、显式 context 以及授权至少完成声明/校验/执行三个角色。
+
+行为负测将 `PATH` 置为不可用，分别证明缺 context、带 context 但缺授权、非法授权都先返回精确错误且没有进入工具发现。
+未为了得到 GREEN 而在当前共享数据面实际删除三轮 Pod；本项证明的是 mutation 前门禁，不把未执行破坏性 HA 演练误报为
+可用性验证。脚本语法及 compat 全组通过，后者 Go 6.979 秒。611 项 production inventory 仍为
+140/171/154/146；代码提交后四片 Go 时间 133.083/365.812/242.452/384.727 秒，端到端时间
+139.076/371.851/248.481/390.737 秒，全部通过。显式授权只解决误触发和 context 漂移；正式执行 HA 演练仍应先确认
+Deployment 所有权、目标 endpoint 与 namespace 对应，并在结束后检查副本、restartCount、数据与控制状态守恒。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
