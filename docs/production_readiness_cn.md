@@ -7362,6 +7362,26 @@ A5458 完整 GREEN 后的独立审计发现 `/registry/etcd-client-compat/` 仍�
 该守恒只覆盖 canonical `/registry/etcd-client-compat/` 命名空间；使用二进制边界前缀、独立专用 keyspace 或外部
 故障拓扑的测试继续由各自 cleanup/runner 合同负责，不能据此宣称所有专用 scope 的存储状态已统一守恒。
 
+### A5460：默认差分完整用户 keyspace 守恒
+
+A5459 后审计 `get '' --from-key` 发现 canonical 前缀虽为空，完整用户 keyspace 仍有 25 个无 lease artifact，且
+create revision 分成三轮完整差分：固定 HTTP stream key 1 条、Range tombstone 12 条、Txn revision 3 条、recipes
+priority index 9 条。根因分别是固定 key 只在场景开始删除、Range/Txn 场景没有 cleanup，以及 experimental
+PriorityQueue 把排序 index 写入 `__`+queue prefix、原 cleanup 只删除普通 base。提交 `22025e7d` 为四个场景补齐
+有界 cleanup；recipes 同时删除普通与 `__` 内部前缀，不改变其 FIFO/priority 行为断言。
+
+同一提交把默认 runner 从 canonical 守恒扩展为完整用户 keyspace 前后空检查，使用 etcd 的
+`get '' --from-key --limit=1`，查询失败或任意用户 key 存在均在 reference 启动前/测试返回后 fail closed。真实脏环境
+负测在 proposal health 后准确退出 1，错误为 `user keyspace is not empty during preflight`。随后仅删除已枚举的四个
+测试目标：固定 key 1 条，以及限制到 `kubebrain` 实例的 tombstone/txn/recipes 前缀 12/3/9 条，总数精确 25；未做
+全 keyspace 宽删除，删除不可恢复。
+
+清空后由新 runner 聚焦执行四个修复场景，Go 2.499 秒、端到端 5.973 秒全绿，完整 keyspace postflight 为零；compat
+全组 Go 5.626 秒通过。611 项 inventory 仍为 140/171/154/146；精确代码提交后四片 Go 时间
+119.728/349.180/223.587/358.712 秒，端到端时间 125.742/355.228/229.598/364.722 秒，全部通过。
+默认 differential 从此明确要求空 disposable target；不能把它指向含业务 key 的生产 keyspace。专用 runner 是否允许
+基线数据、使用独立 keyspace 还是要求全空，仍由各自风险和守恒合同决定。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
