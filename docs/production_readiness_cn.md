@@ -7932,6 +7932,34 @@ fake 行为负测证明共享 WORK_ROOT 和端口竞争均先于 docker access �
 Go 时间 129.460/361.604/232.575/371.359 秒，端到端时间 135.392/367.564/238.654/377.455 秒，全部通过。standalone
 base/watch 本地生命周期已闭环；rollout/version matrix 的更高层共享工作目录与日志所有权仍需继续独立审计。
 
+### A5483：apiserver version matrix 的 cache provenance 与全矩阵互斥
+
+version matrix 顶层 `WORK_DIR` 实际同时承担可持久 binary cache 和历史运行目录。旧提取逻辑仅按清洗后的 image ref 命名，
+看到 executable 就直接复用：不同 ref 可能 safe-name 碰撞，mutable tag 更新后仍运行旧 binary，并发 matrix 也会同时覆盖
+同一输出。端口只校验 base 为正数，没有按镜像数量验证最终 smoke/watch 端口不超过 65535。
+
+提交 `496ea3f6` 在启动 Docker 前取得稳定 `matrix.lock` 的 non-blocking flock，整轮独占共享 cache 与连续端口范围；并发
+matrix 明确 fail closed，而不是让子 runner 竞争到一半才失败。输入阶段建立 safe-name→原始 ref 映射，空名称或任何重复
+cache name 都拒绝；按镜像数计算最大端口并要求不超过 65535。
+
+每个 cache entry 现在先 pull，再读取 Docker 的 immutable `sha256:<64 hex>` image ID。只有 executable、`image-id` 和
+`image-ref` 三者都存在且与当前 image 完全匹配才复用；否则在 matrix lock 内提取到 PID 唯一临时文件，chmod 后原子 mv，
+再原子写入 ID/ref 元数据。失败或 RETURN trap 会删除容器和临时文件，避免把半写 binary 标成可执行。smoke/watch 子目录
+继续使用 A5481/A5482 的纳秒唯一目录并由子 runner 自行清理。
+
+fake flock 回归证明 cache/port range 已被占用时在 Docker access 前拒绝；静态测试锁定 immutable image inspect、ID/ref
+元数据、safe-name collision 和端口上界。真实单版本 `v1.36.1` matrix 执行完整 smoke 与 2 对象 × 2 更新 watch，端到端
+26 秒；最终 KV、user、role、lease、alarm 与运行前相等，新增运行目录为 0，cache 身份元数据存在，matrix lock 与
+16500/16501 子端口锁均可立即重新取得。独立进程持有 matrix lock 的真实负例返回 1 且未访问 Docker。
+
+确认没有 matrix 或 16500/16501 进程后，精确删除 v1.35.4/v1.36.1 下共 4 个旧固定 `smoke`/`watch-soak` 目录及其中
+PKI、kubeconfig、日志、watch 数据和重复子 binary；不可恢复的内容均为可重新生成测试状态。两个版本顶层 binary cache
+保留；v1.36.1 已写入当前 image ID/ref，v1.35.4 会在下次选择时因缺元数据自动 pull、刷新并补齐 provenance。
+
+脚本语法与 compat 全组通过，后者 Go 7.344 秒。611 项 production inventory 仍为 140/171/154/146；代码提交后四片
+Go 时间 131.608/369.067/232.368/376.783 秒，端到端时间 137.573/375.110/238.392/382.781 秒，全部通过。matrix cache
+现在具备单宿主并发与 image 身份保证；跨宿主共享文件系统场景仍依赖 flock 语义和 Docker image ref 的 registry 可用性。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
