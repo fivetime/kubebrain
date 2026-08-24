@@ -7096,6 +7096,38 @@ compat 全组 Go 4.726 秒、端到端 6.008 秒；611 项 inventory 为 140/171
 全 0。该准入只证明 runner 网络域在测试开始时可达，不替代持续拨号监控、跨网络域验证，
 也不证明 ClientURL 在长测试期间不会漂移。
 
+### A5449：三副本 Watch 分片边界从永久 SKIP 到组合门禁
+
+提交 `5085efdd` 关闭主差分唯一显式排除但此前没有任何专项 runner 选中的
+`TestWatchFragmentLimitBoundaryAcrossDirectReplicas`。`run-direct-moveleader-differential.sh`
+现在为 `all` scope 纳入该测试，新增可聚焦复跑的 `watch-fragment-boundary` scope，并把三节点
+reference etcd 的第一条 client endpoint 显式导出为测试实际读取的 `REFERENCE_ETCD_ENDPOINT`；
+只有 `REFERENCE_ETCD_DIRECT_ENDPOINTS` 时不再出现正则命中却因环境变量缺失而 SKIP 的假覆盖。
+
+首次聚焦运行的 3 个 size delta×3 个直连副本全部通过，但加入完整 direct 组合后在最后一个
+边界子用例暴露 oracle 缺陷：共享 KubeBrain 集群允许其他 lease/stream 场景的全局 revision
+插入，旧 oracle 把 `base+3` 写死为 delete revision，于是实际 gap 4 被误报为 PrevKV metadata
+不一致。修复后，seed create/mod revision 来自每次实际 Put 响应，delete revision 来自实际 Txn
+响应；仍严格要求每个 Watch header revision 等于事件 mod revision、PrevKV key/value/version/
+lease 和真实 seed revision 一致，并继续要求重组 protobuf 精确命中 2 MiB±1 目标。修复没有放宽
+分片帧大小、fragment flag、事件顺序或内容契约。组合门禁由 Go 37.023 秒 RED 转为 Go
+39.376 秒、端到端 51.975 秒 GREEN。
+
+精确提交镜像 `kubebrain:a5449-5085efdd`（完整 revision
+`5085efdda5edaf9037688b689d2167e0eac9c4a0`，本地 manifest list
+`sha256:42c04b2de134c40538a5259ede783e0acceacc43247777bc96753a466690331f`，Kind runtime digest
+`sha256:9ae6fc457031e104922c987b2f8e4205a26ea965b58873750b23a83843836268`）部署到三个由独立
+NodePort `30083/30085/30087` 直连的副本后，完整 `TEST_SCOPE=all` 对 reference etcd
+`5cd9f4ee13801e18825d661e5005ae599460bc3a` 通过：Go 38.974 秒、端到端 51.625 秒。
+同一精确数据面随后通过 12 项 direct consistency（含 metrics、alarm、header、HashKV、lease、
+mutation 和 local Watch control）：Go 9.519 秒、端到端 11.209 秒。
+
+compat 全组 Go 4.587 秒、端到端 5.822 秒；611 项 inventory 为 140/171/154/146，代码提交后
+四片 Go 时间 131.297/359.915/237.241/379.656 秒，端到端时间
+137.261/365.815/243.241/385.603 秒，全部通过。最终 JWT 辅助数据面恢复到同一精确镜像和
+干净 `a5449-jwt-restored` keyspace，authRevision/data revision 均为 1，3/3 Ready 且
+restartCount 全 0。该证据覆盖单节点 Kind 的三副本直连，不替代跨节点/AZ 网络或长时并发 soak。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
