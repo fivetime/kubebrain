@@ -7229,6 +7229,30 @@ Go 4.685 秒、端到端 5.965 秒；611 项 inventory 为 140/171/154/146，代
 均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。该门禁仍不替代长时持续流量、
 大历史版本集合、跨节点/AZ 或 backend fault 与 physical compact 重叠验证。
 
+### A5454：Lease 绑定与元数据穿越 physical compaction
+
+提交 `28128305` 把此前没有 runner 入口的 `TestLeaseSurvivesCompaction` 纳入新的广义
+`TEST_SCOPE=compaction`。原测试只验证 lease 存活、反向 attached-key 绑定和 compact 后 keepalive，并保留了
+“Range 不回填 `KV.Lease`”的已修复旧注释。现在它在 physical compact 前后都严格要求绑定 key 的 Lease 字段等于
+原始 signed grant ID，同时继续验证 TTL、attached keys、bound value 和 compact 后 keepalive。原始测试在当前
+精确数据面上 Go 0.145 秒、端到端 1.410 秒通过；升级断言后也在完整 scope 中实际通过。
+
+为避免改变 A5451-A5453 已发布调用语义，旧 `hashkv-compaction` scope 仍保留原三项；新 `compaction` scope
+选择三项 HashKV/physical-traffic oracle 加 lease-compaction，共四项。两者都必须同时显式授权 mutation 与
+destructive compact，非法 scope 和两类缺失授权仍在依赖探测、拓扑查询和 mutation 前 fail closed；静态回归
+分别覆盖两个 destructive scope。真实 `compaction` runner 四项 Go 9.055 秒、端到端 10.725 秒通过。
+
+精确提交镜像 `kubebrain:a5454-28128305`（完整 revision
+`28128305b8309de71a4608959a9757341a04ae04`，本地 manifest list
+`sha256:d67d993a221edfc6a5df68470a36425e08cc8bcd529dd18836b316f251167c9a`，Kind runtime digest
+`sha256:0b3b95e18b334e4b5245d1e316f35088af68fb5f577768612fe5cd95cb48b5f7`）在全新
+`a5454-compaction-exact` keyspace 上再次通过四项：Go 7.155 秒、端到端 8.852 秒。compat 全组
+Go 4.696 秒、端到端 5.976 秒；611 项 inventory 为 140/171/154/146，代码提交后四片 Go 时间
+120.231/354.058/230.284/366.119 秒，端到端时间 126.178/360.022/236.198/372.049 秒，全部通过。
+最终 JWT 数据面保持同一精确镜像并恢复到全新 `a5454-jwt-restored` keyspace，authRevision/data revision
+均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。该证据仍不替代 lease expiry/revoke
+与 compact 并发、超大 attached-key 集合、长时高频 compact 或 backend fault 重叠验证。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
