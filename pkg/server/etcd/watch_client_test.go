@@ -1403,6 +1403,57 @@ func TestRawGRPCWatchIDRangeBoundariesKeepStreamAlive(t *testing.T) {
 	require.Empty(t, response.CancelReason)
 }
 
+func TestRawGRPCWatchEmptyKeyDistinguishesPointAndFromKey(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	kv := etcdserverpb.NewKVClient(conn)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/a5427/watch-empty-key/seed"), Value: []byte("seed")})
+	require.NoError(t, err)
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+
+	create := func(id int64, rangeEnd []byte) {
+		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{WatchId: id, RangeEnd: rangeEnd},
+		}}))
+		response, recvErr := stream.Recv()
+		require.NoError(t, recvErr)
+		require.True(t, response.Created)
+		require.False(t, response.Canceled)
+		require.Equal(t, id, response.WatchId)
+		requireRawWatchHeaderWellFormed(t, response)
+	}
+	create(801, nil)
+	create(802, []byte{0})
+	key := []byte(fmt.Sprintf("/a5427/watch-empty-key/%d", time.Now().UnixNano()))
+	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	response, err := stream.Recv()
+	require.NoError(t, err)
+	require.Equal(t, int64(802), response.WatchId,
+		"an empty point key is normalized to the NUL key; only range_end={0} watches ordinary keys")
+	require.Len(t, response.Events, 1)
+	require.Equal(t, key, response.Events[0].GetKv().GetKey())
+	require.Equal(t, []byte("value"), response.Events[0].GetKv().GetValue())
+	require.Equal(t, put.Header.Revision, response.Events[0].GetKv().GetModRevision())
+}
+
 func TestRawGRPCWatchEmptyControlFramesMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
