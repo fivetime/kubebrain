@@ -2233,6 +2233,41 @@ func TestStandaloneAPIServerBaseRejectsUnsafeWorkDirAndReservedPortBeforeCluster
 	})
 }
 
+func TestStandaloneAPIServerWatchRejectsUnsafeWorkDirAndReservedPortBeforeClusterAccess(t *testing.T) {
+	path := filepath.Join("..", "dev", "apiserver-watch-soak.sh")
+	t.Run("work dir", func(t *testing.T) {
+		workRoot := t.TempDir()
+		output, err := runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{
+			"ALLOW_MUTATING_APISERVER_WATCH_SOAK=true",
+			"ETCD_PREFIX=/registry-kubebrain-apiserver-watch-unsafe-workdir",
+			"RUN_ID=watch-unsafe-workdir",
+			"WORK_ROOT=" + workRoot,
+			"WORK_DIR=" + workRoot,
+		})
+		require.Error(t, err)
+		require.Contains(t, string(output), "WORK_DIR must be a unique child")
+		require.NotContains(t, string(output), "missing required command: docker")
+	})
+
+	t.Run("port", func(t *testing.T) {
+		fakeBin := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "flock"), []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
+		output, err := runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{
+			"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+			"ALLOW_MUTATING_APISERVER_WATCH_SOAK=true",
+			"ETCD_PREFIX=/registry-kubebrain-apiserver-watch-reserved-port",
+			"RUN_ID=watch-reserved-port",
+			"WORK_ROOT=" + fakeBin,
+			"WORK_DIR=" + filepath.Join(fakeBin, "work"),
+			"PORT_LOCK_ROOT=" + filepath.Join(fakeBin, "locks"),
+			"SECURE_PORT=26445",
+		})
+		require.Error(t, err)
+		require.Contains(t, string(output), "SECURE_PORT is already reserved by another standalone apiserver runner: 26445")
+		require.NotContains(t, string(output), "missing required command: docker")
+	})
+}
+
 func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	data, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "owned-endpoint-runner-contracts.txt"))
@@ -2296,6 +2331,17 @@ func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 			require.Contains(t, calleeContent, `rm -rf -- "$WORK_DIR"`)
 			require.Contains(t, calleeContent, "port_lock_owned=false")
 			require.Contains(t, calleeContent, `flock -n "$port_lock_fd"`)
+			require.Contains(t, calleeContent, `umask 077`)
+		}
+		if callee == "hack/dev/apiserver-watch-soak.sh" {
+			require.Contains(t, calleeContent, `WORK_DIR="${WORK_DIR:-${WORK_ROOT}/apiserver-watch-soak-runs/${RUN_ID}}"`)
+			require.Contains(t, calleeContent, "work_dir_created=false")
+			require.Contains(t, calleeContent, `rm -rf -- "$WORK_DIR"`)
+			require.Contains(t, calleeContent, "port_lock_owned=false")
+			require.Contains(t, calleeContent, `flock -n "$port_lock_fd"`)
+			require.Contains(t, calleeContent, "namespace_created=false")
+			require.Contains(t, calleeContent, `if [[ "$namespace_created" == true ]]`)
+			require.Contains(t, calleeContent, "refusing to reuse existing apiserver watch-soak namespace")
 			require.Contains(t, calleeContent, `umask 077`)
 		}
 		contracts++
@@ -2381,7 +2427,9 @@ exit 98
 		"REFERENCE_ETCD_EXPECTED_GIT_SHA=5cd9f4ee13801e18825d661e5005ae599460bc3a",
 		"ALLOW_MUTATING_APISERVER_WATCH_SOAK=true",
 		"ETCD_PREFIX=/registry-kubebrain-apiserver-occupied",
+		"WORK_ROOT=" + fakeBin,
 		"WORK_DIR=" + filepath.Join(fakeBin, "watch-work"),
+		"PORT_LOCK_ROOT=" + filepath.Join(fakeBin, "watch-locks"),
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "refusing non-empty apiserver watch-soak prefix")

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 CLUSTER_NAME="${CLUSTER_NAME:-kubebrain-dev}"
@@ -10,11 +11,14 @@ ETCD_CERTFILE="${ETCD_CERTFILE:-}"
 ETCD_KEYFILE="${ETCD_KEYFILE:-}"
 APISERVER_BIN="${APISERVER_BIN:-}"
 SECURE_PORT="${SECURE_PORT:-16445}"
+PORT_LOCK_ROOT="${PORT_LOCK_ROOT:-${ROOT_DIR}/.dev/apiserver-port-locks}"
 ETCD_PREFIX="${ETCD_PREFIX:-}"
 ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 ALLOW_MUTATING_APISERVER_WATCH_SOAK="${ALLOW_MUTATING_APISERVER_WATCH_SOAK:-false}"
-WORK_DIR="${WORK_DIR:-${ROOT_DIR}/.dev/apiserver-watch-soak}"
-BIN_DIR="${WORK_DIR}/bin"
+RUN_ID="${RUN_ID:-apiserver-watch-soak-$(date +%s%N)}"
+WORK_ROOT="${WORK_ROOT:-${ROOT_DIR}/.dev}"
+WORK_DIR="${WORK_DIR:-${WORK_ROOT}/apiserver-watch-soak-runs/${RUN_ID}}"
+BIN_DIR="${BIN_DIR:-${ROOT_DIR}/.dev/apiserver-smoke/bin}"
 PKI_DIR="${WORK_DIR}/pki"
 LOG_FILE="${WORK_DIR}/kube-apiserver.log"
 PID_FILE="${WORK_DIR}/kube-apiserver.pid"
@@ -29,6 +33,10 @@ ALLOW_WATCH_RESTARTS="${ALLOW_WATCH_RESTARTS:-0}"
 prefix_owned=false
 process_owned=false
 baseline_lease_ids=""
+work_dir_created=false
+port_lock_owned=false
+bin_lock_owned=false
+namespace_created=false
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -87,7 +95,7 @@ cleanup() {
     kill "$watch_pid" >/dev/null 2>&1 || true
     wait "$watch_pid" 2>/dev/null || true
   fi
-  if [ -n "${ns:-}" ]; then
+  if [[ "$namespace_created" == true ]]; then
     kubectl --kubeconfig "$KUBECONFIG_FILE" --request-timeout=5s \
       delete namespace "$ns" --wait=false >/dev/null 2>&1 || true
   fi
@@ -130,8 +138,22 @@ cleanup() {
       fi
     fi
   fi
-  if [[ "$cleanup_failed" -ne 0 && "$status" -eq 0 ]]; then
-    status=1
+  if [[ "$work_dir_created" == true ]]; then
+    if ! rm -rf -- "$WORK_DIR"; then
+      echo "failed to delete owned apiserver watch-soak WORK_DIR: $WORK_DIR" >&2
+      cleanup_failed=1
+    fi
+  fi
+  if [[ "$bin_lock_owned" == true ]]; then
+    flock -u "$bin_lock_fd" >/dev/null 2>&1 || true
+    exec {bin_lock_fd}>&-
+  fi
+  if [[ "$port_lock_owned" == true ]]; then
+    flock -u "$port_lock_fd" >/dev/null 2>&1 || true
+    exec {port_lock_fd}>&-
+  fi
+  if [[ "$cleanup_failed" -ne 0 ]]; then
+    status=70
   fi
   exit "$status"
 }
@@ -148,6 +170,48 @@ if [[ ! "$ETCD_PREFIX" =~ ^/registry-kubebrain-apiserver-[a-z0-9-]+$ ]]; then
   echo "ETCD_PREFIX must be an explicit unique /registry-kubebrain-apiserver-* prefix" >&2
   exit 2
 fi
+if [[ ! "$RUN_ID" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+  echo "invalid apiserver watch-soak RUN_ID: $RUN_ID" >&2
+  exit 2
+fi
+if [[ ! "$SECURE_PORT" =~ ^[1-9][0-9]*$ || "$SECURE_PORT" -gt 65535 ]]; then
+  echo "SECURE_PORT must be an integer between 1 and 65535" >&2
+  exit 2
+fi
+for numeric_name in OBJECTS UPDATES WAIT_TIMEOUT_SECONDS WATCH_TIMEOUT_SECONDS; do
+  numeric_value="${!numeric_name}"
+  if [[ ! "$numeric_value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "${numeric_name} must be a positive integer" >&2
+    exit 2
+  fi
+done
+if [[ ! "$PRE_UPDATE_SLEEP_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "PRE_UPDATE_SLEEP_SECONDS must be a non-negative integer" >&2
+  exit 2
+fi
+need realpath
+canonical_work_root="$(realpath -m "$WORK_ROOT")"
+canonical_work_dir="$(realpath -m "$WORK_DIR")"
+if [[ "$canonical_work_dir" == "$canonical_work_root" || "$canonical_work_dir" != "$canonical_work_root"/* ]]; then
+  echo "WORK_DIR must be a unique child of $canonical_work_root" >&2
+  exit 2
+fi
+if [[ -e "$canonical_work_dir" ]]; then
+  echo "refusing to reuse existing apiserver watch-soak WORK_DIR: $canonical_work_dir" >&2
+  exit 1
+fi
+
+trap cleanup EXIT
+
+need flock
+mkdir -p "$PORT_LOCK_ROOT"
+port_lock_file="${PORT_LOCK_ROOT}/${SECURE_PORT}.lock"
+exec {port_lock_fd}>"$port_lock_file"
+if ! flock -n "$port_lock_fd"; then
+  echo "SECURE_PORT is already reserved by another standalone apiserver runner: $SECURE_PORT" >&2
+  exit 1
+fi
+port_lock_owned=true
 
 need docker
 need kubectl
@@ -164,7 +228,7 @@ if [[ -n "$ETCD_CAFILE" ]]; then ETCDCTL+=(--cacert="$ETCD_CAFILE"); fi
 if [[ -n "$ETCD_CERTFILE" ]]; then ETCDCTL+=(--cert="$ETCD_CERTFILE"); fi
 if [[ -n "$ETCD_KEYFILE" ]]; then ETCDCTL+=(--key="$ETCD_KEYFILE"); fi
 
-mkdir -p "$BIN_DIR" "$PKI_DIR"
+mkdir -p "$BIN_DIR"
 if [[ -f "$PID_FILE" ]]; then
   existing_pid="$(cat "$PID_FILE")"
   if [[ "$existing_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
@@ -174,8 +238,6 @@ if [[ -f "$PID_FILE" ]]; then
   rm -f "$PID_FILE"
 fi
 cd "$ROOT_DIR"
-
-trap cleanup EXIT
 prefix_response="$("${ETCDCTL[@]}" get "$ETCD_PREFIX" --prefix --limit=1 -w json)"
 if [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$prefix_response")" != 0 ]]; then
   echo "refusing non-empty apiserver watch-soak prefix: $ETCD_PREFIX" >&2
@@ -183,6 +245,17 @@ if [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$prefix_response")" != 0 ]];
 fi
 baseline_lease_ids="$(list_lease_ids)"
 prefix_owned=true
+
+work_parent="$(dirname "$canonical_work_dir")"
+mkdir -p "$work_parent"
+mkdir -m 0700 "$canonical_work_dir"
+WORK_DIR="$canonical_work_dir"
+PKI_DIR="${WORK_DIR}/pki"
+LOG_FILE="${WORK_DIR}/kube-apiserver.log"
+PID_FILE="${WORK_DIR}/kube-apiserver.pid"
+KUBECONFIG_FILE="${WORK_DIR}/kubeconfig"
+WATCH_FILE="${WORK_DIR}/configmap-watch.jsonl"
+work_dir_created=true
 
 kube_apiserver_bin="${BIN_DIR}/kube-apiserver"
 if [ -n "$APISERVER_BIN" ]; then
@@ -192,16 +265,26 @@ if [ -n "$APISERVER_BIN" ]; then
   fi
   kube_apiserver_bin="$APISERVER_BIN"
 elif [ ! -x "$kube_apiserver_bin" ]; then
-  apiserver_path="$(docker exec "$NODE_NAME" sh -c 'find /var/lib/containerd /run/containerd -path "*/usr/local/bin/kube-apiserver" -type f 2>/dev/null | head -1')"
-  if [ -z "$apiserver_path" ]; then
-    echo "failed to find kube-apiserver binary in ${NODE_NAME}" >&2
+  exec {bin_lock_fd}>"${BIN_DIR}/.extract.lock"
+  if ! flock -n "$bin_lock_fd"; then
+    echo "standalone apiserver binary cache is already being populated: $BIN_DIR" >&2
     exit 1
   fi
-  docker cp "${NODE_NAME}:${apiserver_path}" "$kube_apiserver_bin"
-  chmod +x "$kube_apiserver_bin"
+  bin_lock_owned=true
+  if [ ! -x "$kube_apiserver_bin" ]; then
+    apiserver_path="$(docker exec "$NODE_NAME" sh -c 'find /var/lib/containerd /run/containerd -path "*/usr/local/bin/kube-apiserver" -type f 2>/dev/null | head -1')"
+    if [ -z "$apiserver_path" ]; then
+      echo "failed to find kube-apiserver binary in ${NODE_NAME}" >&2
+      exit 1
+    fi
+    docker cp "${NODE_NAME}:${apiserver_path}" "$kube_apiserver_bin"
+    chmod +x "$kube_apiserver_bin"
+  fi
+  flock -u "$bin_lock_fd"
+  exec {bin_lock_fd}>&-
+  bin_lock_owned=false
 fi
 
-rm -rf "$PKI_DIR"
 docker cp "${NODE_NAME}:/etc/kubernetes/pki" "$PKI_DIR"
 
 cat >"$KUBECONFIG_FILE" <<EOF
@@ -287,8 +370,13 @@ until curl -kfsS \
   sleep 2
 done
 
-ns="kubebrain-apiserver-watch-soak-$(date +%s)"
+ns="$RUN_ID"
+if [[ -n "$(kubectl --kubeconfig "$KUBECONFIG_FILE" get namespace "$ns" -o name --ignore-not-found)" ]]; then
+  echo "refusing to reuse existing apiserver watch-soak namespace: $ns" >&2
+  exit 1
+fi
 kubectl --kubeconfig "$KUBECONFIG_FILE" create namespace "$ns"
+namespace_created=true
 
 for i in $(seq 1 "$OBJECTS"); do
   kubectl --kubeconfig "$KUBECONFIG_FILE" -n "$ns" create configmap "soak-${i}" \
@@ -410,6 +498,6 @@ wait "$watch_pid" 2>/dev/null || true
 watch_pid=""
 
 kubectl --kubeconfig "$KUBECONFIG_FILE" delete namespace "$ns" --wait=false >/dev/null
-ns=""
+namespace_created=false
 
 echo "Apiserver watch soak completed: objects=${OBJECTS} updates=${UPDATES} modified_events=${modified_count}"
