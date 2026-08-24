@@ -7448,6 +7448,30 @@ Auth/JWT/main 三套数据面均 auth disabled，key/user/role/lease/alarm 全�
 JWT args 唯一性与 digest 一致性均再次验证。该改动确保失败后执行审计，不保证测试自身 cleanup 一定成功；若 postflight
 发现污染，它会以守恒错误覆盖原测试错误，因此日志仍需同时保留原 Go 输出用于根因判断。
 
+### A5464：direct MoveLeader 显式 mutation 授权与全状态守恒
+
+`run-direct-moveleader-differential.sh` 的默认 `all` 会写 key、grant/revoke lease、切换 leader，并在部分 scope 启动
+L4/L7/Envoy 故障代理，但此前仅要求三个 direct endpoint，没有显式 mutation 授权，也没有任何 target postflight。
+提交 `d7f34678` 新增 `ALLOW_MUTATING_DIRECT_MOVELEADER=true`：非法布尔值和缺失授权都在依赖探测、reference 启动及
+target mutation 前 fail closed；endpoint 数量/唯一性、TLS/Envoy 参数和 reference 端口冲突等纯参数错误仍优先返回其
+原有精确诊断。
+
+runner 在第一条 direct endpoint 上以线性一致性全量 Range 捕获完整可见 KV，包括 base64 key/value、create/mod revision、
+version 与 lease 绑定，并同时规范化 user、role、lease、alarm 集合；auth 必须在前后均 disabled。Go 测试状态先捕获，
+postflight 在成功或失败后执行，任何 key 内容/版本或控制集合变化都打印 before/after 并 fail closed，守恒通过后才传播
+原测试退出码。它因此加入 A5463 的统一 postflight 可达性门禁，现有受控 runner 数量由 10 增至 11。
+
+真实 JWT 三直连 NodePort 30083/30085/30087 运行 `rangestream-follower` scope，启动固定 provenance
+`5cd9f4ee13801e18825d661e5005ae599460bc3a` 的三成员 reference；decoded boundary large-value 与 follower
+RangeStream 两项均通过，Go 3.819 秒、端到端 16.936 秒，完整 target 前后状态精确相等。compat 全组 Go 6.454 秒、
+端到端 7.769 秒通过。611 项 production inventory 仍为 140/171/154/146；代码提交后四片 Go 时间
+131.176/362.947/236.809/376.177 秒，端到端时间 137.192/369.027/242.801/382.208 秒，全部通过。
+
+最终逐 endpoint Status 证明三个不同 member ID、同一 cluster ID、同一 in-set leader 和 revision 252；JWT target
+auth disabled，key/user/role/lease/alarm 全空，三 Pod Ready、restartCount 0、digest 一致，StatefulSet 仍只有一个
+`--keyspace=a5463-rangestream-alarm` 且保留 `--max-delete-range-keys=1024`。全量状态比较适合本 runner 的受控测试
+target；大规模业务 keyspace 会增加 pre/postflight 内存与网络成本，且显式授权并不等价于允许对生产租户运行故障测试。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
