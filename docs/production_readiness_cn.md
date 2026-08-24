@@ -7851,6 +7851,28 @@ prefix 和 Kubernetes 临时资源均为 0。
 Go 时间 134.808/364.392/231.642/374.787 秒，端到端时间 141.103/370.836/238.235/381.499 秒，全部通过。凭据本地生命周期
 已闭环，但 LOCAL_PORT 仍是调用者负责协调的宿主资源；同端口并发目前只保证安全失败，不保证并发成功。
 
+### A5480：in-cluster kube-apiserver 宿主端口租约
+
+A5479 的唯一 NAME/workdir 防止本地文件碰撞，但多个 runner 仍可同时选择同一 `LOCAL_PORT`；依靠 port-forward 启动失败
+只能在已经创建 Secret/Pod/Service 和取得后端 prefix ownership 后发现冲突，也存在“先检查端口空闲、后 bind”的竞态。
+提交 `7d71b4b6` 使用内核 advisory `flock`：base runner 校验端口为 1..65535 后，在任何 docker/kubectl cluster access 前
+非阻塞取得 `${PORT_LOCK_ROOT}/${LOCAL_PORT}.lock` 的独占锁，失败即精确报告端口已由另一 in-cluster apiserver runner
+保留。watch 与 rollout 都通过 base 自动继承该保护。
+
+锁 ownership 绑定到本轮打开的文件描述符；EXIT 在 Kubernetes、prefix/lease 和工作目录 cleanup 后显式 unlock/close，
+异常退出时内核也会释放描述符，因此不会留下伪“占用”状态。锁文件 inode 本身稳定保留，不能在持锁时 unlink，否则另一
+进程可能创建新 inode 并绕过互斥；它不包含 PID、凭据或租户数据。测试可覆盖 `PORT_LOCK_ROOT`，生产默认目录受 077
+umask 保护。
+
+fake flock 行为负测证明锁竞争先于 docker 工具发现拒绝。真实竞争测试由独立进程持有端口 26449 的锁，base 返回 1，
+未创建 workdir 或 Kubernetes 资源；持有者结束后同一锁立即可重新取得，测试专用 26449 lock 文件随后在确认无持有者后
+精确删除。正常完整 base smoke 使用 16448 完成 CRUD/watch/pagination，退出后同一锁可立即重新取得，prefix、workdir 与
+临时资源均为 0；实际使用过的 `16448.lock` 作为稳定无敏感内容的锁 inode 保留。
+
+脚本语法与 compat 全组通过，后者 Go 7.070 秒。611 项 production inventory 仍为 140/171/154/146；代码提交后四片
+Go 时间 135.889/371.432/239.457/387.055 秒，端到端时间 144.104/379.797/247.861/395.519 秒，全部通过。本项提供同端口
+并发的确定性 fail-closed 语义；它不自动为每轮分配不同端口，若要求并行成功仍需调用者显式选择不同 LOCAL_PORT。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
