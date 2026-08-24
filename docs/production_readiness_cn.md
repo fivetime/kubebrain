@@ -6903,6 +6903,26 @@ attempt 2 对既有 durable restore receipt 的 reconciliation 同样在独立 v
 monitor 失租须终止 verifier，成功或无效 receipt 的终态提交前都必须再同步续租。只读验证不能作为绕过 owner/attempt
 fencing 的理由，也不能在 verifier 跨越 lease 后由旧 worker 提交 Succeeded 或 Failed。
 
+### A5441：组合后端故障门禁与未关闭的冷缓存差距
+
+当前 A5439 在独立 3 PD/3 TiKV Kind 数据面执行 `pd-quorum-tikv-quorum-serializable` 时，首先暴露的是
+故障编排器的环境绑定：TiKV quorum helper 使用过期的默认 Kind 容器名，且测试只等 ready 文件，不观察 helper
+提前退出。`e76d5bc6` 改为从 TiKV Pod placement 动态取得节点容器，并让 ready barrier 对 command completion
+fail fast；短窗口实测完整安装、同步并清除两组多数派分区规则。runner 还在业务断言之外比较故障前后全部
+KubeBrain Pod UID/restartCount，副本重启或替换不得再被 RPC PASS 掩盖。
+
+dev StatefulSet 的 probe 现在与 production 隔离原则一致：readiness/liveness/startup 均走 info 端口，timeout
+分别为 6/2/2 秒，startup 最多等待 24×5 秒。该修改消除了 dev 清单对 client 端口默认 1 秒 liveness 的偏差，
+但没有证明进程退出问题已经关闭。现场严格复测仍出现一次 KubeBrain 进程退出；随后固定 revision HashKV 在
+真实三副本 Region 282005 上因冷路由无法使用幸存 Store 而报
+`protected snapshot Region 282005 exhausted its cached replicas`。因此生产结论仍为 RED：组合 PD/TiKV quorum
+故障下的 protected snapshot 需要完整、预保护且无需 PD 刷新的 peer/safe-time 目录，首次退出原因也需要保留原
+容器日志后定位。发布门禁必须继续要求业务断言、规则清理、后端恢复和 KubeBrain 零重启同时满足。
+
+代码提交 `e76d5bc6` 的受影响 production manifest/compat 全组、shell syntax 与 diff check 全绿；611 项 inventory
+为 140/171/154/146，四片 Go 时间 128.048/345.861/227.530/363.198 秒，端到端时间
+133.908/351.732/233.324/369.012 秒。上述测试通过只证明门禁实现本身稳定，不覆盖仍明确记录的 live RED。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 

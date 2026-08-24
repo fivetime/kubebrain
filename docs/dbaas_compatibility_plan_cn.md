@@ -61528,6 +61528,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   129.091/351.548/228.886/363.900 秒）。该现场是单节点 Kind 上的 3 PD/3 TiKV，不外推为跨节点/AZ rollout；
   `PROBE_IMAGE` 绑定镜像内容，但 registry 签名/准入仍由外部发布系统负责。
 
+- A5441 用当前 A5439 独立 3 PD/3 TiKV Kind 数据面重跑
+  `pd-quorum-tikv-quorum-serializable`，先发现组合故障门禁本身无法进入故障窗口：TiKV quorum
+  helper 的 single-node 路径仍使用历史默认容器 `kubebrain-dev-control-plane`，而现场节点是
+  `kubebrain-dbaas-control-plane`；子进程立即退出，但 HashKV 测试只轮询 ready 文件，最终把原始错误掩盖成
+  180 秒超时。提交 `e76d5bc6` 改为从每个目标 TiKV Pod 的 `.spec.nodeName` 解析 Kind 节点，并让
+  HashKV ready barrier 同时监听 command completion，helper 提前退出时立即携带完整输出失败。3 秒独立
+  helper 实测同时隔离 PD leader+peer 与两个 TiKV Store，ready、release、恢复和 iptables 清理全绿
+  （17.558 秒）。
+
+  同一提交还把组合 HashKV runner 的成功条件从 RPC 断言扩展为故障前后 KubeBrain Pod UID 与累计
+  `restartCount` 完全一致；业务测试 PASS 但副本被替换/重启现在必须 RED。现场首次完整测试的 RPC 断言通过
+  （Go 180.631 秒、端到端 182.359 秒），但单 Pod port-forward 目标在故障期退出且
+  `kubebrain-2` 增加 3 次重启；NodePort 重跑再次得到 RPC PASS，却由新门禁准确报告
+  `kubebrain-0` 从 0 增至 2 次重启。dev 清单原先把 readiness/liveness 都放在受业务流量影响的 client
+  端口，且 liveness 使用默认 1 秒 timeout；现已与 production 拓扑一致，探针改走独立 info 端口，显式使用
+  readiness 6 秒、liveness 2 秒并增加 24×5 秒 startupProbe。manifest 测试固定三种 probe 的端口、路径、
+  timeout 与 failure threshold；同时修正备份 scheduler 已于 `53882e9fb` 提升到 256Mi/512Mi 后遗漏更新的
+  测试期望。
+
+  不能把本轮记为故障语义关闭。应用新 probe 后的严格重跑仍 RED：Region 282005 实际有 Store
+  1/16001/16002 三个 voter，但冷 KubeBrain 路由在 PD quorum 与 Store 1/16001 同时不可达时返回
+  `protected snapshot Region 282005 exhausted its cached replicas`；`kubebrain-2` 的 restartCount 也从
+  2 增至 3（之后 admission identity 碰撞又发生一次启动失败）。这证明此前 GREEN 依赖已暖缓存状态，且进程
+  退出不能只归因于 client-port probe。后续必须捕获首次退出容器的完整日志，并使 protected snapshot 在失去
+  PD 前持有可用的完整 peer/directory 与 safe-time 证据；同时把零重启条件保留为发布门禁。受影响 production
+  manifest/compat 全组分别 0.284/3.996 秒通过，shell syntax、diff check 与 611 项 inventory 校验通过。
+  精确代码提交四片 140/171/154/146 全绿（Go 测试 128.048/345.861/227.530/363.198 秒；端到端
+  133.908/351.732/233.324/369.012 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
