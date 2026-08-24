@@ -85,7 +85,7 @@ done
 
 assert_clean_endpoint() {
   local phase="$1"
-  local auth_status_json endpoint_status_json range_json user_json role_json lease_json
+  local auth_status_json endpoint_status_json range_json user_json role_json lease_json alarm_json
   auth_status_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_COMPACTION_ENDPOINT" auth status -w json)"
   if [[ "$(jq -r '.enabled // false' <<<"$auth_status_json")" != false ]]; then
     echo "disposable KubeBrain RangeStream endpoint has authentication enabled during ${phase}" >&2
@@ -96,11 +96,13 @@ assert_clean_endpoint() {
   user_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_COMPACTION_ENDPOINT" user list -w json)"
   role_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_COMPACTION_ENDPOINT" role list -w json)"
   lease_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_COMPACTION_ENDPOINT" lease list -w json)"
+  alarm_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_COMPACTION_ENDPOINT" alarm list -w json)"
   if [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$range_json")" != 0 ||
     "$(jq -r '(.users // []) | length' <<<"$user_json")" != 0 ||
     "$(jq -r '(.roles // []) | length' <<<"$role_json")" != 0 ||
-    "$(jq -r '(.leases // []) | length' <<<"$lease_json")" != 0 ]]; then
-    echo "disposable KubeBrain RangeStream endpoint has keys, users, roles, or leases during ${phase}" >&2
+    "$(jq -r '(.leases // []) | length' <<<"$lease_json")" != 0 ||
+    "$(jq -r '(.alarms // []) | length' <<<"$alarm_json")" != 0 ]]; then
+    echo "disposable KubeBrain RangeStream endpoint has keys, users, roles, leases, or alarms during ${phase}" >&2
     exit 1
   fi
   if [[ "$phase" == preflight ]]; then
@@ -161,12 +163,17 @@ if ! curl --fail --silent --max-time 1 "${REFERENCE_CLIENT_URL}/health" >/dev/nu
   exit 1
 fi
 
+test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_ENDPOINT="${REFERENCE_CLIENT_URL#http://}" \
     KUBEBRAIN_COMPACTION_ENDPOINT="$KUBEBRAIN_COMPACTION_ENDPOINT" \
     go test "${race_args[@]}" . -run '^TestRangeStream(Partial|Client)CompactionDifferential$' \
       -count=1 -timeout="$TEST_TIMEOUT" -v
-)
+) || test_status=$?
 assert_clean_endpoint postflight
+if [[ "$test_status" -ne 0 ]]; then
+  echo "RangeStream compaction differential test package failed with status $test_status" >&2
+  exit "$test_status"
+fi
 test_succeeded=true

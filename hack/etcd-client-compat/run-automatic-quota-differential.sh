@@ -190,6 +190,7 @@ if ! curl --fail --silent --max-time 1 "${REFERENCE_CLIENT_URL}/health" >/dev/nu
   exit 1
 fi
 
+test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_AUTOMATIC_QUOTA_ENDPOINT="${REFERENCE_CLIENT_URL#http://}" \
@@ -200,6 +201,10 @@ fi
     KUBEBRAIN_AUTOMATIC_QUOTA_FILL_BYTES="$KUBEBRAIN_FILL_BYTES" \
     go test . -run '^TestAutomaticQuotaAlarmDifferentialAgainstReferenceEtcd$' \
       -count=1 -timeout="$TEST_TIMEOUT" -v
-)
+) || test_status=$?
 assert_clean_endpoint postflight
+if [[ "$test_status" -ne 0 ]]; then
+  echo "automatic-quota differential test package failed with status $test_status" >&2
+  exit "$test_status"
+fi
 test_succeeded=true

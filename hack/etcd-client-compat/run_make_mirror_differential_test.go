@@ -14,6 +14,7 @@ func TestMakeMirrorDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "auth revision must be 1")
 	require.Contains(t, string(script), "advertised client URL is unreachable")
 	require.Contains(t, string(script), "assert_clean_endpoint postflight")
+	require.Contains(t, string(script), "alarm list -w json")
 	require.Contains(t, string(script), "TestMakeMirrorAuthenticatedBidirectionalDifferential")
 	require.Contains(t, string(script), "TestMakeMirrorRevisionAndCompactionDifferential")
 }

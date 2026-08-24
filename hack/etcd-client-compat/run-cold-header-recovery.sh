@@ -129,6 +129,7 @@ assert_compat_prefix_empty preflight
 baseline_leases="$("$ETCDCTL_BIN" --endpoints="$BASELINE_ENDPOINT" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
 cleanup_armed=true
 
+test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_COLD_ALARM_ENDPOINT="$DIRECT_ENDPOINT" \
@@ -143,7 +144,7 @@ cleanup_armed=true
     KUBEBRAIN_COLD_AUTH_VICTIM_POD="$VICTIM_POD" \
     REFERENCE_ETCD_BINARY="$REFERENCE_ETCD_BINARY" \
     go test . -run "$TEST_PATTERN" -count=1 -timeout="$TEST_TIMEOUT" -v
-)
+) || test_status=$?
 
 assert_alarm_set_empty postflight
 assert_compat_prefix_empty postflight
@@ -157,3 +158,7 @@ if ! "$ETCDCTL_BIN" --endpoints="$BASELINE_ENDPOINT" endpoint health; then
   exit 1
 fi
 cleanup_armed=false
+if [[ "$test_status" -ne 0 ]]; then
+  echo "cold-header recovery test package failed with status $test_status" >&2
+  exit "$test_status"
+fi

@@ -1595,6 +1595,33 @@ func TestCompatCommandHelpersUseWaitDelay(t *testing.T) {
 	require.GreaterOrEqual(t, strings.Count(text, "command.WaitDelay = compatCommandWaitDelay"), 2)
 }
 
+func TestRunnerPostflightsRemainReachableAfterTestFailure(t *testing.T) {
+	for _, script := range []string{
+		"run-alarm-restart-recovery.sh",
+		"run-auth-differential.sh",
+		"run-automatic-quota-differential.sh",
+		"run-cold-header-recovery.sh",
+		"run-differential.sh",
+		"run-direct-replica-consistency.sh",
+		"run-jwt-differential.sh",
+		"run-make-mirror-differential.sh",
+		"run-rangestream-compaction-differential.sh",
+		"run-replica-restart-revision.sh",
+	} {
+		t.Run(script, func(t *testing.T) {
+			data, err := os.ReadFile(script)
+			require.NoError(t, err)
+			content := string(data)
+			capture := strings.Index(content, ") || test_status=$?")
+			require.NotEqual(t, -1, capture, "runner must capture the Go test exit status instead of exiting under set -e")
+			postflight := strings.Index(content[capture:], "postflight")
+			require.NotEqual(t, -1, postflight, "runner must execute a postflight after capturing test failure")
+			propagate := strings.Index(content[capture+postflight:], `if [[ "$test_status" -ne 0 ]]`)
+			require.NotEqual(t, -1, propagate, "runner must propagate the captured test failure after postflight")
+		})
+	}
+}
+
 func TestCompatSuiteRunnerRejectsReferenceDifferentialOptIns(t *testing.T) {
 	for _, envVar := range []string{
 		"REFERENCE_ETCD_ENDPOINT",

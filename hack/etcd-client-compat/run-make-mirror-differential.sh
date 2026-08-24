@@ -78,7 +78,7 @@ done
 
 assert_clean_endpoint() {
   local phase="$1"
-  local auth_status_json range_json user_json role_json lease_json
+  local auth_status_json range_json user_json role_json lease_json alarm_json
   auth_status_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_MIRROR_ENDPOINT" auth status -w json)"
   if [[ "$(jq -r '.enabled // false' <<<"$auth_status_json")" != false ]]; then
     echo "disposable KubeBrain make-mirror endpoint has authentication enabled during ${phase}" >&2
@@ -88,11 +88,13 @@ assert_clean_endpoint() {
   user_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_MIRROR_ENDPOINT" user list -w json)"
   role_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_MIRROR_ENDPOINT" role list -w json)"
   lease_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_MIRROR_ENDPOINT" lease list -w json)"
+  alarm_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_MIRROR_ENDPOINT" alarm list -w json)"
   if [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$range_json")" != 0 ||
     "$(jq -r '(.users // []) | length' <<<"$user_json")" != 0 ||
     "$(jq -r '(.roles // []) | length' <<<"$role_json")" != 0 ||
-    "$(jq -r '(.leases // []) | length' <<<"$lease_json")" != 0 ]]; then
-    echo "disposable KubeBrain make-mirror endpoint has keys, users, roles, or leases during ${phase}" >&2
+    "$(jq -r '(.leases // []) | length' <<<"$lease_json")" != 0 ||
+    "$(jq -r '(.alarms // []) | length' <<<"$alarm_json")" != 0 ]]; then
+    echo "disposable KubeBrain make-mirror endpoint has keys, users, roles, leases, or alarms during ${phase}" >&2
     exit 1
   fi
   if [[ "$phase" == preflight && "$(jq -r '.authRevision // 0' <<<"$auth_status_json")" != 1 ]]; then
@@ -147,6 +149,7 @@ if ! curl --fail --silent --max-time 1 "${REFERENCE_CLIENT_URL}/health" >/dev/nu
   exit 1
 fi
 
+test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_ENDPOINT="${REFERENCE_CLIENT_URL#http://}" \
@@ -156,6 +159,10 @@ fi
     go test . \
       -run '^(TestMakeMirrorAuthenticatedBidirectionalDifferential|TestMakeMirrorRevisionAndCompactionDifferential)$' \
       -count=1 -timeout="$TEST_TIMEOUT" -v
-)
+) || test_status=$?
 assert_clean_endpoint postflight
+if [[ "$test_status" -ne 0 ]]; then
+  echo "make-mirror differential test package failed with status $test_status" >&2
+  exit "$test_status"
+fi
 test_succeeded=true

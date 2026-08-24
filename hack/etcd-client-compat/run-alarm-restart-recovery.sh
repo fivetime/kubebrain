@@ -143,6 +143,7 @@ assert_compat_prefix_empty preflight
 baseline_leases="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ALARM_ENDPOINT" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
 cleanup_armed=true
 
+test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_GENERIC_ALARM_METRIC_RESTART_ENDPOINT="$KUBEBRAIN_ALARM_ENDPOINT" \
@@ -156,7 +157,7 @@ cleanup_armed=true
     KUBEBRAIN_CORRUPT_RESTART_PODS="$(IFS=,; echo "${kube_pods[*]}")" \
     REFERENCE_ETCD_BINARY="$REFERENCE_ETCD_BINARY" \
     go test . -run "$TEST_PATTERN" -count=1 -timeout="$TEST_TIMEOUT" -v
-)
+) || test_status=$?
 
 assert_alarm_set_empty postflight
 assert_compat_prefix_empty postflight
@@ -170,3 +171,7 @@ if ! "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ALARM_ENDPOINT" endpoint health; the
   exit 1
 fi
 cleanup_armed=false
+if [[ "$test_status" -ne 0 ]]; then
+  echo "alarm-restart recovery test package failed with status $test_status" >&2
+  exit "$test_status"
+fi
