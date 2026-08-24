@@ -468,7 +468,7 @@ run_apiserver_smoke() {
     ETCD_PREFIX="/registry-kubebrain-apiserver-tls-$(date +%s%N)" \
     ALLOW_MUTATING_APISERVER_SMOKE=true \
     SECURE_PORT="$APISERVER_SECURE_PORT" \
-    WORK_DIR="${ROOT_DIR}/.dev/apiserver-tls-smoke" \
+    WORK_DIR="${ROOT_DIR}/.dev/apiserver-tls-smoke-$(date +%s%N)" \
     "$ROOT_DIR/hack/dev/apiserver-smoke.sh"
 }
 

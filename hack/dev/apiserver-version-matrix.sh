@@ -105,7 +105,7 @@ for image in "${apiserver_images[@]}"; do
       ENDPOINT="$ENDPOINT" \
       APISERVER_BIN="$bin" \
       SECURE_PORT="$smoke_port" \
-      WORK_DIR="${WORK_DIR}/${name}/smoke" \
+      WORK_DIR="${WORK_DIR}/${name}/smoke-$(date +%s%N)" \
       ETCD_PREFIX="/registry-kubebrain-apiserver-matrix-${name}-smoke-$(date +%s%N)" \
       ALLOW_MUTATING_APISERVER_SMOKE=true \
       hack/dev/apiserver-smoke.sh
