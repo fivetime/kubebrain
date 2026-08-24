@@ -73,6 +73,36 @@ func TestAuthWatchFromKeyDoesNotUseExactKeyPermission(t *testing.T) {
 	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), stream.sent[0].CancelReason)
 }
 
+func TestAuthWatchEmptyKeyUsesNormalizedNULPermissionWithoutWidening(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := setupAuthKVUser(t, server)
+	require.NoError(t, server.auth.roleRevokePermission(context.Background(), "allowed", []byte("/allowed/"), []byte("/allowed0")))
+	require.NoError(t, server.auth.roleGrantPermission(context.Background(), "allowed", &authpb.Permission{
+		PermType: authpb.READ, Key: []byte{0},
+	}))
+
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: ctx},
+		reqs: []*etcdserverpb.WatchRequest{
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				RangeEnd: []byte{0},
+			}}},
+		},
+	}
+	requireWatchCanceled(t, server.Watch(stream))
+	require.Len(t, stream.sent, 2)
+	require.True(t, stream.sent[0].Created)
+	require.False(t, stream.sent[0].Canceled,
+		"an empty point watch is authorized as the normalized NUL key")
+	require.True(t, stream.sent[1].Created)
+	require.True(t, stream.sent[1].Canceled,
+		"an exact NUL permission must not authorize the empty-key from-key range")
+	require.Equal(t, int64(-1), stream.sent[1].WatchId)
+	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), stream.sent[1].CancelReason)
+}
+
 func TestAuthWatchValidationErrorPriorityMatchesUpstream(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
