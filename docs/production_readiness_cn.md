@@ -7305,6 +7305,26 @@ runner 再用三个独立 NodePort 映射验证 member ID/HashKV，Go 0.182 秒�
 revision 均为 1，key/lease 全空，3/3 Ready 且 restartCount 全 0。共享 Service/LB 单入口与逐成员直连是两种
 不同有效拓扑：前者由 Sync 可达性门禁负责，后者由本专项证明身份和副本一致性；两者证据不可互相替代。
 
+### A5457：直接副本 runner scope 归属静态门禁
+
+前四轮连续发现 live oracle 已存在、但 `run-direct-replica-consistency.sh` 的手写 `-run` 正则没有选择它们；逐项补正
+不能防止同类遗漏复发。提交 `f1a0fcb9` 将四个公开 scope 的选择集合迁移到共享
+`direct-replica-scopes.txt`：runner 从该清单生成带首尾锚点的精确 Go test 正则，metrics 条目仍只在提供三条独立
+metrics endpoint 时加入默认 `all`，两个 compaction scope 的显式 mutation/destructive 授权语义均未改变。当前清单
+包含 22 条 scope/test 关系、19 个唯一 live oracle；重复测试仅用于表达两个 compaction scope 的有意交集。
+
+新增 AST 静态门禁遍历 compat module 的全部 `Test*`，凡直接读取 runner 专用的 direct/multi/quota/alarm-metrics/
+memberlist 环境变量，都必须在共享清单至少归属一个 scope；反向同时验证清单 scope 合法、行不重复、测试名格式合法且
+对应 Go 测试真实存在。由共同 live endpoint 间接进入的 maintenance/physical-compaction 测试仍需显式登记和代码评审，
+本门禁不把普通 `KUBEBRAIN_ETCD_ENDPOINT` 的大量差分、故障注入和专用拓扑测试误归到直接副本 runner。
+
+shell syntax、聚焦静态门禁和 compat 全组通过（compat Go 5.474 秒）。提交后的真实三副本 NodePort 默认 scope 由新清单
+选中含 metrics 的 14 项，Go 6.862 秒、端到端 8.559 秒全绿；runner 的 prefix、lease、alarm 前后守恒检查同时通过。
+611 项 production inventory 仍为 140/171/154/146；精确代码提交后四片 Go 时间
+121.455/350.898/226.491/362.355 秒，端到端时间 127.352/356.864/232.480/368.331 秒，全部通过。
+本项只改变测试编排与防漏机制，不改变数据面二进制，因此沿用 A5456 精确 runtime 环境做现场验证，不新增或冒充新的
+数据面镜像证据。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
