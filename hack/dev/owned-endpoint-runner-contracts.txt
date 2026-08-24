@@ -1,0 +1,4 @@
+# caller run flag default callee approval owned resource
+hack/dev/verify.sh RUN_APISERVER_SMOKE true hack/dev/apiserver-smoke.sh ALLOW_MUTATING_APISERVER_SMOKE etcd-prefix
+hack/dev/tls-smoke.sh RUN_APISERVER_SMOKE true hack/dev/apiserver-smoke.sh ALLOW_MUTATING_APISERVER_SMOKE etcd-prefix
+hack/dev/apiserver-version-matrix.sh RUN_APISERVER_SMOKE true hack/dev/apiserver-smoke.sh ALLOW_MUTATING_APISERVER_SMOKE etcd-prefix

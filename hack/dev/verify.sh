@@ -201,7 +201,11 @@ if [ "$RUN_INCLUSTER_BALANCER_SMOKE" = "true" ]; then
 fi
 
 if [ "$RUN_APISERVER_SMOKE" = "true" ]; then
-  run_step "standalone kube-apiserver smoke" env ENDPOINT="http://${ENDPOINT}" hack/dev/apiserver-smoke.sh
+  run_step "standalone kube-apiserver smoke" env \
+    ENDPOINT="http://${ENDPOINT}" \
+    ETCD_PREFIX="/registry-kubebrain-apiserver-verify-$(date +%s%N)" \
+    ALLOW_MUTATING_APISERVER_SMOKE=true \
+    hack/dev/apiserver-smoke.sh
 fi
 
 if [ "$RUN_INCLUSTER_APISERVER_SMOKE" = "true" ]; then

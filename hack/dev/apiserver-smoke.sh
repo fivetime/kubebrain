@@ -10,7 +10,9 @@ ETCD_CERTFILE="${ETCD_CERTFILE:-}"
 ETCD_KEYFILE="${ETCD_KEYFILE:-}"
 APISERVER_BIN="${APISERVER_BIN:-}"
 SECURE_PORT="${SECURE_PORT:-16443}"
-ETCD_PREFIX="${ETCD_PREFIX:-/registry-kubebrain-apiserver-smoke-$(date +%s)}"
+ETCD_PREFIX="${ETCD_PREFIX:-}"
+ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
+ALLOW_MUTATING_APISERVER_SMOKE="${ALLOW_MUTATING_APISERVER_SMOKE:-false}"
 WORK_DIR="${WORK_DIR:-${ROOT_DIR}/.dev/apiserver-smoke}"
 BIN_DIR="${WORK_DIR}/bin"
 PKI_DIR="${WORK_DIR}/pki"
@@ -20,6 +22,9 @@ KUBECONFIG_FILE="${WORK_DIR}/kubeconfig"
 WATCH_FILE="${WORK_DIR}/configmap-watch.jsonl"
 WAIT_PATH="${WAIT_PATH:-/livez}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-180}"
+prefix_owned=false
+process_owned=false
+baseline_lease_ids=""
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -28,12 +33,43 @@ need() {
   fi
 }
 
+list_lease_ids() {
+  local output line declared_count
+  local -a lines ids
+  output="$("${ETCDCTL[@]}" lease list)" || return 1
+  mapfile -t lines <<<"$output"
+  if [[ ! "${lines[0]:-}" =~ ^found\ ([0-9]+)\ leases$ ]]; then
+    echo "unexpected etcdctl lease list header: ${lines[0]:-<empty>}" >&2
+    return 1
+  fi
+  declared_count="${BASH_REMATCH[1]}"
+  ids=()
+  for line in "${lines[@]:1}"; do
+    [[ -z "$line" ]] && continue
+    if [[ ! "$line" =~ ^[0-9a-fA-F]+$ ]]; then
+      echo "unexpected etcdctl lease ID: $line" >&2
+      return 1
+    fi
+    ids+=("${line,,}")
+  done
+  if [[ "${#ids[@]}" -ne "$declared_count" ]]; then
+    echo "etcdctl lease list count mismatch: declared=$declared_count parsed=${#ids[@]}" >&2
+    return 1
+  fi
+  if [[ "${#ids[@]}" -gt 0 ]]; then
+    printf '%s\n' "${ids[@]}" | sort
+  fi
+}
+
 cleanup() {
+  local status=$?
+  local cleanup_failed=0
+  trap - EXIT
   if [ -n "${watch_pid:-}" ] && kill -0 "$watch_pid" >/dev/null 2>&1; then
     kill "$watch_pid" >/dev/null 2>&1 || true
     wait "$watch_pid" 2>/dev/null || true
   fi
-  if [ -f "$PID_FILE" ]; then
+  if [[ "$process_owned" == true && -f "$PID_FILE" ]]; then
     local pid
     pid="$(cat "$PID_FILE")"
     if kill -0 "$pid" >/dev/null 2>&1; then
@@ -42,14 +78,96 @@ cleanup() {
     fi
     rm -f "$PID_FILE"
   fi
+  if [[ "$prefix_owned" == true ]]; then
+    if ! "${ETCDCTL[@]}" del "$ETCD_PREFIX" --prefix >/dev/null; then
+      echo "failed to delete owned apiserver smoke prefix: $ETCD_PREFIX" >&2
+      cleanup_failed=1
+    elif ! prefix_response="$("${ETCDCTL[@]}" get "$ETCD_PREFIX" --prefix --limit=1 -w json)"; then
+      echo "failed to verify owned apiserver smoke prefix cleanup: $ETCD_PREFIX" >&2
+      cleanup_failed=1
+    elif [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$prefix_response")" != 0 ]]; then
+      echo "owned apiserver smoke prefix is not empty after cleanup: $ETCD_PREFIX" >&2
+      cleanup_failed=1
+    fi
+    if ! final_lease_ids="$(list_lease_ids)"; then
+      echo "failed to list leases after apiserver smoke" >&2
+      cleanup_failed=1
+    else
+      while IFS= read -r lease_id; do
+        [[ -z "$lease_id" ]] && continue
+        if ! grep -Fxq "$lease_id" <<<"$baseline_lease_ids"; then
+          if ! "${ETCDCTL[@]}" lease revoke "$lease_id" >/dev/null; then
+            echo "failed to revoke apiserver smoke lease: $lease_id" >&2
+            cleanup_failed=1
+          fi
+        fi
+      done <<<"$final_lease_ids"
+      if ! final_lease_ids="$(list_lease_ids)" || [[ "$final_lease_ids" != "$baseline_lease_ids" ]]; then
+        echo "apiserver smoke lease set differs from preflight after cleanup" >&2
+        cleanup_failed=1
+      fi
+    fi
+  fi
+  if [[ "$cleanup_failed" -ne 0 && "$status" -eq 0 ]]; then
+    status=1
+  fi
+  exit "$status"
 }
+
+if [[ "$ALLOW_MUTATING_APISERVER_SMOKE" != true && "$ALLOW_MUTATING_APISERVER_SMOKE" != false ]]; then
+  echo "ALLOW_MUTATING_APISERVER_SMOKE must be true or false" >&2
+  exit 2
+fi
+if [[ "$ALLOW_MUTATING_APISERVER_SMOKE" != true ]]; then
+  echo "refusing shared-endpoint apiserver writes without ALLOW_MUTATING_APISERVER_SMOKE=true" >&2
+  exit 1
+fi
+if [[ ! "$ETCD_PREFIX" =~ ^/registry-kubebrain-apiserver-[a-z0-9-]+$ ]]; then
+  echo "ETCD_PREFIX must be an explicit unique /registry-kubebrain-apiserver-* prefix" >&2
+  exit 2
+fi
 
 need docker
 need kubectl
 need curl
+need jq
+if [[ ! -x "$ETCDCTL_BIN" ]]; then
+  echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
+  exit 1
+fi
+REFERENCE_ETCD_BIN="$ETCDCTL_BIN" "$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"
+
+ETCDCTL=("$ETCDCTL_BIN" --endpoints="$ENDPOINT")
+if [[ -n "$ETCD_CAFILE" ]]; then
+  ETCDCTL+=(--cacert="$ETCD_CAFILE")
+fi
+if [[ -n "$ETCD_CERTFILE" ]]; then
+  ETCDCTL+=(--cert="$ETCD_CERTFILE")
+fi
+if [[ -n "$ETCD_KEYFILE" ]]; then
+  ETCDCTL+=(--key="$ETCD_KEYFILE")
+fi
 
 mkdir -p "$BIN_DIR" "$PKI_DIR"
+if [[ -f "$PID_FILE" ]]; then
+  existing_pid="$(cat "$PID_FILE")"
+  if [[ "$existing_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
+    echo "refusing to replace active apiserver smoke process from $PID_FILE: $existing_pid" >&2
+    exit 1
+  fi
+  rm -f "$PID_FILE"
+fi
 cd "$ROOT_DIR"
+
+trap cleanup EXIT
+
+prefix_response="$("${ETCDCTL[@]}" get "$ETCD_PREFIX" --prefix --limit=1 -w json)"
+if [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$prefix_response")" != 0 ]]; then
+  echo "refusing non-empty apiserver smoke prefix: $ETCD_PREFIX" >&2
+  exit 1
+fi
+baseline_lease_ids="$(list_lease_ids)"
+prefix_owned=true
 
 kube_apiserver_bin="${BIN_DIR}/kube-apiserver"
 if [ -n "$APISERVER_BIN" ]; then
@@ -92,9 +210,6 @@ contexts:
 current-context: kubebrain-apiserver-smoke
 EOF
 
-cleanup
-trap cleanup EXIT
-
 etcd_tls_args=()
 if [ -n "$ETCD_CAFILE" ]; then
   etcd_tls_args+=("--etcd-cafile=${ETCD_CAFILE}")
@@ -136,6 +251,7 @@ fi
   --v=2 \
   >"$LOG_FILE" 2>&1 &
 echo "$!" >"$PID_FILE"
+process_owned=true
 
 echo "Waiting for standalone kube-apiserver on https://127.0.0.1:${SECURE_PORT}"
 deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))

@@ -1909,6 +1909,85 @@ exit 99
 	require.NotContains(t, string(logData), "create namespace")
 }
 
+func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "owned-endpoint-runner-contracts.txt"))
+	require.NoError(t, err)
+	contracts := 0
+	for lineNumber, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		require.Len(t, fields, 6, "owned endpoint manifest line %d", lineNumber+1)
+		caller, runFlag, defaultValue, callee, approval, resource := fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]
+		require.Equal(t, "true", defaultValue)
+		require.Equal(t, "etcd-prefix", resource)
+		require.Regexp(t, `^ALLOW_MUTATING_[A-Z0-9_]+$`, approval)
+
+		callerData, readErr := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(caller)))
+		require.NoError(t, readErr)
+		callerContent := string(callerData)
+		require.Contains(t, callerContent, runFlag+`="${`+runFlag+`:-`+defaultValue+`}"`)
+		require.Contains(t, callerContent, callee)
+		require.Contains(t, callerContent, approval+"=true")
+		require.Contains(t, callerContent, `ETCD_PREFIX="/registry-kubebrain-apiserver-`)
+
+		calleeData, readErr := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(callee)))
+		require.NoError(t, readErr)
+		calleeContent := string(calleeData)
+		require.Contains(t, calleeContent, approval+`="${`+approval+`:-false}"`)
+		require.Contains(t, calleeContent, "prefix_owned=false")
+		require.Contains(t, calleeContent, `if [[ "$prefix_owned" == true ]]`)
+		require.Contains(t, calleeContent, `del "$ETCD_PREFIX" --prefix`)
+		require.Contains(t, calleeContent, "baseline_lease_ids=\"$(list_lease_ids)\"")
+		require.Contains(t, calleeContent, `lease revoke "$lease_id"`)
+		require.Contains(t, calleeContent, "lease set differs from preflight after cleanup")
+		require.Contains(t, calleeContent, "refusing non-empty apiserver smoke prefix")
+		require.Contains(t, calleeContent, "process_owned=false")
+		require.Contains(t, calleeContent, "refusing to replace active apiserver smoke process")
+		contracts++
+	}
+	require.Equal(t, 3, contracts)
+}
+
+func TestAPIServerSmokeRejectsNonEmptyPrefixWithoutDeletingIt(t *testing.T) {
+	fakeBin := t.TempDir()
+	logPath := filepath.Join(fakeBin, "etcdctl.log")
+	fakeEtcdctl := filepath.Join(fakeBin, "etcdctl")
+	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_ETCDCTL_LOG"
+if [[ "${1:-}" == "--version" ]]; then
+  printf '%s\n' 'Git SHA: 5cd9f4ee13801e18825d661e5005ae599460bc3a'
+  exit 0
+fi
+if [[ "$*" == *" get /registry-kubebrain-apiserver-occupied --prefix --limit=1 -w json"* ]]; then
+  printf '%s\n' '{"header":{"revision":7},"count":1,"kvs":[{"key":"aw==","value":"dg=="}]}'
+  exit 0
+fi
+exit 98
+`), 0o755))
+	for _, tool := range []string{"docker", "kubectl", "curl"} {
+		require.NoError(t, os.WriteFile(filepath.Join(fakeBin, tool), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755))
+	}
+
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "apiserver-smoke.sh")}, []string{
+		"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+		"FAKE_ETCDCTL_LOG=" + logPath,
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=5cd9f4ee13801e18825d661e5005ae599460bc3a",
+		"ALLOW_MUTATING_APISERVER_SMOKE=true",
+		"ETCD_PREFIX=/registry-kubebrain-apiserver-occupied",
+		"WORK_DIR=" + filepath.Join(fakeBin, "work"),
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing non-empty apiserver smoke prefix")
+	logData, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	require.NotContains(t, string(logData), " del ")
+}
+
 func TestCompatSuiteRunnerRejectsReferenceDifferentialOptIns(t *testing.T) {
 	for _, envVar := range []string{
 		"REFERENCE_ETCD_ENDPOINT",
