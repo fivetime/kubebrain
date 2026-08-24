@@ -61409,6 +61409,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV/PD 双节点 endpoint，故不声称真实 follower/leader 数据面演练。精确代码提交四片 139/171/153/146 全绿
   （Go 测试 118.099/341.726/219.930/356.398 秒；端到端 123.939/347.626/225.831/362.287 秒）。
 
+- A5434 收紧 A5433 异步 cancellation 旁路的资源上界。A5433 为每个 client-requested follower cancel 启动一个
+  直发协程；它们虽不再阻塞 Watch 接收主循环，却会在不读取响应的客户端上同时等待 `sendMu`，生产配置允许
+  `--max-watches=10000`，因此单 stream 最坏可制造近万个阻塞协程。提交 `e6841b9e` 改为每条 stream 固定一个
+  `sendDirectControls` worker 和容量 16 的专用 FIFO：终止帧仍按请求顺序通过同一 `sendMu` 与事件串行，原
+  generation 仍保留到 wire Send 完成；FIFO 满后在第 18 个并发待发取消处对接收主循环施加可由 stream context
+  解除的反压，从而同时限制 goroutine 与排队内存，stream Close 会关闭两个 control FIFO 并等待各自 sender。
+  新增确定性资源 RED：阻塞首个 Send 后批量取消 follower generations，旧实现立即出现多个 `cancel.func1`
+  发送协程；修复后始终只有一个 stream-owned sender，16 个槽耗尽后的下一次取消保持阻塞，并在 context cancel
+  后 1 秒内退出。资源用例在 race 下连续 50 轮通过（10.882 秒），包含 A5431–A5433 活性/顺序场景的关键集合
+  race 50 轮通过（14.050 秒），全部 Watch 测试连续 10 轮通过（114.922 秒），完整 server/proxy 包通过
+  （126.725 秒/proxy cached），diff check 与 609 项 inventory 校验通过。本项只约束 follower Watch 传输背压的
+  进程资源，不改变 TiKV 数据语义；本轮没有可用的 disposable TiKV/PD 双节点 endpoint，故不声称真实数据面演练。
+  精确代码提交四片 139/171/153/146 全绿（Go 测试 121.908/348.048/219.906/360.747 秒；端到端
+  127.625/353.789/225.725/366.537 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
