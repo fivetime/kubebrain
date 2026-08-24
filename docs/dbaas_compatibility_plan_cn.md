@@ -61339,6 +61339,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已正确的授权路径。精确测试提交的 609 项 production 四片 139/171/153/146 全绿（Go 测试
   117.945/345.604/219.628/353.871 秒；端到端 123.721/351.500/225.483/359.723 秒）。
 
+- A5429 审计 A5428 语义跨 KubeBrain follower→leader proxy 后是否仍成立。单进程 upstream 没有这一层表示转换；
+  KubeBrain public ingress 在鉴权前保存 wire `range_end={0}`，再把请求归一为 `key={0}`、非 nil/长度 0 的内部
+  open-end slice，随后 `watcher.openWatchChannel` 把两者交给 peer proxy；`watchOptionsForRange` 必须依据 nil 与
+  empty slice 的区别分别生成 point 或 clientv3 `WithFromKey`。若 protobuf/clone/重连中把 empty 变成 nil，leader
+  会错误按 exact NUL permission 授权并把全范围 watch 缩成 point。提交 `d6fcb241` 增加 follower 初代回归：使用
+  auth token 创建空 key from-key Watch，强制 follower proxy，精确要求 peer 收到 `key={0}`、`rangeEnd != nil &&
+  len==0`；outgoing metadata 必须携带原 token 且不得提前携带 trusted-continuation 标记，确保 leader 对正确全范围
+  做首次权威鉴权。该链普通 50 轮 0.741 秒、race 50 轮 5.679 秒通过；既有 proxy option 编码普通/race 各 50 轮
+  0.033/1.103 秒通过，server/proxy vet 与 diff check 通过。审计未发现产品 RED，故只增加多副本架构回归、不改
+  正确实现；真实 follower/leader + auth-enabled disposable TiKV 双端仍由 A5428 永久 live 门禁负责。精确测试提交
+  的 609 项 production 四片 139/171/153/146 全绿（Go 测试 122.324/343.912/220.479/357.080 秒；端到端
+  128.088/349.746/226.318/362.843 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
