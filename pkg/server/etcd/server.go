@@ -119,6 +119,7 @@ type RPCServer struct {
 	// waits for those calls to return, releases the campaign lease, then lets new
 	// calls route through the newly observed leader.
 	leadershipDrainBoundary sync.RWMutex
+	leadershipDrained       atomic.Bool
 
 	concurrencyClient *clientv3.Client
 
@@ -143,6 +144,7 @@ func (s *RPCServer) DrainLeadership(release func()) {
 	s.leadershipDrainBoundary.Lock()
 	defer s.leadershipDrainBoundary.Unlock()
 	release()
+	s.leadershipDrained.Store(true)
 }
 
 // SetMaxRequestsInFlight sets the process-wide public client RPC limit. A

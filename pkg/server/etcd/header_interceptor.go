@@ -34,6 +34,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -192,6 +193,9 @@ func (s *RPCServer) observeClientRequest(ctx context.Context, requestType, fullM
 func (s *RPCServer) requireLeaderUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	s.leadershipDrainBoundary.RLock()
 	defer s.leadershipDrainBoundary.RUnlock()
+	if s.leadershipDrained.Load() {
+		return nil, proxyprotocol.ErrPeerDrainedBeforeAdmission
+	}
 	ctx = context.WithValue(ctx, peerRequestContextKey{}, true)
 	if err := validateClientAPIVersion(ctx); err != nil {
 		return nil, err

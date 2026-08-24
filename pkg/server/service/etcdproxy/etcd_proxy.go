@@ -37,6 +37,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
@@ -473,6 +474,9 @@ func (e *etcdProxy) markForwardError(ctx context.Context, client *clientv3.Clien
 }
 
 func isForwardConnectionError(err error) bool {
+	if proxyprotocol.IsPeerDrainedBeforeAdmission(err) {
+		return true
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
@@ -484,6 +488,26 @@ func isForwardConnectionError(err error) bool {
 	}
 }
 
+func forwardUnaryWithDrainRetry[T any](
+	e *etcdProxy,
+	ctx context.Context,
+	call func(*clientv3.Client, string) (T, error),
+) (T, error) {
+	var zero T
+	for attempt := 0; attempt < 2; attempt++ {
+		client, leader, _, err := e.readyClient(ctx)
+		if err != nil {
+			return zero, err
+		}
+		response, err := call(client, leader)
+		e.markForwardError(ctx, client, err)
+		if err == nil || !proxyprotocol.IsPeerDrainedBeforeAdmission(err) || attempt == 1 {
+			return response, err
+		}
+	}
+	return zero, status.Error(codes.Internal, "kubebrain: exhausted peer drain retry")
+}
+
 func getKeyFromTxn(txn *etcdserverpb.TxnRequest) (string, int64) {
 	if len(txn.GetCompare()) <= 0 {
 		return "", 0
@@ -492,18 +516,11 @@ func getKeyFromTxn(txn *etcdserverpb.TxnRequest) (string, int64) {
 }
 
 func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
-	client, leader, _, err := e.readyClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	key, rev := getKeyFromTxn(txn)
-	klog.InfoS("forward txn",
-		"leader", leader,
-		"key", key,
-		"rev", rev)
-	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, e.callOptions...)
-	e.markForwardError(ctx, client, err)
+	resp, err := forwardUnaryWithDrainRetry(e, ctx, func(client *clientv3.Client, leader string) (*etcdserverpb.TxnResponse, error) {
+		klog.InfoS("forward txn", "leader", leader, "key", key, "rev", rev)
+		return etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, e.callOptions...)
+	})
 	if err != nil {
 		klog.InfoS("forward txn failed", "key", loggedProxyKey([]byte(key)), "err", err.Error())
 		return nil, err
@@ -531,14 +548,10 @@ func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 }
 
 func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-	client, leader, _, err := e.readyClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	klog.InfoS("forward range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd), "revision", req.Revision)
-	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, e.callOptions...)
-	e.markForwardError(ctx, client, err)
-	return resp, err
+	return forwardUnaryWithDrainRetry(e, ctx, func(client *clientv3.Client, leader string) (*etcdserverpb.RangeResponse, error) {
+		klog.InfoS("forward range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd), "revision", req.Revision)
+		return etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, e.callOptions...)
+	})
 }
 
 func peerUnaryForwardErrorInterceptor(
@@ -618,25 +631,17 @@ func (e *etcdProxy) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 }
 
 func (e *etcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
-	client, leader, _, err := e.readyClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	klog.InfoS("forward put", "leader", leader, "key", loggedProxyKey(req.Key), "lease", req.Lease)
-	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, e.callOptions...)
-	e.markForwardError(ctx, client, err)
-	return resp, err
+	return forwardUnaryWithDrainRetry(e, ctx, func(client *clientv3.Client, leader string) (*etcdserverpb.PutResponse, error) {
+		klog.InfoS("forward put", "leader", leader, "key", loggedProxyKey(req.Key), "lease", req.Lease)
+		return etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, e.callOptions...)
+	})
 }
 
 func (e *etcdProxy) DeleteRange(ctx context.Context, req *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
-	client, leader, _, err := e.readyClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	klog.InfoS("forward delete range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd))
-	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, e.callOptions...)
-	e.markForwardError(ctx, client, err)
-	return resp, err
+	return forwardUnaryWithDrainRetry(e, ctx, func(client *clientv3.Client, leader string) (*etcdserverpb.DeleteRangeResponse, error) {
+		klog.InfoS("forward delete range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd))
+		return etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, e.callOptions...)
+	})
 }
 
 func (e *etcdProxy) Compact(ctx context.Context, req *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {

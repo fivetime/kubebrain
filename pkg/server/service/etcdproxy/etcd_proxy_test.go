@@ -20,6 +20,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/stretchr/testify/require"
 )
@@ -104,6 +106,9 @@ func TestIsForwardConnectionError(t *testing.T) {
 		{name: "grpc canceled", err: status.Error(codes.Canceled, "canceled"), want: true},
 		{name: "grpc deadline", err: status.Error(codes.DeadlineExceeded, "deadline"), want: true},
 		{name: "grpc unavailable", err: status.Error(codes.Unavailable, "unavailable"), want: true},
+		{name: "peer drained before admission", err: proxyprotocol.ErrPeerDrainedBeforeAdmission, want: true},
+		{name: "generic aborted", err: status.Error(codes.Aborted, "aborted"), want: false},
+		{name: "leader changed", err: rpctypes.ErrGRPCLeaderChanged, want: true},
 		{name: "grpc invalid argument", err: status.Error(codes.InvalidArgument, "bad request"), want: false},
 		{name: "grpc out of range", err: status.Error(codes.OutOfRange, "compacted"), want: false},
 		{name: "nil", err: nil, want: false},
@@ -114,6 +119,89 @@ func TestIsForwardConnectionError(t *testing.T) {
 			require.Equal(t, tt.want, isForwardConnectionError(tt.err))
 		})
 	}
+}
+
+type switchingLeaderElection struct {
+	testLeaderElection
+	address atomic.Value
+}
+
+func newSwitchingLeaderElection(address string) *switchingLeaderElection {
+	election := &switchingLeaderElection{}
+	election.address.Store(address)
+	return election
+}
+
+func (e *switchingLeaderElection) GetLeaderInfo() string {
+	return e.address.Load().(string)
+}
+
+func (e *switchingLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
+	return leader.ElectionInfo{LeaderAddress: e.GetLeaderInfo()}, nil
+}
+
+type putResultServer struct {
+	etcdserverpb.UnimplementedKVServer
+	calls atomic.Int32
+	put   func() (*etcdserverpb.PutResponse, error)
+}
+
+func (s *putResultServer) Put(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+	s.calls.Add(1)
+	return s.put()
+}
+
+func startPutResultServer(t *testing.T, upstream *putResultServer) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	registerServingHealth(server)
+	etcdserverpb.RegisterKVServer(server, upstream)
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+	return lis.Addr().String()
+}
+
+func TestPutRetriesExactPreAdmissionDrainOnPublishedSuccessor(t *testing.T) {
+	want := &etcdserverpb.PutResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}}
+	successor := &putResultServer{put: func() (*etcdserverpb.PutResponse, error) { return want, nil }}
+	successorAddress := startPutResultServer(t, successor)
+
+	var election *switchingLeaderElection
+	retiring := &putResultServer{put: func() (*etcdserverpb.PutResponse, error) {
+		election.address.Store(successorAddress)
+		return nil, proxyprotocol.ErrPeerDrainedBeforeAdmission
+	}}
+	retiringAddress := startPutResultServer(t, retiring)
+	election = newSwitchingLeaderElection(retiringAddress)
+
+	proxy := NewEtcdProxy(t.Context(), election, nil, false, 0).(*etcdProxy)
+	t.Cleanup(func() { require.NoError(t, proxy.Close()) })
+	require.Eventually(t, func() bool { return proxy.Ready() == nil }, 5*time.Second, 10*time.Millisecond)
+
+	response, err := proxy.Put(t.Context(), &etcdserverpb.PutRequest{Key: []byte("rollout")})
+	require.NoError(t, err)
+	require.True(t, proto.Equal(want, response))
+	require.Equal(t, int32(1), retiring.calls.Load())
+	require.Equal(t, int32(1), successor.calls.Load())
+}
+
+func TestPutDoesNotRetryGenericLeaderChanged(t *testing.T) {
+	upstream := &putResultServer{put: func() (*etcdserverpb.PutResponse, error) {
+		return nil, rpctypes.ErrGRPCLeaderChanged
+	}}
+	address := startPutResultServer(t, upstream)
+	proxy := NewEtcdProxy(t.Context(), newSwitchingLeaderElection(address), nil, false, 0).(*etcdProxy)
+	t.Cleanup(func() { require.NoError(t, proxy.Close()) })
+	require.Eventually(t, func() bool { return proxy.Ready() == nil }, 5*time.Second, 10*time.Millisecond)
+
+	_, err := proxy.Put(t.Context(), &etcdserverpb.PutRequest{Key: []byte("rollout")})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
+	require.Equal(t, int32(1), upstream.calls.Load())
 }
 
 func TestPeerUnaryForwardErrorMapsInternalCancellationToLeaderChanged(t *testing.T) {

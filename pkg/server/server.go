@@ -112,6 +112,7 @@ type server struct {
 	drainMu          sync.Mutex
 	drainStopped     bool
 	drainSucceeded   bool
+	transportDrains  []func()
 	closeErr         error
 }
 
@@ -180,6 +181,7 @@ func (s *server) Drain(ctx context.Context) error {
 	}
 	var drainErr error
 	release := func() {
+		peerFailoverEnabled := s.peers != nil && s.peers.EtcdProxyEnabled()
 		if !s.drainStopped {
 			if s.campaignCancel != nil {
 				s.campaignCancel()
@@ -193,6 +195,31 @@ func (s *server) Drain(ctx context.Context) error {
 			EnsureVoluntaryRelease(context.Context) error
 		}); ok {
 			drainErr = releaser.EnsureVoluntaryRelease(ctx)
+			if drainErr == nil && peerFailoverEnabled {
+				if waiter, ok := s.leaderElection.(interface {
+					WaitForVoluntarySuccessor(context.Context) error
+				}); ok {
+					drainErr = waiter.WaitForVoluntarySuccessor(ctx)
+				}
+			}
+		}
+		if drainErr == nil && peerFailoverEnabled {
+			for {
+				drainErr = s.peers.Ready()
+				if drainErr == nil {
+					break
+				}
+				timer := time.NewTimer(50 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						<-timer.C
+					}
+					drainErr = fmt.Errorf("wait for voluntary successor proxy readiness: %w: %v", ctx.Err(), drainErr)
+					return
+				case <-timer.C:
+				}
+			}
 		}
 	}
 	if s.etcdServer != nil {
@@ -202,8 +229,28 @@ func (s *server) Drain(ctx context.Context) error {
 	}
 	if drainErr == nil {
 		s.drainSucceeded = true
+		for _, drainTransport := range s.transportDrains {
+			drainTransport()
+		}
 	}
 	return drainErr
+}
+
+// RegisterTransportDrain attaches a non-blocking transport quiesce callback.
+// Endpoint uses it to send HTTP/2 GOAWAY after the durable leader handoff and
+// unary admission fence complete, so clients migrate off a terminating Pod
+// before long-lived watches force the final bounded shutdown to close sockets.
+func (s *server) RegisterTransportDrain(drain func()) {
+	if drain == nil {
+		return
+	}
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	if s.drainSucceeded {
+		drain()
+		return
+	}
+	s.transportDrains = append(s.transportDrains, drain)
 }
 
 // NewServer returns the server

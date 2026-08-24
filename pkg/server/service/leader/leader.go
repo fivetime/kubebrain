@@ -116,6 +116,34 @@ func (l *leaderElection) EnsureVoluntaryRelease(ctx context.Context) error {
 	}
 }
 
+// WaitForVoluntarySuccessor keeps the rollout admission boundary closed until
+// another campaigner has published a non-empty durable leader identity. Merely
+// clearing our own record creates a client-visible no-leader window in which
+// non-idempotent etcd RPCs cannot be retried safely.
+func (l *leaderElection) WaitForVoluntarySuccessor(ctx context.Context) error {
+	for {
+		record, raw, err := l.resourceLock.Get(ctx)
+		if err == nil && record != nil {
+			l.observeLeadershipRecordRaw(*record, raw)
+			if record.HolderIdentity != "" && record.HolderIdentity != l.resourceLock.Identity() {
+				return nil
+			}
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("wait for voluntary leadership successor: %w", ctx.Err())
+		}
+		timer := time.NewTimer(l.retryPeriod)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("wait for voluntary leadership successor: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
 // ElectionInfo is the response for http election service
 type ElectionInfo struct {
 	// LeaderAddress is the ip address of leader

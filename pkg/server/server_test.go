@@ -44,6 +44,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	etcdcompat "github.com/kubewharf/kubebrain/pkg/server/etcd"
+	"github.com/kubewharf/kubebrain/pkg/server/service"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/kubewharf/kubebrain/pkg/server/service/revision"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -78,6 +79,36 @@ type releaseFailingLeaderElection struct{ alwaysLeaderElection }
 
 func (releaseFailingLeaderElection) EnsureVoluntaryRelease(context.Context) error {
 	return errors.New("durable release failed")
+}
+
+type waitingSuccessorLeaderElection struct {
+	alwaysLeaderElection
+	waitStarted chan struct{}
+	allow       chan struct{}
+}
+
+type waitingSuccessorPeerService struct {
+	service.PeerService
+	ready atomic.Bool
+}
+
+func (*waitingSuccessorPeerService) EtcdProxyEnabled() bool { return true }
+func (p *waitingSuccessorPeerService) Ready() error {
+	if p.ready.Load() {
+		return nil
+	}
+	return errors.New("successor proxy not ready")
+}
+
+func (*waitingSuccessorLeaderElection) EnsureVoluntaryRelease(context.Context) error { return nil }
+func (l *waitingSuccessorLeaderElection) WaitForVoluntarySuccessor(ctx context.Context) error {
+	close(l.waitStarted)
+	select {
+	case <-l.allow:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 type healthStorage struct {
@@ -936,6 +967,72 @@ func TestInfoDrainFailsWhenDurableReleaseCannotBeConfirmed(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "durable release failed")
+}
+
+func TestDrainWaitsForPublishedSuccessorBeforeCompleting(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	leaderElection := &waitingSuccessorLeaderElection{
+		waitStarted: make(chan struct{}),
+		allow:       make(chan struct{}),
+	}
+	peers := &waitingSuccessorPeerService{}
+	peers.ready.Store(true)
+	s := &server{campaignDone: done, leaderElection: leaderElection, peers: peers}
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- s.Drain(t.Context()) }()
+	<-leaderElection.waitStarted
+	select {
+	case err := <-drainDone:
+		t.Fatalf("drain completed before successor publication: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(leaderElection.allow)
+	require.NoError(t, <-drainDone)
+}
+
+func TestDrainWaitsForSuccessorProxyReadinessBeforeCompleting(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	peers := &waitingSuccessorPeerService{}
+	s := &server{campaignDone: done, peers: peers}
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- s.Drain(t.Context()) }()
+	select {
+	case err := <-drainDone:
+		t.Fatalf("drain completed before successor proxy readiness: %v", err)
+	case <-time.After(70 * time.Millisecond):
+	}
+	peers.ready.Store(true)
+	require.NoError(t, <-drainDone)
+}
+
+func TestDrainQuiescesRegisteredTransportsAfterSuccessfulHandoff(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	s := &server{campaignDone: done}
+	first := make(chan struct{}, 1)
+	s.RegisterTransportDrain(func() { first <- struct{}{} })
+
+	require.NoError(t, s.Drain(t.Context()))
+	require.Eventually(t, func() bool { return len(first) == 1 }, time.Second, time.Millisecond)
+
+	late := make(chan struct{}, 1)
+	s.RegisterTransportDrain(func() { late <- struct{}{} })
+	require.Eventually(t, func() bool { return len(late) == 1 }, time.Second, time.Millisecond)
+	require.NoError(t, s.Drain(t.Context()))
+	require.Len(t, first, 1, "idempotent drain must not quiesce a transport twice")
+}
+
+func TestFailedDrainDoesNotQuiesceTransport(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	s := &server{campaignDone: done, leaderElection: releaseFailingLeaderElection{}}
+	called := make(chan struct{}, 1)
+	s.RegisterTransportDrain(func() { called <- struct{}{} })
+
+	require.ErrorContains(t, s.Drain(t.Context()), "durable release failed")
+	require.Empty(t, called)
 }
 
 func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {

@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/soheilhy/cmux"
@@ -253,7 +254,7 @@ func (h *httpServer) close() error {
 	return nil
 }
 
-func newGRPCMuxedHTTPServer(grpcServer *grpc.Server, httpHandler http.Handler) exposedServer {
+func newGRPCMuxedHTTPServer(grpcServer *grpc.Server, httpHandler http.Handler) *grpcMuxedHTTPServer {
 	return &grpcMuxedHTTPServer{
 		grpcServer: grpcServer,
 		httpServer: newHTTPServer(grpcHandlerFunc(grpcServer, httpHandler)),
@@ -263,6 +264,7 @@ func newGRPCMuxedHTTPServer(grpcServer *grpc.Server, httpHandler http.Handler) e
 type grpcMuxedHTTPServer struct {
 	grpcServer *grpc.Server
 	httpServer *httpServer
+	quiescing  atomic.Bool
 }
 
 func (s *grpcMuxedHTTPServer) name() string {
@@ -275,6 +277,24 @@ func (s *grpcMuxedHTTPServer) matchWriters() []cmux.MatchWriter {
 
 func (s *grpcMuxedHTTPServer) serve(listener net.Listener) error {
 	return s.httpServer.serve(listener)
+}
+
+func (s *grpcMuxedHTTPServer) quiesce() {
+	if !s.quiescing.CompareAndSwap(false, true) {
+		return
+	}
+	// net/http owns these gRPC HTTP/2 transports. Shutdown stops admission and
+	// sends GOAWAY before waiting for long-lived watches; keep that wait off the
+	// /drain request and let final close terminate streams at process shutdown.
+	go func() {
+		if err := s.httpServer.svr.Shutdown(context.Background()); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			klog.ErrorS(err, "quiesce muxed HTTP/2 transport")
+		}
+	}()
+}
+
+func (s *grpcMuxedHTTPServer) isQuiescing() bool {
+	return s.quiescing.Load()
 }
 
 func (s *grpcMuxedHTTPServer) close() error {
@@ -418,8 +438,19 @@ func runSubServer(ctx context.Context, lsn net.Listener, server exposedServer) f
 			close(closed)
 		}()
 
-		// block until exposedServer stop or context done
-		return waitFor(ctx, closed)
+		// Block until exposedServer stop or context done. A successful transport
+		// quiesce deliberately ends Serve after GOAWAY; keep the root endpoint
+		// alive until process shutdown instead of treating that as a fatal stop.
+		select {
+		case <-ctx.Done():
+			return nil
+		case serveErr := <-closed:
+			if quiesced, ok := server.(interface{ isQuiescing() bool }); ok && quiesced.isQuiescing() && serveErr == nil {
+				<-ctx.Done()
+				return nil
+			}
+			return serveErr
+		}
 	}
 
 }

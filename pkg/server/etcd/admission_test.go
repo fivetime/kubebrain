@@ -35,6 +35,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 )
 
 type blockingHealthServer struct {
@@ -264,7 +265,7 @@ func TestLeadershipDrainWaitsForUnaryAndBlocksLaterCalls(t *testing.T) {
 	<-secondDone
 }
 
-func TestLeadershipDrainWaitsForForwardedUnaryAndBlocksLaterCalls(t *testing.T) {
+func TestLeadershipDrainWaitsForForwardedUnaryAndRejectsLaterCalls(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -304,15 +305,14 @@ func TestLeadershipDrainWaitsForForwardedUnaryAndBlocksLaterCalls(t *testing.T) 
 	<-releaseStarted
 
 	secondEntered := make(chan struct{})
-	secondDone := make(chan struct{})
+	secondResult := make(chan error, 1)
 	go func() {
-		defer close(secondDone)
 		_, err := rpc.requireLeaderUnary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: etcdserverpb.KV_Put_FullMethodName},
 			func(context.Context, any) (any, error) {
 				close(secondEntered)
 				return nil, nil
 			})
-		require.NoError(t, err)
+		secondResult <- err
 	}()
 	select {
 	case <-secondEntered:
@@ -321,7 +321,12 @@ func TestLeadershipDrainWaitsForForwardedUnaryAndBlocksLaterCalls(t *testing.T) 
 	}
 	close(allowRelease)
 	<-drainDone
-	<-secondDone
+	require.ErrorIs(t, <-secondResult, proxyprotocol.ErrPeerDrainedBeforeAdmission)
+	select {
+	case <-secondEntered:
+		t.Fatal("drained forwarded unary request entered its handler")
+	default:
+	}
 }
 
 func TestLeaseRevokeUsesBoundedInflightReserve(t *testing.T) {

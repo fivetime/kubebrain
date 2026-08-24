@@ -37,6 +37,11 @@ func (s *secureExposedServer) name() string {
 	return fmt.Sprintf("secure %v", s.exposedServer.name())
 }
 
+func (s *secureExposedServer) isQuiescing() bool {
+	quiesced, ok := s.exposedServer.(interface{ isQuiescing() bool })
+	return ok && quiesced.isQuiescing()
+}
+
 func newSecureExposedServers(ss []exposedServer) []exposedServer {
 	ret := make([]exposedServer, 0, len(ss))
 	for _, s := range ss {
@@ -61,6 +66,15 @@ func newSecureServer(conf *SecurityConfig, identities *transportidentity.Registr
 
 func (t *secureServer) name() string {
 	return "tls"
+}
+
+func (t *secureServer) isQuiescing() bool {
+	for _, server := range t.internalServers {
+		if quiesced, ok := server.(interface{ isQuiescing() bool }); ok && quiesced.isQuiescing() {
+			return true
+		}
+	}
+	return false
 }
 
 // initialReadTimeout bounds the root cmux classification that runs before this

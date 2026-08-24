@@ -15,6 +15,7 @@
 package endpoint
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -106,6 +107,40 @@ func TestHTTPServerCloseDrainsInFlightRequest(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, result.status)
 	require.NoError(t, <-closeDone)
 	require.NoError(t, normalizeServeError(<-serveDone))
+}
+
+func TestMuxedHTTP2QuiesceKeepsRunnerAliveUntilShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	server := newGRPCMuxedHTTPServer(grpc.NewServer(), http.NotFoundHandler())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	done := make(chan error, 1)
+	go func() { done <- runSubServer(ctx, listener, server)() }()
+	client := &http.Client{Timeout: time.Second}
+	t.Cleanup(client.CloseIdleConnections)
+
+	require.Eventually(t, func() bool {
+		response, requestErr := client.Get("http://" + listener.Addr().String())
+		if requestErr != nil {
+			return false
+		}
+		_ = response.Body.Close()
+		return true
+	}, 5*time.Second, 10*time.Millisecond)
+
+	server.quiesce()
+	require.Eventually(t, func() bool {
+		_, requestErr := client.Get("http://" + listener.Addr().String())
+		return requestErr != nil
+	}, 5*time.Second, 10*time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("quiesced transport stopped the endpoint before process shutdown: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	require.NoError(t, <-done)
 }
 
 func TestSecureServerCloseNormalizesAndReturnsErrors(t *testing.T) {

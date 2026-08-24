@@ -155,6 +155,31 @@ func TestEnsureVoluntaryReleaseRejectsPublishedLeader(t *testing.T) {
 	require.ErrorContains(t, election.EnsureVoluntaryRelease(context.Background()), "still published")
 }
 
+func TestWaitForVoluntarySuccessorWaitsForNonEmptyForeignHolder(t *testing.T) {
+	lock := &campaignLock{}
+	lock.set(lock.record)
+	election := &leaderElection{resourceLock: lock, retryPeriod: time.Millisecond}
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		lock.mu.Lock()
+		lock.set(resourcelock.LeaderElectionRecord{HolderIdentity: "successor", LeaderTransitions: 8})
+		lock.mu.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, election.WaitForVoluntarySuccessor(ctx))
+}
+
+func TestWaitForVoluntarySuccessorRejectsMissingSuccessorAtDeadline(t *testing.T) {
+	lock := &campaignLock{}
+	lock.set(lock.record)
+	election := &leaderElection{resourceLock: lock, retryPeriod: time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	require.ErrorContains(t, election.WaitForVoluntarySuccessor(ctx), "wait for voluntary leadership successor: context deadline exceeded")
+}
+
 func TestLeadershipInitializationMetricsDoNotMisclassifyTransportError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := metricmock.NewMockMetrics(ctrl)

@@ -152,8 +152,9 @@ func (e *Endpoint) runClientServer(ctx context.Context) (retErr error) {
 			retErr = errors.Join(retErr, gatewayConn.Close())
 		}()
 	}
-	exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig,
-		newGRPCMuxedHTTPServer(clientGrpc, clientHTTPHandler))
+	muxedServer := newGRPCMuxedHTTPServer(clientGrpc, clientHTTPHandler)
+	e.registerTransportDrain(muxedServer.quiesce)
+	exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig, muxedServer)
 	clientServiceGroup := newRootServer(e.config.Port, exposedServers...)
 	return clientServiceGroup.run(ctx)
 }
@@ -161,8 +162,9 @@ func (e *Endpoint) runClientServer(ctx context.Context) (retErr error) {
 func (e *Endpoint) runPeerServer(ctx context.Context) error {
 	peerGrpc := e.buildPeerGrpcServer()
 	peerHTTPHandler := e.buildPeerHTTPHandler()
-	exposedServers := e.buildExposedServers(e.config.PeerSecurityConfig,
-		newGRPCMuxedHTTPServer(peerGrpc, peerHTTPHandler))
+	muxedServer := newGRPCMuxedHTTPServer(peerGrpc, peerHTTPHandler)
+	e.registerTransportDrain(muxedServer.quiesce)
+	exposedServers := e.buildExposedServers(e.config.PeerSecurityConfig, muxedServer)
 	peerServiceGroup := newRootServer(e.config.PeerPort, exposedServers...)
 	return peerServiceGroup.run(ctx)
 }
@@ -379,6 +381,14 @@ func (e *Endpoint) buildPeerGrpcServer() *grpc.Server {
 	e.server.RegisterPeer(grpcServer)
 	grpc_prometheus.Register(grpcServer)
 	return grpcServer
+}
+
+func (e *Endpoint) registerTransportDrain(drain func()) {
+	registrar, ok := e.server.(interface{ RegisterTransportDrain(func()) })
+	if !ok {
+		return
+	}
+	registrar.RegisterTransportDrain(drain)
 }
 
 func (e *Endpoint) peerGrpcServerOptions() []grpc.ServerOption {
