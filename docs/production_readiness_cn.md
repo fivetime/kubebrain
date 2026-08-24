@@ -7611,6 +7611,32 @@ namespace 创建改为真正的 create，不再 apply 复用；只有创建成�
 137.330/375.897/241.759/388.674 秒，全部通过。namespace ownership 防止删除既有对象，但不能证明共享 PD/TiKV
 endpoint 的租户隔离；完整 TLS 演练仍必须使用独立 keyspace、验证 cleanup 后可见状态并遵循后端生命周期策略。
 
+### A5471：standalone kube-apiserver prefix、进程与 lease 守恒
+
+默认 `RUN_APISERVER_SMOKE=true` 的 runner 原先用秒级 `ETCD_PREFIX`，启动前不检查 prefix 是否已有数据，成功仅异步删除
+namespace，EXIT 只停止进程且从不删除 prefix。standalone kube-apiserver 没有 namespace controller，不能把
+`delete namespace --wait=false` 当成底层对象已清除；固定 `WORK_DIR` 的启动前 `cleanup` 还会读取 PID 文件并 kill，可能
+接管另一并发运行。提交 `2430a954` 要求显式
+`ALLOW_MUTATING_APISERVER_SMOKE=true` 与符合专用命名域的显式 `ETCD_PREFIX`，并使用 provenance 固定为
+`5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 etcdctl。在任何 endpoint write 前确认 prefix 为空后才设置
+`prefix_owned=true`；成功或失败均先停止本轮持有的进程，再精确删除 prefix 并复核为空。已有活跃 PID 现在拒绝而非 kill，
+cleanup 也只有 `process_owned=true` 才能终止进程。
+
+默认 verify、TLS 内嵌 smoke 与 apiserver version matrix 三个 caller 都改为纳秒唯一 prefix 并显式授权；新增
+`owned-endpoint-runner-contracts.txt` 双向绑定 caller flag、callee、approval 与 etcd-prefix 所有权。非空 prefix 的 fake
+etcdctl 负测证明 runner 在启动 Docker/apiserver 前拒绝，且日志没有 delete。第一次真实 main 数据面演练中，对象 smoke
+本身通过且 prefix/KV/user/role/alarm 守恒，但审计发现新增一枚无 key 绑定的 kube-apiserver lease
+`739091608966667`。外层比较命令当时未启用 `set -e`，所以 `leases_equal=false` 的中间 test 没有传播为最终非零；该轮不能
+算完整 GREEN。该 lease 按十进制 ID 精确转成 `0002a0332ccf160b` 后 revoke，复核集合为空。
+
+runner 随后改用 etcdctl 默认的无损十六进制 lease 输出，严格校验声明数量和解析数量；preflight 保存排序基线，停止
+apiserver 后只 revoke 相对基线新增的 lease，最后要求集合精确恢复。第二次真实演练在外层 `set -euo pipefail` 下完成
+namespace/configmap/watch/list-selector/pagination/secret/Lease/Deployment 全流程，端到端 14 秒；最终 prefix count=0，
+全量 KV、user、role、lease、alarm 均与运行前相等。compat 全组 Go 6.774 秒；611 项 inventory 仍为
+140/171/154/146，代码提交后四片 Go 时间 136.501/368.434/245.745/389.487 秒，端到端时间
+144.982/377.116/254.261/398.090 秒，全部通过。lease 差集回收要求受控 endpoint 在演练窗口不接受其他租户并发创建
+lease；共享生产 keyspace 上仍应使用独立租户 keyspace 或测试集群，而不是仅凭 mutation approval 运行。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
