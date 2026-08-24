@@ -7590,6 +7590,27 @@ true/false，缺 context、缺授权或非法值都在 kubectl/go 依赖发现�
 139.076/371.851/248.481/390.737 秒，全部通过。显式授权只解决误触发和 context 漂移；正式执行 HA 演练仍应先确认
 Deployment 所有权、目标 endpoint 与 namespace 对应，并在结束后检查副本、restartCount、数据与控制状态守恒。
 
+### A5470：默认 TLS runner 的 namespace 所有权与 context 固定
+
+继续审计 `verify.sh` 其余默认启用项时，`RUN_TLS_SMOKE=true` 指向的 `tls-smoke.sh` 使用隐式 current context，并对固定
+`kubebrain-tls-smoke` namespace 执行 create-dry-run/apply；EXIT trap 无条件删除该 namespace。若同名 namespace 已存在，
+runner 会复用其中资源并在退出时删除整个 namespace，既没有资源所有权，也可能跨 context 误删。提交 `9e054a38` 要求
+显式非空 `KUBE_CONTEXT`、精确解析该 context，并校验 namespace 为 DNS label；任何依赖资源创建前先用该 context 查询
+namespace，查询失败即 fail closed，已存在则明确拒绝。
+
+namespace 创建改为真正的 create，不再 apply 复用；只有创建成功后才设置 `namespace_created=true`，cleanup 仅在持有该
+标记时删除。所有顶层 kubectl 通过固定 `--context` 的 shell wrapper 执行，rotation gate 子 shell 也把同一 context
+写入命令。新增 `owned-kubernetes-runner-contracts.txt`，绑定默认 caller flag、callee、owned namespace 和 context 环境
+变量；静态测试固定拒绝复用、所有权标记及禁止 dry-run/apply。伪 kubectl 行为负测返回既有 namespace，日志证明 runner
+没有发出 create 或 delete。
+
+真实只读负例使用当前 context 并故意指定现存 `kubebrain-dev`：runner 返回 1，精确报告
+`refusing to reuse existing TLS smoke namespace`；namespace UID 与全部 Pod UID 前后完全相等。未运行会创建证书和重启
+自有 StatefulSet 的完整 TLS 演练，因此本项不声称新的 TLS/轮换 live GREEN。脚本语法通过，compat 全组 Go 6.853 秒。
+611 项 inventory 仍为 140/171/154/146；代码提交后四片 Go 时间 131.371/369.861/235.714/382.672 秒，端到端时间
+137.330/375.897/241.759/388.674 秒，全部通过。namespace ownership 防止删除既有对象，但不能证明共享 PD/TiKV
+endpoint 的租户隔离；完整 TLS 演练仍必须使用独立 keyspace、验证 cleanup 后可见状态并遵循后端生命周期策略。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
