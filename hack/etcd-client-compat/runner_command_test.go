@@ -1802,6 +1802,7 @@ func TestIndirectClusterMutationCallersHaveSafetyContracts(t *testing.T) {
 		callerContent := string(callerData)
 		require.Contains(t, callerContent, runFlag+`="${`+runFlag+`:-`+defaultValue+`}"`)
 		require.Contains(t, callerContent, callee)
+		require.NotContains(t, callerContent, approval+"=true", "indirect caller must not auto-authorize destructive mutation")
 
 		calleeData, readErr := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(callee)))
 		require.NoError(t, readErr)
@@ -1812,7 +1813,7 @@ func TestIndirectClusterMutationCallersHaveSafetyContracts(t *testing.T) {
 		require.NotContains(t, calleeContent, "\nkubectl ", "%s must not bypass its explicit-context kubectl array", callee)
 		contracts++
 	}
-	require.Equal(t, 4, contracts)
+	require.Equal(t, 5, contracts)
 }
 
 func TestDefaultHAIndirectMutationFailsClosedBeforeToolDiscovery(t *testing.T) {
@@ -2114,13 +2115,35 @@ fi
 	require.NotContains(t, string(logData), " del ")
 }
 
-func TestInClusterAPIServerRolloutRequiresBackendMutationApprovalBeforeKubectl(t *testing.T) {
-	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "incluster-apiserver-rollout-smoke.sh")}, []string{
-		"PATH=/nonexistent",
-	})
-	require.Error(t, err)
-	require.Contains(t, string(output), "refusing in-cluster apiserver rollout backend writes without ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true")
-	require.NotContains(t, string(output), "missing required command: kubectl")
+func TestInClusterAPIServerRolloutFailsClosedBeforeToolDiscovery(t *testing.T) {
+	path := filepath.Join("..", "dev", "incluster-apiserver-rollout-smoke.sh")
+	testCases := []struct {
+		name    string
+		env     []string
+		message string
+	}{
+		{name: "context", env: []string{"PATH=/nonexistent"}, message: "KUBE_CONTEXT is required"},
+		{name: "cluster", env: []string{"PATH=/nonexistent", "KUBE_CONTEXT=kind-explicit"}, message: "CLUSTER_NAME is required"},
+		{name: "rollout approval", env: []string{"PATH=/nonexistent", "KUBE_CONTEXT=kind-explicit", "CLUSTER_NAME=explicit"}, message: "ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT=true"},
+		{name: "invalid rollout approval", env: []string{"PATH=/nonexistent", "KUBE_CONTEXT=kind-explicit", "CLUSTER_NAME=explicit", "ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT=invalid"}, message: "ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT must be true or false"},
+		{name: "backend approval", env: []string{"PATH=/nonexistent", "KUBE_CONTEXT=kind-explicit", "CLUSTER_NAME=explicit", "ALLOW_DESTRUCTIVE_INCLUSTER_APISERVER_ROLLOUT=true"}, message: "ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			output, err := runCompatCommandContext(t, context.Background(), "bash", []string{path}, testCase.env)
+			require.Error(t, err)
+			require.Contains(t, string(output), testCase.message)
+			require.NotContains(t, string(output), "missing required command")
+		})
+	}
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	require.NotContains(t, content, " scale ")
+	require.Contains(t, content, `deployment_uid=`)
+	require.Contains(t, content, `final_uid=`)
+	require.Contains(t, content, `if [[ "$final_uid" != "$deployment_uid" ]]`)
 }
 
 func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {

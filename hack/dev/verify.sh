@@ -308,7 +308,9 @@ if [ "$RUN_APISERVER_ROLLOUT_SMOKE" = "true" ]; then
 fi
 
 if [ "$RUN_INCLUSTER_APISERVER_ROLLOUT_SMOKE" = "true" ]; then
-  run_step "in-cluster kube-apiserver rollout smoke" hack/dev/incluster-apiserver-rollout-smoke.sh
+  run_step "in-cluster kube-apiserver rollout smoke" env \
+    ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true \
+    hack/dev/incluster-apiserver-rollout-smoke.sh
 fi
 
 if [ "$RUN_APISERVER_WATCH_SOAK" = "true" ]; then
