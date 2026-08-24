@@ -5,8 +5,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 KUBEBRAIN_DIRECT_RAW="${KUBEBRAIN_DIRECT_ENDPOINTS:-}"
 KUBEBRAIN_DIRECT_METRICS_RAW="${KUBEBRAIN_DIRECT_METRICS_ENDPOINTS:-}"
 ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY="${ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY:-false}"
+ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY="${ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY:-false}"
 ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-2m}"
+TEST_SCOPE="${TEST_SCOPE:-all}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -27,6 +29,18 @@ if [[ "$ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY" != true &&
   echo "ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY must be true or false, got ${ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY}" >&2
   exit 2
 fi
+if [[ "$ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY" != true &&
+  "$ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY" != false ]]; then
+  echo "ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY must be true or false, got ${ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY}" >&2
+  exit 2
+fi
+case "$TEST_SCOPE" in
+  all|hashkv-compaction) ;;
+  *)
+    echo "TEST_SCOPE must be all or hashkv-compaction" >&2
+    exit 2
+    ;;
+esac
 if [[ -z "$KUBEBRAIN_DIRECT_RAW" ]]; then
   echo "set KUBEBRAIN_DIRECT_ENDPOINTS to three direct KubeBrain replica endpoints" >&2
   exit 1
@@ -72,6 +86,12 @@ fi
 if [[ "$ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY" != true ]]; then
   echo "refusing mutating direct-replica consistency suite: it creates and revokes a lease and writes test keys" >&2
   echo "confirm the three direct endpoints belong to the intended cluster and set ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY=true" >&2
+  exit 1
+fi
+if [[ "$TEST_SCOPE" == hashkv-compaction &&
+  "$ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY" != true ]]; then
+  echo "refusing destructive direct-replica consistency scope: HashKV compaction advances the target instance's global compact revision" >&2
+  echo "use a disposable KubeBrain instance and set ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY=true" >&2
   exit 1
 fi
 
@@ -128,10 +148,17 @@ assert_test_prefixes_empty preflight
 baseline_leases="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
 baseline_alarms="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" alarm list -w json | jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort')"
 
-test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestConcurrencyResponseHeadersAcrossDirectReplicas|TestContendedConcurrencyResponseHeadersAcrossDirectReplicas|TestControlResponseHeadersAcrossDirectReplicas|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestMutationResponseHeadersAcrossDirectReplicas|TestQuotaAlarmCrossEndpointDisarm|TestStatusAlarmCrossEndpointVisibility|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
-if [[ "${#kubebrain_metrics_endpoints[@]}" -gt 0 ]]; then
-	test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestConcurrencyResponseHeadersAcrossDirectReplicas|TestContendedConcurrencyResponseHeadersAcrossDirectReplicas|TestControlResponseHeadersAcrossDirectReplicas|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestMutationResponseHeadersAcrossDirectReplicas|TestQuotaAlarmCrossEndpointDisarm|TestStatusAlarmCrossEndpointVisibility|TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
-fi
+case "$TEST_SCOPE" in
+  all)
+    test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestConcurrencyResponseHeadersAcrossDirectReplicas|TestContendedConcurrencyResponseHeadersAcrossDirectReplicas|TestControlResponseHeadersAcrossDirectReplicas|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestMutationResponseHeadersAcrossDirectReplicas|TestQuotaAlarmCrossEndpointDisarm|TestStatusAlarmCrossEndpointVisibility|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
+    if [[ "${#kubebrain_metrics_endpoints[@]}" -gt 0 ]]; then
+      test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestConcurrencyResponseHeadersAcrossDirectReplicas|TestContendedConcurrencyResponseHeadersAcrossDirectReplicas|TestControlResponseHeadersAcrossDirectReplicas|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestMutationResponseHeadersAcrossDirectReplicas|TestQuotaAlarmCrossEndpointDisarm|TestStatusAlarmCrossEndpointVisibility|TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
+    fi
+    ;;
+  hashkv-compaction)
+    test_pattern='^TestHashKVCompactionConvergesAcrossKubeBrainReplicas$'
+    ;;
+esac
 
 test_status=0
 (

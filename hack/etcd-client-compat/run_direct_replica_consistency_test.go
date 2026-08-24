@@ -11,12 +11,14 @@ func TestDirectReplicaConsistencyRunnerFailsClosed(t *testing.T) {
 	script, err := os.ReadFile("run-direct-replica-consistency.sh")
 	require.NoError(t, err)
 	require.Contains(t, string(script), "ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY")
+	require.Contains(t, string(script), "ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY")
 	require.Contains(t, string(script), "one healthy three-member topology with an in-set leader")
 	require.Contains(t, string(script), "assert_test_prefixes_empty postflight")
 	require.Contains(t, string(script), "changed the live lease set")
 	require.Contains(t, string(script), "changed the live alarm set")
 	require.Contains(t, string(script), "test package failed with status")
 	require.Contains(t, string(script), "TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas")
+	require.Contains(t, string(script), "TestHashKVCompactionConvergesAcrossKubeBrainReplicas")
 	require.Contains(t, string(script), "TestLeaseReadAndRevokeAcrossDirectReplicas")
 	require.Contains(t, string(script), "TestMutationResponseHeadersAcrossDirectReplicas")
 	require.Contains(t, string(script), "TestQuotaAlarmCrossEndpointDisarm")
@@ -29,6 +31,26 @@ func TestDirectReplicaConsistencyRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "TestControlResponseHeadersAcrossDirectReplicas")
 	require.Contains(t, string(script), "TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas")
 	require.Contains(t, string(script), "direct KubeBrain replica metrics preflight failed")
+}
+
+func TestDirectReplicaConsistencyRunnerRejectsInvalidScopeBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-direct-replica-consistency.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"TEST_SCOPE=unknown",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "TEST_SCOPE must be all or hashkv-compaction")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestDirectReplicaConsistencyRunnerRejectsInvalidDestructiveApprovalBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-direct-replica-consistency.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY=maybe",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY must be true or false")
+	require.NotContains(t, string(output), "missing required command")
 }
 
 func TestDirectReplicaConsistencyRunnerRejectsMetricsEndpointCountBeforeDependencies(t *testing.T) {
@@ -80,5 +102,17 @@ func TestDirectReplicaConsistencyRunnerRequiresMutationApproval(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "refusing mutating direct-replica consistency suite")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestDirectReplicaConsistencyRunnerRequiresDestructiveApprovalForHashKVCompaction(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-direct-replica-consistency.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3",
+		"ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY=true",
+		"TEST_SCOPE=hashkv-compaction",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "HashKV compaction advances the target instance's global compact revision")
 	require.NotContains(t, string(output), "missing required command")
 }
