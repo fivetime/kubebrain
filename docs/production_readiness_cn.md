@@ -7903,6 +7903,35 @@ ConfigMap CRUD/watch、label/field selector、分页/collection delete、Secret�
 Go 时间 135.746/357.909/230.734/371.097 秒，端到端时间 143.935/366.044/238.729/379.208 秒，全部通过。本项只覆盖
 base smoke；`apiserver-watch-soak.sh` 仍有独立固定 WORK_DIR/SECURE_PORT/PID/PKI 生命周期，下一增量继续处理。
 
+### A5482：standalone apiserver watch-soak 的运行态、namespace 与端口所有权
+
+`apiserver-watch-soak.sh` 原先重复保存一份 88MB kube-apiserver binary，并在固定目录覆盖 PKI、PID、kubeconfig、日志和
+watch 数据；固定 16445 无端口租约。失败路径只凭 `ns` 非空删除 namespace，而 `ns` 在 create 前已赋值，名称又只有秒级，
+碰撞后可能删除既有 namespace。提交 `87991c00` 将 watch binary 指向 A5481 的共享 cache，运行态默认迁移到
+`${WORK_ROOT}/apiserver-watch-soak-runs/${RUN_ID}` 的唯一 0700 目录，并启用 077 umask。
+
+RUN_ID、WORK_DIR 边界与拒绝复用规则和 base 一致；退出先停止 watch、只删除 `namespace_created=true` 的 namespace，再
+停止本轮 apiserver、回收 prefix/lease，最后删除本轮目录。namespace 直接使用纳秒唯一 RUN_ID，create 前查询并拒绝既有
+对象，只有 create 成功后才取得 ownership。cleanup 任一关键回收失败返回状态 70。version matrix caller 也改为纳秒唯一
+watch 子目录。
+
+SECURE_PORT 校验为 1..65535，并在 cluster/endpoint access 前取得与 base 共用锁域的 non-blocking flock；因此 smoke 与
+watch 即使是不同脚本也不能占用同一端口。共享 binary 缺失时复用同一个 cache extraction flock，在锁内二次检查并只由
+一轮提取。对象数、更新数和 timeout 必须为正整数，pre-update sleep 必须为非负整数。
+
+fake 行为负测证明共享 WORK_ROOT 和端口竞争均先于 docker access 拒绝；静态合同锁定目录、namespace、port、077 umask
+和清理标记。真实 4 对象 × 3 更新 watch 收到全部 12 个 MODIFIED 事件，端到端 8 秒；最终 KV、user、role、lease、alarm
+与运行前相等，prefix=0、运行目录不存在且 16445 lock 可立即重新取得。真实 26445 锁竞争在 workdir/prefix/process 创建
+前返回 1，持有者退出后测试 lock 文件被精确删除。
+
+确认没有旧 watch 或 16445 进程后，先用 cmp 证明旧目录的 88MB binary 与 A5481 共享 cache 字节一致，再删除旧目录全部
+子项，包括重复 executable、PKI 私钥、kubeconfig、日志和 190,682-byte watch 数据；这些生成物不可恢复但可重新生成。
+旧目录和新 run root 最终都为 0 子项，稳定端口锁只保留 16443/16445 两个无敏感内容 inode。
+
+脚本语法与 compat 全组通过，后者 Go 7.165 秒。611 项 production inventory 仍为 140/171/154/146；代码提交后四片
+Go 时间 129.460/361.604/232.575/371.359 秒，端到端时间 135.392/367.564/238.654/377.455 秒，全部通过。standalone
+base/watch 本地生命周期已闭环；rollout/version matrix 的更高层共享工作目录与日志所有权仍需继续独立审计。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
