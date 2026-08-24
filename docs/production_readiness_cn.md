@@ -7067,6 +7067,35 @@ compat 全组 Go 4.328 秒、端到端 5.606 秒；611 项 inventory 为 140/171
 URL 和干净 `a5447-jwt-restored` keyspace，3/3 Ready 且 restartCount 全 0。该门禁验证 runner
 所在网络域的瞬时可达性，不替代生产 ClientURL 持续监控、跨网络域路由或证书轮换验证。
 
+### A5448：其余破坏性专项的广告 endpoint 准入闭环
+
+提交 `38c0ec5a` 关闭同一类门禁在 automatic-quota、RangeStream compaction 和
+make-mirror 三个 runner 中的遗漏。三者此前都只验证入口 endpoint，随后分别进入配额/告警、
+物理 compact 或 Auth+mirror mutation。现在它们在任何 pristine/auth/data 状态读取和 reference
+etcd 启动前先读取 MemberList，筛选具名非 learner 成员、要求至少一个 ClientURL，并以默认
+5 秒 command timeout 验证每个去重广告 URL 的 proposal health。共享命令级 oracle 固定不可达
+URL 必须先于 auth/status/get/user/role/lease/alarm 检查失败，防止后续 runner 再次漂移。
+
+精确提交镜像 `kubebrain:a5448-38c0ec5a`（完整 revision
+`38c0ec5ae5d3d4d08476b0a4cfe68506c9c321e6`，本地 manifest list
+`sha256:5a2d403755e7f2663ba47d48b9bd92c6f85ee3d207e80370f98767a0d79c3730`，Kind runtime digest
+`sha256:f03b6d867ec4263320bd89932fb9b6e63ba1ff56ed17dd4c3a9665c8a00441ba`）的真实负例中，
+入口 `http://172.18.0.2:30081` 均健康、MemberList 临时广告不存在的 `.3:30081`；三个 runner
+分别在 2.163/2.172/2.169 秒内因 DeadlineExceeded 退出 1，未进入各自状态检查或 mutation。
+
+恢复可达广告 URL 后，三个全新 keyspace 的精确正向专项全部对 reference etcd
+`5cd9f4ee13801e18825d661e5005ae599460bc3a` 通过：automatic-quota Go 0.420 秒、端到端
+2.591 秒；两项 RangeStream compaction Go 8.902 秒、端到端 11.218 秒；authenticated
+bidirectional 与 revision/compaction make-mirror Go 2.386 秒、端到端 4.684 秒。
+compat 全组 Go 4.726 秒、端到端 6.008 秒；611 项 inventory 为 140/171/154/146，代码提交后
+四片 Go 时间 122.765/354.773/230.261/369.934 秒，端到端时间
+128.731/360.737/236.299/375.977 秒，全部通过。
+
+最终 Auth 辅助数据面已恢复为同一精确镜像、1 GiB 配额、可达 `.2:30081` 和干净
+`a5448-auth-restored` keyspace；authRevision/data revision 均为 1，3/3 Ready 且 restartCount
+全 0。该准入只证明 runner 网络域在测试开始时可达，不替代持续拨号监控、跨网络域验证，
+也不证明 ClientURL 在长测试期间不会漂移。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
