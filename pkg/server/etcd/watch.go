@@ -415,6 +415,13 @@ func (w *watcher) progressRequestRevision(request watchProgressRequest) (revisio
 		if current := w.watches[id]; current != generation || generation.closing.Load() {
 			return 0, false, false
 		}
+		// Match upstream progressIfSync's request-time revision check. A watch
+		// starting after this request's target cannot become eligible for this
+		// particular progress request, even if its event stream catches up later.
+		// Treat it as terminal instead of occupying the bounded worker for 100ms.
+		if generation.progressStartRevision > request.target {
+			return 0, false, false
+		}
 		deliveredRevision := atomic.LoadUint64(&generation.syncedRev)
 		if generation.progressStartRevision > deliveredRevision {
 			return 0, false, true
@@ -703,6 +710,13 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			if len(request.generations) == 0 {
 				continue
 			}
+			// Upstream evaluates future-start watches synchronously and emits no
+			// response. Do the same before enqueueing so a burst of requests that
+			// is already impossible at capture time cannot fill the worker queue
+			// and stall later requests on this multiplexed stream.
+			if _, synced, retry := w.progressRequestRevision(request); !synced && !retry {
+				continue
+			}
 			if !w.queueProgressRequest(request) {
 				return ws.Context().Err()
 			}
@@ -962,7 +976,10 @@ func (w *watcher) rejectAuthoritativeCreate(id int64, generation *watch, err err
 	response := canceledWatchCreateResponse(w.responseRevision(), reason)
 	response.CompactRevision = compactRevision
 	if generation.authoritativeControl != nil {
-		*generation.authoritativeControl = *response
+		// Preserve the placeholder identity already queued in controlCh without
+		// copying protobuf's embedded MessageState (which contains a mutex).
+		proto.Reset(generation.authoritativeControl)
+		proto.Merge(generation.authoritativeControl, response)
 		close(generation.authoritativeReady)
 		if generation.cancel != nil {
 			generation.cancel()

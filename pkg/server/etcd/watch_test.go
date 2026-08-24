@@ -3712,7 +3712,7 @@ func TestStreamProgressRevisionRequiresImmediateFullSynchronization(t *testing.T
 		target: 7, generations: map[int64]*watch{1: future},
 	})
 	require.False(t, ok, "an ineligible watch must suppress the stream-wide response")
-	require.True(t, retry)
+	require.False(t, retry, "a watch whose start revision is future at request time cannot become eligible for that request")
 	_, ok, retry = w.progressRequestRevision(watchProgressRequest{target: 1})
 	require.False(t, ok, "etcd emits no progress response without an active watch")
 	require.False(t, retry)
@@ -4749,6 +4749,48 @@ func TestEmptyProgressBurstDoesNotBlockLaterWatchCreate(t *testing.T) {
 	require.Eventually(t, func() bool {
 		responses := stream.snapshot()
 		return len(responses) == 1 && responses[0].Created && responses[0].WatchId == 802
+	}, time.Second, time.Millisecond)
+
+	cancel()
+	require.Error(t, <-done)
+}
+
+func TestFutureProgressBurstDoesNotBlockSameStreamCancel(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const progressRequests = watchControlBuffer + 2
+	stream := &requestTrackingWatchServer{
+		controllableWatchServer: &controllableWatchServer{
+			ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, progressRequests+2),
+		},
+		target: progressRequests + 2, targetRead: make(chan struct{}),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/future-progress-burst"), WatchId: 803, StartRevision: 100,
+		},
+	}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	for range progressRequests {
+		stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
+			ProgressRequest: &etcdserverpb.WatchProgressRequest{},
+		}}
+	}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+		CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 803},
+	}}
+	select {
+	case <-stream.targetRead:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("future RequestProgress backlog blocked a later Watch cancel")
+	}
+	require.Eventually(t, func() bool {
+		responses := stream.snapshot()
+		return len(responses) == 2 && responses[1].Canceled && responses[1].WatchId == 803
 	}, time.Second, time.Millisecond)
 
 	cancel()
