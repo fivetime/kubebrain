@@ -61440,6 +61440,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   代码提交四片 139/171/153/146 全绿（Go 测试 125.671/347.834/221.768/362.114 秒；端到端
   131.554/353.703/227.664/368.017 秒）。
 
+- A5436 修复 `RequestProgress` 同步等待造成的 multiplexed Watch 接收队头阻塞。upstream
+  `serverWatchStream.recvLoop` 调用 `RequestProgressAll/progressIfSync` 后立即返回：本地 MVCC watcher set 已能同步
+  判断是否 caught up；KubeBrain 此前在接收主循环内最多轮询 100ms，future/未同步 Watch 期间会把随后同流 Cancel
+  一并扣留。简单删除等待并不可行：TiKV/peer progress marker 要经过每个订阅 FIFO 才更新 `syncedRev`，即时快照
+  常早于刚触发的 marker，实际使 multi-Watch clientv3、RequestProgressAll 和 future-revision raw gRPC 三项测试均在
+  5 秒超时。提交 `e805da4c` 为每条 stream 增加一个容量 16 的有界 progress worker；接收循环在请求点冻结当前非
+  closing WatchId→generation 集合和 target revision，触发 marker 后立即继续 Recv。worker 最多等待 100ms，只检查
+  捕获的 generation 身份、future start floor 与各自已交付 watermark；新创建 Watch 不会追加入旧请求，generation
+  取消/替换则抑制旧 progress，全部达到目标时仅按最慢已交付 revision 输出一个 `WatchId=-1`。关闭先停止并等待
+  progress worker，再关闭两个 control sender，避免向已关闭 FIFO 入队。新增确定性 RED：revision 100 的 future
+  Watch 收到 Progress 后紧接 Cancel，旧实现 50ms 内不读取第三个请求，修复后立即读取并输出 cancellation。相关
+  活性/水位/clientv3/跨控制栅栏集合 race 连续 50 轮通过（36.394 秒），全部 Watch 测试连续 10 轮通过
+  （113.389 秒），完整 server/proxy 包通过（125.935 秒/proxy cached），diff check 与 609 项 inventory 校验通过。
+  本项对齐公开 Watch stream liveness，不改变 TiKV 数据布局；本轮无 disposable TiKV/PD 双节点 endpoint，故不声称
+  真实数据面演练。精确代码提交四片 139/171/153/146 全绿（Go 测试
+  120.686/349.981/223.658/361.983 秒；端到端 126.523/355.890/229.546/367.881 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
