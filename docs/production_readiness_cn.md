@@ -7825,6 +7825,32 @@ Go 时间 121.258/351.949/229.434/367.350 秒，端到端时间 127.209/357.928/
 真实 Deployment rollout，因此 A5477 的 rollout/watch 连续性差距仍然存在；并发吞吐验证若要求同宿主多轮并行，应再为
 LOCAL_PORT 实现显式端口租约或由调度器分配不同端口，而不能把“安全失败”当成并发成功能力。
 
+### A5479：in-cluster base runner 的 PKI/kubeconfig 所有权与历史凭据清理
+
+A5478 清理 wrapper 独占目录后，直接运行 `incluster-apiserver-smoke.sh` 仍默认复用固定
+`.dev/incluster-apiserver-smoke`：每次覆盖 PKI/kubeconfig，EXIT 只删除日志，长期留下 apiserver、front-proxy、service
+account 私钥和客户端 kubeconfig；并发运行也可能互相读取或删除本地状态。提交 `20155fd3` 将默认目录改为
+`${STATE_ROOT}/${NAME}`，启用 `umask 077`，要求规范化路径必须是固定 state root 的严格子路径，并在任何 cluster access 前
+拒绝共享根目录或已存在目录。目录通过原子 mkdir 成功后才设置 `work_dir_created=true`，从而不会接管碰撞目录。
+
+本轮目录以 0700 创建，所有复制的 PKI、生成的 kubeconfig 和 port-forward 日志都位于其中。cleanup 仍先完成
+Service/Pod/Secret、prefix 和 lease 守恒，最后只删除本轮持有且已做边界校验的目录；目录删除失败与其他 cleanup 失败一样
+返回专用状态 70。watch wrapper 不再把 base 放进自己的目录，而是为同一唯一 NAME 指向 base state root 下的独立子目录，
+并在 wait 后要求 base 自行完成凭据清理；wrapper 与 base 两个目录的所有权边界因此清晰且可分别验证。
+
+行为负测把 base WORK_DIR 指向共享 state root，证明在 docker/kubectl cluster access 前拒绝；静态合同锁定 077 umask、唯一
+默认目录、ownership 标记和精确目录回收。真实 base smoke 完成完整对象 CRUD/watch/pagination 流程，最终 KV/lease 守恒、
+prefix=0 且 base workdir 不存在；随后真实 2 对象 × 2 更新 watch smoke 收到全部 4 个事件，wrapper/base 两个 workdir、
+prefix 和 Kubernetes 临时资源均为 0。
+
+运行时审计确认没有活跃 in-cluster apiserver runner 后，精确删除 A5478 之前遗留的固定路径生成物：watch kubeconfig、
+72,942-byte 事件文件、base kubeconfig 和整个旧 PKI 目录。删除内容包含测试私钥且不可恢复，但均可由 runner 重新生成；
+两个 state root 随后都为 0 子项，没有删除源代码或集群资源。
+
+脚本语法与 compat 全组通过，后者 Go 7.044 秒。611 项 production inventory 仍为 140/171/154/146；代码提交后四片
+Go 时间 134.808/364.392/231.642/374.787 秒，端到端时间 141.103/370.836/238.235/381.499 秒，全部通过。凭据本地生命周期
+已闭环，但 LOCAL_PORT 仍是调用者负责协调的宿主资源；同端口并发目前只保证安全失败，不保证并发成功。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
