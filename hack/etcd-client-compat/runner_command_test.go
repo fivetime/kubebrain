@@ -2268,6 +2268,31 @@ func TestStandaloneAPIServerWatchRejectsUnsafeWorkDirAndReservedPortBeforeCluste
 	})
 }
 
+func TestAPIServerVersionMatrixRejectsConcurrentCacheOwnerBeforeDocker(t *testing.T) {
+	fakeBin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "flock"), []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "apiserver-version-matrix.sh")}, []string{
+		"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+		"MATRIX_LOCK_ROOT=" + filepath.Join(fakeBin, "locks"),
+		"RUN_APISERVER_SMOKE=false",
+		"RUN_APISERVER_WATCH_SOAK=false",
+		"APISERVER_IMAGES=registry.k8s.io/kube-apiserver:v1.36.1",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "another apiserver version matrix owns the shared cache and port range")
+	require.NotContains(t, string(output), "missing required command: docker")
+
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	data, readErr := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "apiserver-version-matrix.sh"))
+	require.NoError(t, readErr)
+	content := string(data)
+	require.Contains(t, content, `docker image inspect "$image" --format '{{.Id}}'`)
+	require.Contains(t, content, `image-id`)
+	require.Contains(t, content, `image-ref`)
+	require.Contains(t, content, "APISERVER_IMAGES produce a duplicate cache name")
+	require.Contains(t, content, "secure port range exceeds 65535")
+}
+
 func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	data, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "owned-endpoint-runner-contracts.txt"))

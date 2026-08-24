@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 # shellcheck source=hack/dev/common.sh
@@ -9,6 +10,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-kubebrain-dev}"
 ENDPOINT="${ENDPOINT:-http://127.0.0.1:3379}"
 APISERVER_IMAGES="${APISERVER_IMAGES:-${KIND_NODE_IMAGES:-registry.k8s.io/kube-apiserver:v1.36.1}}"
 WORK_DIR="${WORK_DIR:-${ROOT_DIR}/.dev/apiserver-version-matrix}"
+MATRIX_LOCK_ROOT="${MATRIX_LOCK_ROOT:-${ROOT_DIR}/.dev/apiserver-version-matrix-locks}"
 BASE_SECURE_PORT="${BASE_SECURE_PORT:-16500}"
 RUN_APISERVER_SMOKE="${RUN_APISERVER_SMOKE:-true}"
 RUN_APISERVER_WATCH_SOAK="${RUN_APISERVER_WATCH_SOAK:-true}"
@@ -43,22 +45,40 @@ extract_kube_apiserver() {
   local image="$1"
   local out="$2"
   local cid=""
-
-  if [ -x "$out" ]; then
-    return
-  fi
+  local image_id image_id_file image_ref_file image_id_tmp image_ref_tmp out_tmp
 
   mkdir -p "$(dirname "$out")"
   docker pull "$image" >/dev/null
+  image_id="$(docker image inspect "$image" --format '{{.Id}}')"
+  if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "docker image has invalid immutable ID: image=$image id=${image_id:-missing}" >&2
+    return 1
+  fi
+  image_id_file="$(dirname "$out")/image-id"
+  image_ref_file="$(dirname "$out")/image-ref"
+  image_id_tmp="${image_id_file}.tmp.$$"
+  image_ref_tmp="${image_ref_file}.tmp.$$"
+  if [[ -x "$out" && -f "$image_id_file" && -f "$image_ref_file" ]] &&
+    [[ "$(cat "$image_id_file")" == "$image_id" && "$(cat "$image_ref_file")" == "$image" ]]; then
+    return
+  fi
+
   cid="$(docker create "$image" --version)"
+  out_tmp="${out}.tmp.$$"
   cleanup_container() {
     if [ -n "$cid" ]; then
       docker rm -f "$cid" >/dev/null 2>&1 || true
     fi
+    rm -f "$out_tmp" "$image_id_tmp" "$image_ref_tmp"
   }
   trap cleanup_container RETURN
-  docker cp "${cid}:/usr/local/bin/kube-apiserver" "$out"
-  chmod +x "$out"
+  docker cp "${cid}:/usr/local/bin/kube-apiserver" "$out_tmp"
+  chmod +x "$out_tmp"
+  mv -f "$out_tmp" "$out"
+  printf '%s\n' "$image_id" >"$image_id_tmp"
+  mv -f "$image_id_tmp" "$image_id_file"
+  printf '%s\n' "$image" >"$image_ref_tmp"
+  mv -f "$image_ref_tmp" "$image_ref_file"
 }
 
 validate_bool_flag RUN_APISERVER_SMOKE
@@ -77,9 +97,39 @@ if [ "${#apiserver_images[@]}" -eq 0 ]; then
   echo "APISERVER_IMAGES must contain at least one kube-apiserver image" >&2
   exit 2
 fi
+declare -A image_by_cache_name=()
 for image in "${apiserver_images[@]}"; do
   validate_image_reference_value APISERVER_IMAGE "$image"
+  name="$(safe_name "$image")"
+  if [[ -z "$name" ]]; then
+    echo "APISERVER_IMAGE produces an empty cache name: $image" >&2
+    exit 2
+  fi
+  if [[ -n "${image_by_cache_name[$name]:-}" ]]; then
+    echo "APISERVER_IMAGES produce a duplicate cache name: name=$name first=${image_by_cache_name[$name]} second=$image" >&2
+    exit 2
+  fi
+  image_by_cache_name[$name]="$image"
 done
+max_secure_port=$((BASE_SECURE_PORT + (${#apiserver_images[@]} - 1) * 2 + 1))
+if [[ "$max_secure_port" -gt 65535 ]]; then
+  echo "apiserver version matrix secure port range exceeds 65535: base=$BASE_SECURE_PORT images=${#apiserver_images[@]} max=$max_secure_port" >&2
+  exit 2
+fi
+
+need flock
+mkdir -p "$MATRIX_LOCK_ROOT"
+matrix_lock_file="${MATRIX_LOCK_ROOT}/matrix.lock"
+exec {matrix_lock_fd}>"$matrix_lock_file"
+if ! flock -n "$matrix_lock_fd"; then
+  echo "another apiserver version matrix owns the shared cache and port range" >&2
+  exit 1
+fi
+cleanup_matrix_lock() {
+  flock -u "$matrix_lock_fd" >/dev/null 2>&1 || true
+  exec {matrix_lock_fd}>&-
+}
+trap cleanup_matrix_lock EXIT
 
 need docker
 need kubectl
