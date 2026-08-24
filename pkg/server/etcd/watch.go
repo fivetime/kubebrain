@@ -873,13 +873,6 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		w.metricCli.EmitCounter("watch.watch", 1)
 		go w.watchGeneration(ctx, id, r, generation)
 		klog.InfoS("watch awaiting authoritative create", "id", id, "count", watchCount, "key", loggedWatchKey(r.Key), "revision", r.StartRevision)
-		// Preserve request/control ordering on the multiplexed stream. The receive
-		// pump remains live, but the next request is not applied until this create
-		// has become either a successful Created or a terminal create rejection.
-		select {
-		case <-generation.authoritativeReady:
-		case <-ctx.Done():
-		}
 		return
 	}
 	createdDone, err := w.sendControlWithCompletion(&etcdserverpb.WatchResponse{

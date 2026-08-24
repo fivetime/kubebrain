@@ -2983,9 +2983,9 @@ func TestFollowerFromNowWatchUsesSynchronizedRevisionFence(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
-	proxyCh := make(chan etcdproxy.WatchResult)
-	close(proxyCh)
-	var watchedRevision uint64
+	proxyCh := make(chan etcdproxy.WatchResult, 1)
+	proxyCh <- etcdproxy.WatchResult{Created: true, Revision: 50}
+	var watchedRevision atomic.Uint64
 	server.peers = testPeerService{
 		isLeader:     false,
 		proxyEnabled: true,
@@ -2993,27 +2993,32 @@ func TestFollowerFromNowWatchUsesSynchronizedRevisionFence(t *testing.T) {
 			server.backend.SetCurrentRevision(50)
 			return nil
 		},
-		watchFn: func(_ context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
-			watchedRevision = revision
+		watchFn: func(watchCtx context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			watchedRevision.Store(revision)
+			go func() {
+				<-watchCtx.Done()
+				close(proxyCh)
+			}()
 			return proxyCh, nil
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	stream := &scriptedWatchServer{
-		fakeWatchServer: &fakeWatchServer{ctx: ctx},
-		reqs: []*etcdserverpb.WatchRequest{
-			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
-				Key: []byte("/registry/watch/fenced"), WatchId: 77,
-			}}},
-		},
+	defer cancel()
+	stream := &controllableWatchServer{
+		ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 1),
 	}
-	err := server.Watch(stream)
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/fenced"), WatchId: 77,
+	}}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
 	cancel()
-	requireWatchCanceled(t, err)
-	require.Equal(t, uint64(51), watchedRevision, "from-now follower watch must subscribe at synchronized R+1")
-	require.GreaterOrEqual(t, len(stream.sent), 1)
-	require.Equal(t, int64(50), stream.sent[0].Header.Revision)
-	require.True(t, stream.sent[0].Created)
+	requireWatchCanceled(t, <-done)
+	require.Equal(t, uint64(51), watchedRevision.Load(), "from-now follower watch must subscribe at synchronized R+1")
+	responses := stream.snapshot()
+	require.Equal(t, int64(50), responses[0].Header.Revision)
+	require.True(t, responses[0].Created)
 }
 
 func TestFollowerWatchReadBarrierFailureIsRetryable(t *testing.T) {
@@ -3069,9 +3074,9 @@ func TestStaleFreshnessWatchCannotOpenLocalGeneration(t *testing.T) {
 func TestStaleFreshnessWatchUsesFollowerProxyGeneration(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	proxyCh := make(chan etcdproxy.WatchResult)
-	close(proxyCh)
-	var watchedRevision uint64
+	proxyCh := make(chan etcdproxy.WatchResult, 1)
+	proxyCh <- etcdproxy.WatchResult{Created: true, Revision: 50}
+	var watchedRevision atomic.Uint64
 	server.peers = testPeerService{
 		isLeaderFn:   func() bool { return true },
 		epochFn:      func() (uint64, bool) { return 7, false },
@@ -3080,28 +3085,31 @@ func TestStaleFreshnessWatchUsesFollowerProxyGeneration(t *testing.T) {
 			server.backend.SetCurrentRevision(50)
 			return nil
 		},
-		watchFn: func(_ context.Context, _, _ []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
-			watchedRevision = revision
+		watchFn: func(watchCtx context.Context, _, _ []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			watchedRevision.Store(revision)
+			go func() {
+				<-watchCtx.Done()
+				close(proxyCh)
+			}()
 			return proxyCh, nil
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream := &scriptedWatchServer{
-		fakeWatchServer: &fakeWatchServer{ctx: ctx},
-		reqs: []*etcdserverpb.WatchRequest{{
-			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
-				CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/stale-proxy"), WatchId: 418},
-			},
-		}},
+	stream := &controllableWatchServer{
+		ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 1),
 	}
-
-	err := server.Watch(stream)
-	requireWatchCanceled(t, err)
-	require.Equal(t, uint64(51), watchedRevision,
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/stale-proxy"), WatchId: 418},
+	}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	cancel()
+	requireWatchCanceled(t, <-done)
+	require.Equal(t, uint64(51), watchedRevision.Load(),
 		"a stale leader flag must use the synchronized follower R+1 proxy generation")
-	require.NotEmpty(t, stream.sent)
-	require.True(t, stream.sent[0].Created)
+	require.True(t, stream.snapshot()[0].Created)
 }
 
 func TestFollowerWatchLocalRejectionsPrecedeReadBarrier(t *testing.T) {
@@ -3182,14 +3190,17 @@ func TestFollowerWatchDuplicateIDPrecedesReadBarrier(t *testing.T) {
 	err := server.Watch(stream)
 	requireWatchStatusError(t, err, codes.Unavailable, barrierErr.Error())
 	require.Equal(t, int64(2), barrierCalls.Load(), "duplicate ID must not enter the read barrier")
-	require.GreaterOrEqual(t, len(stream.sent), 2)
-	require.True(t, stream.sent[0].Created)
-	require.False(t, stream.sent[0].Canceled)
-	require.Equal(t, int64(414), stream.sent[0].WatchId)
-	require.True(t, stream.sent[1].Created)
-	require.True(t, stream.sent[1].Canceled)
-	require.Equal(t, int64(-1), stream.sent[1].WatchId)
-	require.Equal(t, "mvcc: duplicate watch ID provided on the WatchStream", stream.sent[1].CancelReason)
+	require.Contains(t, []int{1, 2}, len(stream.sent), "the later barrier may close the stream before async Created is sent")
+	duplicate := stream.sent[len(stream.sent)-1]
+	require.True(t, duplicate.Created)
+	require.True(t, duplicate.Canceled)
+	require.Equal(t, int64(-1), duplicate.WatchId)
+	require.Equal(t, "mvcc: duplicate watch ID provided on the WatchStream", duplicate.CancelReason)
+	if len(stream.sent) == 2 {
+		require.True(t, stream.sent[0].Created)
+		require.False(t, stream.sent[0].Canceled)
+		require.Equal(t, int64(414), stream.sent[0].WatchId)
+	}
 }
 
 func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
@@ -3248,14 +3259,17 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 	err = server.Watch(stream)
 	requireWatchStatusError(t, err, codes.Unavailable, barrierErr.Error())
 	require.Equal(t, int64(2), barrierCalls.Load(), "client cancel must not enter the read barrier")
-	require.Len(t, stream.sent, 2)
-	require.True(t, stream.sent[0].Created)
-	require.False(t, stream.sent[0].Canceled)
-	require.Equal(t, int64(415), stream.sent[0].WatchId)
-	require.True(t, stream.sent[1].Canceled)
-	require.Empty(t, stream.sent[1].CancelReason)
-	require.Equal(t, int64(415), stream.sent[1].WatchId)
-	require.Equal(t, int64(61), stream.sent[1].Header.Revision)
+	require.Contains(t, []int{1, 2}, len(stream.sent), "cancel may overtake the async leader acknowledgement")
+	canceled := stream.sent[len(stream.sent)-1]
+	require.True(t, canceled.Canceled)
+	require.Empty(t, canceled.CancelReason)
+	require.Equal(t, int64(415), canceled.WatchId)
+	require.Equal(t, int64(61), canceled.Header.Revision)
+	if len(stream.sent) == 2 {
+		require.True(t, stream.sent[0].Created)
+		require.False(t, stream.sent[0].Canceled)
+		require.Equal(t, int64(415), stream.sent[0].WatchId)
+	}
 	require.Eventually(t, func() bool {
 		select {
 		case <-proxyCanceled:
@@ -4259,6 +4273,59 @@ func TestFollowerWatchPublishesCreatedOnlyAfterAuthoritativeAcknowledgement(t *t
 	}}}
 	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
 	require.Len(t, stream.snapshot()[1].Events, 1)
+
+	cancel()
+	require.Error(t, <-done)
+}
+
+func TestFollowerPendingAuthoritativeCreateDoesNotBlockSameStreamCancel(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	results := make(chan etcdproxy.WatchResult)
+	opened := make(chan struct{})
+	proxyCanceled := make(chan struct{})
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		watchFn: func(watchCtx context.Context, _ []byte, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			close(opened)
+			go func() {
+				<-watchCtx.Done()
+				close(proxyCanceled)
+				close(results)
+			}()
+			return results, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &controllableWatchServer{
+		ctx:  ctx,
+		recv: make(chan *etcdserverpb.WatchRequest, 2),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/pending"), WatchId: 707},
+	}}
+	select {
+	case <-opened:
+	case <-time.After(time.Second):
+		t.Fatal("follower did not open authoritative leader watch")
+	}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+		CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 707},
+	}}
+	select {
+	case <-proxyCanceled:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("pending authoritative create blocked same-stream cancel")
+	}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	response := stream.snapshot()[0]
+	require.True(t, response.Canceled)
+	require.Equal(t, int64(707), response.WatchId)
+	require.False(t, response.Created)
 
 	cancel()
 	require.Error(t, <-done)
