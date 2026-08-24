@@ -11,14 +11,20 @@ import (
 func TestJWTDifferentialRunnerFailsClosed(t *testing.T) {
 	script, err := os.ReadFile("run-jwt-differential.sh")
 	require.NoError(t, err)
-	require.Contains(t, string(script), "ALLOW_DESTRUCTIVE_JWT_DIFFERENTIAL")
-	require.Contains(t, string(script), "auth revision must be 1")
-	require.Contains(t, string(script), "still has keys, users, roles, or leases")
-	require.Contains(t, string(script), "JWT HS256 key file is missing or empty")
-	require.Contains(t, string(script), "advertised client URL is unreachable")
-	require.Contains(t, string(script), "GO_TEST_RACE")
-	require.Contains(t, string(script), "find \"$data_dir\" -depth -delete")
-	require.Contains(t, string(script), "-run '^TestJWTAuthDifferentialAgainstReferenceEtcd$'")
+	content := string(script)
+	require.Contains(t, content, "ALLOW_DESTRUCTIVE_JWT_DIFFERENTIAL")
+	require.Contains(t, content, "auth revision must be 1")
+	require.Contains(t, content, "has keys, users, roles, leases, or alarms during ${phase}")
+	require.Contains(t, content, "JWT HS256 key file is missing or empty")
+	require.Contains(t, content, "advertised client URL is unreachable")
+	require.Contains(t, content, "GO_TEST_RACE")
+	require.Contains(t, content, "find \"$data_dir\" -depth -delete")
+	require.Contains(t, content, "assert_clean_endpoint preflight")
+	require.Contains(t, content, "assert_clean_endpoint postflight")
+	require.Contains(t, content, "alarm list -w json")
+	require.Contains(t, content, ") || test_status=$?")
+	require.Contains(t, content, "JWT differential test package failed with status")
+	require.Contains(t, content, "-run '^TestJWTAuthDifferentialAgainstReferenceEtcd$'")
 }
 
 func TestJWTDifferentialRunnerRejectsUnreachableAdvertisedClientURLBeforeMutation(t *testing.T) {

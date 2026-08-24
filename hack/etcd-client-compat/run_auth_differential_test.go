@@ -11,13 +11,17 @@ import (
 func TestAuthDifferentialRunnerFailsClosed(t *testing.T) {
 	script, err := os.ReadFile("run-auth-differential.sh")
 	require.NoError(t, err)
-	require.Contains(t, string(script), "ALLOW_DESTRUCTIVE_AUTH_DIFFERENTIAL")
-	require.Contains(t, string(script), "disposable KubeBrain Auth endpoint is not empty")
-	require.Contains(t, string(script), "already has authentication enabled")
-	require.Contains(t, string(script), "auth revision must be 1")
-	require.Contains(t, string(script), "still has users, roles, or leases")
-	require.Contains(t, string(script), "advertised client URL is unreachable")
-	require.Contains(t, string(script), "-run '^TestAuthDifferentialAgainstEtcd$'")
+	content := string(script)
+	require.Contains(t, content, "ALLOW_DESTRUCTIVE_AUTH_DIFFERENTIAL")
+	require.Contains(t, content, "auth revision must be 1")
+	require.Contains(t, content, "has keys, users, roles, leases, or alarms during ${phase}")
+	require.Contains(t, content, "advertised client URL is unreachable")
+	require.Contains(t, content, "assert_clean_endpoint preflight")
+	require.Contains(t, content, "assert_clean_endpoint postflight")
+	require.Contains(t, content, "alarm list -w json")
+	require.Contains(t, content, ") || test_status=$?")
+	require.Contains(t, content, "Auth differential test package failed with status")
+	require.Contains(t, content, "-run '^TestAuthDifferentialAgainstEtcd$'")
 }
 
 func TestAuthDifferentialRunnerRejectsUnreachableAdvertisedClientURLBeforeMutation(t *testing.T) {
@@ -61,6 +65,55 @@ exit 1
 	require.Contains(t, string(output), "advertised client URL is unreachable")
 	require.Contains(t, string(output), "http://internal.invalid:3379")
 	require.NotContains(t, string(output), "mutation-adjacent preflight reached")
+}
+
+func TestAuthRunnersRejectDirtyAlarmStateBeforeReferenceStart(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		script   string
+		endpoint string
+		approval string
+	}{
+		{name: "simple-token", script: "run-auth-differential.sh", endpoint: "KUBEBRAIN_AUTH_DIFF_ENDPOINT", approval: "ALLOW_DESTRUCTIVE_AUTH_DIFFERENTIAL"},
+		{name: "jwt", script: "run-jwt-differential.sh", endpoint: "KUBEBRAIN_JWT_ETCD_ENDPOINT", approval: "ALLOW_DESTRUCTIVE_JWT_DIFFERENTIAL"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fakeEtcd := writeFakeReferenceEtcd(t, dir)
+			fakeEtcdctl := filepath.Join(dir, "etcdctl")
+			require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'Git SHA: d947b2086\n'
+  exit 0
+fi
+case "$*" in
+  *"member list -w json"*) printf '%s\n' '{"members":[{"name":"kubebrain-0","clientURLs":["http://127.0.0.1:22379"]}]}' ;;
+  *"auth status -w json"*) printf '%s\n' '{"enabled":false,"authRevision":1}' ;;
+  *"get  --from-key --limit=1 -w json"*) printf '%s\n' '{"count":0}' ;;
+  *"user list -w json"*) printf '%s\n' '{"users":[]}' ;;
+  *"role list -w json"*) printf '%s\n' '{"roles":[]}' ;;
+  *"lease list -w json"*) printf '%s\n' '{"leases":[]}' ;;
+  *"alarm list -w json"*) printf '%s\n' '{"alarms":[{"memberID":7,"alarm":1}]}' ;;
+  *"endpoint health"*) ;;
+  *) exit 1 ;;
+esac
+`), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "curl"), []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
+
+			output, err := runCompatScriptCommand(t, testCase.script, []string{
+				"PATH=" + dir + ":" + os.Getenv("PATH"),
+				testCase.endpoint + "=127.0.0.1:22379",
+				testCase.approval + "=true",
+				"REFERENCE_ETCD_BIN=" + fakeEtcd,
+				"REFERENCE_ETCD_EXPECTED_GIT_SHA=d947b2086",
+				"ETCDCTL_BIN=" + fakeEtcdctl,
+			})
+			require.Error(t, err)
+			require.Contains(t, string(output), "has keys, users, roles, leases, or alarms during preflight")
+			require.NotContains(t, string(output), "etcd exited before becoming healthy")
+		})
+	}
 }
 
 func TestAuthDifferentialRunnerRejectsInvalidApprovalBeforeDependencies(t *testing.T) {

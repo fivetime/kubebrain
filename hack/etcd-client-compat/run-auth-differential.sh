@@ -84,29 +84,32 @@ for advertised_client_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
-auth_status_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" auth status -w json)"
-if [[ "$(jq -r '.enabled // false' <<<"$auth_status_json")" != false ]]; then
-  echo "disposable KubeBrain Auth endpoint already has authentication enabled" >&2
-  exit 1
-fi
-if [[ "$(jq -r '.authRevision // 0' <<<"$auth_status_json")" != 1 ]]; then
-  echo "disposable KubeBrain Auth endpoint is not pristine: auth revision must be 1" >&2
-  exit 1
-fi
-range_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" get '' --from-key --limit=1 -w json)"
-if [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$range_json")" != 0 ]]; then
-  echo "disposable KubeBrain Auth endpoint is not empty" >&2
-  exit 1
-fi
-user_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" user list -w json)"
-role_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" role list -w json)"
-lease_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" lease list -w json)"
-if [[ "$(jq -r '(.users // []) | length' <<<"$user_json")" != 0 ||
-  "$(jq -r '(.roles // []) | length' <<<"$role_json")" != 0 ||
-  "$(jq -r '(.leases // []) | length' <<<"$lease_json")" != 0 ]]; then
-  echo "disposable KubeBrain Auth endpoint still has users, roles, or leases" >&2
-  exit 1
-fi
+assert_clean_endpoint() {
+  local phase="$1" auth_status_json range_json user_json role_json lease_json alarm_json
+  auth_status_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" auth status -w json)"
+  range_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" get '' --from-key --limit=1 -w json)"
+  user_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" user list -w json)"
+  role_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" role list -w json)"
+  lease_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" lease list -w json)"
+  alarm_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_AUTH_ENDPOINT" alarm list -w json)"
+  if [[ "$(jq -r '.enabled // false' <<<"$auth_status_json")" != false ]]; then
+    echo "disposable KubeBrain Auth endpoint has authentication enabled during ${phase}" >&2
+    exit 1
+  fi
+  if [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$range_json")" != 0 ||
+    "$(jq -r '(.users // []) | length' <<<"$user_json")" != 0 ||
+    "$(jq -r '(.roles // []) | length' <<<"$role_json")" != 0 ||
+    "$(jq -r '(.leases // []) | length' <<<"$lease_json")" != 0 ||
+    "$(jq -r '(.alarms // []) | length' <<<"$alarm_json")" != 0 ]]; then
+    echo "disposable KubeBrain Auth endpoint has keys, users, roles, leases, or alarms during ${phase}" >&2
+    exit 1
+  fi
+  if [[ "$phase" == preflight && "$(jq -r '.authRevision // 0' <<<"$auth_status_json")" != 1 ]]; then
+    echo "disposable KubeBrain Auth endpoint is not pristine: auth revision must be 1" >&2
+    exit 1
+  fi
+}
+assert_clean_endpoint preflight
 
 data_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-auth-reference-etcd.XXXXXX")"
 reference_log="$data_dir/etcd.log"
@@ -153,10 +156,16 @@ if ! curl --fail --silent --max-time 1 "${REFERENCE_CLIENT_URL}/health" >/dev/nu
   exit 1
 fi
 
+test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   ETCD_AUTH_DIFF_ENDPOINT="${REFERENCE_CLIENT_URL#http://}" \
     KUBEBRAIN_AUTH_DIFF_ENDPOINT="$KUBEBRAIN_AUTH_ENDPOINT" \
     go test "${race_args[@]}" . -run '^TestAuthDifferentialAgainstEtcd$' -count=1 -timeout="$TEST_TIMEOUT" -v
-)
+) || test_status=$?
+assert_clean_endpoint postflight
+if [[ "$test_status" -ne 0 ]]; then
+  echo "Auth differential test package failed with status $test_status" >&2
+  exit "$test_status"
+fi
 test_succeeded=true
