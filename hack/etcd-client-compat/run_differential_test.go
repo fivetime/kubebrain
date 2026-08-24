@@ -75,6 +75,10 @@ if [[ "$*" == *"get /registry/etcd-client-compat/ --prefix --limit=1 -w json"* ]
   printf '%s\n' '{"count":0}'
   exit 0
 fi
+if [[ "$*" == *"get  --from-key --limit=1 -w json"* ]]; then
+  printf '%s\n' '{"count":0}'
+  exit 0
+fi
 exit 1
 `), 0o755))
 	fakeCurl := filepath.Join(dir, "curl")
@@ -151,6 +155,10 @@ if [[ "$*" == *"get /registry/etcd-client-compat/ --prefix --limit=1 -w json"* ]
   printf '%s\n' '{"count":0}'
   exit 0
 fi
+if [[ "$*" == *"get  --from-key --limit=1 -w json"* ]]; then
+  printf '%s\n' '{"count":0}'
+  exit 0
+fi
 if [[ "$*" == *"endpoint health"* ]]; then
   exit 0
 fi
@@ -220,6 +228,15 @@ func TestDifferentialRunnerRequiresCompatPrefixConservation(t *testing.T) {
 	require.Contains(t, content, "get /registry/etcd-client-compat/ --prefix --limit=1 -w json")
 	require.Contains(t, content, "differential test package failed with status")
 	require.Contains(t, content, ") || test_status=$?")
+}
+
+func TestDifferentialRunnerRequiresEntireUserKeyspaceConservation(t *testing.T) {
+	script, err := os.ReadFile("run-differential.sh")
+	require.NoError(t, err)
+	content := string(script)
+	require.Contains(t, content, "assert_user_keyspace_empty preflight")
+	require.Contains(t, content, "assert_user_keyspace_empty postflight")
+	require.Contains(t, content, "get '' --from-key --limit=1 -w json")
 }
 
 func TestDifferentialRunnerRejectsDirtyCompatPrefixBeforeReferenceStart(t *testing.T) {

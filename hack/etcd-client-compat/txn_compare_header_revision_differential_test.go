@@ -52,6 +52,11 @@ func runTxnRevisionScenario(t *testing.T, endpoint, instance string) txnRevision
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	prefix := fmt.Sprintf("/dbaas-txn-revision/%s/%d/", instance, time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = client.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+	})
 	key := prefix + "key"
 	seed, err := client.Put(ctx, key, "one")
 	require.NoError(t, err)

@@ -63,6 +63,8 @@ func runRecipesScenario(t *testing.T, endpoint, instance string) recipesOutcome 
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = client.Delete(cleanupCtx, base, clientv3.WithPrefix())
+		// PriorityQueue stores its ordering index under "__"+queue prefix.
+		_, _ = client.Delete(cleanupCtx, "__"+base, clientv3.WithPrefix())
 	}()
 
 	barrierName := base + "barrier"

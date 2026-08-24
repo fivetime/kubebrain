@@ -109,6 +109,7 @@ func runHTTPGatewayStreamScenario(t *testing.T, endpoint, _ string, leaseID stri
 
 	key := "/a357/http-stream/watch-key"
 	post("/v3/kv/deleterange", map[string]any{"key": encode(key)})
+	t.Cleanup(func() { post("/v3/kv/deleterange", map[string]any{"key": encode(key)}) })
 	post("/v3/kv/put", map[string]any{"key": encode(key), "value": encode("before")})
 	watchResponse, watchReader := openStream("/v3/watch", map[string]any{
 		"create_request": map[string]any{"key": encode(key), "prev_kv": true},

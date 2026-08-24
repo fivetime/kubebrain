@@ -46,6 +46,11 @@ func runRangeLimitAcrossTombstonesScenario(t *testing.T, endpoint, name string) 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	prefix := fmt.Sprintf("/dbaas-range-tombstone/%s-%d/", name, time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = client.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+	})
 	var beforeDeletes int64
 	for _, suffix := range []string{"a", "b", "c", "d"} {
 		response, putErr := client.Put(ctx, prefix+suffix, "value-"+suffix)

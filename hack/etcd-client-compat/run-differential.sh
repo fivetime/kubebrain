@@ -181,6 +181,21 @@ assert_compat_prefix_empty() {
 }
 assert_compat_prefix_empty preflight
 
+assert_user_keyspace_empty() {
+  local phase="$1" range_json count
+  if ! range_json="$(ETCDCTL_API=3 "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ENDPOINT" \
+    get '' --from-key --limit=1 -w json)"; then
+    echo "KubeBrain user-keyspace ${phase} check failed: $KUBEBRAIN_ENDPOINT" >&2
+    exit 1
+  fi
+  count="$(jq -r '.count // (.kvs | length) // 0' <<<"$range_json")"
+  if [[ "$count" != 0 ]]; then
+    echo "KubeBrain user keyspace is not empty during ${phase}" >&2
+    exit 1
+  fi
+}
+assert_user_keyspace_empty preflight
+
 data_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-reference-etcd.XXXXXX")"
 reference_log="$data_dir/etcd.log"
 reference_pid=""
@@ -243,6 +258,7 @@ test_status=0
     go test . -run "$TEST_RUN_PATTERN" -count=1 -parallel=1 -timeout="$TEST_TIMEOUT" -v
 ) || test_status=$?
 assert_compat_prefix_empty postflight
+assert_user_keyspace_empty postflight
 if [[ "$test_status" -ne 0 ]]; then
   echo "differential test package failed with status $test_status" >&2
   exit "$test_status"
