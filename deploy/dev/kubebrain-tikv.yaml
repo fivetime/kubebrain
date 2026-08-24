@@ -81,15 +81,26 @@ spec:
           readinessProbe:
             httpGet:
               path: /ready
-              port: client
+              port: info
             initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 6
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /ping
-              port: client
+              port: info
             initialDelaySeconds: 15
             periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: info
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 24
 ---
 apiVersion: v1
 kind: Service

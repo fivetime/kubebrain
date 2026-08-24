@@ -615,10 +615,10 @@ partition_tikv_quorum() {
       echo "refusing to partition TiKV member $pod: invalid IPv4 Pod IP $ip" >&2
       exit 1
     fi
-    node="$KIND_NODE_CONTAINER"
-    if [[ "$placement" == "cross-node" ]]; then
-      node="$(kubectl -n "$TIDB_NAMESPACE" get pod "$pod" -o jsonpath='{.spec.nodeName}')"
-    fi
+    # Resolve the container from the Pod placement even for the single-node
+    # profile. Kind cluster names are not stable across DBaaS environments, so
+    # the historical KIND_NODE_CONTAINER default is not authoritative here.
+    node="$(kubectl -n "$TIDB_NAMESPACE" get pod "$pod" -o jsonpath='{.spec.nodeName}')"
     if [[ ! "$node" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
       echo "refusing TiKV quorum partition: invalid node container ${node:-missing}" >&2
       exit 1
@@ -1262,7 +1262,14 @@ run_pd_quorum_hashkv_test() {
 run_combined_hashkv_test() {
   local label="$1"
   local command="$2"
+  local before_restarts after_restarts
   echo "Running ${label}"
+  before_restarts="$(kubectl -n "$KUBEBRAIN_NAMESPACE" get pods \
+    -l app.kubernetes.io/name=kubebrain -o json | jq -c '[.items[] | {
+      name: .metadata.name,
+      uid: .metadata.uid,
+      restarts: ([.status.containerStatuses[]?.restartCount] | add // 0)
+    }] | sort_by(.name)')"
   (
     cd "$ROOT_DIR/hack/etcd-client-compat"
     KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
@@ -1270,6 +1277,19 @@ run_combined_hashkv_test() {
       go test . -run '^TestFixedRevisionHashKVSurvivesCombinedBackendFault$' -count=1 -v
   )
   wait_backend_ready
+  after_restarts="$(kubectl -n "$KUBEBRAIN_NAMESPACE" get pods \
+    -l app.kubernetes.io/name=kubebrain -o json | jq -c '[.items[] | {
+      name: .metadata.name,
+      uid: .metadata.uid,
+      restarts: ([.status.containerStatuses[]?.restartCount] | add // 0)
+    }] | sort_by(.name)')"
+  if [[ "$after_restarts" != "$before_restarts" ]]; then
+    echo "KubeBrain Pods restarted or were replaced during the combined backend fault" >&2
+    echo "before=$before_restarts" >&2
+    echo "after=$after_restarts" >&2
+    return 1
+  fi
+  echo "KubeBrain Pod identities and restart counts remained stable: $after_restarts"
 }
 
 run_combined_status_test() {

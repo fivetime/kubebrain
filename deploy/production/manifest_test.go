@@ -2279,8 +2279,8 @@ func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
 	require.Contains(t, args, "--max-scan-items=10000")
 	require.Contains(t, args, "--max-scan-bytes=67108864")
 	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
-	require.Equal(t, "64Mi", nestedString(t, container, "resources", "requests", "memory"))
-	require.Equal(t, "256Mi", nestedString(t, container, "resources", "limits", "memory"))
+	require.Equal(t, "256Mi", nestedString(t, container, "resources", "requests", "memory"))
+	require.Equal(t, "512Mi", nestedString(t, container, "resources", "limits", "memory"))
 	spreads, found, err := unstructured.NestedSlice(
 		deployment.Object, "spec", "template", "spec", "topologySpreadConstraints",
 	)
@@ -4476,6 +4476,7 @@ func TestDevManifestProvidesStableCompleteMembership(t *testing.T) {
 	require.True(t, found)
 	require.Len(t, containers, 1)
 	container := containers[0].(map[string]any)
+	containerObject := &unstructured.Unstructured{Object: container}
 	args, found, err := unstructured.NestedStringSlice(container, "args")
 	require.NoError(t, err)
 	require.True(t, found)
@@ -4488,6 +4489,21 @@ func TestDevManifestProvidesStableCompleteMembership(t *testing.T) {
 			"kubebrain-1=http://kubebrain-1.kubebrain-peer.kubebrain-dev.svc.cluster.local:3380,"+
 			"kubebrain-2=http://kubebrain-2.kubebrain-peer.kubebrain-dev.svc.cluster.local:3380",
 	)
+	for _, probe := range []struct {
+		name             string
+		path             string
+		timeoutSeconds   int64
+		failureThreshold int64
+	}{
+		{name: "readinessProbe", path: "/ready", timeoutSeconds: 6, failureThreshold: 3},
+		{name: "livenessProbe", path: "/ping", timeoutSeconds: 2, failureThreshold: 3},
+		{name: "startupProbe", path: "/ping", timeoutSeconds: 2, failureThreshold: 24},
+	} {
+		require.Equal(t, probe.path, nestedString(t, containerObject, probe.name, "httpGet", "path"))
+		require.Equal(t, "info", nestedString(t, containerObject, probe.name, "httpGet", "port"))
+		require.EqualValues(t, probe.timeoutSeconds, nestedInt64(t, containerObject, probe.name, "timeoutSeconds"))
+		require.EqualValues(t, probe.failureThreshold, nestedInt64(t, containerObject, probe.name, "failureThreshold"))
+	}
 
 	peer := objectByKindAndName(t, objects, "Service", "kubebrain-peer")
 	require.Equal(t, "None", nestedString(t, peer, "spec", "clusterIP"))

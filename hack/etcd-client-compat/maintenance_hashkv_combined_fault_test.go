@@ -136,10 +136,25 @@ func runFixedRevisionHashKVFault(t *testing.T, commandEnv, faultLabel string) {
 		commandDone <- commandResult{output: output, err: commandErr}
 	}()
 	if requireCombinedReady {
-		require.Eventually(t, func() bool {
-			_, statErr := os.Stat(combinedReadyPath)
-			return statErr == nil
-		}, 3*time.Minute, 100*time.Millisecond, "combined backend fault must signal both quorums ready")
+		readyDeadline := time.NewTimer(3 * time.Minute)
+		readyPoll := time.NewTicker(100 * time.Millisecond)
+		defer readyDeadline.Stop()
+		defer readyPoll.Stop()
+		for {
+			if _, statErr := os.Stat(combinedReadyPath); statErr == nil {
+				break
+			}
+			select {
+			case result := <-commandDone:
+				require.NoErrorf(t, result.err, "%s command exited before readiness: %s",
+					faultLabel, strings.TrimSpace(string(result.output)))
+				t.Fatalf("%s command exited before signaling both quorums ready: %s",
+					faultLabel, strings.TrimSpace(string(result.output)))
+			case <-readyDeadline.C:
+				t.Fatalf("combined backend fault did not signal both quorums ready within 3m")
+			case <-readyPoll.C:
+			}
+		}
 	}
 
 	require.Eventually(t, func() bool {
