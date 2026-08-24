@@ -61501,6 +61501,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   120.449/352.338/223.786/362.431 秒；端到端 126.316/358.200/229.626/368.269 秒）。本项不改变 TiKV
   数据布局；本轮无 disposable TiKV/PD 双节点 endpoint，故不声称真实 follower/leader 数据面演练。
 
+- A5440 将 A5439 当前代码重新带回真实独立 TiKV/PD 三副本发布门禁，并增加可选的独立不可变 rollout probe
+  artifact。长期 Kind 主实例仍运行 A4983；构建绑定 `55e7ccf276e9fe300e83adbd0c32aca40f6e5a81`、
+  `dbaas-a5439`、`2026-08-24T05:01:48Z` 的 linux/amd64 TiKV 镜像，OCI index 为
+  `sha256:409d00f7628f986887f5dbd8ef27518585e5da3093e0c223d4e3bfa0dcca790d`，Kind 导入后的
+  immutable runtime digest 为 `sha256:f59a2f6cfff238f01de928ec275a48fa034037c422bfd3af8c96034f308d9c8d`，
+  容器内版本、完整 SHA、构建时间及运行用户 `65532:65532` 均一致。
+
+  首两次 rollout 在 probe start barrier 前失败，且 StatefulSet 始终保持 A4983、3/3 Ready、原 runtime digest，
+  probe Pod 也完成清理。诊断证明原因是现场 39 天旧清单的 client Service 仍名为 `kubebrain`，调用却显式传入标准
+  `kubebrain-client`，Pod 内 DNS 返回 NXDOMAIN；这不是 probe 协议或数据面差距。随后用 A4983 旧镜像、正确 Service
+  独立执行同一探针，明确取得 `PROBE_STARTED` 与 3/3 GREEN，因此没有把错误配置误记为跨版本不兼容。
+
+  提交 `e3498e22` 为 canonical runner 增加可选 `PROBE_IMAGE`：为空时继续使用运行中镜像，显式设置时只接受
+  `repository@sha256:<64 lowercase hex>`，并在任何 Kubernetes 调用前与其他发布参数一起 fail closed；实际 Pod
+  使用该精确引用，最终 receipt 记录 `probe_image`。这允许发布系统把探针作为独立审核/签名的 immutable artifact，
+  不要求它与待替换数据面镜像同生命周期，也不把 mutable tag 引入发布证据。两条 RED 固定 mutable probe 在旧实现中
+  触达 Kubernetes、显式 immutable probe 未进入 Pod/receipt；修复后聚焦连续 20 轮 30.906 秒、runner 全组普通/race
+  56.518/57.636 秒、vet、shell syntax 与 diff check 通过。
+
+  使用正确现场 Service、上述 immutable data-plane/probe 引用完成 A4983→A5439 三副本滚动：900/900 次
+  KV/Watch/Lease、PD TSO 与 TiKV Region 探针全绿，最大业务/TSO/Region 延迟 1529/139/7ms，一次
+  `leader changed` 由官方 client 正常重试；终态 revision `kubebrain-7b7bf7dfc`，三 Pod 均为完整 A5439 SHA、
+  Ready、零重启、相同 runtime digest，probe Pod 已删除。production inventory 增至 611，精确代码提交四片
+  140/171/154/146 全绿（Go 测试 123.226/345.565/222.998/357.959 秒；端到端
+  129.091/351.548/228.886/363.900 秒）。该现场是单节点 Kind 上的 3 PD/3 TiKV，不外推为跨节点/AZ rollout；
+  `PROBE_IMAGE` 绑定镜像内容，但 registry 签名/准入仍由外部发布系统负责。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
