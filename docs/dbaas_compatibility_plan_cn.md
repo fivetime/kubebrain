@@ -61457,6 +61457,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   真实数据面演练。精确代码提交四片 139/171/153/146 全绿（Go 测试
   120.686/349.981/223.658/361.983 秒；端到端 126.523/355.890/229.546/367.881 秒）。
 
+- A5437 修复 A5436 有界 worker 在空 Watch stream 上仍制造虚假 progress backlog。空 watcher set 的 upstream
+  `progressAll` 立即返回且不发响应；A5436 却把每个空 RequestProgress 排入 worker 并各等满 100ms，连续 18 个
+  请求会占用一个执行项和 16 个队列槽，使第 18 个入队阻塞接收循环，随后合法 Create 再次发生队头阻塞。提交
+  `0385d04f` 在接收循环捕获 generation 集合后直接跳过空快照；worker 的水位判定改为 synced/retry/terminal
+  三态，只有仍存在且可追赶的 generation 占用等待窗口，Watch 已 closing、ID 被新 generation 替换、空集合或无效
+  target 都立即终止旧请求。新增确定性 RED：空 stream 连续发送 18 个 Progress 后发送 ID 802 Create，旧实现
+  50ms 内不读取第 19 个请求，修复后立即 Recv 且 wire 上只出现 Created。空 burst/future/Cancel/clientv3 集合普通
+  连续 50 轮通过（10.353 秒），关键集合 race 连续 50 轮通过（26.344 秒），全部 Watch 测试连续 10 轮通过
+  （112.476 秒），完整 server/proxy 包通过（130.197 秒/proxy cached），diff check 与 609 项 inventory 校验通过。
+  本项只收紧 Watch progress 控制面的空载资源与接收活性，不改变 TiKV 数据语义；本轮无 disposable TiKV/PD
+  双节点 endpoint，故不声称真实数据面演练。精确代码提交四片 139/171/153/146 全绿（Go 测试
+  116.843/346.255/219.652/356.783 秒；端到端 122.687/352.105/225.484/362.654 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
