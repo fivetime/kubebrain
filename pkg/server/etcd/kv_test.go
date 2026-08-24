@@ -92,6 +92,21 @@ type compareDeleteTrapBackendShim struct {
 	called bool
 }
 
+type quotaAlarmErrorBackendShim struct {
+	BackendShim
+	err      error
+	armCalls int
+}
+
+func (b *quotaAlarmErrorBackendShim) QuotaStatus(context.Context) (int64, int64, bool, error) {
+	return 10, 10, false, nil
+}
+
+func (b *quotaAlarmErrorBackendShim) ArmNoSpace(context.Context, uint64) (uint64, error) {
+	b.armCalls++
+	return 0, b.err
+}
+
 type checkpointRangeBackendShim struct {
 	BackendShim
 	checkpoint backend.SerializableCheckpoint
@@ -120,6 +135,23 @@ func (b *checkpointCountBackendShim) Count(ctx context.Context, _ *etcdserverpb.
 func (b *checkpointCountBackendShim) List(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 	b.listCalled = true
 	return nil, errors.New("checkpoint CountOnly unexpectedly materialized List")
+}
+
+func TestPutDoesNotReportNoSpaceWhenAutomaticAlarmPersistenceFails(t *testing.T) {
+	server, cleanup := newTestRPCServer(t)
+	defer cleanup()
+	wantErr := errors.New("alarm storage unavailable")
+	shim := &quotaAlarmErrorBackendShim{BackendShim: server.backend, err: wantErr}
+	server.backend = shim
+
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("quota-key"), Value: []byte("quota-value"),
+	})
+	require.ErrorContains(t, err, "persist automatic NOSPACE alarm")
+	require.ErrorIs(t, err, wantErr)
+	require.False(t, errors.Is(err, rpctypes.ErrGRPCNoSpace),
+		"NOSPACE must imply that the sticky alarm was durably published")
+	require.Equal(t, 1, shim.armCalls)
 }
 
 func (b *checkpointRangeBackendShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {

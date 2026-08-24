@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -24,6 +25,7 @@ type automaticQuotaOutcome struct {
 	OversizedTypedNoSpace     bool
 	OversizedKeyAbsent        bool
 	AlarmOwnedByMember        bool
+	AlarmCount                int
 	ReadAllowedWhileAlarmed   bool
 	LeaseGrantCode            string
 	LeaseGrantTypedNoSpace    bool
@@ -65,6 +67,7 @@ func TestAutomaticQuotaAlarmDifferentialAgainstReferenceEtcd(t *testing.T) {
 		OversizedTypedNoSpace:     true,
 		OversizedKeyAbsent:        true,
 		AlarmOwnedByMember:        true,
+		AlarmCount:                1,
 		ReadAllowedWhileAlarmed:   true,
 		LeaseGrantCode:            codes.Unknown.String(),
 		LeaseGrantTypedNoSpace:    true,
@@ -157,20 +160,33 @@ func runAutomaticQuotaScenario(
 	outcome.OversizedKeyAbsent = oversizedRead.Count == 0
 
 	var noSpaceAlarm *etcdserverpb.AlarmMember
-	require.Eventually(t, func() bool {
+	var observedAlarmMembers []uint64
+	foundOwnedAlarm := assert.Eventually(t, func() bool {
 		alarms, listErr := client.AlarmList(ctx)
 		if listErr != nil {
 			return false
 		}
+		observedAlarmMembers = observedAlarmMembers[:0]
 		for _, alarm := range alarms.Alarms {
 			if alarm.Alarm == etcdserverpb.AlarmType_NOSPACE {
-				noSpaceAlarm = alarm
-				return alarm.MemberID == memberID
+				observedAlarmMembers = append(observedAlarmMembers, alarm.MemberID)
+				if alarm.MemberID == memberID {
+					noSpaceAlarm = alarm
+				}
 			}
 		}
-		return false
+		return noSpaceAlarm != nil
 	}, 10*time.Second, 50*time.Millisecond)
+	require.Truef(t, foundOwnedAlarm,
+		"NOSPACE owner mismatch: status member=%d observed alarm members=%v", memberID, observedAlarmMembers)
 	outcome.AlarmOwnedByMember = noSpaceAlarm != nil && noSpaceAlarm.MemberID == memberID
+	alarmsAfterActivation, err := client.AlarmList(ctx)
+	require.NoError(t, err)
+	for _, alarm := range alarmsAfterActivation.Alarms {
+		if alarm.Alarm == etcdserverpb.AlarmType_NOSPACE {
+			outcome.AlarmCount++
+		}
+	}
 
 	smallRead, err := client.Get(ctx, smallKey)
 	require.NoError(t, err)

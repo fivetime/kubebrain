@@ -216,7 +216,11 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	// Lease records are outside KubeBrain's logical user key/value accounting,
 	// so they add no estimated growth here. An already exhausted configured
 	// quota is still rejected at the same outer admission boundary as etcd.
-	if m.srv.configuredQuotaUnavailable(ctx, 0) {
+	quotaUnavailable, quotaErr := m.srv.configuredQuotaUnavailable(ctx, 0)
+	if quotaErr != nil {
+		return nil, mapFenceErr(quotaErr)
+	}
+	if quotaUnavailable {
 		return nil, rpctypes.ErrGRPCNoSpace
 	}
 	explicitID := req.ID != 0

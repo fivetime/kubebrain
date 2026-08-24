@@ -937,7 +937,11 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 		// making every valid follower write synchronously read local storage.
 		// Valid writes are authoritatively admitted by the leader below.
 		if validationErr != nil {
-			if s.configuredQuotaUnavailable(ctx, quotaTxnCost(txn)) {
+			quotaUnavailable, quotaErr := s.configuredQuotaUnavailable(ctx, quotaTxnCost(txn))
+			if quotaErr != nil {
+				return nil, mapFenceErr(quotaErr)
+			}
+			if quotaUnavailable {
 				return nil, rpctypes.ErrGRPCNoSpace
 			}
 			return nil, validationErr
@@ -956,7 +960,11 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 			s.observeForwardedRevision(response.GetHeader(), err)
 			return response, err
 		}
-		if s.configuredQuotaUnavailable(ctx, quotaTxnCost(txn)) {
+		quotaUnavailable, quotaErr := s.configuredQuotaUnavailable(ctx, quotaTxnCost(txn))
+		if quotaErr != nil {
+			return nil, mapFenceErr(quotaErr)
+		}
+		if quotaUnavailable {
 			return nil, rpctypes.ErrGRPCNoSpace
 		}
 	}
@@ -1296,17 +1304,20 @@ func txnContainsPut(txn *etcdserverpb.TxnRequest) bool {
 // remain an atomic backend decision. Requests which cannot fit are rejected
 // before protocol validation, auth, automatic ID allocation, or leader routing.
 // A manually armed NOSPACE alarm remains an apply-time cap.
-func (s *RPCServer) configuredQuotaUnavailable(ctx context.Context, requestCost int64) bool {
+func (s *RPCServer) configuredQuotaUnavailable(ctx context.Context, requestCost int64) (bool, error) {
 	usage, quota, _, err := s.backend.QuotaStatus(ctx)
 	if err != nil || quota <= 0 || (usage < quota && requestCost <= quota-usage) {
-		return false
+		return false, err
 	}
 	// Match upstream quotaAlarmer at the RPC boundary: the member which accepted
 	// the client request owns the alarm, even when it subsequently proxies the
-	// write to the leader. Preserve NoSpace if alarm persistence itself fails.
+	// write to the leader. Do not report NOSPACE unless its sticky alarm was
+	// durably published; otherwise AlarmList and the capped write mode diverge.
 	memberID := s.quotaAdmissionMember(ctx)
-	_, _ = s.backend.ArmNoSpace(ctx, memberID)
-	return true
+	if _, err := s.backend.ArmNoSpace(ctx, memberID); err != nil {
+		return true, fmt.Errorf("persist automatic NOSPACE alarm for member %d: %w", memberID, err)
+	}
+	return true, nil
 }
 
 const quotaAdmissionMemberMetadataKey = "kubebrain-quota-admission-member"
@@ -1787,7 +1798,11 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	startTime := time.Now()
 	validationErr := validatePutRequest(r)
 	if validationErr != nil {
-		if s.configuredQuotaUnavailable(ctx, quotaPutCost(r)) {
+		quotaUnavailable, quotaErr := s.configuredQuotaUnavailable(ctx, quotaPutCost(r))
+		if quotaErr != nil {
+			return nil, mapFenceErr(quotaErr)
+		}
+		if quotaUnavailable {
 			return nil, rpctypes.ErrGRPCNoSpace
 		}
 		return nil, validationErr
@@ -1808,7 +1823,11 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
-	if s.configuredQuotaUnavailable(ctx, quotaPutCost(r)) {
+	quotaUnavailable, quotaErr := s.configuredQuotaUnavailable(ctx, quotaPutCost(r))
+	if quotaErr != nil {
+		return nil, mapFenceErr(quotaErr)
+	}
+	if quotaUnavailable {
 		return nil, rpctypes.ErrGRPCNoSpace
 	}
 	if !leadingFresh {
