@@ -156,7 +156,7 @@ case "$TEST_SCOPE" in
     fi
     ;;
   hashkv-compaction)
-    test_pattern='^TestHashKVCompactionConvergesAcrossKubeBrainReplicas$'
+    test_pattern='^(TestHashKVCompactionConvergesAcrossKubeBrainReplicas|TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction)$'
     ;;
 esac
 
