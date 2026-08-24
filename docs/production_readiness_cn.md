@@ -7010,6 +7010,34 @@ endpoint 与空白 keyspace，没有在启用 Auth、创建用户和 compact 前
 123.531/358.922/235.461/371.833 秒，全部通过。该门禁防止坏 endpoint 在测试中途才暴露，
 但不替代生产 MemberList ClientURL 的持续拨号监控或跨网络域验证。
 
+### A5446：自动 NOSPACE 告警持久化与低配额专项闭环
+
+提交 `b9afb275` 关闭了自动配额路径中两个独立缺口。首先，低配额差分不再假定
+`AlarmList` 的第一条 NOSPACE 就属于当前成员，而是扫描全部告警、输出实际 owner 诊断，
+并固定单次触发最终只有一条 NOSPACE；这样既不会被返回顺序误导，也不能用“列表中碰巧有
+正确 owner”掩盖重复告警。其次，`Put`、含 Put 的 `Txn` 和 `LeaseGrant` 只有在
+`ArmNoSpace` 已成功持久化 sticky 告警后才返回 etcd 的 `ErrGRPCNoSpace`。告警写入失败现在
+保留原始错误并经 fence error 映射返回，禁止客户端看到 NOSPACE、重试后却找不到 durable
+告警。确定性单测注入告警后端失败，固定该错误不是 `ErrGRPCNoSpace`、包含底层原因且只调用
+一次 `ArmNoSpace`。
+
+精确提交镜像 `kubebrain:a5446-b9afb275`（完整 revision
+`b9afb275d3556cc3cfad73ee850055ef89c0defd`，本地 manifest list
+`sha256:5bbffc84c7d756183601642e4b6064b3543eb6a2503a96be8cb4872406ad3f28`，Kind runtime digest
+`sha256:cd1390ce2e68129acd821e48f76e2ee1691b79c453045d6ce2d4162d6ac23c2c`）在独立
+3 PD/3 TiKV 数据面、全新 `a5446-quota-exact` keyspace 和 1024-byte 配额下，对 reference etcd
+`5cd9f4ee13801e18825d661e5005ae599460bc3a` 完成真实自动配额差分：Go 0.266 秒、端到端
+2.350 秒，三副本均零重启。测试覆盖超额 Put 不落盘、成员归属及唯一 sticky NOSPACE、告警期
+读/删允许、LeaseGrant 拒绝、compact/defrag、disarm 和恢复写入。
+
+服务包全组 Go 129.080 秒、端到端 132.614 秒，compat 全组 Go 4.365 秒、端到端
+5.620 秒；611 项 inventory 为 140/171/154/146，精确代码提交后四片 Go 时间
+134.132/359.671/232.416/372.666 秒，端到端时间
+142.552/367.852/241.003/381.423 秒，全部通过。专项验证后，被临时借用的数据面已恢复为
+`a5446-auth-restored`、1 GiB 配额和同一精确镜像，3/3 Ready 且 restartCount 全 0。
+该证据关闭单次自动告警的语义与持久化门禁，不替代长期容量增长、并发跨成员超额写入、
+告警后端持续故障或真实磁盘耗尽演练。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
