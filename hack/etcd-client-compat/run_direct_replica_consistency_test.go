@@ -22,6 +22,7 @@ func TestDirectReplicaConsistencyRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "TestHashKVCompactionConvergesAcrossKubeBrainReplicas")
 	require.Contains(t, string(script), "TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction")
 	require.Contains(t, string(script), "TestPhysicalCompactionUnderTraffic")
+	require.Contains(t, string(script), "TestLeaseSurvivesCompaction")
 	require.Contains(t, string(script), "TestLeaseReadAndRevokeAcrossDirectReplicas")
 	require.Contains(t, string(script), "TestMutationResponseHeadersAcrossDirectReplicas")
 	require.Contains(t, string(script), "TestQuotaAlarmCrossEndpointDisarm")
@@ -42,7 +43,7 @@ func TestDirectReplicaConsistencyRunnerRejectsInvalidScopeBeforeDependencies(t *
 		"TEST_SCOPE=unknown",
 	})
 	require.Error(t, err)
-	require.Contains(t, string(output), "TEST_SCOPE must be all or hashkv-compaction")
+	require.Contains(t, string(output), "TEST_SCOPE must be all, hashkv-compaction, or compaction")
 	require.NotContains(t, string(output), "missing required command")
 }
 
@@ -109,13 +110,17 @@ func TestDirectReplicaConsistencyRunnerRequiresMutationApproval(t *testing.T) {
 }
 
 func TestDirectReplicaConsistencyRunnerRequiresDestructiveApprovalForHashKVCompaction(t *testing.T) {
-	output, err := runCompatScriptCommand(t, "run-direct-replica-consistency.sh", []string{
-		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
-		"KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3",
-		"ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY=true",
-		"TEST_SCOPE=hashkv-compaction",
-	})
-	require.Error(t, err)
-	require.Contains(t, string(output), "HashKV compaction advances the target instance's global compact revision")
-	require.NotContains(t, string(output), "missing required command")
+	for _, scope := range []string{"hashkv-compaction", "compaction"} {
+		t.Run(scope, func(t *testing.T) {
+			output, err := runCompatScriptCommand(t, "run-direct-replica-consistency.sh", []string{
+				"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+				"KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3",
+				"ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY=true",
+				"TEST_SCOPE=" + scope,
+			})
+			require.Error(t, err)
+			require.Contains(t, string(output), "compaction advances the target instance's global compact revision")
+			require.NotContains(t, string(output), "missing required command")
+		})
+	}
 }

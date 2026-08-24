@@ -50,6 +50,9 @@ func TestLeaseSurvivesCompaction(t *testing.T) {
 	// keyspace and must retire only the superseded record versions.
 	cur, err := cli.Get(ctx, key)
 	require.NoError(t, err)
+	require.Len(t, cur.Kvs, 1)
+	require.Equal(t, int64(grant.ID), cur.Kvs[0].Lease,
+		"bound key must report its lease before compaction")
 	_, err = cli.Compact(ctx, cur.Header.Revision, clientv3.WithCompactPhysical())
 	require.NoError(t, err)
 
@@ -57,10 +60,12 @@ func TestLeaseSurvivesCompaction(t *testing.T) {
 	g, err := cli.Get(ctx, key)
 	require.NoError(t, err)
 	require.Len(t, g.Kvs, 1, "bound key must survive compaction")
+	require.Equal(t, int64(grant.ID), g.Kvs[0].Lease,
+		"bound key must preserve its lease metadata after compaction")
 
 	// TimeToLive is the authoritative check: the lease is still alive and its
-	// key binding survived compaction. (KubeBrain does not populate the Lease
-	// field on read responses — a separate compat gap, not exercised here.)
+	// reverse key binding survived compaction. Range above independently verifies
+	// that the forward KeyValue lease metadata remains visible to etcd clients.
 	ttl, err := cli.TimeToLive(ctx, grant.ID, clientv3.WithAttachedKeys())
 	require.NoError(t, err)
 	require.Positive(t, ttl.TTL, "lease must still be alive after compaction")

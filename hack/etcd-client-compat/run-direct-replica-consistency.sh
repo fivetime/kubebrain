@@ -35,9 +35,9 @@ if [[ "$ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY" != true &&
   exit 2
 fi
 case "$TEST_SCOPE" in
-  all|hashkv-compaction) ;;
+  all|hashkv-compaction|compaction) ;;
   *)
-    echo "TEST_SCOPE must be all or hashkv-compaction" >&2
+    echo "TEST_SCOPE must be all, hashkv-compaction, or compaction" >&2
     exit 2
     ;;
 esac
@@ -88,9 +88,9 @@ if [[ "$ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY" != true ]]; then
   echo "confirm the three direct endpoints belong to the intended cluster and set ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY=true" >&2
   exit 1
 fi
-if [[ "$TEST_SCOPE" == hashkv-compaction &&
+if [[ "$TEST_SCOPE" != all &&
   "$ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY" != true ]]; then
-  echo "refusing destructive direct-replica consistency scope: HashKV compaction advances the target instance's global compact revision" >&2
+  echo "refusing destructive direct-replica consistency scope: compaction advances the target instance's global compact revision" >&2
   echo "use a disposable KubeBrain instance and set ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY=true" >&2
   exit 1
 fi
@@ -159,6 +159,9 @@ case "$TEST_SCOPE" in
     ;;
   hashkv-compaction)
     test_pattern='^(TestHashKVCompactionConvergesAcrossKubeBrainReplicas|TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction|TestPhysicalCompactionUnderTraffic)$'
+    ;;
+  compaction)
+    test_pattern='^(TestHashKVCompactionConvergesAcrossKubeBrainReplicas|TestLeaseSurvivesCompaction|TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction|TestPhysicalCompactionUnderTraffic)$'
     ;;
 esac
 
