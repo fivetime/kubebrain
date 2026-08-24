@@ -76,8 +76,9 @@ type watchControlResponse struct {
 	done chan error
 	// ready gates a deferred control response whose final shape depends on an
 	// authoritative leader result. cancel lets stream teardown discard it.
-	ready  <-chan struct{}
-	cancel <-chan struct{}
+	ready      <-chan struct{}
+	cancel     <-chan struct{}
+	generation *watch
 }
 
 type watchReceiveResult struct {
@@ -860,10 +861,11 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		generation.authoritativeDone = make(chan error, 1)
 		select {
 		case w.controlCh <- watchControlResponse{
-			resp:   generation.authoritativeControl,
-			done:   generation.authoritativeDone,
-			ready:  generation.authoritativeReady,
-			cancel: ctx.Done(),
+			resp:       generation.authoritativeControl,
+			done:       generation.authoritativeDone,
+			ready:      generation.authoritativeReady,
+			cancel:     ctx.Done(),
+			generation: generation,
 		}:
 		case <-ctx.Done():
 			w.rejectAuthoritativeCreate(id, generation, ctx.Err(), 0)
@@ -1041,15 +1043,26 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 	if clientRequest {
 		header = txnHeader(int64(w.clientCancelResponseRevision()))
 	}
-	serr := w.SendControl(&etcdserverpb.WatchResponse{
+	response := &etcdserverpb.WatchResponse{
 		Header:          header,
 		Canceled:        true,
 		CancelReason:    cancelReason,
 		WatchId:         id,
 		CompactRevision: compactRevision,
-	})
-	// SendControl returning means the terminal response is either already sent
-	// or ordered in controlCh. Only now may a create reuse this explicit ID.
+	}
+	var serr error
+	if clientRequest && generation.authoritativeControl != nil {
+		// Another follower create awaiting the leader's authoritative
+		// acknowledgement can occupy a deferred slot in controlCh. Do not let it
+		// withhold cancellation of this logical watch indefinitely.
+		// Send still serializes on sendMu; closing was marked above, so no event
+		// from this generation can cross the terminal frame.
+		serr = w.Send(response)
+	} else {
+		serr = w.SendControl(response)
+	}
+	// Reaching here means the terminal response is either already sent or ordered
+	// in controlCh. Only now may a create reuse this explicit ID.
 	w.Lock()
 	if w.watches[id] == generation {
 		delete(w.watches, id)
@@ -1157,9 +1170,23 @@ func (w *watcher) sendControls() {
 				}
 				continue
 			}
+			if control.generation != nil && !control.resp.Canceled && control.generation.closing.Load() {
+				if control.done != nil {
+					control.done <- context.Canceled
+				}
+				continue
+			}
 		}
 		start := time.Now()
-		err := w.Send(control.resp)
+		var err error
+		if control.generation != nil && !control.resp.Canceled {
+			err = w.SendWatch(control.resp.WatchId, control.generation, control.resp)
+			if errors.Is(err, errWatchInactive) {
+				err = context.Canceled
+			}
+		} else {
+			err = w.Send(control.resp)
+		}
 		emitWatchSendLoopControlStreamDuration(w.metricCli, time.Since(start))
 		if control.done != nil {
 			control.done <- err

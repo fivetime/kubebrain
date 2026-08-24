@@ -4331,6 +4331,77 @@ func TestFollowerPendingAuthoritativeCreateDoesNotBlockSameStreamCancel(t *testi
 	require.Error(t, <-done)
 }
 
+func TestFollowerPendingCreateDoesNotBlockEstablishedWatchCancelResponse(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	firstResults := make(chan etcdproxy.WatchResult, 1)
+	firstResults <- etcdproxy.WatchResult{Created: true, Revision: 10}
+	secondResults := make(chan etcdproxy.WatchResult)
+	firstCanceled := make(chan struct{})
+	secondOpened := make(chan struct{})
+	var calls atomic.Int64
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		watchFn: func(watchCtx context.Context, _ []byte, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			switch calls.Add(1) {
+			case 1:
+				go func() {
+					<-watchCtx.Done()
+					close(firstCanceled)
+					close(firstResults)
+				}()
+				return firstResults, nil
+			case 2:
+				close(secondOpened)
+				go func() {
+					<-watchCtx.Done()
+					close(secondResults)
+				}()
+				return secondResults, nil
+			default:
+				return nil, errors.New("unexpected proxy watch generation")
+			}
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &controllableWatchServer{
+		ctx:  ctx,
+		recv: make(chan *etcdserverpb.WatchRequest, 3),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/established"), WatchId: 701},
+	}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/pending"), WatchId: 702},
+	}}
+	select {
+	case <-secondOpened:
+	case <-time.After(time.Second):
+		t.Fatal("second follower watch did not enter pending authoritative create")
+	}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+		CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 701},
+	}}
+	select {
+	case <-firstCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("pending create blocked established watch cancellation")
+	}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond,
+		"pending create blocked established watch cancellation response")
+	response := stream.snapshot()[1]
+	require.True(t, response.Canceled)
+	require.Equal(t, int64(701), response.WatchId)
+
+	cancel()
+	require.Error(t, <-done)
+}
+
 func TestWatchContextCancellationDoesNotWaitForBlockedRecv(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
