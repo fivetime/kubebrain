@@ -7472,6 +7472,32 @@ auth disabled，key/user/role/lease/alarm 全空，三 Pod Ready、restartCount 
 `--keyspace=a5463-rangestream-alarm` 且保留 `--max-delete-range-keys=1024`。全量状态比较适合本 runner 的受控测试
 target；大规模业务 keyspace 会增加 pre/postflight 内存与网络成本，且显式授权并不等价于允许对生产租户运行故障测试。
 
+### A5465：RangeStream oversize 临时资源所有权与状态闭环
+
+runner 覆盖矩阵发现 `run-rangestream-oversize-differential.sh` 仍使用隐式 Kind context、namespace 和固定历史 keyspace，
+启动时无条件删除同名 Pod/Service，再创建临时单副本数据面、写入 12 个 4 MiB value 并重启验证默认请求上限；它既无
+destructive 授权，也无 target 状态 postflight。提交 `9f2365d1` 要求显式 `KUBE_CONTEXT`、`NAMESPACE`、全新
+`KEYSPACE` 及 `ALLOW_DESTRUCTIVE_RANGESTREAM_OVERSIZE=true`，非法/缺失输入在依赖探测和 Kubernetes mutation 前
+fail closed，并把 etcdctl 纳入固定 reference provenance 校验。
+
+同名临时 Pod 或 Service 已存在时 runner 现在拒绝执行，不再先删除；`pod_created`/`service_created` 所有权标记保证
+EXIT trap 只删除本次创建的对象，fixture-prefix 删除也必须持有本次 Pod 所有权，避免拒绝路径向既有 Service 发起数据
+删除。临时 endpoint 在 seed 前以及成功/失败后的 read cleanup 后均检查 auth disabled、完整用户 keyspace、user、role、
+lease、alarm 为空；两个 Go 阶段分别捕获退出码并在 postflight 后传播。该 runner 同时加入 reference、etcdctl provenance
+和失败路径 postflight 三项统一静态门禁，受控 postflight runner 总数增至 12。
+
+第一次真实运行在写入前因 NodePort 30458 未在原 10 秒窗口内可达而退出，Pod 已 Ready、Service 已创建，所有权 trap
+随后删除两者且无 fixture 写入。runner 因此把传播等待扩至 60 秒，并在超时输出 Pod、Service、EndpointSlice 和末尾
+容器日志；相同全新 `a5465-rangestream-oversize` keyspace 重跑后，高上限 seed 阶段 Go 3.905 秒、默认上限重启读取
+阶段 Go 2.455 秒，总端到端 17.204 秒通过，约 48 MiB fixture cleanup 与完整 postflight 均通过，临时 Pod/Service
+最终不存在。reference provenance 固定 `5cd9f4ee13801e18825d661e5005ae599460bc3a`。
+
+compat 全组 Go 6.705 秒、端到端 8.009 秒；611 项 production inventory 仍为 140/171/154/146，代码提交后四片
+Go 时间 132.484/361.409/240.091/376.839 秒，端到端时间 138.490/367.436/246.146/382.900 秒，全部通过。
+最终 main/Auth/JWT 三套常驻数据面仍 auth disabled、key/lease/alarm 空，相关 9 Pod Ready、restartCount 0、各组三副本
+digest 一致。测试 keyspace 的逻辑 key 已清空不等于 TiKV 立即回收 48 MiB 历史版本；物理空间回收仍受 GC 生命周期和
+独立 keyspace 生命周期管理约束。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
