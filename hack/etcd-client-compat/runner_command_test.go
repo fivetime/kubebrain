@@ -1793,7 +1793,7 @@ func TestIndirectClusterMutationCallersHaveSafetyContracts(t *testing.T) {
 		caller, runFlag, defaultValue, callee, approval := fields[0], fields[1], fields[2], fields[3], fields[4]
 		require.Regexp(t, `^hack/[a-z0-9/-]+\.sh$`, caller)
 		require.Regexp(t, `^RUN_[A-Z0-9_]+$`, runFlag)
-		require.Equal(t, "true", defaultValue, "only default-enabled indirect mutations belong in this manifest")
+		require.Contains(t, []string{"true", "false"}, defaultValue)
 		require.Regexp(t, `^hack/[a-z0-9/-]+\.sh$`, callee)
 		require.Regexp(t, `^ALLOW_DESTRUCTIVE_[A-Z0-9_]+$`, approval)
 
@@ -1812,7 +1812,7 @@ func TestIndirectClusterMutationCallersHaveSafetyContracts(t *testing.T) {
 		require.NotContains(t, calleeContent, "\nkubectl ", "%s must not bypass its explicit-context kubectl array", callee)
 		contracts++
 	}
-	require.Positive(t, contracts)
+	require.Equal(t, 2, contracts)
 }
 
 func TestDefaultHAIndirectMutationFailsClosedBeforeToolDiscovery(t *testing.T) {
@@ -1837,6 +1837,23 @@ func TestDefaultHAIndirectMutationFailsClosedBeforeToolDiscovery(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "ALLOW_DESTRUCTIVE_HA_SMOKE must be true or false")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestAPIServerRolloutMutationFailsClosedBeforeToolDiscovery(t *testing.T) {
+	path := filepath.Join("..", "dev", "apiserver-rollout-smoke.sh")
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{"PATH=/nonexistent"})
+	require.Error(t, err)
+	require.Contains(t, string(output), "KUBE_CONTEXT is required for apiserver rollout smoke")
+	require.NotContains(t, string(output), "missing required command")
+
+	output, err = runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{
+		"PATH=/nonexistent",
+		"KUBE_CONTEXT=kind-explicit",
+		"CLUSTER_NAME=explicit",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "ALLOW_DESTRUCTIVE_APISERVER_ROLLOUT=true")
 	require.NotContains(t, string(output), "missing required command")
 }
 
