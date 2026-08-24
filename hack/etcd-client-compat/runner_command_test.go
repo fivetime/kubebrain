@@ -1602,6 +1602,7 @@ func TestRunnerPostflightsRemainReachableAfterTestFailure(t *testing.T) {
 		"run-automatic-quota-differential.sh",
 		"run-cold-header-recovery.sh",
 		"run-differential.sh",
+		"run-direct-moveleader-differential.sh",
 		"run-direct-replica-consistency.sh",
 		"run-jwt-differential.sh",
 		"run-make-mirror-differential.sh",

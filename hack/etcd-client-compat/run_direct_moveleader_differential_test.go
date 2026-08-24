@@ -10,6 +10,7 @@ import (
 func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	script, err := os.ReadFile("run-direct-moveleader-differential.sh")
 	require.NoError(t, err)
+	require.Contains(t, string(script), "ALLOW_MUTATING_DIRECT_MOVELEADER")
 	require.Contains(t, string(script), "must contain exactly three non-empty")
 	require.Contains(t, string(script), "must contain three distinct endpoints")
 	require.Contains(t, string(script), "reference direct client and peer endpoints must be mutually distinct")
@@ -48,6 +49,31 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), `go build -o "$data_dir/grpc-switch-proxy" ./cmd/grpc-switch-proxy`)
 	require.Contains(t, string(script), `EXTERNAL_TCP_SWITCH_PROXY_BINARY="$data_dir/tcp-switch-proxy"`)
 	require.Contains(t, string(script), `EXTERNAL_GRPC_SWITCH_PROXY_BINARY="$data_dir/grpc-switch-proxy"`)
+	require.Contains(t, string(script), "baseline_target_state=\"$(capture_target_state preflight)\"")
+	require.Contains(t, string(script), "final_target_state=\"$(capture_target_state postflight)\"")
+	require.Contains(t, string(script), "direct MoveLeader suite changed visible target state")
+	require.Contains(t, string(script), ") || test_status=$?")
+}
+
+func TestDirectMoveLeaderDifferentialRunnerRequiresMutationApprovalBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-direct-moveleader-differential.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing mutating direct MoveLeader differential without explicit approval")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestDirectMoveLeaderDifferentialRunnerRejectsInvalidMutationApprovalBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-direct-moveleader-differential.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3",
+		"ALLOW_MUTATING_DIRECT_MOVELEADER=maybe",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "ALLOW_MUTATING_DIRECT_MOVELEADER must be true or false")
+	require.NotContains(t, string(output), "missing required command")
 }
 
 func TestDirectMoveLeaderDifferentialRunnerRejectsInvalidScopeBeforeDependencies(t *testing.T) {

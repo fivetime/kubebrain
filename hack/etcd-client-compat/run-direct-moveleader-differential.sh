@@ -10,6 +10,7 @@ REFERENCE_PEER_RAW="${REFERENCE_DIRECT_PEER_ENDPOINTS:-127.0.0.1:12380,127.0.0.1
 TEST_TIMEOUT="${TEST_TIMEOUT:-1m}"
 TEST_COUNT="${TEST_COUNT:-1}"
 TEST_SCOPE="${TEST_SCOPE:-all}"
+ALLOW_MUTATING_DIRECT_MOVELEADER="${ALLOW_MUTATING_DIRECT_MOVELEADER:-false}"
 TLS_CA_FILE="${TLS_CA_FILE:-}"
 TLS_CERT_FILE="${TLS_CERT_FILE:-}"
 TLS_KEY_FILE="${TLS_KEY_FILE:-}"
@@ -97,6 +98,10 @@ case "$TEST_SCOPE" in
     exit 2
     ;;
 esac
+if [[ "$ALLOW_MUTATING_DIRECT_MOVELEADER" != true && "$ALLOW_MUTATING_DIRECT_MOVELEADER" != false ]]; then
+  echo "ALLOW_MUTATING_DIRECT_MOVELEADER must be true or false, got $ALLOW_MUTATING_DIRECT_MOVELEADER" >&2
+  exit 2
+fi
 reference_scheme=http
 declare -a curl_tls_args=()
 declare -a etcd_tls_args=()
@@ -144,6 +149,12 @@ for endpoint in "${reference_client_endpoints[@]}" "${reference_peer_endpoints[@
   reference_addresses[$endpoint]=true
 done
 
+if [[ "$ALLOW_MUTATING_DIRECT_MOVELEADER" != true ]]; then
+  echo "refusing mutating direct MoveLeader differential without explicit approval" >&2
+  echo "set ALLOW_MUTATING_DIRECT_MOVELEADER=true only for a controlled KubeBrain target" >&2
+  exit 1
+fi
+
 need curl
 need go
 need jq
@@ -177,6 +188,35 @@ if ! jq -e '
   echo "direct KubeBrain endpoints do not expose one healthy three-member topology with an in-set leader" >&2
   exit 1
 fi
+
+capture_target_state() {
+  local phase="$1" endpoint="${kubebrain_endpoints[0]}"
+  local auth_json range_json users_json roles_json leases_json alarms_json
+  if ! auth_json="$("$ETCDCTL_BIN" --endpoints="$endpoint" auth status -w json)" ||
+    ! jq -e '(.enabled // false) == false' >/dev/null <<<"$auth_json"; then
+    echo "direct MoveLeader target authentication must be disabled during ${phase}" >&2
+    exit 1
+  fi
+  range_json="$("$ETCDCTL_BIN" --endpoints="$endpoint" get '' --from-key -w json)"
+  users_json="$("$ETCDCTL_BIN" --endpoints="$endpoint" user list -w json)"
+  roles_json="$("$ETCDCTL_BIN" --endpoints="$endpoint" role list -w json)"
+  leases_json="$("$ETCDCTL_BIN" --endpoints="$endpoint" lease list -w json)"
+  alarms_json="$("$ETCDCTL_BIN" --endpoints="$endpoint" alarm list -w json)"
+  jq -cn \
+    --argjson range "$range_json" \
+    --argjson users "$users_json" \
+    --argjson roles "$roles_json" \
+    --argjson leases "$leases_json" \
+    --argjson alarms "$alarms_json" \
+    '{
+      kvs: (($range.kvs // []) | map({key, value, create_revision, mod_revision, version, lease}) | sort_by(.key)),
+      users: (($users.users // []) | sort),
+      roles: (($roles.roles // []) | sort),
+      leases: (($leases.leases // []) | map(.ID // .id) | sort),
+      alarms: (($alarms.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort)
+    }'
+}
+baseline_target_state="$(capture_target_state preflight)"
 
 for endpoint in "${reference_client_endpoints[@]}"; do
   if curl --fail --silent --max-time 1 "${curl_tls_args[@]}" "${reference_scheme}://${endpoint}/health" >/dev/null 2>&1; then
@@ -268,6 +308,7 @@ for endpoint in "${reference_client_endpoints[@]}"; do
   fi
 done
 
+test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_DIRECT_ENDPOINTS="$(IFS=,; echo "${reference_client_endpoints[*]}")" \
@@ -286,5 +327,16 @@ done
     KUBEBRAIN_TLS_SERVER_NAME="$TLS_SERVER_NAME" \
     go test . -run "$test_pattern" \
       -count="$TEST_COUNT" -timeout="$TEST_TIMEOUT" -v
-)
+) || test_status=$?
+final_target_state="$(capture_target_state postflight)"
+if [[ "$final_target_state" != "$baseline_target_state" ]]; then
+  echo "direct MoveLeader suite changed visible target state" >&2
+  echo "before: $baseline_target_state" >&2
+  echo "after:  $final_target_state" >&2
+  exit 1
+fi
+if [[ "$test_status" -ne 0 ]]; then
+  echo "direct MoveLeader differential test package failed with status $test_status" >&2
+  exit "$test_status"
+fi
 test_succeeded=true
