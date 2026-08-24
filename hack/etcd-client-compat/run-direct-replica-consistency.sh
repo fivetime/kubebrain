@@ -135,11 +135,13 @@ fi
 service_endpoint="${kubebrain_endpoints[0]}"
 assert_test_prefixes_empty() {
   local phase="$1"
-  local compat_json lease_json
+  local compat_json lease_json physical_traffic_json
   compat_json="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" get /registry/etcd-client-compat/ --prefix --limit=1 -w json)"
   lease_json="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" get /dbaas-direct-replica-lease/ --prefix --limit=1 -w json)"
+  physical_traffic_json="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" get /dbaas-physical-traffic/ --prefix --limit=1 -w json)"
   if [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$compat_json")" != 0 ||
-    "$(jq -r '.count // (.kvs | length) // 0' <<<"$lease_json")" != 0 ]]; then
+    "$(jq -r '.count // (.kvs | length) // 0' <<<"$lease_json")" != 0 ||
+    "$(jq -r '.count // (.kvs | length) // 0' <<<"$physical_traffic_json")" != 0 ]]; then
     echo "direct-replica consistency test prefixes are not empty during ${phase}" >&2
     exit 1
   fi
@@ -156,7 +158,7 @@ case "$TEST_SCOPE" in
     fi
     ;;
   hashkv-compaction)
-    test_pattern='^(TestHashKVCompactionConvergesAcrossKubeBrainReplicas|TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction)$'
+    test_pattern='^(TestHashKVCompactionConvergesAcrossKubeBrainReplicas|TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction|TestPhysicalCompactionUnderTraffic)$'
     ;;
 esac
 
