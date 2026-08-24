@@ -7400,6 +7400,28 @@ lease，runner 同样退出 1；按响应中的十进制 ID 转成 `etcdctl` 所
 专用 disposable 数据面，不适用于本来就承载业务用户、角色、lease 或 alarm 的生产实例；它证明测试运行前后可观察
 控制集合守恒，但不把单调 revision、已压缩历史或 TiKV 物理空间回收误称为恢复到全新集群状态。
 
+### A5462：Auth/JWT 专用 runner 失败路径状态守恒
+
+横向审计发现 `run-auth-differential.sh` 与 `run-jwt-differential.sh` 只在 reference 启动前要求 pristine target，Go 测试
+成功或失败后都不再检查，并且 preflight 未覆盖 alarm；这与已闭环的 automatic-quota、RangeStream compaction runner
+不一致。提交 `508db222` 将两者的 key/user/role/lease/alarm 与 auth-disabled 检查统一为
+`assert_clean_endpoint preflight/postflight`。authRevision=1 仍只用于证明 destructive 测试开始前是全新 auth store；
+postflight 不要求单调 auth revision 回退。Go 测试退出码先捕获，postflight 在成功和失败路径均执行，守恒通过后再原样
+传播包失败。
+
+静态合同固定 alarm 查询、两个检查点和失败传播；共享行为负测分别构造 simple-token/JWT 完整可达 fake topology，仅
+留下一个 NOSPACE alarm，两个 runner 都在 reference 启动前 fail closed。真实 simple-token Auth 三副本在 data/auth
+revision=1 的 pristine keyspace 上完整通过：Go 12.270 秒、端到端 15.085 秒。JWT 辅助环境原 keyspace 已有 A5460
+识别的 9 个历史 artifacts 且 authRevision=54，不能删除 key 后伪装 pristine；旧 keyspace 因此保留，StatefulSet 只切换
+到全新 `a5462-jwt-postflight`。三 Pod 保持 digest
+`sha256:13d9f5671a87c15609a21bd693887b892b52ce26efb1d36ac2661f5bab3eaefb`、3/3 Ready、restartCount 全 0，
+新 keyspace 的 data/auth revision 均为 1 后，完整 JWT 差分 Go 8.941 秒、端到端 11.556 秒通过。
+
+compat 全组 Go 6.139 秒、端到端 7.456 秒；611 项 production inventory 仍为 140/171/154/146，精确代码提交后
+四片 Go 时间 136.091/366.717/245.836/386.507 秒，端到端时间
+142.017/372.795/251.864/392.685 秒，全部通过。该门禁能发现可观察控制对象与 key 泄漏，但不能验证旧 token、
+compacted auth 历史或 TiKV 物理数据已被擦除；需要严格销毁租户时仍必须使用独立 keyspace 生命周期与后端回收流程。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
