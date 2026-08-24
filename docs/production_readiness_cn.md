@@ -7729,6 +7729,39 @@ fail closed。三个对象改用 create；只有各自创建成功后才获得�
 宿主管理 endpoint，并像 standalone apiserver runner 一样实现 prefix 空前置、精确清理、lease 基线/差集回收和最终
 状态守恒；在此之前不应以 Kubernetes 临时资源已清理替代后端状态守恒证明。
 
+### A5476：in-cluster kube-apiserver 后端 prefix 与 lease 守恒
+
+A5475 只拥有 Kubernetes 临时对象，Pod 使用集群内 Service DNS 时，宿主无法证明清理 endpoint 与实际写入后端相同。
+提交 `e10f74b7` 为 base runner 增加显式 `MANAGEMENT_ENDPOINT`、固定 provenance 的 etcdctl 和默认 false 的
+`ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE`；`ETCD_PREFIX` 不再隐式生成，必须属于唯一的
+`/registry-kubebrain-incluster-apiserver-*` 命名域。缺授权、缺管理 endpoint 或非法 prefix 都在工具发现及任何资源读写前
+fail closed。
+
+该 runner 已限定 Kind，因此管理端等价性不是由操作者口头保证：它读取目标 namespace 中 backend Service 的 named
+client port 与 NodePort，要求 Pod endpoint 精确等于该 Service 的 DNS/port；管理 endpoint 则必须等于 control-plane
+容器 IP + NodePort，或匹配 Docker 实际发布的 loopback host port。由此两条地址都被绑定到同一个 Kubernetes Service。
+真实审计还发现当前集群把 30079 发布到宿主 4379，旧假设的 `127.0.0.1:3379` 实际不可达；live 演练因此使用已验证的
+`172.18.0.2:30079`，没有以不可达或无法证明同源的地址继续运行。
+
+在创建证书、Secret、Pod 或 Service 前，管理端先证明 prefix 为空并记录无损十六进制 lease 基线，随后才获得
+`prefix_owned=true`。EXIT 先停止 port-forward 并同步删除本轮 Pod，再精确删除 prefix、复核为空、只 revoke 相对基线
+新增的 lease，最终要求 lease 集合恢复；Service、Pod、Secret 任一所有权清理失败也会使原本成功的运行返回非零。verify
+为 base 与 watch caller 生成纳秒唯一 prefix 并显式授权；watch wrapper 自身也先要求授权，再把同一 prefix/授权传递给
+base。in-cluster rollout 在发现 kubectl 和 scale 前检查后端写授权，避免新增门禁造成先 mutation 后失败，但它仍缺独立
+rollout destructive/context 门禁，必须在后续增量补齐。
+
+fake Service/docker/etcdctl 回归证明非空 prefix 在任何 Kubernetes create/delete 或 etcd delete 前拒绝；资源碰撞负测仍
+证明不接管既有 Pod。真实 base smoke 完成 namespace、ConfigMap CRUD/watch、分页 list/delete 与 Secret 流程，端到端
+12 秒。第一次外层审计错误地比较了响应 header revision，写入后即使可见内容清空 revision 也必然推进，故该比较返回
+非零但 runner 已成功且 key/lease/临时资源均为 0；修正为语义快照后再次完整执行，最终 KV、user、role、lease、alarm
+以及既有 Kubernetes 资源 UID 集合全部与运行前相等，目标 prefix=0、临时资源=0，取得 base smoke live GREEN。
+
+脚本语法通过，compat 全组 Go 7.046 秒。611 项 production inventory 仍为 140/171/154/146；代码提交后四片 Go
+时间 121.686/356.015/229.867/370.910 秒，端到端时间 127.672/362.043/235.902/376.915 秒，全部通过。本项没有执行
+长时 watch wrapper 或会滚动工作负载的 rollout，因此不把 base GREEN 外推为 watch/rollout 可用性；lease 差集回收也仍
+要求受控演练窗口不存在其他租户并发创建 lease。下一步应先为 in-cluster apiserver rollout 增加显式 context、cluster
+身份、Deployment 拓扑/UID 守恒和独立 destructive approval，再在匹配拓扑中验证 watch 连续性。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
