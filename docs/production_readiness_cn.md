@@ -7204,6 +7204,31 @@ Go 时间 123.359/346.967/223.114/360.465 秒，端到端时间 129.345/353.018/
 revision 均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。本轮仍为测试选择修复，
 不代表新增服务端行为，也不替代高频、大历史或故障并发 compaction 验证。
 
+### A5453：physical compaction 与实时流量组合门禁
+
+提交 `c16269bc` 将此前没有任何 runner 入口的 `TestPhysicalCompactionUnderTraffic` 纳入双重授权的
+`hashkv-compaction` scope。该测试使用官方 client，在 20 次历史覆盖写后并发启动 physical compact 与
+100 轮写入/点读，维持从 compact target 后一 revision 开始的前缀 Watch，并在完成后验证范围读、全部 100 个
+Watch key、compact 边界可读、边界前 revision 返回标准 compacted 错误及当前对象总数。原始聚焦 oracle
+Go 3.651 秒、端到端 4.895 秒通过，证明是 runner 选择缺口而非服务端故障。
+
+runner 现在同时选择三副本 HashKV 收敛、物理 GC 后逻辑 hash 稳定和 physical compact 并发流量三项；新增
+`/dbaas-physical-traffic/` 前后空白检查，测试 cleanup 失败或历史残留都会使门禁失败。既有
+`ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY` 与 `ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY`
+两道显式授权、三成员拓扑校验以及 lease/alarm 守恒均未放宽。修复后的真实 runner 三项 Go 7.048 秒、端到端
+8.720 秒通过。
+
+精确提交镜像 `kubebrain:a5453-c16269bc`（完整 revision
+`c16269bc644c5da007ff56a635c68225264d01c0`，本地 manifest list
+`sha256:03c094edfa936e522ee41c90a983d928e4a2cfe2c3f381d7f4a90320b814d553`，Kind runtime digest
+`sha256:d18d739cfdebc328014b314dd2139615b5c74e33faee006419c1aded64dc237a`）在全新
+`a5453-physical-exact` keyspace 上再次通过三项：Go 9.040 秒、端到端 10.753 秒。compat 全组
+Go 4.685 秒、端到端 5.965 秒；611 项 inventory 为 140/171/154/146，代码提交后四片 Go 时间
+119.745/353.775/229.448/368.023 秒，端到端时间 125.739/359.854/235.548/374.108 秒，全部通过。
+最终 JWT 数据面保持同一精确镜像并恢复到全新 `a5453-jwt-restored` keyspace，authRevision/data revision
+均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。该门禁仍不替代长时持续流量、
+大历史版本集合、跨节点/AZ 或 backend fault 与 physical compact 重叠验证。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
