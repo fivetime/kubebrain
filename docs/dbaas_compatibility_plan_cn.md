@@ -61622,6 +61622,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   用无 scheme endpoint 从头完成完整差分；auth/JWT/quota、外部 L4/L7/Envoy、direct-replica 与 oversize 专用 endpoint
   scope 仍按各自独立门禁记录，不能由本轮聚焦 GREEN 替代。
 
+### A5484：版本矩阵发现的 Txn/compaction HA 差异
+
+真实 Kubernetes v1.36.1 三副本矩阵发现两项客户端可观察差异并由提交 `2626aa66` 修复：无比较
+`Get(key)+Delete(key)` Txn 的旧专用快路径只返回一个 response，follower proxy 因响应树长度不匹配返回 DataLoss；现在该
+形状使用通用单 revision staged executor，返回 Range 和 DeleteRange 两个有序 response。连续 maintenance Compact 与逐
+Pod 重启还发现 witness validator 会把 `revision == compactRevision` 的已回收 index 误报为 CORRUPT；所有 witness
+object/index 验证及最终 evidence fence 现在只覆盖 `revision > compactRevision`，与 etcd 对
+`revision <= compactRevision` 返回 Compacted 的边界一致。
+
+同轮把 HA runner 从历史 Deployment 默认迁移到生产 StatefulSet，并将 Kind matrix 改为显式 destructive approval、全矩阵
+互斥、预存集群/容器碰撞拒绝、隔离 kubeconfig/context 和 only-owned cleanup。最终 v1.36.1 基础 smoke 及依次删除三个
+KubeBrain Pod 后的三轮 smoke 全绿，最终 revision 206、alarm=0，矩阵退出后无临时集群。`pkg/server/etcd`、
+`pkg/backend`、compat 和代码提交后四分片全部通过；当前证据不替代 v1.35、跨节点/AZ 或长时升级 soak。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

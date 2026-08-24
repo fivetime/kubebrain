@@ -50,8 +50,15 @@ hack/dev/version-info.sh
 
 ```shell
 KIND_NODE_IMAGES="kindest/node:v1.35.4 kindest/node:v1.36.1" \
+ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true \
 hack/dev/k8s-version-matrix.sh
 ```
+
+矩阵只管理本轮创建的一次性集群：启动前会拒绝任何同名 Kind 集群或 control-plane
+容器，不再静默删除既有环境；每个版本无论成功或失败都会删除本轮集群和隔离
+kubeconfig。创建/删除必须显式设置 `ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true`。
+同一宿主的矩阵通过非阻塞文件锁串行使用固定 NodePort 和派生集群命名空间；并发
+运行会在访问 Docker/Kind 前 fail closed。
 
 矩阵脚本默认会启用 standalone kube-apiserver list/watch soak；故障注入、逻辑备份演练和直接 etcd watch soak 仍需通过 `RUN_FAULT_SMOKE=true`、`RUN_BACKUP_DRILL=true`、`RUN_WATCH_SOAK=true` 显式打开。
 

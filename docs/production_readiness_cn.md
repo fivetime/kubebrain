@@ -884,6 +884,7 @@ KIND_NODE_IMAGE=kindest/node:v1.36.1 KUBEBRAIN_REPLICAS=3 hack/dev/up.sh
 
 ```shell
 KIND_NODE_IMAGES="kindest/node:v1.35.4 kindest/node:v1.36.1" \
+ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true \
 hack/dev/k8s-version-matrix.sh
 ```
 
@@ -892,6 +893,7 @@ hack/dev/k8s-version-matrix.sh
 ```shell
 RUN_K8S_VERSION_MATRIX=true \
 KIND_NODE_IMAGES="kindest/node:v1.35.4 kindest/node:v1.36.1" \
+ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true \
 hack/dev/verify.sh
 ```
 
@@ -7959,6 +7961,35 @@ PKI、kubeconfig、日志、watch 数据和重复子 binary；不可恢复的内
 脚本语法与 compat 全组通过，后者 Go 7.344 秒。611 项 production inventory 仍为 140/171/154/146；代码提交后四片
 Go 时间 131.608/369.067/232.368/376.783 秒，端到端时间 137.573/375.110/238.392/382.781 秒，全部通过。matrix cache
 现在具备单宿主并发与 image 身份保证；跨宿主共享文件系统场景仍依赖 flock 语义和 Docker image ref 的 registry 可用性。
+
+### A5484：Kubernetes version matrix 所有权与真实 HA 闭环
+
+`k8s-version-matrix.sh` 原先在每项开始前无条件执行 `down.sh`，会静默删除同名既有 Kind 集群；成功后又不清理新建集群，
+且内层 verify 依赖调用者当前 kube context。提交 `2626aa66` 要求显式
+`ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true`，在工具/集群访问前取得 matrix-wide non-blocking flock，并预先计算全部
+image 派生名，拒绝 safe-name 重复、既有 Kind 集群或同名 control-plane 容器。每项使用 077 umask 下的独立临时
+kubeconfig 和精确 `kind-<cluster>` context；只有通过预检后由本轮创建的集群进入 ownership，EXIT 和正常项结束都只删除
+该集群及 kubeconfig。默认 HA 门禁的 destructive approval 仅传给这个一次性 owned cluster。失败、成功和锁竞争实测后，
+临时矩阵集群为 0，锁可立即重取，原 `kubebrain-dbaas` 集群始终存在。
+
+首次真实 v1.36.1 基础 smoke 揭示遗留 `Get(key)+Delete(key)` 无比较 Txn 快路径只返回一个 Range response；leader 直连未校验
+完整响应树，follower 的 proxy integrity validator 正确以 DataLoss 拒绝“2 requests/1 response”。该不完整快路径已删除，
+请求改走单 revision staged executor；回归固定两个 response 的类型、旧值和 header revision，真实 follower NodePort 路径
+随后输出 `delete succeeded=true`。`pkg/server/etcd` 全包 130.048 秒通过。
+
+第二轮暴露 `ha-smoke.sh` 仍硬编码 Deployment，而 dev/production 数据面已是 StatefulSet。runner 现在默认
+`WORKLOAD=statefulset/kubebrain`，只接受 deployment/statefulset resource ref，校验正副本数和精确 context，并统一对该
+workload scale、rollout 与 readyReplicas。第三轮在连续 compact 后重启最后一个副本时又发现 transaction witness 校验把
+`revision == compactRevision` 的已合法回收 index 误报为 CORRUPT；etcd 对 `revision <= compactRevision` 已返回 Compacted，
+因此 witness 的 object/index 验证和二次 evidence fence 已统一只覆盖严格大于 watermark 的 revision。新增等值水位物理 GC
+回归，`pkg/backend` 全包 46.518 秒通过。
+
+最终 v1.36.1 一次性矩阵用三副本 KubeBrain、三 PD、三 TiKV 完成基础 smoke、baseline HA smoke 及依次删除
+`kubebrain-0/1/2` 后的三轮完整 smoke；每轮均推进 compact，最后 revision 206，maintenance alarm 始终为 0，端到端
+530.893 秒。脚本 syntax、pinned ShellCheck 和 compat 全组（7.224 秒）通过；611 项 production inventory 仍为
+140/171/154/146。代码提交后四片 Go 时间 122.417/364.600/230.057/376.046 秒，端到端
+128.500/370.759/236.162/382.118 秒，全部通过。当前只证明单宿主 v1.36.1 的一次性矩阵；v1.35 回归、跨节点/AZ 与长时
+版本升级 soak 仍是独立证据缺口。
 
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
