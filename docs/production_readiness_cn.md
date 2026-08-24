@@ -7498,6 +7498,34 @@ Go 时间 132.484/361.409/240.091/376.839 秒，端到端时间 138.490/367.436/
 digest 一致。测试 keyspace 的逻辑 key 已清空不等于 TiKV 立即回收 48 MiB 历史版本；物理空间回收仍受 GC 生命周期和
 独立 keyspace 生命周期管理约束。
 
+### A5466：Envoy Kubernetes rollout 授权、资源所有权与 fixture 守恒
+
+runner 覆盖矩阵最后一条旁路 `run-envoy-kubernetes-rollout.sh` 会对三节点 Envoy Deployment 做 1–10 轮完整滚动，
+并固定删除/创建 `kubebrain-envoy-rollout-gate` Service，但此前没有 destructive 授权、已有 Service 所有权保护或 target
+postflight。提交 `4239ecae` 新增 `ALLOW_DESTRUCTIVE_ENVOY_ROLLOUT=true`，非法/缺失授权在依赖探测、Service 创建和
+Deployment rollout 前 fail closed；已有同名 Service 时拒绝而非删除，EXIT trap 仅在 `service_created=true` 时删除
+本次对象。runner 使用固定 provenance 的 etcdctl，经 plaintext 或 mTLS NodePort 捕获完整 KV 内容/版本及
+user/role/lease/alarm 基线，前后要求 auth disabled；Go 退出码先捕获，postflight 守恒通过后再传播。
+
+rollout 测试自身此前也会泄漏：每个 Watch cohort 的普通 watch key 没有清理，TTL=3 lease 只依赖自然过期，TLS rotation
+还写两个固定 probe key。现在所有 watch/lease/TLS probe key 都归入本轮纳秒唯一 prefix，cleanup 显式 revoke 每个
+cohort lease 并删除该 prefix；固定 TLS key 被移除，避免并发运行冲突或误删历史数据。TLS rotation 后 postflight 会切换
+到 rotated CA/cert/key，避免因旧 CA 已退休把正确轮换误报为 target 不可达。源码合同固定唯一 prefix、两类 lease ID
+登记、显式 revoke、prefix delete 和 rotated credential 选择；runner 纳入 etcdctl provenance 与失败路径 postflight
+全局门禁，受控 runner 总数增至 13。
+
+当前 Kind 只有一个 control-plane node，且没有 Envoy Deployment/Pod/EndpointSlice，无法提供诚实的三节点 rollout
+GREEN。真实负例在显式 context、namespace、授权和 `ROLLOUT_CYCLES=1` 下运行，固定 etcdctl provenance 后准确以
+`rollout gate requires exactly three Ready Envoy Pods` 退出 1；gate Service 集合前后均为空，证明在拓扑不足时没有
+Kubernetes mutation。compat 全组 Go 6.742 秒、端到端 12.477 秒通过。611 项 production inventory 仍为
+140/171/154/146；代码提交后四片 Go 时间 124.109/351.670/226.955/364.455 秒，端到端时间
+130.075/357.680/232.946/370.475 秒，全部通过。
+
+最终 gate Service 不存在，main/Auth/JWT 三套常驻数据面均 auth disabled、key/user/role/lease/alarm 全空，相关 9 Pod
+Ready、restartCount 0、各组三副本 digest 一致。三节点跨 node rollout、每轮至少两个 ready EndpointSlice、长连接
+Watch/KeepAlive 连续性及 TLS CA overlap/retirement 仍缺当前环境的 live GREEN，不能由本次 fail-closed 负例替代；
+需要具备三个真实 Kubernetes node 和已部署 Envoy profile 后运行该门禁。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
