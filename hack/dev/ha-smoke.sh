@@ -5,6 +5,21 @@ NAMESPACE="${NAMESPACE:-kubebrain-dev}"
 DEPLOYMENT="${DEPLOYMENT:-kubebrain}"
 REPLICAS="${REPLICAS:-3}"
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+ALLOW_DESTRUCTIVE_HA_SMOKE="${ALLOW_DESTRUCTIVE_HA_SMOKE:-false}"
+
+if [[ "$ALLOW_DESTRUCTIVE_HA_SMOKE" != true && "$ALLOW_DESTRUCTIVE_HA_SMOKE" != false ]]; then
+  echo "ALLOW_DESTRUCTIVE_HA_SMOKE must be true or false" >&2
+  exit 2
+fi
+if [[ -z "$KUBE_CONTEXT" ]]; then
+  echo "KUBE_CONTEXT is required for HA smoke" >&2
+  exit 2
+fi
+if [[ "$ALLOW_DESTRUCTIVE_HA_SMOKE" != true ]]; then
+  echo "refusing shared-cluster HA mutation without ALLOW_DESTRUCTIVE_HA_SMOKE=true" >&2
+  exit 1
+fi
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -15,6 +30,7 @@ need() {
 
 need kubectl
 need go
+KUBECTL=(kubectl --context "$KUBE_CONTEXT")
 
 run_smoke_with_retry() {
   local label="$1"
@@ -41,8 +57,8 @@ wait_for_ready_replicas() {
   local available
 
   while true; do
-    ready="$(kubectl get deployment/"$DEPLOYMENT" --namespace "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
-    available="$(kubectl get deployment/"$DEPLOYMENT" --namespace "$NAMESPACE" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || true)"
+    ready="$("${KUBECTL[@]}" get deployment/"$DEPLOYMENT" --namespace "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+    available="$("${KUBECTL[@]}" get deployment/"$DEPLOYMENT" --namespace "$NAMESPACE" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || true)"
     ready="${ready:-0}"
     available="${available:-0}"
     if [ "$ready" -ge "$REPLICAS" ] && [ "$available" -ge "$REPLICAS" ]; then
@@ -50,7 +66,7 @@ wait_for_ready_replicas() {
     fi
     if [ "$SECONDS" -ge "$deadline" ]; then
       echo "timed out waiting for ${DEPLOYMENT} ready replicas: ready=${ready}/${REPLICAS} available=${available}/${REPLICAS}" >&2
-      kubectl get pods --namespace "$NAMESPACE" -l app.kubernetes.io/name=kubebrain -o wide >&2 || true
+      "${KUBECTL[@]}" get pods --namespace "$NAMESPACE" -l app.kubernetes.io/name=kubebrain -o wide >&2 || true
       return 1
     fi
     sleep 2
@@ -58,13 +74,13 @@ wait_for_ready_replicas() {
 }
 
 echo "Scaling ${DEPLOYMENT} to ${REPLICAS} replicas"
-kubectl scale deployment/"$DEPLOYMENT" --namespace "$NAMESPACE" --replicas="$REPLICAS"
-kubectl rollout status deployment/"$DEPLOYMENT" --namespace "$NAMESPACE" --timeout=180s
+"${KUBECTL[@]}" scale deployment/"$DEPLOYMENT" --namespace "$NAMESPACE" --replicas="$REPLICAS"
+"${KUBECTL[@]}" rollout status deployment/"$DEPLOYMENT" --namespace "$NAMESPACE" --timeout=180s
 wait_for_ready_replicas
 
 run_smoke_with_retry "Running baseline smoke test through ${ENDPOINT}"
 
-mapfile -t pods < <(kubectl get pods --namespace "$NAMESPACE" \
+mapfile -t pods < <("${KUBECTL[@]}" get pods --namespace "$NAMESPACE" \
   -l app.kubernetes.io/name=kubebrain \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
 
@@ -75,8 +91,8 @@ fi
 
 for pod in "${pods[@]}"; do
   echo "Deleting pod ${pod} and waiting for rollout recovery"
-  kubectl delete pod "$pod" --namespace "$NAMESPACE" --wait=false --ignore-not-found
-  kubectl rollout status deployment/"$DEPLOYMENT" --namespace "$NAMESPACE" --timeout=180s
+  "${KUBECTL[@]}" delete pod "$pod" --namespace "$NAMESPACE" --wait=false --ignore-not-found
+  "${KUBECTL[@]}" rollout status deployment/"$DEPLOYMENT" --namespace "$NAMESPACE" --timeout=180s
   wait_for_ready_replicas
 
   run_smoke_with_retry "Running smoke test after deleting ${pod}"
