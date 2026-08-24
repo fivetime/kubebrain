@@ -4131,10 +4131,11 @@ type blockedAllSendWatchServer struct {
 	release chan struct{}
 }
 
-type thirdRequestWatchServer struct {
+type requestTrackingWatchServer struct {
 	*controllableWatchServer
-	recvCount atomic.Int64
-	thirdRead chan struct{}
+	recvCount  atomic.Int64
+	target     int64
+	targetRead chan struct{}
 }
 
 type contextIgnoringWatchServer struct {
@@ -4185,10 +4186,10 @@ func (s *blockedAllSendWatchServer) Send(*etcdserverpb.WatchResponse) error {
 	}
 }
 
-func (s *thirdRequestWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
+func (s *requestTrackingWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
 	request, err := s.controllableWatchServer.Recv()
-	if err == nil && s.recvCount.Add(1) == 3 {
-		close(s.thirdRead)
+	if err == nil && s.recvCount.Add(1) == s.target {
+		close(s.targetRead)
 	}
 	return request, err
 }
@@ -4656,11 +4657,11 @@ func TestUnsyncedProgressRequestDoesNotBlockSameStreamCancel(t *testing.T) {
 	defer closeFn()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream := &thirdRequestWatchServer{
+	stream := &requestTrackingWatchServer{
 		controllableWatchServer: &controllableWatchServer{
 			ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 3),
 		},
-		thirdRead: make(chan struct{}),
+		target: 3, targetRead: make(chan struct{}),
 	}
 	done := make(chan error, 1)
 	go func() { done <- server.Watch(stream) }()
@@ -4677,13 +4678,49 @@ func TestUnsyncedProgressRequestDoesNotBlockSameStreamCancel(t *testing.T) {
 		CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 801},
 	}}
 	select {
-	case <-stream.thirdRead:
+	case <-stream.targetRead:
 	case <-time.After(50 * time.Millisecond):
 		t.Fatal("an unsynchronized RequestProgress blocked the same-stream Cancel")
 	}
 	require.Eventually(t, func() bool {
 		responses := stream.snapshot()
 		return len(responses) == 2 && responses[1].Canceled && responses[1].WatchId == 801
+	}, time.Second, time.Millisecond)
+
+	cancel()
+	require.Error(t, <-done)
+}
+
+func TestEmptyProgressBurstDoesNotBlockLaterWatchCreate(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const progressRequests = watchControlBuffer + 2
+	stream := &requestTrackingWatchServer{
+		controllableWatchServer: &controllableWatchServer{
+			ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, progressRequests+1),
+		},
+		target: progressRequests + 1, targetRead: make(chan struct{}),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	for range progressRequests {
+		stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
+			ProgressRequest: &etcdserverpb.WatchProgressRequest{},
+		}}
+	}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/after-empty-progress"), WatchId: 802},
+	}}
+	select {
+	case <-stream.targetRead:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("empty RequestProgress backlog blocked a later Watch create")
+	}
+	require.Eventually(t, func() bool {
+		responses := stream.snapshot()
+		return len(responses) == 1 && responses[0].Created && responses[0].WatchId == 802
 	}, time.Second, time.Millisecond)
 
 	cancel()

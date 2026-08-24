@@ -420,21 +420,25 @@ func (w *watcher) captureProgressRequest(target uint64) watchProgressRequest {
 	return watchProgressRequest{target: target, generations: generations}
 }
 
-func (w *watcher) progressRequestRevision(request watchProgressRequest) (uint64, bool) {
+func (w *watcher) progressRequestRevision(request watchProgressRequest) (revision uint64, synced, retry bool) {
+	if request.target == 0 || len(request.generations) == 0 {
+		return 0, false, false
+	}
 	w.Lock()
 	defer w.Unlock()
 	snapshot := make(map[int64]uint64, len(request.generations))
 	for id, generation := range request.generations {
 		if current := w.watches[id]; current != generation || generation.closing.Load() {
-			return 0, false
+			return 0, false, false
 		}
-		revision := atomic.LoadUint64(&generation.syncedRev)
-		if generation.progressStartRevision > revision {
-			return 0, false
+		deliveredRevision := atomic.LoadUint64(&generation.syncedRev)
+		if generation.progressStartRevision > deliveredRevision {
+			return 0, false, true
 		}
-		snapshot[id] = revision
+		snapshot[id] = deliveredRevision
 	}
-	return streamProgressRevision(snapshot, len(snapshot) > 0, request.target)
+	revision, synced = streamProgressRevision(snapshot, true, request.target)
+	return revision, synced, !synced
 }
 
 func (w *watcher) waitProgressRequest(request watchProgressRequest) (uint64, bool) {
@@ -443,8 +447,12 @@ func (w *watcher) waitProgressRequest(request watchProgressRequest) (uint64, boo
 	ticker := time.NewTicker(2 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if revision, synced := w.progressRequestRevision(request); synced {
+		revision, synced, retry := w.progressRequestRevision(request)
+		if synced {
 			return revision, true
+		}
+		if !retry {
+			return 0, false
 		}
 		select {
 		case <-w.watchServer.Context().Done():
@@ -703,7 +711,11 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			// the request's generations now, kick a marker, and let the bounded worker
 			// wait for their watermarks without blocking later Cancel/Create requests.
 			s.backend.KickWatchProgress()
-			if !w.queueProgressRequest(w.captureProgressRequest(targetRevision)) {
+			request := w.captureProgressRequest(targetRevision)
+			if len(request.generations) == 0 {
+				continue
+			}
+			if !w.queueProgressRequest(request) {
 				return ws.Context().Err()
 			}
 			// Match etcd's progressAll/progressIfSync contract: RequestProgress
