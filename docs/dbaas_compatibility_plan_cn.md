@@ -61424,6 +61424,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确代码提交四片 139/171/153/146 全绿（Go 测试 121.908/348.048/219.906/360.747 秒；端到端
   127.625/353.789/225.725/366.537 秒）。
 
+- A5435 修复 A5434 专用 cancellation FIFO 与普通 control FIFO 之间的后继控制帧重排。两个已建立 follower
+  Watch 依次 Cancel 时，若第一条 wire Send 被客户端背压阻塞，第二条 cancellation 已在专用 FIFO 排队，而随后
+  对相同 ID 的 duplicate Create 拒绝进入普通 FIFO；背压解除后两个 sender 竞争 `sendMu`，旧实现可输出
+  `Canceled(1), duplicate rejection, Canceled(2)`，违反请求顺序及“终止帧完成前 ID 仍保留”的控制面契约。
+  提交 `e3b31fad` 在每次 direct cancellation 入队时原子发布最后一项的 close-broadcast 完成栅栏；所有后来的
+  `SendControl` 调用者在进入普通 FIFO 前等待该栅栏。早于 cancellation 的 pending authoritative Created 仍留在
+  原 FIFO 且可被 direct sender 旁路，晚于 cancellation 的一个或多个普通控制项则统一在终止帧之后释放；发送错误
+  也通过栅栏传播，stream context 可中断等待。新增确定性双队列 RED：第一条 Send 返回后用 watcherMu 暂停 direct
+  sender 的完成步骤，迫使旧普通 sender 抢到空闲 `sendMu`；旧实现稳定把 ID=-1 拒绝插到第二条取消前，修复后两个
+  并发普通控制等待者均只在 `Canceled(1), Canceled(2)` 之后输出。该用例单独 race 连续 50 轮通过（6.259 秒），
+  A5431–A5435 活性/资源/握手/顺序集合 race 连续 50 轮通过（25.287 秒），全部 Watch 测试连续 10 轮通过
+  （114.593 秒），完整 server/proxy 包通过（126.161 秒/proxy cached），diff check 与 609 项 inventory 校验通过。
+  本项不改变 TiKV 数据语义；本轮没有可用的 disposable TiKV/PD 双节点 endpoint，故不声称真实数据面演练。精确
+  代码提交四片 139/171/153/146 全绿（Go 测试 125.671/347.834/221.768/362.114 秒；端到端
+  131.554/353.703/227.664/368.017 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
