@@ -61352,6 +61352,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 609 项 production 四片 139/171/153/146 全绿（Go 测试 122.324/343.912/220.479/357.080 秒；端到端
   128.088/349.746/226.318/362.843 秒）。
 
+- A5430 修复 follower 初代 Watch 的权威创建时序。此前 public follower 在 `etcdproxy.Watch` 的 leader RPC 尚未
+  返回、也即 leader 尚未完成 create-time auth 前，`watcher.start` 已向外发送成功 Created；若 leader 随后返回
+  PermissionDenied，客户端会观察到错误的“Created 后再 Canceled”两帧，而 leader/upstream 入口对创建失败只暴露
+  `WatchId=-1` 的单个 Created+Canceled 控制响应。提交 `5a23dcb5` 让内部 clientv3 Watch 始终请求
+  `WithCreatedNotify`，并在私有 `WatchResult` 中显式传递 Created、header revision 与 CompactRevision。follower
+  先把一个待解析控制帧放入 stream FIFO，首个 leader Created 到达后才把它解析为对外 Created；首个鉴权错误则在
+  原位置解析为 canonical 单帧拒绝、释放 ID 与 admission quota。后续 proxy 重连的 generation-local Created 只用作
+  内部握手，不会重复泄漏给客户端。占位帧同时阻止后续 duplicate/cancel 控制响应反超，接收泵仍可独立读取 transport；
+  对外 Created 继续使用订阅前 follower 的安全 published fence，而不使用更高的 leader acknowledgement revision，
+  避免断线恢复跳过已缓冲历史。新增确定性 follower PermissionDenied 与成功握手+事件顺序回归，并更新既有 duplicate
+  ID/cancel read-barrier 测试；完整 proxy/server 包分别 3.046/124.171 秒通过，关键握手、重连及控制顺序集合在 race
+  下连续 10 轮分别 4.192/3.054 秒通过，diff check 与 609 项 inventory 校验通过。本项是多副本代理协议修复，不改变
+  TiKV 数据布局；本轮未提供 disposable TiKV/PD endpoint，故不声称真实双节点数据面演练。精确代码提交四片
+  139/171/153/146 全绿（Go 测试 121.098/345.107/221.754/357.298 秒；端到端
+  126.923/351.014/227.666/363.199 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
