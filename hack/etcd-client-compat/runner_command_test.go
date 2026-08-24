@@ -2146,6 +2146,22 @@ func TestInClusterAPIServerRolloutFailsClosedBeforeToolDiscovery(t *testing.T) {
 	require.Contains(t, content, `if [[ "$final_uid" != "$deployment_uid" ]]`)
 }
 
+func TestInClusterAPIServerWatchRejectsSharedWorkDirBeforeStartingBase(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	sharedWorkDir := filepath.Join(repoRoot, ".dev", "incluster-apiserver-watch-soak")
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "incluster-apiserver-watch-soak.sh")}, []string{
+		"ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true",
+		"KUBE_CONTEXT=kind-owned",
+		"CLUSTER_NAME=owned",
+		"MANAGEMENT_ENDPOINT=http://172.18.0.2:30079",
+		"NAME=owned-watch",
+		"WORK_DIR=" + sharedWorkDir,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "WORK_DIR must be a unique child")
+	require.NotContains(t, string(output), "Starting in-cluster kube-apiserver")
+}
+
 func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	data, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "owned-endpoint-runner-contracts.txt"))
@@ -2220,6 +2236,16 @@ func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 	require.Contains(t, inClusterWatchContent, "hack/dev/incluster-apiserver-smoke.sh")
 	require.Contains(t, inClusterWatchContent, `ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE="$ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE"`)
 	require.Contains(t, inClusterWatchContent, `ETCD_PREFIX="$ETCD_PREFIX"`)
+	require.Contains(t, inClusterWatchContent, `work_dir="${WORK_DIR:-${state_root}/${NAME}}"`)
+	require.Contains(t, inClusterWatchContent, `WORK_DIR="$base_work_dir"`)
+	require.Contains(t, inClusterWatchContent, `namespace_created=false`)
+	require.Contains(t, inClusterWatchContent, `if [[ "$namespace_created" == true`)
+	require.Contains(t, inClusterWatchContent, "refusing to reuse existing in-cluster apiserver watch namespace")
+	require.NotContains(t, inClusterWatchContent, "/tmp/")
+
+	inClusterBaseData, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "incluster-apiserver-smoke.sh"))
+	require.NoError(t, err)
+	require.Contains(t, string(inClusterBaseData), `status=70`)
 }
 
 func TestAPIServerSmokeRejectsNonEmptyPrefixWithoutDeletingIt(t *testing.T) {

@@ -165,8 +165,8 @@ cleanup() {
       fi
     fi
   fi
-  if [[ "$cleanup_failed" -ne 0 && "$status" -eq 0 ]]; then
-    status=1
+  if [[ "$cleanup_failed" -ne 0 ]]; then
+    status=70
   fi
   exit "$status"
 }
