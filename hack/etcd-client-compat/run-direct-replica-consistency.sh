@@ -9,6 +9,7 @@ ALLOW_DESTRUCTIVE_DIRECT_REPLICA_CONSISTENCY="${ALLOW_DESTRUCTIVE_DIRECT_REPLICA
 ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-2m}"
 TEST_SCOPE="${TEST_SCOPE:-all}"
+TEST_SCOPE_MANIFEST="$ROOT_DIR/hack/etcd-client-compat/direct-replica-scopes.txt"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -150,23 +151,25 @@ assert_test_prefixes_empty preflight
 baseline_leases="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
 baseline_alarms="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" alarm list -w json | jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort')"
 
-case "$TEST_SCOPE" in
-  all)
-    test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestConcurrencyResponseHeadersAcrossDirectReplicas|TestContendedConcurrencyResponseHeadersAcrossDirectReplicas|TestControlResponseHeadersAcrossDirectReplicas|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites|TestMaintenanceHashKVSemantics|TestMutationResponseHeadersAcrossDirectReplicas|TestQuotaAlarmCrossEndpointDisarm|TestStatusAlarmCrossEndpointVisibility|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
-    if [[ "${#kubebrain_metrics_endpoints[@]}" -gt 0 ]]; then
-      test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestConcurrencyResponseHeadersAcrossDirectReplicas|TestContendedConcurrencyResponseHeadersAcrossDirectReplicas|TestControlResponseHeadersAcrossDirectReplicas|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites|TestMaintenanceHashKVSemantics|TestMutationResponseHeadersAcrossDirectReplicas|TestQuotaAlarmCrossEndpointDisarm|TestStatusAlarmCrossEndpointVisibility|TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
-    fi
-    ;;
-  hashkv-compaction)
-    test_pattern='^(TestHashKVCompactionConvergesAcrossKubeBrainReplicas|TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction|TestPhysicalCompactionUnderTraffic)$'
-    ;;
-  compaction)
-    test_pattern='^(TestHashKVCompactionConvergesAcrossKubeBrainReplicas|TestLeaseSurvivesCompaction|TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction|TestPhysicalCompactionUnderTraffic)$'
-    ;;
-  memberlist-hash)
-    test_pattern='^TestMaintenanceHashKVMatchesAcrossMembers$'
-    ;;
-esac
+declare -a selected_tests=()
+while read -r manifest_scope manifest_test extra; do
+  if [[ -z "$manifest_scope" || "$manifest_scope" == \#* ]]; then
+    continue
+  fi
+  if [[ -n "${extra:-}" || -z "$manifest_test" ]]; then
+    echo "invalid direct-replica scope manifest row: $manifest_scope $manifest_test ${extra:-}" >&2
+    exit 2
+  fi
+  if [[ "$manifest_scope" == "$TEST_SCOPE" ||
+    ("$TEST_SCOPE" == all && "$manifest_scope" == all-metrics && "${#kubebrain_metrics_endpoints[@]}" -gt 0) ]]; then
+    selected_tests+=("$manifest_test")
+  fi
+done <"$TEST_SCOPE_MANIFEST"
+if [[ "${#selected_tests[@]}" -eq 0 ]]; then
+  echo "direct-replica scope manifest selects no tests for TEST_SCOPE=$TEST_SCOPE" >&2
+  exit 2
+fi
+test_pattern="^($(IFS='|'; echo "${selected_tests[*]}"))$"
 
 memberlist_endpoints_direct=""
 memberlist_dial_endpoints=""
