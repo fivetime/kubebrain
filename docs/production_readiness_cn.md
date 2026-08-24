@@ -7703,6 +7703,32 @@ StatefulSet UID/3/3 状态、三 Pod UID/restartCount、Job UID 集合、全量 
 时间 122.917/351.313/228.794/365.866 秒，端到端时间 128.904/357.304/234.768/371.746 秒，全部通过。真实
 Deployment rollout 下的 load 连续性、Job 成功和 UID/Ready 守恒仍待具备对应拓扑后验证。
 
+### A5475：in-cluster kube-apiserver 资源所有权与 context 固定
+
+`incluster-apiserver-smoke.sh` 原先默认指向 `kubebrain-dev` Kind 集群并使用隐式 current context；Secret、Pod、Service
+通过固定到秒级名称的 apply 创建，启动前 cleanup 和 EXIT cleanup 都会无条件删除同名资源。因此名称碰撞时 runner 会
+接管既有对象并在退出时删除，context 漂移时还可能操作错误集群。提交 `11cb9f44` 改为要求显式 `KUBE_CONTEXT` 与
+`CLUSTER_NAME`，context 必须精确解析；kind context suffix、cluster name、control-plane 容器 Kind label 三者必须一致，
+所有宿主集群资源操作统一固定到 `kubectl --context`。默认名称升级为纳秒唯一值，cluster、namespace、name 均先校验为
+DNS label。
+
+runner 在生成证书或创建任何资源前分别确认 `${NAME}-pki` Secret、`${NAME}` Pod 与 Service 都不存在，任一碰撞即
+fail closed。三个对象改用 create；只有各自创建成功后才获得独立 ownership 标记，EXIT cleanup 只删除本轮实际持有的
+对象，port-forward 日志也仅在本轮创建后清理。owned Kubernetes runner 清单新增 verify→in-cluster apiserver 的
+`secret-pod-service` 合同，静态测试锁定显式 context、三个所有权标记、拒绝复用和禁止 apply。fake kubectl/docker 行为
+负测模拟既有 Pod，证明 runner 在创建或删除任何对象前返回 1。
+
+真实只读负例固定到 `kind-kubebrain-dbaas`，以现存 `kubebrain-dev/kubebrain-0` Pod 制造碰撞；runner 精确报告
+`refusing to reuse existing in-cluster apiserver resource`。该 Pod UID/restartCount、相关 Secret/Service 集合、全量 KV
+与 lease 集合前后完全相等。脚本语法通过，compat 全组 Go 6.796 秒。611 项 production inventory 仍为
+140/171/154/146；代码提交后四片 Go 时间 129.832/361.041/233.780/374.397 秒，端到端时间
+135.794/367.122/239.810/380.469 秒，全部通过。
+
+本项没有执行完整 in-cluster apiserver 成功路径，不能据此宣称 live GREEN：其 etcd endpoint 当前只通过集群内 DNS
+暴露，宿主 runner 尚不能在运行前后审计并精确回收 `${ETCD_PREFIX}` 数据与新增 lease。下一增量必须引入显式、受控的
+宿主管理 endpoint，并像 standalone apiserver runner 一样实现 prefix 空前置、精确清理、lease 基线/差集回收和最终
+状态守恒；在此之前不应以 Kubernetes 临时资源已清理替代后端状态守恒证明。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
