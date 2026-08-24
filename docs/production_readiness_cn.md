@@ -7546,6 +7546,30 @@ A5461-A5466 逐条补齐 runner 守恒后，安全覆盖仍依赖评审者记住
 均不存在。清单能阻止未登记的 shell runner 进入仓库，但不能自动证明某个状态模型实现充分；新增副作用类型时仍需先
 扩展模型闭集和相应行为负测，而不是复用语义不匹配的标签。
 
+### A5468：全仓 Go-test 集群故障入口所有权
+
+A5467 只按 compat 目录的 `run-*.sh` 命名发现 runner；全仓扫描所有包含 `go test` 的 shell 后，确认三个命名范围外的
+实质旁路。`backend-quorum-fault-smoke.sh` 会删除 KubeBrain/PD/TiKV Pod，并向 Kind node 注入 iptables/tc 故障；
+`lease-renewal-failover-smoke.sh` 会删除当前 leader 或隔离其网络；native PITR full-restore runner 的三个 network
+profile 会修改宿主机 `OUTPUT` 链。提交 `a6def349` 分别新增默认 false、严格布尔校验的
+`ALLOW_DESTRUCTIVE_BACKEND_QUORUM_FAULT`、`ALLOW_DESTRUCTIVE_LEASE_RENEWAL_FAILOVER` 和
+`ALLOW_DESTRUCTIVE_HOST_NETWORK_FAULT`。前两者在任何依赖探测前 fail closed，并导出给同脚本递归故障命令；PITR
+授权只约束实际修改宿主链的三个 profile，普通一次性 Docker 恢复演练不被误设为 destructive。一次性 worker-node
+演练拒绝复用现有 Kind 集群，因此仅在其自建集群内向 lease 子命令传递授权。
+
+新增 `go-test-cluster-mutation-contracts.txt`，以仓库相对路径登记共享集群/宿主 mutation runner、授权变量和
+`fault-cleanup`、`host-fault-cleanup`、`baseline-prefix-control` 状态合同。回归递归扫描整个 `hack/`（compat 已由
+A5467 的双向清单独立覆盖），凡同时执行 Go 测试且直接删除 Pod、使用 iptables/tc 或声明 destructive 授权的 shell，
+都必须在清单恰好出现一次；清单条目也不能陈旧。行为负测把 `PATH` 设为不可用，证明两个共享集群 runner 在工具发现前
+要求授权，非法布尔值同样先拒绝；PITR 网络 profile 在创建临时目录或检查 root/iptables 前要求宿主故障授权。脚本语法
+检查及 compat 全组均通过，后者 Go 6.446 秒。
+
+611 项 production inventory 仍完整分成 140/171/154/146。代码提交后按零基索引并行执行四片，Go 时间
+133.993/354.531/235.315/372.740 秒，端到端时间 141.549/360.457/241.239/378.636 秒，全部通过。首次并行命令曾把
+人类编号 1–4 直接作为参数，索引 4 被脚本 usage 立即拒绝且未执行测试；随后补跑正确索引 0，最终有效证据为 0/1/2/3
+四片。该静态发现覆盖现有危险 token，但不能从任意 shell 语义自动推导所有间接副作用；新增故障执行机制时仍需扩展
+发现规则与状态合同，显式授权也不替代 cleanup trap、资源所有权和运行后的现场审计。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
