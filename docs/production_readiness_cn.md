@@ -7128,6 +7128,34 @@ compat 全组 Go 4.587 秒、端到端 5.822 秒；611 项 inventory 为 140/171
 干净 `a5449-jwt-restored` keyspace，authRevision/data revision 均为 1，3/3 Ready 且
 restartCount 全 0。该证据覆盖单节点 Kind 的三副本直连，不替代跨节点/AZ 网络或长时并发 soak。
 
+### A5450：直连组合门禁保留大值 follower 覆盖
+
+提交 `23f805c7` 修复 A5449 runner 环境变量调整引入的假覆盖。`rangestream-follower` scope 的正则虽然同时
+选中 decoded-boundary 大值测试和 follower 测试，runner 却额外导出单一 `REFERENCE_ETCD_ENDPOINT`，使前者
+进入主 endpoint 分支并因缺少 `KUBEBRAIN_ETCD_ENDPOINT` 而 SKIP。现在 runner 只导出三条
+`REFERENCE_ETCD_DIRECT_ENDPOINTS`；Watch 直连边界测试在没有单一 reference endpoint 时显式选择该列表第一项，
+`all` scope 也明确包含 decoded-boundary 大值测试。修复后聚焦 `rangestream-follower` 两项均实际执行并通过：
+Go 2.970 秒、端到端 15.456 秒。
+
+首次完整组合运行随后暴露另一个测试 oracle 竞态：Watch 仍从预测的 `base+3` revision 启动，而共享集群的其他
+场景可在两个 seed Put 之间插入全局 revision，导致 Watch 把第二个 seed Put 当成目标删除事件。现在两个 seed Put
+完成后执行线性化 count-only Range，并从响应 header 的下一 revision 创建 Watch；删除 Txn 和两个 seed Put 的
+真实响应 revision 仍分别固定事件 header gap 与 PrevKV create/mod revision，2 MiB±1 大小、fragment flag、事件
+顺序和内容断言均未放宽。修复后的预提交完整直连组合 Go 42.767 秒、端到端 55.576 秒；精确提交镜像上的最终
+组合再次全部通过，Go 41.350 秒、端到端 53.757 秒，其中大值 decoded-boundary、RangeStream follower 和
+9 个 Watch size-delta×replica 子用例均有实际 PASS 记录，reference etcd provenance 为
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`。
+
+精确镜像 `kubebrain:a5450-23f805c7`（完整 revision
+`23f805c7d1e3bc47d28ac2d8c2db506d7d635ba3`，本地 manifest list
+`sha256:e585f2cd9b7d10d1305d01839f18198d1ed6fae26757b9f6c7283f6aabaef520`，Kind runtime digest
+`sha256:f599504745a440e76c531e64ce2dff23cbbad5a48dbaf4d407a64352f7740833`）三副本一致且零重启。
+compat 全组 Go 4.562 秒、端到端 5.834 秒；611 项 inventory 为 140/171/154/146，代码提交后四片
+Go 时间 133.112/351.949/231.642/366.686 秒，端到端时间 139.030/357.994/237.681/372.720 秒，
+全部通过。最终 JWT 数据面保持该精确镜像并恢复到全新 `a5450-jwt-restored` keyspace，authRevision/data
+revision 均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。本轮只修复测试选择与并发
+revision oracle，不代表服务端语义变更，也不替代跨节点/AZ 或持续并发 soak。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
