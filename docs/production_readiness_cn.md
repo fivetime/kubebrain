@@ -7873,6 +7873,36 @@ fake flock 行为负测证明锁竞争先于 docker 工具发现拒绝。真实�
 Go 时间 135.889/371.432/239.457/387.055 秒，端到端时间 144.104/379.797/247.861/395.519 秒，全部通过。本项提供同端口
 并发的确定性 fail-closed 语义；它不自动为每轮分配不同端口，若要求并行成功仍需调用者显式选择不同 LOCAL_PORT。
 
+### A5481：standalone apiserver smoke 的运行目录、凭据与端口所有权
+
+完成 in-cluster runner 后，`apiserver-smoke.sh` 仍把可共享的 88MB kube-apiserver binary cache 与逐轮 PKI、kubeconfig、
+PID、日志和 watch 数据混在固定 `.dev/apiserver-smoke`。它会复用目录、清除 stale PID 并覆盖敏感文件，EXIT 只停止进程和
+回收后端 prefix/lease，不删除凭据；固定 `SECURE_PORT` 也没有并发租约。提交 `a4d1e9ce` 将两类状态拆开：binary 继续
+保留在共享 cache，运行态默认进入 `${WORK_ROOT}/apiserver-smoke-runs/${RUN_ID}` 的唯一 0700 目录，并启用 077 umask。
+
+RUN_ID 必须是 DNS label；规范化 WORK_DIR 必须是 WORK_ROOT 的严格子路径且启动前不存在，碰撞或越界在 cluster access 前
+拒绝。目录 create 成功后才取得 ownership；cleanup 停止本轮 PID、完成 prefix/lease 守恒后精确删除本轮目录，任何清理
+失败返回专用状态 70。共享 binary 缺失时由独立 non-blocking cache flock 串行提取，并在锁内二次检查，避免不同端口的
+并发运行写坏 cache。apiserver version matrix 和 TLS caller 改用纳秒唯一 smoke 子目录，不再传固定复用路径。
+
+`SECURE_PORT` 校验为 1..65535，并在 docker/kubectl 或 endpoint access 前取得稳定 lock inode 的非阻塞 flock；EXIT 显式
+释放，异常退出由内核释放。fake 行为负测分别证明共享 WORK_ROOT 与已占端口先于 cluster access 拒绝；owned endpoint
+合同锁定独占目录、077 umask 和端口租约。
+
+第一次真实 smoke 暴露默认 `apiserver-smoke-runs` 中间目录尚不存在，直接 mkdir 叶子目录失败；runner 尚未启动
+kube-apiserver，trap 已恢复 prefix/key/lease。修复为在已验证 WORK_ROOT 边界内创建目标 parent 后重跑，完整完成
+ConfigMap CRUD/watch、label/field selector、分页/collection delete、Secret、Lease 与 Deployment 流程，端到端 8 秒；
+最终 KV、user、role、lease、alarm 均与运行前相等，prefix=0、运行目录不存在且 16443 lock 可立即重新取得。真实 26443
+锁竞争也在 workdir、prefix 和进程创建前返回 1，持有者结束后测试 lock 文件被精确删除。
+
+确认没有使用旧路径或 16443 的活跃 standalone 进程后，精确删除固定目录中的旧 PKI 私钥、kubeconfig、日志和 watch
+数据；这些测试凭据不可恢复但可从 Kind 节点重新生成。88MB executable cache 被保留，旧目录最终只含 `bin`，新运行目录
+为 0，实际 `16443.lock` 作为无敏感内容的稳定 inode 保留。
+
+脚本语法与 compat 全组通过，后者 Go 7.212 秒。611 项 production inventory 仍为 140/171/154/146；代码提交后四片
+Go 时间 135.746/357.909/230.734/371.097 秒，端到端时间 143.935/366.044/238.729/379.208 秒，全部通过。本项只覆盖
+base smoke；`apiserver-watch-soak.sh` 仍有独立固定 WORK_DIR/SECURE_PORT/PID/PKI 生命周期，下一增量继续处理。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
