@@ -61470,6 +61470,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   双节点 endpoint，故不声称真实数据面演练。精确代码提交四片 139/171/153/146 全绿（Go 测试
   116.843/346.255/219.652/356.783 秒；端到端 122.687/352.105/225.484/362.654 秒）。
 
+- A5438 收紧 A5436/A5437 progress worker 在生产高基数 Watch 下的 GC 开销。旧
+  `progressRequestRevision` 每 2ms 轮询都会按捕获 generation 数量重建一张 `map[WatchId]syncedRev`；生产
+  `--max-watches=10000` 下单个 100ms 等待最多复制约 50 次大 map，多个排队请求会把纯水位检查放大为持续 heap
+  churn。提交 `fc5a37a4` 在 watcherMu 内单遍同时完成 generation 身份、closing、future start floor、target 和
+  最慢 delivered revision 判定，不再构造中间 snapshot；synced/retry/terminal 语义及请求时冻结集合保持不变。
+  TDD 的 10000-Watch 隔离基线先测得旧实现每次 33 allocations，修复后标准 Go benchmark 为约
+  290.829µs/op、0 B/op、0 allocs/op。最初尝试把 `AllocsPerRun==0` 作为普通单测，但 race instrumentation 与全包
+  后台 runtime 活动会污染进程级分配统计，因此将其改为 `-benchmem` benchmark，未用任意噪声阈值制造假绿；功能
+  正确性仍由同步/重试/终止、空 burst、future、Cancel 和 clientv3 单测覆盖。非 race benchmark/判定连续 50/100
+  轮通过，关键功能集合 race 连续 50 轮通过（17.529 秒），全部 Watch 测试连续 10 轮通过（112.961 秒），最终
+  完整 server/proxy 包通过（130.999 秒/proxy cached），diff check 与 609 项 inventory 校验通过。本项只减少
+  Watch progress 控制面的分配与 GC 压力，不改变 TiKV 数据语义；本轮无 disposable TiKV/PD 双节点 endpoint。
+  精确代码提交四片 139/171/153/146 全绿（Go 测试 118.367/346.501/217.522/353.969 秒；端到端
+  124.149/352.276/223.356/359.793 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
