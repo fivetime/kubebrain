@@ -2330,7 +2330,152 @@ func TestKubernetesVersionMatrixRequiresOwnershipAndRejectsConcurrentOwner(t *te
 	require.Contains(t, content, "KIND_NODE_IMAGES produce a duplicate cluster name")
 	require.Contains(t, content, `KUBECONFIG="$current_kubeconfig"`)
 	require.Contains(t, content, `KUBE_CONTEXT="$kube_context"`)
-	require.Contains(t, content, `if [[ "$current_cluster_owned" == true`)
+	require.Contains(t, content, `$(<"$current_marker")" == "$current_cluster_name"`)
+	require.Contains(t, content, "refusing to delete cluster without this run's ownership marker")
+	require.Contains(t, content, `CLUSTER_CREATED_MARKER="$current_marker"`)
+	require.Contains(t, content, "failed to delete owned kind cluster; preserving ownership marker")
+	require.Contains(t, content, `status=70`)
+}
+
+func TestDevUpRecordsOwnershipOnlyAfterKindCreate(t *testing.T) {
+	path := filepath.Join("..", "dev", "up.sh")
+	for _, tc := range []struct {
+		name        string
+		createExit  int
+		preexisting bool
+		wantMarker  bool
+		wantOutput  string
+	}{
+		{name: "create fails", createExit: 9},
+		{name: "post-create build fails", wantMarker: true},
+		{
+			name:        "pre-existing cluster is rejected",
+			preexisting: true,
+			wantOutput:  "refusing to use pre-existing cluster when creation ownership is required",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			markerDir := t.TempDir()
+			marker := filepath.Join(markerDir, "cluster-created")
+			kindScript := fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == get && "${2:-}" == clusters ]]; then
+  if [[ %t == true ]]; then printf 'marker-contract\n'; fi
+  exit 0
+fi
+if [[ "${1:-}" == create ]]; then
+  exit %d
+fi
+exit 0
+`, tc.preexisting, tc.createExit)
+			require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "kind"), []byte(kindScript), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "docker"), []byte("#!/usr/bin/env bash\nexit 9\n"), 0o755))
+			for _, tool := range []string{"kubectl", "helm"} {
+				require.NoError(t, os.WriteFile(filepath.Join(fakeBin, tool), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755))
+			}
+
+			output, err := runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{
+				"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+				"CLUSTER_NAME=marker-contract",
+				"CLUSTER_CREATED_MARKER=" + marker,
+			})
+			require.Error(t, err, string(output))
+			if tc.wantOutput != "" {
+				require.Contains(t, string(output), tc.wantOutput)
+			}
+			data, readErr := os.ReadFile(marker)
+			if !tc.wantMarker {
+				require.ErrorIs(t, readErr, os.ErrNotExist)
+				return
+			}
+			require.NoError(t, readErr)
+			require.Equal(t, "marker-contract\n", string(data))
+		})
+	}
+}
+
+func TestKubernetesVersionMatrixCleansOnlyMarkedCluster(t *testing.T) {
+	path := filepath.Join("..", "dev", "k8s-version-matrix.sh")
+	for _, tc := range []struct {
+		name       string
+		deleteFail bool
+	}{
+		{name: "owned cleanup succeeds"},
+		{name: "delete failure preserves marker", deleteFail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			state := filepath.Join(t.TempDir(), "kind-state")
+			tmpDir := t.TempDir()
+			kindScript := `#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-} ${2:-}" in
+  "get clusters")
+    [[ ! -f "$FAKE_KIND_STATE" ]] || cat "$FAKE_KIND_STATE"
+    ;;
+  "create cluster")
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == --name ]]; then printf '%s\n' "$2" >"$FAKE_KIND_STATE"; break; fi
+      shift
+    done
+    ;;
+  "delete cluster")
+    if [[ "${FAKE_KIND_DELETE_FAIL:-false}" == true ]]; then exit 9; fi
+    : >"$FAKE_KIND_STATE"
+    ;;
+  "load docker-image") ;;
+  *) printf 'kind fake\n' ;;
+esac
+`
+			dockerScript := `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-} ${2:-}" == "container inspect" ]]; then exit 1; fi
+if [[ "${1:-}" == inspect ]]; then printf 'kindest/node:v1.36.1\n'; fi
+exit 0
+`
+			kubectlScript := `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"get pods"* ]]; then printf 'fake-pod 1/1 Running 0 1s\n'; fi
+if [[ "${1:-}" == version ]]; then printf 'clientVersion: {}\nserverVersion: {}\n'; fi
+exit 0
+`
+			tools := map[string]string{
+				"kind": kindScript, "docker": dockerScript, "kubectl": kubectlScript,
+				"helm": "#!/usr/bin/env bash\nexit 0\n", "go": "#!/usr/bin/env bash\nexit 0\n",
+			}
+			for name, body := range tools {
+				require.NoError(t, os.WriteFile(filepath.Join(fakeBin, name), []byte(body), 0o755))
+			}
+			env := []string{
+				"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+				"TMPDIR=" + tmpDir,
+				"FAKE_KIND_STATE=" + state,
+				"ALLOW_DESTRUCTIVE_K8S_VERSION_MATRIX=true",
+				"MATRIX_LOCK_ROOT=" + t.TempDir(),
+				"CLUSTER_NAME=marker-matrix",
+				"KIND_NODE_IMAGES=kindest/node:v1.36.1",
+				"VERIFY_COMMAND=/bin/true",
+			}
+			if tc.deleteFail {
+				env = append(env, "FAKE_KIND_DELETE_FAIL=true")
+			}
+			output, err := runCompatCommandContext(t, context.Background(), "bash", []string{path}, env)
+			entries, readErr := os.ReadDir(tmpDir)
+			require.NoError(t, readErr)
+			if !tc.deleteFail {
+				require.NoError(t, err, string(output))
+				require.Empty(t, entries)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, string(output), "failed to delete owned kind cluster; preserving ownership marker")
+			require.Len(t, entries, 1)
+			marker, markerErr := os.ReadFile(filepath.Join(tmpDir, entries[0].Name(), "cluster-created"))
+			require.NoError(t, markerErr)
+			require.Equal(t, "marker-matrix-kindest-node-v1-36-1\n", string(marker))
+		})
+	}
 }
 
 func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {

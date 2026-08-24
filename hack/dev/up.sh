@@ -13,6 +13,7 @@ KUBEBRAIN_REPLICAS="${KUBEBRAIN_REPLICAS:-1}"
 KIND_CLIENT_HOST_PORT="${KIND_CLIENT_HOST_PORT:-3379}"
 KIND_PEER_HOST_PORT="${KIND_PEER_HOST_PORT:-3380}"
 KIND_WORKER_NODES="${KIND_WORKER_NODES:-0}"
+CLUSTER_CREATED_MARKER="${CLUSTER_CREATED_MARKER:-}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -42,6 +43,13 @@ fi
 if [[ "$KIND_CLIENT_HOST_PORT" == "$KIND_PEER_HOST_PORT" ]]; then
   echo "KIND_CLIENT_HOST_PORT and KIND_PEER_HOST_PORT must differ" >&2
   exit 1
+fi
+if [[ -n "$CLUSTER_CREATED_MARKER" ]]; then
+  marker_parent="$(dirname "$CLUSTER_CREATED_MARKER")"
+  if [[ "$CLUSTER_CREATED_MARKER" != /* || ! -d "$marker_parent" || -e "$CLUSTER_CREATED_MARKER" || -L "$CLUSTER_CREATED_MARKER" ]]; then
+    echo "CLUSTER_CREATED_MARKER must be an absent absolute path in an existing directory" >&2
+    exit 2
+  fi
 fi
 
 need docker
@@ -116,6 +124,15 @@ fi
 
 if ! kind get clusters | grep -qx "$CLUSTER_NAME"; then
   kind create cluster --name "$CLUSTER_NAME" --config "$kind_config"
+  if [[ -n "$CLUSTER_CREATED_MARKER" ]]; then
+    if ! (set -o noclobber; printf '%s\n' "$CLUSTER_NAME" >"$CLUSTER_CREATED_MARKER") 2>/dev/null; then
+      echo "failed to record ownership for newly created cluster ${CLUSTER_NAME}" >&2
+      exit 70
+    fi
+  fi
+elif [[ -n "$CLUSTER_CREATED_MARKER" ]]; then
+  echo "refusing to use pre-existing cluster when creation ownership is required: ${CLUSTER_NAME}" >&2
+  exit 70
 elif [ -n "$KIND_NODE_IMAGE" ]; then
   echo "cluster ${CLUSTER_NAME} already exists; KIND_NODE_IMAGE only applies when creating a new kind cluster" >&2
 fi

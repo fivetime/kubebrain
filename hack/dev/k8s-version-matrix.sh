@@ -114,23 +114,47 @@ for cluster_name in "${cluster_names[@]}"; do
 done
 
 current_cluster_name=""
-current_cluster_owned=false
 current_kubeconfig=""
+current_marker=""
+current_run_dir=""
 cleanup_entry() {
-  if [[ "$current_cluster_owned" == true && -n "$current_cluster_name" ]]; then
-    kind delete cluster --name "$current_cluster_name" >/dev/null 2>&1 || true
+  local cleanup_failed=false
+  local clusters
+  if [[ -n "$current_cluster_name" && -f "$current_marker" && "$(<"$current_marker")" == "$current_cluster_name" ]]; then
+    if ! kind delete cluster --name "$current_cluster_name" >/dev/null 2>&1; then
+      echo "failed to delete owned kind cluster; preserving ownership marker: ${current_cluster_name}" >&2
+      cleanup_failed=true
+    fi
+  elif [[ -n "$current_cluster_name" ]]; then
+    if ! clusters="$(kind get clusters 2>/dev/null)"; then
+      echo "failed to verify absence of unowned kind cluster: ${current_cluster_name}" >&2
+      cleanup_failed=true
+    elif grep -Fxq "$current_cluster_name" <<<"$clusters"; then
+      echo "refusing to delete cluster without this run's ownership marker: ${current_cluster_name}" >&2
+      cleanup_failed=true
+    fi
   fi
   if [[ -n "$current_kubeconfig" && -f "$current_kubeconfig" ]]; then
     rm -f "$current_kubeconfig"
   fi
+  if [[ "$cleanup_failed" == false && -n "$current_marker" && -f "$current_marker" ]]; then
+    rm -f "$current_marker"
+  fi
+  if [[ -n "$current_run_dir" && -d "$current_run_dir" ]]; then
+    rmdir "$current_run_dir" 2>/dev/null || true
+  fi
   current_cluster_name=""
-  current_cluster_owned=false
   current_kubeconfig=""
+  current_marker=""
+  current_run_dir=""
+  [[ "$cleanup_failed" == false ]]
 }
 cleanup() {
   local status=$?
   trap - EXIT
-  cleanup_entry
+  if ! cleanup_entry && [[ "$status" -eq 0 ]]; then
+    status=70
+  fi
   flock -u "$matrix_lock_fd" >/dev/null 2>&1 || true
   exit "$status"
 }
@@ -141,13 +165,15 @@ for index in "${!node_images[@]}"; do
   cluster_name="${cluster_names[$index]}"
   kube_context="kind-${cluster_name}"
   current_cluster_name="$cluster_name"
-  current_cluster_owned=true
-  current_kubeconfig="$(mktemp)"
+  current_run_dir="$(mktemp -d)"
+  current_kubeconfig="${current_run_dir}/kubeconfig"
+  current_marker="${current_run_dir}/cluster-created"
 
   echo
   echo "==> Kubernetes matrix entry: ${node_image}"
   KUBECONFIG="$current_kubeconfig" \
     CLUSTER_NAME="$cluster_name" \
+    CLUSTER_CREATED_MARKER="$current_marker" \
     KIND_NODE_IMAGE="$node_image" \
     IMAGE_NAME="$IMAGE_NAME" \
     KUBEBRAIN_REPLICAS=3 \
@@ -171,7 +197,9 @@ for index in "${!node_images[@]}"; do
     "$VERIFY_COMMAND"
 
   echo "Kubernetes matrix entry completed: ${node_image}"
-  cleanup_entry
+  if ! cleanup_entry; then
+    exit 70
+  fi
 done
 
 echo
