@@ -100,7 +100,8 @@ func TestWatchFragmentLimitBoundaryMatrixDifferentialAgainstReferenceEtcd(t *tes
 func TestWatchFragmentLimitBoundaryAcrossDirectReplicas(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
-		t.Skip("set REFERENCE_ETCD_ENDPOINT to run watch fragment differential tests")
+		referenceEndpoints := splitRequiredDirectEndpoints(t, "REFERENCE_ETCD_DIRECT_ENDPOINTS")
+		reference = referenceEndpoints[0]
 	}
 	endpoints := splitRequiredDirectEndpoints(t, "KUBEBRAIN_DIRECT_ENDPOINTS")
 	requireDistinctDirectReplicaTopology(t, endpoints)
@@ -167,13 +168,19 @@ func runWatchLimitBoundaryScenario(t *testing.T, endpoint, instance string, targ
 		require.NotNil(t, put.Header)
 		seedRevisions[index] = put.Header.Revision
 	}
+	latest, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)), CountOnly: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, latest.Header)
+	watchStartRevision := latest.Header.Revision + 1
 
 	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
 	require.NoError(t, err)
 	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
 			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
-			StartRevision: revision, WatchId: watchID, Fragment: true, PrevKv: true,
+			StartRevision: watchStartRevision, WatchId: watchID, Fragment: true, PrevKv: true,
 		}},
 	}))
 	created, err := stream.Recv()
