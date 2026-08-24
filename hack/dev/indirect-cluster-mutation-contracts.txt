@@ -1,3 +1,5 @@
 # caller run flag default callee approval environment variable
 hack/dev/verify.sh RUN_HA_SMOKE true hack/dev/ha-smoke.sh ALLOW_DESTRUCTIVE_HA_SMOKE
 hack/dev/verify.sh RUN_APISERVER_ROLLOUT_SMOKE false hack/dev/apiserver-rollout-smoke.sh ALLOW_DESTRUCTIVE_APISERVER_ROLLOUT
+hack/dev/verify.sh RUN_ROLLOUT_SMOKE false hack/dev/rollout-smoke.sh ALLOW_DESTRUCTIVE_ROLLOUT_SMOKE
+hack/dev/verify.sh RUN_INCLUSTER_ROLLOUT_SMOKE false hack/dev/incluster-rollout-smoke.sh ALLOW_DESTRUCTIVE_INCLUSTER_ROLLOUT

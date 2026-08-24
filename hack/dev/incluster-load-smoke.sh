@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 NAMESPACE="${NAMESPACE:-kubebrain-dev}"
 JOB_NAMESPACE="${JOB_NAMESPACE:-$NAMESPACE}"
-JOB_NAME="${JOB_NAME:-kubebrain-incluster-load-$(date +%s)}"
+JOB_NAME="${JOB_NAME:-kubebrain-incluster-load-$(date +%s%N)}"
 CONFIGMAP_NAME="${CONFIGMAP_NAME:-${JOB_NAME}-scripts}"
 ENDPOINT="${ENDPOINT:-kubebrain.${NAMESPACE}.svc:3379}"
 WORKERS="${WORKERS:-8}"
@@ -12,6 +12,9 @@ OPS_PER_WORKER="${OPS_PER_WORKER:-25}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-180}"
 JOB_TIMEOUT_SECONDS="${JOB_TIMEOUT_SECONDS:-300}"
 GO_IMAGE="${GO_IMAGE:-golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+job_created=false
+configmap_created=false
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -20,19 +23,50 @@ need() {
   fi
 }
 
+if [[ -z "$KUBE_CONTEXT" ]]; then
+  echo "KUBE_CONTEXT is required for in-cluster load smoke" >&2
+  exit 2
+fi
+for value in "$NAMESPACE" "$JOB_NAMESPACE" "$JOB_NAME" "$CONFIGMAP_NAME"; do
+  if [[ ! "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+    echo "invalid in-cluster load resource name: $value" >&2
+    exit 2
+  fi
+done
 need kubectl
+resolved_context="$(command kubectl config get-contexts "$KUBE_CONTEXT" -o name 2>/dev/null || true)"
+if [[ "$resolved_context" != "$KUBE_CONTEXT" ]]; then
+  echo "KUBE_CONTEXT does not resolve exactly: $KUBE_CONTEXT" >&2
+  exit 1
+fi
+kubectl() {
+  command kubectl --context "$KUBE_CONTEXT" "$@"
+}
+
+if [[ -n "$(kubectl -n "$JOB_NAMESPACE" get job "$JOB_NAME" -o name --ignore-not-found)" ]]; then
+  echo "refusing to reuse existing in-cluster load Job: $JOB_NAMESPACE/$JOB_NAME" >&2
+  exit 1
+fi
+if [[ -n "$(kubectl -n "$JOB_NAMESPACE" get configmap "$CONFIGMAP_NAME" -o name --ignore-not-found)" ]]; then
+  echo "refusing to reuse existing in-cluster load ConfigMap: $JOB_NAMESPACE/$CONFIGMAP_NAME" >&2
+  exit 1
+fi
 
 cleanup() {
-  kubectl -n "$JOB_NAMESPACE" delete job "$JOB_NAME" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
-  kubectl -n "$JOB_NAMESPACE" delete configmap "$CONFIGMAP_NAME" --ignore-not-found=true >/dev/null 2>&1 || true
+  if [[ "$job_created" == true ]]; then
+    kubectl -n "$JOB_NAMESPACE" delete job "$JOB_NAME" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+  fi
+  if [[ "$configmap_created" == true ]]; then
+    kubectl -n "$JOB_NAMESPACE" delete configmap "$CONFIGMAP_NAME" --ignore-not-found=true >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
 kubectl -n "$JOB_NAMESPACE" create configmap "$CONFIGMAP_NAME" \
-  --from-file=load-smoke.sh="$ROOT_DIR/hack/dev/load-smoke.sh" \
-  --dry-run=client -o yaml | kubectl apply -f -
+  --from-file=load-smoke.sh="$ROOT_DIR/hack/dev/load-smoke.sh"
+configmap_created=true
 
-cat <<EOF | kubectl apply -f -
+cat <<EOF | kubectl create -f -
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -73,6 +107,7 @@ spec:
           name: ${CONFIGMAP_NAME}
           defaultMode: 0555
 EOF
+job_created=true
 
 echo "Waiting for in-cluster load smoke job ${JOB_NAMESPACE}/${JOB_NAME}"
 if ! kubectl -n "$JOB_NAMESPACE" wait --for=condition=complete "job/${JOB_NAME}" --timeout="${JOB_TIMEOUT_SECONDS}s"; then

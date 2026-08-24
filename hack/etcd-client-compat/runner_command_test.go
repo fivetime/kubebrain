@@ -1812,7 +1812,7 @@ func TestIndirectClusterMutationCallersHaveSafetyContracts(t *testing.T) {
 		require.NotContains(t, calleeContent, "\nkubectl ", "%s must not bypass its explicit-context kubectl array", callee)
 		contracts++
 	}
-	require.Equal(t, 2, contracts)
+	require.Equal(t, 4, contracts)
 }
 
 func TestDefaultHAIndirectMutationFailsClosedBeforeToolDiscovery(t *testing.T) {
@@ -1857,6 +1857,29 @@ func TestAPIServerRolloutMutationFailsClosedBeforeToolDiscovery(t *testing.T) {
 	require.NotContains(t, string(output), "missing required command")
 }
 
+func TestLoadRolloutMutationsFailClosedBeforeToolDiscovery(t *testing.T) {
+	for script, approval := range map[string]string{
+		"rollout-smoke.sh":           "ALLOW_DESTRUCTIVE_ROLLOUT_SMOKE",
+		"incluster-rollout-smoke.sh": "ALLOW_DESTRUCTIVE_INCLUSTER_ROLLOUT",
+	} {
+		t.Run(script, func(t *testing.T) {
+			path := filepath.Join("..", "dev", script)
+			output, err := runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{"PATH=/nonexistent"})
+			require.Error(t, err)
+			require.Contains(t, string(output), "KUBE_CONTEXT is required")
+			require.NotContains(t, string(output), "missing required command")
+
+			output, err = runCompatCommandContext(t, context.Background(), "bash", []string{path}, []string{
+				"PATH=/nonexistent",
+				"KUBE_CONTEXT=kind-explicit",
+			})
+			require.Error(t, err)
+			require.Contains(t, string(output), approval+"=true")
+			require.NotContains(t, string(output), "missing required command")
+		})
+	}
+}
+
 func TestDefaultOwnedKubernetesRunnersHaveSafetyContracts(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	data, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "owned-kubernetes-runner-contracts.txt"))
@@ -1870,7 +1893,7 @@ func TestDefaultOwnedKubernetesRunnersHaveSafetyContracts(t *testing.T) {
 		fields := strings.Fields(line)
 		require.Len(t, fields, 6, "owned Kubernetes manifest line %d", lineNumber+1)
 		caller, runFlag, defaultValue, callee, resource, contextEnv := fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]
-		require.Equal(t, "namespace", resource)
+		require.Contains(t, []string{"namespace", "job-configmap"}, resource)
 		require.Equal(t, "KUBE_CONTEXT", contextEnv)
 
 		callerData, readErr := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(caller)))
@@ -1883,13 +1906,24 @@ func TestDefaultOwnedKubernetesRunnersHaveSafetyContracts(t *testing.T) {
 		require.NoError(t, readErr)
 		calleeContent := string(calleeData)
 		require.Contains(t, calleeContent, `KUBE_CONTEXT="${KUBE_CONTEXT:-}"`)
-		require.Contains(t, calleeContent, "namespace_created=false")
-		require.Contains(t, calleeContent, `if [[ "$namespace_created" == true ]]`)
-		require.Contains(t, calleeContent, "refusing to reuse existing TLS smoke namespace")
-		require.NotContains(t, calleeContent, `create namespace "$NAMESPACE" --dry-run`)
+		switch resource {
+		case "namespace":
+			require.Contains(t, calleeContent, "namespace_created=false")
+			require.Contains(t, calleeContent, `if [[ "$namespace_created" == true ]]`)
+			require.Contains(t, calleeContent, "refusing to reuse existing TLS smoke namespace")
+			require.NotContains(t, calleeContent, `create namespace "$NAMESPACE" --dry-run`)
+		case "job-configmap":
+			require.Contains(t, calleeContent, "job_created=false")
+			require.Contains(t, calleeContent, "configmap_created=false")
+			require.Contains(t, calleeContent, `if [[ "$job_created" == true ]]`)
+			require.Contains(t, calleeContent, `if [[ "$configmap_created" == true ]]`)
+			require.Contains(t, calleeContent, "refusing to reuse existing in-cluster load Job")
+			require.Contains(t, calleeContent, "refusing to reuse existing in-cluster load ConfigMap")
+			require.NotContains(t, calleeContent, "kubectl apply")
+		}
 		contracts++
 	}
-	require.Positive(t, contracts)
+	require.Equal(t, 2, contracts)
 }
 
 func TestDefaultTLSRunnerRejectsPreexistingNamespaceWithoutDeletingIt(t *testing.T) {
@@ -1924,6 +1958,40 @@ exit 99
 	require.NoError(t, readErr)
 	require.NotContains(t, string(logData), "delete namespace")
 	require.NotContains(t, string(logData), "create namespace")
+}
+
+func TestInClusterLoadRejectsPreexistingJobWithoutDeletingIt(t *testing.T) {
+	fakeBin := t.TempDir()
+	logPath := filepath.Join(fakeBin, "kubectl.log")
+	fakeKubectl := filepath.Join(fakeBin, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_KUBECTL_LOG"
+if [[ "$*" == "config get-contexts kind-owned -o name" ]]; then
+  printf '%s\n' kind-owned
+  exit 0
+fi
+if [[ "$*" == "--context kind-owned -n occupied get job existing-job -o name --ignore-not-found" ]]; then
+  printf '%s\n' job.batch/existing-job
+  exit 0
+fi
+exit 99
+`), 0o755))
+
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "incluster-load-smoke.sh")}, []string{
+		"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+		"FAKE_KUBECTL_LOG=" + logPath,
+		"KUBE_CONTEXT=kind-owned",
+		"NAMESPACE=occupied",
+		"JOB_NAMESPACE=occupied",
+		"JOB_NAME=existing-job",
+		"CONFIGMAP_NAME=existing-scripts",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing to reuse existing in-cluster load Job: occupied/existing-job")
+	logData, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	require.NotContains(t, string(logData), " delete ")
+	require.NotContains(t, string(logData), " create ")
 }
 
 func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
