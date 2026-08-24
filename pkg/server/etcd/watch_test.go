@@ -4290,6 +4290,50 @@ func TestFollowerWatchDelegatesInitialAuthorizationDespiteStaleAppliedState(t *t
 	requireWatchCanceled(t, <-done)
 }
 
+func TestFollowerEmptyKeyFromKeyWatchPreservesOpenRangeForLeaderAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	incoming, ok := metadata.FromIncomingContext(aliceCtx)
+	require.True(t, ok)
+	wantToken := incoming.Get(rpctypes.TokenFieldNameGRPC)
+	require.Len(t, wantToken, 1)
+
+	proxyCalled := make(chan struct{})
+	proxyResults := make(chan etcdproxy.WatchResult)
+	close(proxyResults)
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		watchFn: func(ctx context.Context, key, rangeEnd []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			md, mdOK := metadata.FromOutgoingContext(ctx)
+			require.True(t, mdOK)
+			require.Equal(t, wantToken, md.Get(rpctypes.TokenFieldNameGRPC))
+			require.Empty(t, md.Get(etcdproxy.AuthorizedWatchProxyMetadataKey),
+				"the leader must authorize the first proxied generation")
+			require.Equal(t, []byte{0}, key, "the empty wire key must be normalized to the NUL key")
+			require.NotNil(t, rangeEnd, "a from-key range must remain distinguishable from a point watch")
+			require.Empty(t, rangeEnd, "the internal empty slice is the open-ended range marker")
+			close(proxyCalled)
+			return proxyResults, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(aliceCtx)
+	stream := &controllableWatchServer{ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 1)}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{RangeEnd: []byte{0}},
+	}}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	select {
+	case <-proxyCalled:
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "empty-key from-key watch was not forwarded")
+	}
+	cancel()
+	requireWatchCanceled(t, <-done)
+}
+
 func TestFollowerWatchDelegatesInitialAuthorizationWhenAppliedStateIsIncomplete(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
