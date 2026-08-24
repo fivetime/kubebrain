@@ -71,6 +71,10 @@ fi
 if [[ "$*" == *"endpoint health"* ]]; then
   exit 0
 fi
+if [[ "$*" == *"get /registry/etcd-client-compat/ --prefix --limit=1 -w json"* ]]; then
+  printf '%s\n' '{"count":0}'
+  exit 0
+fi
 exit 1
 `), 0o755))
 	fakeCurl := filepath.Join(dir, "curl")
@@ -143,6 +147,10 @@ if [[ "$*" == *"endpoint status -w json"* ]]; then
   printf '%s\n' '[{"Status":{"dbSizeQuota":1073741824}}]'
   exit 0
 fi
+if [[ "$*" == *"get /registry/etcd-client-compat/ --prefix --limit=1 -w json"* ]]; then
+  printf '%s\n' '{"count":0}'
+  exit 0
+fi
 if [[ "$*" == *"endpoint health"* ]]; then
   exit 0
 fi
@@ -201,6 +209,59 @@ func TestDifferentialRunnerSelectsScenariosNotRunnerSelfTests(t *testing.T) {
 	require.Contains(t, string(script), `-run "$TEST_RUN_PATTERN"`,
 		"the live runner must default to differential scenarios while allowing an explicit focused reproduction")
 	require.NotContains(t, string(script), "-run Differential -count=1")
+}
+
+func TestDifferentialRunnerRequiresCompatPrefixConservation(t *testing.T) {
+	script, err := os.ReadFile("run-differential.sh")
+	require.NoError(t, err)
+	content := string(script)
+	require.Contains(t, content, "assert_compat_prefix_empty preflight")
+	require.Contains(t, content, "assert_compat_prefix_empty postflight")
+	require.Contains(t, content, "get /registry/etcd-client-compat/ --prefix --limit=1 -w json")
+	require.Contains(t, content, "differential test package failed with status")
+	require.Contains(t, content, ") || test_status=$?")
+}
+
+func TestDifferentialRunnerRejectsDirtyCompatPrefixBeforeReferenceStart(t *testing.T) {
+	dir := t.TempDir()
+	fakeEtcd := writeFakeReferenceEtcd(t, dir)
+	fakeEtcdctl := filepath.Join(dir, "etcdctl")
+	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'Git SHA: d947b2086\n'
+  exit 0
+fi
+if [[ "$*" == *"endpoint health"* ]]; then
+  exit 0
+fi
+if [[ "$*" == *"member list -w json"* ]]; then
+  printf '%s\n' '{"members":[{"name":"kubebrain-0","clientURLs":["http://127.0.0.1:22379"]}]}'
+  exit 0
+fi
+if [[ "$*" == *"endpoint status -w json"* ]]; then
+  printf '%s\n' '[{"Status":{"dbSizeQuota":1073741824}}]'
+  exit 0
+fi
+if [[ "$*" == *"get /registry/etcd-client-compat/ --prefix --limit=1 -w json"* ]]; then
+  printf '%s\n' '{"count":1}'
+  exit 0
+fi
+exit 1
+`), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "curl"), []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
+
+	output, err := runDifferentialScript(t, []string{
+		"PATH=" + dir + ":" + os.Getenv("PATH"),
+		"KUBEBRAIN_ETCD_ENDPOINT=127.0.0.1:22379",
+		"ALLOW_DESTRUCTIVE_DIFFERENTIAL=true",
+		"REFERENCE_ETCD_BIN=" + fakeEtcd,
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=d947b2086",
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "compat test prefix is not empty during preflight")
+	require.NotContains(t, string(output), "reference etcd exited before becoming healthy")
 }
 
 func TestDifferentialRunnerSeparatesGRPCAuthorityFromGatewayURL(t *testing.T) {

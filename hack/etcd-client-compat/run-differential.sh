@@ -166,6 +166,21 @@ if ! reference_quota="$(jq -er '
   exit 1
 fi
 
+assert_compat_prefix_empty() {
+  local phase="$1" prefix_json count
+  if ! prefix_json="$(ETCDCTL_API=3 "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ENDPOINT" \
+    get /registry/etcd-client-compat/ --prefix --limit=1 -w json)"; then
+    echo "KubeBrain compat-prefix ${phase} check failed: $KUBEBRAIN_ENDPOINT" >&2
+    exit 1
+  fi
+  count="$(jq -r '.count // (.kvs | length) // 0' <<<"$prefix_json")"
+  if [[ "$count" != 0 ]]; then
+    echo "KubeBrain compat test prefix is not empty during ${phase}" >&2
+    exit 1
+  fi
+}
+assert_compat_prefix_empty preflight
+
 data_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-reference-etcd.XXXXXX")"
 reference_log="$data_dir/etcd.log"
 reference_pid=""
@@ -213,6 +228,7 @@ if ! curl --fail --silent --max-time 1 "${REFERENCE_CLIENT_URL}/health" >/dev/nu
   exit 1
 fi
 
+test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_ENDPOINT="${REFERENCE_CLIENT_URL#http://}" \
@@ -225,5 +241,10 @@ fi
     KUBEBRAIN_EXPECTED_MEMBER_COUNT="$KUBEBRAIN_EXPECTED_MEMBER_COUNT" \
     ETCDCTL_BIN="$ETCDCTL_BIN" \
     go test . -run "$TEST_RUN_PATTERN" -count=1 -parallel=1 -timeout="$TEST_TIMEOUT" -v
-)
+) || test_status=$?
+assert_compat_prefix_empty postflight
+if [[ "$test_status" -ne 0 ]]; then
+  echo "differential test package failed with status $test_status" >&2
+  exit "$test_status"
+fi
 test_succeeded=true
