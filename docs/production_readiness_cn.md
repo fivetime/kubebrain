@@ -7382,6 +7382,24 @@ PriorityQueue 把排序 index 写入 `__`+queue prefix、原 cleanup 只删除�
 默认 differential 从此明确要求空 disposable target；不能把它指向含业务 key 的生产 keyspace。专用 runner 是否允许
 基线数据、使用独立 keyspace 还是要求全空，仍由各自风险和守恒合同决定。
 
+### A5461：默认差分控制状态守恒
+
+提交 `3e174b26` 把默认 runner 的 disposable target 合同从用户 keyspace 扩展到控制状态：reference etcd 启动前和
+Go 测试返回后都必须确认 auth disabled，且 user、role、lease、alarm 的可观察集合为空；任一查询失败或集合非空均
+fail closed。`authRevision` 是 auth store 的单调历史版本，现场当前值为 193，因此门禁有意不要求它回到 1，避免把
+正确的历史推进误判为污染。postflight 仍先于 Go 测试退出码传播执行，测试失败不能绕过控制状态审计。
+
+静态合同固定五类 JSON 查询和前后两个检查点；行为负测提供干净的 fake topology，仅留下一个 lease，并证明 runner
+在 reference 启动前以 `lease set must be empty during preflight` 拒绝。真实 simple-token 数据面上又授予一个 60 秒
+lease，runner 同样退出 1；按响应中的十进制 ID 转成 `etcdctl` 所需十六进制参数后精确 revoke，复核 lease 集合为空。
+随后运行会创建和清理 auth graph、权限及 lease 的 HTTP concurrency authorization 差分，Go 4.788 秒、端到端
+8.821 秒通过，前后 user/role/lease/alarm 均为空且 auth disabled。compat 全组 Go 5.766 秒、端到端 7.048 秒通过。
+
+611 项 production inventory 仍为 140/171/154/146；精确代码提交后四片 Go 时间
+131.714/355.588/226.935/367.664 秒，端到端时间 137.679/361.648/233.009/373.663 秒，全部通过。本门禁要求
+专用 disposable 数据面，不适用于本来就承载业务用户、角色、lease 或 alarm 的生产实例；它证明测试运行前后可观察
+控制集合守恒，但不把单调 revision、已压缩历史或 TiKV 物理空间回收误称为恢复到全新集群状态。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
