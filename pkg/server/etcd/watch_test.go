@@ -3145,7 +3145,7 @@ func TestFollowerWatchDuplicateIDPrecedesReadBarrier(t *testing.T) {
 
 	barrierErr := errors.New("leader revision transport failed")
 	var barrierCalls atomic.Int64
-	proxyResults := make(chan etcdproxy.WatchResult)
+	proxyResults := make(chan etcdproxy.WatchResult, 1)
 	server.peers = testPeerService{
 		isLeader:     false,
 		proxyEnabled: true,
@@ -3157,6 +3157,7 @@ func TestFollowerWatchDuplicateIDPrecedesReadBarrier(t *testing.T) {
 			return barrierErr
 		},
 		watchFn: func(ctx context.Context, _ []byte, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			proxyResults <- etcdproxy.WatchResult{Created: true, Revision: 50}
 			go func() {
 				<-ctx.Done()
 				close(proxyResults)
@@ -3197,7 +3198,7 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 
 	barrierErr := errors.New("leader revision transport failed")
 	var barrierCalls atomic.Int64
-	proxyResults := make(chan etcdproxy.WatchResult)
+	proxyResults := make(chan etcdproxy.WatchResult, 1)
 	proxyCanceled := make(chan struct{})
 	server.peers = testPeerService{
 		isLeader:     false,
@@ -3213,6 +3214,7 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 			return barrierErr
 		},
 		watchFn: func(ctx context.Context, _ []byte, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			proxyResults <- etcdproxy.WatchResult{Created: true, Revision: 60}
 			go func() {
 				<-ctx.Done()
 				close(proxyCanceled)
@@ -4074,7 +4076,7 @@ func TestRewrittenFromNowWatchPreservesPublishedProgressFloor(t *testing.T) {
 		Key:            []byte("/registry/watch/from-now"),
 		StartRevision:  int64(published) + 1,
 		ProgressNotify: true,
-	}, 0, false, true)
+	}, 0, false, true, false)
 
 	// The rewritten watch is caught up through published, and must remain
 	// immediately progress-eligible as an original from-now request.
@@ -4158,6 +4160,108 @@ func (s *controllableWatchServer) snapshot() []*etcdserverpb.WatchResponse {
 	out := make([]*etcdserverpb.WatchResponse, len(s.sent))
 	copy(out, s.sent)
 	return out
+}
+
+func TestFollowerWatchWaitsForAuthoritativeCreateAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	results := make(chan etcdproxy.WatchResult, 1)
+	opened := make(chan struct{})
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		watchFn: func(watchCtx context.Context, _ []byte, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			close(opened)
+			go func() {
+				<-watchCtx.Done()
+				close(results)
+			}()
+			return results, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &controllableWatchServer{
+		ctx:  ctx,
+		recv: make(chan *etcdserverpb.WatchRequest, 1),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/denied")},
+	}}
+
+	select {
+	case <-opened:
+	case <-time.After(time.Second):
+		t.Fatal("follower did not open authoritative leader watch")
+	}
+	require.Empty(t, stream.snapshot(), "follower exposed Created before leader authorization")
+	results <- etcdproxy.WatchResult{Err: rpctypes.ErrPermissionDenied}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	responses := stream.snapshot()
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Created)
+	require.True(t, responses[0].Canceled)
+	require.Equal(t, int64(-1), responses[0].WatchId)
+	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), responses[0].CancelReason)
+
+	cancel()
+	require.Error(t, <-done)
+}
+
+func TestFollowerWatchPublishesCreatedOnlyAfterAuthoritativeAcknowledgement(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	results := make(chan etcdproxy.WatchResult, 2)
+	opened := make(chan struct{})
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		watchFn: func(watchCtx context.Context, _ []byte, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			close(opened)
+			go func() {
+				<-watchCtx.Done()
+				close(results)
+			}()
+			return results, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &controllableWatchServer{
+		ctx:  ctx,
+		recv: make(chan *etcdserverpb.WatchRequest, 1),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/allowed")},
+	}}
+	select {
+	case <-opened:
+	case <-time.After(time.Second):
+		t.Fatal("follower did not open authoritative leader watch")
+	}
+	require.Empty(t, stream.snapshot())
+
+	results <- etcdproxy.WatchResult{Created: true, Revision: 99}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	created := stream.snapshot()[0]
+	require.True(t, created.Created)
+	require.False(t, created.Canceled)
+	require.Equal(t, int64(0), created.WatchId)
+	require.Less(t, created.Header.Revision, int64(99), "leader acknowledgement must not skip buffered history")
+
+	results <- etcdproxy.WatchResult{Revision: 99, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT,
+		Kv: &mvccpb.KeyValue{
+			Key: []byte("/allowed"), Value: []byte("v"), CreateRevision: 99, ModRevision: 99, Version: 1,
+		},
+	}}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
+	require.Len(t, stream.snapshot()[1].Events, 1)
+
+	cancel()
+	require.Error(t, <-done)
 }
 
 func TestWatchContextCancellationDoesNotWaitForBlockedRecv(t *testing.T) {

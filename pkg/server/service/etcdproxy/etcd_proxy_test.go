@@ -58,12 +58,22 @@ func TestProxyTLSFallbackRequiresExplicitMixedMode(t *testing.T) {
 // and no ProgressRevision. This is what advances a quiet watch's progress across
 // the follower/proxy path.
 func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
+	created := clientv3.WatchResponse{
+		Header:  &etcdserverpb.ResponseHeader{Revision: 41},
+		Created: true,
+	}
+	got := watchResultFromResponse(created)
+	require.True(t, got.Created)
+	require.Equal(t, uint64(41), got.Revision)
+	require.Zero(t, got.ProgressRevision)
+	require.Empty(t, got.Events)
+
 	// Progress notify: no events, header revision set -> IsProgressNotify() true.
 	progress := clientv3.WatchResponse{
 		Header: &etcdserverpb.ResponseHeader{Revision: 42},
 	}
 	require.True(t, progress.IsProgressNotify())
-	got := watchResultFromResponse(progress)
+	got = watchResultFromResponse(progress)
 	require.Equal(t, uint64(42), got.ProgressRevision)
 	require.Zero(t, got.Revision)
 	require.Empty(t, got.Events)
@@ -795,10 +805,10 @@ func TestNextWatchRevision(t *testing.T) {
 // TestWatchOptionsForRangeRequestsProgressNotify guards that the proxy watch
 // requests progress notifications (needed for #63) across the range variants.
 func TestWatchOptionsForRangeRequestsProgressNotify(t *testing.T) {
-	// base opts: WithRev + WithPrevKV + WithProgressNotify = 3
-	require.Len(t, watchOptionsForRange(nil, 5), 3, "single-key watch: rev+prevkv+progress")
-	require.Len(t, watchOptionsForRange([]byte{}, 5), 4, "from-key watch adds WithFromKey")
-	require.Len(t, watchOptionsForRange([]byte("z"), 5), 4, "range watch adds WithRange")
+	// base opts: WithRev + WithPrevKV + WithProgressNotify + WithCreatedNotify = 4
+	require.Len(t, watchOptionsForRange(nil, 5), 4, "single-key watch: rev+prevkv+progress+created")
+	require.Len(t, watchOptionsForRange([]byte{}, 5), 5, "from-key watch adds WithFromKey")
+	require.Len(t, watchOptionsForRange([]byte("z"), 5), 5, "range watch adds WithRange")
 }
 
 func TestWaitProxyWatchReconnectStopsWithCaller(t *testing.T) {

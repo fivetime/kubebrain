@@ -1184,7 +1184,12 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 							break
 						}
 						select {
-						case outputCh <- WatchResult{Err: err}:
+						case outputCh <- WatchResult{
+							Err:             err,
+							Created:         wresp.Created,
+							Revision:        uint64(wresp.Header.Revision),
+							CompactRevision: wresp.CompactRevision,
+						}:
 						case <-ctx.Done():
 						}
 						return
@@ -1242,7 +1247,14 @@ func watchOptionsForRange(rangeEnd []byte, revision uint64) []clientv3.OpOption 
 	// WithProgressNotify makes the leader advertise its current revision even
 	// when the watched range is idle, so the proxy can advance its resume point
 	// and not lose the gap on a leader-change reconnect (#63).
-	opts := []clientv3.OpOption{clientv3.WithRev(int64(revision)), clientv3.WithPrevKV(), clientv3.WithProgressNotify()}
+	opts := []clientv3.OpOption{
+		clientv3.WithRev(int64(revision)),
+		clientv3.WithPrevKV(),
+		clientv3.WithProgressNotify(),
+		// The ingress follower must not expose a successful create before the
+		// leader has authoritatively authenticated and accepted it.
+		clientv3.WithCreatedNotify(),
+	}
 	if rangeEnd == nil {
 		return opts
 	}
@@ -1274,6 +1286,9 @@ func nextWatchRevision(current uint64, headerRev int64) uint64 {
 // so the proxy's FIFO copy preserves the guarantee. Any other response carries
 // converted events.
 func watchResultFromResponse(wresp clientv3.WatchResponse) WatchResult {
+	if wresp.Created {
+		return WatchResult{Created: true, Revision: uint64(wresp.Header.Revision)}
+	}
 	if wresp.IsProgressNotify() {
 		return WatchResult{ProgressRevision: uint64(wresp.Header.Revision)}
 	}

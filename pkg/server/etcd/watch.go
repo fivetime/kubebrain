@@ -74,6 +74,10 @@ func canceledWatchCreateResponse(revision uint64, reason string) *etcdserverpb.W
 type watchControlResponse struct {
 	resp *etcdserverpb.WatchResponse
 	done chan error
+	// ready gates a deferred control response whose final shape depends on an
+	// authoritative leader result. cancel lets stream teardown discard it.
+	ready  <-chan struct{}
+	cancel <-chan struct{}
 }
 
 type watchReceiveResult struct {
@@ -172,6 +176,14 @@ type watch struct {
 	// backend/proxy result stream. Unlike syncedRev, it is not initialized to
 	// StartRevision-1 for a future watch. Access atomically.
 	sourceRev uint64
+	// awaitAuthoritativeCreate is set only for a public Watch first received by
+	// a follower. Its first proxy generation must prove that the leader accepted
+	// the caller's credentials before this replica exposes Created.
+	awaitAuthoritativeCreate bool
+	createdRevision          uint64
+	authoritativeControl     *etcdserverpb.WatchResponse
+	authoritativeReady       chan struct{}
+	authoritativeDone        chan error
 }
 
 type periodicProgressState struct {
@@ -625,7 +637,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				r.StartRevision = int64(w.responseRevision()) + 1
 			}
 
-			w.start(watchCtx, r, uint64(progressStartRevision), quotaReserved, false)
+			w.start(watchCtx, r, uint64(progressStartRevision), quotaReserved, false, proxyInitialAuthorization)
 		} else if cancelRequest := msg.GetCancelRequest(); cancelRequest != nil {
 			// Match etcd's stream-local cancellation: removing an existing watch
 			// does not require a leader read barrier. Its terminal response reports
@@ -737,10 +749,10 @@ func watchAuthCancelReason(err error) string {
 }
 
 func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
-	w.start(c, r, uint64(r.StartRevision), false, true)
+	w.start(c, r, uint64(r.StartRevision), false, true, false)
 }
 
-func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, progressStartRevision uint64, quotaReserved, waitForCreated bool) {
+func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, progressStartRevision uint64, quotaReserved, waitForCreated, awaitAuthoritativeCreate bool) {
 	w.Lock()
 	ctx, cancel := context.WithCancel(c)
 	releaseReservedQuota := func() {
@@ -810,11 +822,12 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		// These fields exist only for diagnostics. Keep their retained size and
 		// eventual log output bounded instead of holding another full copy of
 		// client-controlled watch keys for the lifetime of the stream.
-		start:                 loggedWatchKey(r.Key),
-		end:                   loggedWatchKey(r.RangeEnd),
-		quotaHeld:             quotaReserved,
-		progressStartRevision: progressStartRevision,
-		syncedRev:             initSyncedRev,
+		start:                    loggedWatchKey(r.Key),
+		end:                      loggedWatchKey(r.RangeEnd),
+		quotaHeld:                quotaReserved,
+		progressStartRevision:    progressStartRevision,
+		syncedRev:                initSyncedRev,
+		awaitAuthoritativeCreate: awaitAuthoritativeCreate,
 	}
 	w.watches[id] = generation
 	watchCount := len(w.watches)
@@ -831,6 +844,7 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 	// could skip events. The published revision is at/below every still-in-flight
 	// event (see initSyncedRev above), so it is a safe, non-skipping resume floor.
 	createdRev := w.responseRevision()
+	generation.createdRevision = createdRev
 	if r.StartRevision == 0 {
 		// Register from-now watches as an explicit historical watch from the
 		// created watermark forward. Send(Created) happens before the backend
@@ -839,6 +853,34 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		// Replaying from createdRev+1 closes that gap; backend.Watch installs its
 		// live subscriber before scanning history, so the handoff is lossless.
 		r.StartRevision = int64(createdRev) + 1
+	}
+	if awaitAuthoritativeCreate {
+		generation.authoritativeControl = &etcdserverpb.WatchResponse{}
+		generation.authoritativeReady = make(chan struct{})
+		generation.authoritativeDone = make(chan error, 1)
+		select {
+		case w.controlCh <- watchControlResponse{
+			resp:   generation.authoritativeControl,
+			done:   generation.authoritativeDone,
+			ready:  generation.authoritativeReady,
+			cancel: ctx.Done(),
+		}:
+		case <-ctx.Done():
+			w.rejectAuthoritativeCreate(id, generation, ctx.Err(), 0)
+			return
+		}
+		w.wg.Add(1)
+		w.metricCli.EmitCounter("watch.watch", 1)
+		go w.watchGeneration(ctx, id, r, generation)
+		klog.InfoS("watch awaiting authoritative create", "id", id, "count", watchCount, "key", loggedWatchKey(r.Key), "revision", r.StartRevision)
+		// Preserve request/control ordering on the multiplexed stream. The receive
+		// pump remains live, but the next request is not applied until this create
+		// has become either a successful Created or a terminal create rejection.
+		select {
+		case <-generation.authoritativeReady:
+		case <-ctx.Done():
+		}
+		return
 	}
 	createdDone, err := w.sendControlWithCompletion(&etcdserverpb.WatchResponse{
 		Header:  txnHeader(int64(createdRev)),
@@ -875,6 +917,44 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		go waitAndStartGeneration()
 	}
 	klog.InfoS("watch start", "id", id, "count", watchCount, "key", loggedWatchKey([]byte(key)), "revision", r.StartRevision)
+}
+
+func (w *watcher) rejectAuthoritativeCreate(id int64, generation *watch, err error, compactRevision int64) {
+	if generation == nil || !generation.closing.CompareAndSwap(false, true) {
+		return
+	}
+	w.Lock()
+	if w.watches[id] == generation {
+		delete(w.watches, id)
+	}
+	quotaHeld := generation.quotaHeld
+	generation.quotaHeld = false
+	w.Unlock()
+	if quotaHeld {
+		w.grpcServer.releaseWatch()
+	}
+	reason := err.Error()
+	if compactRevision > 0 {
+		reason = ""
+	}
+	if errors.Is(err, rpctypes.ErrInvalidAuthToken) || errors.Is(err, rpctypes.ErrAuthOldRevision) ||
+		errors.Is(err, rpctypes.ErrUserEmpty) || errors.Is(err, rpctypes.ErrPermissionDenied) {
+		reason = watchAuthCancelReason(err)
+	}
+	response := canceledWatchCreateResponse(w.responseRevision(), reason)
+	response.CompactRevision = compactRevision
+	if generation.authoritativeControl != nil {
+		*generation.authoritativeControl = *response
+		close(generation.authoritativeReady)
+		if generation.cancel != nil {
+			generation.cancel()
+		}
+		return
+	}
+	if generation.cancel != nil {
+		generation.cancel()
+	}
+	_ = w.SendControl(response)
 }
 
 // allocateWatchIDLocked selects an ID while w is locked.
@@ -1075,6 +1155,16 @@ func (w *watcher) sendControlWithCompletion(resp *etcdserverpb.WatchResponse) (<
 func (w *watcher) sendControls() {
 	defer w.controlWG.Done()
 	for control := range w.controlCh {
+		if control.ready != nil {
+			select {
+			case <-control.ready:
+			case <-control.cancel:
+				if control.done != nil {
+					control.done <- context.Canceled
+				}
+				continue
+			}
+		}
 		start := time.Now()
 		err := w.Send(control.resp)
 		emitWatchSendLoopControlStreamDuration(w.metricCli, time.Since(start))
@@ -1155,8 +1245,45 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 	if err != nil {
 		w.metricCli.EmitCounter("watch.backend.err", 1)
 		klog.ErrorS(err, "[watch stream] cancel due to backend watch err", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "end", loggedWatchKey(r.RangeEnd), "rev", r.StartRevision)
-		w.CancelGeneration(id, wt, err, isWatchCompactedError(err))
+		if wt.awaitAuthoritativeCreate {
+			w.rejectAuthoritativeCreate(id, wt, err, 0)
+		} else {
+			w.CancelGeneration(id, wt, err, isWatchCompactedError(err))
+		}
 		return
+	}
+	if wt.awaitAuthoritativeCreate {
+		select {
+		case result, ok := <-ch:
+			if !ok {
+				w.rejectAuthoritativeCreate(id, wt, errors.New("watch closed before authoritative create"), 0)
+				return
+			}
+			if result.Err != nil {
+				w.rejectAuthoritativeCreate(id, wt, result.Err, result.CompactRevision)
+				return
+			}
+			if !result.Created || result.ProgressRevision != 0 || len(result.Events) != 0 {
+				w.rejectAuthoritativeCreate(id, wt, errors.New("watch backend omitted authoritative create acknowledgement"), 0)
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+		*wt.authoritativeControl = etcdserverpb.WatchResponse{
+			Header: txnHeader(int64(wt.createdRevision)), Created: true, WatchId: id,
+		}
+		close(wt.authoritativeReady)
+		select {
+		case sendCreateErr := <-wt.authoritativeDone:
+			if sendCreateErr != nil {
+				w.CancelGeneration(id, wt, sendCreateErr, false)
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+		wt.awaitAuthoritativeCreate = false
 	}
 
 	var sendErr error
@@ -1262,6 +1389,18 @@ watchLoop:
 				klog.InfoS("[watch stream] watch channel error", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "err", result.Err)
 				w.CancelGeneration(id, wt, result.Err, isWatchCompactedError(result.Err))
 				return
+			}
+			if result.Created {
+				if localGeneration || result.ProgressRevision != 0 || len(result.Events) != 0 {
+					resultErr := errors.New("watch backend returned invalid create acknowledgement")
+					emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
+					w.CancelGeneration(id, wt, resultErr, false)
+					return
+				}
+				// Every proxy reconnect requests CreatedNotify. The logical watch was
+				// already exposed after its first authoritative acknowledgement, so
+				// later generation-local acknowledgements are internal-only.
+				continue
 			}
 			if resultErr := invalidWatchResultShape(result); resultErr != nil {
 				emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")

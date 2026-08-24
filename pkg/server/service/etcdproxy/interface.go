@@ -136,14 +136,17 @@ type RangeStreamResult struct {
 	Err      error
 }
 
-// WatchResult is exactly one of: an event batch (Events set, Revision is the
-// store revision covered by the batch), an error (Err set), or a progress
-// notification (ProgressRevision > 0) — never a mix. Revision is independent of
-// visible events because server-side watch filters may remove some or all events
-// while the watch still advances through the batch.
+// WatchResult is exactly one of: a successful create acknowledgement (Created
+// set, Revision is the leader's response revision), an event batch (Events set,
+// Revision is the store revision covered by the batch), an error (Err set), or
+// a progress notification (ProgressRevision > 0) — never a mix. Revision is
+// independent of visible events because server-side watch filters may remove
+// some or all events while the watch still advances through the batch.
 type WatchResult struct {
 	Events           []*mvccpb.Event
 	Err              error
+	Created          bool
 	Revision         uint64
 	ProgressRevision uint64
+	CompactRevision  int64
 }
