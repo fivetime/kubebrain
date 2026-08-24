@@ -91,6 +91,8 @@ type watcher struct {
 	sync.Mutex
 	sendMu sync.Mutex
 
+	directControlCh chan watchControlResponse
+
 	wg        sync.WaitGroup
 	controlWG sync.WaitGroup
 	backend   BackendShim
@@ -155,8 +157,9 @@ type watch struct {
 	start, end string
 	quotaHeld  bool
 	// closing is set before terminal cancellation work begins. The WatchId stays
-	// reserved in watches until its Canceled control is queued, preventing a new
-	// explicit create from overtaking a slow compact/error cancellation.
+	// reserved in watches until its Canceled control has completed the required
+	// send ordering, preventing a new explicit create from overtaking a slow
+	// compact/error cancellation.
 	closing atomic.Bool
 	// progressStartRevision is the client's requested progress floor. It normally
 	// equals WatchCreateRequest.StartRevision, except when a follower rewrites a
@@ -443,6 +446,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 	w.id = atomic.AddInt64(&watcherID, 1)
 	w.controlWG.Add(1)
 	go w.sendControls()
+	w.startDirectControls()
 	receiveNext := make(chan struct{})
 	receiveResults := make(chan watchReceiveResult)
 	receiveStop := make(chan struct{})
@@ -1054,17 +1058,20 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 		// Another follower create awaiting the leader's authoritative
 		// acknowledgement can occupy a deferred slot in controlCh. Do not let it
 		// withhold cancellation of this logical watch indefinitely.
-		// Send still serializes on sendMu, but it must not run in the request loop:
+		// The transport Send still serializes on sendMu, but it must not run in the request loop:
 		// a client that stops reading can otherwise prevent the server from
-		// receiving another cancellation on the same multiplexed stream. Retain
-		// the generation in watches until Send finishes so an explicit ID cannot
-		// be reused ahead of its terminal frame. Close starts only after the
-		// request loop returns, so this Add precedes its controlWG.Wait.
-		w.controlWG.Add(1)
-		go func() {
-			defer w.controlWG.Done()
-			w.finishCancel(id, generation, w.Send(response))
-		}()
+		// receiving another cancellation on the same multiplexed stream. A single
+		// stream-owned sender drains these bypass controls in request order; using
+		// one goroutine per cancellation would turn a non-reading client into an
+		// admission-limit-sized goroutine leak. Retain the generation in watches
+		// until Send finishes so an explicit ID cannot be reused ahead of its
+		// terminal frame.
+		if w.queueDirectControl(response, generation) {
+			return
+		}
+		// Direct-constructed watcher adapters do not own stream send loops. Keep
+		// their cancellation behavior synchronous.
+		w.finishCancel(id, generation, w.Send(response))
 		return
 	}
 	w.finishCancel(id, generation, w.SendControl(response))
@@ -1210,6 +1217,37 @@ func (w *watcher) sendControls() {
 	}
 }
 
+func (w *watcher) startDirectControls() {
+	w.directControlCh = make(chan watchControlResponse, watchControlBuffer)
+	w.controlWG.Add(1)
+	go w.sendDirectControls()
+}
+
+func (w *watcher) queueDirectControl(resp *etcdserverpb.WatchResponse, generation *watch) bool {
+	if w.directControlCh == nil {
+		return false
+	}
+	select {
+	case w.directControlCh <- watchControlResponse{resp: resp, generation: generation}:
+		return true
+	case <-w.watchServer.Context().Done():
+		return false
+	}
+}
+
+func (w *watcher) sendDirectControls() {
+	defer w.controlWG.Done()
+	for control := range w.directControlCh {
+		w.finishCancel(control.resp.WatchId, control.generation, w.Send(control.resp))
+	}
+}
+
+func (w *watcher) closeDirectControls() {
+	if w.directControlCh != nil {
+		close(w.directControlCh)
+	}
+}
+
 func (w *watcher) Close() {
 	w.metricCli.EmitCounter("watch.close", 1)
 	w.Lock()
@@ -1230,8 +1268,9 @@ func (w *watcher) Close() {
 	w.wg.Wait()
 	if w.controlCh != nil {
 		close(w.controlCh)
-		w.controlWG.Wait()
 	}
+	w.closeDirectControls()
+	w.controlWG.Wait()
 }
 
 func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCreateRequest) {

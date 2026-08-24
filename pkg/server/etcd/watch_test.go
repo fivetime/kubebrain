@@ -21,6 +21,8 @@ import (
 	"io"
 	"math"
 	"net"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -4133,6 +4135,12 @@ type blockedCancelSendWatchServer struct {
 	thirdRequestRead  chan struct{}
 }
 
+type blockedAllSendWatchServer struct {
+	*fakeWatchServer
+	entered chan struct{}
+	release chan struct{}
+}
+
 type contextIgnoringWatchServer struct {
 	*fakeWatchServer
 	entered chan struct{}
@@ -4166,6 +4174,30 @@ func (s *blockedCancelSendWatchServer) Send(resp *etcdserverpb.WatchResponse) er
 		}
 	}
 	return s.controllableWatchServer.Send(resp)
+}
+
+func (s *blockedAllSendWatchServer) Send(*etcdserverpb.WatchResponse) error {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-s.release:
+		return nil
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+}
+
+func goroutineStackOccurrences(needle string) int {
+	buffer := make([]byte, 64<<10)
+	for {
+		length := runtime.Stack(buffer, true)
+		if length < len(buffer) {
+			return strings.Count(string(buffer[:length]), needle)
+		}
+		buffer = make([]byte, len(buffer)*2)
+	}
 }
 
 func (s *blockedCancelSendWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
@@ -4494,6 +4526,69 @@ func TestFollowerCancelSendBackpressureDoesNotBlockSameStreamRequests(t *testing
 
 	cancel()
 	require.Error(t, <-done)
+}
+
+func TestFollowerCancelBackpressureUsesBoundedSenderGoroutines(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	release := make(chan struct{})
+	stream := &blockedAllSendWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: ctx},
+		entered:         make(chan struct{}, 1),
+		release:         release,
+	}
+	const cancellationCount = watchControlBuffer + 2
+	watches := make(map[int64]*watch, cancellationCount)
+	for id := int64(1); id <= cancellationCount; id++ {
+		watches[id] = &watch{cancel: func() {}, authoritativeControl: &etcdserverpb.WatchResponse{}}
+	}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: watches, metricCli: server.metricCli,
+	}
+	w.startDirectControls()
+	defer func() {
+		close(release)
+		w.closeDirectControls()
+		w.controlWG.Wait()
+	}()
+
+	for id := int64(1); id < cancellationCount; id++ {
+		w.CancelRequest(id)
+	}
+	select {
+	case <-stream.entered:
+	case <-time.After(time.Second):
+		t.Fatal("follower cancellation sender did not enter blocked Send")
+	}
+	require.Never(t, func() bool {
+		return goroutineStackOccurrences("(*watcher).cancel.func1") > 1
+	}, 100*time.Millisecond, time.Millisecond,
+		"output backpressure must not create one blocked sender goroutine per canceled watch")
+	require.Equal(t, 1, goroutineStackOccurrences("(*watcher).sendDirectControls"),
+		"one stream-owned sender must serialize the bounded cancellation backlog")
+	backpressured := make(chan struct{})
+	go func() {
+		w.CancelRequest(cancellationCount)
+		close(backpressured)
+	}()
+	require.Never(t, func() bool {
+		select {
+		case <-backpressured:
+			return true
+		default:
+			return false
+		}
+	}, 50*time.Millisecond, time.Millisecond,
+		"the fixed cancellation backlog must apply receive-side backpressure when full")
+	cancel()
+	select {
+	case <-backpressured:
+	case <-time.After(time.Second):
+		t.Fatal("stream cancellation did not release the bounded cancellation backlog")
+	}
 }
 
 func TestWatchContextCancellationDoesNotWaitForBlockedRecv(t *testing.T) {
