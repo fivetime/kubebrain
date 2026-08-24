@@ -61382,6 +61382,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   代码提交四片 139/171/153/146 全绿（Go 测试 121.585/341.682/218.475/351.316 秒；端到端
   128.526/349.100/225.682/358.870 秒）。
 
+- A5432 修复 A5431 之后仍存在的跨 WatchId 输出队头阻塞，并封堵 Cancel/Created 竞态。此前 follower stream 上
+  ID 701 已权威创建后，若 ID 702 的新 Create 一直等待 leader，ID 701 的 Cancel 虽会立即撤销其 backend/proxy
+  context，却仍排在 ID 702 的 deferred control slot 后，客户端无法收到终止帧。提交 `2da52dff` 将 client-requested
+  cancellation 的旁路严格限定为携带 A5430 权威占位对象的 follower logical Watch，并继续通过全局 `sendMu` 与事件
+  串行；本地 Watch 仍走原 control FIFO，Created→Canceled 和 signed/automatic ID 顺序不变。占位控制项新增 generation
+  绑定，成功 Created 在同一 `sendMu` 临界区通过 `SendWatch` 复核 map 身份与 `closing`：若 Cancel 先赢，只发 Canceled；
+  若 Created 先赢，则按 Created→Canceled 输出，绝不允许 Canceled 后出现迟到 Created。权威 PermissionDenied 等合法
+  Created+Canceled 拒绝帧不受成功 Created 栅栏误伤。新增双 Watch 确定性 RED：ID 702 永不获得 leader 响应时，ID 701
+  的代理取消与 wire cancellation 都必须在 1 秒内完成；旧实现无限扣留终止帧。关键成功/拒绝/同 ID/跨 ID 竞态集合
+  在 race 下连续 200 轮通过，全部 Watch 测试连续 10 轮通过，完整 server/proxy 包、diff check 与 609 项 inventory
+  校验通过。本项只隔离 multiplexed follower Watch 的控制面 liveness，不改变事件或 TiKV 数据语义。精确代码提交
+  四片 139/171/153/146 全绿（Go 测试 118.482/342.675/219.680/353.686 秒；端到端
+  124.396/348.611/225.494/359.548 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
