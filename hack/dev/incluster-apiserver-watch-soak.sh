@@ -21,7 +21,7 @@ ALLOW_WATCH_RESTARTS="${ALLOW_WATCH_RESTARTS:-0}"
 
 state_root="${ROOT_DIR}/.dev/incluster-apiserver-watch-soak"
 work_dir="${WORK_DIR:-${state_root}/${NAME}}"
-base_work_dir="${work_dir}/base"
+base_work_dir="${ROOT_DIR}/.dev/incluster-apiserver-smoke/${NAME}"
 kubeconfig_file="${work_dir}/kubeconfig"
 watch_file="${work_dir}/configmap-watch.jsonl"
 bootstrap_log="${work_dir}/bootstrap.log"
@@ -102,7 +102,7 @@ if [[ -e "$canonical_work_dir" ]]; then
   exit 1
 fi
 work_dir="$canonical_work_dir"
-base_work_dir="${work_dir}/base"
+base_work_dir="${ROOT_DIR}/.dev/incluster-apiserver-smoke/${NAME}"
 kubeconfig_file="${work_dir}/kubeconfig"
 watch_file="${work_dir}/configmap-watch.jsonl"
 bootstrap_log="${work_dir}/bootstrap.log"

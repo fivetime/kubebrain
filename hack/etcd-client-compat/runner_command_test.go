@@ -2162,6 +2162,23 @@ func TestInClusterAPIServerWatchRejectsSharedWorkDirBeforeStartingBase(t *testin
 	require.NotContains(t, string(output), "Starting in-cluster kube-apiserver")
 }
 
+func TestInClusterAPIServerBaseRejectsSharedWorkDirBeforeClusterAccess(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	sharedWorkDir := filepath.Join(repoRoot, ".dev", "incluster-apiserver-smoke")
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "incluster-apiserver-smoke.sh")}, []string{
+		"ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true",
+		"ETCD_PREFIX=/registry-kubebrain-incluster-apiserver-owned",
+		"MANAGEMENT_ENDPOINT=http://172.18.0.2:30079",
+		"KUBE_CONTEXT=kind-owned",
+		"CLUSTER_NAME=owned",
+		"NAME=owned-base",
+		"WORK_DIR=" + sharedWorkDir,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "WORK_DIR must be a unique child")
+	require.NotContains(t, string(output), "missing required command: docker")
+}
+
 func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	data, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "owned-endpoint-runner-contracts.txt"))
@@ -2245,7 +2262,13 @@ func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 
 	inClusterBaseData, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "incluster-apiserver-smoke.sh"))
 	require.NoError(t, err)
-	require.Contains(t, string(inClusterBaseData), `status=70`)
+	inClusterBaseContent := string(inClusterBaseData)
+	require.Contains(t, inClusterBaseContent, `status=70`)
+	require.Contains(t, inClusterBaseContent, `WORK_DIR="${WORK_DIR:-${STATE_ROOT}/${NAME}}"`)
+	require.Contains(t, inClusterBaseContent, `work_dir_created=false`)
+	require.Contains(t, inClusterBaseContent, `if [[ "$work_dir_created" == true ]]`)
+	require.Contains(t, inClusterBaseContent, `rm -rf -- "$WORK_DIR"`)
+	require.Contains(t, inClusterBaseContent, `umask 077`)
 }
 
 func TestAPIServerSmokeRejectsNonEmptyPrefixWithoutDeletingIt(t *testing.T) {

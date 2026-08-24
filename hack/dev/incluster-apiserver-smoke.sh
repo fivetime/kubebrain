@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 CLUSTER_NAME="${CLUSTER_NAME:-}"
@@ -15,7 +16,8 @@ ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE="${ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE:-false}"
 LOCAL_PORT="${LOCAL_PORT:-16448}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-180}"
-WORK_DIR="${WORK_DIR:-${ROOT_DIR}/.dev/incluster-apiserver-smoke}"
+STATE_ROOT="${ROOT_DIR}/.dev/incluster-apiserver-smoke"
+WORK_DIR="${WORK_DIR:-${STATE_ROOT}/${NAME}}"
 PKI_DIR="${WORK_DIR}/pki"
 KUBECONFIG_FILE="${WORK_DIR}/kubeconfig"
 LOG_FILE="${WORK_DIR}/kube-apiserver.log"
@@ -25,6 +27,7 @@ secret_created=false
 pod_created=false
 service_created=false
 log_owned=false
+work_dir_created=false
 prefix_owned=false
 baseline_lease_ids=""
 
@@ -77,6 +80,17 @@ for value in "$CLUSTER_NAME" "$NAMESPACE" "$NAME" "$BACKEND_SERVICE"; do
     exit 2
   fi
 done
+need realpath
+canonical_state_root="$(realpath -m "$STATE_ROOT")"
+canonical_work_dir="$(realpath -m "$WORK_DIR")"
+if [[ "$canonical_work_dir" == "$canonical_state_root" || "$canonical_work_dir" != "$canonical_state_root"/* ]]; then
+  echo "WORK_DIR must be a unique child of $canonical_state_root" >&2
+  exit 2
+fi
+if [[ -e "$canonical_work_dir" ]]; then
+  echo "refusing to reuse existing in-cluster apiserver WORK_DIR: $canonical_work_dir" >&2
+  exit 1
+fi
 
 list_lease_ids() {
   local output line declared_count
@@ -165,6 +179,12 @@ cleanup() {
       fi
     fi
   fi
+  if [[ "$work_dir_created" == true ]]; then
+    if ! rm -rf -- "$WORK_DIR"; then
+      echo "failed to delete owned in-cluster apiserver WORK_DIR: $WORK_DIR" >&2
+      cleanup_failed=1
+    fi
+  fi
   if [[ "$cleanup_failed" -ne 0 ]]; then
     status=70
   fi
@@ -246,8 +266,13 @@ fi
 baseline_lease_ids="$(list_lease_ids)"
 prefix_owned=true
 
-mkdir -p "$PKI_DIR"
-rm -rf "$PKI_DIR"
+mkdir -p "$canonical_state_root"
+mkdir -m 0700 "$canonical_work_dir"
+WORK_DIR="$canonical_work_dir"
+PKI_DIR="${WORK_DIR}/pki"
+KUBECONFIG_FILE="${WORK_DIR}/kubeconfig"
+LOG_FILE="${WORK_DIR}/kube-apiserver.log"
+work_dir_created=true
 docker cp "${NODE_NAME}:/etc/kubernetes/pki" "$PKI_DIR"
 
 cat >"$KUBECONFIG_FILE" <<EOF
