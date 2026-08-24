@@ -61368,6 +61368,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   139/171/153/146 全绿（Go 测试 121.098/345.107/221.754/357.298 秒；端到端
   126.923/351.014/227.666/363.199 秒）。
 
+- A5431 修复 A5430 权威握手引入的 multiplexed Watch stream 接收队头阻塞。A5430 为保持控制帧顺序，曾在
+  `watcher.start` 等待 `authoritativeReady`；当 leader 暂时不可达且首个 Create 长时间没有结果时，独立接收泵虽已
+  收到后续 Cancel，主循环却无法处理，客户端只能关闭整条 stream 才能停止待定代理 generation。提交 `5525ea77`
+  移除该接收侧等待：待解析 Created 占位帧仍先进入单一 control FIFO，故后续控制帧不会反超；generation 与 leader
+  握手异步进行，主循环立即继续处理同流请求。若客户端在权威 Created 前取消该显式 Watch ID，Cancel 立即撤销代理
+  context，发送循环丢弃从未公开的占位 Created，再输出正常 `Canceled`，不会制造成功创建或泄漏 admission quota。
+  新增确定性 RED：fake leader 永不应答，ID 707 的同流 Cancel 必须在 100ms 内传播到代理 context，且 wire 上只有
+  一个非 Created 的 ID 707 cancellation；修复前稳定超时，修复后普通关键集合连续 50 轮 2.709 秒、race 连续 50 轮
+  10.034 秒通过。两个原先依赖同步 Created 的 revision-fence/stale-freshness fixture 改用可控异步 stream 和显式 leader
+  Created acknowledgement，连续 20 轮通过；完整 server/proxy 包随后两次确认无失败，diff check 与 609 项 inventory
+  校验通过。本项只改善 follower failover 窗口内的 stream liveness，不改变公开 Watch 数据或 TiKV 存储语义。精确
+  代码提交四片 139/171/153/146 全绿（Go 测试 121.585/341.682/218.475/351.316 秒；端到端
+  128.526/349.100/225.682/358.870 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
