@@ -61308,6 +61308,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确代码提交四片 139/171/153/146 全绿（Go 测试 118.027/341.845/218.796/353.349 秒；端到端
   123.734/347.638/224.578/359.140 秒）。本项只收紧发布阶段 liveness，不改变 etcd API 或 TiKV 数据语义。
 
+- A5427 回到公开 Watch wire contract 做请求字段覆盖审计。Range/Txn 的 negative limit/revision、未知 sort/compare
+  enum、revision filters 与嵌套 operation validation 已有生成差分；新发现 raw `WatchCreateRequest.key` 为空时的
+  namespace 归一化只在实现注释和间接测试中存在，未由双端场景固定。对照
+  `/root/etcd@5cd9f4ee1/server/etcdserver/api/v3rpc/watch.go`：空 key 先变为最小 key `0x00`；空 `range_end`
+  仍是该 NUL key 的单点 watch，只有 `range_end={0}` 再归一为空上界、表示 `[0x00,+inf)`。提交 `af963c4c`
+  新增永久 raw gRPC differential：同一 stream 以显式 ID 801/802 创建两者，写入普通非空 key，只允许 802 收到
+  单个 PUT，并固定 key/value、event/header revision gap、created/canceled envelope 与 cluster/member/term 身份；
+  若把空 point 错当全范围，首个事件 ID 或后续控制帧会立即不等。KubeBrain bufconn 回归在真实 KV+Watch server
+  上连续 20 轮普通（包时间 0.312 秒）、10 轮 race（1.645 秒）通过；固定 reference etcd 临时单成员 oracle 的
+  reference 分支 0.024 秒通过，专用数据目录随后删除。compat module 编译/vet 与 server vet 通过。未提供本轮
+  disposable TiKV endpoint，故永久测试的 live 双端 equality 分支保留在有 `REFERENCE_ETCD_ENDPOINT` 和
+  `KUBEBRAIN_ETCD_ENDPOINT` 的正式门禁执行；本地 KubeBrain raw server 与真实 upstream oracle 已分别证明预期，
+  未发现需要修改产品数据路径的 RED。609 项 production inventory 不含这两个核心/嵌套模块测试，仍按精确提交
+  四片 139/171/153/146 全绿（Go 测试 117.814/343.797/219.686/355.731 秒；端到端
+  123.651/349.676/225.517/361.631 秒）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
