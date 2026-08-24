@@ -6991,6 +6991,25 @@ proposal commit 为 5.0–6.8 毫秒。随后同一精确 A5443 数据面镜像�
 133.612/355.565/233.207/375.502 秒，全部通过。该结论仍只覆盖单节点 Kind 上的独立
 3 PD/3 TiKV 环境，不替代跨节点/AZ、持续负载、专项 auth/quota 和故障代理门禁。
 
+### A5445：Auth 破坏性差分的广告 endpoint 前置门禁
+
+提交 `2b592133` 修复 `run-auth-differential.sh` 的破坏性准入缺口。此前 runner 只验证入口
+endpoint 与空白 keyspace，没有在启用 Auth、创建用户和 compact 前验证 MemberList 中所有
+非 learner 成员的广告 ClientURL。真实复现中入口 `172.18.0.2:30081` 可用，但清单仍广告已不存在的
+`172.18.0.3:30081`；旧 runner 完成大部分 Auth mutation 后，直到末尾 `endpoint health --cluster`
+才失败。现在 runner 在读取任何 Auth 状态和启动 reference etcd 前取得 MemberList，要求至少一个
+广告 URL，并以默认 5 秒 command timeout 逐个执行 proposal health；缺失或不可达立即 fail closed。
+命令级回归还固定失败发生在后续 Auth/user/role/lease 空白检查之前。
+
+将一次性辅助数据面切到新 `a5445-auth-admission` keyspace、精确镜像
+`kubebrain:a5443-84636b98` 并修正广告 URL 后，三副本零重启，完整
+`TestAuthDifferentialAgainstEtcd` 对 reference etcd
+`5cd9f4ee13801e18825d661e5005ae599460bc3a` 通过：Go 12.627 秒、端到端
+14.893 秒。完整 compat 模块 Go 4.406 秒、端到端 5.726 秒；611 项 inventory 为
+140/171/154/146，提交后四片 Go 时间 117.436/352.962/229.393/365.714 秒，端到端
+123.531/358.922/235.461/371.833 秒，全部通过。该门禁防止坏 endpoint 在测试中途才暴露，
+但不替代生产 MemberList ClientURL 的持续拨号监控或跨网络域验证。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 

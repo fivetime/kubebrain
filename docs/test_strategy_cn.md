@@ -30,6 +30,7 @@ KubeBrain 的目标不是"内部函数看起来对"，而是**"对 Kubernetes �
 - **协议边界**：对 protobuf 未知 enum 不凭直觉统一做严格拒绝；先用官方实例固定 wire、持久化和授权行为。例如 Auth `Permission.Type=99` 必须可原样 grant/get/revoke，但不能授予 READ/WRITE。
 - **测试方法**：`hack/etcd-client-compat/`（普通 live compat 用 `ENDPOINT=<node>:<nodeport> hack/etcd-client-compat/run.sh`）。runner 不再隐式连接 `127.0.0.1:3379`：必须显式设置 `KUBEBRAIN_ETCD_ENDPOINT`，或使用兼容别名 `ENDPOINT`。直接执行无 endpoint 的 `go test` 时 live 用例立即 skip，静态/runner 单测仍会运行。新增兼容性回归请加到这里。reference etcd 双端差分请用 `hack/etcd-client-compat/run-differential.sh` 或 `RUN_ETCD_CLIENT_DIFFERENTIAL=true hack/dev/verify.sh`，并只对一次性实例设置 destructive approval；普通 runner 会拒绝 reference/differential opt-in 环境变量，避免误跑 Compact 差分。差分 runner 接受裸 `host:port` 或 `http(s)://host:port`，会分别派生 HTTP gateway URL 和无 scheme 的 gRPC authority；不要在 endpoint 中附加 path、query 或 fragment。
 - **约定**：每个修复应优先在这里加一个**打真实 endpoint** 的黑盒用例（例如：超大 mod_revision 不冻结集群、空闲 watch 的 progress 不超前、慢 watcher 收到无缺口前缀、compact 后低版本读被拒为 compacted）。
+- **破坏性 Auth 差分**：`run-auth-differential.sh` 只允许空白的一次性 keyspace。除 auth revision、用户、角色、lease 和 key 为空外，runner 还会在任何 Auth mutation 前读取 MemberList，并逐个验证所有非 learner 广告 ClientURL 可从 runner 网络执行 proposal health；错误广告地址不得留到测试末尾才发现。
 
 ### 3. 内部单测（仅用于锁 bug，不替代 1/2）
 
