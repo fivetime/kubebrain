@@ -11,6 +11,7 @@ REFERENCE_PEER_URL="${REFERENCE_JWT_PEER_URL:-http://127.0.0.1:12380}"
 JWT_HS256_KEY_FILE="${JWT_HS256_KEY_FILE:-$ROOT_DIR/hack/etcd-client-compat/testdata/jwt-hs256-secret}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-2m}"
 GO_TEST_RACE="${GO_TEST_RACE:-false}"
+ADVERTISED_ENDPOINT_TIMEOUT="${ADVERTISED_ENDPOINT_TIMEOUT:-5s}"
 
 case "$GO_TEST_RACE" in
   true) race_args=(-race) ;;
@@ -65,6 +66,28 @@ if ! "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_JWT_ENDPOINT" endpoint health; then
   echo "disposable KubeBrain JWT endpoint health preflight failed: $KUBEBRAIN_JWT_ENDPOINT" >&2
   exit 1
 fi
+
+if ! member_list_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_JWT_ENDPOINT" member list -w json)"; then
+  echo "disposable KubeBrain JWT MemberList preflight failed: $KUBEBRAIN_JWT_ENDPOINT" >&2
+  exit 1
+fi
+mapfile -t advertised_client_urls < <(
+  jq -r '[.members[] | select((.name // "") != "" and ((.isLearner // false) | not)) | .clientURLs[]?] | unique[]' \
+    <<<"$member_list_json"
+)
+if [[ "${#advertised_client_urls[@]}" -eq 0 ]]; then
+  echo "disposable KubeBrain JWT MemberList preflight returned no advertised client URLs" >&2
+  exit 1
+fi
+for advertised_client_url in "${advertised_client_urls[@]}"; do
+  if ! "$ETCDCTL_BIN" \
+    --command-timeout="$ADVERTISED_ENDPOINT_TIMEOUT" \
+    --endpoints="$advertised_client_url" endpoint health >/dev/null; then
+    echo "disposable KubeBrain JWT advertised client URL is unreachable: $advertised_client_url" >&2
+    echo "publish client URLs reachable by the JWT differential runner before destructive approval" >&2
+    exit 1
+  fi
+done
 
 auth_status_json="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_JWT_ENDPOINT" auth status -w json)"
 if [[ "$(jq -r '.enabled // false' <<<"$auth_status_json")" != false ]]; then

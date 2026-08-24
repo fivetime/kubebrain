@@ -2,6 +2,7 @@ package compat
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -14,9 +15,53 @@ func TestJWTDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "auth revision must be 1")
 	require.Contains(t, string(script), "still has keys, users, roles, or leases")
 	require.Contains(t, string(script), "JWT HS256 key file is missing or empty")
+	require.Contains(t, string(script), "advertised client URL is unreachable")
 	require.Contains(t, string(script), "GO_TEST_RACE")
 	require.Contains(t, string(script), "find \"$data_dir\" -depth -delete")
 	require.Contains(t, string(script), "-run '^TestJWTAuthDifferentialAgainstReferenceEtcd$'")
+}
+
+func TestJWTDifferentialRunnerRejectsUnreachableAdvertisedClientURLBeforeMutation(t *testing.T) {
+	dir := t.TempDir()
+	fakeEtcd := writeFakeReferenceEtcd(t, dir)
+	fakeEtcdctl := filepath.Join(dir, "etcdctl")
+	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'Git SHA: d947b2086\n'
+  exit 0
+fi
+if [[ "$*" == *"member list -w json"* ]]; then
+  printf '%s\n' '{"members":[{"name":"kubebrain-0","clientURLs":["http://internal.invalid:3379"]}]}'
+  exit 0
+fi
+if [[ "$*" == *"--endpoints=http://internal.invalid:3379"* ]]; then
+  exit 1
+fi
+if [[ "$*" == *"auth status"* || "$*" == *"user list"* || "$*" == *"role list"* || "$*" == *"lease list"* ]]; then
+  echo "mutation-adjacent preflight reached" >&2
+  exit 9
+fi
+if [[ "$*" == *"endpoint health"* ]]; then
+  exit 0
+fi
+exit 1
+`), 0o755))
+	fakeCurl := filepath.Join(dir, "curl")
+	require.NoError(t, os.WriteFile(fakeCurl, []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
+
+	output, err := runCompatScriptCommand(t, "run-jwt-differential.sh", []string{
+		"PATH=" + dir + ":" + os.Getenv("PATH"),
+		"KUBEBRAIN_JWT_ETCD_ENDPOINT=127.0.0.1:24379",
+		"ALLOW_DESTRUCTIVE_JWT_DIFFERENTIAL=true",
+		"REFERENCE_ETCD_BIN=" + fakeEtcd,
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=d947b2086",
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "advertised client URL is unreachable")
+	require.Contains(t, string(output), "http://internal.invalid:3379")
+	require.NotContains(t, string(output), "mutation-adjacent preflight reached")
 }
 
 func TestJWTDifferentialRunnerRejectsInvalidRaceBeforeDependencies(t *testing.T) {
