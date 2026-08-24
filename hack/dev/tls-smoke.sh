@@ -20,6 +20,8 @@ AUTH_TOKEN_TTL="${AUTH_TOKEN_TTL:-300}"
 BACKUP_PREFIX="${BACKUP_PREFIX:-/registry/tls-smoke}"
 BACKUP_BATCH_SIZE="${BACKUP_BATCH_SIZE:-100}"
 APISERVER_SECURE_PORT="${APISERVER_SECURE_PORT:-16444}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+namespace_created=false
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -46,12 +48,36 @@ validate_bool_flag RUN_AUTH_CERT_SMOKE
 validate_bool_flag RUN_AUTH_TTL_ONLY
 validate_bool_flag RUN_CERT_ROTATION_SMOKE
 
+if [[ -z "$KUBE_CONTEXT" ]]; then
+  echo "KUBE_CONTEXT is required for TLS smoke" >&2
+  exit 2
+fi
+if [[ ! "$NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+  echo "invalid TLS smoke namespace: $NAMESPACE" >&2
+  exit 2
+fi
 need kubectl
 need openssl
 need go
 if [ "$RUN_CERT_ROTATION_SMOKE" = "true" ]; then
   need etcdctl
 fi
+resolved_context="$(command kubectl config get-contexts "$KUBE_CONTEXT" -o name 2>/dev/null || true)"
+if [[ "$resolved_context" != "$KUBE_CONTEXT" ]]; then
+  echo "KUBE_CONTEXT does not resolve exactly: $KUBE_CONTEXT" >&2
+  exit 1
+fi
+namespace_json="$(command kubectl --context "$KUBE_CONTEXT" get namespace "$NAMESPACE" -o json --ignore-not-found)" || {
+  echo "failed to inspect TLS smoke namespace in context $KUBE_CONTEXT: $NAMESPACE" >&2
+  exit 1
+}
+if [[ -n "$namespace_json" ]]; then
+  echo "refusing to reuse existing TLS smoke namespace: $NAMESPACE" >&2
+  exit 1
+fi
+kubectl() {
+  command kubectl --context "$KUBE_CONTEXT" "$@"
+}
 
 workdir="$(mktemp -d)"
 cleanup() {
@@ -64,7 +90,9 @@ cleanup() {
   if [ -n "${soak_pid:-}" ]; then
     kill "$soak_pid" >/dev/null 2>&1 || true
   fi
-  kubectl delete namespace "$NAMESPACE" --wait=false >/dev/null 2>&1 || true
+  if [[ "$namespace_created" == true ]]; then
+    kubectl delete namespace "$NAMESPACE" --wait=false >/dev/null 2>&1 || true
+  fi
   rm -rf "$workdir"
 }
 trap cleanup EXIT
@@ -192,7 +220,8 @@ openssl crl -in revoked.pem -outform DER -out revoked.crl
 openssl ca -gencrl -config crl-next.conf -out revoked-next.pem -batch >/dev/null 2>&1
 openssl crl -in revoked-next.pem -outform DER -out revoked-next.crl
 
-kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+kubectl create namespace "$NAMESPACE" >/dev/null
+namespace_created=true
 kubectl -n "$NAMESPACE" create secret generic kubebrain-client-tls \
   --from-file=tls.crt=tls.crt \
   --from-file=tls.key=tls.key \
@@ -462,7 +491,7 @@ run_rotation_gate() {
 set -uo pipefail
 log="${workdir}/rotation-gate-port-forward.log"
 : >"\$log"
-kubectl -n "${NAMESPACE}" port-forward service/kubebrain-client \
+kubectl --context '${KUBE_CONTEXT}' -n "${NAMESPACE}" port-forward service/kubebrain-client \
   "${ROTATION_GATE_LOCAL_PORT}:3379" >"\$log" 2>&1 &
 pf=\$!
 cleanup_gate_forward() {

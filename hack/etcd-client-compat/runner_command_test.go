@@ -1840,6 +1840,75 @@ func TestDefaultHAIndirectMutationFailsClosedBeforeToolDiscovery(t *testing.T) {
 	require.NotContains(t, string(output), "missing required command")
 }
 
+func TestDefaultOwnedKubernetesRunnersHaveSafetyContracts(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "owned-kubernetes-runner-contracts.txt"))
+	require.NoError(t, err)
+	contracts := 0
+	for lineNumber, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		require.Len(t, fields, 6, "owned Kubernetes manifest line %d", lineNumber+1)
+		caller, runFlag, defaultValue, callee, resource, contextEnv := fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]
+		require.Equal(t, "namespace", resource)
+		require.Equal(t, "KUBE_CONTEXT", contextEnv)
+
+		callerData, readErr := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(caller)))
+		require.NoError(t, readErr)
+		callerContent := string(callerData)
+		require.Contains(t, callerContent, runFlag+`="${`+runFlag+`:-`+defaultValue+`}"`)
+		require.Contains(t, callerContent, callee)
+
+		calleeData, readErr := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(callee)))
+		require.NoError(t, readErr)
+		calleeContent := string(calleeData)
+		require.Contains(t, calleeContent, `KUBE_CONTEXT="${KUBE_CONTEXT:-}"`)
+		require.Contains(t, calleeContent, "namespace_created=false")
+		require.Contains(t, calleeContent, `if [[ "$namespace_created" == true ]]`)
+		require.Contains(t, calleeContent, "refusing to reuse existing TLS smoke namespace")
+		require.NotContains(t, calleeContent, `create namespace "$NAMESPACE" --dry-run`)
+		contracts++
+	}
+	require.Positive(t, contracts)
+}
+
+func TestDefaultTLSRunnerRejectsPreexistingNamespaceWithoutDeletingIt(t *testing.T) {
+	fakeBin := t.TempDir()
+	logPath := filepath.Join(fakeBin, "kubectl.log")
+	fakeKubectl := filepath.Join(fakeBin, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_KUBECTL_LOG"
+if [[ "$*" == "config get-contexts kind-owned -o name" ]]; then
+  printf '%s\n' kind-owned
+  exit 0
+fi
+if [[ "$*" == "--context kind-owned get namespace occupied -o json --ignore-not-found" ]]; then
+  printf '%s\n' '{"metadata":{"name":"occupied"}}'
+  exit 0
+fi
+exit 99
+`), 0o755))
+	for _, tool := range []string{"go", "openssl", "etcdctl"} {
+		require.NoError(t, os.WriteFile(filepath.Join(fakeBin, tool), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755))
+	}
+
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "tls-smoke.sh")}, []string{
+		"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+		"FAKE_KUBECTL_LOG=" + logPath,
+		"KUBE_CONTEXT=kind-owned",
+		"NAMESPACE=occupied",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing to reuse existing TLS smoke namespace: occupied")
+	logData, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	require.NotContains(t, string(logData), "delete namespace")
+	require.NotContains(t, string(logData), "create namespace")
+}
+
 func TestCompatSuiteRunnerRejectsReferenceDifferentialOptIns(t *testing.T) {
 	for _, envVar := range []string{
 		"REFERENCE_ETCD_ENDPOINT",
