@@ -19,6 +19,8 @@ func TestDirectReplicaConsistencyRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "changed the live alarm set")
 	require.Contains(t, string(script), "test package failed with status")
 	require.Contains(t, string(script), "TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas")
+	require.Contains(t, string(script), "TestMaintenanceHashKVSemantics")
+	require.Contains(t, string(script), "TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites")
 	require.Contains(t, string(script), "TestHashKVCompactionConvergesAcrossKubeBrainReplicas")
 	require.Contains(t, string(script), "TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction")
 	require.Contains(t, string(script), "TestPhysicalCompactionUnderTraffic")
