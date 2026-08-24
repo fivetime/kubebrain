@@ -118,6 +118,49 @@ func TestEmitMetrics(t *testing.T) {
 	ast.NoError(err)
 }
 
+func TestEmitMetricLabelMismatchReturnsErrorInsteadOfPanicking(t *testing.T) {
+	newRegistry := prometheus.NewRegistry()
+	registerer, gather = newRegistry, newRegistry
+	defer func() {
+		registerer, gather = prometheus.DefaultRegisterer, prometheus.DefaultGatherer
+	}()
+
+	p := NewMetrics(metrics.Tag("cluster", "test"))
+	for _, tc := range []struct {
+		name string
+		emit func(string, ...metrics.T) error
+	}{
+		{name: "counter", emit: func(name string, tags ...metrics.T) error {
+			return p.EmitCounter(name, 1, tags...)
+		}},
+		{name: "gauge", emit: func(name string, tags ...metrics.T) error {
+			return p.EmitGauge(name, 1, tags...)
+		}},
+		{name: "histogram", emit: func(name string, tags ...metrics.T) error {
+			return p.EmitHistogram(name, 1, tags...)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := "label_mismatch_" + tc.name
+			assert.NoError(t, tc.emit(name, metrics.Tag("addr", "")))
+			var emitErr error
+			assert.NotPanics(t, func() {
+				emitErr = tc.emit(name)
+			})
+			assert.ErrorContains(t, emitErr, "inconsistent label cardinality")
+		})
+	}
+
+	assert.NoError(t, p.(metrics.HistogramRegistrar).RegisterHistogram(
+		"label_mismatch_registered_histogram", metrics.Tag("stage", ""),
+	))
+	var registerErr error
+	assert.NotPanics(t, func() {
+		registerErr = p.(metrics.HistogramRegistrar).RegisterHistogram("label_mismatch_registered_histogram")
+	})
+	assert.ErrorContains(t, registerErr, "inconsistent label cardinality")
+}
+
 func TestBackendCommitHistogramUsesUpstreamBuckets(t *testing.T) {
 	newRegistry := prometheus.NewRegistry()
 	registerer, gather = newRegistry, newRegistry

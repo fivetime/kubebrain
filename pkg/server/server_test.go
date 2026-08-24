@@ -762,7 +762,8 @@ func TestLeaderElectionMetricsInitializedBeforeCampaign(t *testing.T) {
 	s.initLeaderElectionMetrics()
 
 	require.Equal(t, []healthMetricEvent{
-		{kind: "counter", name: "leader.election.lost", value: 0},
+		{kind: "counter", name: "leader.election.lost", value: 0,
+			tags: []metrics.T{metrics.Tag("addr", "")}},
 		{kind: "counter", name: "leader.election.initialize.err", value: 0},
 		{kind: "counter", name: "leader.election.initialize.incompatible_witness", value: 0},
 		{kind: "counter", name: "leader.election.initialize.invalid_alarm_metadata", value: 0},

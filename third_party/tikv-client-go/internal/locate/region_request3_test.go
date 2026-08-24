@@ -166,6 +166,57 @@ func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadSelectsProtectedI
 	s.NotNil(rpcCtx)
 }
 
+func (s *testRegionRequestToThreeStoresSuite) TestProtectCachedRegionRebuildsCompleteSeededVoterRoute() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("key"))
+	s.NoError(err)
+	active := s.cache.GetCachedRegionWithRLock(loc.Region)
+	s.NotNil(active)
+	full := active.getStore()
+	s.Len(full.accessIndex[tiKVOnly], 3)
+
+	// Active traffic may leave a usable leader route while its local store view
+	// is incomplete. Checkpoint protection must use the immutable Region metadata
+	// plus the pre-seeded Store directory, rather than freezing that partial view.
+	partial := full.clone()
+	partial.stores = []*Store{full.stores[0]}
+	partial.storeEpochs = []uint32{full.storeEpochs[0]}
+	partial.accessIndex[tiKVOnly] = []int{0}
+	partial.accessIndex[tiFlashOnly] = nil
+	partial.workTiKVIdx = 0
+	active.setStore(partial)
+
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("key")}))
+	protected := s.cache.getProtectedRegion(loc.Region)
+	s.NotNil(protected)
+	s.Len(protected.getStore().accessIndex[tiKVOnly], 3)
+	storeIDs := make(map[uint64]struct{}, 3)
+	for _, store := range protected.getStore().stores {
+		storeIDs[store.storeID] = struct{}{}
+	}
+	for _, storeID := range s.storeIDs {
+		s.Contains(storeIDs, storeID)
+	}
+}
+
+func (s *testRegionRequestToThreeStoresSuite) TestProtectCachedRegionExcludesUnverifiedLearner() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("key"))
+	s.NoError(err)
+	active := s.cache.GetCachedRegionWithRLock(loc.Region)
+	s.NotNil(active)
+	s.Len(active.meta.Peers, 3)
+	active.meta.Peers[2].Role = metapb.PeerRole_Learner
+
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("key")}))
+	protected := s.cache.getProtectedRegion(loc.Region)
+	s.NotNil(protected)
+	s.Len(protected.meta.Peers, 2)
+	s.Len(protected.getStore().accessIndex[tiKVOnly], 2)
+	for _, peer := range protected.meta.Peers {
+		s.NotEqual(metapb.PeerRole_Learner, peer.GetRole())
+		s.False(peer.GetIsWitness())
+	}
+}
+
 func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadFailsAfterProtectedReplicasAreExhausted() {
 	loc, err := s.cache.LocateKey(s.bo, []byte("key"))
 	s.NoError(err)
@@ -196,8 +247,43 @@ func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadFailsAfterProtect
 	)
 	s.Nil(resp)
 	s.ErrorContains(err, "exhausted its cached replicas")
+	s.ErrorContains(err, "RPC failed: partitioned")
 	s.Equal(int32(3), attempts.Load())
 	s.Len(addresses, 3)
+}
+
+func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadReportsPerReplicaFailureReasons() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("key"))
+	s.NoError(err)
+	s.NoError(s.cache.ProtectCachedRegions([][]byte{[]byte("key")}))
+
+	var attempts atomic.Int32
+	s.regionRequestSender.client = &fnClient{fn: func(
+		_ context.Context, _ string, _ *tikvrpc.Request, _ time.Duration,
+	) (*tikvrpc.Response, error) {
+		if attempts.Add(1) < 3 {
+			return nil, errors.New("partitioned")
+		}
+		return &tikvrpc.Response{Resp: &kvrpcpb.GetResponse{RegionError: &errorpb.Error{
+			DataIsNotReady: &errorpb.DataIsNotReady{RegionId: loc.Region.GetID(), PeerId: 77, SafeTs: 41},
+		}}}, nil
+	}}
+	unreachableFn := func(*Store, *retry.Backoffer) livenessState { return unreachable }
+	s.cache.testingKnobs.mockRequestLiveness.Store((*livenessFunc)(&unreachableFn))
+
+	seed := uint32(0)
+	req := tikvrpc.NewReplicaReadRequest(tikvrpc.CmdGet, &kvrpcpb.GetRequest{
+		Key: []byte("key"), Version: 42,
+	}, kv.ReplicaReadMixed, &seed)
+	req.CacheOnlyRegionRead = true
+	resp, _, _, err := s.regionRequestSender.SendReqCtx(
+		s.bo, req, loc.Region, client.ReadTimeoutShort, tikvrpc.TiKV,
+	)
+	s.Nil(resp)
+	s.ErrorContains(err, "exhausted its cached replicas")
+	s.ErrorContains(err, "RPC failed: partitioned")
+	s.ErrorContains(err, "data is not ready (peer 77, safeTS 41)")
+	s.Equal(int32(3), attempts.Load())
 }
 
 func (s *testRegionRequestToThreeStoresSuite) TestCacheOnlyReadBoundsEachReplicaAttempt() {

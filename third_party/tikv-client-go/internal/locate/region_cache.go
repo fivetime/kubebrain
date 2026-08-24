@@ -1096,26 +1096,16 @@ func (c *RegionCache) ProtectCachedRegions(starts [][]byte) error {
 		if r == nil {
 			return errors.Errorf("cannot protect uncached Region route for key %q", util.HexRegionKeyStr(start))
 		}
-		id := r.VerID()
+		protected, err := c.newProtectedRegion(r.meta, r.GetLeaderStoreID())
+		if err != nil {
+			return errors.Wrapf(err, "cannot protect Region route for key %q", util.HexRegionKeyStr(start))
+		}
+		id := protected.VerID()
 		if _, exists := regions[id]; exists {
 			continue
 		}
-		clone := &Region{
-			meta:       proto.Clone(r.meta).(*metapb.Region),
-			syncFlag:   updated,
-			lastAccess: time.Now().Unix(),
-		}
-		protectedStore := r.getStore().clone()
-		for i, store := range protectedStore.stores {
-			// The active Region entry may intentionally retain an older epoch until
-			// PD reloads it. A protected route snapshots already-resolved Store
-			// addresses now, so bind its candidates to the Store epochs observed at
-			// protection time instead of inheriting that stale invalidation fence.
-			protectedStore.storeEpochs[i] = atomic.LoadUint32(&store.epoch)
-		}
-		clone.setStore(protectedStore)
-		regions[id] = clone
-		sorted.ReplaceOrInsert(clone)
+		regions[id] = protected
+		sorted.ReplaceOrInsert(protected)
 	}
 	c.protected.Lock()
 	c.protected.regions = regions
@@ -1177,14 +1167,17 @@ func (c *RegionCache) newProtectedRegion(meta *metapb.Region, preferredStoreID u
 	}
 	availablePeers := region.meta.Peers[:0]
 	for _, peer := range region.meta.Peers {
+		// Checkpoint readiness is proved against non-witness voter Stores. Learners
+		// and witnesses are deliberately outside that proof and must never become a
+		// protected snapshot candidate.
+		if peer.IsWitness || peer.GetRole() == metapb.PeerRole_Learner {
+			continue
+		}
 		c.storeMu.RLock()
 		store := c.storeMu.stores[peer.StoreId]
 		c.storeMu.RUnlock()
 		if store == nil || store.getResolveState() != resolved || store.GetAddr() == "" {
 			return nil, errors.Errorf("protected Region %d Store %d is not seeded", region.GetID(), peer.StoreId)
-		}
-		if peer.IsWitness && peer.StoreId != preferredStoreID {
-			continue
 		}
 		availablePeers = append(availablePeers, peer)
 		switch store.storeType {

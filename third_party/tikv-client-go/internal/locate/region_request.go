@@ -108,6 +108,10 @@ type RegionRequestSender struct {
 	replicaSelector   *replicaSelector
 	failStoreIDs      map[uint64]struct{}
 	failProxyStoreIDs map[uint64]struct{}
+	// cacheOnlyFailures retains the bounded per-replica outcome for a protected
+	// snapshot request. Without it, the terminal "exhausted" error hides whether
+	// the only reachable peer was behind the published checkpoint timestamp.
+	cacheOnlyFailures []string
 	// disableMergeRecovery prevents a metadata probe from recursively issuing
 	// another probe when its candidate Region is stale too.
 	disableMergeRecovery bool
@@ -1170,6 +1174,12 @@ func (s *RegionRequestSender) reset() {
 	s.replicaSelector = nil
 	s.failStoreIDs = nil
 	s.failProxyStoreIDs = nil
+	s.cacheOnlyFailures = nil
+}
+
+func (s *RegionRequestSender) recordCacheOnlyFailure(storeID uint64, format string, args ...interface{}) {
+	s.cacheOnlyFailures = append(s.cacheOnlyFailures,
+		fmt.Sprintf("store %d: %s", storeID, fmt.Sprintf(format, args...)))
 }
 
 // IsFakeRegionError returns true if err is fake region error.
@@ -1275,8 +1285,12 @@ func (s *RegionRequestSender) SendReqCtx(
 		}
 		if rpcCtx == nil {
 			if req.CacheOnlyRegionRead {
+				detail := strings.Join(s.cacheOnlyFailures, "; ")
+				if detail == "" {
+					detail = "no selectable protected replica"
+				}
 				return nil, nil, retryTimes, errors.Errorf(
-					"protected snapshot Region %d exhausted its cached replicas", regionID.GetID(),
+					"protected snapshot Region %d exhausted its cached replicas (%s)", regionID.GetID(), detail,
 				)
 			}
 			// TODO(youjiali1995): remove it when using the replica selector for all requests.
@@ -1333,6 +1347,8 @@ func (s *RegionRequestSender) SendReqCtx(
 		if regionErr != nil {
 			if req.CacheOnlyRegionRead {
 				if notReady := regionErr.GetDataIsNotReady(); notReady != nil {
+					s.recordCacheOnlyFailure(rpcCtx.Store.storeID,
+						"data is not ready (peer %d, safeTS %d)", notReady.GetPeerId(), notReady.GetSafeTs())
 					logutil.Logger(bo.GetCtx()).Warn(
 						"protected snapshot replica data is not ready",
 						zap.Uint64("regionID", notReady.GetRegionId()),
@@ -1796,6 +1812,9 @@ func (s *RegionRequestSender) onSendFail(
 	// TiKV RPC backoff only consumes the caller's bounded diagnostic deadline and
 	// cannot make this cache-only route fresher.
 	if cacheOnlyRegionRead {
+		if ctx != nil && ctx.Store != nil {
+			s.recordCacheOnlyFailure(ctx.Store.storeID, "RPC failed: %v", err)
+		}
 		return nil
 	}
 

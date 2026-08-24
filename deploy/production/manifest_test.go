@@ -133,6 +133,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Contains(t, args, "--max-watches=10000")
 			require.Equal(t, "/ready", nestedString(t, containerObject, "readinessProbe", "httpGet", "path"))
 			require.Equal(t, "/ping", nestedString(t, containerObject, "livenessProbe", "httpGet", "path"))
+			require.EqualValues(t, 3, nestedInt64(t, containerObject, "livenessProbe", "failureThreshold"))
 			require.Equal(t, "/ping", nestedString(t, containerObject, "startupProbe", "httpGet", "path"))
 			for _, probe := range []string{"readinessProbe", "livenessProbe", "startupProbe"} {
 				require.Equal(t, "HTTPS", nestedString(t, containerObject, probe, "httpGet", "scheme"))

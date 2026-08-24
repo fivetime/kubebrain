@@ -32,6 +32,7 @@ TIKV_NETEM_JITTER_MS="${TIKV_NETEM_JITTER_MS:-50}"
 TIKV_NETEM_LOSS_PERCENT="${TIKV_NETEM_LOSS_PERCENT:-2}"
 TIKV_NETEM_RATE="${TIKV_NETEM_RATE:-20mbit}"
 TIKV_PARTITION_POD="${TIKV_PARTITION_POD:-}"
+TIKV_QUORUM_PARTITION_PODS="${TIKV_QUORUM_PARTITION_PODS:-}"
 FAULT_READY_FILE="${FAULT_READY_FILE:-}"
 FAULT_RELEASE_FILE="${FAULT_RELEASE_FILE:-}"
 partition_pod_ip=""
@@ -585,9 +586,21 @@ partition_tikv_quorum() {
     exit 1
   fi
   cluster_json="$(kubectl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"
-  mapfile -t tikv_pods < <(jq -r '.status.tikv.stores | to_entries |
-    map(select(.value.state == "Up")) |
-    sort_by(.value.leaderCount) | reverse | .[0:2][] | .value.podName' <<<"$cluster_json")
+  if [[ -n "$TIKV_QUORUM_PARTITION_PODS" ]]; then
+    IFS=',' read -r -a tikv_pods <<<"$TIKV_QUORUM_PARTITION_PODS"
+    for pod in "${tikv_pods[@]}"; do
+      jq -e --arg pod "$pod" '
+        [.status.tikv.stores[] | select(.podName == $pod and .state == "Up")] | length == 1
+      ' <<<"$cluster_json" >/dev/null || {
+        echo "TIKV_QUORUM_PARTITION_PODS must name two Up TiKV stores: $TIKV_QUORUM_PARTITION_PODS" >&2
+        exit 1
+      }
+    done
+  else
+    mapfile -t tikv_pods < <(jq -r '.status.tikv.stores | to_entries |
+      map(select(.value.state == "Up")) |
+      sort_by(.value.leaderCount) | reverse | .[0:2][] | .value.podName' <<<"$cluster_json")
+  fi
   if [[ "${#tikv_pods[@]}" -ne 2 || "${tikv_pods[0]}" == "${tikv_pods[1]}" ]]; then
     echo "refusing TiKV quorum partition: need two distinct Up stores" >&2
     exit 1

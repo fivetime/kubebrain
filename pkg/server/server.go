@@ -979,7 +979,11 @@ func (s *server) initLeaderElectionMetrics() {
 	if s.metricCli == nil {
 		return
 	}
-	_ = s.metricCli.EmitCounter("leader.election.lost", 0)
+	// OnStoppedLeading records the previous holder as addr. Register the zero
+	// series with the same label set: Prometheus vectors cannot change their
+	// label cardinality after first use, and a mismatch must never turn an
+	// ordinary leadership loss into a process panic.
+	_ = s.metricCli.EmitCounter("leader.election.lost", 0, metrics.Tag("addr", ""))
 	_ = s.metricCli.EmitCounter("leader.election.initialize.err", 0)
 	_ = s.metricCli.EmitCounter("leader.election.initialize.incompatible_witness", 0)
 	_ = s.metricCli.EmitCounter("leader.election.initialize.invalid_alarm_metadata", 0)

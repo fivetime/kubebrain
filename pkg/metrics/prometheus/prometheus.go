@@ -74,29 +74,53 @@ func (pw *prometheusWrapper) GetGrpcServerOption() []grpc.ServerOption {
 
 // EmitCounter implements metrics.Metrics interface
 func (pw *prometheusWrapper) EmitCounter(name string, value interface{}, labels ...metrics.T) error {
-	flt, _ := convert2float64(value)
-	pw.mustGetCounterVec(name, labels).With(pw.labelsToMap(labels)).Add(flt)
+	flt, err := convert2float64(value)
+	if err != nil {
+		return err
+	}
+	counter, err := pw.mustGetCounterVec(name, labels).GetMetricWith(pw.labelsToMap(labels))
+	if err != nil {
+		return fmt.Errorf("get counter %q: %w", name, err)
+	}
+	counter.Add(flt)
 	return nil
 }
 
 // EmitGauge implements metrics.Metrics interface
 func (pw *prometheusWrapper) EmitGauge(name string, value interface{}, labels ...metrics.T) error {
-	flt, _ := convert2float64(value)
-	pw.mustGetGaugeVec(name, labels).With(pw.labelsToMap(labels)).Set(flt)
+	flt, err := convert2float64(value)
+	if err != nil {
+		return err
+	}
+	gauge, err := pw.mustGetGaugeVec(name, labels).GetMetricWith(pw.labelsToMap(labels))
+	if err != nil {
+		return fmt.Errorf("get gauge %q: %w", name, err)
+	}
+	gauge.Set(flt)
 	return nil
 }
 
 // EmitHistogram implements metrics.Metrics interface
 func (pw *prometheusWrapper) EmitHistogram(name string, value interface{}, labels ...metrics.T) error {
-	flt, _ := convert2float64(value)
-	pw.mustGetHistogramVec(name, labels).With(pw.labelsToMap(labels)).Observe(flt)
+	flt, err := convert2float64(value)
+	if err != nil {
+		return err
+	}
+	histogram, err := pw.mustGetHistogramVec(name, labels).GetMetricWith(pw.labelsToMap(labels))
+	if err != nil {
+		return fmt.Errorf("get histogram %q: %w", name, err)
+	}
+	histogram.Observe(flt)
 	return nil
 }
 
 // RegisterHistogram creates the labeled histogram child without adding a
 // sample, so Prometheus exposes its buckets/sum/count with count zero.
 func (pw *prometheusWrapper) RegisterHistogram(name string, labels ...metrics.T) error {
-	pw.mustGetHistogramVec(name, labels).With(pw.labelsToMap(labels))
+	_, err := pw.mustGetHistogramVec(name, labels).GetMetricWith(pw.labelsToMap(labels))
+	if err != nil {
+		return fmt.Errorf("register histogram %q: %w", name, err)
+	}
 	return nil
 }
 

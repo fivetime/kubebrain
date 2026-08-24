@@ -794,6 +794,8 @@ func TestBackendTiKVQuorumLossHelperIsRecoverable(t *testing.T) {
 	script := string(data)
 	require.Contains(t, script, `tikv-quorum-loss)`)
 	require.Contains(t, script, `sort_by(.value.leaderCount) | reverse | .[0:2][]`)
+	require.Contains(t, script, `IFS=',' read -r -a tikv_pods <<<"$TIKV_QUORUM_PARTITION_PODS"`)
+	require.Contains(t, script, `TIKV_QUORUM_PARTITION_PODS must name two Up TiKV stores`)
 	require.Contains(t, script, `dual_partition_pod_ips+=("$ip")`)
 	require.Contains(t, script, `node="$(kubectl -n "$TIDB_NAMESPACE" get pod "$pod" -o jsonpath='{.spec.nodeName}')"`)
 	require.Contains(t, script, `trap cleanup_dual_partition EXIT`)
