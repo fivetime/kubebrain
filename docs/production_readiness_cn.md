@@ -7637,6 +7637,28 @@ namespace/configmap/watch/list-selector/pagination/secret/Lease/Deployment 全�
 144.982/377.116/254.261/398.090 秒，全部通过。lease 差集回收要求受控 endpoint 在演练窗口不接受其他租户并发创建
 lease；共享生产 keyspace 上仍应使用独立租户 keyspace 或测试集群，而不是仅凭 mutation approval 运行。
 
+### A5472：apiserver watch-soak prefix、进程与 lease 守恒
+
+与 A5471 同族的 `apiserver-watch-soak.sh` 仍保留秒级隐式 prefix、启动前无空检查、EXIT 不清理 prefix/lease，以及固定
+PID 文件可被启动前 cleanup 接管的问题；它还被可选 verify、默认启用 watch 的 apiserver version matrix 和 rollout
+wrapper 间接调用。提交 `7b5b536a` 为其新增默认 false 的 `ALLOW_MUTATING_APISERVER_WATCH_SOAK`，要求显式唯一
+`/registry-kubebrain-apiserver-*` prefix，并使用固定 provenance 的 etcdctl。prefix 空前置通过后才获得 ownership；
+cleanup 只停止本轮持有的 watch/apiserver 进程，精确删除并复核 prefix，再按无损十六进制 lease 基线回收新增差集并要求
+集合完全恢复。失败路径的 namespace API cleanup 使用 5 秒 request timeout，避免 apiserver 失联阻塞后续底层回收；活跃
+PID 一律拒绝接管。
+
+verify 与 version matrix 分别传递纳秒唯一 prefix 和授权；rollout wrapper 的直接子调用也显式传递，两条 manifest 合同
+加一条 rollout 静态合同锁定调用关系。非空 prefix fake etcdctl 负测覆盖 smoke/watch-soak 两个 callee，均在 Docker 或
+apiserver 启动前拒绝，且日志无 delete。真实 main 数据面使用独立 prefix 执行 4 objects × 3 updates，12 个 MODIFIED
+事件全部收到，端到端 12 秒；外层 `set -euo pipefail` 证明最终 prefix count=0，且全量 KV、user、role、lease、alarm
+均与运行前相等。compat 全组 Go 6.711 秒。
+
+611 项 inventory 仍为 140/171/154/146；代码提交后四片 Go 时间
+134.772/365.075/240.802/381.944 秒，端到端时间 140.913/371.408/247.335/388.580 秒，全部通过。本项没有执行会
+重启共享 KubeBrain Deployment 的 rollout wrapper，也不把基础 watch-soak GREEN 当成 rollout 可用性证明；后者仍需
+独立 destructive/context 门禁和具备目标拓扑的 live 演练。lease 差集回收同样只适用于演练窗口无其他租户并发创建
+lease 的受控 endpoint。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
