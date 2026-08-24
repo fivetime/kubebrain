@@ -7038,6 +7038,35 @@ endpoint 与空白 keyspace，没有在启用 Auth、创建用户和 compact 前
 该证据关闭单次自动告警的语义与持久化门禁，不替代长期容量增长、并发跨成员超额写入、
 告警后端持续故障或真实磁盘耗尽演练。
 
+### A5447：JWT 破坏性差分的广告 endpoint 前置门禁
+
+提交 `6d2f1aa0` 将 A5445 的成员拓扑准入扩展到 JWT 专项 runner。此前 runner 只对入口
+endpoint 执行 health，随后就读取 Auth 状态、启动 reference etcd 并启用认证；MemberList 中
+任一非 learner 成员缺少或广告不可达 ClientURL 都可能在破坏性 mutation 之后才暴露。现在 runner
+先取得 MemberList，要求至少一个广告 URL，并以默认 5 秒 command timeout 对去重后的每个 URL
+执行 proposal health；缺失、查询失败或不可达均在 Auth 状态读取之前 fail closed。命令级回归用
+不可达 URL 固定该顺序，且禁止触达 auth/user/role/lease 的 mutation-adjacent preflight。
+
+真实准入负例使用精确镜像、全新 `a5447-jwt-restored` keyspace，将三成员 ClientURL 临时广告为
+不存在的 `http://172.18.0.3:30082`。入口 `.2` proposal health 成功后，runner 在 2.228 秒内因
+广告 endpoint DeadlineExceeded 退出 1，尚未读取 Auth 状态或启动测试。恢复 `.2` 后再次确认
+authRevision=1、认证关闭、key/user/role/lease 全空。
+
+精确提交镜像 `kubebrain:a5447-6d2f1aa0`（完整 revision
+`6d2f1aa0aea96a91d783dbe204309db61397dbc8`，本地 manifest list
+`sha256:784ea49de12b02b90566789b1b6ae3ab0c19063d4443cab0ec2e44808dc32b62`，Kind runtime digest
+`sha256:d841dc67c3d76e0487e822dfc67fba26031a5f5c3700a43b5f7651fec4dc55eb`）在全新
+`a5447-jwt-exact` keyspace 上完成完整 JWT 差分，对 reference etcd
+`5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 Go 时间为 4.517 秒、端到端 6.933 秒。
+JWT 三段 token、初始写入、RangeStream 跨 auth revision 的尾帧及 old-revision 错误、旧 token
+拒绝和重新认证写入全部一致。
+
+compat 全组 Go 4.328 秒、端到端 5.606 秒；611 项 inventory 为 140/171/154/146，代码提交后
+四片 Go 时间 122.286/353.975/230.812/366.513 秒，端到端时间
+128.264/359.994/236.887/372.585 秒，全部通过。最终 JWT 数据面保持同一精确镜像、可达广告
+URL 和干净 `a5447-jwt-restored` keyspace，3/3 Ready 且 restartCount 全 0。该门禁验证 runner
+所在网络域的瞬时可达性，不替代生产 ClientURL 持续监控、跨网络域路由或证书轮换验证。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
