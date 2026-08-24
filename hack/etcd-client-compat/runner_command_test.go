@@ -1514,6 +1514,7 @@ func TestEveryEtcdctlRunnerVerifiesProvenance(t *testing.T) {
 		"run-jwt-differential.sh",
 		"run-make-mirror-differential.sh",
 		"run-rangestream-compaction-differential.sh",
+		"run-rangestream-oversize-differential.sh",
 		"run-replica-restart-revision.sh",
 	}
 	for _, runner := range runners {
@@ -1607,6 +1608,7 @@ func TestRunnerPostflightsRemainReachableAfterTestFailure(t *testing.T) {
 		"run-jwt-differential.sh",
 		"run-make-mirror-differential.sh",
 		"run-rangestream-compaction-differential.sh",
+		"run-rangestream-oversize-differential.sh",
 		"run-replica-restart-revision.sh",
 	} {
 		t.Run(script, func(t *testing.T) {
