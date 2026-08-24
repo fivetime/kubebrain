@@ -7278,6 +7278,33 @@ Go 4.721 秒、端到端 6.081 秒；611 项 inventory 为 140/171/154/146，代
 最终 JWT 数据面保持同一精确镜像并恢复到全新 `a5455-jwt-restored` keyspace，authRevision/data revision
 均为 1，key/user/role/lease 全空，3/3 Ready 且 restartCount 全 0。
 
+### A5456：逐成员 MemberList 身份与 HashKV 映射专项
+
+提交 `ad263646` 新增 `TEST_SCOPE=memberlist-hash`，关闭
+`TestMaintenanceHashKVMatchesAcrossMembers` 只能手工设置环境、没有安全 runner 入口的缺口。测试仍严格要求
+MemberList 中每个成员恰好一个且全局唯一的 ClientURL；新增的三条 dial override 只解决外部 runner 无法解析
+集群 Pod DNS 的网络域差异，必须数量相同且唯一，并通过 Status 证明其 member ID 集合与 MemberList 精确相等，
+随后在同一 revision 要求三个成员 HashKV、cluster ID 完全一致。它不把共享 Service URL 改写成虚假的逐成员 URL。
+
+真实负例中，辅助集群显式广告共享 `http://172.18.0.2:30082`，runner 在写测试 key 前因三个重复 URL 退出 1。
+把显式覆盖错误替换为每 Pod 模板仍得到“当前响应副本 URL 复制给所有成员”，进一步确认该参数按设计是全成员共享
+覆盖。正确逐成员模式省略该参数，由相同 `initial-cluster` 的三个 peer host 派生 3379 client URL；MemberList 随即
+返回 `a4653-jwt-0/1/2` 三条唯一 Pod DNS。从 `a4653-jwt-0` Pod 网络域逐条执行 proposal health 全部通过，外部
+runner 再用三个独立 NodePort 映射验证 member ID/HashKV，Go 0.182 秒、端到端 1.885 秒通过。
+
+精确提交镜像 `kubebrain:a5456-ad263646`（完整 revision
+`ad263646782c8ea3d5c02df782dd7c13640d6011`，本地 manifest list
+`sha256:c28be3c0d09b3ee99a0742448e6a06bb70f8190e355cc3d25ff2eccf78e07ae9`，Kind runtime digest
+`sha256:13d9f5671a87c15609a21bd693887b892b52ce26efb1d36ac2661f5bab3eaefb`）在全新
+`a5456-memberlist-exact` keyspace 上再次完成三条 Pod DNS proposal health 和逐成员映射：Go 0.154 秒、
+端到端 1.939 秒。compat 全组 Go 4.856 秒、端到端 6.169 秒；611 项 inventory 为 140/171/154/146，
+代码提交后四片 Go 时间 121.529/347.967/223.791/363.421 秒，端到端时间
+127.518/353.945/229.855/369.451 秒，全部通过。
+
+辅助 JWT 数据面随后恢复共享入口模式、同一精确镜像和全新 `a5456-jwt-restored` keyspace，authRevision/data
+revision 均为 1，key/lease 全空，3/3 Ready 且 restartCount 全 0。共享 Service/LB 单入口与逐成员直连是两种
+不同有效拓扑：前者由 Sync 可达性门禁负责，后者由本专项证明身份和副本一致性；两者证据不可互相替代。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 
