@@ -209,7 +209,10 @@ if [ "$RUN_APISERVER_SMOKE" = "true" ]; then
 fi
 
 if [ "$RUN_INCLUSTER_APISERVER_SMOKE" = "true" ]; then
-  run_step "in-cluster kube-apiserver smoke" hack/dev/incluster-apiserver-smoke.sh
+  run_step "in-cluster kube-apiserver smoke" env \
+    ETCD_PREFIX="/registry-kubebrain-incluster-apiserver-verify-$(date +%s%N)" \
+    ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true \
+    hack/dev/incluster-apiserver-smoke.sh
 fi
 
 if [ "$RUN_TLS_SMOKE" = "true" ]; then
@@ -317,7 +320,10 @@ if [ "$RUN_APISERVER_WATCH_SOAK" = "true" ]; then
 fi
 
 if [ "$RUN_INCLUSTER_APISERVER_WATCH_SOAK" = "true" ]; then
-  run_step "in-cluster kube-apiserver watch soak" hack/dev/incluster-apiserver-watch-soak.sh
+  run_step "in-cluster kube-apiserver watch soak" env \
+    ETCD_PREFIX="/registry-kubebrain-incluster-apiserver-verify-watch-$(date +%s%N)" \
+    ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true \
+    hack/dev/incluster-apiserver-watch-soak.sh
 fi
 
 if [ "$RUN_APISERVER_VERSION_MATRIX" = "true" ]; then

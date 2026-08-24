@@ -8,7 +8,11 @@ NAMESPACE="${NAMESPACE:-kubebrain-dev}"
 NAME="${NAME:-kubebrain-incluster-apiserver-$(date +%s%N)}"
 APISERVER_IMAGE="${APISERVER_IMAGE:-registry.k8s.io/kube-apiserver:v1.36.1}"
 ENDPOINT="${ENDPOINT:-http://kubebrain.${NAMESPACE}.svc:3379}"
-ETCD_PREFIX="${ETCD_PREFIX:-/registry-${NAME}}"
+MANAGEMENT_ENDPOINT="${MANAGEMENT_ENDPOINT:-}"
+BACKEND_SERVICE="${BACKEND_SERVICE:-kubebrain}"
+ETCD_PREFIX="${ETCD_PREFIX:-}"
+ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
+ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE="${ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE:-false}"
 LOCAL_PORT="${LOCAL_PORT:-16448}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-180}"
 WORK_DIR="${WORK_DIR:-${ROOT_DIR}/.dev/incluster-apiserver-smoke}"
@@ -21,6 +25,8 @@ secret_created=false
 pod_created=false
 service_created=false
 log_owned=false
+prefix_owned=false
+baseline_lease_ids=""
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -42,6 +48,20 @@ validate_bool_flag() {
 }
 
 validate_bool_flag APISERVER_ONLY
+validate_bool_flag ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE
+
+if [[ "$ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE" != true ]]; then
+  echo "refusing shared-endpoint in-cluster apiserver writes without ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true" >&2
+  exit 1
+fi
+if [[ ! "$ETCD_PREFIX" =~ ^/registry-kubebrain-incluster-apiserver-[a-z0-9-]+$ ]]; then
+  echo "ETCD_PREFIX must be an explicit unique /registry-kubebrain-incluster-apiserver-* prefix" >&2
+  exit 2
+fi
+if [[ -z "$MANAGEMENT_ENDPOINT" ]]; then
+  echo "MANAGEMENT_ENDPOINT is required for in-cluster apiserver backend cleanup" >&2
+  exit 2
+fi
 
 if [[ -z "$KUBE_CONTEXT" ]]; then
   echo "KUBE_CONTEXT is required for in-cluster apiserver smoke" >&2
@@ -51,36 +71,111 @@ if [[ -z "$CLUSTER_NAME" ]]; then
   echo "CLUSTER_NAME is required for in-cluster apiserver smoke" >&2
   exit 2
 fi
-for value in "$CLUSTER_NAME" "$NAMESPACE" "$NAME"; do
+for value in "$CLUSTER_NAME" "$NAMESPACE" "$NAME" "$BACKEND_SERVICE"; do
   if [[ ! "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
     echo "invalid in-cluster apiserver resource name: $value" >&2
     exit 2
   fi
 done
 
+list_lease_ids() {
+  local output line declared_count
+  local -a lines ids
+  output="$("${ETCDCTL[@]}" lease list)" || return 1
+  mapfile -t lines <<<"$output"
+  if [[ ! "${lines[0]:-}" =~ ^found\ ([0-9]+)\ leases$ ]]; then
+    echo "unexpected etcdctl lease list header: ${lines[0]:-<empty>}" >&2
+    return 1
+  fi
+  declared_count="${BASH_REMATCH[1]}"
+  ids=()
+  for line in "${lines[@]:1}"; do
+    [[ -z "$line" ]] && continue
+    if [[ ! "$line" =~ ^[0-9a-fA-F]+$ ]]; then
+      echo "unexpected etcdctl lease ID: $line" >&2
+      return 1
+    fi
+    ids+=("${line,,}")
+  done
+  if [[ "${#ids[@]}" -ne "$declared_count" ]]; then
+    echo "etcdctl lease list count mismatch: declared=$declared_count parsed=${#ids[@]}" >&2
+    return 1
+  fi
+  if [[ "${#ids[@]}" -gt 0 ]]; then
+    printf '%s\n' "${ids[@]}" | sort
+  fi
+}
+
 cleanup() {
+  local status=$?
+  local cleanup_failed=0
+  trap - EXIT
   if [ -n "${pf_pid:-}" ] && kill -0 "$pf_pid" >/dev/null 2>&1; then
     kill "$pf_pid" >/dev/null 2>&1 || true
     wait "$pf_pid" 2>/dev/null || true
   fi
   if [[ "$service_created" == true ]]; then
-    "${KUBECTL[@]}" -n "$NAMESPACE" delete service "$NAME" --ignore-not-found=true >/dev/null 2>&1 || true
+    if ! "${KUBECTL[@]}" -n "$NAMESPACE" delete service "$NAME" --ignore-not-found=true >/dev/null; then
+      echo "failed to delete owned in-cluster apiserver Service: $NAMESPACE/$NAME" >&2
+      cleanup_failed=1
+    fi
   fi
   if [[ "$pod_created" == true ]]; then
-    "${KUBECTL[@]}" -n "$NAMESPACE" delete pod "$NAME" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+    if ! "${KUBECTL[@]}" -n "$NAMESPACE" delete pod "$NAME" --ignore-not-found=true --wait=true --timeout=60s >/dev/null; then
+      echo "failed to delete owned in-cluster apiserver Pod: $NAMESPACE/$NAME" >&2
+      cleanup_failed=1
+    fi
   fi
   if [[ "$secret_created" == true ]]; then
-    "${KUBECTL[@]}" -n "$NAMESPACE" delete secret "${NAME}-pki" --ignore-not-found=true >/dev/null 2>&1 || true
+    if ! "${KUBECTL[@]}" -n "$NAMESPACE" delete secret "${NAME}-pki" --ignore-not-found=true >/dev/null; then
+      echo "failed to delete owned in-cluster apiserver Secret: $NAMESPACE/${NAME}-pki" >&2
+      cleanup_failed=1
+    fi
   fi
   if [[ "$log_owned" == true ]]; then
     rm -f "$LOG_FILE"
   fi
+  if [[ "$prefix_owned" == true ]]; then
+    if ! "${ETCDCTL[@]}" del "$ETCD_PREFIX" --prefix >/dev/null; then
+      echo "failed to delete owned in-cluster apiserver prefix: $ETCD_PREFIX" >&2
+      cleanup_failed=1
+    elif ! prefix_response="$("${ETCDCTL[@]}" get "$ETCD_PREFIX" --prefix --limit=1 -w json)"; then
+      echo "failed to verify owned in-cluster apiserver prefix cleanup: $ETCD_PREFIX" >&2
+      cleanup_failed=1
+    elif [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$prefix_response")" != 0 ]]; then
+      echo "owned in-cluster apiserver prefix is not empty after cleanup: $ETCD_PREFIX" >&2
+      cleanup_failed=1
+    fi
+    if ! final_lease_ids="$(list_lease_ids)"; then
+      echo "failed to list leases after in-cluster apiserver smoke" >&2
+      cleanup_failed=1
+    else
+      while IFS= read -r lease_id; do
+        [[ -z "$lease_id" ]] && continue
+        if ! grep -Fxq "$lease_id" <<<"$baseline_lease_ids"; then
+          if ! "${ETCDCTL[@]}" lease revoke "$lease_id" >/dev/null; then
+            echo "failed to revoke in-cluster apiserver smoke lease: $lease_id" >&2
+            cleanup_failed=1
+          fi
+        fi
+      done <<<"$final_lease_ids"
+      if ! final_lease_ids="$(list_lease_ids)" || [[ "$final_lease_ids" != "$baseline_lease_ids" ]]; then
+        echo "in-cluster apiserver smoke lease set differs from preflight after cleanup" >&2
+        cleanup_failed=1
+      fi
+    fi
+  fi
+  if [[ "$cleanup_failed" -ne 0 && "$status" -eq 0 ]]; then
+    status=1
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
 
 need docker
 need kubectl
 need curl
+need jq
 resolved_context="$(kubectl config get-contexts "$KUBE_CONTEXT" -o name 2>/dev/null || true)"
 if [[ "$resolved_context" != "$KUBE_CONTEXT" ]]; then
   echo "KUBE_CONTEXT does not resolve exactly: $KUBE_CONTEXT" >&2
@@ -103,6 +198,53 @@ for resource in "secret/${NAME}-pki" "pod/$NAME" "service/$NAME"; do
     exit 1
   fi
 done
+
+service_port="$("${KUBECTL[@]}" -n "$NAMESPACE" get service "$BACKEND_SERVICE" -o jsonpath='{.spec.ports[?(@.name=="client")].port}')"
+service_node_port="$("${KUBECTL[@]}" -n "$NAMESPACE" get service "$BACKEND_SERVICE" -o jsonpath='{.spec.ports[?(@.name=="client")].nodePort}')"
+if [[ ! "$service_port" =~ ^[0-9]+$ || ! "$service_node_port" =~ ^[0-9]+$ ]]; then
+  echo "backend Service must expose named client port with a NodePort: $NAMESPACE/$BACKEND_SERVICE" >&2
+  exit 1
+fi
+expected_endpoint="http://${BACKEND_SERVICE}.${NAMESPACE}.svc:${service_port}"
+if [[ "$ENDPOINT" != "$expected_endpoint" ]]; then
+  echo "ENDPOINT must identify backend Service $NAMESPACE/$BACKEND_SERVICE: expected=$expected_endpoint got=$ENDPOINT" >&2
+  exit 1
+fi
+if [[ ! "$MANAGEMENT_ENDPOINT" =~ ^http://([^:/]+):([0-9]+)$ ]]; then
+  echo "MANAGEMENT_ENDPOINT must be an explicit http://host:port endpoint" >&2
+  exit 2
+fi
+management_host="${BASH_REMATCH[1]}"
+management_port="${BASH_REMATCH[2]}"
+node_ip="$(docker inspect "$NODE_NAME" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || true)"
+management_matches_service=false
+if [[ "$management_host" == "$node_ip" && "$management_port" == "$service_node_port" ]]; then
+  management_matches_service=true
+elif [[ "$management_host" == "127.0.0.1" || "$management_host" == "localhost" ]]; then
+  while IFS= read -r published_address; do
+    if [[ "$published_address" =~ ^([^:]+):${management_port}$ ]] &&
+      [[ "${BASH_REMATCH[1]}" == "127.0.0.1" || "${BASH_REMATCH[1]}" == "0.0.0.0" || "${BASH_REMATCH[1]}" == "::" ]]; then
+      management_matches_service=true
+    fi
+  done < <(docker port "$NODE_NAME" "${service_node_port}/tcp" 2>/dev/null || true)
+fi
+if [[ "$management_matches_service" != true ]]; then
+  echo "MANAGEMENT_ENDPOINT does not map to backend Service NodePort: endpoint=$MANAGEMENT_ENDPOINT service=$NAMESPACE/$BACKEND_SERVICE nodePort=$service_node_port" >&2
+  exit 1
+fi
+if [[ ! -x "$ETCDCTL_BIN" ]]; then
+  echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
+  exit 1
+fi
+REFERENCE_ETCD_BIN="$ETCDCTL_BIN" "$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"
+ETCDCTL=("$ETCDCTL_BIN" --endpoints="$MANAGEMENT_ENDPOINT")
+prefix_response="$("${ETCDCTL[@]}" get "$ETCD_PREFIX" --prefix --limit=1 -w json)"
+if [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$prefix_response")" != 0 ]]; then
+  echo "refusing non-empty in-cluster apiserver smoke prefix: $ETCD_PREFIX" >&2
+  exit 1
+fi
+baseline_lease_ids="$(list_lease_ids)"
+prefix_owned=true
 
 mkdir -p "$PKI_DIR"
 rm -rf "$PKI_DIR"

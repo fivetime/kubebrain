@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 NAMESPACE="${NAMESPACE:-kubebrain-dev}"
-NAME="${NAME:-kubebrain-incluster-apiserver-watch-$(date +%s)}"
+NAME="${NAME:-kubebrain-incluster-apiserver-watch-$(date +%s%N)}"
+ETCD_PREFIX="${ETCD_PREFIX:-/registry-kubebrain-incluster-apiserver-watch-$(date +%s%N)}"
+ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE="${ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE:-false}"
 LOCAL_PORT="${LOCAL_PORT:-16449}"
 OBJECTS="${OBJECTS:-20}"
 UPDATES="${UPDATES:-10}"
@@ -30,6 +32,15 @@ validate_zero_one_flag() {
 
 validate_zero_one_flag ALLOW_WATCH_RESTARTS
 
+if [[ "$ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE" != true && "$ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE" != false ]]; then
+  echo "ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE must be true or false" >&2
+  exit 2
+fi
+if [[ "$ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE" != true ]]; then
+  echo "refusing in-cluster apiserver watch writes without ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true" >&2
+  exit 1
+fi
+
 mkdir -p "$work_dir"
 
 cleanup() {
@@ -52,6 +63,8 @@ echo "Starting in-cluster kube-apiserver for watch soak"
   NAME="$NAME" \
   LOCAL_PORT="$LOCAL_PORT" \
   APISERVER_ONLY=true \
+  ETCD_PREFIX="$ETCD_PREFIX" \
+  ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE="$ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE" \
   WAIT_TIMEOUT_SECONDS="$WAIT_TIMEOUT_SECONDS" \
     "$ROOT_DIR/hack/dev/incluster-apiserver-smoke.sh"
 ) >/tmp/"${NAME}.bootstrap.log" 2>&1 &

@@ -11,6 +11,12 @@ LOCAL_PORT="${LOCAL_PORT:-16450}"
 PRE_UPDATE_SLEEP_SECONDS="${PRE_UPDATE_SLEEP_SECONDS:-20}"
 WATCH_TIMEOUT_SECONDS="${WATCH_TIMEOUT_SECONDS:-180}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-240}"
+ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE="${ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE:-false}"
+
+if [[ "$ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE" != true ]]; then
+  echo "refusing in-cluster apiserver rollout backend writes without ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true" >&2
+  exit 1
+fi
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -70,6 +76,7 @@ echo "Starting in-cluster kube-apiserver watch soak with pre-update pause"
   ALLOW_WATCH_RESTARTS=1 \
   WATCH_TIMEOUT_SECONDS="$WATCH_TIMEOUT_SECONDS" \
   WAIT_TIMEOUT_SECONDS="$WAIT_TIMEOUT_SECONDS" \
+  ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE="$ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE" \
     "$ROOT_DIR/hack/dev/incluster-apiserver-watch-soak.sh"
 ) >"$log_file" 2>&1 &
 soak_pid=$!

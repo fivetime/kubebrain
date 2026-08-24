@@ -2039,6 +2039,9 @@ exit 99
 		"CLUSTER_NAME=owned",
 		"NAMESPACE=occupied",
 		"NAME=existing",
+		"MANAGEMENT_ENDPOINT=http://127.0.0.1:3379",
+		"ETCD_PREFIX=/registry-kubebrain-incluster-apiserver-existing",
+		"ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true",
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "refusing to reuse existing in-cluster apiserver resource: occupied/pod/existing")
@@ -2046,6 +2049,78 @@ exit 99
 	require.NoError(t, readErr)
 	require.NotContains(t, string(logData), " delete ")
 	require.NotContains(t, string(logData), " create ")
+}
+
+func TestInClusterAPIServerRejectsNonEmptyPrefixWithoutCreatingResources(t *testing.T) {
+	fakeBin := t.TempDir()
+	commandLog := filepath.Join(fakeBin, "commands.log")
+	fakeKubectl := filepath.Join(fakeBin, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
+printf 'kubectl %s\n' "$*" >>"$FAKE_COMMAND_LOG"
+case "$*" in
+  "config get-contexts kind-owned -o name") printf '%s\n' kind-owned ;;
+  "--context kind-owned -n occupied get secret/fresh-pki -o name --ignore-not-found") ;;
+  "--context kind-owned -n occupied get pod/fresh -o name --ignore-not-found") ;;
+  "--context kind-owned -n occupied get service/fresh -o name --ignore-not-found") ;;
+  *"get service backend -o jsonpath="*".port}"*) printf '%s\n' 3379 ;;
+  *"get service backend -o jsonpath="*".nodePort}"*) printf '%s\n' 30079 ;;
+  *) exit 99 ;;
+esac
+`), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "docker"), []byte(`#!/usr/bin/env bash
+printf 'docker %s\n' "$*" >>"$FAKE_COMMAND_LOG"
+if [[ "$*" == *"io.x-k8s.kind.cluster"* ]]; then
+  printf '%s\n' owned
+elif [[ "$*" == *"NetworkSettings.Networks"* ]]; then
+  printf '%s\n' 172.18.0.2
+else
+  exit 99
+fi
+`), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "curl"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755))
+	fakeEtcdctl := filepath.Join(fakeBin, "etcdctl")
+	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
+printf 'etcdctl %s\n' "$*" >>"$FAKE_COMMAND_LOG"
+if [[ "${1:-}" == "--version" ]]; then
+  printf '%s\n' 'Git SHA: 5cd9f4ee13801e18825d661e5005ae599460bc3a'
+elif [[ "$*" == *" get /registry-kubebrain-incluster-apiserver-occupied --prefix --limit=1 -w json"* ]]; then
+  printf '%s\n' '{"count":1,"kvs":[{"key":"aw==","value":"dg=="}]}'
+else
+  exit 98
+fi
+`), 0o755))
+
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "incluster-apiserver-smoke.sh")}, []string{
+		"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+		"FAKE_COMMAND_LOG=" + commandLog,
+		"KUBE_CONTEXT=kind-owned",
+		"CLUSTER_NAME=owned",
+		"NAMESPACE=occupied",
+		"NAME=fresh",
+		"BACKEND_SERVICE=backend",
+		"ENDPOINT=http://backend.occupied.svc:3379",
+		"MANAGEMENT_ENDPOINT=http://172.18.0.2:30079",
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=5cd9f4ee13801e18825d661e5005ae599460bc3a",
+		"ETCD_PREFIX=/registry-kubebrain-incluster-apiserver-occupied",
+		"ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing non-empty in-cluster apiserver smoke prefix")
+	logData, readErr := os.ReadFile(commandLog)
+	require.NoError(t, readErr)
+	require.NotContains(t, string(logData), " delete ")
+	require.NotContains(t, string(logData), " create ")
+	require.NotContains(t, string(logData), " del ")
+}
+
+func TestInClusterAPIServerRolloutRequiresBackendMutationApprovalBeforeKubectl(t *testing.T) {
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "incluster-apiserver-rollout-smoke.sh")}, []string{
+		"PATH=/nonexistent",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing in-cluster apiserver rollout backend writes without ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE=true")
+	require.NotContains(t, string(output), "missing required command: kubectl")
 }
 
 func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
@@ -2062,7 +2137,7 @@ func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 		require.Len(t, fields, 6, "owned endpoint manifest line %d", lineNumber+1)
 		caller, runFlag, defaultValue, callee, approval, resource := fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]
 		require.Contains(t, []string{"true", "false"}, defaultValue)
-		require.Equal(t, "etcd-prefix", resource)
+		require.Contains(t, []string{"etcd-prefix", "etcd-prefix-kubernetes", "delegated-etcd-prefix-kubernetes"}, resource)
 		require.Regexp(t, `^ALLOW_MUTATING_[A-Z0-9_]+$`, approval)
 
 		callerData, readErr := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(caller)))
@@ -2071,24 +2146,43 @@ func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 		require.Contains(t, callerContent, runFlag+`="${`+runFlag+`:-`+defaultValue+`}"`)
 		require.Contains(t, callerContent, callee)
 		require.Contains(t, callerContent, approval+"=true")
-		require.Contains(t, callerContent, `ETCD_PREFIX="/registry-kubebrain-apiserver-`)
+		if resource == "etcd-prefix-kubernetes" || resource == "delegated-etcd-prefix-kubernetes" {
+			require.Contains(t, callerContent, `ETCD_PREFIX="/registry-kubebrain-incluster-apiserver-`)
+		} else {
+			require.Contains(t, callerContent, `ETCD_PREFIX="/registry-kubebrain-apiserver-`)
+		}
 
 		calleeData, readErr := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(callee)))
 		require.NoError(t, readErr)
 		calleeContent := string(calleeData)
 		require.Contains(t, calleeContent, approval+`="${`+approval+`:-false}"`)
+		if resource == "delegated-etcd-prefix-kubernetes" {
+			require.Contains(t, calleeContent, "hack/dev/incluster-apiserver-smoke.sh")
+			require.Contains(t, calleeContent, `ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE="$ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE"`)
+			require.Contains(t, calleeContent, `ETCD_PREFIX="$ETCD_PREFIX"`)
+			contracts++
+			continue
+		}
 		require.Contains(t, calleeContent, "prefix_owned=false")
 		require.Contains(t, calleeContent, `if [[ "$prefix_owned" == true ]]`)
 		require.Contains(t, calleeContent, `del "$ETCD_PREFIX" --prefix`)
 		require.Contains(t, calleeContent, "baseline_lease_ids=\"$(list_lease_ids)\"")
 		require.Contains(t, calleeContent, `lease revoke "$lease_id"`)
 		require.Contains(t, calleeContent, "lease set differs from preflight after cleanup")
-		require.Contains(t, calleeContent, "refusing non-empty apiserver")
-		require.Contains(t, calleeContent, "process_owned=false")
-		require.Contains(t, calleeContent, "refusing to replace active apiserver")
+		if resource == "etcd-prefix-kubernetes" {
+			require.Contains(t, calleeContent, "refusing non-empty in-cluster apiserver")
+			require.Contains(t, calleeContent, "MANAGEMENT_ENDPOINT is required")
+			require.Contains(t, calleeContent, "MANAGEMENT_ENDPOINT does not map to backend Service NodePort")
+			require.Contains(t, calleeContent, "pod_created=false")
+			require.Contains(t, calleeContent, `--wait=true --timeout=60s`)
+		} else {
+			require.Contains(t, calleeContent, "refusing non-empty apiserver")
+			require.Contains(t, calleeContent, "process_owned=false")
+			require.Contains(t, calleeContent, "refusing to replace active apiserver")
+		}
 		contracts++
 	}
-	require.Equal(t, 5, contracts)
+	require.Equal(t, 7, contracts)
 
 	rolloutData, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "apiserver-rollout-smoke.sh"))
 	require.NoError(t, err)
@@ -2096,6 +2190,13 @@ func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 	require.Contains(t, rolloutContent, "hack/dev/apiserver-watch-soak.sh")
 	require.Contains(t, rolloutContent, "ALLOW_MUTATING_APISERVER_WATCH_SOAK=true")
 	require.Contains(t, rolloutContent, `ETCD_PREFIX="/registry-kubebrain-apiserver-rollout-watch-`)
+
+	inClusterWatchData, err := os.ReadFile(filepath.Join(repoRoot, "hack", "dev", "incluster-apiserver-watch-soak.sh"))
+	require.NoError(t, err)
+	inClusterWatchContent := string(inClusterWatchData)
+	require.Contains(t, inClusterWatchContent, "hack/dev/incluster-apiserver-smoke.sh")
+	require.Contains(t, inClusterWatchContent, `ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE="$ALLOW_MUTATING_INCLUSTER_APISERVER_SMOKE"`)
+	require.Contains(t, inClusterWatchContent, `ETCD_PREFIX="$ETCD_PREFIX"`)
 }
 
 func TestAPIServerSmokeRejectsNonEmptyPrefixWithoutDeletingIt(t *testing.T) {
