@@ -1893,7 +1893,7 @@ func TestDefaultOwnedKubernetesRunnersHaveSafetyContracts(t *testing.T) {
 		fields := strings.Fields(line)
 		require.Len(t, fields, 6, "owned Kubernetes manifest line %d", lineNumber+1)
 		caller, runFlag, defaultValue, callee, resource, contextEnv := fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]
-		require.Contains(t, []string{"namespace", "job-configmap"}, resource)
+		require.Contains(t, []string{"namespace", "job-configmap", "secret-pod-service"}, resource)
 		require.Equal(t, "KUBE_CONTEXT", contextEnv)
 
 		callerData, readErr := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(caller)))
@@ -1920,10 +1920,19 @@ func TestDefaultOwnedKubernetesRunnersHaveSafetyContracts(t *testing.T) {
 			require.Contains(t, calleeContent, "refusing to reuse existing in-cluster load Job")
 			require.Contains(t, calleeContent, "refusing to reuse existing in-cluster load ConfigMap")
 			require.NotContains(t, calleeContent, "kubectl apply")
+		case "secret-pod-service":
+			require.Contains(t, calleeContent, "secret_created=false")
+			require.Contains(t, calleeContent, "pod_created=false")
+			require.Contains(t, calleeContent, "service_created=false")
+			require.Contains(t, calleeContent, `if [[ "$secret_created" == true ]]`)
+			require.Contains(t, calleeContent, `if [[ "$pod_created" == true ]]`)
+			require.Contains(t, calleeContent, `if [[ "$service_created" == true ]]`)
+			require.Contains(t, calleeContent, "refusing to reuse existing in-cluster apiserver resource")
+			require.NotContains(t, calleeContent, "kubectl apply")
 		}
 		contracts++
 	}
-	require.Equal(t, 2, contracts)
+	require.Equal(t, 3, contracts)
 }
 
 func TestDefaultTLSRunnerRejectsPreexistingNamespaceWithoutDeletingIt(t *testing.T) {
@@ -1988,6 +1997,51 @@ exit 99
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "refusing to reuse existing in-cluster load Job: occupied/existing-job")
+	logData, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	require.NotContains(t, string(logData), " delete ")
+	require.NotContains(t, string(logData), " create ")
+}
+
+func TestInClusterAPIServerRejectsPreexistingPodWithoutDeletingIt(t *testing.T) {
+	fakeBin := t.TempDir()
+	logPath := filepath.Join(fakeBin, "commands.log")
+	fakeKubectl := filepath.Join(fakeBin, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
+printf 'kubectl %s\n' "$*" >>"$FAKE_COMMAND_LOG"
+if [[ "$*" == "config get-contexts kind-owned -o name" ]]; then
+  printf '%s\n' kind-owned
+  exit 0
+fi
+if [[ "$*" == "--context kind-owned -n occupied get secret/existing-pki -o name --ignore-not-found" ]]; then
+  exit 0
+fi
+if [[ "$*" == "--context kind-owned -n occupied get pod/existing -o name --ignore-not-found" ]]; then
+  printf '%s\n' pod/existing
+  exit 0
+fi
+exit 99
+`), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "docker"), []byte(`#!/usr/bin/env bash
+printf 'docker %s\n' "$*" >>"$FAKE_COMMAND_LOG"
+if [[ "$*" == *"inspect owned-control-plane"* ]]; then
+  printf '%s\n' owned
+  exit 0
+fi
+exit 99
+`), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(fakeBin, "curl"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755))
+
+	output, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "dev", "incluster-apiserver-smoke.sh")}, []string{
+		"PATH=" + fakeBin + ":" + os.Getenv("PATH"),
+		"FAKE_COMMAND_LOG=" + logPath,
+		"KUBE_CONTEXT=kind-owned",
+		"CLUSTER_NAME=owned",
+		"NAMESPACE=occupied",
+		"NAME=existing",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing to reuse existing in-cluster apiserver resource: occupied/pod/existing")
 	logData, readErr := os.ReadFile(logPath)
 	require.NoError(t, readErr)
 	require.NotContains(t, string(logData), " delete ")

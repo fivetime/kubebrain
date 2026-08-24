@@ -1,3 +1,4 @@
 # caller run flag default callee owned resource context environment variable
 hack/dev/verify.sh RUN_TLS_SMOKE true hack/dev/tls-smoke.sh namespace KUBE_CONTEXT
 hack/dev/verify.sh RUN_INCLUSTER_LOAD_SMOKE false hack/dev/incluster-load-smoke.sh job-configmap KUBE_CONTEXT
+hack/dev/verify.sh RUN_INCLUSTER_APISERVER_SMOKE false hack/dev/incluster-apiserver-smoke.sh secret-pod-service KUBE_CONTEXT
