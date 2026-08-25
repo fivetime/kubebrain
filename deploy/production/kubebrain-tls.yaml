@@ -98,14 +98,16 @@ spec:
               drop:
                 - ALL
           lifecycle:
-            # Release leadership before SIGTERM, then let EndpointSlice and
-            # kube-proxy drain the terminating endpoint.
+            # Pod deletion withdraws the EndpointSlice target first. Continue
+            # serving established connections while that update reaches
+            # kube-proxy, then release leadership and migrate transports before
+            # SIGTERM.
             preStop:
               exec:
                 command:
                   - /bin/sh
                   - -c
-                  - curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5
+                  - sleep 5 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5
           resources:
             requests:
               cpu: 500m

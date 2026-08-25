@@ -232,6 +232,24 @@ func TestRolloutAvailabilityRunnerRejectsMissingDrainBeforeMutation(t *testing.T
 	require.NotContains(t, log, " rollout restart ")
 }
 
+func TestRolloutAvailabilityRunnerRejectsDrainBeforeEndpointPropagation(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_DRAIN_FIRST_PRESTOP=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "rollout drain contract mismatch")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " run ")
+	require.NotContains(t, log, " patch ")
+}
+
 func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -654,7 +672,8 @@ fi
 if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   revision=revision-old
   [[ -e "$FAKE_KUBECTL_STATE" ]] && revision=revision-new
-  prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
+  prestop='["/bin/sh","-c","sleep 5 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
+  [[ "${FAKE_DRAIN_FIRST_PRESTOP:-false}" != true ]] || prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
   [[ "${FAKE_BAD_PRESTOP:-false}" == true ]] && prestop='["/bin/sleep","5"]'
   runtime_image=kubebrain:test
   [[ -e "$FAKE_KUBECTL_STATE" && -n "${TARGET_IMAGE:-}" ]] && runtime_image="$TARGET_IMAGE"

@@ -284,7 +284,7 @@ for pd_addr in "${pd_addr_items[@]}"; do
   pd_endpoints="${pd_endpoints:+${pd_endpoints},}${pd_addr}"
 done
 prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' "$statefulset_json")"
-expected_prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
+expected_prestop='["/bin/sh","-c","sleep 5 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
 
 if [[ "$replicas" != "$EXPECTED_REPLICAS" || "$ready" != "$EXPECTED_REPLICAS" ]]; then
   echo "KubeBrain StatefulSet must have exactly ${EXPECTED_REPLICAS} desired and Ready replicas" >&2
