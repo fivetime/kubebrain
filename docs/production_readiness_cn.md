@@ -8381,3 +8381,34 @@ compat 全套 8.797 秒、vet、runner 单测、bash syntax、diff check 与目�
 `152/178/159/150`；精确提交后四片 Go/墙钟秒为 134.819/141.045、364.105/370.328、233.408/239.623、
 386.224/392.447，全部通过。本项不修改 etcd RPC runtime，也未发现新的压缩语义差异；它关闭的是 pre/postflight 无法捕获的
 瞬时拓扑切换证据缺口。推进 compact revision 的两个 scope 仍只允许在确认可丢弃的实例上以独立破坏性批准执行。
+
+### A5504：全部 direct scope 绑定 runner 冻结拓扑
+
+A5503 的 admission 由测试内第一条成功响应建立 endpoint→member 映射，且只接入压缩相关测试；它不能证明首条响应就等于 runner
+preflight 的 member，也没有覆盖默认 `all` 中 Alarm、Concurrency、Control、Lease、Mutation、Watch、其余 HashKV 及实际
+metrics scrape。若三个隧道在 Go 启动前循环换位并在 postflight 前恢复，旧证据仍可能自洽但不属于冻结端点。
+
+提交 `d99404c8` 让 runner 把 preflight 的非零 cluster ID、有序 member ID JSON 数组和每端最低 revision JSON 数组作为专用环境
+注入 Go。解析器拒绝缺项、空/零值、长度不等、重复 member、非法 JSON/整数和 scope 外 index；admission 从第一条响应开始即要求
+精确匹配冻结映射，而非重新学习。全部 manifest 测试现共享该 admission，AST 守卫禁止以后新增 scope 测试而遗漏 fence；成功的
+Alarm、KV、Lease、HashKV、Concurrency、Watch event 与 cleanup 同时验证因果 revision 下界。`all-metrics` 的每次实际 HTTP
+scrape 还必须恰有一条与同位置 client endpoint 对应的 `etcd_server_id`；纯解析负测固定错误/重复 server identity 为 RED。
+
+第一轮增强版真实 `all+metrics` 正确暴露测试合同过严：MemberList header 和本地 Watch create/cancel control header 可合法为
+revision 0，但仍有非零 cluster/member/RaftTerm；已在主路径 Revoke 的 lease，cleanup 再次 Revoke 返回 NotFound。最终 admission
+区分 identity-only header 与带因果 revision 的数据 header，cleanup 先用 TTL 判断 lease 是否仍存在。专用 `memberlist-hash`
+又暴露 runner 已提供三条 direct dial override、测试却在使用 override 前拒绝三个成员共享同一外部 NodePort；现仅在无 override
+时要求 advertised URL 唯一，有 override 时要求 override 唯一并逐一覆盖冻结 member 集。
+
+Kubernetes v1.36.1、`kubebrain:a5491-88b00806` 和独立 3×PD/3×TiKV v8.5.3 上，未加固 `all+metrics` 基线 Go
+7.652 秒（runner 墙钟 10.634 秒）；最终 13 项 Go 7.715 秒（墙钟 11.115 秒）GREEN。修复前 `memberlist-hash` 因共享 NodePort
+RED，最终 Go 0.184 秒（墙钟 7.938 秒）GREEN；最终 `hashkv-compaction` 为 7.858/10.846 秒，`compaction` 为
+8.342/11.361 秒，均 GREEN。每轮 runner 三端 postflight 均证明 prefix 为空、lease/alarm 等于基线。三个 Pod UID 仍为
+`159a0604-b45c-469f-941e-e7db43b762d4`、`8eb84073-6c2b-4bb2-a1d9-13f85d6b63bb`、
+`55151c13-75c3-4e50-a8ff-c2b59cca9061`，Ready/restart 0、image digest 仍为
+`b124dae011be8d4e19e949432e43b791e33133805b76f9480bb61db48c11315d`；所有隧道、端口和临时日志均已清理。
+
+compat 全套 10.313 秒、direct runner 连续 10 轮 29.019 秒、目标 race 9.257 秒、vet、`bash -n` 与 diff check 通过；当前执行
+环境未安装 ShellCheck，故本项不声称新的 ShellCheck 证据。639 项 inventory 保持 `152/178/159/150`；精确提交后四片
+Go/墙钟秒为 134.436/140.620、370.848/377.021、229.755/235.906、381.207/387.372，全部通过。本项只加固发布证据与修复
+`memberlist-hash` runner 可达性，不修改 etcd RPC runtime。

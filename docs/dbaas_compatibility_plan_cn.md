@@ -62138,6 +62138,26 @@ Kubernetes v1.36.1、三副本 KubeBrain 与独立 3×PD/3×TiKV v8.5.3 上，�
 386.224/392.447。本轮没有 runtime 语义改动或新增偏差；`hashkv-compaction`/`compaction` 仍保持 disposable instance 与独立
 破坏性批准要求。
 
+### A5504：runner preflight 身份贯穿全部 direct scope
+
+对照 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/api/etcdserverpb/rpc.proto::ResponseHeader`、
+`server/etcdserver/api/v3rpc/member.go::MemberList` 与 `watch.go::newResponseHeader`：cluster/member 标识发送集群与成员，但并非所有
+control response 都携带正 revision。A5503 既把测试首条响应当成身份基线，也把正 revision 规则推广得过宽；默认 `all` 的多数
+测试和测试体内 metrics scrape 尚未消费该 fence。
+
+提交 `d99404c8` 将 runner preflight 冻结的 cluster、有序 member 和最低 revision 显式注入 Go，并在全部 manifest 测试中预加载
+共享 admission。数据/事件响应继续要求正 revision 与因果下界；MemberList 和本地 Watch create/cancel 走 identity-only 合同，仍
+严格验证 cluster/member，原有 RaftTerm 断言保留。Alarm、Lease、KV、HashKV、Concurrency、Mutation、Watch、cleanup 以及
+每次 metrics scrape 均绑定冻结 endpoint；AST 守卫禁止 scope 测试绕过 admission，纯解析负测拒绝错误或重复 metrics server ID。
+
+真实首轮 RED 同时发现 `memberlist-hash` 在三成员合法共享外部 NodePort 时，尚未使用唯一 direct override 就提前失败。现无 override
+才要求 advertised URL 唯一；有 override 时三条 dial endpoint 必须唯一，并由冻结身份和 MemberList member 集双重验证。最终
+Kubernetes v1.36.1、三副本 KubeBrain 与独立 3×PD/3×TiKV v8.5.3 上，`all+metrics` 13 项 Go 7.715 秒、
+`memberlist-hash` 0.184 秒、`hashkv-compaction` 7.858 秒、`compaction` 8.342 秒全部 GREEN，postflight 无状态泄漏，Pod UID
+未变且 Ready/restart 0。compat/runner/race/vet/Bash 门禁通过；当前环境无 ShellCheck，未声称该项。639 项四片提交后 Go/墙钟秒为
+134.436/140.620、370.848/377.021、229.755/235.906、381.207/387.372。本项不改变 runtime 客户端语义，关闭的是 runner
+preflight 与测试体之间的瞬时换端证据缺口及 shared-advertise memberlist scope 不可执行缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
