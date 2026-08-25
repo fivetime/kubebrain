@@ -33,6 +33,7 @@ verify_inventory() {
   done
   grep -Fq 'name: kubebrainoperations.dbaas.kubebrain.io' "${DEPLOY_DIR}/kubebrain-operation-crd.yaml" || die "Operation CRD identity drifted"
   grep -Fq 'name: kubebrain-operations' "${DEPLOY_DIR}/kubebrain-operation-worker-rbac.yaml" || die "Operation namespace identity drifted"
+  grep -Fq 'namespace: kubebrain-repair-operations' "${DEPLOY_DIR}/kubebrain-operation-parameter-broker.yaml" || die "repair Operation namespace identity drifted"
   for file in "${admission_manifests[@]}"; do
     grep -Fq 'failurePolicy: Fail' "${DEPLOY_DIR}/${file}" || die "foundation admission is not fail closed: ${file}"
     if ! grep -Fq 'validationActions: [Deny]' "${DEPLOY_DIR}/${file}" &&
@@ -81,8 +82,10 @@ case "$1" in
 
     "$KUBECTL" "${context[@]}" apply --server-side --field-manager="$FIELD_MANAGER" -f "${DEPLOY_DIR}/kubebrain-operation-crd.yaml"
     "$KUBECTL" "${context[@]}" wait --for=condition=Established --timeout=60s crd/kubebrainoperations.dbaas.kubebrain.io
-    printf '%s\n' 'apiVersion: v1' 'kind: Namespace' 'metadata:' '  name: kubebrain-operations' | \
-      "$KUBECTL" "${context[@]}" apply --server-side --field-manager="$FIELD_MANAGER" -f -
+    for namespace in kubebrain-operations kubebrain-repair-operations; do
+      printf '%s\n' 'apiVersion: v1' 'kind: Namespace' 'metadata:' "  name: ${namespace}" '  labels:' '    app.kubernetes.io/part-of: kubebrain' | \
+        "$KUBECTL" "${context[@]}" apply --server-side --field-manager="$FIELD_MANAGER" -f -
+    done
 
     for file in "${admission_manifests[@]}"; do
       "$KUBECTL" "${context[@]}" apply --server-side --field-manager="$FIELD_MANAGER" -f "${DEPLOY_DIR}/${file}"

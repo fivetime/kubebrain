@@ -148,6 +148,41 @@ check_can_i() {
   fi
 }
 
+render_policy_names() {
+  local manifest="$1" resource
+  "$KUBECTL" "${context[@]}" create --dry-run=client --validate=false -f "$manifest" -o name | while IFS= read -r resource; do
+    case "$resource" in
+      validatingadmissionpolicy.admissionregistration.k8s.io/*|validatingadmissionpolicies.admissionregistration.k8s.io/*) printf '%s\n' "${resource#*/}" ;;
+    esac
+  done
+}
+
+wait_for_policy() {
+  local policy="$1" policy_json binding_json attempt
+  for ((attempt = 1; attempt <= 60; attempt++)); do
+    if policy_json="$("$KUBECTL" "${context[@]}" get validatingadmissionpolicy "$policy" -o json 2>/dev/null)" &&
+      "$JQ" -e '.status.observedGeneration == .metadata.generation and (.status|has("typeChecking")) and ((.status.typeChecking.expressionWarnings // [])|length == 0)' <<<"$policy_json" >/dev/null 2>&1 &&
+      binding_json="$("$KUBECTL" "${context[@]}" get validatingadmissionpolicybinding "$policy" -o json 2>/dev/null)" &&
+      "$JQ" -e --arg policy "$policy" '.metadata.name == $policy and .spec.policyName == $policy and .spec.validationActions == ["Deny"]' <<<"$binding_json" >/dev/null 2>&1; then
+      return 0
+    fi
+    ((attempt == 60)) || sleep 1
+  done
+  die "requester policy did not become a compiled exact Deny policy before RBAC grant: ${policy}"
+}
+
+apply_alert_subset() {
+  local subset="$1" selector
+  case "$subset" in
+    admission) selector='select(.kind == "ValidatingAdmissionPolicy" or .kind == "ValidatingAdmissionPolicyBinding")' ;;
+    requester-rbac) selector='select((.kind == "ServiceAccount" or .kind == "Role" or .kind == "RoleBinding") and .metadata.name == "kubebrain-tikv-repair-alert-receiver" and .metadata.namespace == "kubebrain-repair-operations")' ;;
+    *) return 2 ;;
+  esac
+  "$KUBECTL" "${context[@]}" create --dry-run=client --validate=false -f "${DEPLOY_DIR}/kubebrain-tikv-repair-alert-receiver.yaml" -o json | \
+    "$JQ" -c "$selector" | "$JQ" -sc '{apiVersion:"v1",kind:"List",items:.}' | \
+    "$KUBECTL" "${context[@]}" apply --server-side --field-manager=kubebrain-requester-guardrails -f -
+}
+
 [[ "$#" == 1 ]] || usage
 case "$1" in
   --verify)
@@ -166,10 +201,20 @@ case "$1" in
       "$KUBECTL" "${context[@]}" apply --server-side --field-manager=kubebrain-requester-guardrails \
         -f "${DEPLOY_DIR}/kubebrain-${requester}-requester-admission.yaml"
     done
+    apply_alert_subset admission
+    policy_names=()
+    while IFS= read -r policy; do policy_names+=("$policy"); done < <(render_policy_names "$JWT_PUBLISHER_ADMISSION")
+    for requester in "${requesters[@]}"; do
+      while IFS= read -r policy; do policy_names+=("$policy"); done < <(render_policy_names "${DEPLOY_DIR}/kubebrain-${requester}-requester-admission.yaml")
+    done
+    while IFS= read -r policy; do policy_names+=("$policy"); done < <(render_policy_names "${DEPLOY_DIR}/kubebrain-tikv-repair-alert-receiver.yaml")
+    [[ "${#policy_names[@]}" == 38 ]] || die "requester and JWT publisher policy inventory must contain 38 policies before RBAC grant"
+    for policy in "${policy_names[@]}"; do wait_for_policy "$policy"; done
     for requester in "${requesters[@]}"; do
       "$KUBECTL" "${context[@]}" apply --server-side --field-manager=kubebrain-requester-guardrails \
         -f "${DEPLOY_DIR}/kubebrain-${requester}-requester-rbac.yaml"
     done
+    apply_alert_subset requester-rbac
     echo "applied ${#requesters[@]} fail-closed operation requester guardrail pairs"
     ;;
   --check)

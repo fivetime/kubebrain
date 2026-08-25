@@ -24,18 +24,20 @@ func TestOperationControlPlaneFoundationAppliesAdmissionBeforeRBAC(t *testing.T)
 	})
 	require.NoError(t, err, string(out))
 	lines := strings.Split(strings.TrimSpace(string(mustRead(t, logPath))), "\n")
-	require.Len(t, lines, 17)
+	require.Len(t, lines, 18)
 	require.Contains(t, lines[0], "api-resources")
 	require.Contains(t, lines[1], "kubebrain-operation-crd.yaml")
 	require.Contains(t, lines[2], "wait --for=condition=Established")
 	require.Contains(t, lines[3], "apply --server-side")
 	require.Contains(t, lines[3], "-f -")
-	require.Contains(t, lines[4], "kubebrain-operation-worker-admission.yaml")
-	require.Contains(t, lines[5], "kubebrain-operation-audit-admission.yaml")
-	for _, line := range lines[6:10] {
+	require.Contains(t, lines[4], "apply --server-side")
+	require.Contains(t, lines[4], "-f -")
+	require.Contains(t, lines[5], "kubebrain-operation-worker-admission.yaml")
+	require.Contains(t, lines[6], "kubebrain-operation-audit-admission.yaml")
+	for _, line := range lines[7:11] {
 		require.Contains(t, line, "validatingadmissionpolicy")
 	}
-	for _, line := range lines[10:] {
+	for _, line := range lines[11:] {
 		require.NotContains(t, line, "-admission.yaml")
 		require.NotContains(t, line, "kubebrain-operation-submitter-rbac.yaml")
 		require.NotContains(t, line, "kubebrain-operation-api.yaml")

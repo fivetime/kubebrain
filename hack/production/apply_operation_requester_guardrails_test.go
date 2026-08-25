@@ -21,26 +21,46 @@ func TestOperationRequesterGuardrailsApplyAdmissionBeforeRBAC(t *testing.T) {
 	writeTrafficExecutable(t, kubectl, `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$KUBECTL_LOG"
-if [[ "$*" == *" api-resources "* ]]; then
-  printf '%s\n' validatingadmissionpolicies.admissionregistration.k8s.io validatingadmissionpolicybindings.admissionregistration.k8s.io
-fi
+if [[ "${1:-}" == --context ]]; then shift 2; fi
+case "${1:-}" in
+  api-resources) printf '%s\n' validatingadmissionpolicies.admissionregistration.k8s.io validatingadmissionpolicybindings.admissionregistration.k8s.io ;;
+  apply) [[ "$*" != *" -f -"* ]] || cat >/dev/null ;;
+  create)
+    file=""; output=""; while [[ "$#" -gt 0 ]]; do case "$1" in -f) file="$2"; shift 2;; -o) output="$2"; shift 2;; *) shift;; esac; done
+    if [[ "$output" == json ]]; then
+      printf '%s\n' \
+        '{"apiVersion":"admissionregistration.k8s.io/v1","kind":"ValidatingAdmissionPolicy","metadata":{"name":"kubebrain-tikv-repair-alert-operation"}}' \
+        '{"apiVersion":"admissionregistration.k8s.io/v1","kind":"ValidatingAdmissionPolicyBinding","metadata":{"name":"kubebrain-tikv-repair-alert-operation"}}' \
+        '{"apiVersion":"admissionregistration.k8s.io/v1","kind":"ValidatingAdmissionPolicy","metadata":{"name":"kubebrain-tikv-repair-alert-parameters"}}' \
+        '{"apiVersion":"admissionregistration.k8s.io/v1","kind":"ValidatingAdmissionPolicyBinding","metadata":{"name":"kubebrain-tikv-repair-alert-parameters"}}' \
+        '{"apiVersion":"v1","kind":"ServiceAccount","metadata":{"name":"kubebrain-tikv-repair-alert-receiver","namespace":"kubebrain-repair-operations"}}' \
+        '{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"Role","metadata":{"name":"kubebrain-tikv-repair-alert-receiver","namespace":"kubebrain-repair-operations"}}' \
+        '{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"RoleBinding","metadata":{"name":"kubebrain-tikv-repair-alert-receiver","namespace":"kubebrain-repair-operations"}}'
+    else
+      stem="${file##*/kubebrain-}"
+      if [[ "$stem" == jwt-key-rotation-publisher-admission.yaml ]]; then stem=jwt-key-rotation-publish; elif [[ "$stem" == tikv-repair-alert-receiver.yaml ]]; then stem=tikv-repair-alert; else stem="${stem%-requester-admission.yaml}-request"; fi
+      printf 'validatingadmissionpolicy.admissionregistration.k8s.io/%s-operation\n' "$stem"
+      printf 'validatingadmissionpolicybinding.admissionregistration.k8s.io/%s-operation\n' "$stem"
+      printf 'validatingadmissionpolicy.admissionregistration.k8s.io/%s-parameters\n' "$stem"
+      printf 'validatingadmissionpolicybinding.admissionregistration.k8s.io/%s-parameters\n' "$stem"
+    fi ;;
+  get)
+    kind="$2"; name="$3"
+    if [[ "$kind" == validatingadmissionpolicy ]]; then printf '{"metadata":{"name":"%s","generation":1},"status":{"observedGeneration":1,"typeChecking":{}}}\n' "$name"; else printf '{"metadata":{"name":"%s"},"spec":{"policyName":"%s","validationActions":["Deny"]}}\n' "$name" "$name"; fi ;;
+esac
 `)
 	out, err := runProductionCommand(t, "bash", []string{"apply-operation-requester-guardrails.sh", "--apply"}, []string{
 		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "KUBECTL_LOG=" + logPath,
 	})
 	require.NoError(t, err, string(out))
-	lines := strings.Split(strings.TrimSpace(string(mustRead(t, logPath))), "\n")
-	require.Len(t, lines, 36)
-	require.Contains(t, lines[0], "--context production api-resources")
-	require.Contains(t, lines[1], "kubebrain-jwt-key-rotation-publisher-admission.yaml")
-	for i, line := range lines[2:19] {
-		require.Contains(t, line, "requester-admission.yaml", "apply call %d", i)
-		require.Contains(t, line, "--server-side")
-	}
-	for i, line := range lines[19:] {
-		require.Contains(t, line, "requester-rbac.yaml", "apply call %d", i+18)
-		require.Contains(t, line, "--server-side")
-	}
+	log := string(mustRead(t, logPath))
+	require.Contains(t, log, "--context production api-resources")
+	firstRBAC := strings.Index(log, "requester-rbac.yaml")
+	require.Positive(t, firstRBAC)
+	require.Less(t, strings.Index(log, "kubebrain-jwt-key-rotation-publisher-admission.yaml"), firstRBAC)
+	require.Less(t, strings.Index(log, "kubebrain-tikv-repair-alert-receiver.yaml -o json"), firstRBAC)
+	require.GreaterOrEqual(t, strings.Count(log[:firstRBAC], " get validatingadmissionpolicy "), 38)
+	require.Contains(t, log[firstRBAC:], "kubebrain-tikv-repair-alert-receiver.yaml -o json")
 	require.Contains(t, string(out), "applied 17 fail-closed operation requester guardrail pairs")
 }
 
