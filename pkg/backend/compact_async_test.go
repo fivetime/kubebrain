@@ -333,6 +333,10 @@ func TestPhysicalCompactionTransfersAcrossLeadershipContexts(t *testing.T) {
 		return atomic.LoadUint64(&b.compactDoneRev) >= target
 	}, 100*time.Millisecond, 5*time.Millisecond,
 		"a scan canceled with the old leadership term must not report completion")
+	require.Never(t, func() bool {
+		return kv.attempts.Load() > 1
+	}, physicalCompactRetryInterval+250*time.Millisecond, 10*time.Millisecond,
+		"a follower must not retry physical compaction with the canceled old-term context")
 
 	newCtx, stopNewLeader := context.WithCancel(context.Background())
 	defer stopNewLeader()
@@ -341,6 +345,8 @@ func TestPhysicalCompactionTransfersAcrossLeadershipContexts(t *testing.T) {
 		return atomic.LoadUint64(&b.compactDoneRev) >= target
 	}, 3*time.Second, 10*time.Millisecond,
 		"the new leadership term must resume the durable physical-GC target")
+	require.Equal(t, int32(2), kv.attempts.Load(),
+		"only the explicit new-term resume may start the replacement scan")
 }
 
 func TestCompactAsyncCapturesEpochForInternalCaller(t *testing.T) {

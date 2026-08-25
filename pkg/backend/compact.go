@@ -523,10 +523,19 @@ func (b *backend) runCompactor(workerCtx context.Context) {
 				break
 			}
 			ctx, cancel := b.maintenanceContextWithShutdown(workerCtx, 0)
-			if err := b.physicalCompact(ctx, target); err != nil {
+			err := b.physicalCompact(ctx, target)
+			maintenanceErr := ctx.Err()
+			if err != nil {
 				cancel()
 				if workerCtx.Err() != nil {
 					return
+				}
+				if maintenanceErr != nil {
+					// The leadership lifecycle, rather than storage, ended this
+					// attempt. Do not keep waking the process-owned worker with the
+					// canceled old-term context: the next leader calls
+					// ResumePhysicalCompaction and requeues the durable watermark.
+					break
 				}
 				// Do not claim completion. Retry independently of a newer logical
 				// compact request so transient storage failures cannot leave physical

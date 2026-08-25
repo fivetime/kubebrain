@@ -100,11 +100,13 @@ func (a *armedFailPartitionsKV) GetPartitions(ctx context.Context, start, end []
 
 type cancelFirstPartitionsKV struct {
 	storage.KvStorage
-	first   int32
-	entered chan struct{}
+	first    int32
+	attempts atomic.Int32
+	entered  chan struct{}
 }
 
 func (c *cancelFirstPartitionsKV) GetPartitions(ctx context.Context, start, end []byte) ([]storage.Partition, error) {
+	c.attempts.Add(1)
 	if atomic.CompareAndSwapInt32(&c.first, 0, 1) {
 		close(c.entered)
 		<-ctx.Done()
