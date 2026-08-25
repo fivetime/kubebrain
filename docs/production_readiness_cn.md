@@ -3945,6 +3945,13 @@ KMS export 网络调用现已闭环；promotion/revoke 必须由独立控制身�
 不能只凭 version ID 执行 mutation。623 项四片 Go/墙钟秒为 131.244/137.375、375.550/381.678、228.913/235.046、
 395.870/402.005，全部通过。promotion/revoke 实现仍开放。
 
+提交 `98c40685` 新增 KMS lifecycle receipt verifier。它把 canonical JWT Operation v3 receipt 的 SHA 作为根，验证 provider-signed
+promotion=`new-primary`，并要求 revoke=`old-revoked` 精确引用同一 promotion envelope SHA；两步均绑定 request、Operation、instance、
+old/new version，且 completion < promotion < revoke，单张签名证据有效期最多 15 分钟。缺 predecessor、错 trust key、错状态、错顺序、
+非规范 JSON 或文件边界异常均拒绝。623 项四片 Go/墙钟秒为
+131.943/138.139、354.991/361.134、226.506/232.659、374.056/380.174，全部通过。尚需实际 mutation API client、独立 KMS
+write credential 和终态归档，不能仅凭 verifier 存在声称旧 version 已撤权。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。

@@ -300,6 +300,16 @@ receipt 直接恢复，生命周期控制器不能证明 KMS mutation 对应哪�
 提交后 Go/墙钟秒为 131.244/137.375、375.550/381.678、228.913/235.046、395.870/402.005，全部通过。该提交只提供后续
 KMS lifecycle request/operation 双重绑定，不代表 promotion 或 revoke 已执行。
 
+提交 `98c40685` 交付正式 `kubebrain-jwt-kms-lifecycle-verifier` 并纳入 runtime image。它先严格解析 canonical v3 Operation receipt，
+验证 request/operation/instance/attempt、old/new version 和七个 SHA-256，再以整张 Operation receipt SHA 作为 lifecycle 根。
+provider envelope 为 `kubebrain.jwt-kms-lifecycle-envelope.v1`，Ed25519 签名 payload 为
+`kubebrain.jwt-kms-lifecycle.v1`。promotion 必须无 predecessor、状态为 `new-primary`；revoke 必须引用同一 trust key 验证通过的
+promotion envelope SHA、状态为 `old-revoked`，且 observed time 严格晚于 promotion。两类 receipt 都要逐项匹配 request、Operation、
+instance、old/new version 和 Operation receipt SHA，发生在 Operation completion 后，有效期不超过 15 分钟并在当前窗口内。
+未知字段、trailing/noncanonical JSON、签名/状态/顺序/时间/摘要漂移和 symlink/权限越界全部 fail closed。623 项提交后四片
+Go/墙钟秒为 131.943/138.139、354.991/361.134、226.506/232.659、374.056/380.174，全部通过。该提交固定可信终态证据合同；
+实际 mutation client、专用凭据/RBAC 与归档流程仍未交付。
+
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。

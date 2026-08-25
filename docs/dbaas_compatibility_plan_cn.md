@@ -61963,6 +61963,12 @@ receipt 升级为 v3 并显式记录它，不再只能从 deterministic hash 间
 131.244/137.375、375.550/381.678、228.913/235.046、395.870/402.005，全部通过。promotion/revoke 必须绑定该 v3 receipt、
 operation 与 request ID 后才可实施，本项本身未授予或调用 KMS 写权限。
 
+提交 `98c40685` 固定 provider-signed lifecycle chain：promotion receipt 必须证明同一 v3 Operation 根上的 `new-primary`；revoke
+必须以其 envelope SHA 为 predecessor、证明 `old-revoked`，并满足 Operation completion < promotion < revoke。正式 verifier
+校验 Ed25519、canonical exact JSON、全部 identity/version/SHA、15 分钟有效期和安全文件边界。623 项四片提交后 Go/墙钟秒为
+131.943/138.139、354.991/361.134、226.506/232.659、374.056/380.174，全部通过。实际 mutation client、独立 KMS write
+identity 和 receipt Object Lock 归档仍开放。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
