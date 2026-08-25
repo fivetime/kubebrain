@@ -103,12 +103,41 @@ if [[ "$mode" == --retire ]]; then
   retirement="${RETIREMENT_RECEIPT:-}"; [[ "$retirement" == /* && -f "$retirement" && ! -L "$retirement" && "$(realpath -e -- "$retirement")" == "$retirement" ]] || die "RETIREMENT_RECEIPT must be a canonical regular non-symlink file"
   verifier="$(resolve "${KMS_LIFECYCLE_CREDENTIAL_RETIREMENT_VERIFIER:-kubebrain-jwt-kms-lifecycle-credential-retirement-verifier}")" || die "retirement verifier must be executable"
   "$verifier" --receipt "$retirement" --public-key "$public_key" --retired-credential-id "$retired_id" --retired-secret-uid "$retired_uid" --retired-secret-data-sha256 "$retired_sha" --replacement-credential-id "$replacement_id" --replacement-secret-uid "$replacement_uid" --replacement-secret-data-sha256 "$replacement_sha" --replacement-readiness-receipt-sha256 "$replacement_readiness_sha"
+  retirement_marker="$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/retirement-in-progress"] // ""' <<<"$active")"
+  last_retired="$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/last-retired-credential"] // ""' <<<"$active")"
+  [[ -z "$retirement_marker" || "$retirement_marker" == "$retired_id" ]] || die "another lifecycle credential retirement is in progress"
+  if [[ -z "$retirement_marker" ]]; then
+    annotations="$("$JQ" -c --arg retired "$retired_id" '(.metadata.annotations // {}) + {"dbaas.kubebrain.io/retirement-in-progress":$retired}' <<<"$active")"
+    marker_patch="$("$JQ" -cn --arg rv "$active_rv" --argjson data "$active_data" --argjson annotations "$annotations" '[{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"test","path":"/data","value":$data},{"op":"add","path":"/metadata/annotations","value":$annotations}]')"
+    active="$(kc patch configmap kubebrain-jwt-kms-lifecycle-active -n "$NAMESPACE" --type=json -p "$marker_patch" -o json)" || die "retirement marker CAS failed"
+    active_uid="$("$JQ" -er '.metadata.uid' <<<"$active")"; active_rv="$("$JQ" -er '.metadata.resourceVersion' <<<"$active")"; active_data="$("$JQ" -cS '.data' <<<"$active")"
+  fi
+  [[ "$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/retirement-in-progress"]' <<<"$active")" == "$retired_id" ]] || die "retirement marker is not owned by this credential"
   current_active="$(kc get configmap kubebrain-jwt-kms-lifecycle-active -n "$NAMESPACE" -o json)" || die "active pointer disappeared after retirement verification"
   [[ "$("$JQ" -er '.metadata.uid' <<<"$current_active")" == "$active_uid" && "$("$JQ" -er '.metadata.resourceVersion' <<<"$current_active")" == "$active_rv" && "$("$JQ" -cS '.data' <<<"$current_active")" == "$active_data" ]] || die "active pointer changed after retirement verification"
   credential_id="$retired_id"; secret="$retired_secret"; check_secret
   [[ "$credential_secret_uid" == "$retired_uid" && "$credential_secret_rv" == "$retired_rv" && "$credential_secret_sha" == "$retired_sha" ]] || die "retired Secret changed after retirement verification"
   credential_id="$replacement_id"; secret="$replacement_secret"; check_secret
   [[ "$credential_secret_uid" == "$replacement_uid" && "$credential_secret_rv" == "$replacement_rv" && "$credential_secret_sha" == "$replacement_sha" ]] || die "replacement Secret changed after retirement verification"
+  archiver="$(resolve "${KMS_LIFECYCLE_CREDENTIAL_RETIREMENT_ARCHIVER:-$ROOT_DIR/hack/production/archive-jwt-kms-lifecycle-credential-retirement.sh}")" || die "retirement archiver must be executable"
+  archive_receipt="${RETIREMENT_ARCHIVE_RECEIPT_OUTPUT:-}"; [[ "$archive_receipt" == /* ]] || die "RETIREMENT_ARCHIVE_RECEIPT_OUTPUT must be absolute"
+  archive_prefix="${RETIREMENT_ARCHIVE_OBJECT_PREFIX:-jwt-kms-lifecycle-credential-retirement}"
+  RETIRED_CREDENTIAL_ID="$retired_id" RETIRED_SECRET_UID="$retired_uid" RETIRED_SECRET_DATA_SHA256="$retired_sha" REPLACEMENT_CREDENTIAL_ID="$replacement_id" REPLACEMENT_SECRET_UID="$replacement_uid" REPLACEMENT_SECRET_DATA_SHA256="$replacement_sha" REPLACEMENT_READINESS_RECEIPT_SHA256="$replacement_readiness_sha" ARCHIVE_RECEIPT_OUTPUT="$archive_receipt" OBJECT_PREFIX="$archive_prefix" "$archiver"
+  [[ -f "$archive_receipt" && ! -L "$archive_receipt" && "$(realpath -e -- "$archive_receipt")" == "$archive_receipt" ]] || die "retirement archive receipt is unsafe"
+  "$JQ" -e --arg artifact "${retired_id}:${retired_uid}" --arg replacement "$replacement_id" --arg store "${OBJECT_STORE_ID:-}" --arg bucket "${S3_BUCKET:-}" --arg key "${archive_prefix}/${retired_id}/${retired_uid}.json" --arg mode "${RETENTION_MODE:-}" --arg until "${RETAIN_UNTIL_UNIX:-}" '
+    .format=="kubebrain.object-immutable-blob.receipt.v1" and .artifact_format=="kubebrain.jwt-kms-lifecycle-credential-retirement-artifact.v1" and
+    .artifact_id==$artifact and .instance==$replacement and .object_store_id==$store and .bucket==$bucket and .object_key==$key and
+    .retention_mode==$mode and (.retain_until_unix|tostring)==$until and .remote_verified==true and
+    (.version_id|type=="string" and length>0) and (.artifact_sha256|test("^[a-f0-9]{64}$"))
+  ' "$archive_receipt" >/dev/null || die "retirement archive receipt binding is invalid"
+  current_active="$(kc get configmap kubebrain-jwt-kms-lifecycle-active -n "$NAMESPACE" -o json)" || die "active pointer disappeared during retirement archive"
+  [[ "$("$JQ" -er '.metadata.uid' <<<"$current_active")" == "$active_uid" && "$("$JQ" -er '.metadata.resourceVersion' <<<"$current_active")" == "$active_rv" && "$("$JQ" -cS '.data' <<<"$current_active")" == "$active_data" ]] || die "active pointer changed during retirement archive"
+  credential_id="$replacement_id"; secret="$replacement_secret"; check_secret
+  [[ "$credential_secret_uid" == "$replacement_uid" && "$credential_secret_rv" == "$replacement_rv" && "$credential_secret_sha" == "$replacement_sha" ]] || die "replacement Secret changed during retirement archive"
+  annotations="$("$JQ" -c --arg retired "$retired_id" '(.metadata.annotations // {}) | del(."dbaas.kubebrain.io/retirement-in-progress") + {"dbaas.kubebrain.io/last-retired-credential":$retired}' <<<"$current_active")"
+  completed_patch="$("$JQ" -cn --arg rv "$active_rv" --argjson data "$active_data" --argjson annotations "$annotations" '[{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"test","path":"/data","value":$data},{"op":"test","path":"/metadata/annotations/dbaas.kubebrain.io~1retirement-in-progress","value":$annotations["dbaas.kubebrain.io/last-retired-credential"]},{"op":"add","path":"/metadata/annotations","value":$annotations}]')"
+  current_active="$(kc patch configmap kubebrain-jwt-kms-lifecycle-active -n "$NAMESPACE" --type=json -p "$completed_patch" -o json)" || die "retirement completion marker CAS failed"
+  [[ "$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/last-retired-credential"]' <<<"$current_active")" == "$retired_id" && "$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/retirement-in-progress"] // ""' <<<"$current_active")" == "" ]] || die "retirement completion marker is invalid"
   uid_delete="$(resolve "${UID_DELETE:-kubebrain-uid-delete}")" || die "UID_DELETE must be executable"
   "$uid_delete" --api-version v1 --resource secrets --namespace "$NAMESPACE" --name "$retired_secret" --uid "$retired_uid" --resource-version "$retired_rv" --context "$KUBE_CONTEXT" --timeout 30s >/dev/null
   kc wait --for=delete --timeout=30s "secret/$retired_secret" -n "$NAMESPACE" >/dev/null || die "retired lifecycle credential Secret deletion did not converge"
@@ -135,6 +164,10 @@ public_der="$("$OPENSSL" pkey -pubin -in "$public_key" -outform DER 2>/dev/null 
 
 if [[ "$mode" == --activate ]]; then
   check_secret
+  if preactive="$(kc get configmap kubebrain-jwt-kms-lifecycle-active -n "$NAMESPACE" -o json 2>/dev/null)"; then
+    [[ "$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/retirement-in-progress"] // ""' <<<"$preactive")" == "" ]] || die "credential activation is blocked by retirement in progress"
+    [[ "$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/last-retired-credential"] // ""' <<<"$preactive")" != "$credential_id" ]] || die "a revoked lifecycle credential cannot be reactivated"
+  fi
   probed_secret_uid="$credential_secret_uid"; probed_secret_rv="$credential_secret_rv"; probed_secret_sha="$credential_secret_sha"
   desired_data="$("$JQ" -cn --arg endpoint "$(printf '%s' "$endpoint" | base64 -w0)" --arg token "$(base64 -w0 <"$token")" --arg ca "$(base64 -w0 <"$ca")" --arg key "$(base64 -w0 <"$public_key")" '{"ca.crt":$ca,"endpoint":$endpoint,"lifecycle-token":$token,"receipt-public-key.pem":$key}')" || die "cannot construct lifecycle credential binding"
   [[ "$desired_data" == "$credential_secret_data" ]] || die "local credential inputs do not match the immutable Secret"
@@ -155,6 +188,8 @@ if [[ "$mode" == --activate ]]; then
   activated_at="$(date +%s)"; (( readiness_expiry > activated_at )) || die "readiness receipt expired before activation"
   active_data="$("$JQ" -cn --arg id "$credential_id" --arg name "$secret" --arg uid "$credential_secret_uid" --arg rv "$credential_secret_rv" --arg sha "$credential_secret_sha" --arg readiness "$readiness_sha" --arg expiry "$readiness_expiry" --arg activated "$activated_at" '{format:"kubebrain.jwt-kms-lifecycle-active.v1","credential-id":$id,"secret-name":$name,"secret-uid":$uid,"secret-resource-version":$rv,"secret-data-sha256":$sha,"readiness-receipt-sha256":$readiness,"readiness-expires-at-unix":$expiry,"activated-at-unix":$activated}')"
   if current="$(kc get configmap kubebrain-jwt-kms-lifecycle-active -n "$NAMESPACE" -o json 2>/dev/null)"; then
+    [[ "$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/retirement-in-progress"] // ""' <<<"$current")" == "" ]] || die "credential activation is blocked by retirement in progress"
+    [[ "$("$JQ" -er '.metadata.annotations["dbaas.kubebrain.io/last-retired-credential"] // ""' <<<"$current")" != "$credential_id" ]] || die "a revoked lifecycle credential cannot be reactivated"
     active_rv="$("$JQ" -er '.metadata.resourceVersion' <<<"$current")"
     patch="$("$JQ" -cn --arg rv "$active_rv" --argjson data "$active_data" '[{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"replace","path":"/data","value":$data}]')"
     kc patch configmap kubebrain-jwt-kms-lifecycle-active -n "$NAMESPACE" --type=json -p "$patch" >/dev/null || die "active credential CAS failed"

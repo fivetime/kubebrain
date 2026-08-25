@@ -58,7 +58,7 @@ if [[ "$args" == *"get validatingadmissionpolicybinding kubebrain-jwt-kms-lifecy
 if [[ "$args" == *"get validatingadmissionpolicybinding kubebrain-jwt-kms-lifecycle-active"* ]]; then printf '{"spec":{"policyName":"kubebrain-jwt-kms-lifecycle-active","validationActions":["Deny"]}}\n'; exit 0; fi
 if [[ "$args" == *"auth can-i"* ]]; then printf 'no\n'; exit 0; fi
 if [[ "$args" == *"get secret kubebrain-jwt-kms-lifecycle-2026q3"* ]]; then cat "$SECRET_STATE"; exit 0; fi
-if [[ "$args" == *"get configmap kubebrain-jwt-kms-lifecycle-active"* ]]; then exit 1; fi
+if [[ "$args" == *"get configmap kubebrain-jwt-kms-lifecycle-active"* ]]; then [[ -f "$ACTIVE_STATE" ]] || exit 1; cat "$ACTIVE_STATE"; exit 0; fi
 if [[ "$args" == *"create -f -"* ]]; then tee "$ACTIVE_STATE" >/dev/null; exit 0; fi
 exit 1
 `)
@@ -86,6 +86,15 @@ if [[ "${MUTATE_SECRET_AFTER_PROBE:-}" == true ]]; then jq '.metadata.uid="repla
 	_, err = runProductionCommand(t, "bash", []string{"apply-jwt-kms-lifecycle-credential.sh", "--activate"}, append(env, "MUTATE_SECRET_AFTER_PROBE=true"))
 	require.Error(t, err)
 	require.NoFileExists(t, activeState, "Secret replacement after probe must prevent activation")
+	require.NoError(t, os.WriteFile(secretState, secretJSON, 0o600))
+	active["metadata"].(map[string]any)["annotations"] = map[string]any{"dbaas.kubebrain.io/retirement-in-progress": "old-2026q2"}
+	activeWithMarker, err := json.Marshal(active)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(activeState, activeWithMarker, 0o600))
+	require.NoError(t, os.WriteFile(probeLog, []byte("not-called"), 0o600))
+	_, err = runProductionCommand(t, "bash", []string{"apply-jwt-kms-lifecycle-credential.sh", "--activate"}, env)
+	require.Error(t, err)
+	require.Equal(t, "not-called", string(mustRead(t, probeLog)), "retirement marker must reject activation before provider probe")
 }
 
 func TestRetireJWTKMSLifecycleCredentialRequiresRevocationAndReplacement(t *testing.T) {
@@ -119,7 +128,7 @@ func TestRetireJWTKMSLifecycleCredentialRequiresRevocationAndReplacement(t *test
 	require.NoError(t, err)
 	activePath, deleted, calls := filepath.Join(dir, "active.json"), filepath.Join(dir, "deleted"), filepath.Join(dir, "calls")
 	require.NoError(t, os.WriteFile(activePath, activeJSON, 0o600))
-	kubectl, verifier, uidDelete := filepath.Join(dir, "kubectl"), filepath.Join(dir, "verifier"), filepath.Join(dir, "uid-delete")
+	kubectl, verifier, archiver, uidDelete := filepath.Join(dir, "kubectl"), filepath.Join(dir, "verifier"), filepath.Join(dir, "archiver"), filepath.Join(dir, "uid-delete")
 	writeTrafficExecutable(t, kubectl, `#!/usr/bin/env bash
 set -euo pipefail
 args="$*"
@@ -128,20 +137,36 @@ if [[ "$args" == *"get validatingadmissionpolicybinding kubebrain-jwt-kms-lifecy
 if [[ "$args" == *"get validatingadmissionpolicybinding kubebrain-jwt-kms-lifecycle-active"* ]]; then printf '{"spec":{"policyName":"kubebrain-jwt-kms-lifecycle-active","validationActions":["Deny"]}}\n'; exit 0; fi
 if [[ "$args" == *"auth can-i"* ]]; then printf 'no\n'; exit 0; fi
 if [[ "$args" == *"get configmap kubebrain-jwt-kms-lifecycle-active"* ]]; then cat "$ACTIVE_STATE"; exit 0; fi
+if [[ "$args" == *"patch configmap kubebrain-jwt-kms-lifecycle-active"* ]]; then
+  if [[ "$args" == *"last-retired-credential"* ]]; then
+    jq '.metadata.resourceVersion="32" | .metadata.annotations={"dbaas.kubebrain.io/last-retired-credential":"old-2026q2"}' "$ACTIVE_STATE" >"$ACTIVE_STATE.tmp"
+  else
+    jq '.metadata.resourceVersion="31" | .metadata.annotations={"dbaas.kubebrain.io/retirement-in-progress":"old-2026q2"}' "$ACTIVE_STATE" >"$ACTIVE_STATE.tmp"
+  fi
+  mv "$ACTIVE_STATE.tmp" "$ACTIVE_STATE"; cat "$ACTIVE_STATE"; exit 0
+fi
 if [[ "$args" == *"get secret kubebrain-jwt-kms-lifecycle-old-2026q2"* ]]; then [[ -f "$DELETED" ]] && exit 1; cat "$OLD_STATE"; exit 0; fi
 if [[ "$args" == *"get secret kubebrain-jwt-kms-lifecycle-new-2026q3"* ]]; then cat "$NEW_STATE"; exit 0; fi
 if [[ "$args" == *"wait --for=delete"* ]]; then [[ -f "$DELETED" ]]; exit; fi
 exit 1
 `)
 	writeTrafficExecutable(t, verifier, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'verify %s\\n' \"$*\" >>\"$CALLS\"\n[[ \"${FAIL_VERIFY:-}\" != true ]]\n")
+	writeTrafficExecutable(t, archiver, `#!/usr/bin/env bash
+set -euo pipefail
+printf 'archive %s:%s\n' "$RETIRED_CREDENTIAL_ID" "$RETIRED_SECRET_UID" >>"$CALLS"
+printf '{"format":"kubebrain.object-immutable-blob.receipt.v1","artifact_format":"kubebrain.jwt-kms-lifecycle-credential-retirement-artifact.v1","artifact_id":"%s:%s","instance":"%s","object_store_id":"%s","bucket":"%s","object_key":"%s/%s/%s.json","version_id":"version-1","artifact_sha256":"%064d","object_bytes":100,"retention_mode":"%s","retain_until_unix":%s,"remote_verified":true,"archived_at_unix":2000000000}\n' "$RETIRED_CREDENTIAL_ID" "$RETIRED_SECRET_UID" "$REPLACEMENT_CREDENTIAL_ID" "$OBJECT_STORE_ID" "$S3_BUCKET" "$OBJECT_PREFIX" "$RETIRED_CREDENTIAL_ID" "$RETIRED_SECRET_UID" 0 "$RETENTION_MODE" "$RETAIN_UNTIL_UNIX" >"$ARCHIVE_RECEIPT_OUTPUT"
+chmod 600 "$ARCHIVE_RECEIPT_OUTPUT"
+`)
 	writeTrafficExecutable(t, uidDelete, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'delete %s\\n' \"$*\" >>\"$CALLS\"\ntouch \"$DELETED\"\n")
 	retirement := filepath.Join(dir, "retirement.json")
+	archiveReceipt := filepath.Join(dir, "archive-receipt.json")
 	require.NoError(t, os.WriteFile(retirement, []byte("signed-retirement"), 0o600))
-	env := []string{"KUBE_CONTEXT=test", "KUBECTL=" + kubectl, "CREDENTIAL_ID=old-2026q2", "KMS_RECEIPT_PUBLIC_KEY=" + key, "RETIREMENT_RECEIPT=" + retirement, "KMS_LIFECYCLE_CREDENTIAL_RETIREMENT_VERIFIER=" + verifier, "UID_DELETE=" + uidDelete, "OLD_STATE=" + oldPath, "NEW_STATE=" + newPath, "ACTIVE_STATE=" + activePath, "DELETED=" + deleted, "CALLS=" + calls}
+	env := []string{"KUBE_CONTEXT=test", "KUBECTL=" + kubectl, "CREDENTIAL_ID=old-2026q2", "KMS_RECEIPT_PUBLIC_KEY=" + key, "RETIREMENT_RECEIPT=" + retirement, "KMS_LIFECYCLE_CREDENTIAL_RETIREMENT_VERIFIER=" + verifier, "KMS_LIFECYCLE_CREDENTIAL_RETIREMENT_ARCHIVER=" + archiver, "RETIREMENT_ARCHIVE_RECEIPT_OUTPUT=" + archiveReceipt, "OBJECT_STORE_ID=store-a", "S3_BUCKET=audit", "RETENTION_MODE=COMPLIANCE", "RETAIN_UNTIL_UNIX=2100000000", "UID_DELETE=" + uidDelete, "OLD_STATE=" + oldPath, "NEW_STATE=" + newPath, "ACTIVE_STATE=" + activePath, "DELETED=" + deleted, "CALLS=" + calls}
 	output, err := runProductionCommand(t, "bash", []string{"apply-jwt-kms-lifecycle-credential.sh", "--retire"}, env)
 	require.NoError(t, err, string(output))
 	log := string(mustRead(t, calls))
 	require.Contains(t, log, "--replacement-readiness-receipt-sha256 "+readinessSHA)
+	require.Contains(t, log, "archive old-2026q2:old-uid")
 	require.Contains(t, log, "--uid old-uid --resource-version 10")
 	require.FileExists(t, deleted)
 	require.NoError(t, os.Remove(deleted))

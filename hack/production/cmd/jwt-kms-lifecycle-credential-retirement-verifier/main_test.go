@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,11 +23,33 @@ func TestVerifyRetirementBindsOldReplacementAndReadiness(t *testing.T) {
 	receipt := retirementReceipt{Format: "kubebrain.jwt-kms-lifecycle-credential-retirement.v1", State: "revoked", Principal: "identity-admin", RetiredCredentialID: want.retiredID, RetiredSecretUID: want.retiredUID, RetiredSecretDataSHA256: want.retiredSHA, ReplacementCredentialID: want.replacementID, ReplacementSecretUID: want.replacementUID, ReplacementSecretDataSHA256: want.replacementSHA, ReplacementReadinessSHA256: want.readinessSHA, RevokedAtUnix: now.Unix() - 1, ExpiresAtUnix: now.Unix() + 300}
 	data := signRetirement(t, privateKey, receipt)
 	require.NoError(t, verify(data, publicKey, want, now))
+	require.NoError(t, verify(data, publicKey, want, now.Add(24*time.Hour)), "a signed revoked state is permanent after its bounded issuance window")
+	artifactPath := filepath.Join(t.TempDir(), "artifact.json")
+	require.NoError(t, writeArtifact(artifactPath, data, want))
+	var artifact retirementArtifact
+	require.NoError(t, json.Unmarshal(mustRead(t, artifactPath), &artifact))
+	require.Equal(t, "kubebrain.jwt-kms-lifecycle-credential-retirement-artifact.v1", artifact.Format)
+	require.Equal(t, data, mustDecode(t, artifact.RetirementReceiptBase64))
+	require.Error(t, writeArtifact(artifactPath, data, want))
 	wrong := want
 	wrong.replacementUID = "other-uid"
 	require.ErrorContains(t, verify(data, publicKey, wrong, now), "binding")
 	receipt.State = "disabled"
 	require.ErrorContains(t, verify(signRetirement(t, privateKey, receipt), publicKey, want, now), "state")
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
+}
+
+func mustDecode(t *testing.T, value string) []byte {
+	t.Helper()
+	data, err := base64.StdEncoding.Strict().DecodeString(value)
+	require.NoError(t, err)
+	return data
 }
 
 func TestVerifyRetirementRejectsSameCredentialAndLongWindow(t *testing.T) {
