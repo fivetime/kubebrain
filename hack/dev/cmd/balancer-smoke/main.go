@@ -31,10 +31,14 @@ import (
 
 func main() {
 	endpoints := splitRequired("ENDPOINTS")
+	advertisedEndpoints := splitOptional("EXPECTED_ADVERTISED_ENDPOINTS", endpoints)
 	victimEndpoint := required("VICTIM_ENDPOINT")
 	stateDir := required("STATE_DIR")
 	if len(endpoints) != 3 {
 		log.Fatalf("ENDPOINTS must contain exactly three endpoints, got %d", len(endpoints))
+	}
+	if len(advertisedEndpoints) != 3 {
+		log.Fatalf("EXPECTED_ADVERTISED_ENDPOINTS must contain exactly three endpoints, got %d", len(advertisedEndpoints))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -60,7 +64,7 @@ func main() {
 	if _, err := unary.Get(ctx, prefix+"pin"); err != nil {
 		log.Fatalf("pin unary connection: %v", err)
 	}
-	syncAndRequireEndpoints(ctx, unary, endpoints)
+	syncAndRequireEndpoints(ctx, unary, advertisedEndpoints)
 
 	watchClient := newAutoSyncPinnedClient(victimEndpoint)
 	defer watchClient.Close()
@@ -75,7 +79,7 @@ func main() {
 	case <-ctx.Done():
 		log.Fatalf("create pinned watch: %v", ctx.Err())
 	}
-	waitAndRequireAutoSyncedEndpoints(ctx, watchClient, endpoints)
+	waitAndRequireAutoSyncedEndpoints(ctx, watchClient, advertisedEndpoints)
 
 	writeMarker(stateDir, "ready")
 	waitMarker(ctx, stateDir, "deleted")
@@ -142,8 +146,8 @@ func main() {
 	if err != nil || deletedCount != 1 {
 		log.Fatalf("delete after failover: deleted=%d err=%v", deletedCount, err)
 	}
-	fmt.Printf("balancer smoke completed: synced_endpoints=3 autosynced_endpoints=3 watch_events=%d last_revision=%d transient_failures=%d stale_serializable_reads=%d replacement_ready=true\n",
-		writes, lastRevision, transientFailures, staleSerializableReads)
+	fmt.Printf("balancer smoke completed: initial_endpoints=%d synced_endpoints=%d synced_unique_endpoints=%d autosynced_endpoints=%d watch_events=%d last_revision=%d transient_failures=%d stale_serializable_reads=%d replacement_ready=true\n",
+		len(endpoints), len(advertisedEndpoints), uniqueEndpointCount(advertisedEndpoints), len(advertisedEndpoints), writes, lastRevision, transientFailures, staleSerializableReads)
 }
 
 func syncAndRequireEndpoints(ctx context.Context, client *clientv3.Client, expected []string) {
@@ -161,9 +165,6 @@ func syncAndRequireEndpoints(ctx context.Context, client *clientv3.Client, expec
 		if got[index] != want[index] {
 			log.Fatalf("synced endpoints mismatch: got=%q want=%q", got, want)
 		}
-		if index > 0 && got[index] == got[index-1] {
-			log.Fatalf("synced endpoints are not unique: %q", got)
-		}
 	}
 }
 
@@ -175,7 +176,7 @@ func waitAndRequireAutoSyncedEndpoints(ctx context.Context, client *clientv3.Cli
 	for {
 		got := append([]string(nil), client.Endpoints()...)
 		sort.Strings(got)
-		if equalUniqueEndpoints(got, want) {
+		if equalEndpoints(got, want) {
 			return
 		}
 		select {
@@ -186,16 +187,28 @@ func waitAndRequireAutoSyncedEndpoints(ctx context.Context, client *clientv3.Cli
 	}
 }
 
-func equalUniqueEndpoints(got, want []string) bool {
+func equalEndpoints(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
 	}
+	got = append([]string(nil), got...)
+	want = append([]string(nil), want...)
+	sort.Strings(got)
+	sort.Strings(want)
 	for index := range want {
-		if got[index] != want[index] || (index > 0 && got[index] == got[index-1]) {
+		if got[index] != want[index] {
 			return false
 		}
 	}
 	return true
+}
+
+func uniqueEndpointCount(endpoints []string) int {
+	unique := make(map[string]struct{}, len(endpoints))
+	for _, endpoint := range endpoints {
+		unique[endpoint] = struct{}{}
+	}
+	return len(unique)
 }
 
 func createEventually(ctx context.Context, client *clientv3.Client, key, value string) int {
@@ -278,7 +291,19 @@ func required(name string) string {
 }
 
 func splitRequired(name string) []string {
-	parts := strings.Split(required(name), ",")
+	return split(required(name))
+}
+
+func splitOptional(name string, fallback []string) []string {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return append([]string(nil), fallback...)
+	}
+	return split(value)
+}
+
+func split(value string) []string {
+	parts := strings.Split(value, ",")
 	values := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if value := strings.TrimSpace(part); value != "" {

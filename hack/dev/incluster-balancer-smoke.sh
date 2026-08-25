@@ -26,6 +26,7 @@ RUNTIME_IMAGE="${RUNTIME_IMAGE:-}"
 PROBE_IMAGE="${PROBE_IMAGE:-}"
 JOB_NAME="${JOB_NAME:-kubebrain-balancer-smoke-$(date +%s)}"
 JOB_TIMEOUT_SECONDS="${JOB_TIMEOUT_SECONDS:-300}"
+EXPECTED_ADVERTISED_ENDPOINTS="${EXPECTED_ADVERTISED_ENDPOINTS:-}"
 GO_IMAGE="${GO_IMAGE:-golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651}"
 
 for command in docker jq kind kubectl sha256sum; do
@@ -43,6 +44,15 @@ done
   { echo "VICTIM_POD must be one of ${POD_BASENAME}-0, -1, or -2" >&2; exit 2; }
 [[ "$JOB_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
   { echo "JOB_TIMEOUT_SECONDS must be a positive integer" >&2; exit 2; }
+if [[ -n "$EXPECTED_ADVERTISED_ENDPOINTS" ]]; then
+  IFS=',' read -r -a expected_advertised_endpoints <<<"$EXPECTED_ADVERTISED_ENDPOINTS"
+  (( ${#expected_advertised_endpoints[@]} == 3 )) ||
+    { echo "EXPECTED_ADVERTISED_ENDPOINTS must contain exactly three comma-separated URLs" >&2; exit 2; }
+  for endpoint in "${expected_advertised_endpoints[@]}"; do
+    [[ "$endpoint" =~ ^https?://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[1-9][0-9]{0,4})?$ ]] ||
+      { echo "EXPECTED_ADVERTISED_ENDPOINTS contains an invalid URL: ${endpoint}" >&2; exit 2; }
+  done
+fi
 
 if [[ -z "$RUNTIME_IMAGE" ]]; then
   RUNTIME_IMAGE="$(kubectl -n "$NAMESPACE" get "$WORKLOAD" \
@@ -188,6 +198,8 @@ spec:
           value: "${endpoints}"
         - name: VICTIM_ENDPOINT
           value: "${victim_endpoint}"
+        - name: EXPECTED_ADVERTISED_ENDPOINTS
+          value: "${EXPECTED_ADVERTISED_ENDPOINTS}"
         - name: STATE_DIR
           value: /state
         volumeMounts:
