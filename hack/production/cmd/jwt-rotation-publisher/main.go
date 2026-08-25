@@ -89,6 +89,7 @@ func (k kubectlClient) Patch(ctx context.Context, namespace, resource, name stri
 func main() {
 	var o jwtrotationpublisher.Options
 	var kubectlPath, kubeContext, kubeconfig string
+	var rollbackPhaseC bool
 	flag.StringVar(&o.Phase, "phase", "", "phase-a, phase-b, or phase-c")
 	flag.StringVar(&o.OperationID, "operation-id", "", "stable rotation operation ID")
 	flag.StringVar(&o.Instance, "instance", "", "instance identity")
@@ -113,6 +114,7 @@ func main() {
 	flag.StringVar(&kubectlPath, "kubectl", "kubectl", "kubectl executable")
 	flag.StringVar(&kubeContext, "kube-context", "", "explicit Kubernetes context")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "explicit kubeconfig")
+	flag.BoolVar(&rollbackPhaseC, "rollback-phase-c-to-b", false, "restore phase B after an unreceipted phase C failure")
 	flag.Parse()
 
 	path, err := exec.LookPath(kubectlPath)
@@ -120,7 +122,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, "JWT rotation publisher: kubectl is required")
 		os.Exit(2)
 	}
-	receipt, err := jwtrotationpublisher.Run(context.Background(), kubectlClient{path: path, context: kubeContext, kubeconfig: kubeconfig}, o, time.Now)
+	client := kubectlClient{path: path, context: kubeContext, kubeconfig: kubeconfig}
+	if rollbackPhaseC {
+		if err := jwtrotationpublisher.RollbackPhaseCToB(context.Background(), client, o); err != nil {
+			fmt.Fprintln(os.Stderr, "JWT rotation publisher rollback:", err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, "JWT phase C rollback converged to phase B")
+		return
+	}
+	receipt, err := jwtrotationpublisher.Run(context.Background(), client, o, time.Now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "JWT rotation publisher:", err)
 		os.Exit(1)

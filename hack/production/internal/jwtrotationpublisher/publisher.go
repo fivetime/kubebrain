@@ -249,6 +249,95 @@ func Run(ctx context.Context, kube Kubernetes, o Options, now func() time.Time) 
 	return receipt, nil
 }
 
+// RollbackPhaseCToB conservatively restores the overlap configuration after an
+// unreceipted phase C rollout failure. It never rewrites phase receipts.
+func RollbackPhaseCToB(ctx context.Context, kube Kubernetes, o Options) error {
+	if err := validateOptions(o); err != nil {
+		return err
+	}
+	if o.Phase != "phase-c" {
+		return errors.New("rollback requires phase-c options")
+	}
+	if _, err := os.Lstat(o.ReceiptOutput); err == nil {
+		return errors.New("refusing to roll back a receipted phase C")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	oldKey, err := readPrivateFile(o.OldKeySource)
+	if err != nil {
+		return fmt.Errorf("old key: %w", err)
+	}
+	newKey, err := readPrivateFile(o.NewKeySource)
+	if err != nil {
+		return fmt.Errorf("new key: %w", err)
+	}
+	if digestBytes(oldKey) != o.OldKeySHA256 || digestBytes(newKey) != o.NewKeySHA256 {
+		return errors.New("key source digest does not match approved parameters")
+	}
+	secret, err := ensureSecret(ctx, kube, o, oldKey, newKey)
+	if err != nil {
+		return err
+	}
+	secretDigest := digestJSONLine(secret.Data)
+	previous, _, err := readReceipt(o.PreviousReceipt)
+	if err != nil {
+		return fmt.Errorf("previous receipt: %w", err)
+	}
+	if err := validatePrevious(previous, o, secret, secretDigest); err != nil {
+		return err
+	}
+	current, err := getStatefulSet(ctx, kube, o)
+	if err != nil {
+		return err
+	}
+	if err := validateStateBinding(current, o); err != nil {
+		return err
+	}
+	if current.object.Metadata.UID != previous.StatefulSetUID || current.baseline != previous.TemplateBaselineSHA {
+		return errors.New("StatefulSet identity or template baseline changed before rollback")
+	}
+	phaseC, phaseB := desiredAuthArgs(o)
+	if current.authArg != phaseC && current.authArg != phaseB {
+		return errors.New("phase C rollback found an unsupported auth-token configuration")
+	}
+	rollbackOptions := o
+	rollbackOptions.Phase = "phase-b"
+	if current.authArg != phaseB || !phaseMetadataMatches(current.object, rollbackOptions, secretDigest) {
+		patch, err := buildPatch(current, phaseB, secretDigest, rollbackOptions)
+		if err != nil {
+			return err
+		}
+		if err := kube.Patch(ctx, o.Namespace, "statefulset", o.StatefulSet, patch); err != nil {
+			return fmt.Errorf("patch StatefulSet rollback: %w", err)
+		}
+	}
+	deadline := time.Now().Add(o.RolloutTimeout)
+	for {
+		current, err = getStatefulSet(ctx, kube, o)
+		if err == nil && current.authArg == phaseB && phaseMetadataMatches(current.object, rollbackOptions, secretDigest) && rolloutComplete(current.object, o.ExpectedReplicas) {
+			break
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("wait for rollback: %w", err)
+			}
+			return errors.New("timed out waiting for phase B rollback")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(o.PollInterval):
+		}
+	}
+	if err := validateStateBinding(current, o); err != nil {
+		return fmt.Errorf("StatefulSet binding changed during rollback: %w", err)
+	}
+	if current.object.Metadata.UID != previous.StatefulSetUID || current.baseline != previous.TemplateBaselineSHA {
+		return errors.New("StatefulSet identity or template baseline changed during rollback")
+	}
+	return nil
+}
+
 func validateOptions(o Options) error {
 	if !slices.Contains([]string{"phase-a", "phase-b", "phase-c"}, o.Phase) {
 		return errors.New("phase must be phase-a, phase-b, or phase-c")

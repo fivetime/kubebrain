@@ -49,6 +49,26 @@ func TestPublisherLifecycleAndIdempotentTakeover(t *testing.T) {
 	require.Equal(t, a.AfterRevision, recoveredB.BeforeRevision)
 	b = recoveredB
 
+	// A failed phase C rollout may be conservatively restored to the receipted
+	// phase B without publishing or replacing any phase receipt.
+	candidateC := bOptions
+	candidateC.Phase = "phase-c"
+	candidateC.PreviousReceipt = bOptions.ReceiptOutput
+	candidateC.ReceiptOutput = filepath.Join(f.dir, "phase-c.json")
+	phaseCArg, _ := desiredAuthArgs(candidateC)
+	containers := nested(f.statefulSet, "spec", "template", "spec")["containers"].([]any)
+	containers[0].(map[string]any)["args"].([]any)[0] = phaseCArg
+	annotations := nested(f.statefulSet, "spec", "template", "metadata")["annotations"].(map[string]any)
+	annotations["dbaas.kubebrain.io/jwt-key-rotation-phase"] = "phase-c"
+	status := f.statefulSet["status"].(map[string]any)
+	status["updateRevision"] = "rev-phase-c-partial"
+	require.NoError(t, RollbackPhaseCToB(t.Context(), f, candidateC))
+	require.Equal(t, "phase-b", nested(f.statefulSet, "spec", "template", "metadata")["annotations"].(map[string]any)["dbaas.kubebrain.io/jwt-key-rotation-phase"])
+	require.NoFileExists(t, candidateC.ReceiptOutput)
+	require.Equal(t, 3, f.patches)
+	require.NoError(t, RollbackPhaseCToB(t.Context(), f, candidateC))
+	require.Equal(t, 3, f.patches)
+
 	cOptions := bOptions
 	cOptions.Phase = "phase-c"
 	cOptions.PreviousReceipt = bOptions.ReceiptOutput
@@ -59,12 +79,13 @@ func TestPublisherLifecycleAndIdempotentTakeover(t *testing.T) {
 	require.Equal(t, a.TemplateBaselineSHA, b.TemplateBaselineSHA)
 	require.Equal(t, b.TemplateBaselineSHA, c.TemplateBaselineSHA)
 	require.Equal(t, digestFile(t, bOptions.ReceiptOutput), c.PreviousReceiptSHA256)
-	require.Equal(t, 3, f.patches)
+	require.Equal(t, 4, f.patches)
 	for _, path := range []string{options.ReceiptOutput, bOptions.ReceiptOutput, cOptions.ReceiptOutput} {
 		info, err := os.Stat(path)
 		require.NoError(t, err)
 		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 	}
+	require.ErrorContains(t, RollbackPhaseCToB(t.Context(), f, cOptions), "receipted phase C")
 }
 
 func TestPublisherFailsClosed(t *testing.T) {

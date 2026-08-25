@@ -115,7 +115,24 @@ secure_file "$a_gate" "$MAX_EVIDENCE_BYTES" && secure_file "$b_gate" "$MAX_EVIDE
 earliest="$("$JQ" -er '.earliest_retirement_at_unix | select(type=="number" and .>0 and .==floor)' "$b_gate")" || retry "phase B gate receipt is invalid"
 wait_until() { local now; while true; do now="$("$DATE" +%s)"; [[ "$now" =~ ^[1-9][0-9]*$ ]] || return 2; (( now >= earliest )) && return 0; "$SLEEP" "$((earliest-now > 5 ? 5 : earliest-now))"; done; }
 run_or_retry "JWT retirement wait" wait_until
-run_or_retry "phase C publish" "$PUBLISHER_COMMAND" --phase phase-c --previous-receipt "$b_publish" --receipt-output "$c_publish" "${publisher_common[@]}"
+phase_c_rc=0
+run_step "phase C publish" "$PUBLISHER_COMMAND" --phase phase-c --previous-receipt "$b_publish" --receipt-output "$c_publish" "${publisher_common[@]}" || phase_c_rc=$?
+[[ "$fenced" == false ]] || exit 1
+if (( phase_c_rc != 0 )); then
+  # A timeout may race with a rollout that actually converged. Reconcile once
+  # before deciding that the unreceipted phase must be rolled back.
+  phase_c_recheck_rc=0
+  run_step "phase C convergence recheck" "$PUBLISHER_COMMAND" --phase phase-c --previous-receipt "$b_publish" --receipt-output "$c_publish" "${publisher_common[@]}" || phase_c_recheck_rc=$?
+  [[ "$fenced" == false ]] || exit 1
+  if (( phase_c_recheck_rc != 0 )); then
+    rollback_rc=0
+    run_step "phase C rollback to B" "$PUBLISHER_COMMAND" --phase phase-c --rollback-phase-c-to-b --previous-receipt "$b_publish" --receipt-output "$c_publish" "${publisher_common[@]}" || rollback_rc=$?
+    [[ "$fenced" == false ]] || exit 1
+    terminal_heartbeat || exit 1
+    (( rollback_rc == 0 )) || retry "phase C publish failed and rollback to B exited ${rollback_rc}"
+    retry "phase C publish exited ${phase_c_rc}; overlap phase B was restored"
+  fi
+fi
 issue_token "$c_token" "$new_source" phase-c-new
 run_or_retry "phase C gate" env "${gate_common[@]}" NEW_TOKEN_FILE="$c_token" ACTION=phase-c "$ROTATION_COMMAND"
 
