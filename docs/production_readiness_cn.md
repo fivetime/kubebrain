@@ -3926,6 +3926,13 @@ identity 和严格参数摘要。每次 old/new material broker 请求都必须�
 146.864/152.978、373.425/379.459、236.001/242.057、381.470/387.540，全部通过。该绑定提供审计 provenance，不代表外部
 provider 已证明 version enabled/primary/revoked，也不能代替 export/promotion/revoke receipt。
 
+提交 `e15b1d0a` 新增正式 `kubebrain-jwt-kms-export-verifier`：requester 必须在任何 Kubernetes 调用前，用 pinned Ed25519 trust
+key 验证 old/new provider export envelope。规范 payload 绑定 request/instance/version/material SHA、`state=enabled` 和不超过
+15 分钟的有效期；未知字段、非规范 JSON、错误签名、过期、身份或材料漂移全部拒绝。文件通过 `O_NOFOLLOW` 和权限/大小边界读取；
+key、receipt、trust key、TLS 在验证前冻结，后续摘要与 Secret 创建只读取冻结副本。三项 receipt/trust digest 进入 operation identity
+和 runner schema。621 项四片 Go/墙钟秒为 133.081/139.209、364.557/370.752、231.373/237.505、381.369/387.503，全部通过。
+这关闭“调用者可凭裸 version 字符串自证 export”的缺口；尚未实现 provider 请求、new-version promotion 与 old-version revoke。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。

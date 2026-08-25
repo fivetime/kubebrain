@@ -50,6 +50,9 @@
   "new_key_material_key": "jwt-new-key",
   "old_key_version_id": "kms/prod/jwt/versions/41",
   "new_key_version_id": "kms/prod/jwt/versions/42",
+  "kms_receipt_public_key_sha256": "<64 hex>",
+  "old_key_export_receipt_sha256": "<64 hex>",
+  "new_key_export_receipt_sha256": "<64 hex>",
   "old_key_sha256": "<64 hex>",
   "new_key_sha256": "<64 hex>",
   "key_volume": "jwt-keys",
@@ -82,6 +85,13 @@ profile 必须要求 HTTPS endpoint 与非空 TLS 字段。endpoint 数必须等
 old/new version ID 必须不同、各为 1..512 字符，首字符为字母或数字，其余只允许字母数字及 `._:/@+=-`，以兼容常见
 KMS resource/version URI 且禁止空白与控制字符。version ID 与材料 SHA 都进入 deterministic operation binding；ID 是外部
 KMS provenance 的不可变声明，不单独证明该版本当前 enabled/primary/revoked 状态，状态真实性必须由后续 provider receipt 证明。
+
+requester 还必须提供两张 provider export receipt 和 pinned Ed25519 public key。envelope 精确为
+`kubebrain.jwt-kms-export-envelope.v1`，其 base64 payload 必须是无未知字段、无 trailing value 的规范
+`kubebrain.jwt-kms-export.v1` JSON，签名覆盖 payload 原始字节。payload 绑定 request ID、instance、version ID、材料 SHA-256、
+`state=enabled`、export/expiry Unix 时间；有效期最多 15 分钟，允许最多 60 秒未来时钟偏差。验证器使用 `O_NOFOLLOW` 打开有界普通
+文件，trust key/receipt 禁止 group/world 写，材料禁止 group/other 任意访问。requester 在验证前把材料、receipt、trust key 与 TLS
+输入冻结为 0600 私有副本，验证、摘要和 Secret 创建只使用同一冻结字节；验证失败不得调用 Kubernetes。
 
 Operation 参数不包含 root 密码、JWT 或 KMS 解封凭据。token 签发器使用独立 projected credential/短期 broker，输出只允许写入
 上述固定 workspace 文件；stdout/stderr、Operation message 和 receipt 都不得包含 token/key 明文。
@@ -259,6 +269,14 @@ operation 名 binding 与严格参数 schema。`operationctl material` 对 signi
 伪带 KMS version。最终 composite receipt 升级为 v2 并显式记录两个 version ID，已有 v1/篡改 receipt 均不能幂等复用。
 定向测试、race、vet 通过；620 项提交后四片 Go/墙钟秒为 146.864/152.978、373.425/379.459、236.001/242.057、
 381.470/387.540，全部通过。该证据固定 provenance 声明，但尚未验证外部 KMS 对 version 状态的签名/在线证明。
+
+提交 `e15b1d0a` 交付正式 `kubebrain-jwt-kms-export-verifier` 并纳入 runtime image。requester 现在强制验证 old/new 两张短期
+Ed25519-signed export receipt；identity/state/time/signature/material 任一不匹配都在 Kubernetes 调用前失败。receipt、provider public
+key 和材料 SHA 同时进入 deterministic operation identity 与参数摘要；runner 的精确 schema 要求三项 provenance digest 非空且
+old/new receipt 不同。所有输入先冻结到私有临时目录，消除验证后再从可变源路径创建 Secret 的窗口。验证器单元/文件系统边界、
+requester fail-before-Kubernetes、race、vet、build 和镜像合同通过；621 项提交后四片 Go/墙钟秒为
+133.081/139.209、364.557/370.752、231.373/237.505、381.369/387.503，全部通过。该实现验证 provider 已签署的 enabled/export
+事实；provider API 调用本身、primary promotion、旧版本 revoke 及其终态 receipt 仍未交付。
 
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实

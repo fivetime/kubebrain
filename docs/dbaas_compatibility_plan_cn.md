@@ -61944,6 +61944,13 @@ material 则禁止携带 version。这样后续 KMS receipt 可以与同一不�
 620 项四片提交后 Go/墙钟秒为 146.864/152.978、373.425/379.459、236.001/242.057、381.470/387.540，全部通过。
 version ID 目前仍是外部声明；provider 对 enabled/primary/revoked 状态的可信证明和动作 receipt 尚未交付，不能标记 KMS lifecycle GREEN。
 
+提交 `e15b1d0a` 将 export provenance 从声明推进为密码学验证：正式 runtime binary 验证 Ed25519-signed canonical envelope，绑定
+request、instance、version、材料 SHA、enabled state 和最多 15 分钟有效期。requester 在 Kubernetes 前验证 old/new 两张 receipt，
+并把 receipt/trust SHA 纳入 operation identity 与严格参数；输入冻结后才参与验证、摘要和 Secret 创建。错误签名、过期、错误材料、
+symlink/权限越界及验证失败仍调用 Kubernetes 均有负测。621 项四片提交后 Go/墙钟秒为
+133.081/139.209、364.557/370.752、231.373/237.505、381.369/387.503，全部通过。外部 provider 调用、promotion/revoke 动作与
+签名终态 receipt 仍开放。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
