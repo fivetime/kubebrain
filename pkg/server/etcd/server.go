@@ -117,9 +117,10 @@ type RPCServer struct {
 	// leadershipDrainBoundary prevents a voluntary leader release from cutting
 	// across an already-admitted unary RPC. DrainLeadership takes the write side,
 	// waits for those calls to return, releases the campaign lease, then lets new
-	// calls route through the newly observed leader.
+	// public calls route through the newly observed leader. Peer calls remain
+	// fenced so followers stop selecting this retiring member.
 	leadershipDrainBoundary sync.RWMutex
-	leadershipDrained       atomic.Bool
+	peerLeadershipDrained   atomic.Bool
 
 	concurrencyClient *clientv3.Client
 
@@ -135,16 +136,17 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 	s.clientCertAuth = enabled
 }
 
-// DrainLeadership runs release only after every admitted unary client RPC has
-// completed and holds later unary calls until the release is visible locally.
-// Long-lived Watch and KeepAlive streams deliberately remain connected; their
-// individual writes still pass through unary forwarding or their own epoch
-// fences and must not prevent a rollout from draining forever.
+// DrainLeadership runs release only after every admitted unary RPC has
+// completed and holds later calls until the release is visible locally. New
+// public calls may then proxy through the successor while transport GOAWAY is
+// migrating the connection; new peer calls remain fenced from this retiring
+// member. Long-lived Watch and KeepAlive streams deliberately remain connected
+// and must not prevent a rollout from draining forever.
 func (s *RPCServer) DrainLeadership(release func() bool) {
 	s.leadershipDrainBoundary.Lock()
 	defer s.leadershipDrainBoundary.Unlock()
 	if release() {
-		s.leadershipDrained.Store(true)
+		s.peerLeadershipDrained.Store(true)
 	}
 }
 

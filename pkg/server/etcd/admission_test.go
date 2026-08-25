@@ -205,7 +205,7 @@ func TestClientAdmissionDisabledDoesNotTrackRequests(t *testing.T) {
 	require.Zero(t, rpc.requestsInFlight)
 }
 
-func TestLeadershipDrainWaitsForUnaryAndBlocksLaterCalls(t *testing.T) {
+func TestLeadershipDrainWaitsForUnaryAndReopensPublicProxyAdmission(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -262,11 +262,13 @@ func TestLeadershipDrainWaitsForUnaryAndBlocksLaterCalls(t *testing.T) {
 	}
 	close(allowRelease)
 	<-drainDone
-	require.ErrorIs(t, <-secondResult, proxyprotocol.ErrClientDrainedBeforeAdmission)
+	require.NoError(t, <-secondResult)
 	select {
 	case <-secondEntered:
-		t.Fatal("drained public unary request entered its handler")
+		// After durable release, public traffic may enter and route through the
+		// successor while GOAWAY migrates this client connection.
 	default:
+		t.Fatal("public unary admission did not reopen after leadership release")
 	}
 }
 
