@@ -15,6 +15,8 @@ import (
 	"io"
 	"time"
 
+	"k8s.io/klog/v2"
+
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -32,6 +34,7 @@ func initSerializableCheckpointMetrics(metricCli metrics.Metrics) {
 	_ = metricCli.EmitGauge("serializable.checkpoint.revision", int64(0))
 	_ = metricCli.EmitGauge("serializable.checkpoint.remaining_seconds", int64(0))
 	_ = metricCli.EmitCounter("serializable.checkpoint.refresh_err", int64(0))
+	_ = metricCli.EmitCounter("serializable.checkpoint.release_err", int64(0))
 }
 
 const (
@@ -350,19 +353,40 @@ func (b *backend) protectSerializableCheckpoint(ctx context.Context, c Serializa
 	if err != nil {
 		return err
 	}
+	b.serializableCheckpointRegistered[slot] = true
+	unpublishedSlot := current == nil || current.Timestamp != c.Timestamp
+	rollback := func(cause error) error {
+		if !unpublishedSlot {
+			return cause
+		}
+		// ProtectSnapshot implementations may ignore cancellation and register the
+		// service safepoint after this leadership term has retired. Compensation
+		// must therefore escape the cancelled term context, but remains bounded.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), unaryRpcTimeout)
+		defer cleanupCancel()
+		if releaseErr := b.releaseSerializableCheckpointSlotLocked(cleanupCtx, protector, slot); releaseErr != nil {
+			if b.metricCli != nil {
+				b.metricCli.EmitCounter("serializable.checkpoint.release_err", 1)
+			}
+			klog.ErrorS(releaseErr, "release unpublished serializable checkpoint safepoint failed; waiting for TTL or shutdown retry",
+				"serviceID", b.serializableCheckpointServiceIDs[slot])
+			return errors.Join(cause, fmt.Errorf("release unpublished serializable checkpoint: %w", releaseErr))
+		}
+		return cause
+	}
 	if minimum > c.Timestamp {
-		return fmt.Errorf("%w: GC safepoint %d passed snapshot %d", ErrSerializableCheckpointUnavailable, minimum, c.Timestamp)
+		return rollback(fmt.Errorf("%w: GC safepoint %d passed snapshot %d", ErrSerializableCheckpointUnavailable, minimum, c.Timestamp))
 	}
 	if regionsRefreshed {
 		if err := b.validateSerializableCheckpointPublication(ctx, c.Timestamp); err != nil {
-			return err
+			return rollback(err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return rollback(err)
 	}
 	if err := b.validateLeadershipEpoch(ctx); err != nil {
-		return err
+		return rollback(err)
 	}
 	if current == nil || current.Timestamp != c.Timestamp {
 		b.serializableCheckpointSlot = slot
@@ -461,27 +485,43 @@ func (b *backend) GetSerializableCheckpoint() (SerializableCheckpoint, error) {
 	return *c, nil
 }
 
+func (b *backend) releaseSerializableCheckpointSlotLocked(
+	ctx context.Context, protector storage.SnapshotProtector, slot int,
+) error {
+	if slot < 0 || slot >= len(b.serializableCheckpointServiceIDs) ||
+		!b.serializableCheckpointRegistered[slot] {
+		return nil
+	}
+	if err := protector.ReleaseSnapshot(ctx, b.serializableCheckpointServiceIDs[slot]); err != nil {
+		return err
+	}
+	b.serializableCheckpointRegistered[slot] = false
+	return nil
+}
+
 // releaseSerializableCheckpoint stops advertising this process's checkpoint
-// before removing its PD service safepoint. The registration has a finite TTL,
-// so failure is safe during a PD outage; a bounded best-effort release keeps a
-// normal rollout from pinning TiKV MVCC history until that TTL expires.
+// before removing its PD service safepoints. Successful registrations are
+// tracked independently from local publication: a protector may ignore a
+// cancelled leadership context and succeed too late to publish. The records
+// have finite TTLs, so release failure remains safe during a PD outage; a
+// bounded best-effort release avoids pinning TiKV MVCC history until expiry.
 func (b *backend) releaseSerializableCheckpoint(ctx context.Context) error {
 	b.serializableCheckpointProtectMu.Lock()
 	defer b.serializableCheckpointProtectMu.Unlock()
 	checkpoint := b.serializableCheckpoint.Swap(nil)
-	if checkpoint == nil {
-		return nil
-	}
 	protector, ok := storage.FindCapability[storage.SnapshotProtector](b.kv)
 	if !ok {
 		return nil
 	}
 	var releaseErr error
-	for _, serviceID := range b.serializableCheckpointServiceIDs {
-		if serviceID == "" {
-			continue
+	for slot := range b.serializableCheckpointServiceIDs {
+		// A published checkpoint historically implied that both alternating
+		// slots might still protect in-flight readers. Preserve that conservative
+		// cleanup while allowing an unpublished late success to be tracked exactly.
+		if checkpoint != nil {
+			b.serializableCheckpointRegistered[slot] = true
 		}
-		releaseErr = errors.Join(releaseErr, protector.ReleaseSnapshot(ctx, serviceID))
+		releaseErr = errors.Join(releaseErr, b.releaseSerializableCheckpointSlotLocked(ctx, protector, slot))
 	}
 	return releaseErr
 }

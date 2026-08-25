@@ -306,6 +306,38 @@ func TestBackendCloseReturnsSerializableCheckpointReleaseFailure(t *testing.T) {
 	})
 }
 
+func TestBackendCloseReleasesUnpublishedSerializableCheckpointSlots(t *testing.T) {
+	releaseErr := errors.New("injected unpublished checkpoint release failure")
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), releaseErr: releaseErr}
+	recorder := &compactMetricRecorder{}
+	b := NewBackend(store, Config{
+		Prefix: "/registry", Keyspace: "checkpoint-unpublished-close-test", Identity: "peer-a", EnableEtcdCompatibility: true,
+	}, recorder).(*backend)
+	b.stopWorkers()
+	b.SetLeadershipFence(func() (uint64, bool) { return 2, false })
+	err := b.protectSerializableCheckpoint(
+		WithLeadershipEpoch(context.Background(), 1),
+		SerializableCheckpoint{Revision: 5, Timestamp: 200},
+	)
+	require.ErrorIs(t, err, ErrLeadershipFenced)
+	require.ErrorIs(t, err, releaseErr)
+	require.Contains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "serializable.checkpoint.release_err", value: 1,
+	})
+
+	store.mu.Lock()
+	store.releaseErr = nil
+	store.mu.Unlock()
+
+	require.NoError(t, b.Close())
+	store.mu.Lock()
+	releasedIDs := append([]string(nil), store.releasedIDs...)
+	store.mu.Unlock()
+	require.Equal(t, []string{
+		b.serializableCheckpointServiceIDs[0], b.serializableCheckpointServiceIDs[0],
+	}, releasedIDs, "shutdown must retry a failed compensation even when the checkpoint was never published locally")
+}
+
 func newCheckpointBackend(t *testing.T, store storage.KvStorage) *backend {
 	t.Helper()
 	ctrl := gomock.NewController(t)
@@ -414,6 +446,9 @@ func TestSerializableCheckpointLeaderRefreshStopsWithLeadershipContext(t *testin
 	require.NotContains(t, recorder.snapshot(), compactMetricRecord{
 		kind: "counter", name: "serializable.checkpoint.refresh_err", value: 1,
 	})
+	require.NotContains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "serializable.checkpoint.release_err", value: 1,
+	})
 	_, err := b.GetSerializableCheckpoint()
 	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable,
 		"a retired leader must not publish a local checkpoint")
@@ -450,9 +485,19 @@ func TestSerializableCheckpointRetiredLeaderSuppressesLateProtection(t *testing.
 	require.NotContains(t, recorder.snapshot(), compactMetricRecord{
 		kind: "counter", name: "serializable.checkpoint.refresh_err", value: 1,
 	})
+	require.NotContains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "serializable.checkpoint.release_err", value: 1,
+	})
 	_, err := b.GetSerializableCheckpoint()
 	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable,
 		"a late protection success must not publish follower-owned availability")
+	store.mu.Lock()
+	protections := append([]checkpointProtection(nil), store.protections...)
+	releasedIDs := append([]string(nil), store.releasedIDs...)
+	store.mu.Unlock()
+	require.Len(t, protections, 1)
+	require.Equal(t, []string{protections[0].id}, releasedIDs,
+		"a retired leader must compensate the unpublished PD service safepoint immediately")
 }
 
 func TestSerializableCheckpointBindsRevisionCompactAndAuthAtSnapshot(t *testing.T) {
@@ -660,9 +705,13 @@ func TestSerializableCheckpointRevalidatesTopologyAfterWarmBeforePublication(t *
 	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable)
 
 	base.mu.Lock()
-	require.Len(t, base.protections, 1, "GC protection must precede the final publication fence")
-	require.Equal(t, uint64(200), base.protections[0].timestamp)
+	protections := append([]checkpointProtection(nil), base.protections...)
+	releasedIDs := append([]string(nil), base.releasedIDs...)
 	base.mu.Unlock()
+	require.Len(t, protections, 1, "GC protection must precede the final publication fence")
+	require.Equal(t, uint64(200), protections[0].timestamp)
+	require.Equal(t, []string{protections[0].id}, releasedIDs,
+		"a candidate rejected by the final publication fence must not retain a PD GC pin")
 	compactKey := getCompactKey(b.config.Prefix)
 	require.Equal(t, [][]byte{b.ks.ObjectKeyspaceStart(), compactKey}, store.publicationStarts)
 	require.Equal(t, [][]byte{
@@ -690,9 +739,13 @@ func TestSerializableCheckpointPublicationFailureRetainsPreviousGeneration(t *te
 	require.NoError(t, serveErr)
 	require.Equal(t, first.Timestamp, served.Timestamp)
 	base.mu.Lock()
-	require.Len(t, base.protections, 2)
-	require.NotEqual(t, base.protections[0].id, base.protections[1].id)
+	protections := append([]checkpointProtection(nil), base.protections...)
+	releasedIDs := append([]string(nil), base.releasedIDs...)
 	base.mu.Unlock()
+	require.Len(t, protections, 2)
+	require.NotEqual(t, protections[0].id, protections[1].id)
+	require.Equal(t, []string{protections[1].id}, releasedIDs,
+		"a rejected next generation must be removed without releasing the served generation")
 }
 
 func TestSerializableCheckpointUsableWindowExpiresBeforeDefaultRegionCacheTTL(t *testing.T) {
@@ -717,6 +770,7 @@ func TestSerializableCheckpointMetricsExposePerReplicaUsableWindow(t *testing.T)
 		{kind: "gauge", name: "serializable.checkpoint.revision", value: int64(0)},
 		{kind: "gauge", name: "serializable.checkpoint.remaining_seconds", value: int64(0)},
 		{kind: "counter", name: "serializable.checkpoint.refresh_err", value: int64(0)},
+		{kind: "counter", name: "serializable.checkpoint.release_err", value: int64(0)},
 		{kind: "gauge", name: "serializable.checkpoint.available", value: int64(1)},
 		{kind: "gauge", name: "serializable.checkpoint.revision", value: int64(42)},
 		{kind: "gauge", name: "serializable.checkpoint.remaining_seconds", value: int64(90)},

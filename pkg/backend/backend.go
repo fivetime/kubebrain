@@ -460,6 +460,11 @@ type backend struct {
 	serializableCheckpoint           atomic.Pointer[SerializableCheckpoint]
 	serializableCheckpointServiceIDs [2]string
 	serializableCheckpointProtectMu  sync.Mutex
+	// serializableCheckpointRegistered tracks successful PD registrations even
+	// when leadership retires before the candidate is published locally. It is
+	// protected by serializableCheckpointProtectMu and lets shutdown retry a
+	// failed compensation without probing nonexistent service IDs.
+	serializableCheckpointRegistered [2]bool
 	serializableCheckpointSlot       int
 	serializableCheckpointSwitchedAt time.Time
 	// serializableCheckpointRegionsWarmedAt is the wall-clock UnixNano of the
