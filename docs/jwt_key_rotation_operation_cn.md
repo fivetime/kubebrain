@@ -39,6 +39,7 @@
 
 ```json
 {
+  "request_id": "change-2026-jwt-1",
   "state_dir": "/var/lib/kubebrain-operation/jwt-key-rotate-<id>.state",
   "receipt_output": "/var/lib/kubebrain-operation/jwt-key-rotate-<id>.operation.receipt.json",
   "kubebrain_namespace": "instance-a",
@@ -118,7 +119,7 @@ observedGeneration、replicas、readyReplicas、updatedReplicas 和 current/upda
 `--auth-token` 参数、operation phase annotation、固定 Secret 引用和必要的 checksum annotation；镜像、其他 args/env、
 ServiceAccount、security context、volume 或 selector 漂移时拒绝。每次发布结果写一个独立严格 JSON publish receipt，gate
 receipt 保持 A5492 的既有 schema。runner 最后原子发布独立
-`kubebrain.jwt-key-rotation.operation.receipt.v2`，绑定 old/new KMS version ID、三张 publish receipt、phase A/B/final gate receipt、
+`kubebrain.jwt-key-rotation.operation.receipt.v3`，显式绑定外部 request ID、old/new KMS version ID、三张 publish receipt、phase A/B/final gate receipt、
 参数 SHA、Operation UID/attempt 和各自摘要；terminal CAS 提交该 composite receipt 的 SHA-256，不能仅凭 rollout status stdout 或修改既有 gate
 schema。
 
@@ -292,6 +293,12 @@ requester fail-before-Kubernetes、race、vet、build 和镜像合同通过；62
 证明任一 export 失败不会调用 Kubernetes。最终 623 项四片为 145/172/156/150，提交后 Go/墙钟秒为
 137.219/143.410、361.246/367.394、235.131/241.288、380.005/386.233，全部通过。export 调用链已交付；provider promotion/revoke
 仍必须由不向 executor 授予 KMS 写权限的独立生命周期身份实现。
+
+提交 `74fc263a` 修复 promotion/revoke 前置审计缺口：此前 external request ID 只参与 deterministic operation hash，无法从 v2
+receipt 直接恢复，生命周期控制器不能证明 KMS mutation 对应哪张变更单。requester 现把规范 request ID 加入严格参数；runner
+重新验证其语法，composite receipt 升级为 v3 并显式绑定 request ID。已有 v2 receipt 不会被新 schema 幂等接受。623 项四片
+提交后 Go/墙钟秒为 131.244/137.375、375.550/381.678、228.913/235.046、395.870/402.005，全部通过。该提交只提供后续
+KMS lifecycle request/operation 双重绑定，不代表 promotion 或 revoke 已执行。
 
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实

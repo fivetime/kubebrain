@@ -3940,6 +3940,11 @@ fsync+hard-link no-clobber 私有发布。KMS wrapper 顺序取得 old/new 后�
 最终 623 项四片 Go/墙钟秒为 137.219/143.410、361.246/367.394、235.131/241.288、380.005/386.233，全部通过。
 KMS export 网络调用现已闭环；promotion/revoke 必须由独立控制身份实现，不能把写 KMS 权限加入 JWT executor。
 
+提交 `74fc263a` 将 external request ID 从不可逆的 operation hash 输入提升为严格参数字段，并把 composite receipt 升级为 v3、
+显式绑定 request ID。后续 KMS lifecycle controller 因而可同时校验变更单、Operation、instance、old/new version 与最终 receipt SHA；
+不能只凭 version ID 执行 mutation。623 项四片 Go/墙钟秒为 131.244/137.375、375.550/381.678、228.913/235.046、
+395.870/402.005，全部通过。promotion/revoke 实现仍开放。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。

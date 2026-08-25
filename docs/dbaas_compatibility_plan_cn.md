@@ -61958,6 +61958,11 @@ Operation 提交流程，退出删除临时明文且不接受直接材料混用�
 137.219/143.410、361.246/367.394、235.131/241.288、380.005/386.233，全部通过。external KMS export 已从离线输入推进为
 真实 API client；promotion/revoke 与签名终态 receipt 仍开放，并应由独立生命周期控制身份承担。
 
+提交 `74fc263a` 为后续 lifecycle mutation 补齐 external request provenance：request ID 现在是严格参数字段，最终 JWT operation
+receipt 升级为 v3 并显式记录它，不再只能从 deterministic hash 间接存在。623 项四片提交后 Go/墙钟秒为
+131.244/137.375、375.550/381.678、228.913/235.046、395.870/402.005，全部通过。promotion/revoke 必须绑定该 v3 receipt、
+operation 与 request ID 后才可实施，本项本身未授予或调用 KMS 写权限。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
