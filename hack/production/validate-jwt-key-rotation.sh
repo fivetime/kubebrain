@@ -20,6 +20,12 @@ KUBECTL="${KUBECTL:-kubectl}"
 JQ="${JQ:-jq}"
 DATE="${DATE:-date}"
 TOKEN_PROBE="${TOKEN_PROBE:-kubebrain-jwt-token-probe}"
+PROBE_CACERT="${PROBE_CACERT:-}"
+PROBE_CERT="${PROBE_CERT:-}"
+PROBE_KEY="${PROBE_KEY:-}"
+PROBE_SERVER_NAME="${PROBE_SERVER_NAME:-}"
+PROBE_RANGE_KEY="${PROBE_RANGE_KEY:-/kubebrain/jwt-rotation/probe}"
+PROBE_TIMEOUT="${PROBE_TIMEOUT:-10s}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 
@@ -58,6 +64,13 @@ done
 if [[ "$ACTION" != phase-a ]]; then
   [[ -n "$NEW_TOKEN_FILE" && -f "$NEW_TOKEN_FILE" ]] || die "NEW_TOKEN_FILE is required for $ACTION"
 fi
+[[ -z "$PROBE_CACERT" || -f "$PROBE_CACERT" ]] || die "PROBE_CACERT does not exist"
+[[ -z "$PROBE_CERT" || -f "$PROBE_CERT" ]] || die "PROBE_CERT does not exist"
+[[ -z "$PROBE_KEY" || -f "$PROBE_KEY" ]] || die "PROBE_KEY does not exist"
+[[ -n "$PROBE_RANGE_KEY" && "$PROBE_RANGE_KEY" != *[[:cntrl:]]* ]] || die "PROBE_RANGE_KEY is invalid"
+[[ "$PROBE_SERVER_NAME" != *[[:space:],]* && "$PROBE_SERVER_NAME" != *[[:cntrl:]]* ]] || die "PROBE_SERVER_NAME is invalid"
+[[ -z "$PROBE_CERT" && -z "$PROBE_KEY" || -n "$PROBE_CERT" && -n "$PROBE_KEY" ]] || die "PROBE_CERT and PROBE_KEY must be provided together"
+[[ -z "$PROBE_CACERT" && -z "$PROBE_CERT" && -z "$PROBE_KEY" && -z "$PROBE_SERVER_NAME" || -n "$PROBE_CACERT" ]] || die "TLS probe options require PROBE_CACERT"
 command -v "$JQ" >/dev/null || die "jq is required"
 command -v "$KUBECTL" >/dev/null || die "kubectl is required"
 command -v "$TOKEN_PROBE" >/dev/null || die "TOKEN_PROBE is required"
@@ -76,18 +89,27 @@ umask 077
 mkdir -p "$STATE_DIR"
 token_capture_dir="$(mktemp -d)"
 trap 'rm -rf "$token_capture_dir"' EXIT INT TERM
-freeze_token() {
+freeze_evidence() {
   local source="$1" name="$2" before after current destination
   before="$(sha256sum "$source" | awk '{print $1}')"
   destination="${token_capture_dir}/${name}"
   cp -- "$source" "$destination"; chmod 600 "$destination"
   after="$(sha256sum "$destination" | awk '{print $1}')"
   current="$(sha256sum "$source" | awk '{print $1}')"
-  [[ "$before" =~ ^[a-f0-9]{64}$ && "$before" == "$after" && "$before" == "$current" ]] || die "$name token changed while being captured"
+  [[ "$before" =~ ^[a-f0-9]{64}$ && "$before" == "$after" && "$before" == "$current" ]] || die "$name evidence changed while being captured"
   printf '%s\n' "$destination"
 }
-OLD_TOKEN_FILE="$(freeze_token "$OLD_TOKEN_FILE" old)"
-if [[ "$ACTION" != phase-a ]]; then NEW_TOKEN_FILE="$(freeze_token "$NEW_TOKEN_FILE" new)"; fi
+OLD_TOKEN_FILE="$(freeze_evidence "$OLD_TOKEN_FILE" old-token)"
+if [[ "$ACTION" != phase-a ]]; then NEW_TOKEN_FILE="$(freeze_evidence "$NEW_TOKEN_FILE" new-token)"; fi
+if [[ -n "$PROBE_CACERT" ]]; then PROBE_CACERT="$(freeze_evidence "$PROBE_CACERT" ca)"; fi
+if [[ -n "$PROBE_CERT" ]]; then
+  PROBE_CERT="$(freeze_evidence "$PROBE_CERT" client-cert)"
+  PROBE_KEY="$(freeze_evidence "$PROBE_KEY" client-key)"
+fi
+probe_args=(--probe-key "$PROBE_RANGE_KEY" --timeout "$PROBE_TIMEOUT")
+[[ -z "$PROBE_CACERT" ]] || probe_args+=(--cacert "$PROBE_CACERT")
+[[ -z "$PROBE_CERT" ]] || probe_args+=(--cert "$PROBE_CERT" --key "$PROBE_KEY")
+[[ -z "$PROBE_SERVER_NAME" ]] || probe_args+=(--server-name "$PROBE_SERVER_NAME")
 phase_a="${STATE_DIR}/${ROTATION_ID}.phase-a.json"
 phase_b="${STATE_DIR}/${ROTATION_ID}.phase-b.json"
 phase_c="${STATE_DIR}/${ROTATION_ID}.receipt.json"
@@ -116,15 +138,15 @@ publish() {
 }
 probe_all() {
   local token="$1" endpoint
-  for endpoint in "${endpoints[@]}"; do "$TOKEN_PROBE" --endpoint "$endpoint" --token-file "$token"; done
+  for endpoint in "${endpoints[@]}"; do "$TOKEN_PROBE" "${probe_args[@]}" --endpoint "$endpoint" --token-file "$token"; done
 }
 probe_old_rejected_and_new_live() {
   local endpoint
   for endpoint in "${endpoints[@]}"; do
-    if "$TOKEN_PROBE" --endpoint "$endpoint" --token-file "$OLD_TOKEN_FILE"; then
+    if "$TOKEN_PROBE" "${probe_args[@]}" --endpoint "$endpoint" --token-file "$OLD_TOKEN_FILE"; then
       die "old token is still accepted by $endpoint after phase C"
     fi
-    "$TOKEN_PROBE" --endpoint "$endpoint" --token-file "$NEW_TOKEN_FILE" ||
+    "$TOKEN_PROBE" "${probe_args[@]}" --endpoint "$endpoint" --token-file "$NEW_TOKEN_FILE" ||
       die "new token failed after old-token rejection at $endpoint; endpoint outage is not retirement proof"
   done
 }

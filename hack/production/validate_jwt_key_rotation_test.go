@@ -104,7 +104,7 @@ fi
 `)
 	writeExecutable(t, filepath.Join(dir, "probe"), `#!/usr/bin/env bash
 endpoint= token=
-while (($#)); do case "$1" in --endpoint) endpoint="$2"; shift 2;; --token-file) token="$(<"$2")"; shift 2;; *) exit 2;; esac; done
+while (($#)); do case "$1" in --endpoint) endpoint="$2"; shift 2;; --token-file) token="$(<"$2")"; shift 2;; --probe-key|--timeout|--cacert|--cert|--key|--server-name) shift 2;; *) exit 2;; esac; done
 if [[ "$token" == old-token ]]; then
   if [[ "${FAKE_REJECT_OLD:-false}" == true || ",${FAKE_REJECT_OLD_ENDPOINTS:-}," == *",${endpoint},"* ]]; then
     [[ "${FAKE_FAIL_NEW_AFTER_OLD:-false}" != true ]] || touch "$FAKE_STATE_DIR/outage"
