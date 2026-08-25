@@ -356,6 +356,16 @@ credential ID、immutable Secret UID/data SHA、HTTPS origin、provider principa
 Kubernetes v1.36.1 server-side dry-run 以状态 0 接受新增 policy/binding，且无持久资源。真实 provider probe、持久 credential 激活和
 旧 token provider-side revoke 仍未执行。
 
+提交 `d68a3586` 补齐旧 lifecycle credential 的 fail-closed 退役链。外部身份系统必须签发 canonical Ed25519 retirement receipt，
+证明旧 credential 为 `revoked`，并同时绑定旧 Secret ID/UID/data SHA、当前 replacement ID/UID/data SHA 和 active pointer 中的
+readiness receipt SHA；principal、revoked time 与最长 15 分钟有效期同样验真。退役脚本拒绝删除当前 active credential，要求
+replacement readiness 仍有效，并在验签后再次逐字节复核 active ConfigMap UID/resourceVersion/data 及两份 immutable Secret 身份。
+
+通用 `kubebrain-uid-delete` 新增可选 resourceVersion precondition；本路径同时传 UID+resourceVersion，删除同名重建或并发变化对象会
+Conflict，而不会误删。删除后等待 API 确认 absent；验签失败时 UID delete 调用为零。631 项四片提交后 Go/墙钟秒为
+129.692/135.857、368.107/374.257、227.191/233.371、378.731/384.917，全部通过。由此 credential 轮换代码序列已覆盖
+provision→readiness→CAS activate→signed revoke→fenced delete；真实 provider 执行和 retirement receipt Object Lock 归档仍未证明。
+
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。

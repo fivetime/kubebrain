@@ -61996,6 +61996,12 @@ digest，防止 probe 后同名重建。active ConfigMap 以 resourceVersion CAS
 630 项四片提交后 Go/墙钟秒为 130.276/136.366、359.025/365.141、226.309/232.366、374.767/380.855，全部通过；Kubernetes
 v1.36.1 server dry-run 接受新增 policy。真实 provider readiness、持久 active pointer 和旧 credential provider revoke 仍开放。
 
+提交 `d68a3586` 完成旧 credential 的代码级退役：provider-signed receipt 绑定 revoked old Secret、当前 replacement Secret 和其
+readiness SHA；退役脚本在验签前后复核 active pointer 与两份 Secret，且拒绝 active=self。`kubebrain-uid-delete` 扩展
+resourceVersion precondition，本路径以 UID+resourceVersion 双 fence 删除旧 Secret并等待 absent；receipt 失败不调用 delete。
+631 项四片提交后 Go/墙钟秒为 129.692/135.857、368.107/374.257、227.191/233.371、378.731/384.917，全部通过。真实 provider
+revoke/持久轮换以及 retirement receipt 的 Object Lock 归档仍开放，故 credential lifecycle 尚不能标记生产 GREEN。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 

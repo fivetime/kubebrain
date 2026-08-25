@@ -3982,6 +3982,13 @@ API schema/CEL 请求可接受，不证明持久 policy status 已 observed/type
 630 项四片 Go/墙钟秒为 130.276/136.366、359.025/365.141、226.309/232.366、374.767/380.855，全部通过；v1.36.1 对两套
 policy/binding 的独立 server dry-run 状态为 0。尚无真实 provider probe/持久激活/旧 token revoke，生产门禁保持开放。
 
+提交 `d68a3586` 增加 provider-signed credential retirement verifier 与本地安全删除。receipt 必须证明旧 credential 已 revoked，绑定
+旧/新 Secret UID+data SHA 以及 replacement readiness SHA；退役只能发生在 active pointer 指向不同 replacement 且 readiness 未过期
+时。验签后脚本重新检查 active ConfigMap UID/resourceVersion/data 和两份 Secret，随后以 UID+resourceVersion 双 precondition 删除
+旧 Secret并等待 absent。验证失败确定性测试证明零 delete。631 项四片 Go/墙钟秒为
+129.692/135.857、368.107/374.257、227.191/233.371、378.731/384.917，全部通过。真实 provider revoke、持久集群轮换及
+retirement evidence Object Lock 归档仍是上线门禁。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。
