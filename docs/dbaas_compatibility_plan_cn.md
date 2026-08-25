@@ -61683,6 +61683,25 @@ admission、leader release、transport quiesce 放在同一 leadership 写 fence
 Kind 三副本直连滚动升级的已观测 unary 丢请求窗口；外部 L4/L7、advertised Pod DNS balancer、跨节点/AZ 与长时 soak
 仍需独立门禁，不能由本轮直连 GREEN 替代。
 
+### A5487：balancer 连接地址与 advertised 地址解耦
+
+A5486 的集群内 balancer probe 在故障注入前要求三条 Pod DNS 与 MemberList 返回地址精确相等；当前生产形态的三个成员
+合法地统一 advertise `http://172.18.0.2:30079` NodePort，因此旧探针把部署拓扑差异误报为 endpoint 同步失败。
+提交 `ca1dc960` 新增显式 `EXPECTED_ADVERTISED_ENDPOINTS`，默认仍使用原三条初始地址以保持既有严格门禁；显式配置时，
+unary/watch client 仍先固定到 victim Pod DNS，Sync/AutoSync 后则把实际地址与 advertised 期望按多重集合比较。重复地址
+不会被擅自去重，只有期望也包含相同重复项才通过；receipt 同时记录初始数、同步总数和唯一地址数。runner 在任何
+Kubernetes 变更前要求恰好三个 comma-separated http(s) URL 并 fail closed。单测固定乱序唯一集合、三项重复 NodePort、
+重复次数不匹配和默认 slice 不别名；普通/race 各连续 20 轮通过，恶意/畸形 URL preflight 返回 2。
+
+dirty 与精确提交态各执行一次真实集群内故障：探针从三条 Pod DNS 建连，确认 Sync 后为三项、一个唯一 NodePort，随后
+删除 `kubebrain-0`。两轮均收到 20/20 有序 Watch 事件，linearizable/serializable Range、Txn、Put/Delete 全部通过，
+transient failure 与 stale serializable read 都为 0，replacement Pod UID 改变并 Ready；墙钟分别 83.542 和 67.866 秒，
+末 revision 38353/38377。精确 probe tag 为 `kubebrain:balancer-smoke-amd64-367c9aa70fa7cb4f5267`，最终本地 OCI
+manifest list 为 `sha256:e6e71b41db23aae40c068038d409b71f31701852c0c2bbe2f320d370bb8222a0`；数据面继续使用
+`kubebrain:a5486-831478e8`，三 Pod Ready、零重启。611 项 production inventory 仍为 140/171/154/146；提交后四片
+Go 时间 118.023/354.318/227.679/367.167 秒，墙钟 124.065/360.489/233.759/373.194 秒，全部通过。该证据关闭共享
+NodePort advertise 下的集群内 Pod 删除/balancer 门禁缺口；多个外部 L4/L7 地址、跨节点/AZ 与连接跟踪耗尽仍需独立验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
