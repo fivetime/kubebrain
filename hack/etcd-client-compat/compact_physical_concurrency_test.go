@@ -26,6 +26,7 @@ func TestPhysicalCompactionUnderTraffic(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	identity := &liveResponseIdentityAdmission{}
 
 	prefix := fmt.Sprintf("/dbaas-physical-traffic/%d/", time.Now().UnixNano())
 	registerPrefixCleanup(t, cli, prefix)
@@ -34,11 +35,13 @@ func TestPhysicalCompactionUnderTraffic(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		resp, putErr := cli.Put(ctx, seed, fmt.Sprintf("v-%d", i))
 		require.NoError(t, putErr)
+		require.NoError(t, identity.admitHeader(0, resp.Header, target+1))
 		target = resp.Header.Revision
 	}
 	// Keep a current revision above the compact target and start a watch there.
 	tail, err := cli.Put(ctx, prefix+"tail", "tail")
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, tail.Header, target+1))
 	watchRev := tail.Header.Revision + 1
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	defer watchCancel()
@@ -52,14 +55,22 @@ func TestPhysicalCompactionUnderTraffic(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		_, compactErr = cli.Compact(ctx, target, clientv3.WithCompactPhysical())
+		var compacted *clientv3.CompactResponse
+		compacted, compactErr = cli.Compact(ctx, target, clientv3.WithCompactPhysical())
+		if compactErr == nil {
+			compactErr = identity.admitHeader(0, compacted.Header, target)
+		}
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
 		for i := 0; i < writes; i++ {
 			key := fmt.Sprintf("%slive/%03d", prefix, i)
-			if _, trafficErr = cli.Put(ctx, key, "live"); trafficErr != nil {
+			var put *clientv3.PutResponse
+			if put, trafficErr = cli.Put(ctx, key, "live"); trafficErr != nil {
+				return
+			}
+			if trafficErr = identity.admitHeader(0, put.Header, watchRev); trafficErr != nil {
 				return
 			}
 			var got *clientv3.GetResponse
@@ -70,8 +81,15 @@ func TestPhysicalCompactionUnderTraffic(t *testing.T) {
 				}
 				return
 			}
+			if trafficErr = identity.admitHeader(0, got.Header, put.Header.Revision); trafficErr != nil {
+				return
+			}
 		}
-		_, trafficErr = cli.Get(ctx, prefix+"live/", clientv3.WithPrefix())
+		var ranged *clientv3.GetResponse
+		ranged, trafficErr = cli.Get(ctx, prefix+"live/", clientv3.WithPrefix())
+		if trafficErr == nil {
+			trafficErr = identity.admitHeader(0, ranged.Header, watchRev)
+		}
 	}()
 	close(start)
 	wg.Wait()
@@ -83,6 +101,7 @@ func TestPhysicalCompactionUnderTraffic(t *testing.T) {
 		select {
 		case response := <-watchCh:
 			require.NoError(t, response.Err())
+			require.NoError(t, identity.admitHeader(0, response.Header, watchRev))
 			for _, event := range response.Events {
 				seen[string(event.Kv.Key)] = struct{}{}
 			}
@@ -93,11 +112,13 @@ func TestPhysicalCompactionUnderTraffic(t *testing.T) {
 
 	boundary, err := cli.Get(ctx, seed, clientv3.WithRev(target))
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, boundary.Header, watchRev))
 	require.Len(t, boundary.Kvs, 1)
 	require.Equal(t, "v-19", string(boundary.Kvs[0].Value))
 	_, err = cli.Get(ctx, seed, clientv3.WithRev(target-1))
 	require.Error(t, err, "revision below the compact boundary must be rejected")
 	current, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, current.Header, watchRev))
 	require.Len(t, current.Kvs, writes+2)
 }

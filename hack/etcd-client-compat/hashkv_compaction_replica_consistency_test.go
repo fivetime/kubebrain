@@ -41,27 +41,32 @@ func TestHashKVCompactionConvergesAcrossKubeBrainReplicas(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	identity := &liveResponseIdentityAdmission{}
 	key := []byte(testPrefix(t) + "/replica-hashkv-compaction")
-	put := func(client etcdserverpb.KVClient, value string) int64 {
+	put := func(index int, client etcdserverpb.KVClient, value string, minimumRevision int64) int64 {
 		t.Helper()
 		response, err := client.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte(value)})
 		require.NoError(t, err)
+		require.NoError(t, identity.admitHeader(index, response.GetHeader(), minimumRevision))
 		return response.GetHeader().GetRevision()
 	}
-	firstRevision := put(kvClients[0], "first")
-	compactRevision := put(kvClients[1], "second")
-	latestRevision := put(kvClients[2], "latest")
+	firstRevision := put(0, kvClients[0], "first", 1)
+	compactRevision := put(1, kvClients[1], "second", firstRevision+1)
+	latestRevision := put(2, kvClients[2], "latest", compactRevision+1)
 	require.Less(t, firstRevision, compactRevision)
 	require.Less(t, compactRevision, latestRevision)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		_, _ = kvClients[0].DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		deleted, deleteErr := kvClients[0].DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		require.NoError(t, deleteErr)
+		require.NoError(t, identity.admitHeader(0, deleted.GetHeader(), latestRevision))
 	})
 
 	compactResponse, err := kvClients[1].Compact(ctx, &etcdserverpb.CompactionRequest{Revision: compactRevision})
 	require.NoError(t, err)
 	require.NotNil(t, compactResponse.Header)
+	require.NoError(t, identity.admitHeader(1, compactResponse.Header, latestRevision))
 	require.GreaterOrEqual(t, compactResponse.Header.Revision, latestRevision)
 
 	// The hash cached at the compact boundary can have been computed just before
@@ -70,6 +75,7 @@ func TestHashKVCompactionConvergesAcrossKubeBrainReplicas(t *testing.T) {
 	for i, client := range maintenanceClients {
 		boundary, boundaryErr := client.HashKV(ctx, &etcdserverpb.HashKVRequest{Revision: compactRevision})
 		require.NoError(t, boundaryErr, "replica %d", i)
+		require.NoError(t, identity.admitHeader(i, boundary.GetHeader(), latestRevision), "replica %d", i)
 		require.Equal(t, compactRevision, boundary.HashRevision, "replica %d", i)
 		require.LessOrEqual(t, boundary.CompactRevision, compactRevision, "replica %d", i)
 	}
@@ -83,11 +89,11 @@ func TestHashKVCompactionConvergesAcrossKubeBrainReplicas(t *testing.T) {
 	// Physical compaction progresses asynchronously. Once it settles, every
 	// replica must expose the same latest logical hash and completed watermark.
 	time.Sleep(1500 * time.Millisecond)
-	latestSnapshots := readReplicaHashKVSnapshots(t, ctx, maintenanceClients, 0)
+	latestSnapshots := readReplicaHashKVSnapshots(t, ctx, maintenanceClients, identity, 0)
 	requireAllReplicaSnapshotsEqual(t, latestSnapshots)
 	require.Equal(t, compactRevision, latestSnapshots[0].CompactRevision)
 	require.GreaterOrEqual(t, latestSnapshots[0].HashRevision, latestRevision)
 	time.Sleep(250 * time.Millisecond)
-	afterPhysicalProgress := readReplicaHashKVSnapshots(t, ctx, maintenanceClients, 0)
+	afterPhysicalProgress := readReplicaHashKVSnapshots(t, ctx, maintenanceClients, identity, 0)
 	require.Equal(t, latestSnapshots, afterPhysicalProgress)
 }

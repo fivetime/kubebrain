@@ -281,6 +281,7 @@ func TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	identity := &liveResponseIdentityAdmission{}
 	key := testPrefix(t) + "/hash-physical-compact"
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -288,18 +289,25 @@ func TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction(t *testing.T) {
 		_, _ = cli.Delete(cleanupCtx, key)
 	})
 
+	var latestRevision int64
 	for i := 0; i < 8; i++ {
-		_, err = cli.Put(ctx, key, fmt.Sprintf("value-%d", i))
+		var put *clientv3.PutResponse
+		put, err = cli.Put(ctx, key, fmt.Sprintf("value-%d", i))
 		require.NoError(t, err)
+		require.NoError(t, identity.admitHeader(0, put.Header, latestRevision+1))
+		latestRevision = put.Header.Revision
 	}
 	before, err := cli.HashKV(ctx, endpoint, 0)
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, before.Header, latestRevision))
 	require.Equal(t, before.Header.Revision, before.HashRevision)
 
-	_, err = cli.Compact(ctx, before.HashRevision)
+	compacted, err := cli.Compact(ctx, before.HashRevision)
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, compacted.Header, before.HashRevision))
 	afterLogical, err := cli.HashKV(ctx, endpoint, 0)
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, afterLogical.Header, before.HashRevision))
 	require.Equal(t, before.HashRevision, afterLogical.CompactRevision)
 	require.NotEqual(t, before.Hash, afterLogical.Hash,
 		"logical compaction must remove superseded versions from the hash")
@@ -308,6 +316,7 @@ func TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		afterPhysicalProgress, hashErr := cli.HashKV(ctx, endpoint, 0)
 		require.NoError(t, hashErr)
+		require.NoError(t, identity.admitHeader(0, afterPhysicalProgress.Header, before.HashRevision))
 		require.Equal(t, afterLogical.Hash, afterPhysicalProgress.Hash,
 			"physical GC progress must not change the logical hash")
 		require.Equal(t, afterLogical.CompactRevision, afterPhysicalProgress.CompactRevision)
