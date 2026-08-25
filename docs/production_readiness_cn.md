@@ -8538,3 +8538,64 @@ vet 通过。完整 backend 首次与其他重负载门禁并行时约 50 秒出
 生产 StatefulSet 当前未传 `--auto-compaction-retention-revisions`，程序默认值为 0，因此该 worker 在线上关闭。为制造 live 证据而
 临时开启会推进 durable compact watermark，超出本项必要范围，因此没有构建或 rollout A5509，也不声称 changed-path live 验证；现网继续运行已通过
 900/900 门禁的 A5508 不可变镜像。本项证据边界是确定性 backend 生命周期回归、完整 backend 复跑与精确生产分片。
+
+### A5510：serializable checkpoint 刷新绑定精确 leadership 任期
+
+离线 serializable read 依赖由 leader 写入 TiKV/PD service safepoint 保护的共享 checkpoint。审计发现 backend constructor 会在
+server 注册 leadership fence 之前立即启动 refresh worker；旧 `leadingFresh` 在 fence 未配置时把当前进程当作 leader，即使 fence
+已经 fresh、精确任期 context 尚未注册，也可能创建共享 checkpoint。另一个竞态是 active-leader refresh 使用进程 context：
+`SnapshotReadyTimestamp` 阻塞时换主不能及时取消，迟到的 `ProtectSnapshot` success 还能在旧任期退出后发布本地 checkpoint 并
+误增 refresh error。该行为违反 etcd server-owned maintenance 随当前 leadership 生命周期退役的边界。
+
+提交 `80cb4018` 为 maintenance context 标记是否属于任期，引入无副作用的 leadership epoch 校验。后台 worker 只有在 fence 已配置、
+fresh 且当前精确任期 context 已注册时才能创建/刷新 checkpoint；其他状态只能从共享元数据加载。leader refresh 使用带 timeout 的
+任期 context，并在 safepoint 调用后及本地发布前再次验证原 epoch；进程退出、任期取消或 fence 变化均静默退役，真实 active-leader
+错误仍保留。五个确定性回归分别固定“等待 fence”“等待精确 lifecycle”“有效 leader 发布”“取消及时结束”和“忽略 cancel 的迟到
+保护不得发布”。旧代码在未配置 fence 时错误创建 checkpoint，且取消后的阻塞读取超过 250ms 仍存活；最终普通 20 轮 0.826 秒、
+race 10 轮 2.195 秒、checkpoint 全套 10 轮 Go/墙钟 1.788/4.789 秒、checkpoint race 5 轮 3.925/8.166 秒、完整 backend
+3 轮 153.118/156.291 秒、公开 serializable 10 轮 166.797/194.520 秒和 server leadership 5 轮均通过。
+
+候选 `kubebrain:a5510-80cb4018` 的 OCI index 为
+`sha256:b67b6482a7aa40d1c42f7d8a8d672ecbc404556d49639ffc34bb7261b14f7d9c`，kind runtime digest 为
+`sha256:dc53379acf1e66dc3e90290af78bcd962b93f71752cc86fd4e4c1ce0be47ca63`。首次 runner 因缺少 digest-qualified
+kind alias 在 probe preflight ImagePullBackOff，并在 StatefulSet mutation 前退出。登记 alias 后，两次真实 rollout 分别在
+iteration 100 和 6 因 Put→Watch 6.779 秒、6.404 秒超过 5 秒 SLA 而 RED，并完整回滚到 A5508。随后以同一 900 轮/5 秒门禁只重启
+A5508 基线，也在 iteration 6 得到 Put→Watch 6.749 秒 RED，证明这是既存 rollout 长 Watch 迁移缺陷，不能据此归因于 A5510；
+同样不能把失败候选计作 A5510 的 standalone live GREEN。该缺陷由 A5511 修复，最终 A5511 镜像包含本提交，并补齐组合 changed-path
+live 证据。
+
+639 项 inventory 保持 `152/178/159/150`；精确代码提交后四片 Go/墙钟秒为
+126.504/132.697、356.593/362.784、223.848/230.053、371.146/377.370，全部通过。
+
+### A5511：drain 在预算内迁移长 Watch
+
+`/drain` 会先拒绝新流量并调用 transport quiesce，随后 Kubernetes preStop 保留 5 秒迁移窗口。旧 muxed HTTP/2 quiesce 却在后台
+执行 `http.Server.Shutdown(context.Background())`：已有长 Watch 不主动结束时，Shutdown 无限等待，连接一直绑定即将退出的 Pod，
+直到进程终止后客户端才重连并恢复 Watch。这正是 A5510 候选与 A5508 基线均出现约 6.4--6.7 秒 Put→Watch 空窗的根因。对照
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/embed/etcd.go::stopServers`，上游也用有界调用方 context
+先发起 HTTP Shutdown，再以 gRPC Stop 强制结束不能优雅排空的长流。
+
+提交 `cbdf2967` 让非阻塞 quiesce goroutine 复用现有有界 `httpServer.close()`：先 Shutdown/GOAWAY，生产 2 秒预算耗尽后 Close
+强制回收活跃 transport。`quiesceDone` 和唯一结果使最终 close 等待同一次 quiesce 完成，再停止 gRPC server，避免双重关停竞态；
+root server 仍存活到进程 context 结束，因此 `/drain` 响应和 preStop 窗口不变。新增真实 listener 回归在 50ms 测试预算下挂住长
+request；旧实现跨过 1 秒仍不取消 handler，修复后 request context、client 和 Serve 均有界结束。quiesce 三项普通 20 轮 Go
+4.129 秒、race 20 轮 5.287 秒、完整 endpoint 3 轮 60.299 秒、endpoint race 14.108/17.985 秒、公开 Watch
+11.591/15.287 秒、server 3 轮 1.133/3.831 秒及 connection-age Watch+Lease 20 轮 60.446 秒均通过，endpoint/server vet
+与 diff check 全绿。精确提交后四片 Go/墙钟秒为 159.566/165.793、374.972/381.207、250.197/256.471、
+391.933/398.205，639 项 inventory 仍为 `152/178/159/150`。
+
+最终组合候选 `kubebrain:a5511-cbdf2967` 内嵌完整 SHA
+`cbdf2967ea2974499ce8b86424797918e374e9c8`，OCI index 为
+`sha256:a05deb70960348b7319326f44813c30dd44671e33f64e46f58a3342c3a110034`，OCI platform manifest 为
+`sha256:9550817df8695429eee3bafd7a02f4f5237fe96d97c7e3857ccdc3d314f460e5`，kind runtime digest 为
+`sha256:0852bfe826592dc7929dcc0ae6840c7853c0ed4cc72970f3f8d43383718dac56`。独立 3×PD/3×TiKV v8.5.3 上从
+A5508 执行三副本 rollout，revision `kubebrain-57ccf9b978 -> kubebrain-55c4c7b779`，availability gate **900/900 GREEN**：
+Watch 900、lease alive，最大业务/PD TSO/TiKV Region 延迟为 1955/53/7ms，严格低于 5 秒 SLA。
+
+最终三个 Pod UID 为 `522c01f4-c131-48e7-80a3-4e82799daf43`、`6a251225-9125-4a4c-9a39-2e0e89aca3f0`、
+`e9ec093e-e88b-49a0-b770-5378468b6df1`，均 Ready、restart 0、运行上述相同 runtime digest；leader 为 `kubebrain-1`，
+三端 `/readyz=ok`。后续逐 Pod 直连 serializable Range 均返回 cluster ID `7662961163671170154` 和同一 revision 49061；三端
+`serializable_checkpoint_available=1`、`refresh_err=0`、`remaining_seconds=150`、`revision=49061` 完全收敛，证明 A5510
+checkpoint changed path 在包含修复的最终候选中有效。主 PD/TiKV 3+3 全部 Ready、restart 0，最近 10 分钟未发现 checkpoint 或
+quiesce error log。该组合证据不改写 A5510 两次 standalone rollout RED，只证明独立的长 Watch 迁移缺陷修复后，A5510+A5511
+最终数据面满足本轮发布门禁。

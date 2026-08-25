@@ -62255,6 +62255,42 @@ worker context。确定性 RED 证明：读取阻塞时取消 leadership，旧�
 compact watermark，故本项不执行额外 rollout，也不声称 changed-path live 证据；现网继续保持已通过 900/900 的 A5508 镜像。当前关闭的是代码级任期泄漏与遥测
 缺口，开启自动压缩后的 disposable-instance live 证据仍须独立批准。
 
+### A5510：离线 serializable checkpoint 受精确 leader 任期约束
+
+backend 早于 server leadership fence 启动 checkpoint worker，旧实现会把“fence 尚未配置”当作 leader；fence fresh 但当前任期
+context 尚未注册时也能创建共享 checkpoint。阻塞的 PD timestamp/safepoint 调用又使用进程 context，导致换主后旧调用继续存活，
+迟到成功可发布 follower 本地 checkpoint。提交 `80cb4018` 标记 term-owned maintenance context，并要求 fence 已配置、fresh、
+精确任期已注册才允许创建/刷新；调用前后及本地发布前校验原 epoch，旧任期结果静默退役，其他副本只加载共享 checkpoint。
+
+确定性旧代码 RED 覆盖无 fence 错误创建、取消后超过 250ms 仍存活和迟到发布；五类 lifecycle 测试的普通 20 轮、race 10 轮，完整
+backend、公开 serializable、server leadership、vet 与 diff check 均绿。639 项四片保持 `152/178/159/150`，精确提交后 Go/墙钟秒为
+126.504/132.697、356.593/362.784、223.848/230.053、371.146/377.370。
+
+候选 OCI index `sha256:b67b6482a7aa40d1c42f7d8a8d672ecbc404556d49639ffc34bb7261b14f7d9c`、runtime digest
+`sha256:dc53379acf1e66dc3e90290af78bcd962b93f71752cc86fd4e4c1ce0be47ca63` 的首次 probe 因缺 digest alias 在
+StatefulSet mutation 前 RED。修正后两次真实 rollout 又分别在 iteration 100/6 因 Put→Watch 6.779/6.404 秒超过 5 秒门禁而回滚。
+同样重启 A5508 基线也在 iteration 6 得到 6.749 秒 RED，定位为独立的既存 drain/长 Watch 迁移问题；因此 A5510 不声称 standalone
+live GREEN。A5511 的最终组合镜像包含本提交并补齐 checkpoint changed-path live 证据。
+
+### A5511：有界 quiesce 关闭 rollout 长 Watch 空窗
+
+旧 `/drain` 让 muxed HTTP/2 transport 在后台执行无期限 `Shutdown(context.Background())`，长 Watch 会一直绑定退出 Pod，越过
+preStop 迁移窗口后才因进程退出而重连。提交 `cbdf2967` 对齐 etcd `server/embed/etcd.go::stopServers` 的有界 shutdown/force-stop
+原则：quiesce 非阻塞返回，但后台复用生产 2 秒预算的 `httpServer.close()`，超时即 Close 活跃 transport；最终 close 等待同一次
+quiesce 结果后再停 gRPC，server 进程仍按原 lifecycle 存活。真实 listener RED 在 50ms 测试预算下跨 1 秒仍留下 handler；GREEN
+固定 request context、client 与 Serve 全部有界结束。普通/race、完整 endpoint、公开 Watch、connection-age Watch+Lease、server、
+vet 与 diff check 全绿；精确提交四片 Go/墙钟秒为 159.566/165.793、374.972/381.207、250.197/256.471、
+391.933/398.205，inventory 仍为 `152/178/159/150`。
+
+组合候选完整 SHA `cbdf2967ea2974499ce8b86424797918e374e9c8`、OCI index
+`sha256:a05deb70960348b7319326f44813c30dd44671e33f64e46f58a3342c3a110034`、runtime digest
+`sha256:0852bfe826592dc7929dcc0ae6840c7853c0ed4cc72970f3f8d43383718dac56` 在独立 3×PD/3×TiKV v8.5.3 上从
+A5508 完成三副本 rollout：revision `kubebrain-57ccf9b978 -> kubebrain-55c4c7b779`，900/900、Watch 900、lease alive，最大业务/
+TSO/Region 延迟 1955/53/7ms。三个 KubeBrain Pod Ready、restart 0、同一不可变 runtime digest；主 PD/TiKV 3+3 Ready、restart 0。
+后续三端直连 serializable Range 均返回 cluster ID `7662961163671170154`、revision 49061，且 checkpoint available/error/remaining/
+revision 精确收敛为 1/0/150/49061。该证据同时证明 rollout Watch 在 5 秒 SLA 内迁移，以及 A5510 changed path 在最终组合候选中
+正常工作；A5510 两次失败 rollout 仍保留为 RED，不计为独立发布成功。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
