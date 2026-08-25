@@ -1229,6 +1229,8 @@ func TestJWTKMSExportVerifierIsInRuntimeImage(t *testing.T) {
 	text := string(dockerfile)
 	require.Contains(t, text, "go build -trimpath -o /src/bin/kubebrain-jwt-kms-export-verifier ./hack/production/cmd/jwt-kms-export-verifier")
 	require.Contains(t, text, "COPY --from=build /src/bin/kubebrain-jwt-kms-export-verifier /usr/local/bin/kubebrain-jwt-kms-export-verifier")
+	require.Contains(t, text, "go build -trimpath -o /src/bin/kubebrain-jwt-kms-export-client ./hack/production/cmd/jwt-kms-export-client")
+	require.Contains(t, text, "COPY --from=build /src/bin/kubebrain-jwt-kms-export-client /usr/local/bin/kubebrain-jwt-kms-export-client")
 }
 
 func TestNativePITRFullBackupHasPinnedIsolatedRuntimeImage(t *testing.T) {

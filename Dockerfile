@@ -59,6 +59,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-jwt-token-probe ./hack/production/cmd/jwt-token-probe \
     && go build -trimpath -o /src/bin/kubebrain-jwt-token-issuer ./hack/production/cmd/jwt-token-issuer \
     && go build -trimpath -o /src/bin/kubebrain-jwt-kms-export-verifier ./hack/production/cmd/jwt-kms-export-verifier \
+    && go build -trimpath -o /src/bin/kubebrain-jwt-kms-export-client ./hack/production/cmd/jwt-kms-export-client \
     && go build -trimpath -o /src/bin/kubebrain-jwt-rotation-publisher ./hack/production/cmd/jwt-rotation-publisher \
     && go build -trimpath -o /src/bin/kubebrain-metering-archive ./hack/production/cmd/metering-archive \
     && go build -trimpath -o /src/bin/kubebrain-metering-rollup ./hack/production/cmd/metering-rollup \
@@ -207,6 +208,7 @@ COPY --from=build /src/bin/kubebrain-rollout-availability-probe /usr/local/bin/k
 COPY --from=build /src/bin/kubebrain-jwt-token-probe /usr/local/bin/kubebrain-jwt-token-probe
 COPY --from=build /src/bin/kubebrain-jwt-token-issuer /usr/local/bin/kubebrain-jwt-token-issuer
 COPY --from=build /src/bin/kubebrain-jwt-kms-export-verifier /usr/local/bin/kubebrain-jwt-kms-export-verifier
+COPY --from=build /src/bin/kubebrain-jwt-kms-export-client /usr/local/bin/kubebrain-jwt-kms-export-client
 COPY --from=build /src/bin/kubebrain-jwt-rotation-publisher /usr/local/bin/kubebrain-jwt-rotation-publisher
 COPY --from=build /src/bin/kubebrain-metering-archive /usr/local/bin/kubebrain-metering-archive
 COPY --from=build /src/bin/kubebrain-metering-rollup /usr/local/bin/kubebrain-metering-rollup
