@@ -14,6 +14,10 @@ import (
 
 func TestJWTKeyRotationOperationCompletesAndTakeoverReusesReceipt(t *testing.T) {
 	dir := t.TempDir()
+	captureRoot, err := os.MkdirTemp("/dev/shm", "kubebrain-jwt-capture-")
+	if err == nil {
+		t.Cleanup(func() { require.NoError(t, os.RemoveAll(captureRoot)) })
+	}
 	oldKey, newKey := filepath.Join(dir, "old.key"), filepath.Join(dir, "new.key")
 	require.NoError(t, os.WriteFile(oldKey, []byte("old-material"), 0o600))
 	require.NoError(t, os.WriteFile(newKey, []byte("new-material"), 0o600))
@@ -88,8 +92,14 @@ if [[ ! -e "$output" ]]; then (umask 077; printf '%s\n' "$body" >"$output"); fi
 		"OPERATION_LOG=" + logPath, "OPERATION_NAME=" + name, "PARAMETERS_SHA=" + digest, "PARAMETERS_PATH=" + parameterPath,
 		"ROTATION_EVENT_LOG=" + eventLog,
 	}
+	if captureRoot != "" {
+		baseEnv = append(baseEnv, "TMPDIR="+captureRoot)
+	}
 	output, err := runProductionRunnerCommand(t, "run-jwt-key-rotation-operation.sh", append(baseEnv, "CLAIM_ATTEMPT=1"))
 	require.NoError(t, err, string(output))
+	staged, err := filepath.Glob(filepath.Join(dir, "."+name+".operation.receipt.*"))
+	require.NoError(t, err)
+	require.Empty(t, staged, "receipt staging files must not survive publication")
 	firstReceipt := mustRead(t, receipt)
 	var receiptValues map[string]any
 	require.NoError(t, json.Unmarshal(firstReceipt, &receiptValues))

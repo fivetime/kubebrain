@@ -50,8 +50,8 @@ identity="$("$JQ" -er '[.namespace,.name,.operation_id,.instance,.type,.requeste
 IFS=$'\t' read -r claimed_namespace name operation_id instance operation_type requester owner parameters_sha parameters_secret parameters_key attempt <<<"$identity"
 [[ "$claimed_namespace" == kubebrain-operations && "$name" =~ ^jwt-key-rotate-[a-f0-9]{20}$ && "$operation_id" == "$name" && "$operation_type" == JWTKeyRotation && "$requester" == platform:jwt-key-rotation && "$owner" == "$WORKER_ID" && "$parameters_secret" == "${name}-parameters" && "$parameters_key" == parameters.json && "$parameters_sha" =~ ^[a-f0-9]{64}$ && "$attempt" =~ ^[1-5]$ && "$instance" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "JWT key rotation claim does not match the dedicated requester contract"
 
-capture="$(mktemp -d)"; child=0; heartbeat_pid=0; fenced=false
-cleanup() { [[ "$child" == 0 ]] || operation_kill_process_group "$child"; [[ "$heartbeat_pid" == 0 ]] || operation_kill_process_group "$heartbeat_pid"; rm -rf -- "$capture"; }
+capture="$(mktemp -d)"; child=0; heartbeat_pid=0; fenced=false; receipt_stage=""
+cleanup() { [[ "$child" == 0 ]] || operation_kill_process_group "$child"; [[ "$heartbeat_pid" == 0 ]] || operation_kill_process_group "$heartbeat_pid"; [[ -z "$receipt_stage" ]] || rm -f -- "$receipt_stage"; rm -rf -- "$capture"; }
 trap cleanup EXIT INT TERM
 digest() { sha256sum "$1" | cut -d ' ' -f1; }
 secure_file() { local p="$1" max="$2" a; [[ -f "$p" && ! -L "$p" ]] || return 1; a="$(stat -Lc '%a:%h:%s' -- "$p")" || return 1; IFS=: read -r mode links size <<<"$a"; [[ "$mode" == 600 && "$links" == 1 && "$size" =~ ^[1-9][0-9]*$ ]] && (( size <= max )); }
@@ -198,9 +198,25 @@ validate_composite() {
     (.completed_at_unix|type=="number" and .>0 and .==floor)' "$receipt_output" >/dev/null
 }
 if [[ -e "$receipt_output" ]]; then secure_file "$receipt_output" "$MAX_EVIDENCE_BYTES" && validate_composite || retry "existing composite receipt drifted"; else
-  composite="$capture/composite.json"
-  "$JQ" -cnS --arg format kubebrain.jwt-key-rotation.operation.receipt.v3 --arg request "$request_id" --arg operation "$operation_id" --arg instance "$instance" --arg uid "$operation_uid" --argjson attempt "$attempt" --arg parameters "$parameters_sha" --arg old_version "$old_version" --arg new_version "$new_version" --arg ap "$a_publish_sha" --arg bp "$b_publish_sha" --arg cp "$c_publish_sha" --arg ag "$a_gate_sha" --arg bg "$b_gate_sha" --arg cg "$c_gate_sha" --argjson completed "$("$DATE" +%s)" '{format:$format,request_id:$request,operation_id:$operation,instance:$instance,operation_uid:$uid,attempt:$attempt,parameters_sha256:$parameters,old_key_version_id:$old_version,new_key_version_id:$new_version,phase_a_publish_receipt_sha256:$ap,phase_b_publish_receipt_sha256:$bp,phase_c_publish_receipt_sha256:$cp,phase_a_gate_receipt_sha256:$ag,phase_b_gate_receipt_sha256:$bg,phase_c_gate_receipt_sha256:$cg,completed_at_unix:$completed}' >"$composite"
-  chmod 600 "$composite"; sync -f "$composite"; ln "$composite" "$receipt_output" || retry "composite receipt no-clobber publish failed"; sync -f "$state_dir"; validate_composite || retry "published composite receipt is invalid"
+  # The executor's default mktemp directory and WORK_DIR can be different
+  # filesystems (container overlay and a PVC). Stage on WORK_DIR itself so the
+  # hard link remains an atomic no-clobber publish in the real deployment.
+  receipt_stage="$(mktemp -p "$workspace_root" ".${name}.operation.receipt.XXXXXX")" || retry "composite receipt staging failed"
+  "$JQ" -cnS --arg format kubebrain.jwt-key-rotation.operation.receipt.v3 --arg request "$request_id" --arg operation "$operation_id" --arg instance "$instance" --arg uid "$operation_uid" --argjson attempt "$attempt" --arg parameters "$parameters_sha" --arg old_version "$old_version" --arg new_version "$new_version" --arg ap "$a_publish_sha" --arg bp "$b_publish_sha" --arg cp "$c_publish_sha" --arg ag "$a_gate_sha" --arg bg "$b_gate_sha" --arg cg "$c_gate_sha" --argjson completed "$("$DATE" +%s)" '{format:$format,request_id:$request,operation_id:$operation,instance:$instance,operation_uid:$uid,attempt:$attempt,parameters_sha256:$parameters,old_key_version_id:$old_version,new_key_version_id:$new_version,phase_a_publish_receipt_sha256:$ap,phase_b_publish_receipt_sha256:$bp,phase_c_publish_receipt_sha256:$cp,phase_a_gate_receipt_sha256:$ag,phase_b_gate_receipt_sha256:$bg,phase_c_gate_receipt_sha256:$cg,completed_at_unix:$completed}' >"$receipt_stage"
+  chmod 600 "$receipt_stage"; sync -f "$receipt_stage"
+  if ln "$receipt_stage" "$receipt_output"; then
+    rm -f -- "$receipt_stage"; receipt_stage=""
+  else
+    rm -f -- "$receipt_stage"; receipt_stage=""
+    published=false
+    for _ in {1..20}; do
+      if secure_file "$receipt_output" "$MAX_EVIDENCE_BYTES" && validate_composite; then published=true; break; fi
+      "$SLEEP" 0.1
+    done
+    [[ "$published" == true ]] || retry "composite receipt no-clobber publish failed"
+  fi
+  sync -f "$receipt_output"; sync -f "$workspace_root"
+  secure_file "$receipt_output" "$MAX_EVIDENCE_BYTES" && validate_composite || retry "published composite receipt is invalid"
 fi
 receipt_sha="$(digest "$receipt_output")"
 fault_hold phase-c-before-terminal
