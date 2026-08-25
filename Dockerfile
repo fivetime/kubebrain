@@ -57,6 +57,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-tikv-repair-alert-receiver ./hack/production/cmd/tikv-repair-alert-receiver \
     && go build -trimpath -o /src/bin/kubebrain-rollout-availability-probe ./hack/production/cmd/rollout-availability-probe \
     && go build -trimpath -o /src/bin/kubebrain-jwt-token-probe ./hack/production/cmd/jwt-token-probe \
+    && go build -trimpath -o /src/bin/kubebrain-jwt-rotation-publisher ./hack/production/cmd/jwt-rotation-publisher \
     && go build -trimpath -o /src/bin/kubebrain-metering-archive ./hack/production/cmd/metering-archive \
     && go build -trimpath -o /src/bin/kubebrain-metering-rollup ./hack/production/cmd/metering-rollup \
     && go build -trimpath -o /src/bin/kubebrain-metering-charge ./hack/production/cmd/metering-charge \
@@ -202,6 +203,7 @@ COPY --from=build /src/bin/kubebrain-scan-memory-probe /usr/local/bin/kubebrain-
 COPY --from=build /src/bin/kubebrain-tikv-repair-alert-receiver /usr/local/bin/kubebrain-tikv-repair-alert-receiver
 COPY --from=build /src/bin/kubebrain-rollout-availability-probe /usr/local/bin/kubebrain-rollout-availability-probe
 COPY --from=build /src/bin/kubebrain-jwt-token-probe /usr/local/bin/kubebrain-jwt-token-probe
+COPY --from=build /src/bin/kubebrain-jwt-rotation-publisher /usr/local/bin/kubebrain-jwt-rotation-publisher
 COPY --from=build /src/bin/kubebrain-metering-archive /usr/local/bin/kubebrain-metering-archive
 COPY --from=build /src/bin/kubebrain-metering-rollup /usr/local/bin/kubebrain-metering-rollup
 COPY --from=build /src/bin/kubebrain-metering-charge /usr/local/bin/kubebrain-metering-charge
