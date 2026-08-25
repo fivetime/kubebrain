@@ -27,7 +27,11 @@ const (
 	jwtSignMethod = "sign-method"
 	jwtPublicKey  = "pub-key"
 	jwtPrivateKey = "priv-key"
-	jwtTTL        = "ttl"
+	// jwtVerifyKey is a KubeBrain extension for one predecessor/successor
+	// verification key during a staged signing-key rotation. The active
+	// priv-key remains the only key used to issue tokens.
+	jwtVerifyKey = "verify-key"
+	jwtTTL       = "ttl"
 
 	maxJWTKeyBytes int64 = 1 << 20
 )
@@ -35,6 +39,7 @@ const (
 type jwtTokenProvider struct {
 	method     jwt.SigningMethod
 	key        any
+	verifyKeys []any
 	ttl        time.Duration
 	verifyOnly bool
 }
@@ -114,7 +119,21 @@ func parseAuthTokenProvider(spec string) (*jwtTokenProvider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &jwtTokenProvider{method: method, key: key, ttl: ttl, verifyOnly: verifyOnly}, nil
+	verifyKeys := []any{jwtVerificationKey(key)}
+	if path := opts[jwtVerifyKey]; path != "" {
+		verifyPEM, err := readJWTKeyOption(path, jwtVerifyKey)
+		if err != nil {
+			return nil, err
+		}
+		verifyKey, err := jwtProviderVerifyKey(method, verifyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("parse JWT %s: %w", jwtVerifyKey, err)
+		}
+		verifyKeys = append(verifyKeys, verifyKey)
+	}
+	return &jwtTokenProvider{
+		method: method, key: key, verifyKeys: verifyKeys, ttl: ttl, verifyOnly: verifyOnly,
+	}, nil
 }
 
 func readJWTKeyOption(path, option string) (value []byte, retErr error) {
@@ -231,8 +250,8 @@ func (p *jwtTokenProvider) signingKey() (any, error) {
 	return p.key, nil
 }
 
-func (p *jwtTokenProvider) verificationKey() any {
-	switch key := p.key.(type) {
+func jwtVerificationKey(key any) any {
+	switch key := key.(type) {
 	case *rsa.PrivateKey:
 		return &key.PublicKey
 	case *ecdsa.PrivateKey:
@@ -241,6 +260,24 @@ func (p *jwtTokenProvider) verificationKey() any {
 		return key.Public()
 	default:
 		return key
+	}
+}
+
+func jwtProviderVerifyKey(method jwt.SigningMethod, value []byte) (any, error) {
+	if len(value) == 0 {
+		return nil, errors.New("auth: missing key data")
+	}
+	switch method.(type) {
+	case *jwt.SigningMethodHMAC:
+		return value, nil
+	case *jwt.SigningMethodRSA, *jwt.SigningMethodRSAPSS:
+		return jwt.ParseRSAPublicKeyFromPEM(value)
+	case *jwt.SigningMethodECDSA:
+		return jwt.ParseECPublicKeyFromPEM(value)
+	case *jwt.SigningMethodEd25519:
+		return jwt.ParseEdPublicKeyFromPEM(value)
+	default:
+		return nil, fmt.Errorf("unsupported JWT signing method %T", method)
 	}
 }
 
@@ -260,23 +297,26 @@ func (p *jwtTokenProvider) issue(username string, revision uint64, now time.Time
 }
 
 func (p *jwtTokenProvider) verify(token string, now time.Time) (authTokenClaims, error) {
-	claims := jwt.MapClaims{}
-	parsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (any, error) {
-		if token.Method.Alg() != p.method.Alg() {
-			return nil, errors.New("invalid signing method")
+	for _, key := range p.verifyKeys {
+		claims := jwt.MapClaims{}
+		parsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (any, error) {
+			if token.Method.Alg() != p.method.Alg() {
+				return nil, errors.New("invalid signing method")
+			}
+			return key, nil
+		}, jwt.WithTimeFunc(func() time.Time { return now }), jwt.WithValidMethods([]string{p.method.Alg()}))
+		if err != nil || !parsed.Valid {
+			continue
 		}
-		return p.verificationKey(), nil
-	}, jwt.WithTimeFunc(func() time.Time { return now }), jwt.WithValidMethods([]string{p.method.Alg()}))
-	if err != nil || !parsed.Valid {
-		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+		username, ok := claims["username"].(string)
+		if !ok {
+			return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+		}
+		revision, ok := claims["revision"].(float64)
+		if !ok {
+			return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+		}
+		return authTokenClaims{Username: username, Revision: uint64(revision)}, nil
 	}
-	username, ok := claims["username"].(string)
-	if !ok {
-		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
-	}
-	revision, ok := claims["revision"].(float64)
-	if !ok {
-		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
-	}
-	return authTokenClaims{Username: username, Revision: uint64(revision)}, nil
+	return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
 }

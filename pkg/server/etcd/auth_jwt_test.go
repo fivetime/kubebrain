@@ -121,6 +121,83 @@ func TestJWTProviderPublicOnlyAndKeyMismatch(t *testing.T) {
 	require.EqualError(t, ValidateAuthTokenProvider(mismatch), "auth: public and private keys don't match")
 }
 
+func TestJWTProviderRotationOverlapAndRetirement(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	type rotationCase struct {
+		name               string
+		method             string
+		oldPrivate, oldPub []byte
+		newPrivate, newPub []byte
+	}
+	tests := []rotationCase{
+		{
+			name: "HMAC", method: "HS256",
+			oldPrivate: []byte("old-shared-secret"), oldPub: []byte("old-shared-secret"),
+			newPrivate: []byte("new-shared-secret"), newPub: []byte("new-shared-secret"),
+		},
+	}
+	oldKeys, newKeys := generateJWTTestKeys(t), generateJWTTestKeys(t)
+	tests = append(tests,
+		rotationCase{
+			name: "RSA", method: "RS256",
+			oldPrivate: oldKeys.rsaPrivate, oldPub: oldKeys.rsaPublic,
+			newPrivate: newKeys.rsaPrivate, newPub: newKeys.rsaPublic,
+		},
+		rotationCase{
+			name: "RSA-PSS", method: "PS256",
+			oldPrivate: oldKeys.rsaPrivate, oldPub: oldKeys.rsaPublic,
+			newPrivate: newKeys.rsaPrivate, newPub: newKeys.rsaPublic,
+		},
+		rotationCase{
+			name: "ECDSA", method: "ES256",
+			oldPrivate: oldKeys.ecPrivate, oldPub: oldKeys.ecPublic,
+			newPrivate: newKeys.ecPrivate, newPub: newKeys.ecPublic,
+		},
+		rotationCase{
+			name: "EdDSA", method: "EdDSA",
+			oldPrivate: oldKeys.edPrivate, oldPub: oldKeys.edPublic,
+			newPrivate: newKeys.edPrivate, newPub: newKeys.edPublic,
+		},
+	)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldSigner, err := parseAuthTokenProvider(fmt.Sprintf(
+				"jwt,sign-method=%s,priv-key=%s,verify-key=%s",
+				tc.method,
+				writeJWTKey(t, "old-private", tc.oldPrivate),
+				writeJWTKey(t, "new-verify", tc.newPub),
+			))
+			require.NoError(t, err)
+			newSigner, err := parseAuthTokenProvider(fmt.Sprintf(
+				"jwt,sign-method=%s,priv-key=%s,verify-key=%s",
+				tc.method,
+				writeJWTKey(t, "new-private", tc.newPrivate),
+				writeJWTKey(t, "old-verify", tc.oldPub),
+			))
+			require.NoError(t, err)
+			retiredOld, err := parseAuthTokenProvider(fmt.Sprintf(
+				"jwt,sign-method=%s,priv-key=%s",
+				tc.method, writeJWTKey(t, "retired-new-private", tc.newPrivate),
+			))
+			require.NoError(t, err)
+
+			oldToken, err := oldSigner.issue("root", 17, now)
+			require.NoError(t, err)
+			newToken, err := newSigner.issue("root", 17, now)
+			require.NoError(t, err)
+			_, err = oldSigner.verify(newToken, now)
+			require.NoError(t, err, "old signer must pre-trust the next verification key")
+			_, err = newSigner.verify(oldToken, now)
+			require.NoError(t, err, "new signer must retain the previous verification key during overlap")
+			_, err = retiredOld.verify(oldToken, now)
+			requireJWTError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
+			_, err = retiredOld.verify(newToken, now)
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestJWTProviderRevisionFloatCoercionMatchesEtcd(t *testing.T) {
 	secretValue := []byte("shared-secret")
 	secret := writeJWTKey(t, "secret", secretValue)
@@ -206,6 +283,11 @@ func TestJWTProviderRejectsOversizedKeyFiles(t *testing.T) {
 	require.EqualError(t,
 		ValidateAuthTokenProvider("jwt,sign-method=RS256,pub-key="+oversized),
 		"read JWT pub-key: key file exceeds 1048576 bytes",
+	)
+	active := writeJWTKey(t, "active", []byte("active-secret"))
+	require.EqualError(t,
+		ValidateAuthTokenProvider("jwt,sign-method=HS256,priv-key="+active+",verify-key="+oversized),
+		"read JWT verify-key: key file exceeds 1048576 bytes",
 	)
 }
 
@@ -348,6 +430,7 @@ func TestJWTEmptyAndZeroClaimsMatchEtcdAuthorization(t *testing.T) {
 func TestJWTProviderRejectsMalformedOptionsAndWrongAlgorithm(t *testing.T) {
 	require.EqualError(t, ValidateAuthTokenProvider("jwt,sign-method=RS256,broken"), `invalid auth token option "broken"`)
 	require.EqualError(t, ValidateAuthTokenProvider("jwt,sign-method=RS256,sign-method=PS256"), `duplicate auth token option "sign-method"`)
+	require.EqualError(t, ValidateAuthTokenProvider("jwt,sign-method=HS256,verify-key=a,verify-key=b"), `duplicate auth token option "verify-key"`)
 	require.EqualError(t, ValidateAuthTokenProvider("jwt"), "auth: invalid auth signature method")
 	require.EqualError(t, ValidateAuthTokenProvider("jwt,sign-method=none"), "unsupported JWT signing method *jwt.signingMethodNone")
 	require.EqualError(t, ValidateAuthTokenProvider("bearer"), `auth token provider "bearer" is unsupported`)
@@ -361,6 +444,14 @@ func TestJWTProviderRejectsMalformedOptionsAndWrongAlgorithm(t *testing.T) {
 	require.NoError(t, err)
 	_, err = hs256.verify(token, time.Now())
 	requireJWTError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
+
+	rsaKeys := generateJWTTestKeys(t)
+	rsaPrivate := writeJWTKey(t, "rsa-private", rsaKeys.rsaPrivate)
+	malformedVerify := writeJWTKey(t, "malformed-verify", []byte("not a public key"))
+	require.ErrorContains(t,
+		ValidateAuthTokenProvider("jwt,sign-method=RS256,priv-key="+rsaPrivate+",verify-key="+malformedVerify),
+		"parse JWT verify-key:",
+	)
 }
 
 func requireJWTError(t *testing.T, err error, want error, code codes.Code, message string) {

@@ -212,7 +212,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.UintVar(&o.epsConf.MaxTxnOps, "max-txn-ops", o.epsConf.MaxTxnOps, "Maximum number of operations permitted in a transaction.")
 	fs.UintVar(&o.epsConf.MaxRequestBytes, "max-request-bytes", o.epsConf.MaxRequestBytes, "Maximum client request payload size in bytes, excluding 512 KiB of gRPC transport overhead.")
 	fs.Int64Var(&o.quotaBackendBytes, "quota-backend-bytes", o.quotaBackendBytes, "Maximum latest logical user key+value bytes in this tenant keyspace; 0 uses etcd's 2 GiB default and negative disables. Exceeding the limit raises NOSPACE and rejects growing writes.")
-	fs.StringVar(&o.epsConf.AuthToken, "auth-token", o.epsConf.AuthToken, "Authentication token provider: simple or jwt with etcd-compatible options.")
+	fs.StringVar(&o.epsConf.AuthToken, "auth-token", o.epsConf.AuthToken, "Authentication token provider: simple or jwt with etcd-compatible options plus KubeBrain verify-key overlap for staged rotation.")
 	fs.UintVar(&o.epsConf.BcryptCost, "bcrypt-cost", o.epsConf.BcryptCost, "Bcrypt cost factor for hashing authentication passwords; out-of-range values use the bcrypt default.")
 	fs.UintVar(&o.epsConf.AuthTokenTTL, "auth-token-ttl", o.epsConf.AuthTokenTTL, "Authentication token lifetime in seconds; 0 uses the 300-second default.")
 	fs.StringVar(&o.epsConf.TLSMinVersion, "tls-min-version", o.epsConf.TLSMinVersion, "Minimum TLS version for client, peer, and info endpoints: TLS1.2 or TLS1.3.")
