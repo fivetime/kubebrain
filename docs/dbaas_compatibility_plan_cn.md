@@ -61990,6 +61990,12 @@ readiness、active credential CAS 和旧 token revoke 尚未完成，本项仍�
 Kubernetes v1.36.1 API server 随后以 server-side dry-run 接受 Namespace、ServiceAccount、policy 和 binding，复查无任何同名
 持久资源；这提升了 schema/CEL 静态证据，但尚未产生持久 policy `observedGeneration/typeChecking` 或真实 credential UID。
 
+提交 `cb0b7bbf` 补齐 credential active CAS 的代码链：固定 HTTPS lifecycle probe 返回 provider-signed readiness，严格绑定 Secret
+UID/data SHA、credential ID、endpoint/principal、promote+revoke scopes 和短有效期；激活前后双读 Secret 并冻结 UID/resourceVersion/
+digest，防止 probe 后同名重建。active ConfigMap 以 resourceVersion CAS 发布，admission 固定九字段和 activation<expiry。
+630 项四片提交后 Go/墙钟秒为 130.276/136.366、359.025/365.141、226.309/232.366、374.767/380.855，全部通过；Kubernetes
+v1.36.1 server dry-run 接受新增 policy。真实 provider readiness、持久 active pointer 和旧 credential provider revoke 仍开放。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 

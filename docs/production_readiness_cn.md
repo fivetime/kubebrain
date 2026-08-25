@@ -3975,6 +3975,13 @@ credential provision、provider readiness、激活和旧 token revoke 证据，�
 另以现有 namespace 做等价 server dry-run。请求后目标 namespace、policy、SA 均为 NotFound，未改变长期测试集群。此结果只证明
 API schema/CEL 请求可接受，不证明持久 policy status 已 observed/type-check clean。
 
+提交 `cb0b7bbf` 将 credential readiness 提升为 provider-signed 门禁。正式 runtime probe 固定 HTTPS endpoint、Bearer、pinned CA，
+验签并绑定 credential ID、Secret UID/data SHA、endpoint、principal、精确 promote/revoke scopes 与 15 分钟窗口；receipt no-clobber，
+也可离线重验。激活脚本在 probe 前后双读并冻结 Secret UID/resourceVersion/data SHA，本地四份 credential 必须逐字节对应 Secret data；
+同名删除重建不能借相同 data 通过。active ConfigMap 使用 resourceVersion CAS，独立 admission 固定九字段及 activation<expiry。
+630 项四片 Go/墙钟秒为 130.276/136.366、359.025/365.141、226.309/232.366、374.767/380.855，全部通过；v1.36.1 对两套
+policy/binding 的独立 server dry-run 状态为 0。尚无真实 provider probe/持久激活/旧 token revoke，生产门禁保持开放。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。

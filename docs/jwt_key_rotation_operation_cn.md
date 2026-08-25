@@ -344,6 +344,18 @@ type-check/apply、真实 Secret provisioning、新 credential provider readines
 dry-run 全部接受；目标 namespace/policy/SA 复查均为 NotFound，确认零持久写。该证据仍不替代持久 apply 后的
 `observedGeneration`/`typeChecking` 收敛。
 
+提交 `cb0b7bbf` 增加正式 lifecycle credential readiness probe 与 CAS 激活。probe 只调用 pinned CA 下固定
+`POST /v1/jwt-key-versions:lifecycle-probe`，使用专用 Bearer token，验证 provider Ed25519-signed canonical receipt；receipt 精确绑定
+credential ID、immutable Secret UID/data SHA、HTTPS origin、provider principal、顺序固定的 `promote,revoke` scopes 和最长 15 分钟
+有效期，并以 0600 fsync/no-clobber 发布。离线重验已有 receipt 不会再次访问 provider。
+
+`--activate` 先证明本地 credential 文件与 Secret `.data` 完全相同，冻结 UID/resourceVersion/data SHA，再执行 probe；probe 后任何
+同名 Secret 删除重建、resourceVersion 或数据变化都会阻止 active pointer 写入。最终 ConfigMap 以 resourceVersion JSON Patch CAS
+轮换，admission 固定九字段 identity/evidence/time schema 并要求 activation 早于 readiness expiry。替换 Secret UID 的确定性负测证明
+零 active pointer。630 项四片提交后 Go/墙钟秒为 130.276/136.366、359.025/365.141、226.309/232.366、374.767/380.855，全部通过。
+Kubernetes v1.36.1 server-side dry-run 以状态 0 接受新增 policy/binding，且无持久资源。真实 provider probe、持久 credential 激活和
+旧 token provider-side revoke 仍未执行。
+
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。
