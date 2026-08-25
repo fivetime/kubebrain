@@ -90,7 +90,14 @@ mkdir -p "$STATE_DIR"
 token_capture_dir="$(mktemp -d)"
 trap 'rm -rf "$token_capture_dir"' EXIT INT TERM
 freeze_evidence() {
-  local source="$1" name="$2" before after current destination
+  local source="$1" name="$2" private="$3" before after current destination size permissions
+  [[ -f "$source" && ! -L "$source" ]] || die "$name evidence must be a regular non-symlink file"
+  size="$(stat -c %s "$source")"
+  [[ "$size" =~ ^[1-9][0-9]*$ ]] && (( size <= 1048576 )) || die "$name evidence must contain 1..1048576 bytes"
+  if [[ "$private" == true ]]; then
+    permissions="$(stat -c %a "$source")"
+    (( (8#$permissions & 8#077) == 0 )) || die "$name evidence must be inaccessible to group/other"
+  fi
   before="$(sha256sum "$source" | awk '{print $1}')"
   destination="${token_capture_dir}/${name}"
   cp -- "$source" "$destination"; chmod 600 "$destination"
@@ -99,12 +106,12 @@ freeze_evidence() {
   [[ "$before" =~ ^[a-f0-9]{64}$ && "$before" == "$after" && "$before" == "$current" ]] || die "$name evidence changed while being captured"
   printf '%s\n' "$destination"
 }
-OLD_TOKEN_FILE="$(freeze_evidence "$OLD_TOKEN_FILE" old-token)"
-if [[ "$ACTION" != phase-a ]]; then NEW_TOKEN_FILE="$(freeze_evidence "$NEW_TOKEN_FILE" new-token)"; fi
-if [[ -n "$PROBE_CACERT" ]]; then PROBE_CACERT="$(freeze_evidence "$PROBE_CACERT" ca)"; fi
+OLD_TOKEN_FILE="$(freeze_evidence "$OLD_TOKEN_FILE" old-token true)"
+if [[ "$ACTION" != phase-a ]]; then NEW_TOKEN_FILE="$(freeze_evidence "$NEW_TOKEN_FILE" new-token true)"; fi
+if [[ -n "$PROBE_CACERT" ]]; then PROBE_CACERT="$(freeze_evidence "$PROBE_CACERT" ca false)"; fi
 if [[ -n "$PROBE_CERT" ]]; then
-  PROBE_CERT="$(freeze_evidence "$PROBE_CERT" client-cert)"
-  PROBE_KEY="$(freeze_evidence "$PROBE_KEY" client-key)"
+  PROBE_CERT="$(freeze_evidence "$PROBE_CERT" client-cert false)"
+  PROBE_KEY="$(freeze_evidence "$PROBE_KEY" client-key true)"
 fi
 probe_args=(--probe-key "$PROBE_RANGE_KEY" --timeout "$PROBE_TIMEOUT")
 [[ -z "$PROBE_CACERT" ]] || probe_args+=(--cacert "$PROBE_CACERT")
@@ -122,7 +129,9 @@ read_stable() {
   local kind="$1" name="$2" first second
   first="$(mktemp)"; second="$(mktemp)"
   "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" get "$kind" "$name" -o json >"$first"
+  [[ "$(wc -c <"$first")" -le 2097152 ]] || { rm -f "$first" "$second"; die "$kind/$name response exceeds 2 MiB"; }
   "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" get "$kind" "$name" -o json >"$second"
+  [[ "$(wc -c <"$second")" -le 2097152 ]] || { rm -f "$first" "$second"; die "$kind/$name response exceeds 2 MiB"; }
   if [[ "$(digest_file "$first")" != "$(digest_file "$second")" ]]; then rm -f "$first" "$second"; die "$kind/$name changed during capture"; fi
   rm -f "$second"
   printf '%s\n' "$first"

@@ -79,9 +79,16 @@ func TestValidateJWTKeyRotationRejectsPartialRetirementAndOutage(t *testing.T) {
 	}
 }
 
+func TestValidateJWTKeyRotationRejectsUnsafeTokenBeforeKubernetes(t *testing.T) {
+	f := newJWTRotationFixture(t)
+	require.NoError(t, os.Chmod(f.oldToken, 0o644))
+	f.run(t, "phase-a", false, "old-token evidence must be inaccessible to group/other")
+	require.NoFileExists(t, filepath.Join(f.stateDir, "rotation-1.phase-a.json"))
+}
+
 type jwtRotationFixture struct {
-	dir, stateDir string
-	env           []string
+	dir, stateDir, oldToken string
+	env                     []string
 }
 
 func newJWTRotationFixture(t *testing.T) *jwtRotationFixture {
@@ -113,7 +120,7 @@ if [[ "$token" == old-token ]]; then
 fi
 [[ ! -f "$FAKE_STATE_DIR/outage" ]]
 `)
-	return &jwtRotationFixture{dir: dir, stateDir: stateDir, env: []string{
+	return &jwtRotationFixture{dir: dir, stateDir: stateDir, oldToken: oldToken, env: []string{
 		"ROTATION_ID=rotation-1", "INSTANCE=instance-a", "STATE_DIR=" + stateDir,
 		"KEY_SECRET=jwt-keys", "ENDPOINTS=https://member-0:2379,https://member-1:2379,https://member-2:2379",
 		"OLD_TOKEN_FILE=" + oldToken, "NEW_TOKEN_FILE=" + newToken,
