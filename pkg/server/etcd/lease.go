@@ -1815,8 +1815,11 @@ func (m *leaseManager) expireLeaseGenerationWithContext(workerCtx context.Contex
 	}
 	m.leaseMu.Unlock()
 
-	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
-	if !leadingFresh || epoch != expectedEpoch {
+	epoch, termActive := m.leaseTermActive(workerCtx, expectedEpoch)
+	if !termActive {
+		if workerCtx.Err() != nil {
+			return
+		}
 		m.retryLeaseExpiry(id, generation)
 		return
 	}
@@ -1834,6 +1837,9 @@ func (m *leaseManager) expireLeaseGenerationWithContext(workerCtx context.Contex
 	// Keep the same boundary here: retaining the complete lease lets the normal
 	// expiry retry remove it after the alarm is explicitly disarmed.
 	if err := m.srv.rejectCorrupt(workerCtx); err != nil {
+		if _, current := m.leaseTermCurrent(expectedEpoch); workerCtx.Err() != nil || !current {
+			return
+		}
 		m.srv.metricCli.EmitCounter("lease.expire.corrupt_deferred", 1, errClassTag(err))
 		emitLeaseBackgroundFailure(m.srv.metricCli, "expire_corrupt_deferred")
 		m.retryLeaseExpiry(id, generation)
@@ -1849,10 +1855,16 @@ func (m *leaseManager) expireLeaseGenerationWithContext(workerCtx context.Contex
 	// partial deletion is safe. On a real storage failure keep the lease and retry
 	// rather than swallowing the error and orphaning the surviving keys (#36).
 	if _, err := m.deleteLeasedKeysAtomic(ctx, id, keys); err != nil {
+		if _, current := m.leaseTermCurrent(expectedEpoch); workerCtx.Err() != nil || !current {
+			return
+		}
 		m.srv.metricCli.EmitCounter("lease.expire.delete.err", 1)
 		emitLeaseBackgroundFailure(m.srv.metricCli, "expire_delete")
 		klog.ErrorS(err, "lease expiry: atomic delete of bound keys failed; keeping lease for retry", "lease", id, "keys", len(keys))
 		m.retryLeaseExpiry(id, generation)
+		return
+	}
+	if _, current := m.leaseTermCurrent(expectedEpoch); !current {
 		return
 	}
 	// Every bound key is gone; now drop the lease record and attachment records.
@@ -2109,7 +2121,7 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 	m.leaseCheckpointMu.Lock()
 	defer m.leaseCheckpointMu.Unlock()
 	m.leaseWriteMu.Lock()
-	legacy := m.applyLeaseRecords(records, attachments)
+	legacy := m.applyLeaseRecordsForTerm(records, attachments, ctx)
 	// This node is now the leader; convert any pre-#17 monolithic records to the
 	// per-key attachment format so subsequent detaches are durable and the
 	// monolithic key-list is not carried forward. One-time, idempotent.
@@ -2428,18 +2440,25 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, migrations []leg
 // leader can migrate it to the new per-key format. Safe on both first restore
 // (empty maps) and leadership reload.
 func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[string]int64) (legacy []legacyLeaseMigration) {
-	return m.applyLeaseRecordsWithPrimary(records, attachments, true)
+	return m.applyLeaseRecordsWithPrimary(records, attachments, true, context.Background())
+}
+
+func (m *leaseManager) applyLeaseRecordsForTerm(records []leaseRecord, attachments map[string]int64, termCtx context.Context) (legacy []legacyLeaseMigration) {
+	return m.applyLeaseRecordsWithPrimary(records, attachments, true, termCtx)
 }
 
 func (m *leaseManager) applyLeaseRecordsInactive(records []leaseRecord, attachments map[string]int64) (legacy []legacyLeaseMigration) {
-	return m.applyLeaseRecordsWithPrimary(records, attachments, false)
+	return m.applyLeaseRecordsWithPrimary(records, attachments, false, nil)
 }
 
-func (m *leaseManager) applyLeaseRecordsWithPrimary(records []leaseRecord, attachments map[string]int64, primary bool) (legacy []legacyLeaseMigration) {
+func (m *leaseManager) applyLeaseRecordsWithPrimary(records []leaseRecord, attachments map[string]int64, primary bool, termCtx context.Context) (legacy []legacyLeaseMigration) {
 	now := time.Now()
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
 	m.leaseGeneration++
+	if primary {
+		m.leaseTermCtx = termCtx
+	}
 	for _, st := range m.leases {
 		if st.timer != nil {
 			st.timer.Stop()
@@ -2656,6 +2675,7 @@ func (m *leaseManager) clearLeaseStateHoldingCheckpointLock() {
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
 	m.leaseGeneration++
+	m.leaseTermCtx = nil
 	for _, st := range m.leases {
 		if st.timer != nil {
 			st.timer.Stop()
@@ -2925,8 +2945,9 @@ func (m *leaseManager) scheduleLeaseLocked(st *leaseState) {
 	if st.timer == nil {
 		generation := m.leaseGeneration
 		epoch, _ := m.srv.peers.EpochAndLeadingFresh()
+		termCtx := m.leaseTermCtx
 		st.timer = time.AfterFunc(duration, func() {
-			m.startWorker(func(ctx context.Context) {
+			m.startLeaseTermWorker(termCtx, func(ctx context.Context) {
 				m.expireLeaseGenerationWithContext(ctx, st.id, generation, epoch)
 			})
 		})
@@ -2945,8 +2966,9 @@ func (m *leaseManager) scheduleLeaseCheckpointLocked(st *leaseState) {
 	if st.checkpointTimer == nil {
 		generation := m.leaseGeneration
 		epoch, _ := m.srv.peers.EpochAndLeadingFresh()
+		termCtx := m.leaseTermCtx
 		st.checkpointTimer = time.AfterFunc(leaseCheckpointInterval, func() {
-			m.startWorker(func(ctx context.Context) {
+			m.startLeaseTermWorker(termCtx, func(ctx context.Context) {
 				m.checkpointLeaseGenerationWithContext(ctx, st.id, generation, epoch)
 			})
 		})
@@ -2968,6 +2990,24 @@ func (m *leaseManager) retryLeaseCheckpoint(id int64, generation uint64) {
 	st.checkpointTimer.Reset(leaseExpiryRetryInterval)
 }
 
+// startLeaseTermWorker binds timer work to both the manager process and the
+// leadership term that armed it. The term normally ends first during failover;
+// manager cancellation remains the final shutdown fence.
+func (m *leaseManager) startLeaseTermWorker(termCtx context.Context, run func(context.Context)) bool {
+	if termCtx == nil {
+		return false
+	}
+	return m.startWorker(func(workerCtx context.Context) {
+		ctx, cancel := context.WithCancel(termCtx)
+		stopWorker := context.AfterFunc(workerCtx, cancel)
+		defer func() {
+			stopWorker()
+			cancel()
+		}()
+		run(ctx)
+	})
+}
+
 func (m *leaseManager) checkpointLease(id int64) {
 	m.checkpointLeaseWithContext(context.Background(), id)
 }
@@ -2981,8 +3021,11 @@ func (m *leaseManager) checkpointLeaseWithContext(workerCtx context.Context, id 
 }
 
 func (m *leaseManager) checkpointLeaseGenerationWithContext(workerCtx context.Context, id int64, generation, expectedEpoch uint64) {
-	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
-	if !leadingFresh || epoch != expectedEpoch || !m.leaseReady.Load() || m.leaseReadyEpoch.Load() != epoch {
+	epoch, termActive := m.leaseTermActive(workerCtx, expectedEpoch)
+	if !termActive {
+		if workerCtx.Err() != nil {
+			return
+		}
 		m.retryLeaseCheckpoint(id, generation)
 		return
 	}
@@ -3015,6 +3058,9 @@ func (m *leaseManager) checkpointLeaseGenerationWithContext(workerCtx context.Co
 
 	applyStart := time.Now()
 	err := m.persistLeaseCheckpointIncarnation(ctx, id, ttl, remainingTTL, incarnation)
+	if _, current := m.leaseTermCurrent(expectedEpoch); !current || (err != nil && workerCtx.Err() != nil) {
+		return
+	}
 	emitEtcdLeaseCheckpointDurations(m.srv.metricCli, time.Since(applyStart), err)
 	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.checkpoint.err", 1)
@@ -3035,6 +3081,19 @@ func (m *leaseManager) checkpointLeaseGenerationWithContext(workerCtx context.Co
 		m.scheduleLeaseCheckpointLocked(st)
 	}
 	m.leaseMu.Unlock()
+}
+
+func (m *leaseManager) leaseTermActive(ctx context.Context, expectedEpoch uint64) (uint64, bool) {
+	if ctx.Err() != nil {
+		return 0, false
+	}
+	return m.leaseTermCurrent(expectedEpoch)
+}
+
+func (m *leaseManager) leaseTermCurrent(expectedEpoch uint64) (uint64, bool) {
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	return epoch, leadingFresh && epoch == expectedEpoch &&
+		m.leaseReady.Load() && m.leaseReadyEpoch.Load() == epoch
 }
 
 func emitEtcdLeaseCheckpointDurations(metricCli metrics.Metrics, duration time.Duration, err error) {

@@ -1936,6 +1936,76 @@ func TestStaleLeaseTimerCallbacksCannotAdoptReloadedGeneration(t *testing.T) {
 	require.Equal(t, meta, stored)
 }
 
+func TestLeaseCheckpointTimerStopsWithLeadershipContext(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	t.Cleanup(closeFn)
+	ctx := context.Background()
+	const leaseID int64 = 100032
+
+	var leading atomic.Bool
+	leading.Store(true)
+	server.peers = testPeerService{
+		isLeaderFn: leading.Load,
+		epochFn:    func() (uint64, bool) { return 7, leading.Load() },
+	}
+	recorder := &recordingMetrics{}
+	server.metricCli = recorder
+	require.NoError(t, server.persistLeaseMeta(ctx, leaseID, 600))
+
+	termCtx, cancelTerm := context.WithCancel(context.Background())
+	defer cancelTerm()
+	server.PrepareLeaseReload()
+	require.NoError(t, server.ReloadLeases(termCtx))
+
+	shim := &blockingLeaseCheckpointBackend{
+		BackendShim: server.backend,
+		leaseID:     leaseID,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	defer func() {
+		select {
+		case <-shim.release:
+		default:
+			close(shim.release)
+		}
+	}()
+
+	server.leaseMu.Lock()
+	state := server.leases[leaseID]
+	require.NotNil(t, state)
+	require.NotNil(t, state.checkpointTimer)
+	state.deadline = time.Now().Add(60 * time.Second)
+	state.checkpointTimer.Reset(0)
+	server.leaseMu.Unlock()
+	select {
+	case <-shim.entered:
+	case <-time.After(time.Second):
+		t.Fatal("lease checkpoint timer did not enter the backend")
+	}
+
+	leading.Store(false)
+	cancelTerm()
+	stopped := make(chan struct{})
+	go func() {
+		server.StopLeases()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("lease checkpoint timer did not retire with its leadership context")
+	}
+
+	for _, counter := range recorder.counters {
+		require.NotEqual(t, "lease.checkpoint.err", counter.name,
+			"normal leadership cancellation must not be reported as a checkpoint failure")
+		require.NotEqual(t, "lease.background.failure", counter.name,
+			"normal leadership cancellation must not be reported as a background failure")
+	}
+}
+
 func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 	tests := []struct {
 		name  string

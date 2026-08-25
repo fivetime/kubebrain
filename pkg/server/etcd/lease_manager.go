@@ -106,6 +106,11 @@ type leaseManager struct {
 	// snapshot. The stale follower map cannot answer definitive lease lookups.
 	leaseReady      atomic.Bool
 	leaseReadyEpoch atomic.Uint64
+	// leaseTermCtx is the exact leadership lifecycle that installed the active
+	// lease snapshot. Expiry/checkpoint timers capture it when they are created so
+	// a blocked TiKV call is canceled before StopLeases withdraws that term.
+	// Guarded by leaseMu.
+	leaseTermCtx context.Context
 
 	workerCtx    context.Context
 	workerCancel context.CancelFunc
@@ -125,6 +130,7 @@ func newLeaseManager(srv *RPCServer, initialID int64) *leaseManager {
 		pendingLeases:       make(map[int64]uint64),
 		keyLeaseIndex:       make(map[string]int64),
 		orphanSweepInterval: orphanLeaseSweepInterval,
+		leaseTermCtx:        context.Background(),
 		workerCtx:           workerCtx,
 		workerCancel:        workerCancel,
 	}
