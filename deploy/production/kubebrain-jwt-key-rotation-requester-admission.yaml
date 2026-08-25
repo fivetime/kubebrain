@@ -1,0 +1,43 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-jwt-key-rotation-request-operation}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
+  matchConditions:
+    - name: jwt-key-rotation-scope
+      expression: '(object.spec.type == "JWTKeyRotation" && request.userInfo.username != "system:serviceaccount:kubebrain-operations:kubebrain-operation-api") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-jwt-key-rotation-requester"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-jwt-key-rotation-requester"', message: JWT key rotation operations require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: JWT key rotation requester is restricted to the production operation queue}
+    - {expression: 'object.metadata.name.matches("^jwt-key-rotate-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: JWT key rotation operation identity must be deterministic}
+    - {expression: 'object.spec.type == "JWTKeyRotation" && object.spec.requestedBy == "platform:jwt-key-rotation" && object.spec.instance.matches("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$") && object.spec.maxAttempts == 5', message: JWT key rotation operation shape is fixed}
+    - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")', message: JWT key rotation operation must bind its immutable parameter Secret}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-jwt-key-rotation-request-operation}
+spec: {policyName: kubebrain-jwt-key-rotation-request-operation, validationActions: [Deny]}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-jwt-key-rotation-request-parameters}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [secrets], scope: Namespaced}
+  matchConditions:
+    - name: jwt-key-rotation-parameter-scope
+      expression: '(object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^jwt-key-rotate-[a-f0-9]{20}-parameters$")) || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-jwt-key-rotation-requester"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-jwt-key-rotation-requester"', message: JWT key rotation parameter Secrets require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^jwt-key-rotate-[a-f0-9]{20}-parameters$")', message: JWT key rotation parameter Secret identity is fixed}
+    - {expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data', message: JWT key rotation parameters must be one immutable opaque payload}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-jwt-key-rotation-request-parameters}
+spec: {policyName: kubebrain-jwt-key-rotation-request-parameters, validationActions: [Deny]}

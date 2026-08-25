@@ -574,7 +574,7 @@ func claimCandidateLess(left, right *unstructured.Unstructured, lastStarted map[
 
 func requiresApproval(operationType string) bool {
 	switch operationType {
-	case "NativePITRFullRestore", "NativePITRTargetRetirement", "NativePITRTargetProvisioning", "RestoreCutover", "CertificateRotation", "InfoCertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation":
+	case "NativePITRFullRestore", "NativePITRTargetRetirement", "NativePITRTargetProvisioning", "RestoreCutover", "CertificateRotation", "InfoCertificateRotation", "JWTKeyRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation":
 		return true
 	default:
 		return false
@@ -583,7 +583,7 @@ func requiresApproval(operationType string) bool {
 
 func isSupportedOperationType(operationType string) bool {
 	switch operationType {
-	case "Backup", "NativePITRFullBackup", "NativePITRFullRestore", "NativePITRTargetRetirement", "NativePITRTargetProvisioning", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "PostRestoreAudit", "CertificateRotation", "InfoCertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy":
+	case "Backup", "NativePITRFullBackup", "NativePITRFullRestore", "NativePITRTargetRetirement", "NativePITRTargetProvisioning", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "PostRestoreAudit", "CertificateRotation", "InfoCertificateRotation", "JWTKeyRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy":
 		return true
 	default:
 		return false

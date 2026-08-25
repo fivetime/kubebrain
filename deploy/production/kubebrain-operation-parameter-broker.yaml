@@ -253,6 +253,7 @@ spec:
                   - kubebrain-post-restore-audit-executor
                   - kubebrain-certificate-rotation-executor
                   - kubebrain-info-certificate-rotation-executor
+                  - kubebrain-jwt-key-rotation-executor
                   - kubebrain-tikv-transaction-repair-executor
                   - kubebrain-tikv-transaction-recovery-executor
                   - kubebrain-destroy-executor

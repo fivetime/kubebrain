@@ -15,7 +15,7 @@ REPAIR_NAMESPACE=kubebrain-repair-operations
 IDENTITY=system:serviceaccount:kubebrain-operations:kubebrain-operation-parameter-broker
 BROKER_HOST=kubebrain-operation-parameter-broker.kubebrain-operations.svc
 
-requesters=(backup backup-deletion certificate-rotation cold-physical-restore cold-physical-snapshot destroy info-certificate-rotation legacy-snapshot-remediation native-pitr-full-backup native-pitr-full-restore native-pitr-target-provisioning native-pitr-target-retirement post-restore-audit restore-cutover tikv-quiesced-repair tikv-transaction-recovery)
+requesters=(backup backup-deletion certificate-rotation cold-physical-restore cold-physical-snapshot destroy info-certificate-rotation jwt-key-rotation legacy-snapshot-remediation native-pitr-full-backup native-pitr-full-restore native-pitr-target-provisioning native-pitr-target-retirement post-restore-audit restore-cutover tikv-quiesced-repair tikv-transaction-recovery)
 
 die() { echo "$*" >&2; exit 1; }
 resolve() { if [[ "$1" == */* ]]; then [[ -x "$1" ]] || return 1; printf '%s' "$1"; else command -v "$1"; fi; }

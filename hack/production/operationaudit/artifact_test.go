@@ -512,7 +512,7 @@ func TestOperationAuditAcceptsNativePITRFullBackupWithoutApproval(t *testing.T) 
 
 func TestOperationAuditRequiresApprovalForHighRiskTypes(t *testing.T) {
 	for _, operationType := range []string{
-		"NativePITRFullRestore", "NativePITRTargetRetirement", "NativePITRTargetProvisioning", "RestoreCutover", "CertificateRotation", "InfoCertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation",
+		"NativePITRFullRestore", "NativePITRTargetRetirement", "NativePITRTargetProvisioning", "RestoreCutover", "CertificateRotation", "InfoCertificateRotation", "JWTKeyRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation",
 	} {
 		artifact := terminalArtifact()
 		artifact.Type = operationType

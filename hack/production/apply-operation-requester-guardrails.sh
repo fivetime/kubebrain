@@ -15,6 +15,7 @@ requesters=(
   cold-physical-snapshot
   destroy
   info-certificate-rotation
+  jwt-key-rotation
   legacy-snapshot-remediation
   native-pitr-full-backup
   native-pitr-full-restore
@@ -79,6 +80,7 @@ requester_sample_secret() {
     cold-physical-snapshot) printf '%s' cold-snapshot-aaaaaaaaaaaaaaaaaaaa-parameters ;;
     destroy) printf '%s' destroy-aaaaaaaaaaaaaaaaaaaa-parameters ;;
     info-certificate-rotation) printf '%s' info-cert-rotate-aaaaaaaaaaaaaaaaaaaa-parameters ;;
+    jwt-key-rotation) printf '%s' jwt-key-rotate-aaaaaaaaaaaaaaaaaaaa-parameters ;;
     legacy-snapshot-remediation) printf '%s' legacy-snapshot-remediation-aaaaaaaaaaaaaaaaaaaa-parameters ;;
     native-pitr-full-backup) printf '%s' native-pitr-full-aaaaaaaaaaaaaaaaaaaa-parameters ;;
     native-pitr-full-restore) printf '%s' native-pitr-restore-aaaaaaaaaaaaaaaaaaaa-parameters ;;
@@ -101,6 +103,7 @@ requester_operation_contract() {
     cold-physical-snapshot) printf '%s\t%s\t%s\t%s\t%s' cold-snapshot-aaaaaaaaaaaaaaaaaaaa ColdPhysicalSnapshot platform:cold-physical-snapshot kubebrain 2 ;;
     destroy) printf '%s\t%s\t%s\t%s\t%s' destroy-aaaaaaaaaaaaaaaaaaaa Destroy platform:destroy instance-a 5 ;;
     info-certificate-rotation) printf '%s\t%s\t%s\t%s\t%s' info-cert-rotate-aaaaaaaaaaaaaaaaaaaa InfoCertificateRotation platform:info-certificate-rotation instance-a 5 ;;
+    jwt-key-rotation) printf '%s\t%s\t%s\t%s\t%s' jwt-key-rotate-aaaaaaaaaaaaaaaaaaaa JWTKeyRotation platform:jwt-key-rotation instance-a 5 ;;
     legacy-snapshot-remediation) printf '%s\t%s\t%s\t%s\t%s' legacy-snapshot-remediation-aaaaaaaaaaaaaaaaaaaa LegacySnapshotHistoryRemediation platform:legacy-snapshot-remediation kubebrain 2 ;;
     native-pitr-full-backup) printf '%s\t%s\t%s\t%s\t%s' native-pitr-full-aaaaaaaaaaaaaaaaaaaa NativePITRFullBackup platform:native-pitr-full-backup kubebrain 2 ;;
     native-pitr-full-restore) printf '%s\t%s\t%s\t%s\t%s' native-pitr-restore-aaaaaaaaaaaaaaaaaaaa NativePITRFullRestore platform:native-pitr-full-restore kubebrain 2 ;;
@@ -202,7 +205,7 @@ case "$1" in
     done <<<"$rendered"
     [[ "${#policies[@]}" == 2 && "${#bindings[@]}" == 2 && "${policies[0]}" == "${bindings[0]}" && "${policies[1]}" == "${bindings[1]}" ]] || die "TiKV repair alert receiver must render two same-name policy/binding pairs"
     policy_names+=("${policies[@]}")
-    [[ "${#policy_names[@]}" == 34 ]] || die "requester policy inventory must contain 34 policies"
+    [[ "${#policy_names[@]}" == 36 ]] || die "requester policy inventory must contain 36 policies"
     for policy in "${policy_names[@]}"; do
       policy_json="$("$KUBECTL" "${context[@]}" get validatingadmissionpolicy "$policy" -o json)" || die "requester policy is missing: ${policy}"
       "$JQ" -e '.status.observedGeneration == .metadata.generation and (.status|has("typeChecking")) and ((.status.typeChecking.expressionWarnings // [])|length == 0)' <<<"$policy_json" >/dev/null || die "requester policy type checking is incomplete or has warnings: ${policy}"
@@ -270,7 +273,7 @@ case "$1" in
     if printf '%s\n' "$wrong_identity_operation" | "$KUBECTL" "${context[@]}" create --dry-run=server --validate=false --as="$wrong_identity" -f - >/dev/null 2>&1; then
       die "repair alert admission allowed another requester identity to create its Operation"
     fi
-    echo "checked 34 compiled Deny policies and 17 requester RBAC/admission identities"
+    echo "checked 36 compiled Deny policies and 18 requester RBAC/admission identities"
     ;;
   *) usage ;;
 esac

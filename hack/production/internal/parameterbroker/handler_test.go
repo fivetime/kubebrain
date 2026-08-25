@@ -62,6 +62,7 @@ func TestHandlerAuthenticatesHighRiskExecutorTypes(t *testing.T) {
 		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 		{serviceAccount: "kubebrain-cold-physical-restore-executor", operationType: "ColdPhysicalRestore"},
 		{serviceAccount: "kubebrain-legacy-snapshot-remediation-executor", operationType: "LegacySnapshotHistoryRemediation"},
+		{serviceAccount: "kubebrain-jwt-key-rotation-executor", operationType: "JWTKeyRotation"},
 	} {
 		t.Run(tc.serviceAccount, func(t *testing.T) {
 			handler, err := NewHandler(
@@ -91,6 +92,7 @@ func TestHandlerReturnsHighRiskParametersThroughTypeBoundBrokerIdentity(t *testi
 		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 		{serviceAccount: "kubebrain-cold-physical-restore-executor", operationType: "ColdPhysicalRestore"},
 		{serviceAccount: "kubebrain-legacy-snapshot-remediation-executor", operationType: "LegacySnapshotHistoryRemediation"},
+		{serviceAccount: "kubebrain-jwt-key-rotation-executor", operationType: "JWTKeyRotation"},
 	} {
 		t.Run(tc.operationType, func(t *testing.T) {
 			parameters := []byte(`{"repair":"bound"}`)
@@ -537,7 +539,7 @@ func claimedOperationWithType(
 	})
 	require.NoError(t, err)
 	if operationType == "TiKVTransactionRepair" || operationType == "TiKVTransactionRecovery" ||
-		operationType == "NativePITRFullRestore" || operationType == "ColdPhysicalSnapshot" || operationType == "ColdPhysicalRestore" || operationType == "LegacySnapshotHistoryRemediation" {
+		operationType == "NativePITRFullRestore" || operationType == "ColdPhysicalSnapshot" || operationType == "ColdPhysicalRestore" || operationType == "LegacySnapshotHistoryRemediation" || operationType == "JWTKeyRotation" {
 		_, err = queue.Approve(
 			context.Background(), operationName, operationaudit.ApproverUsername, "change-test-1",
 		)

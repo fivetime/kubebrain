@@ -143,7 +143,7 @@ func (a Artifact) Validate() error {
 	if a.Phase == "Failed" && a.ReceiptSHA256 != "" {
 		return errors.New("failed operation audit cannot carry a receipt SHA-256")
 	}
-	approvalRequired := a.Type == "NativePITRFullRestore" || a.Type == "NativePITRTargetRetirement" || a.Type == "NativePITRTargetProvisioning" || a.Type == "RestoreCutover" || a.Type == "ColdPhysicalSnapshot" || a.Type == "ColdPhysicalRestore" || a.Type == "LegacySnapshotHistoryRemediation" || a.Type == "CertificateRotation" || a.Type == "InfoCertificateRotation" ||
+	approvalRequired := a.Type == "NativePITRFullRestore" || a.Type == "NativePITRTargetRetirement" || a.Type == "NativePITRTargetProvisioning" || a.Type == "RestoreCutover" || a.Type == "ColdPhysicalSnapshot" || a.Type == "ColdPhysicalRestore" || a.Type == "LegacySnapshotHistoryRemediation" || a.Type == "CertificateRotation" || a.Type == "InfoCertificateRotation" || a.Type == "JWTKeyRotation" ||
 		a.Type == "TiKVTransactionRepair" || a.Type == "TiKVTransactionRecovery" ||
 		a.Type == "Destroy" || a.Type == "BackupDeletion"
 	if approvalRequired &&
@@ -158,7 +158,7 @@ func (a Artifact) Validate() error {
 
 func validOperationType(value string) bool {
 	return value == "Backup" || value == "NativePITRFullBackup" || value == "NativePITRFullRestore" || value == "NativePITRTargetRetirement" || value == "NativePITRTargetProvisioning" || value == "BackupDeletion" || value == "ColdPhysicalSnapshot" || value == "ColdPhysicalRestore" || value == "LegacySnapshotHistoryRemediation" || value == "RestoreCutover" ||
-		value == "PostRestoreAudit" || value == "CertificateRotation" || value == "InfoCertificateRotation" || value == "TiKVTransactionRepair" ||
+		value == "PostRestoreAudit" || value == "CertificateRotation" || value == "InfoCertificateRotation" || value == "JWTKeyRotation" || value == "TiKVTransactionRepair" ||
 		value == "TiKVTransactionRecovery" || value == "Destroy"
 }
 

@@ -36,6 +36,15 @@ func TestOperationRunnersRejectInvalidSubcommandBeforeClaim(t *testing.T) {
 				"SCRAPE_COMMAND={hook}",
 			},
 		},
+		{
+			name:    "JWT key rotation publisher",
+			script:  "run-jwt-key-rotation-operation.sh",
+			command: "PUBLISHER_COMMAND",
+			extraEnvs: []string{
+				"ROTATION_COMMAND={hook}",
+				"TOKEN_ISSUER_COMMAND={hook}",
+			},
+		},
 		{name: "destroy command", script: "run-destroy-operation.sh", command: "DESTROY_COMMAND"},
 		{name: "TiKV repair command", script: "run-tikv-transaction-repair-operation.sh", command: "REPAIR_COMMAND"},
 		{name: "TiKV recovery command", script: "run-tikv-transaction-recovery-operation.sh", command: "RECOVERY_COMMAND"},
@@ -78,6 +87,12 @@ func replaceHookPath(value, hook string) string {
 	}
 	if value == "SCRAPE_COMMAND={hook}" {
 		return "SCRAPE_COMMAND=" + hook
+	}
+	if value == "ROTATION_COMMAND={hook}" {
+		return "ROTATION_COMMAND=" + hook
+	}
+	if value == "TOKEN_ISSUER_COMMAND={hook}" {
+		return "TOKEN_ISSUER_COMMAND=" + hook
 	}
 	return value
 }

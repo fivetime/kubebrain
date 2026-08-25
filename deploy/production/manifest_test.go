@@ -573,6 +573,7 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.Contains(t, operationTypes, "NativePITRFullBackup")
 	require.Contains(t, operationTypes, "NativePITRFullRestore")
 	require.Contains(t, operationTypes, "LegacySnapshotHistoryRemediation")
+	require.Contains(t, operationTypes, "JWTKeyRotation")
 	tenantType := nestedString(
 		t, version, "schema", "openAPIV3Schema", "properties", "spec",
 		"properties", "tenant", "type",
@@ -733,6 +734,10 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			"run-info-certificate-rotation-operation.sh", "kubebrain-info-certificate-rotation-executor-env",
 			"kubebrain-info-certificate-rotation-executor-workspace",
 		},
+		"kubebrain-jwt-key-rotation-executor": {
+			"run-jwt-key-rotation-operation.sh", "kubebrain-jwt-key-rotation-executor-env",
+			"kubebrain-jwt-key-rotation-executor-workspace",
+		},
 		"kubebrain-tikv-transaction-repair-executor": {
 			"run-tikv-transaction-repair-operation.sh", "kubebrain-tikv-transaction-repair-executor-env",
 			"kubebrain-tikv-transaction-repair-executor-workspace",
@@ -859,7 +864,7 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			nestedInt64(t, tokenSource, "serviceAccountToken", "expirationSeconds"))
 		require.Equal(t, "kubebrain-operation-parameter-broker-ca",
 			nestedString(t, parameterCA, "configMap", "name"))
-		if name == "kubebrain-certificate-rotation-executor" || name == "kubebrain-info-certificate-rotation-executor" {
+		if name == "kubebrain-certificate-rotation-executor" || name == "kubebrain-info-certificate-rotation-executor" || name == "kubebrain-jwt-key-rotation-executor" {
 			require.NotNil(t, hooks)
 			require.Equal(t, name+"-hooks",
 				nestedString(t, hooks, "secret", "secretName"))
@@ -874,7 +879,7 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			}
 			if name == "kubebrain-certificate-rotation-executor" {
 				require.Equal(t, map[string]string{"publish-overlap": "publish-overlap", "publish-final": "publish-final"}, pathsByKey)
-			} else {
+			} else if name == "kubebrain-info-certificate-rotation-executor" {
 				require.Equal(t, map[string]string{"publish": "publish"}, pathsByKey)
 				env, found, err := unstructured.NestedSlice(container.Object, "env")
 				require.NoError(t, err)
@@ -916,6 +921,12 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 				require.NotNil(t, prometheusMount)
 				require.Equal(t, "/var/run/secrets/kubebrain-prometheus", nestedString(t, prometheusMount, "mountPath"))
 				require.True(t, nestedBool(t, prometheusMount, "readOnly"))
+			} else {
+				require.Equal(t, map[string]string{"issue-token": "issue-token"}, pathsByKey)
+				require.Equal(t, "/usr/local/bin/kubebrain-jwt-rotation-publisher", envValues["PUBLISHER_COMMAND"])
+				require.Equal(t, "/opt/kubebrain/hack/production/validate-jwt-key-rotation.sh", envValues["ROTATION_COMMAND"])
+				require.Equal(t, "/opt/kubebrain-executor-hooks/issue-token", envValues["TOKEN_ISSUER_COMMAND"])
+				require.Equal(t, "/usr/local/bin/kubebrain-jwt-token-probe", envValues["TOKEN_PROBE"])
 			}
 		} else {
 			require.Nil(t, hooks)
@@ -1315,7 +1326,7 @@ func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *tes
 		"kubebrain-cold-physical-snapshot-executor",
 		"kubebrain-cold-physical-restore-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
-		"kubebrain-certificate-rotation-executor", "kubebrain-info-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
+		"kubebrain-certificate-rotation-executor", "kubebrain-info-certificate-rotation-executor", "kubebrain-jwt-key-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
 		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-legacy-snapshot-remediation-executor", "kubebrain-destroy-executor",
 	}, values)
 
@@ -1389,7 +1400,7 @@ func TestOperationWorkerAdmissionBindsStatusUpdatesToExecutorType(t *testing.T) 
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
 		"kubebrain-native-pitr-full-backup-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
-		"kubebrain-certificate-rotation-executor", "kubebrain-info-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
+		"kubebrain-certificate-rotation-executor", "kubebrain-info-certificate-rotation-executor", "kubebrain-jwt-key-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
 		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-destroy-executor",
 	} {
 		require.Contains(t, expression, name)
@@ -1789,7 +1800,7 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)
 	require.Contains(t, approvalExpression, `object.status.phase == "Pending"`)
 	require.Contains(t, approvalExpression, `approval-id"].matches("^[a-z0-9]`)
-	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "CertificateRotation", "InfoCertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "CertificateRotation", "InfoCertificateRotation", "JWTKeyRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
 		require.Contains(t, approvalExpression, `"`+operationType+`"`)
 	}
 	require.NotContains(t, approvalExpression, `"Backup"`)
@@ -2028,6 +2039,38 @@ func TestInfoCertificateRotationRequesterIsFailClosedAndLeastPrivilege(t *testin
 	}
 }
 
+func TestJWTKeyRotationRequesterIsFailClosedAndLeastPrivilege(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-jwt-key-rotation-requester-admission.yaml")
+	for _, name := range []string{"kubebrain-jwt-key-rotation-request-operation", "kubebrain-jwt-key-rotation-request-parameters"} {
+		policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", name)
+		require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+		binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", name)
+		require.Equal(t, []string{"Deny"}, nestedStringSlice(t, binding, "spec", "validationActions"))
+		text := fmt.Sprintf("%v", policy.Object)
+		require.Contains(t, text, "kubebrain-jwt-key-rotation-requester")
+		require.Contains(t, text, "parameters.json")
+		if strings.HasSuffix(name, "operation") {
+			require.Contains(t, text, `^jwt-key-rotate-[a-f0-9]{20}$`)
+			require.Contains(t, text, "platform:jwt-key-rotation")
+			require.Contains(t, text, "maxAttempts == 5")
+		} else {
+			require.Contains(t, text, `^jwt-key-rotate-[a-f0-9]{20}-parameters$`)
+			require.Contains(t, text, "object.immutable == true")
+		}
+	}
+	rbac := decodeManifest(t, "kubebrain-jwt-key-rotation-requester-rbac.yaml")
+	account := objectByKindAndName(t, rbac, "ServiceAccount", "kubebrain-jwt-key-rotation-requester")
+	require.False(t, nestedBool(t, account, "automountServiceAccountToken"))
+	role := objectByKindAndName(t, rbac, "Role", "kubebrain-jwt-key-rotation-requester")
+	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, rules, 2)
+	for _, rule := range rules {
+		require.Equal(t, []any{"create", "get"}, rule.(map[string]any)["verbs"].([]any))
+	}
+}
+
 func TestBackupRequesterIsFailClosedAndLeastPrivilege(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-backup-requester-admission.yaml")
 	for _, tc := range []struct {
@@ -2193,7 +2236,7 @@ func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 func TestDedicatedRequesterAdmissionsDelegateOnlyOperationAPIIdentity(t *testing.T) {
 	files, err := filepath.Glob("kubebrain-*-requester-admission.yaml")
 	require.NoError(t, err)
-	require.Len(t, files, 16)
+	require.Len(t, files, 17)
 	const exclusion = "&& request.userInfo.username != \"system:serviceaccount:kubebrain-operations:kubebrain-operation-api\""
 	for _, file := range files {
 		contents, readErr := os.ReadFile(file)

@@ -38,6 +38,7 @@ var serviceAccountTypes = map[string]string{
 	"kubebrain-post-restore-audit-executor":              "PostRestoreAudit",
 	"kubebrain-certificate-rotation-executor":            "CertificateRotation",
 	"kubebrain-info-certificate-rotation-executor":       "InfoCertificateRotation",
+	"kubebrain-jwt-key-rotation-executor":                "JWTKeyRotation",
 	"kubebrain-tikv-transaction-repair-executor":         "TiKVTransactionRepair",
 	"kubebrain-tikv-transaction-recovery-executor":       "TiKVTransactionRecovery",
 	"kubebrain-destroy-executor":                         "Destroy",

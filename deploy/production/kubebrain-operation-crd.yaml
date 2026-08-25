@@ -112,6 +112,7 @@ spec:
                     - PostRestoreAudit
                     - CertificateRotation
                     - InfoCertificateRotation
+                    - JWTKeyRotation
                     - TiKVTransactionRepair
                     - TiKVTransactionRecovery
                     - Destroy

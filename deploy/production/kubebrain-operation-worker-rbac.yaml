@@ -109,6 +109,9 @@ subjects:
     name: kubebrain-info-certificate-rotation-executor
     namespace: kubebrain-operations
   - kind: ServiceAccount
+    name: kubebrain-jwt-key-rotation-executor
+    namespace: kubebrain-operations
+  - kind: ServiceAccount
     name: kubebrain-tikv-transaction-repair-executor
     namespace: kubebrain-operations
   - kind: ServiceAccount
