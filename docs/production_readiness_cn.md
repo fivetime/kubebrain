@@ -8324,3 +8324,34 @@ GREEN。最终 Pod UID `2e9ba678-2e7c-4384-bba2-6aa2d793263e`、Ready、restart 
 639 项 inventory 为 `152/178/159/150`；精确提交后四片 Go/墙钟秒为
 135.867/142.175、369.855/376.170、225.168/231.470、382.219/388.471，全部通过。本项没有发现或声称新的 quota
 生产语义偏差；它关闭的是自动 NOSPACE 发布证据跨实例拼接和错误清理的门禁缺口。
+
+### A5502：direct-replica 三成员与 metrics 身份冻结
+
+`run-direct-replica-consistency.sh` 的 `all` scope 会跨三个直连副本写测试键、创建/撤销 lease，并激活/解除 NOSPACE、CORRUPT
+与 unknown alarm；旧 runner 虽在开头确认同 cluster、三个不同 member 和一个 in-set leader，却在测试后只从第一个 endpoint
+检查 prefix/lease/alarm，metrics 也只要求三个不同 URL 均返回 HTTP 200。若 endpoint selector 或隧道在执行中改指另一 member，
+或三个 metrics URL 实际重复同一健康副本，旧门禁可能把跨实例响应和错误 cleanup 误报为三副本收敛。
+
+提交 `bec080f0` 冻结有序 endpoint→member 映射、cluster ID 和每端最低 revision。preflight 现在从三个 endpoint 分别读取三个
+测试前缀、LeaseList 与 AlarmList，兼容官方 etcdctl 的 KV/Alarm `.header` 和 LeaseList 根级 header 两种 JSON 外形；每个响应
+必须来自该 endpoint 原 member，三端 lease/alarm 集必须一致。postflight 重新读取三份 Status：leader 允许合法切换，但仍须唯一、
+位于冻结 member 集内；cluster、有序 member 映射不得变化，revision 不得低于基线。随后三个 endpoint 各自证明三个前缀为空、
+lease/alarm 集逐字等于基线，不能再由 endpoint 0 替其他副本背书。
+
+提供 metrics 时，runner 以 5 秒/1 MiB 上限写入 077 私有临时目录，要求每份文本恰有一条
+`etcd_server_id{cluster="default",server_id="<hex>"} 1`，且十六进制 ID 精确对应同位置 client endpoint 的 member；pre/postflight
+各验证一次。临时文件使用 `umask 077`，EXIT 清理，INT/TERM 明确非零退出后清理。fake 回归证明测试执行后 endpoint 1 变为
+endpoint 2 的 member 必须失败，也证明错误 metrics member 在任何 Go 测试前失败；目标普通连续 10 轮 8.087 秒、race 连续
+10 轮 9.242 秒，compat 全套 8.748 秒、bash syntax、ShellCheck、vet 和 diff check 均通过。
+
+真实 Kubernetes v1.36.1 数据面使用 `kubebrain:a5491-88b00806`、独立 3×PD/3×TiKV v8.5.3。三个仅监听
+`127.0.0.1` 的临时 port-forward 分别绑定 `kubebrain-0/1/2` client+metrics；member 十进制 ID 为
+`4034353177/2393892952/231094427`，metrics hex 为 `f0775819/8eafe858/dc6389b`。未加固 runner 的 13 项 `all+metrics`
+基线 25.061 秒 GREEN；最终代码同组 21.250 秒 GREEN，postflight 三端前缀为空且 lease/alarm 恢复基线。三个 Pod UID
+`159a0604-b45c-469f-941e-e7db43b762d4`、`8eb84073-6c2b-4bb2-a1d9-13f85d6b63bb`、
+`55151c13-75c3-4e50-a8ff-c2b59cca9061` 全程不变、Ready、restart 0；主 PD/TiKV 六 Pod 亦 Ready、restart 0。隧道已终止，
+六个本地端口均关闭，临时日志目录已删除。
+
+639 项 inventory 仍为 `152/178/159/150`；精确提交后四片 Go/墙钟秒为
+141.881/148.744、377.470/384.373、238.370/245.231、391.580/398.468，全部通过。本项不改变 etcd RPC runtime；
+`hashkv-compaction`/`compaction` 仍需 disposable 实例和独立破坏性批准，不能由本轮 `all` scope 替代。

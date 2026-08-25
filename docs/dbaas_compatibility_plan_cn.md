@@ -62101,6 +62101,25 @@ v1.36.1 上以独立 1 KiB quota、全新 TiKV keyspace 和 3×PD/3×TiKV v8.5.3
 135.867/142.175、369.855/376.170、225.168/231.470、382.219/388.471。本项未发现新的 quota runtime 偏差，只关闭
 发布证据身份与清理归属缺口。
 
+### A5502：direct-replica 发布证据绑定三成员拓扑
+
+direct-replica `all` scope 已覆盖跨端点 KV/concurrency/Watch/Lease/HashKV、NOSPACE/CORRUPT/unknown alarm 及 metrics
+收敛，但旧 runner 只在 preflight 检查三个不同 member，postflight 仅查询 endpoint 0；metrics 三个 URL 也只验证可达。
+Service selector、隧道或 metrics 后端漂移时，两个实例的响应可能被拼成 GREEN，测试产生的 key/lease/alarm 也可能在错误实例上
+被判定已清理。
+
+提交 `bec080f0` 冻结 cluster ID、有序 endpoint→member 映射与每端最低 revision。三个 endpoint 现在分别在 pre/postflight
+验证 Status、三个测试前缀、LeaseList、AlarmList；允许 leader 在同一冻结 member 集内切换，但拒绝 cluster/member 映射变化或
+revision 回退。官方 etcdctl 的 KV/Alarm nested header 与 LeaseList flat header 均严格解析。提供 metrics 时，每份响应限制
+5 秒/1 MiB，且必须恰有一条 `etcd_server_id`，其 hex server ID 与同位置 client member 精确相等；私有临时文件在正常、INT、
+TERM 下均清理。确定性 fake 负测覆盖 Go 测试后 endpoint member 漂移和测试前 metrics member 错配。
+
+Kubernetes v1.36.1、三副本 KubeBrain 与独立 3×PD/3×TiKV v8.5.3 上，最终 `all+metrics` 13 项 21.250 秒 GREEN；三个
+KubeBrain Pod UID 不变、Ready/restart 0，主 PD/TiKV 六 Pod Ready/restart 0，postflight 三端前缀为空、lease/alarm 等于基线。
+目标普通/race 各连续 10 轮、compat 全套、ShellCheck/vet/diff check 均通过。639 项四片为 `152/178/159/150`，精确提交后
+Go/墙钟秒为 141.881/148.744、377.470/384.373、238.370/245.231、391.580/398.468。本轮没有发现 runtime 语义偏差；
+需要推进 compact revision 的 `hashkv-compaction`/`compaction` scope 仍保持独立破坏性门禁。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
