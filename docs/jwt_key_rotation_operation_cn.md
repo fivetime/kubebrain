@@ -381,3 +381,22 @@ Object Lock bucket 演练仍开放。
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。
+
+提交 `8183bf91` 将“三处真实接管/fencing 故障注入”从文字清单推进为可执行、但尚未实跑的生产 drill。runner 新增默认关闭的
+`ttl-wait` 与 `phase-c-before-terminal` hold point；只有同时给出精确 attempt 和
+`CONFIRM_JWT_ROTATION_FAULT_DRILL=yes` 才会启用。hold 仍在既有 process-group heartbeat 下续租，最长 3600 秒，超时会先做
+terminal heartbeat 再安全 requeue；新 attempt 因 attempt fencing 不会再次停在旧 hold。phase B 单 Pod 场景不模拟 rollout，
+drill 直接等待真实 StatefulSet `updatedReplicas==1`。
+
+`drill-jwt-key-rotation-takeover.sh` 一次只接受一个全新、已审批、attempt=0 的 Operation，并要求 executor 起始为零副本、目标
+StatefulSet 为 3/3 完整 rollout、三个数据 Pod Ready 且 `restartCount==0`。它用 resourceVersion CAS 临时注入短 lease/hold 配置，
+在目标边界以 UID+resourceVersion precondition 删除精确 executor Pod，要求更高 attempt 的不同 owner 接管并唯一进入稳定
+`Succeeded`。终态后从共享 PVC 抽取 composite、三张 publish 和三张 gate receipt，逐段验证 A→B→C predecessor SHA、共同
+StatefulSet/Secret UID 与数据摘要、Operation status receipt SHA、旧 JWT 全拒绝和新 JWT 全接受；全过程采样和最终状态均拒绝任何
+数据 Pod container restart。EXIT 和成功路径都只在 Deployment UID、当前 env 和 replicas 与 drill 预期完全一致时 CAS 恢复
+executor=0，避免覆盖并发运维修改。
+
+提交前 inventory 为 637 项、四片 `150/178/159/150`；提交后 Go/墙钟秒为
+133.973/140.349、379.754/386.130、233.685/240.097、392.264/398.661，全部通过。当前 kind 集群只读预检确认脚本能读取
+真实 executor Deployment，并在不存在 Operation 时于任何 scale/delete 前退出，executor 保持 0。三个场景尚未实际删除 Pod，
+因此“一条 receipt 链、一次终态、旧拒新收、零非预期重启”的 live 验收仍保持开放，不能据此标记自动轮换生产就绪。

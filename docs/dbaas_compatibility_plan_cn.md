@@ -62027,6 +62027,25 @@ executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
    renewal window 模型已建立；继续在多 store/多 PD 预生产拓扑上做分区和多点故障注入。
    大规模性能测试不能替代正确性证明。
 
+### A5494：JWTKeyRotation 三副本接管故障演练器
+
+A5493 规定的三个故障点此前只有 runner 接管单测，没有确定性 live 入口。提交 `8183bf91` 新增默认禁用、显式确认、精确 attempt、
+最长 3600 秒的 `ttl-wait` 与 `phase-c-before-terminal` heartbeat hold；phase B 仍以 Kubernetes 真实
+`updatedReplicas==1` 为注入边界。独立 drill 要求每个场景使用全新已审批 Operation，在 executor Deployment 起始为 0、目标
+StatefulSet 3/3 Ready 时以 CAS 临时启用 worker，再通过 `kubebrain-uid-delete` 的 UID+resourceVersion precondition 删除精确旧
+executor Pod。任何失败都只在 Deployment UID/env/replicas 未漂移时恢复原始零副本 spec。
+
+验收器不以 Operation `Succeeded` 单点代替证明：它抽取并核对 composite 与 A/B/C publish+gate 六段 receipt，要求 publish
+predecessor SHA、StatefulSet/Secret identity、Operation status receipt SHA 全部闭合；phase C gate 必须精确引用 A/B gate，且明确
+`old_token_rejected=true`、`new_token_accepted=true`。注入后必须看到更高 attempt 的不同 owner、稳定不变的唯一终态；全程 Pod
+采样和最终三副本均要求 container `restartCount==0`。
+
+637 项四片为 `150/178/159/150`，提交后 Go/墙钟秒为
+133.973/140.349、379.754/386.130、233.685/240.097、392.264/398.661。当前 kind 集群已有独立 3×PD/3×TiKV 与 3/3 JWT
+StatefulSet；只读失败预检证明不存在 Operation 时不会 scale/delete，executor 保持 0。但三次真实故障注入尚未执行，故 A5493
+最终 live 清单仍开放，不能把演练器代码和单元测试标为生产证据。etcd 源码对标 SHA 保持
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

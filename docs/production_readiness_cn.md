@@ -8226,3 +8226,17 @@ Kubernetes v1.35.5/v1.36.1 的基础与 HA 矩阵现已有证据；跨节点/AZ�
 ```shell
 kubectl apply -f deploy/production/kubebrain-native-pitr-full-restore-writer-rbac.yaml
 ```
+
+### JWTKeyRotation 接管故障演练入口
+
+提交 `8183bf91` 增加 fail-closed JWT rotation takeover drill。runner 的 TTL wait 与 phase C terminal CAS 前同步点默认关闭，必须
+显式确认、精确 point/attempt 和有界 timeout；驻留时继续 heartbeat，旧 owner 被删后由 attempt fence 阻止终态写。phase B 场景
+不使用 mock，而在真实 StatefulSet 恰好 `updatedReplicas==1` 时由独立 operator 删除 executor Pod。演练器要求 fresh approved
+Operation、executor=0、三副本数据面完整 Ready，使用 Deployment resourceVersion CAS 启用/恢复 worker，并以 Pod UID+resourceVersion
+precondition 注入故障。成功证据必须同时证明更高 attempt/不同 owner、稳定单一 Succeeded、六段 receipt 摘要链、旧 JWT 拒绝、
+新 JWT 接受和全部观测数据 Pod `restartCount==0`。
+
+637 项四片提交后 Go/墙钟秒为 133.973/140.349、379.754/386.130、233.685/240.097、392.264/398.661，全部通过。
+`kind-kubebrain-dbaas` 只读预检在不存在 Operation 时于 mutation 前停止且 executor 仍为 0；三个真实故障场景尚未执行，故该项仍非
+GREEN。etcd 对标基线仍为 `/root/etcd` 的 `5cd9f4ee13801e18825d661e5005ae599460bc3a`；本提交只加强 DBaaS 操作接管，
+不改变 etcd client 可观察语义。
