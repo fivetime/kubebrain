@@ -8428,3 +8428,32 @@ quiesce、存在活跃 handler 时，最终 close 也必须在预算后强制回
 639 项 inventory 保持 `152/178/159/150`；精确代码提交后四片 Go/墙钟秒为
 145.518/151.709、380.724/386.918、234.065/240.257、392.876/399.059，全部通过。本项关闭的是已有 rollout 关停机制的
 超时分支证据空洞，不声称新增 etcd 客户端能力，也未改变 TiKV/PD 数据路径，因此不重复构建或扰动 A5504 已验证的数据面。
+
+### A5506：旧 leadership 物理压缩重试退役
+
+对照 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/{kvstore.go,kvstore_compaction.go}`：
+logical compact watermark 先持久化，physical compaction 由 server-owned scheduler 继续；停止或换主不能让已退出的生命周期继续调度。
+KubeBrain 同样把 durable watermark 交给进程级 compactor，并用 leadership context 围栏每次 TiKV scan，但旧 worker 在 scan 因旧任期
+取消而返回后仍无条件注册 1 秒 retry timer。节点成为 follower 后会持续用同一已取消 context 重扫，形成每秒
+`context canceled`、失败指标和无效 scanner 调度，直到再次成为 leader 或进程退出。
+
+提交 `d15bc396` 在 `physicalCompact` 返回时同时采样 maintenance context：进程 worker 被取消仍立即退出；leadership lifecycle
+已结束时不注册 retry，由后继 leader 的 `ResumePhysicalCompaction` 从 durable watermark 重新排队；只有 context 仍有效的真实
+存储失败继续每秒自愈。确定性 RED 在旧代码取消旧 leader 后 1.02 秒观察到第二次 `GetPartitions` 和第二轮 canceled scan；GREEN
+要求跨过完整 retry interval 仍恰好一次 attempt，显式新任期恢复后才出现第二次并完成。换主/存储故障普通连续 10 轮 23.904 秒、
+race 5 轮 13.330 秒、完整 backend 48.254 秒、公开 Compact 回归 1.575 秒及 backend vet/diff check 全绿。
+
+最终候选 `kubebrain:a5506-d15bc396-r2` 的 OCI index 为
+`sha256:03dcbe0823d104b2f9d3ccdbe7232adcfa9338f9807c46e9f48d2698c558c4e7`，kind/CRI runtime digest 为
+`sha256:93952e2a1e1ce7a8133b747e380f0109fb600f61735a71d8cd5617b508619613`。首次 build 以短 SHA 被 metadata 门禁拒绝；首次
+probe 因 kind 未登记 digest-qualified alias 而 ImagePullBackOff，二者均发生在 StatefulSet mutation 前，旧数据面保持 3/3。
+登记别名后的首个 900/900 rollout 随后在证据审计中被拒绝：镜像虽运行本提交代码，但内嵌的语法有效 40 位 SHA 与
+`git rev-parse d15bc396` 不相等，故不能作为发布证据。使用权威完整 SHA 重新构建并执行纠正性全量 rollout 后，availability gate
+再次 **900/900 GREEN**：Watch 900、lease 保持 alive，最大业务/PD TSO/TiKV Region 延迟为 1465/62/9ms。最终候选三 Pod
+3/3 Ready、restart 0，版本均精确报告 `d15bc39680f1472309cba25c0c10a2914541ccc0`；PD/TiKV 3+3 Ready、restart 0，
+probe 已清理，三端 `/readyz=ok`。错误 metadata 候选不计入最终证据。
+现 leader 只对既有 watermark 44329 执行一次成功 physical scan，指标为 `done_rev=44329`、`inflight=0`，全部 compaction failure
+stage 为 0；本轮没有调用 Compact RPC 或推进 watermark。
+
+639 项 inventory 保持 `152/178/159/150`；精确代码提交后四片 Go/墙钟秒为
+129.573/135.829、368.090/374.328、225.067/231.348、377.084/383.320，全部通过。

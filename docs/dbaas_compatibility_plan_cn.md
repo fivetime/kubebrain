@@ -62173,6 +62173,27 @@ HTTP Shutdown→gRPC Stop 顺序，KubeBrain 现有实现同样先排空 net/htt
 Go/墙钟秒为 145.518/151.709、380.724/386.918、234.065/240.257、392.876/399.059。本项是 rollout 可靠性证据补全，
 不改变 etcd RPC、TiKV 编码或 DBaaS 控制面职责，也不把单元回归冒充新的 live 数据面语义验证。
 
+### A5506：换主后停止旧任期 physical-compaction 自重试
+
+KubeBrain 的 logical Compact 与 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc`
+一样先发布 durable watermark，再由后台完成 physical GC。审计发现 KubeBrain scan 虽绑定 leadership context，但失败出口不区分
+存储错误与旧任期取消：后者仍每秒注册 retry timer，follower 会持续用已取消 context 调用 scanner 并污染失败指标/日志。提交
+`d15bc396` 仅在 maintenance context 仍有效时保留自动重试；旧任期取消后等待新 leader 的
+`ResumePhysicalCompaction` 读取并重排 durable watermark，进程关闭仍由 worker context 立即终止。
+
+确定性旧代码 RED 在 1.02 秒出现第二次 canceled attempt；最终回归跨过完整 retry interval 保持一次，显式新任期后恰好第二次
+并成功，同时普通存储故障继续自动恢复。聚焦普通 10 轮、race 5 轮、完整 backend、公开 Compact、vet/diff check 全绿。
+精确提交四片 Go/墙钟秒为 129.573/135.829、368.090/374.328、225.067/231.348、377.084/383.320。
+
+最终候选 OCI index `sha256:03dcbe0823d104b2f9d3ccdbe7232adcfa9338f9807c46e9f48d2698c558c4e7`、kind runtime
+`sha256:93952e2a1e1ce7a8133b747e380f0109fb600f61735a71d8cd5617b508619613` 在独立 3×PD/3×TiKV v8.5.3 上完成
+三副本纠正性 rollout：900/900 probe GREEN，Watch 900、lease alive，最大业务/TSO/Region 延迟 1465/62/9ms；KubeBrain 与
+PD/TiKV 最终全 Ready、restart 0，三 Pod 均报告权威 SHA `d15bc39680f1472309cba25c0c10a2914541ccc0`。新 leader 对既有
+watermark 44329 只执行一次成功 scan，`done_rev=44329`、`inflight=0`、全部 failure stage=0；没有调用破坏性 Compact RPC。
+短 SHA build 与缺 digest alias 的首轮 probe 分别在 metadata、pre-mutation 门禁 RED，StatefulSet 均未改变。别名修正后的首个
+900/900 rollout 因证据审计发现内嵌的语法有效 40 位 SHA 不等于 `git rev-parse` 而作废；按权威 SHA 重建并完成上述纠正性
+全量 rollout 后才形成最终证据，临时 probe 已清理。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
