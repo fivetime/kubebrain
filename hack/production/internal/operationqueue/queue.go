@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -1053,7 +1054,7 @@ func (q *Queue) operationForWorker(
 // MaterialForWorker returns one allowlisted opaque material field only after
 // revalidating the same type-bound claim fencing used for parameters.
 func (q *Queue) MaterialForWorker(
-	ctx context.Context, name, operationType, owner string, attempt int64, key string,
+	ctx context.Context, name, operationType, owner string, attempt int64, key, version string,
 ) ([]byte, error) {
 	object, err := q.operationForWorker(ctx, name, operationType, owner, attempt)
 	if err != nil {
@@ -1064,7 +1065,11 @@ func (q *Queue) MaterialForWorker(
 	}
 	// Prove the immutable parameter payload and full Secret shape before
 	// releasing any sibling material field.
-	if _, err := q.parameters(ctx, object); err != nil {
+	parameters, err := q.parameters(ctx, object)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateJWTMaterialVersion(parameters, key, version); err != nil {
 		return nil, err
 	}
 	secretName, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "name")
@@ -1086,6 +1091,56 @@ func (q *Queue) MaterialForWorker(
 		return nil, errors.New("operation material is invalid")
 	}
 	return material, nil
+}
+
+func validateJWTMaterialVersion(parameters []byte, key, version string) error {
+	versionField := ""
+	switch key {
+	case "jwt-old-key":
+		versionField = "old_key_version_id"
+	case "jwt-new-key":
+		versionField = "new_key_version_id"
+	default:
+		if version != "" {
+			return errors.New("non-key operation material must not carry a KMS version")
+		}
+		return nil
+	}
+	if !validExternalKeyVersion(version) {
+		return errors.New("operation material KMS version is invalid")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(parameters, &fields); err != nil {
+		return errors.New("operation parameters do not contain a valid KMS version binding")
+	}
+	var oldVersion, newVersion string
+	if err := json.Unmarshal(fields["old_key_version_id"], &oldVersion); err != nil ||
+		json.Unmarshal(fields["new_key_version_id"], &newVersion) != nil ||
+		!validExternalKeyVersion(oldVersion) || !validExternalKeyVersion(newVersion) || oldVersion == newVersion {
+		return errors.New("operation parameters do not contain distinct canonical KMS versions")
+	}
+	bound := oldVersion
+	if versionField == "new_key_version_id" {
+		bound = newVersion
+	}
+	if bound != version {
+		return errors.New("operation material KMS version does not match parameters")
+	}
+	return nil
+}
+
+func validExternalKeyVersion(version string) bool {
+	if len(version) == 0 || len(version) > 512 {
+		return false
+	}
+	for i, char := range version {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || (i > 0 && strings.ContainsRune("._:/@+=-", char)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (q *Queue) parameters(

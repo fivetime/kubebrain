@@ -38,7 +38,7 @@ var inClusterConfig = rest.InClusterConfig
 
 func main() {
 	var action, namespace, name, operationID, tenant, requestedBy, instance, operationType, parametersSHA string
-	var parametersSecret, parametersKey, materialKey string
+	var parametersSecret, parametersKey, materialKey, materialVersion string
 	var parametersEndpoint, parametersTokenFile, parametersCAFile string
 	var inventoryName, inventoryNamespace, inventoryKey string
 	var owner, receiptSHA, message, approvalID, approvedBy, kubeconfig, contextName string
@@ -76,6 +76,7 @@ func main() {
 	flag.StringVar(&parametersSecret, "parameters-secret", "", "immutable parameters Secret name")
 	flag.StringVar(&parametersKey, "parameters-key", "", "immutable parameters Secret key")
 	flag.StringVar(&materialKey, "material-key", "", "allowlisted opaque sibling field requested from the parameter broker")
+	flag.StringVar(&materialVersion, "material-version", "", "external KMS version bound to JWT signing material")
 	flag.StringVar(&parametersEndpoint, "parameters-endpoint",
 		os.Getenv("OPERATION_PARAMETERS_ENDPOINT"), "HTTPS operation parameter broker endpoint")
 	flag.StringVar(&parametersTokenFile, "parameters-token-file",
@@ -176,7 +177,7 @@ func main() {
 			var data []byte
 			data, err = brokerMaterial(
 				ctx, parametersEndpoint, parametersTokenFile, parametersCAFile,
-				namespace, name, owner, attempt, materialKey,
+				namespace, name, owner, attempt, materialKey, materialVersion,
 			)
 			if err == nil {
 				if _, writeErr := os.Stdout.Write(data); writeErr != nil {
@@ -217,10 +218,14 @@ func main() {
 }
 
 func brokerMaterial(
-	ctx context.Context, endpoint, tokenFile, caFile, namespace, name, owner string, attempt int64, key string,
+	ctx context.Context, endpoint, tokenFile, caFile, namespace, name, owner string, attempt int64, key, version string,
 ) ([]byte, error) {
 	if name == "" || owner == "" || attempt <= 0 || !validMaterialKey(key) {
 		return nil, errors.New("broker material requires name, owner, positive attempt, and a valid key")
+	}
+	isJWTKey := key == "jwt-old-key" || key == "jwt-new-key"
+	if isJWTKey != (version != "") {
+		return nil, errors.New("JWT signing material requires exactly one external KMS version")
 	}
 	if containsUnsafeEndpointChar(endpoint) {
 		return nil, errors.New("parameters endpoint contains unsupported characters")
@@ -237,6 +242,12 @@ func brokerMaterial(
 	query.Set("owner", owner)
 	query.Set("attempt", strconv.FormatInt(attempt, 10))
 	query.Set("key", key)
+	if version != "" {
+		if !validMaterialVersion(version) {
+			return nil, errors.New("broker material requires a valid external KMS version")
+		}
+		query.Set("version", version)
+	}
 	base.RawQuery = query.Encode()
 	token, err := readBrokerToken(tokenFile)
 	if err != nil {
@@ -276,6 +287,20 @@ func brokerMaterial(
 		return nil, fmt.Errorf("parameter broker material must contain 1..%d bytes", maxBrokerMaterialBytes)
 	}
 	return body, nil
+}
+
+func validMaterialVersion(version string) bool {
+	if len(version) == 0 || len(version) > 512 {
+		return false
+	}
+	for i, char := range version {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || (i > 0 && strings.ContainsRune("._:/@+=-", char)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validMaterialKey(key string) bool {

@@ -50,7 +50,7 @@ func TestHandlerReturnsOnlyCurrentTypeBoundWorkerParameters(t *testing.T) {
 
 func TestHandlerReturnsOnlyClaimBoundAllowlistedJWTMaterial(t *testing.T) {
 	dynamicClient, claim, _ := claimedOperationWithType(
-		t, []byte(`{"rotation":true}`), "JWTKeyRotation",
+		t, []byte(`{"rotation":true,"old_key_version_id":"kms/prod/jwt/versions/41","new_key_version_id":"kms/prod/jwt/versions/42"}`), "JWTKeyRotation",
 		"jwt-key-rotate-aaaaaaaaaaaaaaaaaaaa", "jwt-worker", "jwt-key-rotate-aaaaaaaaaaaaaaaaaaaa-parameters",
 	)
 	secret, err := dynamicClient.Resource(operationqueue.SecretResource).Namespace("test").Get(
@@ -71,7 +71,7 @@ func TestHandlerReturnsOnlyClaimBoundAllowlistedJWTMaterial(t *testing.T) {
 	require.NoError(t, err)
 
 	request := httptest.NewRequest(http.MethodGet,
-		fmt.Sprintf("/v1/material?namespace=test&name=%s&owner=%s&attempt=%d&key=jwt-new-key", claim.Name, claim.Owner, claim.Attempt), nil)
+		fmt.Sprintf("/v1/material?namespace=test&name=%s&owner=%s&attempt=%d&key=jwt-new-key&version=kms%%2Fprod%%2Fjwt%%2Fversions%%2F42", claim.Name, claim.Owner, claim.Attempt), nil)
 	request.Header.Set("Authorization", "Bearer valid")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -79,6 +79,13 @@ func TestHandlerReturnsOnlyClaimBoundAllowlistedJWTMaterial(t *testing.T) {
 	require.Equal(t, "application/octet-stream", response.Header().Get("Content-Type"))
 	require.Equal(t, "new-private", response.Body.String())
 	requireNoStoreHeaders(t, response)
+
+	request = httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/v1/material?namespace=test&name=%s&owner=%s&attempt=%d&key=jwt-new-key&version=kms%%2Fprod%%2Fjwt%%2Fversions%%2F43", claim.Name, claim.Owner, claim.Attempt), nil)
+	request.Header.Set("Authorization", "Bearer valid")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusForbidden, response.Code)
 
 	request = httptest.NewRequest(http.MethodGet,
 		fmt.Sprintf("/v1/material?namespace=test&name=%s&owner=%s&attempt=%d&key=parameters.json", claim.Name, claim.Owner, claim.Attempt), nil)

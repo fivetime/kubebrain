@@ -34,6 +34,7 @@ exit 99
 		"REQUEST_ID=change-2026-jwt-1", "INSTANCE=instance-a", "WORK_DIR=" + dir,
 		"KUBEBRAIN_NAMESPACE=instance-a", "KUBEBRAIN_STATEFULSET=kubebrain",
 		"OLD_KEY_SOURCE=" + oldKey, "NEW_KEY_SOURCE=" + newKey, "SIGN_METHOD=HS256",
+		"OLD_KEY_VERSION_ID=kms/prod/jwt/versions/41", "NEW_KEY_VERSION_ID=kms/prod/jwt/versions/42",
 		`ENDPOINTS_JSON=["https://member-0:2379","https://member-1:2379","https://member-2:2379"]`,
 		"EXPECTED_REPLICAS=3", "JWT_TTL_SECONDS=300", "MAX_CLOCK_SKEW_SECONDS=2",
 		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "OPERATIONCTL=" + operationctl,
@@ -72,18 +73,21 @@ exit 99
 	require.NotEqual(t, values["old_key_sha256"], values["new_key_sha256"])
 	require.Equal(t, "jwt-old-key", values["old_key_material_key"])
 	require.Equal(t, "jwt-new-key", values["new_key_material_key"])
+	require.Equal(t, "kms/prod/jwt/versions/41", values["old_key_version_id"])
+	require.Equal(t, "kms/prod/jwt/versions/42", values["new_key_version_id"])
 	require.NotContains(t, values, "old_key_source")
 	require.NotContains(t, values, "new_key_source")
 }
 
 func TestRequestJWTKeyRotationRejectsUnsafeInputsBeforeKubernetes(t *testing.T) {
 	for _, tc := range []struct {
-		name, endpoints string
-		mode            os.FileMode
-		want            string
+		name, endpoints, oldVersion, newVersion string
+		mode                                    os.FileMode
+		want                                    string
 	}{
-		{name: "permissive private key", endpoints: `["https://member-0:2379"]`, mode: 0o640, want: "inaccessible to group/other"},
-		{name: "duplicate endpoints", endpoints: `["https://member-0:2379","https://member-0:2379"]`, mode: 0o600, want: "exact unique HTTPS member set"},
+		{name: "permissive private key", endpoints: `["https://member-0:2379"]`, oldVersion: "kms/prod/jwt/versions/41", newVersion: "kms/prod/jwt/versions/42", mode: 0o640, want: "inaccessible to group/other"},
+		{name: "duplicate endpoints", endpoints: `["https://member-0:2379","https://member-0:2379"]`, oldVersion: "kms/prod/jwt/versions/41", newVersion: "kms/prod/jwt/versions/42", mode: 0o600, want: "exact unique HTTPS member set"},
+		{name: "same KMS version", endpoints: `["https://member-0:2379"]`, oldVersion: "kms/prod/jwt/versions/41", newVersion: "kms/prod/jwt/versions/41", mode: 0o600, want: "distinct canonical external KMS versions"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -99,6 +103,7 @@ func TestRequestJWTKeyRotationRejectsUnsafeInputsBeforeKubernetes(t *testing.T) 
 			output, err := runProductionScriptCommand(t, "request-jwt-key-rotation.sh", []string{
 				"REQUEST_ID=change-2026-jwt-2", "INSTANCE=instance-a", "WORK_DIR=" + dir,
 				"KUBEBRAIN_NAMESPACE=instance-a", "OLD_KEY_SOURCE=" + oldKey, "NEW_KEY_SOURCE=" + newKey,
+				"OLD_KEY_VERSION_ID=" + tc.oldVersion, "NEW_KEY_VERSION_ID=" + tc.newVersion,
 				"SIGN_METHOD=HS256", "ENDPOINTS_JSON=" + tc.endpoints, "EXPECTED_REPLICAS=" + replicas, "JWT_TTL_SECONDS=300", "MAX_CLOCK_SKEW_SECONDS=2",
 				"KUBE_CONTEXT=production", "KUBECTL=" + command, "OPERATIONCTL=" + command, "MARKER=" + marker,
 			})

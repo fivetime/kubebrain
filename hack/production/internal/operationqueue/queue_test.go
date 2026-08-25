@@ -1619,7 +1619,7 @@ func TestQueueRejectsParameterSecretWithExtraData(t *testing.T) {
 func TestQueueReturnsOnlyAllowlistedJWTMaterialToCurrentWorker(t *testing.T) {
 	queue := newFakeQueue()
 	ctx := context.Background()
-	parameters := []byte("{\"rotation\":true}\n")
+	parameters := []byte("{\"rotation\":true,\"old_key_version_id\":\"kms/prod/jwt/versions/41\",\"new_key_version_id\":\"kms/prod/jwt/versions/42\"}\n")
 	spec := validSpec()
 	spec.Type = "JWTKeyRotation"
 	spec.ParametersSHA256 = fmt.Sprintf("%x", sha256.Sum256(parameters))
@@ -1641,12 +1641,16 @@ func TestQueueReturnsOnlyAllowlistedJWTMaterialToCurrentWorker(t *testing.T) {
 	claim, err := queue.Claim(ctx, "jwt-worker", "JWTKeyRotation", time.Hour)
 	require.NoError(t, err)
 
-	material, err := queue.MaterialForWorker(ctx, claim.Name, claim.Type, claim.Owner, claim.Attempt, "jwt-new-key")
+	material, err := queue.MaterialForWorker(ctx, claim.Name, claim.Type, claim.Owner, claim.Attempt, "jwt-new-key", "kms/prod/jwt/versions/42")
 	require.NoError(t, err)
 	require.Equal(t, []byte("new-private"), material)
-	_, err = queue.MaterialForWorker(ctx, claim.Name, claim.Type, claim.Owner, claim.Attempt, "parameters.json")
+	_, err = queue.MaterialForWorker(ctx, claim.Name, claim.Type, claim.Owner, claim.Attempt, "jwt-new-key", "kms/prod/jwt/versions/43")
+	require.ErrorContains(t, err, "does not match")
+	_, err = queue.MaterialForWorker(ctx, claim.Name, claim.Type, claim.Owner, claim.Attempt, "jwt-old-key", "")
+	require.ErrorContains(t, err, "invalid")
+	_, err = queue.MaterialForWorker(ctx, claim.Name, claim.Type, claim.Owner, claim.Attempt, "parameters.json", "")
 	require.ErrorContains(t, err, "not allowed")
-	_, err = queue.MaterialForWorker(ctx, claim.Name, claim.Type, "other-worker", claim.Attempt, "jwt-new-key")
+	_, err = queue.MaterialForWorker(ctx, claim.Name, claim.Type, "other-worker", claim.Attempt, "jwt-new-key", "kms/prod/jwt/versions/42")
 	require.Error(t, err)
 }
 

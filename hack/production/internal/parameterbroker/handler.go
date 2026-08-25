@@ -119,6 +119,7 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	}
 	query := request.URL.Query()
 	materialKey := ""
+	materialVersion := ""
 	if request.URL.Path == "/v1/material" {
 		values := query["key"]
 		if len(values) != 1 || values[0] == "" {
@@ -127,6 +128,15 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		}
 		materialKey = values[0]
 		query = cloneQueryWithout(query, "key")
+		versions := query["version"]
+		if len(versions) > 1 || (len(versions) == 1 && versions[0] == "") {
+			http.Error(response, "material version is ambiguous", http.StatusBadRequest)
+			return
+		}
+		if len(versions) == 1 {
+			materialVersion = versions[0]
+		}
+		query = cloneQueryWithout(query, "version")
 	}
 	identity, err := parameterIdentityFromQuery(query)
 	if err != nil {
@@ -140,7 +150,7 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	}
 	queue := operationqueue.New(h.dynamic, identity.namespace)
 	if materialKey != "" {
-		material, materialErr := queue.MaterialForWorker(request.Context(), identity.name, operationType, identity.owner, identity.attempt, materialKey)
+		material, materialErr := queue.MaterialForWorker(request.Context(), identity.name, operationType, identity.owner, identity.attempt, materialKey, materialVersion)
 		if materialErr != nil {
 			http.Error(response, "material unavailable", http.StatusForbidden)
 			return

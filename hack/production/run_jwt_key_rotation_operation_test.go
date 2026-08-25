@@ -22,6 +22,7 @@ func TestJWTKeyRotationOperationCompletesAndTakeoverReusesReceipt(t *testing.T) 
 	parameters := map[string]any{
 		"state_dir": stateDir, "receipt_output": receipt, "kubebrain_namespace": "instance-a", "kubebrain_statefulset": "kubebrain",
 		"key_secret": name + "-keys", "old_key_field": "old-key", "new_key_field": "new-key", "old_key_material_key": "jwt-old-key", "new_key_material_key": "jwt-new-key",
+		"old_key_version_id": "kms/prod/jwt/versions/41", "new_key_version_id": "kms/prod/jwt/versions/42",
 		"old_key_sha256": testSHA([]byte("old-material")), "new_key_sha256": testSHA([]byte("new-material")), "key_volume": "jwt-keys", "key_mount_dir": "/etc/kubebrain-jwt", "sign_method": "HS256",
 		"endpoints": []string{"https://member-0:2379"}, "expected_replicas": 1, "jwt_ttl_seconds": 90, "max_clock_skew_seconds": 2, "probe_range_key": "/probe",
 		"probe_cacert_material_key": "", "probe_cert_material_key": "", "probe_key_material_key": "", "probe_server_name": "", "probe_cacert_sha256": "", "probe_cert_sha256": "", "probe_key_sha256": "",
@@ -88,9 +89,16 @@ if [[ ! -e "$output" ]]; then (umask 077; printf '%s\n' "$body" >"$output"); fi
 	output, err := runProductionRunnerCommand(t, "run-jwt-key-rotation-operation.sh", append(baseEnv, "CLAIM_ATTEMPT=1"))
 	require.NoError(t, err, string(output))
 	firstReceipt := mustRead(t, receipt)
+	var receiptValues map[string]any
+	require.NoError(t, json.Unmarshal(firstReceipt, &receiptValues))
+	require.Equal(t, "kubebrain.jwt-key-rotation.operation.receipt.v2", receiptValues["format"])
+	require.Equal(t, "kms/prod/jwt/versions/41", receiptValues["old_key_version_id"])
+	require.Equal(t, "kms/prod/jwt/versions/42", receiptValues["new_key_version_id"])
 	log := string(mustRead(t, logPath))
 	require.Contains(t, log, "--action succeed")
 	require.Contains(t, log, "--receipt-sha256")
+	require.Contains(t, log, "--material-key jwt-old-key --material-version kms/prod/jwt/versions/41")
+	require.Contains(t, log, "--material-key jwt-new-key --material-version kms/prod/jwt/versions/42")
 	require.Equal(t, []string{
 		"publish:phase-a", "issue:" + name + ".old.jwt",
 		"publish:phase-b", "issue:" + name + ".phase-b-new.jwt",
