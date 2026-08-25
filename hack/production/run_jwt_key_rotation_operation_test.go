@@ -20,7 +20,8 @@ func TestJWTKeyRotationOperationCompletesAndTakeoverReusesReceipt(t *testing.T) 
 	name := "jwt-key-rotate-0123456789abcdefabcd"
 	stateDir, receipt := filepath.Join(dir, name+".state"), filepath.Join(dir, name+".operation.receipt.json")
 	parameters := map[string]any{
-		"state_dir": stateDir, "receipt_output": receipt, "kubebrain_namespace": "instance-a", "kubebrain_statefulset": "kubebrain",
+		"request_id": "change-2026-jwt-1",
+		"state_dir":  stateDir, "receipt_output": receipt, "kubebrain_namespace": "instance-a", "kubebrain_statefulset": "kubebrain",
 		"key_secret": name + "-keys", "old_key_field": "old-key", "new_key_field": "new-key", "old_key_material_key": "jwt-old-key", "new_key_material_key": "jwt-new-key",
 		"old_key_version_id": "kms/prod/jwt/versions/41", "new_key_version_id": "kms/prod/jwt/versions/42",
 		"kms_receipt_public_key_sha256": testSHA([]byte("kms-public-key")), "old_key_export_receipt_sha256": testSHA([]byte("old-export-receipt")), "new_key_export_receipt_sha256": testSHA([]byte("new-export-receipt")),
@@ -92,7 +93,8 @@ if [[ ! -e "$output" ]]; then (umask 077; printf '%s\n' "$body" >"$output"); fi
 	firstReceipt := mustRead(t, receipt)
 	var receiptValues map[string]any
 	require.NoError(t, json.Unmarshal(firstReceipt, &receiptValues))
-	require.Equal(t, "kubebrain.jwt-key-rotation.operation.receipt.v2", receiptValues["format"])
+	require.Equal(t, "kubebrain.jwt-key-rotation.operation.receipt.v3", receiptValues["format"])
+	require.Equal(t, "change-2026-jwt-1", receiptValues["request_id"])
 	require.Equal(t, "kms/prod/jwt/versions/41", receiptValues["old_key_version_id"])
 	require.Equal(t, "kms/prod/jwt/versions/42", receiptValues["new_key_version_id"])
 	log := string(mustRead(t, logPath))

@@ -79,6 +79,7 @@ exit 99
 	var values map[string]any
 	require.NoError(t, json.Unmarshal(parameters, &values))
 	require.Equal(t, "HS256", values["sign_method"])
+	require.Equal(t, "change-2026-jwt-1", values["request_id"])
 	require.Regexp(t, `^jwt-key-rotate-[a-f0-9]{20}-keys$`, values["key_secret"])
 	require.Equal(t, float64(300), values["jwt_ttl_seconds"])
 	require.Len(t, values["endpoints"], 3)
