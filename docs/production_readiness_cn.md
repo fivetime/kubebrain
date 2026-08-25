@@ -8250,3 +8250,51 @@ Service `:443` port-forward 日志报告解析后的 Pod targetPort `-> 8443`，
 修复后正式 broker enable 完成 RBAC deny/allow、2/2 rollout、Service 与两个逐 Pod pinned-CA HTTPS `/readyz=204` 以及 executor
 audience TokenReview/不存在 Operation `403`；错误使用 broker SA token 的一次尝试得到非 403 并自动回滚到 0，没有放宽 handler。
 637 项提交后四片 Go/墙钟秒为 142.770/149.051、360.290/366.622、245.415/251.694、384.818/391.087，全部通过。
+
+### A5500：JWTKeyRotation 三处真实接管闭环
+
+A5494 的三个开放场景已在 `kind-kubebrain-dbaas` Kubernetes v1.36.1 上真实执行。目标为 HTTPS+auth 的
+`kubebrain-dev/a4653-jwt` 三副本 StatefulSet，后端为独立 `tidb-cluster` 中 3×PD v8.5.3 与 3×TiKV v8.5.3；目标 PD/TiKV
+及三个数据 Pod 在最终复查中均 Ready、`restartCount=0`。认证端点 `https://172.18.0.2:30082` 的 authenticated health
+成功、`authRevision=4`，匿名 endpoint status 以 `user name is empty` 拒绝。executor 演练后恢复为 0 副本。
+
+live 执行先后暴露并修复了不能由 mock 证明的生产缺陷：
+
+1. `84b14a23` 避免 Alpine/musl Bash 对大区间 ERE 的不兼容；`952443a6` 修正真实 jq selector 并接受合法 `/` label key；
+   `1631259e` 允许 takeover 跳过已收据化的 A/B gate，并等待同 Operation 的部分 managed rollout；`4aa6ad78` 让最大 attempt
+   在 scanner 中直接终态化，同时用窄 CRD CEL 迁移历史 `Pending/attempt=max/owner=""` 对象，避免毒化队列。
+2. `ff4d2baf` 修复 composite receipt 从容器 `/tmp` hard-link 到 PVC 时的 `EXDEV`：staging 现在位于 `WORK_DIR`，仍以同文件系统
+   hard-link no-clobber 发布；竞争者只能复用完整匹配同一六段摘要链的 receipt。回归实际把 `TMPDIR` 放在不同 device 的
+   `/dev/shm`。
+3. `260dde3b` 为连续轮换记录 `jwt-active-key-sha256`；只有上一 Operation 为 phase C、当前 auth old-only、active SHA 等于新请求
+   old-key SHA 时，新 phase A 才在同一 resourceVersion CAS patch 中切换 operation-bound Secret volume 与 overlap auth。
+   `f2a3933a` 同步收紧 admission：只允许一个同名 Secret volume 在 C→A 时更换 `secretName`，新旧名称必须分别等于新旧
+   Operation 加 `-keys`，active SHA 不得变化，其他 volume/Secret projection/sidecar 均不可变。live policy generation 2 已由
+   controller 观测且 `typeChecking={}`。
+4. `20104d44` 修复长 TTL hold 后缓存 Pod resourceVersion 过期：删除前重新读取同名同 UID、Ready、未删除的 Pod，并再次确认
+   Operation 仍为 attempt 1 且 owner 等于该 UID，再以最新 UID+RV 删除。陈旧 RV 的真实负例被 API Server Conflict 拒绝，没有
+   误删 Pod。
+
+最终三个独立 fresh Operation 的强证据如下：
+
+| 场景 | Operation / UID | 注入边界 | 终态 |
+| --- | --- | --- | --- |
+| phase B 单 Pod | `jwt-key-rotate-554dcc26ee29f83d5ee4` / `857fadd1-e972-48a2-9fa8-85a1c5118b12` | attempt 1、`updatedReplicas=1` | attempt 2、不同 owner、Succeeded |
+| TTL wait | `jwt-key-rotate-7a000aa498c8e082e48d` / `03a1b4d3-64fb-456c-9482-f734891dcde4` | attempt 1、phase B 3/3 后 `ttl-wait` | attempt 2、不同 owner、Succeeded |
+| phase C terminal fence | `jwt-key-rotate-0e4841cda3cee3aef250` / `235a914f-5642-4427-83d6-7876fdf6b804` | attempt 1、phase C 3/3 后、终态 CAS 前 | attempt 2、不同 owner、Succeeded |
+
+每个 evidence 目录的文件均为 0600；`operation-final` 与两秒后 `operation-final-stable` status 完全相同，Operation
+`receiptSHA256` 等于实际 composite 文件 SHA，A/B/C publish predecessor 与三张 gate receipt 链完整，phase C gate 明确证明
+旧 JWT 拒绝、新 JWT 接受。每轮最终 StatefulSet 均 3 Ready/3 updated/currentRevision=updateRevision，三个 Pod 的最大 restart 为 0。
+当前最终 active Operation 为 `jwt-key-rotate-0e4841cda3cee3aef250`，phase C 与 operation-bound Secret 一致。
+
+本轮新增提交均以 639 项、四片 `152/178/159/150` 清单验证。提交后 Go/墙钟秒分别为：`ff4d2baf`
+139.754/146.029、369.513/375.826、240.023/246.301、388.622/394.886；`260dde3b`
+127.687/133.920、363.848/370.140、232.727/238.947、386.054/392.258；`f2a3933a`
+130.858/137.173、361.827/368.132、232.032/238.263、380.223/386.476；`20104d44`
+143.729/149.962、387.743/394.070、236.530/242.782、403.812/410.099，全部通过。
+
+因此 A5494 的“三处真实接管/fencing 注入”门禁现为 GREEN，但自动 KMS lifecycle 仍非整体生产 GREEN：本轮 export receipt
+由本地测试 Ed25519 私钥模拟 provider 签发，未调用真实外部 KMS；没有执行真实 promote/revoke、独立 lifecycle credential
+轮换或 Object Lock bucket 归档。etcd 对标 SHA 仍为 `/root/etcd` 的
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`，这些 DBaaS 运维修复不改变 etcd client 可观察语义。

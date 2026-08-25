@@ -400,3 +400,36 @@ executor=0，避免覆盖并发运维修改。
 133.973/140.349、379.754/386.130、233.685/240.097、392.264/398.661，全部通过。当前 kind 集群只读预检确认脚本能读取
 真实 executor Deployment，并在不存在 Operation 时于任何 scale/delete 前退出，executor 保持 0。三个场景尚未实际删除 Pod，
 因此“一条 receipt 链、一次终态、旧拒新收、零非预期重启”的 live 验收仍保持开放，不能据此标记自动轮换生产就绪。
+
+## 连续轮换与真实接管结果（A5500）
+
+后续 live 演练关闭了上述三处注入门禁，并补齐连续 Operation 的 Secret handoff。StatefulSet 模板现在携带
+`dbaas.kubebrain.io/jwt-active-key-sha256`；phase A 记录 old key，phase B/C 记录 new key。下一轮 phase A 若发现 key volume
+仍引用上一 Operation Secret，只在以下条件全部成立时允许切换：上一模板为 phase C；Operation ID 不同且均为确定性名称；当前
+old-only auth 路径对应新请求的 old field；active SHA 等于新请求 old-key SHA；StatefulSet 已完整 rollout。publisher 在一个
+resourceVersion JSON Patch 中同时测试旧 auth 与旧 SecretName，再替换 overlap auth、managed annotations 和新 SecretName。
+
+admission 只允许同一 C→A 过渡中的一个同名纯 Secret volume 改变，SecretName 必须从
+`<old-operation>-keys` 变为 `<new-operation>-keys`，defaultMode/items/optional 不变，active SHA 不变；其他 volume、mount、container、
+sidecar、placement 与 workload identity 仍不可修改。这样不需要先把 Pod 指向不存在的新 Secret，也不把 executor 权限扩大为通用
+StatefulSet/volume 写权限。
+
+真实 Kubernetes v1.36.1、三副本 KubeBrain、3×PD/3×TiKV 结果：
+
+| 场景 | Operation | 注入 attempt → 终态 attempt | 结果 |
+| --- | --- | --- | --- |
+| `phase-b-one-pod` | `jwt-key-rotate-554dcc26ee29f83d5ee4` | 1 → 2 | phase B 1/3 删除，接管后六段链闭合 |
+| `ttl-wait-takeover` | `jwt-key-rotate-7a000aa498c8e082e48d` | 1 → 2 | 复用原 phase-B TTL 证据后进入 C |
+| `phase-c-terminal-fencing` | `jwt-key-rotate-0e4841cda3cee3aef250` | 1 → 2 | 旧 owner 未写终态，新 owner 复用 composite 成功 |
+
+三轮均得到稳定唯一 `Succeeded`、Operation receipt SHA 与文件一致、旧 JWT 拒绝、新 JWT 接受、StatefulSet 3/3 收敛和数据 Pod
+最大 restart 0；drill 最终将 executor 恢复为 0。长 hold 中 Pod status 会推进 resourceVersion，因此 drill 在删除前刷新同名同 UID
+Pod，并重验 Operation owner/attempt 后才使用最新 UID+RV precondition；陈旧 RV 真实负例由 API Server Conflict 拒绝。
+
+发现过程中的耗尽 Operation 保持不可变 Failed，用于审计真实失败：历史接管重放、跨文件系统 hard-link、连续 Secret binding、旧
+admission 以及陈旧 Pod RV 均未通过重置对象来掩盖。修复提交为 `1631259e`、`4aa6ad78`、`ff4d2baf`、`260dde3b`、
+`f2a3933a`、`20104d44`；639 项四片清单全部通过。
+
+范围边界不变：演练使用本地生成的 HS256 材料和本地测试 Ed25519 provider key 签发 export receipt，只证明 KubeBrain 内部
+Secret→publisher→rollout→gate→Operation 接管链；真实外部 KMS export/promotion/revoke、lifecycle credential 轮换和 Object Lock
+归档仍须独立 live 证明。

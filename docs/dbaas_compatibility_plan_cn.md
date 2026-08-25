@@ -62053,6 +62053,35 @@ live 前置启用又发现 Kubernetes v1.36 的两项 checker 兼容差异。Tok
 Go/墙钟秒为 142.770/149.051、360.290/366.622、245.415/251.694、384.818/391.087。该证据只关闭 broker live 前置，
 不替代三个 JWT takeover 场景。
 
+### A5500：JWT 轮换连续 Operation 与三处 live takeover GREEN
+
+A5494 的开放项已在 Kubernetes v1.36.1、HTTPS+auth 的三副本 `a4653-jwt`、独立 3×PD/3×TiKV v8.5.3 上完成。真实执行依次发现
+并修复：Alpine Bash 大区间 ERE、jq label selector、部分 rollout 接管重放、max-attempt queue poison、`/tmp`→PVC hard-link
+`EXDEV`、连续 Operation Secret volume 无法交接、admission 禁止窄 C→A handoff，以及 TTL hold 后 Pod RV 陈旧。相关代码提交为
+`84b14a23`、`952443a6`、`1631259e`、`4aa6ad78`、`ff4d2baf`、`260dde3b`、`f2a3933a`、`20104d44`；失败 Operation
+均保持不可变终态，不重置审计历史。
+
+连续 handoff 以 active-key SHA 为密码学连续性条件，并在单个 resourceVersion patch 内同时切换 auth 与 operation-bound Secret。
+admission 只接受一个同名 Secret volume 从 `<old-op>-keys` 变为 `<new-op>-keys` 的 phase C→A 过渡，要求新旧 active SHA 相等；
+其余 Pod template 字段仍全量围栏。live policy generation 2 已观测、`typeChecking={}`。composite receipt 改在 PVC 内 staging 后
+hard-link no-clobber；测试以不同 device 的 `/dev/shm` 证明跨文件系统部署。drill 删除前刷新同一 Pod UID 的最新 RV，并重验
+Operation attempt/owner，陈旧 RV 不会误删。
+
+三个最终 fresh Operation 均由 attempt 1 注入、attempt 2 不同 owner 接管并稳定 Succeeded：
+
+- phase B `updatedReplicas=1`：`jwt-key-rotate-554dcc26ee29f83d5ee4`；
+- phase B 3/3 后 TTL wait：`jwt-key-rotate-7a000aa498c8e082e48d`；
+- phase C 3/3 后、终态写前：`jwt-key-rotate-0e4841cda3cee3aef250`。
+
+三者的 composite 与 A/B/C publish+gate 六段 SHA 链、Operation receipt SHA、稳定 status 均闭合；旧 JWT 拒绝、新 JWT 接受；每轮
+最终 StatefulSet 3/3 收敛，三个数据 Pod 全程最大 restart 0。最终 executor=0，authenticated endpoint health 正常、匿名请求拒绝，
+目标 PD/TiKV 仍 Ready 且 restart 0。由此“三处真实 takeover/fencing”子项由 OPEN 更新为 GREEN。
+
+639 项四片 `152/178/159/150` 提交清单全部通过；四个新增提交的详细 Go/墙钟数据记录于
+`docs/production_readiness_cn.md` A5500。整体自动 KMS 轮换仍非 GREEN：export receipt 来自本地测试 Ed25519 signer，而非真实外部
+KMS；provider promote/revoke、lifecycle credential 轮换和 Object Lock 归档尚未 live 执行。etcd 对标基线保持
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
