@@ -3794,6 +3794,23 @@ signature、expiry、username/revision claims，默认 MemberList 仍 fail close
 原子挂载、限制文件权限并随 Pod 一致发布；key/CA 轮换应滚动重启并通过默认 linearizable 探针确认新配置，
 不能假设 serializable 请求会从不可用 PD 获取新的认证材料。
 
+2026-08-25 的 A5491 为 JWT signing key 增加 KubeBrain `verify-key` overlap 扩展。参考 etcd
+`5cd9f4ee13801e18825d661e5005ae599460bc3a` 只在启动时加载一个 signing/verification key；直接把三副本从旧 key
+滚到新 key 会产生旧 Pod 不接受新 token、新 Pod 不接受旧 token 的双向故障窗口。生产轮换必须按以下三个完整 rollout
+执行，Secret 必须在第一阶段前已经原子包含旧、新两份材料：
+
+1. phase A：`priv-key=old,verify-key=new`，先让所有 Pod 继续只签旧 token、同时预信任新 key；
+2. phase B：`priv-key=new,verify-key=old`，滚动推广新 signer；此时新旧 Pod 对两种 token 都可验签；
+3. phase C：从最后一个旧 token 可能签发的时刻起等待不少于配置 JWT TTL 加最大时钟偏差，再移除
+   `verify-key`，只保留 `priv-key=new`。不得按 rollout 完成时间缩短等待窗口。
+
+`verify-key` 只参与验证，不会签发 token，且只允许一把 overlap key；HS* 使用原始共享 secret，RS*/ES*/EdDSA 必须提供
+对应 public key。缺失、畸形、重复或超过 1 MiB 的文件在启动时 fail closed。不得跳过 phase A 直接进入混合 signer rollout，
+也不得在 phase B 完成前删除任一 key。真实三副本门禁在 phase B 只先更新一个 Pod，从新 Pod 签发 token 后逐一验证三个
+直连 member 同时接受新旧 token，再完成推广；等待 2 分钟 TTL 后退休旧 key，三个 member 均拒绝旧 token、接受 fresh 新
+token。生产自动化还应把每阶段 StatefulSet revision、Secret resourceVersion/key digest（不能记录明文）、最早退休时间和
+三 member 探针写入不可变 receipt；KMS/Secret 控制面自动编排尚未由本次数据面原语替代。
+
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
 
 ```shell

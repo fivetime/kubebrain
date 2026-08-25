@@ -61791,6 +61791,31 @@ endpoint 唯一；测试已改为固定多重集合、重复次数和 unique cou
 mutation、授权 Watch generation 和 enabled-auth StatefulSet rollout 缺口；JWT key rotation、跨节点/AZ、网络分区与长时间
 token/Watch soak 仍开放。
 
+### A5491：JWT signing key 三阶段无中断轮换
+
+参考 etcd `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 JWT provider 只加载一个启动期 key；直接在三副本滚动替换
+key 会让混合版本副本互不接受对方签发的 token。提交 `88b00806fc4c3281a327edb73f82ad196b56de15` 增加可选
+`verify-key`：active `priv-key` 是唯一 signer，额外 key 只参与验证。安全流程固定为旧 signer 预信任新 key、再由新 signer
+保留旧 verify key、最后从旧 token 最晚签发时刻等待完整 TTL 加时钟裕量后退休旧 key。HS256 使用原始共享 secret；
+RS256/PS256、ES256、EdDSA 使用对应 public key。单测覆盖五种算法的双向 overlap、新 key 独立签发、旧 key 退休，以及
+缺失/畸形/重复/超过 1 MiB 的辅助 key fail closed；相关 race 10 轮通过（Go 11.068 秒）。完整 server 包 Go 136.088 秒、
+墙钟 163.131 秒通过，compat 全包 Go 8.131 秒、墙钟 9.360 秒通过。
+
+真实三副本使用独立 keyspace、一个 balancer 与三个逐 member NodePort，JWT TTL 为 2 分钟。dirty 和精确提交镜像各执行
+完整三阶段：phase A 全量旧 signer+新 verifier；phase B 先只更新 Pod 2，从该新 signer 签发 token 后证明两个旧 Pod 与
+一个新 Pod 均接受新旧 token，再更新其余 Pod；等待从旧 token 签发时刻计算的 TTL+2 秒后，phase C 删除旧 verifier。
+两轮均在三个 member 上确认 fresh 新 token 成功、旧 token 返回 `InvalidAuthToken`，且全过程 Pod restartCount 为 0；
+dirty Go/墙钟 160.104/166.234 秒，精确提交 Go/墙钟 155.250/156.526 秒。fixture 最终恢复 auth-disabled，
+keys/users/roles/leases/alarms 全空并删除。
+
+代码提交前 611 项 inventory 为 140/171/154/146；提交后四片 Go 时间
+119.142/356.650/229.294/371.909 秒，墙钟 125.087/362.502/235.246/377.856 秒，全部通过。精确镜像
+`kubebrain:a5491-88b00806` 构建墙钟 211.504 秒，内嵌完整 SHA、TiKV 和 Go 1.26.5；本地 manifest list 为
+`sha256:277ba3a261ad2ebbcc4f463f233c7517b292f07e2d56f0d4d8151370cee68a05`，fixture 与主数据面 runtime digest
+均为 `sha256:09cc887a91b7d77e799f2256997b3d7b1e46a5279272229cc15a2218bd3317ad`。主数据面 3/3 Ready、零重启，
+alarm 与公开 keyspace 为空。数据面 overlap/retirement 原语和单节点 Kind 演练缺口关闭；KMS/Secret 控制面编排、不可变
+阶段 receipt、跨节点/AZ 与长时间 rotation soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
