@@ -61899,7 +61899,12 @@ publisher/direct gate、按可信 phase B receipt heartbeat 等待 TTL，并以 
 no-clobber composite receipt；attempt 接管与 heartbeat 进程组 fencing 均有黑盒测试。618 项 production inventory 四片提交后
 Go/墙钟秒为 123.990/130.091、356.779/362.890、225.884/231.982、369.691/375.798，全部通过。
 
-executor 仍固定零副本；实例级数据面 Role/RoleBinding/publisher admission、phase C 失败自动回滚、真实 token issuer/KMS 以及三处
+提交 `c76cd02d` 随后关闭 phase C 失败自动回滚缺口：未出 C receipt 时，publisher 可在 B receipt、UID/template/Secret/key
+binding 全部不变的前提下以双 precondition 恢复 overlap B；runner 先重做 C 收敛确认，仍失败才在 heartbeat 下回滚并 retry。
+已有 C receipt、漂移或并发 patch 均 fail closed。618 项四片提交后 Go/墙钟秒为
+131.751/137.834、358.316/364.426、224.576/230.654、371.212/377.320，全部通过。
+
+executor 仍固定零副本；实例级数据面 Role/RoleBinding/publisher admission、真实 token issuer/KMS 以及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
 ### P2：运维兼容和长期验证

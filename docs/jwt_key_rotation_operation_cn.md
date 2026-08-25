@@ -163,6 +163,13 @@ UID/生成 attempt、参数摘要、三张 publish receipt 和三张 gate receip
 测试通过；代码提交前 inventory 为 618 项、四片 143/171/155/149，提交后四片 Go/墙钟秒为
 123.990/130.091、356.779/362.890、225.884/231.982、369.691/375.798，全部通过。
 
+提交 `c76cd02d` 增加受限 `--rollback-phase-c-to-b` 原语。只有 phase C 尚无 publish receipt、phase B receipt 严格有效且
+StatefulSet UID/template baseline、immutable Secret 和审批 key 摘要均未漂移时，才允许以 resourceVersion/auth 参数双
+precondition 把 C 或部分 C 收敛回 B；已有 C receipt 一律拒绝回滚，重复调用已收敛的 B 幂等成功。runner 对首次 C 发布失败先
+重做一次收敛确认，排除“rollout 已完成但响应丢失”，仍失败才在 heartbeat/fencing 下调用回滚，回滚成功后 retry 交给新 attempt
+重新确认 TTL 与在线状态。包级 lifecycle、幂等、receipted-C 拒绝、race/vet 通过；618 项四片提交后 Go/墙钟秒为
+131.751/137.834、358.316/364.426、224.576/230.654、371.212/377.320，全部通过。
+
 当前仍保持 disabled-by-default，不能直接规模化上线：每个实例的精确 StatefulSet/Secret 数据面 Role/RoleBinding 与 publisher
-admission 尚未生成，phase C rollout 失败后的自动回滚到 B 尚未实现，token issuer/KMS 合同尚无真实实现与轮换撤权演练，三处真实
+admission 尚未生成，token issuer/KMS 合同尚无真实实现与轮换撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。

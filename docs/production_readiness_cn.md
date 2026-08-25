@@ -3881,8 +3881,12 @@ data digest 不变，相邻有效阶段 StatefulSet revision 不同，最终三�
 receipt 指定的最早退休时间前持续 heartbeat，并用六张阶段 receipt 生成绑定 Operation UID/attempt 的 no-clobber composite
 receipt；attempt 接管和 heartbeat fencing 测试通过。618 项 production inventory 四片提交后全部通过。
 
-该 Deployment 仍必须保持 `replicas: 0`，直到实例级 StatefulSet/Secret 数据面 Role/RoleBinding 与 publisher admission、phase C
-失败自动回滚、真实 token issuer/KMS 和三处三副本故障注入全部验收；当前不能把 API/模板存在等同于生产自动轮换 GREEN。
+提交 `c76cd02d` 增加未 receipted phase C→B 的受限自动回滚：先重做 C 收敛确认，再以 B receipt、UID/template/Secret/key
+binding 和双 JSON Patch precondition 在 heartbeat 下恢复 overlap；已有 C receipt 或任何漂移均拒绝。618 项生产测试四片提交后
+全部通过。
+
+该 Deployment 仍必须保持 `replicas: 0`，直到实例级 StatefulSet/Secret 数据面 Role/RoleBinding 与 publisher admission、真实
+token issuer/KMS 和三处三副本故障注入全部验收；当前不能把 API/模板存在等同于生产自动轮换 GREEN。
 
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
 
