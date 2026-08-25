@@ -14,7 +14,54 @@
 
 package backend
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/kubewharf/kubebrain/pkg/storage"
+	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
+)
+
+type blockingCompactWatermarkKV struct {
+	storage.KvStorage
+	compactKey []byte
+	armed      atomic.Bool
+	once       sync.Once
+	entered    chan struct{}
+	release    chan struct{}
+}
+
+type failingCompactWatermarkKV struct {
+	storage.KvStorage
+	compactKey []byte
+}
+
+func (f *failingCompactWatermarkKV) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if bytes.Equal(key, f.compactKey) {
+		return nil, errors.New("injected compact watermark failure")
+	}
+	return f.KvStorage.Get(ctx, key)
+}
+
+func (b *blockingCompactWatermarkKV) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if !b.armed.Load() || !bytes.Equal(key, b.compactKey) {
+		return b.KvStorage.Get(ctx, key)
+	}
+	b.once.Do(func() { close(b.entered) })
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-b.release:
+		return nil, storage.ErrKeyNotFound
+	}
+}
 
 // TestAutoCompactTarget pins the safety-net auto-compaction decision: cap history
 // to the last `retention` revisions, leader-only, and never fight a healthy
@@ -44,4 +91,85 @@ func TestAutoCompactTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAutoCompactCycleStopsWithLeadershipContext(t *testing.T) {
+	m := newRecordCounters()
+	kv := &blockingCompactWatermarkKV{
+		KvStorage: imemkv.NewKvStorage(), compactKey: getCompactKey(prefix),
+		entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	defer stopBackendWorkersForTest(b)
+	b.SetCurrentRevision(1000)
+	var leading atomic.Bool
+	leading.Store(true)
+	b.SetLeadershipFence(func() (uint64, bool) { return 1, leading.Load() })
+	leaderCtx, stopLeader := context.WithCancel(context.Background())
+	b.compactCtx.Store(compactContextHolder{ctx: leaderCtx})
+	kv.armed.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		b.autoCompactOnce(context.Background(), 100)
+		close(done)
+	}()
+	<-kv.entered
+	leading.Store(false)
+	stopLeader()
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		close(kv.release)
+		<-done
+		t.Fatal("auto-compaction watermark read outlived its leadership context")
+	}
+	require.Zero(t, m.get("backend.auto_compact.err"),
+		"leadership retirement is not an auto-compaction failure")
+	require.Zero(t, m.get("storage.compaction.failure"),
+		"leadership retirement must not enter the storage-failure taxonomy")
+}
+
+func TestAutoCompactCycleAdvancesWatermarkForActiveLeader(t *testing.T) {
+	m := newRecordCounters()
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	defer stopBackendWorkersForTest(b)
+	b.SetCurrentRevision(1000)
+
+	b.autoCompactOnce(context.Background(), 100)
+	watermark, err := b.GetCompactRevisionFresh(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, uint64(900), watermark)
+	require.Equal(t, float64(1), m.get("backend.auto_compact"))
+	require.Equal(t, float64(900), m.gauge("backend.auto_compact.revision"))
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&b.compactDoneRev) >= 900
+	}, time.Second, 5*time.Millisecond, "the active leader must finish the scheduled physical GC")
+}
+
+func TestAutoCompactCycleWatermarkFailureRemainsObservable(t *testing.T) {
+	m := newRecordCounters()
+	kv := &failingCompactWatermarkKV{
+		KvStorage: imemkv.NewKvStorage(), compactKey: getCompactKey(prefix),
+	}
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	defer stopBackendWorkersForTest(b)
+	b.SetCurrentRevision(1000)
+
+	b.autoCompactOnce(context.Background(), 100)
+	require.Equal(t, float64(1), m.get("backend.auto_compact.err"),
+		"an active leader's watermark read failure must be observable")
+	require.Equal(t, float64(1), m.get("storage.compaction.failure"),
+		"watermark read failures must enter the fixed compaction taxonomy")
+	require.Zero(t, m.get("backend.auto_compact"))
 }

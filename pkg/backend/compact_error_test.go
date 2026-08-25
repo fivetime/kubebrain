@@ -54,6 +54,8 @@ func (r *recordCounters) EmitGauge(name string, value interface{}, _ ...metrics.
 		r.g[name] = float64(x)
 	case int64:
 		r.g[name] = float64(x)
+	case uint64:
+		r.g[name] = float64(x)
 	case float64:
 		r.g[name] = x
 	}
@@ -67,6 +69,8 @@ func (r *recordCounters) EmitCounter(name string, value interface{}, _ ...metric
 	case int:
 		r.c[name] += float64(x)
 	case int64:
+		r.c[name] += float64(x)
+	case uint64:
 		r.c[name] += float64(x)
 	case float64:
 		r.c[name] += x

@@ -611,33 +611,56 @@ func (b *backend) runAutoCompactor(workerCtx context.Context) {
 			return
 		case <-timer.C:
 		}
-
-		// Only the leader drives compaction. leadingFresh is true on single-node /
-		// unfenced test backends, so those auto-compact too when enabled.
-		if !b.leadingFresh() {
-			continue
-		}
-		cur := b.tso.GetRevision()
-		compacted, cerr := b.GetCompactRevision(workerCtx)
-		if cerr != nil {
-			continue
-		}
-		target, act := autoCompactTarget(cur, retention, compacted, true /*already leadingFresh above*/)
-		if !act {
-			continue // not enough history yet, or the watermark already covers it
-		}
-		got, err := b.CompactAsync(workerCtx, target)
-		if err != nil {
-			b.metricCli.EmitCounter("backend.auto_compact.err", 1)
-			emitCompactionFailure(b.metricCli, "auto")
-			klog.ErrorS(err, "auto-compaction safety net failed", "target", target)
-			continue
-		}
-		b.metricCli.EmitCounter("backend.auto_compact", 1)
-		b.metricCli.EmitGauge("backend.auto_compact.revision", got)
-		klog.InfoS("auto-compaction safety net advanced the compact watermark",
-			"target", target, "compacted", got, "retention", retention, "current", cur)
+		b.autoCompactOnce(workerCtx, retention)
 	}
+}
+
+// autoCompactOnce executes one revision-retention evaluation. It is split from
+// the jittered timer loop so the whole cycle's leadership lifecycle can be
+// exercised deterministically.
+func (b *backend) autoCompactOnce(workerCtx context.Context, retention uint64) {
+	// Only the leader drives compaction. leadingFresh is true on single-node /
+	// unfenced test backends, so those auto-compact too when enabled.
+	if !b.leadingFresh() {
+		return
+	}
+	ctx, maintenanceCtx, cancel := b.maintenanceContextWithShutdown(workerCtx, 0)
+	defer cancel()
+	if ctx.Err() != nil {
+		return
+	}
+	cur := b.tso.GetRevision()
+	compacted, cerr := b.GetCompactRevision(ctx)
+	if workerCtx.Err() != nil || maintenanceCtx.Err() != nil {
+		return
+	}
+	if cerr != nil {
+		b.metricCli.EmitCounter("backend.auto_compact.err", 1)
+		emitCompactionFailure(b.metricCli, "auto")
+		klog.ErrorS(cerr, "auto-compaction safety net failed to read compact watermark")
+		return
+	}
+	target, act := autoCompactTarget(cur, retention, compacted, true /*already leadingFresh above*/)
+	if !act {
+		return // not enough history yet, or the watermark already covers it
+	}
+	got, err := b.CompactAsync(ctx, target)
+	if workerCtx.Err() != nil || maintenanceCtx.Err() != nil {
+		// A cycle belongs wholly to the leadership term that admitted it. Normal
+		// retirement neither reports a storage failure nor publishes a late
+		// success; the successor evaluates the durable watermark independently.
+		return
+	}
+	if err != nil {
+		b.metricCli.EmitCounter("backend.auto_compact.err", 1)
+		emitCompactionFailure(b.metricCli, "auto")
+		klog.ErrorS(err, "auto-compaction safety net failed", "target", target)
+		return
+	}
+	b.metricCli.EmitCounter("backend.auto_compact", 1)
+	b.metricCli.EmitGauge("backend.auto_compact.revision", got)
+	klog.InfoS("auto-compaction safety net advanced the compact watermark",
+		"target", target, "compacted", got, "retention", retention, "current", cur)
 }
 
 // autoCompactTarget decides the safety-net compaction target: cap history to the
