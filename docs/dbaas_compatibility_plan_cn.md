@@ -61762,6 +61762,35 @@ GREEN（Go 6.403 秒、runner 墙钟 8.851 秒），postflight 仍为全空且�
 各 3/3 Ready、零重启。JWT 默认专用差分和新 keyspace 并行冷启动缺口至此关闭；JWT HA 故障、外部 TLS/L7、跨节点/AZ
 与长时间 soak 仍需独立证据。
 
+### A5490：JWT HA token、授权 Watch 与 StatefulSet rollout 专项
+
+在 A5489 精确镜像上创建独立 `a5490-jwt-ha` keyspace、三副本 JWT fixture、一个 balancer NodePort 和三个逐 Pod
+NodePort，使用真实 member/leader 映射执行 HA 场景。同一 token 在三个不同 member endpoint 独立验签通过（Go 0.116 秒、
+墙钟 1.368 秒）；删除 token 签发后的 leader 后，三个 endpoint 均可继续使用旧 token 完成 Put/Get（Go 17.655 秒、
+墙钟 18.929 秒）。再让 32 个并发 RoleAdd 跨越下一次 leader 删除，全部操作最终存在且 authRevision 精确增加 32（Go
+5.510 秒、墙钟 6.740 秒）。
+
+授权 Watch 场景首次在故障注入前 RED：撤权后复用旧 Alice JWT 创建新 Watch，实际返回
+`InvalidArgument: etcdserver: revision of auth store is old`，旧测试却要求 `permission denied`。对照参考 etcd
+`5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 `server/etcdserver/api/v3rpc/watch.go`，旧 auth revision 明确映射为
+`ErrGRPCAuthOldRevision`；因此这是测试把“新 Watch 观察最新权限”错误实现成复用旧 token，并非 KubeBrain 产品差异。
+提交 `3632afcdecca91cbc6bdd93615f88c3aaed4cd10` 在撤权后重新 Authenticate 创建新 client；原 Watch 仍保留创建时的授权
+决定。修正后，从 follower 建立 Watch、撤权、确认新 Watch PermissionDenied、删除 leader、等待 replacement，再由旧 Watch
+收到故障后的事件，全程 GREEN（Go 17.062 秒、墙钟 23.156 秒）。
+
+同一提交移除 enabled-auth rollout 测试硬编码的历史 `Deployment/kubebrain-auth-ha`，改为显式 context/workload，默认
+生产 `StatefulSet/kubebrain`。真实三副本 `statefulset/a5489-jwt` 滚动重启后，预滚动 JWT 继续有效且 auth 仍启用（Go
+26.764 秒、墙钟 32.853 秒）；所有 replacement Pod Ready、零重启。完整 compat module 通过（Go 8.180 秒、墙钟
+14.127 秒），相关参数合同 race 连续 20 轮通过。全包同时发现 A5487 后遗留的 balancer runner 断言仍要求 advertised
+endpoint 唯一；测试已改为固定多重集合、重复次数和 unique count 合同，与实际 probe 一致。
+
+代码提交前 611 项 inventory 仍为 140/171/154/146；提交后四片 Go 时间
+132.601/360.393/235.626/374.477 秒，墙钟 138.517/366.377/241.566/380.393 秒，全部通过。每轮 auth
+场景结束均恢复 auth-disabled 并清空 keys/users/roles/leases/alarms，临时 StatefulSet、六个 Service/Secret 随后删除；
+主数据面继续运行 A5489 精确镜像 3/3 Ready、零重启。当前证据关闭单节点 Kind 上 JWT token 跨 member/leader、并发 auth
+mutation、授权 Watch generation 和 enabled-auth StatefulSet rollout 缺口；JWT key rotation、跨节点/AZ、网络分区与长时间
+token/Watch soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
