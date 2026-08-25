@@ -24,20 +24,22 @@ var inClusterConfig = rest.InClusterConfig
 
 func main() {
 	var (
-		apiVersion  string
-		resource    string
-		namespace   string
-		name        string
-		uid         string
-		kubeconfig  string
-		kubeContext string
-		timeout     time.Duration
+		apiVersion      string
+		resource        string
+		namespace       string
+		name            string
+		uid             string
+		resourceVersion string
+		kubeconfig      string
+		kubeContext     string
+		timeout         time.Duration
 	)
 	flag.StringVar(&apiVersion, "api-version", "", "resource API version, for example apps/v1")
 	flag.StringVar(&resource, "resource", "", "resource plural, for example statefulsets")
 	flag.StringVar(&namespace, "namespace", "", "resource namespace")
 	flag.StringVar(&name, "name", "", "resource name")
 	flag.StringVar(&uid, "uid", "", "required object UID precondition")
+	flag.StringVar(&resourceVersion, "resource-version", "", "optional object resourceVersion precondition")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "path to kubeconfig; defaults to standard loading rules")
 	flag.StringVar(&kubeContext, "context", "", "kubeconfig context override")
 	flag.DurationVar(&timeout, "timeout", 30*time.Second, "API request timeout")
@@ -49,6 +51,9 @@ func main() {
 	groupVersion, err := validateDeleteRequest(apiVersion, resource, namespace, name, uid)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if resourceVersion != "" && !validPreconditionValue(resourceVersion) {
+		log.Fatal("invalid resourceVersion precondition")
 	}
 
 	config, err := clientConfig(kubeconfig, kubeContext)
@@ -62,7 +67,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	err = deleteWithUID(ctx, client, groupVersion.String(), resource, namespace, name, uid)
+	err = deleteWithPreconditions(ctx, client, groupVersion.String(), resource, namespace, name, uid, resourceVersion)
 	switch {
 	case err == nil:
 		fmt.Printf("delete accepted: %s %s/%s uid=%s\n", resource, namespace, name, uid)
@@ -100,12 +105,27 @@ func deleteWithUID(
 	client dynamic.Interface,
 	apiVersion, resource, namespace, name, uid string,
 ) error {
+	return deleteWithPreconditions(ctx, client, apiVersion, resource, namespace, name, uid, "")
+}
+
+func deleteWithPreconditions(
+	ctx context.Context,
+	client dynamic.Interface,
+	apiVersion, resource, namespace, name, uid, resourceVersion string,
+) error {
 	groupVersion, err := validateDeleteRequest(apiVersion, resource, namespace, name, uid)
 	if err != nil {
 		return err
 	}
+	if resourceVersion != "" && !validPreconditionValue(resourceVersion) {
+		return errors.New("invalid resourceVersion precondition")
+	}
 	propagation := metav1.DeletePropagationForeground
 	expectedUID := types.UID(uid)
+	var expectedResourceVersion *string
+	if resourceVersion != "" {
+		expectedResourceVersion = &resourceVersion
+	}
 	resourceClient := client.Resource(groupVersion.WithResource(resource))
 	var target dynamic.ResourceInterface
 	if namespace == "" {
@@ -118,9 +138,21 @@ func deleteWithUID(
 		name,
 		metav1.DeleteOptions{
 			PropagationPolicy: &propagation,
-			Preconditions:     &metav1.Preconditions{UID: &expectedUID},
+			Preconditions:     &metav1.Preconditions{UID: &expectedUID, ResourceVersion: expectedResourceVersion},
 		},
 	)
+}
+
+func validPreconditionValue(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if char <= ' ' || char == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func validateDeleteRequest(

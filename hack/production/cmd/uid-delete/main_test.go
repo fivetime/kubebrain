@@ -17,7 +17,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-func TestDeleteOptionsUIDPreconditionShape(t *testing.T) {
+func TestDeleteOptionsUIDAndResourceVersionPreconditionShape(t *testing.T) {
 	var options metav1.DeleteOptions
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodDelete, r.Method)
@@ -31,7 +31,7 @@ func TestDeleteOptionsUIDPreconditionShape(t *testing.T) {
 	config := testRESTConfig(server.URL)
 	client, err := dynamicClient(config)
 	require.NoError(t, err)
-	require.NoError(t, deleteWithUID(
+	require.NoError(t, deleteWithPreconditions(
 		context.Background(),
 		client,
 		"apps/v1",
@@ -39,10 +39,13 @@ func TestDeleteOptionsUIDPreconditionShape(t *testing.T) {
 		"instance-a",
 		"kubebrain",
 		"uid-123",
+		"42",
 	))
 	require.NotNil(t, options.Preconditions)
 	require.NotNil(t, options.Preconditions.UID)
 	require.Equal(t, "uid-123", string(*options.Preconditions.UID))
+	require.NotNil(t, options.Preconditions.ResourceVersion)
+	require.Equal(t, "42", *options.Preconditions.ResourceVersion)
 	require.NotNil(t, options.PropagationPolicy)
 	require.Equal(t, metav1.DeletePropagationForeground, *options.PropagationPolicy)
 }
@@ -57,6 +60,15 @@ func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid namespace tenant.a")
+}
+
+func TestMainRejectsInvalidResourceVersionBeforeKubeconfig(t *testing.T) {
+	output, err := testcommand.GoRun(t, ".",
+		"--api-version", "v1", "--resource", "secrets", "--namespace", "tenant-a",
+		"--name", "credential-a", "--uid", "uid-1", "--resource-version", "bad version",
+	)
+	require.Error(t, err)
+	require.Contains(t, string(output), "invalid resourceVersion precondition")
 }
 
 func TestDeleteWithUIDRejectsUnsafeRequestBeforeAPI(t *testing.T) {

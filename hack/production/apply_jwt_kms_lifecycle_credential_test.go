@@ -1,10 +1,14 @@
 package production_test
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +86,68 @@ if [[ "${MUTATE_SECRET_AFTER_PROBE:-}" == true ]]; then jq '.metadata.uid="repla
 	_, err = runProductionCommand(t, "bash", []string{"apply-jwt-kms-lifecycle-credential.sh", "--activate"}, append(env, "MUTATE_SECRET_AFTER_PROBE=true"))
 	require.Error(t, err)
 	require.NoFileExists(t, activeState, "Secret replacement after probe must prevent activation")
+}
+
+func TestRetireJWTKMSLifecycleCredentialRequiresRevocationAndReplacement(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "public")
+	require.NoError(t, os.WriteFile(key, []byte("provider-key"), 0o600))
+	makeSecret := func(id, uid, rv, token string) []byte {
+		data := map[string]string{"endpoint": base64.StdEncoding.EncodeToString([]byte("https://kms.example")), "lifecycle-token": base64.StdEncoding.EncodeToString([]byte(token)), "ca.crt": base64.StdEncoding.EncodeToString([]byte("ca")), "receipt-public-key.pem": base64.StdEncoding.EncodeToString([]byte("provider-key"))}
+		object := map[string]any{"metadata": map[string]any{"name": "kubebrain-jwt-kms-lifecycle-" + id, "namespace": "kubebrain-kms-lifecycle", "uid": uid, "resourceVersion": rv, "labels": map[string]string{"dbaas.kubebrain.io/credential-kind": "jwt-kms-lifecycle"}}, "immutable": true, "type": "Opaque", "data": data}
+		encoded, err := json.Marshal(object)
+		require.NoError(t, err)
+		return encoded
+	}
+	oldData, newData := makeSecret("old-2026q2", "old-uid", "10", "old-token"), makeSecret("new-2026q3", "new-uid", "20", "new-token")
+	oldPath, newPath := filepath.Join(dir, "old.json"), filepath.Join(dir, "new.json")
+	require.NoError(t, os.WriteFile(oldPath, oldData, 0o600))
+	require.NoError(t, os.WriteFile(newPath, newData, 0o600))
+	secretDataSHA := func(data []byte) string {
+		var object struct {
+			Data map[string]string `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(data, &object))
+		canonical, err := json.Marshal(object.Data)
+		require.NoError(t, err)
+		sum := sha256.Sum256(canonical)
+		return hex.EncodeToString(sum[:])
+	}
+	readinessSHA := strings.Repeat("c", 64)
+	activeObject := map[string]any{"metadata": map[string]any{"uid": "active-uid", "resourceVersion": "30"}, "data": map[string]string{"format": "kubebrain.jwt-kms-lifecycle-active.v1", "credential-id": "new-2026q3", "secret-name": "kubebrain-jwt-kms-lifecycle-new-2026q3", "secret-uid": "new-uid", "secret-resource-version": "20", "secret-data-sha256": secretDataSHA(newData), "readiness-receipt-sha256": readinessSHA, "readiness-expires-at-unix": strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10), "activated-at-unix": "1"}}
+	activeJSON, err := json.Marshal(activeObject)
+	require.NoError(t, err)
+	activePath, deleted, calls := filepath.Join(dir, "active.json"), filepath.Join(dir, "deleted"), filepath.Join(dir, "calls")
+	require.NoError(t, os.WriteFile(activePath, activeJSON, 0o600))
+	kubectl, verifier, uidDelete := filepath.Join(dir, "kubectl"), filepath.Join(dir, "verifier"), filepath.Join(dir, "uid-delete")
+	writeTrafficExecutable(t, kubectl, `#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+if [[ "$args" == *"get validatingadmissionpolicy "* ]]; then printf '{"metadata":{"generation":1},"status":{"observedGeneration":1,"typeChecking":{"expressionWarnings":[]}}}\n'; exit 0; fi
+if [[ "$args" == *"get validatingadmissionpolicybinding kubebrain-jwt-kms-lifecycle-credential"* ]]; then printf '{"spec":{"policyName":"kubebrain-jwt-kms-lifecycle-credential","validationActions":["Deny"]}}\n'; exit 0; fi
+if [[ "$args" == *"get validatingadmissionpolicybinding kubebrain-jwt-kms-lifecycle-active"* ]]; then printf '{"spec":{"policyName":"kubebrain-jwt-kms-lifecycle-active","validationActions":["Deny"]}}\n'; exit 0; fi
+if [[ "$args" == *"auth can-i"* ]]; then printf 'no\n'; exit 0; fi
+if [[ "$args" == *"get configmap kubebrain-jwt-kms-lifecycle-active"* ]]; then cat "$ACTIVE_STATE"; exit 0; fi
+if [[ "$args" == *"get secret kubebrain-jwt-kms-lifecycle-old-2026q2"* ]]; then [[ -f "$DELETED" ]] && exit 1; cat "$OLD_STATE"; exit 0; fi
+if [[ "$args" == *"get secret kubebrain-jwt-kms-lifecycle-new-2026q3"* ]]; then cat "$NEW_STATE"; exit 0; fi
+if [[ "$args" == *"wait --for=delete"* ]]; then [[ -f "$DELETED" ]]; exit; fi
+exit 1
+`)
+	writeTrafficExecutable(t, verifier, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'verify %s\\n' \"$*\" >>\"$CALLS\"\n[[ \"${FAIL_VERIFY:-}\" != true ]]\n")
+	writeTrafficExecutable(t, uidDelete, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'delete %s\\n' \"$*\" >>\"$CALLS\"\ntouch \"$DELETED\"\n")
+	retirement := filepath.Join(dir, "retirement.json")
+	require.NoError(t, os.WriteFile(retirement, []byte("signed-retirement"), 0o600))
+	env := []string{"KUBE_CONTEXT=test", "KUBECTL=" + kubectl, "CREDENTIAL_ID=old-2026q2", "KMS_RECEIPT_PUBLIC_KEY=" + key, "RETIREMENT_RECEIPT=" + retirement, "KMS_LIFECYCLE_CREDENTIAL_RETIREMENT_VERIFIER=" + verifier, "UID_DELETE=" + uidDelete, "OLD_STATE=" + oldPath, "NEW_STATE=" + newPath, "ACTIVE_STATE=" + activePath, "DELETED=" + deleted, "CALLS=" + calls}
+	output, err := runProductionCommand(t, "bash", []string{"apply-jwt-kms-lifecycle-credential.sh", "--retire"}, env)
+	require.NoError(t, err, string(output))
+	log := string(mustRead(t, calls))
+	require.Contains(t, log, "--replacement-readiness-receipt-sha256 "+readinessSHA)
+	require.Contains(t, log, "--uid old-uid --resource-version 10")
+	require.FileExists(t, deleted)
+	require.NoError(t, os.Remove(deleted))
+	_, err = runProductionCommand(t, "bash", []string{"apply-jwt-kms-lifecycle-credential.sh", "--retire"}, append(env, "FAIL_VERIFY=true"))
+	require.Error(t, err)
+	require.NoFileExists(t, deleted, "failed revoke evidence verification must not delete the old credential")
 }
 
 func TestProvisionJWTKMSLifecycleCredentialIsVersionedAndImmutable(t *testing.T) {

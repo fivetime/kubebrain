@@ -190,7 +190,7 @@ func verify(data []byte, key ed25519.PublicKey, endpoint, credentialID, secretUI
 	if !bytes.Equal(canonical, payload) {
 		return errors.New("readiness payload is not canonical")
 	}
-	if receipt.Format != "kubebrain.jwt-kms-lifecycle-credential-readiness.v1" || receipt.CredentialID != credentialID || receipt.CredentialSecretUID != secretUID || receipt.CredentialSecretDataSHA256 != secretSHA || receipt.Endpoint != endpoint || receipt.Principal == "" || len(receipt.Principal) > 512 || receipt.Scopes == nil || len(receipt.Scopes) != 2 || receipt.Scopes[0] != "promote" || receipt.Scopes[1] != "revoke" {
+	if receipt.Format != "kubebrain.jwt-kms-lifecycle-credential-readiness.v1" || receipt.CredentialID != credentialID || receipt.CredentialSecretUID != secretUID || receipt.CredentialSecretDataSHA256 != secretSHA || receipt.Endpoint != endpoint || !validPrincipal(receipt.Principal) || receipt.Scopes == nil || len(receipt.Scopes) != 2 || receipt.Scopes[0] != "promote" || receipt.Scopes[1] != "revoke" {
 		return errors.New("readiness identity or scope binding is invalid")
 	}
 	if receipt.ObservedAtUnix <= 0 || receipt.ExpiresAtUnix <= receipt.ObservedAtUnix || receipt.ExpiresAtUnix-receipt.ObservedAtUnix > 900 || now.Unix() < receipt.ObservedAtUnix-60 || now.Unix() > receipt.ExpiresAtUnix {
@@ -314,4 +314,16 @@ func validSHA(value string) bool {
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil && value == strings.ToLower(value)
+}
+
+func validPrincipal(value string) bool {
+	if len(value) == 0 || len(value) > 512 {
+		return false
+	}
+	for _, char := range value {
+		if char <= ' ' || char == 0x7f {
+			return false
+		}
+	}
+	return true
 }

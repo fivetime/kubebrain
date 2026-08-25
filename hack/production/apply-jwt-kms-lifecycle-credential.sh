@@ -22,10 +22,10 @@ verify_static() {
   grep -Fq 'validationActions: [Deny]' "$MANIFEST" || die "lifecycle credential admission binding must be Deny"
 }
 
-usage() { echo "Usage: $0 --verify | --apply | --provision | --check | --activate" >&2; exit 2; }
+usage() { echo "Usage: $0 --verify | --apply | --provision | --check | --activate | --retire" >&2; exit 2; }
 [[ "$#" == 1 ]] || usage
 mode="$1"
-case "$mode" in --verify) verify_static; echo "verified isolated immutable JWT KMS lifecycle credential foundation"; exit 0;; --apply|--provision|--check|--activate) ;; *) usage;; esac
+case "$mode" in --verify) verify_static; echo "verified isolated immutable JWT KMS lifecycle credential foundation"; exit 0;; --apply|--provision|--check|--activate|--retire) ;; *) usage;; esac
 verify_static
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required"
 KUBECTL="$(resolve "$KUBECTL")" || die "KUBECTL must be executable"
@@ -83,6 +83,39 @@ check_secret() {
 }
 
 if [[ "$mode" == --check ]]; then check_secret; echo "checked isolated immutable lifecycle credential $secret"; exit 0; fi
+
+if [[ "$mode" == --retire ]]; then
+  check_secret
+  retired_id="$credential_id"; retired_secret="$secret"; retired_uid="$credential_secret_uid"; retired_rv="$credential_secret_rv"; retired_sha="$credential_secret_sha"
+  active="$(kc get configmap kubebrain-jwt-kms-lifecycle-active -n "$NAMESPACE" -o json)" || die "active lifecycle credential pointer is missing"
+  "$JQ" -e '(.data|keys|sort)==["activated-at-unix","credential-id","format","readiness-expires-at-unix","readiness-receipt-sha256","secret-data-sha256","secret-name","secret-resource-version","secret-uid"] and .data.format=="kubebrain.jwt-kms-lifecycle-active.v1"' <<<"$active" >/dev/null || die "active lifecycle credential pointer shape drifted"
+  active_uid="$("$JQ" -er '.metadata.uid|select(type=="string" and length>0)' <<<"$active")"; active_rv="$("$JQ" -er '.metadata.resourceVersion|select(type=="string" and length>0)' <<<"$active")"
+  replacement_id="$("$JQ" -er '.data["credential-id"]|select(type=="string" and test("^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$"))' <<<"$active")" || die "active replacement credential ID is invalid"
+  [[ "$replacement_id" != "$retired_id" ]] || die "active credential cannot be retired"
+  replacement_readiness_sha="$("$JQ" -er '.data["readiness-receipt-sha256"]|select(test("^[a-f0-9]{64}$"))' <<<"$active")"
+  replacement_expiry="$("$JQ" -er '.data["readiness-expires-at-unix"]|select(test("^[1-9][0-9]*$"))' <<<"$active")"; (( replacement_expiry > $(date +%s) )) || die "active replacement readiness is expired"
+  active_data="$("$JQ" -cS '.data' <<<"$active")"
+  credential_id="$replacement_id"; secret="kubebrain-jwt-kms-lifecycle-${replacement_id}"; check_secret
+  replacement_secret="$secret"; replacement_uid="$credential_secret_uid"; replacement_rv="$credential_secret_rv"; replacement_sha="$credential_secret_sha"; replacement_data="$credential_secret_data"
+  "$JQ" -e --arg name "$replacement_secret" --arg uid "$replacement_uid" --arg rv "$replacement_rv" --arg sha "$replacement_sha" '.data["secret-name"]==$name and .data["secret-uid"]==$uid and .data["secret-resource-version"]==$rv and .data["secret-data-sha256"]==$sha' <<<"$active" >/dev/null || die "active pointer does not match replacement Secret"
+  public_key="${KMS_RECEIPT_PUBLIC_KEY:-}"; [[ "$public_key" == /* && -f "$public_key" && ! -L "$public_key" && "$(realpath -e -- "$public_key")" == "$public_key" ]] || die "KMS_RECEIPT_PUBLIC_KEY must be a canonical regular non-symlink file"
+  [[ "$(printf '%s' "$(base64 -w0 <"$public_key")")" == "$("$JQ" -r '.["receipt-public-key.pem"]' <<<"$replacement_data")" ]] || die "retirement trust key does not match replacement Secret"
+  retirement="${RETIREMENT_RECEIPT:-}"; [[ "$retirement" == /* && -f "$retirement" && ! -L "$retirement" && "$(realpath -e -- "$retirement")" == "$retirement" ]] || die "RETIREMENT_RECEIPT must be a canonical regular non-symlink file"
+  verifier="$(resolve "${KMS_LIFECYCLE_CREDENTIAL_RETIREMENT_VERIFIER:-kubebrain-jwt-kms-lifecycle-credential-retirement-verifier}")" || die "retirement verifier must be executable"
+  "$verifier" --receipt "$retirement" --public-key "$public_key" --retired-credential-id "$retired_id" --retired-secret-uid "$retired_uid" --retired-secret-data-sha256 "$retired_sha" --replacement-credential-id "$replacement_id" --replacement-secret-uid "$replacement_uid" --replacement-secret-data-sha256 "$replacement_sha" --replacement-readiness-receipt-sha256 "$replacement_readiness_sha"
+  current_active="$(kc get configmap kubebrain-jwt-kms-lifecycle-active -n "$NAMESPACE" -o json)" || die "active pointer disappeared after retirement verification"
+  [[ "$("$JQ" -er '.metadata.uid' <<<"$current_active")" == "$active_uid" && "$("$JQ" -er '.metadata.resourceVersion' <<<"$current_active")" == "$active_rv" && "$("$JQ" -cS '.data' <<<"$current_active")" == "$active_data" ]] || die "active pointer changed after retirement verification"
+  credential_id="$retired_id"; secret="$retired_secret"; check_secret
+  [[ "$credential_secret_uid" == "$retired_uid" && "$credential_secret_rv" == "$retired_rv" && "$credential_secret_sha" == "$retired_sha" ]] || die "retired Secret changed after retirement verification"
+  credential_id="$replacement_id"; secret="$replacement_secret"; check_secret
+  [[ "$credential_secret_uid" == "$replacement_uid" && "$credential_secret_rv" == "$replacement_rv" && "$credential_secret_sha" == "$replacement_sha" ]] || die "replacement Secret changed after retirement verification"
+  uid_delete="$(resolve "${UID_DELETE:-kubebrain-uid-delete}")" || die "UID_DELETE must be executable"
+  "$uid_delete" --api-version v1 --resource secrets --namespace "$NAMESPACE" --name "$retired_secret" --uid "$retired_uid" --resource-version "$retired_rv" --context "$KUBE_CONTEXT" --timeout 30s >/dev/null
+  kc wait --for=delete --timeout=30s "secret/$retired_secret" -n "$NAMESPACE" >/dev/null || die "retired lifecycle credential Secret deletion did not converge"
+  if kc get secret "$retired_secret" -n "$NAMESPACE" -o name >/dev/null 2>&1; then die "retired lifecycle credential Secret still exists"; fi
+  echo "retired revoked lifecycle credential $retired_secret after verified replacement activation"
+  exit 0
+fi
 
 endpoint="${KMS_PROVIDER_ENDPOINT:-}"
 token="${KMS_LIFECYCLE_TOKEN_FILE:-}"
