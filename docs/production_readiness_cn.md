@@ -8505,9 +8505,36 @@ Put→Watch 6.983 秒超过 5 秒 SLA 而 RED，runner 完整回滚到 A5507；�
 Service endpoint health 正常，再对同一不可变候选执行全量 rollout，最终 **900/900 GREEN**：Watch 900、lease alive，最大业务/
 PD TSO/TiKV Region 延迟 1331/61/19ms，revision `kubebrain-7c9b5f9899 -> kubebrain-7c7487db97`。
 
-最终三 Pod 3/3 Ready、restart 0、版本 SHA 一致，`storage_gc_enabled=1`、`storage_gc_err=0`；10 分钟首 tick 尚未到达，因此
-`storage_gc_last_success_timestamp_seconds=0` 是启动期预期，不能作为本轮取消路径的 live 证据。PD/TiKV 3+3 Ready、restart 0，
+最终三 Pod 3/3 Ready、restart 0、版本 SHA 一致，`storage_gc_enabled=1`、`storage_gc_err=0`。后续 18:53:23 UTC 首个有效 tick
+由 leader `kubebrain-2` 把 TiKV safepoint 推进到 `468615368409612290`，且 `storage_gc_err=0`；两个 follower 的
+last-success 仍为 0，证明成功遥测仅由有效 leader 发布。该结果证明 active-leader 正常路径，不冒充旧任期取消竞态的 live 证据。
+PD/TiKV 3+3 Ready、restart 0，
 probe 已清理；现 leader 恢复既有 physical watermark 44329，`done_rev=44329`、`inflight=0`、全部 compaction failure stage 为 0。
 
 639 项 inventory 保持 `152/178/159/150`；精确代码提交后四片 Go/墙钟秒为
 145.118/151.636、375.262/381.800、241.024/247.542、397.064/403.838，全部通过。
+
+### A5509：自动压缩周期绑定 leadership lifecycle
+
+对照 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3compactor/revision.go`：revision
+compactor 持有可取消 context，并由 Stop/Pause 结束当前维护生命周期。KubeBrain 原先仅在 timer 入口检查 leadership，随后却用进程级
+worker context 读取 compact watermark 并提交异步压缩。若 watermark read 阻塞期间换主，旧读取会继续存活；释放后 Compact 才被
+commit fence 拒绝，并把正常任期退役错误计入 `backend.auto_compact.err`。反过来，active leader 的真实 watermark read error 又直接
+返回，完全没有进入 auto-compaction 或 storage compaction failure 遥测。
+
+提交 `b12c2350` 把一次周期抽成 `autoCompactOnce`，为 watermark read 与 CompactAsync 派生同一 maintenance/leadership context；
+任一步骤返回后若精确父 lifecycle 已结束就静默退役，真实 active-leader watermark error 则同时增加
+`backend.auto_compact.err` 和 `storage.compaction.failure{source="auto"}`。有效 leader 的成功路径仍推进 durable watermark、发布
+success/revision，并等待 physical compaction 完成。确定性旧代码 RED 一项证明取消后阻塞读取超过 250ms 仍未退出，释放后产生
+`leadership changed during commit` 假失败；另一项证明注入 watermark error 后两个错误计数均为 0。GREEN 固定取消及时退出且不污染
+遥测、有效 leader 将 watermark 推进到 900、真实读取错误可观测。
+
+三项 lifecycle/error 与一项目标选择测试普通连续 20 轮 0.608 秒、race 连续 10 轮 1.881 秒；公开 Compact 回归 1.973 秒、backend
+vet 通过。完整 backend 首次与其他重负载门禁并行时约 50 秒出现一次 RED，但输出截断未保留具体用例；立即单独重跑通过，随后
+`-count=3` 连续通过 147.222 秒，故如实保留为一次未复现的并行压力异常，不把它隐藏或当成已定位缺陷。639 项 inventory 保持
+`152/178/159/150`；精确代码提交后四片 Go/墙钟秒为 136.559/142.791、362.336/368.613、233.173/239.468、
+377.503/383.780，全部通过。
+
+生产 StatefulSet 当前未传 `--auto-compaction-retention-revisions`，程序默认值为 0，因此该 worker 在线上关闭。为制造 live 证据而
+临时开启会推进 durable compact watermark，超出本项必要范围，因此没有构建或 rollout A5509，也不声称 changed-path live 验证；现网继续运行已通过
+900/900 门禁的 A5508 不可变镜像。本项证据边界是确定性 backend 生命周期回归、完整 backend 复跑与精确生产分片。

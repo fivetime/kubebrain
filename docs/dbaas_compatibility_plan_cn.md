@@ -62232,8 +62232,28 @@ race 10 轮和收严 cleanup 后 10 轮均通过，完整 backend/vet 全绿。6
 首轮 rollout 在 iteration 4 因 Put→Watch 6.983 秒超过 5 秒 SLA 而 fail closed 并完整回滚，不能计入成功；候选 GC tick 为 10 分钟，
 失败窗口尚未执行改动路径。回滚后 20 个 readyz/endpoint-health 样本全绿，再运行同一不可变候选得到 900/900、Watch 900、lease alive，
 最大业务/TSO/Region 延迟 1331/61/19ms，revision `kubebrain-7c9b5f9899 -> kubebrain-7c7487db97`。最终 KubeBrain 与
-PD/TiKV 全 Ready、restart 0，`storage_gc_enabled=1`、`storage_gc_err=0`；首个 10 分钟 tick 尚未到，last-success=0 不冒充取消路径
-live 证据，临时 probe 已清理。
+PD/TiKV 全 Ready、restart 0，`storage_gc_enabled=1`、`storage_gc_err=0`。18:53:23 UTC 后续 tick 由 leader
+`kubebrain-2` 成功把 TiKV safepoint 推进到 `468615368409612290`，错误计数仍为 0；两个 follower 的 last-success 保持 0。
+这补齐 active-leader 正常路径证据，但不冒充取消竞态的 live 复现；临时 probe 已清理。
+
+### A5509：auto-compactor 全周期受 leadership lifecycle 约束
+
+对照 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3compactor/revision.go` 的 owned
+context 与 Stop/Pause 边界，KubeBrain 旧 timer 只在周期入口检查 leadership，watermark read 和后续 CompactAsync 却使用进程级
+worker context。确定性 RED 证明：读取阻塞时取消 leadership，旧周期超过 250ms 仍存活，释放后才被 commit fence 拒绝并产生假失败；
+另一个 active-leader 注入错误证明 watermark read failure 的两个应有计数均为 0。
+
+提交 `b12c2350` 让整个 `autoCompactOnce` 使用同一 maintenance/leadership 派生 context，并在 read/compact 返回后核验创建调用的精确
+父 lifecycle。任期取消静默退出；真实读取错误同时进入 `backend.auto_compact.err` 与
+`storage.compaction.failure{source="auto"}`；有效 leader 成功路径仍把 durable watermark 推进到 900 并完成 physical compact。
+四项测试普通 20 轮 0.608 秒、race 10 轮 1.881 秒，公开 Compact 1.973 秒、vet 通过。完整 backend 首次与其他重负载门禁并行约
+50 秒一次 RED且截断未留下具体用例，随即单独通过，再以 `-count=3` 连续通过 147.222 秒；保留该未复现压力异常，不隐去。
+639 项四片仍为 `152/178/159/150`，精确提交后 Go/墙钟秒为 136.559/142.791、362.336/368.613、
+233.173/239.468、377.503/383.780，全部 GREEN。
+
+生产 StatefulSet 当前未传 `--auto-compaction-retention-revisions`，程序默认值为 0，改动路径未启用。临时开启会推进 durable
+compact watermark，故本项不执行额外 rollout，也不声称 changed-path live 证据；现网继续保持已通过 900/900 的 A5508 镜像。当前关闭的是代码级任期泄漏与遥测
+缺口，开启自动压缩后的 disposable-instance live 证据仍须独立批准。
 
 ## 提交规则
 
