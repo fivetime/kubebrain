@@ -162,6 +162,7 @@ func TestMuxedHTTP2CloseBoundsQuiescingRequest(t *testing.T) {
 		close(handlerCanceled)
 	}))
 	server.httpServer.shutdownTimeout = 50 * time.Millisecond
+	server.quiesceDelay = 50 * time.Millisecond
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	serveDone := make(chan error, 1)
@@ -204,6 +205,7 @@ func TestMuxedHTTP2QuiesceBoundsLongLivedRequest(t *testing.T) {
 		close(handlerCanceled)
 	}))
 	server.httpServer.shutdownTimeout = 50 * time.Millisecond
+	server.quiesceDelay = 50 * time.Millisecond
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	serveDone := make(chan error, 1)
@@ -234,12 +236,13 @@ func TestMuxedHTTP2QuiesceBoundsLongLivedRequest(t *testing.T) {
 	require.NoError(t, normalizeServeError(<-serveDone))
 }
 
-func TestMuxedHTTP2QuiesceImmediatelyBoundsLongLivedGRPCStream(t *testing.T) {
+func TestMuxedHTTP2QuiesceBoundsLongLivedGRPCStreamAfterProxyGrace(t *testing.T) {
 	grpcServer := grpc.NewServer()
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(grpcServer, healthServer)
 	server := newGRPCMuxedHTTPServer(grpcServer, http.NotFoundHandler())
+	server.quiesceDelay = 100 * time.Millisecond
 	server.httpServer.shutdownTimeout = 20 * time.Millisecond
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -261,6 +264,11 @@ func TestMuxedHTTP2QuiesceImmediatelyBoundsLongLivedGRPCStream(t *testing.T) {
 
 	started := time.Now()
 	server.quiesce()
+	graceCtx, graceCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer graceCancel()
+	graceResponse, err := healthpb.NewHealthClient(connection).Check(graceCtx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err, "an existing public transport must remain usable during successor proxy grace")
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, graceResponse.Status)
 	streamDone := make(chan error, 1)
 	go func() {
 		_, recvErr := watch.Recv()
@@ -269,8 +277,10 @@ func TestMuxedHTTP2QuiesceImmediatelyBoundsLongLivedGRPCStream(t *testing.T) {
 	select {
 	case recvErr := <-streamDone:
 		require.Error(t, recvErr)
+		require.GreaterOrEqual(t, time.Since(started), server.quiesceDelay,
+			"the usable public connection must remain through successor proxy grace")
 		require.Less(t, time.Since(started), 500*time.Millisecond,
-			"GOAWAY must not retain a client on an admission-fenced Pod")
+			"GOAWAY and force-close must remain bounded after successor proxy grace")
 	case <-time.After(time.Second):
 		t.Fatal("quiesce did not force-close the long-lived gRPC stream within its bounded budget")
 	}
@@ -336,6 +346,14 @@ func TestNewHttpServerBoundsHeaderAdmission(t *testing.T) {
 	require.True(t, server.svr.Protocols.UnencryptedHTTP2())
 	require.Zero(t, server.svr.ReadTimeout)
 	require.Zero(t, server.svr.WriteTimeout)
+}
+
+func TestMuxedHTTP2QuiesceIncludesBoundedSuccessorProxyGrace(t *testing.T) {
+	server := newGRPCMuxedHTTPServer(grpc.NewServer(), http.NotFoundHandler())
+	require.Equal(t, transportQuiesceProxyGracePeriod, server.quiesceDelay)
+	require.Positive(t, server.quiesceDelay)
+	require.Less(t, server.quiesceDelay+server.httpServer.shutdownTimeout, 5*time.Second,
+		"proxy grace and forced-close budgets must fit inside the post-drain rollout window")
 }
 
 func TestRootServerBoundsProtocolClassificationForSecureEndpoints(t *testing.T) {
