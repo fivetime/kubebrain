@@ -61734,6 +61734,34 @@ digest `sha256:c0819738bfccfcf33b7de1fb8b476ba5503aa7113a3affa1fc405fc195979747`
 各 3/3，诊断期间临时缩容的 `a4653-auth`、`a4653-jwt`、`a4657-tls` 均恢复 3/3。最终 alarm 为空、差分用户 keyspace
 为空。默认完整 client/v3 runner 的缺口至此关闭；专用环境变体、跨节点/AZ 和长时间 soak 仍是独立证据缺口。
 
+### A5489：JWT 精确差分与新 keyspace 并行冷启动竞态
+
+为默认完整 runner 在 A5488 明确保留的 JWT 环境变体创建独立三副本 disposable fixture，使用仓库固定 HS256 key、独立
+TiKV keyspace、可达 NodePort 和参考 etcd `5cd9f4ee13801e18825d661e5005ae599460bc3a`。A5488 精确镜像的首次完整
+JWT 差分即 GREEN（Go 8.940 秒、runner 墙钟 11.614 秒）：认证启停、JWT 签发与权限变化、旧 auth revision 拒绝及
+postflight 清理均与参考端一致，最终 keys/users/roles/leases/alarms 全空。
+
+该 fixture 同时暴露了独立的生产冷启动 RED：全新 keyspace 三副本 Parallel 创建时，一个 Pod 首次进程以
+`restore admission is closed or this process identity is already active` 退出。根因是 restore-admission gate 不存在时，多个
+不同进程身份都先尝试 Open-gate 注册；一个事务成功初始化 gate，其余初始化事务因 gate 已出现而失败，旧代码没有重新按
+已打开 gate 注册，错误地把正常初始化竞争解释为 closed gate 或重复身份。提交
+`25d37c8028b873a1c001edde53a623c50ac39e82` 在初始化 compare 失败后增加一次受 `Value(gate)==Open` 与
+`Version(session)==0` 双重比较保护的注册；若并发 restore 已关闭 gate 或同一身份已存在，重试仍严格失败，不放宽互斥边界。
+
+新增测试让 16 个不同身份同步注册从未初始化的 gate。撤掉修复后连续 5 轮全部 RED，错误与真实 Pod 一致；恢复修复后包含
+session/restore acquire 单赢家不变量的完整 admissionfence 包 race 连续 20 轮通过（130.415 秒）。代码提交前 611 项
+inventory 为 140/171/154/146；提交后四片 Go 时间 142.948/371.922/237.907/381.262 秒，墙钟
+148.965/377.929/243.890/387.245 秒，全部通过。
+
+精确镜像 `kubebrain:a5489-25d37c80` 构建墙钟 209.944 秒，内嵌完整 SHA、TiKV 和 Go 1.26.5；本地 manifest list 为
+`sha256:1c710f26e1f0d2eaf10c9639500fddad6cb999c6464f5beefb940c727b788706`。用从未使用过的
+`a5489-cold-start` keyspace 并行创建三副本，三 Pod 一次启动即 3/3 Ready、restartCount 全为 0，runtime digest 均为
+`sha256:3b0a8eb7629c8d176334dcf19091ed13d39b812cc9f803a99518c24c76e5e044`。同一精确镜像 JWT 差分再次
+GREEN（Go 6.403 秒、runner 墙钟 8.851 秒），postflight 仍为全空且三 Pod 零重启；临时 StatefulSet、Service 和 Secret
+随后删除。主数据面已滚动到相同精确镜像，3/3 Ready、零重启、runtime digest 一致，alarm 与公开 keyspace 为空；PD/TiKV
+各 3/3 Ready、零重启。JWT 默认专用差分和新 keyspace 并行冷启动缺口至此关闭；JWT HA 故障、外部 TLS/L7、跨节点/AZ
+与长时间 soak 仍需独立证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
