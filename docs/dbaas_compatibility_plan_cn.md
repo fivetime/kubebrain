@@ -62291,6 +62291,44 @@ TSO/Region 延迟 1955/53/7ms。三个 KubeBrain Pod Ready、restart 0、同一�
 revision 精确收敛为 1/0/150/49061。该证据同时证明 rollout Watch 在 5 秒 SLA 内迁移，以及 A5510 changed path 在最终组合候选中
 正常工作；A5510 两次失败 rollout 仍保留为 RED，不计为独立发布成功。
 
+### A5512--A5516：checkpoint 退役清理与两阶段 rollout drain 闭环
+
+本组继续对齐 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/embed/etcd.go::stopServers`
+的 server-owned、有界 shutdown 原则，同时补齐独立 TiKV/PD 数据面特有的 checkpoint 保护清理。A5512（`16cdc0b3`）把成功注册但
+未发布的 PD checkpoint slot 纳入显式状态：旧任期迟到成功、拓扑拒绝、取消或 epoch stale 后立即以独立有界 context 补偿释放，失败
+计入 `serializable.checkpoint.release_err` 并由 shutdown 重试；冷启动且从未注册的实例不额外探测 PD。checkpoint/close 20 轮、race
+10 轮、backend 3 轮、公开 serializable 10 轮与 vet 全绿，640 项 inventory 为 `152/179/159/150`，四分片 Go/墙钟秒为
+136.551/142.751、365.395/371.587、229.263/235.456、377.107/383.335。其真实 rollout 在 iteration 192 因
+Put→Watch 6.238 秒 RED 并回滚到 A5511，不计 standalone live GREEN。
+
+A5513（`cbe7de32`）让 draining 立即撤回 readiness，并把内部/公共 gRPC health 置为 NOT_SERVING；runner 改用带 StatefulSet UID、
+resourceVersion、容器身份前置条件的精确 JSON Patch，冻结唯一 candidate spec。修正 runner 后 A5511 baseline restart 900/900 GREEN，
+但 A5513 候选在 iteration 4 以 6.711 秒 RED 并回滚。A5514（`537ba562`）把明文/TLS preStop 固定为
+`sleep 5 && curl ... /drain && sleep 5`：先让 terminating EndpointSlice 传播，再建立 admission fence，最后保留迁移窗口；runner 在
+mutation 前验证该顺序并拒绝旧 drain-first hook。A5511 baseline 配新 lifecycle 900/900 GREEN，A5514 候选仍在 iteration 45 以
+6.461 秒 RED 并回滚，证明 post-drain 额外等待仍会把连接粘在已 fence 的 Pod。相关 endpoint、native h2c、server、manifest、runner、
+connection-age、race 与四分片门禁均通过；生产脚本整包因 641 个慢脚本累计触发包级 timeout，不冒充 GREEN。
+
+A5515（`fedb61ae`）移除 admission fence 后的 1 秒延迟并立即发送 GOAWAY；升级 rollout 首次 900/900 GREEN，但随后的同版本 restart
+在 iteration 177 以 5.055 秒 RED，暴露 release 后 public unary 被永久 fence。A5516（`202a4219`）把单一 drain 标志收窄为 peer
+fence：`DrainLeadership` 写锁仍等待所有已 admitted unary 并阻止请求横切 durable release；release 成功后，退休 follower 继续拒绝 peer
+请求，但重新接纳 public unary，经已确认 Ready 的 successor proxy 服务直到 GOAWAY 完成。确定性旧代码 RED 返回 Unavailable；普通
+50 轮、race 20 轮、server 3 轮、etcd 核心整包 3 轮及 vet 全绿，641 项 inventory 为 `153/179/159/150`，四分片 Go/墙钟秒为
+123.528/129.719、353.158/359.366、223.859/230.049、371.678/377.872。
+
+最终不可变候选 `kubebrain:a5516-202a4219` 内嵌完整 SHA `202a421991ec13e3fd17199380d30ff914837df6`，OCI index 为
+`sha256:0bd21ae7d9bed95c7b36935e93391b5c95490dbf651914b4efe344681225a440`，kind runtime digest 为
+`sha256:557e6350064b816fa7b0f577d2b3d865d5e2075ec0e196b05e0ccdae839522e4`。独立 3×PD/3×TiKV v8.5.3 上，A5515→A5516
+rollout 与 A5516 同版本 restart 均为 **900/900 GREEN**，Watch 900、lease alive，最大业务/TSO/Region 延迟分别为
+1589/41/8ms 和 1831/46/9ms。restart 前后冻结共享 PD service safepoint 集：其他 auth/TLS/JWT 实例的 9 项精确保留，本实例旧
+6 项全删并新增 6 项，直接证明 A5512 cleanup 而非 TTL 到期。最终三个 KubeBrain Pod 3/3 Ready、restart 0、runtime digest 一致，
+EndpointSlice 全部 ready/serving；checkpoint 三端 available=1、release_err=0、revision 收敛 54909，PD/TiKV 3+3 Ready 且三 TiKV
+store Up。A5512--A5515 的每次 RED 与回滚仍保留为发布历史，不能由最终双轮 GREEN 覆盖。
+
+本组关闭的是“退役 checkpoint 保护泄漏”和“rollout 期间 readiness、EndpointSlice 传播、admission fence、GOAWAY 与 successor proxy
+次序不一致”两个生命周期缺口。后续每个 rollout 相关候选都必须同时执行 candidate upgrade 和 same-version restart 两轮 900 次门禁；
+只通过其中一轮不足以作为发布证据。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
