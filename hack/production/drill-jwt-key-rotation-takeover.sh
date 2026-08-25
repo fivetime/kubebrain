@@ -140,7 +140,6 @@ done
 (( SECONDS < deadline )) || die "JWT executor Pod did not become Ready"
 executor_name="$($JQ -r '.items[0].metadata.name' <<<"$executor")"
 executor_uid="$($JQ -r '.items[0].metadata.uid' <<<"$executor")"
-executor_rv="$($JQ -r '.items[0].metadata.resourceVersion' <<<"$executor")"
 
 operation=""; sts=""; marker=""
 case "$SCENARIO" in
@@ -175,6 +174,16 @@ esac
 (( SECONDS < deadline )) || die "JWT rotation did not reach the requested fault injection boundary"
 mv -- "$EVIDENCE_DIR/.executor.log" "$EVIDENCE_DIR/executor-before.log" 2>/dev/null || : >"$EVIDENCE_DIR/executor-before.log"
 chmod 600 "$EVIDENCE_DIR/executor-before.log"
+executor="$(kc -n "$OPERATION_NAMESPACE" get pod "$executor_name" -o json)" || die "cannot refresh the JWT executor Pod before injection"
+"$JQ" -e --arg name "$executor_name" --arg uid "$executor_uid" '
+  .metadata.name==$name and .metadata.uid==$uid and (.metadata.deletionTimestamp // "")=="" and
+  any(.status.conditions[]?; .type=="Ready" and .status=="True")
+' <<<"$executor" >/dev/null || die "JWT executor Pod identity changed before injection"
+executor_rv="$($JQ -er '.metadata.resourceVersion | select(type=="string" and test("^[1-9][0-9]*$"))' <<<"$executor")" || die "refreshed JWT executor Pod resourceVersion is invalid"
+operation="$(kc -n "$OPERATION_NAMESPACE" get kubebrainoperation "$OPERATION_NAME" -o json)" || die "cannot refresh the JWT Operation before injection"
+"$JQ" -e --arg uid "$EXPECTED_OPERATION_UID" --arg owner "$executor_uid" '
+  .metadata.uid==$uid and .status.phase=="Running" and .status.owner==$owner and .status.attempt==1
+' <<<"$operation" >/dev/null || die "JWT Operation ownership changed before injection"
 "$JQ" -cnS --arg format kubebrain.jwt-key-rotation.takeover-injection.v1 --arg scenario "$SCENARIO" --arg boundary "$marker" --arg operation "$OPERATION_NAME" --arg operation_uid "$EXPECTED_OPERATION_UID" --arg pod "$executor_name" --arg pod_uid "$executor_uid" --arg pod_rv "$executor_rv" --arg owner "$($JQ -r '.status.owner' <<<"$operation")" --argjson attempt "$($JQ -r '.status.attempt' <<<"$operation")" --arg sts_uid "$($JQ -r '.metadata.uid' <<<"$sts")" --arg sts_rv "$($JQ -r '.metadata.resourceVersion' <<<"$sts")" --argjson injected_at "$(date +%s)" '{format:$format,scenario:$scenario,boundary:$boundary,operation:$operation,operation_uid:$operation_uid,executor_pod:$pod,executor_pod_uid:$pod_uid,executor_pod_resource_version:$pod_rv,owner:$owner,attempt:$attempt,statefulset_uid:$sts_uid,statefulset_resource_version:$sts_rv,injected_at_unix:$injected_at}' >"$EVIDENCE_DIR/injection.json"
 chmod 600 "$EVIDENCE_DIR/injection.json"; sync -f "$EVIDENCE_DIR/injection.json"
 

@@ -49,6 +49,8 @@ func TestJWTKeyRotationTakeoverDrillPinsFaultAndEvidenceInvariants(t *testing.T)
 	require.NoError(t, err)
 	text := string(data)
 	for _, required := range []string{
+		`get pod "$executor_name" -o json`,
+		`JWT Operation ownership changed before injection`,
 		`--uid "$executor_uid" --resource-version "$executor_rv"`,
 		`updatedReplicas==1`,
 		`JWT rotation fault drill hold reached: point=$hold_point`,
