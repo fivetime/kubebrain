@@ -11,6 +11,10 @@ PUBLISHER_COMMAND="${PUBLISHER_COMMAND:-kubebrain-jwt-rotation-publisher}"; ROTA
 TOKEN_ISSUER_COMMAND="${TOKEN_ISSUER_COMMAND:-kubebrain-jwt-token-issuer}"; JWT_AUTH_CREDENTIAL_ROOT="${JWT_AUTH_CREDENTIAL_ROOT:-/var/run/secrets/kubebrain-jwt-auth}"
 JWT_AUTH_USERNAME_FILE="${JWT_AUTH_USERNAME_FILE:-${JWT_AUTH_CREDENTIAL_ROOT}/username}"; JWT_AUTH_PASSWORD_FILE="${JWT_AUTH_PASSWORD_FILE:-${JWT_AUTH_CREDENTIAL_ROOT}/password}"
 JQ="${JQ:-jq}"; DATE="${DATE:-date}"; SLEEP="${SLEEP:-sleep}"
+JWT_ROTATION_FAULT_HOLD_POINT="${JWT_ROTATION_FAULT_HOLD_POINT:-}"
+JWT_ROTATION_FAULT_HOLD_ATTEMPT="${JWT_ROTATION_FAULT_HOLD_ATTEMPT:-}"
+JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS="${JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS:-300}"
+CONFIRM_JWT_ROTATION_FAULT_DRILL="${CONFIRM_JWT_ROTATION_FAULT_DRILL:-}"
 MAX_PARAMETERS_BYTES=65536; MAX_EVIDENCE_BYTES=2097152
 
 die() { echo "$*" >&2; exit 2; }
@@ -20,6 +24,14 @@ resolve() { if [[ "$1" == */* ]]; then [[ -f "$1" && -x "$1" ]] || return 1; pri
 operation_is_positive_int64 "$LEASE_SECONDS" && (( LEASE_SECONDS >= 6 )) || die "LEASE_SECONDS must be an integer of at least 6"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
 operation_is_positive_decimal_less_than_int "$heartbeat_interval" "$LEASE_SECONDS" || die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS; value must be a canonical positive decimal int64"
+if [[ -n "$JWT_ROTATION_FAULT_HOLD_POINT" || -n "$JWT_ROTATION_FAULT_HOLD_ATTEMPT" || "$CONFIRM_JWT_ROTATION_FAULT_DRILL" == yes ]]; then
+  [[ "$CONFIRM_JWT_ROTATION_FAULT_DRILL" == yes ]] || die "set CONFIRM_JWT_ROTATION_FAULT_DRILL=yes to enable a JWT rotation fault hold"
+  [[ "$JWT_ROTATION_FAULT_HOLD_POINT" == ttl-wait || "$JWT_ROTATION_FAULT_HOLD_POINT" == phase-c-before-terminal ]] || die "JWT_ROTATION_FAULT_HOLD_POINT must be ttl-wait or phase-c-before-terminal"
+  [[ "$JWT_ROTATION_FAULT_HOLD_ATTEMPT" =~ ^[1-5]$ ]] || die "JWT_ROTATION_FAULT_HOLD_ATTEMPT must be 1..5"
+  operation_is_positive_int64 "$JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS" && (( JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS <= 3600 )) || die "JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS must be 1..3600"
+else
+  [[ "$JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS" == 300 ]] || die "JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS requires an authorized fault hold"
+fi
 command -v realpath >/dev/null && command -v sha256sum >/dev/null && command -v stat >/dev/null || die "realpath, sha256sum, and stat are required"
 command -v sync >/dev/null || die "sync is required"
 JQ="$(resolve "$JQ")" || die "jq is required"; DATE="$(resolve "$DATE")" || die "date is required"; SLEEP="$(resolve "$SLEEP")" || die "sleep is required"
@@ -86,6 +98,20 @@ run_step() {
   child=0; heartbeat_pid=0; if [[ "$heartbeat_rc" == 75 ]]; then fenced=true; echo "operation heartbeat failed during ${label}" >&2; return 75; fi; return "$step_rc"
 }
 run_or_retry() { local label="$1"; shift; local rc=0; run_step "$label" "$@" || rc=$?; [[ "$fenced" == false ]] || exit 1; (( rc == 0 )) || { terminal_heartbeat || exit 1; retry "${label} exited ${rc}"; }; }
+fault_hold_wait() {
+  local deadline=$((SECONDS + JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do "$SLEEP" 1; done
+  return 74
+}
+fault_hold() {
+  local point="$1" rc=0
+  [[ "$JWT_ROTATION_FAULT_HOLD_POINT" == "$point" && "$JWT_ROTATION_FAULT_HOLD_ATTEMPT" == "$attempt" ]] || return 0
+  echo "JWT rotation fault drill hold reached: point=${point} operation=${operation_id} attempt=${attempt}" >&2
+  run_step "fault drill hold ${point}" fault_hold_wait || rc=$?
+  [[ "$fenced" == false ]] || exit 1
+  terminal_heartbeat || exit 1
+  retry "fault drill hold ${point} timed out after ${JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS}s (rc=${rc})"
+}
 fetch_material_command() { local material_key="$1" material_version="$2" target="$3"; local version_args=(); [[ "$material_version" == - ]] || version_args=(--material-version "$material_version"); run_operationctl --action material --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --material-key "$material_key" "${version_args[@]}" >"$target"; }
 fetch_material() { local material_key="$1" material_version="$2" target="$3" expected="$4" label="$5"; run_or_retry "fetch ${label} material" fetch_material_command "$material_key" "$material_version" "$target"; chmod 600 "$target"; secure_file "$target" 1048576 && [[ "$expected" =~ ^[a-f0-9]{64}$ && "$(digest "$target")" == "$expected" ]] || retry "${label} material digest mismatch"; }
 old_source="$capture/key-old"; new_source="$capture/key-new"
@@ -123,6 +149,7 @@ secure_file "$a_gate" "$MAX_EVIDENCE_BYTES" && secure_file "$b_gate" "$MAX_EVIDE
   (.secret|keys==["data_sha256","resource_version","uid"]) and (.secret.uid|type=="string" and length>0) and (.secret.resource_version|type=="string" and length>0) and (.secret.data_sha256|test("^[a-f0-9]{64}$"))' "$b_gate" >/dev/null || retry "phase B gate receipt is invalid"
 earliest="$("$JQ" -er '.earliest_retirement_at_unix | select(type=="number" and .>0 and .==floor)' "$b_gate")" || retry "phase B gate receipt is invalid"
 wait_until() { local now; while true; do now="$("$DATE" +%s)"; [[ "$now" =~ ^[1-9][0-9]*$ ]] || return 2; (( now >= earliest )) && return 0; "$SLEEP" "$((earliest-now > 5 ? 5 : earliest-now))"; done; }
+fault_hold ttl-wait
 run_or_retry "JWT retirement wait" wait_until
 phase_c_rc=0
 run_step "phase C publish" "$PUBLISHER_COMMAND" --phase phase-c --previous-receipt "$b_publish" --receipt-output "$c_publish" "${publisher_common[@]}" || phase_c_rc=$?
@@ -166,6 +193,8 @@ if [[ -e "$receipt_output" ]]; then secure_file "$receipt_output" "$MAX_EVIDENCE
   "$JQ" -cnS --arg format kubebrain.jwt-key-rotation.operation.receipt.v3 --arg request "$request_id" --arg operation "$operation_id" --arg instance "$instance" --arg uid "$operation_uid" --argjson attempt "$attempt" --arg parameters "$parameters_sha" --arg old_version "$old_version" --arg new_version "$new_version" --arg ap "$a_publish_sha" --arg bp "$b_publish_sha" --arg cp "$c_publish_sha" --arg ag "$a_gate_sha" --arg bg "$b_gate_sha" --arg cg "$c_gate_sha" --argjson completed "$("$DATE" +%s)" '{format:$format,request_id:$request,operation_id:$operation,instance:$instance,operation_uid:$uid,attempt:$attempt,parameters_sha256:$parameters,old_key_version_id:$old_version,new_key_version_id:$new_version,phase_a_publish_receipt_sha256:$ap,phase_b_publish_receipt_sha256:$bp,phase_c_publish_receipt_sha256:$cp,phase_a_gate_receipt_sha256:$ag,phase_b_gate_receipt_sha256:$bg,phase_c_gate_receipt_sha256:$cg,completed_at_unix:$completed}' >"$composite"
   chmod 600 "$composite"; sync -f "$composite"; ln "$composite" "$receipt_output" || retry "composite receipt no-clobber publish failed"; sync -f "$state_dir"; validate_composite || retry "published composite receipt is invalid"
 fi
-receipt_sha="$(digest "$receipt_output")"; terminal_heartbeat || exit 1
+receipt_sha="$(digest "$receipt_output")"
+fault_hold phase-c-before-terminal
+terminal_heartbeat || exit 1
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "JWT key rotation completed" >/dev/null
 trap - EXIT INT TERM; rm -rf -- "$capture"

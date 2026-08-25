@@ -80,7 +80,7 @@ if [[ ! -e "$output" ]]; then (umask 077; printf '%s\n' "$body" >"$output"); fi
 `)
 	dateCommand, sleepCommand := filepath.Join(dir, "date"), filepath.Join(dir, "sleep")
 	writeTrafficExecutable(t, dateCommand, "#!/usr/bin/env bash\nprintf '200\\n'\n")
-	writeTrafficExecutable(t, sleepCommand, "#!/usr/bin/env bash\nexit 0\n")
+	writeTrafficExecutable(t, sleepCommand, "#!/usr/bin/env bash\nif [[ \"${REAL_SLEEP:-false}\" == true ]]; then exec /bin/sleep \"$1\"; fi\nexit 0\n")
 	baseEnv := []string{
 		"WORKER_ID=worker-a", "WORK_DIR=" + dir, "PARAMETERS_INPUT=" + parameterPath, "OPERATIONCTL=" + operationctl,
 		"PUBLISHER_COMMAND=" + publisher, "ROTATION_COMMAND=" + gate, "TOKEN_ISSUER_COMMAND=" + issuer,
@@ -113,11 +113,50 @@ if [[ ! -e "$output" ]]; then (umask 077; printf '%s\n' "$body" >"$output"); fi
 	require.Equal(t, firstReceipt, mustRead(t, receipt))
 	require.Equal(t, 2, strings.Count(string(mustRead(t, logPath)), "--action succeed"))
 
-	output, err = runProductionRunnerCommand(t, "run-jwt-key-rotation-operation.sh", append(baseEnv, "CLAIM_ATTEMPT=3", "FAIL_HEARTBEAT=true", "HANG_PUBLISH=true"))
+	output, err = runProductionRunnerCommand(t, "run-jwt-key-rotation-operation.sh", append(baseEnv,
+		"CLAIM_ATTEMPT=3", "FAIL_HEARTBEAT=true", "REAL_SLEEP=true", "CONFIRM_JWT_ROTATION_FAULT_DRILL=yes",
+		"JWT_ROTATION_FAULT_HOLD_POINT=ttl-wait", "JWT_ROTATION_FAULT_HOLD_ATTEMPT=3"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "JWT rotation fault drill hold reached: point=ttl-wait")
+	require.Contains(t, string(output), "heartbeat failed")
+	require.Equal(t, firstReceipt, mustRead(t, receipt))
+	require.Equal(t, 2, strings.Count(string(mustRead(t, logPath)), "--action succeed"))
+
+	output, err = runProductionRunnerCommand(t, "run-jwt-key-rotation-operation.sh", append(baseEnv,
+		"CLAIM_ATTEMPT=4", "FAIL_HEARTBEAT=true", "REAL_SLEEP=true", "CONFIRM_JWT_ROTATION_FAULT_DRILL=yes",
+		"JWT_ROTATION_FAULT_HOLD_POINT=phase-c-before-terminal", "JWT_ROTATION_FAULT_HOLD_ATTEMPT=4"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "JWT rotation fault drill hold reached: point=phase-c-before-terminal")
+	require.Contains(t, string(output), "heartbeat failed")
+	require.Equal(t, firstReceipt, mustRead(t, receipt))
+	require.Equal(t, 2, strings.Count(string(mustRead(t, logPath)), "--action succeed"))
+
+	output, err = runProductionRunnerCommand(t, "run-jwt-key-rotation-operation.sh", append(baseEnv, "CLAIM_ATTEMPT=5", "FAIL_HEARTBEAT=true", "HANG_PUBLISH=true"))
 	require.Error(t, err)
 	require.Contains(t, string(output), "heartbeat failed")
 	require.Equal(t, firstReceipt, mustRead(t, receipt))
 	require.Equal(t, 2, strings.Count(string(mustRead(t, logPath)), "--action succeed"))
+}
+
+func TestJWTKeyRotationFaultHoldRequiresExplicitBoundedAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{name: "confirmation", env: []string{"JWT_ROTATION_FAULT_HOLD_POINT=ttl-wait", "JWT_ROTATION_FAULT_HOLD_ATTEMPT=1"}, want: "set CONFIRM_JWT_ROTATION_FAULT_DRILL=yes"},
+		{name: "point", env: []string{"CONFIRM_JWT_ROTATION_FAULT_DRILL=yes", "JWT_ROTATION_FAULT_HOLD_POINT=unknown", "JWT_ROTATION_FAULT_HOLD_ATTEMPT=1"}, want: "JWT_ROTATION_FAULT_HOLD_POINT must be"},
+		{name: "attempt", env: []string{"CONFIRM_JWT_ROTATION_FAULT_DRILL=yes", "JWT_ROTATION_FAULT_HOLD_POINT=ttl-wait", "JWT_ROTATION_FAULT_HOLD_ATTEMPT=0"}, want: "JWT_ROTATION_FAULT_HOLD_ATTEMPT must be 1..5"},
+		{name: "timeout", env: []string{"CONFIRM_JWT_ROTATION_FAULT_DRILL=yes", "JWT_ROTATION_FAULT_HOLD_POINT=ttl-wait", "JWT_ROTATION_FAULT_HOLD_ATTEMPT=1", "JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS=3601"}, want: "JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS must be 1..3600"},
+		{name: "timeout without hold", env: []string{"JWT_ROTATION_FAULT_HOLD_TIMEOUT_SECONDS=1"}, want: "requires an authorized fault hold"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := append([]string{"WORKER_ID=worker-a", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=1"}, tc.env...)
+			output, err := runProductionRunnerCommand(t, "run-jwt-key-rotation-operation.sh", env)
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.want)
+		})
+	}
 }
 
 func testSHA(value []byte) string {
