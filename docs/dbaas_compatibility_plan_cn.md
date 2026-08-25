@@ -61651,6 +61651,38 @@ revision 206、alarm=0，总耗时 467.861 秒；退出后临时集群、kubecon
 133.598/369.448/231.892/376.237 秒，端到端 139.643/375.468/237.945/382.270 秒全部通过。v1.35 的单宿主基础/HA
 缺口关闭；跨节点/AZ、原地升级/回滚与长时版本 soak 仍开放。
 
+### A5486：滚动升级请求排空与安全重试闭环
+
+三步代码提交把生产 StatefulSet 的 voluntary handoff 与 HTTP/2 transport 生命周期对齐。`e9527356` 先将四个
+rollout runner 的默认工作负载统一为 StatefulSet，并让 preStop `/drain` 在关闭 public/peer transport 前等待
+successor；`3289e87c` 增加 successor durable/peer-ready 门禁、peer admission 精确
+`Aborted: kubebrain: peer drained before request admission` 信号和仅针对该未执行信号的一次 KV unary 重放，同时用
+`net/http` h2c Shutdown 发出 GOAWAY。提交 `831478e82162d1376f2c39ed18d1ade9570f2eb1` 最终把 public unary
+admission、leader release、transport quiesce 放在同一 leadership 写 fence 内：失败 drain 不再永久关闭 admission，
+成功 drain 后排队请求在进入 handler 前返回 clientv3 的精确 mutable-RPC 安全重试信号
+`Unavailable: there is no connection available`。
+
+真实三副本独立 TiKV/PD 迭代没有把偶然 GREEN 当作关闭证据。精确 `3289e87c` 镜像首次直连仍以
+`etcdserver: leader changed` RED；增加 public fence 后，dirty 镜像又分别暴露 2 秒和 5 秒
+`proxy is not ready` RED。日志证明其中一条路径是 successor count index 重建时返回的应用层 fallback
+`Unavailable` 被代理误判为连接故障并销毁健康共享连接；该内部控制信号现有精确协议身份，不再触发 reset。另一条路径
+是旧 leader 退出而 successor 尚未选出时，请求等待 5 秒仍未转发；由于 handler/leader RPC 均未进入，超时现在也返回
+上述精确安全重试信号，而 caller 自身 cancel/deadline 仍原样优先。dirty 最终版连续三轮 8×50 直连负载均为
+400/400 GREEN（40.284/44.825/43.341 秒）。集群内 balancer probe 在故障注入前因现场成员 advertised client URL
+统一为 `172.18.0.2:30079`、而探针要求三 Pod DNS 精确相等而 RED；该轮没有进入 Pod 删除，故明确记为配置前置失败，
+不作为数据面 GREEN/RED 结论，也不篡改现场 advertise 配置来制造通过。
+
+最终精确镜像 `kubebrain:a5486-831478e8` 的本地 OCI manifest list 为
+`sha256:6e533c22238cafefd5ae8f16fb2e961cdf8dabbc14e3994b7fa0a91ed71c5026`，构建墙钟 212.818 秒；
+三个 Kind Pod 均运行 runtime digest
+`sha256:11c28e322fa71a6aa3b22c96bf3dcc45244a5bf0df30384ffbf74e5f786d1bb4`，3/3 Ready、零重启。
+精确镜像连续三轮 rollout 均为 400/400 GREEN（40.614/41.627/42.263 秒），日志实际命中安全重试信号后全部恢复。
+相关包普通测试全绿（proxyprotocol 0.012、etcdproxy 6.176、etcd 127.816、server 0.398、endpoint 19.658 秒），
+聚焦 race 连续五轮通过。611 项 production inventory 仍为 140/171/154/146；`831478e8` 提交后四片 Go 时间
+122.096/353.218/230.216/367.454 秒，墙钟 128.093/359.251/236.290/373.495 秒，全部通过。当前证据关闭单节点
+Kind 三副本直连滚动升级的已观测 unary 丢请求窗口；外部 L4/L7、advertised Pod DNS balancer、跨节点/AZ 与长时 soak
+仍需独立门禁，不能由本轮直连 GREEN 替代。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
