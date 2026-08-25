@@ -23,6 +23,7 @@ func TestJWTKeyRotationOperationCompletesAndTakeoverReusesReceipt(t *testing.T) 
 		"state_dir": stateDir, "receipt_output": receipt, "kubebrain_namespace": "instance-a", "kubebrain_statefulset": "kubebrain",
 		"key_secret": name + "-keys", "old_key_field": "old-key", "new_key_field": "new-key", "old_key_material_key": "jwt-old-key", "new_key_material_key": "jwt-new-key",
 		"old_key_version_id": "kms/prod/jwt/versions/41", "new_key_version_id": "kms/prod/jwt/versions/42",
+		"kms_receipt_public_key_sha256": testSHA([]byte("kms-public-key")), "old_key_export_receipt_sha256": testSHA([]byte("old-export-receipt")), "new_key_export_receipt_sha256": testSHA([]byte("new-export-receipt")),
 		"old_key_sha256": testSHA([]byte("old-material")), "new_key_sha256": testSHA([]byte("new-material")), "key_volume": "jwt-keys", "key_mount_dir": "/etc/kubebrain-jwt", "sign_method": "HS256",
 		"endpoints": []string{"https://member-0:2379"}, "expected_replicas": 1, "jwt_ttl_seconds": 90, "max_clock_skew_seconds": 2, "probe_range_key": "/probe",
 		"probe_cacert_material_key": "", "probe_cert_material_key": "", "probe_key_material_key": "", "probe_server_name": "", "probe_cacert_sha256": "", "probe_cert_sha256": "", "probe_key_sha256": "",

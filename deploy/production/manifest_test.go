@@ -1223,6 +1223,14 @@ func TestLegacySnapshotRemediationNativeHelperIsInRuntimeImage(t *testing.T) {
 	require.NotContains(t, text, "COPY --from=build /src/bin/etcdutl")
 }
 
+func TestJWTKMSExportVerifierIsInRuntimeImage(t *testing.T) {
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	require.NoError(t, err)
+	text := string(dockerfile)
+	require.Contains(t, text, "go build -trimpath -o /src/bin/kubebrain-jwt-kms-export-verifier ./hack/production/cmd/jwt-kms-export-verifier")
+	require.Contains(t, text, "COPY --from=build /src/bin/kubebrain-jwt-kms-export-verifier /usr/local/bin/kubebrain-jwt-kms-export-verifier")
+}
+
 func TestNativePITRFullBackupHasPinnedIsolatedRuntimeImage(t *testing.T) {
 	dockerfile, err := os.ReadFile("../../Dockerfile")
 	require.NoError(t, err)
