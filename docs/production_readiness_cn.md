@@ -8412,3 +8412,19 @@ compat 全套 10.313 秒、direct runner 连续 10 轮 29.019 秒、目标 race 
 环境未安装 ShellCheck，故本项不声称新的 ShellCheck 证据。639 项 inventory 保持 `152/178/159/150`；精确提交后四片
 Go/墙钟秒为 134.436/140.620、370.848/377.021、229.755/235.906、381.207/387.372，全部通过。本项只加固发布证据与修复
 `memberlist-hash` runner 可达性，不修改 etcd RPC runtime。
+
+### A5505：HTTP drain 超时与 quiesce 最终回收回归门禁
+
+对照 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/embed/etcd.go::stopServers`：上游先以调用方
+context 执行 `http.Server.Shutdown`，再停止由 net/http 承载的 gRPC server。KubeBrain 已采用同一关闭顺序，并在 2 秒 graceful
+预算耗尽后调用 `http.Server.Close`，避免长 Watch/gateway handler 无限拖住 SIGTERM；但既有测试只证明 handler 在预算内完成时
+可优雅排空，没有执行 timeout→force-close 分支，也没有证明 `/drain` 先启动后台 quiesce 后的最终关闭仍然有界。
+
+提交 `f8622114` 将既有 2 秒预算命名为实例默认值，仅为测试提供短预算注入，不改变线上数值或 RPC 语义。新增两个真实 listener
+回归：普通 HTTP handler 超过预算后必须断开客户端、取消 request context 并结束 Serve；muxed HTTP/gRPC transport 先执行
+quiesce、存在活跃 handler 时，最终 close 也必须在预算后强制回收并完成。默认值构造合同同时固定为 2 秒。聚焦普通连续 20 轮
+6.926 秒、race 连续 10 轮 4.687 秒、完整 endpoint 包 19.736 秒及 vet/diff check 全部通过。
+
+639 项 inventory 保持 `152/178/159/150`；精确代码提交后四片 Go/墙钟秒为
+145.518/151.709、380.724/386.918、234.065/240.257、392.876/399.059，全部通过。本项关闭的是已有 rollout 关停机制的
+超时分支证据空洞，不声称新增 etcd 客户端能力，也未改变 TiKV/PD 数据路径，因此不重复构建或扰动 A5504 已验证的数据面。

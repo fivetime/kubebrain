@@ -62158,6 +62158,21 @@ Kubernetes v1.36.1、三副本 KubeBrain 与独立 3×PD/3×TiKV v8.5.3 上，`a
 134.436/140.620、370.848/377.021、229.755/235.906、381.207/387.372。本项不改变 runtime 客户端语义，关闭的是 runner
 preflight 与测试体之间的瞬时换端证据缺口及 shared-advertise memberlist scope 不可执行缺口。
 
+### A5505：有界 HTTP 关停强制回收证据
+
+对照 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/embed/etcd.go::stopServers` 的
+HTTP Shutdown→gRPC Stop 顺序，KubeBrain 现有实现同样先排空 net/http，并在 2 秒预算后强制 Close。此前回归只覆盖活跃请求在
+预算内主动完成，没有命中超时分支；也未覆盖 `/drain` 已启动无期限后台 quiesce、最终进程 close 与其并发的路径，因此实现虽有界，
+发布门禁不能证明长 Watch/gateway request 不会拖住 rollout。
+
+提交 `f8622114` 将既有 2 秒值显式保存为每个 HTTP server 的默认 shutdown budget，线上行为不变；测试实例可注入 50ms 预算。
+两个真实 TCP 回归分别固定普通 HTTP 和 muxed HTTP/gRPC quiesce 路径：handler 阻塞到 request context 取消，Shutdown 超时后必须
+断开客户端、取消 handler 并结束 Serve，最终 close 必须在 1 秒测试上界内返回。构造合同还防止默认预算被遗漏或意外变为零。
+
+聚焦普通连续 20 轮、race 连续 10 轮、完整 endpoint 包、vet 与 diff check 全绿。639 项四片仍为 `152/178/159/150`；精确提交后
+Go/墙钟秒为 145.518/151.709、380.724/386.918、234.065/240.257、392.876/399.059。本项是 rollout 可靠性证据补全，
+不改变 etcd RPC、TiKV 编码或 DBaaS 控制面职责，也不把单元回归冒充新的 live 数据面语义验证。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
