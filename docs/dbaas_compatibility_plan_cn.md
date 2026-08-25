@@ -61987,6 +61987,8 @@ UPDATE 移除 label 后改写 data。provisioner 校验 HTTPS origin、0600 sing
 并要求 lifecycle/requester/worker 对该 namespace 的 Secret 所有读写动词均为明确 Deny。629 项四片提交后 Go/墙钟秒为
 127.473/133.644、364.701/370.806、229.163/235.298、387.853/393.960，全部通过。真实 Kubernetes apply/type-check、provider
 readiness、active credential CAS 和旧 token revoke 尚未完成，本项仍处于 credential rotation 的 foundation 阶段。
+Kubernetes v1.36.1 API server 随后以 server-side dry-run 接受 Namespace、ServiceAccount、policy 和 binding，复查无任何同名
+持久资源；这提升了 schema/CEL 静态证据，但尚未产生持久 policy `observedGeneration/typeChecking` 或真实 credential UID。
 
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。

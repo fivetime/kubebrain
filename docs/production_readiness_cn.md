@@ -3971,6 +3971,9 @@ data immutability；固定四字段之外一律拒绝。provisioner 要求新 cr
 并检查 lifecycle/requester/worker 身份对该 namespace 的 Secret 全动词均为 Deny。629 项四片提交后 Go/墙钟秒为
 127.473/133.644、364.701/370.806、229.163/235.298、387.853/393.960，全部通过。尚未取得真实 apiserver CEL type-check、
 credential provision、provider readiness、激活和旧 token revoke 证据，因此部署/轮换门禁仍开放。
+同日 Kubernetes v1.36.1 server-side dry-run 接受全部四类 foundation 资源；因 dry-run namespace 不对同一请求后续 SA 可见，SA
+另以现有 namespace 做等价 server dry-run。请求后目标 namespace、policy、SA 均为 NotFound，未改变长期测试集群。此结果只证明
+API schema/CEL 请求可接受，不证明持久 policy status 已 observed/type-check clean。
 
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；

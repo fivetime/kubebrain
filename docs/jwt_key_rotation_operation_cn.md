@@ -340,7 +340,9 @@ Secret 仍有较宽 get 权限），而是进入专用 `kubebrain-kms-lifecycle`
 API 写入前验证 HTTPS origin、0600 single-link token/CA/trust key、自签 CA trust anchor 和 Ed25519 公钥。629 项四片提交后
 Go/墙钟秒为 127.473/133.644、364.701/370.806、229.163/235.298、387.853/393.960，全部通过。当前仍缺真实集群 policy
 type-check/apply、真实 Secret provisioning、新 credential provider readiness、激活 CAS 与旧 credential 撤权，不能把 foundation
-存在解释为已完成轮换。
+存在解释为已完成轮换。随后 Kubernetes v1.36.1 API server 对 Namespace、ServiceAccount、policy 与 binding 的 server-side
+dry-run 全部接受；目标 namespace/policy/SA 复查均为 NotFound，确认零持久写。该证据仍不替代持久 apply 后的
+`observedGeneration`/`typeChecking` 收敛。
 
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
