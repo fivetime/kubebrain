@@ -74,8 +74,7 @@ endpoints_json="$("$JQ" -cS '.endpoints' "$PARAMETERS_INPUT")"; endpoints="$("$J
 [[ "$key_secret" == "${operation_id}-keys" ]] || die "JWT key Secret does not match the immutable operation identity"
 [[ "$request_id" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "JWT external request identity is invalid"
 [[ "$old_material" == jwt-old-key && "$new_material" == jwt-new-key ]] || die "JWT key material fields do not match the broker allowlist"
-key_version_re='^[A-Za-z0-9][A-Za-z0-9._:/@+=-]{0,511}$'
-[[ "$old_version" =~ $key_version_re && "$new_version" =~ $key_version_re && "$old_version" != "$new_version" ]] || die "JWT key versions must be distinct canonical external KMS versions"
+operation_is_external_version_id "$old_version" && operation_is_external_version_id "$new_version" && [[ "$old_version" != "$new_version" ]] || die "JWT key versions must be distinct canonical external KMS versions"
 [[ "$kms_public_key_sha" =~ ^[a-f0-9]{64}$ && "$old_export_receipt_sha" =~ ^[a-f0-9]{64}$ && "$new_export_receipt_sha" =~ ^[a-f0-9]{64}$ && "$old_export_receipt_sha" != "$new_export_receipt_sha" ]] || die "JWT KMS export receipt provenance is invalid"
 for value in "$old_field" "$new_field" "$key_volume"; do [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "JWT key field or volume identity is invalid"; done
 [[ "$old_field" != "$new_field" && "$key_mount" == /* && "$key_mount" != / && "$(realpath -m -- "$key_mount")" == "$key_mount" ]] || die "JWT key mount binding is invalid"

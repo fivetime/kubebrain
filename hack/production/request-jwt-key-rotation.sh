@@ -31,8 +31,7 @@ command -v realpath >/dev/null || die "realpath is required"
 for value in "$OLD_KEY_FIELD" "$NEW_KEY_FIELD" "$KEY_VOLUME"; do [[ "$value" =~ $resource_id ]] || die "JWT key field or volume identity is invalid"; done
 [[ "$OLD_KEY_FIELD" != "$NEW_KEY_FIELD" && "$KEY_MOUNT_DIR" == /* && "$KEY_MOUNT_DIR" != / && "$(realpath -m -- "$KEY_MOUNT_DIR")" == "$KEY_MOUNT_DIR" ]] || die "JWT key mount binding is invalid"
 [[ "$SIGN_METHOD" == HS256 || "$SIGN_METHOD" == RS256 || "$SIGN_METHOD" == PS256 || "$SIGN_METHOD" == ES256 || "$SIGN_METHOD" == EdDSA ]] || die "SIGN_METHOD is unsupported"
-key_version_re='^[A-Za-z0-9][A-Za-z0-9._:/@+=-]{0,511}$'
-[[ "$OLD_KEY_VERSION_ID" =~ $key_version_re && "$NEW_KEY_VERSION_ID" =~ $key_version_re && "$OLD_KEY_VERSION_ID" != "$NEW_KEY_VERSION_ID" ]] || die "OLD_KEY_VERSION_ID and NEW_KEY_VERSION_ID must be distinct canonical external KMS versions"
+operation_is_external_version_id "$OLD_KEY_VERSION_ID" && operation_is_external_version_id "$NEW_KEY_VERSION_ID" && [[ "$OLD_KEY_VERSION_ID" != "$NEW_KEY_VERSION_ID" ]] || die "OLD_KEY_VERSION_ID and NEW_KEY_VERSION_ID must be distinct canonical external KMS versions"
 operation_is_positive_int64 "$EXPECTED_REPLICAS" && (( EXPECTED_REPLICAS <= 2147483647 )) || die "EXPECTED_REPLICAS must be a canonical positive int32"
 operation_is_positive_int64 "$JWT_TTL_SECONDS" && (( JWT_TTL_SECONDS <= 2147483647 )) || die "JWT_TTL_SECONDS must be a canonical positive int32"
 operation_is_nonnegative_int64 "$MAX_CLOCK_SKEW_SECONDS" && (( MAX_CLOCK_SKEW_SECONDS <= 2147483647-JWT_TTL_SECONDS )) || die "MAX_CLOCK_SKEW_SECONDS is invalid"

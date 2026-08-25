@@ -7,6 +7,15 @@ OPERATION_MAX_UINT64=18446744073709551615
 OPERATION_MAX_INT32=2147483647
 OPERATION_MAX_UINT32=4294967295
 
+# Keep large external identifiers out of ERE repetition bounds. musl regex(3)
+# rejects bounds above RE_DUP_MAX (255), while glibc accepts the 511 bound that
+# was previously used by the JWT rotation scripts.
+operation_is_external_version_id() {
+  local value="$1"
+  (( ${#value} >= 1 && ${#value} <= 512 )) || return 1
+  [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@+=-]*$ ]]
+}
+
 operation_is_positive_int64() {
   local value="$1"
   [[ "$value" =~ ^[1-9][0-9]{0,18}$ ]] || return 1
