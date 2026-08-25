@@ -61875,6 +61875,21 @@ postflight 关闭 auth 并删除 root user/role，公开 KV count=0、lease=0、
 Service、Secret、Pod 与宿主 JWT/key/receipt 临时文件全部删除。主数据面继续运行 A5491 精确镜像 3/3 Ready、零重启。
 本次把 A5492 从模拟门禁推进为精确镜像真实三副本证据；剩余缺口仍是外部 KMS/Secret/Operation 控制面、跨节点/AZ 与长 soak。
 
+### A5493：JWTKeyRotation 持久 Operation 实现规格
+
+新增 `docs/jwt_key_rotation_operation_cn.md`，在修改公共 Operation API 前固定完整控制面合同。JWT 轮换不能直接复用
+CertificateRotation：phase B 后必须在持续 heartbeat 下等待 TTL+skew，接管者还必须保留并复验同一 phase A 旧 JWT。
+规格因此定义专用 `JWTKeyRotation` type/requester/executor、严格 64 KiB 参数 schema、old/new key 与 TLS 摘要冻结、三份 0600
+no-clobber token 文件、phase receipt 驱动的恢复状态机和 final heartbeat→terminal CAS。
+
+StatefulSet/Secret publisher 只允许更改受管 auth 参数、phase/checksum annotation 和固定 immutable 双 key Secret，通过 API
+precondition 与 rollout 收敛证明每阶段 revision；每阶段另产 publish receipt。最终 composite operation receipt 绑定三张
+publish receipt、三张 gate receipt、参数/Operation UID/attempt，Operation succeed 提交 composite SHA，既不改写 A5492 gate
+schema，也不把 hook 返回码冒充发布证据。规格同时列出 CRD、queue、parameter broker、worker/audit admission、RBAC、executor
+Deployment、terminal fencing 和真实接管故障注入的逐项验收清单。
+
+本项只关闭实现前的权限/恢复语义歧义，尚未声称 API、publisher 或 executor 已交付；下一阶段按该清单做纵向实现与门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

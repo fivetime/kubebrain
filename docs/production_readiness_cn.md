@@ -3870,6 +3870,10 @@ data digest 不变，相邻有效阶段 StatefulSet revision 不同，最终三�
 公开 KV、user、role、lease 和 alarm 全空；隔离 StatefulSet、五个 Service、Secret、Pod 及宿主敏感临时文件全部删除，主数据面
 仍为 3/3 Ready、零重启。
 
+持久控制面的实现合同见 `docs/jwt_key_rotation_operation_cn.md`。它固定独立 `JWTKeyRotation` type、严格参数 schema、
+三份持久 token、heartbeat 覆盖的 TTL 等待、受限 StatefulSet/Secret publisher、六份阶段证据与 composite terminal receipt；
+当前是实现与验收规格，不代表 Operation CRD/executor 已交付。
+
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
 
 ```shell
