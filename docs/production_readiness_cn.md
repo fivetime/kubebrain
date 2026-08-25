@@ -3952,6 +3952,12 @@ old/new version，且 completion < promotion < revoke，单张签名证据有效
 131.943/138.139、354.991/361.134、226.506/232.659、374.056/380.174，全部通过。尚需实际 mutation API client、独立 KMS
 write credential 和终态归档，不能仅凭 verifier 存在声称旧 version 已撤权。
 
+提交 `b3650e6f` 增加实际 lifecycle mutation client：它只从 canonical v3 Operation receipt 派生 request/operation/instance/version，
+使用与 export/executor 分离的短期 0600 lifecycle token 调用固定 HTTPS promote/revoke endpoint，revoke 必须提交 promotion receipt SHA。
+finalizer 在 promotion 签名/状态/绑定验证通过前绝不调用 revoke；已有 receipt 会重新验证后幂等恢复，所有输出 0600 fsync
+no-clobber。625 项四片 Go/墙钟秒为 125.977/132.112、352.488/358.624、227.869/234.002、368.369/374.501，全部通过。
+代码路径已闭环，但尚无真实 provider mutation、独立 credential 部署/轮换和 Object Lock 归档证据，仍不得把 KMS lifecycle 标为生产 GREEN。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。

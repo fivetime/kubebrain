@@ -310,6 +310,19 @@ instance、old/new version 和 Operation receipt SHA，发生在 Operation compl
 Go/墙钟秒为 131.943/138.139、354.991/361.134、226.506/232.659、374.056/380.174，全部通过。该提交固定可信终态证据合同；
 实际 mutation client、专用凭据/RBAC 与归档流程仍未交付。
 
+提交 `b3650e6f` 交付正式 `kubebrain-jwt-kms-lifecycle-client` 和
+`finalize-jwt-kms-lifecycle.sh`。client 从 canonical v3 Operation receipt 派生全部 identity/version/SHA，不接受调用者重述这些字段；
+以独立 0600 lifecycle Bearer token、pinned CA、禁 redirect 的 HTTPS client 调用固定
+`POST /v1/jwt-key-versions:promote|revoke`。promotion 请求 predecessor 为空；revoke 请求携带 promotion envelope SHA。
+请求/响应 exact JSON、media type、20 秒总预算、15 秒 HTTP timeout、64 KiB receipt 和不透传 provider body 均 fail closed；签名
+envelope 以 0600、fsync、hard-link no-clobber 和 directory sync 发布。
+
+finalizer 先冻结 Operation receipt，只在 promotion receipt 经正式 verifier 证明 `new-primary` 后才允许发 revoke；任一 promotion
+验证失败都保证零 revoke 调用。已有 promotion/revoke receipt 会重新验证并幂等跳过对应 mutation，支持响应落盘后的进程接管；
+不同内容不能覆盖。625 项四片提交后 Go/墙钟秒为
+125.977/132.112、352.488/358.624、227.869/234.002、368.369/374.501，全部通过。当前仍缺真实 provider 实机演练、专用
+lifecycle credential 的 Kubernetes/外部身份部署与轮换，以及将两张终态 receipt 写入 Object Lock 审计归档。
+
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。

@@ -61969,6 +61969,12 @@ operation 与 request ID 后才可实施，本项本身未授予或调用 KMS �
 131.943/138.139、354.991/361.134、226.506/232.659、374.056/380.174，全部通过。实际 mutation client、独立 KMS write
 identity 和 receipt Object Lock 归档仍开放。
 
+提交 `b3650e6f` 实现固定 HTTPS promotion/revoke client 与可接管 finalizer。mutation identity 全部从 canonical v3 Operation receipt
+派生；独立 lifecycle token 不复用 export token 或 executor 身份；revoke 请求绑定已验证 promotion SHA。finalizer 强制
+promote→verify new-primary→revoke→verify old-revoked，promotion 验证失败时零 revoke，已有两阶段 receipt 重验后幂等跳过。
+625 项四片提交后 Go/墙钟秒为 125.977/132.112、352.488/358.624、227.869/234.002、368.369/374.501，全部通过。
+真实 provider、credential provisioning/rotation 与 Object Lock 归档仍开放，故本项仅为代码级 lifecycle 闭环。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
