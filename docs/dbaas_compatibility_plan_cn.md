@@ -61917,7 +61917,13 @@ signing-key hook，而在 A rollout 后签发 old token、B new-signer rollout �
 与 etcd 当前 private-key `assign` 语义及 KubeBrain verify-key overlap 扩展一致。镜像和 executor 已改用正式二进制及只读 credential
 mount。620 项四片提交后 Go/墙钟秒为 138.141/144.247、374.569/380.698、235.408/241.539、385.385/391.513，全部通过。
 
-executor 仍固定零副本；真实 API server CEL/type-check 与 auth matrix、外部 KMS/认证 Secret 生命周期及三处
+提交 `e674e764` 以 Kind Kubernetes v1.36.1 真实 server-side apply/type-check 关闭 publisher admission 静态验证缺口，并据此修复
+未引用 YAML 逗号、map `.filter(k,v,...)` 不受支持及 absent optional field 访问错误。最终 Secret/StatefulSet policy 均
+`observedGeneration == generation`、`typeChecking={}`、binding `Deny`；合法 Secret 与 auth-only patch 放行，四类越界 mutation
+拒绝，12 项 `auth can-i` 矩阵证明实例 Role 仅有目标 get/patch/get 与受 admission 约束的 create。一次性 namespace/RBAC/policy
+全部清理。620 项四片提交后 Go/墙钟秒为 123.645/129.741、356.454/362.577、225.825/231.951、375.868/381.955，全部通过。
+
+executor 仍固定零副本；其余 requester/worker live control-plane matrix、外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
 ### P2：运维兼容和长期验证

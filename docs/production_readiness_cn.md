@@ -3896,8 +3896,15 @@ mount 提供，密码不进入 argv/env/log；credential symlink 被限制在 mo
 `publish A→issue old→publish B→issue new→publish C→issue fresh new`。620 项生产测试四片提交后 Go/墙钟秒为
 138.141/144.247、374.569/380.698、235.408/241.539、385.385/391.513，全部通过。
 
-该 Deployment 仍必须保持 `replicas: 0`，直到真实 API server CEL/type-check、server-side dry-run/auth matrix、外部 KMS 与认证
-Secret 创建/轮换/撤权，以及三处三副本故障注入全部验收；当前不能把 API/模板存在等同于生产自动轮换 GREEN。
+提交 `e674e764` 通过真实 Kind Kubernetes v1.36.1 server-side apply 修复 publisher policy 的未引用 YAML 逗号、非法 map
+`.filter(k,v,...)` 和 absent optional field CEL 误拒绝。最终 Secret/StatefulSet policy 的 generation/observedGeneration 分别为 1/1、2/2，
+`typeChecking={}` 且 binding `Deny`；合法 Secret/auth-only StatefulSet dry-run 放行，mutable/wrong-name/wrong-identity Secret 与 image
+drift 拒绝。`auth can-i` 实测确认目标 StatefulSet get/patch、目标 Secret get、Secret create 以外的 update/其他对象/delete/list/
+Pod/exec/跨 namespace 均拒绝。一次性对象已完全清理。620 项四片提交后 Go/墙钟秒为
+123.645/129.741、356.454/362.577、225.825/231.951、375.868/381.955，全部通过。
+
+该 Deployment 仍必须保持 `replicas: 0`，直到 requester/worker 其余 live control-plane matrix、外部 KMS 与认证 Secret
+创建/轮换/撤权，以及三处三副本故障注入全部验收；当前不能把 API/模板存在等同于生产自动轮换 GREEN。
 
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
 

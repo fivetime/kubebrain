@@ -182,7 +182,7 @@ admission 约束的 Secret create，不授予 list/watch/update/delete/exec 或�
 publisher admission 已纳入 requester guardrail 的 apply 顺序和 compiled-policy check，静态 manifest、模拟 apply/check、确定性 RBAC
 渲染及未绑定 Secret 拒绝测试通过。代码提交前 inventory 为 620 项、四片 144/171/155/150；提交后四片 Go/墙钟秒为
 134.441/140.577、377.166/383.298、235.153/241.317、395.412/401.558，全部通过。真实 API server 上的 CEL
-type-check、server-side dry-run 和 `auth can-i` 仍必须随 live 演练留证，不能用本地 YAML 解码替代。
+type-check、server-side dry-run 和 `auth can-i` 不能用本地 YAML 解码替代。
 
 提交 `d0910168` 用正式 `kubebrain-jwt-token-issuer` 替换可执行 hook。issuer 只从 dedicated Secret mount 下读取
 `username`/`password`，支持 Kubernetes atomic-writer symlink 但要求最终目标仍位于 credential root、只读且 other 不可访问；密码
@@ -196,6 +196,18 @@ new → gate C`，不再在 rollout 前用本地 key 离线造 token。Secret mo
 覆盖 symlink root 逃逸、可写 credential、错误脱敏、无覆盖发布和恢复复用，runner 黑盒测试锁定发布/签发顺序。代码提交前
 inventory 为 620 项、四片 144/171/155/150；提交后四片 Go/墙钟秒为 138.141/144.247、374.569/380.698、
 235.408/241.539、385.385/391.513，全部通过。
+
+提交 `e674e764` 完成 publisher admission 的真实 Kubernetes API Server 验收。首次 server-side apply 直接发现 inline YAML message
+中的未引用逗号被解析成伪字段；修复后 API Server 又拒绝 map `.filter(k,v,...)`，再改为双向 `.all`；合法 auth-only dry-run
+随后暴露 absent optional field 的 `no such key`。最终 policy 对 StatefulSet/Pod/container 可选字段逐项使用 presence+value 等价，
+以 CEL variables 绑定唯一 KubeBrain container，并增加 validation 对象只能含 `expression/message` 的 YAML 回归断言。
+
+在 Kind Kubernetes v1.36.1 上，两项 policy 均达到 `observedGeneration == generation` 且 `typeChecking={}`，binding 均为 `Deny`。
+专用 identity 的合法 immutable 双 key Secret CREATE 与唯一 auth 参数/三项 annotation StatefulSet PATCH 均通过 server dry-run；
+mutable Secret、错误 operation-derived 名称、错误 identity、image drift 均被对应 policy 拒绝。实例 Role 的实测矩阵只允许目标
+StatefulSet get/patch、目标 Secret get 和 namespace 内 Secret create；StatefulSet update/其他对象 patch、其他 Secret get、delete/list、
+Pod get/exec 及跨 namespace patch 全部为 `no`。一次性 namespace、Role/Binding 和两组 policy/binding 已全部删除并确认无残留。
+620 项提交后四片 Go/墙钟秒为 123.645/129.741、356.454/362.577、225.825/231.951、375.868/381.955，全部通过。
 
 当前仍保持 disabled-by-default，不能直接规模化上线：外部 KMS key sourcing、认证 Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。
