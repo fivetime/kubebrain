@@ -140,11 +140,12 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 // Long-lived Watch and KeepAlive streams deliberately remain connected; their
 // individual writes still pass through unary forwarding or their own epoch
 // fences and must not prevent a rollout from draining forever.
-func (s *RPCServer) DrainLeadership(release func()) {
+func (s *RPCServer) DrainLeadership(release func() bool) {
 	s.leadershipDrainBoundary.Lock()
 	defer s.leadershipDrainBoundary.Unlock()
-	release()
-	s.leadershipDrained.Store(true)
+	if release() {
+		s.leadershipDrained.Store(true)
+	}
 }
 
 // SetMaxRequestsInFlight sets the process-wide public client RPC limit. A

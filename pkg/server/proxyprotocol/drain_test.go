@@ -32,3 +32,15 @@ func TestIsPeerDrainedBeforeAdmissionRequiresExactInternalSignal(t *testing.T) {
 	require.False(t, IsPeerDrainedBeforeAdmission(status.Error(codes.Unavailable, peerDrainedBeforeAdmissionMessage)))
 	require.False(t, IsPeerDrainedBeforeAdmission(nil))
 }
+
+func TestClientDrainedBeforeAdmissionUsesMutableRetrySentinel(t *testing.T) {
+	require.Equal(t, codes.Unavailable, status.Code(ErrClientDrainedBeforeAdmission))
+	require.Equal(t, clientDrainedBeforeAdmissionMessage, status.Convert(ErrClientDrainedBeforeAdmission).Message())
+}
+
+func TestCountIndexNotReadyRequiresExactSignal(t *testing.T) {
+	require.True(t, IsCountIndexNotReady(ErrCountIndexNotReady))
+	require.True(t, IsCountIndexNotReady(status.Error(codes.Unavailable, countIndexNotReadyMessage)))
+	require.False(t, IsCountIndexNotReady(status.Error(codes.Unavailable, "leader down")))
+	require.False(t, IsCountIndexNotReady(nil))
+}

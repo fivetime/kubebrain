@@ -106,6 +106,7 @@ func TestIsForwardConnectionError(t *testing.T) {
 		{name: "grpc canceled", err: status.Error(codes.Canceled, "canceled"), want: true},
 		{name: "grpc deadline", err: status.Error(codes.DeadlineExceeded, "deadline"), want: true},
 		{name: "grpc unavailable", err: status.Error(codes.Unavailable, "unavailable"), want: true},
+		{name: "count index fallback", err: proxyprotocol.ErrCountIndexNotReady, want: false},
 		{name: "peer drained before admission", err: proxyprotocol.ErrPeerDrainedBeforeAdmission, want: true},
 		{name: "generic aborted", err: status.Error(codes.Aborted, "aborted"), want: false},
 		{name: "leader changed", err: rpctypes.ErrGRPCLeaderChanged, want: true},
@@ -216,7 +217,7 @@ func TestPeerUnaryForwardErrorPreservesCallerCancellation(t *testing.T) {
 	require.ErrorIs(t, normalizePeerUnaryForwardError(ctx, context.Canceled), context.Canceled)
 }
 
-func TestWaitReadyReturnsUnavailableWhenLeaderConnectionIsNotReady(t *testing.T) {
+func TestWaitReadyReturnsSafeRetrySignalWhenLeaderConnectionIsNotReady(t *testing.T) {
 	proxy := &etcdProxy{
 		election: &testLeaderElection{leaderAddress: "127.0.0.1:1"},
 	}
@@ -227,8 +228,9 @@ func TestWaitReadyReturnsUnavailableWhenLeaderConnectionIsNotReady(t *testing.T)
 	err := proxy.waitReady(ctx)
 
 	require.Error(t, err)
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Less(t, time.Since(start), 4*time.Second)
+	require.ErrorIs(t, err, proxyprotocol.ErrClientDrainedBeforeAdmission)
+	require.Equal(t, "there is no connection available", status.Convert(err).Message())
+	require.Less(t, time.Since(start), 7*time.Second)
 }
 
 func TestWaitReadyDoesNotBlockBehindPeerConnectionUpdate(t *testing.T) {
@@ -1043,6 +1045,11 @@ func TestForwardErrorClientCancelDoesNotResetSharedClient(t *testing.T) {
 	// gRPC Canceled with a cancelled caller ctx -> still client-caused, no reset.
 	proxy.markForwardError(cctx, cli, status.Error(codes.Canceled, "context canceled"))
 	require.Same(t, cli, proxy.client, "gRPC-canceled with dead caller ctx must not reset")
+
+	// Application-level Unavailable used by the count fallback protocol does
+	// not imply a broken transport and must not strand unrelated writes.
+	proxy.markForwardError(context.Background(), cli, proxyprotocol.ErrCountIndexNotReady)
+	require.Same(t, cli, proxy.client, "count fallback decline must not reset the shared client")
 
 	// Genuine leader-down (Unavailable) with a live caller ctx -> resets.
 	proxy.markForwardError(context.Background(), cli, status.Error(codes.Unavailable, "leader down"))

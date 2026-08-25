@@ -22,13 +22,12 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"golang.org/x/sync/singleflight"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 )
 
 // countProxyMarkerKey marks a CountOnly Range that a follower forwarded to the
@@ -44,7 +43,7 @@ const countProxyMarkerKey = "kubebrain-count-proxy"
 // errCountIndexNotReady is the fast-reject returned to a proxied count the
 // leader cannot serve from its index. Unavailable makes the follower's proxy
 // treat it as a decline and fall back locally.
-var errCountIndexNotReady = status.Error(codes.Unavailable, "count index not ready (rebuilding); fall back locally")
+var errCountIndexNotReady = proxyprotocol.ErrCountIndexNotReady
 
 // isCountProxyRequest reports whether this count arrived via the leader count
 // proxy (carries countProxyMarkerKey in its gRPC metadata).

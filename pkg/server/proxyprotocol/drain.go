@@ -23,12 +23,31 @@ import (
 
 const peerDrainedBeforeAdmissionMessage = "kubebrain: peer drained before request admission"
 
+// clientDrainedBeforeAdmissionMessage is the exact clientv3 mutable-RPC safe
+// retry sentinel. KubeBrain emits it only after its unary drain fence proves
+// the retiring public endpoint did not enter the request handler.
+const clientDrainedBeforeAdmissionMessage = "there is no connection available"
+
+const countIndexNotReadyMessage = "count index not ready (rebuilding); fall back locally"
+
 // ErrPeerDrainedBeforeAdmission is safe for an internal follower proxy to
 // replay: the retiring leader's admission write fence proves the request never
 // entered its RPC handler. It must never classify a generic leader loss.
 var ErrPeerDrainedBeforeAdmission = status.Error(codes.Aborted, peerDrainedBeforeAdmissionMessage)
 
+var ErrClientDrainedBeforeAdmission = status.Error(codes.Unavailable, clientDrainedBeforeAdmissionMessage)
+
+// ErrCountIndexNotReady asks a follower to fall back to its local count path.
+// It is an application-level decline, not evidence that the peer transport is
+// unhealthy, even though Unavailable is used to keep the internal RPC cheap.
+var ErrCountIndexNotReady = status.Error(codes.Unavailable, countIndexNotReadyMessage)
+
 func IsPeerDrainedBeforeAdmission(err error) bool {
 	return errors.Is(err, ErrPeerDrainedBeforeAdmission) ||
 		(status.Code(err) == codes.Aborted && status.Convert(err).Message() == peerDrainedBeforeAdmissionMessage)
+}
+
+func IsCountIndexNotReady(err error) bool {
+	return errors.Is(err, ErrCountIndexNotReady) ||
+		(status.Code(err) == codes.Unavailable && status.Convert(err).Message() == countIndexNotReadyMessage)
 }

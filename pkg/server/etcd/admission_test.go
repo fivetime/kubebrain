@@ -229,9 +229,10 @@ func TestLeadershipDrainWaitsForUnaryAndBlocksLaterCalls(t *testing.T) {
 	drainDone := make(chan struct{})
 	go func() {
 		defer close(drainDone)
-		rpc.DrainLeadership(func() {
+		rpc.DrainLeadership(func() bool {
 			close(releaseStarted)
 			<-allowRelease
+			return true
 		})
 	}()
 
@@ -245,15 +246,14 @@ func TestLeadershipDrainWaitsForUnaryAndBlocksLaterCalls(t *testing.T) {
 	<-releaseStarted
 
 	secondEntered := make(chan struct{})
-	secondDone := make(chan struct{})
+	secondResult := make(chan error, 1)
 	go func() {
-		defer close(secondDone)
 		_, err := rpc.admitUnary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: etcdserverpb.KV_Put_FullMethodName},
 			func(context.Context, any) (any, error) {
 				close(secondEntered)
 				return nil, nil
 			})
-		require.NoError(t, err)
+		secondResult <- err
 	}()
 	select {
 	case <-secondEntered:
@@ -262,7 +262,12 @@ func TestLeadershipDrainWaitsForUnaryAndBlocksLaterCalls(t *testing.T) {
 	}
 	close(allowRelease)
 	<-drainDone
-	<-secondDone
+	require.ErrorIs(t, <-secondResult, proxyprotocol.ErrClientDrainedBeforeAdmission)
+	select {
+	case <-secondEntered:
+		t.Fatal("drained public unary request entered its handler")
+	default:
+	}
 }
 
 func TestLeadershipDrainWaitsForForwardedUnaryAndRejectsLaterCalls(t *testing.T) {
@@ -289,9 +294,10 @@ func TestLeadershipDrainWaitsForForwardedUnaryAndRejectsLaterCalls(t *testing.T)
 	drainDone := make(chan struct{})
 	go func() {
 		defer close(drainDone)
-		rpc.DrainLeadership(func() {
+		rpc.DrainLeadership(func() bool {
 			close(releaseStarted)
 			<-allowRelease
+			return true
 		})
 	}()
 
@@ -326,6 +332,32 @@ func TestLeadershipDrainWaitsForForwardedUnaryAndRejectsLaterCalls(t *testing.T)
 	case <-secondEntered:
 		t.Fatal("drained forwarded unary request entered its handler")
 	default:
+	}
+}
+
+func TestFailedLeadershipDrainLeavesUnaryAdmissionOpen(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	rpc.DrainLeadership(func() bool { return false })
+	for name, admit := range map[string]func(grpc.UnaryHandler) error{
+		"public": func(handler grpc.UnaryHandler) error {
+			_, err := rpc.admitUnary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: etcdserverpb.KV_Put_FullMethodName}, handler)
+			return err
+		},
+		"peer": func(handler grpc.UnaryHandler) error {
+			_, err := rpc.requireLeaderUnary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: etcdserverpb.KV_Put_FullMethodName}, handler)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			require.NoError(t, admit(func(context.Context, any) (any, error) {
+				called = true
+				return nil, nil
+			}))
+			require.True(t, called)
+		})
 	}
 }
 

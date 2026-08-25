@@ -180,7 +180,7 @@ func (s *server) Drain(ctx context.Context) error {
 		return nil
 	}
 	var drainErr error
-	release := func() {
+	release := func() bool {
 		peerFailoverEnabled := s.peers != nil && s.peers.EtcdProxyEnabled()
 		if !s.drainStopped {
 			if s.campaignCancel != nil {
@@ -216,22 +216,23 @@ func (s *server) Drain(ctx context.Context) error {
 						<-timer.C
 					}
 					drainErr = fmt.Errorf("wait for voluntary successor proxy readiness: %w: %v", ctx.Err(), drainErr)
-					return
+					return false
 				case <-timer.C:
 				}
 			}
 		}
+		if drainErr == nil {
+			s.drainSucceeded = true
+			for _, drainTransport := range s.transportDrains {
+				drainTransport()
+			}
+		}
+		return drainErr == nil
 	}
 	if s.etcdServer != nil {
 		s.etcdServer.DrainLeadership(release)
 	} else {
 		release()
-	}
-	if drainErr == nil {
-		s.drainSucceeded = true
-		for _, drainTransport := range s.transportDrains {
-			drainTransport()
-		}
 	}
 	return drainErr
 }

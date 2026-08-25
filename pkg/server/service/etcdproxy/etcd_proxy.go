@@ -112,7 +112,11 @@ func proxyCallOptions(maxRequestBytes uint) []grpc.CallOption {
 	}
 }
 
-const proxyReadyWaitTimeout = 2 * time.Second
+// A voluntary handoff publishes the successor before every follower has
+// necessarily completed its own health-check/dial loop. Keep unary requests
+// parked through that bounded propagation window; returning an established-
+// connection Unavailable for a mutable RPC would be terminal in clientv3.
+const proxyReadyWaitTimeout = 5 * time.Second
 
 // NewEtcdProxy return an ETCD proxy for forward request to leader.
 // The election identity is the leader's peer endpoint. That listener registers
@@ -476,6 +480,12 @@ func (e *etcdProxy) markForwardError(ctx context.Context, client *clientv3.Clien
 func isForwardConnectionError(err error) bool {
 	if proxyprotocol.IsPeerDrainedBeforeAdmission(err) {
 		return true
+	}
+	// The leader uses this application-level decline to make follower count
+	// requests fall back locally while its count index rebuilds. Resetting the
+	// healthy shared transport here strands unrelated writes during rollout.
+	if proxyprotocol.IsCountIndexNotReady(err) {
+		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
@@ -1078,16 +1088,17 @@ func (e *etcdProxy) readyLocked() error {
 	return nil
 }
 
-// notReadyErr renders the terminal error when the wait deadline fires: the
-// caller's own cancellation takes precedence over a generic "not ready".
+// notReadyErr renders the terminal error when the wait deadline fires. A live
+// caller has not reached any leader RPC yet, so use clientv3's exact mutable-RPC
+// retry sentinel. The caller's own cancellation still takes precedence.
 func notReadyErr(ctx context.Context, lastErr error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if lastErr != nil {
-		return status.Errorf(codes.Unavailable, "proxy is not ready after %s: %v", proxyReadyWaitTimeout, lastErr)
+		klog.V(2).InfoS("proxy remained unavailable before request admission", "wait", proxyReadyWaitTimeout, "err", lastErr)
 	}
-	return status.Errorf(codes.Unavailable, "proxy is not ready after %s", proxyReadyWaitTimeout)
+	return proxyprotocol.ErrClientDrainedBeforeAdmission
 }
 
 func (e *etcdProxy) waitReady(ctx context.Context) error {
