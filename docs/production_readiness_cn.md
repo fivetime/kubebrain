@@ -3989,6 +3989,13 @@ policy/binding 的独立 server dry-run 状态为 0。尚无真实 provider prob
 129.692/135.857、368.107/374.257、227.191/233.371、378.731/384.917，全部通过。真实 provider revoke、持久集群轮换及
 retirement evidence Object Lock 归档仍是上线门禁。
 
+提交 `b8f7e787` 要求旧 credential Secret 删除前先归档 signed retirement evidence。artifact 不含 credential 明文，绑定旧/新
+Secret 身份摘要与 replacement readiness；Object Lock conditional write 后必须 exact-read 唯一版本并逐字节一致，archive receipt
+还要逐项匹配 store/bucket/key/version/retention/digest。active ConfigMap CAS marker 串行化 activation 与 retirement，admission
+禁止跳过/移除 marker 或重新激活 last-retired ID。永久 revoked receipt 允许在有界签发窗口过后重验，确保归档后崩溃可恢复。
+633 项四片 Go/墙钟秒为 134.608/140.764、369.834/376.012、230.152/236.332、381.124/387.379，全部通过。真实 provider、
+持久集群和真实 Object Lock bucket 尚未执行该链，生产门禁仍开放。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。

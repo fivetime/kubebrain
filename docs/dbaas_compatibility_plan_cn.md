@@ -62002,6 +62002,13 @@ resourceVersion precondition，本路径以 UID+resourceVersion 双 fence 删除
 631 项四片提交后 Go/墙钟秒为 129.692/135.857、368.107/374.257、227.191/233.371、378.731/384.917，全部通过。真实 provider
 revoke/持久轮换以及 retirement receipt 的 Object Lock 归档仍开放，故 credential lifecycle 尚不能标记生产 GREEN。
 
+提交 `b8f7e787` 将 retirement Object Lock 归档置于 Secret delete 之前：无明文 artifact 绑定 signed revoke、旧/新 Secret 摘要和
+replacement readiness，conditional write 后 exact-read 唯一版本逐字节校验，archive receipt 再由协调器精确复核。active ConfigMap
+以 `retirement-in-progress`→`last-retired-credential` CAS 状态机阻断并发 activation；admission 禁止 marker 绕过和 revoked ID
+重新激活。永久撤权事实在有界签发后仍可重验，支持归档后接管。633 项四片提交后 Go/墙钟秒为
+134.608/140.764、369.834/376.012、230.152/236.332、381.124/387.379，全部通过。真实 provider/Kubernetes/Object Lock live
+drill 仍缺，不能把代码闭环标记为生产完成。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 

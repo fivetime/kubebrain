@@ -366,6 +366,18 @@ Conflict，而不会误删。删除后等待 API 确认 absent；验签失败时
 129.692/135.857、368.107/374.257、227.191/233.371、378.731/384.917，全部通过。由此 credential 轮换代码序列已覆盖
 provision→readiness→CAS activate→signed revoke→fenced delete；真实 provider 执行和 retirement receipt Object Lock 归档仍未证明。
 
+提交 `b8f7e787` 把 credential retirement evidence 归档提升为删除前硬门禁。retirement verifier 可在验签后生成不含 token/CA/key
+明文的 canonical artifact，只内嵌 signed revoke receipt，并记录旧/新 Secret UID+data SHA、replacement readiness SHA、principal
+与撤权时间。归档使用 conditional immutable blob + Object Lock，固定对象键，上传后 exact-read 唯一版本并逐字节比较；协调脚本还
+逐字段验证 archive receipt 的 store/bucket/key/version/retention/digest/remote_verified，任一不符都不删除 Secret。
+
+activation/retirement 并发由 active ConfigMap resourceVersion CAS 状态机串行化：退役先写 `retirement-in-progress`，归档完成后原子
+转为 `last-retired-credential`，activation 在 provider probe 前即拒绝前者，也永久拒绝重新激活后者。admission 同样限制 marker
+只能保留或同 ID 完成，且 last-retired 不可移除、不可成为 active。`revoked` 是永久事实：receipt 的签发窗口仍最多 15 分钟且不得
+来自未来，但过期后可重验同一精确绑定，以支持归档后崩溃接管继续 fenced delete。633 项四片提交后 Go/墙钟秒为
+134.608/140.764、369.834/376.012、230.152/236.332、381.124/387.379，全部通过。真实 provider、持久 Kubernetes 轮换和真实
+Object Lock bucket 演练仍开放。
+
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。
