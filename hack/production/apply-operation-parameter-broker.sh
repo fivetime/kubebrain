@@ -36,7 +36,7 @@ check_can_i() {
   args=(auth can-i "$verb" "$resource" --as="$identity")
   [[ -z "$namespace" ]] || args+=( -n "$namespace" )
   set +e
-  answer="$("$KUBECTL" "${context[@]}" "${args[@]}" 2>&1)"; rc=$?
+  answer="$("$KUBECTL" "${context[@]}" "${args[@]}")"; rc=$?
   set -e
   if [[ "$expected" == yes ]]; then
     [[ "$rc" == 0 && "$answer" == yes ]] || die "parameter broker authorization must allow ${verb} ${resource}: ${identity}"
@@ -115,7 +115,7 @@ runtime_smoke() (
   for ((attempt = 1; attempt <= 100; attempt++)); do
     kill -0 "$port_forward_pid" 2>/dev/null || die "broker port-forward exited before becoming ready"
     [[ "$(stat -Lc '%s' "$port_log")" -le 65536 ]] || die "broker port-forward log exceeded 64 KiB"
-    line="$(grep -m1 -E '^Forwarding from 127\.0\.0\.1:[0-9]+ -> 443$' "$port_log" || true)"
+    line="$(grep -m1 -E '^Forwarding from 127\.0\.0\.1:[0-9]+ -> 8443$' "$port_log" || true)"
     if [[ -n "$line" ]]; then port="${line#*:}"; port="${port%% *}"; break; fi
     sleep 0.1
   done

@@ -140,7 +140,7 @@ requester_wrong_identity() {
 check_can_i() {
   local expected="$1" identity="$2" namespace="$3" verb="$4" resource="$5" answer rc
   set +e
-  answer="$("$KUBECTL" "${context[@]}" auth can-i "$verb" "$resource" -n "$namespace" --as="$identity" 2>&1)"
+  answer="$("$KUBECTL" "${context[@]}" auth can-i "$verb" "$resource" -n "$namespace" --as="$identity")"
   rc=$?
   set -e
   if [[ "$expected" == yes ]]; then

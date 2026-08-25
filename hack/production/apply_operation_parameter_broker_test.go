@@ -24,7 +24,7 @@ func TestOperationParameterBrokerInstallerEnablesTwoReplicas(t *testing.T) {
 	require.NoError(t, os.WriteFile(tokenFile, []byte("projected.token"), 0o600))
 	out, err := runProductionCommand(t, "bash", []string{"apply-operation-parameter-broker.sh", "--enable"}, []string{
 		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl, "CURL=" + curl, "CALL_LOG=" + logPath,
-		"SCALE_MARKER=" + marker, "BROKER_CA_FILE=" + caFile, "BROKER_TOKEN_FILE=" + tokenFile,
+		"SCALE_MARKER=" + marker, "BROKER_CA_FILE=" + caFile, "BROKER_TOKEN_FILE=" + tokenFile, "AUTH_WARNING=true",
 	})
 	require.NoError(t, err, string(out))
 	log := string(mustRead(t, logPath))
@@ -101,6 +101,7 @@ printf 'kubectl %s\n' "$*" >>"$CALL_LOG"
 if [[ "${1:-}" == --context ]]; then shift 2; fi
 case "$1" in
   auth)
+    [[ "${AUTH_WARNING:-false}" != true ]] || echo "Warning: tokenreviews is cluster scoped" >&2
     verb="$3"; resource="$4"; identity=""
     for arg in "$@"; do case "$arg" in --as=*) identity="${arg#--as=}" ;; esac; done
     if [[ "$identity" == *kubebrain-operation-parameter-broker && ( ( "$resource" == tokenreviews.authentication.k8s.io && "$verb" == create ) || ( "$resource" != tokenreviews.authentication.k8s.io && "$verb" == get ) ) ]]; then echo yes; else echo no; exit 1; fi
@@ -129,7 +130,7 @@ case "$1" in
     ;;
   rollout) ;;
   port-forward)
-    if [[ "$*" == *"pod/"* ]]; then printf 'Forwarding from 127.0.0.1:45680 -> 8443\n'; else printf 'Forwarding from 127.0.0.1:45679 -> 443\n'; fi
+    if [[ "$*" == *"pod/"* ]]; then printf 'Forwarding from 127.0.0.1:45680 -> 8443\n'; else printf 'Forwarding from 127.0.0.1:45679 -> 8443\n'; fi
     while true; do sleep 1; done
     ;;
   *) exit 99 ;;

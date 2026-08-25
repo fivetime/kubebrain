@@ -34,7 +34,7 @@ verify_inventory() {
 check_can_i() {
   local expected="$1" verb="$2" resource="$3" answer rc
   set +e
-  answer="$("$KUBECTL" "${context[@]}" auth can-i "$verb" "$resource" -n "$NAMESPACE" --as="$IDENTITY" 2>&1)"
+  answer="$("$KUBECTL" "${context[@]}" auth can-i "$verb" "$resource" -n "$NAMESPACE" --as="$IDENTITY")"
   rc=$?
   set -e
   if [[ "$expected" == yes ]]; then

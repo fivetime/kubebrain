@@ -67,7 +67,7 @@ revoked=true
 deadline=$((SECONDS + DRILL_TIMEOUT_SECONDS))
 while :; do
   set +e
-  answer="$(kc auth can-i create tokenreviews.authentication.k8s.io --as="$IDENTITY" 2>&1)"; rc=$?
+  answer="$(kc auth can-i create tokenreviews.authentication.k8s.io --as="$IDENTITY")"; rc=$?
   set -e
   [[ "$rc" == 1 && "$answer" == no ]] && break
   (( SECONDS < deadline )) || die "broker TokenReview revocation did not become effective"
@@ -123,7 +123,7 @@ restore_binding || die "failed to restore broker TokenReview binding"
 
 deadline=$((SECONDS + DRILL_TIMEOUT_SECONDS))
 while :; do
-  answer="$(kc auth can-i create tokenreviews.authentication.k8s.io --as="$IDENTITY" 2>&1 || true)"
+  answer="$(kc auth can-i create tokenreviews.authentication.k8s.io --as="$IDENTITY" || true)"
   [[ "$answer" == yes ]] && break
   (( SECONDS < deadline )) || die "broker TokenReview authorization did not recover"
   sleep 1

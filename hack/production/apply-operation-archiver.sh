@@ -29,9 +29,9 @@ check_can_i() {
   local expected="$1" namespace="$2" verb="$3" resource="$4" answer rc
   set +e
   if [[ -n "$namespace" ]]; then
-    answer="$(kc auth can-i "$verb" "$resource" --as="$IDENTITY" -n "$namespace" 2>&1)"; rc=$?
+    answer="$(kc auth can-i "$verb" "$resource" --as="$IDENTITY" -n "$namespace")"; rc=$?
   else
-    answer="$(kc auth can-i "$verb" "$resource" --as="$IDENTITY" 2>&1)"; rc=$?
+    answer="$(kc auth can-i "$verb" "$resource" --as="$IDENTITY")"; rc=$?
   fi
   set -e
   if [[ "$expected" == yes ]]; then
