@@ -157,7 +157,7 @@ func Run(ctx context.Context, kube Kubernetes, o Options, now func() time.Time) 
 	if err != nil {
 		return Receipt{}, err
 	}
-	if err := validateStateBinding(current, o); err != nil {
+	if err := validateStateBinding(current, o, true); err != nil {
 		return Receipt{}, err
 	}
 	managedDesired := current.authArg == desired && phaseMetadataMatches(current.object, o, secretDigest)
@@ -220,7 +220,7 @@ func Run(ctx context.Context, kube Kubernetes, o Options, now func() time.Time) 
 		case <-time.After(o.PollInterval):
 		}
 	}
-	if err := validateStateBinding(current, o); err != nil {
+	if err := validateStateBinding(current, o, false); err != nil {
 		return Receipt{}, fmt.Errorf("StatefulSet binding changed during rollout: %w", err)
 	}
 	if current.object.Metadata.UID == "" || (o.Phase != "phase-a" && current.object.Metadata.UID != previous.StatefulSetUID) {
@@ -291,7 +291,7 @@ func RollbackPhaseCToB(ctx context.Context, kube Kubernetes, o Options) error {
 	if err != nil {
 		return err
 	}
-	if err := validateStateBinding(current, o); err != nil {
+	if err := validateStateBinding(current, o, false); err != nil {
 		return err
 	}
 	if current.object.Metadata.UID != previous.StatefulSetUID || current.baseline != previous.TemplateBaselineSHA {
@@ -330,7 +330,7 @@ func RollbackPhaseCToB(ctx context.Context, kube Kubernetes, o Options) error {
 		case <-time.After(o.PollInterval):
 		}
 	}
-	if err := validateStateBinding(current, o); err != nil {
+	if err := validateStateBinding(current, o, false); err != nil {
 		return fmt.Errorf("StatefulSet binding changed during rollback: %w", err)
 	}
 	if current.object.Metadata.UID != previous.StatefulSetUID || current.baseline != previous.TemplateBaselineSHA {
@@ -466,7 +466,7 @@ func getStatefulSet(ctx context.Context, kube Kubernetes, o Options) (stateEvide
 	return e, nil
 }
 
-func validateStateBinding(e stateEvidence, o Options) error {
+func validateStateBinding(e stateEvidence, o Options, allowPreviousSecret bool) error {
 	if e.object.Metadata.UID == "" || e.object.Metadata.ResourceVersion == "" || e.object.Metadata.Generation <= 0 || e.object.Spec.Replicas == nil || *e.object.Spec.Replicas != o.ExpectedReplicas {
 		return errors.New("StatefulSet identity or replica count is invalid")
 	}
@@ -477,14 +477,20 @@ func validateStateBinding(e stateEvidence, o Options) error {
 			mountOK = true
 		}
 	}
-	volumeOK := false
-	for _, volume := range e.object.Spec.Template.Spec.Volumes {
-		if volume.Name == o.KeyVolume && volume.Secret != nil && volume.Secret.SecretName == o.Secret {
-			volumeOK = true
-		}
-	}
-	if !mountOK || !volumeOK {
+	_, secretName, volumeErr := keyVolumeBinding(e, o)
+	if !mountOK || volumeErr != nil {
 		return errors.New("StatefulSet key Secret volume binding is invalid")
+	}
+	if secretName != o.Secret {
+		annotations := e.object.Spec.Template.Metadata.Annotations
+		_, predecessor := desiredAuthArgs(o)
+		if !allowPreviousSecret || o.Phase != "phase-a" || e.authArg != predecessor ||
+			annotations["dbaas.kubebrain.io/jwt-key-rotation-phase"] != "phase-c" ||
+			annotations["dbaas.kubebrain.io/jwt-key-rotation-operation"] == "" ||
+			annotations["dbaas.kubebrain.io/jwt-key-rotation-operation"] == o.OperationID ||
+			annotations["dbaas.kubebrain.io/jwt-active-key-sha256"] != o.OldKeySHA256 {
+			return errors.New("StatefulSet key Secret volume binding is invalid")
+		}
 	}
 	ttl := fmt.Sprintf("--auth-token-ttl=%d", o.JWTTokenTTL)
 	ttlCount := 0
@@ -527,7 +533,15 @@ func phaseMetadataMatches(s statefulSetObject, o Options, secretDigest string) b
 	annotations := s.Spec.Template.Metadata.Annotations
 	return annotations["dbaas.kubebrain.io/jwt-key-rotation-phase"] == o.Phase &&
 		annotations["dbaas.kubebrain.io/jwt-key-rotation-operation"] == o.OperationID &&
-		annotations["dbaas.kubebrain.io/jwt-key-secret-sha256"] == secretDigest
+		annotations["dbaas.kubebrain.io/jwt-key-secret-sha256"] == secretDigest &&
+		annotations["dbaas.kubebrain.io/jwt-active-key-sha256"] == activeKeySHA256(o)
+}
+
+func activeKeySHA256(o Options) string {
+	if o.Phase == "phase-a" {
+		return o.OldKeySHA256
+	}
+	return o.NewKeySHA256
 }
 
 func templateBaseline(object map[string]any, containerIndex, authArgIndex int) (string, error) {
@@ -546,6 +560,7 @@ func templateBaseline(object map[string]any, containerIndex, authArgIndex int) (
 		delete(annotations, "dbaas.kubebrain.io/jwt-key-rotation-phase")
 		delete(annotations, "dbaas.kubebrain.io/jwt-key-rotation-operation")
 		delete(annotations, "dbaas.kubebrain.io/jwt-key-secret-sha256")
+		delete(annotations, "dbaas.kubebrain.io/jwt-active-key-sha256")
 	}
 	spec, ok := nestedMap(template, "spec")
 	if !ok {
@@ -577,13 +592,42 @@ func buildPatch(current stateEvidence, desired, secretDigest string, o Options) 
 	annotations["dbaas.kubebrain.io/jwt-key-rotation-phase"] = o.Phase
 	annotations["dbaas.kubebrain.io/jwt-key-rotation-operation"] = o.OperationID
 	annotations["dbaas.kubebrain.io/jwt-key-secret-sha256"] = secretDigest
+	annotations["dbaas.kubebrain.io/jwt-active-key-sha256"] = activeKeySHA256(o)
 	patch := []map[string]any{
 		{"op": "test", "path": "/metadata/resourceVersion", "value": current.object.Metadata.ResourceVersion},
 		{"op": "test", "path": fmt.Sprintf("/spec/template/spec/containers/%d/args/%d", current.containerIndex, current.authArgIndex), "value": current.authArg},
 		{"op": "replace", "path": fmt.Sprintf("/spec/template/spec/containers/%d/args/%d", current.containerIndex, current.authArgIndex), "value": desired},
 		{"op": "add", "path": "/spec/template/metadata/annotations", "value": annotations},
 	}
+	volumeIndex, secretName, err := keyVolumeBinding(current, o)
+	if err != nil {
+		return nil, err
+	}
+	if secretName != o.Secret {
+		path := fmt.Sprintf("/spec/template/spec/volumes/%d/secret/secretName", volumeIndex)
+		patch = append(patch,
+			map[string]any{"op": "test", "path": path, "value": secretName},
+			map[string]any{"op": "replace", "path": path, "value": o.Secret},
+		)
+	}
 	return json.Marshal(patch)
+}
+
+func keyVolumeBinding(e stateEvidence, o Options) (int, string, error) {
+	index, secretName := -1, ""
+	for i, volume := range e.object.Spec.Template.Spec.Volumes {
+		if volume.Name != o.KeyVolume {
+			continue
+		}
+		if index >= 0 || volume.Secret == nil || volume.Secret.SecretName == "" {
+			return -1, "", errors.New("StatefulSet key Secret volume binding is invalid")
+		}
+		index, secretName = i, volume.Secret.SecretName
+	}
+	if index < 0 {
+		return -1, "", errors.New("StatefulSet key Secret volume binding is invalid")
+	}
+	return index, secretName, nil
 }
 
 func validatePrevious(r Receipt, o Options, secret secretObject, secretDigest string) error {

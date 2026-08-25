@@ -107,6 +107,7 @@ func TestPublisherResumesIncompleteManagedRolloutAfterTakeover(t *testing.T) {
 	annotations["dbaas.kubebrain.io/jwt-key-rotation-phase"] = "phase-b"
 	annotations["dbaas.kubebrain.io/jwt-key-rotation-operation"] = b.OperationID
 	annotations["dbaas.kubebrain.io/jwt-key-secret-sha256"] = a.SecretDataSHA256
+	annotations["dbaas.kubebrain.io/jwt-active-key-sha256"] = b.NewKeySHA256
 	status := f.statefulSet["status"].(map[string]any)
 	status["updatedReplicas"] = float64(1)
 	status["currentRevision"] = "rev-phase-a"
@@ -119,6 +120,41 @@ func TestPublisherResumesIncompleteManagedRolloutAfterTakeover(t *testing.T) {
 	require.True(t, receipt.ReconciledExisting)
 	require.Equal(t, "rev-phase-b", receipt.AfterRevision)
 	require.Equal(t, 1, f.patches, "takeover must wait for the in-flight rollout without repatching")
+}
+
+func TestPublisherStartsNextOperationFromBoundPhaseC(t *testing.T) {
+	f, options := newFixture(t)
+	a, err := Run(t.Context(), f, options, fixedNow(100))
+	require.NoError(t, err)
+	b := options
+	b.Phase, b.PreviousReceipt, b.ReceiptOutput = "phase-b", options.ReceiptOutput, filepath.Join(f.dir, "phase-b.json")
+	_, err = Run(t.Context(), f, b, fixedNow(200))
+	require.NoError(t, err)
+	c := b
+	c.Phase, c.PreviousReceipt, c.ReceiptOutput = "phase-c", b.ReceiptOutput, filepath.Join(f.dir, "phase-c.json")
+	_, err = Run(t.Context(), f, c, fixedNow(300))
+	require.NoError(t, err)
+
+	nextKey := filepath.Join(f.dir, "next-key")
+	require.NoError(t, os.WriteFile(nextKey, []byte("next-secret-material"), 0o600))
+	next := options
+	next.OperationID = "jwt-key-rotate-fedcba9876543210fedc"
+	next.Secret = "kubebrain-jwt-next-rotation"
+	next.OldKeyField, next.NewKeyField = options.NewKeyField, "next-key"
+	next.OldKeySource, next.NewKeySource = options.NewKeySource, nextKey
+	next.OldKeySHA256, next.NewKeySHA256 = options.NewKeySHA256, digestBytes([]byte("next-secret-material"))
+	next.ReceiptOutput = filepath.Join(f.dir, "next-phase-a.json")
+	f.secret = nil
+
+	receipt, err := Run(t.Context(), f, next, fixedNow(400))
+	require.NoError(t, err)
+	require.Equal(t, "phase-a", receipt.Phase)
+	require.Equal(t, a.StatefulSetUID, receipt.StatefulSetUID)
+	volumes := nested(f.statefulSet, "spec", "template", "spec")["volumes"].([]any)
+	require.Equal(t, next.Secret, volumes[0].(map[string]any)["secret"].(map[string]any)["secretName"])
+	annotations := nested(f.statefulSet, "spec", "template", "metadata")["annotations"].(map[string]any)
+	require.Equal(t, next.OldKeySHA256, annotations["dbaas.kubebrain.io/jwt-active-key-sha256"])
+	require.Equal(t, 4, f.patches)
 }
 
 func TestPublisherFailsClosed(t *testing.T) {
@@ -364,6 +400,14 @@ func (f *fakeKube) Patch(_ context.Context, _, resource, _ string, patch []byte)
 	}
 	args[0] = operations[2]["value"]
 	nested(f.statefulSet, "spec", "template", "metadata")["annotations"] = operations[3]["value"]
+	if len(operations) == 6 {
+		volumes := nested(f.statefulSet, "spec", "template", "spec")["volumes"].([]any)
+		secret := volumes[0].(map[string]any)["secret"].(map[string]any)
+		if operations[4]["value"] != secret["secretName"] {
+			return errors.New("key Secret volume test failed")
+		}
+		secret["secretName"] = operations[5]["value"]
+	}
 	f.patches++
 	phase := operations[3]["value"].(map[string]any)["dbaas.kubebrain.io/jwt-key-rotation-phase"].(string)
 	metadata["generation"] = metadata["generation"].(float64) + 1
