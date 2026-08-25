@@ -162,7 +162,6 @@ func TestMuxedHTTP2CloseBoundsQuiescingRequest(t *testing.T) {
 		close(handlerCanceled)
 	}))
 	server.httpServer.shutdownTimeout = 50 * time.Millisecond
-	server.quiesceDelay = 50 * time.Millisecond
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	serveDone := make(chan error, 1)
@@ -205,7 +204,6 @@ func TestMuxedHTTP2QuiesceBoundsLongLivedRequest(t *testing.T) {
 		close(handlerCanceled)
 	}))
 	server.httpServer.shutdownTimeout = 50 * time.Millisecond
-	server.quiesceDelay = 50 * time.Millisecond
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	serveDone := make(chan error, 1)
@@ -236,13 +234,12 @@ func TestMuxedHTTP2QuiesceBoundsLongLivedRequest(t *testing.T) {
 	require.NoError(t, normalizeServeError(<-serveDone))
 }
 
-func TestMuxedHTTP2QuiesceBoundsLongLivedGRPCStreamAfterPropagation(t *testing.T) {
+func TestMuxedHTTP2QuiesceImmediatelyBoundsLongLivedGRPCStream(t *testing.T) {
 	grpcServer := grpc.NewServer()
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(grpcServer, healthServer)
 	server := newGRPCMuxedHTTPServer(grpcServer, http.NotFoundHandler())
-	server.quiesceDelay = 30 * time.Millisecond
 	server.httpServer.shutdownTimeout = 20 * time.Millisecond
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -272,8 +269,8 @@ func TestMuxedHTTP2QuiesceBoundsLongLivedGRPCStreamAfterPropagation(t *testing.T
 	select {
 	case recvErr := <-streamDone:
 		require.Error(t, recvErr)
-		require.GreaterOrEqual(t, time.Since(started), server.quiesceDelay,
-			"the connection must remain available through the endpoint propagation window")
+		require.Less(t, time.Since(started), 500*time.Millisecond,
+			"GOAWAY must not retain a client on an admission-fenced Pod")
 	case <-time.After(time.Second):
 		t.Fatal("quiesce did not force-close the long-lived gRPC stream within its bounded budget")
 	}
@@ -339,14 +336,6 @@ func TestNewHttpServerBoundsHeaderAdmission(t *testing.T) {
 	require.True(t, server.svr.Protocols.UnencryptedHTTP2())
 	require.Zero(t, server.svr.ReadTimeout)
 	require.Zero(t, server.svr.WriteTimeout)
-}
-
-func TestMuxedHTTP2QuiesceIncludesEndpointPropagationWindow(t *testing.T) {
-	server := newGRPCMuxedHTTPServer(grpc.NewServer(), http.NotFoundHandler())
-	require.Equal(t, transportQuiescePropagationDelay, server.quiesceDelay)
-	require.Positive(t, server.quiesceDelay)
-	require.Less(t, server.quiesceDelay+server.httpServer.shutdownTimeout, 5*time.Second,
-		"quiesce propagation and forced-close budgets must fit inside the rollout SLA")
 }
 
 func TestRootServerBoundsProtocolClassificationForSecureEndpoints(t *testing.T) {
