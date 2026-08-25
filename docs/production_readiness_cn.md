@@ -8457,3 +8457,29 @@ stage 为 0；本轮没有调用 Compact RPC 或推进 watermark。
 
 639 项 inventory 保持 `152/178/159/150`；精确代码提交后四片 Go/墙钟秒为
 129.573/135.829、368.090/374.328、225.067/231.348、377.084/383.320，全部通过。
+
+### A5507：旧 leadership 的挂起物理压缩重试退役
+
+A5506 阻止了“scan 已因旧任期取消而失败”后继续每秒重试，但进一步审计发现另一条先后顺序：一次真实 TiKV scan error 会先注册
+1 秒延迟重试；若 leadership 在 timer 到期前结束，旧 callback 仍会唤醒进程级 compactor，并用已取消的旧任期 context 启动一次
+follower-side scan。它不会形成 A5506 修复前的永久循环，却仍会制造一次无权维护调用、错误日志和失败指标。对照
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_compaction.go` 的
+server-owned scheduler/stop signal 边界，已经失效的维护生命周期不能在延迟窗口后重新进入物理 GC。
+
+提交 `2892b6c4` 让 compactor worker 自身等待四类事件：新 compact target 可立即唤醒、1 秒到期继续自愈、worker shutdown 立即退出、
+创建本次 retry 的 leadership context 结束则放弃该任期。实现没有创建游离于 backend worker wait group 的 goroutine/callback；
+`maintenanceContextWithShutdown` 同时返回本轮精确父生命周期，storage-GC 调用方保持原有 timeout/cancel 行为。确定性旧代码 RED 在首次
+真实 partitions failure 后撤销 leadership，并于 1.00 秒观察到第二次 `GetPartitions`；GREEN 跨过完整 retry interval 仍恰好一次。
+同时保留真实存储故障自动恢复、扫描中换主和 GC safepoint 换主回归。四项组合普通 10 轮 38.777 秒、race 5 轮 20.996 秒、完整
+backend 48.891 秒、公开 Compact 1.587 秒和 backend vet 全绿。
+
+候选 `kubebrain:a5507-2892b6c4` 内嵌完整 SHA `2892b6c4f585e10e255ae6695346fd365c3dcdfa`，OCI index 为
+`sha256:13ae81dc0ba112df83a165f3e07b5b9718d98cd9ae45686a16a21643ba642291`，kind/CRI runtime digest 为
+`sha256:2958c61bd97a26da0349c706c7424dd4a058af2e5b478c31859827d98d2b56dc`。独立 3×PD/3×TiKV v8.5.3 上的
+三副本 rollout availability gate **900/900 GREEN**：Watch 900、lease alive，最大业务/PD TSO/TiKV Region 延迟为
+1369/75/14ms，StatefulSet revision `kubebrain-685c5bfbf9 -> kubebrain-7c9b5f9899`。最终三 Pod 3/3 Ready、restart 0、
+版本 SHA 一致且 `/readyz=ok`；PD/TiKV 3+3 Ready、restart 0，probe 已清理。现 leader 对既有 watermark 44329 只执行一次成功
+physical scan，`done_rev=44329`、`inflight=0`、全部 compaction failure stage 为 0；本轮没有调用 Compact RPC 或推进 watermark。
+
+639 项 inventory 保持 `152/178/159/150`；精确代码提交后四片 Go/墙钟秒为
+139.124/145.394、382.915/389.178、230.127/236.375、394.567/400.807，全部通过。

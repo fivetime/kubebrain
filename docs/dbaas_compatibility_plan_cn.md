@@ -62194,6 +62194,27 @@ watermark 44329 只执行一次成功 scan，`done_rev=44329`、`inflight=0`、�
 900/900 rollout 因证据审计发现内嵌的语法有效 40 位 SHA 不等于 `git rev-parse` 而作废；按权威 SHA 重建并完成上述纠正性
 全量 rollout 后才形成最终证据，临时 probe 已清理。
 
+### A5507：取消旧任期已经挂起的 physical-compaction retry
+
+A5506 关闭 scan 因 leadership cancellation 返回后的持续 retry 后，本轮覆盖“真实 storage failure 先注册延迟 retry、timer 到期前再
+丢失 leadership”的另一种交错。旧 callback 会在 1 秒后继续唤醒进程级 worker，以已取消 context 发起一次 follower scan，污染
+TiKV 调用、日志和 failure metrics。提交 `2892b6c4` 把等待留在受 backend worker 生命周期管理的 compactor 内：新 target 或 timer
+到期继续真实故障自愈，worker shutdown 退出，创建 retry 的 maintenance/leadership context 结束则直接放弃旧任期；不新增游离
+goroutine。该边界与 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_compaction.go`
+中 server-owned scheduler 受 stop signal 约束的生命周期一致。
+
+确定性旧代码 RED 在撤销 leadership 后 1.00 秒观察到第二次 `GetPartitions`；GREEN 跨过完整 retry interval 仍只有首次 attempt。
+扫描中换主、真实存储失败继续重试和 TiKV GC safepoint 换主一并普通 10 轮、race 5 轮通过；完整 backend、公开 Compact 与 vet 全绿。
+639 项四片仍为 `152/178/159/150`，精确提交 Go/墙钟秒为 139.124/145.394、382.915/389.178、230.127/236.375、
+394.567/400.807。
+
+精确候选 SHA `2892b6c4f585e10e255ae6695346fd365c3dcdfa`、OCI index
+`sha256:13ae81dc0ba112df83a165f3e07b5b9718d98cd9ae45686a16a21643ba642291`、kind runtime
+`sha256:2958c61bd97a26da0349c706c7424dd4a058af2e5b478c31859827d98d2b56dc` 在独立 3×PD/3×TiKV v8.5.3 上完成
+三副本 rollout：900/900 probe、Watch 900、lease alive，最大业务/TSO/Region 延迟 1369/75/14ms，revision
+`kubebrain-685c5bfbf9 -> kubebrain-7c9b5f9899`。KubeBrain 与 PD/TiKV 最终全 Ready、restart 0；现 leader 只恢复既有
+watermark 44329 一次，`done_rev=44329`、`inflight=0`、全部 failure stage=0，未调用 Compact RPC，临时 probe 已清理。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
