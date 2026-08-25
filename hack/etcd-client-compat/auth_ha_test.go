@@ -106,9 +106,14 @@ func TestAuthTokenSurvivesEnabledRollout(t *testing.T) {
 	authenticated, err := issuer.Authenticate(ctx, "root", "root-secret")
 	require.NoError(t, err)
 
-	output, err := runCompatKubectlContext(t, ctx, "-n", namespace, "rollout", "restart", "deployment/kubebrain-auth-ha")
+	workload := os.Getenv("KUBEBRAIN_AUTH_HA_WORKLOAD")
+	if workload == "" {
+		workload = "statefulset/kubebrain"
+	}
+	kubeContext := os.Getenv("KUBEBRAIN_AUTH_HA_CONTEXT")
+	output, err := runCompatKubectlContext(t, ctx, authHARolloutArgs(namespace, workload, kubeContext, "restart")...)
 	require.NoError(t, err, string(output))
-	output, err = runCompatKubectlContext(t, ctx, "-n", namespace, "rollout", "status", "deployment/kubebrain-auth-ha", "--timeout=75s")
+	output, err = runCompatKubectlContext(t, ctx, authHARolloutArgs(namespace, workload, kubeContext, "status")...)
 	require.NoError(t, err, string(output))
 
 	client, err := clientv3.New(clientv3.Config{
@@ -131,6 +136,28 @@ func TestAuthTokenSurvivesEnabledRollout(t *testing.T) {
 	statusResponse, err := client.AuthStatus(ctx)
 	require.NoError(t, err)
 	require.True(t, statusResponse.Enabled)
+}
+
+func authHARolloutArgs(namespace, workload, kubeContext, action string) []string {
+	args := make([]string, 0, 9)
+	if kubeContext != "" {
+		args = append(args, "--context", kubeContext)
+	}
+	args = append(args, "-n", namespace, "rollout", action, workload)
+	if action == "status" {
+		args = append(args, "--timeout=75s")
+	}
+	return args
+}
+
+func TestAuthHARolloutArgsUseExplicitWorkloadAndContext(t *testing.T) {
+	require.Equal(t, []string{
+		"--context", "kind-kubebrain-dbaas", "-n", "kubebrain-dev",
+		"rollout", "restart", "statefulset/a5489-jwt",
+	}, authHARolloutArgs("kubebrain-dev", "statefulset/a5489-jwt", "kind-kubebrain-dbaas", "restart"))
+	require.Equal(t, []string{
+		"-n", "kubebrain-dev", "rollout", "status", "statefulset/a5489-jwt", "--timeout=75s",
+	}, authHARolloutArgs("kubebrain-dev", "statefulset/a5489-jwt", "", "status"))
 }
 
 func TestConcurrentAuthMutationsSurviveLeaderFailover(t *testing.T) {

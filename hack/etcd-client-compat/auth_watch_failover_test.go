@@ -100,8 +100,9 @@ func TestAuthorizedWatchSurvivesPermissionRevokeAndLeaderFailover(t *testing.T) 
 
 	// A new logical Watch observes the latest permission revision even though
 	// the already-created Watch above remains authorized.
+	deniedAlice := authClient(t, endpoint, aliceUser, alicePassword)
 	deniedCtx, deniedCancel := context.WithTimeout(ctx, 10*time.Second)
-	denied := alice.Watch(deniedCtx, key, clientv3.WithCreatedNotify())
+	denied := deniedAlice.Watch(deniedCtx, key, clientv3.WithCreatedNotify())
 	deniedResponse := receiveAuthWatchResponse(t, deniedCtx, denied, "post-revoke create")
 	require.Error(t, deniedResponse.Err())
 	require.Contains(t, deniedResponse.Err().Error(), "etcdserver: permission denied")
