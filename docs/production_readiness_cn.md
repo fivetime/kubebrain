@@ -8240,3 +8240,13 @@ precondition 注入故障。成功证据必须同时证明更高 attempt/不同 
 `kind-kubebrain-dbaas` 只读预检在不存在 Operation 时于 mutation 前停止且 executor 仍为 0；三个真实故障场景尚未执行，故该项仍非
 GREEN。etcd 对标基线仍为 `/root/etcd` 的 `5cd9f4ee13801e18825d661e5005ae599460bc3a`；本提交只加强 DBaaS 操作接管，
 不改变 etcd client 可观察语义。
+
+真实 `kind-kubebrain-dbaas` 启用 parameter broker 时发现两项 Kubernetes v1.36 CLI/port-forward 兼容缺陷，提交
+`2098351a` 修复。`kubectl auth can-i` 对 cluster-scoped TokenReview 会在 stderr 输出 warning；四个 Operation RBAC checker
+和 TokenReview recovery drill 现只从 stdout 读取规范 `yes/no`，仍严格要求 allow=0、deny=1，stderr 保留诊断而不再污染判定。
+Service `:443` port-forward 日志报告解析后的 Pod targetPort `-> 8443`，门禁改为固定校验 8443，而非错误的 443 或任意端口。
+测试 fake 向正向 auth 检查真实注入 stderr warning，旧实现会失败。
+
+修复后正式 broker enable 完成 RBAC deny/allow、2/2 rollout、Service 与两个逐 Pod pinned-CA HTTPS `/readyz=204` 以及 executor
+audience TokenReview/不存在 Operation `403`；错误使用 broker SA token 的一次尝试得到非 403 并自动回滚到 0，没有放宽 handler。
+637 项提交后四片 Go/墙钟秒为 142.770/149.051、360.290/366.622、245.415/251.694、384.818/391.087，全部通过。

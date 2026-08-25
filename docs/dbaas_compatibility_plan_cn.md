@@ -62046,6 +62046,13 @@ StatefulSet；只读失败预检证明不存在 Operation 时不会 scale/delete
 最终 live 清单仍开放，不能把演练器代码和单元测试标为生产证据。etcd 源码对标 SHA 保持
 `5cd9f4ee13801e18825d661e5005ae599460bc3a`。
 
+live 前置启用又发现 Kubernetes v1.36 的两项 checker 兼容差异。TokenReview `auth can-i` 的 cluster-scope warning 位于 stderr，
+旧代码合并通道后把真实 `yes` 误判为 drift；Service port-forward 又输出解析后的 `-> 8443`，不是 Service port 443。提交
+`2098351a` 统一保持 stderr 独立、只对 stdout `yes/no` 与精确 0/1 退出码判定，并把 Service tunnel 固定为真实 targetPort 8443。
+修复后的 parameter broker 以当前镜像完成 2/2 rollout、Service/逐 Pod TLS readiness 和 executor TokenReview smoke；637 项四片
+Go/墙钟秒为 142.770/149.051、360.290/366.622、245.415/251.694、384.818/391.087。该证据只关闭 broker live 前置，
+不替代三个 JWT takeover 场景。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
