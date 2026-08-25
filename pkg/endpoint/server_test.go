@@ -28,6 +28,9 @@ import (
 	"github.com/soheilhy/cmux"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 type closeErrorServer struct {
@@ -159,6 +162,7 @@ func TestMuxedHTTP2CloseBoundsQuiescingRequest(t *testing.T) {
 		close(handlerCanceled)
 	}))
 	server.httpServer.shutdownTimeout = 50 * time.Millisecond
+	server.quiesceDelay = 50 * time.Millisecond
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	serveDone := make(chan error, 1)
@@ -201,6 +205,7 @@ func TestMuxedHTTP2QuiesceBoundsLongLivedRequest(t *testing.T) {
 		close(handlerCanceled)
 	}))
 	server.httpServer.shutdownTimeout = 50 * time.Millisecond
+	server.quiesceDelay = 50 * time.Millisecond
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	serveDone := make(chan error, 1)
@@ -228,6 +233,50 @@ func TestMuxedHTTP2QuiesceBoundsLongLivedRequest(t *testing.T) {
 		t.Fatal("quiesce left a long-lived request attached past its drain budget")
 	}
 	require.Error(t, <-requestDone)
+	require.NoError(t, normalizeServeError(<-serveDone))
+}
+
+func TestMuxedHTTP2QuiesceBoundsLongLivedGRPCStreamAfterPropagation(t *testing.T) {
+	grpcServer := grpc.NewServer()
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(grpcServer, healthServer)
+	server := newGRPCMuxedHTTPServer(grpcServer, http.NotFoundHandler())
+	server.quiesceDelay = 30 * time.Millisecond
+	server.httpServer.shutdownTimeout = 20 * time.Millisecond
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.serve(listener) }()
+	t.Cleanup(func() { require.NoError(t, server.close()) })
+
+	connection, err := grpc.NewClient(
+		"passthrough:///"+listener.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, connection.Close()) })
+	watch, err := healthpb.NewHealthClient(connection).Watch(t.Context(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	initial, err := watch.Recv()
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, initial.Status)
+
+	started := time.Now()
+	server.quiesce()
+	streamDone := make(chan error, 1)
+	go func() {
+		_, recvErr := watch.Recv()
+		streamDone <- recvErr
+	}()
+	select {
+	case recvErr := <-streamDone:
+		require.Error(t, recvErr)
+		require.GreaterOrEqual(t, time.Since(started), server.quiesceDelay,
+			"the connection must remain available through the endpoint propagation window")
+	case <-time.After(time.Second):
+		t.Fatal("quiesce did not force-close the long-lived gRPC stream within its bounded budget")
+	}
 	require.NoError(t, normalizeServeError(<-serveDone))
 }
 
@@ -290,6 +339,14 @@ func TestNewHttpServerBoundsHeaderAdmission(t *testing.T) {
 	require.True(t, server.svr.Protocols.UnencryptedHTTP2())
 	require.Zero(t, server.svr.ReadTimeout)
 	require.Zero(t, server.svr.WriteTimeout)
+}
+
+func TestMuxedHTTP2QuiesceIncludesEndpointPropagationWindow(t *testing.T) {
+	server := newGRPCMuxedHTTPServer(grpc.NewServer(), http.NotFoundHandler())
+	require.Equal(t, transportQuiescePropagationDelay, server.quiesceDelay)
+	require.Positive(t, server.quiesceDelay)
+	require.Less(t, server.quiesceDelay+server.httpServer.shutdownTimeout, 5*time.Second,
+		"quiesce propagation and forced-close budgets must fit inside the rollout SLA")
 }
 
 func TestRootServerBoundsProtocolClassificationForSecureEndpoints(t *testing.T) {

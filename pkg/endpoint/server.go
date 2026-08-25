@@ -195,6 +195,11 @@ const (
 	httpReadHeaderTimeout = 5 * time.Minute
 	httpIdleTimeout       = 2 * time.Minute
 	httpShutdownTimeout   = 2 * time.Second
+	// Pod deletion and /drain are observed by different Kubernetes control
+	// loops. Keep the existing connection alive briefly after readiness is
+	// withdrawn so EndpointSlice/kube-proxy can remove the terminating backend
+	// before GOAWAY makes clients establish a replacement connection.
+	transportQuiescePropagationDelay = time.Second
 	// Match net/http's default, which is also the effective limit used by
 	// upstream etcd. Keeping the value explicit preserves bounded admission
 	// without rejecting metadata that an etcd endpoint accepts.
@@ -259,18 +264,20 @@ func (h *httpServer) close() error {
 
 func newGRPCMuxedHTTPServer(grpcServer *grpc.Server, httpHandler http.Handler) *grpcMuxedHTTPServer {
 	return &grpcMuxedHTTPServer{
-		grpcServer:  grpcServer,
-		httpServer:  newHTTPServer(grpcHandlerFunc(grpcServer, httpHandler)),
-		quiesceDone: make(chan struct{}),
+		grpcServer:   grpcServer,
+		httpServer:   newHTTPServer(grpcHandlerFunc(grpcServer, httpHandler)),
+		quiesceDone:  make(chan struct{}),
+		quiesceDelay: transportQuiescePropagationDelay,
 	}
 }
 
 type grpcMuxedHTTPServer struct {
-	grpcServer  *grpc.Server
-	httpServer  *httpServer
-	quiescing   atomic.Bool
-	quiesceDone chan struct{}
-	quiesceErr  error
+	grpcServer   *grpc.Server
+	httpServer   *httpServer
+	quiescing    atomic.Bool
+	quiesceDone  chan struct{}
+	quiesceErr   error
+	quiesceDelay time.Duration
 }
 
 func (s *grpcMuxedHTTPServer) name() string {
@@ -295,6 +302,10 @@ func (s *grpcMuxedHTTPServer) quiesce() {
 	// final close so clients resume on another Pod during that migration window;
 	// keep the wait off the /drain request itself.
 	go func() {
+		if s.quiesceDelay > 0 {
+			timer := time.NewTimer(s.quiesceDelay)
+			<-timer.C
+		}
 		s.quiesceErr = s.httpServer.close()
 		if s.quiesceErr != nil {
 			klog.ErrorS(s.quiesceErr, "quiesce muxed HTTP/2 transport")

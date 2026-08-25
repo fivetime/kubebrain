@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -112,6 +113,7 @@ type server struct {
 	drainMu          sync.Mutex
 	drainStopped     bool
 	drainSucceeded   bool
+	draining         atomic.Bool
 	transportDrains  []func()
 	closeErr         error
 }
@@ -174,6 +176,17 @@ func withoutContextCanceled(err error) error {
 }
 
 func (s *server) Drain(ctx context.Context) error {
+	// Withdraw every public readiness contract before waiting for leadership
+	// handoff. A terminating follower can otherwise remain Ready solely because
+	// its peer proxy is healthy, so kube-proxy may reconnect clients to the Pod
+	// after transport quiesce has already closed its listener.
+	s.draining.Store(true)
+	if s.healthServer != nil {
+		s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	}
+	if s.clientHealthServer != nil {
+		s.clientHealthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	}
 	s.drainMu.Lock()
 	defer s.drainMu.Unlock()
 	if s.drainSucceeded {
@@ -1235,6 +1248,9 @@ func isHealthCheckpointFallbackError(err error) bool {
 }
 
 func (s *server) requestPathReady() bool {
+	if s.draining.Load() {
+		return false
+	}
 	if s.leaderElection != nil && s.leaderElection.IsLeader() && s.leaderServing() {
 		return true
 	}

@@ -241,9 +241,32 @@ update_revision="$(jq -r '.status.updateRevision // ""' "$statefulset_json")"
 image="$(jq -r '.spec.template.spec.containers[] | select(.name == "kubebrain") | .image' "$statefulset_json")"
 initial_spec="$(jq -cS '.spec' "$statefulset_json")" || exit 1
 candidate_spec="$initial_spec"
+restart_patch=""
 if [[ -n "$TARGET_IMAGE" ]]; then
   candidate_spec="$(jq -cS --arg image "$TARGET_IMAGE" --argjson index "$kubebrain_container_index" \
     '.spec | .template.spec.containers[$index].image = $image' "$statefulset_json")" || exit 1
+else
+  restart_value="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+  candidate_spec="$(jq -cS --arg restart "$restart_value" \
+    '.spec | .template.metadata.annotations = ((.template.metadata.annotations // {}) + {"kubectl.kubernetes.io/restartedAt":$restart})' \
+    "$statefulset_json")" || exit 1
+  if jq -e '.spec.template.metadata.annotations == null' "$statefulset_json" >/dev/null; then
+    restart_patch="$(jq -cn --arg uid "$statefulset_uid" --arg resource_version "$statefulset_resource_version" \
+      --arg restart "$restart_value" '[
+        {op:"test",path:"/metadata/uid",value:$uid},
+        {op:"test",path:"/metadata/resourceVersion",value:$resource_version},
+        {op:"add",path:"/spec/template/metadata/annotations",value:{"kubectl.kubernetes.io/restartedAt":$restart}}
+      ]')" || exit 1
+  else
+    restart_operation=add
+    jq -e '.spec.template.metadata.annotations | has("kubectl.kubernetes.io/restartedAt")' "$statefulset_json" >/dev/null && restart_operation=replace
+    restart_patch="$(jq -cn --arg uid "$statefulset_uid" --arg resource_version "$statefulset_resource_version" \
+      --arg operation "$restart_operation" --arg restart "$restart_value" '[
+        {op:"test",path:"/metadata/uid",value:$uid},
+        {op:"test",path:"/metadata/resourceVersion",value:$resource_version},
+        {op:$operation,path:"/spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt",value:$restart}
+      ]')" || exit 1
+  fi
 fi
 if [[ -n "$TARGET_IMAGE" && "$TARGET_IMAGE" == "$image" ]]; then
   echo "TARGET_IMAGE already matches the running StatefulSet image" >&2
@@ -424,7 +447,7 @@ if [[ -n "$TARGET_IMAGE" ]]; then
   expected_final_image="$TARGET_IMAGE"
   patch_kubebrain_image "$image" "$TARGET_IMAGE" "$statefulset_resource_version" >/dev/null
 else
-  kctl_mutation rollout restart "statefulset/$KUBEBRAIN_STATEFULSET" >/dev/null
+  kctl_mutation patch "statefulset/$KUBEBRAIN_STATEFULSET" --type=json -p "$restart_patch" >/dev/null
 fi
 kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
   rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null || {

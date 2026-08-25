@@ -1024,6 +1024,28 @@ func TestDrainQuiescesRegisteredTransportsAfterSuccessfulHandoff(t *testing.T) {
 	require.Len(t, first, 1, "idempotent drain must not quiesce a transport twice")
 }
 
+func TestDrainWithdrawsFollowerProxyReadiness(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	peers := &waitingSuccessorPeerService{}
+	peers.ready.Store(true)
+	clientHealth := health.NewServer()
+	clientHealth.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	s := &server{
+		campaignDone: done, peers: peers, config: Config{EnableEtcdProxy: true},
+		clientHealthServer: clientHealth,
+	}
+	require.True(t, s.requestPathReady(), "a healthy follower proxy must start ready")
+
+	require.NoError(t, s.Drain(t.Context()))
+	require.False(t, s.requestPathReady(),
+		"a drained Pod must leave Service endpoints even while its successor proxy remains healthy")
+	response, err := clientHealth.Check(t.Context(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, response.Status,
+		"the public gRPC health contract must withdraw with HTTP readiness")
+}
+
 func TestFailedDrainDoesNotQuiesceTransport(t *testing.T) {
 	done := make(chan struct{})
 	close(done)

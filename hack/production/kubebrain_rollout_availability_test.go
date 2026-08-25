@@ -265,8 +265,9 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, "--expected-up-stores=3")
 	require.Contains(t, log, "--max-store-heartbeat-age=20s")
 	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system run kubebrain-rollout-availability-probe")
-	require.Contains(t, log, " rollout restart statefulset/kubebrain")
-	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system rollout restart statefulset/kubebrain")
+	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system patch statefulset/kubebrain --type=json -p ")
+	require.Contains(t, log, `kubectl.kubernetes.io~1restartedAt`)
+	require.NotContains(t, log, " rollout restart ")
 	require.Contains(t, log, " wait --for=jsonpath={.status.phase}=Succeeded")
 	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system delete pod kubebrain-rollout-availability-probe --ignore-not-found=true --wait=true --timeout=10s")
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
@@ -291,6 +292,20 @@ func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
 	for ordinal := 0; ordinal < 3; ordinal++ {
 		require.Contains(t, log, " get pod kubebrain-"+string(rune('0'+ordinal))+" -o json")
 	}
+}
+
+func TestRolloutAvailabilityRunnerAddsMissingRestartAnnotations(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "FAKE_NO_TEMPLATE_ANNOTATIONS=true",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, `"path":"/spec/template/metadata/annotations"`)
+	require.NotContains(t, log, " rollout restart ")
 }
 
 func TestRolloutAvailabilityRunnerUsesExplicitImmutableProbeImage(t *testing.T) {
@@ -649,11 +664,18 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   [[ ! -e "$FAKE_KUBECTL_STATE" ]] || resource_version=resource-version-new
   spec_replicas=3
   [[ "${FAKE_ROLLBACK_SPEC_DRIFT:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || spec_replicas=4
-  payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --argjson prestop "$prestop" --argjson replicas "$spec_replicas" '{
+  restart_annotation=restart-old
+  if [[ -e "$FAKE_KUBECTL_STATE" && -z "${TARGET_IMAGE:-}" ]]; then
+    restart_annotation="$(<"$FAKE_KUBECTL_STATE")"
+  fi
+  payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --arg restart "$restart_annotation" --argjson prestop "$prestop" --argjson replicas "$spec_replicas" '{
     metadata:{uid:$uid,resourceVersion:$resourceVersion},
-    spec:{replicas:$replicas,template:{spec:{containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
+    spec:{replicas:$replicas,template:{metadata:{annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
+  if [[ "${FAKE_NO_TEMPLATE_ANNOTATIONS:-false}" == true && ! -e "$FAKE_KUBECTL_STATE" ]]; then
+    payload="$(jq -c 'del(.spec.template.metadata.annotations)' <<<"$payload")"
+  fi
   printf '%s' "$payload"
   if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == statefulset ]]; then
     head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
@@ -691,8 +713,6 @@ elif [[ " $* " =~ " get pod kubebrain-"[0-9]+" -o json " ]]; then
   '
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe "* ]]; then
   exit 1
-elif [[ " $* " == *" rollout restart statefulset/kubebrain "* ]]; then
-  : >"$FAKE_KUBECTL_STATE"
 elif [[ " $* " == *" patch statefulset/kubebrain --type=json -p "* ]]; then
   patch_payload=""
   previous=""
@@ -712,13 +732,24 @@ elif [[ " $* " == *" patch statefulset/kubebrain --type=json -p "* ]]; then
   [[ "${FAKE_PATCH_RESOURCE_VERSION_DRIFT:-false}" != true ]] || current_resource_version=resource-version-concurrent
   current_image=kubebrain:test
   [[ ! -e "$FAKE_KUBECTL_STATE" || -z "${TARGET_IMAGE:-}" ]] || current_image="$TARGET_IMAGE"
-  [[ "$expected_uid" == "$current_uid" && "$expected_resource_version" == "$current_resource_version" &&
-    "$expected_name" == kubebrain && "$expected_image" == "$current_image" && -n "$new_image" ]] || exit 1
-  if [[ "$new_image" == kubebrain:test && "${FAKE_ROLLBACK_IDENTITY_DRIFT:-false}" != true ]]; then
+  patch_path="$(jq -r '.[-1].path // ""' <<<"${patch_payload:-[]}")"
+  if [[ "$patch_path" == /spec/template/metadata/annotations ]]; then
+    restart_value="$(jq -r '.[-1].value["kubectl.kubernetes.io/restartedAt"] // ""' <<<"${patch_payload:-[]}")"
+    [[ "$expected_uid" == "$current_uid" && "$expected_resource_version" == "$current_resource_version" && -n "$restart_value" ]] || exit 1
+    printf '%s' "$restart_value" >"$FAKE_KUBECTL_STATE"
+  elif [[ "$patch_path" == /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt ]]; then
+    [[ "$expected_uid" == "$current_uid" && "$expected_resource_version" == "$current_resource_version" && -n "$new_image" ]] || exit 1
+    printf '%s' "$new_image" >"$FAKE_KUBECTL_STATE"
+  elif [[ "$expected_uid" == "$current_uid" && "$expected_resource_version" == "$current_resource_version" &&
+    "$expected_name" == kubebrain && "$expected_image" == "$current_image" && -n "$new_image" ]] &&
+    [[ "$new_image" == kubebrain:test && "${FAKE_ROLLBACK_IDENTITY_DRIFT:-false}" != true ]]; then
     rm -f -- "$FAKE_KUBECTL_STATE"
     [[ -z "${FAKE_ROLLBACK_MARKER:-}" ]] || : >"$FAKE_ROLLBACK_MARKER"
-  else
+  elif [[ "$expected_uid" == "$current_uid" && "$expected_resource_version" == "$current_resource_version" &&
+    "$expected_name" == kubebrain && "$expected_image" == "$current_image" && -n "$new_image" ]]; then
     : >"$FAKE_KUBECTL_STATE"
+  else
+    exit 1
   fi
 elif [[ " $* " == *" rollout status statefulset/kubebrain "* && "${FAKE_ROLLOUT_FAIL:-false}" == true ]]; then
   exit 1
