@@ -57,6 +57,7 @@ tsv="$("$JQ" -er '[.state_dir,.receipt_output,.kubebrain_namespace,.kubebrain_st
 IFS=$'\t' read -r state_dir receipt_output namespace statefulset key_secret old_field new_field old_source new_source old_sha new_sha key_volume key_mount sign_method replicas ttl skew probe_range ca cert probe_key server ca_sha cert_sha probe_key_sha <<<"$tsv"
 endpoints_json="$("$JQ" -cS '.endpoints' "$PARAMETERS_INPUT")"; endpoints="$("$JQ" -er 'join(",")' <<<"$endpoints_json")"
 [[ "$namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ && "$statefulset" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ && "$key_secret" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "JWT data-plane object identity is invalid"
+[[ "$key_secret" == "${operation_id}-keys" ]] || die "JWT key Secret does not match the immutable operation identity"
 for value in "$old_field" "$new_field" "$key_volume"; do [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "JWT key field or volume identity is invalid"; done
 [[ "$old_field" != "$new_field" && "$key_mount" == /* && "$key_mount" != / && "$(realpath -m -- "$key_mount")" == "$key_mount" ]] || die "JWT key mount binding is invalid"
 [[ "$sign_method" == HS256 || "$sign_method" == RS256 || "$sign_method" == PS256 || "$sign_method" == ES256 || "$sign_method" == EdDSA ]] || die "JWT sign method is unsupported"

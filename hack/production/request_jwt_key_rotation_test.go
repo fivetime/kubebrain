@@ -32,7 +32,7 @@ exit 99
 	writeTrafficExecutable(t, operationctl, "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$*\" >>\"$OPERATION_LOG\"\n")
 	output, err := runProductionScriptCommand(t, "request-jwt-key-rotation.sh", []string{
 		"REQUEST_ID=change-2026-jwt-1", "INSTANCE=instance-a", "WORK_DIR=" + dir,
-		"KUBEBRAIN_NAMESPACE=instance-a", "KUBEBRAIN_STATEFULSET=kubebrain", "KEY_SECRET=kubebrain-jwt-rotation",
+		"KUBEBRAIN_NAMESPACE=instance-a", "KUBEBRAIN_STATEFULSET=kubebrain",
 		"OLD_KEY_SOURCE=" + oldKey, "NEW_KEY_SOURCE=" + newKey, "SIGN_METHOD=HS256",
 		`ENDPOINTS_JSON=["https://member-0:2379","https://member-1:2379","https://member-2:2379"]`,
 		"EXPECTED_REPLICAS=3", "JWT_TTL_SECONDS=300", "MAX_CLOCK_SKEW_SECONDS=2",
@@ -59,6 +59,7 @@ exit 99
 	var values map[string]any
 	require.NoError(t, json.Unmarshal(parameters, &values))
 	require.Equal(t, "HS256", values["sign_method"])
+	require.Regexp(t, `^jwt-key-rotate-[a-f0-9]{20}-keys$`, values["key_secret"])
 	require.Equal(t, float64(300), values["jwt_ttl_seconds"])
 	require.Len(t, values["endpoints"], 3)
 	require.NotEqual(t, values["old_key_sha256"], values["new_key_sha256"])
@@ -86,7 +87,7 @@ func TestRequestJWTKeyRotationRejectsUnsafeInputsBeforeKubernetes(t *testing.T) 
 			}
 			output, err := runProductionScriptCommand(t, "request-jwt-key-rotation.sh", []string{
 				"REQUEST_ID=change-2026-jwt-2", "INSTANCE=instance-a", "WORK_DIR=" + dir,
-				"KUBEBRAIN_NAMESPACE=instance-a", "KEY_SECRET=kubebrain-jwt-rotation", "OLD_KEY_SOURCE=" + oldKey, "NEW_KEY_SOURCE=" + newKey,
+				"KUBEBRAIN_NAMESPACE=instance-a", "OLD_KEY_SOURCE=" + oldKey, "NEW_KEY_SOURCE=" + newKey,
 				"SIGN_METHOD=HS256", "ENDPOINTS_JSON=" + tc.endpoints, "EXPECTED_REPLICAS=" + replicas, "JWT_TTL_SECONDS=300", "MAX_CLOCK_SKEW_SECONDS=2",
 				"KUBE_CONTEXT=production", "KUBECTL=" + command, "OPERATIONCTL=" + command, "MARKER=" + marker,
 			})

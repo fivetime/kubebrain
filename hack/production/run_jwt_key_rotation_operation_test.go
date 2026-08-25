@@ -21,7 +21,7 @@ func TestJWTKeyRotationOperationCompletesAndTakeoverReusesReceipt(t *testing.T) 
 	stateDir, receipt := filepath.Join(dir, name+".state"), filepath.Join(dir, name+".operation.receipt.json")
 	parameters := map[string]any{
 		"state_dir": stateDir, "receipt_output": receipt, "kubebrain_namespace": "instance-a", "kubebrain_statefulset": "kubebrain",
-		"key_secret": "kubebrain-jwt-rotation", "old_key_field": "old-key", "new_key_field": "new-key", "old_key_source": oldKey, "new_key_source": newKey,
+		"key_secret": name + "-keys", "old_key_field": "old-key", "new_key_field": "new-key", "old_key_source": oldKey, "new_key_source": newKey,
 		"old_key_sha256": testSHA([]byte("old-material")), "new_key_sha256": testSHA([]byte("new-material")), "key_volume": "jwt-keys", "key_mount_dir": "/etc/kubebrain-jwt", "sign_method": "HS256",
 		"endpoints": []string{"https://member-0:2379"}, "expected_replicas": 1, "jwt_ttl_seconds": 90, "max_clock_skew_seconds": 2, "probe_range_key": "/probe",
 		"probe_cacert": "", "probe_cert": "", "probe_key": "", "probe_server_name": "", "probe_cacert_sha256": "", "probe_cert_sha256": "", "probe_key_sha256": "",

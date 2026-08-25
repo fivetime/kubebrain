@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 DEPLOY_DIR="${ROOT_DIR}/deploy/production"
+JWT_PUBLISHER_ADMISSION="${DEPLOY_DIR}/kubebrain-jwt-key-rotation-publisher-admission.yaml"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECTL="${KUBECTL:-kubectl}"
 JQ="${JQ:-jq}"
@@ -56,6 +57,9 @@ verify_inventory() {
   grep -Fq 'name: kubebrain-tikv-repair-alert-parameters' "$alert_receiver" || die "TiKV repair alert parameter admission is missing"
   grep -Fq 'failurePolicy: Fail' "$alert_receiver" || die "TiKV repair alert admission is not fail closed"
   grep -Fq 'validationActions: [Deny]' "$alert_receiver" || die "TiKV repair alert admission binding does not deny"
+  [[ -f "$JWT_PUBLISHER_ADMISSION" && ! -L "$JWT_PUBLISHER_ADMISSION" ]] || die "JWT publisher admission guardrail is missing or a symlink"
+  grep -Fq 'failurePolicy: Fail' "$JWT_PUBLISHER_ADMISSION" || die "JWT publisher admission is not fail closed"
+  grep -Fq 'validationActions: [Deny]' "$JWT_PUBLISHER_ADMISSION" || die "JWT publisher admission binding does not deny"
   echo "verified ${#requesters[@]} operation requester guardrail pairs and the self-contained TiKV repair alert receiver"
 }
 
@@ -157,6 +161,7 @@ case "$1" in
     resources="$($KUBECTL "${context[@]}" api-resources --api-group=admissionregistration.k8s.io -o name)" || die "cannot discover admissionregistration resources"
     grep -Fxq 'validatingadmissionpolicies.admissionregistration.k8s.io' <<<"$resources" || die "the API server does not expose ValidatingAdmissionPolicy"
     grep -Fxq 'validatingadmissionpolicybindings.admissionregistration.k8s.io' <<<"$resources" || die "the API server does not expose ValidatingAdmissionPolicyBinding"
+    "$KUBECTL" "${context[@]}" apply --server-side --field-manager=kubebrain-requester-guardrails -f "$JWT_PUBLISHER_ADMISSION"
     for requester in "${requesters[@]}"; do
       "$KUBECTL" "${context[@]}" apply --server-side --field-manager=kubebrain-requester-guardrails \
         -f "${DEPLOY_DIR}/kubebrain-${requester}-requester-admission.yaml"
@@ -177,6 +182,16 @@ case "$1" in
     grep -Fxq 'validatingadmissionpolicies.admissionregistration.k8s.io' <<<"$resources" || die "the API server does not expose ValidatingAdmissionPolicy"
     grep -Fxq 'validatingadmissionpolicybindings.admissionregistration.k8s.io' <<<"$resources" || die "the API server does not expose ValidatingAdmissionPolicyBinding"
     policy_names=()
+    rendered="$("$KUBECTL" "${context[@]}" create --dry-run=client --validate=false -f "$JWT_PUBLISHER_ADMISSION" -o name)" || die "cannot parse JWT publisher admission resources"
+    policies=(); bindings=()
+    while IFS= read -r resource; do
+      case "$resource" in
+        validatingadmissionpolicy.admissionregistration.k8s.io/*|validatingadmissionpolicies.admissionregistration.k8s.io/*) policies+=("${resource#*/}") ;;
+        validatingadmissionpolicybinding.admissionregistration.k8s.io/*|validatingadmissionpolicybindings.admissionregistration.k8s.io/*) bindings+=("${resource#*/}") ;;
+      esac
+    done <<<"$rendered"
+    [[ "${#policies[@]}" == 2 && "${#bindings[@]}" == 2 && "${policies[0]}" == "${bindings[0]}" && "${policies[1]}" == "${bindings[1]}" ]] || die "JWT publisher admission must render two same-name policy/binding pairs"
+    policy_names+=("${policies[@]}")
     for requester in "${requesters[@]}"; do
       rendered="$("$KUBECTL" "${context[@]}" create --dry-run=client --validate=false \
         -f "${DEPLOY_DIR}/kubebrain-${requester}-requester-admission.yaml" -o name)" || die "cannot parse requester admission resources: ${requester}"
@@ -205,7 +220,7 @@ case "$1" in
     done <<<"$rendered"
     [[ "${#policies[@]}" == 2 && "${#bindings[@]}" == 2 && "${policies[0]}" == "${bindings[0]}" && "${policies[1]}" == "${bindings[1]}" ]] || die "TiKV repair alert receiver must render two same-name policy/binding pairs"
     policy_names+=("${policies[@]}")
-    [[ "${#policy_names[@]}" == 36 ]] || die "requester policy inventory must contain 36 policies"
+    [[ "${#policy_names[@]}" == 38 ]] || die "requester and JWT publisher policy inventory must contain 38 policies"
     for policy in "${policy_names[@]}"; do
       policy_json="$("$KUBECTL" "${context[@]}" get validatingadmissionpolicy "$policy" -o json)" || die "requester policy is missing: ${policy}"
       "$JQ" -e '.status.observedGeneration == .metadata.generation and (.status|has("typeChecking")) and ((.status.typeChecking.expressionWarnings // [])|length == 0)' <<<"$policy_json" >/dev/null || die "requester policy type checking is incomplete or has warnings: ${policy}"
@@ -273,7 +288,7 @@ case "$1" in
     if printf '%s\n' "$wrong_identity_operation" | "$KUBECTL" "${context[@]}" create --dry-run=server --validate=false --as="$wrong_identity" -f - >/dev/null 2>&1; then
       die "repair alert admission allowed another requester identity to create its Operation"
     fi
-    echo "checked 36 compiled Deny policies and 18 requester RBAC/admission identities"
+    echo "checked 38 compiled Deny policies and 18 requester RBAC/admission identities"
     ;;
   *) usage ;;
 esac

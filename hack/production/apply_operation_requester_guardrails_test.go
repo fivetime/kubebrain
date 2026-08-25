@@ -30,14 +30,15 @@ fi
 	})
 	require.NoError(t, err, string(out))
 	lines := strings.Split(strings.TrimSpace(string(mustRead(t, logPath))), "\n")
-	require.Len(t, lines, 35)
+	require.Len(t, lines, 36)
 	require.Contains(t, lines[0], "--context production api-resources")
-	for i, line := range lines[1:18] {
+	require.Contains(t, lines[1], "kubebrain-jwt-key-rotation-publisher-admission.yaml")
+	for i, line := range lines[2:19] {
 		require.Contains(t, line, "requester-admission.yaml", "apply call %d", i)
 		require.Contains(t, line, "--server-side")
 	}
-	for i, line := range lines[18:] {
-		require.Contains(t, line, "requester-rbac.yaml", "apply call %d", i+17)
+	for i, line := range lines[19:] {
+		require.Contains(t, line, "requester-rbac.yaml", "apply call %d", i+18)
 		require.Contains(t, line, "--server-side")
 	}
 	require.Contains(t, string(out), "applied 17 fail-closed operation requester guardrail pairs")
@@ -77,7 +78,7 @@ func TestOperationRequesterGuardrailsCheckCompiledPoliciesAndIdentityMatrix(t *t
 		"KUBE_CONTEXT=production", "KUBECTL=" + kubectl,
 	}, productionScriptCommandTimeout)
 	require.NoError(t, err, string(out))
-	require.Contains(t, string(out), "checked 36 compiled Deny policies and 18 requester RBAC/admission identities")
+	require.Contains(t, string(out), "checked 38 compiled Deny policies and 18 requester RBAC/admission identities")
 }
 
 func TestOperationRequesterGuardrailsRejectPolicyWarningsBeforeIdentityProbes(t *testing.T) {

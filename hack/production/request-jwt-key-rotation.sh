@@ -22,7 +22,8 @@ resource_id='^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; dns_id='^[a-z0-9]([-a-z0-9]{0,
 command -v realpath >/dev/null || die "realpath is required"
 
 [[ "$REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "REQUEST_ID must identify the external JWT key rotation proposal"
-[[ "$INSTANCE" =~ $resource_id && "$KUBEBRAIN_NAMESPACE" =~ $dns_id && "$KUBEBRAIN_STATEFULSET" =~ $dns_id && "$KEY_SECRET" =~ $dns_id ]] || die "JWT key rotation identity is invalid"
+[[ -z "$KEY_SECRET" ]] || die "KEY_SECRET is derived from the immutable operation identity and must not be supplied"
+[[ "$INSTANCE" =~ $resource_id && "$KUBEBRAIN_NAMESPACE" =~ $dns_id && "$KUBEBRAIN_STATEFULSET" =~ $dns_id ]] || die "JWT key rotation identity is invalid"
 for value in "$OLD_KEY_FIELD" "$NEW_KEY_FIELD" "$KEY_VOLUME"; do [[ "$value" =~ $resource_id ]] || die "JWT key field or volume identity is invalid"; done
 [[ "$OLD_KEY_FIELD" != "$NEW_KEY_FIELD" && "$KEY_MOUNT_DIR" == /* && "$KEY_MOUNT_DIR" != / && "$(realpath -m -- "$KEY_MOUNT_DIR")" == "$KEY_MOUNT_DIR" ]] || die "JWT key mount binding is invalid"
 [[ "$SIGN_METHOD" == HS256 || "$SIGN_METHOD" == RS256 || "$SIGN_METHOD" == PS256 || "$SIGN_METHOD" == ES256 || "$SIGN_METHOD" == EdDSA ]] || die "SIGN_METHOD is unsupported"
@@ -63,8 +64,8 @@ ca_sha=""; cert_sha=""; probe_key_sha=""
 [[ -z "$PROBE_CACERT" ]] || ca_sha="$(sha256sum "$PROBE_CACERT" | cut -d ' ' -f1)"
 [[ -z "$PROBE_CERT" ]] || cert_sha="$(sha256sum "$PROBE_CERT" | cut -d ' ' -f1)"
 [[ -z "$PROBE_KEY" ]] || probe_key_sha="$(sha256sum "$PROBE_KEY" | cut -d ' ' -f1)"
-binding="$(printf '%s\n' "$REQUEST_ID" "$INSTANCE" "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$KEY_SECRET" "$old_sha" "$new_sha" "$ENDPOINTS_JSON" "$EXPECTED_REPLICAS" "$JWT_TTL_SECONDS" "$MAX_CLOCK_SKEW_SECONDS" | sha256sum | cut -c1-20)"
-name="jwt-key-rotate-${binding}"; secret="${name}-parameters"; state_dir="${WORK_DIR}/${name}.state"; receipt="${WORK_DIR}/${name}.operation.receipt.json"
+binding="$(printf '%s\n' "$REQUEST_ID" "$INSTANCE" "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$old_sha" "$new_sha" "$ENDPOINTS_JSON" "$EXPECTED_REPLICAS" "$JWT_TTL_SECONDS" "$MAX_CLOCK_SKEW_SECONDS" | sha256sum | cut -c1-20)"
+name="jwt-key-rotate-${binding}"; KEY_SECRET="${name}-keys"; secret="${name}-parameters"; state_dir="${WORK_DIR}/${name}.state"; receipt="${WORK_DIR}/${name}.operation.receipt.json"
 params="$temp/parameters.json"
 "$JQ" -cnS --slurpfile endpoints "$endpoints_file" --arg state "$state_dir" --arg receipt "$receipt" --arg namespace "$KUBEBRAIN_NAMESPACE" --arg sts "$KUBEBRAIN_STATEFULSET" --arg secret "$KEY_SECRET" \
   --arg old_field "$OLD_KEY_FIELD" --arg new_field "$NEW_KEY_FIELD" --arg old_source "$OLD_KEY_SOURCE" --arg new_source "$NEW_KEY_SOURCE" --arg old_sha "$old_sha" --arg new_sha "$new_sha" \

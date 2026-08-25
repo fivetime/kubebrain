@@ -1,0 +1,47 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-jwt-key-rotation-publish-secret}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [secrets], scope: Namespaced}
+  matchConditions:
+    - name: jwt-publisher-secret-scope
+      expression: 'object.metadata.name.matches("^jwt-key-rotate-[a-f0-9]{20}-keys$") || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-jwt-key-rotation-executor"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-jwt-key-rotation-executor"', message: JWT rotation key Secrets require the dedicated publisher identity}
+    - {expression: 'namespaceObject != null && namespaceObject.metadata.labels["dbaas.kubebrain.io/dedicated"] == "true"', message: JWT rotation publishing is restricted to dedicated instance namespaces}
+    - {expression: 'has(object.metadata.annotations) && "dbaas.kubebrain.io/jwt-key-rotation-operation" in object.metadata.annotations && object.metadata.annotations["dbaas.kubebrain.io/jwt-key-rotation-operation"].matches("^jwt-key-rotate-[a-f0-9]{20}$") && object.metadata.name == object.metadata.annotations["dbaas.kubebrain.io/jwt-key-rotation-operation"] + "-keys"', message: JWT rotation key Secret must bind its deterministic operation identity}
+    - {expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 2 && object.data.all(k, v, k.matches("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$") && size(v) > 0)', message: JWT rotation key Secret must contain exactly two non-empty approved fields}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-jwt-key-rotation-publish-secret}
+spec: {policyName: kubebrain-jwt-key-rotation-publish-secret, validationActions: [Deny]}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-jwt-key-rotation-publish-statefulset}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [apps], apiVersions: [v1], operations: [UPDATE], resources: [statefulsets], scope: Namespaced}
+  matchConditions:
+    - name: jwt-publisher-statefulset-scope
+      expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-jwt-key-rotation-executor"'
+  validations:
+    - {expression: 'namespaceObject != null && namespaceObject.metadata.labels["dbaas.kubebrain.io/dedicated"] == "true"', message: JWT rotation publishing is restricted to dedicated instance namespaces}
+    - {expression: 'has(object.spec.template.metadata.annotations) && object.spec.template.metadata.annotations["dbaas.kubebrain.io/jwt-key-rotation-operation"].matches("^jwt-key-rotate-[a-f0-9]{20}$") && object.spec.template.metadata.annotations["dbaas.kubebrain.io/jwt-key-rotation-phase"] in ["phase-a", "phase-b", "phase-c"] && object.spec.template.metadata.annotations["dbaas.kubebrain.io/jwt-key-secret-sha256"].matches("^[a-f0-9]{64}$")', message: JWT rotation StatefulSet update requires exact managed annotations}
+    - {expression: 'object.spec.replicas == oldObject.spec.replicas && object.spec.selector == oldObject.spec.selector && object.spec.serviceName == oldObject.spec.serviceName && object.spec.podManagementPolicy == oldObject.spec.podManagementPolicy && object.spec.updateStrategy == oldObject.spec.updateStrategy && object.spec.volumeClaimTemplates == oldObject.spec.volumeClaimTemplates', message: JWT publisher cannot change StatefulSet identity, scale, strategy, selector, or claims}
+    - {expression: 'object.spec.template.metadata.labels == oldObject.spec.template.metadata.labels && object.spec.template.metadata.annotations.filter(k, v, !(k in ["dbaas.kubebrain.io/jwt-key-rotation-operation", "dbaas.kubebrain.io/jwt-key-rotation-phase", "dbaas.kubebrain.io/jwt-key-secret-sha256"])) == oldObject.spec.template.metadata.annotations.filter(k, v, !(k in ["dbaas.kubebrain.io/jwt-key-rotation-operation", "dbaas.kubebrain.io/jwt-key-rotation-phase", "dbaas.kubebrain.io/jwt-key-secret-sha256"]))', message: JWT publisher cannot change unmanaged Pod template metadata}
+    - {expression: 'object.spec.template.spec.volumes == oldObject.spec.template.spec.volumes && object.spec.template.spec.initContainers == oldObject.spec.template.spec.initContainers && object.spec.template.spec.containers.size() == oldObject.spec.template.spec.containers.size() && object.spec.template.spec.containers.filter(c, c.name != "kubebrain") == oldObject.spec.template.spec.containers.filter(c, c.name != "kubebrain")', message: JWT publisher cannot change volumes, init containers, or sidecars}
+    - {expression: 'object.spec.template.spec.serviceAccountName == oldObject.spec.template.spec.serviceAccountName && object.spec.template.spec.securityContext == oldObject.spec.template.spec.securityContext && object.spec.template.spec.nodeSelector == oldObject.spec.template.spec.nodeSelector && object.spec.template.spec.affinity == oldObject.spec.template.spec.affinity && object.spec.template.spec.tolerations == oldObject.spec.template.spec.tolerations && object.spec.template.spec.imagePullSecrets == oldObject.spec.template.spec.imagePullSecrets && object.spec.template.spec.hostNetwork == oldObject.spec.template.spec.hostNetwork && object.spec.template.spec.dnsPolicy == oldObject.spec.template.spec.dnsPolicy && object.spec.template.spec.schedulerName == oldObject.spec.template.spec.schedulerName && object.spec.template.spec.topologySpreadConstraints == oldObject.spec.template.spec.topologySpreadConstraints', message: JWT publisher cannot change Pod identity, placement, networking, or security policy}
+    - {expression: 'object.spec.template.spec.containers.filter(c, c.name == "kubebrain").size() == 1 && oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain").size() == 1 && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].image == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].image && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].imagePullPolicy == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].imagePullPolicy && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].command == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].command && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].ports == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].ports && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].env == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].env && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].envFrom == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].envFrom && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].volumeMounts == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].volumeMounts && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].resources == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].resources && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].securityContext == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].securityContext && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].livenessProbe == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].livenessProbe && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].readinessProbe == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].readinessProbe && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].startupProbe == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].startupProbe && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].lifecycle == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].lifecycle && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].workingDir == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].workingDir', message: JWT publisher cannot change KubeBrain runtime fields other than auth-token args}
+    - {expression: 'object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].args.filter(a, !a.startsWith("--auth-token=")) == oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].args.filter(a, !a.startsWith("--auth-token=")) && object.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].args.filter(a, a.startsWith("--auth-token=")).size() == 1 && oldObject.spec.template.spec.containers.filter(c, c.name == "kubebrain")[0].args.filter(a, a.startsWith("--auth-token=")).size() == 1', message: JWT publisher may replace only the unique auth-token argument}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-jwt-key-rotation-publish-statefulset}
+spec: {policyName: kubebrain-jwt-key-rotation-publish-statefulset, validationActions: [Deny]}

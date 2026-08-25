@@ -2071,6 +2071,33 @@ func TestJWTKeyRotationRequesterIsFailClosedAndLeastPrivilege(t *testing.T) {
 	}
 }
 
+func TestJWTKeyRotationPublisherAdmissionIsFailClosedAndFieldRestricted(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-jwt-key-rotation-publisher-admission.yaml")
+	require.Len(t, objects, 4)
+	for _, name := range []string{"kubebrain-jwt-key-rotation-publish-secret", "kubebrain-jwt-key-rotation-publish-statefulset"} {
+		policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", name)
+		require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+		binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", name)
+		require.Equal(t, []string{"Deny"}, nestedStringSlice(t, binding, "spec", "validationActions"))
+		text := fmt.Sprintf("%v", policy.Object)
+		require.Contains(t, text, "system:serviceaccount:kubebrain-operations:kubebrain-jwt-key-rotation-executor")
+		require.Contains(t, text, `dbaas.kubebrain.io/dedicated`)
+		if strings.HasSuffix(name, "secret") {
+			require.Contains(t, text, `^jwt-key-rotate-[a-f0-9]{20}-keys$`)
+			require.Contains(t, text, "object.immutable == true")
+			require.Contains(t, text, "size(object.data) == 2")
+		} else {
+			for fragment := range map[string]struct{}{
+				"oldObject.spec.replicas": {}, "oldObject.spec.selector": {}, "oldObject.spec.updateStrategy": {},
+				"oldObject.spec.volumeClaimTemplates": {}, "c.name != \"kubebrain\"": {}, "!a.startsWith(\"--auth-token=\")": {},
+				"jwt-key-secret-sha256": {},
+			} {
+				require.Contains(t, text, fragment)
+			}
+		}
+	}
+}
+
 func TestBackupRequesterIsFailClosedAndLeastPrivilege(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-backup-requester-admission.yaml")
 	for _, tc := range []struct {
