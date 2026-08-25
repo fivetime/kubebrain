@@ -3853,6 +3853,23 @@ phase A 原子发布 `kubebrain.jwt-key-rotation.phase-a.v1`；phase B 必须引
 该直接门禁关闭了不可变阶段 receipt、顺序与 TTL 防跳步缺口，但不代替 KMS 生成/托管、Secret 与 StatefulSet 发布控制器、
 失败 rollout 回滚、Operation API 持久调度或不可变审计存储归档；这些控制面编排仍需继续实现。
 
+同日使用精确提交 `d32249011499ee5abbe1f2c139517fa7a64e0c40` 构建并在 Kind 的独立
+`a5492-jwt-receipt` keyspace 实跑上述 gate。镜像 `kubebrain:a5492-d3224901` 构建墙钟 211.179 秒，本地 manifest list
+为 `sha256:1955db9d944784fb740eb6f0fca6f5dc2b67fd4a0fdf8162d96ec05f6ac074dc`，三 Pod runtime digest 均为
+`sha256:902016c8996074a9fdb6060fe8b96b93fde3c27f27ff2639fbc8265ffeeb5d67`；镜像内版本输出精确包含完整 SHA、TiKV 和
+Go 1.26.5。最终演练使用 TTL 90 秒、clock skew 2 秒：phase A observed=1787635979，phase B observed=1787636027、
+earliest retirement=1787636119；仅滚动仍保留 overlap 的预检 revision 后，提前 phase C 被拒绝且未发布最终 receipt。
+到时后才移除旧 verifier，phase C completed=1787636146，三个直连 member 均拒绝同一旧 JWT 并接受 fresh 新 JWT。
+
+phase A/B/final receipt SHA-256 分别为
+`443764b36af6f599c5eb9f795fbfc734f5961e096e4e3ba62f81ea99879ba165`、
+`5b96a7e40574ff9f20f6e849c66d73af528752c2fecc52fee64e256f60778921`、
+`9a23f885ed68ed998e1ab98a466126fed774128239ca0684c0f1f178a05ab126`；独立重算与 JSON 引用一致，三个文件均为 0600。
+再次执行 phase C 会重做逐 member 新/旧 token 检查并幂等复用原 receipt。证据链期间 immutable Secret UID、resourceVersion、
+data digest 不变，相邻有效阶段 StatefulSet revision 不同，最终三个 Pod 3/3 Ready、零重启。postflight 恢复 auth-disabled，
+公开 KV、user、role、lease 和 alarm 全空；隔离 StatefulSet、五个 Service、Secret、Pod 及宿主敏感临时文件全部删除，主数据面
+仍为 3/3 Ready、零重启。
+
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
 
 ```shell

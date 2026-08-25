@@ -61851,6 +61851,30 @@ production 结果采用上述四分片门禁。
 本项关闭 A5491 的不可变阶段 receipt、顺序和 TTL anti-skip 缺口；KMS key lifecycle、Secret/StatefulSet 发布与回滚控制器、
 持久 Operation 编排、receipt 归档、跨节点/AZ 和长时间 rotation soak 仍开放。
 
+随后从精确 HEAD `d32249011499ee5abbe1f2c139517fa7a64e0c40` 构建
+`kubebrain:a5492-d3224901`，墙钟 211.179 秒；本地 manifest list
+`sha256:1955db9d944784fb740eb6f0fca6f5dc2b67fd4a0fdf8162d96ec05f6ac074dc`，Kind runtime digest
+`sha256:902016c8996074a9fdb6060fe8b96b93fde3c27f27ff2639fbc8265ffeeb5d67`，三 Pod 一致。镜像 version 与探针 help
+分别确认完整 SHA、TiKV、Go 1.26.5 和新二进制随正式 runtime 交付。
+
+真实 `a5492-jwt-receipt` 独立 keyspace 以 immutable 双 key Secret、三个直连 NodePort 和一个 balancer 执行 rotation
+`a5492-live-2`。最终 TTL/skew 为 90/2 秒；phase A receipt observed=1787635979，phase B observed=1787636027、
+earliest retirement=1787636119。phase B 全量新 signer 后三个 member 同时接受原 phase A 旧 JWT 和新 JWT。随后只用仍保留
+overlap 的新 StatefulSet revision 调用 phase C，确定性得到 `phase C is too early` 且最终 receipt 不存在；到达最早时间后才
+真正移除旧 verifier，completed=1787636146，三个 member 逐一返回旧 JWT InvalidAuthToken 并立即接受 fresh 新 JWT。
+
+phase A/B/final receipt 摘要分别为 `443764b36af6f599c5eb9f795fbfc734f5961e096e4e3ba62f81ea99879ba165`、
+`5b96a7e40574ff9f20f6e849c66d73af528752c2fecc52fee64e256f60778921` 和
+`9a23f885ed68ed998e1ab98a466126fed774128239ca0684c0f1f178a05ab126`；独立 sha256sum 与两级 JSON 引用完全相等，权限均
+0600。再次 phase C 复做在线检查后幂等通过且未改 receipt。有效链中 Secret UID/resourceVersion/data digest 稳定、三个阶段
+revision 分离、三 Pod 始终 3/3 Ready 且零重启。首次以 20 秒 TTL 做 phase A 后，依据实际 rollout 时间主动废弃该未推进链，
+改用 90 秒从新 revision 和新 token 重新开始；fixture 的初始 Secret mode/advertise 占位错误也均发生在有效链之前，未纳入
+发布证据。
+
+postflight 关闭 auth 并删除 root user/role，公开 KV count=0、lease=0、alarm 为空，三 member 正常；隔离 StatefulSet、五个
+Service、Secret、Pod 与宿主 JWT/key/receipt 临时文件全部删除。主数据面继续运行 A5491 精确镜像 3/3 Ready、零重启。
+本次把 A5492 从模拟门禁推进为精确镜像真实三副本证据；剩余缺口仍是外部 KMS/Secret/Operation 控制面、跨节点/AZ 与长 soak。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
