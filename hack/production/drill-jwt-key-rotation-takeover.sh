@@ -81,7 +81,7 @@ capture_json "$EVIDENCE_DIR/statefulset-initial.json" kc -n "$INSTANCE_NAMESPACE
   .spec.replicas==3 and .status.readyReplicas==3 and .status.updatedReplicas==3 and .status.currentRevision==.status.updateRevision and
   ([.spec.template.spec.containers[]|select(.name=="kubebrain")]|length)==1
 ' "$EVIDENCE_DIR/statefulset-initial.json" >/dev/null || die "target JWT StatefulSet must start at a complete three-replica rollout"
-selector="$($JQ -er '.spec.selector.matchLabels | to_entries | sort_by(.key) | map(select((.key|test("^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$") and (.value|test("^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$"))) | "\(.key)=\(.value)") | select(length>0) | join(",")' "$EVIDENCE_DIR/statefulset-initial.json")" || die "StatefulSet selector is unsafe"
+selector="$("$JQ" -er '.spec.selector.matchLabels | to_entries | sort_by(.key) | map(select((.key|test("^[A-Za-z0-9]([A-Za-z0-9_./-]*[A-Za-z0-9])?$")) and (.value|test("^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$"))) | "\(.key)=\(.value)") | select(length>0) | join(",")' "$EVIDENCE_DIR/statefulset-initial.json")" || die "StatefulSet selector is unsafe"
 
 observe_pods() {
   local pods now
