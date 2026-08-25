@@ -61702,6 +61702,38 @@ manifest list 为 `sha256:e6e71b41db23aae40c068038d409b71f31701852c0c2bbe2f320d3
 Go 时间 118.023/354.318/227.679/367.167 秒，墙钟 124.065/360.489/233.759/373.194 秒，全部通过。该证据关闭共享
 NodePort advertise 下的集群内 Pod 删除/balancer 门禁缺口；多个外部 L4/L7 地址、跨节点/AZ 与连接跟踪耗尽仍需独立验证。
 
+### A5488：CORRUPT disarm 长历史活锁与完整 client/v3 差分闭环
+
+以 `/root/etcd` 的 `5cd9f4ee13801e18825d661e5005ae599460bc3a` 为参考，默认完整 client/v3 差分首次在
+`TestCombinedAlarmDifferentialAgainstReferenceEtcd` 稳定 RED：参考 etcd 可解除 CORRUPT alarm，KubeBrain 则在
+`DisarmCorrupt -> validatePersistedTxnWitnesses(true) -> loadEventValues -> TiKV BatchGet` 连续返回
+`DeadlineExceeded`。真实现场已有约 3.8 万 revision；服务端对全部 Alarm RPC 强制施加 10 秒单次 attempt timeout，
+而 CORRUPT disarm 必须扫描所有尚未 compact 的 durable transaction witness。一次完整扫描实际需要约 18.5 秒，客户端
+每次重试都从零重新扫描，因而即使总重试窗口达到 60 秒也无法取得进展。这不是暂时性能抖动，而是服务端固定预算与不可续扫
+操作组合产生的确定性活锁。
+
+提交 `7300ee98e14e2742eb924a7194c4286456d2045b` 仅让 `Alarm DEACTIVATE CORRUPT` 保留调用方 deadline，普通 Alarm
+及 Auth RPC 继续受服务端 attempt timeout 保护；同时把共享 event-value loader 的 TiKV BatchGet 限制为每批 512 key，
+避免单个任意大 etcd Txn 形成无界请求。回归测试直接覆盖 `verifyObjects=true` 的大 transaction witness，确认 6 次分批且
+最大批次不超过 512；timeout 测试确认 CORRUPT disarm 不再隐式获得 10 秒 deadline、显式 caller deadline 仍原样保留。
+旧构建在同一持久 CORRUPT 长历史上反复 10 秒超时、60 秒仍失败；dirty 修复构建在 18.487 秒成功解除，随后 combined
+differential Go 18.981 秒、墙钟 24.327 秒通过。压缩历史后的精确提交镜像再次通过 combined differential（Go 1.500 秒、
+墙钟 4.901 秒）。
+
+默认完整 client/v3 差分从破坏性 preflight 到 postflight 全部完成，所有可运行测试 GREEN（Go 547.499 秒、墙钟
+551.871 秒）；依赖专用外部环境的 auth/JWT/quota、Envoy/L4/L7 和 direct multi-replica 变体仍按 runner 的显式环境条件
+跳过，不能由默认入口替代。相关 backend/server 普通测试通过；完整 backend race 通过。首次 race 还发现测试自身在后台
+worker 读取期间替换 metrics recorder，以及异步 lease cleanup 直接读取 recorder map 的数据竞争；测试改为构造时注入不可变
+recorder，并统一在锁内取 counter snapshot，相关定向 race 连续通过。代码提交前精确
+`hack/production/test-shard.sh --verify 4` 仍为 611 项、四片 140/171/154/146；提交后四片 Go 时间
+117.731/331.851/214.965/343.255 秒，墙钟 123.573/337.729/220.891/349.092 秒，全部通过。
+
+精确镜像 `kubebrain:a5488-7300ee98` 内嵌完整 revision；本地 OCI manifest list 为
+`sha256:efba253b4d27a05fa88b90944bdff07461c97abfab40cebb6fbf58b082a74447`，三个主数据面 Pod 使用相同 runtime
+digest `sha256:c0819738bfccfcf33b7de1fb8b476ba5503aa7113a3affa1fc405fc195979747`，3/3 Ready、零重启；PD/TiKV
+各 3/3，诊断期间临时缩容的 `a4653-auth`、`a4653-jwt`、`a4657-tls` 均恢复 3/3。最终 alarm 为空、差分用户 keyspace
+为空。默认完整 client/v3 runner 的缺口至此关闭；专用环境变体、跨节点/AZ 和长时间 soak 仍是独立证据缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
