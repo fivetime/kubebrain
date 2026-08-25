@@ -62,6 +62,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-jwt-kms-export-client ./hack/production/cmd/jwt-kms-export-client \
     && go build -trimpath -o /src/bin/kubebrain-jwt-kms-lifecycle-verifier ./hack/production/cmd/jwt-kms-lifecycle-verifier \
     && go build -trimpath -o /src/bin/kubebrain-jwt-kms-lifecycle-client ./hack/production/cmd/jwt-kms-lifecycle-client \
+    && go build -trimpath -o /src/bin/kubebrain-jwt-kms-lifecycle-credential-probe ./hack/production/cmd/jwt-kms-lifecycle-credential-probe \
     && go build -trimpath -o /src/bin/kubebrain-jwt-rotation-publisher ./hack/production/cmd/jwt-rotation-publisher \
     && go build -trimpath -o /src/bin/kubebrain-metering-archive ./hack/production/cmd/metering-archive \
     && go build -trimpath -o /src/bin/kubebrain-metering-rollup ./hack/production/cmd/metering-rollup \
@@ -213,6 +214,7 @@ COPY --from=build /src/bin/kubebrain-jwt-kms-export-verifier /usr/local/bin/kube
 COPY --from=build /src/bin/kubebrain-jwt-kms-export-client /usr/local/bin/kubebrain-jwt-kms-export-client
 COPY --from=build /src/bin/kubebrain-jwt-kms-lifecycle-verifier /usr/local/bin/kubebrain-jwt-kms-lifecycle-verifier
 COPY --from=build /src/bin/kubebrain-jwt-kms-lifecycle-client /usr/local/bin/kubebrain-jwt-kms-lifecycle-client
+COPY --from=build /src/bin/kubebrain-jwt-kms-lifecycle-credential-probe /usr/local/bin/kubebrain-jwt-kms-lifecycle-credential-probe
 COPY --from=build /src/bin/kubebrain-jwt-rotation-publisher /usr/local/bin/kubebrain-jwt-rotation-publisher
 COPY --from=build /src/bin/kubebrain-metering-archive /usr/local/bin/kubebrain-metering-archive
 COPY --from=build /src/bin/kubebrain-metering-rollup /usr/local/bin/kubebrain-metering-rollup

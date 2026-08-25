@@ -19,6 +19,7 @@ func TestJWTKMSLifecycleCredentialManifestIsIsolatedAndFailClosed(t *testing.T) 
 	require.Contains(t, text, `has(oldObject.metadata.labels)`)
 	require.Contains(t, text, `"dbaas.kubebrain.io/credential-kind" in object.metadata.labels`)
 	require.Contains(t, text, "lifecycle credential label cannot be removed or changed")
+	require.Contains(t, text, `int(object.data["readiness-expires-at-unix"]) > int(object.data["activated-at-unix"])`)
 	require.Contains(t, text, `object.immutable == true`)
 	require.Contains(t, text, `validationActions: [Deny]`)
 
