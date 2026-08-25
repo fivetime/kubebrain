@@ -8483,3 +8483,31 @@ physical scan，`done_rev=44329`、`inflight=0`、全部 compaction failure stag
 
 639 项 inventory 保持 `152/178/159/150`；精确代码提交后四片 Go/墙钟秒为
 139.124/145.394、382.915/389.178、230.127/236.375、394.567/400.807，全部通过。
+
+### A5508：TiKV GC 旧任期取消不再污染失败/成功遥测
+
+`runStorageGC` 已用 maintenance context 取消换主中的 TiKV GC safepoint 调用，但旧错误出口只检查进程 worker 是否关闭：旧 leadership
+正常取消返回 `context canceled` 时仍增加 `storage.gc.err` 并打印 error，造成 follower 上的假告警。反向竞态也未分类：若 storage
+实现与 cancel 竞争并迟到返回成功，旧 leader 仍会刷新 `storage.gc.safepoint` 与 last-success timestamp。对照 etcd 的 server-owned
+maintenance/stop lifecycle，已退役任期既不应制造后端故障，也不应发布 successor-owned success telemetry。
+
+提交 `4f33b154` 在 GC 返回后、释放派生 context 前采样创建该调用的精确 maintenance parent；该 lifecycle 已结束时静默退役结果，
+否则继续原有分类：进程 shutdown 退出，真实 storage error 仍增加 `storage.gc.err`，有效 leader 成功才更新 safepoint 和 success time。
+确定性旧代码 RED 在换主取消后观察到 `storage.gc.err=1` 与 `context canceled` error；GREEN 固定旧任期取消为 0、真实注入故障仍可观测，
+并拒绝旧 leader 的迟到 success 指标。三项普通 20 轮 6.068 秒、race 10 轮 4.829 秒；收严 worker cleanup 后再 10 轮 2.938 秒，
+完整 backend 48.909 秒及 backend vet 全绿。
+
+候选 `kubebrain:a5508-4f33b154` 内嵌完整 SHA `4f33b1544f5babf16d376c86b0d5ea5eb04fc051`，OCI index 为
+`sha256:b1e90cd8583ed60c8d6bb96ca0a5a844afa764b4be039761ea2bbf439e7f12d7`，kind/CRI runtime digest 为
+`sha256:00865910cf3149763afd96303f6ed9d10ebde37c45c34ffa10f54fd8b4625d3c`。首次三副本 rollout 在 iteration 4 因
+Put→Watch 6.983 秒超过 5 秒 SLA 而 RED，runner 完整回滚到 A5507；不能计为成功证据。该候选变更路径的 GC interval 为 10 分钟，
+在约 20 秒失败窗口尚未触发，故没有证据把超时归因于代码，也不忽略门禁结果。回滚后连续 20 个样本证明三端 `/readyz=ok` 且
+Service endpoint health 正常，再对同一不可变候选执行全量 rollout，最终 **900/900 GREEN**：Watch 900、lease alive，最大业务/
+PD TSO/TiKV Region 延迟 1331/61/19ms，revision `kubebrain-7c9b5f9899 -> kubebrain-7c7487db97`。
+
+最终三 Pod 3/3 Ready、restart 0、版本 SHA 一致，`storage_gc_enabled=1`、`storage_gc_err=0`；10 分钟首 tick 尚未到达，因此
+`storage_gc_last_success_timestamp_seconds=0` 是启动期预期，不能作为本轮取消路径的 live 证据。PD/TiKV 3+3 Ready、restart 0，
+probe 已清理；现 leader 恢复既有 physical watermark 44329，`done_rev=44329`、`inflight=0`、全部 compaction failure stage 为 0。
+
+639 项 inventory 保持 `152/178/159/150`；精确代码提交后四片 Go/墙钟秒为
+145.118/151.636、375.262/381.800、241.024/247.542、397.064/403.838，全部通过。

@@ -62215,6 +62215,26 @@ goroutine。该边界与 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/se
 `kubebrain-685c5bfbf9 -> kubebrain-7c9b5f9899`。KubeBrain 与 PD/TiKV 最终全 Ready、restart 0；现 leader 只恢复既有
 watermark 44329 一次，`done_rev=44329`、`inflight=0`、全部 failure stage=0，未调用 Compact RPC，临时 probe 已清理。
 
+### A5508：按 leadership lifecycle 分类 TiKV GC 结果
+
+TiKV safepoint driver 的调用虽已绑定当前 leadership context，旧实现却在调用返回后只检查 process worker：换主产生的正常
+`context canceled` 会增加 `storage.gc.err`/error log；忽略 cancel 并迟到返回 success 的 storage 实现还会让 follower 更新 safepoint
+success telemetry。提交 `4f33b154` 采样每次调用的精确 maintenance parent；父 lifecycle 已结束就丢弃该任期结果，真实 active-leader
+storage failure 继续计错，有效成功才发布 safepoint/last-success。该边界与 etcd server-owned maintenance 受 stop lifecycle 管理的原则一致。
+
+确定性旧代码 RED 在换主后得到 `storage.gc.err=1`；GREEN 同时固定取消不计错、真实故障仍计错、迟到成功不发布。三项普通 20 轮、
+race 10 轮和收严 cleanup 后 10 轮均通过，完整 backend/vet 全绿。639 项四片仍为 `152/178/159/150`，精确提交 Go/墙钟秒为
+145.118/151.636、375.262/381.800、241.024/247.542、397.064/403.838。
+
+精确候选 SHA `4f33b1544f5babf16d376c86b0d5ea5eb04fc051`、OCI index
+`sha256:b1e90cd8583ed60c8d6bb96ca0a5a844afa764b4be039761ea2bbf439e7f12d7`、kind runtime
+`sha256:00865910cf3149763afd96303f6ed9d10ebde37c45c34ffa10f54fd8b4625d3c` 在独立 3×PD/3×TiKV v8.5.3 上复验。
+首轮 rollout 在 iteration 4 因 Put→Watch 6.983 秒超过 5 秒 SLA 而 fail closed 并完整回滚，不能计入成功；候选 GC tick 为 10 分钟，
+失败窗口尚未执行改动路径。回滚后 20 个 readyz/endpoint-health 样本全绿，再运行同一不可变候选得到 900/900、Watch 900、lease alive，
+最大业务/TSO/Region 延迟 1331/61/19ms，revision `kubebrain-7c9b5f9899 -> kubebrain-7c7487db97`。最终 KubeBrain 与
+PD/TiKV 全 Ready、restart 0，`storage_gc_enabled=1`、`storage_gc_err=0`；首个 10 分钟 tick 尚未到，last-success=0 不冒充取消路径
+live 证据，临时 probe 已清理。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
