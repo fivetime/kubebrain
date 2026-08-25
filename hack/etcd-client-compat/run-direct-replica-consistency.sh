@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 KUBEBRAIN_DIRECT_RAW="${KUBEBRAIN_DIRECT_ENDPOINTS:-}"
@@ -100,12 +101,6 @@ need go
 need jq
 if [[ "${#kubebrain_metrics_endpoints[@]}" -gt 0 ]]; then
   need curl
-  for endpoint in "${kubebrain_metrics_endpoints[@]}"; do
-    if ! curl --fail --silent --show-error --max-time 5 -- "${endpoint%/}/metrics" >/dev/null; then
-      echo "direct KubeBrain replica metrics preflight failed: $endpoint" >&2
-      exit 1
-    fi
-  done
 fi
 if [[ ! -x "$ETCDCTL_BIN" ]]; then
   echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
@@ -133,23 +128,107 @@ if ! jq -e '
   exit 1
 fi
 
+baseline_cluster_id="$(jq -er '.[0].Status.header.cluster_id | select(. > 0) | tostring' <<<"$candidate_statuses")"
+baseline_member_ids="$(jq -c '[.[].Status.header.member_id]' <<<"$candidate_statuses")"
+baseline_revisions="$(jq -c '[.[].Status.header.revision]' <<<"$candidate_statuses")"
+
+validate_endpoint_header() {
+  local phase="$1"
+  local index="$2"
+  local response="$3"
+  local expected_member minimum_revision
+  expected_member="$(jq -r ".[$index] | tostring" <<<"$baseline_member_ids")"
+  minimum_revision="$(jq -r ".[$index]" <<<"$baseline_revisions")"
+  jq -e --arg cluster "$baseline_cluster_id" --arg member "$expected_member" --argjson minimum "$minimum_revision" '
+    (.header // .) as $header |
+    ($header.cluster_id | tostring) == $cluster and
+    ($header.member_id | tostring) == $member and
+    $header.revision >= $minimum
+  ' >/dev/null <<<"$response" || {
+    echo "direct KubeBrain endpoint response identity drifted during ${phase}: ${kubebrain_endpoints[$index]}" >&2
+    return 1
+  }
+}
+
+metrics_dir=""
+cleanup() {
+  if [[ -n "$metrics_dir" ]]; then
+    rm -rf -- "$metrics_dir"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+assert_metrics_identity() {
+  local phase="$1"
+  local index endpoint expected_member expected_hex metrics_file expected_line server_id_lines
+  if [[ "${#kubebrain_metrics_endpoints[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ -z "$metrics_dir" ]]; then
+    metrics_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-direct-replica-metrics.XXXXXX")"
+    chmod 700 "$metrics_dir"
+  fi
+  for index in "${!kubebrain_metrics_endpoints[@]}"; do
+    endpoint="${kubebrain_metrics_endpoints[$index]}"
+    metrics_file="$metrics_dir/${phase}-${index}.prom"
+    if ! curl --fail --silent --show-error --max-time 5 --max-filesize 1048576 \
+      --output "$metrics_file" -- "${endpoint%/}/metrics"; then
+      echo "direct KubeBrain replica metrics ${phase} failed or exceeded 1 MiB: $endpoint" >&2
+      return 1
+    fi
+    chmod 600 "$metrics_file"
+    expected_member="$(jq -r ".[$index]" <<<"$baseline_member_ids")"
+    printf -v expected_hex '%x' "$expected_member"
+    expected_line="etcd_server_id{cluster=\"default\",server_id=\"${expected_hex}\"} 1"
+    server_id_lines="$(awk '$1 ~ /^etcd_server_id\{/ {count++} END {print count+0}' "$metrics_file")"
+    if [[ "$server_id_lines" != 1 ]] || ! grep -Fqx -- "$expected_line" "$metrics_file"; then
+      echo "direct KubeBrain replica metrics identity drifted during ${phase}: $endpoint expected member $expected_member" >&2
+      return 1
+    fi
+  done
+}
+
+assert_metrics_identity preflight
+
 service_endpoint="${kubebrain_endpoints[0]}"
 assert_test_prefixes_empty() {
   local phase="$1"
-  local compat_json lease_json physical_traffic_json
-  compat_json="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" get /registry/etcd-client-compat/ --prefix --limit=1 -w json)"
-  lease_json="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" get /dbaas-direct-replica-lease/ --prefix --limit=1 -w json)"
-  physical_traffic_json="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" get /dbaas-physical-traffic/ --prefix --limit=1 -w json)"
-  if [[ "$(jq -r '.count // (.kvs | length) // 0' <<<"$compat_json")" != 0 ||
-    "$(jq -r '.count // (.kvs | length) // 0' <<<"$lease_json")" != 0 ||
-    "$(jq -r '.count // (.kvs | length) // 0' <<<"$physical_traffic_json")" != 0 ]]; then
-    echo "direct-replica consistency test prefixes are not empty during ${phase}" >&2
-    exit 1
-  fi
+  local index endpoint prefix response
+  for index in "${!kubebrain_endpoints[@]}"; do
+    endpoint="${kubebrain_endpoints[$index]}"
+    for prefix in /registry/etcd-client-compat/ /dbaas-direct-replica-lease/ /dbaas-physical-traffic/; do
+      response="$("$ETCDCTL_BIN" --endpoints="$endpoint" get "$prefix" --prefix --limit=1 -w json)"
+      validate_endpoint_header "$phase prefix check" "$index" "$response"
+      if ! jq -e '(.count // (.kvs | length) // 0) == 0 and ((.kvs // []) | length) == 0 and (.more // false) == false' \
+        >/dev/null <<<"$response"; then
+        echo "direct-replica consistency test prefix $prefix is not empty during ${phase} at $endpoint" >&2
+        return 1
+      fi
+    done
+  done
 }
 assert_test_prefixes_empty preflight
-baseline_leases="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
-baseline_alarms="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" alarm list -w json | jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort')"
+
+baseline_leases=""
+baseline_alarms=""
+for index in "${!kubebrain_endpoints[@]}"; do
+  endpoint="${kubebrain_endpoints[$index]}"
+  lease_response="$("$ETCDCTL_BIN" --endpoints="$endpoint" lease list -w json)"
+  validate_endpoint_header "preflight lease list" "$index" "$lease_response"
+  leases="$(jq -c '(.leases // []) | map(.ID // .id) | sort' <<<"$lease_response")"
+  alarm_response="$("$ETCDCTL_BIN" --endpoints="$endpoint" alarm list -w json)"
+  validate_endpoint_header "preflight alarm list" "$index" "$alarm_response"
+  alarms="$(jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort' <<<"$alarm_response")"
+  if [[ "$index" == 0 ]]; then
+    baseline_leases="$leases"
+    baseline_alarms="$alarms"
+  elif [[ "$leases" != "$baseline_leases" || "$alarms" != "$baseline_alarms" ]]; then
+    echo "direct KubeBrain replicas disagree on the preflight lease or alarm set" >&2
+    exit 1
+  fi
+done
 
 declare -a selected_tests=()
 while read -r manifest_scope manifest_test extra; do
@@ -194,21 +273,49 @@ test_status=0
       -count=1 -timeout="$TEST_TIMEOUT" -v
 ) || test_status=$?
 
+final_statuses='[]'
+for endpoint in "${kubebrain_endpoints[@]}"; do
+  if ! status_json="$("$ETCDCTL_BIN" --endpoints="$endpoint" endpoint status -w json)"; then
+    echo "direct KubeBrain replica status postflight failed: $endpoint" >&2
+    exit 1
+  fi
+  final_statuses="$(jq -c --argjson status "$status_json" '. + $status' <<<"$final_statuses")"
+done
+if ! jq -e --arg cluster "$baseline_cluster_id" --argjson members "$baseline_member_ids" --argjson revisions "$baseline_revisions" '
+  length == 3 and
+  all(.[]; (.Status.header.cluster_id | tostring) == $cluster and .Status.header.member_id > 0 and .Status.leader > 0) and
+  ([.[].Status.header.member_id] == $members) and
+  ([.[].Status.leader] | unique | length) == 1 and
+  (.[0].Status.leader as $leader | $members | index($leader) != null) and
+  ([range(0; length) as $i | .[$i].Status.header.revision >= $revisions[$i]] | all)
+' >/dev/null <<<"$final_statuses"; then
+  echo "direct KubeBrain endpoint topology or endpoint-to-member mapping drifted during the suite" >&2
+  exit 1
+fi
+
+assert_metrics_identity postflight
 assert_test_prefixes_empty postflight
-final_leases="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
-if [[ "$final_leases" != "$baseline_leases" ]]; then
-  echo "direct-replica consistency suite changed the live lease set" >&2
-  echo "before: $baseline_leases" >&2
-  echo "after:  $final_leases" >&2
-  exit 1
-fi
-final_alarms="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" alarm list -w json | jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort')"
-if [[ "$final_alarms" != "$baseline_alarms" ]]; then
-  echo "direct-replica consistency suite changed the live alarm set" >&2
-  echo "before: $baseline_alarms" >&2
-  echo "after:  $final_alarms" >&2
-  exit 1
-fi
+for index in "${!kubebrain_endpoints[@]}"; do
+  endpoint="${kubebrain_endpoints[$index]}"
+  lease_response="$("$ETCDCTL_BIN" --endpoints="$endpoint" lease list -w json)"
+  validate_endpoint_header "postflight lease list" "$index" "$lease_response"
+  final_leases="$(jq -c '(.leases // []) | map(.ID // .id) | sort' <<<"$lease_response")"
+  if [[ "$final_leases" != "$baseline_leases" ]]; then
+    echo "direct-replica consistency suite changed the live lease set at $endpoint" >&2
+    echo "before: $baseline_leases" >&2
+    echo "after:  $final_leases" >&2
+    exit 1
+  fi
+  alarm_response="$("$ETCDCTL_BIN" --endpoints="$endpoint" alarm list -w json)"
+  validate_endpoint_header "postflight alarm list" "$index" "$alarm_response"
+  final_alarms="$(jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort' <<<"$alarm_response")"
+  if [[ "$final_alarms" != "$baseline_alarms" ]]; then
+    echo "direct-replica consistency suite changed the live alarm set at $endpoint" >&2
+    echo "before: $baseline_alarms" >&2
+    echo "after:  $final_alarms" >&2
+    exit 1
+  fi
+done
 if [[ "$test_status" -ne 0 ]]; then
   echo "direct-replica consistency test package failed with status $test_status" >&2
   exit "$test_status"

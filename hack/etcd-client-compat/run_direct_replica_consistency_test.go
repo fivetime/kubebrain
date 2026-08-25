@@ -48,7 +48,11 @@ func TestDirectReplicaConsistencyRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, content, "TestContendedConcurrencyResponseHeadersAcrossDirectReplicas")
 	require.Contains(t, content, "TestControlResponseHeadersAcrossDirectReplicas")
 	require.Contains(t, content, "TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas")
-	require.Contains(t, string(script), "direct KubeBrain replica metrics preflight failed")
+	require.Contains(t, string(script), "endpoint topology or endpoint-to-member mapping drifted")
+	require.Contains(t, string(script), "direct KubeBrain endpoint response identity drifted")
+	require.Contains(t, string(script), "direct KubeBrain replica metrics identity drifted")
+	require.Contains(t, string(script), "--max-filesize 1048576")
+	require.Contains(t, string(script), "for index in \"${!kubebrain_endpoints[@]}\"")
 }
 
 func TestDirectReplicaScopeManifestOwnsDirectEnvironmentTests(t *testing.T) {
@@ -237,4 +241,108 @@ func TestDirectReplicaConsistencyRunnerRequiresDestructiveApprovalForHashKVCompa
 			require.NotContains(t, string(output), "missing required command")
 		})
 	}
+}
+
+func writeDirectReplicaRunnerFakes(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	goRan := filepath.Join(dir, "go-ran")
+	fakeGo := filepath.Join(dir, "go")
+	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == version ]]; then
+  exit 0
+fi
+touch "$GO_RAN"
+`), 0o755))
+	fakeEtcdctl := filepath.Join(dir, "etcdctl")
+	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'Git SHA: d947b2086\n'
+  exit 0
+fi
+endpoint=""
+for arg in "$@"; do
+  case "$arg" in --endpoints=*) endpoint="${arg#--endpoints=}" ;; esac
+done
+case "$endpoint" in
+  e0) member=101 ;;
+  e1) member=102 ;;
+  e2) member=103 ;;
+  *) exit 91 ;;
+esac
+revision=10
+if [[ -f "$GO_RAN" ]]; then
+  revision=20
+  if [[ "${DRIFT_POSTFLIGHT_MEMBER:-false}" == true && "$endpoint" == e1 ]]; then
+    member=103
+  fi
+fi
+header="{\"cluster_id\":900,\"member_id\":${member},\"revision\":${revision},\"raft_term\":4}"
+case "$*" in
+  *"endpoint status -w json"*) printf '[{"Status":{"header":%s,"leader":101}}]\n' "$header" ;;
+  *" get "*" -w json"*) printf '{"header":%s,"count":0,"kvs":[],"more":false}\n' "$header" ;;
+  *"lease list -w json"*) printf '{"cluster_id":900,"member_id":%s,"revision":%s,"raft_term":4,"leases":[]}\n' "$member" "$revision" ;;
+  *"alarm list -w json"*) printf '{"header":%s,"alarms":[]}\n' "$header" ;;
+  *) exit 92 ;;
+esac
+`), 0o755))
+	fakeCurl := filepath.Join(dir, "curl")
+	require.NoError(t, os.WriteFile(fakeCurl, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+output=""
+url=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --output) output="$2"; shift 2 ;;
+    --) shift; url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$url" in
+  http://m0/metrics) member=65 ;;
+  http://m1/metrics) member=66 ;;
+  http://m2/metrics) member=67 ;;
+  *) exit 93 ;;
+esac
+if [[ "${DRIFT_METRICS_MEMBER:-false}" == true && "$url" == http://m1/metrics ]]; then
+  member=65
+fi
+printf 'etcd_server_id{cluster="default",server_id="%s"} 1\n' "$member" >"$output"
+`), 0o755))
+	return fakeEtcdctl, goRan
+}
+
+func directReplicaRunnerFakeEnv(dir, fakeEtcdctl, goRan string) []string {
+	return []string{
+		"PATH=" + dir + ":" + os.Getenv("PATH"),
+		"KUBEBRAIN_DIRECT_ENDPOINTS=e0,e1,e2",
+		"KUBEBRAIN_DIRECT_METRICS_ENDPOINTS=http://m0,http://m1,http://m2",
+		"ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY=true",
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=d947b2086",
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+		"GO_RAN=" + goRan,
+	}
+}
+
+func TestDirectReplicaConsistencyRunnerRejectsPostflightEndpointMemberDrift(t *testing.T) {
+	dir := t.TempDir()
+	fakeEtcdctl, goRan := writeDirectReplicaRunnerFakes(t, dir)
+	env := append(directReplicaRunnerFakeEnv(dir, fakeEtcdctl, goRan), "DRIFT_POSTFLIGHT_MEMBER=true")
+	output, err := runCompatScriptCommand(t, "run-direct-replica-consistency.sh", env)
+	require.Error(t, err)
+	require.Contains(t, string(output), "endpoint topology or endpoint-to-member mapping drifted")
+	_, statErr := os.Stat(goRan)
+	require.NoError(t, statErr, "postflight drift must be observed after the selected Go tests run")
+}
+
+func TestDirectReplicaConsistencyRunnerRejectsMetricsMemberDriftBeforeTests(t *testing.T) {
+	dir := t.TempDir()
+	fakeEtcdctl, goRan := writeDirectReplicaRunnerFakes(t, dir)
+	env := append(directReplicaRunnerFakeEnv(dir, fakeEtcdctl, goRan), "DRIFT_METRICS_MEMBER=true")
+	output, err := runCompatScriptCommand(t, "run-direct-replica-consistency.sh", env)
+	require.Error(t, err)
+	require.Contains(t, string(output), "metrics identity drifted during preflight")
+	_, statErr := os.Stat(goRan)
+	require.ErrorIs(t, statErr, os.ErrNotExist, "metrics drift must fail before any selected Go test")
 }
