@@ -8,7 +8,9 @@ WORKER_ID="${WORKER_ID:-}"; PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"; OPERATION_
 LEASE_SECONDS="${LEASE_SECONDS:-120}"; HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
 OPERATIONCTL="${OPERATIONCTL:-}"; WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"
 PUBLISHER_COMMAND="${PUBLISHER_COMMAND:-kubebrain-jwt-rotation-publisher}"; ROTATION_COMMAND="${ROTATION_COMMAND:-${ROOT_DIR}/hack/production/validate-jwt-key-rotation.sh}"
-TOKEN_ISSUER_COMMAND="${TOKEN_ISSUER_COMMAND:-}"; JQ="${JQ:-jq}"; DATE="${DATE:-date}"; SLEEP="${SLEEP:-sleep}"
+TOKEN_ISSUER_COMMAND="${TOKEN_ISSUER_COMMAND:-kubebrain-jwt-token-issuer}"; JWT_AUTH_CREDENTIAL_ROOT="${JWT_AUTH_CREDENTIAL_ROOT:-/var/run/secrets/kubebrain-jwt-auth}"
+JWT_AUTH_USERNAME_FILE="${JWT_AUTH_USERNAME_FILE:-${JWT_AUTH_CREDENTIAL_ROOT}/username}"; JWT_AUTH_PASSWORD_FILE="${JWT_AUTH_PASSWORD_FILE:-${JWT_AUTH_CREDENTIAL_ROOT}/password}"
+JQ="${JQ:-jq}"; DATE="${DATE:-date}"; SLEEP="${SLEEP:-sleep}"
 MAX_PARAMETERS_BYTES=65536; MAX_EVIDENCE_BYTES=2097152
 
 die() { echo "$*" >&2; exit 2; }
@@ -82,6 +84,8 @@ if [[ "$ca" != - ]]; then
 	ca="${frozen_tls[0]}"; gate_tls_env+=("PROBE_CACERT=$ca" "PROBE_SERVER_NAME=$server")
 	if [[ "$cert" != - ]]; then cert="${frozen_tls[1]}"; probe_key="${frozen_tls[2]}"; gate_tls_env+=("PROBE_CERT=$cert" "PROBE_KEY=$probe_key"); fi
 else [[ "$cert" == - && "$probe_key" == - && "$server" == - && "$ca_sha" == - && "$cert_sha" == - && "$probe_key_sha" == - ]] || die "plaintext probe parameters are inconsistent"; fi
+issuer_endpoint="$("$JQ" -er '.[0]' <<<"$endpoints_json")" || die "JWT issuer endpoint is missing"
+issuer_tls_args=(); if [[ "$ca" != - ]]; then issuer_tls_args+=(--cacert "$ca" --server-name "$server"); if [[ "$cert" != - ]]; then issuer_tls_args+=(--cert "$cert" --key "$probe_key"); fi; fi
 
 run_step() {
   local label="$1"; shift; local step_rc heartbeat_rc
@@ -91,7 +95,7 @@ run_step() {
   child=0; heartbeat_pid=0; if [[ "$heartbeat_rc" == 75 ]]; then fenced=true; echo "operation heartbeat failed during ${label}" >&2; return 75; fi; return "$step_rc"
 }
 run_or_retry() { local label="$1"; shift; local rc=0; run_step "$label" "$@" || rc=$?; [[ "$fenced" == false ]] || exit 1; (( rc == 0 )) || { terminal_heartbeat || exit 1; retry "${label} exited ${rc}"; }; }
-issue_token() { local output="$1" key="$2" label="$3"; if [[ -e "$output" ]]; then secure_file "$output" 1048576 || die "existing ${label} token is unsafe"; return; fi; run_or_retry "issue ${label} token" env JWT_TOKEN_OUTPUT="$output" JWT_SIGNING_KEY="$key" JWT_SIGN_METHOD="$sign_method" JWT_OPERATION_ID="$operation_id" "$TOKEN_ISSUER_COMMAND"; secure_file "$output" 1048576 || retry "${label} token issuer did not publish a secure token"; }
+issue_token() { local output="$1" label="$2"; if [[ -e "$output" ]]; then secure_file "$output" 1048576 || die "existing ${label} token is unsafe"; return; fi; run_or_retry "issue ${label} token" env JWT_TOKEN_OUTPUT="$output" "$TOKEN_ISSUER_COMMAND" --endpoint "$issuer_endpoint" --credential-root "$JWT_AUTH_CREDENTIAL_ROOT" --username-file "$JWT_AUTH_USERNAME_FILE" --password-file "$JWT_AUTH_PASSWORD_FILE" --output "$output" "${issuer_tls_args[@]}"; secure_file "$output" 1048576 || retry "${label} token issuer did not publish a secure token"; }
 
 old_token="$state_dir/${name}.old.jwt"; b_token="$state_dir/${name}.phase-b-new.jwt"; c_token="$state_dir/${name}.phase-c-new.jwt"
 a_publish="$state_dir/${name}.phase-a.publish.json"; b_publish="$state_dir/${name}.phase-b.publish.json"; c_publish="$state_dir/${name}.phase-c.publish.json"
@@ -99,11 +103,11 @@ a_gate="$state_dir/${name}.phase-a.json"; b_gate="$state_dir/${name}.phase-b.jso
 publisher_common=(--operation-id "$operation_id" --instance "$instance" --namespace "$namespace" --statefulset "$statefulset" --key-secret "$key_secret" --old-key-field "$old_field" --new-key-field "$new_field" --old-key-source "$old_source" --new-key-source "$new_source" --old-key-sha256 "$old_sha" --new-key-sha256 "$new_sha" --key-volume "$key_volume" --key-mount-dir "$key_mount" --sign-method "$sign_method" --expected-replicas "$replicas" --jwt-ttl-seconds "$ttl")
 gate_common=("ROTATION_ID=$operation_id" "INSTANCE=$instance" "STATE_DIR=$state_dir" "KUBEBRAIN_NAMESPACE=$namespace" "KUBEBRAIN_STATEFULSET=$statefulset" "KEY_SECRET=$key_secret" "OLD_KEY_FIELD=$old_field" "NEW_KEY_FIELD=$new_field" "ENDPOINTS=$endpoints" "OLD_TOKEN_FILE=$old_token" "JWT_TTL_SECONDS=$ttl" "MAX_CLOCK_SKEW_SECONDS=$skew" "EXPECTED_REPLICAS=$replicas" "PROBE_RANGE_KEY=$probe_range" "${gate_tls_env[@]}")
 
-issue_token "$old_token" "$old_source" old
 run_or_retry "phase A publish" "$PUBLISHER_COMMAND" --phase phase-a --receipt-output "$a_publish" "${publisher_common[@]}"
+issue_token "$old_token" old
 run_or_retry "phase A gate" env "${gate_common[@]}" ACTION=phase-a "$ROTATION_COMMAND"
-issue_token "$b_token" "$new_source" phase-b-new
 run_or_retry "phase B publish" "$PUBLISHER_COMMAND" --phase phase-b --previous-receipt "$a_publish" --receipt-output "$b_publish" "${publisher_common[@]}"
+issue_token "$b_token" phase-b-new
 run_or_retry "phase B gate" env "${gate_common[@]}" NEW_TOKEN_FILE="$b_token" ACTION=phase-b "$ROTATION_COMMAND"
 secure_file "$a_gate" "$MAX_EVIDENCE_BYTES" && secure_file "$b_gate" "$MAX_EVIDENCE_BYTES" || retry "phase A/B gate receipt is missing or unsafe"
 "$JQ" -e --arg operation "$operation_id" --arg instance "$instance" --argjson endpoints "$endpoints_json" --arg a_sha "$(digest "$a_gate")" --arg old_token "$(digest "$old_token")" --arg new_token "$(digest "$b_token")" --argjson ttl "$ttl" --argjson skew "$skew" '
@@ -134,7 +138,7 @@ if (( phase_c_rc != 0 )); then
     retry "phase C publish exited ${phase_c_rc}; overlap phase B was restored"
   fi
 fi
-issue_token "$c_token" "$new_source" phase-c-new
+issue_token "$c_token" phase-c-new
 run_or_retry "phase C gate" env "${gate_common[@]}" NEW_TOKEN_FILE="$c_token" ACTION=phase-c "$ROTATION_COMMAND"
 
 evidence=("$a_publish" "$b_publish" "$c_publish" "$a_gate" "$b_gate" "$c_gate"); evidence_sha=()

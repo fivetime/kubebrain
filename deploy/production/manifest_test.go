@@ -813,7 +813,7 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.True(t, found)
-		var workspace, parameterToken, parameterCA, hooks, prometheusClient *unstructured.Unstructured
+		var workspace, parameterToken, parameterCA, hooks, prometheusClient, jwtAuth *unstructured.Unstructured
 		for _, raw := range volumes {
 			volume := &unstructured.Unstructured{Object: raw.(map[string]any)}
 			switch nestedString(t, volume, "name") {
@@ -827,6 +827,8 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 				hooks = volume
 			case "prometheus-client":
 				prometheusClient = volume
+			case "jwt-auth":
+				jwtAuth = volume
 			}
 		}
 		require.NotNil(t, workspace)
@@ -864,7 +866,7 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			nestedInt64(t, tokenSource, "serviceAccountToken", "expirationSeconds"))
 		require.Equal(t, "kubebrain-operation-parameter-broker-ca",
 			nestedString(t, parameterCA, "configMap", "name"))
-		if name == "kubebrain-certificate-rotation-executor" || name == "kubebrain-info-certificate-rotation-executor" || name == "kubebrain-jwt-key-rotation-executor" {
+		if name == "kubebrain-certificate-rotation-executor" || name == "kubebrain-info-certificate-rotation-executor" {
 			require.NotNil(t, hooks)
 			require.Equal(t, name+"-hooks",
 				nestedString(t, hooks, "secret", "secretName"))
@@ -921,15 +923,45 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 				require.NotNil(t, prometheusMount)
 				require.Equal(t, "/var/run/secrets/kubebrain-prometheus", nestedString(t, prometheusMount, "mountPath"))
 				require.True(t, nestedBool(t, prometheusMount, "readOnly"))
-			} else {
-				require.Equal(t, map[string]string{"issue-token": "issue-token"}, pathsByKey)
-				require.Equal(t, "/usr/local/bin/kubebrain-jwt-rotation-publisher", envValues["PUBLISHER_COMMAND"])
-				require.Equal(t, "/opt/kubebrain/hack/production/validate-jwt-key-rotation.sh", envValues["ROTATION_COMMAND"])
-				require.Equal(t, "/opt/kubebrain-executor-hooks/issue-token", envValues["TOKEN_ISSUER_COMMAND"])
-				require.Equal(t, "/usr/local/bin/kubebrain-jwt-token-probe", envValues["TOKEN_PROBE"])
 			}
 		} else {
 			require.Nil(t, hooks)
+		}
+		if name == "kubebrain-jwt-key-rotation-executor" {
+			require.NotNil(t, jwtAuth)
+			require.Equal(t, "kubebrain-jwt-key-rotation-auth", nestedString(t, jwtAuth, "secret", "secretName"))
+			require.EqualValues(t, 0440, nestedInt64(t, jwtAuth, "secret", "defaultMode"))
+			items, found, err := unstructured.NestedSlice(jwtAuth.Object, "secret", "items")
+			require.NoError(t, err)
+			require.True(t, found)
+			pathsByKey := map[string]string{}
+			for _, item := range items {
+				itemObject := &unstructured.Unstructured{Object: item.(map[string]any)}
+				pathsByKey[nestedString(t, itemObject, "key")] = nestedString(t, itemObject, "path")
+			}
+			require.Equal(t, map[string]string{"username": "username", "password": "password"}, pathsByKey)
+			require.Equal(t, "/usr/local/bin/kubebrain-jwt-rotation-publisher", envValues["PUBLISHER_COMMAND"])
+			require.Equal(t, "/opt/kubebrain/hack/production/validate-jwt-key-rotation.sh", envValues["ROTATION_COMMAND"])
+			require.Equal(t, "/usr/local/bin/kubebrain-jwt-token-issuer", envValues["TOKEN_ISSUER_COMMAND"])
+			require.Equal(t, "/var/run/secrets/kubebrain-jwt-auth", envValues["JWT_AUTH_CREDENTIAL_ROOT"])
+			require.Equal(t, "/var/run/secrets/kubebrain-jwt-auth/username", envValues["JWT_AUTH_USERNAME_FILE"])
+			require.Equal(t, "/var/run/secrets/kubebrain-jwt-auth/password", envValues["JWT_AUTH_PASSWORD_FILE"])
+			require.Equal(t, "/usr/local/bin/kubebrain-jwt-token-probe", envValues["TOKEN_PROBE"])
+			mounts, found, err := unstructured.NestedSlice(container.Object, "volumeMounts")
+			require.NoError(t, err)
+			require.True(t, found)
+			var authMount *unstructured.Unstructured
+			for _, raw := range mounts {
+				mount := &unstructured.Unstructured{Object: raw.(map[string]any)}
+				if nestedString(t, mount, "name") == "jwt-auth" {
+					authMount = mount
+				}
+			}
+			require.NotNil(t, authMount)
+			require.Equal(t, "/var/run/secrets/kubebrain-jwt-auth", nestedString(t, authMount, "mountPath"))
+			require.True(t, nestedBool(t, authMount, "readOnly"))
+		} else {
+			require.Nil(t, jwtAuth)
 		}
 		if name != "kubebrain-info-certificate-rotation-executor" {
 			require.Nil(t, prometheusClient)

@@ -33,6 +33,7 @@ func TestJWTKeyRotationOperationCompletesAndTakeoverReusesReceipt(t *testing.T) 
 	require.NoError(t, os.WriteFile(parameterPath, append(parameterData, '\n'), 0o600))
 	digest := testSHA(append(parameterData, '\n'))
 	logPath := filepath.Join(dir, "operation.log")
+	eventLog := filepath.Join(dir, "rotation-events.log")
 	operationctl, publisher, gate, issuer := filepath.Join(dir, "operationctl"), filepath.Join(dir, "publisher"), filepath.Join(dir, "gate"), filepath.Join(dir, "issuer")
 	writeTrafficExecutable(t, operationctl, `#!/usr/bin/env bash
 set -euo pipefail
@@ -47,12 +48,14 @@ esac
 `)
 	writeTrafficExecutable(t, issuer, `#!/usr/bin/env bash
 set -euo pipefail
-(umask 077; printf 'token-for-%s\n' "${JWT_SIGNING_KEY##*/}" >"$JWT_TOKEN_OUTPUT")
+printf 'issue:%s\n' "${JWT_TOKEN_OUTPUT##*/}" >>"$ROTATION_EVENT_LOG"
+(umask 077; printf 'token-for-%s\n' "${JWT_TOKEN_OUTPUT##*/}" >"$JWT_TOKEN_OUTPUT")
 `)
 	writeTrafficExecutable(t, publisher, `#!/usr/bin/env bash
 set -euo pipefail
 phase=""; output=""
 while [[ "$#" -gt 0 ]]; do case "$1" in --phase) phase="$2"; shift 2;; --receipt-output) output="$2"; shift 2;; *) shift;; esac; done
+printf 'publish:%s\n' "$phase" >>"$ROTATION_EVENT_LOG"
 [[ "${HANG_PUBLISH:-false}" != true ]] || /bin/sleep 10
 if [[ ! -e "$output" ]]; then (umask 077; printf '{"format":"publish","phase":"%s"}\n' "$phase" >"$output"); fi
 `)
@@ -77,6 +80,7 @@ if [[ ! -e "$output" ]]; then (umask 077; printf '%s\n' "$body" >"$output"); fi
 		"PUBLISHER_COMMAND=" + publisher, "ROTATION_COMMAND=" + gate, "TOKEN_ISSUER_COMMAND=" + issuer,
 		"DATE=" + dateCommand, "SLEEP=" + sleepCommand, "HEARTBEAT_INTERVAL_SECONDS=1", "LEASE_SECONDS=6",
 		"OPERATION_LOG=" + logPath, "OPERATION_NAME=" + name, "PARAMETERS_SHA=" + digest, "PARAMETERS_PATH=" + parameterPath,
+		"ROTATION_EVENT_LOG=" + eventLog,
 	}
 	output, err := runProductionRunnerCommand(t, "run-jwt-key-rotation-operation.sh", append(baseEnv, "CLAIM_ATTEMPT=1"))
 	require.NoError(t, err, string(output))
@@ -84,6 +88,11 @@ if [[ ! -e "$output" ]]; then (umask 077; printf '%s\n' "$body" >"$output"); fi
 	log := string(mustRead(t, logPath))
 	require.Contains(t, log, "--action succeed")
 	require.Contains(t, log, "--receipt-sha256")
+	require.Equal(t, []string{
+		"publish:phase-a", "issue:" + name + ".old.jwt",
+		"publish:phase-b", "issue:" + name + ".phase-b-new.jwt",
+		"publish:phase-c", "issue:" + name + ".phase-c-new.jwt",
+	}, strings.Split(strings.TrimSpace(string(mustRead(t, eventLog))), "\n"))
 
 	output, err = runProductionRunnerCommand(t, "run-jwt-key-rotation-operation.sh", append(baseEnv, "CLAIM_ATTEMPT=2"))
 	require.NoError(t, err, string(output))
