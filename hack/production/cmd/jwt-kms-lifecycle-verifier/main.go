@@ -64,18 +64,38 @@ type lifecycleReceipt struct {
 	State                  string `json:"state"`
 }
 
+type lifecycleArtifact struct {
+	Format                  string `json:"format"`
+	RequestID               string `json:"request_id"`
+	OperationID             string `json:"operation_id"`
+	OperationUID            string `json:"operation_uid"`
+	Instance                string `json:"instance"`
+	OldVersionID            string `json:"old_version_id"`
+	NewVersionID            string `json:"new_version_id"`
+	CompletedAtUnix         int64  `json:"completed_at_unix"`
+	PromotedAtUnix          int64  `json:"promoted_at_unix"`
+	RevokedAtUnix           int64  `json:"revoked_at_unix"`
+	OperationReceiptSHA256  string `json:"operation_receipt_sha256"`
+	PromotionReceiptSHA256  string `json:"promotion_receipt_sha256"`
+	RevocationReceiptSHA256 string `json:"revocation_receipt_sha256"`
+	OperationReceiptBase64  string `json:"operation_receipt_base64"`
+	PromotionReceiptBase64  string `json:"promotion_receipt_base64"`
+	RevocationReceiptBase64 string `json:"revocation_receipt_base64"`
+}
+
 func main() {
-	var action, receiptPath, publicKeyPath, operationPath, previousPath string
+	var action, receiptPath, publicKeyPath, operationPath, previousPath, artifactOutput string
 	flag.StringVar(&action, "action", "", "promote or revoke")
 	flag.StringVar(&receiptPath, "receipt", "", "signed lifecycle receipt")
 	flag.StringVar(&publicKeyPath, "public-key", "", "pinned provider Ed25519 public key PEM")
 	flag.StringVar(&operationPath, "operation-receipt", "", "completed JWT rotation v3 receipt")
 	flag.StringVar(&previousPath, "previous-receipt", "", "verified promotion receipt required by revoke")
+	flag.StringVar(&artifactOutput, "artifact-output", "", "exclusive canonical lifecycle evidence output; valid only for revoke")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fatal(errors.New("positional arguments are not supported"))
 	}
-	if err := verifyFiles(action, receiptPath, publicKeyPath, operationPath, previousPath, time.Now()); err != nil {
+	if err := verifyFiles(action, receiptPath, publicKeyPath, operationPath, previousPath, artifactOutput, time.Now()); err != nil {
 		fatal(err)
 	}
 }
@@ -84,7 +104,10 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-func verifyFiles(action, receiptPath, publicKeyPath, operationPath, previousPath string, now time.Time) error {
+func verifyFiles(action, receiptPath, publicKeyPath, operationPath, previousPath, artifactOutput string, now time.Time) error {
+	if artifactOutput != "" && action != "revoke" {
+		return errors.New("artifact output is valid only for revoke verification")
+	}
 	receipt, err := readFile(receiptPath, 64<<10, 0o022)
 	if err != nil {
 		return fmt.Errorf("read lifecycle receipt: %w", err)
@@ -108,7 +131,75 @@ func verifyFiles(action, receiptPath, publicKeyPath, operationPath, previousPath
 	if err != nil {
 		return err
 	}
-	return verify(action, receipt, key, operation, previous, now)
+	if err := verify(action, receipt, key, operation, previous, now); err != nil {
+		return err
+	}
+	if artifactOutput == "" {
+		return nil
+	}
+	return writeLifecycleArtifact(artifactOutput, operation, previous, receipt, key)
+}
+
+func writeLifecycleArtifact(output string, operationData, promotionData, revocationData []byte, key ed25519.PublicKey) error {
+	if !filepath.IsAbs(output) || filepath.Clean(output) != output {
+		return errors.New("artifact output path must be canonical and absolute")
+	}
+	var operation operationReceipt
+	var promotion, revocation lifecycleReceipt
+	if err := decodeCanonical(operationData, &operation); err != nil {
+		return errors.New("operation receipt is not canonical")
+	}
+	if err := decodeSigned(promotionData, key, &promotion); err != nil {
+		return errors.New("promotion receipt cannot be embedded")
+	}
+	if err := decodeSigned(revocationData, key, &revocation); err != nil {
+		return errors.New("revocation receipt cannot be embedded")
+	}
+	digest := func(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+	artifact := lifecycleArtifact{
+		Format: "kubebrain.jwt-kms-lifecycle-artifact.v1", RequestID: operation.RequestID,
+		OperationID: operation.OperationID, OperationUID: operation.OperationUID, Instance: operation.Instance,
+		OldVersionID: operation.OldKeyVersionID, NewVersionID: operation.NewKeyVersionID,
+		CompletedAtUnix: operation.CompletedAtUnix, PromotedAtUnix: promotion.ObservedAtUnix, RevokedAtUnix: revocation.ObservedAtUnix,
+		OperationReceiptSHA256: digest(operationData), PromotionReceiptSHA256: digest(promotionData), RevocationReceiptSHA256: digest(revocationData),
+		OperationReceiptBase64:  base64.StdEncoding.EncodeToString(operationData),
+		PromotionReceiptBase64:  base64.StdEncoding.EncodeToString(promotionData),
+		RevocationReceiptBase64: base64.StdEncoding.EncodeToString(revocationData),
+	}
+	data, err := json.Marshal(artifact)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	fd, err := unix.Open(output, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return fmt.Errorf("create lifecycle artifact without replacement: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), output)
+	if file == nil {
+		_ = unix.Close(fd)
+		_ = os.Remove(output)
+		return errors.New("create lifecycle artifact failed")
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(output)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	ok = true
+	return nil
 }
 
 func verify(action string, data []byte, publicKey ed25519.PublicKey, operationData, previousData []byte, now time.Time) error {

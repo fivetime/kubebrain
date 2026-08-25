@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +57,43 @@ func TestVerifyRejectsWrongOperationStateAndSignature(t *testing.T) {
 	require.ErrorContains(t, verify("promote", signedLifecycle(t, privateKey, payload), otherPublic, operation, nil, now), "signature")
 	operation[0] = ' '
 	require.ErrorContains(t, verify("promote", signedLifecycle(t, privateKey, payload), publicKey, operation, nil, now), "canonical v3")
+}
+
+func TestWriteLifecycleArtifactPreservesCompleteVerifiedEvidence(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	now := time.Unix(2_000_000_000, 0)
+	operation := operationBytes(t, now.Add(-time.Minute))
+	operationSum := sha256.Sum256(operation)
+	promotePayload := lifecycleReceipt{Format: "kubebrain.jwt-kms-lifecycle.v1", Action: "promote", RequestID: "change-1", OperationID: "jwt-key-rotate-0123456789abcdefabcd", Instance: "instance-a", OldVersionID: "kms/v/41", NewVersionID: "kms/v/42", OperationReceiptSHA256: hex.EncodeToString(operationSum[:]), State: "new-primary", ObservedAtUnix: now.Unix() - 30, ExpiresAtUnix: now.Unix() + 300}
+	promote := signedLifecycle(t, privateKey, promotePayload)
+	promoteSum := sha256.Sum256(promote)
+	revokePayload := promotePayload
+	revokePayload.Action, revokePayload.State = "revoke", "old-revoked"
+	revokePayload.PreviousReceiptSHA256 = hex.EncodeToString(promoteSum[:])
+	revokePayload.ObservedAtUnix = now.Unix() - 10
+	revoke := signedLifecycle(t, privateKey, revokePayload)
+
+	output := filepath.Join(t.TempDir(), "artifact.json")
+	require.NoError(t, writeLifecycleArtifact(output, operation, promote, revoke, publicKey))
+	data, err := os.ReadFile(output)
+	require.NoError(t, err)
+	var artifact lifecycleArtifact
+	require.NoError(t, json.Unmarshal(data, &artifact))
+	require.Equal(t, "kubebrain.jwt-kms-lifecycle-artifact.v1", artifact.Format)
+	require.Equal(t, promotePayload.ObservedAtUnix, artifact.PromotedAtUnix)
+	require.Equal(t, revokePayload.ObservedAtUnix, artifact.RevokedAtUnix)
+	require.Equal(t, operation, mustDecodeBase64(t, artifact.OperationReceiptBase64))
+	require.Equal(t, promote, mustDecodeBase64(t, artifact.PromotionReceiptBase64))
+	require.Equal(t, revoke, mustDecodeBase64(t, artifact.RevocationReceiptBase64))
+	require.ErrorContains(t, writeLifecycleArtifact(output, operation, promote, revoke, publicKey), "without replacement")
+}
+
+func mustDecodeBase64(t *testing.T, value string) []byte {
+	t.Helper()
+	data, err := base64.StdEncoding.Strict().DecodeString(value)
+	require.NoError(t, err)
+	return data
 }
 
 func operationBytes(t *testing.T, completed time.Time) []byte {
