@@ -124,3 +124,27 @@ immutable Secret 或重新使用已经终态的 operation ID。
   或更新状态。
 - 真实三副本演练必须故障注入：phase B 发布一个 Pod 后 executor 重启、TTL 等待中 claim 接管、phase C publish 后 terminal CAS
   前 fencing。最终仍只能有一条 receipt 链、一次终态，旧 JWT 全拒绝、新 JWT 全接受，Pod 零非预期重启。
+
+## A5493 实现进度
+
+提交 `e6ba7c3d` 已交付第一项纵向原语 `kubebrain-jwt-rotation-publisher`，并纳入正式 Dockerfile build/runtime stage。
+它只接受 phase A/B/C 的精确前驱状态；读取 0600、普通非 symlink、1..1 MiB 且 SHA-256 与审批参数一致的 old/new key；
+phase A 创建带 operation annotation 的 immutable、精确双字段 Secret，后续阶段绑定其 UID、resourceVersion 和规范 data
+SHA-256。发布前要求 StatefulSet 已完整 rollout，并校验精确副本数、唯一 `kubebrain` container、唯一 TTL/auth 参数、只读
+Secret volume/mount、UID 和剔除三项受管 annotation/auth 参数后的 template baseline。
+
+StatefulSet 更新使用 resourceVersion 与原 auth 参数双 JSON Patch precondition，只改 auth 参数及三项受管 annotation；正常相邻
+阶段必须收敛到不同 rollout revision，崩溃接管可复用已收敛 revision。publish receipt 使用 0600 临时文件、file sync、
+no-clobber hard-link 和 directory sync，绑定
+old/new key 摘要、Secret/StatefulSet identity、template baseline、前后 revision、auth 参数摘要和前一 receipt 摘要。进程在
+patch 后、receipt 前退出时可识别已收敛状态并生成 `reconciled_existing=true` 的恢复 receipt；已有 receipt 则必须重新核对在线
+状态，不能覆盖。`kubectl` stdout/stderr 各自最多保留 2 MiB。
+
+包级生命周期、接管恢复、race、vet 和构建检查通过；负向测试覆盖不安全 key/receipt 权限、源摘要漂移、Secret 漂移、重复 auth
+参数、TTL/模板/annotation 漂移、未完成 rollout、StatefulSet UID 替换和并发 patch。提交前 inventory 为 615 项、四片
+142/171/155/147；提交后四片 Go/墙钟秒分别为 132.132/138.196、374.984/381.067、224.626/230.688、
+383.174/389.255，全部通过。
+
+这只关闭 publisher 原语，不表示 `JWTKeyRotation` API 已开放。CRD enum、requester、parameter broker、runner/executor、专用
+RBAC/admission、heartbeat TTL wait、composite terminal receipt 和三处真实故障注入仍按上表开放；在这些控制面组件完成前，禁止
+把该二进制直接暴露给租户或声明持久 Operation 已交付。

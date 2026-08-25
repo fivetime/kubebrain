@@ -3872,7 +3872,10 @@ data digest 不变，相邻有效阶段 StatefulSet revision 不同，最终三�
 
 持久控制面的实现合同见 `docs/jwt_key_rotation_operation_cn.md`。它固定独立 `JWTKeyRotation` type、严格参数 schema、
 三份持久 token、heartbeat 覆盖的 TTL 等待、受限 StatefulSet/Secret publisher、六份阶段证据与 composite terminal receipt；
-当前是实现与验收规格，不代表 Operation CRD/executor 已交付。
+提交 `e6ba7c3d` 已实现并随正式镜像交付受限 publisher 原语：immutable 双 key Secret 与 StatefulSet identity/template/rollout
+校验、resourceVersion/auth 参数双 precondition、链式 0600 no-clobber publish receipt、崩溃后已收敛状态接管及 2 MiB kubectl
+输出上限均有包级生命周期、负向和 race 覆盖；615 项生产测试四片提交后全部通过。它仍不代表 Operation CRD/executor 已交付；
+request/broker/runner、RBAC/admission、TTL heartbeat、composite terminal receipt 和真实接管故障注入仍开放。
 
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
 

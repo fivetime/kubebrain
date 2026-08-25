@@ -61888,7 +61888,13 @@ publish receipt、三张 gate receipt、参数/Operation UID/attempt，Operation
 schema，也不把 hook 返回码冒充发布证据。规格同时列出 CRD、queue、parameter broker、worker/audit admission、RBAC、executor
 Deployment、terminal fencing 和真实接管故障注入的逐项验收清单。
 
-本项只关闭实现前的权限/恢复语义歧义，尚未声称 API、publisher 或 executor 已交付；下一阶段按该清单做纵向实现与门禁。
+随后提交 `e6ba7c3d` 交付受限 publisher 原语并纳入正式镜像：它以双 JSON Patch precondition 发布精确 phase，绑定 immutable
+双 key Secret、StatefulSet UID/rollout revision/template baseline、审批 key 摘要与链式 0600 no-clobber receipt，并支持
+patch 后 receipt 前崩溃的 `reconciled_existing` 接管。包级生命周期、负向、race、vet、build 均通过；615 项生产 inventory
+四片提交后 Go/墙钟秒为 132.132/138.196、374.984/381.067、224.626/230.688、383.174/389.255，全部通过。
+
+本项现已关闭实现前的权限/恢复语义歧义和 publisher 原语缺口，但仍未声称公共 API 或 executor 已交付；CRD/requester、broker、
+runner/executor、RBAC/admission、heartbeat TTL wait、composite terminal receipt 与三处真实接管故障注入继续开放。
 
 ### P2：运维兼容和长期验证
 
