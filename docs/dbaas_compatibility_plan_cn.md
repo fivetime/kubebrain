@@ -61818,6 +61818,39 @@ keys/users/roles/leases/alarms 全空并删除。
 alarm 与公开 keyspace 为空。数据面 overlap/retirement 原语和单节点 Kind 演练缺口关闭；KMS/Secret 控制面编排、不可变
 阶段 receipt、跨节点/AZ 与长时间 rotation soak 仍开放。
 
+### A5492：JWT 轮换不可变阶段 receipt 与防跳步门禁
+
+提交 `204aacb26a2f06ae023fdb58d96c352634f0a114` 增加
+`hack/production/validate-jwt-key-rotation.sh` 和固定 JWT 的 `kubebrain-jwt-token-probe`，补正提交
+`1953777d800849328b4932782d8a63041b83e736`
+把 CA、client certificate/key、server name、probe key 与 timeout 完整传入探针，并在探测前冻结 TLS 文件。探针通过
+clientv3 `Token` 直连单 endpoint 执行 serializable Range，不重新登录，因此旧 token 拒绝证据不会被当前 signer 新签 token
+替代；token/private key 要求普通非 symlink 且 group/other 不可读，全部输入限制为 1 MiB，公开 CA/cert 仍拒绝 symlink。
+二进制已纳入正式 Dockerfile build 与 runtime stage。
+
+补正提交 `bb4368bf450480f5d2c6682e1af6e29bef37c066` 在任何复制、Kubernetes 查询或 receipt 写入前要求全部文件为
+1..1 MiB 普通非 symlink，token/client key 的源权限不得向 group/other 开放；StatefulSet/Secret 的每次 JSON 捕获限制为
+2 MiB。回归证明 0644 token 在零 Kubernetes 调用、零阶段 receipt 时 fail closed，避免通过复制成 0600 掩盖不安全源权限，
+也避免超大 projected 文件或 API response 消耗无界内存/磁盘。
+
+direct gate 固定 phase A→B→C：每阶段双读稳定捕获全量 Ready StatefulSet 与 immutable Secret，绑定 StatefulSet UID、generation、
+不同的 rollout revision、Secret UID/resourceVersion、规范化 data SHA-256 和精确三 member endpoint 集合。Secret 必须从 phase A
+开始同时含旧、新 key 且全程不变。phase A 保存旧 token 摘要；phase B 必须复用该旧 token，同时证明新旧 token 被全部
+member 接受，再从探针全部完成后的保守时刻计算 TTL+clock-skew 最早退休时间；phase C 提前执行会拒绝，并逐 member 先确认
+同一旧 token 失败、再立即确认 fresh 新 token 成功，防止 endpoint outage 冒充撤权。
+
+三个严格 JSON schema 通过 SHA-256 串成不可替换证据链，使用 0600 同目录临时文件、file sync、no-clobber hard-link 与 directory
+sync 发布；已有同阶段 receipt 会重新验证 Kubernetes binding、时间输入、token 摘要和在线结果后幂等复用。回归固定跳过 A、
+相邻阶段 revision 相同、Secret 漂移、TTL 参数漂移、提前退休、部分 member 仍接受旧 token 和拒绝后 endpoint outage 均不得
+发布最终 receipt。最终聚焦 gate race 3 轮通过（22.025 秒），探针 race 10 轮此前通过（1.182 秒），bash、vet、Dockerfile 与
+diff 门禁全绿。最终代码状态 inventory 为 615 项、四片 142/171/155/147；提交后 Go 时间
+137.407/368.096/235.202/383.029 秒，墙钟 143.318/374.104/241.122/389.043 秒，全部通过。串行
+`go test ./hack/production/... -timeout=15m` 在既有 `TestValidateInstanceReady` 内达到总超时；所有子命令包均已通过，权威
+production 结果采用上述四分片门禁。
+
+本项关闭 A5491 的不可变阶段 receipt、顺序和 TTL anti-skip 缺口；KMS key lifecycle、Secret/StatefulSet 发布与回滚控制器、
+持久 Operation 编排、receipt 归档、跨节点/AZ 和长时间 rotation soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

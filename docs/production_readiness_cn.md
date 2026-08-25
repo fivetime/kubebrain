@@ -3808,8 +3808,50 @@ signature、expiry、username/revision claims，默认 MemberList 仍 fail close
 对应 public key。缺失、畸形、重复或超过 1 MiB 的文件在启动时 fail closed。不得跳过 phase A 直接进入混合 signer rollout，
 也不得在 phase B 完成前删除任一 key。真实三副本门禁在 phase B 只先更新一个 Pod，从新 Pod 签发 token 后逐一验证三个
 直连 member 同时接受新旧 token，再完成推广；等待 2 分钟 TTL 后退休旧 key，三个 member 均拒绝旧 token、接受 fresh 新
-token。生产自动化还应把每阶段 StatefulSet revision、Secret resourceVersion/key digest（不能记录明文）、最早退休时间和
-三 member 探针写入不可变 receipt；KMS/Secret 控制面自动编排尚未由本次数据面原语替代。
+token。
+
+2026-08-25 的 A5492 增加 `hack/production/validate-jwt-key-rotation.sh`，把上述顺序变成不可跳过的直接生产门禁。
+控制面必须使用同一个 rotation ID、实例、不可变 Secret、三个直连 member endpoint 和持久 state 目录；Secret 在 phase A
+前已经同时包含旧、新 key，三个 rollout 只改变 `--auth-token` 引用关系，phase C 后再由独立受审流程回收旧 key。示例：
+
+```shell
+common_env=(
+  ROTATION_ID=instance-a-20260825 INSTANCE=instance-a
+  STATE_DIR=/var/lib/kubebrain-operations/jwt-key-rotations
+  KUBEBRAIN_NAMESPACE=instance-a KUBEBRAIN_STATEFULSET=kubebrain
+  KEY_SECRET=kubebrain-jwt-rotation OLD_KEY_FIELD=old-key NEW_KEY_FIELD=new-key
+  ENDPOINTS=https://member-0:2379,https://member-1:2379,https://member-2:2379
+  JWT_TTL_SECONDS=120 MAX_CLOCK_SKEW_SECONDS=2 EXPECTED_REPLICAS=3
+  PROBE_CACERT=/run/rotation/ca.crt PROBE_CERT=/run/rotation/client.crt
+  PROBE_KEY=/run/rotation/client.key PROBE_SERVER_NAME=kubebrain-peer.instance-a.svc
+)
+# phase A rollout 完成后签发并保存旧 JWT：
+env "${common_env[@]}" ACTION=phase-a OLD_TOKEN_FILE=/run/rotation/old.jwt \
+  hack/production/validate-jwt-key-rotation.sh
+# phase B 全量 rollout 完成后，从新 signer 签发 JWT；OLD_TOKEN_FILE 必须仍是同一文件：
+env "${common_env[@]}" ACTION=phase-b OLD_TOKEN_FILE=/run/rotation/old.jwt \
+  NEW_TOKEN_FILE=/run/rotation/new.jwt hack/production/validate-jwt-key-rotation.sh
+# 到 receipt 给出的 earliest_retirement_at_unix 后执行 phase C rollout，并使用 fresh 新 JWT：
+env "${common_env[@]}" ACTION=phase-c OLD_TOKEN_FILE=/run/rotation/old.jwt \
+  NEW_TOKEN_FILE=/run/rotation/fresh-new.jwt hack/production/validate-jwt-key-rotation.sh
+```
+
+phase A/B/C 分别要求全量 Ready 且 `currentRevision==updateRevision`，相邻阶段必须使用不同 revision。每次读取 StatefulSet 和
+Secret 都做双份稳定捕获；Secret 必须 `immutable=true`、UID/resourceVersion/规范化 `.data` SHA-256 全程相同，并含两份非空 key。
+每份 Kubernetes JSON 响应先限制为 2 MiB；token、CA 和 client credential 必须为 1..1 MiB 普通非 symlink 文件，再双摘要
+冻结到 0600 私有快照，私密 token/client key 的源文件还必须对 group/other 不可读。receipt 只记录 token/key 摘要，不记录明文。默认
+`kubebrain-jwt-token-probe` 用 clientv3 固定 `Token` 对逐 member endpoint 做 serializable Range，绝不通过重新 Authenticate
+替换被测 token；`PROBE_RANGE_KEY` 必须由被测用户授权。
+
+phase A 原子发布 `kubebrain.jwt-key-rotation.phase-a.v1`；phase B 必须引用它的文件 SHA-256、复用同一旧 token，并在确认
+全量新 signer 和新旧 token 均被三个 member 接受后记录 completion time，按该时刻加 JWT TTL 与最大时钟偏差计算
+`earliest_retirement_at_unix`。phase C 在该时间前 fail closed，且必须引用 phase A/B 两份 SHA-256；它逐 member 要求旧 token
+失败后立即用新 token 复检同一 endpoint，endpoint outage 不能冒充旧 key 撤权。三个 0600 JSON receipt 均使用目标目录内
+`mktemp`、文件同步、no-clobber hard-link 和目录同步；同阶段接管会严格复验既有 schema/binding、重做在线探针并幂等复用，
+任何 shadow 字段、证据漂移或覆盖企图均拒绝。最终 receipt 为 `kubebrain.jwt-key-rotation.receipt.v1`。
+
+该直接门禁关闭了不可变阶段 receipt、顺序与 TTL 防跳步缺口，但不代替 KMS 生成/托管、Secret 与 StatefulSet 发布控制器、
+失败 rollout 回滚、Operation API 持久调度或不可变审计存储归档；这些控制面编排仍需继续实现。
 
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
 
