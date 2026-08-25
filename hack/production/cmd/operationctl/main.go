@@ -30,6 +30,7 @@ import (
 )
 
 const maxBrokerParametersBytes = 4 << 20
+const maxBrokerMaterialBytes = 1 << 20
 const maxBrokerTokenBytes = 16 << 10
 const maxBrokerCABytes = 1 << 20
 
@@ -37,7 +38,7 @@ var inClusterConfig = rest.InClusterConfig
 
 func main() {
 	var action, namespace, name, operationID, tenant, requestedBy, instance, operationType, parametersSHA string
-	var parametersSecret, parametersKey string
+	var parametersSecret, parametersKey, materialKey string
 	var parametersEndpoint, parametersTokenFile, parametersCAFile string
 	var inventoryName, inventoryNamespace, inventoryKey string
 	var owner, receiptSHA, message, approvalID, approvedBy, kubeconfig, contextName string
@@ -53,7 +54,7 @@ func main() {
 	var lease time.Duration
 	flag.StringVar(
 		&action, "action", "",
-		"submit, claim, parameters, heartbeat, retry, succeed, fail, get, or approve",
+		"submit, claim, parameters, material, heartbeat, retry, succeed, fail, get, or approve",
 	)
 	flag.StringVar(&namespace, "namespace", "kubebrain-system", "operation namespace")
 	flag.StringVar(&inventoryName, "namespace-inventory-configmap",
@@ -74,6 +75,7 @@ func main() {
 	flag.StringVar(&parametersSHA, "parameters-sha256", "", "immutable parameters digest")
 	flag.StringVar(&parametersSecret, "parameters-secret", "", "immutable parameters Secret name")
 	flag.StringVar(&parametersKey, "parameters-key", "", "immutable parameters Secret key")
+	flag.StringVar(&materialKey, "material-key", "", "allowlisted opaque sibling field requested from the parameter broker")
 	flag.StringVar(&parametersEndpoint, "parameters-endpoint",
 		os.Getenv("OPERATION_PARAMETERS_ENDPOINT"), "HTTPS operation parameter broker endpoint")
 	flag.StringVar(&parametersTokenFile, "parameters-token-file",
@@ -167,6 +169,22 @@ func main() {
 			}
 			return
 		}
+	case "material":
+		if parametersEndpoint == "" {
+			err = errors.New("material retrieval requires the HTTPS parameter broker")
+		} else {
+			var data []byte
+			data, err = brokerMaterial(
+				ctx, parametersEndpoint, parametersTokenFile, parametersCAFile,
+				namespace, name, owner, attempt, materialKey,
+			)
+			if err == nil {
+				if _, writeErr := os.Stdout.Write(data); writeErr != nil {
+					log.Fatal(writeErr)
+				}
+				return
+			}
+		}
 	case "heartbeat":
 		output, err = queue.Heartbeat(ctx, name, owner, attempt, lease)
 	case "retry":
@@ -180,7 +198,7 @@ func main() {
 	case "approve":
 		output, err = queue.Approve(ctx, name, approvedBy, approvalID)
 	default:
-		log.Fatal("action must be submit, claim, parameters, heartbeat, retry, succeed, fail, get, or approve")
+		log.Fatal("action must be submit, claim, parameters, material, heartbeat, retry, succeed, fail, get, or approve")
 	}
 	if err != nil {
 		if errors.Is(err, operationqueue.ErrNoOperation) {
@@ -196,6 +214,81 @@ func main() {
 	if err := encoder.Encode(output); err != nil {
 		log.Fatal(fmt.Errorf("encode result: %w", err))
 	}
+}
+
+func brokerMaterial(
+	ctx context.Context, endpoint, tokenFile, caFile, namespace, name, owner string, attempt int64, key string,
+) ([]byte, error) {
+	if name == "" || owner == "" || attempt <= 0 || !validMaterialKey(key) {
+		return nil, errors.New("broker material requires name, owner, positive attempt, and a valid key")
+	}
+	if containsUnsafeEndpointChar(endpoint) {
+		return nil, errors.New("parameters endpoint contains unsupported characters")
+	}
+	base, err := url.Parse(endpoint)
+	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil ||
+		(base.Path != "" && base.Path != "/") || base.RawQuery != "" || base.Fragment != "" {
+		return nil, errors.New("parameters endpoint must be an HTTPS origin")
+	}
+	base.Path = "/v1/material"
+	query := base.Query()
+	query.Set("namespace", namespace)
+	query.Set("name", name)
+	query.Set("owner", owner)
+	query.Set("attempt", strconv.FormatInt(attempt, 10))
+	query.Set("key", key)
+	base.RawQuery = query.Encode()
+	token, err := readBrokerToken(tokenFile)
+	if err != nil {
+		return nil, fmt.Errorf("read parameter broker token: %w", err)
+	}
+	ca, err := readBrokerCA(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read parameter broker CA: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(ca) {
+		return nil, errors.New("parameter broker CA contains no certificates")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}}}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("parameter broker request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("parameter broker returned HTTP %d", response.StatusCode)
+	}
+	contentType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || contentType != "application/octet-stream" {
+		return nil, errors.New("parameter broker returned non-material response")
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxBrokerMaterialBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) == 0 || len(body) > maxBrokerMaterialBytes {
+		return nil, fmt.Errorf("parameter broker material must contain 1..%d bytes", maxBrokerMaterialBytes)
+	}
+	return body, nil
+}
+
+func validMaterialKey(key string) bool {
+	if key == "" || len(key) > 253 {
+		return false
+	}
+	for i := range len(key) {
+		c := key[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '.' && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func envInt64OrDefault(name string, fallback int64) (int64, error) {

@@ -48,6 +48,65 @@ func TestHandlerReturnsOnlyCurrentTypeBoundWorkerParameters(t *testing.T) {
 	require.Equal(t, parameters, response.Body.Bytes())
 }
 
+func TestHandlerReturnsOnlyClaimBoundAllowlistedJWTMaterial(t *testing.T) {
+	dynamicClient, claim, _ := claimedOperationWithType(
+		t, []byte(`{"rotation":true}`), "JWTKeyRotation",
+		"jwt-key-rotate-aaaaaaaaaaaaaaaaaaaa", "jwt-worker", "jwt-key-rotate-aaaaaaaaaaaaaaaaaaaa-parameters",
+	)
+	secret, err := dynamicClient.Resource(operationqueue.SecretResource).Namespace("test").Get(
+		t.Context(), claim.ParametersSecret, metav1.GetOptions{},
+	)
+	require.NoError(t, err)
+	data := secret.Object["data"].(map[string]any)
+	data["jwt-old-key"] = base64.StdEncoding.EncodeToString([]byte("old-private"))
+	data["jwt-new-key"] = base64.StdEncoding.EncodeToString([]byte("new-private"))
+	_, err = dynamicClient.Resource(operationqueue.SecretResource).Namespace("test").Update(
+		t.Context(), secret, metav1.UpdateOptions{},
+	)
+	require.NoError(t, err)
+	handler, err := NewHandler(
+		tokenClient("system:serviceaccount:test:kubebrain-jwt-key-rotation-executor", []string{testAudience}, true),
+		dynamicClient, "test", testAudience, time.Second,
+	)
+	require.NoError(t, err)
+
+	request := httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/v1/material?namespace=test&name=%s&owner=%s&attempt=%d&key=jwt-new-key", claim.Name, claim.Owner, claim.Attempt), nil)
+	request.Header.Set("Authorization", "Bearer valid")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, "application/octet-stream", response.Header().Get("Content-Type"))
+	require.Equal(t, "new-private", response.Body.String())
+	requireNoStoreHeaders(t, response)
+
+	request = httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/v1/material?namespace=test&name=%s&owner=%s&attempt=%d&key=parameters.json", claim.Name, claim.Owner, claim.Attempt), nil)
+	request.Header.Set("Authorization", "Bearer valid")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusForbidden, response.Code)
+	require.NotContains(t, response.Body.String(), "new-private")
+}
+
+func TestHandlerRejectsMaterialForOtherTypesAndAmbiguousKey(t *testing.T) {
+	dynamicClient, claim, _ := claimedOperation(t)
+	handler, err := NewHandler(
+		tokenClient("system:serviceaccount:test:kubebrain-post-restore-audit-executor", []string{testAudience}, true),
+		dynamicClient, "test", testAudience, time.Second,
+	)
+	require.NoError(t, err)
+	for _, suffix := range []string{"&key=jwt-new-key", "&key=jwt-new-key&key=jwt-old-key"} {
+		request := httptest.NewRequest(http.MethodGet,
+			fmt.Sprintf("/v1/material?namespace=test&name=%s&owner=%s&attempt=%d%s", claim.Name, claim.Owner, claim.Attempt, suffix), nil)
+		request.Header.Set("Authorization", "Bearer valid")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		require.Contains(t, []int{http.StatusBadRequest, http.StatusForbidden}, response.Code)
+		requireNoStoreHeaders(t, response)
+	}
+}
+
 func TestHandlerAuthenticatesHighRiskExecutorTypes(t *testing.T) {
 	for _, tc := range []struct {
 		serviceAccount string
@@ -521,14 +580,17 @@ func claimedOperationWithType(
 	)
 	queue := operationqueue.New(client, "test")
 	digest := fmt.Sprintf("%x", sha256.Sum256(parameters))
+	secretData := map[string]any{"parameters.json": base64.StdEncoding.EncodeToString(parameters)}
+	if operationType == "JWTKeyRotation" {
+		secretData["jwt-old-key"] = base64.StdEncoding.EncodeToString([]byte("old-private"))
+		secretData["jwt-new-key"] = base64.StdEncoding.EncodeToString([]byte("new-private"))
+	}
 	_, err := client.Resource(operationqueue.SecretResource).Namespace("test").Create(
 		context.Background(), &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "v1", "kind": "Secret",
 			"metadata":  map[string]any{"name": secretName},
 			"immutable": true,
-			"data": map[string]any{
-				"parameters.json": base64.StdEncoding.EncodeToString(parameters),
-			},
+			"data":      secretData,
 		}}, metav1.CreateOptions{},
 	)
 	require.NoError(t, err)

@@ -1011,6 +1011,16 @@ func (q *Queue) Parameters(ctx context.Context, name string) ([]byte, error) {
 func (q *Queue) ParametersForWorker(
 	ctx context.Context, name, operationType, owner string, attempt int64,
 ) ([]byte, error) {
+	object, err := q.operationForWorker(ctx, name, operationType, owner, attempt)
+	if err != nil {
+		return nil, err
+	}
+	return q.parameters(ctx, object)
+}
+
+func (q *Queue) operationForWorker(
+	ctx context.Context, name, operationType, owner string, attempt int64,
+) (*unstructured.Unstructured, error) {
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
 	}
@@ -1037,7 +1047,45 @@ func (q *Queue) ParametersForWorker(
 	if err := q.requireWorker(object, owner, attempt); err != nil {
 		return nil, err
 	}
-	return q.parameters(ctx, object)
+	return object, nil
+}
+
+// MaterialForWorker returns one allowlisted opaque material field only after
+// revalidating the same type-bound claim fencing used for parameters.
+func (q *Queue) MaterialForWorker(
+	ctx context.Context, name, operationType, owner string, attempt int64, key string,
+) ([]byte, error) {
+	object, err := q.operationForWorker(ctx, name, operationType, owner, attempt)
+	if err != nil {
+		return nil, err
+	}
+	if operationType != "JWTKeyRotation" || !validJWTMaterialKey(key) {
+		return nil, errors.New("operation material key is not allowed for this type")
+	}
+	// Prove the immutable parameter payload and full Secret shape before
+	// releasing any sibling material field.
+	if _, err := q.parameters(ctx, object); err != nil {
+		return nil, err
+	}
+	secretName, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "name")
+	secret, err := q.secrets.Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	immutable, _, _ := unstructured.NestedBool(secret.Object, "immutable")
+	data, found, dataErr := unstructured.NestedStringMap(secret.Object, "data")
+	if !immutable || dataErr != nil || !found || !validParameterSecretData(operationType, "parameters.json", data) {
+		return nil, errors.New("parameter secret material shape is invalid")
+	}
+	encoded, found := data[key]
+	if !found {
+		return nil, errors.New("operation material is unavailable")
+	}
+	material, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(material) == 0 || len(material) > 1<<20 {
+		return nil, errors.New("operation material is invalid")
+	}
+	return material, nil
 }
 
 func (q *Queue) parameters(
@@ -1069,8 +1117,9 @@ func (q *Queue) parameters(
 		return nil, errors.New("parameter secret must be immutable")
 	}
 	secretData, found, err := unstructured.NestedStringMap(secret.Object, "data")
-	if err != nil || !found || len(secretData) != 1 {
-		return nil, errors.New("parameter secret data must contain exactly the referenced key")
+	operationType, _, _ := unstructured.NestedString(object.Object, "spec", "type")
+	if err != nil || !found || !validParameterSecretData(operationType, key, secretData) {
+		return nil, errors.New("parameter secret data must contain exactly the referenced key or approved JWT materials")
 	}
 	encoded, found := secretData[key]
 	if !found {
@@ -1085,6 +1134,40 @@ func (q *Queue) parameters(
 		return nil, errors.New("parameter secret digest does not match operation spec")
 	}
 	return data, nil
+}
+
+var jwtMaterialKeys = map[string]struct{}{
+	"jwt-old-key": {}, "jwt-new-key": {}, "probe-ca": {}, "probe-cert": {}, "probe-key": {},
+}
+
+func validJWTMaterialKey(key string) bool {
+	_, ok := jwtMaterialKeys[key]
+	return ok
+}
+
+func validParameterSecretData(operationType, parameterKey string, data map[string]string) bool {
+	if _, found := data[parameterKey]; !found {
+		return false
+	}
+	if operationType != "JWTKeyRotation" {
+		return len(data) == 1
+	}
+	if _, found := data["jwt-old-key"]; !found {
+		return false
+	}
+	if _, found := data["jwt-new-key"]; !found {
+		return false
+	}
+	for key := range data {
+		if key != parameterKey && !validJWTMaterialKey(key) {
+			return false
+		}
+		if data[key] == "" {
+			return false
+		}
+	}
+	return len(data) == 3 || (len(data) == 4 && data["probe-ca"] != "") ||
+		(len(data) == 6 && data["probe-ca"] != "" && data["probe-cert"] != "" && data["probe-key"] != "")
 }
 
 func (q *Queue) Approve(

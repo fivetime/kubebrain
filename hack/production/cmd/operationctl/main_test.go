@@ -95,6 +95,31 @@ func TestBrokerParametersUsesTLSBearerAndFencingIdentity(t *testing.T) {
 	require.JSONEq(t, `{"bound":true}`, string(parameters))
 }
 
+func TestBrokerMaterialUsesTLSBearerFencingAndOpaqueContentType(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		require.Equal(t, "/v1/material", request.URL.Path)
+		require.Equal(t, "tenant-a", request.URL.Query().Get("namespace"))
+		require.Equal(t, "jwt-1", request.URL.Query().Get("name"))
+		require.Equal(t, "worker-a", request.URL.Query().Get("owner"))
+		require.Equal(t, "2", request.URL.Query().Get("attempt"))
+		require.Equal(t, "jwt-new-key", request.URL.Query().Get("key"))
+		require.Equal(t, "Bearer projected-token", request.Header.Get("Authorization"))
+		response.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = response.Write([]byte("private-material"))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	tokenPath, caPath := filepath.Join(dir, "token"), filepath.Join(dir, "ca.crt")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("projected-token\n"), 0o600))
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600))
+	material, err := brokerMaterial(t.Context(), server.URL, tokenPath, caPath, "tenant-a", "jwt-1", "worker-a", 2, "jwt-new-key")
+	require.NoError(t, err)
+	require.Equal(t, []byte("private-material"), material)
+
+	_, err = brokerMaterial(t.Context(), server.URL, tokenPath, caPath, "tenant-a", "jwt-1", "worker-a", 2, "../key")
+	require.ErrorContains(t, err, "valid key")
+}
+
 func TestBrokerParametersRejectsInsecureEndpointAndNonSuccess(t *testing.T) {
 	for _, endpoint := range []string{
 		"http://parameters.example",

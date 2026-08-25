@@ -281,6 +281,7 @@ case "$1" in
       done
       sample_secret="$(requester_sample_secret "$requester")"
       valid_secret="$("$JQ" -cn --arg namespace "$namespace" --arg name "$sample_secret" '{apiVersion:"v1",kind:"Secret",metadata:{namespace:$namespace,name:$name},immutable:true,type:"Opaque",data:{"parameters.json":"e30="}}')"
+      if [[ "$requester" == jwt-key-rotation ]]; then valid_secret="$("$JQ" -c '.data["jwt-old-key"]="b2xk" | .data["jwt-new-key"]="bmV3"' <<<"$valid_secret")"; fi
       printf '%s\n' "$valid_secret" | "$KUBECTL" "${context[@]}" create --dry-run=server --validate=false --as="$identity" -f - >/dev/null || die "dedicated requester identity could not dry-run its valid parameter Secret: ${requester}"
       invalid_secret="$("$JQ" -c '.data.unexpected="eA=="' <<<"$valid_secret")"
       if printf '%s\n' "$invalid_secret" | "$KUBECTL" "${context[@]}" create --dry-run=server --validate=false --as="$identity" -f - >/dev/null 2>&1; then

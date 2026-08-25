@@ -22,11 +22,11 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$KUBECTL_LOG"
 if [[ "$*" == *" get secret "* ]]; then exit 1; fi
 if [[ "$*" == *" --dry-run=client "* ]]; then
-  for arg in "$@"; do [[ "$arg" == --from-file=parameters.json=* ]] && source="${arg#--from-file=parameters.json=}"; done
-  printf '{"apiVersion":"v1","kind":"Secret","metadata":{},"type":"Opaque","data":{"parameters.json":"%s"}}\n' "$(base64 -w0 <"$source")"
+  for arg in "$@"; do case "$arg" in --from-file=parameters.json=*) parameters="${arg#--from-file=parameters.json=}";; --from-file=jwt-old-key=*) old="${arg#--from-file=jwt-old-key=}";; --from-file=jwt-new-key=*) new="${arg#--from-file=jwt-new-key=}";; esac; done
+  printf '{"apiVersion":"v1","kind":"Secret","metadata":{},"type":"Opaque","data":{"parameters.json":"%s","jwt-old-key":"%s","jwt-new-key":"%s"}}\n' "$(base64 -w0 <"$parameters")" "$(base64 -w0 <"$old")" "$(base64 -w0 <"$new")"
   exit 0
 fi
-if [[ "$*" == *" create -f -"* ]]; then cat >"$SECRET_CAPTURE"; exit 0; fi
+if [[ "$*" == *" create -f "* ]]; then while [[ "$#" -gt 0 ]]; do if [[ "$1" == -f ]]; then cp "$2" "$SECRET_CAPTURE"; exit 0; fi; shift; done; fi
 exit 99
 `)
 	writeTrafficExecutable(t, operationctl, "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$*\" >>\"$OPERATION_LOG\"\n")
@@ -54,6 +54,13 @@ exit 99
 	}
 	require.NoError(t, json.Unmarshal(mustRead(t, secretCapture), &secret))
 	require.True(t, secret.Immutable)
+	require.Len(t, secret.Data, 3)
+	oldMaterial, err := base64.StdEncoding.DecodeString(secret.Data["jwt-old-key"])
+	require.NoError(t, err)
+	require.Equal(t, "old-key-material", string(oldMaterial))
+	newMaterial, err := base64.StdEncoding.DecodeString(secret.Data["jwt-new-key"])
+	require.NoError(t, err)
+	require.Equal(t, "new-key-material", string(newMaterial))
 	parameters, err := base64.StdEncoding.DecodeString(secret.Data["parameters.json"])
 	require.NoError(t, err)
 	var values map[string]any
@@ -63,6 +70,10 @@ exit 99
 	require.Equal(t, float64(300), values["jwt_ttl_seconds"])
 	require.Len(t, values["endpoints"], 3)
 	require.NotEqual(t, values["old_key_sha256"], values["new_key_sha256"])
+	require.Equal(t, "jwt-old-key", values["old_key_material_key"])
+	require.Equal(t, "jwt-new-key", values["new_key_material_key"])
+	require.NotContains(t, values, "old_key_source")
+	require.NotContains(t, values, "new_key_source")
 }
 
 func TestRequestJWTKeyRotationRejectsUnsafeInputsBeforeKubernetes(t *testing.T) {

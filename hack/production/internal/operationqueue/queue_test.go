@@ -1616,6 +1616,40 @@ func TestQueueRejectsParameterSecretWithExtraData(t *testing.T) {
 	require.ErrorContains(t, err, "exactly the referenced key")
 }
 
+func TestQueueReturnsOnlyAllowlistedJWTMaterialToCurrentWorker(t *testing.T) {
+	queue := newFakeQueue()
+	ctx := context.Background()
+	parameters := []byte("{\"rotation\":true}\n")
+	spec := validSpec()
+	spec.Type = "JWTKeyRotation"
+	spec.ParametersSHA256 = fmt.Sprintf("%x", sha256.Sum256(parameters))
+	spec.ParametersSecret = "jwt-key-rotate-aaaaaaaaaaaaaaaaaaaa-parameters"
+	spec.ParametersKey = "parameters.json"
+	_, err := queue.secrets.Create(ctx, &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": spec.ParametersSecret}, "immutable": true,
+		"data": map[string]any{
+			"parameters.json": base64.StdEncoding.EncodeToString(parameters),
+			"jwt-old-key":     base64.StdEncoding.EncodeToString([]byte("old-private")),
+			"jwt-new-key":     base64.StdEncoding.EncodeToString([]byte("new-private")),
+		},
+	}}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	_, err = queue.Submit(ctx, "jwt-key-rotate-aaaaaaaaaaaaaaaaaaaa", spec)
+	require.NoError(t, err)
+	_, err = queue.Approve(ctx, "jwt-key-rotate-aaaaaaaaaaaaaaaaaaaa", operationaudit.ApproverUsername, "change-jwt-1")
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "jwt-worker", "JWTKeyRotation", time.Hour)
+	require.NoError(t, err)
+
+	material, err := queue.MaterialForWorker(ctx, claim.Name, claim.Type, claim.Owner, claim.Attempt, "jwt-new-key")
+	require.NoError(t, err)
+	require.Equal(t, []byte("new-private"), material)
+	_, err = queue.MaterialForWorker(ctx, claim.Name, claim.Type, claim.Owner, claim.Attempt, "parameters.json")
+	require.ErrorContains(t, err, "not allowed")
+	_, err = queue.MaterialForWorker(ctx, claim.Name, claim.Type, "other-worker", claim.Attempt, "jwt-new-key")
+	require.Error(t, err)
+}
+
 func TestQueueRejectsMalformedParameterReferenceBeforeSecretAPI(t *testing.T) {
 	for _, test := range []struct {
 		name       string

@@ -101,7 +101,7 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		response.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if request.Method != http.MethodGet || request.URL.Path != "/v1/parameters" {
+	if request.Method != http.MethodGet || (request.URL.Path != "/v1/parameters" && request.URL.Path != "/v1/material") {
 		http.Error(response, "not found", http.StatusNotFound)
 		return
 	}
@@ -117,7 +117,18 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	identity, err := parameterIdentityFromQuery(request.URL.Query())
+	query := request.URL.Query()
+	materialKey := ""
+	if request.URL.Path == "/v1/material" {
+		values := query["key"]
+		if len(values) != 1 || values[0] == "" {
+			http.Error(response, "namespace, name, owner, attempt, and key are required", http.StatusBadRequest)
+			return
+		}
+		materialKey = values[0]
+		query = cloneQueryWithout(query, "key")
+	}
+	identity, err := parameterIdentityFromQuery(query)
 	if err != nil {
 		http.Error(response, "namespace, name, owner, and positive attempt are required", http.StatusBadRequest)
 		return
@@ -127,8 +138,19 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	parameters, err := operationqueue.New(h.dynamic, identity.namespace).
-		ParametersForWorker(request.Context(), identity.name, operationType, identity.owner, identity.attempt)
+	queue := operationqueue.New(h.dynamic, identity.namespace)
+	if materialKey != "" {
+		material, materialErr := queue.MaterialForWorker(request.Context(), identity.name, operationType, identity.owner, identity.attempt, materialKey)
+		if materialErr != nil {
+			http.Error(response, "material unavailable", http.StatusForbidden)
+			return
+		}
+		response.Header().Set("Content-Type", "application/octet-stream")
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write(material)
+		return
+	}
+	parameters, err := queue.ParametersForWorker(request.Context(), identity.name, operationType, identity.owner, identity.attempt)
 	if err != nil {
 		http.Error(response, "parameters unavailable", http.StatusForbidden)
 		return
@@ -140,6 +162,16 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write(parameters)
+}
+
+func cloneQueryWithout(query url.Values, omitted string) url.Values {
+	result := make(url.Values, len(query)-1)
+	for key, values := range query {
+		if key != omitted {
+			result[key] = append([]string(nil), values...)
+		}
+	}
+	return result
 }
 
 func validateParametersJSON(parameters []byte) error {

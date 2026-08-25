@@ -35,7 +35,7 @@ spec:
   validations:
     - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-jwt-key-rotation-requester"', message: JWT key rotation parameter Secrets require the dedicated requester identity}
     - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^jwt-key-rotate-[a-f0-9]{20}-parameters$")', message: JWT key rotation parameter Secret identity is fixed}
-    - {expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data', message: JWT key rotation parameters must be one immutable opaque payload}
+    - {expression: 'object.immutable == true && object.type == "Opaque" && has(object.data) && "parameters.json" in object.data && "jwt-old-key" in object.data && "jwt-new-key" in object.data && object.data.all(k, v, k in ["parameters.json", "jwt-old-key", "jwt-new-key", "probe-ca", "probe-cert", "probe-key"] && size(v) > 0) && (size(object.data) == 3 || (size(object.data) == 4 && "probe-ca" in object.data) || (size(object.data) == 6 && "probe-ca" in object.data && "probe-cert" in object.data && "probe-key" in object.data))', message: JWT key rotation parameters and materials must use the exact immutable field set}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

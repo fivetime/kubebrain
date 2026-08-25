@@ -2097,6 +2097,9 @@ func TestJWTKeyRotationRequesterIsFailClosedAndLeastPrivilege(t *testing.T) {
 		} else {
 			require.Contains(t, text, `^jwt-key-rotate-[a-f0-9]{20}-parameters$`)
 			require.Contains(t, text, "object.immutable == true")
+			require.Contains(t, text, `"jwt-old-key" in object.data`)
+			require.Contains(t, text, `"jwt-new-key" in object.data`)
+			require.Contains(t, text, `size(object.data) == 6`)
 		}
 	}
 	rbac := decodeManifest(t, "kubebrain-jwt-key-rotation-requester-rbac.yaml")

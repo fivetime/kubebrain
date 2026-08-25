@@ -21,10 +21,10 @@ func TestJWTKeyRotationOperationCompletesAndTakeoverReusesReceipt(t *testing.T) 
 	stateDir, receipt := filepath.Join(dir, name+".state"), filepath.Join(dir, name+".operation.receipt.json")
 	parameters := map[string]any{
 		"state_dir": stateDir, "receipt_output": receipt, "kubebrain_namespace": "instance-a", "kubebrain_statefulset": "kubebrain",
-		"key_secret": name + "-keys", "old_key_field": "old-key", "new_key_field": "new-key", "old_key_source": oldKey, "new_key_source": newKey,
+		"key_secret": name + "-keys", "old_key_field": "old-key", "new_key_field": "new-key", "old_key_material_key": "jwt-old-key", "new_key_material_key": "jwt-new-key",
 		"old_key_sha256": testSHA([]byte("old-material")), "new_key_sha256": testSHA([]byte("new-material")), "key_volume": "jwt-keys", "key_mount_dir": "/etc/kubebrain-jwt", "sign_method": "HS256",
 		"endpoints": []string{"https://member-0:2379"}, "expected_replicas": 1, "jwt_ttl_seconds": 90, "max_clock_skew_seconds": 2, "probe_range_key": "/probe",
-		"probe_cacert": "", "probe_cert": "", "probe_key": "", "probe_server_name": "", "probe_cacert_sha256": "", "probe_cert_sha256": "", "probe_key_sha256": "",
+		"probe_cacert_material_key": "", "probe_cert_material_key": "", "probe_key_material_key": "", "probe_server_name": "", "probe_cacert_sha256": "", "probe_cert_sha256": "", "probe_key_sha256": "",
 		"data_kube_context": "", "data_kubeconfig_path": "",
 	}
 	parameterData, err := json.Marshal(parameters)
@@ -41,6 +41,9 @@ printf '%s\n' "$*" >>"$OPERATION_LOG"
 case " $* " in
   *" --action claim "*) printf '{"namespace":"%s","name":"%s","operation_id":"%s","uid":"operation-uid","instance":"instance-a","type":"JWTKeyRotation","requested_by":"platform:jwt-key-rotation","owner":"worker-a","attempt":%s,"parameters_sha256":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json"}\n' "${CLAIM_NAMESPACE:-kubebrain-operations}" "$OPERATION_NAME" "$OPERATION_NAME" "$CLAIM_ATTEMPT" "$PARAMETERS_SHA" "$OPERATION_NAME" ;;
   *" --action parameters "*) cat "$PARAMETERS_PATH" ;;
+  *" --action material "*)
+    key=""; while [[ "$#" -gt 0 ]]; do if [[ "$1" == --material-key ]]; then key="$2"; break; fi; shift; done
+    case "$key" in jwt-old-key) printf old-material;; jwt-new-key) printf new-material;; *) exit 98;; esac ;;
   *" --action heartbeat "*) [[ "${FAIL_HEARTBEAT:-false}" != true ]] ;;
   *" --action succeed "*|*" --action retry "*) ;;
   *) exit 99 ;;
