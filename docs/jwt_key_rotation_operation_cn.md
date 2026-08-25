@@ -16,8 +16,10 @@
    数据面 Secret/StatefulSet。
 2. Operation 名固定为 `jwt-key-rotate-<request binding SHA-256 前 20 hex>`，type 为 `JWTKeyRotation`，
    `requestedBy=platform:jwt-key-rotation`，`maxAttempts=5`，并要求专用 requester/approver/executor 身份。
-3. old/new signing material 在请求前已置于 executor 的规范、非 symlink、受访问控制 workspace；参数只记录规范路径和
-   SHA-256。executor 在任何发布前做 1 MiB 上限、源权限、双摘要冻结。
+3. requester 从规范绝对路径读取 old/new signing material，把材料与参数 JSON 一并写入同一个 immutable Secret；参数只记录
+   固定 sibling field 名与 SHA-256，不记录 requester/executor 文件路径。executor 没有 Secret `get` 权限，只能以 projected
+   ServiceAccount token 经 HTTPS parameter broker、并在 type/owner/attempt fencing 通过后逐字段取得材料；每份材料在使用前
+   写入 0600 临时文件并复核大小和摘要。
 4. 数据面 Secret 从 phase A 前开始同时包含 old/new 两个非空字段，`immutable=true`；phase C 只移除 StatefulSet
    `verify-key` 参数，不删除 Secret 中 old key。旧 key 的销毁是最终 receipt 归档后的独立 KMS 操作。
 5. 三阶段均由同一个 operation ID、实例、StatefulSet UID、Secret UID/resourceVersion/data digest、endpoint 数组、TTL、
@@ -44,8 +46,8 @@
   "key_secret": "jwt-key-rotate-<request-binding-20-hex>-keys",
   "old_key_field": "old-key",
   "new_key_field": "new-key",
-  "old_key_source": "/var/lib/kubebrain-operation/keys/old",
-  "new_key_source": "/var/lib/kubebrain-operation/keys/new",
+  "old_key_material_key": "jwt-old-key",
+  "new_key_material_key": "jwt-new-key",
   "old_key_sha256": "<64 hex>",
   "new_key_sha256": "<64 hex>",
   "key_volume": "jwt-keys",
@@ -56,9 +58,9 @@
   "jwt_ttl_seconds": 300,
   "max_clock_skew_seconds": 2,
   "probe_range_key": "/kubebrain/jwt-rotation/probe",
-  "probe_cacert": "/var/lib/kubebrain-operation/tls/ca.crt",
-  "probe_cert": "/var/lib/kubebrain-operation/tls/client.crt",
-  "probe_key": "/var/lib/kubebrain-operation/tls/client.key",
+  "probe_cacert_material_key": "probe-ca",
+  "probe_cert_material_key": "probe-cert",
+  "probe_key_material_key": "probe-key",
   "probe_server_name": "kubebrain-peer.instance-a.svc",
   "probe_cacert_sha256": "<64 hex>",
   "probe_cert_sha256": "<64 hex>",
@@ -68,7 +70,10 @@
 }
 ```
 
-TLS 三文件可同时为空以支持显式 plaintext 开发环境；只要任一 TLS 字段非空，CA 必填且 cert/key 必须成对。生产 admission
+TLS 三个 material key 可同时为空以支持显式 plaintext 开发环境；只要任一 TLS 字段非空，CA 必填且 cert/key 必须成对。参数
+Secret 的 `.data` 只允许精确三种形状：`parameters.json+jwt-old-key+jwt-new-key`、再加 `probe-ca`，或再加完整
+`probe-ca+probe-cert+probe-key`；所有值非空。单份输入最大 512 KiB，材料合计最大 700 KiB，以留出 Kubernetes Secret 编码和
+metadata 余量。生产 admission
 profile 必须要求 HTTPS endpoint 与非空 TLS 字段。endpoint 数必须等于 `expected_replicas`，均唯一且只允许单 endpoint
 字符串；TTL 为规范正 int32，skew 为规范非负 int32，二者与当前时间相加不得溢出 int64。
 
@@ -109,7 +114,8 @@ immutable Secret 或重新使用已经终态的 operation ID。
 
 - requester：仅 `kubebrainoperations create/get` 与 operation namespace 内参数 Secret `create/get`。
 - executor queue：现有 operation worker Role，加 `JWTKeyRotation` type→专用 ServiceAccount 的 status admission 映射。
-- parameter broker：`kubebrain-jwt-key-rotation-executor` 只能获取 claim 中 type=JWTKeyRotation 的参数。
+- parameter broker：`kubebrain-jwt-key-rotation-executor` 只能获取 claim 中 type=JWTKeyRotation 的参数，以及固定 allowlist 中的
+  `jwt-old-key`、`jwt-new-key`、`probe-ca`、`probe-cert`、`probe-key`；每次材料读取都重新校验专用 ServiceAccount、claim owner 与 attempt。
 - 数据面 publisher：目标 namespace 中精确 StatefulSet/Secret/Pod 的 get/list/watch，以及 Secret create 和 StatefulSet patch；
   admission 要求 operation ID annotation、固定对象名、immutable 双 key Secret 和允许字段差分。禁止 delete Secret/StatefulSet、
   exec、pods/delete、任意 namespace 或通配资源。
@@ -227,5 +233,20 @@ Operation，live 验收显式 force-migrate 既有 foundation manager 后再运�
 namespace 已删除。620 项提交后四片 Go/墙钟秒为 134.699/140.814、367.435/373.553、227.896/234.072、
 378.059/384.167，全部通过。
 
-当前仍保持 disabled-by-default，不能直接规模化上线：外部 KMS key sourcing、认证 Secret 创建/轮换/撤权演练，三处真实
+提交 `71ed8081` 关闭 requester 本地路径无法跨 Pod 交付给 executor 的缺口。requester 现在把参数和 old/new key、可选 probe TLS
+材料放入同一个 immutable Opaque Secret；参数仅绑定固定 material field 与 SHA-256，不再泄露或依赖主机路径。admission 只接受
+精确 3/4/6 字段形状且拒绝空值、额外字段和不完整 mTLS。已有同名 Secret 的幂等路径比较完整 `.data`，任一材料漂移均失败。
+
+parameter broker 新增 `/v1/material`：沿用 projected token TokenReview、executor ServiceAccount→operation type 映射及
+owner/attempt claim fencing，并只为 JWTKeyRotation 开放五个固定字段；错误统一为不可用，不在响应中暴露 Secret 细节。
+`operationctl material` 只接受 HTTPS origin、受限 key、受信 CA 与有界响应。runner 在 heartbeat/process-group fencing 内逐份下载，
+以 0600 捕获并复核 1 MiB 上限和审批 SHA 后才交给 publisher/探针；executor 仍无 Kubernetes Secret `get` 权限。
+
+Kind Kubernetes v1.36.1 上 requester policy 达到 generation/observedGeneration 1/1、2/2 且无 CEL type warning；合法三字段 Secret
+server dry-run 放行，缺失 key、额外 key 和不完整 TLS 均拒绝。race、vet 与定向 production 测试通过；完整未分片包因累计运行到
+Go 默认 10 分钟总超时停在既有 info certificate scrape 用例，该用例单独 1.965 秒通过。权威 620 项四分片提交后 Go/墙钟秒为
+143.327/149.438、373.654/379.762、231.023/237.133、382.421/388.548，全部通过。
+
+当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
+生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。

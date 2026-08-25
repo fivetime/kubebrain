@@ -3911,7 +3911,16 @@ server dry-run、create/get 和 list/watch/update/patch/delete 拒绝矩阵。�
 临时 `kubebrain-system` 已删除。旧 client-side field manager 的迁移仅在确认 CRD 无 Operation 后显式执行，不能作为生产默认 force。
 620 项四片提交后 Go/墙钟秒为 134.699/140.814、367.435/373.553、227.896/234.072、378.059/384.167，全部通过。
 
-该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 与认证 Secret 创建/轮换/撤权，以及三处三副本故障注入全部验收；
+提交 `71ed8081` 把 JWT signing/probe material 从不可跨 Pod 的参数路径改为 immutable parameter Secret 的固定 sibling fields。
+requester 仅接受规范绝对普通文件、私钥禁止 group/other 访问、单份 512 KiB/合计 700 KiB，并创建精确 3/4/6 字段 Secret；参数只保留
+field name 与 SHA-256。executor 不具备 Secret `get`，而是用 projected token 经 HTTPS broker `/v1/material` 获取；broker
+重新验证专用 SA、JWTKeyRotation type、claim owner/attempt 与五字段 allowlist。runner 在 heartbeat/process-group fencing 下
+把材料捕获为 0600 文件并校验摘要后才发布。Kind v1.36.1 policy 无 type warning；合法 Secret dry-run 放行，missing/extra/
+partial-TLS 均拒绝。620 项四片 Go/墙钟秒为 143.327/149.438、373.654/379.762、231.023/237.133、382.421/388.548，全部通过。
+这证明受限 Secret→executor 交接，不证明外部 KMS export/promotion/revoke 或真实 broker 双副本网络链路已经演练。
+
+该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
+真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。
 
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：

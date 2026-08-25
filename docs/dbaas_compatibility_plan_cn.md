@@ -61930,6 +61930,14 @@ Secret+Operation server dry-run 与 RBAC 矩阵通过；API/broker/archiver/exec
 manager 仅在确认测试 CRD 无实例后显式迁移，生产升级仍须独立审批。620 项四片提交后 Go/墙钟秒为
 134.699/140.814、367.435/373.553、227.896/234.072、378.059/384.167，全部通过。
 
+提交 `71ed8081` 继续关闭 key material handoff 缺口：requester 将参数、old/new key 和可选 TLS 材料写入同一 immutable Secret，
+参数从本地路径改为固定 field name+SHA；admission 只接受非空精确 3/4/6 字段集合。executor 无 Secret `get`，只能用 projected
+token 经 HTTPS broker `/v1/material`，在专用 SA、operation type、claim owner/attempt 和五字段 allowlist 全部通过后逐份取得；
+runner 在 heartbeat/process-group fencing 中以 0600 捕获并复核摘要。Kind v1.36.1 的合法/缺失/额外/partial-TLS server dry-run
+矩阵通过；620 项四片提交后 Go/墙钟秒为 143.327/149.438、373.654/379.762、231.023/237.133、382.421/388.548，全部通过。
+本项只关闭 Secret→executor 的安全交接，外部 KMS export/version promotion/revoke、认证 credential lifecycle、真实 broker
+双副本链路和三处接管故障注入仍开放。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
