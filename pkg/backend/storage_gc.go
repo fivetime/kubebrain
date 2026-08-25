@@ -73,9 +73,17 @@ func (b *backend) runStorageGC(workerCtx context.Context, lifetime time.Duration
 			if !b.leadingFresh() {
 				continue
 			}
-			ctx, _, cancel := b.maintenanceContextWithShutdown(workerCtx, interval)
+			ctx, maintenanceCtx, cancel := b.maintenanceContextWithShutdown(workerCtx, interval)
 			safepoint, err := gc.GC(ctx, lifetime)
+			maintenanceErr := maintenanceCtx.Err()
 			cancel()
+			if maintenanceErr != nil {
+				// Losing the leadership lifecycle retires this attempt. It is not a
+				// storage failure, and a storage implementation that races the cancel
+				// and returns a late success must not publish follower-owned success
+				// telemetry either; the next leader resumes on its next tick.
+				continue
+			}
 			if err != nil {
 				if workerCtx.Err() != nil {
 					return

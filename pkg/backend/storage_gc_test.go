@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,6 +49,29 @@ type lifecycleGCKV struct {
 	successes atomic.Int64
 	entered   chan struct{}
 	canceled  chan struct{}
+}
+
+type failingGCKV struct {
+	storage.KvStorage
+	calls atomic.Int64
+}
+
+func (g *failingGCKV) GC(context.Context, time.Duration) (uint64, error) {
+	g.calls.Add(1)
+	return 0, errors.New("injected storage GC failure")
+}
+
+type lateSuccessGCKV struct {
+	storage.KvStorage
+	entered  chan struct{}
+	returned chan struct{}
+}
+
+func (g *lateSuccessGCKV) GC(ctx context.Context, _ time.Duration) (uint64, error) {
+	close(g.entered)
+	<-ctx.Done()
+	close(g.returned)
+	return 42, nil
 }
 
 func (g *lifecycleGCKV) GC(ctx context.Context, _ time.Duration) (uint64, error) {
@@ -131,9 +155,7 @@ func TestStorageGCDriverDisabledByZeroLifetime(t *testing.T) {
 }
 
 func TestStorageGCTransfersAcrossLeadershipContexts(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	m := mock.NewMinimalMetrics(ctrl)
+	m := newRecordCounters()
 	kv := &lifecycleGCKV{
 		KvStorage: imemkv.NewKvStorage(),
 		entered:   make(chan struct{}),
@@ -146,6 +168,7 @@ func TestStorageGCTransfersAcrossLeadershipContexts(t *testing.T) {
 		Prefix: prefix, Identity: getStorageIdentity(),
 		EnableEtcdCompatibility: true, StorageGCLifetime: lifetime,
 	}, m).(*backend)
+	defer stopBackendWorkersForTest(b)
 	var epoch atomic.Uint64
 	var leading atomic.Bool
 	epoch.Store(1)
@@ -160,6 +183,8 @@ func TestStorageGCTransfersAcrossLeadershipContexts(t *testing.T) {
 	<-kv.canceled
 	time.Sleep(2 * lifetime)
 	require.Zero(t, kv.successes.Load(), "a follower must not advance the storage GC safepoint")
+	require.Zero(t, m.get("storage.gc.err"),
+		"leadership cancellation is normal lifecycle retirement, not a storage GC failure")
 
 	epoch.Store(2)
 	leading.Store(true)
@@ -170,4 +195,51 @@ func TestStorageGCTransfersAcrossLeadershipContexts(t *testing.T) {
 		return kv.successes.Load() > 0
 	}, 2*time.Second, 10*time.Millisecond,
 		"the new leader must resume safepoint advancement without restarting the driver")
+}
+
+func TestStorageGCStorageFailureRemainsObservable(t *testing.T) {
+	m := newRecordCounters()
+	kv := &failingGCKV{KvStorage: imemkv.NewKvStorage()}
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(),
+		EnableEtcdCompatibility: true, StorageGCLifetime: 20 * time.Millisecond,
+	}, m).(*backend)
+	defer stopBackendWorkersForTest(b)
+
+	require.Eventually(t, func() bool {
+		return kv.calls.Load() > 0 && m.get("storage.gc.err") > 0
+	}, time.Second, 5*time.Millisecond,
+		"an active leader's real storage GC failure must remain observable")
+}
+
+func TestStorageGCLateSuccessAfterLeadershipLossIsNotPublished(t *testing.T) {
+	m := newRecordCounters()
+	kv := &lateSuccessGCKV{
+		KvStorage: imemkv.NewKvStorage(), entered: make(chan struct{}), returned: make(chan struct{}),
+	}
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(),
+		EnableEtcdCompatibility: true, StorageGCLifetime: 20 * time.Millisecond,
+	}, m).(*backend)
+	defer stopBackendWorkersForTest(b)
+	var leading atomic.Bool
+	leading.Store(true)
+	b.SetLeadershipFence(func() (uint64, bool) { return 1, leading.Load() })
+	leaderCtx, stopLeader := context.WithCancel(context.Background())
+	require.NoError(t, b.ResumePhysicalCompaction(leaderCtx))
+
+	<-kv.entered
+	leading.Store(false)
+	stopLeader()
+	<-kv.returned
+	time.Sleep(2 * b.config.StorageGCLifetime)
+	require.Zero(t, m.get("storage.gc.err"))
+	require.Zero(t, m.gauge("storage.gc.safepoint"),
+		"a deposed leader must not publish a late GC success")
+	require.Zero(t, m.gauge("storage.gc.last_success_timestamp_seconds"),
+		"a deposed leader must not refresh the success timestamp")
 }
