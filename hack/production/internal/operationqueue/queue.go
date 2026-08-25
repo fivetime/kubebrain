@@ -697,6 +697,12 @@ func (q *Queue) Requeue(
 	if err := q.requireWorker(object, owner, attempt); err != nil {
 		return nil, err
 	}
+	maxAttempts, _, _ := unstructured.NestedInt64(object.Object, "spec", "maxAttempts")
+	if actualAttempt >= maxAttempts {
+		return q.Finish(
+			ctx, name, owner, attempt, false, "", exhaustedAttemptsMessage(message),
+		)
+	}
 	instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
 	holder := leaseHolder(object, owner, attempt)
 	updated := object.DeepCopy()
@@ -747,6 +753,18 @@ func (q *Queue) Requeue(
 		return result, fmt.Errorf("release instance lease after requeue: %w", releaseErr)
 	}
 	return result, nil
+}
+
+func exhaustedAttemptsMessage(last string) string {
+	message := "maximum attempts exhausted"
+	if last != "" {
+		message += ": " + last
+	}
+	runes := []rune(message)
+	if len(runes) > maxStatusMessageLength {
+		message = string(runes[:maxStatusMessageLength])
+	}
+	return message
 }
 
 func (q *Queue) Heartbeat(ctx context.Context, name, owner string, attempt int64, lease time.Duration) (*Claim, error) {

@@ -45,7 +45,7 @@ spec:
               message: status attempt cannot exceed spec maxAttempts
             - rule: '!has(oldSelf.status) || !has(oldSelf.status.attempt) || !has(self.status) || !has(self.status.attempt) || self.status.attempt >= oldSelf.status.attempt'
               message: status attempt cannot decrease
-            - rule: '!has(oldSelf.status) || !has(oldSelf.status.owner) || !has(self.status) || !has(self.status.owner) || self.status.owner == oldSelf.status.owner || (self.status.phase == "Pending" && self.status.owner == "") || self.status.attempt > oldSelf.status.attempt'
+            - rule: '!has(oldSelf.status) || !has(oldSelf.status.owner) || !has(self.status) || !has(self.status.owner) || self.status.owner == oldSelf.status.owner || (self.status.phase == "Pending" && self.status.owner == "") || self.status.attempt > oldSelf.status.attempt || (has(oldSelf.status.phase) && oldSelf.status.phase == "Pending" && oldSelf.status.owner == "" && self.status.phase == "Failed" && self.status.owner != "" && self.status.attempt == oldSelf.status.attempt && self.status.attempt == self.spec.maxAttempts)'
               message: owner changes require a higher fencing attempt or explicit requeue
             - rule: '!has(self.status) || !has(self.status.phase) || self.status.phase != "Running" || (self.status.owner != "" && self.status.attempt > 0 && self.status.leaseUntilUnix > 0)'
               message: running operations require owner, attempt, and lease

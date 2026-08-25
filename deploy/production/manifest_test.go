@@ -623,6 +623,10 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.Contains(t, terminalAuditExpression, `self.status.attempt > 0`)
 	require.Contains(t, terminalAuditExpression, `self.status.observedGeneration > 0`)
 	require.Contains(t, terminalAuditExpression, `self.status.completedAtUnix >= self.status.startedAtUnix`)
+	ownerFencingExpression := crdExpressionsByMessage["owner changes require a higher fencing attempt or explicit requeue"]
+	require.Contains(t, ownerFencingExpression, `oldSelf.status.phase == "Pending"`)
+	require.Contains(t, ownerFencingExpression, `self.status.phase == "Failed"`)
+	require.Contains(t, ownerFencingExpression, `self.status.attempt == self.spec.maxAttempts`)
 	failedReceiptExpression := crdExpressionsByMessage["failed operations cannot carry a receipt SHA-256"]
 	require.Contains(t, failedReceiptExpression, `self.status.phase != "Failed"`)
 	require.Contains(t, failedReceiptExpression, `self.status.receiptSHA256 == ""`)
