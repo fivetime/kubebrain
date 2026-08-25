@@ -2044,6 +2044,15 @@ func TestInfoCertificateRotationRequesterIsFailClosedAndLeastPrivilege(t *testin
 	for _, name := range []string{"kubebrain-info-certificate-rotation-request-operation", "kubebrain-info-certificate-rotation-request-parameters"} {
 		policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", name)
 		require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+		validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
+		require.NoError(t, err)
+		require.True(t, found)
+		for _, raw := range validations {
+			validation := raw.(map[string]any)
+			require.Len(t, validation, 2)
+			require.Contains(t, validation, "expression")
+			require.Contains(t, validation, "message")
+		}
 		binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", name)
 		require.Equal(t, []string{"Deny"}, nestedStringSlice(t, binding, "spec", "validationActions"))
 		text := fmt.Sprintf("%v", policy.Object)
@@ -2122,7 +2131,7 @@ func TestJWTKeyRotationPublisherAdmissionIsFailClosedAndFieldRestricted(t *testi
 			for fragment := range map[string]struct{}{
 				"oldObject.spec.replicas": {}, "oldObject.spec.selector": {}, "oldObject.spec.updateStrategy": {},
 				"oldObject.spec.volumeClaimTemplates": {}, "c.name != \"kubebrain\"": {}, "!a.startsWith(\"--auth-token=\")": {},
-				"jwt-key-secret-sha256": {},
+				"jwt-key-secret-sha256": {}, "annotations.all(k, v": {},
 			} {
 				require.Contains(t, text, fragment)
 			}
