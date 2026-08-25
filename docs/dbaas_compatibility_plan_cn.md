@@ -61975,6 +61975,12 @@ promote→verify new-primary→revoke→verify old-revoked，promotion 验证失
 625 项四片提交后 Go/墙钟秒为 125.977/132.112、352.488/358.624、227.869/234.002、368.369/374.501，全部通过。
 真实 provider、credential provisioning/rotation 与 Object Lock 归档仍开放，故本项仅为代码级 lifecycle 闭环。
 
+提交 `9c113dd8` 实现 lifecycle 终态证据的不可变归档链：完整重验签后生成内嵌三份原始 receipt、三份 digest 和全部
+request/operation/version/time binding 的 canonical artifact；对象键由已验证 identity 固定派生，使用 conditional immutable
+blob + Object Lock，并在返回成功前 exact-read 唯一远端版本逐字节比对。验证失败不会调用对象存储。627 项四片提交后
+Go/墙钟秒为 131.387/137.465、359.730/365.805、230.512/236.605、376.890/382.983，全部通过。真实 bucket/provider 演练和
+独立 lifecycle credential 部署/轮换仍开放，因此不能把本项代码证据等同于生产归档证据。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 

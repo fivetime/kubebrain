@@ -3958,6 +3958,13 @@ finalizer 在 promotion 签名/状态/绑定验证通过前绝不调用 revoke�
 no-clobber。625 项四片 Go/墙钟秒为 125.977/132.112、352.488/358.624、227.869/234.002、368.369/374.501，全部通过。
 代码路径已闭环，但尚无真实 provider mutation、独立 credential 部署/轮换和 Object Lock 归档证据，仍不得把 KMS lifecycle 标为生产 GREEN。
 
+提交 `9c113dd8` 关闭 lifecycle receipt 缺少不可变归档实现的代码缺口。verifier 只有在完整 revoke 链重新验签通过后才以
+no-clobber 方式输出 canonical lifecycle artifact；artifact 保留三份原始回执并绑定各自 SHA、完整 KMS/Operation identity 与
+严格时间顺序。`archive-jwt-kms-lifecycle.sh` 冻结输入后复用 immutable blob 的 conditional put、Object Lock retention、唯一
+version 和 receipt 合同，并立即 exact-read 后逐字节比较；验签失败时对象存储 executor 调用数为零。627 项四片提交后
+Go/墙钟秒为 131.387/137.465、359.730/365.805、230.512/236.605、376.890/382.983，全部通过。真实 KMS provider 和真实
+Object Lock bucket 尚未执行本链，lifecycle credential provisioning/rotation 也未完成，故仍不能标记生产 GREEN。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。

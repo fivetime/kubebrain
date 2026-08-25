@@ -323,6 +323,16 @@ finalizer 先冻结 Operation receipt，只在 promotion receipt 经正式 verif
 125.977/132.112、352.488/358.624、227.869/234.002、368.369/374.501，全部通过。当前仍缺真实 provider 实机演练、专用
 lifecycle credential 的 Kubernetes/外部身份部署与轮换，以及将两张终态 receipt 写入 Object Lock 审计归档。
 
+提交 `9c113dd8` 补齐 lifecycle 终态证据的代码级 Object Lock 归档入口。正式 verifier 在同一次 revoke 链验证成功后，以
+exclusive create 生成 `kubebrain.jwt-kms-lifecycle-artifact.v1`：artifact 内嵌原始 Operation、promotion、revoke 三份回执，
+同时绑定三份 SHA-256、request/operation/instance、old/new version 及 completion/promotion/revoke 时间。归档 wrapper 先冻结
+全部输入和 trust key，再调用 verifier；任何验签或链校验失败都不会启动对象存储写入。
+
+上传复用 immutable blob 合同：固定 identity 派生对象键、`If-None-Match:*`、SHA-256 metadata、Object Lock retention、唯一
+version 和不可覆盖 receipt；随后用 `blob-read` 枚举并精确读取唯一版本，逐字节比较远端 artifact。627 项提交后四片
+Go/墙钟秒为 131.387/137.465、359.730/365.805、230.512/236.605、376.890/382.983，全部通过。该提交证明代码路径，尚未证明
+真实 provider mutation、真实 Object Lock bucket 写入/保留、独立 lifecycle credential 的部署与轮换；这些 live 门禁仍开放。
+
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。
