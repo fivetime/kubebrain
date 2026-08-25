@@ -61794,7 +61794,7 @@ token/Watch soak 仍开放。
 ### A5491：JWT signing key 三阶段无中断轮换
 
 参考 etcd `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 JWT provider 只加载一个启动期 key；直接在三副本滚动替换
-key 会让混合版本副本互不接受对方签发的 token。提交 `88b00806fc4c3281a327edb73f82ad196b56de15` 增加可选
+key 会让混合版本副本互不接受对方签发的 token。提交 `88b008062c35c7205dbfcf7410339ec57db77ed7` 增加可选
 `verify-key`：active `priv-key` 是唯一 signer，额外 key 只参与验证。安全流程固定为旧 signer 预信任新 key、再由新 signer
 保留旧 verify key、最后从旧 token 最晚签发时刻等待完整 TTL 加时钟裕量后退休旧 key。HS256 使用原始共享 secret；
 RS256/PS256、ES256、EdDSA 使用对应 public key。单测覆盖五种算法的双向 overlap、新 key 独立签发、旧 key 退休，以及
@@ -61805,14 +61805,16 @@ RS256/PS256、ES256、EdDSA 使用对应 public key。单测覆盖五种算法�
 完整三阶段：phase A 全量旧 signer+新 verifier；phase B 先只更新 Pod 2，从该新 signer 签发 token 后证明两个旧 Pod 与
 一个新 Pod 均接受新旧 token，再更新其余 Pod；等待从旧 token 签发时刻计算的 TTL+2 秒后，phase C 删除旧 verifier。
 两轮均在三个 member 上确认 fresh 新 token 成功、旧 token 返回 `InvalidAuthToken`，且全过程 Pod restartCount 为 0；
-dirty Go/墙钟 160.104/166.234 秒，精确提交 Go/墙钟 155.250/156.526 秒。fixture 最终恢复 auth-disabled，
+dirty Go/墙钟 160.104/166.234 秒，纠正 provenance 后的精确提交 Go/墙钟 160.503/161.774 秒。fixture 最终恢复 auth-disabled，
 keys/users/roles/leases/alarms 全空并删除。
 
 代码提交前 611 项 inventory 为 140/171/154/146；提交后四片 Go 时间
 119.142/356.650/229.294/371.909 秒，墙钟 125.087/362.502/235.246/377.856 秒，全部通过。精确镜像
-`kubebrain:a5491-88b00806` 构建墙钟 211.504 秒，内嵌完整 SHA、TiKV 和 Go 1.26.5；本地 manifest list 为
-`sha256:277ba3a261ad2ebbcc4f463f233c7517b292f07e2d56f0d4d8151370cee68a05`，fixture 与主数据面 runtime digest
-均为 `sha256:09cc887a91b7d77e799f2256997b3d7b1e46a5279272229cc15a2218bd3317ad`。主数据面 3/3 Ready、零重启，
+`kubebrain:a5491-88b00806` 最终构建墙钟 216.493 秒，内嵌完整 SHA、TiKV 和 Go 1.26.5；本地 manifest list 为
+`sha256:8dd5949f40b3dcbb7c0c903fb1c62c4bb1ce124359e2cf093a8c31e095c6c419`，fixture 与主数据面 runtime digest
+均为 `sha256:b124dae011be8d4e19e949432e43b791e33133805b76f9480bb61db48c11315d`。首次手工构建把相同短前缀扩展成了
+不存在的完整 SHA；最终审计发现后废弃该镜像及其“精确”轮换结果，用上述真实提交 SHA 重建并在第三个全新 keyspace 从头
+复验，未把代码内容相同但 provenance 错误的镜像计入发布证据。主数据面 3/3 Ready、零重启，
 alarm 与公开 keyspace 为空。数据面 overlap/retirement 原语和单节点 Kind 演练缺口关闭；KMS/Secret 控制面编排、不可变
 阶段 receipt、跨节点/AZ 与长时间 rotation soak 仍开放。
 
