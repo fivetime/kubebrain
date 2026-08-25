@@ -2,8 +2,10 @@ package admissionfence
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -67,6 +69,44 @@ func TestConcurrentSessionRegistrationAndAcquireHaveSingleWinner(t *testing.T) {
 		if acquireErr == nil {
 			require.NoError(t, Release(ctx, cli, keyspace, token))
 		}
+	}
+}
+
+func TestConcurrentSessionsInitializeMissingGate(t *testing.T) {
+	cli := testClient(t)
+	ctx := t.Context()
+	const replicas = 16
+	start := make(chan struct{})
+	type result struct {
+		session *Session
+		err     error
+	}
+	results := make(chan result, replicas)
+	var ready sync.WaitGroup
+	ready.Add(replicas)
+	for i := 0; i < replicas; i++ {
+		identity := fmt.Sprintf("replica-%d:2380", i)
+		go func() {
+			ready.Done()
+			<-start
+			session, err := StartSession(ctx, cli, "cold-start", identity, 6*time.Second)
+			results <- result{session: session, err: err}
+		}()
+	}
+	ready.Wait()
+	close(start)
+	got := make([]result, 0, replicas)
+	for i := 0; i < replicas; i++ {
+		got = append(got, <-results)
+	}
+	for _, result := range got {
+		if result.session != nil {
+			require.NoError(t, result.session.Close(ctx))
+		}
+	}
+	for _, result := range got {
+		require.NoError(t, result.err)
+		require.NotNil(t, result.session)
 	}
 }
 

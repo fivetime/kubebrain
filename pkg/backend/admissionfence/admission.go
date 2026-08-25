@@ -234,6 +234,12 @@ func establishSession(ctx context.Context, cli *clientv3.Client, keyspace, ident
 	ok, err := register(clientv3.Compare(clientv3.Value(GateKey(keyspace)), "=", Open), false)
 	if err == nil && !ok {
 		ok, err = register(clientv3.Compare(clientv3.Version(GateKey(keyspace)), "=", 0), true)
+		if err == nil && !ok {
+			// Another process may have initialized the missing gate between the
+			// two transactions above. Re-check the now-open gate before treating
+			// the failed initializer as a closed gate or duplicate identity.
+			ok, err = register(clientv3.Compare(clientv3.Value(GateKey(keyspace)), "=", Open), false)
+		}
 	}
 	if err != nil || !ok {
 		revokeBestEffort(cli, grant.ID)
