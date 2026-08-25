@@ -73,7 +73,7 @@ func (b *backend) runStorageGC(workerCtx context.Context, lifetime time.Duration
 			if !b.leadingFresh() {
 				continue
 			}
-			ctx, cancel := b.maintenanceContextWithShutdown(workerCtx, interval)
+			ctx, _, cancel := b.maintenanceContextWithShutdown(workerCtx, interval)
 			safepoint, err := gc.GC(ctx, lifetime)
 			cancel()
 			if err != nil {

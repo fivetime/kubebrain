@@ -45,16 +45,20 @@ func (b *backend) maintenanceContext() context.Context {
 	return context.Background()
 }
 
-func (b *backend) maintenanceContextWithShutdown(shutdown context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+func (b *backend) maintenanceContextWithShutdown(
+	shutdown context.Context,
+	timeout time.Duration,
+) (context.Context, context.Context, context.CancelFunc) {
+	maintenance := b.maintenanceContext()
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if timeout > 0 {
-		ctx, cancel = context.WithTimeout(b.maintenanceContext(), timeout)
+		ctx, cancel = context.WithTimeout(maintenance, timeout)
 	} else {
-		ctx, cancel = context.WithCancel(b.maintenanceContext())
+		ctx, cancel = context.WithCancel(maintenance)
 	}
 	stop := context.AfterFunc(shutdown, cancel)
-	return ctx, func() {
+	return ctx, maintenance, func() {
 		stop()
 		cancel()
 	}
@@ -514,6 +518,7 @@ func (b *backend) runCompactor(workerCtx context.Context) {
 			return
 		case <-b.compactSignal:
 		}
+	compaction:
 		for {
 			if workerCtx.Err() != nil {
 				return
@@ -522,7 +527,7 @@ func (b *backend) runCompactor(workerCtx context.Context) {
 			if target <= lastScanned {
 				break
 			}
-			ctx, cancel := b.maintenanceContextWithShutdown(workerCtx, 0)
+			ctx, maintenanceCtx, cancel := b.maintenanceContextWithShutdown(workerCtx, 0)
 			err := b.physicalCompact(ctx, target)
 			maintenanceErr := ctx.Err()
 			if err != nil {
@@ -540,10 +545,25 @@ func (b *backend) runCompactor(workerCtx context.Context) {
 				// Do not claim completion. Retry independently of a newer logical
 				// compact request so transient storage failures cannot leave physical
 				// history stranded forever.
-				time.AfterFunc(physicalCompactRetryInterval, func() {
-					b.schedulePhysicalCompact(target)
-				})
-				break
+				retryTimer := time.NewTimer(physicalCompactRetryInterval)
+				select {
+				case <-workerCtx.Done():
+					if !retryTimer.Stop() {
+						<-retryTimer.C
+					}
+					return
+				case <-maintenanceCtx.Done():
+					if !retryTimer.Stop() {
+						<-retryTimer.C
+					}
+					break compaction
+				case <-b.compactSignal:
+					if !retryTimer.Stop() {
+						<-retryTimer.C
+					}
+				case <-retryTimer.C:
+				}
+				continue
 			}
 			cancel()
 			lastScanned = target

@@ -115,6 +115,16 @@ func (c *cancelFirstPartitionsKV) GetPartitions(ctx context.Context, start, end 
 	return c.KvStorage.GetPartitions(ctx, start, end)
 }
 
+type failAndCountPartitionsKV struct {
+	storage.KvStorage
+	attempts atomic.Int32
+}
+
+func (f *failAndCountPartitionsKV) GetPartitions(context.Context, []byte, []byte) ([]storage.Partition, error) {
+	f.attempts.Add(1)
+	return nil, errors.New("injected partitions failure")
+}
+
 // TestCompactSurfacesScanError pins #71 and the recovery contract:
 // Physical=true returns a scan failure even though the logical watermark is
 // already durable, then the client-independent compactor resumes that target.

@@ -349,6 +349,34 @@ func TestPhysicalCompactionTransfersAcrossLeadershipContexts(t *testing.T) {
 		"only the explicit new-term resume may start the replacement scan")
 }
 
+func TestPhysicalCompactionPendingRetryStopsWithLeadershipContext(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &failAndCountPartitionsKV{KvStorage: imemkv.NewKvStorage()}
+	defer func() { require.NoError(t, kv.Close()) }()
+	target := uint64(time.Now().UnixNano())
+
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: "leader-retry-cancel", EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(target)
+	leaderCtx, stopLeader := context.WithCancel(context.Background())
+	require.NoError(t, b.ResumePhysicalCompaction(leaderCtx))
+
+	_, err := b.CompactAsync(context.Background(), target)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return kv.attempts.Load() == 1
+	}, time.Second, 5*time.Millisecond, "the first storage failure must schedule a background retry")
+	// Give runCompactor time to install its one-second retry before ending the
+	// term; the pending callback, not an in-flight scan, is the behavior under test.
+	time.Sleep(25 * time.Millisecond)
+	stopLeader()
+	require.Never(t, func() bool {
+		return kv.attempts.Load() > 1
+	}, physicalCompactRetryInterval+250*time.Millisecond, 10*time.Millisecond,
+		"a retry queued by an old term must not start a follower-side scan")
+}
+
 func TestCompactAsyncCapturesEpochForInternalCaller(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
