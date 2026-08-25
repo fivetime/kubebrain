@@ -8355,3 +8355,29 @@ endpoint 2 的 member 必须失败，也证明错误 metrics member 在任何 Go
 639 项 inventory 仍为 `152/178/159/150`；精确提交后四片 Go/墙钟秒为
 141.881/148.744、377.470/384.373、238.370/245.231、391.580/398.468，全部通过。本项不改变 etcd RPC runtime；
 `hashkv-compaction`/`compaction` 仍需 disposable 实例和独立破坏性批准，不能由本轮 `all` scope 替代。
+
+### A5503：压缩 live 响应逐次绑定 endpoint 身份
+
+A5502 已在 direct-replica runner 的 pre/postflight 冻结 cluster、有序 endpoint→member 和最低 revision，但这只能拒绝持续到
+postflight 的漂移。如果 Service selector 或本地隧道在测试中途改指另一 member、随后又恢复，旧门禁仍可能把跨成员的压缩、
+HashKV、Lease 与 Watch 响应拼成 GREEN；相关 Go 测试原先主要验证数据语义，没有逐次验证每个成功响应来自预期副本。
+
+提交 `2c16a924` 新增并发安全的 `liveResponseIdentityAdmission`。首次响应固定非零 cluster ID；每个 endpoint index 固定唯一、非零
+member ID，后续拒绝 cluster/member 漂移、两个 endpoint 复用同一 member、nil/零 header、零 revision 及低于场景因果下界的
+revision。该 admission 已贯穿 direct HashKV 快照、三副本 HashKV+Compact、并发物理 Compact/Put/Range/Watch、Lease
+Grant/KeepAlive/TTL/Revoke 和物理压缩前后 HashKV；测试 cleanup 的 Delete/Range 也复用同一身份链。mutex 保护使并发
+Compact/traffic goroutine 共享同一证据状态，确定性负测覆盖瞬时 member/cluster 替换、重复 member、revision 回退和畸形 header，
+并发稳定身份普通 20 轮及 race 10 轮通过。
+
+真实 Kubernetes v1.36.1 数据面继续使用 `kubebrain:a5491-88b00806`（image digest
+`b124dae011be8d4e19e949432e43b791e33133805b76f9480bb61db48c11315d`）和独立 3×PD/3×TiKV v8.5.3。三个只监听
+`127.0.0.1` 的 client+metrics port-forward 仍分别绑定 `kubebrain-0/1/2`。加固前 disposable 基线中
+`hashkv-compaction` 3 项 Go 7.621 秒、`compaction` 4 项 Go 7.788 秒 GREEN；最终代码分别为 Go 7.846 秒（runner 墙钟
+11.001 秒）和 Go 8.078 秒（runner 墙钟 11.113 秒）GREEN，runner 的三端 postflight 同时证明测试前缀为空且 lease/alarm
+恢复基线。三个 Pod UID 仍为 `159a0604-b45c-469f-941e-e7db43b762d4`、`8eb84073-6c2b-4bb2-a1d9-13f85d6b63bb`、
+`55151c13-75c3-4e50-a8ff-c2b59cca9061`，均 Ready、restart 0；六个本地端口已关闭，临时日志目录已删除。
+
+compat 全套 8.797 秒、vet、runner 单测、bash syntax、diff check 与目标 race 均通过。639 项 inventory 保持
+`152/178/159/150`；精确提交后四片 Go/墙钟秒为 134.819/141.045、364.105/370.328、233.408/239.623、
+386.224/392.447，全部通过。本项不修改 etcd RPC runtime，也未发现新的压缩语义差异；它关闭的是 pre/postflight 无法捕获的
+瞬时拓扑切换证据缺口。推进 compact revision 的两个 scope 仍只允许在确认可丢弃的实例上以独立破坏性批准执行。

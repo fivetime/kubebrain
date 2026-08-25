@@ -62120,6 +62120,24 @@ KubeBrain Pod UID 不变、Ready/restart 0，主 PD/TiKV 六 Pod Ready/restart 0
 Go/墙钟秒为 141.881/148.744、377.470/384.373、238.370/245.231、391.580/398.468。本轮没有发现 runtime 语义偏差；
 需要推进 compact revision 的 `hashkv-compaction`/`compaction` scope 仍保持独立破坏性门禁。
 
+### A5503：压缩路径逐响应身份 fence
+
+对照 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/api/etcdserverpb/rpc.proto::ResponseHeader`：
+cluster ID 标识响应集群，member ID 标识发送响应的成员，revision 是请求应用时的 KV revision，Watch progress header 还定义后续
+事件的 revision 下界。A5502 的 runner 只在测试前后冻结这些属性，因此无法证明中途发生、结束前恢复的 endpoint/member 切换。
+
+提交 `2c16a924` 为 direct HashKV、Compact、并发 Put/Range/Watch、Lease 和 cleanup 的每个成功响应增加共享 admission：cluster
+全程不变、每个 endpoint index 的 member 全程不变且三者唯一、header 身份与 revision 必须非零，revision 不得低于已建立的场景
+因果下界。实现由 mutex 保护，真实并发 traffic 与确定性 race 单测均覆盖；负测证明瞬时 cluster/member 替换、重复 member、
+revision 回退和畸形 header 会立即 RED，而不等待 runner postflight。
+
+Kubernetes v1.36.1、三副本 KubeBrain 与独立 3×PD/3×TiKV v8.5.3 上，最终 destructive+metrics
+`hashkv-compaction` 3 项 Go 7.846 秒、`compaction` 4 项 Go 8.078 秒 GREEN；三端 postflight 无测试键、lease/alarm 回到基线。
+三个 KubeBrain Pod UID 未变、Ready/restart 0，临时端口和日志均已清理。compat 全套 8.797 秒、vet、race 和 runner 回归通过；
+639 项四片为 `152/178/159/150`，提交后 Go/墙钟秒为 134.819/141.045、364.105/370.328、233.408/239.623、
+386.224/392.447。本轮没有 runtime 语义改动或新增偏差；`hashkv-compaction`/`compaction` 仍保持 disposable instance 与独立
+破坏性批准要求。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
