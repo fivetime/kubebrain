@@ -61910,7 +61910,14 @@ namespace/专用 executor，限制 immutable 双字段 Secret CREATE，并冻结
 跨 namespace 权限，并要求归档后由平台删除。620 项四片提交后 Go/墙钟秒为
 134.441/140.577、377.166/383.298、235.153/241.317、395.412/401.558，全部通过。
 
-executor 仍固定零副本；真实 API server CEL/type-check 与 auth matrix、真实 token issuer/KMS 以及三处
+提交 `d0910168` 关闭真实 token 签发实现缺口：正式 issuer 从 0440 dedicated Secret volume 文件读取 username/password，限定
+atomic-writer symlink 不得逃逸 mount root，不把密码放入 argv/env/log，并用官方 client/v3 `Authenticate` 从审批 endpoint 获取
+JWT。输出以 0600、file/directory sync、hard-link no-clobber 发布，错误脱敏、竞争写和恢复复用均有测试。runner 不再离线使用
+signing-key hook，而在 A rollout 后签发 old token、B new-signer rollout 后签发 new token、C rollout 后签发 fresh new token；该顺序
+与 etcd 当前 private-key `assign` 语义及 KubeBrain verify-key overlap 扩展一致。镜像和 executor 已改用正式二进制及只读 credential
+mount。620 项四片提交后 Go/墙钟秒为 138.141/144.247、374.569/380.698、235.408/241.539、385.385/391.513，全部通过。
+
+executor 仍固定零副本；真实 API server CEL/type-check 与 auth matrix、外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
 ### P2：运维兼容和长期验证

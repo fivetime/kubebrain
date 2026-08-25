@@ -150,7 +150,8 @@ patch 后、receipt 前退出时可识别已收敛状态并生成 `reconciled_ex
 
 提交 `c8352bb5` 在 publisher 之上交付持久纵向链路：CRD enum、queue approval、operation audit allowlist、worker type admission、
 parameter broker identity/NetworkPolicy、专用 requester RBAC/admission 与 deterministic request 脚本同步启用；executor
-Deployment 保持 `replicas: 0`，采用专用 ServiceAccount、PVC、projected broker token 和 token issuer hook。
+Deployment 保持 `replicas: 0`，采用专用 ServiceAccount、PVC、projected broker token 和只读 JWT 认证 Secret；不再挂载
+可执行 token issuer hook。
 
 runner 对 64 KiB 参数做精确 schema 与 SHA-256 双读冻结，在自身边界重新校验 workspace、1 MiB 上限、symlink、私钥权限、TLS
 配对/摘要和 HTTPS member 集合。它持久复用 old/phase-B-new token，phase C 强制 fresh new token；所有 issuer、publisher、gate
@@ -183,5 +184,18 @@ publisher admission 已纳入 requester guardrail 的 apply 顺序和 compiled-p
 134.441/140.577、377.166/383.298、235.153/241.317、395.412/401.558，全部通过。真实 API server 上的 CEL
 type-check、server-side dry-run 和 `auth can-i` 仍必须随 live 演练留证，不能用本地 YAML 解码替代。
 
-当前仍保持 disabled-by-default，不能直接规模化上线：token issuer/KMS 合同尚无真实实现与轮换撤权演练，三处真实
+提交 `d0910168` 用正式 `kubebrain-jwt-token-issuer` 替换可执行 hook。issuer 只从 dedicated Secret mount 下读取
+`username`/`password`，支持 Kubernetes atomic-writer symlink 但要求最终目标仍位于 credential root、只读且 other 不可访问；密码
+不进入 argv、环境变量或日志。它对一个审批 endpoint 调用官方 client/v3 `Authenticate`，错误文本不透传服务端/凭据内容，JWT
+以 0600 临时文件、file sync、no-clobber hard-link、unlink 和 directory sync 发布；已有安全单链接 token 幂等复用，竞争写不能
+覆盖。TLS 复用参数摘要冻结后的 CA/client cert/key。
+
+对照 etcd `server/auth/jwt.go` 的 `assign`（以当前 private key 签发）以及 KubeBrain phase B 的 new signer + old verify-key 扩展，runner
+时序固定为 `publish A → Authenticate old → gate A → publish B → Authenticate new → gate B → TTL → publish C → Authenticate fresh
+new → gate C`，不再在 rollout 前用本地 key 离线造 token。Secret mount 固定 0440、read-only，镜像正式 build/copy issuer；单元测试
+覆盖 symlink root 逃逸、可写 credential、错误脱敏、无覆盖发布和恢复复用，runner 黑盒测试锁定发布/签发顺序。代码提交前
+inventory 为 620 项、四片 144/171/155/150；提交后四片 Go/墙钟秒为 138.141/144.247、374.569/380.698、
+235.408/241.539、385.385/391.513，全部通过。
+
+当前仍保持 disabled-by-default，不能直接规模化上线：外部 KMS key sourcing、认证 Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。

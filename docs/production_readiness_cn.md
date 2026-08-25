@@ -3890,8 +3890,14 @@ binding 和双 JSON Patch precondition 在 heartbeat 下恢复 overlap；已有 
 容器运行字段均冻结。实例 renderer 只授予目标 StatefulSet get/patch、目标 Secret get 和 admission 约束下的 Secret create，
 归档后必须删除 operation-labeled Role/RoleBinding。620 项生产测试四片提交后全部通过。
 
-该 Deployment 仍必须保持 `replicas: 0`，直到真实 API server CEL/type-check、server-side dry-run/auth matrix、真实 token issuer/KMS
-和三处三副本故障注入全部验收；当前不能把 API/模板存在等同于生产自动轮换 GREEN。
+提交 `d0910168` 用正式 client/v3 `Authenticate` issuer 取代 token hook：username/password 仅由 0440 read-only dedicated Secret
+mount 提供，密码不进入 argv/env/log；credential symlink 被限制在 mount root 内，JWT 以 0600、fsync、hard-link no-clobber 方式
+持久化。runner 在 A/B/C rollout 后才分别签发当前 signer 的 token，黑盒测试固定
+`publish A→issue old→publish B→issue new→publish C→issue fresh new`。620 项生产测试四片提交后 Go/墙钟秒为
+138.141/144.247、374.569/380.698、235.408/241.539、385.385/391.513，全部通过。
+
+该 Deployment 仍必须保持 `replicas: 0`，直到真实 API server CEL/type-check、server-side dry-run/auth matrix、外部 KMS 与认证
+Secret 创建/轮换/撤权，以及三处三副本故障注入全部验收；当前不能把 API/模板存在等同于生产自动轮换 GREEN。
 
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
 
