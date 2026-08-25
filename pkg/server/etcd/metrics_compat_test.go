@@ -51,6 +51,12 @@ type recordingMetrics struct {
 	gauges     []recordedGauge
 }
 
+func (r *recordingMetrics) snapshotCounters() []recordedCounter {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]recordedCounter(nil), r.counters...)
+}
+
 type histogramRegistrationRecorder struct {
 	recordingMetrics
 	registered []string

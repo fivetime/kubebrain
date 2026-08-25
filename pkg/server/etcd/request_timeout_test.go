@@ -97,6 +97,15 @@ func TestUnaryInterceptorBoundsUpstreamRaftEquivalentServices(t *testing.T) {
 		{name: "auth status", method: etcdserverpb.Auth_AuthStatus_FullMethodName, request: &etcdserverpb.AuthStatusRequest{}, wantDeadline: true},
 		{name: "auth shorter client", method: etcdserverpb.Auth_UserAdd_FullMethodName, request: &etcdserverpb.AuthUserAddRequest{}, clientTimeout: 500 * time.Millisecond, wantDeadline: true},
 		{name: "alarm", method: etcdserverpb.Maintenance_Alarm_FullMethodName, request: &etcdserverpb.AlarmRequest{}, wantDeadline: true},
+		{
+			name: "corrupt disarm uses caller budget", method: etcdserverpb.Maintenance_Alarm_FullMethodName,
+			request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT},
+		},
+		{
+			name: "corrupt disarm preserves caller deadline", method: etcdserverpb.Maintenance_Alarm_FullMethodName,
+			request:       &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT},
+			clientTimeout: 500 * time.Millisecond, wantDeadline: true,
+		},
 		{name: "ordinary range", method: etcdserverpb.KV_Range_FullMethodName, request: &etcdserverpb.RangeRequest{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

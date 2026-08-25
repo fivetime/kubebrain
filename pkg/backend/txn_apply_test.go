@@ -206,10 +206,14 @@ func (transientCASBatch) Commit(ctx context.Context) error {
 func newTxnApplyBackend(t *testing.T) (*backend, context.Context) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
-	m := mock.NewMinimalMetrics(ctrl)
+	return newTxnApplyBackendWithMetrics(t, mock.NewMinimalMetrics(ctrl))
+}
+
+func newTxnApplyBackendWithMetrics(t *testing.T, metricCli metrics.Metrics) (*backend, context.Context) {
+	t.Helper()
 	kv := imemkv.NewKvStorage()
 	t.Cleanup(func() { require.NoError(t, kv.Close()) })
-	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, metricCli).(*backend)
 	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
 	return b, context.Background()
 }
@@ -625,9 +629,8 @@ func TestTxnCommitRecordedValidatesExactOrderedMarkers(t *testing.T) {
 }
 
 func TestUncertainTxnCorruptWitnessArmsPersistentAlarm(t *testing.T) {
-	b, ctx := newTxnApplyBackend(t)
 	recorder := &compactMetricRecorder{}
-	b.metricCli = recorder
+	b, ctx := newTxnApplyBackendWithMetrics(t, recorder)
 	revision := b.GetCurrentRevision() + 1
 	preps := []txnPrep{{
 		op: TxnWriteOp{Key: []byte(prefix + "/marker/corrupt-alarm")}, effective: true, create: true,

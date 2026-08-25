@@ -590,14 +590,14 @@ func TestDecodedHistoricalRangeStreamExtendsOrderingIndexBackToRequestedRevision
 }
 
 func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T) {
-	ctrl := gomock.NewController(t)
 	rawStore := memkv.NewKvStorage()
 	store := &rangeSnapshotTraceStorage{KvStorage: rawStore}
 	t.Cleanup(func() { require.NoError(t, rawStore.Close()) })
+	metricRecorder := &compactMetricRecorder{}
 	b := NewBackend(store, Config{
 		Prefix: "/kubebrain/range-stream-spill", Identity: getStorageIdentity(),
 		EnableEtcdCompatibility: true, EnableCountIndex: true, CountIndexMaxKeys: 2,
-	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	}, metricRecorder).(*backend)
 	ctx := context.Background()
 	keys := make([][]byte, 303)
 	keys[0] = []byte("a")
@@ -632,8 +632,6 @@ func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T
 	t.Setenv("TMPDIR", spillDir)
 	tracked := &checkpointCountScanner{Scanner: b.scanner}
 	b.scanner = tracked
-	metricRecorder := &compactMetricRecorder{}
-	b.metricCli = metricRecorder
 	store.resetTrace()
 	stream, err := b.RangeStream(ctx, []byte("a"), []byte("b"), 304)
 	require.NoError(t, err)

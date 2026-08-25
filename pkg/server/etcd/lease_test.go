@@ -2361,10 +2361,11 @@ func TestLeaseGrantCleanupFailureRetainsReservationUntilRetrySucceeds(t *testing
 		_, pending = server.pendingLeases[leaseID]
 		return !pending
 	}, 5*time.Second, 10*time.Millisecond)
-	require.Contains(t, recorder.counters, recordedCounter{
+	counters := recorder.snapshotCounters()
+	require.Contains(t, counters, recordedCounter{
 		name: "lease.grant_cleanup", value: 1, tags: []metrics.T{metrics.Tag("outcome", "retry")},
 	})
-	require.Contains(t, recorder.counters, recordedCounter{
+	require.Contains(t, counters, recordedCounter{
 		name: "lease.grant_cleanup", value: 1, tags: []metrics.T{metrics.Tag("outcome", "success")},
 	})
 }

@@ -483,7 +483,7 @@ func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnarySer
 		return nil, rpctypes.ErrGRPCRequestTooLarge
 	}
 	handlerCtx := ctx
-	if isUnaryServerAttemptTimeoutMethod(info.FullMethod) {
+	if shouldApplyUnaryServerAttemptTimeout(info.FullMethod, req) {
 		var cancel context.CancelFunc
 		handlerCtx, cancel = withUnaryRequestTimeout(ctx)
 		defer cancel()
@@ -608,6 +608,26 @@ func isDedicatedConcurrencyMethod(method string) bool {
 func isUnaryServerAttemptTimeoutMethod(method string) bool {
 	_, ok := unaryServerAttemptTimeoutMethods[method]
 	return ok
+}
+
+func shouldApplyUnaryServerAttemptTimeout(method string, request any) bool {
+	if !isUnaryServerAttemptTimeoutMethod(method) {
+		return false
+	}
+	// KubeBrain validates every uncompacted durable transaction witness before
+	// reopening writes after a CORRUPT alarm. That work is intentionally stronger
+	// than upstream's constant-time alarm mutation and can exceed one ordinary
+	// raft-request attempt as history grows. Clipping it to unaryRpcTimeout makes
+	// every client retry restart the scan from the beginning, so a healthy cluster
+	// can become permanently impossible to disarm. Preserve the caller's deadline
+	// for this one operator recovery operation; all other Alarm/Auth attempts keep
+	// the normal server-side bound.
+	if method == etcdserverpb.Maintenance_Alarm_FullMethodName {
+		alarm, ok := request.(*etcdserverpb.AlarmRequest)
+		return !ok || alarm.GetAction() != etcdserverpb.AlarmRequest_DEACTIVATE ||
+			alarm.GetAlarm() != etcdserverpb.AlarmType_CORRUPT
+	}
+	return true
 }
 
 func grpcServiceFullMethods(services ...grpc.ServiceDesc) map[string]struct{} {

@@ -66,13 +66,19 @@ type blockingRevisionIndexRecheckStorage struct {
 
 type countingWitnessIndexBatchStorage struct {
 	storage.KvStorage
-	calls atomic.Int32
+	calls   atomic.Int32
+	maxKeys atomic.Int32
 }
 
 func (s *countingWitnessIndexBatchStorage) BatchGet(
 	ctx context.Context, keys [][]byte,
 ) (map[string][]byte, error) {
 	s.calls.Add(1)
+	for current := s.maxKeys.Load(); int32(len(keys)) > current; current = s.maxKeys.Load() {
+		if s.maxKeys.CompareAndSwap(current, int32(len(keys))) {
+			break
+		}
+	}
 	return s.KvStorage.(storage.BatchGetter).BatchGet(ctx, keys)
 }
 
@@ -417,10 +423,19 @@ func TestLeadershipRevisionIndexValidationBoundsSingleLargeTransactionBatch(t *t
 	_, _, err := b.TxnApply(ctx, ops, nil)
 	require.NoError(t, err)
 	store.calls.Store(0)
+	store.maxKeys.Store(0)
 
 	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
 	require.Equal(t, int32(4), store.calls.Load(),
 		"one large transaction must be split into bounded two-phase index/object batches")
+	require.LessOrEqual(t, store.maxKeys.Load(), int32(eventLogBatchGetSize))
+
+	store.calls.Store(0)
+	store.maxKeys.Store(0)
+	require.NoError(t, b.validatePersistedTxnWitnesses(ctx, true))
+	require.Equal(t, int32(6), store.calls.Load(),
+		"operator disarm validation must bound historical objects, indexes, and current objects")
+	require.LessOrEqual(t, store.maxKeys.Load(), int32(eventLogBatchGetSize))
 }
 
 func TestLeadershipRestartArmsCorruptForWitnessedIndexTargetObject(t *testing.T) {

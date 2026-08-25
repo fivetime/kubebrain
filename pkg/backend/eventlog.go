@@ -50,6 +50,11 @@ const (
 	// eventLogReplayConcurrency bounds the parallel object-key point reads that
 	// rebuild event values during a replay.
 	eventLogReplayConcurrency = 16
+	// eventLogBatchGetSize bounds each request sent to a BatchGetter. A single
+	// etcd transaction can contain an arbitrary number of operations; forwarding
+	// every referenced object version in one TiKV BatchGet can monopolize a
+	// region request and make CORRUPT disarm impossible under its RPC deadline.
+	eventLogBatchGetSize = 512
 	// eventLogCleanupBatch bounds one cleanup transaction.
 	eventLogCleanupBatch = 512
 )
@@ -508,21 +513,24 @@ func (b *backend) loadEventValues(ctx context.Context, keys [][]byte) (vals map[
 		return map[string][]byte{}, false, nil
 	}
 	if bg, ok := storage.FindCapability[storage.BatchGetter](b.kv); ok {
-		m, gerr := bg.BatchGet(ctx, keys)
-		if gerr != nil {
-			return nil, false, gerr
-		}
-		// Keys are deduplicated, so every requested key present == complete. A key
-		// missing from the map was unexpectedly GC'd: the window references a
-		// version that no longer exists and cannot be trusted.
-		if len(m) != len(keys) {
-			for _, k := range keys {
-				if _, found := m[string(k)]; !found {
+		vals = make(map[string][]byte, len(keys))
+		for start := 0; start < len(keys); start += eventLogBatchGetSize {
+			batch := keys[start:min(start+eventLogBatchGetSize, len(keys))]
+			m, gerr := bg.BatchGet(ctx, batch)
+			if gerr != nil {
+				return nil, false, gerr
+			}
+			// Keys are deduplicated, so every requested key present == complete. A
+			// missing key was unexpectedly GC'd and the window cannot be trusted.
+			for _, k := range batch {
+				value, found := m[string(k)]
+				if !found {
 					return nil, true, nil
 				}
+				vals[string(k)] = value
 			}
 		}
-		return m, false, nil
+		return vals, false, nil
 	}
 	// Fallback for backends without BatchGet (e.g. badger): bounded-concurrency
 	// per-key Get — the original replay path.
