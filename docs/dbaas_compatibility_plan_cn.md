@@ -61923,7 +61923,14 @@ mount。620 项四片提交后 Go/墙钟秒为 138.141/144.247、374.569/380.698
 拒绝，12 项 `auth can-i` 矩阵证明实例 Role 仅有目标 get/patch/get 与受 admission 约束的 create。一次性 namespace/RBAC/policy
 全部清理。620 项四片提交后 Go/墙钟秒为 123.645/129.741、356.454/362.577、225.825/231.951、375.868/381.955，全部通过。
 
-executor 仍固定零副本；其余 requester/worker live control-plane matrix、外部 KMS/认证 Secret 生命周期及三处
+提交 `ac8e6ae0` 又用标准 foundation→requester apply/check 关闭其余 live 控制面矩阵：foundation 在 repair-queue RBAC 前创建
+`kubebrain-repair-operations`；requester apply 从 2 副本 alert receiver manifest 只筛选 policy/binding 和最小 requester RBAC，
+不创建 workload，并等待全部 38 个 policy compiled exact-Deny 后才授予权限。Kind v1.36.1 的 18 identity 全量合法/负向
+Secret+Operation server dry-run 与 RBAC 矩阵通过；API/broker/archiver/executor 保持 0，alert receiver 未创建。旧 client-side
+manager 仅在确认测试 CRD 无实例后显式迁移，生产升级仍须独立审批。620 项四片提交后 Go/墙钟秒为
+134.699/140.814、367.435/373.553、227.896/234.072、378.059/384.167，全部通过。
+
+executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
 ### P2：运维兼容和长期验证

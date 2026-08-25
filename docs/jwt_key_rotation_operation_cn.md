@@ -209,5 +209,23 @@ StatefulSet get/patch、目标 Secret get 和 namespace 内 Secret create；Stat
 Pod get/exec 及跨 namespace patch 全部为 `no`。一次性 namespace、Role/Binding 和两组 policy/binding 已全部删除并确认无残留。
 620 项提交后四片 Go/墙钟秒为 123.645/129.741、356.454/362.577、225.825/231.951、375.868/381.955，全部通过。
 
+提交 `ac8e6ae0` 将上述 JWT policy 验收扩展到完整 Operation requester/worker 控制面。真实 Kind 干净队列暴露 foundation 先应用
+parameter broker repair-queue Role/Binding、却未创建 `kubebrain-repair-operations` 的确定性失败；foundation 现先以统一
+`app.kubernetes.io/part-of=kubebrain` label 创建主/repair 两个队列 namespace，再应用 policy、等待 compiled exact Deny，最后授予
+RBAC 与零副本 workload。
+
+requester guardrail 的 inventory/check 原本把 self-contained TiKV repair alert policy 计入 38 项，但 apply 不会安装它；同时 17 组
+requester RBAC 会在 policy observed/type-check 前立即授予。修复后从同一 alert receiver manifest 的 client-dry-run JSON stream 中只
+筛选两项 policy/binding，绝不创建其 2 副本 Deployment/Service/PDB/NetworkPolicy；待全部 38 项 policy
+`observedGeneration==generation`、无 expression warning、binding 精确 `Deny` 后，才应用 17 组 requester RBAC 与 alert identity 的
+SA/Role/RoleBinding 子集。
+
+Kubernetes v1.36.1 上标准 foundation apply、guardrail apply/check 最终通过，输出为
+`checked 38 compiled Deny policies and 18 requester RBAC/admission identities`；所有 Operation API/broker/archiver/executor 仍为
+0 副本，alert receiver Deployment 未创建。旧集群首次迁移遇到 client-side→server-side field ownership conflict；因测试 CRD 无
+Operation，live 验收显式 force-migrate 既有 foundation manager 后再运行标准脚本，生产升级不得无审计地照搬该动作。临时数据面
+namespace 已删除。620 项提交后四片 Go/墙钟秒为 134.699/140.814、367.435/373.553、227.896/234.072、
+378.059/384.167，全部通过。
+
 当前仍保持 disabled-by-default，不能直接规模化上线：外部 KMS key sourcing、认证 Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。

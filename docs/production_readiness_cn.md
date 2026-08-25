@@ -3903,8 +3903,16 @@ drift 拒绝。`auth can-i` 实测确认目标 StatefulSet get/patch、目标 Se
 Pod/exec/跨 namespace 均拒绝。一次性对象已完全清理。620 项四片提交后 Go/墙钟秒为
 123.645/129.741、356.454/362.577、225.825/231.951、375.868/381.955，全部通过。
 
-该 Deployment 仍必须保持 `replicas: 0`，直到 requester/worker 其余 live control-plane matrix、外部 KMS 与认证 Secret
-创建/轮换/撤权，以及三处三副本故障注入全部验收；当前不能把 API/模板存在等同于生产自动轮换 GREEN。
+提交 `ac8e6ae0` 修复 Operation control-plane 标准 apply/check 的两个真实断点：foundation 现在先创建主/repair 队列 namespace，
+不会在 parameter broker repair Role/Binding 处因 namespace 缺失中止；requester apply 从 alert receiver 权威 manifest 仅筛选
+policy/binding 与最小 requester SA/Role/RoleBinding，不会启动其 2 副本 workload，并在任何 requester RBAC 授予前等待全部 38 个
+policy compiled、无 warning、精确 Deny。Kind v1.36.1 标准链最终完成 38 policy/18 identity 的全量合法与负向 Secret/Operation
+server dry-run、create/get 和 list/watch/update/patch/delete 拒绝矩阵。所有受控 workload 保持零副本，alert receiver 未创建；
+临时 `kubebrain-system` 已删除。旧 client-side field manager 的迁移仅在确认 CRD 无 Operation 后显式执行，不能作为生产默认 force。
+620 项四片提交后 Go/墙钟秒为 134.699/140.814、367.435/373.553、227.896/234.072、378.059/384.167，全部通过。
+
+该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 与认证 Secret 创建/轮换/撤权，以及三处三副本故障注入全部验收；
+当前不能把 API/模板存在等同于生产自动轮换 GREEN。
 
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
 
