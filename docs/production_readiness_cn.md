@@ -8298,3 +8298,29 @@ live 执行先后暴露并修复了不能由 mock 证明的生产缺陷：
 由本地测试 Ed25519 私钥模拟 provider 签发，未调用真实外部 KMS；没有执行真实 promote/revoke、独立 lifecycle credential
 轮换或 Object Lock bucket 归档。etcd 对标 SHA 仍为 `/root/etcd` 的
 `5cd9f4ee13801e18825d661e5005ae599460bc3a`，这些 DBaaS 运维修复不改变 etcd client 可观察语义。
+
+### A5501：自动 quota 证据身份链与真实低配额差分
+
+自动 quota 专用 runner 原先能比较 NOSPACE、只读/删除放行、compact/defrag、disarm 与恢复写，却只把这些结果压缩为布尔值；
+成功响应没有绑定同一非零 cluster ID、非零 serving member 和单调 revision，`t.Cleanup` 也可能在 Kubernetes Service selector
+切换后清理另一实例。源码审计因此不能排除把两个 pristine disposable 实例的片段拼成假 GREEN，或原实例遗留 NOSPACE/测试键。
+
+提交 `6a9a49b8` 为完整 Status→Put→Range→Alarm→Delete→Compact→Disarm→恢复 Put 链增加有状态 response admission：允许同一
+cluster 内负载均衡到不同 member，但拒绝 nil/零 header、cluster 切换、revision 回退及成功 mutation 不推进；成功 Range 同时
+验证 Count/KVs/More、exact key/value 和 MVCC metadata，Put/Delete 拒绝未请求 PrevKV。cleanup 复用同一 admission，逐项验证
+AlarmList/Disarm/Delete/empty Range/最终无 NOSPACE，因而不能切到另一干净后端后误报清理成功。负向单测覆盖零身份、cluster
+替换、revision 回退和 mutation 停滞，普通与 race 各连续 20 轮通过；compat 模块全套 8.198 秒、vet 与 diff check 通过。
+
+首轮增强门禁在 reference etcd 上正确暴露测试自身的过严假设：upstream
+`server/etcdserver/api/v3rpc/maintenance.go::Defragment` 明确返回空 `DefragmentResponse{}`，其 Header 合法为 nil。最终实现保留并
+显式断言该例外，而不是把 KV header 规则机械施加到 maintenance no-op。
+
+真实 Kubernetes v1.36.1 上创建单副本 `quota-a5501`、1 KiB quota 和三个依次使用的全新 TiKV keyspace；server 使用
+`kubebrain:a5491-88b00806`（本轮只修改差分门禁），后端为独立 3×PD/3×TiKV v8.5.3。原始门禁 0.41 秒 GREEN；最终
+cleanup-admission 版本对 reference `5cd9f4ee13801e18825d661e5005ae599460bc3a` 与 TiKV-backed KubeBrain 完整差分 0.61 秒
+GREEN。最终 Pod UID `2e9ba678-2e7c-4384-bba2-6aa2d793263e`、Ready、restart 0，主 PD/TiKV 六 Pod 全 Ready、restart 0；
+测试键与 NOSPACE 均清空，临时 StatefulSet 和两个 Service 已删除。三个测试 keyspace 仅保留空业务状态及内部 metadata。
+
+639 项 inventory 为 `152/178/159/150`；精确提交后四片 Go/墙钟秒为
+135.867/142.175、369.855/376.170、225.168/231.470、382.219/388.471，全部通过。本项没有发现或声称新的 quota
+生产语义偏差；它关闭的是自动 NOSPACE 发布证据跨实例拼接和错误清理的门禁缺口。

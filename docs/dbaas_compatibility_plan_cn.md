@@ -62082,6 +62082,25 @@ Operation attempt/owner，陈旧 RV 不会误删。
 KMS；provider promote/revoke、lifecycle credential 轮换和 Object Lock 归档尚未 live 执行。etcd 对标基线保持
 `5cd9f4ee13801e18825d661e5005ae599460bc3a`。
 
+### A5501：自动 quota 差分证据不再跨实例拼接
+
+专用自动 quota runner 已能证明 NOSPACE 激活、alarm sticky、读/删放行、compact/defrag、disarm 和恢复写与 reference etcd
+一致，但旧测试只比较最终布尔结果。若 Kubernetes Service 在 Status、业务阶段或 `t.Cleanup` 之间切到另一 pristine 实例，两个
+cluster 的响应可能被拼成 GREEN，cleanup 也可能清理错误后端并让原实例遗留 alarm/测试键。
+
+提交 `6a9a49b8` 增加贯穿测试与 cleanup 的 response admission：首次成功 header 固定非零 cluster ID，后续允许 serving member
+随负载均衡变化但必须非零，revision 不得回退，Put/Delete/recovery Put 必须严格推进。Range、Put/Delete 和 Status 进一步验证
+canonical payload；AlarmList/Disarm、Compact 及 cleanup 全链复用同一 fence。upstream
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3rpc/maintenance.go::Defragment`
+合法返回 nil Header，增强门禁首次 RED 后已按该精确合同保留例外，未制造 KubeBrain 特有要求。
+
+零身份、cluster 替换、revision 回退和 mutation 停滞负例普通/race 各连续 20 轮通过，compat 全套 8.198 秒。Kubernetes
+v1.36.1 上以独立 1 KiB quota、全新 TiKV keyspace 和 3×PD/3×TiKV v8.5.3 执行最终差分，reference/KubeBrain 全生命周期
+0.61 秒 GREEN；目标 quota Pod 同 UID Ready、restart 0，主 PD/TiKV 六 Pod 全 Ready、restart 0，临时 StatefulSet/Service
+已删除。639 项四片仍为 `152/178/159/150`，精确提交后 Go/墙钟秒为
+135.867/142.175、369.855/376.170、225.168/231.470、382.219/388.471。本项未发现新的 quota runtime 偏差，只关闭
+发布证据身份与清理归属缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
