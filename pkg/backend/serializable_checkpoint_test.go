@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -115,6 +116,48 @@ type publicationValidatingCheckpointStorage struct {
 	publicationCalls      int
 	publicationStarts     [][]byte
 	publicationEnds       [][]byte
+}
+
+type blockingCheckpointReadinessStorage struct {
+	*checkpointTestStorage
+	armed   atomic.Bool
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+type blockingCheckpointProtectionStorage struct {
+	*checkpointTestStorage
+	armed   atomic.Bool
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingCheckpointProtectionStorage) ProtectSnapshot(
+	ctx context.Context, id string, ttl time.Duration, timestamp uint64,
+) (uint64, error) {
+	if !s.armed.Load() {
+		return s.checkpointTestStorage.ProtectSnapshot(ctx, id, ttl, timestamp)
+	}
+	s.once.Do(func() { close(s.entered) })
+	<-s.release // Deliberately ignore ctx to model a storage call racing cancellation.
+	return s.checkpointTestStorage.ProtectSnapshot(ctx, id, ttl, timestamp)
+}
+
+func (s *blockingCheckpointReadinessStorage) SnapshotReadyTimestamp(
+	ctx context.Context, start, end []byte,
+) (uint64, error) {
+	if !s.armed.Load() {
+		return s.checkpointTestStorage.SnapshotReadyTimestamp(ctx, start, end)
+	}
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-s.release:
+		return s.checkpointTestStorage.SnapshotReadyTimestamp(ctx, start, end)
+	}
 }
 
 func (s *publicationValidatingCheckpointStorage) ValidateSnapshotPublication(
@@ -272,6 +315,144 @@ func newCheckpointBackend(t *testing.T, store storage.KvStorage) *backend {
 	b.stopWorkers()
 	t.Cleanup(func() { require.NoError(t, b.Close()) })
 	return b
+}
+
+func TestSerializableCheckpointBackgroundRefreshWaitsForLeadershipFence(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), readyTimestamp: 300}
+	recorder := &compactMetricRecorder{}
+	b := NewBackend(store, Config{
+		Prefix: "/registry", Keyspace: "checkpoint-unfenced-test", Identity: "peer-a", EnableEtcdCompatibility: true,
+	}, recorder).(*backend)
+	b.stopWorkers()
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(17)
+
+	err := b.refreshSerializableCheckpoint(context.Background())
+	require.ErrorIs(t, err, storage.ErrKeyNotFound,
+		"an unconfigured background worker must load a leader-owned checkpoint, never create one")
+	_, loadErr := b.loadSerializableCheckpoint(context.Background())
+	require.ErrorIs(t, loadErr, storage.ErrKeyNotFound)
+	require.Empty(t, store.protections)
+}
+
+func TestSerializableCheckpointBackgroundRefreshWaitsForLeadershipLifecycle(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), readyTimestamp: 300}
+	recorder := &compactMetricRecorder{}
+	b := NewBackend(store, Config{
+		Prefix: "/registry", Keyspace: "checkpoint-no-term-test", Identity: "peer-a", EnableEtcdCompatibility: true,
+	}, recorder).(*backend)
+	b.stopWorkers()
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(17)
+	b.SetLeadershipFence(func() (uint64, bool) { return 1, true })
+
+	err := b.refreshSerializableCheckpoint(context.Background())
+	require.ErrorIs(t, err, storage.ErrKeyNotFound,
+		"fresh election state must not create until its exact lifecycle context is registered")
+	_, loadErr := b.loadSerializableCheckpoint(context.Background())
+	require.ErrorIs(t, loadErr, storage.ErrKeyNotFound)
+	require.Empty(t, store.protections)
+}
+
+func TestSerializableCheckpointActiveLeaderBackgroundRefreshPublishes(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), readyTimestamp: 300}
+	recorder := &compactMetricRecorder{}
+	b := NewBackend(store, Config{
+		Prefix: "/registry", Keyspace: "checkpoint-active-term-test", Identity: "peer-a", EnableEtcdCompatibility: true,
+	}, recorder).(*backend)
+	b.stopWorkers()
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(17)
+	b.SetLeadershipFence(func() (uint64, bool) { return 1, true })
+	require.NoError(t, b.ResumePhysicalCompaction(context.Background()))
+
+	require.NoError(t, b.refreshSerializableCheckpoint(context.Background()))
+	checkpoint, err := b.GetSerializableCheckpoint()
+	require.NoError(t, err)
+	require.Equal(t, uint64(17), checkpoint.Revision)
+	require.Equal(t, uint64(300), checkpoint.Timestamp)
+	loaded, err := b.loadSerializableCheckpoint(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, checkpoint.Timestamp, loaded.Timestamp)
+	require.NotEmpty(t, store.protections)
+}
+
+func TestSerializableCheckpointLeaderRefreshStopsWithLeadershipContext(t *testing.T) {
+	base := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), readyTimestamp: 300}
+	store := &blockingCheckpointReadinessStorage{
+		checkpointTestStorage: base,
+		entered:               make(chan struct{}),
+		release:               make(chan struct{}),
+	}
+	recorder := &compactMetricRecorder{}
+	b := NewBackend(store, Config{
+		Prefix: "/registry", Keyspace: "checkpoint-leadership-test", Identity: "peer-a", EnableEtcdCompatibility: true,
+	}, recorder).(*backend)
+	b.stopWorkers()
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(17)
+	var leading atomic.Bool
+	leading.Store(true)
+	b.SetLeadershipFence(func() (uint64, bool) { return 1, leading.Load() })
+	leaderCtx, stopLeader := context.WithCancel(context.Background())
+	b.compactCtx.Store(compactContextHolder{ctx: leaderCtx, termOwned: true})
+	store.armed.Store(true)
+
+	done := make(chan error, 1)
+	go func() { done <- b.refreshSerializableCheckpoint(context.Background()) }()
+	<-store.entered
+	leading.Store(false)
+	stopLeader()
+	select {
+	case err := <-done:
+		require.NoError(t, err, "normal leadership retirement must not become a refresh failure")
+	case <-time.After(250 * time.Millisecond):
+		close(store.release)
+		<-done
+		t.Fatal("serializable checkpoint refresh outlived its leadership context")
+	}
+	require.NotContains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "serializable.checkpoint.refresh_err", value: 1,
+	})
+	_, err := b.GetSerializableCheckpoint()
+	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable,
+		"a retired leader must not publish a local checkpoint")
+}
+
+func TestSerializableCheckpointRetiredLeaderSuppressesLateProtection(t *testing.T) {
+	base := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), readyTimestamp: 300}
+	store := &blockingCheckpointProtectionStorage{
+		checkpointTestStorage: base,
+		entered:               make(chan struct{}),
+		release:               make(chan struct{}),
+	}
+	recorder := &compactMetricRecorder{}
+	b := NewBackend(store, Config{
+		Prefix: "/registry", Keyspace: "checkpoint-late-protection-test", Identity: "peer-a", EnableEtcdCompatibility: true,
+	}, recorder).(*backend)
+	b.stopWorkers()
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(17)
+	var leading atomic.Bool
+	leading.Store(true)
+	b.SetLeadershipFence(func() (uint64, bool) { return 1, leading.Load() })
+	leaderCtx, stopLeader := context.WithCancel(context.Background())
+	b.compactCtx.Store(compactContextHolder{ctx: leaderCtx, termOwned: true})
+	store.armed.Store(true)
+
+	done := make(chan error, 1)
+	go func() { done <- b.refreshSerializableCheckpoint(context.Background()) }()
+	<-store.entered
+	leading.Store(false)
+	stopLeader()
+	close(store.release)
+	require.NoError(t, <-done)
+	require.NotContains(t, recorder.snapshot(), compactMetricRecord{
+		kind: "counter", name: "serializable.checkpoint.refresh_err", value: 1,
+	})
+	_, err := b.GetSerializableCheckpoint()
+	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable,
+		"a late protection success must not publish follower-owned availability")
 }
 
 func TestSerializableCheckpointBindsRevisionCompactAndAuthAtSnapshot(t *testing.T) {

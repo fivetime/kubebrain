@@ -214,6 +214,35 @@ func (b *backend) leadingFresh() bool {
 	return fresh
 }
 
+func (b *backend) leadershipFenceState() (configured, fresh bool) {
+	h, _ := b.fenceFn.Load().(fenceHolder)
+	if h.fn == nil {
+		return false, false
+	}
+	_, fresh = h.fn()
+	return true, fresh
+}
+
+// validateLeadershipEpoch is the side-effect-free counterpart to fenceAdmit.
+// Maintenance that has already completed its shared-storage work uses it before
+// publishing process-local state, where incrementing a write-rejection counter
+// would be misleading but accepting a retired term would still be unsafe.
+func (b *backend) validateLeadershipEpoch(ctx context.Context) error {
+	epoch, admitted := leadershipEpochFromContext(ctx)
+	if !admitted {
+		return nil
+	}
+	h, _ := b.fenceFn.Load().(fenceHolder)
+	if h.fn == nil {
+		return nil
+	}
+	current, fresh := h.fn()
+	if !fresh || current != epoch {
+		return ErrLeadershipFenced
+	}
+	return nil
+}
+
 // fenceAdmit is the write fence's in-memory re-check, called immediately before
 // a data batch is opened. If a fence is registered and the write carries
 // an admit-time epoch, it re-loads the current leadership epoch/freshness and

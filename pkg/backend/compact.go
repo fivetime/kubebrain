@@ -34,7 +34,8 @@ import (
 )
 
 type compactContextHolder struct {
-	ctx context.Context
+	ctx       context.Context
+	termOwned bool
 }
 
 func (b *backend) maintenanceContext() context.Context {
@@ -43,6 +44,11 @@ func (b *backend) maintenanceContext() context.Context {
 		return holder.ctx
 	}
 	return context.Background()
+}
+
+func (b *backend) leadershipMaintenanceContextReady() bool {
+	holder, _ := b.compactCtx.Load().(compactContextHolder)
+	return holder.ctx != nil && holder.termOwned
 }
 
 func (b *backend) maintenanceContextWithShutdown(
@@ -494,7 +500,7 @@ func (b *backend) ResumePhysicalCompaction(ctx context.Context) error {
 	// term. Every later background scan uses this lifecycle instead of an
 	// immortal context, preventing old and new leaders from scanning the shared
 	// TiKV keyspace concurrently.
-	b.compactCtx.Store(compactContextHolder{ctx: ctx})
+	b.compactCtx.Store(compactContextHolder{ctx: ctx, termOwned: true})
 	revision, err := b.GetCompactRevisionFresh(ctx)
 	if err != nil {
 		return err

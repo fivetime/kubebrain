@@ -358,6 +358,12 @@ func (b *backend) protectSerializableCheckpoint(ctx context.Context, c Serializa
 			return err
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := b.validateLeadershipEpoch(ctx); err != nil {
+		return err
+	}
 	if current == nil || current.Timestamp != c.Timestamp {
 		b.serializableCheckpointSlot = slot
 		b.serializableCheckpointSwitchedAt = now
@@ -530,17 +536,38 @@ func (b *backend) runSerializableCheckpoint(workerCtx context.Context) {
 
 func (b *backend) refreshSerializableCheckpoint(ctx context.Context) error {
 	defer b.emitSerializableCheckpointMetrics(time.Now())
-	ctx, cancel := context.WithTimeout(ctx, unaryRpcTimeout)
+	workerCtx := ctx
+	configured, leading := b.leadershipFenceState()
+	leaderRefresh := configured && leading && b.leadershipMaintenanceContextReady()
+	var maintenanceCtx context.Context
+	var cancel context.CancelFunc
+	if leaderRefresh {
+		ctx, maintenanceCtx, cancel = b.maintenanceContextWithShutdown(workerCtx, unaryRpcTimeout)
+		var err error
+		ctx, err = b.withCurrentLeadershipEpoch(ctx)
+		if err != nil {
+			cancel()
+			return nil
+		}
+	} else {
+		ctx, cancel = context.WithTimeout(workerCtx, unaryRpcTimeout)
+	}
 	defer cancel()
 	var c SerializableCheckpoint
 	var err error
-	if b.leadingFresh() {
+	if leaderRefresh {
 		c, err = b.createSerializableCheckpoint(ctx)
 	} else {
 		c, err = b.loadSerializableCheckpoint(ctx)
 	}
+	if workerCtx.Err() != nil || (leaderRefresh && maintenanceCtx.Err() != nil) || errors.Is(err, ErrLeadershipFenced) {
+		return nil
+	}
 	if err == nil {
 		err = b.protectSerializableCheckpoint(ctx, c)
+	}
+	if workerCtx.Err() != nil || (leaderRefresh && maintenanceCtx.Err() != nil) || errors.Is(err, ErrLeadershipFenced) {
+		return nil
 	}
 	if err != nil && !errors.Is(err, storage.ErrKeyNotFound) && !errors.Is(err, ErrSerializableCheckpointUnavailable) {
 		b.metricCli.EmitCounter("serializable.checkpoint.refresh_err", 1)
