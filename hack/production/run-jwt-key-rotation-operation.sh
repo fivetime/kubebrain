@@ -132,12 +132,22 @@ a_gate="$state_dir/${name}.phase-a.json"; b_gate="$state_dir/${name}.phase-b.jso
 publisher_common=(--operation-id "$operation_id" --instance "$instance" --namespace "$namespace" --statefulset "$statefulset" --key-secret "$key_secret" --old-key-field "$old_field" --new-key-field "$new_field" --old-key-source "$old_source" --new-key-source "$new_source" --old-key-sha256 "$old_sha" --new-key-sha256 "$new_sha" --key-volume "$key_volume" --key-mount-dir "$key_mount" --sign-method "$sign_method" --expected-replicas "$replicas" --jwt-ttl-seconds "$ttl")
 gate_common=("ROTATION_ID=$operation_id" "INSTANCE=$instance" "STATE_DIR=$state_dir" "KUBEBRAIN_NAMESPACE=$namespace" "KUBEBRAIN_STATEFULSET=$statefulset" "KEY_SECRET=$key_secret" "OLD_KEY_FIELD=$old_field" "NEW_KEY_FIELD=$new_field" "ENDPOINTS=$endpoints" "OLD_TOKEN_FILE=$old_token" "JWT_TTL_SECONDS=$ttl" "MAX_CLOCK_SKEW_SECONDS=$skew" "EXPECTED_REPLICAS=$replicas" "PROBE_RANGE_KEY=$probe_range" "${gate_tls_env[@]}")
 
-run_or_retry "phase A publish" "$PUBLISHER_COMMAND" --phase phase-a --receipt-output "$a_publish" "${publisher_common[@]}"
-issue_token "$old_token" old
-run_or_retry "phase A gate" env "${gate_common[@]}" ACTION=phase-a "$ROTATION_COMMAND"
-run_or_retry "phase B publish" "$PUBLISHER_COMMAND" --phase phase-b --previous-receipt "$a_publish" --receipt-output "$b_publish" "${publisher_common[@]}"
-issue_token "$b_token" phase-b-new
-run_or_retry "phase B gate" env "${gate_common[@]}" NEW_TOKEN_FILE="$b_token" ACTION=phase-b "$ROTATION_COMMAND"
+if [[ -e "$a_gate" ]]; then
+  secure_file "$a_publish" "$MAX_EVIDENCE_BYTES" && secure_file "$a_gate" "$MAX_EVIDENCE_BYTES" && secure_file "$old_token" 1048576 || retry "completed phase A evidence is missing or unsafe"
+else
+  [[ ! -e "$b_publish" && ! -e "$b_gate" && ! -e "$c_publish" && ! -e "$c_gate" ]] || retry "later JWT rotation evidence exists without a completed phase A"
+  run_or_retry "phase A publish" "$PUBLISHER_COMMAND" --phase phase-a --receipt-output "$a_publish" "${publisher_common[@]}"
+  issue_token "$old_token" old
+  run_or_retry "phase A gate" env "${gate_common[@]}" ACTION=phase-a "$ROTATION_COMMAND"
+fi
+if [[ -e "$b_gate" ]]; then
+  secure_file "$b_publish" "$MAX_EVIDENCE_BYTES" && secure_file "$b_gate" "$MAX_EVIDENCE_BYTES" && secure_file "$b_token" 1048576 || retry "completed phase B evidence is missing or unsafe"
+else
+  [[ ! -e "$c_publish" && ! -e "$c_gate" ]] || retry "later JWT rotation evidence exists without a completed phase B"
+  run_or_retry "phase B publish" "$PUBLISHER_COMMAND" --phase phase-b --previous-receipt "$a_publish" --receipt-output "$b_publish" "${publisher_common[@]}"
+  issue_token "$b_token" phase-b-new
+  run_or_retry "phase B gate" env "${gate_common[@]}" NEW_TOKEN_FILE="$b_token" ACTION=phase-b "$ROTATION_COMMAND"
+fi
 secure_file "$a_gate" "$MAX_EVIDENCE_BYTES" && secure_file "$b_gate" "$MAX_EVIDENCE_BYTES" || retry "phase A/B gate receipt is missing or unsafe"
 "$JQ" -e --arg operation "$operation_id" --arg instance "$instance" --argjson endpoints "$endpoints_json" --arg a_sha "$(digest "$a_gate")" --arg old_token "$(digest "$old_token")" --arg new_token "$(digest "$b_token")" --argjson ttl "$ttl" --argjson skew "$skew" '
   keys==["all_members_accept_new","all_members_accept_old","earliest_retirement_at_unix","endpoints","format","instance","jwt_ttl_seconds","max_clock_skew_seconds","new_token_sha256","observed_at_unix","old_token_sha256","phase_a_sha256","rotation_id","secret","statefulset"] and

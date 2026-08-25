@@ -88,6 +88,39 @@ func TestPublisherLifecycleAndIdempotentTakeover(t *testing.T) {
 	require.ErrorContains(t, RollbackPhaseCToB(t.Context(), f, cOptions), "receipted phase C")
 }
 
+func TestPublisherResumesIncompleteManagedRolloutAfterTakeover(t *testing.T) {
+	f, options := newFixture(t)
+	a, err := Run(t.Context(), f, options, fixedNow(100))
+	require.NoError(t, err)
+
+	b := options
+	b.Phase = "phase-b"
+	b.PreviousReceipt = options.ReceiptOutput
+	b.ReceiptOutput = filepath.Join(f.dir, "phase-b.json")
+	desired, _ := desiredAuthArgs(b)
+	metadata := f.statefulSet["metadata"].(map[string]any)
+	metadata["generation"] = metadata["generation"].(float64) + 1
+	metadata["resourceVersion"] = "partial-b"
+	container := nested(f.statefulSet, "spec", "template", "spec")["containers"].([]any)[0].(map[string]any)
+	container["args"].([]any)[0] = desired
+	annotations := nested(f.statefulSet, "spec", "template", "metadata")["annotations"].(map[string]any)
+	annotations["dbaas.kubebrain.io/jwt-key-rotation-phase"] = "phase-b"
+	annotations["dbaas.kubebrain.io/jwt-key-rotation-operation"] = b.OperationID
+	annotations["dbaas.kubebrain.io/jwt-key-secret-sha256"] = a.SecretDataSHA256
+	status := f.statefulSet["status"].(map[string]any)
+	status["updatedReplicas"] = float64(1)
+	status["currentRevision"] = "rev-phase-a"
+	status["updateRevision"] = "rev-phase-b"
+	f.statefulSetGets = 0
+	f.completeRolloutAtGet = 2
+
+	receipt, err := Run(t.Context(), f, b, fixedNow(200))
+	require.NoError(t, err)
+	require.True(t, receipt.ReconciledExisting)
+	require.Equal(t, "rev-phase-b", receipt.AfterRevision)
+	require.Equal(t, 1, f.patches, "takeover must wait for the in-flight rollout without repatching")
+}
+
 func TestPublisherFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -228,11 +261,13 @@ func TestPublisherRejectsDriftAndNonCanonicalReceipt(t *testing.T) {
 }
 
 type fakeKube struct {
-	dir                 string
-	statefulSet, secret map[string]any
-	oldKey, newKey      []byte
-	creates, patches    int
-	patchErr            error
+	dir                  string
+	statefulSet, secret  map[string]any
+	oldKey, newKey       []byte
+	creates, patches     int
+	patchErr             error
+	statefulSetGets      int
+	completeRolloutAtGet int
 }
 
 func newFixture(t *testing.T) (*fakeKube, Options) {
@@ -275,6 +310,15 @@ func (f *fakeKube) Get(_ context.Context, _, resource, _ string) ([]byte, bool, 
 		data, _ := json.Marshal(f.secret)
 		return data, true, nil
 	case "statefulset":
+		f.statefulSetGets++
+		if f.completeRolloutAtGet > 0 && f.statefulSetGets == f.completeRolloutAtGet {
+			metadata := f.statefulSet["metadata"].(map[string]any)
+			status := f.statefulSet["status"].(map[string]any)
+			status["observedGeneration"] = metadata["generation"]
+			status["readyReplicas"] = float64(3)
+			status["updatedReplicas"] = float64(3)
+			status["currentRevision"] = status["updateRevision"]
+		}
 		data, _ := json.Marshal(f.statefulSet)
 		return data, true, nil
 	default:

@@ -160,7 +160,8 @@ func Run(ctx context.Context, kube Kubernetes, o Options, now func() time.Time) 
 	if err := validateStateBinding(current, o); err != nil {
 		return Receipt{}, err
 	}
-	if !rolloutComplete(current.object, o.ExpectedReplicas) {
+	managedDesired := current.authArg == desired && phaseMetadataMatches(current.object, o, secretDigest)
+	if !rolloutComplete(current.object, o.ExpectedReplicas) && !managedDesired {
 		return Receipt{}, errors.New("StatefulSet must be fully rolled out before publishing a JWT phase")
 	}
 	if o.Phase != "phase-a" && current.object.Metadata.UID != previous.StatefulSetUID {
@@ -190,7 +191,7 @@ func Run(ctx context.Context, kube Kubernetes, o Options, now func() time.Time) 
 	if o.Phase != "phase-a" {
 		beforeRevision = previous.AfterRevision
 	}
-	reconciledExisting := current.authArg == desired && phaseMetadataMatches(current.object, o, secretDigest)
+	reconciledExisting := managedDesired
 	if !reconciledExisting {
 		patch, err := buildPatch(current, desired, secretDigest, o)
 		if err != nil {

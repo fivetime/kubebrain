@@ -112,6 +112,12 @@ if [[ ! -e "$output" ]]; then (umask 077; printf '%s\n' "$body" >"$output"); fi
 	require.NoError(t, err, string(output))
 	require.Equal(t, firstReceipt, mustRead(t, receipt))
 	require.Equal(t, 2, strings.Count(string(mustRead(t, logPath)), "--action succeed"))
+	require.Equal(t, []string{
+		"publish:phase-a", "issue:" + name + ".old.jwt",
+		"publish:phase-b", "issue:" + name + ".phase-b-new.jwt",
+		"publish:phase-c", "issue:" + name + ".phase-c-new.jwt",
+		"publish:phase-c",
+	}, strings.Split(strings.TrimSpace(string(mustRead(t, eventLog))), "\n"), "a takeover must not replay completed phase A or B side effects")
 
 	output, err = runProductionRunnerCommand(t, "run-jwt-key-rotation-operation.sh", append(baseEnv,
 		"CLAIM_ATTEMPT=3", "FAIL_HEARTBEAT=true", "REAL_SLEEP=true", "CONFIRM_JWT_ROTATION_FAULT_DRILL=yes",
