@@ -6,7 +6,7 @@ WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; REQUEST_ID="${REQUEST_ID:-
 OLD_KEY_VERSION_ID="${OLD_KEY_VERSION_ID:-}"; NEW_KEY_VERSION_ID="${NEW_KEY_VERSION_ID:-}"
 KMS_PROVIDER_ENDPOINT="${KMS_PROVIDER_ENDPOINT:-}"; KMS_PROVIDER_TOKEN_FILE="${KMS_PROVIDER_TOKEN_FILE:-}"; KMS_PROVIDER_CA_FILE="${KMS_PROVIDER_CA_FILE:-}"
 KMS_EXPORT_CLIENT="${KMS_EXPORT_CLIENT:-kubebrain-jwt-kms-export-client}"; KMS_RECEIPT_PUBLIC_KEY="${KMS_RECEIPT_PUBLIC_KEY:-}"
-REQUEST_COMMAND="${REQUEST_COMMAND:-${ROOT_DIR}/hack/production/request-jwt-key-rotation.sh}"
+REQUEST_COMMAND="${ROOT_DIR}/hack/production/request-jwt-key-rotation.sh"
 
 die() { echo "$*" >&2; exit 1; }
 resolve() { if [[ "$1" == */* ]]; then [[ -f "$1" && -x "$1" ]] || return 1; printf '%s' "$1"; else command -v "$1"; fi; }
@@ -14,7 +14,7 @@ resolve() { if [[ "$1" == */* ]]; then [[ -f "$1" && -x "$1" ]] || return 1; pri
 [[ "$WORK_DIR" == /* && -d "$WORK_DIR" && ! -L "$WORK_DIR" && "$(realpath -e -- "$WORK_DIR")" == "$WORK_DIR" ]] || die "WORK_DIR must be a canonical absolute non-symlink directory"
 [[ -n "$KMS_PROVIDER_ENDPOINT" && -n "$KMS_PROVIDER_TOKEN_FILE" && -n "$KMS_PROVIDER_CA_FILE" && -n "$KMS_RECEIPT_PUBLIC_KEY" ]] || die "KMS provider endpoint, token, CA, and receipt trust key are required"
 KMS_EXPORT_CLIENT="$(resolve "$KMS_EXPORT_CLIENT")" || die "KMS_EXPORT_CLIENT must be executable"
-REQUEST_COMMAND="$(resolve "$REQUEST_COMMAND")" || die "REQUEST_COMMAND must be executable"
+REQUEST_COMMAND="$(resolve "$REQUEST_COMMAND")" || die "the fixed JWT rotation requester must be executable"
 umask 077
 capture="$(mktemp -d "${WORK_DIR}/.jwt-kms-export.XXXXXXXX")"; trap 'rm -rf -- "$capture"' EXIT INT TERM
 old_material="$capture/jwt-old-key"; new_material="$capture/jwt-new-key"

@@ -39,9 +39,11 @@ verify_inventory() {
   expected="$(printf 'kubebrain-%s-requester-rbac.yaml\n' "${requesters[@]}" | sort)"
   actual="$(find "$DEPLOY_DIR" -maxdepth 1 -type f -name 'kubebrain-*-requester-rbac.yaml' -printf '%f\n' | sort)"
   [[ "$actual" == "$expected" ]] || die "requester RBAC inventory drifted; update apply-operation-requester-guardrails.sh"
-  expected="$({ printf 'request-%s.sh\n' "${requesters[@]}"; printf '%s\n' request-tikv-transaction-repair.sh; } | sort)"
+  expected="$({ printf 'request-%s.sh\n' "${requesters[@]}"; printf '%s\n' request-tikv-transaction-repair.sh request-jwt-key-rotation-from-kms.sh; } | sort)"
   actual="$(find "${ROOT_DIR}/hack/production" -maxdepth 1 -type f -name 'request-*.sh' -printf '%f\n' | sort)"
   [[ "$actual" == "$expected" ]] || die "requester executable inventory drifted; add its fail-closed guardrail before release"
+  [[ -x "${ROOT_DIR}/hack/production/request-jwt-key-rotation-from-kms.sh" ]] || die "KMS-backed JWT requester entrypoint is not executable"
+  grep -Fq 'REQUEST_COMMAND="${ROOT_DIR}/hack/production/request-jwt-key-rotation.sh"' "${ROOT_DIR}/hack/production/request-jwt-key-rotation-from-kms.sh" || die "KMS-backed JWT requester must delegate to the fixed guarded requester"
   for requester in "${requesters[@]}"; do
     admission="${DEPLOY_DIR}/kubebrain-${requester}-requester-admission.yaml"
     rbac="${DEPLOY_DIR}/kubebrain-${requester}-requester-rbac.yaml"
