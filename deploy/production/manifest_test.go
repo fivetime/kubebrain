@@ -2156,7 +2156,10 @@ func TestJWTKeyRotationPublisherAdmissionIsFailClosedAndFieldRestricted(t *testi
 			for fragment := range map[string]struct{}{
 				"oldObject.spec.replicas": {}, "oldObject.spec.selector": {}, "oldObject.spec.updateStrategy": {},
 				"oldObject.spec.volumeClaimTemplates": {}, "c.name != \"kubebrain\"": {}, "!a.startsWith(\"--auth-token=\")": {},
-				"jwt-key-secret-sha256": {}, "annotations.all(k, v": {},
+				"jwt-key-secret-sha256": {}, "jwt-active-key-sha256": {}, "annotations.all(k, v": {},
+				"newChangedVolumes.size() == 1": {}, "oldChangedVolumes.size() == 1": {},
+				"variables.newOperation + \"-keys\"": {}, "variables.oldOperation + \"-keys\"": {},
+				`== "phase-a"`: {}, `== "phase-c"`: {},
 			} {
 				require.Contains(t, text, fragment)
 			}
