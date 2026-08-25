@@ -41,7 +41,7 @@
   "receipt_output": "/var/lib/kubebrain-operation/jwt-key-rotate-<id>.operation.receipt.json",
   "kubebrain_namespace": "instance-a",
   "kubebrain_statefulset": "kubebrain",
-  "key_secret": "kubebrain-jwt-rotation",
+  "key_secret": "jwt-key-rotate-<request-binding-20-hex>-keys",
   "old_key_field": "old-key",
   "new_key_field": "new-key",
   "old_key_source": "/var/lib/kubebrain-operation/keys/old",
@@ -170,6 +170,18 @@ precondition 把 C 或部分 C 收敛回 B；已有 C receipt 一律拒绝回滚
 重新确认 TTL 与在线状态。包级 lifecycle、幂等、receipted-C 拒绝、race/vet 通过；618 项四片提交后 Go/墙钟秒为
 131.751/137.834、358.316/364.426、224.576/230.654、371.212/377.320，全部通过。
 
-当前仍保持 disabled-by-default，不能直接规模化上线：每个实例的精确 StatefulSet/Secret 数据面 Role/RoleBinding 与 publisher
-admission 尚未生成，token issuer/KMS 合同尚无真实实现与轮换撤权演练，三处真实
+提交 `cafc9bcf` 固定 key Secret 名为 `<operation-id>-keys`，requester 不再接受调用者指定 Secret，runner 再次校验该绑定。
+集群级 fail-closed publisher admission 要求 dedicated instance namespace 与专用 executor identity；Secret CREATE 必须是 operation
+绑定的 immutable、精确双字段对象；StatefulSet UPDATE 冻结 scale/selector/strategy/claims、Pod metadata、volume/init/sidecar、
+identity/placement/network/security policy 以及 KubeBrain image/command/ports/env/mount/resources/probes/lifecycle，只允许唯一
+`--auth-token` 参数和三项受管 annotation 变化。实例 Role renderer 只授予目标 StatefulSet get/patch、目标 Secret get，以及受上述
+admission 约束的 Secret create，不授予 list/watch/update/delete/exec 或跨 namespace 权限。operation 完成并归档后，平台必须删除
+该 operation-labeled Role/RoleBinding，避免专用 ServiceAccount 累积历史实例授权。
+
+publisher admission 已纳入 requester guardrail 的 apply 顺序和 compiled-policy check，静态 manifest、模拟 apply/check、确定性 RBAC
+渲染及未绑定 Secret 拒绝测试通过。代码提交前 inventory 为 620 项、四片 144/171/155/150；提交后四片 Go/墙钟秒为
+134.441/140.577、377.166/383.298、235.153/241.317、395.412/401.558，全部通过。真实 API server 上的 CEL
+type-check、server-side dry-run 和 `auth can-i` 仍必须随 live 演练留证，不能用本地 YAML 解码替代。
+
+当前仍保持 disabled-by-default，不能直接规模化上线：token issuer/KMS 合同尚无真实实现与轮换撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。

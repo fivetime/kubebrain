@@ -3885,8 +3885,13 @@ receipt；attempt 接管和 heartbeat fencing 测试通过。618 项 production 
 binding 和双 JSON Patch precondition 在 heartbeat 下恢复 overlap；已有 C receipt 或任何漂移均拒绝。618 项生产测试四片提交后
 全部通过。
 
-该 Deployment 仍必须保持 `replicas: 0`，直到实例级 StatefulSet/Secret 数据面 Role/RoleBinding 与 publisher admission、真实
-token issuer/KMS 和三处三副本故障注入全部验收；当前不能把 API/模板存在等同于生产自动轮换 GREEN。
+提交 `cafc9bcf` 将 key Secret 固定为 operation-derived 名称，并增加 dedicated namespace/executor publisher admission：Secret
+只能创建 operation-bound immutable 双字段对象，StatefulSet 除唯一 auth 参数和三项受管 annotation 外的 scale、拓扑、Pod 与
+容器运行字段均冻结。实例 renderer 只授予目标 StatefulSet get/patch、目标 Secret get 和 admission 约束下的 Secret create，
+归档后必须删除 operation-labeled Role/RoleBinding。620 项生产测试四片提交后全部通过。
+
+该 Deployment 仍必须保持 `replicas: 0`，直到真实 API server CEL/type-check、server-side dry-run/auth matrix、真实 token issuer/KMS
+和三处三副本故障注入全部验收；当前不能把 API/模板存在等同于生产自动轮换 GREEN。
 
 2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
 

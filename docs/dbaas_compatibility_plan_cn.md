@@ -61904,7 +61904,13 @@ binding 全部不变的前提下以双 precondition 恢复 overlap B；runner �
 已有 C receipt、漂移或并发 patch 均 fail closed。618 项四片提交后 Go/墙钟秒为
 131.751/137.834、358.316/364.426、224.576/230.654、371.212/377.320，全部通过。
 
-executor 仍固定零副本；实例级数据面 Role/RoleBinding/publisher admission、真实 token issuer/KMS 以及三处
+提交 `cafc9bcf` 进一步关闭静态数据面授权缺口：key Secret 名由 operation ID 唯一派生；publisher admission 绑定 dedicated
+namespace/专用 executor，限制 immutable 双字段 Secret CREATE，并冻结 StatefulSet 除唯一 auth 参数和三项 annotation 外的
+身份、拓扑、Pod 与容器字段。renderer 生成 operation/instance/StatefulSet/Secret 精确 Role/RoleBinding，不含 delete/exec/
+跨 namespace 权限，并要求归档后由平台删除。620 项四片提交后 Go/墙钟秒为
+134.441/140.577、377.166/383.298、235.153/241.317、395.412/401.558，全部通过。
+
+executor 仍固定零副本；真实 API server CEL/type-check 与 auth matrix、真实 token issuer/KMS 以及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
 ### P2：运维兼容和长期验证
