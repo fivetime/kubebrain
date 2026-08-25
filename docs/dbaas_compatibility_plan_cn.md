@@ -61981,6 +61981,13 @@ blob + Object Lock，并在返回成功前 exact-read 唯一远端版本逐字�
 Go/墙钟秒为 131.387/137.465、359.730/365.805、230.512/236.605、376.890/382.983，全部通过。真实 bucket/provider 演练和
 独立 lifecycle credential 部署/轮换仍开放，因此不能把本项代码证据等同于生产归档证据。
 
+提交 `46c6a393` 建立 lifecycle credential 的隔离 provisioning 边界：版本化 immutable 四字段 Secret 位于独立 namespace，避免
+operation requester 的动态参数 Secret get 权限横向读取 KMS write token；admission 同时匹配 old/new credential label，拒绝
+UPDATE 移除 label 后改写 data。provisioner 校验 HTTPS origin、0600 single-link token/CA/key、自签 CA 和 Ed25519 trust key，
+并要求 lifecycle/requester/worker 对该 namespace 的 Secret 所有读写动词均为明确 Deny。629 项四片提交后 Go/墙钟秒为
+127.473/133.644、364.701/370.806、229.163/235.298、387.853/393.960，全部通过。真实 Kubernetes apply/type-check、provider
+readiness、active credential CAS 和旧 token revoke 尚未完成，本项仍处于 credential rotation 的 foundation 阶段。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 

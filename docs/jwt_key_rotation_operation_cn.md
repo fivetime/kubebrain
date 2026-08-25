@@ -333,6 +333,15 @@ version 和不可覆盖 receipt；随后用 `blob-read` 枚举并精确读取唯
 Go/墙钟秒为 131.387/137.465、359.730/365.805、230.512/236.605、376.890/382.983，全部通过。该提交证明代码路径，尚未证明
 真实 provider mutation、真实 Object Lock bucket 写入/保留、独立 lifecycle credential 的部署与轮换；这些 live 门禁仍开放。
 
+提交 `46c6a393` 增加独立 lifecycle credential 基础。凭据不再放入 `kubebrain-operations`（该 namespace 的 requester 因动态参数
+Secret 仍有较宽 get 权限），而是进入专用 `kubebrain-kms-lifecycle` namespace；lifecycle、requester、worker 三个 ServiceAccount
+对该 namespace 的 Secret get/list/watch/create/update/patch/delete 均必须明确返回 `no`，运行时只允许 kubelet 对未来受审计 Job
+挂载精确版本。版本化 Secret 固定四字段、immutable Opaque、不可覆盖，credential label 在 UPDATE 中也不可移除；provisioner 在
+API 写入前验证 HTTPS origin、0600 single-link token/CA/trust key、自签 CA trust anchor 和 Ed25519 公钥。629 项四片提交后
+Go/墙钟秒为 127.473/133.644、364.701/370.806、229.163/235.298、387.853/393.960，全部通过。当前仍缺真实集群 policy
+type-check/apply、真实 Secret provisioning、新 credential provider readiness、激活 CAS 与旧 credential 撤权，不能把 foundation
+存在解释为已完成轮换。
+
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。

@@ -3965,6 +3965,13 @@ version 和 receipt 合同，并立即 exact-read 后逐字节比较；验签失
 Go/墙钟秒为 131.387/137.465、359.730/365.805、230.512/236.605、376.890/382.983，全部通过。真实 KMS provider 和真实
 Object Lock bucket 尚未执行本链，lifecycle credential provisioning/rotation 也未完成，故仍不能标记生产 GREEN。
 
+提交 `46c6a393` 将 lifecycle credential 从 requester 可读的 operation namespace 隔离到专用 namespace，并新增版本化 immutable
+Secret admission/provisioning 基础。新旧 object 任一带 credential label 时 policy 都参与 UPDATE，故不能通过同次移除 label 绕过
+data immutability；固定四字段之外一律拒绝。provisioner 要求新 credential ID，验证 token/CA/Ed25519 trust key 的文件边界与格式，
+并检查 lifecycle/requester/worker 身份对该 namespace 的 Secret 全动词均为 Deny。629 项四片提交后 Go/墙钟秒为
+127.473/133.644、364.701/370.806、229.163/235.298、387.853/393.960，全部通过。尚未取得真实 apiserver CEL type-check、
+credential provision、provider readiness、激活和旧 token revoke 证据，因此部署/轮换门禁仍开放。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。
