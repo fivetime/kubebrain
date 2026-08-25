@@ -61951,6 +61951,13 @@ symlink/权限越界及验证失败仍调用 Kubernetes 均有负测。621 项�
 133.081/139.209、364.557/370.752、231.373/237.505、381.369/387.503，全部通过。外部 provider 调用、promotion/revoke 动作与
 签名终态 receipt 仍开放。
 
+提交 `83f22d48` 新增严格 HTTPS KMS export client 和 KMS-backed JWT requester wrapper：固定 POST API、短期 Bearer+pinned CA、
+禁止 redirect、严格 JSON/size/timeout、0600 fsync/no-clobber pair publish；wrapper 顺序 export 两个 version，再进入既有签名验证与
+Operation 提交流程，退出删除临时明文且不接受直接材料混用。首次四分片全部因新 requester 未登记而 fail closed；`0d12301d`
+补齐权威 inventory，并固定 wrapper 只能委托正式 JWT requester。623 项四片提交后 Go/墙钟秒为
+137.219/143.410、361.246/367.394、235.131/241.288、380.005/386.233，全部通过。external KMS export 已从离线输入推进为
+真实 API client；promotion/revoke 与签名终态 receipt 仍开放，并应由独立生命周期控制身份承担。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 

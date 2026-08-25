@@ -3933,6 +3933,13 @@ key、receipt、trust key、TLS 在验证前冻结，后续摘要与 Secret 创�
 和 runner schema。621 项四片 Go/墙钟秒为 133.081/139.209、364.557/370.752、231.373/237.505、381.369/387.503，全部通过。
 这关闭“调用者可凭裸 version 字符串自证 export”的缺口；尚未实现 provider 请求、new-version promotion 与 old-version revoke。
 
+提交 `83f22d48` 接入固定 external provider export API：正式 client 以 pinned CA 和短期 0600 Bearer token 对 HTTPS origin 调用
+`POST /v1/jwt-key-versions:export`，禁止 redirect，严格限制身份请求、JSON/media type、响应/材料/receipt 大小和超时，并以
+fsync+hard-link no-clobber 私有发布。KMS wrapper 顺序取得 old/new 后只委托现有签名验证 requester，退出清除临时明文，且禁止调用者
+混入直接材料。首次提交后 4/4 分片均被 requester inventory fail closed；`0d12301d` 将 wrapper 登记为受管入口并删除可替换下游命令。
+最终 623 项四片 Go/墙钟秒为 137.219/143.410、361.246/367.394、235.131/241.288、380.005/386.233，全部通过。
+KMS export 网络调用现已闭环；promotion/revoke 必须由独立控制身份实现，不能把写 KMS 权限加入 JWT executor。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。

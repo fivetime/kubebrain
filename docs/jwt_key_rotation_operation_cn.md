@@ -278,6 +278,21 @@ requester fail-before-Kubernetes、race、vet、build 和镜像合同通过；62
 133.081/139.209、364.557/370.752、231.373/237.505、381.369/387.503，全部通过。该实现验证 provider 已签署的 enabled/export
 事实；provider API 调用本身、primary promotion、旧版本 revoke 及其终态 receipt 仍未交付。
 
+提交 `83f22d48` 增加正式 `kubebrain-jwt-kms-export-client` 与唯一推荐入口
+`request-jwt-key-rotation-from-kms.sh`。client 只接受无 userinfo/path/query/fragment 的 HTTPS origin，以 0600 短期 Bearer token
+和 pinned CA 调用固定 `POST /v1/jwt-key-versions:export`；请求 JSON 精确绑定 request/instance/version。它禁止 redirect，限制
+20 秒总预算、15 秒 HTTP timeout、1 MiB response、512 KiB material 与 64 KiB receipt，拒绝未知/trailing JSON 和错误 media type，
+不透传 provider body。material/receipt 以 0600、file sync、hard-link no-clobber 和 directory sync 成对发布，第二项失败会移除本次
+新建的第一项。wrapper 在 WORK_DIR 私有临时目录顺序 export old/new，随后交给固定 requester 做签名验证和 Operation 提交，退出
+必删明文捕获；caller 不能混入直接 key/receipt 输入。
+
+首次 `83f22d48` 提交后四分片都被 requester inventory 正确拒绝：新增 `request-*.sh` 尚未登记，错误统一为
+`requester executable inventory drifted`，没有被误判成产品测试回归。提交 `0d12301d` 将 wrapper 显式纳入权威 inventory，并移除
+可由环境替换的 request command，只允许委托仓库固定 `request-jwt-key-rotation.sh`。wrapper 正向测试使用真实下游 requester，负向
+证明任一 export 失败不会调用 Kubernetes。最终 623 项四片为 145/172/156/150，提交后 Go/墙钟秒为
+137.219/143.410、361.246/367.394、235.131/241.288、380.005/386.233，全部通过。export 调用链已交付；provider promotion/revoke
+仍必须由不向 executor 授予 KMS 写权限的独立生命周期身份实现。
+
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
 接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。
