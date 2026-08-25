@@ -26,7 +26,7 @@ func TestLeaseSurvivesCompaction(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	identity := &liveResponseIdentityAdmission{}
+	identity := newLiveResponseIdentityAdmission(t)
 
 	prefix := testPrefix(t)
 	cleanupPrefix(t, newKubernetesClient(t), prefix)

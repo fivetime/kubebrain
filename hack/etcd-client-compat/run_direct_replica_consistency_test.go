@@ -50,6 +50,9 @@ func TestDirectReplicaConsistencyRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, content, "TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas")
 	require.Contains(t, string(script), "endpoint topology or endpoint-to-member mapping drifted")
 	require.Contains(t, string(script), "direct KubeBrain endpoint response identity drifted")
+	require.Contains(t, string(script), "KUBEBRAIN_DIRECT_EXPECTED_CLUSTER_ID")
+	require.Contains(t, string(script), "KUBEBRAIN_DIRECT_EXPECTED_MEMBER_IDS")
+	require.Contains(t, string(script), "KUBEBRAIN_DIRECT_MIN_REVISIONS")
 	require.Contains(t, string(script), "direct KubeBrain replica metrics identity drifted")
 	require.Contains(t, string(script), "--max-filesize 1048576")
 	require.Contains(t, string(script), "for index in \"${!kubebrain_endpoints[@]}\"")
@@ -108,6 +111,41 @@ func TestDirectReplicaScopeManifestOwnsDirectEnvironmentTests(t *testing.T) {
 			// Some runner-owned tests intentionally use the common live endpoint.
 			require.Contains(t, allCompatTestNames(t, files), testName, "manifest names a missing Go test")
 		}
+	}
+}
+
+func TestDirectReplicaScopeManifestRequiresLiveResponseIdentityAdmission(t *testing.T) {
+	registered := readDirectReplicaScopeManifest(t)
+	files, err := filepath.Glob("*_test.go")
+	require.NoError(t, err)
+	found := make(map[string]bool, len(registered))
+	for _, file := range files {
+		parsed, parseErr := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+		require.NoError(t, parseErr)
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil || function.Name == nil {
+				continue
+			}
+			if _, owned := registered[function.Name.Name]; !owned {
+				continue
+			}
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				callee, ok := call.Fun.(*ast.Ident)
+				if ok && callee.Name == "newLiveResponseIdentityAdmission" {
+					found[function.Name.Name] = true
+					return false
+				}
+				return true
+			})
+		}
+	}
+	for testName := range registered {
+		require.True(t, found[testName], "%s is selected by the direct-replica runner without live response identity admission", testName)
 	}
 }
 
@@ -253,6 +291,10 @@ if [[ "${1:-}" == version ]]; then
   exit 0
 fi
 touch "$GO_RAN"
+printf '%s\n%s\n%s\n' \
+  "${KUBEBRAIN_DIRECT_EXPECTED_CLUSTER_ID:-}" \
+  "${KUBEBRAIN_DIRECT_EXPECTED_MEMBER_IDS:-}" \
+  "${KUBEBRAIN_DIRECT_MIN_REVISIONS:-}" >"${GO_RAN}.env"
 `), 0o755))
 	fakeEtcdctl := filepath.Join(dir, "etcdctl")
 	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
@@ -334,6 +376,16 @@ func TestDirectReplicaConsistencyRunnerRejectsPostflightEndpointMemberDrift(t *t
 	require.Contains(t, string(output), "endpoint topology or endpoint-to-member mapping drifted")
 	_, statErr := os.Stat(goRan)
 	require.NoError(t, statErr, "postflight drift must be observed after the selected Go tests run")
+}
+
+func TestDirectReplicaConsistencyRunnerPassesFrozenTopologyToGoTests(t *testing.T) {
+	dir := t.TempDir()
+	fakeEtcdctl, goRan := writeDirectReplicaRunnerFakes(t, dir)
+	output, err := runCompatScriptCommand(t, "run-direct-replica-consistency.sh", directReplicaRunnerFakeEnv(dir, fakeEtcdctl, goRan))
+	require.NoError(t, err, string(output))
+	baseline, readErr := os.ReadFile(goRan + ".env")
+	require.NoError(t, readErr)
+	require.Equal(t, "900\n[101,102,103]\n[10,10,10]\n", string(baseline))
 }
 
 func TestDirectReplicaConsistencyRunnerRejectsMetricsMemberDriftBeforeTests(t *testing.T) {

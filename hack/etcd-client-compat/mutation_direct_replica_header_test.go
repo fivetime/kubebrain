@@ -22,6 +22,7 @@ func TestMutationResponseHeadersAcrossDirectReplicas(t *testing.T) {
 	endpoints := strings.Split(rawEndpoints, ",")
 	require.GreaterOrEqual(t, len(endpoints), 3)
 	requireDistinctDirectReplicaTopology(t, endpoints)
+	identity := newLiveResponseIdentityAdmission(t)
 
 	for index, rawEndpoint := range endpoints {
 		endpoint := strings.TrimSpace(rawEndpoint)
@@ -34,8 +35,10 @@ func TestMutationResponseHeadersAcrossDirectReplicas(t *testing.T) {
 			statusResponse, err := etcdserverpb.NewMaintenanceClient(conn).Status(ctx, &etcdserverpb.StatusRequest{})
 			require.NoError(t, err)
 			require.NotNil(t, statusResponse.Header)
+			require.NoError(t, identity.admitHeader(index, statusResponse.Header, 1))
 			assertLocal := func(name string, header *etcdserverpb.ResponseHeader) {
 				t.Helper()
+				require.NoError(t, identity.admitHeader(index, header, statusResponse.Header.Revision), name)
 				require.NotNil(t, header, name)
 				require.Equal(t, statusResponse.Header.ClusterId, header.ClusterId, name)
 				require.Equal(t, statusResponse.Header.MemberId, header.MemberId, name)
@@ -52,8 +55,17 @@ func TestMutationResponseHeadersAcrossDirectReplicas(t *testing.T) {
 			defer func() {
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cleanupCancel()
-				_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: grant.ID})
-				_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+				ttl, ttlErr := lease.LeaseTimeToLive(cleanupCtx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grant.ID})
+				require.NoError(t, ttlErr)
+				assertLocal("lease cleanup ttl", ttl.Header)
+				if ttl.TTL != -1 {
+					revoked, revokeErr := lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: grant.ID})
+					require.NoError(t, revokeErr)
+					assertLocal("lease cleanup", revoked.Header)
+				}
+				deleted, deleteErr := kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+				require.NoError(t, deleteErr)
+				assertLocal("key cleanup", deleted.Header)
 			}()
 
 			put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("one"), Lease: grant.ID})

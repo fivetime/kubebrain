@@ -44,7 +44,7 @@ func TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	identity := &liveResponseIdentityAdmission{}
+	identity := newLiveResponseIdentityAdmission(t)
 	key := []byte(testPrefix(t) + "/replica-hashkv")
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)

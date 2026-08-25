@@ -56,6 +56,7 @@ func TestStatusAlarmCrossEndpointVisibility(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	identity := newLiveResponseIdentityAdmission(t)
 	const memberID uint64 = 515151
 	activated, err := clients[0].Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
@@ -63,36 +64,43 @@ func TestStatusAlarmCrossEndpointVisibility(t *testing.T) {
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, activated.Header, 1))
 	require.Len(t, activated.Alarms, 1)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		_, _ = clients[0].Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+		disarmed, cleanupErr := clients[0].Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
 			Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
 			MemberID: memberID,
 			Alarm:    etcdserverpb.AlarmType_NOSPACE,
 		})
+		require.NoError(t, cleanupErr)
+		require.NoError(t, identity.admitHeader(0, disarmed.Header, 1))
 	})
 
 	firstStatus, err := clients[0].Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, firstStatus.Header, activated.Header.Revision))
 	require.Len(t, firstStatus.Errors, 1)
 	require.Contains(t, firstStatus.Errors[0], "memberID:515151")
 	require.Contains(t, firstStatus.Errors[0], "alarm:NOSPACE")
 	for i, client := range clients[1:] {
 		statusResponse, statusErr := client.Status(ctx, &etcdserverpb.StatusRequest{})
 		require.NoError(t, statusErr, "endpoint %d", i+1)
+		require.NoError(t, identity.admitHeader(i+1, statusResponse.Header, firstStatus.Header.Revision), "endpoint %d", i+1)
 		require.Equal(t, firstStatus.Errors, statusResponse.Errors, "endpoint %d", i+1)
 	}
-	_, err = clients[2].Alarm(ctx, &etcdserverpb.AlarmRequest{
+	disarmed, err := clients[2].Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
 		MemberID: memberID,
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(2, disarmed.Header, firstStatus.Header.Revision))
 	for i, client := range clients {
 		statusResponse, statusErr := client.Status(ctx, &etcdserverpb.StatusRequest{})
 		require.NoError(t, statusErr, "endpoint %d", i)
+		require.NoError(t, identity.admitHeader(i, statusResponse.Header, disarmed.Header.Revision), "endpoint %d", i)
 		require.Empty(t, statusResponse.Errors, "endpoint %d", i)
 	}
 }

@@ -23,8 +23,9 @@ func TestWatchLocalControlResponsesAcrossDirectReplicas(t *testing.T) {
 	endpoints := strings.Split(rawEndpoints, ",")
 	require.GreaterOrEqual(t, len(endpoints), 3)
 	requireDistinctDirectReplicaTopology(t, endpoints)
+	identity := newLiveResponseIdentityAdmission(t)
 
-	for _, rawEndpoint := range endpoints {
+	for index, rawEndpoint := range endpoints {
 		endpoint := strings.TrimSpace(rawEndpoint)
 		t.Run(endpoint, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -35,10 +36,12 @@ func TestWatchLocalControlResponsesAcrossDirectReplicas(t *testing.T) {
 			statusResponse, err := etcdserverpb.NewMaintenanceClient(conn).Status(ctx, &etcdserverpb.StatusRequest{})
 			require.NoError(t, err)
 			require.NotNil(t, statusResponse.Header)
+			require.NoError(t, identity.admitHeader(index, statusResponse.Header, 1))
 			stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
 			require.NoError(t, err)
 			assertLocalHeader := func(name string, response *etcdserverpb.WatchResponse) {
 				t.Helper()
+				require.NoError(t, identity.admitIdentityHeader(index, response.Header), name)
 				require.NotNil(t, response.Header, name)
 				require.Equal(t, statusResponse.Header.ClusterId, response.Header.ClusterId, name)
 				require.Equal(t, statusResponse.Header.MemberId, response.Header.MemberId, name)
@@ -75,7 +78,9 @@ func TestWatchLocalControlResponsesAcrossDirectReplicas(t *testing.T) {
 			defer func() {
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cleanupCancel()
-				_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: eventKey})
+				deleted, deleteErr := kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: eventKey})
+				require.NoError(t, deleteErr)
+				require.NoError(t, identity.admitHeader(index, deleted.Header, statusResponse.Header.Revision))
 			}()
 			created := send(&etcdserverpb.WatchCreateRequest{Key: eventKey, WatchId: 413})
 			assertLocalHeader("successful create", created)
@@ -93,9 +98,11 @@ func TestWatchLocalControlResponsesAcrossDirectReplicas(t *testing.T) {
 			put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: eventKey, Value: []byte("value")})
 			require.NoError(t, err)
 			require.NotNil(t, put.Header)
+			require.NoError(t, identity.admitHeader(index, put.Header, statusResponse.Header.Revision))
 			event, err := stream.Recv()
 			require.NoError(t, err)
 			assertLocalHeader("watch event", event)
+			require.NoError(t, identity.admitHeader(index, event.Header, put.Header.Revision))
 			require.Equal(t, int64(413), event.WatchId)
 			require.Len(t, event.Events, 1)
 			require.Equal(t, eventKey, event.Events[0].Kv.Key)
@@ -113,8 +120,9 @@ func TestWatchLocalControlResponsesAcrossDirectReplicas(t *testing.T) {
 			require.True(t, canceled.Canceled)
 			require.Equal(t, int64(413), canceled.WatchId)
 			require.NoError(t, stream.CloseSend())
-			_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: eventKey})
+			deleted, err := kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: eventKey})
 			require.NoError(t, err)
+			require.NoError(t, identity.admitHeader(index, deleted.Header, put.Header.Revision))
 		})
 	}
 }

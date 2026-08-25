@@ -24,6 +24,7 @@ func TestConcurrencyResponseHeadersAcrossDirectReplicas(t *testing.T) {
 	endpoints := strings.Split(rawEndpoints, ",")
 	require.GreaterOrEqual(t, len(endpoints), 3)
 	requireDistinctDirectReplicaTopology(t, endpoints)
+	identity := newLiveResponseIdentityAdmission(t)
 
 	for index, rawEndpoint := range endpoints {
 		endpoint := strings.TrimSpace(rawEndpoint)
@@ -36,8 +37,10 @@ func TestConcurrencyResponseHeadersAcrossDirectReplicas(t *testing.T) {
 			statusResponse, err := etcdserverpb.NewMaintenanceClient(conn).Status(ctx, &etcdserverpb.StatusRequest{})
 			require.NoError(t, err)
 			require.NotNil(t, statusResponse.Header)
+			require.NoError(t, identity.admitHeader(index, statusResponse.Header, 1))
 			assertLocal := func(name string, header *etcdserverpb.ResponseHeader) {
 				t.Helper()
+				require.NoError(t, identity.admitHeader(index, header, statusResponse.Header.Revision), name)
 				require.NotNil(t, header, name)
 				require.Equal(t, statusResponse.Header.ClusterId, header.ClusterId, name)
 				require.Equal(t, statusResponse.Header.MemberId, header.MemberId, name)
@@ -47,13 +50,19 @@ func TestConcurrencyResponseHeadersAcrossDirectReplicas(t *testing.T) {
 			leaseClient := etcdserverpb.NewLeaseClient(conn)
 			lockLease, err := leaseClient.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300})
 			require.NoError(t, err)
+			assertLocal("lock lease grant", lockLease.Header)
 			electionLease, err := leaseClient.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300})
 			require.NoError(t, err)
+			assertLocal("election lease grant", electionLease.Header)
 			defer func() {
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cleanupCancel()
-				_, _ = leaseClient.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: lockLease.ID})
-				_, _ = leaseClient.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: electionLease.ID})
+				revokedLock, revokeErr := leaseClient.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: lockLease.ID})
+				require.NoError(t, revokeErr)
+				assertLocal("lock lease cleanup", revokedLock.Header)
+				revokedElection, revokeErr := leaseClient.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: electionLease.ID})
+				require.NoError(t, revokeErr)
+				assertLocal("election lease cleanup", revokedElection.Header)
 			}()
 			root := fmt.Sprintf("/registry/etcd-client-compat/direct-concurrency-header/%d/%d", time.Now().UnixNano(), index)
 
@@ -107,6 +116,7 @@ func TestContendedConcurrencyResponseHeadersAcrossDirectReplicas(t *testing.T) {
 		endpoints[index] = strings.TrimSpace(raw[index])
 	}
 	requireDistinctDirectReplicaTopology(t, endpoints)
+	identity := newLiveResponseIdentityAdmission(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -120,9 +130,11 @@ func TestContendedConcurrencyResponseHeadersAcrossDirectReplicas(t *testing.T) {
 		statuses[index], err = etcdserverpb.NewMaintenanceClient(conn).Status(ctx, &etcdserverpb.StatusRequest{})
 		require.NoError(t, err)
 		require.NotNil(t, statuses[index].Header)
+		require.NoError(t, identity.admitHeader(index, statuses[index].Header, 1))
 	}
 	assertLocal := func(endpointIndex int, name string, header *etcdserverpb.ResponseHeader) {
 		t.Helper()
+		require.NoError(t, identity.admitHeader(endpointIndex, header, statuses[endpointIndex].Header.Revision), name)
 		require.NotNil(t, header, name)
 		require.Equal(t, statuses[endpointIndex].Header.ClusterId, header.ClusterId, name)
 		require.Equal(t, statuses[endpointIndex].Header.MemberId, header.MemberId, name)
@@ -131,25 +143,37 @@ func TestContendedConcurrencyResponseHeadersAcrossDirectReplicas(t *testing.T) {
 
 	ownerLease, err := etcdserverpb.NewLeaseClient(connections[0]).LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300})
 	require.NoError(t, err)
+	assertLocal(0, "owner lease grant", ownerLease.Header)
 	waiterLease, err := etcdserverpb.NewLeaseClient(connections[1]).LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300})
 	require.NoError(t, err)
+	assertLocal(1, "waiter lease grant", waiterLease.Header)
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		leaseClient := etcdserverpb.NewLeaseClient(connections[0])
-		_, _ = leaseClient.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: ownerLease.ID})
-		_, _ = leaseClient.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: waiterLease.ID})
+		revokedOwner, revokeErr := leaseClient.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: ownerLease.ID})
+		require.NoError(t, revokeErr)
+		assertLocal(0, "owner lease cleanup", revokedOwner.Header)
+		revokedWaiter, revokeErr := leaseClient.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: waiterLease.ID})
+		require.NoError(t, revokeErr)
+		assertLocal(0, "waiter lease cleanup", revokedWaiter.Header)
 	}()
 	root := fmt.Sprintf("/registry/etcd-client-compat/direct-concurrency-contended/%d", time.Now().UnixNano())
 	kvClient := etcdserverpb.NewKVClient(connections[2])
 	waitForQueuedPair := func(name []byte) {
 		t.Helper()
+		var identityErr error
 		require.Eventually(t, func() bool {
 			response, rangeErr := kvClient.Range(ctx, &etcdserverpb.RangeRequest{
 				Key: name, RangeEnd: []byte(clientPrefixRangeEnd(string(name))), CountOnly: true,
 			})
-			return rangeErr == nil && response.Count == 2
+			if rangeErr != nil {
+				return false
+			}
+			identityErr = identity.admitHeader(2, response.Header, statuses[2].Header.Revision)
+			return identityErr != nil || response.Count == 2
 		}, 5*time.Second, 10*time.Millisecond, "owner and waiter were not both persisted under %q", name)
+		require.NoError(t, identityErr)
 	}
 
 	lockClients := []v3lockpb.LockClient{

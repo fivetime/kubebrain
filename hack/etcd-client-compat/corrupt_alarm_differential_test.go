@@ -123,32 +123,41 @@ func TestCorruptAlarmCrossEndpoint(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	identity := newLiveResponseIdentityAdmission(t)
 	firstMaintenance := etcdserverpb.NewMaintenanceClient(connections[0])
 	thirdMaintenance := etcdserverpb.NewMaintenanceClient(connections[2])
 	firstKV := etcdserverpb.NewKVClient(connections[0])
 	secondKV := etcdserverpb.NewKVClient(connections[1])
 	statusResponse, err := firstMaintenance.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, statusResponse.Header, 1))
 	memberID := statusResponse.Header.MemberId
 	require.NotZero(t, memberID)
 	key := []byte(testPrefix(t) + "/corrupt-alarm-cross-endpoint")
-	_, err = firstKV.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("before")})
+	seeded, err := firstKV.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("before")})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, seeded.Header, statusResponse.Header.Revision))
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		_, _ = firstMaintenance.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+		disarmed, cleanupErr := firstMaintenance.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
 			Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
 		})
-		_, _ = firstKV.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		require.NoError(t, cleanupErr)
+		require.NoError(t, identity.admitHeader(0, disarmed.Header, 1))
+		deleted, cleanupErr := firstKV.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		require.NoError(t, cleanupErr)
+		require.NoError(t, identity.admitHeader(0, deleted.Header, 1))
 	})
 
-	_, err = firstMaintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+	activated, err := firstMaintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, activated.Header, seeded.Header.Revision))
 	read, err := secondKV.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(1, read.Header, activated.Header.Revision))
 	require.Len(t, read.Kvs, 1)
 	_, err = secondKV.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("blocked")})
 	require.ErrorIs(t, err, rpctypes.ErrGRPCCorrupt)
@@ -156,14 +165,17 @@ func TestCorruptAlarmCrossEndpoint(t *testing.T) {
 		Action: etcdserverpb.AlarmRequest_GET, Alarm: etcdserverpb.AlarmType_CORRUPT,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(2, listed.Header, read.Header.Revision))
 	require.Len(t, listed.Alarms, 1)
 	require.Equal(t, memberID, listed.Alarms[0].MemberID)
-	_, err = thirdMaintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+	disarmed, err := thirdMaintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
 	})
 	require.NoError(t, err)
-	_, err = firstKV.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("restored")})
+	require.NoError(t, identity.admitHeader(2, disarmed.Header, listed.Header.Revision))
+	restored, err := firstKV.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("restored")})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, restored.Header, seeded.Header.Revision+1))
 }
 
 func runCorruptAlarmScenario(t *testing.T, endpoint string) []corruptAlarmOutcome {

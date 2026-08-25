@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -20,6 +21,22 @@ import (
 type alarmMetricOutcome struct {
 	Name  string
 	Delta float64
+}
+
+func TestAlarmMetricParserRejectsServingMemberDrift(t *testing.T) {
+	alarm := etcdserverpb.AlarmType(127)
+	metric := func(serverID string) string {
+		return fmt.Sprintf("etcd_server_id{cluster=\"default\",server_id=\"%s\"} 1\n"+
+			"etcd_debugging_server_alarms{server_id=\"a342701\",alarm_type=\"%s\"} 1\n", serverID, alarm.String())
+	}
+	value, err := parseAlarmMetric(strings.NewReader(metric("b")), 0xa342701, alarm, 0xb)
+	require.NoError(t, err)
+	require.Equal(t, float64(1), value)
+	_, err = parseAlarmMetric(strings.NewReader(metric("c")), 0xa342701, alarm, 0xb)
+	require.ErrorContains(t, err, "serving member")
+	duplicateIdentity := `etcd_server_id{cluster="default",server_id="b"} 1` + "\n" + metric("b")
+	_, err = parseAlarmMetric(strings.NewReader(duplicateIdentity), 0xa342701, alarm, 0xb)
+	require.ErrorContains(t, err, "exactly one")
 }
 
 func TestUnknownAlarmMetricDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -55,6 +72,7 @@ func TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	identity := newLiveResponseIdentityAdmission(t)
 	clients := make([]etcdserverpb.MaintenanceClient, 0, len(grpcEndpoints))
 	for _, endpoint := range grpcEndpoints {
 		conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -62,44 +80,59 @@ func TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas(t *testing.T) {
 		t.Cleanup(func() { require.NoError(t, conn.Close()) })
 		clients = append(clients, etcdserverpb.NewMaintenanceClient(conn))
 	}
+	for index, client := range clients {
+		statusResponse, err := client.Status(ctx, &etcdserverpb.StatusRequest{})
+		require.NoError(t, err)
+		require.NoError(t, identity.admitHeader(index, statusResponse.Header, 1))
+	}
 
 	const (
 		memberID = uint64(0xa342701)
 		alarm    = etcdserverpb.AlarmType(127)
 	)
-	disarm := func(client etcdserverpb.MaintenanceClient, callCtx context.Context) {
-		_, _ = client.Alarm(callCtx, &etcdserverpb.AlarmRequest{
+	disarm := func(index int, client etcdserverpb.MaintenanceClient, callCtx context.Context) {
+		response, err := client.Alarm(callCtx, &etcdserverpb.AlarmRequest{
 			Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: memberID, Alarm: alarm,
 		})
+		require.NoError(t, err)
+		require.NoError(t, identity.admitHeader(index, response.Header, 1))
 	}
-	disarm(clients[0], ctx)
+	disarm(0, clients[0], ctx)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		disarm(clients[0], cleanupCtx)
+		disarm(0, clients[0], cleanupCtx)
 	})
 	baselines := make([]float64, len(metricsEndpoints))
 	for i, endpoint := range metricsEndpoints {
-		baselines[i] = readAlarmMetric(t, ctx, endpoint, memberID, alarm)
+		expectedMemberID, expectedErr := identity.expectedMemberID(i)
+		require.NoError(t, expectedErr)
+		baselines[i] = readAlarmMetricForReplica(t, ctx, endpoint, memberID, alarm, expectedMemberID)
 	}
 
-	_, err := clients[0].Alarm(ctx, &etcdserverpb.AlarmRequest{
+	activated, err := clients[0].Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: memberID, Alarm: alarm,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, activated.Header, 1))
 	for i, endpoint := range metricsEndpoints {
+		expectedMemberID, expectedErr := identity.expectedMemberID(i)
+		require.NoError(t, expectedErr)
 		require.Eventually(t, func() bool {
-			return readAlarmMetric(t, ctx, endpoint, memberID, alarm)-baselines[i] == 1
+			return readAlarmMetricForReplica(t, ctx, endpoint, memberID, alarm, expectedMemberID)-baselines[i] == 1
 		}, 5*time.Second, 100*time.Millisecond, "replica %d did not observe activation", i)
 	}
 
-	_, err = clients[len(clients)-1].Alarm(ctx, &etcdserverpb.AlarmRequest{
+	disarmed, err := clients[len(clients)-1].Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: memberID, Alarm: alarm,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(len(clients)-1, disarmed.Header, activated.Header.Revision))
 	for i, endpoint := range metricsEndpoints {
+		expectedMemberID, expectedErr := identity.expectedMemberID(i)
+		require.NoError(t, expectedErr)
 		require.Eventually(t, func() bool {
-			return readAlarmMetric(t, ctx, endpoint, memberID, alarm)-baselines[i] == 0
+			return readAlarmMetricForReplica(t, ctx, endpoint, memberID, alarm, expectedMemberID)-baselines[i] == 0
 		}, 5*time.Second, 100*time.Millisecond, "replica %d did not observe disarm", i)
 	}
 }
@@ -180,6 +213,17 @@ func readAlarmMetric(
 	memberID uint64,
 	alarm etcdserverpb.AlarmType,
 ) float64 {
+	return readAlarmMetricForReplica(t, ctx, metricsEndpoint, memberID, alarm, 0)
+}
+
+func readAlarmMetricForReplica(
+	t *testing.T,
+	ctx context.Context,
+	metricsEndpoint string,
+	memberID uint64,
+	alarm etcdserverpb.AlarmType,
+	expectedServingMemberID uint64,
+) float64 {
 	t.Helper()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		httpEndpointURL(metricsEndpoint)+"/metrics", nil)
@@ -188,26 +232,55 @@ func readAlarmMetric(
 	require.NoError(t, err)
 	defer response.Body.Close()
 	require.Equal(t, http.StatusOK, response.StatusCode)
+	value, err := parseAlarmMetric(response.Body, memberID, alarm, expectedServingMemberID)
+	require.NoError(t, err)
+	return value
+}
 
+func parseAlarmMetric(
+	reader io.Reader,
+	memberID uint64,
+	alarm etcdserverpb.AlarmType,
+	expectedServingMemberID uint64,
+) (float64, error) {
 	wantLabels := fmt.Sprintf(`server_id="%x",alarm_type="%s"`, memberID, alarm.String())
 	reversedLabels := fmt.Sprintf(`alarm_type="%s",server_id="%x"`, alarm.String(), memberID)
 	value := float64(0)
 	found := false
-	scanner := bufio.NewScanner(response.Body)
+	serverIdentityLines := 0
+	wantServerIdentity := fmt.Sprintf(`etcd_server_id{cluster="default",server_id="%x"} 1`, expectedServingMemberID)
+	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Text()
+		if strings.HasPrefix(line, "etcd_server_id{") {
+			serverIdentityLines++
+			if expectedServingMemberID != 0 && line != wantServerIdentity {
+				return 0, fmt.Errorf("metrics response serving member differs from %x", expectedServingMemberID)
+			}
+		}
 		if !strings.HasPrefix(line, "etcd_debugging_server_alarms{") ||
 			(!strings.Contains(line, wantLabels) && !strings.Contains(line, reversedLabels)) {
 			continue
 		}
 		fields := strings.Fields(line)
-		require.Len(t, fields, 2, line)
-		require.False(t, found, "duplicate alarm metric series: %s", line)
+		if len(fields) != 2 {
+			return 0, fmt.Errorf("invalid alarm metric series: %s", line)
+		}
+		if found {
+			return 0, fmt.Errorf("duplicate alarm metric series: %s", line)
+		}
 		parsed, parseErr := strconv.ParseFloat(fields[1], 64)
-		require.NoError(t, parseErr, line)
+		if parseErr != nil {
+			return 0, fmt.Errorf("invalid alarm metric value in %s: %w", line, parseErr)
+		}
 		value = parsed
 		found = true
 	}
-	require.NoError(t, scanner.Err())
-	return value
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	if expectedServingMemberID != 0 && serverIdentityLines != 1 {
+		return 0, fmt.Errorf("metrics response must identify exactly one serving member, got %d", serverIdentityLines)
+	}
+	return value, nil
 }

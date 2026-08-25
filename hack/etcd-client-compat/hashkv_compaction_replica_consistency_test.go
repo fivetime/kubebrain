@@ -41,7 +41,7 @@ func TestHashKVCompactionConvergesAcrossKubeBrainReplicas(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	identity := &liveResponseIdentityAdmission{}
+	identity := newLiveResponseIdentityAdmission(t)
 	key := []byte(testPrefix(t) + "/replica-hashkv-compaction")
 	put := func(index int, client etcdserverpb.KVClient, value string, minimumRevision int64) int64 {
 		t.Helper()

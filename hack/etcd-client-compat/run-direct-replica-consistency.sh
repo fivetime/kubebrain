@@ -261,6 +261,9 @@ test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_ETCD_ENDPOINT="$service_endpoint" \
+    KUBEBRAIN_DIRECT_EXPECTED_CLUSTER_ID="$baseline_cluster_id" \
+    KUBEBRAIN_DIRECT_EXPECTED_MEMBER_IDS="$baseline_member_ids" \
+    KUBEBRAIN_DIRECT_MIN_REVISIONS="$baseline_revisions" \
     KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIRECT="$memberlist_endpoints_direct" \
     KUBEBRAIN_MEMBERLIST_DIAL_ENDPOINTS="$memberlist_dial_endpoints" \
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \

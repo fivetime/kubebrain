@@ -26,7 +26,7 @@ func TestPhysicalCompactionUnderTraffic(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	identity := &liveResponseIdentityAdmission{}
+	identity := newLiveResponseIdentityAdmission(t)
 
 	prefix := fmt.Sprintf("/dbaas-physical-traffic/%d/", time.Now().UnixNano())
 	registerPrefixCleanup(t, cli, prefix)

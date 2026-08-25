@@ -21,8 +21,9 @@ func TestControlResponseHeadersAcrossDirectReplicas(t *testing.T) {
 	endpoints := strings.Split(rawEndpoints, ",")
 	require.GreaterOrEqual(t, len(endpoints), 3)
 	requireDistinctDirectReplicaTopology(t, endpoints)
+	identity := newLiveResponseIdentityAdmission(t)
 
-	for _, rawEndpoint := range endpoints {
+	for index, rawEndpoint := range endpoints {
 		endpoint := strings.TrimSpace(rawEndpoint)
 		t.Run(endpoint, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -35,8 +36,10 @@ func TestControlResponseHeadersAcrossDirectReplicas(t *testing.T) {
 			statusResponse, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
 			require.NoError(t, err)
 			require.NotNil(t, statusResponse.Header)
+			require.NoError(t, identity.admitHeader(index, statusResponse.Header, 1))
 			assertLocal := func(name string, header *etcdserverpb.ResponseHeader) {
 				t.Helper()
+				require.NoError(t, identity.admitIdentityHeader(index, header), name)
 				require.NotNil(t, header, name)
 				require.Equal(t, statusResponse.Header.ClusterId, header.ClusterId, name)
 				require.Equal(t, statusResponse.Header.MemberId, header.MemberId, name)
@@ -52,11 +55,13 @@ func TestControlResponseHeadersAcrossDirectReplicas(t *testing.T) {
 			hash, err := maintenance.Hash(ctx, &etcdserverpb.HashRequest{})
 			require.NoError(t, err)
 			assertLocal("hash", hash.Header)
+			require.NoError(t, identity.admitHeader(index, hash.Header, statusResponse.Header.Revision))
 			require.Positive(t, hash.Header.Revision)
 
 			hashKV, err := maintenance.HashKV(ctx, &etcdserverpb.HashKVRequest{})
 			require.NoError(t, err)
 			assertLocal("hashkv", hashKV.Header)
+			require.NoError(t, identity.admitHeader(index, hashKV.Header, statusResponse.Header.Revision))
 			require.Positive(t, hashKV.HashRevision)
 			require.LessOrEqual(t, hashKV.CompactRevision, hashKV.HashRevision)
 
@@ -66,10 +71,12 @@ func TestControlResponseHeadersAcrossDirectReplicas(t *testing.T) {
 			})
 			require.NoError(t, err)
 			assertLocal("alarm get", alarms.Header)
+			require.NoError(t, identity.admitHeader(index, alarms.Header, statusResponse.Header.Revision))
 
 			authStatus, err := etcdserverpb.NewAuthClient(connection).AuthStatus(ctx, &etcdserverpb.AuthStatusRequest{})
 			require.NoError(t, err)
 			assertLocal("auth status", authStatus.Header)
+			require.NoError(t, identity.admitHeader(index, authStatus.Header, statusResponse.Header.Revision))
 		})
 	}
 }

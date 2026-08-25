@@ -76,6 +76,7 @@ func TestCombinedAlarmCrossEndpointStateTransition(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	identity := newLiveResponseIdentityAdmission(t)
 	maintenances := []etcdserverpb.MaintenanceClient{
 		etcdserverpb.NewMaintenanceClient(connections[0]),
 		etcdserverpb.NewMaintenanceClient(connections[1]),
@@ -91,32 +92,42 @@ func TestCombinedAlarmCrossEndpointStateTransition(t *testing.T) {
 		corruptOwner = uint64(400002)
 	)
 	key := []byte(testPrefix(t) + "/combined-alarm-cross-endpoint")
-	_, err := kvs[0].Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("before")})
+	seeded, err := kvs[0].Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("before")})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, seeded.Header, 1))
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		_, _ = maintenances[0].Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+		corrupt, cleanupErr := maintenances[0].Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
 			Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: corruptOwner,
 		})
-		_, _ = maintenances[0].Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+		require.NoError(t, cleanupErr)
+		require.NoError(t, identity.admitHeader(0, corrupt.Header, 1))
+		noSpace, cleanupErr := maintenances[0].Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
 			Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: noSpaceOwner,
 		})
-		_, _ = kvs[0].DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		require.NoError(t, cleanupErr)
+		require.NoError(t, identity.admitHeader(0, noSpace.Header, 1))
+		deleted, cleanupErr := kvs[0].DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		require.NoError(t, cleanupErr)
+		require.NoError(t, identity.admitHeader(0, deleted.Header, 1))
 	})
 
-	_, err = maintenances[0].Alarm(ctx, &etcdserverpb.AlarmRequest{
+	activatedNoSpace, err := maintenances[0].Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: noSpaceOwner,
 	})
 	require.NoError(t, err)
-	_, err = maintenances[1].Alarm(ctx, &etcdserverpb.AlarmRequest{
+	require.NoError(t, identity.admitHeader(0, activatedNoSpace.Header, seeded.Header.Revision))
+	activatedCorrupt, err := maintenances[1].Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: corruptOwner,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(1, activatedCorrupt.Header, activatedNoSpace.Header.Revision))
 	listed, err := maintenances[2].Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_GET, Alarm: etcdserverpb.AlarmType_NONE,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(2, listed.Header, activatedCorrupt.Header.Revision))
 	require.ElementsMatch(t, []*etcdserverpb.AlarmMember{
 		{MemberID: noSpaceOwner, Alarm: etcdserverpb.AlarmType_NOSPACE},
 		{MemberID: corruptOwner, Alarm: etcdserverpb.AlarmType_CORRUPT},
@@ -124,21 +135,25 @@ func TestCombinedAlarmCrossEndpointStateTransition(t *testing.T) {
 	_, err = kvs[2].Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("blocked")})
 	require.Equal(t, codes.DataLoss, status.Code(err))
 
-	_, err = maintenances[0].Alarm(ctx, &etcdserverpb.AlarmRequest{
+	disarmedCorrupt, err := maintenances[0].Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: corruptOwner,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, disarmedCorrupt.Header, listed.Header.Revision))
 	_, err = kvs[1].Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("still-blocked")})
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
-	_, err = kvs[2].DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
+	deleted, err := kvs[2].DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(2, deleted.Header, disarmedCorrupt.Header.Revision))
 
-	_, err = maintenances[1].Alarm(ctx, &etcdserverpb.AlarmRequest{
+	disarmedNoSpace, err := maintenances[1].Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: noSpaceOwner,
 	})
 	require.NoError(t, err)
-	_, err = kvs[0].Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("restored")})
+	require.NoError(t, identity.admitHeader(1, disarmedNoSpace.Header, deleted.Header.Revision))
+	restored, err := kvs[0].Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("restored")})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, restored.Header, deleted.Header.Revision+1))
 }
 
 func runCombinedAlarmScenario(t *testing.T, endpoint string) []combinedAlarmOutcome {

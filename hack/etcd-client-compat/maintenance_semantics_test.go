@@ -188,39 +188,49 @@ func TestMaintenanceHashKVSemantics(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	identity := newLiveResponseIdentityAdmission(t)
 	key := testPrefix(t) + "/hash-key"
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		_, _ = cli.Delete(cleanupCtx, key)
+		deleted, deleteErr := cli.Delete(cleanupCtx, key)
+		require.NoError(t, deleteErr)
+		require.NoError(t, identity.admitHeader(0, deleted.Header, 1))
 	})
 
 	put1, err := cli.Put(ctx, key, "v1")
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, put1.Header, 1))
 	rev1 := put1.Header.Revision
 
 	hash1, err := cli.HashKV(ctx, endpoint, rev1)
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, hash1.Header, rev1))
 	require.Equal(t, rev1, hash1.HashRevision)
 	hash1Again, err := cli.HashKV(ctx, endpoint, rev1)
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, hash1Again.Header, rev1))
 	require.Equal(t, hash1.Hash, hash1Again.Hash)
 	require.Equal(t, rev1, hash1Again.HashRevision)
 
-	_, err = cli.Put(ctx, key, "v2")
+	put2, err := cli.Put(ctx, key, "v2")
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, put2.Header, rev1+1))
 	current, err := cli.HashKV(ctx, endpoint, 0)
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, current.Header, put2.Header.Revision))
 	require.NotEqual(t, hash1.Hash, current.Hash)
 	require.Equal(t, current.Header.Revision, current.HashRevision)
 
 	negative, err := cli.HashKV(ctx, endpoint, -1)
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, negative.Header, put2.Header.Revision))
 	require.Equal(t, int64(-1), negative.HashRevision)
 	require.NotEqual(t, current.Hash, negative.Hash)
 
 	historical, err := cli.HashKV(ctx, endpoint, rev1)
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, historical.Header, put2.Header.Revision))
 	require.Equal(t, hash1.Hash, historical.Hash)
 	require.Equal(t, rev1, historical.HashRevision)
 }
@@ -236,11 +246,14 @@ func TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	identity := newLiveResponseIdentityAdmission(t)
 	prefix := testPrefix(t) + "/hash-snapshot/"
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		_, _ = cli.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+		deleted, deleteErr := cli.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+		require.NoError(t, deleteErr)
+		require.NoError(t, identity.admitHeader(0, deleted.Header, 1))
 	})
 
 	var wg sync.WaitGroup
@@ -249,8 +262,13 @@ func TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 25; i++ {
-			if _, putErr := cli.Put(ctx, prefix+"key", fmt.Sprintf("value-%d", i)); putErr != nil {
+			put, putErr := cli.Put(ctx, prefix+"key", fmt.Sprintf("value-%d", i))
+			if putErr != nil {
 				writerErr <- putErr
+				return
+			}
+			if identityErr := identity.admitHeader(0, put.Header, 1); identityErr != nil {
+				writerErr <- identityErr
 				return
 			}
 		}
@@ -259,6 +277,7 @@ func TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites(t *testing.T) {
 	for i := 0; i < 25; i++ {
 		resp, hashErr := cli.HashKV(ctx, endpoint, 0)
 		require.NoError(t, hashErr)
+		require.NoError(t, identity.admitHeader(0, resp.Header, 1))
 		require.Equal(t, resp.HashRevision, resp.Header.Revision,
 			"HashKV(0) header must identify the exact snapshot that was hashed")
 	}
@@ -281,7 +300,7 @@ func TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	identity := &liveResponseIdentityAdmission{}
+	identity := newLiveResponseIdentityAdmission(t)
 	key := testPrefix(t) + "/hash-physical-compact"
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -337,8 +356,10 @@ func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	identity := newLiveResponseIdentityAdmission(t)
 	members, err := cli.MemberList(ctx)
 	require.NoError(t, err)
+	require.NoError(t, identity.admitIdentityHeader(0, members.Header))
 	endpoints := make([]string, 0, len(members.Members))
 	uniqueEndpoints := make(map[string]struct{}, len(members.Members))
 	advertisedMemberIDs := make(map[uint64]struct{}, len(members.Members))
@@ -353,8 +374,6 @@ func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
 	require.NotEmpty(t, endpoints)
 	require.Len(t, endpoints, len(members.Members),
 		"direct-member HashKV verification requires exactly one advertised endpoint per member")
-	require.Len(t, uniqueEndpoints, len(endpoints),
-		"direct-member HashKV verification requires unique advertised endpoints; a shared Service URL proves Sync reachability, not member identity")
 	dialEndpoints := endpoints
 	if overrides := splitNonEmptyCSV(os.Getenv("KUBEBRAIN_MEMBERLIST_DIAL_ENDPOINTS")); len(overrides) > 0 {
 		require.Len(t, overrides, len(endpoints),
@@ -366,26 +385,34 @@ func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
 		require.Len(t, uniqueOverrides, len(overrides),
 			"member dial overrides must be unique")
 		dialEndpoints = overrides
+	} else {
+		require.Len(t, uniqueEndpoints, len(endpoints),
+			"direct-member HashKV verification requires unique advertised endpoints unless unique direct dial overrides are supplied")
 	}
 
 	key := testPrefix(t) + "/member-hash"
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		_, _ = cli.Delete(cleanupCtx, key)
+		deleted, deleteErr := cli.Delete(cleanupCtx, key)
+		require.NoError(t, deleteErr)
+		require.NoError(t, identity.admitHeader(0, deleted.Header, 1))
 	})
 	put, err := cli.Put(ctx, key, "member-consistent")
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, put.Header, members.Header.Revision+1))
 
 	var wantHash, wantCluster uint64
 	memberIDs := map[uint64]struct{}{}
 	for i, ep := range dialEndpoints {
 		statusResp, err := cli.Status(ctx, ep)
 		require.NoError(t, err, "status %s", ep)
+		require.NoError(t, identity.admitHeader(i, statusResp.Header, put.Header.Revision), "status %s", ep)
 		_, advertised := advertisedMemberIDs[statusResp.Header.MemberId]
 		require.True(t, advertised, "dial endpoint %s identified an unadvertised member", ep)
 		hashResp, err := cli.HashKV(ctx, ep, put.Header.Revision)
 		require.NoError(t, err, "hashkv %s", ep)
+		require.NoError(t, identity.admitHeader(i, hashResp.Header, put.Header.Revision), "hashkv %s", ep)
 		if i == 0 {
 			wantHash = uint64(hashResp.Hash)
 			wantCluster = statusResp.Header.ClusterId

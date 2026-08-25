@@ -98,13 +98,15 @@ func TestQuotaAlarmCrossEndpointDisarm(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	identity := newLiveResponseIdentityAdmission(t)
 	kv := etcdserverpb.NewKVClient(connections[0])
 	first := etcdserverpb.NewMaintenanceClient(connections[0])
 	second := etcdserverpb.NewMaintenanceClient(connections[1])
 	third := etcdserverpb.NewMaintenanceClient(connections[2])
 	key := []byte(testPrefix(t) + "/cross-endpoint-alarm")
-	_, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	seeded, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, seeded.Header, 1))
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
@@ -112,15 +114,20 @@ func TestQuotaAlarmCrossEndpointDisarm(t *testing.T) {
 			Action: etcdserverpb.AlarmRequest_GET,
 			Alarm:  etcdserverpb.AlarmType_NOSPACE,
 		}); getErr == nil {
+			require.NoError(t, identity.admitHeader(0, alarms.Header, 1))
 			for _, alarm := range alarms.Alarms {
-				_, _ = first.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+				disarmed, disarmErr := first.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
 					Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
 					MemberID: alarm.MemberID,
 					Alarm:    etcdserverpb.AlarmType_NOSPACE,
 				})
+				require.NoError(t, disarmErr)
+				require.NoError(t, identity.admitHeader(0, disarmed.Header, 1))
 			}
 		}
-		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		deleted, cleanupErr := kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		require.NoError(t, cleanupErr)
+		require.NoError(t, identity.admitHeader(0, deleted.Header, 1))
 	})
 
 	const requestedMemberID uint64 = 424242
@@ -130,12 +137,14 @@ func TestQuotaAlarmCrossEndpointDisarm(t *testing.T) {
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, activated.Header, seeded.Header.Revision))
 	require.Len(t, activated.Alarms, 1)
 	listed, err := second.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_GET,
 		Alarm:  etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(1, listed.Header, activated.Header.Revision))
 	require.Len(t, listed.Alarms, 1)
 	require.Equal(t, requestedMemberID, activated.Alarms[0].MemberID)
 	require.Equal(t, requestedMemberID, listed.Alarms[0].MemberID)
@@ -147,6 +156,7 @@ func TestQuotaAlarmCrossEndpointDisarm(t *testing.T) {
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(2, wrong.Header, listed.Header.Revision))
 	require.Empty(t, wrong.Alarms)
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("blocked")})
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
@@ -157,9 +167,11 @@ func TestQuotaAlarmCrossEndpointDisarm(t *testing.T) {
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(2, disarmed.Header, wrong.Header.Revision))
 	require.Equal(t, listed.Alarms, disarmed.Alarms)
-	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("restored")})
+	restored, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("restored")})
 	require.NoError(t, err)
+	require.NoError(t, identity.admitHeader(0, restored.Header, seeded.Header.Revision+1))
 }
 
 func runQuotaAlarmCappedScenario(t *testing.T, endpoint string) []quotaAlarmOutcome {
