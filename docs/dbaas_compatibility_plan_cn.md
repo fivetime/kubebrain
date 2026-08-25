@@ -61893,8 +61893,14 @@ Deployment、terminal fencing 和真实接管故障注入的逐项验收清单�
 patch 后 receipt 前崩溃的 `reconciled_existing` 接管。包级生命周期、负向、race、vet、build 均通过；615 项生产 inventory
 四片提交后 Go/墙钟秒为 132.132/138.196、374.984/381.067、224.626/230.688、383.174/389.255，全部通过。
 
-本项现已关闭实现前的权限/恢复语义歧义和 publisher 原语缺口，但仍未声称公共 API 或 executor 已交付；CRD/requester、broker、
-runner/executor、RBAC/admission、heartbeat TTL wait、composite terminal receipt 与三处真实接管故障注入继续开放。
+提交 `c8352bb5` 随后交付 disabled-by-default 的持久纵向链路：`JWTKeyRotation` CRD/审批/审计、专用 requester、parameter broker
+type binding、worker admission、executor 模板、严格 request 和 heartbeat runner 已闭环。runner 依序持久签发 token、调用三阶段
+publisher/direct gate、按可信 phase B receipt heartbeat 等待 TTL，并以 Operation UID/attempt、参数摘要和六张阶段 receipt 生成
+no-clobber composite receipt；attempt 接管与 heartbeat 进程组 fencing 均有黑盒测试。618 项 production inventory 四片提交后
+Go/墙钟秒为 123.990/130.091、356.779/362.890、225.884/231.982、369.691/375.798，全部通过。
+
+executor 仍固定零副本；实例级数据面 Role/RoleBinding/publisher admission、phase C 失败自动回滚、真实 token issuer/KMS 以及三处
+真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 
 ### P2：运维兼容和长期验证
 

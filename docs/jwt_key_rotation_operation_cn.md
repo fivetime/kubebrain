@@ -48,6 +48,9 @@
   "new_key_source": "/var/lib/kubebrain-operation/keys/new",
   "old_key_sha256": "<64 hex>",
   "new_key_sha256": "<64 hex>",
+  "key_volume": "jwt-keys",
+  "key_mount_dir": "/etc/kubebrain-jwt",
+  "sign_method": "HS256",
   "endpoints": ["https://member-0:2379", "https://member-1:2379", "https://member-2:2379"],
   "expected_replicas": 3,
   "jwt_ttl_seconds": 300,
@@ -145,6 +148,21 @@ patch 后、receipt 前退出时可识别已收敛状态并生成 `reconciled_ex
 142/171/155/147；提交后四片 Go/墙钟秒分别为 132.132/138.196、374.984/381.067、224.626/230.688、
 383.174/389.255，全部通过。
 
-这只关闭 publisher 原语，不表示 `JWTKeyRotation` API 已开放。CRD enum、requester、parameter broker、runner/executor、专用
-RBAC/admission、heartbeat TTL wait、composite terminal receipt 和三处真实故障注入仍按上表开放；在这些控制面组件完成前，禁止
-把该二进制直接暴露给租户或声明持久 Operation 已交付。
+提交 `c8352bb5` 在 publisher 之上交付持久纵向链路：CRD enum、queue approval、operation audit allowlist、worker type admission、
+parameter broker identity/NetworkPolicy、专用 requester RBAC/admission 与 deterministic request 脚本同步启用；executor
+Deployment 保持 `replicas: 0`，采用专用 ServiceAccount、PVC、projected broker token 和 token issuer hook。
+
+runner 对 64 KiB 参数做精确 schema 与 SHA-256 双读冻结，在自身边界重新校验 workspace、1 MiB 上限、symlink、私钥权限、TLS
+配对/摘要和 HTTPS member 集合。它持久复用 old/phase-B-new token，phase C 强制 fresh new token；所有 issuer、publisher、gate
+和 TTL wait 均有 heartbeat 子循环及进程组 fencing。phase B receipt 在移除 old verifier 前由 runner 再次严格校验 receipt chain、
+token 摘要与 `observed+TTL+skew` 算式。最终 composite receipt 以 file sync、no-clobber hard-link 和 directory sync 绑定 Operation
+UID/生成 attempt、参数摘要、三张 publish receipt 和三张 gate receipt；崩溃接管可复验旧 attempt receipt 后用当前 fenced attempt
+提交 terminal CAS，已有 composite 不得覆盖。
+
+请求、生命周期、attempt 接管、heartbeat 杀进程组、CRD/manifest、broker type binding、approval/audit 与 requester inventory
+测试通过；代码提交前 inventory 为 618 项、四片 143/171/155/149，提交后四片 Go/墙钟秒为
+123.990/130.091、356.779/362.890、225.884/231.982、369.691/375.798，全部通过。
+
+当前仍保持 disabled-by-default，不能直接规模化上线：每个实例的精确 StatefulSet/Secret 数据面 Role/RoleBinding 与 publisher
+admission 尚未生成，phase C rollout 失败后的自动回滚到 B 尚未实现，token issuer/KMS 合同尚无真实实现与轮换撤权演练，三处真实
+接管/fencing 故障注入也未完成。在这些门禁关闭前不得把 executor 扩容到非零，也不得对租户宣称自动轮换生产就绪。
