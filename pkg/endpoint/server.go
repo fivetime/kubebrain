@@ -194,6 +194,7 @@ const (
 	// TLS handshakes retain their independent 10-second deadline.
 	httpReadHeaderTimeout = 5 * time.Minute
 	httpIdleTimeout       = 2 * time.Minute
+	httpShutdownTimeout   = 2 * time.Second
 	// Match net/http's default, which is also the effective limit used by
 	// upstream etcd. Keeping the value explicit preserves bounded admission
 	// without rejecting metadata that an etcd endpoint accepts.
@@ -217,12 +218,14 @@ func newHTTPServer(handler http.Handler) *httpServer {
 		Protocols:         protocols,
 	}
 	return &httpServer{
-		svr: svr,
+		svr:             svr,
+		shutdownTimeout: httpShutdownTimeout,
 	}
 }
 
 type httpServer struct {
-	svr *http.Server
+	svr             *http.Server
+	shutdownTimeout time.Duration
 }
 
 func (h *httpServer) name() string {
@@ -238,7 +241,7 @@ func (h *httpServer) serve(listener net.Listener) error {
 }
 
 func (h *httpServer) close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), h.shutdownTimeout)
 	defer cancel()
 	if err := h.svr.Shutdown(ctx); err != nil {
 		// Long-lived watch/gateway requests may outlive the bounded rollout

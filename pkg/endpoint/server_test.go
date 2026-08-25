@@ -109,6 +109,89 @@ func TestHTTPServerCloseDrainsInFlightRequest(t *testing.T) {
 	require.NoError(t, normalizeServeError(<-serveDone))
 }
 
+func TestHTTPServerCloseForcesRequestPastDrainBudget(t *testing.T) {
+	handlerStarted := make(chan struct{})
+	handlerCanceled := make(chan struct{})
+	server := newHTTPServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		close(handlerStarted)
+		<-request.Context().Done()
+		close(handlerCanceled)
+	}))
+	server.shutdownTimeout = 50 * time.Millisecond
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.serve(listener) }()
+
+	requestDone := make(chan error, 1)
+	go func() {
+		response, requestErr := http.Get("http://" + listener.Addr().String())
+		if response != nil {
+			requestErr = errors.Join(requestErr, response.Body.Close())
+		}
+		requestDone <- requestErr
+	}()
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not reach handler")
+	}
+
+	started := time.Now()
+	require.NoError(t, server.close())
+	require.Less(t, time.Since(started), time.Second,
+		"an in-flight request must not outlive the bounded shutdown window")
+	require.Error(t, <-requestDone)
+	select {
+	case <-handlerCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("forced HTTP close did not cancel the in-flight request")
+	}
+	require.NoError(t, normalizeServeError(<-serveDone))
+}
+
+func TestMuxedHTTP2CloseBoundsQuiescingRequest(t *testing.T) {
+	handlerStarted := make(chan struct{})
+	handlerCanceled := make(chan struct{})
+	server := newGRPCMuxedHTTPServer(grpc.NewServer(), http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		close(handlerStarted)
+		<-request.Context().Done()
+		close(handlerCanceled)
+	}))
+	server.httpServer.shutdownTimeout = 50 * time.Millisecond
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.serve(listener) }()
+
+	requestDone := make(chan error, 1)
+	go func() {
+		response, requestErr := http.Get("http://" + listener.Addr().String())
+		if response != nil {
+			requestErr = errors.Join(requestErr, response.Body.Close())
+		}
+		requestDone <- requestErr
+	}()
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not reach handler")
+	}
+
+	server.quiesce()
+	started := time.Now()
+	require.NoError(t, server.close())
+	require.Less(t, time.Since(started), time.Second,
+		"final close must bound the background quiesce wait")
+	require.Error(t, <-requestDone)
+	select {
+	case <-handlerCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("final close did not cancel the quiescing request")
+	}
+	require.NoError(t, normalizeServeError(<-serveDone))
+}
+
 func TestMuxedHTTP2QuiesceKeepsRunnerAliveUntilShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	server := newGRPCMuxedHTTPServer(grpc.NewServer(), http.NotFoundHandler())
@@ -161,6 +244,7 @@ func TestNewHttpServerBoundsHeaderAdmission(t *testing.T) {
 
 	require.Equal(t, httpReadHeaderTimeout, server.svr.ReadHeaderTimeout)
 	require.Equal(t, httpIdleTimeout, server.svr.IdleTimeout)
+	require.Equal(t, httpShutdownTimeout, server.shutdownTimeout)
 	require.Equal(t, httpMaxHeaderBytes, server.svr.MaxHeaderBytes)
 	require.True(t, server.svr.Protocols.HTTP1())
 	require.True(t, server.svr.Protocols.HTTP2())
