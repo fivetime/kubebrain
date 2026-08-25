@@ -3919,6 +3919,13 @@ field name 与 SHA-256。executor 不具备 Secret `get`，而是用 projected t
 partial-TLS 均拒绝。620 项四片 Go/墙钟秒为 143.327/149.438、373.654/379.762、231.023/237.133、382.421/388.548，全部通过。
 这证明受限 Secret→executor 交接，不证明外部 KMS export/promotion/revoke 或真实 broker 双副本网络链路已经演练。
 
+提交 `440f8f73` 要求 JWT request 明确绑定两个不同的规范 KMS version ID；version 与材料 SHA 一同进入 deterministic operation
+identity 和严格参数摘要。每次 old/new material broker 请求都必须携带对应 version，服务端从已绑定参数独立校验两者规范、互异、
+逐字段精确匹配；TLS material 不接受伪 KMS version。最终 composite receipt 升级为
+`kubebrain.jwt-key-rotation.operation.receipt.v2` 并显式保留 old/new version。620 项四片 Go/墙钟秒为
+146.864/152.978、373.425/379.459、236.001/242.057、381.470/387.540，全部通过。该绑定提供审计 provenance，不代表外部
+provider 已证明 version enabled/primary/revoked，也不能代替 export/promotion/revoke receipt。
+
 该 Deployment 仍必须保持 `replicas: 0`，直到外部 KMS 生成/export/version promotion/revoke、认证 Secret 创建/轮换/撤权，
 真实 broker 双副本链路以及三处三副本故障注入全部验收；
 当前不能把 API/模板存在等同于生产自动轮换 GREEN。

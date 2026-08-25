@@ -61938,6 +61938,12 @@ runner 在 heartbeat/process-group fencing 中以 0600 捕获并复核摘要。K
 本项只关闭 Secret→executor 的安全交接，外部 KMS export/version promotion/revoke、认证 credential lifecycle、真实 broker
 双副本链路和三处接管故障注入仍开放。
 
+提交 `440f8f73` 再把 old/new 外部 KMS version ID 纳入 deterministic operation identity、严格参数和 v2 composite receipt。
+signing material 的 broker 请求必须携带 version；broker 从参数摘要绑定的 JSON 独立验证两个 ID 规范、互异且逐字段匹配，TLS
+material 则禁止携带 version。这样后续 KMS receipt 可以与同一不可变 operation/version 对账，不会只剩无法追源的 key SHA。
+620 项四片提交后 Go/墙钟秒为 146.864/152.978、373.425/379.459、236.001/242.057、381.470/387.540，全部通过。
+version ID 目前仍是外部声明；provider 对 enabled/primary/revoked 状态的可信证明和动作 receipt 尚未交付，不能标记 KMS lifecycle GREEN。
+
 executor 仍固定零副本；外部 KMS/认证 Secret 生命周期及三处
 真实三副本故障注入继续开放，因此本项尚不标记生产自动轮换 GREEN。
 

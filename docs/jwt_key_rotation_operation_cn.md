@@ -48,6 +48,8 @@
   "new_key_field": "new-key",
   "old_key_material_key": "jwt-old-key",
   "new_key_material_key": "jwt-new-key",
+  "old_key_version_id": "kms/prod/jwt/versions/41",
+  "new_key_version_id": "kms/prod/jwt/versions/42",
   "old_key_sha256": "<64 hex>",
   "new_key_sha256": "<64 hex>",
   "key_volume": "jwt-keys",
@@ -77,6 +79,10 @@ metadata 余量。生产 admission
 profile 必须要求 HTTPS endpoint 与非空 TLS 字段。endpoint 数必须等于 `expected_replicas`，均唯一且只允许单 endpoint
 字符串；TTL 为规范正 int32，skew 为规范非负 int32，二者与当前时间相加不得溢出 int64。
 
+old/new version ID 必须不同、各为 1..512 字符，首字符为字母或数字，其余只允许字母数字及 `._:/@+=-`，以兼容常见
+KMS resource/version URI 且禁止空白与控制字符。version ID 与材料 SHA 都进入 deterministic operation binding；ID 是外部
+KMS provenance 的不可变声明，不单独证明该版本当前 enabled/primary/revoked 状态，状态真实性必须由后续 provider receipt 证明。
+
 Operation 参数不包含 root 密码、JWT 或 KMS 解封凭据。token 签发器使用独立 projected credential/短期 broker，输出只允许写入
 上述固定 workspace 文件；stdout/stderr、Operation message 和 receipt 都不得包含 token/key 明文。
 
@@ -102,8 +108,8 @@ observedGeneration、replicas、readyReplicas、updatedReplicas 和 current/upda
 `--auth-token` 参数、operation phase annotation、固定 Secret 引用和必要的 checksum annotation；镜像、其他 args/env、
 ServiceAccount、security context、volume 或 selector 漂移时拒绝。每次发布结果写一个独立严格 JSON publish receipt，gate
 receipt 保持 A5492 的既有 schema。runner 最后原子发布独立
-`kubebrain.jwt-key-rotation.operation.receipt.v1`，绑定三张 publish receipt、phase A/B/final gate receipt、参数 SHA、Operation
-UID/attempt 和各自摘要；terminal CAS 提交该 composite receipt 的 SHA-256，不能仅凭 rollout status stdout 或修改既有 gate
+`kubebrain.jwt-key-rotation.operation.receipt.v2`，绑定 old/new KMS version ID、三张 publish receipt、phase A/B/final gate receipt、
+参数 SHA、Operation UID/attempt 和各自摘要；terminal CAS 提交该 composite receipt 的 SHA-256，不能仅凭 rollout status stdout 或修改既有 gate
 schema。
 
 phase A 发布失败可安全重试到 A。phase B 混合窗口只能继续收敛到 B，或由显式 rollback policy 把全部副本收敛回 A；不得留下
@@ -246,6 +252,13 @@ Kind Kubernetes v1.36.1 上 requester policy 达到 generation/observedGeneratio
 server dry-run 放行，缺失 key、额外 key 和不完整 TLS 均拒绝。race、vet 与定向 production 测试通过；完整未分片包因累计运行到
 Go 默认 10 分钟总超时停在既有 info certificate scrape 用例，该用例单独 1.965 秒通过。权威 620 项四分片提交后 Go/墙钟秒为
 143.327/149.438、373.654/379.762、231.023/237.133、382.421/388.548，全部通过。
+
+提交 `440f8f73` 增加 KMS version provenance 强绑定。requester 必须提供不同且规范的 old/new version ID，两个 ID 同时进入
+operation 名 binding 与严格参数 schema。`operationctl material` 对 signing material 强制携带 version；broker 不只匹配请求字段，
+还从摘要绑定的参数 JSON 独立验证两个 version 均规范、互异，并要求请求 version 精确匹配对应 old/new 字段。TLS material 禁止
+伪带 KMS version。最终 composite receipt 升级为 v2 并显式记录两个 version ID，已有 v1/篡改 receipt 均不能幂等复用。
+定向测试、race、vet 通过；620 项提交后四片 Go/墙钟秒为 146.864/152.978、373.425/379.459、236.001/242.057、
+381.470/387.540，全部通过。该证据固定 provenance 声明，但尚未验证外部 KMS 对 version 状态的签名/在线证明。
 
 当前仍保持 disabled-by-default，不能直接规模化上线：本提交只实现受限 Kubernetes Secret→broker→executor 交接；外部 KMS
 生成/export、version promotion/revoke 与认证 credential Secret 创建/轮换/撤权演练，三处真实
