@@ -259,15 +259,18 @@ func (h *httpServer) close() error {
 
 func newGRPCMuxedHTTPServer(grpcServer *grpc.Server, httpHandler http.Handler) *grpcMuxedHTTPServer {
 	return &grpcMuxedHTTPServer{
-		grpcServer: grpcServer,
-		httpServer: newHTTPServer(grpcHandlerFunc(grpcServer, httpHandler)),
+		grpcServer:  grpcServer,
+		httpServer:  newHTTPServer(grpcHandlerFunc(grpcServer, httpHandler)),
+		quiesceDone: make(chan struct{}),
 	}
 }
 
 type grpcMuxedHTTPServer struct {
-	grpcServer *grpc.Server
-	httpServer *httpServer
-	quiescing  atomic.Bool
+	grpcServer  *grpc.Server
+	httpServer  *httpServer
+	quiescing   atomic.Bool
+	quiesceDone chan struct{}
+	quiesceErr  error
 }
 
 func (s *grpcMuxedHTTPServer) name() string {
@@ -287,12 +290,16 @@ func (s *grpcMuxedHTTPServer) quiesce() {
 		return
 	}
 	// net/http owns these gRPC HTTP/2 transports. Shutdown stops admission and
-	// sends GOAWAY before waiting for long-lived watches; keep that wait off the
-	// /drain request and let final close terminate streams at process shutdown.
+	// sends GOAWAY, but an existing Watch can otherwise remain attached until the
+	// process exits after the preStop sleep. Use the same bounded shutdown as the
+	// final close so clients resume on another Pod during that migration window;
+	// keep the wait off the /drain request itself.
 	go func() {
-		if err := s.httpServer.svr.Shutdown(context.Background()); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			klog.ErrorS(err, "quiesce muxed HTTP/2 transport")
+		s.quiesceErr = s.httpServer.close()
+		if s.quiesceErr != nil {
+			klog.ErrorS(s.quiesceErr, "quiesce muxed HTTP/2 transport")
 		}
+		close(s.quiesceDone)
 	}()
 }
 
@@ -305,7 +312,13 @@ func (s *grpcMuxedHTTPServer) close() error {
 	// shutdown order: let http.Server.Shutdown send GOAWAY and drain handlers,
 	// then stop gRPC. Calling http.Server.Close first drops persistent client
 	// connections with EOF during a Kubernetes rollout.
-	httpErr := s.httpServer.close()
+	var httpErr error
+	if s.quiescing.Load() {
+		<-s.quiesceDone
+		httpErr = s.quiesceErr
+	} else {
+		httpErr = s.httpServer.close()
+	}
 	s.grpcServer.Stop()
 	return httpErr
 }

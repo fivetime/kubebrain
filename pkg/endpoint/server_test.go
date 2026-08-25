@@ -192,6 +192,45 @@ func TestMuxedHTTP2CloseBoundsQuiescingRequest(t *testing.T) {
 	require.NoError(t, normalizeServeError(<-serveDone))
 }
 
+func TestMuxedHTTP2QuiesceBoundsLongLivedRequest(t *testing.T) {
+	handlerStarted := make(chan struct{})
+	handlerCanceled := make(chan struct{})
+	server := newGRPCMuxedHTTPServer(grpc.NewServer(), http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		close(handlerStarted)
+		<-request.Context().Done()
+		close(handlerCanceled)
+	}))
+	server.httpServer.shutdownTimeout = 50 * time.Millisecond
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.serve(listener) }()
+	t.Cleanup(func() { require.NoError(t, server.close()) })
+
+	requestDone := make(chan error, 1)
+	go func() {
+		response, requestErr := http.Get("http://" + listener.Addr().String())
+		if response != nil {
+			requestErr = errors.Join(requestErr, response.Body.Close())
+		}
+		requestDone <- requestErr
+	}()
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not reach handler")
+	}
+
+	server.quiesce()
+	select {
+	case <-handlerCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("quiesce left a long-lived request attached past its drain budget")
+	}
+	require.Error(t, <-requestDone)
+	require.NoError(t, normalizeServeError(<-serveDone))
+}
+
 func TestMuxedHTTP2QuiesceKeepsRunnerAliveUntilShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	server := newGRPCMuxedHTTPServer(grpc.NewServer(), http.NotFoundHandler())
