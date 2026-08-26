@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -19,6 +20,7 @@ import (
 	tikverr "github.com/tikv/client-go/v2/error"
 	"github.com/tikv/client-go/v2/txnkv"
 	pd "github.com/tikv/pd/client"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
@@ -559,6 +561,56 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 		expected.revision = lastRevision
 	}
+	historySeed := &streamExpected[0]
+	historyCreateRevision := historySeed.revision
+	historySeed.events = append(historySeed.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: historySeed.value, hash: historySeed.hash, revision: historyCreateRevision,
+		createRevision: historyCreateRevision, version: 1,
+	})
+	updatedValue := historySeed.value + "-updated"
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	updated, updateErr := client.Put(opCtx, historySeed.key, updatedValue)
+	cancel()
+	if updateErr != nil {
+		return fmt.Errorf("update Snapshot history seed %q: %w", historySeed.key, updateErr)
+	}
+	lastRevision, updateErr = validatePutResponse(updated, clusterID, lastRevision)
+	if updateErr != nil {
+		return fmt.Errorf("update Snapshot history seed %q: %w", historySeed.key, updateErr)
+	}
+	historySeed.events = append(historySeed.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: updatedValue, hash: sha256.Sum256([]byte(updatedValue)), revision: lastRevision,
+		createRevision: historyCreateRevision, version: 2,
+	})
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	deleted, deleteErr := client.Delete(opCtx, historySeed.key)
+	cancel()
+	if deleteErr != nil {
+		return fmt.Errorf("delete Snapshot history seed %q: %w", historySeed.key, deleteErr)
+	}
+	_, lastRevision, deleteErr = validateDeleteResponse(deleted, clusterID, lastRevision)
+	if deleteErr != nil {
+		return fmt.Errorf("delete Snapshot history seed %q: %w", historySeed.key, deleteErr)
+	}
+	if deleted.Deleted != 1 {
+		return fmt.Errorf("delete Snapshot history seed %q returned deleted=%d, want 1", historySeed.key, deleted.Deleted)
+	}
+	historySeed.events = append(historySeed.events, streamProbeEventExpectation{eventType: mvccpb.DELETE, revision: lastRevision})
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	recreated, recreateErr := client.Put(opCtx, historySeed.key, historySeed.value)
+	cancel()
+	if recreateErr != nil {
+		return fmt.Errorf("recreate Snapshot history seed %q: %w", historySeed.key, recreateErr)
+	}
+	lastRevision, recreateErr = validatePutResponse(recreated, clusterID, lastRevision)
+	if recreateErr != nil {
+		return fmt.Errorf("recreate Snapshot history seed %q: %w", historySeed.key, recreateErr)
+	}
+	historySeed.revision = lastRevision
+	historySeed.events = append(historySeed.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: historySeed.value, hash: historySeed.hash, revision: lastRevision,
+		createRevision: lastRevision, version: 1,
+	})
 
 	watchKey := cfg.prefix + "watch"
 	watchCtx, stopWatch := context.WithCancel(ctx)

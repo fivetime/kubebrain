@@ -53,6 +53,17 @@ type streamProbeExpectation struct {
 	value    string
 	hash     [sha256.Size]byte
 	revision int64
+	events   []streamProbeEventExpectation
+}
+
+type streamProbeEventExpectation struct {
+	eventType      mvccpb.Event_EventType
+	value          string
+	hash           [sha256.Size]byte
+	revision       int64
+	createRevision int64
+	version        int64
+	lease          int64
 }
 
 func newStreamProbeExpectations(prefix string) []streamProbeExpectation {
@@ -357,18 +368,56 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		}
 		return validateHeader(response.Header)
 	}
-	expectedByKey := make(map[string]streamProbeExpectation, len(expected))
+	type keyedExpectedEvent struct {
+		key   string
+		event streamProbeEventExpectation
+	}
+	seenKeys := make(map[string]struct{}, len(expected))
+	expectedEvents := make([]keyedExpectedEvent, 0, len(expected))
 	firstRevision := revision + 1
 	commonPrefix := []byte(expected[0].key)
 	for _, item := range expected {
 		if item.key == "" || item.revision <= 0 || item.revision > revision {
 			return fmt.Errorf("invalid restored seed expectation: key=%q revision=%d snapshot_revision=%d", item.key, item.revision, revision)
 		}
-		if _, duplicate := expectedByKey[item.key]; duplicate {
+		if _, duplicate := seenKeys[item.key]; duplicate {
 			return fmt.Errorf("duplicate restored seed expectation for %q", item.key)
 		}
-		expectedByKey[item.key] = item
-		firstRevision = min(firstRevision, item.revision)
+		seenKeys[item.key] = struct{}{}
+		events := item.events
+		if len(events) == 0 {
+			events = []streamProbeEventExpectation{{
+				eventType: mvccpb.PUT, value: item.value, hash: item.hash, revision: item.revision,
+				createRevision: item.revision, version: 1,
+			}}
+		}
+		var previousRevision int64
+		for _, event := range events {
+			if event.revision <= 0 || event.revision > revision || event.revision <= previousRevision {
+				return fmt.Errorf("invalid restored seed event expectation: key=%q revision=%d previous_revision=%d snapshot_revision=%d",
+					item.key, event.revision, previousRevision, revision)
+			}
+			switch event.eventType {
+			case mvccpb.PUT:
+				if event.createRevision <= 0 || event.createRevision > event.revision || event.version <= 0 || event.lease < 0 {
+					return fmt.Errorf("invalid restored seed PUT expectation: key=%q revision=%d", item.key, event.revision)
+				}
+			case mvccpb.DELETE:
+				if event.value != "" || event.hash != ([sha256.Size]byte{}) || event.createRevision != 0 || event.version != 0 || event.lease != 0 {
+					return fmt.Errorf("invalid restored seed DELETE expectation: key=%q revision=%d", item.key, event.revision)
+				}
+			default:
+				return fmt.Errorf("invalid restored seed event type: key=%q type=%s", item.key, event.eventType)
+			}
+			expectedEvents = append(expectedEvents, keyedExpectedEvent{key: item.key, event: event})
+			firstRevision = min(firstRevision, event.revision)
+			previousRevision = event.revision
+		}
+		lastEvent := events[len(events)-1]
+		if lastEvent.eventType != mvccpb.PUT || lastEvent.revision != item.revision || lastEvent.createRevision != item.revision ||
+			lastEvent.version != 1 || lastEvent.lease != 0 || lastEvent.hash != item.hash || lastEvent.value != item.value {
+			return fmt.Errorf("restored seed event history does not end at current seed: key=%q", item.key)
+		}
 		key := []byte(item.key)
 		commonLength := min(len(commonPrefix), len(key))
 		for commonLength > 0 && !bytes.Equal(commonPrefix[:commonLength], key[:commonLength]) {
@@ -378,6 +427,14 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 	}
 	if len(commonPrefix) == 0 {
 		return errors.New("restored seed expectations do not share a non-empty Watch prefix")
+	}
+	sort.Slice(expectedEvents, func(left, right int) bool {
+		return expectedEvents[left].event.revision < expectedEvents[right].event.revision
+	})
+	for index := 1; index < len(expectedEvents); index++ {
+		if expectedEvents[index-1].event.revision == expectedEvents[index].event.revision {
+			return fmt.Errorf("restored seed event expectations share revision %d without subrevision metadata", expectedEvents[index].event.revision)
+		}
 	}
 	validateSeed := func(item streamProbeExpectation, response *clientv3.GetResponse, historical bool) error {
 		label := "current"
@@ -402,14 +459,38 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		return nil
 	}
 	for _, item := range expected {
-		response, err := client.Get(verifyCtx, item.key, clientv3.WithRev(item.revision))
-		if err != nil {
-			return fmt.Errorf("read historical seed %q at revision %d from officially restored etcd: %w", item.key, item.revision, err)
+		events := item.events
+		if len(events) == 0 {
+			events = []streamProbeEventExpectation{{
+				eventType: mvccpb.PUT, value: item.value, hash: item.hash, revision: item.revision,
+				createRevision: item.revision, version: 1,
+			}}
 		}
-		if err := validateSeed(item, response, true); err != nil {
-			return err
+		for _, event := range events {
+			response, err := client.Get(verifyCtx, item.key, clientv3.WithRev(event.revision))
+			if err != nil {
+				return fmt.Errorf("read historical seed %q at revision %d from officially restored etcd: %w", item.key, event.revision, err)
+			}
+			if err := validateHeader(response.Header); err != nil {
+				return fmt.Errorf("validate restored historical seed %q at revision %d: %w", item.key, event.revision, err)
+			}
+			if event.eventType == mvccpb.DELETE {
+				if response.More || response.Count != 0 || len(response.Kvs) != 0 {
+					return fmt.Errorf("officially restored etcd returned data for deleted historical seed %q at revision %d", item.key, event.revision)
+				}
+				continue
+			}
+			if response.More || response.Count != 1 || len(response.Kvs) != 1 {
+				return fmt.Errorf("officially restored etcd returned invalid historical seed cardinality for %q at revision %d: count=%d values=%d more=%t",
+					item.key, event.revision, response.Count, len(response.Kvs), response.More)
+			}
+			kv := response.Kvs[0]
+			if kv == nil || string(kv.Key) != item.key || sha256.Sum256(kv.Value) != event.hash || kv.CreateRevision != event.createRevision ||
+				kv.ModRevision != event.revision || kv.Version != event.version || kv.Lease != event.lease {
+				return fmt.Errorf("officially restored etcd returned invalid historical seed data for %q at revision %d", item.key, event.revision)
+			}
 		}
-		response, err = client.Get(verifyCtx, item.key)
+		response, err := client.Get(verifyCtx, item.key)
 		if err != nil {
 			return fmt.Errorf("read current seed %q from officially restored etcd: %w", item.key, err)
 		}
@@ -421,12 +502,12 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 	watchCtx, stopWatch := context.WithCancel(verifyCtx)
 	defer stopWatch()
 	watch := client.Watch(watchCtx, string(commonPrefix), clientv3.WithPrefix(), clientv3.WithRev(firstRevision))
-	observed := make(map[string]struct{}, len(expected))
-	for len(observed) < len(expected) {
+	observed := 0
+	for observed < len(expectedEvents) {
 		select {
 		case response, ok := <-watch:
 			if !ok {
-				return fmt.Errorf("officially restored etcd historical seed Watch closed after %d/%d events", len(observed), len(expected))
+				return fmt.Errorf("officially restored etcd historical seed Watch closed after %d/%d events", observed, len(expectedEvents))
 			}
 			if err := response.Err(); err != nil {
 				return fmt.Errorf("watch restored historical seeds from revision %d: %w", firstRevision, err)
@@ -439,22 +520,30 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 				return fmt.Errorf("validate restored historical seed Watch: %w", err)
 			}
 			for _, event := range response.Events {
-				if event == nil || event.Type != mvccpb.PUT || event.Kv == nil || event.PrevKv != nil {
+				if event == nil || event.Kv == nil || event.PrevKv != nil {
 					return errors.New("officially restored etcd returned an invalid historical seed Watch event")
 				}
+				if observed >= len(expectedEvents) {
+					return fmt.Errorf("officially restored etcd historical seed Watch returned unexpected key %q", event.Kv.Key)
+				}
+				want := expectedEvents[observed]
 				key := string(event.Kv.Key)
-				item, exists := expectedByKey[key]
-				if !exists {
+				if key != want.key {
 					return fmt.Errorf("officially restored etcd historical seed Watch returned unexpected key %q", key)
 				}
-				if _, duplicate := observed[key]; duplicate {
-					return fmt.Errorf("officially restored etcd historical seed Watch repeated key %q", key)
+				if event.Type != want.event.eventType {
+					return fmt.Errorf("officially restored etcd historical seed Watch returned unexpected event type for %q: got=%s want=%s", key, event.Type, want.event.eventType)
 				}
-				if sha256.Sum256(event.Kv.Value) != item.hash || event.Kv.CreateRevision != item.revision ||
-					event.Kv.ModRevision != item.revision || event.Kv.Version != 1 || event.Kv.Lease != 0 {
+				if want.event.eventType == mvccpb.DELETE {
+					if len(event.Kv.Value) != 0 || event.Kv.CreateRevision != 0 || event.Kv.ModRevision != want.event.revision ||
+						event.Kv.Version != 0 || event.Kv.Lease != 0 {
+						return fmt.Errorf("officially restored etcd returned invalid historical seed Watch delete for %q", key)
+					}
+				} else if sha256.Sum256(event.Kv.Value) != want.event.hash || event.Kv.CreateRevision != want.event.createRevision ||
+					event.Kv.ModRevision != want.event.revision || event.Kv.Version != want.event.version || event.Kv.Lease != want.event.lease {
 					return fmt.Errorf("officially restored etcd returned invalid historical seed Watch data for %q", key)
 				}
-				observed[key] = struct{}{}
+				observed++
 			}
 		case <-verifyCtx.Done():
 			return fmt.Errorf("wait for officially restored etcd historical seed Watch: %w", context.Cause(verifyCtx))

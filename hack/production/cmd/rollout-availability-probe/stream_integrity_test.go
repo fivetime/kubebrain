@@ -331,6 +331,52 @@ func TestConsumeAndValidateSnapshotRejectsUnexpectedHistoricalWatchEvent(t *test
 	require.Empty(t, entries, "a historical Watch validation failure must always be removed")
 }
 
+func TestConsumeAndValidateSnapshotValidatesUpdateDeleteRecreateHistory(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source.db")
+	require.NoError(t, etcdsnapshot.WriteBackend(sourcePath, etcdsnapshot.State{
+		Revision: 10, PreserveHistory: true,
+		Records: []etcdsnapshot.Record{
+			{Key: []byte("probe/history"), Value: []byte("v1"), CreateRevision: 7, ModRevision: 7, Version: 1},
+			{Key: []byte("probe/history"), Value: []byte("v2"), CreateRevision: 7, ModRevision: 8, Version: 2},
+			{Key: []byte("probe/history"), ModRevision: 9, Tombstone: true},
+			{Key: []byte("probe/history"), Value: []byte("v3"), CreateRevision: 10, ModRevision: 10, Version: 1},
+		},
+	}))
+	data, err := os.ReadFile(sourcePath)
+	require.NoError(t, err)
+	digest := sha256.Sum256(data)
+	expected := []streamProbeExpectation{{
+		key: "probe/history", value: "v3", hash: sha256.Sum256([]byte("v3")), revision: 10,
+		events: []streamProbeEventExpectation{
+			{eventType: mvccpb.PUT, value: "v1", hash: sha256.Sum256([]byte("v1")), revision: 7, createRevision: 7, version: 1},
+			{eventType: mvccpb.PUT, value: "v2", hash: sha256.Sum256([]byte("v2")), revision: 8, createRevision: 7, version: 2},
+			{eventType: mvccpb.DELETE, revision: 9},
+			{eventType: mvccpb.PUT, value: "v3", hash: sha256.Sum256([]byte("v3")), revision: 10, createRevision: 10, version: 1},
+		},
+	}}
+	receiver := func() *fakeSnapshotReceiver {
+		return &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+			{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+			{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+		}}
+	}
+	dir := t.TempDir()
+	partial, err := consumeAndValidateSnapshot(t.Context(), receiver(), dir, expected, restoredSnapshotTLSConfig{})
+	require.NoError(t, err)
+	require.True(t, partial)
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a validated historical artifact must always be removed")
+
+	expected[0].events[1].hash = sha256.Sum256([]byte("wrong v2"))
+	partial, err = consumeAndValidateSnapshot(t.Context(), receiver(), dir, expected, restoredSnapshotTLSConfig{})
+	require.ErrorContains(t, err, "historical seed")
+	require.True(t, partial)
+	entries, readErr = os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a rejected historical artifact must always be removed")
+}
+
 func TestValidateSnapshotArtifactRejectsRestoreFailureAndRemovesPartialOutput(t *testing.T) {
 	dir := t.TempDir()
 	artifactPath := filepath.Join(dir, "artifact.db")
