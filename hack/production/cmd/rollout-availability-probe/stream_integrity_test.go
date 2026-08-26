@@ -377,25 +377,30 @@ func TestConsumeAndValidateSnapshotValidatesUpdateDeleteRecreateHistory(t *testi
 	require.Empty(t, entries, "a rejected historical artifact must always be removed")
 }
 
-func TestConsumeAndValidateSnapshotValidatesHistoricalLeaseState(t *testing.T) {
+func TestConsumeAndValidateSnapshotValidatesMultipleHistoricalLeaseStates(t *testing.T) {
 	expected := []streamProbeExpectation{{
-		key: "probe/lease-history", value: "v3", hash: sha256.Sum256([]byte("v3")), revision: 10,
+		key: "probe/lease-history", value: "v4", hash: sha256.Sum256([]byte("v4")), revision: 11,
 		events: []streamProbeEventExpectation{
 			{eventType: mvccpb.PUT, value: "v1", hash: sha256.Sum256([]byte("v1")), revision: 7, createRevision: 7, version: 1},
-			{eventType: mvccpb.PUT, value: "v2", hash: sha256.Sum256([]byte("v2")), revision: 8, createRevision: 7, version: 2, lease: 17},
-			{eventType: mvccpb.DELETE, revision: 9},
-			{eventType: mvccpb.PUT, value: "v3", hash: sha256.Sum256([]byte("v3")), revision: 10, createRevision: 10, version: 1},
+			{eventType: mvccpb.PUT, value: "v2", hash: sha256.Sum256([]byte("v2")), revision: 8, createRevision: 7, version: 2, lease: 17, leaseGrantedTTL: 60},
+			{eventType: mvccpb.PUT, value: "v3", hash: sha256.Sum256([]byte("v3")), revision: 9, createRevision: 7, version: 3, lease: 23, leaseGrantedTTL: 90},
+			{eventType: mvccpb.DELETE, revision: 10},
+			{eventType: mvccpb.PUT, value: "v4", hash: sha256.Sum256([]byte("v4")), revision: 11, createRevision: 11, version: 1},
 		},
 	}}
 	state := etcdsnapshot.State{
-		Revision: 10, PreserveHistory: true,
+		Revision: 11, PreserveHistory: true,
 		Records: []etcdsnapshot.Record{
 			{Key: []byte("probe/lease-history"), Value: []byte("v1"), CreateRevision: 7, ModRevision: 7, Version: 1},
 			{Key: []byte("probe/lease-history"), Value: []byte("v2"), CreateRevision: 7, ModRevision: 8, Version: 2, Lease: 17},
-			{Key: []byte("probe/lease-history"), ModRevision: 9, Tombstone: true},
-			{Key: []byte("probe/lease-history"), Value: []byte("v3"), CreateRevision: 10, ModRevision: 10, Version: 1},
+			{Key: []byte("probe/lease-history"), Value: []byte("v3"), CreateRevision: 7, ModRevision: 9, Version: 3, Lease: 23},
+			{Key: []byte("probe/lease-history"), ModRevision: 10, Tombstone: true},
+			{Key: []byte("probe/lease-history"), Value: []byte("v4"), CreateRevision: 11, ModRevision: 11, Version: 1},
 		},
-		Leases: []etcdsnapshot.Lease{{ID: 17, GrantedTTL: 60, RemainingTTL: 29}},
+		Leases: []etcdsnapshot.Lease{
+			{ID: 17, GrantedTTL: 60, RemainingTTL: 29},
+			{ID: 23, GrantedTTL: 90, RemainingTTL: 47},
+		},
 	}
 	receiver := func(t *testing.T, state etcdsnapshot.State) *fakeSnapshotReceiver {
 		t.Helper()
@@ -417,13 +422,86 @@ func TestConsumeAndValidateSnapshotValidatesHistoricalLeaseState(t *testing.T) {
 	require.NoError(t, readErr)
 	require.Empty(t, entries, "a validated lease artifact must always be removed")
 
-	state.Leases = nil
-	partial, err = consumeAndValidateSnapshot(t.Context(), receiver(t, state), dir, expected, restoredSnapshotTLSConfig{})
-	require.ErrorContains(t, err, "historical lease")
+	currentlyLeasedState := state
+	currentlyLeasedState.Revision = 9
+	currentlyLeasedState.Records = append([]etcdsnapshot.Record(nil), state.Records[:3]...)
+	currentlyLeasedExpected := append([]streamProbeExpectation(nil), expected...)
+	currentlyLeasedExpected[0].value = "v3"
+	currentlyLeasedExpected[0].hash = sha256.Sum256([]byte("v3"))
+	currentlyLeasedExpected[0].revision = 9
+	currentlyLeasedExpected[0].events = append([]streamProbeEventExpectation(nil), expected[0].events[:3]...)
+	partial, err = consumeAndValidateSnapshot(
+		t.Context(), receiver(t, currentlyLeasedState), dir, currentlyLeasedExpected, restoredSnapshotTLSConfig{},
+	)
+	require.NoError(t, err)
 	require.True(t, partial)
 	entries, readErr = os.ReadDir(dir)
 	require.NoError(t, readErr)
-	require.Empty(t, entries, "an artifact with missing historical lease state must always be removed")
+	require.Empty(t, entries, "a validated currently leased artifact must always be removed")
+
+	for name, testCase := range map[string]struct {
+		state    etcdsnapshot.State
+		expected []streamProbeExpectation
+		message  string
+	}{
+		"missing second lease": {
+			state: func() etcdsnapshot.State {
+				copy := state
+				copy.Leases = append([]etcdsnapshot.Lease(nil), state.Leases[:1]...)
+				return copy
+			}(),
+			expected: expected, message: "historical lease",
+		},
+		"wrong second granted ttl": {
+			state: func() etcdsnapshot.State {
+				copy := state
+				copy.Leases = append([]etcdsnapshot.Lease(nil), state.Leases...)
+				copy.Leases[1].GrantedTTL++
+				return copy
+			}(),
+			expected: expected, message: "invalid historical lease state",
+		},
+		"unexpected current attachment": {
+			state: func() etcdsnapshot.State {
+				copy := state
+				copy.Revision = 12
+				copy.Records = append(append([]etcdsnapshot.Record(nil), state.Records...), etcdsnapshot.Record{
+					Key: []byte("probe/unexpected"), Value: []byte("attached"), CreateRevision: 12, ModRevision: 12, Version: 1, Lease: 17,
+				})
+				return copy
+			}(),
+			expected: expected, message: "invalid attached key count",
+		},
+		"missing granted ttl expectation": {
+			state: state,
+			expected: func() []streamProbeExpectation {
+				copy := append([]streamProbeExpectation(nil), expected...)
+				copy[0].events = append([]streamProbeEventExpectation(nil), expected[0].events...)
+				copy[0].events[1].leaseGrantedTTL = 0
+				return copy
+			}(),
+			message: "missing a granted TTL",
+		},
+		"inconsistent granted ttl expectation": {
+			state: state,
+			expected: func() []streamProbeExpectation {
+				copy := append([]streamProbeExpectation(nil), expected...)
+				copy[0].events = append([]streamProbeEventExpectation(nil), expected[0].events...)
+				copy[0].events[2].lease = 17
+				return copy
+			}(),
+			message: "inconsistent restored historical lease granted TTL expectation",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			partial, err := consumeAndValidateSnapshot(t.Context(), receiver(t, testCase.state), dir, testCase.expected, restoredSnapshotTLSConfig{})
+			require.ErrorContains(t, err, testCase.message)
+			require.True(t, partial)
+			entries, readErr := os.ReadDir(dir)
+			require.NoError(t, readErr)
+			require.Empty(t, entries, "a rejected multiple-lease artifact must always be removed")
+		})
+	}
 }
 
 func TestConsumeAndValidateSnapshotValidatesTxnSubrevisionOrder(t *testing.T) {

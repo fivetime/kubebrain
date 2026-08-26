@@ -44,9 +44,10 @@ import (
 )
 
 const (
-	streamProbeSeedKeys        = 16
-	streamProbeValueBytes      = 8 * 1024
-	streamProbeHistoryLeaseTTL = 15 * 60
+	streamProbeSeedKeys              = 16
+	streamProbeValueBytes            = 8 * 1024
+	streamProbeHistoryLeaseTTL       = 15 * 60
+	streamProbeSecondHistoryLeaseTTL = 16 * 60
 )
 
 type streamProbeExpectation struct {
@@ -58,15 +59,16 @@ type streamProbeExpectation struct {
 }
 
 type streamProbeEventExpectation struct {
-	eventType      mvccpb.Event_EventType
-	value          string
-	hash           [sha256.Size]byte
-	revision       int64
-	subRevision    int64
-	totalChanges   int64
-	createRevision int64
-	version        int64
-	lease          int64
+	eventType       mvccpb.Event_EventType
+	value           string
+	hash            [sha256.Size]byte
+	revision        int64
+	subRevision     int64
+	totalChanges    int64
+	createRevision  int64
+	version         int64
+	lease           int64
+	leaseGrantedTTL int64
 }
 
 func newStreamProbeExpectations(prefix string) []streamProbeExpectation {
@@ -445,7 +447,11 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 	}
 	seenKeys := make(map[string]struct{}, len(expected))
 	expectedEvents := make([]keyedExpectedEvent, 0, len(expected))
-	expectedLeaseIDs := make(map[int64]struct{})
+	type historicalLeaseExpectation struct {
+		grantedTTL   int64
+		attachedKeys map[string]struct{}
+	}
+	expectedLeases := make(map[int64]*historicalLeaseExpectation)
 	firstRevision := revision + 1
 	commonPrefix := []byte(expected[0].key)
 	for _, item := range expected {
@@ -481,10 +487,26 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 					return fmt.Errorf("invalid restored seed PUT expectation: key=%q revision=%d", item.key, event.revision)
 				}
 				if event.lease != 0 {
-					expectedLeaseIDs[event.lease] = struct{}{}
+					if event.leaseGrantedTTL <= 0 {
+						return fmt.Errorf("restored seed lease expectation is missing a granted TTL: key=%q revision=%d lease=%d",
+							item.key, event.revision, event.lease)
+					}
+					expectedLease := expectedLeases[event.lease]
+					if expectedLease == nil {
+						expectedLeases[event.lease] = &historicalLeaseExpectation{
+							grantedTTL: event.leaseGrantedTTL, attachedKeys: make(map[string]struct{}),
+						}
+					} else if expectedLease.grantedTTL != event.leaseGrantedTTL {
+						return fmt.Errorf("inconsistent restored historical lease granted TTL expectation: lease=%d got=%d want=%d",
+							event.lease, event.leaseGrantedTTL, expectedLease.grantedTTL)
+					}
+				} else if event.leaseGrantedTTL != 0 {
+					return fmt.Errorf("unleased restored seed PUT has a granted TTL expectation: key=%q revision=%d",
+						item.key, event.revision)
 				}
 			case mvccpb.DELETE:
-				if event.value != "" || event.hash != ([sha256.Size]byte{}) || event.createRevision != 0 || event.version != 0 || event.lease != 0 {
+				if event.value != "" || event.hash != ([sha256.Size]byte{}) || event.createRevision != 0 || event.version != 0 ||
+					event.lease != 0 || event.leaseGrantedTTL != 0 {
 					return fmt.Errorf("invalid restored seed DELETE expectation: key=%q revision=%d", item.key, event.revision)
 				}
 			default:
@@ -495,9 +517,12 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			previousRevision = event.revision
 		}
 		lastEvent := events[len(events)-1]
-		if lastEvent.eventType != mvccpb.PUT || lastEvent.revision != item.revision || lastEvent.lease != 0 ||
+		if lastEvent.eventType != mvccpb.PUT || lastEvent.revision != item.revision ||
 			lastEvent.hash != item.hash || lastEvent.value != item.value {
 			return fmt.Errorf("restored seed event history does not end at current seed: key=%q", item.key)
+		}
+		if lastEvent.lease != 0 {
+			expectedLeases[lastEvent.lease].attachedKeys[item.key] = struct{}{}
 		}
 		key := []byte(item.key)
 		commonLength := min(len(commonPrefix), len(key))
@@ -596,12 +621,13 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			return err
 		}
 	}
-	leaseIDs := make([]int64, 0, len(expectedLeaseIDs))
-	for leaseID := range expectedLeaseIDs {
+	leaseIDs := make([]int64, 0, len(expectedLeases))
+	for leaseID := range expectedLeases {
 		leaseIDs = append(leaseIDs, leaseID)
 	}
 	sort.Slice(leaseIDs, func(left, right int) bool { return leaseIDs[left] < leaseIDs[right] })
 	for _, leaseID := range leaseIDs {
+		expectedLease := expectedLeases[leaseID]
 		response, err := client.TimeToLive(verifyCtx, clientv3.LeaseID(leaseID), clientv3.WithAttachedKeys())
 		if err != nil {
 			return fmt.Errorf("read restored historical lease %d: %w", leaseID, err)
@@ -612,9 +638,14 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		if err := validateHeader(response.ResponseHeader); err != nil {
 			return fmt.Errorf("validate restored historical lease %d: %w", leaseID, err)
 		}
-		if int64(response.ID) != leaseID || response.TTL <= 0 || response.GrantedTTL <= 0 || response.TTL > response.GrantedTTL {
+		if int64(response.ID) != leaseID || response.TTL <= 0 || response.GrantedTTL != expectedLease.grantedTTL ||
+			response.TTL > response.GrantedTTL {
 			return fmt.Errorf("officially restored etcd returned invalid historical lease state for %d: id=%d ttl=%d granted_ttl=%d",
 				leaseID, response.ID, response.TTL, response.GrantedTTL)
+		}
+		if len(response.Keys) != len(expectedLease.attachedKeys) {
+			return fmt.Errorf("officially restored etcd returned invalid attached key count for historical lease %d: got=%d want=%d",
+				leaseID, len(response.Keys), len(expectedLease.attachedKeys))
 		}
 		seenAttachedKeys := make(map[string]struct{}, len(response.Keys))
 		for _, key := range response.Keys {
@@ -623,6 +654,9 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			}
 			if _, duplicate := seenAttachedKeys[string(key)]; duplicate {
 				return fmt.Errorf("officially restored etcd repeated attached key %q for historical lease %d", key, leaseID)
+			}
+			if _, expected := expectedLease.attachedKeys[string(key)]; !expected {
+				return fmt.Errorf("officially restored etcd returned unexpected attached key %q for historical lease %d", key, leaseID)
 			}
 			seenAttachedKeys[string(key)] = struct{}{}
 		}
