@@ -85,6 +85,8 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 	for _, variable := range []string{
 		"PROBE_COMMAND_TIMEOUT", "PROBE_DIAL_TIMEOUT", "PROBE_MAX_OPERATION_LATENCY", "PROBE_MAX_DIRECT_STREAM_LATENCY",
 		"PROBE_MAX_PD_TSO_LATENCY", "PROBE_MAX_TIKV_REGION_LATENCY", "PROBE_READY_TIMEOUT",
+		"PROBE_RANGE_STREAM_INTERVAL", "PROBE_SNAPSHOT_START_DELAY", "PROBE_STREAM_ATTEMPT_TIMEOUT",
+		"PROBE_STREAM_RETRY_BACKOFF", "PROBE_STREAM_MAX_RETRY_BACKOFF",
 		"PROBE_START_TIMEOUT", "PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_EVIDENCE_REQUEST_TIMEOUT",
 		"KUBECTL_EVIDENCE_COMMAND_TIMEOUT", "KUBECTL_MUTATION_REQUEST_TIMEOUT",
 		"KUBECTL_MUTATION_COMMAND_TIMEOUT", "KUBECTL_READY_WAIT_COMMAND_TIMEOUT",
@@ -101,6 +103,22 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 			require.NoFileExists(t, logPath)
 		})
 	}
+}
+
+func TestRolloutAvailabilityRunnerRejectsInvertedStreamBackoffBeforeKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"PROBE_STREAM_RETRY_BACKOFF=2s",
+		"PROBE_STREAM_MAX_RETRY_BACKOFF=1000ms",
+	)
+	output, err := command.CombinedOutput()
+	require.EqualError(t, err, "exit status 2")
+	require.Contains(t, string(output), "PROBE_STREAM_RETRY_BACKOFF must not exceed PROBE_STREAM_MAX_RETRY_BACKOFF")
+	require.NoFileExists(t, logPath)
 }
 
 func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
@@ -208,6 +226,9 @@ func TestRolloutAvailabilityRunnerAcceptsDurationBoundary(t *testing.T) {
 		"PROBE_COMMAND_TIMEOUT=9223372036854ms", "PROBE_DIAL_TIMEOUT=9223372036s",
 		"PROBE_MAX_OPERATION_LATENCY=153722867m", "PROBE_MAX_PD_TSO_LATENCY=9223372036854ms",
 		"PROBE_MAX_TIKV_REGION_LATENCY=9223372036s", "PROBE_READY_TIMEOUT=153722867m",
+		"PROBE_RANGE_STREAM_INTERVAL=9223372036854ms", "PROBE_SNAPSHOT_START_DELAY=9223372036s",
+		"PROBE_STREAM_ATTEMPT_TIMEOUT=153722867m", "PROBE_STREAM_RETRY_BACKOFF=9223372036s",
+		"PROBE_STREAM_MAX_RETRY_BACKOFF=9223372036s",
 		"PROBE_START_TIMEOUT=9223372036854ms", "PROBE_COMPLETE_TIMEOUT=153722867m", "ROLLOUT_TIMEOUT=9223372036854ms",
 	)
 	output, err := command.CombinedOutput()
@@ -392,7 +413,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_lease_restarts=3 direct_endpoints=3 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
+	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_lease_restarts=3 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
 	require.Contains(t, string(output), "revision=revision-old->revision-new")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
@@ -408,6 +429,11 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, "--max-direct-stream-latency=30s")
 	require.Contains(t, log, "--max-pd-tso-latency=1s")
 	require.Contains(t, log, "--max-tikv-region-latency=1s")
+	require.Contains(t, log, "--range-stream-interval=1s")
+	require.Contains(t, log, "--snapshot-start-delay=25s")
+	require.Contains(t, log, "--stream-attempt-timeout=2m")
+	require.Contains(t, log, "--stream-retry-backoff=100ms")
+	require.Contains(t, log, "--stream-max-retry-backoff=2s")
 	require.Contains(t, log, "--lease-ttl=5")
 	require.Contains(t, log, "--direct-endpoints=http://kubebrain-0.kubebrain-peer.kubebrain-system.svc:3379,http://kubebrain-1.kubebrain-peer.kubebrain-system.svc:3379,http://kubebrain-2.kubebrain-peer.kubebrain-system.svc:3379")
 	require.Contains(t, log, "--pd-endpoints=http://pd-0:2379,http://pd-1:2379,http://pd-2:2379")
@@ -420,6 +446,26 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, " wait --for=jsonpath={.status.phase}=Succeeded")
 	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system delete pod kubebrain-rollout-availability-probe --ignore-not-found=true --wait=true --timeout=10s")
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
+}
+
+func TestRolloutAvailabilityRunnerRequiresCompleteRangeStreamAndSnapshot(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	content, err := os.ReadFile(fake)
+	require.NoError(t, err)
+	content = []byte(strings.ReplaceAll(string(content), "range_stream=17 snapshot=2", "range_stream=0 snapshot=0"))
+	require.NoError(t, os.WriteFile(fake, content, 0o755))
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "availability probe summary mismatch")
+	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
 }
 
 func TestRolloutAvailabilityRunnerBindsMutualTLSProbeIdentity(t *testing.T) {
@@ -1049,7 +1095,7 @@ elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
-  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_lease_restarts=3 direct_endpoints=3 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_lease_restarts=3 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
   printf '%s' "$payload"
   if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == probe-log ]]; then
     head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '

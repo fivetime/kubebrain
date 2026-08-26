@@ -40,6 +40,11 @@ type config struct {
 	maxHeartbeatAge  time.Duration
 	maxTSOLatency    time.Duration
 	maxRegionLatency time.Duration
+	rangeInterval    time.Duration
+	snapshotDelay    time.Duration
+	streamTimeout    time.Duration
+	streamBackoff    time.Duration
+	streamMaxBackoff time.Duration
 	caFile           string
 	certFile         string
 	keyFile          string
@@ -63,6 +68,11 @@ func main() {
 	flag.DurationVar(&cfg.maxHeartbeatAge, "max-store-heartbeat-age", 20*time.Second, "maximum TiKV store heartbeat age")
 	flag.DurationVar(&cfg.maxTSOLatency, "max-pd-tso-latency", time.Second, "maximum PD TSO request latency")
 	flag.DurationVar(&cfg.maxRegionLatency, "max-tikv-region-latency", time.Second, "maximum TiKV Region point-read latency")
+	flag.DurationVar(&cfg.rangeInterval, "range-stream-interval", time.Second, "minimum interval between complete public RangeStream probes")
+	flag.DurationVar(&cfg.snapshotDelay, "snapshot-start-delay", 25*time.Second, "delay before the single complete public Snapshot probe")
+	flag.DurationVar(&cfg.streamTimeout, "stream-attempt-timeout", 2*time.Minute, "timeout for one RangeStream or Snapshot attempt")
+	flag.DurationVar(&cfg.streamBackoff, "stream-retry-backoff", 100*time.Millisecond, "initial retry backoff after a retryable stream failure")
+	flag.DurationVar(&cfg.streamMaxBackoff, "stream-max-retry-backoff", 2*time.Second, "maximum retry backoff after consecutive stream failures")
 	flag.StringVar(&cfg.caFile, "cacert", "", "trusted CA file for KubeBrain HTTPS endpoints")
 	flag.StringVar(&cfg.certFile, "cert", "", "client certificate file for KubeBrain HTTPS endpoints")
 	flag.StringVar(&cfg.keyFile, "key", "", "client private key file for KubeBrain HTTPS endpoints")
@@ -92,7 +102,8 @@ func (cfg config) validate() error {
 	if cfg.endpoint == "" || cfg.prefix == "" || cfg.iterations <= 0 || cfg.leaseTTL <= 0 || cfg.expectedStores <= 0 {
 		return fmt.Errorf("endpoint, prefix, and positive iterations are required")
 	}
-	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxDirectLatency < cfg.maxLatency || cfg.maxHeartbeatAge <= 0 || cfg.maxTSOLatency <= 0 || cfg.maxTSOLatency > cfg.maxLatency || cfg.maxRegionLatency <= 0 || cfg.maxRegionLatency > cfg.maxLatency {
+	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxDirectLatency < cfg.maxLatency || cfg.maxHeartbeatAge <= 0 || cfg.maxTSOLatency <= 0 || cfg.maxTSOLatency > cfg.maxLatency || cfg.maxRegionLatency <= 0 || cfg.maxRegionLatency > cfg.maxLatency ||
+		cfg.rangeInterval <= 0 || cfg.snapshotDelay <= 0 || cfg.streamTimeout <= 0 || cfg.streamBackoff <= 0 || cfg.streamMaxBackoff < cfg.streamBackoff {
 		return fmt.Errorf("interval and timeouts must be positive")
 	}
 	if len(cfg.pdEndpoints) == 0 {
@@ -532,6 +543,20 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		return fmt.Errorf("attach lease key: %w", err)
 	}
 
+	streamExpected := newStreamProbeExpectations(cfg.prefix)
+	for _, expected := range streamExpected {
+		opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+		seeded, seedErr := client.Put(opCtx, expected.key, expected.value)
+		cancel()
+		if seedErr != nil {
+			return fmt.Errorf("seed RangeStream key %q: %w", expected.key, seedErr)
+		}
+		lastRevision, seedErr = validatePutResponse(seeded, clusterID, lastRevision)
+		if seedErr != nil {
+			return fmt.Errorf("seed RangeStream key %q: %w", expected.key, seedErr)
+		}
+	}
+
 	watchKey := cfg.prefix + "watch"
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	defer stopWatch()
@@ -598,11 +623,25 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 	}
 
+	streamProbe := startStreamProbeGroup(ctx, client, cfg.prefix, streamExpected, clusterID,
+		streamWorkerConfig{interval: cfg.rangeInterval, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff},
+		streamWorkerConfig{initialDelay: cfg.snapshotDelay, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff, successLimit: 1},
+	)
+	streamProbeStopped := false
+	defer func() {
+		if !streamProbeStopped {
+			_, _ = streamProbe.stop()
+		}
+	}()
+
 	fmt.Println("PROBE_STARTED")
 	var maxLatency time.Duration
 	var maxDirectLatency time.Duration
 	lastPDCheck := time.Now()
 	for i := 1; i <= cfg.iterations; i++ {
+		if streamErr := streamProbe.err(); streamErr != nil {
+			return fmt.Errorf("iteration=%d: %w", i, streamErr)
+		}
 		tsoLatency, tsoErr := samplePDTimestamp(ctx, pdClient, cfg.maxTSOLatency)
 		if tsoErr != nil {
 			return fmt.Errorf("iteration=%d backend instability: %w", i, tsoErr)
@@ -745,6 +784,14 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 		time.Sleep(cfg.interval)
 	}
+	if err := streamProbe.waitForMinimum(ctx, cfg.streamTimeout); err != nil {
+		return err
+	}
+	streamResult, err := streamProbe.stop()
+	streamProbeStopped = true
+	if err != nil {
+		return err
+	}
 	for _, probe := range directProbes {
 		if probe.keepAliveResponses == 0 {
 			return fmt.Errorf("direct lease keepalive produced no rollout-window response endpoint=%s", probe.endpoint)
@@ -818,6 +865,6 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	for _, probe := range directProbes {
 		directKeepAliveRestarts += probe.keepAliveRestarts
 	}
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive direct_lease=alive direct_lease_restarts=%d direct_endpoints=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), directKeepAliveRestarts, len(directProbes), maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive direct_lease=alive direct_lease_restarts=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), directKeepAliveRestarts, len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
 	return nil
 }

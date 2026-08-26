@@ -158,7 +158,7 @@ func TestVerifyPDStoresRejectsDuplicateIdentityAndMalformedAddress(t *testing.T)
 }
 
 func TestConfigValidation(t *testing.T) {
-	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond}
+	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second}
 	require.NoError(t, valid.validate())
 
 	for name, mutate := range map[string]func(*config){
@@ -185,6 +185,11 @@ func TestConfigValidation(t *testing.T) {
 		"TSO cap":                   func(cfg *config) { cfg.maxTSOLatency = 2 * cfg.maxLatency },
 		"Region latency":            func(cfg *config) { cfg.maxRegionLatency = 0 },
 		"Region cap":                func(cfg *config) { cfg.maxRegionLatency = 2 * cfg.maxLatency },
+		"RangeStream interval":      func(cfg *config) { cfg.rangeInterval = 0 },
+		"Snapshot delay":            func(cfg *config) { cfg.snapshotDelay = 0 },
+		"stream timeout":            func(cfg *config) { cfg.streamTimeout = 0 },
+		"stream retry backoff":      func(cfg *config) { cfg.streamBackoff = 0 },
+		"stream retry backoff cap":  func(cfg *config) { cfg.streamMaxBackoff = cfg.streamBackoff / 2 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := valid
@@ -196,12 +201,12 @@ func TestConfigValidation(t *testing.T) {
 }
 
 func TestConfigRejectsHTTPSWithoutExplicitTLSIdentity(t *testing.T) {
-	cfg := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond}
+	cfg := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second}
 	require.ErrorContains(t, cfg.validate(), "TLS")
 }
 
 func TestConfigRequiresCompleteTLSIdentityAndMatchingSchemes(t *testing.T) {
-	valid := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, caFile: "/tls/ca.crt", certFile: "/tls/tls.crt", keyFile: "/tls/tls.key", tlsServerName: "kubebrain-client.example"}
+	valid := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, caFile: "/tls/ca.crt", certFile: "/tls/tls.crt", keyFile: "/tls/tls.key", tlsServerName: "kubebrain-client.example"}
 	require.NoError(t, valid.validate())
 
 	for name, mutate := range map[string]func(*config){

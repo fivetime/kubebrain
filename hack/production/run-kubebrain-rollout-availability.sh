@@ -22,6 +22,11 @@ PROBE_MAX_OPERATION_LATENCY="${PROBE_MAX_OPERATION_LATENCY:-5s}"
 PROBE_MAX_DIRECT_STREAM_LATENCY="${PROBE_MAX_DIRECT_STREAM_LATENCY:-30s}"
 PROBE_MAX_PD_TSO_LATENCY="${PROBE_MAX_PD_TSO_LATENCY:-1s}"
 PROBE_MAX_TIKV_REGION_LATENCY="${PROBE_MAX_TIKV_REGION_LATENCY:-1s}"
+PROBE_RANGE_STREAM_INTERVAL="${PROBE_RANGE_STREAM_INTERVAL:-1s}"
+PROBE_SNAPSHOT_START_DELAY="${PROBE_SNAPSHOT_START_DELAY:-25s}"
+PROBE_STREAM_ATTEMPT_TIMEOUT="${PROBE_STREAM_ATTEMPT_TIMEOUT:-2m}"
+PROBE_STREAM_RETRY_BACKOFF="${PROBE_STREAM_RETRY_BACKOFF:-100ms}"
+PROBE_STREAM_MAX_RETRY_BACKOFF="${PROBE_STREAM_MAX_RETRY_BACKOFF:-2s}"
 PROBE_LEASE_TTL="${PROBE_LEASE_TTL:-5}"
 PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-10s}"
@@ -83,6 +88,8 @@ if ! operation_is_positive_go_seconds_decimal "$PROBE_INTERVAL"; then
 fi
 for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LATENCY PROBE_MAX_DIRECT_STREAM_LATENCY \
   PROBE_MAX_PD_TSO_LATENCY PROBE_MAX_TIKV_REGION_LATENCY PROBE_READY_TIMEOUT \
+  PROBE_RANGE_STREAM_INTERVAL PROBE_SNAPSHOT_START_DELAY PROBE_STREAM_ATTEMPT_TIMEOUT \
+  PROBE_STREAM_RETRY_BACKOFF PROBE_STREAM_MAX_RETRY_BACKOFF \
   PROBE_START_TIMEOUT PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_EVIDENCE_REQUEST_TIMEOUT \
   KUBECTL_EVIDENCE_COMMAND_TIMEOUT KUBECTL_MUTATION_REQUEST_TIMEOUT \
   KUBECTL_MUTATION_COMMAND_TIMEOUT KUBECTL_READY_WAIT_COMMAND_TIMEOUT \
@@ -92,6 +99,20 @@ for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LAT
     exit 2
   }
 done
+go_duration_nanoseconds() {
+  local value="$1" magnitude
+  case "$value" in
+    *ms) magnitude="${value%ms}"; echo "$((magnitude * 1000000))" ;;
+    *s) magnitude="${value%s}"; echo "$((magnitude * 1000000000))" ;;
+    *m) magnitude="${value%m}"; echo "$((magnitude * 60 * 1000000000))" ;;
+  esac
+}
+stream_retry_backoff_ns="$(go_duration_nanoseconds "$PROBE_STREAM_RETRY_BACKOFF")"
+stream_max_retry_backoff_ns="$(go_duration_nanoseconds "$PROBE_STREAM_MAX_RETRY_BACKOFF")"
+if (( stream_retry_backoff_ns > stream_max_retry_backoff_ns )); then
+  echo "PROBE_STREAM_RETRY_BACKOFF must not exceed PROBE_STREAM_MAX_RETRY_BACKOFF" >&2
+  exit 2
+fi
 if ! [[ "$PROBE_POD" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
   echo "PROBE_POD must be a DNS label" >&2
   exit 2
@@ -482,6 +503,11 @@ probe_command=(
   --max-direct-stream-latency="$PROBE_MAX_DIRECT_STREAM_LATENCY" \
   --max-pd-tso-latency="$PROBE_MAX_PD_TSO_LATENCY" \
   --max-tikv-region-latency="$PROBE_MAX_TIKV_REGION_LATENCY" \
+  --range-stream-interval="$PROBE_RANGE_STREAM_INTERVAL" \
+  --snapshot-start-delay="$PROBE_SNAPSHOT_START_DELAY" \
+  --stream-attempt-timeout="$PROBE_STREAM_ATTEMPT_TIMEOUT" \
+  --stream-retry-backoff="$PROBE_STREAM_RETRY_BACKOFF" \
+  --stream-max-retry-backoff="$PROBE_STREAM_MAX_RETRY_BACKOFF" \
   --lease-ttl="$PROBE_LEASE_TTL" \
   --pd-endpoints="$pd_endpoints" \
   --expected-up-stores=3 \
@@ -589,7 +615,7 @@ capture_runtime_evidence "$probe_log" kctl_evidence logs "$PROBE_POD" || {
 }
 cat "$probe_log"
 summary="$(grep '^PROBE_SUMMARY ' "$probe_log" || true)"
-if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ direct_watch=${PROBE_ITERATIONS}x${EXPECTED_REPLICAS}\ lease=alive\ direct_lease=alive\ direct_lease_restarts=[0-9]+\ direct_endpoints=${EXPECTED_REPLICAS}\ max_latency_ms=[0-9]+\ max_direct_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
+if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ direct_watch=${PROBE_ITERATIONS}x${EXPECTED_REPLICAS}\ lease=alive\ direct_lease=alive\ direct_lease_restarts=[0-9]+\ direct_endpoints=${EXPECTED_REPLICAS}\ range_stream=[1-9][0-9]*\ snapshot=[1-9][0-9]*\ stream_retries=[0-9]+\ stream_partial_retries=[0-9]+\ max_latency_ms=[0-9]+\ max_direct_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
   echo "availability probe summary mismatch" >&2
   exit 1
 fi
