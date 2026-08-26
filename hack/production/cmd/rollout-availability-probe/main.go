@@ -686,6 +686,51 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		createRevision: lastRevision, version: 1,
 	})
 
+	txnSeeds := streamExpected[2:5]
+	txnOps := make([]clientv3.Op, 0, len(txnSeeds))
+	for index := range txnSeeds {
+		seed := &txnSeeds[index]
+		seed.events = append(seed.events, streamProbeEventExpectation{
+			eventType: mvccpb.PUT, value: seed.value, hash: seed.hash, revision: seed.revision,
+			createRevision: seed.revision, version: 1,
+		})
+		value := fmt.Sprintf("%s-txn-%d", seed.value, index)
+		txnOps = append(txnOps, clientv3.OpPut(seed.key, value))
+	}
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	txnResponse, txnErr := client.Txn(opCtx).Then(txnOps...).Commit()
+	cancel()
+	if txnErr != nil {
+		return fmt.Errorf("update Snapshot subrevision seeds: %w", txnErr)
+	}
+	if txnResponse == nil || !txnResponse.Succeeded || len(txnResponse.Responses) != len(txnSeeds) {
+		return fmt.Errorf("update Snapshot subrevision seeds returned invalid response: response=%+v", txnResponse)
+	}
+	_, txnRevision, txnErr := validateResponseHeader(txnResponse.Header, clusterID, lastRevision)
+	if txnErr != nil {
+		return fmt.Errorf("update Snapshot subrevision seeds returned invalid header: %w", txnErr)
+	}
+	if txnRevision <= lastRevision {
+		return fmt.Errorf("update Snapshot subrevision seeds did not advance revision: got=%d previous=%d", txnRevision, lastRevision)
+	}
+	lastRevision = txnRevision
+	for index := range txnSeeds {
+		putResponse := txnResponse.Responses[index].GetResponsePut()
+		if putResponse == nil || putResponse.PrevKv != nil {
+			return fmt.Errorf("update Snapshot subrevision seed %q returned invalid nested response", txnSeeds[index].key)
+		}
+		seed := &txnSeeds[index]
+		value := fmt.Sprintf("%s-txn-%d", seed.value, index)
+		seed.value = value
+		seed.hash = sha256.Sum256([]byte(value))
+		seed.revision = txnRevision
+		seed.events = append(seed.events, streamProbeEventExpectation{
+			eventType: mvccpb.PUT, value: value, hash: seed.hash, revision: txnRevision,
+			subRevision: int64(index), totalChanges: int64(len(txnSeeds)),
+			createRevision: seed.events[0].createRevision, version: 2,
+		})
+	}
+
 	watchKey := cfg.prefix + "watch"
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	defer stopWatch()

@@ -62,6 +62,8 @@ type streamProbeEventExpectation struct {
 	value          string
 	hash           [sha256.Size]byte
 	revision       int64
+	subRevision    int64
+	totalChanges   int64
 	createRevision int64
 	version        int64
 	lease          int64
@@ -399,6 +401,12 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 				return fmt.Errorf("invalid restored seed event expectation: key=%q revision=%d previous_revision=%d snapshot_revision=%d",
 					item.key, event.revision, previousRevision, revision)
 			}
+			if event.subRevision < 0 || event.totalChanges < 0 ||
+				(event.totalChanges == 0 && event.subRevision != 0) ||
+				(event.totalChanges > 0 && event.subRevision >= event.totalChanges) {
+				return fmt.Errorf("invalid restored seed event order expectation: key=%q revision=%d subrevision=%d total_changes=%d",
+					item.key, event.revision, event.subRevision, event.totalChanges)
+			}
 			switch event.eventType {
 			case mvccpb.PUT:
 				if event.createRevision <= 0 || event.createRevision > event.revision || event.version <= 0 {
@@ -419,8 +427,8 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			previousRevision = event.revision
 		}
 		lastEvent := events[len(events)-1]
-		if lastEvent.eventType != mvccpb.PUT || lastEvent.revision != item.revision || lastEvent.createRevision != item.revision ||
-			lastEvent.version != 1 || lastEvent.lease != 0 || lastEvent.hash != item.hash || lastEvent.value != item.value {
+		if lastEvent.eventType != mvccpb.PUT || lastEvent.revision != item.revision || lastEvent.lease != 0 ||
+			lastEvent.hash != item.hash || lastEvent.value != item.value {
 			return fmt.Errorf("restored seed event history does not end at current seed: key=%q", item.key)
 		}
 		key := []byte(item.key)
@@ -434,14 +442,31 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		return errors.New("restored seed expectations do not share a non-empty Watch prefix")
 	}
 	sort.Slice(expectedEvents, func(left, right int) bool {
-		return expectedEvents[left].event.revision < expectedEvents[right].event.revision
-	})
-	for index := 1; index < len(expectedEvents); index++ {
-		if expectedEvents[index-1].event.revision == expectedEvents[index].event.revision {
-			return fmt.Errorf("restored seed event expectations share revision %d without subrevision metadata", expectedEvents[index].event.revision)
+		if expectedEvents[left].event.revision != expectedEvents[right].event.revision {
+			return expectedEvents[left].event.revision < expectedEvents[right].event.revision
 		}
+		return expectedEvents[left].event.subRevision < expectedEvents[right].event.subRevision
+	})
+	for start := 0; start < len(expectedEvents); {
+		end := start + 1
+		for end < len(expectedEvents) && expectedEvents[end].event.revision == expectedEvents[start].event.revision {
+			end++
+		}
+		count := int64(end - start)
+		for index := start; index < end; index++ {
+			event := expectedEvents[index].event
+			if count == 1 && event.totalChanges == 0 {
+				continue
+			}
+			wantSub := int64(index - start)
+			if event.totalChanges != count || event.subRevision != wantSub {
+				return fmt.Errorf("incomplete restored seed event order expectation at revision %d: subrevision=%d total_changes=%d want_subrevision=%d want_total_changes=%d",
+					event.revision, event.subRevision, event.totalChanges, wantSub, count)
+			}
+		}
+		start = end
 	}
-	validateSeed := func(item streamProbeExpectation, response *clientv3.GetResponse, historical bool) error {
+	validateSeed := func(item streamProbeExpectation, current streamProbeEventExpectation, response *clientv3.GetResponse, historical bool) error {
 		label := "current"
 		if historical {
 			label = "historical"
@@ -457,8 +482,8 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 				label, item.key, response.Count, len(response.Kvs), response.More)
 		}
 		kv := response.Kvs[0]
-		if kv == nil || string(kv.Key) != item.key || sha256.Sum256(kv.Value) != item.hash || kv.CreateRevision != item.revision ||
-			kv.ModRevision != item.revision || kv.Version != 1 || kv.Lease != 0 {
+		if kv == nil || string(kv.Key) != item.key || sha256.Sum256(kv.Value) != current.hash || kv.CreateRevision != current.createRevision ||
+			kv.ModRevision != current.revision || kv.Version != current.version || kv.Lease != current.lease {
 			return fmt.Errorf("officially restored etcd returned invalid %s seed data for %q", label, item.key)
 		}
 		return nil
@@ -499,7 +524,7 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		if err != nil {
 			return fmt.Errorf("read current seed %q from officially restored etcd: %w", item.key, err)
 		}
-		if err := validateSeed(item, response, false); err != nil {
+		if err := validateSeed(item, events[len(events)-1], response, false); err != nil {
 			return err
 		}
 	}

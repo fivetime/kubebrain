@@ -426,6 +426,80 @@ func TestConsumeAndValidateSnapshotValidatesHistoricalLeaseState(t *testing.T) {
 	require.Empty(t, entries, "an artifact with missing historical lease state must always be removed")
 }
 
+func TestConsumeAndValidateSnapshotValidatesTxnSubrevisionOrder(t *testing.T) {
+	state := etcdsnapshot.State{
+		Revision: 7, PreserveHistory: true,
+		Records: []etcdsnapshot.Record{
+			{Key: []byte("probe/z"), Value: []byte("z1"), CreateRevision: 4, ModRevision: 4, Version: 1},
+			{Key: []byte("probe/a"), Value: []byte("a1"), CreateRevision: 5, ModRevision: 5, Version: 1},
+			{Key: []byte("probe/m"), Value: []byte("m1"), CreateRevision: 6, ModRevision: 6, Version: 1},
+			{Key: []byte("probe/z"), Value: []byte("z2"), CreateRevision: 4, ModRevision: 7, Version: 2,
+				SubRevision: 0, TotalChanges: 3, Ordered: true},
+			{Key: []byte("probe/a"), Value: []byte("a2"), CreateRevision: 5, ModRevision: 7, Version: 2,
+				SubRevision: 1, TotalChanges: 3, Ordered: true},
+			{Key: []byte("probe/m"), Value: []byte("m2"), CreateRevision: 6, ModRevision: 7, Version: 2,
+				SubRevision: 2, TotalChanges: 3, Ordered: true},
+		},
+	}
+	expected := []streamProbeExpectation{
+		{key: "probe/z", value: "z2", hash: sha256.Sum256([]byte("z2")), revision: 7, events: []streamProbeEventExpectation{
+			{eventType: mvccpb.PUT, value: "z1", hash: sha256.Sum256([]byte("z1")), revision: 4, createRevision: 4, version: 1},
+			{eventType: mvccpb.PUT, value: "z2", hash: sha256.Sum256([]byte("z2")), revision: 7, subRevision: 0, totalChanges: 3, createRevision: 4, version: 2},
+		}},
+		{key: "probe/a", value: "a2", hash: sha256.Sum256([]byte("a2")), revision: 7, events: []streamProbeEventExpectation{
+			{eventType: mvccpb.PUT, value: "a1", hash: sha256.Sum256([]byte("a1")), revision: 5, createRevision: 5, version: 1},
+			{eventType: mvccpb.PUT, value: "a2", hash: sha256.Sum256([]byte("a2")), revision: 7, subRevision: 1, totalChanges: 3, createRevision: 5, version: 2},
+		}},
+		{key: "probe/m", value: "m2", hash: sha256.Sum256([]byte("m2")), revision: 7, events: []streamProbeEventExpectation{
+			{eventType: mvccpb.PUT, value: "m1", hash: sha256.Sum256([]byte("m1")), revision: 6, createRevision: 6, version: 1},
+			{eventType: mvccpb.PUT, value: "m2", hash: sha256.Sum256([]byte("m2")), revision: 7, subRevision: 2, totalChanges: 3, createRevision: 6, version: 2},
+		}},
+	}
+	receiver := func() *fakeSnapshotReceiver {
+		sourcePath := filepath.Join(t.TempDir(), "source.db")
+		require.NoError(t, etcdsnapshot.WriteBackend(sourcePath, state))
+		data, err := os.ReadFile(sourcePath)
+		require.NoError(t, err)
+		digest := sha256.Sum256(data)
+		return &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+			{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+			{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+		}}
+	}
+	dir := t.TempDir()
+	partial, err := consumeAndValidateSnapshot(t.Context(), receiver(), dir, expected, restoredSnapshotTLSConfig{})
+	require.NoError(t, err)
+	require.True(t, partial)
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a validated subrevision artifact must always be removed")
+
+	wrongOrder := append([]streamProbeExpectation(nil), expected...)
+	for index := range wrongOrder {
+		wrongOrder[index].events = append([]streamProbeEventExpectation(nil), expected[index].events...)
+	}
+	wrongOrder[0].events[1].subRevision = 1
+	wrongOrder[1].events[1].subRevision = 0
+	partial, err = consumeAndValidateSnapshot(t.Context(), receiver(), dir, wrongOrder, restoredSnapshotTLSConfig{})
+	require.ErrorContains(t, err, "historical seed Watch returned unexpected key")
+	require.True(t, partial)
+	entries, readErr = os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a rejected subrevision artifact must always be removed")
+
+	incomplete := append([]streamProbeExpectation(nil), expected...)
+	for index := range incomplete {
+		incomplete[index].events = append([]streamProbeEventExpectation(nil), expected[index].events...)
+	}
+	incomplete[2].events[1].totalChanges = 4
+	partial, err = consumeAndValidateSnapshot(t.Context(), receiver(), dir, incomplete, restoredSnapshotTLSConfig{})
+	require.ErrorContains(t, err, "incomplete restored seed event order expectation")
+	require.True(t, partial)
+	entries, readErr = os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "an artifact with incomplete subrevision expectations must always be removed")
+}
+
 func TestValidateSnapshotArtifactRejectsRestoreFailureAndRemovesPartialOutput(t *testing.T) {
 	dir := t.TempDir()
 	artifactPath := filepath.Join(dir, "artifact.db")
