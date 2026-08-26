@@ -137,8 +137,8 @@ func TestConsumeAndValidateSnapshotPreservesEnabledAuthPermissionMatrix(t *testi
 	})
 	state.Auth.Roles = append(state.Auth.Roles, &authpb.Role{Name: []byte("root")})
 	dir := t.TempDir()
-	partial, err := consumeAndValidateSnapshotWithAuth(t.Context(), snapshotAuthReceiver(t, state), dir, expected,
-		restoredSnapshotTLSConfig{}, &fixture.expected)
+	partial, err := consumeAndValidateSnapshotWithClusterAuth(t.Context(), snapshotAuthReceiver(t, state), dir, expected,
+		restoredSnapshotTLSConfig{}, &fixture.expected, 3)
 	require.NoError(t, err)
 	require.True(t, partial)
 	entries, readErr := os.ReadDir(dir)
@@ -167,8 +167,8 @@ func TestConsumeAndValidateSnapshotValidatesRestoredAuthPermissionMatrix(t *test
 	state := snapshotAuthTestState(t, expected, &fixture.expected)
 	dir := t.TempDir()
 
-	partial, err := consumeAndValidateSnapshotWithAuth(t.Context(), snapshotAuthReceiver(t, state), dir, expected,
-		restoredSnapshotTLSConfig{}, &fixture.expected)
+	partial, err := consumeAndValidateSnapshotWithClusterAuth(t.Context(), snapshotAuthReceiver(t, state), dir, expected,
+		restoredSnapshotTLSConfig{}, &fixture.expected, 3)
 	require.NoError(t, err)
 	require.True(t, partial)
 	entries, readErr := os.ReadDir(dir)

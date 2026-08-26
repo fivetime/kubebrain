@@ -1079,7 +1079,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		streamWorkerConfig{interval: cfg.rangeInterval, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff},
 		streamWorkerConfig{initialDelay: cfg.snapshotDelay, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff, successLimit: 1, artifactDir: cfg.snapshotDir,
 			restoredTLS:  restoredSnapshotTLSConfig{caFile: cfg.caFile, certFile: cfg.certFile, keyFile: cfg.keyFile, serverName: cfg.tlsServerName},
-			restoredAuth: &authFixture.expected},
+			restoredAuth: &authFixture.expected, restoredMembers: 3},
 	)
 	streamProbeStopped := false
 	defer func() {

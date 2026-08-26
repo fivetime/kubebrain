@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -163,13 +164,51 @@ type snapshotArtifactManager interface {
 }
 
 type restoredSnapshotConfig struct {
-	name                string
-	dataDir             string
+	members             []restoredSnapshotMemberConfig
+	initialCluster      string
 	initialClusterToken string
-	clientURL           url.URL
-	peerURL             url.URL
 	tls                 restoredSnapshotTLSConfig
 	auth                *restoredSnapshotAuthExpectation
+}
+
+type restoredSnapshotMemberConfig struct {
+	name      string
+	dataDir   string
+	clientURL url.URL
+	peerURL   url.URL
+}
+
+func (cfg restoredSnapshotConfig) validate() error {
+	if len(cfg.members) == 0 || cfg.initialCluster == "" || cfg.initialClusterToken == "" {
+		return errors.New("restored Snapshot cluster requires members, an initial cluster, and a token")
+	}
+	names := make(map[string]struct{}, len(cfg.members))
+	dataDirs := make(map[string]struct{}, len(cfg.members))
+	clientURLs := make(map[string]struct{}, len(cfg.members))
+	peerURLs := make(map[string]struct{}, len(cfg.members))
+	initialCluster := make([]string, 0, len(cfg.members))
+	for index, member := range cfg.members {
+		if member.name == "" || member.dataDir == "" || member.clientURL.Host == "" || member.peerURL.Host == "" {
+			return fmt.Errorf("restored Snapshot member %d requires a name, data directory, client URL, and peer URL", index)
+		}
+		for label, identity := range map[string]struct {
+			value string
+			seen  map[string]struct{}
+		}{
+			"name": {member.name, names}, "data directory": {member.dataDir, dataDirs},
+			"client URL": {member.clientURL.String(), clientURLs}, "peer URL": {member.peerURL.String(), peerURLs},
+		} {
+			if _, duplicate := identity.seen[identity.value]; duplicate {
+				return fmt.Errorf("restored Snapshot member %d repeats %s %q", index, label, identity.value)
+			}
+			identity.seen[identity.value] = struct{}{}
+		}
+		initialCluster = append(initialCluster, member.name+"="+member.peerURL.String())
+	}
+	if got := strings.Join(initialCluster, ","); cfg.initialCluster != got {
+		return fmt.Errorf("restored Snapshot initial cluster mismatch: got=%q want=%q", cfg.initialCluster, got)
+	}
+	return cfg.tls.validate()
 }
 
 type restoredSnapshotVerifier func(context.Context, restoredSnapshotConfig, []streamProbeExpectation, int64) error
@@ -358,32 +397,243 @@ func allocateRestoredSnapshotURLs(clientTLS bool) (clientURL, peerURL url.URL, r
 	return clientURL, peerURL, nil
 }
 
+func newRestoredSnapshotConfig(restoreRoot string, memberCount int, tlsCfg restoredSnapshotTLSConfig,
+	auth *restoredSnapshotAuthExpectation,
+) (restoredSnapshotConfig, error) {
+	if memberCount != 1 && memberCount < 3 {
+		return restoredSnapshotConfig{}, fmt.Errorf("restored Snapshot member count must be one or at least three: %d", memberCount)
+	}
+	const restoreName = "kubebrain-rollout-restore"
+	members := make([]restoredSnapshotMemberConfig, memberCount)
+	initialCluster := make([]string, memberCount)
+	for index := range members {
+		clientURL, peerURL, err := allocateRestoredSnapshotURLs(tlsCfg.enabled())
+		if err != nil {
+			return restoredSnapshotConfig{}, err
+		}
+		name := restoreName
+		if memberCount > 1 {
+			name = fmt.Sprintf("%s-%d", restoreName, index)
+		}
+		members[index] = restoredSnapshotMemberConfig{
+			name: name, dataDir: filepath.Join(restoreRoot, fmt.Sprintf("member-%d", index)),
+			clientURL: clientURL, peerURL: peerURL,
+		}
+		initialCluster[index] = name + "=" + peerURL.String()
+	}
+	cfg := restoredSnapshotConfig{
+		members: members, initialCluster: strings.Join(initialCluster, ","), initialClusterToken: restoreName,
+		tls: tlsCfg, auth: auth,
+	}
+	if err := cfg.validate(); err != nil {
+		return restoredSnapshotConfig{}, err
+	}
+	return cfg, nil
+}
+
+type restoredClusterTopology struct {
+	clusterID uint64
+	leaderID  uint64
+	memberIDs []uint64
+}
+
+func verifyRestoredClusterTopology(ctx context.Context, client *clientv3.Client, cfg restoredSnapshotConfig, revision int64,
+) (restoredClusterTopology, error) {
+	response, err := client.MemberList(ctx)
+	if err != nil {
+		return restoredClusterTopology{}, fmt.Errorf("list officially restored etcd members: %w", err)
+	}
+	if response == nil || response.Header == nil || response.Header.ClusterId == 0 || response.Header.MemberId == 0 ||
+		response.Header.RaftTerm == 0 || response.Header.Revision != 0 {
+		return restoredClusterTopology{}, fmt.Errorf("invalid officially restored etcd member-list identity: response=%+v snapshot_revision=%d", response, revision)
+	}
+	if len(response.Members) != len(cfg.members) {
+		return restoredClusterTopology{}, fmt.Errorf("officially restored etcd member count mismatch: got=%d want=%d", len(response.Members), len(cfg.members))
+	}
+	expectedByName := make(map[string]int, len(cfg.members))
+	for index, member := range cfg.members {
+		expectedByName[member.name] = index
+	}
+	topology := restoredClusterTopology{clusterID: response.Header.ClusterId, memberIDs: make([]uint64, len(cfg.members))}
+	seenIDs := make(map[uint64]struct{}, len(cfg.members))
+	for _, member := range response.Members {
+		if member == nil || member.ID == 0 || member.Name == "" || member.IsLearner {
+			return restoredClusterTopology{}, fmt.Errorf("officially restored etcd returned an invalid voting member: %+v", member)
+		}
+		index, exists := expectedByName[member.Name]
+		if !exists {
+			return restoredClusterTopology{}, fmt.Errorf("officially restored etcd returned unexpected member name %q", member.Name)
+		}
+		if _, duplicate := seenIDs[member.ID]; duplicate {
+			return restoredClusterTopology{}, fmt.Errorf("officially restored etcd repeated member ID %x", member.ID)
+		}
+		seenIDs[member.ID] = struct{}{}
+		expected := cfg.members[index]
+		if len(member.PeerURLs) != 1 || member.PeerURLs[0] != expected.peerURL.String() ||
+			len(member.ClientURLs) != 1 || member.ClientURLs[0] != expected.clientURL.String() {
+			return restoredClusterTopology{}, fmt.Errorf("officially restored etcd member %q URL mismatch: peer=%v client=%v want_peer=%q want_client=%q",
+				member.Name, member.PeerURLs, member.ClientURLs, expected.peerURL.String(), expected.clientURL.String())
+		}
+		topology.memberIDs[index] = member.ID
+	}
+	for index, member := range cfg.members {
+		statusResponse, statusErr := client.Status(ctx, member.clientURL.String())
+		if statusErr != nil {
+			return restoredClusterTopology{}, fmt.Errorf("read officially restored etcd member %q status: %w", member.name, statusErr)
+		}
+		if statusResponse == nil || statusResponse.Header == nil || statusResponse.Header.ClusterId != topology.clusterID ||
+			statusResponse.Header.MemberId != topology.memberIDs[index] || statusResponse.Header.RaftTerm == 0 ||
+			statusResponse.Header.Revision != revision || statusResponse.Leader == 0 || statusResponse.RaftTerm == 0 ||
+			statusResponse.IsLearner || len(statusResponse.Errors) != 0 {
+			return restoredClusterTopology{}, fmt.Errorf("invalid officially restored etcd member %q status: %+v snapshot_revision=%d", member.name, statusResponse, revision)
+		}
+		if _, exists := seenIDs[statusResponse.Leader]; !exists {
+			return restoredClusterTopology{}, fmt.Errorf("officially restored etcd member %q reported unknown leader %x", member.name, statusResponse.Leader)
+		}
+		if topology.leaderID == 0 {
+			topology.leaderID = statusResponse.Leader
+		} else if topology.leaderID != statusResponse.Leader {
+			return restoredClusterTopology{}, fmt.Errorf("officially restored etcd members disagree on leader: got=%x want=%x", statusResponse.Leader, topology.leaderID)
+		}
+	}
+	return topology, nil
+}
+
+func newDirectRestoredClient(cfg clientv3.Config, endpoint string) (*clientv3.Client, error) {
+	cfg.Endpoints = []string{endpoint}
+	cfg.Logger = zap.NewNop()
+	return clientv3.New(cfg)
+}
+
+func waitForRestoredMemberValue(ctx context.Context, client *clientv3.Client, key, value string, minimumRevision int64) error {
+	for {
+		response, err := client.Get(ctx, key, clientv3.WithSerializable())
+		if err == nil && response != nil && response.Header != nil && response.Header.Revision >= minimumRevision &&
+			len(response.Kvs) == 1 && string(response.Kvs[0].Key) == key && string(response.Kvs[0].Value) == value &&
+			response.Kvs[0].ModRevision == minimumRevision {
+			return nil
+		}
+		if err != nil && ctx.Err() != nil {
+			return fmt.Errorf("wait for restored member value: %w", context.Cause(ctx))
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-ctx.Done():
+			return fmt.Errorf("wait for restored member value: %w", context.Cause(ctx))
+		}
+	}
+}
+
+func verifyRestoredClusterReplicationAndQuorum(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
+	cfg restoredSnapshotConfig, topology restoredClusterTopology, servers []*embed.Etcd, revision int64,
+) (retErr error) {
+	if len(cfg.members) < 3 || len(topology.memberIDs) != len(cfg.members) || len(servers) != len(cfg.members) {
+		return fmt.Errorf("restored Snapshot quorum verification requires matching cluster state with at least three members: members=%d ids=%d servers=%d",
+			len(cfg.members), len(topology.memberIDs), len(servers))
+	}
+	directClients := make([]*clientv3.Client, len(cfg.members))
+	defer func() {
+		for index, directClient := range directClients {
+			if directClient != nil {
+				if closeErr := directClient.Close(); closeErr != nil {
+					retErr = errors.Join(retErr, fmt.Errorf("close officially restored etcd member %q client: %w", cfg.members[index].name, closeErr))
+				}
+			}
+		}
+	}()
+	for index, member := range cfg.members {
+		var err error
+		directClients[index], err = newDirectRestoredClient(adminConfig, member.clientURL.String())
+		if err != nil {
+			return fmt.Errorf("create officially restored etcd member %q client: %w", member.name, err)
+		}
+	}
+
+	replicationKey := "/kubebrain-rollout-restore/three-member-replication"
+	replicationValue := fmt.Sprintf("cluster-%x-revision-%d", topology.clusterID, revision)
+	putResponse, err := adminClient.Put(ctx, replicationKey, replicationValue)
+	if err != nil {
+		return fmt.Errorf("write officially restored etcd replication probe: %w", err)
+	}
+	if putResponse == nil || putResponse.Header == nil || putResponse.Header.ClusterId != topology.clusterID || putResponse.Header.Revision <= revision {
+		return fmt.Errorf("invalid officially restored etcd replication write response: %+v", putResponse)
+	}
+	for index, directClient := range directClients {
+		if err := waitForRestoredMemberValue(ctx, directClient, replicationKey, replicationValue, putResponse.Header.Revision); err != nil {
+			return fmt.Errorf("verify replicated value on officially restored member %q: %w", cfg.members[index].name, err)
+		}
+	}
+	deleteResponse, err := adminClient.Delete(ctx, replicationKey)
+	if err != nil || deleteResponse == nil || deleteResponse.Header == nil || deleteResponse.Header.ClusterId != topology.clusterID || deleteResponse.Deleted != 1 {
+		return fmt.Errorf("delete officially restored etcd replication probe: response=%+v err=%v", deleteResponse, err)
+	}
+
+	stopped := -1
+	for index, memberID := range topology.memberIDs {
+		if memberID != topology.leaderID {
+			stopped = index
+			break
+		}
+	}
+	if stopped < 0 || servers[stopped] == nil {
+		return errors.New("officially restored etcd cluster has no stoppable follower")
+	}
+	servers[stopped].Close()
+	servers[stopped] = nil
+	survivorEndpoints := make([]string, 0, len(cfg.members)-1)
+	for index, member := range cfg.members {
+		if index != stopped {
+			survivorEndpoints = append(survivorEndpoints, member.clientURL.String())
+		}
+	}
+	quorumConfig := adminConfig
+	quorumConfig.Endpoints = survivorEndpoints
+	quorumConfig.Logger = zap.NewNop()
+	quorumClient, err := clientv3.New(quorumConfig)
+	if err != nil {
+		return fmt.Errorf("create officially restored etcd quorum client: %w", err)
+	}
+	defer func() {
+		if closeErr := quorumClient.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close officially restored etcd quorum client: %w", closeErr))
+		}
+	}()
+	quorumKey := "/kubebrain-rollout-restore/two-of-three-quorum"
+	quorumValue := fmt.Sprintf("stopped-%x", topology.memberIDs[stopped])
+	quorumPut, err := quorumClient.Put(ctx, quorumKey, quorumValue)
+	if err != nil {
+		return fmt.Errorf("write through officially restored etcd two-of-three quorum: %w", err)
+	}
+	if quorumPut == nil || quorumPut.Header == nil || quorumPut.Header.ClusterId != topology.clusterID || quorumPut.Header.Revision <= deleteResponse.Header.Revision {
+		return fmt.Errorf("invalid officially restored etcd quorum write response: %+v", quorumPut)
+	}
+	for index, directClient := range directClients {
+		if index == stopped {
+			continue
+		}
+		if err := waitForRestoredMemberValue(ctx, directClient, quorumKey, quorumValue, quorumPut.Header.Revision); err != nil {
+			return fmt.Errorf("verify quorum value on surviving officially restored member %q: %w", cfg.members[index].name, err)
+		}
+	}
+	quorumDelete, err := quorumClient.Delete(ctx, quorumKey)
+	if err != nil || quorumDelete == nil || quorumDelete.Header == nil || quorumDelete.Header.ClusterId != topology.clusterID || quorumDelete.Deleted != 1 {
+		return fmt.Errorf("delete officially restored etcd quorum probe: response=%+v err=%v", quorumDelete, err)
+	}
+	return nil
+}
+
 func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, expected []streamProbeExpectation, revision int64) (retErr error) {
-	verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	verifyCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	embedCfg := embed.NewConfig()
-	embedCfg.Name = cfg.name
-	embedCfg.Dir = cfg.dataDir
-	embedCfg.ClusterState = embed.ClusterStateFlagExisting
-	embedCfg.ListenClientUrls = []url.URL{cfg.clientURL}
-	embedCfg.AdvertiseClientUrls = []url.URL{cfg.clientURL}
-	embedCfg.ListenPeerUrls = []url.URL{cfg.peerURL}
-	embedCfg.AdvertisePeerUrls = []url.URL{cfg.peerURL}
-	embedCfg.InitialCluster = cfg.name + "=" + cfg.peerURL.String()
-	embedCfg.InitialClusterToken = cfg.initialClusterToken
-	embedCfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
 	var (
 		clientTLSConfig *tls.Config
 		err             error
 	)
 	if cfg.tls.enabled() {
-		embedCfg.ClientTLSInfo = transport.TLSInfo{
-			CertFile:       cfg.tls.certFile,
-			KeyFile:        cfg.tls.keyFile,
-			TrustedCAFile:  cfg.tls.caFile,
-			ClientCertAuth: true,
-		}
 		clientTLSConfig, err = (transport.TLSInfo{
 			TrustedCAFile: cfg.tls.caFile,
 			CertFile:      cfg.tls.certFile,
@@ -394,27 +644,59 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			return fmt.Errorf("configure client for officially restored etcd TLS: %w", err)
 		}
 	}
-	restored, err := embed.StartEtcd(embedCfg)
-	if err != nil {
-		return fmt.Errorf("start officially restored etcd: %w", err)
-	}
-	defer restored.Close()
-	select {
-	case <-restored.Server.ReadyNotify():
-	case serveErr, ok := <-restored.Err():
-		if !ok || serveErr == nil {
-			return errors.New("officially restored etcd stopped before becoming ready")
+	restored := make([]*embed.Etcd, len(cfg.members))
+	defer func() {
+		for index := len(restored) - 1; index >= 0; index-- {
+			if restored[index] != nil {
+				restored[index].Close()
+			}
 		}
-		return fmt.Errorf("officially restored etcd stopped before becoming ready: %w", serveErr)
-	case <-verifyCtx.Done():
-		return fmt.Errorf("wait for officially restored etcd readiness: %w", context.Cause(verifyCtx))
+	}()
+	for index, member := range cfg.members {
+		embedCfg := embed.NewConfig()
+		embedCfg.Name = member.name
+		embedCfg.Dir = member.dataDir
+		embedCfg.ClusterState = embed.ClusterStateFlagExisting
+		embedCfg.ListenClientUrls = []url.URL{member.clientURL}
+		embedCfg.AdvertiseClientUrls = []url.URL{member.clientURL}
+		embedCfg.ListenPeerUrls = []url.URL{member.peerURL}
+		embedCfg.AdvertisePeerUrls = []url.URL{member.peerURL}
+		embedCfg.InitialCluster = cfg.initialCluster
+		embedCfg.InitialClusterToken = cfg.initialClusterToken
+		embedCfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
+		if cfg.tls.enabled() {
+			embedCfg.ClientTLSInfo = transport.TLSInfo{
+				CertFile: cfg.tls.certFile, KeyFile: cfg.tls.keyFile, TrustedCAFile: cfg.tls.caFile, ClientCertAuth: true,
+			}
+		}
+		restored[index], err = embed.StartEtcd(embedCfg)
+		if err != nil {
+			return fmt.Errorf("start officially restored etcd member %q: %w", member.name, err)
+		}
+	}
+	for index, server := range restored {
+		select {
+		case <-server.Server.ReadyNotify():
+		case serveErr, ok := <-server.Err():
+			if !ok || serveErr == nil {
+				return fmt.Errorf("officially restored etcd member %q stopped before becoming ready", cfg.members[index].name)
+			}
+			return fmt.Errorf("officially restored etcd member %q stopped before becoming ready: %w", cfg.members[index].name, serveErr)
+		case <-verifyCtx.Done():
+			return fmt.Errorf("wait for officially restored etcd member %q readiness: %w", cfg.members[index].name, context.Cause(verifyCtx))
+		}
 	}
 
+	endpoints := make([]string, len(cfg.members))
+	for index, member := range cfg.members {
+		endpoints[index] = member.clientURL.String()
+	}
 	clientConfig := clientv3.Config{
-		Endpoints:   []string{cfg.clientURL.String()},
+		Endpoints:   endpoints,
 		DialTimeout: 3 * time.Second,
 		Context:     verifyCtx,
 		TLS:         clientTLSConfig,
+		Logger:      zap.NewNop(),
 	}
 	if cfg.auth != nil {
 		if (cfg.auth.adminUsername == "") != (cfg.auth.adminPassword == "") ||
@@ -438,6 +720,16 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			retErr = errors.Join(retErr, fmt.Errorf("close officially restored etcd client: %w", closeErr))
 		}
 	}()
+	topology, err := verifyRestoredClusterTopology(verifyCtx, client, cfg, revision)
+	if err != nil {
+		return err
+	}
+	verifyCluster := func(adminClient *clientv3.Client, adminConfig clientv3.Config) error {
+		if len(cfg.members) == 1 {
+			return nil
+		}
+		return verifyRestoredClusterReplicationAndQuorum(verifyCtx, adminClient, adminConfig, cfg, topology, restored, revision)
+	}
 
 	validateHeader := func(header *etcdserverpb.ResponseHeader) error {
 		if header == nil || header.ClusterId == 0 || header.MemberId == 0 || header.RaftTerm == 0 || header.Revision != revision {
@@ -453,7 +745,7 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		if err := validateHeader(response.Header); err != nil {
 			return err
 		}
-		return verifyRestoredSnapshotAuth(verifyCtx, client, clientConfig, cfg.auth, revision)
+		return verifyRestoredSnapshotAuthWithAdmin(verifyCtx, client, clientConfig, cfg.auth, revision, verifyCluster)
 	}
 	type keyedExpectedEvent struct {
 		key   string
@@ -726,7 +1018,7 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			return fmt.Errorf("wait for officially restored etcd historical seed Watch: %w", context.Cause(verifyCtx))
 		}
 	}
-	return verifyRestoredSnapshotAuth(verifyCtx, client, clientConfig, cfg.auth, revision)
+	return verifyRestoredSnapshotAuthWithAdmin(verifyCtx, client, clientConfig, cfg.auth, revision, verifyCluster)
 }
 
 func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotArtifactManager, path, wireVersion, artifactDir string,
@@ -737,6 +1029,13 @@ func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotA
 
 func validateSnapshotArtifactWithAuthVerifier(ctx context.Context, manager snapshotArtifactManager, path, wireVersion, artifactDir string,
 	expected []streamProbeExpectation, tlsCfg restoredSnapshotTLSConfig, auth *restoredSnapshotAuthExpectation,
+	verifier restoredSnapshotVerifier,
+) error {
+	return validateSnapshotArtifactWithClusterAuthVerifier(ctx, manager, path, wireVersion, artifactDir, expected, tlsCfg, auth, 1, verifier)
+}
+
+func validateSnapshotArtifactWithClusterAuthVerifier(ctx context.Context, manager snapshotArtifactManager, path, wireVersion, artifactDir string,
+	expected []streamProbeExpectation, tlsCfg restoredSnapshotTLSConfig, auth *restoredSnapshotAuthExpectation, memberCount int,
 	verifier restoredSnapshotVerifier,
 ) (retErr error) {
 	if err := tlsCfg.validate(); err != nil {
@@ -761,39 +1060,26 @@ func validateSnapshotArtifactWithAuthVerifier(ctx context.Context, manager snaps
 		}
 	}()
 
-	const restoreName = "kubebrain-rollout-restore"
-	restoreDataDir := filepath.Join(restoreRoot, "data")
-	clientURL, peerURL, err := allocateRestoredSnapshotURLs(tlsCfg.enabled())
+	restoredCfg, err := newRestoredSnapshotConfig(restoreRoot, memberCount, tlsCfg, auth)
 	if err != nil {
 		return err
 	}
-	restoredCfg := restoredSnapshotConfig{
-		name:                restoreName,
-		dataDir:             restoreDataDir,
-		initialClusterToken: "kubebrain-rollout-restore",
-		clientURL:           clientURL,
-		peerURL:             peerURL,
-		tls:                 tlsCfg,
-		auth:                auth,
-	}
-	if err := manager.Restore(etcdutlsnapshot.RestoreConfig{
-		SnapshotPath:        path,
-		Name:                restoreName,
-		OutputDataDir:       restoreDataDir,
-		PeerURLs:            []string{peerURL.String()},
-		InitialCluster:      restoreName + "=" + peerURL.String(),
-		InitialClusterToken: restoredCfg.initialClusterToken,
-		SkipHashCheck:       false,
-	}); err != nil {
-		return fmt.Errorf("official etcdutl failed to restore Snapshot artifact: %w", err)
-	}
-	restoredDB := filepath.Join(restoreDataDir, "member", "snap", "db")
-	info, err := os.Stat(restoredDB)
-	if err != nil {
-		return fmt.Errorf("inspect officially restored Snapshot database: %w", err)
-	}
-	if !info.Mode().IsRegular() || info.Size() <= 0 {
-		return fmt.Errorf("official etcdutl produced an invalid restored Snapshot database: mode=%s size=%d", info.Mode(), info.Size())
+	for _, member := range restoredCfg.members {
+		if err := manager.Restore(etcdutlsnapshot.RestoreConfig{
+			SnapshotPath: path, Name: member.name, OutputDataDir: member.dataDir, PeerURLs: []string{member.peerURL.String()},
+			InitialCluster: restoredCfg.initialCluster, InitialClusterToken: restoredCfg.initialClusterToken, SkipHashCheck: false,
+		}); err != nil {
+			return fmt.Errorf("official etcdutl failed to restore Snapshot artifact for member %q: %w", member.name, err)
+		}
+		restoredDB := filepath.Join(member.dataDir, "member", "snap", "db")
+		info, err := os.Stat(restoredDB)
+		if err != nil {
+			return fmt.Errorf("inspect officially restored Snapshot database for member %q: %w", member.name, err)
+		}
+		if !info.Mode().IsRegular() || info.Size() <= 0 {
+			return fmt.Errorf("official etcdutl produced an invalid restored Snapshot database for member %q: mode=%s size=%d",
+				member.name, info.Mode(), info.Size())
+		}
 	}
 	if verifier == nil {
 		return errors.New("restored Snapshot verifier is required")
@@ -812,6 +1098,12 @@ func consumeAndValidateSnapshot(ctx context.Context, stream snapshotReceiver, ar
 
 func consumeAndValidateSnapshotWithAuth(ctx context.Context, stream snapshotReceiver, artifactDir string,
 	expected []streamProbeExpectation, tlsCfg restoredSnapshotTLSConfig, auth *restoredSnapshotAuthExpectation,
+) (bool, error) {
+	return consumeAndValidateSnapshotWithClusterAuth(ctx, stream, artifactDir, expected, tlsCfg, auth, 1)
+}
+
+func consumeAndValidateSnapshotWithClusterAuth(ctx context.Context, stream snapshotReceiver, artifactDir string,
+	expected []streamProbeExpectation, tlsCfg restoredSnapshotTLSConfig, auth *restoredSnapshotAuthExpectation, memberCount int,
 ) (partial bool, retErr error) {
 	artifact, err := os.CreateTemp(artifactDir, ".kubebrain-rollout-snapshot-*.db")
 	if err != nil {
@@ -834,8 +1126,8 @@ func consumeAndValidateSnapshotWithAuth(ctx context.Context, stream snapshotRece
 	if err != nil {
 		return partial, err
 	}
-	if err := validateSnapshotArtifactWithAuthVerifier(ctx, etcdutlsnapshot.NewV3(zap.NewNop()), path, version, artifactDir,
-		expected, tlsCfg, auth, verifyRestoredSnapshot); err != nil {
+	if err := validateSnapshotArtifactWithClusterAuthVerifier(ctx, etcdutlsnapshot.NewV3(zap.NewNop()), path, version, artifactDir,
+		expected, tlsCfg, auth, memberCount, verifyRestoredSnapshot); err != nil {
 		return partial, err
 	}
 	return partial, nil
@@ -856,15 +1148,16 @@ type streamProbeResult struct {
 }
 
 type streamWorkerConfig struct {
-	initialDelay   time.Duration
-	interval       time.Duration
-	attemptTimeout time.Duration
-	retryBackoff   time.Duration
-	maxBackoff     time.Duration
-	successLimit   int64
-	artifactDir    string
-	restoredTLS    restoredSnapshotTLSConfig
-	restoredAuth   *restoredSnapshotAuthExpectation
+	initialDelay    time.Duration
+	interval        time.Duration
+	attemptTimeout  time.Duration
+	retryBackoff    time.Duration
+	maxBackoff      time.Duration
+	successLimit    int64
+	artifactDir     string
+	restoredTLS     restoredSnapshotTLSConfig
+	restoredAuth    *restoredSnapshotAuthExpectation
+	restoredMembers int
 }
 
 type streamAttempt func(context.Context) (partial bool, err error)
@@ -978,8 +1271,12 @@ func startStreamProbeGroup(ctx context.Context, client *clientv3.Client, prefix 
 			if err != nil {
 				return false, err
 			}
-			return consumeAndValidateSnapshotWithAuth(callCtx, stream, snapshotCfg.artifactDir, expected,
-				snapshotCfg.restoredTLS, snapshotCfg.restoredAuth)
+			memberCount := snapshotCfg.restoredMembers
+			if memberCount == 0 {
+				memberCount = 1
+			}
+			return consumeAndValidateSnapshotWithClusterAuth(callCtx, stream, snapshotCfg.artifactDir, expected,
+				snapshotCfg.restoredTLS, snapshotCfg.restoredAuth, memberCount)
 		})
 		if err != nil {
 			fail("Snapshot", err)

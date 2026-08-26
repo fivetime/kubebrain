@@ -353,11 +353,16 @@ func (fixture *snapshotAuthFixture) cleanup(client *clientv3.Client, clusterID u
 	return lastRevision, cleanupErr
 }
 
-func verifyRestoredSnapshotAuth(ctx context.Context, client *clientv3.Client, clientConfig clientv3.Config,
-	expected *restoredSnapshotAuthExpectation, revision int64,
+type restoredSnapshotAdminVerifier func(*clientv3.Client, clientv3.Config) error
+
+func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.Client, clientConfig clientv3.Config,
+	expected *restoredSnapshotAuthExpectation, revision int64, verifyAdmin restoredSnapshotAdminVerifier,
 ) (retErr error) {
 	if expected == nil {
-		return nil
+		if verifyAdmin == nil {
+			return nil
+		}
+		return verifyAdmin(client, clientConfig)
 	}
 	if expected.revision == 0 || len(expected.users) == 0 || len(expected.roles) == 0 || len(expected.access) == 0 || expected.rootKey == "" {
 		return errors.New("restored auth expectation requires a positive revision and non-empty users, roles, access matrix, and root key")
@@ -482,6 +487,7 @@ func verifyRestoredSnapshotAuth(ctx context.Context, client *clientv3.Client, cl
 	}
 
 	adminClient := client
+	adminConfig := clientConfig
 	if !expected.enabled {
 		const restoredRootPassword = "kubebrain-rollout-restored-root-secret"
 		var rootResponse *clientv3.AuthUserGetResponse
@@ -532,6 +538,7 @@ func verifyRestoredSnapshotAuth(ctx context.Context, client *clientv3.Client, cl
 			}
 		}()
 		adminClient = rootClient
+		adminConfig = rootConfig
 	}
 	if _, err = adminClient.RoleList(ctx); err != nil {
 		return fmt.Errorf("list roles as isolated restored root user: %w", err)
@@ -585,6 +592,11 @@ func verifyRestoredSnapshotAuth(ctx context.Context, client *clientv3.Client, cl
 		}
 		if err := verifyRestoredAuthAccess(ctx, authenticated, access, index); err != nil {
 			return err
+		}
+	}
+	if verifyAdmin != nil {
+		if err := verifyAdmin(adminClient, adminConfig); err != nil {
+			return fmt.Errorf("verify restored cluster as administrator: %w", err)
 		}
 	}
 	return nil

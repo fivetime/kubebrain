@@ -88,6 +88,11 @@ type completeRestoreSnapshotManager struct {
 	restoreConfig etcdutlsnapshot.RestoreConfig
 }
 
+type recordingRestoreSnapshotManager struct {
+	restoreConfigs []etcdutlsnapshot.RestoreConfig
+	failAt         int
+}
+
 func (*completeRestoreSnapshotManager) Status(string) (etcdutlsnapshot.Status, error) {
 	return etcdutlsnapshot.Status{Revision: 7, TotalSize: 4096, Version: etcdsnapshot.StorageVersion}, nil
 }
@@ -97,6 +102,22 @@ func (m *completeRestoreSnapshotManager) Restore(cfg etcdutlsnapshot.RestoreConf
 	dbPath := filepath.Join(cfg.OutputDataDir, "member", "snap", "db")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return err
+	}
+	return os.WriteFile(dbPath, []byte("non-empty restored db"), 0o600)
+}
+
+func (*recordingRestoreSnapshotManager) Status(string) (etcdutlsnapshot.Status, error) {
+	return etcdutlsnapshot.Status{Revision: 7, TotalSize: 4096, Version: etcdsnapshot.StorageVersion}, nil
+}
+
+func (m *recordingRestoreSnapshotManager) Restore(cfg etcdutlsnapshot.RestoreConfig) error {
+	m.restoreConfigs = append(m.restoreConfigs, cfg)
+	dbPath := filepath.Join(cfg.OutputDataDir, "member", "snap", "db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		return err
+	}
+	if m.failAt == len(m.restoreConfigs) {
+		return errors.New("injected member restore failure")
 	}
 	return os.WriteFile(dbPath, []byte("non-empty restored db"), 0o600)
 }
@@ -648,7 +669,8 @@ func TestValidateSnapshotArtifactRejectsRestoredServerFailureAndRemovesOutput(t 
 	err := validateSnapshotArtifactWithVerifier(t.Context(), manager, artifactPath, etcdsnapshot.StorageVersion, dir, expected, restoredSnapshotTLSConfig{},
 		func(_ context.Context, cfg restoredSnapshotConfig, got []streamProbeExpectation, revision int64) error {
 			verified = true
-			require.Equal(t, manager.restoreConfig.OutputDataDir, cfg.dataDir)
+			require.Len(t, cfg.members, 1)
+			require.Equal(t, manager.restoreConfig.OutputDataDir, cfg.members[0].dataDir)
 			require.Equal(t, expected, got)
 			require.Equal(t, int64(7), revision)
 			return errors.New("restored etcd failed to start")
@@ -657,6 +679,126 @@ func TestValidateSnapshotArtifactRejectsRestoredServerFailureAndRemovesOutput(t 
 	require.True(t, verified)
 	require.NoDirExists(t, filepath.Dir(manager.restoreConfig.OutputDataDir), "failed server validation output must always be removed")
 	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
+}
+
+func TestValidateSnapshotArtifactRestoresThreeMemberClusterContract(t *testing.T) {
+	dir := t.TempDir()
+	artifactPath := filepath.Join(dir, "artifact.db")
+	require.NoError(t, os.WriteFile(artifactPath, []byte("managed by fake status"), 0o600))
+	manager := &recordingRestoreSnapshotManager{}
+	var restoredCfg restoredSnapshotConfig
+
+	err := validateSnapshotArtifactWithClusterAuthVerifier(t.Context(), manager, artifactPath, etcdsnapshot.StorageVersion,
+		dir, nil, restoredSnapshotTLSConfig{}, nil, 3,
+		func(_ context.Context, cfg restoredSnapshotConfig, _ []streamProbeExpectation, revision int64) error {
+			restoredCfg = cfg
+			require.Equal(t, int64(7), revision)
+			for _, member := range cfg.members {
+				require.FileExists(t, filepath.Join(member.dataDir, "member", "snap", "db"))
+			}
+			return nil
+		})
+	require.NoError(t, err)
+	require.Len(t, restoredCfg.members, 3)
+	require.Len(t, manager.restoreConfigs, 3)
+	names := make(map[string]struct{}, 3)
+	dataDirs := make(map[string]struct{}, 3)
+	peerURLs := make(map[string]struct{}, 3)
+	for index, restoreCfg := range manager.restoreConfigs {
+		require.Equal(t, artifactPath, restoreCfg.SnapshotPath)
+		require.Equal(t, restoredCfg.initialCluster, restoreCfg.InitialCluster)
+		require.Equal(t, restoredCfg.initialClusterToken, restoreCfg.InitialClusterToken)
+		require.False(t, restoreCfg.SkipHashCheck)
+		require.Equal(t, restoredCfg.members[index].name, restoreCfg.Name)
+		require.Equal(t, restoredCfg.members[index].dataDir, restoreCfg.OutputDataDir)
+		require.Equal(t, []string{restoredCfg.members[index].peerURL.String()}, restoreCfg.PeerURLs)
+		names[restoreCfg.Name] = struct{}{}
+		dataDirs[restoreCfg.OutputDataDir] = struct{}{}
+		peerURLs[restoreCfg.PeerURLs[0]] = struct{}{}
+	}
+	require.Len(t, names, 3)
+	require.Len(t, dataDirs, 3)
+	require.Len(t, peerURLs, 3)
+	require.NoDirExists(t, filepath.Dir(manager.restoreConfigs[0].OutputDataDir), "all restored member data must be removed")
+	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
+}
+
+func TestValidateSnapshotArtifactRemovesAllMembersAfterLaterRestoreFailure(t *testing.T) {
+	dir := t.TempDir()
+	artifactPath := filepath.Join(dir, "artifact.db")
+	require.NoError(t, os.WriteFile(artifactPath, []byte("managed by fake status"), 0o600))
+	manager := &recordingRestoreSnapshotManager{failAt: 2}
+	verified := false
+
+	err := validateSnapshotArtifactWithClusterAuthVerifier(t.Context(), manager, artifactPath, etcdsnapshot.StorageVersion,
+		dir, nil, restoredSnapshotTLSConfig{}, nil, 3,
+		func(context.Context, restoredSnapshotConfig, []streamProbeExpectation, int64) error {
+			verified = true
+			return nil
+		})
+	require.ErrorContains(t, err, "injected member restore failure")
+	require.Len(t, manager.restoreConfigs, 2)
+	require.False(t, verified)
+	require.NoDirExists(t, filepath.Dir(manager.restoreConfigs[0].OutputDataDir), "partial multi-member restore must be removed")
+	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
+}
+
+func TestConsumeAndValidateSnapshotValidatesThreeMemberRestoreReplicationAndQuorum(t *testing.T) {
+	const (
+		key      = "probe/three-member"
+		value    = "restored-through-official-etcd"
+		revision = int64(7)
+	)
+	sourcePath := filepath.Join(t.TempDir(), "source.db")
+	require.NoError(t, etcdsnapshot.WriteBackend(sourcePath, etcdsnapshot.State{
+		Revision: revision, PreserveHistory: true,
+		Records: []etcdsnapshot.Record{{Key: []byte(key), Value: []byte(value), CreateRevision: revision, ModRevision: revision, Version: 1}},
+	}))
+	data, err := os.ReadFile(sourcePath)
+	require.NoError(t, err)
+	digest := sha256.Sum256(data)
+	receiver := &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+	}}
+	expected := []streamProbeExpectation{{key: key, value: value, hash: sha256.Sum256([]byte(value)), revision: revision}}
+	dir := t.TempDir()
+	identity, err := transport.SelfCert(zap.NewNop(), t.TempDir(), []string{"restored-three-member.example:443"}, 1, x509.ExtKeyUsageClientAuth)
+	require.NoError(t, err)
+	tlsCfg := restoredSnapshotTLSConfig{
+		caFile: identity.CertFile, certFile: identity.CertFile, keyFile: identity.KeyFile, serverName: "restored-three-member.example",
+	}
+
+	partial, err := consumeAndValidateSnapshotWithClusterAuth(t.Context(), receiver, dir, expected, tlsCfg, nil, 3)
+	require.NoError(t, err)
+	require.True(t, partial)
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "validated artifact and all three restored members must be removed")
+}
+
+func TestRestoredSnapshotConfigRejectsInvalidClusterIdentity(t *testing.T) {
+	_, err := newRestoredSnapshotConfig(t.TempDir(), 2, restoredSnapshotTLSConfig{}, nil)
+	require.ErrorContains(t, err, "one or at least three")
+	base, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	require.NoError(t, err)
+	for name, mutate := range map[string]func(*restoredSnapshotConfig){
+		"missing members": func(cfg *restoredSnapshotConfig) { cfg.members = nil },
+		"duplicate name":  func(cfg *restoredSnapshotConfig) { cfg.members[1].name = cfg.members[0].name },
+		"duplicate data":  func(cfg *restoredSnapshotConfig) { cfg.members[1].dataDir = cfg.members[0].dataDir },
+		"duplicate client": func(cfg *restoredSnapshotConfig) {
+			cfg.members[1].clientURL = cfg.members[0].clientURL
+		},
+		"duplicate peer":   func(cfg *restoredSnapshotConfig) { cfg.members[1].peerURL = cfg.members[0].peerURL },
+		"cluster mismatch": func(cfg *restoredSnapshotConfig) { cfg.initialCluster += ",unexpected=http://127.0.0.1:1" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := base
+			cfg.members = append([]restoredSnapshotMemberConfig(nil), base.members...)
+			mutate(&cfg)
+			require.Error(t, cfg.validate())
+		})
+	}
 }
 
 func TestRestoredSnapshotTLSConfigRejectsPartialIdentity(t *testing.T) {
