@@ -62698,6 +62698,46 @@ Service UID `7295fb7f-ad59-44b6-81cc-b1b1f8f8d059` 已用创建时 UID/resourceV
 该结果证明当前单节点 Kind、独立 3×PD/3×TiKV 和两次受控滚动窗口内没有 client-side KeepAlive 队列溢出；它不外推为跨节点/AZ、
 外部负载均衡或长时 soak 的容量结论。
 
+### A5538：直连 KeepAlive 恢复阶段绑定硬 deadline
+
+A5537 把 KeepAlive 改为持续消费后，真实两轮滚动分别观察到 32 和 31 次直连 channel 重建，但恢复时限仍只存在于最终收尾调用：从某个
+Pod channel 首次关闭到第一条合法响应可以跨越后续多个 iteration，期间每次 replacement 关闭都不会失败，直到整轮结束才最多再等
+30 秒。direct Watch 的 `max-direct-stream-latency=30s` 不能替代 LeaseKeepAlive 路径本身的可用性证据；同步 restart 若卡住，还会占住
+该 channel 的唯一 consumer。
+
+提交 `121d19f4`（完整 SHA `121d19f44bf7d8aae48e4105c8e742468683d2bf`）让每个直连 monitor 在首次非调用方关闭时启动
+唯一的 30 秒恢复 deadline，并把相同 deadline 贯穿同一恢复阶段内的所有 replacement channel；重复关闭不会重置预算。restart 调用在
+独立、受 monitor context 取消的 goroutine 中执行，因此调用自身阻塞也不能绕过 deadline。第一条身份、TTL 和 revision 均合法的响应才会
+结束计时并记录恢复耗时；旧 timer 随后失效，不会误杀已恢复订阅。超时、非正 timeout 或空 timer channel 都发布首个 fatal error、取消
+订阅并让 rollout fail closed。
+
+确定性 RED 分别固定“第二次关闭重置时钟”和“restart 阻塞导致 deadline 无法被消费”；另有成功后旧 timer 失效、最大恢复耗时、重建失败、
+非法响应与 queue overflow 回归。摘要新增 `max_direct_lease_recovery_ms`，runner 要求该字段存在且为规范非负整数；真正的 `<30s` 约束由
+monitor 在产生摘要前执行，不能靠日志事后解释。KeepAlive race 20 轮 2.098 秒、probe 全套 20 轮 3.609 秒、完整 rollout runner
+77.906 秒，vet、Shell syntax 与 diff check 全绿。655 项 inventory 为 `158/181/164/152`；精确提交后四片 Go/墙钟秒为
+`134.129/140.637`、`361.698/368.158`、`232.319/238.828`、`377.433/383.897`，全部通过。
+
+A5538 镜像构建时间 `2026-08-26T12:06:24Z`，OCI index
+`sha256:f7a017845a39b84661198b32f1ce073f681b4096af3cd68ef2ee9621cc6e8d9f`、platform manifest
+`sha256:cb96a63dbe756ca8ff67353bd8bf86b6eee91dcdcb45834fc4508b1d67edd01c`、config
+`sha256:565cf2444790d47ae5f6afe74dbc22f82df06b592eb9d8b29947fff1a6eca05b`、attestation
+`sha256:eb6fc483cbbed6c879eeb4f0b3f0528e45d1fe65b53bab17950e14f30572498d`、Kind runtime
+`sha256:64a5ab9a8480ff7d561cb687acd8bad1916fd0a8b8319e868c8758b530d308a9`；完整提交 SHA、TiKV、Go 1.26.5、
+linux/amd64 与 `USER 65532:65532` 均经镜像和运行时复核。
+
+A5537→A5538 upgrade **900/900 GREEN**：公共/直连 KeepAlive 响应 `108`/`279`、重建 33 次、最大 KeepAlive 恢复
+`21667ms`；RangeStream 186、官方可打开 Snapshot 1，stream/partial retry 均 0，最大公共 Watch/直连 Watch/TSO/Region
+延迟 `2116/26073/39/7ms`，revision `a4657-tls-bdb4f678f -> a4657-tls-7cf54d6f69`。A5538 same-version
+restart 再次 **900/900 GREEN**：KeepAlive `107`/`274`、重建 33 次、最大恢复 `21652ms`；RangeStream 189、Snapshot 1、
+stream/partial retry 均 0，最大延迟 `3058/28574/101/9ms`，revision
+`a4657-tls-7cf54d6f69 -> a4657-tls-6dc9c5bdd6`。两轮 queue-full 均为 0，且 KeepAlive 与 Watch 的独立最大恢复都严格低于
+30 秒。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，三 Pod 3/3 Ready、restart 0、同 revision、精确
+runtime digest 且三端 `/readyz=ok`；PD/TiKV 3+3 Ready、restart 0，probe prefix Count=0、probe Pod 不存在。临时 client
+Service UID `bd2cfe30-5344-4f82-bdec-eb2c3fb03499` 已用创建时 UID/resourceVersion 前置条件删除，EndpointSlice 不存在。
+本轮把当前 30 秒发布恢复合同落实到 direct LeaseKeepAlive 本身；它仍不是跨节点/AZ、外部负载均衡或长时网络分区的容量证明。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
