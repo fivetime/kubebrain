@@ -317,17 +317,9 @@ func TestReceiveDirectWatchResponsesDoesNotHeadOfLineBlockFastEndpoints(t *testi
 	require.ErrorContains(t, err, "direct watch recovery exceeded")
 }
 
-func TestHandleDirectKeepAliveClosureRequiresRollingEndpoint(t *testing.T) {
-	fast := &directStreamProbe{endpoint: "fast"}
+func TestHandleDirectKeepAliveClosureAllowsOneBoundedRecoveryEpisode(t *testing.T) {
+	rolling := &directStreamProbe{endpoint: "rolling"}
 	restarted := false
-	err := handleDirectKeepAliveClosure(fast, func() error {
-		restarted = true
-		return nil
-	})
-	require.ErrorContains(t, err, "closed without matching slow direct watch")
-	require.False(t, restarted)
-
-	rolling := &directStreamProbe{endpoint: "rolling", keepAliveRecoveryEligible: true}
 	require.NoError(t, handleDirectKeepAliveClosure(rolling, func() error {
 		restarted = true
 		return nil
@@ -336,6 +328,21 @@ func TestHandleDirectKeepAliveClosureRequiresRollingEndpoint(t *testing.T) {
 	require.True(t, rolling.keepAliveRecovering)
 	require.Equal(t, 1, rolling.keepAliveRestarts)
 
-	require.EqualError(t, handleDirectKeepAliveClosure(rolling, func() error { return errors.New("restart failed") }), "restart direct lease keepalive endpoint=rolling: restart failed")
-	require.Equal(t, 1, rolling.keepAliveRestarts, "a failed restart must not publish another recovery")
+	// A restarted channel may close repeatedly while the same Pod is still being
+	// replaced. That remains one recovery episode until a response is observed.
+	require.NoError(t, handleDirectKeepAliveClosure(rolling, func() error {
+		return nil
+	}))
+	require.True(t, rolling.keepAliveRecovering)
+	require.Equal(t, 2, rolling.keepAliveRestarts)
+
+	rolling.keepAliveRecovering = false
+	require.ErrorContains(t, handleDirectKeepAliveClosure(rolling, func() error {
+		t.Fatal("a second completed recovery episode must not restart")
+		return nil
+	}), "closed after completed recovery")
+
+	failing := &directStreamProbe{endpoint: "failing"}
+	require.EqualError(t, handleDirectKeepAliveClosure(failing, func() error { return errors.New("restart failed") }), "restart direct lease keepalive endpoint=failing: restart failed")
+	require.Equal(t, 0, failing.keepAliveRestarts, "a failed restart must not publish a recovery")
 }

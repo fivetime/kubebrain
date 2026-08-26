@@ -100,7 +100,7 @@ spec:
           lifecycle:
             # Pod deletion withdraws the EndpointSlice target first. Continue
             # serving established connections while that update reaches
-            # kube-proxy. Keep twenty seconds for that asynchronous propagation,
+            # kube-proxy. Keep twenty-five seconds for that asynchronous propagation,
             # then release leadership and migrate transports before SIGTERM.
             preStop:
               exec:
