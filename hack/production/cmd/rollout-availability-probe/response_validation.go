@@ -20,6 +20,26 @@ func validateResponseHeader(header *etcdserverpb.ResponseHeader, clusterID uint6
 	return header.ClusterId, header.Revision, nil
 }
 
+// validateTxnOperationHeader follows etcd's Txn wire shape: the outer header
+// carries the serving cluster/member identity, while nested operation headers
+// are allowed to carry only the shared transaction revision. If an
+// implementation does populate nested identity fields, require them to agree
+// with the outer response instead of accepting a split identity.
+func validateTxnOperationHeader(header, outer *etcdserverpb.ResponseHeader) error {
+	if header == nil || outer == nil || header.Revision <= 0 || header.Revision != outer.Revision {
+		return errors.New("invalid transaction operation response header")
+	}
+	identityEmpty := header.ClusterId == 0 && header.MemberId == 0
+	identityComplete := header.ClusterId != 0 && header.MemberId != 0
+	if !identityEmpty && (!identityComplete || header.ClusterId != outer.ClusterId || header.MemberId != outer.MemberId) {
+		return errors.New("transaction operation response identity differs from outer header")
+	}
+	if header.RaftTerm != 0 && header.RaftTerm != outer.RaftTerm {
+		return errors.New("transaction operation response Raft term differs from outer header")
+	}
+	return nil
+}
+
 func validateDeleteResponse(response *clientv3.DeleteResponse, clusterID uint64, minRevision int64) (uint64, int64, error) {
 	if response == nil {
 		return 0, 0, errors.New("delete returned an empty response")

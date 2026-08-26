@@ -723,13 +723,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	}
 	lastRevision = txnRevision
 	validateTxnHeader := func(header *etcdserverpb.ResponseHeader, operation string) error {
-		_, nestedRevision, headerErr := validateResponseHeader(header, clusterID, txnRevision)
-		if headerErr != nil {
+		if headerErr := validateTxnOperationHeader(header, txnResponse.Header); headerErr != nil {
 			return fmt.Errorf("%s returned invalid nested header: %w", operation, headerErr)
-		}
-		if nestedRevision != txnRevision {
-			return fmt.Errorf("%s returned nested revision=%d, want transaction revision=%d",
-				operation, nestedRevision, txnRevision)
 		}
 		return nil
 	}

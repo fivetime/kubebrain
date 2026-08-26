@@ -13,6 +13,33 @@ func rolloutHeader(revision int64) *etcdserverpb.ResponseHeader {
 	return &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 9, Revision: revision}
 }
 
+func TestValidateTxnOperationHeaderAcceptsEtcdRevisionOnlyShape(t *testing.T) {
+	outer := rolloutHeader(11)
+	outer.RaftTerm = 3
+	require.NoError(t, validateTxnOperationHeader(&etcdserverpb.ResponseHeader{Revision: 11}, outer))
+	require.NoError(t, validateTxnOperationHeader(&etcdserverpb.ResponseHeader{
+		ClusterId: 7, MemberId: 9, Revision: 11, RaftTerm: 3,
+	}, outer))
+}
+
+func TestValidateTxnOperationHeaderRejectsMalformedShape(t *testing.T) {
+	outer := rolloutHeader(11)
+	outer.RaftTerm = 3
+	for name, header := range map[string]*etcdserverpb.ResponseHeader{
+		"nil":              nil,
+		"zero revision":    {},
+		"wrong revision":   {Revision: 10},
+		"partial identity": {ClusterId: 7, Revision: 11},
+		"wrong cluster":    {ClusterId: 8, MemberId: 9, Revision: 11},
+		"wrong member":     {ClusterId: 7, MemberId: 8, Revision: 11},
+		"wrong Raft term":  {Revision: 11, RaftTerm: 4},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Error(t, validateTxnOperationHeader(header, outer))
+		})
+	}
+}
+
 func TestValidateRolloutMutationResponses(t *testing.T) {
 	deleted := &clientv3.DeleteResponse{Header: rolloutHeader(10), Deleted: 2}
 	clusterID, revision, err := validateDeleteResponse(deleted, 0, 1)
