@@ -63360,6 +63360,71 @@ NotFound、EndpointSlice 0、两个 A5552 probe Pod 0，节点仍有 118GB 可�
 本轮关闭多个历史 lease ID、同键 lease reassignment、每个 grant 的精确恢复 TTL 与 current attachment 集合生产门禁缺口。
 仍未覆盖完整 auth 权限矩阵、多 member restore、跨集群灾备或大数据量恢复。
 
+### A5553：rollout Restore 覆盖完整 auth 权限矩阵与 enabled 状态
+
+A5552 只证明 lease lineage，生产 Snapshot/Restore 仍未验证 auth bucket、auth revision、启用状态、密码哈希、无密码用户、角色并集和
+区间权限缓存是否一起恢复。本轮固定上游
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/auth/store.go::{Recover,AuthEnable,CheckPassword,UserGet,RoleGet,IsPutPermitted,IsRangePermitted,IsDeleteRangePermitted}`、
+`server/auth/range_perm_cache.go`、`server/etcdserver/apply/auth.go` 与
+`server/etcdserver/api/v3rpc/watch.go`。上游恢复 auth enabled/revision 后重建权限 cache；READWRITE 同时进入 read/write interval tree，
+多角色权限取并集，exact key 与 prefix range 不得互相泄漏；Range/Watch 要 READ，Put/Delete 要 WRITE，`WithPrevKV` 同时要求 READ，
+Txn 递归检查已选操作，读取 lease attached keys 也受 key READ 权限约束。无密码用户带非空密码认证必须返回精确
+`Unknown: auth: authentication failed, password was given for no password user`。
+
+提交 `e104421b`（完整 SHA `e104421bcfa6cda095d8ea7d34d568b8b821810d`）新增四角色、六用户 fixture：prefix READ、prefix
+WRITE、prefix READWRITE、exact READ，以及 reader、writer、readwriter、READ+WRITE union、exact-reader、no-password 用户。
+Snapshot worker 在 fixture 安装后捕获精确 auth revision；official etcdutl restore 后逐项核对用户角色、权限 proto、密码/无密码语义，并执行
+Range、Watch、Put、write-only Txn、`Put WithPrevKV`、Delete、lease Grant/attach/TTL keys/KeepAlive/Revoke 正反矩阵和 root
+全局管理/读写正例。fixture 只清理由本次成功创建的对象，中途名称冲突不能删除既有对象；退出后还要证明用户/角色无泄漏。
+
+第一份 A5553 候选在任何 StatefulSet mutation 前因 10 秒启动屏障 RED。随后只读审计发现真实生产源 auth 原本就是 enabled、revision
+18，用户为 `KubeWharfServer/alice/root`，而最初实现错误要求 source auth disabled。没有放宽启动或延迟合同；纠正提交
+`badd0424`（完整 SHA `badd0424757f7d85158baa500cc351ed3a1d1182`）改为记录并保持源 `AuthStatus.Enabled`：disabled
+快照只在隔离 restored etcd 中补 root 并启用 auth；enabled 快照保持启用状态，使用恢复出的 mTLS 管理身份验证完整图和 root 能力，绝不
+修改生产 root 密码。cleanup 必须证明 enabled 位未变化。新增真实 enabled source 安装/清理测试，以及带 enabled auth bucket 的官方
+restore 正例和 enabled 位缺失负例；disabled 路径仍完整保留。
+
+最终聚焦 enabled/disabled auth 正反例为 6.589 秒，完整 probe 包 23.396 秒，聚焦 race 为 34.258 秒，vet 与 diff check
+全绿。655 项 inventory 保持 `158/181/164/152`。纠正提交前四片墙钟为
+`147.285/374.240/241.617/391.270s`，提交后为 `139.336/366.135/238.401/382.984s`，全部通过；初始提交
+前后四片也分别以 `141.916/368.644/239.468/386.143s` 和 `148.089/372.308/241.925/390.474s` 全绿。
+
+最终 A5553 build time 为 `2026-08-26T22:10:52Z`，OCI 构建墙钟 277.066 秒。最终 OCI index
+`sha256:8433853e3fcd3d3f393d7f7ba40a1168951875d3b6edf04babb935fde0d1126d`、platform manifest
+`sha256:b0438668dc8f415e21f18188555cba4ee8ee3637acb9322aedd5e57e039a0f5f`、config
+`sha256:b0cfb6a0721fcefdbaf8e0415767caf8d75fae630fd2b997f5377523845eaf47`、attestation manifest
+`sha256:83d09c1c148bfbd2c7af871b4f818e4bb46be3a5b2742d4a8b0508714124428f`、provenance layer
+`sha256:355818361f27c40f726bad74ff871ec65c90cc4ff60e886abe3a5df08d6cd67c`、SBOM layer
+`sha256:5fcb3c7fd0807c2d856722b3df1d03a39f9aa9228bed907a27ecc7abe673db18`、Kind runtime
+`sha256:fe7cdd2c4c314cdd0dc9702d13edc9c4cbb4429e58f4ca9a22664462eecfa71b`。78 个 blob 的摘要与 descriptor size
+全部匹配，总 blob 911,579,488 bytes，config+compressed layers 906,662,453 bytes，archive 911,644,672 bytes，probe
+48,140,660 bytes。OCI labels、SLSA subject/args、SPDX 包集合、镜像内 Version/TiKV/完整 SHA/Go
+1.26.5/linux-amd64/build time、kubectl v1.36.2 与 config/runtime UID/GID 65532 均通过离线和一次性 runtime 复核。初始
+`e104421b` 候选 index `sha256:0f68b1dd4667d7102e791a5d17652fc9ff5391f9805aceda8afd8f4c90013451` 从未被 workload
+使用，纠正后其两个 containerd alias 与全部本地制品均删除；最终 archive、两轮解包目录、二进制目录和可变 tag 也已删除，只保留
+workload 使用的最终 immutable index。
+
+A5552→A5553 upgrade 一次即 **900/900 GREEN**：KeepAlive `102/271`、direct replacement 24、最大恢复 22,161ms；
+RangeStream 199、完成 enabled auth revision/用户/角色/权限与行为矩阵的 Snapshot 1、stream/partial retry `1/1`，最大公共/直连/
+TSO/Region 延迟 `1292/26523/26/9ms`，revision `a4657-tls-5645655f95 -> a4657-tls-59dc87765c`。第一次
+same-version restart 在 iteration 409 因公共 Put→Watch 5.51509377 秒超过 5 秒硬上限而 RED；伴随一次公共 Put
+`there is no connection available`，但 StatefulSet 已收敛到 A5553 `a4657-tls-7d997cdfc6`，三 Pod runtime/restart
+正确，probe NotFound、专属 KV 0、auth fixture 0，没有放宽合同。原参数重跑后 **900/900 GREEN**：KeepAlive `105/278`、
+replacement 21、最大恢复 22,868ms；RangeStream 194、Snapshot 1、retry/partial `0/0`，最大延迟
+`2304/27776/47/14ms`，revision `a4657-tls-7d997cdfc6 -> a4657-tls-866b6fbc7d`。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 均为 78，
+current/update revision 均为 `a4657-tls-866b6fbc7d`；三 Pod 3/3 Ready、restart 0、运行精确 A5553 runtime digest、UID/GID
+65532，三端 HTTPS `/readyz=ok`。AlarmList 为空，cluster revision 43076、term 322；auth 保持 enabled，revision 111，用户仍
+精确为 `KubeWharfServer/alice/root`、角色为 `operator/root`。PD leader 为 `kb-pd-2`，主 PD/TiKV 3+3 Ready、restart 0，
+三个 TiKV store 均 Up；近 15 分钟无 KeepAlive queue-full/panic/fatal/corrupt。四个 A5553 尝试前缀均无 KV，根前缀 Count=1 且
+精确为未触碰的 `/kubebrain-rollout-availability/a5529-tls-migration/watch`。临时 Service UID
+`9b679463-8750-4391-80a4-4f078ce37bdb` 已以创建时 resourceVersion `6826055` 和 UID 双前置条件删除；Service
+NotFound、EndpointSlice 0、A5553 probe Pod 0，节点有 104GB 可用。
+
+本轮关闭完整 auth 权限矩阵、enabled/auth revision、密码与 no-password、角色 union、exact/prefix 隔离和 auth fixture
+所有权清理的生产 Restore 门禁缺口。仍未覆盖多 member restore、跨集群灾备或大数据量恢复。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
