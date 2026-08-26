@@ -62525,10 +62525,12 @@ proxy Watch error。测试专用 client Service `a5527-tls-client` 已按 UID+re
 ### A5534：RangeStream/Snapshot 首帧前换主重试与受控流负载闭环
 
 对照 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
-`server/proxy/grpcproxy/kv.go:RangeStream`、`server/proxy/grpcproxy/maintenance.go:Snapshot` 和
-`server/etcdserver/v3_server.go:RangeStream`：一个公开 server-stream 只转发一条完整 upstream stream，不能把两个 leader 的部分
-结果拼接。KubeBrain follower 额外存在 peer leader 在公开首帧前退休的窗口；旧实现把 call-stage 或 Recv-stage
-`ErrGRPCLeaderChanged` 直接暴露为 `Unavailable`，即使客户端尚未收到任何结果、入口已能安全重选 leader。
+`server/etcdserver/v3_server.go:RangeStream`、`client/v3/kv.go:GetStream` 和
+`server/proxy/grpcproxy/maintenance.go:Snapshot`：一个公开 server-stream 只能交付一条完整结果，不能把两个 leader 的部分结果拼接。
+需要特别更正：上游 `server/proxy/grpcproxy/kv.go:RangeStream` 实际明确返回
+`Unimplemented: RangeStream is not supported by the gRPC proxy`，不提供 RangeStream 转发基线；KubeBrain follower 的 peer
+转发来自共享 TiKV/PD 数据面下的自有三副本拓扑。该拓扑额外存在 peer leader 在公开首帧前退休的窗口；旧实现把 call-stage 或
+Recv-stage `ErrGRPCLeaderChanged` 直接暴露为 `Unavailable`，即使客户端尚未收到任何结果、入口已能安全重选 leader。
 
 A5534（`aa7787ac`，完整 SHA `aa7787ac5ba7fbcf9472bc5909e2331946d89ede`）让 follower 的 RangeStream 与 Snapshot
 只在**公开首帧前**、且内部错误精确映射为 `ErrGRPCLeaderChanged` 时重试一次（总 attempt 上限 2）。任一公开帧发送成功后绝不跨
@@ -62573,6 +62575,50 @@ Snapshot，同时经 `kubectl port-forward service` 接入；该命令实际固�
 `/a5534-stream/` count=0；临时 NodePort Service 已按 UID+resourceVersion 前置条件删除，所有 port-forward 和临时源码均已
 停止/移除。受控结果关闭 A5534 正确性与当前 Kind 容量点的发布门禁；不把约 53 MiB/s RangeStream 加高频 Snapshot 的首轮复合压力
 外推为支持容量，跨节点/AZ、外部负载均衡及更高流量仍需独立容量测试和客户端退避合同。
+
+### A5535：将 RangeStream/Snapshot 完整性固化为 rollout availability gate
+
+A5534 的三轮流负载使用临时程序，不能保证后续每个生产候选都继续覆盖 RangeStream/Snapshot。提交 `b00ee3b1`（完整 SHA
+`b00ee3b1a0c4ef42e3468ebcefd336902472178e`）把该责任并入正式
+`kubebrain-rollout-availability-probe`：探针在独占前缀写入 16 个 8 KiB 可验证值，按默认 1 秒成功间隔持续执行公开
+RangeStream，并在默认 25 秒、即当前 preStop drain 切点启动一次公开 Snapshot。每个 RangeStream frame 都验证请求范围、跨帧严格
+key 顺序、MVCC 元数据、稳定 cluster/member/revision identity，以及仅 terminal frame 可携带的 Count/More/Header；terminal Count
+必须等于实际交付数，且 16 个种子 key/value 哈希必须全部存在。Snapshot 逐帧验证 RemainingBytes 连续性、稳定 Version、非空 data、
+最终 SHA-256 checksum 与 checksum 后 EOF；上游 Snapshot 在 schema 尚未初始化时 Version 可以为空，因此只要求其稳定，不伪造非空
+约束。
+
+RangeStream/Snapshot 只对 `Unavailable`、`Canceled`、`DeadlineExceeded` 重试整条 stream；调用方取消不重试，失败 attempt 的任何
+部分结果全部丢弃，不与下一 attempt 拼接。默认 attempt timeout 为 2 分钟，指数退避 100ms 起步、2 秒封顶；runner 在接触
+Kubernetes 前验证全部 duration、退避次序和 int64 纳秒表示。终态摘要新增并强制要求正数
+`range_stream`/`snapshot`，同时报告 `stream_retries` 与 `stream_partial_retries`。普通 probe 20 轮为 2.718 秒、race 10 轮
+为 4.301 秒，完整 rollout runner 为 73.650 秒，vet、shell syntax 与 diff check 全绿。完整
+`go test ./hack/production/...` 在 10 分钟命中既有且不相关的
+`TestCertificateRotationOperationRejectsInvalidIdentityBeforeSteps/endpoint_control_character` package timeout；所有已完成子包（包括
+rollout probe）均通过，但该次不记作 production 全包 GREEN。653 项 inventory 为 `157/181/163/152`；精确提交后四片 Go/墙钟秒为
+`128.113/134.480`、`351.434/357.695`、`224.477/230.746`、`368.740/375.001`，全部通过。
+
+A5535 镜像内嵌上述完整 SHA，构建时间 `2026-08-26T10:16:04Z`，OCI index
+`sha256:9b10a0451b1104e6f980206d7f8b1eb98a66d89cd11c29024fe510c8416ff7de`、platform manifest
+`sha256:ef9c0ea5e5818285f617e501be4c6224be54e50f99a2ae9839f2fea712e75a62`、config
+`sha256:406e72c322dd7b317658884dedcc50888351df7cef216330aeb34a6776e303d2`、attestation
+`sha256:bd9661ee324520d644cc2c733bd178d0e8557168b9bfd407a8c1b6a2841864ac`、Kind runtime
+`sha256:7259dd95485281f7263936090d38c88126d59f511f89e41d10b9e7564f9ec9f4`；运行配置为 linux/amd64、
+`USER 65532:65532`、TiKV、Go 1.26.5 与 kubectl v1.36.2。首次正式 runner 因 Kind 导入后缺少
+`kubebrain@sha256:<OCI-index>` 名称而在 probe `ImagePullBackOff`，于任何 StatefulSet mutation 前 fail closed；为同一内容 digest
+登记 containerd alias 并用一次性 Pod 验证完整版本元数据后才重新发布。
+
+A5534→A5535 候选 rollout **900/900 GREEN**：公共/直连 Watch 为 `900`/`900x3`、Lease alive、direct KeepAlive restart 3，
+RangeStream 188 条、Snapshot 1 个、stream/partial retry 均为 0，最大公共/直连/TSO/Region 延迟
+`1226/25651/13/8ms`；revision `a4657-tls-7cc468569f -> a4657-tls-668c44d84f`。随后 A5535 same-version
+restart 再次 **900/900 GREEN**：RangeStream 190 条、Snapshot 1 个；滚动期间 1 次 retryable stream failure 被整流重试且
+`stream_partial_retries=0`，最大延迟 `3346/28120/58/18ms`；revision
+`a4657-tls-668c44d84f -> a4657-tls-6b5485cd9d`。两轮均严格低于公共 5 秒、直连 30 秒门禁。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，3/3 Pod 同 revision、Ready、restart 0，镜像索引与
+Kind runtime digest 全部一致。A5535 专属 `/kubebrain-rollout-availability/kubebrain-rollout-availability-probe/` 前缀为空；根前缀中
+既有 A5529 独立审计键未被触碰。临时 client Service UID `281717ca-06e0-4ddc-8a01-8bccb5d56ddf` 已按 UID/resourceVersion
+前置条件删除，关联 EndpointSlice 与两个临时 Pod 均不存在。该闭环把流式制品完整性从一次性实验提升为每个候选和同版本重启都必须经过的
+发布条件；当前证据仍只覆盖单节点 Kind、独立 3×PD/3×TiKV 和本轮负载，跨节点/AZ、外部负载均衡与长时 soak 继续保留为容量边界。
 
 ## 提交规则
 
