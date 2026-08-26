@@ -797,6 +797,75 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		createRevision: lastRevision, version: 1,
 	})
 
+	nestedSeeds, nestedTxnErr := streamProbeNestedTxnSeeds(streamExpected)
+	if nestedTxnErr != nil {
+		return nestedTxnErr
+	}
+	for _, seed := range []*streamProbeExpectation{nestedSeeds.outerPut, nestedSeeds.deleted, nestedSeeds.innerPut} {
+		seed.events = append(seed.events, streamProbeEventExpectation{
+			eventType: mvccpb.PUT, value: seed.value, hash: seed.hash, revision: seed.revision,
+			createRevision: seed.revision, version: 1,
+		})
+	}
+	outerNestedValue := nestedSeeds.outerPut.value + "-nested-outer"
+	innerNestedValue := nestedSeeds.innerPut.value + "-nested-inner"
+	nestedOp := clientv3.OpTxn(
+		[]clientv3.Cmp{clientv3.Compare(clientv3.Value(nestedSeeds.compare.key), "=", nestedSeeds.compare.value+"-missing")},
+		[]clientv3.Op{clientv3.OpPut(nestedSeeds.deleted.key, nestedSeeds.deleted.value+"-unexpected")},
+		[]clientv3.Op{
+			clientv3.OpGet(nestedSeeds.outerPut.key),
+			clientv3.OpDelete(nestedSeeds.deleted.key),
+			clientv3.OpPut(nestedSeeds.innerPut.key, innerNestedValue),
+		},
+	)
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	nestedTxnResponse, nestedTxnErr := client.Txn(opCtx).Then(
+		clientv3.OpPut(nestedSeeds.outerPut.key, outerNestedValue), nestedOp,
+	).Commit()
+	cancel()
+	if nestedTxnErr != nil {
+		return fmt.Errorf("update nested Snapshot transaction seeds: %w", nestedTxnErr)
+	}
+	nestedTxnRevision, nestedTxnErr := validateNestedFailureTxnResponse(
+		nestedTxnResponse, clusterID, lastRevision, nestedSeeds, outerNestedValue,
+	)
+	if nestedTxnErr != nil {
+		return nestedTxnErr
+	}
+	lastRevision = nestedTxnRevision
+	nestedSeeds.outerPut.value = outerNestedValue
+	nestedSeeds.outerPut.hash = sha256.Sum256([]byte(outerNestedValue))
+	nestedSeeds.outerPut.revision = nestedTxnRevision
+	nestedSeeds.outerPut.events = append(nestedSeeds.outerPut.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: outerNestedValue, hash: nestedSeeds.outerPut.hash, revision: nestedTxnRevision,
+		subRevision: 0, totalChanges: 3, createRevision: nestedSeeds.outerPut.events[0].createRevision, version: 2,
+	})
+	nestedSeeds.deleted.events = append(nestedSeeds.deleted.events, streamProbeEventExpectation{
+		eventType: mvccpb.DELETE, revision: nestedTxnRevision, subRevision: 1, totalChanges: 3,
+	})
+	nestedSeeds.innerPut.value = innerNestedValue
+	nestedSeeds.innerPut.hash = sha256.Sum256([]byte(innerNestedValue))
+	nestedSeeds.innerPut.revision = nestedTxnRevision
+	nestedSeeds.innerPut.events = append(nestedSeeds.innerPut.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: innerNestedValue, hash: nestedSeeds.innerPut.hash, revision: nestedTxnRevision,
+		subRevision: 2, totalChanges: 3, createRevision: nestedSeeds.innerPut.events[0].createRevision, version: 2,
+	})
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	recreatedNestedSeed, nestedTxnErr := client.Put(opCtx, nestedSeeds.deleted.key, nestedSeeds.deleted.value)
+	cancel()
+	if nestedTxnErr != nil {
+		return fmt.Errorf("recreate nested Snapshot transaction seed %q: %w", nestedSeeds.deleted.key, nestedTxnErr)
+	}
+	lastRevision, nestedTxnErr = validatePutResponse(recreatedNestedSeed, clusterID, lastRevision)
+	if nestedTxnErr != nil {
+		return fmt.Errorf("recreate nested Snapshot transaction seed %q: %w", nestedSeeds.deleted.key, nestedTxnErr)
+	}
+	nestedSeeds.deleted.revision = lastRevision
+	nestedSeeds.deleted.events = append(nestedSeeds.deleted.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: nestedSeeds.deleted.value, hash: nestedSeeds.deleted.hash, revision: lastRevision,
+		createRevision: lastRevision, version: 1,
+	})
+
 	watchKey := cfg.prefix + "watch"
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	defer stopWatch()

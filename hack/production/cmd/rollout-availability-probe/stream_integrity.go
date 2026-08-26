@@ -91,6 +91,31 @@ func streamProbeTxnSeeds(expected []streamProbeExpectation) ([]*streamProbeExpec
 	return seeds, nil
 }
 
+type streamProbeNestedSeeds struct {
+	compare  *streamProbeExpectation
+	outerPut *streamProbeExpectation
+	deleted  *streamProbeExpectation
+	innerPut *streamProbeExpectation
+}
+
+func streamProbeNestedTxnSeeds(expected []streamProbeExpectation) (streamProbeNestedSeeds, error) {
+	const (
+		compareIndex  = 6
+		outerPutIndex = 9
+		deletedIndex  = 7
+		innerPutIndex = 8
+	)
+	if len(expected) <= outerPutIndex {
+		return streamProbeNestedSeeds{}, fmt.Errorf("Snapshot nested transaction probe requires at least %d stream seeds", outerPutIndex+1)
+	}
+	return streamProbeNestedSeeds{
+		compare:  &expected[compareIndex],
+		outerPut: &expected[outerPutIndex],
+		deleted:  &expected[deletedIndex],
+		innerPut: &expected[innerPutIndex],
+	}, nil
+}
+
 type rangeStreamReceiver interface {
 	Recv() (*etcdserverpb.RangeStreamResponse, error)
 }

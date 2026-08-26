@@ -40,6 +40,68 @@ func validateTxnOperationHeader(header, outer *etcdserverpb.ResponseHeader) erro
 	return nil
 }
 
+func validateNestedFailureTxnResponse(response *clientv3.TxnResponse, clusterID uint64, previousRevision int64,
+	seeds streamProbeNestedSeeds, outerValue string,
+) (int64, error) {
+	if response == nil || !response.Succeeded || len(response.Responses) != 2 {
+		return 0, errors.New("nested Snapshot transaction returned an invalid outer response")
+	}
+	_, revision, err := validateResponseHeader(response.Header, clusterID, previousRevision)
+	if err != nil {
+		return 0, fmt.Errorf("nested Snapshot transaction returned an invalid outer header: %w", err)
+	}
+	if revision <= previousRevision {
+		return 0, fmt.Errorf("nested Snapshot transaction revision=%d did not advance previous revision=%d", revision, previousRevision)
+	}
+	if seeds.outerPut == nil || seeds.deleted == nil || seeds.innerPut == nil ||
+		len(seeds.outerPut.events) == 0 || len(seeds.deleted.events) == 0 || len(seeds.innerPut.events) == 0 {
+		return 0, errors.New("nested Snapshot transaction seed expectations are incomplete")
+	}
+	outerPut := response.Responses[0].GetResponsePut()
+	if outerPut == nil || outerPut.PrevKv != nil {
+		return 0, errors.New("nested Snapshot transaction returned an invalid outer Put response")
+	}
+	if err := validateTxnOperationHeader(outerPut.Header, response.Header); err != nil {
+		return 0, fmt.Errorf("nested Snapshot transaction outer Put header: %w", err)
+	}
+	nested := response.Responses[1].GetResponseTxn()
+	if nested == nil || nested.Header == nil || nested.Header.ClusterId != 0 || nested.Header.MemberId != 0 ||
+		nested.Header.Revision != 0 || nested.Header.RaftTerm != 0 || nested.Succeeded || len(nested.Responses) != 3 {
+		return 0, errors.New("nested Snapshot transaction did not return the selected failure branch")
+	}
+	stagedRange := nested.Responses[0].GetResponseRange()
+	if stagedRange == nil {
+		return 0, errors.New("nested Snapshot transaction returned an empty staged Range response")
+	}
+	if err := validateTxnOperationHeader(stagedRange.Header, response.Header); err != nil {
+		return 0, fmt.Errorf("nested Snapshot transaction staged Range header: %w", err)
+	}
+	if stagedRange.More || stagedRange.Count != 1 || len(stagedRange.Kvs) != 1 {
+		return 0, errors.New("nested Snapshot transaction returned invalid staged Range cardinality")
+	}
+	stagedKV := stagedRange.Kvs[0]
+	initialOuter := seeds.outerPut.events[0]
+	if stagedKV == nil || string(stagedKV.Key) != seeds.outerPut.key || string(stagedKV.Value) != outerValue ||
+		stagedKV.CreateRevision != initialOuter.createRevision || stagedKV.ModRevision != revision || stagedKV.Version != 2 || stagedKV.Lease != 0 {
+		return 0, errors.New("nested Snapshot transaction returned invalid staged Range data")
+	}
+	deleted := nested.Responses[1].GetResponseDeleteRange()
+	if deleted == nil || deleted.Deleted != 1 || len(deleted.PrevKvs) != 0 {
+		return 0, errors.New("nested Snapshot transaction returned an invalid Delete response")
+	}
+	if err := validateTxnOperationHeader(deleted.Header, response.Header); err != nil {
+		return 0, fmt.Errorf("nested Snapshot transaction Delete header: %w", err)
+	}
+	innerPut := nested.Responses[2].GetResponsePut()
+	if innerPut == nil || innerPut.PrevKv != nil {
+		return 0, errors.New("nested Snapshot transaction returned an invalid inner Put response")
+	}
+	if err := validateTxnOperationHeader(innerPut.Header, response.Header); err != nil {
+		return 0, fmt.Errorf("nested Snapshot transaction inner Put header: %w", err)
+	}
+	return revision, nil
+}
+
 func validateDeleteResponse(response *clientv3.DeleteResponse, clusterID uint64, minRevision int64) (uint64, int64, error) {
 	if response == nil {
 		return 0, 0, errors.New("delete returned an empty response")

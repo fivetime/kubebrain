@@ -40,6 +40,94 @@ func TestValidateTxnOperationHeaderRejectsMalformedShape(t *testing.T) {
 	}
 }
 
+func nestedFailureTxnFixture() (*clientv3.TxnResponse, streamProbeNestedSeeds) {
+	initial := func(key string, revision int64) *streamProbeExpectation {
+		value := key + "-old"
+		return &streamProbeExpectation{key: key, value: value, revision: revision, events: []streamProbeEventExpectation{{
+			eventType: mvccpb.PUT, value: value, revision: revision, createRevision: revision, version: 1,
+		}}}
+	}
+	seeds := streamProbeNestedSeeds{
+		outerPut: initial("probe/z", 4),
+		deleted:  initial("probe/a", 5),
+		innerPut: initial("probe/m", 6),
+	}
+	outerValue := "probe/z-new"
+	header := rolloutHeader(7)
+	response := &clientv3.TxnResponse{
+		Header: header, Succeeded: true,
+		Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{
+				Header: &etcdserverpb.ResponseHeader{Revision: 7},
+			}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{
+				Header: &etcdserverpb.ResponseHeader{}, Succeeded: false,
+				Responses: []*etcdserverpb.ResponseOp{
+					{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+						Header: &etcdserverpb.ResponseHeader{Revision: 7}, Count: 1,
+						Kvs: []*mvccpb.KeyValue{{Key: []byte("probe/z"), Value: []byte(outerValue), CreateRevision: 4, ModRevision: 7, Version: 2}},
+					}}},
+					{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+						Header: &etcdserverpb.ResponseHeader{Revision: 7}, Deleted: 1,
+					}}},
+					{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{
+						Header: &etcdserverpb.ResponseHeader{Revision: 7},
+					}}},
+				},
+			}}},
+		},
+	}
+	return response, seeds
+}
+
+func TestValidateNestedFailureTxnResponse(t *testing.T) {
+	response, seeds := nestedFailureTxnFixture()
+	revision, err := validateNestedFailureTxnResponse(response, 7, 6, seeds, "probe/z-new")
+	require.NoError(t, err)
+	require.Equal(t, int64(7), revision)
+}
+
+func TestValidateNestedFailureTxnResponseRejectsMalformedSuccess(t *testing.T) {
+	for name, mutate := range map[string]func(*clientv3.TxnResponse){
+		"outer did not advance": func(response *clientv3.TxnResponse) { response.Header.Revision = 6 },
+		"missing nested":        func(response *clientv3.TxnResponse) { response.Responses = response.Responses[:1] },
+		"wrong nested union": func(response *clientv3.TxnResponse) {
+			response.Responses[1] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{
+				ResponsePut: &etcdserverpb.PutResponse{Header: &etcdserverpb.ResponseHeader{Revision: 7}},
+			}}
+		},
+		"nested header stamped": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Header.Revision = 7
+		},
+		"nested success branch": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Succeeded = true
+		},
+		"wrong nested operation count": func(response *clientv3.TxnResponse) {
+			nested := response.Responses[1].GetResponseTxn()
+			nested.Responses = nested.Responses[:2]
+		},
+		"staged old value": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[0].GetResponseRange().Kvs[0].Value = []byte("probe/z-old")
+		},
+		"delete did not apply": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[1].GetResponseDeleteRange().Deleted = 0
+		},
+		"inner put previous value": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[2].GetResponsePut().PrevKv = &mvccpb.KeyValue{}
+		},
+		"wrong inner revision": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[2].GetResponsePut().Header.Revision = 8
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response, seeds := nestedFailureTxnFixture()
+			mutate(response)
+			_, err := validateNestedFailureTxnResponse(response, 7, 6, seeds, "probe/z-new")
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestValidateRolloutMutationResponses(t *testing.T) {
 	deleted := &clientv3.DeleteResponse{Header: rolloutHeader(10), Deleted: 2}
 	clusterID, revision, err := validateDeleteResponse(deleted, 0, 1)
