@@ -230,3 +230,26 @@ func TestReceiveDirectWatchResponsesDoesNotHeadOfLineBlockFastEndpoints(t *testi
 	_, err = receiveDirectWatchResponses(context.Background(), []*directStreamProbe{{endpoint: "blocked", watch: blocked}}, 10*time.Millisecond)
 	require.ErrorContains(t, err, "direct watch recovery exceeded")
 }
+
+func TestHandleDirectKeepAliveClosureRequiresRollingEndpoint(t *testing.T) {
+	fast := &directStreamProbe{endpoint: "fast"}
+	restarted := false
+	err := handleDirectKeepAliveClosure(fast, func() error {
+		restarted = true
+		return nil
+	})
+	require.ErrorContains(t, err, "closed without matching slow direct watch")
+	require.False(t, restarted)
+
+	rolling := &directStreamProbe{endpoint: "rolling", keepAliveRecoveryEligible: true}
+	require.NoError(t, handleDirectKeepAliveClosure(rolling, func() error {
+		restarted = true
+		return nil
+	}))
+	require.True(t, restarted)
+	require.True(t, rolling.keepAliveRecovering)
+	require.Equal(t, 1, rolling.keepAliveRestarts)
+
+	require.EqualError(t, handleDirectKeepAliveClosure(rolling, func() error { return errors.New("restart failed") }), "restart direct lease keepalive endpoint=rolling: restart failed")
+	require.Equal(t, 1, rolling.keepAliveRestarts, "a failed restart must not publish another recovery")
+}

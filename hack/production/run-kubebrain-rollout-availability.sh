@@ -509,7 +509,7 @@ capture_runtime_evidence "$probe_log" kctl_evidence logs "$PROBE_POD" || {
 }
 cat "$probe_log"
 summary="$(grep '^PROBE_SUMMARY ' "$probe_log" || true)"
-if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ direct_watch=${PROBE_ITERATIONS}x${EXPECTED_REPLICAS}\ lease=alive\ direct_lease=alive\ direct_endpoints=${EXPECTED_REPLICAS}\ max_latency_ms=[0-9]+\ max_direct_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
+if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ direct_watch=${PROBE_ITERATIONS}x${EXPECTED_REPLICAS}\ lease=alive\ direct_lease=alive\ direct_lease_restarts=[0-9]+\ direct_endpoints=${EXPECTED_REPLICAS}\ max_latency_ms=[0-9]+\ max_direct_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
   echo "availability probe summary mismatch" >&2
   exit 1
 fi
