@@ -240,16 +240,25 @@ func (s *server) Drain(ctx context.Context) error {
 		return drainErr == nil
 	}
 	if s.etcdServer != nil {
-		s.etcdServer.DrainLeadership(release)
+		if s.etcdServer.PrepareLeadershipDrain(release) {
+			// Start every client and peer GOAWAY concurrently while their long-lived
+			// streams still keep the underlying HTTP/2 connections non-idle. Each
+			// callback returns only after its bounded propagation window.
+			var transportDrainWait sync.WaitGroup
+			transportDrainWait.Add(len(s.transportDrains))
+			for _, drainTransport := range s.transportDrains {
+				go func() {
+					defer transportDrainWait.Done()
+					drainTransport()
+				}()
+			}
+			transportDrainWait.Wait()
+			s.etcdServer.RetireLeadershipStreams()
+		}
 	} else {
 		release()
 	}
-	if drainErr == nil {
-		// RPCServer closes admitted public and peer streams with route-appropriate
-		// retry signals only
-		// after release reports a durable, proxy-ready successor. Start transport
-		// GOAWAY afterwards so clientv3 can resume those streams without racing a
-		// force-closed HTTP/2 connection.
+	if drainErr == nil && s.etcdServer == nil {
 		for _, drainTransport := range s.transportDrains {
 			drainTransport()
 		}
@@ -257,10 +266,10 @@ func (s *server) Drain(ctx context.Context) error {
 	return drainErr
 }
 
-// RegisterTransportDrain attaches a non-blocking transport quiesce callback.
-// Endpoint uses it to send HTTP/2 GOAWAY after the durable leader handoff and
-// unary admission fence and leadership-stream retirement complete, so clients
-// migrate off a terminating Pod before bounded HTTP shutdown closes sockets.
+// RegisterTransportDrain attaches a transport quiesce callback.
+// Endpoint uses it to start HTTP/2 GOAWAY after durable leader handoff and unary
+// admission fencing, but before leadership streams retire. A callback returns
+// after GOAWAY has had a bounded propagation window.
 func (s *server) RegisterTransportDrain(drain func()) {
 	if drain == nil {
 		return

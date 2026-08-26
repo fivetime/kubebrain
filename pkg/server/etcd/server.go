@@ -139,21 +139,34 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 	s.clientCertAuth = enabled
 }
 
-// DrainLeadership runs release only after every admitted unary RPC has
+// PrepareLeadershipDrain runs release only after every admitted unary RPC has
 // completed and holds later calls until the release is visible locally. New
-// public unary calls may then proxy through the successor while transport
-// GOAWAY is migrating the connection; new peer calls remain fenced from this
-// retiring member. Public streams admitted before the release are retired with
-// etcd's retryable stopped status, and later public streams are rejected with
-// the same status. Internal peer streams receive a distinct control status so
-// the follower proxy can resume them without exposing Aborted to its public
-// caller. This lets Watch and KeepAlive reach the successor before net/http
-// reaches its bounded force-close path.
-func (s *RPCServer) DrainLeadership(release func() bool) {
+// public unary calls may then proxy through the successor while new peer calls
+// remain fenced from this retiring member. Streams deliberately remain active:
+// Endpoint must first start HTTP/2 GOAWAY while the connection is non-idle, or
+// net/http Shutdown can close it before the graceful signal reaches clientv3.
+func (s *RPCServer) PrepareLeadershipDrain(release func() bool) bool {
 	s.leadershipDrainBoundary.Lock()
 	defer s.leadershipDrainBoundary.Unlock()
-	if release() {
-		s.peerLeadershipDrained.Store(true)
+	if !release() {
+		return false
+	}
+	s.peerLeadershipDrained.Store(true)
+	return true
+}
+
+// RetireLeadershipStreams ends public and peer streams after transport GOAWAY
+// has started. Public streams receive etcd's retryable stopped status; peer
+// streams receive their distinct internal retry signal.
+func (s *RPCServer) RetireLeadershipStreams() {
+	s.retireLeadershipStreams()
+}
+
+// DrainLeadership preserves the single-call contract used by focused RPCServer
+// tests and non-Endpoint callers. The production server uses the split prepare /
+// transport / retire phases so GOAWAY cannot race an already-idle connection.
+func (s *RPCServer) DrainLeadership(release func() bool) {
+	if s.PrepareLeadershipDrain(release) {
 		s.retireLeadershipStreams()
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1040,7 +1041,7 @@ func TestDrainQuiescesRegisteredTransportsAfterSuccessfulHandoff(t *testing.T) {
 	require.Len(t, first, 1, "idempotent drain must not quiesce a transport twice")
 }
 
-func TestDrainRetiresPublicStreamBeforeTransportQuiesce(t *testing.T) {
+func TestDrainStartsTransportQuiesceBeforeRetiringPublicStream(t *testing.T) {
 	metrics := &healthMetricRecorder{}
 	kv := imemkv.NewKvStorage()
 	t.Cleanup(func() { require.NoError(t, kv.Close()) })
@@ -1073,19 +1074,45 @@ func TestDrainRetiresPublicStreamBeforeTransportQuiesce(t *testing.T) {
 	require.NoError(t, err)
 	_, err = watch.Recv()
 	require.NoError(t, err)
+	streamDone := make(chan error, 1)
+	go func() {
+		_, recvErr := watch.Recv()
+		streamDone <- recvErr
+	}()
 	quiesceObserved := make(chan error, 1)
 	s.RegisterTransportDrain(func() {
-		_, recvErr := watch.Recv()
-		quiesceObserved <- recvErr
+		probeCtx, probeCancel := context.WithCancel(t.Context())
+		defer probeCancel()
+		probe, probeErr := healthpb.NewHealthClient(conn).Watch(probeCtx, &healthpb.HealthCheckRequest{})
+		if probeErr != nil {
+			quiesceObserved <- probeErr
+			return
+		}
+		initial, probeErr := probe.Recv()
+		if probeErr != nil {
+			quiesceObserved <- probeErr
+			return
+		}
+		if initial.Status != healthpb.HealthCheckResponse_SERVING {
+			quiesceObserved <- fmt.Errorf("unexpected health status %s", initial.Status)
+			return
+		}
+		quiesceObserved <- nil
 	})
 
 	require.NoError(t, s.Drain(t.Context()))
 	select {
-	case err = <-quiesceObserved:
+	case quiesceErr := <-quiesceObserved:
+		require.NoError(t, quiesceErr, "transport GOAWAY must start while public streams are still admitted")
+	case <-time.After(time.Second):
+		t.Fatal("transport quiesce did not start")
+	}
+	select {
+	case err = <-streamDone:
 		require.EqualError(t, err, rpctypes.ErrGRPCStopped.Error())
 		require.Equal(t, codes.Unavailable, status.Code(err))
 	case <-time.After(time.Second):
-		t.Fatal("transport quiesce ran before public stream retirement became observable")
+		t.Fatal("public stream was not retired after transport GOAWAY started")
 	}
 }
 

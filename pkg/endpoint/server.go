@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -195,11 +196,10 @@ const (
 	httpReadHeaderTimeout = 5 * time.Minute
 	httpIdleTimeout       = 2 * time.Minute
 	httpShutdownTimeout   = 2 * time.Second
-	// DrainLeadership reopens public unary admission through the confirmed
-	// successor before Endpoint invokes transport quiesce. Keep the existing
-	// connection usable for one bounded grace period so client resolvers can
-	// establish a replacement before GOAWAY; peer admission remains fenced.
-	transportQuiesceProxyGracePeriod = time.Second
+	// Keep admitted streams active for one bounded window after Shutdown starts.
+	// This makes net/http send HTTP/2 GOAWAY on a non-idle connection and gives
+	// clientv3 time to establish a replacement before RPCServer retires streams.
+	transportGoAwayPropagationPeriod = time.Second
 	// Match net/http's default, which is also the effective limit used by
 	// upstream etcd. Keeping the value explicit preserves bounded admission
 	// without rejecting metadata that an etcd endpoint accepts.
@@ -222,15 +222,22 @@ func newHTTPServer(handler http.Handler) *httpServer {
 		MaxHeaderBytes:    httpMaxHeaderBytes,
 		Protocols:         protocols,
 	}
+	shutdownStarted := make(chan struct{})
+	var shutdownStartedOnce sync.Once
+	svr.RegisterOnShutdown(func() {
+		shutdownStartedOnce.Do(func() { close(shutdownStarted) })
+	})
 	return &httpServer{
 		svr:             svr,
 		shutdownTimeout: httpShutdownTimeout,
+		shutdownStarted: shutdownStarted,
 	}
 }
 
 type httpServer struct {
 	svr             *http.Server
 	shutdownTimeout time.Duration
+	shutdownStarted <-chan struct{}
 }
 
 func (h *httpServer) name() string {
@@ -264,20 +271,20 @@ func (h *httpServer) close() error {
 
 func newGRPCMuxedHTTPServer(grpcServer *grpc.Server, httpHandler http.Handler) *grpcMuxedHTTPServer {
 	return &grpcMuxedHTTPServer{
-		grpcServer:   grpcServer,
-		httpServer:   newHTTPServer(grpcHandlerFunc(grpcServer, httpHandler)),
-		quiesceDone:  make(chan struct{}),
-		quiesceDelay: transportQuiesceProxyGracePeriod,
+		grpcServer:             grpcServer,
+		httpServer:             newHTTPServer(grpcHandlerFunc(grpcServer, httpHandler)),
+		quiesceDone:            make(chan struct{}),
+		goAwayPropagationDelay: transportGoAwayPropagationPeriod,
 	}
 }
 
 type grpcMuxedHTTPServer struct {
-	grpcServer   *grpc.Server
-	httpServer   *httpServer
-	quiescing    atomic.Bool
-	quiesceDone  chan struct{}
-	quiesceErr   error
-	quiesceDelay time.Duration
+	grpcServer             *grpc.Server
+	httpServer             *httpServer
+	quiescing              atomic.Bool
+	quiesceDone            chan struct{}
+	quiesceErr             error
+	goAwayPropagationDelay time.Duration
 }
 
 func (s *grpcMuxedHTTPServer) name() string {
@@ -296,23 +303,26 @@ func (s *grpcMuxedHTTPServer) quiesce() {
 	if !s.quiescing.CompareAndSwap(false, true) {
 		return
 	}
-	// net/http owns these gRPC HTTP/2 transports. The production preStop hook has
-	// already preserved serving through EndpointSlice propagation, and successful
-	// DrainLeadership has reopened public unary admission through the successor.
-	// Keep that usable connection for a short grace period before GOAWAY so a
-	// resolver can establish its replacement without a zero-connection window.
-	// Keep both the grace and bounded shutdown off the /drain request itself.
+	// net/http owns these gRPC HTTP/2 transports. Start Shutdown while admitted
+	// streams still keep the connection non-idle, then acknowledge the transport
+	// callback only after a bounded GOAWAY propagation window. RPCServer retires
+	// those streams after this method returns.
 	go func() {
-		if s.quiesceDelay > 0 {
-			timer := time.NewTimer(s.quiesceDelay)
-			<-timer.C
-		}
 		s.quiesceErr = s.httpServer.close()
 		if s.quiesceErr != nil {
 			klog.ErrorS(s.quiesceErr, "quiesce muxed HTTP/2 transport")
 		}
 		close(s.quiesceDone)
 	}()
+	select {
+	case <-s.httpServer.shutdownStarted:
+	case <-s.quiesceDone:
+		return
+	}
+	if s.goAwayPropagationDelay > 0 {
+		timer := time.NewTimer(s.goAwayPropagationDelay)
+		<-timer.C
+	}
 }
 
 func (s *grpcMuxedHTTPServer) isQuiescing() bool {
