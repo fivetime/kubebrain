@@ -627,6 +627,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			leaseID:         leaseID,
 			grantedTTL:      lease.TTL,
 			initialRevision: directKeepAliveRevision,
+			recoveryTimeout: cfg.maxDirectLatency,
 			restart: func(restartCtx context.Context) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
 				return directClient.KeepAlive(restartCtx, leaseID)
 			},
@@ -811,12 +812,16 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	}
 	directKeepAliveRestarts := 0
 	directKeepAliveResponses := 0
+	var maxDirectKeepAliveRecovery time.Duration
 	for _, probe := range directProbes {
 		snapshot := probe.keepAlive.snapshot()
 		directKeepAliveRestarts += snapshot.restarts
 		directKeepAliveResponses += snapshot.responses
+		if snapshot.maxRecovery > maxDirectKeepAliveRecovery {
+			maxDirectKeepAliveRecovery = snapshot.maxRecovery
+		}
 	}
 	publicKeepAliveResponses := publicKeepAlive.snapshot().responses
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive lease_responses=%d direct_lease=alive direct_lease_responses=%d direct_lease_restarts=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), publicKeepAliveResponses, directKeepAliveResponses, directKeepAliveRestarts, len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive lease_responses=%d direct_lease=alive direct_lease_responses=%d direct_lease_restarts=%d max_direct_lease_recovery_ms=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), publicKeepAliveResponses, directKeepAliveResponses, directKeepAliveRestarts, maxDirectKeepAliveRecovery.Milliseconds(), len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
 	return nil
 }
