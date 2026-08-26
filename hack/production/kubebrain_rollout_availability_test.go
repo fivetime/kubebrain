@@ -413,7 +413,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_lease_restarts=3 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
+	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
 	require.Contains(t, string(output), "revision=revision-old->revision-new")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
@@ -450,6 +450,22 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, " wait --for=jsonpath={.status.phase}=Succeeded")
 	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system delete pod kubebrain-rollout-availability-probe --ignore-not-found=true --wait=true --timeout=10s")
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
+}
+
+func TestRolloutAvailabilityRunnerRejectsKeepAliveQueueOverflow(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_KEEPALIVE_QUEUE_FULL=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "availability probe keepalive response queue overflowed")
 }
 
 func TestRolloutAvailabilityRunnerRequiresCompleteRangeStreamAndSnapshot(t *testing.T) {
@@ -1129,7 +1145,8 @@ elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
-  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_lease_restarts=3 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  [[ "${FAKE_KEEPALIVE_QUEUE_FULL:-false}" != true ]] || payload=$'lease keepalive response queue is full; dropping response send\n'"$payload"
   printf '%s' "$payload"
   if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == probe-log ]]; then
     head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '

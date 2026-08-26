@@ -305,43 +305,11 @@ type pdLeader struct {
 }
 
 type directStreamProbe struct {
-	endpoint              string
-	client                *clientv3.Client
-	watch                 clientv3.WatchChan
-	stopWatch             context.CancelFunc
-	keepAlive             <-chan *clientv3.LeaseKeepAliveResponse
-	stopKeepAlive         context.CancelFunc
-	lastKeepAliveRevision int64
-	keepAliveResponses    int
-	keepAliveRecovering   bool
-	keepAliveRestarts     int
-}
-
-func handleDirectKeepAliveClosure(probe *directStreamProbe, restart func() error) error {
-	if probe.keepAliveRestarts > 0 && !probe.keepAliveRecovering {
-		return fmt.Errorf("direct lease keepalive closed after completed recovery endpoint=%s", probe.endpoint)
-	}
-	if err := restart(); err != nil {
-		return fmt.Errorf("restart direct lease keepalive endpoint=%s: %w", probe.endpoint, err)
-	}
-	probe.keepAliveRecovering = true
-	probe.keepAliveRestarts++
-	return nil
-}
-
-func restartDirectKeepAlive(ctx context.Context, probe *directStreamProbe, leaseID clientv3.LeaseID) error {
-	if probe.stopKeepAlive != nil {
-		probe.stopKeepAlive()
-	}
-	keepAliveCtx, stopKeepAlive := context.WithCancel(ctx)
-	keepAlive, err := probe.client.KeepAlive(keepAliveCtx, leaseID)
-	if err != nil {
-		stopKeepAlive()
-		return err
-	}
-	probe.stopKeepAlive = stopKeepAlive
-	probe.keepAlive = keepAlive
-	return nil
+	endpoint  string
+	client    *clientv3.Client
+	watch     clientv3.WatchChan
+	stopWatch context.CancelFunc
+	keepAlive *keepAliveMonitor
 }
 
 type directWatchResult struct {
@@ -406,8 +374,8 @@ func (probe *directStreamProbe) close() {
 	if probe.stopWatch != nil {
 		probe.stopWatch()
 	}
-	if probe.stopKeepAlive != nil {
-		probe.stopKeepAlive()
+	if probe.keepAlive != nil {
+		probe.keepAlive.stop()
 	}
 	if probe.client != nil {
 		_ = probe.client.Close()
@@ -550,6 +518,14 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	case <-time.After(cfg.commandTimeout):
 		return fmt.Errorf("initial lease keepalive timed out")
 	}
+	publicKeepAlive := startKeepAliveMonitor(leaseCtx, stopLease, keepAlive, keepAliveMonitorConfig{
+		label:           "public",
+		clusterID:       clusterID,
+		leaseID:         leaseID,
+		grantedTTL:      lease.TTL,
+		initialRevision: lastKeepAliveRevision,
+	})
+	defer publicKeepAlive.stop()
 
 	leaseKey := cfg.prefix + "lease"
 	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
@@ -605,7 +581,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		if directErr != nil {
 			return fmt.Errorf("create direct client %s: %w", endpoint, directErr)
 		}
-		probe := &directStreamProbe{endpoint: endpoint, client: directClient, lastKeepAliveRevision: leaseRevision}
+		probe := &directStreamProbe{endpoint: endpoint, client: directClient}
 		directProbes = append(directProbes, probe)
 
 		directWatchCtx, stopDirectWatch := context.WithCancel(ctx)
@@ -624,23 +600,37 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 
 		directLeaseCtx, stopDirectLease := context.WithCancel(ctx)
-		probe.stopKeepAlive = stopDirectLease
-		probe.keepAlive, directErr = directClient.KeepAlive(directLeaseCtx, leaseID)
+		directKeepAlive, directErr := directClient.KeepAlive(directLeaseCtx, leaseID)
 		if directErr != nil {
+			stopDirectLease()
 			return fmt.Errorf("start direct lease keepalive endpoint=%s: %w", endpoint, directErr)
 		}
+		directKeepAliveRevision := leaseRevision
 		select {
-		case response, ok := <-probe.keepAlive:
+		case response, ok := <-directKeepAlive:
 			if !ok {
+				stopDirectLease()
 				return fmt.Errorf("initial direct lease keepalive closed endpoint=%s", endpoint)
 			}
-			probe.lastKeepAliveRevision, directErr = validateKeepAliveResponse(response, clusterID, probe.lastKeepAliveRevision, leaseID, lease.TTL)
+			directKeepAliveRevision, directErr = validateKeepAliveResponse(response, clusterID, directKeepAliveRevision, leaseID, lease.TTL)
 			if directErr != nil {
+				stopDirectLease()
 				return fmt.Errorf("initial direct lease keepalive endpoint=%s: %w", endpoint, directErr)
 			}
 		case <-time.After(cfg.commandTimeout):
+			stopDirectLease()
 			return fmt.Errorf("initial direct lease keepalive timed out endpoint=%s", endpoint)
 		}
+		probe.keepAlive = startKeepAliveMonitor(directLeaseCtx, stopDirectLease, directKeepAlive, keepAliveMonitorConfig{
+			label:           "direct endpoint=" + endpoint,
+			clusterID:       clusterID,
+			leaseID:         leaseID,
+			grantedTTL:      lease.TTL,
+			initialRevision: directKeepAliveRevision,
+			restart: func(restartCtx context.Context) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
+				return directClient.KeepAlive(restartCtx, leaseID)
+			},
+		})
 	}
 
 	streamProbe := startStreamProbeGroup(ctx, client, cfg.prefix, streamExpected, clusterID,
@@ -661,6 +651,14 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	for i := 1; i <= cfg.iterations; i++ {
 		if streamErr := streamProbe.err(); streamErr != nil {
 			return fmt.Errorf("iteration=%d: %w", i, streamErr)
+		}
+		if keepAliveErr := publicKeepAlive.err(); keepAliveErr != nil {
+			return fmt.Errorf("iteration=%d: %w", i, keepAliveErr)
+		}
+		for _, probe := range directProbes {
+			if keepAliveErr := probe.keepAlive.err(); keepAliveErr != nil {
+				return fmt.Errorf("iteration=%d: %w", i, keepAliveErr)
+			}
 		}
 		tsoLatency, tsoErr := samplePDTimestamp(ctx, pdClient, cfg.maxTSOLatency)
 		if tsoErr != nil {
@@ -762,44 +760,12 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			return fmt.Errorf("iteration=%d: %w", i, directErr)
 		}
 
-		select {
-		case response, ok := <-keepAlive:
-			if !ok {
-				return fmt.Errorf("iteration=%d lease keepalive closed", i)
-			}
-			keepAliveRevision, validateErr := validateKeepAliveResponse(response, clusterID, lastKeepAliveRevision, leaseID, lease.TTL)
-			if validateErr != nil {
-				return fmt.Errorf("iteration=%d lease keepalive: %w", i, validateErr)
-			}
-			lastKeepAliveRevision = keepAliveRevision
-			lastRevision = max(lastRevision, keepAliveRevision)
-		default:
+		if keepAliveErr := publicKeepAlive.err(); keepAliveErr != nil {
+			return fmt.Errorf("iteration=%d: %w", i, keepAliveErr)
 		}
 		for _, probe := range directProbes {
-		drainDirectKeepAlive:
-			for {
-				select {
-				case response, ok := <-probe.keepAlive:
-					if !ok {
-						if restartErr := handleDirectKeepAliveClosure(probe, func() error {
-							return restartDirectKeepAlive(ctx, probe, leaseID)
-						}); restartErr != nil {
-							return fmt.Errorf("iteration=%d: %w", i, restartErr)
-						}
-						break drainDirectKeepAlive
-					}
-					keepAliveRevision, validateErr := validateKeepAliveResponse(response, clusterID, probe.lastKeepAliveRevision, leaseID, lease.TTL)
-					if validateErr != nil {
-						return fmt.Errorf("iteration=%d direct lease keepalive endpoint=%s: %w", i, probe.endpoint, validateErr)
-					}
-					probe.lastKeepAliveRevision = keepAliveRevision
-					probe.keepAliveResponses++
-					if probe.keepAliveRecovering {
-						probe.keepAliveRecovering = false
-					}
-				default:
-					break drainDirectKeepAlive
-				}
+			if keepAliveErr := probe.keepAlive.err(); keepAliveErr != nil {
+				return fmt.Errorf("iteration=%d: %w", i, keepAliveErr)
 			}
 		}
 		time.Sleep(cfg.interval)
@@ -812,64 +778,26 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if err != nil {
 		return err
 	}
+	if err := publicKeepAlive.waitForResponses(ctx, 1, cfg.commandTimeout); err != nil {
+		return fmt.Errorf("final: %w", err)
+	}
 	for _, probe := range directProbes {
-		if probe.keepAliveResponses == 0 {
-			return fmt.Errorf("direct lease keepalive produced no rollout-window response endpoint=%s", probe.endpoint)
+		if err := probe.keepAlive.waitForResponses(ctx, 1, cfg.maxDirectLatency); err != nil {
+			return fmt.Errorf("final: %w", err)
 		}
-	finalDrain:
-		for {
-			select {
-			case response, ok := <-probe.keepAlive:
-				if !ok {
-					if restartErr := handleDirectKeepAliveClosure(probe, func() error {
-						return restartDirectKeepAlive(ctx, probe, leaseID)
-					}); restartErr != nil {
-						return fmt.Errorf("final: %w", restartErr)
-					}
-					continue
-				}
-				keepAliveRevision, validateErr := validateKeepAliveResponse(response, clusterID, probe.lastKeepAliveRevision, leaseID, lease.TTL)
-				if validateErr != nil {
-					return fmt.Errorf("final direct lease keepalive endpoint=%s: %w", probe.endpoint, validateErr)
-				}
-				probe.lastKeepAliveRevision = keepAliveRevision
-				if probe.keepAliveRecovering {
-					probe.keepAliveRecovering = false
-				}
-			default:
-				break finalDrain
-			}
+	}
+	keepAliveFinalMarker := time.Now()
+	if err := publicKeepAlive.waitForFreshResponse(ctx, keepAliveFinalMarker, cfg.commandTimeout); err != nil {
+		return fmt.Errorf("final: %w", err)
+	}
+	for _, probe := range directProbes {
+		if err := probe.keepAlive.waitForFreshResponse(ctx, keepAliveFinalMarker, cfg.maxDirectLatency); err != nil {
+			return fmt.Errorf("final: %w", err)
 		}
-		finalTimer := time.NewTimer(cfg.maxDirectLatency)
-	finalWait:
-		for {
-			select {
-			case response, ok := <-probe.keepAlive:
-				if !ok {
-					if restartErr := handleDirectKeepAliveClosure(probe, func() error {
-						return restartDirectKeepAlive(ctx, probe, leaseID)
-					}); restartErr != nil {
-						return fmt.Errorf("final: %w", restartErr)
-					}
-					continue
-				}
-				keepAliveRevision, validateErr := validateKeepAliveResponse(response, clusterID, probe.lastKeepAliveRevision, leaseID, lease.TTL)
-				if validateErr != nil {
-					return fmt.Errorf("final direct lease keepalive endpoint=%s: %w", probe.endpoint, validateErr)
-				}
-				probe.lastKeepAliveRevision = keepAliveRevision
-				probe.keepAliveRecovering = false
-				break finalWait
-			case <-finalTimer.C:
-				return fmt.Errorf("final direct lease keepalive timed out endpoint=%s", probe.endpoint)
-			}
-		}
-		if !finalTimer.Stop() {
-			select {
-			case <-finalTimer.C:
-			default:
-			}
-		}
+	}
+	lastRevision = max(lastRevision, publicKeepAlive.snapshot().lastRevision)
+	for _, probe := range directProbes {
+		lastRevision = max(lastRevision, probe.keepAlive.snapshot().lastRevision)
 	}
 
 	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
@@ -882,9 +810,13 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		return fmt.Errorf("final lease verification failed: %w", err)
 	}
 	directKeepAliveRestarts := 0
+	directKeepAliveResponses := 0
 	for _, probe := range directProbes {
-		directKeepAliveRestarts += probe.keepAliveRestarts
+		snapshot := probe.keepAlive.snapshot()
+		directKeepAliveRestarts += snapshot.restarts
+		directKeepAliveResponses += snapshot.responses
 	}
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive direct_lease=alive direct_lease_restarts=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), directKeepAliveRestarts, len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
+	publicKeepAliveResponses := publicKeepAlive.snapshot().responses
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive lease_responses=%d direct_lease=alive direct_lease_responses=%d direct_lease_restarts=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), publicKeepAliveResponses, directKeepAliveResponses, directKeepAliveRestarts, len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
 	return nil
 }

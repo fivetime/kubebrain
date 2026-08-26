@@ -328,33 +328,3 @@ func TestReceiveDirectWatchResponsesDoesNotHeadOfLineBlockFastEndpoints(t *testi
 	_, err = receiveDirectWatchResponses(context.Background(), []*directStreamProbe{{endpoint: "blocked", watch: blocked}}, 10*time.Millisecond)
 	require.ErrorContains(t, err, "direct watch recovery exceeded")
 }
-
-func TestHandleDirectKeepAliveClosureAllowsOneBoundedRecoveryEpisode(t *testing.T) {
-	rolling := &directStreamProbe{endpoint: "rolling"}
-	restarted := false
-	require.NoError(t, handleDirectKeepAliveClosure(rolling, func() error {
-		restarted = true
-		return nil
-	}))
-	require.True(t, restarted)
-	require.True(t, rolling.keepAliveRecovering)
-	require.Equal(t, 1, rolling.keepAliveRestarts)
-
-	// A restarted channel may close repeatedly while the same Pod is still being
-	// replaced. That remains one recovery episode until a response is observed.
-	require.NoError(t, handleDirectKeepAliveClosure(rolling, func() error {
-		return nil
-	}))
-	require.True(t, rolling.keepAliveRecovering)
-	require.Equal(t, 2, rolling.keepAliveRestarts)
-
-	rolling.keepAliveRecovering = false
-	require.ErrorContains(t, handleDirectKeepAliveClosure(rolling, func() error {
-		t.Fatal("a second completed recovery episode must not restart")
-		return nil
-	}), "closed after completed recovery")
-
-	failing := &directStreamProbe{endpoint: "failing"}
-	require.EqualError(t, handleDirectKeepAliveClosure(failing, func() error { return errors.New("restart failed") }), "restart direct lease keepalive endpoint=failing: restart failed")
-	require.Equal(t, 0, failing.keepAliveRestarts, "a failed restart must not publish a recovery")
-}
