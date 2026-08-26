@@ -383,7 +383,13 @@ func TestRolloutAvailabilityRunnerBindsMutualTLSProbeIdentity(t *testing.T) {
 		Spec struct {
 			AutomountServiceAccountToken bool   `json:"automountServiceAccountToken"`
 			RestartPolicy                string `json:"restartPolicy"`
-			Containers                   []struct {
+			SecurityContext              struct {
+				RunAsNonRoot bool  `json:"runAsNonRoot"`
+				RunAsUser    int64 `json:"runAsUser"`
+				RunAsGroup   int64 `json:"runAsGroup"`
+				FSGroup      int64 `json:"fsGroup"`
+			} `json:"securityContext"`
+			Containers []struct {
 				Name         string   `json:"name"`
 				Image        string   `json:"image"`
 				Command      []string `json:"command"`
@@ -399,6 +405,10 @@ func TestRolloutAvailabilityRunnerBindsMutualTLSProbeIdentity(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(overrideJSON), &override))
 	require.False(t, override.Spec.AutomountServiceAccountToken)
 	require.Equal(t, "Never", override.Spec.RestartPolicy)
+	require.True(t, override.Spec.SecurityContext.RunAsNonRoot)
+	require.EqualValues(t, 65532, override.Spec.SecurityContext.RunAsUser)
+	require.EqualValues(t, 65532, override.Spec.SecurityContext.RunAsGroup)
+	require.EqualValues(t, 65532, override.Spec.SecurityContext.FSGroup)
 	require.Len(t, override.Spec.Containers, 1)
 	require.Equal(t, "kubebrain:test", override.Spec.Containers[0].Image)
 	require.Equal(t, []string{"/usr/local/bin/kubebrain-rollout-availability-probe"}, override.Spec.Containers[0].Command)
@@ -417,6 +427,25 @@ func TestRolloutAvailabilityRunnerRejectsWritableTLSIdentityBeforeMutation(t *te
 		"FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_TLS_STATE=true",
 		"FAKE_TLS_WRITABLE_MOUNT=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "rollout drain contract mismatch")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " run ")
+	require.NotContains(t, log, " patch ")
+}
+
+func TestRolloutAvailabilityRunnerRejectsRootTLSProbeContextBeforeMutation(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_TLS_STATE=true",
+		"FAKE_TLS_ROOT_CONTEXT=true",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
 	)
 	output, err := command.CombinedOutput()
@@ -815,12 +844,15 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   args='["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"]'
   volume_mounts='[]'
   volumes='[]'
+  pod_security_context='{}'
   if [[ "${FAKE_TLS_STATE:-false}" == true ]]; then
     prestop='["/bin/sh","-c","sleep 20 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5"]'
     args='["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379","--allow-insecure=false","--cert-file=/etc/kubebrain/client-tls/tls.crt","--key-file=/etc/kubebrain/client-tls/tls.key","--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt","--tls-server-name=kubebrain-client.kubebrain-system.svc","--client-cert-auth=true"]'
     volume_mounts='[{"name":"client-tls","mountPath":"/etc/kubebrain/client-tls","readOnly":true}]'
     volumes='[{"name":"client-tls","secret":{"secretName":"kubebrain-client-tls","defaultMode":256}}]'
+    pod_security_context='{"runAsNonRoot":true,"runAsUser":65532,"runAsGroup":65532,"fsGroup":65532}'
     [[ "${FAKE_TLS_WRITABLE_MOUNT:-false}" != true ]] || volume_mounts='[{"name":"client-tls","mountPath":"/etc/kubebrain/client-tls","readOnly":false}]'
+    [[ "${FAKE_TLS_ROOT_CONTEXT:-false}" != true ]] || pod_security_context='{"runAsNonRoot":false,"runAsUser":0,"runAsGroup":0,"fsGroup":0}'
   fi
   runtime_image=kubebrain:test
   [[ -e "$FAKE_KUBECTL_STATE" && -n "${TARGET_IMAGE:-}" ]] && runtime_image="$TARGET_IMAGE"
@@ -836,9 +868,9 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   if [[ -e "$FAKE_KUBECTL_STATE" && -z "${TARGET_IMAGE:-}" ]]; then
     restart_annotation="$(<"$FAKE_KUBECTL_STATE")"
   fi
-  payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --arg restart "$restart_annotation" --argjson prestop "$prestop" --argjson args "$args" --argjson volume_mounts "$volume_mounts" --argjson volumes "$volumes" --argjson replicas "$spec_replicas" --argjson termination_grace "$termination_grace" '{
+  payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --arg restart "$restart_annotation" --argjson prestop "$prestop" --argjson args "$args" --argjson volume_mounts "$volume_mounts" --argjson volumes "$volumes" --argjson pod_security_context "$pod_security_context" --argjson replicas "$spec_replicas" --argjson termination_grace "$termination_grace" '{
     metadata:{uid:$uid,resourceVersion:$resourceVersion},
-    spec:{replicas:$replicas,serviceName:"kubebrain-peer",template:{metadata:{annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{terminationGracePeriodSeconds:$termination_grace,containers:[{name:"kubebrain",image:$image,args:$args,volumeMounts:$volume_mounts,lifecycle:{preStop:{exec:{command:$prestop}}}}],volumes:$volumes}}},
+    spec:{replicas:$replicas,serviceName:"kubebrain-peer",template:{metadata:{annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{terminationGracePeriodSeconds:$termination_grace,securityContext:$pod_security_context,containers:[{name:"kubebrain",image:$image,args:$args,volumeMounts:$volume_mounts,lifecycle:{preStop:{exec:{command:$prestop}}}}],volumes:$volumes}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
   if [[ "${FAKE_NO_TEMPLATE_ANNOTATIONS:-false}" == true && ! -e "$FAKE_KUBECTL_STATE" ]]; then

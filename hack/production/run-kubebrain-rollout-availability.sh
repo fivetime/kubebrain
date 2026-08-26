@@ -317,7 +317,12 @@ if (( tls_marker_count > 0 )); then
     fi
     tls_volume="$(jq -cer --arg name "$tls_volume_name" '[.spec.template.spec.volumes[]? |
       select(.name == $name and ((.secret.secretName // "") | length > 0))] | select(length == 1) | .[0]' "$statefulset_json" 2>/dev/null || true)"
-    if [[ -z "$tls_volume_mount" || -z "$tls_volume_name" || -z "$tls_volume" ]]; then
+    tls_pod_security_context="$(jq -cer '.spec.template.spec.securityContext |
+      select(type == "object" and .runAsNonRoot == true and
+        (.runAsUser | type == "number" and . > 0) and
+        (.runAsGroup | type == "number" and . > 0) and
+        (.fsGroup | type == "number" and . > 0))' "$statefulset_json" 2>/dev/null || true)"
+    if [[ -z "$tls_volume_mount" || -z "$tls_volume_name" || -z "$tls_volume" || -z "$tls_pod_security_context" ]]; then
       tls_contract_valid=false
     else
       probe_tls_args+=(--cacert="$ca_file" --cert="$cert_file" --key="$key_file" --tls-server-name="$tls_server_name")
@@ -464,8 +469,9 @@ probe_command=(
 if [[ "$endpoint_scheme" == https ]]; then
   probe_command_args="$(jq -cn --args '$ARGS.positional' -- "${probe_command[@]:1}")" || exit 1
   probe_overrides="$(jq -cn --arg name "$PROBE_POD" --arg image "$probe_image" --arg command "${probe_command[0]}" \
-    --argjson args "$probe_command_args" --argjson mount "$tls_volume_mount" --argjson volume "$tls_volume" '{
-      apiVersion:"v1",kind:"Pod",spec:{automountServiceAccountToken:false,restartPolicy:"Never",
+    --argjson args "$probe_command_args" --argjson mount "$tls_volume_mount" --argjson volume "$tls_volume" \
+    --argjson security_context "$tls_pod_security_context" '{
+      apiVersion:"v1",kind:"Pod",spec:{automountServiceAccountToken:false,restartPolicy:"Never",securityContext:$security_context,
         containers:[{name:$name,image:$image,command:[$command],args:$args,volumeMounts:[$mount]}],volumes:[$volume]}
     }')" || exit 1
   kctl_mutation run "$PROBE_POD" --image="$probe_image" --restart=Never --overrides="$probe_overrides" >/dev/null || {
