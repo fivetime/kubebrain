@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
 )
 
 type fakePDTimestampClient struct {
@@ -185,6 +187,50 @@ func TestConfigValidation(t *testing.T) {
 			require.Error(t, candidate.validate())
 		})
 	}
+}
+
+func TestConfigRejectsHTTPSWithoutExplicitTLSIdentity(t *testing.T) {
+	cfg := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond}
+	require.ErrorContains(t, cfg.validate(), "TLS")
+}
+
+func TestConfigRequiresCompleteTLSIdentityAndMatchingSchemes(t *testing.T) {
+	valid := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, caFile: "/tls/ca.crt", certFile: "/tls/tls.crt", keyFile: "/tls/tls.key", tlsServerName: "kubebrain-client.example"}
+	require.NoError(t, valid.validate())
+
+	for name, mutate := range map[string]func(*config){
+		"missing CA":          func(cfg *config) { cfg.caFile = "" },
+		"missing cert":        func(cfg *config) { cfg.certFile = "" },
+		"missing key":         func(cfg *config) { cfg.keyFile = "" },
+		"missing server name": func(cfg *config) { cfg.tlsServerName = "" },
+		"public HTTP":         func(cfg *config) { cfg.endpoint = "http://etcd:2379" },
+		"direct HTTP":         func(cfg *config) { cfg.directEndpoints[0] = "http://kb-0:3379" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			candidate.directEndpoints = append([]string(nil), valid.directEndpoints...)
+			mutate(&candidate)
+			require.ErrorContains(t, candidate.validate(), "TLS")
+		})
+	}
+
+	_, err := valid.clientTLSConfig()
+	require.ErrorContains(t, err, "open /tls")
+}
+
+func TestClientTLSConfigLoadsMutualTLSIdentity(t *testing.T) {
+	identity, err := transport.SelfCert(zap.NewNop(), t.TempDir(), []string{"kubebrain-client.example"}, 1)
+	require.NoError(t, err)
+	cfg := config{caFile: identity.CertFile, certFile: identity.CertFile, keyFile: identity.KeyFile, tlsServerName: "kubebrain-client.example"}
+	tlsConfig, err := cfg.clientTLSConfig()
+	require.NoError(t, err)
+	require.Equal(t, "kubebrain-client.example", tlsConfig.ServerName)
+	require.NotNil(t, tlsConfig.RootCAs)
+	require.NotNil(t, tlsConfig.GetClientCertificate)
+
+	plaintext, err := (config{}).clientTLSConfig()
+	require.NoError(t, err)
+	require.Nil(t, plaintext)
 }
 
 func TestValidateDirectWatchLatencyAllowsOnlyOneRollingEndpoint(t *testing.T) {

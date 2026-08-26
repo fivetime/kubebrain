@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	tikverr "github.com/tikv/client-go/v2/error"
 	"github.com/tikv/client-go/v2/txnkv"
 	pd "github.com/tikv/pd/client"
+	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -37,6 +39,10 @@ type config struct {
 	maxHeartbeatAge  time.Duration
 	maxTSOLatency    time.Duration
 	maxRegionLatency time.Duration
+	caFile           string
+	certFile         string
+	keyFile          string
+	tlsServerName    string
 }
 
 func main() {
@@ -56,6 +62,10 @@ func main() {
 	flag.DurationVar(&cfg.maxHeartbeatAge, "max-store-heartbeat-age", 20*time.Second, "maximum TiKV store heartbeat age")
 	flag.DurationVar(&cfg.maxTSOLatency, "max-pd-tso-latency", time.Second, "maximum PD TSO request latency")
 	flag.DurationVar(&cfg.maxRegionLatency, "max-tikv-region-latency", time.Second, "maximum TiKV Region point-read latency")
+	flag.StringVar(&cfg.caFile, "cacert", "", "trusted CA file for KubeBrain HTTPS endpoints")
+	flag.StringVar(&cfg.certFile, "cert", "", "client certificate file for KubeBrain HTTPS endpoints")
+	flag.StringVar(&cfg.keyFile, "key", "", "client private key file for KubeBrain HTTPS endpoints")
+	flag.StringVar(&cfg.tlsServerName, "tls-server-name", "", "TLS server name for KubeBrain HTTPS endpoints")
 	var pdEndpoints string
 	flag.StringVar(&pdEndpoints, "pd-endpoints", "", "comma-separated PD HTTP endpoints")
 	flag.Parse()
@@ -90,6 +100,13 @@ func (cfg config) validate() error {
 	if len(cfg.directEndpoints) < 3 {
 		return fmt.Errorf("at least three direct KubeBrain endpoints are required")
 	}
+	tlsEnabled := cfg.caFile != "" || cfg.certFile != "" || cfg.keyFile != "" || cfg.tlsServerName != ""
+	if tlsEnabled && (cfg.caFile == "" || cfg.certFile == "" || cfg.keyFile == "" || cfg.tlsServerName == "") {
+		return fmt.Errorf("TLS requires cacert, cert, key, and tls-server-name")
+	}
+	if strings.HasPrefix(cfg.endpoint, "https://") != tlsEnabled || (!strings.HasPrefix(cfg.endpoint, "http://") && !strings.HasPrefix(cfg.endpoint, "https://")) {
+		return fmt.Errorf("KubeBrain endpoint scheme and TLS identity must match: %q", cfg.endpoint)
+	}
 	seenDirectEndpoints := make(map[string]struct{}, len(cfg.directEndpoints))
 	for _, endpoint := range cfg.directEndpoints {
 		if (!strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://")) || strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://") == "" {
@@ -97,6 +114,9 @@ func (cfg config) validate() error {
 		}
 		if _, duplicate := seenDirectEndpoints[endpoint]; duplicate {
 			return fmt.Errorf("direct KubeBrain endpoints must be unique: %q", endpoint)
+		}
+		if strings.HasPrefix(endpoint, "https://") != tlsEnabled {
+			return fmt.Errorf("direct KubeBrain endpoint scheme and TLS identity must match: %q", endpoint)
 		}
 		seenDirectEndpoints[endpoint] = struct{}{}
 	}
@@ -106,6 +126,18 @@ func (cfg config) validate() error {
 		}
 	}
 	return nil
+}
+
+func (cfg config) clientTLSConfig() (*tls.Config, error) {
+	if cfg.caFile == "" {
+		return nil, nil
+	}
+	return transport.TLSInfo{
+		TrustedCAFile: cfg.caFile,
+		CertFile:      cfg.certFile,
+		KeyFile:       cfg.keyFile,
+		ServerName:    cfg.tlsServerName,
+	}.ClientConfig()
 }
 
 type tikvRegionReader interface {
@@ -362,6 +394,10 @@ func readPDLeader(ctx context.Context, endpoints []string, timeout time.Duration
 }
 
 func run(ctx context.Context, cfg config) (retErr error) {
+	tlsConfig, err := cfg.clientTLSConfig()
+	if err != nil {
+		return fmt.Errorf("load KubeBrain TLS identity: %w", err)
+	}
 	initialPDLeader, err := readPDLeader(ctx, cfg.pdEndpoints, cfg.dialTimeout)
 	if err != nil {
 		return fmt.Errorf("backend preflight: %w", err)
@@ -393,6 +429,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{cfg.endpoint},
 		DialTimeout: cfg.dialTimeout,
+		TLS:         tlsConfig,
 	})
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
@@ -511,6 +548,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		directClient, directErr := clientv3.New(clientv3.Config{
 			Endpoints:   []string{endpoint},
 			DialTimeout: cfg.dialTimeout,
+			TLS:         tlsConfig,
 		})
 		if directErr != nil {
 			return fmt.Errorf("create direct client %s: %w", endpoint, directErr)

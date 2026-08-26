@@ -1,6 +1,7 @@
 package production_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -345,6 +346,85 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, " wait --for=jsonpath={.status.phase}=Succeeded")
 	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system delete pod kubebrain-rollout-availability-probe --ignore-not-found=true --wait=true --timeout=10s")
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
+}
+
+func TestRolloutAvailabilityRunnerBindsMutualTLSProbeIdentity(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_TLS_STATE=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "rollout availability gate passed")
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, "--endpoint=https://kubebrain-client.kubebrain-system.svc:3379")
+	require.Contains(t, log, "--direct-endpoints=https://kubebrain-0.kubebrain-peer.kubebrain-system.svc:3379,https://kubebrain-1.kubebrain-peer.kubebrain-system.svc:3379,https://kubebrain-2.kubebrain-peer.kubebrain-system.svc:3379")
+	require.Contains(t, log, "--cacert=/etc/kubebrain/client-tls/ca.crt")
+	require.Contains(t, log, "--cert=/etc/kubebrain/client-tls/tls.crt")
+	require.Contains(t, log, "--key=/etc/kubebrain/client-tls/tls.key")
+	require.Contains(t, log, "--tls-server-name=kubebrain-client.kubebrain-system.svc")
+	require.Contains(t, log, `"secretName":"kubebrain-client-tls"`)
+	require.Contains(t, log, `"mountPath":"/etc/kubebrain/client-tls"`)
+	var overrideJSON string
+	for _, line := range strings.Split(log, "\n") {
+		if index := strings.Index(line, "--overrides="); index >= 0 {
+			overrideJSON = line[index+len("--overrides="):]
+			break
+		}
+	}
+	require.NotEmpty(t, overrideJSON)
+	var override struct {
+		Spec struct {
+			AutomountServiceAccountToken bool   `json:"automountServiceAccountToken"`
+			RestartPolicy                string `json:"restartPolicy"`
+			Containers                   []struct {
+				Name         string   `json:"name"`
+				Image        string   `json:"image"`
+				Command      []string `json:"command"`
+				Args         []string `json:"args"`
+				VolumeMounts []struct {
+					Name      string `json:"name"`
+					MountPath string `json:"mountPath"`
+					ReadOnly  bool   `json:"readOnly"`
+				} `json:"volumeMounts"`
+			} `json:"containers"`
+		} `json:"spec"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(overrideJSON), &override))
+	require.False(t, override.Spec.AutomountServiceAccountToken)
+	require.Equal(t, "Never", override.Spec.RestartPolicy)
+	require.Len(t, override.Spec.Containers, 1)
+	require.Equal(t, "kubebrain:test", override.Spec.Containers[0].Image)
+	require.Equal(t, []string{"/usr/local/bin/kubebrain-rollout-availability-probe"}, override.Spec.Containers[0].Command)
+	require.Contains(t, override.Spec.Containers[0].Args, "--endpoint=https://kubebrain-client.kubebrain-system.svc:3379")
+	require.Len(t, override.Spec.Containers[0].VolumeMounts, 1)
+	require.Equal(t, "/etc/kubebrain/client-tls", override.Spec.Containers[0].VolumeMounts[0].MountPath)
+	require.True(t, override.Spec.Containers[0].VolumeMounts[0].ReadOnly)
+}
+
+func TestRolloutAvailabilityRunnerRejectsWritableTLSIdentityBeforeMutation(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_TLS_STATE=true",
+		"FAKE_TLS_WRITABLE_MOUNT=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "rollout drain contract mismatch")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " run ")
+	require.NotContains(t, log, " patch ")
 }
 
 func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
@@ -732,6 +812,16 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   [[ "${FAKE_DRAIN_FIRST_PRESTOP:-false}" != true ]] || prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
   [[ "${FAKE_SHORT_PROPAGATION_PRESTOP:-false}" != true ]] || prestop='["/bin/sh","-c","sleep 10 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
   [[ "${FAKE_BAD_PRESTOP:-false}" == true ]] && prestop='["/bin/sleep","5"]'
+  args='["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"]'
+  volume_mounts='[]'
+  volumes='[]'
+  if [[ "${FAKE_TLS_STATE:-false}" == true ]]; then
+    prestop='["/bin/sh","-c","sleep 20 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5"]'
+    args='["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379","--allow-insecure=false","--cert-file=/etc/kubebrain/client-tls/tls.crt","--key-file=/etc/kubebrain/client-tls/tls.key","--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt","--tls-server-name=kubebrain-client.kubebrain-system.svc","--client-cert-auth=true"]'
+    volume_mounts='[{"name":"client-tls","mountPath":"/etc/kubebrain/client-tls","readOnly":true}]'
+    volumes='[{"name":"client-tls","secret":{"secretName":"kubebrain-client-tls","defaultMode":256}}]'
+    [[ "${FAKE_TLS_WRITABLE_MOUNT:-false}" != true ]] || volume_mounts='[{"name":"client-tls","mountPath":"/etc/kubebrain/client-tls","readOnly":false}]'
+  fi
   runtime_image=kubebrain:test
   [[ -e "$FAKE_KUBECTL_STATE" && -n "${TARGET_IMAGE:-}" ]] && runtime_image="$TARGET_IMAGE"
   statefulset_uid="${FAKE_STATEFULSET_UID:-statefulset-uid}"
@@ -746,9 +836,9 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   if [[ -e "$FAKE_KUBECTL_STATE" && -z "${TARGET_IMAGE:-}" ]]; then
     restart_annotation="$(<"$FAKE_KUBECTL_STATE")"
   fi
-  payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --arg restart "$restart_annotation" --argjson prestop "$prestop" --argjson replicas "$spec_replicas" --argjson termination_grace "$termination_grace" '{
+  payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --arg restart "$restart_annotation" --argjson prestop "$prestop" --argjson args "$args" --argjson volume_mounts "$volume_mounts" --argjson volumes "$volumes" --argjson replicas "$spec_replicas" --argjson termination_grace "$termination_grace" '{
     metadata:{uid:$uid,resourceVersion:$resourceVersion},
-    spec:{replicas:$replicas,serviceName:"kubebrain-peer",template:{metadata:{annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{terminationGracePeriodSeconds:$termination_grace,containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
+    spec:{replicas:$replicas,serviceName:"kubebrain-peer",template:{metadata:{annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{terminationGracePeriodSeconds:$termination_grace,containers:[{name:"kubebrain",image:$image,args:$args,volumeMounts:$volume_mounts,lifecycle:{preStop:{exec:{command:$prestop}}}}],volumes:$volumes}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
   if [[ "${FAKE_NO_TEMPLATE_ANNOTATIONS:-false}" == true && ! -e "$FAKE_KUBECTL_STATE" ]]; then

@@ -289,6 +289,41 @@ done
 prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' "$statefulset_json")"
 expected_prestop='["/bin/sh","-c","sleep 20 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
 termination_grace_period_seconds="$(jq -r '.spec.template.spec.terminationGracePeriodSeconds // 0' "$statefulset_json")"
+endpoint_scheme=http
+declare -a probe_tls_args=()
+tls_marker_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? |
+  select(. == "--allow-insecure=false" or . == "--client-cert-auth=true" or startswith("--cert-file=") or
+    startswith("--key-file=") or startswith("--trusted-ca-file=") or startswith("--tls-server-name="))] | length' "$statefulset_json")"
+tls_contract_valid=true
+if (( tls_marker_count > 0 )); then
+  endpoint_scheme=https
+  expected_prestop='["/bin/sh","-c","sleep 20 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5"]'
+  allow_insecure_false_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--allow-insecure=false")] | length' "$statefulset_json")"
+  client_cert_auth_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--client-cert-auth=true")] | length' "$statefulset_json")"
+  cert_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--cert-file=")) | sub("^--cert-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
+  key_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--key-file=")) | sub("^--key-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
+  ca_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--trusted-ca-file=")) | sub("^--trusted-ca-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
+  tls_server_name="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--tls-server-name=")) | sub("^--tls-server-name="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
+  cert_dir="${cert_file%/*}"
+  if [[ "$allow_insecure_false_count" != 1 || "$client_cert_auth_count" != 1 || "$cert_file" != /* || "$key_file" != "${cert_dir}/"* ||
+    "$ca_file" != "${cert_dir}/"* || -z "$tls_server_name" ]]; then
+    tls_contract_valid=false
+  else
+    tls_volume_mount="$(jq -cer --arg dir "$cert_dir" '[.spec.template.spec.containers[] | select(.name == "kubebrain") |
+      .volumeMounts[]? | select(.mountPath == $dir and .readOnly == true)] | select(length == 1) | .[0]' "$statefulset_json" 2>/dev/null || true)"
+    tls_volume_name=""
+    if [[ -n "$tls_volume_mount" ]]; then
+      tls_volume_name="$(jq -r '.name // ""' <<<"$tls_volume_mount")"
+    fi
+    tls_volume="$(jq -cer --arg name "$tls_volume_name" '[.spec.template.spec.volumes[]? |
+      select(.name == $name and ((.secret.secretName // "") | length > 0))] | select(length == 1) | .[0]' "$statefulset_json" 2>/dev/null || true)"
+    if [[ -z "$tls_volume_mount" || -z "$tls_volume_name" || -z "$tls_volume" ]]; then
+      tls_contract_valid=false
+    else
+      probe_tls_args+=(--cacert="$ca_file" --cert="$cert_file" --key="$key_file" --tls-server-name="$tls_server_name")
+    fi
+  fi
+fi
 
 if [[ "$replicas" != "$EXPECTED_REPLICAS" || "$ready" != "$EXPECTED_REPLICAS" ]]; then
   echo "KubeBrain StatefulSet must have exactly ${EXPECTED_REPLICAS} desired and Ready replicas" >&2
@@ -298,10 +333,10 @@ if [[ -z "$current_revision" || "$current_revision" != "$update_revision" ]]; th
   echo "KubeBrain StatefulSet is not at one stable revision" >&2
   exit 1
 fi
-if [[ -z "$image" || -z "$pd_endpoints" || ! "$headless_service" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || "$retry_count" != 1 || "$prestop" != "$expected_prestop" ]] ||
+if [[ -z "$image" || -z "$pd_endpoints" || ! "$headless_service" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || "$retry_count" != 1 || "$prestop" != "$expected_prestop" || "$tls_contract_valid" != true ]] ||
   ! operation_is_positive_int64 "$termination_grace_period_seconds" ||
   (( termination_grace_period_seconds < MIN_TERMINATION_GRACE_PERIOD_SECONDS )); then
-  echo "KubeBrain rollout drain contract mismatch (image/retry/serviceName/preStop/terminationGracePeriodSeconds)" >&2
+  echo "KubeBrain rollout drain contract mismatch (image/retry/serviceName/preStop/terminationGracePeriodSeconds/TLS identity)" >&2
   exit 1
 fi
 declare -a original_runtime_image_ids=()
@@ -397,17 +432,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-endpoint="http://${KUBEBRAIN_CLIENT_SERVICE}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
+endpoint="${endpoint_scheme}://${KUBEBRAIN_CLIENT_SERVICE}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
 direct_endpoints=""
 for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
-  direct_endpoint="http://${KUBEBRAIN_STATEFULSET}-${ordinal}.${headless_service}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
+  direct_endpoint="${endpoint_scheme}://${KUBEBRAIN_STATEFULSET}-${ordinal}.${headless_service}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
   direct_endpoints="${direct_endpoints:+${direct_endpoints},}${direct_endpoint}"
 done
 probe_image="$image"
 if [[ -n "$PROBE_IMAGE" ]]; then
   probe_image="$PROBE_IMAGE"
 fi
-kctl_mutation run "$PROBE_POD" --image="$probe_image" --restart=Never --command -- \
+probe_command=(
   /usr/local/bin/kubebrain-rollout-availability-probe \
   --endpoint="$endpoint" \
   --direct-endpoints="$direct_endpoints" \
@@ -423,10 +458,26 @@ kctl_mutation run "$PROBE_POD" --image="$probe_image" --restart=Never --command 
   --pd-endpoints="$pd_endpoints" \
   --expected-up-stores=3 \
   --max-store-heartbeat-age=20s \
-  --dial-timeout="$PROBE_DIAL_TIMEOUT" >/dev/null || {
-  echo "failed to create rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
-  exit 1
-}
+  "${probe_tls_args[@]}" \
+  --dial-timeout="$PROBE_DIAL_TIMEOUT"
+)
+if [[ "$endpoint_scheme" == https ]]; then
+  probe_command_args="$(jq -cn --args '$ARGS.positional' -- "${probe_command[@]:1}")" || exit 1
+  probe_overrides="$(jq -cn --arg name "$PROBE_POD" --arg image "$probe_image" --arg command "${probe_command[0]}" \
+    --argjson args "$probe_command_args" --argjson mount "$tls_volume_mount" --argjson volume "$tls_volume" '{
+      apiVersion:"v1",kind:"Pod",spec:{automountServiceAccountToken:false,restartPolicy:"Never",
+        containers:[{name:$name,image:$image,command:[$command],args:$args,volumeMounts:[$mount]}],volumes:[$volume]}
+    }')" || exit 1
+  kctl_mutation run "$PROBE_POD" --image="$probe_image" --restart=Never --overrides="$probe_overrides" >/dev/null || {
+    echo "failed to create rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
+    exit 1
+  }
+else
+  kctl_mutation run "$PROBE_POD" --image="$probe_image" --restart=Never --command -- "${probe_command[@]}" >/dev/null || {
+    echo "failed to create rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
+    exit 1
+  }
+fi
 kctl_watch "$KUBECTL_READY_WAIT_COMMAND_TIMEOUT" \
   wait --for=condition=Ready "pod/$PROBE_POD" --timeout="$PROBE_READY_TIMEOUT" >/dev/null || {
   echo "rollout availability probe Pod did not become Ready within ${PROBE_READY_TIMEOUT}" >&2
