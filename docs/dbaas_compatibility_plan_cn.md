@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、server version、独立 backend storage version、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 兼容核心语义（升级历史有条件） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；每次生产 rollout 还实际执行官方 etcdutl Status 与带哈希检查的 Restore，启动恢复后的官方 singleton etcd，并通过 clientv3 以原 mTLS caller 身份读回固定 seed/MVCC 后才放行；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
+| Maintenance | Snapshot | 兼容核心语义（升级历史有条件） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；每次生产 rollout 还实际执行官方 etcdutl Status 与带哈希检查的 Restore，启动恢复后的官方 singleton etcd，并通过 clientv3 以原 mTLS caller 身份对固定 seed（含 `v1→v2→Delete→v3`）执行当前/逐 revision 历史 Range 与从最早 seed revision 开始的 prefix Watch 精确重放后才放行；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；follower 的 latest `HashKV(0)` 本地 hedge 必须先跨 leader revision barrier，不能以陈旧 hash 抢赢权威 peer；显式历史 revision 保持成员本地诊断；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -62954,6 +62954,62 @@ Ready、restart 0，近 7 分钟无 queue-full/panic/fatal。A5543 probe 数据�
 本轮证明的是 16 个无 lease、仅创建一次的固定 seed 可在官方恢复启动后按原 revision Range 并从最早 seed revision 完整 Watch
 重放；它不覆盖更新/删除/lease 历史、任意 auth 权限矩阵、多 member restore、跨集群灾备或大数据量恢复。节点磁盘耗尽也表明生产发布
 仍需由平台提供独立于协议门禁的镜像/磁盘容量监控与垃圾回收预算。
+
+### A5544：rollout 恢复门禁覆盖 Update、Delete 与 Recreate 历史
+
+A5543 的 16 个 seed 都只创建一次，因此逐 revision Range 与历史 Watch 仍不能证明同键 version 递增、tombstone 和删除后
+CreateRevision/Version 重置。仓库已有 `hack/etcd-client-compat/snapshot_history_differential_test.go` 使用
+`v1→v2→Delete→v3` 对照官方 etcd；本轮继续对照
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/watchable_store.go` 与
+`tests/integration/clientv3/watch/v3_watch_test.go`，确认未请求 PrevKV 的官方 DELETE event 只含 key 与删除 ModRevision，其他
+MVCC/value 字段为零。
+
+提交 `d37be493`（完整 SHA `d37be49372258db28f5df4541e96d8847d9a68c2`）把第一个生产 stream seed 在初始 16 次
+Put 后继续执行 update、Delete、recreate，形成四个互异 main revision 的 `v1(version=1,create=r1)`、
+`v2(version=2,create=r1)`、DELETE 与 `v3(version=1,create=r4)`。最终 v3 继续参与当前 RangeStream；Snapshot verifier
+则将所有 seed event 按 revision 排序，逐事件执行历史 Get：PUT 必须匹配 value hash、create/mod revision、version、lease，DELETE
+revision 必须返回 Count=0/空 payload。恢复后的 prefix Watch 必须按相同全序返回精确 PUT/DELETE 类型与 MVCC 字段，并拒绝未知 key、
+错序、重复/额外事件、PrevKV、共享 main revision 却缺少 subrevision expectation，以及历史未落到最终 current seed 的输入。现阶段
+production canary 故意使用逐次单操作；多 op Txn 的 subrevision 序列继续由 snapshot 差分门禁覆盖而未纳入此 rollout expectation。
+
+确定性旧代码 RED 使用真实含 v1/v2/tombstone/v3 的 snapshot，把 v2 expectation hash 改错；旧 verifier 只读最终 v3 并返回 nil。
+实现后正例与该篡改负例均由官方 Restore→embedded etcd 启动路径执行。两类真实制品普通 20 轮 Go/墙钟为
+`93.854/95.599s`，race 20 轮为 `100.286/104.072s`；完整 probe 包 6.586 秒，vet 与 diff check 全绿。655 项
+inventory 为 `158/181/164/152`；精确提交后四片 Go/墙钟秒为 `129.511/136.257`、`354.893/361.568`、
+`228.919/235.591`、`371.218/377.903`，全部通过。
+
+A5544 镜像构建时间 `2026-08-26T15:43:37Z`，OCI index
+`sha256:d0cfd68ad034c4c037472b124f7af44826a0b6ca530ed2c276a8af10557967a8`、platform manifest
+`sha256:fb82e5fc551f4ab20f7faccc4894207fff725ecb2983bde4c9fff70d2afb9cee`、config
+`sha256:33604302cf4c1b4be99f01ab4da855d9017a50551271cc649d19f845e26087f1`、attestation manifest
+`sha256:1188a400fc4470e4e8cba423a6b4ecedaa78d5400cb200e8af72313a8c0b869b`、buildx provenance attachment
+`sha256:3363d75563e4c6f380ed9aabb5a9d3f2236db82dbbf4bc88a907b8c653915a29`、Kind runtime
+`sha256:53ad471c220eb0dcffb0b9b765ad88b1868bc1e42f997c4bd6a4363a38bd3580`。probe 为 47,931,533 bytes，较
+A5543 增加 28,750 bytes；config+compressed layers 为 906,575,303 bytes，减少 2,748 bytes。完整 SHA、TiKV、Go 1.26.5、
+linux/amd64、kubectl v1.36.2 与 `USER 65532:65532` 经 OCI 和 Kind 一次性 Pod 双重复核；审计 Pod 已按 UID/RV 删除，907,156,480
+bytes 临时 OCI archive 随后以精确文件 `unlink` 删除，可由 build cache 重建。
+
+A5543→A5544 upgrade **900/900 GREEN**：公共/直连 KeepAlive `103`/`279`、replacement 23、最大恢复
+`21766ms`；RangeStream 194、完成 v1/v2/Delete/v3 历史 Range/Watch 的 Snapshot 1、stream retry 2、partial retry 0，
+最大公共 Watch/直连 Watch/TSO/Region 延迟 `3314/26447/79/7ms`，revision
+`a4657-tls-78449bd4bf -> a4657-tls-7cfc54b99d`。带同值 `TARGET_IMAGE` 的第一次同版本调用按 runner 合同在 mutation 前
+exit 2；改用冻结当前镜像的 restart 模式后，首次实际 same-version restart 在 iteration 369 **RED**：直连
+`a4657-tls-2` LeaseKeepAlive 完成一次恢复后再次关闭，触发既有单恢复阶段 fail-closed 合同。该失败与 Snapshot 路径无关，但不从
+发布历史删除；滚动自身随后完整收敛到 revision `a4657-tls-7df5ffcfc7`、3/3 Ready、restart 0，三端 HTTPS readyz 与有界
+mTLS Put/Delete 烟测均通过。
+
+对同一不可变 A5544 镜像执行的纠正性 restart **900/900 GREEN**：KeepAlive `102`/`278`、replacement 23、最大恢复
+`20747ms`；RangeStream 197、Snapshot 1、stream retry 2、partial retry 0，最大公共/直连 Watch/TSO/Region 延迟
+`1961/25291/101/10ms`，revision `a4657-tls-7df5ffcfc7 -> a4657-tls-7c8d9b6c79`。
+
+终态 StatefulSet UID `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，current/update revision 均为
+`a4657-tls-7c8d9b6c79`，三 Pod 3/3 Ready、restart 0、运行精确 A5544 digest 且三端 `/readyz=ok`；PD/TiKV 3+3
+Ready、restart 0，近 8 分钟无 KeepAlive queue-full/panic/fatal。A5544 专属 probe 前缀 Count=0，根前缀只保留未触碰的 A5529
+独立审计键。临时 client Service UID `c7a7fe8f-2b38-4eec-bee3-f57811f4569f` 已以创建时 resourceVersion `6782146`
+和 UID 双前置条件删除，EndpointSlice 与 A5544 临时 Pod 均不存在；节点仍有 178GB 可用。
+
+本轮把单键 update/delete/recreate 的无 lease 历史加入每次 rollout 的官方恢复发布条件；它仍不证明带 lease 的版本历史、同 revision
+多 subrevision Txn、完整 auth 权限矩阵、多 member restore、跨集群灾备或大数据量恢复。
 
 ## 提交规则
 
