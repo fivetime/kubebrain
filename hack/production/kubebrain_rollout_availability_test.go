@@ -82,7 +82,7 @@ func TestRolloutAvailabilityRunnerRejectsInvalidPreflightModeBeforeKubernetes(t 
 
 func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *testing.T) {
 	for _, variable := range []string{
-		"PROBE_COMMAND_TIMEOUT", "PROBE_DIAL_TIMEOUT", "PROBE_MAX_OPERATION_LATENCY",
+		"PROBE_COMMAND_TIMEOUT", "PROBE_DIAL_TIMEOUT", "PROBE_MAX_OPERATION_LATENCY", "PROBE_MAX_DIRECT_STREAM_LATENCY",
 		"PROBE_MAX_PD_TSO_LATENCY", "PROBE_MAX_TIKV_REGION_LATENCY", "PROBE_READY_TIMEOUT",
 		"PROBE_START_TIMEOUT", "PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_EVIDENCE_REQUEST_TIMEOUT",
 		"KUBECTL_EVIDENCE_COMMAND_TIMEOUT", "KUBECTL_MUTATION_REQUEST_TIMEOUT",
@@ -317,7 +317,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_endpoints=3 max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34")
+	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_endpoints=3 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
 	require.Contains(t, string(output), "revision=revision-old->revision-new")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
@@ -330,6 +330,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, "/usr/local/bin/kubebrain-rollout-availability-probe")
 	require.Contains(t, log, "--command-timeout=10s")
 	require.Contains(t, log, "--max-operation-latency=5s")
+	require.Contains(t, log, "--max-direct-stream-latency=20s")
 	require.Contains(t, log, "--max-pd-tso-latency=1s")
 	require.Contains(t, log, "--max-tikv-region-latency=1s")
 	require.Contains(t, log, "--lease-ttl=5")
@@ -839,7 +840,7 @@ elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
-  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_endpoints=3 max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_endpoints=3 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
   printf '%s' "$payload"
   if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == probe-log ]]; then
     head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '

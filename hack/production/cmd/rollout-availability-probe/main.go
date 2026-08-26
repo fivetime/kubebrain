@@ -30,6 +30,7 @@ type config struct {
 	commandTimeout   time.Duration
 	dialTimeout      time.Duration
 	maxLatency       time.Duration
+	maxDirectLatency time.Duration
 	leaseTTL         int64
 	pdEndpoints      []string
 	expectedStores   int
@@ -49,6 +50,7 @@ func main() {
 	flag.DurationVar(&cfg.commandTimeout, "command-timeout", 10*time.Second, "per-operation timeout")
 	flag.DurationVar(&cfg.dialTimeout, "dial-timeout", time.Second, "client dial timeout")
 	flag.DurationVar(&cfg.maxLatency, "max-operation-latency", 5*time.Second, "maximum Put-to-Watch latency")
+	flag.DurationVar(&cfg.maxDirectLatency, "max-direct-stream-latency", 20*time.Second, "maximum recovery latency for the one direct endpoint being rolled")
 	flag.Int64Var(&cfg.leaseTTL, "lease-ttl", 15, "lease TTL in seconds")
 	flag.IntVar(&cfg.expectedStores, "expected-up-stores", 3, "exact number of Up TiKV stores")
 	flag.DurationVar(&cfg.maxHeartbeatAge, "max-store-heartbeat-age", 20*time.Second, "maximum TiKV store heartbeat age")
@@ -79,7 +81,7 @@ func (cfg config) validate() error {
 	if cfg.endpoint == "" || cfg.prefix == "" || cfg.iterations <= 0 || cfg.leaseTTL <= 0 || cfg.expectedStores <= 0 {
 		return fmt.Errorf("endpoint, prefix, and positive iterations are required")
 	}
-	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxHeartbeatAge <= 0 || cfg.maxTSOLatency <= 0 || cfg.maxTSOLatency > cfg.maxLatency || cfg.maxRegionLatency <= 0 || cfg.maxRegionLatency > cfg.maxLatency {
+	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxDirectLatency < cfg.maxLatency || cfg.maxHeartbeatAge <= 0 || cfg.maxTSOLatency <= 0 || cfg.maxTSOLatency > cfg.maxLatency || cfg.maxRegionLatency <= 0 || cfg.maxRegionLatency > cfg.maxLatency {
 		return fmt.Errorf("interval and timeouts must be positive")
 	}
 	if len(cfg.pdEndpoints) == 0 {
@@ -232,6 +234,64 @@ type directStreamProbe struct {
 	stopKeepAlive         context.CancelFunc
 	lastKeepAliveRevision int64
 	keepAliveResponses    int
+}
+
+type directWatchResult struct {
+	endpoint string
+	response clientv3.WatchResponse
+	ok       bool
+	received time.Time
+}
+
+type directWatchObservation struct {
+	endpoint string
+	latency  time.Duration
+}
+
+func receiveDirectWatchResponses(ctx context.Context, probes []*directStreamProbe, timeout time.Duration) ([]directWatchResult, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	results := make(chan directWatchResult, len(probes))
+	for _, probe := range probes {
+		go func(probe *directStreamProbe) {
+			select {
+			case response, ok := <-probe.watch:
+				results <- directWatchResult{endpoint: probe.endpoint, response: response, ok: ok, received: time.Now()}
+			case <-waitCtx.Done():
+			}
+		}(probe)
+	}
+
+	received := make([]directWatchResult, 0, len(probes))
+	for len(received) < len(probes) {
+		select {
+		case result := <-results:
+			if !result.ok {
+				return nil, fmt.Errorf("direct watch closed endpoint=%s", result.endpoint)
+			}
+			received = append(received, result)
+		case <-waitCtx.Done():
+			return nil, fmt.Errorf("direct watch recovery exceeded %s: %w", timeout, waitCtx.Err())
+		}
+	}
+	return received, nil
+}
+
+func validateDirectWatchLatency(observations []directWatchObservation, fastLimit, recoveryLimit time.Duration) error {
+	requiredFast := len(observations) - 1
+	fast := 0
+	for _, observation := range observations {
+		if observation.latency < 0 || observation.latency > recoveryLimit {
+			return fmt.Errorf("direct endpoint %s latency %s exceeds bounded recovery latency %s", observation.endpoint, observation.latency, recoveryLimit)
+		}
+		if observation.latency <= fastLimit {
+			fast++
+		}
+	}
+	if fast < requiredFast {
+		return fmt.Errorf("fewer than %d direct endpoints met %s latency: got %d", requiredFast, fastLimit, fast)
+	}
+	return nil
 }
 
 func (probe *directStreamProbe) close() {
@@ -465,6 +525,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 
 	fmt.Println("PROBE_STARTED")
 	var maxLatency time.Duration
+	var maxDirectLatency time.Duration
 	lastPDCheck := time.Now()
 	for i := 1; i <= cfg.iterations; i++ {
 		tsoLatency, tsoErr := samplePDTimestamp(ctx, pdClient, cfg.maxTSOLatency)
@@ -536,32 +597,35 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		case <-time.After(cfg.commandTimeout):
 			return fmt.Errorf("iteration=%d watch timed out", i)
 		}
-		directWatchTimer := time.NewTimer(cfg.commandTimeout)
-		for _, probe := range directProbes {
-			select {
-			case response, ok := <-probe.watch:
-				if !ok {
-					return fmt.Errorf("iteration=%d direct watch closed endpoint=%s", i, probe.endpoint)
-				}
-				if _, validateErr := validatePutWatch(response, clusterID, putRevision, watchKey, value); validateErr != nil {
-					return fmt.Errorf("iteration=%d unexpected direct watch response endpoint=%s: %w", i, probe.endpoint, validateErr)
-				}
-			case <-directWatchTimer.C:
-				return fmt.Errorf("iteration=%d direct watch timed out endpoint=%s", i, probe.endpoint)
-			}
-		}
-		if !directWatchTimer.Stop() {
-			select {
-			case <-directWatchTimer.C:
-			default:
-			}
-		}
 		latency := time.Since(started)
 		if latency > maxLatency {
 			maxLatency = latency
 		}
 		if latency > cfg.maxLatency {
 			return fmt.Errorf("iteration=%d Put-to-Watch latency %s exceeds %s", i, latency, cfg.maxLatency)
+		}
+
+		directRemaining := time.Until(started.Add(cfg.maxDirectLatency))
+		if directRemaining <= 0 {
+			return fmt.Errorf("iteration=%d direct watch recovery exceeded %s", i, cfg.maxDirectLatency)
+		}
+		directResults, directErr := receiveDirectWatchResponses(ctx, directProbes, directRemaining)
+		if directErr != nil {
+			return fmt.Errorf("iteration=%d: %w", i, directErr)
+		}
+		directObservations := make([]directWatchObservation, 0, len(directResults))
+		for _, result := range directResults {
+			if _, validateErr := validatePutWatch(result.response, clusterID, putRevision, watchKey, value); validateErr != nil {
+				return fmt.Errorf("iteration=%d unexpected direct watch response endpoint=%s: %w", i, result.endpoint, validateErr)
+			}
+			directLatency := result.received.Sub(started)
+			if directLatency > maxDirectLatency {
+				maxDirectLatency = directLatency
+			}
+			directObservations = append(directObservations, directWatchObservation{endpoint: result.endpoint, latency: directLatency})
+		}
+		if directErr := validateDirectWatchLatency(directObservations, cfg.maxLatency, cfg.maxDirectLatency); directErr != nil {
+			return fmt.Errorf("iteration=%d: %w", i, directErr)
 		}
 
 		select {
@@ -609,6 +673,6 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if _, err := validateTimeToLiveResponse(ttl, clusterID, lastRevision, leaseID, lease.TTL, leaseKey); err != nil {
 		return fmt.Errorf("final lease verification failed: %w", err)
 	}
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive direct_lease=alive direct_endpoints=%d max_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), len(directProbes), maxLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive direct_lease=alive direct_endpoints=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), len(directProbes), maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
 	return nil
 }

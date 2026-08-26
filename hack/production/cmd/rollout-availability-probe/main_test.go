@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type fakePDTimestampClient struct {
@@ -149,7 +150,7 @@ func TestVerifyPDStoresRejectsDuplicateIdentityAndMalformedAddress(t *testing.T)
 }
 
 func TestConfigValidation(t *testing.T) {
-	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond}
+	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond}
 	require.NoError(t, valid.validate())
 
 	for name, mutate := range map[string]func(*config){
@@ -161,6 +162,8 @@ func TestConfigValidation(t *testing.T) {
 		"dial":                      func(cfg *config) { cfg.dialTimeout = 0 },
 		"latency":                   func(cfg *config) { cfg.maxLatency = 0 },
 		"latency cap":               func(cfg *config) { cfg.maxLatency = 2 * cfg.commandTimeout },
+		"direct latency":            func(cfg *config) { cfg.maxDirectLatency = 0 },
+		"direct latency floor":      func(cfg *config) { cfg.maxDirectLatency = cfg.maxLatency / 2 },
 		"lease TTL":                 func(cfg *config) { cfg.leaseTTL = 0 },
 		"PD endpoints":              func(cfg *config) { cfg.pdEndpoints = nil },
 		"direct endpoints":          func(cfg *config) { cfg.directEndpoints = nil },
@@ -182,4 +185,48 @@ func TestConfigValidation(t *testing.T) {
 			require.Error(t, candidate.validate())
 		})
 	}
+}
+
+func TestValidateDirectWatchLatencyAllowsOnlyOneRollingEndpoint(t *testing.T) {
+	observations := []directWatchObservation{
+		{endpoint: "http://kb-0:3379", latency: time.Second},
+		{endpoint: "http://kb-1:3379", latency: 2 * time.Second},
+		{endpoint: "http://kb-2:3379", latency: 12 * time.Second},
+	}
+	require.NoError(t, validateDirectWatchLatency(observations, 5*time.Second, 20*time.Second))
+
+	twoSlow := append([]directWatchObservation(nil), observations...)
+	twoSlow[1].latency = 6 * time.Second
+	require.ErrorContains(t, validateDirectWatchLatency(twoSlow, 5*time.Second, 20*time.Second), "fewer than 2 direct endpoints")
+
+	unbounded := append([]directWatchObservation(nil), observations...)
+	unbounded[2].latency = 21 * time.Second
+	require.ErrorContains(t, validateDirectWatchLatency(unbounded, 5*time.Second, 20*time.Second), "exceeds bounded recovery latency")
+}
+
+func TestReceiveDirectWatchResponsesDoesNotHeadOfLineBlockFastEndpoints(t *testing.T) {
+	slow := make(chan clientv3.WatchResponse, 1)
+	fastOne := make(chan clientv3.WatchResponse, 1)
+	fastTwo := make(chan clientv3.WatchResponse, 1)
+	fastOne <- clientv3.WatchResponse{}
+	fastTwo <- clientv3.WatchResponse{}
+	probes := []*directStreamProbe{
+		{endpoint: "slow", watch: slow},
+		{endpoint: "fast-one", watch: fastOne},
+		{endpoint: "fast-two", watch: fastTwo},
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		slow <- clientv3.WatchResponse{}
+	}()
+
+	results, err := receiveDirectWatchResponses(context.Background(), probes, time.Second)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	require.NotEqual(t, "slow", results[0].endpoint, "a slow first ordinal must not hide fast follower responses")
+	require.Equal(t, "slow", results[2].endpoint)
+
+	blocked := make(chan clientv3.WatchResponse)
+	_, err = receiveDirectWatchResponses(context.Background(), []*directStreamProbe{{endpoint: "blocked", watch: blocked}}, 10*time.Millisecond)
+	require.ErrorContains(t, err, "direct watch recovery exceeded")
 }
