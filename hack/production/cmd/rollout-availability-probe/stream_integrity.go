@@ -169,6 +169,7 @@ type restoredSnapshotConfig struct {
 	clientURL           url.URL
 	peerURL             url.URL
 	tls                 restoredSnapshotTLSConfig
+	auth                *restoredSnapshotAuthExpectation
 }
 
 type restoredSnapshotVerifier func(context.Context, restoredSnapshotConfig, []streamProbeExpectation, int64) error
@@ -358,7 +359,7 @@ func allocateRestoredSnapshotURLs(clientTLS bool) (clientURL, peerURL url.URL, r
 }
 
 func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, expected []streamProbeExpectation, revision int64) (retErr error) {
-	verifyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	embedCfg := embed.NewConfig()
@@ -439,7 +440,10 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		if err != nil {
 			return fmt.Errorf("read from officially restored etcd: %w", err)
 		}
-		return validateHeader(response.Header)
+		if err := validateHeader(response.Header); err != nil {
+			return err
+		}
+		return verifyRestoredSnapshotAuth(verifyCtx, client, clientConfig, cfg.auth, revision)
 	}
 	type keyedExpectedEvent struct {
 		key   string
@@ -712,11 +716,18 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			return fmt.Errorf("wait for officially restored etcd historical seed Watch: %w", context.Cause(verifyCtx))
 		}
 	}
-	return nil
+	return verifyRestoredSnapshotAuth(verifyCtx, client, clientConfig, cfg.auth, revision)
 }
 
 func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotArtifactManager, path, wireVersion, artifactDir string,
 	expected []streamProbeExpectation, tlsCfg restoredSnapshotTLSConfig, verifier restoredSnapshotVerifier,
+) error {
+	return validateSnapshotArtifactWithAuthVerifier(ctx, manager, path, wireVersion, artifactDir, expected, tlsCfg, nil, verifier)
+}
+
+func validateSnapshotArtifactWithAuthVerifier(ctx context.Context, manager snapshotArtifactManager, path, wireVersion, artifactDir string,
+	expected []streamProbeExpectation, tlsCfg restoredSnapshotTLSConfig, auth *restoredSnapshotAuthExpectation,
+	verifier restoredSnapshotVerifier,
 ) (retErr error) {
 	if err := tlsCfg.validate(); err != nil {
 		return err
@@ -753,6 +764,7 @@ func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotA
 		clientURL:           clientURL,
 		peerURL:             peerURL,
 		tls:                 tlsCfg,
+		auth:                auth,
 	}
 	if err := manager.Restore(etcdutlsnapshot.RestoreConfig{
 		SnapshotPath:        path,
@@ -784,6 +796,12 @@ func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotA
 
 func consumeAndValidateSnapshot(ctx context.Context, stream snapshotReceiver, artifactDir string, expected []streamProbeExpectation,
 	tlsCfg restoredSnapshotTLSConfig,
+) (bool, error) {
+	return consumeAndValidateSnapshotWithAuth(ctx, stream, artifactDir, expected, tlsCfg, nil)
+}
+
+func consumeAndValidateSnapshotWithAuth(ctx context.Context, stream snapshotReceiver, artifactDir string,
+	expected []streamProbeExpectation, tlsCfg restoredSnapshotTLSConfig, auth *restoredSnapshotAuthExpectation,
 ) (partial bool, retErr error) {
 	artifact, err := os.CreateTemp(artifactDir, ".kubebrain-rollout-snapshot-*.db")
 	if err != nil {
@@ -806,7 +824,8 @@ func consumeAndValidateSnapshot(ctx context.Context, stream snapshotReceiver, ar
 	if err != nil {
 		return partial, err
 	}
-	if err := validateSnapshotArtifactWithVerifier(ctx, etcdutlsnapshot.NewV3(zap.NewNop()), path, version, artifactDir, expected, tlsCfg, verifyRestoredSnapshot); err != nil {
+	if err := validateSnapshotArtifactWithAuthVerifier(ctx, etcdutlsnapshot.NewV3(zap.NewNop()), path, version, artifactDir,
+		expected, tlsCfg, auth, verifyRestoredSnapshot); err != nil {
 		return partial, err
 	}
 	return partial, nil
@@ -835,6 +854,7 @@ type streamWorkerConfig struct {
 	successLimit   int64
 	artifactDir    string
 	restoredTLS    restoredSnapshotTLSConfig
+	restoredAuth   *restoredSnapshotAuthExpectation
 }
 
 type streamAttempt func(context.Context) (partial bool, err error)
@@ -948,7 +968,8 @@ func startStreamProbeGroup(ctx context.Context, client *clientv3.Client, prefix 
 			if err != nil {
 				return false, err
 			}
-			return consumeAndValidateSnapshot(callCtx, stream, snapshotCfg.artifactDir, expected, snapshotCfg.restoredTLS)
+			return consumeAndValidateSnapshotWithAuth(callCtx, stream, snapshotCfg.artifactDir, expected,
+				snapshotCfg.restoredTLS, snapshotCfg.restoredAuth)
 		})
 		if err != nil {
 			fail("Snapshot", err)

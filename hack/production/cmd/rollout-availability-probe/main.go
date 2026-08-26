@@ -1062,10 +1062,24 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		})
 	}
 
+	authFixture := newSnapshotAuthFixture(cfg.prefix)
+	defer func() {
+		var cleanupErr error
+		lastRevision, cleanupErr = authFixture.cleanup(client, clusterID, lastRevision, cfg.commandTimeout)
+		if cleanupErr != nil && retErr == nil {
+			retErr = fmt.Errorf("cleanup Snapshot auth fixture: %w", cleanupErr)
+		}
+	}()
+	lastRevision, err = authFixture.install(ctx, client, clusterID, lastRevision, cfg.commandTimeout)
+	if err != nil {
+		return fmt.Errorf("install Snapshot auth fixture: %w", err)
+	}
+
 	streamProbe := startStreamProbeGroup(ctx, client, cfg.prefix, streamExpected, clusterID,
 		streamWorkerConfig{interval: cfg.rangeInterval, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff},
 		streamWorkerConfig{initialDelay: cfg.snapshotDelay, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff, successLimit: 1, artifactDir: cfg.snapshotDir,
-			restoredTLS: restoredSnapshotTLSConfig{caFile: cfg.caFile, certFile: cfg.certFile, keyFile: cfg.keyFile, serverName: cfg.tlsServerName}},
+			restoredTLS:  restoredSnapshotTLSConfig{caFile: cfg.caFile, certFile: cfg.certFile, keyFile: cfg.keyFile, serverName: cfg.tlsServerName},
+			restoredAuth: &authFixture.expected},
 	)
 	streamProbeStopped := false
 	defer func() {
