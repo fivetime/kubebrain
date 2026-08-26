@@ -63425,6 +63425,64 @@ NotFound、EndpointSlice 0、A5553 probe Pod 0，节点有 104GB 可用。
 本轮关闭完整 auth 权限矩阵、enabled/auth revision、密码与 no-password、角色 union、exact/prefix 隔离和 auth fixture
 所有权清理的生产 Restore 门禁缺口。仍未覆盖多 member restore、跨集群灾备或大数据量恢复。
 
+### A5554：rollout Restore 覆盖三成员官方集群与 2/3 quorum
+
+A5553 只把同一 Snapshot 恢复成一个隔离的官方 etcd，不能证明制品可按 etcdutl 的 multi-member 合同生成一致 membership，或三个恢复成员
+真的形成可复制、可在失去一个成员后继续提交的集群。本轮固定上游
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/tests/integration/snapshot/v3_snapshot_test.go::restoreCluster` 与
+`tests/integration/snapshot/member_test.go::TestSnapshotV3RestoreMultiMemberAdd`：每个成员必须从同一 SnapshotPath 独立 Restore 到唯一
+data-dir，使用唯一 name/peer URL，但共享完整 InitialCluster 和 InitialClusterToken；全部成员以 existing 状态启动后才验证 membership 和数据。
+同时按官方实测锁定 `MemberList` header revision 为 0，而每个 endpoint 的 `Status`/KV header 才携带快照 revision，避免把错误的
+数据面 revision 假设施加到 membership RPC。
+
+提交 `59e83e25`（完整 SHA `59e83e25a492cd98e9e470f5c1bcbeaa3a00f97f`）令生产 Snapshot worker 显式要求 3 个恢复成员，
+保留既有单成员 helper 供窄测试使用。verifier 为三个成员分配互不重复的 name/data-dir/client URL/peer URL，逐一调用官方 etcdutl
+Restore，再以相同 InitialCluster/token 启动三个 embedded etcd。它严格核对 MemberList 的三个非 learner voter、唯一非零 member ID、
+name 与 peer/client URL 映射；逐 endpoint Status 必须报告同一非零 cluster ID/leader、精确自身 member ID、快照 revision/正 raft term，
+且无 health error。完成原有 MVCC history、Watch、lease 和完整 auth 权限矩阵后，verifier 用 restored admin 会话提交复制探针，并从每个
+endpoint 做 serializable read，要求 value/mod revision 精确一致；随后关闭一个非 leader，限定客户端只访问两个 survivor，必须还能完成
+Put、两端读取和 Delete，直接证明 2/3 quorum。disabled-auth 快照在隔离集群补 root 并启用 auth 后执行同一矩阵，enabled-auth 快照沿用
+恢复出的管理员身份；这些写入只发生在临时 restored cluster，生产成员关系不受影响。任一中途 Restore/启动/验证失败都删除全部 member
+目录和 Snapshot artifact。
+
+新增真实 mTLS 三成员正例覆盖 topology、全副本复制和 follower loss quorum；enabled 与 disabled auth 两条既有正例也升级为三成员。
+另有 fake manager 正反例锁定三次 Restore 的共同 Snapshot/InitialCluster/token、唯一输出身份，以及第二成员失败时的全目录清理；配置负例
+拒绝空成员、2-member 非 quorum 拓扑、重复 name/data-dir/client/peer URL 和 InitialCluster 漂移。最终 probe 包全量普通/race 墙钟为
+`30.047/74.723s`，vet 与 diff check 全绿。655 项 production inventory 为 `158/181/164/152`；精确提交后四片墙钟为
+`136.271/362.170/233.665/377.549s`，全部通过。
+
+A5554 build time 为 `2026-08-26T23:02:07Z`，OCI 构建墙钟 271.799 秒。最终 OCI index
+`sha256:5670cd5f41de05e6767dcc2732a2d044ab0a0c6f8b211fd8788b5499648f47f1`、platform manifest
+`sha256:6ae25aa6d88f07b487c7c50e399587458aeaf2db18855179e8c0022112729469`、config
+`sha256:cbf42b54edcf96095a8340a22c11e915ec6587af6bb92d81135a9d8f19a0888f`、attestation manifest
+`sha256:911cddcdbe63f290e1092a590925863c4f18fe3d24e199bf7307ba114a48d1b0`、provenance layer
+`sha256:f2710d40461b0066088eb84d6fb127f26d895ba60acddd2e7e06c780082f81b2`、SBOM layer
+`sha256:06d5962d409b34251dd2bfcd820790ac32c2bb37c9bf0360ee1aebeb76f04bb6`、Kind runtime
+`sha256:8520147086d08aa602c0b584550e0239bd6653990452cc23921f0e8438d452cf`。78 个 blob 的 digest 与 descriptor size
+全部匹配，总 blob 911,606,559 bytes，config+compressed layers 906,689,582 bytes，archive 911,671,808 bytes，probe
+48,189,985 bytes；SBOM 含 2,592 packages。OCI labels、SLSA subject/args/VCS、镜像内 Version/TiKV/完整 SHA/Go
+1.26.5/linux-amd64/build time、kubectl v1.36.2、UID/GID 65532 及三成员 quorum verifier 均经离线和一次性 Pod 复核。
+
+A5553→A5554 upgrade 一次即 **900/900 GREEN**：KeepAlive `101/263`、direct replacement 21、最大恢复 23,590ms；
+RangeStream 187、完成三成员 auth Snapshot Restore/复制/follower loss quorum 的 Snapshot 1、stream/partial retry `1/1`，最大公共/直连/
+TSO/Region 延迟 `2872/27833/37/7ms`，revision `a4657-tls-866b6fbc7d -> a4657-tls-59c59b8cb8`。
+A5554 same-version restart 再次 **900/900 GREEN**：KeepAlive `112/290`、replacement 25、最大恢复 23,998ms；RangeStream
+203、Snapshot 1、retry/partial `2/0`，最大延迟 `2563/28311/22/6ms`，revision
+`a4657-tls-59c59b8cb8 -> a4657-tls-5cbc589b4`。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 均为 80，
+current/update revision 均为 `a4657-tls-5cbc589b4`；三 Pod 3/3 Ready、restart 0、运行精确 A5554 runtime digest、UID/GID
+65532，三端 HTTPS `/readyz=ok`。AlarmList 为空，cluster revision 44940、term 325；auth 保持 enabled、revision 173，用户仍
+精确为 `KubeWharfServer/alice/root`、角色为 `operator/root`。PD leader 为 `kb-pd-2`，主 PD/TiKV 3+3 Ready、restart 0，
+三个 TiKV store 均 Up；近 15 分钟 KubeBrain/PD/TiKV 的 queue-full/panic/fatal/corrupt 命中 0。两个 A5554 probe 前缀均无 KV，
+根前缀 Count=1 且精确为未触碰的 `/kubebrain-rollout-availability/a5529-tls-migration/watch`。临时 Service UID
+`10d04df8-aa03-434d-bb04-84fe3a843395` 已以创建时 resourceVersion `6836476` 和 UID 双前置条件删除；Service NotFound、
+EndpointSlice 0、三个 A5554 临时 Pod 0。本地 OCI/archive/metadata/layout/bin 与可变 tag 已删除，只保留 workload 使用的 immutable
+index，宿主剩余 97GB。
+
+本轮关闭 official etcdutl 多 member restore、恢复 membership 身份、三副本复制和单 follower 丢失后 2/3 quorum 的生产门禁缺口。
+仍未覆盖恢复集群再扩容 member 的 reconfiguration、跨集群灾备或大数据量恢复。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
