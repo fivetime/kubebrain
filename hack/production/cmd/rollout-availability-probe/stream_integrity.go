@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,6 +33,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
+	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -69,6 +72,16 @@ type snapshotArtifactManager interface {
 	Status(string) (etcdutlsnapshot.Status, error)
 	Restore(etcdutlsnapshot.RestoreConfig) error
 }
+
+type restoredSnapshotConfig struct {
+	name                string
+	dataDir             string
+	initialClusterToken string
+	clientURL           url.URL
+	peerURL             url.URL
+}
+
+type restoredSnapshotVerifier func(context.Context, restoredSnapshotConfig, []streamProbeExpectation, int64) error
 
 func consumeRangeStream(stream rangeStreamReceiver, prefix string, expected []streamProbeExpectation, clusterID uint64) (bool, error) {
 	expectedHashes := make(map[string][sha256.Size]byte, len(expected))
@@ -208,7 +221,108 @@ func consumeSnapshotTo(stream snapshotReceiver, artifact io.Writer) (bool, strin
 	}
 }
 
-func validateSnapshotArtifact(manager snapshotArtifactManager, path, wireVersion, artifactDir string) (retErr error) {
+func allocateRestoredSnapshotURLs() (clientURL, peerURL url.URL, retErr error) {
+	listeners := make([]net.Listener, 0, 2)
+	defer func() {
+		for _, listener := range listeners {
+			if closeErr := listener.Close(); closeErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("release restored Snapshot listener reservation: %w", closeErr))
+			}
+		}
+	}()
+	for range 2 {
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			return url.URL{}, url.URL{}, fmt.Errorf("reserve restored Snapshot listener: %w", err)
+		}
+		listeners = append(listeners, listener)
+	}
+	clientURL = url.URL{Scheme: "http", Host: listeners[0].Addr().String()}
+	peerURL = url.URL{Scheme: "http", Host: listeners[1].Addr().String()}
+	return clientURL, peerURL, nil
+}
+
+func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, expected []streamProbeExpectation, revision int64) (retErr error) {
+	verifyCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	embedCfg := embed.NewConfig()
+	embedCfg.Name = cfg.name
+	embedCfg.Dir = cfg.dataDir
+	embedCfg.ClusterState = embed.ClusterStateFlagExisting
+	embedCfg.ListenClientUrls = []url.URL{cfg.clientURL}
+	embedCfg.AdvertiseClientUrls = []url.URL{cfg.clientURL}
+	embedCfg.ListenPeerUrls = []url.URL{cfg.peerURL}
+	embedCfg.AdvertisePeerUrls = []url.URL{cfg.peerURL}
+	embedCfg.InitialCluster = cfg.name + "=" + cfg.peerURL.String()
+	embedCfg.InitialClusterToken = cfg.initialClusterToken
+	embedCfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
+	restored, err := embed.StartEtcd(embedCfg)
+	if err != nil {
+		return fmt.Errorf("start officially restored etcd: %w", err)
+	}
+	defer restored.Close()
+	select {
+	case <-restored.Server.ReadyNotify():
+	case serveErr, ok := <-restored.Err():
+		if !ok || serveErr == nil {
+			return errors.New("officially restored etcd stopped before becoming ready")
+		}
+		return fmt.Errorf("officially restored etcd stopped before becoming ready: %w", serveErr)
+	case <-verifyCtx.Done():
+		return fmt.Errorf("wait for officially restored etcd readiness: %w", context.Cause(verifyCtx))
+	}
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{cfg.clientURL.String()},
+		DialTimeout: 3 * time.Second,
+		Context:     verifyCtx,
+	})
+	if err != nil {
+		return fmt.Errorf("create client for officially restored etcd: %w", err)
+	}
+	defer func() {
+		if closeErr := client.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close officially restored etcd client: %w", closeErr))
+		}
+	}()
+
+	validateHeader := func(header *etcdserverpb.ResponseHeader) error {
+		if header == nil || header.ClusterId == 0 || header.MemberId == 0 || header.RaftTerm == 0 || header.Revision != revision {
+			return fmt.Errorf("invalid restored response identity: header=%+v snapshot_revision=%d", header, revision)
+		}
+		return nil
+	}
+	if len(expected) == 0 {
+		response, err := client.Get(verifyCtx, "\x00")
+		if err != nil {
+			return fmt.Errorf("read from officially restored etcd: %w", err)
+		}
+		return validateHeader(response.Header)
+	}
+	for _, item := range expected {
+		response, err := client.Get(verifyCtx, item.key)
+		if err != nil {
+			return fmt.Errorf("read seed %q from officially restored etcd: %w", item.key, err)
+		}
+		if err := validateHeader(response.Header); err != nil {
+			return fmt.Errorf("validate restored seed %q: %w", item.key, err)
+		}
+		if len(response.Kvs) != 1 {
+			return fmt.Errorf("officially restored etcd returned %d values for seed %q", len(response.Kvs), item.key)
+		}
+		kv := response.Kvs[0]
+		if kv == nil || string(kv.Key) != item.key || sha256.Sum256(kv.Value) != item.hash || kv.CreateRevision <= 0 ||
+			kv.ModRevision <= 0 || kv.CreateRevision > kv.ModRevision || kv.ModRevision > revision || kv.Version <= 0 {
+			return fmt.Errorf("officially restored etcd returned invalid seed data for %q", item.key)
+		}
+	}
+	return nil
+}
+
+func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotArtifactManager, path, wireVersion, artifactDir string,
+	expected []streamProbeExpectation, verifier restoredSnapshotVerifier,
+) (retErr error) {
 	artifactStatus, err := manager.Status(path)
 	if err != nil {
 		return fmt.Errorf("official etcdutl rejected Snapshot artifact: %w", err)
@@ -230,13 +344,24 @@ func validateSnapshotArtifact(manager snapshotArtifactManager, path, wireVersion
 
 	const restoreName = "kubebrain-rollout-restore"
 	restoreDataDir := filepath.Join(restoreRoot, "data")
+	clientURL, peerURL, err := allocateRestoredSnapshotURLs()
+	if err != nil {
+		return err
+	}
+	restoredCfg := restoredSnapshotConfig{
+		name:                restoreName,
+		dataDir:             restoreDataDir,
+		initialClusterToken: "kubebrain-rollout-restore",
+		clientURL:           clientURL,
+		peerURL:             peerURL,
+	}
 	if err := manager.Restore(etcdutlsnapshot.RestoreConfig{
 		SnapshotPath:        path,
 		Name:                restoreName,
 		OutputDataDir:       restoreDataDir,
-		PeerURLs:            []string{"http://127.0.0.1:2380"},
-		InitialCluster:      restoreName + "=http://127.0.0.1:2380",
-		InitialClusterToken: "kubebrain-rollout-restore",
+		PeerURLs:            []string{peerURL.String()},
+		InitialCluster:      restoreName + "=" + peerURL.String(),
+		InitialClusterToken: restoredCfg.initialClusterToken,
 		SkipHashCheck:       false,
 	}); err != nil {
 		return fmt.Errorf("official etcdutl failed to restore Snapshot artifact: %w", err)
@@ -249,10 +374,16 @@ func validateSnapshotArtifact(manager snapshotArtifactManager, path, wireVersion
 	if !info.Mode().IsRegular() || info.Size() <= 0 {
 		return fmt.Errorf("official etcdutl produced an invalid restored Snapshot database: mode=%s size=%d", info.Mode(), info.Size())
 	}
+	if verifier == nil {
+		return errors.New("restored Snapshot verifier is required")
+	}
+	if err := verifier(ctx, restoredCfg, expected, artifactStatus.Revision); err != nil {
+		return fmt.Errorf("official restored etcd validation failed: %w", err)
+	}
 	return nil
 }
 
-func consumeAndValidateSnapshot(stream snapshotReceiver, artifactDir string) (partial bool, retErr error) {
+func consumeAndValidateSnapshot(ctx context.Context, stream snapshotReceiver, artifactDir string, expected []streamProbeExpectation) (partial bool, retErr error) {
 	artifact, err := os.CreateTemp(artifactDir, ".kubebrain-rollout-snapshot-*.db")
 	if err != nil {
 		return false, fmt.Errorf("create Snapshot artifact: %w", err)
@@ -274,7 +405,7 @@ func consumeAndValidateSnapshot(stream snapshotReceiver, artifactDir string) (pa
 	if err != nil {
 		return partial, err
 	}
-	if err := validateSnapshotArtifact(etcdutlsnapshot.NewV3(zap.NewNop()), path, version, artifactDir); err != nil {
+	if err := validateSnapshotArtifactWithVerifier(ctx, etcdutlsnapshot.NewV3(zap.NewNop()), path, version, artifactDir, expected, verifyRestoredSnapshot); err != nil {
 		return partial, err
 	}
 	return partial, nil
@@ -415,7 +546,7 @@ func startStreamProbeGroup(ctx context.Context, client *clientv3.Client, prefix 
 			if err != nil {
 				return false, err
 			}
-			return consumeAndValidateSnapshot(stream, snapshotCfg.artifactDir)
+			return consumeAndValidateSnapshot(callCtx, stream, snapshotCfg.artifactDir, expected)
 		})
 		if err != nil {
 			fail("Snapshot", err)

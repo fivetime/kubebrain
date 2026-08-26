@@ -81,6 +81,23 @@ func (m *partialRestoreSnapshotManager) Restore(cfg etcdutlsnapshot.RestoreConfi
 	return errors.New("restore rejected snapshot schema")
 }
 
+type completeRestoreSnapshotManager struct {
+	restoreConfig etcdutlsnapshot.RestoreConfig
+}
+
+func (*completeRestoreSnapshotManager) Status(string) (etcdutlsnapshot.Status, error) {
+	return etcdutlsnapshot.Status{Revision: 7, TotalSize: 4096, Version: etcdsnapshot.StorageVersion}, nil
+}
+
+func (m *completeRestoreSnapshotManager) Restore(cfg etcdutlsnapshot.RestoreConfig) error {
+	m.restoreConfig = cfg
+	dbPath := filepath.Join(cfg.OutputDataDir, "member", "snap", "db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(dbPath, []byte("non-empty restored db"), 0o600)
+}
+
 func (f *fakeSnapshotReceiver) Recv() (*etcdserverpb.SnapshotResponse, error) {
 	if f.next >= len(f.steps) {
 		return nil, io.EOF
@@ -203,10 +220,10 @@ func TestConsumeAndValidateSnapshotRejectsSelfConsistentNonEtcdArtifact(t *testi
 	data := []byte("self-consistent but not a bbolt snapshot")
 	digest := sha256.Sum256(data)
 	dir := t.TempDir()
-	partial, err := consumeAndValidateSnapshot(&fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+	partial, err := consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
 		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
 		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
-	}}, dir)
+	}}, dir, nil)
 	require.ErrorContains(t, err, "official etcdutl rejected Snapshot artifact")
 	require.True(t, partial)
 	entries, readErr := os.ReadDir(dir)
@@ -214,7 +231,7 @@ func TestConsumeAndValidateSnapshotRejectsSelfConsistentNonEtcdArtifact(t *testi
 	require.Empty(t, entries, "a rejected artifact must always be removed")
 }
 
-func TestConsumeAndValidateSnapshotAcceptsOfficialRestorableArtifact(t *testing.T) {
+func TestConsumeAndValidateSnapshotStartsOfficialServerAndValidatesSeedData(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "source.db")
 	require.NoError(t, etcdsnapshot.WriteBackend(sourcePath, etcdsnapshot.State{Revision: 7, Records: []etcdsnapshot.Record{{
 		Key: []byte("key"), Value: []byte("value"), CreateRevision: 7, ModRevision: 7, Version: 1,
@@ -222,22 +239,35 @@ func TestConsumeAndValidateSnapshotAcceptsOfficialRestorableArtifact(t *testing.
 	data, err := os.ReadFile(sourcePath)
 	require.NoError(t, err)
 	digest := sha256.Sum256(data)
+	expected := []streamProbeExpectation{{key: "key", value: "value", hash: sha256.Sum256([]byte("value"))}}
 	dir := t.TempDir()
-	partial, err := consumeAndValidateSnapshot(&fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+	partial, err := consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
 		{response: &etcdserverpb.SnapshotResponse{Blob: data[:len(data)/2], RemainingBytes: uint64(len(data) - len(data)/2), Version: etcdsnapshot.StorageVersion}},
 		{response: &etcdserverpb.SnapshotResponse{Blob: data[len(data)/2:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
 		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
-	}}, dir)
+	}}, dir, expected)
 	require.NoError(t, err)
 	require.True(t, partial)
 	entries, readErr := os.ReadDir(dir)
 	require.NoError(t, readErr)
 	require.Empty(t, entries, "a validated artifact must always be removed")
 
-	partial, err = consumeAndValidateSnapshot(&fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+	wrongExpected := append([]streamProbeExpectation(nil), expected...)
+	wrongExpected[0].hash = sha256.Sum256([]byte("wrong value"))
+	partial, err = consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+	}}, dir, wrongExpected)
+	require.ErrorContains(t, err, "officially restored etcd returned invalid seed data")
+	require.True(t, partial)
+	entries, readErr = os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a semantic validation failure must always be removed")
+
+	partial, err = consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
 		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: "3.6.0"}},
 		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: "3.6.0"}},
-	}}, dir)
+	}}, dir, expected)
 	require.ErrorContains(t, err, "official etcdutl returned invalid Snapshot status")
 	require.True(t, partial)
 }
@@ -248,12 +278,34 @@ func TestValidateSnapshotArtifactRejectsRestoreFailureAndRemovesPartialOutput(t 
 	require.NoError(t, os.WriteFile(artifactPath, []byte("managed by fake status"), 0o600))
 	manager := &partialRestoreSnapshotManager{}
 
-	err := validateSnapshotArtifact(manager, artifactPath, etcdsnapshot.StorageVersion, dir)
+	err := validateSnapshotArtifactWithVerifier(t.Context(), manager, artifactPath, etcdsnapshot.StorageVersion, dir, nil, verifyRestoredSnapshot)
 	require.ErrorContains(t, err, "official etcdutl failed to restore Snapshot artifact")
 	require.Equal(t, artifactPath, manager.restoreConfig.SnapshotPath)
 	require.False(t, manager.restoreConfig.SkipHashCheck)
 	require.NotEmpty(t, manager.restoreConfig.OutputDataDir)
 	require.NoDirExists(t, filepath.Dir(manager.restoreConfig.OutputDataDir), "partial restore output must always be removed")
+	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
+}
+
+func TestValidateSnapshotArtifactRejectsRestoredServerFailureAndRemovesOutput(t *testing.T) {
+	dir := t.TempDir()
+	artifactPath := filepath.Join(dir, "artifact.db")
+	require.NoError(t, os.WriteFile(artifactPath, []byte("managed by fake status"), 0o600))
+	manager := &completeRestoreSnapshotManager{}
+	expected := newStreamProbeExpectations("/probe/")[:1]
+	verified := false
+
+	err := validateSnapshotArtifactWithVerifier(context.Background(), manager, artifactPath, etcdsnapshot.StorageVersion, dir, expected,
+		func(_ context.Context, cfg restoredSnapshotConfig, got []streamProbeExpectation, revision int64) error {
+			verified = true
+			require.Equal(t, manager.restoreConfig.OutputDataDir, cfg.dataDir)
+			require.Equal(t, expected, got)
+			require.Equal(t, int64(7), revision)
+			return errors.New("restored etcd failed to start")
+		})
+	require.ErrorContains(t, err, "official restored etcd validation failed")
+	require.True(t, verified)
+	require.NoDirExists(t, filepath.Dir(manager.restoreConfig.OutputDataDir), "failed server validation output must always be removed")
 	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
 }
 
