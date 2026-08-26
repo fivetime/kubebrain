@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +15,10 @@ import (
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 type fakePDTimestampClient struct {
@@ -219,7 +225,7 @@ func TestConfigRequiresCompleteTLSIdentityAndMatchingSchemes(t *testing.T) {
 }
 
 func TestClientTLSConfigLoadsMutualTLSIdentity(t *testing.T) {
-	identity, err := transport.SelfCert(zap.NewNop(), t.TempDir(), []string{"kubebrain-client.example"}, 1)
+	identity, err := transport.SelfCert(zap.NewNop(), t.TempDir(), []string{"kubebrain-client.example:443"}, 1)
 	require.NoError(t, err)
 	cfg := config{caFile: identity.CertFile, certFile: identity.CertFile, keyFile: identity.KeyFile, tlsServerName: "kubebrain-client.example"}
 	tlsConfig, err := cfg.clientTLSConfig()
@@ -231,6 +237,40 @@ func TestClientTLSConfigLoadsMutualTLSIdentity(t *testing.T) {
 	plaintext, err := (config{}).clientTLSConfig()
 	require.NoError(t, err)
 	require.Nil(t, plaintext)
+}
+
+func TestMutualTLSClientHonorsExplicitServerName(t *testing.T) {
+	identity, err := transport.SelfCert(zap.NewNop(), t.TempDir(), []string{"kubebrain-client.example:443"}, 1, x509.ExtKeyUsageClientAuth)
+	require.NoError(t, err)
+	serverInfo := identity
+	serverInfo.TrustedCAFile = identity.CertFile
+	serverInfo.ClientCertAuth = true
+	serverTLS, err := serverInfo.ServerConfig()
+	require.NoError(t, err)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+	healthServer := health.NewServer()
+	healthpb.RegisterHealthServer(server, healthServer)
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+
+	cfg := config{caFile: identity.CertFile, certFile: identity.CertFile, keyFile: identity.KeyFile, tlsServerName: "kubebrain-client.example"}
+	clientTLS, err := cfg.clientTLSConfig()
+	require.NoError(t, err)
+	cfg.dialTimeout = time.Second
+	client, err := clientv3.New(cfg.kubeBrainClientConfig("https://"+listener.Addr().String(), clientTLS))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	response, err := healthpb.NewHealthClient(client.ActiveConnection()).Check(ctx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
 }
 
 func TestValidateDirectWatchLatencyAllowsOnlyOneRollingEndpoint(t *testing.T) {

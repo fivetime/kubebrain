@@ -21,6 +21,7 @@ import (
 	pd "github.com/tikv/pd/client"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc"
 )
 
 type config struct {
@@ -138,6 +139,21 @@ func (cfg config) clientTLSConfig() (*tls.Config, error) {
 		KeyFile:       cfg.keyFile,
 		ServerName:    cfg.tlsServerName,
 	}.ClientConfig()
+}
+
+func (cfg config) kubeBrainClientConfig(endpoint string, tlsConfig *tls.Config) clientv3.Config {
+	clientConfig := clientv3.Config{
+		Endpoints:   []string{endpoint},
+		DialTimeout: cfg.dialTimeout,
+		TLS:         tlsConfig,
+	}
+	if tlsConfig != nil {
+		// grpc-go 1.79+ derives both :authority and certificate verification
+		// from the dial target unless WithAuthority is explicit. Preserve the
+		// audited server name when Service and stable Pod DNS differ from the SAN.
+		clientConfig.DialOptions = append(clientConfig.DialOptions, grpc.WithAuthority(cfg.tlsServerName))
+	}
+	return clientConfig
 }
 
 type tikvRegionReader interface {
@@ -426,11 +442,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("backend preflight: %w", err)
 	}
-	client, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{cfg.endpoint},
-		DialTimeout: cfg.dialTimeout,
-		TLS:         tlsConfig,
-	})
+	client, err := clientv3.New(cfg.kubeBrainClientConfig(cfg.endpoint, tlsConfig))
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
@@ -545,11 +557,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 	}()
 	for _, endpoint := range cfg.directEndpoints {
-		directClient, directErr := clientv3.New(clientv3.Config{
-			Endpoints:   []string{endpoint},
-			DialTimeout: cfg.dialTimeout,
-			TLS:         tlsConfig,
-		})
+		directClient, directErr := clientv3.New(cfg.kubeBrainClientConfig(endpoint, tlsConfig))
 		if directErr != nil {
 			return fmt.Errorf("create direct client %s: %w", endpoint, directErr)
 		}
