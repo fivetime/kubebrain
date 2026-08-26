@@ -344,6 +344,29 @@ if [[ -z "$image" || -z "$pd_endpoints" || ! "$headless_service" =~ ^[a-z0-9]([-
   echo "KubeBrain rollout drain contract mismatch (image/retry/serviceName/preStop/terminationGracePeriodSeconds/TLS identity)" >&2
   exit 1
 fi
+headless_service_json="$runtime_evidence_dir/headless-service-initial.json"
+capture_runtime_evidence "$headless_service_json" kctl_evidence get service "$headless_service" -o json || {
+  echo "failed to read KubeBrain headless Service" >&2
+  exit 1
+}
+headless_service_uid="$(jq -er '.metadata.uid | select(type == "string" and length > 0)' "$headless_service_json")" || {
+  echo "KubeBrain headless Service UID is missing" >&2
+  exit 1
+}
+headless_service_resource_version="$(jq -er '.metadata.resourceVersion | select(type == "string" and length > 0)' "$headless_service_json")" || {
+  echo "KubeBrain headless Service resourceVersion is missing" >&2
+  exit 1
+}
+headless_service_spec="$(jq -cS '.spec' "$headless_service_json")" || exit 1
+template_labels="$(jq -c '.spec.template.metadata.labels // {}' "$statefulset_json")" || exit 1
+if ! jq -e --arg name "$headless_service" --argjson labels "$template_labels" '
+  .metadata.name == $name and .spec.clusterIP == "None" and .spec.publishNotReadyAddresses == true and
+  (.spec.selector | type) == "object" and (.spec.selector | length) > 0 and
+  all(.spec.selector | to_entries[]; $labels[.key] == .value)
+' "$headless_service_json" >/dev/null; then
+  echo "KubeBrain headless Service rollout DNS contract mismatch (clusterIP/publishNotReadyAddresses/selector)" >&2
+  exit 1
+fi
 declare -a original_runtime_image_ids=()
 if [[ -n "$TARGET_IMAGE" ]]; then
   for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
@@ -615,6 +638,19 @@ if [[ -n "$TARGET_IMAGE" ]]; then
       exit 1
     fi
   done
+fi
+
+headless_service_final_json="$runtime_evidence_dir/headless-service-final.json"
+capture_runtime_evidence "$headless_service_final_json" kctl_evidence get service "$headless_service" -o json || {
+  echo "failed to read final KubeBrain headless Service identity" >&2
+  exit 1
+}
+if ! jq -e --arg uid "$headless_service_uid" --arg resource_version "$headless_service_resource_version" \
+  --argjson spec "$headless_service_spec" '
+  .metadata.uid == $uid and .metadata.resourceVersion == $resource_version and .spec == $spec
+' "$headless_service_final_json" >/dev/null; then
+  echo "KubeBrain headless Service identity drifted during rollout" >&2
+  exit 1
 fi
 
 if ! kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null; then

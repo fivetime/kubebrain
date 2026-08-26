@@ -305,6 +305,64 @@ func TestRolloutAvailabilityRunnerRequiresStableHeadlessServiceBeforeMutation(t 
 	require.NotContains(t, log, " patch ")
 }
 
+func TestRolloutAvailabilityRunnerRequiresPublishedHeadlessPodAddressesBeforeMutation(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_HEADLESS_PUBLISH_NOT_READY=false",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "headless Service rollout DNS contract mismatch")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " run ")
+	require.NotContains(t, log, " patch ")
+}
+
+func TestRolloutAvailabilityRunnerRejectsInvalidHeadlessServiceIdentityBeforeMutation(t *testing.T) {
+	for _, setting := range []string{"FAKE_HEADLESS_CLUSTER_IP=10.96.0.10", "FAKE_HEADLESS_SELECTOR_MISMATCH=true"} {
+		t.Run(setting, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(),
+				"KUBECTL_BIN="+fake,
+				"FAKE_KUBECTL_LOG="+logPath,
+				"FAKE_KUBECTL_STATE="+statePath,
+				setting,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+				"PROBE_ITERATIONS=3",
+			)
+			output, err := command.CombinedOutput()
+			require.Error(t, err)
+			require.Contains(t, string(output), "headless Service rollout DNS contract mismatch")
+			log := readOptionalFile(t, logPath)
+			require.NotContains(t, log, " run ")
+			require.NotContains(t, log, " patch ")
+		})
+	}
+}
+
+func TestRolloutAvailabilityRunnerRejectsHeadlessServiceDriftDuringRollout(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_HEADLESS_IDENTITY_DRIFT=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "headless Service identity drifted during rollout")
+}
+
 func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -834,7 +892,19 @@ fi
 if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == start && " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
   sleep 30
 fi
-if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
+if [[ " $* " == *" get service kubebrain-peer -o json "* ]]; then
+  publish_not_ready=true
+  [[ "${FAKE_HEADLESS_PUBLISH_NOT_READY:-true}" == true ]] || publish_not_ready=false
+  cluster_ip="${FAKE_HEADLESS_CLUSTER_IP:-None}"
+  selector_value=kubebrain
+  [[ "${FAKE_HEADLESS_SELECTOR_MISMATCH:-false}" != true ]] || selector_value=other
+  resource_version=headless-service-rv
+  [[ "${FAKE_HEADLESS_IDENTITY_DRIFT:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || resource_version=headless-service-rv-drifted
+  jq -cn --arg clusterIP "$cluster_ip" --arg selector "$selector_value" --arg resourceVersion "$resource_version" --argjson publishNotReady "$publish_not_ready" '{
+    metadata:{name:"kubebrain-peer",uid:"headless-service-uid",resourceVersion:$resourceVersion},
+    spec:{clusterIP:$clusterIP,publishNotReadyAddresses:$publishNotReady,selector:{app:$selector}}
+  }'
+elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   revision=revision-old
   [[ -e "$FAKE_KUBECTL_STATE" ]] && revision=revision-new
   prestop='["/bin/sh","-c","sleep 20 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
@@ -870,7 +940,7 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   fi
   payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --arg restart "$restart_annotation" --argjson prestop "$prestop" --argjson args "$args" --argjson volume_mounts "$volume_mounts" --argjson volumes "$volumes" --argjson pod_security_context "$pod_security_context" --argjson replicas "$spec_replicas" --argjson termination_grace "$termination_grace" '{
     metadata:{uid:$uid,resourceVersion:$resourceVersion},
-    spec:{replicas:$replicas,serviceName:"kubebrain-peer",template:{metadata:{annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{terminationGracePeriodSeconds:$termination_grace,securityContext:$pod_security_context,containers:[{name:"kubebrain",image:$image,args:$args,volumeMounts:$volume_mounts,lifecycle:{preStop:{exec:{command:$prestop}}}}],volumes:$volumes}}},
+    spec:{replicas:$replicas,serviceName:"kubebrain-peer",template:{metadata:{labels:{app:"kubebrain"},annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{terminationGracePeriodSeconds:$termination_grace,securityContext:$pod_security_context,containers:[{name:"kubebrain",image:$image,args:$args,volumeMounts:$volume_mounts,lifecycle:{preStop:{exec:{command:$prestop}}}}],volumes:$volumes}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
   if [[ "${FAKE_NO_TEMPLATE_ANNOTATIONS:-false}" == true && ! -e "$FAKE_KUBECTL_STATE" ]]; then
