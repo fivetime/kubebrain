@@ -114,9 +114,10 @@ func proxyCallOptions(maxRequestBytes uint) []grpc.CallOption {
 
 // A voluntary handoff publishes the successor before every follower has
 // necessarily completed its own health-check/dial loop. Keep unary requests
-// parked through that bounded propagation window; returning an established-
-// connection Unavailable for a mutable RPC would be terminal in clientv3.
-const proxyReadyWaitTimeout = 5 * time.Second
+// parked through that bounded propagation window, but leave enough of the
+// five-second rollout SLO for clientv3's safe mutable-RPC retry sentinel and
+// the replacement Watch event to complete.
+const proxyReadyWaitTimeout = 3 * time.Second
 
 // NewEtcdProxy return an ETCD proxy for forward request to leader.
 // The election identity is the leader's peer endpoint. That listener registers

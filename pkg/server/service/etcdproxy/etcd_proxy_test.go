@@ -231,7 +231,8 @@ func TestWaitReadyReturnsSafeRetrySignalWhenLeaderConnectionIsNotReady(t *testin
 	require.Error(t, err)
 	require.ErrorIs(t, err, proxyprotocol.ErrClientDrainedBeforeAdmission)
 	require.Equal(t, "there is no connection available", status.Convert(err).Message())
-	require.Less(t, time.Since(start), 7*time.Second)
+	require.GreaterOrEqual(t, time.Since(start), 2500*time.Millisecond)
+	require.Less(t, time.Since(start), 4*time.Second)
 }
 
 func TestWaitReadyDoesNotBlockBehindPeerConnectionUpdate(t *testing.T) {
