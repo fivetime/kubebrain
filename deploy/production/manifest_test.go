@@ -42,7 +42,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Equal(t, "kubebrain-peer", nestedString(t, workload, "spec", "serviceName"))
 			require.EqualValues(t, 3, nestedInt64(t, workload, "spec", "replicas"))
 			require.Equal(t, "RollingUpdate", nestedString(t, workload, "spec", "updateStrategy", "type"))
-			require.EqualValues(t, 30, nestedInt64(t, workload, "spec", "template", "spec", "terminationGracePeriodSeconds"))
+			require.EqualValues(t, 45, nestedInt64(t, workload, "spec", "template", "spec", "terminationGracePeriodSeconds"))
 			require.False(t, nestedBool(t, workload, "spec", "template", "spec", "automountServiceAccountToken"))
 			require.True(t, nestedBool(t, workload, "spec", "template", "spec", "securityContext", "runAsNonRoot"))
 			require.EqualValues(t, 65532, nestedInt64(t, workload, "spec", "template", "spec", "securityContext", "runAsUser"))
@@ -85,7 +85,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Len(t, containers, 1)
 			container := containers[0].(map[string]any)
 			containerObject := &unstructured.Unstructured{Object: container}
-			require.Equal(t, []string{"/bin/sh", "-c", "sleep 10 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5"}, nestedStringSlice(t, containerObject,
+			require.Equal(t, []string{"/bin/sh", "-c", "sleep 20 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5"}, nestedStringSlice(t, containerObject,
 				"lifecycle", "preStop", "exec", "command"))
 			require.False(t, nestedBool(t, containerObject, "securityContext", "allowPrivilegeEscalation"))
 			require.True(t, nestedBool(t, containerObject, "securityContext", "readOnlyRootFilesystem"))

@@ -63,7 +63,7 @@ spec:
       serviceAccountName: kubebrain
       priorityClassName: kubebrain-dbaas-critical
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 45
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -100,14 +100,14 @@ spec:
           lifecycle:
             # Pod deletion withdraws the EndpointSlice target first. Continue
             # serving established connections while that update reaches
-            # kube-proxy. Keep ten seconds for that asynchronous propagation,
+            # kube-proxy. Keep twenty seconds for that asynchronous propagation,
             # then release leadership and migrate transports before SIGTERM.
             preStop:
               exec:
                 command:
                   - /bin/sh
                   - -c
-                  - sleep 10 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5
+                  - sleep 20 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5
           resources:
             requests:
               cpu: 500m

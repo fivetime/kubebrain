@@ -728,9 +728,9 @@ fi
 if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   revision=revision-old
   [[ -e "$FAKE_KUBECTL_STATE" ]] && revision=revision-new
-  prestop='["/bin/sh","-c","sleep 10 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
+  prestop='["/bin/sh","-c","sleep 20 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
   [[ "${FAKE_DRAIN_FIRST_PRESTOP:-false}" != true ]] || prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
-  [[ "${FAKE_SHORT_PROPAGATION_PRESTOP:-false}" != true ]] || prestop='["/bin/sh","-c","sleep 5 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
+  [[ "${FAKE_SHORT_PROPAGATION_PRESTOP:-false}" != true ]] || prestop='["/bin/sh","-c","sleep 10 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
   [[ "${FAKE_BAD_PRESTOP:-false}" == true ]] && prestop='["/bin/sleep","5"]'
   runtime_image=kubebrain:test
   [[ -e "$FAKE_KUBECTL_STATE" && -n "${TARGET_IMAGE:-}" ]] && runtime_image="$TARGET_IMAGE"
@@ -740,8 +740,8 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   [[ ! -e "$FAKE_KUBECTL_STATE" ]] || resource_version=resource-version-new
   spec_replicas=3
   [[ "${FAKE_ROLLBACK_SPEC_DRIFT:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || spec_replicas=4
-  termination_grace=30
-  [[ "${FAKE_SHORT_TERMINATION_GRACE:-false}" != true ]] || termination_grace=20
+  termination_grace=45
+  [[ "${FAKE_SHORT_TERMINATION_GRACE:-false}" != true ]] || termination_grace=30
   restart_annotation=restart-old
   if [[ -e "$FAKE_KUBECTL_STATE" && -z "${TARGET_IMAGE:-}" ]]; then
     restart_annotation="$(<"$FAKE_KUBECTL_STATE")"
