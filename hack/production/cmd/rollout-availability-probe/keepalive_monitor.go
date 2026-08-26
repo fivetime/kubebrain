@@ -19,6 +19,8 @@ type keepAliveMonitorConfig struct {
 	initialRevision int64
 	recoveryTimeout time.Duration
 	after           func(time.Duration) <-chan time.Time
+	retryWait       time.Duration
+	retryAfter      func(time.Duration) <-chan time.Time
 	restart         keepAliveRestart
 }
 
@@ -85,10 +87,19 @@ func (monitor *keepAliveMonitor) consume(responses <-chan *clientv3.LeaseKeepAli
 					return
 				}
 				var err error
-				recoveryDeadline, err = monitor.beginRecovery(recoveryDeadline)
+				var repeated bool
+				recoveryDeadline, repeated, err = monitor.beginRecovery(recoveryDeadline)
 				if err != nil {
 					monitor.terminate(err)
 					return
+				}
+				if repeated {
+					if err = monitor.waitBeforeRestart(recoveryDeadline); err != nil {
+						if monitor.ctx.Err() == nil {
+							monitor.terminate(err)
+						}
+						return
+					}
 				}
 				replacement, err := monitor.restartWithinDeadline(recoveryDeadline)
 				if err != nil {
@@ -133,22 +144,22 @@ func (monitor *keepAliveMonitor) consume(responses <-chan *clientv3.LeaseKeepAli
 	}
 }
 
-func (monitor *keepAliveMonitor) beginRecovery(deadline <-chan time.Time) (<-chan time.Time, error) {
+func (monitor *keepAliveMonitor) beginRecovery(deadline <-chan time.Time) (<-chan time.Time, bool, error) {
 	monitor.mu.Lock()
 	restarts := monitor.state.restarts
 	recovering := monitor.state.recovering
 	monitor.mu.Unlock()
 	if monitor.config.restart == nil {
-		return nil, fmt.Errorf("%s lease keepalive closed", monitor.config.label)
+		return nil, false, fmt.Errorf("%s lease keepalive closed", monitor.config.label)
 	}
 	if restarts > 0 && !recovering {
-		return nil, fmt.Errorf("%s lease keepalive closed after completed recovery", monitor.config.label)
+		return nil, false, fmt.Errorf("%s lease keepalive closed after completed recovery", monitor.config.label)
 	}
 	if recovering {
-		return deadline, nil
+		return deadline, true, nil
 	}
 	if monitor.config.recoveryTimeout <= 0 {
-		return nil, fmt.Errorf("%s lease keepalive recovery timeout must be positive", monitor.config.label)
+		return nil, false, fmt.Errorf("%s lease keepalive recovery timeout must be positive", monitor.config.label)
 	}
 	after := monitor.config.after
 	if after == nil {
@@ -161,9 +172,31 @@ func (monitor *keepAliveMonitor) beginRecovery(deadline <-chan time.Time) (<-cha
 	monitor.notify()
 	deadline = after(monitor.config.recoveryTimeout)
 	if deadline == nil {
-		return nil, fmt.Errorf("%s lease keepalive recovery timer returned an empty channel", monitor.config.label)
+		return nil, false, fmt.Errorf("%s lease keepalive recovery timer returned an empty channel", monitor.config.label)
 	}
-	return deadline, nil
+	return deadline, false, nil
+}
+
+func (monitor *keepAliveMonitor) waitBeforeRestart(deadline <-chan time.Time) error {
+	if monitor.config.retryWait <= 0 {
+		return fmt.Errorf("%s lease keepalive replacement retry wait must be positive", monitor.config.label)
+	}
+	retryAfter := monitor.config.retryAfter
+	if retryAfter == nil {
+		retryAfter = time.After
+	}
+	retry := retryAfter(monitor.config.retryWait)
+	if retry == nil {
+		return fmt.Errorf("%s lease keepalive replacement retry timer returned an empty channel", monitor.config.label)
+	}
+	select {
+	case <-monitor.ctx.Done():
+		return monitor.ctx.Err()
+	case <-deadline:
+		return fmt.Errorf("%s lease keepalive recovery exceeded %s", monitor.config.label, monitor.config.recoveryTimeout)
+	case <-retry:
+		return nil
+	}
 }
 
 func (monitor *keepAliveMonitor) restartWithinDeadline(deadline <-chan time.Time) (<-chan *clientv3.LeaseKeepAliveResponse, error) {

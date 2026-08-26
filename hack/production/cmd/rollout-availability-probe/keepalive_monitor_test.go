@@ -20,6 +20,12 @@ func keepAliveResponse(revision int64) *clientv3.LeaseKeepAliveResponse {
 	}
 }
 
+func immediateTime() <-chan time.Time {
+	ready := make(chan time.Time, 1)
+	ready <- time.Now()
+	return ready
+}
+
 func TestKeepAliveMonitorContinuouslyDrainsBeyondClientQueueCapacity(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	responses := make(chan *clientv3.LeaseKeepAliveResponse, 16)
@@ -65,6 +71,7 @@ func TestKeepAliveMonitorAllowsOnlyOneCompletedRecoveryEpisode(t *testing.T) {
 		grantedTTL:      15,
 		initialRevision: 10,
 		recoveryTimeout: time.Second,
+		retryWait:       time.Millisecond,
 		restart: func(context.Context) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
 			restarts++
 			switch restarts {
@@ -150,6 +157,8 @@ func TestKeepAliveMonitorRecoveryDeadlineSurvivesRepeatedClosures(t *testing.T) 
 	monitor := startKeepAliveMonitor(ctx, cancel, initial, keepAliveMonitorConfig{
 		label: "direct endpoint=ordinal-0", clusterID: 7, leaseID: 42, grantedTTL: 15, initialRevision: 10,
 		recoveryTimeout: 30 * time.Second,
+		retryWait:       500 * time.Millisecond,
+		retryAfter:      func(time.Duration) <-chan time.Time { return immediateTime() },
 		after: func(timeout time.Duration) <-chan time.Time {
 			require.Equal(t, 30*time.Second, timeout)
 			timerStarts.Add(1)
@@ -241,4 +250,41 @@ func TestKeepAliveMonitorRejectsEmptyRecoveryTimer(t *testing.T) {
 	close(initial)
 	require.Eventually(t, func() bool { return monitor.snapshot().err != nil }, time.Second, time.Millisecond)
 	require.ErrorContains(t, monitor.snapshot().err, "recovery timer returned an empty channel")
+}
+
+func TestKeepAliveMonitorWaitsBeforeRepeatedReplacement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	initial := make(chan *clientv3.LeaseKeepAliveResponse)
+	firstRecovery := make(chan *clientv3.LeaseKeepAliveResponse)
+	close(firstRecovery)
+	secondRecovery := make(chan *clientv3.LeaseKeepAliveResponse)
+	retryGate := make(chan time.Time, 1)
+	var retryWaits atomic.Int32
+	restarts := 0
+	monitor := startKeepAliveMonitor(ctx, cancel, initial, keepAliveMonitorConfig{
+		label: "direct endpoint=ordinal-0", clusterID: 7, leaseID: 42, grantedTTL: 15, initialRevision: 10,
+		recoveryTimeout: 30 * time.Second,
+		retryWait:       500 * time.Millisecond,
+		retryAfter: func(wait time.Duration) <-chan time.Time {
+			require.Equal(t, 500*time.Millisecond, wait)
+			retryWaits.Add(1)
+			return retryGate
+		},
+		restart: func(context.Context) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
+			restarts++
+			if restarts == 1 {
+				return firstRecovery, nil
+			}
+			return secondRecovery, nil
+		},
+	})
+	t.Cleanup(monitor.stop)
+
+	close(initial)
+	require.Eventually(t, func() bool { return retryWaits.Load() == 1 }, time.Second, time.Millisecond)
+	require.Equal(t, 1, monitor.snapshot().restarts)
+	require.Never(t, func() bool { return monitor.snapshot().restarts > 1 }, 20*time.Millisecond, time.Millisecond,
+		"an immediately closed replacement must not hot-loop")
+	retryGate <- time.Now()
+	require.Eventually(t, func() bool { return monitor.snapshot().restarts == 2 }, time.Second, time.Millisecond)
 }

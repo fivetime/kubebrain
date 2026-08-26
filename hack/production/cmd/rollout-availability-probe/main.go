@@ -312,6 +312,11 @@ type directStreamProbe struct {
 	keepAlive *keepAliveMonitor
 }
 
+// Match clientv3's retryConnWait between failed keepalive stream reconnects.
+// The first replacement remains immediate; only a replacement that itself
+// closes is paced by this interval within the original recovery deadline.
+const directKeepAliveRestartWait = 500 * time.Millisecond
+
 type directWatchResult struct {
 	endpoint string
 	response clientv3.WatchResponse
@@ -628,6 +633,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			grantedTTL:      lease.TTL,
 			initialRevision: directKeepAliveRevision,
 			recoveryTimeout: cfg.maxDirectLatency,
+			retryWait:       directKeepAliveRestartWait,
 			restart: func(restartCtx context.Context) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
 				return directClient.KeepAlive(restartCtx, leaseID)
 			},
