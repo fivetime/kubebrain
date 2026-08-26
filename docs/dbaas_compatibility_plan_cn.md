@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、server version、独立 backend storage version、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
+| Maintenance | Snapshot | 兼容核心语义（升级历史有条件） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；每次生产 rollout 还实际执行官方 etcdutl Status 与带哈希检查的 Restore，要求生成非空 `member/snap/db` 后才放行；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；follower 的 latest `HashKV(0)` 本地 hedge 必须先跨 leader revision barrier，不能以陈旧 hash 抢赢权威 peer；显式历史 revision 保持成员本地诊断；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -62780,6 +62780,49 @@ queue-full 均为 0；节流没有越过 30 秒恢复合同，同时减少了约
 runtime digest 和三端 `/readyz=ok`；PD/TiKV 3+3 Ready、restart 0，probe prefix Count=0、probe Pod 不存在。临时 client
 Service UID `1b3da235-3897-4aec-b6f5-d3a7927974c3` 已用创建时 UID/resourceVersion 前置条件删除，EndpointSlice 不存在。
 第一次 RED 仍是发布历史的一部分，不被后续双轮 GREEN 覆盖；当前结果也不外推为长期网络分区容量证明。
+
+### A5540：rollout Snapshot 由官方 Status 提升到官方 Restore
+
+A5536 的 rollout gate 已把 Snapshot wire 制品落到 0600 临时文件，并要求主模块锁定的官方 etcdutl 3.7 `Status`
+完成 bbolt `Tx.Check`、revision/size/storage version 校验；但 `Status` 不会执行 restore 的 membership trim、singleton
+bootstrap、WAL/Raft snapshot 生成和 consistent index 更新。一个可由 `Status` 扫描的文件仍不等价于官方 restore 转换路径
+已经接受，因此矩阵此前继续把 Maintenance Snapshot 标为“部分兼容”。本轮继续对照
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/etcdutl/snapshot/v3_snapshot.go` 的
+`Manager.Restore`/`RestoreConfig` 合同。
+
+提交 `06e1eb04`（完整 SHA `06e1eb048cea00132b590ea6d765c8360122bcb0`）在 `Status` 成功后，于同一受控
+artifact volume 内创建随机 0700 restore parent，向尚不存在的 `data` 子目录执行官方 `Restore`。恢复使用固定合成 singleton
+peer identity，保持 `SkipHashCheck=false`，成功后还要求 `member/snap/db` 是非空普通文件；成功、部分写入后失败和输出检查失败
+都递归删除精确随机 parent，源 artifact 继续由外层生命周期删除，任一清理错误都会与原错误合并并阻断发布。确定性 RED 用窄
+manager fake 让 `Status` 返回合法状态、`Restore` 写出部分目录后失败；旧实现缺少 Restore 调用，最终实现同时证明错误上浮、部分
+输出消失且调用方拥有的源 artifact 未被 helper 越权删除。真实 KubeBrain snapshot 用官方 manager 完成 Restore 并清空目录。
+
+Snapshot/Restore 聚焦普通 20 轮 0.351 秒、race 20 轮 3.190 秒，完整 availability probe 包 1.838 秒，vet 与 diff check
+全绿。655 项 inventory 仍为 `158/181/164/152`；精确提交后四片 Go/墙钟秒为 `130.005/136.525`、
+`355.803/362.241`、`230.335/236.844`、`374.900/381.479`，全部通过。
+
+A5540 镜像构建时间 `2026-08-26T13:10:32Z`，OCI index
+`sha256:87f2826a998d8e31c0ee0e48889ab316cfaf395ee8d22f1dcd99ec166b6565db`、platform manifest
+`sha256:fef1a45d97958a50784238c4f78558ea12cf20682413ffadba9a4433723eda79`、config
+`sha256:89bc332b4a9a24e2766c72173e8ba2a0077723498214b5735bf4508f31122961`、attestation
+`sha256:edbe99101001b73af8a10f30c6611b7702a47969ffc4969b9724e014b0eb1112`、Kind runtime
+`sha256:6c6558735b7905c9244db95891811a20bc34499a40dc09a8541bd84a9e1993a9`；内嵌完整 SHA、TiKV、Go 1.26.5、
+linux/amd64、kubectl v1.36.2 与 `USER 65532:65532` 均经镜像和节点运行时复核。
+
+A5539→A5540 upgrade **900/900 GREEN**：公共/直连 KeepAlive 响应 `100`/`268`、replacement 22、最大恢复
+`21234ms`；RangeStream 179、经官方 Status+Restore 的 Snapshot 1、stream/partial retry 均 0，最大公共/直连
+Watch/TSO/Region 延迟 `1647/25628/71/8ms`，revision
+`a4657-tls-69b87d69d7 -> a4657-tls-6655db74f9`。A5540 same-version restart 再次 **900/900 GREEN**：
+KeepAlive `98`/`260`、replacement 18、最大恢复 `20595ms`；RangeStream 162、官方 Restore Snapshot 1、stream retry 2、
+partial retry 0，最大延迟 `3276/24501/47/7ms`，revision
+`a4657-tls-6655db74f9 -> a4657-tls-867bbfb68f`。第二轮出现一次可重试 `Unavailable: there is no connection available`
+但没有越过公共 5 秒或直连 30 秒合同；两轮均无 KeepAlive queue-full。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，3/3 Pod 同 revision、Ready、restart 0、
+runtime digest 一致且三端 `/readyz=ok`；PD/TiKV 精确 3+3 Ready、restart 0，probe prefix 为空、probe Pod 不存在。
+临时 client Service UID `38e2af39-b9ee-4b1c-81a0-20c84e1030e8` 已用创建时 UID/resourceVersion 前置条件删除，
+EndpointSlice 不存在。由此矩阵把 Snapshot 提升为“兼容核心语义（升级历史有条件）”；含不可判定 legacy lease history 时继续
+fail closed，且本轮 Restore 是官方离线目录转换证明，不冒充启动恢复后的独立 etcd 集群、跨集群灾备演练或大容量节点磁盘证明。
 
 ## 提交规则
 
