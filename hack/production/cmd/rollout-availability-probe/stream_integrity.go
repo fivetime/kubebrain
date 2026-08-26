@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
@@ -48,9 +49,10 @@ const (
 )
 
 type streamProbeExpectation struct {
-	key   string
-	value string
-	hash  [sha256.Size]byte
+	key      string
+	value    string
+	hash     [sha256.Size]byte
+	revision int64
 }
 
 func newStreamProbeExpectations(prefix string) []streamProbeExpectation {
@@ -355,21 +357,107 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		}
 		return validateHeader(response.Header)
 	}
+	expectedByKey := make(map[string]streamProbeExpectation, len(expected))
+	firstRevision := revision + 1
+	commonPrefix := []byte(expected[0].key)
 	for _, item := range expected {
-		response, err := client.Get(verifyCtx, item.key)
-		if err != nil {
-			return fmt.Errorf("read seed %q from officially restored etcd: %w", item.key, err)
+		if item.key == "" || item.revision <= 0 || item.revision > revision {
+			return fmt.Errorf("invalid restored seed expectation: key=%q revision=%d snapshot_revision=%d", item.key, item.revision, revision)
+		}
+		if _, duplicate := expectedByKey[item.key]; duplicate {
+			return fmt.Errorf("duplicate restored seed expectation for %q", item.key)
+		}
+		expectedByKey[item.key] = item
+		firstRevision = min(firstRevision, item.revision)
+		key := []byte(item.key)
+		commonLength := min(len(commonPrefix), len(key))
+		for commonLength > 0 && !bytes.Equal(commonPrefix[:commonLength], key[:commonLength]) {
+			commonLength--
+		}
+		commonPrefix = commonPrefix[:commonLength]
+	}
+	if len(commonPrefix) == 0 {
+		return errors.New("restored seed expectations do not share a non-empty Watch prefix")
+	}
+	validateSeed := func(item streamProbeExpectation, response *clientv3.GetResponse, historical bool) error {
+		label := "current"
+		if historical {
+			label = "historical"
+		}
+		if response == nil {
+			return fmt.Errorf("officially restored etcd returned an empty %s seed response for %q", label, item.key)
 		}
 		if err := validateHeader(response.Header); err != nil {
-			return fmt.Errorf("validate restored seed %q: %w", item.key, err)
+			return fmt.Errorf("validate restored %s seed %q: %w", label, item.key, err)
 		}
-		if len(response.Kvs) != 1 {
-			return fmt.Errorf("officially restored etcd returned %d values for seed %q", len(response.Kvs), item.key)
+		if response.More || response.Count != 1 || len(response.Kvs) != 1 {
+			return fmt.Errorf("officially restored etcd returned invalid %s seed cardinality for %q: count=%d values=%d more=%t",
+				label, item.key, response.Count, len(response.Kvs), response.More)
 		}
 		kv := response.Kvs[0]
-		if kv == nil || string(kv.Key) != item.key || sha256.Sum256(kv.Value) != item.hash || kv.CreateRevision <= 0 ||
-			kv.ModRevision <= 0 || kv.CreateRevision > kv.ModRevision || kv.ModRevision > revision || kv.Version <= 0 {
-			return fmt.Errorf("officially restored etcd returned invalid seed data for %q", item.key)
+		if kv == nil || string(kv.Key) != item.key || sha256.Sum256(kv.Value) != item.hash || kv.CreateRevision != item.revision ||
+			kv.ModRevision != item.revision || kv.Version != 1 || kv.Lease != 0 {
+			return fmt.Errorf("officially restored etcd returned invalid %s seed data for %q", label, item.key)
+		}
+		return nil
+	}
+	for _, item := range expected {
+		response, err := client.Get(verifyCtx, item.key, clientv3.WithRev(item.revision))
+		if err != nil {
+			return fmt.Errorf("read historical seed %q at revision %d from officially restored etcd: %w", item.key, item.revision, err)
+		}
+		if err := validateSeed(item, response, true); err != nil {
+			return err
+		}
+		response, err = client.Get(verifyCtx, item.key)
+		if err != nil {
+			return fmt.Errorf("read current seed %q from officially restored etcd: %w", item.key, err)
+		}
+		if err := validateSeed(item, response, false); err != nil {
+			return err
+		}
+	}
+
+	watchCtx, stopWatch := context.WithCancel(verifyCtx)
+	defer stopWatch()
+	watch := client.Watch(watchCtx, string(commonPrefix), clientv3.WithPrefix(), clientv3.WithRev(firstRevision))
+	observed := make(map[string]struct{}, len(expected))
+	for len(observed) < len(expected) {
+		select {
+		case response, ok := <-watch:
+			if !ok {
+				return fmt.Errorf("officially restored etcd historical seed Watch closed after %d/%d events", len(observed), len(expected))
+			}
+			if err := response.Err(); err != nil {
+				return fmt.Errorf("watch restored historical seeds from revision %d: %w", firstRevision, err)
+			}
+			if response.Canceled || response.Created || response.CompactRevision != 0 || len(response.Events) == 0 {
+				return fmt.Errorf("officially restored etcd returned an invalid historical seed Watch envelope: canceled=%t created=%t compact_revision=%d events=%d",
+					response.Canceled, response.Created, response.CompactRevision, len(response.Events))
+			}
+			if err := validateHeader(response.Header); err != nil {
+				return fmt.Errorf("validate restored historical seed Watch: %w", err)
+			}
+			for _, event := range response.Events {
+				if event == nil || event.Type != mvccpb.PUT || event.Kv == nil || event.PrevKv != nil {
+					return errors.New("officially restored etcd returned an invalid historical seed Watch event")
+				}
+				key := string(event.Kv.Key)
+				item, exists := expectedByKey[key]
+				if !exists {
+					return fmt.Errorf("officially restored etcd historical seed Watch returned unexpected key %q", key)
+				}
+				if _, duplicate := observed[key]; duplicate {
+					return fmt.Errorf("officially restored etcd historical seed Watch repeated key %q", key)
+				}
+				if sha256.Sum256(event.Kv.Value) != item.hash || event.Kv.CreateRevision != item.revision ||
+					event.Kv.ModRevision != item.revision || event.Kv.Version != 1 || event.Kv.Lease != 0 {
+					return fmt.Errorf("officially restored etcd returned invalid historical seed Watch data for %q", key)
+				}
+				observed[key] = struct{}{}
+			}
+		case <-verifyCtx.Done():
+			return fmt.Errorf("wait for officially restored etcd historical seed Watch: %w", context.Cause(verifyCtx))
 		}
 	}
 	return nil

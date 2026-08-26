@@ -236,13 +236,13 @@ func TestConsumeAndValidateSnapshotRejectsSelfConsistentNonEtcdArtifact(t *testi
 
 func TestConsumeAndValidateSnapshotStartsOfficialServerAndValidatesSeedData(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "source.db")
-	require.NoError(t, etcdsnapshot.WriteBackend(sourcePath, etcdsnapshot.State{Revision: 7, Records: []etcdsnapshot.Record{{
+	require.NoError(t, etcdsnapshot.WriteBackend(sourcePath, etcdsnapshot.State{Revision: 9, PreserveHistory: true, Records: []etcdsnapshot.Record{{
 		Key: []byte("key"), Value: []byte("value"), CreateRevision: 7, ModRevision: 7, Version: 1,
 	}}}))
 	data, err := os.ReadFile(sourcePath)
 	require.NoError(t, err)
 	digest := sha256.Sum256(data)
-	expected := []streamProbeExpectation{{key: "key", value: "value", hash: sha256.Sum256([]byte("value"))}}
+	expected := []streamProbeExpectation{{key: "key", value: "value", hash: sha256.Sum256([]byte("value")), revision: 7}}
 	dir := t.TempDir()
 	partial, err := consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
 		{response: &etcdserverpb.SnapshotResponse{Blob: data[:len(data)/2], RemainingBytes: uint64(len(data) - len(data)/2), Version: etcdsnapshot.StorageVersion}},
@@ -275,11 +275,23 @@ func TestConsumeAndValidateSnapshotStartsOfficialServerAndValidatesSeedData(t *t
 		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
 		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
 	}}, dir, wrongExpected, restoredSnapshotTLSConfig{})
-	require.ErrorContains(t, err, "officially restored etcd returned invalid seed data")
+	require.ErrorContains(t, err, "officially restored etcd returned invalid historical seed data")
 	require.True(t, partial)
 	entries, readErr = os.ReadDir(dir)
 	require.NoError(t, readErr)
 	require.Empty(t, entries, "a semantic validation failure must always be removed")
+
+	wrongExpected = append([]streamProbeExpectation(nil), expected...)
+	wrongExpected[0].revision = 8
+	partial, err = consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+	}}, dir, wrongExpected, restoredSnapshotTLSConfig{})
+	require.ErrorContains(t, err, "historical seed")
+	require.True(t, partial)
+	entries, readErr = os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a historical validation failure must always be removed")
 
 	partial, err = consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
 		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: "3.6.0"}},
@@ -287,6 +299,36 @@ func TestConsumeAndValidateSnapshotStartsOfficialServerAndValidatesSeedData(t *t
 	}}, dir, expected, restoredSnapshotTLSConfig{})
 	require.ErrorContains(t, err, "official etcdutl returned invalid Snapshot status")
 	require.True(t, partial)
+}
+
+func TestConsumeAndValidateSnapshotRejectsUnexpectedHistoricalWatchEvent(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source.db")
+	require.NoError(t, etcdsnapshot.WriteBackend(sourcePath, etcdsnapshot.State{
+		Revision: 10, PreserveHistory: true,
+		Records: []etcdsnapshot.Record{
+			{Key: []byte("probe/a"), Value: []byte("a"), CreateRevision: 7, ModRevision: 7, Version: 1},
+			{Key: []byte("probe/b"), Value: []byte("b"), CreateRevision: 8, ModRevision: 8, Version: 1},
+			{Key: []byte("probe/b"), ModRevision: 9, Tombstone: true},
+			{Key: []byte("probe/c"), Value: []byte("c"), CreateRevision: 10, ModRevision: 10, Version: 1},
+		},
+	}))
+	data, err := os.ReadFile(sourcePath)
+	require.NoError(t, err)
+	digest := sha256.Sum256(data)
+	expected := []streamProbeExpectation{
+		{key: "probe/a", value: "a", hash: sha256.Sum256([]byte("a")), revision: 7},
+		{key: "probe/c", value: "c", hash: sha256.Sum256([]byte("c")), revision: 10},
+	}
+	dir := t.TempDir()
+	partial, err := consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+	}}, dir, expected, restoredSnapshotTLSConfig{})
+	require.ErrorContains(t, err, "historical seed Watch returned unexpected key")
+	require.True(t, partial)
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a historical Watch validation failure must always be removed")
 }
 
 func TestValidateSnapshotArtifactRejectsRestoreFailureAndRemovesPartialOutput(t *testing.T) {

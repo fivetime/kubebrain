@@ -545,7 +545,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	}
 
 	streamExpected := newStreamProbeExpectations(cfg.prefix)
-	for _, expected := range streamExpected {
+	for index := range streamExpected {
+		expected := &streamExpected[index]
 		opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
 		seeded, seedErr := client.Put(opCtx, expected.key, expected.value)
 		cancel()
@@ -556,6 +557,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		if seedErr != nil {
 			return fmt.Errorf("seed RangeStream key %q: %w", expected.key, seedErr)
 		}
+		expected.revision = lastRevision
 	}
 
 	watchKey := cfg.prefix + "watch"
