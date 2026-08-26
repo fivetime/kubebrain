@@ -363,6 +363,111 @@ func TestFailedLeadershipDrainLeavesUnaryAdmissionOpen(t *testing.T) {
 	}
 }
 
+func TestLeadershipDrainRetiresPublicStreamsWithRetryableStatus(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	recvRelease := make(chan struct{})
+	stream := &blockingRecvServerStream{
+		ctx:     context.Background(),
+		entered: make(chan struct{}),
+		release: recvRelease,
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- rpc.admitStream(nil, stream,
+			&grpc.StreamServerInfo{FullMethod: etcdserverpb.Watch_Watch_FullMethodName},
+			func(_ any, admitted grpc.ServerStream) error {
+				return admitted.RecvMsg(nil)
+			})
+	}()
+	<-stream.entered
+
+	rpc.DrainLeadership(func() bool { return true })
+	select {
+	case err := <-result:
+		requireAdmissionError(t, err, rpctypes.ErrGRPCStopped, codes.Unavailable, "etcdserver: server stopped")
+	case <-time.After(time.Second):
+		close(recvRelease)
+		t.Fatal("successful leadership drain did not retire an admitted public stream")
+	}
+	close(recvRelease)
+
+	handlerCalled := false
+	err := rpc.admitStream(nil, &serverStreamWithContext{ctx: context.Background()},
+		&grpc.StreamServerInfo{FullMethod: etcdserverpb.Watch_Watch_FullMethodName},
+		func(any, grpc.ServerStream) error {
+			handlerCalled = true
+			return nil
+		})
+	requireAdmissionError(t, err, rpctypes.ErrGRPCStopped, codes.Unavailable, "etcdserver: server stopped")
+	require.False(t, handlerCalled, "a public stream entered after successful leadership drain")
+}
+
+func TestFailedLeadershipDrainLeavesPublicStreamsOpen(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	recvRelease := make(chan struct{})
+	stream := &blockingRecvServerStream{
+		ctx:     context.Background(),
+		entered: make(chan struct{}),
+		release: recvRelease,
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- rpc.admitStream(nil, stream,
+			&grpc.StreamServerInfo{FullMethod: etcdserverpb.Watch_Watch_FullMethodName},
+			func(_ any, admitted grpc.ServerStream) error {
+				return admitted.RecvMsg(nil)
+			})
+	}()
+	<-stream.entered
+
+	rpc.DrainLeadership(func() bool { return false })
+	select {
+	case err := <-result:
+		t.Fatalf("failed leadership drain retired a public stream: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(recvRelease)
+	require.NoError(t, <-result)
+}
+
+func TestClientLeadershipDrainRetiresPublicStreamOnWire(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	streaming := &streamingHealthServer{entered: make(chan struct{})}
+	listener := startAdmissionServer(t, rpc.ClientServerOptions(), streaming)
+	client := admissionClient(t, listener)
+	stream, err := client.Watch(context.Background(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	recvDone := make(chan error, 1)
+	go func() {
+		_, recvErr := stream.Recv()
+		recvDone <- recvErr
+	}()
+	select {
+	case <-streaming.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("public stream did not reach its handler")
+	}
+
+	rpc.DrainLeadership(func() bool { return true })
+	select {
+	case err = <-recvDone:
+		requireAdmissionError(t, err, rpctypes.ErrGRPCStopped, codes.Unavailable, "etcdserver: server stopped")
+	case <-time.After(time.Second):
+		t.Fatal("client did not receive retryable stopped status after leadership drain")
+	}
+
+	stream, err = client.Watch(context.Background(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	requireAdmissionError(t, err, rpctypes.ErrGRPCStopped, codes.Unavailable, "etcdserver: server stopped")
+}
+
 func TestLeaseRevokeUsesBoundedInflightReserve(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()

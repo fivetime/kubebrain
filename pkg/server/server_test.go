@@ -29,6 +29,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -93,6 +94,21 @@ type waitingSuccessorPeerService struct {
 }
 
 func (*waitingSuccessorPeerService) EtcdProxyEnabled() bool { return true }
+
+type drainOrderPeerService struct {
+	waitingSuccessorPeerService
+}
+
+func (*drainOrderPeerService) IsLeader() bool { return true }
+func (*drainOrderPeerService) CurrentLeadershipTerm() uint64 {
+	return 1
+}
+func (*drainOrderPeerService) LeadershipTerm(context.Context) (uint64, error) {
+	return 1, nil
+}
+func (*drainOrderPeerService) EpochAndLeadingFresh() (uint64, bool) {
+	return 1, true
+}
 func (p *waitingSuccessorPeerService) Ready() error {
 	if p.ready.Load() {
 		return nil
@@ -1022,6 +1038,55 @@ func TestDrainQuiescesRegisteredTransportsAfterSuccessfulHandoff(t *testing.T) {
 	require.Eventually(t, func() bool { return len(late) == 1 }, time.Second, time.Millisecond)
 	require.NoError(t, s.Drain(t.Context()))
 	require.Len(t, first, 1, "idempotent drain must not quiesce a transport twice")
+}
+
+func TestDrainRetiresPublicStreamBeforeTransportQuiesce(t *testing.T) {
+	metrics := &healthMetricRecorder{}
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	b := backend.NewBackend(kv, backend.Config{
+		Prefix: "/registry", Identity: "drain-order", EnableEtcdCompatibility: true,
+	}, metrics)
+	peers := &drainOrderPeerService{}
+	peers.ready.Store(true)
+	rpc := etcdcompat.New(b, metrics, peers)
+	done := make(chan struct{})
+	close(done)
+	s := &server{campaignDone: done, etcdServer: rpc, peers: peers}
+
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	grpcServer := grpc.NewServer(rpc.ClientServerOptions()...)
+	healthpb.RegisterHealthServer(grpcServer, healthServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	conn, err := grpc.NewClient("passthrough:///drain-order",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	watch, err := healthpb.NewHealthClient(conn).Watch(t.Context(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	_, err = watch.Recv()
+	require.NoError(t, err)
+	quiesceObserved := make(chan error, 1)
+	s.RegisterTransportDrain(func() {
+		_, recvErr := watch.Recv()
+		quiesceObserved <- recvErr
+	})
+
+	require.NoError(t, s.Drain(t.Context()))
+	select {
+	case err = <-quiesceObserved:
+		require.EqualError(t, err, rpctypes.ErrGRPCStopped.Error())
+		require.Equal(t, codes.Unavailable, status.Code(err))
+	case <-time.After(time.Second):
+		t.Fatal("transport quiesce ran before public stream retirement became observable")
+	}
 }
 
 func TestDrainWithdrawsFollowerProxyReadiness(t *testing.T) {

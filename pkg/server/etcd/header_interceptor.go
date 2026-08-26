@@ -409,20 +409,47 @@ func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.Stream
 	if s.maxRequestsInFlight != 0 {
 		defer s.releaseRequest()
 	}
-	if requireLeader(ss.Context()) {
-		return s.monitorRequiredLeaderStream(srv, ss, info, func(srv any, monitored grpc.ServerStream) error {
-			return handler(srv, &rateLimitedServerStream{
-				ServerStream: monitored,
-				server:       s,
-				method:       info.FullMethod,
+	return s.monitorPublicStreamDrain(srv, ss, info, func(srv any, draining grpc.ServerStream) error {
+		if requireLeader(draining.Context()) {
+			return s.monitorRequiredLeaderStream(srv, draining, info, func(srv any, monitored grpc.ServerStream) error {
+				return handler(srv, &rateLimitedServerStream{
+					ServerStream: monitored,
+					server:       s,
+					method:       info.FullMethod,
+				})
 			})
+		}
+		return handler(srv, &rateLimitedServerStream{
+			ServerStream: draining,
+			server:       s,
+			method:       info.FullMethod,
 		})
-	}
-	return handler(srv, &rateLimitedServerStream{
-		ServerStream: ss,
-		server:       s,
-		method:       info.FullMethod,
 	})
+}
+
+func (s *RPCServer) monitorPublicStreamDrain(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	drain, drained := s.publicStreamDrainState()
+	if drained {
+		return rpctypes.ErrGRPCStopped
+	}
+
+	ctx, cancel := context.WithCancelCause(ss.Context())
+	defer cancel(nil)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		case <-drain:
+			cancel(rpctypes.ErrGRPCStopped)
+		}
+	}()
+	err := handler(srv, &serverStreamWithContext{ServerStream: ss, ctx: ctx})
+	close(done)
+	if errors.Is(context.Cause(ctx), rpctypes.ErrGRPCStopped) {
+		return rpctypes.ErrGRPCStopped
+	}
+	return err
 }
 
 type rateLimitedServerStream struct {

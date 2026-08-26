@@ -121,6 +121,9 @@ type RPCServer struct {
 	// fenced so followers stop selecting this retiring member.
 	leadershipDrainBoundary sync.RWMutex
 	peerLeadershipDrained   atomic.Bool
+	publicStreamDrainMu     sync.Mutex
+	publicStreamDrain       chan struct{}
+	publicStreamsDrained    bool
 
 	concurrencyClient *clientv3.Client
 
@@ -138,16 +141,41 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 
 // DrainLeadership runs release only after every admitted unary RPC has
 // completed and holds later calls until the release is visible locally. New
-// public calls may then proxy through the successor while transport GOAWAY is
-// migrating the connection; new peer calls remain fenced from this retiring
-// member. Long-lived Watch and KeepAlive streams deliberately remain connected
-// and must not prevent a rollout from draining forever.
+// public unary calls may then proxy through the successor while transport
+// GOAWAY is migrating the connection; new peer calls remain fenced from this
+// retiring member. Public streams admitted before the release are retired with
+// etcd's retryable stopped status, and later public streams are rejected with
+// the same status. This lets clientv3 resume Watch and KeepAlive on a successor
+// before net/http reaches its bounded force-close path.
 func (s *RPCServer) DrainLeadership(release func() bool) {
 	s.leadershipDrainBoundary.Lock()
 	defer s.leadershipDrainBoundary.Unlock()
 	if release() {
 		s.peerLeadershipDrained.Store(true)
+		s.retirePublicStreams()
 	}
+}
+
+func (s *RPCServer) publicStreamDrainState() (<-chan struct{}, bool) {
+	s.publicStreamDrainMu.Lock()
+	defer s.publicStreamDrainMu.Unlock()
+	if s.publicStreamDrain == nil {
+		s.publicStreamDrain = make(chan struct{})
+	}
+	return s.publicStreamDrain, s.publicStreamsDrained
+}
+
+func (s *RPCServer) retirePublicStreams() {
+	s.publicStreamDrainMu.Lock()
+	defer s.publicStreamDrainMu.Unlock()
+	if s.publicStreamsDrained {
+		return
+	}
+	if s.publicStreamDrain == nil {
+		s.publicStreamDrain = make(chan struct{})
+	}
+	s.publicStreamsDrained = true
+	close(s.publicStreamDrain)
 }
 
 // SetMaxRequestsInFlight sets the process-wide public client RPC limit. A
