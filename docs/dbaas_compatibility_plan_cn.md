@@ -62522,6 +62522,58 @@ proxy Watch error。测试专用 client Service `a5527-tls-client` 已按 UID+re
 单节点 Kind 的 direct ordinal replacement 上经两轮实测成立，不是跨 AZ 的保证；共享入口 5 秒 SLO 未改变，跨节点/AZ、外部负载均衡和
 更长 soak 仍需独立验证。对照基线继续固定为 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`。
 
+### A5534：RangeStream/Snapshot 首帧前换主重试与受控流负载闭环
+
+对照 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+`server/proxy/grpcproxy/kv.go:RangeStream`、`server/proxy/grpcproxy/maintenance.go:Snapshot` 和
+`server/etcdserver/v3_server.go:RangeStream`：一个公开 server-stream 只转发一条完整 upstream stream，不能把两个 leader 的部分
+结果拼接。KubeBrain follower 额外存在 peer leader 在公开首帧前退休的窗口；旧实现把 call-stage 或 Recv-stage
+`ErrGRPCLeaderChanged` 直接暴露为 `Unavailable`，即使客户端尚未收到任何结果、入口已能安全重选 leader。
+
+A5534（`aa7787ac`，完整 SHA `aa7787ac5ba7fbcf9472bc5909e2331946d89ede`）让 follower 的 RangeStream 与 Snapshot
+只在**公开首帧前**、且内部错误精确映射为 `ErrGRPCLeaderChanged` 时重试一次（总 attempt 上限 2）。任一公开帧发送成功后绝不跨
+leader 重试，避免 RangeStream 重复/漏键或 Snapshot 混合两个制品；caller cancellation 也不重试。每次 attempt 都重建
+RangeStream payload validator，或 Snapshot 的 remaining-bytes/version/SHA-256 状态。新增
+`read.range_stream.proxy_retry` 与 `maintenance.snapshot.proxy_retry` counter；call-stage RangeStream drain、Recv-stage
+Snapshot drain、两次均失败、半帧后失败和 caller cancel 均有确定性测试。聚焦普通 20 轮为 5.136 秒、race 10 轮为
+14.835 秒；`go test ./pkg/server/...` 中 etcd 包 129.218 秒，vet 通过。651 项 inventory 为
+`156/181/162/152`；精确提交后四片 Go/墙钟秒为
+`131.461/137.867`、`357.782/364.187`、`229.744/236.154`、`376.729/383.199`。
+
+A5534 镜像构建时间 `2026-08-26T08:40:03Z`，OCI index
+`sha256:7866f6eab5e2785435994b3c4ed419a7b99100db2d03dfe1eec44dc82dad1b7b`、platform
+`sha256:d770123b9b30d80ac7de416f17eff27f3c9f255835160ff7a74b206cb8c18970`、config
+`sha256:8f2d95e2c4d45b75125dc46e60c4e3659f1c498f79a4d67c27a6d4d62625e25b`、attestation
+`sha256:a3d068f6b3e9f807b4c654e65810488218b409e57ce43b4b80cded1708a87970`、Kind runtime
+`sha256:b6952d7889f503a7e3b52fa405eea4583839b2c8c65bb4868aa7f3630e2573ea`。A5533→A5534 候选 rollout
+**900/900 GREEN**：公共/直连 Watch `900`/`900x3`、Lease 均存活、direct KeepAlive restart 3，最大公共/直连/TSO/Region
+延迟 `1425/28313/35/6ms`，revision
+`a4657-tls-dbcf98868 -> a4657-tls-5f997f4df5`。
+
+首轮同版本长流实验得到需要保留的 RED：测试程序不节流地连续读取约 1 MiB RangeStream（稳定段约 53 次/秒）并约 2.5 次/秒生成
+Snapshot，同时经 `kubectl port-forward service` 接入；该命令实际固定一个初始 Pod，Pod 替换后隧道退出，测试程序又没有错误退避，
+最终记录 `range_retry=23827212`、`snapshot_retry=2136`。同轮标准 probe 在 iteration 156 的 Put/Get 10 秒预算内无法解析，
+服务端窗口也出现 TiKV request 与 leader-election deadline。它证明“无节流流导出 + 非 HA 隧道 + 无退避重试”的复合负载不能满足
+当前容量合同，但既不能作为 A5534 流内容损坏证据（`range_partial=0`、`snapshot_partial=0`、`fatal=0`），也不能隔离归因到
+首帧前服务端重试。
+
+修正验证使用三 Pod selector 的临时 NodePort Service，保留 TLS authority `kubernetes`，对 retryable 整流失败采用
+100ms 起步、2 秒封顶的指数退避，并分别限制 RangeStream 成功间隔 100ms、Snapshot 成功间隔 1 秒。随后三次 A5534 同版本滚动均
+**900/900 GREEN**：
+
+- RangeStream-only：2439 次完整流、1 次整流重试、0 半帧；最大公共/直连/TSO/Region
+  `4281/27804/100/9ms`，revision `a4657-tls-6987fdc4f5 -> a4657-tls-6cc5cfb886`。
+- Snapshot-only：191 个完整 SHA-256 制品、0 重试、0 半帧；最大延迟
+  `1317/27348/13/12ms`，revision `a4657-tls-6cc5cfb886 -> a4657-tls-776844c94d`。
+- 组合负载：2361 次完整 RangeStream（1 次整流重试）与 178 个完整 Snapshot（2 次整流重试），两者半帧均为 0；
+  最大延迟 `4273/27990/71/7ms`，revision `a4657-tls-776844c94d -> a4657-tls-7cc468569f`。
+
+终态三个 Pod 3/3 Ready、restart 0，精确 OCI/runtime digest 一致；两个新增 counter 在三副本 Prometheus endpoint 均存在，本轮
+滚动后的进程值为 0（流量没有命中服务端内部二次 proxy attempt）。遗留的 128 个首轮测试键已精确删除并复核
+`/a5534-stream/` count=0；临时 NodePort Service 已按 UID+resourceVersion 前置条件删除，所有 port-forward 和临时源码均已
+停止/移除。受控结果关闭 A5534 正确性与当前 Kind 容量点的发布门禁；不把约 53 MiB/s RangeStream 加高频 Snapshot 的首轮复合压力
+外推为支持容量，跨节点/AZ、外部负载均衡及更高流量仍需独立容量测试和客户端退避合同。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
