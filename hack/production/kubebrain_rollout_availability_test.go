@@ -250,6 +250,42 @@ func TestRolloutAvailabilityRunnerRejectsDrainBeforeEndpointPropagation(t *testi
 	require.NotContains(t, log, " patch ")
 }
 
+func TestRolloutAvailabilityRunnerRejectsShortEndpointPropagationWindow(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_SHORT_PROPAGATION_PRESTOP=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "rollout drain contract mismatch")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " run ")
+	require.NotContains(t, log, " patch ")
+}
+
+func TestRolloutAvailabilityRunnerRejectsShortTerminationGraceBeforeMutation(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_SHORT_TERMINATION_GRACE=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "rollout drain contract mismatch")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " run ")
+	require.NotContains(t, log, " patch ")
+}
+
 func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -672,8 +708,9 @@ fi
 if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   revision=revision-old
   [[ -e "$FAKE_KUBECTL_STATE" ]] && revision=revision-new
-  prestop='["/bin/sh","-c","sleep 5 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
+  prestop='["/bin/sh","-c","sleep 10 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
   [[ "${FAKE_DRAIN_FIRST_PRESTOP:-false}" != true ]] || prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
+  [[ "${FAKE_SHORT_PROPAGATION_PRESTOP:-false}" != true ]] || prestop='["/bin/sh","-c","sleep 5 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
   [[ "${FAKE_BAD_PRESTOP:-false}" == true ]] && prestop='["/bin/sleep","5"]'
   runtime_image=kubebrain:test
   [[ -e "$FAKE_KUBECTL_STATE" && -n "${TARGET_IMAGE:-}" ]] && runtime_image="$TARGET_IMAGE"
@@ -683,13 +720,15 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   [[ ! -e "$FAKE_KUBECTL_STATE" ]] || resource_version=resource-version-new
   spec_replicas=3
   [[ "${FAKE_ROLLBACK_SPEC_DRIFT:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || spec_replicas=4
+  termination_grace=30
+  [[ "${FAKE_SHORT_TERMINATION_GRACE:-false}" != true ]] || termination_grace=20
   restart_annotation=restart-old
   if [[ -e "$FAKE_KUBECTL_STATE" && -z "${TARGET_IMAGE:-}" ]]; then
     restart_annotation="$(<"$FAKE_KUBECTL_STATE")"
   fi
-  payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --arg restart "$restart_annotation" --argjson prestop "$prestop" --argjson replicas "$spec_replicas" '{
+  payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --arg restart "$restart_annotation" --argjson prestop "$prestop" --argjson replicas "$spec_replicas" --argjson termination_grace "$termination_grace" '{
     metadata:{uid:$uid,resourceVersion:$resourceVersion},
-    spec:{replicas:$replicas,template:{metadata:{annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
+    spec:{replicas:$replicas,template:{metadata:{annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{terminationGracePeriodSeconds:$termination_grace,containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
   if [[ "${FAKE_NO_TEMPLATE_ANNOTATIONS:-false}" == true && ! -e "$FAKE_KUBECTL_STATE" ]]; then

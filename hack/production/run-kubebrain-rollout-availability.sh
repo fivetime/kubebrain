@@ -13,6 +13,7 @@ KUBEBRAIN_CLIENT_SERVICE="${KUBEBRAIN_CLIENT_SERVICE:-kubebrain-client}"
 KUBEBRAIN_CLIENT_PORT="${KUBEBRAIN_CLIENT_PORT:-3379}"
 EXPECTED_REPLICAS="${EXPECTED_REPLICAS:-3}"
 EXPECTED_LEADER_RETRY_PERIOD="${EXPECTED_LEADER_RETRY_PERIOD:-500ms}"
+MIN_TERMINATION_GRACE_PERIOD_SECONDS=30
 PROBE_ITERATIONS="${PROBE_ITERATIONS:-900}"
 PROBE_INTERVAL="${PROBE_INTERVAL:-0.1}"
 PROBE_COMMAND_TIMEOUT="${PROBE_COMMAND_TIMEOUT:-10s}"
@@ -284,7 +285,8 @@ for pd_addr in "${pd_addr_items[@]}"; do
   pd_endpoints="${pd_endpoints:+${pd_endpoints},}${pd_addr}"
 done
 prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' "$statefulset_json")"
-expected_prestop='["/bin/sh","-c","sleep 5 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
+expected_prestop='["/bin/sh","-c","sleep 10 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
+termination_grace_period_seconds="$(jq -r '.spec.template.spec.terminationGracePeriodSeconds // 0' "$statefulset_json")"
 
 if [[ "$replicas" != "$EXPECTED_REPLICAS" || "$ready" != "$EXPECTED_REPLICAS" ]]; then
   echo "KubeBrain StatefulSet must have exactly ${EXPECTED_REPLICAS} desired and Ready replicas" >&2
@@ -294,8 +296,10 @@ if [[ -z "$current_revision" || "$current_revision" != "$update_revision" ]]; th
   echo "KubeBrain StatefulSet is not at one stable revision" >&2
   exit 1
 fi
-if [[ -z "$image" || -z "$pd_endpoints" || "$retry_count" != 1 || "$prestop" != "$expected_prestop" ]]; then
-  echo "KubeBrain rollout drain contract mismatch (image/retry/preStop)" >&2
+if [[ -z "$image" || -z "$pd_endpoints" || "$retry_count" != 1 || "$prestop" != "$expected_prestop" ]] ||
+  ! operation_is_positive_int64 "$termination_grace_period_seconds" ||
+  (( termination_grace_period_seconds < MIN_TERMINATION_GRACE_PERIOD_SECONDS )); then
+  echo "KubeBrain rollout drain contract mismatch (image/retry/preStop/terminationGracePeriodSeconds)" >&2
   exit 1
 fi
 declare -a original_runtime_image_ids=()
