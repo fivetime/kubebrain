@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、server version、独立 backend storage version、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 兼容核心语义（升级历史有条件） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；每次生产 rollout 还实际执行官方 etcdutl Status 与带哈希检查的 Restore，要求生成非空 `member/snap/db` 后才放行；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
+| Maintenance | Snapshot | 兼容核心语义（升级历史有条件） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；每次生产 rollout 还实际执行官方 etcdutl Status 与带哈希检查的 Restore，启动恢复后的官方 singleton etcd，并通过 clientv3 以原 mTLS caller 身份读回固定 seed/MVCC 后才放行；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；follower 的 latest `HashKV(0)` 本地 hedge 必须先跨 leader revision barrier，不能以陈旧 hash 抢赢权威 peer；显式历史 revision 保持成员本地诊断；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -62823,6 +62823,79 @@ runtime digest 一致且三端 `/readyz=ok`；PD/TiKV 精确 3+3 Ready、restart
 临时 client Service UID `38e2af39-b9ee-4b1c-81a0-20c84e1030e8` 已用创建时 UID/resourceVersion 前置条件删除，
 EndpointSlice 不存在。由此矩阵把 Snapshot 提升为“兼容核心语义（升级历史有条件）”；含不可判定 legacy lease history 时继续
 fail closed，且本轮 Restore 是官方离线目录转换证明，不冒充启动恢复后的独立 etcd 集群、跨集群灾备演练或大容量节点磁盘证明。
+
+### A5541：启动官方恢复 server 并读回固定 seed
+
+A5540 只证明官方 `etcdutl snapshot restore` 能生成完整 singleton data directory，尚未证明 WAL/Raft snapshot 能被 etcd
+实际启动，也没有从启动后的 KV API 验证恢复内容。上游 etcd 提交 `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+`tests/integration/snapshot/v3_snapshot_test.go` 恢复测试采用 Restore→`embed.StartEtcd`→clientv3 Get；本轮按相同可观察路径补齐
+rollout gate。
+
+提交 `002b6447`（完整 SHA `002b6447cdedfe8d955d7734a6b27bcbead3cc08`）为恢复 server 预留两个互异的随机 loopback
+client/peer URL，以 `ClusterState=existing` 启动官方 singleton embedded etcd，并在同一 15 秒有界 context 内等待 Ready、建立官方
+clientv3 连接和读取全部 16 个固定 `stream/%04d` seed。每个响应必须给出非零 cluster/member/term、与 artifact Status 精确相同的
+revision，并返回唯一 key/value；value 哈希、create/mod revision、version 与 lease 等 MVCC 字段继续由既有 expectation 校验。
+server、client、预留 listener 和随机 restore parent 在成功或任一步失败后都必须释放；启动或 seed 校验失败会阻断发布。确定性旧代码
+RED 通过 verifier fake 证明 gate 必须调用启动验证器；真实恢复制品测试还注入错误 seed expectation，证明已启动的官方 server 会实际
+返回并拒绝不匹配数据，而不是仅检查目录。
+
+聚焦普通 20 轮 25.672 秒、race 20 轮 31.076 秒，完整 availability probe 包 1.976 秒，vet 与 diff check 全绿。655 项
+inventory 仍为 `158/181/164/152`；精确提交后四片 Go/墙钟秒为 `135.884/142.293`、`357.011/363.496`、
+`232.551/238.970`、`378.037/384.480`，全部通过。
+
+A5541 镜像构建时间 `2026-08-26T13:43:21Z`，OCI index
+`sha256:13af543ce033bb0a7ced6a03dd19df7f2ffeba2b3d97e3a218d87d410e0eed86`、platform manifest
+`sha256:9a5c3f80b45d29081fa79b6f14b0b31aef623e584a4a7152893fe98455f575d4`、config
+`sha256:e02b78d0d470d3992add87afa8502492bdb8590368ef91e37b7457281794c817`、attestation
+`sha256:a81de8b50bbe60a37f44ad05f4c6c4e65a8b9f6001aeb00834559786413aac5a`、Kind runtime
+`sha256:c4453df440b2aad395a9e07eaebae4c607c99abb8a1f13b34c6dd951206b0f55`。probe 为 47,881,154 bytes，较
+A5540 增加 8,596,603 bytes（约 8.20 MiB）；完整镜像为 906,567,466 bytes，增加 3,878,807 bytes（约 3.70 MiB）。
+
+A5540→A5541 首次 rollout 在 iteration 198 **RED**：恢复后的官方 server 已成功启动，但匿名 Get 被 snapshot 中已启用的 auth
+拒绝为 `InvalidArgument: etcdserver: user name is empty`。runner 完整回滚 A5540，终态 3/3 Ready、restart 0、原 digest 和
+revision `a4657-tls-867bbfb68f`，probe 数据已清空。只读审计确认 snapshot 的 auth revision 为 18，用户包含
+`KubeWharfServer`、`alice`、`root`，当前客户端证书身份为 `CN=KubeWharfServer`。因此 A5541 没有 GREEN 发布结论；它暴露的是
+恢复验证没有继承原 caller 身份，而不是 snapshot 内容或官方启动失败。
+
+### A5542：恢复验证继承原 mTLS caller 身份
+
+提交 `75509e6e`（完整 SHA `75509e6e9195bb64fdbb810fac5bab5b8067c452`）把当前 probe 的 CA、客户端证书、私钥和
+TLS server name 传入 snapshot worker；配置只允许四项全空或全有，部分身份 fail closed。启用时，恢复后的官方 client listener
+改用 HTTPS、信任同一 CA 并要求 `ClientCertAuth=true`，clientv3 使用同一证书、显式 server name 和 gRPC authority 发起 Get。
+这保留 snapshot 中的 auth 状态和权限判定，没有通过关闭 auth 绕过 A5541 的失败。真实测试用 `transport.SelfCert` 启动双向 TLS
+恢复 server 并完成 seed 读取，另有部分 TLS 配置的逐项负例；原有错误数据、启动失败、清理和无 TLS 回归继续覆盖。
+
+最终修正后的完整 probe 1.862 秒、普通聚焦 20 轮 43.904 秒、race 20 轮 49.959 秒，vet 与 diff check 全绿。655 项
+inventory 仍为 `158/181/164/152`；精确提交后四片 Go/墙钟秒为 `136.111/142.570`、`358.937/365.477`、
+`233.510/240.053`、`377.629/384.159`，全部通过。
+
+A5542 镜像构建时间 `2026-08-26T14:08:31Z`，OCI index
+`sha256:ffd05aa4a9be571da674f30dc9c08eea8804b5c706950bcb6dcf6e373518cb69`、platform manifest
+`sha256:fe3d3576086cfbab5efc3411547de404375a3b0554ce0ca6f020b49ffbecd799`、config
+`sha256:aafb8e5e2649b6e44279403d40134217c9c35ca6ef6a62e4ec4d5eab20a7be6c`、attestation
+`sha256:cb5d84071a761969f940c9a746c862401f2333804643463dd6d6e392379f9a39`、Kind runtime
+`sha256:73315ea5ddc05a556e7a7122274606dd8fc61cee1e4f4bbab358a8e69182e8fc`；probe/完整镜像分别为
+47,890,610/906,570,441 bytes。完整 SHA、TiKV、Go 1.26.5、linux/amd64、kubectl v1.36.2 与 `USER 65532:65532`
+均经镜像和节点运行时复核。
+
+A5540→A5542 纠正性 upgrade **900/900 GREEN**：公共/直连 KeepAlive `106`/`269`、replacement 23、最大恢复
+`21443ms`；RangeStream 179、完成官方 Status→Restore→mTLS/auth 启动→16 seed 读回的 Snapshot 1、stream retry 1、partial
+retry 0，最大公共 Watch/直连 Watch/TSO/Region 延迟 `4210/28402/45/14ms`，revision
+`a4657-tls-867bbfb68f -> a4657-tls-c8b6bc849`。首次 A5542 same-version restart 在 iteration 194 **RED**：direct
+Watch 对旧 Pod 地址 connection refused，`29.967981698s` 后越过剩余 deadline；Snapshot auth 路径此前已经通过，失败路径与本轮
+Snapshot 代码无关，但仍保留为发布历史。相同镜像完成滚动后稳定在 revision `a4657-tls-66df55fbbb`，3/3 Ready、restart 0。
+
+对同一不可变 A5542 镜像执行的纠正性 restart **900/900 GREEN**：KeepAlive `107`/`284`、replacement 22、最大恢复
+`21133ms`；RangeStream 175、完整恢复 Snapshot 1、stream retry 2、partial retry 0，最大延迟
+`3243/27416/2/8ms`，revision `a4657-tls-66df55fbbb -> a4657-tls-777dfbbfbc`。终态 StatefulSet UID
+`3d124ab7-b3ab-43d3-afd5-1b354722ab54`，三 Pod 同 revision、3/3 Ready、restart 0、精确 A5542 runtime digest 且
+三端 `/readyz=ok`；PD/TiKV 3+3 Ready、restart 0，近 20 分钟无 queue-full/panic/fatal，probe prefix 为空、probe Pod 不存在。
+临时 client Service UID `a6ad9923-abe1-4969-8b72-b93d78a71535` 已用创建时 UID/resourceVersion 前置条件删除，
+EndpointSlice 不存在。
+
+矩阵据此保留“兼容核心语义（升级历史有条件）”：gate 现在证明官方恢复目录可真正启动，且保留 auth 时可由原 mTLS caller 读回
+固定 seed/MVCC；它仍不是多 member restore、跨集群灾备、任意历史 revision/完整权限矩阵或大容量节点磁盘演练。A5541 auth RED
+和首次 A5542 restart 延迟 RED 都不被后续 GREEN 覆盖。
 
 ## 提交规则
 
