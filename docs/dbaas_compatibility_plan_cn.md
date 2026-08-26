@@ -62369,6 +62369,34 @@ KubeBrain 额外需要在独立 TiKV/PD + follower proxy 架构中显式给长�
 最终 StatefulSet UID 不变，三 Pod Ready、restart 0、runtime digest 一致。由此关闭此前稳定约 6.3 秒的 rollout Watch 恢复空窗；
 仍未改变 RangeStream 等非 clientv3 自动恢复消费者需要由调用方重试 `Unavailable` 的兼容性责任。
 
+### A5521：peer 长流 leadership handoff 退役闭环
+
+A5520 解决了 public Watch/KeepAlive，但 peer listener 中已经 admitted 的长流仍不参与交棒：successor 已持久接管后，它们可继续绑定退休
+leader，并让共享 follower proxy 形成不必要的转发链。A5521（`844c824a`）把 leadership-stream signal 同时用于 public 与 peer
+listener，但保持两个边界的错误契约分离。release 成功后 peer 旧流和新流返回精确内部
+`ErrPeerStreamDrained`（`codes.Aborted: kubebrain: peer stream drained after leadership handoff`）；release 失败不关闭流。
+proxy 仅把该精确 sentinel（而非任意 `Aborted`）分类为连接退役并重建共享连接；Watch 从追踪 revision 继续，LeaseKeepAlive 映射为
+`ErrGRPCLeaderChanged` 后重放请求。RangeStream/Snapshot 则在 public API 映射为 `Unavailable: etcdserver: leader changed`，保留调用方
+取消 cause，并明确要求消费者丢弃部分流再重试。公共 Watch/KeepAlive 仍沿用 A5520 的 `ErrGRPCStopped`。
+
+确定性 direct/on-wire、失败 release、proxy reconnect、keepalive replay 和 public boundary 回归均通过；聚焦普通 20 轮、race 10 轮、
+完整 etcd/proxy/server 3 轮及 vet 全绿。643 项 inventory 为 `154/180/159/150`，提交后四片 Go/墙钟秒为
+142.390/148.690、367.113/373.423、232.985/239.295、385.273/391.594。镜像
+`kubebrain:a5521-844c824a` 内嵌 SHA `844c824a05e22efb4e18970bcd1363b0e8a92477`，OCI index
+`sha256:348d5eeadd2fe725677c124d44361cc9cbc2a3fa82a8f0981d3a0e36764ddb6e`，platform manifest
+`sha256:9f51e363be7b527008c52fc7cc5ab4b0ed17dfeb9bae9cabdc5e3f302aa560eb`，config
+`sha256:cac24cd389cf8104406bea9841a5ee36318f4ea2c43584725ed0a517871dd981`，attestation
+`sha256:c50b5c9e4f27132c581607b5c0631c73a7de2509c38e58a37feffa469a88e713`，kind runtime
+`sha256:8ac39264b93f1ab577e52cef46c78e37f13be965c4aa636ac7430c1458a83020`。
+
+live 发布保留完整失败轨迹：首次把 runner 的 `PREFLIGHT_ONLY` 误写为带前缀变量，因而候选真实运行并在 iteration 80 以 Put→Watch
+6.289 秒 RED 后回滚；第二次 config/runtime 摘要混用，业务 900/900（1519/56/9ms）但 postflight 身份校验 RED 并回滚，不能计
+GREEN。使用 Pod 权威 `imageID` 后，A5520→A5521 upgrade 为 **900/900 GREEN**，Watch 900、lease alive，最大业务/TSO/Region
+2840/53/10ms；A5521 same-version restart 再为 **900/900 GREEN**，最大 2391/52/12ms。revision 依次为
+`kubebrain-547b679468 -> kubebrain-5747bc48c7 -> kubebrain-7554c99d78`。最终 StatefulSet UID 不变，三 Pod 3/3 Ready、restart 0、
+runtime digest 一致，近 10 分钟无 panic/fatal/error。该闭环消除了退休 leader 上的 peer 长流残留；RangeStream/Snapshot 的部分结果重试
+仍是对外兼容性责任，不能宣称透明自动恢复。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

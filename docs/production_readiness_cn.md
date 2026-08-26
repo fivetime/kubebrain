@@ -8762,3 +8762,35 @@ platform manifest `sha256:84c2eed3a2616e7eeeced0b1c8ad6d26c33ca9eab5ae698d08a2cb
 仍为 `817bc005-a4d1-4d57-9aab-de93e0874054`，三 Pod 3/3 Ready、restart 0、精确 runtime digest 一致；日志仅见退休 peer
 按合同返回 `Aborted: kubebrain: peer drained before request admission` 后重建连接，无 panic/fatal。A5517--A5519 的三次 same-version/
 candidate RED 不被本轮双 GREEN 覆盖；它们共同证明 lease 任期、transport grace 和 EndpointSlice 前窗都不是约 6.3 秒空窗的根因。
+
+### A5521：交棒后退役 peer 长流并保持边界错误契约
+
+A5520 只主动退役公共 Watch/KeepAlive；已进入 peer listener 的 Watch、LeaseKeepAlive、RangeStream 或 Snapshot 仍可长期附着退休 leader，
+甚至让 follower proxy 继续经过该进程形成额外一跳，直到 transport force-close。提交 `844c824a` 把同一 leadership-stream signal 扩展到
+peer listener：durable release 成功后，已 admitted peer 流与随后新流都以精确内部
+`codes.Aborted: kubebrain: peer stream drained after leadership handoff` 结束；release 失败时信号不关闭，现有流继续服务。该 sentinel
+只在内部边界使用且按精确 status 分类，普通 `Aborted` 不会误判。共享 proxy 连接看到它后立即 reset/reconnect；Watch 从已跟踪 revision
+恢复；LeaseKeepAlive 映射为上游 `ErrGRPCLeaderChanged` 以重放已消费的幂等 keepalive；RangeStream/Snapshot 在公共边界映射为
+`Unavailable: etcdserver: leader changed`，调用方必须丢弃部分结果并重试。A5520 的公共流仍保持 `ErrGRPCStopped`/`Unavailable`。
+
+direct blocked peer stream、新流拒绝、失败 release 保持、真实 on-wire peer-health Watch、精确 sentinel 分类、Watch 重连、KeepAlive 重放及
+RangeStream/Snapshot 边界映射均有回归覆盖。聚焦普通 20 轮中 proxyprotocol/etcdproxy/etcd 分别约 0.024/0.124/6.072 秒；race 10 轮
+分别 1.083/1.382/20.419 秒。完整 etcd 3 轮 Go/墙钟 406.117/410.086 秒，proxy 3 轮 18.455/21.059 秒，server 3 轮
+1.155/6.479 秒，vet 5.545 秒；643 项 inventory 仍为 `154/180/159/150`。提交前 verify 通过，精确提交后四片 Go/墙钟为
+142.390/148.690、367.113/373.423、232.985/239.295、385.273/391.594 秒，全部 GREEN。
+
+不可变镜像 `kubebrain:a5521-844c824a` 内嵌完整 SHA `844c824a05e22efb4e18970bcd1363b0e8a92477`，构建时间
+`2026-08-26T02:10:00Z`，OCI index `sha256:348d5eeadd2fe725677c124d44361cc9cbc2a3fa82a8f0981d3a0e36764ddb6e`，
+platform manifest `sha256:9f51e363be7b527008c52fc7cc5ab4b0ed17dfeb9bae9cabdc5e3f302aa560eb`，config
+`sha256:cac24cd389cf8104406bea9841a5ee36318f4ea2c43584725ed0a517871dd981`，attestation
+`sha256:c50b5c9e4f27132c581607b5c0631c73a7de2509c38e58a37feffa469a88e713`，kind/containerd runtime
+`sha256:8ac39264b93f1ab577e52cef46c78e37f13be965c4aa636ac7430c1458a83020`。
+
+发布历史保留两次未计 GREEN 的尝试：首次误写 `KUBEBRAIN_ROLLOUT_PREFLIGHT_ONLY`（runner 只接受 `PREFLIGHT_ONLY`）而实际启动候选，
+iteration 80 的 Put→Watch 6.289 秒超过 5 秒并自动回滚；第二次把 config ID 误作 runtime digest，业务探针虽 900/900、最大
+1519/56/9ms，postflight 身份校验按合同失败并回滚。修正为 Pod 实际 `imageID` 后，独立 3×PD/3×TiKV v8.5.3 上
+A5520→A5521 upgrade **900/900 GREEN**，Watch 900、lease alive，最大业务/TSO/Region 2840/53/10ms，revision
+`kubebrain-547b679468 -> kubebrain-5747bc48c7`；紧随的 A5521 same-version restart 再次 **900/900 GREEN**，最大
+2391/52/12ms，revision `kubebrain-5747bc48c7 -> kubebrain-7554c99d78`。最终 StatefulSet UID
+`817bc005-a4d1-4d57-9aab-de93e0874054`，三 Pod 3/3 Ready、restart 0、精确 runtime digest 和 revision 一致，近 10 分钟日志无
+panic/fatal/error。首次尾延迟 RED 与第二次证据参数 RED 均不由最终双轮 GREEN 覆盖。
