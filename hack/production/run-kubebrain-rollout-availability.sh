@@ -287,7 +287,7 @@ for pd_addr in "${pd_addr_items[@]}"; do
   pd_endpoints="${pd_endpoints:+${pd_endpoints},}${pd_addr}"
 done
 prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' "$statefulset_json")"
-expected_prestop='["/bin/sh","-c","sleep 20 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
+expected_prestop='["/bin/sh","-c","sleep 25 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain"]'
 termination_grace_period_seconds="$(jq -r '.spec.template.spec.terminationGracePeriodSeconds // 0' "$statefulset_json")"
 endpoint_scheme=http
 declare -a probe_tls_args=()
@@ -297,7 +297,7 @@ tls_marker_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kub
 tls_contract_valid=true
 if (( tls_marker_count > 0 )); then
   endpoint_scheme=https
-  expected_prestop='["/bin/sh","-c","sleep 20 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5"]'
+  expected_prestop='["/bin/sh","-c","sleep 25 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain"]'
   allow_insecure_false_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--allow-insecure=false")] | length' "$statefulset_json")"
   client_cert_auth_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--client-cert-auth=true")] | length' "$statefulset_json")"
   cert_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--cert-file=")) | sub("^--cert-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"

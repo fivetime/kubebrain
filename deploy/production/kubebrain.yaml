@@ -107,7 +107,7 @@ spec:
                 command:
                   - /bin/sh
                   - -c
-                  - sleep 20 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain && sleep 5
+                  - sleep 25 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain
           resources:
             requests:
               cpu: 500m
