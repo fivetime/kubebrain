@@ -62397,6 +62397,63 @@ GREEN。使用 Pod 权威 `imageID` 后，A5520→A5521 upgrade 为 **900/900 GR
 runtime digest 一致，近 10 分钟无 panic/fatal/error。该闭环消除了退休 leader 上的 peer 长流残留；RangeStream/Snapshot 的部分结果重试
 仍是对外兼容性责任，不能宣称透明自动恢复。
 
+### A5522--A5526：逐副本长流探针与 EndpointSlice 传播预算闭环
+
+A5521 的双轮 GREEN 只证明公共 Service 探针，没有持续覆盖每个 StatefulSet ordinal，因而可能漏掉某个退休 Pod 上的 peer/direct
+长流。A5522（`b5eb8cce`）把 rollout probe 扩展为三个稳定 Pod DNS 端点：每轮除公共 Put→Watch 外，还在每个 ordinal 上保持并推进
+Watch，并把 `direct_watch=<iterations>x3`、三端身份与最大延迟写入强类型终态摘要。更重的探针立即提供了反证：live 候选在 iteration 82
+越过 5 秒组合延迟门禁，不能沿用 A5521 的历史 GREEN 作为新探针下的发布证据。A5523（`73b88db9`）进一步拆开公共 5 秒 SLO 与直连
+流 20 秒恢复预算，防止一个聚合最大值掩盖故障类别；live 仍在 iteration 82 暴露退休 ordinal 的 direct KeepAlive socket closure。
+A5524（`72dc7feb`）让每个 direct KeepAlive 在明确的可恢复连接错误后重建，并要求终态报告精确三次 endpoint restart。其镜像
+`kubebrain:a5524-72dc7feb` 的 OCI index 为
+`sha256:158f73fb2f09773412456b182850f050ae88324c0530806d785ecd8e98358fac`，platform manifest
+`sha256:d5bf19cc1b31559f1c5c3525a835eaca5d2e6049d0953d0bb3d2bc045f3bf53e`，config
+`sha256:f70b169ba664e5ec91b0ec44276bfc246a9f741be0567054dd60b39729180dc8`，attestation
+`sha256:8a7ba1bd92dae36fa4515bae16782b09bb5efecc47d2c2c7ec660c9170b9d058`，kind runtime
+`sha256:d5994d98fa888b10f8d6ce3f0178369ee83a0087cf9f1a5047938154174f7910`。精确 preflight GREEN，但 A5521→A5524
+upgrade 在 iteration 80 以公共 Put→Watch 6.227 秒 RED；同时观测到 Service 无可用连接和旧 Pod IP connection refused，自动回滚完整恢复
+A5521、3/3 Ready、restart 0。A5522--A5524 都是探针/恢复语义增强，不得把“探针能恢复”误记为数据面可用性修复。
+
+A5525（`8ed993b9`，完整 SHA `8ed993b9341b52d0226d2e33c121a0835e0b2e47`）修复 `http.Server.Shutdown` 只及时关闭
+idle connection、而 active HTTP/2 长流要到后续 retirement 才收到 GOAWAY 的次序缺口。交棒成功后现在分成两阶段：先并发启动所有
+transport shutdown，使仍 active 的连接收到 GOAWAY；等待有界 1 秒传播窗后，再退役 public/peer stream。修复前确定性测试在 transport
+callback 内新建公共 Watch 得到 `Unavailable: etcdserver: server stopped`；修复后 focused 普通/race、server/etcd/endpoint、rollout
+runner 与 vet 均绿。完整 `go test ./hack/production` 仍在既有且不相关的
+`TestRunColdPhysicalSnapshotOperationIsBoundAndTerminal` 命中默认 10 分钟包级 timeout，故不把它写成全包 GREEN；与 changed path 相关的
+rollout runner 35 项为 60.063 Go 秒/60.652 墙钟秒。644 项 inventory 为 `154/180/160/150`，提交后四片 Go/墙钟秒为
+138.628/144.969、362.602/368.901、235.269/241.611、379.141/385.440。
+
+A5525 镜像 `kubebrain:a5525-8ed993b9`（构建时间 `2026-08-26T04:15:00Z`）的 OCI index 为
+`sha256:6ec824de3127817448926f10487aae5c490d553719bd50a3c50b43e447aaf519`，platform manifest
+`sha256:bdc656354d387d2fc336a60763fc0f0c6ccb0d3d40338d667f59eb2e8ac1101c`，config
+`sha256:3624480e781891525de45605c436c9f99d99e510e68f1a169f0a49317b1ee227`，attestation
+`sha256:b954bc6d8390218ef0b8e95e4fd17ec27b108b87f99bfccf627db097003f02f3`，kind runtime
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。A5521→A5525 upgrade 首次
+**900/900 GREEN**，公共/直连 Watch 为 `900`/`900x3`，direct lease restart 3，最大公共/直连/TSO/Region 延迟为
+2169/12130/7/6ms；但紧随的 A5525 same-version restart 在 iteration 80 又以公共 Put→Watch 6.382 秒 RED。相同镜像无需回滚，滚动最终
+仍收敛 3/3 Ready；该 RED 证明 GOAWAY 次序修复必要但不充分，不能把 upgrade GREEN 单独作为发布结论。
+
+A5526（`3ebf6fad`）依据上述现场反证，把 Pod deletion 后、调用 `/drain` 前的 EndpointSlice/kube-proxy 传播前窗从 10 秒提高到 20 秒，
+并把 termination grace 下限从 30 秒提高到 45 秒；plaintext rollout runner、TLS/非 TLS 生产 manifest 与结构测试使用同一精确契约。
+修复前 RED 证明旧 runner 会接受 `sleep 10` 的短窗并实际进入 probe，旧 manifest 仍输出 30 秒；修复后短窗/短 grace 均在任何 mutation
+前 fail closed。聚焦普通 20 轮、race 10 轮、完整 rollout runner 60.010 秒、production manifest 全包、vet、shell syntax 与 diff check
+均绿；644 项 inventory 为 `154/180/160/150`，提交后四片 Go/墙钟秒为
+142.018/148.297、370.566/376.841、235.670/241.941、383.388/389.668。
+
+线上先以 StatefulSet UID `817bc005-a4d1-4d57-9aab-de93e0874054` 和 resourceVersion 原子 test 安全迁移 20/45 模板，迁移本身由
+1800 次持续探针覆盖并 **1800/1800 GREEN**：公共/直连 Watch `1800`/`1800x3`，direct lease restart 3，最大公共/直连/TSO/Region
+延迟 1529/9147/50/12ms，revision `kubebrain-947785bc8 -> kubebrain-5b799d86b9`。随后同一 A5525 精确镜像连续两轮标准
+same-version restart 均为 **900/900 GREEN**；两轮最大公共/直连/TSO/Region 延迟分别为 1393/8942/29/8ms 与
+1413/9072/51/6ms，revision 依次为
+`kubebrain-5b799d86b9 -> kubebrain-6b64b844c8 -> kubebrain-9b9965dc9`。终态 StatefulSet UID 未变、generation/observedGeneration
+均为 659，三 Pod 同 revision、Ready、restart 0 且 runtime digest 均为 A5525 kind digest；公共 EndpointSlice 三端均
+ready/serving、非 terminating，临时 probe 已删除。独立 3×PD/3×TiKV 均 Running，PD 报告三个 TiKV store 为 Up；近 20 分钟无
+panic/fatal，只有滚动时预期的 peer-drain `Aborted` 重连告警。
+
+该闭环证明在当前单节点 Kind、独立 3×PD/3×TiKV 和 kube-proxy 实现中，20 秒传播前窗可重复满足公共 5 秒 SLO 与直连 20 秒恢复预算；
+它不外推为跨节点/AZ、其他 kube-proxy 后端、外部 L4/L7 或长时 soak 的统一最小值。生产落地仍应按目标集群实测校准，且
+RangeStream/Snapshot 等非 clientv3 自动恢复消费者继续承担收到 `Unavailable` 后丢弃部分结果并重试的兼容性责任。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
