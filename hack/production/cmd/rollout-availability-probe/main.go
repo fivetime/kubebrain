@@ -642,7 +642,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 
 	streamProbe := startStreamProbeGroup(ctx, client, cfg.prefix, streamExpected, clusterID,
 		streamWorkerConfig{interval: cfg.rangeInterval, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff},
-		streamWorkerConfig{initialDelay: cfg.snapshotDelay, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff, successLimit: 1, artifactDir: cfg.snapshotDir},
+		streamWorkerConfig{initialDelay: cfg.snapshotDelay, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff, successLimit: 1, artifactDir: cfg.snapshotDir,
+			restoredTLS: restoredSnapshotTLSConfig{caFile: cfg.caFile, certFile: cfg.certFile, keyFile: cfg.keyFile, serverName: cfg.tlsServerName}},
 	)
 	streamProbeStopped := false
 	defer func() {

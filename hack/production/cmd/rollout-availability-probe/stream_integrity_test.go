@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"errors"
 	"io"
 	"os"
@@ -28,7 +29,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/client/pkg/v3/transport"
 	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -223,7 +226,7 @@ func TestConsumeAndValidateSnapshotRejectsSelfConsistentNonEtcdArtifact(t *testi
 	partial, err := consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
 		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
 		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
-	}}, dir, nil)
+	}}, dir, nil, restoredSnapshotTLSConfig{})
 	require.ErrorContains(t, err, "official etcdutl rejected Snapshot artifact")
 	require.True(t, partial)
 	entries, readErr := os.ReadDir(dir)
@@ -245,19 +248,33 @@ func TestConsumeAndValidateSnapshotStartsOfficialServerAndValidatesSeedData(t *t
 		{response: &etcdserverpb.SnapshotResponse{Blob: data[:len(data)/2], RemainingBytes: uint64(len(data) - len(data)/2), Version: etcdsnapshot.StorageVersion}},
 		{response: &etcdserverpb.SnapshotResponse{Blob: data[len(data)/2:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
 		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
-	}}, dir, expected)
+	}}, dir, expected, restoredSnapshotTLSConfig{})
 	require.NoError(t, err)
 	require.True(t, partial)
 	entries, readErr := os.ReadDir(dir)
 	require.NoError(t, readErr)
 	require.Empty(t, entries, "a validated artifact must always be removed")
 
+	identity, err := transport.SelfCert(zap.NewNop(), t.TempDir(), []string{"restored.example:443"}, 1, x509.ExtKeyUsageClientAuth)
+	require.NoError(t, err)
+	partial, err = consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+	}}, dir, expected, restoredSnapshotTLSConfig{
+		caFile: identity.CertFile, certFile: identity.CertFile, keyFile: identity.KeyFile, serverName: "restored.example",
+	})
+	require.NoError(t, err)
+	require.True(t, partial)
+	entries, readErr = os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a mutually authenticated validation must always be removed")
+
 	wrongExpected := append([]streamProbeExpectation(nil), expected...)
 	wrongExpected[0].hash = sha256.Sum256([]byte("wrong value"))
 	partial, err = consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
 		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
 		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
-	}}, dir, wrongExpected)
+	}}, dir, wrongExpected, restoredSnapshotTLSConfig{})
 	require.ErrorContains(t, err, "officially restored etcd returned invalid seed data")
 	require.True(t, partial)
 	entries, readErr = os.ReadDir(dir)
@@ -267,7 +284,7 @@ func TestConsumeAndValidateSnapshotStartsOfficialServerAndValidatesSeedData(t *t
 	partial, err = consumeAndValidateSnapshot(t.Context(), &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
 		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: "3.6.0"}},
 		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: "3.6.0"}},
-	}}, dir, expected)
+	}}, dir, expected, restoredSnapshotTLSConfig{})
 	require.ErrorContains(t, err, "official etcdutl returned invalid Snapshot status")
 	require.True(t, partial)
 }
@@ -278,7 +295,7 @@ func TestValidateSnapshotArtifactRejectsRestoreFailureAndRemovesPartialOutput(t 
 	require.NoError(t, os.WriteFile(artifactPath, []byte("managed by fake status"), 0o600))
 	manager := &partialRestoreSnapshotManager{}
 
-	err := validateSnapshotArtifactWithVerifier(t.Context(), manager, artifactPath, etcdsnapshot.StorageVersion, dir, nil, verifyRestoredSnapshot)
+	err := validateSnapshotArtifactWithVerifier(t.Context(), manager, artifactPath, etcdsnapshot.StorageVersion, dir, nil, restoredSnapshotTLSConfig{}, verifyRestoredSnapshot)
 	require.ErrorContains(t, err, "official etcdutl failed to restore Snapshot artifact")
 	require.Equal(t, artifactPath, manager.restoreConfig.SnapshotPath)
 	require.False(t, manager.restoreConfig.SkipHashCheck)
@@ -295,7 +312,7 @@ func TestValidateSnapshotArtifactRejectsRestoredServerFailureAndRemovesOutput(t 
 	expected := newStreamProbeExpectations("/probe/")[:1]
 	verified := false
 
-	err := validateSnapshotArtifactWithVerifier(context.Background(), manager, artifactPath, etcdsnapshot.StorageVersion, dir, expected,
+	err := validateSnapshotArtifactWithVerifier(t.Context(), manager, artifactPath, etcdsnapshot.StorageVersion, dir, expected, restoredSnapshotTLSConfig{},
 		func(_ context.Context, cfg restoredSnapshotConfig, got []streamProbeExpectation, revision int64) error {
 			verified = true
 			require.Equal(t, manager.restoreConfig.OutputDataDir, cfg.dataDir)
@@ -307,6 +324,21 @@ func TestValidateSnapshotArtifactRejectsRestoredServerFailureAndRemovesOutput(t 
 	require.True(t, verified)
 	require.NoDirExists(t, filepath.Dir(manager.restoreConfig.OutputDataDir), "failed server validation output must always be removed")
 	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
+}
+
+func TestRestoredSnapshotTLSConfigRejectsPartialIdentity(t *testing.T) {
+	require.NoError(t, (restoredSnapshotTLSConfig{}).validate())
+	require.NoError(t, (restoredSnapshotTLSConfig{caFile: "ca", certFile: "cert", keyFile: "key", serverName: "server"}).validate())
+	for name, cfg := range map[string]restoredSnapshotTLSConfig{
+		"ca only":          {caFile: "ca"},
+		"certificate only": {certFile: "cert"},
+		"key only":         {keyFile: "key"},
+		"server name only": {serverName: "server"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorContains(t, cfg.validate(), "requires CA, certificate, key, and server name")
+		})
+	}
 }
 
 func TestRunStreamWorkerRetriesWithBackoffAndDiscardsPartialAttempt(t *testing.T) {

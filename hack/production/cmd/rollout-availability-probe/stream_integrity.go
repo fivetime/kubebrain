@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"hash"
@@ -31,10 +32,12 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -79,9 +82,31 @@ type restoredSnapshotConfig struct {
 	initialClusterToken string
 	clientURL           url.URL
 	peerURL             url.URL
+	tls                 restoredSnapshotTLSConfig
 }
 
 type restoredSnapshotVerifier func(context.Context, restoredSnapshotConfig, []streamProbeExpectation, int64) error
+
+type restoredSnapshotTLSConfig struct {
+	caFile     string
+	certFile   string
+	keyFile    string
+	serverName string
+}
+
+func (cfg restoredSnapshotTLSConfig) enabled() bool {
+	return cfg.caFile != "" || cfg.certFile != "" || cfg.keyFile != "" || cfg.serverName != ""
+}
+
+func (cfg restoredSnapshotTLSConfig) validate() error {
+	if !cfg.enabled() {
+		return nil
+	}
+	if cfg.caFile == "" || cfg.certFile == "" || cfg.keyFile == "" || cfg.serverName == "" {
+		return errors.New("restored Snapshot TLS requires CA, certificate, key, and server name")
+	}
+	return nil
+}
 
 func consumeRangeStream(stream rangeStreamReceiver, prefix string, expected []streamProbeExpectation, clusterID uint64) (bool, error) {
 	expectedHashes := make(map[string][sha256.Size]byte, len(expected))
@@ -221,7 +246,7 @@ func consumeSnapshotTo(stream snapshotReceiver, artifact io.Writer) (bool, strin
 	}
 }
 
-func allocateRestoredSnapshotURLs() (clientURL, peerURL url.URL, retErr error) {
+func allocateRestoredSnapshotURLs(clientTLS bool) (clientURL, peerURL url.URL, retErr error) {
 	listeners := make([]net.Listener, 0, 2)
 	defer func() {
 		for _, listener := range listeners {
@@ -237,7 +262,11 @@ func allocateRestoredSnapshotURLs() (clientURL, peerURL url.URL, retErr error) {
 		}
 		listeners = append(listeners, listener)
 	}
-	clientURL = url.URL{Scheme: "http", Host: listeners[0].Addr().String()}
+	clientScheme := "http"
+	if clientTLS {
+		clientScheme = "https"
+	}
+	clientURL = url.URL{Scheme: clientScheme, Host: listeners[0].Addr().String()}
 	peerURL = url.URL{Scheme: "http", Host: listeners[1].Addr().String()}
 	return clientURL, peerURL, nil
 }
@@ -257,6 +286,27 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 	embedCfg.InitialCluster = cfg.name + "=" + cfg.peerURL.String()
 	embedCfg.InitialClusterToken = cfg.initialClusterToken
 	embedCfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
+	var (
+		clientTLSConfig *tls.Config
+		err             error
+	)
+	if cfg.tls.enabled() {
+		embedCfg.ClientTLSInfo = transport.TLSInfo{
+			CertFile:       cfg.tls.certFile,
+			KeyFile:        cfg.tls.keyFile,
+			TrustedCAFile:  cfg.tls.caFile,
+			ClientCertAuth: true,
+		}
+		clientTLSConfig, err = (transport.TLSInfo{
+			TrustedCAFile: cfg.tls.caFile,
+			CertFile:      cfg.tls.certFile,
+			KeyFile:       cfg.tls.keyFile,
+			ServerName:    cfg.tls.serverName,
+		}).ClientConfig()
+		if err != nil {
+			return fmt.Errorf("configure client for officially restored etcd TLS: %w", err)
+		}
+	}
 	restored, err := embed.StartEtcd(embedCfg)
 	if err != nil {
 		return fmt.Errorf("start officially restored etcd: %w", err)
@@ -273,11 +323,16 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		return fmt.Errorf("wait for officially restored etcd readiness: %w", context.Cause(verifyCtx))
 	}
 
-	client, err := clientv3.New(clientv3.Config{
+	clientConfig := clientv3.Config{
 		Endpoints:   []string{cfg.clientURL.String()},
 		DialTimeout: 3 * time.Second,
 		Context:     verifyCtx,
-	})
+		TLS:         clientTLSConfig,
+	}
+	if clientTLSConfig != nil {
+		clientConfig.DialOptions = append(clientConfig.DialOptions, grpc.WithAuthority(cfg.tls.serverName))
+	}
+	client, err := clientv3.New(clientConfig)
 	if err != nil {
 		return fmt.Errorf("create client for officially restored etcd: %w", err)
 	}
@@ -321,8 +376,11 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 }
 
 func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotArtifactManager, path, wireVersion, artifactDir string,
-	expected []streamProbeExpectation, verifier restoredSnapshotVerifier,
+	expected []streamProbeExpectation, tlsCfg restoredSnapshotTLSConfig, verifier restoredSnapshotVerifier,
 ) (retErr error) {
+	if err := tlsCfg.validate(); err != nil {
+		return err
+	}
 	artifactStatus, err := manager.Status(path)
 	if err != nil {
 		return fmt.Errorf("official etcdutl rejected Snapshot artifact: %w", err)
@@ -344,7 +402,7 @@ func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotA
 
 	const restoreName = "kubebrain-rollout-restore"
 	restoreDataDir := filepath.Join(restoreRoot, "data")
-	clientURL, peerURL, err := allocateRestoredSnapshotURLs()
+	clientURL, peerURL, err := allocateRestoredSnapshotURLs(tlsCfg.enabled())
 	if err != nil {
 		return err
 	}
@@ -354,6 +412,7 @@ func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotA
 		initialClusterToken: "kubebrain-rollout-restore",
 		clientURL:           clientURL,
 		peerURL:             peerURL,
+		tls:                 tlsCfg,
 	}
 	if err := manager.Restore(etcdutlsnapshot.RestoreConfig{
 		SnapshotPath:        path,
@@ -383,7 +442,9 @@ func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotA
 	return nil
 }
 
-func consumeAndValidateSnapshot(ctx context.Context, stream snapshotReceiver, artifactDir string, expected []streamProbeExpectation) (partial bool, retErr error) {
+func consumeAndValidateSnapshot(ctx context.Context, stream snapshotReceiver, artifactDir string, expected []streamProbeExpectation,
+	tlsCfg restoredSnapshotTLSConfig,
+) (partial bool, retErr error) {
 	artifact, err := os.CreateTemp(artifactDir, ".kubebrain-rollout-snapshot-*.db")
 	if err != nil {
 		return false, fmt.Errorf("create Snapshot artifact: %w", err)
@@ -405,7 +466,7 @@ func consumeAndValidateSnapshot(ctx context.Context, stream snapshotReceiver, ar
 	if err != nil {
 		return partial, err
 	}
-	if err := validateSnapshotArtifactWithVerifier(ctx, etcdutlsnapshot.NewV3(zap.NewNop()), path, version, artifactDir, expected, verifyRestoredSnapshot); err != nil {
+	if err := validateSnapshotArtifactWithVerifier(ctx, etcdutlsnapshot.NewV3(zap.NewNop()), path, version, artifactDir, expected, tlsCfg, verifyRestoredSnapshot); err != nil {
 		return partial, err
 	}
 	return partial, nil
@@ -433,6 +494,7 @@ type streamWorkerConfig struct {
 	maxBackoff     time.Duration
 	successLimit   int64
 	artifactDir    string
+	restoredTLS    restoredSnapshotTLSConfig
 }
 
 type streamAttempt func(context.Context) (partial bool, err error)
@@ -546,7 +608,7 @@ func startStreamProbeGroup(ctx context.Context, client *clientv3.Client, prefix 
 			if err != nil {
 				return false, err
 			}
-			return consumeAndValidateSnapshot(callCtx, stream, snapshotCfg.artifactDir, expected)
+			return consumeAndValidateSnapshot(callCtx, stream, snapshotCfg.artifactDir, expected, snapshotCfg.restoredTLS)
 		})
 		if err != nil {
 			fail("Snapshot", err)
