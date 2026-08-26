@@ -275,6 +275,7 @@ if [[ -n "$TARGET_IMAGE" && "$TARGET_IMAGE" == "$image" ]]; then
 fi
 retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_RETRY_PERIOD}" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(. == $expected)] | length' "$statefulset_json")"
 pd_addrs="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(startswith("--pd-addrs=")) | sub("^--pd-addrs="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
+headless_service="$(jq -r '.spec.serviceName // ""' "$statefulset_json")"
 pd_endpoints=""
 IFS=',' read -r -a pd_addr_items <<<"$pd_addrs"
 for pd_addr in "${pd_addr_items[@]}"; do
@@ -296,10 +297,10 @@ if [[ -z "$current_revision" || "$current_revision" != "$update_revision" ]]; th
   echo "KubeBrain StatefulSet is not at one stable revision" >&2
   exit 1
 fi
-if [[ -z "$image" || -z "$pd_endpoints" || "$retry_count" != 1 || "$prestop" != "$expected_prestop" ]] ||
+if [[ -z "$image" || -z "$pd_endpoints" || ! "$headless_service" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || "$retry_count" != 1 || "$prestop" != "$expected_prestop" ]] ||
   ! operation_is_positive_int64 "$termination_grace_period_seconds" ||
   (( termination_grace_period_seconds < MIN_TERMINATION_GRACE_PERIOD_SECONDS )); then
-  echo "KubeBrain rollout drain contract mismatch (image/retry/preStop/terminationGracePeriodSeconds)" >&2
+  echo "KubeBrain rollout drain contract mismatch (image/retry/serviceName/preStop/terminationGracePeriodSeconds)" >&2
   exit 1
 fi
 declare -a original_runtime_image_ids=()
@@ -396,6 +397,11 @@ cleanup() {
 trap cleanup EXIT
 
 endpoint="http://${KUBEBRAIN_CLIENT_SERVICE}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
+direct_endpoints=""
+for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
+  direct_endpoint="http://${KUBEBRAIN_STATEFULSET}-${ordinal}.${headless_service}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
+  direct_endpoints="${direct_endpoints:+${direct_endpoints},}${direct_endpoint}"
+done
 probe_image="$image"
 if [[ -n "$PROBE_IMAGE" ]]; then
   probe_image="$PROBE_IMAGE"
@@ -403,6 +409,7 @@ fi
 kctl_mutation run "$PROBE_POD" --image="$probe_image" --restart=Never --command -- \
   /usr/local/bin/kubebrain-rollout-availability-probe \
   --endpoint="$endpoint" \
+  --direct-endpoints="$direct_endpoints" \
   --prefix="/kubebrain-rollout-availability/${PROBE_POD}/" \
   --iterations="$PROBE_ITERATIONS" \
   --interval="${PROBE_INTERVAL}s" \
@@ -500,7 +507,7 @@ capture_runtime_evidence "$probe_log" kctl_evidence logs "$PROBE_POD" || {
 }
 cat "$probe_log"
 summary="$(grep '^PROBE_SUMMARY ' "$probe_log" || true)"
-if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ lease=alive\ max_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
+if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ direct_watch=${PROBE_ITERATIONS}x${EXPECTED_REPLICAS}\ lease=alive\ direct_lease=alive\ direct_endpoints=${EXPECTED_REPLICAS}\ max_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
   echo "availability probe summary mismatch" >&2
   exit 1
 fi

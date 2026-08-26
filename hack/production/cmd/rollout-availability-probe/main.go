@@ -23,6 +23,7 @@ import (
 
 type config struct {
 	endpoint         string
+	directEndpoints  []string
 	prefix           string
 	iterations       int
 	interval         time.Duration
@@ -40,6 +41,8 @@ type config struct {
 func main() {
 	cfg := config{}
 	flag.StringVar(&cfg.endpoint, "endpoint", "", "etcd endpoint")
+	var directEndpoints string
+	flag.StringVar(&directEndpoints, "direct-endpoints", "", "comma-separated stable direct KubeBrain Pod endpoints")
 	flag.StringVar(&cfg.prefix, "prefix", "/kubebrain-rollout-availability/", "exclusive probe key prefix")
 	flag.IntVar(&cfg.iterations, "iterations", 0, "number of write/watch probes")
 	flag.DurationVar(&cfg.interval, "interval", 100*time.Millisecond, "interval between probes")
@@ -54,6 +57,9 @@ func main() {
 	var pdEndpoints string
 	flag.StringVar(&pdEndpoints, "pd-endpoints", "", "comma-separated PD HTTP endpoints")
 	flag.Parse()
+	if directEndpoints != "" {
+		cfg.directEndpoints = strings.Split(directEndpoints, ",")
+	}
 	if pdEndpoints != "" {
 		cfg.pdEndpoints = strings.Split(pdEndpoints, ",")
 	}
@@ -78,6 +84,19 @@ func (cfg config) validate() error {
 	}
 	if len(cfg.pdEndpoints) == 0 {
 		return fmt.Errorf("PD endpoints are required")
+	}
+	if len(cfg.directEndpoints) < 3 {
+		return fmt.Errorf("at least three direct KubeBrain endpoints are required")
+	}
+	seenDirectEndpoints := make(map[string]struct{}, len(cfg.directEndpoints))
+	for _, endpoint := range cfg.directEndpoints {
+		if (!strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://")) || strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://") == "" {
+			return fmt.Errorf("direct KubeBrain endpoint must use http or https: %q", endpoint)
+		}
+		if _, duplicate := seenDirectEndpoints[endpoint]; duplicate {
+			return fmt.Errorf("direct KubeBrain endpoints must be unique: %q", endpoint)
+		}
+		seenDirectEndpoints[endpoint] = struct{}{}
 	}
 	for _, endpoint := range cfg.pdEndpoints {
 		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
@@ -202,6 +221,29 @@ func verifyPDStores(ctx context.Context, endpoints []string, timeout, maxAge tim
 type pdLeader struct {
 	Name     string `json:"name"`
 	MemberID uint64 `json:"member_id"`
+}
+
+type directStreamProbe struct {
+	endpoint              string
+	client                *clientv3.Client
+	watch                 clientv3.WatchChan
+	stopWatch             context.CancelFunc
+	keepAlive             <-chan *clientv3.LeaseKeepAliveResponse
+	stopKeepAlive         context.CancelFunc
+	lastKeepAliveRevision int64
+	keepAliveResponses    int
+}
+
+func (probe *directStreamProbe) close() {
+	if probe.stopWatch != nil {
+		probe.stopWatch()
+	}
+	if probe.stopKeepAlive != nil {
+		probe.stopKeepAlive()
+	}
+	if probe.client != nil {
+		_ = probe.client.Close()
+	}
 }
 
 func readPDLeader(ctx context.Context, endpoints []string, timeout time.Duration) (pdLeader, error) {
@@ -369,6 +411,58 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		return fmt.Errorf("watch creation timed out")
 	}
 
+	directProbes := make([]*directStreamProbe, 0, len(cfg.directEndpoints))
+	defer func() {
+		for _, probe := range directProbes {
+			probe.close()
+		}
+	}()
+	for _, endpoint := range cfg.directEndpoints {
+		directClient, directErr := clientv3.New(clientv3.Config{
+			Endpoints:   []string{endpoint},
+			DialTimeout: cfg.dialTimeout,
+		})
+		if directErr != nil {
+			return fmt.Errorf("create direct client %s: %w", endpoint, directErr)
+		}
+		probe := &directStreamProbe{endpoint: endpoint, client: directClient, lastKeepAliveRevision: leaseRevision}
+		directProbes = append(directProbes, probe)
+
+		directWatchCtx, stopDirectWatch := context.WithCancel(ctx)
+		probe.stopWatch = stopDirectWatch
+		probe.watch = directClient.Watch(directWatchCtx, watchKey, clientv3.WithCreatedNotify())
+		select {
+		case response, ok := <-probe.watch:
+			if !ok {
+				return fmt.Errorf("direct watch creation failed endpoint=%s: stream closed", endpoint)
+			}
+			if _, validateErr := validateCreatedWatch(response, clusterID, lastRevision); validateErr != nil {
+				return fmt.Errorf("direct watch creation failed endpoint=%s: %w", endpoint, validateErr)
+			}
+		case <-time.After(cfg.commandTimeout):
+			return fmt.Errorf("direct watch creation timed out endpoint=%s", endpoint)
+		}
+
+		directLeaseCtx, stopDirectLease := context.WithCancel(ctx)
+		probe.stopKeepAlive = stopDirectLease
+		probe.keepAlive, directErr = directClient.KeepAlive(directLeaseCtx, leaseID)
+		if directErr != nil {
+			return fmt.Errorf("start direct lease keepalive endpoint=%s: %w", endpoint, directErr)
+		}
+		select {
+		case response, ok := <-probe.keepAlive:
+			if !ok {
+				return fmt.Errorf("initial direct lease keepalive closed endpoint=%s", endpoint)
+			}
+			probe.lastKeepAliveRevision, directErr = validateKeepAliveResponse(response, clusterID, probe.lastKeepAliveRevision, leaseID, lease.TTL)
+			if directErr != nil {
+				return fmt.Errorf("initial direct lease keepalive endpoint=%s: %w", endpoint, directErr)
+			}
+		case <-time.After(cfg.commandTimeout):
+			return fmt.Errorf("initial direct lease keepalive timed out endpoint=%s", endpoint)
+		}
+	}
+
 	fmt.Println("PROBE_STARTED")
 	var maxLatency time.Duration
 	lastPDCheck := time.Now()
@@ -442,6 +536,26 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		case <-time.After(cfg.commandTimeout):
 			return fmt.Errorf("iteration=%d watch timed out", i)
 		}
+		directWatchTimer := time.NewTimer(cfg.commandTimeout)
+		for _, probe := range directProbes {
+			select {
+			case response, ok := <-probe.watch:
+				if !ok {
+					return fmt.Errorf("iteration=%d direct watch closed endpoint=%s", i, probe.endpoint)
+				}
+				if _, validateErr := validatePutWatch(response, clusterID, putRevision, watchKey, value); validateErr != nil {
+					return fmt.Errorf("iteration=%d unexpected direct watch response endpoint=%s: %w", i, probe.endpoint, validateErr)
+				}
+			case <-directWatchTimer.C:
+				return fmt.Errorf("iteration=%d direct watch timed out endpoint=%s", i, probe.endpoint)
+			}
+		}
+		if !directWatchTimer.Stop() {
+			select {
+			case <-directWatchTimer.C:
+			default:
+			}
+		}
 		latency := time.Since(started)
 		if latency > maxLatency {
 			maxLatency = latency
@@ -463,7 +577,27 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			lastRevision = max(lastRevision, keepAliveRevision)
 		default:
 		}
+		for _, probe := range directProbes {
+			select {
+			case response, ok := <-probe.keepAlive:
+				if !ok {
+					return fmt.Errorf("iteration=%d direct lease keepalive closed endpoint=%s", i, probe.endpoint)
+				}
+				keepAliveRevision, validateErr := validateKeepAliveResponse(response, clusterID, probe.lastKeepAliveRevision, leaseID, lease.TTL)
+				if validateErr != nil {
+					return fmt.Errorf("iteration=%d direct lease keepalive endpoint=%s: %w", i, probe.endpoint, validateErr)
+				}
+				probe.lastKeepAliveRevision = keepAliveRevision
+				probe.keepAliveResponses++
+			default:
+			}
+		}
 		time.Sleep(cfg.interval)
+	}
+	for _, probe := range directProbes {
+		if probe.keepAliveResponses == 0 {
+			return fmt.Errorf("direct lease keepalive produced no rollout-window response endpoint=%s", probe.endpoint)
+		}
 	}
 
 	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
@@ -475,6 +609,6 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if _, err := validateTimeToLiveResponse(ttl, clusterID, lastRevision, leaseID, lease.TTL, leaseKey); err != nil {
 		return fmt.Errorf("final lease verification failed: %w", err)
 	}
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d lease=alive max_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, maxLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive direct_lease=alive direct_endpoints=%d max_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), len(directProbes), maxLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
 	return nil
 }

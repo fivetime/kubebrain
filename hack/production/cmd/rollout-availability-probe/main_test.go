@@ -149,30 +149,35 @@ func TestVerifyPDStoresRejectsDuplicateIdentityAndMalformedAddress(t *testing.T)
 }
 
 func TestConfigValidation(t *testing.T) {
-	valid := config{endpoint: "http://etcd:2379", prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond}
+	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond}
 	require.NoError(t, valid.validate())
 
 	for name, mutate := range map[string]func(*config){
-		"endpoint":       func(cfg *config) { cfg.endpoint = "" },
-		"prefix":         func(cfg *config) { cfg.prefix = "" },
-		"iterations":     func(cfg *config) { cfg.iterations = 0 },
-		"interval":       func(cfg *config) { cfg.interval = 0 },
-		"command":        func(cfg *config) { cfg.commandTimeout = 0 },
-		"dial":           func(cfg *config) { cfg.dialTimeout = 0 },
-		"latency":        func(cfg *config) { cfg.maxLatency = 0 },
-		"latency cap":    func(cfg *config) { cfg.maxLatency = 2 * cfg.commandTimeout },
-		"lease TTL":      func(cfg *config) { cfg.leaseTTL = 0 },
-		"PD endpoints":   func(cfg *config) { cfg.pdEndpoints = nil },
-		"PD scheme":      func(cfg *config) { cfg.pdEndpoints = []string{"pd:2379"} },
-		"stores":         func(cfg *config) { cfg.expectedStores = 0 },
-		"heartbeat":      func(cfg *config) { cfg.maxHeartbeatAge = 0 },
-		"TSO latency":    func(cfg *config) { cfg.maxTSOLatency = 0 },
-		"TSO cap":        func(cfg *config) { cfg.maxTSOLatency = 2 * cfg.maxLatency },
-		"Region latency": func(cfg *config) { cfg.maxRegionLatency = 0 },
-		"Region cap":     func(cfg *config) { cfg.maxRegionLatency = 2 * cfg.maxLatency },
+		"endpoint":                  func(cfg *config) { cfg.endpoint = "" },
+		"prefix":                    func(cfg *config) { cfg.prefix = "" },
+		"iterations":                func(cfg *config) { cfg.iterations = 0 },
+		"interval":                  func(cfg *config) { cfg.interval = 0 },
+		"command":                   func(cfg *config) { cfg.commandTimeout = 0 },
+		"dial":                      func(cfg *config) { cfg.dialTimeout = 0 },
+		"latency":                   func(cfg *config) { cfg.maxLatency = 0 },
+		"latency cap":               func(cfg *config) { cfg.maxLatency = 2 * cfg.commandTimeout },
+		"lease TTL":                 func(cfg *config) { cfg.leaseTTL = 0 },
+		"PD endpoints":              func(cfg *config) { cfg.pdEndpoints = nil },
+		"direct endpoints":          func(cfg *config) { cfg.directEndpoints = nil },
+		"direct endpoint count":     func(cfg *config) { cfg.directEndpoints = cfg.directEndpoints[:2] },
+		"direct endpoint scheme":    func(cfg *config) { cfg.directEndpoints[0] = "kb-0:3379" },
+		"direct endpoint duplicate": func(cfg *config) { cfg.directEndpoints[1] = cfg.directEndpoints[0] },
+		"PD scheme":                 func(cfg *config) { cfg.pdEndpoints = []string{"pd:2379"} },
+		"stores":                    func(cfg *config) { cfg.expectedStores = 0 },
+		"heartbeat":                 func(cfg *config) { cfg.maxHeartbeatAge = 0 },
+		"TSO latency":               func(cfg *config) { cfg.maxTSOLatency = 0 },
+		"TSO cap":                   func(cfg *config) { cfg.maxTSOLatency = 2 * cfg.maxLatency },
+		"Region latency":            func(cfg *config) { cfg.maxRegionLatency = 0 },
+		"Region cap":                func(cfg *config) { cfg.maxRegionLatency = 2 * cfg.maxLatency },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := valid
+			candidate.directEndpoints = append([]string(nil), valid.directEndpoints...)
 			mutate(&candidate)
 			require.Error(t, candidate.validate())
 		})

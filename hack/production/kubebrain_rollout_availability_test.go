@@ -286,6 +286,24 @@ func TestRolloutAvailabilityRunnerRejectsShortTerminationGraceBeforeMutation(t *
 	require.NotContains(t, log, " patch ")
 }
 
+func TestRolloutAvailabilityRunnerRequiresStableHeadlessServiceBeforeMutation(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_NO_HEADLESS_SERVICE=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "rollout drain contract mismatch")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " run ")
+	require.NotContains(t, log, " patch ")
+}
+
 func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -299,7 +317,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34")
+	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_endpoints=3 max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34")
 	require.Contains(t, string(output), "revision=revision-old->revision-new")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
@@ -315,6 +333,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, "--max-pd-tso-latency=1s")
 	require.Contains(t, log, "--max-tikv-region-latency=1s")
 	require.Contains(t, log, "--lease-ttl=5")
+	require.Contains(t, log, "--direct-endpoints=http://kubebrain-0.kubebrain-peer.kubebrain-system.svc:3379,http://kubebrain-1.kubebrain-peer.kubebrain-system.svc:3379,http://kubebrain-2.kubebrain-peer.kubebrain-system.svc:3379")
 	require.Contains(t, log, "--pd-endpoints=http://pd-0:2379,http://pd-1:2379,http://pd-2:2379")
 	require.Contains(t, log, "--expected-up-stores=3")
 	require.Contains(t, log, "--max-store-heartbeat-age=20s")
@@ -728,11 +747,14 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   fi
   payload="$(jq -cn --arg uid "$statefulset_uid" --arg resourceVersion "$resource_version" --arg revision "$revision" --arg image "$runtime_image" --arg restart "$restart_annotation" --argjson prestop "$prestop" --argjson replicas "$spec_replicas" --argjson termination_grace "$termination_grace" '{
     metadata:{uid:$uid,resourceVersion:$resourceVersion},
-    spec:{replicas:$replicas,template:{metadata:{annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{terminationGracePeriodSeconds:$termination_grace,containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
+    spec:{replicas:$replicas,serviceName:"kubebrain-peer",template:{metadata:{annotations:{"kubectl.kubernetes.io/restartedAt":$restart}},spec:{terminationGracePeriodSeconds:$termination_grace,containers:[{name:"kubebrain",image:$image,args:["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   ')"
   if [[ "${FAKE_NO_TEMPLATE_ANNOTATIONS:-false}" == true && ! -e "$FAKE_KUBECTL_STATE" ]]; then
     payload="$(jq -c 'del(.spec.template.metadata.annotations)' <<<"$payload")"
+  fi
+  if [[ "${FAKE_NO_HEADLESS_SERVICE:-false}" == true ]]; then
+    payload="$(jq -c 'del(.spec.serviceName)' <<<"$payload")"
   fi
   printf '%s' "$payload"
   if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == statefulset ]]; then
@@ -817,7 +839,7 @@ elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
-  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive direct_lease=alive direct_endpoints=3 max_latency_ms=123 max_tso_latency_ms=12 max_region_latency_ms=34\n'
   printf '%s' "$payload"
   if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == probe-log ]]; then
     head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
