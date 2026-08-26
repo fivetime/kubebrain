@@ -686,10 +686,12 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		createRevision: lastRevision, version: 1,
 	})
 
-	txnSeeds := streamExpected[2:5]
+	txnSeeds, txnErr := streamProbeTxnSeeds(streamExpected)
+	if txnErr != nil {
+		return txnErr
+	}
 	txnOps := make([]clientv3.Op, 0, len(txnSeeds))
-	for index := range txnSeeds {
-		seed := &txnSeeds[index]
+	for index, seed := range txnSeeds {
 		seed.events = append(seed.events, streamProbeEventExpectation{
 			eventType: mvccpb.PUT, value: seed.value, hash: seed.hash, revision: seed.revision,
 			createRevision: seed.revision, version: 1,
@@ -719,7 +721,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		if putResponse == nil || putResponse.PrevKv != nil {
 			return fmt.Errorf("update Snapshot subrevision seed %q returned invalid nested response", txnSeeds[index].key)
 		}
-		seed := &txnSeeds[index]
+		seed := txnSeeds[index]
 		value := fmt.Sprintf("%s-txn-%d", seed.value, index)
 		seed.value = value
 		seed.hash = sha256.Sum256([]byte(value))

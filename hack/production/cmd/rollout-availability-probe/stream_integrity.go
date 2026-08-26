@@ -79,6 +79,18 @@ func newStreamProbeExpectations(prefix string) []streamProbeExpectation {
 	return expected
 }
 
+func streamProbeTxnSeeds(expected []streamProbeExpectation) ([]*streamProbeExpectation, error) {
+	indexes := [...]int{4, 2, 3}
+	if len(expected) <= indexes[0] {
+		return nil, fmt.Errorf("Snapshot subrevision probe requires at least %d stream seeds", indexes[0]+1)
+	}
+	seeds := make([]*streamProbeExpectation, 0, len(indexes))
+	for _, index := range indexes {
+		seeds = append(seeds, &expected[index])
+	}
+	return seeds, nil
+}
+
 type rangeStreamReceiver interface {
 	Recv() (*etcdserverpb.RangeStreamResponse, error)
 }

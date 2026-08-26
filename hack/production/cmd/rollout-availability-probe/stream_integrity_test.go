@@ -500,6 +500,19 @@ func TestConsumeAndValidateSnapshotValidatesTxnSubrevisionOrder(t *testing.T) {
 	require.Empty(t, entries, "an artifact with incomplete subrevision expectations must always be removed")
 }
 
+func TestStreamProbeTxnSeedsUseNonLexicographicOrder(t *testing.T) {
+	expected := newStreamProbeExpectations("probe/")
+	seeds, err := streamProbeTxnSeeds(expected)
+	require.NoError(t, err)
+	require.Equal(t, []string{"probe/stream/0004", "probe/stream/0002", "probe/stream/0003"},
+		[]string{seeds[0].key, seeds[1].key, seeds[2].key})
+	require.NotEqual(t, []string{"probe/stream/0002", "probe/stream/0003", "probe/stream/0004"},
+		[]string{seeds[0].key, seeds[1].key, seeds[2].key}, "operation order must differ from key order")
+
+	_, err = streamProbeTxnSeeds(expected[:4])
+	require.ErrorContains(t, err, "requires at least 5 stream seeds")
+}
+
 func TestValidateSnapshotArtifactRejectsRestoreFailureAndRemovesPartialOutput(t *testing.T) {
 	dir := t.TempDir()
 	artifactPath := filepath.Join(dir, "artifact.db")
