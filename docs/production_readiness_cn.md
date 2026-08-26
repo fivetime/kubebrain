@@ -8700,3 +8700,65 @@ restart 0，EndpointSlice target 全部 ready/serving。三端 checkpoint availa
 54909；pod-2 启动期 refresh_err=1，但跨 35 秒下一周期未增长，其他两端为 0，三端可操作错误日志均为 0。etcd Status 报 cluster ID
 `7662961163671170154`、version/storageVersion 3.7.0、revision 54909；PD/TiKV v8.5.3 均 3/3 Ready且三 TiKV store Up。
 此前 A5512--A5515 的每次 RED 与回滚仍是发布历史的一部分，不被最终双轮 GREEN 覆盖。
+
+### A5517：lease timer 绑定精确 leadership 任期
+
+lease expiry/checkpoint timer 虽捕获 leadership epoch，旧 callback 却把进程级 worker context 传给 TiKV checkpoint：换主时阻塞调用不会
+取消，`StopLeases` 还可能等待其持有的锁；若只把 context 换成任期 context，又会把正常取消计成 checkpoint error，并丢弃存储已成功、
+读回可确认的 uncertain result。提交 `75e7a9cf` 为每个 authoritative lease snapshot 保存精确任期 context，timer 合并任期与 worker
+lifecycle；任期取消静默退役，uncertain checkpoint 读回成功仍仅在原 epoch 当前时发布。确定性旧代码 RED 超过 1 秒仍未退出；最终
+聚焦 20 轮、race 10 轮、lease 全套 3 轮、etcd 全套与 vet 全绿。641 项 inventory 为 `153/179/159/150`；提交后四片 Go/墙钟秒为
+140.704/146.967、368.803/375.101、236.726/242.959、387.520/393.775。
+
+候选 OCI index `sha256:17a8c7a41552f354eb720426f4be12d0d65c87408549a94412685410360d20e6`、runtime
+`sha256:e508cec969fc6bb49d543a4d3c57cb2447da346d17420d66a01e80e1096298b8`。A5516→A5517 upgrade 为
+900/900 GREEN（Watch 900、lease alive，最大业务/TSO/Region 1364/65/8ms），但紧随的 A5517 same-version restart 在 iteration 168
+以 Put→Watch 6.525 秒 RED，client 报 `Unavailable: there is no connection available`。因此 lease changed path 有单元/组合升级证据，
+但 A5517 不是 rollout 最终闭环。
+
+### A5518--A5519：排除 GOAWAY grace 与 EndpointSlice 前窗假设
+
+A5518（`ee483d44`）在 public unary 已可经 successor proxy 服务后，恢复 1 秒 usable transport grace，再发送 GOAWAY；现有 public
+health unary 在 grace 内可用、长流随后有界结束，且 `1s + 2s < 5s` 的确定性测试通过。endpoint 聚焦 20 轮、race 10 轮、完整包
+3 轮、server/etcd drain 50 轮及 vet 全绿；641 项四片 Go/墙钟秒为 133.529/139.776、354.721/360.970、
+228.708/234.974、371.459/377.712。候选 OCI index
+`sha256:bb0d53d0bec4e13e46f12b3d063efa54ac10de37f7fd88c2ee645f1ae70a89c2`、runtime
+`sha256:0aab4c5d344933a4afd1b7d85389aa1e23822f876de9cfa7b524ae690a7aa9a5`，却在 iteration 171 以 6.363 秒 RED，
+完整回滚到 A5517，证明短 grace 不是根因。
+
+A5519（`5f78789e`）再把明文/TLS preStop 前窗从 5 秒扩大到 10 秒，最终合同为
+`sleep 10 && curl ... /drain && sleep 5`，并要求 `terminationGracePeriodSeconds >= 30`；runner 负测保证旧 5 秒前窗和 20 秒终止预算
+都在 mutation 前 fail closed。643 项 inventory 为 `154/180/159/150`；提交后四片 Go/墙钟秒为
+135.451/141.760、370.823/377.133、235.943/242.232、386.988/393.295。生产 StatefulSet 以 UID/resourceVersion
+前置条件安全切换新 hook 后，A5517 baseline restart 仍在 iteration 84 以 6.323 秒 RED，排除了 EndpointSlice 传播不足。runner 全套
+20 轮曾命中 Go 默认 10 分钟 package timeout，堆栈停在故意挂起的 kubectl start-barrier deadline 用例且此前无断言失败；该次不计
+GREEN，随后四个变更负测 20 轮和完整 rollout suite 单轮均通过。A5519 没有单独构建镜像，也不声称 live GREEN。
+
+### A5520：交棒后以 retryable status 退役公共长流
+
+最终根因是 Watch/KeepAlive 从未参与 `DrainLeadership`：successor 已持久可用后，旧流仍附着退休 Pod；`http.Server.Shutdown` 发送
+GOAWAY 后等待 2 秒，最后 `Close` 硬断 socket，clientv3 才进入连接恢复，形成稳定约 6.3 秒空窗。提交 `a61fb4ae` 在成功 release 后
+关闭进程内 public-stream drain signal：已 admitted 的公共流用带 cause 的 stream context 同时唤醒阻塞 `RecvMsg`/`SendMsg`，新公共流
+不进入 handler，二者都返回上游 `rpctypes.ErrGRPCStopped`（`codes.Unavailable`），使 clientv3 在最多 100ms Watch backoff 后向
+successor resume；失败 release 不触发该信号，public unary 仍按 A5516 经 successor proxy 服务，peer fence 不变。服务层同时把 transport
+quiesce callback 移到 `RPCServer.DrainLeadership` 返回之后，严格固定“durable successor + proxy Ready → stream retirement →
+HTTP/2 GOAWAY”，不再依赖 1 秒 grace 恰好足够。
+
+修复前确定性回归 1 秒超时 RED；最终 direct blocked-stream、真实 gRPC on-wire、新流拒绝、失败 release 和 public unary reopen
+聚焦 20 轮 4.815 秒、race 10 轮 12.901 秒，服务层顺序 race 10 轮、完整 server 3 轮、endpoint 3 轮、etcd 3 轮及 vet 全绿。
+etcd 三轮 Go/墙钟 422.755/426.563 秒；643 项 inventory 保持 `154/180/159/150`，精确提交后四片墙钟为
+137.537、366.105、231.554、383.302 秒，全部 GREEN。
+
+不可变镜像 `kubebrain:a5520-a61fb4ae` 内嵌完整 SHA `a61fb4ae481bb491732d69382aa734fb8c0d617f`，构建时间
+`2026-08-26T02:00:00Z`，OCI index `sha256:858a4dc17b174eda069bd197999eb9ff6a18d8d8185c08c375d1d0837d20257d`，
+platform manifest `sha256:84c2eed3a2616e7eeeced0b1c8ad6d26c33ca9eab5ae698d08a2cbc3742a4417`，config
+`sha256:e979e8f75bb6379ff075c8f1d40bec785f232b8ff951e7cf2f717c3224ed4a27`，attestation
+`sha256:fbbf9e3ff21f778d027706554322a93c7d3f044863832cf2bbbb2626fe5e4d08`，kind runtime
+`sha256:4147490a5d0afc3644aeed4e986860324b1fc0b9bc2632e0a1ad7e75c4f957d6`。
+
+独立 3×PD/3×TiKV v8.5.3 上，A5517→A5520 upgrade **900/900 GREEN**，Watch 900、lease alive，最大业务/TSO/Region
+1943/48/22ms，revision `kubebrain-549cb6978c -> kubebrain-798885cd6d`；紧随的 A5520 same-version restart 再次
+**900/900 GREEN**，最大 1459/101/9ms，revision `kubebrain-798885cd6d -> kubebrain-547b679468`。最终 StatefulSet UID
+仍为 `817bc005-a4d1-4d57-9aab-de93e0874054`，三 Pod 3/3 Ready、restart 0、精确 runtime digest 一致；日志仅见退休 peer
+按合同返回 `Aborted: kubebrain: peer drained before request admission` 后重建连接，无 panic/fatal。A5517--A5519 的三次 same-version/
+candidate RED 不被本轮双 GREEN 覆盖；它们共同证明 lease 任期、transport grace 和 EndpointSlice 前窗都不是约 6.3 秒空窗的根因。

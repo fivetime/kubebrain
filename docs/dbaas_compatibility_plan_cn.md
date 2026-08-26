@@ -62329,6 +62329,46 @@ store Up。A5512--A5515 的每次 RED 与回滚仍保留为发布历史，不能
 次序不一致”两个生命周期缺口。后续每个 rollout 相关候选都必须同时执行 candidate upgrade 和 same-version restart 两轮 900 次门禁；
 只通过其中一轮不足以作为发布证据。
 
+### A5517--A5520：lease 任期 timer 与公共长流 rollout 退役闭环
+
+A5517（`75e7a9cf`）把 lease expiry/checkpoint timer 绑定创建它的精确 leadership context；换主会立即取消阻塞 TiKV checkpoint，正常
+任期退役不污染错误指标，uncertain result 只有在读回成功且原 epoch 当前时才发布。旧代码确定性测试超过 1 秒仍阻塞；聚焦普通/race、
+lease 3 轮、etcd 全套和四片均绿。不可变 OCI index
+`sha256:17a8c7a41552f354eb720426f4be12d0d65c87408549a94412685410360d20e6`、runtime
+`sha256:e508cec969fc6bb49d543a4d3c57cb2447da346d17420d66a01e80e1096298b8` 的 A5516→A5517 upgrade 900/900 GREEN，
+但同版本 restart 在 iteration 168 以 Put→Watch 6.525 秒 RED。
+
+A5518（`ee483d44`）尝试在 successor proxy 可用后保留 1 秒 transport grace；候选 OCI index
+`sha256:bb0d53d0bec4e13e46f12b3d063efa54ac10de37f7fd88c2ee645f1ae70a89c2`、runtime
+`sha256:0aab4c5d344933a4afd1b7d85389aa1e23822f876de9cfa7b524ae690a7aa9a5` 在 iteration 171 仍以 6.363 秒 RED 并
+回滚。A5519（`5f78789e`）把生产 preStop 固定为 `sleep 10 && drain && sleep 5` 并要求 termination grace 至少 30 秒；在 A5517
+baseline 安全切换 hook 后，同版本 restart 又于 iteration 84 以 6.323 秒 RED。两次失败分别排除 GOAWAY grace 与 EndpointSlice
+传播前窗不足；A5519 不单独构建镜像，不计 live GREEN。三项提交的每次 RED、回滚和一次 runner 包级 10 分钟 timeout 均保留，
+没有被后续成功覆盖。
+
+A5520（`a61fb4ae`）定位到真正空窗：Watch/KeepAlive 一直留在退休 Pod，net/http 的 2 秒 bounded Shutdown 最后硬关 HTTP/2 socket，
+clientv3 才开始恢复。成功 durable release 且 successor proxy Ready 后，RPCServer 现在先广播 public-stream drain：旧流的阻塞
+`RecvMsg`/`SendMsg` 被带 cause context 唤醒，新流不进入 handler，均返回 etcd 上游 retryable
+`rpctypes.ErrGRPCStopped`/`codes.Unavailable`；失败 release 不退役流，public unary 仍可经 successor proxy，peer admission 继续 fence。
+transport callback 被移到该退役完成之后，形成“交棒 → 流退役 → GOAWAY”的严格顺序。对照的 etcd 边界仍是
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/embed/etcd.go::stopServers` 所体现的 server-owned、有界 shutdown；
+KubeBrain 额外需要在独立 TiKV/PD + follower proxy 架构中显式给长流可重试退出语义。
+
+修复前回归 1 秒 RED；最终 direct blocked-stream、真实 gRPC on-wire、新流拒绝、失败 release、public unary reopen 与 transport 顺序
+均有普通/race 覆盖。完整 etcd 3 轮 Go/墙钟 422.755/426.563 秒，server/endpoint 3 轮和 vet 全绿；643 项 inventory 为
+`154/180/159/150`，精确提交后四片墙钟 137.537、366.105、231.554、383.302 秒。
+
+最终镜像 `kubebrain:a5520-a61fb4ae` 内嵌 SHA `a61fb4ae481bb491732d69382aa734fb8c0d617f`，OCI index
+`sha256:858a4dc17b174eda069bd197999eb9ff6a18d8d8185c08c375d1d0837d20257d`，platform manifest
+`sha256:84c2eed3a2616e7eeeced0b1c8ad6d26c33ca9eab5ae698d08a2cbc3742a4417`，config
+`sha256:e979e8f75bb6379ff075c8f1d40bec785f232b8ff951e7cf2f717c3224ed4a27`，attestation
+`sha256:fbbf9e3ff21f778d027706554322a93c7d3f044863832cf2bbbb2626fe5e4d08`，kind runtime
+`sha256:4147490a5d0afc3644aeed4e986860324b1fc0b9bc2632e0a1ad7e75c4f957d6`。独立 3×PD/3×TiKV v8.5.3
+上 A5517→A5520 upgrade 与 A5520 same-version restart 均为 **900/900 GREEN**，Watch 900、lease alive；最大业务/TSO/Region 分别
+1943/48/22ms、1459/101/9ms，revision 依次为 `kubebrain-549cb6978c -> kubebrain-798885cd6d -> kubebrain-547b679468`。
+最终 StatefulSet UID 不变，三 Pod Ready、restart 0、runtime digest 一致。由此关闭此前稳定约 6.3 秒的 rollout Watch 恢复空窗；
+仍未改变 RangeStream 等非 clientv3 自动恢复消费者需要由调用方重试 `Unavailable` 的兼容性责任。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
