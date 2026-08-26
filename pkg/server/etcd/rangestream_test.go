@@ -38,6 +38,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -1644,6 +1645,16 @@ func requireRangeStreamStatusError(t *testing.T, err error, code codes.Code, mes
 	require.EqualError(t, err, status.Error(code, message).Error())
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func TestRangeStreamPeerDrainIsRetryableAtPublicBoundary(t *testing.T) {
+	err := rangeStreamForwardError(context.Background(), proxyprotocol.ErrPeerStreamDrained)
+	requireRangeStreamStatusError(t, err, codes.Unavailable, "etcdserver: leader changed")
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = rangeStreamForwardError(canceled, proxyprotocol.ErrPeerStreamDrained)
+	require.ErrorIs(t, err, proxyprotocol.ErrPeerStreamDrained)
 }
 
 // TestWatchNegativeStartRevisionCanceledInStream pins the black-magic retirement: a

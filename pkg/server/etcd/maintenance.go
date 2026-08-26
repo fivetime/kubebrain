@@ -38,6 +38,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -1096,7 +1097,8 @@ func snapshotForwardError(ctx context.Context, err error) error {
 	// A Snapshot stream cannot resume after any response frame was delivered, so
 	// report the topology change as Unavailable and let the client restart the
 	// complete checksum-protected download. Preserve genuine caller cancellation.
-	if errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled {
+	if errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled ||
+		proxyprotocol.IsPeerStreamDrained(err) {
 		return rpctypes.ErrGRPCLeaderChanged
 	}
 	return err

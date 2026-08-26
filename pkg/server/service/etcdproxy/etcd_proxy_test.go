@@ -108,6 +108,7 @@ func TestIsForwardConnectionError(t *testing.T) {
 		{name: "grpc unavailable", err: status.Error(codes.Unavailable, "unavailable"), want: true},
 		{name: "count index fallback", err: proxyprotocol.ErrCountIndexNotReady, want: false},
 		{name: "peer drained before admission", err: proxyprotocol.ErrPeerDrainedBeforeAdmission, want: true},
+		{name: "peer stream drained", err: proxyprotocol.ErrPeerStreamDrained, want: true},
 		{name: "generic aborted", err: status.Error(codes.Aborted, "aborted"), want: false},
 		{name: "leader changed", err: rpctypes.ErrGRPCLeaderChanged, want: true},
 		{name: "grpc invalid argument", err: status.Error(codes.InvalidArgument, "bad request"), want: false},
@@ -601,6 +602,8 @@ func TestMapLeaseKeepAliveForwardError(t *testing.T) {
 		mapLeaseKeepAliveForwardError(
 			parent, liveCall, status.Error(codes.Canceled, "grpc: the client connection is closing"),
 		))
+	require.Equal(t, rpctypes.ErrGRPCLeaderChanged,
+		mapLeaseKeepAliveForwardError(parent, liveCall, proxyprotocol.ErrPeerStreamDrained))
 
 	canceledParent, cancelParent := context.WithCancel(context.Background())
 	cancelParent()

@@ -245,7 +245,8 @@ func (s *server) Drain(ctx context.Context) error {
 		release()
 	}
 	if drainErr == nil {
-		// RPCServer closes admitted public streams with a retryable status only
+		// RPCServer closes admitted public and peer streams with route-appropriate
+		// retry signals only
 		// after release reports a durable, proxy-ready successor. Start transport
 		// GOAWAY afterwards so clientv3 can resume those streams without racing a
 		// force-closed HTTP/2 connection.
@@ -258,7 +259,7 @@ func (s *server) Drain(ctx context.Context) error {
 
 // RegisterTransportDrain attaches a non-blocking transport quiesce callback.
 // Endpoint uses it to send HTTP/2 GOAWAY after the durable leader handoff and
-// unary admission fence and public-stream retirement complete, so clients
+// unary admission fence and leadership-stream retirement complete, so clients
 // migrate off a terminating Pod before bounded HTTP shutdown closes sockets.
 func (s *server) RegisterTransportDrain(drain func()) {
 	if drain == nil {

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
@@ -2021,4 +2022,15 @@ func TestMaintenanceSnapshotClassifiesRepeatedPinnedLeaseMismatch(t *testing.T) 
 	require.ErrorContains(t, err, string(key))
 	require.ErrorContains(t, err, "1812")
 	require.Empty(t, stream.responses)
+}
+
+func TestSnapshotPeerDrainIsRetryableAtPublicBoundary(t *testing.T) {
+	err := snapshotForwardError(context.Background(), proxyprotocol.ErrPeerStreamDrained)
+	require.EqualError(t, err, rpctypes.ErrGRPCLeaderChanged.Error())
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = snapshotForwardError(canceled, proxyprotocol.ErrPeerStreamDrained)
+	require.ErrorIs(t, err, proxyprotocol.ErrPeerStreamDrained)
 }

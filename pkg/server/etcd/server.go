@@ -119,11 +119,11 @@ type RPCServer struct {
 	// waits for those calls to return, releases the campaign lease, then lets new
 	// public calls route through the newly observed leader. Peer calls remain
 	// fenced so followers stop selecting this retiring member.
-	leadershipDrainBoundary sync.RWMutex
-	peerLeadershipDrained   atomic.Bool
-	publicStreamDrainMu     sync.Mutex
-	publicStreamDrain       chan struct{}
-	publicStreamsDrained    bool
+	leadershipDrainBoundary  sync.RWMutex
+	peerLeadershipDrained    atomic.Bool
+	leadershipStreamDrainMu  sync.Mutex
+	leadershipStreamDrain    chan struct{}
+	leadershipStreamsDrained bool
 
 	concurrencyClient *clientv3.Client
 
@@ -145,37 +145,39 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 // GOAWAY is migrating the connection; new peer calls remain fenced from this
 // retiring member. Public streams admitted before the release are retired with
 // etcd's retryable stopped status, and later public streams are rejected with
-// the same status. This lets clientv3 resume Watch and KeepAlive on a successor
-// before net/http reaches its bounded force-close path.
+// the same status. Internal peer streams receive a distinct control status so
+// the follower proxy can resume them without exposing Aborted to its public
+// caller. This lets Watch and KeepAlive reach the successor before net/http
+// reaches its bounded force-close path.
 func (s *RPCServer) DrainLeadership(release func() bool) {
 	s.leadershipDrainBoundary.Lock()
 	defer s.leadershipDrainBoundary.Unlock()
 	if release() {
 		s.peerLeadershipDrained.Store(true)
-		s.retirePublicStreams()
+		s.retireLeadershipStreams()
 	}
 }
 
-func (s *RPCServer) publicStreamDrainState() (<-chan struct{}, bool) {
-	s.publicStreamDrainMu.Lock()
-	defer s.publicStreamDrainMu.Unlock()
-	if s.publicStreamDrain == nil {
-		s.publicStreamDrain = make(chan struct{})
+func (s *RPCServer) leadershipStreamDrainState() (<-chan struct{}, bool) {
+	s.leadershipStreamDrainMu.Lock()
+	defer s.leadershipStreamDrainMu.Unlock()
+	if s.leadershipStreamDrain == nil {
+		s.leadershipStreamDrain = make(chan struct{})
 	}
-	return s.publicStreamDrain, s.publicStreamsDrained
+	return s.leadershipStreamDrain, s.leadershipStreamsDrained
 }
 
-func (s *RPCServer) retirePublicStreams() {
-	s.publicStreamDrainMu.Lock()
-	defer s.publicStreamDrainMu.Unlock()
-	if s.publicStreamsDrained {
+func (s *RPCServer) retireLeadershipStreams() {
+	s.leadershipStreamDrainMu.Lock()
+	defer s.leadershipStreamDrainMu.Unlock()
+	if s.leadershipStreamsDrained {
 		return
 	}
-	if s.publicStreamDrain == nil {
-		s.publicStreamDrain = make(chan struct{})
+	if s.leadershipStreamDrain == nil {
+		s.leadershipStreamDrain = make(chan struct{})
 	}
-	s.publicStreamsDrained = true
-	close(s.publicStreamDrain)
+	s.leadershipStreamsDrained = true
+	close(s.leadershipStreamDrain)
 }
 
 // SetMaxRequestsInFlight sets the process-wide public client RPC limit. A

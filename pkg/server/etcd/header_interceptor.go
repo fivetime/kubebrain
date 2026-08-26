@@ -211,16 +211,19 @@ func (s *RPCServer) requireLeaderStream(srv any, ss grpc.ServerStream, info *grp
 		ServerStream: ss,
 		ctx:          context.WithValue(ss.Context(), peerRequestContextKey{}, true),
 	}
-	if err := validateClientAPIVersion(ss.Context()); err != nil {
-		return err
-	}
-	if requireLeader(ss.Context()) && !s.hasKnownLeader() {
-		return rpctypes.ErrGRPCNoLeader
-	}
-	if requireLeader(ss.Context()) {
-		return s.monitorRequiredLeaderStream(srv, ss, info, handler)
-	}
-	return handler(srv, ss)
+	return s.monitorLeadershipStreamDrain(srv, ss, proxyprotocol.ErrPeerStreamDrained,
+		func(srv any, draining grpc.ServerStream) error {
+			if err := validateClientAPIVersion(draining.Context()); err != nil {
+				return err
+			}
+			if requireLeader(draining.Context()) && !s.hasKnownLeader() {
+				return rpctypes.ErrGRPCNoLeader
+			}
+			if requireLeader(draining.Context()) {
+				return s.monitorRequiredLeaderStream(srv, draining, info, handler)
+			}
+			return handler(srv, draining)
+		})
 }
 
 // peerRequestContextKey is injected only by PeerServerOptions. Metadata alone
@@ -409,7 +412,7 @@ func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.Stream
 	if s.maxRequestsInFlight != 0 {
 		defer s.releaseRequest()
 	}
-	return s.monitorPublicStreamDrain(srv, ss, info, func(srv any, draining grpc.ServerStream) error {
+	return s.monitorLeadershipStreamDrain(srv, ss, rpctypes.ErrGRPCStopped, func(srv any, draining grpc.ServerStream) error {
 		if requireLeader(draining.Context()) {
 			return s.monitorRequiredLeaderStream(srv, draining, info, func(srv any, monitored grpc.ServerStream) error {
 				return handler(srv, &rateLimitedServerStream{
@@ -427,10 +430,10 @@ func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.Stream
 	})
 }
 
-func (s *RPCServer) monitorPublicStreamDrain(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-	drain, drained := s.publicStreamDrainState()
+func (s *RPCServer) monitorLeadershipStreamDrain(srv any, ss grpc.ServerStream, drainErr error, handler grpc.StreamHandler) error {
+	drain, drained := s.leadershipStreamDrainState()
 	if drained {
-		return rpctypes.ErrGRPCStopped
+		return drainErr
 	}
 
 	ctx, cancel := context.WithCancelCause(ss.Context())
@@ -441,13 +444,13 @@ func (s *RPCServer) monitorPublicStreamDrain(srv any, ss grpc.ServerStream, info
 		case <-done:
 		case <-ctx.Done():
 		case <-drain:
-			cancel(rpctypes.ErrGRPCStopped)
+			cancel(drainErr)
 		}
 	}()
 	err := handler(srv, &serverStreamWithContext{ServerStream: ss, ctx: ctx})
 	close(done)
-	if errors.Is(context.Cause(ctx), rpctypes.ErrGRPCStopped) {
-		return rpctypes.ErrGRPCStopped
+	if errors.Is(context.Cause(ctx), drainErr) {
+		return drainErr
 	}
 	return err
 }

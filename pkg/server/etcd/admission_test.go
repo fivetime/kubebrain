@@ -468,6 +468,109 @@ func TestClientLeadershipDrainRetiresPublicStreamOnWire(t *testing.T) {
 	requireAdmissionError(t, err, rpctypes.ErrGRPCStopped, codes.Unavailable, "etcdserver: server stopped")
 }
 
+func TestLeadershipDrainRetiresPeerStreamsWithInternalRetrySignal(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	recvRelease := make(chan struct{})
+	stream := &blockingRecvServerStream{
+		ctx:     context.Background(),
+		entered: make(chan struct{}),
+		release: recvRelease,
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- rpc.requireLeaderStream(nil, stream,
+			&grpc.StreamServerInfo{FullMethod: etcdserverpb.Watch_Watch_FullMethodName},
+			func(_ any, admitted grpc.ServerStream) error {
+				return admitted.RecvMsg(nil)
+			})
+	}()
+	<-stream.entered
+
+	rpc.DrainLeadership(func() bool { return true })
+	select {
+	case err := <-result:
+		requireAdmissionError(t, err, proxyprotocol.ErrPeerStreamDrained, codes.Aborted,
+			"kubebrain: peer stream drained after leadership handoff")
+	case <-time.After(time.Second):
+		close(recvRelease)
+		t.Fatal("successful leadership drain did not retire an admitted peer stream")
+	}
+	close(recvRelease)
+
+	handlerCalled := false
+	err := rpc.requireLeaderStream(nil, &serverStreamWithContext{ctx: context.Background()},
+		&grpc.StreamServerInfo{FullMethod: etcdserverpb.Watch_Watch_FullMethodName},
+		func(any, grpc.ServerStream) error {
+			handlerCalled = true
+			return nil
+		})
+	requireAdmissionError(t, err, proxyprotocol.ErrPeerStreamDrained, codes.Aborted,
+		"kubebrain: peer stream drained after leadership handoff")
+	require.False(t, handlerCalled, "a peer stream entered after successful leadership drain")
+}
+
+func TestFailedLeadershipDrainLeavesPeerStreamsOpen(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	recvRelease := make(chan struct{})
+	stream := &blockingRecvServerStream{
+		ctx:     context.Background(),
+		entered: make(chan struct{}),
+		release: recvRelease,
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- rpc.requireLeaderStream(nil, stream,
+			&grpc.StreamServerInfo{FullMethod: etcdserverpb.Watch_Watch_FullMethodName},
+			func(_ any, admitted grpc.ServerStream) error {
+				return admitted.RecvMsg(nil)
+			})
+	}()
+	<-stream.entered
+
+	rpc.DrainLeadership(func() bool { return false })
+	select {
+	case err := <-result:
+		t.Fatalf("failed leadership drain retired a peer stream: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(recvRelease)
+	require.NoError(t, <-result)
+}
+
+func TestPeerLeadershipDrainRetiresStreamOnWire(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	streaming := &streamingHealthServer{entered: make(chan struct{})}
+	listener := startAdmissionServer(t, rpc.PeerServerOptions(), streaming)
+	client := admissionClient(t, listener)
+	stream, err := client.Watch(context.Background(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	recvDone := make(chan error, 1)
+	go func() {
+		_, recvErr := stream.Recv()
+		recvDone <- recvErr
+	}()
+	select {
+	case <-streaming.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("peer stream did not reach its handler")
+	}
+
+	rpc.DrainLeadership(func() bool { return true })
+	select {
+	case err = <-recvDone:
+		requireAdmissionError(t, err, proxyprotocol.ErrPeerStreamDrained, codes.Aborted,
+			"kubebrain: peer stream drained after leadership handoff")
+	case <-time.After(time.Second):
+		t.Fatal("peer client did not receive drain control status after leadership handoff")
+	}
+}
+
 func TestLeaseRevokeUsesBoundedInflightReserve(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()

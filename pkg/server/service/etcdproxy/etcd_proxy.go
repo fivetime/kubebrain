@@ -478,7 +478,7 @@ func (e *etcdProxy) markForwardError(ctx context.Context, client *clientv3.Clien
 }
 
 func isForwardConnectionError(err error) bool {
-	if proxyprotocol.IsPeerDrainedBeforeAdmission(err) {
+	if proxyprotocol.IsPeerDrainedBeforeAdmission(err) || proxyprotocol.IsPeerStreamDrained(err) {
 		return true
 	}
 	// The leader uses this application-level decline to make follower count
@@ -977,6 +977,11 @@ func (e *etcdProxy) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseK
 }
 
 func mapLeaseKeepAliveForwardError(parentCtx, callCtx context.Context, err error) error {
+	// A voluntary handoff may retire this internal peer stream after consuming
+	// the message. Ask the outer keepalive loop to replay it against the successor.
+	if err != nil && parentCtx.Err() == nil && proxyprotocol.IsPeerStreamDrained(err) {
+		return rpctypes.ErrGRPCLeaderChanged
+	}
 	// grpc may surface codes.DeadlineExceeded just before callCtx.Err becomes
 	// observable to this goroutine. The parent still being live distinguishes
 	// the proxy's bounded per-message forwarding deadline from caller

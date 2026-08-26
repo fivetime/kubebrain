@@ -35,6 +35,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
@@ -723,7 +724,8 @@ func rangeStreamForwardError(ctx context.Context, err error) error {
 	// Canceled even though the public caller is still live. A partially delivered
 	// RangeStream cannot resume or be joined with a successor's snapshot, so make
 	// the topology change retryable and require the caller to discard the stream.
-	if errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled {
+	if errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled ||
+		proxyprotocol.IsPeerStreamDrained(err) {
 		return rpctypes.ErrGRPCLeaderChanged
 	}
 	return err

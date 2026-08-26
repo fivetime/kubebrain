@@ -33,6 +33,15 @@ func TestIsPeerDrainedBeforeAdmissionRequiresExactInternalSignal(t *testing.T) {
 	require.False(t, IsPeerDrainedBeforeAdmission(nil))
 }
 
+func TestIsPeerStreamDrainedRequiresExactInternalSignal(t *testing.T) {
+	require.True(t, IsPeerStreamDrained(ErrPeerStreamDrained))
+	require.True(t, IsPeerStreamDrained(fmt.Errorf("forward: %w", ErrPeerStreamDrained)))
+	require.False(t, IsPeerStreamDrained(ErrPeerDrainedBeforeAdmission))
+	require.False(t, IsPeerStreamDrained(status.Error(codes.Aborted, "another aborted stream")))
+	require.False(t, IsPeerStreamDrained(status.Error(codes.Unavailable, peerStreamDrainedMessage)))
+	require.False(t, IsPeerStreamDrained(nil))
+}
+
 func TestClientDrainedBeforeAdmissionUsesMutableRetrySentinel(t *testing.T) {
 	require.Equal(t, codes.Unavailable, status.Code(ErrClientDrainedBeforeAdmission))
 	require.Equal(t, clientDrainedBeforeAdmissionMessage, status.Convert(ErrClientDrainedBeforeAdmission).Message())
