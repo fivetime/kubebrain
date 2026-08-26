@@ -529,6 +529,21 @@ func TestStreamProbeNestedTxnSeedsUseDistinctNonLexicographicWrites(t *testing.T
 	require.ErrorContains(t, err, "requires at least 10 stream seeds")
 }
 
+func TestStreamProbeMultilevelTxnSeedsUseDistinctNonLexicographicWrites(t *testing.T) {
+	expected := newStreamProbeExpectations("probe/")
+	seeds, err := streamProbeMultilevelTxnSeeds(expected)
+	require.NoError(t, err)
+	require.Equal(t, []string{"probe/stream/0010", "probe/stream/0011"},
+		[]string{seeds.outerCompare.key, seeds.innerCompare.key})
+	require.Equal(t, []string{"probe/stream/0015", "probe/stream/0012", "probe/stream/0014", "probe/stream/0013"},
+		[]string{seeds.outerPut.key, seeds.middlePut.key, seeds.deleted.key, seeds.innerPut.key})
+	require.NotEqual(t, []string{"probe/stream/0012", "probe/stream/0013", "probe/stream/0014", "probe/stream/0015"},
+		[]string{seeds.outerPut.key, seeds.middlePut.key, seeds.deleted.key, seeds.innerPut.key})
+
+	_, err = streamProbeMultilevelTxnSeeds(expected[:15])
+	require.ErrorContains(t, err, "requires at least 16 stream seeds")
+}
+
 func TestValidateSnapshotArtifactRejectsRestoreFailureAndRemovesPartialOutput(t *testing.T) {
 	dir := t.TempDir()
 	artifactPath := filepath.Join(dir, "artifact.db")

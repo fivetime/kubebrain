@@ -866,6 +866,91 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		createRevision: lastRevision, version: 1,
 	})
 
+	multilevelSeeds, multilevelTxnErr := streamProbeMultilevelTxnSeeds(streamExpected)
+	if multilevelTxnErr != nil {
+		return multilevelTxnErr
+	}
+	for _, seed := range []*streamProbeExpectation{
+		multilevelSeeds.outerPut, multilevelSeeds.middlePut, multilevelSeeds.deleted, multilevelSeeds.innerPut,
+	} {
+		seed.events = append(seed.events, streamProbeEventExpectation{
+			eventType: mvccpb.PUT, value: seed.value, hash: seed.hash, revision: seed.revision,
+			createRevision: seed.revision, version: 1,
+		})
+	}
+	outerMultilevelValue := multilevelSeeds.outerPut.value + "-multilevel-outer"
+	middleMultilevelValue := multilevelSeeds.middlePut.value + "-multilevel-middle"
+	innerMultilevelValue := multilevelSeeds.innerPut.value + "-multilevel-inner"
+	levelTwoOp := clientv3.OpTxn(
+		[]clientv3.Cmp{clientv3.Compare(clientv3.Value(multilevelSeeds.innerCompare.key), "=", multilevelSeeds.innerCompare.value)},
+		[]clientv3.Op{
+			clientv3.OpGet(multilevelSeeds.middlePut.key),
+			clientv3.OpDelete(multilevelSeeds.deleted.key),
+			clientv3.OpPut(multilevelSeeds.innerPut.key, innerMultilevelValue),
+		},
+		[]clientv3.Op{clientv3.OpPut(multilevelSeeds.deleted.key, multilevelSeeds.deleted.value+"-unexpected")},
+	)
+	levelOneOp := clientv3.OpTxn(
+		[]clientv3.Cmp{clientv3.Compare(clientv3.Value(multilevelSeeds.outerCompare.key), "=", multilevelSeeds.outerCompare.value)},
+		[]clientv3.Op{
+			clientv3.OpGet(multilevelSeeds.outerPut.key),
+			clientv3.OpPut(multilevelSeeds.middlePut.key, middleMultilevelValue),
+			levelTwoOp,
+		},
+		[]clientv3.Op{clientv3.OpPut(multilevelSeeds.middlePut.key, multilevelSeeds.middlePut.value+"-unexpected")},
+	)
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	multilevelTxnResponse, multilevelTxnErr := client.Txn(opCtx).Then(
+		clientv3.OpPut(multilevelSeeds.outerPut.key, outerMultilevelValue), levelOneOp,
+	).Commit()
+	cancel()
+	if multilevelTxnErr != nil {
+		return fmt.Errorf("update multilevel nested Snapshot transaction seeds: %w", multilevelTxnErr)
+	}
+	multilevelTxnRevision, multilevelTxnErr := validateMultilevelSuccessTxnResponse(
+		multilevelTxnResponse, clusterID, lastRevision, multilevelSeeds, outerMultilevelValue, middleMultilevelValue,
+	)
+	if multilevelTxnErr != nil {
+		return multilevelTxnErr
+	}
+	lastRevision = multilevelTxnRevision
+	for _, update := range []struct {
+		seed        *streamProbeExpectation
+		value       string
+		subRevision int64
+	}{
+		{seed: multilevelSeeds.outerPut, value: outerMultilevelValue, subRevision: 0},
+		{seed: multilevelSeeds.middlePut, value: middleMultilevelValue, subRevision: 1},
+		{seed: multilevelSeeds.innerPut, value: innerMultilevelValue, subRevision: 3},
+	} {
+		update.seed.value = update.value
+		update.seed.hash = sha256.Sum256([]byte(update.value))
+		update.seed.revision = multilevelTxnRevision
+		update.seed.events = append(update.seed.events, streamProbeEventExpectation{
+			eventType: mvccpb.PUT, value: update.value, hash: update.seed.hash, revision: multilevelTxnRevision,
+			subRevision: update.subRevision, totalChanges: 4,
+			createRevision: update.seed.events[0].createRevision, version: 2,
+		})
+	}
+	multilevelSeeds.deleted.events = append(multilevelSeeds.deleted.events, streamProbeEventExpectation{
+		eventType: mvccpb.DELETE, revision: multilevelTxnRevision, subRevision: 2, totalChanges: 4,
+	})
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	recreatedMultilevelSeed, multilevelTxnErr := client.Put(opCtx, multilevelSeeds.deleted.key, multilevelSeeds.deleted.value)
+	cancel()
+	if multilevelTxnErr != nil {
+		return fmt.Errorf("recreate multilevel nested Snapshot transaction seed %q: %w", multilevelSeeds.deleted.key, multilevelTxnErr)
+	}
+	lastRevision, multilevelTxnErr = validatePutResponse(recreatedMultilevelSeed, clusterID, lastRevision)
+	if multilevelTxnErr != nil {
+		return fmt.Errorf("recreate multilevel nested Snapshot transaction seed %q: %w", multilevelSeeds.deleted.key, multilevelTxnErr)
+	}
+	multilevelSeeds.deleted.revision = lastRevision
+	multilevelSeeds.deleted.events = append(multilevelSeeds.deleted.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: multilevelSeeds.deleted.value, hash: multilevelSeeds.deleted.hash, revision: lastRevision,
+		createRevision: lastRevision, version: 1,
+	})
+
 	watchKey := cfg.prefix + "watch"
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	defer stopWatch()

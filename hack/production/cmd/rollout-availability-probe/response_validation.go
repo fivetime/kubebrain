@@ -40,6 +40,13 @@ func validateTxnOperationHeader(header, outer *etcdserverpb.ResponseHeader) erro
 	return nil
 }
 
+func validateEmptyNestedTxnHeader(header *etcdserverpb.ResponseHeader) error {
+	if header == nil || header.ClusterId != 0 || header.MemberId != 0 || header.Revision != 0 || header.RaftTerm != 0 {
+		return errors.New("invalid nested transaction response header")
+	}
+	return nil
+}
+
 func validateNestedFailureTxnResponse(response *clientv3.TxnResponse, clusterID uint64, previousRevision int64,
 	seeds streamProbeNestedSeeds, outerValue string,
 ) (int64, error) {
@@ -65,9 +72,11 @@ func validateNestedFailureTxnResponse(response *clientv3.TxnResponse, clusterID 
 		return 0, fmt.Errorf("nested Snapshot transaction outer Put header: %w", err)
 	}
 	nested := response.Responses[1].GetResponseTxn()
-	if nested == nil || nested.Header == nil || nested.Header.ClusterId != 0 || nested.Header.MemberId != 0 ||
-		nested.Header.Revision != 0 || nested.Header.RaftTerm != 0 || nested.Succeeded || len(nested.Responses) != 3 {
+	if nested == nil || nested.Succeeded || len(nested.Responses) != 3 {
 		return 0, errors.New("nested Snapshot transaction did not return the selected failure branch")
+	}
+	if err := validateEmptyNestedTxnHeader(nested.Header); err != nil {
+		return 0, fmt.Errorf("nested Snapshot transaction header: %w", err)
 	}
 	stagedRange := nested.Responses[0].GetResponseRange()
 	if stagedRange == nil {
@@ -100,6 +109,98 @@ func validateNestedFailureTxnResponse(response *clientv3.TxnResponse, clusterID 
 		return 0, fmt.Errorf("nested Snapshot transaction inner Put header: %w", err)
 	}
 	return revision, nil
+}
+
+func validateMultilevelSuccessTxnResponse(response *clientv3.TxnResponse, clusterID uint64, previousRevision int64,
+	seeds streamProbeMultilevelSeeds, outerValue, middleValue string,
+) (int64, error) {
+	if response == nil || !response.Succeeded || len(response.Responses) != 2 {
+		return 0, errors.New("multilevel Snapshot transaction returned an invalid outer response")
+	}
+	_, revision, err := validateResponseHeader(response.Header, clusterID, previousRevision)
+	if err != nil {
+		return 0, fmt.Errorf("multilevel Snapshot transaction returned an invalid outer header: %w", err)
+	}
+	if revision <= previousRevision {
+		return 0, fmt.Errorf("multilevel Snapshot transaction revision=%d did not advance previous revision=%d", revision, previousRevision)
+	}
+	for _, seed := range []*streamProbeExpectation{seeds.outerPut, seeds.middlePut, seeds.deleted, seeds.innerPut} {
+		if seed == nil || len(seed.events) == 0 {
+			return 0, errors.New("multilevel Snapshot transaction seed expectations are incomplete")
+		}
+	}
+	outerPut := response.Responses[0].GetResponsePut()
+	if outerPut == nil || outerPut.PrevKv != nil {
+		return 0, errors.New("multilevel Snapshot transaction returned an invalid outer Put response")
+	}
+	if err := validateTxnOperationHeader(outerPut.Header, response.Header); err != nil {
+		return 0, fmt.Errorf("multilevel Snapshot transaction outer Put header: %w", err)
+	}
+	levelOne := response.Responses[1].GetResponseTxn()
+	if levelOne == nil || !levelOne.Succeeded || len(levelOne.Responses) != 3 {
+		return 0, errors.New("multilevel Snapshot transaction did not return the first success branch")
+	}
+	if err := validateEmptyNestedTxnHeader(levelOne.Header); err != nil {
+		return 0, fmt.Errorf("multilevel Snapshot transaction first nested header: %w", err)
+	}
+	if err := validateStagedTxnRange(levelOne.Responses[0].GetResponseRange(), response.Header,
+		seeds.outerPut, outerValue, revision, "first nested"); err != nil {
+		return 0, err
+	}
+	middlePut := levelOne.Responses[1].GetResponsePut()
+	if middlePut == nil || middlePut.PrevKv != nil {
+		return 0, errors.New("multilevel Snapshot transaction returned an invalid middle Put response")
+	}
+	if err := validateTxnOperationHeader(middlePut.Header, response.Header); err != nil {
+		return 0, fmt.Errorf("multilevel Snapshot transaction middle Put header: %w", err)
+	}
+	levelTwo := levelOne.Responses[2].GetResponseTxn()
+	if levelTwo == nil || !levelTwo.Succeeded || len(levelTwo.Responses) != 3 {
+		return 0, errors.New("multilevel Snapshot transaction did not return the second success branch")
+	}
+	if err := validateEmptyNestedTxnHeader(levelTwo.Header); err != nil {
+		return 0, fmt.Errorf("multilevel Snapshot transaction second nested header: %w", err)
+	}
+	if err := validateStagedTxnRange(levelTwo.Responses[0].GetResponseRange(), response.Header,
+		seeds.middlePut, middleValue, revision, "second nested"); err != nil {
+		return 0, err
+	}
+	deleted := levelTwo.Responses[1].GetResponseDeleteRange()
+	if deleted == nil || deleted.Deleted != 1 || len(deleted.PrevKvs) != 0 {
+		return 0, errors.New("multilevel Snapshot transaction returned an invalid Delete response")
+	}
+	if err := validateTxnOperationHeader(deleted.Header, response.Header); err != nil {
+		return 0, fmt.Errorf("multilevel Snapshot transaction Delete header: %w", err)
+	}
+	innerPut := levelTwo.Responses[2].GetResponsePut()
+	if innerPut == nil || innerPut.PrevKv != nil {
+		return 0, errors.New("multilevel Snapshot transaction returned an invalid inner Put response")
+	}
+	if err := validateTxnOperationHeader(innerPut.Header, response.Header); err != nil {
+		return 0, fmt.Errorf("multilevel Snapshot transaction inner Put header: %w", err)
+	}
+	return revision, nil
+}
+
+func validateStagedTxnRange(response *etcdserverpb.RangeResponse, outerHeader *etcdserverpb.ResponseHeader,
+	seed *streamProbeExpectation, value string, revision int64, label string,
+) error {
+	if response == nil {
+		return fmt.Errorf("multilevel Snapshot transaction returned an empty %s staged Range response", label)
+	}
+	if err := validateTxnOperationHeader(response.Header, outerHeader); err != nil {
+		return fmt.Errorf("multilevel Snapshot transaction %s staged Range header: %w", label, err)
+	}
+	if response.More || response.Count != 1 || len(response.Kvs) != 1 {
+		return fmt.Errorf("multilevel Snapshot transaction returned invalid %s staged Range cardinality", label)
+	}
+	kv := response.Kvs[0]
+	initial := seed.events[0]
+	if kv == nil || string(kv.Key) != seed.key || string(kv.Value) != value ||
+		kv.CreateRevision != initial.createRevision || kv.ModRevision != revision || kv.Version != 2 || kv.Lease != 0 {
+		return fmt.Errorf("multilevel Snapshot transaction returned invalid %s staged Range data", label)
+	}
+	return nil
 }
 
 func validateDeleteResponse(response *clientv3.DeleteResponse, clusterID uint64, minRevision int64) (uint64, int64, error) {

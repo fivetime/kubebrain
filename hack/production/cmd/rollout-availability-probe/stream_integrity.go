@@ -116,6 +116,37 @@ func streamProbeNestedTxnSeeds(expected []streamProbeExpectation) (streamProbeNe
 	}, nil
 }
 
+type streamProbeMultilevelSeeds struct {
+	outerCompare *streamProbeExpectation
+	innerCompare *streamProbeExpectation
+	outerPut     *streamProbeExpectation
+	middlePut    *streamProbeExpectation
+	deleted      *streamProbeExpectation
+	innerPut     *streamProbeExpectation
+}
+
+func streamProbeMultilevelTxnSeeds(expected []streamProbeExpectation) (streamProbeMultilevelSeeds, error) {
+	const (
+		outerCompareIndex = 10
+		innerCompareIndex = 11
+		outerPutIndex     = 15
+		middlePutIndex    = 12
+		deletedIndex      = 14
+		innerPutIndex     = 13
+	)
+	if len(expected) <= outerPutIndex {
+		return streamProbeMultilevelSeeds{}, fmt.Errorf("Snapshot multilevel transaction probe requires at least %d stream seeds", outerPutIndex+1)
+	}
+	return streamProbeMultilevelSeeds{
+		outerCompare: &expected[outerCompareIndex],
+		innerCompare: &expected[innerCompareIndex],
+		outerPut:     &expected[outerPutIndex],
+		middlePut:    &expected[middlePutIndex],
+		deleted:      &expected[deletedIndex],
+		innerPut:     &expected[innerPutIndex],
+	}, nil
+}
+
 type rangeStreamReceiver interface {
 	Recv() (*etcdserverpb.RangeStreamResponse, error)
 }

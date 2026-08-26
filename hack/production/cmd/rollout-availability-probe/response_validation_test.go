@@ -40,6 +40,21 @@ func TestValidateTxnOperationHeaderRejectsMalformedShape(t *testing.T) {
 	}
 }
 
+func TestValidateEmptyNestedTxnHeader(t *testing.T) {
+	require.NoError(t, validateEmptyNestedTxnHeader(&etcdserverpb.ResponseHeader{}))
+	for name, header := range map[string]*etcdserverpb.ResponseHeader{
+		"nil":      nil,
+		"cluster":  {ClusterId: 7},
+		"member":   {MemberId: 9},
+		"revision": {Revision: 11},
+		"term":     {RaftTerm: 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Error(t, validateEmptyNestedTxnHeader(header))
+		})
+	}
+}
+
 func nestedFailureTxnFixture() (*clientv3.TxnResponse, streamProbeNestedSeeds) {
 	initial := func(key string, revision int64) *streamProbeExpectation {
 		value := key + "-old"
@@ -126,6 +141,141 @@ func TestValidateNestedFailureTxnResponseRejectsMalformedSuccess(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func multilevelSuccessTxnFixture() (*clientv3.TxnResponse, streamProbeMultilevelSeeds) {
+	initial := func(key string, revision int64) *streamProbeExpectation {
+		value := key + "-old"
+		return &streamProbeExpectation{key: key, value: value, revision: revision, events: []streamProbeEventExpectation{{
+			eventType: mvccpb.PUT, value: value, revision: revision, createRevision: revision, version: 1,
+		}}}
+	}
+	seeds := streamProbeMultilevelSeeds{
+		outerPut:  initial("probe/z", 3),
+		middlePut: initial("probe/b", 4),
+		deleted:   initial("probe/y", 5),
+		innerPut:  initial("probe/m", 6),
+	}
+	outerValue := "probe/z-new"
+	middleValue := "probe/b-new"
+	header := rolloutHeader(7)
+	response := &clientv3.TxnResponse{
+		Header: header, Succeeded: true,
+		Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{
+				Header: &etcdserverpb.ResponseHeader{Revision: 7},
+			}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{
+				Header: &etcdserverpb.ResponseHeader{}, Succeeded: true,
+				Responses: []*etcdserverpb.ResponseOp{
+					{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+						Header: &etcdserverpb.ResponseHeader{Revision: 7}, Count: 1,
+						Kvs: []*mvccpb.KeyValue{{Key: []byte("probe/z"), Value: []byte(outerValue), CreateRevision: 3, ModRevision: 7, Version: 2}},
+					}}},
+					{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{
+						Header: &etcdserverpb.ResponseHeader{Revision: 7},
+					}}},
+					{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{
+						Header: &etcdserverpb.ResponseHeader{}, Succeeded: true,
+						Responses: []*etcdserverpb.ResponseOp{
+							{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+								Header: &etcdserverpb.ResponseHeader{Revision: 7}, Count: 1,
+								Kvs: []*mvccpb.KeyValue{{Key: []byte("probe/b"), Value: []byte(middleValue), CreateRevision: 4, ModRevision: 7, Version: 2}},
+							}}},
+							{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+								Header: &etcdserverpb.ResponseHeader{Revision: 7}, Deleted: 1,
+							}}},
+							{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{
+								Header: &etcdserverpb.ResponseHeader{Revision: 7},
+							}}},
+						},
+					}}},
+				},
+			}}},
+		},
+	}
+	return response, seeds
+}
+
+func TestValidateMultilevelSuccessTxnResponse(t *testing.T) {
+	response, seeds := multilevelSuccessTxnFixture()
+	revision, err := validateMultilevelSuccessTxnResponse(response, 7, 6, seeds, "probe/z-new", "probe/b-new")
+	require.NoError(t, err)
+	require.Equal(t, int64(7), revision)
+}
+
+func TestValidateMultilevelSuccessTxnResponseRejectsMalformedResponse(t *testing.T) {
+	for name, mutate := range map[string]func(*clientv3.TxnResponse){
+		"outer did not advance": func(response *clientv3.TxnResponse) { response.Header.Revision = 6 },
+		"wrong outer union": func(response *clientv3.TxnResponse) {
+			response.Responses[0] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseRange{
+				ResponseRange: &etcdserverpb.RangeResponse{Header: &etcdserverpb.ResponseHeader{Revision: 7}},
+			}}
+		},
+		"missing first nested": func(response *clientv3.TxnResponse) { response.Responses = response.Responses[:1] },
+		"wrong first union": func(response *clientv3.TxnResponse) {
+			response.Responses[1] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{
+				ResponsePut: &etcdserverpb.PutResponse{Header: &etcdserverpb.ResponseHeader{Revision: 7}},
+			}}
+		},
+		"first header stamped": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Header.Revision = 7
+		},
+		"first failure branch": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Succeeded = false
+		},
+		"wrong first count": func(response *clientv3.TxnResponse) {
+			levelOne := response.Responses[1].GetResponseTxn()
+			levelOne.Responses = levelOne.Responses[:2]
+		},
+		"first staged old value": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[0].GetResponseRange().Kvs[0].Value = []byte("probe/z-old")
+		},
+		"middle put previous value": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[1].GetResponsePut().PrevKv = &mvccpb.KeyValue{}
+		},
+		"wrong second union": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[2] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{
+				ResponsePut: &etcdserverpb.PutResponse{Header: &etcdserverpb.ResponseHeader{Revision: 7}},
+			}}
+		},
+		"second header stamped": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[2].GetResponseTxn().Header.MemberId = 9
+		},
+		"second failure branch": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[2].GetResponseTxn().Succeeded = false
+		},
+		"wrong second count": func(response *clientv3.TxnResponse) {
+			levelTwo := response.Responses[1].GetResponseTxn().Responses[2].GetResponseTxn()
+			levelTwo.Responses = levelTwo.Responses[:2]
+		},
+		"second staged metadata": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[2].GetResponseTxn().Responses[0].GetResponseRange().Kvs[0].Version = 1
+		},
+		"delete did not apply": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[2].GetResponseTxn().Responses[1].GetResponseDeleteRange().Deleted = 0
+		},
+		"inner put previous value": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[2].GetResponseTxn().Responses[2].GetResponsePut().PrevKv = &mvccpb.KeyValue{}
+		},
+		"wrong deepest revision": func(response *clientv3.TxnResponse) {
+			response.Responses[1].GetResponseTxn().Responses[2].GetResponseTxn().Responses[2].GetResponsePut().Header.Revision = 8
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response, seeds := multilevelSuccessTxnFixture()
+			mutate(response)
+			_, err := validateMultilevelSuccessTxnResponse(response, 7, 6, seeds, "probe/z-new", "probe/b-new")
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestValidateMultilevelSuccessTxnResponseRejectsIncompleteSeedHistory(t *testing.T) {
+	response, seeds := multilevelSuccessTxnFixture()
+	seeds.deleted.events = nil
+	_, err := validateMultilevelSuccessTxnResponse(response, 7, 6, seeds, "probe/z-new", "probe/b-new")
+	require.ErrorContains(t, err, "seed expectations are incomplete")
 }
 
 func TestValidateRolloutMutationResponses(t *testing.T) {
