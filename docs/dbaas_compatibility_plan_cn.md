@@ -62738,6 +62738,49 @@ runtime digest 且三端 `/readyz=ok`；PD/TiKV 3+3 Ready、restart 0，probe pr
 Service UID `bd2cfe30-5344-4f82-bdec-eb2c3fb03499` 已用创建时 UID/resourceVersion 前置条件删除，EndpointSlice 不存在。
 本轮把当前 30 秒发布恢复合同落实到 direct LeaseKeepAlive 本身；它仍不是跨节点/AZ、外部负载均衡或长时网络分区的容量证明。
 
+### A5539：直连 KeepAlive replacement 与 upstream 同步节流
+
+A5538 的两轮真实滚动各有 33 次直连 KeepAlive channel 重建；clientv3 当前会为断开的底层 LeaseKeepAlive stream 在
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/client/v3/lease.go` 使用固定
+`retryConnWait=500ms`，但 probe 在一个 replacement channel 立即关闭时会无等待地再次调用 `KeepAlive`。当前 client 内部通常会间接
+节流该循环，不能把这一实现细节当作 probe 的 CPU、goroutine 和连接创建上界。
+
+提交 `3ad8c115`（完整 SHA `3ad8c115353a2f8c6b43e63380108931318a1049`）使一次恢复阶段的首次 replacement 仍立即
+执行，只有 replacement 自身继续关闭时才等待与 upstream 相同的固定 500ms。等待同时监听 monitor context 和 A5538 从首次关闭建立的
+原 30 秒 deadline：取消可立即退出，deadline 到期优先形成同一 fatal recovery error，任何 retry 都不重置预算。空 retry timer 或非正
+retry wait fail closed。确定性旧代码 RED 返回预先关闭的第一个 replacement，并证明第二次 restart 在人工 gate 放行前不得发生；恢复
+deadline、阻塞 restart、成功后旧 timer 失效和 queue overflow 回归继续保留。
+
+KeepAlive race 20 轮 2.542 秒、probe 全套 20 轮 4.067 秒、完整 rollout runner 77.942 秒，vet、Shell syntax 与 diff check
+全绿。655 项 inventory 为 `158/181/164/152`；精确提交后四片 Go/墙钟秒为 `134.432/142.617`、
+`361.119/369.305`、`236.275/244.523`、`377.747/385.983`，全部通过。
+
+A5539 镜像构建时间 `2026-08-26T12:34:42Z`，OCI index
+`sha256:511a644a5d287e0700fa7a13219bc023076a94f445620389369d7816d6ec9237`、platform manifest
+`sha256:1d338a6b861d48eae669278f98d8c76e5a9d3c3ca7d4f8caec8804677ea5a85e`、config
+`sha256:cbaafbfaea130e7e3ff035d22508757818059802923c6b0405e1c42fd4f6f4de`、attestation
+`sha256:2a1c73f6f51a17bf14c8c3e05303f60d2e4cb1ef3da8ae793d6062f28bd290d5`、Kind runtime
+`sha256:1075dd372169a275eec37459afe17c18c083589005c6aedda89e319f89e4dd31`；完整提交 SHA、TiKV、Go 1.26.5、
+linux/amd64 和 `USER 65532:65532` 已复核。
+
+首次 A5538→A5539 rollout 在 iteration 623 **RED**：公共阶段消耗约 4.75 秒后，direct Watch 在剩余
+`25.250684443s` 内未恢复；同时日志出现滚动 ordinal DNS 暂不可解析。变更路径只触及 KeepAlive monitor，不能把该失败归因于或掩盖为
+代码成功；runner 完整回滚到 A5538 `a4657-tls-6dc9c5bdd6`，经 3/3 Ready、restart 0、原 runtime digest 和 headless
+3 endpoints 复核后，才对同一不可变候选重跑。
+
+纠正性 A5538→A5539 upgrade **900/900 GREEN**：公共/直连 KeepAlive `109`/`288`，replacement 从 A5538 的 33 次降为
+23 次，最大 KeepAlive 恢复 `21012ms`；RangeStream 181、官方可打开 Snapshot 1、stream retry 1、partial retry 0，最大公共/
+直连 Watch/TSO/Region 延迟 `4786/28246/43/9ms`，revision
+`a4657-tls-6dc9c5bdd6 -> a4657-tls-5c658ddc6d`。A5539 same-version restart 再次 **900/900 GREEN**：
+KeepAlive `104`/`280`、replacement 23、最大恢复 `23776ms`；RangeStream 179、Snapshot 1、stream/partial retry 均 0，
+最大延迟 `1369/28229/75/8ms`，revision `a4657-tls-5c658ddc6d -> a4657-tls-69b87d69d7`。两轮
+queue-full 均为 0；节流没有越过 30 秒恢复合同，同时减少了约 30% 的 replacement 创建。
+
+终态 StatefulSet UID `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，三 Pod 3/3 Ready、restart 0、同 revision、精确
+runtime digest 和三端 `/readyz=ok`；PD/TiKV 3+3 Ready、restart 0，probe prefix Count=0、probe Pod 不存在。临时 client
+Service UID `1b3da235-3897-4aec-b6f5-d3a7927974c3` 已用创建时 UID/resourceVersion 前置条件删除，EndpointSlice 不存在。
+第一次 RED 仍是发布历史的一部分，不被后续双轮 GREEN 覆盖；当前结果也不外推为长期网络分区容量证明。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
