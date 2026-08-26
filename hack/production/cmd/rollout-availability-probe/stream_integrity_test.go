@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -59,6 +60,25 @@ type snapshotReceiveStep struct {
 type fakeSnapshotReceiver struct {
 	steps []snapshotReceiveStep
 	next  int
+}
+
+type partialRestoreSnapshotManager struct {
+	restoreConfig etcdutlsnapshot.RestoreConfig
+}
+
+func (*partialRestoreSnapshotManager) Status(string) (etcdutlsnapshot.Status, error) {
+	return etcdutlsnapshot.Status{Revision: 7, TotalSize: 4096, Version: etcdsnapshot.StorageVersion}, nil
+}
+
+func (m *partialRestoreSnapshotManager) Restore(cfg etcdutlsnapshot.RestoreConfig) error {
+	m.restoreConfig = cfg
+	if err := os.MkdirAll(cfg.OutputDataDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(cfg.OutputDataDir, "partial"), []byte("incomplete restore"), 0o600); err != nil {
+		return err
+	}
+	return errors.New("restore rejected snapshot schema")
 }
 
 func (f *fakeSnapshotReceiver) Recv() (*etcdserverpb.SnapshotResponse, error) {
@@ -220,6 +240,21 @@ func TestConsumeAndValidateSnapshotAcceptsOfficialRestorableArtifact(t *testing.
 	}}, dir)
 	require.ErrorContains(t, err, "official etcdutl returned invalid Snapshot status")
 	require.True(t, partial)
+}
+
+func TestValidateSnapshotArtifactRejectsRestoreFailureAndRemovesPartialOutput(t *testing.T) {
+	dir := t.TempDir()
+	artifactPath := filepath.Join(dir, "artifact.db")
+	require.NoError(t, os.WriteFile(artifactPath, []byte("managed by fake status"), 0o600))
+	manager := &partialRestoreSnapshotManager{}
+
+	err := validateSnapshotArtifact(manager, artifactPath, etcdsnapshot.StorageVersion, dir)
+	require.ErrorContains(t, err, "official etcdutl failed to restore Snapshot artifact")
+	require.Equal(t, artifactPath, manager.restoreConfig.SnapshotPath)
+	require.False(t, manager.restoreConfig.SkipHashCheck)
+	require.NotEmpty(t, manager.restoreConfig.OutputDataDir)
+	require.NoDirExists(t, filepath.Dir(manager.restoreConfig.OutputDataDir), "partial restore output must always be removed")
+	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
 }
 
 func TestRunStreamWorkerRetriesWithBackoffAndDiscardsPartialAttempt(t *testing.T) {

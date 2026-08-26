@@ -22,6 +22,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -62,6 +63,11 @@ type rangeStreamReceiver interface {
 
 type snapshotReceiver interface {
 	Recv() (*etcdserverpb.SnapshotResponse, error)
+}
+
+type snapshotArtifactManager interface {
+	Status(string) (etcdutlsnapshot.Status, error)
+	Restore(etcdutlsnapshot.RestoreConfig) error
 }
 
 func consumeRangeStream(stream rangeStreamReceiver, prefix string, expected []streamProbeExpectation, clusterID uint64) (bool, error) {
@@ -202,6 +208,50 @@ func consumeSnapshotTo(stream snapshotReceiver, artifact io.Writer) (bool, strin
 	}
 }
 
+func validateSnapshotArtifact(manager snapshotArtifactManager, path, wireVersion, artifactDir string) (retErr error) {
+	artifactStatus, err := manager.Status(path)
+	if err != nil {
+		return fmt.Errorf("official etcdutl rejected Snapshot artifact: %w", err)
+	}
+	if artifactStatus.Revision <= 0 || artifactStatus.TotalSize <= 0 || artifactStatus.Version != wireVersion {
+		return fmt.Errorf("official etcdutl returned invalid Snapshot status: revision=%d size=%d version=%q wire_version=%q",
+			artifactStatus.Revision, artifactStatus.TotalSize, artifactStatus.Version, wireVersion)
+	}
+
+	restoreRoot, err := os.MkdirTemp(artifactDir, ".kubebrain-rollout-restore-*")
+	if err != nil {
+		return fmt.Errorf("create Snapshot restore directory: %w", err)
+	}
+	defer func() {
+		if removeErr := os.RemoveAll(restoreRoot); removeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("remove Snapshot restore directory: %w", removeErr))
+		}
+	}()
+
+	const restoreName = "kubebrain-rollout-restore"
+	restoreDataDir := filepath.Join(restoreRoot, "data")
+	if err := manager.Restore(etcdutlsnapshot.RestoreConfig{
+		SnapshotPath:        path,
+		Name:                restoreName,
+		OutputDataDir:       restoreDataDir,
+		PeerURLs:            []string{"http://127.0.0.1:2380"},
+		InitialCluster:      restoreName + "=http://127.0.0.1:2380",
+		InitialClusterToken: "kubebrain-rollout-restore",
+		SkipHashCheck:       false,
+	}); err != nil {
+		return fmt.Errorf("official etcdutl failed to restore Snapshot artifact: %w", err)
+	}
+	restoredDB := filepath.Join(restoreDataDir, "member", "snap", "db")
+	info, err := os.Stat(restoredDB)
+	if err != nil {
+		return fmt.Errorf("inspect officially restored Snapshot database: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 {
+		return fmt.Errorf("official etcdutl produced an invalid restored Snapshot database: mode=%s size=%d", info.Mode(), info.Size())
+	}
+	return nil
+}
+
 func consumeAndValidateSnapshot(stream snapshotReceiver, artifactDir string) (partial bool, retErr error) {
 	artifact, err := os.CreateTemp(artifactDir, ".kubebrain-rollout-snapshot-*.db")
 	if err != nil {
@@ -224,13 +274,8 @@ func consumeAndValidateSnapshot(stream snapshotReceiver, artifactDir string) (pa
 	if err != nil {
 		return partial, err
 	}
-	artifactStatus, err := etcdutlsnapshot.NewV3(zap.NewNop()).Status(path)
-	if err != nil {
-		return partial, fmt.Errorf("official etcdutl rejected Snapshot artifact: %w", err)
-	}
-	if artifactStatus.Revision <= 0 || artifactStatus.TotalSize <= 0 || artifactStatus.Version != version {
-		return partial, fmt.Errorf("official etcdutl returned invalid Snapshot status: revision=%d size=%d version=%q wire_version=%q",
-			artifactStatus.Revision, artifactStatus.TotalSize, artifactStatus.Version, version)
+	if err := validateSnapshotArtifact(etcdutlsnapshot.NewV3(zap.NewNop()), path, version, artifactDir); err != nil {
+		return partial, err
 	}
 	return partial, nil
 }
