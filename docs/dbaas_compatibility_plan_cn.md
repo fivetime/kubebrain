@@ -62454,6 +62454,74 @@ panic/fatal，只有滚动时预期的 peer-drain `Aborted` 重连告警。
 它不外推为跨节点/AZ、其他 kube-proxy 后端、外部 L4/L7 或长时 soak 的统一最小值。生产落地仍应按目标集群实测校准，且
 RangeStream/Snapshot 等非 clientv3 自动恢复消费者继续承担收到 `Unavailable` 后丢弃部分结果并重试的兼容性责任。
 
+### A5527--A5533：mTLS rollout、逐 Pod DNS 与双流恢复预算闭环
+
+A5527（`a33819e9`）把真实双向 TLS 纳入 rollout availability gate：runner 从目标 StatefulSet 冻结 CA、客户端证书、私钥和
+`--tls-server-name`，probe 同时经公共 Service 与三个 ordinal DNS 执行 Put/Watch、LeaseKeepAlive、PD TSO 和 TiKV Region
+采样；A5528（`64262494`）进一步复制目标容器的 non-root、只读根文件系统、drop ALL、seccomp 与证书卷安全上下文，防止测试镜像
+通过比数据面更宽松的权限得到假 GREEN。证书夹具使用 Secret `a4657-tls-pki`，服务端证书 SAN 为 `kubernetes`。首轮真实握手 RED
+暴露 gRPC dial target 是 Pod/Service DNS 时会覆盖 `tls.Config.ServerName`；A5529（`8fde39f1`，完整 SHA
+`8fde39f1a90f1186bc0e58435388bbc2050f766f`）对公共和直连 clientv3 连接显式设置 `grpc.WithAuthority`，并以真实要求客户端证书的
+health server 回归固定 authority 与 mTLS ClientAuth。聚焦普通 20 轮、race 10 轮及完整 probe/runner 均绿；A5529 OCI index
+`sha256:724de1cf50de38799c37a26728d5b80452bde58e2bc7aa7ea843efcef00c014b`、platform
+`sha256:50f7e4c819d0f23e55e93d10a63022176cefe02d42e3325823d8ea382bba8eda`、config
+`sha256:2a54948f75345d1c41052c9eb22e3530c81bfd7bd71f8928a6535cfbbd717c80`、attestation
+`sha256:c8a48e4bb2828cd1030ca911d79db2760915fd5866048d5994f7efd1d646c02d`、Kind runtime
+`sha256:57fb30e38075a8cff7f43591296ff7448fd7d15709927ab6de2a74fea8cb382f`；稳定态 30/30 mTLS smoke 全绿，公共/直连最大均为 27ms。
+
+隔离实例 `a4657-tls`（StatefulSet UID `3d124ab7-b3ab-43d3-afd5-1b354722ab54`）从不含新 lifecycle 的旧镜像迁移到 A5529 时，
+1800 次探针在 iteration 507 得到公共 Service connection refused/Put 超时 RED；旧 Pod 没有 preStop，故该 baseline migration 不计
+可用发布。随后标准 same-version rollout 又以 ordinal DNS `NXDOMAIN` RED，定位到 headless Service 未设置
+`publishNotReadyAddresses`。A5530（`c2545614`）在任何 mutation 前冻结并校验 headless Service 必须为 ClusterIP None、
+`publishNotReadyAddresses=true`、selector 精确匹配 Pod template，postflight 再要求 UID/resourceVersion/spec 全部未漂移；false、普通
+ClusterIP、selector mismatch 与 identity drift 均有负测。现场以 UID 前置条件修正 headless Service 后，NXDOMAIN 消失，但退休 Pod
+旧 IP/Pod 替换仍使 direct Watch 超过 20 秒。
+
+A5531（`c1c5a36f`）把 45 秒 termination grace 内的 hook 从 `sleep 20 && drain && sleep 5` 调整为
+`sleep 25 && drain`，让 EndpointSlice/kube-proxy 在 admission fence 前获得完整 25 秒传播窗；真实同版本 rollout 仍在
+iteration 200 得到 direct stream 超过 20 秒 RED。事件时间线显示 Pod deletion 到替代 Pod Ready 约 42--48 秒，且 direct DNS/连接
+恢复约 26--28 秒；预先存在的逐 ordinal ClusterIP/NodePort Service 也会在 Pod 不 Ready 时失去 backend，不能把 20 秒变成可满足合同。
+因此 20 秒不是当前 Kubernetes 单副本替换路径的有效 SLO；共享 client Service 的 5 秒可用性合同保持不变。
+
+同一现场还两次得到公共 Put→Watch 6.291/6.216 秒 RED。根因不是 EndpointSlice：leader 约 1 秒完成交棒、follower proxy 约
+1.1 秒重连，但内部 `proxyReadyWaitTimeout` 恰好占满外部 5 秒预算后才返回上游可安全重试的
+`rpctypes.ErrGRPCNoLeader`（`Unavailable: there is no connection available`），clientv3 重试与 Watch 续流只能落到第 6 秒。
+A5532（`31628cb3`，完整 SHA `31628cb304711b84295b1431ec2fefad65020d6f`）把内部等待收紧到 3 秒，为安全重试保留 2 秒，
+不放宽公共 5 秒 SLO；测试固定返回精确 retry sentinel 且耗时在 2.5--4 秒。构建时首次发现传入的完整 SHA 与真实 HEAD 不同，在镜像
+产出前主动终止；正确重建的 A5532 OCI index 为
+`sha256:fdb476fb9b613cbf2157fe6204825131f2495b8dc81d435854e490a443b9d6fa`、platform
+`sha256:b785b76b63f4e5826dc320fb45a34d57713da213cc48985d8da425ed10f5baa3`、config
+`sha256:773b40c2da091b0fe594c493804bbeb3cd55ca483c8903705b85f8a5d5f6b0d2`、attestation
+`sha256:36f01d20028f02aafe1850fa1c84efc627f15345988322d336e96e92e2869fb5`、Kind runtime
+`sha256:e8f342e481fde0bb919462d17c940b4007460a4c2df0b7d532f3c3b9d98adef5`。
+
+A5532 真实候选 rollout 的公共路径未再越过 5 秒，却在 iteration 201 因 ordinal-0 KeepAlive channel 已关闭而同轮 Watch 在 5 秒内
+自动恢复，被 probe 误判为“没有 matching slow Watch”并自动回滚到 A5529；回滚后 UID 不变、3/3 Ready、restart 0、原 runtime
+digest 一致。该 RED 证明 Watch 与 KeepAlive 是两个独立 gRPC 流：clientv3 Watch 可自动续流，KeepAlive channel 关闭则要求调用方
+重新调用，不能要求两者同步变慢。A5533（`78aa9974`，完整 SHA
+`78aa99748a2b2aad6bb6118bbb36e711ac0a398e`）允许每个 ordinal 一个有界 KeepAlive 恢复事件；同一替换尚未恢复时可重试，收到首个
+有效 response 后再发生关闭则 fail closed。probe CLI 与 runner 的 direct 上限统一为 30 秒，公共上限仍为 5 秒；两份生产清单的
+25 秒注释也与实际 hook 对齐。普通 probe 20 轮、race 10 轮、rollout/manifest 专项 73.704 秒、shell/diff check 全绿；651 项
+inventory 为 `156/181/162/152`，精确提交后四片 Go/墙钟秒为
+136.896/143.436、364.323/370.888、236.269/242.753、380.334/386.870。
+
+最终 A5533 内嵌上述完整 SHA，构建时间 `2026-08-26T08:01:11Z`，OCI index
+`sha256:9af19fe686fb5c1971effcd068a38ac1b297f89b13daee29cd240a8988010401`、platform
+`sha256:a09d2c4695443ad7c0c33d614600ca2bcb0fc8869425f40feefd9d836d2c3a47`、config
+`sha256:ef56e18c357345f9774d429e95722deebf93019b6f7014ef056e163e8f6dc596`、attestation
+`sha256:0319a904d0c142e10248fda21959fb7fc59cc12bd04b0d68e2130aba7acd6520`、Kind runtime
+`sha256:0935389a6d0386c6be8c6348fb910d34c899ff7a765d522ea935527b06bd6128`。A5529→A5533 候选升级和 A5533 同版本
+restart 连续两轮 **900/900 GREEN**：公共/直连 Watch 均为 `900`/`900x3`、Lease alive、direct KeepAlive restart 均为 3；两轮最大
+公共/直连/TSO/Region 延迟分别为 `1678/27908/39/8ms` 与 `1376/26258/81/9ms`，revision 依次为
+`a4657-tls-79bcbb9d76 -> a4657-tls-d97646f75 -> a4657-tls-dbcf98868`。
+
+终态 StatefulSet UID 未变，generation/observedGeneration 均为 30，三 Pod 3/3 Ready、restart 0、精确 runtime digest 一致；
+headless EndpointSlice 三端 ready，主 3×PD/3×TiKV 均 Running、restart 0，近 10 分钟未发现 panic/fatal/data race/storage 或
+proxy Watch error。测试专用 client Service `a5527-tls-client` 已按 UID+resourceVersion 原子前置条件删除，关联 EndpointSlice 已消失。
+这组证据关闭 mTLS authority、headless Pod DNS、内部 proxy retry budget 和 probe 双流错误耦合；它同时明确留下边界：30 秒只是在当前
+单节点 Kind 的 direct ordinal replacement 上经两轮实测成立，不是跨 AZ 的保证；共享入口 5 秒 SLO 未改变，跨节点/AZ、外部负载均衡和
+更长 soak 仍需独立验证。对照基线继续固定为 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
