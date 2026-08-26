@@ -20,6 +20,7 @@ import (
 	tikverr "github.com/tikv/client-go/v2/error"
 	"github.com/tikv/client-go/v2/txnkv"
 	pd "github.com/tikv/pd/client"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -690,14 +691,19 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if txnErr != nil {
 		return txnErr
 	}
-	txnOps := make([]clientv3.Op, 0, len(txnSeeds))
+	txnValues := make([]string, len(txnSeeds))
 	for index, seed := range txnSeeds {
 		seed.events = append(seed.events, streamProbeEventExpectation{
 			eventType: mvccpb.PUT, value: seed.value, hash: seed.hash, revision: seed.revision,
 			createRevision: seed.revision, version: 1,
 		})
-		value := fmt.Sprintf("%s-txn-%d", seed.value, index)
-		txnOps = append(txnOps, clientv3.OpPut(seed.key, value))
+		txnValues[index] = fmt.Sprintf("%s-txn-%d", seed.value, index)
+	}
+	txnOps := []clientv3.Op{
+		clientv3.OpPut(txnSeeds[0].key, txnValues[0]),
+		clientv3.OpGet(txnSeeds[0].key),
+		clientv3.OpDelete(txnSeeds[1].key),
+		clientv3.OpPut(txnSeeds[2].key, txnValues[2]),
 	}
 	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
 	txnResponse, txnErr := client.Txn(opCtx).Then(txnOps...).Commit()
@@ -705,7 +711,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if txnErr != nil {
 		return fmt.Errorf("update Snapshot subrevision seeds: %w", txnErr)
 	}
-	if txnResponse == nil || !txnResponse.Succeeded || len(txnResponse.Responses) != len(txnSeeds) {
+	if txnResponse == nil || !txnResponse.Succeeded || len(txnResponse.Responses) != len(txnOps) {
 		return fmt.Errorf("update Snapshot subrevision seeds returned invalid response: response=%+v", txnResponse)
 	}
 	_, txnRevision, txnErr := validateResponseHeader(txnResponse.Header, clusterID, lastRevision)
@@ -716,22 +722,85 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		return fmt.Errorf("update Snapshot subrevision seeds did not advance revision: got=%d previous=%d", txnRevision, lastRevision)
 	}
 	lastRevision = txnRevision
-	for index := range txnSeeds {
-		putResponse := txnResponse.Responses[index].GetResponsePut()
-		if putResponse == nil || putResponse.PrevKv != nil {
-			return fmt.Errorf("update Snapshot subrevision seed %q returned invalid nested response", txnSeeds[index].key)
+	validateTxnHeader := func(header *etcdserverpb.ResponseHeader, operation string) error {
+		_, nestedRevision, headerErr := validateResponseHeader(header, clusterID, txnRevision)
+		if headerErr != nil {
+			return fmt.Errorf("%s returned invalid nested header: %w", operation, headerErr)
 		}
+		if nestedRevision != txnRevision {
+			return fmt.Errorf("%s returned nested revision=%d, want transaction revision=%d",
+				operation, nestedRevision, txnRevision)
+		}
+		return nil
+	}
+	firstPut := txnResponse.Responses[0].GetResponsePut()
+	if firstPut == nil || firstPut.PrevKv != nil {
+		return fmt.Errorf("update Snapshot subrevision seed %q returned invalid first Put response", txnSeeds[0].key)
+	}
+	if txnErr = validateTxnHeader(firstPut.Header, "Snapshot Txn first Put"); txnErr != nil {
+		return txnErr
+	}
+	stagedRange := txnResponse.Responses[1].GetResponseRange()
+	if stagedRange == nil {
+		return fmt.Errorf("read staged Snapshot subrevision seed %q returned an empty Range response", txnSeeds[0].key)
+	}
+	if txnErr = validateTxnHeader(stagedRange.Header, "Snapshot Txn staged Range"); txnErr != nil {
+		return txnErr
+	}
+	if stagedRange.More || stagedRange.Count != 1 || len(stagedRange.Kvs) != 1 {
+		return fmt.Errorf("read staged Snapshot subrevision seed %q returned invalid cardinality: count=%d values=%d more=%t",
+			txnSeeds[0].key, stagedRange.Count, len(stagedRange.Kvs), stagedRange.More)
+	}
+	stagedKV := stagedRange.Kvs[0]
+	if stagedKV == nil || string(stagedKV.Key) != txnSeeds[0].key || string(stagedKV.Value) != txnValues[0] ||
+		stagedKV.CreateRevision != txnSeeds[0].events[0].createRevision || stagedKV.ModRevision != txnRevision ||
+		stagedKV.Version != 2 || stagedKV.Lease != 0 {
+		return fmt.Errorf("read staged Snapshot subrevision seed %q returned invalid data", txnSeeds[0].key)
+	}
+	deletedTxn := txnResponse.Responses[2].GetResponseDeleteRange()
+	if deletedTxn == nil || deletedTxn.Deleted != 1 || len(deletedTxn.PrevKvs) != 0 {
+		return fmt.Errorf("delete Snapshot subrevision seed %q returned invalid response", txnSeeds[1].key)
+	}
+	if txnErr = validateTxnHeader(deletedTxn.Header, "Snapshot Txn Delete"); txnErr != nil {
+		return txnErr
+	}
+	lastPut := txnResponse.Responses[3].GetResponsePut()
+	if lastPut == nil || lastPut.PrevKv != nil {
+		return fmt.Errorf("update Snapshot subrevision seed %q returned invalid last Put response", txnSeeds[2].key)
+	}
+	if txnErr = validateTxnHeader(lastPut.Header, "Snapshot Txn last Put"); txnErr != nil {
+		return txnErr
+	}
+	for _, index := range []int{0, 2} {
 		seed := txnSeeds[index]
-		value := fmt.Sprintf("%s-txn-%d", seed.value, index)
-		seed.value = value
-		seed.hash = sha256.Sum256([]byte(value))
+		seed.value = txnValues[index]
+		seed.hash = sha256.Sum256([]byte(seed.value))
 		seed.revision = txnRevision
 		seed.events = append(seed.events, streamProbeEventExpectation{
-			eventType: mvccpb.PUT, value: value, hash: seed.hash, revision: txnRevision,
+			eventType: mvccpb.PUT, value: seed.value, hash: seed.hash, revision: txnRevision,
 			subRevision: int64(index), totalChanges: int64(len(txnSeeds)),
 			createRevision: seed.events[0].createRevision, version: 2,
 		})
 	}
+	deletedSeed := txnSeeds[1]
+	deletedSeed.events = append(deletedSeed.events, streamProbeEventExpectation{
+		eventType: mvccpb.DELETE, revision: txnRevision, subRevision: 1, totalChanges: int64(len(txnSeeds)),
+	})
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	recreatedTxnSeed, recreateTxnErr := client.Put(opCtx, deletedSeed.key, deletedSeed.value)
+	cancel()
+	if recreateTxnErr != nil {
+		return fmt.Errorf("recreate deleted Snapshot subrevision seed %q: %w", deletedSeed.key, recreateTxnErr)
+	}
+	lastRevision, recreateTxnErr = validatePutResponse(recreatedTxnSeed, clusterID, lastRevision)
+	if recreateTxnErr != nil {
+		return fmt.Errorf("recreate deleted Snapshot subrevision seed %q: %w", deletedSeed.key, recreateTxnErr)
+	}
+	deletedSeed.revision = lastRevision
+	deletedSeed.events = append(deletedSeed.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: deletedSeed.value, hash: deletedSeed.hash, revision: lastRevision,
+		createRevision: lastRevision, version: 1,
+	})
 
 	watchKey := cfg.prefix + "watch"
 	watchCtx, stopWatch := context.WithCancel(ctx)

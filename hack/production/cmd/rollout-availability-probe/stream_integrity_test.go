@@ -428,17 +428,18 @@ func TestConsumeAndValidateSnapshotValidatesHistoricalLeaseState(t *testing.T) {
 
 func TestConsumeAndValidateSnapshotValidatesTxnSubrevisionOrder(t *testing.T) {
 	state := etcdsnapshot.State{
-		Revision: 7, PreserveHistory: true,
+		Revision: 8, PreserveHistory: true,
 		Records: []etcdsnapshot.Record{
 			{Key: []byte("probe/z"), Value: []byte("z1"), CreateRevision: 4, ModRevision: 4, Version: 1},
 			{Key: []byte("probe/a"), Value: []byte("a1"), CreateRevision: 5, ModRevision: 5, Version: 1},
 			{Key: []byte("probe/m"), Value: []byte("m1"), CreateRevision: 6, ModRevision: 6, Version: 1},
 			{Key: []byte("probe/z"), Value: []byte("z2"), CreateRevision: 4, ModRevision: 7, Version: 2,
 				SubRevision: 0, TotalChanges: 3, Ordered: true},
-			{Key: []byte("probe/a"), Value: []byte("a2"), CreateRevision: 5, ModRevision: 7, Version: 2,
+			{Key: []byte("probe/a"), ModRevision: 7, Tombstone: true,
 				SubRevision: 1, TotalChanges: 3, Ordered: true},
 			{Key: []byte("probe/m"), Value: []byte("m2"), CreateRevision: 6, ModRevision: 7, Version: 2,
 				SubRevision: 2, TotalChanges: 3, Ordered: true},
+			{Key: []byte("probe/a"), Value: []byte("a3"), CreateRevision: 8, ModRevision: 8, Version: 1},
 		},
 	}
 	expected := []streamProbeExpectation{
@@ -446,9 +447,10 @@ func TestConsumeAndValidateSnapshotValidatesTxnSubrevisionOrder(t *testing.T) {
 			{eventType: mvccpb.PUT, value: "z1", hash: sha256.Sum256([]byte("z1")), revision: 4, createRevision: 4, version: 1},
 			{eventType: mvccpb.PUT, value: "z2", hash: sha256.Sum256([]byte("z2")), revision: 7, subRevision: 0, totalChanges: 3, createRevision: 4, version: 2},
 		}},
-		{key: "probe/a", value: "a2", hash: sha256.Sum256([]byte("a2")), revision: 7, events: []streamProbeEventExpectation{
+		{key: "probe/a", value: "a3", hash: sha256.Sum256([]byte("a3")), revision: 8, events: []streamProbeEventExpectation{
 			{eventType: mvccpb.PUT, value: "a1", hash: sha256.Sum256([]byte("a1")), revision: 5, createRevision: 5, version: 1},
-			{eventType: mvccpb.PUT, value: "a2", hash: sha256.Sum256([]byte("a2")), revision: 7, subRevision: 1, totalChanges: 3, createRevision: 5, version: 2},
+			{eventType: mvccpb.DELETE, revision: 7, subRevision: 1, totalChanges: 3},
+			{eventType: mvccpb.PUT, value: "a3", hash: sha256.Sum256([]byte("a3")), revision: 8, createRevision: 8, version: 1},
 		}},
 		{key: "probe/m", value: "m2", hash: sha256.Sum256([]byte("m2")), revision: 7, events: []streamProbeEventExpectation{
 			{eventType: mvccpb.PUT, value: "m1", hash: sha256.Sum256([]byte("m1")), revision: 6, createRevision: 6, version: 1},
