@@ -62620,6 +62620,40 @@ Kind runtime digest 全部一致。A5535 专属 `/kubebrain-rollout-availability
 前置条件删除，关联 EndpointSlice 与两个临时 Pod 均不存在。该闭环把流式制品完整性从一次性实验提升为每个候选和同版本重启都必须经过的
 发布条件；当前证据仍只覆盖单节点 Kind、独立 3×PD/3×TiKV 和本轮负载，跨节点/AZ、外部负载均衡与长时 soak 继续保留为容量边界。
 
+### A5536：rollout Snapshot 从 wire 自洽提升到官方制品可打开
+
+A5535 的 Snapshot 门禁验证 RemainingBytes、稳定 Version、SHA-256 checksum 和 checksum 后 EOF，但随后丢弃全部字节；一条任意的
+非 bbolt 字节流只要自带正确 checksum，仍会被计作 Snapshot GREEN。确定性 RED 构造了这种“wire 完全自洽但不是 etcd snapshot”
+的流，旧 consumer 无错误接受。提交 `dc042d60`（完整 SHA `dc042d6022109387e7f3862f3d8acc5cf184362c`）让每个 Snapshot
+attempt 把 data 与 checksum 写入独立 0600 临时文件，完成 `fsync/close` 后直接调用主模块锁定的官方
+`go.etcd.io/etcd/etcdutl/v3/snapshot.NewV3(...).Status`。GREEN 现在同时要求 bbolt `Tx.Check`、正 revision、正总大小和 artifact/wire
+storage version 一致；自洽垃圾、结构损坏或版本漂移均 fail closed。失败 attempt 的文件不会与重试拼接，成功、协议失败、Status
+拒绝和 close/remove 错误路径均删除制品。
+
+runner 为 TLS 与明文 probe 都挂载专用 `/var/run/kubebrain-rollout-availability` `emptyDir`，继承目标 StatefulSet 的非 root
+runAsUser/runAsGroup/fsGroup，并在输出 `PROBE_STARTED` 之前实际 create/close/unlink canary；目录不存在、不可写或无法清理时，不允许
+发生 StatefulSet mutation。合法 KubeBrain 3.7 snapshot 与自洽伪制品、artifact/wire version mismatch、双路径 emptyDir、TLS/明文
+root context 拒绝均有回归。probe 普通 20 轮 Go/墙钟 2.748/4.268 秒、race 10 轮 4.247/7.981 秒，最终完整 rollout runner
+75.756 秒，vet、shell syntax 与 diff check 全绿。654 项 inventory 为 `158/181/163/152`；提交后四片 Go/墙钟秒为
+`132.088/138.535`、`354.209/360.649`、`225.288/231.729`、`370.000/376.423`，全部通过。
+
+A5536 镜像构建时间 `2026-08-26T10:58:50Z`，OCI index
+`sha256:32bf62f5f6999f242031e4e83c2edbca71c75d42b50e623cf327d1c87b8b3774`、platform manifest
+`sha256:2e471d69f6a8a0292c9e78d414bd8d74f4540241320163c42a4b2864cc7a84c4`、config
+`sha256:21c8ba7457f26f1226521d73b29ad7352d3fc749065ff4cec3b6fdb4c053807e`、attestation
+`sha256:588962744b2ce1bb53b354189e3406c0d6a4b1cd099bdbfe97b40ef3a12330a7`、Kind runtime
+`sha256:9f453f28c2356aeb4c6129419ff1356c89622cac51569c505d3dd94fbad7ed49`；内嵌完整提交 SHA、TiKV、Go 1.26.5、
+linux/amd64 与 `USER 65532:65532` 均经运行时复核。
+
+A5535→A5536 upgrade **900/900 GREEN**：公共/直连 Watch `900`/`900x3`、Lease alive、direct KeepAlive restart 3，
+RangeStream 193、经官方 Status 打开的 Snapshot 1，stream/partial retry 均 0，最大公共/直连/TSO/Region 延迟
+`1350/27818/100/16ms`；revision `a4657-tls-6b5485cd9d -> a4657-tls-659fb866dd`。A5536 same-version restart
+再次 **900/900 GREEN**：RangeStream 189、官方可打开 Snapshot 1，1 次整流重试且 partial retry 0，最大延迟
+`4381/27750/51/8ms`；revision `a4657-tls-659fb866dd -> a4657-tls-8597fcf97d`。终态 StatefulSet UID 未变，3/3
+Pod 同 revision、Ready、restart 0 且 runtime digest 一致；专属 probe 前缀为空。临时 client Service UID
+`541fd91e-24f6-4ed7-8d8b-05838d72258d` 已按 UID/resourceVersion 删除，关联 EndpointSlice 与 probe Pod 均不存在。
+这证明本轮真实下载制品可由官方 3.7 status 路径完整扫描；它不是完整离线 restore/启动演练的替代，后者继续由备份恢复门禁承担。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
