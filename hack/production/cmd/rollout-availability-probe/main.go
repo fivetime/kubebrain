@@ -45,6 +45,7 @@ type config struct {
 	streamTimeout    time.Duration
 	streamBackoff    time.Duration
 	streamMaxBackoff time.Duration
+	snapshotDir      string
 	caFile           string
 	certFile         string
 	keyFile          string
@@ -73,6 +74,7 @@ func main() {
 	flag.DurationVar(&cfg.streamTimeout, "stream-attempt-timeout", 2*time.Minute, "timeout for one RangeStream or Snapshot attempt")
 	flag.DurationVar(&cfg.streamBackoff, "stream-retry-backoff", 100*time.Millisecond, "initial retry backoff after a retryable stream failure")
 	flag.DurationVar(&cfg.streamMaxBackoff, "stream-max-retry-backoff", 2*time.Second, "maximum retry backoff after consecutive stream failures")
+	flag.StringVar(&cfg.snapshotDir, "snapshot-artifact-dir", "", "writable directory for transient Snapshot artifact validation")
 	flag.StringVar(&cfg.caFile, "cacert", "", "trusted CA file for KubeBrain HTTPS endpoints")
 	flag.StringVar(&cfg.certFile, "cert", "", "client certificate file for KubeBrain HTTPS endpoints")
 	flag.StringVar(&cfg.keyFile, "key", "", "client private key file for KubeBrain HTTPS endpoints")
@@ -105,6 +107,24 @@ func (cfg config) validate() error {
 	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxDirectLatency < cfg.maxLatency || cfg.maxHeartbeatAge <= 0 || cfg.maxTSOLatency <= 0 || cfg.maxTSOLatency > cfg.maxLatency || cfg.maxRegionLatency <= 0 || cfg.maxRegionLatency > cfg.maxLatency ||
 		cfg.rangeInterval <= 0 || cfg.snapshotDelay <= 0 || cfg.streamTimeout <= 0 || cfg.streamBackoff <= 0 || cfg.streamMaxBackoff < cfg.streamBackoff {
 		return fmt.Errorf("interval and timeouts must be positive")
+	}
+	if cfg.snapshotDir != "" {
+		info, err := os.Stat(cfg.snapshotDir)
+		if err != nil || !info.IsDir() {
+			return fmt.Errorf("snapshot artifact directory must be an existing directory: %q", cfg.snapshotDir)
+		}
+		canary, err := os.CreateTemp(cfg.snapshotDir, ".kubebrain-rollout-write-check-*")
+		if err != nil {
+			return fmt.Errorf("snapshot artifact directory must be writable: %q: %w", cfg.snapshotDir, err)
+		}
+		canaryPath := canary.Name()
+		if closeErr := canary.Close(); closeErr != nil {
+			_ = os.Remove(canaryPath)
+			return fmt.Errorf("close snapshot artifact write check: %w", closeErr)
+		}
+		if removeErr := os.Remove(canaryPath); removeErr != nil {
+			return fmt.Errorf("remove snapshot artifact write check: %w", removeErr)
+		}
 	}
 	if len(cfg.pdEndpoints) == 0 {
 		return fmt.Errorf("PD endpoints are required")
@@ -625,7 +645,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 
 	streamProbe := startStreamProbeGroup(ctx, client, cfg.prefix, streamExpected, clusterID,
 		streamWorkerConfig{interval: cfg.rangeInterval, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff},
-		streamWorkerConfig{initialDelay: cfg.snapshotDelay, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff, successLimit: 1},
+		streamWorkerConfig{initialDelay: cfg.snapshotDelay, attemptTimeout: cfg.streamTimeout, retryBackoff: cfg.streamBackoff, maxBackoff: cfg.streamMaxBackoff, successLimit: 1, artifactDir: cfg.snapshotDir},
 	)
 	streamProbeStopped := false
 	defer func() {

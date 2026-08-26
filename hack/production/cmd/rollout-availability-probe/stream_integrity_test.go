@@ -18,10 +18,13 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -174,6 +177,49 @@ func TestConsumeSnapshotRejectsPartialAndCorruptResults(t *testing.T) {
 		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: "3.6.0"}},
 	}})
 	require.ErrorContains(t, err, "changed storage version")
+}
+
+func TestConsumeAndValidateSnapshotRejectsSelfConsistentNonEtcdArtifact(t *testing.T) {
+	data := []byte("self-consistent but not a bbolt snapshot")
+	digest := sha256.Sum256(data)
+	dir := t.TempDir()
+	partial, err := consumeAndValidateSnapshot(&fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+	}}, dir)
+	require.ErrorContains(t, err, "official etcdutl rejected Snapshot artifact")
+	require.True(t, partial)
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a rejected artifact must always be removed")
+}
+
+func TestConsumeAndValidateSnapshotAcceptsOfficialRestorableArtifact(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source.db")
+	require.NoError(t, etcdsnapshot.WriteBackend(sourcePath, etcdsnapshot.State{Revision: 7, Records: []etcdsnapshot.Record{{
+		Key: []byte("key"), Value: []byte("value"), CreateRevision: 7, ModRevision: 7, Version: 1,
+	}}}))
+	data, err := os.ReadFile(sourcePath)
+	require.NoError(t, err)
+	digest := sha256.Sum256(data)
+	dir := t.TempDir()
+	partial, err := consumeAndValidateSnapshot(&fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+		{response: &etcdserverpb.SnapshotResponse{Blob: data[:len(data)/2], RemainingBytes: uint64(len(data) - len(data)/2), Version: etcdsnapshot.StorageVersion}},
+		{response: &etcdserverpb.SnapshotResponse{Blob: data[len(data)/2:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+	}}, dir)
+	require.NoError(t, err)
+	require.True(t, partial)
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a validated artifact must always be removed")
+
+	partial, err = consumeAndValidateSnapshot(&fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+		{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: "3.6.0"}},
+		{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: "3.6.0"}},
+	}}, dir)
+	require.ErrorContains(t, err, "official etcdutl returned invalid Snapshot status")
+	require.True(t, partial)
 }
 
 func TestRunStreamWorkerRetriesWithBackoffAndDiscardsPartialAttempt(t *testing.T) {

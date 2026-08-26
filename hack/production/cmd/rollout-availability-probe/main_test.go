@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -158,8 +160,12 @@ func TestVerifyPDStoresRejectsDuplicateIdentityAndMalformedAddress(t *testing.T)
 }
 
 func TestConfigValidation(t *testing.T) {
-	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second}
+	snapshotDir := t.TempDir()
+	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, snapshotDir: snapshotDir}
 	require.NoError(t, valid.validate())
+	entries, err := os.ReadDir(snapshotDir)
+	require.NoError(t, err)
+	require.Empty(t, entries, "the pre-start write canary must be removed")
 
 	for name, mutate := range map[string]func(*config){
 		"endpoint":                  func(cfg *config) { cfg.endpoint = "" },
@@ -190,6 +196,7 @@ func TestConfigValidation(t *testing.T) {
 		"stream timeout":            func(cfg *config) { cfg.streamTimeout = 0 },
 		"stream retry backoff":      func(cfg *config) { cfg.streamBackoff = 0 },
 		"stream retry backoff cap":  func(cfg *config) { cfg.streamMaxBackoff = cfg.streamBackoff / 2 },
+		"snapshot artifact dir":     func(cfg *config) { cfg.snapshotDir = filepath.Join(t.TempDir(), "missing") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := valid

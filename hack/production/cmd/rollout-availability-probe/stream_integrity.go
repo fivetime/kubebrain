@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,8 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -133,6 +136,11 @@ func consumeRangeStream(stream rangeStreamReceiver, prefix string, expected []st
 }
 
 func consumeSnapshot(stream snapshotReceiver) (bool, error) {
+	partial, _, err := consumeSnapshotTo(stream, io.Discard)
+	return partial, err
+}
+
+func consumeSnapshotTo(stream snapshotReceiver, artifact io.Writer) (bool, string, error) {
 	var (
 		digest           hash.Hash = sha256.New()
 		remaining        uint64
@@ -147,45 +155,84 @@ func consumeSnapshot(stream snapshotReceiver) (bool, error) {
 		response, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			if !complete {
-				return partial, errors.New("Snapshot ended before its checksum frame")
+				return partial, version, errors.New("Snapshot ended before its checksum frame")
 			}
-			return partial, nil
+			return partial, version, nil
 		}
 		if err != nil {
-			return partial, err
+			return partial, version, err
 		}
 		partial = true
 		if response == nil {
-			return partial, errors.New("Snapshot returned an empty frame")
+			return partial, version, errors.New("Snapshot returned an empty frame")
 		}
 		if complete {
-			return partial, errors.New("Snapshot continued after its checksum frame")
+			return partial, version, errors.New("Snapshot continued after its checksum frame")
 		}
 		if versionObserved && response.Version != version {
-			return partial, errors.New("Snapshot changed storage version")
+			return partial, version, errors.New("Snapshot changed storage version")
 		}
 		version = response.Version
 		versionObserved = true
 		if awaitingChecksum {
 			if response.RemainingBytes != 0 || len(response.Blob) != sha256.Size || !bytes.Equal(response.Blob, digest.Sum(nil)) {
-				return partial, errors.New("Snapshot returned an invalid checksum frame")
+				return partial, version, errors.New("Snapshot returned an invalid checksum frame")
+			}
+			if _, err = artifact.Write(response.Blob); err != nil {
+				return partial, version, fmt.Errorf("write Snapshot checksum: %w", err)
 			}
 			complete = true
 			continue
 		}
 		if len(response.Blob) == 0 {
-			return partial, errors.New("Snapshot returned an empty data frame")
+			return partial, version, errors.New("Snapshot returned an empty data frame")
 		}
 		if haveData {
 			if uint64(len(response.Blob)) > remaining || response.RemainingBytes != remaining-uint64(len(response.Blob)) {
-				return partial, errors.New("Snapshot returned discontinuous remaining bytes")
+				return partial, version, errors.New("Snapshot returned discontinuous remaining bytes")
 			}
+		}
+		if _, err = artifact.Write(response.Blob); err != nil {
+			return partial, version, fmt.Errorf("write Snapshot data: %w", err)
 		}
 		_, _ = digest.Write(response.Blob)
 		remaining = response.RemainingBytes
 		haveData = true
 		awaitingChecksum = remaining == 0
 	}
+}
+
+func consumeAndValidateSnapshot(stream snapshotReceiver, artifactDir string) (partial bool, retErr error) {
+	artifact, err := os.CreateTemp(artifactDir, ".kubebrain-rollout-snapshot-*.db")
+	if err != nil {
+		return false, fmt.Errorf("create Snapshot artifact: %w", err)
+	}
+	path := artifact.Name()
+	defer func() {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove Snapshot artifact: %w", removeErr))
+		}
+	}()
+	version := ""
+	partial, version, err = consumeSnapshotTo(stream, artifact)
+	if err == nil {
+		err = artifact.Sync()
+	}
+	if closeErr := artifact.Close(); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
+	if err != nil {
+		return partial, err
+	}
+	artifactStatus, err := etcdutlsnapshot.NewV3(zap.NewNop()).Status(path)
+	if err != nil {
+		return partial, fmt.Errorf("official etcdutl rejected Snapshot artifact: %w", err)
+	}
+	if artifactStatus.Revision <= 0 || artifactStatus.TotalSize <= 0 || artifactStatus.Version != version {
+		return partial, fmt.Errorf("official etcdutl returned invalid Snapshot status: revision=%d size=%d version=%q wire_version=%q",
+			artifactStatus.Revision, artifactStatus.TotalSize, artifactStatus.Version, version)
+	}
+	return partial, nil
 }
 
 type streamProbeCounters struct {
@@ -209,6 +256,7 @@ type streamWorkerConfig struct {
 	retryBackoff   time.Duration
 	maxBackoff     time.Duration
 	successLimit   int64
+	artifactDir    string
 }
 
 type streamAttempt func(context.Context) (partial bool, err error)
@@ -322,7 +370,7 @@ func startStreamProbeGroup(ctx context.Context, client *clientv3.Client, prefix 
 			if err != nil {
 				return false, err
 			}
-			return consumeSnapshot(stream)
+			return consumeAndValidateSnapshot(stream, snapshotCfg.artifactDir)
 		})
 		if err != nil {
 			fail("Snapshot", err)
