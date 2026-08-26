@@ -477,9 +477,23 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		return fmt.Errorf("grant lease: %w", err)
 	}
 	lastRevision = leaseRevision
+	historyLeaseID := clientv3.NoLease
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
+		if historyLeaseID != clientv3.NoLease {
+			revokedHistory, cleanupErr := client.Revoke(cleanupCtx, historyLeaseID)
+			if cleanupErr == nil {
+				if revokedHistory == nil {
+					cleanupErr = fmt.Errorf("empty response")
+				} else {
+					_, lastRevision, cleanupErr = validateResponseHeader(revokedHistory.Header, clusterID, lastRevision)
+				}
+			}
+			if cleanupErr != nil && retErr == nil {
+				retErr = fmt.Errorf("cleanup revoke Snapshot history lease: %w", cleanupErr)
+			}
+		}
 		revoked, cleanupErr := client.Revoke(cleanupCtx, leaseID)
 		if cleanupErr == nil {
 			if revoked == nil {
@@ -545,6 +559,16 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("attach lease key: %w", err)
 	}
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	historyLease, err := client.Grant(opCtx, streamProbeHistoryLeaseTTL)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("grant Snapshot history lease: %w", err)
+	}
+	historyLeaseID, lastRevision, err = validateGrantResponse(historyLease, clusterID, lastRevision, streamProbeHistoryLeaseTTL)
+	if err != nil {
+		return fmt.Errorf("grant Snapshot history lease: %w", err)
+	}
 
 	streamExpected := newStreamProbeExpectations(cfg.prefix)
 	for index := range streamExpected {
@@ -609,6 +633,56 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	historySeed.revision = lastRevision
 	historySeed.events = append(historySeed.events, streamProbeEventExpectation{
 		eventType: mvccpb.PUT, value: historySeed.value, hash: historySeed.hash, revision: lastRevision,
+		createRevision: lastRevision, version: 1,
+	})
+	leaseHistorySeed := &streamExpected[1]
+	leaseHistoryCreateRevision := leaseHistorySeed.revision
+	leaseHistorySeed.events = append(leaseHistorySeed.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: leaseHistorySeed.value, hash: leaseHistorySeed.hash, revision: leaseHistoryCreateRevision,
+		createRevision: leaseHistoryCreateRevision, version: 1,
+	})
+	leasedHistoryValue := leaseHistorySeed.value + "-leased"
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	leasedHistory, leaseHistoryErr := client.Put(opCtx, leaseHistorySeed.key, leasedHistoryValue, clientv3.WithLease(historyLeaseID))
+	cancel()
+	if leaseHistoryErr != nil {
+		return fmt.Errorf("attach lease to Snapshot history seed %q: %w", leaseHistorySeed.key, leaseHistoryErr)
+	}
+	lastRevision, leaseHistoryErr = validatePutResponse(leasedHistory, clusterID, lastRevision)
+	if leaseHistoryErr != nil {
+		return fmt.Errorf("attach lease to Snapshot history seed %q: %w", leaseHistorySeed.key, leaseHistoryErr)
+	}
+	leaseHistorySeed.events = append(leaseHistorySeed.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: leasedHistoryValue, hash: sha256.Sum256([]byte(leasedHistoryValue)), revision: lastRevision,
+		createRevision: leaseHistoryCreateRevision, version: 2, lease: int64(historyLeaseID),
+	})
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	deletedLeaseHistory, leaseHistoryErr := client.Delete(opCtx, leaseHistorySeed.key)
+	cancel()
+	if leaseHistoryErr != nil {
+		return fmt.Errorf("delete leased Snapshot history seed %q: %w", leaseHistorySeed.key, leaseHistoryErr)
+	}
+	_, lastRevision, leaseHistoryErr = validateDeleteResponse(deletedLeaseHistory, clusterID, lastRevision)
+	if leaseHistoryErr != nil {
+		return fmt.Errorf("delete leased Snapshot history seed %q: %w", leaseHistorySeed.key, leaseHistoryErr)
+	}
+	if deletedLeaseHistory.Deleted != 1 {
+		return fmt.Errorf("delete leased Snapshot history seed %q returned deleted=%d, want 1", leaseHistorySeed.key, deletedLeaseHistory.Deleted)
+	}
+	leaseHistorySeed.events = append(leaseHistorySeed.events, streamProbeEventExpectation{eventType: mvccpb.DELETE, revision: lastRevision})
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	recreatedLeaseHistory, leaseHistoryErr := client.Put(opCtx, leaseHistorySeed.key, leaseHistorySeed.value)
+	cancel()
+	if leaseHistoryErr != nil {
+		return fmt.Errorf("recreate unleased Snapshot history seed %q: %w", leaseHistorySeed.key, leaseHistoryErr)
+	}
+	lastRevision, leaseHistoryErr = validatePutResponse(recreatedLeaseHistory, clusterID, lastRevision)
+	if leaseHistoryErr != nil {
+		return fmt.Errorf("recreate unleased Snapshot history seed %q: %w", leaseHistorySeed.key, leaseHistoryErr)
+	}
+	leaseHistorySeed.revision = lastRevision
+	leaseHistorySeed.events = append(leaseHistorySeed.events, streamProbeEventExpectation{
+		eventType: mvccpb.PUT, value: leaseHistorySeed.value, hash: leaseHistorySeed.hash, revision: lastRevision,
 		createRevision: lastRevision, version: 1,
 	})
 

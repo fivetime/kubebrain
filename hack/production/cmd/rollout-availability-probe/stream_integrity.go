@@ -44,8 +44,9 @@ import (
 )
 
 const (
-	streamProbeSeedKeys   = 16
-	streamProbeValueBytes = 8 * 1024
+	streamProbeSeedKeys        = 16
+	streamProbeValueBytes      = 8 * 1024
+	streamProbeHistoryLeaseTTL = 15 * 60
 )
 
 type streamProbeExpectation struct {
@@ -374,6 +375,7 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 	}
 	seenKeys := make(map[string]struct{}, len(expected))
 	expectedEvents := make([]keyedExpectedEvent, 0, len(expected))
+	expectedLeaseIDs := make(map[int64]struct{})
 	firstRevision := revision + 1
 	commonPrefix := []byte(expected[0].key)
 	for _, item := range expected {
@@ -399,8 +401,11 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			}
 			switch event.eventType {
 			case mvccpb.PUT:
-				if event.createRevision <= 0 || event.createRevision > event.revision || event.version <= 0 || event.lease < 0 {
+				if event.createRevision <= 0 || event.createRevision > event.revision || event.version <= 0 {
 					return fmt.Errorf("invalid restored seed PUT expectation: key=%q revision=%d", item.key, event.revision)
+				}
+				if event.lease != 0 {
+					expectedLeaseIDs[event.lease] = struct{}{}
 				}
 			case mvccpb.DELETE:
 				if event.value != "" || event.hash != ([sha256.Size]byte{}) || event.createRevision != 0 || event.version != 0 || event.lease != 0 {
@@ -496,6 +501,37 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		}
 		if err := validateSeed(item, response, false); err != nil {
 			return err
+		}
+	}
+	leaseIDs := make([]int64, 0, len(expectedLeaseIDs))
+	for leaseID := range expectedLeaseIDs {
+		leaseIDs = append(leaseIDs, leaseID)
+	}
+	sort.Slice(leaseIDs, func(left, right int) bool { return leaseIDs[left] < leaseIDs[right] })
+	for _, leaseID := range leaseIDs {
+		response, err := client.TimeToLive(verifyCtx, clientv3.LeaseID(leaseID), clientv3.WithAttachedKeys())
+		if err != nil {
+			return fmt.Errorf("read restored historical lease %d: %w", leaseID, err)
+		}
+		if response == nil {
+			return fmt.Errorf("officially restored etcd returned an empty historical lease response for %d", leaseID)
+		}
+		if err := validateHeader(response.ResponseHeader); err != nil {
+			return fmt.Errorf("validate restored historical lease %d: %w", leaseID, err)
+		}
+		if int64(response.ID) != leaseID || response.TTL <= 0 || response.GrantedTTL <= 0 || response.TTL > response.GrantedTTL {
+			return fmt.Errorf("officially restored etcd returned invalid historical lease state for %d: id=%d ttl=%d granted_ttl=%d",
+				leaseID, response.ID, response.TTL, response.GrantedTTL)
+		}
+		seenAttachedKeys := make(map[string]struct{}, len(response.Keys))
+		for _, key := range response.Keys {
+			if len(key) == 0 {
+				return fmt.Errorf("officially restored etcd returned an empty attached key for historical lease %d", leaseID)
+			}
+			if _, duplicate := seenAttachedKeys[string(key)]; duplicate {
+				return fmt.Errorf("officially restored etcd repeated attached key %q for historical lease %d", key, leaseID)
+			}
+			seenAttachedKeys[string(key)] = struct{}{}
 		}
 	}
 

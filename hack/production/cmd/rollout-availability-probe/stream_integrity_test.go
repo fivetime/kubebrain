@@ -377,6 +377,55 @@ func TestConsumeAndValidateSnapshotValidatesUpdateDeleteRecreateHistory(t *testi
 	require.Empty(t, entries, "a rejected historical artifact must always be removed")
 }
 
+func TestConsumeAndValidateSnapshotValidatesHistoricalLeaseState(t *testing.T) {
+	expected := []streamProbeExpectation{{
+		key: "probe/lease-history", value: "v3", hash: sha256.Sum256([]byte("v3")), revision: 10,
+		events: []streamProbeEventExpectation{
+			{eventType: mvccpb.PUT, value: "v1", hash: sha256.Sum256([]byte("v1")), revision: 7, createRevision: 7, version: 1},
+			{eventType: mvccpb.PUT, value: "v2", hash: sha256.Sum256([]byte("v2")), revision: 8, createRevision: 7, version: 2, lease: 17},
+			{eventType: mvccpb.DELETE, revision: 9},
+			{eventType: mvccpb.PUT, value: "v3", hash: sha256.Sum256([]byte("v3")), revision: 10, createRevision: 10, version: 1},
+		},
+	}}
+	state := etcdsnapshot.State{
+		Revision: 10, PreserveHistory: true,
+		Records: []etcdsnapshot.Record{
+			{Key: []byte("probe/lease-history"), Value: []byte("v1"), CreateRevision: 7, ModRevision: 7, Version: 1},
+			{Key: []byte("probe/lease-history"), Value: []byte("v2"), CreateRevision: 7, ModRevision: 8, Version: 2, Lease: 17},
+			{Key: []byte("probe/lease-history"), ModRevision: 9, Tombstone: true},
+			{Key: []byte("probe/lease-history"), Value: []byte("v3"), CreateRevision: 10, ModRevision: 10, Version: 1},
+		},
+		Leases: []etcdsnapshot.Lease{{ID: 17, GrantedTTL: 60, RemainingTTL: 29}},
+	}
+	receiver := func(t *testing.T, state etcdsnapshot.State) *fakeSnapshotReceiver {
+		t.Helper()
+		sourcePath := filepath.Join(t.TempDir(), "source.db")
+		require.NoError(t, etcdsnapshot.WriteBackend(sourcePath, state))
+		data, err := os.ReadFile(sourcePath)
+		require.NoError(t, err)
+		digest := sha256.Sum256(data)
+		return &fakeSnapshotReceiver{steps: []snapshotReceiveStep{
+			{response: &etcdserverpb.SnapshotResponse{Blob: data, RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+			{response: &etcdserverpb.SnapshotResponse{Blob: digest[:], RemainingBytes: 0, Version: etcdsnapshot.StorageVersion}},
+		}}
+	}
+	dir := t.TempDir()
+	partial, err := consumeAndValidateSnapshot(t.Context(), receiver(t, state), dir, expected, restoredSnapshotTLSConfig{})
+	require.NoError(t, err)
+	require.True(t, partial)
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a validated lease artifact must always be removed")
+
+	state.Leases = nil
+	partial, err = consumeAndValidateSnapshot(t.Context(), receiver(t, state), dir, expected, restoredSnapshotTLSConfig{})
+	require.ErrorContains(t, err, "historical lease")
+	require.True(t, partial)
+	entries, readErr = os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "an artifact with missing historical lease state must always be removed")
+}
+
 func TestValidateSnapshotArtifactRejectsRestoreFailureAndRemovesPartialOutput(t *testing.T) {
 	dir := t.TempDir()
 	artifactPath := filepath.Join(dir, "artifact.db")
