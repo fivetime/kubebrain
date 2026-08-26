@@ -32,6 +32,7 @@ func initRangeStreamFailureMetrics(metricCli metrics.Metrics) {
 	for _, stage := range rangeStreamFailureStages {
 		_ = metricCli.EmitCounter("read.range_stream.failure", int64(0), metrics.Tag("stage", stage))
 	}
+	_ = metricCli.EmitCounter("read.range_stream.proxy_retry", int64(0))
 }
 
 func emitRangeStreamFailure(metricCli metrics.Metrics, stage string) {

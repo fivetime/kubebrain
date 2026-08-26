@@ -265,6 +265,18 @@ func recordedRangeStreamFailureValues(rec *recordingMetrics, stage string) []int
 	return values
 }
 
+func recordedRangeStreamProxyRetryValues(rec *recordingMetrics) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == "read.range_stream.proxy_retry" && len(counter.tags) == 0 {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
 // newRangeStreamTestServer builds a leader RPCServer over memkv.
 func newRangeStreamTestServer(t *testing.T) (*RPCServer, func()) {
 	t.Helper()
@@ -909,10 +921,12 @@ func TestFollowerRangeStreamSendFailureUsesCanonicalMetric(t *testing.T) {
 func TestFollowerRangeStreamMapsInternalProxyCancellationToLeaderChanged(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()
+	calls := 0
 	server.peers = testPeerService{
 		proxyEnabled: true,
 		epochFn:      func() (uint64, bool) { return 7, false },
 		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			calls++
 			results := make(chan etcdproxy.RangeStreamResult, 1)
 			results <- etcdproxy.RangeStreamResult{Err: status.Error(codes.Canceled, "grpc: the client connection is closing")}
 			close(results)
@@ -924,15 +938,83 @@ func TestFollowerRangeStreamMapsInternalProxyCancellationToLeaderChanged(t *test
 		&fakeRangeStreamServer{ctx: ctx})
 	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
 	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, preResponseStreamProxyAttempts, calls)
+}
+
+func TestFollowerRangeStreamRetriesPeerDrainBeforeFirstPublicFrame(t *testing.T) {
+	rec := &recordingMetrics{}
+	server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+	defer cleanup()
+	calls := 0
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			calls++
+			if calls == 1 {
+				return nil, proxyprotocol.ErrPeerStreamDrained
+			}
+			results := make(chan etcdproxy.RangeStreamResult, 1)
+			results <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
+				RangeResponse: &etcdserverpb.RangeResponse{Header: txnHeader(42)},
+			}}
+			close(results)
+			return results, nil
+		},
+	}
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/stream/"), RangeEnd: []byte("/stream0"),
+	}, stream))
+	require.Equal(t, 2, calls)
+	require.Len(t, stream.sent, 1)
+	require.EqualValues(t, 42, stream.sent[0].RangeResponse.Header.Revision)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamProxyRetryValues(rec))
+	require.Equal(t, []interface{}{int64(0)}, recordedRangeStreamFailureValues(rec, rangeStreamFailureBackend))
+}
+
+func TestFollowerRangeStreamDoesNotJoinLeadersAfterPublicFrame(t *testing.T) {
+	rec := &recordingMetrics{}
+	server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+	defer cleanup()
+	calls := 0
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			calls++
+			results := make(chan etcdproxy.RangeStreamResult, 2)
+			results <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
+				RangeResponse: &etcdserverpb.RangeResponse{Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("/stream/a"), Value: []byte("value"), CreateRevision: 1, ModRevision: 1, Version: 1,
+				}}},
+			}}
+			results <- etcdproxy.RangeStreamResult{Err: proxyprotocol.ErrPeerStreamDrained}
+			close(results)
+			return results, nil
+		},
+	}
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/stream/"), RangeEnd: []byte("/stream0"),
+	}, stream)
+	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
+	require.Equal(t, 1, calls)
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, "/stream/a", string(stream.sent[0].RangeResponse.Kvs[0].Key))
+	require.Equal(t, []interface{}{int64(0)}, recordedRangeStreamProxyRetryValues(rec))
+	require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureBackend))
 }
 
 func TestFollowerRangeStreamPreservesCallerCancellation(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()
+	calls := 0
 	server.peers = testPeerService{
 		proxyEnabled: true,
 		epochFn:      func() (uint64, bool) { return 7, false },
 		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			calls++
 			results := make(chan etcdproxy.RangeStreamResult, 1)
 			results <- etcdproxy.RangeStreamResult{Err: context.Canceled}
 			close(results)
@@ -944,6 +1026,7 @@ func TestFollowerRangeStreamPreservesCallerCancellation(t *testing.T) {
 	err := server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")},
 		&fakeRangeStreamServer{ctx: ctx})
 	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, calls)
 }
 
 func TestFreshLeaderSerializableLatestRangeStreamFallsBackBeforeFirstFrame(t *testing.T) {

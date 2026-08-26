@@ -338,6 +338,12 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	return s.rangeStreamOnce(r, &contextRangeStreamServer{KV_RangeStreamServer: rs, ctx: ctx}, startTime)
 }
 
+// A follower proxy is an implementation detail that upstream etcd does not
+// expose. Retrying one retired peer stream before the public client has seen a
+// frame preserves the direct-member wire contract. Once a frame is visible,
+// joining results from two leaders could duplicate or omit keys and is forbidden.
+const preResponseStreamProxyAttempts = 2
+
 // contextRangeStreamServer lets one public RangeStream execute against a
 // bounded live-read context or a protected checkpoint while retaining the
 // original gRPC transport. sent counts only successfully delivered frames: a
@@ -407,62 +413,82 @@ func (s *RPCServer) rangeStreamOnce(
 			if err != nil {
 				return err
 			}
-			results, err := s.peers.RangeStream(proxyCtx, r)
-			if err != nil {
-				if ctx.Err() == nil {
-					emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
-				}
-				return rangeStreamForwardError(ctx, err)
-			}
-			if results == nil {
-				emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
-				return status.Error(codes.Unavailable, "forwarded range stream returned a nil result channel")
-			}
-			terminalSeen := false
-			payloadValidator := newRangeStreamProxyPayloadValidator(r)
-			for result := range results {
-				if result.Err != nil && result.Response != nil {
-					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
-					return status.Error(codes.Unavailable, "forwarded range stream result mixed response and error")
-				}
-				if result.Err != nil {
+			sentAny := false
+			for attempt := 0; attempt < preResponseStreamProxyAttempts; attempt++ {
+				results, callErr := s.peers.RangeStream(proxyCtx, r)
+				if callErr != nil {
+					mappedErr := rangeStreamForwardError(ctx, callErr)
+					if !sentAny && attempt+1 < preResponseStreamProxyAttempts && errors.Is(mappedErr, rpctypes.ErrGRPCLeaderChanged) {
+						s.metricCli.EmitCounter("read.range_stream.proxy_retry", 1)
+						continue
+					}
 					if ctx.Err() == nil {
 						emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
 					}
-					return rangeStreamForwardError(ctx, result.Err)
+					return mappedErr
 				}
-				response := result.Response
-				if response == nil || response.RangeResponse == nil {
+				if results == nil {
 					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
-					return status.Error(codes.Unavailable, "forwarded range stream returned an empty result")
+					return status.Error(codes.Unavailable, "forwarded range stream returned a nil result channel")
 				}
-				if terminalSeen {
-					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
-					return status.Error(codes.Unavailable, "forwarded range stream continued after terminal metadata")
-				}
-				if err := payloadValidator.validate(response.RangeResponse); err != nil {
-					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
-					return err
-				}
-				terminalSeen = response.RangeResponse.Header != nil
-				s.observeForwardedRevision(response.RangeResponse.Header, nil)
-				if err := rs.Send(response); err != nil {
-					if shouldCountServerStreamFailure(rs.Context(), err) {
-						emitRangeStreamFailure(s.metricCli, rangeStreamFailureSend)
+				terminalSeen := false
+				retry := false
+				payloadValidator := newRangeStreamProxyPayloadValidator(r)
+				for result := range results {
+					if result.Err != nil && result.Response != nil {
+						emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+						return status.Error(codes.Unavailable, "forwarded range stream result mixed response and error")
 					}
-					return err
+					if result.Err != nil {
+						mappedErr := rangeStreamForwardError(ctx, result.Err)
+						if !sentAny && attempt+1 < preResponseStreamProxyAttempts && errors.Is(mappedErr, rpctypes.ErrGRPCLeaderChanged) {
+							s.metricCli.EmitCounter("read.range_stream.proxy_retry", 1)
+							retry = true
+							break
+						}
+						if ctx.Err() == nil {
+							emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
+						}
+						return mappedErr
+					}
+					response := result.Response
+					if response == nil || response.RangeResponse == nil {
+						emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+						return status.Error(codes.Unavailable, "forwarded range stream returned an empty result")
+					}
+					if terminalSeen {
+						emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+						return status.Error(codes.Unavailable, "forwarded range stream continued after terminal metadata")
+					}
+					if err := payloadValidator.validate(response.RangeResponse); err != nil {
+						emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+						return err
+					}
+					terminalSeen = response.RangeResponse.Header != nil
+					s.observeForwardedRevision(response.RangeResponse.Header, nil)
+					if err := rs.Send(response); err != nil {
+						if shouldCountServerStreamFailure(rs.Context(), err) {
+							emitRangeStreamFailure(s.metricCli, rangeStreamFailureSend)
+						}
+						return err
+					}
+					sentAny = true
 				}
-			}
-			if !terminalSeen {
-				if err := ctx.Err(); err != nil {
-					return err
+				if retry {
+					continue
 				}
-				emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
-				return status.Error(codes.Unavailable, "forwarded range stream ended without terminal metadata")
+				if !terminalSeen {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+					return status.Error(codes.Unavailable, "forwarded range stream ended without terminal metadata")
+				}
+				s.metricCli.EmitCounter("read.range_stream", 1)
+				s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
+				return nil
 			}
-			s.metricCli.EmitCounter("read.range_stream", 1)
-			s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
-			return nil
+			return status.Error(codes.Internal, "kubebrain: exhausted pre-response range stream proxy retry")
 		}
 	}
 	if r.Serializable && r.Revision <= 0 {

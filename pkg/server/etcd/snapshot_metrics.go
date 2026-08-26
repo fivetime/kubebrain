@@ -56,6 +56,7 @@ func initSnapshotFailureMetrics(metricCli metrics.Metrics) {
 	for _, stage := range snapshotFailureStages {
 		_ = metricCli.EmitCounter("maintenance.snapshot.failure", int64(0), metrics.Tag("stage", stage))
 	}
+	_ = metricCli.EmitCounter("maintenance.snapshot.proxy_retry", int64(0))
 }
 
 func emitSnapshotFailure(metricCli metrics.Metrics, stage string) {

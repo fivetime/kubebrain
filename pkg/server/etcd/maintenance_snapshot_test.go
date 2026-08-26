@@ -578,8 +578,10 @@ func TestMaintenanceSnapshotFollowerMapsInternalProxyCancellationToLeaderChanged
 	rec := &recordingMetrics{}
 	server.metricCli = rec
 	initSnapshotFailureMetrics(rec)
+	calls := 0
 	server.peers = testPeerService{
 		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			calls++
 			results := make(chan etcdproxy.SnapshotResult, 1)
 			results <- etcdproxy.SnapshotResult{Err: status.Error(codes.Canceled, "grpc: the client connection is closing")}
 			close(results)
@@ -590,6 +592,71 @@ func TestMaintenanceSnapshotFollowerMapsInternalProxyCancellationToLeaderChanged
 	err := server.forwardSnapshot(ctx, &etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: ctx})
 	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
 	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, preResponseStreamProxyAttempts, calls)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedCounterValues(rec, "maintenance.snapshot.proxy_retry"))
+	require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, snapshotFailureProxy))
+}
+
+func TestMaintenanceSnapshotFollowerRetriesPeerDrainBeforeFirstPublicFrame(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
+	digest := sha256.Sum256([]byte("abc"))
+	calls := 0
+	server.peers = testPeerService{
+		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			calls++
+			results := make(chan etcdproxy.SnapshotResult, 2)
+			if calls == 1 {
+				results <- etcdproxy.SnapshotResult{Err: proxyprotocol.ErrPeerStreamDrained}
+			} else {
+				results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+					RemainingBytes: 0, Blob: []byte("abc"), Version: Version,
+				}}
+				results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+					RemainingBytes: 0, Blob: digest[:], Version: Version,
+				}}
+			}
+			close(results)
+			return results, nil
+		},
+	}
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+	require.NoError(t, server.forwardSnapshot(stream.ctx, &etcdserverpb.SnapshotRequest{}, stream))
+	require.Equal(t, 2, calls)
+	require.Len(t, stream.responses, 2)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedCounterValues(rec, "maintenance.snapshot.proxy_retry"))
+	require.Equal(t, []interface{}{int64(0)}, recordedSnapshotFailureValues(rec, snapshotFailureProxy))
+}
+
+func TestMaintenanceSnapshotFollowerDoesNotJoinLeadersAfterPublicFrame(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
+	calls := 0
+	server.peers = testPeerService{
+		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			calls++
+			results := make(chan etcdproxy.SnapshotResult, 2)
+			results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+				RemainingBytes: 2, Blob: []byte("a"), Version: Version,
+			}}
+			results <- etcdproxy.SnapshotResult{Err: proxyprotocol.ErrPeerStreamDrained}
+			close(results)
+			return results, nil
+		},
+	}
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+	err := server.forwardSnapshot(stream.ctx, &etcdserverpb.SnapshotRequest{}, stream)
+	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
+	require.Equal(t, 1, calls)
+	require.Len(t, stream.responses, 1)
+	require.Equal(t, []byte("a"), stream.responses[0].Blob)
+	require.Equal(t, []interface{}{int64(0)}, recordedCounterValues(rec, "maintenance.snapshot.proxy_retry"))
 	require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, snapshotFailureProxy))
 }
 
@@ -599,8 +666,10 @@ func TestMaintenanceSnapshotFollowerPreservesCallerCancellation(t *testing.T) {
 	rec := &recordingMetrics{}
 	server.metricCli = rec
 	initSnapshotFailureMetrics(rec)
+	calls := 0
 	server.peers = testPeerService{
 		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			calls++
 			results := make(chan etcdproxy.SnapshotResult, 1)
 			results <- etcdproxy.SnapshotResult{Err: context.Canceled}
 			close(results)
@@ -611,6 +680,8 @@ func TestMaintenanceSnapshotFollowerPreservesCallerCancellation(t *testing.T) {
 	cancel()
 	err := server.forwardSnapshot(ctx, &etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: ctx})
 	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, calls)
+	require.Equal(t, []interface{}{int64(0)}, recordedCounterValues(rec, "maintenance.snapshot.proxy_retry"))
 	require.Equal(t, []interface{}{int64(0)}, recordedSnapshotFailureValues(rec, snapshotFailureProxy))
 }
 

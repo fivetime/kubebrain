@@ -118,6 +118,18 @@ func recordedSnapshotFailureValues(rec *recordingMetrics, stage string) []interf
 	return values
 }
 
+func recordedCounterValues(rec *recordingMetrics, name string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == name && len(counter.tags) == 0 {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
 func recordedMaintenanceProxyIntegrityValues(rec *recordingMetrics, rpc string) []interface{} {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
@@ -1404,6 +1416,7 @@ func TestRangeStreamFailureMetricsInitializeFixedStages(t *testing.T) {
 		{name: "read.range_stream.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "backend")}},
 		{name: "read.range_stream.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "send")}},
 		{name: "read.range_stream.failure", value: int64(0), tags: []metrics.T{metrics.Tag("stage", "protocol")}},
+		{name: "read.range_stream.proxy_retry", value: int64(0)},
 		{name: "read.range_stream.failure", value: 1, tags: []metrics.T{metrics.Tag("stage", "protocol")}},
 	}, rec.counters)
 }
