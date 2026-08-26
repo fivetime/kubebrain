@@ -62897,6 +62897,64 @@ EndpointSlice 不存在。
 固定 seed/MVCC；它仍不是多 member restore、跨集群灾备、任意历史 revision/完整权限矩阵或大容量节点磁盘演练。A5541 auth RED
 和首次 A5542 restart 延迟 RED 都不被后续 GREEN 覆盖。
 
+### A5543：恢复后的历史 Range 与 Watch 重放
+
+A5542 只从启动后的官方 singleton etcd 读取 16 个 seed 的当前值；即使 snapshot 保存了旧版本，恢复或启动路径若丢失历史 revision、
+Watch event 或 MVCC 元数据，这个门禁仍可能 GREEN。对照
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/tests/integration/snapshot/v3_snapshot_test.go` 的
+Restore→`embed.StartEtcd`→clientv3 读取路径，以及官方 clientv3 历史 Range/Watch 集成测试，本轮把每个 seed 的真实 Put revision 纳入
+恢复 expectation。
+
+提交 `42b9036a`（完整 SHA `42b9036af6a769974128e52f7d8fd0ccbf89d1d8`）在恢复 server 上先以每个 seed 的原 Put
+revision 执行 `Get(..., WithRev(revision))`，再执行当前 Get；两次结果都必须精确匹配 key/value hash、create/mod revision、
+`version=1` 与 `lease=0`。随后从所有 seed 的最长非空公共前缀和最早 seed revision 建立 prefix Watch，要求恰好重放全部预期 PUT，
+逐项校验相同 MVCC 字段，并拒绝 created/canceled/compact/空 envelope、非 PUT、意外 key、重复 key 或缺失事件。该验证继续受原 15 秒
+context 约束，并使用 A5542 的原 mTLS caller 与 auth 权限，而非匿名或关闭 auth 的旁路。
+
+确定性旧代码 RED 把一个 seed expectation 改成错误历史 revision；旧 verifier 因不读取历史而返回 nil。另一负例在相同 prefix 注入额外
+历史事件和 tombstone，证明 Watch 不能只收齐预期键后忽略同区间污染。真实保留历史的制品 head revision 为 9、seed revision 为 7，
+普通聚焦 20 轮 Go/墙钟为 `70.854/72.653s`，race 20 轮为 `80.915/84.671s`；完整 probe 包 4.845 秒，vet 与 diff check
+全绿。655 项 inventory 为 `158/181/164/152`；精确提交后四片 Go/墙钟秒为 `130.807/139.575`、
+`355.684/364.515`、`229.016/237.779`、`371.618/380.444`，全部通过。
+
+A5543 镜像构建时间 `2026-08-26T14:48:09Z`，OCI index
+`sha256:95d7273a0ce9f86ef2f56147dc5e057520f6ed29845e079d882da5fd1082c513`、platform manifest
+`sha256:73665b523d7f763a9c822dcaa55c55ebd78f0d1ca3f1863e2da07004189cb889`、config
+`sha256:8f887f39b195881fde9828f6b9956cd42159d6b0c9b3a0a3f1962c81c5c87814`、attestation
+`sha256:eb243d588820b606ca227b8cd41c54b405882671f4e3861407cea4ae62231fb1`、buildx provenance attachment
+`sha256:37ca174cf0ec4ed46beb5f8224266e4fb4931ce273a0dfa254832249080c03bc`、Kind runtime
+`sha256:d021ec96f7759162403f8d8494260c6bf2f78e9d46563000bb4a4dee8ef83011`。probe/完整镜像分别为
+47,902,783/906,578,051 bytes，较 A5542 增加 12,173/7,610 bytes；镜像内完整 SHA、TiKV、Go 1.26.5、
+linux/amd64、kubectl v1.36.2 与 `USER 65532:65532` 已独立复核。构建前的一次人工 SHA 比较使用了错误 expected 值且 shell 未
+`set -e`，但实际 build arg、provenance、二进制版本与镜像 labels 均指向上述同一完整提交；该操作失误不作为制品身份依据。
+
+首次正式尝试在任何 StatefulSet mutation 前因 Kind containerd 只有 tag、缺少候选 OCI index 的显式 digest alias 而
+`ImagePullBackOff` RED；登记同内容 digest alias 后，另两次尝试仍在 mutation 前因 probe 10 秒内未发布启动 barrier 而 RED。
+诊断 Pod 随后证明所有直写均超时，既有 A5542 三端 `/readyz` 已为 503；KubeBrain 日志显示 TiKV store 请求超时、选主 lease 无法读取，
+PD 三个 store 均报告 20GiB capacity、0B available，Kind 节点根盘也为 100%。因此这两次 RED 的根因是既有数据面磁盘耗尽，不是
+A5543 历史验证逻辑。现场两次执行节点内 `crictl rmi --prune`，仅删除未被容器使用的旧 Kind 镜像；当前 A5542 与候选 A5543 均被
+保留，约释放 200GB，节点最终有 186GB 可用、使用率 91%。这些旧镜像可通过重新 load/build 恢复。清理后相同 A5543 诊断立即完成
+1/1，Snapshot 1、retry/partial 均 0，再进入正式 mutation。
+
+A5542→A5543 upgrade **900/900 GREEN**：公共/直连 KeepAlive `106`/`276`、replacement 24、最大 KeepAlive 恢复
+`23910ms`；RangeStream 179、完成当前/历史 Range 与历史 prefix Watch 的 Snapshot 1、stream retry 2、partial retry 0，
+最大公共 Watch/直连 Watch/TSO/Region 延迟 `3327/29903/49/7ms`，revision
+`a4657-tls-777dfbbfbc -> a4657-tls-d65847776`。A5543 same-version restart 再次 **900/900 GREEN**：
+KeepAlive `101`/`271`、replacement 22、最大恢复 `22893ms`；RangeStream 172、Snapshot 1、stream/partial retry 均 0，
+最大延迟 `1800/27656/61/8ms`，revision `a4657-tls-d65847776 -> a4657-tls-78449bd4bf`。两轮中的 leader
+changed/暂无连接告警均在既有有界重试合同内恢复。
+
+终态 StatefulSet UID `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，current/update revision 均为
+`a4657-tls-78449bd4bf`，三 Pod 3/3 Ready、restart 0、运行精确 A5543 digest 且三端 `/readyz=ok`；PD/TiKV 3+3
+Ready、restart 0，近 7 分钟无 queue-full/panic/fatal。A5543 probe 数据均已清除；根 rollout 前缀 Count=1 仅为文档明确保留、
+未触碰的 A5529 独立审计键 `/kubebrain-rollout-availability/a5529-tls-migration/watch`。临时 client Service UID
+`9acbfb8e-8257-4051-b706-9d065819929b` 已以创建时 resourceVersion `6775047` 和 UID 双前置条件删除，关联 EndpointSlice
+与 probe Pod 均不存在。
+
+本轮证明的是 16 个无 lease、仅创建一次的固定 seed 可在官方恢复启动后按原 revision Range 并从最早 seed revision 完整 Watch
+重放；它不覆盖更新/删除/lease 历史、任意 auth 权限矩阵、多 member restore、跨集群灾备或大数据量恢复。节点磁盘耗尽也表明生产发布
+仍需由平台提供独立于协议门禁的镜像/磁盘容量监控与垃圾回收预算。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
