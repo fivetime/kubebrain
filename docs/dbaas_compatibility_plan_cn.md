@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、server version、独立 backend storage version、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 兼容核心语义（升级历史有条件） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；每次生产 rollout 还实际执行官方 etcdutl Status 与带哈希检查的 Restore，启动恢复后的官方 singleton etcd，并通过 clientv3 以原 mTLS caller 身份对固定 seed（含 `unleased v1→leased v2→Delete→unleased v3`、非字典序 `Put→Range(staged)→Delete→Put` 混合 Txn、外层 Put→nested compare failure 的 Range/Delete/Put，以及两级 nested compare success 中逐层读取上一层 staged Put 后形成的四写扁平历史）执行当前/逐 revision 历史 Range、从最早 seed revision 开始并按 main/subrevision 全序的 prefix Watch 精确重放，以及历史 lease 的恢复后 TTL/attached-key 状态校验后才放行；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
+| Maintenance | Snapshot | 兼容核心语义（升级历史有条件） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；每次生产 rollout 还实际执行官方 etcdutl Status 与带哈希检查的 Restore，启动恢复后的官方 singleton etcd，并通过 clientv3 以原 mTLS caller 身份对固定 seed（含 `unleased v1→lease-A v2→lease-B v3→Delete→unleased recreate v1` 的同键多 lease lineage、非字典序 `Put→Range(staged)→Delete→Put` 混合 Txn、外层 Put→nested compare failure 的 Range/Delete/Put，以及两级 nested compare success 中逐层读取上一层 staged Put 后形成的四写扁平历史）执行当前/逐 revision 历史 Range、从最早 seed revision 开始并按 main/subrevision 全序的 prefix Watch 精确重放，以及每个历史 lease 的恢复后精确 GrantedTTL/TTL/attached-key 集合校验后才放行；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；follower 的 latest `HashKV(0)` 本地 hedge 必须先跨 leader revision barrier，不能以陈旧 hash 抢赢权威 peer；显式历史 revision 保持成员本地诊断；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -63305,6 +63305,60 @@ EndpointSlice 0、三个 A5551 probe Pod 0，节点有 126GB 可用。
 
 本轮关闭 nested compare success、两级 nested response tree、逐层读取 staged write 与四写扁平历史的生产 Restore 门禁缺口。
 仍未覆盖多个历史 lease ID、完整 auth 权限矩阵、多 member restore、跨集群灾备或大数据量恢复。
+
+### A5552：rollout Restore 覆盖同键多历史 lease lineage
+
+A5551 的生产 seed 只有一个历史 lease ID，不能证明同一键从 lease-A 重新绑定到 lease-B 后，两个 grant 都进入官方 snapshot，或
+official restore 只把快照时 current key 重新挂到最后一个 lease。本文继续固定
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_txn.go::put`、
+`server/storage/mvcc/kvstore.go::{restoreChunk,restore}`、`server/etcdserver/server.go` 的 lessor-before-KV 恢复次序，以及
+`server/lease/lessor.go::{Grant,Recover,Attach,Detach}`。上游在 Put 改绑时从旧 lease Detach 并向新 lease Attach；恢复时保留
+lease bucket 中所有未过期 grant，但只根据每个键的 current generation 重建 attachment，不能把历史 MVCC version 的 lease
+误当成当前 attachment。
+
+提交 `0194909a`（完整 SHA `0194909a3bc12e64ebbe3a933ac46c6353bac814`）不增加 16 个生产 seed，而把既有 lease-history
+seed 扩展为 `unleased v1→lease-A v2→lease-B v3→Delete→unleased recreate v1`。两个 grant 的 TTL 固定为 900/960
+秒且 ID 必须不同；官方 etcdutl restore 后，逐 revision Range/全序 Watch 必须看到两个精确 lease ID，两个 `TimeToLive` 必须返回
+各自精确 GrantedTTL、正 RemainingTTL，且最终 attachment 集合都严格为空。verifier 同时支持快照时仍带 lease 的 current key，并以
+正例锁定 lease-A 空集合、lease-B 精确挂载该键；缺第二 lease、错误 GrantedTTL、意外挂载、缺失或同 ID 不一致的 TTL expectation
+都确定性拒绝并删除制品。probe defer 仍逆序 revoke 两个历史 lease，清理总窗口至少等于配置的 command timeout。
+
+probe 包全量 Go 测试为 12.042 秒；多 lease Restore 正反例单轮 6.384 秒，20 轮普通/race Go 测试分别报告
+104.965/103.943 秒，vet 与 diff check 全绿。655 项 inventory 保持 `158/181/164/152`；精确提交后四片墙钟为
+`138.299/364.265/235.720/380.020s`，全部通过。提交前四片也以 `150.048/373.167/246.705/389.870s` 全绿。
+
+A5552 build time 固定为 `2026-08-26T20:33:07Z`，OCI 构建墙钟 274.253 秒。最终 OCI index
+`sha256:027dde6a1f5b9e56857cf9aa4b9789331d8b88fbbdc023f21fae7b6b1315ae04`、platform manifest
+`sha256:8ccb5c6cadd24cde095ea3967ac752b4dad2affd199326e0f67c3e7e71aaba3e`、config
+`sha256:667d0baaf296fd749cc0f9eb24e3a60fef660f5aa767b5e6f4ff887de167e687`、attestation manifest
+`sha256:eb5c6e0b708bf7126ebc70623c9789e6683abb386ba919ec971d637c3b606e58`、provenance layer
+`sha256:1a2e00d088fc302ac89703460eddef6f809ba63589d01741bbedee39db8a0e2c`、SBOM layer
+`sha256:b0238651f85f3c08e26ac2164e1723f4af3a0ac29c6495fc01ae7a9ce41b1fd6`、Kind runtime
+`sha256:f755fdbf1ba4fc555222c02d11dab9246ed6bfd2f8a3f5b3c7db5db3cb9c39d5`。78 个 blob 的摘要与 descriptor size
+全部匹配，总 blob 911,533,690 bytes，config+compressed layers 906,616,695 bytes，archive 911,599,104 bytes，probe
+48,041,063 bytes。OCI labels、SLSA subject/args/VCS revision、SPDX 包集合、镜像内 Version/TiKV/完整 SHA/Go
+1.26.5/linux-amd64/build time、kubectl v1.36.2 与 config/runtime UID/GID 65532 均通过离线和节点一次性 runtime 复核。
+手工错误的完整 source SHA、runtime digest 和不适配宿主版本的 timing/ctr 参数都在构建、probe 或 workload mutation 前被拒绝；未生成
+错误候选、未创建遗留 task，也未触发回滚。最终 archive、解包目录与可变 Kind tag 已删除，只保留 workload 使用的不可变 index。
+
+A5551→A5552 upgrade 一次即 **900/900 GREEN**：KeepAlive `103/278`、direct replacement 22、最大恢复 22,385ms；
+RangeStream 197、完成两个历史 lease grant/lineage/空 attachment 恢复的 Snapshot 1、stream/partial retry `0/0`，最大公共/直连/
+TSO/Region 延迟 `2484/26427/8/13ms`，revision `a4657-tls-59cf94cb77 -> a4657-tls-6d66c44cc`。A5552
+same-version restart 再次 **900/900 GREEN**：KeepAlive `110/289`、replacement 24、最大恢复 21,520ms；RangeStream 197、
+Snapshot 1、retry/partial `3/0`，最大延迟 `3055/27443/43/8ms`，revision
+`a4657-tls-6d66c44cc -> a4657-tls-5645655f95`。一次公共 Put 的 `there is no connection available` 在既有
+Put→Get 对账合同内恢复，没有计为成功前丢失的写。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 均为 75，
+current/update revision 均为 `a4657-tls-5645655f95`；三 Pod 3/3 Ready、restart 0、运行精确 A5552 runtime digest、UID/GID
+65532，三端 HTTPS `/readyz=ok`。AlarmList 为空，cluster revision 40739、term 316；PD leader 为 `kb-pd-2`，主 PD/TiKV
+3+3 Ready、restart 0，三个 TiKV store 均 Up；近 10 分钟无 KeepAlive queue-full/panic/fatal/corrupt。两个 A5552 probe
+前缀均无 KV，根前缀 Count=1 且精确为未触碰的 `/kubebrain-rollout-availability/a5529-tls-migration/watch`。临时 client Service
+UID `7aeade14-e70f-41d0-93ab-b55e65c29abb` 已以创建时 resourceVersion `6818637` 和 UID 双前置条件删除；Service
+NotFound、EndpointSlice 0、两个 A5552 probe Pod 0，节点仍有 118GB 可用。
+
+本轮关闭多个历史 lease ID、同键 lease reassignment、每个 grant 的精确恢复 TTL 与 current attachment 集合生产门禁缺口。
+仍未覆盖完整 auth 权限矩阵、多 member restore、跨集群灾备或大数据量恢复。
 
 ## 提交规则
 
