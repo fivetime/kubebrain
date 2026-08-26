@@ -62654,6 +62654,50 @@ Pod 同 revision、Ready、restart 0 且 runtime digest 一致；专属 probe �
 `541fd91e-24f6-4ed7-8d8b-05838d72258d` 已按 UID/resourceVersion 删除，关联 EndpointSlice 与 probe Pod 均不存在。
 这证明本轮真实下载制品可由官方 3.7 status 路径完整扫描；它不是完整离线 restore/启动演练的替代，后者继续由备份恢复门禁承担。
 
+### A5537：rollout KeepAlive 从主循环抽样提升到持续消费
+
+A5536 同版本滚动的真实 probe 日志三次出现 clientv3
+`lease keepalive response queue is full; dropping response send`。旧实现中公共 KeepAlive 每轮最多非阻塞读取一条，三条直连 KeepAlive
+也只在一次 Put/Watch、后端检查和最长 30 秒 direct Watch 等待全部结束后才 drain；最终 `lease=alive` 因而不能排除滚动窗口内响应已
+积压并丢弃。对照 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/client/v3/lease.go`，每个订阅 channel
+只有 `LeaseResponseChSize=16`，producer 队列满时明确执行 non-blocking drop；同一版本的
+`client/v3/concurrency/session.go` 则用独立 goroutine 持续 `range keepAlive`。
+
+提交 `a8d6fbf4`（完整 SHA `a8d6fbf400d2b53e6a4dcb1319fb63c63788f6bf`）为公共和每个逐 Pod KeepAlive 建立唯一的
+专用 consumer goroutine。它在与业务主循环并行的情况下验证 cluster/member/revision、lease ID 与 TTL，并以 mutex 保护最新 revision、
+响应数、最后响应时间、恢复状态、重建次数和首个 fatal error；公共 channel 非调用方取消而关闭即 fail closed。直连 channel 保留
+A5533 的单次完成恢复阶段合同：Pod 被替换期间 replacement channel 可连续关闭并重建，收到第一条合法响应后结束该恢复阶段，之后再次关闭
+则拒绝第二次恢复。收尾不仅要求 rollout window 内至少一条响应，还以共同时间标记要求公共和三条直连 channel 各自再交付一条新鲜响应，
+避免用初始或陈旧样本冒充终态存活。
+
+确定性旧代码 RED 用 64 条突发响应越过 upstream 的 16 槽容量；新 consumer 不阻塞 producer，并覆盖恢复中重复关闭、恢复完成后再关闭、
+重建失败、非法响应和最终新鲜响应超时。runner 摘要新增正数 `lease_responses`/`direct_lease_responses`，并把任何
+`lease keepalive response queue is full` 日志升级为发布硬失败。probe 普通 20 轮 3.018 秒、race 10 轮 4.500 秒，完整 rollout
+runner 77.686 秒，vet、Shell syntax 与 diff check 全绿。655 项 inventory 为 `158/181/164/152`；精确提交后四片 Go/墙钟秒为
+`130.613/137.087`、`353.211/359.643`、`228.442/234.843`、`370.254/376.638`，全部通过。
+
+A5537 镜像构建时间 `2026-08-26T11:34:21Z`，OCI index
+`sha256:81fc389328688ba339892b98159d93f31600a5447f37d927716939a47c4be5f2`、platform manifest
+`sha256:8df1f7dcf0ff5731991b8554054425456e7cbf1e2c74eda4504f670e325d6931`、config
+`sha256:da77465aa5b67cbefd86b03df5701cb97b607da8b17fdba1247655bb2f43c48b`、attestation
+`sha256:5abe9d3a1c3895ca01cbb1097be3f18176e08dd4486f0189e2f389f198403ace`、Kind runtime
+`sha256:68ff21e3b5f4940e94cd920b2dd5b52c8fe439f04f4cd1c17ce0f2703cd1d4c7`；内嵌完整提交 SHA、TiKV、Go 1.26.5、
+linux/amd64 与 `USER 65532:65532` 均已复核。
+
+A5536→A5537 upgrade **900/900 GREEN**：公共/直连 Watch `900`/`900x3`，KeepAlive 响应 `99`/`263`，同一滚动恢复
+阶段直连 channel 重建 32 次，RangeStream 185、官方可打开 Snapshot 1，stream/partial retry 均 0；最大公共/直连/TSO/Region
+延迟 `1292/26164/81/8ms`，revision `a4657-tls-8597fcf97d -> a4657-tls-54d9b478bb`。A5537 same-version
+restart 再次 **900/900 GREEN**：KeepAlive 响应 `102`/`277`、重建 31 次，RangeStream 180、Snapshot 1、stream retry 1、
+partial retry 0，最大延迟 `4540/27862/38/8ms`，revision
+`a4657-tls-54d9b478bb -> a4657-tls-bdb4f678f`。两轮完整日志均无 queue-full，证明即使 direct Watch 恢复接近 30 秒，
+KeepAlive 接收也不再被主循环阻塞。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，三 Pod 3/3 Ready、restart 0、同 revision 与精确
+runtime digest，三端 `/readyz=ok`；PD/TiKV 3+3 Ready、restart 0，专属 probe 前缀 Count=0、probe Pod 不存在。临时 client
+Service UID `7295fb7f-ad59-44b6-81cc-b1b1f8f8d059` 已用创建时 UID/resourceVersion 前置条件删除，EndpointSlice 不存在。
+该结果证明当前单节点 Kind、独立 3×PD/3×TiKV 和两次受控滚动窗口内没有 client-side KeepAlive 队列溢出；它不外推为跨节点/AZ、
+外部负载均衡或长时 soak 的容量结论。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
