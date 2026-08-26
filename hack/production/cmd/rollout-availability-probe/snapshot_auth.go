@@ -51,11 +51,14 @@ type restoredSnapshotAuthAccessExpectation struct {
 }
 
 type restoredSnapshotAuthExpectation struct {
-	revision uint64
-	users    []restoredSnapshotAuthUserExpectation
-	roles    []restoredSnapshotAuthRoleExpectation
-	access   []restoredSnapshotAuthAccessExpectation
-	rootKey  string
+	revision      uint64
+	enabled       bool
+	adminUsername string
+	adminPassword string
+	users         []restoredSnapshotAuthUserExpectation
+	roles         []restoredSnapshotAuthRoleExpectation
+	access        []restoredSnapshotAuthAccessExpectation
+	rootKey       string
 }
 
 type snapshotAuthFixture struct {
@@ -144,9 +147,7 @@ func (fixture *snapshotAuthFixture) install(ctx context.Context, client *clientv
 	if err := validateHeader("read auth status before Snapshot fixture", statusResponse.Header); err != nil {
 		return lastRevision, err
 	}
-	if statusResponse.Enabled {
-		return lastRevision, errors.New("Snapshot auth fixture requires source authentication to remain disabled")
-	}
+	fixture.expected.enabled = statusResponse.Enabled
 
 	for _, role := range fixture.expected.roles {
 		role := role
@@ -217,7 +218,7 @@ func (fixture *snapshotAuthFixture) install(ctx context.Context, client *clientv
 	if err := validateHeader("read installed Snapshot auth status", statusResponse.Header); err != nil {
 		return lastRevision, err
 	}
-	if statusResponse.Enabled || statusResponse.AuthRevision == 0 || statusResponse.AuthRevision <= fixture.expected.revision {
+	if statusResponse.Enabled != fixture.expected.enabled || statusResponse.AuthRevision == 0 || statusResponse.AuthRevision <= fixture.expected.revision {
 		return lastRevision, fmt.Errorf("installed Snapshot auth fixture returned invalid status: enabled=%t revision=%d previous=%d",
 			statusResponse.Enabled, statusResponse.AuthRevision, fixture.expected.revision)
 	}
@@ -340,8 +341,9 @@ func (fixture *snapshotAuthFixture) cleanup(client *clientv3.Client, clusterID u
 			err = validateErr
 		} else {
 			lastRevision = revision
-			if statusResponse.Enabled {
-				err = errors.New("source authentication became enabled during Snapshot auth fixture cleanup")
+			if statusResponse.Enabled != fixture.expected.enabled {
+				err = fmt.Errorf("source authentication state changed during Snapshot auth fixture cleanup: got=%t want=%t",
+					statusResponse.Enabled, fixture.expected.enabled)
 			}
 		}
 	}
@@ -376,9 +378,9 @@ func verifyRestoredSnapshotAuth(ctx context.Context, client *clientv3.Client, cl
 	if err := validateHeader("restored auth status", statusResponse.Header); err != nil {
 		return err
 	}
-	if statusResponse.Enabled || statusResponse.AuthRevision != expected.revision {
-		return fmt.Errorf("restored auth status mismatch: enabled=%t revision=%d want_enabled=false want_revision=%d",
-			statusResponse.Enabled, statusResponse.AuthRevision, expected.revision)
+	if statusResponse.Enabled != expected.enabled || statusResponse.AuthRevision != expected.revision {
+		return fmt.Errorf("restored auth status mismatch: enabled=%t revision=%d want_enabled=%t want_revision=%d",
+			statusResponse.Enabled, statusResponse.AuthRevision, expected.enabled, expected.revision)
 	}
 	usersResponse, err := client.UserList(ctx)
 	if err != nil {
@@ -479,67 +481,72 @@ func verifyRestoredSnapshotAuth(ctx context.Context, client *clientv3.Client, cl
 		}
 	}
 
-	const restoredRootPassword = "kubebrain-rollout-restored-root-secret"
-	var rootResponse *clientv3.AuthUserGetResponse
-	if _, rootExists := userSet["root"]; !rootExists {
-		if _, err = client.UserAdd(ctx, "root", restoredRootPassword); err != nil {
-			return fmt.Errorf("add root user to isolated restored etcd: %w", err)
+	adminClient := client
+	if !expected.enabled {
+		const restoredRootPassword = "kubebrain-rollout-restored-root-secret"
+		var rootResponse *clientv3.AuthUserGetResponse
+		if _, rootExists := userSet["root"]; !rootExists {
+			if _, err = client.UserAdd(ctx, "root", restoredRootPassword); err != nil {
+				return fmt.Errorf("add root user to isolated restored etcd: %w", err)
+			}
+			rootResponse, err = client.UserGet(ctx, "root")
+			if err != nil {
+				return fmt.Errorf("read added root user from isolated restored etcd: %w", err)
+			}
+		} else {
+			rootResponse, err = client.UserGet(ctx, "root")
+			if err != nil {
+				return fmt.Errorf("inspect restored root user: %w", err)
+			}
+			if _, err = client.UserChangePassword(ctx, "root", restoredRootPassword); err != nil {
+				return fmt.Errorf("set isolated restored root password: %w", err)
+			}
 		}
-		rootResponse, err = client.UserGet(ctx, "root")
-		if err != nil {
-			return fmt.Errorf("read added root user from isolated restored etcd: %w", err)
+		hasRootRole := false
+		for _, role := range rootResponse.Roles {
+			hasRootRole = hasRootRole || role == "root"
 		}
-	} else {
-		rootResponse, err = client.UserGet(ctx, "root")
-		if err != nil {
-			return fmt.Errorf("inspect restored root user: %w", err)
+		if !hasRootRole {
+			if _, err = client.UserGrantRole(ctx, "root", "root"); err != nil {
+				return fmt.Errorf("grant root role in isolated restored etcd: %w", err)
+			}
 		}
-		if _, err = client.UserChangePassword(ctx, "root", restoredRootPassword); err != nil {
-			return fmt.Errorf("set isolated restored root password: %w", err)
+		if _, err = client.AuthEnable(ctx); err != nil {
+			return fmt.Errorf("enable auth in isolated restored etcd: %w", err)
 		}
-	}
-	hasRootRole := false
-	for _, role := range rootResponse.Roles {
-		hasRootRole = hasRootRole || role == "root"
-	}
-	if !hasRootRole {
-		if _, err = client.UserGrantRole(ctx, "root", "root"); err != nil {
-			return fmt.Errorf("grant root role in isolated restored etcd: %w", err)
+		if _, err = client.Get(ctx, expected.access[0].key); !errors.Is(err, rpctypes.ErrUserEmpty) &&
+			!errors.Is(err, rpctypes.ErrPermissionDenied) {
+			return fmt.Errorf("unauthenticated restored Range after AuthEnable returned %v, want user empty or permission denied", err)
 		}
-	}
-	if _, err = client.AuthEnable(ctx); err != nil {
-		return fmt.Errorf("enable auth in isolated restored etcd: %w", err)
-	}
-	if _, err = client.Get(ctx, expected.access[0].key); !errors.Is(err, rpctypes.ErrUserEmpty) {
-		return fmt.Errorf("anonymous restored Range after AuthEnable returned %v, want user empty", err)
-	}
-	rootConfig := clientConfig
-	rootConfig.Username = "root"
-	rootConfig.Password = restoredRootPassword
-	rootConfig.Logger = zap.NewNop()
-	rootClient, err := clientv3.New(rootConfig)
-	if err != nil {
-		return fmt.Errorf("authenticate isolated restored root user: %w", err)
-	}
-	defer func() {
-		if closeErr := rootClient.Close(); closeErr != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("close isolated restored root client: %w", closeErr))
+		rootConfig := clientConfig
+		rootConfig.Username = "root"
+		rootConfig.Password = restoredRootPassword
+		rootConfig.Logger = zap.NewNop()
+		rootClient, clientErr := clientv3.New(rootConfig)
+		if clientErr != nil {
+			return fmt.Errorf("authenticate isolated restored root user: %w", clientErr)
 		}
-	}()
-	if _, err = rootClient.RoleList(ctx); err != nil {
+		defer func() {
+			if closeErr := rootClient.Close(); closeErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close isolated restored root client: %w", closeErr))
+			}
+		}()
+		adminClient = rootClient
+	}
+	if _, err = adminClient.RoleList(ctx); err != nil {
 		return fmt.Errorf("list roles as isolated restored root user: %w", err)
 	}
-	if _, err = rootClient.Put(ctx, expected.rootKey, "root-admin"); err != nil {
+	if _, err = adminClient.Put(ctx, expected.rootKey, "root-admin"); err != nil {
 		return fmt.Errorf("write unrestricted key as isolated restored root user: %w", err)
 	}
-	rootRange, err := rootClient.Get(ctx, expected.rootKey)
+	rootRange, err := adminClient.Get(ctx, expected.rootKey)
 	if err != nil {
 		return fmt.Errorf("read unrestricted key as isolated restored root user: %w", err)
 	}
 	if len(rootRange.Kvs) != 1 || string(rootRange.Kvs[0].Value) != "root-admin" {
 		return fmt.Errorf("isolated restored root read mismatch: kvs=%d", len(rootRange.Kvs))
 	}
-	if _, err = rootClient.Delete(ctx, expected.rootKey); err != nil {
+	if _, err = adminClient.Delete(ctx, expected.rootKey); err != nil {
 		return fmt.Errorf("delete unrestricted key as isolated restored root user: %w", err)
 	}
 

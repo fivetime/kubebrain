@@ -416,6 +416,16 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		Context:     verifyCtx,
 		TLS:         clientTLSConfig,
 	}
+	if cfg.auth != nil {
+		if (cfg.auth.adminUsername == "") != (cfg.auth.adminPassword == "") ||
+			(!cfg.auth.enabled && cfg.auth.adminUsername != "") {
+			return errors.New("restored auth administrator credentials require enabled auth and a non-empty username/password pair")
+		}
+		if cfg.auth.adminUsername != "" {
+			clientConfig.Username = cfg.auth.adminUsername
+			clientConfig.Password = cfg.auth.adminPassword
+		}
+	}
 	if clientTLSConfig != nil {
 		clientConfig.DialOptions = append(clientConfig.DialOptions, grpc.WithAuthority(cfg.tls.serverName))
 	}

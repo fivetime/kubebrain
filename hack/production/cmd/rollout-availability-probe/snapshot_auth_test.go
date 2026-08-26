@@ -95,6 +95,68 @@ func TestSnapshotAuthFixtureInstallCleanupAndCollisionOwnership(t *testing.T) {
 	require.NoError(t, err, "fixture cleanup must not delete a colliding role it did not create")
 	_, err = client.RoleDelete(ctx, collision.expected.roles[0].name)
 	require.NoError(t, err)
+
+	_, err = client.UserAdd(ctx, "root", "root-secret")
+	require.NoError(t, err)
+	_, err = client.UserGrantRole(ctx, "root", "root")
+	require.NoError(t, err)
+	_, err = client.AuthEnable(ctx)
+	require.NoError(t, err)
+	rootClient, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{clientURL.String()}, DialTimeout: 3 * time.Second, Context: ctx,
+		Username: "root", Password: "root-secret", Logger: zap.NewNop(),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, rootClient.Close()) })
+	enabled := newSnapshotAuthFixture("/probe/auth-enabled/")
+	lastRevision, err = enabled.install(ctx, rootClient, initial.Header.ClusterId, lastRevision, 3*time.Second)
+	require.NoError(t, err)
+	require.True(t, enabled.expected.enabled)
+	lastRevision, err = enabled.cleanup(rootClient, initial.Header.ClusterId, lastRevision, 3*time.Second)
+	require.NoError(t, err)
+	statusResponse, err := rootClient.AuthStatus(ctx)
+	require.NoError(t, err)
+	require.True(t, statusResponse.Enabled)
+}
+
+func TestConsumeAndValidateSnapshotPreservesEnabledAuthPermissionMatrix(t *testing.T) {
+	const prefix = "/probe/auth-enabled-restore/"
+	fixture := newSnapshotAuthFixture(prefix)
+	fixture.expected.revision = 29
+	fixture.expected.enabled = true
+	fixture.expected.adminUsername = "root"
+	fixture.expected.adminPassword = "restored-root-secret"
+	expected := newStreamProbeExpectations(prefix)
+	state := snapshotAuthTestState(t, expected, &fixture.expected)
+	state.Auth.Enabled = true
+	rootHash, err := bcrypt.GenerateFromPassword([]byte(fixture.expected.adminPassword), bcrypt.MinCost)
+	require.NoError(t, err)
+	state.Auth.Users = append(state.Auth.Users, &authpb.User{
+		Name: []byte(fixture.expected.adminUsername), Password: rootHash, Roles: []string{"root"},
+		Options: &authpb.UserAddOptions{},
+	})
+	state.Auth.Roles = append(state.Auth.Roles, &authpb.Role{Name: []byte("root")})
+	dir := t.TempDir()
+	partial, err := consumeAndValidateSnapshotWithAuth(t.Context(), snapshotAuthReceiver(t, state), dir, expected,
+		restoredSnapshotTLSConfig{}, &fixture.expected)
+	require.NoError(t, err)
+	require.True(t, partial)
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries)
+
+	disabledState := state
+	disabledState.Auth.Enabled = false
+	missingEnabledState := cloneRestoredSnapshotAuthExpectation(&fixture.expected)
+	missingEnabledState.adminUsername = ""
+	missingEnabledState.adminPassword = ""
+	partial, err = consumeAndValidateSnapshotWithAuth(t.Context(), snapshotAuthReceiver(t, disabledState), dir, expected,
+		restoredSnapshotTLSConfig{}, missingEnabledState)
+	require.ErrorContains(t, err, "restored auth status mismatch")
+	require.True(t, partial)
+	entries, readErr = os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries)
 }
 
 func TestConsumeAndValidateSnapshotValidatesRestoredAuthPermissionMatrix(t *testing.T) {
@@ -244,7 +306,10 @@ func snapshotResponse(blob []byte, remaining uint64, version string) *etcdserver
 }
 
 func cloneRestoredSnapshotAuthExpectation(source *restoredSnapshotAuthExpectation) *restoredSnapshotAuthExpectation {
-	copy := &restoredSnapshotAuthExpectation{revision: source.revision, rootKey: source.rootKey}
+	copy := &restoredSnapshotAuthExpectation{
+		revision: source.revision, enabled: source.enabled, adminUsername: source.adminUsername,
+		adminPassword: source.adminPassword, rootKey: source.rootKey,
+	}
 	for _, user := range source.users {
 		user.roles = append([]string(nil), user.roles...)
 		copy.users = append(copy.users, user)
