@@ -30,6 +30,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -743,7 +744,7 @@ func TestValidateSnapshotArtifactRemovesAllMembersAfterLaterRestoreFailure(t *te
 	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
 }
 
-func TestConsumeAndValidateSnapshotValidatesThreeMemberRestoreReplicationAndQuorum(t *testing.T) {
+func TestConsumeAndValidateSnapshotValidatesRestoreReplicationQuorumAndMemberAdd(t *testing.T) {
 	const (
 		key      = "probe/three-member"
 		value    = "restored-through-official-etcd"
@@ -774,7 +775,72 @@ func TestConsumeAndValidateSnapshotValidatesThreeMemberRestoreReplicationAndQuor
 	require.True(t, partial)
 	entries, readErr := os.ReadDir(dir)
 	require.NoError(t, readErr)
-	require.Empty(t, entries, "validated artifact and all three restored members must be removed")
+	require.Empty(t, entries, "validated artifact and all restored members must be removed")
+}
+
+func TestValidateRestoredMemberAddResponseRejectsIdentityDrift(t *testing.T) {
+	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	require.NoError(t, err)
+	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
+	require.NoError(t, err)
+	added := restoredSnapshotMemberConfig{name: "kubebrain-rollout-restore-added", clientURL: clientURL, peerURL: peerURL}
+	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33}}
+	makeResponse := func() *clientv3.MemberAddResponse {
+		members := make([]*etcdserverpb.Member, 0, len(cfg.members)+1)
+		for index, member := range cfg.members {
+			members = append(members, &etcdserverpb.Member{
+				ID: topology.memberIDs[index], Name: member.name,
+				PeerURLs: []string{member.peerURL.String()}, ClientURLs: []string{member.clientURL.String()},
+			})
+		}
+		newMember := &etcdserverpb.Member{ID: 44, PeerURLs: []string{added.peerURL.String()}}
+		members = append(members, newMember)
+		return &clientv3.MemberAddResponse{
+			Header:  &etcdserverpb.ResponseHeader{ClusterId: topology.clusterID, MemberId: topology.leaderID, RaftTerm: 2},
+			Member:  newMember,
+			Members: members,
+		}
+	}
+
+	memberID, err := validateRestoredMemberAddResponse(makeResponse(), cfg, topology, added)
+	require.NoError(t, err)
+	require.Equal(t, uint64(44), memberID)
+	require.Error(t, func() error {
+		_, validateErr := validateRestoredMemberAddResponse(nil, cfg, topology, added)
+		return validateErr
+	}())
+
+	for name, mutate := range map[string]func(*clientv3.MemberAddResponse){
+		"missing header":         func(response *clientv3.MemberAddResponse) { response.Header = nil },
+		"wrong cluster":          func(response *clientv3.MemberAddResponse) { response.Header.ClusterId++ },
+		"unknown serving member": func(response *clientv3.MemberAddResponse) { response.Header.MemberId = 99 },
+		"nonzero revision":       func(response *clientv3.MemberAddResponse) { response.Header.Revision = 1 },
+		"missing added member":   func(response *clientv3.MemberAddResponse) { response.Member = nil },
+		"learner":                func(response *clientv3.MemberAddResponse) { response.Member.IsLearner = true },
+		"premature name":         func(response *clientv3.MemberAddResponse) { response.Member.Name = added.name },
+		"premature client URL": func(response *clientv3.MemberAddResponse) {
+			response.Member.ClientURLs = []string{added.clientURL.String()}
+		},
+		"reused member ID": func(response *clientv3.MemberAddResponse) {
+			response.Member.ID = topology.memberIDs[0]
+		},
+		"omitted from list": func(response *clientv3.MemberAddResponse) {
+			response.Members = response.Members[:len(response.Members)-1]
+		},
+		"existing identity drift": func(response *clientv3.MemberAddResponse) {
+			response.Members[0].ClientURLs = []string{"http://127.0.0.1:1"}
+		},
+		"duplicate member ID": func(response *clientv3.MemberAddResponse) {
+			response.Members[1].ID = response.Members[0].ID
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := makeResponse()
+			mutate(response)
+			_, err := validateRestoredMemberAddResponse(response, cfg, topology, added)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestRestoredSnapshotConfigRejectsInvalidClusterIdentity(t *testing.T) {

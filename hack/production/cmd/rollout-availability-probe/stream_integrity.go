@@ -34,6 +34,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
@@ -42,6 +43,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -431,6 +433,42 @@ func newRestoredSnapshotConfig(restoreRoot string, memberCount int, tlsCfg resto
 	return cfg, nil
 }
 
+func newRestoredSnapshotEmbedConfig(cfg restoredSnapshotConfig, member restoredSnapshotMemberConfig,
+	initialCluster string,
+) *embed.Config {
+	embedCfg := embed.NewConfig()
+	embedCfg.Name = member.name
+	embedCfg.Dir = member.dataDir
+	embedCfg.ClusterState = embed.ClusterStateFlagExisting
+	embedCfg.ListenClientUrls = []url.URL{member.clientURL}
+	embedCfg.AdvertiseClientUrls = []url.URL{member.clientURL}
+	embedCfg.ListenPeerUrls = []url.URL{member.peerURL}
+	embedCfg.AdvertisePeerUrls = []url.URL{member.peerURL}
+	embedCfg.InitialCluster = initialCluster
+	embedCfg.InitialClusterToken = cfg.initialClusterToken
+	embedCfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
+	if cfg.tls.enabled() {
+		embedCfg.ClientTLSInfo = transport.TLSInfo{
+			CertFile: cfg.tls.certFile, KeyFile: cfg.tls.keyFile, TrustedCAFile: cfg.tls.caFile, ClientCertAuth: true,
+		}
+	}
+	return embedCfg
+}
+
+func waitForRestoredSnapshotMember(ctx context.Context, member restoredSnapshotMemberConfig, server *embed.Etcd) error {
+	select {
+	case <-server.Server.ReadyNotify():
+		return nil
+	case serveErr, ok := <-server.Err():
+		if !ok || serveErr == nil {
+			return fmt.Errorf("officially restored etcd member %q stopped before becoming ready", member.name)
+		}
+		return fmt.Errorf("officially restored etcd member %q stopped before becoming ready: %w", member.name, serveErr)
+	case <-ctx.Done():
+		return fmt.Errorf("wait for officially restored etcd member %q readiness: %w", member.name, context.Cause(ctx))
+	}
+}
+
 type restoredClusterTopology struct {
 	clusterID uint64
 	leaderID  uint64
@@ -524,8 +562,354 @@ func waitForRestoredMemberValue(ctx context.Context, client *clientv3.Client, ke
 	}
 }
 
+func waitForRestoredMemberMissing(ctx context.Context, client *clientv3.Client, key string, minimumRevision int64) error {
+	for {
+		response, err := client.Get(ctx, key, clientv3.WithSerializable())
+		if err == nil && response != nil && response.Header != nil && response.Header.Revision >= minimumRevision &&
+			response.Count == 0 && len(response.Kvs) == 0 {
+			return nil
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-ctx.Done():
+			return fmt.Errorf("wait for restored member key deletion: %w", context.Cause(ctx))
+		}
+	}
+}
+
+func validateRestoredMemberAddResponse(response *clientv3.MemberAddResponse, cfg restoredSnapshotConfig,
+	topology restoredClusterTopology, added restoredSnapshotMemberConfig,
+) (uint64, error) {
+	if response == nil || response.Header == nil || response.Header.ClusterId != topology.clusterID ||
+		response.Header.MemberId == 0 || response.Header.RaftTerm == 0 || response.Header.Revision != 0 || response.Member == nil {
+		return 0, fmt.Errorf("invalid officially restored etcd MemberAdd response identity: %+v", response)
+	}
+	servingMember := false
+	for _, memberID := range topology.memberIDs {
+		servingMember = servingMember || response.Header.MemberId == memberID
+	}
+	if !servingMember {
+		return 0, fmt.Errorf("officially restored etcd MemberAdd response came from unknown member %x", response.Header.MemberId)
+	}
+	newMember := response.Member
+	if newMember.ID == 0 || newMember.Name != "" || newMember.IsLearner || len(newMember.PeerURLs) != 1 ||
+		newMember.PeerURLs[0] != added.peerURL.String() || len(newMember.ClientURLs) != 0 {
+		return 0, fmt.Errorf("officially restored etcd returned an invalid added voter: %+v", newMember)
+	}
+	for _, memberID := range topology.memberIDs {
+		if newMember.ID == memberID {
+			return 0, fmt.Errorf("officially restored etcd reused member ID %x during MemberAdd", newMember.ID)
+		}
+	}
+	if len(response.Members) != len(cfg.members)+1 {
+		return 0, fmt.Errorf("officially restored etcd MemberAdd member count mismatch: got=%d want=%d", len(response.Members), len(cfg.members)+1)
+	}
+	expectedByID := make(map[uint64]restoredSnapshotMemberConfig, len(cfg.members))
+	for index, memberID := range topology.memberIDs {
+		expectedByID[memberID] = cfg.members[index]
+	}
+	seen := make(map[uint64]struct{}, len(response.Members))
+	for _, member := range response.Members {
+		if member == nil || member.ID == 0 || member.IsLearner {
+			return 0, fmt.Errorf("officially restored etcd MemberAdd returned an invalid voter: %+v", member)
+		}
+		if _, duplicate := seen[member.ID]; duplicate {
+			return 0, fmt.Errorf("officially restored etcd MemberAdd repeated member ID %x", member.ID)
+		}
+		seen[member.ID] = struct{}{}
+		if member.ID == newMember.ID {
+			if member.Name != "" || len(member.PeerURLs) != 1 || member.PeerURLs[0] != added.peerURL.String() || len(member.ClientURLs) != 0 {
+				return 0, fmt.Errorf("officially restored etcd MemberAdd member list disagrees on new voter: %+v", member)
+			}
+			continue
+		}
+		expected, exists := expectedByID[member.ID]
+		if !exists || member.Name != expected.name || len(member.PeerURLs) != 1 || member.PeerURLs[0] != expected.peerURL.String() ||
+			len(member.ClientURLs) != 1 || member.ClientURLs[0] != expected.clientURL.String() {
+			return 0, fmt.Errorf("officially restored etcd MemberAdd changed an existing voter: %+v", member)
+		}
+	}
+	if _, exists := seen[newMember.ID]; !exists {
+		return 0, fmt.Errorf("officially restored etcd MemberAdd omitted new voter %x from member list", newMember.ID)
+	}
+	return newMember.ID, nil
+}
+
+func verifyRestoredMemberCurrentSeeds(ctx context.Context, source, added *clientv3.Client, expected []streamProbeExpectation,
+	clusterID, memberID uint64, minimumRevision int64,
+) error {
+	for _, item := range expected {
+		sourceResponse, err := source.Get(ctx, item.key, clientv3.WithSerializable())
+		if err != nil {
+			return fmt.Errorf("read current seed %q from source restored member: %w", item.key, err)
+		}
+		addedResponse, err := added.Get(ctx, item.key, clientv3.WithSerializable())
+		if err != nil {
+			return fmt.Errorf("read current seed %q from added restored member: %w", item.key, err)
+		}
+		if sourceResponse == nil || sourceResponse.Header == nil || sourceResponse.Header.ClusterId != clusterID ||
+			sourceResponse.Header.MemberId == 0 || sourceResponse.Header.Revision < minimumRevision || sourceResponse.More ||
+			sourceResponse.Count < 0 || sourceResponse.Count > 1 || int64(len(sourceResponse.Kvs)) != sourceResponse.Count {
+			return fmt.Errorf("source restored member returned invalid current seed envelope for %q: %+v", item.key, sourceResponse)
+		}
+		if addedResponse == nil || addedResponse.Header == nil || addedResponse.Header.ClusterId != clusterID ||
+			addedResponse.Header.MemberId != memberID || addedResponse.Header.Revision < minimumRevision || addedResponse.More ||
+			addedResponse.Count != sourceResponse.Count || len(addedResponse.Kvs) != len(sourceResponse.Kvs) {
+			return fmt.Errorf("added restored member returned divergent current seed envelope for %q: source=%+v added=%+v",
+				item.key, sourceResponse, addedResponse)
+		}
+		if len(sourceResponse.Kvs) == 0 {
+			continue
+		}
+		sourceKV, addedKV := sourceResponse.Kvs[0], addedResponse.Kvs[0]
+		if sourceKV == nil || addedKV == nil || string(sourceKV.Key) != item.key ||
+			!bytes.Equal(sourceKV.Key, addedKV.Key) || !bytes.Equal(sourceKV.Value, addedKV.Value) ||
+			sourceKV.CreateRevision != addedKV.CreateRevision || sourceKV.ModRevision != addedKV.ModRevision ||
+			sourceKV.Version != addedKV.Version || sourceKV.Lease != addedKV.Lease {
+			return fmt.Errorf("added restored member returned divergent current seed data for %q", item.key)
+		}
+	}
+	return nil
+}
+
+func sortedStrings(values []string) []string {
+	copy := append([]string(nil), values...)
+	sort.Strings(copy)
+	return copy
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func verifyRestoredMemberAuthState(ctx context.Context, source, added *clientv3.Client,
+	clusterID, memberID uint64, minimumRevision int64,
+) error {
+	validateHeaders := func(label string, sourceHeader, addedHeader *etcdserverpb.ResponseHeader) error {
+		if sourceHeader == nil || sourceHeader.ClusterId != clusterID || sourceHeader.MemberId == 0 || sourceHeader.RaftTerm == 0 ||
+			sourceHeader.Revision < minimumRevision || addedHeader == nil || addedHeader.ClusterId != clusterID ||
+			addedHeader.MemberId != memberID || addedHeader.RaftTerm == 0 || addedHeader.Revision < minimumRevision {
+			return fmt.Errorf("added restored member returned invalid %s identity: source=%+v added=%+v", label, sourceHeader, addedHeader)
+		}
+		return nil
+	}
+	sourceStatus, err := source.AuthStatus(ctx)
+	if err != nil {
+		return fmt.Errorf("read restored auth status before member expansion verification: %w", err)
+	}
+	addedStatus, err := added.AuthStatus(ctx)
+	if err != nil {
+		return fmt.Errorf("read restored auth status from added member: %w", err)
+	}
+	if sourceStatus == nil || addedStatus == nil || sourceStatus.Enabled != addedStatus.Enabled ||
+		sourceStatus.AuthRevision != addedStatus.AuthRevision {
+		return fmt.Errorf("added restored member auth status mismatch: source=%+v added=%+v", sourceStatus, addedStatus)
+	}
+	if err := validateHeaders("auth status", sourceStatus.Header, addedStatus.Header); err != nil {
+		return err
+	}
+	sourceUsers, err := source.UserList(ctx)
+	if err != nil {
+		return fmt.Errorf("list restored users before member expansion verification: %w", err)
+	}
+	addedUsers, err := added.UserList(ctx)
+	if err != nil {
+		return fmt.Errorf("list restored users from added member: %w", err)
+	}
+	sourceRoles, err := source.RoleList(ctx)
+	if err != nil {
+		return fmt.Errorf("list restored roles before member expansion verification: %w", err)
+	}
+	addedRoles, err := added.RoleList(ctx)
+	if err != nil {
+		return fmt.Errorf("list restored roles from added member: %w", err)
+	}
+	if sourceUsers == nil || addedUsers == nil || sourceRoles == nil || addedRoles == nil ||
+		!equalStrings(sortedStrings(sourceUsers.Users), sortedStrings(addedUsers.Users)) ||
+		!equalStrings(sortedStrings(sourceRoles.Roles), sortedStrings(addedRoles.Roles)) {
+		return fmt.Errorf("added restored member auth identity mismatch: source_users=%v added_users=%v source_roles=%v added_roles=%v",
+			sourceUsers, addedUsers, sourceRoles, addedRoles)
+	}
+	if err := validateHeaders("auth user list", sourceUsers.Header, addedUsers.Header); err != nil {
+		return err
+	}
+	if err := validateHeaders("auth role list", sourceRoles.Header, addedRoles.Header); err != nil {
+		return err
+	}
+	for _, username := range sourceUsers.Users {
+		sourceUser, err := source.UserGet(ctx, username)
+		if err != nil {
+			return fmt.Errorf("read restored user %q before member expansion verification: %w", username, err)
+		}
+		addedUser, err := added.UserGet(ctx, username)
+		if err != nil {
+			return fmt.Errorf("read restored user %q from added member: %w", username, err)
+		}
+		if sourceUser == nil || addedUser == nil ||
+			!equalStrings(sortedStrings(sourceUser.Roles), sortedStrings(addedUser.Roles)) {
+			return fmt.Errorf("added restored member user %q role bindings mismatch: source=%+v added=%+v", username, sourceUser, addedUser)
+		}
+		if err := validateHeaders("auth user "+username, sourceUser.Header, addedUser.Header); err != nil {
+			return err
+		}
+	}
+	for _, roleName := range sourceRoles.Roles {
+		sourceRole, err := source.RoleGet(ctx, roleName)
+		if err != nil {
+			return fmt.Errorf("read restored role %q before member expansion verification: %w", roleName, err)
+		}
+		addedRole, err := added.RoleGet(ctx, roleName)
+		if err != nil {
+			return fmt.Errorf("read restored role %q from added member: %w", roleName, err)
+		}
+		if sourceRole == nil || addedRole == nil || len(sourceRole.Perm) != len(addedRole.Perm) {
+			return fmt.Errorf("added restored member role %q permission count mismatch: source=%+v added=%+v", roleName, sourceRole, addedRole)
+		}
+		for index := range sourceRole.Perm {
+			if !proto.Equal(sourceRole.Perm[index], addedRole.Perm[index]) {
+				return fmt.Errorf("added restored member role %q permission mismatch at %d", roleName, index)
+			}
+		}
+		if err := validateHeaders("auth role "+roleName, sourceRole.Header, addedRole.Header); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addRestoredSnapshotMember(ctx context.Context, client *clientv3.Client, peerURL string) (*clientv3.MemberAddResponse, error) {
+	for {
+		response, err := client.MemberAdd(ctx, []string{peerURL})
+		if err == nil {
+			return response, nil
+		}
+		if !errors.Is(err, rpctypes.ErrUnhealthy) && !errors.Is(err, rpctypes.ErrMemberNotEnoughStarted) {
+			return nil, err
+		}
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, fmt.Errorf("wait for officially restored etcd cluster to become safe for MemberAdd: %w", context.Cause(ctx))
+		}
+	}
+}
+
+func verifyRestoredClusterMemberAdd(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
+	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
+	expected []streamProbeExpectation, preJoinKey, preJoinValue string, preJoinRevision int64,
+) (retErr error) {
+	clientURL, peerURL, err := allocateRestoredSnapshotURLs(cfg.tls.enabled())
+	if err != nil {
+		return err
+	}
+	added := restoredSnapshotMemberConfig{
+		name: "kubebrain-rollout-restore-added", dataDir: filepath.Join(filepath.Dir(cfg.members[0].dataDir), "member-added"),
+		clientURL: clientURL, peerURL: peerURL,
+	}
+	memberAddResponse, err := addRestoredSnapshotMember(ctx, adminClient, added.peerURL.String())
+	if err != nil {
+		return fmt.Errorf("add voter to officially restored etcd cluster: %w", err)
+	}
+	addedMemberID, err := validateRestoredMemberAddResponse(memberAddResponse, cfg, topology, added)
+	if err != nil {
+		return err
+	}
+	expandedCfg := cfg
+	expandedCfg.members = append(append([]restoredSnapshotMemberConfig(nil), cfg.members...), added)
+	initialCluster := make([]string, len(expandedCfg.members))
+	for index, member := range expandedCfg.members {
+		initialCluster[index] = member.name + "=" + member.peerURL.String()
+	}
+	expandedCfg.initialCluster = strings.Join(initialCluster, ",")
+	if err := expandedCfg.validate(); err != nil {
+		return fmt.Errorf("validate expanded restored Snapshot cluster: %w", err)
+	}
+	addedServer, err := embed.StartEtcd(newRestoredSnapshotEmbedConfig(expandedCfg, added, expandedCfg.initialCluster))
+	if err != nil {
+		return fmt.Errorf("start added officially restored etcd member %q: %w", added.name, err)
+	}
+	defer addedServer.Close()
+	if err := waitForRestoredSnapshotMember(ctx, added, addedServer); err != nil {
+		return err
+	}
+	expandedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, expandedCfg, preJoinRevision)
+	if err != nil {
+		return fmt.Errorf("verify expanded officially restored etcd topology: %w", err)
+	}
+	for index, memberID := range topology.memberIDs {
+		if expandedTopology.memberIDs[index] != memberID {
+			return fmt.Errorf("officially restored etcd changed member ID during expansion at %d: got=%x want=%x",
+				index, expandedTopology.memberIDs[index], memberID)
+		}
+	}
+	if expandedTopology.memberIDs[len(expandedTopology.memberIDs)-1] != addedMemberID {
+		return fmt.Errorf("officially restored etcd added member ID mismatch: got=%x want=%x",
+			expandedTopology.memberIDs[len(expandedTopology.memberIDs)-1], addedMemberID)
+	}
+	addedClient, err := newDirectRestoredClient(adminConfig, added.clientURL.String())
+	if err != nil {
+		return fmt.Errorf("create added officially restored etcd member client: %w", err)
+	}
+	defer func() {
+		if closeErr := addedClient.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close added officially restored etcd member client: %w", closeErr))
+		}
+	}()
+	if err := waitForRestoredMemberValue(ctx, addedClient, preJoinKey, preJoinValue, preJoinRevision); err != nil {
+		return fmt.Errorf("verify pre-join value on added restored member: %w", err)
+	}
+	if err := verifyRestoredMemberCurrentSeeds(ctx, adminClient, addedClient, expected, topology.clusterID, addedMemberID, preJoinRevision); err != nil {
+		return err
+	}
+	if err := verifyRestoredMemberAuthState(ctx, adminClient, addedClient, topology.clusterID, addedMemberID, preJoinRevision); err != nil {
+		return err
+	}
+
+	postJoinKey := "/kubebrain-rollout-restore/four-member-replication"
+	postJoinValue := fmt.Sprintf("added-%x", addedMemberID)
+	postJoinPut, err := adminClient.Put(ctx, postJoinKey, postJoinValue)
+	if err != nil {
+		return fmt.Errorf("write through expanded officially restored etcd cluster: %w", err)
+	}
+	if postJoinPut == nil || postJoinPut.Header == nil || postJoinPut.Header.ClusterId != topology.clusterID ||
+		postJoinPut.Header.Revision <= preJoinRevision {
+		return fmt.Errorf("invalid expanded officially restored etcd write response: %+v", postJoinPut)
+	}
+	for index, directClient := range append(append([]*clientv3.Client(nil), directClients...), addedClient) {
+		if err := waitForRestoredMemberValue(ctx, directClient, postJoinKey, postJoinValue, postJoinPut.Header.Revision); err != nil {
+			return fmt.Errorf("verify expanded cluster value on member %d: %w", index, err)
+		}
+	}
+	deleteResponse, err := adminClient.Txn(ctx).Then(clientv3.OpDelete(preJoinKey), clientv3.OpDelete(postJoinKey)).Commit()
+	if err != nil {
+		return fmt.Errorf("delete officially restored etcd expansion probes: %w", err)
+	}
+	if deleteResponse == nil || deleteResponse.Header == nil || deleteResponse.Header.ClusterId != topology.clusterID ||
+		deleteResponse.Header.Revision <= postJoinPut.Header.Revision || len(deleteResponse.Responses) != 2 ||
+		deleteResponse.Responses[0].GetResponseDeleteRange() == nil || deleteResponse.Responses[0].GetResponseDeleteRange().Deleted != 1 ||
+		deleteResponse.Responses[1].GetResponseDeleteRange() == nil || deleteResponse.Responses[1].GetResponseDeleteRange().Deleted != 1 {
+		return fmt.Errorf("invalid officially restored etcd expansion probe deletion response: %+v", deleteResponse)
+	}
+	for index, directClient := range append(append([]*clientv3.Client(nil), directClients...), addedClient) {
+		for _, key := range []string{preJoinKey, postJoinKey} {
+			if err := waitForRestoredMemberMissing(ctx, directClient, key, deleteResponse.Header.Revision); err != nil {
+				return fmt.Errorf("verify expansion probe deletion on member %d key %q: %w", index, key, err)
+			}
+		}
+	}
+	return nil
+}
+
 func verifyRestoredClusterReplicationAndQuorum(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
-	cfg restoredSnapshotConfig, topology restoredClusterTopology, servers []*embed.Etcd, revision int64,
+	cfg restoredSnapshotConfig, topology restoredClusterTopology, servers []*embed.Etcd, expected []streamProbeExpectation, revision int64,
 ) (retErr error) {
 	if len(cfg.members) < 3 || len(topology.memberIDs) != len(cfg.members) || len(servers) != len(cfg.members) {
 		return fmt.Errorf("restored Snapshot quorum verification requires matching cluster state with at least three members: members=%d ids=%d servers=%d",
@@ -578,6 +962,10 @@ func verifyRestoredClusterReplicationAndQuorum(ctx context.Context, adminClient 
 	if stopped < 0 || servers[stopped] == nil {
 		return errors.New("officially restored etcd cluster has no stoppable follower")
 	}
+	if closeErr := directClients[stopped].Close(); closeErr != nil {
+		return fmt.Errorf("close officially restored etcd follower %q client before stop: %w", cfg.members[stopped].name, closeErr)
+	}
+	directClients[stopped] = nil
 	servers[stopped].Close()
 	servers[stopped] = nil
 	survivorEndpoints := make([]string, 0, len(cfg.members)-1)
@@ -615,11 +1003,34 @@ func verifyRestoredClusterReplicationAndQuorum(ctx context.Context, adminClient 
 			return fmt.Errorf("verify quorum value on surviving officially restored member %q: %w", cfg.members[index].name, err)
 		}
 	}
-	quorumDelete, err := quorumClient.Delete(ctx, quorumKey)
-	if err != nil || quorumDelete == nil || quorumDelete.Header == nil || quorumDelete.Header.ClusterId != topology.clusterID || quorumDelete.Deleted != 1 {
-		return fmt.Errorf("delete officially restored etcd quorum probe: response=%+v err=%v", quorumDelete, err)
+
+	restarted, err := embed.StartEtcd(newRestoredSnapshotEmbedConfig(cfg, cfg.members[stopped], cfg.initialCluster))
+	if err != nil {
+		return fmt.Errorf("restart stopped officially restored etcd follower %q: %w", cfg.members[stopped].name, err)
 	}
-	return nil
+	servers[stopped] = restarted
+	if err := waitForRestoredSnapshotMember(ctx, cfg.members[stopped], restarted); err != nil {
+		return err
+	}
+	directClients[stopped], err = newDirectRestoredClient(adminConfig, cfg.members[stopped].clientURL.String())
+	if err != nil {
+		return fmt.Errorf("recreate officially restored etcd follower %q client: %w", cfg.members[stopped].name, err)
+	}
+	if err := waitForRestoredMemberValue(ctx, directClients[stopped], quorumKey, quorumValue, quorumPut.Header.Revision); err != nil {
+		return fmt.Errorf("verify recovered follower %q caught up to quorum write: %w", cfg.members[stopped].name, err)
+	}
+	recoveredTopology, err := verifyRestoredClusterTopology(ctx, adminClient, cfg, quorumPut.Header.Revision)
+	if err != nil {
+		return fmt.Errorf("verify recovered officially restored etcd topology: %w", err)
+	}
+	for index, memberID := range topology.memberIDs {
+		if recoveredTopology.memberIDs[index] != memberID {
+			return fmt.Errorf("officially restored etcd changed member ID during follower recovery at %d: got=%x want=%x",
+				index, recoveredTopology.memberIDs[index], memberID)
+		}
+	}
+	return verifyRestoredClusterMemberAdd(ctx, adminClient, adminConfig, cfg, recoveredTopology, directClients,
+		expected, quorumKey, quorumValue, quorumPut.Header.Revision)
 }
 
 func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, expected []streamProbeExpectation, revision int64) (retErr error) {
@@ -653,37 +1064,14 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		}
 	}()
 	for index, member := range cfg.members {
-		embedCfg := embed.NewConfig()
-		embedCfg.Name = member.name
-		embedCfg.Dir = member.dataDir
-		embedCfg.ClusterState = embed.ClusterStateFlagExisting
-		embedCfg.ListenClientUrls = []url.URL{member.clientURL}
-		embedCfg.AdvertiseClientUrls = []url.URL{member.clientURL}
-		embedCfg.ListenPeerUrls = []url.URL{member.peerURL}
-		embedCfg.AdvertisePeerUrls = []url.URL{member.peerURL}
-		embedCfg.InitialCluster = cfg.initialCluster
-		embedCfg.InitialClusterToken = cfg.initialClusterToken
-		embedCfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
-		if cfg.tls.enabled() {
-			embedCfg.ClientTLSInfo = transport.TLSInfo{
-				CertFile: cfg.tls.certFile, KeyFile: cfg.tls.keyFile, TrustedCAFile: cfg.tls.caFile, ClientCertAuth: true,
-			}
-		}
-		restored[index], err = embed.StartEtcd(embedCfg)
+		restored[index], err = embed.StartEtcd(newRestoredSnapshotEmbedConfig(cfg, member, cfg.initialCluster))
 		if err != nil {
 			return fmt.Errorf("start officially restored etcd member %q: %w", member.name, err)
 		}
 	}
 	for index, server := range restored {
-		select {
-		case <-server.Server.ReadyNotify():
-		case serveErr, ok := <-server.Err():
-			if !ok || serveErr == nil {
-				return fmt.Errorf("officially restored etcd member %q stopped before becoming ready", cfg.members[index].name)
-			}
-			return fmt.Errorf("officially restored etcd member %q stopped before becoming ready: %w", cfg.members[index].name, serveErr)
-		case <-verifyCtx.Done():
-			return fmt.Errorf("wait for officially restored etcd member %q readiness: %w", cfg.members[index].name, context.Cause(verifyCtx))
+		if err := waitForRestoredSnapshotMember(verifyCtx, cfg.members[index], server); err != nil {
+			return err
 		}
 	}
 
@@ -728,7 +1116,7 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		if len(cfg.members) == 1 {
 			return nil
 		}
-		return verifyRestoredClusterReplicationAndQuorum(verifyCtx, adminClient, adminConfig, cfg, topology, restored, revision)
+		return verifyRestoredClusterReplicationAndQuorum(verifyCtx, adminClient, adminConfig, cfg, topology, restored, expected, revision)
 	}
 
 	validateHeader := func(header *etcdserverpb.ResponseHeader) error {
