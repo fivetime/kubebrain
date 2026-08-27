@@ -109,6 +109,36 @@ func TestRolloutAvailabilityRunnerRejectsInvalidPreflightModeBeforeKubernetes(t 
 	require.NoFileExists(t, logPath)
 }
 
+func TestRolloutAvailabilityRunnerRejectsInvalidConnectionAgingMigrationBeforeKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=1",
+	)
+	output, err := command.CombinedOutput()
+	require.EqualError(t, err, "exit status 2")
+	require.Equal(t, "ENABLE_GRPC_CONNECTION_AGING_MIGRATION must be true or false\n", string(output))
+	require.NoFileExists(t, logPath)
+}
+
+func TestRolloutAvailabilityRunnerRequiresTargetForConnectionAgingMigration(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
+	)
+	output, err := command.CombinedOutput()
+	require.EqualError(t, err, "exit status 2")
+	require.Equal(t, "ENABLE_GRPC_CONNECTION_AGING_MIGRATION requires TARGET_IMAGE\n", string(output))
+	require.NoFileExists(t, logPath)
+}
+
 func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *testing.T) {
 	for _, variable := range []string{
 		"PROBE_COMMAND_TIMEOUT", "PROBE_DIAL_TIMEOUT", "PROBE_MAX_OPERATION_LATENCY", "PROBE_MAX_DIRECT_STREAM_LATENCY",
@@ -693,6 +723,67 @@ func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
 	}
 }
 
+func TestRolloutAvailabilityRunnerMigratesTLSConnectionAgingWithCandidate(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("f", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_TLS_STATE=true", "FAKE_TLS_NO_CONNECTION_AGING=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("f", 64),
+		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "image=kubebrain:test->"+target)
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, `"path":"/spec"`)
+	require.Contains(t, log, `"--grpc-max-connection-age=1h"`)
+	require.Contains(t, log, `"--grpc-max-connection-age-grace=5m"`)
+}
+
+func TestRolloutAvailabilityRunnerRejectsConnectionAgingMigrationWhenAlreadyConfigured(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("f", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_TLS_STATE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+		"TARGET_IMAGE="+target, "TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("f", 64),
+		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "rollout drain contract mismatch")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " run ")
+	require.NotContains(t, log, " patch ")
+}
+
+func TestRolloutAvailabilityRunnerRollsBackConnectionAgingMigrationSpec(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("f", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_TLS_STATE=true", "FAKE_TLS_NO_CONNECTION_AGING=true", "FAKE_ROLLOUT_FAIL=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("f", 64),
+		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
+	require.NoFileExists(t, statePath, "rollback must restore the original spec")
+	log := readOptionalFile(t, logPath)
+	require.Equal(t, 2, strings.Count(log, " patch statefulset/kubebrain --type=json -p "))
+	require.Equal(t, 4, strings.Count(log, `"path":"/spec"`),
+		"each full-spec patch must test and then replace /spec")
+	require.Contains(t, log, `"--grpc-max-connection-age=1h"`)
+	require.Contains(t, log, `"--grpc-max-connection-age-grace=5m"`)
+}
+
 func TestRolloutAvailabilityRunnerAddsMissingRestartAnnotations(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -1078,6 +1169,9 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
     prestop='["/bin/sh","-c","sleep 25 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain"]'
     args='["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379","--allow-insecure=false","--grpc-max-connection-age=1h","--grpc-max-connection-age-grace=5m","--cert-file=/etc/kubebrain/client-tls/tls.crt","--key-file=/etc/kubebrain/client-tls/tls.key","--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt","--tls-server-name=kubebrain-client.kubebrain-system.svc","--client-cert-auth=true"]'
     [[ "${FAKE_TLS_NO_CONNECTION_AGING:-false}" != true ]] || args='["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379","--allow-insecure=false","--cert-file=/etc/kubebrain/client-tls/tls.crt","--key-file=/etc/kubebrain/client-tls/tls.key","--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt","--tls-server-name=kubebrain-client.kubebrain-system.svc","--client-cert-auth=true"]'
+    if [[ "${FAKE_TLS_NO_CONNECTION_AGING:-false}" == true && "${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}" == true && -e "$FAKE_KUBECTL_STATE" ]]; then
+      args='["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379","--allow-insecure=false","--cert-file=/etc/kubebrain/client-tls/tls.crt","--key-file=/etc/kubebrain/client-tls/tls.key","--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt","--tls-server-name=kubebrain-client.kubebrain-system.svc","--client-cert-auth=true","--grpc-max-connection-age=1h","--grpc-max-connection-age-grace=5m"]'
+    fi
     volume_mounts='[{"name":"client-tls","mountPath":"/etc/kubebrain/client-tls","readOnly":true}]'
     volumes='[{"name":"client-tls","secret":{"secretName":"kubebrain-client-tls","defaultMode":256}}]'
     pod_security_context='{"runAsNonRoot":true,"runAsUser":65532,"runAsGroup":65532,"fsGroup":65532}'
@@ -1167,7 +1261,18 @@ elif [[ " $* " == *" patch statefulset/kubebrain --type=json -p "* ]]; then
   current_image=kubebrain:test
   [[ ! -e "$FAKE_KUBECTL_STATE" || -z "${TARGET_IMAGE:-}" ]] || current_image="$TARGET_IMAGE"
   patch_path="$(jq -r '.[-1].path // ""' <<<"${patch_payload:-[]}")"
-  if [[ "$patch_path" == /spec/template/metadata/annotations ]]; then
+  if [[ "$patch_path" == /spec ]]; then
+    expected_spec="$(jq -cS '.[2].value // {}' <<<"${patch_payload:-[]}")"
+    new_spec="$(jq -cS '.[-1].value // {}' <<<"${patch_payload:-[]}")"
+    new_image="$(jq -r '.template.spec.containers[] | select(.name == "kubebrain") | .image // ""' <<<"$new_spec")"
+    [[ "$expected_uid" == "$current_uid" && "$expected_resource_version" == "$current_resource_version" && -n "$expected_spec" && -n "$new_image" ]] || exit 1
+    if [[ "$new_image" == kubebrain:test && "${FAKE_ROLLBACK_IDENTITY_DRIFT:-false}" != true ]]; then
+      rm -f -- "$FAKE_KUBECTL_STATE"
+      [[ -z "${FAKE_ROLLBACK_MARKER:-}" ]] || : >"$FAKE_ROLLBACK_MARKER"
+    else
+      : >"$FAKE_KUBECTL_STATE"
+    fi
+  elif [[ "$patch_path" == /spec/template/metadata/annotations ]]; then
     restart_value="$(jq -r '.[-1].value["kubectl.kubernetes.io/restartedAt"] // ""' <<<"${patch_payload:-[]}")"
     [[ "$expected_uid" == "$current_uid" && "$expected_resource_version" == "$current_resource_version" && -n "$restart_value" ]] || exit 1
     printf '%s' "$restart_value" >"$FAKE_KUBECTL_STATE"

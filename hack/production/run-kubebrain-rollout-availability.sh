@@ -49,6 +49,7 @@ ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
 TARGET_RUNTIME_DIGESTS="${TARGET_RUNTIME_DIGESTS:-}"
+ENABLE_GRPC_CONNECTION_AGING_MIGRATION="${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}"
 PROBE_IMAGE="${PROBE_IMAGE:-}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
 MAX_RUNTIME_EVIDENCE_BYTES=1048576
@@ -56,6 +57,10 @@ MAX_PROBE_PHASE_RESPONSE_BYTES=4096
 
 if [[ "$PREFLIGHT_ONLY" != true && "$PREFLIGHT_ONLY" != false ]]; then
   echo "PREFLIGHT_ONLY must be true or false" >&2
+  exit 2
+fi
+if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != true && "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != false ]]; then
+  echo "ENABLE_GRPC_CONNECTION_AGING_MIGRATION must be true or false" >&2
   exit 2
 fi
 if [[ "$ALLOW_MUTATING_KUBEBRAIN_ROLLOUT" != true ]]; then
@@ -139,6 +144,10 @@ if [[ -z "$TARGET_IMAGE" && -n "$TARGET_RUNTIME_DIGESTS" ]]; then
   echo "TARGET_RUNTIME_DIGESTS requires TARGET_IMAGE" >&2
   exit 2
 fi
+if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true && -z "$TARGET_IMAGE" ]]; then
+  echo "ENABLE_GRPC_CONNECTION_AGING_MIGRATION requires TARGET_IMAGE" >&2
+  exit 2
+fi
 declare -A seen_runtime_digests=()
 IFS=',' read -r -a target_runtime_digest_items <<<"$TARGET_RUNTIME_DIGESTS"
 for digest in "${target_runtime_digest_items[@]}"; do
@@ -213,6 +222,19 @@ patch_kubebrain_image() {
   ')" || return 1
   kctl_mutation patch "statefulset/$KUBEBRAIN_STATEFULSET" --type=json -p "$patch"
 }
+patch_kubebrain_spec() {
+  local old_spec="$1" new_spec="$2" resource_version="$3" patch
+  patch="$(jq -cn --arg uid "$statefulset_uid" --arg resource_version "$resource_version" \
+    --argjson old_spec "$old_spec" --argjson new_spec "$new_spec" '
+    [
+      {op:"test",path:"/metadata/uid",value:$uid},
+      {op:"test",path:"/metadata/resourceVersion",value:$resource_version},
+      {op:"test",path:"/spec",value:$old_spec},
+      {op:"replace",path:"/spec",value:$new_spec}
+    ]
+  ')" || return 1
+  kctl_mutation patch "statefulset/$KUBEBRAIN_STATEFULSET" --type=json -p "$patch"
+}
 
 runtime_evidence_dir="$(mktemp -d)"
 trap 'rm -rf -- "$runtime_evidence_dir"' EXIT
@@ -273,7 +295,13 @@ candidate_spec="$initial_spec"
 restart_patch=""
 if [[ -n "$TARGET_IMAGE" ]]; then
   candidate_spec="$(jq -cS --arg image "$TARGET_IMAGE" --argjson index "$kubebrain_container_index" \
-    '.spec | .template.spec.containers[$index].image = $image' "$statefulset_json")" || exit 1
+    --argjson migrate "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" '
+    .spec |
+    .template.spec.containers[$index].image = $image |
+    if $migrate then
+      .template.spec.containers[$index].args += ["--grpc-max-connection-age=1h","--grpc-max-connection-age-grace=5m"]
+    else . end
+  ' "$statefulset_json")" || exit 1
 else
   restart_value="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
   candidate_spec="$(jq -cS --arg restart "$restart_value" \
@@ -334,13 +362,24 @@ if (( tls_marker_count > 0 )); then
   client_cert_auth_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--client-cert-auth=true")] | length' "$statefulset_json")"
   max_connection_age_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--grpc-max-connection-age=1h")] | length' "$statefulset_json")"
   max_connection_age_grace_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--grpc-max-connection-age-grace=5m")] | length' "$statefulset_json")"
+  max_connection_age_any_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--grpc-max-connection-age="))] | length' "$statefulset_json")"
+  max_connection_age_grace_any_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--grpc-max-connection-age-grace="))] | length' "$statefulset_json")"
   cert_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--cert-file=")) | sub("^--cert-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
   key_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--key-file=")) | sub("^--key-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
   ca_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--trusted-ca-file=")) | sub("^--trusted-ca-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
   tls_server_name="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--tls-server-name=")) | sub("^--tls-server-name="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
   cert_dir="${cert_file%/*}"
-  if [[ "$allow_insecure_false_count" != 1 || "$client_cert_auth_count" != 1 || "$max_connection_age_count" != 1 ||
-    "$max_connection_age_grace_count" != 1 || "$cert_file" != /* || "$key_file" != "${cert_dir}/"* ||
+  connection_aging_contract_valid=false
+  if [[ "$max_connection_age_count" == 1 && "$max_connection_age_grace_count" == 1 &&
+    "$max_connection_age_any_count" == 1 && "$max_connection_age_grace_any_count" == 1 &&
+    "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == false ]]; then
+    connection_aging_contract_valid=true
+  elif [[ "$max_connection_age_any_count" == 0 && "$max_connection_age_grace_any_count" == 0 &&
+    "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ]]; then
+    connection_aging_contract_valid=true
+  fi
+  if [[ "$allow_insecure_false_count" != 1 || "$client_cert_auth_count" != 1 || "$connection_aging_contract_valid" != true ||
+    "$cert_file" != /* || "$key_file" != "${cert_dir}/"* ||
     "$ca_file" != "${cert_dir}/"* || -z "$tls_server_name" ]]; then
     tls_contract_valid=false
   else
@@ -446,7 +485,11 @@ cleanup() {
       echo "candidate image mutation was not observed; original StatefulSet spec remains" >&2
     elif [[ "$rollback_current_spec" != "$candidate_spec" ]]; then
       echo "CRITICAL: candidate state drifted before rollback; refusing to overwrite concurrent StatefulSet changes" >&2
-    elif ! patch_kubebrain_image "$TARGET_IMAGE" "$image" "$rollback_current_resource_version" >/dev/null; then
+    elif [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ]] &&
+      ! patch_kubebrain_spec "$candidate_spec" "$initial_spec" "$rollback_current_resource_version" >/dev/null; then
+      echo "CRITICAL: failed to request candidate spec rollback to image ${image}" >&2
+    elif [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != true ]] &&
+      ! patch_kubebrain_image "$TARGET_IMAGE" "$image" "$rollback_current_resource_version" >/dev/null; then
       echo "CRITICAL: failed to request candidate image rollback to ${image}" >&2
     elif ! kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
       rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null; then
@@ -583,7 +626,11 @@ expected_final_image="$image"
 if [[ -n "$TARGET_IMAGE" ]]; then
   candidate_rollout_started=true
   expected_final_image="$TARGET_IMAGE"
-  patch_kubebrain_image "$image" "$TARGET_IMAGE" "$statefulset_resource_version" >/dev/null
+  if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ]]; then
+    patch_kubebrain_spec "$initial_spec" "$candidate_spec" "$statefulset_resource_version" >/dev/null
+  else
+    patch_kubebrain_image "$image" "$TARGET_IMAGE" "$statefulset_resource_version" >/dev/null
+  fi
 else
   kctl_mutation patch "statefulset/$KUBEBRAIN_STATEFULSET" --type=json -p "$restart_patch" >/dev/null
 fi
