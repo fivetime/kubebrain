@@ -63832,6 +63832,55 @@ HTTP/2 由 native gRPC 独占，health/version/JSON gateway 仍支持 HTTP/1.1�
 到 HTTP/1.1/独立 HTTP endpoint。仍需覆盖至少一小时自然 age 到期的真实 GOAWAY（当前由缩短 age 的 mTLS 测试覆盖），以及更长时段、
 多节点/多可用区 Service 与外部负载均衡器下的尾延迟分布。
 
+### A5560：自然 connection-age 轮换、语义 readiness 与长时门禁清理
+
+A5559 只用缩短 age 的进程内测试证明了 native gRPC transport 会轮换 TCP，本轮补齐真实 `1h` 配置的自然到期证据。提交
+`eceae7f9` 给 public Service 与三个稳定 Pod DNS client 的自定义 dialer 增加“成功 TCP 建连”计数，并给 rollout runner 增加
+`OBSERVE_ONLY`：该模式创建业务探针但不 patch StatefulSet，结束时要求 UID、完整 spec 和 current/update revision 逐字不变。
+`--min-public-tcp-dials` 与 `--min-direct-tcp-dials` 只统计成功连接，失败拨号不能冒充 replacement。对照 grpc-go transport 的
+MaxConnectionAge 抖动上界，真实观察使用 4200×1 秒并给 80 分钟完成预算，覆盖最迟 66 分钟触发点。
+
+第一次候选在滚动中暴露 public Lease KeepAlive 没有 direct 路径已有的有界恢复能力。提交 `7f7c517f` 让 public KeepAlive 在
+每次不超过 5 秒的窗口内最多恢复三个 episode，500ms 退避与 `/root/etcd/client/v3/lease.go` 的 retry wait 对齐；汇总新增
+`public_lease_restarts/max_public_lease_recovery_ms`。第二次候选又以 5.459 秒公共 Put→Watch RED 暴露旧 TCP readiness 的真实缺口：
+Pod 已进入 drain、listener 随后关闭，但 5 秒 TCP probe 周期内 EndpointSlice 仍可能把它作为 Ready。提交 `f75aa71b` 增加显式
+`ENABLE_HTTP_READINESS_MIGRATION`，以 UID/resourceVersion/完整旧 spec 三重 CAS 原子迁移为 TLS info port 的 HTTPS
+`/readyz`（1 秒周期、failure threshold 1）；失败时仅在当前 spec 仍等于候选 spec 才恢复旧 TCP spec。迁移后的 EndpointSlice
+在两个独立滚动中都把 terminating Pod 立即标为 `ready=false`。
+
+readiness 迁移候选 **900/900 GREEN**：public/direct TCP dial `3/min 2`，最大公共/direct 延迟 `3611/25765ms`；同版本重启
+**900/900 GREEN**：TCP dial `2/min 2`，最大公共/direct 延迟 `4814/28993ms`。随后从 `2026-08-27T13:53:06Z` 开始的
+observe-only 长测完成 **4200/4200**，Watch `4200`、direct Watch `4200×3`、public/direct lease alive，RangeStream 3915、
+Snapshot 1、stream retry 0；public TCP dial=2，三个 direct endpoint 的最小 TCP dial=2，最大公共/direct/TSO/Region 延迟
+`803/851/91/721ms`。全过程 StatefulSet UID `3d124ab7-b3ab-43d3-afd5-1b354722ab54`、generation 124、spec 与 revision
+`a4657-tls-cb7778859` 不变，三个服务 Pod 与探针均零重启。这关闭了 A5559 留下的“一小时自然 GOAWAY 未覆盖”缺口。
+
+长测业务阶段全部 GREEN 后，清理两个 15/16 分钟 Snapshot history lease 得到符合预期的 LeaseNotFound，却使门禁最终退出
+RED。提交 `1575309c` 把清理语义改为幂等：仅 `errors.Is(rpctypes.ErrLeaseNotFound)` 被分类为“已经不存在”并跳过空响应头校验；
+权限、连接、超时、非空错误和有效响应头错误仍失败。最终 inventory 为 673 项、分片 `162/185/170/156`；提交前 verify 通过，
+提交后四片 wall 为 `136.210/368.258/244.577/387.616s`，完整 probe 普通/race 为 `130.079/153.330s`，rollout runner
+普通/race 为 `93.863/95.066s`，vet/diff check 全绿。
+
+最终 build time `2026-08-27T15:26:05Z`；OCI archive 914,248,704 bytes，SHA-256
+`0156e2c050d197830f20ba0687014140904e5d4dbc8d20948bb614d9ca35931e`。index
+`sha256:1648746a7b08ad5af5e744b28c2c4c158e5a1242080a0c2e3788d59f9ce62e18`、platform
+`sha256:39e58e1d679d98c9ecd920be78d5579212e500e404dc3a2af015b18e5abb31d8`、attestation
+`sha256:923cd99ee50b65e92f651ac439b39a06726f2ddb3d52a8af095d15bda0a58f31`、Kind runtime wrapper
+`sha256:b7d243475f8a290d3baed2308be7fc4a5be6abfbfe986f1f7552b854e9755b62`。78 个 blob digest 与全部 graph descriptor size
+匹配；SBOM 2,592 packages/8,096 relationships，SBOM/provenance 均绑定 platform manifest。审计 Pod 验证 TiKV、完整 Git SHA
+`1575309c8775997ab0357f014444ef17b84fff48`、Go 1.26.5 与 build time 后，按 UID/resourceVersion 删除。
+
+最终镜像门禁的前两次尝试分别被真实 PD region-load timeout 引发的 Count Index DataLoss、以及非确定性 Snapshot 恢复鉴权读取
+nil 拦截，runner 两次都完整回滚到旧镜像并删除探针；没有把失败写成绿色。PD/TiKV 3+3 Ready、零重启且近 10 分钟无后端错误后，
+第三次相同 immutable 候选 **900/900 GREEN**：public/direct TCP dial `3/min 2`，RangeStream 181、Snapshot 1、stream retry 11、
+最大公共/direct/TSO/Region 延迟 `4851/26193/57/13ms`，revision 最终为 `a4657-tls-667c54d6d9`。
+
+终态 StatefulSet UID 未变，generation/observed generation 129，current/update revision 均为 `a4657-tls-667c54d6d9`；3/3
+Ready、restart 0，三个 imageID 均为最终 index，HTTPS `/readyz` 与 `1h/5m` 参数保持。A5560 所有探针均不存在，临时 Service UID
+`12827cd6-4de7-477e-9263-325978ba609a` 以 resourceVersion `6935449` 双前置条件删除。节点删除失败候选与过期 final 的精确引用，
+保留当前 A5560 和 A5559 rollback。仍需单独收敛两次非确定性 Snapshot/Count Index 门禁异常，并在多节点、多可用区与外部负载均衡器
+上积累更长时间的连接轮换尾延迟分布。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
