@@ -179,6 +179,36 @@ type blockingLeadershipBackend struct {
 	once    sync.Once
 }
 
+type concurrentServingInitializationBackend struct {
+	backend.Backend
+	eventEntered      chan struct{}
+	checkpointEntered chan struct{}
+	releaseEvent      chan struct{}
+	releaseCheckpoint chan struct{}
+	eventOnce         sync.Once
+	checkpointOnce    sync.Once
+}
+
+func (b *concurrentServingInitializationBackend) EnsureEventLogStart(ctx context.Context) error {
+	b.eventOnce.Do(func() { close(b.eventEntered) })
+	select {
+	case <-b.releaseEvent:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b *concurrentServingInitializationBackend) RefreshSerializableCheckpoint(ctx context.Context) error {
+	b.checkpointOnce.Do(func() { close(b.checkpointEntered) })
+	select {
+	case <-b.releaseCheckpoint:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type quotaRefreshBackend struct {
 	backend.Backend
 	calls     atomic.Int32
@@ -889,6 +919,55 @@ func TestLeadershipHealthTransitions(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("local watch remained open after leadership loss")
 	}
+}
+
+func TestLeaderReadinessRunsIndependentDurableFencesConcurrently(t *testing.T) {
+	recorder := &healthMetricRecorder{}
+	base := backend.NewBackend(imemkv.NewKvStorage(), backend.Config{
+		Prefix: "/registry", Identity: "test", EnableEtcdCompatibility: true,
+	}, recorder)
+	defer func() { require.NoError(t, base.(interface{ Close() error }).Close()) }()
+	b := &concurrentServingInitializationBackend{
+		Backend:           base,
+		eventEntered:      make(chan struct{}),
+		checkpointEntered: make(chan struct{}),
+		releaseEvent:      make(chan struct{}),
+		releaseCheckpoint: make(chan struct{}),
+	}
+	s := &server{healthServer: health.NewServer(), metricCli: recorder, backend: b}
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	done := make(chan struct{})
+	go func() {
+		s.onStartedLeading(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-b.eventEntered:
+	case <-time.After(time.Second):
+		t.Fatal("event-log fence did not start")
+	}
+	select {
+	case <-b.checkpointEntered:
+	case <-time.After(time.Second):
+		t.Fatal("checkpoint fence waited behind event-log fence")
+	}
+	require.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, healthStatus(t, s),
+		"readiness must remain withdrawn while both durable fences are in flight")
+
+	close(b.releaseEvent)
+	select {
+	case <-done:
+		t.Fatal("readiness published before checkpoint fence completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(b.releaseCheckpoint)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("leadership startup did not finish after both fences completed")
+	}
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, healthStatus(t, s))
 }
 
 func TestLeaderReadinessWaitsForDurableStartup(t *testing.T) {

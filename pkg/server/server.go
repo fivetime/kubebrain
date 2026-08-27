@@ -654,38 +654,70 @@ func (s *server) onPreparingLeading() {
 	}
 }
 
+func (s *server) runServingInitializationStage(ctx context.Context, stage string, initialize func(context.Context) error) bool {
+	started := time.Now()
+	for {
+		err := initialize(ctx)
+		if err == nil {
+			duration := time.Since(started)
+			if s.metricCli != nil {
+				_ = s.metricCli.EmitHistogram("leader.serving_initialization.duration_seconds", duration.Seconds(), metrics.Tag("stage", stage))
+			}
+			klog.InfoS("leader serving initialization stage completed", "stage", stage, "duration", duration)
+			return true
+		}
+		s.emitServingInitializationError(stage)
+		klog.ErrorS(err, "leader serving initialization failed; retrying before serving", "stage", stage)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(leaderReloadRetryInterval):
+		}
+	}
+}
+
+type servingInitializationStage struct {
+	name       string
+	initialize func(context.Context) error
+}
+
+func (s *server) runServingInitializationStagesConcurrently(ctx context.Context, stages ...servingInitializationStage) bool {
+	completed := make(chan bool, len(stages))
+	for _, stage := range stages {
+		stage := stage
+		go func() {
+			completed <- s.runServingInitializationStage(ctx, stage.name, stage.initialize)
+		}()
+	}
+	allSucceeded := true
+	for range stages {
+		allSucceeded = <-completed && allSucceeded
+	}
+	return allSucceeded
+}
+
 func (s *server) onStartedLeading(ctx context.Context) {
 	// Register this leadership lifecycle before any other startup work. Physical
 	// compaction and the TiKV GC-safepoint driver both derive their in-flight
 	// contexts from it, so a term loss cancels shared-storage maintenance even
 	// while lease/event initialization is still retrying.
-	for {
+	if !s.runServingInitializationStage(ctx, "compact", func(ctx context.Context) error {
 		err := s.backend.ResumePhysicalCompaction(ctx)
-		if err == nil {
-			break
+		if err != nil && s.metricCli != nil {
+			_ = s.metricCli.EmitCounter("compact.resume.err", 1)
 		}
-		s.metricCli.EmitCounter("compact.resume.err", 1)
-		s.emitServingInitializationError("compact")
-		klog.ErrorS(err, "resume physical compaction on leadership acquisition failed; retrying before serving")
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(leaderReloadRetryInterval):
-		}
+		return err
+	}) {
+		return
 	}
-	for {
+	if !s.runServingInitializationStage(ctx, "quota", func(ctx context.Context) error {
 		err := s.backend.EnsureQuotaInitialized(ctx)
-		if err == nil {
-			break
+		if err != nil && s.metricCli != nil {
+			_ = s.metricCli.EmitCounter("quota.initialize.err", 1)
 		}
-		s.metricCli.EmitCounter("quota.initialize.err", 1)
-		s.emitServingInitializationError("quota")
-		klog.ErrorS(err, "quota usage initialization failed; retrying before serving")
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(leaderReloadRetryInterval):
-		}
+		return err
+	}) {
+		return
 	}
 	// Reconstruct lease state from storage BEFORE advertising readiness (review
 	// #6). A stale follower snapshot's expiry timers would otherwise wrongly delete
@@ -693,19 +725,14 @@ func (s *server) onStartedLeading(ctx context.Context) {
 	// serving with unreconstructed lease state (the old code logged the error and
 	// proceeded). ctx cancellation (lost leadership / shutdown) ends the wait.
 	if s.etcdServer != nil {
-		for {
+		if !s.runServingInitializationStage(ctx, "lease", func(ctx context.Context) error {
 			err := s.etcdServer.ReloadLeases(ctx)
-			if err == nil {
-				break
+			if err != nil && s.metricCli != nil {
+				_ = s.metricCli.EmitCounter("lease.reload.err", 1)
 			}
-			s.metricCli.EmitCounter("lease.reload.err", 1)
-			s.emitServingInitializationError("lease")
-			klog.ErrorS(err, "reload leases on leadership acquisition failed; retrying before serving")
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(leaderReloadRetryInterval):
-			}
+			return err
+		}) {
+			return
 		}
 	}
 	// Push the event log's completeness watermark to this term's start BEFORE
@@ -716,33 +743,28 @@ func (s *server) onStartedLeading(ctx context.Context) {
 	// serve that window with silent holes. Failure must retry, not proceed: a
 	// failed advance leaves the OLD watermark in place (the log keeps serving,
 	// wrongly), not "unavailable" as the previous code assumed.
-	for {
-		err := s.backend.EnsureEventLogStart(ctx)
-		if err == nil {
-			break
-		}
-		s.metricCli.EmitCounter("event_log.ensure.err", 1)
-		s.emitServingInitializationError("event_log")
-		klog.ErrorS(err, "event log start initialization failed; retrying before serving")
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(leaderReloadRetryInterval):
-		}
-	}
-	for {
-		err := s.backend.RefreshSerializableCheckpoint(ctx)
-		if err == nil {
-			break
-		}
-		s.metricCli.EmitCounter("serializable.checkpoint.initialize_err", 1)
-		s.emitServingInitializationError("checkpoint")
-		klog.ErrorS(err, "initialize serializable checkpoint failed; retrying before serving")
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(leaderReloadRetryInterval):
-		}
+	// Both stages must observe the lease migration above, but after that boundary
+	// they are independent: the event-log watermark mutates only event metadata,
+	// while the checkpoint pins and protects an engine snapshot. Running them in
+	// parallel removes a PD/Region-cache round trip from the failover critical
+	// path without publishing readiness until both durable fences are complete.
+	if !s.runServingInitializationStagesConcurrently(ctx,
+		servingInitializationStage{name: "event_log", initialize: func(ctx context.Context) error {
+			err := s.backend.EnsureEventLogStart(ctx)
+			if err != nil && s.metricCli != nil {
+				_ = s.metricCli.EmitCounter("event_log.ensure.err", 1)
+			}
+			return err
+		}},
+		servingInitializationStage{name: "checkpoint", initialize: func(ctx context.Context) error {
+			err := s.backend.RefreshSerializableCheckpoint(ctx)
+			if err != nil && s.metricCli != nil {
+				_ = s.metricCli.EmitCounter("serializable.checkpoint.initialize_err", 1)
+			}
+			return err
+		}},
+	) {
+		return
 	}
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	if s.etcdServer != nil {
