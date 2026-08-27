@@ -1130,6 +1130,25 @@ func TestValidateRestoredMemberRaftAppliedStatus(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRestoredMemberPromoteFollowerIndexExcludesRestartedFollower(t *testing.T) {
+	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33}}
+	clients := []*clientv3.Client{{}, {}, {}}
+
+	index, err := restoredMemberPromoteFollowerIndex(topology, clients, 1)
+	require.NoError(t, err)
+	require.Equal(t, 2, index)
+	index, err = restoredMemberPromoteFollowerIndex(topology, clients, 2)
+	require.NoError(t, err)
+	require.Equal(t, 1, index)
+
+	_, err = restoredMemberPromoteFollowerIndex(topology, clients[:2], 1)
+	require.Error(t, err)
+	_, err = restoredMemberPromoteFollowerIndex(
+		restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22}}, clients[:2], 1,
+	)
+	require.Error(t, err)
+}
+
 func TestRestoredSnapshotConfigRejectsInvalidClusterIdentity(t *testing.T) {
 	_, err := newRestoredSnapshotConfig(t.TempDir(), 2, restoredSnapshotTLSConfig{}, nil)
 	require.ErrorContains(t, err, "one or at least three")

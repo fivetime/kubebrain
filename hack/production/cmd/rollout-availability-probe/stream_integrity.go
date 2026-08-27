@@ -1112,6 +1112,21 @@ func verifyRestoredMemberPromoteRejections(ctx context.Context, followerClient *
 	return nil
 }
 
+func restoredMemberPromoteFollowerIndex(topology restoredClusterTopology, directClients []*clientv3.Client,
+	restartedFollowerIndex int,
+) (int, error) {
+	if len(topology.memberIDs) != len(directClients) || restartedFollowerIndex < 0 || restartedFollowerIndex >= len(directClients) {
+		return -1, fmt.Errorf("restored MemberPromote follower selection requires matching IDs and clients plus a restarted member: ids=%d clients=%d restarted=%d",
+			len(topology.memberIDs), len(directClients), restartedFollowerIndex)
+	}
+	for index, memberID := range topology.memberIDs {
+		if index != restartedFollowerIndex && memberID != topology.leaderID && directClients[index] != nil {
+			return index, nil
+		}
+	}
+	return -1, errors.New("officially restored etcd cluster has no continuously serving follower for MemberPromote rejection verification")
+}
+
 func validateRestoredMemberRaftAppliedStatus(response *clientv3.StatusResponse, topology restoredClusterTopology,
 	memberID uint64,
 ) (bool, error) {
@@ -1403,7 +1418,7 @@ func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *cli
 
 func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
 	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
-	expected []streamProbeExpectation, preJoinKey, preJoinValue string, preJoinRevision int64,
+	expected []streamProbeExpectation, preJoinKey, preJoinValue string, preJoinRevision int64, restartedFollowerIndex int,
 ) (retErr error) {
 	if len(topology.memberIDs) != len(cfg.members) || len(directClients) != len(cfg.members) {
 		return fmt.Errorf("restored member reconfiguration requires matching voters, IDs, and clients: voters=%d ids=%d clients=%d",
@@ -1415,15 +1430,9 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 			return fmt.Errorf("establish restored member %q Raft apply barrier before reconfiguration: %w", cfg.members[index].name, err)
 		}
 	}
-	followerIndex := -1
-	for index, memberID := range topology.memberIDs {
-		if memberID != topology.leaderID {
-			followerIndex = index
-			break
-		}
-	}
-	if followerIndex < 0 || followerIndex >= len(directClients) {
-		return errors.New("officially restored etcd cluster has no direct follower client for MemberPromote rejection verification")
+	followerIndex, err := restoredMemberPromoteFollowerIndex(topology, directClients, restartedFollowerIndex)
+	if err != nil {
+		return err
 	}
 	if err := verifyRestoredMemberPromoteRejections(ctx, directClients[followerIndex], topology); err != nil {
 		return err
@@ -1725,7 +1734,7 @@ func verifyRestoredClusterReplicationAndQuorum(ctx context.Context, adminClient 
 		}
 	}
 	return verifyRestoredClusterMemberReconfiguration(ctx, adminClient, adminConfig, cfg, recoveredTopology, directClients,
-		expected, quorumKey, quorumValue, quorumPut.Header.Revision)
+		expected, quorumKey, quorumValue, quorumPut.Header.Revision, stopped)
 }
 
 func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, expected []streamProbeExpectation, revision int64) (retErr error) {
