@@ -63926,6 +63926,75 @@ revision 均为 `a4657-tls-6bd8f588f`；3/3 Ready、restart 0，三个 Pod 均�
 follower apply 竞态；真实数据面的 Count Index 在 PD region-load timeout 后返回 DataLoss，以及快速连续滚动的直连 DNS 尾延迟仍是后续
 需独立收敛的两项生产差距。
 
+### A5562/A5563：隔离 Count Index 验证超时，并收敛连续滚动的 direct lease 尾部
+
+A5560 的一次真实 RED 先发现 latest range 返回的 live revision index 未出现在 ready Count Index，随后用于独立举证的 transaction
+witness `BatchGet` 又遇到 PD `loadRegion` DeadlineExceeded。旧代码在
+`persistWitnessedRevisionIndexCorruption` 中用 `errors.Join` 合并“尚未证实的 Count Index 矛盾”和“验证基础设施超时”，RPC 层因错误链
+包含 `ErrInvalidMVCCMetadata` 而先映射为 DataLoss；重试又让 RangeStream 从不同位置开始，形成误导性的完整性失败。对照固定 upstream
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3rpc/util.go::togRPCError`，确认
+Canceled/DeadlineExceeded 必须先于其他分类穿透，而未完成的诊断不能升级为 durable corruption。
+
+提交 `c7f6c399e692cb27687d7588ce8e6b267fbb6ca1` 让 witness validator 的非
+`ErrTxnWitnessCorrupt` 失败单独返回：PD/TiKV transport 原因因此保持既有 DeadlineExceeded/Unavailable 契约，不再携带
+`ErrInvalidMVCCMetadata`；验证完成但矛盾仍存在时仍返回 DataLoss，完整持久 witness 证明物理矛盾时仍拉起 CORRUPT。稳定回归构造
+ready Count Index 漏掉 live key、第一次 BatchGet 成功读取物理 index、第二次 BatchGet 精确注入生产形状的 PD loadRegion timeout；断言
+响应不含 `ErrInvalidMVCCMetadata`、Alarm 空，恢复 storage 并 rebuild disposable Count Index 后同一 List 成功。该复现普通连续 100 次、
+race 连续 20 次通过；`pkg/backend`/`pkg/server/etcd` 全包分别 `49.684/136.598s`，相关 RPC race 通过，vet/diff check 全绿。
+production inventory 为 673 项、分片 `162/185/170/156`；提交前 verify 通过，提交后四片 wall 为
+`140.187/368.174/244.488/388.399s`，全部通过。
+
+A5562 build time `2026-08-27T17:03:26.769Z`；OCI archive 914,249,216 bytes，SHA-256
+`af3241c8c20493c606e23ecb8018f29775df599bfae7655368c91f349c1010bb`。index
+`sha256:2efbc2b0e13b11cc27f4074b37aa084256b561cdc4273a72f5d5c3bef1257df8`、platform
+`sha256:a59550a09fa85e71aeac8fe5702c42e115980b8811060d9778f754bcbe02e563`、config
+`sha256:c8bf7ab0529c17aaf7c97a1756c928a192a99a3c1aacb6e0c058958804b5d709`、attestation
+`sha256:3e0b8ada9bdaac31d6cff439561bd7d361a8cd3c9b1bd8d731a8116a50cb5ab2`、Kind runtime wrapper
+`sha256:2a59d000a04a51769baf2c22149aa973e97f756ee62ca0457c52b4cf2da884e0`。78/78 blob digest 与 78/78 graph
+descriptor size 匹配；SBOM 为 2,592 packages/8,096 relationships，SBOM/provenance 均绑定 platform manifest；一次性审计 Pod
+验证 TiKV、完整 Git SHA、Go 1.26.5 与 build time 后按 UID/resourceVersion 删除。
+
+真实 A5561→A5562 门禁没有被写成绿色：第一次在 iteration 534 因 direct ordinal 1 的 LeaseKeepAlive 已完成 1 个恢复 episode 后再次
+关闭而 RED；完整回滚后第二次在 iteration 514 由 ordinal 2 的相同原因 RED，再次完整回滚。审计发现 public KeepAlive 已允许
+`len(directEndpoints)=3` 个有界 episode，direct monitor 却遗漏 `maxRecoveries` 而使用默认 1。一次 replacement 可能在 headless DNS
+收敛前短暂连回 retiring Pod，取得一条完全有效的新鲜响应后又关闭；这不是 lease 失效，也不能靠无限重试掩盖。提交
+`dddd4e39e66e6349bfabb473f2f4a8faeebb643e`（A5563）把每条 direct lease 的独立 episode 上限同样绑定三成员集合；每个
+episode 仍必须在 30 秒 `maxDirectLatency` 内拿到 cluster ID、lease ID、revision 与 TTL 全匹配的新鲜响应，重复 replacement 关闭仍共享
+同一 episode deadline，第四个完成后的 episode 仍 fail closed。三-episode 边界普通 100 次/race 20 次通过；完整 probe 普通/race 为
+`128.882/175.710s`，vet/diff check 全绿；提交前 673 项 verify 通过，提交后四片为
+`137.891/370.430/244.694/389.969s`，全部通过。
+
+A5563 build time `2026-08-27T17:41:22Z`；OCI archive 914,249,728 bytes，SHA-256
+`5d4c89ddd10f7f04c65e9d7b7b0676c90ed041b60acd96be10a579179136d781`。index
+`sha256:c43ae873a5d0afca00f0c77f83608d66b1219968733b31cf14a1f949203ad277`、platform
+`sha256:c530617a2d2adb63f638ffe1d3d99c7cbc0566e9b667087d74959a635532e6c6`、config
+`sha256:8c9174c4f87c00298946993cc1ac26ccf6dc0ef49092ec2433104b1a0c5d7c3c`、attestation
+`sha256:f4c79400548ad546bdcb54c15b94932512eedd5e8c744f424705a73872382189`、Kind runtime wrapper
+`sha256:09adfca2a0aa7ed5eefa1b49c42c7cf5f6d6ac64e1ae8fbef63751c587fc3412`。78/78 blob 与 graph descriptor
+均闭合；SBOM 仍为 2,592/8,096，SBOM digest `b51e457503e620588b1fc9ced5c0e51e9e3afccf7c520dca9f97ed8d82988d67`、
+provenance digest `f145f34a93d1256b645842b645793343f8babbc0a06a511e99e4b844def3562d`，两者精确绑定 platform；审计 Pod
+验证二进制后按 UID/resourceVersion 删除。
+
+A5561→A5563 候选升级 **900/900 GREEN**：public/direct TCP dial `4/min 2`，direct lease replacement 23、最大恢复
+20,915ms，RangeStream 182、Snapshot 1、stream retry/partial `9/0`，最大公共/direct/TSO/Region 延迟
+`3911/25338/64/9ms`，revision `a4657-tls-6bd8f588f -> a4657-tls-7f479795f7`。紧邻升级的第一次同版本重启在
+iteration 175 因 Put→Watch `5.079955926s` 超过固定 5 秒 SLO 而 RED，并看到旧 Pod IP `.41` connection refused；没有记为绿色。
+该重启最终完整收敛、DNS 更新且关键日志为空后，第二次独立同版本重启 **900/900 GREEN**：TCP dial `3/min 2`，direct lease
+replacement 23、最大恢复 22,558ms，RangeStream 187、Snapshot 1、retry/partial `4/0`，最大延迟
+`4330/27370/49/9ms`，revision 最终为 `a4657-tls-97f8bdb4c`。两次绿色运行均未再出现 Count Index DataLoss 或 direct episode
+上限错误。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 139，
+current/update revision 均为 `a4657-tls-97f8bdb4c`；3/3 Ready、restart 0，三个 Pod 均运行 A5563 wrapper，HTTPS `/readyz` 与
+`1h/5m` 保持。cluster ID 7662961163671170154、revision/index/applied 75222（精确清理旧残骸后 revision 75223）、term 450、
+leader 2985394290；三个 voter 精确、AlarmList 空。auth enabled/revision 1506，用户 `KubeWharfServer/alice/root`、角色
+`operator/root`。PD leader `kb-pd-2`，PD/TiKV 3+3 Ready、restart 0，三个 store 均 Up；九个主 Pod 近 30 分钟关键日志命中 0。
+A5562/A5563 四个门禁前缀均为 0；额外发现并精确删除旧 A5560 失败探针残留 529 键，根前缀最终 Count=1 且唯一为未触碰的 A5529
+watch。临时 Service UID `def14f40-98e9-48e9-ab03-c927adc67388`、resourceVersion `6971288` 已双前置条件删除，Service
+NotFound、EndpointSlice 0。节点只保留当前 A5563 与回滚 A5561 的精确 index/runtime/config 引用，删除 A5560（N−2）、失败 A5562
+和 A5563 可变 tag。Count Index 验证超时误报 DataLoss 与 direct lease 单 episode 缺口均已关闭；连续滚动仍观察到一次约 80ms 超出
+5 秒 SLO 的 Put→Watch 尾部，需继续在更长时段、多节点/多可用区和外部负载均衡器下量化，而不能用后续 GREEN 抹去。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
