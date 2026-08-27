@@ -51,6 +51,7 @@ OBSERVE_ONLY="${OBSERVE_ONLY:-false}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
 TARGET_RUNTIME_DIGESTS="${TARGET_RUNTIME_DIGESTS:-}"
 ENABLE_GRPC_CONNECTION_AGING_MIGRATION="${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}"
+ENABLE_HTTP_READINESS_MIGRATION="${ENABLE_HTTP_READINESS_MIGRATION:-false}"
 PROBE_IMAGE="${PROBE_IMAGE:-}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
 PROBE_MIN_PUBLIC_TCP_DIALS="${PROBE_MIN_PUBLIC_TCP_DIALS:-1}"
@@ -68,6 +69,10 @@ if [[ "$OBSERVE_ONLY" != true && "$OBSERVE_ONLY" != false ]]; then
 fi
 if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != true && "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != false ]]; then
   echo "ENABLE_GRPC_CONNECTION_AGING_MIGRATION must be true or false" >&2
+  exit 2
+fi
+if [[ "$ENABLE_HTTP_READINESS_MIGRATION" != true && "$ENABLE_HTTP_READINESS_MIGRATION" != false ]]; then
+  echo "ENABLE_HTTP_READINESS_MIGRATION must be true or false" >&2
   exit 2
 fi
 if [[ "$ALLOW_MUTATING_KUBEBRAIN_ROLLOUT" != true ]]; then
@@ -155,8 +160,12 @@ if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true && -z "$TARGET_IMAGE" ]]
   echo "ENABLE_GRPC_CONNECTION_AGING_MIGRATION requires TARGET_IMAGE" >&2
   exit 2
 fi
-if [[ "$OBSERVE_ONLY" == true && ( -n "$TARGET_IMAGE" || "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ) ]]; then
-  echo "OBSERVE_ONLY cannot be combined with TARGET_IMAGE or ENABLE_GRPC_CONNECTION_AGING_MIGRATION" >&2
+if [[ "$ENABLE_HTTP_READINESS_MIGRATION" == true && -z "$TARGET_IMAGE" ]]; then
+  echo "ENABLE_HTTP_READINESS_MIGRATION requires TARGET_IMAGE" >&2
+  exit 2
+fi
+if [[ "$OBSERVE_ONLY" == true && ( -n "$TARGET_IMAGE" || "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true || "$ENABLE_HTTP_READINESS_MIGRATION" == true ) ]]; then
+  echo "OBSERVE_ONLY cannot be combined with TARGET_IMAGE or rollout migrations" >&2
   exit 2
 fi
 declare -A seen_runtime_digests=()
@@ -304,13 +313,26 @@ image="$(jq -r '.spec.template.spec.containers[] | select(.name == "kubebrain") 
 initial_spec="$(jq -cS '.spec' "$statefulset_json")" || exit 1
 candidate_spec="$initial_spec"
 restart_patch=""
+full_spec_migration=false
+if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true || "$ENABLE_HTTP_READINESS_MIGRATION" == true ]]; then
+  full_spec_migration=true
+fi
 if [[ -n "$TARGET_IMAGE" ]]; then
   candidate_spec="$(jq -cS --arg image "$TARGET_IMAGE" --argjson index "$kubebrain_container_index" \
-    --argjson migrate "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" '
+    --argjson migrate_aging "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" \
+    --argjson migrate_readiness "$ENABLE_HTTP_READINESS_MIGRATION" '
     .spec |
     .template.spec.containers[$index].image = $image |
-    if $migrate then
+    if $migrate_aging then
       .template.spec.containers[$index].args += ["--grpc-max-connection-age=1h","--grpc-max-connection-age-grace=5m"]
+    else . end |
+    if $migrate_readiness then
+      ([.template.spec.containers[$index].args[]? | select(startswith("--info-cert-file="))] |
+        if length == 1 then "HTTPS" else "HTTP" end) as $scheme |
+      .template.spec.containers[$index].readinessProbe = {
+        httpGet:{path:"/readyz",port:"info",scheme:$scheme},
+        initialDelaySeconds:5,periodSeconds:1,timeoutSeconds:1,successThreshold:1,failureThreshold:1
+      }
     else . end
   ' "$statefulset_json")" || exit 1
 elif [[ "$OBSERVE_ONLY" != true ]]; then
@@ -353,6 +375,7 @@ for pd_addr in "${pd_addr_items[@]}"; do
   pd_endpoints="${pd_endpoints:+${pd_endpoints},}${pd_addr}"
 done
 prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' "$statefulset_json")"
+readiness_probe="$(jq -cS '.spec.template.spec.containers[] | select(.name == "kubebrain") | .readinessProbe // {}' "$statefulset_json")"
 expected_prestop='["/bin/sh","-c","sleep 25 && curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain"]'
 termination_grace_period_seconds="$(jq -r '.spec.template.spec.terminationGracePeriodSeconds // 0' "$statefulset_json")"
 probe_pod_security_context="$(jq -cer '.spec.template.spec.securityContext |
@@ -410,6 +433,20 @@ if (( tls_marker_count > 0 )); then
   fi
 fi
 
+readiness_scheme=HTTP
+[[ "$endpoint_scheme" != https ]] || readiness_scheme=HTTPS
+expected_readiness_probe="$(jq -cS -n --arg scheme "$readiness_scheme" '{
+  httpGet:{path:"/readyz",port:"info",scheme:$scheme},
+  initialDelaySeconds:5,periodSeconds:1,timeoutSeconds:1,successThreshold:1,failureThreshold:1
+}')" || exit 1
+legacy_tcp_readiness_probe='{"failureThreshold":3,"initialDelaySeconds":5,"periodSeconds":5,"successThreshold":1,"tcpSocket":{"port":"client"},"timeoutSeconds":1}'
+readiness_contract_valid=false
+if [[ "$ENABLE_HTTP_READINESS_MIGRATION" == true && "$readiness_probe" == "$legacy_tcp_readiness_probe" ]]; then
+  readiness_contract_valid=true
+elif [[ "$ENABLE_HTTP_READINESS_MIGRATION" != true && "$readiness_probe" == "$expected_readiness_probe" ]]; then
+  readiness_contract_valid=true
+fi
+
 if [[ "$replicas" != "$EXPECTED_REPLICAS" || "$ready" != "$EXPECTED_REPLICAS" ]]; then
   echo "KubeBrain StatefulSet must have exactly ${EXPECTED_REPLICAS} desired and Ready replicas" >&2
   exit 1
@@ -418,10 +455,10 @@ if [[ -z "$current_revision" || "$current_revision" != "$update_revision" ]]; th
   echo "KubeBrain StatefulSet is not at one stable revision" >&2
   exit 1
 fi
-if [[ -z "$image" || -z "$pd_endpoints" || -z "$probe_pod_security_context" || ! "$headless_service" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || "$retry_count" != 1 || "$prestop" != "$expected_prestop" || "$tls_contract_valid" != true ]] ||
+if [[ -z "$image" || -z "$pd_endpoints" || -z "$probe_pod_security_context" || ! "$headless_service" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || "$retry_count" != 1 || "$prestop" != "$expected_prestop" || "$tls_contract_valid" != true || "$readiness_contract_valid" != true ]] ||
   ! operation_is_positive_int64 "$termination_grace_period_seconds" ||
   (( termination_grace_period_seconds < MIN_TERMINATION_GRACE_PERIOD_SECONDS )); then
-  echo "KubeBrain rollout drain contract mismatch (image/retry/serviceName/preStop/terminationGracePeriodSeconds/probe security context/TLS identity)" >&2
+  echo "KubeBrain rollout drain contract mismatch (image/retry/serviceName/preStop/readiness/terminationGracePeriodSeconds/probe security context/TLS identity)" >&2
   exit 1
 fi
 headless_service_json="$runtime_evidence_dir/headless-service-initial.json"
@@ -496,10 +533,10 @@ cleanup() {
       echo "candidate image mutation was not observed; original StatefulSet spec remains" >&2
     elif [[ "$rollback_current_spec" != "$candidate_spec" ]]; then
       echo "CRITICAL: candidate state drifted before rollback; refusing to overwrite concurrent StatefulSet changes" >&2
-    elif [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ]] &&
+    elif [[ "$full_spec_migration" == true ]] &&
       ! patch_kubebrain_spec "$candidate_spec" "$initial_spec" "$rollback_current_resource_version" >/dev/null; then
       echo "CRITICAL: failed to request candidate spec rollback to image ${image}" >&2
-    elif [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != true ]] &&
+    elif [[ "$full_spec_migration" != true ]] &&
       ! patch_kubebrain_image "$TARGET_IMAGE" "$image" "$rollback_current_resource_version" >/dev/null; then
       echo "CRITICAL: failed to request candidate image rollback to ${image}" >&2
     elif ! kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
@@ -639,7 +676,7 @@ expected_final_image="$image"
 if [[ -n "$TARGET_IMAGE" ]]; then
   candidate_rollout_started=true
   expected_final_image="$TARGET_IMAGE"
-  if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ]]; then
+  if [[ "$full_spec_migration" == true ]]; then
     patch_kubebrain_spec "$initial_spec" "$candidate_spec" "$statefulset_resource_version" >/dev/null
   else
     patch_kubebrain_image "$image" "$TARGET_IMAGE" "$statefulset_resource_version" >/dev/null
