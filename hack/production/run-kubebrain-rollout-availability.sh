@@ -737,7 +737,7 @@ if grep -Fq 'lease keepalive response queue is full' "$probe_log"; then
   exit 1
 fi
 summary="$(grep '^PROBE_SUMMARY ' "$probe_log" || true)"
-if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ direct_watch=${PROBE_ITERATIONS}x${EXPECTED_REPLICAS}\ lease=alive\ lease_responses=[1-9][0-9]*\ public_lease_restarts=[0-9]+\ max_public_lease_recovery_ms=[0-9]+\ direct_lease=alive\ direct_lease_responses=[1-9][0-9]*\ direct_lease_restarts=[0-9]+\ max_direct_lease_recovery_ms=[0-9]+\ public_tcp_dials=[1-9][0-9]*\ min_direct_tcp_dials=[1-9][0-9]*\ direct_endpoints=${EXPECTED_REPLICAS}\ range_stream=[1-9][0-9]*\ snapshot=[1-9][0-9]*\ stream_retries=[0-9]+\ stream_partial_retries=[0-9]+\ max_latency_ms=[0-9]+\ max_direct_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
+if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ direct_watch=${PROBE_ITERATIONS}x${EXPECTED_REPLICAS}\ lease=alive\ lease_responses=[1-9][0-9]*\ public_lease_restarts=[0-9]+\ max_public_lease_recovery_ms=[0-9]+\ direct_lease=alive\ direct_lease_responses=[1-9][0-9]*\ direct_lease_restarts=[0-9]+\ max_direct_lease_recovery_ms=[0-9]+\ public_tcp_dials=[1-9][0-9]*\ min_direct_tcp_dials=[1-9][0-9]*\ direct_endpoints=${EXPECTED_REPLICAS}\ range_stream=[1-9][0-9]*\ snapshot=[1-9][0-9]*\ stream_retries=[0-9]+\ stream_partial_retries=[0-9]+\ max_latency_ms=[0-9]+\ max_put_latency_ms=[0-9]+\ max_watch_after_put_latency_ms=[0-9]+\ max_direct_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
   echo "availability probe summary mismatch" >&2
   exit 1
 fi

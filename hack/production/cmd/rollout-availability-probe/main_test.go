@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -179,7 +180,7 @@ func TestVerifyPDStoresRejectsDuplicateIdentityAndMalformedAddress(t *testing.T)
 
 func TestConfigValidation(t *testing.T) {
 	snapshotDir := t.TempDir()
-	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, snapshotDir: snapshotDir, minPublicTCPDials: 1, minDirectTCPDials: 1}
+	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: 100 * time.Millisecond, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, snapshotDir: snapshotDir, minPublicTCPDials: 1, minDirectTCPDials: 1}
 	require.NoError(t, valid.validate())
 	entries, err := os.ReadDir(snapshotDir)
 	require.NoError(t, err)
@@ -192,6 +193,7 @@ func TestConfigValidation(t *testing.T) {
 		"interval":                  func(cfg *config) { cfg.interval = 0 },
 		"command":                   func(cfg *config) { cfg.commandTimeout = 0 },
 		"dial":                      func(cfg *config) { cfg.dialTimeout = 0 },
+		"dial consumes latency SLO": func(cfg *config) { cfg.dialTimeout = cfg.maxLatency },
 		"latency":                   func(cfg *config) { cfg.maxLatency = 0 },
 		"latency cap":               func(cfg *config) { cfg.maxLatency = 2 * cfg.commandTimeout },
 		"direct latency":            func(cfg *config) { cfg.maxDirectLatency = 0 },
@@ -228,12 +230,12 @@ func TestConfigValidation(t *testing.T) {
 }
 
 func TestConfigRejectsHTTPSWithoutExplicitTLSIdentity(t *testing.T) {
-	cfg := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, minPublicTCPDials: 1, minDirectTCPDials: 1}
+	cfg := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: 100 * time.Millisecond, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, minPublicTCPDials: 1, minDirectTCPDials: 1}
 	require.ErrorContains(t, cfg.validate(), "TLS")
 }
 
 func TestCleanupClientConfigRetainsAllDirectEndpoints(t *testing.T) {
-	cfg := config{dialTimeout: 3 * time.Second}
+	cfg := config{dialTimeout: 3 * time.Second, maxLatency: 5 * time.Second}
 	endpoints := []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}
 	clientConfig := cfg.kubeBrainClientConfigForEndpoints(endpoints, nil)
 	require.Equal(t, endpoints, clientConfig.Endpoints)
@@ -290,7 +292,7 @@ func TestValidateTCPDialEvidenceRequiresEveryDirectEndpoint(t *testing.T) {
 }
 
 func TestConfigRequiresCompleteTLSIdentityAndMatchingSchemes(t *testing.T) {
-	valid := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, caFile: "/tls/ca.crt", certFile: "/tls/tls.crt", keyFile: "/tls/tls.key", tlsServerName: "kubebrain-client.example", minPublicTCPDials: 1, minDirectTCPDials: 1}
+	valid := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: 100 * time.Millisecond, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, caFile: "/tls/ca.crt", certFile: "/tls/tls.crt", keyFile: "/tls/tls.key", tlsServerName: "kubebrain-client.example", minPublicTCPDials: 1, minDirectTCPDials: 1}
 	require.NoError(t, valid.validate())
 
 	for name, mutate := range map[string]func(*config){
@@ -352,6 +354,7 @@ func TestMutualTLSClientHonorsExplicitServerName(t *testing.T) {
 	clientTLS, err := cfg.clientTLSConfig()
 	require.NoError(t, err)
 	cfg.dialTimeout = time.Second
+	cfg.maxLatency = 5 * time.Second
 	dialCount := &successfulTCPDialCounter{timeout: cfg.dialTimeout}
 	client, err := clientv3.New(cfg.kubeBrainClientConfigWithDialCounter("https://"+listener.Addr().String(), clientTLS, dialCount))
 	require.NoError(t, err)
@@ -362,6 +365,76 @@ func TestMutualTLSClientHonorsExplicitServerName(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
 	require.GreaterOrEqual(t, dialCount.count.Load(), int64(1))
+}
+
+func TestClientReconnectsWithinAvailabilitySLOAfterConsecutiveDialFailures(t *testing.T) {
+	startHealthServer := func() (*grpc.Server, net.Listener) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		server := grpc.NewServer()
+		healthServer := health.NewServer()
+		healthpb.RegisterHealthServer(server, healthServer)
+		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+		go func() { _ = server.Serve(listener) }()
+		return server, listener
+	}
+
+	initialServer, initialListener := startHealthServer()
+	t.Cleanup(initialServer.Stop)
+	replacementServer, replacementListener := startHealthServer()
+	t.Cleanup(replacementServer.Stop)
+
+	var target atomic.Value
+	target.Store(initialListener.Addr().String())
+	var unavailable atomic.Bool
+	var dialAttempts atomic.Int64
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		dialAttempts.Add(1)
+		if unavailable.Load() {
+			return nil, errors.New("injected rollout connection refusal")
+		}
+		return (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "tcp", target.Load().(string))
+	}
+
+	cfg := config{dialTimeout: 100 * time.Millisecond, maxLatency: 2 * time.Second}
+	clientConfig := cfg.kubeBrainClientConfig("http://"+initialListener.Addr().String(), nil)
+	clientConfig.DialOptions = append(clientConfig.DialOptions, grpc.WithContextDialer(dialer))
+	client, err := clientv3.New(clientConfig)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	healthClient := healthpb.NewHealthClient(client.ActiveConnection())
+	initialCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	_, err = healthClient.Check(initialCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+	cancel()
+	require.NoError(t, err)
+
+	beforeFailure := dialAttempts.Load()
+	unavailable.Store(true)
+	initialServer.Stop()
+	require.Eventually(t, func() bool {
+		return dialAttempts.Load() > beforeFailure
+	}, time.Second, 10*time.Millisecond,
+		"the stopped transport must enter connection recovery before the recovery RPC starts")
+	recoveryCtx, stopRecovery := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopRecovery()
+	recovered := make(chan error, 1)
+	go func() {
+		_, checkErr := healthClient.Check(recoveryCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+		recovered <- checkErr
+	}()
+	require.Eventually(t, func() bool {
+		return dialAttempts.Load() >= beforeFailure+5
+	}, 3*time.Second, 10*time.Millisecond,
+		"five consecutive rollout dial failures must be retried inside the five-second operation SLO")
+
+	target.Store(replacementListener.Addr().String())
+	unavailable.Store(false)
+	select {
+	case err = <-recovered:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("client remained in connection backoff after the replacement endpoint became available")
+	}
 }
 
 func TestValidateDirectWatchLatencyAllowsOnlyOneRollingEndpoint(t *testing.T) {

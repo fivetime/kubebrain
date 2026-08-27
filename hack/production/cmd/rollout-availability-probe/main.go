@@ -28,6 +28,7 @@ import (
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 )
 
 type config struct {
@@ -125,6 +126,9 @@ func (cfg config) validate() error {
 		cfg.rangeInterval <= 0 || cfg.snapshotDelay <= 0 || cfg.streamTimeout <= 0 || cfg.streamBackoff <= 0 || cfg.streamMaxBackoff < cfg.streamBackoff {
 		return fmt.Errorf("interval and timeouts must be positive")
 	}
+	if cfg.dialTimeout >= cfg.maxLatency {
+		return fmt.Errorf("dial timeout %s must be smaller than operation latency SLO %s", cfg.dialTimeout, cfg.maxLatency)
+	}
 	if cfg.snapshotDir != "" {
 		info, err := os.Stat(cfg.snapshotDir)
 		if err != nil || !info.IsDir() {
@@ -213,10 +217,29 @@ func (cfg config) kubeBrainClientConfigWithDialCounter(endpoint string, tlsConfi
 }
 
 func (cfg config) kubeBrainClientConfigForEndpoints(endpoints []string, tlsConfig *tls.Config) clientv3.Config {
+	// grpc-go's default connection backoff grows to 120 seconds. That is a good
+	// generic outage policy, but it cannot prove this probe's five-second
+	// rollout availability SLO: after EndpointSlice recovery the client may
+	// remain asleep longer than the service outage. Reserve at least half of the
+	// post-dial SLO for RPC and Watch resumption, and keep every connection retry
+	// inside the remaining bounded transport budget.
+	// Jitter can extend a delay by 20%, so one retry still consumes less than
+	// half of the post-dial SLO when the derived one-third cap applies.
+	maxReconnectDelay := max(time.Nanosecond, min(time.Second, (cfg.maxLatency-cfg.dialTimeout)/3))
+	baseReconnectDelay := min(100*time.Millisecond, maxReconnectDelay)
 	clientConfig := clientv3.Config{
 		Endpoints:   append([]string(nil), endpoints...),
 		DialTimeout: cfg.dialTimeout,
 		TLS:         tlsConfig,
+		DialOptions: []grpc.DialOption{grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff: backoff.Config{
+				BaseDelay:  baseReconnectDelay,
+				Multiplier: 1.6,
+				Jitter:     0.2,
+				MaxDelay:   maxReconnectDelay,
+			},
+			MinConnectTimeout: cfg.dialTimeout,
+		})},
 	}
 	if tlsConfig != nil {
 		// grpc-go 1.79+ derives both :authority and certificate verification
@@ -1177,6 +1200,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 
 	fmt.Println("PROBE_STARTED")
 	var maxLatency time.Duration
+	var maxPutLatency time.Duration
+	var maxWatchResumeLatency time.Duration
 	var maxDirectLatency time.Duration
 	lastPDCheck := time.Now()
 	for i := 1; i <= cfg.iterations; i++ {
@@ -1246,9 +1271,16 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+		putResolved := time.Now()
+		putLatency := putResolved.Sub(started)
+		if putLatency > maxPutLatency {
+			maxPutLatency = putLatency
+		}
 
+		var watchReceived time.Time
 		select {
 		case response, ok := <-watch:
+			watchReceived = time.Now()
 			if !ok {
 				return fmt.Errorf("iteration=%d watch closed", i)
 			}
@@ -1260,12 +1292,16 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		case <-time.After(cfg.commandTimeout):
 			return fmt.Errorf("iteration=%d watch timed out", i)
 		}
-		latency := time.Since(started)
+		watchResumeLatency := watchReceived.Sub(putResolved)
+		if watchResumeLatency > maxWatchResumeLatency {
+			maxWatchResumeLatency = watchResumeLatency
+		}
+		latency := watchReceived.Sub(started)
 		if latency > maxLatency {
 			maxLatency = latency
 		}
 		if latency > cfg.maxLatency {
-			return fmt.Errorf("iteration=%d Put-to-Watch latency %s exceeds %s", i, latency, cfg.maxLatency)
+			return fmt.Errorf("iteration=%d Put-to-Watch latency %s exceeds %s (put=%s watch_after_put=%s grpc_state=%s successful_tcp_dials=%d)", i, latency, cfg.maxLatency, putLatency, watchResumeLatency, client.ActiveConnection().GetState(), publicDialCount.count.Load())
 		}
 
 		directRemaining := time.Until(started.Add(cfg.maxDirectLatency))
@@ -1358,6 +1394,6 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive lease_responses=%d public_lease_restarts=%d max_public_lease_recovery_ms=%d direct_lease=alive direct_lease_responses=%d direct_lease_restarts=%d max_direct_lease_recovery_ms=%d public_tcp_dials=%d min_direct_tcp_dials=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), publicKeepAliveResponses, publicKeepAliveSnapshot.restarts, publicKeepAliveSnapshot.maxRecovery.Milliseconds(), directKeepAliveResponses, directKeepAliveRestarts, maxDirectKeepAliveRecovery.Milliseconds(), publicTCPDials, minDirectTCPDials, len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive lease_responses=%d public_lease_restarts=%d max_public_lease_recovery_ms=%d direct_lease=alive direct_lease_responses=%d direct_lease_restarts=%d max_direct_lease_recovery_ms=%d public_tcp_dials=%d min_direct_tcp_dials=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_put_latency_ms=%d max_watch_after_put_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), publicKeepAliveResponses, publicKeepAliveSnapshot.restarts, publicKeepAliveSnapshot.maxRecovery.Milliseconds(), directKeepAliveResponses, directKeepAliveRestarts, maxDirectKeepAliveRecovery.Milliseconds(), publicTCPDials, minDirectTCPDials, len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxPutLatency.Milliseconds(), maxWatchResumeLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
 	return nil
 }

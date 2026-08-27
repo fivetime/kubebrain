@@ -581,7 +581,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 public_lease_restarts=1 max_public_lease_recovery_ms=3210 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
+	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 public_lease_restarts=1 max_public_lease_recovery_ms=3210 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_put_latency_ms=45 max_watch_after_put_latency_ms=78 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
 	require.Contains(t, string(output), "revision=revision-old->revision-new")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
@@ -1493,7 +1493,7 @@ elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
-  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 public_lease_restarts=1 max_public_lease_recovery_ms=3210 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 public_lease_restarts=1 max_public_lease_recovery_ms=3210 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_put_latency_ms=45 max_watch_after_put_latency_ms=78 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
   payload="${payload/public_tcp_dials=2/public_tcp_dials=${FAKE_PUBLIC_TCP_DIALS:-2}}"
   payload="${payload/min_direct_tcp_dials=2/min_direct_tcp_dials=${FAKE_MIN_DIRECT_TCP_DIALS:-2}}"
   [[ "${FAKE_PROBE_START_FAIL:-false}" != true ]] || payload=$'PROBE_FAIL invalid Snapshot scale put response\n'
