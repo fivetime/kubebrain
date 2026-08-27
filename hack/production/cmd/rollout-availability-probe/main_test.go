@@ -161,7 +161,7 @@ func TestVerifyPDStoresRejectsDuplicateIdentityAndMalformedAddress(t *testing.T)
 
 func TestConfigValidation(t *testing.T) {
 	snapshotDir := t.TempDir()
-	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, snapshotDir: snapshotDir}
+	valid := config{endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, snapshotDir: snapshotDir, minPublicTCPDials: 1, minDirectTCPDials: 1}
 	require.NoError(t, valid.validate())
 	entries, err := os.ReadDir(snapshotDir)
 	require.NoError(t, err)
@@ -179,6 +179,8 @@ func TestConfigValidation(t *testing.T) {
 		"direct latency":            func(cfg *config) { cfg.maxDirectLatency = 0 },
 		"direct latency floor":      func(cfg *config) { cfg.maxDirectLatency = cfg.maxLatency / 2 },
 		"lease TTL":                 func(cfg *config) { cfg.leaseTTL = 0 },
+		"public TCP dials":          func(cfg *config) { cfg.minPublicTCPDials = 0 },
+		"direct TCP dials":          func(cfg *config) { cfg.minDirectTCPDials = 0 },
 		"PD endpoints":              func(cfg *config) { cfg.pdEndpoints = nil },
 		"direct endpoints":          func(cfg *config) { cfg.directEndpoints = nil },
 		"direct endpoint count":     func(cfg *config) { cfg.directEndpoints = cfg.directEndpoints[:2] },
@@ -208,7 +210,7 @@ func TestConfigValidation(t *testing.T) {
 }
 
 func TestConfigRejectsHTTPSWithoutExplicitTLSIdentity(t *testing.T) {
-	cfg := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second}
+	cfg := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, minPublicTCPDials: 1, minDirectTCPDials: 1}
 	require.ErrorContains(t, cfg.validate(), "TLS")
 }
 
@@ -223,8 +225,54 @@ func TestCleanupClientConfigRetainsAllDirectEndpoints(t *testing.T) {
 	require.Equal(t, "http://kb-0:3379", clientConfig.Endpoints[0], "cleanup endpoints must be defensively copied")
 }
 
+func TestSuccessfulTCPDialCounterCountsOnlyEstablishedConnections(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- connection
+		}
+	}()
+
+	counter := &successfulTCPDialCounter{timeout: time.Second}
+	connection, err := counter.dialContext(context.Background(), listener.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, connection.Close())
+	serverConnection := <-accepted
+	require.NoError(t, serverConnection.Close())
+	require.EqualValues(t, 1, counter.count.Load())
+	require.NoError(t, listener.Close())
+
+	_, err = counter.dialContext(context.Background(), listener.Addr().String())
+	require.Error(t, err)
+	require.EqualValues(t, 1, counter.count.Load(), "failed TCP attempts must not become replacement evidence")
+}
+
+func TestValidateTCPDialEvidenceRequiresEveryDirectEndpoint(t *testing.T) {
+	probes := []*directStreamProbe{
+		{endpoint: "one", dialCount: &successfulTCPDialCounter{}},
+		{endpoint: "two", dialCount: &successfulTCPDialCounter{}},
+		{endpoint: "three", dialCount: &successfulTCPDialCounter{}},
+	}
+	probes[0].dialCount.count.Store(3)
+	probes[1].dialCount.count.Store(2)
+	probes[2].dialCount.count.Store(4)
+	minimum, err := validateTCPDialEvidence(2, 2, probes, 2)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, minimum)
+
+	_, err = validateTCPDialEvidence(1, 2, probes, 2)
+	require.ErrorContains(t, err, "public TCP dial evidence 1")
+	probes[1].dialCount.count.Store(1)
+	_, err = validateTCPDialEvidence(2, 2, probes, 2)
+	require.ErrorContains(t, err, "endpoint=two count=1")
+}
+
 func TestConfigRequiresCompleteTLSIdentityAndMatchingSchemes(t *testing.T) {
-	valid := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, caFile: "/tls/ca.crt", certFile: "/tls/tls.crt", keyFile: "/tls/tls.key", tlsServerName: "kubebrain-client.example"}
+	valid := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, caFile: "/tls/ca.crt", certFile: "/tls/tls.crt", keyFile: "/tls/tls.key", tlsServerName: "kubebrain-client.example", minPublicTCPDials: 1, minDirectTCPDials: 1}
 	require.NoError(t, valid.validate())
 
 	for name, mutate := range map[string]func(*config){
@@ -286,7 +334,8 @@ func TestMutualTLSClientHonorsExplicitServerName(t *testing.T) {
 	clientTLS, err := cfg.clientTLSConfig()
 	require.NoError(t, err)
 	cfg.dialTimeout = time.Second
-	client, err := clientv3.New(cfg.kubeBrainClientConfig("https://"+listener.Addr().String(), clientTLS))
+	dialCount := &successfulTCPDialCounter{timeout: cfg.dialTimeout}
+	client, err := clientv3.New(cfg.kubeBrainClientConfigWithDialCounter("https://"+listener.Addr().String(), clientTLS, dialCount))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -294,6 +343,7 @@ func TestMutualTLSClientHonorsExplicitServerName(t *testing.T) {
 	response, err := healthpb.NewHealthClient(client.ActiveConnection()).Check(ctx, &healthpb.HealthCheckRequest{})
 	require.NoError(t, err)
 	require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
+	require.GreaterOrEqual(t, dialCount.count.Load(), int64(1))
 }
 
 func TestValidateDirectWatchLatencyAllowsOnlyOneRollingEndpoint(t *testing.T) {

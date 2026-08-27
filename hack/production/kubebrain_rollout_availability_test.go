@@ -109,6 +109,21 @@ func TestRolloutAvailabilityRunnerRejectsInvalidPreflightModeBeforeKubernetes(t 
 	require.NoFileExists(t, logPath)
 }
 
+func TestRolloutAvailabilityRunnerRejectsInvalidObserveModeBeforeKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"OBSERVE_ONLY=1",
+	)
+	output, err := command.CombinedOutput()
+	require.EqualError(t, err, "exit status 2")
+	require.Equal(t, "OBSERVE_ONLY must be true or false\n", string(output))
+	require.NoFileExists(t, logPath)
+}
+
 func TestRolloutAvailabilityRunnerRejectsInvalidConnectionAgingMigrationBeforeKubernetes(t *testing.T) {
 	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -136,6 +151,23 @@ func TestRolloutAvailabilityRunnerRequiresTargetForConnectionAgingMigration(t *t
 	output, err := command.CombinedOutput()
 	require.EqualError(t, err, "exit status 2")
 	require.Equal(t, "ENABLE_GRPC_CONNECTION_AGING_MIGRATION requires TARGET_IMAGE\n", string(output))
+	require.NoFileExists(t, logPath)
+}
+
+func TestRolloutAvailabilityRunnerRejectsObserveModeWithCandidateBeforeKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"OBSERVE_ONLY=true",
+		"TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("a", 64),
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("b", 64),
+	)
+	output, err := command.CombinedOutput()
+	require.EqualError(t, err, "exit status 2")
+	require.Equal(t, "OBSERVE_ONLY cannot be combined with TARGET_IMAGE or ENABLE_GRPC_CONNECTION_AGING_MIGRATION\n", string(output))
 	require.NoFileExists(t, logPath)
 }
 
@@ -223,6 +255,8 @@ func TestRolloutAvailabilityRunnerRejectsNumericControlsBeforeKubernetes(t *test
 		{name: "replicas overflow", setting: "EXPECTED_REPLICAS=9223372036854775808", want: "EXPECTED_REPLICAS must be a positive int64"},
 		{name: "iterations overflow", setting: "PROBE_ITERATIONS=9223372036854775808", want: "PROBE_ITERATIONS must be a positive int64"},
 		{name: "lease TTL overflow", setting: "PROBE_LEASE_TTL=9223372036854775808", want: "PROBE_LEASE_TTL must be a positive int64"},
+		{name: "zero public TCP dials", setting: "PROBE_MIN_PUBLIC_TCP_DIALS=0", want: "PROBE_MIN_PUBLIC_TCP_DIALS must be a positive int64"},
+		{name: "direct TCP dials overflow", setting: "PROBE_MIN_DIRECT_TCP_DIALS=9223372036854775808", want: "PROBE_MIN_DIRECT_TCP_DIALS must be a positive int64"},
 		{name: "port overflow", setting: "KUBEBRAIN_CLIENT_PORT=65536", want: "KUBEBRAIN_CLIENT_PORT must be a positive int64 between 1 and 65535"},
 		{name: "zero interval", setting: "PROBE_INTERVAL=0", want: "PROBE_INTERVAL must be a canonical positive decimal seconds value"},
 		{name: "interval overflow", setting: "PROBE_INTERVAL=9223372036.854775808", want: "PROBE_INTERVAL must be a canonical positive decimal seconds value"},
@@ -238,6 +272,52 @@ func TestRolloutAvailabilityRunnerRejectsNumericControlsBeforeKubernetes(t *test
 			require.NoFileExists(t, logPath)
 		})
 	}
+}
+
+func TestRolloutAvailabilityRunnerObserveOnlyDoesNotRollStatefulSet(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"OBSERVE_ONLY=true",
+		"PROBE_ITERATIONS=3",
+		"PROBE_MIN_PUBLIC_TCP_DIALS=2",
+		"PROBE_MIN_DIRECT_TCP_DIALS=2",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "mode=observe")
+	require.Contains(t, string(output), "revision=revision-old->revision-old")
+	require.NoFileExists(t, statePath, "observe-only mode must not mutate the StatefulSet")
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
+	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe ")
+	require.NotContains(t, log, " patch statefulset/kubebrain ")
+	require.NotContains(t, log, " rollout status statefulset/kubebrain ")
+}
+
+func TestRolloutAvailabilityRunnerRejectsInsufficientTCPDialEvidence(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"OBSERVE_ONLY=true",
+		"PROBE_ITERATIONS=3",
+		"PROBE_MIN_PUBLIC_TCP_DIALS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "availability probe TCP dial evidence is below the required minimum")
+	require.NoFileExists(t, statePath)
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " patch statefulset/kubebrain ")
+	require.NotContains(t, log, " rollout status statefulset/kubebrain ")
 }
 
 func TestRolloutAvailabilityRunnerRejectsMutableTargetImageBeforeKubernetes(t *testing.T) {
@@ -471,7 +551,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
+	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
 	require.Contains(t, string(output), "revision=revision-old->revision-new")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
@@ -497,6 +577,8 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, `"name":"snapshot-artifact","emptyDir":{}`)
 	require.Contains(t, log, `"runAsNonRoot":true`)
 	require.Contains(t, log, "--lease-ttl=5")
+	require.Contains(t, log, "--min-public-tcp-dials=1")
+	require.Contains(t, log, "--min-direct-tcp-dials=1")
 	require.Contains(t, log, "--direct-endpoints=http://kubebrain-0.kubebrain-peer.kubebrain-system.svc:3379,http://kubebrain-1.kubebrain-peer.kubebrain-system.svc:3379,http://kubebrain-2.kubebrain-peer.kubebrain-system.svc:3379")
 	require.Contains(t, log, "--pd-endpoints=http://pd-0:2379,http://pd-1:2379,http://pd-2:2379")
 	require.Contains(t, log, "--expected-up-stores=3")
@@ -1298,7 +1380,9 @@ elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
-  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  payload="${payload/public_tcp_dials=2/public_tcp_dials=${FAKE_PUBLIC_TCP_DIALS:-2}}"
+  payload="${payload/min_direct_tcp_dials=2/min_direct_tcp_dials=${FAKE_MIN_DIRECT_TCP_DIALS:-2}}"
   [[ "${FAKE_PROBE_START_FAIL:-false}" != true ]] || payload=$'PROBE_FAIL invalid Snapshot scale put response\n'
   [[ "${FAKE_KEEPALIVE_QUEUE_FULL:-false}" != true ]] || payload=$'lease keepalive response queue is full; dropping response send\n'"$payload"
   printf '%s' "$payload"

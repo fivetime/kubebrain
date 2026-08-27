@@ -47,16 +47,23 @@ KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT="${KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT
 KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT="${KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT:-5s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
+OBSERVE_ONLY="${OBSERVE_ONLY:-false}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
 TARGET_RUNTIME_DIGESTS="${TARGET_RUNTIME_DIGESTS:-}"
 ENABLE_GRPC_CONNECTION_AGING_MIGRATION="${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}"
 PROBE_IMAGE="${PROBE_IMAGE:-}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
+PROBE_MIN_PUBLIC_TCP_DIALS="${PROBE_MIN_PUBLIC_TCP_DIALS:-1}"
+PROBE_MIN_DIRECT_TCP_DIALS="${PROBE_MIN_DIRECT_TCP_DIALS:-1}"
 MAX_RUNTIME_EVIDENCE_BYTES=1048576
 MAX_PROBE_PHASE_RESPONSE_BYTES=4096
 
 if [[ "$PREFLIGHT_ONLY" != true && "$PREFLIGHT_ONLY" != false ]]; then
   echo "PREFLIGHT_ONLY must be true or false" >&2
+  exit 2
+fi
+if [[ "$OBSERVE_ONLY" != true && "$OBSERVE_ONLY" != false ]]; then
+  echo "OBSERVE_ONLY must be true or false" >&2
   exit 2
 fi
 if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != true && "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != false ]]; then
@@ -79,7 +86,7 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "missing required command: jq" >&2
   exit 1
 fi
-for variable in EXPECTED_REPLICAS PROBE_ITERATIONS PROBE_LEASE_TTL; do
+for variable in EXPECTED_REPLICAS PROBE_ITERATIONS PROBE_LEASE_TTL PROBE_MIN_PUBLIC_TCP_DIALS PROBE_MIN_DIRECT_TCP_DIALS; do
   if ! operation_is_positive_int64 "${!variable}"; then
     echo "${variable} must be a positive int64" >&2
     exit 2
@@ -146,6 +153,10 @@ if [[ -z "$TARGET_IMAGE" && -n "$TARGET_RUNTIME_DIGESTS" ]]; then
 fi
 if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true && -z "$TARGET_IMAGE" ]]; then
   echo "ENABLE_GRPC_CONNECTION_AGING_MIGRATION requires TARGET_IMAGE" >&2
+  exit 2
+fi
+if [[ "$OBSERVE_ONLY" == true && ( -n "$TARGET_IMAGE" || "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ) ]]; then
+  echo "OBSERVE_ONLY cannot be combined with TARGET_IMAGE or ENABLE_GRPC_CONNECTION_AGING_MIGRATION" >&2
   exit 2
 fi
 declare -A seen_runtime_digests=()
@@ -302,7 +313,7 @@ if [[ -n "$TARGET_IMAGE" ]]; then
       .template.spec.containers[$index].args += ["--grpc-max-connection-age=1h","--grpc-max-connection-age-grace=5m"]
     else . end
   ' "$statefulset_json")" || exit 1
-else
+elif [[ "$OBSERVE_ONLY" != true ]]; then
   restart_value="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
   candidate_spec="$(jq -cS --arg restart "$restart_value" \
     '.spec | .template.metadata.annotations = ((.template.metadata.annotations // {}) + {"kubectl.kubernetes.io/restartedAt":$restart})' \
@@ -562,6 +573,8 @@ probe_command=(
   --stream-max-retry-backoff="$PROBE_STREAM_MAX_RETRY_BACKOFF" \
   --snapshot-artifact-dir="$PROBE_SNAPSHOT_ARTIFACT_DIR" \
   --lease-ttl="$PROBE_LEASE_TTL" \
+  --min-public-tcp-dials="$PROBE_MIN_PUBLIC_TCP_DIALS" \
+  --min-direct-tcp-dials="$PROBE_MIN_DIRECT_TCP_DIALS" \
   --pd-endpoints="$pd_endpoints" \
   --expected-up-stores=3 \
   --max-store-heartbeat-age=20s \
@@ -631,14 +644,16 @@ if [[ -n "$TARGET_IMAGE" ]]; then
   else
     patch_kubebrain_image "$image" "$TARGET_IMAGE" "$statefulset_resource_version" >/dev/null
   fi
-else
+elif [[ "$OBSERVE_ONLY" != true ]]; then
   kctl_mutation patch "statefulset/$KUBEBRAIN_STATEFULSET" --type=json -p "$restart_patch" >/dev/null
 fi
-kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
-  rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null || {
-  echo "KubeBrain rollout did not converge within ${ROLLOUT_TIMEOUT}" >&2
-  exit 1
-}
+if [[ "$OBSERVE_ONLY" != true ]]; then
+  kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
+    rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null || {
+    echo "KubeBrain rollout did not converge within ${ROLLOUT_TIMEOUT}" >&2
+    exit 1
+  }
+fi
 probe_complete_seconds="$(duration_ceil_seconds "$PROBE_COMPLETE_TIMEOUT")"
 probe_complete_deadline=$((SECONDS + probe_complete_seconds))
 probe_phase_attempt=0
@@ -685,8 +700,17 @@ if grep -Fq 'lease keepalive response queue is full' "$probe_log"; then
   exit 1
 fi
 summary="$(grep '^PROBE_SUMMARY ' "$probe_log" || true)"
-if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ direct_watch=${PROBE_ITERATIONS}x${EXPECTED_REPLICAS}\ lease=alive\ lease_responses=[1-9][0-9]*\ direct_lease=alive\ direct_lease_responses=[1-9][0-9]*\ direct_lease_restarts=[0-9]+\ max_direct_lease_recovery_ms=[0-9]+\ direct_endpoints=${EXPECTED_REPLICAS}\ range_stream=[1-9][0-9]*\ snapshot=[1-9][0-9]*\ stream_retries=[0-9]+\ stream_partial_retries=[0-9]+\ max_latency_ms=[0-9]+\ max_direct_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
+if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ direct_watch=${PROBE_ITERATIONS}x${EXPECTED_REPLICAS}\ lease=alive\ lease_responses=[1-9][0-9]*\ direct_lease=alive\ direct_lease_responses=[1-9][0-9]*\ direct_lease_restarts=[0-9]+\ max_direct_lease_recovery_ms=[0-9]+\ public_tcp_dials=[1-9][0-9]*\ min_direct_tcp_dials=[1-9][0-9]*\ direct_endpoints=${EXPECTED_REPLICAS}\ range_stream=[1-9][0-9]*\ snapshot=[1-9][0-9]*\ stream_retries=[0-9]+\ stream_partial_retries=[0-9]+\ max_latency_ms=[0-9]+\ max_direct_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
   echo "availability probe summary mismatch" >&2
+  exit 1
+fi
+reported_public_tcp_dials="$(sed -n 's/^.* public_tcp_dials=\([0-9][0-9]*\) .*$/\1/p' <<<"$summary")"
+reported_min_direct_tcp_dials="$(sed -n 's/^.* min_direct_tcp_dials=\([0-9][0-9]*\) .*$/\1/p' <<<"$summary")"
+if ! operation_is_positive_int64 "$reported_public_tcp_dials" ||
+  ! operation_is_positive_int64 "$reported_min_direct_tcp_dials" ||
+  (( reported_public_tcp_dials < PROBE_MIN_PUBLIC_TCP_DIALS )) ||
+  (( reported_min_direct_tcp_dials < PROBE_MIN_DIRECT_TCP_DIALS )); then
+  echo "availability probe TCP dial evidence is below the required minimum" >&2
   exit 1
 fi
 
@@ -703,8 +727,14 @@ final_retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_
 final_prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' "$final_json")"
 final_uid="$(jq -r '.metadata.uid // ""' "$final_json")"
 final_spec="$(jq -cS '.spec' "$final_json")"
+revision_contract_valid=false
+if [[ "$OBSERVE_ONLY" == true && "$final_current_revision" == "$current_revision" ]]; then
+  revision_contract_valid=true
+elif [[ "$OBSERVE_ONLY" != true && "$final_current_revision" != "$current_revision" ]]; then
+  revision_contract_valid=true
+fi
 if [[ "$final_uid" != "$statefulset_uid" || "$final_spec" != "$candidate_spec" || "$final_ready" != "$EXPECTED_REPLICAS" || -z "$final_current_revision" ||
-  "$final_current_revision" != "$final_update_revision" || "$final_current_revision" == "$current_revision" ||
+  "$final_current_revision" != "$final_update_revision" || "$revision_contract_valid" != true ||
   "$final_image" != "$expected_final_image" || "$final_retry_count" != 1 || "$final_prestop" != "$expected_prestop" ]]; then
   echo "KubeBrain rollout postflight identity mismatch" >&2
   exit 1
@@ -756,4 +786,7 @@ fi
 probe_deleted=true
 candidate_rollout_succeeded=true
 
-echo "KubeBrain rollout availability gate passed: namespace=${KUBEBRAIN_NAMESPACE} statefulset=${KUBEBRAIN_STATEFULSET} image=${image}->${expected_final_image} runtime_digests=${TARGET_RUNTIME_DIGESTS:-unchanged} probe_image=${probe_image} revision=${current_revision}->${final_current_revision} probes=${PROBE_ITERATIONS}"
+gate_mode=restart
+[[ -z "$TARGET_IMAGE" ]] || gate_mode=candidate
+[[ "$OBSERVE_ONLY" != true ]] || gate_mode=observe
+echo "KubeBrain rollout availability gate passed: mode=${gate_mode} namespace=${KUBEBRAIN_NAMESPACE} statefulset=${KUBEBRAIN_STATEFULSET} image=${image}->${expected_final_image} runtime_digests=${TARGET_RUNTIME_DIGESTS:-unchanged} probe_image=${probe_image} revision=${current_revision}->${final_current_revision} probes=${PROBE_ITERATIONS}"

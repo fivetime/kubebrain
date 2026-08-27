@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,31 +30,33 @@ import (
 )
 
 type config struct {
-	endpoint         string
-	directEndpoints  []string
-	prefix           string
-	iterations       int
-	interval         time.Duration
-	commandTimeout   time.Duration
-	dialTimeout      time.Duration
-	maxLatency       time.Duration
-	maxDirectLatency time.Duration
-	leaseTTL         int64
-	pdEndpoints      []string
-	expectedStores   int
-	maxHeartbeatAge  time.Duration
-	maxTSOLatency    time.Duration
-	maxRegionLatency time.Duration
-	rangeInterval    time.Duration
-	snapshotDelay    time.Duration
-	streamTimeout    time.Duration
-	streamBackoff    time.Duration
-	streamMaxBackoff time.Duration
-	snapshotDir      string
-	caFile           string
-	certFile         string
-	keyFile          string
-	tlsServerName    string
+	endpoint          string
+	directEndpoints   []string
+	prefix            string
+	iterations        int
+	interval          time.Duration
+	commandTimeout    time.Duration
+	dialTimeout       time.Duration
+	maxLatency        time.Duration
+	maxDirectLatency  time.Duration
+	leaseTTL          int64
+	pdEndpoints       []string
+	expectedStores    int
+	maxHeartbeatAge   time.Duration
+	maxTSOLatency     time.Duration
+	maxRegionLatency  time.Duration
+	rangeInterval     time.Duration
+	snapshotDelay     time.Duration
+	streamTimeout     time.Duration
+	streamBackoff     time.Duration
+	streamMaxBackoff  time.Duration
+	snapshotDir       string
+	caFile            string
+	certFile          string
+	keyFile           string
+	tlsServerName     string
+	minPublicTCPDials int64
+	minDirectTCPDials int64
 }
 
 func main() {
@@ -83,6 +86,8 @@ func main() {
 	flag.StringVar(&cfg.certFile, "cert", "", "client certificate file for KubeBrain HTTPS endpoints")
 	flag.StringVar(&cfg.keyFile, "key", "", "client private key file for KubeBrain HTTPS endpoints")
 	flag.StringVar(&cfg.tlsServerName, "tls-server-name", "", "TLS server name for KubeBrain HTTPS endpoints")
+	flag.Int64Var(&cfg.minPublicTCPDials, "min-public-tcp-dials", 1, "minimum successful TCP dials for the public client")
+	flag.Int64Var(&cfg.minDirectTCPDials, "min-direct-tcp-dials", 1, "minimum successful TCP dials required for every direct client")
 	var pdEndpoints string
 	flag.StringVar(&pdEndpoints, "pd-endpoints", "", "comma-separated PD HTTP endpoints")
 	flag.Parse()
@@ -105,7 +110,7 @@ func main() {
 }
 
 func (cfg config) validate() error {
-	if cfg.endpoint == "" || cfg.prefix == "" || cfg.iterations <= 0 || cfg.leaseTTL <= 0 || cfg.expectedStores <= 0 {
+	if cfg.endpoint == "" || cfg.prefix == "" || cfg.iterations <= 0 || cfg.leaseTTL <= 0 || cfg.expectedStores <= 0 || cfg.minPublicTCPDials <= 0 || cfg.minDirectTCPDials <= 0 {
 		return fmt.Errorf("endpoint, prefix, and positive iterations are required")
 	}
 	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxDirectLatency < cfg.maxLatency || cfg.maxHeartbeatAge <= 0 || cfg.maxTSOLatency <= 0 || cfg.maxTSOLatency > cfg.maxLatency || cfg.maxRegionLatency <= 0 || cfg.maxRegionLatency > cfg.maxLatency ||
@@ -178,6 +183,25 @@ func (cfg config) clientTLSConfig() (*tls.Config, error) {
 
 func (cfg config) kubeBrainClientConfig(endpoint string, tlsConfig *tls.Config) clientv3.Config {
 	return cfg.kubeBrainClientConfigForEndpoints([]string{endpoint}, tlsConfig)
+}
+
+type successfulTCPDialCounter struct {
+	timeout time.Duration
+	count   atomic.Int64
+}
+
+func (counter *successfulTCPDialCounter) dialContext(ctx context.Context, address string) (net.Conn, error) {
+	connection, err := (&net.Dialer{Timeout: counter.timeout}).DialContext(ctx, "tcp", address)
+	if err == nil {
+		counter.count.Add(1)
+	}
+	return connection, err
+}
+
+func (cfg config) kubeBrainClientConfigWithDialCounter(endpoint string, tlsConfig *tls.Config, counter *successfulTCPDialCounter) clientv3.Config {
+	clientConfig := cfg.kubeBrainClientConfig(endpoint, tlsConfig)
+	clientConfig.DialOptions = append(clientConfig.DialOptions, grpc.WithContextDialer(counter.dialContext))
+	return clientConfig
 }
 
 func (cfg config) kubeBrainClientConfigForEndpoints(endpoints []string, tlsConfig *tls.Config) clientv3.Config {
@@ -315,9 +339,25 @@ type pdLeader struct {
 type directStreamProbe struct {
 	endpoint  string
 	client    *clientv3.Client
+	dialCount *successfulTCPDialCounter
 	watch     clientv3.WatchChan
 	stopWatch context.CancelFunc
 	keepAlive *keepAliveMonitor
+}
+
+func validateTCPDialEvidence(publicDials, minPublicDials int64, directProbes []*directStreamProbe, minDirectDials int64) (int64, error) {
+	if publicDials < minPublicDials {
+		return 0, fmt.Errorf("public TCP dial evidence %d is below required minimum %d", publicDials, minPublicDials)
+	}
+	minObservedDirectDials := int64(math.MaxInt64)
+	for _, probe := range directProbes {
+		dials := probe.dialCount.count.Load()
+		if dials < minDirectDials {
+			return 0, fmt.Errorf("direct TCP dial evidence endpoint=%s count=%d is below required minimum %d", probe.endpoint, dials, minDirectDials)
+		}
+		minObservedDirectDials = min(minObservedDirectDials, dials)
+	}
+	return minObservedDirectDials, nil
 }
 
 // Match clientv3's retryConnWait between failed keepalive stream reconnects.
@@ -453,7 +493,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("backend preflight: %w", err)
 	}
-	client, err := clientv3.New(cfg.kubeBrainClientConfig(cfg.endpoint, tlsConfig))
+	publicDialCount := &successfulTCPDialCounter{timeout: cfg.dialTimeout}
+	client, err := clientv3.New(cfg.kubeBrainClientConfigWithDialCounter(cfg.endpoint, tlsConfig, publicDialCount))
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
@@ -1026,11 +1067,12 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 	}()
 	for _, endpoint := range cfg.directEndpoints {
-		directClient, directErr := clientv3.New(cfg.kubeBrainClientConfig(endpoint, tlsConfig))
+		directDialCount := &successfulTCPDialCounter{timeout: cfg.dialTimeout}
+		directClient, directErr := clientv3.New(cfg.kubeBrainClientConfigWithDialCounter(endpoint, tlsConfig, directDialCount))
 		if directErr != nil {
 			return fmt.Errorf("create direct client %s: %w", endpoint, directErr)
 		}
-		probe := &directStreamProbe{endpoint: endpoint, client: directClient}
+		probe := &directStreamProbe{endpoint: endpoint, client: directClient, dialCount: directDialCount}
 		directProbes = append(directProbes, probe)
 
 		directWatchCtx, stopDirectWatch := context.WithCancel(ctx)
@@ -1287,6 +1329,11 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 	}
 	publicKeepAliveResponses := publicKeepAlive.snapshot().responses
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive lease_responses=%d direct_lease=alive direct_lease_responses=%d direct_lease_restarts=%d max_direct_lease_recovery_ms=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), publicKeepAliveResponses, directKeepAliveResponses, directKeepAliveRestarts, maxDirectKeepAliveRecovery.Milliseconds(), len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
+	publicTCPDials := publicDialCount.count.Load()
+	minDirectTCPDials, err := validateTCPDialEvidence(publicTCPDials, cfg.minPublicTCPDials, directProbes, cfg.minDirectTCPDials)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive lease_responses=%d direct_lease=alive direct_lease_responses=%d direct_lease_restarts=%d max_direct_lease_recovery_ms=%d public_tcp_dials=%d min_direct_tcp_dials=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), publicKeepAliveResponses, directKeepAliveResponses, directKeepAliveRestarts, maxDirectKeepAliveRecovery.Milliseconds(), publicTCPDials, minDirectTCPDials, len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
 	return nil
 }
