@@ -191,8 +191,11 @@ func seedSnapshotScale(ctx context.Context, client *clientv3.Client, scale *snap
 		}
 		for offset, operationResponse := range response.Responses {
 			put := operationResponse.GetResponsePut()
-			if put == nil || put.Header == nil || put.Header.ClusterId != clusterID ||
-				put.Header.Revision != response.Header.Revision || put.PrevKv != nil {
+			// Upstream etcd fills cluster/member/term on the top-level Txn
+			// header only. Operation headers carry the operation revision, so
+			// accept an omitted cluster ID while still rejecting a conflicting
+			// non-zero identity from a proxy or incompatible implementation.
+			if !validSnapshotScalePutResponse(put, clusterID, response.Header.Revision) {
 				return lastRevision, fmt.Errorf("invalid Snapshot scale put response at %d: %+v", start+offset, operationResponse)
 			}
 			scale.items[start+offset].revision = response.Header.Revision
@@ -200,6 +203,12 @@ func seedSnapshotScale(ctx context.Context, client *clientv3.Client, scale *snap
 		lastRevision = response.Header.Revision
 	}
 	return lastRevision, nil
+}
+
+func validSnapshotScalePutResponse(put *etcdserverpb.PutResponse, clusterID uint64, revision int64) bool {
+	return put != nil && put.Header != nil &&
+		(put.Header.ClusterId == 0 || put.Header.ClusterId == clusterID) &&
+		put.Header.Revision == revision && put.PrevKv == nil
 }
 
 func streamProbeTxnSeeds(expected []streamProbeExpectation) ([]*streamProbeExpectation, error) {

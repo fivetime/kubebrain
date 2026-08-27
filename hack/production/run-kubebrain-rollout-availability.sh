@@ -557,9 +557,16 @@ while (( SECONDS < probe_start_deadline )); do
   probe_start_remaining=$((probe_start_deadline - SECONDS))
   probe_start_log="$runtime_evidence_dir/probe-start-${attempt}.log"
   if capture_runtime_evidence "$probe_start_log" kctl_evidence_bounded "${probe_start_remaining}s" \
-    logs "$PROBE_POD" && grep -qx PROBE_STARTED "$probe_start_log"; then
-    started=true
-    break
+    logs "$PROBE_POD"; then
+    if grep -qx PROBE_STARTED "$probe_start_log"; then
+      started=true
+      break
+    fi
+    if grep -q '^PROBE_FAIL ' "$probe_start_log"; then
+      cat "$probe_start_log" >&2
+      echo "availability probe failed before publishing its start barrier" >&2
+      exit 1
+    fi
   fi
   (( SECONDS < probe_start_deadline )) || break
   sleep 0.1

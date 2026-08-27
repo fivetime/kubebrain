@@ -647,6 +647,28 @@ func TestSnapshotScaleExpectationRejectsMissingDuplicateAndInvalidItems(t *testi
 	require.Error(t, err)
 }
 
+func TestValidSnapshotScalePutResponseMatchesEtcdTxnHeaderSemantics(t *testing.T) {
+	const (
+		clusterID = uint64(17)
+		revision  = int64(23)
+	)
+	require.True(t, validSnapshotScalePutResponse(&etcdserverpb.PutResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: revision},
+	}, clusterID, revision), "upstream etcd leaves identity fields empty on an operation header")
+	require.True(t, validSnapshotScalePutResponse(&etcdserverpb.PutResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: clusterID, Revision: revision},
+	}, clusterID, revision), "a repeated matching cluster identity is also safe")
+	require.False(t, validSnapshotScalePutResponse(&etcdserverpb.PutResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: clusterID + 1, Revision: revision},
+	}, clusterID, revision))
+	require.False(t, validSnapshotScalePutResponse(&etcdserverpb.PutResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: revision - 1},
+	}, clusterID, revision))
+	require.False(t, validSnapshotScalePutResponse(&etcdserverpb.PutResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: revision}, PrevKv: &mvccpb.KeyValue{},
+	}, clusterID, revision))
+}
+
 func TestStreamProbeNestedTxnSeedsUseDistinctNonLexicographicWrites(t *testing.T) {
 	expected := newStreamProbeExpectations("probe/")
 	seeds, err := streamProbeNestedTxnSeeds(expected)
