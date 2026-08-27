@@ -323,6 +323,23 @@ func (s *nativeGRPCServer) quiesce() {
 	}
 }
 
+// quiesceAndStop is the public-client drain path. GracefulStop sends GOAWAY,
+// then the propagation delay gives grpc-go clients time to create a replacement
+// transport. A long-lived Watch can otherwise keep this retiring transport
+// alive until leadership handoff completes and strand new unary retries on the
+// old Pod. Force-close only after the bounded GOAWAY window; peer transports use
+// quiesce instead and remain attached through durable handoff.
+func (s *nativeGRPCServer) quiesceAndStop() {
+	s.quiesce()
+	select {
+	case <-s.gracefulDone:
+		return
+	default:
+	}
+	s.server.Stop()
+	<-s.gracefulDone
+}
+
 func (s *nativeGRPCServer) isQuiescing() bool { return s.quiescing.Load() }
 
 func (s *nativeGRPCServer) close() error {

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -333,6 +334,72 @@ func TestNativeGRPCQuiesceStartsGoAwayBeforeLongLivedStreamRetires(t *testing.T)
 	require.Error(t, func() error { _, recvErr := watch.Recv(); return recvErr }())
 	require.NoError(t, server.close())
 	require.NoError(t, normalizeServeError(<-serveDone))
+}
+
+func TestNativeGRPCPublicQuiesceForcesLongLivedClientMigration(t *testing.T) {
+	grpcServer := grpc.NewServer()
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(grpcServer, healthServer)
+	server := newNativeGRPCServer(grpcServer)
+	server.goAwayPropagationDelay = 20 * time.Millisecond
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.serve(listener) }()
+	replacementListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	replacementServer := grpc.NewServer()
+	replacementHealth := health.NewServer()
+	replacementHealth.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(replacementServer, replacementHealth)
+	go func() { _ = replacementServer.Serve(replacementListener) }()
+	t.Cleanup(func() {
+		replacementServer.Stop()
+		_ = replacementListener.Close()
+	})
+
+	var dialTarget atomic.Value
+	dialTarget.Store(listener.Addr().String())
+	var dialCount atomic.Int64
+	connection, err := grpc.NewClient(
+		"passthrough:///public-drain",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			dialCount.Add(1)
+			return (&net.Dialer{}).DialContext(ctx, "tcp", dialTarget.Load().(string))
+		}),
+	)
+	require.NoError(t, err)
+	defer connection.Close()
+	watch, err := healthpb.NewHealthClient(connection).Watch(t.Context(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	initial, err := watch.Recv()
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, initial.Status)
+
+	dialTarget.Store(replacementListener.Addr().String())
+	started := time.Now()
+	server.quiesceAndStop()
+	require.GreaterOrEqual(t, time.Since(started), server.goAwayPropagationDelay)
+	require.Less(t, time.Since(started), time.Second)
+	_, err = watch.Recv()
+	require.Error(t, err, "a public Watch must leave the retiring transport after the GOAWAY propagation window")
+	select {
+	case <-server.gracefulDone:
+	default:
+		t.Fatal("forced public transport close did not finish GracefulStop")
+	}
+	require.NoError(t, normalizeServeError(<-serveDone))
+	recoveryCtx, cancelRecovery := context.WithTimeout(t.Context(), time.Second)
+	defer cancelRecovery()
+	recovered, err := healthpb.NewHealthClient(connection).Check(
+		recoveryCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true),
+	)
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, recovered.Status)
+	require.GreaterOrEqual(t, dialCount.Load(), int64(2),
+		"the existing client connection must establish a replacement transport")
 }
 
 func TestMuxedHTTP2QuiesceKeepsRunnerAliveUntilShutdown(t *testing.T) {

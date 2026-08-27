@@ -246,8 +246,9 @@ func (s *server) Drain(ctx context.Context) error {
 		if s.etcdServer.PrepareLeadershipDrain(func() bool {
 			// The write side of leadershipDrainBoundary is already held here: every
 			// previously admitted unary RPC has finished and later calls cannot enter.
-			// Send public GOAWAY before durable handoff can consume the client's SLO,
-			// so an established Service connection migrates to another Ready replica.
+			// Send public GOAWAY and finish its bounded transport close before durable
+			// handoff can consume the client's SLO, so an established Service
+			// connection migrates to another Ready replica.
 			s.startClientTransportDrainsLocked()
 			return release()
 		}) {
@@ -295,8 +296,9 @@ func (s *server) startPeerTransportDrainsLocked() {
 }
 
 // RegisterClientTransportDrain attaches a public transport quiesce callback.
-// Endpoint uses it to send HTTP/2 GOAWAY after unary admission is fenced but
-// before durable leadership handoff can consume the external client's SLO.
+// Endpoint uses it to send HTTP/2 GOAWAY and complete a bounded public
+// transport close after unary admission is fenced but before durable leadership
+// handoff can consume the external client's SLO.
 func (s *server) RegisterClientTransportDrain(drain func()) {
 	if drain == nil {
 		return

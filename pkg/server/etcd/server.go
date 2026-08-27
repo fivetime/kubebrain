@@ -118,7 +118,9 @@ type RPCServer struct {
 	// across an already-admitted unary RPC. DrainLeadership takes the write side,
 	// waits for those calls to return, releases the campaign lease, then lets new
 	// public calls route through the newly observed leader. Peer calls remain
-	// fenced so followers stop selecting this retiring member.
+	// fenced so followers stop selecting this retiring member. Endpoint may close
+	// public transports after a bounded GOAWAY window while this boundary is held;
+	// peer transports and leadership streams remain until durable handoff finishes.
 	leadershipDrainBoundary  sync.RWMutex
 	peerLeadershipDrained    atomic.Bool
 	leadershipStreamDrainMu  sync.Mutex
