@@ -63995,6 +63995,85 @@ NotFound、EndpointSlice 0。节点只保留当前 A5563 与回滚 A5561 的精�
 和 A5563 可变 tag。Count Index 验证超时误报 DataLoss 与 direct lease 单 episode 缺口均已关闭；连续滚动仍观察到一次约 80ms 超出
 5 秒 SLO 的 Put→Watch 尾部，需继续在更长时段、多节点/多可用区和外部负载均衡器下量化，而不能用后续 GREEN 抹去。
 
+### A5564–A5569：把 leader 切换全历史校验移出不可用窗口
+
+A5563 后的 5 秒 Put→Watch 尾部首先需要排除探针自身的 grpc-go 退避放大。提交
+`6424a5fe1fb11ee101224dbe81aca5207c577a43`（A5564）给 public 与三个 direct client 显式配置
+`grpc.ConnectParams`：dial timeout 必须小于业务 SLO，连接退避上界取 1 秒与剩余 SLO 三分之一的较小值，并单独输出
+`max_put_latency_ms` 与 `max_watch_after_put_latency_ms`。这只让失败测量有界，不能替代服务端可用性修复。随后提交
+`774381f29cb5beb36e02a65b144e602db7160a12`（A5565）把 follower proxy 的一次 WaitForReady 从 3 秒收紧到 1 秒，避免
+Put、reconciliation Range 与 Watch 各自重复消耗 5 秒预算；真实门禁仍 RED，证明问题不只是 proxy 等待。
+
+提交 `e9aee945c36619a9ac47729b024934ad9078517c`（A5566）把 public 与 peer transport drain 分开：旧 leader 在 unary
+admission fence 内先向公共连接发 GOAWAY，再做 durable handoff；peer transport 则保留到 successor 和 replacement proxy
+就绪。真实门禁仍 RED。提交 `47e26255e68f30dd3977ba5810fd15158c57af94`（A5567）进一步在公共 GOAWAY 的有界传播窗口后
+调用 `grpc.Server.Stop`，强制关闭仍被长 Watch 占用的 retiring transport；mTLS 测试证明公共连接被关闭而 peer 连接仍保留。
+A5567 候选可完成，但紧邻的第一次同版本重启仍在公开 Put 上观察到 `5.856s`，对应 Watch 仅 `9ms`，因此没有把它记为生产
+GREEN。A5567 index 为 `sha256:eb25fa9268421e9e42a0f84743ed5842f9aa696fc86cda02ebd74989bb2d8b20`，Kind runtime
+为 `sha256:b51defcf48f5a0f1a3d8e40dc7bdf42546a296b10173ec1a880ed16bc1500078`，作为后续候选的明确回滚点。
+
+失败时间线把方向从 transport 收窄到新 leader 启动路径：A5567 的新 leader 在 `start leading` 后约 2.98 秒才进入 compact，
+而 compact 自身仅约 1ms，说明主要窗口在 `InitializeLeadershipRevision` 的 transaction witness/event 全历史合并校验。提交
+`9482f8a71db31ea730ac23af9f299c398b168cb1`（A5568）先把 lease reload/migration 之后互不依赖的 event-log watermark 与
+serializable checkpoint 并行，并增加 `leader.serving_initialization.duration_seconds{stage=...}`；强稳定测试同时阻塞两个 fence，
+证明二者并发进入且 readiness 不会提前发布。提交前 673 项 verify 通过，提交后四片 wall 为
+`134.550/367.612/243.903/387.971s`，全部通过。A5568 的 compact/quota/lease/checkpoint/event-log 分别约
+`0.986/2.5/3.45/5.89/7.35ms`，再次证明 2.98 秒不在这些 stage；候选在 iteration 180 因 public LeaseKeepAlive 恢复超过
+5 秒而 RED，并完整回滚 A5567，没有把并行化本身写成可用性 GREEN。
+
+提交 `267a5aaa1edee728d66a900e0f965742fbefdc45`（A5569）最终把完整 witness/event integrity scan 放到每个进程的
+`Campaign` 之前，并以 30 秒上界记录一次进程本地、一次性 durable revision floor。第一次晋升原子 `Swap(0)` 消费该 floor，
+只验证之后的新 witness/event，同时继续覆盖保留的 `MaxInt64` lease-format fence；晋升失败或后续再次参选都会退回完整扫描，
+所以没有把完整性审计永久缓存。预校验失败不会在选举前误拉起 cluster CORRUPT，也不会推进 floor；进程仍参选，真正当选的 fenced
+路径会重新完整校验并按原契约告警。并发写只会使 floor 保守，不会跳过未验证 revision。新增测试覆盖 prevalidation 在 Campaign
+前完成、失败仍参选、floor+1 增量起点、后续篡改仍被检测并拉起 CORRUPT、失败不污染缓存，以及 `MaxInt64` fence；既有 sparse
+large-window 测试还抓到并修正了“跨多次晋升复用缓存”的早期错误设计。backend、server/endpoint 全包、普通与 race 定向重复、vet、
+diff check 均通过；提交前 673 项 verify 通过，提交后四片 wall 为
+`142.737/381.914/244.043/398.873s`，全部通过。
+
+A5564–A5569 的 immutable index/runtime 映射分别为：A5564
+`e9e042d596264cd24dd88d3e8ee21eece531ae520d3fb4481d442c3d70d4660e/6bf09847de087c813634f84699e9d792ae553efb2c7c7a056d4bf3d1556c0a9f`、
+A5565 `2c5aec9d6f7d25e9916e39136897737b3ed176c03ecc3944888acfbb4c503804/b12e3518e36323172e0f10ed3d13f5a17dfcceab5df68a725d9a51ddd4f65737`、
+A5566 `8deb823a818418ade6c016bacbd0df57e88a5f42b598d8ec055bdb975449cc1e/f04651a535431622fa22ea24f58de35e06e549d020d49366e8a09d7a20a8225d`、
+A5567 `eb25fa9268421e9e42a0f84743ed5842f9aa696fc86cda02ebd74989bb2d8b20/b51defcf48f5a0f1a3d8e40dc7bdf42546a296b10173ec1a880ed16bc1500078`、
+A5568 `df366378cf0e9b3b898f6fed0622492bba08ae90031b2623a3286b2970de5ecc/2377e034f41daef3944b7d9dda14ac651f38deb22d9a0d8f6f9bd950158e263d`、
+A5569 `38bfb3fce076f69b9a773315370758e9c6b0f97c8fbbd9ac181c4d6c7cb6e7c8/347a74b1e308ac7f017b14ea32349ec5f5f5d4ce0319cac08ed53678da5a54c2`。
+A5569 build time
+`2026-08-27T21:59:41Z`；OCI archive 914,258,432 bytes，SHA-256
+`2b79ef62b84c17d309a8ce6c418cffc43942b3868aff2547be02afbdb6978174`，platform
+`sha256:2aeb9147bdddba2b84bf73a1b7d77be4a039963c71c1fbc8e13fda33af67605e`、config
+`sha256:2754894dc96c12840a08e7959997df1e0c639f82d5d8bad47a8a5382412d0a8d`、attestation
+`sha256:66460e8a34e48c4599db5ea0d0e65385d45b65a63c0486f6b7691a1fd4b483b6`、SBOM
+`sha256:e2511e0a53bb4cdc6619608965497d93008874a2d3e354570535dca7c8d27b09`、provenance
+`sha256:010b474141c9cb85932cc6c31b4be2bdb7e6d691247f5c9aebd9dcc6319ea12e`。严格递归验证为 78/78 blobs
+可达、77 edges，digest/descriptor size/missing 均 0；SBOM 为 2,592 packages/8,096 relationships，provenance 有 3 个
+materials，两份声明均精确绑定 platform。一次性 immutable 审计 Pod 验证 TiKV、完整 Git SHA、Go 1.26.5 与 build time 后，以
+UID `2e3a612a-9afc-4959-ada6-d2141a11434e` 和 resourceVersion `7012143` 双前置条件删除。
+
+A5567→A5569 候选升级 **900/900 GREEN**：public/direct Watch `900/900×3`，public/direct Lease response
+`95/253`，public restart 0、direct replacement 16、最大 direct 恢复 15,015ms，public TCP dial 2、每个 direct 最少 2，
+RangeStream 167、Snapshot 1、retry/partial `1/0`，最大总/Put/Watch/direct/TSO/Region 延迟
+`2398/2392/32/20972/26/9ms`。随后三次同版本重启均为 **900/900 GREEN**：第一轮 Lease `97/257`、direct replacement
+16/14,679ms、RangeStream 167、retry `2/0`、最大延迟 `3656/3648/28/20650/60/8ms`；第二轮 Lease
+`100/267`、replacement 18/15,101ms、RangeStream 173、retry `3/0`、最大延迟
+`3412/3404/207/21471/68/8ms`；第三轮 Lease `97/262`、replacement 17/14,819ms、RangeStream 170、retry
+`1/0`、最大延迟 `2200/2195/74/20803/58/8ms`。四轮合计 3600/3600，每轮 public Lease restart=0、Snapshot=1、
+partial retry=0；短暂 `leader changed`/`no connection available` 均由官方 client 安全恢复。
+
+候选轮三个进程在 Campaign 前完整扫描分别约 `3.262/3.313/3.329s`；当选者 `start leading` 后只用 `11.285ms`
+完成 `mode=incremental, afterRevision=81422, durableRevision=81641`，compact/quota/lease/event-log/checkpoint 分别为
+`0.682/2.364/3.064/6.209/18.741ms`。第三次重启再次得到 Campaign 前 `4.398–4.767s` 完整扫描，而晋升增量校验仅
+`9.606ms`，证明优化不是单次偶然。终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，
+generation/observed generation 158，current/update revision 均为 `a4657-tls-6f65dc5cbd`；3/3 Ready、restart 0，三个
+imageID 均为 A5569 runtime，UID/GID/fsGroup 65532，HTTPS `/readyz` 保持。主 PD/TiKV 3+3 Ready、restart 0。全部 A5569
+临时 Pod 均不存在；门禁 Service `a5564-client` 的 UID `4feb8c6d-e85e-4d08-a471-053ce99083c0` 已以 resourceVersion
+`6985097` 双前置条件删除，Service NotFound、EndpointSlice 0。节点已精确删除过期 A5564/A5565/A5566 与失败 A5568 的
+CRI image 引用，只保留当前 A5569 与回滚 A5567；本地同时保留两者 OCI archive，避免节点缓存丢失时失去恢复路径。
+
+本轮关闭了“每次选举后都把完整 transaction witness history 放在服务恢复关键路径”的生产缺口，同时保留每次晋升的增量完整性
+fence 和后续选举的完整审计。仍需继续量化 direct stable-Pod DNS 在滚动中的 14–21 秒 replacement 尾部；它没有影响本轮 public
+Service 5 秒 SLO，但在多节点、多可用区、外部负载均衡器和故障而非 voluntary drain 的环境中仍是明确兼容性/运维边界。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
