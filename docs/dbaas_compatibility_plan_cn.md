@@ -63624,6 +63624,75 @@ queue-full/panic/fatal/corrupt 命中 0。失败/最终 upgrade 与 restart 三�
 77GB。本轮关闭 restored cluster 第四 voter 安全删除、self-removal supervisor、三成员收缩复制与探针清理的生产门禁缺口。仍未覆盖
 learner add/promote、跨集群灾备或大数据量恢复。
 
+### A5557：rollout Restore 覆盖 learner 加入、追平、晋升与移除
+
+A5556 已覆盖 restored cluster 的 voter 扩缩容，但仍没有证明 DBaaS 控制面可按 etcd 推荐路径先增加 learner、等待其追平后再晋升，
+也没有锁定过早晋升、重复晋升和不存在 member 的错误契约。本轮固定上游
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/tests/integration/member_test.go`、
+`tests/framework/integration/cluster.go`、`server/etcdserver/server.go`，以及上游 issue `#15528`、修复 PR `#15708` 和
+Raft issue `#354`：ConfChange 的 apply 与 pending 状态会短暂落后于 membership RPC；learner 只有在本地进程启动并追平 leader
+后才允许晋升。KubeBrain 对外 `MemberAdd/Promote/Remove` 仍由 DBaaS 控制面管理；本轮继续验证 KubeBrain Snapshot 制品能被官方
+etcd 恢复并安全执行完整 learner 生命周期，没有在无状态数据面中移植 Raft membership。
+
+九个连续代码提交逐步收紧该门禁：`a47829b96cc206c73fb0e566f0043387ac09f0db`、
+`17da74d3c0f22f83529748606bdd05d36eeea29a`、`f871b679221104837dbf297b6dc9f80963451233`、
+`83429b02e345a809a83b051b6ade5410dcafc3d0`、`744e08935455a6588a0b4c4d027c7b8abd0d6dd0`、
+`dcf33ca8aca683348780fc9c21995555832ceca4`、`298e6dd657b197da92f1f19e48c82985dcb7f627`、
+`1edc4539ee75637f17d6e67eba462b78e5eb88ce`，最终为
+`9e4e13fa0a41904f4c3801ec92e3d290473032d4`。真实 mTLS+enabled-auth 三成员恢复流程依次验证 follower 重启、既有 voter
+的 `ErrMemberNotLearner`、不存在 ID 的 `ErrMemberNotFound`、`MemberAddAsLearner` 返回未启动且无 client URL 的唯一 learner、
+未启动 learner 的 `ErrMemberLearnerNotReady`、启动后的身份收敛与追平、成功晋升、四 voter 复制 barrier、learner 移除和原三 voter
+拓扑/Auth/seed 精确恢复。所有 topology response 都 fail closed：cluster/member/term、member 数量与唯一非零 ID、name/peer/client URL、
+learner 位、错误、leader 一致性、正 raft index 和 `raftAppliedIndex == raftIndex` 任一漂移都会失败。
+
+开发阶段没有把 flaky 候选包装成绿色。最初候选在 rollout iteration 201/190 失败，随后 timeout budget、拒绝路径隔离、apply barrier、
+500ms Raft quiescence、持续 serving follower 和显式 raft advance 等候选又分别在 iteration 249/193/187/200/192 失败；这些失败均为
+恢复集群 reconfiguration 时的 `etcdserver request timed out`，没有放宽 5 秒线上操作阈值。`298e6dd6` 候选在 iteration 192 通过
+follower 执行既有 voter Promote 仍超时；`1edc4539` 将拒绝语义与 forwarding 分开后，又在 iteration 239 对未启动 learner 的
+Promote 超时。后者不会提交 ConfChange，证明此处剩余问题是官方恢复集群在 auth/高负载门禁中的 follower server-side forwarding
+不可靠，而不是待 apply 的 Raft 变更。最终实现每次 Promote 前从三个直连 Status 重新选择已完全 apply、全员同意的当前 leader，并只向
+该 leader 发一次请求；成功晋升的 readiness helper 仍只重试上游允许的精确 `ErrMemberLearnerNotReady`。另一个制品因镜像内 Git SHA
+不是预期 HEAD，在离线 OCI 审计阶段即被拒绝，未进入生产 rollout。
+
+最终 selector 单测加三条真实生命周期测试 88.845 秒，mTLS+enabled-auth 三成员正例 83.059 秒；完整 probe 包测试/墙钟
+`129.766/131.661s`，race 测试/墙钟 `154.252/159.233s`，vet 与 diff check 全绿。提交前 verify 的 655 项 production
+inventory 保持 `158/181/164/152`；提交后精确四片墙钟为
+`141.304/368.565/238.279/385.407s`，全部通过。
+
+A5557 build time 为 `2026-08-27T06:58:56Z`，OCI 构建墙钟 279.463 秒；archive 911,750,656 bytes，SHA-256
+`afe1547c15defd3067f8c64f7a4a6a5951a75f8a8c159a387a747e8dda7b726d`。最终 index
+`sha256:f97e4054bf2ad44d211c73f1910797fcbb6d1067671f3305f5c52c36f61eca5c`、platform manifest
+`sha256:72ce5498a380a243f11b2993b7c2cee620ca7ab5471c99406715e91233126a8b`、config
+`sha256:95fab4915a3781a6e00b5f1b2ceb7d465fdc7420996157ba92e8229f961f24c2`、attestation manifest
+`sha256:33cf9b590e4f4d2a8a3d5e7da137e9daf34e698469d42bdc71736b0c67541ca0`、provenance layer
+`sha256:265679d454a7389535cf5a88724e1644aa0641ab7d131a0687c74d71ba59dac2`、SBOM layer
+`sha256:48d4d14f36455f02874745fcb2a6626d788c1d4e7b380e9f07437878c899bfe0`、Kind runtime
+`sha256:66f6faec8d31bbaded3767c652a2b3936ac774c9d18b818dc82c31a6cdb46f69`。78 个 blob/descriptor 的 digest 与 size
+全部匹配，总 blob 911,685,631 bytes；SBOM 为 2,592 packages、8,096 relationships。OCI config/provenance、linux/amd64、
+UID/GID 65532、完整 VCS SHA、Go 1.26.5，以及镜像内 kube-brain/probe SHA 均经离线解包与一次性 Pod 复核；审计 Pod UID
+`40e676c9-1f4f-446b-8218-5921b86bf979` 已按 UID/resourceVersion 双前置条件删除。
+
+A5556→A5557 upgrade **900/900 GREEN**：KeepAlive `106/276`、direct replacement 23、最大恢复 22,067ms；
+RangeStream 198、Snapshot 1、stream/partial retry `0/0`，最大公共/直连/TSO/Region 延迟 `2534/26943/56/8ms`，revision
+`a4657-tls-59b978fdfd -> a4657-tls-8b5859f8c`。A5557 same-version restart 再次 **900/900 GREEN**：KeepAlive
+`110/294`、replacement 22、最大恢复 22,051ms；RangeStream 201、Snapshot 1、retry/partial `2/0`，最大延迟
+`3062/26255/79/18ms`，revision `a4657-tls-8b5859f8c -> a4657-tls-c6d85bb5c`。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 均为 108，
+current/update revision 均为 `a4657-tls-c6d85bb5c`；三 Pod 3/3 Ready、restart 0，运行精确 A5557 index/runtime，UID/GID/fsGroup
+65532，三端 HTTPS `/readyz=ok`。cluster ID 7662961163671170154、revision/raft index/applied index 均为 53256、term 381、
+leader member 2985394290；MemberList 精确三个既有 voter，AlarmList 为空。auth enabled/revision 700，用户精确为
+`KubeWharfServer/alice/root`、角色为 `operator/root`。PD leader 为 `kb-pd-2`，主 PD/TiKV 3+3 Ready、restart 0，三个 store
+均 Up；九个相关 Pod 近 20 分钟 queue-full/panic/fatal/corrupt 命中 0。A5557 final6/final7/final8/restart 前缀均为 0；根前缀
+实测 Count=7，其中一个是未触碰的 A5529 watch key，另外六个是更早的 Envoy plaintext unary/watch 探针键。临时 Service UID
+`9da90c3d-33eb-4f67-a210-233d55818d70`、resourceVersion `6862484` 已用双前置条件删除；Service NotFound、EndpointSlice 0，
+A5557 临时 Pod 0。
+
+十个候选/最终本地构建目录（清理前约 23.6GiB）和所有可变 tag 已删除，可由 BuildKit cache 重建；节点精确保留当前 A5557 与
+上一版 A5556 各自的 immutable index、raw runtime、normalized runtime 六个引用，并在确认没有 workload 使用后删除 A5555（N−2）
+及全部 A5557 中间候选引用。本轮关闭 restored cluster learner add、未追平拒绝、启动追平、leader 定向晋升、四 voter barrier、移除与
+三 voter 收敛的生产门禁缺口。仍未覆盖跨集群灾备、大数据量恢复，以及平台控制面把这些已验证原语编排为可审计的长期 DBaaS 工作流。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
