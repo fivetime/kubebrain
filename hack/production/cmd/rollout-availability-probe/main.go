@@ -596,6 +596,15 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 		expected.revision = lastRevision
 	}
+	snapshotScale, err := newSnapshotScaleExpectation(cfg.prefix, snapshotScaleKeys, snapshotScaleValueBytes)
+	if err != nil {
+		return err
+	}
+	lastRevision, err = seedSnapshotScale(ctx, client, snapshotScale, clusterID, lastRevision, cfg.commandTimeout)
+	if err != nil {
+		return err
+	}
+	streamExpected[0].snapshotScale = snapshotScale
 	historySeed := &streamExpected[0]
 	historyCreateRevision := historySeed.revision
 	historySeed.events = append(historySeed.events, streamProbeEventExpectation{

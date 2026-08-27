@@ -161,6 +161,46 @@ func TestConsumeAndValidateSnapshotPreservesEnabledAuthPermissionMatrix(t *testi
 	require.Empty(t, entries)
 }
 
+func TestConsumeAndValidateSnapshotVerifiesScaleDatasetAfterOfficialRestore(t *testing.T) {
+	const prefix = "/probe/snapshot-scale/"
+	expected := newStreamProbeExpectations(prefix)[:1]
+	expected[0].revision = 2
+	scale, err := newSnapshotScaleExpectation(prefix, snapshotScaleKeys, snapshotScaleValueBytes)
+	require.NoError(t, err)
+	records := []etcdsnapshot.Record{{
+		Key: []byte(expected[0].key), Value: []byte(expected[0].value),
+		CreateRevision: expected[0].revision, ModRevision: expected[0].revision, Version: 1,
+	}}
+	for index := range scale.items {
+		revision := int64(index + 3)
+		scale.items[index].revision = revision
+		records = append(records, etcdsnapshot.Record{
+			Key: []byte(scale.items[index].key), Value: snapshotScaleValue(scale.items[index].key, scale.valueBytes),
+			CreateRevision: revision, ModRevision: revision, Version: 1,
+		})
+	}
+	expected[0].snapshotScale = scale
+	state := etcdsnapshot.State{Revision: int64(len(scale.items) + 10), PreserveHistory: true, Records: records}
+	dir := t.TempDir()
+
+	partial, err := consumeAndValidateSnapshot(t.Context(), snapshotAuthReceiver(t, state), dir, expected,
+		restoredSnapshotTLSConfig{})
+	require.NoError(t, err)
+	require.True(t, partial)
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries)
+
+	scale.items[17].hash[0] ^= 0xff
+	partial, err = consumeAndValidateSnapshot(t.Context(), snapshotAuthReceiver(t, state), dir, expected,
+		restoredSnapshotTLSConfig{})
+	require.ErrorContains(t, err, "invalid Snapshot scale item 17")
+	require.True(t, partial)
+	entries, readErr = os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a rejected scale artifact must always be removed")
+}
+
 func TestConsumeAndValidateSnapshotPreservesEnabledAuthPermissionMatrixWithTLS(t *testing.T) {
 	const prefix = "/probe/auth-enabled-tls-restore/"
 	fixture := newSnapshotAuthFixture(prefix)
@@ -170,6 +210,7 @@ func TestConsumeAndValidateSnapshotPreservesEnabledAuthPermissionMatrixWithTLS(t
 	fixture.expected.adminPassword = "restored-root-tls-secret"
 	expected := newStreamProbeExpectations(prefix)
 	state := snapshotAuthTestState(t, expected, &fixture.expected)
+	state = attachProductionSnapshotScale(t, prefix, expected, state)
 	state.Auth.Enabled = true
 	rootHash, err := bcrypt.GenerateFromPassword([]byte(fixture.expected.adminPassword), bcrypt.MinCost)
 	require.NoError(t, err)
@@ -193,6 +234,27 @@ func TestConsumeAndValidateSnapshotPreservesEnabledAuthPermissionMatrixWithTLS(t
 	entries, readErr := os.ReadDir(dir)
 	require.NoError(t, readErr)
 	require.Empty(t, entries)
+}
+
+func attachProductionSnapshotScale(t *testing.T, prefix string, expected []streamProbeExpectation,
+	state etcdsnapshot.State,
+) etcdsnapshot.State {
+	t.Helper()
+	require.NotEmpty(t, expected)
+	scale, err := newSnapshotScaleExpectation(prefix, snapshotScaleKeys, snapshotScaleValueBytes)
+	require.NoError(t, err)
+	nextRevision := state.Revision + 1
+	for index := range scale.items {
+		scale.items[index].revision = nextRevision
+		state.Records = append(state.Records, etcdsnapshot.Record{
+			Key: []byte(scale.items[index].key), Value: snapshotScaleValue(scale.items[index].key, scale.valueBytes),
+			CreateRevision: nextRevision, ModRevision: nextRevision, Version: 1,
+		})
+		nextRevision++
+	}
+	state.Revision = nextRevision
+	expected[0].snapshotScale = scale
+	return state
 }
 
 func TestConsumeAndValidateSnapshotValidatesRestoredAuthPermissionMatrix(t *testing.T) {

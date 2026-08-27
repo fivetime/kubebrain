@@ -49,6 +49,10 @@ import (
 const (
 	streamProbeSeedKeys              = 16
 	streamProbeValueBytes            = 8 * 1024
+	snapshotScaleKeys                = 512
+	snapshotScaleValueBytes          = 32 * 1024
+	snapshotScaleTxnKeys             = 32
+	snapshotScalePageKeys            = 32
 	streamProbeHistoryLeaseTTL       = 15 * 60
 	streamProbeSecondHistoryLeaseTTL = 16 * 60
 	// Keep enough headroom for the two bounded voter and learner
@@ -69,6 +73,22 @@ type streamProbeExpectation struct {
 	hash     [sha256.Size]byte
 	revision int64
 	events   []streamProbeEventExpectation
+	// snapshotScale is carried by exactly one seed so the existing stream and
+	// restore verifier interfaces cannot silently drop the production scale
+	// contract. It is not itself part of the ordinary historical seed set.
+	snapshotScale *snapshotScaleExpectation
+}
+
+type snapshotScaleExpectation struct {
+	prefix     string
+	valueBytes int
+	items      []snapshotScaleItemExpectation
+}
+
+type snapshotScaleItemExpectation struct {
+	key      string
+	hash     [sha256.Size]byte
+	revision int64
 }
 
 type streamProbeEventExpectation struct {
@@ -92,6 +112,94 @@ func newStreamProbeExpectations(prefix string) []streamProbeExpectation {
 		expected = append(expected, streamProbeExpectation{key: key, value: value, hash: sha256.Sum256([]byte(value))})
 	}
 	return expected
+}
+
+func newSnapshotScaleExpectation(prefix string, keyCount, valueBytes int) (*snapshotScaleExpectation, error) {
+	if prefix == "" || keyCount <= 0 || valueBytes <= 0 {
+		return nil, fmt.Errorf("Snapshot scale expectation requires a prefix, positive key count, and positive value size")
+	}
+	scale := &snapshotScaleExpectation{
+		prefix: prefix + "snapshot-scale/", valueBytes: valueBytes,
+		items: make([]snapshotScaleItemExpectation, keyCount),
+	}
+	for index := range scale.items {
+		key := fmt.Sprintf("%s%06d", scale.prefix, index)
+		value := snapshotScaleValue(key, valueBytes)
+		scale.items[index] = snapshotScaleItemExpectation{key: key, hash: sha256.Sum256(value)}
+	}
+	return scale, nil
+}
+
+func snapshotScaleValue(key string, size int) []byte {
+	seed := sha256.Sum256([]byte(key))
+	value := make([]byte, size)
+	for offset := 0; offset < len(value); offset += len(seed) {
+		copy(value[offset:], seed[:])
+	}
+	return value
+}
+
+func snapshotScaleFromExpectations(expected []streamProbeExpectation, snapshotRevision int64) (*snapshotScaleExpectation, error) {
+	var scale *snapshotScaleExpectation
+	for index := range expected {
+		if expected[index].snapshotScale == nil {
+			continue
+		}
+		if scale != nil {
+			return nil, errors.New("multiple Snapshot scale expectations")
+		}
+		scale = expected[index].snapshotScale
+	}
+	if scale == nil {
+		return nil, nil
+	}
+	if scale.prefix == "" || scale.valueBytes <= 0 || len(scale.items) == 0 {
+		return nil, errors.New("invalid Snapshot scale expectation")
+	}
+	for index, item := range scale.items {
+		wantKey := fmt.Sprintf("%s%06d", scale.prefix, index)
+		if item.key != wantKey || item.hash == ([sha256.Size]byte{}) || item.revision <= 0 || item.revision > snapshotRevision {
+			return nil, fmt.Errorf("invalid Snapshot scale item %d: key=%q revision=%d snapshot_revision=%d",
+				index, item.key, item.revision, snapshotRevision)
+		}
+	}
+	return scale, nil
+}
+
+func seedSnapshotScale(ctx context.Context, client *clientv3.Client, scale *snapshotScaleExpectation,
+	clusterID uint64, lastRevision int64, timeout time.Duration,
+) (int64, error) {
+	if scale == nil || len(scale.items) == 0 || scale.valueBytes <= 0 {
+		return lastRevision, errors.New("invalid Snapshot scale seed configuration")
+	}
+	for start := 0; start < len(scale.items); start += snapshotScaleTxnKeys {
+		end := min(start+snapshotScaleTxnKeys, len(scale.items))
+		operations := make([]clientv3.Op, 0, end-start)
+		for index := start; index < end; index++ {
+			operations = append(operations, clientv3.OpPut(scale.items[index].key,
+				string(snapshotScaleValue(scale.items[index].key, scale.valueBytes))))
+		}
+		requestCtx, cancel := context.WithTimeout(ctx, timeout)
+		response, err := client.Txn(requestCtx).Then(operations...).Commit()
+		cancel()
+		if err != nil {
+			return lastRevision, fmt.Errorf("seed Snapshot scale batch [%d,%d): %w", start, end, err)
+		}
+		if response == nil || response.Header == nil || response.Header.ClusterId != clusterID ||
+			response.Header.Revision <= lastRevision || !response.Succeeded || len(response.Responses) != len(operations) {
+			return lastRevision, fmt.Errorf("invalid Snapshot scale batch response [%d,%d): %+v", start, end, response)
+		}
+		for offset, operationResponse := range response.Responses {
+			put := operationResponse.GetResponsePut()
+			if put == nil || put.Header == nil || put.Header.ClusterId != clusterID ||
+				put.Header.Revision != response.Header.Revision || put.PrevKv != nil {
+				return lastRevision, fmt.Errorf("invalid Snapshot scale put response at %d: %+v", start+offset, operationResponse)
+			}
+			scale.items[start+offset].revision = response.Header.Revision
+		}
+		lastRevision = response.Header.Revision
+	}
+	return lastRevision, nil
 }
 
 func streamProbeTxnSeeds(expected []streamProbeExpectation) ([]*streamProbeExpectation, error) {
@@ -1862,6 +1970,49 @@ func verifyRestoredClusterReplicationAndQuorum(ctx context.Context, adminClient 
 		expected, quorumKey, quorumValue, quorumPut.Header.Revision)
 }
 
+func verifyRestoredSnapshotScale(ctx context.Context, client *clientv3.Client, scale *snapshotScaleExpectation,
+	clusterID uint64, snapshotRevision int64,
+) error {
+	if scale == nil {
+		return nil
+	}
+	rangeEnd := clientv3.GetPrefixRangeEnd(scale.prefix)
+	startKey := scale.prefix
+	observed := 0
+	for {
+		response, err := client.Get(ctx, startKey, clientv3.WithRange(rangeEnd), clientv3.WithLimit(snapshotScalePageKeys),
+			clientv3.WithRev(snapshotRevision))
+		if err != nil {
+			return fmt.Errorf("read officially restored Snapshot scale page at %d: %w", observed, err)
+		}
+		if response == nil || response.Header == nil || response.Header.ClusterId != clusterID ||
+			response.Header.MemberId == 0 || response.Header.RaftTerm == 0 || response.Header.Revision != snapshotRevision ||
+			len(response.Kvs) == 0 || len(response.Kvs) > snapshotScalePageKeys {
+			return fmt.Errorf("officially restored etcd returned invalid Snapshot scale page at %d: %+v", observed, response)
+		}
+		for _, kv := range response.Kvs {
+			if observed >= len(scale.items) {
+				return fmt.Errorf("officially restored etcd returned extra Snapshot scale key %q", kv.Key)
+			}
+			item := scale.items[observed]
+			if kv == nil || string(kv.Key) != item.key || len(kv.Value) != scale.valueBytes || sha256.Sum256(kv.Value) != item.hash ||
+				kv.CreateRevision != item.revision || kv.ModRevision != item.revision || kv.Version != 1 || kv.Lease != 0 {
+				return fmt.Errorf("officially restored etcd returned invalid Snapshot scale item %d", observed)
+			}
+			observed++
+		}
+		if !response.More {
+			break
+		}
+		lastKey := response.Kvs[len(response.Kvs)-1].Key
+		startKey = string(append(append([]byte(nil), lastKey...), 0))
+	}
+	if observed != len(scale.items) {
+		return fmt.Errorf("officially restored etcd returned %d/%d Snapshot scale items", observed, len(scale.items))
+	}
+	return nil
+}
+
 func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, expected []streamProbeExpectation, revision int64) (retErr error) {
 	if err := cfg.validate(); err != nil {
 		return err
@@ -1939,6 +2090,13 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 	}()
 	topology, err := verifyRestoredClusterTopology(verifyCtx, client, cfg, revision)
 	if err != nil {
+		return err
+	}
+	scale, err := snapshotScaleFromExpectations(expected, revision)
+	if err != nil {
+		return err
+	}
+	if err := verifyRestoredSnapshotScale(verifyCtx, client, scale, topology.clusterID, revision); err != nil {
 		return err
 	}
 	verifyCluster := func(adminClient *clientv3.Client, adminConfig clientv3.Config) error {
@@ -2265,6 +2423,14 @@ func validateSnapshotArtifactWithClusterAuthVerifier(ctx context.Context, manage
 	if artifactStatus.Revision <= 0 || artifactStatus.TotalSize <= 0 || artifactStatus.Version != wireVersion {
 		return fmt.Errorf("official etcdutl returned invalid Snapshot status: revision=%d size=%d version=%q wire_version=%q",
 			artifactStatus.Revision, artifactStatus.TotalSize, artifactStatus.Version, wireVersion)
+	}
+	scale, err := snapshotScaleFromExpectations(expected, artifactStatus.Revision)
+	if err != nil {
+		return err
+	}
+	if scale != nil && artifactStatus.TotalSize < int64(len(scale.items))*int64(scale.valueBytes) {
+		return fmt.Errorf("official etcdutl returned undersized Snapshot for scale contract: size=%d minimum_value_bytes=%d",
+			artifactStatus.TotalSize, int64(len(scale.items))*int64(scale.valueBytes))
 	}
 
 	restoreRoot, err := os.MkdirTemp(artifactDir, ".kubebrain-rollout-restore-*")

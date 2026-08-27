@@ -623,6 +623,30 @@ func TestStreamProbeTxnSeedsUseNonLexicographicOrder(t *testing.T) {
 	require.ErrorContains(t, err, "requires at least 5 stream seeds")
 }
 
+func TestSnapshotScaleExpectationRejectsMissingDuplicateAndInvalidItems(t *testing.T) {
+	scale, err := newSnapshotScaleExpectation("/probe/", 3, 128)
+	require.NoError(t, err)
+	for index := range scale.items {
+		scale.items[index].revision = int64(index + 2)
+	}
+	expected := newStreamProbeExpectations("/probe/")
+	expected[0].snapshotScale = scale
+	got, err := snapshotScaleFromExpectations(expected, 10)
+	require.NoError(t, err)
+	require.Same(t, scale, got)
+
+	duplicate := append([]streamProbeExpectation(nil), expected...)
+	duplicate[1].snapshotScale = scale
+	_, err = snapshotScaleFromExpectations(duplicate, 10)
+	require.ErrorContains(t, err, "multiple Snapshot scale expectations")
+
+	scale.items[1].revision = 0
+	_, err = snapshotScaleFromExpectations(expected, 10)
+	require.ErrorContains(t, err, "invalid Snapshot scale item 1")
+	_, err = newSnapshotScaleExpectation("", 3, 128)
+	require.Error(t, err)
+}
+
 func TestStreamProbeNestedTxnSeedsUseDistinctNonLexicographicWrites(t *testing.T) {
 	expected := newStreamProbeExpectations("probe/")
 	seeds, err := streamProbeNestedTxnSeeds(expected)
