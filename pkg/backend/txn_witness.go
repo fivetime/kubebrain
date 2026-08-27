@@ -874,7 +874,13 @@ func (b *backend) persistWitnessedRevisionIndexCorruption(ctx context.Context, c
 	default:
 		b.metricCli.EmitCounter("read.revision_index.corrupt_alarm_failed", 1)
 		emitReadIntegrityFence(b.metricCli, "revision_index", "failed")
-		return errors.Join(cause, fmt.Errorf("validate persisted transaction witnesses: %w", validationErr))
+		// The count-index contradiction is only a trigger for this independent
+		// durable validation. If storage or PD prevents that validation, exposing
+		// cause would misclassify an unproved contradiction as DataLoss. Return
+		// only the validation failure so the RPC boundary can preserve its
+		// retryable DeadlineExceeded/Unavailable contract. A completed validator
+		// still returns cause above, and witnessed corruption still arms CORRUPT.
+		return fmt.Errorf("validate persisted transaction witnesses: %w", validationErr)
 	}
 }
 

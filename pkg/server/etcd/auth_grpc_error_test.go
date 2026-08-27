@@ -53,6 +53,7 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("epoch_not_match:<>")), codes.Unavailable},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("no available connections")), codes.Unavailable},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("loadRegion from PD failed, key: %q, err: rpc error: code = DeadlineExceeded desc = context deadline exceeded", "57FB80")), codes.DeadlineExceeded},
+		{fmt.Errorf("validate persisted transaction witnesses: %w", fmt.Errorf("loadRegion from PD failed, key: %q, err: rpc error: code = DeadlineExceeded desc = context deadline exceeded", "57FB80")), codes.DeadlineExceeded},
 		{markInvalidAuthMetadata(errors.New("decode auth config")), codes.DataLoss},
 		{markInvalidLeaseMetadata(errors.New("decode lease record")), codes.DataLoss},
 		{fmt.Errorf("%w: decode alarm set", backend.ErrInvalidAlarmMetadata), codes.DataLoss},

@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,26 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+var errRuntimeIndexWitnessLoadRegionDeadline = fmt.Errorf(
+	"loadRegion from PD failed, key: %q, err: rpc error: code = DeadlineExceeded desc = context deadline exceeded", "57FB80",
+)
+
+type runtimeIndexWitnessBatchGetErrorStorage struct {
+	storage.KvStorage
+	enabled atomic.Bool
+	calls   atomic.Int32
+	failAt  int32
+}
+
+func (s *runtimeIndexWitnessBatchGetErrorStorage) BatchGet(
+	ctx context.Context, keys [][]byte,
+) (map[string][]byte, error) {
+	if s.enabled.Load() && s.calls.Add(1) == s.failAt {
+		return nil, errRuntimeIndexWitnessLoadRegionDeadline
+	}
+	return s.KvStorage.(storage.BatchGetter).BatchGet(ctx, keys)
+}
 
 func newRuntimeIndexBackend(t *testing.T) (*backend, storage.KvStorage, context.Context, []byte) {
 	t.Helper()
@@ -198,6 +219,54 @@ func TestLatestListUnwitnessedIndexContradictionDoesNotArm(t *testing.T) {
 	alarms, alarmErr := b.CorruptAlarms(ctx)
 	require.NoError(t, alarmErr)
 	require.Empty(t, alarms)
+}
+
+func TestLatestListWitnessValidationTransportFailureIsRetryable(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	raw := imemkv.NewKvStorage()
+	store := &runtimeIndexWitnessBatchGetErrorStorage{KvStorage: raw, failAt: 2}
+	pfx := fmt.Sprintf("/kubebrain/runtime-index-witness-timeout/%d", time.Now().UnixNano())
+	b := NewBackend(store, Config{
+		Prefix: pfx, Identity: getStorageIdentity(),
+		EnableEtcdCompatibility: true, EnableCountIndex: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	key := []byte("runtime-index-witness-timeout")
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= revision }, 5*time.Second, 2*time.Millisecond)
+
+	// Model the production failure: the complete count-index snapshot omits a
+	// physically live key. The first BatchGet reads its physical index; the
+	// second belongs to the independent durable-witness validator and fails
+	// while client-go reloads the Region from PD.
+	b.countIndex.Reset(func() uint64 { return revision }, func(_ uint64, _ func([]byte, uint64, bool)) error {
+		return nil
+	})
+	store.enabled.Store(true)
+	resp, listErr := b.List(ctx, &proto.RangeRequest{Key: key, End: runtimeIndexRangeEnd(key)})
+	require.Nil(t, resp)
+	require.Equal(t, int32(2), store.calls.Load())
+	require.ErrorIs(t, listErr, errRuntimeIndexWitnessLoadRegionDeadline)
+	require.NotErrorIs(t, listErr, ErrInvalidMVCCMetadata,
+		"an unavailable validator must not turn an unproved count-index contradiction into DataLoss")
+	require.ErrorContains(t, listErr, "validate persisted transaction witnesses")
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms)
+
+	// The transient request must not poison the backend. Once storage and the
+	// disposable count index recover, the same latest read succeeds.
+	store.enabled.Store(false)
+	require.NoError(t, b.RebuildCountIndex(ctx))
+	resp, listErr = b.List(ctx, &proto.RangeRequest{Key: key, End: runtimeIndexRangeEnd(key)})
+	require.NoError(t, listErr)
+	require.Len(t, resp.GetKvs(), 1)
+	require.Equal(t, key, resp.GetKvs()[0].GetKey())
 }
 
 func TestLatestListRevisionIndexNewerThanReadySnapshotIsNotRejected(t *testing.T) {
