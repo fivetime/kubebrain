@@ -828,6 +828,198 @@ func addRestoredSnapshotMember(ctx context.Context, client *clientv3.Client, pee
 	}
 }
 
+func addRestoredSnapshotLearner(ctx context.Context, client *clientv3.Client, peerURL string) (*clientv3.MemberAddResponse, error) {
+	for {
+		response, err := client.MemberAddAsLearner(ctx, []string{peerURL})
+		if err == nil {
+			return response, nil
+		}
+		if !errors.Is(rpctypes.Error(err), rpctypes.ErrUnhealthy) &&
+			!errors.Is(rpctypes.Error(err), rpctypes.ErrMemberNotEnoughStarted) {
+			return nil, err
+		}
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, fmt.Errorf("wait for officially restored etcd cluster to become safe for MemberAddAsLearner: %w", context.Cause(ctx))
+		}
+	}
+}
+
+func validateRestoredLearnerMembers(header *etcdserverpb.ResponseHeader, members []*etcdserverpb.Member,
+	cfg restoredSnapshotConfig, topology restoredClusterTopology, learner restoredSnapshotMemberConfig,
+	learnerID uint64, started bool,
+) error {
+	if len(topology.memberIDs) != len(cfg.members) {
+		return fmt.Errorf("officially restored etcd learner membership voter identity count mismatch: voters=%d ids=%d",
+			len(cfg.members), len(topology.memberIDs))
+	}
+	if header == nil || header.ClusterId != topology.clusterID || header.MemberId == 0 ||
+		header.RaftTerm == 0 || header.Revision != 0 {
+		return fmt.Errorf("invalid officially restored etcd learner membership response identity: %+v", header)
+	}
+	servingMember := false
+	for _, memberID := range topology.memberIDs {
+		servingMember = servingMember || header.MemberId == memberID
+	}
+	if !servingMember {
+		return fmt.Errorf("officially restored etcd learner membership response came from unknown member %x", header.MemberId)
+	}
+	if learnerID == 0 || len(members) != len(cfg.members)+1 {
+		return fmt.Errorf("officially restored etcd learner membership count mismatch: learner=%x got=%d want=%d",
+			learnerID, len(members), len(cfg.members)+1)
+	}
+	expectedByID := make(map[uint64]restoredSnapshotMemberConfig, len(cfg.members))
+	for index, memberID := range topology.memberIDs {
+		expectedByID[memberID] = cfg.members[index]
+	}
+	seen := make(map[uint64]struct{}, len(members))
+	learnerSeen := false
+	for _, member := range members {
+		if member == nil || member.ID == 0 {
+			return fmt.Errorf("officially restored etcd learner membership returned an invalid member: %+v", member)
+		}
+		if _, duplicate := seen[member.ID]; duplicate {
+			return fmt.Errorf("officially restored etcd learner membership repeated member ID %x", member.ID)
+		}
+		seen[member.ID] = struct{}{}
+		if member.ID == learnerID {
+			learnerSeen = true
+			expectedName := ""
+			expectedClientURLs := 0
+			if started {
+				expectedName = learner.name
+				expectedClientURLs = 1
+			}
+			if !member.IsLearner || member.Name != expectedName || len(member.PeerURLs) != 1 ||
+				member.PeerURLs[0] != learner.peerURL.String() || len(member.ClientURLs) != expectedClientURLs ||
+				(expectedClientURLs == 1 && member.ClientURLs[0] != learner.clientURL.String()) {
+				return fmt.Errorf("officially restored etcd returned an invalid learner identity: %+v", member)
+			}
+			continue
+		}
+		expected, exists := expectedByID[member.ID]
+		if !exists || member.IsLearner || member.Name != expected.name || len(member.PeerURLs) != 1 ||
+			member.PeerURLs[0] != expected.peerURL.String() || len(member.ClientURLs) != 1 ||
+			member.ClientURLs[0] != expected.clientURL.String() {
+			return fmt.Errorf("officially restored etcd learner membership changed an existing voter: %+v", member)
+		}
+	}
+	if !learnerSeen {
+		return fmt.Errorf("officially restored etcd learner membership omitted learner %x", learnerID)
+	}
+	return nil
+}
+
+func validateRestoredMemberAddLearnerResponse(response *clientv3.MemberAddResponse, cfg restoredSnapshotConfig,
+	topology restoredClusterTopology, learner restoredSnapshotMemberConfig,
+) (uint64, error) {
+	if response == nil || response.Member == nil || response.Member.ID == 0 {
+		return 0, fmt.Errorf("invalid officially restored etcd MemberAddAsLearner response: %+v", response)
+	}
+	learnerID := response.Member.ID
+	for _, memberID := range topology.memberIDs {
+		if learnerID == memberID {
+			return 0, fmt.Errorf("officially restored etcd reused member ID %x during MemberAddAsLearner", learnerID)
+		}
+	}
+	if !response.Member.IsLearner || response.Member.Name != "" || len(response.Member.PeerURLs) != 1 ||
+		response.Member.PeerURLs[0] != learner.peerURL.String() || len(response.Member.ClientURLs) != 0 {
+		return 0, fmt.Errorf("officially restored etcd returned an invalid added learner: %+v", response.Member)
+	}
+	if err := validateRestoredLearnerMembers(response.Header, response.Members, cfg, topology, learner, learnerID, false); err != nil {
+		return 0, err
+	}
+	return learnerID, nil
+}
+
+func waitForRestoredLearnerMembership(ctx context.Context, client *clientv3.Client, cfg restoredSnapshotConfig,
+	topology restoredClusterTopology, learner restoredSnapshotMemberConfig, learnerID uint64,
+) error {
+	var lastErr error
+	for {
+		response, err := client.MemberList(ctx)
+		if err == nil && response != nil {
+			lastErr = validateRestoredLearnerMembers(response.Header, response.Members, cfg, topology, learner, learnerID, true)
+			if lastErr == nil {
+				return nil
+			}
+		} else if err == nil {
+			lastErr = errors.New("officially restored etcd returned a nil learner MemberList response")
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-ctx.Done():
+			return fmt.Errorf("wait for officially restored etcd learner membership: last_error=%v: %w", lastErr, context.Cause(ctx))
+		}
+	}
+}
+
+func promoteRestoredSnapshotLearner(ctx context.Context, client *clientv3.Client, learnerID uint64) (*clientv3.MemberPromoteResponse, error) {
+	for {
+		response, err := client.MemberPromote(ctx, learnerID)
+		if err == nil {
+			return response, nil
+		}
+		if !errors.Is(rpctypes.Error(err), rpctypes.ErrMemberLearnerNotReady) {
+			return nil, err
+		}
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, fmt.Errorf("wait for officially restored etcd learner %x to become promotable: %w", learnerID, context.Cause(ctx))
+		}
+	}
+}
+
+func validateRestoredMemberPromoteResponse(response *clientv3.MemberPromoteResponse, cfg restoredSnapshotConfig,
+	topology restoredClusterTopology, promotedID uint64,
+) error {
+	if len(topology.memberIDs) != len(cfg.members) {
+		return fmt.Errorf("officially restored etcd MemberPromote voter identity count mismatch: voters=%d ids=%d",
+			len(cfg.members), len(topology.memberIDs))
+	}
+	if response == nil || response.Header == nil || response.Header.ClusterId != topology.clusterID ||
+		response.Header.MemberId == 0 || response.Header.RaftTerm == 0 || response.Header.Revision != 0 {
+		return fmt.Errorf("invalid officially restored etcd MemberPromote response identity: %+v", response)
+	}
+	servingMember := false
+	for _, memberID := range topology.memberIDs {
+		servingMember = servingMember || response.Header.MemberId == memberID
+	}
+	if !servingMember || len(response.Members) != len(cfg.members) {
+		return fmt.Errorf("invalid officially restored etcd MemberPromote responder or member count: response=%+v want_members=%d",
+			response, len(cfg.members))
+	}
+	expectedByID := make(map[uint64]restoredSnapshotMemberConfig, len(cfg.members))
+	for index, memberID := range topology.memberIDs {
+		expectedByID[memberID] = cfg.members[index]
+	}
+	seen := make(map[uint64]struct{}, len(response.Members))
+	promotedSeen := false
+	for _, member := range response.Members {
+		if member == nil || member.ID == 0 || member.IsLearner {
+			return fmt.Errorf("officially restored etcd MemberPromote returned an invalid voter: %+v", member)
+		}
+		if _, duplicate := seen[member.ID]; duplicate {
+			return fmt.Errorf("officially restored etcd MemberPromote repeated member ID %x", member.ID)
+		}
+		seen[member.ID] = struct{}{}
+		expected, exists := expectedByID[member.ID]
+		if !exists || member.Name != expected.name || len(member.PeerURLs) != 1 || member.PeerURLs[0] != expected.peerURL.String() ||
+			len(member.ClientURLs) != 1 || member.ClientURLs[0] != expected.clientURL.String() {
+			return fmt.Errorf("officially restored etcd MemberPromote changed a voter identity: %+v", member)
+		}
+		promotedSeen = promotedSeen || member.ID == promotedID
+	}
+	if !promotedSeen {
+		return fmt.Errorf("officially restored etcd MemberPromote omitted promoted member %x", promotedID)
+	}
+	return nil
+}
+
 func validateRestoredMemberRemoveResponse(response *clientv3.MemberRemoveResponse, cfg restoredSnapshotConfig,
 	topology restoredClusterTopology, removedMemberID uint64,
 ) error {
@@ -882,6 +1074,248 @@ func removeRestoredSnapshotMember(ctx context.Context, client *clientv3.Client, 
 			return nil, fmt.Errorf("wait for officially restored etcd cluster to become safe for MemberRemove: %w", context.Cause(ctx))
 		}
 	}
+}
+
+func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
+	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
+	expected []streamProbeExpectation, catchUpKey, catchUpValue string, catchUpRevision int64,
+) (probeKeys []string, finalRevision int64, retErr error) {
+	if len(topology.memberIDs) != len(cfg.members) || len(directClients) != len(cfg.members) {
+		return nil, 0, fmt.Errorf("restored learner verification requires matching voters, IDs, and clients: voters=%d ids=%d clients=%d",
+			len(cfg.members), len(topology.memberIDs), len(directClients))
+	}
+	if _, err := adminClient.MemberPromote(ctx, topology.memberIDs[0]); !errors.Is(rpctypes.Error(err), rpctypes.ErrMemberNotLearner) {
+		return nil, 0, fmt.Errorf("promote existing restored voter must fail with ErrMemberNotLearner: %w", err)
+	}
+	existingMemberIDs := make(map[uint64]struct{}, len(topology.memberIDs))
+	for _, memberID := range topology.memberIDs {
+		existingMemberIDs[memberID] = struct{}{}
+	}
+	missingMemberID := ^uint64(0)
+	for {
+		if _, exists := existingMemberIDs[missingMemberID]; !exists {
+			break
+		}
+		missingMemberID--
+	}
+	if _, err := adminClient.MemberPromote(ctx, missingMemberID); !errors.Is(rpctypes.Error(err), rpctypes.ErrMemberNotFound) {
+		return nil, 0, fmt.Errorf("promote absent restored member must fail with ErrMemberNotFound: %w", err)
+	}
+
+	clientURL, peerURL, err := allocateRestoredSnapshotURLs(cfg.tls.enabled())
+	if err != nil {
+		return nil, 0, err
+	}
+	learner := restoredSnapshotMemberConfig{
+		name: "kubebrain-rollout-restore-learner", dataDir: filepath.Join(filepath.Dir(cfg.members[0].dataDir), "member-learner"),
+		clientURL: clientURL, peerURL: peerURL,
+	}
+	addResponse, err := addRestoredSnapshotLearner(ctx, adminClient, learner.peerURL.String())
+	if err != nil {
+		return nil, 0, fmt.Errorf("add learner to officially restored etcd cluster: %w", err)
+	}
+	learnerID, err := validateRestoredMemberAddLearnerResponse(addResponse, cfg, topology, learner)
+	if err != nil {
+		return nil, 0, err
+	}
+	if _, err := adminClient.MemberPromote(ctx, learnerID); !errors.Is(rpctypes.Error(err), rpctypes.ErrMemberLearnerNotReady) {
+		return nil, 0, fmt.Errorf("promote unstarted restored learner must fail with ErrMemberLearnerNotReady: %w", err)
+	}
+	memberList, err := adminClient.MemberList(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list restored members after rejected learner promotion: %w", err)
+	}
+	if err := validateRestoredLearnerMembers(memberList.Header, memberList.Members, cfg, topology, learner, learnerID, false); err != nil {
+		return nil, 0, fmt.Errorf("verify membership after rejected learner promotion: %w", err)
+	}
+
+	expandedCfg := cfg
+	expandedCfg.members = append(append([]restoredSnapshotMemberConfig(nil), cfg.members...), learner)
+	initialCluster := make([]string, len(expandedCfg.members))
+	for index, member := range expandedCfg.members {
+		initialCluster[index] = member.name + "=" + member.peerURL.String()
+	}
+	expandedCfg.initialCluster = strings.Join(initialCluster, ",")
+	if err := expandedCfg.validate(); err != nil {
+		return nil, 0, fmt.Errorf("validate learner-expanded restored Snapshot cluster: %w", err)
+	}
+	learnerServer, err := embed.StartEtcd(newRestoredSnapshotEmbedConfig(expandedCfg, learner, expandedCfg.initialCluster))
+	if err != nil {
+		return nil, 0, fmt.Errorf("start officially restored etcd learner %q: %w", learner.name, err)
+	}
+	learnerServerClosed := false
+	defer func() {
+		if !learnerServerClosed {
+			learnerServer.Close()
+		}
+	}()
+	if err := waitForRestoredSnapshotMember(ctx, learner, learnerServer); err != nil {
+		return nil, 0, err
+	}
+
+	learnerClientConfig := adminConfig
+	if learnerClientConfig.Username != "" {
+		authResponse, authErr := adminClient.Authenticate(ctx, learnerClientConfig.Username, learnerClientConfig.Password)
+		if authErr != nil {
+			return nil, 0, fmt.Errorf("obtain restored administrator token for direct learner verification: %w", authErr)
+		}
+		if authResponse == nil || authResponse.Token == "" {
+			return nil, 0, fmt.Errorf("restored administrator authentication returned an empty token: %+v", authResponse)
+		}
+		learnerClientConfig.Username = ""
+		learnerClientConfig.Password = ""
+		learnerClientConfig.Token = authResponse.Token
+	}
+	learnerClient, err := newDirectRestoredClient(learnerClientConfig, learner.clientURL.String())
+	if err != nil {
+		return nil, 0, fmt.Errorf("create direct officially restored etcd learner client: %w", err)
+	}
+	learnerClientClosed := false
+	defer func() {
+		if !learnerClientClosed {
+			if closeErr := learnerClient.Close(); closeErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close direct officially restored etcd learner client: %w", closeErr))
+			}
+		}
+	}()
+	if err := waitForRestoredLearnerMembership(ctx, adminClient, cfg, topology, learner, learnerID); err != nil {
+		return nil, 0, err
+	}
+	if err := waitForRestoredMemberValue(ctx, learnerClient, catchUpKey, catchUpValue, catchUpRevision); err != nil {
+		return nil, 0, fmt.Errorf("verify restored learner caught up before promotion: %w", err)
+	}
+	learnerStatus, err := learnerClient.Status(ctx, learner.clientURL.String())
+	if err != nil {
+		return nil, 0, fmt.Errorf("read officially restored etcd learner status: %w", err)
+	}
+	if learnerStatus == nil {
+		return nil, 0, errors.New("officially restored etcd learner returned a nil status before promotion")
+	}
+	knownLeader := false
+	for _, memberID := range topology.memberIDs {
+		knownLeader = knownLeader || learnerStatus.Leader == memberID
+	}
+	if learnerStatus.Header == nil || learnerStatus.Header.ClusterId != topology.clusterID ||
+		learnerStatus.Header.MemberId != learnerID || learnerStatus.Header.Revision < catchUpRevision || learnerStatus.Header.RaftTerm == 0 ||
+		!learnerStatus.IsLearner || !knownLeader || len(learnerStatus.Errors) != 0 {
+		return nil, 0, fmt.Errorf("invalid officially restored etcd learner status before promotion: %+v", learnerStatus)
+	}
+	serializableResponse, err := learnerClient.Get(ctx, catchUpKey, clientv3.WithSerializable())
+	if err != nil || serializableResponse == nil || serializableResponse.Header == nil ||
+		serializableResponse.Header.ClusterId != topology.clusterID || serializableResponse.Header.MemberId != learnerID ||
+		serializableResponse.Header.Revision < catchUpRevision || serializableResponse.Count != 1 || len(serializableResponse.Kvs) != 1 ||
+		string(serializableResponse.Kvs[0].Key) != catchUpKey || string(serializableResponse.Kvs[0].Value) != catchUpValue {
+		return nil, 0, fmt.Errorf("restored learner serializable read contract failed: response=%+v err=%v", serializableResponse, err)
+	}
+	rejectedKey := "/kubebrain-rollout-restore/learner-rejected-mutation"
+	rejectedOperations := []struct {
+		name string
+		op   clientv3.Op
+	}{
+		{name: "linearizable range", op: clientv3.OpGet(catchUpKey)},
+		{name: "put", op: clientv3.OpPut(rejectedKey, "must-not-commit")},
+		{name: "delete", op: clientv3.OpDelete(rejectedKey)},
+		{name: "transaction", op: clientv3.OpTxn([]clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(rejectedKey), "=", 0)}, nil, nil)},
+	}
+	for _, operation := range rejectedOperations {
+		if _, err := learnerClient.Do(ctx, operation.op); !errors.Is(rpctypes.Error(err), rpctypes.Error(rpctypes.ErrGRPCNotSupportedForLearner)) {
+			return nil, 0, fmt.Errorf("restored learner %s must fail with ErrGRPCNotSupportedForLearner: %w", operation.name, err)
+		}
+	}
+
+	promoteResponse, err := promoteRestoredSnapshotLearner(ctx, adminClient, learnerID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("promote caught-up officially restored etcd learner: %w", err)
+	}
+	expandedTopology := restoredClusterTopology{
+		clusterID: topology.clusterID, leaderID: topology.leaderID,
+		memberIDs: append(append([]uint64(nil), topology.memberIDs...), learnerID),
+	}
+	if err := validateRestoredMemberPromoteResponse(promoteResponse, expandedCfg, expandedTopology, learnerID); err != nil {
+		return nil, 0, err
+	}
+	promotedKey := "/kubebrain-rollout-restore/learner-promoted-replication"
+	promotedValue := fmt.Sprintf("promoted-%x", learnerID)
+	promotedPut, err := adminClient.Put(ctx, promotedKey, promotedValue)
+	if err != nil {
+		return nil, 0, fmt.Errorf("write through learner-promoted officially restored etcd cluster: %w", err)
+	}
+	if promotedPut == nil || promotedPut.Header == nil || promotedPut.Header.ClusterId != topology.clusterID ||
+		promotedPut.Header.Revision <= catchUpRevision {
+		return nil, 0, fmt.Errorf("invalid learner-promoted officially restored etcd write response: %+v", promotedPut)
+	}
+	for index, directClient := range append(append([]*clientv3.Client(nil), directClients...), learnerClient) {
+		if err := waitForRestoredMemberValue(ctx, directClient, promotedKey, promotedValue, promotedPut.Header.Revision); err != nil {
+			return nil, 0, fmt.Errorf("verify learner-promoted cluster value on member %d: %w", index, err)
+		}
+	}
+	verifiedExpandedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, expandedCfg, promotedPut.Header.Revision)
+	if err != nil {
+		return nil, 0, fmt.Errorf("verify learner-promoted officially restored etcd topology: %w", err)
+	}
+	for index, memberID := range expandedTopology.memberIDs {
+		if verifiedExpandedTopology.memberIDs[index] != memberID {
+			return nil, 0, fmt.Errorf("officially restored etcd changed member ID during learner promotion at %d: got=%x want=%x",
+				index, verifiedExpandedTopology.memberIDs[index], memberID)
+		}
+	}
+	if err := verifyRestoredMemberCurrentSeeds(ctx, adminClient, learnerClient, expected, topology.clusterID, learnerID,
+		promotedPut.Header.Revision); err != nil {
+		return nil, 0, err
+	}
+	if err := verifyRestoredMemberAuthState(ctx, adminClient, learnerClient, topology.clusterID, learnerID,
+		promotedPut.Header.Revision); err != nil {
+		return nil, 0, err
+	}
+
+	removeResponse, err := removeRestoredSnapshotMember(ctx, adminClient, learnerID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("remove promoted learner from officially restored etcd cluster: %w", err)
+	}
+	if err := validateRestoredMemberRemoveResponse(removeResponse, cfg, topology, learnerID); err != nil {
+		return nil, 0, err
+	}
+	select {
+	case <-learnerServer.Server.StopNotify():
+	case <-ctx.Done():
+		return nil, 0, fmt.Errorf("wait for removed promoted learner %q to stop: %w", learner.name, context.Cause(ctx))
+	}
+	learnerClientClosed = true
+	if closeErr := learnerClient.Close(); closeErr != nil {
+		return nil, 0, fmt.Errorf("close removed promoted learner client: %w", closeErr)
+	}
+	learnerServer.Close()
+	learnerServerClosed = true
+	if err := waitForRestoredMemberListenerClosed(ctx, &learner.clientURL); err != nil {
+		return nil, 0, fmt.Errorf("verify removed promoted learner %q listener stopped: %w", learner.name, err)
+	}
+
+	contractedKey := "/kubebrain-rollout-restore/three-member-after-learner"
+	contractedValue := fmt.Sprintf("removed-promoted-%x", learnerID)
+	contractedPut, err := adminClient.Put(ctx, contractedKey, contractedValue)
+	if err != nil {
+		return nil, 0, fmt.Errorf("write after removing promoted learner: %w", err)
+	}
+	if contractedPut == nil || contractedPut.Header == nil || contractedPut.Header.ClusterId != topology.clusterID ||
+		contractedPut.Header.Revision <= promotedPut.Header.Revision {
+		return nil, 0, fmt.Errorf("invalid write after removing promoted learner: %+v", contractedPut)
+	}
+	for index, directClient := range directClients {
+		if err := waitForRestoredMemberValue(ctx, directClient, contractedKey, contractedValue, contractedPut.Header.Revision); err != nil {
+			return nil, 0, fmt.Errorf("verify post-learner contraction value on voter %d: %w", index, err)
+		}
+	}
+	contractedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, cfg, contractedPut.Header.Revision)
+	if err != nil {
+		return nil, 0, fmt.Errorf("verify topology after removing promoted learner: %w", err)
+	}
+	for index, memberID := range topology.memberIDs {
+		if contractedTopology.memberIDs[index] != memberID {
+			return nil, 0, fmt.Errorf("officially restored etcd changed member ID after learner contraction at %d: got=%x want=%x",
+				index, contractedTopology.memberIDs[index], memberID)
+		}
+	}
+	return []string{promotedKey, contractedKey}, contractedPut.Header.Revision, nil
 }
 
 func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
@@ -1028,22 +1462,33 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 				index, contractedTopology.memberIDs[index], memberID)
 		}
 	}
+	learnerProbeKeys, learnerFinalRevision, err := verifyRestoredClusterLearnerLifecycle(ctx, adminClient, adminConfig,
+		cfg, topology, directClients, expected, postRemoveKey, postRemoveValue, postRemovePut.Header.Revision)
+	if err != nil {
+		return err
+	}
 
-	deleteResponse, err := adminClient.Txn(ctx).Then(
-		clientv3.OpDelete(preJoinKey), clientv3.OpDelete(postJoinKey), clientv3.OpDelete(postRemoveKey),
-	).Commit()
+	probeKeys := append([]string{preJoinKey, postJoinKey, postRemoveKey}, learnerProbeKeys...)
+	deleteOperations := make([]clientv3.Op, len(probeKeys))
+	for index, key := range probeKeys {
+		deleteOperations[index] = clientv3.OpDelete(key)
+	}
+	deleteResponse, err := adminClient.Txn(ctx).Then(deleteOperations...).Commit()
 	if err != nil {
 		return fmt.Errorf("delete officially restored etcd reconfiguration probes: %w", err)
 	}
 	if deleteResponse == nil || deleteResponse.Header == nil || deleteResponse.Header.ClusterId != topology.clusterID ||
-		deleteResponse.Header.Revision <= postRemovePut.Header.Revision || len(deleteResponse.Responses) != 3 ||
-		deleteResponse.Responses[0].GetResponseDeleteRange() == nil || deleteResponse.Responses[0].GetResponseDeleteRange().Deleted != 1 ||
-		deleteResponse.Responses[1].GetResponseDeleteRange() == nil || deleteResponse.Responses[1].GetResponseDeleteRange().Deleted != 1 ||
-		deleteResponse.Responses[2].GetResponseDeleteRange() == nil || deleteResponse.Responses[2].GetResponseDeleteRange().Deleted != 1 {
+		deleteResponse.Header.Revision <= learnerFinalRevision || len(deleteResponse.Responses) != len(probeKeys) {
 		return fmt.Errorf("invalid officially restored etcd reconfiguration probe deletion response: %+v", deleteResponse)
 	}
+	for index, response := range deleteResponse.Responses {
+		if response.GetResponseDeleteRange() == nil || response.GetResponseDeleteRange().Deleted != 1 {
+			return fmt.Errorf("invalid officially restored etcd reconfiguration probe deletion at %d for %q: %+v",
+				index, probeKeys[index], response)
+		}
+	}
 	for index, directClient := range directClients {
-		for _, key := range []string{preJoinKey, postJoinKey, postRemoveKey} {
+		for _, key := range probeKeys {
 			if err := waitForRestoredMemberMissing(ctx, directClient, key, deleteResponse.Header.Revision); err != nil {
 				return fmt.Errorf("verify reconfiguration probe deletion on member %d key %q: %w", index, key, err)
 			}

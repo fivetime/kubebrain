@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -744,7 +745,7 @@ func TestValidateSnapshotArtifactRemovesAllMembersAfterLaterRestoreFailure(t *te
 	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
 }
 
-func TestConsumeAndValidateSnapshotValidatesRestoreReplicationQuorumMemberAddAndRemove(t *testing.T) {
+func TestConsumeAndValidateSnapshotValidatesRestoreReplicationQuorumMemberAddRemoveAndLearnerPromotion(t *testing.T) {
 	const (
 		key      = "probe/three-member"
 		value    = "restored-through-official-etcd"
@@ -839,6 +840,191 @@ func TestValidateRestoredMemberAddResponseRejectsIdentityDrift(t *testing.T) {
 			mutate(response)
 			_, err := validateRestoredMemberAddResponse(response, cfg, topology, added)
 			require.Error(t, err)
+		})
+	}
+}
+
+func TestValidateRestoredMemberAddLearnerResponseRejectsIdentityDrift(t *testing.T) {
+	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	require.NoError(t, err)
+	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
+	require.NoError(t, err)
+	learner := restoredSnapshotMemberConfig{
+		name: "kubebrain-rollout-restore-learner", dataDir: filepath.Join(t.TempDir(), "learner"),
+		clientURL: clientURL, peerURL: peerURL,
+	}
+	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33}}
+	makeResponse := func() *clientv3.MemberAddResponse {
+		members := make([]*etcdserverpb.Member, 0, len(cfg.members)+1)
+		for index, member := range cfg.members {
+			members = append(members, &etcdserverpb.Member{
+				ID: topology.memberIDs[index], Name: member.name,
+				PeerURLs: []string{member.peerURL.String()}, ClientURLs: []string{member.clientURL.String()},
+			})
+		}
+		added := &etcdserverpb.Member{ID: 44, PeerURLs: []string{learner.peerURL.String()}, IsLearner: true}
+		members = append(members, added)
+		return &clientv3.MemberAddResponse{
+			Header:  &etcdserverpb.ResponseHeader{ClusterId: topology.clusterID, MemberId: topology.leaderID, RaftTerm: 2},
+			Member:  added,
+			Members: members,
+		}
+	}
+
+	learnerID, err := validateRestoredMemberAddLearnerResponse(makeResponse(), cfg, topology, learner)
+	require.NoError(t, err)
+	require.Equal(t, uint64(44), learnerID)
+	_, err = validateRestoredMemberAddLearnerResponse(nil, cfg, topology, learner)
+	require.Error(t, err)
+
+	for name, mutate := range map[string]func(*clientv3.MemberAddResponse){
+		"missing header":         func(response *clientv3.MemberAddResponse) { response.Header = nil },
+		"wrong cluster":          func(response *clientv3.MemberAddResponse) { response.Header.ClusterId++ },
+		"unknown serving member": func(response *clientv3.MemberAddResponse) { response.Header.MemberId = 99 },
+		"nonzero revision":       func(response *clientv3.MemberAddResponse) { response.Header.Revision = 1 },
+		"missing added member":   func(response *clientv3.MemberAddResponse) { response.Member = nil },
+		"not learner":            func(response *clientv3.MemberAddResponse) { response.Member.IsLearner = false },
+		"premature name":         func(response *clientv3.MemberAddResponse) { response.Member.Name = learner.name },
+		"premature client URL": func(response *clientv3.MemberAddResponse) {
+			response.Member.ClientURLs = []string{learner.clientURL.String()}
+		},
+		"wrong peer URL": func(response *clientv3.MemberAddResponse) {
+			response.Member.PeerURLs = []string{"http://127.0.0.1:1"}
+		},
+		"reused member ID": func(response *clientv3.MemberAddResponse) {
+			response.Member.ID = topology.memberIDs[0]
+		},
+		"omitted from list": func(response *clientv3.MemberAddResponse) {
+			response.Members = response.Members[:len(response.Members)-1]
+		},
+		"existing identity drift": func(response *clientv3.MemberAddResponse) {
+			response.Members[0].ClientURLs = []string{"http://127.0.0.1:1"}
+		},
+		"second learner": func(response *clientv3.MemberAddResponse) {
+			response.Members[0].IsLearner = true
+		},
+		"duplicate member ID": func(response *clientv3.MemberAddResponse) {
+			response.Members[1].ID = response.Members[0].ID
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := makeResponse()
+			mutate(response)
+			_, err := validateRestoredMemberAddLearnerResponse(response, cfg, topology, learner)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestValidateRestoredLearnerStartedMembershipRejectsIdentityDrift(t *testing.T) {
+	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	require.NoError(t, err)
+	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
+	require.NoError(t, err)
+	learner := restoredSnapshotMemberConfig{
+		name: "kubebrain-rollout-restore-learner", dataDir: filepath.Join(t.TempDir(), "learner"),
+		clientURL: clientURL, peerURL: peerURL,
+	}
+	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33}}
+	makeMembership := func() (*etcdserverpb.ResponseHeader, []*etcdserverpb.Member) {
+		members := make([]*etcdserverpb.Member, 0, len(cfg.members)+1)
+		for index, member := range cfg.members {
+			members = append(members, &etcdserverpb.Member{
+				ID: topology.memberIDs[index], Name: member.name,
+				PeerURLs: []string{member.peerURL.String()}, ClientURLs: []string{member.clientURL.String()},
+			})
+		}
+		members = append(members, &etcdserverpb.Member{
+			ID: 44, Name: learner.name, IsLearner: true,
+			PeerURLs: []string{learner.peerURL.String()}, ClientURLs: []string{learner.clientURL.String()},
+		})
+		return &etcdserverpb.ResponseHeader{ClusterId: topology.clusterID, MemberId: topology.leaderID, RaftTerm: 2}, members
+	}
+	header, members := makeMembership()
+	require.NoError(t, validateRestoredLearnerMembers(header, members, cfg, topology, learner, 44, true))
+	mismatchedTopology := topology
+	mismatchedTopology.memberIDs = mismatchedTopology.memberIDs[:2]
+	require.Error(t, validateRestoredLearnerMembers(header, members, cfg, mismatchedTopology, learner, 44, true))
+
+	for name, mutate := range map[string]func(*etcdserverpb.ResponseHeader, []*etcdserverpb.Member){
+		"missing learner name": func(_ *etcdserverpb.ResponseHeader, members []*etcdserverpb.Member) {
+			members[len(members)-1].Name = ""
+		},
+		"missing learner client URL": func(_ *etcdserverpb.ResponseHeader, members []*etcdserverpb.Member) {
+			members[len(members)-1].ClientURLs = nil
+		},
+		"learner became voter": func(_ *etcdserverpb.ResponseHeader, members []*etcdserverpb.Member) {
+			members[len(members)-1].IsLearner = false
+		},
+		"wrong learner ID": func(_ *etcdserverpb.ResponseHeader, members []*etcdserverpb.Member) {
+			members[len(members)-1].ID = 45
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			header, members := makeMembership()
+			mutate(header, members)
+			require.Error(t, validateRestoredLearnerMembers(header, members, cfg, topology, learner, 44, true))
+		})
+	}
+}
+
+func TestValidateRestoredMemberPromoteResponseRejectsIdentityDrift(t *testing.T) {
+	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	require.NoError(t, err)
+	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
+	require.NoError(t, err)
+	cfg.members = append(cfg.members, restoredSnapshotMemberConfig{
+		name: "kubebrain-rollout-restore-learner", dataDir: filepath.Join(t.TempDir(), "learner"),
+		clientURL: clientURL, peerURL: peerURL,
+	})
+	initialCluster := make([]string, len(cfg.members))
+	for index, member := range cfg.members {
+		initialCluster[index] = member.name + "=" + member.peerURL.String()
+	}
+	cfg.initialCluster = strings.Join(initialCluster, ",")
+	require.NoError(t, cfg.validate())
+	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33, 44}}
+	makeResponse := func() *clientv3.MemberPromoteResponse {
+		members := make([]*etcdserverpb.Member, len(cfg.members))
+		for index, member := range cfg.members {
+			members[index] = &etcdserverpb.Member{
+				ID: topology.memberIDs[index], Name: member.name,
+				PeerURLs: []string{member.peerURL.String()}, ClientURLs: []string{member.clientURL.String()},
+			}
+		}
+		return &clientv3.MemberPromoteResponse{
+			Header:  &etcdserverpb.ResponseHeader{ClusterId: topology.clusterID, MemberId: topology.leaderID, RaftTerm: 2},
+			Members: members,
+		}
+	}
+	require.NoError(t, validateRestoredMemberPromoteResponse(makeResponse(), cfg, topology, 44))
+	require.Error(t, validateRestoredMemberPromoteResponse(nil, cfg, topology, 44))
+	mismatchedTopology := topology
+	mismatchedTopology.memberIDs = mismatchedTopology.memberIDs[:3]
+	require.Error(t, validateRestoredMemberPromoteResponse(makeResponse(), cfg, mismatchedTopology, 44))
+
+	for name, mutate := range map[string]func(*clientv3.MemberPromoteResponse){
+		"missing header":         func(response *clientv3.MemberPromoteResponse) { response.Header = nil },
+		"wrong cluster":          func(response *clientv3.MemberPromoteResponse) { response.Header.ClusterId++ },
+		"unknown serving member": func(response *clientv3.MemberPromoteResponse) { response.Header.MemberId = 99 },
+		"nonzero revision":       func(response *clientv3.MemberPromoteResponse) { response.Header.Revision = 1 },
+		"missing voter": func(response *clientv3.MemberPromoteResponse) {
+			response.Members = response.Members[:len(response.Members)-1]
+		},
+		"still learner": func(response *clientv3.MemberPromoteResponse) {
+			response.Members[len(response.Members)-1].IsLearner = true
+		},
+		"promoted identity drift": func(response *clientv3.MemberPromoteResponse) {
+			response.Members[len(response.Members)-1].ClientURLs = []string{"http://127.0.0.1:1"}
+		},
+		"duplicate member ID": func(response *clientv3.MemberPromoteResponse) {
+			response.Members[1].ID = response.Members[0].ID
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := makeResponse()
+			mutate(response)
+			require.Error(t, validateRestoredMemberPromoteResponse(response, cfg, topology, 44))
 		})
 	}
 }
