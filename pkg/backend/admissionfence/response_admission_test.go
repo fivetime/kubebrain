@@ -80,6 +80,8 @@ func TestResponseAdmissionRangePayloads(t *testing.T) {
 	header := admissionHeader(7, 9, 10)
 	kv := &mvccpb.KeyValue{Key: []byte("gate"), Value: []byte("open"), CreateRevision: 4, ModRevision: 8, Version: 2}
 	require.NoError(t, newResponseAdmission(0).admitExactGet(&clientv3.GetResponse{Header: header, Count: 1, Kvs: []*mvccpb.KeyValue{kv}}, "gate", "open", "gate read"))
+	leasedKV := &mvccpb.KeyValue{Key: []byte("session"), Value: []byte("replica-1"), CreateRevision: 8, ModRevision: 8, Version: 1, Lease: 12}
+	require.NoError(t, newResponseAdmission(0).admitExactLeasedGet(&clientv3.GetResponse{Header: header, Count: 1, Kvs: []*mvccpb.KeyValue{leasedKV}}, "session", "replica-1", "session read"))
 	require.NoError(t, newResponseAdmission(0).admitEmptyGet(&clientv3.GetResponse{Header: header}, "session read"))
 
 	badExact := []*clientv3.GetResponse{
@@ -94,6 +96,20 @@ func TestResponseAdmissionRangePayloads(t *testing.T) {
 	}
 	for i, response := range badExact {
 		require.Error(t, newResponseAdmission(0).admitExactGet(response, "gate", "open", "gate read"), i)
+	}
+	for i, response := range []*clientv3.GetResponse{
+		nil,
+		{Header: header},
+		{Header: header, Count: 1, More: true, Kvs: []*mvccpb.KeyValue{leasedKV}},
+		{Header: header, Count: 1, Kvs: []*mvccpb.KeyValue{nil}},
+		{Header: header, Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("wrong"), Value: []byte("replica-1"), CreateRevision: 4, ModRevision: 8, Version: 2, Lease: 12}}},
+		{Header: header, Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("session"), Value: []byte("wrong"), CreateRevision: 4, ModRevision: 8, Version: 2, Lease: 12}}},
+		{Header: header, Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("session"), Value: []byte("replica-1"), CreateRevision: 4, ModRevision: 8, Version: 2}}},
+		{Header: header, Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("session"), Value: []byte("replica-1"), CreateRevision: 4, ModRevision: 11, Version: 2, Lease: 12}}},
+		{Header: header, Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("session"), Value: []byte("replica-1"), CreateRevision: 8, ModRevision: 8, Version: 2, Lease: 12}}},
+		{Header: header, Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("session"), Value: []byte("replica-1"), CreateRevision: 4, ModRevision: 8, Version: 1, Lease: 12}}},
+	} {
+		require.Error(t, newResponseAdmission(0).admitExactLeasedGet(response, "session", "replica-1", "session read"), i)
 	}
 	for i, response := range []*clientv3.GetResponse{
 		nil,

@@ -70,7 +70,7 @@ func (s *storageConfig) buildProcessAdmission(ctx context.Context, keyspace, ide
 	if err != nil {
 		return nil, fmt.Errorf("connect PD admission metadata: %w", err)
 	}
-	session, err := admissionfence.StartSession(ctx, client, keyspace, identity, 15*time.Second)
+	session, err := admissionfence.StartSessionWithIdentityHandoff(ctx, client, keyspace, identity, 15*time.Second)
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("register PD restore admission session: %w", err),

@@ -150,6 +150,72 @@ func TestSessionReRegistersAfterKeepAliveStreamEnds(t *testing.T) {
 	require.NoError(t, session.Close(ctx))
 }
 
+func TestSessionIdentityHandoffWaitsForOldLeaseRelease(t *testing.T) {
+	cli := testClient(t)
+	oldCtx, stopOld := context.WithCancel(t.Context())
+	oldSession, err := StartSession(oldCtx, cli, "handoff", "replica-1:2380", 6*time.Second)
+	require.NoError(t, err)
+	oldLease := clientv3.LeaseID(oldSession.leaseID.Load())
+	stopOld()
+	require.Eventually(t, func() bool {
+		select {
+		case <-oldSession.done:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		revokeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, _ = cli.Revoke(revokeCtx, oldLease)
+		close(released)
+	}()
+	started := time.Now()
+	replacement, err := StartSessionWithIdentityHandoff(t.Context(), cli, "handoff", "replica-1:2380", 6*time.Second)
+	require.NoError(t, err)
+	<-released
+	require.GreaterOrEqual(t, time.Since(started), 200*time.Millisecond)
+	require.NotEqual(t, oldLease, clientv3.LeaseID(replacement.leaseID.Load()))
+	require.NoError(t, replacement.Close(t.Context()))
+}
+
+func TestSessionIdentityHandoffNeverStealsActiveLease(t *testing.T) {
+	cli := testClient(t)
+	active, err := StartSession(t.Context(), cli, "handoff-active", "replica-1:2380", 6*time.Second)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 350*time.Millisecond)
+	defer cancel()
+	_, err = StartSessionWithIdentityHandoff(ctx, cli, "handoff-active", "replica-1:2380", 6*time.Second)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.True(t, active.Fresh())
+	response, getErr := cli.Get(t.Context(), SessionKey("handoff-active", "replica-1:2380"))
+	require.NoError(t, getErr)
+	require.Len(t, response.Kvs, 1)
+	require.Equal(t, int64(active.leaseID.Load()), response.Kvs[0].Lease)
+	leases, leasesErr := cli.Leases(t.Context())
+	require.NoError(t, leasesErr)
+	require.Len(t, leases.Leases, 1, "handoff polling must not churn temporary leases")
+	require.Equal(t, active.leaseID.Load(), int64(leases.Leases[0].ID))
+	require.NoError(t, active.Close(t.Context()))
+}
+
+func TestSessionIdentityHandoffDoesNotWaitThroughClosedGate(t *testing.T) {
+	cli := testClient(t)
+	token, err := NewToken("restore-1", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 42, "handoff-closed")
+	require.NoError(t, err)
+	_, err = Acquire(t.Context(), cli, "handoff-closed", token)
+	require.NoError(t, err)
+	started := time.Now()
+	_, err = StartSessionWithIdentityHandoff(t.Context(), cli, "handoff-closed", "replica-1:2380", 6*time.Second)
+	require.ErrorContains(t, err, "restore admission is closed")
+	require.Less(t, time.Since(started), time.Second)
+	require.NoError(t, Release(t.Context(), cli, "handoff-closed", token))
+}
+
 func TestIPv6ProcessIdentityIsAccepted(t *testing.T) {
 	cli := testClient(t)
 	session, err := StartSession(t.Context(), cli, "a1001", "[2001:db8::1]:2380", 6*time.Second)

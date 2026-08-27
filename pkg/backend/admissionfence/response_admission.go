@@ -114,6 +114,25 @@ func (a *responseAdmission) admitEmptyGet(response *clientv3.GetResponse, kind s
 	return nil
 }
 
+func (a *responseAdmission) admitExactLeasedGet(response *clientv3.GetResponse, key, value, kind string) error {
+	if response == nil {
+		return fmt.Errorf("%s returned an empty range response", kind)
+	}
+	revision, err := a.admitHeader(response.Header, false)
+	if err != nil {
+		return fmt.Errorf("%s response admission: %w", kind, err)
+	}
+	if response.Count != 1 || len(response.Kvs) != 1 || response.More || response.Kvs[0] == nil {
+		return fmt.Errorf("%s did not return exactly one key", kind)
+	}
+	kv := response.Kvs[0]
+	if string(kv.Key) != key || string(kv.Value) != value || kv.Lease <= 0 || kv.CreateRevision <= 0 ||
+		kv.ModRevision != kv.CreateRevision || kv.ModRevision > revision || kv.Version != 1 {
+		return fmt.Errorf("%s returned an invalid leased key/value record", kind)
+	}
+	return nil
+}
+
 func (a *responseAdmission) admitGrant(response *clientv3.LeaseGrantResponse, requestedTTL int64) error {
 	if response == nil {
 		return errors.New("session lease grant returned an empty response")

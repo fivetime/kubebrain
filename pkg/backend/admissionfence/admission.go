@@ -26,8 +26,9 @@ const (
 )
 
 var (
-	idRE     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
-	sha256RE = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	idRE                     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
+	sha256RE                 = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	errSessionIdentityActive = errors.New("restore admission process identity is already active")
 )
 
 type Token struct {
@@ -190,11 +191,43 @@ type Session struct {
 }
 
 func StartSession(ctx context.Context, cli *clientv3.Client, keyspace, identity string, ttl time.Duration) (*Session, error) {
+	return startSession(ctx, cli, keyspace, identity, ttl, false)
+}
+
+// StartSessionWithIdentityHandoff waits for a previous lease with the same
+// process identity to disappear before registering. StatefulSet replacement
+// Pods reuse the stable peer identity, so an abruptly killed process can leave
+// this key alive until PD expires its lease. The registration transaction
+// continues to require an open restore gate and an absent session key; this
+// function never steals a live lease or waits through a closed restore gate.
+func StartSessionWithIdentityHandoff(ctx context.Context, cli *clientv3.Client, keyspace, identity string, ttl time.Duration) (*Session, error) {
+	return startSession(ctx, cli, keyspace, identity, ttl, true)
+}
+
+func startSession(ctx context.Context, cli *clientv3.Client, keyspace, identity string, ttl time.Duration, handoff bool) (*Session, error) {
 	if identity == "" || len(identity) > 512 || !utf8.ValidString(identity) || strings.ContainsRune(identity, '\x00') || ttl < 3*time.Second {
 		return nil, errors.New("invalid restore admission session parameters")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	leaseID, keepalive, admission, err := establishSession(runCtx, cli, keyspace, identity, ttl)
+	leaseID, keepalive, admission, err := establishSession(runCtx, runCtx, cli, keyspace, identity, ttl)
+	if err != nil && handoff && errors.Is(err, errSessionIdentityActive) {
+		// A lease can remain visible for up to its full TTL after an abrupt
+		// process death. Allow another full TTL for PD expiry scheduling and
+		// request latency, but never leave Pod startup waiting indefinitely.
+		handoffTimeout := ttl
+		if ttl <= time.Duration((1<<63-1)/2) {
+			handoffTimeout = 2 * ttl
+		}
+		handoffCtx, stopHandoff := context.WithTimeout(runCtx, handoffTimeout)
+		defer stopHandoff()
+		for err != nil && errors.Is(err, errSessionIdentityActive) {
+			if waitErr := waitForSessionIdentityRelease(handoffCtx, cli, keyspace, identity); waitErr != nil {
+				cancel()
+				return nil, fmt.Errorf("wait for previous restore admission process identity: %w", waitErr)
+			}
+			leaseID, keepalive, admission, err = establishSession(handoffCtx, runCtx, cli, keyspace, identity, ttl)
+		}
+	}
 	if err != nil {
 		cancel()
 		return nil, err
@@ -207,9 +240,71 @@ func StartSession(ctx context.Context, cli *clientv3.Client, keyspace, identity 
 	return s, nil
 }
 
-func establishSession(ctx context.Context, cli *clientv3.Client, keyspace, identity string, ttl time.Duration) (clientv3.LeaseID, <-chan *clientv3.LeaseKeepAliveResponse, *responseAdmission, error) {
+func inspectSessionRegistrationConflict(ctx context.Context, cli *clientv3.Client, keyspace, identity string,
+	admission *responseAdmission,
+) (bool, error) {
+	gate, err := cli.Get(ctx, GateKey(keyspace))
+	if err != nil {
+		return false, fmt.Errorf("read restore admission gate after registration conflict: %w", err)
+	}
+	if err := admission.admitExactGet(gate, GateKey(keyspace), Open, "open restore admission after session registration conflict"); err != nil {
+		return false, errors.New("restore admission is closed")
+	}
+	session, err := cli.Get(ctx, SessionKey(keyspace, identity))
+	if err != nil {
+		return false, fmt.Errorf("read restore admission process identity after registration conflict: %w", err)
+	}
+	if session.Count == 0 && len(session.Kvs) == 0 && !session.More {
+		if err := admission.admitEmptyGet(session, "restore admission process identity after registration conflict"); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if err := admission.admitExactLeasedGet(session, SessionKey(keyspace, identity), identity,
+		"restore admission process identity after registration conflict"); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func classifySessionRegistrationConflict(ctx context.Context, cli *clientv3.Client, keyspace, identity string,
+	admission *responseAdmission,
+) error {
+	_, err := inspectSessionRegistrationConflict(ctx, cli, keyspace, identity, admission)
+	if err != nil {
+		return err
+	}
+	// Whether the old key is still present or expired between the transaction
+	// and the read, retry through the same handoff path. Every retry remains
+	// serialized against gate closure by the registration transaction.
+	return errSessionIdentityActive
+}
+
+func waitForSessionIdentityRelease(ctx context.Context, cli *clientv3.Client, keyspace, identity string) error {
+	admission := newResponseAdmission(0)
+	for {
+		active, err := inspectSessionRegistrationConflict(ctx, cli, keyspace, identity, admission)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return nil
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return context.Cause(ctx)
+		case <-timer.C:
+		}
+	}
+}
+
+func establishSession(requestCtx, keepaliveCtx context.Context, cli *clientv3.Client, keyspace, identity string, ttl time.Duration) (clientv3.LeaseID, <-chan *clientv3.LeaseKeepAliveResponse, *responseAdmission, error) {
 	requestedTTL := int64(ttl / time.Second)
-	grant, err := cli.Grant(ctx, requestedTTL)
+	grant, err := cli.Grant(requestCtx, requestedTTL)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -225,7 +320,7 @@ func establishSession(ctx context.Context, cli *clientv3.Client, keyspace, ident
 		if initialize {
 			ops = append([]clientv3.Op{clientv3.OpPut(GateKey(keyspace), Open)}, ops...)
 		}
-		resp, err := cli.Txn(ctx).If(gateCmp, clientv3.Compare(clientv3.Version(SessionKey(keyspace, identity)), "=", 0)).Then(ops...).Commit()
+		resp, err := cli.Txn(requestCtx).If(gateCmp, clientv3.Compare(clientv3.Version(SessionKey(keyspace, identity)), "=", 0)).Then(ops...).Commit()
 		if err != nil {
 			return false, err
 		}
@@ -242,13 +337,17 @@ func establishSession(ctx context.Context, cli *clientv3.Client, keyspace, ident
 		}
 	}
 	if err != nil || !ok {
-		revokeBestEffort(cli, grant.ID)
-		if err != nil {
-			return 0, nil, nil, fmt.Errorf("register restore admission session: %w", err)
+		conflictErr := err
+		if conflictErr == nil {
+			conflictErr = classifySessionRegistrationConflict(requestCtx, cli, keyspace, identity, admission)
 		}
-		return 0, nil, nil, errors.New("restore admission is closed or this process identity is already active")
+		revokeBestEffort(cli, grant.ID)
+		if conflictErr != nil {
+			return 0, nil, nil, fmt.Errorf("register restore admission session: %w", conflictErr)
+		}
+		return 0, nil, nil, errors.New("restore admission session registration conflict was not classified")
 	}
-	keepalive, err := cli.KeepAlive(ctx, grant.ID)
+	keepalive, err := cli.KeepAlive(keepaliveCtx, grant.ID)
 	if err != nil {
 		revokeBestEffort(cli, grant.ID)
 		return 0, nil, nil, err
@@ -282,7 +381,7 @@ func (s *Session) run(ctx context.Context, keyspace, identity string, keepalive 
 			if ctx.Err() != nil {
 				return
 			}
-			leaseID, next, nextAdmission, err := establishSession(ctx, s.cli, keyspace, identity, s.ttl)
+			leaseID, next, nextAdmission, err := establishSession(ctx, ctx, s.cli, keyspace, identity, s.ttl)
 			if err == nil {
 				s.leaseID.Store(int64(leaseID))
 				s.lastAck.Store(time.Now().UnixNano())
