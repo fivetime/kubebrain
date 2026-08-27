@@ -1008,6 +1008,41 @@ func TestDrainWaitsForPublishedSuccessorBeforeCompleting(t *testing.T) {
 	require.NoError(t, <-drainDone)
 }
 
+func TestDrainStartsPublicTransportQuiesceBeforeSuccessorPublication(t *testing.T) {
+	metrics := &healthMetricRecorder{}
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	b := backend.NewBackend(kv, backend.Config{
+		Prefix: "/registry", Identity: "early-public-quiesce", EnableEtcdCompatibility: true,
+	}, metrics)
+	leaderElection := &waitingSuccessorLeaderElection{
+		waitStarted: make(chan struct{}),
+		allow:       make(chan struct{}),
+	}
+	peers := &drainOrderPeerService{}
+	peers.ready.Store(true)
+	rpc := etcdcompat.New(b, metrics, peers)
+	done := make(chan struct{})
+	close(done)
+	s := &server{campaignDone: done, leaderElection: leaderElection, etcdServer: rpc, peers: peers}
+	publicQuiesced := make(chan struct{}, 1)
+	s.RegisterClientTransportDrain(func() { publicQuiesced <- struct{}{} })
+
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- s.Drain(t.Context()) }()
+	<-leaderElection.waitStarted
+	var quiescedBeforeSuccessor bool
+	select {
+	case <-publicQuiesced:
+		quiescedBeforeSuccessor = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(leaderElection.allow)
+	require.NoError(t, <-drainDone)
+	require.True(t, quiescedBeforeSuccessor,
+		"an established public client must receive GOAWAY before durable successor publication can consume its availability SLO")
+}
+
 func TestDrainWaitsForSuccessorProxyReadinessBeforeCompleting(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
@@ -1024,21 +1059,26 @@ func TestDrainWaitsForSuccessorProxyReadinessBeforeCompleting(t *testing.T) {
 	require.NoError(t, <-drainDone)
 }
 
-func TestDrainQuiescesRegisteredTransportsAfterSuccessfulHandoff(t *testing.T) {
+func TestDrainQuiescesRegisteredClientAndPeerTransportsExactlyOnce(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
 	s := &server{campaignDone: done}
-	first := make(chan struct{}, 1)
-	s.RegisterTransportDrain(func() { first <- struct{}{} })
+	client := make(chan struct{}, 1)
+	peer := make(chan struct{}, 1)
+	s.RegisterClientTransportDrain(func() { client <- struct{}{} })
+	s.RegisterPeerTransportDrain(func() { peer <- struct{}{} })
 
 	require.NoError(t, s.Drain(t.Context()))
-	require.Eventually(t, func() bool { return len(first) == 1 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return len(client) == 1 && len(peer) == 1 }, time.Second, time.Millisecond)
 
-	late := make(chan struct{}, 1)
-	s.RegisterTransportDrain(func() { late <- struct{}{} })
-	require.Eventually(t, func() bool { return len(late) == 1 }, time.Second, time.Millisecond)
+	lateClient := make(chan struct{}, 1)
+	latePeer := make(chan struct{}, 1)
+	s.RegisterClientTransportDrain(func() { lateClient <- struct{}{} })
+	s.RegisterPeerTransportDrain(func() { latePeer <- struct{}{} })
+	require.Eventually(t, func() bool { return len(lateClient) == 1 && len(latePeer) == 1 }, time.Second, time.Millisecond)
 	require.NoError(t, s.Drain(t.Context()))
-	require.Len(t, first, 1, "idempotent drain must not quiesce a transport twice")
+	require.Len(t, client, 1, "idempotent drain must not quiesce a client transport twice")
+	require.Len(t, peer, 1, "idempotent drain must not quiesce a peer transport twice")
 }
 
 func TestDrainStartsTransportQuiesceBeforeRetiringPublicStream(t *testing.T) {
@@ -1080,7 +1120,7 @@ func TestDrainStartsTransportQuiesceBeforeRetiringPublicStream(t *testing.T) {
 		streamDone <- recvErr
 	}()
 	quiesceObserved := make(chan error, 1)
-	s.RegisterTransportDrain(func() {
+	s.RegisterClientTransportDrain(func() {
 		probeCtx, probeCancel := context.WithCancel(t.Context())
 		defer probeCancel()
 		probe, probeErr := healthpb.NewHealthClient(conn).Watch(probeCtx, &healthpb.HealthCheckRequest{})
@@ -1138,15 +1178,26 @@ func TestDrainWithdrawsFollowerProxyReadiness(t *testing.T) {
 		"the public gRPC health contract must withdraw with HTTP readiness")
 }
 
-func TestFailedDrainDoesNotQuiesceTransport(t *testing.T) {
+func TestFailedDrainQuiescesClientButRetainsPeerTransport(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
-	s := &server{campaignDone: done, leaderElection: releaseFailingLeaderElection{}}
-	called := make(chan struct{}, 1)
-	s.RegisterTransportDrain(func() { called <- struct{}{} })
+	metrics := &healthMetricRecorder{}
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	b := backend.NewBackend(kv, backend.Config{
+		Prefix: "/registry", Identity: "failed-drain", EnableEtcdCompatibility: true,
+	}, metrics)
+	peers := &drainOrderPeerService{}
+	peers.ready.Store(true)
+	s := &server{campaignDone: done, leaderElection: releaseFailingLeaderElection{}, etcdServer: etcdcompat.New(b, metrics, peers), peers: peers}
+	clientCalled := make(chan struct{}, 1)
+	peerCalled := make(chan struct{}, 1)
+	s.RegisterClientTransportDrain(func() { clientCalled <- struct{}{} })
+	s.RegisterPeerTransportDrain(func() { peerCalled <- struct{}{} })
 
 	require.ErrorContains(t, s.Drain(t.Context()), "durable release failed")
-	require.Empty(t, called)
+	require.Len(t, clientCalled, 1, "public clients must migrate away even when the retiring member cannot confirm release")
+	require.Empty(t, peerCalled, "internal peers must remain connected until durable handoff succeeds")
 }
 
 func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {

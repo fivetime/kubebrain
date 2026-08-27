@@ -157,13 +157,13 @@ func (e *Endpoint) runClientServer(ctx context.Context) (retErr error) {
 		// Native gRPC owns all HTTP/2. The existing bounded HTTP transport
 		// continues to serve health and JSON gateway requests over HTTP/1.1.
 		httpTransport := newGRPCMuxedHTTPServer(grpc.NewServer(), clientHTTPHandler)
-		e.registerTransportDrain(grpcTransport.quiesce)
-		e.registerTransportDrain(httpTransport.quiesce)
+		e.registerClientTransportDrain(grpcTransport.quiesce)
+		e.registerClientTransportDrain(httpTransport.quiesce)
 		exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig, grpcTransport, httpTransport)
 		return newRootServer(e.config.Port, exposedServers...).run(ctx)
 	}
 	muxedServer := newGRPCMuxedHTTPServer(clientGrpc, clientHTTPHandler)
-	e.registerTransportDrain(muxedServer.quiesce)
+	e.registerClientTransportDrain(muxedServer.quiesce)
 	exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig, muxedServer)
 	clientServiceGroup := newRootServer(e.config.Port, exposedServers...)
 	return clientServiceGroup.run(ctx)
@@ -175,13 +175,13 @@ func (e *Endpoint) runPeerServer(ctx context.Context) error {
 	if e.config.GRPCMaxConnectionAge > 0 {
 		grpcTransport := newNativeGRPCServer(peerGrpc)
 		httpTransport := newGRPCMuxedHTTPServer(grpc.NewServer(), peerHTTPHandler)
-		e.registerTransportDrain(grpcTransport.quiesce)
-		e.registerTransportDrain(httpTransport.quiesce)
+		e.registerPeerTransportDrain(grpcTransport.quiesce)
+		e.registerPeerTransportDrain(httpTransport.quiesce)
 		exposedServers := e.buildExposedServers(e.config.PeerSecurityConfig, grpcTransport, httpTransport)
 		return newRootServer(e.config.PeerPort, exposedServers...).run(ctx)
 	}
 	muxedServer := newGRPCMuxedHTTPServer(peerGrpc, peerHTTPHandler)
-	e.registerTransportDrain(muxedServer.quiesce)
+	e.registerPeerTransportDrain(muxedServer.quiesce)
 	exposedServers := e.buildExposedServers(e.config.PeerSecurityConfig, muxedServer)
 	peerServiceGroup := newRootServer(e.config.PeerPort, exposedServers...)
 	return peerServiceGroup.run(ctx)
@@ -401,12 +401,20 @@ func (e *Endpoint) buildPeerGrpcServer() *grpc.Server {
 	return grpcServer
 }
 
-func (e *Endpoint) registerTransportDrain(drain func()) {
-	registrar, ok := e.server.(interface{ RegisterTransportDrain(func()) })
+func (e *Endpoint) registerClientTransportDrain(drain func()) {
+	registrar, ok := e.server.(interface{ RegisterClientTransportDrain(func()) })
 	if !ok {
 		return
 	}
-	registrar.RegisterTransportDrain(drain)
+	registrar.RegisterClientTransportDrain(drain)
+}
+
+func (e *Endpoint) registerPeerTransportDrain(drain func()) {
+	registrar, ok := e.server.(interface{ RegisterPeerTransportDrain(func()) })
+	if !ok {
+		return
+	}
+	registrar.RegisterPeerTransportDrain(drain)
 }
 
 func (e *Endpoint) peerGrpcServerOptions() []grpc.ServerOption {

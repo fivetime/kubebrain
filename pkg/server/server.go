@@ -101,21 +101,24 @@ type server struct {
 
 	config Config
 
-	cancel           context.CancelFunc
-	campaignCancel   context.CancelFunc
-	campaignDone     chan struct{}
-	quotaMetricsDone chan struct{}
-	alarmMetricsDone chan struct{}
-	fdMetricsDone    chan struct{}
-	stateMetricsDone chan struct{}
-	observedLeader   string
-	closeOnce        sync.Once
-	drainMu          sync.Mutex
-	drainStopped     bool
-	drainSucceeded   bool
-	draining         atomic.Bool
-	transportDrains  []func()
-	closeErr         error
+	cancel                context.CancelFunc
+	campaignCancel        context.CancelFunc
+	campaignDone          chan struct{}
+	quotaMetricsDone      chan struct{}
+	alarmMetricsDone      chan struct{}
+	fdMetricsDone         chan struct{}
+	stateMetricsDone      chan struct{}
+	observedLeader        string
+	closeOnce             sync.Once
+	drainMu               sync.Mutex
+	drainStopped          bool
+	drainSucceeded        bool
+	draining              atomic.Bool
+	clientDrainsStarted   bool
+	peerDrainsStarted     bool
+	clientTransportDrains []func()
+	peerTransportDrains   []func()
+	closeErr              error
 }
 
 func (s *server) Close() error {
@@ -240,47 +243,86 @@ func (s *server) Drain(ctx context.Context) error {
 		return drainErr == nil
 	}
 	if s.etcdServer != nil {
-		if s.etcdServer.PrepareLeadershipDrain(release) {
-			// Start every client and peer GOAWAY concurrently while their long-lived
-			// streams still keep the underlying HTTP/2 connections non-idle. Each
-			// callback returns only after its bounded propagation window.
-			var transportDrainWait sync.WaitGroup
-			transportDrainWait.Add(len(s.transportDrains))
-			for _, drainTransport := range s.transportDrains {
-				go func() {
-					defer transportDrainWait.Done()
-					drainTransport()
-				}()
-			}
-			transportDrainWait.Wait()
+		if s.etcdServer.PrepareLeadershipDrain(func() bool {
+			// The write side of leadershipDrainBoundary is already held here: every
+			// previously admitted unary RPC has finished and later calls cannot enter.
+			// Send public GOAWAY before durable handoff can consume the client's SLO,
+			// so an established Service connection migrates to another Ready replica.
+			s.startClientTransportDrainsLocked()
+			return release()
+		}) {
+			// Direct peer transports must remain attached until the durable successor
+			// and this member's replacement proxy are ready. Quiescing them with the
+			// public transport would only reconnect followers to the same retiring Pod.
+			s.startPeerTransportDrainsLocked()
 			s.etcdServer.RetireLeadershipStreams()
 		}
 	} else {
-		release()
-	}
-	if drainErr == nil && s.etcdServer == nil {
-		for _, drainTransport := range s.transportDrains {
-			drainTransport()
+		if release() {
+			s.startClientTransportDrainsLocked()
+			s.startPeerTransportDrainsLocked()
 		}
 	}
 	return drainErr
 }
 
-// RegisterTransportDrain attaches a transport quiesce callback.
-// Endpoint uses it to start HTTP/2 GOAWAY after durable leader handoff and unary
-// admission fencing, but before leadership streams retire. A callback returns
-// after GOAWAY has had a bounded propagation window.
-func (s *server) RegisterTransportDrain(drain func()) {
+func runTransportDrains(drains []func()) {
+	var wait sync.WaitGroup
+	wait.Add(len(drains))
+	for _, drainTransport := range drains {
+		go func() {
+			defer wait.Done()
+			drainTransport()
+		}()
+	}
+	wait.Wait()
+}
+
+func (s *server) startClientTransportDrainsLocked() {
+	if s.clientDrainsStarted {
+		return
+	}
+	s.clientDrainsStarted = true
+	runTransportDrains(s.clientTransportDrains)
+}
+
+func (s *server) startPeerTransportDrainsLocked() {
+	if s.peerDrainsStarted {
+		return
+	}
+	s.peerDrainsStarted = true
+	runTransportDrains(s.peerTransportDrains)
+}
+
+// RegisterClientTransportDrain attaches a public transport quiesce callback.
+// Endpoint uses it to send HTTP/2 GOAWAY after unary admission is fenced but
+// before durable leadership handoff can consume the external client's SLO.
+func (s *server) RegisterClientTransportDrain(drain func()) {
 	if drain == nil {
 		return
 	}
 	s.drainMu.Lock()
 	defer s.drainMu.Unlock()
-	if s.drainSucceeded {
+	if s.clientDrainsStarted {
 		drain()
 		return
 	}
-	s.transportDrains = append(s.transportDrains, drain)
+	s.clientTransportDrains = append(s.clientTransportDrains, drain)
+}
+
+// RegisterPeerTransportDrain attaches an internal transport quiesce callback.
+// Peer GOAWAY waits for durable handoff and successor proxy readiness.
+func (s *server) RegisterPeerTransportDrain(drain func()) {
+	if drain == nil {
+		return
+	}
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	if s.peerDrainsStarted {
+		drain()
+		return
+	}
+	s.peerTransportDrains = append(s.peerTransportDrains, drain)
 }
 
 // NewServer returns the server
