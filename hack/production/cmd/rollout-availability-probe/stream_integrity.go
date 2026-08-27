@@ -675,7 +675,7 @@ func validateRestoredMemberUpdateResponse(response *clientv3.MemberUpdateRespons
 	topology restoredClusterTopology, updatedMemberID uint64,
 ) error {
 	if response == nil || response.Header == nil || response.Header.ClusterId != topology.clusterID ||
-		response.Header.MemberId != topology.leaderID || response.Header.RaftTerm == 0 || response.Header.Revision != 0 {
+		response.Header.MemberId != updatedMemberID || response.Header.RaftTerm == 0 || response.Header.Revision != 0 {
 		return fmt.Errorf("invalid officially restored etcd MemberUpdate response identity: %+v", response)
 	}
 	if len(response.Members) != len(cfg.members) || len(topology.memberIDs) != len(cfg.members) {
@@ -1150,19 +1150,46 @@ func verifyRestoredMemberPromoteRejections(ctx context.Context, leaderClient *cl
 	return nil
 }
 
-func restoredMemberPromoteFollowerIndex(topology restoredClusterTopology, directClients []*clientv3.Client,
-	restartedFollowerIndex int,
-) (int, error) {
-	if len(topology.memberIDs) != len(directClients) || restartedFollowerIndex < 0 || restartedFollowerIndex >= len(directClients) {
-		return -1, fmt.Errorf("restored MemberPromote follower selection requires matching IDs and clients plus a restarted member: ids=%d clients=%d restarted=%d",
-			len(topology.memberIDs), len(directClients), restartedFollowerIndex)
+func restoredMemberLeaderIndex(topology restoredClusterTopology, responses []*clientv3.StatusResponse) (int, error) {
+	if len(topology.memberIDs) == 0 || len(responses) != len(topology.memberIDs) {
+		return -1, fmt.Errorf("restored leader selection requires matching member IDs and statuses: ids=%d statuses=%d",
+			len(topology.memberIDs), len(responses))
 	}
+	knownIDs := make(map[uint64]int, len(topology.memberIDs))
 	for index, memberID := range topology.memberIDs {
-		if index != restartedFollowerIndex && memberID != topology.leaderID && directClients[index] != nil {
-			return index, nil
+		if memberID == 0 {
+			return -1, fmt.Errorf("restored leader selection received a zero member ID at index %d", index)
+		}
+		if _, duplicate := knownIDs[memberID]; duplicate {
+			return -1, fmt.Errorf("restored leader selection received duplicate member ID %x", memberID)
+		}
+		knownIDs[memberID] = index
+	}
+	leaderID := uint64(0)
+	for index, response := range responses {
+		if response == nil || response.Header == nil || response.Header.ClusterId != topology.clusterID ||
+			response.Header.MemberId != topology.memberIDs[index] || response.Header.RaftTerm == 0 || response.RaftTerm == 0 ||
+			response.Header.RaftTerm != response.RaftTerm || response.Leader == 0 || response.IsLearner || len(response.Errors) != 0 ||
+			response.RaftIndex == 0 || response.RaftAppliedIndex != response.RaftIndex {
+			return -1, fmt.Errorf("officially restored etcd member %x returned an invalid leader-selection status: %+v",
+				topology.memberIDs[index], response)
+		}
+		if _, known := knownIDs[response.Leader]; !known {
+			return -1, fmt.Errorf("officially restored etcd member %x reported unknown leader %x",
+				topology.memberIDs[index], response.Leader)
+		}
+		if leaderID == 0 {
+			leaderID = response.Leader
+		} else if response.Leader != leaderID {
+			return -1, fmt.Errorf("officially restored etcd members disagree on the current leader: got=%x want=%x",
+				response.Leader, leaderID)
 		}
 	}
-	return -1, errors.New("officially restored etcd cluster has no continuously serving follower for MemberPromote forwarding verification")
+	leaderIndex, exists := knownIDs[leaderID]
+	if !exists || responses[leaderIndex].Header.MemberId != leaderID {
+		return -1, fmt.Errorf("officially restored etcd statuses reported unknown leader %x", leaderID)
+	}
+	return leaderIndex, nil
 }
 
 func validateRestoredMemberRaftAppliedStatus(response *clientv3.StatusResponse, topology restoredClusterTopology,
@@ -1229,11 +1256,51 @@ func waitForRestoredMemberRaftApplied(ctx context.Context, client *clientv3.Clie
 	}
 }
 
+func waitForRestoredMemberLeader(ctx context.Context, cfg restoredSnapshotConfig, topology restoredClusterTopology,
+	directClients []*clientv3.Client,
+) (int, error) {
+	if len(cfg.members) != len(topology.memberIDs) || len(directClients) != len(topology.memberIDs) {
+		return -1, fmt.Errorf("restored leader wait requires matching members, IDs, and clients: members=%d ids=%d clients=%d",
+			len(cfg.members), len(topology.memberIDs), len(directClients))
+	}
+	var lastErr error
+	for {
+		responses := make([]*clientv3.StatusResponse, len(directClients))
+		var attemptErr error
+		for index, directClient := range directClients {
+			if directClient == nil {
+				attemptErr = fmt.Errorf("officially restored etcd member %d has no direct client", index)
+				break
+			}
+			response, err := directClient.Status(ctx, cfg.members[index].clientURL.String())
+			if err != nil {
+				attemptErr = fmt.Errorf("read officially restored etcd member %q status while selecting leader: %w",
+					cfg.members[index].name, err)
+				break
+			}
+			responses[index] = response
+		}
+		if attemptErr == nil {
+			leaderIndex, err := restoredMemberLeaderIndex(topology, responses)
+			if err == nil {
+				return leaderIndex, nil
+			}
+			attemptErr = err
+		}
+		lastErr = attemptErr
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-ctx.Done():
+			return -1, fmt.Errorf("wait for a fully applied restored etcd leader: last_error=%v: %w", lastErr, context.Cause(ctx))
+		}
+	}
+}
+
 func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
 	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
-	promoteFollowerClient *clientv3.Client, expected []streamProbeExpectation, catchUpKey, catchUpValue string, catchUpRevision int64,
+	expected []streamProbeExpectation, catchUpKey, catchUpValue string, catchUpRevision int64,
 ) (probeKeys []string, finalRevision int64, retErr error) {
-	if len(topology.memberIDs) != len(cfg.members) || len(directClients) != len(cfg.members) || promoteFollowerClient == nil {
+	if len(topology.memberIDs) != len(cfg.members) || len(directClients) != len(cfg.members) {
 		return nil, 0, fmt.Errorf("restored learner verification requires matching voters, IDs, and clients: voters=%d ids=%d clients=%d",
 			len(cfg.members), len(topology.memberIDs), len(directClients))
 	}
@@ -1254,7 +1321,11 @@ func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *cli
 	if err != nil {
 		return nil, 0, err
 	}
-	if _, err := promoteFollowerClient.MemberPromote(ctx, learnerID); !errors.Is(rpctypes.Error(err), rpctypes.ErrMemberLearnerNotReady) {
+	promoteLeaderIndex, err := waitForRestoredMemberLeader(ctx, cfg, topology, directClients)
+	if err != nil {
+		return nil, 0, err
+	}
+	if _, err := directClients[promoteLeaderIndex].MemberPromote(ctx, learnerID); !errors.Is(rpctypes.Error(err), rpctypes.ErrMemberLearnerNotReady) {
 		return nil, 0, fmt.Errorf("promote unstarted restored learner must fail with ErrMemberLearnerNotReady: %w", err)
 	}
 	memberList, err := adminClient.MemberList(ctx)
@@ -1359,7 +1430,11 @@ func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *cli
 		}
 	}
 
-	promoteResponse, err := promoteRestoredSnapshotLearner(ctx, promoteFollowerClient, learnerID)
+	promoteLeaderIndex, err = waitForRestoredMemberLeader(ctx, cfg, topology, directClients)
+	if err != nil {
+		return nil, 0, err
+	}
+	promoteResponse, err := promoteRestoredSnapshotLearner(ctx, directClients[promoteLeaderIndex], learnerID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("promote caught-up officially restored etcd learner: %w", err)
 	}
@@ -1456,7 +1531,7 @@ func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *cli
 
 func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
 	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
-	expected []streamProbeExpectation, preJoinKey, preJoinValue string, preJoinRevision int64, restartedFollowerIndex int,
+	expected []streamProbeExpectation, preJoinKey, preJoinValue string, preJoinRevision int64,
 ) (retErr error) {
 	if len(topology.memberIDs) != len(cfg.members) || len(directClients) != len(cfg.members) {
 		return fmt.Errorf("restored member reconfiguration requires matching voters, IDs, and clients: voters=%d ids=%d clients=%d",
@@ -1468,15 +1543,9 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 			return fmt.Errorf("establish restored member %q Raft apply barrier before reconfiguration: %w", cfg.members[index].name, err)
 		}
 	}
-	leaderIndex := -1
-	for index, memberID := range topology.memberIDs {
-		if memberID == topology.leaderID {
-			leaderIndex = index
-			break
-		}
-	}
-	if leaderIndex < 0 || directClients[leaderIndex] == nil {
-		return errors.New("officially restored etcd cluster has no direct leader client for the MemberUpdate Raft advance barrier")
+	leaderIndex, err := waitForRestoredMemberLeader(ctx, cfg, topology, directClients)
+	if err != nil {
+		return err
 	}
 	updateResponse, err := directClients[leaderIndex].MemberUpdate(ctx, topology.memberIDs[leaderIndex],
 		[]string{cfg.members[leaderIndex].peerURL.String()})
@@ -1486,7 +1555,7 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 	if err := validateRestoredMemberUpdateResponse(updateResponse, cfg, topology, topology.memberIDs[leaderIndex]); err != nil {
 		return err
 	}
-	followerIndex, err := restoredMemberPromoteFollowerIndex(topology, directClients, restartedFollowerIndex)
+	leaderIndex, err = waitForRestoredMemberLeader(ctx, cfg, topology, directClients)
 	if err != nil {
 		return err
 	}
@@ -1634,7 +1703,7 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 		}
 	}
 	learnerProbeKeys, learnerFinalRevision, err := verifyRestoredClusterLearnerLifecycle(ctx, adminClient, adminConfig,
-		cfg, topology, directClients, directClients[followerIndex], expected, postRemoveKey, postRemoveValue, postRemovePut.Header.Revision)
+		cfg, topology, directClients, expected, postRemoveKey, postRemoveValue, postRemovePut.Header.Revision)
 	if err != nil {
 		return err
 	}
@@ -1790,7 +1859,7 @@ func verifyRestoredClusterReplicationAndQuorum(ctx context.Context, adminClient 
 		}
 	}
 	return verifyRestoredClusterMemberReconfiguration(ctx, adminClient, adminConfig, cfg, recoveredTopology, directClients,
-		expected, quorumKey, quorumValue, quorumPut.Header.Revision, stopped)
+		expected, quorumKey, quorumValue, quorumPut.Header.Revision)
 }
 
 func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, expected []streamProbeExpectation, revision int64) (retErr error) {

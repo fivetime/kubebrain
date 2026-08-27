@@ -1176,23 +1176,54 @@ func TestValidateRestoredMemberRaftAppliedStatus(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestRestoredMemberPromoteFollowerIndexExcludesRestartedFollower(t *testing.T) {
+func TestRestoredMemberLeaderIndexRejectsIdentityDriftAndLag(t *testing.T) {
 	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33}}
-	clients := []*clientv3.Client{{}, {}, {}}
+	makeResponses := func() []*clientv3.StatusResponse {
+		responses := make([]*clientv3.StatusResponse, len(topology.memberIDs))
+		for index, memberID := range topology.memberIDs {
+			responses[index] = &clientv3.StatusResponse{
+				Header: &etcdserverpb.ResponseHeader{ClusterId: topology.clusterID, MemberId: memberID, RaftTerm: 4},
+				Leader: 33, RaftIndex: 12, RaftAppliedIndex: 12, RaftTerm: 4,
+			}
+		}
+		return responses
+	}
 
-	index, err := restoredMemberPromoteFollowerIndex(topology, clients, 1)
+	index, err := restoredMemberLeaderIndex(topology, makeResponses())
 	require.NoError(t, err)
 	require.Equal(t, 2, index)
-	index, err = restoredMemberPromoteFollowerIndex(topology, clients, 2)
-	require.NoError(t, err)
-	require.Equal(t, 1, index)
+	_, err = restoredMemberLeaderIndex(topology, makeResponses()[:2])
+	require.Error(t, err)
+	_, err = restoredMemberLeaderIndex(restoredClusterTopology{clusterID: 7, memberIDs: []uint64{11, 11}}, makeResponses()[:2])
+	require.Error(t, err)
+	_, err = restoredMemberLeaderIndex(restoredClusterTopology{clusterID: 7, memberIDs: []uint64{0, 22, 33}}, makeResponses())
+	require.Error(t, err)
 
-	_, err = restoredMemberPromoteFollowerIndex(topology, clients[:2], 1)
-	require.Error(t, err)
-	_, err = restoredMemberPromoteFollowerIndex(
-		restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22}}, clients[:2], 1,
-	)
-	require.Error(t, err)
+	for name, mutate := range map[string]func([]*clientv3.StatusResponse){
+		"missing status":      func(responses []*clientv3.StatusResponse) { responses[0] = nil },
+		"missing header":      func(responses []*clientv3.StatusResponse) { responses[0].Header = nil },
+		"wrong cluster":       func(responses []*clientv3.StatusResponse) { responses[0].Header.ClusterId++ },
+		"wrong member":        func(responses []*clientv3.StatusResponse) { responses[0].Header.MemberId++ },
+		"zero header term":    func(responses []*clientv3.StatusResponse) { responses[0].Header.RaftTerm = 0 },
+		"zero status term":    func(responses []*clientv3.StatusResponse) { responses[0].RaftTerm = 0 },
+		"term disagreement":   func(responses []*clientv3.StatusResponse) { responses[0].RaftTerm++ },
+		"unknown leader":      func(responses []*clientv3.StatusResponse) { responses[0].Leader = 44 },
+		"leader disagreement": func(responses []*clientv3.StatusResponse) { responses[0].Leader = 22 },
+		"learner":             func(responses []*clientv3.StatusResponse) { responses[0].IsLearner = true },
+		"status error":        func(responses []*clientv3.StatusResponse) { responses[0].Errors = []string{"alarm"} },
+		"zero raft index": func(responses []*clientv3.StatusResponse) {
+			responses[0].RaftIndex = 0
+			responses[0].RaftAppliedIndex = 0
+		},
+		"apply lag": func(responses []*clientv3.StatusResponse) { responses[0].RaftAppliedIndex-- },
+	} {
+		t.Run(name, func(t *testing.T) {
+			responses := makeResponses()
+			mutate(responses)
+			_, err := restoredMemberLeaderIndex(topology, responses)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestRestoredSnapshotConfigRejectsInvalidClusterIdentity(t *testing.T) {
