@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -59,6 +60,10 @@ type config struct {
 	tlsServerName     string
 	minPublicTCPDials int64
 	minDirectTCPDials int64
+	leaderTargetOnly  bool
+	leaderStatefulSet string
+	leaderHeadlessSvc string
+	leaderNamespace   string
 }
 
 func classifyCleanupLeaseError(err error) (alreadyAbsent bool, cleanupErr error) {
@@ -97,6 +102,10 @@ func main() {
 	flag.StringVar(&cfg.tlsServerName, "tls-server-name", "", "TLS server name for KubeBrain HTTPS endpoints")
 	flag.Int64Var(&cfg.minPublicTCPDials, "min-public-tcp-dials", 1, "minimum successful TCP dials for the public client")
 	flag.Int64Var(&cfg.minDirectTCPDials, "min-direct-tcp-dials", 1, "minimum successful TCP dials required for every direct client")
+	flag.BoolVar(&cfg.leaderTargetOnly, "leader-target-only", false, "print one stable leader member and StatefulSet Pod identity, then exit")
+	flag.StringVar(&cfg.leaderStatefulSet, "leader-statefulset", "", "expected StatefulSet name for leader target discovery")
+	flag.StringVar(&cfg.leaderHeadlessSvc, "leader-headless-service", "", "expected headless Service name for leader target discovery")
+	flag.StringVar(&cfg.leaderNamespace, "leader-namespace", "", "expected namespace for leader target discovery")
 	var pdEndpoints string
 	flag.StringVar(&pdEndpoints, "pd-endpoints", "", "comma-separated PD HTTP endpoints")
 	flag.Parse()
@@ -106,16 +115,156 @@ func main() {
 	if pdEndpoints != "" {
 		cfg.pdEndpoints = strings.Split(pdEndpoints, ",")
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if cfg.leaderTargetOnly {
+		if err := cfg.validateLeaderTarget(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		target, err := discoverLeaderTarget(ctx, cfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "LEADER_TARGET_FAIL", err)
+			os.Exit(1)
+		}
+		encoded, err := json.Marshal(target)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "LEADER_TARGET_FAIL", err)
+			os.Exit(1)
+		}
+		fmt.Printf("LEADER_TARGET %s\n", encoded)
+		return
+	}
 	if err := cfg.validate(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	if err := run(ctx, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "PROBE_FAIL", err)
 		os.Exit(1)
 	}
+}
+
+type leaderTarget struct {
+	MemberID uint64 `json:"member_id"`
+	Pod      string `json:"pod"`
+	PeerURL  string `json:"peer_url"`
+}
+
+func (cfg config) validateLeaderTarget() error {
+	if cfg.endpoint == "" || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.dialTimeout >= cfg.commandTimeout {
+		return fmt.Errorf("leader target requires endpoint and positive dial timeout smaller than command timeout")
+	}
+	for name, value := range map[string]string{
+		"leader-statefulset":      cfg.leaderStatefulSet,
+		"leader-headless-service": cfg.leaderHeadlessSvc,
+		"leader-namespace":        cfg.leaderNamespace,
+	} {
+		if !isDNSLabel(value) {
+			return fmt.Errorf("%s must be a lowercase DNS label", name)
+		}
+	}
+	tlsEnabled := cfg.caFile != "" || cfg.certFile != "" || cfg.keyFile != "" || cfg.tlsServerName != ""
+	if tlsEnabled && (cfg.caFile == "" || cfg.certFile == "" || cfg.keyFile == "" || cfg.tlsServerName == "") {
+		return fmt.Errorf("TLS requires cacert, cert, key, and tls-server-name")
+	}
+	if strings.HasPrefix(cfg.endpoint, "https://") != tlsEnabled ||
+		(!strings.HasPrefix(cfg.endpoint, "http://") && !strings.HasPrefix(cfg.endpoint, "https://")) {
+		return fmt.Errorf("KubeBrain endpoint scheme and TLS identity must match: %q", cfg.endpoint)
+	}
+	return nil
+}
+
+func isDNSLabel(value string) bool {
+	if len(value) == 0 || len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func discoverLeaderTarget(parent context.Context, cfg config) (leaderTarget, error) {
+	tlsConfig, err := cfg.clientTLSConfig()
+	if err != nil {
+		return leaderTarget{}, fmt.Errorf("load leader target TLS identity: %w", err)
+	}
+	clientConfig := cfg.kubeBrainClientConfig(cfg.endpoint, tlsConfig)
+	clientConfig.DialTimeout = cfg.dialTimeout
+	client, err := clientv3.New(clientConfig)
+	if err != nil {
+		return leaderTarget{}, fmt.Errorf("create leader target client: %w", err)
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(parent, cfg.commandTimeout)
+	defer cancel()
+	first, err := client.Status(ctx, cfg.endpoint)
+	if err != nil {
+		return leaderTarget{}, fmt.Errorf("read first leader status: %w", err)
+	}
+	members, err := client.MemberList(ctx)
+	if err != nil {
+		return leaderTarget{}, fmt.Errorf("list members for leader target: %w", err)
+	}
+	second, err := client.Status(ctx, cfg.endpoint)
+	if err != nil {
+		return leaderTarget{}, fmt.Errorf("read confirming leader status: %w", err)
+	}
+	if first.Leader == 0 || second.Leader == 0 || first.Leader != second.Leader {
+		return leaderTarget{}, fmt.Errorf("leader changed during target discovery: first=%d second=%d", first.Leader, second.Leader)
+	}
+	return resolveLeaderTarget(first.Leader, members.Members, cfg.leaderStatefulSet, cfg.leaderHeadlessSvc, cfg.leaderNamespace)
+}
+
+func resolveLeaderTarget(leaderID uint64, members []*etcdserverpb.Member, statefulSet, headlessService, namespace string) (leaderTarget, error) {
+	if leaderID == 0 {
+		return leaderTarget{}, errors.New("leader member ID is zero")
+	}
+	var matches []*etcdserverpb.Member
+	for _, member := range members {
+		if member != nil && member.ID == leaderID {
+			matches = append(matches, member)
+		}
+	}
+	if len(matches) != 1 {
+		return leaderTarget{}, fmt.Errorf("leader member ID %d matched %d members", leaderID, len(matches))
+	}
+	member := matches[0]
+	if member.IsLearner {
+		return leaderTarget{}, fmt.Errorf("leader member ID %d is a learner", leaderID)
+	}
+	if len(member.PeerURLs) != 1 {
+		return leaderTarget{}, fmt.Errorf("leader member ID %d must have exactly one peer URL, got %d", leaderID, len(member.PeerURLs))
+	}
+	peerURL := member.PeerURLs[0]
+	parsed, err := url.Parse(peerURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil ||
+		parsed.Hostname() == "" || parsed.Port() == "" || (parsed.Path != "" && parsed.Path != "/") ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return leaderTarget{}, fmt.Errorf("leader member ID %d has invalid peer URL %q", leaderID, peerURL)
+	}
+	suffix := "." + headlessService + "." + namespace + ".svc.cluster.local"
+	hostname := parsed.Hostname()
+	if !strings.HasSuffix(hostname, suffix) {
+		return leaderTarget{}, fmt.Errorf("leader peer hostname %q does not end in %q", hostname, suffix)
+	}
+	pod := strings.TrimSuffix(hostname, suffix)
+	prefix := statefulSet + "-"
+	if !strings.HasPrefix(pod, prefix) {
+		return leaderTarget{}, fmt.Errorf("leader peer Pod %q does not belong to StatefulSet %q", pod, statefulSet)
+	}
+	ordinalText := strings.TrimPrefix(pod, prefix)
+	ordinal, err := strconv.Atoi(ordinalText)
+	if err != nil || ordinal < 0 || strconv.Itoa(ordinal) != ordinalText {
+		return leaderTarget{}, fmt.Errorf("leader peer Pod %q has a non-canonical ordinal", pod)
+	}
+	if member.Name != "" && member.Name != pod {
+		return leaderTarget{}, fmt.Errorf("leader member name %q does not match peer Pod %q", member.Name, pod)
+	}
+	return leaderTarget{MemberID: leaderID, Pod: pod, PeerURL: peerURL}, nil
 }
 
 func (cfg config) validate() error {

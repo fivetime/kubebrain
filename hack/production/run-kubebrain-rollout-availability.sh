@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PRODUCTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(cd "${PRODUCTION_DIR}/../.." && pwd -P)"
 . "${PRODUCTION_DIR}/operation-time-validation.sh"
 
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
@@ -45,9 +46,14 @@ KUBECTL_MUTATION_COMMAND_TIMEOUT="${KUBECTL_MUTATION_COMMAND_TIMEOUT:-15s}"
 KUBECTL_READY_WAIT_COMMAND_TIMEOUT="${KUBECTL_READY_WAIT_COMMAND_TIMEOUT:-70s}"
 KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT="${KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT:-310s}"
 KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT="${KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT:-5s}"
+UID_DELETE_COMMAND_TIMEOUT="${UID_DELETE_COMMAND_TIMEOUT:-60s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 OBSERVE_ONLY="${OBSERVE_ONLY:-false}"
+HARD_FAILOVER="${HARD_FAILOVER:-false}"
+CONFIRM_KUBEBRAIN_HARD_FAILOVER="${CONFIRM_KUBEBRAIN_HARD_FAILOVER:-}"
+UID_DELETE_BIN="${UID_DELETE_BIN:-}"
+GO_BIN="${GO_BIN:-go}"
 TARGET_IMAGE="${TARGET_IMAGE:-}"
 TARGET_RUNTIME_DIGESTS="${TARGET_RUNTIME_DIGESTS:-}"
 ENABLE_GRPC_CONNECTION_AGING_MIGRATION="${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}"
@@ -65,6 +71,10 @@ if [[ "$PREFLIGHT_ONLY" != true && "$PREFLIGHT_ONLY" != false ]]; then
 fi
 if [[ "$OBSERVE_ONLY" != true && "$OBSERVE_ONLY" != false ]]; then
   echo "OBSERVE_ONLY must be true or false" >&2
+  exit 2
+fi
+if [[ "$HARD_FAILOVER" != true && "$HARD_FAILOVER" != false ]]; then
+  echo "HARD_FAILOVER must be true or false" >&2
   exit 2
 fi
 if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != true && "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != false ]]; then
@@ -91,6 +101,21 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "missing required command: jq" >&2
   exit 1
 fi
+if [[ "$HARD_FAILOVER" == true ]]; then
+  if [[ "$CONFIRM_KUBEBRAIN_HARD_FAILOVER" != delete-current-leader ]]; then
+    echo "HARD_FAILOVER requires CONFIRM_KUBEBRAIN_HARD_FAILOVER=delete-current-leader" >&2
+    exit 1
+  fi
+  if [[ -n "$UID_DELETE_BIN" ]]; then
+    if [[ ! -x "$UID_DELETE_BIN" ]]; then
+      echo "UID_DELETE_BIN is not executable: $UID_DELETE_BIN" >&2
+      exit 1
+    fi
+  elif ! command -v "$GO_BIN" >/dev/null 2>&1; then
+    echo "go binary is not executable: $GO_BIN" >&2
+    exit 1
+  fi
+fi
 for variable in EXPECTED_REPLICAS PROBE_ITERATIONS PROBE_LEASE_TTL PROBE_MIN_PUBLIC_TCP_DIALS PROBE_MIN_DIRECT_TCP_DIALS; do
   if ! operation_is_positive_int64 "${!variable}"; then
     echo "${variable} must be a positive int64" >&2
@@ -116,7 +141,7 @@ for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LAT
   PROBE_START_TIMEOUT PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_EVIDENCE_REQUEST_TIMEOUT \
   KUBECTL_EVIDENCE_COMMAND_TIMEOUT KUBECTL_MUTATION_REQUEST_TIMEOUT \
   KUBECTL_MUTATION_COMMAND_TIMEOUT KUBECTL_READY_WAIT_COMMAND_TIMEOUT \
-  KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT; do
+  KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT UID_DELETE_COMMAND_TIMEOUT; do
   operation_is_positive_go_duration "${!variable}" || {
     echo "${variable} must be a positive ms, s, or m duration representable by Go time.Duration" >&2
     exit 2
@@ -166,6 +191,10 @@ if [[ "$ENABLE_HTTP_READINESS_MIGRATION" == true && -z "$TARGET_IMAGE" ]]; then
 fi
 if [[ "$OBSERVE_ONLY" == true && ( -n "$TARGET_IMAGE" || "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true || "$ENABLE_HTTP_READINESS_MIGRATION" == true ) ]]; then
   echo "OBSERVE_ONLY cannot be combined with TARGET_IMAGE or rollout migrations" >&2
+  exit 2
+fi
+if [[ "$HARD_FAILOVER" == true && ( "$OBSERVE_ONLY" == true || -n "$TARGET_IMAGE" || "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true || "$ENABLE_HTTP_READINESS_MIGRATION" == true ) ]]; then
+  echo "HARD_FAILOVER cannot be combined with OBSERVE_ONLY, TARGET_IMAGE, or rollout migrations" >&2
   exit 2
 fi
 declare -A seen_runtime_digests=()
@@ -218,6 +247,19 @@ kctl_watch_bounded() {
   "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$outer_timeout" \
     "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$command_timeout" \
     "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" "$@"
+}
+uid_delete() {
+  local -a args=("$@")
+  if [[ -n "$UID_DELETE_BIN" ]]; then
+    "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$UID_DELETE_COMMAND_TIMEOUT" \
+      "$UID_DELETE_BIN" "${args[@]}"
+    return
+  fi
+  (
+    cd "$ROOT_DIR"
+    "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$UID_DELETE_COMMAND_TIMEOUT" \
+      "$GO_BIN" run ./hack/production/cmd/uid-delete "${args[@]}"
+  )
 }
 duration_ceil_seconds() {
   case "$1" in
@@ -335,7 +377,7 @@ if [[ -n "$TARGET_IMAGE" ]]; then
       }
     else . end
   ' "$statefulset_json")" || exit 1
-elif [[ "$OBSERVE_ONLY" != true ]]; then
+elif [[ "$OBSERVE_ONLY" != true && "$HARD_FAILOVER" != true ]]; then
   restart_value="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
   candidate_spec="$(jq -cS --arg restart "$restart_value" \
     '.spec | .template.metadata.annotations = ((.template.metadata.annotations // {}) + {"kubectl.kubernetes.io/restartedAt":$restart})' \
@@ -485,7 +527,7 @@ if ! jq -e --arg name "$headless_service" --argjson labels "$template_labels" '
   exit 1
 fi
 declare -a original_runtime_image_ids=()
-if [[ -n "$TARGET_IMAGE" ]]; then
+if [[ -n "$TARGET_IMAGE" || "$HARD_FAILOVER" == true ]]; then
   for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
     pod_name="${KUBEBRAIN_STATEFULSET}-${ordinal}"
     pod_json="$runtime_evidence_dir/pod-initial-${ordinal}.json"
@@ -514,6 +556,10 @@ fi
 
 candidate_rollout_started=false
 candidate_rollout_succeeded=false
+hard_failover_started=false
+hard_failover_succeeded=false
+hard_failover_pod=""
+hard_failover_pod_uid=""
 probe_deleted=false
 cleanup() {
   if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
@@ -573,6 +619,23 @@ cleanup() {
       done
     fi
   fi
+  if [[ "$hard_failover_started" == true && "$hard_failover_succeeded" != true ]]; then
+    echo "hard failover gate failed; waiting for StatefulSet self-healing" >&2
+    if ! kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
+      rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null; then
+      echo "CRITICAL: hard-failover StatefulSet did not self-heal within ${ROLLOUT_TIMEOUT}" >&2
+    elif ! capture_runtime_evidence "$runtime_evidence_dir/statefulset-hard-failover-recovered.json" \
+      kctl_evidence get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
+      echo "CRITICAL: failed to read hard-failover self-healed StatefulSet" >&2
+    elif ! jq -e \
+      --arg uid "$statefulset_uid" --argjson spec "$initial_spec" --arg revision "$current_revision" \
+      --argjson replicas "$EXPECTED_REPLICAS" '
+      .metadata.uid == $uid and .spec == $spec and .status.readyReplicas == $replicas and
+      .status.currentRevision == $revision and .status.updateRevision == $revision
+    ' "$runtime_evidence_dir/statefulset-hard-failover-recovered.json" >/dev/null; then
+      echo "CRITICAL: hard-failover StatefulSet self-healed with identity drift" >&2
+    fi
+  fi
   if [[ "$probe_deleted" != true ]] &&
     ! kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null; then
     echo "CRITICAL: failed to delete rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
@@ -618,6 +681,34 @@ probe_command=(
   "${probe_tls_args[@]}" \
   --dial-timeout="$PROBE_DIAL_TIMEOUT"
 )
+leader_target_command=(
+  /usr/local/bin/kubebrain-rollout-availability-probe
+  --leader-target-only
+  --endpoint="$endpoint"
+  --leader-statefulset="$KUBEBRAIN_STATEFULSET"
+  --leader-headless-service="$headless_service"
+  --leader-namespace="$KUBEBRAIN_NAMESPACE"
+  --command-timeout="$PROBE_COMMAND_TIMEOUT"
+  --dial-timeout="$PROBE_DIAL_TIMEOUT"
+  "${probe_tls_args[@]}"
+)
+read_leader_target() {
+  local destination="$1" line
+  capture_runtime_evidence "$destination" kctl_evidence exec "$PROBE_POD" -- "${leader_target_command[@]}" || return 1
+  if [[ "$(grep -c '^LEADER_TARGET ' "$destination" || true)" != 1 ]]; then
+    echo "leader target discovery did not return exactly one result" >&2
+    return 1
+  fi
+  line="$(grep '^LEADER_TARGET ' "$destination")"
+  line="${line#LEADER_TARGET }"
+  jq -ce --arg statefulset "$KUBEBRAIN_STATEFULSET" --argjson replicas "$EXPECTED_REPLICAS" '
+    select(type == "object" and (.member_id | type == "number" and . > 0) and
+      (.pod | type == "string") and (.peer_url | type == "string" and length > 0)) |
+    (.pod | capture("^(?<statefulset>[a-z0-9]([-a-z0-9]*[a-z0-9])?)-(?<ordinal>0|[1-9][0-9]*)$")) as $identity |
+    select($identity.statefulset == $statefulset and ($identity.ordinal | tonumber) < $replicas) |
+    {member_id,pod,peer_url}
+  ' <<<"$line"
+}
 probe_command_args="$(jq -cn --args '$ARGS.positional' -- "${probe_command[@]:1}")" || exit 1
 snapshot_volume_mount="$(jq -cn --arg dir "$PROBE_SNAPSHOT_ARTIFACT_DIR" '{name:"snapshot-artifact",mountPath:$dir}')" || exit 1
 snapshot_volume='{"name":"snapshot-artifact","emptyDir":{}}'
@@ -681,6 +772,63 @@ if [[ -n "$TARGET_IMAGE" ]]; then
   else
     patch_kubebrain_image "$image" "$TARGET_IMAGE" "$statefulset_resource_version" >/dev/null
   fi
+elif [[ "$HARD_FAILOVER" == true ]]; then
+  first_leader_target="$(read_leader_target "$runtime_evidence_dir/leader-target-first.log")" || {
+    echo "failed to discover a stable KubeBrain leader target" >&2
+    exit 1
+  }
+  hard_failover_pod="$(jq -r '.pod' <<<"$first_leader_target")"
+  hard_failover_member_id="$(jq -r '.member_id' <<<"$first_leader_target")"
+  hard_failover_peer_url="$(jq -r '.peer_url' <<<"$first_leader_target")"
+  hard_failover_pod_ordinal="${hard_failover_pod##*-}"
+  hard_failover_image_id="${original_runtime_image_ids[$hard_failover_pod_ordinal]}"
+  hard_failover_pod_json="$runtime_evidence_dir/hard-failover-pod.json"
+  capture_runtime_evidence "$hard_failover_pod_json" kctl_evidence get pod "$hard_failover_pod" -o json || {
+    echo "failed to read hard-failover leader Pod ${hard_failover_pod}" >&2
+    exit 1
+  }
+  hard_failover_pod_uid="$(jq -er --arg pod "$hard_failover_pod" --arg statefulset "$KUBEBRAIN_STATEFULSET" \
+    --arg statefulset_uid "$statefulset_uid" --arg image "$image" --arg image_id "$hard_failover_image_id" \
+    --arg revision "$current_revision" '
+    select(.metadata.name == $pod and .metadata.deletionTimestamp == null and .status.phase == "Running" and
+      .metadata.labels["controller-revision-hash"] == $revision and
+      ([.metadata.ownerReferences[]? | select(.apiVersion == "apps/v1" and .kind == "StatefulSet" and
+        .name == $statefulset and .uid == $statefulset_uid and .controller == true)] | length) == 1 and
+      ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and
+      ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
+      ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and .restartCount == 0 and
+        .imageID == $image_id)] | length) == 1) |
+    .metadata.uid | select(type == "string" and length > 0)
+  ' "$hard_failover_pod_json")" || {
+    echo "hard-failover target Pod identity mismatch: ${hard_failover_pod}" >&2
+    exit 1
+  }
+  hard_failover_pod_resource_version="$(jq -er '.metadata.resourceVersion | select(type == "string" and length > 0)' "$hard_failover_pod_json")" || {
+    echo "hard-failover target Pod resourceVersion is missing: ${hard_failover_pod}" >&2
+    exit 1
+  }
+  second_leader_target="$(read_leader_target "$runtime_evidence_dir/leader-target-confirm.log")" || {
+    echo "failed to confirm KubeBrain leader target" >&2
+    exit 1
+  }
+  if [[ "$second_leader_target" != "$first_leader_target" ]]; then
+    echo "KubeBrain leader changed before hard-failover deletion; refusing mutation" >&2
+    exit 1
+  fi
+  uid_delete_args=(
+    --api-version=v1 --resource=pods --namespace="$KUBEBRAIN_NAMESPACE" --name="$hard_failover_pod"
+    --uid="$hard_failover_pod_uid" --resource-version="$hard_failover_pod_resource_version"
+    --grace-period-seconds=0 --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT"
+  )
+  if [[ -n "$KUBECTL_CONTEXT" ]]; then
+    uid_delete_args+=(--context="$KUBECTL_CONTEXT")
+  fi
+  hard_failover_started=true
+  uid_delete "${uid_delete_args[@]}" >/dev/null || {
+    echo "failed to force-delete hard-failover leader Pod ${KUBEBRAIN_NAMESPACE}/${hard_failover_pod}" >&2
+    exit 1
+  }
+  echo "HARD_FAILOVER_STARTED pod=${hard_failover_pod} uid=${hard_failover_pod_uid} member_id=${hard_failover_member_id} peer_url=${hard_failover_peer_url}"
 elif [[ "$OBSERVE_ONLY" != true ]]; then
   kctl_mutation patch "statefulset/$KUBEBRAIN_STATEFULSET" --type=json -p "$restart_patch" >/dev/null
 fi
@@ -765,9 +913,9 @@ final_prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kube
 final_uid="$(jq -r '.metadata.uid // ""' "$final_json")"
 final_spec="$(jq -cS '.spec' "$final_json")"
 revision_contract_valid=false
-if [[ "$OBSERVE_ONLY" == true && "$final_current_revision" == "$current_revision" ]]; then
+if [[ ( "$OBSERVE_ONLY" == true || "$HARD_FAILOVER" == true ) && "$final_current_revision" == "$current_revision" ]]; then
   revision_contract_valid=true
-elif [[ "$OBSERVE_ONLY" != true && "$final_current_revision" != "$current_revision" ]]; then
+elif [[ "$OBSERVE_ONLY" != true && "$HARD_FAILOVER" != true && "$final_current_revision" != "$current_revision" ]]; then
   revision_contract_valid=true
 fi
 if [[ "$final_uid" != "$statefulset_uid" || "$final_spec" != "$candidate_spec" || "$final_ready" != "$EXPECTED_REPLICAS" || -z "$final_current_revision" ||
@@ -802,6 +950,40 @@ if [[ -n "$TARGET_IMAGE" ]]; then
     fi
   done
 fi
+if [[ "$HARD_FAILOVER" == true ]]; then
+  for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
+    pod_name="${KUBEBRAIN_STATEFULSET}-${ordinal}"
+    pod_json="$runtime_evidence_dir/pod-hard-failover-final-${ordinal}.json"
+    capture_runtime_evidence "$pod_json" kctl_evidence get pod "$pod_name" -o json || {
+      echo "failed to read hard-failover final Pod ${pod_name}" >&2
+      exit 1
+    }
+    if ! jq -e --arg image "$image" --arg image_id "${original_runtime_image_ids[$ordinal]}" \
+      --arg revision "$current_revision" '
+      .metadata.deletionTimestamp == null and .status.phase == "Running" and
+      .metadata.labels["controller-revision-hash"] == $revision and
+      ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and
+      ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
+      ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and .restartCount == 0 and
+        .imageID == $image_id)] | length) == 1
+    ' "$pod_json" >/dev/null; then
+      echo "hard-failover final Pod runtime identity mismatch: ${pod_name}" >&2
+      exit 1
+    fi
+    if [[ "$pod_name" == "$hard_failover_pod" ]]; then
+      replacement_uid="$(jq -er '.metadata.uid | select(type == "string" and length > 0)' "$pod_json")" || exit 1
+      if [[ "$replacement_uid" == "$hard_failover_pod_uid" ]]; then
+        echo "hard-failover target Pod UID did not change: ${pod_name}" >&2
+        exit 1
+      fi
+    fi
+  done
+  final_leader_target="$(read_leader_target "$runtime_evidence_dir/leader-target-final.log")" || {
+    echo "failed to discover leader after hard failover" >&2
+    exit 1
+  }
+  echo "HARD_FAILOVER_RECOVERED old_pod=${hard_failover_pod} old_uid=${hard_failover_pod_uid} new_uid=${replacement_uid} final_leader=$(jq -r '.pod' <<<"$final_leader_target") final_member_id=$(jq -r '.member_id' <<<"$final_leader_target")"
+fi
 
 headless_service_final_json="$runtime_evidence_dir/headless-service-final.json"
 capture_runtime_evidence "$headless_service_final_json" kctl_evidence get service "$headless_service" -o json || {
@@ -821,9 +1003,11 @@ if ! kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true -
   exit 1
 fi
 probe_deleted=true
-candidate_rollout_succeeded=true
+[[ -z "$TARGET_IMAGE" ]] || candidate_rollout_succeeded=true
+[[ "$HARD_FAILOVER" != true ]] || hard_failover_succeeded=true
 
 gate_mode=restart
 [[ -z "$TARGET_IMAGE" ]] || gate_mode=candidate
 [[ "$OBSERVE_ONLY" != true ]] || gate_mode=observe
+[[ "$HARD_FAILOVER" != true ]] || gate_mode=hard-failover
 echo "KubeBrain rollout availability gate passed: mode=${gate_mode} namespace=${KUBEBRAIN_NAMESPACE} statefulset=${KUBEBRAIN_STATEFULSET} image=${image}->${expected_final_image} runtime_digests=${TARGET_RUNTIME_DIGESTS:-unchanged} probe_image=${probe_image} revision=${current_revision}->${final_current_revision} probes=${PROBE_ITERATIONS}"

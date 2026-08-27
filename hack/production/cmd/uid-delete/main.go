@@ -33,6 +33,7 @@ func main() {
 		kubeconfig      string
 		kubeContext     string
 		timeout         time.Duration
+		gracePeriod     int64
 	)
 	flag.StringVar(&apiVersion, "api-version", "", "resource API version, for example apps/v1")
 	flag.StringVar(&resource, "resource", "", "resource plural, for example statefulsets")
@@ -43,13 +44,20 @@ func main() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "path to kubeconfig; defaults to standard loading rules")
 	flag.StringVar(&kubeContext, "context", "", "kubeconfig context override")
 	flag.DurationVar(&timeout, "timeout", 30*time.Second, "API request timeout")
+	flag.Int64Var(&gracePeriod, "grace-period-seconds", -1, "optional deletion grace period in seconds; zero requests immediate termination")
 	flag.Parse()
 
 	if timeout <= 0 {
 		log.Fatal("--timeout must be positive")
 	}
+	if gracePeriod < -1 {
+		log.Fatal("--grace-period-seconds must be -1 (unset) or non-negative")
+	}
 	groupVersion, err := validateDeleteRequest(apiVersion, resource, namespace, name, uid)
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := validateGracePeriod(groupVersion, resource, namespace, gracePeriod); err != nil {
 		log.Fatal(err)
 	}
 	if resourceVersion != "" && !validPreconditionValue(resourceVersion) {
@@ -67,7 +75,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	err = deleteWithPreconditions(ctx, client, groupVersion.String(), resource, namespace, name, uid, resourceVersion)
+	err = deleteWithGracePreconditions(ctx, client, groupVersion.String(), resource, namespace, name, uid, resourceVersion, gracePeriod)
 	switch {
 	case err == nil:
 		fmt.Printf("delete accepted: %s %s/%s uid=%s\n", resource, namespace, name, uid)
@@ -113,6 +121,15 @@ func deleteWithPreconditions(
 	client dynamic.Interface,
 	apiVersion, resource, namespace, name, uid, resourceVersion string,
 ) error {
+	return deleteWithGracePreconditions(ctx, client, apiVersion, resource, namespace, name, uid, resourceVersion, -1)
+}
+
+func deleteWithGracePreconditions(
+	ctx context.Context,
+	client dynamic.Interface,
+	apiVersion, resource, namespace, name, uid, resourceVersion string,
+	gracePeriodSeconds int64,
+) error {
 	groupVersion, err := validateDeleteRequest(apiVersion, resource, namespace, name, uid)
 	if err != nil {
 		return err
@@ -120,11 +137,18 @@ func deleteWithPreconditions(
 	if resourceVersion != "" && !validPreconditionValue(resourceVersion) {
 		return errors.New("invalid resourceVersion precondition")
 	}
+	if err := validateGracePeriod(groupVersion, resource, namespace, gracePeriodSeconds); err != nil {
+		return err
+	}
 	propagation := metav1.DeletePropagationForeground
 	expectedUID := types.UID(uid)
 	var expectedResourceVersion *string
 	if resourceVersion != "" {
 		expectedResourceVersion = &resourceVersion
+	}
+	var gracePeriod *int64
+	if gracePeriodSeconds >= 0 {
+		gracePeriod = &gracePeriodSeconds
 	}
 	resourceClient := client.Resource(groupVersion.WithResource(resource))
 	var target dynamic.ResourceInterface
@@ -137,10 +161,21 @@ func deleteWithPreconditions(
 		ctx,
 		name,
 		metav1.DeleteOptions{
-			PropagationPolicy: &propagation,
-			Preconditions:     &metav1.Preconditions{UID: &expectedUID, ResourceVersion: expectedResourceVersion},
+			PropagationPolicy:  &propagation,
+			Preconditions:      &metav1.Preconditions{UID: &expectedUID, ResourceVersion: expectedResourceVersion},
+			GracePeriodSeconds: gracePeriod,
 		},
 	)
+}
+
+func validateGracePeriod(groupVersion schema.GroupVersion, resource, namespace string, gracePeriodSeconds int64) error {
+	if gracePeriodSeconds < -1 {
+		return errors.New("grace period seconds must be -1 (unset) or non-negative")
+	}
+	if gracePeriodSeconds >= 0 && (groupVersion.String() != "v1" || resource != "pods" || namespace == "") {
+		return errors.New("grace period override is restricted to namespaced core/v1 pods")
+	}
+	return nil
 }
 
 func validPreconditionValue(value string) bool {

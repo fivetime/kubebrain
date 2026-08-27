@@ -124,6 +124,40 @@ func TestRolloutAvailabilityRunnerRejectsInvalidObserveModeBeforeKubernetes(t *t
 	require.NoFileExists(t, logPath)
 }
 
+func TestRolloutAvailabilityRunnerRequiresExplicitHardFailoverApproval(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"HARD_FAILOVER=true",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "CONFIRM_KUBEBRAIN_HARD_FAILOVER=delete-current-leader")
+	require.NoFileExists(t, logPath, "leader discovery must not run before destructive approval")
+}
+
+func TestRolloutAvailabilityRunnerRejectsHardFailoverCombinationBeforeKubernetes(t *testing.T) {
+	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+	uidDelete, _, _ := writeRolloutAvailabilityUIDDelete(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"HARD_FAILOVER=true",
+		"CONFIRM_KUBEBRAIN_HARD_FAILOVER=delete-current-leader",
+		"UID_DELETE_BIN="+uidDelete,
+		"OBSERVE_ONLY=true",
+	)
+	output, err := command.CombinedOutput()
+	require.EqualError(t, err, "exit status 2")
+	require.Contains(t, string(output), "HARD_FAILOVER cannot be combined")
+	require.NoFileExists(t, logPath)
+}
+
 func TestRolloutAvailabilityRunnerRejectsInvalidConnectionAgingMigrationBeforeKubernetes(t *testing.T) {
 	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -210,7 +244,7 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 		"PROBE_START_TIMEOUT", "PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_EVIDENCE_REQUEST_TIMEOUT",
 		"KUBECTL_EVIDENCE_COMMAND_TIMEOUT", "KUBECTL_MUTATION_REQUEST_TIMEOUT",
 		"KUBECTL_MUTATION_COMMAND_TIMEOUT", "KUBECTL_READY_WAIT_COMMAND_TIMEOUT",
-		"KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT", "KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT",
+		"KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT", "KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT", "UID_DELETE_COMMAND_TIMEOUT",
 	} {
 		t.Run(variable, func(t *testing.T) {
 			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
@@ -327,6 +361,69 @@ func TestRolloutAvailabilityRunnerObserveOnlyDoesNotRollStatefulSet(t *testing.T
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe ")
 	require.NotContains(t, log, " patch statefulset/kubebrain ")
 	require.NotContains(t, log, " rollout status statefulset/kubebrain ")
+}
+
+func TestRolloutAvailabilityRunnerHardFailoverDeletesStableLeaderIdentityAndRecovers(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	uidDelete, uidDeleteLog, hardState := writeRolloutAvailabilityUIDDelete(t)
+	leaderDiscoveryState := filepath.Join(t.TempDir(), "leader-discovery-state")
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"HARD_FAILOVER=true",
+		"CONFIRM_KUBEBRAIN_HARD_FAILOVER=delete-current-leader",
+		"UID_DELETE_BIN="+uidDelete,
+		"FAKE_UID_DELETE_LOG="+uidDeleteLog,
+		"FAKE_HARD_FAILOVER_STATE="+hardState,
+		"FAKE_LEADER_DISCOVERY_STATE="+leaderDiscoveryState,
+		"PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "HARD_FAILOVER_STARTED pod=kubebrain-1 uid=kubebrain-1-uid-old member_id=12")
+	require.Contains(t, string(output), "HARD_FAILOVER_RECOVERED old_pod=kubebrain-1 old_uid=kubebrain-1-uid-old new_uid=kubebrain-1-uid-new final_leader=kubebrain-2 final_member_id=13")
+	require.Contains(t, string(output), "mode=hard-failover")
+	require.Contains(t, string(output), "revision=revision-old->revision-old")
+	require.FileExists(t, hardState)
+	require.NoFileExists(t, statePath, "hard failover must not mutate the StatefulSet spec")
+	uidLog := readOptionalFile(t, uidDeleteLog)
+	require.Contains(t, uidLog, "--uid=kubebrain-1-uid-old")
+	require.Contains(t, uidLog, "--resource-version=rv-kubebrain-1-uid-old")
+	require.Contains(t, uidLog, "--grace-period-seconds=0")
+	kubectlLog := readOptionalFile(t, logPath)
+	require.Equal(t, 3, strings.Count(kubectlLog, " --leader-target-only"))
+	require.Contains(t, kubectlLog, " rollout status statefulset/kubebrain ")
+	require.NotContains(t, kubectlLog, " patch statefulset/kubebrain ")
+}
+
+func TestRolloutAvailabilityRunnerHardFailoverRefusesLeaderChangeBeforeDelete(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	uidDelete, uidDeleteLog, hardState := writeRolloutAvailabilityUIDDelete(t)
+	leaderDiscoveryState := filepath.Join(t.TempDir(), "leader-discovery-state")
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"HARD_FAILOVER=true",
+		"CONFIRM_KUBEBRAIN_HARD_FAILOVER=delete-current-leader",
+		"UID_DELETE_BIN="+uidDelete,
+		"FAKE_UID_DELETE_LOG="+uidDeleteLog,
+		"FAKE_HARD_FAILOVER_STATE="+hardState,
+		"FAKE_LEADER_DISCOVERY_STATE="+leaderDiscoveryState,
+		"FAKE_LEADER_CHANGES_BEFORE_DELETE=true",
+		"PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "KubeBrain leader changed before hard-failover deletion; refusing mutation")
+	require.NoFileExists(t, uidDeleteLog)
+	require.NoFileExists(t, hardState)
+	require.NoFileExists(t, statePath)
 }
 
 func TestRolloutAvailabilityRunnerRejectsInsufficientTCPDialEvidence(t *testing.T) {
@@ -1429,11 +1526,25 @@ elif [[ " $* " =~ " get pod kubebrain-"[0-9]+" -o json " ]]; then
   [[ "${FAKE_RUNTIME_IMAGE_ID_STYLE:-}" != bare || ! -e "$FAKE_KUBECTL_STATE" ]] || runtime_image_id="$runtime_digest"
   [[ "${FAKE_RUNTIME_IMAGE_ID_STYLE:-}" != pullable || ! -e "$FAKE_KUBECTL_STATE" ]] || runtime_image_id="registry.example/kubebrain@$runtime_digest"
   [[ "${FAKE_RUNTIME_DIGEST_SUFFIX_SPOOF:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || runtime_image_id="untrusted-prefix$runtime_digest"
-  jq -cn --arg name "$ordinal" --arg image "$runtime_image" --arg imageID "$runtime_image_id" --arg revision "$runtime_revision" --argjson restartCount "$runtime_restart_count" --arg ready "$runtime_ready" '{
-    metadata:{name:$name,labels:{"controller-revision-hash":$revision}},
+  pod_uid="${ordinal}-uid-old"
+  [[ -z "${FAKE_HARD_FAILOVER_STATE:-}" || ! -e "$FAKE_HARD_FAILOVER_STATE" || "$ordinal" != kubebrain-1 ]] || pod_uid="${ordinal}-uid-new"
+  jq -cn --arg name "$ordinal" --arg uid "$pod_uid" --arg image "$runtime_image" --arg imageID "$runtime_image_id" --arg revision "$runtime_revision" --argjson restartCount "$runtime_restart_count" --arg ready "$runtime_ready" '{
+    metadata:{name:$name,uid:$uid,resourceVersion:("rv-"+$uid),labels:{"controller-revision-hash":$revision},ownerReferences:[{apiVersion:"apps/v1",kind:"StatefulSet",name:"kubebrain",uid:"statefulset-uid",controller:true}]},
     spec:{containers:[{name:"kubebrain",image:$image}]},
     status:{phase:"Running",conditions:[{type:"Ready",status:$ready}],containerStatuses:[{name:"kubebrain",ready:true,restartCount:$restartCount,imageID:$imageID}]}}
   '
+elif [[ " $* " == *" exec kubebrain-rollout-availability-probe -- /usr/local/bin/kubebrain-rollout-availability-probe --leader-target-only "* ]]; then
+  leader_pod=kubebrain-1
+  leader_id=12
+  if [[ -n "${FAKE_LEADER_DISCOVERY_STATE:-}" ]]; then
+    discovery_count=0
+    [[ ! -e "$FAKE_LEADER_DISCOVERY_STATE" ]] || discovery_count="$(<"$FAKE_LEADER_DISCOVERY_STATE")"
+    discovery_count=$((discovery_count + 1))
+    printf '%s' "$discovery_count" >"$FAKE_LEADER_DISCOVERY_STATE"
+    [[ "${FAKE_LEADER_CHANGES_BEFORE_DELETE:-false}" != true || "$discovery_count" -lt 2 ]] || { leader_pod=kubebrain-2; leader_id=13; }
+  fi
+  if [[ -n "${FAKE_HARD_FAILOVER_STATE:-}" && -e "$FAKE_HARD_FAILOVER_STATE" ]]; then leader_pod=kubebrain-2; leader_id=13; fi
+  printf 'LEADER_TARGET {"member_id":%s,"pod":"%s","peer_url":"https://%s.kubebrain-peer.kubebrain-system.svc.cluster.local:3380"}\n' "$leader_id" "$leader_pod" "$leader_pod"
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe "* ]]; then
   exit 1
 elif [[ " $* " == *" patch statefulset/kubebrain --type=json -p "* ]]; then
@@ -1504,6 +1615,28 @@ elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
     [[ -z "${FAKE_RUNTIME_RESPONSE_COMPLETED:-}" ]] || : >"$FAKE_RUNTIME_RESPONSE_COMPLETED"
   fi
 fi
+`
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	return fakePath, logPath, statePath
+}
+
+func writeRolloutAvailabilityUIDDelete(t *testing.T) (fakePath, logPath, statePath string) {
+	t.Helper()
+	dir := t.TempDir()
+	fakePath = filepath.Join(dir, "uid-delete")
+	logPath = filepath.Join(dir, "uid-delete.log")
+	statePath = filepath.Join(dir, "hard-failover-state")
+	script := `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_UID_DELETE_LOG"
+[[ " $* " == *" --api-version=v1 "* ]]
+[[ " $* " == *" --resource=pods "* ]]
+[[ " $* " == *" --namespace=kubebrain-system "* ]]
+[[ " $* " == *" --name=kubebrain-1 "* ]]
+[[ " $* " == *" --uid=kubebrain-1-uid-old "* ]]
+[[ " $* " == *" --resource-version=rv-kubebrain-1-uid-old "* ]]
+[[ " $* " == *" --grace-period-seconds=0 "* ]]
+: >"$FAKE_HARD_FAILOVER_STATE"
 `
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	return fakePath, logPath, statePath

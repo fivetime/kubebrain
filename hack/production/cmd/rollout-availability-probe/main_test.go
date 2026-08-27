@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -225,6 +226,80 @@ func TestConfigValidation(t *testing.T) {
 			candidate.directEndpoints = append([]string(nil), valid.directEndpoints...)
 			mutate(&candidate)
 			require.Error(t, candidate.validate())
+		})
+	}
+}
+
+func TestLeaderTargetConfigValidation(t *testing.T) {
+	valid := config{
+		endpoint: "http://kubebrain-client:3379", commandTimeout: 5 * time.Second, dialTimeout: time.Second,
+		leaderStatefulSet: "kubebrain", leaderHeadlessSvc: "kubebrain-peer", leaderNamespace: "tenant-a",
+	}
+	require.NoError(t, valid.validateLeaderTarget())
+	for name, mutate := range map[string]func(*config){
+		"endpoint":         func(cfg *config) { cfg.endpoint = "" },
+		"timeout ordering": func(cfg *config) { cfg.dialTimeout = cfg.commandTimeout },
+		"statefulset":      func(cfg *config) { cfg.leaderStatefulSet = "KubeBrain" },
+		"headless service": func(cfg *config) { cfg.leaderHeadlessSvc = "" },
+		"namespace":        func(cfg *config) { cfg.leaderNamespace = "tenant.example" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			require.Error(t, candidate.validateLeaderTarget())
+		})
+	}
+}
+
+func TestResolveLeaderTargetRequiresExactStatefulSetPeerIdentity(t *testing.T) {
+	members := []*etcdserverpb.Member{
+		{ID: 11, Name: "kubebrain-0", PeerURLs: []string{"https://kubebrain-0.kubebrain-peer.tenant-a.svc.cluster.local:3380"}},
+		{ID: 12, Name: "kubebrain-1", PeerURLs: []string{"https://kubebrain-1.kubebrain-peer.tenant-a.svc.cluster.local:3380"}},
+		{ID: 13, Name: "kubebrain-2", PeerURLs: []string{"https://kubebrain-2.kubebrain-peer.tenant-a.svc.cluster.local:3380"}},
+	}
+	target, err := resolveLeaderTarget(12, members, "kubebrain", "kubebrain-peer", "tenant-a")
+	require.NoError(t, err)
+	require.Equal(t, leaderTarget{
+		MemberID: 12, Pod: "kubebrain-1",
+		PeerURL: "https://kubebrain-1.kubebrain-peer.tenant-a.svc.cluster.local:3380",
+	}, target)
+
+	for name, tc := range map[string]struct {
+		leaderID uint64
+		mutate   func([]*etcdserverpb.Member)
+	}{
+		"zero leader":    {leaderID: 0},
+		"unknown leader": {leaderID: 99},
+		"duplicate id":   {leaderID: 12, mutate: func(items []*etcdserverpb.Member) { items[0].ID = 12 }},
+		"learner":        {leaderID: 12, mutate: func(items []*etcdserverpb.Member) { items[1].IsLearner = true }},
+		"multiple peer urls": {leaderID: 12, mutate: func(items []*etcdserverpb.Member) {
+			items[1].PeerURLs = append(items[1].PeerURLs, "https://other:3380")
+		}},
+		"wrong statefulset": {leaderID: 12, mutate: func(items []*etcdserverpb.Member) {
+			items[1].PeerURLs[0] = "https://other-1.kubebrain-peer.tenant-a.svc.cluster.local:3380"
+		}},
+		"wrong namespace": {leaderID: 12, mutate: func(items []*etcdserverpb.Member) {
+			items[1].PeerURLs[0] = "https://kubebrain-1.kubebrain-peer.other.svc.cluster.local:3380"
+		}},
+		"noncanonical ordinal": {leaderID: 12, mutate: func(items []*etcdserverpb.Member) {
+			items[1].Name = "kubebrain-01"
+			items[1].PeerURLs[0] = "https://kubebrain-01.kubebrain-peer.tenant-a.svc.cluster.local:3380"
+		}},
+		"member name mismatch": {leaderID: 12, mutate: func(items []*etcdserverpb.Member) { items[1].Name = "kubebrain-2" }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := make([]*etcdserverpb.Member, len(members))
+			for index, member := range members {
+				candidate[index] = &etcdserverpb.Member{
+					ID: member.ID, Name: member.Name, IsLearner: member.IsLearner,
+					PeerURLs: append([]string(nil), member.PeerURLs...),
+				}
+			}
+			if tc.mutate != nil {
+				tc.mutate(candidate)
+			}
+			_, err := resolveLeaderTarget(tc.leaderID, candidate, "kubebrain", "kubebrain-peer", "tenant-a")
+			require.Error(t, err)
 		})
 	}
 }

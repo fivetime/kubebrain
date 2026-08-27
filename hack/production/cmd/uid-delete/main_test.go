@@ -50,6 +50,29 @@ func TestDeleteOptionsUIDAndResourceVersionPreconditionShape(t *testing.T) {
 	require.Equal(t, metav1.DeletePropagationForeground, *options.PropagationPolicy)
 }
 
+func TestDeleteOptionsCanRequestImmediateTerminationWithPreconditions(t *testing.T) {
+	var options metav1.DeleteOptions
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodDelete, r.Method)
+		require.Equal(t, "/api/v1/namespaces/instance-a/pods/kubebrain-1", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&options))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Success","code":200}`))
+	}))
+	defer server.Close()
+
+	client, err := dynamicClient(testRESTConfig(server.URL))
+	require.NoError(t, err)
+	require.NoError(t, deleteWithGracePreconditions(
+		context.Background(), client, "v1", "pods", "instance-a", "kubebrain-1", "uid-1", "73", 0,
+	))
+	require.NotNil(t, options.Preconditions)
+	require.Equal(t, "uid-1", string(*options.Preconditions.UID))
+	require.Equal(t, "73", *options.Preconditions.ResourceVersion)
+	require.NotNil(t, options.GracePeriodSeconds)
+	require.Zero(t, *options.GracePeriodSeconds)
+}
+
 func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
 	output, err := testcommand.GoRun(t, ".",
 		"--api-version", "v1",
@@ -69,6 +92,24 @@ func TestMainRejectsInvalidResourceVersionBeforeKubeconfig(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid resourceVersion precondition")
+}
+
+func TestMainRejectsInvalidGracePeriodBeforeKubeconfig(t *testing.T) {
+	output, err := testcommand.GoRun(t, ".",
+		"--api-version", "v1", "--resource", "pods", "--namespace", "tenant-a",
+		"--name", "kubebrain-0", "--uid", "uid-1", "--grace-period-seconds", "-2",
+	)
+	require.Error(t, err)
+	require.Contains(t, string(output), "--grace-period-seconds must be -1 (unset) or non-negative")
+}
+
+func TestMainRestrictsGracePeriodOverrideToNamespacedPodsBeforeKubeconfig(t *testing.T) {
+	output, err := testcommand.GoRun(t, ".",
+		"--api-version", "v1", "--resource", "services", "--namespace", "tenant-a",
+		"--name", "client", "--uid", "uid-1", "--grace-period-seconds", "0",
+	)
+	require.Error(t, err)
+	require.Contains(t, string(output), "grace period override is restricted to namespaced core/v1 pods")
 }
 
 func TestDeleteWithUIDRejectsUnsafeRequestBeforeAPI(t *testing.T) {
