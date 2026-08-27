@@ -22,6 +22,7 @@ type keepAliveMonitorConfig struct {
 	retryWait       time.Duration
 	retryAfter      func(time.Duration) <-chan time.Time
 	restart         keepAliveRestart
+	maxRecoveries   int
 }
 
 type keepAliveMonitorSnapshot struct {
@@ -29,6 +30,7 @@ type keepAliveMonitorSnapshot struct {
 	lastResponse time.Time
 	responses    int
 	restarts     int
+	recoveries   int
 	recovering   bool
 	recoveryFrom time.Time
 	maxRecovery  time.Duration
@@ -134,6 +136,7 @@ func (monitor *keepAliveMonitor) consume(responses <-chan *clientv3.LeaseKeepAli
 				if recoveryDuration > monitor.state.maxRecovery {
 					monitor.state.maxRecovery = recoveryDuration
 				}
+				monitor.state.recoveries++
 				recoveryDeadline = nil
 			}
 			monitor.state.recovering = false
@@ -146,14 +149,21 @@ func (monitor *keepAliveMonitor) consume(responses <-chan *clientv3.LeaseKeepAli
 
 func (monitor *keepAliveMonitor) beginRecovery(deadline <-chan time.Time) (<-chan time.Time, bool, error) {
 	monitor.mu.Lock()
-	restarts := monitor.state.restarts
+	recoveries := monitor.state.recoveries
 	recovering := monitor.state.recovering
 	monitor.mu.Unlock()
 	if monitor.config.restart == nil {
 		return nil, false, fmt.Errorf("%s lease keepalive closed", monitor.config.label)
 	}
-	if restarts > 0 && !recovering {
-		return nil, false, fmt.Errorf("%s lease keepalive closed after completed recovery", monitor.config.label)
+	maxRecoveries := monitor.config.maxRecoveries
+	if maxRecoveries == 0 {
+		maxRecoveries = 1
+	}
+	if maxRecoveries < 0 {
+		return nil, false, fmt.Errorf("%s lease keepalive recovery limit must be positive", monitor.config.label)
+	}
+	if recoveries >= maxRecoveries && !recovering {
+		return nil, false, fmt.Errorf("%s lease keepalive closed after completed recovery episodes=%d limit=%d", monitor.config.label, recoveries, maxRecoveries)
 	}
 	if recovering {
 		return deadline, true, nil

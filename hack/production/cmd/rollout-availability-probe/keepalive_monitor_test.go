@@ -100,6 +100,42 @@ func TestKeepAliveMonitorAllowsOnlyOneCompletedRecoveryEpisode(t *testing.T) {
 	require.Equal(t, 2, restarts, "a second completed recovery episode must not restart")
 }
 
+func TestKeepAliveMonitorAllowsConfiguredCompletedRecoveryEpisodes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	initial := make(chan *clientv3.LeaseKeepAliveResponse)
+	firstRecovery := make(chan *clientv3.LeaseKeepAliveResponse, 1)
+	secondRecovery := make(chan *clientv3.LeaseKeepAliveResponse, 1)
+	restarts := 0
+	monitor := startKeepAliveMonitor(ctx, cancel, initial, keepAliveMonitorConfig{
+		label: "public", clusterID: 7, leaseID: 42, grantedTTL: 15, initialRevision: 10,
+		recoveryTimeout: time.Second,
+		retryWait:       time.Millisecond,
+		maxRecoveries:   2,
+		restart: func(context.Context) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
+			restarts++
+			if restarts == 1 {
+				return firstRecovery, nil
+			}
+			return secondRecovery, nil
+		},
+	})
+	t.Cleanup(monitor.stop)
+
+	close(initial)
+	require.Eventually(t, func() bool { return monitor.snapshot().restarts == 1 }, time.Second, time.Millisecond)
+	firstRecovery <- keepAliveResponse(11)
+	require.Eventually(t, func() bool { return monitor.snapshot().recoveries == 1 }, time.Second, time.Millisecond)
+	close(firstRecovery)
+	require.Eventually(t, func() bool { return monitor.snapshot().restarts == 2 }, time.Second, time.Millisecond)
+	secondRecovery <- keepAliveResponse(12)
+	require.Eventually(t, func() bool { return monitor.snapshot().recoveries == 2 }, time.Second, time.Millisecond)
+
+	close(secondRecovery)
+	require.Eventually(t, func() bool { return monitor.snapshot().err != nil }, time.Second, time.Millisecond)
+	require.ErrorContains(t, monitor.snapshot().err, "episodes=2 limit=2")
+	require.Equal(t, 2, restarts)
+}
+
 func TestKeepAliveMonitorPublishesRestartAndValidationFailures(t *testing.T) {
 	t.Run("restart", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

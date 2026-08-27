@@ -601,6 +601,12 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		leaseID:         leaseID,
 		grantedTTL:      lease.TTL,
 		initialRevision: lastKeepAliveRevision,
+		recoveryTimeout: cfg.maxLatency,
+		retryWait:       directKeepAliveRestartWait,
+		maxRecoveries:   len(cfg.directEndpoints),
+		restart: func(restartCtx context.Context) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
+			return client.KeepAlive(restartCtx, leaseID)
+		},
 	})
 	defer publicKeepAlive.stop()
 
@@ -1328,12 +1334,13 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			maxDirectKeepAliveRecovery = snapshot.maxRecovery
 		}
 	}
-	publicKeepAliveResponses := publicKeepAlive.snapshot().responses
+	publicKeepAliveSnapshot := publicKeepAlive.snapshot()
+	publicKeepAliveResponses := publicKeepAliveSnapshot.responses
 	publicTCPDials := publicDialCount.count.Load()
 	minDirectTCPDials, err := validateTCPDialEvidence(publicTCPDials, cfg.minPublicTCPDials, directProbes, cfg.minDirectTCPDials)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive lease_responses=%d direct_lease=alive direct_lease_responses=%d direct_lease_restarts=%d max_direct_lease_recovery_ms=%d public_tcp_dials=%d min_direct_tcp_dials=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), publicKeepAliveResponses, directKeepAliveResponses, directKeepAliveRestarts, maxDirectKeepAliveRecovery.Milliseconds(), publicTCPDials, minDirectTCPDials, len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d direct_watch=%dx%d lease=alive lease_responses=%d public_lease_restarts=%d max_public_lease_recovery_ms=%d direct_lease=alive direct_lease_responses=%d direct_lease_restarts=%d max_direct_lease_recovery_ms=%d public_tcp_dials=%d min_direct_tcp_dials=%d direct_endpoints=%d range_stream=%d snapshot=%d stream_retries=%d stream_partial_retries=%d max_latency_ms=%d max_direct_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, cfg.iterations, len(directProbes), publicKeepAliveResponses, publicKeepAliveSnapshot.restarts, publicKeepAliveSnapshot.maxRecovery.Milliseconds(), directKeepAliveResponses, directKeepAliveRestarts, maxDirectKeepAliveRecovery.Milliseconds(), publicTCPDials, minDirectTCPDials, len(directProbes), streamResult.rangeOK, streamResult.snapshotOK, streamResult.retries, streamResult.partialRetries, maxLatency.Milliseconds(), maxDirectLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
 	return nil
 }
