@@ -212,6 +212,17 @@ func TestConfigRejectsHTTPSWithoutExplicitTLSIdentity(t *testing.T) {
 	require.ErrorContains(t, cfg.validate(), "TLS")
 }
 
+func TestCleanupClientConfigRetainsAllDirectEndpoints(t *testing.T) {
+	cfg := config{dialTimeout: 3 * time.Second}
+	endpoints := []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"}
+	clientConfig := cfg.kubeBrainClientConfigForEndpoints(endpoints, nil)
+	require.Equal(t, endpoints, clientConfig.Endpoints)
+	require.Equal(t, cfg.dialTimeout, clientConfig.DialTimeout)
+
+	endpoints[0] = "http://mutated:3379"
+	require.Equal(t, "http://kb-0:3379", clientConfig.Endpoints[0], "cleanup endpoints must be defensively copied")
+}
+
 func TestConfigRequiresCompleteTLSIdentityAndMatchingSchemes(t *testing.T) {
 	valid := config{endpoint: "https://etcd:2379", directEndpoints: []string{"https://kb-0:3379", "https://kb-1:3379", "https://kb-2:3379"}, prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second, dialTimeout: time.Second, maxLatency: time.Second, maxDirectLatency: 20 * time.Second, leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second, maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second, snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond, streamMaxBackoff: time.Second, caFile: "/tls/ca.crt", certFile: "/tls/tls.crt", keyFile: "/tls/tls.key", tlsServerName: "kubebrain-client.example"}
 	require.NoError(t, valid.validate())

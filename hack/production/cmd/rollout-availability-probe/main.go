@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"math"
@@ -176,8 +177,12 @@ func (cfg config) clientTLSConfig() (*tls.Config, error) {
 }
 
 func (cfg config) kubeBrainClientConfig(endpoint string, tlsConfig *tls.Config) clientv3.Config {
+	return cfg.kubeBrainClientConfigForEndpoints([]string{endpoint}, tlsConfig)
+}
+
+func (cfg config) kubeBrainClientConfigForEndpoints(endpoints []string, tlsConfig *tls.Config) clientv3.Config {
 	clientConfig := clientv3.Config{
-		Endpoints:   []string{endpoint},
+		Endpoints:   append([]string(nil), endpoints...),
 		DialTimeout: cfg.dialTimeout,
 		TLS:         tlsConfig,
 	}
@@ -453,6 +458,14 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		return fmt.Errorf("create client: %w", err)
 	}
 	defer client.Close()
+	// Cleanup must not depend on the single Service connection whose failure
+	// caused the probe to abort. Stable Pod DNS gives the bounded compensating
+	// path all three members while a rollout always keeps quorum serving.
+	cleanupClient, err := clientv3.New(cfg.kubeBrainClientConfigForEndpoints(cfg.directEndpoints, tlsConfig))
+	if err != nil {
+		return fmt.Errorf("create direct cleanup client: %w", err)
+	}
+	defer cleanupClient.Close()
 
 	opCtx, cancel := context.WithTimeout(ctx, cfg.commandTimeout)
 	cleaned, err := client.Delete(opCtx, cfg.prefix, clientv3.WithPrefix())
@@ -480,11 +493,11 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	lastRevision = leaseRevision
 	historyLeaseIDs := make([]clientv3.LeaseID, 0, 2)
 	defer func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), max(5*time.Second, cfg.commandTimeout))
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), max(30*time.Second, cfg.commandTimeout))
 		defer cleanupCancel()
 		for index := len(historyLeaseIDs) - 1; index >= 0; index-- {
 			historyLeaseID := historyLeaseIDs[index]
-			revokedHistory, cleanupErr := client.Revoke(cleanupCtx, historyLeaseID)
+			revokedHistory, cleanupErr := cleanupClient.Revoke(cleanupCtx, historyLeaseID)
 			if cleanupErr == nil {
 				if revokedHistory == nil {
 					cleanupErr = fmt.Errorf("empty response")
@@ -492,11 +505,11 @@ func run(ctx context.Context, cfg config) (retErr error) {
 					_, lastRevision, cleanupErr = validateResponseHeader(revokedHistory.Header, clusterID, lastRevision)
 				}
 			}
-			if cleanupErr != nil && retErr == nil {
-				retErr = fmt.Errorf("cleanup revoke Snapshot history lease %d: %w", historyLeaseID, cleanupErr)
+			if cleanupErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("cleanup revoke Snapshot history lease %d: %w", historyLeaseID, cleanupErr))
 			}
 		}
-		revoked, cleanupErr := client.Revoke(cleanupCtx, leaseID)
+		revoked, cleanupErr := cleanupClient.Revoke(cleanupCtx, leaseID)
 		if cleanupErr == nil {
 			if revoked == nil {
 				cleanupErr = fmt.Errorf("empty response")
@@ -504,22 +517,22 @@ func run(ctx context.Context, cfg config) (retErr error) {
 				_, _, cleanupErr = validateResponseHeader(revoked.Header, clusterID, lastRevision)
 			}
 		}
-		if cleanupErr != nil && retErr == nil {
-			retErr = fmt.Errorf("cleanup revoke lease: %w", cleanupErr)
+		if cleanupErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("cleanup revoke lease: %w", cleanupErr))
 		}
-		deleted, cleanupErr := client.Delete(cleanupCtx, cfg.prefix, clientv3.WithPrefix())
+		deleted, cleanupErr := cleanupClient.Delete(cleanupCtx, cfg.prefix, clientv3.WithPrefix())
 		if cleanupErr == nil {
 			_, lastRevision, cleanupErr = validateDeleteResponse(deleted, clusterID, lastRevision)
 		}
-		if cleanupErr != nil && retErr == nil {
-			retErr = fmt.Errorf("cleanup prefix: %w", cleanupErr)
+		if cleanupErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("cleanup prefix: %w", cleanupErr))
 		}
-		remaining, cleanupErr := client.Get(cleanupCtx, cfg.prefix, clientv3.WithPrefix(), clientv3.WithLimit(1))
+		remaining, cleanupErr := cleanupClient.Get(cleanupCtx, cfg.prefix, clientv3.WithPrefix(), clientv3.WithLimit(1))
 		if cleanupErr == nil {
 			cleanupErr = validateAbsentRange(remaining, clusterID, lastRevision)
 		}
-		if cleanupErr != nil && retErr == nil {
-			retErr = fmt.Errorf("verify prefix cleanup: %w", cleanupErr)
+		if cleanupErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("verify prefix cleanup: %w", cleanupErr))
 		}
 	}()
 	keepAlive, err := client.KeepAlive(leaseCtx, leaseID)
@@ -1074,9 +1087,9 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	authFixture := newSnapshotAuthFixture(cfg.prefix)
 	defer func() {
 		var cleanupErr error
-		lastRevision, cleanupErr = authFixture.cleanup(client, clusterID, lastRevision, cfg.commandTimeout)
-		if cleanupErr != nil && retErr == nil {
-			retErr = fmt.Errorf("cleanup Snapshot auth fixture: %w", cleanupErr)
+		lastRevision, cleanupErr = authFixture.cleanup(cleanupClient, clusterID, lastRevision, cfg.commandTimeout)
+		if cleanupErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("cleanup Snapshot auth fixture: %w", cleanupErr))
 		}
 	}()
 	lastRevision, err = authFixture.install(ctx, client, clusterID, lastRevision, cfg.commandTimeout)
