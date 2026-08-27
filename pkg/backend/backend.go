@@ -542,6 +542,12 @@ type backend struct {
 	// by package tests that exercise durable exact-revision recovery.
 	collectorStallWarnAfter time.Duration
 	collectorStallSkipAfter time.Duration
+	// txnWitnessPrevalidatedRevision is the one-shot durable revision through
+	// which this process completed the immutable transaction-witness/event
+	// consistency scan before joining leader election. The first promotion
+	// consumes it while validating every later revision; subsequent promotions
+	// return to a full scan so the cache cannot weaken repeated integrity audits.
+	txnWitnessPrevalidatedRevision atomic.Uint64
 
 	workerCtx    context.Context
 	workerCancel context.CancelFunc

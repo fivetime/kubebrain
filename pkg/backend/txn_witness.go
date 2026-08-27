@@ -288,7 +288,13 @@ func (b *backend) validateEventLogWindowWitnesses(
 // verifyObjects is reserved for CORRUPT disarm: leadership startup must remain
 // one sequential witness/event merge, while an operator asking to reopen writes
 // must also prove every uncompacted event's referenced object version exists.
-func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjects bool) (retErr error) {
+func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjects bool) error {
+	return b.validatePersistedTxnWitnessesAfter(ctx, verifyObjects, true, 0)
+}
+
+func (b *backend) validatePersistedTxnWitnessesAfter(
+	ctx context.Context, verifyObjects, armCorrupt bool, afterRevision uint64,
+) (retErr error) {
 	compactRevision, err := b.GetCompactRevisionFresh(ctx)
 	if err != nil {
 		return err
@@ -301,8 +307,14 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 	} else if err != nil {
 		return err
 	}
-	start := b.ks.EncodeInternalKey(txnWitnessPrefix)
-	witnesses, err := b.kv.Iter(ctx, start, rawPrefixEnd(start), 0, 0)
+	base := b.ks.EncodeInternalKey(txnWitnessPrefix)
+	start := base
+	if afterRevision > 0 {
+		// MaxInt64 is reserved for the format fence and ordinary revisions stop
+		// one value earlier, so afterRevision+1 cannot wrap here.
+		start = b.ks.EncodeInternalKey(txnWitnessLogicalKey(afterRevision + 1))
+	}
+	witnesses, err := b.kv.Iter(ctx, start, rawPrefixEnd(base), 0, 0)
 	if err != nil {
 		return err
 	}
@@ -382,6 +394,9 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 			if !stillPresent {
 				continue // an operator repaired the index before the alarm linearization point
 			}
+			if !armCorrupt {
+				return indexErr
+			}
 			if err := b.armPersistedWitnessCorrupt(ctx, evidence.revision, indexErr); err != nil {
 				return err
 			}
@@ -425,7 +440,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 		}
 		key := append([]byte(nil), witnesses.Key()...)
 		raw := append([]byte(nil), witnesses.Val()...)
-		logical := key[len(start)-len(txnWitnessPrefix):]
+		logical := key[len(base)-len(txnWitnessPrefix):]
 		var revision uint64
 		var cause error
 		if bytes.Equal(logical, leaseIncarnationFormatFenceKey()) {
@@ -594,6 +609,9 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 		}
 		if !present {
 			continue // compaction removed the seal before deleting these events
+		}
+		if !armCorrupt {
+			return cause
 		}
 		if err := b.armPersistedWitnessCorrupt(ctx, revision, cause); err != nil {
 			return err

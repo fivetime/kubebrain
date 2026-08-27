@@ -15,9 +15,11 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -68,6 +70,39 @@ type countingWitnessIndexBatchStorage struct {
 	storage.KvStorage
 	calls   atomic.Int32
 	maxKeys atomic.Int32
+}
+
+type witnessIterTraceStorage struct {
+	storage.KvStorage
+	mu     sync.Mutex
+	starts [][]byte
+}
+
+func (s *witnessIterTraceStorage) Iter(
+	ctx context.Context, start, end []byte, timestamp, limit uint64,
+) (storage.Iter, error) {
+	s.mu.Lock()
+	s.starts = append(s.starts, append([]byte(nil), start...))
+	s.mu.Unlock()
+	return s.KvStorage.Iter(ctx, start, end, timestamp, limit)
+}
+
+func (s *witnessIterTraceStorage) resetStarts() {
+	s.mu.Lock()
+	s.starts = nil
+	s.mu.Unlock()
+}
+
+func (s *witnessIterTraceStorage) startsWith(prefix []byte) [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var matched [][]byte
+	for _, start := range s.starts {
+		if bytes.HasPrefix(start, prefix) {
+			matched = append(matched, append([]byte(nil), start...))
+		}
+	}
+	return matched
 }
 
 func (s *countingWitnessIndexBatchStorage) BatchGet(
@@ -174,6 +209,134 @@ func TestLeadershipRestartValidatesPersistentTxnWitnessAndRecoversAfterRepair(t 
 	members, err = restarted.CorruptAlarms(ctx)
 	require.NoError(t, err)
 	require.Empty(t, members, "a repaired witness remains healthy after explicit disarm")
+}
+
+func TestLeadershipPrevalidationMovesOnlyValidatedHistoryOffPromotionPath(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store := &witnessIterTraceStorage{KvStorage: imemkv.NewKvStorage()}
+	b := NewBackend(store, Config{
+		Prefix: prefix + "/prevalidate-gap", Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(1)
+	ctx := context.Background()
+
+	_, prevalidatedRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/prevalidate-gap/old"), Value: []byte("old"),
+	}}, nil)
+	require.NoError(t, err)
+	require.NoError(t, b.PrevalidateLeadershipRevision(ctx))
+	require.Equal(t, prevalidatedRevision, b.txnWitnessPrevalidatedRevision.Load())
+
+	store.resetStarts()
+	_, newRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/prevalidate-gap/new"), Value: []byte("new"),
+	}}, nil)
+	require.NoError(t, err)
+	require.Greater(t, newRevision, prevalidatedRevision)
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	require.Zero(t, b.txnWitnessPrevalidatedRevision.Load(),
+		"the first promotion must consume rather than perpetuate the prevalidation cache")
+
+	witnessPrefix := b.ks.EncodeInternalKey(txnWitnessPrefix)
+	witnessStarts := store.startsWith(witnessPrefix)
+	require.Contains(t, witnessStarts,
+		b.ks.EncodeInternalKey(txnWitnessLogicalKey(prevalidatedRevision+1)),
+		"promotion must resume at the first revision not covered by prevalidation")
+	require.NotContains(t, witnessStarts, witnessPrefix,
+		"promotion must not repeat the prevalidated full-history witness scan")
+}
+
+func TestLeadershipPrevalidationDoesNotHideLaterWitnessCorruption(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store := imemkv.NewKvStorage()
+	b := NewBackend(store, Config{
+		Prefix: prefix + "/prevalidate-corrupt-gap", Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(1)
+	ctx := context.Background()
+
+	_, _, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/prevalidate-corrupt-gap/old"), Value: []byte("old"),
+	}}, nil)
+	require.NoError(t, err)
+	require.NoError(t, b.PrevalidateLeadershipRevision(ctx))
+	_, corruptRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/prevalidate-corrupt-gap/new"), Value: []byte("new"),
+	}}, nil)
+	require.NoError(t, err)
+	eventKey := b.ks.EncodeEventLogKey(corruptRevision, []byte(prefix+"/prevalidate-corrupt-gap/new"))
+	corrupt := store.BeginBatchWrite()
+	corrupt.Put(eventKey, []byte("corrupt-event"), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0),
+		"promotion arms CORRUPT and remains available read-only")
+	members, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.NotEmpty(t, members, "a witness created after prevalidation must still be validated on promotion")
+}
+
+func TestLeadershipPrevalidationStillValidatesReservedFormatFence(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store := imemkv.NewKvStorage()
+	b := NewBackend(store, Config{
+		Prefix: prefix + "/prevalidate-format-fence", Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(1)
+	ctx := context.Background()
+
+	_, _, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/prevalidate-format-fence/key"), Value: []byte("value"),
+	}}, nil)
+	require.NoError(t, err)
+	require.NoError(t, b.PrevalidateLeadershipRevision(ctx))
+	corrupt := store.BeginBatchWrite()
+	corrupt.Put(b.ks.EncodeInternalKey(leaseIncarnationFormatFenceKey()), []byte{leaseIncarnationFenceVersion}, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	members, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.NotEmpty(t, members,
+		"the MaxInt64 format fence must remain inside the incremental promotion scan")
+}
+
+func TestLeadershipPrevalidationFailureCannotArmBeforeElectionOrAdvanceCache(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store := imemkv.NewKvStorage()
+	b := NewBackend(store, Config{
+		Prefix: prefix + "/prevalidate-failure", Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(1)
+	ctx := context.Background()
+
+	key := []byte(prefix + "/prevalidate-failure/key")
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+	require.NoError(t, err)
+	eventKey := b.ks.EncodeEventLogKey(revision, key)
+	corrupt := store.BeginBatchWrite()
+	corrupt.Put(eventKey, []byte("corrupt-event"), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	err = b.PrevalidateLeadershipRevision(ctx)
+	require.ErrorIs(t, err, ErrTxnWitnessCorrupt)
+	require.Zero(t, b.txnWitnessPrevalidatedRevision.Load())
+	members, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, members, "a non-elected prevalidator must never mutate the CORRUPT alarm")
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	members, alarmErr = b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.NotEmpty(t, members, "the elected promotion path must rerun and arm the same evidence")
 }
 
 func TestLeadershipRestartWitnessCorruptAlarmFailureIsExplicit(t *testing.T) {

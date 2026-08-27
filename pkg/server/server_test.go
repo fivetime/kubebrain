@@ -189,6 +189,23 @@ type concurrentServingInitializationBackend struct {
 	checkpointOnce    sync.Once
 }
 
+type blockingLeadershipPrevalidationBackend struct {
+	backend.Backend
+	entered chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func (b *blockingLeadershipPrevalidationBackend) PrevalidateLeadershipRevision(ctx context.Context) error {
+	close(b.entered)
+	select {
+	case <-b.release:
+		return b.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (b *concurrentServingInitializationBackend) EnsureEventLogStart(ctx context.Context) error {
 	b.eventOnce.Do(func() { close(b.eventEntered) })
 	select {
@@ -845,8 +862,71 @@ func TestLeaderElectionMetricsInitializedBeforeCampaign(t *testing.T) {
 		{kind: "counter", name: "leader.election.initialize.err", value: 0},
 		{kind: "counter", name: "leader.election.initialize.incompatible_witness", value: 0},
 		{kind: "counter", name: "leader.election.initialize.invalid_alarm_metadata", value: 0},
+		{kind: "counter", name: "leader.election.prevalidate.err", value: 0},
 		{kind: "counter", name: "etcd.server.leader_changes_seen_total", value: 0},
 	}, recorder.events)
+}
+
+func TestLeadershipRevisionPrevalidationCompletesBeforeCampaign(t *testing.T) {
+	recorder := &healthMetricRecorder{}
+	b := &blockingLeadershipPrevalidationBackend{
+		Backend: backend.NewBackend(imemkv.NewKvStorage(), backend.Config{
+			Prefix: "/registry", Identity: "test",
+		}, recorder),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	defer func() { require.NoError(t, b.Backend.(interface{ Close() error }).Close()) }()
+	s := &server{backend: b, metricCli: recorder}
+	campaignEntered := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		s.prevalidateAndCampaign(context.Background(), func(context.Context) { close(campaignEntered) })
+		close(done)
+	}()
+
+	select {
+	case <-b.entered:
+	case <-time.After(time.Second):
+		t.Fatal("leadership revision prevalidation did not start")
+	}
+	select {
+	case <-campaignEntered:
+		t.Fatal("process joined election before revision prevalidation completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(b.release)
+	select {
+	case <-campaignEntered:
+	case <-time.After(time.Second):
+		t.Fatal("process did not join election after revision prevalidation completed")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("prevalidation/campaign wrapper did not return")
+	}
+}
+
+func TestLeadershipRevisionPrevalidationFailureStillJoinsElection(t *testing.T) {
+	recorder := &healthMetricRecorder{}
+	base := backend.NewBackend(imemkv.NewKvStorage(), backend.Config{
+		Prefix: "/registry", Identity: "test",
+	}, recorder)
+	defer func() { require.NoError(t, base.(interface{ Close() error }).Close()) }()
+	wantErr := errors.New("prevalidation unavailable")
+	b := &blockingLeadershipPrevalidationBackend{
+		Backend: base,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		err:     wantErr,
+	}
+	close(b.release)
+	s := &server{backend: b, metricCli: recorder}
+	campaigned := false
+	s.prevalidateAndCampaign(context.Background(), func(context.Context) { campaigned = true })
+	require.True(t, campaigned, "the elected path must retain authority to retry and arm corruption")
+	require.Equal(t, []interface{}{1}, recorder.counterValues("leader.election.prevalidate.err"))
 }
 
 func TestServingInitializationMetricsInitializedBeforeCampaign(t *testing.T) {

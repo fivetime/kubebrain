@@ -114,12 +114,34 @@ func (b *backend) InitializeLeadershipRevision(ctx context.Context, _ uint64) er
 	} else if err != nil {
 		return err
 	}
+	// Consume the startup optimization exactly once. A failed promotion or any
+	// later re-election deliberately returns to the complete integrity scan.
+	prevalidated := b.txnWitnessPrevalidatedRevision.Swap(0)
+	if prevalidated > durable {
+		return fmt.Errorf("%w: prevalidated transaction witness revision %d is above durable revision %d",
+			ErrInvalidMVCCMetadata, prevalidated, durable)
+	}
 	// A commit-result resolver is process-local, but every new user transaction
 	// seals its exact event-marker set in the same TiKV transaction. Validate
 	// those durable seals before this leadership term becomes writable so a
 	// crash cannot erase evidence of a partial/corrupt transaction outcome.
-	if err := b.validatePersistedTxnWitnesses(ctx, false); err != nil && !errors.Is(err, ErrTxnWitnessCorrupt) {
-		return err
+	validationStarted := time.Now()
+	validationErr := b.validatePersistedTxnWitnessesAfter(ctx, false, true, prevalidated)
+	validationDuration := time.Since(validationStarted)
+	validationMode := "full"
+	if prevalidated > 0 {
+		validationMode = "incremental"
+	}
+	if b.metricCli != nil {
+		_ = b.metricCli.EmitHistogram("txn.witness.leadership_validation.duration_seconds",
+			validationDuration.Seconds(), metrics.Tag("mode", validationMode))
+	}
+	if validationErr == nil {
+		klog.InfoS("leadership transaction witnesses validated", "mode", validationMode,
+			"afterRevision", prevalidated, "durableRevision", durable, "duration", validationDuration)
+	}
+	if validationErr != nil && !errors.Is(validationErr, ErrTxnWitnessCorrupt) {
+		return validationErr
 	}
 	// Alarm metadata is part of the write-safety boundary, not merely an RPC
 	// presentation detail. Validate it before publishing this leadership term;
@@ -139,6 +161,36 @@ func (b *backend) InitializeLeadershipRevision(ctx context.Context, _ uint64) er
 	b.collectorRevision.Store(base)
 	b.commitNotify.advance()
 	return nil
+}
+
+// PrevalidateLeadershipRevision performs the expensive immutable
+// transaction-witness/event merge before this process joins leader election.
+// The durable revision is sampled first, so concurrent writes can only make the
+// cached floor conservative. Promotion always scans the gap above that floor.
+// Corruption is reported but not armed here: only the elected, fenced path may
+// mutate the cluster-wide CORRUPT alarm.
+func (b *backend) PrevalidateLeadershipRevision(ctx context.Context) error {
+	durable, err := b.GetDurableRevision(ctx)
+	switch {
+	case errors.Is(err, storage.ErrKeyNotFound):
+		durable = 0
+	case err != nil:
+		return err
+	}
+	if err := b.validatePersistedTxnWitnessesAfter(ctx, false, false, 0); err != nil {
+		return err
+	}
+	b.advanceTxnWitnessPrevalidatedRevision(durable)
+	return nil
+}
+
+func (b *backend) advanceTxnWitnessPrevalidatedRevision(revision uint64) {
+	for {
+		current := b.txnWitnessPrevalidatedRevision.Load()
+		if revision <= current || b.txnWitnessPrevalidatedRevision.CompareAndSwap(current, revision) {
+			return
+		}
+	}
 }
 
 func (b *backend) stageDurableRevision(batch storage.BatchWrite, revision uint64) {

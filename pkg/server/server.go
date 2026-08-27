@@ -392,7 +392,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.initFDMetrics()
 	go func() {
 		defer close(s.campaignDone)
-		peerService.Campaign(campaignCtx)
+		s.prevalidateAndCampaign(campaignCtx, peerService.Campaign)
 	}()
 	go func() {
 		defer close(s.quotaMetricsDone)
@@ -645,6 +645,41 @@ func (s *server) runQuotaMetricsRefresh(ctx context.Context, interval, timeout t
 // leaderReloadRetryInterval is how long onStartedLeading waits before retrying a
 // failed lease reload; until it succeeds the node does not advertise readiness.
 const leaderReloadRetryInterval = time.Second
+
+const leadershipRevisionPrevalidationTimeout = 30 * time.Second
+
+type leadershipRevisionPrevalidator interface {
+	PrevalidateLeadershipRevision(context.Context) error
+}
+
+func (s *server) prevalidateAndCampaign(ctx context.Context, campaign func(context.Context)) {
+	if prevalidator, ok := s.backend.(leadershipRevisionPrevalidator); ok {
+		started := time.Now()
+		prevalidationCtx, cancel := context.WithTimeout(ctx, leadershipRevisionPrevalidationTimeout)
+		err := prevalidator.PrevalidateLeadershipRevision(prevalidationCtx)
+		cancel()
+		duration := time.Since(started)
+		if s.metricCli != nil {
+			_ = s.metricCli.EmitHistogram("leader.election.prevalidate.duration_seconds", duration.Seconds())
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			if s.metricCli != nil {
+				_ = s.metricCli.EmitCounter("leader.election.prevalidate.err", 1)
+			}
+			// Prevalidation is an availability optimization, not the authority
+			// boundary. Join election so the fenced promotion path can retry the
+			// scan and persist CORRUPT if the evidence is truly inconsistent.
+			klog.ErrorS(err, "leadership revision prevalidation failed; joining election with full promotion validation",
+				"duration", duration)
+		} else {
+			klog.InfoS("leadership revision prevalidation completed", "duration", duration)
+		}
+	}
+	campaign(ctx)
+}
 
 func (s *server) onPreparingLeading() {
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
@@ -1130,6 +1165,7 @@ func (s *server) initLeaderElectionMetrics() {
 	_ = s.metricCli.EmitCounter("leader.election.initialize.err", 0)
 	_ = s.metricCli.EmitCounter("leader.election.initialize.incompatible_witness", 0)
 	_ = s.metricCli.EmitCounter("leader.election.initialize.invalid_alarm_metadata", 0)
+	_ = s.metricCli.EmitCounter("leader.election.prevalidate.err", 0)
 	_ = s.metricCli.EmitCounter("etcd.server.leader_changes_seen_total", 0)
 }
 
