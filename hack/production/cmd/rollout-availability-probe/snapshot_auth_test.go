@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
@@ -155,6 +157,40 @@ func TestConsumeAndValidateSnapshotPreservesEnabledAuthPermissionMatrix(t *testi
 	require.ErrorContains(t, err, "restored auth status mismatch")
 	require.True(t, partial)
 	entries, readErr = os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries)
+}
+
+func TestConsumeAndValidateSnapshotPreservesEnabledAuthPermissionMatrixWithTLS(t *testing.T) {
+	const prefix = "/probe/auth-enabled-tls-restore/"
+	fixture := newSnapshotAuthFixture(prefix)
+	fixture.expected.revision = 31
+	fixture.expected.enabled = true
+	fixture.expected.adminUsername = "root"
+	fixture.expected.adminPassword = "restored-root-tls-secret"
+	expected := newStreamProbeExpectations(prefix)
+	state := snapshotAuthTestState(t, expected, &fixture.expected)
+	state.Auth.Enabled = true
+	rootHash, err := bcrypt.GenerateFromPassword([]byte(fixture.expected.adminPassword), bcrypt.MinCost)
+	require.NoError(t, err)
+	state.Auth.Users = append(state.Auth.Users, &authpb.User{
+		Name: []byte(fixture.expected.adminUsername), Password: rootHash, Roles: []string{"root"},
+		Options: &authpb.UserAddOptions{},
+	})
+	state.Auth.Roles = append(state.Auth.Roles, &authpb.Role{Name: []byte("root")})
+	identity, err := transport.SelfCert(zap.NewNop(), t.TempDir(), []string{"restored-auth-tls.example:443"}, 1,
+		x509.ExtKeyUsageClientAuth)
+	require.NoError(t, err)
+	tlsCfg := restoredSnapshotTLSConfig{
+		caFile: identity.CertFile, certFile: identity.CertFile, keyFile: identity.KeyFile,
+		serverName: "restored-auth-tls.example",
+	}
+	dir := t.TempDir()
+	partial, err := consumeAndValidateSnapshotWithClusterAuth(t.Context(), snapshotAuthReceiver(t, state), dir, expected,
+		tlsCfg, &fixture.expected, 3)
+	require.NoError(t, err)
+	require.True(t, partial)
+	entries, readErr := os.ReadDir(dir)
 	require.NoError(t, readErr)
 	require.Empty(t, entries)
 }
