@@ -840,20 +840,6 @@ func verifyRestoredClusterMemberAdd(ctx context.Context, adminClient *clientv3.C
 	if err := waitForRestoredSnapshotMember(ctx, added, addedServer); err != nil {
 		return err
 	}
-	expandedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, expandedCfg, preJoinRevision)
-	if err != nil {
-		return fmt.Errorf("verify expanded officially restored etcd topology: %w", err)
-	}
-	for index, memberID := range topology.memberIDs {
-		if expandedTopology.memberIDs[index] != memberID {
-			return fmt.Errorf("officially restored etcd changed member ID during expansion at %d: got=%x want=%x",
-				index, expandedTopology.memberIDs[index], memberID)
-		}
-	}
-	if expandedTopology.memberIDs[len(expandedTopology.memberIDs)-1] != addedMemberID {
-		return fmt.Errorf("officially restored etcd added member ID mismatch: got=%x want=%x",
-			expandedTopology.memberIDs[len(expandedTopology.memberIDs)-1], addedMemberID)
-	}
 	addedClient, err := newDirectRestoredClient(adminConfig, added.clientURL.String())
 	if err != nil {
 		return fmt.Errorf("create added officially restored etcd member client: %w", err)
@@ -863,15 +849,6 @@ func verifyRestoredClusterMemberAdd(ctx context.Context, adminClient *clientv3.C
 			retErr = errors.Join(retErr, fmt.Errorf("close added officially restored etcd member client: %w", closeErr))
 		}
 	}()
-	if err := waitForRestoredMemberValue(ctx, addedClient, preJoinKey, preJoinValue, preJoinRevision); err != nil {
-		return fmt.Errorf("verify pre-join value on added restored member: %w", err)
-	}
-	if err := verifyRestoredMemberCurrentSeeds(ctx, adminClient, addedClient, expected, topology.clusterID, addedMemberID, preJoinRevision); err != nil {
-		return err
-	}
-	if err := verifyRestoredMemberAuthState(ctx, adminClient, addedClient, topology.clusterID, addedMemberID, preJoinRevision); err != nil {
-		return err
-	}
 
 	postJoinKey := "/kubebrain-rollout-restore/four-member-replication"
 	postJoinValue := fmt.Sprintf("added-%x", addedMemberID)
@@ -887,6 +864,31 @@ func verifyRestoredClusterMemberAdd(ctx context.Context, adminClient *clientv3.C
 		if err := waitForRestoredMemberValue(ctx, directClient, postJoinKey, postJoinValue, postJoinPut.Header.Revision); err != nil {
 			return fmt.Errorf("verify expanded cluster value on member %d: %w", index, err)
 		}
+	}
+	expandedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, expandedCfg, postJoinPut.Header.Revision)
+	if err != nil {
+		return fmt.Errorf("verify expanded officially restored etcd topology after replication barrier: %w", err)
+	}
+	for index, memberID := range topology.memberIDs {
+		if expandedTopology.memberIDs[index] != memberID {
+			return fmt.Errorf("officially restored etcd changed member ID during expansion at %d: got=%x want=%x",
+				index, expandedTopology.memberIDs[index], memberID)
+		}
+	}
+	if expandedTopology.memberIDs[len(expandedTopology.memberIDs)-1] != addedMemberID {
+		return fmt.Errorf("officially restored etcd added member ID mismatch: got=%x want=%x",
+			expandedTopology.memberIDs[len(expandedTopology.memberIDs)-1], addedMemberID)
+	}
+	if err := waitForRestoredMemberValue(ctx, addedClient, preJoinKey, preJoinValue, preJoinRevision); err != nil {
+		return fmt.Errorf("verify pre-join value on added restored member: %w", err)
+	}
+	if err := verifyRestoredMemberCurrentSeeds(ctx, adminClient, addedClient, expected, topology.clusterID, addedMemberID,
+		postJoinPut.Header.Revision); err != nil {
+		return err
+	}
+	if err := verifyRestoredMemberAuthState(ctx, adminClient, addedClient, topology.clusterID, addedMemberID,
+		postJoinPut.Header.Revision); err != nil {
+		return err
 	}
 	deleteResponse, err := adminClient.Txn(ctx).Then(clientv3.OpDelete(preJoinKey), clientv3.OpDelete(postJoinKey)).Commit()
 	if err != nil {
