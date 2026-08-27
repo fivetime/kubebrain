@@ -851,6 +851,52 @@ func TestValidateRestoredMemberAddResponseRejectsIdentityDrift(t *testing.T) {
 	}
 }
 
+func TestValidateRestoredMemberUpdateResponseRejectsIdentityDrift(t *testing.T) {
+	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	require.NoError(t, err)
+	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33}}
+	makeResponse := func() *clientv3.MemberUpdateResponse {
+		members := make([]*etcdserverpb.Member, 0, len(cfg.members))
+		for index, member := range cfg.members {
+			members = append(members, &etcdserverpb.Member{
+				ID: topology.memberIDs[index], Name: member.name,
+				PeerURLs: []string{member.peerURL.String()}, ClientURLs: []string{member.clientURL.String()},
+			})
+		}
+		return &clientv3.MemberUpdateResponse{
+			Header:  &etcdserverpb.ResponseHeader{ClusterId: topology.clusterID, MemberId: topology.leaderID, RaftTerm: 2},
+			Members: members,
+		}
+	}
+
+	require.NoError(t, validateRestoredMemberUpdateResponse(makeResponse(), cfg, topology, topology.memberIDs[0]))
+	require.Error(t, validateRestoredMemberUpdateResponse(nil, cfg, topology, topology.memberIDs[0]))
+	require.Error(t, validateRestoredMemberUpdateResponse(makeResponse(), cfg, topology, 44))
+	for name, mutate := range map[string]func(*clientv3.MemberUpdateResponse){
+		"missing header":     func(response *clientv3.MemberUpdateResponse) { response.Header = nil },
+		"wrong cluster":      func(response *clientv3.MemberUpdateResponse) { response.Header.ClusterId++ },
+		"nonleader response": func(response *clientv3.MemberUpdateResponse) { response.Header.MemberId = 22 },
+		"zero term":          func(response *clientv3.MemberUpdateResponse) { response.Header.RaftTerm = 0 },
+		"nonzero revision":   func(response *clientv3.MemberUpdateResponse) { response.Header.Revision = 1 },
+		"missing voter": func(response *clientv3.MemberUpdateResponse) {
+			response.Members = response.Members[:len(response.Members)-1]
+		},
+		"learner": func(response *clientv3.MemberUpdateResponse) { response.Members[0].IsLearner = true },
+		"identity drift": func(response *clientv3.MemberUpdateResponse) {
+			response.Members[0].PeerURLs = []string{"http://127.0.0.1:1"}
+		},
+		"duplicate member ID": func(response *clientv3.MemberUpdateResponse) {
+			response.Members[1].ID = response.Members[0].ID
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := makeResponse()
+			mutate(response)
+			require.Error(t, validateRestoredMemberUpdateResponse(response, cfg, topology, topology.memberIDs[0]))
+		})
+	}
+}
+
 func TestValidateRestoredMemberAddLearnerResponseRejectsIdentityDrift(t *testing.T) {
 	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
 	require.NoError(t, err)

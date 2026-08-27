@@ -671,6 +671,44 @@ func validateRestoredMemberAddResponse(response *clientv3.MemberAddResponse, cfg
 	return newMember.ID, nil
 }
 
+func validateRestoredMemberUpdateResponse(response *clientv3.MemberUpdateResponse, cfg restoredSnapshotConfig,
+	topology restoredClusterTopology, updatedMemberID uint64,
+) error {
+	if response == nil || response.Header == nil || response.Header.ClusterId != topology.clusterID ||
+		response.Header.MemberId != topology.leaderID || response.Header.RaftTerm == 0 || response.Header.Revision != 0 {
+		return fmt.Errorf("invalid officially restored etcd MemberUpdate response identity: %+v", response)
+	}
+	if len(response.Members) != len(cfg.members) || len(topology.memberIDs) != len(cfg.members) {
+		return fmt.Errorf("officially restored etcd MemberUpdate member count mismatch: got=%d want=%d ids=%d",
+			len(response.Members), len(cfg.members), len(topology.memberIDs))
+	}
+	expectedByID := make(map[uint64]restoredSnapshotMemberConfig, len(cfg.members))
+	updatedKnown := false
+	for index, memberID := range topology.memberIDs {
+		expectedByID[memberID] = cfg.members[index]
+		updatedKnown = updatedKnown || memberID == updatedMemberID
+	}
+	if !updatedKnown {
+		return fmt.Errorf("officially restored etcd MemberUpdate targeted unknown member %x", updatedMemberID)
+	}
+	seen := make(map[uint64]struct{}, len(response.Members))
+	for _, member := range response.Members {
+		if member == nil || member.ID == 0 || member.IsLearner {
+			return fmt.Errorf("officially restored etcd MemberUpdate returned an invalid voter: %+v", member)
+		}
+		if _, duplicate := seen[member.ID]; duplicate {
+			return fmt.Errorf("officially restored etcd MemberUpdate repeated member ID %x", member.ID)
+		}
+		seen[member.ID] = struct{}{}
+		expected, exists := expectedByID[member.ID]
+		if !exists || member.Name != expected.name || len(member.PeerURLs) != 1 || member.PeerURLs[0] != expected.peerURL.String() ||
+			len(member.ClientURLs) != 1 || member.ClientURLs[0] != expected.clientURL.String() {
+			return fmt.Errorf("officially restored etcd MemberUpdate changed voter identity: %+v", member)
+		}
+	}
+	return nil
+}
+
 func verifyRestoredMemberCurrentSeeds(ctx context.Context, source, added *clientv3.Client, expected []streamProbeExpectation,
 	clusterID, memberID uint64, minimumRevision int64,
 ) error {
@@ -1429,6 +1467,24 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 			topology.memberIDs[index]); err != nil {
 			return fmt.Errorf("establish restored member %q Raft apply barrier before reconfiguration: %w", cfg.members[index].name, err)
 		}
+	}
+	leaderIndex := -1
+	for index, memberID := range topology.memberIDs {
+		if memberID == topology.leaderID {
+			leaderIndex = index
+			break
+		}
+	}
+	if leaderIndex < 0 || directClients[leaderIndex] == nil {
+		return errors.New("officially restored etcd cluster has no direct leader client for the MemberUpdate Raft advance barrier")
+	}
+	updateResponse, err := directClients[leaderIndex].MemberUpdate(ctx, topology.memberIDs[leaderIndex],
+		[]string{cfg.members[leaderIndex].peerURL.String()})
+	if err != nil {
+		return fmt.Errorf("establish restored MemberUpdate Raft advance barrier: %w", err)
+	}
+	if err := validateRestoredMemberUpdateResponse(updateResponse, cfg, topology, topology.memberIDs[leaderIndex]); err != nil {
+		return err
 	}
 	followerIndex, err := restoredMemberPromoteFollowerIndex(topology, directClients, restartedFollowerIndex)
 	if err != nil {
