@@ -136,6 +136,40 @@ func TestKeepAliveMonitorAllowsConfiguredCompletedRecoveryEpisodes(t *testing.T)
 	require.Equal(t, 2, restarts)
 }
 
+func TestKeepAliveMonitorBoundsThreeOrdinalRolloutRecoveryEpisodes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	channels := []chan *clientv3.LeaseKeepAliveResponse{
+		make(chan *clientv3.LeaseKeepAliveResponse, 1),
+		make(chan *clientv3.LeaseKeepAliveResponse, 1),
+		make(chan *clientv3.LeaseKeepAliveResponse, 1),
+		make(chan *clientv3.LeaseKeepAliveResponse, 1),
+	}
+	restarts := 0
+	monitor := startKeepAliveMonitor(ctx, cancel, channels[0], keepAliveMonitorConfig{
+		label: "direct endpoint=ordinal-0", clusterID: 7, leaseID: 42, grantedTTL: 15, initialRevision: 10,
+		recoveryTimeout: time.Second,
+		retryWait:       time.Millisecond,
+		maxRecoveries:   3,
+		restart: func(context.Context) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
+			restarts++
+			return channels[restarts], nil
+		},
+	})
+	t.Cleanup(monitor.stop)
+
+	for episode := 1; episode <= 3; episode++ {
+		close(channels[episode-1])
+		require.Eventually(t, func() bool { return monitor.snapshot().restarts == episode }, time.Second, time.Millisecond)
+		channels[episode] <- keepAliveResponse(int64(10 + episode))
+		require.Eventually(t, func() bool { return monitor.snapshot().recoveries == episode }, time.Second, time.Millisecond)
+		require.NoError(t, monitor.snapshot().err)
+	}
+	close(channels[3])
+	require.Eventually(t, func() bool { return monitor.snapshot().err != nil }, time.Second, time.Millisecond)
+	require.ErrorContains(t, monitor.snapshot().err, "episodes=3 limit=3")
+	require.Equal(t, 3, restarts, "the fourth completed recovery episode must not restart")
+}
+
 func TestKeepAliveMonitorPublishesRestartAndValidationFailures(t *testing.T) {
 	t.Run("restart", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

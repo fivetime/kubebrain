@@ -1136,6 +1136,13 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			initialRevision: directKeepAliveRevision,
 			recoveryTimeout: cfg.maxDirectLatency,
 			retryWait:       directKeepAliveRestartWait,
+			// A replacement subscription can briefly resolve the retiring Pod
+			// address before headless DNS converges, completing one valid recovery
+			// and then closing again. Bound independent direct recovery episodes by
+			// the rollout replica set, just like the public KeepAlive above; every
+			// episode must still produce a fully validated fresh response within
+			// maxDirectLatency.
+			maxRecoveries: len(cfg.directEndpoints),
 			restart: func(restartCtx context.Context) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
 				return directClient.KeepAlive(restartCtx, leaseID)
 			},
