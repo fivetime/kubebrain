@@ -63693,6 +63693,74 @@ A5557 临时 Pod 0。
 及全部 A5557 中间候选引用。本轮关闭 restored cluster learner add、未追平拒绝、启动追平、leader 定向晋升、四 voter barrier、移除与
 三 voter 收敛的生产门禁缺口。仍未覆盖跨集群灾备、大数据量恢复，以及平台控制面把这些已验证原语编排为可审计的长期 DBaaS 工作流。
 
+### A5558：16 MiB Snapshot 恢复规模门禁与失败清理
+
+A5557 的官方 Restore 门禁只携带约 128KiB 用户值，无法证明较大逻辑快照的流式制品、官方 etcd 恢复、分页读取和成员生命周期能在
+同一生产预算内成立。本轮将受控规模固定为 512 个 32KiB 值（原始值精确 16MiB）：用 16 个各 32-key 的 Txn 写入，每个 Txn
+仍受 10 秒命令期限约束；快照制品不得小于原始值总量；恢复后的官方 etcd 以 32-key/页精确校验 key、长度、SHA-256、
+create/mod revision、version=1、lease=0 和 snapshot header，并继续执行三 voter、learner add/catch-up/promote/remove 的 TLS+
+enabled-auth 生命周期。生产源端清理最多 512 个规模键，保持在 `--max-delete-range-keys=1024` 以内。
+
+实现提交依次为 `1e8c988bbbd835214a5da46f4280fd3afdc9eb0a`（规模门禁）、
+`de3e182d021444a8b19e011991978f61a1283eb3` 与 `5115594ab397787d24d487ad987f01913eb6493f`（启动总预算）、
+`8bac0e8291ab46a503e6dea5d84706ffb8f914ac`（Alpine OpenSSL 3.5.8 pin）、
+`0fc1563bfd2d362c82985caf92ec8cb9d997c957`（上游 Txn operation header 语义与启动失败直报），最终为
+`e0a580ce1841b0f77d7d8626e3b61f64b8c83312`（失败清理使用三个稳定 Pod DNS 并保留组合错误）。对照
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/txn/txn.go` 与
+`server/etcdserver/api/v3rpc/key.go` 后确认：上游只给顶层 Txn header 填 cluster/member/term，内层 Put header 只保证 revision。
+探针现在接受空 identity 或相同非零 cluster ID，仍拒绝冲突 identity、错误 revision 和意外 PrevKV。
+
+开发 RED 没有被包装为超时或删除。前三个候选分别在 10/30/90 秒报告“未发布 start barrier”；后续读取 Pod日志证明它们实际在
+首批规模 Txn 后即以 `invalid Snapshot scale put response` 失败，runner 当时没有识别 `PROBE_FAIL`，所以错误被等待窗口掩盖。
+最终 runner 在启动阶段发现 `PROBE_FAIL` 会立即输出原始原因并在 StatefulSet mutation 前退出。一次清除旧 BuildKit cache 后的冷构建
+又暴露 Alpine 仓库已从 `openssl=3.5.7-r0` 更新为 `3.5.8-r0`，固定版本与 Dockerfile 静态测试同步更新；冷构建和容器内
+`openssl version` 均确认 3.5.8。
+
+`0fc1563b` 候选从 A5557 升级 **900/900 GREEN**：KeepAlive `107/286`、direct replacement 23、最大恢复 22,012ms，
+RangeStream 179、Snapshot 1、stream/partial retry `2/0`，最大公共/直连/TSO/Region 延迟 `2420/26413/48/8ms`，wall
+219.974 秒。第一次同版本重启在 iteration 176 **RED**：Service 单端点连接在旧 Pod退出后约 7 秒没有可用连接，10 秒 Put 与
+对账 Get 同时到期；滚动本身收敛到 3/3，但旧清理复用同一个失效 Service client，留下 529 个键。人工清理前先精确确认 Count=529，
+单次 Delete 返回 Deleted=529，清理后根 Count 恢复为 7。相同镜像第二次重启 **900/900 GREEN**，最大延迟
+`2334/25445/62/10ms`，wall 218.200 秒。这一 RED/GREEN 差异保留为 Service 单端点重连尾延迟的非确定性证据。
+
+最终清理实现不改变普通业务探测：线上 Put/Get/Watch 仍只走 Service endpoint；只有补偿路径新建包含三个稳定 Pod DNS 的 client，
+使用独立、最多 30 秒 context 撤销临时 lease/auth fixture、删除前缀并验证不存在。任何清理错误都通过 `errors.Join` 与原始错误同时
+返回，不再因已有 `retErr` 被静默吞掉。final5 升级 **900/900 GREEN**：KeepAlive `110/290`、replacement 24、最大恢复
+22,550ms，RangeStream 180、Snapshot 1、retry `2/0`，最大延迟 `4438/26667/101/7ms`，wall 221.676 秒。随后用临时
+Service UID/resourceVersion CAS 把 selector 切到无 endpoint，iteration 337 按预期 RED；`PROBE_FAIL` 发布前直连补偿路径已把该
+前缀清到 Count=0，Service 又以同一 UID 和最新 resourceVersion CAS 恢复，三 endpoint 与滚动均收敛。最终无注入同版本重启
+**900/900 GREEN**：KeepAlive `116/304`、replacement 23、最大恢复 22,503ms，RangeStream 183、Snapshot 1、retry `2/0`，
+最大延迟 `4134/27173/68/8ms`，wall 224.226 秒。
+
+最终完整 probe 包测试/墙钟为 `132.430/134.305s`，race `147.954/153.049s`，vet/diff check 全绿。提交前 production
+inventory 为 657 项、分片 `159/182/164/152`；`0fc1563b` 提交后 wall 为 `142.545/366.195/237.613/384.693s`，
+`e0a580ce` 提交后 wall 为 `140.269/367.556/238.768/384.428s`，全部通过。
+
+最终 build time `2026-08-27T09:48:09Z`，OCI 构建 wall 273.736 秒；archive 914,233,344 bytes，SHA-256
+`844b1b95f2852ed5423b026dd5fb4b3abb0fd0aaf373b66aa175b0871af74ab2`。index
+`sha256:0c6d1cc9406cf6b66cc5af7402771c35a75674e27dce5ce6d0cb7b04b7dd0282`、platform
+`sha256:0d7f2df5a0cb422e9af048702df82be00e0a9c871c9a10c29b2c097d56a7bee9`、config
+`sha256:e80e876380779c40c89d2a8fe56e0c1b57e01976ca465575df80a899123ef5e3`、attestation
+`sha256:90df425e7dd3584c136ee4c8fe991d6a7e8dea17d25dca94d163e11323f97623`、SBOM
+`sha256:21c93a24a98bd9c51f5d12e9acfbb57980500ce08c40626146e988892f195df9`、provenance
+`sha256:b2daed14bd3ee2d001bd95da5b7ea771a1970224bad6510c9fa806451df06ad9`、Kind runtime
+`sha256:481bfa8e7c24d329081721d33c2435d451dda80210e0d87a10eea2ef17956a30`。78 个 blob 哈希全部匹配，总
+914,168,339 bytes；SBOM 2,592 packages/8,096 relationships，两份声明都精确绑定 platform manifest。一次性审计 Pod UID
+`c3dca4fb-af50-4a81-b371-bc1966e884da` 已按 UID/resourceVersion 删除。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 114，
+current/update revision 均为 `a4657-tls-d8554b95`；三 Pod 3/3 Ready、restart 0、运行精确 final5 index/runtime，UID/GID/fsGroup
+65532，三端 HTTPS `/readyz=ok`。cluster ID 7662961163671170154、revision/index/applied 57715、term 395、leader
+2985394290；三个既有 voter 精确、AlarmList 空。auth enabled/revision 886，用户 `KubeWharfServer/alice/root`、角色
+`operator/root`。PD leader `kb-pd-2`，主 PD/TiKV 3+3 Ready、restart 0，三个 store 均 Up；九个相关 Pod近 30 分钟
+queue-full/panic/fatal/corrupt 均 0。全部 A5558 候选、失败、受控故障与最终前缀 Count=0，根 Count=7。临时 Service UID
+`6ec55155-45e5-49f7-8d80-7e6e6831fc65`、resourceVersion `6916754` 已双前置条件删除，Service NotFound、EndpointSlice 0。
+
+六个本地构建目录共 8.6GiB 和全部可变 tag/中间候选引用已删除；节点精确保留当前 A5558 与上一版 A5557 的 immutable index、raw
+runtime、normalized runtime 六个引用，并删除 A5556（N−2）。本轮关闭 16MiB 受控逻辑快照、官方恢复分页完整性、完整
+voter/learner 生命周期以及失败补偿清理缺口。仍未覆盖远大于 16MiB 的容量/性能曲线、跨集群灾备；Service 单端点滚动重连仍有一次
+超过 5 秒且不可稳定复现的尾延迟，后续需单独收敛连接迁移策略，不能由本轮 Snapshot 规模 GREEN 掩盖。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
