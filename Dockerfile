@@ -193,7 +193,7 @@ RUN apk add --no-cache \
       curl=8.20.0-r0 \
       etcd-ctl=3.6.10-r1 \
       jq=1.8.1-r0 \
-      openssl=3.5.7-r0 \
+      openssl=3.5.8-r0 \
     && addgroup -S -g 65532 kubebrain \
     && adduser -S -D -H -h /nonexistent -s /sbin/nologin -u 65532 -G kubebrain kubebrain
 

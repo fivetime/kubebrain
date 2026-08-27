@@ -60,7 +60,7 @@ func TestDockerfilePinsEveryExplicitRuntimePackage(t *testing.T) {
 			"curl=8.20.0-r0",
 			"etcd-ctl=3.6.10-r1",
 			"jq=1.8.1-r0",
-			"openssl=3.5.7-r0",
+			"openssl=3.5.8-r0",
 		},
 	}, installs,
 		"runtime package additions and upgrades must pin exact versions")
