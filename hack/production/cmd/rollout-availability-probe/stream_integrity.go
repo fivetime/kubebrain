@@ -1080,16 +1080,14 @@ func removeRestoredSnapshotMember(ctx context.Context, client *clientv3.Client, 
 	}
 }
 
-func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
-	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
-	expected []streamProbeExpectation, catchUpKey, catchUpValue string, catchUpRevision int64,
-) (probeKeys []string, finalRevision int64, retErr error) {
-	if len(topology.memberIDs) != len(cfg.members) || len(directClients) != len(cfg.members) {
-		return nil, 0, fmt.Errorf("restored learner verification requires matching voters, IDs, and clients: voters=%d ids=%d clients=%d",
-			len(cfg.members), len(topology.memberIDs), len(directClients))
+func verifyRestoredMemberPromoteRejections(ctx context.Context, followerClient *clientv3.Client,
+	topology restoredClusterTopology,
+) error {
+	if followerClient == nil || len(topology.memberIDs) == 0 {
+		return errors.New("restored MemberPromote rejection verification requires a follower client and member IDs")
 	}
-	if _, err := adminClient.MemberPromote(ctx, topology.memberIDs[0]); !errors.Is(rpctypes.Error(err), rpctypes.ErrMemberNotLearner) {
-		return nil, 0, fmt.Errorf("promote existing restored voter must fail with ErrMemberNotLearner: %w", err)
+	if _, err := followerClient.MemberPromote(ctx, topology.memberIDs[0]); !errors.Is(rpctypes.Error(err), rpctypes.ErrMemberNotLearner) {
+		return fmt.Errorf("promote existing restored voter must fail with ErrMemberNotLearner: %w", err)
 	}
 	existingMemberIDs := make(map[uint64]struct{}, len(topology.memberIDs))
 	for _, memberID := range topology.memberIDs {
@@ -1102,8 +1100,19 @@ func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *cli
 		}
 		missingMemberID--
 	}
-	if _, err := adminClient.MemberPromote(ctx, missingMemberID); !errors.Is(rpctypes.Error(err), rpctypes.ErrMemberNotFound) {
-		return nil, 0, fmt.Errorf("promote absent restored member must fail with ErrMemberNotFound: %w", err)
+	if _, err := followerClient.MemberPromote(ctx, missingMemberID); !errors.Is(rpctypes.Error(err), rpctypes.ErrMemberNotFound) {
+		return fmt.Errorf("promote absent restored member must fail with ErrMemberNotFound: %w", err)
+	}
+	return nil
+}
+
+func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
+	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
+	expected []streamProbeExpectation, catchUpKey, catchUpValue string, catchUpRevision int64,
+) (probeKeys []string, finalRevision int64, retErr error) {
+	if len(topology.memberIDs) != len(cfg.members) || len(directClients) != len(cfg.members) {
+		return nil, 0, fmt.Errorf("restored learner verification requires matching voters, IDs, and clients: voters=%d ids=%d clients=%d",
+			len(cfg.members), len(topology.memberIDs), len(directClients))
 	}
 
 	clientURL, peerURL, err := allocateRestoredSnapshotURLs(cfg.tls.enabled())
@@ -1326,6 +1335,19 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
 	expected []streamProbeExpectation, preJoinKey, preJoinValue string, preJoinRevision int64,
 ) (retErr error) {
+	followerIndex := -1
+	for index, memberID := range topology.memberIDs {
+		if memberID != topology.leaderID {
+			followerIndex = index
+			break
+		}
+	}
+	if followerIndex < 0 || followerIndex >= len(directClients) {
+		return errors.New("officially restored etcd cluster has no direct follower client for MemberPromote rejection verification")
+	}
+	if err := verifyRestoredMemberPromoteRejections(ctx, directClients[followerIndex], topology); err != nil {
+		return err
+	}
 	clientURL, peerURL, err := allocateRestoredSnapshotURLs(cfg.tls.enabled())
 	if err != nil {
 		return err
