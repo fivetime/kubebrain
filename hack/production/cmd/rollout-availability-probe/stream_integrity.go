@@ -51,6 +51,10 @@ const (
 	streamProbeValueBytes            = 8 * 1024
 	streamProbeHistoryLeaseTTL       = 15 * 60
 	streamProbeSecondHistoryLeaseTTL = 16 * 60
+	// Keep enough headroom for the two bounded voter and learner
+	// reconfiguration lifecycles while remaining below the outer two-minute
+	// Snapshot stream-attempt budget used by the production rollout gate.
+	restoredSnapshotVerificationTimeout = 100 * time.Second
 )
 
 type streamProbeExpectation struct {
@@ -1626,7 +1630,7 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 	if err := cfg.validate(); err != nil {
 		return err
 	}
-	verifyCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	verifyCtx, cancel := context.WithTimeout(ctx, restoredSnapshotVerificationTimeout)
 	defer cancel()
 
 	var (
