@@ -30,7 +30,10 @@ PROBE_STREAM_MAX_RETRY_BACKOFF="${PROBE_STREAM_MAX_RETRY_BACKOFF:-2s}"
 PROBE_SNAPSHOT_ARTIFACT_DIR=/var/run/kubebrain-rollout-availability
 PROBE_LEASE_TTL="${PROBE_LEASE_TTL:-5}"
 PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
-PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-10s}"
+# The probe publishes its barrier only after seeding and validating the
+# bounded 16 MiB Snapshot scale fixture. Keep this distinct from the 5-second
+# online operation SLO and below the 60-second Pod readiness budget.
+PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-30s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KUBECTL_EVIDENCE_REQUEST_TIMEOUT="${KUBECTL_EVIDENCE_REQUEST_TIMEOUT:-10s}"

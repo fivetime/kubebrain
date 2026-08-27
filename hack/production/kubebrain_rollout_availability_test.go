@@ -34,6 +34,13 @@ func TestRolloutAvailabilityRunnerDoesNotBypassBoundedKubectlWrappers(t *testing
 	}
 }
 
+func TestRolloutAvailabilityRunnerBudgetsSnapshotScaleInitialization(t *testing.T) {
+	source, err := os.ReadFile("run-kubebrain-rollout-availability.sh")
+	require.NoError(t, err)
+	require.Contains(t, string(source), `PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-30s}"`)
+	require.Contains(t, string(source), "bounded 16 MiB Snapshot scale fixture")
+}
+
 func TestRolloutAvailabilityRunnerPreflightDoesNotCallKubernetes(t *testing.T) {
 	fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
