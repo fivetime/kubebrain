@@ -63557,6 +63557,73 @@ EndpointSlice 0、A5555 probe Pod 0。
 follower 身份与追平、strict reconfiguration、第四 voter bootstrap、四副本数据/auth 一致性和扩容后清理的生产门禁缺口。仍未覆盖
 MemberRemove、learner add/promote、跨集群灾备或大数据量恢复。
 
+### A5556：rollout Restore 覆盖第四成员安全移除与三成员收缩
+
+A5555 已证明 restored cluster 可恢复 follower 并增加第四个 voter，但扩容后只删除数据探针，没有证明官方集群能安全移除该 voter、
+终止被移除成员并恢复原三成员拓扑。本轮固定上游
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/tests/integration/member_test.go::TestRemoveMember`、
+`tests/framework/integration/cluster.go::Cluster.RemoveMember` 与
+`server/etcdserver/server.go::{RemoveMember,mayRemoveMember}`：默认 strict reconfiguration 必须拒绝会破坏剩余 quorum 的活动 voter
+删除；健康集群删除 voter 成功后，被删除成员关闭 `StopNotify`，supervisor 关闭其 client 并 terminate embed/process，剩余成员的
+membership backend 必须收敛到目标数量。KubeBrain 对外 `MemberRemove` 仍由 DBaaS 控制面管理；本轮验证的是官方 Snapshot 制品可供
+该控制面安全收缩恢复集群，并未让无状态数据面绕过平台拓扑管理。
+
+提交 `38768041`（完整 SHA `38768041dcd46a377df33a90859b7fefa7672cc1`）在 A5555 四副本 post-join barrier、current seed
+与完整 auth 图核对之后调用 `MemberRemove`。只允许重试 `ErrUnhealthy` 和 `ErrMemberNotEnoughStarted` 两个 strict-health 暂态错误；
+response 必须保留 revision 0 membership header、已知 serving member、精确三个唯一非 learner voter，并要求三个既有 ID/name/peer/client
+URL 完全不变且被删除 ID 不得残留。新增 member 收到 self-removal `StopNotify` 后，verifier 按官方 integration harness 先关闭 client，
+再显式关闭 embed supervisor 并等待 TCP listener 消失；随后通过原三成员写入 post-remove replication barrier，要求三端精确复制、
+topology 回到原三个 member ID，最后一个 Txn 删除 pre-join/post-join/post-remove 三类探针并要求三端观察到同一删除 revision。
+
+最初真实测试在 `StopNotify` 后立即向被删除 endpoint 发 `Status`，命中了官方 etcd 3.7 的 listener 关闭窗口：本地 membership 已删除自身，
+但 gRPC listener 尚可接收请求，`maintenance.Status` 在查找 local ID 时 panic。第二次只等待 listener 自行关闭又证明 embedded wrapper 不会
+自动关闭外层 client listener 并超时。最终实现对齐上游 `Cluster.RemoveMember` 的 supervisor 顺序，不向已移除身份发送维护 RPC，并在显式
+`embed.Close` 后从 TCP 层证明端口关闭。该差异发生在本地门禁开发阶段，没有进入生产候选。
+
+MemberRemove response 的 nil/header/cluster/serving member/revision、成员数、被删除 ID 残留、learner、重复 ID 和剩余身份漂移负例均
+fail closed。最终真实 mTLS add/remove 正例 15.94 秒，enabled-auth 与完整 auth matrix 路径分别 17.44/29.29 秒；完整 probe 包测试/
+墙钟 `88.397/91.341s`，race 测试/墙钟 `98.369/103.067s`，vet 与 diff check 全绿。655 项 production inventory 保持
+`158/181/164/152`；提交后四片测试墙钟为 `140.125/366.786/236.997/384.942s`，全部通过。
+
+A5556 build time 为 `2026-08-27T01:28:43Z`，OCI 构建墙钟 277.146 秒；index
+`sha256:9ae6603159c39d015a7280f447d1450e91032bb3fb233103ccfd08a5a0450cd3`、platform manifest
+`sha256:f3dc622e3e2c0d5cfc14869b484369a518fea1031f3019c40c804a33ce70aef8`、config
+`sha256:637a811e4b04c4dc026c05587ee4c7e1b056a795b5f507a39730ef640d779a8e`、attestation manifest
+`sha256:8cf1a52f5d3cf562de7cd63632bd44b97dcf5b07885df024dd0c51be59af76e2`、provenance layer
+`sha256:6a31321d834358f075e2abcf41187c11514b33fd563bbde9bf51429b01804c61`、SBOM layer
+`sha256:e57b96fec042186d31ae630008152461fe5b5bcd05ae355f3629ca6ba7dac10a`、Kind runtime
+`sha256:a68c700cc02ea1b6fd669d7e213ad57d669a4d86d0d18c4690d5dc58e31a687d`。78 个 blob 的 digest 与真实 OCI graph
+descriptor size 全部匹配，总 blob 911,647,576 bytes，config+compressed layers 906,730,555 bytes，archive 911,712,768 bytes，
+probe 48,268,764 bytes，SBOM 2,592 packages。config/provenance/SBOM subject、linux/amd64、UID/GID 65532、labels/build args/
+VCS/full SHA/build time，以及镜像内 Version/TiKV/Go 1.26.5/kubectl v1.36.2/post-remove barrier 均经离线提取和 immutable index
+一次性 Pod 复核；审计 Pod UID `a440219c-0a87-45ef-b5f4-d9bc2f1d34d1`、resourceVersion `6854322`，已用双前置条件删除且 NotFound。
+
+第一次 A5555→A5556 候选在 iteration 344 因公共 Put→Watch 5.297613978 秒超过 5 秒硬上限而 **RED**，伴随滚动窗口内
+`there is no connection available` 和一次 direct keepalive reconnect；没有放宽阈值。自动回滚使用已保留的 A5555 index/raw/normalized
+runtime 引用恢复到原 revision `a4657-tls-675968ffdc`，generation/observed 86、3/3 Ready、restart 0；AlarmList 为空，cluster
+revision 47406、term 336，auth enabled/revision 297，用户/角色无漂移，失败 probe NotFound、专属前缀空且根前缀仍只有 A5529 watch key。
+
+原参数重跑 upgrade **900/900 GREEN**：KeepAlive `104/286`、direct replacement 22、最大恢复 21,672ms；RangeStream 198、
+完成 follower restart、MemberAdd、四副本 barrier、MemberRemove/self-stop 和三副本 barrier 的 Snapshot 1、stream/partial retry `2/0`，
+最大公共/直连/TSO/Region 延迟 `2627/26588/35/8ms`，revision
+`a4657-tls-675968ffdc -> a4657-tls-5cd69cc64`。A5556 same-version restart 再次 **900/900 GREEN**：KeepAlive
+`110/290`、replacement 23、最大恢复 22,312ms；RangeStream 201、Snapshot 1、retry/partial `2/0`，最大延迟
+`4156/26692/53/8ms`，revision `a4657-tls-5cd69cc64 -> a4657-tls-59b978fdfd`。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 均为 88，
+current/update revision 均为 `a4657-tls-59b978fdfd`；三 Pod 3/3 Ready、restart 0、运行精确 A5556 runtime，UID/GID/fsGroup
+65532，三端 HTTPS `/readyz=ok`。cluster ID 7662961163671170154、revision 49270、term 340、leader member 848842929，
+MemberList 精确三个既有 voter，AlarmList 为空；auth enabled/revision 359，用户仍为 `KubeWharfServer/alice/root`、角色为
+`operator/root`。PD leader 为 `kb-pd-2`，主 PD/TiKV 3+3 Ready、restart 0，三个 store 均 Up；九个相关 Pod 近 20 分钟
+queue-full/panic/fatal/corrupt 命中 0。失败/最终 upgrade 与 restart 三个 A5556 前缀均空，根前缀 Count=1 且仍为未触碰的
+`/kubebrain-rollout-availability/a5529-tls-migration/watch`。临时 Service UID `f8800a38-fcb8-4a85-9f57-5b240ca2a43d`
+已以 UID/resourceVersion 双前置条件删除；Service NotFound、EndpointSlice 0、四个 A5556 临时 Pod 均 NotFound。
+
+最终可变 tag/config alias 与 1.9GiB 本地 OCI/layout/bin 已删除，可由 BuildKit cache 重建；节点只保留当前 A5556 和上一版 A5555
+各自的 immutable index、raw runtime 与 normalized runtime 六个引用，确认没有 workload 使用后移除 A5554（N−2）三项引用，宿主可用
+77GB。本轮关闭 restored cluster 第四 voter 安全删除、self-removal supervisor、三成员收缩复制与探针清理的生产门禁缺口。仍未覆盖
+learner add/promote、跨集群灾备或大数据量恢复。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
