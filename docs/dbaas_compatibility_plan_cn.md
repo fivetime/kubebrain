@@ -63483,6 +63483,80 @@ index，宿主剩余 97GB。
 本轮关闭 official etcdutl 多 member restore、恢复 membership 身份、三副本复制和单 follower 丢失后 2/3 quorum 的生产门禁缺口。
 仍未覆盖恢复集群再扩容 member 的 reconfiguration、跨集群灾备或大数据量恢复。
 
+### A5555：rollout Restore 覆盖 follower 恢复与第四成员扩容
+
+A5554 已证明同一 Snapshot 能恢复出三成员集群并在停止一个 follower 后以 2/3 quorum 继续提交，但尚未证明该 follower 能用原
+data-dir 和身份重新加入、追平停机期间写入，也没有覆盖 restored cluster 的在线扩容。本轮固定上游
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/tests/integration/snapshot/member_test.go::TestSnapshotV3RestoreMultiMemberAdd`、
+`tests/integration/snapshot/v3_snapshot_test.go::restoreCluster` 以及
+`server/etcdserver/server.go::{AddMember,mayAddMember}`：三个成员从同一快照恢复并形成健康集群后，`MemberAdd` 才能增加第四个 voter；
+默认 `StrictReconfigCheck` 会在已启动成员不足或本地成员近期未连接 quorum 时分别返回
+`ErrNotEnoughStartedMembers`/`ErrUnhealthy`，不能把任意失败重试成成功。
+
+提交 `d56d9982`（完整 SHA `d56d9982223a0030980cf13a12a0ccecc2e61921`）先把 embedded etcd config 与 readiness
+等待抽成可复用 helper。三成员 quorum 验证停止非 leader、由两个 survivor 提交写后，会用原 name、data-dir、client/peer URL、
+完整 InitialCluster/token 和 `existing` 状态重启 follower；它必须在原 member ID 不变的前提下追平停机写和三成员 topology，才进入
+MemberAdd。扩容调用只重试上游 strict-reconfiguration 的两个暂态错误；响应必须有 revision 0 header、已知响应 member、四个唯一非零
+voter ID、三个既有身份与 URL 完全不变，并且新增 voter 的 ID、peer URL 和空 name/client URL 精确匹配。随后第四成员使用完整四成员
+InitialCluster 和 `existing` 状态启动，不能以新集群或空拓扑绕过官方 reconfiguration。
+
+第四成员加入后，verifier 写入 post-join replication barrier，并要求四个 direct endpoint 都在该 revision 读到相同值；屏障之后才核对
+四成员 topology、既有/新增 member ID、加入前写入、全部 current seed（包括应当不存在的历史或 auth-matrix key）以及 auth enabled、
+auth revision、用户/角色集合、用户角色绑定和逐项 permission proto。最后用一个 Txn 删除 pre/post-join 两个探针，并要求四成员都在删除
+revision 观察到缺失。新增真实 mTLS 正例覆盖 follower restart、catch-up、第四 voter 启动、四副本复制与清理；enabled auth 和完整权限矩阵
+正例也走同一四成员路径。MemberAdd response 的既有身份漂移、重复 ID、新 voter 身份漂移等负例均 fail closed。
+
+第一份候选在生产 iteration 195 **RED**：第四成员加入后，官方 etcd 的数据 revision 从 45179 推进到 45180，而初始实现仍要求
+expanded topology 的 endpoint Status 精确等于 pre-join revision 45179。该候选从未被接受为发布基线。纠正提交 `799184f4`
+（完整 SHA `799184f495c49d6a1631669375e51054ae70f183`）没有把检查弱化成 `>=`，而是把四副本 post-join 写与追平作为新的线性化
+barrier，再要求 topology、seed 与 auth 状态精确位于 barrier revision。真实官方 etcd 因而证明的是“成员已加入且复制到同一已提交点”，
+不再把 membership apply 前的旧 revision 误当作扩容完成证据。
+
+第一次自动回滚还暴露了节点镜像引用不变量：StatefulSet 已恢复 A5554 immutable index，但节点缺少其规范化 runtime 引用
+`docker.io/library/import-2026-08-26@sha256:8520147086d08aa602c0b584550e0239bd6653990452cc23921f0e8438d452cf`，
+300 秒内只能收敛到 2/3 Ready。补回该精确别名后回滚恢复 3/3 Ready、restart 0；AlarmList 为空，auth enabled/revision 204、
+用户/角色无漂移，PD/TiKV 健康，A5555 专属前缀为空且根前缀仍只有 A5529 watch key。由此把“当前版和上一版都保留 immutable index、
+原始 runtime 引用与 `docker.io/library/` 规范化 runtime 引用”提升为回滚资产要求，而不是发布后只保留 workload index。
+
+最终真实 mTLS 四成员正例 29.56 秒，enabled-auth 与完整 auth matrix 正例分别为 23.56/28.36 秒；完整 probe 包 77.638 秒，
+race 105.929 秒，vet 与 diff check 全绿。655 项 inventory 保持 `158/181/164/152`。初始提交后四片墙钟为
+`141.318/367.411/239.162/386.046s`；纠正提交后为 `139.223/365.665/235.800/384.105s`，全部通过。
+
+被拒候选 index `sha256:efc966f975787b80ed335e4818d953b08e31813cc1df1d7d12caca392bb312dd`、runtime
+`sha256:596d5c3516c807b4084ddfc4f1a2c9d894ac97f802bf6ca920241029981f1e81` 已删除。最终 A5555 build time 为
+`2026-08-27T00:38:52Z`，OCI 构建墙钟 278.099 秒；index
+`sha256:66f585bb3fd5f819618c5d81fbf8563d30bb3f9788a796ea72b3f83e773310ab`、platform manifest
+`sha256:819677561c6d0a1f2bc0ff76e60ec9d0295a97190665fffc9d13786e76b4c7b3`、config
+`sha256:6f11f38478f4cb22e394c0bbefff6f3c28e9b00b541237f95386467254c691d3`、attestation manifest
+`sha256:06852ce0df6c8aa1f0d9f19094456727fbbab0fa2d18f04a326e3f4f7ef848c7`、provenance layer
+`sha256:07b67f30fd4acde33cbf31fa6e0793a51db40745641606a97ba07818a95a1f19`、SBOM layer
+`sha256:4dac4817e9489fb7d9668a255a91553abeb93fb6d1f9ac2e69e73158801a635a`、Kind runtime
+`sha256:d5aed4e3d23b3973c5442f32c4a3f34f43c8de995dbe3d9c8bdd56acfe082d47`。78 个 blob 的 digest/descriptor size
+全部匹配，总 blob 911,637,750 bytes，config+compressed layers 906,720,697 bytes，archive 911,702,528 bytes，probe
+48,251,920 bytes，SBOM 2,592 packages。OCI config/provenance、linux/amd64、UID/GID 65532、labels/build args/source SHA/build time，
+以及镜像内 Version/TiKV/完整 SHA/Go 1.26.5/kubectl v1.36.2/四成员 barrier 信息均经离线解包和一次性 Pod 复核。
+
+A5554→最终 A5555 upgrade **900/900 GREEN**：KeepAlive `108/283`、direct replacement 24、最大恢复 21,591ms；
+RangeStream 197、Snapshot 1、stream/partial retry `2/0`，最大公共/直连/TSO/Region 延迟 `3323/25811/64/9ms`，revision
+`a4657-tls-5cbc589b4 -> a4657-tls-c575bfd49`。A5555 same-version restart 再次 **900/900 GREEN**：KeepAlive
+`110/286`、replacement 23、最大恢复 21,621ms；RangeStream 200、Snapshot 1、retry/partial `2/0`，最大延迟
+`2509/26234/28/6ms`，revision `a4657-tls-c575bfd49 -> a4657-tls-675968ffdc`。两轮仅出现 leader changed/no connection
+且均由既有对账路径恢复，没有失败操作。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 均为 84，
+current/update revision 均为 `a4657-tls-675968ffdc`；三 Pod 3/3 Ready、restart 0，运行精确 A5555 runtime digest、UID/GID/
+supplemental group 65532，三端 `/readyz=ok`。cluster ID 7662961163671170154、revision 47030、term 332、leader member
+2985394290，AlarmList 为空；auth enabled/revision 266，用户精确为 `KubeWharfServer/alice/root`、角色为 `operator/root`。
+PD leader 为 `kb-pd-2`，主 PD/TiKV 3+3 Ready、restart 0，三个 store 均 Up；近 20 分钟九个相关 Pod 的
+queue-full/panic/fatal/corrupt 命中 0。upgrade/final/restart 三个 A5555 前缀均空，根前缀 Count=1 且仍是未触碰的
+`/kubebrain-rollout-availability/a5529-tls-migration/watch`。临时 Service 已以 UID/resourceVersion 前置条件删除，Service NotFound、
+EndpointSlice 0、A5555 probe Pod 0。
+
+两个约 1.9GiB 的 A5555 本地 archive/layout/rootfs 临时目录与失败候选、最终可变 tag/config alias 均已删除，可由 BuildKit cache
+重建；节点精确保留 A5555/A5554 两个 immutable index 及各自 raw/normalized runtime 引用，清理后宿主可用 85GB。本轮关闭恢复
+follower 身份与追平、strict reconfiguration、第四 voter bootstrap、四副本数据/auth 一致性和扩容后清理的生产门禁缺口。仍未覆盖
+MemberRemove、learner add/promote、跨集群灾备或大数据量恢复。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
