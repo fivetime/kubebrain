@@ -55,6 +55,12 @@ const (
 	// reconfiguration lifecycles while remaining below the outer two-minute
 	// Snapshot stream-attempt budget used by the production rollout gate.
 	restoredSnapshotVerificationTimeout = 100 * time.Second
+	// AppliedIndex can momentarily equal the committed index before the raft
+	// Ready has been Advanced. A back-to-back ConfChange in that window is
+	// silently converted to a no-op by raft and its etcd waiter times out (the
+	// race covered upstream by etcd issue #15528). Require a quiescent interval
+	// after equality so restored bootstrap ConfChanges have also been Advanced.
+	restoredSnapshotRaftQuiescence = 500 * time.Millisecond
 )
 
 type streamProbeExpectation struct {
@@ -1138,6 +1144,8 @@ func waitForRestoredMemberRaftApplied(ctx context.Context, client *clientv3.Clie
 	}
 	var lastResponse *clientv3.StatusResponse
 	var lastErr error
+	var stableSince time.Time
+	var stableRaftIndex uint64
 	for {
 		response, err := client.Status(ctx, endpoint)
 		lastResponse, lastErr = response, err
@@ -1147,8 +1155,17 @@ func waitForRestoredMemberRaftApplied(ctx context.Context, client *clientv3.Clie
 				return validationErr
 			}
 			if ready {
-				return nil
+				now := time.Now()
+				if stableSince.IsZero() || stableRaftIndex != response.RaftIndex {
+					stableSince, stableRaftIndex = now, response.RaftIndex
+				} else if now.Sub(stableSince) >= restoredSnapshotRaftQuiescence {
+					return nil
+				}
+			} else {
+				stableSince, stableRaftIndex = time.Time{}, 0
 			}
+		} else {
+			stableSince, stableRaftIndex = time.Time{}, 0
 		}
 		select {
 		case <-time.After(20 * time.Millisecond):

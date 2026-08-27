@@ -51,6 +51,8 @@ type fakeRangeReceiver struct {
 func TestRestoredSnapshotVerificationTimeoutLeavesOuterStreamBudgetHeadroom(t *testing.T) {
 	require.Greater(t, restoredSnapshotVerificationTimeout, 60*time.Second)
 	require.Less(t, restoredSnapshotVerificationTimeout, 2*time.Minute)
+	require.GreaterOrEqual(t, restoredSnapshotRaftQuiescence, 100*time.Millisecond)
+	require.Less(t, restoredSnapshotRaftQuiescence, time.Second)
 }
 
 func (f *fakeRangeReceiver) Recv() (*etcdserverpb.RangeStreamResponse, error) {
