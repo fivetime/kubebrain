@@ -63761,6 +63761,77 @@ runtime、normalized runtime 六个引用，并删除 A5556（N−2）。本轮�
 voter/learner 生命周期以及失败补偿清理缺口。仍未覆盖远大于 16MiB 的容量/性能曲线、跨集群灾备；Service 单端点滚动重连仍有一次
 超过 5 秒且不可稳定复现的尾延迟，后续需单独收敛连接迁移策略，不能由本轮 Snapshot 规模 GREEN 掩盖。
 
+### A5559：让 gRPC connection age 真正作用于 TCP transport，并关闭滚动重连尾延迟
+
+A5558 留下了一次不可稳定复现但真实越过 5 秒 SLO 的 Service 单端点重连。审计发现配置表面上已有
+`GRPCMaxConnectionAge/Grace`，但 client/peer listener 都把 `grpc.Server` 作为 `net/http` handler 调用
+`ServeHTTP`。grpc-go v1.79.3 明确说明该路径使用独立的 Go HTTP/2 server，缺少 native grpc-go HTTP/2 server 的部分功能；
+因此传入 `grpc.KeepaliveParams` 并不会让底层 TCP connection 按 connection age 发送 GOAWAY。对照固定上游
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/embed/etcd.go::serveClients` 的
+`grpc.ServerOption`/native serve 路径后，本轮没有靠放宽 5 秒阈值掩盖尾延迟，而是修复 transport 所有权。
+
+提交 `735bc7a494fc73fc41bc51a9574647d094e54f1d` 在 `GRPCMaxConnectionAge>0` 时让 native
+`grpc.Server.Serve` 接管 client 与 peer 的全部 HTTP/2 connection，HTTP/1.1 health/version/JSON gateway 仍由有界
+`net/http` server 服务；未显式配置 age 时保留原有同端口 HTTP/2 REST multiplex 行为。drain 先
+`GracefulStop` 发送 GOAWAY，保留 1 秒传播窗口，再以 2 秒上界强制 `Stop`。旧测试用 handler transport 的 stats 数量冒充
+TCP reconnect，会在旧实现上假绿；新 mTLS 测试用自定义 dialer 统计成功 TCP dial，旧代码连续 5 秒只有一个 connection 而
+**RED**，最终代码约 2.5 秒内观察到 replacement，并保持 Watch 与 LeaseKeepAlive 恢复。另有 quiesce 测试证明 GOAWAY
+传播前不会强退长流，取消流后 server 可在上界内关闭。
+
+真实部署前又发现 A5558 StatefulSet 实际没有两个 age 参数，不能直接绕过新 runner 的 fail-closed 检查手工滚动。
+提交 `64e27206e533a04b7117468a4151eef5394d65a7` 增加显式
+`ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true`：它只允许与 immutable `TARGET_IMAGE` 同时使用，且当前 TLS args 必须两个参数
+都不存在；runner 在 availability probe 发布 start barrier 后，用 UID、resourceVersion 和完整旧 `.spec` 三重 JSON Patch test，
+原子替换为“候选 image + 固定 `--grpc-max-connection-age=1h`/`--grpc-max-connection-age-grace=5m`”。部分配置、冲突值、已配置后
+重复迁移、无 target 或非法布尔均在 mutation 前拒绝；候选失败只有在当前 spec 仍逐字等于 candidate spec 时才以同样完整 CAS
+恢复原 spec，拒绝覆盖并发控制面变更。
+
+最终 endpoint 包普通测试/墙钟 `21.490/24.230s`，race `15.238/18.834s`；native quiesce 普通 20 次、race 10 次与
+mTLS connection-age 3 次全绿。rollout runner 全套 `84.918s`，新增迁移/回滚 race 10 次 `51.144s`，vet、bash syntax 与
+diff check 全绿。一次完整 `go test ./hack/production -count=1` 在 Go 默认 10 分钟上限到期，当时栈位于无关的既有
+`TestBackupOperationRejectsInvalidPrefix/del` 外部脚本；该父测试单独重跑 `0.428s` 通过，没有把 package timeout 记为绿色。
+最终 production inventory 为 663 项、四片 `160/183/165/155`；`64e27206` 提交后 Go 时间分别为
+`137.473/364.894/235.498/383.906s`，全部通过。
+
+build time 为 `2026-08-27T11:14:28Z`。linux/amd64、provenance=max、SBOM 的 OCI archive 为
+914,245,120 bytes，SHA-256 `51d2a82dcd9bcca622ae118813eb53be056a6f88cbf4af02cd181616b7c44f28`；index
+`sha256:f67003297702900e286971d4934bbade4b22680c64f3ac3722964a2eec89b763`、platform manifest
+`sha256:526413b3f55691de07c6e309062eec9aec3ebe1af3cffad48c8b54dfade3682b`、config
+`sha256:f9a9b9d19a9c1d9ee55729c35c858c01fb999119c58bbfc07bf896484f7b768f`、attestation
+`sha256:74757940e91ca8e92b8330fac5f729f0a88136ee4754632251ea75ecab773710`、SBOM
+`sha256:2974b8aee1b13cc0749dcaff851d8e859fec741dc0810727cf966cf4fa11c2a9`、provenance
+`sha256:9d2eb03364a88cd1a9361319d84c02759d065bdcb955a1c6ff63ac81c00a6f3`、Kind normalized runtime
+`sha256:b8bb1d15edd76aa94f7ab63958b44faa5570c41130630aad2cf0fad77c809915`。78 个 blob 的 digest 与所有 graph
+descriptor size 均匹配，总 blob 914,180,006 bytes；SBOM 为 2,592 packages/8,096 relationships，两份声明精确绑定
+platform manifest。一次性审计 Pod 运行原始 immutable index，确认 version、TiKV、完整 Git SHA、Go 1.26.5 与 build time；其
+UID `1b99d26a-8b1f-4d1c-995c-fe0272c646bb` 已按 UID/resourceVersion 双前置条件删除。
+
+A5558→A5559 的参数迁移与候选升级 **900/900 GREEN**：KeepAlive `109/288`、direct replacement 23、最大恢复
+21,063ms，RangeStream 179、Snapshot 1、retry/partial `2/0`，最大公共/direct/TSO/Region 延迟
+`3681/25399/46/8ms`，revision `a4657-tls-d8554b95 -> a4657-tls-656bd648cb`。随后连续三次同版本重启均为
+**900/900 GREEN**：第一轮 `106/279`、replacement 23、恢复 20,990ms、RangeStream 182、retry `1/0`、最大延迟
+`2702/25593/34/8ms`；第二轮 `111/294`、replacement 21、恢复 19,640ms、RangeStream 181、retry `2/0`、最大延迟
+`3390/24939/46/9ms`；第三轮 `113/297`、replacement 24、恢复 22,430ms、RangeStream 187、retry `3/0`、最大延迟
+`3336/27494/49/8ms`。四轮合计 `3600/3600`，每轮 Snapshot=1、partial retry=0；滚动窗口仍可见极短
+`Unavailable`，但不再出现 A5558 的 5 秒公共操作超限或残留键。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 均为 118，
+current/update revision 均为 `a4657-tls-f6cc4cc8d`；三 Pod 3/3 Ready、restart 0、精确运行 A5559 index/runtime，
+UID/GID/fsGroup 65532，模板精确保留 `1h/5m`，三端 HTTPS `/readyz=ok`。cluster ID 7662961163671170154、
+revision/index/applied 61507、term 402、leader member 2985394290；三个既有 voter 精确、AlarmList 空。auth enabled/revision
+1010，用户仍为 `KubeWharfServer/alice/root`、角色为 `operator/root`。PD leader `kb-pd-2`，主 PD/TiKV 3+3 Ready、
+restart 0，三个 store 均 Up；九个主数据面 Pod 近 30 分钟 queue-full/panic/fatal/corrupt 命中 0。四个 A5559 专属前缀均
+Count=0，根前缀 Count=1 且仍为未触碰的 `/kubebrain-rollout-availability/a5529-tls-migration/watch`。临时 Service UID
+`b10f58ce-af93-480f-a859-c9003cc62bf5` 已以 resourceVersion `6926546` 双前置条件删除；Service NotFound、EndpointSlice 0、
+A5559 临时 Pod 0。
+
+本地 OCI archive/layout 将在文档提交后删除；节点已移除 A5557（N−2）四个精确引用和 A5559 可变 tag，仅保留当前 A5559 与
+回滚 A5558 的 immutable index/runtime/config 引用。本轮关闭了 `grpc-max-connection-age` 只存在于配置层、未作用于 TCP
+transport 的缺口，并用一次升级加三次重启提高了非确定性尾延迟证据强度。兼容性边界是：启用非零 connection age 后，同端口
+HTTP/2 由 native gRPC 独占，health/version/JSON gateway 仍支持 HTTP/1.1；依赖同端口 HTTP/2 REST 的客户端需保持 age=0 或迁移
+到 HTTP/1.1/独立 HTTP endpoint。仍需覆盖至少一小时自然 age 到期的真实 GOAWAY（当前由缩短 age 的 mTLS 测试覆盖），以及更长时段、
+多节点/多可用区 Service 与外部负载均衡器下的尾延迟分布。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
