@@ -63881,6 +63881,51 @@ Ready、restart 0，三个 imageID 均为最终 index，HTTPS `/readyz` 与 `1h/
 保留当前 A5560 和 A5559 rollback。仍需单独收敛两次非确定性 Snapshot/Count Index 门禁异常，并在多节点、多可用区与外部负载均衡器
 上积累更长时间的连接轮换尾延迟分布。
 
+### A5561：隔离官方 restored etcd follower 的 LeaseTimeToLive 鉴权竞态
+
+A5560 最终镜像门禁第二次尝试曾在官方三成员 restored etcd 中非确定性 RED：write-only 用户先 Grant、把获准写入的 key 附着到
+lease，再调用 `TimeToLive(WithAttachedKeys)`，预期 PermissionDenied 却得到 nil。对照固定 upstream
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/v3_server.go::checkLeaseTimeToLive` 与
+`LeaseTimeToLive` 后确认，这不是 KubeBrain 快照丢失权限：官方 follower 会先用本地 lessor 的 `Lease.Keys()` 做 Range RBAC，再把 TTL
+请求转发 leader；writer Put 已由 leader 返回而 follower 尚未 apply lease attachment 时，本地检查可能看到空 keys 并短暂错误放行。
+upstream `tests/common/auth_test.go::TestAuthLeaseTimeToLive` 证明稳定态契约仍是：只要 lease 附着任一不可读 key，Keys=true 必须拒绝，
+Keys=false 才允许。
+
+提交 `76669d297d1c06388729c7fac103f741a53c3049` 没有重试 PermissionDenied 或把 nil 当成功，而是在官方 restore 权限矩阵中加入
+全成员 apply barrier：每次 leased Put 后取得精确 revision，管理员用单 endpoint client 分别直连三个 restored member，执行
+serializable Range；只有 response revision 不低于 Put revision，且唯一 KV 的 key/value/modRevision/lease ID 全部精确匹配，才允许
+负载均衡用户继续 `TimeToLive(Keys=true)`。因此 TTL 仍随机落到任一成员，但每个成员的 lessor/MVCC apply 已有可验证前置条件；
+空/旧 header、More、错误 count/key/value/modRevision/lease 均 fail closed，连接或 barrier 超时也保持 RED。
+
+三成员 enabled-auth 明文/TLS 与完整权限矩阵测试分别 `24.95/25.89/32.41s` 全绿；明文三成员 restore 连续 10 次
+`230.226s`，TLS race `31.815s`，未再出现 write-only TTL 放行。完整 rollout probe 普通/race 为
+`140.471/160.666s`，vet/diff check 全绿。production inventory 仍为 673 项、分片 `162/185/170/156`；提交前 verify 通过，
+提交后四片 wall 为 `143.115/369.330/248.325/391.013s`，全部通过。
+
+build time `2026-08-27T16:16:55Z`；OCI archive 914,250,240 bytes，SHA-256
+`85b81d63ed5bf504a7d544873fdd8d3ffd8bb3ad2e47e64780d91326837f5c62`。index
+`sha256:6ef7deb700da8a2476d539cba53a621f9bd9415e63962ae952be7f013d3a0d1d`、platform
+`sha256:338712113cb28b88b0f4113fccbc0adcd4740ccb1b3d028265d8b7943b670b6f`、config
+`sha256:bc545ab43d36270e2e2fcc14e5ca88973c2e09cd5b03cf5e6a4f2b5252a023b3`、attestation
+`sha256:ab66b140d1345a3d87ea5a2e77bac962cac9fa84fa5e1d1003bdbbf6faeb9c91`、Kind runtime wrapper
+`sha256:2c6927f39bf304daf1c7049aaa6c2f366889d60fa49557d6aa54d292b24f05af`。78 个 blob digest 与所有 graph descriptor size
+匹配；SBOM 为 2,592 packages/8,096 relationships，SBOM/provenance 均绑定 platform manifest。一次性审计 Pod 验证 TiKV、完整
+Git SHA、Go 1.26.5 和 build time 后按 UID/resourceVersion 删除。
+
+A5560→A5561 候选升级 **900/900 GREEN**：public/direct TCP dial `2/min 2`，RangeStream 184、Snapshot 1、stream retry 0，
+最大公共/direct/TSO/Region 延迟 `3300/25500/102/17ms`，revision
+`a4657-tls-667c54d6d9 -> a4657-tls-77f86dc944`。紧邻该升级的第一次同版本重启在 iteration 166 因三个 direct DNS client 都未满足
+5 秒子门限而 RED，日志确认仍拨旧 Pod IP `10.244.0.244`；该失败与 Snapshot barrier 无关且未记为绿色。三个一次性 DNS 审计 Pod
+确认稳定 Pod DNS 已分别解析新 IP 后，第二次同版本重启 **900/900 GREEN**：TCP dial `3/min 2`，RangeStream 178、Snapshot 1、
+stream retry 3，最大延迟 `4069/27016/54/8ms`，revision 最终为 `a4657-tls-6bd8f588f`。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 132，current/update
+revision 均为 `a4657-tls-6bd8f588f`；3/3 Ready、restart 0，三个 Pod 均运行 A5561 wrapper，HTTPS `/readyz` 与 `1h/5m`
+保持。A5561 探针/DNS 审计 Pod 均不存在；临时 Service UID `1462acbc-54d9-40ec-b84b-450186eb60e7` 以 resourceVersion
+`6964445` 双前置条件删除。节点精确保留当前 A5561 与 A5560 rollback，删除 A5559（N−2）。本轮关闭官方 restore 验证自身的
+follower apply 竞态；真实数据面的 Count Index 在 PD region-load timeout 后返回 DataLoss，以及快速连续滚动的直连 DNS 尾延迟仍是后续
+需独立收敛的两项生产差距。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
