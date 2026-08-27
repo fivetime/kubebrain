@@ -67,6 +67,53 @@ type snapshotAuthFixture struct {
 	createdRoles []string
 }
 
+type restoredSnapshotLeaseReplicationBarrier func(context.Context, string, string, clientv3.LeaseID, int64) error
+
+func restoredAuthLeaseAttachmentReady(response *clientv3.GetResponse, key, value string, leaseID clientv3.LeaseID,
+	minimumRevision int64,
+) bool {
+	if response == nil || response.Header == nil || response.Header.Revision < minimumRevision || response.More ||
+		response.Count != 1 || len(response.Kvs) != 1 {
+		return false
+	}
+	kv := response.Kvs[0]
+	return kv != nil && string(kv.Key) == key && string(kv.Value) == value && kv.Lease == int64(leaseID) &&
+		kv.ModRevision == minimumRevision
+}
+
+func waitForRestoredAuthLeaseReplication(ctx context.Context, adminConfig clientv3.Config, key, value string,
+	leaseID clientv3.LeaseID, minimumRevision int64,
+) error {
+	if len(adminConfig.Endpoints) == 0 || key == "" || leaseID == 0 || minimumRevision <= 0 {
+		return errors.New("restored auth lease replication barrier requires endpoints, key, lease, and revision")
+	}
+	for _, endpoint := range adminConfig.Endpoints {
+		direct, err := newDirectRestoredClient(adminConfig, endpoint)
+		if err != nil {
+			return fmt.Errorf("create direct restored auth replication client for %q: %w", endpoint, err)
+		}
+		var lastResponse *clientv3.GetResponse
+		var lastErr error
+		for {
+			lastResponse, lastErr = direct.Get(ctx, key, clientv3.WithSerializable())
+			if lastErr == nil && restoredAuthLeaseAttachmentReady(lastResponse, key, value, leaseID, minimumRevision) {
+				break
+			}
+			select {
+			case <-time.After(20 * time.Millisecond):
+			case <-ctx.Done():
+				_ = direct.Close()
+				return fmt.Errorf("wait for restored auth lease replication on %q: response=%+v err=%v: %w",
+					endpoint, lastResponse, lastErr, context.Cause(ctx))
+			}
+		}
+		if err := direct.Close(); err != nil {
+			return fmt.Errorf("close direct restored auth replication client for %q: %w", endpoint, err)
+		}
+	}
+	return nil
+}
+
 func newSnapshotAuthFixture(prefix string) *snapshotAuthFixture {
 	digest := sha256.Sum256([]byte(prefix))
 	base := fmt.Sprintf("kubebrain-rollout-%x", digest[:6])
@@ -585,12 +632,15 @@ func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.C
 		}
 		clients[user.name] = authenticated
 	}
+	barrier := func(barrierCtx context.Context, key, value string, leaseID clientv3.LeaseID, revision int64) error {
+		return waitForRestoredAuthLeaseReplication(barrierCtx, adminConfig, key, value, leaseID, revision)
+	}
 	for index, access := range expected.access {
 		authenticated := clients[access.username]
 		if authenticated == nil || access.key == "" {
 			return fmt.Errorf("invalid restored auth access expectation at %d", index)
 		}
-		if err := verifyRestoredAuthAccess(ctx, authenticated, access, index); err != nil {
+		if err := verifyRestoredAuthAccess(ctx, authenticated, access, index, barrier); err != nil {
 			return err
 		}
 	}
@@ -603,7 +653,7 @@ func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.C
 }
 
 func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expected restoredSnapshotAuthAccessExpectation,
-	index int,
+	index int, replicationBarrier restoredSnapshotLeaseReplicationBarrier,
 ) error {
 	requirePermission := func(label string, allowed bool, operation func() error) error {
 		err := operation()
@@ -676,8 +726,19 @@ func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expe
 		if err != nil {
 			return fmt.Errorf("grant restored auth lease for user=%q: %w", expected.username, err)
 		}
-		if _, err = client.Put(ctx, expected.key, value+"-leased", clientv3.WithLease(lease.ID)); err != nil {
-			return fmt.Errorf("attach restored auth lease for user=%q key=%q: %w", expected.username, expected.key, err)
+		leasedValue := value + "-leased"
+		leasedPut, putErr := client.Put(ctx, expected.key, leasedValue, clientv3.WithLease(lease.ID))
+		if putErr != nil {
+			return fmt.Errorf("attach restored auth lease for user=%q key=%q: %w", expected.username, expected.key, putErr)
+		}
+		if leasedPut == nil || leasedPut.Header == nil || leasedPut.Header.Revision <= 0 {
+			return fmt.Errorf("attach restored auth lease for user=%q key=%q returned an invalid response", expected.username, expected.key)
+		}
+		if replicationBarrier == nil {
+			return errors.New("restored auth lease replication barrier is required")
+		}
+		if err = replicationBarrier(ctx, expected.key, leasedValue, lease.ID, leasedPut.Header.Revision); err != nil {
+			return fmt.Errorf("replicate restored auth lease for user=%q key=%q: %w", expected.username, expected.key, err)
 		}
 		_, ttlErr := client.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
 		if expected.read && ttlErr != nil {

@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -119,6 +120,38 @@ func TestSnapshotAuthFixtureInstallCleanupAndCollisionOwnership(t *testing.T) {
 	statusResponse, err := rootClient.AuthStatus(ctx)
 	require.NoError(t, err)
 	require.True(t, statusResponse.Enabled)
+}
+
+func TestRestoredAuthLeaseAttachmentReadyRequiresExactReplicatedLease(t *testing.T) {
+	const (
+		key      = "/probe/leased"
+		value    = "value"
+		revision = int64(19)
+		leaseID  = clientv3.LeaseID(23)
+	)
+	valid := &clientv3.GetResponse{Header: &etcdserverpb.ResponseHeader{Revision: revision}, Count: 1,
+		Kvs: []*mvccpb.KeyValue{{Key: []byte(key), Value: []byte(value), ModRevision: revision, Lease: int64(leaseID)}}}
+	require.True(t, restoredAuthLeaseAttachmentReady(valid, key, value, leaseID, revision))
+
+	for name, mutate := range map[string]func(*clientv3.GetResponse){
+		"nil header":     func(response *clientv3.GetResponse) { response.Header = nil },
+		"stale revision": func(response *clientv3.GetResponse) { response.Header.Revision-- },
+		"more":           func(response *clientv3.GetResponse) { response.More = true },
+		"wrong count":    func(response *clientv3.GetResponse) { response.Count = 2 },
+		"wrong key":      func(response *clientv3.GetResponse) { response.Kvs[0].Key = []byte("wrong") },
+		"wrong value":    func(response *clientv3.GetResponse) { response.Kvs[0].Value = []byte("wrong") },
+		"wrong mod":      func(response *clientv3.GetResponse) { response.Kvs[0].ModRevision-- },
+		"wrong lease":    func(response *clientv3.GetResponse) { response.Kvs[0].Lease++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := clientv3.GetResponse{
+				Header: proto.Clone(valid.Header).(*etcdserverpb.ResponseHeader), Count: valid.Count, More: valid.More,
+				Kvs: []*mvccpb.KeyValue{proto.Clone(valid.Kvs[0]).(*mvccpb.KeyValue)},
+			}
+			mutate(&candidate)
+			require.False(t, restoredAuthLeaseAttachmentReady(&candidate, key, value, leaseID, revision))
+		})
+	}
 }
 
 func TestConsumeAndValidateSnapshotPreservesEnabledAuthPermissionMatrix(t *testing.T) {
