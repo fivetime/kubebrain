@@ -1085,6 +1085,49 @@ func TestValidateRestoredMemberRemoveResponseRejectsIdentityDrift(t *testing.T) 
 	}
 }
 
+func TestValidateRestoredMemberRaftAppliedStatus(t *testing.T) {
+	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33}}
+	makeResponse := func() *clientv3.StatusResponse {
+		return &clientv3.StatusResponse{
+			Header: &etcdserverpb.ResponseHeader{ClusterId: topology.clusterID, MemberId: 22, RaftTerm: 3},
+			Leader: topology.leaderID, RaftIndex: 9, RaftAppliedIndex: 9, RaftTerm: 3,
+		}
+	}
+
+	ready, err := validateRestoredMemberRaftAppliedStatus(makeResponse(), topology, 22)
+	require.NoError(t, err)
+	require.True(t, ready)
+
+	lagging := makeResponse()
+	lagging.RaftAppliedIndex--
+	ready, err = validateRestoredMemberRaftAppliedStatus(lagging, topology, 22)
+	require.NoError(t, err)
+	require.False(t, ready)
+
+	for name, mutate := range map[string]func(*clientv3.StatusResponse){
+		"missing header":        func(response *clientv3.StatusResponse) { response.Header = nil },
+		"wrong cluster":         func(response *clientv3.StatusResponse) { response.Header.ClusterId++ },
+		"wrong member":          func(response *clientv3.StatusResponse) { response.Header.MemberId++ },
+		"zero header term":      func(response *clientv3.StatusResponse) { response.Header.RaftTerm = 0 },
+		"zero status term":      func(response *clientv3.StatusResponse) { response.RaftTerm = 0 },
+		"term disagreement":     func(response *clientv3.StatusResponse) { response.RaftTerm++ },
+		"unknown leader":        func(response *clientv3.StatusResponse) { response.Leader = 44 },
+		"changed leader":        func(response *clientv3.StatusResponse) { response.Leader = 33 },
+		"learner":               func(response *clientv3.StatusResponse) { response.IsLearner = true },
+		"status error":          func(response *clientv3.StatusResponse) { response.Errors = []string{"alarm"} },
+		"applied beyond commit": func(response *clientv3.StatusResponse) { response.RaftAppliedIndex++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := makeResponse()
+			mutate(response)
+			_, err := validateRestoredMemberRaftAppliedStatus(response, topology, 22)
+			require.Error(t, err)
+		})
+	}
+	_, err = validateRestoredMemberRaftAppliedStatus(nil, topology, 22)
+	require.Error(t, err)
+}
+
 func TestRestoredSnapshotConfigRejectsInvalidClusterIdentity(t *testing.T) {
 	_, err := newRestoredSnapshotConfig(t.TempDir(), 2, restoredSnapshotTLSConfig{}, nil)
 	require.ErrorContains(t, err, "one or at least three")

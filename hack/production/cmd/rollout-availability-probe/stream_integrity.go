@@ -1106,6 +1106,59 @@ func verifyRestoredMemberPromoteRejections(ctx context.Context, followerClient *
 	return nil
 }
 
+func validateRestoredMemberRaftAppliedStatus(response *clientv3.StatusResponse, topology restoredClusterTopology,
+	memberID uint64,
+) (bool, error) {
+	if response == nil || response.Header == nil {
+		return false, errors.New("officially restored etcd member returned a nil Raft apply-barrier status or header")
+	}
+	if response.Header.ClusterId != topology.clusterID || response.Header.MemberId != memberID ||
+		response.Header.RaftTerm == 0 || response.RaftTerm == 0 || response.Header.RaftTerm != response.RaftTerm {
+		return false, fmt.Errorf("officially restored etcd member returned invalid Raft apply-barrier identity: %+v", response)
+	}
+	knownLeader := false
+	for _, knownMemberID := range topology.memberIDs {
+		knownLeader = knownLeader || response.Leader == knownMemberID
+	}
+	if !knownLeader || response.Leader != topology.leaderID || response.IsLearner || len(response.Errors) != 0 {
+		return false, fmt.Errorf("officially restored etcd member returned invalid Raft apply-barrier state: %+v", response)
+	}
+	if response.RaftAppliedIndex > response.RaftIndex {
+		return false, fmt.Errorf("officially restored etcd member applied Raft index %d beyond committed index %d",
+			response.RaftAppliedIndex, response.RaftIndex)
+	}
+	return response.RaftIndex > 0 && response.RaftAppliedIndex == response.RaftIndex, nil
+}
+
+func waitForRestoredMemberRaftApplied(ctx context.Context, client *clientv3.Client, endpoint string,
+	topology restoredClusterTopology, memberID uint64,
+) error {
+	if client == nil || endpoint == "" || topology.clusterID == 0 || topology.leaderID == 0 || memberID == 0 {
+		return errors.New("restored Raft apply barrier requires a client, endpoint, and complete cluster identity")
+	}
+	var lastResponse *clientv3.StatusResponse
+	var lastErr error
+	for {
+		response, err := client.Status(ctx, endpoint)
+		lastResponse, lastErr = response, err
+		if err == nil {
+			ready, validationErr := validateRestoredMemberRaftAppliedStatus(response, topology, memberID)
+			if validationErr != nil {
+				return validationErr
+			}
+			if ready {
+				return nil
+			}
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-ctx.Done():
+			return fmt.Errorf("wait for officially restored etcd member %x Raft apply barrier: response=%+v last_error=%v: %w",
+				memberID, lastResponse, lastErr, context.Cause(ctx))
+		}
+	}
+}
+
 func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
 	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
 	expected []streamProbeExpectation, catchUpKey, catchUpValue string, catchUpRevision int64,
@@ -1335,6 +1388,16 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
 	expected []streamProbeExpectation, preJoinKey, preJoinValue string, preJoinRevision int64,
 ) (retErr error) {
+	if len(topology.memberIDs) != len(cfg.members) || len(directClients) != len(cfg.members) {
+		return fmt.Errorf("restored member reconfiguration requires matching voters, IDs, and clients: voters=%d ids=%d clients=%d",
+			len(cfg.members), len(topology.memberIDs), len(directClients))
+	}
+	for index, directClient := range directClients {
+		if err := waitForRestoredMemberRaftApplied(ctx, directClient, cfg.members[index].clientURL.String(), topology,
+			topology.memberIDs[index]); err != nil {
+			return fmt.Errorf("establish restored member %q Raft apply barrier before reconfiguration: %w", cfg.members[index].name, err)
+		}
+	}
 	followerIndex := -1
 	for index, memberID := range topology.memberIDs {
 		if memberID != topology.leaderID {
