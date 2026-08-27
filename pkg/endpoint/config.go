@@ -116,7 +116,8 @@ type Config struct {
 
 	// GRPCMaxConnectionAge bounds how long one HTTP/2 transport can retain a
 	// pre-rotation TLS identity. Zero disables aging. Grace is the drain window
-	// after GOAWAY before active streams are forcibly closed.
+	// after GOAWAY before active streams are forcibly closed. A positive age
+	// selects native grpc-go HTTP/2 ownership; same-port HTTP remains HTTP/1.1.
 	GRPCMaxConnectionAge      time.Duration
 	GRPCMaxConnectionAgeGrace time.Duration
 	MaxConcurrentStreams      uint32

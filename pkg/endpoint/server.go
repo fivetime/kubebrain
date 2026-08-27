@@ -269,6 +269,81 @@ func (h *httpServer) close() error {
 	return nil
 }
 
+// nativeGRPCServer keeps grpc-go in ownership of HTTP/2. grpc.Server.ServeHTTP
+// instead delegates the connection to net/http, where grpc-go's keepalive,
+// max-connection-age and max-concurrent-stream options are not applied.
+type nativeGRPCServer struct {
+	server                 *grpc.Server
+	quiescing              atomic.Bool
+	gracefulOnce           sync.Once
+	gracefulDone           chan struct{}
+	goAwayPropagationDelay time.Duration
+	shutdownTimeout        time.Duration
+}
+
+func newNativeGRPCServer(server *grpc.Server) *nativeGRPCServer {
+	return &nativeGRPCServer{
+		server:                 server,
+		gracefulDone:           make(chan struct{}),
+		goAwayPropagationDelay: transportGoAwayPropagationPeriod,
+		shutdownTimeout:        httpShutdownTimeout,
+	}
+}
+
+func (s *nativeGRPCServer) name() string { return "grpc" }
+
+func (s *nativeGRPCServer) matchWriters() []cmux.MatchWriter {
+	// Native mode deliberately owns every HTTP/2 connection. Same-port health,
+	// version and JSON gateway requests remain available over HTTP/1.1.
+	return matchersToMatchWriters(cmux.HTTP2())
+}
+
+func (s *nativeGRPCServer) serve(listener net.Listener) error { return s.server.Serve(listener) }
+
+func (s *nativeGRPCServer) startGracefulStop() {
+	s.gracefulOnce.Do(func() {
+		go func() {
+			s.server.GracefulStop()
+			close(s.gracefulDone)
+		}()
+	})
+}
+
+func (s *nativeGRPCServer) quiesce() {
+	s.quiescing.Store(true)
+	s.startGracefulStop()
+	if s.goAwayPropagationDelay <= 0 {
+		return
+	}
+	timer := time.NewTimer(s.goAwayPropagationDelay)
+	defer timer.Stop()
+	select {
+	case <-s.gracefulDone:
+	case <-timer.C:
+	}
+}
+
+func (s *nativeGRPCServer) isQuiescing() bool { return s.quiescing.Load() }
+
+func (s *nativeGRPCServer) close() error {
+	s.quiescing.Store(true)
+	s.startGracefulStop()
+	timeout := s.shutdownTimeout
+	if timeout <= 0 {
+		timeout = httpShutdownTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-s.gracefulDone:
+		return nil
+	case <-timer.C:
+		s.server.Stop()
+		<-s.gracefulDone
+		return nil
+	}
+}
+
 func newGRPCMuxedHTTPServer(grpcServer *grpc.Server, httpHandler http.Handler) *grpcMuxedHTTPServer {
 	return &grpcMuxedHTTPServer{
 		grpcServer:             grpcServer,

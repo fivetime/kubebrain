@@ -294,6 +294,47 @@ func TestMuxedHTTP2QuiesceStartsGoAwayBeforeLongLivedGRPCStreamRetires(t *testin
 	require.NoError(t, normalizeServeError(<-serveDone))
 }
 
+func TestNativeGRPCQuiesceStartsGoAwayBeforeLongLivedStreamRetires(t *testing.T) {
+	grpcServer := grpc.NewServer()
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(grpcServer, healthServer)
+	server := newNativeGRPCServer(grpcServer)
+	server.goAwayPropagationDelay = 20 * time.Millisecond
+	server.shutdownTimeout = 100 * time.Millisecond
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.serve(listener) }()
+
+	connection, err := grpc.NewClient(
+		"passthrough:///"+listener.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	defer connection.Close()
+	watchCtx, watchCancel := context.WithCancel(t.Context())
+	watch, err := healthpb.NewHealthClient(connection).Watch(watchCtx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	initial, err := watch.Recv()
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, initial.Status)
+
+	started := time.Now()
+	server.quiesce()
+	require.GreaterOrEqual(t, time.Since(started), server.goAwayPropagationDelay)
+	select {
+	case <-server.gracefulDone:
+		t.Fatal("GracefulStop completed before the admitted stream retired")
+	default:
+	}
+
+	watchCancel()
+	require.Error(t, func() error { _, recvErr := watch.Recv(); return recvErr }())
+	require.NoError(t, server.close())
+	require.NoError(t, normalizeServeError(<-serveDone))
+}
+
 func TestMuxedHTTP2QuiesceKeepsRunnerAliveUntilShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	server := newGRPCMuxedHTTPServer(grpc.NewServer(), http.NotFoundHandler())

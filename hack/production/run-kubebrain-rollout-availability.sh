@@ -332,12 +332,15 @@ if (( tls_marker_count > 0 )); then
   expected_prestop='["/bin/sh","-c","sleep 25 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain"]'
   allow_insecure_false_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--allow-insecure=false")] | length' "$statefulset_json")"
   client_cert_auth_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--client-cert-auth=true")] | length' "$statefulset_json")"
+  max_connection_age_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--grpc-max-connection-age=1h")] | length' "$statefulset_json")"
+  max_connection_age_grace_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--grpc-max-connection-age-grace=5m")] | length' "$statefulset_json")"
   cert_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--cert-file=")) | sub("^--cert-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
   key_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--key-file=")) | sub("^--key-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
   ca_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--trusted-ca-file=")) | sub("^--trusted-ca-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
   tls_server_name="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--tls-server-name=")) | sub("^--tls-server-name="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
   cert_dir="${cert_file%/*}"
-  if [[ "$allow_insecure_false_count" != 1 || "$client_cert_auth_count" != 1 || "$cert_file" != /* || "$key_file" != "${cert_dir}/"* ||
+  if [[ "$allow_insecure_false_count" != 1 || "$client_cert_auth_count" != 1 || "$max_connection_age_count" != 1 ||
+    "$max_connection_age_grace_count" != 1 || "$cert_file" != /* || "$key_file" != "${cert_dir}/"* ||
     "$ca_file" != "${cert_dir}/"* || -z "$tls_server_name" ]]; then
     tls_contract_valid=false
   else

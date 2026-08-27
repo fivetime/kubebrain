@@ -198,7 +198,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.epsConf.Port, "port", o.epsConf.Port, "the port kubebrain listen on for client")
 	fs.IntVar(&o.epsConf.PeerPort, "peer-port", o.epsConf.PeerPort, "the port kubebrain listen on for peer communication")
 	fs.IntVar(&o.epsConf.InfoPort, "info-port", o.epsConf.InfoPort, "the port kubebrain listen on for node info")
-	fs.DurationVar(&o.epsConf.GRPCMaxConnectionAge, "grpc-max-connection-age", o.epsConf.GRPCMaxConnectionAge, "Maximum age of a client or peer gRPC connection before GOAWAY; 0 disables. Bounds how long pre-rotation TLS trust remains active.")
+	fs.DurationVar(&o.epsConf.GRPCMaxConnectionAge, "grpc-max-connection-age", o.epsConf.GRPCMaxConnectionAge, "Maximum age of a client or peer gRPC connection before GOAWAY; 0 preserves multiplexed HTTP/2 REST and disables aging. A positive value gives HTTP/2 to native gRPC, so same-port HTTP endpoints use HTTP/1.1.")
 	fs.DurationVar(&o.epsConf.GRPCMaxConnectionAgeGrace, "grpc-max-connection-age-grace", o.epsConf.GRPCMaxConnectionAgeGrace, "Drain window after max connection age before active streams are closed. Must be positive when connection aging is enabled.")
 	fs.Uint32Var(&o.epsConf.MaxConcurrentStreams, "max-concurrent-streams", o.epsConf.MaxConcurrentStreams, "Maximum concurrent streams that each client connection can open at a time.")
 	fs.Uint32Var(&o.epsConf.MaxRequestsInFlight, "max-requests-inflight", o.epsConf.MaxRequestsInFlight, "Maximum concurrent RPCs accepted by each public client endpoint; 0 disables the instance-wide limit.")

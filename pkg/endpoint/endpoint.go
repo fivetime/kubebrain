@@ -152,6 +152,16 @@ func (e *Endpoint) runClientServer(ctx context.Context) (retErr error) {
 			retErr = errors.Join(retErr, gatewayConn.Close())
 		}()
 	}
+	if e.config.GRPCMaxConnectionAge > 0 {
+		grpcTransport := newNativeGRPCServer(clientGrpc)
+		// Native gRPC owns all HTTP/2. The existing bounded HTTP transport
+		// continues to serve health and JSON gateway requests over HTTP/1.1.
+		httpTransport := newGRPCMuxedHTTPServer(grpc.NewServer(), clientHTTPHandler)
+		e.registerTransportDrain(grpcTransport.quiesce)
+		e.registerTransportDrain(httpTransport.quiesce)
+		exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig, grpcTransport, httpTransport)
+		return newRootServer(e.config.Port, exposedServers...).run(ctx)
+	}
 	muxedServer := newGRPCMuxedHTTPServer(clientGrpc, clientHTTPHandler)
 	e.registerTransportDrain(muxedServer.quiesce)
 	exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig, muxedServer)
@@ -162,6 +172,14 @@ func (e *Endpoint) runClientServer(ctx context.Context) (retErr error) {
 func (e *Endpoint) runPeerServer(ctx context.Context) error {
 	peerGrpc := e.buildPeerGrpcServer()
 	peerHTTPHandler := e.buildPeerHTTPHandler()
+	if e.config.GRPCMaxConnectionAge > 0 {
+		grpcTransport := newNativeGRPCServer(peerGrpc)
+		httpTransport := newGRPCMuxedHTTPServer(grpc.NewServer(), peerHTTPHandler)
+		e.registerTransportDrain(grpcTransport.quiesce)
+		e.registerTransportDrain(httpTransport.quiesce)
+		exposedServers := e.buildExposedServers(e.config.PeerSecurityConfig, grpcTransport, httpTransport)
+		return newRootServer(e.config.PeerPort, exposedServers...).run(ctx)
+	}
 	muxedServer := newGRPCMuxedHTTPServer(peerGrpc, peerHTTPHandler)
 	e.registerTransportDrain(muxedServer.quiesce)
 	exposedServers := e.buildExposedServers(e.config.PeerSecurityConfig, muxedServer)
