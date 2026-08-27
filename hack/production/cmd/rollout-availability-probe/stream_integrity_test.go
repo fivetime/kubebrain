@@ -744,7 +744,7 @@ func TestValidateSnapshotArtifactRemovesAllMembersAfterLaterRestoreFailure(t *te
 	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
 }
 
-func TestConsumeAndValidateSnapshotValidatesRestoreReplicationQuorumAndMemberAdd(t *testing.T) {
+func TestConsumeAndValidateSnapshotValidatesRestoreReplicationQuorumMemberAddAndRemove(t *testing.T) {
 	const (
 		key      = "probe/three-member"
 		value    = "restored-through-official-etcd"
@@ -839,6 +839,57 @@ func TestValidateRestoredMemberAddResponseRejectsIdentityDrift(t *testing.T) {
 			mutate(response)
 			_, err := validateRestoredMemberAddResponse(response, cfg, topology, added)
 			require.Error(t, err)
+		})
+	}
+}
+
+func TestValidateRestoredMemberRemoveResponseRejectsIdentityDrift(t *testing.T) {
+	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	require.NoError(t, err)
+	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33}}
+	const removedMemberID = uint64(44)
+	makeResponse := func() *clientv3.MemberRemoveResponse {
+		members := make([]*etcdserverpb.Member, 0, len(cfg.members))
+		for index, member := range cfg.members {
+			members = append(members, &etcdserverpb.Member{
+				ID: topology.memberIDs[index], Name: member.name,
+				PeerURLs: []string{member.peerURL.String()}, ClientURLs: []string{member.clientURL.String()},
+			})
+		}
+		return &clientv3.MemberRemoveResponse{
+			Header:  &etcdserverpb.ResponseHeader{ClusterId: topology.clusterID, MemberId: topology.leaderID, RaftTerm: 2},
+			Members: members,
+		}
+	}
+
+	require.NoError(t, validateRestoredMemberRemoveResponse(makeResponse(), cfg, topology, removedMemberID))
+	require.Error(t, validateRestoredMemberRemoveResponse(nil, cfg, topology, removedMemberID))
+
+	for name, mutate := range map[string]func(*clientv3.MemberRemoveResponse){
+		"missing header":         func(response *clientv3.MemberRemoveResponse) { response.Header = nil },
+		"wrong cluster":          func(response *clientv3.MemberRemoveResponse) { response.Header.ClusterId++ },
+		"unknown serving member": func(response *clientv3.MemberRemoveResponse) { response.Header.MemberId = 99 },
+		"nonzero revision":       func(response *clientv3.MemberRemoveResponse) { response.Header.Revision = 1 },
+		"missing remaining voter": func(response *clientv3.MemberRemoveResponse) {
+			response.Members = response.Members[:len(response.Members)-1]
+		},
+		"removed voter remains": func(response *clientv3.MemberRemoveResponse) {
+			response.Members[len(response.Members)-1].ID = removedMemberID
+		},
+		"learner remains": func(response *clientv3.MemberRemoveResponse) {
+			response.Members[0].IsLearner = true
+		},
+		"remaining identity drift": func(response *clientv3.MemberRemoveResponse) {
+			response.Members[0].ClientURLs = []string{"http://127.0.0.1:1"}
+		},
+		"duplicate remaining ID": func(response *clientv3.MemberRemoveResponse) {
+			response.Members[1].ID = response.Members[0].ID
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := makeResponse()
+			mutate(response)
+			require.Error(t, validateRestoredMemberRemoveResponse(response, cfg, topology, removedMemberID))
 		})
 	}
 }

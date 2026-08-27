@@ -577,6 +577,32 @@ func waitForRestoredMemberMissing(ctx context.Context, client *clientv3.Client, 
 	}
 }
 
+func waitForRestoredMemberListenerClosed(ctx context.Context, endpoint *url.URL) error {
+	if endpoint == nil || endpoint.Host == "" {
+		return errors.New("removed restored member requires a client listener address")
+	}
+	dialer := &net.Dialer{Timeout: 100 * time.Millisecond}
+	for {
+		probeCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		connection, err := dialer.DialContext(probeCtx, "tcp", endpoint.Host)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("wait for removed restored member listener to close: %w", context.Cause(ctx))
+			}
+			return nil
+		}
+		if closeErr := connection.Close(); closeErr != nil {
+			return fmt.Errorf("close removed restored member listener probe: %w", closeErr)
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-ctx.Done():
+			return fmt.Errorf("wait for removed restored member listener to close: %w", context.Cause(ctx))
+		}
+	}
+}
+
 func validateRestoredMemberAddResponse(response *clientv3.MemberAddResponse, cfg restoredSnapshotConfig,
 	topology restoredClusterTopology, added restoredSnapshotMemberConfig,
 ) (uint64, error) {
@@ -802,7 +828,63 @@ func addRestoredSnapshotMember(ctx context.Context, client *clientv3.Client, pee
 	}
 }
 
-func verifyRestoredClusterMemberAdd(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
+func validateRestoredMemberRemoveResponse(response *clientv3.MemberRemoveResponse, cfg restoredSnapshotConfig,
+	topology restoredClusterTopology, removedMemberID uint64,
+) error {
+	if response == nil || response.Header == nil || response.Header.ClusterId != topology.clusterID ||
+		response.Header.MemberId == 0 || response.Header.RaftTerm == 0 || response.Header.Revision != 0 {
+		return fmt.Errorf("invalid officially restored etcd MemberRemove response identity: %+v", response)
+	}
+	servingMember := false
+	for _, memberID := range topology.memberIDs {
+		servingMember = servingMember || response.Header.MemberId == memberID
+	}
+	if !servingMember {
+		return fmt.Errorf("officially restored etcd MemberRemove response came from unknown member %x", response.Header.MemberId)
+	}
+	if len(response.Members) != len(cfg.members) {
+		return fmt.Errorf("officially restored etcd MemberRemove member count mismatch: got=%d want=%d", len(response.Members), len(cfg.members))
+	}
+	expectedByID := make(map[uint64]restoredSnapshotMemberConfig, len(cfg.members))
+	for index, memberID := range topology.memberIDs {
+		expectedByID[memberID] = cfg.members[index]
+	}
+	seen := make(map[uint64]struct{}, len(response.Members))
+	for _, member := range response.Members {
+		if member == nil || member.ID == 0 || member.ID == removedMemberID || member.IsLearner {
+			return fmt.Errorf("officially restored etcd MemberRemove returned an invalid remaining voter: %+v", member)
+		}
+		if _, duplicate := seen[member.ID]; duplicate {
+			return fmt.Errorf("officially restored etcd MemberRemove repeated member ID %x", member.ID)
+		}
+		seen[member.ID] = struct{}{}
+		expected, exists := expectedByID[member.ID]
+		if !exists || member.Name != expected.name || len(member.PeerURLs) != 1 || member.PeerURLs[0] != expected.peerURL.String() ||
+			len(member.ClientURLs) != 1 || member.ClientURLs[0] != expected.clientURL.String() {
+			return fmt.Errorf("officially restored etcd MemberRemove changed a remaining voter: %+v", member)
+		}
+	}
+	return nil
+}
+
+func removeRestoredSnapshotMember(ctx context.Context, client *clientv3.Client, memberID uint64) (*clientv3.MemberRemoveResponse, error) {
+	for {
+		response, err := client.MemberRemove(ctx, memberID)
+		if err == nil {
+			return response, nil
+		}
+		if !errors.Is(err, rpctypes.ErrUnhealthy) && !errors.Is(err, rpctypes.ErrMemberNotEnoughStarted) {
+			return nil, err
+		}
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, fmt.Errorf("wait for officially restored etcd cluster to become safe for MemberRemove: %w", context.Cause(ctx))
+		}
+	}
+}
+
+func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient *clientv3.Client, adminConfig clientv3.Config,
 	cfg restoredSnapshotConfig, topology restoredClusterTopology, directClients []*clientv3.Client,
 	expected []streamProbeExpectation, preJoinKey, preJoinValue string, preJoinRevision int64,
 ) (retErr error) {
@@ -836,7 +918,12 @@ func verifyRestoredClusterMemberAdd(ctx context.Context, adminClient *clientv3.C
 	if err != nil {
 		return fmt.Errorf("start added officially restored etcd member %q: %w", added.name, err)
 	}
-	defer addedServer.Close()
+	addedServerClosed := false
+	defer func() {
+		if !addedServerClosed {
+			addedServer.Close()
+		}
+	}()
 	if err := waitForRestoredSnapshotMember(ctx, added, addedServer); err != nil {
 		return err
 	}
@@ -844,9 +931,12 @@ func verifyRestoredClusterMemberAdd(ctx context.Context, adminClient *clientv3.C
 	if err != nil {
 		return fmt.Errorf("create added officially restored etcd member client: %w", err)
 	}
+	addedClientClosed := false
 	defer func() {
-		if closeErr := addedClient.Close(); closeErr != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("close added officially restored etcd member client: %w", closeErr))
+		if !addedClientClosed {
+			if closeErr := addedClient.Close(); closeErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close added officially restored etcd member client: %w", closeErr))
+			}
 		}
 	}()
 
@@ -890,20 +980,72 @@ func verifyRestoredClusterMemberAdd(ctx context.Context, adminClient *clientv3.C
 		postJoinPut.Header.Revision); err != nil {
 		return err
 	}
-	deleteResponse, err := adminClient.Txn(ctx).Then(clientv3.OpDelete(preJoinKey), clientv3.OpDelete(postJoinKey)).Commit()
+	memberRemoveResponse, err := removeRestoredSnapshotMember(ctx, adminClient, addedMemberID)
 	if err != nil {
-		return fmt.Errorf("delete officially restored etcd expansion probes: %w", err)
+		return fmt.Errorf("remove added voter from officially restored etcd cluster: %w", err)
+	}
+	if err := validateRestoredMemberRemoveResponse(memberRemoveResponse, cfg, topology, addedMemberID); err != nil {
+		return err
+	}
+	select {
+	case <-addedServer.Server.StopNotify():
+	case <-ctx.Done():
+		return fmt.Errorf("wait for removed officially restored etcd member %q to stop: %w", added.name, context.Cause(ctx))
+	}
+	addedClientClosed = true
+	if closeErr := addedClient.Close(); closeErr != nil {
+		retErr = errors.Join(retErr, fmt.Errorf("close added officially restored etcd member client: %w", closeErr))
+		return retErr
+	}
+	addedServer.Close()
+	addedServerClosed = true
+	if err := waitForRestoredMemberListenerClosed(ctx, &added.clientURL); err != nil {
+		return fmt.Errorf("verify removed officially restored etcd member %q listener stopped: %w", added.name, err)
+	}
+
+	postRemoveKey := "/kubebrain-rollout-restore/three-member-replication"
+	postRemoveValue := fmt.Sprintf("removed-%x", addedMemberID)
+	postRemovePut, err := adminClient.Put(ctx, postRemoveKey, postRemoveValue)
+	if err != nil {
+		return fmt.Errorf("write through contracted officially restored etcd cluster: %w", err)
+	}
+	if postRemovePut == nil || postRemovePut.Header == nil || postRemovePut.Header.ClusterId != topology.clusterID ||
+		postRemovePut.Header.Revision <= postJoinPut.Header.Revision {
+		return fmt.Errorf("invalid contracted officially restored etcd write response: %+v", postRemovePut)
+	}
+	for index, directClient := range directClients {
+		if err := waitForRestoredMemberValue(ctx, directClient, postRemoveKey, postRemoveValue, postRemovePut.Header.Revision); err != nil {
+			return fmt.Errorf("verify contracted cluster value on member %d: %w", index, err)
+		}
+	}
+	contractedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, cfg, postRemovePut.Header.Revision)
+	if err != nil {
+		return fmt.Errorf("verify contracted officially restored etcd topology after replication barrier: %w", err)
+	}
+	for index, memberID := range topology.memberIDs {
+		if contractedTopology.memberIDs[index] != memberID {
+			return fmt.Errorf("officially restored etcd changed member ID during contraction at %d: got=%x want=%x",
+				index, contractedTopology.memberIDs[index], memberID)
+		}
+	}
+
+	deleteResponse, err := adminClient.Txn(ctx).Then(
+		clientv3.OpDelete(preJoinKey), clientv3.OpDelete(postJoinKey), clientv3.OpDelete(postRemoveKey),
+	).Commit()
+	if err != nil {
+		return fmt.Errorf("delete officially restored etcd reconfiguration probes: %w", err)
 	}
 	if deleteResponse == nil || deleteResponse.Header == nil || deleteResponse.Header.ClusterId != topology.clusterID ||
-		deleteResponse.Header.Revision <= postJoinPut.Header.Revision || len(deleteResponse.Responses) != 2 ||
+		deleteResponse.Header.Revision <= postRemovePut.Header.Revision || len(deleteResponse.Responses) != 3 ||
 		deleteResponse.Responses[0].GetResponseDeleteRange() == nil || deleteResponse.Responses[0].GetResponseDeleteRange().Deleted != 1 ||
-		deleteResponse.Responses[1].GetResponseDeleteRange() == nil || deleteResponse.Responses[1].GetResponseDeleteRange().Deleted != 1 {
-		return fmt.Errorf("invalid officially restored etcd expansion probe deletion response: %+v", deleteResponse)
+		deleteResponse.Responses[1].GetResponseDeleteRange() == nil || deleteResponse.Responses[1].GetResponseDeleteRange().Deleted != 1 ||
+		deleteResponse.Responses[2].GetResponseDeleteRange() == nil || deleteResponse.Responses[2].GetResponseDeleteRange().Deleted != 1 {
+		return fmt.Errorf("invalid officially restored etcd reconfiguration probe deletion response: %+v", deleteResponse)
 	}
-	for index, directClient := range append(append([]*clientv3.Client(nil), directClients...), addedClient) {
-		for _, key := range []string{preJoinKey, postJoinKey} {
+	for index, directClient := range directClients {
+		for _, key := range []string{preJoinKey, postJoinKey, postRemoveKey} {
 			if err := waitForRestoredMemberMissing(ctx, directClient, key, deleteResponse.Header.Revision); err != nil {
-				return fmt.Errorf("verify expansion probe deletion on member %d key %q: %w", index, key, err)
+				return fmt.Errorf("verify reconfiguration probe deletion on member %d key %q: %w", index, key, err)
 			}
 		}
 	}
@@ -1031,7 +1173,7 @@ func verifyRestoredClusterReplicationAndQuorum(ctx context.Context, adminClient 
 				index, recoveredTopology.memberIDs[index], memberID)
 		}
 	}
-	return verifyRestoredClusterMemberAdd(ctx, adminClient, adminConfig, cfg, recoveredTopology, directClients,
+	return verifyRestoredClusterMemberReconfiguration(ctx, adminClient, adminConfig, cfg, recoveredTopology, directClients,
 		expected, quorumKey, quorumValue, quorumPut.Header.Revision)
 }
 
