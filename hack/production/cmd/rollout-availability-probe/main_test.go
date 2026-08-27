@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
@@ -22,6 +24,22 @@ import (
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
+
+func TestClassifyCleanupLeaseError(t *testing.T) {
+	alreadyAbsent, err := classifyCleanupLeaseError(nil)
+	require.False(t, alreadyAbsent)
+	require.NoError(t, err)
+	for _, missing := range []error{rpctypes.ErrLeaseNotFound, fmt.Errorf("revoke: %w", rpctypes.ErrLeaseNotFound)} {
+		alreadyAbsent, err = classifyCleanupLeaseError(missing)
+		require.True(t, alreadyAbsent)
+		require.NoError(t, err)
+	}
+
+	unrelated := errors.New("permission denied")
+	alreadyAbsent, err = classifyCleanupLeaseError(unrelated)
+	require.False(t, alreadyAbsent)
+	require.ErrorIs(t, err, unrelated)
+}
 
 type fakePDTimestampClient struct {
 	delay    time.Duration

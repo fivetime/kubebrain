@@ -24,6 +24,7 @@ import (
 	pd "github.com/tikv/pd/client"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
@@ -57,6 +58,13 @@ type config struct {
 	tlsServerName     string
 	minPublicTCPDials int64
 	minDirectTCPDials int64
+}
+
+func classifyCleanupLeaseError(err error) (alreadyAbsent bool, cleanupErr error) {
+	if errors.Is(err, rpctypes.ErrLeaseNotFound) {
+		return true, nil
+	}
+	return false, err
 }
 
 func main() {
@@ -539,7 +547,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		for index := len(historyLeaseIDs) - 1; index >= 0; index-- {
 			historyLeaseID := historyLeaseIDs[index]
 			revokedHistory, cleanupErr := cleanupClient.Revoke(cleanupCtx, historyLeaseID)
-			if cleanupErr == nil {
+			missingHistoryLease, cleanupErr := classifyCleanupLeaseError(cleanupErr)
+			if cleanupErr == nil && !missingHistoryLease {
 				if revokedHistory == nil {
 					cleanupErr = fmt.Errorf("empty response")
 				} else {
@@ -551,7 +560,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			}
 		}
 		revoked, cleanupErr := cleanupClient.Revoke(cleanupCtx, leaseID)
-		if cleanupErr == nil {
+		missingLease, cleanupErr := classifyCleanupLeaseError(cleanupErr)
+		if cleanupErr == nil && !missingLease {
 			if revoked == nil {
 				cleanupErr = fmt.Errorf("empty response")
 			} else {
