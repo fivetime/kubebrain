@@ -95,6 +95,26 @@ func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
 	require.Equal(t, []byte("k"), got.Events[0].Kv.Key)
 }
 
+func TestOnlyCreatedWatchResponseAuthorizesContinuation(t *testing.T) {
+	tests := []struct {
+		name     string
+		response clientv3.WatchResponse
+		want     bool
+	}{
+		{name: "created", response: clientv3.WatchResponse{Created: true}, want: true},
+		{name: "empty transport artifact", response: clientv3.WatchResponse{}},
+		{name: "progress", response: clientv3.WatchResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}}},
+		{name: "event before create", response: clientv3.WatchResponse{Events: []*clientv3.Event{{
+			Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 42},
+		}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, watchResponseAuthorizesContinuation(tt.response))
+		})
+	}
+}
+
 func TestIsForwardConnectionError(t *testing.T) {
 	tests := []struct {
 		name string

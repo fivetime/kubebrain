@@ -1328,9 +1328,25 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 						}
 						return
 					}
+					if !authorizedContinuation && !watchResponseAuthorizesContinuation(wresp) {
+						// CreatedNotify makes the leader's Created response the only
+						// authoritative proof that it accepted the original caller's
+						// credentials. clientv3 can surface a generation-local empty or
+						// progress response while its transport is being rebuilt before
+						// that acknowledgement arrives. Do not turn that transient into
+						// an empty WatchResult (and do not mint the trusted continuation
+						// marker). Reopen from the unchanged explicit revision so any
+						// event observed by the abandoned generation is replayed.
+						klog.InfoS("etcd proxy watch response preceded authoritative create; reconnecting",
+							"key", loggedProxyKey(key), "rangeEnd", loggedProxyKey(rangeEnd),
+							"rev", watchRevision, "headerRevision", wresp.Header.GetRevision(),
+							"events", len(wresp.Events))
+						reconnect = true
+						break
+					}
 					if !authorizedContinuation {
-						// A successful response proves the leader accepted the initial
-						// create-time credentials. Only reconnects after this point may
+						// Created proves the leader accepted the initial create-time
+						// credentials. Only reconnects after this point may
 						// use the trusted continuation marker and preserve etcd's rule
 						// that permission changes do not cancel an established Watch.
 						ctx = metadata.AppendToOutgoingContext(ctx, AuthorizedWatchProxyMetadataKey, "1")
@@ -1364,6 +1380,10 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 		}
 	}()
 	return outputCh, nil
+}
+
+func watchResponseAuthorizesContinuation(wresp clientv3.WatchResponse) bool {
+	return wresp.Created
 }
 
 func waitProxyWatchReconnect(ctx context.Context) bool {
