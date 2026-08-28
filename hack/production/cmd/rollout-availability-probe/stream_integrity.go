@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -65,6 +66,13 @@ const (
 	// race covered upstream by etcd issue #15528). Require a quiescent interval
 	// after equality so restored bootstrap ConfChanges have also been Advanced.
 	restoredSnapshotRaftQuiescence = 500 * time.Millisecond
+	// Embedded etcd defaults to a 2 GiB backend quota. Long-running rollout
+	// clusters can legitimately produce a larger logical Snapshot even after
+	// fixture cleanup because MVCC history remains until compaction. Give the
+	// isolated restore enough bounded write headroom for auth and topology
+	// verification instead of turning a valid artifact into a false NOSPACE RED.
+	restoredSnapshotDefaultQuotaBytes = int64(2 * 1024 * 1024 * 1024)
+	restoredSnapshotMinQuotaHeadroom  = int64(64 * 1024 * 1024)
 )
 
 type streamProbeExpectation struct {
@@ -296,6 +304,7 @@ type restoredSnapshotConfig struct {
 	members             []restoredSnapshotMemberConfig
 	initialCluster      string
 	initialClusterToken string
+	quotaBackendBytes   int64
 	tls                 restoredSnapshotTLSConfig
 	auth                *restoredSnapshotAuthExpectation
 }
@@ -573,6 +582,7 @@ func newRestoredSnapshotEmbedConfig(cfg restoredSnapshotConfig, member restoredS
 	embedCfg.AdvertisePeerUrls = []url.URL{member.peerURL}
 	embedCfg.InitialCluster = initialCluster
 	embedCfg.InitialClusterToken = cfg.initialClusterToken
+	embedCfg.QuotaBackendBytes = cfg.quotaBackendBytes
 	embedCfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
 	if cfg.tls.enabled() {
 		embedCfg.ClientTLSInfo = transport.TLSInfo{
@@ -580,6 +590,24 @@ func newRestoredSnapshotEmbedConfig(cfg restoredSnapshotConfig, member restoredS
 		}
 	}
 	return embedCfg
+}
+
+func restoredSnapshotQuotaBytes(databaseBytes int64) (int64, error) {
+	if databaseBytes <= 0 {
+		return 0, fmt.Errorf("restored Snapshot database size must be positive: %d", databaseBytes)
+	}
+	headroom := databaseBytes / 2
+	if headroom < restoredSnapshotMinQuotaHeadroom {
+		headroom = restoredSnapshotMinQuotaHeadroom
+	}
+	if databaseBytes > math.MaxInt64-headroom {
+		return 0, fmt.Errorf("restored Snapshot database size %d cannot reserve %d bytes of quota headroom", databaseBytes, headroom)
+	}
+	quota := databaseBytes + headroom
+	if quota < restoredSnapshotDefaultQuotaBytes {
+		quota = restoredSnapshotDefaultQuotaBytes
+	}
+	return quota, nil
 }
 
 func waitForRestoredSnapshotMember(ctx context.Context, member restoredSnapshotMemberConfig, server *embed.Etcd) error {
@@ -2484,6 +2512,13 @@ func validateSnapshotArtifactWithClusterAuthVerifier(ctx context.Context, manage
 		if !info.Mode().IsRegular() || info.Size() <= 0 {
 			return fmt.Errorf("official etcdutl produced an invalid restored Snapshot database for member %q: mode=%s size=%d",
 				member.name, info.Mode(), info.Size())
+		}
+		quota, quotaErr := restoredSnapshotQuotaBytes(info.Size())
+		if quotaErr != nil {
+			return quotaErr
+		}
+		if quota > restoredCfg.quotaBackendBytes {
+			restoredCfg.quotaBackendBytes = quota
 		}
 	}
 	if verifier == nil {

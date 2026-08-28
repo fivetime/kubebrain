@@ -19,6 +19,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -830,6 +831,38 @@ func TestConsumeAndValidateSnapshotValidatesRestoreReplicationQuorumMemberAddRem
 	entries, readErr := os.ReadDir(dir)
 	require.NoError(t, readErr)
 	require.Empty(t, entries, "validated artifact and all restored members must be removed")
+}
+
+func TestRestoredSnapshotQuotaBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		databaseBytes int64
+		want          int64
+		wantErr       bool
+	}{
+		{name: "empty", databaseBytes: 0, wantErr: true},
+		{name: "negative", databaseBytes: -1, wantErr: true},
+		{name: "small uses default", databaseBytes: 1, want: restoredSnapshotDefaultQuotaBytes},
+		{name: "below default uses default", databaseBytes: 1024 * 1024 * 1024, want: restoredSnapshotDefaultQuotaBytes},
+		{name: "large adds fifty percent", databaseBytes: 3 * 1024 * 1024 * 1024, want: 4608 * 1024 * 1024},
+		{name: "overflow", databaseBytes: math.MaxInt64, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := restoredSnapshotQuotaBytes(tc.databaseBytes)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+
+	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 1, restoredSnapshotTLSConfig{}, nil)
+	require.NoError(t, err)
+	cfg.quotaBackendBytes = 3 * 1024 * 1024 * 1024
+	embedCfg := newRestoredSnapshotEmbedConfig(cfg, cfg.members[0], cfg.initialCluster)
+	require.Equal(t, cfg.quotaBackendBytes, embedCfg.QuotaBackendBytes)
 }
 
 func TestValidateRestoredMemberAddResponseRejectsIdentityDrift(t *testing.T) {
