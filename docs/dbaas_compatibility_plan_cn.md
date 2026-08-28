@@ -64074,6 +64074,72 @@ CRI image 引用，只保留当前 A5569 与回滚 A5567；本地同时保留两
 fence 和后续选举的完整审计。仍需继续量化 direct stable-Pod DNS 在滚动中的 14–21 秒 replacement 尾部；它没有影响本轮 public
 Service 5 秒 SLO，但在多节点、多可用区、外部负载均衡器和故障而非 voluntary drain 的环境中仍是明确兼容性/运维边界。
 
+### A5570–A5572：强制删除当前 leader，并完成崩溃身份 lease 交接
+
+此前 rollout 只覆盖受控 drain，不能证明进程来不及执行 preStop 或主动交接时仍可恢复。提交
+`4e90e560`（A5570）为同一 fail-closed runner 增加显式 `HARD_FAILOVER=true` 和二次确认口令：主探针发布屏障后，runner
+从 MemberList 精确映射 leader member ID、peer URL 与 StatefulSet Pod，连续两次确认 leader 未漂移，再用 Pod UID、
+resourceVersion 和 `gracePeriodSeconds=0` 强制删除该精确对象。恢复必须同时满足同名 Pod UID 改变、首次容器 Ready、restart 0、
+三成员与 runtime 不漂移，以及完整 900 次业务探针通过；删除前任何 leader 映射歧义都会拒绝 mutation。真实 A5570 执行没有假绿：
+replacement 启动时同一稳定 Pod identity 的旧 admission lease 尚未过期，新进程因键已存在退出并被 kubelet 重启，暴露了受控滚动
+从未覆盖的 crash identity handoff 缺口。
+
+提交 `8a47889a`（A5571）增加有界 `StartSessionWithIdentityHandoff`。只有 gate 仍为精确 open、旧记录是 canonical exact identity、
+带 lease、`createRevision=modRevision` 且 `version=1` 时，才等待原 lease 自然消失；不会抢占活 lease，也不会在轮询中反复 Grant/Revoke。
+等待上界为两倍 15 秒 TTL，父 context 取消和 gate 关闭立即失败，最终注册仍与 gate closure 原子竞争；KeepAlive 使用长生命周期 run
+context，而不是短 handoff context。单元测试固定等待后成功、活 lease 不被偷且无 lease churn、closed gate fail-fast，以及 malformed
+leased response 拒绝。production inventory 为 677 项、四片 `162/186/173/156`；提交前 verify 通过，提交后 wall 为
+`138.598/370.895/248.620/388.476s`，全部通过。
+
+A5570→A5571 候选升级 **900/900 GREEN**：public/direct Watch `900/900×3`，Lease response `103/281`，public restart 0、
+direct replacement 18、最大恢复 16,081ms，RangeStream 173、Snapshot 1、retry/partial `4/0`，最大公共/direct/TSO/Region
+延迟 `2688/21095/45/9ms`。随后强制删除 leader `a4657-tls-1` 后，replacement UID 改变、首次容器直接 Ready 且 restart 0，
+业务再次 **900/900 GREEN**，Lease `71/210`、两个方向 restart 均 0、RangeStream 121、Snapshot 1、最大延迟
+`2325/2325/69/9ms`，证明 session 修复关闭了真实 crash restart。整项门禁仍被记为 RED：业务探针已 Succeeded 后，runner 又试图
+第三次 `kubectl exec` 读取最终 leader，得到 `cannot exec into a container in a completed pod`；这是证据时序缺口，不是数据面失败。
+
+提交 `9d15566f`（A5572）让主探针只在全部业务操作与清理成功后、进程退出前输出唯一
+`FINAL_LEADER_TARGET`；hard runner 保留删除前两次 in-process leader 确认，并从最终日志解析严格 JSON，不再 exec 已结束 Pod。
+缺失、重复、malformed 或与三成员映射不一致的最终证据继续 fail closed。rollout runner 全套 `102.630s`，probe 普通/race
+`117.792/155.349s`，vet、bash syntax 和 diff check 全绿；production inventory 为 678 项、四片 `162/187/173/156`；提交前
+verify 通过，提交后 wall 为 `139.865/373.096/249.755/388.739s`，全部通过。
+
+A5571 与第一次 A5572 构建都漏传 `--tag`，虽然 platform/config、SBOM 和 provenance 内容存在，但两份 in-toto statement 的
+`subject=[]`；早期 A5571 人工检查还因 shell 未启用 `set -e` 错把失败断言后的输出记为通过。两者都不能作为合格 attested release；
+A5571 只作为中间运行验证，第一次 A5572 在部署前被严格门禁拦截并删除。重新使用相同完整源码 SHA
+`9d15566fd05f1cfc6cab751531a0a2a3424b384c`、版本 `0.0.0-9d15566fd05f`、TiKV 和 build time
+`2026-08-28T00:43:23Z`，并显式 `--tag kubebrain:a5572-9d15566f` 后，得到唯一接受的 A5572 archive：914,287,104
+bytes，SHA-256 `1c72faf2ff2019d02f0b262b950f4dc629396cfcde293d46997bfe5361036012`；index
+`sha256:6e2851a8691879a8cc53ce20e3e0f4aee267d529d9d0956e2fb961b023b6556a`、platform
+`sha256:cc8988ad82ff96ce87540539aa3e85aa4d92766d081685b420083b3d271e316c`、config
+`sha256:23532677aaaf2ba3aeb6e6996f61419a8f26db1dfad313494ef559a33440bc0d`、attestation
+`sha256:57ab617eb49f95296592dd5a261eac1cb9f46fb627d4890cfb14ae9616c28250`、SBOM
+`sha256:4c31f6edd9c7d31ffb5839167ce7b20c2b10151e71b2093334d1b533663d8400`、provenance
+`sha256:b2f3aef0fc8d1b42602cc15488fb251748ce0eb02e58ee019a95766aad05c344`、Kind runtime wrapper
+`sha256:34f980e8797a1d9da7132ecbfea09c1382057442a34e7b27b5a117fc0156a513`。严格模式验证 78/78 blob 可达、78
+descriptor edges 的 digest/size/missing 全为 0；SBOM 为 2,592 packages/8,096 relationships、provenance 为 3 个
+materials，两份声明都只有一个 subject 且精确绑定 platform。一次性 immutable Pod 验证完整 SHA、TiKV、Go 1.26.5、
+linux/amd64、build time、UID/GID 65532 和 restart 0，并以 UID `759ef035-9c96-413b-b7b3-626ccc3f9966`、
+resourceVersion `7033909` 双前置条件删除。
+
+A5571→A5572 候选升级 **900/900 GREEN**：public/direct Watch `900/900×3`，Lease `100/270`，public restart 0、direct
+replacement 19、最大恢复 17,766ms，public/min-direct TCP dial `2/2`，RangeStream 175、Snapshot 1、retry/partial `0/0`，
+最大总/Put/Watch/direct/TSO/Region 延迟 `3366/3359/1047/22772/45/21ms`，revision
+`a4657-tls-7df474df85 -> a4657-tls-67d98c4774`。随后 hard gate 精确删除 leader `a4657-tls-2`，旧 UID
+`75c98e18-7110-4791-97ee-16bddfb0766e`、member ID 2985394290；replacement UID
+`34377d8e-3d47-455f-bdf8-6b9260da46b5`、restart 0。业务再次 **900/900 GREEN**，Watch `900/900×3`，Lease
+`72/210` 且 restart 0，RangeStream 121、Snapshot 1、retry/partial `2/1`，最大延迟 `2023/2048/36/8ms`；主探针退出前自报
+最终 leader `a4657-tls-1`、member ID 848842929，完整 hard-failover runner exit 0。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 163，
+current/update revision 均为 `a4657-tls-67d98c4774`；3/3 Ready、restart 0，三个 Pod 均运行精确 A5572 index/runtime。
+cluster ID 7662961163671170154、revision 91841、term 505、leader 848842929；三个既有 voter 精确，AlarmList 空。
+auth enabled/revision 2219，用户恢复为 `KubeWharfServer/alice/root`、角色为 `operator/root`。现场另发现旧
+`/kubebrain-rollout-availability/a5570-candidate/` 探针残留 529 个键、6 个生成用户和 4 个生成角色；逐项证明其权限只指向该独占
+测试前缀且没有活探针后，精确清理 529/529，未触碰业务身份。PD leader `kb-pd-2`，PD/TiKV 3+3 Ready、restart 0，三个 store
+均 Up；九个主 Pod 近 30 分钟关键日志命中 0。A5570 残留说明探针进程被非正常终止时，进程内 defer 仍不足以保证外部 fixture
+回收；需要继续把 cleanup ownership/receipt 提升到 runner 侧的可重入补偿，而不能只依赖 Pod 内清理。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
