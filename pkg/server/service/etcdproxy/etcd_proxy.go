@@ -45,6 +45,13 @@ import (
 const (
 	proxyConnectTimeout            = 5 * time.Second
 	proxyFailedLeaderRetryInterval = time.Second
+	// A transport failure can precede the follower election loop's next shared
+	// record read. Refresh that record from the single background connector at a
+	// bounded rate so a published successor is not hidden behind the local
+	// election retry period. This is deliberately shorter than the production
+	// 500ms election poll but long enough to prevent request-driven refresh
+	// storms across followers.
+	proxyFailedLeaderRefreshInterval = 250 * time.Millisecond
 )
 
 func loggedProxyKey(key []byte) string {
@@ -80,6 +87,11 @@ type etcdProxy struct {
 	// bypasses this delay immediately.
 	failedLeader string
 	retryAfter   time.Time
+	// refreshAfter rate-limits shared election-record reads while the cached
+	// holder is the same transport identity that just failed. It is guarded by
+	// lock and consumed only by the serialized background connector; request
+	// goroutines merely wake that connector through updateCh.
+	refreshAfter time.Time
 	lock         sync.RWMutex
 	// updateMu serializes updateClient so at most one goroutine builds/swaps the
 	// forwarding client at a time. Without it the 1s checkLeaderLoop and the RPC
@@ -164,6 +176,7 @@ func (e *etcdProxy) Close() error {
 		e.curLeader = ""
 		e.failedLeader = ""
 		e.retryAfter = time.Time{}
+		e.refreshAfter = time.Time{}
 		e.lock.Unlock()
 		e.updateMu.Unlock()
 	})
@@ -278,7 +291,6 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 		finishAttempt()
 		if err != nil {
 			e.lock.Lock()
-			defer e.lock.Unlock()
 			failedLeader := e.curLeader
 			e.curLeader = ""
 			e.err = err
@@ -286,6 +298,8 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 			if e.resetClient() {
 				klog.InfoS("reset client caused by checking conn", "err", e.err)
 			}
+			e.lock.Unlock()
+			e.requestClientUpdate()
 			return
 		}
 	}
@@ -303,6 +317,7 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 		e.curLeader = ""
 		e.failedLeader = ""
 		e.retryAfter = time.Time{}
+		e.refreshAfter = time.Time{}
 		e.err = nil
 		return
 	}
@@ -320,6 +335,7 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 		}
 		curLeader = e.election.GetLeaderInfo()
 	}
+	curLeader = e.refreshFailedLeader(ctx, curLeader)
 	e.lock.RLock()
 	sameLeader := e.client != nil && curLeader == e.curLeader
 	retryDeferred := curLeader == e.failedLeader && time.Now().Before(e.retryAfter)
@@ -363,6 +379,7 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 			e.err = status.Error(codes.Internal, err.Error())
 			e.deferLeaderRetryLocked(curLeader)
 			e.lock.Unlock()
+			e.requestClientUpdate()
 			return
 		}
 
@@ -390,13 +407,13 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 		e.curLeader = curLeader
 		e.failedLeader = ""
 		e.retryAfter = time.Time{}
+		e.refreshAfter = time.Time{}
 		e.lock.Unlock()
 		klog.InfoS("conn to new leader", "oldLeader", oldLeader, "curLeader", curLeader)
 		return
 	}
 
 	e.lock.Lock()
-	defer e.lock.Unlock()
 	klog.InfoS("leader connection not ready", "err", e.err, "leaderIdentity", curLeader, "dialEndpoint", dialEndpoint)
 	e.curLeader = ""
 	e.deferLeaderRetryLocked(curLeader)
@@ -404,6 +421,8 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 		e.closeClient(e.client)
 		e.client = nil
 	}
+	e.lock.Unlock()
+	e.requestClientUpdate()
 }
 
 func (e *etcdProxy) deferLeaderRetryLocked(leader string) {
@@ -412,6 +431,41 @@ func (e *etcdProxy) deferLeaderRetryLocked(leader string) {
 	}
 	e.failedLeader = leader
 	e.retryAfter = time.Now().Add(proxyFailedLeaderRetryInterval)
+	// Permit one immediate authoritative refresh after each newly observed
+	// transport failure. refreshFailedLeader reserves subsequent reads before
+	// doing I/O, so concurrent wakeups still cannot stampede the backend.
+	e.refreshAfter = time.Time{}
+}
+
+func (e *etcdProxy) refreshFailedLeader(ctx context.Context, cachedLeader string) string {
+	if !election.IsLeaderKnown(cachedLeader) {
+		return cachedLeader
+	}
+	now := time.Now()
+	e.lock.Lock()
+	if cachedLeader != e.failedLeader || now.Before(e.refreshAfter) {
+		e.lock.Unlock()
+		return cachedLeader
+	}
+	e.refreshAfter = now.Add(proxyFailedLeaderRefreshInterval)
+	e.lock.Unlock()
+
+	timeout := proxyFailedLeaderRefreshInterval
+	if connectionTimeout := e.connectionTimeout(); connectionTimeout < timeout {
+		timeout = connectionTimeout
+	}
+	refreshCtx, cancel := context.WithTimeout(ctx, timeout)
+	err := e.election.RefreshLeaderInfo(refreshCtx)
+	cancel()
+	if err != nil {
+		klog.V(2).InfoS("failed to refresh election record after leader transport failure", "leaderIdentity", cachedLeader, "err", err)
+		return cachedLeader
+	}
+	refreshedLeader := e.election.GetLeaderInfo()
+	if election.IsLeaderKnown(refreshedLeader) && refreshedLeader != cachedLeader {
+		klog.InfoS("observed successor after leader transport failure", "oldLeader", cachedLeader, "curLeader", refreshedLeader)
+	}
+	return refreshedLeader
 }
 
 func (e *etcdProxy) connectionTimeout() time.Duration {
@@ -521,8 +575,8 @@ func (e *etcdProxy) markForwardError(ctx context.Context, client *clientv3.Clien
 		return
 	}
 	e.lock.Lock()
-	defer e.lock.Unlock()
 	if e.client != client {
+		e.lock.Unlock()
 		return
 	}
 	failedLeader := e.curLeader
@@ -532,6 +586,8 @@ func (e *etcdProxy) markForwardError(ctx context.Context, client *clientv3.Clien
 	if e.resetClient() {
 		klog.InfoS("reset client caused by forward error", "err", err)
 	}
+	e.lock.Unlock()
+	e.requestClientUpdate()
 }
 
 func isForwardConnectionError(err error) bool {

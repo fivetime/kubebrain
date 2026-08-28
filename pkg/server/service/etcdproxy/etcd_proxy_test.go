@@ -301,6 +301,65 @@ func TestWaitReadyPreemptsStaleLeaderConnectionAttempt(t *testing.T) {
 		"a published successor must preempt the stale five-second peer connection attempt")
 }
 
+func TestFailedLeaderTransportRefreshesPublishedSuccessorBeforeRetry(t *testing.T) {
+	retiringAddress := startPutResultServer(t, &putResultServer{put: func() (*etcdserverpb.PutResponse, error) {
+		return &etcdserverpb.PutResponse{}, nil
+	}})
+	successorAddress := startPutResultServer(t, &putResultServer{put: func() (*etcdserverpb.PutResponse, error) {
+		return &etcdserverpb.PutResponse{}, nil
+	}})
+	election := newSwitchingLeaderElection(retiringAddress)
+	var refreshes atomic.Int32
+	election.testLeaderElection.refresh = func() {
+		refreshes.Add(1)
+		election.address.Store(successorAddress)
+	}
+	proxy := &etcdProxy{
+		election: election,
+		updateCh: make(chan struct{}, 1),
+	}
+	t.Cleanup(func() {
+		proxy.updateMu.Lock()
+		proxy.lock.Lock()
+		proxy.resetClient()
+		proxy.lock.Unlock()
+		proxy.updateMu.Unlock()
+	})
+
+	proxy.updateClient()
+	require.NoError(t, proxy.Ready())
+	proxy.lock.RLock()
+	retiringClient := proxy.client
+	proxy.lock.RUnlock()
+
+	proxy.markForwardError(context.Background(), retiringClient, rpctypes.ErrGRPCLeaderChanged)
+	proxy.updateClient()
+
+	require.Equal(t, int32(1), refreshes.Load(), "the connector must read the shared record instead of waiting for the follower election poll")
+	require.NoError(t, proxy.Ready())
+	proxy.lock.RLock()
+	require.Equal(t, successorAddress, proxy.curLeader)
+	proxy.lock.RUnlock()
+}
+
+func TestFailedLeaderRefreshIsRateLimitedWhileRetryIsDeferred(t *testing.T) {
+	var refreshes atomic.Int32
+	election := &testLeaderElection{
+		leaderAddress: "127.0.0.1:1",
+		refresh:       func() { refreshes.Add(1) },
+	}
+	proxy := &etcdProxy{
+		election:     election,
+		failedLeader: election.leaderAddress,
+		retryAfter:   time.Now().Add(time.Minute),
+	}
+
+	proxy.updateClient()
+	proxy.updateClient()
+
+	require.Equal(t, int32(1), refreshes.Load(), "connector wakeups inside the refresh interval must not multiply backend reads")
+}
+
 func registerServingHealth(server *grpc.Server) *health.Server {
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
