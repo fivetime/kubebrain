@@ -64251,6 +64251,55 @@ revision `a4657-tls-f657b67db`，3/3 Ready、restart 0 且精确运行 A5574 run
 `5ca9b6ba-a3b7-4d13-95b7-908580936770` 和 resourceVersion `7057863` 双前置条件删除，Service NotFound、EndpointSlice 0。
 无效的首次 A5574 与 N−2 A5572 archive 已移入系统回收站并移除节点引用；发布保留集为 A5573 rollback 和最终 A5574 current。
 
+### A5575：阻止 rollout receipt lease ID 的 ABA 误回收
+
+提交 `a59ef87c`（A5575）关闭 A5574 外部 receipt 的 lease generation/ABA 缺口。A5574 runner 用四字节随机数生成自选 lease ID；
+异常后 lease 过期时，另一个客户端可以重新 grant 同一 ID 并挂载前缀外 key，而旧 cleanup 只检查“该 ID 当前存在”，随后会 revoke
+新 lease 并误删外部数据。修复前嵌入式 etcd RED 精确构造 receipt 计划 ID `7202`、把 `/foreign/must-survive` 挂到同 ID lease，
+旧 cleanup 返回 nil 且外部 key 被删除。
+
+修复把 runner ID 生成改为读取 8 字节 `/dev/urandom`、清最高位后生成 canonical 正 63-bit capability，并继续拒绝零值和重复值。
+cleanup 对每个 live receipted lease 使用上游 `clientv3.WithAttachedKeys()` 语义，在任何 auth/lease/KV mutation 前验证响应 header、ID、
+GrantedTTL/TTL，以及每条 attached key 都以 receipt 的独占 prefix 开头；发现前缀外 key 立即 fail closed。允许 live lease 暂时没有 key，
+覆盖 LeaseGrant 成功而首个 fixture Put 尚未提交的合法崩溃窗口；63-bit capability 与 namespace RBAC 共同防止无 witness ID 被实际重用。
+新回归证明前缀外 key、lease 及其 attachment 全部保留，既有 2 keys/6 users/4 roles/3 leases 异常恢复测试又覆盖正常 attached key 和
+两个暂时无 key 的 history lease。
+
+probe 包全量 `123.195s`，observe/hard-failover/malformed-evidence runner 场景 `10.407s`，bash syntax 与 diff check 全绿。production
+inventory 保持 680 项，提交前 `--verify 4` 为 `162/188/174/156`；提交后四片 wall 为
+`154.032/400.292/274.394/415.022s`，全部通过。
+
+A5575 使用完整 SHA `a59ef87cde990ea807c3d4c480f2843c04cc1757`、版本 `0.0.0-a59ef87cde99`、TiKV、Go 1.26.5、
+build time `2026-08-28T05:15:08Z` 和 tag `kubebrain:a5575-a59ef87c`。OCI archive 为 914,343,424 bytes，SHA-256
+`35e6ce7b118774023a8d86b993402c806192947a572951ad04d1f4f8bc95be80`；OCI index
+`sha256:52be3134c5f56453ebad9ff40ab57ecf0f05282b376af49539f9f385c1665f1f`、platform
+`sha256:97651b857b6c197b967e8c9c8b3bb0d2b6ac7f72e1792f31ce124f6c992467a1`、config
+`sha256:505733400e7fc8dcdd3a02af8027db18eb2940a0e943ccec0161530bce4730d0`、attestation
+`sha256:2d4eeeb9b6bacd7d95c5163effebc5777ec6b224090e79761b70b8621256a8de`、SBOM statement
+`sha256:0e5d69025070f4b9170f7d25a34f617ed275d8424d27daf7d0bb7b7b687c98d7`、provenance statement
+`sha256:49d6b0cef4d92260490182a467c892b88753a5c261afb70e606c8558ecb3e0cd`、Kind runtime wrapper
+`sha256:a5e2804c491f22a5da83e542bbbf1a55e4b8aa177d544f1d61a2d84649b497d2`。严格审计 78/78 blobs 与 8 个 JSON
+文档的 78 descriptor edges 全绿；SBOM 为 2,592 packages/8,096 relationships，provenance 为 3 materials。
+
+A5574→A5575 候选升级 **900/900 GREEN**，live receipt 的三个 ID 为
+`1789366457803083978/4698661512351161981/453399790894572421`，均超过 32-bit 且绑定 Pod UID
+`d9ce0e6f-9352-464a-ac23-f09a3adf3950`。Watch `900/900×3`、Lease `101/271`、public restart 0、direct replacement 17、
+RangeStream 174、Snapshot 1、retry/partial `2/1`，最大总/direct/TSO/Region 延迟 `2291/20234/77/32ms`。same-version
+restart 同样 **900/900 GREEN**：Lease `99/268`、public restart 0、direct replacement 17、RangeStream 169、Snapshot 1、
+retry/partial `5/1`，最大总/direct/TSO/Region `2238/21460/81/7ms`；两轮 postflight 均零残留。
+
+真实 ABA 演练用 raw LeaseGrant 创建 ID `6000000000000000001`、TTL 300 秒并挂载 `/a5575/foreign/must-survive`，再创建匹配当前
+StatefulSet UID 的 immutable receipt。preflight cleanup 精确 RED：`has key ... outside owned prefix`，Pod exit 1；独立复验 key/value、
+lease attachment、剩余 TTL 和 receipt 全部原样保留。随后只删除该专用外部 key、撤销测试 lease，并以 receipt UID
+`d4dcdc4f-b5a9-41e1-94cc-aa11e087ac6f`/resourceVersion `7066458` 删除 ConfigMap，最终所有测试对象为零。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 168，current/update
+revision `a4657-tls-6f7bf86f9f`，3/3 Ready/restart 0。三端 cluster ID `7662961163671170154`、revision 100207、term 514、
+leader 2985394290 一致；AlarmList 空，auth 为 `KubeWharfServer/alice/root` 与 `operator/root`，PD/TiKV 3+3 Ready/restart 0，
+A5575/foreign/owner receipt 残留均为零。临时 Service `a5575-client` 以 UID `ac1f5e1d-4f21-40d5-86ec-d0bf54ee9e24`、
+resourceVersion `7065235` 双前置条件删除，Service NotFound、EndpointSlice 0。A5573 archive/节点引用和 mutable A5574/A5575 tag
+已清理；发布保留集为 A5574 rollback 与 A5575 current 的 archive 和不可变 runtime/config 引用。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
