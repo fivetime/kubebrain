@@ -64717,6 +64717,66 @@ rollback 与 A5584 current archive，以及 A5584 不可变 OCI/runtime/config/i
 同时保留 replacement 保护与持续故障 fail closed。外部托管 apiserver 的真实 admission/GC 故障注入、超过默认 60 秒的控制面不可达
 恢复和长时间多 runner soak 仍是更高层生产证据缺口。
 
+### A5585：协调 finalizer unpin 已提交但响应丢失
+
+提交 `9e227633`（A5585）关闭 rollout receipt JSON Patch 已由 apiserver 成功移除 finalizer、但成功响应在客户端侧丢失时的歧义窗口。
+原实现把失败响应后的权威 GET 仅解释为“并发 delete 已设置 deletionTimestamp、finalizer 仍存在”，因此同 UID、完整不可变 receipt、
+finalizer 已空的成功状态会被误判为删除失败。现在 GET 后严格区分两个可协调状态：完整校验 name/namespace/UID、receipt、StatefulSet
+controller owner 和最新 resourceVersion 后，`finalizers=[]` 是已提交 unpin 的权威成功证据，可直接进入 UID/RV 删除；仍为唯一目标 finalizer
+且 terminating 时才重建 CAS Patch。NotFound 仍要求 cleanup evidence 已验证，replacement UID、receipt/owner 漂移、额外 finalizer 或未终止的
+pinned 对象仍全部 fail closed。
+
+新增 `TestRolloutAvailabilityRunnerReconcilesFixtureOwnerUnpinResponseLoss`，fake apiserver 先持久化 finalizer removal 再返回非零；修复前
+稳定以 `rollout fixture owner receipt deletion failed` 退出，修复后继续按最新 RV 做 UID-delete 并完成门禁。新增
+`TestRolloutAvailabilityRunnerRejectsReplacementAfterFixtureOwnerUnpinResponseLoss`，固定相同歧义后 replacement UID 必须保留且失败。
+相关恢复矩阵通过，完整 rollout runner 专项 `419.440s`；最终 production inventory 为 695 项，提交前精确
+`hack/production/test-shard.sh --verify 4` 为 `169/191/176/159`，提交后四个零基分片墙钟
+`260.528/441.928/302.803/503.998s`，全部通过。
+
+真实 TiKV/PD 演练 `a5585-unpin-loss` 用 kubectl wrapper 精确注入一次响应丢失：wrapper 先把 removal Patch 提交给真实 apiserver，
+响应对象 UID `d38c76cf-845c-4480-b79b-722071836615`、resourceVersion `7135380`、finalizers 空、immutable receipt 完整，随后故意
+返回非零。runner 从权威 GET 识别同一对象并继续删除，完整 observe gate **3/3 GREEN**：Watch `3/3x3`、Lease `48/141`、
+public/direct restart `0/0`、TCP `1/1`、RangeStream 79、Snapshot 1、retry/partial `0/0`，最大总/put/watch/direct/TSO/Region
+延迟 `53/42/26/55/0/9ms`。注入计数精确为 1，最终 receipt/probe/cleanup 对象与专用 prefix 均为零。
+
+A5585 使用完整 SHA `9e227633018c9a35842f48b4f1a6d5804582efe8`、版本 `0.0.0-9e227633018c`、TiKV、Go
+1.26.5、build time `2026-08-28T14:36:16Z` 构建，OCI annotation completion 为 `2026-08-28T14:40:44Z`。最终 archive
+为 914,350,592 bytes，SHA-256 `0f8613a4182f1fdfcc25cab38e5a1c4cebaf7dc08542e049c2a14441b6d6c777`；OCI index
+`sha256:b0b285b453db2ed3b37009a19d522bec1c31594a7d9fc427b82fa55361de74a1`、platform
+`sha256:980a8445d174df296a265d0fd858b55a9b469f6106feabdf3586473faaa50c91`、config
+`sha256:f07736595b412f3d2c65c8015ebff47763c83be1a6c8b54573b75f7498f6775f`、attestation
+`sha256:4f29e82636df64c9aeb82618f690f7524984738a5c675253369973cfc790c88e`、SBOM statement
+`sha256:b1a5b095eb3188653dbcd1082b7315f84a4ba4f486f2d23382c1969f61571ec7`、provenance statement
+`sha256:bcb6b479c6e33276883f71841f3cced576ea265dbd6d9b7c6f7cada1d5addd61`、Kind runtime wrapper
+`sha256:2444691d67e677e46709cfaeaf5ddc091d0aed79ab38dc4675f6a5df9c8cf410`。严格审计为 78/78 blobs、78 条
+descriptor edges；SBOM 为 2,592 packages/8,096 relationships，provenance 为 3 materials，两份 statement 均唯一绑定
+platform。不可变审计 Pod UID `f998cecf-7f9d-4e62-842e-c87b0b896155`、resourceVersion `7136828` 验证完整版本、SHA、
+build time、TiKV、Go、linux/amd64、UID/GID 65532、精确 runtime imageID 与 restart 0 后按 UID/RV 删除。
+
+A5584→A5585 候选升级 **900/900 GREEN**：Watch `900/900x3`、Lease `103/273`、public restart 0、direct
+replacement 18、最大 direct recovery `15184ms`、public TCP 2、最小 direct TCP 2、RangeStream 172、Snapshot 1、
+retry/partial `5/2`，最大总/put/watch/direct/TSO/Region 延迟 `2349/2188/1042/20554/100/8ms`，revision
+`a4657-tls-f8ffd54fd -> a4657-tls-7fbb8f6484`。同版本 restart 首轮在 iteration 507 因只有 1 个 direct endpoint 在 5 秒
+SLO 内而 **RED**，但 cleanup 为零并收敛到 `a4657-tls-cc8c788cc`；第二轮在 iteration 549 因 leader 切换期间 public Put
+`7.262s` 超过 5 秒而 **RED**，cleanup 同样为零并收敛到 `a4657-tls-6689bb48d4`。在确认宿主负载正常、三端 EndpointSlice
+ready/serving、三副本一致后，第三轮不放宽任何预算，最终 **900/900 GREEN**：Lease `102/276`、public restart 0、direct
+replacement 17、最大 direct recovery `15520ms`、public TCP 2、最小 direct TCP 2、RangeStream 169、Snapshot 1、
+retry/partial `2/0`，最大 `4216/4209/40/20874/67/9ms`，revision
+`a4657-tls-6689bb48d4 -> a4657-tls-9bd69f98f`。两次 RED 均作为尾延迟证据保留，未由最终 GREEN 覆盖。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，resourceVersion `7139669`，
+generation/observed generation 190，current/update revision `a4657-tls-9bd69f98f`，3/3 Ready/restart 0，三个 Pod 均运行
+A5585 index/runtime。三端 cluster ID `7662961163671170154`、revision `119055`、term 557、leader `848842929`、version
+3.7.0、db size/in-use 492 一致；AlarmList 空，auth revision 3521，用户为 `KubeWharfServer/alice/root`、角色为
+`operator/root`，主 PD/TiKV 3+3 Ready/restart 0。五个 A5585 prefix 与相关 Kubernetes 对象均为零；临时 Service
+`a5585-client` 以 UID `19f9f62a-5102-410d-93e7-38b32aac04f8`、resourceVersion `7135059` 双前置条件删除，Service
+NotFound、EndpointSlice 0。故障 wrapper/证据/计数、展开审计目录和 A5583 archive 已移入系统回收站，可恢复，mutable tag 已解除引用；
+发布保留集为 A5584 rollback 与 A5585 current archive，以及 A5585 不可变 OCI/runtime/config/import 引用。
+
+本轮不改变 etcd 公共 API；它把 rollout receipt finalizer release 提升为可协调的幂等协议，不再把“提交成功但响应丢失”误当成失败，
+同时保持 replacement/身份漂移保护。三次 restart 中两次暴露的 5 秒 tail SLO 抖动说明单次 GREEN 仍不足以替代长时间统计证据；外部托管
+apiserver 的真实断链响应丢失、滚动期间 public/direct tail latency 长 soak 与多 runner 并发仍是下一层生产缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
