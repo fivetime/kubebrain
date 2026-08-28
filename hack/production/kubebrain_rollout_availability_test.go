@@ -539,6 +539,49 @@ func TestRolloutAvailabilityRunnerRejectsInvertedStreamBackoffBeforeKubernetes(t
 	require.NoFileExists(t, logPath)
 }
 
+func TestRolloutAvailabilityRunnerRejectsInvalidSnapshotMemoryVolumeBeforeKubernetes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{name: "unsupported medium", env: []string{"PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM=Disk", "PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT=16Gi"}, want: "PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM must be empty or Memory"},
+		{name: "size without medium", env: []string{"PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT=16Gi"}, want: "PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT requires PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM=Memory"},
+		{name: "missing size", env: []string{"PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM=Memory"}, want: "PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT must be a canonical positive binary quantity"},
+		{name: "noncanonical size", env: []string{"PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM=Memory", "PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT=16G"}, want: "PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT must be a canonical positive binary quantity"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true")
+			command.Env = append(command.Env, tc.env...)
+			output, err := command.CombinedOutput()
+			require.EqualError(t, err, "exit status 2")
+			require.Contains(t, string(output), tc.want)
+			require.NoFileExists(t, logPath)
+		})
+	}
+}
+
+func TestRolloutAvailabilityRunnerSupportsBoundedMemorySnapshotWorkspace(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"PROBE_ITERATIONS=3",
+		"PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM=Memory",
+		"PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT=16Gi",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, `"name":"snapshot-artifact","emptyDir":{"medium":"Memory","sizeLimit":"16Gi"}`)
+}
+
 func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 	for _, tc := range []struct {
 		name, target, timeoutVariable, want string

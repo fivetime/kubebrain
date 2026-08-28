@@ -29,6 +29,8 @@ PROBE_STREAM_ATTEMPT_TIMEOUT="${PROBE_STREAM_ATTEMPT_TIMEOUT:-2m}"
 PROBE_STREAM_RETRY_BACKOFF="${PROBE_STREAM_RETRY_BACKOFF:-100ms}"
 PROBE_STREAM_MAX_RETRY_BACKOFF="${PROBE_STREAM_MAX_RETRY_BACKOFF:-2s}"
 PROBE_SNAPSHOT_ARTIFACT_DIR=/var/run/kubebrain-rollout-availability
+PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM="${PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM:-}"
+PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT="${PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT:-}"
 PROBE_LEASE_TTL="${PROBE_LEASE_TTL:-5}"
 PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 # The probe publishes its barrier only after seeding and validating the
@@ -164,6 +166,18 @@ stream_retry_backoff_ns="$(go_duration_nanoseconds "$PROBE_STREAM_RETRY_BACKOFF"
 stream_max_retry_backoff_ns="$(go_duration_nanoseconds "$PROBE_STREAM_MAX_RETRY_BACKOFF")"
 if (( stream_retry_backoff_ns > stream_max_retry_backoff_ns )); then
   echo "PROBE_STREAM_RETRY_BACKOFF must not exceed PROBE_STREAM_MAX_RETRY_BACKOFF" >&2
+  exit 2
+fi
+if [[ -n "$PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM" && "$PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM" != Memory ]]; then
+  echo "PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM must be empty or Memory" >&2
+  exit 2
+fi
+if [[ -z "$PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM" && -n "$PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT" ]]; then
+  echo "PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT requires PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM=Memory" >&2
+  exit 2
+fi
+if [[ "$PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM" == Memory && ! "$PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT" =~ ^[1-9][0-9]*(Ki|Mi|Gi|Ti|Pi|Ei)$ ]]; then
+  echo "PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT must be a canonical positive binary quantity when Memory medium is enabled" >&2
   exit 2
 fi
 if ! [[ "$PROBE_POD" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
@@ -978,7 +992,9 @@ parse_leader_target() {
 }
 probe_command_args="$(jq -cn --args '$ARGS.positional' -- "${probe_command[@]:1}")" || exit 1
 snapshot_volume_mount="$(jq -cn --arg dir "$PROBE_SNAPSHOT_ARTIFACT_DIR" '{name:"snapshot-artifact",mountPath:$dir}')" || exit 1
-snapshot_volume='{"name":"snapshot-artifact","emptyDir":{}}'
+snapshot_volume="$(jq -cn --arg medium "$PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM" --arg size_limit "$PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT" '
+  {name:"snapshot-artifact",emptyDir:(if $medium == "" then {} else {medium:$medium,sizeLimit:$size_limit} end)}
+')" || exit 1
 if [[ "$endpoint_scheme" == https ]]; then
   probe_volume_mounts="$(jq -cn --argjson tls "$tls_volume_mount" --argjson artifact "$snapshot_volume_mount" '[$tls,$artifact]')" || exit 1
   probe_volumes="$(jq -cn --argjson tls "$tls_volume" --argjson artifact "$snapshot_volume" '[$tls,$artifact]')" || exit 1
