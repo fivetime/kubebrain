@@ -60,6 +60,7 @@ type restoredSnapshotAuthExpectation struct {
 	roles         []restoredSnapshotAuthRoleExpectation
 	access        []restoredSnapshotAuthAccessExpectation
 	rootKey       string
+	forbiddenKeys []string
 }
 
 type snapshotAuthFixture struct {
@@ -155,7 +156,8 @@ func newSnapshotAuthFixture(prefix string) *snapshotAuthFixture {
 			{username: users[4].name, key: exactKey, read: true},
 			{username: users[4].name, key: outsideKey},
 		},
-		rootKey: prefix + "stream/root-admin",
+		rootKey:       prefix + "stream/root-admin",
+		forbiddenKeys: []string{legacyFixtureMarkerKey(prefix)},
 	}}
 }
 

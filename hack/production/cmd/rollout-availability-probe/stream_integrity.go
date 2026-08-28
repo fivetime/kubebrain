@@ -2097,6 +2097,19 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			retErr = errors.Join(retErr, fmt.Errorf("close officially restored etcd client: %w", closeErr))
 		}
 	}()
+	if cfg.auth != nil {
+		for _, key := range cfg.auth.forbiddenKeys {
+			response, getErr := client.Get(verifyCtx, key)
+			if getErr != nil {
+				return fmt.Errorf("inspect forbidden key %q in officially restored etcd: %w", key, getErr)
+			}
+			if response == nil || response.Header == nil || response.Header.ClusterId == 0 ||
+				response.Header.MemberId == 0 || response.Header.RaftTerm == 0 || response.Header.Revision != revision ||
+				response.More || response.Count != 0 || len(response.Kvs) != 0 {
+				return fmt.Errorf("officially restored etcd contains forbidden key %q: %+v", key, response)
+			}
+		}
+	}
 	topology, err := verifyRestoredClusterTopology(verifyCtx, client, cfg, revision)
 	if err != nil {
 		return err

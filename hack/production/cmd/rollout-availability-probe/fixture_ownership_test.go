@@ -115,6 +115,55 @@ func TestOwnedFixtureCleanupRecoversAbruptProbeState(t *testing.T) {
 	require.Equal(t, fixtureCleanupSummary{Status: "absent"}, summary)
 }
 
+func TestExternalFixtureCleanupRecoversWithoutPublicOwnershipKey(t *testing.T) {
+	client, ctx := startFixtureOwnershipEtcd(t)
+	identity := testFixtureOwnerIdentity()
+	prefix := fixturePrefixRoot + identity.ProbePod + "/"
+	leaseIDs := []clientv3.LeaseID{7001, 7002, 7003}
+	clusterID, revision, err := claimExternalFixtureOwnership(ctx, client, prefix, identity, leaseIDs)
+	require.NoError(t, err)
+	for index, ttl := range []int64{15, 900, 960} {
+		lease, grantErr := grantFixtureLease(ctx, client, leaseIDs[index], ttl)
+		require.NoError(t, grantErr)
+		_, revision, grantErr = validateResponseHeader(lease.ResponseHeader, clusterID, revision)
+		require.NoError(t, grantErr)
+	}
+	put, err := client.Put(ctx, prefix+"lease", "alive", clientv3.WithLease(leaseIDs[0]))
+	require.NoError(t, err)
+	revision = max(revision, put.Header.Revision)
+	put, err = client.Put(ctx, prefix+"persistent", "fixture")
+	require.NoError(t, err)
+	revision = max(revision, put.Header.Revision)
+
+	marker, err := client.Get(ctx, legacyFixtureMarkerKey(prefix))
+	require.NoError(t, err)
+	require.Empty(t, marker.Kvs)
+	fixture := newSnapshotAuthFixture(prefix)
+	_, err = fixture.install(ctx, client, clusterID, revision, 3*time.Second)
+	require.NoError(t, err)
+
+	summary, err := cleanupExternallyOwnedFixture(ctx, client, prefix, identity, leaseIDs, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, fixtureCleanupSummary{
+		Status: "recovered", OwnerUID: identity.ProbePodUID, Keys: 2,
+		Users: len(fixture.expected.users), Roles: len(fixture.expected.roles), Leases: len(leaseIDs),
+	}, summary)
+	summary, err = cleanupExternallyOwnedFixture(ctx, client, prefix, identity, leaseIDs, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, fixtureCleanupSummary{Status: "absent"}, summary)
+}
+
+func TestExternalFixtureClaimRejectsReceiptedLeaseCollision(t *testing.T) {
+	client, ctx := startFixtureOwnershipEtcd(t)
+	identity := testFixtureOwnerIdentity()
+	prefix := fixturePrefixRoot + identity.ProbePod + "/"
+	leaseIDs := []clientv3.LeaseID{7101, 7102, 7103}
+	_, err := grantFixtureLease(ctx, client, leaseIDs[1], 30)
+	require.NoError(t, err)
+	_, _, err = claimExternalFixtureOwnership(ctx, client, prefix, identity, leaseIDs)
+	require.ErrorContains(t, err, "already exists")
+}
+
 func TestOwnedFixtureCleanupRejectsSchemaDriftWithoutDeleting(t *testing.T) {
 	client, ctx := startFixtureOwnershipEtcd(t)
 	identity := testFixtureOwnerIdentity()

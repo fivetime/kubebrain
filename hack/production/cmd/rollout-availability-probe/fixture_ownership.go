@@ -173,7 +173,11 @@ func requireJSONEOF(decoder *json.Decoder) error {
 }
 
 func (ownership *fixtureOwnership) markerKey() string {
-	digest := sha256.Sum256([]byte(ownership.receipt.Prefix))
+	return legacyFixtureMarkerKey(ownership.receipt.Prefix)
+}
+
+func legacyFixtureMarkerKey(prefix string) string {
+	digest := sha256.Sum256([]byte(prefix))
 	return fmt.Sprintf("%s%x", fixtureOwnerKeyRoot, digest[:])
 }
 

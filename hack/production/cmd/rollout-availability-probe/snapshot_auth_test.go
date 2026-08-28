@@ -440,6 +440,7 @@ func cloneRestoredSnapshotAuthExpectation(source *restoredSnapshotAuthExpectatio
 	copy := &restoredSnapshotAuthExpectation{
 		revision: source.revision, enabled: source.enabled, adminUsername: source.adminUsername,
 		adminPassword: source.adminPassword, rootKey: source.rootKey,
+		forbiddenKeys: append([]string(nil), source.forbiddenKeys...),
 	}
 	for _, user := range source.users {
 		user.roles = append([]string(nil), user.roles...)

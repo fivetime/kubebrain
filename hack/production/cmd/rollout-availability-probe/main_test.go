@@ -265,6 +265,7 @@ func TestRunConfigRequiresLeaderIdentityForFinalReport(t *testing.T) {
 		fixtureOwner: fixtureOwnerIdentity{Namespace: "tenant-a", ProbePod: "probe-a",
 			ProbePodUID: "11111111-1111-4111-8111-111111111111", StatefulSet: "kubebrain",
 			StatefulSetUID: "22222222-2222-4222-8222-222222222222"},
+		fixtureLeaseIDs: []clientv3.LeaseID{7001, 7002, 7003},
 	}
 	require.NoError(t, valid.validateRun())
 	valid.leaderNamespace = ""

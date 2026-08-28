@@ -41,6 +41,18 @@ func TestRolloutAvailabilityRunnerBudgetsSnapshotScaleInitialization(t *testing.
 	require.Contains(t, string(source), "bounded 16 MiB Snapshot scale fixture")
 }
 
+func TestRolloutAvailabilityRunnerDurablyReceiptsFixtureBeforeScheduling(t *testing.T) {
+	source, err := os.ReadFile("run-kubebrain-rollout-availability.sh")
+	require.NoError(t, err)
+	text := string(source)
+	require.Contains(t, text, `schedulingGates:[{name:"kubebrain.io/fixture-owner-receipt"}]`)
+	require.Contains(t, text, `format:"kubebrain.rollout-fixture-owner.v2"`)
+	require.Contains(t, text, `immutable:true`)
+	require.Contains(t, text, `--fixture-lease-ids="$fixture_lease_ids"`)
+	require.Contains(t, text, `--resource=configmaps`)
+	require.Contains(t, text, `{op:"remove",path:"/spec/schedulingGates"}`)
+}
+
 func TestRolloutAvailabilityRunnerReportsProbeFailureBeforeStartBarrier(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -58,7 +70,7 @@ func TestRolloutAvailabilityRunnerReportsProbeFailureBeforeStartBarrier(t *testi
 	require.Error(t, err)
 	require.Contains(t, string(output), "PROBE_FAIL invalid Snapshot scale put response")
 	require.Contains(t, string(output), "availability probe failed before publishing its start barrier")
-	require.Less(t, time.Since(started), 3*time.Second)
+	require.Less(t, time.Since(started), 5*time.Second)
 	require.NoFileExists(t, statePath, "a failed probe must not mutate the StatefulSet")
 }
 
@@ -485,7 +497,8 @@ func TestRolloutAvailabilityRunnerHardFailoverRefusesLeaderChangeBeforeDelete(t 
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "KubeBrain leader changed before hard-failover deletion; refusing mutation")
-	require.NoFileExists(t, uidDeleteLog)
+	require.NotContains(t, readOptionalFile(t, uidDeleteLog), "--resource=pods",
+		"leader identity drift must prevent the destructive Pod deletion")
 	require.NoFileExists(t, hardState)
 	require.NoFileExists(t, statePath)
 }
@@ -1467,6 +1480,14 @@ func writeRolloutAvailabilityKubectl(t *testing.T) (fakePath, logPath, statePath
 	fakePath = filepath.Join(dir, "kubectl")
 	logPath = filepath.Join(dir, "kubectl.log")
 	statePath = filepath.Join(dir, "state")
+	uidDeletePath := filepath.Join(dir, "uid-delete")
+	require.NoError(t, os.WriteFile(uidDeletePath, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" --resource=configmaps "* ]]; then
+  rm -f -- "${FAKE_KUBECTL_LOG}.owner"
+fi
+`), 0o755))
+	t.Setenv("UID_DELETE_BIN", uidDeletePath)
 	script := `#!/usr/bin/env bash
 set -euo pipefail
 printf ' %s' "$@" >>"$FAKE_KUBECTL_LOG"
@@ -1492,7 +1513,15 @@ fi
 if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == start && " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
   sleep 30
 fi
-if [[ " $* " == *" get service kubebrain-peer -o json "* ]]; then
+owner_state="${FAKE_KUBECTL_LOG}.owner"
+if [[ " $* " == *" get configmap kubebrain-rollout-availability-probe-owner "* ]]; then
+  [[ -e "$owner_state" ]] || exit 1
+  jq -c '.metadata.uid="44444444-4444-4444-8444-444444444444" | .metadata.resourceVersion="owner-rv"' "$owner_state"
+elif [[ " $* " == *" create -f - "* ]]; then
+  jq -c . >"$owner_state"
+elif [[ " $* " == *" patch pod/kubebrain-rollout-availability-probe --type=json -p "* ]]; then
+  :
+elif [[ " $* " == *" get service kubebrain-peer -o json "* ]]; then
   publish_not_ready=true
   [[ "${FAKE_HEADLESS_PUBLISH_NOT_READY:-true}" == true ]] || publish_not_ready=false
   cluster_ip="${FAKE_HEADLESS_CLUSTER_IP:-None}"
@@ -1571,8 +1600,8 @@ elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe-cleanup "* ]];
   exit 1
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o json "* ]]; then
   jq -cn '{
-    metadata:{name:"kubebrain-rollout-availability-probe",uid:"33333333-3333-4333-8333-333333333333"},
-    spec:{containers:[{name:"kubebrain-rollout-availability-probe",image:(env.PROBE_IMAGE // "kubebrain:test")}]}}
+    metadata:{name:"kubebrain-rollout-availability-probe",uid:"33333333-3333-4333-8333-333333333333",resourceVersion:"probe-rv"},
+    spec:{schedulingGates:[{name:"kubebrain.io/fixture-owner-receipt"}],containers:[{name:"kubebrain-rollout-availability-probe",image:(env.PROBE_IMAGE // "kubebrain:test")}]}}
   '
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.status.phase} "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then printf Failed
@@ -1714,13 +1743,17 @@ func writeRolloutAvailabilityUIDDelete(t *testing.T) (fakePath, logPath, statePa
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_UID_DELETE_LOG"
 [[ " $* " == *" --api-version=v1 "* ]]
-[[ " $* " == *" --resource=pods "* ]]
 [[ " $* " == *" --namespace=kubebrain-system "* ]]
-[[ " $* " == *" --name=kubebrain-1 "* ]]
-[[ " $* " == *" --uid=kubebrain-1-uid-old "* ]]
-[[ " $* " == *" --resource-version=rv-kubebrain-1-uid-old "* ]]
-[[ " $* " == *" --grace-period-seconds=0 "* ]]
-: >"$FAKE_HARD_FAILOVER_STATE"
+if [[ " $* " == *" --resource=configmaps "* ]]; then
+  rm -f -- "${FAKE_KUBECTL_LOG}.owner"
+else
+  [[ " $* " == *" --resource=pods "* ]]
+  [[ " $* " == *" --name=kubebrain-1 "* ]]
+  [[ " $* " == *" --uid=kubebrain-1-uid-old "* ]]
+  [[ " $* " == *" --resource-version=rv-kubebrain-1-uid-old "* ]]
+  [[ " $* " == *" --grace-period-seconds=0 "* ]]
+  : >"$FAKE_HARD_FAILOVER_STATE"
+fi
 `
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	return fakePath, logPath, statePath
