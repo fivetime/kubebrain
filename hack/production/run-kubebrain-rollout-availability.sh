@@ -581,6 +581,7 @@ fixture_lease_ids=""
 fixture_owner_uid=""
 fixture_owner_resource_version=""
 fixture_owner_receipt_json=""
+fixture_owner_terminating=false
 fixture_cleanup_ready=false
 fixture_cleanup_verified=false
 
@@ -990,8 +991,7 @@ if capture_runtime_evidence "$existing_owner_json" kctl_evidence get configmap "
   receipt_fields="$(jq -er --arg name "$fixture_owner_configmap" --arg namespace "$KUBEBRAIN_NAMESPACE" \
     --arg pod "$PROBE_POD" --arg statefulset "$KUBEBRAIN_STATEFULSET" --arg statefulset_uid "$statefulset_uid" \
     --arg prefix "/kubebrain-rollout-availability/${PROBE_POD}/" '
-    select(.metadata.name == $name and .metadata.namespace == $namespace and .metadata.deletionTimestamp == null and
-      .immutable == true and
+    select(.metadata.name == $name and .metadata.namespace == $namespace and .immutable == true and
       ([.metadata.ownerReferences[]? | select(.apiVersion == "apps/v1" and .kind == "StatefulSet" and
         .name == $statefulset and .uid == $statefulset_uid and .controller == true)] | length) == 1) |
     (.data["receipt.json"] | fromjson) as $r |
@@ -1001,17 +1001,26 @@ if capture_runtime_evidence "$existing_owner_json" kctl_evidence get configmap "
       ($r.probe_pod_uid | test("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")) and
       ($r.lease_ids | type == "array" and length == 3 and all(.[]; type == "string" and test("^[1-9][0-9]*$"))) and
       ($r.lease_ids | unique | length == 3) and
-      ((.metadata.finalizers // []) == [] or .metadata.finalizers == ["kubebrain.io/rollout-fixture-cleanup"])) |
-    [$r.probe_pod_uid,($r.lease_ids | join(",")),.metadata.uid,.metadata.resourceVersion,.data["receipt.json"]] | @tsv
+      (.metadata.uid | type == "string" and length > 0) and
+      (.metadata.resourceVersion | type == "string" and length > 0) and
+      ((.metadata.deletionTimestamp == null and
+          ((.metadata.finalizers // []) == [] or .metadata.finalizers == ["kubebrain.io/rollout-fixture-cleanup"])) or
+        ((.metadata.deletionTimestamp | type == "string" and length > 0) and
+          .metadata.finalizers == ["kubebrain.io/rollout-fixture-cleanup"]))) |
+    [$r.probe_pod_uid,($r.lease_ids | join(",")),.metadata.uid,.metadata.resourceVersion,
+      .data["receipt.json"],if .metadata.deletionTimestamp == null then "false" else "true" end] | @tsv
   ' "$existing_owner_json")" || {
     echo "existing fixture owner ConfigMap is malformed; refusing cleanup" >&2
     exit 1
   }
-  IFS=$'\t' read -r probe_pod_uid fixture_lease_ids fixture_owner_uid fixture_owner_resource_version fixture_owner_receipt_json <<<"$receipt_fields"
-  pin_fixture_owner_receipt || {
-    echo "failed to pin recovered fixture owner ConfigMap" >&2
-    exit 1
-  }
+  IFS=$'\t' read -r probe_pod_uid fixture_lease_ids fixture_owner_uid fixture_owner_resource_version \
+    fixture_owner_receipt_json fixture_owner_terminating <<<"$receipt_fields"
+  if [[ "$fixture_owner_terminating" != true ]]; then
+    pin_fixture_owner_receipt || {
+      echo "failed to pin recovered fixture owner ConfigMap" >&2
+      exit 1
+    }
+  fi
 fi
 run_fixture_cleanup || {
   echo "rollout fixture preflight cleanup failed" >&2
@@ -1023,6 +1032,7 @@ delete_fixture_owner_receipt || {
 }
 probe_pod_uid=""
 fixture_lease_ids=""
+fixture_owner_terminating=false
 generate_fixture_lease_ids || {
   echo "failed to generate fixture lease IDs" >&2
   exit 1

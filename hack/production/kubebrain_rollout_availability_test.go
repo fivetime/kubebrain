@@ -162,6 +162,43 @@ func TestRolloutAvailabilityRunnerReleasesReceiptDeletedDuringCleanup(t *testing
 	require.NoFileExists(t, logPath+".owner", "the pinned deleting receipt must be released after cleanup")
 }
 
+func TestRolloutAvailabilityRunnerRecoversPinnedTerminatingReceiptAfterCrash(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	receipt := `{"format":"kubebrain.rollout-fixture-owner.v2","lease_ids":["7001","7002","7003"],"namespace":"kubebrain-system","prefix":"/kubebrain-rollout-availability/kubebrain-rollout-availability-probe/","probe_pod":"kubebrain-rollout-availability-probe","probe_pod_uid":"33333333-3333-4333-8333-333333333333","statefulset":"kubebrain","statefulset_uid":"statefulset-uid"}`
+	owner := map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap", "immutable": true,
+		"metadata": map[string]any{
+			"name": "kubebrain-rollout-availability-probe-owner", "namespace": "kubebrain-system",
+			"deletionTimestamp": "2026-08-28T09:00:00Z",
+			"finalizers":        []string{"kubebrain.io/rollout-fixture-cleanup"},
+			"ownerReferences": []map[string]any{{
+				"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "kubebrain",
+				"uid": "statefulset-uid", "controller": true,
+			}},
+		},
+		"data": map[string]string{"receipt.json": receipt},
+	}
+	encoded, err := json.Marshal(owner)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(logPath+".owner", encoded, 0o600))
+
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "KubeBrain rollout availability gate passed")
+	require.NoFileExists(t, logPath+".owner", "the inherited terminating receipt must be released")
+	log := readOptionalFile(t, logPath)
+	cleanup := strings.Index(log, " run kubebrain-rollout-availability-probe-cleanup ")
+	unpin := strings.Index(log, " patch configmap/kubebrain-rollout-availability-probe-owner --type=json -p ")
+	require.GreaterOrEqual(t, cleanup, 0)
+	require.Greater(t, unpin, cleanup,
+		"an inherited finalizer must hold the receipt without an illegal pre-cleanup finalizer mutation")
+}
+
 func TestRolloutAvailabilityRunnerReportsProbeFailureBeforeStartBarrier(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -1653,6 +1690,7 @@ elif [[ " $* " == *" patch configmap/kubebrain-rollout-availability-probe-owner 
     "$expected_receipt" == "$(jq -r '.data["receipt.json"]' <<<"$current")" ]] || exit 1
   final_operation="$(jq -r '.[-1].op' <<<"$patch_payload")"
   if [[ "$final_operation" == add ]]; then
+    [[ "$(jq -r '.metadata.deletionTimestamp // ""' <<<"$current")" == "" ]] || exit 1
     next="$(jq -c --argjson finalizers "$(jq -c '.[-1].value' <<<"$patch_payload")" \
       '.metadata.finalizers=$finalizers | .metadata.resourceVersion="owner-rv-pinned"' <<<"$current")"
   elif [[ "$final_operation" == remove ]]; then
