@@ -253,8 +253,8 @@ func TestWaitReadyReturnsSafeRetrySignalWhenLeaderConnectionIsNotReady(t *testin
 	require.Error(t, err)
 	require.ErrorIs(t, err, proxyprotocol.ErrClientDrainedBeforeAdmission)
 	require.Equal(t, "there is no connection available", status.Convert(err).Message())
-	require.GreaterOrEqual(t, time.Since(start), 800*time.Millisecond)
-	require.Less(t, time.Since(start), 1500*time.Millisecond,
+	require.GreaterOrEqual(t, time.Since(start), 150*time.Millisecond)
+	require.Less(t, time.Since(start), 500*time.Millisecond,
 		"one unavailable ingress attempt must leave the five-second client SLO enough budget for a safe mutable retry and reconciliation read")
 }
 
@@ -275,6 +275,24 @@ func TestWaitReadyDoesNotBlockBehindPeerConnectionUpdate(t *testing.T) {
 	require.Less(t, time.Since(start), 250*time.Millisecond,
 		"a request must not wait for another goroutine's peer dial timeout")
 	require.Len(t, proxy.updateCh, 1, "the background connector must be notified")
+}
+
+func TestWaitReadyReturnsSafeSentinelWithinExternalRetryBudget(t *testing.T) {
+	proxy := &etcdProxy{
+		election: &testLeaderElection{},
+		updateCh: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := proxy.waitReady(ctx)
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, proxyprotocol.ErrClientDrainedBeforeAdmission)
+	require.GreaterOrEqual(t, elapsed, 150*time.Millisecond)
+	require.Less(t, elapsed, 500*time.Millisecond,
+		"one safe follower retry must leave room for clientv3 retries and reconciliation inside the external SLO")
 }
 
 func TestWaitReadyPreemptsStaleLeaderConnectionAttempt(t *testing.T) {

@@ -134,14 +134,12 @@ func proxyCallOptions(maxRequestBytes uint) []grpc.CallOption {
 
 // A voluntary handoff publishes the successor before every follower has
 // necessarily completed its own health-check/dial loop. Keep unary requests
-// parked briefly through that propagation window. Bound one ingress attempt to
-// one second: a mutable request can first land immediately before drain and its
-// clientv3 safe retry can then land on another follower, while an ambiguous
-// write still needs a reconciliation Range and Watch inside the five-second
-// rollout SLO. A three-second wait per ingress consumed that budget twice
-// (Put, then Range) when an established connection remained on the retiring
-// replica.
-const proxyReadyWaitTimeout = time.Second
+// parked briefly through that propagation window, but leave room for clientv3's
+// bounded safe retries plus the caller's reconciliation Range and Watch inside
+// the five-second rollout SLO. The connector runs independently, so a request
+// timing out here has not reached a leader RPC and can use the exact
+// before-admission retry sentinel without waiting for a peer dial itself.
+const proxyReadyWaitTimeout = 200 * time.Millisecond
 
 // NewEtcdProxy return an ETCD proxy for forward request to leader.
 // The election identity is the leader's peer endpoint. That listener registers
