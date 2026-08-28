@@ -1333,6 +1333,7 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 			// Always request PrevKV from the leader. The outer etcd watch server
 			// still strips PrevKv when the original client did not request it.
 			inputCh := client.Watch(ctx, string(key), watchOptionsForRange(rangeEnd, watchRevision)...)
+			generationCreated := false
 			reconnect := false
 			for !reconnect {
 				select {
@@ -1367,23 +1368,26 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 						}
 						return
 					}
-					if !authorizedContinuation && !watchResponseAuthorizesContinuation(wresp) {
+					if watchResponsePrecedesGenerationCreate(generationCreated, wresp) {
 						// CreatedNotify makes the leader's Created response the only
-						// authoritative proof that it accepted the original caller's
-						// credentials. clientv3 can surface a generation-local empty or
-						// progress response while its transport is being rebuilt before
-						// that acknowledgement arrives. Do not turn that transient into
-						// an empty WatchResult (and do not mint the trusted continuation
-						// marker). Reopen from the unchanged explicit revision so any
-						// event observed by the abandoned generation is replayed.
+						// authoritative proof that this backend generation exists. The
+						// logical authorization marker survives reconnects, but it must
+						// never stand in for the next generation's create acknowledgement.
+						// clientv3 can surface an empty/progress/event response, or an
+						// empty canceled envelope, while rebuilding its transport. Reopen
+						// from the unchanged explicit revision so any event observed by
+						// the abandoned generation is replayed.
 						klog.InfoS("etcd proxy watch response preceded authoritative create; reconnecting",
 							"key", loggedProxyKey(key), "rangeEnd", loggedProxyKey(rangeEnd),
 							"rev", watchRevision, "headerRevision", wresp.Header.GetRevision(),
-							"events", len(wresp.Events))
+							"events", len(wresp.Events), "canceled", wresp.Canceled)
 						reconnect = true
 						break
 					}
-					if !authorizedContinuation {
+					if wresp.Created {
+						generationCreated = true
+					}
+					if !authorizedContinuation && watchResponseAuthorizesContinuation(wresp) {
 						// Created proves the leader accepted the initial create-time
 						// credentials. Only reconnects after this point may
 						// use the trusted continuation marker and preserve etcd's rule
@@ -1423,6 +1427,10 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 
 func watchResponseAuthorizesContinuation(wresp clientv3.WatchResponse) bool {
 	return wresp.Created
+}
+
+func watchResponsePrecedesGenerationCreate(generationCreated bool, wresp clientv3.WatchResponse) bool {
+	return !generationCreated && !wresp.Created
 }
 
 func waitProxyWatchReconnect(ctx context.Context) bool {

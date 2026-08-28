@@ -116,6 +116,33 @@ func TestOnlyCreatedWatchResponseAuthorizesContinuation(t *testing.T) {
 	}
 }
 
+func TestEveryWatchGenerationRequiresCreatedBeforeEnvelope(t *testing.T) {
+	tests := []struct {
+		name              string
+		generationCreated bool
+		response          clientv3.WatchResponse
+		wantReconnect     bool
+	}{
+		{name: "new generation created", response: clientv3.WatchResponse{Created: true}},
+		{name: "new generation empty", response: clientv3.WatchResponse{}, wantReconnect: true},
+		{name: "new generation empty cancel", response: clientv3.WatchResponse{Canceled: true}, wantReconnect: true},
+		{name: "new generation progress", response: clientv3.WatchResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}}, wantReconnect: true},
+		{name: "new generation event", response: clientv3.WatchResponse{Events: []*clientv3.Event{{
+			Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 42},
+		}}}, wantReconnect: true},
+		{name: "created generation cancel", generationCreated: true, response: clientv3.WatchResponse{Canceled: true}},
+		{name: "created generation event", generationCreated: true, response: clientv3.WatchResponse{Events: []*clientv3.Event{{
+			Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 43},
+		}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.wantReconnect,
+				watchResponsePrecedesGenerationCreate(tt.generationCreated, tt.response))
+		})
+	}
+}
+
 func TestIsForwardConnectionError(t *testing.T) {
 	tests := []struct {
 		name string
