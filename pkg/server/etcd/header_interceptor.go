@@ -191,13 +191,19 @@ func (s *RPCServer) observeClientRequest(ctx context.Context, requestType, fullM
 }
 
 func (s *RPCServer) requireLeaderUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	s.leadershipDrainBoundary.RLock()
-	defer s.leadershipDrainBoundary.RUnlock()
+	if s.peerLeadershipDrained.Load() {
+		return nil, proxyprotocol.ErrPeerDrainedBeforeAdmission
+	}
+	unlock, err := s.tryLeadershipUnaryAdmission(proxyprotocol.ErrPeerDrainedBeforeAdmission)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	if s.peerLeadershipDrained.Load() {
 		return nil, proxyprotocol.ErrPeerDrainedBeforeAdmission
 	}
 	ctx = context.WithValue(ctx, peerRequestContextKey{}, true)
-	if err := validateClientAPIVersion(ctx); err != nil {
+	if err = validateClientAPIVersion(ctx); err != nil {
 		return nil, err
 	}
 	if requireLeader(ctx) && !s.hasKnownLeader() {
@@ -379,8 +385,11 @@ func priorityAdmissionReserve(limit uint32) uint32 {
 }
 
 func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	s.leadershipDrainBoundary.RLock()
-	defer s.leadershipDrainBoundary.RUnlock()
+	unlock, err := s.tryLeadershipUnaryAdmission(proxyprotocol.ErrClientDrainedBeforeAdmission)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	if err := s.observeClientRequest(ctx, "unary", info.FullMethod); err != nil {
 		return nil, err
 	}
@@ -397,6 +406,27 @@ func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnarySer
 		defer s.releaseRequest()
 	}
 	return handler(ctx, req)
+}
+
+// tryLeadershipUnaryAdmission acquires the read side only when doing so cannot
+// wait behind a leadership drain. The pre-check avoids normal drain traffic;
+// TryRLock closes the race with a writer that is already pending; and the
+// post-check closes the race where the drain fence was published immediately
+// after TryRLock succeeded. Returning the listener-specific before-admission
+// status preserves mutable write-at-most-once semantics while letting clientv3
+// retry on another public endpoint without spending the handoff duration here.
+func (s *RPCServer) tryLeadershipUnaryAdmission(drainErr error) (func(), error) {
+	if s.leadershipDrainInProgress.Load() {
+		return nil, drainErr
+	}
+	if !s.leadershipDrainBoundary.TryRLock() {
+		return nil, drainErr
+	}
+	if s.leadershipDrainInProgress.Load() {
+		s.leadershipDrainBoundary.RUnlock()
+		return nil, drainErr
+	}
+	return s.leadershipDrainBoundary.RUnlock, nil
 }
 
 func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {

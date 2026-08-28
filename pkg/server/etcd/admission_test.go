@@ -205,7 +205,7 @@ func TestClientAdmissionDisabledDoesNotTrackRequests(t *testing.T) {
 	require.Zero(t, rpc.requestsInFlight)
 }
 
-func TestLeadershipDrainWaitsForUnaryAndReopensPublicProxyAdmission(t *testing.T) {
+func TestLeadershipDrainWaitsForUnaryAndRejectsConcurrentPublicAdmission(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -255,21 +255,35 @@ func TestLeadershipDrainWaitsForUnaryAndReopensPublicProxyAdmission(t *testing.T
 			})
 		secondResult <- err
 	}()
+	var secondErr error
+	returnedBeforeRelease := false
 	select {
-	case <-secondEntered:
-		t.Fatal("new unary request crossed leadership release")
-	case <-time.After(20 * time.Millisecond):
+	case secondErr = <-secondResult:
+		returnedBeforeRelease = true
+	case <-time.After(200 * time.Millisecond):
 	}
 	close(allowRelease)
 	<-drainDone
-	require.NoError(t, <-secondResult)
+	if !returnedBeforeRelease {
+		secondErr = <-secondResult
+	}
+	require.True(t, returnedBeforeRelease, "public request that has not entered its handler must not wait for leadership release")
+	require.ErrorIs(t, secondErr, proxyprotocol.ErrClientDrainedBeforeAdmission)
 	select {
 	case <-secondEntered:
-		// After durable release, public traffic may enter and route through the
-		// successor while GOAWAY migrates this client connection.
+		t.Fatal("draining public unary request entered its handler")
 	default:
-		t.Fatal("public unary admission did not reopen after leadership release")
 	}
+
+	thirdEntered := false
+	_, err := rpc.admitUnary(context.Background(), nil,
+		&grpc.UnaryServerInfo{FullMethod: etcdserverpb.KV_Put_FullMethodName},
+		func(context.Context, any) (any, error) {
+			thirdEntered = true
+			return nil, nil
+		})
+	require.NoError(t, err)
+	require.True(t, thirdEntered, "public unary admission did not reopen after leadership release")
 }
 
 func TestLeadershipDrainWaitsForForwardedUnaryAndRejectsLaterCalls(t *testing.T) {
@@ -322,14 +336,20 @@ func TestLeadershipDrainWaitsForForwardedUnaryAndRejectsLaterCalls(t *testing.T)
 			})
 		secondResult <- err
 	}()
+	var secondErr error
+	returnedBeforeRelease := false
 	select {
-	case <-secondEntered:
-		t.Fatal("new forwarded unary request crossed leadership release")
-	case <-time.After(20 * time.Millisecond):
+	case secondErr = <-secondResult:
+		returnedBeforeRelease = true
+	case <-time.After(200 * time.Millisecond):
 	}
 	close(allowRelease)
 	<-drainDone
-	require.ErrorIs(t, <-secondResult, proxyprotocol.ErrPeerDrainedBeforeAdmission)
+	if !returnedBeforeRelease {
+		secondErr = <-secondResult
+	}
+	require.True(t, returnedBeforeRelease, "forwarded request that has not entered its handler must not wait for leadership release")
+	require.ErrorIs(t, secondErr, proxyprotocol.ErrPeerDrainedBeforeAdmission)
 	select {
 	case <-secondEntered:
 		t.Fatal("drained forwarded unary request entered its handler")

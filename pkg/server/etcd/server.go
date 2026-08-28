@@ -115,17 +115,21 @@ type RPCServer struct {
 	// before committing, then new calls observe enabled auth and fail closed.
 	nativeAuthBoundary sync.RWMutex
 	// leadershipDrainBoundary prevents a voluntary leader release from cutting
-	// across an already-admitted unary RPC. DrainLeadership takes the write side,
-	// waits for those calls to return, releases the campaign lease, then lets new
-	// public calls route through the newly observed leader. Peer calls remain
-	// fenced so followers stop selecting this retiring member. Endpoint may close
-	// public transports after a bounded GOAWAY window while this boundary is held;
-	// peer transports and leadership streams remain until durable handoff finishes.
-	leadershipDrainBoundary  sync.RWMutex
-	peerLeadershipDrained    atomic.Bool
-	leadershipStreamDrainMu  sync.Mutex
-	leadershipStreamDrain    chan struct{}
-	leadershipStreamsDrained bool
+	// across an already-admitted unary RPC. DrainLeadership publishes
+	// leadershipDrainInProgress before taking the write side. New calls use
+	// TryRLock and fail before handler admission instead of waiting through the
+	// potentially multi-second release/successor window; calls that already hold
+	// the read side still finish before release. Public admission reopens after
+	// release, while peer calls remain fenced from the retiring member. Endpoint
+	// may close public transports after a bounded GOAWAY window while this
+	// boundary is held; peer transports and leadership streams remain until
+	// durable handoff finishes.
+	leadershipDrainBoundary   sync.RWMutex
+	leadershipDrainInProgress atomic.Bool
+	peerLeadershipDrained     atomic.Bool
+	leadershipStreamDrainMu   sync.Mutex
+	leadershipStreamDrain     chan struct{}
+	leadershipStreamsDrained  bool
 
 	concurrencyClient *clientv3.Client
 
@@ -148,13 +152,22 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 // Endpoint must first start HTTP/2 GOAWAY while the connection is non-idle, or
 // net/http Shutdown can close it before the graceful signal reaches clientv3.
 func (s *RPCServer) PrepareLeadershipDrain(release func() bool) bool {
+	// Publish before waiting for the write lock. A unary request that races this
+	// transition either already owns the read side (and must finish), or observes
+	// the fence before entering its handler. It must never queue on the RWMutex
+	// for the whole durable handoff and consume the external client's retry SLO.
+	s.leadershipDrainInProgress.Store(true)
 	s.leadershipDrainBoundary.Lock()
-	defer s.leadershipDrainBoundary.Unlock()
-	if !release() {
-		return false
+	succeeded := release()
+	if succeeded {
+		s.peerLeadershipDrained.Store(true)
 	}
-	s.peerLeadershipDrained.Store(true)
-	return true
+	s.leadershipDrainBoundary.Unlock()
+	// Clear only after the write side is released. Calls in the narrow gap are
+	// conservatively rejected before admission; later public calls may proxy to
+	// the successor, and a failed drain restores both public and peer admission.
+	s.leadershipDrainInProgress.Store(false)
+	return succeeded
 }
 
 // RetireLeadershipStreams ends public and peer streams after transport GOAWAY
