@@ -64435,6 +64435,63 @@ A5575/A5577 节点引用已移除。发布保留集为 A5576 rollback 与 A5579 
 receipt 必须跨 cleanup 保持同一对象世代的控制面约束。跨节点/AZ、外部托管 Kubernetes API 的 admission/finalizer 故障注入和长时间
 soak 仍是更高层证据缺口。
 
+### A5580：接管进程崩溃后已进入 terminating 的 rollout receipt
+
+提交 `a0dffb2e`（A5580）关闭 A5579 尚未覆盖的跨 runner liveness 缺口：旧 runner 已给外部 ownership receipt 加上
+`kubebrain.io/rollout-fixture-cleanup`，随后外部删除令 ConfigMap 进入 terminating，而 runner 在 cleanup 前崩溃时，下一次 runner
+仍会因 preflight 只接受 `deletionTimestamp == null` 而拒绝接管；对象名称被 finalizer 正确封住，却可能永久无法释放。新 runner 只在
+UID/resourceVersion 为非空字符串、immutable receipt 完整、StatefulSet controller ownerRef 唯一且精确、并且 finalizers 恰为唯一 cleanup
+finalizer 时接受 terminating receipt。该路径复用已有 finalizer 作为对象世代栅栏，跳过 Kubernetes 明确禁止的“删除中新增 finalizer”
+patch，先执行有界 cleanup，再以同 UID/RV/receipt 条件移除 finalizer 并等待 NotFound；普通 active receipt 仍必须先走原有 CAS pin。
+
+新增回归 `TestRolloutAvailabilityRunnerRecoversPinnedTerminatingReceiptAfterCrash` 同时让 fake apiserver 拒绝对 terminating 对象执行
+finalizer `add`，固定 cleanup 必须早于唯一 unpin patch。RED 为
+`existing fixture owner ConfigMap is malformed; refusing cleanup`；修复后完整 rollout runner 专项 `222.145s`。最终 production inventory
+为 684 项，提交前 `--verify 4` 为 `164/188/174/158`，提交后四片墙钟
+`176.300/424.057/292.055/449.485s`，全部通过。
+
+A5580 使用完整 SHA `a0dffb2ed8c0b41cb9f08d94c3c160c7d0e5804d`、版本 `0.0.0-a0dffb2ed8c0`、TiKV、
+Go 1.26.5、build time `2026-08-28T09:16:52Z` 构建。最终 OCI archive 为 914,350,080 bytes，SHA-256
+`de217a184c6679b9535b7153797d473759687ddf430aa11733d3327bcb4d72bb`；OCI index
+`sha256:eb101f714b75b9a78ad85031271b38bd10eba0150f12a73c5d34a43520381bd6`、platform
+`sha256:a7e07a2c6a2c0b323f3adf71c4e6abc8ec2e66808591a319715e22b2174857aa`、config
+`sha256:8838a024aee73ebea73b8e34ae9303bcf6c7652194cb786f8ea5a71961dd7d3f`、attestation
+`sha256:f7896a436aa5f627e05c5d3d596081ccd6da5cbaf441badd845efdc9db5dad83`、SBOM statement
+`sha256:3671bb544c9cc4d98a5db7fcccbc8ededeb057d46a97f2094a8e47f0d693f88f`、provenance statement
+`sha256:4eccd934fb93e8c7925ab3a9d554677c3c7897f8d9edf447107f6a4bbc793b56`、Kind runtime wrapper
+`sha256:aa635fbf8a5ee71eb01cdbfea8e10c8a23c646826f083db0e2656d0e3453e9a3`。严格审计为 78/78 blobs、
+四个 OCI 图文档的 78 条 descriptor edges 全部正确；SBOM 为 2,592 packages/8,096 relationships，provenance 为 3 materials，
+两份 statement 均只有一个 subject，并精确绑定 platform。不可变审计 Pod UID
+`955eb6d7-b3e3-469d-88a2-bd4773bd4384`、resourceVersion `7099943` 验证完整版本/SHA/build time、TiKV、
+linux/amd64、UID/GID 65532 和 restart 0 后按 UID/RV 删除。
+
+真实 crash-takeover 演练创建 receipt UID `8e7767b7-910c-4d00-8472-4f3560e0e59a`，从 RV `7096951` 发起删除并以
+RV `7096952`、非空 deletionTimestamp 和唯一 cleanup finalizer 保持 terminating，模拟旧 runner pin 后在 cleanup 前崩溃。新 runner
+没有执行 pre-cleanup finalizer mutation，完成接管并以 1/1 observe 通过 Watch/direct Watch、Lease、RangeStream 95、Snapshot 1；
+receipt 与 probe/cleanup Pod 最终均为 NotFound，A5580 三个 probe prefix 为零 key，计划 lease `7900000000000000101/102/103`
+均不存在。
+
+第一次 A5579→A5580 候选投放还验证了失败回滚：Kind 初次导入只有不带 registry 的 runtime alias，规范化的
+`docker.io/library/import-2026-08-28@sha256:aa635f...` 因本地缺少同名 alias 而 ErrImagePull；runner 在 300 秒 rollout 上限后拒绝
+候选、恢复冻结的 A5579 spec，并回到 3/3 Ready/restart 0。补齐与 A5579 相同的全限定 immutable alias 且确认 containerd
+`complete (72/72)` 后重跑，A5579→A5580 候选升级 **900/900 GREEN**：Watch `900/900×3`、Lease `100/270`、public
+restart 0、direct replacement 17、最大 direct recovery `15790ms`、public TCP 2、最小 direct TCP 2、RangeStream 167、
+Snapshot 1、retry/partial `1/0`，最大总/put/watch/direct/TSO/Region 延迟 `3388/3382/123/20776/75/8ms`。
+同版本 restart 同样 **900/900 GREEN**：Lease `100/272`、public restart 0、direct replacement 17、最大 direct recovery
+`16111ms`、public TCP 4、最小 direct TCP 2、RangeStream 175、Snapshot 1、retry/partial `2/0`，最大
+`4954/4949/110/22015/8/6ms`；两轮 cleanup 均为零残留。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 178，
+current/update revision `a4657-tls-6ff5bd777c`，3/3 Ready/restart 0 且三个 Pod 均运行 A5580 wrapper。三端 cluster ID
+`7662961163671170154`、revision `108170`、term 534、leader `848842929`、version 3.7.0、db size 492 一致；AlarmList
+空，auth 为 `KubeWharfServer/alice/root` 与 `operator/root`，PD/TiKV 3+3 Ready/restart 0。临时 Service `a5580-client`
+以 UID `7cbc875b-b8ac-4a20-b87f-248721be3091`、resourceVersion `7096948` 删除，所有 A5580 receipt/probe/cleanup 资源归零。
+A5576 archive、A5579 subject 检查目录、A5580 审计/旧 blob 目录和 mutable tags 已移入系统回收站或解除引用；发布保留集为
+A5579 rollback 与 A5580 current 的 archive，以及 A5580 不可变 OCI/runtime/config 引用。
+
+本轮不改变 etcd 公共 API；它把 Kubernetes finalizer 从单 runner 内的删除竞态栅栏推进为跨 runner 的可恢复 ownership 协议。
+外部托管 apiserver 的 admission/finalizer 故障注入、控制面长时间不可达和多 runner 同时接管仍属于更高层生产证据缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
