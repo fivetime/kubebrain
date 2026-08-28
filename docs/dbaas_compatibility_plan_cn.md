@@ -64200,6 +64200,57 @@ marker 根均为 0；fixture 总根仍有一个无 receipt 的既有 `/a5529-tls
 EndpointSlice 0。清理 A5570 archive 与节点 immutable index/config、A5573 mutable node tag 和临时审计展开目录；本轮受管发布
 保留集更新为 A5572 rollback 与 A5573 current 的不可变 index/config/runtime，两个 OCI archive 可用于节点缓存丢失后的恢复。
 
+### A5574：把 rollout fixture ownership 移出 etcd 用户快照
+
+提交 `c0ca2f14`（A5574）修复了 A5573 ownership marker 本身属于普通用户 KV、因而会被 KubeBrain 官方 Snapshot
+无条件导出的兼容性缺口。主 probe 不再写 `/kubebrain-rollout-fixture-owners/...`；runner 预先生成三个 canonical、正数且互异的
+lease ID，并先用 scheduling gate 创建尚不能执行的 Pod。读取 immutable Pod UID 后，runner 创建由 StatefulSet UID controller-own
+的 immutable ConfigMap v2 receipt，精确绑定 namespace、前缀、Pod 名称/UID、StatefulSet 名称/UID 和三个 lease ID；只有读取并复验
+ConfigMap 的 UID/resourceVersion、ownerReference、immutable bit 和 canonical receipt 后，才以 Pod UID/resourceVersion JSON Patch
+移除 scheduling gate。由此 probe 发生任何 etcd mutation 前，外部补偿凭据已经持久存在。
+
+probe 使用 raw LeaseGrant 按 receipt 中的 ID 创建一条 keepalive lease 和两条 Snapshot history lease；claim 会先证明专用前缀、确定性
+auth fixture、旧 v1 marker 和三个计划 lease 全部不存在。正常路径删除 auth、撤销 lease 和前缀，但不写任何 operational KV；外部 cleanup
+仅信任 Kubernetes receipt，在完整检查 auth schema 后执行相同补偿，并把 expired/NotFound lease 作为幂等结果。runner 只有在补偿成功后
+才用 ConfigMap UID/resourceVersion 双前置条件删除 receipt；旧 A5573 marker cleanup 分支仍保留用于迁移。官方 Snapshot 恢复验证新增
+exact forbidden-key 断言，旧 marker 只要进入 bbolt artifact 就会令 gate 失败。嵌入式 etcd 测试固定无公共 marker 的 2 keys/6 users/
+4 roles/3 leases 完整恢复、二次 no-op，以及预分配 lease 碰撞拒绝；runner fake 固定 scheduling gate、非空 immutable receipt、解除 gate
+和 ConfigMap UID-fenced 删除。
+
+提交后首次 live gate 发现 receipt JSON 生成命令漏了 `jq -n`：API 中出现 immutable 但空的 `receipt.json`，且创建后比较使用同一个空变量，
+形成空值自洽。未执行计划中的 SIGKILL，而是 TERM runner 让既有补偿路径清零。提交 `d39d0dd9` 增加 `jq -cnS`、创建后非空约束，并让
+fake Kubernetes 在 create 时解析 receipt、拒绝空字符串，消除该测试盲区。两次代码提交前 `--verify 4` 均证明 production inventory 为
+680 项、分片 `162/188/174/156`；`c0ca2f14` 提交后四片为 `156.264/403.325/279.534/417.432s`，`d39d0dd9`
+提交后为 `157.026/403.323/273.564/416.232s`，全部通过。probe 包全量为 `143.676s`，runner 定向、bash syntax 和 diff check 全绿。
+
+最终 A5574 使用完整 SHA `d39d0dd97e691cf2fb2efb51c6174ade0366be10`、版本 `0.0.0-d39d0dd97e69`、TiKV、Go 1.26.5、
+build time `2026-08-28T04:39:09Z` 和 tag `kubebrain:a5574-d39d0dd9`。OCI archive 为 914,342,400 bytes，SHA-256
+`c15803ede3d117a61f5ae0e31156aeea82f206c13c75581fc7927e0285397f60`；OCI index
+`sha256:51dd733d9a2b9651151f49e961372592506d4d9381f41e74c5e4a97fcdef52b5`、platform
+`sha256:89f40418a577d7ba6f891a83560362e7ce3670b5967d0a21bf83fb40f843f10b`、config
+`sha256:c484408eba0397df978c5e0315f724c099b49583d7dba968baa6cd75277d9b53`、attestation
+`sha256:01e2f4a7dfa5df106152676533abfc85b55a25597484edb4e9f7441aea7b7dd9`、SBOM statement
+`sha256:97077ce7b995d59038b2a07c75bd0b1dd3a6e631bf477d05e112370983e00337`、provenance statement
+`sha256:b6571ea0bc537b5613a5df2e975ea8ecb2ce0dae5b33deb217a665e8b1615f4d`、Kind runtime wrapper
+`sha256:a866bbe1f3ae0cb2db18af45b087345d4ab20a50ab169f72b790312876468ee1`。严格审计 78/78 blobs 和 8 个 JSON
+文档的 78 descriptor edges 全部通过；SBOM 为 2,592 packages/8,096 relationships，provenance 为 3 materials，两份 statement
+均只有一个 subject。不可变 Pod 验证版本/SHA/build time、TiKV、linux/amd64、UID/GID 65532 和 restart 0。
+
+最终候选升级 **900/900 GREEN**：Watch `900/900×3`，Lease `102/273`，public restart 0、direct replacement 16，RangeStream 174、
+Snapshot 1、retry/partial `3/0`，最大总/direct/TSO/Region 延迟 `4551/21359/57/8ms`，postflight 数据、auth、lease 和 receipt
+全部为零。真实验证随后同时 SIGKILL probe 容器宿主 PID 和 runner：现场保留 529 keys、6 users、4 roles，immutable receipt UID
+`bb529228-a373-4686-ad12-20ed48f38022` 精确绑定 Pod UID `52aea55f-6dd9-4872-8c9f-476ef2e376c1` 及三个 lease；补偿时 lease
+已自然过期。UID/resourceVersion 删除 Failed Pod 后，同名下一轮 preflight 仅凭 ConfigMap 报告
+`recovered ... keys=529 users=6 roles=4 leases=3`，随后 3/3 gate、Snapshot 和二次 cleanup 全绿且所有对象清零。
+
+终态 StatefulSet UID 仍为 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 166，current/update
+revision `a4657-tls-f657b67db`，3/3 Ready、restart 0 且精确运行 A5574 runtime wrapper。三端 cluster ID
+`7662961163671170154`、revision 98309、term 511、leader 848842929 一致，AlarmList 空，auth 为
+`KubeWharfServer/alice/root` 与 `operator/root`，PD/TiKV 3+3 全 Ready/restart 0。A5574 两个前缀、旧 marker 根和 owner ConfigMap
+均为零；既有无 receipt 的 `/a5529-tls-migration/watch` 继续按 fail-closed 保留。临时 Service `a5574-client` 以 UID
+`5ca9b6ba-a3b7-4d13-95b7-908580936770` 和 resourceVersion `7057863` 双前置条件删除，Service NotFound、EndpointSlice 0。
+无效的首次 A5574 与 N−2 A5572 archive 已移入系统回收站并移除节点引用；发布保留集为 A5573 rollback 和最终 A5574 current。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
