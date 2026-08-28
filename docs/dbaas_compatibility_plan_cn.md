@@ -64850,6 +64850,85 @@ NotFound、EndpointSlice 0。UID-delete 工具、展开审计目录和 A5584 arc
 行为。黑盒 rollout 已不再复现 A5585 的 7.262 秒 public Put，但第 3 轮 5.213 秒 Put-to-Watch RED 表明容器调度、Endpoint 收敛、
 client balancer 与 watch delivery 叠加的长尾仍未关闭；更长 soak、尾延迟分解观测和对该组合路径的下一轮定向消减仍是生产缺口。
 
+### A5587：传输失败后主动刷新共享 leader 身份
+
+提交 `6f84940d`（A5587）继续收敛 A5586 restart 第 3 轮暴露的 5.213 秒 Put-to-Watch 长尾。该样本中 Put 本身为
+4.166 秒，随后 watch delivery 为 1.048 秒；客户端对安全 mutable 请求执行重试及 authoritative Get 协调，不等价于一次 TiKV Put。
+进一步对照 `/root/etcd` 后确认，上游 etcd 在本地 Raft member 内处理请求，没有 KubeBrain 的 follower→leader gRPC 代理层；因此
+不存在可机械移植的同构实现。KubeBrain 原代理只在缓存 leader 为 unknown 时调用 `RefreshLeaderInfo`：如果缓存仍是已知但已退役的
+leader，transport failure 会先进入 1 秒 redial defer，再依赖生产 follower election 的 500ms 轮询发现 successor，公共请求可能在
+这两个独立恢复周期之间反复收到安全重试错误。
+
+现在所有 health、构造 client、最终 dial 及 forward transport failure 都在释放 proxy lock 后唤醒唯一后台 connector；当缓存 leader
+恰好等于刚失败的 transport identity 时，connector 立即调用共享 election record 的 authoritative refresh。refresh context 最长
+250ms，并在 I/O 前预留下一次 `refreshAfter`，同一失败身份后续最多每 250ms 读取一次；请求 goroutine 只投递容量为 1 的 wakeup，
+不会直接访问后端或形成 follower stampede。刷新、dial 与 client swap 仍由原 `updateMu` 串行，所有 I/O 均在 proxy lock 外；成功连接、
+本实例成为 leader 和 Close 都清空 refresh 状态。若 refresh 失败或仍返回原身份，原有 1 秒保守 redial defer 不变。
+
+新增 `TestFailedLeaderTransportRefreshesPublishedSuccessorBeforeRetry` 和
+`TestFailedLeaderRefreshIsRateLimitedWhileRetryIsDeferred`。在代码前提交 `fc4061e2` 的临时基线仅应用这两项测试时，二者均按预期失败：
+期望一次 refresh、实际为零；当前代码专项测试 `0.038s`、专项 race `1.112s`、完整 etcdproxy 包 `2.272s`、完整包 race
+`3.449s`，`go vet ./pkg/server/service/etcdproxy` 通过。`go test ./pkg/server/... -count=1` 全绿，其中核心 etcd 包
+`134.199s`、etcdproxy `2.270s`、leader `1.478s`、revision `6.637s`。最终 production inventory 为 695 项；提交前精确
+`hack/production/test-shard.sh --verify 4` 为 `169/191/176/159`，提交后四个零基分片墙钟
+`248.835/430.429/292.723/498.952s`，全部通过。临时基线归档已移入系统回收站，可恢复。
+
+A5587 使用完整 SHA `6f84940d35049125db7385fdeb80afbc7d0d55e8`、版本 `0.0.0-6f84940d3504`、TiKV、Go
+1.26.5、build time `2026-08-28T16:56:52Z` 构建，OCI annotation completion 为 `2026-08-28T17:01:27Z`。archive
+为 914,355,712 bytes，SHA-256 `2f36cea6f7aefeecdbb22b6b2f866bea38c2f88e4bf4d7735a27025f6289bfa7`；OCI index
+`sha256:dc5f17f4e9566c120a35de00c3bddc399ac127e8189a8e35857622342bedf8e0`、platform
+`sha256:f1573a49544ed86e52fe024eda4b112af53c1212972b8c76491671bd199b6969`、config
+`sha256:f6903e4d32769cf38b669ad0d596d6955fc05653a1c37512d8488f44b809e50c`、attestation
+`sha256:120162b1887578b7961d1fb93e07e5c2eedb5568a149e55a3274b4404ac4038b`、SBOM statement
+`sha256:29083232185ddf27a17b78e1471d3e623784364629407745fc5689d4dbc996bd`、provenance statement
+`sha256:27d1a5a980d2997097eb7824d2fc038e5e834ae4d0673d4e3bef9c5704134b17`、Kind runtime wrapper
+`sha256:a468adf193d172cec0791770cd59570e5543f145d6b2daac4d6663e1dc9583f0`。严格审计为 78/78 blobs、78 条
+descriptor edges、914,291,562 blob bytes，digest/size/missing 均为 0；SBOM 为 2,592 packages/8,096 relationships，
+provenance 为 3 materials，两份 statement 均唯一绑定 platform。不可变审计 Pod UID
+`1a2f5782-2d58-460f-9e0c-a01d9c0fe1e7`、resourceVersion `7156875` 验证完整版本、SHA、build time、TiKV、Go、
+linux/amd64、UID/GID 65532、精确 runtime imageID、exit 0 与 restart 0 后按 UID/RV 删除。第一次审计 Pod 因调用不存在的
+`kubebrain` 路径而退出 127，已按其独立 UID/RV 删除并使用镜像实际入口 `/usr/local/bin/kube-brain version` 重建验证，未复用旧对象。
+
+首次 rollout runner 在发布 start barrier 前发现临时 Service 误配为 2379，fixture cleanup 为零且 StatefulSet 仍为 generation 197、
+A5586 revision；该次未进入数据面、不能记作产品 RED。Service 按 UID/RV 删除后以 3379→3379 和精确 selector 重建，三个 EndpointSlice
+endpoint Ready。随后 A5586→A5587 候选升级 **900/900 GREEN**：Watch `900/900x3`、Lease `103/276`、public restart 0、
+direct replacement 18、最大 direct recovery `15060ms`、public/min-direct TCP `2/2`、RangeStream 172、Snapshot 1、
+retry/partial `2/0`，最大总/put/watch/direct/TSO/Region 延迟 `4413/4407/192/20884/61/8ms`，revision
+`a4657-tls-7bbc65d79d -> a4657-tls-7fbfbc8598`。
+
+同版本 restart 第 1 轮 **900/900 GREEN**：Lease `101/271`、direct replacement/recovery `17/16450ms`、
+public/min-direct TCP `3/2`、RangeStream 174、Snapshot 1、retry/partial `3/0`，最大延迟
+`3933/3917/26/22045/69/6ms`，revision `7fbfbc8598 -> 8569d4769c`。restart 第 2 轮在 iteration 171 因
+Put-to-Watch `5.435184351s` 超过未放宽的 5 秒门限而 **RED**，其中 Put `5.421274738s`、watch-after-put
+`13.909613ms`、gRPC state READY、successful TCP dial 1；fixture cleanup 仍为零，StatefulSet 随后完整收敛到
+`a4657-tls-5f5d6dcf7b`。连续计数由此归零，不能把第 1 轮拼入最终连续结论。
+
+restart 第 3/4/5 轮随后形成真正连续的三次 **900/900 GREEN**。第 3 轮 Lease `102/277`、direct
+replacement/recovery `17/15214ms`、public/min-direct TCP `2/2`、RangeStream 176、retry/partial `0/0`、最大
+`4003/2058/2688/23472/14/13ms`，revision `5f5d6dcf7b -> 6bb97d98cf`；第 4 轮 `102/271`、
+`18/17930ms`、TCP `3/2`、RangeStream 171、`3/0`、最大 `4682/4676/114/24038/18/17ms`，revision
+`6bb97d98cf -> 8c8dd86cd`；第 5 轮 `100/269`、`16/16300ms`、TCP `2/2`、RangeStream 173、`0/0`、
+最大 `2738/2728/1041/21451/64/18ms`，revision `8c8dd86cd -> 5cd7649869`。三轮均包含 Watch
+`900/900x3`、public lease restart 0、Snapshot 1 和零 cleanup；一次 RED 作为 public Put 尾延迟仍存在的生产证据保留。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，resourceVersion `7161368`，
+generation/observed generation 203，current/update revision `a4657-tls-5cd7649869`，3/3 Ready/restart 0，三个 Pod 均运行
+A5587 index/runtime，UID/GID/fsGroup 65532、HTTPS `/readyz=ok` 与 `1h/5m` connection aging 参数保持。三 Pod IP 的客户端
+mTLS 状态审计得到 cluster ID `7662961163671170154`、revision/index/applied `130093`、term 583、leader `2985394290`、
+version/storage 3.7.0、db size/in-use 492 完全一致；三端 proposal 为 `19.103/19.929/20.321ms`，AlarmList 与 LeaseList 为空，
+auth enabled/revision 3924，用户为 `KubeWharfServer/alice/root`、角色为 `operator/root`。主 PD/TiKV 3+3 Ready/restart 0。
+
+六个 A5587 rollout prefix fresh count 均为 0，相关 Pod/ConfigMap/Secret/ServiceAccount/Role/RoleBinding/Lease 均不存在。临时 Service
+`a5587-client` 以 UID `e7198782-bc8f-4741-8f24-4cd9a6d0a470`、resourceVersion `7157164` 双前置条件删除，Service
+NotFound、EndpointSlice 0。UID-delete 工具、展开审计目录、临时 descriptor 文件和 A5585 archive 已移入系统回收站，可恢复；mutable
+tag 已解除引用。发布保留集为 A5586 rollback 与 A5587 current archive，以及 A5587 immutable OCI/runtime/config/import 引用。
+
+本轮将已知 leader 的 transport failure 转化为 bounded authoritative refresh，在不增加并行 connector 或请求路径后端 I/O 的前提下，
+消除了必须等待 follower election poll 才能观察 successor 的窗口。候选及四轮完整 restart 中 public Put 最大值均低于 4.7 秒，但另一次
+restart 仍出现 5.421 秒 Put，说明该修改关闭了一个确定性等待源，却不能证明 Kubernetes Service 路由、client balancer、leader election、
+响应丢失协调与容器调度叠加的尾部已完全关闭；下一轮应继续从失败请求的服务端接收时间、forward attempt generation 和客户端 subconn
+选择三侧关联证据定位剩余长尾，而不是放宽 5 秒门限。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
