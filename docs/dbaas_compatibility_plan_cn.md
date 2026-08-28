@@ -64550,6 +64550,62 @@ A5580 rollback 与 A5581 current archive，以及 A5581 不可变 OCI/runtime/co
 完整 runner 的 probe ownership fencing、外部托管 apiserver 的 admission/GC 故障注入、控制面长时间不可达和长时间多 runner soak
 仍是更高层生产证据缺口。
 
+### A5582：以 UID/resourceVersion 栅栏 rollout probe 删除
+
+提交 `f2bcac17`（A5582）关闭 A5581 真实双 runner 演练发现的 probe 名称删除竞态。runner 现在让 `kubectl run` 返回完整
+JSON，在任何完整 spec 校验前先从 create response 接纳预期 namespace/name 的非空 UID/resourceVersion，再以 GET 要求同一 UID；
+主路径和 trap 都只通过共享 helper 携带当前 UID/resourceVersion precondition 删除。create 竞争失败且未取得 UID 时绝不按名称删除；
+create response 已取得身份但 spec 被 admission 漂移时会补偿删除自己创建的对象；删除前同名 Pod 被新 UID 替换时保留 replacement
+并让门禁 fail closed。删除确认窗口由 `KUBECTL_MUTATION_REQUEST_TIMEOUT` 导出，不再存在 raw name-delete 旁路。
+
+新增 `TestRolloutAvailabilityRunnerDoesNotDeleteUnownedProbeAfterCreateRace`、
+`TestRolloutAvailabilityRunnerLeavesReplacementProbeUntouched` 和
+`TestRolloutAvailabilityRunnerDeletesOwnedProbeWhenCreateResponseDrifts`，分别固定无 ownership 的 create race、replacement UID 与
+已拥有但 create response spec 漂移三种边界。完整 rollout runner 专项 `275.472s`；最终 production inventory 为 689 项，提交前
+`--verify 4` 为 `167/188/175/159`，提交后四片墙钟 `191.069/412.357/286.552/435.323s`，全部通过。
+
+A5582 使用完整 SHA `f2bcac170a68498366893d129e884a7118349cd3`、版本 `0.0.0-f2bcac170a68`、TiKV、Go
+1.26.5、build time `2026-08-28T11:39:25Z` 构建。最终 OCI archive 为 914,350,592 bytes，SHA-256
+`99415df23697bb75ec92a9a7067ff84891a8e3454c6c3d11b777dd0810e59077`；OCI index
+`sha256:07a201cabe26192fc517bd3f3a9ac06b288ff76987c07e2faa6f4bf02eb4c032`、platform
+`sha256:dabc0588145733cc0f856e2b3eb40b3d53f8007910eed823db57d7a8d2c7170f`、config
+`sha256:2272f117fcdcc1301843d07c5ac3c2696f39ee41410943917ef5934efcb32504`、attestation
+`sha256:7a98df937977f49d02838532804ea983bedfbf4640187caa87cfac2eb860209d`、SBOM statement
+`sha256:2965974309abfaa33fcc962a1464314232257101cadb19580bdcdcd344a48d3b`、provenance statement
+`sha256:c88155920d6bec0b7e197e140fa902712ed8ed172941554a60940e95b4939b89`、Kind runtime wrapper
+`sha256:9872c61a27287a2be805b49e322b9d408e2338d742a0524eba76809ec611b990`。严格审计为 78/78 blobs、78 条
+descriptor edges；SBOM 为 2,592 packages/8,096 relationships，provenance 为 3 materials，两份 statement 均只有一个 subject
+并精确绑定 platform。不可变审计 Pod UID `82caa423-e289-4b7d-8d94-7ab8fea3e4bc`、resourceVersion `7115835` 验证
+UID/GID 65532、版本、TiKV、完整 SHA、Go、linux/amd64、build time、精确 runtime imageID 与 restart 0 后按 UID/RV 删除。
+
+真实双 runner 演练创建 terminating receipt UID `1f551f3e-0d20-4c06-af98-3f3252c0cc74`、resourceVersion
+`7113945`，计划 lease `7900000000000000301/302/303`，并用同一 `a5582-race-probe` 并发启动两个完整 runner。败者精确收到
+AlreadyExists、未取得 probe UID，因此没有删除胜者；胜者 Pod UID `df4de1c8-2da6-467e-b5aa-935732a7d888` 在败者退出后仍保持
+Running，并完成 1/1 门禁：Watch `1/1x3`、Lease `58/168`、restart 0、TCP `1/1`、RangeStream 94、Snapshot 1，最大延迟
+`50ms`、TSO `0ms`、Region `9ms`。最终 cleanup 为零；receipt/probe/cleanup Kubernetes 对象不存在，race/rollout/restart
+三个 etcd prefix 均为 0 key，三项计划 lease 均已过期。由此完整 runner 的并发合同从“发布系统必须保证单实例”提升为“一个胜者、
+败者安全失败且不破坏胜者”。
+
+A5581→A5582 候选升级 **900/900 GREEN**：Watch `900/900x3`、Lease `104/279`、public restart 0、direct
+replacement 18、最大 direct recovery `15132ms`、public TCP 2、最小 direct TCP 2、RangeStream 177、Snapshot 1、
+retry/partial `1/0`，最大总/put/watch/direct/TSO/Region 延迟 `3162/3154/1046/21214/43/19ms`，revision
+`a4657-tls-5ccf9fd957 -> a4657-tls-5c69bd8c76`。同版本 restart 同样 **900/900 GREEN**：Lease `99/267`、
+public restart 0、direct replacement 16、最大 direct recovery `16396ms`、public TCP 4、最小 direct TCP 2、
+RangeStream 168、Snapshot 1、retry/partial `1/0`，最大 `2050/2050/1039/21706/38/15ms`，revision
+`a4657-tls-5c69bd8c76 -> a4657-tls-76b6ccd86d`；两轮 cleanup 均为零残留。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 182，
+current/update revision `a4657-tls-76b6ccd86d`，3/3 Ready/restart 0 且三个 Pod 均运行 A5582 index/runtime。三端 cluster ID
+`7662961163671170154`、revision `112011`、term 541、leader `2985394290`、version 3.7.0、db size 492 一致；AlarmList
+空，auth 为 `KubeWharfServer/alice/root` 与 `operator/root`，PD/TiKV 3+3 Ready/restart 0。临时 Service `a5582-client`
+以 UID `9243d021-e382-4ad5-baf0-fbfd19af6bd1`、resourceVersion `7113940` 双前置条件删除，Service NotFound、
+EndpointSlice 0。A5580 archive 与 A5582 展开审计目录已移入系统回收站，可恢复，mutable tag 已解除引用；发布保留集为 A5581
+rollback 与 A5582 current archive，以及 A5582 不可变 OCI/runtime/config/import 引用。
+
+本轮不改变 etcd 公共 API；它把 rollout probe 的清理从进程内名称约定升级为 Kubernetes 对象身份所有权协议，并用真实双 runner
+证明失败者不会破坏胜者。外部托管 apiserver 的 admission/GC 故障注入、控制面长时间不可达和长时间多 runner soak 仍是更高层生产
+证据缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
