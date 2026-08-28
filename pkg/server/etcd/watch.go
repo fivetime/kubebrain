@@ -1489,22 +1489,48 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 		return
 	}
 	if wt.awaitAuthoritativeCreate {
-		select {
-		case result, ok := <-ch:
-			if !ok {
-				w.rejectAuthoritativeCreate(id, wt, errors.New("watch closed before authoritative create"), 0)
+		// A follower can lose its proxy generation while clientv3 is itself
+		// recreating a public Watch after transport loss. Until Created has been
+		// published no event has been delivered, so a closed generation is a
+		// topology transition, not a terminal logical-watch result. Reopen from
+		// the same explicit revision and keep the authorization boundary hidden.
+		// If this replica became the fresh leader meanwhile, its already-checked
+		// local authorization is authoritative and the local event channel must
+		// remain unread for the normal delivery loop below.
+		authoritativeCreateAccepted := localGeneration
+		for !authoritativeCreateAccepted {
+			select {
+			case result, ok := <-ch:
+				if !ok {
+					cancelGeneration()
+					nextGenerationCtx, nextCancelGeneration := context.WithCancel(ctx)
+					var reopenErr error
+					ch, localGeneration, generationEpoch, reopenErr = w.reopenWatchChannel(
+						nextGenerationCtx, r, backendPrefix, watchRevision,
+					)
+					if reopenErr != nil {
+						nextCancelGeneration()
+						if ctx.Err() == nil {
+							w.rejectAuthoritativeCreate(id, wt, reopenErr, 0)
+						}
+						return
+					}
+					cancelGeneration = nextCancelGeneration
+					klog.InfoS("[watch stream] pending authoritative create resumed", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "rev", watchRevision, "local", localGeneration)
+					continue
+				}
+				if result.Err != nil {
+					w.rejectAuthoritativeCreate(id, wt, result.Err, result.CompactRevision)
+					return
+				}
+				if !result.Created || result.ProgressRevision != 0 || len(result.Events) != 0 {
+					w.rejectAuthoritativeCreate(id, wt, errors.New("watch backend omitted authoritative create acknowledgement"), 0)
+					return
+				}
+				authoritativeCreateAccepted = true
+			case <-ctx.Done():
 				return
 			}
-			if result.Err != nil {
-				w.rejectAuthoritativeCreate(id, wt, result.Err, result.CompactRevision)
-				return
-			}
-			if !result.Created || result.ProgressRevision != 0 || len(result.Events) != 0 {
-				w.rejectAuthoritativeCreate(id, wt, errors.New("watch backend omitted authoritative create acknowledgement"), 0)
-				return
-			}
-		case <-ctx.Done():
-			return
 		}
 		*wt.authoritativeControl = etcdserverpb.WatchResponse{
 			Header: txnHeader(int64(wt.createdRevision)), Created: true, WatchId: id,

@@ -4325,6 +4325,60 @@ func TestFollowerWatchWaitsForAuthoritativeCreateAuthorization(t *testing.T) {
 	require.Error(t, <-done)
 }
 
+func TestFollowerWatchRetriesClosedGenerationBeforeAuthoritativeCreate(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	first := make(chan etcdproxy.WatchResult)
+	close(first)
+	second := make(chan etcdproxy.WatchResult, 2)
+	var calls atomic.Int64
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		watchFn: func(watchCtx context.Context, _ []byte, _ []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			require.Positive(t, revision)
+			if calls.Add(1) == 1 {
+				return first, nil
+			}
+			go func() {
+				<-watchCtx.Done()
+				close(second)
+			}()
+			return second, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &controllableWatchServer{
+		ctx:  ctx,
+		recv: make(chan *etcdserverpb.WatchRequest, 1),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/retry-create")},
+	}}
+
+	require.Eventually(t, func() bool { return calls.Load() == 2 }, time.Second, time.Millisecond)
+	require.Empty(t, stream.snapshot(), "closed predecessor generation exposed a terminal cancel")
+	second <- etcdproxy.WatchResult{Created: true, Revision: 99}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	created := stream.snapshot()[0]
+	require.True(t, created.Created)
+	require.False(t, created.Canceled)
+
+	second <- etcdproxy.WatchResult{Revision: 99, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT,
+		Kv: &mvccpb.KeyValue{
+			Key: []byte("/retry-create"), Value: []byte("v"), CreateRevision: 99, ModRevision: 99, Version: 1,
+		},
+	}}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
+	require.Len(t, stream.snapshot()[1].Events, 1)
+
+	cancel()
+	require.Error(t, <-done)
+}
+
 func TestFollowerWatchPublishesCreatedOnlyAfterAuthoritativeAcknowledgement(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

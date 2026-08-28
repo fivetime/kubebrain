@@ -320,7 +320,10 @@ func validateCreatedWatch(response clientv3.WatchResponse, clusterID uint64, min
 
 func validatePutWatch(response clientv3.WatchResponse, clusterID uint64, putRevision int64, key, value string) (int64, error) {
 	if response.Err() != nil || response.Canceled || response.Created || response.CompactRevision != 0 || len(response.Events) != 1 {
-		return 0, errors.New("put watch returned an invalid envelope")
+		return 0, fmt.Errorf(
+			"put watch returned an invalid envelope: err=%v created=%t canceled=%t compact_revision=%d events=%d header_revision=%d",
+			response.Err(), response.Created, response.Canceled, response.CompactRevision, len(response.Events), response.Header.GetRevision(),
+		)
 	}
 	_, revision, err := validateResponseHeader(response.Header, clusterID, putRevision)
 	if err != nil {
