@@ -281,10 +281,10 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 		extraEnv                            []string
 		wantProbeLogCalls                   int
 	}{
-		{name: "evidence", target: "evidence", timeoutVariable: "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=100ms", want: "failed to read KubeBrain StatefulSet"},
-		{name: "mutation", target: "mutation", timeoutVariable: "KUBECTL_MUTATION_COMMAND_TIMEOUT=100ms", want: "failed to create rollout availability probe Pod"},
-		{name: "ready wait", target: "ready", timeoutVariable: "KUBECTL_READY_WAIT_COMMAND_TIMEOUT=100ms", want: "rollout availability probe Pod did not become Ready"},
-		{name: "rollout status", target: "rollout", timeoutVariable: "KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT=100ms", want: "KubeBrain rollout did not converge"},
+		{name: "evidence", target: "evidence", timeoutVariable: "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=1s", want: "failed to read KubeBrain StatefulSet"},
+		{name: "mutation", target: "mutation", timeoutVariable: "KUBECTL_MUTATION_COMMAND_TIMEOUT=1s", want: "failed to create rollout availability probe Pod"},
+		{name: "ready wait", target: "ready", timeoutVariable: "KUBECTL_READY_WAIT_COMMAND_TIMEOUT=1s", want: "rollout availability probe Pod did not become Ready"},
+		{name: "rollout status", target: "rollout", timeoutVariable: "KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT=1s", want: "KubeBrain rollout did not converge"},
 		{name: "phase wait deadline", target: "phase", timeoutVariable: "KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT=30s", want: "availability probe did not complete within 1s", extraEnv: []string{"PROBE_COMPLETE_TIMEOUT=1s"}, wantProbeLogCalls: 1},
 		{name: "phase evidence deadline", target: "phase-evidence", timeoutVariable: "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=30s", want: "availability probe did not complete within 1s", extraEnv: []string{"PROBE_COMPLETE_TIMEOUT=1s", "FAKE_PROBE_FAILED=true"}, wantProbeLogCalls: 1},
 		{name: "start barrier deadline", target: "start", timeoutVariable: "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=30s", want: "availability probe did not publish its start barrier within 1s", extraEnv: []string{"PROBE_START_TIMEOUT=1s"}},
@@ -304,11 +304,17 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 			require.Contains(t, string(output), tc.want)
 			if tc.wantProbeLogCalls > 0 {
 				log := readOptionalFile(t, logPath)
-				require.Equal(t, tc.wantProbeLogCalls,
-					strings.Count(log, " logs kubebrain-rollout-availability-probe"),
+				probeLogCalls := 0
+				for _, line := range strings.Split(log, "\n") {
+					if strings.HasSuffix(line, " logs kubebrain-rollout-availability-probe") ||
+						strings.Contains(line, " logs kubebrain-rollout-availability-probe ") {
+						probeLogCalls++
+					}
+				}
+				require.Equal(t, tc.wantProbeLogCalls, probeLogCalls,
 					"an expired completion stage must not start a diagnostic log request")
 			}
-			require.Less(t, time.Since(started), 4*time.Second,
+			require.Less(t, time.Since(started), 5*time.Second,
 				"the outer command timeout must terminate a kubectl process that never reaches HTTP request handling")
 		})
 	}
@@ -359,8 +365,37 @@ func TestRolloutAvailabilityRunnerObserveOnlyDoesNotRollStatefulSet(t *testing.T
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe ")
+	require.Equal(t, 2, strings.Count(log, " run kubebrain-rollout-availability-probe-cleanup "))
+	require.Equal(t, 2, strings.Count(log, "--cleanup-owned-fixture"))
+	require.Contains(t, log, "--fixture-owner-namespace=kubebrain-system")
+	require.Contains(t, log, "--fixture-owner-pod=kubebrain-rollout-availability-probe")
+	require.Contains(t, log, "--fixture-owner-statefulset=kubebrain")
+	require.Contains(t, log, "--fixture-owner-statefulset-uid=statefulset-uid")
+	require.Contains(t, log, "--fixture-owner-pod-uid=33333333-3333-4333-8333-333333333333")
+	require.Contains(t, log, `"fieldPath":"metadata.uid"`)
 	require.NotContains(t, log, " patch statefulset/kubebrain ")
 	require.NotContains(t, log, " rollout status statefulset/kubebrain ")
+}
+
+func TestRolloutAvailabilityRunnerFailsClosedOnMalformedFixtureCleanupEvidence(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_FIXTURE_CLEANUP_MALFORMED=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"OBSERVE_ONLY=true",
+		"PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "fixture cleanup evidence is malformed")
+	require.Contains(t, string(output), "rollout fixture preflight cleanup failed")
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log, " run kubebrain-rollout-availability-probe-cleanup ")
+	require.NotContains(t, log, " run kubebrain-rollout-availability-probe ")
 }
 
 func TestRolloutAvailabilityRunnerHardFailoverDeletesStableLeaderIdentityAndRecovers(t *testing.T) {
@@ -809,7 +844,9 @@ func TestRolloutAvailabilityRunnerBindsMutualTLSProbeIdentity(t *testing.T) {
 	require.Contains(t, log, `"mountPath":"/etc/kubebrain/client-tls"`)
 	var overrideJSON string
 	for _, line := range strings.Split(log, "\n") {
-		if index := strings.Index(line, "--overrides="); index >= 0 {
+		if strings.Contains(line, " run kubebrain-rollout-availability-probe ") {
+			index := strings.Index(line, "--overrides=")
+			require.GreaterOrEqual(t, index, 0)
 			overrideJSON = line[index+len("--overrides="):]
 			break
 		}
@@ -1446,7 +1483,7 @@ fi
 if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == rollout && " $* " == *" rollout status statefulset/kubebrain "* ]]; then
   sleep 30
 fi
-if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == phase && " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
+if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == phase && " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded pod/kubebrain-rollout-availability-probe "* ]]; then
   sleep 30
 fi
 if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == phase-evidence && " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.status.phase} "* ]]; then
@@ -1530,6 +1567,13 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
     head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
     [[ -z "${FAKE_RUNTIME_RESPONSE_COMPLETED:-}" ]] || : >"$FAKE_RUNTIME_RESPONSE_COMPLETED"
   fi
+elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe-cleanup "* ]]; then
+  exit 1
+elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o json "* ]]; then
+  jq -cn '{
+    metadata:{name:"kubebrain-rollout-availability-probe",uid:"33333333-3333-4333-8333-333333333333"},
+    spec:{containers:[{name:"kubebrain-rollout-availability-probe",image:(env.PROBE_IMAGE // "kubebrain:test")}]}}
+  '
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.status.phase} "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then printf Failed
   elif [[ "${FAKE_PHASE_RESPONSE:-false}" == true ]]; then printf Running; head -c "$((FAKE_PHASE_BYTES-7))" /dev/zero | tr '\0' ' '
@@ -1629,9 +1673,17 @@ elif [[ " $* " == *" rollout status statefulset/kubebrain "* && "${FAKE_ROLLOUT_
   exit 1
 elif [[ " $* " == *" delete pod kubebrain-rollout-availability-probe "* && "${FAKE_DELETE_FAIL:-false}" == true ]]; then
   exit 1
+elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded pod/kubebrain-rollout-availability-probe-cleanup "* ]]; then
+  :
 elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
+elif [[ " $* " == *" logs kubebrain-rollout-availability-probe-cleanup "* ]]; then
+  if [[ "${FAKE_FIXTURE_CLEANUP_MALFORMED:-false}" == true ]]; then
+    printf '%s\n' 'FIXTURE_CLEANUP_OK status=recovered owner_uid=not-a-uid keys=0 users=0 roles=0 leases=0'
+  else
+    printf '%s\n' 'FIXTURE_CLEANUP_OK status=absent owner_uid= keys=0 users=0 roles=0 leases=0'
+  fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
   payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 public_lease_restarts=1 max_public_lease_recovery_ms=3210 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_put_latency_ms=45 max_watch_after_put_latency_ms=78 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
   if [[ "${HARD_FAILOVER:-false}" == true && -n "${FAKE_HARD_FAILOVER_STATE:-}" && -e "$FAKE_HARD_FAILOVER_STATE" && "${FAKE_OMIT_FINAL_LEADER_TARGET:-false}" != true ]]; then

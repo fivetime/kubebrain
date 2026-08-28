@@ -255,13 +255,16 @@ func TestRunConfigRequiresLeaderIdentityForFinalReport(t *testing.T) {
 	snapshotDir := t.TempDir()
 	valid := config{
 		endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"},
-		prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second,
+		prefix: "/kubebrain-rollout-availability/probe-a/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second,
 		dialTimeout: 100 * time.Millisecond, maxLatency: time.Second, maxDirectLatency: 20 * time.Second,
 		leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second,
 		maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second,
 		snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond,
 		streamMaxBackoff: time.Second, snapshotDir: snapshotDir, minPublicTCPDials: 1, minDirectTCPDials: 1,
 		reportLeaderTarget: true, leaderStatefulSet: "kubebrain", leaderHeadlessSvc: "kubebrain-peer", leaderNamespace: "tenant-a",
+		fixtureOwner: fixtureOwnerIdentity{Namespace: "tenant-a", ProbePod: "probe-a",
+			ProbePodUID: "11111111-1111-4111-8111-111111111111", StatefulSet: "kubebrain",
+			StatefulSetUID: "22222222-2222-4222-8222-222222222222"},
 	}
 	require.NoError(t, valid.validateRun())
 	valid.leaderNamespace = ""

@@ -165,6 +165,11 @@ if ! [[ "$PROBE_POD" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
   echo "PROBE_POD must be a DNS label" >&2
   exit 2
 fi
+if (( ${#PROBE_POD} > 55 )); then
+  echo "PROBE_POD must be at most 55 characters to reserve the cleanup Pod suffix" >&2
+  exit 2
+fi
+probe_cleanup_pod="${PROBE_POD}-cleanup"
 if [[ -n "$TARGET_IMAGE" && ! "$TARGET_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
   echo "TARGET_IMAGE must be an immutable image reference with @sha256:<64 lowercase hex digest>" >&2
   exit 2
@@ -553,6 +558,10 @@ if kctl_evidence get pod "$PROBE_POD" >/dev/null 2>&1; then
   echo "probe Pod already exists: ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   exit 1
 fi
+if kctl_evidence get pod "$probe_cleanup_pod" >/dev/null 2>&1; then
+  echo "probe cleanup Pod already exists: ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
+  exit 1
+fi
 
 candidate_rollout_started=false
 candidate_rollout_succeeded=false
@@ -561,6 +570,9 @@ hard_failover_succeeded=false
 hard_failover_pod=""
 hard_failover_pod_uid=""
 probe_deleted=false
+probe_pod_uid=""
+fixture_cleanup_ready=false
+fixture_cleanup_verified=false
 cleanup() {
   if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
     echo "candidate rollout failed; restoring original image ${image}" >&2
@@ -640,6 +652,13 @@ cleanup() {
     ! kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null; then
     echo "CRITICAL: failed to delete rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   fi
+  if [[ "$fixture_cleanup_ready" == true && "$fixture_cleanup_verified" != true ]]; then
+    if run_fixture_cleanup; then
+      fixture_cleanup_verified=true
+    else
+      echo "CRITICAL: failed to compensate rollout fixture ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
+    fi
+  fi
   rm -rf -- "$runtime_evidence_dir"
 }
 trap cleanup EXIT
@@ -678,6 +697,10 @@ probe_command=(
   --pd-endpoints="$pd_endpoints" \
   --expected-up-stores=3 \
   --max-store-heartbeat-age=20s \
+  --fixture-owner-namespace="$KUBEBRAIN_NAMESPACE" \
+  --fixture-owner-pod="$PROBE_POD" \
+  --fixture-owner-statefulset="$KUBEBRAIN_STATEFULSET" \
+  --fixture-owner-statefulset-uid="$statefulset_uid" \
   "${probe_tls_args[@]}" \
   --dial-timeout="$PROBE_DIAL_TIMEOUT"
 )
@@ -735,10 +758,105 @@ probe_overrides="$(jq -cn --arg name "$PROBE_POD" --arg image "$probe_image" --a
   --argjson args "$probe_command_args" --argjson mounts "$probe_volume_mounts" --argjson volumes "$probe_volumes" \
   --argjson security_context "$probe_pod_security_context" '{
     apiVersion:"v1",kind:"Pod",spec:{automountServiceAccountToken:false,restartPolicy:"Never",securityContext:$security_context,
-      containers:[{name:$name,image:$image,command:[$command],args:$args,volumeMounts:$mounts}],volumes:$volumes}
+      containers:[{name:$name,image:$image,command:[$command],args:$args,volumeMounts:$mounts,
+        env:[{name:"KUBEBRAIN_ROLLOUT_PROBE_UID",valueFrom:{fieldRef:{apiVersion:"v1",fieldPath:"metadata.uid"}}}]}],volumes:$volumes}
   }')" || exit 1
+if [[ "$endpoint_scheme" == https ]]; then
+  cleanup_volume_mounts="$(jq -cn --argjson tls "$tls_volume_mount" '[$tls]')" || exit 1
+  cleanup_volumes="$(jq -cn --argjson tls "$tls_volume" '[$tls]')" || exit 1
+else
+  cleanup_volume_mounts='[]'
+  cleanup_volumes='[]'
+fi
+run_fixture_cleanup() {
+  local cleanup_args cleanup_args_json cleanup_overrides cleanup_log cleanup_line cleanup_wait_seconds
+  cleanup_args=(
+    --cleanup-owned-fixture
+    --prefix="/kubebrain-rollout-availability/${PROBE_POD}/"
+    --direct-endpoints="$direct_endpoints"
+    --command-timeout="$PROBE_COMMAND_TIMEOUT"
+    --dial-timeout="$PROBE_DIAL_TIMEOUT"
+    --fixture-owner-namespace="$KUBEBRAIN_NAMESPACE"
+    --fixture-owner-pod="$PROBE_POD"
+    --fixture-owner-statefulset="$KUBEBRAIN_STATEFULSET"
+    --fixture-owner-statefulset-uid="$statefulset_uid"
+    "${probe_tls_args[@]}"
+  )
+  if [[ -n "$probe_pod_uid" ]]; then
+    cleanup_args+=(--fixture-owner-pod-uid="$probe_pod_uid")
+  fi
+  cleanup_args_json="$(jq -cn --args '$ARGS.positional' -- "${cleanup_args[@]}")" || return 1
+  cleanup_overrides="$(jq -cn --arg name "$probe_cleanup_pod" --arg image "$probe_image" \
+    --arg command /usr/local/bin/kubebrain-rollout-availability-probe --argjson args "$cleanup_args_json" \
+    --argjson mounts "$cleanup_volume_mounts" --argjson volumes "$cleanup_volumes" \
+    --argjson security_context "$probe_pod_security_context" '{
+      apiVersion:"v1",kind:"Pod",spec:{automountServiceAccountToken:false,restartPolicy:"Never",securityContext:$security_context,
+        containers:[{name:$name,image:$image,command:[$command],args:$args,volumeMounts:$mounts}],volumes:$volumes}
+    }')" || return 1
+  if kctl_evidence get pod "$probe_cleanup_pod" >/dev/null 2>&1; then
+    echo "fixture cleanup Pod already exists: ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
+    return 1
+  fi
+  if ! kctl_mutation run "$probe_cleanup_pod" --image="$probe_image" --restart=Never --overrides="$cleanup_overrides" >/dev/null; then
+    echo "failed to create fixture cleanup Pod ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
+    return 1
+  fi
+  cleanup_wait_seconds="$(duration_ceil_seconds "$PROBE_COMPLETE_TIMEOUT")" || return 1
+  if ! kctl_watch "${cleanup_wait_seconds}s" \
+    wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$probe_cleanup_pod" --timeout="$PROBE_COMPLETE_TIMEOUT" >/dev/null; then
+    kctl_evidence logs "$probe_cleanup_pod" >&2 || true
+    kctl_mutation delete pod "$probe_cleanup_pod" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null || true
+    echo "fixture cleanup Pod did not succeed within ${PROBE_COMPLETE_TIMEOUT}" >&2
+    return 1
+  fi
+  cleanup_log="$runtime_evidence_dir/fixture-cleanup-${probe_pod_uid:-preflight}.log"
+  if ! capture_runtime_evidence "$cleanup_log" kctl_evidence logs "$probe_cleanup_pod"; then
+    kctl_mutation delete pod "$probe_cleanup_pod" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null || true
+    echo "failed to read fixture cleanup evidence" >&2
+    return 1
+  fi
+  if [[ "$(grep -c '^FIXTURE_CLEANUP_OK ' "$cleanup_log" || true)" != 1 ]]; then
+    cat "$cleanup_log" >&2
+    kctl_mutation delete pod "$probe_cleanup_pod" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null || true
+    echo "fixture cleanup did not return exactly one success result" >&2
+    return 1
+  fi
+  cleanup_line="$(grep '^FIXTURE_CLEANUP_OK ' "$cleanup_log")"
+  if ! [[ "$cleanup_line" =~ ^FIXTURE_CLEANUP_OK\ status=absent\ owner_uid=\ keys=0\ users=0\ roles=0\ leases=0$ ||
+    "$cleanup_line" =~ ^FIXTURE_CLEANUP_OK\ status=recovered\ owner_uid=[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\ keys=[0-9]+\ users=[0-9]+\ roles=[0-9]+\ leases=[0-9]+$ ]]; then
+    cat "$cleanup_log" >&2
+    kctl_mutation delete pod "$probe_cleanup_pod" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null || true
+    echo "fixture cleanup evidence is malformed" >&2
+    return 1
+  fi
+  cat "$cleanup_log"
+  if ! kctl_mutation delete pod "$probe_cleanup_pod" --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null; then
+    echo "failed to delete fixture cleanup Pod ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
+    return 1
+  fi
+  return 0
+}
+run_fixture_cleanup || {
+  echo "rollout fixture preflight cleanup failed" >&2
+  exit 1
+}
+fixture_cleanup_ready=true
+fixture_cleanup_verified=false
 kctl_mutation run "$PROBE_POD" --image="$probe_image" --restart=Never --overrides="$probe_overrides" >/dev/null || {
   echo "failed to create rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
+  exit 1
+}
+probe_identity_json="$runtime_evidence_dir/probe-identity.json"
+capture_runtime_evidence "$probe_identity_json" kctl_evidence get pod "$PROBE_POD" -o json || {
+  echo "failed to read rollout availability probe Pod identity" >&2
+  exit 1
+}
+probe_pod_uid="$(jq -er --arg name "$PROBE_POD" --arg image "$probe_image" '
+  select(.metadata.name == $name and .metadata.deletionTimestamp == null and
+    ([.spec.containers[]? | select(.name == $name and .image == $image)] | length) == 1) |
+  .metadata.uid | select(type == "string" and test("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"))
+' "$probe_identity_json")" || {
+  echo "rollout availability probe Pod identity mismatch" >&2
   exit 1
 }
 kctl_watch "$KUBECTL_READY_WAIT_COMMAND_TIMEOUT" \
@@ -1015,6 +1133,11 @@ if ! kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true -
   exit 1
 fi
 probe_deleted=true
+run_fixture_cleanup || {
+  echo "rollout fixture postflight cleanup failed" >&2
+  exit 1
+}
+fixture_cleanup_verified=true
 [[ -z "$TARGET_IMAGE" ]] || candidate_rollout_succeeded=true
 [[ "$HARD_FAILOVER" != true ]] || hard_failover_succeeded=true
 

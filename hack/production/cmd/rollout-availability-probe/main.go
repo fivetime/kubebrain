@@ -33,38 +33,40 @@ import (
 )
 
 type config struct {
-	endpoint           string
-	directEndpoints    []string
-	prefix             string
-	iterations         int
-	interval           time.Duration
-	commandTimeout     time.Duration
-	dialTimeout        time.Duration
-	maxLatency         time.Duration
-	maxDirectLatency   time.Duration
-	leaseTTL           int64
-	pdEndpoints        []string
-	expectedStores     int
-	maxHeartbeatAge    time.Duration
-	maxTSOLatency      time.Duration
-	maxRegionLatency   time.Duration
-	rangeInterval      time.Duration
-	snapshotDelay      time.Duration
-	streamTimeout      time.Duration
-	streamBackoff      time.Duration
-	streamMaxBackoff   time.Duration
-	snapshotDir        string
-	caFile             string
-	certFile           string
-	keyFile            string
-	tlsServerName      string
-	minPublicTCPDials  int64
-	minDirectTCPDials  int64
-	leaderTargetOnly   bool
-	reportLeaderTarget bool
-	leaderStatefulSet  string
-	leaderHeadlessSvc  string
-	leaderNamespace    string
+	endpoint            string
+	directEndpoints     []string
+	prefix              string
+	iterations          int
+	interval            time.Duration
+	commandTimeout      time.Duration
+	dialTimeout         time.Duration
+	maxLatency          time.Duration
+	maxDirectLatency    time.Duration
+	leaseTTL            int64
+	pdEndpoints         []string
+	expectedStores      int
+	maxHeartbeatAge     time.Duration
+	maxTSOLatency       time.Duration
+	maxRegionLatency    time.Duration
+	rangeInterval       time.Duration
+	snapshotDelay       time.Duration
+	streamTimeout       time.Duration
+	streamBackoff       time.Duration
+	streamMaxBackoff    time.Duration
+	snapshotDir         string
+	caFile              string
+	certFile            string
+	keyFile             string
+	tlsServerName       string
+	minPublicTCPDials   int64
+	minDirectTCPDials   int64
+	leaderTargetOnly    bool
+	reportLeaderTarget  bool
+	leaderStatefulSet   string
+	leaderHeadlessSvc   string
+	leaderNamespace     string
+	cleanupOwnedFixture bool
+	fixtureOwner        fixtureOwnerIdentity
 }
 
 func classifyCleanupLeaseError(err error) (alreadyAbsent bool, cleanupErr error) {
@@ -108,9 +110,18 @@ func main() {
 	flag.StringVar(&cfg.leaderStatefulSet, "leader-statefulset", "", "expected StatefulSet name for leader target discovery")
 	flag.StringVar(&cfg.leaderHeadlessSvc, "leader-headless-service", "", "expected headless Service name for leader target discovery")
 	flag.StringVar(&cfg.leaderNamespace, "leader-namespace", "", "expected namespace for leader target discovery")
+	flag.BoolVar(&cfg.cleanupOwnedFixture, "cleanup-owned-fixture", false, "recover or verify cleanup of one ownership-bound rollout fixture, then exit")
+	flag.StringVar(&cfg.fixtureOwner.Namespace, "fixture-owner-namespace", "", "namespace bound into the rollout fixture ownership receipt")
+	flag.StringVar(&cfg.fixtureOwner.ProbePod, "fixture-owner-pod", "", "probe Pod name bound into the rollout fixture ownership receipt")
+	flag.StringVar(&cfg.fixtureOwner.ProbePodUID, "fixture-owner-pod-uid", "", "probe Pod UID bound into the rollout fixture ownership receipt")
+	flag.StringVar(&cfg.fixtureOwner.StatefulSet, "fixture-owner-statefulset", "", "StatefulSet name bound into the rollout fixture ownership receipt")
+	flag.StringVar(&cfg.fixtureOwner.StatefulSetUID, "fixture-owner-statefulset-uid", "", "StatefulSet UID bound into the rollout fixture ownership receipt")
 	var pdEndpoints string
 	flag.StringVar(&pdEndpoints, "pd-endpoints", "", "comma-separated PD HTTP endpoints")
 	flag.Parse()
+	if !cfg.cleanupOwnedFixture && cfg.fixtureOwner.ProbePodUID == "" {
+		cfg.fixtureOwner.ProbePodUID = os.Getenv("KUBEBRAIN_ROLLOUT_PROBE_UID")
+	}
 	if directEndpoints != "" {
 		cfg.directEndpoints = strings.Split(directEndpoints, ",")
 	}
@@ -119,6 +130,33 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfg.cleanupOwnedFixture {
+		if err := cfg.validateFixtureCleanup(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		tlsConfig, err := cfg.clientTLSConfig()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "FIXTURE_CLEANUP_FAIL load TLS identity:", err)
+			os.Exit(1)
+		}
+		client, err := clientv3.New(cfg.kubeBrainClientConfigForEndpoints(cfg.directEndpoints, tlsConfig))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "FIXTURE_CLEANUP_FAIL create client:", err)
+			os.Exit(1)
+		}
+		defer client.Close()
+		cleanupCtx, cancel := context.WithTimeout(ctx, max(time.Minute, 20*cfg.commandTimeout))
+		defer cancel()
+		summary, err := cleanupOwnedFixture(cleanupCtx, client, cfg.prefix, cfg.fixtureOwner, cfg.commandTimeout)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "FIXTURE_CLEANUP_FAIL", err)
+			os.Exit(1)
+		}
+		fmt.Printf("FIXTURE_CLEANUP_OK status=%s owner_uid=%s keys=%d users=%d roles=%d leases=%d\n",
+			summary.Status, summary.OwnerUID, summary.Keys, summary.Users, summary.Roles, summary.Leases)
+		return
+	}
 	if cfg.leaderTargetOnly {
 		if err := cfg.validateLeaderTarget(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -354,8 +392,37 @@ func (cfg config) validateRun() error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
+	if err := validateFixtureOwnerIdentity(cfg.prefix, cfg.fixtureOwner, true); err != nil {
+		return err
+	}
 	if cfg.reportLeaderTarget {
 		return cfg.validateLeaderTarget()
+	}
+	return nil
+}
+
+func (cfg config) validateFixtureCleanup() error {
+	if cfg.leaderTargetOnly || cfg.reportLeaderTarget || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 ||
+		cfg.dialTimeout >= cfg.commandTimeout || len(cfg.directEndpoints) < 3 {
+		return errors.New("owned fixture cleanup requires direct endpoints and positive dial timeout smaller than command timeout")
+	}
+	if err := validateFixtureOwnerIdentity(cfg.prefix, cfg.fixtureOwner, false); err != nil {
+		return err
+	}
+	tlsEnabled := cfg.caFile != "" || cfg.certFile != "" || cfg.keyFile != "" || cfg.tlsServerName != ""
+	if tlsEnabled && (cfg.caFile == "" || cfg.certFile == "" || cfg.keyFile == "" || cfg.tlsServerName == "") {
+		return errors.New("TLS requires cacert, cert, key, and tls-server-name")
+	}
+	seen := make(map[string]struct{}, len(cfg.directEndpoints))
+	for _, endpoint := range cfg.directEndpoints {
+		if (!strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://")) ||
+			strings.HasPrefix(endpoint, "https://") != tlsEnabled {
+			return fmt.Errorf("owned fixture cleanup endpoint scheme and TLS identity must match: %q", endpoint)
+		}
+		if _, duplicate := seen[endpoint]; duplicate {
+			return fmt.Errorf("owned fixture cleanup direct endpoints must be unique: %q", endpoint)
+		}
+		seen[endpoint] = struct{}{}
 	}
 	return nil
 }
@@ -718,15 +785,15 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	}
 	defer cleanupClient.Close()
 
+	ownership, err := newFixtureOwnership(cfg.prefix, cfg.fixtureOwner)
+	if err != nil {
+		return fmt.Errorf("prepare fixture ownership: %w", err)
+	}
 	opCtx, cancel := context.WithTimeout(ctx, cfg.commandTimeout)
-	cleaned, err := client.Delete(opCtx, cfg.prefix, clientv3.WithPrefix())
+	clusterID, lastRevision, err := ownership.claim(opCtx, client)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("clean prefix: %w", err)
-	}
-	clusterID, lastRevision, err := validateDeleteResponse(cleaned, 0, 1)
-	if err != nil {
-		return fmt.Errorf("clean prefix: %w", err)
+		return fmt.Errorf("claim fixture ownership: %w", err)
 	}
 
 	leaseCtx, stopLease := context.WithCancel(ctx)
@@ -741,11 +808,20 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("grant lease: %w", err)
 	}
-	lastRevision = leaseRevision
+	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+	ownershipRevision, ownershipErr := ownership.recordLease(opCtx, client, leaseID, clusterID, leaseRevision)
+	cancel()
+	if ownershipErr != nil {
+		revokeErr := revokeUnrecordedLease(context.Background(), cleanupClient, leaseID, cfg.commandTimeout)
+		return fmt.Errorf("record primary fixture lease ownership: %w; revoke unrecorded lease: %v", ownershipErr, revokeErr)
+	}
+	lastRevision = ownershipRevision
 	historyLeaseIDs := make([]clientv3.LeaseID, 0, 2)
+	authCleanupSucceeded := false
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), max(30*time.Second, cfg.commandTimeout))
 		defer cleanupCancel()
+		leaseCleanupSucceeded := true
 		for index := len(historyLeaseIDs) - 1; index >= 0; index-- {
 			historyLeaseID := historyLeaseIDs[index]
 			revokedHistory, cleanupErr := cleanupClient.Revoke(cleanupCtx, historyLeaseID)
@@ -758,6 +834,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 				}
 			}
 			if cleanupErr != nil {
+				leaseCleanupSucceeded = false
 				retErr = errors.Join(retErr, fmt.Errorf("cleanup revoke Snapshot history lease %d: %w", historyLeaseID, cleanupErr))
 			}
 		}
@@ -771,21 +848,14 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			}
 		}
 		if cleanupErr != nil {
+			leaseCleanupSucceeded = false
 			retErr = errors.Join(retErr, fmt.Errorf("cleanup revoke lease: %w", cleanupErr))
 		}
-		deleted, cleanupErr := cleanupClient.Delete(cleanupCtx, cfg.prefix, clientv3.WithPrefix())
-		if cleanupErr == nil {
-			_, lastRevision, cleanupErr = validateDeleteResponse(deleted, clusterID, lastRevision)
-		}
-		if cleanupErr != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("cleanup prefix: %w", cleanupErr))
-		}
-		remaining, cleanupErr := cleanupClient.Get(cleanupCtx, cfg.prefix, clientv3.WithPrefix(), clientv3.WithLimit(1))
-		if cleanupErr == nil {
-			cleanupErr = validateAbsentRange(remaining, clusterID, lastRevision)
-		}
-		if cleanupErr != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("verify prefix cleanup: %w", cleanupErr))
+		if authCleanupSucceeded && leaseCleanupSucceeded {
+			lastRevision, cleanupErr = ownership.release(cleanupCtx, cleanupClient, clusterID, lastRevision)
+			if cleanupErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("release fixture ownership: %w", cleanupErr))
+			}
 		}
 	}()
 	keepAlive, err := client.KeepAlive(leaseCtx, leaseID)
@@ -846,8 +916,15 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		if historyLeaseErr != nil {
 			return fmt.Errorf("grant Snapshot history lease %d: %w", index+1, historyLeaseErr)
 		}
+		opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
+		ownershipRevision, ownershipErr = ownership.recordLease(opCtx, client, historyLeaseID, clusterID, grantRevision)
+		cancel()
+		if ownershipErr != nil {
+			revokeErr := revokeUnrecordedLease(context.Background(), cleanupClient, historyLeaseID, cfg.commandTimeout)
+			return fmt.Errorf("record Snapshot history lease %d ownership: %w; revoke unrecorded lease: %v", index+1, ownershipErr, revokeErr)
+		}
 		historyLeaseIDs = append(historyLeaseIDs, historyLeaseID)
-		lastRevision = grantRevision
+		lastRevision = ownershipRevision
 	}
 	if historyLeaseIDs[0] == historyLeaseIDs[1] {
 		return fmt.Errorf("Snapshot history leases returned duplicate IDs")
@@ -1357,6 +1434,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		lastRevision, cleanupErr = authFixture.cleanup(cleanupClient, clusterID, lastRevision, cfg.commandTimeout)
 		if cleanupErr != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("cleanup Snapshot auth fixture: %w", cleanupErr))
+		} else {
+			authCleanupSucceeded = true
 		}
 	}()
 	lastRevision, err = authFixture.install(ctx, client, clusterID, lastRevision, cfg.commandTimeout)

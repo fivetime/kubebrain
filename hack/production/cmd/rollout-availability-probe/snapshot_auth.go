@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -398,6 +399,150 @@ func (fixture *snapshotAuthFixture) cleanup(client *clientv3.Client, clusterID u
 		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("verify Snapshot auth status after cleanup: %w", err))
 	}
 	return lastRevision, cleanupErr
+}
+
+func (fixture *snapshotAuthFixture) inspectOwnedState(ctx context.Context, client *clientv3.Client) ([]string, []string, error) {
+	if fixture == nil || client == nil {
+		return nil, nil, errors.New("Snapshot auth ownership inspection requires fixture and client")
+	}
+	expectedUsers := make(map[string]restoredSnapshotAuthUserExpectation, len(fixture.expected.users))
+	for _, user := range fixture.expected.users {
+		expectedUsers[user.name] = user
+	}
+	expectedRoles := make(map[string]restoredSnapshotAuthRoleExpectation, len(fixture.expected.roles))
+	for _, role := range fixture.expected.roles {
+		expectedRoles[role.name] = role
+	}
+
+	usersResponse, err := client.UserList(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list users for Snapshot auth ownership: %w", err)
+	}
+	if usersResponse == nil || usersResponse.Header == nil {
+		return nil, nil, errors.New("list users for Snapshot auth ownership returned an empty response")
+	}
+	seenUsers := make(map[string]struct{}, len(usersResponse.Users))
+	presentUsers := make([]string, 0, len(expectedUsers))
+	for _, name := range usersResponse.Users {
+		if _, duplicate := seenUsers[name]; duplicate {
+			return nil, nil, fmt.Errorf("user list contains duplicate identity %q", name)
+		}
+		seenUsers[name] = struct{}{}
+		response, getErr := client.UserGet(ctx, name)
+		if getErr != nil {
+			return nil, nil, fmt.Errorf("get user %q for Snapshot auth ownership: %w", name, getErr)
+		}
+		if response == nil || response.Header == nil {
+			return nil, nil, fmt.Errorf("get user %q for Snapshot auth ownership returned an empty response", name)
+		}
+		roles := append([]string(nil), response.Roles...)
+		sort.Strings(roles)
+		if expected, owned := expectedUsers[name]; owned {
+			wanted := append([]string(nil), expected.roles...)
+			sort.Strings(wanted)
+			if !slices.Equal(roles, wanted) {
+				return nil, nil, fmt.Errorf("owned Snapshot auth user %q roles drifted: got=%v want=%v", name, roles, wanted)
+			}
+			presentUsers = append(presentUsers, name)
+			continue
+		}
+		for _, role := range roles {
+			if _, collision := expectedRoles[role]; collision {
+				return nil, nil, fmt.Errorf("unowned user %q references owned Snapshot auth role %q", name, role)
+			}
+		}
+	}
+
+	rolesResponse, err := client.RoleList(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list roles for Snapshot auth ownership: %w", err)
+	}
+	if rolesResponse == nil || rolesResponse.Header == nil {
+		return nil, nil, errors.New("list roles for Snapshot auth ownership returned an empty response")
+	}
+	seenRoles := make(map[string]struct{}, len(rolesResponse.Roles))
+	presentRoles := make([]string, 0, len(expectedRoles))
+	for _, name := range rolesResponse.Roles {
+		if _, duplicate := seenRoles[name]; duplicate {
+			return nil, nil, fmt.Errorf("role list contains duplicate identity %q", name)
+		}
+		seenRoles[name] = struct{}{}
+		expected, owned := expectedRoles[name]
+		if !owned {
+			continue
+		}
+		response, getErr := client.RoleGet(ctx, name)
+		if getErr != nil {
+			return nil, nil, fmt.Errorf("get role %q for Snapshot auth ownership: %w", name, getErr)
+		}
+		if response == nil || response.Header == nil || len(response.Perm) != len(expected.permissions) {
+			return nil, nil, fmt.Errorf("owned Snapshot auth role %q permissions drifted", name)
+		}
+		for index := range response.Perm {
+			if !proto.Equal(response.Perm[index], expected.permissions[index]) {
+				return nil, nil, fmt.Errorf("owned Snapshot auth role %q permissions drifted at index %d: got=%+v want=%+v",
+					name, index, response.Perm[index], expected.permissions[index])
+			}
+		}
+		presentRoles = append(presentRoles, name)
+	}
+	presentRoleSet := make(map[string]struct{}, len(presentRoles))
+	for _, name := range presentRoles {
+		presentRoleSet[name] = struct{}{}
+	}
+	for _, name := range presentUsers {
+		for _, role := range expectedUsers[name].roles {
+			if _, present := presentRoleSet[role]; !present {
+				return nil, nil, fmt.Errorf("owned Snapshot auth user %q references missing role %q", name, role)
+			}
+		}
+	}
+	sort.Strings(presentUsers)
+	sort.Strings(presentRoles)
+	return presentUsers, presentRoles, nil
+}
+
+func (fixture *snapshotAuthFixture) deleteOwnedState(ctx context.Context, client *clientv3.Client,
+	presentUsers, presentRoles []string,
+) error {
+	if fixture == nil || client == nil {
+		return errors.New("Snapshot auth ownership deletion requires fixture and client")
+	}
+	userSet := make(map[string]struct{}, len(presentUsers))
+	for _, name := range presentUsers {
+		userSet[name] = struct{}{}
+	}
+	roleSet := make(map[string]struct{}, len(presentRoles))
+	for _, name := range presentRoles {
+		roleSet[name] = struct{}{}
+	}
+	for index := len(fixture.expected.users) - 1; index >= 0; index-- {
+		name := fixture.expected.users[index].name
+		if _, present := userSet[name]; !present {
+			continue
+		}
+		response, err := client.UserDelete(ctx, name)
+		if err != nil && !errors.Is(err, rpctypes.ErrUserNotFound) {
+			return fmt.Errorf("delete owned Snapshot auth user %q: %w", name, err)
+		}
+		if err == nil && (response == nil || response.Header == nil) {
+			return fmt.Errorf("delete owned Snapshot auth user %q returned an empty response", name)
+		}
+	}
+	for index := len(fixture.expected.roles) - 1; index >= 0; index-- {
+		name := fixture.expected.roles[index].name
+		if _, present := roleSet[name]; !present {
+			continue
+		}
+		response, err := client.RoleDelete(ctx, name)
+		if err != nil && !errors.Is(err, rpctypes.ErrRoleNotFound) {
+			return fmt.Errorf("delete owned Snapshot auth role %q: %w", name, err)
+		}
+		if err == nil && (response == nil || response.Header == nil) {
+			return fmt.Errorf("delete owned Snapshot auth role %q returned an empty response", name)
+		}
+	}
+	return nil
 }
 
 type restoredSnapshotAdminVerifier func(*clientv3.Client, clientv3.Config) error
