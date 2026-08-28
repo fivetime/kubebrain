@@ -607,28 +607,6 @@ delete_fixture_owner_receipt() {
   local current_json current_fields unpin_patch unpinned_json unpinned_fields observed_json observed_uid
   [[ -n "$fixture_owner_uid" && -n "$fixture_owner_resource_version" ]] || return 0
   [[ -n "$fixture_owner_receipt_json" ]] || return 1
-  # A delete request made while cleanup is running increments resourceVersion
-  # and sets deletionTimestamp, but the finalizer keeps this exact UID and
-  # immutable receipt present. Refresh that safe metadata-only transition after
-  # cleanup so the owner can finish deletion instead of stranding a terminating
-  # receipt. A removed finalizer, changed UID/data, or any read failure remains
-  # fail closed.
-  current_json="$runtime_evidence_dir/fixture-owner-release-current-${fixture_owner_uid}.json"
-  capture_runtime_evidence "$current_json" kctl_evidence get configmap "$fixture_owner_configmap" -o json || return 1
-  current_fields="$(jq -er --arg name "$fixture_owner_configmap" --arg namespace "$KUBEBRAIN_NAMESPACE" \
-    --arg uid "$fixture_owner_uid" --arg receipt "$fixture_owner_receipt_json" \
-    --arg statefulset "$KUBEBRAIN_STATEFULSET" --arg statefulset_uid "$statefulset_uid" \
-    --arg finalizer "$fixture_owner_finalizer" '
-    select(.metadata.name == $name and .metadata.namespace == $namespace and .metadata.uid == $uid and
-      (.metadata.deletionTimestamp == null or
-        (.metadata.deletionTimestamp | type == "string" and length > 0)) and
-      .metadata.finalizers == [$finalizer] and .immutable == true and .data["receipt.json"] == $receipt and
-      ([.metadata.ownerReferences[]? | select(.apiVersion == "apps/v1" and .kind == "StatefulSet" and
-        .name == $statefulset and .uid == $statefulset_uid and .controller == true)] | length) == 1 and
-      (.metadata.resourceVersion | type == "string" and length > 0)) |
-    [.metadata.uid,.metadata.resourceVersion] | @tsv
-  ' "$current_json")" || return 1
-  IFS=$'\t' read -r fixture_owner_uid fixture_owner_resource_version <<<"$current_fields"
   unpin_patch="$(jq -cn --arg uid "$fixture_owner_uid" --arg resource_version "$fixture_owner_resource_version" \
     --arg receipt "$fixture_owner_receipt_json" --arg finalizer "$fixture_owner_finalizer" '[
     {op:"test",path:"/metadata/uid",value:$uid},
@@ -639,8 +617,39 @@ delete_fixture_owner_receipt() {
     {op:"remove",path:"/metadata/finalizers"}
   ]')" || return 1
   unpinned_json="$runtime_evidence_dir/fixture-owner-unpinned-${fixture_owner_uid}.json"
-  capture_runtime_evidence "$unpinned_json" kctl_mutation patch "configmap/$fixture_owner_configmap" \
-    --type=json -p "$unpin_patch" -o json || return 1
+  if ! capture_runtime_evidence "$unpinned_json" kctl_mutation patch "configmap/$fixture_owner_configmap" \
+    --type=json -p "$unpin_patch" -o json; then
+    # A delete request made while cleanup is running increments
+    # resourceVersion and sets deletionTimestamp, but the finalizer keeps this
+    # exact UID and immutable receipt present. Only that safe transition may
+    # refresh the CAS and retry; ordinary metadata drift remains fail closed.
+    current_json="$runtime_evidence_dir/fixture-owner-release-current-${fixture_owner_uid}.json"
+    capture_runtime_evidence "$current_json" kctl_evidence get configmap "$fixture_owner_configmap" -o json || return 1
+    current_fields="$(jq -er --arg name "$fixture_owner_configmap" --arg namespace "$KUBEBRAIN_NAMESPACE" \
+      --arg uid "$fixture_owner_uid" --arg receipt "$fixture_owner_receipt_json" \
+      --arg statefulset "$KUBEBRAIN_STATEFULSET" --arg statefulset_uid "$statefulset_uid" \
+      --arg finalizer "$fixture_owner_finalizer" '
+      select(.metadata.name == $name and .metadata.namespace == $namespace and .metadata.uid == $uid and
+        (.metadata.deletionTimestamp | type == "string" and length > 0) and
+        .metadata.finalizers == [$finalizer] and .immutable == true and .data["receipt.json"] == $receipt and
+        ([.metadata.ownerReferences[]? | select(.apiVersion == "apps/v1" and .kind == "StatefulSet" and
+          .name == $statefulset and .uid == $statefulset_uid and .controller == true)] | length) == 1 and
+        (.metadata.resourceVersion | type == "string" and length > 0)) |
+      [.metadata.uid,.metadata.resourceVersion] | @tsv
+    ' "$current_json")" || return 1
+    IFS=$'\t' read -r fixture_owner_uid fixture_owner_resource_version <<<"$current_fields"
+    unpin_patch="$(jq -cn --arg uid "$fixture_owner_uid" --arg resource_version "$fixture_owner_resource_version" \
+      --arg receipt "$fixture_owner_receipt_json" --arg finalizer "$fixture_owner_finalizer" '[
+      {op:"test",path:"/metadata/uid",value:$uid},
+      {op:"test",path:"/metadata/resourceVersion",value:$resource_version},
+      {op:"test",path:"/immutable",value:true},
+      {op:"test",path:"/data/receipt.json",value:$receipt},
+      {op:"test",path:"/metadata/finalizers",value:[$finalizer]},
+      {op:"remove",path:"/metadata/finalizers"}
+    ]')" || return 1
+    capture_runtime_evidence "$unpinned_json" kctl_mutation patch "configmap/$fixture_owner_configmap" \
+      --type=json -p "$unpin_patch" -o json || return 1
+  fi
   unpinned_fields="$(jq -er --arg uid "$fixture_owner_uid" --arg receipt "$fixture_owner_receipt_json" '
     select(.metadata.uid == $uid and
       (.metadata.deletionTimestamp == null or
