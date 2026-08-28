@@ -199,6 +199,83 @@ func TestRolloutAvailabilityRunnerRecoversPinnedTerminatingReceiptAfterCrash(t *
 		"an inherited finalizer must hold the receipt without an illegal pre-cleanup finalizer mutation")
 }
 
+func TestRolloutAvailabilityRunnerJoinsCompletedCleanupForTerminatingReceipt(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	receipt := `{"format":"kubebrain.rollout-fixture-owner.v2","lease_ids":["7101","7102","7103"],"namespace":"kubebrain-system","prefix":"/kubebrain-rollout-availability/kubebrain-rollout-availability-probe/","probe_pod":"kubebrain-rollout-availability-probe","probe_pod_uid":"33333333-3333-4333-8333-333333333333","statefulset":"kubebrain","statefulset_uid":"statefulset-uid"}`
+	owner := map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap", "immutable": true,
+		"metadata": map[string]any{
+			"name": "kubebrain-rollout-availability-probe-owner", "namespace": "kubebrain-system",
+			"uid": "44444444-4444-4444-8444-444444444444", "resourceVersion": "owner-rv-deleting",
+			"deletionTimestamp": "2026-08-28T10:00:00Z",
+			"finalizers":        []string{"kubebrain.io/rollout-fixture-cleanup"},
+			"ownerReferences": []map[string]any{{
+				"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "kubebrain",
+				"uid": "statefulset-uid", "controller": true,
+			}},
+		},
+		"data": map[string]string{"receipt.json": receipt},
+	}
+	encoded, err := json.Marshal(owner)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(logPath+".owner", encoded, 0o600))
+
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_EXISTING_CLEANUP_POD=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "KubeBrain rollout availability gate passed")
+	require.NoFileExists(t, logPath+".owner", "the joined cleanup evidence must allow receipt release")
+	log := readOptionalFile(t, logPath)
+	require.Equal(t, 1, strings.Count(log, " run kubebrain-rollout-availability-probe-cleanup "),
+		"preflight must join the receipt-bound cleanup Pod; only the new probe needs a fresh postflight cleanup")
+	unpin := strings.Index(log, " patch configmap/kubebrain-rollout-availability-probe-owner --type=json -p ")
+	deleteCleanup := strings.LastIndex(log,
+		" get pod kubebrain-rollout-availability-probe-cleanup -o json --ignore-not-found")
+	require.GreaterOrEqual(t, unpin, 0)
+	require.Greater(t, deleteCleanup, unpin,
+		"the shared cleanup completion evidence must remain available until the receipt is released")
+}
+
+func TestRolloutAvailabilityRunnerRejectsCleanupBoundToDifferentReceipt(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	receipt := `{"format":"kubebrain.rollout-fixture-owner.v2","lease_ids":["7101","7102","7103"],"namespace":"kubebrain-system","prefix":"/kubebrain-rollout-availability/kubebrain-rollout-availability-probe/","probe_pod":"kubebrain-rollout-availability-probe","probe_pod_uid":"33333333-3333-4333-8333-333333333333","statefulset":"kubebrain","statefulset_uid":"statefulset-uid"}`
+	owner := map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap", "immutable": true,
+		"metadata": map[string]any{
+			"name": "kubebrain-rollout-availability-probe-owner", "namespace": "kubebrain-system",
+			"uid": "44444444-4444-4444-8444-444444444444", "resourceVersion": "owner-rv-deleting",
+			"deletionTimestamp": "2026-08-28T10:00:00Z",
+			"finalizers":        []string{"kubebrain.io/rollout-fixture-cleanup"},
+			"ownerReferences": []map[string]any{{
+				"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "kubebrain",
+				"uid": "statefulset-uid", "controller": true,
+			}},
+		},
+		"data": map[string]string{"receipt.json": receipt},
+	}
+	encoded, err := json.Marshal(owner)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(logPath+".owner", encoded, 0o600))
+
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_EXISTING_CLEANUP_POD=true", "FAKE_EXISTING_CLEANUP_RECEIPT_DRIFT=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "existing fixture cleanup Pod identity is malformed")
+	require.FileExists(t, logPath+".owner", "identity drift must preserve the terminating receipt")
+	require.NotContains(t, readOptionalFile(t, logPath), " logs kubebrain-rollout-availability-probe-cleanup ",
+		"identity drift must be rejected before consuming shared cleanup evidence")
+}
+
 func TestRolloutAvailabilityRunnerReportsProbeFailureBeforeStartBarrier(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -457,7 +534,7 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 			env = append(env, tc.extraEnv...)
 			started := time.Now()
 			output, err := runProductionScriptCommandWithTimeout(t,
-				"run-kubebrain-rollout-availability.sh", env, 5*time.Second)
+				"run-kubebrain-rollout-availability.sh", env, 6*time.Second)
 			require.Error(t, err)
 			require.Contains(t, string(output), tc.want)
 			if tc.wantProbeLogCalls > 0 {
@@ -472,7 +549,7 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 				require.Equal(t, tc.wantProbeLogCalls, probeLogCalls,
 					"an expired completion stage must not start a diagnostic log request")
 			}
-			require.Less(t, time.Since(started), 5*time.Second,
+			require.Less(t, time.Since(started), 6*time.Second,
 				"the outer command timeout must terminate a kubectl process that never reaches HTTP request handling")
 		})
 	}
@@ -643,7 +720,7 @@ func TestRolloutAvailabilityRunnerHardFailoverRefusesLeaderChangeBeforeDelete(t 
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "KubeBrain leader changed before hard-failover deletion; refusing mutation")
-	require.NotContains(t, readOptionalFile(t, uidDeleteLog), "--resource=pods",
+	require.NotContains(t, readOptionalFile(t, uidDeleteLog), "--name=kubebrain-1",
 		"leader identity drift must prevent the destructive Pod deletion")
 	require.NoFileExists(t, hardState)
 	require.NoFileExists(t, statePath)
@@ -1629,8 +1706,20 @@ func writeRolloutAvailabilityKubectl(t *testing.T) (fakePath, logPath, statePath
 	uidDeletePath := filepath.Join(dir, "uid-delete")
 	require.NoError(t, os.WriteFile(uidDeletePath, []byte(`#!/usr/bin/env bash
 set -euo pipefail
+printf ' uid-delete %s\n' "$*" >>"${FAKE_KUBECTL_LOG}"
 if [[ " $* " == *" --resource=configmaps "* ]]; then
   rm -f -- "${FAKE_KUBECTL_LOG}.owner"
+  if [[ -e "${FAKE_KUBECTL_LOG}.cleanup" ]] && jq -e '
+    [.metadata.ownerReferences[]? | select(.kind == "ConfigMap" and
+      .name == "kubebrain-rollout-availability-probe-owner" and .controller == true)] | length == 1
+  ' "${FAKE_KUBECTL_LOG}.cleanup" >/dev/null; then
+    rm -f -- "${FAKE_KUBECTL_LOG}.cleanup"
+    : >"${FAKE_KUBECTL_LOG}.cleanup-deleted"
+  fi
+fi
+if [[ " $* " == *" --resource=pods "* && " $* " == *" --name=kubebrain-rollout-availability-probe-cleanup "* ]]; then
+  rm -f -- "${FAKE_KUBECTL_LOG}.cleanup"
+  : >"${FAKE_KUBECTL_LOG}.cleanup-deleted"
 fi
 `), 0o755))
 	t.Setenv("UID_DELETE_BIN", uidDeletePath)
@@ -1660,6 +1749,7 @@ if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == start && " $* " == *" logs kubebrain-ro
   sleep 30
 fi
 owner_state="${FAKE_KUBECTL_LOG}.owner"
+cleanup_state="${FAKE_KUBECTL_LOG}.cleanup"
 if [[ " $* " == *" get configmap kubebrain-rollout-availability-probe-owner "* ]]; then
   if [[ ! -e "$owner_state" ]]; then
     [[ " $* " == *" --ignore-not-found "* ]] && exit 0
@@ -1780,7 +1870,53 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
     [[ -z "${FAKE_RUNTIME_RESPONSE_COMPLETED:-}" ]] || : >"$FAKE_RUNTIME_RESPONSE_COMPLETED"
   fi
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe-cleanup "* ]]; then
+  if [[ -e "${cleanup_state}-deleted" ]]; then
+    [[ " $* " == *" --ignore-not-found "* ]] && exit 0
+    exit 1
+  fi
+  if [[ -e "$cleanup_state" ]]; then
+    jq -c . "$cleanup_state"
+    exit 0
+  fi
+  if [[ "${FAKE_EXISTING_CLEANUP_POD:-false}" == true ]]; then
+    receipt="$(jq -r '.data["receipt.json"]' "$owner_state")"
+    [[ "${FAKE_EXISTING_CLEANUP_RECEIPT_DRIFT:-false}" != true ]] || receipt="${receipt}-drift"
+    jq -cn --arg receipt "$receipt" '{
+      metadata:{name:"kubebrain-rollout-availability-probe-cleanup",namespace:"kubebrain-system",
+        uid:"55555555-5555-4555-8555-555555555555",resourceVersion:"cleanup-rv",deletionTimestamp:null,
+        annotations:{"kubebrain.io/rollout-fixture-owner-uid":"44444444-4444-4444-8444-444444444444",
+          "kubebrain.io/rollout-fixture-owner-receipt":$receipt},
+        ownerReferences:[{apiVersion:"v1",kind:"ConfigMap",name:"kubebrain-rollout-availability-probe-owner",
+          uid:"44444444-4444-4444-8444-444444444444",controller:true}]},
+      spec:{automountServiceAccountToken:false,restartPolicy:"Never",
+        securityContext:{runAsNonRoot:true,runAsUser:65532,runAsGroup:65532,fsGroup:65532},volumes:[],
+        containers:[{name:"kubebrain-rollout-availability-probe-cleanup",image:"kubebrain:test",
+          command:["/usr/local/bin/kubebrain-rollout-availability-probe"],volumeMounts:[],args:[
+            "--cleanup-owned-fixture",
+            "--prefix=/kubebrain-rollout-availability/kubebrain-rollout-availability-probe/",
+            "--direct-endpoints=http://kubebrain-0.kubebrain-peer.kubebrain-system.svc:3379,http://kubebrain-1.kubebrain-peer.kubebrain-system.svc:3379,http://kubebrain-2.kubebrain-peer.kubebrain-system.svc:3379",
+            "--command-timeout=10s","--dial-timeout=1s","--fixture-owner-namespace=kubebrain-system",
+            "--fixture-owner-pod=kubebrain-rollout-availability-probe","--fixture-owner-statefulset=kubebrain",
+            "--fixture-owner-statefulset-uid=statefulset-uid",
+            "--fixture-owner-pod-uid=33333333-3333-4333-8333-333333333333",
+            "--fixture-lease-ids=7101,7102,7103"]}]},
+      status:{phase:"Succeeded"}}
+    ' | tee "$cleanup_state"
+    exit 0
+  fi
   exit 1
+elif [[ " $* " == *" run kubebrain-rollout-availability-probe-cleanup "* ]]; then
+  overrides=""
+  for argument in "$@"; do
+    [[ "$argument" != --overrides=* ]] || overrides="${argument#--overrides=}"
+  done
+  [[ -n "$overrides" ]] || exit 1
+  rm -f -- "${cleanup_state}-deleted"
+  jq -c '.metadata.namespace="kubebrain-system" |
+    .metadata.uid="55555555-5555-4555-8555-555555555555" |
+    .metadata.resourceVersion="cleanup-rv" | .metadata.deletionTimestamp=null |
+    .status.phase="Pending"' <<<"$overrides" >"$cleanup_state"
+  jq -c . "$cleanup_state"
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o json "* ]]; then
   jq -cn '{
     metadata:{name:"kubebrain-rollout-availability-probe",uid:"33333333-3333-4333-8333-333333333333",resourceVersion:"probe-rv"},
@@ -1886,6 +2022,11 @@ elif [[ " $* " == *" rollout status statefulset/kubebrain "* && "${FAKE_ROLLOUT_
 elif [[ " $* " == *" delete pod kubebrain-rollout-availability-probe "* && "${FAKE_DELETE_FAIL:-false}" == true ]]; then
   exit 1
 elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded pod/kubebrain-rollout-availability-probe-cleanup "* ]]; then
+  if [[ -e "$cleanup_state" ]]; then
+    jq -c '.status.phase="Succeeded" | .metadata.resourceVersion="cleanup-rv-succeeded"' \
+      "$cleanup_state" >"${cleanup_state}.next"
+    mv -- "${cleanup_state}.next" "$cleanup_state"
+  fi
   :
 elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
@@ -1936,13 +2077,25 @@ printf '%s\n' "$*" >>"$FAKE_UID_DELETE_LOG"
 [[ " $* " == *" --namespace=kubebrain-system "* ]]
 if [[ " $* " == *" --resource=configmaps "* ]]; then
   rm -f -- "${FAKE_KUBECTL_LOG}.owner"
+  if [[ -e "${FAKE_KUBECTL_LOG}.cleanup" ]] && jq -e '
+    [.metadata.ownerReferences[]? | select(.kind == "ConfigMap" and
+      .name == "kubebrain-rollout-availability-probe-owner" and .controller == true)] | length == 1
+  ' "${FAKE_KUBECTL_LOG}.cleanup" >/dev/null; then
+    rm -f -- "${FAKE_KUBECTL_LOG}.cleanup"
+    : >"${FAKE_KUBECTL_LOG}.cleanup-deleted"
+  fi
 else
   [[ " $* " == *" --resource=pods "* ]]
-  [[ " $* " == *" --name=kubebrain-1 "* ]]
-  [[ " $* " == *" --uid=kubebrain-1-uid-old "* ]]
-  [[ " $* " == *" --resource-version=rv-kubebrain-1-uid-old "* ]]
-  [[ " $* " == *" --grace-period-seconds=0 "* ]]
-  : >"$FAKE_HARD_FAILOVER_STATE"
+  if [[ " $* " == *" --name=kubebrain-rollout-availability-probe-cleanup "* ]]; then
+    rm -f -- "${FAKE_KUBECTL_LOG}.cleanup"
+    : >"${FAKE_KUBECTL_LOG}.cleanup-deleted"
+  else
+    [[ " $* " == *" --name=kubebrain-1 "* ]]
+    [[ " $* " == *" --uid=kubebrain-1-uid-old "* ]]
+    [[ " $* " == *" --resource-version=rv-kubebrain-1-uid-old "* ]]
+    [[ " $* " == *" --grace-period-seconds=0 "* ]]
+    : >"$FAKE_HARD_FAILOVER_STATE"
+  fi
 fi
 `
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))

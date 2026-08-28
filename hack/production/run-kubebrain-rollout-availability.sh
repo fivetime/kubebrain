@@ -564,11 +564,6 @@ if kctl_evidence get pod "$PROBE_POD" >/dev/null 2>&1; then
   echo "probe Pod already exists: ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   exit 1
 fi
-if kctl_evidence get pod "$probe_cleanup_pod" >/dev/null 2>&1; then
-  echo "probe cleanup Pod already exists: ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
-  exit 1
-fi
-
 candidate_rollout_started=false
 candidate_rollout_succeeded=false
 hard_failover_started=false
@@ -582,6 +577,8 @@ fixture_owner_uid=""
 fixture_owner_resource_version=""
 fixture_owner_receipt_json=""
 fixture_owner_terminating=false
+fixture_cleanup_pod_uid=""
+fixture_cleanup_evidence_verified=false
 fixture_cleanup_ready=false
 fixture_cleanup_verified=false
 
@@ -625,7 +622,15 @@ delete_fixture_owner_receipt() {
     # exact UID and immutable receipt present. Only that safe transition may
     # refresh the CAS and retry; ordinary metadata drift remains fail closed.
     current_json="$runtime_evidence_dir/fixture-owner-release-current-${fixture_owner_uid}.json"
-    capture_runtime_evidence "$current_json" kctl_evidence get configmap "$fixture_owner_configmap" -o json || return 1
+    capture_runtime_evidence "$current_json" kctl_evidence get configmap "$fixture_owner_configmap" \
+      -o json --ignore-not-found || return 1
+    if [[ ! -s "$current_json" ]]; then
+      [[ "$fixture_cleanup_evidence_verified" == true ]] || return 1
+      fixture_owner_uid=""
+      fixture_owner_resource_version=""
+      fixture_owner_receipt_json=""
+      return 0
+    fi
     current_fields="$(jq -er --arg name "$fixture_owner_configmap" --arg namespace "$KUBEBRAIN_NAMESPACE" \
       --arg uid "$fixture_owner_uid" --arg receipt "$fixture_owner_receipt_json" \
       --arg statefulset "$KUBEBRAIN_STATEFULSET" --arg statefulset_uid "$statefulset_uid" \
@@ -795,11 +800,13 @@ cleanup() {
     echo "CRITICAL: failed to delete rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   fi
   if [[ "$fixture_cleanup_ready" == true && "$fixture_cleanup_verified" != true ]]; then
-    if run_fixture_cleanup; then
-      if delete_fixture_owner_receipt; then
-        fixture_cleanup_verified=true
-      else
+    if [[ "$fixture_cleanup_evidence_verified" == true ]] || run_fixture_cleanup; then
+      if ! delete_fixture_owner_receipt; then
         echo "CRITICAL: failed to delete rollout fixture owner receipt ${KUBEBRAIN_NAMESPACE}/${fixture_owner_configmap}" >&2
+      elif ! delete_fixture_cleanup_pod; then
+        echo "CRITICAL: failed to delete rollout fixture cleanup Pod ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
+      else
+        fixture_cleanup_verified=true
       fi
     else
       echo "CRITICAL: failed to compensate rollout fixture ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
@@ -917,6 +924,7 @@ else
 fi
 run_fixture_cleanup() {
   local cleanup_args cleanup_args_json cleanup_overrides cleanup_log cleanup_line cleanup_wait_seconds
+  local cleanup_identity_json cleanup_fields
   cleanup_args=(
     --cleanup-owned-fixture
     --prefix="/kubebrain-rollout-availability/${PROBE_POD}/"
@@ -939,16 +947,68 @@ run_fixture_cleanup() {
   cleanup_overrides="$(jq -cn --arg name "$probe_cleanup_pod" --arg image "$probe_image" \
     --arg command /usr/local/bin/kubebrain-rollout-availability-probe --argjson args "$cleanup_args_json" \
     --argjson mounts "$cleanup_volume_mounts" --argjson volumes "$cleanup_volumes" \
-    --argjson security_context "$probe_pod_security_context" '{
-      apiVersion:"v1",kind:"Pod",spec:{automountServiceAccountToken:false,restartPolicy:"Never",securityContext:$security_context,
+    --argjson security_context "$probe_pod_security_context" --arg owner_name "$fixture_owner_configmap" \
+    --arg owner_uid "$fixture_owner_uid" --arg receipt "$fixture_owner_receipt_json" \
+    --argjson owner_terminating "$fixture_owner_terminating" '{
+      apiVersion:"v1",kind:"Pod",
+      metadata:({name:$name} + if $owner_uid == "" then {} else {
+        annotations:{"kubebrain.io/rollout-fixture-owner-uid":$owner_uid,
+          "kubebrain.io/rollout-fixture-owner-receipt":$receipt}
+      } + if $owner_terminating then {} else {
+        ownerReferences:[{apiVersion:"v1",kind:"ConfigMap",name:$owner_name,uid:$owner_uid,controller:true}]
+      } end end),
+      spec:{automountServiceAccountToken:false,restartPolicy:"Never",securityContext:$security_context,
         containers:[{name:$name,image:$image,command:[$command],args:$args,volumeMounts:$mounts}],volumes:$volumes}
     }')" || return 1
-  if kctl_evidence get pod "$probe_cleanup_pod" >/dev/null 2>&1; then
-    echo "fixture cleanup Pod already exists: ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
-    return 1
-  fi
-  if ! kctl_mutation run "$probe_cleanup_pod" --image="$probe_image" --restart=Never --overrides="$cleanup_overrides" >/dev/null; then
-    echo "failed to create fixture cleanup Pod ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
+  admit_cleanup_pod() {
+    cleanup_fields="$(jq -er --arg name "$probe_cleanup_pod" --arg namespace "$KUBEBRAIN_NAMESPACE" \
+      --arg image "$probe_image" --arg command /usr/local/bin/kubebrain-rollout-availability-probe \
+      --arg owner_name "$fixture_owner_configmap" --arg owner_uid "$fixture_owner_uid" \
+      --arg receipt "$fixture_owner_receipt_json" --argjson args "$cleanup_args_json" \
+      --argjson mounts "$cleanup_volume_mounts" --argjson volumes "$cleanup_volumes" \
+      --argjson security_context "$probe_pod_security_context" '
+      select(.metadata.name == $name and .metadata.namespace == $namespace and
+        (.metadata.uid | type == "string" and length > 0) and
+        (.metadata.resourceVersion | type == "string" and length > 0) and .metadata.deletionTimestamp == null and
+        .spec.automountServiceAccountToken == false and .spec.restartPolicy == "Never" and
+        .spec.securityContext == $security_context and .spec.volumes == $volumes and
+        (.spec.containers | length) == 1 and .spec.containers[0].name == $name and
+        .spec.containers[0].image == $image and .spec.containers[0].command == [$command] and
+        .spec.containers[0].args == $args and .spec.containers[0].volumeMounts == $mounts and
+        ($owner_uid == "" or
+          (.metadata.annotations["kubebrain.io/rollout-fixture-owner-uid"] == $owner_uid and
+           .metadata.annotations["kubebrain.io/rollout-fixture-owner-receipt"] == $receipt and
+           ((.metadata.ownerReferences // []) == [] or
+            ((.metadata.ownerReferences | length) == 1 and
+             .metadata.ownerReferences[0].apiVersion == "v1" and .metadata.ownerReferences[0].kind == "ConfigMap" and
+             .metadata.ownerReferences[0].name == $owner_name and .metadata.ownerReferences[0].uid == $owner_uid and
+             .metadata.ownerReferences[0].controller == true))))) |
+      [.metadata.uid,.metadata.resourceVersion] | @tsv
+    ' "$cleanup_identity_json")" || return 1
+    IFS=$'\t' read -r fixture_cleanup_pod_uid _ <<<"$cleanup_fields"
+  }
+  cleanup_identity_json="$runtime_evidence_dir/fixture-cleanup-identity-${fixture_owner_uid:-unowned}.json"
+  if capture_runtime_evidence "$cleanup_identity_json" kctl_evidence get pod "$probe_cleanup_pod" -o json 2>/dev/null; then
+    [[ -n "$fixture_owner_uid" && -n "$fixture_owner_receipt_json" ]] || {
+      echo "fixture cleanup Pod already exists without an ownership receipt: ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
+      return 1
+    }
+    admit_cleanup_pod || {
+      echo "existing fixture cleanup Pod identity is malformed" >&2
+      return 1
+    }
+  elif ! capture_runtime_evidence "$cleanup_identity_json" kctl_mutation run "$probe_cleanup_pod" \
+    --image="$probe_image" --restart=Never --overrides="$cleanup_overrides" -o json; then
+    # A concurrent recovery runner may win the create after our initial GET.
+    # Join only the exact Pod bound to this immutable receipt and cleanup spec.
+    [[ -n "$fixture_owner_uid" && -n "$fixture_owner_receipt_json" ]] &&
+      capture_runtime_evidence "$cleanup_identity_json" kctl_evidence get pod "$probe_cleanup_pod" -o json &&
+      admit_cleanup_pod || {
+        echo "failed to create or join fixture cleanup Pod ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
+        return 1
+      }
+  elif ! admit_cleanup_pod; then
+    echo "created fixture cleanup Pod identity is malformed" >&2
     return 1
   fi
   cleanup_wait_seconds="$(duration_ceil_seconds "$PROBE_COMPLETE_TIMEOUT")" || return 1
@@ -980,11 +1040,44 @@ run_fixture_cleanup() {
     return 1
   fi
   cat "$cleanup_log"
-  if ! kctl_mutation delete pod "$probe_cleanup_pod" --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null; then
-    echo "failed to delete fixture cleanup Pod ${KUBEBRAIN_NAMESPACE}/${probe_cleanup_pod}" >&2
-    return 1
-  fi
+  fixture_cleanup_evidence_verified=true
   return 0
+}
+
+delete_fixture_cleanup_pod() {
+  local current_json current_fields current_uid current_resource_version observed_json observed_uid delete_attempt
+  [[ -n "$fixture_cleanup_pod_uid" ]] || return 0
+  current_json="$runtime_evidence_dir/fixture-cleanup-delete-current-${fixture_cleanup_pod_uid}.json"
+  capture_runtime_evidence "$current_json" kctl_evidence get pod "$probe_cleanup_pod" -o json --ignore-not-found || return 1
+  if [[ ! -s "$current_json" ]]; then
+    fixture_cleanup_pod_uid=""
+    return 0
+  fi
+  current_fields="$(jq -er --arg uid "$fixture_cleanup_pod_uid" '
+    select(.metadata.uid == $uid and .status.phase == "Succeeded" and
+      (.metadata.resourceVersion | type == "string" and length > 0)) |
+    [.metadata.uid,.metadata.resourceVersion] | @tsv
+  ' "$current_json")" || return 1
+  IFS=$'\t' read -r current_uid current_resource_version <<<"$current_fields"
+  uid_delete --api-version=v1 --resource=pods --namespace="$KUBEBRAIN_NAMESPACE" --name="$probe_cleanup_pod" \
+    --uid="$current_uid" --resource-version="$current_resource_version" --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" \
+    >/dev/null 2>&1 || true
+  observed_json="$runtime_evidence_dir/fixture-cleanup-delete-observed-${fixture_cleanup_pod_uid}.json"
+  for ((delete_attempt = 0; delete_attempt < 100; delete_attempt++)); do
+    capture_runtime_evidence "$observed_json" kctl_evidence get pod "$probe_cleanup_pod" -o json --ignore-not-found || return 1
+    if [[ ! -s "$observed_json" ]]; then
+      fixture_cleanup_pod_uid=""
+      return 0
+    fi
+    observed_uid="$(jq -er '.metadata.uid | select(type == "string" and length > 0)' "$observed_json")" || return 1
+    [[ "$observed_uid" == "$fixture_cleanup_pod_uid" ]] || {
+      echo "fixture cleanup Pod was replaced during UID-fenced deletion" >&2
+      return 1
+    }
+    sleep 0.1
+  done
+  echo "fixture cleanup Pod still exists after UID-fenced deletion" >&2
+  return 1
 }
 existing_owner_json="$runtime_evidence_dir/fixture-owner-existing.json"
 if capture_runtime_evidence "$existing_owner_json" kctl_evidence get configmap "$fixture_owner_configmap" -o json 2>/dev/null; then
@@ -1030,9 +1123,16 @@ delete_fixture_owner_receipt || {
   echo "failed to delete recovered fixture owner ConfigMap" >&2
   exit 1
 }
+delete_fixture_cleanup_pod || {
+  echo "failed to delete recovered fixture cleanup Pod" >&2
+  exit 1
+}
+fixture_cleanup_verified=true
 probe_pod_uid=""
 fixture_lease_ids=""
 fixture_owner_terminating=false
+fixture_cleanup_evidence_verified=false
+fixture_cleanup_verified=false
 generate_fixture_lease_ids || {
   echo "failed to generate fixture lease IDs" >&2
   exit 1
@@ -1104,6 +1204,8 @@ owner_fields="$(jq -er --arg name "$fixture_owner_configmap" --arg receipt "$rec
 }
 IFS=$'\t' read -r fixture_owner_uid fixture_owner_resource_version <<<"$owner_fields"
 fixture_owner_receipt_json="$receipt_json"
+fixture_cleanup_evidence_verified=false
+fixture_cleanup_verified=false
 fixture_cleanup_ready=true
 ungate_patch="$(jq -cn --arg uid "$probe_pod_uid" --arg resource_version "$probe_pod_resource_version" '[
   {op:"test",path:"/metadata/uid",value:$uid},{op:"test",path:"/metadata/resourceVersion",value:$resource_version},
@@ -1393,6 +1495,10 @@ run_fixture_cleanup || {
 }
 delete_fixture_owner_receipt || {
   echo "rollout fixture owner receipt deletion failed" >&2
+  exit 1
+}
+delete_fixture_cleanup_pod || {
+  echo "rollout fixture cleanup Pod deletion failed" >&2
   exit 1
 }
 fixture_cleanup_verified=true
