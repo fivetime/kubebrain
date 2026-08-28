@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
@@ -183,6 +184,186 @@ func TestExternalFixtureCleanupRejectsReusedLeaseWithForeignKey(t *testing.T) {
 	require.NoError(t, ttlErr)
 	require.Positive(t, ttl.TTL)
 	require.Equal(t, [][]byte{[]byte("/foreign/must-survive")}, ttl.Keys)
+}
+
+func TestExternalFixtureLeaseAbsenceRequiresExactMissingSentinel(t *testing.T) {
+	tests := []struct {
+		name     string
+		response *clientv3.LeaseTimeToLiveResponse
+		err      error
+		missing  bool
+		wantErr  string
+	}{
+		{
+			name:    "rpc not found",
+			err:     rpctypes.ErrLeaseNotFound,
+			missing: true,
+		},
+		{
+			name: "client missing sentinel",
+			response: &clientv3.LeaseTimeToLiveResponse{
+				ResponseHeader: &etcdserverpb.ResponseHeader{}, ID: 7301, TTL: -1,
+			},
+			missing: true,
+		},
+		{
+			name: "expired lease pending asynchronous revoke",
+			response: &clientv3.LeaseTimeToLiveResponse{
+				ResponseHeader: &etcdserverpb.ResponseHeader{}, ID: 7301, TTL: -2, GrantedTTL: 30,
+				Keys: [][]byte{[]byte("/foreign/must-survive")},
+			},
+		},
+		{
+			name: "live lease exactly one second past deadline",
+			response: &clientv3.LeaseTimeToLiveResponse{
+				ResponseHeader: &etcdserverpb.ResponseHeader{}, ID: 7301, TTL: -1, GrantedTTL: 30,
+			},
+		},
+		{
+			name: "malformed missing sentinel with keys",
+			response: &clientv3.LeaseTimeToLiveResponse{
+				ResponseHeader: &etcdserverpb.ResponseHeader{}, ID: 7301, TTL: -1,
+				Keys: [][]byte{[]byte("stale")},
+			},
+			wantErr: "invalid missing response",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			missing, err := classifyExternalFixtureLeaseAbsence(test.response, test.err)
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, test.missing, missing)
+		})
+	}
+}
+
+func TestExternalFixtureMissingLeaseResponseValidatesIdentityAndHeader(t *testing.T) {
+	validHeader := &etcdserverpb.ResponseHeader{ClusterId: 11, MemberId: 22, Revision: 33, RaftTerm: 44}
+	tests := []struct {
+		name     string
+		response *clientv3.LeaseTimeToLiveResponse
+		wantErr  string
+	}{
+		{
+			name: "valid",
+			response: &clientv3.LeaseTimeToLiveResponse{
+				ResponseHeader: validHeader, ID: 7301, TTL: -1,
+			},
+		},
+		{
+			name: "wrong id",
+			response: &clientv3.LeaseTimeToLiveResponse{
+				ResponseHeader: validHeader, ID: 7302, TTL: -1,
+			},
+			wantErr: "invalid missing identity",
+		},
+		{
+			name: "stale revision",
+			response: &clientv3.LeaseTimeToLiveResponse{
+				ResponseHeader: &etcdserverpb.ResponseHeader{ClusterId: 11, MemberId: 22, Revision: 32, RaftTerm: 44},
+				ID:             7301,
+				TTL:            -1,
+			},
+			wantErr: "invalid response header",
+		},
+		{
+			name: "wrong cluster",
+			response: &clientv3.LeaseTimeToLiveResponse{
+				ResponseHeader: &etcdserverpb.ResponseHeader{ClusterId: 12, MemberId: 22, Revision: 33, RaftTerm: 44},
+				ID:             7301,
+				TTL:            -1,
+			},
+			wantErr: "response cluster ID changed",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			revision, err := validateExternalFixtureMissingLeaseResponse(test.response, 7301, 11, 33)
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, int64(33), revision)
+		})
+	}
+}
+
+func TestExternalFixtureRevokePlanDoesNotAdoptLeaseMissingAtInspection(t *testing.T) {
+	client, ctx := startFixtureOwnershipEtcd(t)
+	prefix := fixturePrefixRoot + "availability-a/"
+	identity, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	require.NoError(t, err)
+	require.NotNil(t, identity.Header)
+
+	// The empty initiallyLive set is the durable result of the mutation-free
+	// inspection. Regranting a receipt ID after that point must not add it to the
+	// cleanup plan, even when the replacement has an attached foreign key.
+	foreign, err := grantFixtureLease(ctx, client, 7401, 60)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/foreign/must-survive", "foreign", clientv3.WithLease(foreign.ID))
+	require.NoError(t, err)
+	revocable, _, err := prepareExternalFixtureLeaseRevocations(
+		ctx, client, prefix, identity.Header.ClusterId, identity.Header.Revision, nil, time.Second,
+	)
+	require.NoError(t, err)
+	require.Empty(t, revocable)
+	ttl, err := client.TimeToLive(ctx, foreign.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{[]byte("/foreign/must-survive")}, ttl.Keys)
+}
+
+func TestExternalFixtureRevokePlanRevalidatesInitiallyLiveLease(t *testing.T) {
+	client, ctx := startFixtureOwnershipEtcd(t)
+	prefix := fixturePrefixRoot + "availability-a/"
+	identity, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	require.NoError(t, err)
+	require.NotNil(t, identity.Header)
+	const leaseID clientv3.LeaseID = 7501
+	original, err := grantFixtureLease(ctx, client, leaseID, 60)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, prefix+"owned", "owned", clientv3.WithLease(original.ID))
+	require.NoError(t, err)
+	_, err = client.Revoke(ctx, leaseID)
+	require.NoError(t, err)
+	replacement, err := grantFixtureLease(ctx, client, leaseID, 60)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/foreign/must-survive", "foreign", clientv3.WithLease(replacement.ID))
+	require.NoError(t, err)
+
+	_, _, err = prepareExternalFixtureLeaseRevocations(
+		ctx, client, prefix, identity.Header.ClusterId, identity.Header.Revision, []clientv3.LeaseID{leaseID}, time.Second,
+	)
+	require.ErrorContains(t, err, "outside owned prefix")
+	ttl, ttlErr := client.TimeToLive(ctx, leaseID, clientv3.WithAttachedKeys())
+	require.NoError(t, ttlErr)
+	require.Equal(t, [][]byte{[]byte("/foreign/must-survive")}, ttl.Keys)
+}
+
+func TestExternalFixtureRevokePlanWaitsOutNearExpiryLease(t *testing.T) {
+	client, ctx := startFixtureOwnershipEtcd(t)
+	prefix := fixturePrefixRoot + "availability-a/"
+	identity, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	require.NoError(t, err)
+	require.NotNil(t, identity.Header)
+	const leaseID clientv3.LeaseID = 7601
+	lease, err := grantFixtureLease(ctx, client, leaseID, 2)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, prefix+"owned", "owned", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+
+	revocable, _, err := prepareExternalFixtureLeaseRevocations(
+		ctx, client, prefix, identity.Header.ClusterId, identity.Header.Revision, []clientv3.LeaseID{leaseID}, 3*time.Second,
+	)
+	require.NoError(t, err)
+	require.Empty(t, revocable, "a near-expiry lease must disappear naturally instead of being revoked after a stale inspection")
+	ttl, err := client.TimeToLive(ctx, leaseID)
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL)
 }
 
 func TestOwnedFixtureCleanupRejectsSchemaDriftWithoutDeleting(t *testing.T) {

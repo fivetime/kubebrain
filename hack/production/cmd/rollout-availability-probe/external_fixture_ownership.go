@@ -101,6 +101,11 @@ func claimExternalFixtureOwnership(ctx context.Context, client *clientv3.Client,
 		if !missing {
 			return 0, 0, fmt.Errorf("external fixture lease %d already exists", leaseID)
 		}
+		observedRevision, validateErr := validateExternalFixtureMissingLeaseResponse(ttl, leaseID, clusterID, revision)
+		if validateErr != nil {
+			return 0, 0, fmt.Errorf("inspect missing external fixture lease %d: %w", leaseID, validateErr)
+		}
+		revision = max(revision, observedRevision)
 	}
 	return clusterID, revision, nil
 }
@@ -181,37 +186,62 @@ func cleanupExternallyOwnedFixture(ctx context.Context, client *clientv3.Client,
 	if err != nil {
 		return fixtureCleanupSummary{}, fmt.Errorf("inspect external Snapshot auth fixture: %w", err)
 	}
-	liveLeases := 0
+	liveLeaseIDs := make([]clientv3.LeaseID, 0, len(leaseIDs))
 	for _, leaseID := range leaseIDs {
 		ttl, ttlErr := client.TimeToLive(ctx, leaseID, clientv3.WithAttachedKeys())
 		missing, ttlErr := classifyExternalFixtureLeaseAbsence(ttl, ttlErr)
 		if ttlErr != nil {
 			return fixtureCleanupSummary{}, fmt.Errorf("inspect external fixture lease %d: %w", leaseID, ttlErr)
 		}
-		if !missing {
-			if ttl.ID != leaseID || ttl.GrantedTTL <= 0 || ttl.TTL <= 0 {
-				return fixtureCleanupSummary{}, fmt.Errorf("inspect external fixture lease %d returned invalid identity: %+v", leaseID, ttl)
+		if missing {
+			observedRevision, validateErr := validateExternalFixtureMissingLeaseResponse(ttl, leaseID, clusterID, revision)
+			if validateErr != nil {
+				return fixtureCleanupSummary{}, fmt.Errorf("inspect missing external fixture lease %d: %w", leaseID, validateErr)
 			}
-			if _, _, headerErr := validateResponseHeader(ttl.ResponseHeader, clusterID, revision); headerErr != nil {
-				return fixtureCleanupSummary{}, fmt.Errorf("inspect external fixture lease %d header: %w", leaseID, headerErr)
-			}
-			for _, key := range ttl.Keys {
-				if !bytes.HasPrefix(key, []byte(prefix)) {
-					return fixtureCleanupSummary{}, fmt.Errorf(
-						"external fixture lease %d has key %q outside owned prefix %q", leaseID, key, prefix,
-					)
-				}
-			}
-			liveLeases++
+			revision = max(revision, observedRevision)
+			continue
 		}
+		observedRevision, validateErr := validateExternalFixtureLeaseResponse(ttl, leaseID, prefix, clusterID, revision)
+		if validateErr != nil {
+			return fixtureCleanupSummary{}, fmt.Errorf("inspect external fixture lease %d: %w", leaseID, validateErr)
+		}
+		revision = max(revision, observedRevision)
+		liveLeaseIDs = append(liveLeaseIDs, leaseID)
 	}
-	if ownedKeys.Count == 0 && len(presentUsers) == 0 && len(presentRoles) == 0 && liveLeases == 0 {
+	if ownedKeys.Count == 0 && len(presentUsers) == 0 && len(presentRoles) == 0 && len(liveLeaseIDs) == 0 {
 		return fixtureCleanupSummary{Status: "absent"}, nil
+	}
+	// LeaseTimeToLive and LeaseRevoke are separate etcd RPCs. Freeze the revoke
+	// set to leases that existed during the mutation-free inspection above, then
+	// revalidate every one before deleting anything. A receipted ID that was
+	// absent must never be adopted if another client grants it later. A lease too
+	// close to natural expiry is allowed to disappear instead of risking expiry
+	// and same-ID regrant between the two RPCs.
+	revocableLeaseIDs, preparedRevision, err := prepareExternalFixtureLeaseRevocations(
+		ctx, client, prefix, clusterID, revision, liveLeaseIDs, commandTimeout,
+	)
+	if err != nil {
+		return fixtureCleanupSummary{}, err
+	}
+	revision = preparedRevision
+	// Re-read auth after any near-expiry wait, then remove only the exact fixture
+	// schema observed before the first mutation. Lease ownership is revalidated
+	// once more afterward so auth cleanup latency cannot carry a lease across its
+	// natural-expiry/regrant boundary into Revoke.
+	presentUsers, presentRoles, err = fixture.inspectOwnedState(ctx, client)
+	if err != nil {
+		return fixtureCleanupSummary{}, fmt.Errorf("reinspect external Snapshot auth fixture: %w", err)
 	}
 	if err := fixture.deleteOwnedState(ctx, client, presentUsers, presentRoles); err != nil {
 		return fixtureCleanupSummary{}, fmt.Errorf("delete external Snapshot auth fixture: %w", err)
 	}
-	for _, leaseID := range leaseIDs {
+	revocableLeaseIDs, revision, err = prepareExternalFixtureLeaseRevocations(
+		ctx, client, prefix, clusterID, revision, revocableLeaseIDs, commandTimeout,
+	)
+	if err != nil {
+		return fixtureCleanupSummary{}, err
+	}
+	for _, leaseID := range revocableLeaseIDs {
 		revokeCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 		revoked, revokeErr := client.Revoke(revokeCtx, leaseID)
 		cancel()
@@ -245,6 +275,106 @@ func cleanupExternallyOwnedFixture(ctx context.Context, client *clientv3.Client,
 	}, nil
 }
 
+func validateExternalFixtureMissingLeaseResponse(response *clientv3.LeaseTimeToLiveResponse,
+	expectedID clientv3.LeaseID, clusterID uint64, minimumRevision int64,
+) (int64, error) {
+	// Some direct Lease implementations return ErrLeaseNotFound without a
+	// response. The public etcd v3 server instead normalizes it to the exact
+	// TTL=-1/GrantedTTL=0 response validated here.
+	if response == nil {
+		return minimumRevision, nil
+	}
+	if response.ID != expectedID || response.TTL != -1 || response.GrantedTTL != 0 || len(response.Keys) != 0 {
+		return minimumRevision, fmt.Errorf("returned invalid missing identity: %+v", response)
+	}
+	_, revision, err := validateResponseHeader(response.ResponseHeader, clusterID, minimumRevision)
+	if err != nil {
+		return minimumRevision, fmt.Errorf("header: %w", err)
+	}
+	return revision, nil
+}
+
+func validateExternalFixtureLeaseResponse(response *clientv3.LeaseTimeToLiveResponse, expectedID clientv3.LeaseID,
+	prefix string, clusterID uint64, minimumRevision int64,
+) (int64, error) {
+	if response == nil || response.ID != expectedID || response.GrantedTTL <= 0 {
+		return minimumRevision, fmt.Errorf("returned invalid identity: %+v", response)
+	}
+	_, revision, err := validateResponseHeader(response.ResponseHeader, clusterID, minimumRevision)
+	if err != nil {
+		return minimumRevision, fmt.Errorf("header: %w", err)
+	}
+	for _, key := range response.Keys {
+		if !bytes.HasPrefix(key, []byte(prefix)) {
+			return minimumRevision, fmt.Errorf(
+				"external fixture lease %d has key %q outside owned prefix %q", expectedID, key, prefix,
+			)
+		}
+	}
+	return revision, nil
+}
+
+func prepareExternalFixtureLeaseRevocations(ctx context.Context, client *clientv3.Client, prefix string,
+	clusterID uint64, minimumRevision int64, initiallyLive []clientv3.LeaseID, commandTimeout time.Duration,
+) ([]clientv3.LeaseID, int64, error) {
+	if client == nil || commandTimeout <= 0 {
+		return nil, minimumRevision, errors.New("prepare external fixture lease revocations requires client and positive timeout")
+	}
+	secondsPerRevoke := int64(commandTimeout / time.Second)
+	if commandTimeout%time.Second != 0 {
+		secondsPerRevoke++
+	}
+	if secondsPerRevoke < 1 {
+		secondsPerRevoke = 1
+	}
+	// Revalidation of all leases precedes the first mutation. Require enough
+	// remaining TTL for the worst-case sequence of bounded Revoke RPCs.
+	minimumSafeTTL := secondsPerRevoke*int64(len(initiallyLive)) + 1
+	revocable := make([]clientv3.LeaseID, 0, len(initiallyLive))
+	for _, leaseID := range initiallyLive {
+		for {
+			readCtx, cancel := context.WithTimeout(ctx, commandTimeout)
+			ttl, ttlErr := client.TimeToLive(readCtx, leaseID, clientv3.WithAttachedKeys())
+			cancel()
+			missing, ttlErr := classifyExternalFixtureLeaseAbsence(ttl, ttlErr)
+			if ttlErr != nil {
+				return nil, minimumRevision, fmt.Errorf("revalidate external fixture lease %d: %w", leaseID, ttlErr)
+			}
+			if missing {
+				observedRevision, validateErr := validateExternalFixtureMissingLeaseResponse(
+					ttl, leaseID, clusterID, minimumRevision,
+				)
+				if validateErr != nil {
+					return nil, minimumRevision, fmt.Errorf("revalidate missing external fixture lease %d: %w", leaseID, validateErr)
+				}
+				minimumRevision = max(minimumRevision, observedRevision)
+				break
+			}
+			observedRevision, validateErr := validateExternalFixtureLeaseResponse(
+				ttl, leaseID, prefix, clusterID, minimumRevision,
+			)
+			if validateErr != nil {
+				return nil, minimumRevision, fmt.Errorf("revalidate external fixture lease %d: %w", leaseID, validateErr)
+			}
+			minimumRevision = max(minimumRevision, observedRevision)
+			if ttl.TTL > minimumSafeTTL {
+				revocable = append(revocable, leaseID)
+				break
+			}
+			timer := time.NewTimer(100 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return nil, minimumRevision, fmt.Errorf("wait for near-expiry external fixture lease %d: %w", leaseID, ctx.Err())
+			case <-timer.C:
+			}
+		}
+	}
+	return revocable, minimumRevision, nil
+}
+
 func classifyExternalFixtureLeaseAbsence(response *clientv3.LeaseTimeToLiveResponse, err error) (bool, error) {
 	if errors.Is(err, rpctypes.ErrLeaseNotFound) {
 		return true, nil
@@ -255,5 +385,11 @@ func classifyExternalFixtureLeaseAbsence(response *clientv3.LeaseTimeToLiveRespo
 	if response == nil || response.ResponseHeader == nil {
 		return false, errors.New("lease TTL returned an empty response")
 	}
-	return response.TTL < 0, nil
+	if response.TTL == -1 && response.GrantedTTL == 0 {
+		if len(response.Keys) != 0 {
+			return false, fmt.Errorf("lease TTL returned an invalid missing response with %d attached keys", len(response.Keys))
+		}
+		return true, nil
+	}
+	return false, nil
 }
