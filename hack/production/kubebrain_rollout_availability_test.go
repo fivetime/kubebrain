@@ -476,7 +476,7 @@ func TestRolloutAvailabilityRunnerRejectsDurationOverflowBeforeKubernetes(t *tes
 		"PROBE_MAX_PD_TSO_LATENCY", "PROBE_MAX_TIKV_REGION_LATENCY", "PROBE_READY_TIMEOUT",
 		"PROBE_RANGE_STREAM_INTERVAL", "PROBE_SNAPSHOT_START_DELAY", "PROBE_STREAM_ATTEMPT_TIMEOUT",
 		"PROBE_STREAM_RETRY_BACKOFF", "PROBE_STREAM_MAX_RETRY_BACKOFF",
-		"PROBE_START_TIMEOUT", "PROBE_COMPLETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_EVIDENCE_REQUEST_TIMEOUT",
+		"PROBE_START_TIMEOUT", "PROBE_COMPLETE_TIMEOUT", "PROBE_DELETE_TIMEOUT", "ROLLOUT_TIMEOUT", "KUBECTL_EVIDENCE_REQUEST_TIMEOUT",
 		"KUBECTL_EVIDENCE_COMMAND_TIMEOUT", "KUBECTL_MUTATION_REQUEST_TIMEOUT",
 		"KUBECTL_MUTATION_COMMAND_TIMEOUT", "KUBECTL_READY_WAIT_COMMAND_TIMEOUT",
 		"KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT", "KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT", "UID_DELETE_COMMAND_TIMEOUT",
@@ -664,6 +664,25 @@ func TestRolloutAvailabilityRunnerDeletesOwnedProbeWhenCreateResponseDrifts(t *t
 	require.Contains(t, readOptionalFile(t, logPath),
 		"--name=kubebrain-rollout-availability-probe --uid=33333333-3333-4333-8333-333333333333 --resource-version=probe-rv",
 		"the admitted create UID must be compensated with UID/RV preconditions")
+}
+
+func TestRolloutAvailabilityRunnerRetriesTransientProbeDeleteReadFailure(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_PROBE_DELETE_GET_FAILURES=2", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=3", "PROBE_DELETE_TIMEOUT=3s",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "KubeBrain rollout availability gate passed")
+	log := readOptionalFile(t, logPath)
+	require.Equal(t, 4, strings.Count(log,
+		" get pod kubebrain-rollout-availability-probe -o json --ignore-not-found"),
+		"the owned probe delete must retry two failures, read its identity, and confirm NotFound")
+	require.Contains(t, log,
+		"--name=kubebrain-rollout-availability-probe --uid=33333333-3333-4333-8333-333333333333 --resource-version=probe-rv")
 }
 
 func TestRolloutAvailabilityRunnerFailsClosedOnMalformedFixtureCleanupEvidence(t *testing.T) {
@@ -1548,7 +1567,7 @@ func TestRolloutAvailabilityRunnerRollsBackCandidateWhenProbeDeletionFails(t *te
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64),
-		"FAKE_DELETE_FAIL=true",
+		"FAKE_DELETE_FAIL=true", "PROBE_DELETE_TIMEOUT=1s",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1997,6 +2016,14 @@ elif [[ " $* " == *" run kubebrain-rollout-availability-probe "* ]]; then
   fi
   jq -c . "$probe_state"
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o json "* ]]; then
+	delete_get_failures="${FAKE_PROBE_DELETE_GET_FAILURES:-0}"
+	if [[ " $* " == *" --ignore-not-found "* && "$delete_get_failures" =~ ^[0-9]+$ ]]; then
+		delete_get_state="${probe_state}-delete-get-count"
+		delete_get_count=0
+		[[ ! -e "$delete_get_state" ]] || delete_get_count="$(<"$delete_get_state")"
+		printf '%s' "$((delete_get_count + 1))" >"$delete_get_state"
+		(( delete_get_count >= delete_get_failures )) || exit 1
+	fi
   if [[ -e "${probe_state}-deleted" ]]; then
     [[ " $* " == *" --ignore-not-found "* ]] && exit 0
     exit 1

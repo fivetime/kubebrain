@@ -38,6 +38,7 @@ PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 # online operation SLO.
 PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-90s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
+PROBE_DELETE_TIMEOUT="${PROBE_DELETE_TIMEOUT:-60s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KUBECTL_EVIDENCE_REQUEST_TIMEOUT="${KUBECTL_EVIDENCE_REQUEST_TIMEOUT:-10s}"
 KUBECTL_EVIDENCE_COMMAND_TIMEOUT="${KUBECTL_EVIDENCE_COMMAND_TIMEOUT:-15s}"
@@ -142,7 +143,7 @@ for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LAT
   PROBE_MAX_PD_TSO_LATENCY PROBE_MAX_TIKV_REGION_LATENCY PROBE_READY_TIMEOUT \
   PROBE_RANGE_STREAM_INTERVAL PROBE_SNAPSHOT_START_DELAY PROBE_STREAM_ATTEMPT_TIMEOUT \
   PROBE_STREAM_RETRY_BACKOFF PROBE_STREAM_MAX_RETRY_BACKOFF \
-  PROBE_START_TIMEOUT PROBE_COMPLETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_EVIDENCE_REQUEST_TIMEOUT \
+  PROBE_START_TIMEOUT PROBE_COMPLETE_TIMEOUT PROBE_DELETE_TIMEOUT ROLLOUT_TIMEOUT KUBECTL_EVIDENCE_REQUEST_TIMEOUT \
   KUBECTL_EVIDENCE_COMMAND_TIMEOUT KUBECTL_MUTATION_REQUEST_TIMEOUT \
   KUBECTL_MUTATION_COMMAND_TIMEOUT KUBECTL_READY_WAIT_COMMAND_TIMEOUT \
   KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT UID_DELETE_COMMAND_TIMEOUT; do
@@ -726,10 +727,13 @@ delete_probe_pod() {
   local -a args
   [[ -n "$probe_pod_uid" ]] || return 0
   current_json="$runtime_evidence_dir/probe-delete-current-${probe_pod_uid}.json"
-  delete_wait_seconds="$(duration_ceil_seconds "$KUBECTL_MUTATION_REQUEST_TIMEOUT")" || return 1
+  delete_wait_seconds="$(duration_ceil_seconds "$PROBE_DELETE_TIMEOUT")" || return 1
   delete_deadline=$((SECONDS + delete_wait_seconds))
   for ((delete_attempt = 0; delete_attempt == 0 || SECONDS < delete_deadline; delete_attempt++)); do
-    capture_runtime_evidence "$current_json" kctl_evidence get pod "$PROBE_POD" -o json --ignore-not-found || return 1
+    if ! capture_runtime_evidence "$current_json" kctl_evidence get pod "$PROBE_POD" -o json --ignore-not-found; then
+      sleep 0.1
+      continue
+    fi
     if [[ ! -s "$current_json" ]]; then
       probe_deleted=true
       return 0
