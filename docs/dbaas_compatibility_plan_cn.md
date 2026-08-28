@@ -64777,6 +64777,79 @@ NotFound、EndpointSlice 0。故障 wrapper/证据/计数、展开审计目录�
 同时保持 replacement/身份漂移保护。三次 restart 中两次暴露的 5 秒 tail SLO 抖动说明单次 GREEN 仍不足以替代长时间统计证据；外部托管
 apiserver 的真实断链响应丢失、滚动期间 public/direct tail latency 长 soak 与多 runner 并发仍是下一层生产缺口。
 
+### A5586：新 leader 抢占退役 leader 的连接探测
+
+提交 `ec8cefb1`（A5586）关闭 follower 代理在 leader 切换后仍被退役 leader 的健康检查占住唯一连接更新锁的窗口。原来的
+`updateMu` 正确保证同一时刻只有一个连接建立者，但一个对黑洞旧 leader 的 5 秒 health check 也会独占该锁；选举缓存已经发布新
+leader 时，后续 `waitReady` 只能重复返回 1 秒安全重试，public Put 及其响应丢失协调 Range 可能叠加越过 5 秒。上游 etcd 请求在本地
+Raft member 内处理，没有 KubeBrain 的 follower→leader gRPC 代理层，因此没有可直接移植的同构代码；本轮对齐的是 etcd leader
+切换后的客户端可观察恢复时间，而不是机械复制其 Raft transport。
+
+现在 proxy 以独立 `attemptMu` 记录正在进行的 health attempt generation、目标 leader identity 和 cancel：已有 client 与新 client 的
+健康检查都使用可取消 context；`waitReady` 从 `LeaderElection.GetLeaderInfo` 的内存缓存看到不同的已知 leader 后，只取消与旧 identity
+匹配的 attempt，并唤醒同一个 `updateMu` 串行建立者。相同 leader 或未知 leader 不取消，任何时刻仍不允许并行 dial，锁顺序也不把
+选举读取带进 proxy 临界区。生产 `GetLeaderInfo` 实现均为缓存读取，不引入 Kubernetes API I/O。
+
+新增 `TestWaitReadyPreemptsStaleLeaderConnectionAttempt`，用 TCP blackhole 模拟退役 leader、正常 listener 模拟 successor；修复前在约
+`1.01s` 后仍返回安全重试 sentinel，successor 被旧 attempt 阻塞，修复后 successor 在 1 秒内抢占且包测试总耗时 `0.133s`。完整
+etcdproxy 包 `2.267s`、专项 race `1.471s`、完整 etcdproxy race `3.435s`，`go test ./pkg/server/... -count=1` 全绿（核心 etcd
+包 `131.857s`）。串行 `go test ./...` 的一次尝试因 Go 全局默认 10 分钟超时在 production 包
+`TestRolloutAvailabilityRunnerRefusesToOverwriteConcurrentSpecBeforeRollback` 处被终止；已打印的非 production 包全部通过、没有 assertion
+失败，该次不能记为全绿。最终 production inventory 为 695 项；提交前精确 `hack/production/test-shard.sh --verify 4` 为
+`169/191/176/159`，提交后四个零基分片墙钟 `270.703/456.536/307.407/521.709s`，全部通过。
+
+A5586 使用完整 SHA `ec8cefb19f3cc76c6e945c01c5815eb3cd5f7c3e`、版本 `0.0.0-ec8cefb19f3c`、TiKV、Go
+1.26.5、build time `2026-08-28T15:38:04Z` 构建，OCI annotation completion 为 `2026-08-28T15:42:31Z`。archive
+为 914,353,664 bytes，SHA-256 `85109a5bef86275cf0120687d9d3bb3daa61b9945a87af49488a43c15a913df8`；OCI index
+`sha256:82d6fe2d569aa3294051bcc92ccc2e09c05e3e949564ed39ccf88c037b5116bc`、platform
+`sha256:b2e53033a10d711f1a0719b66118303ea83f0149cd4ec6af8fe0dd85d506607d`、config
+`sha256:a7930e57d751384232e84c142905ebb5148567941cb658a2c3549c21f3c47e36`、attestation
+`sha256:8c2cb3234a1f49f26d460282f438f8495928eb28afc3198b803d29a992087f58`、SBOM statement
+`sha256:562e815d5708a14f2d85775e2e177a74bb842eb6e843a20a1cc08ee252388ce1`、provenance statement
+`sha256:5117c74f07133303f5c83762885edf98e8bb983a60907a5be1769979696acdb7`、Kind runtime wrapper
+`sha256:567b76164f7c4e28579b51ccee048099ef3eef0a438e1cd205be35cc170f8cdc`。严格审计为 78/78 blobs、78 条
+descriptor edges，914,289,299 blob bytes，digest/size/missing 均为 0；SBOM 为 2,592 packages/8,096 relationships，
+provenance 为 3 materials，两份 statement 均唯一绑定 platform。不可变审计 Pod UID
+`8b4fe7b5-900e-4e55-b42b-0e87008752f2`、resourceVersion `7145216` 验证完整版本、SHA、build time、TiKV、Go、
+linux/amd64、UID/GID 65532、精确 runtime imageID 与 restart 0 后按 UID/RV 删除。
+
+A5585→A5586 候选升级 **900/900 GREEN**：Watch `900/900x3`、Lease `100/269`、public restart 0、direct
+replacement 18、最大 direct recovery `17993ms`、public TCP 3、最小 direct TCP 2、RangeStream 170、Snapshot 1、
+retry/partial `4/1`，最大总/put/watch/direct/TSO/Region 延迟 `3771/3766/197/22919/62/8ms`，revision
+`a4657-tls-9bd69f98f -> a4657-tls-69fdf8ff6`。随后同版本 restart 第 1、2 轮均 **900/900 GREEN**：第 1 轮 Lease
+`104/274`、direct replacement/recovery `17/15958ms`、RangeStream 172、retry/partial `0/0`、最大
+`4087/4078/280/20628/78/22ms`，revision `69fdf8ff6 -> 6798b4787`；第 2 轮 Lease `102/280`、
+`18/16049ms`、RangeStream 172、`2/0`、最大 `3001/2990/1044/21288/42/28ms`，revision
+`6798b4787 -> 687695b5d9`。
+
+restart 第 3 轮在 iteration 343 因 Put-to-Watch `5.213302601s`（Put `4.165681681s`、watch-after-put
+`1.047620920s`）超过未放宽的 5 秒门限而 **RED**；fixture cleanup 仍为零，StatefulSet 收敛到
+`a4657-tls-55479cd84d`。连续计数由此归零，不能把失败前两轮拼入最终结论。第 4/5/6 轮随后在相同预算下形成真正连续的三次
+**900/900 GREEN**：第 4 轮 Lease `102/273`、direct replacement/recovery `17/16152ms`、RangeStream 173、`0/0`、
+最大 `4537/4529/82/22391/25/41ms`，revision `55479cd84d -> db64d767d`；第 5 轮 `102/271`、
+`16/15258ms`、RangeStream 172、`2/0`、最大 `2249/2059/190/21302/71/8ms`，revision
+`db64d767d -> dbc79cc6c`；第 6 轮 `104/280`、`18/16948ms`、public/min-direct TCP `3/2`、RangeStream 174、
+`5/1`、最大 `4016/4004/192/22236/72/28ms`，revision `dbc79cc6c -> 7bbc65d79d`。所有 GREEN 都包含
+`watch=900`、`direct_watch=900x3`、public lease restart 0、Snapshot 1，所有轮次 cleanup 均为零；一次 RED 作为仍存在的
+Put/Watch 尾延迟证据保留，未被后续连续 GREEN 覆盖。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，resourceVersion `7150450`，
+generation/observed generation 197，current/update revision `a4657-tls-7bbc65d79d`，3/3 Ready/restart 0，三个 Pod 均运行
+A5586 index/runtime，UID/GID/fsGroup 65532、HTTPS `/readyz` 与 `1h/5m` connection aging 参数保持。严格公共 mTLS 和三端状态审计
+得到 cluster ID `7662961163671170154`、revision `125134`、term 571、leader `2985394290`、version 3.7.0、db size/in-use
+492 完全一致；AlarmList 空，auth revision 3738，用户为 `KubeWharfServer/alice/root`、角色为 `operator/root`。alice 的
+`UserList` 被最小权限正确拒绝，清单改由 `KubeWharfServer` 证书审计；审计 Pod 不能路由 kind NodePort，因此三 Pod IP status 只跳过
+服务端 hostname 匹配并保留客户端 mTLS，而六轮 runner 已独立严格验证 direct TLS/identity。主 PD/TiKV 3+3 Ready/restart 0。
+
+七个 A5586 rollout prefix fresh count 均为 0，相关 Pod/ConfigMap/Secret/ServiceAccount/Role/RoleBinding/Lease 均不存在。临时 Service
+`a5586-client` 以 UID `35d2a592-2a97-4aeb-9b83-a0a07ca76896`、resourceVersion `7145118` 双前置条件删除，Service
+NotFound、EndpointSlice 0。UID-delete 工具、展开审计目录和 A5584 archive 已移入系统回收站，可恢复；mutable tag 已解除引用。
+发布保留集为 A5585 rollback 与 A5586 current archive，以及 A5586 immutable OCI/runtime/config/import 引用。
+
+本轮不改变 etcd 公共 API；它把 leader identity 变化变成对旧连接 attempt 的定向抢占信号，同时保持单连接建立者和保守的未知 leader
+行为。黑盒 rollout 已不再复现 A5585 的 7.262 秒 public Put，但第 3 轮 5.213 秒 Put-to-Watch RED 表明容器调度、Endpoint 收敛、
+client balancer 与 watch delivery 叠加的长尾仍未关闭；更长 soak、尾延迟分解观测和对该组合路径的下一轮定向消减仍是生产缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
