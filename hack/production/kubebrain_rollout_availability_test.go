@@ -51,9 +51,85 @@ func TestRolloutAvailabilityRunnerDurablyReceiptsFixtureBeforeScheduling(t *test
 	require.Contains(t, text, `od -An -N8 -tx1 /dev/urandom`)
 	require.Contains(t, text, `first_octet=$((16#${hex:0:2} & 0x7f))`)
 	require.Contains(t, text, `immutable:true`)
+	require.Contains(t, text, `fixture_owner_finalizer="kubebrain.io/rollout-fixture-cleanup"`)
+	require.Contains(t, text, `pin_fixture_owner_receipt`)
 	require.Contains(t, text, `--fixture-lease-ids="$fixture_lease_ids"`)
 	require.Contains(t, text, `--resource=configmaps`)
 	require.Contains(t, text, `{op:"remove",path:"/spec/schedulingGates"}`)
+}
+
+func TestRolloutAvailabilityRunnerPinsRecoveredReceiptBeforeCleanup(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	receipt := `{"format":"kubebrain.rollout-fixture-owner.v2","lease_ids":["7001","7002","7003"],"namespace":"kubebrain-system","prefix":"/kubebrain-rollout-availability/kubebrain-rollout-availability-probe/","probe_pod":"kubebrain-rollout-availability-probe","probe_pod_uid":"33333333-3333-4333-8333-333333333333","statefulset":"kubebrain","statefulset_uid":"statefulset-uid"}`
+	owner := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata": map[string]any{
+			"name":      "kubebrain-rollout-availability-probe-owner",
+			"namespace": "kubebrain-system",
+			"ownerReferences": []map[string]any{{
+				"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "kubebrain",
+				"uid": "statefulset-uid", "controller": true,
+			}},
+		},
+		"immutable": true,
+		"data":      map[string]string{"receipt.json": receipt},
+	}
+	encoded, err := json.Marshal(owner)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(logPath+".owner", encoded, 0o600))
+
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_OWNER_FINALIZER_PATCH_DRIFT=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"OBSERVE_ONLY=true",
+		"PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "failed to pin recovered fixture owner ConfigMap")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " run kubebrain-rollout-availability-probe-cleanup ",
+		"cleanup must not mutate etcd after the receipt identity loses its Kubernetes CAS")
+}
+
+func TestRolloutAvailabilityRunnerPinsAndReleasesRecoveredReceipt(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	receipt := `{"format":"kubebrain.rollout-fixture-owner.v2","lease_ids":["7001","7002","7003"],"namespace":"kubebrain-system","prefix":"/kubebrain-rollout-availability/kubebrain-rollout-availability-probe/","probe_pod":"kubebrain-rollout-availability-probe","probe_pod_uid":"33333333-3333-4333-8333-333333333333","statefulset":"kubebrain","statefulset_uid":"statefulset-uid"}`
+	owner := map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap", "immutable": true,
+		"metadata": map[string]any{
+			"name": "kubebrain-rollout-availability-probe-owner", "namespace": "kubebrain-system",
+			"ownerReferences": []map[string]any{{
+				"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "kubebrain",
+				"uid": "statefulset-uid", "controller": true,
+			}},
+		},
+		"data": map[string]string{"receipt.json": receipt},
+	}
+	encoded, err := json.Marshal(owner)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(logPath+".owner", encoded, 0o600))
+
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	log := readOptionalFile(t, logPath)
+	pin := strings.Index(log, " patch configmap/kubebrain-rollout-availability-probe-owner --type=json -p ")
+	cleanup := strings.Index(log, " run kubebrain-rollout-availability-probe-cleanup ")
+	require.GreaterOrEqual(t, pin, 0)
+	require.Greater(t, cleanup, pin, "the receipt finalizer must be durable before etcd cleanup starts")
+	require.GreaterOrEqual(t, strings.Count(log,
+		" patch configmap/kubebrain-rollout-availability-probe-owner --type=json -p "), 3,
+		"recovered receipt pin/unpin and current receipt unpin must all be CAS guarded")
 }
 
 func TestRolloutAvailabilityRunnerReportsProbeFailureBeforeStartBarrier(t *testing.T) {
@@ -1519,12 +1595,42 @@ fi
 owner_state="${FAKE_KUBECTL_LOG}.owner"
 if [[ " $* " == *" get configmap kubebrain-rollout-availability-probe-owner "* ]]; then
   [[ -e "$owner_state" ]] || exit 1
-  jq -c '.metadata.uid="44444444-4444-4444-8444-444444444444" | .metadata.resourceVersion="owner-rv"' "$owner_state"
+  jq -c '.metadata.uid //= "44444444-4444-4444-8444-444444444444" | .metadata.resourceVersion //= "owner-rv"' "$owner_state"
 elif [[ " $* " == *" create -f - "* ]]; then
   payload="$(jq -c .)"
   jq -e '.immutable == true and (.data["receipt.json"] | length > 0) and
+    .metadata.finalizers == ["kubebrain.io/rollout-fixture-cleanup"] and
     (.data["receipt.json"] | fromjson | .format == "kubebrain.rollout-fixture-owner.v2")' <<<"$payload" >/dev/null
   printf '%s' "$payload" >"$owner_state"
+elif [[ " $* " == *" patch configmap/kubebrain-rollout-availability-probe-owner --type=json -p "* ]]; then
+  [[ "${FAKE_OWNER_FINALIZER_PATCH_DRIFT:-false}" != true ]] || exit 1
+  patch_payload=""
+  previous=""
+  for argument in "$@"; do
+    [[ "$previous" != -p ]] || patch_payload="$argument"
+    previous="$argument"
+  done
+  [[ -e "$owner_state" && -n "$patch_payload" ]] || exit 1
+  current="$(jq -c '.metadata.uid //= "44444444-4444-4444-8444-444444444444" | .metadata.resourceVersion //= "owner-rv"' "$owner_state")"
+  expected_uid="$(jq -r '.[0].value // ""' <<<"$patch_payload")"
+  expected_resource_version="$(jq -r '.[1].value // ""' <<<"$patch_payload")"
+  expected_receipt="$(jq -r '.[3].value // ""' <<<"$patch_payload")"
+  [[ "$expected_uid" == "$(jq -r '.metadata.uid' <<<"$current")" &&
+    "$expected_resource_version" == "$(jq -r '.metadata.resourceVersion' <<<"$current")" &&
+    "$expected_receipt" == "$(jq -r '.data["receipt.json"]' <<<"$current")" ]] || exit 1
+  final_operation="$(jq -r '.[-1].op' <<<"$patch_payload")"
+  if [[ "$final_operation" == add ]]; then
+    next="$(jq -c --argjson finalizers "$(jq -c '.[-1].value' <<<"$patch_payload")" \
+      '.metadata.finalizers=$finalizers | .metadata.resourceVersion="owner-rv-pinned"' <<<"$current")"
+  elif [[ "$final_operation" == remove ]]; then
+    [[ "$(jq -c '.metadata.finalizers // []' <<<"$current")" == \
+      "$(jq -c '.[4].value' <<<"$patch_payload")" ]] || exit 1
+    next="$(jq -c 'del(.metadata.finalizers) | .metadata.resourceVersion="owner-rv-unpinned"' <<<"$current")"
+  else
+    exit 1
+  fi
+  printf '%s' "$next" >"$owner_state"
+  printf '%s' "$next"
 elif [[ " $* " == *" patch pod/kubebrain-rollout-availability-probe --type=json -p "* ]]; then
   :
 elif [[ " $* " == *" get service kubebrain-peer -o json "* ]]; then

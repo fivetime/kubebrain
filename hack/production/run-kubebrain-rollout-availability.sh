@@ -175,6 +175,7 @@ if (( ${#PROBE_POD} > 55 )); then
 fi
 probe_cleanup_pod="${PROBE_POD}-cleanup"
 fixture_owner_configmap="${PROBE_POD}-owner"
+fixture_owner_finalizer="kubebrain.io/rollout-fixture-cleanup"
 if [[ -n "$TARGET_IMAGE" && ! "$TARGET_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
   echo "TARGET_IMAGE must be an immutable image reference with @sha256:<64 lowercase hex digest>" >&2
   exit 2
@@ -579,6 +580,7 @@ probe_pod_uid=""
 fixture_lease_ids=""
 fixture_owner_uid=""
 fixture_owner_resource_version=""
+fixture_owner_receipt_json=""
 fixture_cleanup_ready=false
 fixture_cleanup_verified=false
 
@@ -602,7 +604,28 @@ generate_fixture_lease_ids() {
 
 delete_fixture_owner_receipt() {
   local -a args
+  local unpin_patch unpinned_json unpinned_fields
   [[ -n "$fixture_owner_uid" && -n "$fixture_owner_resource_version" ]] || return 0
+  [[ -n "$fixture_owner_receipt_json" ]] || return 1
+  unpin_patch="$(jq -cn --arg uid "$fixture_owner_uid" --arg resource_version "$fixture_owner_resource_version" \
+    --arg receipt "$fixture_owner_receipt_json" --arg finalizer "$fixture_owner_finalizer" '[
+    {op:"test",path:"/metadata/uid",value:$uid},
+    {op:"test",path:"/metadata/resourceVersion",value:$resource_version},
+    {op:"test",path:"/immutable",value:true},
+    {op:"test",path:"/data/receipt.json",value:$receipt},
+    {op:"test",path:"/metadata/finalizers",value:[$finalizer]},
+    {op:"remove",path:"/metadata/finalizers"}
+  ]')" || return 1
+  unpinned_json="$runtime_evidence_dir/fixture-owner-unpinned-${fixture_owner_uid}.json"
+  capture_runtime_evidence "$unpinned_json" kctl_mutation patch "configmap/$fixture_owner_configmap" \
+    --type=json -p "$unpin_patch" -o json || return 1
+  unpinned_fields="$(jq -er --arg uid "$fixture_owner_uid" --arg receipt "$fixture_owner_receipt_json" '
+    select(.metadata.uid == $uid and .metadata.deletionTimestamp == null and
+      (.metadata.finalizers // []) == [] and .immutable == true and .data["receipt.json"] == $receipt and
+      (.metadata.resourceVersion | type == "string" and length > 0)) |
+    [.metadata.uid,.metadata.resourceVersion] | @tsv
+  ' "$unpinned_json")" || return 1
+  IFS=$'\t' read -r fixture_owner_uid fixture_owner_resource_version <<<"$unpinned_fields"
   args=(
     --api-version=v1 --resource=configmaps --namespace="$KUBEBRAIN_NAMESPACE" --name="$fixture_owner_configmap"
     --uid="$fixture_owner_uid" --resource-version="$fixture_owner_resource_version"
@@ -616,6 +639,35 @@ delete_fixture_owner_receipt() {
   fi
   fixture_owner_uid=""
   fixture_owner_resource_version=""
+  fixture_owner_receipt_json=""
+}
+pin_fixture_owner_receipt() {
+  local pin_patch pinned_json pinned_fields
+  [[ -n "$fixture_owner_uid" && -n "$fixture_owner_resource_version" && -n "$fixture_owner_receipt_json" ]] || return 1
+  pin_patch="$(jq -cn --arg uid "$fixture_owner_uid" --arg resource_version "$fixture_owner_resource_version" \
+    --arg receipt "$fixture_owner_receipt_json" --arg finalizer "$fixture_owner_finalizer" '[
+    {op:"test",path:"/metadata/uid",value:$uid},
+    {op:"test",path:"/metadata/resourceVersion",value:$resource_version},
+    {op:"test",path:"/immutable",value:true},
+    {op:"test",path:"/data/receipt.json",value:$receipt},
+    {op:"add",path:"/metadata/finalizers",value:[$finalizer]}
+  ]')" || return 1
+  pinned_json="$runtime_evidence_dir/fixture-owner-pinned-${fixture_owner_uid}.json"
+  capture_runtime_evidence "$pinned_json" kctl_mutation patch "configmap/$fixture_owner_configmap" \
+    --type=json -p "$pin_patch" -o json || return 1
+  pinned_fields="$(jq -er --arg name "$fixture_owner_configmap" --arg namespace "$KUBEBRAIN_NAMESPACE" \
+    --arg uid "$fixture_owner_uid" --arg receipt "$fixture_owner_receipt_json" \
+    --arg statefulset "$KUBEBRAIN_STATEFULSET" --arg statefulset_uid "$statefulset_uid" \
+    --arg finalizer "$fixture_owner_finalizer" '
+    select(.metadata.name == $name and .metadata.namespace == $namespace and .metadata.uid == $uid and
+      .metadata.deletionTimestamp == null and .metadata.finalizers == [$finalizer] and .immutable == true and
+      .data["receipt.json"] == $receipt and
+      ([.metadata.ownerReferences[]? | select(.apiVersion == "apps/v1" and .kind == "StatefulSet" and
+        .name == $statefulset and .uid == $statefulset_uid and .controller == true)] | length) == 1 and
+      (.metadata.resourceVersion | type == "string" and length > 0)) |
+    [.metadata.uid,.metadata.resourceVersion] | @tsv
+  ' "$pinned_json")" || return 1
+  IFS=$'\t' read -r fixture_owner_uid fixture_owner_resource_version <<<"$pinned_fields"
 }
 cleanup() {
   if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
@@ -903,13 +955,18 @@ if capture_runtime_evidence "$existing_owner_json" kctl_evidence get configmap "
       statefulset_uid:$statefulset_uid} and
       ($r.probe_pod_uid | test("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")) and
       ($r.lease_ids | type == "array" and length == 3 and all(.[]; type == "string" and test("^[1-9][0-9]*$"))) and
-      ($r.lease_ids | unique | length == 3)) |
-    [$r.probe_pod_uid,($r.lease_ids | join(",")),.metadata.uid,.metadata.resourceVersion] | @tsv
+      ($r.lease_ids | unique | length == 3) and
+      ((.metadata.finalizers // []) == [] or .metadata.finalizers == ["kubebrain.io/rollout-fixture-cleanup"])) |
+    [$r.probe_pod_uid,($r.lease_ids | join(",")),.metadata.uid,.metadata.resourceVersion,.data["receipt.json"]] | @tsv
   ' "$existing_owner_json")" || {
     echo "existing fixture owner ConfigMap is malformed; refusing cleanup" >&2
     exit 1
   }
-  IFS=$'\t' read -r probe_pod_uid fixture_lease_ids fixture_owner_uid fixture_owner_resource_version <<<"$receipt_fields"
+  IFS=$'\t' read -r probe_pod_uid fixture_lease_ids fixture_owner_uid fixture_owner_resource_version fixture_owner_receipt_json <<<"$receipt_fields"
+  pin_fixture_owner_receipt || {
+    echo "failed to pin recovered fixture owner ConfigMap" >&2
+    exit 1
+  }
 fi
 run_fixture_cleanup || {
   echo "rollout fixture preflight cleanup failed" >&2
@@ -966,7 +1023,8 @@ receipt_json="$(jq -cnS --arg namespace "$KUBEBRAIN_NAMESPACE" --arg prefix "/ku
     statefulset_uid:$statefulset_uid}')" || exit 1
 receipt_manifest="$(jq -cn --arg name "$fixture_owner_configmap" --arg namespace "$KUBEBRAIN_NAMESPACE" \
   --arg statefulset "$KUBEBRAIN_STATEFULSET" --arg statefulset_uid "$statefulset_uid" --arg receipt "$receipt_json" \
-  '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:$name,namespace:$namespace,ownerReferences:[{
+  --arg finalizer "$fixture_owner_finalizer" \
+  '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:$name,namespace:$namespace,finalizers:[$finalizer],ownerReferences:[{
     apiVersion:"apps/v1",kind:"StatefulSet",name:$statefulset,uid:$statefulset_uid,controller:true,
     blockOwnerDeletion:true}]},immutable:true,data:{"receipt.json":$receipt}}')" || exit 1
 kctl_mutation create -f - <<<"$receipt_manifest" >/dev/null || {
@@ -978,9 +1036,10 @@ capture_runtime_evidence "$created_owner_json" kctl_evidence get configmap "$fix
   echo "failed to read immutable fixture owner ConfigMap" >&2
   exit 1
 }
-owner_fields="$(jq -er --arg name "$fixture_owner_configmap" --arg receipt "$receipt_json" --arg uid "$statefulset_uid" '
+owner_fields="$(jq -er --arg name "$fixture_owner_configmap" --arg receipt "$receipt_json" --arg uid "$statefulset_uid" \
+  --arg finalizer "$fixture_owner_finalizer" '
   select(($receipt | length) > 0 and .metadata.name == $name and .metadata.deletionTimestamp == null and .immutable == true and
-    .data["receipt.json"] == $receipt and
+    .metadata.finalizers == [$finalizer] and .data["receipt.json"] == $receipt and
     ([.metadata.ownerReferences[]? | select(.uid == $uid and .controller == true)] | length) == 1 and
     (.metadata.uid | type == "string" and length > 0) and (.metadata.resourceVersion | type == "string" and length > 0)) |
   [.metadata.uid,.metadata.resourceVersion] | @tsv
@@ -989,6 +1048,7 @@ owner_fields="$(jq -er --arg name "$fixture_owner_configmap" --arg receipt "$rec
   exit 1
 }
 IFS=$'\t' read -r fixture_owner_uid fixture_owner_resource_version <<<"$owner_fields"
+fixture_owner_receipt_json="$receipt_json"
 fixture_cleanup_ready=true
 ungate_patch="$(jq -cn --arg uid "$probe_pod_uid" --arg resource_version "$probe_pod_resource_version" '[
   {op:"test",path:"/metadata/uid",value:$uid},{op:"test",path:"/metadata/resourceVersion",value:$resource_version},
