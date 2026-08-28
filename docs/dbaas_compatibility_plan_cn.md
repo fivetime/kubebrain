@@ -64144,6 +64144,62 @@ Service NotFound、EndpointSlice 0。不可接受的 A5571 本地归档/metadata
 和已正确绑定证明的 A5570 rollback archive。节点删除 A5567/A5569/A5571 的精确 tag/index/runtime/config 与 A5570/A5572
 可变 tag，只保留当前 A5572 和回滚 A5570 的 immutable index/config，以及当前正在使用的 A5572 runtime wrapper。
 
+### A5573：用持久 ownership receipt 补偿异常终止的 rollout fixture
+
+提交 `a56e4ddb`（A5573）关闭了 A5570 遗留暴露的外部补偿缺口。探针不再在启动时盲删独占前缀，而是在确认前缀为空后，
+以 create-only Txn 在 `/kubebrain-rollout-fixture-owners/<sha256(prefix)>` 创建 canonical v1 receipt；receipt 精确绑定 namespace、
+probe Pod 名称/UID、StatefulSet 名称/UID，并在每条 lease 被业务数据使用前以 value/version CAS 记录 lease ID。marker 位于 Snapshot
+数据前缀之外，不改变预期快照 keyset；claim 后若发现并发前缀碰撞，只 CAS 撤销本次 marker，不会把外来数据据为己有。正常退出只有在
+auth、lease 和数据清理全部成功后才以 CAS 同时删除前缀与 marker；任何 schema/identity 漂移都保留 receipt 并 fail closed。
+
+runner 在主 probe 前后各创建一个使用同一不可变镜像、TLS identity 和非 root security context 的短生命周期 cleanup Pod。preflight
+只接受“receipt 不存在且前缀、6 个确定性用户、4 个确定性角色全部不存在”，或 receipt 与当前 namespace/StatefulSet 精确匹配；
+postflight 还必须匹配原 probe Pod UID。补偿先完整检查确定性 auth schema 和不存在外来用户对 owned role 的引用，再删除 auth、撤销
+receipt 中全部 lease，最后用 marker value/version CAS 删除数据前缀和 marker，并复验零残留；重复执行返回严格的
+`status=absent`。runner EXIT trap 会重试未确认的补偿，但 SIGKILL runner 后下一次 preflight 仍可仅凭持久 receipt 恢复。嵌入式
+etcd 测试固定完整异常状态恢复与二次 no-op、schema drift 全量保留、无 receipt 残留拒绝，以及非空前缀/非法 Kubernetes identity
+拒绝；runner 测试固定两次 cleanup、Downward API Pod UID、postflight UID 绑定和 malformed evidence 在主 probe 创建前失败。
+
+probe 普通测试 `129.686s`、race `185.027s`，vet、bash syntax、diff check 与受影响 runner 定向测试全绿。production inventory
+增至 679 项，提交前 `--verify 4` 为 `162/187/174/156`；提交后四片 wall 为
+`150.102/396.375/267.831/414.252s`，全部通过。单包 679 项在 `1194.721s` 完成测试执行，仅有旧的 `<4s` 命令边界断言因新增
+固定 cleanup 开销达到 `4.093s`；校准为仍低于测试外层 `<5s` 后定向用例通过，四分片提供完整最终证据。
+
+A5573 使用完整 SHA `a56e4ddbdc92205563255a832c430f7c87ab1856`、版本 `0.0.0-a56e4ddbdc92`、TiKV、Go 1.26.5、
+build time `2026-08-28T02:47:58Z` 和显式 tag `kubebrain:a5573-a56e4ddb` 构建。OCI archive 为 914,324,992 bytes，
+SHA-256 `2a7e31ebfc8752c8f5c64b6e2ee4a3c82415655c8f75f94c4cad14731d6957fe`；index
+`sha256:c877e57a880a8eabc6f419932d19d5a7a1a6627bbebc60bbb46055faf1f0aec6`、platform
+`sha256:50b0a7f6e363d42e4edff84c4b303b28beaa749f84ba16d5875db5012d20a25d`、config
+`sha256:3eac89c475ff493618dc33247aa038ab48893e69737cc46a6179af176c43675e`、attestation
+`sha256:2c9b6a29d2dd3f9c6650c39ad1e6c4e425a59087445cc0ab08d36cbba315c95a`、SBOM statement
+`sha256:45122985cb686cecda1246398796217bcfb502363d262305b2026685d947a79b`、provenance statement
+`sha256:c3e1b3eb4b72585216509bb121196d69ee232d824b1a89a95e13fe0d2d32dfb3`、Kind runtime wrapper
+`sha256:ebf850273fe4f764a2458fb6242740e4270c34e2a94931089bae2a35927eeaa0`。严格审计 78/78 blob digest 正确，8 个
+JSON 文档的 78 descriptor edges digest/size/missing 全为 0；SBOM 为 2,592 packages/8,096 relationships、provenance 为
+3 materials，两份 statement 都只有一个 subject 且精确绑定 platform。一次性不可变 Pod 验证完整版本/SHA/build time、TiKV、
+linux/amd64、UID/GID 65532 和 restart 0，并以 UID `674a95ad-eba1-44ee-8cba-3aaf838d7ee6`、resourceVersion
+`7047777` 双前置条件删除。
+
+真实异常验证先证明 grace-0 Kubernetes 删除仍会触发 SIGTERM handler：留下 529 keys/3 leases、auth 已清理，下一轮 preflight
+精确报告 `recovered ... keys=529 users=0 roles=0 leases=3`。随后从节点 CRI 读取 probe container 宿主 PID 并直接 SIGKILL，且同时
+SIGKILL runner；Pod UID `4e366ecf-49e6-4009-b11e-d08ce7ebccd3` 消失后现场精确存在 529 keys、6 users、4 roles、receipt
+记录的 3 leases 且当时全部存活。下一轮 runner 在创建主 probe 前报告
+`recovered ... keys=529 users=6 roles=4 leases=3`；5 秒 lease 在补偿时自然过期的 NotFound 被作为幂等结果接受，其余对象全部
+清零。使用单 ordinal Service 的后续业务 gate 曾在 iteration 138 `watch timed out` 并按设计 RED、postflight 仍零残留；改用精确
+选择三个 Ready Pod 的临时 ClusterIP 后 observe gate **900/900 GREEN**，Watch `900/900×3`、Lease `73/216` 且 restart 0、
+RangeStream 125、Snapshot 1、最大总/direct/TSO/Region 延迟 `2329/2329/67/17ms`。
+
+A5572→A5573 候选升级同样 **900/900 GREEN**：Watch `900/900×3`，Lease `98/264`，public restart 0、direct replacement 16、
+最大 direct 恢复 15,261ms，RangeStream 172、Snapshot 1、retry/partial `1/0`，最大总/direct/TSO/Region 延迟
+`4174/21324/56/18ms`。终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed
+generation 164，current/update revision `a4657-tls-5567798f8f`；3/3 Ready、restart 0 且运行精确 A5573 index/runtime。
+三端 cluster ID `7662961163671170154`、revision `95239`、term 507、leader `848842929` 一致；三个 voter 精确、AlarmList 空，
+auth 用户恢复为 `KubeWharfServer/alice/root`、角色为 `operator/root`，三个 TiKV store 均 Up。三个 A5573 专用前缀和 ownership
+marker 根均为 0；fixture 总根仍有一个无 receipt 的既有 `/a5529-tls-migration/watch`，按 fail-closed 规则未触碰。临时 Service
+`a5573-client` 以 UID `415cafc7-1624-4d56-95f9-304ac8398829` 和实时 resourceVersion 双前置条件删除，Service NotFound、
+EndpointSlice 0。清理 A5570 archive 与节点 immutable index/config、A5573 mutable node tag 和临时审计展开目录；本轮受管发布
+保留集更新为 A5572 rollback 与 A5573 current 的不可变 index/config/runtime，两个 OCI archive 可用于节点缓存丢失后的恢复。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
