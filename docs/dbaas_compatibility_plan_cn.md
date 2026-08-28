@@ -64300,6 +64300,64 @@ A5575/foreign/owner receipt 残留均为零。临时 Service `a5575-client` 以 
 resourceVersion `7065235` 双前置条件删除，Service NotFound、EndpointSlice 0。A5573 archive/节点引用和 mutable A5574/A5575 tag
 已清理；发布保留集为 A5574 rollback 与 A5575 current 的 archive 和不可变 runtime/config 引用。
 
+### A5576：封闭 rollout 外部 lease cleanup 的 TTL/missing TOCTOU
+
+提交 `a213e60d`（A5576）继续关闭 A5575 的两项 cleanup fail-open。第一，旧
+`classifyExternalFixtureLeaseAbsence` 把所有 `TTL<0` 都当作不存在；但对照
+`/root/etcd/server/etcdserver/v3_server.go` 的 `leaseTimeToLive`，租约超过 deadline 而异步 revoke 尚未完成时仍可返回负 TTL 和
+非零 GrantedTTL/attached keys，只有 `api/v3rpc/lease.go` 把真正 `ErrLeaseNotFound` 规范化为同 ID、`TTL=-1`、
+`GrantedTTL=0`、无 keys 的 missing sentinel。修复前 RED 证明 `TTL=-2, GrantedTTL=30`、恰好 `TTL=-1, GrantedTTL=30`
+都被误判 missing，带 attached key 的伪 missing 也未 fail closed。第二，旧 cleanup 初检某个 receipt ID 不存在后，仍会在 auth cleanup
+之后无条件对全部三个 ID 执行 Revoke；该 ID 在窗口中被另一个客户端 grant 时会被旧 receipt 接管，形成 missing→regrant ABA。
+
+修复现在只接受精确 missing sentinel，并对其 ID、cluster/header/revision 再验证；负 TTL 但 GrantedTTL 非零的租约仍按 live 处理。
+cleanup 冻结初次 mutation-free inspection 得到的 live ID 集，绝不把初检 missing 的 ID 加入 revoke plan。所有初检 live lease 在任何
+mutation 前重新读取 attached keys/header；剩余 TTL 不足以覆盖最坏顺序 Revoke 预算
+`ceil(command-timeout)×initial-live-count+1` 时只等待自然消失，不携带陈旧观察执行 Revoke。auth schema 在等待后重新读取并按精确形状删除，
+随后 lease 再做一次相同复验，避免 auth RPC 延迟跨过自然到期/regrant 边界；只有仍远离到期且两次复验均属于 receipt prefix 的 lease 才会
+Revoke。此收紧不改变 etcd 公共 API，也不禁止显式 signed lease ID 重用。
+
+修复前 RED、missing identity/header、初检 missing 后不接管、live→foreign replacement 拒绝、近到期自然等待、正常异常恢复与 A5575
+foreign-key 拒绝均有嵌入式 etcd 回归；关键 race 组 `21.951s`、probe 包全量 `142.811s`，runner receipt/observe/hard-failover/
+malformed-evidence 场景 `10.355s`，diff check 全绿。production inventory 保持 680 项，提交前 `--verify 4` 为
+`162/188/174/156`；提交后四片为 `152.216/405.762/279.449/419.666s`，全部通过。
+
+A5576 使用完整 SHA `a213e60d9799812695768e171bf845cab093afda`、版本 `0.0.0-a213e60d9799`、TiKV、Go 1.26.5、
+build time `2026-08-28T06:14:11Z` 和显式 tag `kubebrain:a5576-a213e60d` 构建，墙钟 `4m41.445s`。OCI archive 为
+914,348,032 bytes，SHA-256 `d2e326b219b981511d6809dafd25430731fad4606114dc37c6a2a1c011d4800a`；OCI index
+`sha256:c1e228f21be91a15c347fc2acfa07744fec51d4f61027b53145898e0c458938f`、platform
+`sha256:a0a01ed7ca1ca01f1af8c05399e0cfb9b43aa3d9f4b900bc79918ff5c7bbd8e5`、config
+`sha256:a696d5860b514a4ae95ea6685df4ceee55eaefa7635191ecbc82cc04dd93ede8`、attestation
+`sha256:37d0cc3b8bed46a1440e9b2020742655b2a0ab80f6a2761bede5e5c8da37ade5`、SBOM statement
+`sha256:32aaabcabf36ad1b0745205844256a1e4e8a96eec9178443c20b1ee5b2f61835`、provenance statement
+`sha256:c83196e9f7427fc86934f94104366afad63376a869d328ac2bdb374e8c56a38a`、Kind runtime wrapper
+`sha256:3cc6f58cb9218a09949784756e61e9b716d338ed64ec46c78162e2d17ae00e00`。严格审计 78/78 blobs、四个 OCI
+图文档的 78 descriptor edges 全部正确；SBOM 为 2,592 packages/8,096 relationships，provenance 为 3 materials，两份 statement
+均只有一个 subject 且精确绑定 platform。不可变审计 Pod UID `150815d1-5efb-402a-9c43-cdc472c9d7f0`、resourceVersion
+`7073229` 验证完整版本/SHA/build time、TiKV、linux/amd64、UID/GID 65532 和 restart 0 后以双前置条件删除。
+
+A5575→A5576 候选升级 **900/900 GREEN**：Watch `900/900×3`、Lease `103/274`、public restart 0、direct replacement 17、
+RangeStream 171、Snapshot 1、retry/partial `3/0`，最大总/direct/TSO/Region 延迟 `3422/21268/62/8ms`。same-version
+restart 同样 **900/900 GREEN**：Lease `99/268`、public restart 0、direct replacement 17、RangeStream 171、Snapshot 1、
+retry/partial `1/0`，最大总/direct/TSO/Region `2514/20541/61/16ms`；两轮 postflight 均为零残留。
+
+真实 missing→regrant 演练创建 immutable receipt UID `40e3316b-1145-4e39-bd7e-dcd79d3ba073`、resourceVersion
+`7076113`，ID1 `7700000000000000001` 以 TTL 120 挂载自有 prefix，ID2/ID3 初检时为精确 missing。cleanup 使用 180 秒
+command timeout，故 ID1 必须等待自然到期；Pod 自 `2026-08-28T06:44:54Z` 运行后，在该等待窗口以初检缺失的 ID2
+`7700000000000000002`、TTL 300 创建 `/a5576/race/foreign-must-survive=foreign-after-inspection`。cleanup 于
+`06:46:30Z` 以 `status=recovered keys=1 users=0 roles=0 leases=3`、exit 0 完成；复验 ID1/ID3 为 missing，ID2 仍有 TTL 215，
+key/value/attachment 和 receipt UID/resourceVersion 全部原样保留。随后只删除专用 foreign key、撤销 ID2，并以 UID/RV 前置条件删除
+receipt、cleanup/client Pod。首轮 runner 注入因时序过晚只完成正常 preflight，TERM 后留下的新 receipt 也由独立 cleanup 证明
+`status=absent` 后按 UID/RV 删除，不计入 race 成功证据。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 170，current/update
+revision `a4657-tls-84c4bdc457`，3/3 Ready/restart 0 且三个 Pod 均运行 A5576 wrapper。三端 cluster ID
+`7662961163671170154`、revision 102158、term 519、leader 2985394290 一致；AlarmList 空，auth 为
+`KubeWharfServer/alice/root` 与 `operator/root`，PD/TiKV 3+3 Ready/restart 0，A5576/race/owner receipt 残留均为零。临时
+Service `a5576-client` 以 UID `f0b46f42-7629-4b27-9baf-4642cc9a9e12`、resourceVersion `7073322` 双前置条件删除，
+Service NotFound、EndpointSlice 0。A5574 archive、节点 runtime/config/import 引用、A5576 mutable tag、OCI 审计展开目录和临时 helper
+均已移入系统回收站或移除；发布保留集为 A5575 rollback 与 A5576 current 的 archive 和不可变 runtime/config/import 引用。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
