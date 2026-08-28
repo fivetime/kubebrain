@@ -604,7 +604,8 @@ generate_fixture_lease_ids() {
 
 delete_fixture_owner_receipt() {
   local -a args
-  local current_json current_fields unpin_patch unpinned_json unpinned_fields observed_json observed_uid
+  local current_json current_fields unpin_patch unpinned_json unpinned_fields observed_json observed_fields observed_uid
+  local delete_attempt delete_wait_seconds delete_deadline
   [[ -n "$fixture_owner_uid" && -n "$fixture_owner_resource_version" ]] || return 0
   [[ -n "$fixture_owner_receipt_json" ]] || return 1
   unpin_patch="$(jq -cn --arg uid "$fixture_owner_uid" --arg resource_version "$fixture_owner_resource_version" \
@@ -675,20 +676,45 @@ delete_fixture_owner_receipt() {
   [[ -z "$KUBECTL_CONTEXT" ]] || args+=(--context="$KUBECTL_CONTEXT")
   uid_delete "${args[@]}" >/dev/null 2>&1 || true
   observed_json="$runtime_evidence_dir/fixture-owner-delete-observed-${fixture_owner_uid}.json"
-  for ((delete_attempt = 0; delete_attempt < 100; delete_attempt++)); do
-    capture_runtime_evidence "$observed_json" kctl_evidence get configmap "$fixture_owner_configmap" \
-      -o json --ignore-not-found || return 1
+  delete_wait_seconds="$(duration_ceil_seconds "$PROBE_DELETE_TIMEOUT")" || return 1
+  delete_deadline=$((SECONDS + delete_wait_seconds))
+  for ((delete_attempt = 0; delete_attempt == 0 || SECONDS < delete_deadline; delete_attempt++)); do
+    if ! capture_runtime_evidence "$observed_json" kctl_evidence get configmap "$fixture_owner_configmap" \
+      -o json --ignore-not-found; then
+      sleep 0.1
+      continue
+    fi
     if [[ ! -s "$observed_json" ]]; then
       fixture_owner_uid=""
       fixture_owner_resource_version=""
       fixture_owner_receipt_json=""
       return 0
     fi
-    observed_uid="$(jq -er '.metadata.uid | select(type == "string" and length > 0)' "$observed_json")" || return 1
+    observed_fields="$(jq -er '
+      select((.metadata.uid | type == "string" and length > 0) and
+        (.metadata.resourceVersion | type == "string" and length > 0)) |
+      [.metadata.uid,.metadata.resourceVersion] | @tsv
+    ' "$observed_json")" || return 1
+    IFS=$'\t' read -r observed_uid fixture_owner_resource_version <<<"$observed_fields"
     if [[ "$observed_uid" != "$fixture_owner_uid" ]]; then
       echo "fixture owner ConfigMap was replaced during UID-fenced deletion" >&2
       return 1
     fi
+    jq -e --arg name "$fixture_owner_configmap" --arg namespace "$KUBEBRAIN_NAMESPACE" \
+      --arg uid "$fixture_owner_uid" --arg receipt "$fixture_owner_receipt_json" \
+      --arg statefulset "$KUBEBRAIN_STATEFULSET" --arg statefulset_uid "$statefulset_uid" '
+      .metadata.name == $name and .metadata.namespace == $namespace and .metadata.uid == $uid and
+      (.metadata.finalizers // []) == [] and .immutable == true and .data["receipt.json"] == $receipt and
+      ([.metadata.ownerReferences[]? | select(.apiVersion == "apps/v1" and .kind == "StatefulSet" and
+        .name == $statefulset and .uid == $statefulset_uid and .controller == true)] | length) == 1
+    ' "$observed_json" >/dev/null || return 1
+    args=(
+      --api-version=v1 --resource=configmaps --namespace="$KUBEBRAIN_NAMESPACE" --name="$fixture_owner_configmap"
+      --uid="$fixture_owner_uid" --resource-version="$fixture_owner_resource_version"
+      --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT"
+    )
+    [[ -z "$KUBECTL_CONTEXT" ]] || args+=(--context="$KUBECTL_CONTEXT")
+    uid_delete "${args[@]}" >/dev/null 2>&1 || true
     sleep 0.1
   done
   echo "fixture owner ConfigMap still exists after UID-fenced deletion" >&2
@@ -1055,19 +1081,19 @@ run_fixture_cleanup() {
   if ! kctl_watch "${cleanup_wait_seconds}s" \
     wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$probe_cleanup_pod" --timeout="$PROBE_COMPLETE_TIMEOUT" >/dev/null; then
     kctl_evidence logs "$probe_cleanup_pod" >&2 || true
-    kctl_mutation delete pod "$probe_cleanup_pod" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null || true
+    delete_fixture_cleanup_pod >/dev/null 2>&1 || true
     echo "fixture cleanup Pod did not succeed within ${PROBE_COMPLETE_TIMEOUT}" >&2
     return 1
   fi
   cleanup_log="$runtime_evidence_dir/fixture-cleanup-${probe_pod_uid:-preflight}.log"
   if ! capture_runtime_evidence "$cleanup_log" kctl_evidence logs "$probe_cleanup_pod"; then
-    kctl_mutation delete pod "$probe_cleanup_pod" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null || true
+    delete_fixture_cleanup_pod >/dev/null 2>&1 || true
     echo "failed to read fixture cleanup evidence" >&2
     return 1
   fi
   if [[ "$(grep -c '^FIXTURE_CLEANUP_OK ' "$cleanup_log" || true)" != 1 ]]; then
     cat "$cleanup_log" >&2
-    kctl_mutation delete pod "$probe_cleanup_pod" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null || true
+    delete_fixture_cleanup_pod >/dev/null 2>&1 || true
     echo "fixture cleanup did not return exactly one success result" >&2
     return 1
   fi
@@ -1075,7 +1101,7 @@ run_fixture_cleanup() {
   if ! [[ "$cleanup_line" =~ ^FIXTURE_CLEANUP_OK\ status=absent\ owner_uid=\ keys=0\ users=0\ roles=0\ leases=0$ ||
     "$cleanup_line" =~ ^FIXTURE_CLEANUP_OK\ status=recovered\ owner_uid=[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\ keys=[0-9]+\ users=[0-9]+\ roles=[0-9]+\ leases=[0-9]+$ ]]; then
     cat "$cleanup_log" >&2
-    kctl_mutation delete pod "$probe_cleanup_pod" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null || true
+    delete_fixture_cleanup_pod >/dev/null 2>&1 || true
     echo "fixture cleanup evidence is malformed" >&2
     return 1
   fi
@@ -1085,35 +1111,45 @@ run_fixture_cleanup() {
 }
 
 delete_fixture_cleanup_pod() {
-  local current_json current_fields current_uid current_resource_version observed_json observed_uid delete_attempt
+  local current_json current_fields current_uid current_resource_version delete_attempt delete_wait_seconds delete_deadline
+  local -a args
   [[ -n "$fixture_cleanup_pod_uid" ]] || return 0
   current_json="$runtime_evidence_dir/fixture-cleanup-delete-current-${fixture_cleanup_pod_uid}.json"
-  capture_runtime_evidence "$current_json" kctl_evidence get pod "$probe_cleanup_pod" -o json --ignore-not-found || return 1
-  if [[ ! -s "$current_json" ]]; then
-    fixture_cleanup_pod_uid=""
-    return 0
-  fi
-  current_fields="$(jq -er --arg uid "$fixture_cleanup_pod_uid" '
-    select(.metadata.uid == $uid and .status.phase == "Succeeded" and
-      (.metadata.resourceVersion | type == "string" and length > 0)) |
-    [.metadata.uid,.metadata.resourceVersion] | @tsv
-  ' "$current_json")" || return 1
-  IFS=$'\t' read -r current_uid current_resource_version <<<"$current_fields"
-  uid_delete --api-version=v1 --resource=pods --namespace="$KUBEBRAIN_NAMESPACE" --name="$probe_cleanup_pod" \
-    --uid="$current_uid" --resource-version="$current_resource_version" --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" \
-    >/dev/null 2>&1 || true
-  observed_json="$runtime_evidence_dir/fixture-cleanup-delete-observed-${fixture_cleanup_pod_uid}.json"
-  for ((delete_attempt = 0; delete_attempt < 100; delete_attempt++)); do
-    capture_runtime_evidence "$observed_json" kctl_evidence get pod "$probe_cleanup_pod" -o json --ignore-not-found || return 1
-    if [[ ! -s "$observed_json" ]]; then
+  delete_wait_seconds="$(duration_ceil_seconds "$PROBE_DELETE_TIMEOUT")" || return 1
+  delete_deadline=$((SECONDS + delete_wait_seconds))
+  for ((delete_attempt = 0; delete_attempt == 0 || SECONDS < delete_deadline; delete_attempt++)); do
+    if ! capture_runtime_evidence "$current_json" kctl_evidence get pod "$probe_cleanup_pod" -o json --ignore-not-found; then
+      sleep 0.1
+      continue
+    fi
+    if [[ ! -s "$current_json" ]]; then
       fixture_cleanup_pod_uid=""
       return 0
     fi
-    observed_uid="$(jq -er '.metadata.uid | select(type == "string" and length > 0)' "$observed_json")" || return 1
-    [[ "$observed_uid" == "$fixture_cleanup_pod_uid" ]] || {
+    current_fields="$(jq -er '
+      select((.metadata.uid | type == "string" and length > 0) and
+        (.metadata.resourceVersion | type == "string" and length > 0)) |
+      [.metadata.uid,.metadata.resourceVersion] | @tsv
+    ' "$current_json")" || return 1
+    IFS=$'\t' read -r current_uid current_resource_version <<<"$current_fields"
+    [[ "$current_uid" == "$fixture_cleanup_pod_uid" ]] || {
       echo "fixture cleanup Pod was replaced during UID-fenced deletion" >&2
       return 1
     }
+    jq -e --arg uid "$fixture_cleanup_pod_uid" '
+      .metadata.uid == $uid and
+      (.metadata.deletionTimestamp == null or
+        (.metadata.deletionTimestamp | type == "string" and length > 0)) and
+      (.status.phase == "Pending" or .status.phase == "Running" or .status.phase == "Succeeded" or
+        .status.phase == "Failed" or .status.phase == "Unknown")
+    ' "$current_json" >/dev/null || return 1
+    args=(
+      --api-version=v1 --resource=pods --namespace="$KUBEBRAIN_NAMESPACE" --name="$probe_cleanup_pod"
+      --uid="$current_uid" --resource-version="$current_resource_version"
+      --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT"
+    )
+    [[ -z "$KUBECTL_CONTEXT" ]] || args+=(--context="$KUBECTL_CONTEXT")
+    uid_delete "${args[@]}" >/dev/null 2>&1 || true
     sleep 0.1
   done
   echo "fixture cleanup Pod still exists after UID-fenced deletion" >&2

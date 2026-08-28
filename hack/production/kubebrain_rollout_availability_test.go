@@ -685,6 +685,50 @@ func TestRolloutAvailabilityRunnerRetriesTransientProbeDeleteReadFailure(t *test
 		"--name=kubebrain-rollout-availability-probe --uid=33333333-3333-4333-8333-333333333333 --resource-version=probe-rv")
 }
 
+func TestRolloutAvailabilityRunnerRetriesTransientFixtureDeleteReadFailures(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_OWNER_DELETE_GET_FAILURES=2", "FAKE_CLEANUP_DELETE_GET_FAILURES=2",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"PROBE_DELETE_TIMEOUT=3s",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "KubeBrain rollout availability gate passed")
+	log := readOptionalFile(t, logPath)
+	require.Equal(t, 3, strings.Count(log,
+		" get configmap kubebrain-rollout-availability-probe-owner -o json --ignore-not-found"),
+		"receipt deletion must retry two failures and confirm NotFound")
+	require.Equal(t, 5, strings.Count(log,
+		" get pod kubebrain-rollout-availability-probe-cleanup -o json --ignore-not-found"),
+		"preflight cleanup deletion must retry twice, delete by UID, confirm NotFound, and postflight confirm GC")
+	require.NotContains(t, log, " delete pod kubebrain-rollout-availability-probe-cleanup ",
+		"fixture cleanup must not retain a raw name-delete path")
+}
+
+func TestRolloutAvailabilityRunnerRetriesTransientFixtureUIDDeleteFailures(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_OWNER_UID_DELETE_FAILURES=1", "FAKE_CLEANUP_UID_DELETE_FAILURES=1",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"PROBE_DELETE_TIMEOUT=3s",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "KubeBrain rollout availability gate passed")
+	log := readOptionalFile(t, logPath)
+	require.Equal(t, 2, strings.Count(log,
+		"uid-delete --api-version=v1 --resource=configmaps --namespace=kubebrain-system"),
+		"receipt deletion must retry a failed UID/RV request after rereading the same object")
+	require.Equal(t, 2, strings.Count(log,
+		"uid-delete --api-version=v1 --resource=pods --namespace=kubebrain-system --name=kubebrain-rollout-availability-probe-cleanup"),
+		"cleanup deletion must retry a failed UID/RV request after rereading the same object")
+}
+
 func TestRolloutAvailabilityRunnerFailsClosedOnMalformedFixtureCleanupEvidence(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -703,7 +747,30 @@ func TestRolloutAvailabilityRunnerFailsClosedOnMalformedFixtureCleanupEvidence(t
 	require.Contains(t, string(output), "rollout fixture preflight cleanup failed")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe-cleanup ")
+	require.Contains(t, log,
+		"uid-delete --api-version=v1 --resource=pods --namespace=kubebrain-system --name=kubebrain-rollout-availability-probe-cleanup")
+	require.NotContains(t, log, " delete pod kubebrain-rollout-availability-probe-cleanup ",
+		"malformed evidence cleanup must remain UID/RV fenced")
 	require.NotContains(t, log, " run kubebrain-rollout-availability-probe ")
+}
+
+func TestRolloutAvailabilityRunnerDeletesOwnedFailedCleanupWithUIDFence(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_CLEANUP_FAILED=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true",
+		"PROBE_ITERATIONS=3", "PROBE_COMPLETE_TIMEOUT=1s", "PROBE_DELETE_TIMEOUT=3s",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "fixture cleanup Pod did not succeed within 1s")
+	log := readOptionalFile(t, logPath)
+	require.Contains(t, log,
+		"uid-delete --api-version=v1 --resource=pods --namespace=kubebrain-system --name=kubebrain-rollout-availability-probe-cleanup")
+	require.NotContains(t, log, " delete pod kubebrain-rollout-availability-probe-cleanup ")
+	require.NoFileExists(t, logPath+".cleanup",
+		"an admitted Failed cleanup Pod must not poison the next receipt takeover")
 }
 
 func TestRolloutAvailabilityRunnerHardFailoverDeletesStableLeaderIdentityAndRecovers(t *testing.T) {
@@ -1567,7 +1634,7 @@ func TestRolloutAvailabilityRunnerRollsBackCandidateWhenProbeDeletionFails(t *te
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64),
-		"FAKE_DELETE_FAIL=true", "PROBE_DELETE_TIMEOUT=1s",
+		"FAKE_DELETE_FAIL=true", "PROBE_DELETE_TIMEOUT=3s",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1784,6 +1851,12 @@ func writeRolloutAvailabilityKubectl(t *testing.T) (fakePath, logPath, statePath
 set -euo pipefail
 printf ' uid-delete %s\n' "$*" >>"${FAKE_KUBECTL_LOG}"
 if [[ " $* " == *" --resource=configmaps "* ]]; then
+	owner_delete_failures="${FAKE_OWNER_UID_DELETE_FAILURES:-0}"
+	owner_delete_state="${FAKE_KUBECTL_LOG}.owner-uid-delete-count"
+	owner_delete_count=0
+	[[ ! -e "$owner_delete_state" ]] || owner_delete_count="$(<"$owner_delete_state")"
+	printf '%s' "$((owner_delete_count + 1))" >"$owner_delete_state"
+	(( owner_delete_count >= owner_delete_failures )) || exit 1
   rm -f -- "${FAKE_KUBECTL_LOG}.owner"
   if [[ -e "${FAKE_KUBECTL_LOG}.cleanup" ]] && jq -e '
     [.metadata.ownerReferences[]? | select(.kind == "ConfigMap" and
@@ -1794,6 +1867,12 @@ if [[ " $* " == *" --resource=configmaps "* ]]; then
   fi
 fi
 if [[ " $* " == *" --resource=pods "* && " $* " == *" --name=kubebrain-rollout-availability-probe-cleanup "* ]]; then
+	cleanup_delete_failures="${FAKE_CLEANUP_UID_DELETE_FAILURES:-0}"
+	cleanup_delete_state="${FAKE_KUBECTL_LOG}.cleanup-uid-delete-count"
+	cleanup_delete_count=0
+	[[ ! -e "$cleanup_delete_state" ]] || cleanup_delete_count="$(<"$cleanup_delete_state")"
+	printf '%s' "$((cleanup_delete_count + 1))" >"$cleanup_delete_state"
+	(( cleanup_delete_count >= cleanup_delete_failures )) || exit 1
   rm -f -- "${FAKE_KUBECTL_LOG}.cleanup"
   : >"${FAKE_KUBECTL_LOG}.cleanup-deleted"
 fi
@@ -1833,6 +1912,14 @@ owner_state="${FAKE_KUBECTL_LOG}.owner"
 cleanup_state="${FAKE_KUBECTL_LOG}.cleanup"
 probe_state="${FAKE_KUBECTL_LOG}.probe"
 if [[ " $* " == *" get configmap kubebrain-rollout-availability-probe-owner "* ]]; then
+	owner_delete_get_failures="${FAKE_OWNER_DELETE_GET_FAILURES:-0}"
+	if [[ " $* " == *" --ignore-not-found "* && "$owner_delete_get_failures" =~ ^[0-9]+$ ]]; then
+		owner_delete_get_state="${owner_state}-delete-get-count"
+		owner_delete_get_count=0
+		[[ ! -e "$owner_delete_get_state" ]] || owner_delete_get_count="$(<"$owner_delete_get_state")"
+		printf '%s' "$((owner_delete_get_count + 1))" >"$owner_delete_get_state"
+		(( owner_delete_get_count >= owner_delete_get_failures )) || exit 1
+	fi
   if [[ ! -e "$owner_state" ]]; then
     [[ " $* " == *" --ignore-not-found "* ]] && exit 0
     exit 1
@@ -1952,6 +2039,14 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
     [[ -z "${FAKE_RUNTIME_RESPONSE_COMPLETED:-}" ]] || : >"$FAKE_RUNTIME_RESPONSE_COMPLETED"
   fi
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe-cleanup "* ]]; then
+	cleanup_delete_get_failures="${FAKE_CLEANUP_DELETE_GET_FAILURES:-0}"
+	if [[ " $* " == *" --ignore-not-found "* && "$cleanup_delete_get_failures" =~ ^[0-9]+$ ]]; then
+		cleanup_delete_get_state="${cleanup_state}-delete-get-count"
+		cleanup_delete_get_count=0
+		[[ ! -e "$cleanup_delete_get_state" ]] || cleanup_delete_get_count="$(<"$cleanup_delete_get_state")"
+		printf '%s' "$((cleanup_delete_get_count + 1))" >"$cleanup_delete_get_state"
+		(( cleanup_delete_get_count >= cleanup_delete_get_failures )) || exit 1
+	fi
   if [[ -e "${cleanup_state}-deleted" ]]; then
     [[ " $* " == *" --ignore-not-found "* ]] && exit 0
     exit 1
@@ -2135,10 +2230,13 @@ elif [[ " $* " == *" delete pod kubebrain-rollout-availability-probe "* && "${FA
   exit 1
 elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded pod/kubebrain-rollout-availability-probe-cleanup "* ]]; then
   if [[ -e "$cleanup_state" ]]; then
-    jq -c '.status.phase="Succeeded" | .metadata.resourceVersion="cleanup-rv-succeeded"' \
+	cleanup_phase=Succeeded
+	[[ "${FAKE_CLEANUP_FAILED:-false}" != true ]] || cleanup_phase=Failed
+	jq -c --arg phase "$cleanup_phase" '.status.phase=$phase | .metadata.resourceVersion="cleanup-rv-succeeded"' \
       "$cleanup_state" >"${cleanup_state}.next"
     mv -- "${cleanup_state}.next" "$cleanup_state"
   fi
+	[[ "${FAKE_CLEANUP_FAILED:-false}" != true ]] || exit 1
   :
 elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
