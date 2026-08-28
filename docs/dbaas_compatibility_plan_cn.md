@@ -64658,6 +64658,65 @@ current/update revision `a4657-tls-544464c9f6`，3/3 Ready/restart 0 且三个 P
 持续故障 fail closed。外部托管 apiserver 的真实网络/admission/GC 故障注入、超过 60 秒的控制面不可达恢复和长时间多 runner soak
 仍是更高层生产证据缺口。
 
+### A5584：让 rollout fixture cleanup 跨越短暂控制面不可达
+
+提交 `32896cfb`（A5584）把 A5583 的有界删除协调推广到 rollout receipt ConfigMap 与 cleanup Pod。两类对象均在
+`PROBE_DELETE_TIMEOUT` 内重试短暂 GET/UID-delete 失败；每次读到原 UID 都重新完整校验所有权并使用最新 resourceVersion，只有
+NotFound 才成功，读到 replacement 仍立即 fail closed。cleanup Pod 的接纳状态扩展为 Pending/Running/Succeeded/Failed/Unknown，
+避免旧 runner 留下的同 UID Failed Pod 永久阻塞接管；所有错误路径均取消不带 UID/RV 的 raw Pod delete。
+
+新增 `TestRolloutAvailabilityRunnerRetriesTransientFixtureDeleteReadFailures`、
+`TestRolloutAvailabilityRunnerRetriesTransientFixtureUIDDeleteFailures` 与
+`TestRolloutAvailabilityRunnerDeletesOwnedFailedCleanupWithUIDFence`，并加强 malformed evidence 回归，固定只允许 UID 栅栏删除。
+修复前首项回归稳定报 `failed to delete recovered fixture cleanup Pod`。完整 rollout runner 专项最终 `408.921s` 通过；中间一次
+`400.325s` 因永久删除失败用例的 1 秒测试预算在全套负载下误超时，调整为 3 秒后通过，未改变生产默认 60 秒语义。最终 production
+inventory 为 693 项，提交前精确 `hack/production/test-shard.sh --verify 4` 为 `168/190/176/159`；提交后四个零基分片墙钟
+`240.776/425.520/288.947/497.651s`，全部通过。
+
+真实 TiKV/PD 故障注入首轮 `a5584-fixture-retry-probe` 已精确跨越 receipt/cleanup 各两次 GET 不可达与一次 UID-delete 失败，
+并确认对象、prefix 零残留，但 observe gate 因无关的 RangeStream Snapshot 在 2 分钟内未完成而 **RED**；该失败保留为证据，未作为
+清理实现失败掩盖。第二轮 `a5584-fixture-retry-green` 将 Snapshot 启动延迟设为 1 秒、attempt/complete 预算设为 3/4 分钟，
+**3/3 GREEN**：Watch `3/3x3`、Lease `47/138`、public/direct restart `0/0`、TCP `1/1`、RangeStream 77、Snapshot 1、
+retry/partial `0/0`，最大总/put/watch/direct/TSO/Region 延迟 `50/50/19/50/100/7ms`。cleanup 精确经历 GET 1/2 注入失败、
+GET 3 读取原 UID、delete 1 注入失败、GET 4 读取原 UID/RV、delete 2 成功、GET 5 NotFound；owner 精确经历 delete 1 注入失败、
+GET 1/2 注入失败、GET 3 读取原 UID/RV、delete 2 成功、GET 4 NotFound。两轮最终 receipt/probe/cleanup 对象不存在，专用 prefix
+均为零。
+
+A5584 使用完整 SHA `32896cfba6bfafbc25dd42c1802a055cecec53c3`、版本 `0.0.0-32896cfba6bf`、TiKV、Go
+1.26.5、build time `2026-08-28T13:46:00Z` 构建，OCI annotation completion 为 `2026-08-28T13:50:02Z`。最终 archive
+为 914,350,592 bytes，SHA-256 `ae4ba5a25394b780c8273cd0fbd8901c2b781311abc03d9c4237da4ccbbd53d4`；OCI index
+`sha256:ca73fa4d1cab53e0fb8f6742cf4c480a2d7205f0288fa723ef827b3f8037dee9`、platform
+`sha256:dd0ce5f56d4b669fe9d8b588fcb877f5f87e2dd720e7e709e1361d429799eea9`、config
+`sha256:c42b6600461a4b920b8e199b0ccb42096ceaf9ecaf7656aa46e36023d43ceaef`、attestation
+`sha256:dab4fc071180136987ada5555b7dbbaab678745be83d331219c5f7871ef1fe2e`、SBOM statement
+`sha256:b68e5f246c064bf9e68a55f5a8423bb5b4204574cfed0ad10e3ff21ac71d04dc`、provenance statement
+`sha256:e5dbacf5a8ea191731ef88ac61d69423b925d761b5b53b6a7dc8b3a0d0a0c498`、Kind runtime wrapper
+`sha256:c00641c8c93c615ef05a3388063a070f235793721cb35c44230ce2a449360c84`。严格审计为 78/78 blobs、78 条
+descriptor edges；SBOM 为 2,592 packages/8,096 relationships，provenance 为 3 materials，两份 statement 均唯一绑定
+platform。不可变审计 Pod UID `d5590301-a575-4a6f-b0e7-fb326a7409c6`、resourceVersion `7129941` 验证完整版本、SHA、
+build time、TiKV、Go、linux/amd64、UID/GID 65532、精确 runtime imageID 与 restart 0 后按 UID/RV 删除。
+
+A5583→A5584 候选升级 **900/900 GREEN**：Watch `900/900x3`、Lease `101/274`、public restart 0、direct
+replacement 16、最大 direct recovery `14523ms`、public TCP 2、最小 direct TCP 2、RangeStream 170、Snapshot 1、
+retry/partial `0/0`，最大总/put/watch/direct/TSO/Region 延迟 `2431/2307/1042/20247/82/38ms`，revision
+`a4657-tls-544464c9f6 -> a4657-tls-6c69b54c69`。同版本 restart 同样 **900/900 GREEN**：Lease `101/271`、
+public restart 0、direct replacement 17、最大 direct recovery `14703ms`、public TCP 2、最小 direct TCP 2、
+RangeStream 173、Snapshot 1、retry/partial `1/0`，最大 `2553/2548/195/20810/55/24ms`，revision
+`a4657-tls-6c69b54c69 -> a4657-tls-f8ffd54fd`；两轮 cleanup 均为零残留。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 186，
+current/update revision `a4657-tls-f8ffd54fd`，3/3 Ready/restart 0，三个 Pod 均运行 A5584 index/runtime。三端 cluster ID
+`7662961163671170154`、revision `115956`、term 549、leader `2985394290`、version 3.7.0、db size/in-use 492 一致；
+AlarmList 空，auth revision 3366，用户为 `KubeWharfServer/alice/root`、角色为 `operator/root`，主 PD/TiKV 3+3
+Ready/restart 0。四个 A5584 prefix 均返回空 KV 集合，相关 Kubernetes 对象为零；临时 Service `a5584-client` 以 UID
+`b54bd47b-168e-4665-aa3b-14c675a7467c`、resourceVersion `7128249` 双前置条件删除，Service NotFound、EndpointSlice 0。
+故障 wrapper/证据/计数、展开审计目录和 A5582 archive 已移入系统回收站，可恢复，mutable tag 已解除引用；发布保留集为 A5583
+rollback 与 A5584 current archive，以及 A5584 不可变 OCI/runtime/config/import 引用。
+
+本轮不改变 etcd 公共 API；它把 rollout fixture 的 Kubernetes 身份所有权协议补齐为“所有对象均可在短暂控制面故障后安全协调”，
+同时保留 replacement 保护与持续故障 fail closed。外部托管 apiserver 的真实 admission/GC 故障注入、超过默认 60 秒的控制面不可达
+恢复和长时间多 runner soak 仍是更高层生产证据缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
