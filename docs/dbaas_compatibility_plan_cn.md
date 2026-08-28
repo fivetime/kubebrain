@@ -64492,6 +64492,64 @@ A5579 rollback 与 A5580 current 的 archive，以及 A5580 不可变 OCI/runtim
 本轮不改变 etcd 公共 API；它把 Kubernetes finalizer 从单 runner 内的删除竞态栅栏推进为跨 runner 的可恢复 ownership 协议。
 外部托管 apiserver 的 admission/finalizer 故障注入、控制面长时间不可达和多 runner 同时接管仍属于更高层生产证据缺口。
 
+### A5581：把 receipt 绑定的 cleanup Pod 变成可共享完成证据
+
+提交 `def2de27`（A5581）关闭 A5580 接管路径仍会重复执行 cleanup 的并发窗口：旧 runner 已创建 cleanup Pod 并完成 etcd
+补偿、却在释放 terminating receipt 前崩溃时，后续 runner 原先把同名 Pod 一律当作冲突，无法复用已完成证据；两个同时接管的
+runner 也会各自尝试创建同名 cleanup。cleanup Pod 现在用完整不可变 receipt 和 owner UID 注解绑定，并在读取日志前精确校验
+namespace/name、UID/RV、未删除状态、镜像、command/args、volume/mount、安全上下文和可选的唯一 ConfigMap ownerRef。初次 GET
+命中或 create 竞争失败时都只加入完全相同的 Pod；任何 receipt 或规格漂移均 fail closed。成功日志不再立即删除 Pod，而是先作为
+共享完成证据保留，释放 receipt 后才按 Pod UID/RV 删除并有界确认 NotFound/拒绝名称被不同 UID 替换。receipt 已被另一接管者释放时，
+也只有本 runner 已验证完成证据才可接受 NotFound。
+
+活动 receipt 创建的 cleanup Pod继续带 ownerReference，让正常路径可由 Kubernetes GC；对已经 terminating 的 receipt，新建 Pod
+只保留精确注解，不再添加 ownerReference，避免 GC 在 cleanup 完成前删除依赖对象。已有、在 receipt 进入 terminating 前创建且
+ownerRef 精确的完成 Pod仍可加入。新增回归固定 terminating receipt 的完成 Pod只运行一次、证据晚于 finalizer release 才消失，
+并固定不同 receipt 注解在读取 cleanup 日志前被拒绝且 terminating receipt 保持不变；原有 crash takeover 同时覆盖无 ownerRef Pod
+的显式 UID 删除。完整 rollout runner 专项 `236.787s`；最终 production inventory 为 686 项，提交前 `--verify 4` 为
+`165/188/174/159`，提交后四片墙钟 `174.408/418.563/290.259/442.304s`，全部通过。
+
+A5581 使用完整 SHA `def2de27055d2dbdd79b13001f1c1a5b373fc71d`、版本 `0.0.0-def2de27055d`、TiKV、Go
+1.26.5、build time `2026-08-28T10:38:35Z` 构建。最终 OCI archive 为 914,350,080 bytes，SHA-256
+`fa3cf9d33f6ef4ef9e0f9d477f0ba5909d1517a84395582fb1c21d84c8107f5d`；OCI index
+`sha256:99d459be47ccef5f3c0ad95077101e71cc894c4632f2bf203b86d4f0af0bbc91`、platform
+`sha256:eaa255b89f9ca63db8e5d3ab9119be6b940570da299b714769b10a2aba3fcfb3`、config
+`sha256:95a03008d28f14f80d9c104781340a66eaf1f0a5b0acaa6896cb34ab3364a847`、attestation
+`sha256:feda4a7d09f4e7447cfc1887a02b0f333bf9d13d2a86cc3d86960fd06aa6f494`、SBOM statement
+`sha256:e643e8a44d38338dced927ee22c4703e6ee225d5427ea6132155ff5dc26f34e1`、provenance statement
+`sha256:26b330dcaa8f8adb1d7225949beec05d8afe26828e7eb05f5b10f95c8433968c`、Kind runtime wrapper
+`sha256:3a2153dca330b238c7f06ea4ca0216a702c177dab22129910c5f2478de04e7fa`。严格审计为 78/78 blobs、
+四个 OCI 图文档的 78 条 descriptor edges 全部正确；SBOM 为 2,592 packages/8,096 relationships，provenance 为
+3 materials，两份 statement 均只有一个 subject 并精确绑定 platform。第一次未带构建标签的临时 archive 被审计发现 statement
+subject 为空，未进入发布；它与展开目录已移入系统回收站，可恢复。不可变审计 Pod UID
+`dd58602c-e74e-4125-a3e4-381414f291dc`、resourceVersion `7108979` 验证完整版本/SHA/build time、TiKV、
+linux/amd64、UID/GID 65532 和 restart 0 后按 UID/RV 删除。
+
+真实并发接管演练创建 terminating receipt UID `98f45c41-1783-469a-81dc-e0a4934710d2`、RV `7107191`，计划
+lease `7900000000000000201/202/203`，同时启动两个 runner。两者在共享 cleanup 阶段加入同一对象并完成 receipt release；后续进入
+新 probe 世代时，一个创建 Pod、另一个因 AlreadyExists 失败，而失败者的既有无条件 probe trap 又删除了胜者 Pod。因此本项只把
+receipt cleanup 做成可共享幂等阶段，完整 runner 仍必须由发布系统保证单实例互斥；后续应把 probe trap 也升级为 UID/RV ownership
+删除。演练最终 receipt/probe/cleanup 均为 NotFound，三个 prefix 均为零 key，计划 lease 均为 TTL -1/missing，没有遗留状态。
+
+A5580→A5581 候选升级 **900/900 GREEN**：Watch `900/900×3`、Lease `103/277`、public restart 0、direct
+replacement 17、最大 direct recovery `14608ms`、public TCP 2、最小 direct TCP 2、RangeStream 174、Snapshot 1、
+retry/partial `2/1`，最大总/put/watch/direct/TSO/Region 延迟 `2284/2279/102/21421/73/12ms`。同版本 restart
+同样 **900/900 GREEN**：Lease `101/273`、public restart 0、direct replacement 17、最大 direct recovery
+`14995ms`、public TCP 2、最小 direct TCP 2、RangeStream 172、Snapshot 1、retry/partial `1/0`，最大
+`2270/2068/201/20809/32/6ms`；两轮 postflight 均为零残留。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 180，
+current/update revision `a4657-tls-5ccf9fd957`，3/3 Ready/restart 0 且三个 Pod 均运行 A5581 wrapper。三端 cluster ID
+`7662961163671170154`、revision `110066`、term 538、leader `848842929`、version 3.7.0、db size 492 一致；
+AlarmList 空，auth 为 `KubeWharfServer/alice/root` 与 `operator/root`，PD/TiKV 3+3 Ready/restart 0。临时 Service
+`a5581-client` 以 UID `f296dc4f-7064-49e8-b114-af427af6bda2`、resourceVersion `7107185` 删除，Service
+NotFound、EndpointSlice 0。A5579 archive、无 subject 的临时 A5581 archive和两份展开审计目录已移入系统回收站，可恢复；发布保留集为
+A5580 rollback 与 A5581 current archive，以及 A5581 不可变 OCI/runtime/config/import 引用。
+
+本轮不改变 etcd 公共 API；它把 cleanup 的成功日志从单进程瞬时状态提升为 receipt 绑定、可校验、可共享的 Kubernetes 完成证据。
+完整 runner 的 probe ownership fencing、外部托管 apiserver 的 admission/GC 故障注入、控制面长时间不可达和长时间多 runner soak
+仍是更高层生产证据缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
