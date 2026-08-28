@@ -954,7 +954,7 @@ probe_identity_fields="$(jq -er --arg name "$PROBE_POD" --arg image "$probe_imag
 }
 IFS=$'\t' read -r probe_pod_uid probe_pod_resource_version <<<"$probe_identity_fields"
 IFS=, read -r fixture_lease_id_1 fixture_lease_id_2 fixture_lease_id_3 <<<"$fixture_lease_ids"
-receipt_json="$(jq -cS --arg namespace "$KUBEBRAIN_NAMESPACE" --arg prefix "/kubebrain-rollout-availability/${PROBE_POD}/" \
+receipt_json="$(jq -cnS --arg namespace "$KUBEBRAIN_NAMESPACE" --arg prefix "/kubebrain-rollout-availability/${PROBE_POD}/" \
   --arg pod "$PROBE_POD" --arg pod_uid "$probe_pod_uid" --arg statefulset "$KUBEBRAIN_STATEFULSET" \
   --arg statefulset_uid "$statefulset_uid" --arg id1 "$fixture_lease_id_1" --arg id2 "$fixture_lease_id_2" \
   --arg id3 "$fixture_lease_id_3" '{format:"kubebrain.rollout-fixture-owner.v2",lease_ids:[$id1,$id2,$id3],
@@ -975,7 +975,7 @@ capture_runtime_evidence "$created_owner_json" kctl_evidence get configmap "$fix
   exit 1
 }
 owner_fields="$(jq -er --arg name "$fixture_owner_configmap" --arg receipt "$receipt_json" --arg uid "$statefulset_uid" '
-  select(.metadata.name == $name and .metadata.deletionTimestamp == null and .immutable == true and
+  select(($receipt | length) > 0 and .metadata.name == $name and .metadata.deletionTimestamp == null and .immutable == true and
     .data["receipt.json"] == $receipt and
     ([.metadata.ownerReferences[]? | select(.uid == $uid and .controller == true)] | length) == 1 and
     (.metadata.uid | type == "string" and length > 0) and (.metadata.resourceVersion | type == "string" and length > 0)) |

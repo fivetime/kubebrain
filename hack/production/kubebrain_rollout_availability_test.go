@@ -47,6 +47,7 @@ func TestRolloutAvailabilityRunnerDurablyReceiptsFixtureBeforeScheduling(t *test
 	text := string(source)
 	require.Contains(t, text, `schedulingGates:[{name:"kubebrain.io/fixture-owner-receipt"}]`)
 	require.Contains(t, text, `format:"kubebrain.rollout-fixture-owner.v2"`)
+	require.Contains(t, text, `receipt_json="$(jq -cnS`)
 	require.Contains(t, text, `immutable:true`)
 	require.Contains(t, text, `--fixture-lease-ids="$fixture_lease_ids"`)
 	require.Contains(t, text, `--resource=configmaps`)
@@ -1518,7 +1519,10 @@ if [[ " $* " == *" get configmap kubebrain-rollout-availability-probe-owner "* ]
   [[ -e "$owner_state" ]] || exit 1
   jq -c '.metadata.uid="44444444-4444-4444-8444-444444444444" | .metadata.resourceVersion="owner-rv"' "$owner_state"
 elif [[ " $* " == *" create -f - "* ]]; then
-  jq -c . >"$owner_state"
+  payload="$(jq -c .)"
+  jq -e '.immutable == true and (.data["receipt.json"] | length > 0) and
+    (.data["receipt.json"] | fromjson | .format == "kubebrain.rollout-fixture-owner.v2")' <<<"$payload" >/dev/null
+  printf '%s' "$payload" >"$owner_state"
 elif [[ " $* " == *" patch pod/kubebrain-rollout-availability-probe --type=json -p "* ]]; then
   :
 elif [[ " $* " == *" get service kubebrain-peer -o json "* ]]; then
