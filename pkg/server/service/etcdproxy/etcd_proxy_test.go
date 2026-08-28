@@ -30,6 +30,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
@@ -125,12 +126,15 @@ func TestIsForwardConnectionError(t *testing.T) {
 		{name: "context deadline", err: context.DeadlineExceeded, want: true},
 		{name: "grpc canceled", err: status.Error(codes.Canceled, "canceled"), want: true},
 		{name: "grpc deadline", err: status.Error(codes.DeadlineExceeded, "deadline"), want: true},
-		{name: "grpc unavailable", err: status.Error(codes.Unavailable, "unavailable"), want: true},
+		{name: "application unavailable", err: status.Error(codes.Unavailable, "backend temporarily unavailable"), want: false},
 		{name: "count index fallback", err: proxyprotocol.ErrCountIndexNotReady, want: false},
 		{name: "peer drained before admission", err: proxyprotocol.ErrPeerDrainedBeforeAdmission, want: true},
 		{name: "peer stream drained", err: proxyprotocol.ErrPeerStreamDrained, want: true},
 		{name: "generic aborted", err: status.Error(codes.Aborted, "aborted"), want: false},
+		{name: "no leader", err: rpctypes.ErrGRPCNoLeader, want: true},
+		{name: "not leader", err: rpctypes.ErrGRPCNotLeader, want: true},
 		{name: "leader changed", err: rpctypes.ErrGRPCLeaderChanged, want: true},
+		{name: "server stopped", err: rpctypes.ErrGRPCStopped, want: true},
 		{name: "grpc invalid argument", err: status.Error(codes.InvalidArgument, "bad request"), want: false},
 		{name: "grpc out of range", err: status.Error(codes.OutOfRange, "compacted"), want: false},
 		{name: "nil", err: nil, want: false},
@@ -1202,4 +1206,35 @@ func TestForwardErrorClientCancelDoesNotResetSharedClient(t *testing.T) {
 	// Genuine leader-down (Unavailable) with a live caller ctx -> resets.
 	proxy.markForwardError(context.Background(), cli, status.Error(codes.Unavailable, "leader down"))
 	require.Nil(t, proxy.client, "a genuine connection error must reset the shared client")
+}
+
+func TestForwardApplicationUnavailablePreservesReadySharedClient(t *testing.T) {
+	address := startPutResultServer(t, &putResultServer{put: func() (*etcdserverpb.PutResponse, error) {
+		return nil, status.Error(codes.Unavailable, "validate persisted transaction witnesses: context deadline exceeded")
+	}})
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{address}, DialTimeout: time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	require.NoError(t, checkClientConn(cli, nil, time.Second))
+	require.Equal(t, connectivity.Ready, cli.ActiveConnection().GetState())
+
+	proxy := &etcdProxy{election: newSwitchingLeaderElection(address), client: cli, curLeader: address}
+	proxy.markForwardError(context.Background(), cli,
+		status.Error(codes.Unavailable, "validate persisted transaction witnesses: context deadline exceeded"))
+
+	require.Same(t, cli, proxy.client,
+		"an application-level Unavailable delivered over a READY peer transport must not strand unrelated follower RPCs")
+}
+
+func TestFailedLeaderRetryMatchesAuthoritativeRefreshThrottle(t *testing.T) {
+	proxy := &etcdProxy{}
+	proxy.lock.Lock()
+	proxy.deferLeaderRetryLocked("leader-a")
+	retryAfter := proxy.retryAfter
+	proxy.lock.Unlock()
+
+	delay := time.Until(retryAfter)
+	require.Greater(t, delay, 150*time.Millisecond)
+	require.Less(t, delay, 500*time.Millisecond,
+		"an active rollout request must not wait a full second before the next serialized authoritative refresh")
 }

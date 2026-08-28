@@ -43,8 +43,13 @@ import (
 )
 
 const (
-	proxyConnectTimeout            = 5 * time.Second
-	proxyFailedLeaderRetryInterval = time.Second
+	proxyConnectTimeout = 5 * time.Second
+	// Keep the retry delay aligned with the authoritative refresh throttle. A
+	// one-second delay was visible in rollout traces after an exact peer-drain
+	// sentinel and compounded clientv3's safe mutable retries. The connector is
+	// serialized and refreshes are already rate-limited, so a shorter delay does
+	// not create concurrent dial or election-record storms.
+	proxyFailedLeaderRetryInterval = 250 * time.Millisecond
 	// A transport failure can precede the follower election loop's next shared
 	// record read. Refresh that record from the single background connector at a
 	// bounded rate so a published successor is not hidden behind the local
@@ -560,7 +565,7 @@ func (e *etcdProxy) readyClient(ctx context.Context) (*clientv3.Client, string, 
 }
 
 func (e *etcdProxy) markForwardError(ctx context.Context, client *clientv3.Client, err error) {
-	if err == nil || !isForwardConnectionError(err) {
+	if err == nil || !shouldResetForwardClient(client, err) {
 		return
 	}
 	// A cancelled or expired CLIENT context is not a leader-connection failure --
@@ -598,15 +603,49 @@ func isForwardConnectionError(err error) bool {
 	if proxyprotocol.IsCountIndexNotReady(err) {
 		return false
 	}
+	for _, topologyErr := range []error{
+		rpctypes.ErrGRPCNoLeader,
+		rpctypes.ErrGRPCNotLeader,
+		rpctypes.ErrGRPCLeaderChanged,
+		rpctypes.ErrGRPCStopped,
+	} {
+		if sameGRPCStatus(err, topologyErr) {
+			return true
+		}
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	switch status.Code(err) {
-	case codes.Canceled, codes.DeadlineExceeded, codes.Unavailable:
+	case codes.Canceled, codes.DeadlineExceeded:
 		return true
 	default:
 		return false
 	}
+}
+
+func sameGRPCStatus(err, target error) bool {
+	return status.Code(err) == status.Code(target) &&
+		status.Convert(err).Message() == status.Convert(target).Message()
+}
+
+// shouldResetForwardClient separates topology/transport failures from an
+// application-level Unavailable returned over a live peer connection. TiKV
+// admission and leadership initialization can transiently return Unavailable
+// while a large Snapshot is scanned. Closing the shared READY client in that
+// case strands every unrelated follower RPC and turns one backend error into a
+// proxy-wide availability gap. A genuine transport failure moves the gRPC
+// connection out of READY and remains resettable; exact drain/leader sentinels
+// are reset regardless of the sampled connectivity state.
+func shouldResetForwardClient(client *clientv3.Client, err error) bool {
+	if proxyprotocol.IsCountIndexNotReady(err) {
+		return false
+	}
+	if isForwardConnectionError(err) {
+		return true
+	}
+	return status.Code(err) == codes.Unavailable &&
+		(client == nil || client.ActiveConnection().GetState() != connectivity.Ready)
 }
 
 func forwardUnaryWithDrainRetry[T any](
