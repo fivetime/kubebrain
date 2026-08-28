@@ -64606,6 +64606,58 @@ rollback 与 A5582 current archive，以及 A5582 不可变 OCI/runtime/config/i
 证明失败者不会破坏胜者。外部托管 apiserver 的 admission/GC 故障注入、控制面长时间不可达和长时间多 runner soak 仍是更高层生产
 证据缺口。
 
+### A5583：让 UID 栅栏 probe cleanup 跨越短暂控制面不可达
+
+提交 `2c6bb362`（A5583）关闭 A5582 删除 helper 仍在第一次 apiserver GET 失败时放弃的窗口。新增独立、严格校验的
+`PROBE_DELETE_TIMEOUT`（默认 60 秒）；已接纳 probe UID 的主路径和 trap 在该窗口内重试 GET，NotFound 才完成，读到原 UID 时仍使用
+最新 resourceVersion 调用双前置 `uid-delete`，读到 replacement UID 仍立即保留 replacement 并 fail closed。持续不可达或删除持续失败
+仍在窗口结束后失败并触发候选回滚，不会把“未能观察”误判成删除成功。
+
+新增 `TestRolloutAvailabilityRunnerRetriesTransientProbeDeleteReadFailure`，故障夹具让删除阶段前两次 GET 失败，固定第三次读取原对象、
+UID/RV 删除和第四次 NotFound 确认；修复前同一测试稳定以 CRITICAL 退出。duration 溢出矩阵覆盖新参数，永久删除失败回归使用显式 1 秒
+预算保持 fail-closed/rollback 语义。完整 rollout runner 专项 `386.731s`；最终 production inventory 为 690 项，提交前
+`--verify 4` 为 `167/189/175/159`，提交后四片墙钟 `246.366/433.704/300.849/510.695s`，全部通过。
+
+真实 TiKV/PD 演练在当前 A5582 数据面上运行 A5583 host runner，并用仅匹配
+`get pod a5583-delete-retry-probe -o json --ignore-not-found` 的 kubectl wrapper 注入两次非零控制面响应。删除阶段精确记录四次 GET：
+前两次 injected-unavailable，第三次 pass-through 读取原 UID/RV，第四次 pass-through 确认 NotFound；完整 observe gate 3/3 GREEN：
+Watch `3/3x3`、Lease `59/171`、public/direct restart `0/0`、TCP `1/1`、RangeStream 98、Snapshot 1、retry/partial
+`0/0`，最大总/put/watch/direct/TSO/Region 延迟 `52/50/25/53/0/8ms`。probe/cleanup/receipt 均不存在，专用 prefix 为 0 key。
+
+A5583 使用完整 SHA `2c6bb362a522f460b28cbb1131b81c33b320424e`、版本 `0.0.0-2c6bb362a522`、TiKV、Go
+1.26.5、build time `2026-08-28T12:35:30Z` 构建。最终 OCI archive 为 914,350,592 bytes，SHA-256
+`ceae7d5afc7e12fa086aeefee20809aec23ce78c9eda6a35e09d04b64524fce1`；OCI index
+`sha256:0616afbf35bda18c47d58a6a83539f5e6b6a9985ff671ce0c5e975274b2f323c`、platform
+`sha256:279fbbec5ded928fafb115961cd8d9db6974a5c9f055403609ec0ce9087b3406`、config
+`sha256:7fd219d7626c84f74adb9b2136378d2b0afb07dd4fbb895b7479160a2275820a`、attestation
+`sha256:637fd3a897e12c3d19f2d358aaa5c64cc9d40e8513920211714b5851e1c9ca35`、SBOM statement
+`sha256:a8c40076bb26242f84d92f21ac3dde564741729d8fe74e1208b38cfe953f5ac1`、provenance statement
+`sha256:f3241b64bc4f60532b35fcb1fe40d36d8eaeb0afcdb72490ac6da3cb022d46a2`、Kind runtime wrapper
+`sha256:4b8fa5161929079b58a37f441b042f73eb44c39cd80b5c706ff8004905d64665`。严格审计为 78/78 blobs、四个 OCI
+图文档 78 条 descriptor edges；SBOM 为 2,592 packages/8,096 relationships，provenance 为 3 materials，两份 statement 均唯一
+绑定 platform。不可变审计 Pod UID `6321f455-8dc2-4f70-9fda-d9f69767a8ed`、resourceVersion `7121477` 验证完整
+版本/SHA/build time、TiKV、Go、linux/amd64、UID/GID 65532、精确 runtime imageID 与 restart 0 后按 UID/RV 删除。
+
+A5582→A5583 候选升级 **900/900 GREEN**：Watch `900/900x3`、Lease `101/271`、public restart 0、direct
+replacement 17、最大 direct recovery `15336ms`、public TCP 3、最小 direct TCP 2、RangeStream 173、Snapshot 1、
+retry/partial `4/0`，最大总/put/watch/direct/TSO/Region 延迟 `2284/2162/1037/20873/18/31ms`，revision
+`a4657-tls-76b6ccd86d -> a4657-tls-749bf96666`。同版本 restart 同样 **900/900 GREEN**：Lease `101/274`、
+public restart 0、direct replacement 17、最大 direct recovery `16145ms`、public TCP 3、最小 direct TCP 2、
+RangeStream 173、Snapshot 1、retry/partial `2/0`，最大 `4472/4464/203/21414/72/24ms`，revision
+`a4657-tls-749bf96666 -> a4657-tls-544464c9f6`；两轮 cleanup 均为零残留。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 184，
+current/update revision `a4657-tls-544464c9f6`，3/3 Ready/restart 0 且三个 Pod 均运行 A5583 index/runtime。三端 cluster ID
+`7662961163671170154`、revision `113958`、term 546、leader `848842929`、version 3.7.0、db size 492 一致；AlarmList
+空，auth 为 `KubeWharfServer/alice/root` 与 `operator/root`，PD/TiKV 3+3 Ready/restart 0。三个 A5583 prefix 均为 0 key；
+临时 Service `a5583-client` 以 UID `c6af6b09-341f-4d4f-aef5-f8ad8b3a9958`、resourceVersion `7119807` 双前置
+条件删除，Service NotFound、EndpointSlice 0。故障 wrapper/证据、展开审计目录和 A5581 archive 已移入系统回收站，可恢复，mutable tag
+已解除引用；发布保留集为 A5582 rollback 与 A5583 current archive，以及 A5583 不可变 OCI/runtime/config/import 引用。
+
+本轮不改变 etcd 公共 API；它让 rollout cleanup 的 Kubernetes 身份所有权协议容忍短暂控制面不可达，同时保持 replacement 保护和
+持续故障 fail closed。外部托管 apiserver 的真实网络/admission/GC 故障注入、超过 60 秒的控制面不可达恢复和长时间多 runner soak
+仍是更高层生产证据缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
