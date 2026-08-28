@@ -599,7 +599,7 @@ func TestRolloutAvailabilityRunnerObserveOnlyDoesNotRollStatefulSet(t *testing.T
 	require.NoFileExists(t, statePath, "observe-only mode must not mutate the StatefulSet")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
-	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe ")
+	require.Contains(t, log, "--resource=pods --namespace=kubebrain-system --name=kubebrain-rollout-availability-probe ")
 	require.Equal(t, 2, strings.Count(log, " run kubebrain-rollout-availability-probe-cleanup "))
 	require.Equal(t, 2, strings.Count(log, "--cleanup-owned-fixture"))
 	require.Contains(t, log, "--fixture-owner-namespace=kubebrain-system")
@@ -610,6 +610,60 @@ func TestRolloutAvailabilityRunnerObserveOnlyDoesNotRollStatefulSet(t *testing.T
 	require.Contains(t, log, `"fieldPath":"metadata.uid"`)
 	require.NotContains(t, log, " patch statefulset/kubebrain ")
 	require.NotContains(t, log, " rollout status statefulset/kubebrain ")
+}
+
+func TestRolloutAvailabilityRunnerDoesNotDeleteUnownedProbeAfterCreateRace(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_PROBE_CREATE_FAIL=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output),
+		"failed to create rollout availability probe Pod kubebrain-system/kubebrain-rollout-availability-probe")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log, " delete pod kubebrain-rollout-availability-probe ",
+		"a runner that never admitted a probe UID must not delete the competing Pod by name")
+	require.NotContains(t, log, "--name=kubebrain-rollout-availability-probe ",
+		"a runner that never admitted a probe UID must not issue a UID-fenced deletion either")
+}
+
+func TestRolloutAvailabilityRunnerLeavesReplacementProbeUntouched(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_PROBE_REPLACED_BEFORE_DELETE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output),
+		"rollout availability probe Pod was replaced; leaving replacement UID 66666666-6666-4666-8666-666666666666 untouched")
+	require.Contains(t, string(output),
+		"failed to delete rollout availability probe Pod kubebrain-system/kubebrain-rollout-availability-probe")
+	require.NotContains(t, string(output), "KubeBrain rollout availability gate passed")
+	log := readOptionalFile(t, logPath)
+	require.NotContains(t, log,
+		"--name=kubebrain-rollout-availability-probe --uid=33333333-3333-4333-8333-333333333333",
+		"the old runner must not issue a delete after the name resolves to a replacement UID")
+}
+
+func TestRolloutAvailabilityRunnerDeletesOwnedProbeWhenCreateResponseDrifts(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_PROBE_CREATED_SPEC_DRIFT=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "created rollout availability probe Pod specification mismatch")
+	require.Contains(t, readOptionalFile(t, logPath),
+		"--name=kubebrain-rollout-availability-probe --uid=33333333-3333-4333-8333-333333333333 --resource-version=probe-rv",
+		"the admitted create UID must be compensated with UID/RV preconditions")
 }
 
 func TestRolloutAvailabilityRunnerFailsClosedOnMalformedFixtureCleanupEvidence(t *testing.T) {
@@ -1015,8 +1069,8 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, `kubectl.kubernetes.io~1restartedAt`)
 	require.NotContains(t, log, " rollout restart ")
 	require.Contains(t, log, " wait --for=jsonpath={.status.phase}=Succeeded")
-	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system delete pod kubebrain-rollout-availability-probe --ignore-not-found=true --wait=true --timeout=10s")
-	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
+	require.Contains(t, log, "--resource=pods --namespace=kubebrain-system --name=kubebrain-rollout-availability-probe ")
+	require.NotContains(t, log, " delete pod kubebrain-rollout-availability-probe")
 }
 
 func TestRolloutAvailabilityRunnerRejectsKeepAliveQueueOverflow(t *testing.T) {
@@ -1081,9 +1135,12 @@ func TestRolloutAvailabilityRunnerBindsMutualTLSProbeIdentity(t *testing.T) {
 	var overrideJSON string
 	for _, line := range strings.Split(log, "\n") {
 		if strings.Contains(line, " run kubebrain-rollout-availability-probe ") {
-			index := strings.Index(line, "--overrides=")
-			require.GreaterOrEqual(t, index, 0)
-			overrideJSON = line[index+len("--overrides="):]
+			for _, argument := range strings.Fields(line) {
+				if strings.HasPrefix(argument, "--overrides=") {
+					overrideJSON = strings.TrimPrefix(argument, "--overrides=")
+					break
+				}
+			}
 			break
 		}
 	}
@@ -1721,6 +1778,11 @@ if [[ " $* " == *" --resource=pods "* && " $* " == *" --name=kubebrain-rollout-a
   rm -f -- "${FAKE_KUBECTL_LOG}.cleanup"
   : >"${FAKE_KUBECTL_LOG}.cleanup-deleted"
 fi
+if [[ " $* " == *" --resource=pods "* && " $* " == *" --name=kubebrain-rollout-availability-probe "* ]]; then
+  [[ "${FAKE_DELETE_FAIL:-false}" != true ]] || exit 1
+  rm -f -- "${FAKE_KUBECTL_LOG}.probe"
+  : >"${FAKE_KUBECTL_LOG}.probe-deleted"
+fi
 `), 0o755))
 	t.Setenv("UID_DELETE_BIN", uidDeletePath)
 	script := `#!/usr/bin/env bash
@@ -1750,6 +1812,7 @@ if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == start && " $* " == *" logs kubebrain-ro
 fi
 owner_state="${FAKE_KUBECTL_LOG}.owner"
 cleanup_state="${FAKE_KUBECTL_LOG}.cleanup"
+probe_state="${FAKE_KUBECTL_LOG}.probe"
 if [[ " $* " == *" get configmap kubebrain-rollout-availability-probe-owner "* ]]; then
   if [[ ! -e "$owner_state" ]]; then
     [[ " $* " == *" --ignore-not-found "* ]] && exit 0
@@ -1917,11 +1980,33 @@ elif [[ " $* " == *" run kubebrain-rollout-availability-probe-cleanup "* ]]; the
     .metadata.resourceVersion="cleanup-rv" | .metadata.deletionTimestamp=null |
     .status.phase="Pending"' <<<"$overrides" >"$cleanup_state"
   jq -c . "$cleanup_state"
+elif [[ " $* " == *" run kubebrain-rollout-availability-probe "* ]]; then
+  [[ "${FAKE_PROBE_CREATE_FAIL:-false}" != true ]] || exit 1
+  overrides=""
+  for argument in "$@"; do
+    [[ "$argument" != --overrides=* ]] || overrides="${argument#--overrides=}"
+  done
+  [[ -n "$overrides" ]] || exit 1
+  rm -f -- "${probe_state}-deleted"
+  jq -c '.metadata.name="kubebrain-rollout-availability-probe" |
+    .metadata.namespace="kubebrain-system" | .metadata.uid="33333333-3333-4333-8333-333333333333" |
+    .metadata.resourceVersion="probe-rv" | .metadata.deletionTimestamp=null' <<<"$overrides" >"$probe_state"
+  if [[ "${FAKE_PROBE_CREATED_SPEC_DRIFT:-false}" == true ]]; then
+    jq -c '.spec.containers[0].image="other:image"' "$probe_state" >"${probe_state}.next"
+    mv -- "${probe_state}.next" "$probe_state"
+  fi
+  jq -c . "$probe_state"
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o json "* ]]; then
-  jq -cn '{
-    metadata:{name:"kubebrain-rollout-availability-probe",uid:"33333333-3333-4333-8333-333333333333",resourceVersion:"probe-rv"},
-    spec:{schedulingGates:[{name:"kubebrain.io/fixture-owner-receipt"}],containers:[{name:"kubebrain-rollout-availability-probe",image:(env.PROBE_IMAGE // "kubebrain:test")}]}}
-  '
+  if [[ -e "${probe_state}-deleted" ]]; then
+    [[ " $* " == *" --ignore-not-found "* ]] && exit 0
+    exit 1
+  fi
+  [[ -e "$probe_state" ]] || exit 1
+  if [[ "${FAKE_PROBE_REPLACED_BEFORE_DELETE:-false}" == true && " $* " == *" --ignore-not-found "* ]]; then
+    jq -c '.metadata.uid="66666666-6666-4666-8666-666666666666" | .metadata.resourceVersion="replacement-rv"' "$probe_state"
+  else
+    jq -c . "$probe_state"
+  fi
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.status.phase} "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then printf Failed
   elif [[ "${FAKE_PHASE_RESPONSE:-false}" == true ]]; then printf Running; head -c "$((FAKE_PHASE_BYTES-7))" /dev/zero | tr '\0' ' '
@@ -2089,6 +2174,9 @@ else
   if [[ " $* " == *" --name=kubebrain-rollout-availability-probe-cleanup "* ]]; then
     rm -f -- "${FAKE_KUBECTL_LOG}.cleanup"
     : >"${FAKE_KUBECTL_LOG}.cleanup-deleted"
+  elif [[ " $* " == *" --name=kubebrain-rollout-availability-probe "* ]]; then
+    rm -f -- "${FAKE_KUBECTL_LOG}.probe"
+    : >"${FAKE_KUBECTL_LOG}.probe-deleted"
   else
     [[ " $* " == *" --name=kubebrain-1 "* ]]
     [[ " $* " == *" --uid=kubebrain-1-uid-old "* ]]

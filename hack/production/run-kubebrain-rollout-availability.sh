@@ -572,6 +572,7 @@ hard_failover_pod=""
 hard_failover_pod_uid=""
 probe_deleted=false
 probe_pod_uid=""
+probe_pod_resource_version=""
 fixture_lease_ids=""
 fixture_owner_uid=""
 fixture_owner_resource_version=""
@@ -720,6 +721,42 @@ pin_fixture_owner_receipt() {
   ' "$pinned_json")" || return 1
   IFS=$'\t' read -r fixture_owner_uid fixture_owner_resource_version <<<"$pinned_fields"
 }
+delete_probe_pod() {
+  local current_json current_fields current_uid current_resource_version delete_attempt delete_wait_seconds delete_deadline
+  local -a args
+  [[ -n "$probe_pod_uid" ]] || return 0
+  current_json="$runtime_evidence_dir/probe-delete-current-${probe_pod_uid}.json"
+  delete_wait_seconds="$(duration_ceil_seconds "$KUBECTL_MUTATION_REQUEST_TIMEOUT")" || return 1
+  delete_deadline=$((SECONDS + delete_wait_seconds))
+  for ((delete_attempt = 0; delete_attempt == 0 || SECONDS < delete_deadline; delete_attempt++)); do
+    capture_runtime_evidence "$current_json" kctl_evidence get pod "$PROBE_POD" -o json --ignore-not-found || return 1
+    if [[ ! -s "$current_json" ]]; then
+      probe_deleted=true
+      return 0
+    fi
+    current_fields="$(jq -er '
+      select((.metadata.uid | type == "string" and length > 0) and
+        (.metadata.resourceVersion | type == "string" and length > 0)) |
+      [.metadata.uid,.metadata.resourceVersion] | @tsv
+    ' "$current_json")" || return 1
+    IFS=$'\t' read -r current_uid current_resource_version <<<"$current_fields"
+    if [[ "$current_uid" != "$probe_pod_uid" ]]; then
+      echo "rollout availability probe Pod was replaced; leaving replacement UID ${current_uid} untouched" >&2
+      probe_deleted=true
+      return 1
+    fi
+    args=(
+      --api-version=v1 --resource=pods --namespace="$KUBEBRAIN_NAMESPACE" --name="$PROBE_POD"
+      --uid="$current_uid" --resource-version="$current_resource_version"
+      --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT"
+    )
+    [[ -z "$KUBECTL_CONTEXT" ]] || args+=(--context="$KUBECTL_CONTEXT")
+    uid_delete "${args[@]}" >/dev/null 2>&1 || true
+    sleep 0.1
+  done
+  echo "rollout availability probe Pod still exists after UID-fenced deletion" >&2
+  return 1
+}
 cleanup() {
   if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
     echo "candidate rollout failed; restoring original image ${image}" >&2
@@ -795,8 +832,7 @@ cleanup() {
       echo "CRITICAL: hard-failover StatefulSet self-healed with identity drift" >&2
     fi
   fi
-  if [[ "$probe_deleted" != true ]] &&
-    ! kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null; then
+  if [[ "$probe_deleted" != true && -n "$probe_pod_uid" ]] && ! delete_probe_pod; then
     echo "CRITICAL: failed to delete rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   fi
   if [[ "$fixture_cleanup_ready" == true && "$fixture_cleanup_verified" != true ]]; then
@@ -1148,17 +1184,45 @@ probe_overrides="$(jq -cn --arg name "$PROBE_POD" --arg image "$probe_image" --a
         env:[{name:"KUBEBRAIN_ROLLOUT_PROBE_UID",valueFrom:{fieldRef:{apiVersion:"v1",fieldPath:"metadata.uid"}}}]}],volumes:$volumes}
   }')" || exit 1
 fixture_cleanup_verified=false
-kctl_mutation run "$PROBE_POD" --image="$probe_image" --restart=Never --overrides="$probe_overrides" >/dev/null || {
+probe_created_json="$runtime_evidence_dir/probe-created.json"
+capture_runtime_evidence "$probe_created_json" kctl_mutation run "$PROBE_POD" \
+  --image="$probe_image" --restart=Never --overrides="$probe_overrides" -o json || {
   echo "failed to create rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   exit 1
 }
+probe_created_fields="$(jq -er --arg name "$PROBE_POD" --arg namespace "$KUBEBRAIN_NAMESPACE" '
+  select(.metadata.name == $name and .metadata.namespace == $namespace and .metadata.deletionTimestamp == null and
+    (.metadata.uid | type == "string" and length > 0) and
+    (.metadata.resourceVersion | type == "string" and length > 0)) |
+  [.metadata.uid,.metadata.resourceVersion] | @tsv
+' "$probe_created_json")" || {
+  echo "created rollout availability probe Pod identity mismatch" >&2
+  exit 1
+}
+IFS=$'\t' read -r probe_pod_uid probe_pod_resource_version <<<"$probe_created_fields"
+if ! jq -e --arg name "$PROBE_POD" --arg image "$probe_image" --arg command "${probe_command[0]}" \
+  --argjson args "$probe_command_args" --argjson mounts "$probe_volume_mounts" --argjson volumes "$probe_volumes" \
+  --argjson security_context "$probe_pod_security_context" '
+  .spec.automountServiceAccountToken == false and .spec.restartPolicy == "Never" and
+  .spec.securityContext == $security_context and .spec.schedulingGates == [{name:"kubebrain.io/fixture-owner-receipt"}] and
+  .spec.volumes == $volumes and (.spec.containers | length) == 1 and .spec.containers[0].name == $name and
+  .spec.containers[0].image == $image and .spec.containers[0].command == [$command] and
+  .spec.containers[0].args == $args and .spec.containers[0].volumeMounts == $mounts and
+  .spec.containers[0].env == [{name:"KUBEBRAIN_ROLLOUT_PROBE_UID",
+    valueFrom:{fieldRef:{apiVersion:"v1",fieldPath:"metadata.uid"}}}]
+' "$probe_created_json" >/dev/null; then
+  echo "created rollout availability probe Pod specification mismatch" >&2
+  exit 1
+fi
 probe_identity_json="$runtime_evidence_dir/probe-identity.json"
 capture_runtime_evidence "$probe_identity_json" kctl_evidence get pod "$PROBE_POD" -o json || {
   echo "failed to read rollout availability probe Pod identity" >&2
   exit 1
 }
-probe_identity_fields="$(jq -er --arg name "$PROBE_POD" --arg image "$probe_image" '
-  select(.metadata.name == $name and .metadata.deletionTimestamp == null and
+probe_identity_fields="$(jq -er --arg name "$PROBE_POD" --arg namespace "$KUBEBRAIN_NAMESPACE" \
+  --arg uid "$probe_pod_uid" --arg image "$probe_image" '
+  select(.metadata.name == $name and .metadata.namespace == $namespace and .metadata.uid == $uid and
+    .metadata.deletionTimestamp == null and
     ([.spec.schedulingGates[]? | select(.name == "kubebrain.io/fixture-owner-receipt")] | length) == 1 and
     ([.spec.containers[]? | select(.name == $name and .image == $image)] | length) == 1 and
     (.metadata.uid | test("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")) and
@@ -1484,11 +1548,10 @@ if ! jq -e --arg uid "$headless_service_uid" --arg resource_version "$headless_s
   exit 1
 fi
 
-if ! kctl_mutation delete pod "$PROBE_POD" --ignore-not-found=true --wait=true --timeout="$KUBECTL_MUTATION_REQUEST_TIMEOUT" >/dev/null; then
+if ! delete_probe_pod; then
   echo "failed to delete rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   exit 1
 fi
-probe_deleted=true
 run_fixture_cleanup || {
   echo "rollout fixture postflight cleanup failed" >&2
   exit 1
