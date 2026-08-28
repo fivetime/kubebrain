@@ -164,6 +164,27 @@ func TestExternalFixtureClaimRejectsReceiptedLeaseCollision(t *testing.T) {
 	require.ErrorContains(t, err, "already exists")
 }
 
+func TestExternalFixtureCleanupRejectsReusedLeaseWithForeignKey(t *testing.T) {
+	client, ctx := startFixtureOwnershipEtcd(t)
+	identity := testFixtureOwnerIdentity()
+	prefix := fixturePrefixRoot + identity.ProbePod + "/"
+	leaseIDs := []clientv3.LeaseID{7201, 7202, 7203}
+	foreignLease, err := grantFixtureLease(ctx, client, leaseIDs[1], 60)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/foreign/must-survive", "foreign", clientv3.WithLease(foreignLease.ID))
+	require.NoError(t, err)
+
+	_, err = cleanupExternallyOwnedFixture(ctx, client, prefix, identity, leaseIDs, 3*time.Second)
+	require.ErrorContains(t, err, "outside owned prefix")
+	foreign, getErr := client.Get(ctx, "/foreign/must-survive")
+	require.NoError(t, getErr)
+	require.Len(t, foreign.Kvs, 1, "cleanup must preserve a lease reused by another owner")
+	ttl, ttlErr := client.TimeToLive(ctx, foreignLease.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, ttlErr)
+	require.Positive(t, ttl.TTL)
+	require.Equal(t, [][]byte{[]byte("/foreign/must-survive")}, ttl.Keys)
+}
+
 func TestOwnedFixtureCleanupRejectsSchemaDriftWithoutDeleting(t *testing.T) {
 	client, ctx := startFixtureOwnershipEtcd(t)
 	identity := testFixtureOwnerIdentity()

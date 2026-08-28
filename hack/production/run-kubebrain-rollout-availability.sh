@@ -584,9 +584,13 @@ fixture_cleanup_verified=false
 
 generate_fixture_lease_ids() {
   local -a ids=()
-  local candidate existing
+  local candidate existing first_octet hex
   while (( ${#ids[@]} < 3 )); do
-    candidate="$(od -An -N4 -tu4 /dev/urandom | tr -d '[:space:]')" || return 1
+    hex="$(od -An -N8 -tx1 /dev/urandom | tr -d '[:space:]')" || return 1
+    [[ "$hex" =~ ^[a-f0-9]{16}$ ]] || return 1
+    first_octet=$((16#${hex:0:2} & 0x7f))
+    printf -v hex '%02x%s' "$first_octet" "${hex:2}"
+    printf -v candidate '%d' "0x$hex"
     operation_is_positive_int64 "$candidate" || continue
     for existing in "${ids[@]}"; do
       [[ "$candidate" != "$existing" ]] || candidate=""

@@ -48,6 +48,8 @@ func TestRolloutAvailabilityRunnerDurablyReceiptsFixtureBeforeScheduling(t *test
 	require.Contains(t, text, `schedulingGates:[{name:"kubebrain.io/fixture-owner-receipt"}]`)
 	require.Contains(t, text, `format:"kubebrain.rollout-fixture-owner.v2"`)
 	require.Contains(t, text, `receipt_json="$(jq -cnS`)
+	require.Contains(t, text, `od -An -N8 -tx1 /dev/urandom`)
+	require.Contains(t, text, `first_octet=$((16#${hex:0:2} & 0x7f))`)
 	require.Contains(t, text, `immutable:true`)
 	require.Contains(t, text, `--fixture-lease-ids="$fixture_lease_ids"`)
 	require.Contains(t, text, `--resource=configmaps`)

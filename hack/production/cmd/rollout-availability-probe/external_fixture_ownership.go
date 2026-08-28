@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -182,12 +183,25 @@ func cleanupExternallyOwnedFixture(ctx context.Context, client *clientv3.Client,
 	}
 	liveLeases := 0
 	for _, leaseID := range leaseIDs {
-		ttl, ttlErr := client.TimeToLive(ctx, leaseID)
+		ttl, ttlErr := client.TimeToLive(ctx, leaseID, clientv3.WithAttachedKeys())
 		missing, ttlErr := classifyExternalFixtureLeaseAbsence(ttl, ttlErr)
 		if ttlErr != nil {
 			return fixtureCleanupSummary{}, fmt.Errorf("inspect external fixture lease %d: %w", leaseID, ttlErr)
 		}
 		if !missing {
+			if ttl.ID != leaseID || ttl.GrantedTTL <= 0 || ttl.TTL <= 0 {
+				return fixtureCleanupSummary{}, fmt.Errorf("inspect external fixture lease %d returned invalid identity: %+v", leaseID, ttl)
+			}
+			if _, _, headerErr := validateResponseHeader(ttl.ResponseHeader, clusterID, revision); headerErr != nil {
+				return fixtureCleanupSummary{}, fmt.Errorf("inspect external fixture lease %d header: %w", leaseID, headerErr)
+			}
+			for _, key := range ttl.Keys {
+				if !bytes.HasPrefix(key, []byte(prefix)) {
+					return fixtureCleanupSummary{}, fmt.Errorf(
+						"external fixture lease %d has key %q outside owned prefix %q", leaseID, key, prefix,
+					)
+				}
+			}
 			liveLeases++
 		}
 	}
