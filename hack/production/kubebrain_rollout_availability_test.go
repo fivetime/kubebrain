@@ -132,6 +132,36 @@ func TestRolloutAvailabilityRunnerPinsAndReleasesRecoveredReceipt(t *testing.T) 
 		"recovered receipt pin/unpin and current receipt unpin must all be CAS guarded")
 }
 
+func TestRolloutAvailabilityRunnerReleasesReceiptDeletedDuringCleanup(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	receipt := `{"format":"kubebrain.rollout-fixture-owner.v2","lease_ids":["7001","7002","7003"],"namespace":"kubebrain-system","prefix":"/kubebrain-rollout-availability/kubebrain-rollout-availability-probe/","probe_pod":"kubebrain-rollout-availability-probe","probe_pod_uid":"33333333-3333-4333-8333-333333333333","statefulset":"kubebrain","statefulset_uid":"statefulset-uid"}`
+	owner := map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap", "immutable": true,
+		"metadata": map[string]any{
+			"name": "kubebrain-rollout-availability-probe-owner", "namespace": "kubebrain-system",
+			"ownerReferences": []map[string]any{{
+				"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "kubebrain",
+				"uid": "statefulset-uid", "controller": true,
+			}},
+		},
+		"data": map[string]string{"receipt.json": receipt},
+	}
+	encoded, err := json.Marshal(owner)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(logPath+".owner", encoded, 0o600))
+
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_OWNER_DELETE_DURING_CLEANUP=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "KubeBrain rollout availability gate passed")
+	require.NoFileExists(t, logPath+".owner", "the pinned deleting receipt must be released after cleanup")
+}
+
 func TestRolloutAvailabilityRunnerReportsProbeFailureBeforeStartBarrier(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -1594,7 +1624,10 @@ if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == start && " $* " == *" logs kubebrain-ro
 fi
 owner_state="${FAKE_KUBECTL_LOG}.owner"
 if [[ " $* " == *" get configmap kubebrain-rollout-availability-probe-owner "* ]]; then
-  [[ -e "$owner_state" ]] || exit 1
+  if [[ ! -e "$owner_state" ]]; then
+    [[ " $* " == *" --ignore-not-found "* ]] && exit 0
+    exit 1
+  fi
   jq -c '.metadata.uid //= "44444444-4444-4444-8444-444444444444" | .metadata.resourceVersion //= "owner-rv"' "$owner_state"
 elif [[ " $* " == *" create -f - "* ]]; then
   payload="$(jq -c .)"
@@ -1820,6 +1853,13 @@ elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then exit 1; fi
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe-cleanup "* ]]; then
+  if [[ "${FAKE_OWNER_DELETE_DURING_CLEANUP:-false}" == true && -e "$owner_state" &&
+    ! -e "${owner_state}.delete-injected" ]]; then
+    jq -c '.metadata.deletionTimestamp="2026-08-28T08:00:00Z" |
+      .metadata.resourceVersion="owner-rv-deleting"' "$owner_state" >"${owner_state}.next"
+    mv -- "${owner_state}.next" "$owner_state"
+    : >"${owner_state}.delete-injected"
+  fi
   if [[ "${FAKE_FIXTURE_CLEANUP_MALFORMED:-false}" == true ]]; then
     printf '%s\n' 'FIXTURE_CLEANUP_OK status=recovered owner_uid=not-a-uid keys=0 users=0 roles=0 leases=0'
   else
