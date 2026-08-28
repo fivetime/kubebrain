@@ -132,6 +132,35 @@ func TestRolloutAvailabilityRunnerPinsAndReleasesRecoveredReceipt(t *testing.T) 
 		"recovered receipt pin/unpin and current receipt unpin must all be CAS guarded")
 }
 
+func TestRolloutAvailabilityRunnerReconcilesFixtureOwnerUnpinResponseLoss(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_OWNER_UNPIN_RESPONSE_LOSS=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "KubeBrain rollout availability gate passed")
+	require.NoFileExists(t, logPath+".owner", "a reconciled unpin must still UID-delete the exact receipt")
+}
+
+func TestRolloutAvailabilityRunnerRejectsReplacementAfterFixtureOwnerUnpinResponseLoss(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_OWNER_UNPIN_RESPONSE_LOSS=true", "FAKE_OWNER_UNPIN_RESPONSE_LOSS_UID_DRIFT=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "rollout fixture owner receipt deletion failed")
+	require.FileExists(t, logPath+".owner", "an unpin ambiguity must preserve a replacement receipt")
+	require.Contains(t, readOptionalFile(t, logPath+".owner"), `"uid":"replacement-owner-uid"`)
+}
+
 func TestRolloutAvailabilityRunnerReleasesReceiptDeletedDuringCleanup(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	receipt := `{"format":"kubebrain.rollout-fixture-owner.v2","lease_ids":["7001","7002","7003"],"namespace":"kubebrain-system","prefix":"/kubebrain-rollout-availability/kubebrain-rollout-availability-probe/","probe_pod":"kubebrain-rollout-availability-probe","probe_pod_uid":"33333333-3333-4333-8333-333333333333","statefulset":"kubebrain","statefulset_uid":"statefulset-uid"}`
@@ -1960,6 +1989,14 @@ elif [[ " $* " == *" patch configmap/kubebrain-rollout-availability-probe-owner 
     exit 1
   fi
   printf '%s' "$next" >"$owner_state"
+  if [[ "$final_operation" == remove && "${FAKE_OWNER_UNPIN_RESPONSE_LOSS:-false}" == true ]]; then
+    if [[ "${FAKE_OWNER_UNPIN_RESPONSE_LOSS_UID_DRIFT:-false}" == true ]]; then
+      jq -c '.metadata.uid="replacement-owner-uid" | .metadata.resourceVersion="replacement-owner-rv"' \
+        "$owner_state" >"${owner_state}.next"
+      mv -- "${owner_state}.next" "$owner_state"
+    fi
+    exit 1
+  fi
   printf '%s' "$next"
 elif [[ " $* " == *" patch pod/kubebrain-rollout-availability-probe --type=json -p "* ]]; then
   :
