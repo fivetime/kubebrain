@@ -168,6 +168,28 @@ func startPutResultServer(t *testing.T, upstream *putResultServer) string {
 	return lis.Addr().String()
 }
 
+func startBlackholeTCPServer(t *testing.T) (string, <-chan struct{}) {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	accepted := make(chan struct{})
+	stop := make(chan struct{})
+	go func() {
+		conn, acceptErr := lis.Accept()
+		if acceptErr != nil {
+			return
+		}
+		close(accepted)
+		<-stop
+		_ = conn.Close()
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		_ = lis.Close()
+	})
+	return lis.Addr().String(), accepted
+}
+
 func TestPutRetriesExactPreAdmissionDrainOnPublishedSuccessor(t *testing.T) {
 	want := &etcdserverpb.PutResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}}
 	successor := &putResultServer{put: func() (*etcdserverpb.PutResponse, error) { return want, nil }}
@@ -253,6 +275,30 @@ func TestWaitReadyDoesNotBlockBehindPeerConnectionUpdate(t *testing.T) {
 	require.Less(t, time.Since(start), 250*time.Millisecond,
 		"a request must not wait for another goroutine's peer dial timeout")
 	require.Len(t, proxy.updateCh, 1, "the background connector must be notified")
+}
+
+func TestWaitReadyPreemptsStaleLeaderConnectionAttempt(t *testing.T) {
+	retiringAddress, accepted := startBlackholeTCPServer(t)
+	successorAddress := startPutResultServer(t, &putResultServer{put: func() (*etcdserverpb.PutResponse, error) {
+		return &etcdserverpb.PutResponse{}, nil
+	}})
+	election := newSwitchingLeaderElection(retiringAddress)
+	proxy := NewEtcdProxy(t.Context(), election, nil, false, 0).(*etcdProxy)
+	t.Cleanup(func() { require.NoError(t, proxy.Close()) })
+
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("proxy did not start the retiring leader connection attempt")
+	}
+	election.address.Store(successorAddress)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	require.NoError(t, proxy.waitReady(ctx))
+	require.Less(t, time.Since(start), proxyReadyWaitTimeout,
+		"a published successor must preempt the stale five-second peer connection attempt")
 }
 
 func registerServingHealth(server *grpc.Server) *health.Server {

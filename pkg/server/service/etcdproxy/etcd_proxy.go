@@ -88,8 +88,16 @@ type etcdProxy struct {
 	// e.client = client, so a later winner overwrites an earlier client without
 	// closing it (leaked connection, #47) and every caller stampedes the new
 	// leader with its own dial (#41). Held for the whole function; acquired before
-	// `lock` so the lock order is always updateMu -> lock.
-	updateMu sync.Mutex
+	// `lock` so the lock order is always updateMu -> lock. A separately guarded
+	// attempt context lets waitReady preempt this single flight when election
+	// publishes a different leader; it never starts a concurrent dial.
+	updateMu  sync.Mutex
+	attemptMu sync.Mutex
+	// attemptGeneration distinguishes completion of an older tracked context
+	// from a later one without comparing context.CancelFunc values.
+	attemptGeneration uint64
+	attemptLeader     string
+	attemptCancel     context.CancelFunc
 
 	cancel    context.CancelFunc
 	loopDone  chan struct{}
@@ -187,6 +195,42 @@ func (e *etcdProxy) requestClientUpdate() {
 	}
 }
 
+func (e *etcdProxy) trackLeaderConnectionAttempt(parent context.Context, leaderIdentity string) (context.Context, func()) {
+	attemptCtx, cancel := context.WithCancel(parent)
+	e.attemptMu.Lock()
+	e.attemptGeneration++
+	generation := e.attemptGeneration
+	e.attemptLeader = leaderIdentity
+	e.attemptCancel = cancel
+	e.attemptMu.Unlock()
+
+	// The election may have changed immediately before publication of this
+	// attempt. Reconcile once here; waitReady repeats the check while requests
+	// are parked behind the connector.
+	e.cancelStaleLeaderConnectionAttempt()
+	return attemptCtx, func() {
+		cancel()
+		e.attemptMu.Lock()
+		if e.attemptGeneration == generation {
+			e.attemptLeader = ""
+			e.attemptCancel = nil
+		}
+		e.attemptMu.Unlock()
+	}
+}
+
+func (e *etcdProxy) cancelStaleLeaderConnectionAttempt() {
+	observedLeader := e.election.GetLeaderInfo()
+	if !election.IsLeaderKnown(observedLeader) {
+		return
+	}
+	e.attemptMu.Lock()
+	defer e.attemptMu.Unlock()
+	if e.attemptCancel != nil && observedLeader != e.attemptLeader {
+		e.attemptCancel()
+	}
+}
+
 func (e *etcdProxy) resetClient() (reset bool) {
 	reset = e.client != nil
 
@@ -226,7 +270,13 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 	defer e.updateMu.Unlock()
 
 	if e.hasClient() {
-		if err := e.checkConnContext(ctx); err != nil {
+		e.lock.RLock()
+		leaderIdentity := e.curLeader
+		e.lock.RUnlock()
+		attemptCtx, finishAttempt := e.trackLeaderConnectionAttempt(ctx, leaderIdentity)
+		err := e.checkConnContext(attemptCtx)
+		finishAttempt()
+		if err != nil {
 			e.lock.Lock()
 			defer e.lock.Unlock()
 			failedLeader := e.curLeader
@@ -318,7 +368,9 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 
 		klog.InfoS("check conn to new leader", "leaderIdentity", curLeader, "dialEndpoint", dialEndpoint, "secure", tlsConfig != nil)
 
-		err = checkClientConnContext(ctx, client, nil, dialTimeout)
+		attemptCtx, finishAttempt := e.trackLeaderConnectionAttempt(ctx, curLeader)
+		err = checkClientConnContext(attemptCtx, client, nil, dialTimeout)
+		finishAttempt()
 		if err != nil {
 			e.closeClient(client)
 			klog.InfoS("leader connection not ready", "err", err, "leaderIdentity", curLeader, "dialEndpoint", dialEndpoint, "secure", tlsConfig != nil)
@@ -1131,8 +1183,10 @@ func (e *etcdProxy) waitReady(ctx context.Context) error {
 
 		// A peer dial/health check can legitimately consume the full five-second
 		// connection timeout. Never run it, or wait for updateMu, in this request
-		// goroutine: wake the single connector and keep polling readiness under the
-		// caller-derived waitCtx instead.
+		// goroutine. If election already published a successor, cancel only the
+		// stale tracked attempt; then wake the single connector and keep polling
+		// readiness under the caller-derived waitCtx instead.
+		e.cancelStaleLeaderConnectionAttempt()
 		e.requestClientUpdate()
 		if err := e.Ready(); err == nil {
 			return nil
