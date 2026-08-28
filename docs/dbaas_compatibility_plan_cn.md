@@ -64358,6 +64358,83 @@ Service `a5576-client` 以 UID `f0b46f42-7629-4b27-9baf-4642cc9a9e12`、resource
 Service NotFound、EndpointSlice 0。A5574 archive、节点 runtime/config/import 引用、A5576 mutable tag、OCI 审计展开目录和临时 helper
 均已移入系统回收站或移除；发布保留集为 A5575 rollback 与 A5576 current 的 archive 和不可变 runtime/config/import 引用。
 
+### A5577–A5579：用 Kubernetes finalizer 封闭 rollout receipt 删除/重建竞态
+
+提交 `b09ebf94`（A5577）关闭 external rollout receipt 在 Kubernetes API 侧的同名重建 TOCTOU。A5574–A5576
+虽已把 fixture ownership 移出 etcd snapshot，并封闭 lease ID 的 ABA/TTL 窗口，但 runner 读取 immutable ConfigMap 的
+UID/resourceVersion/receipt 后，cleanup 期间该 ConfigMap 仍可被删除并以同名新 UID 重建。旧 cleanup 不再读取 Kubernetes
+对象，因而仍会按旧 lease IDs 删除固定 etcd prefix 和 auth schema；事后的 UID-fenced ConfigMap 删除虽然会失败，但数据破坏已经
+发生。修复前 RED `TestRolloutAvailabilityRunnerPinsRecoveredReceiptBeforeCleanup` 令 receipt 的 Kubernetes CAS 漂移，旧 runner
+仍启动 cleanup 并最终成功。
+
+A5577 为新 receipt 从创建时加入 `kubebrain.io/rollout-fixture-cleanup` finalizer；恢复旧 receipt 时，在任何 etcd mutation 前以
+JSON Patch 同时 test UID、resourceVersion、`immutable` 和完整 `receipt.json`，再安装唯一 finalizer 并验证 StatefulSet ownerRef。
+finalizer 保证删除请求只能把同一 UID 置为 terminating，不能释放名称给新 receipt。cleanup 成功后 runner 再以最新 UID/RV、
+原 receipt 和 finalizer 为前置条件移除 finalizer，并用 `uid-delete` 删除同一对象；新回归固定 pin 必须先于 cleanup、pin CAS 漂移时
+cleanup 调用次数必须为零，以及 recovered/current 两代 receipt 均按条件 unpin。
+
+真实 API 小演练创建临时 ConfigMap UID `dabc37c0-17bd-448f-a92c-020d8ec386b5`：初始 RV `7081226`，pin 后
+`7081227`，删除请求后 `7081228`；对象保持同一 UID/deletionTimestamp/finalizer，同名 create 被拒绝，移除 finalizer 后才
+NotFound。该对象已删除。
+
+提交 `21480955`（A5578）继续关闭 terminating receipt 的 liveness 缺口。删除请求本身会推进 resourceVersion；A5577 cleanup
+完成后若仍只接受 pin 时 RV，会安全地拒绝 unpin，却留下无法由后续 runner 接管的 terminating ConfigMap。新增 RED 在 cleanup
+日志发布时把同一 UID receipt 置为 deletionTimestamp/RV 漂移，A5577 以
+`failed to delete recovered fixture owner ConfigMap` 退出。修复仅在 UID、immutable data、唯一 finalizer、StatefulSet ownerRef
+均不变且 deletionTimestamp 已设置时刷新 RV，随后重试条件 unpin；移除 finalizer 后按同一 UID 有界等待 NotFound，若名称先被
+不同 UID 占用则 fail closed。
+
+A5578 的提交后 shard 3 又精确暴露正常路径无条件多一次 Kubernetes GET 把既有 5 秒 hung-kubectl 外层预算推到 `5.03s`。
+提交 `e95ff714`（A5579）改为先按 pin 时 RV 乐观 unpin；只有该 patch 失败且对象确实为同 UID terminating receipt 时才执行
+一次 bounded refresh/retry。定向 receipt/hung-process 组 `35.194s`、完整 rollout runner 专项 `217.684s`；最终 production
+inventory 为 683 项、提交前 `--verify 4` 为 `164/188/174/157`，提交后四片墙钟
+`166.655/411.340/279.497/427.122s`，全部通过。一次直接 `go test ./hack/production` 在无关
+`TestRepairTiKVTransactionPath` 等待中命中包级 10 分钟上限；分片隔离后的同一 inventory 全绿且没有遗留子进程。
+
+A5579 使用完整 SHA `e95ff714bbdd7aa6aac96c9d9c0f45b1364a46f4`、版本 `0.0.0-e95ff714bbdd`、TiKV、
+Go 1.26.5、build time `2026-08-28T08:29:48Z` 构建，墙钟 `283.040s`。OCI archive 为
+914,349,056 bytes，SHA-256 `183b6f16a66863798d78fe60dd8cf0fb9a4cd9fcb88bcd8119ce17c16e41d9b6`；
+OCI index `sha256:af36cccfdda50941cdc263005e3149e2c1f57645e602c42662378b87d60d86f8`、platform
+`sha256:de4ab987f2691b55e84d13b9e17647e6fdab92a7300d4011f3bb357ed1ec7044`、config
+`sha256:5f05b0cf5fb49120a1cf82df5d065784c23d4521d055ef4643c6b0fc5ef23062`、attestation
+`sha256:ecda3f835ae91291e72feb06a866decc61a3c25225f586672d27ec8bf1c2331e`、SBOM statement
+`sha256:8d570aa148ebbf8c0ba2c7ddb9d4bcba3b17b882551736909b7368f3700d876a`、provenance statement
+`sha256:82f74d8de0e34842e297cd3b841134a0a00fe7766dbb4e3051fc7c562f7fe0e5`、Kind runtime wrapper
+`sha256:13581f419c3241efed66604a19c083cb167046735d77c3eaa6b5daf642ddfa20`。严格审计 78/78 blobs、
+四个 OCI 图文档的 78 descriptor edges 全部正确；SBOM 为 2,592 packages/8,096 relationships，provenance 为
+3 materials，两份 statement 均只有一个 subject 且精确绑定 platform。不可变审计 Pod UID
+`89e59946-54ac-4627-b9a2-f7fe5712c7bf`、resourceVersion `7089900` 验证完整版本/SHA/build time、TiKV、
+linux/amd64、UID/GID 65532 和 restart 0 后按 UID/RV 删除。
+
+真实 deleting-receipt 演练创建 receipt UID `87a706db-b544-4339-9710-0a243c5a55dc`，计划 lease
+`7900000000000000001/2/3`；ID1 以 TTL 30 挂载
+`/kubebrain-rollout-availability/a5579-race/near-expiry=owned-before-cleanup`，ID2/ID3 missing。runner pin 后 RV 为
+`7090312`；并发删除把同一 UID 推进到 RV `7090356`，同名 create 被 API 明确拒绝为
+`object is being deleted ... already exists`。cleanup 等 ID1 自然到期后报告
+`recovered owner_uid=2222... keys=1 users=0 roles=0 leases=3`；一次预期的旧-RV patch 失败后进入 terminating
+refresh，最终 runner exit 0，后续 1/1 observe、Snapshot 和二次 cleanup 全绿。独立复验 prefix 0 keys、ID1 精确 missing、
+Pods/ConfigMaps 均为零。
+
+A5577→A5579 候选升级 **900/900 GREEN**：Watch `900/900×3`、Lease `105/275`、public restart 0、direct
+replacement 17、最大 direct recovery `16082ms`、public TCP 2、最小 direct TCP 2、RangeStream 174、Snapshot 1、
+retry/partial `0/0`，最大总/put/watch/direct/TSO/Region 延迟 `3475/3470/1035/21048/56/29ms`。same-version
+restart 同样 **900/900 GREEN**：Lease `105/282`、public restart 0、direct replacement 18、最大 direct recovery
+`15740ms`、public TCP 3、最小 direct TCP 2、RangeStream 165、Snapshot 1、retry/partial `4/0`，最大
+`4664/4657/541/21972/73/17ms`；两轮 postflight 均为零残留。
+
+终态 StatefulSet UID 保持 `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，generation/observed generation 174，
+current/update revision `a4657-tls-d74f49796`，3/3 Ready/restart 0 且三个 Pod 均运行 A5579 wrapper。三端 cluster ID
+`7662961163671170154`、revision `106001`、term 529、leader `2985394290`、version 3.7.0、db size 492 一致；
+AlarmList 空，auth 为 `KubeWharfServer/alice/root` 与 `operator/root`，PD/TiKV 3+3 Ready/restart 0，A5579/race
+prefix 和 owner receipt 全部为零。临时 Service `a5577-client` 以 UID
+`4f003b83-b9fa-4d80-a3d9-f0986b0a91fc`、resourceVersion `7083532` 删除，Service NotFound、EndpointSlice 0。
+A5575/A5577 archives、A5577/A5579 审计展开目录和 helper 已移入系统回收站，可恢复；mutable A5577/A5579 tag 与
+A5575/A5577 节点引用已移除。发布保留集为 A5576 rollback 与 A5579 current 的 archive、不可变 runtime/config/import 引用。
+
+本轮不改变 etcd 公共 API；它补足的是在 upstream Lease API 没有 generation-CAS revoke 的前提下，Kubernetes 外部 ownership
+receipt 必须跨 cleanup 保持同一对象世代的控制面约束。跨节点/AZ、外部托管 Kubernetes API 的 admission/finalizer 故障注入和长时间
+soak 仍是更高层证据缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
