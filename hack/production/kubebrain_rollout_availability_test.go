@@ -394,9 +394,38 @@ func TestRolloutAvailabilityRunnerHardFailoverDeletesStableLeaderIdentityAndReco
 	require.Contains(t, uidLog, "--resource-version=rv-kubebrain-1-uid-old")
 	require.Contains(t, uidLog, "--grace-period-seconds=0")
 	kubectlLog := readOptionalFile(t, logPath)
-	require.Equal(t, 3, strings.Count(kubectlLog, " --leader-target-only"))
+	require.Equal(t, 2, strings.Count(kubectlLog, " --leader-target-only"))
+	require.Contains(t, kubectlLog, "--report-leader-target-on-complete")
 	require.Contains(t, kubectlLog, " rollout status statefulset/kubebrain ")
 	require.NotContains(t, kubectlLog, " patch statefulset/kubebrain ")
+}
+
+func TestRolloutAvailabilityRunnerHardFailoverRequiresFinalLeaderEvidence(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	uidDelete, uidDeleteLog, hardState := writeRolloutAvailabilityUIDDelete(t)
+	leaderDiscoveryState := filepath.Join(t.TempDir(), "leader-discovery-state")
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake,
+		"FAKE_KUBECTL_LOG="+logPath,
+		"FAKE_KUBECTL_STATE="+statePath,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+		"HARD_FAILOVER=true",
+		"CONFIRM_KUBEBRAIN_HARD_FAILOVER=delete-current-leader",
+		"UID_DELETE_BIN="+uidDelete,
+		"FAKE_UID_DELETE_LOG="+uidDeleteLog,
+		"FAKE_HARD_FAILOVER_STATE="+hardState,
+		"FAKE_LEADER_DISCOVERY_STATE="+leaderDiscoveryState,
+		"FAKE_OMIT_FINAL_LEADER_TARGET=true",
+		"PROBE_ITERATIONS=3",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "final leader target evidence did not return exactly one result")
+	require.Contains(t, string(output), "failed to admit final leader evidence after hard failover")
+	require.FileExists(t, uidDeleteLog, "the explicit hard-failover mutation must have occurred before final evidence")
+	require.FileExists(t, hardState)
+	require.NoFileExists(t, statePath, "hard failover must not mutate the StatefulSet spec")
 }
 
 func TestRolloutAvailabilityRunnerHardFailoverRefusesLeaderChangeBeforeDelete(t *testing.T) {
@@ -1605,6 +1634,9 @@ elif [[ " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded "* ]]; then
   if [[ "${FAKE_PHASE_RESPONSE:-false}" == true && ! -e "$FAKE_PHASE_STATE" ]]; then : >"$FAKE_PHASE_STATE"; exit 1; fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
   payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 public_lease_restarts=1 max_public_lease_recovery_ms=3210 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_put_latency_ms=45 max_watch_after_put_latency_ms=78 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  if [[ "${HARD_FAILOVER:-false}" == true && -n "${FAKE_HARD_FAILOVER_STATE:-}" && -e "$FAKE_HARD_FAILOVER_STATE" && "${FAKE_OMIT_FINAL_LEADER_TARGET:-false}" != true ]]; then
+    payload+=$'FINAL_LEADER_TARGET {"member_id":13,"pod":"kubebrain-2","peer_url":"https://kubebrain-2.kubebrain-peer.kubebrain-system.svc.cluster.local:3380"}\n'
+  fi
   payload="${payload/public_tcp_dials=2/public_tcp_dials=${FAKE_PUBLIC_TCP_DIALS:-2}}"
   payload="${payload/min_direct_tcp_dials=2/min_direct_tcp_dials=${FAKE_MIN_DIRECT_TCP_DIALS:-2}}"
   [[ "${FAKE_PROBE_START_FAIL:-false}" != true ]] || payload=$'PROBE_FAIL invalid Snapshot scale put response\n'

@@ -251,6 +251,23 @@ func TestLeaderTargetConfigValidation(t *testing.T) {
 	}
 }
 
+func TestRunConfigRequiresLeaderIdentityForFinalReport(t *testing.T) {
+	snapshotDir := t.TempDir()
+	valid := config{
+		endpoint: "http://etcd:2379", directEndpoints: []string{"http://kb-0:3379", "http://kb-1:3379", "http://kb-2:3379"},
+		prefix: "/probe/", iterations: 1, interval: time.Millisecond, commandTimeout: time.Second,
+		dialTimeout: 100 * time.Millisecond, maxLatency: time.Second, maxDirectLatency: 20 * time.Second,
+		leaseTTL: 15, pdEndpoints: []string{"http://pd:2379"}, expectedStores: 3, maxHeartbeatAge: 20 * time.Second,
+		maxTSOLatency: 500 * time.Millisecond, maxRegionLatency: 500 * time.Millisecond, rangeInterval: time.Second,
+		snapshotDelay: time.Second, streamTimeout: time.Second, streamBackoff: time.Millisecond,
+		streamMaxBackoff: time.Second, snapshotDir: snapshotDir, minPublicTCPDials: 1, minDirectTCPDials: 1,
+		reportLeaderTarget: true, leaderStatefulSet: "kubebrain", leaderHeadlessSvc: "kubebrain-peer", leaderNamespace: "tenant-a",
+	}
+	require.NoError(t, valid.validateRun())
+	valid.leaderNamespace = ""
+	require.ErrorContains(t, valid.validateRun(), "leader-namespace")
+}
+
 func TestResolveLeaderTargetRequiresExactStatefulSetPeerIdentity(t *testing.T) {
 	members := []*etcdserverpb.Member{
 		{ID: 11, Name: "kubebrain-0", PeerURLs: []string{"https://kubebrain-0.kubebrain-peer.tenant-a.svc.cluster.local:3380"}},

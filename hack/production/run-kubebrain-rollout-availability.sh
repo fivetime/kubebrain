@@ -681,6 +681,14 @@ probe_command=(
   "${probe_tls_args[@]}" \
   --dial-timeout="$PROBE_DIAL_TIMEOUT"
 )
+if [[ "$HARD_FAILOVER" == true ]]; then
+  probe_command+=(
+    --report-leader-target-on-complete
+    --leader-statefulset="$KUBEBRAIN_STATEFULSET"
+    --leader-headless-service="$headless_service"
+    --leader-namespace="$KUBEBRAIN_NAMESPACE"
+  )
+fi
 leader_target_command=(
   /usr/local/bin/kubebrain-rollout-availability-probe
   --leader-target-only
@@ -693,14 +701,18 @@ leader_target_command=(
   "${probe_tls_args[@]}"
 )
 read_leader_target() {
-  local destination="$1" line
+  local destination="$1"
   capture_runtime_evidence "$destination" kctl_evidence exec "$PROBE_POD" -- "${leader_target_command[@]}" || return 1
-  if [[ "$(grep -c '^LEADER_TARGET ' "$destination" || true)" != 1 ]]; then
-    echo "leader target discovery did not return exactly one result" >&2
+  parse_leader_target "$destination" LEADER_TARGET "leader target discovery"
+}
+parse_leader_target() {
+  local source="$1" marker="$2" evidence="$3" line
+  if [[ "$(grep -c "^${marker} " "$source" || true)" != 1 ]]; then
+    echo "${evidence} did not return exactly one result" >&2
     return 1
   fi
-  line="$(grep '^LEADER_TARGET ' "$destination")"
-  line="${line#LEADER_TARGET }"
+  line="$(grep "^${marker} " "$source")"
+  line="${line#"${marker} "}"
   jq -ce --arg statefulset "$KUBEBRAIN_STATEFULSET" --argjson replicas "$EXPECTED_REPLICAS" '
     select(type == "object" and (.member_id | type == "number" and . > 0) and
       (.pod | type == "string") and (.peer_url | type == "string" and length > 0)) |
@@ -978,8 +990,8 @@ if [[ "$HARD_FAILOVER" == true ]]; then
       fi
     fi
   done
-  final_leader_target="$(read_leader_target "$runtime_evidence_dir/leader-target-final.log")" || {
-    echo "failed to discover leader after hard failover" >&2
+  final_leader_target="$(parse_leader_target "$probe_log" FINAL_LEADER_TARGET "final leader target evidence")" || {
+    echo "failed to admit final leader evidence after hard failover" >&2
     exit 1
   }
   echo "HARD_FAILOVER_RECOVERED old_pod=${hard_failover_pod} old_uid=${hard_failover_pod_uid} new_uid=${replacement_uid} final_leader=$(jq -r '.pod' <<<"$final_leader_target") final_member_id=$(jq -r '.member_id' <<<"$final_leader_target")"

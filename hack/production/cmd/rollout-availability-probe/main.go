@@ -33,37 +33,38 @@ import (
 )
 
 type config struct {
-	endpoint          string
-	directEndpoints   []string
-	prefix            string
-	iterations        int
-	interval          time.Duration
-	commandTimeout    time.Duration
-	dialTimeout       time.Duration
-	maxLatency        time.Duration
-	maxDirectLatency  time.Duration
-	leaseTTL          int64
-	pdEndpoints       []string
-	expectedStores    int
-	maxHeartbeatAge   time.Duration
-	maxTSOLatency     time.Duration
-	maxRegionLatency  time.Duration
-	rangeInterval     time.Duration
-	snapshotDelay     time.Duration
-	streamTimeout     time.Duration
-	streamBackoff     time.Duration
-	streamMaxBackoff  time.Duration
-	snapshotDir       string
-	caFile            string
-	certFile          string
-	keyFile           string
-	tlsServerName     string
-	minPublicTCPDials int64
-	minDirectTCPDials int64
-	leaderTargetOnly  bool
-	leaderStatefulSet string
-	leaderHeadlessSvc string
-	leaderNamespace   string
+	endpoint           string
+	directEndpoints    []string
+	prefix             string
+	iterations         int
+	interval           time.Duration
+	commandTimeout     time.Duration
+	dialTimeout        time.Duration
+	maxLatency         time.Duration
+	maxDirectLatency   time.Duration
+	leaseTTL           int64
+	pdEndpoints        []string
+	expectedStores     int
+	maxHeartbeatAge    time.Duration
+	maxTSOLatency      time.Duration
+	maxRegionLatency   time.Duration
+	rangeInterval      time.Duration
+	snapshotDelay      time.Duration
+	streamTimeout      time.Duration
+	streamBackoff      time.Duration
+	streamMaxBackoff   time.Duration
+	snapshotDir        string
+	caFile             string
+	certFile           string
+	keyFile            string
+	tlsServerName      string
+	minPublicTCPDials  int64
+	minDirectTCPDials  int64
+	leaderTargetOnly   bool
+	reportLeaderTarget bool
+	leaderStatefulSet  string
+	leaderHeadlessSvc  string
+	leaderNamespace    string
 }
 
 func classifyCleanupLeaseError(err error) (alreadyAbsent bool, cleanupErr error) {
@@ -103,6 +104,7 @@ func main() {
 	flag.Int64Var(&cfg.minPublicTCPDials, "min-public-tcp-dials", 1, "minimum successful TCP dials for the public client")
 	flag.Int64Var(&cfg.minDirectTCPDials, "min-direct-tcp-dials", 1, "minimum successful TCP dials required for every direct client")
 	flag.BoolVar(&cfg.leaderTargetOnly, "leader-target-only", false, "print one stable leader member and StatefulSet Pod identity, then exit")
+	flag.BoolVar(&cfg.reportLeaderTarget, "report-leader-target-on-complete", false, "print one stable leader target after every availability probe succeeds")
 	flag.StringVar(&cfg.leaderStatefulSet, "leader-statefulset", "", "expected StatefulSet name for leader target discovery")
 	flag.StringVar(&cfg.leaderHeadlessSvc, "leader-headless-service", "", "expected headless Service name for leader target discovery")
 	flag.StringVar(&cfg.leaderNamespace, "leader-namespace", "", "expected namespace for leader target discovery")
@@ -127,15 +129,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "LEADER_TARGET_FAIL", err)
 			os.Exit(1)
 		}
-		encoded, err := json.Marshal(target)
-		if err != nil {
+		if err := emitLeaderTarget("LEADER_TARGET", target); err != nil {
 			fmt.Fprintln(os.Stderr, "LEADER_TARGET_FAIL", err)
 			os.Exit(1)
 		}
-		fmt.Printf("LEADER_TARGET %s\n", encoded)
 		return
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validateRun(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
@@ -143,12 +143,32 @@ func main() {
 		fmt.Fprintln(os.Stderr, "PROBE_FAIL", err)
 		os.Exit(1)
 	}
+	if cfg.reportLeaderTarget {
+		target, err := discoverLeaderTarget(ctx, cfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "PROBE_FAIL discover final leader target:", err)
+			os.Exit(1)
+		}
+		if err := emitLeaderTarget("FINAL_LEADER_TARGET", target); err != nil {
+			fmt.Fprintln(os.Stderr, "PROBE_FAIL encode final leader target:", err)
+			os.Exit(1)
+		}
+	}
 }
 
 type leaderTarget struct {
 	MemberID uint64 `json:"member_id"`
 	Pod      string `json:"pod"`
 	PeerURL  string `json:"peer_url"`
+}
+
+func emitLeaderTarget(kind string, target leaderTarget) error {
+	encoded, err := json.Marshal(target)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s %s\n", kind, encoded)
+	return nil
 }
 
 func (cfg config) validateLeaderTarget() error {
@@ -326,6 +346,16 @@ func (cfg config) validate() error {
 		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
 			return fmt.Errorf("PD endpoint must use http or https: %q", endpoint)
 		}
+	}
+	return nil
+}
+
+func (cfg config) validateRun() error {
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	if cfg.reportLeaderTarget {
+		return cfg.validateLeaderTarget()
 	}
 	return nil
 }
