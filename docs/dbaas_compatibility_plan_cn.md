@@ -64138,7 +64138,11 @@ auth enabled/revision 2219，用户恢复为 `KubeWharfServer/alice/root`、角�
 `/kubebrain-rollout-availability/a5570-candidate/` 探针残留 529 个键、6 个生成用户和 4 个生成角色；逐项证明其权限只指向该独占
 测试前缀且没有活探针后，精确清理 529/529，未触碰业务身份。PD leader `kb-pd-2`，PD/TiKV 3+3 Ready、restart 0，三个 store
 均 Up；九个主 Pod 近 30 分钟关键日志命中 0。A5570 残留说明探针进程被非正常终止时，进程内 defer 仍不足以保证外部 fixture
-回收；需要继续把 cleanup ownership/receipt 提升到 runner 侧的可重入补偿，而不能只依赖 Pod 内清理。
+回收；需要继续把 cleanup ownership/receipt 提升到 runner 侧的可重入补偿，而不能只依赖 Pod 内清理。临时 Service
+`a5570-client` 已以 UID `977d6e61-d2ba-4a97-bec3-b09fbaec99bd`、resourceVersion `7022049` 双前置条件删除，
+Service NotFound、EndpointSlice 0。不可接受的 A5571 本地归档/metadata 与 N−2 A5567/A5569 归档已删除；本地只保留当前 A5572
+和已正确绑定证明的 A5570 rollback archive。节点删除 A5567/A5569/A5571 的精确 tag/index/runtime/config 与 A5570/A5572
+可变 tag，只保留当前 A5572 和回滚 A5570 的 immutable index/config，以及当前正在使用的 A5572 runtime wrapper。
 
 ## 提交规则
 
