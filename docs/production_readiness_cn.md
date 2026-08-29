@@ -8795,10 +8795,10 @@ A5520→A5521 upgrade **900/900 GREEN**，Watch 900、lease alive，最大业务
 `817bc005-a4d1-4d57-9aab-de93e0874054`，三 Pod 3/3 Ready、restart 0、精确 runtime digest 和 revision 一致，近 10 分钟日志无
 panic/fatal/error。首次尾延迟 RED 与第二次证据参数 RED 均不由最终双轮 GREEN 覆盖。
 
-## 近期增量证据：A5596--A5598
+## 近期增量证据：A5596--A5599
 
 本文较早的逐候选流水记录停在 A5521；以下只补记已经由当前仓库、不可变镜像和独立 TiKV/PD 实测直接证明的
-A5596--A5598，不用推测性文字补写中间候选。
+A5596--A5599，不用推测性文字补写中间候选。
 
 ### A5596：pending Watch generation 在发布前重新鉴权
 
@@ -8839,3 +8839,31 @@ same-version restart 在 iteration 518 因 PD leader API 超过 1 秒而 **RED**
 PD TSO 最大 59/7/64ms，Region 最大 9/8/7ms；每轮均包含 `watch=900`、`direct_watch=900x3`、Snapshot 1、
 public lease restart 0、至少两次 direct TCP dial，以及 keys/users/roles/leases 全零 cleanup。普通磁盘的两次 RED 都保留为容量规划与
 I/O 隔离要求的生产证据，不能由隔离环境三轮 GREEN 抹去。
+
+### A5599：在线 Snapshot 在写入敏感数据前解除路径名
+
+A5598 只保证首个 response 前 unlink；在此前可能持续很久的 bulk load 期间，generic ephemeral PVC 上仍存在命名 bbolt。
+进程若在此窗口崩溃，包含 KV、密码哈希和 lease 元数据的部分制品会跨容器重启留在卷内，并可能持续占用空间。提交
+`c1adfa0c3a076f7ffff2fdac3d6bd0b62572d288` 增加在线专用 unlinked builder：创建 bbolt 后先取得自有只读 fd，随即在任何
+metadata/history 写入前 unlink；构建、失败重捕获、storage-version 校验和 stream 都只通过 fd 完成。失败 attempt 关闭旧 fd，
+成功 attempt seek 后发送；离线 `WriteBackend` 的命名输出合同不变。
+
+暂停式回归最初只在 scanner 首次握手处停住，尚未证明敏感记录已写入，因此旧代码也会通过；修正为“两块数据、首块写入后再暂停”
+后，旧实现稳定暴露命名 artifact 而 **RED**，修复后路径始终不存在。另有失败 attempt fd 替换、unlinked builder 仅通过自有 fd
+发布、metadata 失败零命名残留等回归。Snapshot/writer 聚焦普通与 race 多轮、两个完整包、vet 均 GREEN；697 项提交前 inventory
+仍为 `169/193/176/159`，提交后四片墙钟分别为 250.125、439.088、291.727、498.635 秒，全部 GREEN。
+
+不可变候选 `kubebrain:a5599-c1adfa0c` 内嵌完整 SHA，OCI index
+`sha256:6d215a9a9025b20b220929500120a8def10f216c56e4c13200ce5c9f529da80f`、Kind runtime
+`sha256:db19890e8912081055f73bf6402588d5b5aee4f258ed46c6829e3bd8bc6ee70c`；78/78 descriptor/blob 闭包、
+SBOM/provenance、`linux/amd64`、USER `65532:65532`、入口和运行版本审计均通过。首次运行 rollout 命令时只设置了
+`PROBE_IMAGE`、遗漏 `TARGET_IMAGE`，实际执行的是 A5598 同版本 restart；虽然 900/900 GREEN，但明确不计作 A5599 候选证据。
+
+随后 A5598→A5599 真正候选升级 **900/900 GREEN**，revision
+`a4657-tls-7b7b589fb9 -> a4657-tls-7f9b544797`；A5599 又连续三轮同版本 restart **900/900 GREEN ×3**，revision
+依次到 `a4657-tls-5db75fc597`、`a4657-tls-6f5d4fb7cf`、`a4657-tls-76f5bfcc75`。四个有效门禁每轮均有
+`watch=900`、`direct_watch=900x3`、Snapshot 1、public lease restart 0、至少两个 direct TCP dial 和全零 fixture cleanup。
+三轮 restart 最大总/Put/Watch/direct/TSO/Region 延迟分别为
+`2713/2703/293/21082/82/12ms`、`3259/3248/205/20623/37/8ms`、
+`2400/2399/1039/20811/31/14ms`。每轮之后三 Pod 工作目录均为 0；最终 KubeBrain、PD、TiKV 均 3/3 Ready，
+KubeBrain 三 Pod restart 0 且 runtime digest 精确一致。

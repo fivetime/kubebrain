@@ -64955,6 +64955,23 @@ A5598 upgrade 同样在普通磁盘 **900/900 GREEN**，第一次 restart 又因
 `900/900x3`、Snapshot 1、public lease restart 0 和全零 cleanup。该开发替代物不把生产 512Gi PVC 改写为 tmpfs；发布合同仍要求
 动态制备、容量足够且与在线后端隔离的 StorageClass。
 
+### A5599：在线 Snapshot 在首条敏感记录前 unlink
+
+A5598 仍让命名 bbolt 存在于整个 bulk load 窗口，进程崩溃可能在 generic ephemeral PVC 中留下部分 KV/auth/lease
+数据和空间占用。提交 `c1adfa0c3a076f7ffff2fdac3d6bd0b62572d288` 增加在线专用 unlinked builder：创建 bbolt、取得
+自有只读 fd 后，在 metadata/history 写入前立即 unlink；重捕获替换失败 attempt 的 fd，最终校验和 stream 只走
+`/proc/self/fd/<n>`，离线 `WriteBackend` 命名输出保持不变。修正为首批敏感记录已写入后暂停的确定性回归令旧代码稳定
+**RED**，修复后无命名路径；失败 fd 替换、metadata 失败零残留及 fd-only 发布均有覆盖。
+
+Snapshot/writer 普通、race、完整包、vet 与 697 项提交前 inventory 全绿，提交后四片墙钟为
+250.125/439.088/291.727/498.635 秒。OCI index
+`sha256:6d215a9a9025b20b220929500120a8def10f216c56e4c13200ce5c9f529da80f`、runtime
+`sha256:db19890e8912081055f73bf6402588d5b5aee4f258ed46c6829e3bd8bc6ee70c` 完成 78/78 闭包、SBOM/provenance、
+非 root 和运行版本审计。一次漏设 `TARGET_IMAGE` 的 900/900 实际仍是 A5598 restart，不计 A5599 发布证据；随后真正
+A5598→A5599 upgrade 及连续三轮 A5599 restart 均 **900/900 GREEN**，四轮都有 Watch `900/900x3`、Snapshot 1、
+public lease restart 0、direct TCP 下界和全零 cleanup。最终 revision `a4657-tls-76f5bfcc75`，KubeBrain/PD/TiKV 3/3 Ready，
+KubeBrain restart 0、runtime digest 一致，三 Pod snapshot workspace 均零残留。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

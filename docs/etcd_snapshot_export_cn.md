@@ -42,10 +42,14 @@ order 与 legacy metadata 仍通过独立读取拼接，其防物理 GC pin 是�
 无分类的 `Unknown`。
 请求最初落到无 proxy follower 时仍返回 `ErrGRPCNotLeader`；只有已经通过 leader admission 后发生的
 lease freshness 丢失或 epoch 改变才属于 LeaderChanged，两个公开错误不会混淆。
-每次透明重捕获前必须成功删除上一 attempt 的私有 bbolt；除“不存在”外的删除错误会在读取任何集群
-状态前 fail closed，禁止在残留 buckets/rows 上继续写出跨 attempt 混合 artifact。
-捕获完成后，服务端打开并取得文件大小便立即 unlink 临时 bbolt，再从仍有效的 Linux 文件描述符发送；
-因此从首个 gRPC response 开始，慢客户端、断连或进程崩溃都不会留下包含完整 KV/auth hash 的命名文件。
+每次透明重捕获前必须先确认工作路径没有命名条目；除“不存在”外的删除错误会在读取任何集群状态前
+fail closed。新 builder 创建前还必须关闭上一 attempt 的匿名 artifact fd；关闭失败同样停止重捕获，禁止跨 attempt
+混用描述符或 backend 状态。
+在线 Maintenance 在写入 metadata、KV history 或 auth hash **之前**，先打开自有只读文件描述符并立即 unlink
+临时 bbolt；bulk load、透明重捕获、storage-version 校验和最终 stream 始终只持有该 Linux 文件描述符。失败 attempt
+会先关闭其描述符，成功 attempt 则 seek 到起点后直接发送。因此即使进程在长时间 bulk load 中崩溃，也不会留下包含
+部分或完整 KV/auth 数据的命名文件；慢客户端和断连同样没有可残留路径。该 `/proc/self/fd/<n>` 校验/发送路径是当前
+Linux 数据面合同。离线 `WriteBackend` 仍按调用方指定路径生成命名输出，不采用在线 RPC 的提前 unlink 语义。
 生产明文/TLS StatefulSet 在只读 rootfs 外为每个 Pod 申请独占 generic ephemeral PVC，并显式将
 `TMPDIR` 指向该卷。模板要求 `storageClassName: kubebrain-snapshot-workspace`、RWO/Filesystem 与 512Gi；
 平台必须提供动态制备、与 TiKV 及节点 root disk 隔离 I/O 的同名 StorageClass，否则 Pod 应 fail closed，
@@ -53,8 +57,8 @@ lease freshness 丢失或 epoch 改变才属于 LeaderChanged，两个公开错�
 live quota，仍须按实例 retention/历史体量调整容量并监控 PVC 延迟、吞吐和空间；512Gi 不是“任意历史
 都可导出”的保证。
 builder 以 bbolt `NoSync` 执行逐批 bulk load，且 Finish 不做本地 durability barrier。这不是降低已发布
-snapshot 的完整性：artifact 只在同一进程、同一次 RPC 内从仍打开的文件描述符读取，首个 response 前即
-unlink，客户端只有收到独立 terminal SHA-256 frame 才会接受制品；进程、节点或卷故障会使 RPC 失败并由
+snapshot 的完整性：在线 artifact 在开始 bulk load 前即 unlink，只在同一进程、同一次 RPC 内从仍打开的文件描述符读取；
+客户端只有收到独立 terminal SHA-256 frame 才会接受制品；进程、节点或卷故障会使 RPC 失败并由
 客户端从头重建，不存在从该临时文件恢复或续传的合同。这样避免每批同步及最终全文件 `Sync` 与在线
 TiKV/PD 争用 I/O；独立工作区仍是生产必需条件，`NoSync` 不能把共享节点磁盘变成安全配置。
 follower 转发在线 Snapshot 时也验证 upstream 帧终止契约：最后一个数据库 data frame 把
