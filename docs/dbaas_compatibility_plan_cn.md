@@ -65027,6 +65027,76 @@ retry 1 次。终态 KubeBrain/PD/TiKV 均 3/3 Ready/restart 0、runtime 一致�
 可观测性已落地，公共 5 秒尾部未关闭；下一轮应把 client subconn、EndpointSlice、目标 Pod 接收时间与本指标按同一请求关联，不能
 用最终 GREEN 覆盖两条 RED。
 
+### A5602--A5606：把公共慢请求拆成客户端 attempt，并修正门禁重试判据
+
+提交 `91b9f0a051ef2def8693b220d2f96abe964bb454`（A5602）为 rollout probe 的 Range/Txn/Put/DeleteRange
+增加每次 gRPC attempt 证据：固定 256 项环形缓冲、失败时最多输出 64 项，记录 method、规范化 remote、响应 member ID、
+name-resolution/transparent-retry 标志，以及 begin、pick、header、end 各阶段微秒数和 canonical code。证据只在失败窗口输出，
+不记录 key、value、认证材料或任意 header；未知或不合法地址归一为 `unknown`。这补上了 A5601 服务端低基数累计指标无法与单次公共请求
+关联的客户端一侧，但当时尚没有服务端 proxy stage 的逐请求关联字段。
+
+A5603--A5606 依次由 `048495aa49a73328906dbb61e8762e76e1ef0f8f`、
+`ef025e1ff3e7abcdea0bbe2e4a8194d72ff9ede4`、`b9d204a91017126bed36f92f3373fffb222ceffe`、
+`102c1d72228cdc881443c519c2a78fe8854ae3b6` 和 `31d5e034a4b36f5059aa7efcae8263793f0fe060`
+收紧门禁自身：初始 restored Snapshot 必须与 snapshot revision 精确一致，成员扩缩、learner promotion 和 quorum 写后的状态则允许
+revision 单调前进；restored auth Watch 关闭保留原 context cause，使 timeout/cancel 可被正确分类为可重试；runner completion budget
+从 180 秒扩到 360 秒，最终把单次 Snapshot attempt 从 2 分钟扩到 4 分钟、总预算扩到 600 秒，并由
+`2*attemptTimeout + maxBackoff` 的溢出安全下界校验保证一次完整重试能够真正结束。A5605 的测试外层观察预算同步放宽到 10 秒，
+只修正 loaded cleanup 测试的假超时，不改变生产 kubectl 或数据面 SLO。上述门禁错误均作为测试基础设施问题记录，不伪装为产品 RED；
+5 秒公共操作、1 秒 PD/TiKV 与 30 秒直连 stream 阈值没有放宽。
+
+预算修正后的 A5606 仍在 iteration 172 捕获真实 Put-to-Watch `6.029s` RED。客户端 attempt 显示首个 Put 以 topology error
+约 `1.522s` 返回，随后六次 Range 各约 `201ms` 失败，Range 在 serving member `4c40e0f0` 上约 `110ms` 成功，最终 Put
+约 `2.972s` 成功；总延迟不是 Snapshot 门禁假阳性。runner 完整回滚 A5601，cleanup 为零。该证据把下一步从继续增加整体预算
+收敛为：核心 unary 在已证明 readiness 后不应继续等待 stale transport，并需要把服务端 wait/forward 阶段带回同一个 attempt。
+
+### A5607--A5608：核心 unary stale transport fail-fast 与逐请求 proxy trailer
+
+提交 `328dc550922e0c2db099de2521e795f614cc4dc3`（A5607）只对 Txn/Range/Put/DeleteRange 在既有 readiness
+证明之后追加 `grpc.WaitForReady(false)`；stream 和非核心 unary 保留旧行为，drain replay 上限、错误映射与 leader connector 不变。
+连接拒绝回归证明 direct `Invoke` 在 500ms 内 fail-fast；聚焦普通 50 轮/race 20 轮、完整 proxy/server、vet 通过。698 项提交前
+inventory 为 `169/193/177/159`，提交后四片墙钟 `247.909/439.584/292.807/502.008s`，全部 GREEN。
+
+A5607 不可变 OCI archive 为 914,388,480 bytes，SHA-256
+`4f036e48957b51a3d25e4a7e5bf0986b4dd02db238ca74dad366d6f669f35386`；index
+`sha256:a087c2ae6ed5de4e81d9ebafd258762387e4d75856a5bff33a44ff876c6144a5`、runtime
+`sha256:74aeb8ce5ee01aad9d5fbb59bee6313a80ecc07d07dc5c1b1dac023940902958`，78/78 blob/edge 闭包、SBOM
+2,592 packages/8,096 relationships、3-material provenance 和非 root 运行审计均通过。首次 runner 因 Kind 只有 mutable tag、没有
+repo@index alias 而 `ErrImagePull`，fixture cleanup 为零且 StatefulSet 未变，明确不计产品 RED；补齐同 digest alias 后的真实候选
+在 iteration 174 仍以 Put-to-Watch `6.081061020s` RED，其中 Put `6.073219783s`、Watch `7.841237ms`。attempt 证据为首个
+Put topology error `1.160s`、六次 Range 约 `201ms` 失败、同一 member Range `106ms` 成功、最终 Put `3.392s` 成功。
+fail-fast 缩短了首段等待却未关闭最终 forward 长尾；runner 安全回滚 A5601，cleanup 为零。
+
+提交 `99b74830d05ef3d3195f31b462f0c1ffdc64f062`（A5608）为核心 unary response trailer 增加四个固定字段：
+`x-kubebrain-proxy-route=proxy`、累计 wait 微秒、累计 forward 微秒和 drain retry 次数。服务端忽略 `SetTrailer` 的观测错误，
+因此 trailer 失败不改变请求语义；客户端 stats handler 只接受单个 canonical 非负十进制值，缺失或畸形字段统一为 unknown。字段不含
+key、user、endpoint 或 leader identity。fake transport stream、真实 gRPC trailer、畸形输入和 drain retry 聚焦回归及完整
+proxy/probe 普通与 race、vet 全绿；698 项提交前 inventory 仍为 `169/193/177/159`，提交后四片
+`249.093/436.654/296.667/498.794s` 全部通过。
+
+A5608 archive `/root/kubebrain-a5608-99b74830.oci.tar` 为 914,403,840 bytes，SHA-256
+`d9ad084d299aef76ca8571355cdbd1aff662e8fe3081171823ad4d1f0ae6f7db`；index
+`sha256:ad184a8792faf9b69f7c977f6571d79c2710185394fb5ebead59704efcb299df`、platform
+`sha256:628ebae05ae5a3aec5928138f0bfc5babf0e119d638485b275399b92c649c228`、runtime
+`sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；78/78 闭包、SBOM/provenance、
+linux/amd64、USER `65532:65532`、入口和运行版本审计全部通过。
+
+A5601→A5608 候选及前两轮同版本 restart 连续 **900/900 GREEN ×3**，revision
+`f8c489ff6 -> 5d7c49f9c -> 68668dfd9b -> 7cc74644b7`。三轮最大总/Put/Watch/direct/TSO/Region
+分别为 `3121/3111/40/20633/27/8ms`、`3153/3105/47/21446/101/11ms`、
+`3260/3242/90/21543/53/8ms`；每轮均有 `watch=900`、`direct_watch=900x3`、Snapshot 1、public lease restart 0、
+至少两个 direct TCP dial 和全零 cleanup。随后一轮 restart 的终端输出不可恢复，虽然 StatefulSet 已收敛且 Pod 零重启，仍按证据合同
+记为“未证实”、不计 GREEN。使用新前缀补跑的 replacement restart 明确 exit 0：`900/900`、Lease public/direct
+`116/314`、direct replacement 19、最大 recovery `15873ms`、RangeStream 202、Snapshot 1、retry/partial `11/1`，
+最大延迟 `2566/2552/108/20446/101/9ms`，revision `6d854499bd -> 6768fb4758`，cleanup 全零。
+
+终态 StatefulSet UID `3d124ab7-b3ab-43d3-afd5-1b354722ab54`，resourceVersion `7340391`，
+generation/observed generation 291，current/update revision `a4657-tls-6768fb4758`，3/3 Ready/restart 0；三 Pod 精确运行
+A5608 index/runtime。主 PD/TiKV 各 3/3 Ready/restart 0，A5602--A5608 临时对象为零。临时 Service `a5602-client` 以 UID
+`38a7e619-85e1-412d-b0bb-07b034f15d85`、resourceVersion `7294322` 双前置条件删除并确认 NotFound；A5608 展开审计目录已移入
+系统回收站、可恢复，OCI archive 保留。A5608 通过本窗口并提供下一次 RED 所需的端到端分段字段，但不能把 A5606/A5607 两条 6 秒级
+RED 改写成尾延迟已经消失。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
