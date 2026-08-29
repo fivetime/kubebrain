@@ -1522,7 +1522,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 - **Watch A84 slow-consumer control-plane isolation（2026-07-17）**：对照 etcd
   `server/etcdserver/api/v3rpc/watch.go` 的独立 `sendLoop` 与 16 深度
   `ctrlStream`，发现 KubeBrain 虽已有每 subscriber 10k batch buffer、满载后从
-  100k event ring 无缝追赶/重新挂接、ring 淘汰后明确关闭等数据面保护，但 stream
+  100k event ring 无缝追赶/重新挂接、ring 淘汰后明确关闭 backend generation 等数据面保护，但 stream
   Recv loop 仍直接争用 gRPC `Send` 锁。客户端停止读取、event send 阻塞时，cancel
   与 progress 响应也会阻塞 Recv loop，导致已发送的取消请求不能及时释放逻辑 Watch
   配额。现每 stream 增加 16 深度有界 control queue 与单独 sender：created 响应仍
@@ -56981,7 +56981,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 - A5071 闭合 WatcherHub 慢消费者只有瞬时 gauge 和动态 legacy counter、流关闭后生产无法识别历史 re-list 放大的
   缺口。对照 `/root/etcd/server/storage/mvcc/watchable_store.go` 的 synced/unsynced/victims 重试模型，KubeBrain 的
   独立 TiKV 等价路径是 full subscriber 脱离 live fan-out、从 bounded watch-cache ring 无 gap replay、追平后重挂；
-  只有 backlog 已淘汰或 ring reset 才干净关闭 stream。前缀不匹配的 `route_skipped` 仅跳过无关批次，published
+  只有 backlog 已淘汰或 ring reset 才干净关闭当前 backend generation，fresh leader 的 RPC 层随后从首个未成功 Send
+  的 revision 透明 reopen durable history，只有精确 resume revision 已压缩才取消公开 Watch。前缀不匹配的
+  `route_skipped` 仅跳过无关批次，published
   revision 在完整 fan-out 后推进且 progress marker 仍广播给 quiet watcher，因此不是事件丢失。现新增固定
   `watcher_hub.slow_consumer.outcome{outcome="catch_up|recovered|dropped"}`，backend 创建时初始化三类权威零值；
   catch_up/recovered 覆盖 replay 生命周期，dropped 同时覆盖未接 ring 的 legacy fallback 与 ring 不可恢复终态，
@@ -65142,7 +65144,23 @@ Pod 的 info endpoint：写完后只有 `catch_up` 相对 baseline 精确 `+1` �
 `/dev/fd` 在 TLS 前失败，均不计清理反证，最终采用 owned-prefix preflight 取得独立证据。聚焦普通 50 轮/race 20 轮、全部 dev command
 普通/race、backend/server、compat 全套、两侧 vet 和 module verify 全绿；698 项 inventory 为 `169/193/177/159`，提交后四片
 `251.341/447.037/298.603/504.751s` 全部通过。本轮闭合一个生产参数下的可恢复慢消费者场景，不关闭数天级断线、滚动更新、并发多慢
-消费者和 ring 淘汰后的客户端 re-list P1。
+消费者，以及生产参数下 ring 淘汰后 durable generation reopen/compacted 终态的真实 TiKV/PD P1。
+
+### A5611：ring 淘汰后的透明 durable generation reopen
+
+A5611 `df06179e` 对标 `/root/etcd/server/storage/mvcc/watchable_store.go` 的 victim→unsynced 历史追赶，澄清
+`watcher_hub.slow_consumer.outcome{outcome="dropped"}` 是 Hub/backend generation 终态，不是公开 gRPC Watch 终态。
+fresh local leader 在 generation channel 关闭后以 `syncedRev+1` 重新打开 Watch；backend ring low miss 会读取 durable
+history，只有精确 resume revision 已压缩才发送 compacted cancellation 并要求客户端 re-list。
+
+确定性跨层回归使用真实 memkv backend、`WatchFanoutBuffer=1`、`WatchCacheSize=4`，在首个公开 Send 上施加反压；每个
+Put 都等待 published watermark 后才发下一笔，使 112 个 mutation 成为独立 fan-out batch，确定性越过 100-batch
+result buffer、1-batch Hub buffer 与 4-event ring。运行证据为 Hub revision 106 catch-up 后 ring low dropped，逻辑 Watch
+从首个未交付 revision 107 reopen durable history 至 113；相对 first revision 的 112 个事件严格连续、无重复、无
+canceled response，`slow_consumer dropped` 和 `generation recovered` 均为 `[0,1]`。focused 普通 20 轮、race 10 轮、
+backend/server 全包、vet 通过；698 项 inventory `169/193/177/159`，提交后四片
+`272.649/459.913/309.559/518.011s` 全绿。该证据关闭单进程 ring 淘汰客户端语义缺口，不把生产默认
+10,000-batch/200,000-event 参数下的多慢消费者、真实 TiKV/PD 扫描成本或 compaction 竞态误标为完成。
 
 ## 提交规则
 

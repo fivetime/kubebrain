@@ -1517,11 +1517,14 @@ backend WatcherHub 真实状态刷新；production 只消费 60 秒内、按 Rea
 watcher），slow 非零持续 5 分钟 warning；缺失、陈旧或非法 telemetry warning。
 慢消费者的历史终态另由 `watcher_hub_slow_consumer_outcome{outcome="catch_up|recovered|dropped"}` 表达，backend
 创建时三类均发布权威零值。catch_up 表示订阅缓冲已满并进入 bounded ring replay，recovered 表示追平后无 gap
-重挂 live fan-out，dropped 只表示 ring backlog 不可恢复或 reset 后干净关闭流并迫使客户端重连/re-list；客户端取消、
+重挂 live fan-out，dropped 只表示 ring backlog 不可恢复或 reset 后干净关闭当前 backend generation；fresh leader 的
+RPC 层会从首个未成功 Send 的 revision 透明 reopen durable history，故 dropped 本身不等于公开 Watch 取消或客户端
+re-list，只有该 resume revision 已压缩才进入 `watch_generation_recovery{outcome="compacted"}` 并要求 re-list。客户端取消、
 deadline 和服务 shutdown 不计 dropped。production 仅消费 60 秒新鲜 Ready Pod UID/outcome current 与十分钟
 increase，要求两者均为 `3×Ready`，current 为 `[0,2^53]` 精确整数、increase 有限同范围，未知 outcome 非法；
 catch_up 或 dropped 任一增长 warning，缺失、陈旧、非法或组合不完整 warning。出现 dropped 时必须同时检查 ring
-容量、Watch send-loop、客户端流控及 re-list 放大，不能因当前 slow gauge 已回零而关闭事件。
+容量、Watch send-loop、客户端流控及 durable history 扫描放大，并与 generation recovered/compacted/failed 对账；
+不能因当前 slow gauge 已回零而关闭事件，也不能在 recovered 已精确收敛时误报客户端 re-list。
 换主或 peer transport 变化时，`watch_generation_recovery{outcome="retry|recovered|compacted|failed"}` 记录逻辑
 Watch generation 的恢复过程，RPC server 创建时四类均发布权威零值。每次 reopen 都从该 Watch 最后成功发送
 revision 的下一位开始：瞬时打开失败计 retry，成功建立权威 local/proxy channel 计 recovered，精确 resume revision
@@ -9067,4 +9070,21 @@ oracle 2,000/2,000 GREEN，revision `2..2001`。
 Range 分页，每个 Txn 最多执行 128 个精确 key Delete，并由独立预算完成，异常 key、超限 batch 或 deleted count 不等于 1 均失败；
 12,000-key 真实清理和同 RUN_ID preflight 已证明。聚焦、race、backend/server、compat、vet、module verify 均全绿；698 项提交前
 inventory `169/193/177/159`，提交后四片 `251.341/447.037/298.603/504.751s`。这证明一个生产缓冲参数下的 recoverable catch-up，
-不能替代数天断线/滚动更新、多慢消费者、ring 淘汰与客户端 re-list 长稳，相关 P1 继续开放。
+不能替代数天断线/滚动更新、多慢消费者，以及生产参数下 ring 淘汰后 durable generation reopen/compacted 终态的
+真实 TiKV/PD 长稳，相关 P1 继续开放。
+
+### A5611：ring 淘汰后的透明 durable generation reopen
+
+A5611 `df06179e` 对标 upstream `/root/etcd/server/storage/mvcc/watchable_store.go` 的 victim→unsynced MVCC 历史追赶，
+修正了“`watcher_hub ... outcome=dropped` 必然关闭公开 stream 并迫使客户端 re-list”的层次混淆。Hub dropped 只关闭
+一个 backend generation；fresh local leader 的 gRPC Watch 会从 `syncedRev+1`（仅在 wire Send 成功后推进）重新打开，
+ring low miss 转入 durable history。只有该精确 revision 已被压缩，逻辑 Watch 才返回 compacted cancellation。
+
+新增的跨层确定性回归使用真实 memkv backend、`WatchFanoutBuffer=1`、`WatchCacheSize=4`，阻塞首个公开 Send，并在每个
+Put 后等待其 published watermark，保证 112 个 mutation 形成独立 fan-out batch，精确越过 100-batch backend result
+缓冲、1-batch Hub 缓冲和 4-event ring。实测 Hub 从 revision 106 进入 catch-up 后因 ring low 关闭 generation，RPC 从
+首个未交付 revision 107 reopen 并由 durable history 回放至 113；客户端最终收到相对 first revision 的全部 112 个事件，
+无 gap、duplicate 或 canceled response，且 `slow_consumer{dropped}` 与 `watch_generation_recovery{recovered}` 均从
+`[0]` 精确到 `[0,1]`。focused 普通 20 轮、race 10 轮、backend/server 全包和 vet 通过；提交前 698 项 inventory 为
+`169/193/177/159`，提交后四片 `272.649/459.913/309.559/518.011s` 全绿。本轮证明单进程真实协议栈合同；生产默认
+10,000-batch/200,000-event 参数下的多慢消费者、真实 TiKV/PD replay 成本与 compaction 竞态仍保留为 P1。
