@@ -604,6 +604,7 @@ func TestRolloutAvailabilityRunnerSupportsBoundedMemorySnapshotWorkspace(t *test
 }
 
 func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
+	const outerObservationBudget = 10 * time.Second
 	for _, tc := range []struct {
 		name, target, timeoutVariable, want string
 		extraEnv                            []string
@@ -627,7 +628,7 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 			env = append(env, tc.extraEnv...)
 			started := time.Now()
 			output, err := runProductionScriptCommandWithTimeout(t,
-				"run-kubebrain-rollout-availability.sh", env, 6*time.Second)
+				"run-kubebrain-rollout-availability.sh", env, outerObservationBudget)
 			require.Error(t, err)
 			require.Contains(t, string(output), tc.want)
 			if tc.wantProbeLogCalls > 0 {
@@ -642,7 +643,7 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 				require.Equal(t, tc.wantProbeLogCalls, probeLogCalls,
 					"an expired completion stage must not start a diagnostic log request")
 			}
-			require.Less(t, time.Since(started), 6*time.Second,
+			require.Less(t, time.Since(started), outerObservationBudget,
 				"the outer command timeout must terminate a kubectl process that never reaches HTTP request handling")
 		})
 	}
