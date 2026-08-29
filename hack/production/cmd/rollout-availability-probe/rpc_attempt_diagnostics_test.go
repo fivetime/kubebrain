@@ -13,8 +13,11 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 )
 
 type rpcAttemptFakeClock struct {
@@ -50,6 +53,12 @@ func TestRPCAttemptDiagnosticsCaptureRemoteAndPhases(t *testing.T) {
 	clock.Set(base.Add(8 * time.Millisecond))
 	recorder.HandleRPC(ctx, &stats.InHeader{Client: true})
 	recorder.HandleRPC(ctx, &stats.InPayload{Client: true, Payload: &etcdserverpb.PutResponse{Header: &etcdserverpb.ResponseHeader{MemberId: 0x2a}}})
+	recorder.HandleRPC(ctx, &stats.InTrailer{Client: true, Trailer: metadata.Pairs(
+		proxyprotocol.CoreUnaryProxyRouteTrailer, "proxy",
+		proxyprotocol.CoreUnaryProxyWaitMicrosTrailer, "17",
+		proxyprotocol.CoreUnaryProxyForwardMicrosTrailer, "3900",
+		proxyprotocol.CoreUnaryProxyDrainRetriesTrailer, "1",
+	)})
 	recorder.HandleRPC(ctx, &stats.End{Client: true, BeginTime: base.Add(time.Millisecond), EndTime: base.Add(13 * time.Millisecond)})
 
 	require.JSONEq(t, `{
@@ -65,7 +74,11 @@ func TestRPCAttemptDiagnosticsCaptureRemoteAndPhases(t *testing.T) {
 			"out_header_to_in_header_us":4000,
 			"in_header_to_end_us":5000,
 			"total_us":12000,
-			"code":"OK"
+			"code":"OK",
+			"proxy_route":"proxy",
+			"proxy_wait_us":17,
+			"proxy_forward_us":3900,
+			"proxy_drain_retries":1
 		}],
 		"omitted":0,
 		"ring_overwrites":0
@@ -109,7 +122,11 @@ func TestRPCAttemptDiagnosticsKeepRetryAttemptsAndBoundOutput(t *testing.T) {
 			"out_header_to_in_header_us":1000,
 			"in_header_to_end_us":1000,
 			"total_us":3000,
-			"code":"OK"
+			"code":"OK",
+			"proxy_route":"unknown",
+			"proxy_wait_us":null,
+			"proxy_forward_us":null,
+			"proxy_drain_retries":null
 		}],
 		"omitted":1,
 		"ring_overwrites":0
@@ -123,6 +140,12 @@ func TestRPCAttemptDiagnosticsFailClosedOnInvalidRemoteAndTime(t *testing.T) {
 	ctx := recorder.TagRPC(context.Background(), &stats.RPCTagInfo{FullMethodName: "/etcdserverpb.KV/Put"})
 	recorder.HandleRPC(ctx, &stats.Begin{Client: true, BeginTime: base})
 	recorder.HandleRPC(ctx, &stats.OutHeader{Client: true, RemoteAddr: invalidDiagnosticAddress("forged\nremote")})
+	recorder.HandleRPC(ctx, &stats.InTrailer{Client: true, Trailer: metadata.Pairs(
+		proxyprotocol.CoreUnaryProxyRouteTrailer, "forged",
+		proxyprotocol.CoreUnaryProxyWaitMicrosTrailer, "-1",
+		proxyprotocol.CoreUnaryProxyForwardMicrosTrailer, "01",
+		proxyprotocol.CoreUnaryProxyDrainRetriesTrailer, "not-a-number",
+	)})
 	recorder.HandleRPC(ctx, &stats.End{Client: true, BeginTime: base, EndTime: base.Add(-time.Millisecond), Error: context.DeadlineExceeded})
 
 	require.JSONEq(t, `{
@@ -138,7 +161,11 @@ func TestRPCAttemptDiagnosticsFailClosedOnInvalidRemoteAndTime(t *testing.T) {
 			"out_header_to_in_header_us":null,
 			"in_header_to_end_us":null,
 			"total_us":0,
-			"code":"DeadlineExceeded"
+			"code":"DeadlineExceeded",
+			"proxy_route":"unknown",
+			"proxy_wait_us":null,
+			"proxy_forward_us":null,
+			"proxy_drain_retries":null
 		}],
 		"omitted":0,
 		"ring_overwrites":0
@@ -173,7 +200,15 @@ type diagnosticKVServer struct {
 	etcdserverpb.UnimplementedKVServer
 }
 
-func (diagnosticKVServer) Range(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+func (diagnosticKVServer) Range(ctx context.Context, _ *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	if err := grpc.SetTrailer(ctx, metadata.Pairs(
+		proxyprotocol.CoreUnaryProxyRouteTrailer, "proxy",
+		proxyprotocol.CoreUnaryProxyWaitMicrosTrailer, "23",
+		proxyprotocol.CoreUnaryProxyForwardMicrosTrailer, "4567",
+		proxyprotocol.CoreUnaryProxyDrainRetriesTrailer, "0",
+	)); err != nil {
+		return nil, err
+	}
 	return &etcdserverpb.RangeResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 0x2a, Revision: 1}}, nil
 }
 
@@ -213,4 +248,8 @@ func TestRPCAttemptDiagnosticsObserveRealGRPCRemote(t *testing.T) {
 	require.Equal(t, "OK", report.Attempts[0].Code)
 	require.NotNil(t, report.Attempts[0].BeginToOutHeaderMicros)
 	require.NotNil(t, report.Attempts[0].OutHeaderToInHeaderMicros)
+	require.Equal(t, "proxy", report.Attempts[0].ProxyRoute)
+	require.Equal(t, int64(23), *report.Attempts[0].ProxyWaitMicros)
+	require.Equal(t, int64(4567), *report.Attempts[0].ProxyForwardMicros)
+	require.Equal(t, int64(0), *report.Attempts[0].ProxyDrainRetries)
 }

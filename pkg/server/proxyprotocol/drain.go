@@ -31,6 +31,17 @@ const clientDrainedBeforeAdmissionMessage = "there is no connection available"
 
 const countIndexNotReadyMessage = "count index not ready (rebuilding); fall back locally"
 
+// Core unary proxy diagnostics are bounded response trailers. They intentionally
+// contain no key, caller, endpoint, or leader identity, so rollout probes can
+// correlate one public attempt with its follower forwarding stages without
+// creating a high-cardinality or topology-disclosure channel.
+const (
+	CoreUnaryProxyRouteTrailer         = "x-kubebrain-proxy-route"
+	CoreUnaryProxyWaitMicrosTrailer    = "x-kubebrain-proxy-wait-us"
+	CoreUnaryProxyForwardMicrosTrailer = "x-kubebrain-proxy-forward-us"
+	CoreUnaryProxyDrainRetriesTrailer  = "x-kubebrain-proxy-drain-retries"
+)
+
 // ErrPeerDrainedBeforeAdmission is safe for an internal follower proxy to
 // replay: the retiring leader's admission write fence proves the request never
 // entered its RPC handler. It must never classify a generic leader loss.

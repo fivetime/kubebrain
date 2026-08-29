@@ -20,6 +20,7 @@ import (
 	stderrors "errors"
 	"io"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -680,21 +681,38 @@ func forwardUnaryWithDrainRetry[T any](
 	call func(*clientv3.Client, string) (T, error),
 ) (T, error) {
 	var zero T
+	var waitReadyDuration time.Duration
+	var forwardDuration time.Duration
+	var drainRetries int
+	defer func() {
+		// Direct unit calls do not carry a server transport stream; SetTrailer's
+		// error is deliberately ignored because observability must never change
+		// the etcd result. Real public/peer handlers expose these bounded values.
+		_ = grpc.SetTrailer(ctx, metadata.Pairs(
+			proxyprotocol.CoreUnaryProxyRouteTrailer, "proxy",
+			proxyprotocol.CoreUnaryProxyWaitMicrosTrailer, strconv.FormatInt(max(0, waitReadyDuration.Microseconds()), 10),
+			proxyprotocol.CoreUnaryProxyForwardMicrosTrailer, strconv.FormatInt(max(0, forwardDuration.Microseconds()), 10),
+			proxyprotocol.CoreUnaryProxyDrainRetriesTrailer, strconv.Itoa(drainRetries),
+		))
+	}()
 	for attempt := 0; attempt < 2; attempt++ {
 		readyStarted := time.Now()
 		client, leader, _, err := e.readyClient(ctx)
+		waitReadyDuration += time.Since(readyStarted)
 		emitUnaryForwardDuration(e.metricCli, rpc, unaryForwardStageWaitReady, readyStarted, ctx, client, err)
 		if err != nil {
 			return zero, err
 		}
 		forwardStarted := time.Now()
 		response, err := call(client, leader)
+		forwardDuration += time.Since(forwardStarted)
 		emitUnaryForwardDuration(e.metricCli, rpc, unaryForwardStageForward, forwardStarted, ctx, client, err)
 		e.markForwardError(ctx, client, err)
 		if err == nil || !proxyprotocol.IsPeerDrainedBeforeAdmission(err) || attempt == 1 {
 			return response, err
 		}
 		emitUnaryForwardDrainRetry(e.metricCli, rpc)
+		drainRetries++
 	}
 	return zero, status.Error(codes.Internal, "kubebrain: exhausted peer drain retry")
 }

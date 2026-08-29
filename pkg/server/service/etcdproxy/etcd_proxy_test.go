@@ -20,6 +20,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,6 +36,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
@@ -275,6 +277,27 @@ type putResultServer struct {
 	put   func() (*etcdserverpb.PutResponse, error)
 }
 
+type recordingServerTransportStream struct {
+	mu      sync.Mutex
+	trailer metadata.MD
+}
+
+func (*recordingServerTransportStream) Method() string               { return "/etcdserverpb.KV/Put" }
+func (*recordingServerTransportStream) SetHeader(metadata.MD) error  { return nil }
+func (*recordingServerTransportStream) SendHeader(metadata.MD) error { return nil }
+func (s *recordingServerTransportStream) SetTrailer(trailer metadata.MD) error {
+	s.mu.Lock()
+	s.trailer = metadata.Join(s.trailer, trailer)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *recordingServerTransportStream) trailers() metadata.MD {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trailer.Copy()
+}
+
 func (s *putResultServer) Put(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 	s.calls.Add(1)
 	return s.put()
@@ -334,11 +357,24 @@ func TestPutRetriesExactPreAdmissionDrainOnPublishedSuccessor(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, proxy.Close()) })
 	require.Eventually(t, func() bool { return proxy.Ready() == nil }, 5*time.Second, 10*time.Millisecond)
 
-	response, err := proxy.Put(t.Context(), &etcdserverpb.PutRequest{Key: []byte("rollout")})
+	transport := &recordingServerTransportStream{}
+	ctx := grpc.NewContextWithServerTransportStream(t.Context(), transport)
+	response, err := proxy.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("rollout")})
 	require.NoError(t, err)
 	require.True(t, proto.Equal(want, response))
 	require.Equal(t, int32(1), retiring.calls.Load())
 	require.Equal(t, int32(1), successor.calls.Load())
+	trailers := transport.trailers()
+	require.Equal(t, []string{"proxy"}, trailers.Get(proxyprotocol.CoreUnaryProxyRouteTrailer))
+	require.Equal(t, []string{"1"}, trailers.Get(proxyprotocol.CoreUnaryProxyDrainRetriesTrailer))
+	for _, key := range []string{proxyprotocol.CoreUnaryProxyWaitMicrosTrailer, proxyprotocol.CoreUnaryProxyForwardMicrosTrailer} {
+		values := trailers.Get(key)
+		require.Len(t, values, 1)
+		value, parseErr := strconv.ParseInt(values[0], 10, 64)
+		require.NoError(t, parseErr)
+		require.GreaterOrEqual(t, value, int64(0))
+		require.Equal(t, strconv.FormatInt(value, 10), values[0])
+	}
 }
 
 func TestPutForwardMetricsSplitReadyCallAndDrainRetry(t *testing.T) {

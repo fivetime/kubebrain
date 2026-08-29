@@ -11,8 +11,11 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 )
 
 const (
@@ -43,6 +46,10 @@ type rpcAttemptRecord struct {
 	inHeader            time.Time
 	end                 time.Time
 	code                codes.Code
+	proxyRoute          string
+	proxyWaitMicros     *int64
+	proxyForwardMicros  *int64
+	proxyDrainRetries   *int64
 }
 
 type rpcAttemptRecorder struct {
@@ -68,6 +75,10 @@ type rpcAttemptEvidence struct {
 	InHeaderToEndMicros       *int64 `json:"in_header_to_end_us"`
 	TotalMicros               int64  `json:"total_us"`
 	Code                      string `json:"code"`
+	ProxyRoute                string `json:"proxy_route"`
+	ProxyWaitMicros           *int64 `json:"proxy_wait_us"`
+	ProxyForwardMicros        *int64 `json:"proxy_forward_us"`
+	ProxyDrainRetries         *int64 `json:"proxy_drain_retries"`
 }
 
 type rpcAttemptEvidenceReport struct {
@@ -155,6 +166,13 @@ func (recorder *rpcAttemptRecorder) HandleRPC(ctx context.Context, event stats.R
 		if tracker.current != nil {
 			tracker.current.servingMemberID = diagnosticServingMemberID(value.Payload)
 		}
+	case *stats.InTrailer:
+		if tracker.current != nil {
+			tracker.current.proxyRoute = singleDiagnosticTrailer(value.Trailer, proxyprotocol.CoreUnaryProxyRouteTrailer)
+			tracker.current.proxyWaitMicros = nonnegativeDiagnosticTrailer(value.Trailer, proxyprotocol.CoreUnaryProxyWaitMicrosTrailer)
+			tracker.current.proxyForwardMicros = nonnegativeDiagnosticTrailer(value.Trailer, proxyprotocol.CoreUnaryProxyForwardMicrosTrailer)
+			tracker.current.proxyDrainRetries = nonnegativeDiagnosticTrailer(value.Trailer, proxyprotocol.CoreUnaryProxyDrainRetriesTrailer)
+		}
 	case *stats.End:
 		if tracker.current == nil {
 			tracker.mu.Unlock()
@@ -169,6 +187,29 @@ func (recorder *rpcAttemptRecorder) HandleRPC(ctx context.Context, event stats.R
 		return
 	}
 	tracker.mu.Unlock()
+}
+
+func singleDiagnosticTrailer(trailer metadata.MD, key string) string {
+	values := trailer.Get(key)
+	if len(values) != 1 {
+		return "unknown"
+	}
+	if values[0] != "proxy" {
+		return "unknown"
+	}
+	return values[0]
+}
+
+func nonnegativeDiagnosticTrailer(trailer metadata.MD, key string) *int64 {
+	values := trailer.Get(key)
+	if len(values) != 1 {
+		return nil
+	}
+	value, err := strconv.ParseInt(values[0], 10, 64)
+	if err != nil || value < 0 || strconv.FormatInt(value, 10) != values[0] {
+		return nil
+	}
+	return &value
 }
 
 func diagnosticServingMemberID(payload any) string {
@@ -296,7 +337,18 @@ func (record rpcAttemptRecord) evidence(windowStart time.Time) rpcAttemptEvidenc
 		OutHeaderToInHeaderMicros: phaseMicros(record.outHeader, record.inHeader),
 		InHeaderToEndMicros:       phaseMicros(record.inHeader, record.end),
 		TotalMicros:               total, Code: record.code.String(),
+		ProxyRoute:         diagnosticProxyRoute(record.proxyRoute),
+		ProxyWaitMicros:    record.proxyWaitMicros,
+		ProxyForwardMicros: record.proxyForwardMicros,
+		ProxyDrainRetries:  record.proxyDrainRetries,
 	}
+}
+
+func diagnosticProxyRoute(route string) string {
+	if route == "proxy" {
+		return route
+	}
+	return "unknown"
 }
 
 func phaseMicros(start, end time.Time) *int64 {
