@@ -65117,6 +65117,33 @@ Put header 完全相等，因此事件总数相同也不能掩盖丢失、重复
 临时 Kubernetes 对象或落盘凭据。提交前 `--verify 4` 确认 698 项 inventory 为 `169/193/177/159`；提交后四片 Go 时间
 `258.166/451.738/305.574/514.408s`，全部 GREEN。短跑不关闭矩阵中的 P1：仍需数天级断线、滚动更新和慢消费者 soak。
 
+### A5610：raw Watch backpressure 与生产 slow-consumer outcome 闭环
+
+提交 `ca2dacad48475d2ab163121483ab62bdc22b9921` 对照 upstream `/root/etcd/server/storage/mvcc/watchable_store.go` 的
+synced→victim→unsynced 恢复路径，补上此前普通 clientv3 watcher 无法证明的服务端 backpressure。clientv3 即使业务不读 WatchChan，
+内部 goroutine 仍持续 `Recv` 并缓存 response；新 raw watcher 在 Created 后完全暂停 `Recv`，让 HTTP/2 flow control 反压服务端。
+Status 在 raw Created 前后两次要求 serving member 等于 leader，防止 follower proxy/client buffer 吸收压力。KubeBrain 模式还绑定同一
+Pod 的 info endpoint：写完后只有 `catch_up` 相对 baseline 精确 `+1` 且 `dropped` 不变才恢复读取；全部事件与 Put revision 精确对账
+后，再要求 `recovered +1`、`dropped` 仍不变。metrics parser 使用显式 UTF-8 validation、32 MiB 上限、固定三 outcome、非负有限整数，
+禁止 redirect、重复 outcome 和异常 counter。
+
+为了越过生产 `--watch-fanout-buffer=10000`，演练必须创建超过一万个独立事务；A5609 的单次 Prefix Delete 会被生产
+`--max-delete-range-keys=1024` 拒绝。A5610 cleanup 改为每轮线性一致 Range 最多 128 key，再以最多 128 个精确 key Delete 组成 Txn，
+对异常超限/out-of-prefix 返回 fail closed，并使用独立 `CLEANUP_TIMEOUT_SECONDS`。写入进度日志至少间隔 1,000 次且总量约束在 100 条，
+只记录计数、revision 和耗时。普通及 raw watcher 一并计入 20,000,000 observation 内存上限。
+
+真实 `a4657-tls-2` 直连 leader 与独立 3 PD/3 TiKV 执行 1 个正常 watcher + 1 个 raw watcher、12,000 个独立 Put，revision
+`178549..190548`，两条序列均精确 GREEN；leader `catch_up/recovered/dropped` 从 `0/0/0` 变为 `1/1/0`。同一 RUN_ID 的独立
+1-event 复跑只有在旧前缀 CountOnly=0 后才能写入，最终再次清零。`a4657-tls-0/1` 分别以 member `4c40e0f0/329850b1` 在首写前
+拒绝，因为 leader 为 `b1f18072`。没有创建 Kubernetes 对象或落盘凭据；三 KubeBrain、三 PD、三 TiKV 均 Ready/restart 0。
+
+独立 upstream etcd 用同一 raw-pause oracle 2,000/2,000 GREEN，revision `2..2001`、写入约 0.912 秒，同 RUN_ID 复跑证明 cleanup；
+临时数据目录已移入系统回收站、可恢复。gateway CountOnly 因该 HTTP 路径未映射证书用户名返回 400，etcdctl 因重试重复打开一次性
+`/dev/fd` 在 TLS 前失败，均不计清理反证，最终采用 owned-prefix preflight 取得独立证据。聚焦普通 50 轮/race 20 轮、全部 dev command
+普通/race、backend/server、compat 全套、两侧 vet 和 module verify 全绿；698 项 inventory 为 `169/193/177/159`，提交后四片
+`251.341/447.037/298.603/504.751s` 全部通过。本轮闭合一个生产参数下的可恢复慢消费者场景，不关闭数天级断线、滚动更新、并发多慢
+消费者和 ring 淘汰后的客户端 re-list P1。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

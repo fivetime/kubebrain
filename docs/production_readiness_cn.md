@@ -9048,3 +9048,23 @@ key/value、新建 KV revision/version/lease 形状；每条 watcher 的 revisio
 普通/race、compat module 全量、两侧 vet 均通过；698 项提交前 inventory 为 `169/193/177/159`，提交后四片
 `258.166/451.738/305.574/514.408s` 全绿。该轮证明 oracle 与当前基础 Watch 路径，不代表数天级断线、滚动更新、真实慢消费者和
 故障恢复长稳已经完成；这些仍是发布前 P1 开放项。
+
+### A5610：生产参数下的 raw slow-consumer 恢复证明
+
+A5610 `ca2dacad48475d2ab163121483ab62bdc22b9921` 修正“业务不读 clientv3 WatchChan 就等于服务端慢消费者”的错误假设：
+clientv3 内部仍会持续 `Recv`，因此新增 raw gRPC Watch 在 Created 后暂停读取，让 HTTP/2 flow control 将 backpressure 传到服务端。
+endpoint 在 Created 前后必须由 Status 两次证明直接服务 leader；KubeBrain 模式要求同一 Pod 的 info metrics 相对 baseline 恰好出现
+`catch_up +1`，才恢复 raw `Recv`。恢复后 raw 与正常 watcher 都必须逐项匹配 Put revision，随后 `recovered +1` 且 `dropped`
+不变。metrics 请求有 32 MiB 上限、固定 outcome、有限非负整数和 no-redirect 合同；URL/TLS/身份配置均 fail closed。
+
+生产 profile 的 fan-out buffer 为 10,000 batches、watch ring 为 200,000 events。本轮直连 `a4657-tls-2` leader，在独立三 PD/三 TiKV
+上以 1 个正常 watcher、1 个 raw watcher 执行 12,000 个独立 Put，revision `178549..190548`，两条事件/revision 序列精确 GREEN，
+`catch_up/recovered/dropped` 从 `0/0/0` 到 `1/1/0`。同 RUN_ID 独立复跑的空前缀 preflight 通过并再次清理。两个 follower 在首写前
+明确拒绝；无权限扩大、凭据落盘或临时 Kubernetes 对象，KubeBrain/PD/TiKV 各 3/3 Ready 且 restart 0。reference etcd 相同 raw-pause
+oracle 2,000/2,000 GREEN，revision `2..2001`。
+
+高规模演练同时暴露 A5609 cleanup 的生产配置缺口：单个 Prefix Delete 会越过 `--max-delete-range-keys=1024`。现在 cleanup 以线性一致
+Range 分页，每个 Txn 最多执行 128 个精确 key Delete，并由独立预算完成，异常 key、超限 batch 或 deleted count 不等于 1 均失败；
+12,000-key 真实清理和同 RUN_ID preflight 已证明。聚焦、race、backend/server、compat、vet、module verify 均全绿；698 项提交前
+inventory `169/193/177/159`，提交后四片 `251.341/447.037/298.603/504.751s`。这证明一个生产缓冲参数下的 recoverable catch-up，
+不能替代数天断线/滚动更新、多慢消费者、ring 淘汰与客户端 re-list 长稳，相关 P1 继续开放。

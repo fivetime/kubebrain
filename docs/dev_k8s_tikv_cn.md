@@ -462,16 +462,41 @@ ALLOW_MUTATING_WATCH_SOAK=true hack/dev/watch-soak.sh
 `/registry/watch-soak/<RUN_ID>/` 前缀写入 50 个单独 key。每条 watcher 不只校验数量，还逐项校验 PUT 类型、key/value、
 create/mod revision、version、lease，并要求观察到的 revision 序列与每次 Put 的响应 revision 完全相等；丢失、重复和乱序都会失败。
 
-可以通过 `WATCHERS`、`EVENTS`、`TIMEOUT_SECONDS`、`WRITE_INTERVAL` 和 `RUN_ID` 调整规模。`RUN_ID` 必须是本轮唯一的
-小写 DNS label；脚本先以 CountOnly 确认前缀为空，获得本轮 ownership 后才注册独立的 15 秒 cleanup，退出时 Delete Prefix 并再次
-CountOnly 确认归零。`WATCHERS*EVENTS` 上限为 20,000,000 个 revision observation，约束内存中的精确 oracle；例如 25 条 watcher、
-每秒 1 个事件可覆盖九天以上，但 `TIMEOUT_SECONDS` 必须同时覆盖完整写入和观察窗口。共享生产 keyspace 应使用独立租户前缀或专用
+可以通过 `WATCHERS`、`EVENTS`、`TIMEOUT_SECONDS`、`CLEANUP_TIMEOUT_SECONDS`、`WRITE_INTERVAL` 和 `RUN_ID` 调整规模。
+`RUN_ID` 必须是本轮唯一的小写 DNS label；脚本先以 CountOnly 确认前缀为空，获得本轮 ownership 后才注册独立 cleanup。cleanup
+每次 Range 最多读取 128 个 key，再用一个 Txn 发出最多 128 个精确 key Delete，既不越过默认 `--max-txn-ops=128`，也不受生产
+`--max-delete-range-keys` 对大 Prefix Delete 的限制；最后再次 CountOnly 确认归零。普通 watcher 加可选 raw slow watcher 的
+`observers*EVENTS` 上限为 20,000,000 个 revision observation，约束内存中的精确 oracle；例如 25 条 watcher、每秒 1 个事件可覆盖
+九天以上，但 `TIMEOUT_SECONDS` 必须覆盖完整写入和观察窗口，cleanup 使用独立预算。共享生产 keyspace 应使用独立租户前缀或专用
 演练集群，不能把 mutation approval 当成隔离措施。
 
 mTLS endpoint 可设置 `ETCD_CA_FILE`、成对的 `ETCD_CERT_FILE`/`ETCD_KEY_FILE`，以及可选的
 `ETCD_TLS_SERVER_NAME`；用户名认证使用成对的 `ETCD_USERNAME`/`ETCD_PASSWORD`。当前独立 TiKV/PD 三副本环境已通过真实 mTLS
 默认规模 25×50（`WRITE_INTERVAL=5ms`），revision `178496..178545`，退出后同一进程 Delete+CountOnly 清理为零。该短跑只证明
 当前精确 oracle 和基础 Watch 路径，不能替代数天级断线、滚动更新和慢消费者 soak。
+
+要制造服务端真实慢消费者，必须指向当前 leader 的稳定直连 client endpoint，并把同一 Pod 的 info `/metrics` endpoint 成对提供：
+
+```shell
+ALLOW_MUTATING_WATCH_SOAK=true \
+SLOW_CONSUMER=true \
+REQUIRE_SLOW_CONSUMER_OUTCOMES=true \
+INFO_ENDPOINT=https://127.0.0.1:18082/metrics \
+EVENTS=12000 TIMEOUT_SECONDS=900 CLEANUP_TIMEOUT_SECONDS=300 \
+hack/dev/watch-soak.sh
+```
+
+raw watcher 收到 Created 后停止调用 `Recv`，直到全部独立 Put 完成。工具先用两次 Status 证明目标仍直接服务 leader；暂停期间必须观察
+该进程 `watcher_hub_slow_consumer_outcome{outcome="catch_up"}` 精确增长 1 才恢复读取，随后要求 raw watcher 与正常 watcher 的完整
+revision 序列都等于 Put 序列，并要求 `recovered` 精确增长 1、`dropped` 不变。metrics URL 只接受无 credential/query/fragment 的
+绝对 `/metrics` URL，不跟随 redirect；counter 必须完整、非负、有限整数。info TLS 可使用 `INFO_CA_FILE`、
+`INFO_TLS_SERVER_NAME` 和成对的 `INFO_CERT_FILE`/`INFO_KEY_FILE`；未单独设置 CA/server name 时复用 etcd TLS 值。对单成员 reference
+etcd 可将 `REQUIRE_SLOW_CONSUMER_OUTCOMES=false`，只对照客户端可见的无丢、无重、无乱序语义。
+
+当前生产参数为 fan-out 10,000 batches、watch ring 200,000 events。真实独立 TiKV/PD 环境已用 1 个正常 watcher 加 1 个 raw watcher
+执行 12,000 个独立 Put，revision `178549..190548`；leader outcome 从 `0/0/0` 变为 catch_up/recovered/dropped `1/1/0`，同一
+`RUN_ID` 的独立复跑 preflight 证明前缀清零。reference etcd 同一 oracle 2,000/2,000 GREEN，revision `2..2001`。这是一轮有界
+backpressure 恢复证明，仍不替代数天级断线、滚动更新与多慢消费者长稳。
 
 ## Load Smoke
 
