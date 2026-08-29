@@ -96,7 +96,7 @@ func main() {
 	flag.DurationVar(&cfg.maxRegionLatency, "max-tikv-region-latency", time.Second, "maximum TiKV Region point-read latency")
 	flag.DurationVar(&cfg.rangeInterval, "range-stream-interval", time.Second, "minimum interval between complete public RangeStream probes")
 	flag.DurationVar(&cfg.snapshotDelay, "snapshot-start-delay", 25*time.Second, "delay before the single complete public Snapshot probe")
-	flag.DurationVar(&cfg.streamTimeout, "stream-attempt-timeout", 2*time.Minute, "timeout for one RangeStream or Snapshot attempt")
+	flag.DurationVar(&cfg.streamTimeout, "stream-attempt-timeout", 4*time.Minute, "timeout for one RangeStream or Snapshot attempt")
 	flag.DurationVar(&cfg.streamBackoff, "stream-retry-backoff", 100*time.Millisecond, "initial retry backoff after a retryable stream failure")
 	flag.DurationVar(&cfg.streamMaxBackoff, "stream-max-retry-backoff", 2*time.Second, "maximum retry backoff after consecutive stream failures")
 	flag.StringVar(&cfg.snapshotDir, "snapshot-artifact-dir", "", "writable directory for transient Snapshot artifact validation")
@@ -1619,7 +1619,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 		time.Sleep(cfg.interval)
 	}
-	if err := streamProbe.waitForMinimum(ctx, cfg.streamTimeout); err != nil {
+	if err := streamProbe.waitForMinimum(ctx, streamMinimumCompletionTimeout(cfg.streamTimeout, cfg.streamMaxBackoff)); err != nil {
 		return err
 	}
 	streamResult, err := streamProbe.stop()

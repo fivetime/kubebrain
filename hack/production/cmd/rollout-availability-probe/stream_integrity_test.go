@@ -1379,6 +1379,13 @@ func TestRunStreamWorkerRetriesWithBackoffAndDiscardsPartialAttempt(t *testing.T
 	require.Equal(t, int64(1), counters.partialRetries.Load())
 }
 
+func TestStreamMinimumCompletionTimeoutCoversFullRetryAndSaturates(t *testing.T) {
+	require.Equal(t, 8*time.Minute+2*time.Second, streamMinimumCompletionTimeout(4*time.Minute, 2*time.Second))
+	require.Equal(t, time.Duration(1<<63-1), streamMinimumCompletionTimeout(time.Duration(1<<62), time.Second))
+	require.Zero(t, streamMinimumCompletionTimeout(0, time.Second))
+	require.Zero(t, streamMinimumCompletionTimeout(time.Second, -time.Nanosecond))
+}
+
 func TestRunStreamWorkerRetriesWrappedAttemptDeadline(t *testing.T) {
 	var attempts atomic.Int64
 	var success atomic.Int64

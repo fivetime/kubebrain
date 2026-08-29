@@ -2684,6 +2684,17 @@ func nextStreamProbeBackoff(current, maximum time.Duration) time.Duration {
 	return next
 }
 
+func streamMinimumCompletionTimeout(attemptTimeout, maximumBackoff time.Duration) time.Duration {
+	const maximumDuration = time.Duration(1<<63 - 1)
+	if attemptTimeout <= 0 || maximumBackoff < 0 {
+		return 0
+	}
+	if attemptTimeout > (maximumDuration-maximumBackoff)/2 {
+		return maximumDuration
+	}
+	return 2*attemptTimeout + maximumBackoff
+}
+
 type streamProbeGroup struct {
 	cancel   context.CancelFunc
 	wait     sync.WaitGroup
