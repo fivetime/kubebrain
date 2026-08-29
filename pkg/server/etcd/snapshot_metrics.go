@@ -23,6 +23,11 @@ import (
 const etcdBackendSnapshotDurationMetric = "etcd.disk.backend_snapshot_duration_seconds"
 
 const (
+	snapshotActiveMetric            = "maintenance.snapshot.active"
+	snapshotAdmissionRejectedMetric = "maintenance.snapshot.admission_rejected"
+)
+
+const (
 	snapshotFailureSource   = "source"
 	snapshotFailureProxy    = "proxy"
 	snapshotFailureSend     = "send"
@@ -57,6 +62,8 @@ func initSnapshotFailureMetrics(metricCli metrics.Metrics) {
 		_ = metricCli.EmitCounter("maintenance.snapshot.failure", int64(0), metrics.Tag("stage", stage))
 	}
 	_ = metricCli.EmitCounter("maintenance.snapshot.proxy_retry", int64(0))
+	_ = metricCli.EmitCounter(snapshotAdmissionRejectedMetric, int64(0))
+	_ = metricCli.EmitGauge(snapshotActiveMetric, int64(0))
 }
 
 func emitSnapshotFailure(metricCli metrics.Metrics, stage string) {
@@ -64,4 +71,22 @@ func emitSnapshotFailure(metricCli metrics.Metrics, stage string) {
 		return
 	}
 	_ = metricCli.EmitCounter("maintenance.snapshot.failure", 1, metrics.Tag("stage", stage))
+}
+
+func emitSnapshotAdmissionRejected(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter(snapshotAdmissionRejectedMetric, 1)
+}
+
+func emitSnapshotActive(metricCli metrics.Metrics, active bool) {
+	if metricCli == nil {
+		return
+	}
+	value := int64(0)
+	if active {
+		value = 1
+	}
+	_ = metricCli.EmitGauge(snapshotActiveMetric, value)
 }

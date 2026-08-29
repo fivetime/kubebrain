@@ -130,6 +130,18 @@ func recordedCounterValues(rec *recordingMetrics, name string) []interface{} {
 	return values
 }
 
+func recordedGaugeValues(rec *recordingMetrics, name string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, gauge := range rec.gauges {
+		if gauge.name == name && len(gauge.tags) == 0 {
+			values = append(values, gauge.value)
+		}
+	}
+	return values
+}
+
 func recordedMaintenanceProxyIntegrityValues(rec *recordingMetrics, rpc string) []interface{} {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
@@ -1219,6 +1231,11 @@ func TestSnapshotFailureMetricsInitializeFixedStages(t *testing.T) {
 	for _, stage := range snapshotFailureStages {
 		require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, stage))
 	}
+	emitSnapshotAdmissionRejected(rec)
+	emitSnapshotActive(rec, true)
+	emitSnapshotActive(rec, false)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedCounterValues(rec, snapshotAdmissionRejectedMetric))
+	require.Equal(t, []interface{}{int64(0), int64(1), int64(0)}, recordedGaugeValues(rec, snapshotActiveMetric))
 }
 
 func TestWatchGenerationRecoveryMetricsInitializeFixedOutcomes(t *testing.T) {

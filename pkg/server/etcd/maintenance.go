@@ -941,6 +941,16 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		}
 		return s.forwardSnapshot(proxyCtx, request, stream)
 	}
+	if !s.snapshotActive.CompareAndSwap(false, true) {
+		emitSnapshotAdmissionRejected(s.metricCli)
+		emitClientAdmissionRejection(s.metricCli, clientAdmissionGuardConcurrency)
+		return rpctypes.ErrGRPCRequestTooManyRequests
+	}
+	emitSnapshotActive(s.metricCli, true)
+	defer func() {
+		s.snapshotActive.Store(false)
+		emitSnapshotActive(s.metricCli, false)
+	}()
 	err = s.sendSnapshot(stream)
 	if errors.Is(err, errSnapshotHistoryStreamProtocol) {
 		emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)

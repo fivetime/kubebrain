@@ -46,6 +46,13 @@ type failingMaintenanceSnapshotServer struct {
 	err error
 }
 
+type blockingMaintenanceSnapshotServer struct {
+	*maintenanceSnapshotServer
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
 type availableSnapshotCheckpointBackend struct {
 	BackendShim
 	checkpoint     backend.SerializableCheckpoint
@@ -243,6 +250,16 @@ func (s *failingMaintenanceSnapshotServer) Send(*etcdserverpb.SnapshotResponse) 
 	return s.err
 }
 
+func (s *blockingMaintenanceSnapshotServer) Send(response *etcdserverpb.SnapshotResponse) error {
+	s.once.Do(func() { close(s.started) })
+	select {
+	case <-s.release:
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+	return s.maintenanceSnapshotServer.Send(response)
+}
+
 func TestMaintenanceSnapshotDurationObservedForSuccessAndSendFailure(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -258,6 +275,7 @@ func TestMaintenanceSnapshotDurationObservedForSuccessAndSendFailure(t *testing.
 		err:                       sendErr,
 	})
 	require.ErrorIs(t, err, sendErr)
+	require.False(t, server.snapshotActive.Load(), "a failed stream send must release snapshot admission")
 	require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, snapshotFailureSend))
 
 	var samples []recordedHistogram
@@ -271,6 +289,40 @@ func TestMaintenanceSnapshotDurationObservedForSuccessAndSendFailure(t *testing.
 		require.GreaterOrEqual(t, sample.value.(float64), float64(0))
 		require.Empty(t, sample.tags)
 	}
+}
+
+func TestMaintenanceSnapshotHoldsAdmissionUntilFinalStreamFrameReturns(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("snapshot-stream-admission-seed"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+
+	first := &blockingMaintenanceSnapshotServer{
+		maintenanceSnapshotServer: &maintenanceSnapshotServer{ctx: context.Background()},
+		started:                   make(chan struct{}),
+		release:                   make(chan struct{}),
+	}
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- server.Snapshot(&etcdserverpb.SnapshotRequest{}, first) }()
+	select {
+	case <-first.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first snapshot did not reach its stream send")
+	}
+
+	err = server.Snapshot(&etcdserverpb.SnapshotRequest{},
+		&maintenanceSnapshotServer{ctx: context.Background()})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCRequestTooManyRequests)
+	close(first.release)
+	require.NoError(t, <-firstDone)
+	require.GreaterOrEqual(t, len(first.responses), 2)
+
+	third := &maintenanceSnapshotServer{ctx: context.Background()}
+	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, third))
+	require.GreaterOrEqual(t, len(third.responses), 2,
+		"the admission slot must reopen after the final frame returns")
 }
 
 func TestSnapshotFileIsUnlinkedBeforeFirstStreamResponse(t *testing.T) {
@@ -401,9 +453,107 @@ type twoChunkPausedSnapshotBackend struct {
 	release chan struct{}
 }
 
+type concurrentSnapshotAdmissionBackend struct {
+	BackendShim
+	started chan struct{}
+	release chan struct{}
+	calls   atomic.Int64
+}
+
 type retryOnceChangedSnapshotBackend struct {
 	BackendShim
 	calls atomic.Uint64
+}
+
+func (b *concurrentSnapshotAdmissionBackend) SnapshotHistoryStreamChan(
+	ctx context.Context, revision uint64,
+) (<-chan backend.SnapshotHistoryChunk, error) {
+	chunks, err := b.BackendShim.SnapshotHistoryStreamChan(ctx, revision)
+	if err != nil {
+		return nil, err
+	}
+	b.calls.Add(1)
+	b.started <- struct{}{}
+	out := make(chan backend.SnapshotHistoryChunk)
+	go func() {
+		defer close(out)
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return
+		}
+		for {
+			select {
+			case chunk, ok := <-chunks:
+				if !ok {
+					return
+				}
+				select {
+				case out <- chunk:
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+func TestMaintenanceSnapshotRejectsConcurrentLocalBuildBeforeSecondHistoryScan(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
+	initClientAdmissionMetrics(rec)
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("snapshot-admission-seed"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+
+	wrapped := &concurrentSnapshotAdmissionBackend{
+		BackendShim: server.backend,
+		started:     make(chan struct{}, 2),
+		release:     make(chan struct{}),
+	}
+	server.backend = wrapped
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- server.Snapshot(&etcdserverpb.SnapshotRequest{},
+			&maintenanceSnapshotServer{ctx: context.Background()})
+	}()
+	select {
+	case <-wrapped.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first snapshot did not enter its history scan")
+	}
+
+	secondCtx, cancelSecond := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancelSecond()
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- server.Snapshot(&etcdserverpb.SnapshotRequest{},
+			&maintenanceSnapshotServer{ctx: secondCtx})
+	}()
+	var secondErr error
+	select {
+	case secondErr = <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent snapshot did not fail within its bounded deadline")
+	}
+	close(wrapped.release)
+	require.NoError(t, <-firstDone)
+
+	require.ErrorIs(t, secondErr, rpctypes.ErrGRPCRequestTooManyRequests)
+	require.Equal(t, codes.ResourceExhausted, status.Code(secondErr))
+	require.Equal(t, int64(1), wrapped.calls.Load(),
+		"a rejected snapshot must not start another TiKV history scan")
+	require.Equal(t, []interface{}{int64(0), 1},
+		recordedCounterValues(rec, snapshotAdmissionRejectedMetric))
+	require.Equal(t, []interface{}{int64(0), int64(1), int64(0)},
+		recordedGaugeValues(rec, snapshotActiveMetric))
 }
 
 type metadataBarrierSnapshotBackend struct {
@@ -574,6 +724,7 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 			return results, nil
 		},
 	}
+	server.snapshotActive.Store(true)
 	stream := &maintenanceSnapshotServer{ctx: context.Background()}
 	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
 	require.Equal(t, int64(1), shim.probeCalls.Load(),

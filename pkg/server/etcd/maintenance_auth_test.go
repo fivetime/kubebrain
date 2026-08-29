@@ -121,6 +121,15 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	_, err = server.Defragment(rootCtx, &etcdserverpb.DefragmentRequest{})
 	require.NoError(t, err)
 
+	server.snapshotActive.Store(true)
+	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: plain})
+	requireMaintenanceAuthError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: aliceCtx})
+	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: rootCtx})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCRequestTooManyRequests)
+	server.snapshotActive.Store(false)
+
 	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: aliceCtx})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	rootSnapshot := &maintenanceSnapshotServer{ctx: rootCtx}

@@ -103,13 +103,18 @@ type RPCServer struct {
 	requestsInFlight     int64
 	requestRateLimiter   *rate.Limiter
 	priorityRateLimiter  *rate.Limiter
-	maxDeleteRangeKeys   uint32
-	maxWatches           uint32
-	watchQuotaMu         sync.Mutex
-	activeWatches        int64
-	activeWatchStreams   atomic.Int64
-	mvccPutSizeBytes     atomic.Int64
-	leaderReady          atomic.Bool
+	// One local online Snapshot owns almost a full logical-quota-sized anonymous
+	// bbolt until its final checksum frame is sent. The production workspace is
+	// sized for one such artifact, so the generic request admission limit is not
+	// a safe concurrency bound for this KubeBrain-specific reconstruction path.
+	snapshotActive     atomic.Bool
+	maxDeleteRangeKeys uint32
+	maxWatches         uint32
+	watchQuotaMu       sync.Mutex
+	activeWatches      int64
+	activeWatchStreams atomic.Int64
+	mvccPutSizeBytes   atomic.Int64
+	leaderReady        atomic.Bool
 	// Serializes the runtime etcd auth transition with legacy native unary
 	// calls on the public listener. AuthEnable drains already-admitted calls
 	// before committing, then new calls observe enabled auth and fail closed.
