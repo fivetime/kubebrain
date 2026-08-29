@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -33,8 +34,12 @@ func setValidEnvironment(t *testing.T) {
 	t.Setenv("WATCHERS", "25")
 	t.Setenv("EVENTS", "50")
 	t.Setenv("TIMEOUT_SECONDS", "60")
+	t.Setenv("CLEANUP_TIMEOUT_SECONDS", "300")
 	t.Setenv("WRITE_INTERVAL", "100ms")
 	t.Setenv("RUN_ID", "watch-soak-test")
+	t.Setenv("SLOW_CONSUMER", "false")
+	t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "false")
+	t.Setenv("INFO_ENDPOINT", "")
 }
 
 func TestConfigFromEnvironment(t *testing.T) {
@@ -44,6 +49,8 @@ func TestConfigFromEnvironment(t *testing.T) {
 	require.Equal(t, 25, cfg.watchers)
 	require.Equal(t, 50, cfg.events)
 	require.Equal(t, "watch-soak-test", cfg.runID)
+	require.Equal(t, 300*time.Second, cfg.cleanupTimeout)
+	require.False(t, cfg.slowConsumer)
 }
 
 func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
@@ -56,11 +63,26 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 		"observation memory bound": {mutate: func(t *testing.T) {
 			t.Setenv("WATCHERS", "10000")
 			t.Setenv("EVENTS", "2001")
-		}, want: "WATCHERS*EVENTS must not exceed"},
+		}, want: "(WATCHERS+slow-consumer)*EVENTS must not exceed"},
 		"negative interval":         {mutate: func(t *testing.T) { t.Setenv("WRITE_INTERVAL", "-1s") }, want: "WRITE_INTERVAL must be"},
 		"unsafe run ID":             {mutate: func(t *testing.T) { t.Setenv("RUN_ID", "../shared") }, want: "RUN_ID must be"},
 		"partial TLS identity":      {mutate: func(t *testing.T) { t.Setenv("ETCD_CERT_FILE", "client.crt") }, want: "must be set together"},
 		"partial password identity": {mutate: func(t *testing.T) { t.Setenv("ETCD_USERNAME", "root") }, want: "must be set together"},
+		"invalid slow flag":         {mutate: func(t *testing.T) { t.Setenv("SLOW_CONSUMER", "1") }, want: "SLOW_CONSUMER must be"},
+		"outcomes require slow": {mutate: func(t *testing.T) {
+			t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "true")
+		}, want: "requires SLOW_CONSUMER=true"},
+		"outcomes require info": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER", "true")
+			t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "true")
+		}, want: "INFO_ENDPOINT is required"},
+		"unsafe info URL": {mutate: func(t *testing.T) {
+			t.Setenv("INFO_ENDPOINT", "https://user:pass@example.invalid/metrics")
+		}, want: "INFO_ENDPOINT must be"},
+		"partial info identity": {mutate: func(t *testing.T) { t.Setenv("INFO_CERT_FILE", "client.crt") }, want: "must be set together"},
+		"noncanonical cleanup timeout": {mutate: func(t *testing.T) {
+			t.Setenv("CLEANUP_TIMEOUT_SECONDS", "0300")
+		}, want: "CLEANUP_TIMEOUT_SECONDS must be"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			setValidEnvironment(t)
@@ -69,6 +91,20 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 			require.ErrorContains(t, err, testCase.want)
 		})
 	}
+}
+
+func TestConfigSlowConsumerCountsTowardObservationBound(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("WATCHERS", "1")
+	t.Setenv("EVENTS", "10000000")
+	t.Setenv("SLOW_CONSUMER", "true")
+	cfg, err := configFromEnvironment()
+	require.NoError(t, err)
+	require.True(t, cfg.slowConsumer)
+
+	t.Setenv("WATCHERS", "2")
+	_, err = configFromEnvironment()
+	require.ErrorContains(t, err, "(WATCHERS+slow-consumer)*EVENTS")
 }
 
 func TestValidateEventRequiresExactIdentityAndEtcdCreateShape(t *testing.T) {
@@ -95,12 +131,47 @@ func TestValidateObservedRevisionsRejectsLossDuplicationAndReordering(t *testing
 	require.ErrorContains(t, validateObservedRevisions([]int64{7, 12, 9}, []int64{7, 9, 12}), "event 1 revision mismatch")
 }
 
+func TestWatchSoakProgressIsBoundedAndUseful(t *testing.T) {
+	require.Equal(t, 1000, watchSoakProgressEvery(50))
+	require.Equal(t, 1000, watchSoakProgressEvery(12000))
+	require.Equal(t, 8000, watchSoakProgressEvery(800000))
+}
+
+func TestCleanupDeleteOperationsAreExactAndPrefixBound(t *testing.T) {
+	prefix := "/registry/watch-soak/owned/"
+	kvs := make([]*mvccpb.KeyValue, 128)
+	for index := range kvs {
+		kvs[index] = &mvccpb.KeyValue{Key: []byte(expectedKey(prefix, index))}
+	}
+	operations, err := cleanupDeleteOperations(prefix, kvs)
+	require.NoError(t, err)
+	require.Len(t, operations, 128)
+	for index, operation := range operations {
+		require.True(t, operation.IsDelete())
+		require.Equal(t, expectedKey(prefix, index), string(operation.KeyBytes()))
+		require.Empty(t, operation.RangeBytes(), "cleanup must issue exact-key deletes")
+	}
+
+	_, err = cleanupDeleteOperations(prefix, []*mvccpb.KeyValue{{Key: []byte("/registry/watch-soak/other/event")}})
+	require.ErrorContains(t, err, "out-of-prefix")
+	_, err = cleanupDeleteOperations(prefix, []*mvccpb.KeyValue{nil})
+	require.ErrorContains(t, err, "out-of-prefix")
+	_, err = cleanupDeleteOperations(prefix, nil)
+	require.ErrorContains(t, err, "invalid batch size")
+	tooMany := append(kvs, &mvccpb.KeyValue{Key: []byte(expectedKey(prefix, len(kvs)))})
+	_, err = cleanupDeleteOperations(prefix, tooMany)
+	require.ErrorContains(t, err, "invalid batch size")
+}
+
 func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *testing.T) {
 	script, err := os.ReadFile(filepath.Join("..", "..", "watch-soak.sh"))
 	require.NoError(t, err)
 	text := string(script)
 	require.Contains(t, text, "ALLOW_MUTATING_WATCH_SOAK=true")
 	require.Contains(t, text, "go run ./hack/dev/cmd/watch-soak")
+	require.Contains(t, text, `CLEANUP_TIMEOUT_SECONDS="${CLEANUP_TIMEOUT_SECONDS:-300}"`)
+	require.Contains(t, text, `SLOW_CONSUMER="${SLOW_CONSUMER:-false}"`)
+	require.Contains(t, text, `REQUIRE_SLOW_CONSUMER_OUTCOMES="${REQUIRE_SLOW_CONSUMER_OUTCOMES:-false}"`)
 	require.NotContains(t, text, "go get")
 	require.NotContains(t, text, "rm -rf")
 	verify, err := os.ReadFile(filepath.Join("..", "..", "verify.sh"))
