@@ -9088,3 +9088,48 @@ Put 后等待其 published watermark，保证 112 个 mutation 形成独立 fan-
 `[0]` 精确到 `[0,1]`。focused 普通 20 轮、race 10 轮、backend/server 全包和 vet 通过；提交前 698 项 inventory 为
 `169/193/177/159`，提交后四片 `272.649/459.913/309.559/518.011s` 全绿。本轮证明单进程真实协议栈合同；生产默认
 10,000-batch/200,000-event 参数下的多慢消费者、真实 TiKV/PD replay 成本与 compaction 竞态仍保留为 P1。
+
+### A5612：有序 watch publication 与默认容量 eviction 生产实证
+
+A5612 `8aa32f280956e9e9fd2354205152f3d4eada9ded` 修复 TiKV commit、Status durable observation 与 `notifyBatch` 的并发顺序。
+旧 Status 路径会把 durable revision 同时写入 `collectorRevision`；若事务已经提交但 notify 尚未入 ring，真实事件随后被当作 stale 丢弃，
+Put 也可能过早 ACK。12,000-event RED 缺少的 index `61/1637/9898` 与 `watch_event_buffer_stale_drop=3` 精确对应。现在普通
+`SetCurrentRevision` 不推进 collector frontier，只有零值 bootstrap 可初始化；commit wait 同时等待 public TSO revision 和 collector
+frontier。确定性回归将 Status 固定在 commit 与 notify 之间，证明事件仍按序 publish 且 Put 不会越过它返回。
+
+watch-soak 同时获得并发独立 Put 和排序后的 `(index, revision)` 精确 oracle。`dfe4e577` 增加可恢复中断前缀的
+`CLEANUP_ONLY=true`；`7b6cd492` 将 dropped pressure barrier 定义为 `catch_up +1`，先释放 raw channel 后才在 completion barrier
+要求 `dropped +1` 与 `generation recovered +1`，消除工具自身的满通道互等；`8d28fa5e` 把清理改为 2,048-key 线性页面和 16 路
+128-op exact Delete Txn，逐操作仍要求 `Deleted=1`，最后 CountOnly=0。剩余约 164,000 键的真实 cleanup-only 约 11 分钟 exit 0。
+四个代码提交前 inventory 都是 698=`169/193/177/159`；提交后四片依次为
+`256.885/444.440/293.651/508.321s`、`256.739/444.062/302.611/507.055s`、
+`249.350/440.651/293.157/504.131s`、`248.694/438.577/291.843/501.965s`，全部 GREEN；聚焦 race×10 与 shell
+syntax 通过。
+
+候选 `kubebrain:a5612-8aa32f28` 版本 `0.0.0-8aa32f280956`，archive 909,508,608 bytes、SHA-256
+`a7b2a3deb088eb0fc2bf04c13a1a93ac9315734ada56c9093a7137906715c522`；OCI index
+`sha256:2f87db87e8aecd8e1ba346c1aafb1c405d0a9b2ae143ddca97fdfb27363b6e53`、platform
+`sha256:0e2ceb70d27a262fcb91e823f08b2a3d8a81d78c5ea6f9e415a97175be641303`、Kind runtime
+`sha256:1162a17f327f8da3e2baa6621ad23de782bfb8c99f21141ebddb129b4dda1e17`。完整 OCI closure、SBOM/provenance、
+linux/amd64、非 root、labels、入口与运行版本审计通过。
+
+候选 runner 没有掩盖四条门禁 RED：固定 public Service 在 ordinal 0 down 时 Put/Get 10 秒未决；临时三副本 Service 出现
+Put-to-Watch `6.938s`；一次 `900/900 GREEN` 行为轮因错误 allowed runtime digest 在 postflight RED；修正 digest 后又因不足两个
+direct endpoint 满足 5 秒而 RED。每轮均回滚且 fixture/probe/owner 清零。受控诊断部署后的 12,000 recovered soak 以并发 64 得到
+revision `204957..216956`，两条 watcher 精确 GREEN，slow 指标相对 baseline `+1/+1/0`，stale/collector/generation 异常全零。
+并发 256 的过载尝试由 TiKV store reverse scan/Get timeout 中断，commit-wait backstop 和 stale 均为零；清理后保留为基础设施过载
+边界。第一轮 220,000 写揭示 dropped 编排互等；修正后一次重跑又在 Put 37,037 遇到 TiKV store 短暂不可达、leader 切换并明确
+`Unavailable` RED，均用精确 cleanup-only 清零。
+
+最终从 `a4657-tls-2` 直连 leader 运行 1 个正常 watcher、1 个 raw 慢 watcher、220,000 Put、并发 64。54m20.869s 写入的
+revision 为 `493672..713671`，跨过生产 200,000-event ring 容量后，两条序列对全部 220,000 个 `(index, revision)` 严格一致。
+owned baseline 全零，完成指标为 slow `catch_up/recovered/dropped=1/0/1`，generation
+`retry/recovered/compacted/failed=0/1/0/0`；event stale/full、collector stalled/recovery 全零。清理阶段两条单次 Txn
+DeadlineExceeded retry 可见，但 exact deleted-count、最终 CountOnly=0 和整个进程 exit 0 均通过。
+
+诊断部署随后以 StatefulSet UID/RV、容器名和当前 image 四重 test 回滚原 A5608。终态 generation/observed 301、
+current/update `a4657-tls-6768fb4758`、3/3 Ready/updated、restart 0，三 Pod runtime 精确为
+`sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；PD/TiKV 各 3/3 Ready/restart 0。
+临时 `a5612-client` Service 以 UID `0afaca76-58ae-402f-a3bc-12a158fdbb05`、RV `7368065` 删除并确认 NotFound；三个
+port-forward 均退出，诊断文件移入回收站且无凭据落盘，A5612 archive 保留。默认容量、真实 TiKV/PD、单慢消费者 eviction 后透明
+durable generation reopen 已有生产实证；多慢消费者、主动 compaction 竞态和数天断线/滚动更新长稳仍是开放项。
