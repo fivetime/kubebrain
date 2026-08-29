@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
@@ -502,6 +503,26 @@ func TestWaitReadyReturnsSafeSentinelWithinExternalRetryBudget(t *testing.T) {
 	require.GreaterOrEqual(t, elapsed, 150*time.Millisecond)
 	require.Less(t, elapsed, 500*time.Millisecond,
 		"one safe follower retry must leave room for clientv3 retries and reconciliation inside the external SLO")
+}
+
+func TestCoreUnaryCallOptionsFailFastWhenPeerTransportIsUnavailable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	address := listener.Addr().String()
+	require.NoError(t, listener.Close())
+	connection, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, connection.Close()) })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	err = connection.Invoke(ctx, "/etcdserverpb.KV/Put", &etcdserverpb.PutRequest{}, &etcdserverpb.PutResponse{},
+		proxyCoreUnaryCallOptions(0)...)
+
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Less(t, time.Since(started), 500*time.Millisecond,
+		"a core unary call must not wait on a peer transport that lost readiness after admission")
 }
 
 func TestWaitReadyPreemptsStaleLeaderConnectionAttempt(t *testing.T) {

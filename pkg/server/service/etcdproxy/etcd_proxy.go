@@ -72,8 +72,9 @@ type etcdProxy struct {
 	allowInsecure bool
 	// dialTimeout is injectable for deterministic tests; zero uses the
 	// production proxyConnectTimeout.
-	dialTimeout time.Duration
-	callOptions []grpc.CallOption
+	dialTimeout          time.Duration
+	callOptions          []grpc.CallOption
+	coreUnaryCallOptions []grpc.CallOption
 
 	election  leader.LeaderElection
 	tlsConfig *tls.Config
@@ -139,6 +140,16 @@ func proxyCallOptions(maxRequestBytes uint) []grpc.CallOption {
 	}
 }
 
+func proxyCoreUnaryCallOptions(maxRequestBytes uint) []grpc.CallOption {
+	options := proxyCallOptions(maxRequestBytes)
+	// readyClient already proves the published peer transport before admission.
+	// If that transport changes state after the proof, fail the core unary call
+	// immediately so the public client can perform its operation-specific
+	// ambiguity reconciliation. Waiting for the old transport here compounds the
+	// reconnect Range and successor write while providing no additional safety.
+	return append(options, grpc.WaitForReady(false))
+}
+
 // A voluntary handoff publishes the successor before every follower has
 // necessarily completed its own health-check/dial loop. Keep unary requests
 // parked briefly through that propagation window, but leave room for clientv3's
@@ -166,8 +177,9 @@ func NewEtcdProxyWithMetrics(ctx context.Context, leaderElection leader.LeaderEl
 	proxy := &etcdProxy{
 		election: leaderElection, tlsConfig: tlsConfig,
 		allowInsecure: allowInsecure, callOptions: proxyCallOptions(maxRequestBytes),
-		metricCli: metricCli,
-		cancel:    cancel, loopDone: make(chan struct{}), updateCh: make(chan struct{}, 1),
+		coreUnaryCallOptions: proxyCoreUnaryCallOptions(maxRequestBytes),
+		metricCli:            metricCli,
+		cancel:               cancel, loopDone: make(chan struct{}), updateCh: make(chan struct{}, 1),
 	}
 	initUnaryForwardMetrics(metricCli)
 	go func() {
@@ -698,7 +710,7 @@ func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	key, rev := getKeyFromTxn(txn)
 	resp, err := forwardUnaryWithDrainRetry(e, ctx, unaryForwardRPCTxn, func(client *clientv3.Client, leader string) (*etcdserverpb.TxnResponse, error) {
 		klog.InfoS("forward txn", "leader", leader, "key", key, "rev", rev)
-		return etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, e.callOptions...)
+		return etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, e.coreUnaryCallOptions...)
 	})
 	if err != nil {
 		klog.InfoS("forward txn failed", "key", loggedProxyKey([]byte(key)), "err", err.Error())
@@ -729,7 +741,7 @@ func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 	return forwardUnaryWithDrainRetry(e, ctx, unaryForwardRPCRange, func(client *clientv3.Client, leader string) (*etcdserverpb.RangeResponse, error) {
 		klog.InfoS("forward range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd), "revision", req.Revision)
-		return etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, e.callOptions...)
+		return etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, e.coreUnaryCallOptions...)
 	})
 }
 
@@ -812,14 +824,14 @@ func (e *etcdProxy) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 func (e *etcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 	return forwardUnaryWithDrainRetry(e, ctx, unaryForwardRPCPut, func(client *clientv3.Client, leader string) (*etcdserverpb.PutResponse, error) {
 		klog.InfoS("forward put", "leader", leader, "key", loggedProxyKey(req.Key), "lease", req.Lease)
-		return etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, e.callOptions...)
+		return etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, e.coreUnaryCallOptions...)
 	})
 }
 
 func (e *etcdProxy) DeleteRange(ctx context.Context, req *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
 	return forwardUnaryWithDrainRetry(e, ctx, unaryForwardRPCDeleteRange, func(client *clientv3.Client, leader string) (*etcdserverpb.DeleteRangeResponse, error) {
 		klog.InfoS("forward delete range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd))
-		return etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, e.callOptions...)
+		return etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, e.coreUnaryCallOptions...)
 	})
 }
 
