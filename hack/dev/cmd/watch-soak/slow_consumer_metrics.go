@@ -237,8 +237,8 @@ func expectedWatchOutcomes(baseline watchOutcomes, outcome string, completed boo
 			expected.slow.recovered++
 		}
 	case slowConsumerExpectedDropped:
-		expected.slow.dropped++
 		if completed {
+			expected.slow.dropped++
 			expected.generation.recovered++
 		}
 	default:

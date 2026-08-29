@@ -352,6 +352,11 @@ func run(ctx context.Context, client *clientv3.Client, cfg config) (retErr error
 		return err
 	}
 	if cfg.requireSlowConsumerOutcomes {
+		// The pressure barrier proves that the raw watcher filled its fan-out
+		// channel and entered ring catch-up before we let it read. In dropped
+		// mode the catch-up goroutine can only discover that its next revision
+		// was evicted after the raw watcher drains enough of that full channel,
+		// so the drop itself belongs to the completion barrier below.
 		if err := waitForExpectedSlowConsumerPressure(ctx, metricsReader, baseline, cfg.slowConsumerExpectedOutcome); err != nil {
 			return err
 		}

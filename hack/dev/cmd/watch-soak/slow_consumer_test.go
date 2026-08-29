@@ -208,7 +208,7 @@ func TestExpectedWatchOutcomesDistinguishRingRecoveryAndEviction(t *testing.T) {
 	droppedEntered, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, false)
 	require.NoError(t, err)
 	require.Equal(t, watchOutcomes{
-		slow:       slowConsumerOutcomes{catchUp: 4, recovered: 2, dropped: 2},
+		slow:       slowConsumerOutcomes{catchUp: 4, recovered: 2, dropped: 1},
 		generation: baseline.generation,
 	}, droppedEntered)
 	droppedComplete, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, true)
@@ -234,7 +234,7 @@ func TestDroppedOutcomeWaitsForExactGenerationRecovery(t *testing.T) {
 		generation: watchGenerationOutcomes{retry: 4, recovered: 5, compacted: 6, failed: 7},
 	}
 	var body atomic.Value
-	body.Store(metricsTextWithGeneration(4, 2, 2, 4, 5, 6, 7))
+	body.Store(metricsTextWithGeneration(4, 2, 1, 4, 5, 6, 7))
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(response, body.Load().(string))
 	}))
