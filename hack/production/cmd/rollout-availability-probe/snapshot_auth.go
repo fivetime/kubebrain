@@ -822,10 +822,12 @@ func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expe
 	watch := client.Watch(watchCtx, expected.key, clientv3.WithCreatedNotify())
 	select {
 	case response, ok := <-watch:
-		cancelWatch()
 		if !ok {
-			return fmt.Errorf("restored auth Watch closed for user=%q key=%q", expected.username, expected.key)
+			closeErr := restoredAuthWatchCloseError(watchCtx, expected.username, expected.key)
+			cancelWatch()
+			return closeErr
 		}
+		cancelWatch()
 		if expected.read {
 			if err := response.Err(); err != nil || response.Canceled || !response.Created {
 				return fmt.Errorf("restored auth Watch was denied for user=%q key=%q: %v", expected.username, expected.key, response.Err())
@@ -902,4 +904,11 @@ func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expe
 		}
 	}
 	return nil
+}
+
+func restoredAuthWatchCloseError(ctx context.Context, username, key string) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return fmt.Errorf("restored auth Watch closed for user=%q key=%q: %w", username, key, cause)
+	}
+	return fmt.Errorf("restored auth Watch closed for user=%q key=%q", username, key)
 }

@@ -379,6 +379,45 @@ func TestConsumeAndValidateSnapshotValidatesRestoredAuthPermissionMatrix(t *test
 	}
 }
 
+func TestRestoredAuthWatchCloseErrorPreservesContextCause(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		ctx       func() context.Context
+		wantCause error
+	}{
+		"live context": {
+			ctx: func() context.Context { return t.Context() },
+		},
+		"canceled context": {
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				return ctx
+			},
+			wantCause: context.Canceled,
+		},
+		"deadline context": {
+			ctx: func() context.Context {
+				ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+				t.Cleanup(cancel)
+				return ctx
+			},
+			wantCause: context.DeadlineExceeded,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := restoredAuthWatchCloseError(testCase.ctx(), "probe-user", "/probe/key")
+			require.ErrorContains(t, err, `user="probe-user" key="/probe/key"`)
+			if testCase.wantCause == nil {
+				require.NotErrorIs(t, err, context.Canceled)
+				require.NotErrorIs(t, err, context.DeadlineExceeded)
+				return
+			}
+			require.ErrorIs(t, err, testCase.wantCause)
+			require.True(t, retryableStreamError(err))
+		})
+	}
+}
+
 func snapshotAuthTestState(t *testing.T, expected []streamProbeExpectation,
 	auth *restoredSnapshotAuthExpectation,
 ) etcdsnapshot.State {
