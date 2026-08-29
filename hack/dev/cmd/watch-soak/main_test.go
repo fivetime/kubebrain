@@ -43,6 +43,7 @@ func setValidEnvironment(t *testing.T) {
 	t.Setenv("WRITE_INTERVAL", "100ms")
 	t.Setenv("WRITE_CONCURRENCY", "1")
 	t.Setenv("RUN_ID", "watch-soak-test")
+	t.Setenv("CLEANUP_ONLY", "false")
 	t.Setenv("SLOW_CONSUMER", "false")
 	t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "false")
 	t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "recovered")
@@ -58,6 +59,7 @@ func TestConfigFromEnvironment(t *testing.T) {
 	require.Equal(t, "watch-soak-test", cfg.runID)
 	require.Equal(t, 300*time.Second, cfg.cleanupTimeout)
 	require.Equal(t, 1, cfg.writeConcurrency)
+	require.False(t, cfg.cleanupOnly)
 	require.False(t, cfg.slowConsumer)
 	require.Equal(t, slowConsumerExpectedRecovered, cfg.slowConsumerExpectedOutcome)
 }
@@ -81,6 +83,7 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 			t.Setenv("WRITE_CONCURRENCY", "1025")
 		}, want: "WRITE_CONCURRENCY must be"},
 		"unsafe run ID":             {mutate: func(t *testing.T) { t.Setenv("RUN_ID", "../shared") }, want: "RUN_ID must be"},
+		"invalid cleanup-only flag": {mutate: func(t *testing.T) { t.Setenv("CLEANUP_ONLY", "1") }, want: "CLEANUP_ONLY must be"},
 		"partial TLS identity":      {mutate: func(t *testing.T) { t.Setenv("ETCD_CERT_FILE", "client.crt") }, want: "must be set together"},
 		"partial password identity": {mutate: func(t *testing.T) { t.Setenv("ETCD_USERNAME", "root") }, want: "must be set together"},
 		"invalid slow flag":         {mutate: func(t *testing.T) { t.Setenv("SLOW_CONSUMER", "1") }, want: "SLOW_CONSUMER must be"},
@@ -112,6 +115,14 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 			require.ErrorContains(t, err, testCase.want)
 		})
 	}
+}
+
+func TestConfigAllowsExplicitCleanupOnlyRecovery(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("CLEANUP_ONLY", "true")
+	cfg, err := configFromEnvironment()
+	require.NoError(t, err)
+	require.True(t, cfg.cleanupOnly)
 }
 
 func TestConfigSlowConsumerCountsTowardObservationBound(t *testing.T) {
@@ -256,6 +267,8 @@ func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *test
 	require.Contains(t, text, `CLEANUP_TIMEOUT_SECONDS="${CLEANUP_TIMEOUT_SECONDS:-300}"`)
 	require.Contains(t, text, `WRITE_CONCURRENCY="${WRITE_CONCURRENCY:-1}"`)
 	require.Contains(t, text, `WRITE_CONCURRENCY="$WRITE_CONCURRENCY"`)
+	require.Contains(t, text, `CLEANUP_ONLY="${CLEANUP_ONLY:-false}"`)
+	require.Contains(t, text, `CLEANUP_ONLY="$CLEANUP_ONLY"`)
 	require.Contains(t, text, `SLOW_CONSUMER="${SLOW_CONSUMER:-false}"`)
 	require.Contains(t, text, `REQUIRE_SLOW_CONSUMER_OUTCOMES="${REQUIRE_SLOW_CONSUMER_OUTCOMES:-false}"`)
 	require.Contains(t, text, `SLOW_CONSUMER_EXPECTED_OUTCOME="${SLOW_CONSUMER_EXPECTED_OUTCOME:-recovered}"`)

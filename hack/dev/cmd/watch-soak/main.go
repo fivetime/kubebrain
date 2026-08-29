@@ -62,6 +62,7 @@ type config struct {
 	writeInterval               time.Duration
 	writeConcurrency            int
 	runID                       string
+	cleanupOnly                 bool
 	slowConsumer                bool
 	requireSlowConsumerOutcomes bool
 	slowConsumerExpectedOutcome string
@@ -140,6 +141,10 @@ func configFromEnvironment() (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	cleanupOnly, err := strictBool("CLEANUP_ONLY")
+	if err != nil {
+		return config{}, err
+	}
 	if requireOutcomes && !slowConsumer {
 		return config{}, errors.New("REQUIRE_SLOW_CONSUMER_OUTCOMES=true requires SLOW_CONSUMER=true")
 	}
@@ -206,7 +211,7 @@ func configFromEnvironment() (config, error) {
 		endpoint: endpoint, watchers: watchers, events: events,
 		timeout:        time.Duration(timeoutSeconds) * time.Second,
 		cleanupTimeout: time.Duration(cleanupTimeoutSeconds) * time.Second,
-		writeInterval:  writeInterval, writeConcurrency: writeConcurrency, runID: runID,
+		writeInterval:  writeInterval, writeConcurrency: writeConcurrency, runID: runID, cleanupOnly: cleanupOnly,
 		slowConsumer: slowConsumer, requireSlowConsumerOutcomes: requireOutcomes,
 		slowConsumerExpectedOutcome: expectedOutcome, infoEndpoint: infoEndpoint,
 		caFile: os.Getenv("ETCD_CA_FILE"), certFile: certFile, keyFile: keyFile,
@@ -264,6 +269,19 @@ func loadTLSConfig(cfg config) (*tls.Config, error) {
 
 func run(ctx context.Context, client *clientv3.Client, cfg config) (retErr error) {
 	prefix := "/registry/watch-soak/" + cfg.runID + "/"
+	if cfg.cleanupOnly {
+		// Recovery mode deliberately does not claim a non-empty prefix through the
+		// normal preflight: its sole purpose is to clean the exact RUN_ID after an
+		// interrupted process could not execute its defer. It retains the same
+		// bounded exact-key transactions and final CountOnly proof as normal exit.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cfg.cleanupTimeout)
+		defer cancel()
+		if err := cleanupPrefix(cleanupCtx, client, prefix); err != nil {
+			return err
+		}
+		fmt.Printf("Watch soak cleanup completed: prefix=%s\n", prefix)
+		return nil
+	}
 	preflight, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
 	if err != nil {
 		return fmt.Errorf("preflight watch-soak prefix: %w", err)
