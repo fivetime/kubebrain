@@ -119,18 +119,24 @@ func TestWaitCommittedRevisionWakesAndBounds(t *testing.T) {
 	base := uint64(time.Now().UnixNano())
 	b.SetCurrentRevision(base)
 
-	// Waker: advances committed to base+10 shortly after the waiter parks.
-	done := make(chan struct{})
+	// An external durable observation may advance the public header but is not
+	// proof that the ordered collector has published the event.
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
-		time.Sleep(50 * time.Millisecond)
-		b.SetCurrentRevision(base + 10)
+		done <- b.waitCommittedRevision(context.Background(), base+10)
 	}()
 	start := time.Now()
-	require.NoError(t, b.waitCommittedRevision(context.Background(), base+10))
+	b.SetCurrentRevision(base + 10)
+	select {
+	case err := <-done:
+		require.Failf(t, "wait returned before collector publication", "error=%v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	b.setCollectorRevision(base + 10)
+	b.SetCurrentRevision(base + 10)
+	require.NoError(t, <-done)
 	require.GreaterOrEqual(t, b.GetCurrentRevision(), base+10, "wait must return only once committed reached the target")
 	require.Less(t, time.Since(start), 3*time.Second, "wake must be prompt, not backstop-bound")
-	<-done
 
 	// ctx cancellation unblocks a waiter whose target never arrives.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)

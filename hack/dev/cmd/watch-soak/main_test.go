@@ -15,14 +15,19 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/protobuf/proto"
@@ -36,9 +41,11 @@ func setValidEnvironment(t *testing.T) {
 	t.Setenv("TIMEOUT_SECONDS", "60")
 	t.Setenv("CLEANUP_TIMEOUT_SECONDS", "300")
 	t.Setenv("WRITE_INTERVAL", "100ms")
+	t.Setenv("WRITE_CONCURRENCY", "1")
 	t.Setenv("RUN_ID", "watch-soak-test")
 	t.Setenv("SLOW_CONSUMER", "false")
 	t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "false")
+	t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "recovered")
 	t.Setenv("INFO_ENDPOINT", "")
 }
 
@@ -50,7 +57,9 @@ func TestConfigFromEnvironment(t *testing.T) {
 	require.Equal(t, 50, cfg.events)
 	require.Equal(t, "watch-soak-test", cfg.runID)
 	require.Equal(t, 300*time.Second, cfg.cleanupTimeout)
+	require.Equal(t, 1, cfg.writeConcurrency)
 	require.False(t, cfg.slowConsumer)
+	require.Equal(t, slowConsumerExpectedRecovered, cfg.slowConsumerExpectedOutcome)
 }
 
 func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
@@ -64,11 +73,23 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 			t.Setenv("WATCHERS", "10000")
 			t.Setenv("EVENTS", "2001")
 		}, want: "(WATCHERS+slow-consumer)*EVENTS must not exceed"},
-		"negative interval":         {mutate: func(t *testing.T) { t.Setenv("WRITE_INTERVAL", "-1s") }, want: "WRITE_INTERVAL must be"},
+		"negative interval": {mutate: func(t *testing.T) { t.Setenv("WRITE_INTERVAL", "-1s") }, want: "WRITE_INTERVAL must be"},
+		"zero write concurrency": {mutate: func(t *testing.T) {
+			t.Setenv("WRITE_CONCURRENCY", "0")
+		}, want: "WRITE_CONCURRENCY must be"},
+		"excessive write concurrency": {mutate: func(t *testing.T) {
+			t.Setenv("WRITE_CONCURRENCY", "1025")
+		}, want: "WRITE_CONCURRENCY must be"},
 		"unsafe run ID":             {mutate: func(t *testing.T) { t.Setenv("RUN_ID", "../shared") }, want: "RUN_ID must be"},
 		"partial TLS identity":      {mutate: func(t *testing.T) { t.Setenv("ETCD_CERT_FILE", "client.crt") }, want: "must be set together"},
 		"partial password identity": {mutate: func(t *testing.T) { t.Setenv("ETCD_USERNAME", "root") }, want: "must be set together"},
 		"invalid slow flag":         {mutate: func(t *testing.T) { t.Setenv("SLOW_CONSUMER", "1") }, want: "SLOW_CONSUMER must be"},
+		"invalid expected outcome": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "drop")
+		}, want: "must be recovered or dropped"},
+		"dropped outcome requires slow metrics": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "dropped")
+		}, want: "requires SLOW_CONSUMER=true and REQUIRE_SLOW_CONSUMER_OUTCOMES=true"},
 		"outcomes require slow": {mutate: func(t *testing.T) {
 			t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "true")
 		}, want: "requires SLOW_CONSUMER=true"},
@@ -107,6 +128,17 @@ func TestConfigSlowConsumerCountsTowardObservationBound(t *testing.T) {
 	require.ErrorContains(t, err, "(WATCHERS+slow-consumer)*EVENTS")
 }
 
+func TestConfigAllowsExplicitDroppedSlowConsumerOutcome(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("SLOW_CONSUMER", "true")
+	t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "true")
+	t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "dropped")
+	t.Setenv("INFO_ENDPOINT", "https://127.0.0.1:18082/metrics")
+	cfg, err := configFromEnvironment()
+	require.NoError(t, err)
+	require.Equal(t, slowConsumerExpectedDropped, cfg.slowConsumerExpectedOutcome)
+}
+
 func TestValidateEventRequiresExactIdentityAndEtcdCreateShape(t *testing.T) {
 	prefix := "/registry/watch-soak/test/"
 	event := &clientv3.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{
@@ -124,11 +156,63 @@ func TestValidateEventRequiresExactIdentityAndEtcdCreateShape(t *testing.T) {
 	require.ErrorContains(t, validateEvent(prefix, 3, &clientv3.Event{Type: mvccpb.DELETE, Kv: event.Kv}), "not a Put")
 }
 
-func TestValidateObservedRevisionsRejectsLossDuplicationAndReordering(t *testing.T) {
-	require.NoError(t, validateObservedRevisions([]int64{7, 9, 12}, []int64{7, 9, 12}))
-	require.ErrorContains(t, validateObservedRevisions([]int64{7, 12}, []int64{7, 9, 12}), "event count mismatch")
-	require.ErrorContains(t, validateObservedRevisions([]int64{7, 7, 12}, []int64{7, 9, 12}), "event 1 revision mismatch")
-	require.ErrorContains(t, validateObservedRevisions([]int64{7, 12, 9}, []int64{7, 9, 12}), "event 1 revision mismatch")
+func TestValidateObservedEventsRejectsLossDuplicationAndReordering(t *testing.T) {
+	written := []eventObservation{{index: 2, revision: 7}, {index: 0, revision: 9}, {index: 1, revision: 12}}
+	require.NoError(t, validateObservedEvents(written, written))
+	require.ErrorContains(t, validateObservedEvents(written[:2], written), "event count mismatch")
+	require.ErrorContains(t, validateObservedEvents(
+		[]eventObservation{{index: 2, revision: 7}, {index: 2, revision: 7}, {index: 1, revision: 12}}, written,
+	), "event position 1 mismatch")
+	require.ErrorContains(t, validateObservedEvents(
+		[]eventObservation{{index: 2, revision: 7}, {index: 1, revision: 12}, {index: 0, revision: 9}}, written,
+	), "event position 1 mismatch")
+}
+
+func TestWriteEventsSortsConcurrentResultsByCommittedRevision(t *testing.T) {
+	prefix := "/registry/watch-soak/concurrent/"
+	observed, err := writeEvents(context.Background(), prefix, 8, 4, 0, func(_ context.Context, key, value string) (*clientv3.PutResponse, error) {
+		indexText := strings.TrimPrefix(key, prefix+"event-")
+		index, parseErr := strconv.Atoi(indexText)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse event index %q: %w", indexText, parseErr)
+		}
+		if value != expectedValue(index) {
+			return nil, fmt.Errorf("event %d value mismatch: got=%q want=%q", index, value, expectedValue(index))
+		}
+		return &clientv3.PutResponse{Header: &etcdserverpb.ResponseHeader{Revision: int64(100 - index)}}, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []eventObservation{
+		{index: 7, revision: 93}, {index: 6, revision: 94}, {index: 5, revision: 95}, {index: 4, revision: 96},
+		{index: 3, revision: 97}, {index: 2, revision: 98}, {index: 1, revision: 99}, {index: 0, revision: 100},
+	}, observed)
+}
+
+func TestWriteEventsCancelsOutstandingWritesAfterFirstFailure(t *testing.T) {
+	started := make(chan struct{}, 8)
+	_, err := writeEvents(context.Background(), "/registry/watch-soak/failure/", 8, 2, 0,
+		func(ctx context.Context, key, _ string) (*clientv3.PutResponse, error) {
+			started <- struct{}{}
+			if key == expectedKey("/registry/watch-soak/failure/", 0) {
+				return nil, errors.New("injected write failure")
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Second):
+				return &clientv3.PutResponse{Header: &etcdserverpb.ResponseHeader{Revision: 1}}, nil
+			}
+		})
+	require.ErrorContains(t, err, "injected write failure")
+	require.NotEmpty(t, started, "the bounded group must start at least one companion write")
+}
+
+func TestWriteEventsRejectsDuplicateCommittedRevision(t *testing.T) {
+	_, err := writeEvents(context.Background(), "/registry/watch-soak/duplicate/", 2, 2, 0,
+		func(context.Context, string, string) (*clientv3.PutResponse, error) {
+			return &clientv3.PutResponse{Header: &etcdserverpb.ResponseHeader{Revision: 9}}, nil
+		})
+	require.ErrorContains(t, err, "revisions are not unique and increasing")
 }
 
 func TestWatchSoakProgressIsBoundedAndUseful(t *testing.T) {
@@ -170,8 +254,12 @@ func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *test
 	require.Contains(t, text, "ALLOW_MUTATING_WATCH_SOAK=true")
 	require.Contains(t, text, "go run ./hack/dev/cmd/watch-soak")
 	require.Contains(t, text, `CLEANUP_TIMEOUT_SECONDS="${CLEANUP_TIMEOUT_SECONDS:-300}"`)
+	require.Contains(t, text, `WRITE_CONCURRENCY="${WRITE_CONCURRENCY:-1}"`)
+	require.Contains(t, text, `WRITE_CONCURRENCY="$WRITE_CONCURRENCY"`)
 	require.Contains(t, text, `SLOW_CONSUMER="${SLOW_CONSUMER:-false}"`)
 	require.Contains(t, text, `REQUIRE_SLOW_CONSUMER_OUTCOMES="${REQUIRE_SLOW_CONSUMER_OUTCOMES:-false}"`)
+	require.Contains(t, text, `SLOW_CONSUMER_EXPECTED_OUTCOME="${SLOW_CONSUMER_EXPECTED_OUTCOME:-recovered}"`)
+	require.Contains(t, text, `SLOW_CONSUMER_EXPECTED_OUTCOME="$SLOW_CONSUMER_EXPECTED_OUTCOME"`)
 	require.NotContains(t, text, "go get")
 	require.NotContains(t, text, "rm -rf")
 	verify, err := os.ReadFile(filepath.Join("..", "..", "verify.sh"))

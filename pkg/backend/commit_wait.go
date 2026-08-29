@@ -52,11 +52,11 @@ func emitCommitWaitFailure(metricCli metrics.Metrics, reason string) {
 	_ = metricCli.EmitCounter("write.commit_wait.failure", 1, metrics.Tag("reason", reason))
 }
 
-// commitNotify wakes waiters when the committed revision advances. advance is
-// called from SetCurrentRevision — the single funnel every committed-revision
-// bump goes through (collector, overflow reset, compact bump, follower sync) —
-// so waiters never miss a wake-up. One channel close per bump; the collector
-// commits in batches, so this is a few thousand closes per second at most.
+// commitNotify wakes waiters when an observed or collector revision advances.
+// Observed-only bumps may wake spuriously; waitCommittedRevision re-checks both
+// watermarks and sleeps again until the ordered collector has consumed the
+// target. One channel close per bump; the collector commits in batches, so this
+// is a few thousand closes per second at most.
 type commitNotify struct {
 	mu sync.Mutex
 	ch chan struct{}
@@ -106,7 +106,10 @@ func (b *backend) waitCommittedRevision(ctx context.Context, revision uint64) er
 }
 
 func (b *backend) waitCommittedRevisionUntil(ctx context.Context, revision uint64, backstopDuration time.Duration) error {
-	if revision == 0 || b.tso.GetRevision() >= revision {
+	visible := func() bool {
+		return b.tso.GetRevision() >= revision && b.collectorRevision.Load() >= revision
+	}
+	if revision == 0 || visible() {
 		return nil
 	}
 	start := time.Now()
@@ -116,7 +119,7 @@ func (b *backend) waitCommittedRevisionUntil(ctx context.Context, revision uint6
 		// Grab the wait channel BEFORE re-checking: an advance between the check
 		// and the wait closes the grabbed channel, so the wake-up cannot be lost.
 		ch := b.commitNotify.waitChan()
-		if b.tso.GetRevision() >= revision {
+		if visible() {
 			b.metricCli.EmitHistogram("write.commit_wait", time.Since(start).Milliseconds())
 			return nil
 		}
@@ -130,7 +133,8 @@ func (b *backend) waitCommittedRevisionUntil(ctx context.Context, revision uint6
 			b.metricCli.EmitCounter("write.commit_wait.backstop", 1)
 			emitCommitWaitFailure(b.metricCli, "backstop")
 			klog.ErrorS(nil, "commit wait backstop fired; collector stalled?",
-				"revision", revision, "committed", b.tso.GetRevision(), "waited", time.Since(start))
+				"revision", revision, "committed", b.tso.GetRevision(),
+				"collectorRevision", b.collectorRevision.Load(), "waited", time.Since(start))
 			return errCommitWaitBackstop
 		}
 	}

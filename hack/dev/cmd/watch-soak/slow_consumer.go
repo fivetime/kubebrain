@@ -98,40 +98,42 @@ func (watch *rawSlowWatch) close() {
 	}
 }
 
-// consume begins only after every write and (when requested) the catch_up
-// counter have been observed. Until this call the application performs no Recv,
-// so HTTP/2 flow control propagates real backpressure into the server send loop.
-func (watch *rawSlowWatch) consume() ([]int64, error) {
-	revisions := make([]int64, 0, watch.eventCount)
-	for len(revisions) < watch.eventCount {
+// consume begins only after every write and (when requested) the exact expected
+// catch_up/recovered-or-dropped pressure checkpoint has been observed. Until
+// this call the application performs no Recv, so HTTP/2 flow control propagates
+// real backpressure into the server send loop.
+func (watch *rawSlowWatch) consume() ([]eventObservation, error) {
+	observations := make([]eventObservation, 0, watch.eventCount)
+	for len(observations) < watch.eventCount {
 		response, err := watch.stream.Recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil, fmt.Errorf("raw watch stream closed after %d/%d events", len(revisions), watch.eventCount)
+				return nil, fmt.Errorf("raw watch stream closed after %d/%d events", len(observations), watch.eventCount)
 			}
-			return nil, fmt.Errorf("receive raw watch response after %d/%d events: %w", len(revisions), watch.eventCount, err)
+			return nil, fmt.Errorf("receive raw watch response after %d/%d events: %w", len(observations), watch.eventCount, err)
 		}
 		if response == nil || response.Header == nil || response.Header.ClusterId != watch.clusterID ||
 			response.Header.MemberId != watch.memberID || response.WatchId != slowConsumerWatchID {
-			return nil, fmt.Errorf("raw watch response identity mismatch after %d events: %+v", len(revisions), response)
+			return nil, fmt.Errorf("raw watch response identity mismatch after %d events: %+v", len(observations), response)
 		}
 		if response.Created {
-			return nil, fmt.Errorf("raw watch returned duplicate Created response after %d events", len(revisions))
+			return nil, fmt.Errorf("raw watch returned duplicate Created response after %d events", len(observations))
 		}
 		if response.Canceled {
 			return nil, fmt.Errorf("raw watch canceled after %d/%d events: reason=%q compact_revision=%d",
-				len(revisions), watch.eventCount, response.CancelReason, response.CompactRevision)
+				len(observations), watch.eventCount, response.CancelReason, response.CompactRevision)
 		}
 		for _, event := range response.Events {
-			index := len(revisions)
-			if index >= watch.eventCount {
-				return nil, fmt.Errorf("raw watch received extra event at index %d", index)
+			position := len(observations)
+			if position >= watch.eventCount {
+				return nil, fmt.Errorf("raw watch received extra event at position %d", position)
 			}
-			if err := validateEvent(watch.prefix, index, event); err != nil {
-				return nil, err
+			observation, err := observeEvent(watch.prefix, (*clientv3.Event)(event))
+			if err != nil {
+				return nil, fmt.Errorf("raw event position %d: %w", position, err)
 			}
-			revisions = append(revisions, event.Kv.ModRevision)
+			observations = append(observations, observation)
 		}
 	}
-	return revisions, nil
+	return observations, nil
 }

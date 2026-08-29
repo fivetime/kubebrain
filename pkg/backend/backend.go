@@ -1047,14 +1047,23 @@ func (b *backend) CloseWatchers() {
 	b.watcherHub.CloseAll()
 }
 
-// SetCurrentRevision implements Backend interface
+// SetCurrentRevision advances the process-local public revision observed from
+// durable storage, a forwarded response, or the ordered collector. It must not
+// normally advance collectorRevision: a leader's /revision handler can observe
+// a transaction's atomically persisted durable watermark in the narrow window
+// between TiKV commit and notifyBatch. Treating that observation as collector
+// progress makes notifyBatch drop the still-unpublished event as stale and lets
+// the write ACK before its watch event is visible.
+//
+// The one zero-to-initial-revision bootstrap keeps direct backend users and
+// cold followers aligned before any collector generation exists. Leadership
+// initialization also installs both watermarks explicitly. After bootstrap,
+// only setCollectorRevision (collector/overflow) may move collectorRevision.
 func (b *backend) SetCurrentRevision(revision uint64) {
+	bootstrapCollector := b.tso.GetRevision() == 0 && b.collectorRevision.Load() == 0
 	b.tso.Commit(revision)
-	for {
-		current := b.collectorRevision.Load()
-		if revision <= current || b.collectorRevision.CompareAndSwap(current, revision) {
-			break
-		}
+	if bootstrapCollector {
+		b.collectorRevision.CompareAndSwap(0, revision)
 	}
 	// Wake commit waiters AFTER the revision is visible (waiters re-check after
 	// each wake, so visibility-then-wake cannot lose an update). Every committed

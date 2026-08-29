@@ -24,6 +24,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/common"
+	"github.com/kubewharf/kubebrain/pkg/backend/tso"
 )
 
 func watchLagGauge(recorder *recordCounters) float64 {
@@ -60,6 +61,35 @@ func TestWatchRevisionLagFallsAsCollectorCatchesUp(t *testing.T) {
 	// Collector progress refreshes the gauge even when no later write arrives.
 	b.setCollectorRevision(15)
 	require.Equal(t, float64(0), watchLagGauge(recorder))
+}
+
+func TestObservedRevisionCannotMakeCommittedEventNotificationStale(t *testing.T) {
+	recorder := newRecordCounters()
+	b := &backend{
+		tso:                   tso.NewTSO(),
+		metricCli:             recorder,
+		commitNotify:          newCommitNotify(),
+		writeSignal:           make(chan struct{}, 1),
+		watchEventsRingBuffer: newWatchEventSlots(watchersChanCapacity),
+	}
+	b.tso.Init(10)
+	b.collectorRevision.Store(10)
+
+	// Models /revision observing the durable counter after TiKV commit but
+	// before TxnApply publishes that transaction to the event ring.
+	b.SetCurrentRevision(11)
+	require.Equal(t, uint64(10), b.collectorRevision.Load(),
+		"an observed durable revision is not proof of collector publication")
+
+	b.notifyBatch([]*common.WatchEvent{{
+		Revision: 11, Valid: true, ResourceVerb: proto.Event_PUT,
+		Key: []byte("key"), Value: []byte("value"),
+	}})
+	require.NotEmpty(t, b.watchEventsRingBuffer[11%watchersChanCapacity].take(11),
+		"the committed event must remain available to the ordered collector")
+	recorder.mu.Lock()
+	require.Zero(t, recorder.c["watch.event.buffer.stale_drop"])
+	recorder.mu.Unlock()
 }
 
 func TestWatchRevisionLagHeartbeatPublishesIdleStateAndStops(t *testing.T) {

@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -79,9 +80,9 @@ func TestRawSlowWatchConsumesExactEventsAcrossProgressAndBatches(t *testing.T) {
 		}},
 		prefix: prefix, eventCount: 3, clusterID: 7, memberID: 9,
 	}
-	revisions, err := watch.consume()
+	observations, err := watch.consume()
 	require.NoError(t, err)
-	require.Equal(t, []int64{7, 8, 9}, revisions)
+	require.Equal(t, []eventObservation{{index: 0, revision: 7}, {index: 1, revision: 8}, {index: 2, revision: 9}}, observations)
 }
 
 func TestRawSlowWatchRejectsIdentityDriftAndDuplicateCreated(t *testing.T) {
@@ -99,17 +100,31 @@ func TestRawSlowWatchRejectsIdentityDriftAndDuplicateCreated(t *testing.T) {
 }
 
 func metricsText(catchUp, recovered, dropped int) string {
-	return strings.NewReplacer("CATCH", fmt.Sprint(catchUp), "RECOVERED", fmt.Sprint(recovered), "DROPPED", fmt.Sprint(dropped)).Replace(`# HELP watcher_hub_slow_consumer_outcome_total slow outcomes
+	return metricsTextWithGeneration(catchUp, recovered, dropped, 0, 0, 0, 0)
+}
+
+func metricsTextWithGeneration(catchUp, recovered, dropped, retry, generationRecovered, compacted, failed int) string {
+	return strings.NewReplacer(
+		"CATCH", fmt.Sprint(catchUp), "SLOW_RECOVERED", fmt.Sprint(recovered), "DROPPED", fmt.Sprint(dropped),
+		"RETRY", fmt.Sprint(retry), "GEN_RECOVERED", fmt.Sprint(generationRecovered),
+		"COMPACTED", fmt.Sprint(compacted), "FAILED", fmt.Sprint(failed),
+	).Replace(`# HELP watcher_hub_slow_consumer_outcome_total slow outcomes
 # TYPE watcher_hub_slow_consumer_outcome_total counter
 watcher_hub_slow_consumer_outcome_total{cluster="default",outcome="catch_up"} CATCH
-watcher_hub_slow_consumer_outcome_total{cluster="default",outcome="recovered"} RECOVERED
+watcher_hub_slow_consumer_outcome_total{cluster="default",outcome="recovered"} SLOW_RECOVERED
 watcher_hub_slow_consumer_outcome_total{cluster="default",outcome="dropped"} DROPPED
+# HELP watch_generation_recovery_total generation outcomes
+# TYPE watch_generation_recovery_total counter
+watch_generation_recovery_total{cluster="default",outcome="retry"} RETRY
+watch_generation_recovery_total{cluster="default",outcome="recovered"} GEN_RECOVERED
+watch_generation_recovery_total{cluster="default",outcome="compacted"} COMPACTED
+watch_generation_recovery_total{cluster="default",outcome="failed"} FAILED
 `)
 }
 
 func TestMetricsReaderParsesAllFixedOutcomes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(response, metricsText(3, 2, 1))
+		_, _ = io.WriteString(response, metricsTextWithGeneration(3, 2, 1, 4, 5, 6, 7))
 	}))
 	defer server.Close()
 	cfg := config{infoEndpoint: server.URL + "/metrics"}
@@ -118,7 +133,10 @@ func TestMetricsReaderParsesAllFixedOutcomes(t *testing.T) {
 	defer reader.close()
 	outcomes, err := reader.fetch(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, slowConsumerOutcomes{catchUp: 3, recovered: 2, dropped: 1}, outcomes)
+	require.Equal(t, watchOutcomes{
+		slow:       slowConsumerOutcomes{catchUp: 3, recovered: 2, dropped: 1},
+		generation: watchGenerationOutcomes{retry: 4, recovered: 5, compacted: 6, failed: 7},
+	}, outcomes)
 }
 
 func TestMetricsReaderRejectsMissingAndDuplicateOutcomes(t *testing.T) {
@@ -126,7 +144,10 @@ func TestMetricsReaderRejectsMissingAndDuplicateOutcomes(t *testing.T) {
 		"missing": `# TYPE watcher_hub_slow_consumer_outcome_total counter
 watcher_hub_slow_consumer_outcome_total{outcome="catch_up"} 1
 `,
+		"missing generation": strings.Split(metricsText(1, 0, 0), "# HELP watch_generation_recovery_total")[0],
 		"duplicate": metricsText(1, 0, 0) + `watcher_hub_slow_consumer_outcome_total{cluster="other",outcome="catch_up"} 1
+`,
+		"unknown generation": metricsText(1, 0, 0) + `watch_generation_recovery_total{outcome="unknown"} 1
 `,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -155,7 +176,7 @@ func TestMetricsReaderRejectsInvalidCounterAndRedirect(t *testing.T) {
 	reader, err := newSlowConsumerMetricsReader(config{infoEndpoint: server.URL + "/metrics"})
 	require.NoError(t, err)
 	_, err = reader.fetch(context.Background())
-	require.ErrorContains(t, err, "invalid outcome")
+	require.ErrorContains(t, err, "invalid "+slowConsumerMetricName+" outcome")
 	reader.close()
 
 	reader, err = newSlowConsumerMetricsReader(config{infoEndpoint: server.URL + "/redirect"})
@@ -163,4 +184,78 @@ func TestMetricsReaderRejectsInvalidCounterAndRedirect(t *testing.T) {
 	_, err = reader.fetch(context.Background())
 	require.ErrorContains(t, err, "redirects are not allowed")
 	reader.close()
+}
+
+func TestExpectedWatchOutcomesDistinguishRingRecoveryAndEviction(t *testing.T) {
+	baseline := watchOutcomes{
+		slow:       slowConsumerOutcomes{catchUp: 3, recovered: 2, dropped: 1},
+		generation: watchGenerationOutcomes{retry: 4, recovered: 5, compacted: 6, failed: 7},
+	}
+
+	recoveredEntered, err := expectedWatchOutcomes(baseline, slowConsumerExpectedRecovered, false)
+	require.NoError(t, err)
+	require.Equal(t, watchOutcomes{
+		slow:       slowConsumerOutcomes{catchUp: 4, recovered: 2, dropped: 1},
+		generation: baseline.generation,
+	}, recoveredEntered)
+	recoveredComplete, err := expectedWatchOutcomes(baseline, slowConsumerExpectedRecovered, true)
+	require.NoError(t, err)
+	require.Equal(t, watchOutcomes{
+		slow:       slowConsumerOutcomes{catchUp: 4, recovered: 3, dropped: 1},
+		generation: baseline.generation,
+	}, recoveredComplete)
+
+	droppedEntered, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, false)
+	require.NoError(t, err)
+	require.Equal(t, watchOutcomes{
+		slow:       slowConsumerOutcomes{catchUp: 4, recovered: 2, dropped: 2},
+		generation: baseline.generation,
+	}, droppedEntered)
+	droppedComplete, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, true)
+	require.NoError(t, err)
+	require.Equal(t, watchOutcomes{
+		slow: slowConsumerOutcomes{catchUp: 4, recovered: 2, dropped: 2},
+		generation: watchGenerationOutcomes{
+			retry: 4, recovered: 6, compacted: 6, failed: 7,
+		},
+	}, droppedComplete)
+
+	compacted := droppedComplete
+	compacted.generation.compacted++
+	require.True(t, watchOutcomesExceeded(compacted, droppedComplete),
+		"a compacted terminal must fail an oracle expecting transparent generation recovery")
+	_, err = expectedWatchOutcomes(baseline, "unknown", true)
+	require.ErrorContains(t, err, "unsupported")
+}
+
+func TestDroppedOutcomeWaitsForExactGenerationRecovery(t *testing.T) {
+	baseline := watchOutcomes{
+		slow:       slowConsumerOutcomes{catchUp: 3, recovered: 2, dropped: 1},
+		generation: watchGenerationOutcomes{retry: 4, recovered: 5, compacted: 6, failed: 7},
+	}
+	var body atomic.Value
+	body.Store(metricsTextWithGeneration(4, 2, 2, 4, 5, 6, 7))
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(response, body.Load().(string))
+	}))
+	defer server.Close()
+	reader, err := newSlowConsumerMetricsReader(config{infoEndpoint: server.URL + "/metrics"})
+	require.NoError(t, err)
+	defer reader.close()
+
+	require.NoError(t, waitForExpectedSlowConsumerPressure(
+		context.Background(), reader, baseline, slowConsumerExpectedDropped,
+	))
+	body.Store(metricsTextWithGeneration(4, 2, 2, 4, 6, 6, 7))
+	require.NoError(t, waitForExpectedSlowConsumerCompletion(
+		context.Background(), reader, baseline, slowConsumerExpectedDropped,
+	))
+
+	body.Store(metricsTextWithGeneration(4, 2, 2, 4, 6, 7, 7))
+	current, err := reader.fetch(context.Background())
+	require.NoError(t, err)
+	expected, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, true)
+	require.NoError(t, err)
+	require.True(t, watchOutcomesExceeded(current, expected),
+		"compaction must not satisfy the transparent recovery oracle")
 }

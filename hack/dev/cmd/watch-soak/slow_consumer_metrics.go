@@ -27,19 +27,33 @@ import (
 	"os"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
 )
 
 const (
-	slowConsumerMetricName = "watcher_hub_slow_consumer_outcome"
-	maximumMetricsBytes    = 32 << 20
+	slowConsumerMetricName    = "watcher_hub_slow_consumer_outcome"
+	watchGenerationMetricName = "watch_generation_recovery"
+	maximumMetricsBytes       = 32 << 20
 )
 
 type slowConsumerOutcomes struct {
 	catchUp   float64
 	recovered float64
 	dropped   float64
+}
+
+type watchGenerationOutcomes struct {
+	retry     float64
+	recovered float64
+	compacted float64
+	failed    float64
+}
+
+type watchOutcomes struct {
+	slow       slowConsumerOutcomes
+	generation watchGenerationOutcomes
 }
 
 type slowConsumerMetricsReader struct {
@@ -113,35 +127,59 @@ func (reader *slowConsumerMetricsReader) close() {
 	}
 }
 
-func (reader *slowConsumerMetricsReader) fetch(ctx context.Context) (slowConsumerOutcomes, error) {
+func (reader *slowConsumerMetricsReader) fetch(ctx context.Context) (watchOutcomes, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, reader.endpoint, nil)
 	if err != nil {
-		return slowConsumerOutcomes{}, err
+		return watchOutcomes{}, err
 	}
 	response, err := reader.client.Do(request)
 	if err != nil {
-		return slowConsumerOutcomes{}, err
+		return watchOutcomes{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return slowConsumerOutcomes{}, fmt.Errorf("metrics endpoint returned %s", response.Status)
+		return watchOutcomes{}, fmt.Errorf("metrics endpoint returned %s", response.Status)
 	}
 	limited := &io.LimitedReader{R: response.Body, N: maximumMetricsBytes + 1}
 	parser := expfmt.NewTextParser(model.UTF8Validation)
 	families, err := parser.TextToMetricFamilies(limited)
 	if err != nil {
-		return slowConsumerOutcomes{}, fmt.Errorf("parse Prometheus metrics: %w", err)
+		return watchOutcomes{}, fmt.Errorf("parse Prometheus metrics: %w", err)
 	}
 	if limited.N <= 0 {
-		return slowConsumerOutcomes{}, fmt.Errorf("metrics response exceeds %d bytes", maximumMetricsBytes)
+		return watchOutcomes{}, fmt.Errorf("metrics response exceeds %d bytes", maximumMetricsBytes)
 	}
-	family := families[slowConsumerMetricName]
+	slow, err := parseFixedOutcomeCounters(families, slowConsumerMetricName, []string{"catch_up", "recovered", "dropped"})
+	if err != nil {
+		return watchOutcomes{}, err
+	}
+	generation, err := parseFixedOutcomeCounters(families, watchGenerationMetricName, []string{"retry", "recovered", "compacted", "failed"})
+	if err != nil {
+		return watchOutcomes{}, err
+	}
+	return watchOutcomes{
+		slow: slowConsumerOutcomes{
+			catchUp: slow["catch_up"], recovered: slow["recovered"], dropped: slow["dropped"],
+		},
+		generation: watchGenerationOutcomes{
+			retry: generation["retry"], recovered: generation["recovered"],
+			compacted: generation["compacted"], failed: generation["failed"],
+		},
+	}, nil
+}
+
+func parseFixedOutcomeCounters(families map[string]*dto.MetricFamily, name string, outcomes []string) (map[string]float64, error) {
+	family := families[name]
 	if family == nil {
-		family = families[slowConsumerMetricName+"_total"]
+		family = families[name+"_total"]
 	}
 	if family == nil {
-		return slowConsumerOutcomes{}, fmt.Errorf("metrics response omits %s", slowConsumerMetricName)
+		return nil, fmt.Errorf("metrics response omits %s", name)
+	}
+	allowed := make(map[string]struct{}, len(outcomes))
+	for _, outcome := range outcomes {
+		allowed[outcome] = struct{}{}
 	}
 	values := map[string]float64{}
 	for _, metric := range family.Metric {
@@ -154,36 +192,62 @@ func (reader *slowConsumerMetricsReader) fetch(ctx context.Context) (slowConsume
 		if outcome == "" || metric.Counter == nil {
 			continue
 		}
+		if _, ok := allowed[outcome]; !ok {
+			return nil, fmt.Errorf("metrics response has unknown %s outcome %q", name, outcome)
+		}
 		if _, duplicate := values[outcome]; duplicate {
-			return slowConsumerOutcomes{}, fmt.Errorf("metrics response has duplicate outcome %q", outcome)
+			return nil, fmt.Errorf("metrics response has duplicate %s outcome %q", name, outcome)
 		}
 		value := metric.Counter.GetValue()
 		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || math.Trunc(value) != value {
-			return slowConsumerOutcomes{}, fmt.Errorf("metrics response has invalid outcome %q counter %v", outcome, value)
+			return nil, fmt.Errorf("metrics response has invalid %s outcome %q counter %v", name, outcome, value)
 		}
 		values[outcome] = value
 	}
-	for _, outcome := range []string{"catch_up", "recovered", "dropped"} {
+	for _, outcome := range outcomes {
 		if _, exists := values[outcome]; !exists {
-			return slowConsumerOutcomes{}, fmt.Errorf("metrics response omits slow-consumer outcome %q", outcome)
+			return nil, fmt.Errorf("metrics response omits %s outcome %q", name, outcome)
 		}
 	}
-	return slowConsumerOutcomes{catchUp: values["catch_up"], recovered: values["recovered"], dropped: values["dropped"]}, nil
+	return values, nil
 }
 
-func waitForSlowConsumerEntered(ctx context.Context, reader *slowConsumerMetricsReader, baseline slowConsumerOutcomes) error {
-	return waitForSlowConsumerOutcomes(ctx, reader, baseline, slowConsumerOutcomes{
-		catchUp: baseline.catchUp + 1, recovered: baseline.recovered, dropped: baseline.dropped,
-	}, "catch_up")
+func waitForExpectedSlowConsumerPressure(ctx context.Context, reader *slowConsumerMetricsReader, baseline watchOutcomes, outcome string) error {
+	expected, err := expectedWatchOutcomes(baseline, outcome, false)
+	if err != nil {
+		return err
+	}
+	return waitForWatchOutcomes(ctx, reader, baseline, expected, outcome+" pressure")
 }
 
-func waitForSlowConsumerRecovered(ctx context.Context, reader *slowConsumerMetricsReader, baseline slowConsumerOutcomes) error {
-	return waitForSlowConsumerOutcomes(ctx, reader, baseline, slowConsumerOutcomes{
-		catchUp: baseline.catchUp + 1, recovered: baseline.recovered + 1, dropped: baseline.dropped,
-	}, "recovered")
+func waitForExpectedSlowConsumerCompletion(ctx context.Context, reader *slowConsumerMetricsReader, baseline watchOutcomes, outcome string) error {
+	expected, err := expectedWatchOutcomes(baseline, outcome, true)
+	if err != nil {
+		return err
+	}
+	return waitForWatchOutcomes(ctx, reader, baseline, expected, outcome+" completion")
 }
 
-func waitForSlowConsumerOutcomes(ctx context.Context, reader *slowConsumerMetricsReader, baseline, expected slowConsumerOutcomes, phase string) error {
+func expectedWatchOutcomes(baseline watchOutcomes, outcome string, completed bool) (watchOutcomes, error) {
+	expected := baseline
+	expected.slow.catchUp++
+	switch outcome {
+	case slowConsumerExpectedRecovered:
+		if completed {
+			expected.slow.recovered++
+		}
+	case slowConsumerExpectedDropped:
+		expected.slow.dropped++
+		if completed {
+			expected.generation.recovered++
+		}
+	default:
+		return watchOutcomes{}, fmt.Errorf("unsupported slow-consumer expected outcome %q", outcome)
+	}
+	return expected, nil
+}
+
+func waitForWatchOutcomes(ctx context.Context, reader *slowConsumerMetricsReader, baseline, expected watchOutcomes, phase string) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -191,17 +255,14 @@ func waitForSlowConsumerOutcomes(ctx context.Context, reader *slowConsumerMetric
 		if err != nil {
 			return fmt.Errorf("read slow-consumer outcomes while waiting for %s: %w", phase, err)
 		}
-		if current.catchUp < baseline.catchUp || current.recovered < baseline.recovered || current.dropped < baseline.dropped {
+		if watchOutcomesRegressed(current, baseline) {
 			return fmt.Errorf("slow-consumer counters regressed while waiting for %s: baseline=%+v current=%+v", phase, baseline, current)
-		}
-		if current.dropped != baseline.dropped {
-			return fmt.Errorf("slow-consumer was dropped while waiting for %s: baseline=%+v current=%+v", phase, baseline, current)
 		}
 		if current == expected {
 			return nil
 		}
-		if current.catchUp > expected.catchUp || current.recovered > expected.recovered {
-			return fmt.Errorf("slow-consumer outcome counters changed by more than this owned watch while waiting for %s: baseline=%+v current=%+v expected=%+v",
+		if watchOutcomesExceeded(current, expected) {
+			return fmt.Errorf("watch outcome counters changed beyond this owned watch while waiting for %s: baseline=%+v current=%+v expected=%+v",
 				phase, baseline, current, expected)
 		}
 		select {
@@ -210,4 +271,18 @@ func waitForSlowConsumerOutcomes(ctx context.Context, reader *slowConsumerMetric
 		case <-ticker.C:
 		}
 	}
+}
+
+func watchOutcomesRegressed(current, floor watchOutcomes) bool {
+	return current.slow.catchUp < floor.slow.catchUp || current.slow.recovered < floor.slow.recovered ||
+		current.slow.dropped < floor.slow.dropped || current.generation.retry < floor.generation.retry ||
+		current.generation.recovered < floor.generation.recovered || current.generation.compacted < floor.generation.compacted ||
+		current.generation.failed < floor.generation.failed
+}
+
+func watchOutcomesExceeded(current, ceiling watchOutcomes) bool {
+	return current.slow.catchUp > ceiling.slow.catchUp || current.slow.recovered > ceiling.slow.recovered ||
+		current.slow.dropped > ceiling.slow.dropped || current.generation.retry > ceiling.generation.retry ||
+		current.generation.recovered > ceiling.generation.recovered || current.generation.compacted > ceiling.generation.compacted ||
+		current.generation.failed > ceiling.generation.failed
 }
