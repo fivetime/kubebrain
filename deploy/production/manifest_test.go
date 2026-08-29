@@ -193,8 +193,18 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 				volume := raw.(map[string]any)
 				volumeByName[volume["name"].(string)] = volume
 			}
-			require.Equal(t, "512Gi", nestedString(t,
-				&unstructured.Unstructured{Object: volumeByName["snapshot-tmp"]}, "emptyDir", "sizeLimit"))
+			snapshotVolume := &unstructured.Unstructured{Object: volumeByName["snapshot-tmp"]}
+			require.Equal(t, "Filesystem", nestedString(t, snapshotVolume,
+				"ephemeral", "volumeClaimTemplate", "spec", "volumeMode"))
+			require.Equal(t, []string{"ReadWriteOnce"}, nestedStringSlice(t, snapshotVolume,
+				"ephemeral", "volumeClaimTemplate", "spec", "accessModes"))
+			require.Equal(t, "512Gi", nestedString(t, snapshotVolume,
+				"ephemeral", "volumeClaimTemplate", "spec", "resources", "requests", "storage"))
+			require.Equal(t, "snapshot-workspace", nestedString(t, snapshotVolume,
+				"ephemeral", "volumeClaimTemplate", "metadata", "labels", "app.kubernetes.io/component"))
+			_, hasEmptyDir, err := unstructured.NestedMap(snapshotVolume.Object, "emptyDir")
+			require.NoError(t, err)
+			require.False(t, hasEmptyDir, "snapshot workspace must not use shared node-root ephemeral storage")
 
 			serviceAccount := objectByKindAndName(t, objects, "ServiceAccount", "kubebrain")
 			require.False(t, nestedBool(t, serviceAccount, "automountServiceAccountToken"))

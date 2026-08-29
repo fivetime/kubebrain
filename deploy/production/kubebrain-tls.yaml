@@ -230,8 +230,22 @@ spec:
               readOnly: true
       volumes:
         - name: snapshot-tmp
-          emptyDir:
-            sizeLimit: 512Gi
+          # The streamed bbolt artifact can approach the logical quota. Use a
+          # Pod-scoped dynamically provisioned volume so its bulk writes do not
+          # share node-root ephemeral storage with the serving data path.
+          ephemeral:
+            volumeClaimTemplate:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: kubebrain
+                  app.kubernetes.io/instance: kubebrain
+                  app.kubernetes.io/component: snapshot-workspace
+              spec:
+                accessModes: [ReadWriteOnce]
+                volumeMode: Filesystem
+                resources:
+                  requests:
+                    storage: 512Gi
         - name: client-tls
           secret:
             secretName: kubebrain-client-tls

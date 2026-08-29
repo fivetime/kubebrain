@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -62,6 +63,36 @@ func TestBuilderAppendsMultipleBatchesWithoutLosingSameRevisionRecords(t *testin
 		})
 	}))
 	require.Equal(t, map[string]string{"a": "1", "b": "2", "c": "3"}, got)
+}
+
+func TestBuilderDefersDurabilityUntilValidatedArtifactIsComplete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	builder, err := NewBuilder(path, State{Revision: 2})
+	require.NoError(t, err)
+	defer builder.Close()
+	require.True(t, builder.db.NoSync, "private bulk-load transactions must not sync every history batch")
+
+	syncErr := errors.New("injected artifact sync failure")
+	syncCalls := 0
+	builder.sync = func() error {
+		syncCalls++
+		return syncErr
+	}
+	require.NoError(t, builder.Append([]Record{{
+		Key: []byte("key"), Value: []byte("value"), CreateRevision: 2, ModRevision: 2, Version: 1,
+	}}))
+	require.Zero(t, syncCalls, "Append must not establish a publishable durability boundary")
+	require.ErrorIs(t, builder.Finish(), syncErr)
+	require.Equal(t, 1, syncCalls)
+	require.False(t, builder.finished, "an unsynced artifact must never become publishable")
+
+	builder.sync = func() error {
+		syncCalls++
+		return builder.db.Sync()
+	}
+	require.NoError(t, builder.Finish())
+	require.Equal(t, 2, syncCalls)
+	require.True(t, builder.finished)
 }
 
 func TestWriteBackendRejectsNonPositiveSnapshotRevision(t *testing.T) {

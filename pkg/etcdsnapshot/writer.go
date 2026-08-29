@@ -137,6 +137,7 @@ func WriteBackend(path string, state State) (retErr error) {
 // Committed bbolt pages, rather than the complete keyspace, hold prior batches.
 type Builder struct {
 	db               *bolt.DB
+	sync             func() error
 	revision         int64
 	restoredRevision int64
 	nextSub          int64
@@ -159,13 +160,18 @@ func NewBuilder(path string, state State) (*Builder, error) {
 	if state.Revision == math.MaxInt64 {
 		return nil, invalidSnapshotMetadataf("snapshot revision leaves no room for next etcd write: %d", state.Revision)
 	}
-	db, err := bolt.Open(path, 0o600, nil)
+	// This database is a private, restartable bulk-load artifact until Finish
+	// returns. Syncing both its data and meta pages for every streamed history
+	// batch adds no recoverability, but can make an online Snapshot contend with
+	// TiKV foreground writes through shared storage. Finish performs the single
+	// durability boundary required before the artifact can be published.
+	db, err := bolt.Open(path, 0o600, &bolt.Options{NoSync: true})
 	if err != nil {
 		return nil, err
 	}
 	restoredRevision := int64(1) // upstream MVCC restore starts at revision 1
 	builder := &Builder{
-		db: db, revision: state.Revision, restoredRevision: restoredRevision,
+		db: db, sync: db.Sync, revision: state.Revision, restoredRevision: restoredRevision,
 		preserveHistory: state.PreserveHistory, orderedTotals: make(map[int64]int64),
 	}
 	if state.HasCompactRevision {
@@ -508,28 +514,29 @@ func (b *Builder) Finish() error {
 	}); err != nil {
 		return err
 	}
-	if b.restoredRevision >= b.revision {
-		b.finished = true
-		return nil
+	if b.restoredRevision < b.revision {
+		// Official MVCC restore derives currentRev from the greatest revision key,
+		// so a marker is required when KubeBrain's published revision has no retained
+		// user row (for example, a dealt-but-uncommitted revision). Use the empty key:
+		// etcd's Watch API normalizes an empty watch key to \x00, and Range/Txn reject
+		// empty keys, making this restore-only row unreachable to every legal client
+		// key interval. A named \x00-prefixed marker would leak as a DELETE through an
+		// all-key historical Watch after restore.
+		marker, err := proto.Marshal(&mvccpb.KeyValue{Key: []byte{}})
+		if err != nil {
+			return err
+		}
+		if err = b.db.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket(keyBucket).Put(append(revisionBytes(b.revision, fallbackSubRevisionBase+b.nextSub), 't'), marker)
+		}); err != nil {
+			return err
+		}
 	}
-	// Official MVCC restore derives currentRev from the greatest revision key,
-	// so a marker is required when KubeBrain's published revision has no retained
-	// user row (for example, a dealt-but-uncommitted revision). Use the empty key:
-	// etcd's Watch API normalizes an empty watch key to \x00, and Range/Txn reject
-	// empty keys, making this restore-only row unreachable to every legal client
-	// key interval. A named \x00-prefixed marker would leak as a DELETE through an
-	// all-key historical Watch after restore.
-	marker, err := proto.Marshal(&mvccpb.KeyValue{Key: []byte{}})
-	if err != nil {
-		return err
+	if err := b.sync(); err != nil {
+		return fmt.Errorf("sync completed snapshot backend: %w", err)
 	}
-	err = b.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(keyBucket).Put(append(revisionBytes(b.revision, fallbackSubRevisionBase+b.nextSub), 't'), marker)
-	})
-	if err == nil {
-		b.finished = true
-	}
-	return err
+	b.finished = true
+	return nil
 }
 
 type mvccGenerationState struct {
