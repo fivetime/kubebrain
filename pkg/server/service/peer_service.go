@@ -61,7 +61,7 @@ func NewPeerService(ctx context.Context, le leader.LeaderElection, m metrics.Met
 		config:         config,
 	}
 	if config.EnableEtcdProxy {
-		ps.EtcdProxy = etcdproxy.NewEtcdProxy(ctx, le, config.TLS, config.AllowInsecure, config.MaxRequestBytes)
+		ps.EtcdProxy = etcdproxy.NewEtcdProxyWithMetrics(ctx, le, config.TLS, config.AllowInsecure, config.MaxRequestBytes, m)
 	}
 	return ps
 }

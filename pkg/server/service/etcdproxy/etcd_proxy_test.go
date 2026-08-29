@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -36,10 +37,84 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/stretchr/testify/require"
 )
+
+type recordedProxyMetric struct {
+	name  string
+	value any
+	tags  []metrics.T
+}
+
+type proxyMetricsRecorder struct {
+	mu            sync.Mutex
+	counters      []recordedProxyMetric
+	histograms    []recordedProxyMetric
+	registrations []recordedProxyMetric
+}
+
+func (*proxyMetricsRecorder) GetGrpcServerOption() []grpc.ServerOption { return nil }
+func (*proxyMetricsRecorder) GetHttpHandlers() map[string]http.Handler { return nil }
+func (r *proxyMetricsRecorder) EmitCounter(name string, value any, tags ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters = append(r.counters, recordedProxyMetric{name: name, value: value, tags: append([]metrics.T(nil), tags...)})
+	return nil
+}
+func (*proxyMetricsRecorder) EmitGauge(string, any, ...metrics.T) error { return nil }
+func (r *proxyMetricsRecorder) EmitHistogram(name string, value any, tags ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.histograms = append(r.histograms, recordedProxyMetric{name: name, value: value, tags: append([]metrics.T(nil), tags...)})
+	return nil
+}
+func (r *proxyMetricsRecorder) RegisterHistogram(name string, tags ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.registrations = append(r.registrations, recordedProxyMetric{name: name, tags: append([]metrics.T(nil), tags...)})
+	return nil
+}
+
+func metricTags(tags ...metrics.T) []metrics.T { return tags }
+
+func countRecordedMetrics(samples []recordedProxyMetric, name string, tags []metrics.T) int {
+	count := 0
+	for _, sample := range samples {
+		if sample.name == name && equalMetricTags(sample.tags, tags) {
+			count++
+		}
+	}
+	return count
+}
+
+func sumRecordedCounter(samples []recordedProxyMetric, name string, tags []metrics.T) int64 {
+	var sum int64
+	for _, sample := range samples {
+		if sample.name != name || !equalMetricTags(sample.tags, tags) {
+			continue
+		}
+		value, ok := sample.value.(int64)
+		if ok {
+			sum += value
+		}
+	}
+	return sum
+}
+
+func equalMetricTags(left, right []metrics.T) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
 
 func TestProxyTLSFallbackRequiresExplicitMixedMode(t *testing.T) {
 	tlsOnly := (&etcdProxy{tlsConfig: &tls.Config{}}).dialTLSConfigs()
@@ -263,6 +338,89 @@ func TestPutRetriesExactPreAdmissionDrainOnPublishedSuccessor(t *testing.T) {
 	require.True(t, proto.Equal(want, response))
 	require.Equal(t, int32(1), retiring.calls.Load())
 	require.Equal(t, int32(1), successor.calls.Load())
+}
+
+func TestPutForwardMetricsSplitReadyCallAndDrainRetry(t *testing.T) {
+	want := &etcdserverpb.PutResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}}
+	successor := &putResultServer{put: func() (*etcdserverpb.PutResponse, error) { return want, nil }}
+	successorAddress := startPutResultServer(t, successor)
+
+	var election *switchingLeaderElection
+	retiring := &putResultServer{put: func() (*etcdserverpb.PutResponse, error) {
+		election.address.Store(successorAddress)
+		return nil, proxyprotocol.ErrPeerDrainedBeforeAdmission
+	}}
+	retiringAddress := startPutResultServer(t, retiring)
+	election = newSwitchingLeaderElection(retiringAddress)
+	recorder := &proxyMetricsRecorder{}
+
+	proxy := NewEtcdProxyWithMetrics(t.Context(), election, nil, false, 0, recorder).(*etcdProxy)
+	t.Cleanup(func() { require.NoError(t, proxy.Close()) })
+	require.Eventually(t, func() bool { return proxy.Ready() == nil }, 5*time.Second, 10*time.Millisecond)
+
+	response, err := proxy.Put(t.Context(), &etcdserverpb.PutRequest{Key: []byte("rollout")})
+	require.NoError(t, err)
+	require.True(t, proto.Equal(want, response))
+
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	require.Equal(t, 2, countRecordedMetrics(recorder.histograms, unaryForwardDurationMetric,
+		metricTags(metrics.Tag("rpc", unaryForwardRPCPut), metrics.Tag("stage", unaryForwardStageWaitReady), metrics.Tag("outcome", unaryForwardOutcomeSuccess))))
+	require.Equal(t, 1, countRecordedMetrics(recorder.histograms, unaryForwardDurationMetric,
+		metricTags(metrics.Tag("rpc", unaryForwardRPCPut), metrics.Tag("stage", unaryForwardStageForward), metrics.Tag("outcome", unaryForwardOutcomeDrained))))
+	require.Equal(t, 1, countRecordedMetrics(recorder.histograms, unaryForwardDurationMetric,
+		metricTags(metrics.Tag("rpc", unaryForwardRPCPut), metrics.Tag("stage", unaryForwardStageForward), metrics.Tag("outcome", unaryForwardOutcomeSuccess))))
+	require.Equal(t, int64(1), sumRecordedCounter(recorder.counters, unaryForwardRetryMetric,
+		metricTags(metrics.Tag("rpc", unaryForwardRPCPut), metrics.Tag("reason", unaryForwardRetryDrain))))
+	require.Len(t, recorder.registrations, len(unaryForwardRPCs)*len(unaryForwardStages)*len(unaryForwardOutcomes))
+}
+
+func TestUnaryForwardOutcomeClassification(t *testing.T) {
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want string
+	}{
+		{name: "success", ctx: context.Background(), want: unaryForwardOutcomeSuccess},
+		{name: "caller cancellation", ctx: canceledCtx, err: context.Canceled, want: unaryForwardOutcomeCaller},
+		{name: "peer drained before admission", ctx: context.Background(), err: proxyprotocol.ErrPeerDrainedBeforeAdmission, want: unaryForwardOutcomeDrained},
+		{name: "leader changed", ctx: context.Background(), err: rpctypes.ErrGRPCLeaderChanged, want: unaryForwardOutcomeTopology},
+		{name: "transport unavailable", ctx: context.Background(), err: status.Error(codes.Unavailable, "connection refused"), want: unaryForwardOutcomeTransport},
+		{name: "application invalid argument", ctx: context.Background(), err: status.Error(codes.InvalidArgument, "bad request"), want: unaryForwardOutcomeApplication},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.want, classifyUnaryForwardOutcome(test.ctx, nil, test.err))
+		})
+	}
+}
+
+func TestUnaryForwardMetricInitializationHasFixedCompleteDomain(t *testing.T) {
+	recorder := &proxyMetricsRecorder{}
+	initUnaryForwardMetrics(recorder)
+
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	require.Len(t, recorder.registrations, len(unaryForwardRPCs)*len(unaryForwardStages)*len(unaryForwardOutcomes))
+	seen := make(map[string]struct{}, len(recorder.registrations))
+	for _, registration := range recorder.registrations {
+		require.Equal(t, unaryForwardDurationMetric, registration.name)
+		require.Len(t, registration.tags, 3)
+		require.Equal(t, "rpc", registration.tags[0].Name)
+		require.Equal(t, "stage", registration.tags[1].Name)
+		require.Equal(t, "outcome", registration.tags[2].Name)
+		identity := registration.tags[0].Value + "/" + registration.tags[1].Value + "/" + registration.tags[2].Value
+		_, duplicate := seen[identity]
+		require.False(t, duplicate, "duplicate registration %s", identity)
+		seen[identity] = struct{}{}
+	}
+	for _, rpc := range unaryForwardRPCs {
+		require.Equal(t, int64(0), sumRecordedCounter(recorder.counters, unaryForwardRetryMetric,
+			metricTags(metrics.Tag("rpc", rpc), metrics.Tag("reason", unaryForwardRetryDrain))))
+	}
 }
 
 func TestPutDoesNotRetryGenericLeaderChanged(t *testing.T) {

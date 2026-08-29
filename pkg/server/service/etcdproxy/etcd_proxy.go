@@ -37,6 +37,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/proxyprotocol"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/kubewharf/kubebrain/pkg/util"
@@ -76,6 +77,7 @@ type etcdProxy struct {
 
 	election  leader.LeaderElection
 	tlsConfig *tls.Config
+	metricCli metrics.Metrics
 
 	closed chan struct{}
 	// updateCh lets request handlers wake the single background connector
@@ -151,12 +153,23 @@ const proxyReadyWaitTimeout = 200 * time.Millisecond
 // the complete RPC surface without public admission, so forwarding there counts
 // each external request exactly once at its ingress replica.
 func NewEtcdProxy(ctx context.Context, leaderElection leader.LeaderElection, tlsConfig *tls.Config, allowInsecure bool, maxRequestBytes uint) EtcdProxy {
+	return NewEtcdProxyWithMetrics(ctx, leaderElection, tlsConfig, allowInsecure, maxRequestBytes, nil)
+}
+
+// NewEtcdProxyWithMetrics constructs the forwarding proxy and publishes fixed,
+// low-cardinality telemetry for the core KV unary path. Keep NewEtcdProxy as a
+// compatibility wrapper for embedders that do not supply a metrics backend.
+func NewEtcdProxyWithMetrics(ctx context.Context, leaderElection leader.LeaderElection, tlsConfig *tls.Config, allowInsecure bool,
+	maxRequestBytes uint, metricCli metrics.Metrics,
+) EtcdProxy {
 	runCtx, cancel := context.WithCancel(ctx)
 	proxy := &etcdProxy{
 		election: leaderElection, tlsConfig: tlsConfig,
 		allowInsecure: allowInsecure, callOptions: proxyCallOptions(maxRequestBytes),
-		cancel: cancel, loopDone: make(chan struct{}), updateCh: make(chan struct{}, 1),
+		metricCli: metricCli,
+		cancel:    cancel, loopDone: make(chan struct{}), updateCh: make(chan struct{}, 1),
 	}
+	initUnaryForwardMetrics(metricCli)
 	go func() {
 		defer util.Recover()
 		defer close(proxy.loopDone)
@@ -651,19 +664,25 @@ func shouldResetForwardClient(client *clientv3.Client, err error) bool {
 func forwardUnaryWithDrainRetry[T any](
 	e *etcdProxy,
 	ctx context.Context,
+	rpc string,
 	call func(*clientv3.Client, string) (T, error),
 ) (T, error) {
 	var zero T
 	for attempt := 0; attempt < 2; attempt++ {
+		readyStarted := time.Now()
 		client, leader, _, err := e.readyClient(ctx)
+		emitUnaryForwardDuration(e.metricCli, rpc, unaryForwardStageWaitReady, readyStarted, ctx, client, err)
 		if err != nil {
 			return zero, err
 		}
+		forwardStarted := time.Now()
 		response, err := call(client, leader)
+		emitUnaryForwardDuration(e.metricCli, rpc, unaryForwardStageForward, forwardStarted, ctx, client, err)
 		e.markForwardError(ctx, client, err)
 		if err == nil || !proxyprotocol.IsPeerDrainedBeforeAdmission(err) || attempt == 1 {
 			return response, err
 		}
+		emitUnaryForwardDrainRetry(e.metricCli, rpc)
 	}
 	return zero, status.Error(codes.Internal, "kubebrain: exhausted peer drain retry")
 }
@@ -677,7 +696,7 @@ func getKeyFromTxn(txn *etcdserverpb.TxnRequest) (string, int64) {
 
 func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
 	key, rev := getKeyFromTxn(txn)
-	resp, err := forwardUnaryWithDrainRetry(e, ctx, func(client *clientv3.Client, leader string) (*etcdserverpb.TxnResponse, error) {
+	resp, err := forwardUnaryWithDrainRetry(e, ctx, unaryForwardRPCTxn, func(client *clientv3.Client, leader string) (*etcdserverpb.TxnResponse, error) {
 		klog.InfoS("forward txn", "leader", leader, "key", key, "rev", rev)
 		return etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, e.callOptions...)
 	})
@@ -708,7 +727,7 @@ func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 }
 
 func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-	return forwardUnaryWithDrainRetry(e, ctx, func(client *clientv3.Client, leader string) (*etcdserverpb.RangeResponse, error) {
+	return forwardUnaryWithDrainRetry(e, ctx, unaryForwardRPCRange, func(client *clientv3.Client, leader string) (*etcdserverpb.RangeResponse, error) {
 		klog.InfoS("forward range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd), "revision", req.Revision)
 		return etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, e.callOptions...)
 	})
@@ -791,14 +810,14 @@ func (e *etcdProxy) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 }
 
 func (e *etcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
-	return forwardUnaryWithDrainRetry(e, ctx, func(client *clientv3.Client, leader string) (*etcdserverpb.PutResponse, error) {
+	return forwardUnaryWithDrainRetry(e, ctx, unaryForwardRPCPut, func(client *clientv3.Client, leader string) (*etcdserverpb.PutResponse, error) {
 		klog.InfoS("forward put", "leader", leader, "key", loggedProxyKey(req.Key), "lease", req.Lease)
 		return etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, e.callOptions...)
 	})
 }
 
 func (e *etcdProxy) DeleteRange(ctx context.Context, req *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
-	return forwardUnaryWithDrainRetry(e, ctx, func(client *clientv3.Client, leader string) (*etcdserverpb.DeleteRangeResponse, error) {
+	return forwardUnaryWithDrainRetry(e, ctx, unaryForwardRPCDeleteRange, func(client *clientv3.Client, leader string) (*etcdserverpb.DeleteRangeResponse, error) {
 		klog.InfoS("forward delete range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd))
 		return etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, e.callOptions...)
 	})
