@@ -212,34 +212,42 @@ func parseFixedOutcomeCounters(families map[string]*dto.MetricFamily, name strin
 	return values, nil
 }
 
-func waitForExpectedSlowConsumerPressure(ctx context.Context, reader *slowConsumerMetricsReader, baseline watchOutcomes, outcome string) error {
-	expected, err := expectedWatchOutcomes(baseline, outcome, false)
+func waitForExpectedSlowConsumerPressure(ctx context.Context, reader *slowConsumerMetricsReader, baseline watchOutcomes,
+	outcome string, slowConsumers int,
+) error {
+	expected, err := expectedWatchOutcomes(baseline, outcome, slowConsumers, false)
 	if err != nil {
 		return err
 	}
 	return waitForWatchOutcomes(ctx, reader, baseline, expected, outcome+" pressure")
 }
 
-func waitForExpectedSlowConsumerCompletion(ctx context.Context, reader *slowConsumerMetricsReader, baseline watchOutcomes, outcome string) error {
-	expected, err := expectedWatchOutcomes(baseline, outcome, true)
+func waitForExpectedSlowConsumerCompletion(ctx context.Context, reader *slowConsumerMetricsReader, baseline watchOutcomes,
+	outcome string, slowConsumers int,
+) error {
+	expected, err := expectedWatchOutcomes(baseline, outcome, slowConsumers, true)
 	if err != nil {
 		return err
 	}
 	return waitForWatchOutcomes(ctx, reader, baseline, expected, outcome+" completion")
 }
 
-func expectedWatchOutcomes(baseline watchOutcomes, outcome string, completed bool) (watchOutcomes, error) {
+func expectedWatchOutcomes(baseline watchOutcomes, outcome string, slowConsumers int, completed bool) (watchOutcomes, error) {
+	if slowConsumers < 1 {
+		return watchOutcomes{}, fmt.Errorf("slow-consumer outcome oracle requires a positive consumer count: %d", slowConsumers)
+	}
+	delta := float64(slowConsumers)
 	expected := baseline
-	expected.slow.catchUp++
+	expected.slow.catchUp += delta
 	switch outcome {
 	case slowConsumerExpectedRecovered:
 		if completed {
-			expected.slow.recovered++
+			expected.slow.recovered += delta
 		}
 	case slowConsumerExpectedDropped:
 		if completed {
-			expected.slow.dropped++
-			expected.generation.recovered++
+			expected.slow.dropped += delta
+			expected.generation.recovered += delta
 		}
 	default:
 		return watchOutcomes{}, fmt.Errorf("unsupported slow-consumer expected outcome %q", outcome)

@@ -41,6 +41,7 @@ import (
 // payload to about 320 MiB while still allowing 25 watchers at one event/second
 // for more than nine days.
 const maximumWatchObservations int64 = 20_000_000
+const maximumSlowConsumers = 1000
 
 // Match etcd's default --max-txn-ops and stay within KubeBrain's production
 // profile. Every operation is an exact-key Delete, never a broad range delete.
@@ -68,6 +69,7 @@ type config struct {
 	runID                       string
 	cleanupOnly                 bool
 	slowConsumer                bool
+	slowConsumers               int
 	requireSlowConsumerOutcomes bool
 	slowConsumerExpectedOutcome string
 	infoEndpoint                string
@@ -95,6 +97,7 @@ type eventObservation struct {
 }
 
 type putEventFunc func(context.Context, string, string) (*clientv3.PutResponse, error)
+type etcdClientFactory func() (*clientv3.Client, error)
 
 func main() {
 	cfg, err := configFromEnvironment()
@@ -105,13 +108,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	client, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{cfg.endpoint},
-		DialTimeout: min(10*time.Second, cfg.timeout),
-		TLS:         tlsConfig,
-		Username:    cfg.username,
-		Password:    cfg.password,
-	})
+	clientFactory := func() (*clientv3.Client, error) { return newEtcdClient(cfg, tlsConfig) }
+	client, err := clientFactory()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -119,7 +117,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
-	if err := run(ctx, client, cfg); err != nil {
+	if err := run(ctx, client, cfg, clientFactory); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -141,6 +139,19 @@ func configFromEnvironment() (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	slowConsumers := 0
+	if slowConsumer {
+		slowConsumers = 1
+	}
+	if os.Getenv("SLOW_CONSUMERS") != "" {
+		if !slowConsumer {
+			return config{}, errors.New("SLOW_CONSUMERS requires SLOW_CONSUMER=true")
+		}
+		slowConsumers, err = positiveInt("SLOW_CONSUMERS", maximumSlowConsumers)
+		if err != nil {
+			return config{}, err
+		}
+	}
 	requireOutcomes, err := strictBool("REQUIRE_SLOW_CONSUMER_OUTCOMES")
 	if err != nil {
 		return config{}, err
@@ -159,12 +170,9 @@ func configFromEnvironment() (config, error) {
 	if expectedOutcome == slowConsumerExpectedDropped && (!slowConsumer || !requireOutcomes) {
 		return config{}, errors.New("SLOW_CONSUMER_EXPECTED_OUTCOME=dropped requires SLOW_CONSUMER=true and REQUIRE_SLOW_CONSUMER_OUTCOMES=true")
 	}
-	observers := int64(watchers)
-	if slowConsumer {
-		observers++
-	}
+	observers := int64(watchers + slowConsumers)
 	if observers*int64(events) > maximumWatchObservations {
-		return config{}, fmt.Errorf("(WATCHERS+slow-consumer)*EVENTS must not exceed %d", maximumWatchObservations)
+		return config{}, fmt.Errorf("(WATCHERS+SLOW_CONSUMERS)*EVENTS must not exceed %d", maximumWatchObservations)
 	}
 	timeoutSeconds, err := positiveInt("TIMEOUT_SECONDS", int(^uint(0)>>1))
 	if err != nil {
@@ -216,7 +224,7 @@ func configFromEnvironment() (config, error) {
 		timeout:        time.Duration(timeoutSeconds) * time.Second,
 		cleanupTimeout: time.Duration(cleanupTimeoutSeconds) * time.Second,
 		writeInterval:  writeInterval, writeConcurrency: writeConcurrency, runID: runID, cleanupOnly: cleanupOnly,
-		slowConsumer: slowConsumer, requireSlowConsumerOutcomes: requireOutcomes,
+		slowConsumer: slowConsumer, slowConsumers: slowConsumers, requireSlowConsumerOutcomes: requireOutcomes,
 		slowConsumerExpectedOutcome: expectedOutcome, infoEndpoint: infoEndpoint,
 		caFile: os.Getenv("ETCD_CA_FILE"), certFile: certFile, keyFile: keyFile,
 		tlsServerName: os.Getenv("ETCD_TLS_SERVER_NAME"), username: username, password: password,
@@ -271,7 +279,25 @@ func loadTLSConfig(cfg config) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-func run(ctx context.Context, client *clientv3.Client, cfg config) (retErr error) {
+// newEtcdClient clones the already-loaded TLS configuration so every raw slow
+// consumer owns an independent gRPC connection without reopening credential
+// paths. This is required for /dev/fd process substitutions, which may only be
+// consumed once and must never be copied to persistent files.
+func newEtcdClient(cfg config, tlsConfig *tls.Config) (*clientv3.Client, error) {
+	var clientTLS *tls.Config
+	if tlsConfig != nil {
+		clientTLS = tlsConfig.Clone()
+	}
+	return clientv3.New(clientv3.Config{
+		Endpoints:   []string{cfg.endpoint},
+		DialTimeout: min(10*time.Second, cfg.timeout),
+		TLS:         clientTLS,
+		Username:    cfg.username,
+		Password:    cfg.password,
+	})
+}
+
+func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory etcdClientFactory) (retErr error) {
 	prefix := "/registry/watch-soak/" + cfg.runID + "/"
 	if cfg.cleanupOnly {
 		// Recovery mode deliberately does not claim a non-empty prefix through the
@@ -333,18 +359,32 @@ func run(ctx context.Context, client *clientv3.Client, cfg config) (retErr error
 			return fmt.Errorf("read baseline slow-consumer outcomes: %w", err)
 		}
 	}
-	var slow *rawSlowWatch
-	if cfg.slowConsumer {
+	slows := make([]*rawSlowWatch, 0, cfg.slowConsumers)
+	if cfg.slowConsumers > 0 {
+		if clientFactory == nil {
+			return errors.New("raw slow consumers require an etcd client factory")
+		}
 		if err := requireDirectLeader(ctx, client, cfg.endpoint); err != nil {
 			return err
 		}
-		slow, err = startRawSlowWatch(watchCtx, client, prefix, startRevision, cfg.events)
-		if err != nil {
-			return fmt.Errorf("start raw slow-consumer watch: %w", err)
+		for id := 0; id < cfg.slowConsumers; id++ {
+			rawClient, clientErr := clientFactory()
+			if clientErr != nil {
+				return fmt.Errorf("create raw slow-consumer client %d: %w", id, clientErr)
+			}
+			defer rawClient.Close()
+			if err := requireDirectLeader(ctx, rawClient, cfg.endpoint); err != nil {
+				return fmt.Errorf("confirm direct leader for raw slow-consumer client %d: %w", id, err)
+			}
+			slow, startErr := startRawSlowWatch(watchCtx, rawClient, prefix, startRevision, cfg.events)
+			if startErr != nil {
+				return fmt.Errorf("start raw slow-consumer watch %d: %w", id, startErr)
+			}
+			defer slow.close()
+			slows = append(slows, slow)
 		}
-		defer slow.close()
 		if err := requireDirectLeader(ctx, client, cfg.endpoint); err != nil {
-			return fmt.Errorf("confirm direct leader after raw watch Created: %w", err)
+			return fmt.Errorf("confirm direct leader after %d raw watch Created responses: %w", len(slows), err)
 		}
 	}
 
@@ -361,18 +401,14 @@ func run(ctx context.Context, client *clientv3.Client, cfg config) (retErr error
 		// mode the catch-up goroutine can only discover that its next revision
 		// was evicted after the raw watcher drains enough of that full channel,
 		// so the drop itself belongs to the completion barrier below.
-		if err := waitForExpectedSlowConsumerPressure(ctx, metricsReader, baseline, cfg.slowConsumerExpectedOutcome); err != nil {
+		if err := waitForExpectedSlowConsumerPressure(
+			ctx, metricsReader, baseline, cfg.slowConsumerExpectedOutcome, cfg.slowConsumers,
+		); err != nil {
 			return err
 		}
 	}
-	if slow != nil {
-		slowEvents, slowErr := slow.consume()
-		if slowErr != nil {
-			return fmt.Errorf("raw slow-consumer watcher: %w", slowErr)
-		}
-		if err := validateObservedEvents(slowEvents, writtenEvents); err != nil {
-			return fmt.Errorf("raw slow-consumer watcher: %w", err)
-		}
+	if err := consumeRawSlowWatches(slows, writtenEvents); err != nil {
+		return err
 	}
 
 	for count := 0; count < cfg.watchers; count++ {
@@ -389,13 +425,15 @@ func run(ctx context.Context, client *clientv3.Client, cfg config) (retErr error
 		}
 	}
 	if cfg.requireSlowConsumerOutcomes {
-		if err := waitForExpectedSlowConsumerCompletion(ctx, metricsReader, baseline, cfg.slowConsumerExpectedOutcome); err != nil {
+		if err := waitForExpectedSlowConsumerCompletion(
+			ctx, metricsReader, baseline, cfg.slowConsumerExpectedOutcome, cfg.slowConsumers,
+		); err != nil {
 			return err
 		}
 	}
 	cancelWatches()
-	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d prefix=%s write_interval=%s write_concurrency=%d\n",
-		cfg.watchers, cfg.slowConsumer, cfg.slowConsumerExpectedOutcome, cfg.requireSlowConsumerOutcomes, cfg.events, writtenEvents[0].revision,
+	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d prefix=%s write_interval=%s write_concurrency=%d\n",
+		cfg.watchers, cfg.slowConsumer, cfg.slowConsumers, cfg.slowConsumerExpectedOutcome, cfg.requireSlowConsumerOutcomes, cfg.events, writtenEvents[0].revision,
 		writtenEvents[len(writtenEvents)-1].revision, prefix, cfg.writeInterval, cfg.writeConcurrency)
 	return nil
 }

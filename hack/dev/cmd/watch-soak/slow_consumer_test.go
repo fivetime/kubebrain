@@ -48,7 +48,21 @@ type scriptedRawWatchStream struct {
 	responses []*etcdserverpb.WatchResponse
 }
 
+type blockingRawWatchStream struct {
+	grpc.ClientStream
+	done <-chan struct{}
+}
+
+func (stream *blockingRawWatchStream) Send(*etcdserverpb.WatchRequest) error { return nil }
+func (stream *blockingRawWatchStream) CloseSend() error                      { return nil }
+
+func (stream *blockingRawWatchStream) Recv() (*etcdserverpb.WatchResponse, error) {
+	<-stream.done
+	return nil, context.Canceled
+}
+
 func (stream *scriptedRawWatchStream) Send(*etcdserverpb.WatchRequest) error { return nil }
+func (stream *scriptedRawWatchStream) CloseSend() error                      { return nil }
 
 func (stream *scriptedRawWatchStream) Recv() (*etcdserverpb.WatchResponse, error) {
 	if len(stream.responses) == 0 {
@@ -83,6 +97,50 @@ func TestRawSlowWatchConsumesExactEventsAcrossProgressAndBatches(t *testing.T) {
 	observations, err := watch.consume()
 	require.NoError(t, err)
 	require.Equal(t, []eventObservation{{index: 0, revision: 7}, {index: 1, revision: 8}, {index: 2, revision: 9}}, observations)
+}
+
+func TestMultipleRawSlowWatchesConsumeAndValidateConcurrently(t *testing.T) {
+	prefix := "/registry/watch-soak/multiple-slow/"
+	written := []eventObservation{{index: 0, revision: 7}, {index: 1, revision: 8}}
+	events := func() []*etcdserverpb.WatchResponse {
+		return []*etcdserverpb.WatchResponse{
+			rawResponse(6),
+			rawResponse(8,
+				&mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte(expectedKey(prefix, 0)), Value: []byte(expectedValue(0)), CreateRevision: 7, ModRevision: 7, Version: 1}},
+				&mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte(expectedKey(prefix, 1)), Value: []byte(expectedValue(1)), CreateRevision: 8, ModRevision: 8, Version: 1}},
+			),
+		}
+	}
+	watches := []*rawSlowWatch{
+		{stream: &scriptedRawWatchStream{responses: events()}, prefix: prefix, eventCount: 2, clusterID: 7, memberID: 9},
+		{stream: &scriptedRawWatchStream{responses: events()}, prefix: prefix, eventCount: 2, clusterID: 7, memberID: 9},
+		{stream: &scriptedRawWatchStream{responses: events()}, prefix: prefix, eventCount: 2, clusterID: 7, memberID: 9},
+	}
+	require.NoError(t, consumeRawSlowWatches(watches, written))
+}
+
+func TestMultipleRawSlowWatchesCancelAndJoinPeersAfterFailure(t *testing.T) {
+	done := make(chan struct{})
+	watches := []*rawSlowWatch{
+		{
+			stream: &scriptedRawWatchStream{responses: []*etcdserverpb.WatchResponse{{
+				Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 10, Revision: 8}, WatchId: slowConsumerWatchID,
+			}}},
+			prefix: "/registry/watch-soak/failing-slow/", eventCount: 1, clusterID: 7, memberID: 9,
+		},
+		{
+			stream: &blockingRawWatchStream{done: done}, cancel: func() { close(done) },
+			prefix: "/registry/watch-soak/failing-slow/", eventCount: 1, clusterID: 7, memberID: 9,
+		},
+	}
+	err := consumeRawSlowWatches(watches, []eventObservation{{index: 0, revision: 8}})
+	require.ErrorContains(t, err, "raw slow-consumer watcher 0")
+	require.ErrorContains(t, err, "identity mismatch")
+	select {
+	case <-done:
+	default:
+		t.Fatal("peer raw watcher was not canceled before join returned")
+	}
 }
 
 func TestRawSlowWatchRejectsIdentityDriftAndDuplicateCreated(t *testing.T) {
@@ -192,31 +250,31 @@ func TestExpectedWatchOutcomesDistinguishRingRecoveryAndEviction(t *testing.T) {
 		generation: watchGenerationOutcomes{retry: 4, recovered: 5, compacted: 6, failed: 7},
 	}
 
-	recoveredEntered, err := expectedWatchOutcomes(baseline, slowConsumerExpectedRecovered, false)
+	recoveredEntered, err := expectedWatchOutcomes(baseline, slowConsumerExpectedRecovered, 3, false)
 	require.NoError(t, err)
 	require.Equal(t, watchOutcomes{
-		slow:       slowConsumerOutcomes{catchUp: 4, recovered: 2, dropped: 1},
+		slow:       slowConsumerOutcomes{catchUp: 6, recovered: 2, dropped: 1},
 		generation: baseline.generation,
 	}, recoveredEntered)
-	recoveredComplete, err := expectedWatchOutcomes(baseline, slowConsumerExpectedRecovered, true)
+	recoveredComplete, err := expectedWatchOutcomes(baseline, slowConsumerExpectedRecovered, 3, true)
 	require.NoError(t, err)
 	require.Equal(t, watchOutcomes{
-		slow:       slowConsumerOutcomes{catchUp: 4, recovered: 3, dropped: 1},
+		slow:       slowConsumerOutcomes{catchUp: 6, recovered: 5, dropped: 1},
 		generation: baseline.generation,
 	}, recoveredComplete)
 
-	droppedEntered, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, false)
+	droppedEntered, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, 3, false)
 	require.NoError(t, err)
 	require.Equal(t, watchOutcomes{
-		slow:       slowConsumerOutcomes{catchUp: 4, recovered: 2, dropped: 1},
+		slow:       slowConsumerOutcomes{catchUp: 6, recovered: 2, dropped: 1},
 		generation: baseline.generation,
 	}, droppedEntered)
-	droppedComplete, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, true)
+	droppedComplete, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, 3, true)
 	require.NoError(t, err)
 	require.Equal(t, watchOutcomes{
-		slow: slowConsumerOutcomes{catchUp: 4, recovered: 2, dropped: 2},
+		slow: slowConsumerOutcomes{catchUp: 6, recovered: 2, dropped: 4},
 		generation: watchGenerationOutcomes{
-			retry: 4, recovered: 6, compacted: 6, failed: 7,
+			retry: 4, recovered: 8, compacted: 6, failed: 7,
 		},
 	}, droppedComplete)
 
@@ -224,8 +282,10 @@ func TestExpectedWatchOutcomesDistinguishRingRecoveryAndEviction(t *testing.T) {
 	compacted.generation.compacted++
 	require.True(t, watchOutcomesExceeded(compacted, droppedComplete),
 		"a compacted terminal must fail an oracle expecting transparent generation recovery")
-	_, err = expectedWatchOutcomes(baseline, "unknown", true)
+	_, err = expectedWatchOutcomes(baseline, "unknown", 3, true)
 	require.ErrorContains(t, err, "unsupported")
+	_, err = expectedWatchOutcomes(baseline, slowConsumerExpectedRecovered, 0, true)
+	require.ErrorContains(t, err, "positive consumer count")
 }
 
 func TestDroppedOutcomeWaitsForExactGenerationRecovery(t *testing.T) {
@@ -244,17 +304,17 @@ func TestDroppedOutcomeWaitsForExactGenerationRecovery(t *testing.T) {
 	defer reader.close()
 
 	require.NoError(t, waitForExpectedSlowConsumerPressure(
-		context.Background(), reader, baseline, slowConsumerExpectedDropped,
+		context.Background(), reader, baseline, slowConsumerExpectedDropped, 1,
 	))
 	body.Store(metricsTextWithGeneration(4, 2, 2, 4, 6, 6, 7))
 	require.NoError(t, waitForExpectedSlowConsumerCompletion(
-		context.Background(), reader, baseline, slowConsumerExpectedDropped,
+		context.Background(), reader, baseline, slowConsumerExpectedDropped, 1,
 	))
 
 	body.Store(metricsTextWithGeneration(4, 2, 2, 4, 6, 7, 7))
 	current, err := reader.fetch(context.Background())
 	require.NoError(t, err)
-	expected, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, true)
+	expected, err := expectedWatchOutcomes(baseline, slowConsumerExpectedDropped, 1, true)
 	require.NoError(t, err)
 	require.True(t, watchOutcomesExceeded(current, expected),
 		"compaction must not satisfy the transparent recovery oracle")

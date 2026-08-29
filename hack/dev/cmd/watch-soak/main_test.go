@@ -45,6 +45,7 @@ func setValidEnvironment(t *testing.T) {
 	t.Setenv("RUN_ID", "watch-soak-test")
 	t.Setenv("CLEANUP_ONLY", "false")
 	t.Setenv("SLOW_CONSUMER", "false")
+	t.Setenv("SLOW_CONSUMERS", "")
 	t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "false")
 	t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "recovered")
 	t.Setenv("INFO_ENDPOINT", "")
@@ -61,6 +62,7 @@ func TestConfigFromEnvironment(t *testing.T) {
 	require.Equal(t, 1, cfg.writeConcurrency)
 	require.False(t, cfg.cleanupOnly)
 	require.False(t, cfg.slowConsumer)
+	require.Zero(t, cfg.slowConsumers)
 	require.Equal(t, slowConsumerExpectedRecovered, cfg.slowConsumerExpectedOutcome)
 }
 
@@ -74,7 +76,7 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 		"observation memory bound": {mutate: func(t *testing.T) {
 			t.Setenv("WATCHERS", "10000")
 			t.Setenv("EVENTS", "2001")
-		}, want: "(WATCHERS+slow-consumer)*EVENTS must not exceed"},
+		}, want: "(WATCHERS+SLOW_CONSUMERS)*EVENTS must not exceed"},
 		"negative interval": {mutate: func(t *testing.T) { t.Setenv("WRITE_INTERVAL", "-1s") }, want: "WRITE_INTERVAL must be"},
 		"zero write concurrency": {mutate: func(t *testing.T) {
 			t.Setenv("WRITE_CONCURRENCY", "0")
@@ -87,6 +89,17 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 		"partial TLS identity":      {mutate: func(t *testing.T) { t.Setenv("ETCD_CERT_FILE", "client.crt") }, want: "must be set together"},
 		"partial password identity": {mutate: func(t *testing.T) { t.Setenv("ETCD_USERNAME", "root") }, want: "must be set together"},
 		"invalid slow flag":         {mutate: func(t *testing.T) { t.Setenv("SLOW_CONSUMER", "1") }, want: "SLOW_CONSUMER must be"},
+		"slow count without safety flag": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMERS", "2")
+		}, want: "SLOW_CONSUMERS requires SLOW_CONSUMER=true"},
+		"noncanonical slow count": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER", "true")
+			t.Setenv("SLOW_CONSUMERS", "02")
+		}, want: "SLOW_CONSUMERS must be"},
+		"excessive slow count": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER", "true")
+			t.Setenv("SLOW_CONSUMERS", "1001")
+		}, want: "SLOW_CONSUMERS must be"},
 		"invalid expected outcome": {mutate: func(t *testing.T) {
 			t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "drop")
 		}, want: "must be recovered or dropped"},
@@ -133,10 +146,26 @@ func TestConfigSlowConsumerCountsTowardObservationBound(t *testing.T) {
 	cfg, err := configFromEnvironment()
 	require.NoError(t, err)
 	require.True(t, cfg.slowConsumer)
+	require.Equal(t, 1, cfg.slowConsumers)
 
 	t.Setenv("WATCHERS", "2")
 	_, err = configFromEnvironment()
-	require.ErrorContains(t, err, "(WATCHERS+slow-consumer)*EVENTS")
+	require.ErrorContains(t, err, "(WATCHERS+SLOW_CONSUMERS)*EVENTS")
+}
+
+func TestConfigMultipleSlowConsumersCountTowardObservationBound(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("WATCHERS", "1")
+	t.Setenv("EVENTS", "5000000")
+	t.Setenv("SLOW_CONSUMER", "true")
+	t.Setenv("SLOW_CONSUMERS", "3")
+	cfg, err := configFromEnvironment()
+	require.NoError(t, err)
+	require.Equal(t, 3, cfg.slowConsumers)
+
+	t.Setenv("SLOW_CONSUMERS", "4")
+	_, err = configFromEnvironment()
+	require.ErrorContains(t, err, "(WATCHERS+SLOW_CONSUMERS)*EVENTS")
 }
 
 func TestConfigAllowsExplicitDroppedSlowConsumerOutcome(t *testing.T) {
@@ -270,6 +299,8 @@ func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *test
 	require.Contains(t, text, `CLEANUP_ONLY="${CLEANUP_ONLY:-false}"`)
 	require.Contains(t, text, `CLEANUP_ONLY="$CLEANUP_ONLY"`)
 	require.Contains(t, text, `SLOW_CONSUMER="${SLOW_CONSUMER:-false}"`)
+	require.Contains(t, text, `SLOW_CONSUMERS="${SLOW_CONSUMERS:-}"`)
+	require.Contains(t, text, `SLOW_CONSUMERS="$SLOW_CONSUMERS"`)
 	require.Contains(t, text, `REQUIRE_SLOW_CONSUMER_OUTCOMES="${REQUIRE_SLOW_CONSUMER_OUTCOMES:-false}"`)
 	require.Contains(t, text, `SLOW_CONSUMER_EXPECTED_OUTCOME="${SLOW_CONSUMER_EXPECTED_OUTCOME:-recovered}"`)
 	require.Contains(t, text, `SLOW_CONSUMER_EXPECTED_OUTCOME="$SLOW_CONSUMER_EXPECTED_OUTCOME"`)

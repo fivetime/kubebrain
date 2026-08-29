@@ -28,6 +28,7 @@ const slowConsumerWatchID int64 = 1
 
 type rawSlowWatch struct {
 	stream     etcdserverpb.Watch_WatchClient
+	cancel     context.CancelFunc
 	prefix     string
 	eventCount int
 	clusterID  uint64
@@ -57,11 +58,14 @@ func validateDirectLeaderStatus(status *clientv3.StatusResponse) error {
 }
 
 func startRawSlowWatch(ctx context.Context, client *clientv3.Client, prefix string, startRevision int64, eventCount int) (*rawSlowWatch, error) {
-	stream, err := etcdserverpb.NewWatchClient(client.ActiveConnection()).Watch(ctx)
+	streamCtx, cancel := context.WithCancel(ctx)
+	stream, err := etcdserverpb.NewWatchClient(client.ActiveConnection()).Watch(streamCtx)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	closeOnError := func(err error) (*rawSlowWatch, error) {
+		cancel()
 		_ = stream.CloseSend()
 		return nil, err
 	}
@@ -87,21 +91,63 @@ func startRawSlowWatch(ctx context.Context, client *clientv3.Client, prefix stri
 		return closeOnError(fmt.Errorf("invalid raw watch Created response: %+v", created))
 	}
 	return &rawSlowWatch{
-		stream: stream, prefix: prefix, eventCount: eventCount,
+		stream: stream, cancel: cancel, prefix: prefix, eventCount: eventCount,
 		clusterID: created.Header.ClusterId, memberID: created.Header.MemberId,
 	}, nil
 }
 
 func (watch *rawSlowWatch) close() {
-	if watch != nil && watch.stream != nil {
+	if watch == nil {
+		return
+	}
+	if watch.cancel != nil {
+		watch.cancel()
+	}
+	if watch.stream != nil {
 		_ = watch.stream.CloseSend()
 	}
 }
 
-// consume begins only after every write and (when requested) the exact expected
-// catch_up/recovered-or-dropped pressure checkpoint has been observed. Until
-// this call the application performs no Recv, so HTTP/2 flow control propagates
-// real backpressure into the server send loop.
+type rawSlowWatchResult struct {
+	id  int
+	err error
+}
+
+// consumeRawSlowWatches releases every independently connected raw watcher at
+// the same barrier. The first failure cancels all peer streams, but the helper
+// still joins every goroutine before returning so no credential-bearing client
+// or Recv remains live beyond the run lifecycle.
+func consumeRawSlowWatches(watches []*rawSlowWatch, written []eventObservation) error {
+	if len(watches) == 0 {
+		return nil
+	}
+	results := make(chan rawSlowWatchResult, len(watches))
+	for id, watch := range watches {
+		go func() {
+			observed, err := watch.consume()
+			if err == nil {
+				err = validateObservedEvents(observed, written)
+			}
+			results <- rawSlowWatchResult{id: id, err: err}
+		}()
+	}
+	var firstErr error
+	for range watches {
+		result := <-results
+		if result.err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("raw slow-consumer watcher %d: %w", result.id, result.err)
+			for _, watch := range watches {
+				watch.close()
+			}
+		}
+	}
+	return firstErr
+}
+
+// consume begins only after every write and (when requested) the exact catch_up
+// pressure checkpoint has been observed. Until this call the application
+// performs no Recv, so HTTP/2 flow control propagates real backpressure into
+// the server send loop.
 func (watch *rawSlowWatch) consume() ([]eventObservation, error) {
 	observations := make([]eventObservation, 0, watch.eventCount)
 	for len(observations) < watch.eventCount {
