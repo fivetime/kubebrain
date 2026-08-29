@@ -798,7 +798,10 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		return fmt.Errorf("backend preflight: %w", err)
 	}
 	publicDialCount := &successfulTCPDialCounter{timeout: cfg.dialTimeout}
-	client, err := clientv3.New(cfg.kubeBrainClientConfigWithDialCounter(cfg.endpoint, tlsConfig, publicDialCount))
+	publicRPCAttempts := newRPCAttemptRecorder(publicRPCAttemptRingCapacity, time.Now)
+	publicClientConfig := cfg.kubeBrainClientConfigWithDialCounter(cfg.endpoint, tlsConfig, publicDialCount)
+	publicClientConfig.DialOptions = append(publicClientConfig.DialOptions, grpc.WithStatsHandler(publicRPCAttempts))
+	client, err := clientv3.New(publicClientConfig)
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
@@ -1517,6 +1520,10 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			lastPDCheck = time.Now()
 		}
 		started := time.Now()
+		publicRPCAttempts.reset()
+		publicAttemptEvidence := func(ended time.Time) string {
+			return publicRPCAttempts.formatEvidence(started, ended, publicRPCAttemptOutputLimit)
+		}
 		value := strconv.Itoa(i)
 		deadline := started.Add(cfg.commandTimeout)
 		var putRevision int64
@@ -1540,7 +1547,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 				}
 			}
 			if time.Now().After(deadline) {
-				return fmt.Errorf("iteration=%d put unresolved before deadline: put=%v get=%v", i, putErr, getErr)
+				ended := time.Now()
+				return fmt.Errorf("iteration=%d put unresolved before deadline: put=%v get=%v grpc_state=%s successful_tcp_dials=%d public_rpc_attempts=%s", i, putErr, getErr, client.ActiveConnection().GetState(), publicDialCount.count.Load(), publicAttemptEvidence(ended))
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -1563,7 +1571,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			}
 			lastRevision = max(lastRevision, watchRevision)
 		case <-time.After(cfg.commandTimeout):
-			return fmt.Errorf("iteration=%d watch timed out", i)
+			ended := time.Now()
+			return fmt.Errorf("iteration=%d watch timed out (put=%s grpc_state=%s successful_tcp_dials=%d public_rpc_attempts=%s)", i, putLatency, client.ActiveConnection().GetState(), publicDialCount.count.Load(), publicAttemptEvidence(ended))
 		}
 		watchResumeLatency := watchReceived.Sub(putResolved)
 		if watchResumeLatency > maxWatchResumeLatency {
@@ -1574,7 +1583,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			maxLatency = latency
 		}
 		if latency > cfg.maxLatency {
-			return fmt.Errorf("iteration=%d Put-to-Watch latency %s exceeds %s (put=%s watch_after_put=%s grpc_state=%s successful_tcp_dials=%d)", i, latency, cfg.maxLatency, putLatency, watchResumeLatency, client.ActiveConnection().GetState(), publicDialCount.count.Load())
+			return fmt.Errorf("iteration=%d Put-to-Watch latency %s exceeds %s (put=%s watch_after_put=%s grpc_state=%s successful_tcp_dials=%d public_rpc_attempts=%s)", i, latency, cfg.maxLatency, putLatency, watchResumeLatency, client.ActiveConnection().GetState(), publicDialCount.count.Load(), publicAttemptEvidence(watchReceived))
 		}
 
 		directRemaining := time.Until(started.Add(cfg.maxDirectLatency))
