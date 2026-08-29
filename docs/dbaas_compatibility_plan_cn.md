@@ -64929,6 +64929,32 @@ restart 仍出现 5.421 秒 Put，说明该修改关闭了一个确定性等待�
 响应丢失协调与容器调度叠加的尾部已完全关闭；下一轮应继续从失败请求的服务端接收时间、forward attempt generation 和客户端 subconn
 选择三侧关联证据定位剩余长尾，而不是放宽 5 秒门限。
 
+### A5596：created 前重新授权 pending Watch generation
+
+提交 `2e8b208be99f641f61d8706e7d2c63075394dbbf` 把 A5595 的 created acknowledgement 证明继续收紧：本地
+Watch generation 已由后端创建但仍处于 pending 时，如果 auth revision 变化，必须在 created 发布前重新鉴权。撤权后的旧 generation
+不能凭创建时证明跨过新的授权边界。新增回归覆盖 pending generation 的重新授权、拒绝和安全发布；697 项 production inventory
+`169/193/176/159` 及提交后四片全部 GREEN，不改变 Watch 的公开正常路径。
+
+### A5597--A5598：Snapshot 临时制品不再争用在线后端 I/O
+
+对照官方 etcd backend snapshot 可直接复制已存在 bbolt 的实现，KubeBrain 必须从独立 TiKV/PD 的 MVCC history 在线重建完整 bbolt；
+因此它有官方实现不存在的临时制品 I/O 放大风险。A5597 `c656f24e097a8632b8a73b8d813ffdaca9f89f0f` 将每批 builder
+事务改为 bbolt `NoSync` bulk load，并把生产 `snapshot-tmp` 从节点 `emptyDir` 改为每 Pod 独占的 512Gi generic ephemeral PVC。
+A5598 `2d9fbd0a8778a65e02d02a5f3f0e63960bf51d55` 删除 Finish 的全文件 `DB.Sync`，并要求专用
+`kubebrain-snapshot-workspace` StorageClass；缺少该 StorageClass 时调度 fail closed，禁止回退到与 TiKV/PD 共享的节点 root disk。
+
+这不为临时 bbolt 声明断电持久性：服务端首个 response 前 unlink，RPC 只从同进程打开 fd 发送，客户端仅在收到 terminal SHA-256
+frame 后接受；任何进程、节点或卷故障都会使本次 RPC 失败并从头重建。最终 artifact 仍通过官方 Status/Restore、历史/auth/lease/
+membership 等既有门禁。生产容量仍按 retained history 而非 live quota 规划；512Gi 只对应当前 400Gi logical quota 加余量。
+
+A5597 upgrade 在普通磁盘 **900/900 GREEN**，其 same-version restart 随后因 Put 5.634 秒导致 Put-to-Watch 5.643 秒 **RED**。
+A5598 upgrade 同样在普通磁盘 **900/900 GREEN**，第一次 restart 又因 PD leader API 超过 1 秒 **RED**；两次失败都保留为共享 I/O
+域不可接受的证据。开发 Kind 以 8Gi Memory 卷仅模拟 16Mi fixture 的独立 I/O 域后，A5598 连续三次 restart 真正形成
+**900/900 GREEN ×3**：最大公共延迟 2617/2539/2501ms，TSO 59/7/64ms，Region 9/8/7ms；每轮均有 Watch
+`900/900x3`、Snapshot 1、public lease restart 0 和全零 cleanup。该开发替代物不把生产 512Gi PVC 改写为 tmpfs；发布合同仍要求
+动态制备、容量足够且与在线后端隔离的 StorageClass。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

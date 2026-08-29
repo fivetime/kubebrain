@@ -8794,3 +8794,48 @@ A5520→A5521 upgrade **900/900 GREEN**，Watch 900、lease alive，最大业务
 2391/52/12ms，revision `kubebrain-5747bc48c7 -> kubebrain-7554c99d78`。最终 StatefulSet UID
 `817bc005-a4d1-4d57-9aab-de93e0874054`，三 Pod 3/3 Ready、restart 0、精确 runtime digest 和 revision 一致，近 10 分钟日志无
 panic/fatal/error。首次尾延迟 RED 与第二次证据参数 RED 均不由最终双轮 GREEN 覆盖。
+
+## 近期增量证据：A5596--A5598
+
+本文较早的逐候选流水记录停在 A5521；以下只补记已经由当前仓库、不可变镜像和独立 TiKV/PD 实测直接证明的
+A5596--A5598，不用推测性文字补写中间候选。
+
+### A5596：pending Watch generation 在发布前重新鉴权
+
+提交 `2e8b208be99f641f61d8706e7d2c63075394dbbf` 修复 Watch create 已由后端接受、但 created acknowledgement
+尚未安全发布时 auth revision 变化的窗口。每个 pending local generation 在发布 created 前重新取得授权证明；若权限已撤销，旧 generation
+不会越过新 auth revision 成为可观察 Watch。代码提交前 697 项 production inventory 为 `169/193/176/159`，提交后四片全部通过。
+不可变候选完成 OCI descriptor closure、SBOM/provenance、非 root 运行时身份和版本审计；升级门禁为 **900/900 GREEN**。
+
+### A5597--A5598：在线 Snapshot bulk load 与独立 I/O 工作区
+
+Snapshot builder 需要把 TiKV 固定 revision 的完整历史写成官方 bbolt 制品。旧实现每个 batch 都触发同步写，生产清单又把 512Gi
+`emptyDir` 放在节点 root disk；Snapshot 与同节点 PD/TiKV 竞争 I/O。A5597 提交
+`c656f24e097a8632b8a73b8d813ffdaca9f89f0f` 将 builder 改为 bbolt `NoSync` bulk load，并把生产明文/TLS 清单改为
+Pod 独占的 512Gi generic ephemeral PVC。A5598 提交 `2d9fbd0a8778a65e02d02a5f3f0e63960bf51d55` 进一步移除
+Finish 的全文件 durability barrier，并固定 `storageClassName: kubebrain-snapshot-workspace`：平台若没有提供与 TiKV、PD 和节点 root disk
+隔离 I/O 的动态 StorageClass，Pod 必须调度失败，不能无声降级为共享盘。
+
+临时 artifact 没有本地重启恢复合同：它在同进程 RPC 中从打开的 fd 发送，首个 response 前 unlink；只有 terminal SHA-256 frame
+使客户端接受结果。进程、节点或卷失败会中断 RPC，并要求从头重建。因此跳过本地 sync 不改变公开 snapshot 的 checksum/EOF
+完整性合同，也不改变官方 Status/Restore 验证，只消除对不需要的临时文件断电持久性的等待。
+
+A5597 的单元、race、完整 etcd 包、vet、manifest server-side dry-run 通过；697 项提交前 inventory 和提交后四片均 GREEN。
+不可变 OCI index 为 `sha256:5ae846ab475392eb8e27cf74b9c4fc10e3d57969e9f1803f6ccc05fed1155598`，升级门禁在普通磁盘上
+**900/900 GREEN**，但随后同版本 restart 在 iteration 172 因 Put 5.634 秒令 Put-to-Watch 达 5.643 秒而 **RED**；该失败保留，
+不能被升级 GREEN 覆盖。
+
+A5598 的 Snapshot 聚焦、race、完整 etcd 包、vet、manifest dry-run 和 697 项提交前 inventory 全部通过；提交后 shard 0/1/2
+直接 GREEN，shard 3 首次仅因测试外层 6 秒预算在 6.09 秒退出，目标 subtest 10/10 GREEN，随后完整精确 shard 3 重跑 GREEN。
+不可变 OCI index 为 `sha256:378d663cbbf0b6e976608dace1ddc922894eb4ae8741e1a4fa4908914aee2e0c`，Kind runtime wrapper 为
+`sha256:5c7faa61ae761ff70d826477933225aaa08637deec78ee8299a397a0cbab8acd`，78/78 blobs 严格闭包、USER
+`65532:65532`、SBOM/provenance 和运行时版本审计全部通过。A5597→A5598 升级在普通磁盘上 **900/900 GREEN**；第一次普通磁盘
+same-version restart 在 iteration 518 因 PD leader API 超过 1 秒而 **RED**。这不是公共请求 5 秒越界，但证明同节点 root disk
+仍不是可接受的生产 Snapshot 工作区。
+
+开发 Kind 环境没有动态 StorageClass，最终用 8Gi Memory `emptyDir` 仅为 16Mi 测试 fixture 模拟独立 I/O 域；这不是生产容量方案。
+在该隔离域中，A5598 连续三轮 same-version restart 均为 **900/900 GREEN**，revision 依次
+`d86948fd7 -> 7495f469bd -> 678665f5b4 -> d545f6b4`。三轮最大公共延迟分别为 2617/2539/2501ms，
+PD TSO 最大 59/7/64ms，Region 最大 9/8/7ms；每轮均包含 `watch=900`、`direct_watch=900x3`、Snapshot 1、
+public lease restart 0、至少两次 direct TCP dial，以及 keys/users/roles/leases 全零 cleanup。普通磁盘的两次 RED 都保留为容量规划与
+I/O 隔离要求的生产证据，不能由隔离环境三轮 GREEN 抹去。

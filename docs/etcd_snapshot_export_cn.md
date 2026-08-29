@@ -46,10 +46,17 @@ lease freshness 丢失或 epoch 改变才属于 LeaderChanged，两个公开错�
 状态前 fail closed，禁止在残留 buckets/rows 上继续写出跨 attempt 混合 artifact。
 捕获完成后，服务端打开并取得文件大小便立即 unlink 临时 bbolt，再从仍有效的 Linux 文件描述符发送；
 因此从首个 gRPC response 开始，慢客户端、断连或进程崩溃都不会留下包含完整 KV/auth hash 的命名文件。
-生产明文/TLS StatefulSet 在只读 rootfs 外挂载 Pod 独占 `snapshot-tmp` emptyDir，并显式将 `TMPDIR`
-指向该卷；基线 sizeLimit 为 512Gi，对应当前 400Gi logical quota 加 bbolt 余量。保留历史可能明显大于
-当前 live quota，平台必须按实例 retention/历史体量调整临时卷或改用受管 ephemeral PVC，并监控 node
-ephemeral storage；512Gi 不是“任意历史都可导出”的保证。
+生产明文/TLS StatefulSet 在只读 rootfs 外为每个 Pod 申请独占 generic ephemeral PVC，并显式将
+`TMPDIR` 指向该卷。模板要求 `storageClassName: kubebrain-snapshot-workspace`、RWO/Filesystem 与 512Gi；
+平台必须提供动态制备、与 TiKV 及节点 root disk 隔离 I/O 的同名 StorageClass，否则 Pod 应 fail closed，
+不能静默退回共享 `emptyDir`。512Gi 对应当前 400Gi logical quota 加 bbolt 余量，但保留历史可能明显大于
+live quota，仍须按实例 retention/历史体量调整容量并监控 PVC 延迟、吞吐和空间；512Gi 不是“任意历史
+都可导出”的保证。
+builder 以 bbolt `NoSync` 执行逐批 bulk load，且 Finish 不做本地 durability barrier。这不是降低已发布
+snapshot 的完整性：artifact 只在同一进程、同一次 RPC 内从仍打开的文件描述符读取，首个 response 前即
+unlink，客户端只有收到独立 terminal SHA-256 frame 才会接受制品；进程、节点或卷故障会使 RPC 失败并由
+客户端从头重建，不存在从该临时文件恢复或续传的合同。这样避免每批同步及最终全文件 `Sync` 与在线
+TiKV/PD 争用 I/O；独立工作区仍是生产必需条件，`NoSync` 不能把共享节点磁盘变成安全配置。
 follower 转发在线 Snapshot 时也验证 upstream 帧终止契约：最后一个数据库 data frame 把
 `RemainingBytes` 降为 0，随后必须收到独立的 32 字节 SHA-256 frame；leader stream 在 checksum 前 EOF、
 checksum 形状错误或 checksum 后继续发帧均以 gRPC `DataLoss` 失败，不能把截断制品发布成成功 RPC。
