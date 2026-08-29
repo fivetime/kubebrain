@@ -92,6 +92,19 @@ func recordedWatchGenerationRecoveryValues(rec *recordingMetrics, outcome string
 	return values
 }
 
+func recordedWatcherSlowConsumerOutcomeValues(rec *recordingMetrics, outcome string) []interface{} {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var values []interface{}
+	for _, counter := range rec.counters {
+		if counter.name == "watcher_hub.slow_consumer.outcome" && len(counter.tags) == 1 &&
+			counter.tags[0] == metrics.Tag("outcome", outcome) {
+			values = append(values, counter.value)
+		}
+	}
+	return values
+}
+
 func recordedWatchBackendIntegrityValues(rec *recordingMetrics, kind string) []interface{} {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()

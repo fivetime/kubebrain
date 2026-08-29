@@ -263,11 +263,11 @@ func (w *WatcherHub) Stream(ctx context.Context, input chan []*proto.Event) {
 // inline would deadlock. Since Stream is the sole live sender, a sub detached
 // here receives no further fan-out batch; its missed tail is instead replayed
 // from the watch-cache ring by a catch-up goroutine that re-attaches it once
-// level (#34) — dropping it outright would force the consumer to re-list the
-// whole keyspace (O(all-keys) at scale), and at 500k+ objects those re-lists
-// burn enough CPU to make more watchers slow: a vicious circle. Only a
-// subscriber whose backlog has already been evicted from the ring (or a ring
-// reset) is dropped, exactly as before.
+// level (#34). This avoids a durable-history generation reopen in the common
+// case. Only a subscriber whose backlog has already been evicted from the ring
+// (or a ring reset) closes here; the etcd RPC layer then transparently reopens
+// the logical Watch from its first unsent revision, and asks the client to
+// re-list only if that exact revision was compacted.
 func (w *WatcherHub) broadcast(item []*proto.Event) {
 	var slow []chan []*proto.Event
 	skipped := 0
@@ -349,8 +349,9 @@ func (w *WatcherHub) beginCatchUp(sub chan []*proto.Event, missed []*proto.Event
 // broadcast batch it receives carries revisions >= fromRev.
 //
 // Every exit path except the successful re-attach closes sub (this goroutine
-// owns the channel once catch-up begins): the downstream watcher sees a clean
-// close and cancels, exactly like the legacy drop.
+// owns the channel once catch-up begins). That terminates the backend
+// generation, not necessarily the public Watch: the etcd RPC layer normally
+// reopens from durable history and keeps the logical stream alive.
 func (w *WatcherHub) catchUp(sub chan []*proto.Event, st *catchUpState, fromRev uint64) {
 	for {
 		ret := w.ringLookup(fromRev)

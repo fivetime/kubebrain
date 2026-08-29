@@ -720,8 +720,10 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	b.startWorker(func(ctx context.Context) { b.runStorageGC(ctx, config.StorageGCLifetime) })
 
 	// Wire the fan-out hub's ring catch-up to the watch cache: a slow
-	// subscriber replays its missed tail from the ring instead of being
-	// dropped into an O(all-keys) re-list (#34).
+	// subscriber replays its missed tail from the ring. If the tail has already
+	// left the ring, the hub closes only that backend generation; the etcd RPC
+	// layer reopens it from durable history unless the resume revision was
+	// compacted, so ring eviction alone does not force a client re-list (#34).
 	b.watcherHub.ringLookup = b.watchCache.FindEvents
 
 	// write into watch chan, trigger by create/ update/ delete method in storage interface

@@ -1648,6 +1648,10 @@ watchLoop:
 		case result, ok := <-ch:
 			if !ok {
 				klog.InfoS("[watch stream] watch channel closed", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key))
+				// A local generation may close because its subscriber fell beyond
+				// the bounded hub ring. Treat that as an internal generation
+				// rollover: reopen from the first revision whose Send was not
+				// confirmed. Only a compacted resume point becomes a public cancel.
 				_, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
 				roleTransition := localGeneration || leadingFresh
 				if ctx.Err() == nil && roleTransition && resumeGeneration() {

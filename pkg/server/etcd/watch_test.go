@@ -43,8 +43,10 @@ import (
 	gproto "google.golang.org/protobuf/proto"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
+	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
@@ -2092,6 +2094,120 @@ func TestFreshLeaderReopensLocalWatchWithoutPeerProxy(t *testing.T) {
 
 	cancel()
 	close(secondCh)
+	<-done
+}
+
+// TestSlowLocalWatchBeyondRingReopensFromDurableHistory pins the complete
+// client-visible contract behind the backend hub's "dropped" outcome. The hub
+// closes one overloaded backend generation after its missed tail leaves the
+// bounded ring, but a fresh leader must transparently reopen that logical Watch
+// at the first revision not successfully sent and replay the durable history.
+// In particular, ring eviction is not itself a public cancellation or a reason
+// for an O(all-keys) client re-list; only compaction of the resume revision is.
+func TestSlowLocalWatchBeyondRingReopensFromDurableHistory(t *testing.T) {
+	rec := &recordingMetrics{}
+	kv := memkv.NewKvStorage()
+	rawBackend := backend.NewBackend(kv, backend.Config{
+		Identity:                "slow-watch-ring-peer",
+		EnableEtcdCompatibility: true,
+		WatchCacheSize:          4,
+		WatchFanoutBuffer:       1,
+	}, rec)
+	server := New(rawBackend, rec, testPeerService{
+		isLeader: true,
+		epochFn:  func() (uint64, bool) { return 7, true },
+	})
+	defer func() {
+		require.NoError(t, server.Close())
+		closer, ok := rawBackend.(interface{ Close() error })
+		require.True(t, ok)
+		require.NoError(t, closer.Close())
+	}()
+
+	const totalEvents = 112 // > result buffer (100) + hub buffer (1) + ring (4)
+	key := func(i int) []byte { return []byte(fmt.Sprintf("/registry/watch/ring/%03d", i)) }
+	first, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key(0), Value: []byte("0")})
+	require.NoError(t, err)
+	firstRevision := uint64(first.GetHeader().GetRevision())
+	require.Eventually(t, func() bool {
+		return server.backend.GetPublishedRevision() >= firstRevision
+	}, 5*time.Second, time.Millisecond, "seed event must enter the watch cache")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &blockingFirstSendWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: ctx},
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	const watchPrefix = "/registry/watch/ring/"
+	wt := &watch{
+		start:     watchPrefix,
+		end:       "/registry/watch/ring0",
+		syncedRev: firstRevision - 1,
+		sourceRev: firstRevision - 1,
+	}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: wt}, metricCli: rec,
+	}
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+			Key: []byte(watchPrefix), RangeEnd: []byte("/registry/watch/ring0"),
+			StartRevision: int64(firstRevision),
+		})
+	}()
+	<-stream.started // the seed event is blocked at the public Send boundary
+
+	for i := 1; i < totalEvents; i++ {
+		response, putErr := server.Put(context.Background(), &etcdserverpb.PutRequest{
+			Key: key(i), Value: []byte(fmt.Sprintf("%d", i)),
+		})
+		require.NoError(t, putErr)
+		revision := uint64(response.GetHeader().GetRevision())
+		require.Equal(t, firstRevision+uint64(i), revision)
+		// Do not issue the next write until this one has been broadcast. This
+		// makes every mutation a distinct fan-out batch and deterministically
+		// fills the downstream buffers instead of letting the collector coalesce.
+		require.Eventually(t, func() bool {
+			return server.backend.GetPublishedRevision() >= revision
+		}, 5*time.Second, time.Millisecond, "revision %d must be fanned out", revision)
+	}
+
+	close(stream.release)
+	require.Eventually(t, func() bool {
+		return len(recordedCounterValues(rec, "drop.slow.watcher")) == 1
+	}, 5*time.Second, time.Millisecond, "the real hub backlog must leave the four-event ring")
+	require.Eventually(t, func() bool {
+		count := 0
+		for _, response := range stream.snapshot() {
+			count += len(response.GetEvents())
+		}
+		return count == totalEvents
+	}, 10*time.Second, time.Millisecond, "the reopened generation must replay every durable event")
+
+	responses := stream.snapshot()
+	revisions := make([]uint64, 0, totalEvents)
+	for _, response := range responses {
+		require.False(t, response.GetCanceled(), "ring eviction must stay internal to the logical Watch")
+		for _, event := range response.GetEvents() {
+			revisions = append(revisions, uint64(event.GetKv().GetModRevision()))
+		}
+	}
+	require.Len(t, revisions, totalEvents)
+	for i, revision := range revisions {
+		require.Equal(t, firstRevision+uint64(i), revision,
+			"durable generation reopen must be gap-free and duplicate-free")
+	}
+	require.Equal(t, []interface{}{int64(0), 1},
+		recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRecovered))
+	require.Equal(t, []interface{}{int64(0), 1},
+		recordedWatcherSlowConsumerOutcomeValues(rec, "dropped"))
+
+	cancel()
 	<-done
 }
 
