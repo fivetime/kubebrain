@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -4118,7 +4119,7 @@ func TestRewrittenFromNowWatchPreservesPublishedProgressFloor(t *testing.T) {
 		Key:            []byte("/registry/watch/from-now"),
 		StartRevision:  int64(published) + 1,
 		ProgressNotify: true,
-	}, 0, false, true, false)
+	}, 0, false, true, false, nil, nil)
 
 	// The rewritten watch is caught up through published, and must remain
 	// immediately progress-eligible as an original from-now request.
@@ -4377,6 +4378,107 @@ func TestFollowerWatchRetriesClosedGenerationBeforeAuthoritativeCreate(t *testin
 
 	cancel()
 	require.Error(t, <-done)
+}
+
+func TestFollowerPendingAuthoritativeCreateReauthorizesAfterBecomingLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	proxyResults := make(chan etcdproxy.WatchResult)
+	localResults := make(chan etcdproxy.WatchResult, 1)
+	localCalled := make(chan uint64, 1)
+	server.backend = &roleSwitchWatchBackend{
+		BackendShim: server.backend,
+		local:       localResults,
+		called:      localCalled,
+	}
+	var leading atomic.Bool
+	proxyOpened := make(chan struct{})
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn: func() (uint64, bool) {
+			if leading.Load() {
+				return 7, true
+			}
+			return 6, false
+		},
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			close(proxyOpened)
+			return proxyResults, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &controllableWatchServer{
+		ctx:  ctx,
+		recv: make(chan *etcdserverpb.WatchRequest, 1),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/role-switch-before-created")},
+	}}
+
+	select {
+	case <-proxyOpened:
+	case <-time.After(time.Second):
+		t.Fatal("follower did not open authoritative proxy generation")
+	}
+	require.Empty(t, stream.snapshot())
+	leading.Store(true)
+	close(proxyResults)
+	var revision uint64
+	select {
+	case revision = <-localCalled:
+	case <-time.After(time.Second):
+		t.Fatal("pending create did not reopen on the new local leader")
+	}
+	localResults <- etcdproxy.WatchResult{Revision: revision, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT,
+		Kv: &mvccpb.KeyValue{
+			Key: []byte("/role-switch-before-created"), Value: []byte("v"),
+			CreateRevision: int64(revision), ModRevision: int64(revision), Version: 1,
+		},
+	}}}
+
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
+	responses := stream.snapshot()
+	require.True(t, responses[0].Created)
+	require.False(t, responses[0].Canceled)
+	require.Len(t, responses[1].Events, 1)
+	require.False(t, responses[1].Canceled)
+
+	cancel()
+	close(localResults)
+	require.Error(t, <-done)
+}
+
+func TestPendingLocalWatchReauthenticationUsesOriginalAuthorizationInterval(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	manager, tokens := bootstrapAuthForToken(t, server)
+	server.tokens = tokens
+	ctx := context.Background()
+	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "alice", Password: "secret",
+	}))
+	require.NoError(t, manager.roleAdd(ctx, "reader"))
+	require.NoError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{
+		PermType: authpb.READ, Key: []byte("/allowed"),
+	}))
+	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"))
+	token, err := tokens.authenticate(ctx, "alice", "secret")
+	require.NoError(t, err)
+	authenticated := metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, token))
+	w := &watcher{grpcServer: server}
+
+	require.NoError(t, w.authorizePendingLocalWatch(authenticated, &watch{
+		authoritativeAuthKey: []byte("/allowed"),
+	}))
+	require.ErrorIs(t, w.authorizePendingLocalWatch(authenticated, &watch{
+		authoritativeAuthKey: []byte("/denied"),
+	}), rpctypes.ErrPermissionDenied)
 }
 
 func TestFollowerWatchPublishesCreatedOnlyAfterAuthoritativeAcknowledgement(t *testing.T) {

@@ -199,13 +199,15 @@ type watch struct {
 	// awaitAuthoritativeCreate is set only for a public Watch first received by
 	// a follower. Its first proxy generation must prove that the leader accepted
 	// the caller's credentials before this replica exposes Created.
-	awaitAuthoritativeCreate bool
-	createdRevision          uint64
-	authoritativeControl     *etcdserverpb.WatchResponse
-	authoritativeReady       chan struct{}
-	authoritativeDone        chan error
-	authoritativeSent        chan struct{}
-	cancelPending            atomic.Bool
+	awaitAuthoritativeCreate  bool
+	authoritativeAuthKey      []byte
+	authoritativeAuthRangeEnd []byte
+	createdRevision           uint64
+	authoritativeControl      *etcdserverpb.WatchResponse
+	authoritativeReady        chan struct{}
+	authoritativeDone         chan error
+	authoritativeSent         chan struct{}
+	cancelPending             atomic.Bool
 }
 
 type periodicProgressState struct {
@@ -691,7 +693,8 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				r.StartRevision = int64(w.responseRevision()) + 1
 			}
 
-			w.start(watchCtx, r, uint64(progressStartRevision), quotaReserved, false, proxyInitialAuthorization)
+			w.start(watchCtx, r, uint64(progressStartRevision), quotaReserved, false,
+				proxyInitialAuthorization, authKey, authRangeEnd)
 		} else if cancelRequest := msg.GetCancelRequest(); cancelRequest != nil {
 			// Match etcd's stream-local cancellation: removing an existing watch
 			// does not require a leader read barrier. Its terminal response reports
@@ -789,10 +792,10 @@ func watchAuthCancelReason(err error) string {
 }
 
 func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
-	w.start(c, r, uint64(r.StartRevision), false, true, false)
+	w.start(c, r, uint64(r.StartRevision), false, true, false, nil, nil)
 }
 
-func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, progressStartRevision uint64, quotaReserved, waitForCreated, awaitAuthoritativeCreate bool) {
+func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, progressStartRevision uint64, quotaReserved, waitForCreated, awaitAuthoritativeCreate bool, authoritativeAuthKey, authoritativeAuthRangeEnd []byte) {
 	w.Lock()
 	ctx, cancel := context.WithCancel(c)
 	releaseReservedQuota := func() {
@@ -868,6 +871,10 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		progressStartRevision:    progressStartRevision,
 		syncedRev:                initSyncedRev,
 		awaitAuthoritativeCreate: awaitAuthoritativeCreate,
+	}
+	if awaitAuthoritativeCreate {
+		generation.authoritativeAuthKey = authoritativeAuthKey
+		generation.authoritativeAuthRangeEnd = authoritativeAuthRangeEnd
 	}
 	w.watches[id] = generation
 	watchCount := len(w.watches)
@@ -1494,10 +1501,18 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 		// published no event has been delivered, so a closed generation is a
 		// topology transition, not a terminal logical-watch result. Reopen from
 		// the same explicit revision and keep the authorization boundary hidden.
-		// If this replica became the fresh leader meanwhile, its already-checked
-		// local authorization is authoritative and the local event channel must
-		// remain unread for the normal delivery loop below.
-		authoritativeCreateAccepted := localGeneration
+		// If this replica became the fresh leader meanwhile, reauthenticate the
+		// original public credentials against its now-authoritative auth state
+		// before synthesizing Created. The local backend does not emit Created, so
+		// its event channel must remain unread for the normal delivery loop below.
+		authoritativeCreateAccepted := false
+		if localGeneration {
+			if localAuthErr := w.authorizePendingLocalWatch(ctx, wt); localAuthErr != nil {
+				w.rejectAuthoritativeCreate(id, wt, localAuthErr, 0)
+				return
+			}
+			authoritativeCreateAccepted = true
+		}
 		for !authoritativeCreateAccepted {
 			select {
 			case result, ok := <-ch:
@@ -1517,6 +1532,13 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 					}
 					cancelGeneration = nextCancelGeneration
 					klog.InfoS("[watch stream] pending authoritative create resumed", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "rev", watchRevision, "local", localGeneration)
+					if localGeneration {
+						if localAuthErr := w.authorizePendingLocalWatch(ctx, wt); localAuthErr != nil {
+							w.rejectAuthoritativeCreate(id, wt, localAuthErr, 0)
+							return
+						}
+						authoritativeCreateAccepted = true
+					}
 					continue
 				}
 				if result.Err != nil {
@@ -1546,6 +1568,8 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 			return
 		}
 		wt.awaitAuthoritativeCreate = false
+		wt.authoritativeAuthKey = nil
+		wt.authoritativeAuthRangeEnd = nil
 	}
 
 	var sendErr error
@@ -1928,6 +1952,14 @@ func emitWatchSendLoopProgressDuration(metricCli metrics.Metrics, duration time.
 // the node's current role. The local backend and follower proxy expose the same
 // WatchResult stream, so callers can resume between them at an explicit revision.
 var errNilWatchGeneration = errors.New("watch backend returned a nil generation channel")
+
+func (w *watcher) authorizePendingLocalWatch(ctx context.Context, wt *watch) error {
+	caller, err := w.grpcServer.authCallerFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	return caller.require(wt.authoritativeAuthKey, wt.authoritativeAuthRangeEnd, authpb.READ)
+}
 
 func (w *watcher) openWatchChannel(ctx context.Context, r *etcdserverpb.WatchCreateRequest, backendPrefix string, revision uint64) (<-chan etcdproxy.WatchResult, bool, uint64, error) {
 	epoch, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
