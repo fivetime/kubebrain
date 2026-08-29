@@ -64999,6 +64999,34 @@ restart 0、至少两个 direct TCP dial 和零 cleanup。最大公共延迟 `22
 `10/12/6ms`。终态 KubeBrain/PD/TiKV 均 3/3 Ready，KubeBrain restart 0、A5600 runtime 一致、三个 workspace 与全部临时对象
 为零。两条 rollout RED 仍作为 Service/subconn/EndpointSlice/direct tail 未完全关闭的兼容性缺口保留。
 
+### A5601：把核心 unary follower forwarding 拆成可归因阶段
+
+对照 `/root/etcd` 后确认，上游本地 Raft 路径没有 KubeBrain follower→leader proxy 层；总请求 latency 不能回答剩余 rollout
+尾部是在等 leader client、执行 peer RPC、drain replay，还是根本没有经过 follower。提交
+`09ae966a9b8484a2c102316aedc36f07ea9bd419` 为 Range/Txn/Put/DeleteRange 增加固定低基数
+`peer.proxy.unary.duration_seconds{rpc,stage,outcome}` 与 `peer.proxy.unary.retry{rpc,reason="drain"}`。每进程预注册
+`4×2×6=48` histogram child 和 4 retry child；stage 固定 `wait_ready|forward`，outcome 固定六类，不引入 leader/endpoint/key/user。
+原构造 API、两次上限 drain replay 与客户端错误语义不变。
+
+确定性旧代码 compile RED、六类结果、完整域和 drain→success 分段回归均通过；697 项 inventory 为
+`169/193/176/159`，提交后四片 `246.009/435.369/291.985/497.495s` 全绿。OCI index
+`sha256:287aa86fe86944c821bca12bab945ae698e3e3d94af48ac8a7316c97e5981b0f`、runtime
+`sha256:f369c16483320461a75171b0ecc052e66661b825a29b3323b4095aa490a77c5b` 完成 78/78 闭包、SBOM/provenance、非 root 与运行版本审计。
+
+前两次 A5600→A5601 候选门禁分别在 iteration 314 因 Watch timeout、iteration 176 因 Put-to-Watch
+`6.026826801s`（Put `6.02054374s`、Watch `6.283061ms`、gRPC READY）真实 RED，均完整回滚且 cleanup 为零。第二次回滚期间抓到的
+两个 follower 都有完整 48/48/4 域、drain/transport 样本而无 Put proxy 样本；该证据只排除慢 Put 经过这两个实例，不能排除第三实例
+或 Service/client subconn。随后候选升级和两轮同版本 restart 连续 **900/900 GREEN ×3**，revision
+`684f7c575b -> 7cbdd574 -> 77dc8bd48d -> f8c489ff6`，最大公共延迟 `3158/1979/2545ms`，TSO
+`68/101/21ms`、Region `14/9/8ms`；每轮 Watch `900/900x3`、Snapshot 1、public lease restart 0、至少两个 direct TCP dial 和
+零 cleanup。
+
+最终三个 Pod 各自再次证明完整 48 count/48 sum/4 retry 域，只有固定全局 `cluster="default"` 标签。现场把一条 DeleteRange
+2.781 秒归到 forward（wait-ready 18 微秒），并观察到 Put wait-ready transport 8 次合计 1.606 秒、forward drained 1 次和安全
+retry 1 次。终态 KubeBrain/PD/TiKV 均 3/3 Ready/restart 0、runtime 一致、workspace 与 A5601 测试前缀为零。状态仍是：代理分段
+可观测性已落地，公共 5 秒尾部未关闭；下一轮应把 client subconn、EndpointSlice、目标 Pod 接收时间与本指标按同一请求关联，不能
+用最终 GREEN 覆盖两条 RED。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

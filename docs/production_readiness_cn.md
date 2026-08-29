@@ -8919,3 +8919,47 @@ RangeStream `227/164/243`、Snapshot 均 1、retry/partial `7/2`、`14/0`、`19/
 三个 Pod 精确运行 A5600 runtime，workspace 均为 0；主 PD/TiKV 各 3/3 Ready、restart 0，A5600 probe/owner 对象为零。
 连续 GREEN 证明本候选在本次窗口通过门禁，但两条未放宽阈值的滚动 RED 仍证明公共 Service/direct endpoint 尾部尚未彻底关闭，
 后续应继续关联客户端 subconn、EndpointSlice 传播与服务端 forward attempt，而不是把连续 GREEN 改写成尾延迟已消失。
+
+### A5601：核心 KV unary follower proxy 分阶段低基数指标
+
+上游 `/root/etcd` 在本地 Raft apply 路径中没有 KubeBrain 这层 follower→leader client，现有公共
+`write.latency` 只能看到请求总耗时，无法区分等待可用 leader 连接、实际 peer RPC、drain replay 与错误类别。提交
+`09ae966a9b8484a2c102316aedc36f07ea9bd419` 保留原 `NewEtcdProxy` API，并由 PeerService 把既有 metrics backend 注入新构造器；
+Range/Txn/Put/DeleteRange 统一经过原有两次上限 drain-retry helper。新增
+`peer.proxy.unary.duration_seconds{rpc,stage,outcome}` 固定 `4×2×6` 域，以及
+`peer.proxy.unary.retry{rpc,reason="drain"}` 四个零值 child。阶段只分 `wait_ready|forward`，结果只分
+`success|caller|drained|topology|transport|application`；不携带 leader 地址、endpoint、key 或 user。请求返回、重试上限和错误合同均未改变。
+
+确定性 RED 先证明旧代码不存在 metrics-aware 构造器与固定域。GREEN 覆盖一次 drain 后切到 successor 的两次 wait-ready、一次
+drained forward、一次成功 forward 和精确 retry，以及六类 outcome 与完整零值注册。聚焦普通 20 轮/race 10 轮、完整 proxy
+普通/race、完整 `pkg/server/service/...`、`pkg/server/...`、vet 与 diff check 全绿；697 项提交前 inventory 为
+`169/193/176/159`，提交后四片墙钟 `246.009/435.369/291.985/497.495s`，全部 GREEN。
+
+不可变候选 `kubebrain:a5601-09ae966a` 内嵌版本 `0.0.0-09ae966a9b84` 和完整 SHA，archive size
+914,370,048 bytes、SHA-256 `d051b166d814f61fe6b853f91df9968a96792e9eaa6e2e0881b794fa19bbc61d`；OCI index
+`sha256:287aa86fe86944c821bca12bab945ae698e3e3d94af48ac8a7316c97e5981b0f`、platform
+`sha256:289107397153bb6f6ec93c5c44b10353a62de1a738f09bf198722f257d5fb95c`、Kind runtime
+`sha256:f369c16483320461a75171b0ecc052e66661b825a29b3323b4095aa490a77c5b`。78/78 descriptor/blob 均可达且
+size/hash 匹配，无 orphan；SBOM 为 2,592 packages/8,096 relationships，provenance 为 3 materials。
+`linux/amd64`、71 diff IDs、USER `65532:65532`、入口、OCI labels 与运行时 version/storage/build time、kubectl v1.36.2 全部通过。
+
+前两次候选门禁均保留为真实 RED 并由 runner 完整回滚 A5600。第一次 iteration 314 为 Watch timeout；第二次 iteration 176 为
+Put-to-Watch `6.026826801s`，其中 Put `6.02054374s`、watch-after-put `6.283061ms`、gRPC state READY、public TCP dial 1，未放宽
+5 秒阈值。第二次回滚窗口成功抓取的两个 A5601 follower 都有完整 `48 count + 48 sum + 4 retry` 域；其中一个记录 Range
+forward drained 1、wait-ready transport 1、drain retry 1。两者都没有 Put proxy 样本，因此只可排除该慢 Put 经过这两个已抓取
+follower，不能排除当时正在替换、抓取失败的第三实例或公共 Service/client subconn 路径。
+
+第三次 A5600→A5601 候选升级及随后两次 A5601 restart 真正连续 **900/900 GREEN ×3**，revision
+`684f7c575b -> 7cbdd574 -> 77dc8bd48d -> f8c489ff6`。三轮 Lease public/direct 为 `133/365`、`94/250`、`96/255`，
+public restart 均 0；direct replacement/recovery 为 `16/14563ms`、`17/14717ms`、`18/16071ms`，RangeStream
+`232/164/168`、Snapshot 均 1、retry/partial `13/2`、`9/0`、`6/0`。最大总/Put/Watch/direct/TSO/Region 分别为
+`3158/3016/142/21844/68/14ms`、`1979/1961/201/20693/101/9ms`、
+`2545/2535/126/21214/21/8ms`，每轮 fixture cleanup 全零。
+
+最终 revision 三实例再次逐一审计为完整 48/48/4 域，除 metrics backend 固定 `cluster="default"` 外没有额外标签。
+一个 follower 的 DeleteRange 样本将 2.781 秒定位到 `forward/success`，其 `wait_ready/success` 仅 18 微秒；另一个 follower
+记录 Put `wait_ready/transport` 8 次合计 1.606 秒、`forward/drained` 1 次 0.971 毫秒和 drain retry 1 次，证明阶段与安全 replay
+均可在线观察。终态 generation/observed generation 268，KubeBrain 3/3 Ready/restart 0 且 runtime 一致，三个 workspace 为 0；
+主 PD/TiKV 各 3/3 Ready/restart 0，auth enabled/revision 5567，所有 A5601 rollout/restart 前缀与临时探针对象为零。
+连续 GREEN 证明候选通过本窗口，不抵消前两条 RED；尤其 6.021 秒公共 Put 仍要求继续关联 client subconn、EndpointSlice、目标 Pod
+接收时间与本指标，不能把新增可观测性写成尾延迟已经修复。
