@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"unicode/utf8"
 
@@ -153,20 +154,44 @@ const fallbackSubRevisionBase int64 = 1 << 32
 const maxLeaseTTLSeconds int64 = 9000000000
 
 func NewBuilder(path string, state State) (*Builder, error) {
+	builder, _, err := newBuilder(path, state, false)
+	return builder, err
+}
+
+// NewUnlinkedBuilder creates an online-only snapshot artifact whose readable
+// descriptor survives after its directory entry is removed. The unlink occurs
+// before any lease, auth, alarm, or MVCC metadata is written, so a process crash
+// during a long bulk load cannot leave sensitive named files on a persistent
+// workspace. The caller owns artifact and must close it after Builder.Close.
+func NewUnlinkedBuilder(path string, state State) (*Builder, *os.File, error) {
+	return newBuilder(path, state, true)
+}
+
+func newBuilder(path string, state State, unlink bool) (*Builder, *os.File, error) {
 	if state.Revision <= 0 {
-		return nil, invalidSnapshotMetadataf("snapshot revision must be positive: %d", state.Revision)
+		return nil, nil, invalidSnapshotMetadataf("snapshot revision must be positive: %d", state.Revision)
 	}
 	if state.Revision == math.MaxInt64 {
-		return nil, invalidSnapshotMetadataf("snapshot revision leaves no room for next etcd write: %d", state.Revision)
+		return nil, nil, invalidSnapshotMetadataf("snapshot revision leaves no room for next etcd write: %d", state.Revision)
 	}
-	// This database is a private, restartable bulk-load artifact until Finish
-	// returns. Syncing both its data and meta pages for every streamed history
-	// batch adds no recoverability, but can make an online Snapshot contend with
-	// TiKV foreground writes through shared storage. Finish performs the single
-	// durability boundary required before the artifact can be published.
+	// This database is a private, same-process bulk-load artifact. Syncing its
+	// data and meta pages adds no recoverability contract, but can make an online
+	// Snapshot contend with TiKV foreground writes through shared storage. The
+	// public stream checksum, rather than local restart durability, is the
+	// artifact publication boundary.
 	db, err := bolt.Open(path, 0o600, &bolt.Options{NoSync: true})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	var artifact *os.File
+	if unlink {
+		artifact, err = os.Open(path)
+		if err != nil {
+			return nil, nil, errors.Join(err, db.Close())
+		}
+		if err = os.Remove(path); err != nil {
+			return nil, nil, errors.Join(err, artifact.Close(), db.Close())
+		}
 	}
 	restoredRevision := int64(1) // upstream MVCC restore starts at revision 1
 	builder := &Builder{
@@ -177,9 +202,13 @@ func NewBuilder(path string, state State) (*Builder, error) {
 		builder.compactRevision = state.CompactRevision
 	}
 	if err = db.Update(func(tx *bolt.Tx) error { return writeMetadata(tx, state) }); err != nil {
-		return nil, errors.Join(err, db.Close())
+		var artifactCloseErr error
+		if artifact != nil {
+			artifactCloseErr = artifact.Close()
+		}
+		return nil, nil, errors.Join(err, artifactCloseErr, db.Close())
 	}
-	return builder, nil
+	return builder, artifact, nil
 }
 
 func writeMetadata(tx *bolt.Tx, state State) error {

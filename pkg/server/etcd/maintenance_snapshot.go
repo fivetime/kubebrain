@@ -34,6 +34,8 @@ var errSnapshotHistoricalLeaseUnknown = errors.New("snapshot cannot determine le
 
 var errSnapshotHistoryStreamProtocol = errors.New("snapshot history stream protocol violation")
 
+type snapshotBuilderFactory func(string, production.State) (*production.Builder, error)
+
 func snapshotHistoryStreamProtocolErrorf(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errSnapshotHistoryStreamProtocol, fmt.Sprintf(format, args...))
 }
@@ -43,11 +45,15 @@ func snapshotHistoryStreamProtocolErrorf(format string, args ...any) error {
 // Each failed attempt owns a fresh bbolt file; no partially captured backend can
 // be sent to the client.
 func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
+	return s.buildSnapshotWithBuilder(ctx, path, production.NewBuilder)
+}
+
+func (s *RPCServer) buildSnapshotWithBuilder(ctx context.Context, path string, newBuilder snapshotBuilderFactory) error {
 	for attempt := 0; ; attempt++ {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("reset etcd snapshot capture path: %w", err)
 		}
-		err := s.buildSnapshotOnce(ctx, path)
+		err := s.buildSnapshotOnceWithBuilder(ctx, path, newBuilder)
 		if !errors.Is(err, errSnapshotChanged) && !errors.Is(err, errSnapshotLeaderChanged) {
 			return err
 		}
@@ -66,6 +72,12 @@ func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
 }
 
 func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr error) {
+	return s.buildSnapshotOnceWithBuilder(ctx, path, production.NewBuilder)
+}
+
+func (s *RPCServer) buildSnapshotOnceWithBuilder(
+	ctx context.Context, path string, newBuilder snapshotBuilderFactory,
+) (retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	checkpoint, protected := backend.SerializableCheckpointFromContext(ctx)
@@ -171,7 +183,7 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	unlock()
 	locked = false
 
-	builder, err := production.NewBuilder(path, state)
+	builder, err := newBuilder(path, state)
 	if err != nil {
 		return fmt.Errorf("create etcd snapshot backend: %w", err)
 	}
@@ -327,6 +339,39 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	}
 }
 
+func (s *RPCServer) buildUnlinkedSnapshot(ctx context.Context, path string) (artifact *os.File, retErr error) {
+	defer func() {
+		if retErr != nil && artifact != nil {
+			retErr = errors.Join(retErr, artifact.Close())
+			artifact = nil
+		}
+	}()
+	newBuilder := func(path string, state production.State) (*production.Builder, error) {
+		if artifact != nil {
+			if err := artifact.Close(); err != nil {
+				artifact = nil
+				return nil, fmt.Errorf("close superseded etcd snapshot artifact: %w", err)
+			}
+			artifact = nil
+		}
+		builder, nextArtifact, err := production.NewUnlinkedBuilder(path, state)
+		if err != nil {
+			return nil, err
+		}
+		artifact = nextArtifact
+		return builder, nil
+	}
+	if err := s.buildSnapshotWithBuilder(ctx, path, newBuilder); err != nil {
+		retErr = err
+		return
+	}
+	if artifact == nil {
+		retErr = errors.New("snapshot builder returned no readable artifact descriptor")
+		return
+	}
+	return artifact, nil
+}
+
 func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (production.State, map[int64]struct{}, map[string]int64, error) {
 	state := production.State{Revision: revision}
 	auth, err := s.auth.repo.load(ctx)
@@ -431,14 +476,16 @@ func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer)
 	if closeErr := tmp.Close(); closeErr != nil {
 		return closeErr
 	}
-	if err = s.buildSnapshot(stream.Context(), path); err != nil {
-		return err
-	}
-	storageVersion, err := snapshotArtifactStorageVersion(path)
+	artifact, err := s.buildUnlinkedSnapshot(stream.Context(), path)
 	if err != nil {
 		return err
 	}
-	return streamSnapshotFile(path, storageVersion, stream)
+	defer func() { retErr = errors.Join(retErr, artifact.Close()) }()
+	storageVersion, err := snapshotArtifactStorageVersion(snapshotArtifactDescriptorPath(artifact))
+	if err != nil {
+		return err
+	}
+	return streamSnapshotOpenFile(artifact, storageVersion, stream)
 }
 
 var errSnapshotSend = errors.New("maintenance snapshot send failed")
@@ -447,22 +494,33 @@ func snapshotArtifactStorageVersion(path string) (string, error) {
 	return production.ReadStorageVersion(path)
 }
 
+func snapshotArtifactDescriptorPath(artifact *os.File) string {
+	return fmt.Sprintf("/proc/self/fd/%d", artifact.Fd())
+}
+
 func streamSnapshotFile(path, storageVersion string, stream etcdserverpb.Maintenance_SnapshotServer) (retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer func() { retErr = errors.Join(retErr, f.Close()) }()
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
 	// Snapshot artifacts contain the complete keyspace and auth password hashes.
 	// Unlink the name before the first response; the open descriptor remains a
 	// stable readable snapshot on the Linux DBaaS data-plane target, while client
 	// stalls, disconnects, and process crashes cannot leave a named artifact.
 	if err = os.Remove(path); err != nil {
 		return fmt.Errorf("unlink opened etcd snapshot artifact: %w", err)
+	}
+	return streamSnapshotOpenFile(f, storageVersion, stream)
+}
+
+func streamSnapshotOpenFile(f *os.File, storageVersion string, stream etcdserverpb.Maintenance_SnapshotServer) error {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return err
 	}
 	total := info.Size()
 	sent := int64(0)

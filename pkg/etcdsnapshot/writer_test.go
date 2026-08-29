@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -87,6 +89,57 @@ func TestBuilderUsesRestartableBulkLoadWithoutLocalDurabilityBarrier(t *testing.
 		require.Equal(t, []byte("value"), kv.Value)
 		return nil
 	}))
+}
+
+func TestUnlinkedBuilderPublishesOnlyThroughOwnedDescriptor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "online-snapshot.db")
+	builder, artifact, err := NewUnlinkedBuilder(path, State{Revision: 2})
+	require.NoError(t, err)
+	defer artifact.Close()
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+	require.NoError(t, builder.Append([]Record{{
+		Key: []byte("private-key"), Value: []byte("private-value"),
+		CreateRevision: 2, ModRevision: 2, Version: 1,
+	}}))
+	require.NoError(t, builder.Finish())
+	require.NoError(t, builder.Close())
+
+	_, statErr = os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+	_, err = artifact.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+	contents, err := io.ReadAll(artifact)
+	require.NoError(t, err)
+	require.NotEmpty(t, contents)
+	copyPath := filepath.Join(t.TempDir(), "descriptor-copy.db")
+	require.NoError(t, os.WriteFile(copyPath, contents, 0o600))
+	db, err := bolt.Open(copyPath, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		value := tx.Bucket(schema.Key.Name()).Get(revisionBytes(2, fallbackSubRevisionBase))
+		var kv mvccpb.KeyValue
+		require.NoError(t, proto.Unmarshal(value, &kv))
+		require.Equal(t, []byte("private-key"), kv.Key)
+		return nil
+	}))
+}
+
+func TestUnlinkedBuilderMetadataFailureLeavesNoNamedArtifact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid-online-snapshot.db")
+	builder, artifact, err := NewUnlinkedBuilder(path, State{
+		Revision: 2,
+		Leases: []Lease{
+			{ID: 7, GrantedTTL: 30, RemainingTTL: 20},
+			{ID: 7, GrantedTTL: 30, RemainingTTL: 20},
+		},
+	})
+	require.ErrorContains(t, err, "duplicate lease id 7")
+	require.Nil(t, builder)
+	require.Nil(t, artifact)
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func TestWriteBackendRejectsNonPositiveSnapshotRevision(t *testing.T) {

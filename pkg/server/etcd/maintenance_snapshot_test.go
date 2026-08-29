@@ -394,6 +394,18 @@ type pausedSnapshotBackend struct {
 	once    sync.Once
 }
 
+type twoChunkPausedSnapshotBackend struct {
+	BackendShim
+	records []backend.SnapshotHistoryRecord
+	paused  chan struct{}
+	release chan struct{}
+}
+
+type retryOnceChangedSnapshotBackend struct {
+	BackendShim
+	calls atomic.Uint64
+}
+
 type metadataBarrierSnapshotBackend struct {
 	*pausedSnapshotBackend
 	barrierAcquired chan struct{}
@@ -1110,6 +1122,124 @@ func TestMaintenanceSnapshotDoesNotBlockWritesAndKeepsPinnedRevision(t *testing.
 	// but excludes the later key despite allowing that write to complete.
 	require.Contains(t, keys, []byte("snapshot-seed"))
 	require.NotContains(t, keys, []byte("after-snapshot-pin"))
+}
+
+func TestMaintenanceSnapshotHasNoNamedArtifactWhileBulkLoadIsPaused(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	first, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("snapshot-sensitive-first"), Value: []byte("private-one"),
+	})
+	require.NoError(t, err)
+	second, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("snapshot-sensitive-second"), Value: []byte("private-two"),
+	})
+	require.NoError(t, err)
+
+	wrapped := &twoChunkPausedSnapshotBackend{
+		BackendShim: server.backend,
+		records: []backend.SnapshotHistoryRecord{
+			{
+				Key: []byte("snapshot-sensitive-first"), Value: []byte("private-one"),
+				CreateRevision: uint64(first.Header.Revision), ModRevision: uint64(first.Header.Revision),
+				Version: 1, LeaseKnown: true, Current: true,
+			},
+			{
+				Key: []byte("snapshot-sensitive-second"), Value: []byte("private-two"),
+				CreateRevision: uint64(second.Header.Revision), ModRevision: uint64(second.Header.Revision),
+				Version: 1, LeaseKnown: true, Current: true,
+			},
+		},
+		paused:  make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	server.backend = wrapped
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+	done := make(chan error, 1)
+	go func() { done <- server.sendSnapshot(stream) }()
+
+	select {
+	case <-wrapped.paused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not pause after beginning its bulk load")
+	}
+	paths, globErr := filepath.Glob(filepath.Join(tmpDir, ".kubebrain-maintenance-snapshot-*.db"))
+	close(wrapped.release)
+	require.NoError(t, <-done)
+	require.NoError(t, globErr)
+	require.Empty(t, paths,
+		"a container crash during bulk load must not leave a named snapshot containing KV/auth state")
+	require.GreaterOrEqual(t, len(stream.responses), 2)
+}
+
+func (b *twoChunkPausedSnapshotBackend) SnapshotHistoryStreamChan(
+	ctx context.Context, revision uint64,
+) (<-chan backend.SnapshotHistoryChunk, error) {
+	out := make(chan backend.SnapshotHistoryChunk)
+	go func() {
+		defer close(out)
+		for _, record := range b.records {
+			select {
+			case out <- backend.SnapshotHistoryChunk{
+				Revision: revision, Records: []backend.SnapshotHistoryRecord{record},
+			}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		// The unbuffered second send cannot complete until the consumer has
+		// constructed the builder and committed the first sensitive record.
+		close(b.paused)
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case out <- backend.SnapshotHistoryChunk{Revision: revision, Done: true}:
+		case <-ctx.Done():
+		}
+	}()
+	return out, nil
+}
+
+func (b *retryOnceChangedSnapshotBackend) SnapshotHistoryStreamChan(
+	ctx context.Context, revision uint64,
+) (<-chan backend.SnapshotHistoryChunk, error) {
+	if b.calls.Add(1) != 1 {
+		return b.BackendShim.SnapshotHistoryStreamChan(ctx, revision)
+	}
+	out := make(chan backend.SnapshotHistoryChunk, 1)
+	out <- backend.SnapshotHistoryChunk{Revision: revision + 1}
+	close(out)
+	return out, nil
+}
+
+func TestMaintenanceUnlinkedSnapshotReplacesFailedAttemptDescriptor(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("snapshot-retry-seed"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	wrapper := &retryOnceChangedSnapshotBackend{BackendShim: server.backend}
+	server.backend = wrapper
+
+	path := filepath.Join(t.TempDir(), "retry-snapshot.db")
+	artifact, err := server.buildUnlinkedSnapshot(context.Background(), path)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), wrapper.calls.Load())
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+	storageVersion, err := snapshotArtifactStorageVersion(snapshotArtifactDescriptorPath(artifact))
+	require.NoError(t, err)
+	require.Equal(t, etcdsnapshot.StorageVersion, storageVersion)
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+	require.NoError(t, streamSnapshotOpenFile(artifact, storageVersion, stream))
+	require.GreaterOrEqual(t, len(stream.responses), 2)
+	require.NoError(t, artifact.Close())
 }
 
 func TestMaintenanceSnapshotPinsAuthMetadataBeforeReleasingWriteBarrier(t *testing.T) {
