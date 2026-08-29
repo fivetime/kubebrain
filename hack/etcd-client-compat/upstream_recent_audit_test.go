@@ -3762,8 +3762,8 @@ func TestCompatibilityMatrixKeepsIrrecoverableLegacySnapshotBoundaryOpen(t *test
 	require.GreaterOrEqual(t, matrixStart, 0)
 	require.Greater(t, matrixEnd, 0)
 	matrix := plan[matrixStart : matrixStart+matrixEnd]
-	require.Equal(t, 1, strings.Count(matrix, "部分兼容"), "Snapshot must remain the only explicitly partial matrix row")
-	require.Contains(t, matrix, "| Maintenance | Snapshot | 部分兼容")
+	require.Zero(t, strings.Count(matrix, "部分兼容"), "the matrix no longer has an unqualified partial row")
+	require.Contains(t, matrix, "| Maintenance | Snapshot | 兼容核心语义（升级历史有条件）")
 	require.Contains(t, matrix, "含 lease 不可判定的旧历史版本时 snapshot 明确失败")
 
 	sourcePath := filepath.Join("..", "..", "pkg", "server", "etcd", "maintenance_snapshot.go")

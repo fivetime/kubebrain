@@ -1,0 +1,122 @@
+// Copyright 2026 ByteDance and/or its affiliates
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/protobuf/proto"
+)
+
+func setValidEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv("ENDPOINT", "127.0.0.1:3379")
+	t.Setenv("WATCHERS", "25")
+	t.Setenv("EVENTS", "50")
+	t.Setenv("TIMEOUT_SECONDS", "60")
+	t.Setenv("WRITE_INTERVAL", "100ms")
+	t.Setenv("RUN_ID", "watch-soak-test")
+}
+
+func TestConfigFromEnvironment(t *testing.T) {
+	setValidEnvironment(t)
+	cfg, err := configFromEnvironment()
+	require.NoError(t, err)
+	require.Equal(t, 25, cfg.watchers)
+	require.Equal(t, 50, cfg.events)
+	require.Equal(t, "watch-soak-test", cfg.runID)
+}
+
+func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		mutate func(*testing.T)
+		want   string
+	}{
+		"zero watchers": {mutate: func(t *testing.T) { t.Setenv("WATCHERS", "0") }, want: "WATCHERS must be"},
+		"leading zero":  {mutate: func(t *testing.T) { t.Setenv("EVENTS", "050") }, want: "EVENTS must be"},
+		"observation memory bound": {mutate: func(t *testing.T) {
+			t.Setenv("WATCHERS", "10000")
+			t.Setenv("EVENTS", "2001")
+		}, want: "WATCHERS*EVENTS must not exceed"},
+		"negative interval":         {mutate: func(t *testing.T) { t.Setenv("WRITE_INTERVAL", "-1s") }, want: "WRITE_INTERVAL must be"},
+		"unsafe run ID":             {mutate: func(t *testing.T) { t.Setenv("RUN_ID", "../shared") }, want: "RUN_ID must be"},
+		"partial TLS identity":      {mutate: func(t *testing.T) { t.Setenv("ETCD_CERT_FILE", "client.crt") }, want: "must be set together"},
+		"partial password identity": {mutate: func(t *testing.T) { t.Setenv("ETCD_USERNAME", "root") }, want: "must be set together"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setValidEnvironment(t)
+			testCase.mutate(t)
+			_, err := configFromEnvironment()
+			require.ErrorContains(t, err, testCase.want)
+		})
+	}
+}
+
+func TestValidateEventRequiresExactIdentityAndEtcdCreateShape(t *testing.T) {
+	prefix := "/registry/watch-soak/test/"
+	event := &clientv3.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{
+		Key: []byte(expectedKey(prefix, 3)), Value: []byte(expectedValue(3)),
+		CreateRevision: 9, ModRevision: 9, Version: 1,
+	}}
+	require.NoError(t, validateEvent(prefix, 3, event))
+
+	copy := proto.Clone(event.Kv).(*mvccpb.KeyValue)
+	copy.Value = []byte("duplicate-or-wrong")
+	require.ErrorContains(t, validateEvent(prefix, 3, &clientv3.Event{Type: mvccpb.PUT, Kv: copy}), "event 3 mismatch")
+	copy = proto.Clone(event.Kv).(*mvccpb.KeyValue)
+	copy.ModRevision++
+	require.ErrorContains(t, validateEvent(prefix, 3, &clientv3.Event{Type: mvccpb.PUT, Kv: copy}), "event 3 mismatch")
+	require.ErrorContains(t, validateEvent(prefix, 3, &clientv3.Event{Type: mvccpb.DELETE, Kv: event.Kv}), "not a Put")
+}
+
+func TestValidateObservedRevisionsRejectsLossDuplicationAndReordering(t *testing.T) {
+	require.NoError(t, validateObservedRevisions([]int64{7, 9, 12}, []int64{7, 9, 12}))
+	require.ErrorContains(t, validateObservedRevisions([]int64{7, 12}, []int64{7, 9, 12}), "event count mismatch")
+	require.ErrorContains(t, validateObservedRevisions([]int64{7, 7, 12}, []int64{7, 9, 12}), "event 1 revision mismatch")
+	require.ErrorContains(t, validateObservedRevisions([]int64{7, 12, 9}, []int64{7, 9, 12}), "event 1 revision mismatch")
+}
+
+func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join("..", "..", "watch-soak.sh"))
+	require.NoError(t, err)
+	text := string(script)
+	require.Contains(t, text, "ALLOW_MUTATING_WATCH_SOAK=true")
+	require.Contains(t, text, "go run ./hack/dev/cmd/watch-soak")
+	require.NotContains(t, text, "go get")
+	require.NotContains(t, text, "rm -rf")
+	verify, err := os.ReadFile(filepath.Join("..", "..", "verify.sh"))
+	require.NoError(t, err)
+	require.Contains(t, string(verify), "ALLOW_MUTATING_WATCH_SOAK=true")
+}
+
+func TestWrapperRejectsMutationWithoutApprovalBeforeRunningGo(t *testing.T) {
+	script := filepath.Join("..", "..", "watch-soak.sh")
+	command := exec.Command("bash", script)
+	command.Env = append(os.Environ(),
+		"ALLOW_MUTATING_WATCH_SOAK=false",
+		"RUN_ID=unauthorized-watch-soak",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing shared-endpoint watch writes")
+	require.NotContains(t, strings.ToLower(string(output)), "missing required command: go")
+}

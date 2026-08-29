@@ -276,7 +276,10 @@ if [ "$RUN_MEMBERLIST_SYNC_SMOKE" = "true" ]; then
 fi
 
 if [ "$RUN_WATCH_SOAK" = "true" ]; then
-  run_step "watch soak" env ENDPOINT="$ENDPOINT" hack/dev/watch-soak.sh
+  run_step "watch soak" env \
+    ENDPOINT="$ENDPOINT" \
+    ALLOW_MUTATING_WATCH_SOAK=true \
+    hack/dev/watch-soak.sh
 fi
 
 if [ "$RUN_LOAD_SMOKE" = "true" ]; then
