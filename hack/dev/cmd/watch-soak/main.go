@@ -44,7 +44,11 @@ const maximumWatchObservations int64 = 20_000_000
 
 // Match etcd's default --max-txn-ops and stay within KubeBrain's production
 // profile. Every operation is an exact-key Delete, never a broad range delete.
-const cleanupDeleteOpsPerTxn = 128
+const (
+	cleanupDeleteOpsPerTxn   = 128
+	cleanupDeleteConcurrency = 16
+	cleanupListLimit         = cleanupDeleteOpsPerTxn * cleanupDeleteConcurrency
+)
 
 const (
 	slowConsumerExpectedRecovered = "recovered"
@@ -567,29 +571,24 @@ func validateObservedEvents(observed, written []eventObservation) error {
 
 func cleanupPrefix(ctx context.Context, client *clientv3.Client, prefix string) error {
 	for {
-		response, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithKeysOnly(), clientv3.WithLimit(cleanupDeleteOpsPerTxn))
+		response, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithKeysOnly(), clientv3.WithLimit(cleanupListLimit))
 		if err != nil {
 			return fmt.Errorf("list owned watch-soak prefix %q for cleanup: %w", prefix, err)
 		}
 		if len(response.Kvs) == 0 {
 			break
 		}
-		operations, err := cleanupDeleteOperations(prefix, response.Kvs)
-		if err != nil {
+		group, deleteCtx := errgroup.WithContext(ctx)
+		group.SetLimit(cleanupDeleteConcurrency)
+		for start := 0; start < len(response.Kvs); start += cleanupDeleteOpsPerTxn {
+			end := min(start+cleanupDeleteOpsPerTxn, len(response.Kvs))
+			batch := response.Kvs[start:end]
+			group.Go(func() error {
+				return deleteCleanupBatch(deleteCtx, client, prefix, batch)
+			})
+		}
+		if err := group.Wait(); err != nil {
 			return err
-		}
-		transaction, err := client.Txn(ctx).Then(operations...).Commit()
-		if err != nil {
-			return fmt.Errorf("delete owned watch-soak prefix %q batch: %w", prefix, err)
-		}
-		if transaction == nil || transaction.Header == nil || len(transaction.Responses) != len(operations) {
-			return fmt.Errorf("delete owned watch-soak prefix %q returned invalid transaction response", prefix)
-		}
-		for index, operation := range transaction.Responses {
-			deleted := operation.GetResponseDeleteRange()
-			if deleted == nil || deleted.Deleted != 1 {
-				return fmt.Errorf("delete owned watch-soak prefix %q batch operation %d deleted %d keys", prefix, index, deleted.GetDeleted())
-			}
 		}
 	}
 	response, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
@@ -598,6 +597,27 @@ func cleanupPrefix(ctx context.Context, client *clientv3.Client, prefix string) 
 	}
 	if response.Count != 0 {
 		return fmt.Errorf("owned watch-soak prefix %q is not empty after cleanup: count=%d", prefix, response.Count)
+	}
+	return nil
+}
+
+func deleteCleanupBatch(ctx context.Context, client *clientv3.Client, prefix string, kvs []*mvccpb.KeyValue) error {
+	operations, err := cleanupDeleteOperations(prefix, kvs)
+	if err != nil {
+		return err
+	}
+	transaction, err := client.Txn(ctx).Then(operations...).Commit()
+	if err != nil {
+		return fmt.Errorf("delete owned watch-soak prefix %q batch: %w", prefix, err)
+	}
+	if transaction == nil || transaction.Header == nil || len(transaction.Responses) != len(operations) {
+		return fmt.Errorf("delete owned watch-soak prefix %q returned invalid transaction response", prefix)
+	}
+	for index, operation := range transaction.Responses {
+		deleted := operation.GetResponseDeleteRange()
+		if deleted == nil || deleted.Deleted != 1 {
+			return fmt.Errorf("delete owned watch-soak prefix %q batch operation %d deleted %d keys", prefix, index, deleted.GetDeleted())
+		}
 	}
 	return nil
 }
