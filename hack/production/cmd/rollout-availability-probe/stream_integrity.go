@@ -630,7 +630,18 @@ type restoredClusterTopology struct {
 	memberIDs []uint64
 }
 
+func restoredStatusRevisionMatches(observed, required int64, requireExact bool) bool {
+	if observed <= 0 || required <= 0 {
+		return false
+	}
+	if requireExact {
+		return observed == required
+	}
+	return observed >= required
+}
+
 func verifyRestoredClusterTopology(ctx context.Context, client *clientv3.Client, cfg restoredSnapshotConfig, revision int64,
+	requireExactRevision bool,
 ) (restoredClusterTopology, error) {
 	response, err := client.MemberList(ctx)
 	if err != nil {
@@ -676,9 +687,11 @@ func verifyRestoredClusterTopology(ctx context.Context, client *clientv3.Client,
 		}
 		if statusResponse == nil || statusResponse.Header == nil || statusResponse.Header.ClusterId != topology.clusterID ||
 			statusResponse.Header.MemberId != topology.memberIDs[index] || statusResponse.Header.RaftTerm == 0 ||
-			statusResponse.Header.Revision != revision || statusResponse.Leader == 0 || statusResponse.RaftTerm == 0 ||
+			!restoredStatusRevisionMatches(statusResponse.Header.Revision, revision, requireExactRevision) ||
+			statusResponse.Leader == 0 || statusResponse.RaftTerm == 0 ||
 			statusResponse.IsLearner || len(statusResponse.Errors) != 0 {
-			return restoredClusterTopology{}, fmt.Errorf("invalid officially restored etcd member %q status: %+v snapshot_revision=%d", member.name, statusResponse, revision)
+			return restoredClusterTopology{}, fmt.Errorf("invalid officially restored etcd member %q status: %+v required_revision=%d exact_revision=%t",
+				member.name, statusResponse, revision, requireExactRevision)
 		}
 		if _, exists := seenIDs[statusResponse.Leader]; !exists {
 			return restoredClusterTopology{}, fmt.Errorf("officially restored etcd member %q reported unknown leader %x", member.name, statusResponse.Leader)
@@ -1605,7 +1618,7 @@ func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *cli
 			return nil, 0, fmt.Errorf("verify learner-promoted cluster value on member %d: %w", index, err)
 		}
 	}
-	verifiedExpandedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, expandedCfg, promotedPut.Header.Revision)
+	verifiedExpandedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, expandedCfg, promotedPut.Header.Revision, false)
 	if err != nil {
 		return nil, 0, fmt.Errorf("verify learner-promoted officially restored etcd topology: %w", err)
 	}
@@ -1661,7 +1674,7 @@ func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *cli
 			return nil, 0, fmt.Errorf("verify post-learner contraction value on voter %d: %w", index, err)
 		}
 	}
-	contractedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, cfg, contractedPut.Header.Revision)
+	contractedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, cfg, contractedPut.Header.Revision, false)
 	if err != nil {
 		return nil, 0, fmt.Errorf("verify topology after removing promoted learner: %w", err)
 	}
@@ -1774,7 +1787,7 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 			return fmt.Errorf("verify expanded cluster value on member %d: %w", index, err)
 		}
 	}
-	expandedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, expandedCfg, postJoinPut.Header.Revision)
+	expandedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, expandedCfg, postJoinPut.Header.Revision, false)
 	if err != nil {
 		return fmt.Errorf("verify expanded officially restored etcd topology after replication barrier: %w", err)
 	}
@@ -1837,7 +1850,7 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 			return fmt.Errorf("verify contracted cluster value on member %d: %w", index, err)
 		}
 	}
-	contractedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, cfg, postRemovePut.Header.Revision)
+	contractedTopology, err := verifyRestoredClusterTopology(ctx, adminClient, cfg, postRemovePut.Header.Revision, false)
 	if err != nil {
 		return fmt.Errorf("verify contracted officially restored etcd topology after replication barrier: %w", err)
 	}
@@ -1993,7 +2006,7 @@ func verifyRestoredClusterReplicationAndQuorum(ctx context.Context, adminClient 
 	if err := waitForRestoredMemberValue(ctx, directClients[stopped], quorumKey, quorumValue, quorumPut.Header.Revision); err != nil {
 		return fmt.Errorf("verify recovered follower %q caught up to quorum write: %w", cfg.members[stopped].name, err)
 	}
-	recoveredTopology, err := verifyRestoredClusterTopology(ctx, adminClient, cfg, quorumPut.Header.Revision)
+	recoveredTopology, err := verifyRestoredClusterTopology(ctx, adminClient, cfg, quorumPut.Header.Revision, false)
 	if err != nil {
 		return fmt.Errorf("verify recovered officially restored etcd topology: %w", err)
 	}
@@ -2138,7 +2151,7 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			}
 		}
 	}
-	topology, err := verifyRestoredClusterTopology(verifyCtx, client, cfg, revision)
+	topology, err := verifyRestoredClusterTopology(verifyCtx, client, cfg, revision, true)
 	if err != nil {
 		return err
 	}
@@ -2641,6 +2654,9 @@ func runStreamWorker(ctx context.Context, cfg streamWorkerConfig, success *atomi
 }
 
 func retryableStreamError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
 	switch status.Code(err) {
 	case codes.Unavailable, codes.Canceled, codes.DeadlineExceeded:
 		return true

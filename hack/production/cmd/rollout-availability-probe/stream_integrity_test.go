@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -865,6 +866,14 @@ func TestRestoredSnapshotQuotaBytes(t *testing.T) {
 	require.Equal(t, cfg.quotaBackendBytes, embedCfg.QuotaBackendBytes)
 }
 
+func TestRestoredStatusRevisionRequirement(t *testing.T) {
+	require.True(t, restoredStatusRevisionMatches(10, 10, true))
+	require.False(t, restoredStatusRevisionMatches(11, 10, true), "initial restore must not hide post-Snapshot writes")
+	require.True(t, restoredStatusRevisionMatches(11, 10, false), "post-quorum lease expiry may advance MVCC")
+	require.False(t, restoredStatusRevisionMatches(9, 10, false), "post-quorum members must apply the proven write")
+	require.False(t, restoredStatusRevisionMatches(0, 10, false))
+}
+
 func TestValidateRestoredMemberAddResponseRejectsIdentityDrift(t *testing.T) {
 	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
 	require.NoError(t, err)
@@ -1367,6 +1376,26 @@ func TestRunStreamWorkerRetriesWithBackoffAndDiscardsPartialAttempt(t *testing.T
 	require.Equal(t, int64(3), attempts.Load())
 	require.Equal(t, int64(1), success.Load())
 	require.Equal(t, int64(2), counters.retries.Load())
+	require.Equal(t, int64(1), counters.partialRetries.Load())
+}
+
+func TestRunStreamWorkerRetriesWrappedAttemptDeadline(t *testing.T) {
+	var attempts atomic.Int64
+	var success atomic.Int64
+	counters := &streamProbeCounters{}
+	err := runStreamWorker(context.Background(), streamWorkerConfig{
+		interval: time.Millisecond, attemptTimeout: time.Second,
+		retryBackoff: time.Millisecond, maxBackoff: time.Millisecond, successLimit: 1,
+	}, &success, counters, func(context.Context) (bool, error) {
+		if attempts.Add(1) == 1 {
+			return true, fmt.Errorf("restore member readiness: %w", context.DeadlineExceeded)
+		}
+		return false, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), attempts.Load())
+	require.Equal(t, int64(1), success.Load())
+	require.Equal(t, int64(1), counters.retries.Load())
 	require.Equal(t, int64(1), counters.partialRetries.Load())
 }
 
