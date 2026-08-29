@@ -454,10 +454,24 @@ hack/dev/lease-fault-smoke.sh
 ## Watch Soak
 
 ```shell
-hack/dev/watch-soak.sh
+ALLOW_MUTATING_WATCH_SOAK=true hack/dev/watch-soak.sh
 ```
 
-默认会启动 25 条 watcher，对同一个 `/registry/watch-soak/...` 前缀写入 50 个事件，并确认每条 watcher 都收到完整事件数。可以通过 `WATCHERS`、`EVENTS` 和 `TIMEOUT_SECONDS` 调整规模。
+该入口会向目标 endpoint 写数据，因此默认拒绝执行，必须精确设置
+`ALLOW_MUTATING_WATCH_SOAK=true`。默认启动 25 条 watcher，在所有 stream 都返回 Created 后，向本轮唯一的
+`/registry/watch-soak/<RUN_ID>/` 前缀写入 50 个单独 key。每条 watcher 不只校验数量，还逐项校验 PUT 类型、key/value、
+create/mod revision、version、lease，并要求观察到的 revision 序列与每次 Put 的响应 revision 完全相等；丢失、重复和乱序都会失败。
+
+可以通过 `WATCHERS`、`EVENTS`、`TIMEOUT_SECONDS`、`WRITE_INTERVAL` 和 `RUN_ID` 调整规模。`RUN_ID` 必须是本轮唯一的
+小写 DNS label；脚本先以 CountOnly 确认前缀为空，获得本轮 ownership 后才注册独立的 15 秒 cleanup，退出时 Delete Prefix 并再次
+CountOnly 确认归零。`WATCHERS*EVENTS` 上限为 20,000,000 个 revision observation，约束内存中的精确 oracle；例如 25 条 watcher、
+每秒 1 个事件可覆盖九天以上，但 `TIMEOUT_SECONDS` 必须同时覆盖完整写入和观察窗口。共享生产 keyspace 应使用独立租户前缀或专用
+演练集群，不能把 mutation approval 当成隔离措施。
+
+mTLS endpoint 可设置 `ETCD_CA_FILE`、成对的 `ETCD_CERT_FILE`/`ETCD_KEY_FILE`，以及可选的
+`ETCD_TLS_SERVER_NAME`；用户名认证使用成对的 `ETCD_USERNAME`/`ETCD_PASSWORD`。当前独立 TiKV/PD 三副本环境已通过真实 mTLS
+默认规模 25×50（`WRITE_INTERVAL=5ms`），revision `178496..178545`，退出后同一进程 Delete+CountOnly 清理为零。该短跑只证明
+当前精确 oracle 和基础 Watch 路径，不能替代数天级断线、滚动更新和慢消费者 soak。
 
 ## Load Smoke
 

@@ -65097,6 +65097,26 @@ A5608 index/runtime。主 PD/TiKV 各 3/3 Ready/restart 0，A5602--A5608 临时�
 系统回收站、可恢复，OCI archive 保留。A5608 通过本窗口并提供下一次 RED 所需的端到端分段字段，但不能把 A5606/A5607 两条 6 秒级
 RED 改写成尾延迟已经消失。
 
+### A5609：Watch soak 精确事件 oracle 与前缀所有权
+
+提交 `3b3f47c8362b4ec633a2024286946f3ec295d97e` 将 `hack/dev/watch-soak.sh` 从临时目录动态生成旧版 client 程序，改为仓库内
+`hack/dev/cmd/watch-soak`，复用当前固定依赖且不再运行 `go get` 或递归删除临时目录。入口默认拒绝写，只有精确设置
+`ALLOW_MUTATING_WATCH_SOAK=true` 才可执行；`verify.sh` 也只在调用者显式启用 `RUN_WATCH_SOAK=true` 后向子步骤传递授权。
+配置使用 canonical 正整数、非负 duration 和唯一 DNS-label `RUN_ID`，并以 `WATCHERS*EVENTS <= 20,000,000` 约束精确 revision
+oracle 的内存。可选 CA、client certificate/server name 和 username/password 都有成对及加载校验。
+
+runner 先 CountOnly 证明 `/registry/watch-soak/<RUN_ID>/` 为空，之后才获得该前缀 ownership 并安装独立 15 秒 cleanup；结束时
+Delete Prefix 后再次 CountOnly，清理错误与原错误合并。所有 watcher 必须跨过服务端 Created barrier 才开始写入。每个事件必须是
+预期 PUT，且 key/value、create/mod revision、version、lease 精确符合新建 etcd KV；最终每条 watcher 的 revision 数组必须与每次
+Put header 完全相等，因此事件总数相同也不能掩盖丢失、重复或乱序。单元测试覆盖非法/超界配置、事件形状、revision 差异、默认拒绝写
+和 verify 授权链；命令包普通 50 轮、race 20 轮、vet、全部 dev command 普通/race，以及 compat module 全量测试/vet 均通过。
+
+真实独立 TiKV/PD 三副本数据面经已有 KubeBrain mTLS 身份执行 4×20 和默认 25×50 两轮，后者以 5ms 写间隔得到 revision
+`178496..178545`，所有 watcher 精确通过且同进程 Delete+CountOnly 清理为零。宿主机旧 NodePort 无路由在 preflight 超时、Alice 对
+目标前缀无权限在 preflight 返回 PermissionDenied，二者都发生在首写前，分别记录为拓扑与授权拒绝而非产品 RED；没有扩大权限、创建
+临时 Kubernetes 对象或落盘凭据。提交前 `--verify 4` 确认 698 项 inventory 为 `169/193/177/159`；提交后四片 Go 时间
+`258.166/451.738/305.574/514.408s`，全部 GREEN。短跑不关闭矩阵中的 P1：仍需数天级断线、滚动更新和慢消费者 soak。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

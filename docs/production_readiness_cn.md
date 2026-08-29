@@ -9031,3 +9031,20 @@ PD 与 TiKV 各 3/3 Ready、restart 0。A5602--A5608 probe/owner/audit 临时对
 `38a7e619-85e1-412d-b0bb-07b034f15d85` 和 RV `7294322` 双前置条件删除、确认为 NotFound。A5608 展开审计目录已移入回收站、
 可恢复，OCI archive 保留。当前候选通过本次窗口，但 A5606/A5607 两条未放宽阈值的 RED 仍证明公共 Service、client subconn、
 leader 切换和最终 forward 的组合长尾尚未被证明消失；新增 trailer 是下一次失败归因能力，不是“尾延迟已修复”的替代证据。
+
+### A5609：可归属、可清理且可识别丢重乱序的 Watch soak
+
+A5609 `3b3f47c8362b4ec633a2024286946f3ec295d97e` 把直接 etcd Watch soak 固化为仓库内 Go command，并要求
+`ALLOW_MUTATING_WATCH_SOAK=true` 显式授权。runner 对唯一 DNS-label 前缀先 CountOnly；只有空前缀才获得 ownership，随后使用独立
+15 秒 cleanup 执行 Delete Prefix 和 CountOnly 归零。它等待每条 stream 的 Created response 后才写入，并逐事件校验 PUT、确定性
+key/value、新建 KV revision/version/lease 形状；每条 watcher 的 revision 序列必须与 Put response revision 序列完全相等，避免旧版
+“只计总数”让重复事件抵消丢失事件。20,000,000 个 observation 上限将精确 oracle 的 revision 存储约束在约 160 MiB，同时允许
+25 watcher、每秒 1 个事件运行九天以上。mTLS 与 username/password 身份均支持严格配置，脚本不再动态下载 client module 或递归删除
+临时目录。
+
+真实三副本 KubeBrain 加独立 3 PD/3 TiKV 环境通过 4×20 和默认 25×50 mTLS 两轮；默认轮写间隔 5ms、revision
+`178496..178545`，全部 watcher 精确 GREEN，退出时同进程 Delete+CountOnly 为零。旧 NodePort 无路由和 Alice 权限不足均在 preflight
+首写前拒绝，不计产品 RED，也没有扩大权限、创建临时 Kubernetes 对象或写出凭据文件。聚焦普通 50 轮/race 20 轮、全部 dev command
+普通/race、compat module 全量、两侧 vet 均通过；698 项提交前 inventory 为 `169/193/177/159`，提交后四片
+`258.166/451.738/305.574/514.408s` 全绿。该轮证明 oracle 与当前基础 Watch 路径，不代表数天级断线、滚动更新、真实慢消费者和
+故障恢复长稳已经完成；这些仍是发布前 P1 开放项。
