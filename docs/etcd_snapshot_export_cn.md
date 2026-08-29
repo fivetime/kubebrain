@@ -186,3 +186,20 @@ Lease metadata 要求 `0 <= remainingTTL <= grantedTTL`：0 表示没有有效 c
 可出现在刚 grant/renew 的导出点，大于 granted 会非法延长恢复后的租约。显式 lease ID 仍与
 upstream 一样允许负数，只禁止 0。grantedTTL 还不得超过 upstream `MaxLeaseTTL=9,000,000,000`
 秒；官方恢复路径不会替 artifact 重做该上界校验，超界值可能在 expiry 时间运算中溢出。
+
+## 在线 Snapshot 并发准入
+
+官方 etcd 的 `Maintenance.Snapshot` 读取已经存在的 bbolt backend；KubeBrain 则必须从独立 TiKV/PD 的
+固定 revision 历史在线重建完整 bbolt。即使通用 gRPC 并发上限允许更多请求，生产工作区也只按一个接近
+logical quota 的 artifact 加余量规划。因此每个 KubeBrain 实例只允许一个本地在线 Snapshot 生命周期，
+范围从开始捕获一直覆盖到最终 checksum frame 已发送或调用失败；不能只保护 history scan 或 builder。
+
+第二个已经通过鉴权、且最终要在同一实例本地构建的并发请求会立即返回标准 etcd
+`ResourceExhausted: etcdserver: too many requests`（`rpctypes.ErrGRPCRequestTooManyRequests`），不会进入第二次
+metadata/history scan，也不会创建第二个 artifact。鉴权和 leader/proxy 选择发生在准入之前：未认证或非管理员
+调用仍得到原本的 auth 错误，不能通过 busy 状态探测管理员操作；follower 只转发，不占用 follower 的本地 slot，
+最终由执行构建的 leader 统一准入。发送失败、调用取消以及最终 frame 返回后都会释放 slot。
+
+运维必须同时观察 `maintenance.snapshot.active` 与 `maintenance.snapshot.admission_rejected`：前者在本地完整
+生命周期内为 1，空闲时必须为 0；后者记录因本地 slot 忙而拒绝的调用。持续拒绝首先表示调用方并发策略或
+Snapshot 容量/耗时需要处理，不应通过扩大通用 `--max-requests-inflight` 绕过单 artifact 容量合同。

@@ -64972,6 +64972,33 @@ A5598→A5599 upgrade 及连续三轮 A5599 restart 均 **900/900 GREEN**，四�
 public lease restart 0、direct TCP 下界和全零 cleanup。最终 revision `a4657-tls-76f5bfcc75`，KubeBrain/PD/TiKV 3/3 Ready，
 KubeBrain restart 0、runtime digest 一致，三 Pod snapshot workspace 均零残留。
 
+### A5600：每实例只准入一个本地在线 Snapshot 生命周期
+
+对照 `/root/etcd` 后确认，上游 Snapshot 读取既有 bbolt，而 KubeBrain 每次都从 TiKV/PD retained history 重建完整 bbolt；生产
+workspace 只按一个近 quota artifact 规划。旧代码的确定性并发回归中，第二个 Snapshot 在 500ms context 后仍未返回并进入第二次
+捕获。提交 `7ea2a85ae9a42d8d78369de52cc708eafa174582` 在 auth 和 leader/proxy 选择之后为 local build 增加每实例唯一 slot，生命周期
+持续到最终 checksum frame 返回；并发 local 请求按 upstream 标准返回 `ResourceExhausted/too many requests`。follower 转发不占
+follower slot，leader 最终执行准入；auth error 不被 busy 状态覆盖。`maintenance.snapshot.active` gauge 和
+`maintenance.snapshot.admission_rejected` counter 提供运行证据，拒绝同时进入通用 concurrency admission counter。
+
+并发、慢 final frame、send failure、auth ordering、follower proxy 和指标测试普通/race 多轮均 GREEN；697 项 inventory
+`169/193/176/159`，提交后四片 `247.923/437.311/291.669/500.261s` 全绿。OCI index
+`sha256:65650da89b39e9e0c6b38ecc25c209761ee610ab5517b1a199e33aa8af27b6a1`、runtime
+`sha256:a9a2148c4ea1f6b6d1197861e2363e73367d7221c55ee5d3ae11c4266f5c7253` 完成 78/78 闭包、SBOM/provenance、
+非 root 和运行版本审计。线上 16MiB fixture 让首流停在仍剩约 2.7GiB 时，第二连接精确得到 ResourceExhausted；取消后 key/workspace
+为零，leader rejection counter 为 2，三端 active 为 0。
+
+A5599→A5600 upgrade **900/900 GREEN**。restart 过程中先后保留两条真实可用性 RED：一次 iteration 172 只有一个 direct endpoint
+满足 5 秒，另一次 iteration 175 的 Put-to-Watch 为 6.870 秒；连续计数均归零。当前大历史的三成员官方 restore 门禁还证明 16Gi
+Memory 卷会因约 5× 临时复制峰值耗尽；32Gi observe-only 在 2m44s 完整 Snapshot GREEN，因此最终仅扩大开发验证卷，不放宽线上
+5 秒和后端阈值，也不改变生产 512Gi 独占 PVC 合同。
+
+最终三轮 restart 真正连续 **900/900 GREEN ×3**，revision
+`6575c4cbb -> 5559b755b5 -> 6b489f9475 -> 684f7c575b`；每轮均有 Watch `900/900x3`、Snapshot 1、public lease
+restart 0、至少两个 direct TCP dial 和零 cleanup。最大公共延迟 `2265/2375/2767ms`，TSO `75/58/47ms`，Region
+`10/12/6ms`。终态 KubeBrain/PD/TiKV 均 3/3 Ready，KubeBrain restart 0、A5600 runtime 一致、三个 workspace 与全部临时对象
+为零。两条 rollout RED 仍作为 Service/subconn/EndpointSlice/direct tail 未完全关闭的兼容性缺口保留。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

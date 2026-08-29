@@ -8867,3 +8867,55 @@ SBOM/provenance、`linux/amd64`、USER `65532:65532`、入口和运行版本审�
 `2713/2703/293/21082/82/12ms`、`3259/3248/205/20623/37/8ms`、
 `2400/2399/1039/20811/31/14ms`。每轮之后三 Pod 工作目录均为 0；最终 KubeBrain、PD、TiKV 均 3/3 Ready，
 KubeBrain 三 Pod restart 0 且 runtime digest 精确一致。
+
+### A5600：限制每实例一个本地在线 Snapshot 生命周期
+
+官方 etcd Snapshot 直接读取已有 bbolt；KubeBrain 从 TiKV/PD retained history 为每次请求重建完整 bbolt。旧实现仅受通用
+`max-requests-inflight=1024` 约束，而生产 512Gi 工作区只按一个 400Gi logical quota 附加余量规划。确定性回归让首个 Snapshot
+停在 history scan，第二个使用 500ms context；旧代码在 2 秒内仍未返回，证明它已经进入第二次捕获而 **RED**。提交
+`7ea2a85ae9a42d8d78369de52cc708eafa174582` 增加每实例原子 local slot：鉴权及 leader/proxy 选择之后、local build 之前 CAS，
+slot 覆盖到最终 checksum frame 的 `Send` 返回；并发 local 请求立即返回标准
+`ResourceExhausted: etcdserver: too many requests`。follower 转发不占本地 slot，leader 最终执行准入；未认证/非管理员调用仍先得到
+auth 错误。发送失败、取消和正常结束都释放 slot。
+
+新增测试覆盖第二次请求不进入 history scan、最终 frame 尚未返回时仍拒绝、final send/失败后释放、auth ordering、follower proxy
+以及 `maintenance.snapshot.active`/`maintenance.snapshot.admission_rejected` 转换。聚焦普通 20 轮、race 10 轮，慢发送普通 20/
+race 10，全 Snapshot 普通 20/race 10，完整 `pkg/server/etcd` 与 vet 全绿。697 项提交前 inventory 为
+`169/193/176/159`；提交后四片墙钟 `247.923/437.311/291.669/500.261s`，全部通过。
+
+不可变候选 `kubebrain:a5600-7ea2a85a` 内嵌版本 `0.0.0-7ea2a85ae9a4`，archive SHA-256
+`bc2b41dc525b8bdfd331b926f4ac95c61e859ce9b8aecd6df4d0f311aebdfdb6`；OCI index
+`sha256:65650da89b39e9e0c6b38ecc25c209761ee610ab5517b1a199e33aa8af27b6a1`、platform
+`sha256:373a722a390a073bffddaf2ff4ea8e05f194f95056b15a41eeec3062b3710720`、Kind runtime
+`sha256:a9a2148c4ea1f6b6d1197861e2363e73367d7221c55ee5d3ae11c4266f5c7253`。78/78 descriptor/blob、SBOM
+2,592 packages/8,096 relationships、3-material provenance、linux/amd64、USER `65532:65532` 和运行版本审计全部通过。
+
+线上并发审计先写入 16MiB fixture，首个 Snapshot 只读取一帧后保持 stream，第二个独立连接精确得到
+`ResourceExhausted/etcdserver: too many requests`，首流仍剩余 2,725,445,632 bytes；取消后 fixture CountOnly 为 0、三 Pod
+workspace 为 0。两次已实际命中拒绝的行为尝试使 leader `maintenance_snapshot_admission_rejected=2`，最终三端
+`maintenance_snapshot_active=0`。工具准备期先后暴露动态 glibc 不能在 Alpine 执行、Secret fsGroup 缺失、alice 无写权限，以及一次
+错误的客户端 sentinel 比较；这些都发生在产品断言之外并已分别清理，不伪装为产品 RED。
+
+A5599→A5600 候选升级 **900/900 GREEN**：Watch `900/900x3`、Lease public/direct `96/262`、public restart 0、direct
+replacement 16、RangeStream 167、Snapshot 1，最大总/Put/Watch/direct/TSO/Region
+`2788/2690/98/20091/87/8ms`。最初 same-version restart 前两轮均 GREEN，第三轮 iteration 172 因只有一个 direct endpoint
+满足 5 秒延迟而 **RED**，连续计数归零。后续一次 restart 又在 iteration 175 以 Put-to-Watch `6.869610961s`（Put
+`6.860746249s`）超过未放宽的 5 秒门限而 RED；这条公共 Service 重连长尾同样保留。
+
+当前 retained history 使 Snapshot 约 2.7GiB，而 rollout probe 会用官方 etcdutl 为三个成员分别 restore，再启动三成员集群验证
+复制、2/3 quorum、follower recovery 与 membership。原 16Gi Memory 卷在 3m40s 达到 100%，probe RSS 约 8.3GiB，导致 300s/
+600s 收尾超时；这是门禁恢复副本约 5× 瞬时空间放大，不是服务端 workspace 残留。32Gi observe-only 诊断在 2m44s 完成
+`Snapshot=1`、无 retry 且清理为零；宿主/Kind 约 247GiB 内存，故最终门禁只把开发恢复卷改为 32Gi，未放宽 5 秒业务、1 秒
+PD/TiKV 或 direct 端点阈值，生产仍要求 512Gi 独占 PVC。
+
+在端点/DNS 完全收敛后，最终三轮形成真正连续的 **900/900 GREEN ×3**。三轮 revision 为
+`6575c4cbb -> 5559b755b5 -> 6b489f9475 -> 684f7c575b`；Lease public/direct 为 `130/356`、`95/259`、
+`142/391`，public restart 均 0，direct replacement/recovery 为 `16/13935ms`、`16/14994ms`、`19/15491ms`，
+RangeStream `227/164/243`、Snapshot 均 1、retry/partial `7/2`、`14/0`、`19/2`。最大总/Put/Watch/direct/TSO/Region
+分别为 `2265/2257/74/20036/75/10ms`、`2375/2361/195/20339/58/12ms`、
+`2767/2755/87/20270/47/6ms`，每轮 cleanup 全零。
+
+终态 generation/observed generation 261，current/update revision `a4657-tls-684f7c575b`；KubeBrain 3/3 Ready、restart 0，
+三个 Pod 精确运行 A5600 runtime，workspace 均为 0；主 PD/TiKV 各 3/3 Ready、restart 0，A5600 probe/owner 对象为零。
+连续 GREEN 证明本候选在本次窗口通过门禁，但两条未放宽阈值的滚动 RED 仍证明公共 Service/direct endpoint 尾部尚未彻底关闭，
+后续应继续关联客户端 subconn、EndpointSlice 传播与服务端 forward attempt，而不是把连续 GREEN 改写成尾延迟已消失。
