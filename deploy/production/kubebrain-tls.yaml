@@ -243,6 +243,9 @@ spec:
               spec:
                 accessModes: [ReadWriteOnce]
                 volumeMode: Filesystem
+                # Operators must provide a dynamically provisioned class whose
+                # backing I/O is isolated from TiKV and node-root storage.
+                storageClassName: kubebrain-snapshot-workspace
                 resources:
                   requests:
                     storage: 512Gi

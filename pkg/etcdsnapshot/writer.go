@@ -137,7 +137,6 @@ func WriteBackend(path string, state State) (retErr error) {
 // Committed bbolt pages, rather than the complete keyspace, hold prior batches.
 type Builder struct {
 	db               *bolt.DB
-	sync             func() error
 	revision         int64
 	restoredRevision int64
 	nextSub          int64
@@ -171,7 +170,7 @@ func NewBuilder(path string, state State) (*Builder, error) {
 	}
 	restoredRevision := int64(1) // upstream MVCC restore starts at revision 1
 	builder := &Builder{
-		db: db, sync: db.Sync, revision: state.Revision, restoredRevision: restoredRevision,
+		db: db, revision: state.Revision, restoredRevision: restoredRevision,
 		preserveHistory: state.PreserveHistory, orderedTotals: make(map[int64]int64),
 	}
 	if state.HasCompactRevision {
@@ -532,9 +531,14 @@ func (b *Builder) Finish() error {
 			return err
 		}
 	}
-	if err := b.sync(); err != nil {
-		return fmt.Errorf("sync completed snapshot backend: %w", err)
-	}
+	// Do not call DB.Sync here. This file is a same-process transfer workspace,
+	// not a restartable local backup: sendSnapshot opens it only after Close,
+	// unlinks it before the first frame, and the client accepts it only after the
+	// terminal SHA-256 frame. A process or node failure therefore invalidates the
+	// RPC and rebuilds from scratch; forcing the complete artifact to durable
+	// media would add an avoidable foreground-I/O spike without improving the
+	// recovery contract. Successful bbolt writes remain immediately readable
+	// through the kernel page cache by the subsequent stream.
 	b.finished = true
 	return nil
 }

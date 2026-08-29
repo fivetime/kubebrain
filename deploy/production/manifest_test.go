@@ -198,6 +198,8 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 				"ephemeral", "volumeClaimTemplate", "spec", "volumeMode"))
 			require.Equal(t, []string{"ReadWriteOnce"}, nestedStringSlice(t, snapshotVolume,
 				"ephemeral", "volumeClaimTemplate", "spec", "accessModes"))
+			require.Equal(t, "kubebrain-snapshot-workspace", nestedString(t, snapshotVolume,
+				"ephemeral", "volumeClaimTemplate", "spec", "storageClassName"))
 			require.Equal(t, "512Gi", nestedString(t, snapshotVolume,
 				"ephemeral", "volumeClaimTemplate", "spec", "resources", "requests", "storage"))
 			require.Equal(t, "snapshot-workspace", nestedString(t, snapshotVolume,
