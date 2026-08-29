@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,26 @@ func TestRolloutAvailabilityRunnerBudgetsSnapshotScaleInitialization(t *testing.
 	require.NoError(t, err)
 	require.Contains(t, string(source), `PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-90s}"`)
 	require.Contains(t, string(source), "bounded 16 MiB Snapshot scale fixture")
+}
+
+func TestRolloutAvailabilityRunnerDefaultCompletionBudgetCoversFullStreamRetry(t *testing.T) {
+	source, err := os.ReadFile("run-kubebrain-rollout-availability.sh")
+	require.NoError(t, err)
+	defaultDuration := func(name string) time.Duration {
+		t.Helper()
+		pattern := regexp.MustCompile(regexp.QuoteMeta(name+`="${`+name+`:-`) + `([^}]+)}`)
+		match := pattern.FindStringSubmatch(string(source))
+		require.Len(t, match, 2, "missing default for %s", name)
+		duration, parseErr := time.ParseDuration(match[1])
+		require.NoError(t, parseErr, "parse default for %s", name)
+		return duration
+	}
+
+	minimum := defaultDuration("PROBE_SNAPSHOT_START_DELAY") +
+		2*defaultDuration("PROBE_STREAM_ATTEMPT_TIMEOUT") +
+		defaultDuration("PROBE_STREAM_MAX_RETRY_BACKOFF")
+	require.GreaterOrEqual(t, defaultDuration("PROBE_COMPLETE_TIMEOUT"), minimum,
+		"the runner must allow one complete retry after a timed-out Snapshot attempt")
 }
 
 func TestRolloutAvailabilityRunnerDurablyReceiptsFixtureBeforeScheduling(t *testing.T) {
