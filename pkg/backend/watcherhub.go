@@ -111,6 +111,15 @@ type catchUpState struct {
 
 func (st *catchUpState) stop() { st.stopOnce.Do(func() { close(st.done) }) }
 
+func (st *catchUpState) stopped() bool {
+	select {
+	case <-st.done:
+		return true
+	default:
+		return false
+	}
+}
+
 // NewProgressMarker builds an in-band progress marker: a one-element batch whose
 // single event carries only a revision and a nil Kv. Real events always set Kv,
 // so a nil Kv unambiguously distinguishes a marker from an event batch.
@@ -354,11 +363,22 @@ func (w *WatcherHub) beginCatchUp(sub chan []*proto.Event, missed []*proto.Event
 // reopens from durable history and keeps the logical stream alive.
 func (w *WatcherHub) catchUp(sub chan []*proto.Event, st *catchUpState, fromRev uint64) {
 	for {
+		if st.stopped() {
+			w.finishCatchUp(sub, st, "catch-up stopped", watcherSlowConsumerOutcomeInterrupted)
+			return
+		}
 		ret := w.ringLookup(fromRev)
+		// A ring lookup may block on internal synchronization. If the subscriber
+		// ended while it ran, cancellation owns the terminal classification even
+		// when the now-stale lookup also reports an unrecoverable backlog.
+		if st.stopped() {
+			w.finishCatchUp(sub, st, "catch-up stopped", watcherSlowConsumerOutcomeInterrupted)
+			return
+		}
 		if ret.empty || ret.low {
 			// Ring reset (watch-event overflow) or the backlog was already
 			// evicted: too far behind to replay cheaply. Drop, as before #34.
-			w.finishCatchUp(sub, st, "backlog beyond ring, dropping", "drop.slow.watcher")
+			w.finishCatchUp(sub, st, "backlog beyond ring, dropping", watcherSlowConsumerOutcomeDropped)
 			return
 		}
 		if !ret.high {
@@ -376,7 +396,7 @@ func (w *WatcherHub) catchUp(sub chan []*proto.Event, st *catchUpState, fromRev 
 				select {
 				case sub <- chunk:
 				case <-st.done:
-					w.finishCatchUp(sub, st, "catch-up stopped", "")
+					w.finishCatchUp(sub, st, "catch-up stopped", watcherSlowConsumerOutcomeInterrupted)
 					return
 				}
 			}
@@ -388,13 +408,13 @@ func (w *WatcherHub) catchUp(sub chan []*proto.Event, st *catchUpState, fromRev 
 			// DeleteWatcher/CloseAll raced us and gave up the entry; we still own
 			// the channel and must close it on the way out.
 			w.Unlock()
-			w.finishCatchUp(sub, st, "catch-up stopped", "")
+			w.finishCatchUp(sub, st, "catch-up stopped", watcherSlowConsumerOutcomeInterrupted)
 			return
 		}
 		ret = w.ringLookup(fromRev)
 		if ret.empty || ret.low {
 			w.Unlock()
-			w.finishCatchUp(sub, st, "backlog beyond ring, dropping", "drop.slow.watcher")
+			w.finishCatchUp(sub, st, "backlog beyond ring, dropping", watcherSlowConsumerOutcomeDropped)
 			return
 		}
 		if ret.high {
@@ -414,16 +434,19 @@ func (w *WatcherHub) catchUp(sub chan []*proto.Event, st *catchUpState, fromRev 
 
 // finishCatchUp terminates a catch-up (drop or stop): removes the hub entry if
 // still present and closes the subscriber channel, which this goroutine owns.
-func (w *WatcherHub) finishCatchUp(sub chan []*proto.Event, st *catchUpState, msg string, dropMetric string) {
+func (w *WatcherHub) finishCatchUp(sub chan []*proto.Event, st *catchUpState, msg, outcome string) {
 	w.Lock()
 	delete(w.catchingUp, sub)
 	w.Unlock()
+	if outcome == watcherSlowConsumerOutcomeDropped {
+		w.metricCli.EmitCounter("drop.slow.watcher", 1)
+	}
+	// Publish the terminal before closing sub. A consumer that observes channel
+	// closure can then immediately account this catch-up as recovered, dropped,
+	// or interrupted without a transient entered-without-terminal window.
+	emitWatcherSlowConsumerOutcome(w.metricCli, outcome)
 	close(sub)
 	klog.InfoS(msg, "subscription", watchChannelID(sub), "prefix", util.LoggedKey(st.prefix))
-	if dropMetric != "" {
-		w.metricCli.EmitCounter(dropMetric, 1)
-		emitWatcherSlowConsumerOutcome(w.metricCli, watcherSlowConsumerOutcomeDropped)
-	}
 }
 
 // broadcastProgress fans an in-band progress marker carrying rev to every

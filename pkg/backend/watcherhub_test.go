@@ -363,6 +363,7 @@ func TestSlowWatcherCatchUpNoGapAndReattach(t *testing.T) {
 	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeCatchUp))
 	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeRecovered))
 	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeDropped))
+	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeInterrupted))
 }
 
 // TestSlowWatcherBeyondRingDropped pins the bounded fallback: when the missed
@@ -397,6 +398,7 @@ func TestSlowWatcherBeyondRingDropped(t *testing.T) {
 	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeCatchUp))
 	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeRecovered))
 	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeDropped))
+	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeInterrupted))
 }
 
 // TestDeleteWatcherDuringCatchUpClosesChan pins the shutdown handoff: a watcher
@@ -441,6 +443,80 @@ func TestDeleteWatcherDuringCatchUpClosesChan(t *testing.T) {
 	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeCatchUp))
 	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeRecovered))
 	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeDropped))
+	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeInterrupted))
+}
+
+func TestCloseAllDuringCatchUpRecordsInterruptedBeforeClose(t *testing.T) {
+	rec := &compactMetricRecorder{}
+	initWatcherSlowConsumerMetrics(rec)
+	hub, ring := newRecordedCatchUpHub(1, 1024, rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub, err := hub.AddWatcher(ctx, nil)
+	require.NoError(t, err)
+	for rev := uint64(1); rev <= 50; rev++ {
+		feed(hub, ring, batch(rev))
+	}
+	require.Equal(t, 1, hub.catchingUpCount())
+
+	hub.CloseAll()
+	require.Eventually(t, func() bool {
+		for {
+			select {
+			case _, ok := <-sub:
+				return !ok
+			default:
+				return false
+			}
+		}
+	}, 5*time.Second, 5*time.Millisecond, "CloseAll must stop and close a catching-up sub")
+	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeCatchUp))
+	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeRecovered))
+	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeDropped))
+	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeInterrupted))
+}
+
+func TestCatchUpCancellationWinsOverConcurrentRingEviction(t *testing.T) {
+	rec := &compactMetricRecorder{}
+	initWatcherSlowConsumerMetrics(rec)
+	lookupStarted := make(chan struct{})
+	releaseLookup := make(chan struct{})
+	hub := &WatcherHub{
+		subs:       make(map[chan []*proto.Event][]byte),
+		catchingUp: make(map[chan []*proto.Event]*catchUpState),
+		metricCli:  rec,
+		bufSize:    1,
+		ringLookup: func(uint64) *FindRet {
+			close(lookupStarted)
+			<-releaseLookup
+			return &FindRet{low: true}
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	sub := make(chan []*proto.Event, 1)
+	hub.subs[sub] = nil
+	go func() {
+		<-ctx.Done()
+		hub.DeleteWatcher(sub, true)
+	}()
+	hub.beginCatchUp(sub, batch(2))
+	<-lookupStarted
+	cancel()
+	require.Eventually(t, func() bool { return hub.catchingUpCount() == 0 }, 5*time.Second, 5*time.Millisecond)
+	close(releaseLookup)
+	require.Eventually(t, func() bool {
+		select {
+		case _, ok := <-sub:
+			return !ok
+		default:
+			return false
+		}
+	}, 5*time.Second, 5*time.Millisecond)
+	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeCatchUp))
+	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeRecovered))
+	require.Equal(t, []interface{}{int64(0)}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeDropped))
+	require.Equal(t, []interface{}{int64(0), 1}, watcherSlowConsumerOutcomeValues(rec, watcherSlowConsumerOutcomeInterrupted))
 }
 
 // TestStreamDeliversGapFreePrefixToSlowConsumer drives the real Stream loop with

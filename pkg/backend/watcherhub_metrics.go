@@ -7,15 +7,17 @@ package backend
 import "github.com/kubewharf/kubebrain/pkg/metrics"
 
 const (
-	watcherSlowConsumerOutcomeCatchUp   = "catch_up"
-	watcherSlowConsumerOutcomeRecovered = "recovered"
-	watcherSlowConsumerOutcomeDropped   = "dropped"
+	watcherSlowConsumerOutcomeCatchUp     = "catch_up"
+	watcherSlowConsumerOutcomeRecovered   = "recovered"
+	watcherSlowConsumerOutcomeDropped     = "dropped"
+	watcherSlowConsumerOutcomeInterrupted = "interrupted"
 )
 
 var watcherSlowConsumerOutcomes = []string{
 	watcherSlowConsumerOutcomeCatchUp,
 	watcherSlowConsumerOutcomeRecovered,
 	watcherSlowConsumerOutcomeDropped,
+	watcherSlowConsumerOutcomeInterrupted,
 }
 
 func initWatcherSlowConsumerMetrics(metricCli metrics.Metrics) {

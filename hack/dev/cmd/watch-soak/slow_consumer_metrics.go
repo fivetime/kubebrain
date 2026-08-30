@@ -39,9 +39,10 @@ const (
 )
 
 type slowConsumerOutcomes struct {
-	catchUp   float64
-	recovered float64
-	dropped   float64
+	catchUp     float64
+	recovered   float64
+	dropped     float64
+	interrupted float64
 }
 
 type watchGenerationOutcomes struct {
@@ -150,7 +151,7 @@ func (reader *slowConsumerMetricsReader) fetch(ctx context.Context) (watchOutcom
 	if limited.N <= 0 {
 		return watchOutcomes{}, fmt.Errorf("metrics response exceeds %d bytes", maximumMetricsBytes)
 	}
-	slow, err := parseFixedOutcomeCounters(families, slowConsumerMetricName, []string{"catch_up", "recovered", "dropped"})
+	slow, err := parseFixedOutcomeCounters(families, slowConsumerMetricName, []string{"catch_up", "recovered", "dropped", "interrupted"})
 	if err != nil {
 		return watchOutcomes{}, err
 	}
@@ -160,7 +161,7 @@ func (reader *slowConsumerMetricsReader) fetch(ctx context.Context) (watchOutcom
 	}
 	return watchOutcomes{
 		slow: slowConsumerOutcomes{
-			catchUp: slow["catch_up"], recovered: slow["recovered"], dropped: slow["dropped"],
+			catchUp: slow["catch_up"], recovered: slow["recovered"], dropped: slow["dropped"], interrupted: slow["interrupted"],
 		},
 		generation: watchGenerationOutcomes{
 			retry: generation["retry"], recovered: generation["recovered"],
@@ -255,9 +256,9 @@ func expectedWatchOutcomes(baseline watchOutcomes, outcome string, slowConsumers
 			expected.generation.compacted += delta
 		}
 	case slowConsumerExpectedInterrupted:
-		// The owned transport fault cancels the server-side catch-up generation.
-		// It is neither a successful re-attach nor a ring eviction. The raw client
-		// separately proves an explicit revision resume and complete event replay.
+		if completed {
+			expected.slow.interrupted += delta
+		}
 	default:
 		return watchOutcomes{}, fmt.Errorf("unsupported slow-consumer expected outcome %q", outcome)
 	}
@@ -292,14 +293,16 @@ func waitForWatchOutcomes(ctx context.Context, reader *slowConsumerMetricsReader
 
 func watchOutcomesRegressed(current, floor watchOutcomes) bool {
 	return current.slow.catchUp < floor.slow.catchUp || current.slow.recovered < floor.slow.recovered ||
-		current.slow.dropped < floor.slow.dropped || current.generation.retry < floor.generation.retry ||
+		current.slow.dropped < floor.slow.dropped || current.slow.interrupted < floor.slow.interrupted ||
+		current.generation.retry < floor.generation.retry ||
 		current.generation.recovered < floor.generation.recovered || current.generation.compacted < floor.generation.compacted ||
 		current.generation.failed < floor.generation.failed
 }
 
 func watchOutcomesExceeded(current, ceiling watchOutcomes) bool {
 	return current.slow.catchUp > ceiling.slow.catchUp || current.slow.recovered > ceiling.slow.recovered ||
-		current.slow.dropped > ceiling.slow.dropped || current.generation.retry > ceiling.generation.retry ||
+		current.slow.dropped > ceiling.slow.dropped || current.slow.interrupted > ceiling.slow.interrupted ||
+		current.generation.retry > ceiling.generation.retry ||
 		current.generation.recovered > ceiling.generation.recovered || current.generation.compacted > ceiling.generation.compacted ||
 		current.generation.failed > ceiling.generation.failed
 }

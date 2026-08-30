@@ -316,8 +316,13 @@ func metricsText(catchUp, recovered, dropped int) string {
 }
 
 func metricsTextWithGeneration(catchUp, recovered, dropped, retry, generationRecovered, compacted, failed int) string {
+	return metricsTextWithAllOutcomes(catchUp, recovered, dropped, 0, retry, generationRecovered, compacted, failed)
+}
+
+func metricsTextWithAllOutcomes(catchUp, recovered, dropped, interrupted, retry, generationRecovered, compacted, failed int) string {
 	return strings.NewReplacer(
 		"CATCH", fmt.Sprint(catchUp), "SLOW_RECOVERED", fmt.Sprint(recovered), "DROPPED", fmt.Sprint(dropped),
+		"INTERRUPTED", fmt.Sprint(interrupted),
 		"RETRY", fmt.Sprint(retry), "GEN_RECOVERED", fmt.Sprint(generationRecovered),
 		"COMPACTED", fmt.Sprint(compacted), "FAILED", fmt.Sprint(failed),
 	).Replace(`# HELP watcher_hub_slow_consumer_outcome_total slow outcomes
@@ -325,6 +330,7 @@ func metricsTextWithGeneration(catchUp, recovered, dropped, retry, generationRec
 watcher_hub_slow_consumer_outcome_total{cluster="default",outcome="catch_up"} CATCH
 watcher_hub_slow_consumer_outcome_total{cluster="default",outcome="recovered"} SLOW_RECOVERED
 watcher_hub_slow_consumer_outcome_total{cluster="default",outcome="dropped"} DROPPED
+watcher_hub_slow_consumer_outcome_total{cluster="default",outcome="interrupted"} INTERRUPTED
 # HELP watch_generation_recovery_total generation outcomes
 # TYPE watch_generation_recovery_total counter
 watch_generation_recovery_total{cluster="default",outcome="retry"} RETRY
@@ -336,7 +342,7 @@ watch_generation_recovery_total{cluster="default",outcome="failed"} FAILED
 
 func TestMetricsReaderParsesAllFixedOutcomes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(response, metricsTextWithGeneration(3, 2, 1, 4, 5, 6, 7))
+		_, _ = io.WriteString(response, metricsTextWithAllOutcomes(3, 2, 1, 8, 4, 5, 6, 7))
 	}))
 	defer server.Close()
 	cfg := config{infoEndpoint: server.URL + "/metrics"}
@@ -346,7 +352,7 @@ func TestMetricsReaderParsesAllFixedOutcomes(t *testing.T) {
 	outcomes, err := reader.fetch(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, watchOutcomes{
-		slow:       slowConsumerOutcomes{catchUp: 3, recovered: 2, dropped: 1},
+		slow:       slowConsumerOutcomes{catchUp: 3, recovered: 2, dropped: 1, interrupted: 8},
 		generation: watchGenerationOutcomes{retry: 4, recovered: 5, compacted: 6, failed: 7},
 	}, outcomes)
 }
@@ -449,7 +455,10 @@ func TestExpectedWatchOutcomesDistinguishRingRecoveryAndEviction(t *testing.T) {
 	require.Equal(t, droppedEntered, interruptedEntered)
 	interruptedComplete, err := expectedWatchOutcomes(baseline, slowConsumerExpectedInterrupted, 3, true)
 	require.NoError(t, err)
-	require.Equal(t, interruptedEntered, interruptedComplete)
+	require.Equal(t, watchOutcomes{
+		slow:       slowConsumerOutcomes{catchUp: 6, recovered: 2, dropped: 1, interrupted: 3},
+		generation: baseline.generation,
+	}, interruptedComplete)
 
 	unownedCompaction := droppedComplete
 	unownedCompaction.generation.compacted++
@@ -491,4 +500,28 @@ func TestDroppedOutcomeWaitsForExactGenerationRecovery(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, watchOutcomesExceeded(current, expected),
 		"compaction must not satisfy the transparent recovery oracle")
+}
+
+func TestInterruptedOutcomeWaitsForExplicitTerminalMetric(t *testing.T) {
+	baseline := watchOutcomes{
+		slow:       slowConsumerOutcomes{catchUp: 3, recovered: 2, dropped: 1, interrupted: 4},
+		generation: watchGenerationOutcomes{retry: 5, recovered: 6, compacted: 7, failed: 8},
+	}
+	var body atomic.Value
+	body.Store(metricsTextWithAllOutcomes(4, 2, 1, 4, 5, 6, 7, 8))
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(response, body.Load().(string))
+	}))
+	defer server.Close()
+	reader, err := newSlowConsumerMetricsReader(config{infoEndpoint: server.URL + "/metrics"})
+	require.NoError(t, err)
+	defer reader.close()
+
+	require.NoError(t, waitForExpectedSlowConsumerPressure(
+		context.Background(), reader, baseline, slowConsumerExpectedInterrupted, 1,
+	))
+	body.Store(metricsTextWithAllOutcomes(4, 2, 1, 5, 5, 6, 7, 8))
+	require.NoError(t, waitForExpectedSlowConsumerCompletion(
+		context.Background(), reader, baseline, slowConsumerExpectedInterrupted, 1,
+	))
 }
