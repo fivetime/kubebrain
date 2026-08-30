@@ -65382,7 +65382,7 @@ A5618 `3ba08bd4c03c9029b473f9a845519569d8d92545` 把 A5617 发现的“候选无
 非 GET 返回 405。该接口不冒充 etcd v3 feature negotiation，而是供 DBaaS 控制面判断源二进制是否具备安全退出语义。
 
 候选 rollout probe 新增全部源 ordinal 的 HTTPS info endpoint 与 required capability 参数。校验位于读取 PD leader、建立 TiKV/etcd
-client、创建 fixture owner 或写入 fixture 之前；任一源 Pod 的 404、非 JSON content type、未知字段、尾随 JSON、超过 16 KiB、redirect、
+client 及任何 fixture key/user/role/lease 写入之前；任一源 Pod 的 404、非 JSON content type、未知字段、尾随 JSON、超过 16 KiB、redirect、
 format/canonical capability 漂移或缺少必需项都会 fail closed。endpoint 只接受与数据面 TLS 模式一致、显式合法端口、无 user/path/query/
 fragment 的唯一 HTTP(S) origin，HTTP client 禁用 proxy/redirect/keepalive 并分别限制 dial、response-header、整体 context。生产 runner
 从 StatefulSet 唯一 `--info-port` 构造每个 ordinal 的固定 DNS endpoint；candidate 模式默认使用不可变 `TARGET_IMAGE` 运行探针，仍允许显式
