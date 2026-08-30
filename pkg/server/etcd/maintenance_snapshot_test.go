@@ -501,6 +501,72 @@ func (b *concurrentSnapshotAdmissionBackend) SnapshotHistoryStreamChan(
 	return out, nil
 }
 
+func TestMaintenanceSnapshotFirstHistoryChunkDoesNotBlockWrites(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("snapshot-first-chunk-seed"), Value: []byte("before"),
+	})
+	require.NoError(t, err)
+
+	wrapped := &concurrentSnapshotAdmissionBackend{
+		BackendShim: server.backend,
+		started:     make(chan struct{}, 1),
+		release:     make(chan struct{}),
+	}
+	server.backend = wrapped
+	released := false
+	defer func() {
+		if !released {
+			close(wrapped.release)
+		}
+	}()
+
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	snapshotDone := make(chan error, 1)
+	go func() {
+		snapshotDone <- server.buildSnapshot(context.Background(), path)
+	}()
+	select {
+	case <-wrapped.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not establish its fixed history iterator")
+	}
+
+	putCtx, cancelPut := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancelPut()
+	put, putErr := server.Put(putCtx, &etcdserverpb.PutRequest{
+		Key: []byte("snapshot-first-chunk-concurrent"), Value: []byte("after"),
+	})
+	require.NoError(t, putErr,
+		"a fixed history iterator must not retain the logical-write barrier while waiting for its first chunk")
+	require.NotNil(t, put)
+
+	select {
+	case err := <-snapshotDone:
+		t.Fatalf("snapshot unexpectedly completed before its first chunk was released: %v", err)
+	default:
+	}
+	close(wrapped.release)
+	released = true
+	require.NoError(t, <-snapshotDone)
+
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(schema.Key.Name()).ForEach(func(_, value []byte) error {
+			kv := new(mvccpb.KeyValue)
+			if err := proto.Unmarshal(value, kv); err != nil {
+				return err
+			}
+			require.NotEqual(t, []byte("snapshot-first-chunk-concurrent"), kv.Key,
+				"the iterator established before barrier release must exclude the concurrent Put")
+			return nil
+		})
+	}))
+}
+
 func TestMaintenanceSnapshotRejectsConcurrentLocalBuildBeforeSecondHistoryScan(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

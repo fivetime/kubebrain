@@ -143,10 +143,16 @@ func (s *RPCServer) buildSnapshotOnceWithBuilder(
 	if err != nil {
 		return err
 	}
-	// Wait for the scanner's first response while still excluding local Compact
-	// and writes. Receiving it proves the fixed-revision storage snapshot has
-	// actually been established; merely creating the channel starts a goroutine
-	// whose timestamp/compaction checks may not have run yet.
+	// SnapshotHistoryStreamChan returns only after its fixed storage iterator and
+	// compaction pin exist. Release the process-wide write barrier now, matching
+	// upstream etcd's Backend.Snapshot: it synchronously opens a bbolt read
+	// transaction under the backend lock, then streams after releasing that lock.
+	// Waiting for TiKV's first history chunk here made every local mutation wait
+	// behind a potentially slow first batch and could consume its complete 10s
+	// RPC budget while a rolling drain waited for that admitted mutation.
+	unlock()
+	locked = false
+
 	leadershipPoll := time.NewTicker(snapshotLeadershipPollInterval)
 	defer leadershipPoll.Stop()
 	var firstChunk backend.SnapshotHistoryChunk
@@ -176,13 +182,6 @@ func (s *RPCServer) buildSnapshotOnceWithBuilder(
 	if err = checkLeadership(); err != nil {
 		return err
 	}
-	// Metadata and the pinned user revision define the snapshot's linearization
-	// point. Historical scanning remains fixed at that revision, so retaining the
-	// process-wide logical-write barrier while TiKV and bbolt stream the entire
-	// keyspace would only stall later writes; it is not required for consistency.
-	unlock()
-	locked = false
-
 	builder, err := newBuilder(path, state)
 	if err != nil {
 		return fmt.Errorf("create etcd snapshot backend: %w", err)

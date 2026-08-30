@@ -1568,9 +1568,10 @@ const (
 )
 
 // SnapshotHistoryStream emits every retained physical version from one storage
-// iterator snapshot. The iterator is created before this method returns, so a
-// caller can use receipt of the first chunk as the same pin handshake used by
-// SnapshotStream and release its logical-write barrier afterwards.
+// iterator snapshot. The iterator and compaction pin are created before this
+// method returns. Callers may therefore release a logical-write barrier as soon
+// as this method succeeds; waiting for the first chunk would let a slow TiKV
+// scan stall unrelated writes for the duration of its first batch request.
 func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan SnapshotHistoryChunk, error) {
 	curRev, err := b.safeCurrentRevision(ctx)
 	if err != nil {

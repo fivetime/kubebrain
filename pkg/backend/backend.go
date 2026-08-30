@@ -242,7 +242,9 @@ type Backend interface {
 
 	// SnapshotHistoryStream scans every retained user MVCC version and tombstone
 	// from one storage snapshot. Unlike SnapshotStream it does not collapse each
-	// key to its latest visible value.
+	// key to its latest visible value. A successful return means the fixed storage
+	// iterator and compaction pin already exist; consumers must not require the
+	// first streamed chunk as an additional pin handshake.
 	SnapshotHistoryStream(ctx context.Context, revision uint64) (<-chan SnapshotHistoryChunk, error)
 
 	// Watch subscribe the changes from revision on kvs with given prefix
