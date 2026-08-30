@@ -1560,6 +1560,11 @@ local leader 的 exact、任意 `[start,end)` 与 from-key Watch 仍可能依赖
 持续高增长时应按 leader Pod 与写热点对账 Watch range 设计、backend prefix 索引和 PrevKV 成本；follower 上的零值不能反证 leader 没有
 执行过滤。A5626 的真实独立 TiKV/PD gate 用同 revision 的 2 个范围内 PUT 加 100 个范围外 PUT，官方 etcdctl 只收到目标两条且 leader
 counter 精确 `+100`，随后 exact cleanup 与 prefix 复验为零。
+A5627 将该 counter 纳入 Watch event-delivery production 合同：按 60 秒新鲜窗口和 Ready Pod UID 生成 current 与 5 分钟 rate，current 必须是
+`[0,2^53]` 精确整数，rate 必须有限且在同范围；每个 Ready Pod 两类 recording 都必须恰好一份，否则与 pending/delivered telemetry 一起在
+2 分钟后 warning。全体 Ready Pod 的过滤速率持续 5 分钟超过 1000 events/s 也 warning；它表示 backend 已经承担 coarse subscription 与
+fan-out 成本，不是客户端 event loss。发布只读 gate 在启用完整 info metrics 检查时也要求原始
+`watch_range_prefilter_dropped` 存在，避免旧二进制或初始化回归进入 rollout 后才由 Prometheus 发现。
 lease 指标 `etcd_debugging_server_lease_expired_total`、
 `etcd_debugging_lease_granted_total`、`etcd_debugging_lease_revoked_total` 与
 `etcd_debugging_lease_renewed_total` 在 RPC server 创建时均初始化权威 0。production 将四个 raw family 规范为

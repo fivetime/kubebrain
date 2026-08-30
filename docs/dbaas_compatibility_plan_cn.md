@@ -65717,6 +65717,42 @@ current/update `a4657-tls-7d94b578fb`，三 Pod runtime 均恢复
 六个临时端口无监听、测试前缀为空。A5626 关闭 local 窄范围 Watch 在转换和 PrevKV 阶段的无关事件放大缺口；它不改变跨 leader proxy 的
 公开范围语义，也不替代数天级断线、连续 rollout 与多可用区网络故障长稳，后者继续保持 P1。
 
+### A5627：Watch range-prefilter 生产可观测性与发布门禁
+
+A5627 审计先核对公开 `Unimplemented` 路径。`RangeStream` 的 custom sort/revision filter 看似数据面缺口，但固定 upstream
+`/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 `server/etcdserver/api/v3rpc/key.go::checkRangeStreamRequest`
+与 integration 测试明确同样只允许 natural/ASCEND+KEY 且拒绝 revision filters，故没有错误扩张协议。真正开放的是 A5626 新增 raw counter
+尚未进入 production recording、值域/来源完整性告警和发布只读 gate；指标缺失、陈旧或畸形时，运维会静默失去 coarse-range 放大证据。
+
+提交 `9f3dc4d7298e15f57b58ac1282990d6e3ca2a69a` 新增按 60 秒新鲜窗口、Ready Pod UID 去重的
+`watch_range_prefilter_dropped:current_by_pod` 与 `rate_5m_by_pod`。两者进入既有 Watch event-delivery invalid-values recording：counter
+current 必须是 `[0,2^53]` 精确整数，rate 可为分数但必须有限且在同范围。完整性 alert 现在要求每个 Ready Pod 两类 series 各一份；缺失、
+陈旧、非法或 recording 本身 absent 持续两分钟 warning，不能解释为零放大。新增 `KubeBrainWatchRangePrefilterHigh` 在全体 Ready Pod
+过滤速率持续 5 分钟超过 1000 events/s 时 warning，说明 backend 已承担 coarse subscription/fan-out 成本，但描述明确不把它误报为客户端
+事件丢失。`validate-dataplane-readonly.sh` 的完整 info metrics 模式同时要求 raw counter 存在；新增负例从其余完整 fixture 删除该行并精确
+得到 `info metrics mismatch: expected watch_range_prefilter_dropped`。
+
+production 包普通 20 轮 `6.246s`、race 10 轮 `28.626s`；只读 gate 聚焦普通 `91.494s`、race `93.601s`，两包 vet、shell syntax 与
+diff check 全部 GREEN。固定本地 `prom/prometheus:v3.5.0` 对多文档清单中唯一 `PrometheusRule.spec` 的非空 474 条规则执行
+`promtool check rules`，全部解析成功；直接把 Kubernetes CRD 外壳交给 promtool 的 schema 拒绝和缺少 yq/ruby 后的空输入“0 rules”均未冒充
+GREEN。提交前 703 项 inventory 为 `170/193/180/160`；提交后四片为
+`274.551/456.834/317.629/516.347s`，全部 GREEN。
+
+本项只改变 production 清单与发布脚本，不另造数据面镜像；真实独立 3 PD/3 TiKV 验证复用不可变
+`kubebrain:a5626-1e666c3d`，generation 336 三副本 runtime 均为
+`sha256:600e89a2f87a363d052e2d4db75e5f3129edf649c53c12881f1332a227e99fbf`、Ready/restart 0。leader info 口直接证明 raw
+counter 唯一且为合法权威零值，PD/TiKV 各 3/3 Ready/restart 0。完整只读 gate 两次都在新指标检查前由既有 HTTP gateway Status 返回
+400：follower 日志明确显示内部 auth caller 的 user name 为空，改为 direct leader 后仍复现同一 HTTP 400；唯一前缀只读 Count 已完成、没有
+mutation，因此该轮既不算 A5627 指标 RED，也不伪装成完整 gate GREEN。mTLS CA/cert/key 与 curl wrapper 全部位于独立匿名 memfd，
+没有凭据或脚本落盘；当前 kind 仍无
+`monitoring.coreos.com/v1` CRD，故没有声称真实 PrometheusRule apply。
+
+最后以 UID/resourceVersion/container/candidate image/完整 args 五重 test 回滚 A5608。终态 generation/observed 337、current/update
+`a4657-tls-7d94b578fb`，KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，A5608 runtime digest 精确恢复为
+`sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`，临时端口无监听。
+A5627 关闭 range-prefilter 指标的 production recording、告警和值班可见性缺口；HTTP gateway 在 mTLS-only caller 下无法为 Maintenance
+Status 构造内部 auth 身份已成为后续独立兼容差距，不能由本项监控证据掩盖。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
