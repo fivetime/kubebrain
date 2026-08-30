@@ -66083,6 +66083,42 @@ generation 358，三 Pod Ready/restart 0。完整 gate 的 Status 与全部三�
 3+3+3 Ready/restart 0，六个诊断端口无监听，宿主剩余约 320 GiB。A5636 关闭省略全部或部分 HashKV term 即可绕过跨 RPC
 任期一致性证据的问题。
 
+### A5637：将 HTTP gateway Maintenance 链绑定到 ENDPOINT 成员
+
+只读 gate 已分别校验 gateway Status、AuthStatus、Alarm、Hash、HashKV 的 cluster/revision/term 和字段 envelope，但五类 header 的
+member ID 都只要求为正数。若错误代理让 `ENDPOINT` 的 gateway 请求由另一健康 member 响应，旧 gate 可以把该 header 与 direct Status
+成员拼成 GREEN；A5635 只绑定 etcdctl Status/HashKV 的逐 endpoint 结果，不能覆盖独立 HTTP gateway 调用。对照
+`/root/etcd/server/etcdserver/api/v3rpc/header.go::fillWithoutRevision` 以及 `maintenance.go::{Status,Hash,HashKV}`，成功响应 header 的
+member ID 始终由实际 serving server 填充，AuthStatus/Alarm 也遵循同一 response-header 身份契约。
+
+启用 Status 后，gate 现在先从 Status JSON 中按精确 `ENDPOINT` 解析唯一预期 member；ENDPOINT 不在 `STATUS_ENDPOINTS` 或无法唯一映射时
+直接 fail closed。随后 gateway Status、AuthStatus、Alarm、Hash、HashKV 的 header member ID 必须逐一等于该值，正常成功链才在摘要输出
+`gateway_endpoint_member_id=<id>, gateway_endpoint_members_match=true`。非空 client certificate CN 的 upstream 预期 HTTP 400 模式没有
+成功 response header，仍只证明拒绝边界，不伪称完成成员映射。确定性 RED 保持 endpoint/cluster/revision/hash/compact revision 全部正确，
+只把 gateway HashKV member 从 Status 的 456 改为另一正值 789；旧 gate 整体 GREEN，新 gate 精确拒绝
+`gateway hashkv serving member mismatch`。另四个负例分别固定 Status、AuthStatus、Alarm 和 Hash 的相同漂移，防止统一身份链只覆盖末端。
+
+聚焦只读 gate 普通/race 分别为 `109.144s/110.198s`；Go vet、gofmt、shell syntax、diff check 与固定 digest 的
+`koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
+
+代码提交 `d2f509a2a947e6ddb245eec9d9bc7a24f3d79449` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`253.359/448.681/301.931/531.944s`，全部 GREEN。
+
+真实独立三 PD/三 TiKV 验证选用现有 auth-disabled `kubebrain` 三副本，以确保实际执行 gateway 成功 response-header 链，而不是
+`a4657-tls` 非空 client-cert CN 的预期 HTTP 400 分支。本项只修改本地 gate，未滚动或修改数据面；StatefulSet 全程保持
+generation/observed 659、revision `kubebrain-9b9965dc9`、runtime
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`，三 Pod Ready/restart 0。三组独立 client/info
+port-forward 上完整只读 gate GREEN：`ENDPOINT=http://127.0.0.1:14379` 从 Status 映射到 member `4034353177`，摘要明确输出
+`gateway_endpoint_member_id=4034353177, gateway_endpoint_members_match=true`；另两 members 为 `2393892952/231094427`，leader
+`2393892952`、term `195`、revision/index/applied `65743`、HashKV `4283180840`、compact revision `44329`，逐 endpoint
+Status/HashKV 身份及 term 也全部一致。独立 curl 复核 Status、AuthStatus、Alarm、Hash、HashKV 五个 header 都精确为
+`4034353177`；首次展示命令误把 AuthStatus 拼到 `/v3/maintenance/auth/status` 而得到 HTTP 404，纠正为 `/v3/auth/status` 后五项
+全绿，该观察命令没有写入状态。
+
+验证窗口 Pod 日志无 panic/fatal/data corruption/context deadline/TiKV/PD error。终态仍为相同 generation/revision/runtime，
+KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口无监听；由于没有集群 mutation，不存在需要伪造的 rollback。A5637 关闭把
+另一健康成员的 gateway Maintenance header 拼入当前 ENDPOINT 发布证据的问题。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

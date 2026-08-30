@@ -1714,6 +1714,10 @@ dbSizeQuota 和 downgradeInfo envelope；AuthStatus 的缺省 `enabled` 视为 p
 省略的 `false`，若返回则必须是 JSON boolean，`authRevision` 若返回则必须为非负整数；
 Alarm GET 的缺省 `alarms` 视为 protojson 空 repeated 省略，若返回则必须是 JSON array，
 当前发布只读门禁要求为空；
+正常 gateway 成功模式还要求 `ENDPOINT` 在 `STATUS_ENDPOINTS` 中精确对应唯一 member，且
+gateway Status、AuthStatus、Alarm、Hash、HashKV 五种响应的 header member ID 全部等于该成员；
+通过摘要输出 `gateway_endpoint_member_id=<id>` 与 `gateway_endpoint_members_match=true`。
+非空 client certificate CN 的预期 HTTP 400 模式没有成功 response header，因此不会声称完成该映射校验；
 client/info 双口 `/version` 的 `etcdserver`、`etcdcluster`、`storage` 必须一致，且
 `storage` 必须与 gateway Status `storageVersion` 一致。启用 HashKV 校验时，脚本还会读取
 HTTP gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv`，要求 HashKV hash、
@@ -1747,7 +1751,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时�
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、
 `version_etcdserver=<semver>`、`version_storage=<semver>`、`info_version_storage=<semver>`、
 `gateway_auth_enabled=<bool>`、`gateway_alarms=empty`、`gateway_hashkv_hash=<n>`、
-`gateway_hashkv_revisions_match=true`、`hashkv_endpoint_members_match=true`、
+`gateway_hashkv_revisions_match=true`、`gateway_endpoint_members_match=true`、
+`hashkv_endpoint_members_match=true`、
 `revisions_match=true`、`hashkv_raft_terms=<unique>` 和
 `raft_terms_match=true` 等证据；
 其中 HashKV/gateway HashKV revision 与 raft term 交叉一致性用于证明本次只读诊断
