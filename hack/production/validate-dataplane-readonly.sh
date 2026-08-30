@@ -1571,6 +1571,35 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "ENDPOINT must match exactly one STATUS_ENDPOINTS revision: endpoint=${ENDPOINT}" >&2
     exit 1
   fi
+  gateway_expected_status_values="$(printf '%s' "$status_json" | "$JQ" -r --arg endpoint "$ENDPOINT" '
+    [
+      .[]
+      | select(.Endpoint == $endpoint)
+      | .Status
+      | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else null end) as $downgrade_info
+      | [
+          (.version // "missing"),
+          (if has("storageVersion") then .storageVersion elif has("storage_version") then .storage_version else "missing" end),
+          ((if has("dbSize") then .dbSize else .db_size end) | tostring),
+          (if has("dbSizeInUse") then (.dbSizeInUse | tostring) elif has("db_size_in_use") then (.db_size_in_use | tostring) else "missing" end),
+          (if has("dbSizeQuota") then (.dbSizeQuota | tostring) elif has("db_size_quota") then (.db_size_quota | tostring) else "missing" end),
+          (if has("isLearner") then (.isLearner | tostring) elif has("is_learner") then (.is_learner | tostring) else "missing" end),
+          (if has("leader") then (.leader | tostring) elif has("leader_id") then (.leader_id | tostring) elif has("leaderId") then (.leaderId | tostring) else "missing" end),
+          (if has("raftTerm") then (.raftTerm | tostring) elif has("raft_term") then (.raft_term | tostring) else "missing" end),
+          (if has("raftIndex") then (.raftIndex | tostring) elif has("raft_index") then (.raft_index | tostring) else "missing" end),
+          (if has("raftAppliedIndex") then (.raftAppliedIndex | tostring) elif has("raft_applied_index") then (.raft_applied_index | tostring) else "missing" end),
+          (if $downgrade_info == null then "missing" elif ($downgrade_info | has("enabled")) then ($downgrade_info.enabled | tostring) else "false" end),
+          (if $downgrade_info == null then "missing" elif ($downgrade_info | has("targetVersion")) then ($downgrade_info.targetVersion | if . == "" then "-" else . end) elif ($downgrade_info | has("target_version")) then ($downgrade_info.target_version | if . == "" then "-" else . end) else "-" end)
+        ]
+      | @tsv
+    ]
+    | if length == 1 then .[0] else "invalid" end
+  ')"
+  IFS=$'\t' read -r gateway_expected_status_version gateway_expected_status_storage_version gateway_expected_status_db_size gateway_expected_status_db_size_in_use gateway_expected_status_db_size_quota gateway_expected_status_is_learner gateway_expected_status_leader gateway_expected_status_raft_term gateway_expected_status_raft_index gateway_expected_status_raft_applied_index gateway_expected_status_downgrade_enabled gateway_expected_status_downgrade_target_version <<<"$gateway_expected_status_values"
+  if [[ "$gateway_expected_status_db_size" == "" || "$gateway_expected_status_db_size" == "invalid" ]]; then
+    echo "ENDPOINT must match exactly one STATUS_ENDPOINTS body: endpoint=${ENDPOINT}" >&2
+    exit 1
+  fi
   if [[ -n "$INFO_ENDPOINTS" ]]; then
     status_reported_leader_count="$(printf '%s' "$status_json" | "$JQ" -r '
       [
@@ -1684,9 +1713,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   gateway_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_status_url")"
   gateway_status_values="$(printf '%s' "$gateway_status_json" | "$JQ" -r '
     if type != "object" then
-      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       (if has("isLearner") then .isLearner elif has("is_learner") then .is_learner else null end) as $is_learner
+      | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else null end) as $downgrade_info
       |
       [
         (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
@@ -1704,11 +1734,13 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         (if has("raftTerm") then .raftTerm elif has("raft_term") then .raft_term else "missing" end),
         (if has("raftIndex") then .raftIndex elif has("raft_index") then .raft_index else "missing" end),
         (if has("raftAppliedIndex") then .raftAppliedIndex elif has("raft_applied_index") then .raft_applied_index else "missing" end),
-        (if has("downgradeInfo") then (.downgradeInfo | type) elif has("downgrade_info") then (.downgrade_info | type) else "missing" end)
+        (if $downgrade_info == null then "missing" else ($downgrade_info | type) end),
+        (if $downgrade_info == null then "missing" elif ($downgrade_info | type) != "object" then "invalid" elif ($downgrade_info | has("enabled")) then ($downgrade_info.enabled | tostring) else "false" end),
+        (if $downgrade_info == null then "missing" elif ($downgrade_info | type) != "object" then "invalid" elif ($downgrade_info | has("targetVersion")) then ($downgrade_info.targetVersion | if . == "" then "-" else . end) elif ($downgrade_info | has("target_version")) then ($downgrade_info.target_version | if . == "" then "-" else . end) else "-" end)
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r gateway_status_cluster_id gateway_status_member_id gateway_status_revision gateway_status_header_raft_term gateway_status_version gateway_status_storage_version gateway_status_db_size gateway_status_db_size_in_use gateway_status_db_size_quota gateway_status_is_learner_type gateway_status_is_learner gateway_status_leader gateway_status_raft_term gateway_status_raft_index gateway_status_raft_applied_index gateway_status_downgrade_info_type <<<"$gateway_status_values"
+  IFS=$'\t' read -r gateway_status_cluster_id gateway_status_member_id gateway_status_revision gateway_status_header_raft_term gateway_status_version gateway_status_storage_version gateway_status_db_size gateway_status_db_size_in_use gateway_status_db_size_quota gateway_status_is_learner_type gateway_status_is_learner gateway_status_leader gateway_status_raft_term gateway_status_raft_index gateway_status_raft_applied_index gateway_status_downgrade_info_type gateway_status_downgrade_enabled gateway_status_downgrade_target_version <<<"$gateway_status_values"
   if [[ "$gateway_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${gateway_status_cluster_id}" >&2
     exit 1
@@ -1785,6 +1817,50 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$gateway_status_downgrade_info_type" != "object" ]]; then
     echo "gateway status downgradeInfo envelope invalid: expected object, got ${gateway_status_downgrade_info_type}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_status_db_size" != "$gateway_expected_status_db_size" ]]; then
+    echo "gateway status dbSize mismatch with direct endpoint: direct=${gateway_expected_status_db_size}, gateway=${gateway_status_db_size}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_expected_status_version" != "missing" && "$gateway_status_version" != "$gateway_expected_status_version" ]]; then
+    echo "gateway status version mismatch with direct endpoint: direct=${gateway_expected_status_version}, gateway=${gateway_status_version}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_expected_status_storage_version" != "missing" && "$gateway_status_storage_version" != "$gateway_expected_status_storage_version" ]]; then
+    echo "gateway status storageVersion mismatch with direct endpoint: direct=${gateway_expected_status_storage_version}, gateway=${gateway_status_storage_version}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_expected_status_db_size_in_use" != "missing" && "$gateway_status_db_size_in_use" != "$gateway_expected_status_db_size_in_use" ]]; then
+    echo "gateway status dbSizeInUse mismatch with direct endpoint: direct=${gateway_expected_status_db_size_in_use}, gateway=${gateway_status_db_size_in_use}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_expected_status_db_size_quota" != "missing" && "$gateway_status_db_size_quota" != "$gateway_expected_status_db_size_quota" ]]; then
+    echo "gateway status dbSizeQuota mismatch with direct endpoint: direct=${gateway_expected_status_db_size_quota}, gateway=${gateway_status_db_size_quota}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_expected_status_is_learner" != "missing" && "$gateway_status_is_learner" != "$gateway_expected_status_is_learner" ]]; then
+    echo "gateway status isLearner mismatch with direct endpoint: direct=${gateway_expected_status_is_learner}, gateway=${gateway_status_is_learner}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_expected_status_leader" != "missing" && "$gateway_status_leader" != "$gateway_expected_status_leader" ]]; then
+    echo "gateway status leader mismatch with direct endpoint: direct=${gateway_expected_status_leader}, gateway=${gateway_status_leader}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_expected_status_raft_term" != "missing" && "$gateway_status_raft_term" != "$gateway_expected_status_raft_term" ]]; then
+    echo "gateway status raftTerm mismatch with direct endpoint: direct=${gateway_expected_status_raft_term}, gateway=${gateway_status_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_expected_status_raft_index" != "missing" && "$gateway_status_raft_index" != "$gateway_expected_status_raft_index" ]]; then
+    echo "gateway status raftIndex mismatch with direct endpoint: direct=${gateway_expected_status_raft_index}, gateway=${gateway_status_raft_index}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_expected_status_raft_applied_index" != "missing" && "$gateway_status_raft_applied_index" != "$gateway_expected_status_raft_applied_index" ]]; then
+    echo "gateway status raftAppliedIndex mismatch with direct endpoint: direct=${gateway_expected_status_raft_applied_index}, gateway=${gateway_status_raft_applied_index}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_expected_status_downgrade_enabled" != "missing" && ( "$gateway_status_downgrade_enabled" != "$gateway_expected_status_downgrade_enabled" || "$gateway_status_downgrade_target_version" != "$gateway_expected_status_downgrade_target_version" ) ]]; then
+    echo "gateway status downgradeInfo mismatch with direct endpoint: direct=${gateway_expected_status_downgrade_enabled}/${gateway_expected_status_downgrade_target_version}, gateway=${gateway_status_downgrade_enabled}/${gateway_status_downgrade_target_version}" >&2
     exit 1
   fi
   fi
@@ -1884,6 +1960,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     status_summary+=", gateway_raft_applied_index=${gateway_status_raft_applied_index}"
     status_summary+=", gateway_raft_indexes_sampled=true"
     status_summary+=", gateway_downgrade_info=object"
+    status_summary+=", gateway_status_body_match=true"
   fi
 
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
