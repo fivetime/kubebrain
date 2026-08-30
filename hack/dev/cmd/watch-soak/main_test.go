@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -23,6 +24,7 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -414,7 +416,9 @@ func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *test
 	require.NoError(t, err)
 	text := string(script)
 	require.Contains(t, text, "ALLOW_MUTATING_WATCH_SOAK=true")
-	require.Contains(t, text, "go run ./hack/dev/cmd/watch-soak")
+	require.Contains(t, text, `go build -o "$WATCH_SOAK_BINARY" ./hack/dev/cmd/watch-soak`)
+	require.Contains(t, text, `kill "-$signal" "$watch_soak_pid"`)
+	require.Contains(t, text, `wait "$watch_soak_pid"`)
 	require.Contains(t, text, `CLEANUP_TIMEOUT_SECONDS="${CLEANUP_TIMEOUT_SECONDS:-300}"`)
 	require.Contains(t, text, `WRITE_CONCURRENCY="${WRITE_CONCURRENCY:-1}"`)
 	require.Contains(t, text, `WRITE_CONCURRENCY="$WRITE_CONCURRENCY"`)
@@ -427,10 +431,65 @@ func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *test
 	require.Contains(t, text, `SLOW_CONSUMER_EXPECTED_OUTCOME="${SLOW_CONSUMER_EXPECTED_OUTCOME:-recovered}"`)
 	require.Contains(t, text, `SLOW_CONSUMER_EXPECTED_OUTCOME="$SLOW_CONSUMER_EXPECTED_OUTCOME"`)
 	require.NotContains(t, text, "go get")
+	require.NotContains(t, text, "go run")
 	require.NotContains(t, text, "rm -rf")
 	verify, err := os.ReadFile(filepath.Join("..", "..", "verify.sh"))
 	require.NoError(t, err)
 	require.Contains(t, string(verify), "ALLOW_MUTATING_WATCH_SOAK=true")
+}
+
+func TestWrapperForwardsSIGTERMAndWaitsForRunner(t *testing.T) {
+	script := filepath.Join("..", "..", "watch-soak.sh")
+	buildRoot := t.TempDir()
+	command := exec.Command("bash", script)
+	command.Env = append(os.Environ(),
+		"ALLOW_MUTATING_WATCH_SOAK=true",
+		"ENDPOINT=127.0.0.1:1",
+		"WATCHERS=1",
+		"EVENTS=1",
+		"TIMEOUT_SECONDS=10",
+		"CLEANUP_TIMEOUT_SECONDS=5",
+		"WRITE_INTERVAL=0s",
+		"WRITE_CONCURRENCY=1",
+		"RUN_ID=wrapper-sigterm-test",
+		"CLEANUP_ONLY=false",
+		"SLOW_CONSUMER=false",
+		"SLOW_CONSUMERS=",
+		"REQUIRE_SLOW_CONSUMER_OUTCOMES=false",
+		"SLOW_CONSUMER_EXPECTED_OUTCOME=recovered",
+		"INFO_ENDPOINT=",
+		"ETCD_CA_FILE=",
+		"ETCD_CERT_FILE=",
+		"ETCD_KEY_FILE=",
+		"ETCD_TLS_SERVER_NAME=",
+		"TMPDIR="+buildRoot,
+	)
+	stderr, err := command.StderrPipe()
+	require.NoError(t, err)
+	require.NoError(t, command.Start())
+
+	scanner := bufio.NewScanner(stderr)
+	lines := make([]string, 0, 4)
+	started := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		lines = append(lines, line)
+		if strings.Contains(line, "Watch soak signal handler ready:") {
+			started = true
+			break
+		}
+	}
+	require.True(t, started, "runner did not install signal handler: %s", strings.Join(lines, "\n"))
+	require.NoError(t, command.Process.Signal(syscall.SIGTERM))
+	remaining, readErr := io.ReadAll(stderr)
+	require.NoError(t, readErr)
+	err = command.Wait()
+	require.Error(t, err, "interrupted soak must not report success")
+	output := strings.Join(lines, "\n") + "\n" + string(remaining)
+	require.Contains(t, output, "preflight watch-soak prefix: context canceled")
+	entries, err := os.ReadDir(buildRoot)
+	require.NoError(t, err)
+	require.Empty(t, entries, "wrapper must remove its exact temporary build directory")
 }
 
 func TestWrapperRejectsMutationWithoutApprovalBeforeRunningGo(t *testing.T) {

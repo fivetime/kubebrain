@@ -32,7 +32,29 @@ if ! command -v go >/dev/null 2>&1; then
 fi
 
 cd "$ROOT_DIR"
-exec env \
+WATCH_SOAK_BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-watch-soak.XXXXXX")"
+WATCH_SOAK_BINARY="$WATCH_SOAK_BUILD_DIR/watch-soak"
+watch_soak_pid=""
+
+cleanup_watch_soak_binary() {
+  rm -f -- "$WATCH_SOAK_BINARY"
+  rmdir -- "$WATCH_SOAK_BUILD_DIR"
+}
+forward_watch_soak_signal() {
+  local signal="$1"
+  local exit_status="$2"
+  if [[ -n "$watch_soak_pid" ]] && kill -0 "$watch_soak_pid" 2>/dev/null; then
+    kill "-$signal" "$watch_soak_pid" 2>/dev/null || true
+    return
+  fi
+  exit "$exit_status"
+}
+trap cleanup_watch_soak_binary EXIT
+trap 'forward_watch_soak_signal INT 130' INT
+trap 'forward_watch_soak_signal TERM 143' TERM
+
+go build -o "$WATCH_SOAK_BINARY" ./hack/dev/cmd/watch-soak
+env \
   ENDPOINT="$ENDPOINT" \
   WATCHERS="$WATCHERS" \
   EVENTS="$EVENTS" \
@@ -47,4 +69,17 @@ exec env \
   REQUIRE_SLOW_CONSUMER_OUTCOMES="$REQUIRE_SLOW_CONSUMER_OUTCOMES" \
   SLOW_CONSUMER_EXPECTED_OUTCOME="$SLOW_CONSUMER_EXPECTED_OUTCOME" \
   INFO_ENDPOINT="$INFO_ENDPOINT" \
-  go run ./hack/dev/cmd/watch-soak
+  "$WATCH_SOAK_BINARY" &
+watch_soak_pid=$!
+
+watch_soak_status=0
+while true; do
+  set +e
+  wait "$watch_soak_pid"
+  watch_soak_status=$?
+  set -e
+  if ! kill -0 "$watch_soak_pid" 2>/dev/null; then
+    break
+  fi
+done
+exit "$watch_soak_status"

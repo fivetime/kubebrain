@@ -106,6 +106,7 @@ type etcdClientFactory func() (*clientv3.Client, error)
 func main() {
 	processCtx, stop := processContext()
 	defer stop()
+	fmt.Fprintf(os.Stderr, "Watch soak signal handler ready: pid=%d\n", os.Getpid())
 
 	cfg, err := configFromEnvironment()
 	if err != nil {
