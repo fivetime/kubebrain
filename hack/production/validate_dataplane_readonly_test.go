@@ -3052,6 +3052,47 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "hashkv_raft_terms=8, raft_terms_match=true",
 		},
 		{
+			name: "rejects missing hashkv raft term when status reports term",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"dbSize":99,"raftTerm":8}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":3}}]`,
+			},
+			wantOutput: "hashkv raft term must be present on all endpoints when Status reports raft term",
+		},
+		{
+			name: "rejects partial hashkv raft term coverage",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7},"dbSize":99}}
+			]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				`FAKE_HASHKV_JSON=[
+					{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}},
+					{"Endpoint":"http://127.0.0.2:2379","HashKV":{"header":{"cluster_id":123,"member_id":789,"revision":7},"hash":111,"compact_revision":3}}
+				]`,
+			},
+			wantOutput: "hashkv raft term must be present on all endpoints when present",
+		},
+		{
 			name: "reports gateway hash and hashkv envelope in summary",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -3086,6 +3127,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_VERSION=3.7.0",
 				"EXPECTED_HASHKV_HASH=111",
 				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}}]`,
 			},
 			wantOK:     true,
 			wantOutput: "mvcc_hash_metrics=ok",
@@ -3110,6 +3152,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_VERSION=3.7.0",
 				"EXPECTED_HASHKV_HASH=111",
 				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}}]`,
 			},
 			wantOutput: "info metrics mismatch: expected etcd_mvcc_hash_rev_duration_seconds_count after gateway hashkv",
 		},
@@ -5533,6 +5576,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"revisions_match=true",
 		"hashkv_raft_terms=<unique>",
 		"raft_terms_match=true",
+		"HashKV raft term 一旦在任一 endpoint 返回就必须覆盖全部 endpoint",
 		"同一个静态 MVCC/Raft 观察边界",
 	} {
 		require.Contains(t, doc, required)

@@ -2207,6 +2207,21 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv raft term envelope invalid: ${hashkv_raft_term_violations}" >&2
     exit 1
   fi
+  hashkv_raft_term_presence="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      ([.[] | select((.HashKV.header | has("raft_term")) or (.HashKV.header | has("raftTerm")))] | length)
+    end
+  ')"
+  if [[ "${status_raft_terms:-"-"}" != "-" && "$hashkv_raft_term_presence" != "$hashkv_count" ]]; then
+    echo "hashkv raft term must be present on all endpoints when Status reports raft term: present=${hashkv_raft_term_presence}, total=${hashkv_count}" >&2
+    exit 1
+  fi
+  if [[ "$hashkv_raft_term_presence" != "0" && "$hashkv_raft_term_presence" != "$hashkv_count" ]]; then
+    echo "hashkv raft term must be present on all endpoints when present: present=${hashkv_raft_term_presence}, total=${hashkv_count}" >&2
+    exit 1
+  fi
   hashkv_revision_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
