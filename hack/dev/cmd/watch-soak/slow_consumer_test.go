@@ -29,6 +29,8 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestValidateDirectLeaderStatus(t *testing.T) {
@@ -46,6 +48,7 @@ func TestValidateDirectLeaderStatus(t *testing.T) {
 type scriptedRawWatchStream struct {
 	grpc.ClientStream
 	responses []*etcdserverpb.WatchResponse
+	sent      []*etcdserverpb.WatchRequest
 }
 
 type blockingRawWatchStream struct {
@@ -61,8 +64,11 @@ func (stream *blockingRawWatchStream) Recv() (*etcdserverpb.WatchResponse, error
 	return nil, context.Canceled
 }
 
-func (stream *scriptedRawWatchStream) Send(*etcdserverpb.WatchRequest) error { return nil }
-func (stream *scriptedRawWatchStream) CloseSend() error                      { return nil }
+func (stream *scriptedRawWatchStream) Send(request *etcdserverpb.WatchRequest) error {
+	stream.sent = append(stream.sent, request)
+	return nil
+}
+func (stream *scriptedRawWatchStream) CloseSend() error { return nil }
 
 func (stream *scriptedRawWatchStream) Recv() (*etcdserverpb.WatchResponse, error) {
 	if len(stream.responses) == 0 {
@@ -94,9 +100,104 @@ func TestRawSlowWatchConsumesExactEventsAcrossProgressAndBatches(t *testing.T) {
 		}},
 		prefix: prefix, eventCount: 3, clusterID: 7, memberID: 9,
 	}
-	observations, err := watch.consume()
+	written := []eventObservation{{index: 0, revision: 7}, {index: 1, revision: 8}, {index: 2, revision: 9}}
+	observations, err := watch.consume(written)
 	require.NoError(t, err)
 	require.Equal(t, []eventObservation{{index: 0, revision: 7}, {index: 1, revision: 8}, {index: 2, revision: 9}}, observations)
+}
+
+func TestRawSlowWatchReconnectsFromNextVerifiedRevision(t *testing.T) {
+	prefix := "/registry/watch-soak/reconnect-slow/"
+	written := []eventObservation{{index: 0, revision: 7}, {index: 1, revision: 8}, {index: 2, revision: 9}}
+	event := func(index int) *mvccpb.Event {
+		revision := written[index].revision
+		return &mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{
+			Key: []byte(expectedKey(prefix, index)), Value: []byte(expectedValue(index)),
+			CreateRevision: revision, ModRevision: revision, Version: 1,
+		}}
+	}
+	initial := &scriptedRawWatchStream{responses: []*etcdserverpb.WatchResponse{
+		rawResponse(7, event(0)),
+	}}
+	reopened := &scriptedRawWatchStream{responses: []*etcdserverpb.WatchResponse{
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 9, Revision: 9}, WatchId: slowConsumerWatchID, Created: true},
+		rawResponse(9, event(1), event(2)),
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watch := &rawSlowWatch{
+		stream: initial, ctx: ctx, cancel: cancel, prefix: prefix, eventCount: len(written),
+		clusterID: 7, memberID: 9, minimumReconnects: 1,
+		openStream: func(context.Context) (etcdserverpb.Watch_WatchClient, error) { return reopened, nil },
+	}
+	observed, err := watch.consume(written)
+	require.NoError(t, err)
+	require.Equal(t, written, observed)
+	require.Equal(t, 1, watch.reconnects)
+	require.Len(t, reopened.sent, 1)
+	require.Equal(t, int64(8), reopened.sent[0].GetCreateRequest().StartRevision)
+}
+
+func TestRawSlowWatchRetriesUnavailableReopen(t *testing.T) {
+	prefix := "/registry/watch-soak/retry-reopen-slow/"
+	written := []eventObservation{{index: 0, revision: 7}}
+	reopened := &scriptedRawWatchStream{responses: []*etcdserverpb.WatchResponse{
+		{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 9, Revision: 7}, WatchId: slowConsumerWatchID, Created: true},
+		rawResponse(7, &mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{
+			Key: []byte(expectedKey(prefix, 0)), Value: []byte(expectedValue(0)), CreateRevision: 7, ModRevision: 7, Version: 1,
+		}}),
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	attempts := 0
+	watch := &rawSlowWatch{
+		stream: &scriptedRawWatchStream{}, ctx: ctx, cancel: cancel, prefix: prefix, eventCount: len(written),
+		clusterID: 7, memberID: 9, minimumReconnects: 1,
+		openStream: func(context.Context) (etcdserverpb.Watch_WatchClient, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, status.Error(codes.Unavailable, "injected reopen failure")
+			}
+			return reopened, nil
+		},
+	}
+	observed, err := watch.consume(written)
+	require.NoError(t, err)
+	require.Equal(t, written, observed)
+	require.Equal(t, 2, attempts)
+	require.Equal(t, 1, watch.reconnects)
+}
+
+func TestRawSlowWatchReconnectGateDoesNotCountSteadyStream(t *testing.T) {
+	prefix := "/registry/watch-soak/no-reconnect-slow/"
+	written := []eventObservation{{index: 0, revision: 7}}
+	stream := &scriptedRawWatchStream{responses: []*etcdserverpb.WatchResponse{rawResponse(7,
+		&mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{
+			Key: []byte(expectedKey(prefix, 0)), Value: []byte(expectedValue(0)), CreateRevision: 7, ModRevision: 7, Version: 1,
+		}},
+	)}}
+	watch := &rawSlowWatch{stream: stream, prefix: prefix, eventCount: 1, clusterID: 7, memberID: 9, minimumReconnects: 1}
+	_, err := watch.consume(written)
+	require.ErrorContains(t, err, "observed 0 reconnects, require at least 1")
+}
+
+func TestRawSlowWatchRejectsNonRetriableReceiveFailure(t *testing.T) {
+	prefix := "/registry/watch-soak/non-retriable-slow/"
+	stream := &errorRawWatchStream{err: status.Error(codes.PermissionDenied, "denied")}
+	watch := &rawSlowWatch{stream: stream, prefix: prefix, eventCount: 1, minimumReconnects: 1}
+	_, err := watch.consume([]eventObservation{{index: 0, revision: 7}})
+	require.ErrorContains(t, err, "PermissionDenied")
+}
+
+type errorRawWatchStream struct {
+	grpc.ClientStream
+	err error
+}
+
+func (*errorRawWatchStream) Send(*etcdserverpb.WatchRequest) error { return nil }
+func (*errorRawWatchStream) CloseSend() error                      { return nil }
+func (stream *errorRawWatchStream) Recv() (*etcdserverpb.WatchResponse, error) {
+	return nil, stream.err
 }
 
 func TestMultipleRawSlowWatchesConsumeAndValidateConcurrently(t *testing.T) {
@@ -204,7 +305,7 @@ func TestRawSlowWatchRejectsIdentityDriftAndDuplicateCreated(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			watch := &rawSlowWatch{stream: &scriptedRawWatchStream{responses: []*etcdserverpb.WatchResponse{response}},
 				prefix: "/registry/watch-soak/slow/", eventCount: 1, clusterID: 7, memberID: 9}
-			_, err := watch.consume()
+			_, err := watch.consume([]eventObservation{{index: 0, revision: 8}})
 			require.Error(t, err)
 		})
 	}
@@ -342,6 +443,13 @@ func TestExpectedWatchOutcomesDistinguishRingRecoveryAndEviction(t *testing.T) {
 			retry: 4, recovered: 5, compacted: 9, failed: 7,
 		},
 	}, compactedComplete)
+
+	interruptedEntered, err := expectedWatchOutcomes(baseline, slowConsumerExpectedInterrupted, 3, false)
+	require.NoError(t, err)
+	require.Equal(t, droppedEntered, interruptedEntered)
+	interruptedComplete, err := expectedWatchOutcomes(baseline, slowConsumerExpectedInterrupted, 3, true)
+	require.NoError(t, err)
+	require.Equal(t, interruptedEntered, interruptedComplete)
 
 	unownedCompaction := droppedComplete
 	unownedCompaction.generation.compacted++

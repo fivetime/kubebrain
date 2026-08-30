@@ -58,42 +58,45 @@ const (
 )
 
 const (
-	slowConsumerExpectedRecovered = "recovered"
-	slowConsumerExpectedDropped   = "dropped"
-	slowConsumerExpectedCompacted = "compacted"
+	slowConsumerExpectedRecovered   = "recovered"
+	slowConsumerExpectedDropped     = "dropped"
+	slowConsumerExpectedCompacted   = "compacted"
+	slowConsumerExpectedInterrupted = "interrupted"
 )
 
 var runIDPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 type config struct {
-	endpoint                    string
-	writeEndpoint               string
-	watchers                    int
-	events                      int
-	timeout                     time.Duration
-	cleanupTimeout              time.Duration
-	writeInterval               time.Duration
-	writeConcurrency            int
-	minimumTransportReconnects  int
-	minimumResumedWatchStreams  int
-	runID                       string
-	cleanupOnly                 bool
-	slowConsumer                bool
-	slowConsumers               int
-	requireSlowConsumerOutcomes bool
-	slowConsumerExpectedOutcome string
-	infoEndpoint                string
-	caFile                      string
-	certFile                    string
-	keyFile                     string
-	tlsServerName               string
-	writeTLSServerName          string
-	infoCAFile                  string
-	infoCertFile                string
-	infoKeyFile                 string
-	infoTLSServerName           string
-	username                    string
-	password                    string
+	endpoint                      string
+	writeEndpoint                 string
+	watchers                      int
+	events                        int
+	timeout                       time.Duration
+	cleanupTimeout                time.Duration
+	writeInterval                 time.Duration
+	writeConcurrency              int
+	minimumTransportReconnects    int
+	minimumResumedWatchStreams    int
+	minimumRawSlowReconnects      int
+	slowConsumerHoldAfterPressure time.Duration
+	runID                         string
+	cleanupOnly                   bool
+	slowConsumer                  bool
+	slowConsumers                 int
+	requireSlowConsumerOutcomes   bool
+	slowConsumerExpectedOutcome   string
+	infoEndpoint                  string
+	caFile                        string
+	certFile                      string
+	keyFile                       string
+	tlsServerName                 string
+	writeTLSServerName            string
+	infoCAFile                    string
+	infoCertFile                  string
+	infoKeyFile                   string
+	infoTLSServerName             string
+	username                      string
+	password                      string
 }
 
 type watcherResult struct {
@@ -285,6 +288,10 @@ func configFromEnvironment() (config, error) {
 		return config{}, fmt.Errorf("MIN_RESUMED_WATCH_STREAMS_PER_WATCHER requires WATCHERS no greater than %d: %d",
 			maximumIndependentlyTrackedWatchers, watchers)
 	}
+	minimumRawSlowReconnects, err := nonNegativeInt("MIN_RAW_SLOW_CONSUMER_RECONNECTS", 1_000_000)
+	if err != nil {
+		return config{}, err
+	}
 	slowConsumer, err := strictBool("SLOW_CONSUMER")
 	if err != nil {
 		return config{}, err
@@ -315,11 +322,20 @@ func configFromEnvironment() (config, error) {
 	}
 	expectedOutcome := os.Getenv("SLOW_CONSUMER_EXPECTED_OUTCOME")
 	if expectedOutcome != slowConsumerExpectedRecovered && expectedOutcome != slowConsumerExpectedDropped &&
-		expectedOutcome != slowConsumerExpectedCompacted {
-		return config{}, fmt.Errorf("SLOW_CONSUMER_EXPECTED_OUTCOME must be recovered, dropped, or compacted: %q", expectedOutcome)
+		expectedOutcome != slowConsumerExpectedCompacted && expectedOutcome != slowConsumerExpectedInterrupted {
+		return config{}, fmt.Errorf("SLOW_CONSUMER_EXPECTED_OUTCOME must be recovered, dropped, compacted, or interrupted: %q", expectedOutcome)
 	}
 	if expectedOutcome != slowConsumerExpectedRecovered && (!slowConsumer || !requireOutcomes) {
 		return config{}, fmt.Errorf("SLOW_CONSUMER_EXPECTED_OUTCOME=%s requires SLOW_CONSUMER=true and REQUIRE_SLOW_CONSUMER_OUTCOMES=true", expectedOutcome)
+	}
+	if minimumRawSlowReconnects > 0 && (!slowConsumer || !requireOutcomes) {
+		return config{}, errors.New("MIN_RAW_SLOW_CONSUMER_RECONNECTS requires SLOW_CONSUMER=true and REQUIRE_SLOW_CONSUMER_OUTCOMES=true")
+	}
+	if minimumRawSlowReconnects > 0 && expectedOutcome == slowConsumerExpectedCompacted {
+		return config{}, errors.New("MIN_RAW_SLOW_CONSUMER_RECONNECTS does not support SLOW_CONSUMER_EXPECTED_OUTCOME=compacted")
+	}
+	if expectedOutcome == slowConsumerExpectedInterrupted && minimumRawSlowReconnects == 0 {
+		return config{}, errors.New("SLOW_CONSUMER_EXPECTED_OUTCOME=interrupted requires MIN_RAW_SLOW_CONSUMER_RECONNECTS greater than zero")
 	}
 	observers := int64(watchers + slowConsumers)
 	if observers*int64(events) > maximumWatchObservations {
@@ -342,6 +358,14 @@ func configFromEnvironment() (config, error) {
 	writeInterval, err := time.ParseDuration(os.Getenv("WRITE_INTERVAL"))
 	if err != nil || writeInterval < 0 {
 		return config{}, fmt.Errorf("WRITE_INTERVAL must be a non-negative Go duration: %q", os.Getenv("WRITE_INTERVAL"))
+	}
+	slowConsumerHoldAfterPressure, err := time.ParseDuration(os.Getenv("SLOW_CONSUMER_HOLD_AFTER_PRESSURE"))
+	if err != nil || slowConsumerHoldAfterPressure < 0 || slowConsumerHoldAfterPressure > 10*time.Minute {
+		return config{}, fmt.Errorf("SLOW_CONSUMER_HOLD_AFTER_PRESSURE must be a non-negative Go duration no greater than 10m: %q",
+			os.Getenv("SLOW_CONSUMER_HOLD_AFTER_PRESSURE"))
+	}
+	if slowConsumerHoldAfterPressure > 0 && expectedOutcome != slowConsumerExpectedInterrupted {
+		return config{}, errors.New("SLOW_CONSUMER_HOLD_AFTER_PRESSURE requires SLOW_CONSUMER_EXPECTED_OUTCOME=interrupted")
 	}
 	runID := os.Getenv("RUN_ID")
 	if len(runID) == 0 || len(runID) > 63 || !runIDPattern.MatchString(runID) {
@@ -380,6 +404,7 @@ func configFromEnvironment() (config, error) {
 		cleanupTimeout: time.Duration(cleanupTimeoutSeconds) * time.Second,
 		writeInterval:  writeInterval, writeConcurrency: writeConcurrency,
 		minimumTransportReconnects: minimumTransportReconnects, minimumResumedWatchStreams: minimumResumedWatchStreams,
+		minimumRawSlowReconnects: minimumRawSlowReconnects, slowConsumerHoldAfterPressure: slowConsumerHoldAfterPressure,
 		runID: runID, cleanupOnly: cleanupOnly,
 		slowConsumer: slowConsumer, slowConsumers: slowConsumers, requireSlowConsumerOutcomes: requireOutcomes,
 		slowConsumerExpectedOutcome: expectedOutcome, infoEndpoint: infoEndpoint,
@@ -593,7 +618,9 @@ func run(ctx context.Context, client, writeClient *clientv3.Client, cfg config, 
 			if err := requireDirectLeader(ctx, rawClient, cfg.endpoint); err != nil {
 				return fmt.Errorf("confirm direct leader for raw slow-consumer client %d: %w", id, err)
 			}
-			slow, startErr := startRawSlowWatch(watchCtx, rawClient, prefix, startRevision, cfg.events)
+			slow, startErr := startRawSlowWatch(
+				watchCtx, rawClient, prefix, startRevision, cfg.events, cfg.minimumRawSlowReconnects,
+			)
 			if startErr != nil {
 				return fmt.Errorf("start raw slow-consumer watch %d: %w", id, startErr)
 			}
@@ -623,6 +650,17 @@ func run(ctx context.Context, client, writeClient *clientv3.Client, cfg config, 
 		); err != nil {
 			return err
 		}
+		fmt.Fprintf(os.Stderr, "Watch soak slow-consumer pressure satisfied: consumers=%d expected_outcome=%s hold=%s\n",
+			cfg.slowConsumers, cfg.slowConsumerExpectedOutcome, cfg.slowConsumerHoldAfterPressure)
+		if cfg.slowConsumerHoldAfterPressure > 0 {
+			timer := time.NewTimer(cfg.slowConsumerHoldAfterPressure)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return fmt.Errorf("hold slow consumers after pressure: %w", context.Cause(ctx))
+			}
+		}
 	}
 	compactRevision := int64(0)
 	if cfg.slowConsumerExpectedOutcome == slowConsumerExpectedCompacted {
@@ -635,6 +673,7 @@ func run(ctx context.Context, client, writeClient *clientv3.Client, cfg config, 
 	if err := consumeRawSlowWatches(slows, writtenEvents, cfg.slowConsumerExpectedOutcome); err != nil {
 		return err
 	}
+	rawSlowReconnectsMin, rawSlowReconnectsTotal := rawSlowWatchReconnectSummary(slows)
 
 	for count := 0; count < cfg.watchers; count++ {
 		select {
@@ -674,11 +713,12 @@ func run(ctx context.Context, client, writeClient *clientv3.Client, cfg config, 
 		return err
 	}
 	cancelWatches()
-	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d compact_revision=%d prefix=%s write_interval=%s write_concurrency=%d separate_write_endpoint=%t transport_connections=%d transport_reconnects=%d minimum_transport_reconnects=%d resumed_watch_streams_total=%d resumed_watch_streams_min_per_watcher=%d minimum_resumed_watch_streams_per_watcher=%d\n",
+	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d compact_revision=%d prefix=%s write_interval=%s write_concurrency=%d separate_write_endpoint=%t transport_connections=%d transport_reconnects=%d minimum_transport_reconnects=%d resumed_watch_streams_total=%d resumed_watch_streams_min_per_watcher=%d minimum_resumed_watch_streams_per_watcher=%d raw_slow_reconnects_total=%d raw_slow_reconnects_min_per_consumer=%d minimum_raw_slow_consumer_reconnects=%d\n",
 		cfg.watchers, cfg.slowConsumer, cfg.slowConsumers, cfg.slowConsumerExpectedOutcome, cfg.requireSlowConsumerOutcomes, cfg.events, writtenEvents[0].revision,
 		writtenEvents[len(writtenEvents)-1].revision, compactRevision, prefix, cfg.writeInterval, cfg.writeConcurrency,
 		client != writeClient, transportConnections, transportReconnects, cfg.minimumTransportReconnects,
-		resumedWatchStreamsTotal, resumedWatchStreamsMin, cfg.minimumResumedWatchStreams)
+		resumedWatchStreamsTotal, resumedWatchStreamsMin, cfg.minimumResumedWatchStreams,
+		rawSlowReconnectsTotal, rawSlowReconnectsMin, cfg.minimumRawSlowReconnects)
 	return nil
 }
 

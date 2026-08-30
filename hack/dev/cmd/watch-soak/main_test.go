@@ -61,6 +61,8 @@ func setValidEnvironment(t *testing.T) {
 	t.Setenv("WRITE_CONCURRENCY", "1")
 	t.Setenv("MIN_TRANSPORT_RECONNECTS", "0")
 	t.Setenv("MIN_RESUMED_WATCH_STREAMS_PER_WATCHER", "0")
+	t.Setenv("MIN_RAW_SLOW_CONSUMER_RECONNECTS", "0")
+	t.Setenv("SLOW_CONSUMER_HOLD_AFTER_PRESSURE", "0s")
 	t.Setenv("RUN_ID", "watch-soak-test")
 	t.Setenv("CLEANUP_ONLY", "false")
 	t.Setenv("SLOW_CONSUMER", "false")
@@ -81,6 +83,8 @@ func TestConfigFromEnvironment(t *testing.T) {
 	require.Equal(t, 1, cfg.writeConcurrency)
 	require.Zero(t, cfg.minimumTransportReconnects)
 	require.Zero(t, cfg.minimumResumedWatchStreams)
+	require.Zero(t, cfg.minimumRawSlowReconnects)
+	require.Zero(t, cfg.slowConsumerHoldAfterPressure)
 	require.Empty(t, cfg.writeEndpoint)
 	require.Empty(t, cfg.writeTLSServerName)
 	require.False(t, cfg.cleanupOnly)
@@ -331,6 +335,34 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 			t.Setenv("WATCHERS", "1001")
 			t.Setenv("MIN_RESUMED_WATCH_STREAMS_PER_WATCHER", "1")
 		}, want: "requires WATCHERS no greater than 1000"},
+		"negative minimum raw slow reconnects": {mutate: func(t *testing.T) {
+			t.Setenv("MIN_RAW_SLOW_CONSUMER_RECONNECTS", "-1")
+		}, want: "MIN_RAW_SLOW_CONSUMER_RECONNECTS must be"},
+		"raw reconnects require strict slow outcomes": {mutate: func(t *testing.T) {
+			t.Setenv("MIN_RAW_SLOW_CONSUMER_RECONNECTS", "1")
+		}, want: "requires SLOW_CONSUMER=true and REQUIRE_SLOW_CONSUMER_OUTCOMES=true"},
+		"raw reconnects reject compacted outcome": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER", "true")
+			t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "true")
+			t.Setenv("INFO_ENDPOINT", "https://info.example/metrics")
+			t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "compacted")
+			t.Setenv("MIN_RAW_SLOW_CONSUMER_RECONNECTS", "1")
+		}, want: "does not support SLOW_CONSUMER_EXPECTED_OUTCOME=compacted"},
+		"interrupted outcome requires raw reconnects": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER", "true")
+			t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "true")
+			t.Setenv("INFO_ENDPOINT", "https://info.example/metrics")
+			t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "interrupted")
+		}, want: "requires MIN_RAW_SLOW_CONSUMER_RECONNECTS greater than zero"},
+		"negative slow pressure hold": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER_HOLD_AFTER_PRESSURE", "-1s")
+		}, want: "SLOW_CONSUMER_HOLD_AFTER_PRESSURE must be"},
+		"excessive slow pressure hold": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER_HOLD_AFTER_PRESSURE", "10m1s")
+		}, want: "SLOW_CONSUMER_HOLD_AFTER_PRESSURE must be"},
+		"slow pressure hold requires interrupted outcome": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER_HOLD_AFTER_PRESSURE", "1s")
+		}, want: "requires SLOW_CONSUMER_EXPECTED_OUTCOME=interrupted"},
 		"write TLS name without endpoint": {mutate: func(t *testing.T) {
 			t.Setenv("WRITE_TLS_SERVER_NAME", "write.example")
 		}, want: "WRITE_TLS_SERVER_NAME requires WRITE_ENDPOINT"},
@@ -352,7 +384,7 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 		}, want: "SLOW_CONSUMERS must be"},
 		"invalid expected outcome": {mutate: func(t *testing.T) {
 			t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "drop")
-		}, want: "must be recovered, dropped, or compacted"},
+		}, want: "must be recovered, dropped, compacted, or interrupted"},
 		"dropped outcome requires slow metrics": {mutate: func(t *testing.T) {
 			t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "dropped")
 		}, want: "requires SLOW_CONSUMER=true and REQUIRE_SLOW_CONSUMER_OUTCOMES=true"},
@@ -441,6 +473,21 @@ func TestConfigAllowsExplicitCompactedSlowConsumerOutcome(t *testing.T) {
 	cfg, err := configFromEnvironment()
 	require.NoError(t, err)
 	require.Equal(t, slowConsumerExpectedCompacted, cfg.slowConsumerExpectedOutcome)
+}
+
+func TestConfigAllowsInterruptedSlowConsumerWithHoldAndReconnectGate(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("SLOW_CONSUMER", "true")
+	t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "true")
+	t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "interrupted")
+	t.Setenv("MIN_RAW_SLOW_CONSUMER_RECONNECTS", "2")
+	t.Setenv("SLOW_CONSUMER_HOLD_AFTER_PRESSURE", "3s")
+	t.Setenv("INFO_ENDPOINT", "https://127.0.0.1:18082/metrics")
+	cfg, err := configFromEnvironment()
+	require.NoError(t, err)
+	require.Equal(t, slowConsumerExpectedInterrupted, cfg.slowConsumerExpectedOutcome)
+	require.Equal(t, 2, cfg.minimumRawSlowReconnects)
+	require.Equal(t, 3*time.Second, cfg.slowConsumerHoldAfterPressure)
 }
 
 func TestValidateSlowConsumerCompactResponse(t *testing.T) {
@@ -582,6 +629,10 @@ func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *test
 	require.Contains(t, text, `MIN_TRANSPORT_RECONNECTS="$MIN_TRANSPORT_RECONNECTS"`)
 	require.Contains(t, text, `MIN_RESUMED_WATCH_STREAMS_PER_WATCHER="${MIN_RESUMED_WATCH_STREAMS_PER_WATCHER:-0}"`)
 	require.Contains(t, text, `MIN_RESUMED_WATCH_STREAMS_PER_WATCHER="$MIN_RESUMED_WATCH_STREAMS_PER_WATCHER"`)
+	require.Contains(t, text, `MIN_RAW_SLOW_CONSUMER_RECONNECTS="${MIN_RAW_SLOW_CONSUMER_RECONNECTS:-0}"`)
+	require.Contains(t, text, `MIN_RAW_SLOW_CONSUMER_RECONNECTS="$MIN_RAW_SLOW_CONSUMER_RECONNECTS"`)
+	require.Contains(t, text, `SLOW_CONSUMER_HOLD_AFTER_PRESSURE="${SLOW_CONSUMER_HOLD_AFTER_PRESSURE:-0s}"`)
+	require.Contains(t, text, `SLOW_CONSUMER_HOLD_AFTER_PRESSURE="$SLOW_CONSUMER_HOLD_AFTER_PRESSURE"`)
 	require.Contains(t, text, `CLEANUP_ONLY="${CLEANUP_ONLY:-false}"`)
 	require.Contains(t, text, `CLEANUP_ONLY="$CLEANUP_ONLY"`)
 	require.Contains(t, text, `SLOW_CONSUMER="${SLOW_CONSUMER:-false}"`)
@@ -615,6 +666,8 @@ func TestWrapperForwardsSIGTERMAndWaitsForRunner(t *testing.T) {
 		"WRITE_CONCURRENCY=1",
 		"MIN_TRANSPORT_RECONNECTS=0",
 		"MIN_RESUMED_WATCH_STREAMS_PER_WATCHER=0",
+		"MIN_RAW_SLOW_CONSUMER_RECONNECTS=0",
+		"SLOW_CONSUMER_HOLD_AFTER_PRESSURE=0s",
 		"RUN_ID=wrapper-sigterm-test",
 		"CLEANUP_ONLY=false",
 		"SLOW_CONSUMER=false",

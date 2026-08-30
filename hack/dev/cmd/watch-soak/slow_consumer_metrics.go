@@ -254,6 +254,10 @@ func expectedWatchOutcomes(baseline watchOutcomes, outcome string, slowConsumers
 			expected.slow.dropped += delta
 			expected.generation.compacted += delta
 		}
+	case slowConsumerExpectedInterrupted:
+		// The owned transport fault cancels the server-side catch-up generation.
+		// It is neither a successful re-attach nor a ring eviction. The raw client
+		// separately proves an explicit revision resume and complete event replay.
 	default:
 		return watchOutcomes{}, fmt.Errorf("unsupported slow-consumer expected outcome %q", outcome)
 	}
