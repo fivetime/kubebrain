@@ -1350,6 +1350,16 @@ AuthStatus、Alarm、Hash/HashKV；token 和密码不会写入通过摘要。密
 形式，只有第一个冒号分隔用户名。只设置用户名或只设置密码、以及同时内嵌和单独设置密码
 都会 fail closed，避免交互提示或凭据歧义。
 
+TLS client endpoint 同时启用 `client-cert-auth` 与 etcd auth，且已验证客户端证书 leaf CN
+非空时，upstream etcd 不会把该 CN 当作 JSON gateway caller，而是在 `/v3/*` 入口返回
+HTTP 400 和固定文本
+`CommonName of client sending a request against gateway will be ignored and not used as expected`。
+这类部署应设置 `EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION=1`；它必须与
+`EXPECTED_STATUS_CLUSTER_ID` 同时配置。脚本会精确校验状态码和响应体，不获取 bearer token，
+并跳过不可能到达内部 gRPC 的 gateway Status/AuthStatus/Alarm/Hash/HashKV payload 校验；官方
+gRPC `etcdctl endpoint status/hashkv`、client/info `/version`、健康和可选 info metrics 检查仍保留。
+auth disabled 时不应用该拒绝，gateway 继续按普通路径工作。
+
 该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 与 `/livez` 必须返回 `ok`，
 `/livez?verbose` 必须包含 `[+]serializable_read ok` 并以 `ok` 结束；配置
 `EXPECTED_LIVEZ_NAMED_CHECKS=1` 时还会读取 `/livez/serializable_read?verbose` named check
@@ -4901,7 +4911,12 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   client-cert-auth 模式
   会使用服务配置的客户端身份完成内部 mTLS，并对每个 gateway request 显式注入内部
   代理标记，确保无 `Accept` 头的 HTTP JSON 请求也不能回退借用本机证书 CN。HTTP token 使用标准
-  `Authorization: <token>` 或 `Authorization: Bearer <token>`。不需要 JSON API 的
+  `Authorization: <token>` 或 `Authorization: Bearer <token>`。与 upstream etcd 相同，若
+  public TLS 已验证的客户端证书带非空 CN 且 auth 当前启用，`/v3/*` 会在 HTTP access controller
+  返回固定 HTTP 400；外层 TLS listener 必须把 verified state 显式桥接进 `net/http` connection
+  context，不能依赖被自定义连接 wrapper 清空的 `Request.TLS`。该检查按 durable auth snapshot
+  动态决定，auth disabled 时不能误拒绝。不要用内部 gateway client certificate 身份绕过这一边界。
+  不需要 JSON API 的
   实例可显式设置 `--enable-grpc-gateway=false` 缩小 HTTP surface，并在发布门禁确认
   `/v3/*` 返回 404、`/health` 仍可用。启用 client-cert-auth 时，Kubernetes 原生
   HTTPS probe 无法携带客户端证书；生产 Pod 应继续用不暴露数据的 info 端口

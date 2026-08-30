@@ -65750,8 +65750,44 @@ mutation，因此该轮既不算 A5627 指标 RED，也不伪装成完整 gate G
 最后以 UID/resourceVersion/container/candidate image/完整 args 五重 test 回滚 A5608。终态 generation/observed 337、current/update
 `a4657-tls-7d94b578fb`，KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，A5608 runtime digest 精确恢复为
 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`，临时端口无监听。
-A5627 关闭 range-prefilter 指标的 production recording、告警和值班可见性缺口；HTTP gateway 在 mTLS-only caller 下无法为 Maintenance
-Status 构造内部 auth 身份已成为后续独立兼容差距，不能由本项监控证据掩盖。
+A5627 关闭 range-prefilter 指标的 production recording、告警和值班可见性缺口；当 public mTLS caller 带非空 CN 且 auth enabled 时，
+HTTP gateway 的 Maintenance Status 400 已转入 A5628 按 upstream 明确边界核对，不能由本项监控证据掩盖。
+
+### A5628：gRPC gateway client-cert-auth/CN 边界与 HTTP TLS identity 桥接
+
+A5628 固定对照 `/root/etcd/server/embed/serve.go`：HTTPS gateway 请求在 `client-cert-auth`、auth enabled、verified client leaf CN 非空
+三项同时成立时，upstream 在 HTTP 层返回 400 和固定文本
+`CommonName of client sending a request against gateway will be ignored and not used as expected`；它不把 CN 当 gateway 用户，也不是要求
+KubeBrain 为内部 Maintenance RPC 合成身份。提交 `3a168db3370a959620a7c9444aa66854125a4667` 增加动态 durable auth-state 查询和同文拒绝，
+并给只读 gate 增加 `EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION=1`：精确检查 HTTP 400/body，跳过不可能到达的 gateway payload/auth/hash
+探针，但保留官方 gRPC status/hashkv、版本、健康和独立 info 边界。auth disabled、plaintext、非 `/v3/`、无 verified CN 均保持原路径。
+
+第一版真实候选 `kubebrain:a5628-3a168db3` 在独立 3 PD/3 TiKV、三副本 TLS-only/client-cert-auth/auth-enabled 集群上给出有效 RED：
+follower 与 leader 都仍返回 gateway 内部 JSON `user name is empty`，而非固定 HTTP 文本。根因不是 access policy，而是外层
+`identityTLSListener` 完成握手后用自定义 `net.Conn` 交给 cmux/`net/http`，后者不会填充 `Request.TLS`；手工设置 `request.TLS` 的单测
+遗漏了这一跨层行为。提交 `8e700dac496f0a26fba647d0728f0c1cabb29cab` 复用现有 verified TLS registry，在 HTTP `ConnContext`
+按同一 live connection 的 local/remote key 注入 TLS state，access controller 在标准 `Request.TLS` 缺失时读取该可信 context。新增测试
+执行真实 CA/server/client cert、TLS handshake、identity listener 与 `net/http`，不再只模拟 request 字段；plaintext connection 没有 registry
+entry，不能被误认成 mTLS。
+
+两提交相关包普通、race、vet 与 diff check 全部 GREEN；第二次代码提交前 703 项 inventory 为 `170/193/180/160`，提交后四片为
+`249.690/439.153/298.612/508.305s`，全部 GREEN。最终候选 OCI index
+`sha256:82b808e414e16f9c5496f460c9a2256608f8a05f0cbf2870fbfc7d2c64ea05da`，Kind runtime platform digest
+`sha256:9f883f4dc7da9f2d09d630d4f3128b0029bcc4041ad22fde3de9ac7315cb33ff`，三 Pod Ready/restart 0。曾把 `crictl` 截断 digest
+和未注册到 `kubebrain` 仓库名的 OCI digest 用作 Pod 引用，两次均在首 Pod `ImagePullBackOff`、候选未启动时被发现；两个基线 Pod 始终 Ready，
+改用已核验且 `IfNotPresent` 的本地 exact tag 后 3/3 rollout 正常，故不把镜像引用错误计为产品 RED。
+
+真实 follower `13379` 与 leader `13381` 均精确返回目标 HTTP 400/body。三端点 cluster ID
+`7662961163671170154`、member `1279320304/848842929/2985394290`、revision `1258096`、leader `2985394290`、raft term `857`、
+version `3.7.0` 一致，auth enabled/revision `6528`。60 秒有界只读 gate 验证 3 Ready、健康 named/exclude/method/header、精确 gateway rejection、
+client/info version、debug/pprof 边界，以及三 member HashKV `3680408421`、compact revision `1169203` 和 revision/term 对账，全项 GREEN；
+CA/cert/key/curl wrapper 仅位于独立匿名 memfd，没有凭据文件。候选日志无 panic/fatal/PD/TiKV/oracle/data-corruption 错误。
+
+完整 info metrics 可选检查另发现既有 `etcd_server_range_duration_seconds` 只定义而 unary `Range` 未发射：同次真实 scrape 已有
+`etcd_mvcc_range_total=1`、`etcd_server_request_duration_seconds{type="Range"}` 和成功 gRPC Range，却缺该 histogram。该项从 A5628 收口 gate
+显式排除并登记为后续 A5629，不能把它伪装成本项 GREEN，也不改变 TLS/gateway 结论。最后以 UID/resourceVersion/container/candidate image
+四重 test 回滚 A5608；终态 generation/observed 343、current/update `a4657-tls-7d94b578fb`，KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，
+runtime 恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`，四个临时端口无监听。
 
 ## 提交规则
 
