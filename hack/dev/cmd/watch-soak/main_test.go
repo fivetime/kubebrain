@@ -50,6 +50,8 @@ import (
 func setValidEnvironment(t *testing.T) {
 	t.Helper()
 	t.Setenv("ENDPOINT", "127.0.0.1:3379")
+	t.Setenv("WRITE_ENDPOINT", "")
+	t.Setenv("WRITE_TLS_SERVER_NAME", "")
 	t.Setenv("WATCHERS", "25")
 	t.Setenv("EVENTS", "50")
 	t.Setenv("TIMEOUT_SECONDS", "60")
@@ -76,10 +78,49 @@ func TestConfigFromEnvironment(t *testing.T) {
 	require.Equal(t, 300*time.Second, cfg.cleanupTimeout)
 	require.Equal(t, 1, cfg.writeConcurrency)
 	require.Zero(t, cfg.minimumTransportReconnects)
+	require.Empty(t, cfg.writeEndpoint)
+	require.Empty(t, cfg.writeTLSServerName)
 	require.False(t, cfg.cleanupOnly)
 	require.False(t, cfg.slowConsumer)
 	require.Zero(t, cfg.slowConsumers)
 	require.Equal(t, slowConsumerExpectedRecovered, cfg.slowConsumerExpectedOutcome)
+}
+
+func TestConfigAllowsDistinctWriteEndpointWithTLSName(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("WRITE_ENDPOINT", "10.0.0.2:3379")
+	t.Setenv("WRITE_TLS_SERVER_NAME", "write.example")
+	cfg, err := configFromEnvironment()
+	require.NoError(t, err)
+	require.Equal(t, "10.0.0.2:3379", cfg.writeEndpoint)
+	require.Equal(t, "write.example", cfg.writeTLSServerName)
+}
+
+func TestDeriveWriteClientConfigClonesTLSAndSupportsSystemRoots(t *testing.T) {
+	cfg := config{
+		endpoint: "watch.example:3379", writeEndpoint: "write.example:3379",
+		tlsServerName: "watch.example", writeTLSServerName: "write.example",
+	}
+	baseTLS := &tls.Config{MinVersion: tls.VersionTLS13, ServerName: "watch.example"}
+	writeConfig, writeTLS := deriveWriteClientConfig(cfg, baseTLS)
+	require.Equal(t, "write.example:3379", writeConfig.endpoint)
+	require.Equal(t, "write.example", writeConfig.tlsServerName)
+	require.NotSame(t, baseTLS, writeTLS)
+	require.Equal(t, "write.example", writeTLS.ServerName)
+	require.Equal(t, "watch.example", baseTLS.ServerName, "writer derivation must not mutate Watch TLS")
+
+	systemRootConfig, systemRootTLS := deriveWriteClientConfig(config{
+		endpoint: "127.0.0.1:3379", writeEndpoint: "write.example:3379", writeTLSServerName: "write.example",
+	}, nil)
+	require.Equal(t, "write.example", systemRootConfig.tlsServerName)
+	require.Equal(t, "write.example", systemRootTLS.ServerName)
+	require.Equal(t, uint16(tls.VersionTLS12), systemRootTLS.MinVersion)
+
+	inheritedConfig, inheritedTLS := deriveWriteClientConfig(config{
+		writeEndpoint: "write.example:3379", tlsServerName: "shared.example",
+	}, baseTLS)
+	require.Equal(t, "shared.example", inheritedConfig.tlsServerName)
+	require.Equal(t, "shared.example", inheritedTLS.ServerName)
 }
 
 func TestSignalCancellationRunsDeferredCleanup(t *testing.T) {
@@ -188,6 +229,20 @@ func TestTransportReconnectAccountingStartsAfterCreatedBarrier(t *testing.T) {
 	require.ErrorContains(t, err, "invalid transport connection accounting")
 }
 
+func TestValidateWatchWriteStatusesRequiresSameCompleteClusterIdentity(t *testing.T) {
+	watch := &clientv3.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 9}}
+	write := &clientv3.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 10}}
+	require.NoError(t, validateWatchWriteStatuses(watch, write))
+	require.ErrorContains(t, validateWatchWriteStatuses(nil, write), "watch endpoint returned incomplete")
+	require.ErrorContains(t, validateWatchWriteStatuses(watch, nil), "write endpoint returned incomplete")
+	require.ErrorContains(t, validateWatchWriteStatuses(
+		&clientv3.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 7}}, write,
+	), "watch endpoint returned incomplete")
+	require.ErrorContains(t, validateWatchWriteStatuses(watch,
+		&clientv3.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 8, MemberId: 10}},
+	), "cluster ID mismatch")
+}
+
 func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		mutate func(*testing.T)
@@ -215,6 +270,9 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 		"excessive minimum reconnects": {mutate: func(t *testing.T) {
 			t.Setenv("MIN_TRANSPORT_RECONNECTS", "1000001")
 		}, want: "MIN_TRANSPORT_RECONNECTS must be"},
+		"write TLS name without endpoint": {mutate: func(t *testing.T) {
+			t.Setenv("WRITE_TLS_SERVER_NAME", "write.example")
+		}, want: "WRITE_TLS_SERVER_NAME requires WRITE_ENDPOINT"},
 		"unsafe run ID":             {mutate: func(t *testing.T) { t.Setenv("RUN_ID", "../shared") }, want: "RUN_ID must be"},
 		"invalid cleanup-only flag": {mutate: func(t *testing.T) { t.Setenv("CLEANUP_ONLY", "1") }, want: "CLEANUP_ONLY must be"},
 		"partial TLS identity":      {mutate: func(t *testing.T) { t.Setenv("ETCD_CERT_FILE", "client.crt") }, want: "must be set together"},
@@ -449,6 +507,10 @@ func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *test
 	require.NoError(t, err)
 	text := string(script)
 	require.Contains(t, text, "ALLOW_MUTATING_WATCH_SOAK=true")
+	require.Contains(t, text, `WRITE_ENDPOINT="${WRITE_ENDPOINT:-}"`)
+	require.Contains(t, text, `WRITE_TLS_SERVER_NAME="${WRITE_TLS_SERVER_NAME:-}"`)
+	require.Contains(t, text, `WRITE_ENDPOINT="$WRITE_ENDPOINT"`)
+	require.Contains(t, text, `WRITE_TLS_SERVER_NAME="$WRITE_TLS_SERVER_NAME"`)
 	require.Contains(t, text, `go build -o "$WATCH_SOAK_BINARY" ./hack/dev/cmd/watch-soak`)
 	require.Contains(t, text, `kill "-$signal" "$watch_soak_pid"`)
 	require.Contains(t, text, `wait "$watch_soak_pid"`)
@@ -480,6 +542,8 @@ func TestWrapperForwardsSIGTERMAndWaitsForRunner(t *testing.T) {
 	command.Env = append(os.Environ(),
 		"ALLOW_MUTATING_WATCH_SOAK=true",
 		"ENDPOINT=127.0.0.1:1",
+		"WRITE_ENDPOINT=",
+		"WRITE_TLS_SERVER_NAME=",
 		"WATCHERS=1",
 		"EVENTS=1",
 		"TIMEOUT_SECONDS=10",

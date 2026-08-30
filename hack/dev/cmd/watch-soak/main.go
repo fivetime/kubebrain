@@ -65,6 +65,7 @@ var runIDPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 type config struct {
 	endpoint                    string
+	writeEndpoint               string
 	watchers                    int
 	events                      int
 	timeout                     time.Duration
@@ -83,6 +84,7 @@ type config struct {
 	certFile                    string
 	keyFile                     string
 	tlsServerName               string
+	writeTLSServerName          string
 	infoCAFile                  string
 	infoCertFile                string
 	infoKeyFile                 string
@@ -149,12 +151,38 @@ func main() {
 		log.Fatal(err)
 	}
 	defer client.Close()
+	writeClient := client
+	if cfg.writeEndpoint != "" {
+		writeConfig, writeTLSConfig := deriveWriteClientConfig(cfg, tlsConfig)
+		writeClient, err = newEtcdClient(writeConfig, writeTLSConfig, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer writeClient.Close()
+	}
 
 	if err := runWithTimeout(processCtx, cfg.timeout, func(ctx context.Context) error {
-		return run(ctx, client, cfg, clientFactory, connectionTracker)
+		return run(ctx, client, writeClient, cfg, clientFactory, connectionTracker)
 	}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func deriveWriteClientConfig(cfg config, tlsConfig *tls.Config) (config, *tls.Config) {
+	writeConfig := cfg
+	writeConfig.endpoint = cfg.writeEndpoint
+	if cfg.writeTLSServerName != "" {
+		writeConfig.tlsServerName = cfg.writeTLSServerName
+	}
+	if tlsConfig != nil {
+		writeTLSConfig := tlsConfig.Clone()
+		writeTLSConfig.ServerName = writeConfig.tlsServerName
+		return writeConfig, writeTLSConfig
+	}
+	if writeConfig.tlsServerName != "" {
+		return writeConfig, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: writeConfig.tlsServerName}
+	}
+	return writeConfig, nil
 }
 
 func processContext() (context.Context, context.CancelFunc) {
@@ -258,6 +286,10 @@ func configFromEnvironment() (config, error) {
 	if endpoint == "" {
 		return config{}, errors.New("ENDPOINT is required")
 	}
+	writeEndpoint, writeTLSServerName := os.Getenv("WRITE_ENDPOINT"), os.Getenv("WRITE_TLS_SERVER_NAME")
+	if writeTLSServerName != "" && writeEndpoint == "" {
+		return config{}, errors.New("WRITE_TLS_SERVER_NAME requires WRITE_ENDPOINT")
+	}
 	certFile, keyFile := os.Getenv("ETCD_CERT_FILE"), os.Getenv("ETCD_KEY_FILE")
 	if (certFile == "") != (keyFile == "") {
 		return config{}, errors.New("ETCD_CERT_FILE and ETCD_KEY_FILE must be set together")
@@ -278,7 +310,7 @@ func configFromEnvironment() (config, error) {
 		return config{}, errors.New("INFO_CERT_FILE and INFO_KEY_FILE must be set together")
 	}
 	return config{
-		endpoint: endpoint, watchers: watchers, events: events,
+		endpoint: endpoint, writeEndpoint: writeEndpoint, watchers: watchers, events: events,
 		timeout:        time.Duration(timeoutSeconds) * time.Second,
 		cleanupTimeout: time.Duration(cleanupTimeoutSeconds) * time.Second,
 		writeInterval:  writeInterval, writeConcurrency: writeConcurrency,
@@ -286,7 +318,8 @@ func configFromEnvironment() (config, error) {
 		slowConsumer: slowConsumer, slowConsumers: slowConsumers, requireSlowConsumerOutcomes: requireOutcomes,
 		slowConsumerExpectedOutcome: expectedOutcome, infoEndpoint: infoEndpoint,
 		caFile: os.Getenv("ETCD_CA_FILE"), certFile: certFile, keyFile: keyFile,
-		tlsServerName: os.Getenv("ETCD_TLS_SERVER_NAME"), username: username, password: password,
+		tlsServerName: os.Getenv("ETCD_TLS_SERVER_NAME"), writeTLSServerName: writeTLSServerName,
+		username: username, password: password,
 		infoCAFile: os.Getenv("INFO_CA_FILE"), infoCertFile: infoCertFile, infoKeyFile: infoKeyFile,
 		infoTLSServerName: os.Getenv("INFO_TLS_SERVER_NAME"),
 	}, nil
@@ -376,9 +409,12 @@ func newEtcdClient(cfg config, tlsConfig *tls.Config, connectionTracker *transpo
 	})
 }
 
-func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory etcdClientFactory,
+func run(ctx context.Context, client, writeClient *clientv3.Client, cfg config, clientFactory etcdClientFactory,
 	connectionTracker *transportConnectionTracker,
 ) (retErr error) {
+	if client == nil || writeClient == nil {
+		return errors.New("watch and write clients are required")
+	}
 	prefix := "/registry/watch-soak/" + cfg.runID + "/"
 	if cfg.cleanupOnly {
 		// Recovery mode deliberately does not claim a non-empty prefix through the
@@ -387,13 +423,26 @@ func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory
 		// bounded exact-key transactions and final CountOnly proof as normal exit.
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), cfg.cleanupTimeout)
 		defer cancel()
-		if err := cleanupPrefix(cleanupCtx, client, prefix); err != nil {
+		if err := cleanupPrefix(cleanupCtx, writeClient, prefix); err != nil {
 			return err
 		}
 		fmt.Printf("Watch soak cleanup completed: prefix=%s\n", prefix)
 		return nil
 	}
-	preflight, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	if client != writeClient {
+		watchStatus, err := client.Status(ctx, cfg.endpoint)
+		if err != nil {
+			return fmt.Errorf("read watch endpoint status: %w", err)
+		}
+		writeStatus, err := writeClient.Status(ctx, cfg.writeEndpoint)
+		if err != nil {
+			return fmt.Errorf("read write endpoint status: %w", err)
+		}
+		if err := validateWatchWriteStatuses(watchStatus, writeStatus); err != nil {
+			return err
+		}
+	}
+	preflight, err := writeClient.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
 	if err != nil {
 		return fmt.Errorf("preflight watch-soak prefix: %w", err)
 	}
@@ -406,7 +455,7 @@ func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), cfg.cleanupTimeout)
 		defer cancel()
-		cleanupErr := cleanupPrefix(cleanupCtx, client, prefix)
+		cleanupErr := cleanupPrefix(cleanupCtx, writeClient, prefix)
 		if cleanupErr == nil {
 			fmt.Printf("Watch soak cleanup completed: prefix=%s\n", prefix)
 		}
@@ -479,7 +528,7 @@ func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory
 
 	writtenEvents, err := writeEvents(ctx, prefix, cfg.events, cfg.writeConcurrency, cfg.writeInterval,
 		func(putCtx context.Context, key, value string) (*clientv3.PutResponse, error) {
-			return client.Put(putCtx, key, value)
+			return writeClient.Put(putCtx, key, value)
 		})
 	if err != nil {
 		return err
@@ -499,7 +548,7 @@ func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory
 	compactRevision := int64(0)
 	if cfg.slowConsumerExpectedOutcome == slowConsumerExpectedCompacted {
 		compactRevision = writtenEvents[len(writtenEvents)-1].revision
-		response, compactErr := client.Compact(ctx, compactRevision)
+		response, compactErr := writeClient.Compact(ctx, compactRevision)
 		if compactErr = validateSlowConsumerCompactResponse(compactRevision, response, compactErr); compactErr != nil {
 			return compactErr
 		}
@@ -536,10 +585,23 @@ func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory
 		return err
 	}
 	cancelWatches()
-	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d compact_revision=%d prefix=%s write_interval=%s write_concurrency=%d transport_connections=%d transport_reconnects=%d minimum_transport_reconnects=%d\n",
+	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d compact_revision=%d prefix=%s write_interval=%s write_concurrency=%d separate_write_endpoint=%t transport_connections=%d transport_reconnects=%d minimum_transport_reconnects=%d\n",
 		cfg.watchers, cfg.slowConsumer, cfg.slowConsumers, cfg.slowConsumerExpectedOutcome, cfg.requireSlowConsumerOutcomes, cfg.events, writtenEvents[0].revision,
 		writtenEvents[len(writtenEvents)-1].revision, compactRevision, prefix, cfg.writeInterval, cfg.writeConcurrency,
-		transportConnections, transportReconnects, cfg.minimumTransportReconnects)
+		client != writeClient, transportConnections, transportReconnects, cfg.minimumTransportReconnects)
+	return nil
+}
+
+func validateWatchWriteStatuses(watch, write *clientv3.StatusResponse) error {
+	if watch == nil || watch.Header == nil || watch.Header.ClusterId == 0 || watch.Header.MemberId == 0 {
+		return fmt.Errorf("watch endpoint returned incomplete cluster identity: %+v", watch)
+	}
+	if write == nil || write.Header == nil || write.Header.ClusterId == 0 || write.Header.MemberId == 0 {
+		return fmt.Errorf("write endpoint returned incomplete cluster identity: %+v", write)
+	}
+	if write.Header.ClusterId != watch.Header.ClusterId {
+		return fmt.Errorf("watch/write endpoint cluster ID mismatch: watch=%d write=%d", watch.Header.ClusterId, write.Header.ClusterId)
+	}
 	return nil
 }
 
