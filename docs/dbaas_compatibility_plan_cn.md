@@ -66080,24 +66080,6 @@ Ready/restart 0。三组独立 client/info port-forward 上完整只读 gate GRE
 KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口无监听；本轮没有集群 mutation，故无需 rollback。A5638 关闭 gateway
 任期漂移或省略 header term 仍可被拼成发布 GREEN 的问题。
 
-代码提交 `49b46a5aa568eddbfe6ca58770223c8af64869f4` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
-`261.360/459.043/311.793/537.087s`，全部 GREEN。
-
-真实独立三 PD/三 TiKV 门禁继续复用 A5629 runtime
-`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`，经五重 StatefulSet test 部署为
-generation 358，三 Pod Ready/restart 0。完整 gate 的 Status 与全部三端 HashKV 都报告 term `888`，新门禁实际输出
-`hashkv_raft_terms=888, raft_terms_match=true`；cluster ID `7662961163671170154`、members
-`1279320304/848842929/2985394290`、leader `2985394290`、revision/index/applied `1258096`、HashKV
-`3680408421`、compact revision `1169203` 继续一致。脚本动态选择 leader info
-`https://127.0.0.1:18081/metrics`、identity `b1f18072`，endpoint/member 映射、Status 前后围栏、gateway 预期拒绝、版本、debug/pprof
-和全部 metrics 均 GREEN。候选窗口日志无 panic/fatal/data corruption/context deadline/TiKV/PD error；CA/cert/key/curl wrapper
-仍只存在于四个独立匿名 memfd，没有凭据或诊断文件落盘，也未创建临时 Kubernetes 对象。
-
-最后以新鲜五重 test 回滚稳定 digest。终态 generation/observed 359、current/update `a4657-tls-7d94b578fb`，三 Pod runtime
-恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV
-3+3+3 Ready/restart 0，六个诊断端口无监听，宿主剩余约 320 GiB。A5636 关闭省略全部或部分 HashKV term 即可绕过跨 RPC
-任期一致性证据的问题。
-
 ### A5637：将 HTTP gateway Maintenance 链绑定到 ENDPOINT 成员
 
 只读 gate 已分别校验 gateway Status、AuthStatus、Alarm、Hash、HashKV 的 cluster/revision/term 和字段 envelope，但五类 header 的
@@ -66156,6 +66138,49 @@ Status、AuthStatus、Alarm、Hash 的 header term，固定整条链没有可选
 gateway HashKV hash/compact 路径都精确先失败于新 term 门禁。只给这些 fixture 补入与其 gateway Status 相同的 term 8、保持原断言
 目标不变后，完整聚焦普通/race 分别为 `113.700s/114.975s`；Go vet、gofmt、shell syntax、diff check 与固定 digest 的
 `koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
+
+### A5639：将 Status、HashKV 与 gateway revision 绑定到逐端点身份
+
+只读 gate 原先从多 endpoint Status/HashKV 各取最小 header revision 并比较，gateway AuthStatus、Alarm、Hash 也统一对这个最小值；
+gateway Status 自身只要求 revision 非负，HashKV 则对自身最小值。若两个 endpoint 的 Status revision 为 7/8，而 HashKV 在保持相同
+endpoint/member 映射时返回 8/7，两组最小值仍同为 7，旧 gate 会错误 GREEN。类似地，`ENDPOINT` 的 gateway Status revision 单独漂移，
+只要后续响应仍等于全局 min 也不会被发现。upstream response header revision 表示该 serving member 本次 RPC 的 MVCC 观察边界，不能作为
+脱离 endpoint 身份的集合统计量。
+
+gate 现在从 Status 与 HashKV 分别构造按 endpoint 排序的规范 `endpoint<TAB>revision` 映射并要求逐字节相等；成功摘要新增
+`hashkv_endpoint_revisions_match=true`。同时从 direct Status 精确解析 `ENDPOINT` 对应 revision，要求 gateway Status、AuthStatus、Alarm、
+Hash、HashKV 五类 header 全部等于它，并输出 `gateway_endpoint_revision=<n>, gateway_endpoint_revisions_match=true`。既有最小 revision
+摘要仍保留用于容量与低水位观察，但不再承担身份一致性证明。
+
+第一项确定性 RED 使用两端 Status revision 7/8 与 HashKV revision 8/7，member、endpoint、hash、compact revision 均正确；旧 gate 因
+min 都为 7 而整体 GREEN，新 gate 精确拒绝 `status/hashkv endpoint revision mapping mismatch`。第二项保持 direct Status revision 7、
+只把同一 ENDPOINT 的 gateway Status revision 改成 8，旧 gate 仍 GREEN，新 gate 拒绝 `gateway status serving revision mismatch`。
+
+首次完整聚焦普通/race 同步发现 5 个旧 fixture 与新身份化约束冲突：两个 Status raft-index 成功路径把 direct revision 提升到 9，
+却仍沿用 revision 7 的默认 gateway Status；另三个原有负例应优先报告 Status/HashKV 负 revision 或单 endpoint 全局 mismatch，而新映射比较
+过早截获。给两个成功 fixture 补齐同 endpoint revision 9，并把非负、全局低水位检查恢复到精确映射比较之前后，原诊断契约与新多 endpoint
+拒绝同时成立。五项定向普通/race 分别为 `2.704s/3.789s`，完整聚焦普通/race 分别为 `114.540s/115.698s`。
+Go vet、gofmt、shell syntax、diff check、文档契约测试与固定 digest 的
+`koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
+
+代码提交 `9bad7d79753ef423f699dbdba202ab3fbdb8e0df` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`256.211/448.191/312.219/539.591s`，全部 GREEN。
+
+真实独立三 PD/三 TiKV 验证继续使用 auth-disabled `kubebrain` 三副本，本项没有滚动或修改数据面。StatefulSet 全程保持 UID
+`817bc005-a4d1-4d57-9aab-de93e0874054`、resourceVersion `7553628`、generation/observed 659、current/update revision
+`kubebrain-9b9965dc9`；三 Pod UID 与 runtime
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b` 均未变化，Ready/restart 0。三端 direct
+Status/HashKV 的 endpoint→revision 都为 `14379→65743,14380→65743,14381→65743`，cluster ID `7662961163671170154`、members
+`4034353177/2393892952/231094427`、leader `2393892952`、term `195`、index/applied `65743`、HashKV `4283180840`、compact
+revision `44329` 一致。与本项范围匹配的完整只读 gate GREEN，实际输出 `hashkv_endpoint_revisions_match=true`、
+`gateway_endpoint_revision=65743, gateway_endpoint_revisions_match=true`；独立 curl 再验证 Status、AuthStatus、Alarm、Hash、HashKV
+五个 header 都精确为 `(member=4034353177, revision=65743, term=195)`。
+
+启用最新全量 info metrics 子门禁时，现有稳定 runtime 还缺少 `watch_range_prefilter_dropped`，因此该更宽检查按预期 RED；这是独立的运行镜像
+版本差距，不用关闭 metrics 检查来伪称全量门禁 GREEN。本项只移除 `INFO_ENDPOINTS/EXPECTED_INFO_METRICS_CHECKS` 后复验 revision、gateway、
+health、version、debug/pprof 等其余只读契约并 GREEN，缺口留给后续独立实现/部署验证。验证窗口日志无 panic/fatal/data corruption/
+context deadline/TiKV/PD error；终态 KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口无监听，也没有凭据或诊断文件落盘。A5639
+关闭跨 endpoint revision 对调或 gateway revision 漂移仍可被集合最小值拼成发布 GREEN 的问题。
 
 ## 提交规则
 
