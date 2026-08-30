@@ -1026,8 +1026,18 @@ func (b *backendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (_ 
 }
 
 func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (_ *etcdserverpb.RangeResponse, retErr error) {
-	start := time.Now()
-	defer func() { emitEtcdRangeDuration(b.metricCli, time.Since(start), retErr) }()
+	return b.list(ctx, r, true)
+}
+
+func (b *backendShim) list(
+	ctx context.Context,
+	r *etcdserverpb.RangeRequest,
+	observe bool,
+) (_ *etcdserverpb.RangeResponse, retErr error) {
+	if observe {
+		start := time.Now()
+		defer func() { emitEtcdRangeDuration(b.metricCli, time.Since(start), retErr) }()
+	}
 
 	limit := r.Limit
 	if needsFullRangeMaterialization(r) {

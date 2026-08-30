@@ -19,6 +19,7 @@ import (
 	"context"
 	"math"
 	"strconv"
+	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"golang.org/x/sync/singleflight"
@@ -157,7 +158,7 @@ func (cr *countResolver) exactRangeCountUncached(ctx context.Context, r *etcdser
 	}
 
 	if r.Revision == 0 && !hasRangeRevisionFilters(r) {
-		resp, err := cr.Count(ctx, r)
+		resp, err := cr.count(ctx, r, false)
 		if err != nil {
 			return 0, err
 		}
@@ -195,7 +196,22 @@ func (cr *countResolver) SetCountProxy(f func(ctx context.Context, r *etcdserver
 	cr.countProxy = f
 }
 
-func (cr *countResolver) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+func (cr *countResolver) Count(
+	ctx context.Context,
+	r *etcdserverpb.RangeRequest,
+) (_ *etcdserverpb.RangeResponse, retErr error) {
+	return cr.count(ctx, r, true)
+}
+
+func (cr *countResolver) count(
+	ctx context.Context,
+	r *etcdserverpb.RangeRequest,
+	observe bool,
+) (_ *etcdserverpb.RangeResponse, retErr error) {
+	if observe {
+		start := time.Now()
+		defer func() { emitEtcdRangeDuration(cr.shim.metricCli, time.Since(start), retErr) }()
+	}
 	if _, checkpoint := backend.SerializableCheckpointFromContext(ctx); checkpoint {
 		// CountAtRevision is checkpoint-aware, but its shim response historically
 		// stamped the process-local revision. Delegate to backend.Count so both an
@@ -228,7 +244,7 @@ func (cr *countResolver) Count(ctx context.Context, r *etcdserverpb.RangeRequest
 		if isCountProxyRequest(ctx) {
 			return nil, errCountIndexNotReady
 		}
-		return cr.shim.List(ctx, r)
+		return cr.shim.list(ctx, r, false)
 	}
 
 	// Current-revision count. Prefer the local index, then the leader's index

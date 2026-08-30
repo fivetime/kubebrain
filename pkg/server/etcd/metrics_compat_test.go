@@ -1635,7 +1635,7 @@ func TestApplyDurationIncludesApplyAuthorizationButExcludesInvalidAuthInfo(t *te
 	}, got, "invalid authentication metadata must fail before the apply observer")
 }
 
-func TestBackendShimObservesPointAndRangeMVCCReads(t *testing.T) {
+func TestBackendShimObservesPointRangeAndCountMVCCReads(t *testing.T) {
 	rec := &recordingMetrics{}
 	shim := NewBackendShim(&rangeRevisionProbeBackend{}, rec)
 
@@ -1643,12 +1643,39 @@ func TestBackendShimObservesPointAndRangeMVCCReads(t *testing.T) {
 	require.NoError(t, err)
 	_, err = shim.List(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")})
 	require.NoError(t, err)
+	_, err = shim.Count(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("a"), RangeEnd: []byte("z"), CountOnly: true,
+	})
+	require.NoError(t, err)
 
-	require.Len(t, rec.histograms, 2)
+	require.Len(t, rec.histograms, 3)
 	for _, observed := range rec.histograms {
 		require.Equal(t, etcdRangeDurationMetric, observed.name)
 		require.Equal(t, []metrics.T{metrics.Tag("success", "true")}, observed.tags)
 		require.GreaterOrEqual(t, observed.value.(float64), 0.0)
+	}
+}
+
+type countMetricFallbackBackend struct{ rangeRevisionProbeBackend }
+
+func (b *countMetricFallbackBackend) CountAtRevision(context.Context, []byte, []byte, uint64) (int64, bool) {
+	return 0, false
+}
+
+func TestBackendShimObservesCountFallbackExactlyOnce(t *testing.T) {
+	for _, revision := range []int64{0, 7} {
+		t.Run(strconv.FormatInt(revision, 10), func(t *testing.T) {
+			rec := &recordingMetrics{}
+			shim := NewBackendShim(&countMetricFallbackBackend{}, rec)
+
+			_, err := shim.Count(context.Background(), &etcdserverpb.RangeRequest{
+				Key: []byte("a"), RangeEnd: []byte("z"), Revision: revision, CountOnly: true,
+			})
+			require.NoError(t, err)
+			require.Len(t, rec.histograms, 1)
+			require.Equal(t, etcdRangeDurationMetric, rec.histograms[0].name)
+			require.Equal(t, []metrics.T{metrics.Tag("success", "true")}, rec.histograms[0].tags)
+		})
 	}
 }
 
