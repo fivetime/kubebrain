@@ -1553,6 +1553,13 @@ production 从 60 秒内样本生成 Ready Pod UID 级 pending、delivered curre
 channel 前递增、消费者接收后递减，任一 Ready Pod `>0` 持续 5 分钟 warning，表示本地 handoff 阻塞而非
 普通吞吐波动。`events_total` 在 handoff 成功后递增，不证明客户端已从 socket 读取；wire send 仍需与
 watch send-loop histogram 和 `etcd_network_server_stream_failures_total` 对账。
+local leader 的 exact、任意 `[start,end)` 与 from-key Watch 仍可能依赖 backend coarse-prefix 订阅，但必须在 PrevKV lookup 和 protobuf
+转换前执行精确范围预过滤；完整 source batch 要先验证并保留其最大 revision，即使全部 event 被过滤也必须推进内部恢复水位。RPC 层继续保留
+第二道范围过滤，alternate backend 与 follower proxy 不得依赖优化路径提供正确性。`watch_range_prefilter_dropped` 在每个 backend 创建时
+初始化为零，只累计 local shim 在转换前丢弃的无关 event；它增长不是数据丢失，表示客户端不可见的 coarse-subscription 放大已被消除。
+持续高增长时应按 leader Pod 与写热点对账 Watch range 设计、backend prefix 索引和 PrevKV 成本；follower 上的零值不能反证 leader 没有
+执行过滤。A5626 的真实独立 TiKV/PD gate 用同 revision 的 2 个范围内 PUT 加 100 个范围外 PUT，官方 etcdctl 只收到目标两条且 leader
+counter 精确 `+100`，随后 exact cleanup 与 prefix 复验为零。
 lease 指标 `etcd_debugging_server_lease_expired_total`、
 `etcd_debugging_lease_granted_total`、`etcd_debugging_lease_revoked_total` 与
 `etcd_debugging_lease_renewed_total` 在 RPC server 创建时均初始化权威 0。production 将四个 raw family 规范为

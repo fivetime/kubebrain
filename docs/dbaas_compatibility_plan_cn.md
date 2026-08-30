@@ -35,7 +35,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；read-only serializable Txn 复用上述单一 checkpoint；当前无已知数据语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
-| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：短时单轮/三轮交替断线、断线期间持续写及慢消费者 catch-up 中断后的精确恢复已门禁；继续数天级长断线/连续滚动/多可用区 soak |
+| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环；local exact/任意 range 在 PrevKV 与 protobuf 转换前精确预过滤 | P1：短时单轮/三轮交替断线、断线期间持续写及慢消费者 catch-up 中断后的精确恢复已门禁；继续数天级长断线/连续滚动/多可用区 soak |
 | Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；异步 revoke 被阻断时 TTL 与 etcd 一样持续为负；继续扩大故障、并发和错误差分矩阵 |
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
@@ -65672,6 +65672,50 @@ info 凭据仍仅由六个独立 `/dev/fd` process substitution 提供，真实 
 current/update revision 同为 `a4657-tls-7d94b578fb`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，runner、port-forward、一次性代理和
 临时目录全部不存在。门禁日志已经 `gio trash` 移入系统回收站、可恢复。A5625 关闭“相对 delta 可以掩盖历史不守恒，生产只看序列完整而不看
 跨序列守恒”的证据与告警缺口；数天级长断线、连续 rollout 和多可用区网络故障长稳仍保持 P1。
+
+### A5626：local Watch 精确范围预过滤
+
+对照 `/root/etcd` `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+`server/storage/mvcc/watchable_store.go`：upstream 的 unsynced/synced watcher 在 MVCC 层按自身 key range 匹配事件；KubeBrain
+此前虽然在公开 RPC 层正确执行 exact、`[start,end)` 和 from-key 过滤，但 local leader 只能向 TiKV backend 提交 coarse prefix。
+任意非 prefix range 会订阅整个 DB，点 Watch 也会订阅共享前缀；所有无关 event 因而仍先做完整 batch 转换，启用 PrevKV 时还可能触发
+revisioned Get，最后才由 RPC 层丢弃。这不改变客户端结果，却会把窄范围 Watch 放大为与无关写流量成比例的存储读和 protobuf 分配。
+
+提交 `1e666c3d4ff9657f697975023a668b0a64661ccb` 在 backend shim 增加可选 `WatchRange` 合同。公开 Watch 在 fresh local
+generation 上把原始 start/end 与 coarse backend prefix 一并传入；alternate/fake shim 不实现该接口时保持旧 `Watch` 兼容路径，follower
+仍由 leader proxy 执行权威范围语义。shim 先验证完整 source batch 并计算其最大 revision，再以 etcd exact、半开区间和非 nil 空 end 的
+from-key 规则过滤，之后才执行 PrevKV prefetch 和 protobuf 转换。全过滤 batch 仍向内部 generation 传递原始 revision 水位，避免 reconnect
+从旧 revision 重放；RPC 层过滤继续作为 alternate backend 的防御边界。过滤采用首次排除时才复制 accepted prefix，不修改可能由 history
+scan 共享的源 slice，全部命中热路径不分配；start/end clone 保留 nil 与非 nil 空 sentinel。每个 backend 初始化
+`watch_range_prefilter_dropped` 权威零值，并按预转换丢弃 event 数递增。
+
+确定性回归 `TestBackendShimWatchRangeFiltersBeforeConversionAndPreservesBatchRevision` 固定同批一个匹配 event、一个范围外且无法解码的 inline
+value，证明后者在转换前被丢弃、客户端 batch 只含目标 key，而水位仍取完整批次 revision 9；下一批全过滤仍推进至 11。指标轨迹精确为
+`[0,1,1]`。`TestFilterBackendWatchEventsByRangeMatchesEtcdIntervals` 覆盖点 Watch、半开范围、from-key、源 slice 不变、全命中复用以及 nil/空
+边界。聚焦普通 20 轮与 race 50 轮、server 全包普通、完整 server race 重跑、vet 全部 GREEN。首次完整 race 只有既有
+`TestLocalWatchReopenStopsWhenFreshnessIsLostWithoutPeerProxy` 的 500ms wall-clock 断言在宿主压力下耗时 540ms；该 fake 不实现新接口，聚焦
+race 100 轮 `15.425s` 全部通过，随后完整 race 重跑无失败、无 data race。提交前 703 项 inventory 为
+`170/193/180/160`；提交后四片为 `247.792/444.264/302.418/513.310s`，全部 GREEN。
+
+候选 `kubebrain:a5626-1e666c3d` 内嵌版本 `0.0.0-1e666c3d4ff9`、完整 Git SHA 和 build time
+`2026-08-30T13:25:42Z`，TiKV/linux-amd64、USER `65532:65532` 与入口均正确；outer OCI/index digest 为
+`sha256:28f898a74655ee3ca1a162c62980617b53fa3e63792a62e16ee162f9192cd8f9`，Kind 三副本 runtime digest 同为
+`sha256:600e89a2f87a363d052e2d4db75e5f3129edf649c53c12881f1332a227e99fbf`。首次直接使用 outer digest 因 Kind import 后仓库名
+不同而在 Pod 2 `ImagePullBackOff`，容器尚未启动、restart 0，不计产品 RED；以新鲜五重 JSON Patch tests 切换唯一已导入 tag 后，候选
+generation 334 全部 3/3 Ready/restart 0。
+
+真实独立 3 PD/3 TiKV mTLS 门禁在 leader `a4657-tls-2` 上从 revision 1258095 建立任意
+`[prefix+m/,prefix+n/)` Watch；单个原子 Txn 同 revision 写入 2 个范围内 key 和 100 个 `prefix+z/` 范围外 key。官方 etcdctl 3.7
+只收到两个目标 PUT，key 精确为 `m/a,m/b`；leader 的 `watch_range_prefilter_dropped` 从 200 到 300，delta 精确 100。102 个 key 随后
+由一个 exact-delete Txn 清理，prefix Range 复验为零。补充通用 watch-soak 以 2 watcher/100 events 精确对账 revisions
+`1257992..1258091` 并同进程清零。早期两次控制脚本分别因 pod port-forward 中断、etcdctl Txn 多一个空段而未写入，不计产品结果；修正后的
+有效轮均以唯一空前缀 preflight 取得 ownership。凭据始终只经三个独立 `/dev/fd` 输入，watch 日志经 `gio trash` 可恢复地回收。
+
+最后使用 StatefulSet UID、resourceVersion、容器名、候选 image 与完整 args 五重 test 回滚 A5608 digest。终态 generation/observed 335、
+current/update `a4657-tls-7d94b578fb`，三 Pod runtime 均恢复
+`sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，
+六个临时端口无监听、测试前缀为空。A5626 关闭 local 窄范围 Watch 在转换和 PrevKV 阶段的无关事件放大缺口；它不改变跨 leader proxy 的
+公开范围语义，也不替代数天级断线、连续 rollout 与多可用区网络故障长稳，后者继续保持 P1。
 
 ## 提交规则
 
