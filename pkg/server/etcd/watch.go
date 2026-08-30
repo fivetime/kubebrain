@@ -1964,6 +1964,10 @@ func emitWatchSendLoopProgressDuration(metricCli metrics.Metrics, duration time.
 // WatchResult stream, so callers can resume between them at an explicit revision.
 var errNilWatchGeneration = errors.New("watch backend returned a nil generation channel")
 
+type rangeWatchBackend interface {
+	WatchRange(ctx context.Context, backendPrefix string, start, end []byte, revision uint64) (<-chan etcdproxy.WatchResult, error)
+}
+
 func (w *watcher) authorizePendingLocalWatch(ctx context.Context, wt *watch) error {
 	caller, err := w.grpcServer.authCallerFromContext(ctx)
 	if err != nil {
@@ -1975,7 +1979,13 @@ func (w *watcher) authorizePendingLocalWatch(ctx context.Context, wt *watch) err
 func (w *watcher) openWatchChannel(ctx context.Context, r *etcdserverpb.WatchCreateRequest, backendPrefix string, revision uint64) (<-chan etcdproxy.WatchResult, bool, uint64, error) {
 	epoch, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
 	if leadingFresh {
-		ch, err := w.backend.Watch(ctx, backendPrefix, revision)
+		var ch <-chan etcdproxy.WatchResult
+		var err error
+		if ranged, ok := w.backend.(rangeWatchBackend); ok {
+			ch, err = ranged.WatchRange(ctx, backendPrefix, r.Key, r.RangeEnd, revision)
+		} else {
+			ch, err = w.backend.Watch(ctx, backendPrefix, revision)
+		}
 		if err == nil && ch == nil {
 			emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
 			err = errNilWatchGeneration

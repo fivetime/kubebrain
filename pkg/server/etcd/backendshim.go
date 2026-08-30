@@ -287,6 +287,7 @@ type mutationLockOwner struct {
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
 	initWatchPrevKvBudgetExhaustedMetric(metricCli)
+	initWatchRangePrefilterMetric(metricCli)
 	shim := &backendShim{
 		backend:   backend,
 		metricCli: metricCli,
@@ -298,6 +299,13 @@ func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendS
 	shim.countResolver = newCountResolver(shim)
 	shim.watchTranslator = newWatchTranslator(shim)
 	return shim
+}
+
+func initWatchRangePrefilterMetric(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("watch.range_prefilter.dropped", int64(0))
 }
 
 // Close terminates background work owned by the shim. It is intentionally not
@@ -1319,7 +1327,31 @@ func (b *backendShim) translateRangeStream(
 }
 
 func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<-chan etcdproxy.WatchResult, error) {
-	ch, err := b.backend.Watch(ctx, key, revision)
+	return b.watch(ctx, key, nil, nil, revision)
+}
+
+// WatchRange subscribes through the backend's coarse prefix index, then applies
+// the exact etcd interval before converting events or resolving PrevKV. Exact
+// keys and arbitrary half-open ranges otherwise receive every event sharing the
+// coarse backend prefix (or, for a non-prefix range, every database event), so a
+// narrow Watch can amplify unrelated write traffic into storage reads and
+// protobuf allocations. The RPC layer retains its own range filter as a
+// defensive boundary for alternate BackendShim implementations.
+func (b *backendShim) WatchRange(ctx context.Context, backendPrefix string, start, end []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+	return b.watch(ctx, backendPrefix, cloneWatchRangeBoundary(start), cloneWatchRangeBoundary(end), revision)
+}
+
+func cloneWatchRangeBoundary(boundary []byte) []byte {
+	if boundary == nil {
+		return nil
+	}
+	cloned := make([]byte, len(boundary))
+	copy(cloned, boundary)
+	return cloned
+}
+
+func (b *backendShim) watch(ctx context.Context, backendPrefix string, rangeStart, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+	ch, err := b.backend.Watch(ctx, backendPrefix, revision)
 	if err != nil {
 		return nil, err
 	}
@@ -1350,11 +1382,7 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 					}
 					continue
 				}
-				// Resolve cold-key PrevKv lookups for the whole batch in parallel
-				// before the sequential conversion: a hint miss costs a revisioned
-				// network Get (~10-20ms), and issuing those one-by-one caps the
-				// stream at ~60 events/s — slower than the write rate, so cachers
-				// could never catch up (#45).
+				var batchRevision uint64
 				for i, e := range events {
 					if validateErr := validateBackendWatchEvent(e); validateErr != nil {
 						resultErr := fmt.Errorf("transform watch event %d at revision %d: %w", i, watchEventRevision(e), validateErr)
@@ -1365,14 +1393,26 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 						}
 						return
 					}
+					if eventRevision := watchEventRevision(e); eventRevision > batchRevision {
+						batchRevision = eventRevision
+					}
 				}
+				if rangeStart != nil {
+					sourceEventCount := len(events)
+					events = filterBackendWatchEventsByRange(events, rangeStart, rangeEnd)
+					if dropped := sourceEventCount - len(events); dropped > 0 && b.metricCli != nil {
+						b.metricCli.EmitCounter("watch.range_prefilter.dropped", dropped)
+					}
+				}
+				// Resolve cold-key PrevKv lookups for the matching batch in parallel
+				// before the sequential conversion: a hint miss costs a revisioned
+				// network Get (~10-20ms), and issuing those one-by-one caps the
+				// stream at ~60 events/s — slower than the write rate, so cachers
+				// could never catch up (#45). Range filtering before this step keeps
+				// an arbitrary interval from paying that cost for unrelated writes.
 				b.prefetchPrevKvs(ctx, events)
 				etcdEvents := make([]*mvccpb.Event, 0, len(events))
-				var batchRevision uint64
 				for i, e := range events {
-					if revision := watchEventRevision(e); revision > batchRevision {
-						batchRevision = revision
-					}
 					etcdEvent, err := b.watchEventToEtcdEvent(ctx, e)
 					if err != nil {
 						resultErr := fmt.Errorf("transform watch event %d at revision %d: %w", i, watchEventRevision(e), err)
@@ -1399,6 +1439,37 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 	}
 	go transformResponseFunc(ctx, ch, watchResponseCh)
 	return watchResponseCh, nil
+}
+
+func filterBackendWatchEventsByRange(events []*proto.Event, start, end []byte) []*proto.Event {
+	var filtered []*proto.Event
+	for i, event := range events {
+		key := event.Kv.Key
+		matches := false
+		if end == nil {
+			matches = bytes.Equal(key, start)
+		} else {
+			matches = bytes.Compare(key, start) >= 0 && (len(end) == 0 || bytes.Compare(key, end) < 0)
+		}
+		if filtered == nil {
+			if matches {
+				continue
+			}
+			// The source slice may be shared by coalesced history scans. Copy the
+			// accepted prefix only after the first exclusion instead of filtering
+			// in place; the common all-matching prefix-Watch path stays allocation-free.
+			filtered = make([]*proto.Event, i, len(events)-1)
+			copy(filtered, events[:i])
+			continue
+		}
+		if matches {
+			filtered = append(filtered, event)
+		}
+	}
+	if filtered == nil {
+		return events
+	}
+	return filtered
 }
 
 func watchEventRevision(e *proto.Event) uint64 {

@@ -108,6 +108,81 @@ func TestBackendShimWatchFailsBatchWhenAnyEventCannotBeTranslated(t *testing.T) 
 	require.False(t, ok)
 }
 
+func TestBackendShimWatchRangeFiltersBeforeConversionAndPreservesBatchRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := server.backend.(*backendShim)
+	rec := &recordingMetrics{}
+	initWatchRangePrefilterMetric(rec)
+	shim.metricCli = rec
+	input := make(chan []*proto.Event, 2)
+	input <- []*proto.Event{
+		{
+			Type: proto.Event_CREATE, Revision: 7,
+			Kv: &proto.KeyValue{Key: []byte("/watch/target"), Value: []byte("value"), Revision: 7},
+		},
+		{
+			// This is structurally valid but its inline envelope cannot be
+			// decoded. Exact-range filtering must discard it before conversion.
+			Type: proto.Event_CREATE, Revision: 9,
+			Kv: &proto.KeyValue{Key: []byte("/watch/target-child"), Value: []byte{0, 'k', 'b', 2}, Revision: 9},
+		},
+	}
+	input <- []*proto.Event{{
+		Type: proto.Event_CREATE, Revision: 11,
+		Kv: &proto.KeyValue{Key: []byte("/watch/unrelated"), Value: []byte("value"), Revision: 11},
+	}}
+	close(input)
+	shim.backend = &scriptedBackendWatch{Backend: shim.backend, results: input}
+
+	results, err := shim.WatchRange(context.Background(), "/watch/target", []byte("/watch/target"), nil, 1)
+	require.NoError(t, err)
+
+	matching, ok := <-results
+	require.True(t, ok)
+	require.NoError(t, matching.Err)
+	require.Equal(t, uint64(9), matching.Revision, "watermark must cover the complete source batch")
+	require.Len(t, matching.Events, 1)
+	require.Equal(t, []byte("/watch/target"), matching.Events[0].Kv.Key)
+
+	filtered, ok := <-results
+	require.True(t, ok)
+	require.NoError(t, filtered.Err)
+	require.Equal(t, uint64(11), filtered.Revision, "an all-filtered batch must still advance the watch watermark")
+	require.Empty(t, filtered.Events)
+	_, ok = <-results
+	require.False(t, ok)
+	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedCounterValues(rec, "watch.range_prefilter.dropped"))
+}
+
+func TestFilterBackendWatchEventsByRangeMatchesEtcdIntervals(t *testing.T) {
+	events := []*proto.Event{
+		{Kv: &proto.KeyValue{Key: []byte("a")}},
+		{Kv: &proto.KeyValue{Key: []byte("ab")}},
+		{Kv: &proto.KeyValue{Key: []byte("b")}},
+		{Kv: &proto.KeyValue{Key: []byte("c")}},
+	}
+	keys := func(filtered []*proto.Event) []string {
+		out := make([]string, 0, len(filtered))
+		for _, event := range filtered {
+			out = append(out, string(event.Kv.Key))
+		}
+		return out
+	}
+
+	require.Equal(t, []string{"b"}, keys(filterBackendWatchEventsByRange(events, []byte("b"), nil)))
+	require.Equal(t, []string{"ab", "b"}, keys(filterBackendWatchEventsByRange(events, []byte("ab"), []byte("c"))))
+	require.Equal(t, []string{"b", "c"}, keys(filterBackendWatchEventsByRange(events, []byte("b"), []byte{})))
+	require.Equal(t, []string{"a", "ab", "b", "c"}, keys(events), "filtering must not mutate a shared source batch")
+	all := filterBackendWatchEventsByRange(events, []byte("a"), []byte{})
+	require.Same(t, events[0], all[0])
+	require.Equal(t, &events[0], &all[0], "the all-matching hot path must reuse the source slice")
+
+	fromKey := cloneWatchRangeBoundary([]byte{})
+	require.NotNil(t, fromKey, "cloning must preserve the non-nil empty from-key sentinel")
+	require.Nil(t, cloneWatchRangeBoundary(nil), "cloning must preserve exact-key nil")
+}
+
 func TestWatchEventRejectsMalformedInlineValue(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
