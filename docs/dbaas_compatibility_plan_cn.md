@@ -65916,6 +65916,23 @@ A5630 已根据 Status leader 选择同位置 info endpoint，并要求 scrape �
 `expected exactly one etcd_server_id server_id=315 value=1`。另一负例放入两条完全正确的 `server_id="315"`，证明重复 identity
 不能经值去重伪装成唯一来源；成功 fixture 同时覆盖 `leaderId`/`memberId` camelCase 与 snake_case 混合 Status。
 
+提交 `955fa3640431287f097cb968f2318c648eb23fb4` 的聚焦只读 gate 普通/race 分别为 `100.808s/101.841s`，vet、shell syntax、
+shellcheck 与 diff check 全部 GREEN。提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`264.928/453.571/306.277/529.002s`，全部 GREEN。
+
+真实独立三 PD/三 TiKV 门禁复用 A5629 runtime
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`，经五重 StatefulSet test 部署为
+generation 350，三 Pod Ready/restart 0。现场在本轮恰好由旧 leader `2985394290` 换到 member `848842929`；Status 三端一致报告
+新 leader、term `874`，脚本动态选择第二项 `https://127.0.0.1:18080/metrics`，并输出
+`info_metrics_server_id=329850b1`，与 `848842929` 的小写十六进制精确一致。完整 gate 同时保持 cluster ID
+`7662961163671170154`、revision/index/applied `1258096`、HashKV `3680408421`、compact revision `1169203`、gateway 预期拒绝、
+Range/其余 metrics、版本和 debug/pprof 全部 GREEN；这证明校验不是依赖固定 ordinal/旧 leader 的静态巧合。候选日志无
+panic/fatal/data corruption/deadline，证书与 curl wrapper 只存在于四个独立匿名 memfd。
+
+最后以同样五重 test 回滚稳定 digest。终态 generation/observed 351、current/update `a4657-tls-7d94b578fb`，三 Pod runtime
+恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV
+3+3+3 Ready/restart 0，六个诊断端口无监听。A5632 关闭跨实例拼接健康 leader metrics 的发布证据身份缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
