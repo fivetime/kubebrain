@@ -35,7 +35,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；read-only serializable Txn 复用上述单一 checkpoint；当前无已知数据语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
-| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：短时 transport 断线恢复已门禁；继续数天级多轮断线/慢消费者/连续滚动 soak |
+| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：短时单轮断线及断线期间持续写已门禁；继续数天级多轮断线/慢消费者/连续滚动 soak |
 | Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；异步 revoke 被阻断时 TTL 与 etcd 一样持续为负；继续扩大故障、并发和错误差分矩阵 |
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
@@ -65495,6 +65495,34 @@ watch-soak 完整包普通 20 轮 `28.243s`、race 10 轮 `25.887s`、vet、shel
 `hack/production/test-shard.sh --verify 4` 为 703 项、`170/193/180/160`；提交后四片为
 `258.664/444.515/302.147/511.597s`，全部 GREEN。A5620 关闭一次可控、无 in-flight mutation 的短时客户端 transport 断线证据缺口；
 它不把 40 秒门禁扩张为数天长稳，也不证明多轮长断线、断线期间持续写、慢消费者与连续 rollout 的组合路径，后者继续保持 P1。
+
+### A5621：Watch transport 断线期间由独立 writer 持续提交
+
+A5620 首轮故障击中 in-flight Put 后正确 RED，说明同一 client/transport 同时承担 Watch 与 mutation 时，断开 Watch 连接必然可能让 Put
+落入提交结果不确定窗口；对相同 Put 盲重试还会在首次已提交时产生额外 revision/version，破坏精确事件 oracle。为了覆盖 upstream
+`TestWatchResumeAfterDisconnect` 未包含、但 DBaaS 长稳必须验证的“断线期间仍持续写”，提交
+`9708e0a144ae0516c4d60d71e72ca1a4152c5a88` 新增可选 `WRITE_ENDPOINT` 与 `WRITE_TLS_SERVER_NAME`。默认空值保持原单 client
+行为；显式配置后，Watch/重连统计只使用可故障 endpoint，preflight、Put、Compact 与最终 exact-key cleanup 全部使用独立稳定 writer。
+
+双端模式在取得前缀 ownership 前分别调用 Status，要求两边都返回非零 ClusterID/MemberID 且 ClusterID 精确相同，任何 RPC、身份缺失或
+cluster 漂移都 fail closed。writer 复用一次加载的认证材料但 clone TLS config，绝不修改 Watch client 的 server-name，也不重新打开一次性
+`/dev/fd`；独立 writer 可覆盖证书名、继承共享证书名，或在主 Watch 为明文且 writer 只需系统根时独立建立 TLS 1.2+ 配置。配置表测固定
+悬空 `WRITE_TLS_SERVER_NAME` 被拒，TLS 派生普通/race 各 20 轮证明 clone、继承与 system-root 三条分支，Status 表测固定完整同集群成功、
+两端身份缺失和不同 ClusterID 拒绝。摘要新增 `separate_write_endpoint`，避免把单 client 结果误记为持续写隔离证据。
+
+真实门禁仍使用 A5608 三副本 mTLS 集群：Watch endpoint 为可停止的 `127.0.0.1:13379` port-forward，writer 为稳定
+`172.18.0.2:30089` NodePort，两端分别用证书 SAN 对应的 `127.0.0.1`/`172.18.0.3` authority，并在任何写入前通过同集群 Status。
+2 Watch/1000 events、10ms 间隔运行中，故障前独立 writer preflight 看到 480 keys；完全停止 Watch port-forward 并保持离线后，再由
+writer 读取到 1000 keys，证明剩余 520 个 Put 在 Watch 不可达期间继续提交。重建相同端口后，两路 Watch 精确追平 revisions
+`1180287..1181286` 的全部 1000 个事件，无丢失、重复或乱序；摘要为 `separate_write_endpoint=true`、
+`transport_connections=3`、Created 后 `transport_reconnects=1`、下限 1，wrapper exit 0，最终 CountOnly 为零。Created 前 Status/启动
+产生的额外连接留在 baseline 内，没有冒充故障重连。凭据仍只使用三个独立 `/dev/fd` process substitution；StatefulSet/auth/PD/TiKV/
+产品镜像均未修改，KubeBrain 3/3 Ready/restart 0，runner、port-forward 与临时目录全部不存在。
+
+最终 watch-soak 完整包普通 20 轮 `28.352s`、race 10 轮 `25.811s`、vet、shell syntax 与 diff check 全部 GREEN。提交前
+`hack/production/test-shard.sh --verify 4` 为 703 项、`170/193/180/160`；提交后四片为
+`257.009/450.711/302.502/517.982s`，全部 GREEN。A5621 关闭一次短时 Watch 断线期间持续写并从历史追平的证据缺口；它仍不替代
+数天级多轮长断线、断线/恢复反复交替、慢消费者叠加和连续 rollout 长稳，后者继续保持 P1。
 
 ## 提交规则
 
