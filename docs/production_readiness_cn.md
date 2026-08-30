@@ -1526,7 +1526,11 @@ re-list，只有该 resume revision 已压缩才进入 `watch_generation_recover
 陈旧、非法或组合不完整 warning。出现 dropped 时必须同时检查 ring
 容量、Watch send-loop、客户端流控及 durable history 扫描放大，并与 generation recovered/compacted/failed 对账；
 出现 interrupted 时还必须检查客户端超时/取消、连接中断和服务关闭记录。不能因当前 slow gauge 已回零而关闭事件，
-也不能在 recovered 已精确收敛时误报客户端 re-list。
+也不能在 recovered 已精确收敛时误报客户端 re-list。每个 Pod UID 还必须持续满足
+`catch_up = recovered + dropped + interrupted + etcd_debugging_mvcc_slow_watcher_total`。production recording 输出等式左右的
+守恒误差；由于 counter 转移与每秒刷新的 slow gauge 存在正常的短暂发布窗口，只在误差绝对值持续非零两分钟时
+warning。持续正值表示已进入 catch-up 但遗失终态，持续负值表示重复终态或未进入即终止；重启会清零进程 counter，
+故处置前必须先保全指标和日志。严格 watch-soak 在任何写入前也要求 baseline 守恒误差为零，不允许历史漏计藏在本轮精确 delta 后面。
 换主或 peer transport 变化时，`watch_generation_recovery{outcome="retry|recovered|compacted|failed"}` 记录逻辑
 Watch generation 的恢复过程，RPC server 创建时四类均发布权威零值。每次 reopen 都从该 Watch 最后成功发送
 revision 的下一位开始：瞬时打开失败计 retry，成功建立权威 local/proxy channel 计 recovered，精确 resume revision

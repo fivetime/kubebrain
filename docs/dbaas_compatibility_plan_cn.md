@@ -65630,6 +65630,49 @@ raw reconnect 1；严格 baseline delta 只增加 `catch_up+1/interrupted+1`，`
 已经 `gio trash` 移入系统回收站、可恢复。A5624 关闭“catch-up 已开始但取消路径无终态计数”的可观测性守恒缺口；
 数天级长断线、连续 rollout 和多可用区网络故障长稳仍保持 P1。
 
+### A5625：慢 Watch outcome 守恒门禁与生产持续告警
+
+对照 `/root/etcd` `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+`tests/integration/clientv3/watch/watch_test.go::{TestWatchReconnRunning,TestWatchResumeAfterDisconnect}` 与
+`client/v3/watch.go::serveSubstream`：upstream 保证客户端恢复后的事件连续性，但 KubeBrain 还有 bounded ring catch-up 过程指标的独立
+生产合同。A5624 补齐了 interrupted 终态，但既有 runner 只比较“本轮相对 baseline 的精确 delta”；如果 baseline 已经
+遗留一个无终态 catch-up，新一轮仍可 GREEN。production 也只检查四条序列完整性和各自增长，没有直接检测“漏终态”或
+“重复终态”。
+
+提交 `bb7e31bc826f7ad22ada0ea243289a96bb061486` 将
+`catch_up - recovered - dropped - interrupted` 定义为 outstanding generation。watch-soak 在启动 raw slow watcher 和任何事件写入前
+要求 baseline outstanding 精确为零；pressure 期望精确 N，completion 重新期望零，从而不能用本轮正确 delta 掩盖历史不守恒。
+正值和负值负例分别锁定漏终态与重复/无入口终态。production 新增每 Pod UID
+`watch_slow_consumer_outcome:conservation_error_by_pod`，将四类 counter 之差再减去当前 slow-watcher gauge；显式
+`on(namespace,pod,uid)` 消除 recording 固定 `dbaas_instance` 标签造成的空向量风险。守恒误差绝对值持续非零两分钟才 warning，
+容忍 counter 转移和一秒 gauge 刷新的正常短窗口；告警明确要求重启前保全 counter 与日志。
+
+验证中 watch-soak 完整包普通 20 轮 `28.214s`、race 10 轮 `26.107s`，production 完整包 10 轮 `3.038s`，
+受影响包 vet 与 diff check 全部 GREEN。Prometheus v3.5 `promtool check rules` 直接解析全部 471 条规则为 GREEN；当前 kind 未安装
+`monitoring.coreos.com/v1` CRD，因此 server-side dry-run 无法找到 ServiceMonitor/PrometheusRule mapping，没有将该环境能力缺失冒充为
+API 验证 GREEN。提交前 `hack/production/test-shard.sh --verify 4` 为 703 项、`170/193/180/160`；提交后四片
+`292.409/477.259/313.675/548.350s` 全部 GREEN。
+
+候选镜像 `kubebrain:a5625-bb7e31bc` 的 OCI digest 为
+`sha256:36caf9e43c62bc83f1830fe14310208c9c1d9b7e131fd01ac43c0ff3d621c28d`，镜像内版本/完整 Git SHA/build time
+`2026-08-30T12:13:44Z` 精确，kind runtime 三副本 image ID 同为
+`sha256:ecf101283d7a78b754350dc6fbbb99265854a8b99a11db74544ed721184c508c`。候选从 generation 330 滚动到 331，3/3 Ready、
+restart 0；leader 为 `a4657-tls-1`，独立 writer 为 `172.18.0.2:30090`，Watch/info 为 `127.0.0.1:13379/18082`。新进程 baseline
+的四类 outcome 和 active slow gauge 均为零。真实 TiKV/PD 门禁用 1 个普通 watcher、1 个 raw slow consumer、64 并发写入 12,000 个事件；
+同一本地控制进程在 pressure barrier 后精确定时，完全断开 Watch transport `12:27:46Z..12:27:48Z`。最终精确对账 revisions
+`1245898..1257897`，`transport_connections=5`、Created 后 reconnects 3、普通 watcher 响应承载恢复流 1、raw reconnect 1；完成态
+`catch_up/recovered/dropped/interrupted/active=1/0/0/1/0`，直接计算 conservation error 为 0，独立 cleanup-only 为零。
+
+真实负例使用一次性本地 metrics 代理，只把真实完成态的 `interrupted=1` 改为 0。首次代理因 shell 去掉末尾换行而被
+Prometheus parser 在写入前拒绝，不当作守恒证据；补齐换行与 Content-Length 后，runner 在任何事件写入前以
+`catch_up=1 recovered=0 dropped=0 interrupted=0 outstanding=1 expected_outstanding=0` 明确 RED/exit 1，并清零 ownership prefix。数据与
+info 凭据仍仅由六个独立 `/dev/fd` process substitution 提供，真实 metrics 和集群配置未修改。
+
+最后以新鲜 UID/resourceVersion/container/image/完整 args JSON Patch tests 回滚到 A5608 digest，generation 332 的
+current/update revision 同为 `a4657-tls-7d94b578fb`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，runner、port-forward、一次性代理和
+临时目录全部不存在。门禁日志已经 `gio trash` 移入系统回收站、可恢复。A5625 关闭“相对 delta 可以掩盖历史不守恒，生产只看序列完整而不看
+跨序列守恒”的证据与告警缺口；数天级长断线、连续 rollout 和多可用区网络故障长稳仍保持 P1。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
