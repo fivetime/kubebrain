@@ -65880,6 +65880,24 @@ A5631 来自 A5630 真实验证中的有效门禁假阴性：`PROBE_TIMEOUT=60s`
 `etcdctl command timeout mismatch: expected --command-timeout=60s`，修复后两条路径均通过。该变更不延长 gate 声明的总预算，
 只消除调用者看不见的 2 秒 dial/5 秒 command 较短上限。
 
+提交 `008dbb80c763b983745b35fdb218e6bfd8c22c20` 的聚焦只读 gate 普通/race 分别为 `99.789s/102.054s`，vet、shell syntax、
+shellcheck 与 diff check 全部 GREEN。提交前清单验证为 703 项、`170/193/180/160`；提交后四片分别
+`258.102/451.950/313.362/526.523s`，全部 GREEN。
+
+真实独立三 PD/三 TiKV 门禁仍复用 A5629 runtime
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`，以 StatefulSet
+UID/resourceVersion/container/image/full args 五重 test 部署为 generation 348，三 Pod Ready/restart 0。门禁进程在启动前明确删除
+`ETCDCTL_COMMAND_TIMEOUT` 和 `ETCDCTL_DIAL_TIMEOUT` 环境变量，只设置 `PROBE_TIMEOUT=60s`；新脚本自身传入的两个 flag 让三端点
+Status/HashKV 完整通过。结果为 cluster ID `7662961163671170154`、members
+`1279320304/848842929/2985394290`、leader `2985394290`、revision/index/applied `1258096`、term `869`、HashKV
+`3680408421`、compact revision `1169203`，并继续自动选择 leader info `https://127.0.0.1:18081/metrics`；完整 metrics、gateway
+预期拒绝、版本和 debug/pprof 门禁均 GREEN。候选日志无 panic/fatal/data corruption/deadline，证书与 curl wrapper 只存在于四个独立匿名
+memfd。
+
+最后以同样五重 test 回滚稳定 digest。终态 generation/observed 349、current/update `a4657-tls-7d94b578fb`，三 Pod runtime
+恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV
+3+3+3 Ready/restart 0，六个诊断端口无监听。A5631 关闭“声明 60 秒探针预算、etcdctl 却在 2/5 秒内部先行失败”的发布假阴性。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
