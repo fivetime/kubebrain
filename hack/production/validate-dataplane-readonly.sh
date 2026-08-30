@@ -1536,6 +1536,14 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       exit 1
     fi
   done
+  status_endpoint_member_map="$(printf '%s' "$status_json" | "$JQ" -r '
+    .[]
+    | [
+        .Endpoint,
+        ((if (.Status.header | has("member_id")) then .Status.header.member_id else .Status.header.memberId end) | tostring)
+      ]
+    | @tsv
+  ' | LC_ALL=C sort)"
   if [[ -n "$INFO_ENDPOINTS" ]]; then
     status_reported_leader_count="$(printf '%s' "$status_json" | "$JQ" -r '
       [
@@ -2255,6 +2263,18 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
       exit 1
     fi
   done
+  hashkv_endpoint_member_map="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    .[]
+    | [
+        .Endpoint,
+        ((if (.HashKV.header | has("member_id")) then .HashKV.header.member_id else .HashKV.header.memberId end) | tostring)
+      ]
+    | @tsv
+  ' | LC_ALL=C sort)"
+  if [[ "$hashkv_endpoint_member_map" != "$status_endpoint_member_map" ]]; then
+    echo "status/hashkv endpoint member mapping mismatch: status=${status_endpoint_member_map//$'\n'/,}, hashkv=${hashkv_endpoint_member_map//$'\n'/,}" >&2
+    exit 1
+  fi
   if [[ "$hashkv_hashes" != "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv hash mismatch: expected ${EXPECTED_HASHKV_HASH}, got ${hashkv_hashes}" >&2
     exit 1
@@ -2275,7 +2295,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "status/hashkv revision mismatch: status=${min_status_revision:-missing}, hashkv=${min_hashkv_revision}" >&2
     exit 1
   fi
-  hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
+  hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_endpoint_members_match=true, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
   hashkv_summary+=", revisions_match=true"
   if [[ "$hashkv_raft_terms" != "-" ]]; then
     hashkv_summary+=", hashkv_raft_terms=${hashkv_raft_terms}"
