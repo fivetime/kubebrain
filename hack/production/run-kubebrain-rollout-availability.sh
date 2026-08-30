@@ -403,7 +403,9 @@ if [[ -n "$TARGET_IMAGE" ]]; then
     .spec |
     .template.spec.containers[$index].image = $image |
     if $migrate_aging then
-      .template.spec.containers[$index].args += [$max_age,$max_age_grace]
+      .template.spec.containers[$index].args = ([.template.spec.containers[$index].args[] |
+        select((startswith("--grpc-max-connection-age=") or startswith("--grpc-max-connection-age-grace=")) | not)] +
+        [$max_age,$max_age_grace])
     else . end |
     if $migrate_readiness then
       ([.template.spec.containers[$index].args[]? | select(startswith("--info-cert-file="))] |
@@ -487,9 +489,17 @@ if (( tls_marker_count > 0 )); then
     "$max_connection_age_any_count" == 1 && "$max_connection_age_grace_any_count" == 1 &&
     "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == false ]]; then
     connection_aging_contract_valid=true
-  elif [[ "$max_connection_age_any_count" == 0 && "$max_connection_age_grace_any_count" == 0 &&
-    "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ]]; then
-    connection_aging_contract_valid=true
+  elif [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ]]; then
+    if [[ "$max_connection_age_any_count" == 0 && "$max_connection_age_grace_any_count" == 0 ]]; then
+      connection_aging_contract_valid=true
+    elif [[ "$max_connection_age_any_count" == 1 && "$max_connection_age_grace_any_count" == 1 &&
+      "$max_connection_age_count" == 0 && "$max_connection_age_grace_count" == 0 ]]; then
+      # A diagnostic/candidate rollout may retune one complete existing pair.
+      # Reject partial drift and an already-matching pair so migration remains
+      # an intentional, observable spec transition rather than hiding duplicate
+      # or redundant command-line state.
+      connection_aging_contract_valid=true
+    fi
   fi
   if [[ "$allow_insecure_false_count" != 1 || "$client_cert_auth_count" != 1 || "$connection_aging_contract_valid" != true ||
     "$cert_file" != /* || "$key_file" != "${cert_dir}/"* ||

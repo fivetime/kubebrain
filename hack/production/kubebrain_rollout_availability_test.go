@@ -1534,6 +1534,29 @@ func TestRolloutAvailabilityRunnerMigratesConfiguredTLSConnectionAgingWithCandid
 	require.NotContains(t, log, `"--grpc-max-connection-age=1h"`)
 }
 
+func TestRolloutAvailabilityRunnerRetunesConfiguredTLSConnectionAgingWithCandidate(t *testing.T) {
+	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+	target := "registry.example/kubebrain@sha256:" + strings.Repeat("c", 64)
+	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+		"FAKE_TLS_STATE=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("c", 64),
+		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
+		"EXPECTED_GRPC_MAX_CONNECTION_AGE=5m", "EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=30s",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	log := readOptionalFile(t, logPath)
+	require.Equal(t, 1, strings.Count(log, `"--grpc-max-connection-age=5m"`))
+	require.Equal(t, 1, strings.Count(log, `"--grpc-max-connection-age-grace=30s"`))
+	require.Equal(t, 1, strings.Count(log, `"--grpc-max-connection-age=1h"`),
+		"the old age may appear only in the atomic JSON Patch test")
+	require.Equal(t, 1, strings.Count(log, `"--grpc-max-connection-age-grace=5m"`),
+		"the old grace may appear only in the atomic JSON Patch test")
+}
+
 func TestRolloutAvailabilityRunnerMigratesSemanticReadinessWithCandidate(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	target := "registry.example/kubebrain@sha256:" + strings.Repeat("e", 64)
@@ -2137,7 +2160,7 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
     prestop='["/bin/sh","-c","sleep 25 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain"]'
     args='["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379","--allow-insecure=false","--info-cert-file=/etc/kubebrain/client-tls/tls.crt","--info-key-file=/etc/kubebrain/client-tls/tls.key","--grpc-max-connection-age=1h","--grpc-max-connection-age-grace=5m","--cert-file=/etc/kubebrain/client-tls/tls.crt","--key-file=/etc/kubebrain/client-tls/tls.key","--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt","--tls-server-name=kubebrain-client.kubebrain-system.svc","--client-cert-auth=true"]'
     [[ "${FAKE_TLS_NO_CONNECTION_AGING:-false}" != true ]] || args='["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379","--allow-insecure=false","--info-cert-file=/etc/kubebrain/client-tls/tls.crt","--info-key-file=/etc/kubebrain/client-tls/tls.key","--cert-file=/etc/kubebrain/client-tls/tls.crt","--key-file=/etc/kubebrain/client-tls/tls.key","--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt","--tls-server-name=kubebrain-client.kubebrain-system.svc","--client-cert-auth=true"]'
-    if [[ "${FAKE_TLS_NO_CONNECTION_AGING:-false}" == true && "${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}" == true && -e "$FAKE_KUBECTL_STATE" ]]; then
+    if [[ "${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}" == true && -e "$FAKE_KUBECTL_STATE" ]]; then
       max_age="${EXPECTED_GRPC_MAX_CONNECTION_AGE:-1h}"
       max_age_grace="${EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE:-5m}"
       args="$(jq -cn --arg age "--grpc-max-connection-age=${max_age}" --arg grace "--grpc-max-connection-age-grace=${max_age_grace}" '["--leader-retry-period=500ms","--pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379","--allow-insecure=false","--info-cert-file=/etc/kubebrain/client-tls/tls.crt","--info-key-file=/etc/kubebrain/client-tls/tls.key","--cert-file=/etc/kubebrain/client-tls/tls.crt","--key-file=/etc/kubebrain/client-tls/tls.key","--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt","--tls-server-name=kubebrain-client.kubebrain-system.svc","--client-cert-auth=true",$age,$grace]')"
