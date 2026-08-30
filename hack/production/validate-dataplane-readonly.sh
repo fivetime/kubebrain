@@ -294,7 +294,7 @@ expect_info_metrics_boundary() {
   local wal_metric_values
   local raft_snapshot_metric
   local raft_snapshot_metric_values
-  local is_leader_values
+  local leader_state_rows
   local server_identity_rows
 
   client_response="$(run_with_probe_timeout "$CURL" -sS -i "$client_metrics_url")"
@@ -434,13 +434,6 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected etcd_server_is_leader" >&2
     exit 1
   fi
-  if [[ "$must_be_leader" == "1" ]]; then
-    is_leader_values="$(awk '$1 == "etcd_server_is_leader" || index($1, "etcd_server_is_leader{") == 1 {print $2}' <<<"$info_metrics" | sort -u)"
-    if [[ "$is_leader_values" != "1" ]]; then
-      echo "info metrics leader mismatch: expected etcd_server_is_leader=1, got ${is_leader_values:-missing}" >&2
-      exit 1
-    fi
-  fi
   if [[ "$info_metrics" != *"etcd_server_leader_changes_seen_total{"* && "$info_metrics" != *"etcd_server_leader_changes_seen_total "* ]]; then
     echo "info metrics mismatch: expected etcd_server_leader_changes_seen_total" >&2
     exit 1
@@ -448,6 +441,23 @@ expect_info_metrics_boundary() {
   if [[ "$info_metrics" != *"etcd_server_is_learner{"* ]]; then
     echo "info metrics mismatch: expected etcd_server_is_learner" >&2
     exit 1
+  fi
+  if [[ "$must_be_leader" == "1" ]]; then
+    leader_state_rows="$(awk '
+      $1 == "etcd_server_has_leader" || index($1, "etcd_server_has_leader{") == 1 {
+        print "has_leader\t" $2
+      }
+      $1 == "etcd_server_is_leader" || index($1, "etcd_server_is_leader{") == 1 {
+        print "is_leader\t" $2
+      }
+      $1 == "etcd_server_is_learner" || index($1, "etcd_server_is_learner{") == 1 {
+        print "is_learner\t" $2
+      }
+    ' <<<"$info_metrics" | LC_ALL=C sort)"
+    if [[ "$leader_state_rows" != $'has_leader\t1\nis_leader\t1\nis_learner\t0' ]]; then
+      echo "info metrics leader state mismatch: expected exactly has_leader=1,is_leader=1,is_learner=0, got ${leader_state_rows//$'\n'/,}" >&2
+      exit 1
+    fi
   fi
   if [[ "$info_metrics" != *"etcd_server_learner_promote_successes{"* && "$info_metrics" != *"etcd_server_learner_promote_successes "* ]]; then
     echo "info metrics mismatch: expected etcd_server_learner_promote_successes" >&2
