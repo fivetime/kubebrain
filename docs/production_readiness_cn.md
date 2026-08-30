@@ -1407,7 +1407,9 @@ scrape 还必须恰有一条 value=1 的 `etcd_server_id`，其小写十六进�
 以及所选 leader 状态缺失、重复、非规范值或互相矛盾均 fail closed。未设置 `INFO_ENDPOINTS` 时继续从
 `READYZ_URL` 推导 `/metrics`，仅用于已经显式对齐
 info 实例的旧调用或单成员实例。通过摘要会输出实际选择的 `info_metrics_endpoint=<url>/metrics` 和
-`info_metrics_server_id=<hex>`。
+`info_metrics_server_id=<hex>`。完整 scrape 前后还会各取一次 Status，要求 endpoint、cluster、member、leader、
+header/body raft term 与空 errors 构成的有序围栏完全相同；换主、任期推进、身份漂移或错误状态均拒绝，并仅在稳定时输出
+`info_metrics_status_fence=stable`。
 A5629 在独立三 PD/三 TiKV 上以 leader 对齐的完整只读 gate 验证
 `range_duration_metrics=ok`，同时保持三 member Status/HashKV、gateway client-cert-auth 拒绝与全部
 info metrics 对账 GREEN。

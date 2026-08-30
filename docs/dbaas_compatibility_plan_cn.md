@@ -65972,6 +65972,43 @@ metrics 通过。HashKV `3680408421`、compact revision `1169203`、gateway 预�
 3+3+3 Ready/restart 0，六个诊断端口无监听，宿主剩余约 320 GiB。A5633 关闭互相矛盾或重复的 leader 状态 series 被发布 gate
 误接受的问题，同时不把无法建立 Status-to-info 身份映射的兼容 fallback 收紧为未经证明的 leader 判断。
 
+### A5634：用前后 Status/term 围栏夹住 leader info scrape
+
+A5630-A5633 已把首次 Status 选出的 leader 绑定到 info endpoint、server identity 和唯一状态元组，但完整 `/metrics` scrape 后不再读取
+Status。KubeBrain 的三项 server-state gauge 每秒刷新；若换主发生在首次 Status 与 scrape 之间，旧 leader 的滞后 gauge 仍可能短暂保持 1，
+旧 gate 会把不同时间边界的证据拼成 GREEN。对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status`、
+`api/v3rpc/header.go::fillWithoutRevision` 与 KubeBrain `pkg/server/etcd/maintenance.go::Status`，leader 身份必须由正 raft term 定界，
+仅比较 leader ID 不能排除同 leader ABA 或同一 ID 下的新任期。
+
+`INFO_ENDPOINTS` 模式现在从首次 Status 构造按 endpoint 排序的严格围栏，每行包含 endpoint、cluster ID、member ID、leader ID 和 raft term；
+所有数值必须为正整数，header/body term 必须相等，Errors 必须为空。完整 info metrics 校验后，脚本以相同 timeout 预算再次执行
+`etcdctl endpoint status` 并重建围栏；任一字段变化、缺失、畸形、错误状态或 endpoint 数变化都 fail closed，只有完全相同才在摘要输出
+`info_metrics_status_fence=stable`。未设置 `INFO_ENDPOINTS` 的 fallback 不声称能够建立该跨端点时间围栏。
+
+确定性 RED 的首次快照为 leader 789/term 8，选中 member 789 的完整 metrics 也具有正确 identity 与 leader 状态；第二快照保持同一
+leader/member/endpoint，却把 header/body term 推进到 9。旧 gate 因只调用一次 Status 而整体 GREEN；新 gate 精确拒绝
+`INFO_ENDPOINTS status fence changed across info metrics scrape`，证明 term 而非仅 leader ID 参与稳定性判断。
+
+聚焦只读 gate 普通/race 分别为 `100.334s/101.592s`；Go vet、gofmt、shell syntax、diff check 与固定
+`koalaman/shellcheck:v0.11.0` 对目标脚本的检查全部 GREEN。
+
+代码提交 `2f7b4ffd55bf407d23db4efbdf6c0ce1059953dd` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`251.287/440.828/297.142/513.131s`，全部 GREEN。
+
+真实独立三 PD/三 TiKV 门禁继续复用 A5629 runtime
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`，经五重 StatefulSet test 部署为
+generation 354，三 Pod Ready/restart 0。完整 gate 的首次与 metrics 后第二次 Status 都保持 cluster ID
+`7662961163671170154`、members `1279320304/848842929/2985394290`、leader `2985394290`、term `881`；脚本动态选择
+`https://127.0.0.1:18081/metrics`、验证 identity `b1f18072` 与唯一 leader 状态元组，并明确输出
+`info_metrics_status_fence=stable`。revision/index/applied `1258096`、HashKV `3680408421`、compact revision `1169203`、
+gateway 预期拒绝、版本、debug/pprof 和全部 metrics 均 GREEN。候选日志无 panic/fatal/data corruption/context deadline/TiKV/PD
+error；CA/cert/key/curl wrapper 只存在于四个独立匿名 memfd。
+
+最后以同样五重 test 回滚稳定 digest。终态 generation/observed 355、current/update `a4657-tls-7d94b578fb`，三 Pod runtime
+恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV
+3+3+3 Ready/restart 0，六个诊断端口无监听，宿主剩余约 320 GiB。A5634 关闭单次 Status 快照无法证明 leader metrics
+在同一任期内稳定的发布证据时间窗口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
