@@ -14,6 +14,8 @@ KUBEBRAIN_CLIENT_SERVICE="${KUBEBRAIN_CLIENT_SERVICE:-kubebrain-client}"
 KUBEBRAIN_CLIENT_PORT="${KUBEBRAIN_CLIENT_PORT:-3379}"
 EXPECTED_REPLICAS="${EXPECTED_REPLICAS:-3}"
 EXPECTED_LEADER_RETRY_PERIOD="${EXPECTED_LEADER_RETRY_PERIOD:-500ms}"
+EXPECTED_GRPC_MAX_CONNECTION_AGE="${EXPECTED_GRPC_MAX_CONNECTION_AGE:-1h}"
+EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE="${EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE:-5m}"
 MIN_TERMINATION_GRACE_PERIOD_SECONDS=45
 PROBE_ITERATIONS="${PROBE_ITERATIONS:-900}"
 PROBE_INTERVAL="${PROBE_INTERVAL:-0.1}"
@@ -154,6 +156,14 @@ for variable in PROBE_COMMAND_TIMEOUT PROBE_DIAL_TIMEOUT PROBE_MAX_OPERATION_LAT
     exit 2
   }
 done
+for variable in EXPECTED_GRPC_MAX_CONNECTION_AGE EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE; do
+  operation_is_positive_go_duration_hms "${!variable}" || {
+    echo "${variable} must be a positive Go duration" >&2
+    exit 2
+  }
+done
+grpc_max_connection_age_arg="--grpc-max-connection-age=${EXPECTED_GRPC_MAX_CONNECTION_AGE}"
+grpc_max_connection_age_grace_arg="--grpc-max-connection-age-grace=${EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE}"
 go_duration_nanoseconds() {
   local value="$1" magnitude
   case "$value" in
@@ -388,11 +398,12 @@ fi
 if [[ -n "$TARGET_IMAGE" ]]; then
   candidate_spec="$(jq -cS --arg image "$TARGET_IMAGE" --argjson index "$kubebrain_container_index" \
     --argjson migrate_aging "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" \
-    --argjson migrate_readiness "$ENABLE_HTTP_READINESS_MIGRATION" '
+    --argjson migrate_readiness "$ENABLE_HTTP_READINESS_MIGRATION" \
+    --arg max_age "$grpc_max_connection_age_arg" --arg max_age_grace "$grpc_max_connection_age_grace_arg" '
     .spec |
     .template.spec.containers[$index].image = $image |
     if $migrate_aging then
-      .template.spec.containers[$index].args += ["--grpc-max-connection-age=1h","--grpc-max-connection-age-grace=5m"]
+      .template.spec.containers[$index].args += [$max_age,$max_age_grace]
     else . end |
     if $migrate_readiness then
       ([.template.spec.containers[$index].args[]? | select(startswith("--info-cert-file="))] |
@@ -462,8 +473,8 @@ if (( tls_marker_count > 0 )); then
   expected_prestop='["/bin/sh","-c","sleep 25 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain"]'
   allow_insecure_false_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--allow-insecure=false")] | length' "$statefulset_json")"
   client_cert_auth_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--client-cert-auth=true")] | length' "$statefulset_json")"
-  max_connection_age_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--grpc-max-connection-age=1h")] | length' "$statefulset_json")"
-  max_connection_age_grace_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--grpc-max-connection-age-grace=5m")] | length' "$statefulset_json")"
+  max_connection_age_count="$(jq --arg expected "$grpc_max_connection_age_arg" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == $expected)] | length' "$statefulset_json")"
+  max_connection_age_grace_count="$(jq --arg expected "$grpc_max_connection_age_grace_arg" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == $expected)] | length' "$statefulset_json")"
   max_connection_age_any_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--grpc-max-connection-age="))] | length' "$statefulset_json")"
   max_connection_age_grace_any_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--grpc-max-connection-age-grace="))] | length' "$statefulset_json")"
   cert_file="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--cert-file=")) | sub("^--cert-file="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
