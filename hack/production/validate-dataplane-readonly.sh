@@ -1748,15 +1748,17 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status raftTerm must be positive, got ${gateway_status_raft_term}" >&2
     exit 1
   fi
-  if [[ "$gateway_status_header_raft_term" != "missing" ]]; then
-    if ! [[ "$gateway_status_header_raft_term" =~ ^[1-9][0-9]*$ ]]; then
-      echo "gateway status header raft term must be positive, got ${gateway_status_header_raft_term}" >&2
-      exit 1
-    fi
-    if [[ "$gateway_status_header_raft_term" != "$gateway_status_raft_term" ]]; then
-      echo "gateway status raft term mismatch: header=${gateway_status_header_raft_term}, status=${gateway_status_raft_term}" >&2
-      exit 1
-    fi
+  if ! [[ "$gateway_status_header_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway status header raft term must be positive, got ${gateway_status_header_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_status_header_raft_term" != "$gateway_status_raft_term" ]]; then
+    echo "gateway status raft term mismatch: header=${gateway_status_header_raft_term}, status=${gateway_status_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "${status_raft_terms:-"-"}" != "-" && "$gateway_status_raft_term" != "$status_raft_terms" ]]; then
+    echo "status/gateway status raft term mismatch: status=${status_raft_terms}, gateway_status=${gateway_status_raft_term}" >&2
+    exit 1
   fi
   if ! [[ "$gateway_status_raft_index" =~ ^[0-9]+$ ]]; then
     echo "gateway status raftIndex must be non-negative, got ${gateway_status_raft_index}" >&2
@@ -1910,15 +1912,13 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway auth status revision mismatch: status=${min_status_revision}, auth=${gateway_auth_revision}" >&2
     exit 1
   fi
-  if [[ "$gateway_auth_raft_term" != "missing" ]]; then
-    if ! [[ "$gateway_auth_raft_term" =~ ^[1-9][0-9]*$ ]]; then
-      echo "gateway auth status raft term must be positive, got ${gateway_auth_raft_term}" >&2
-      exit 1
-    fi
-    if [[ "${status_raft_terms:-"-"}" != "-" && "$gateway_auth_raft_term" != "$status_raft_terms" ]]; then
-      echo "status/gateway auth status raft term mismatch: status=${status_raft_terms}, auth=${gateway_auth_raft_term}" >&2
-      exit 1
-    fi
+  if ! [[ "$gateway_auth_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway auth status raft term must be positive, got ${gateway_auth_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_auth_raft_term" != "$gateway_status_raft_term" ]]; then
+    echo "gateway status/auth status raft term mismatch: status=${gateway_status_raft_term}, auth=${gateway_auth_raft_term}" >&2
+    exit 1
   fi
   if [[ "$gateway_auth_enabled_type" != "missing" && "$gateway_auth_enabled_type" != "boolean" ]]; then
     echo "gateway auth status enabled must be boolean, got ${gateway_auth_enabled_type}" >&2
@@ -1969,15 +1969,13 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway alarm revision mismatch: status=${min_status_revision}, alarm=${gateway_alarm_revision}" >&2
     exit 1
   fi
-  if [[ "$gateway_alarm_raft_term" != "missing" ]]; then
-    if ! [[ "$gateway_alarm_raft_term" =~ ^[1-9][0-9]*$ ]]; then
-      echo "gateway alarm raft term must be positive, got ${gateway_alarm_raft_term}" >&2
-      exit 1
-    fi
-    if [[ "${status_raft_terms:-"-"}" != "-" && "$gateway_alarm_raft_term" != "$status_raft_terms" ]]; then
-      echo "status/gateway alarm raft term mismatch: status=${status_raft_terms}, alarm=${gateway_alarm_raft_term}" >&2
-      exit 1
-    fi
+  if ! [[ "$gateway_alarm_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway alarm raft term must be positive, got ${gateway_alarm_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_alarm_raft_term" != "$gateway_status_raft_term" ]]; then
+    echo "gateway status/alarm raft term mismatch: status=${gateway_status_raft_term}, alarm=${gateway_alarm_raft_term}" >&2
+    exit 1
   fi
   if [[ "$gateway_alarm_type" != "missing" && "$gateway_alarm_type" != "array" ]]; then
     echo "gateway alarm alarms must be an array when present, got ${gateway_alarm_type}" >&2
@@ -1990,6 +1988,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   status_summary+=", gateway_alarms=empty"
   status_summary+=", gateway_endpoint_member_id=${gateway_expected_member_id}, gateway_endpoint_members_match=true"
+  status_summary+=", gateway_endpoint_raft_term=${gateway_status_raft_term}, gateway_endpoint_raft_terms_match=true"
   fi
 fi
 
@@ -2385,15 +2384,13 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hash revision mismatch: status=${min_status_revision}, hash=${gateway_hash_revision}" >&2
     exit 1
   fi
-  if [[ "$gateway_hash_raft_term" != "missing" ]]; then
-    if ! [[ "$gateway_hash_raft_term" =~ ^[1-9][0-9]*$ ]]; then
-      echo "gateway hash raft term must be positive, got ${gateway_hash_raft_term}" >&2
-      exit 1
-    fi
-    if [[ "${status_raft_terms:-"-"}" != "-" && "$gateway_hash_raft_term" != "$status_raft_terms" ]]; then
-      echo "status/gateway hash raft term mismatch: status=${status_raft_terms}, gateway_hash=${gateway_hash_raft_term}" >&2
-      exit 1
-    fi
+  if ! [[ "$gateway_hash_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway hash raft term must be positive, got ${gateway_hash_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_hash_raft_term" != "$gateway_status_raft_term" ]]; then
+    echo "gateway status/hash raft term mismatch: status=${gateway_status_raft_term}, hash=${gateway_hash_raft_term}" >&2
+    exit 1
   fi
   if ! [[ "$gateway_hash_value" =~ ^[0-9]+$ ]]; then
     echo "gateway hash must be a non-negative integer, got ${gateway_hash_value}" >&2
@@ -2438,15 +2435,17 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv revision mismatch: etcdctl=${min_hashkv_revision}, gateway=${gateway_hashkv_revision}" >&2
     exit 1
   fi
-  if [[ "$gateway_hashkv_raft_term" != "missing" ]]; then
-    if ! [[ "$gateway_hashkv_raft_term" =~ ^[1-9][0-9]*$ ]]; then
-      echo "gateway hashkv raft term must be positive, got ${gateway_hashkv_raft_term}" >&2
-      exit 1
-    fi
-    if [[ "${hashkv_raft_terms:-"-"}" != "-" && "$gateway_hashkv_raft_term" != "$hashkv_raft_terms" ]]; then
-      echo "hashkv/gateway hashkv raft term mismatch: etcdctl=${hashkv_raft_terms}, gateway=${gateway_hashkv_raft_term}" >&2
-      exit 1
-    fi
+  if ! [[ "$gateway_hashkv_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway hashkv raft term must be positive, got ${gateway_hashkv_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_hashkv_raft_term" != "$gateway_status_raft_term" ]]; then
+    echo "gateway status/hashkv raft term mismatch: status=${gateway_status_raft_term}, hashkv=${gateway_hashkv_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "${hashkv_raft_terms:-"-"}" != "-" && "$gateway_hashkv_raft_term" != "$hashkv_raft_terms" ]]; then
+    echo "hashkv/gateway hashkv raft term mismatch: etcdctl=${hashkv_raft_terms}, gateway=${gateway_hashkv_raft_term}" >&2
+    exit 1
   fi
   if [[ "$gateway_hashkv_hash" != "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv hash mismatch: expected ${EXPECTED_HASHKV_HASH}, got ${gateway_hashkv_hash}" >&2
