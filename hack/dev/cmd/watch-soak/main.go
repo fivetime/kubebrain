@@ -37,6 +37,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	grpcstats "google.golang.org/grpc/stats"
 )
 
@@ -46,6 +47,7 @@ import (
 // for more than nine days.
 const maximumWatchObservations int64 = 20_000_000
 const maximumSlowConsumers = 1000
+const maximumIndependentlyTrackedWatchers = 1000
 
 // Match etcd's default --max-txn-ops and stay within KubeBrain's production
 // profile. Every operation is an exact-key Delete, never a broad range delete.
@@ -73,6 +75,7 @@ type config struct {
 	writeInterval               time.Duration
 	writeConcurrency            int
 	minimumTransportReconnects  int
+	minimumResumedWatchStreams  int
 	runID                       string
 	cleanupOnly                 bool
 	slowConsumer                bool
@@ -109,16 +112,54 @@ type etcdClientFactory func() (*clientv3.Client, error)
 
 type transportConnectionTracker struct {
 	connections atomic.Int64
+	watchRPCs   sync.Map
 }
 
-func (*transportConnectionTracker) TagRPC(ctx context.Context, _ *grpcstats.RPCTagInfo) context.Context {
-	return ctx
+type watcherIDContextKey struct{}
+type trackedWatchRPCContextKey struct{}
+
+type trackedWatchRPC struct {
+	tracker   *transportConnectionTracker
+	watcherID int
+	seen      atomic.Bool
 }
 
-func (*transportConnectionTracker) HandleRPC(context.Context, grpcstats.RPCStats) {}
+const watchFullMethodName = "/etcdserverpb.Watch/Watch"
+
+func (tracker *transportConnectionTracker) TagRPC(ctx context.Context, info *grpcstats.RPCTagInfo) context.Context {
+	watcherID, ok := ctx.Value(watcherIDContextKey{}).(int)
+	if !ok || watcherID < 0 || info == nil || info.FullMethodName != watchFullMethodName {
+		return ctx
+	}
+	return context.WithValue(ctx, trackedWatchRPCContextKey{}, &trackedWatchRPC{
+		tracker: tracker, watcherID: watcherID,
+	})
+}
+
+func (tracker *transportConnectionTracker) HandleRPC(ctx context.Context, event grpcstats.RPCStats) {
+	payload, ok := event.(*grpcstats.InPayload)
+	if !ok || !payload.Client {
+		return
+	}
+	rpc, ok := ctx.Value(trackedWatchRPCContextKey{}).(*trackedWatchRPC)
+	if !ok || rpc == nil || rpc.tracker != tracker || !rpc.seen.CompareAndSwap(false, true) {
+		return
+	}
+	counter, _ := tracker.watchRPCs.LoadOrStore(rpc.watcherID, &atomic.Int64{})
+	counter.(*atomic.Int64).Add(1)
+}
 
 func (*transportConnectionTracker) TagConn(ctx context.Context, _ *grpcstats.ConnTagInfo) context.Context {
 	return ctx
+}
+
+func (*transportConnectionTracker) watchContext(ctx context.Context, watcherID int) context.Context {
+	// clientv3 multiplexes Watch calls that share outgoing metadata onto one
+	// bidirectional RPC. A distinct non-secret metadata value deliberately gives
+	// every logical watcher its own resumable RPC when the per-watcher gate is
+	// enabled, while all RPCs may still share the same underlying transport.
+	ctx = metadata.AppendToOutgoingContext(ctx, "kubebrain-watch-soak-watcher-id", strconv.Itoa(watcherID))
+	return context.WithValue(ctx, watcherIDContextKey{}, watcherID)
 }
 
 func (tracker *transportConnectionTracker) HandleConn(_ context.Context, event grpcstats.ConnStats) {
@@ -129,6 +170,22 @@ func (tracker *transportConnectionTracker) HandleConn(_ context.Context, event g
 
 func (tracker *transportConnectionTracker) connectionCount() int64 {
 	return tracker.connections.Load()
+}
+
+func (tracker *transportConnectionTracker) watchRPCPayloadCount(watcherID int) int64 {
+	counter, ok := tracker.watchRPCs.Load(watcherID)
+	if !ok {
+		return 0
+	}
+	return counter.(*atomic.Int64).Load()
+}
+
+func (tracker *transportConnectionTracker) watchRPCPayloadCounts(watchers int) []int64 {
+	counts := make([]int64, watchers)
+	for watcherID := range watchers {
+		counts[watcherID] = tracker.watchRPCPayloadCount(watcherID)
+	}
+	return counts
 }
 
 func main() {
@@ -219,6 +276,14 @@ func configFromEnvironment() (config, error) {
 	minimumTransportReconnects, err := nonNegativeInt("MIN_TRANSPORT_RECONNECTS", 1_000_000)
 	if err != nil {
 		return config{}, err
+	}
+	minimumResumedWatchStreams, err := nonNegativeInt("MIN_RESUMED_WATCH_STREAMS_PER_WATCHER", 1_000_000)
+	if err != nil {
+		return config{}, err
+	}
+	if minimumResumedWatchStreams > 0 && watchers > maximumIndependentlyTrackedWatchers {
+		return config{}, fmt.Errorf("MIN_RESUMED_WATCH_STREAMS_PER_WATCHER requires WATCHERS no greater than %d: %d",
+			maximumIndependentlyTrackedWatchers, watchers)
 	}
 	slowConsumer, err := strictBool("SLOW_CONSUMER")
 	if err != nil {
@@ -314,7 +379,8 @@ func configFromEnvironment() (config, error) {
 		timeout:        time.Duration(timeoutSeconds) * time.Second,
 		cleanupTimeout: time.Duration(cleanupTimeoutSeconds) * time.Second,
 		writeInterval:  writeInterval, writeConcurrency: writeConcurrency,
-		minimumTransportReconnects: minimumTransportReconnects, runID: runID, cleanupOnly: cleanupOnly,
+		minimumTransportReconnects: minimumTransportReconnects, minimumResumedWatchStreams: minimumResumedWatchStreams,
+		runID: runID, cleanupOnly: cleanupOnly,
 		slowConsumer: slowConsumer, slowConsumers: slowConsumers, requireSlowConsumerOutcomes: requireOutcomes,
 		slowConsumerExpectedOutcome: expectedOutcome, infoEndpoint: infoEndpoint,
 		caFile: os.Getenv("ETCD_CA_FILE"), certFile: certFile, keyFile: keyFile,
@@ -468,7 +534,11 @@ func run(ctx context.Context, client, writeClient *clientv3.Client, cfg config, 
 	created := make(chan int, cfg.watchers)
 	results := make(chan watcherResult, cfg.watchers)
 	for id := 0; id < cfg.watchers; id++ {
-		go consumeWatch(watchCtx, client, prefix, startRevision, cfg.events, id, created, results)
+		ctx := watchCtx
+		if cfg.minimumResumedWatchStreams > 0 {
+			ctx = connectionTracker.watchContext(ctx, id)
+		}
+		go consumeWatch(ctx, client, prefix, startRevision, cfg.events, id, created, results)
 	}
 	for count := 0; count < cfg.watchers; count++ {
 		select {
@@ -483,6 +553,15 @@ func run(ctx context.Context, client, writeClient *clientv3.Client, cfg config, 
 		return errors.New("watch Created barrier completed without an observed client transport connection")
 	}
 	transportConnectionBaseline := connectionTracker.connectionCount()
+	var watchRPCPayloadBaseline []int64
+	if cfg.minimumResumedWatchStreams > 0 {
+		watchRPCPayloadBaseline = connectionTracker.watchRPCPayloadCounts(cfg.watchers)
+		for watcherID, count := range watchRPCPayloadBaseline {
+			if count < 1 {
+				return fmt.Errorf("watcher %d completed Created barrier without an observed Watch RPC payload", watcherID)
+			}
+		}
+	}
 
 	var metricsReader *slowConsumerMetricsReader
 	var baseline watchOutcomes
@@ -584,11 +663,22 @@ func run(ctx context.Context, client, writeClient *clientv3.Client, cfg config, 
 	if err != nil {
 		return err
 	}
+	var watchRPCPayloadTotal []int64
+	if cfg.minimumResumedWatchStreams > 0 {
+		watchRPCPayloadTotal = connectionTracker.watchRPCPayloadCounts(cfg.watchers)
+	}
+	resumedWatchStreamsMin, resumedWatchStreamsTotal, err := validateResumedWatchStreams(
+		cfg.minimumResumedWatchStreams, watchRPCPayloadBaseline, watchRPCPayloadTotal,
+	)
+	if err != nil {
+		return err
+	}
 	cancelWatches()
-	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d compact_revision=%d prefix=%s write_interval=%s write_concurrency=%d separate_write_endpoint=%t transport_connections=%d transport_reconnects=%d minimum_transport_reconnects=%d\n",
+	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d compact_revision=%d prefix=%s write_interval=%s write_concurrency=%d separate_write_endpoint=%t transport_connections=%d transport_reconnects=%d minimum_transport_reconnects=%d resumed_watch_streams_total=%d resumed_watch_streams_min_per_watcher=%d minimum_resumed_watch_streams_per_watcher=%d\n",
 		cfg.watchers, cfg.slowConsumer, cfg.slowConsumers, cfg.slowConsumerExpectedOutcome, cfg.requireSlowConsumerOutcomes, cfg.events, writtenEvents[0].revision,
 		writtenEvents[len(writtenEvents)-1].revision, compactRevision, prefix, cfg.writeInterval, cfg.writeConcurrency,
-		client != writeClient, transportConnections, transportReconnects, cfg.minimumTransportReconnects)
+		client != writeClient, transportConnections, transportReconnects, cfg.minimumTransportReconnects,
+		resumedWatchStreamsTotal, resumedWatchStreamsMin, cfg.minimumResumedWatchStreams)
 	return nil
 }
 
@@ -615,6 +705,32 @@ func validateTransportReconnects(minimum int, baseline, total int64) (int64, err
 			reconnects, minimum, baseline, total)
 	}
 	return reconnects, nil
+}
+
+func validateResumedWatchStreams(minimum int, baseline, total []int64) (int64, int64, error) {
+	if minimum == 0 && len(baseline) == 0 && len(total) == 0 {
+		return 0, 0, nil
+	}
+	if minimum < 0 || len(baseline) == 0 || len(total) != len(baseline) {
+		return 0, 0, fmt.Errorf("invalid resumed Watch stream accounting: minimum=%d baseline_watchers=%d total_watchers=%d",
+			minimum, len(baseline), len(total))
+	}
+	minimumObserved := int64(1<<63 - 1)
+	var totalObserved int64
+	for watcherID := range baseline {
+		if baseline[watcherID] < 1 || total[watcherID] < baseline[watcherID] {
+			return 0, 0, fmt.Errorf("invalid resumed Watch stream accounting for watcher %d: baseline=%d total=%d",
+				watcherID, baseline[watcherID], total[watcherID])
+		}
+		observed := total[watcherID] - baseline[watcherID]
+		totalObserved += observed
+		minimumObserved = min(minimumObserved, observed)
+	}
+	if minimumObserved < int64(minimum) {
+		return minimumObserved, totalObserved, fmt.Errorf("watch soak observed at least %d resumed Watch streams per watcher, require at least %d",
+			minimumObserved, minimum)
+	}
+	return minimumObserved, totalObserved, nil
 }
 
 func validateSlowConsumerCompactResponse(revision int64, response *clientv3.CompactResponse, err error) error {

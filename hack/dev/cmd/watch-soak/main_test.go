@@ -43,6 +43,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	grpcstats "google.golang.org/grpc/stats"
 	"google.golang.org/protobuf/proto"
 )
@@ -59,6 +60,7 @@ func setValidEnvironment(t *testing.T) {
 	t.Setenv("WRITE_INTERVAL", "100ms")
 	t.Setenv("WRITE_CONCURRENCY", "1")
 	t.Setenv("MIN_TRANSPORT_RECONNECTS", "0")
+	t.Setenv("MIN_RESUMED_WATCH_STREAMS_PER_WATCHER", "0")
 	t.Setenv("RUN_ID", "watch-soak-test")
 	t.Setenv("CLEANUP_ONLY", "false")
 	t.Setenv("SLOW_CONSUMER", "false")
@@ -78,6 +80,7 @@ func TestConfigFromEnvironment(t *testing.T) {
 	require.Equal(t, 300*time.Second, cfg.cleanupTimeout)
 	require.Equal(t, 1, cfg.writeConcurrency)
 	require.Zero(t, cfg.minimumTransportReconnects)
+	require.Zero(t, cfg.minimumResumedWatchStreams)
 	require.Empty(t, cfg.writeEndpoint)
 	require.Empty(t, cfg.writeTLSServerName)
 	require.False(t, cfg.cleanupOnly)
@@ -229,6 +232,51 @@ func TestTransportReconnectAccountingStartsAfterCreatedBarrier(t *testing.T) {
 	require.ErrorContains(t, err, "invalid transport connection accounting")
 }
 
+func TestWatchRPCPayloadAccountingIsPerWatcherAndPerRPC(t *testing.T) {
+	tracker := &transportConnectionTracker{}
+	watcher0 := tracker.watchContext(context.Background(), 0)
+	watcher1 := tracker.watchContext(context.Background(), 1)
+	watcher0Metadata, ok := metadata.FromOutgoingContext(watcher0)
+	require.True(t, ok)
+	require.Equal(t, []string{"0"}, watcher0Metadata.Get("kubebrain-watch-soak-watcher-id"))
+	watcher1Metadata, ok := metadata.FromOutgoingContext(watcher1)
+	require.True(t, ok)
+	require.Equal(t, []string{"1"}, watcher1Metadata.Get("kubebrain-watch-soak-watcher-id"))
+	rpc0 := tracker.TagRPC(watcher0, &grpcstats.RPCTagInfo{FullMethodName: watchFullMethodName})
+	tracker.HandleRPC(rpc0, &grpcstats.InPayload{Client: false})
+	tracker.HandleRPC(rpc0, &grpcstats.InPayload{Client: true})
+	tracker.HandleRPC(rpc0, &grpcstats.InPayload{Client: true})
+	require.EqualValues(t, 1, tracker.watchRPCPayloadCount(0), "multiple payloads on one RPC count once")
+
+	rpc0Reconnect := tracker.TagRPC(watcher0, &grpcstats.RPCTagInfo{FullMethodName: watchFullMethodName})
+	tracker.HandleRPC(rpc0Reconnect, &grpcstats.InPayload{Client: true})
+	rpc1 := tracker.TagRPC(watcher1, &grpcstats.RPCTagInfo{FullMethodName: watchFullMethodName})
+	tracker.HandleRPC(rpc1, &grpcstats.InPayload{Client: true})
+	otherRPC := tracker.TagRPC(watcher0, &grpcstats.RPCTagInfo{FullMethodName: "/etcdserverpb.KV/Range"})
+	tracker.HandleRPC(otherRPC, &grpcstats.InPayload{Client: true})
+	require.Equal(t, []int64{2, 1}, tracker.watchRPCPayloadCounts(2))
+}
+
+func TestValidateResumedWatchStreamsRequiresEveryWatcher(t *testing.T) {
+	minimum, total, err := validateResumedWatchStreams(2, []int64{1, 2}, []int64{4, 4})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, minimum)
+	require.EqualValues(t, 5, total)
+
+	minimum, total, err = validateResumedWatchStreams(3, []int64{1, 2}, []int64{4, 4})
+	require.EqualValues(t, 2, minimum)
+	require.EqualValues(t, 5, total)
+	require.ErrorContains(t, err, "observed at least 2 resumed Watch streams per watcher, require at least 3")
+	_, _, err = validateResumedWatchStreams(0, []int64{0}, []int64{1})
+	require.ErrorContains(t, err, "invalid resumed Watch stream accounting for watcher 0")
+	_, _, err = validateResumedWatchStreams(1, nil, nil)
+	require.ErrorContains(t, err, "invalid resumed Watch stream accounting")
+	minimum, total, err = validateResumedWatchStreams(0, nil, nil)
+	require.NoError(t, err)
+	require.Zero(t, minimum)
+	require.Zero(t, total)
+}
+
 func TestValidateWatchWriteStatusesRequiresSameCompleteClusterIdentity(t *testing.T) {
 	watch := &clientv3.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 9}}
 	write := &clientv3.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 10}}
@@ -270,6 +318,19 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 		"excessive minimum reconnects": {mutate: func(t *testing.T) {
 			t.Setenv("MIN_TRANSPORT_RECONNECTS", "1000001")
 		}, want: "MIN_TRANSPORT_RECONNECTS must be"},
+		"negative minimum resumed streams": {mutate: func(t *testing.T) {
+			t.Setenv("MIN_RESUMED_WATCH_STREAMS_PER_WATCHER", "-1")
+		}, want: "MIN_RESUMED_WATCH_STREAMS_PER_WATCHER must be"},
+		"noncanonical minimum resumed streams": {mutate: func(t *testing.T) {
+			t.Setenv("MIN_RESUMED_WATCH_STREAMS_PER_WATCHER", "01")
+		}, want: "MIN_RESUMED_WATCH_STREAMS_PER_WATCHER must be"},
+		"excessive minimum resumed streams": {mutate: func(t *testing.T) {
+			t.Setenv("MIN_RESUMED_WATCH_STREAMS_PER_WATCHER", "1000001")
+		}, want: "MIN_RESUMED_WATCH_STREAMS_PER_WATCHER must be"},
+		"too many independently tracked watchers": {mutate: func(t *testing.T) {
+			t.Setenv("WATCHERS", "1001")
+			t.Setenv("MIN_RESUMED_WATCH_STREAMS_PER_WATCHER", "1")
+		}, want: "requires WATCHERS no greater than 1000"},
 		"write TLS name without endpoint": {mutate: func(t *testing.T) {
 			t.Setenv("WRITE_TLS_SERVER_NAME", "write.example")
 		}, want: "WRITE_TLS_SERVER_NAME requires WRITE_ENDPOINT"},
@@ -519,6 +580,8 @@ func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *test
 	require.Contains(t, text, `WRITE_CONCURRENCY="$WRITE_CONCURRENCY"`)
 	require.Contains(t, text, `MIN_TRANSPORT_RECONNECTS="${MIN_TRANSPORT_RECONNECTS:-0}"`)
 	require.Contains(t, text, `MIN_TRANSPORT_RECONNECTS="$MIN_TRANSPORT_RECONNECTS"`)
+	require.Contains(t, text, `MIN_RESUMED_WATCH_STREAMS_PER_WATCHER="${MIN_RESUMED_WATCH_STREAMS_PER_WATCHER:-0}"`)
+	require.Contains(t, text, `MIN_RESUMED_WATCH_STREAMS_PER_WATCHER="$MIN_RESUMED_WATCH_STREAMS_PER_WATCHER"`)
 	require.Contains(t, text, `CLEANUP_ONLY="${CLEANUP_ONLY:-false}"`)
 	require.Contains(t, text, `CLEANUP_ONLY="$CLEANUP_ONLY"`)
 	require.Contains(t, text, `SLOW_CONSUMER="${SLOW_CONSUMER:-false}"`)
@@ -551,6 +614,7 @@ func TestWrapperForwardsSIGTERMAndWaitsForRunner(t *testing.T) {
 		"WRITE_INTERVAL=0s",
 		"WRITE_CONCURRENCY=1",
 		"MIN_TRANSPORT_RECONNECTS=0",
+		"MIN_RESUMED_WATCH_STREAMS_PER_WATCHER=0",
 		"RUN_ID=wrapper-sigterm-test",
 		"CLEANUP_ONLY=false",
 		"SLOW_CONSUMER=false",
