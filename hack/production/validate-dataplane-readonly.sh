@@ -30,6 +30,7 @@ EXPECTED_HTTP_HEADER_CHECKS="${EXPECTED_HTTP_HEADER_CHECKS:-}"
 EXPECTED_INFO_METRICS_CHECKS="${EXPECTED_INFO_METRICS_CHECKS:-}"
 EXPECTED_DEBUG_VARS_CHECKS="${EXPECTED_DEBUG_VARS_CHECKS:-}"
 EXPECTED_PPROF_DISABLED_CHECKS="${EXPECTED_PPROF_DISABLED_CHECKS:-}"
+EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION="${EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 ETCDCTL_USER="${ETCDCTL_USER:-}"
 ETCDCTL_PASSWORD="${ETCDCTL_PASSWORD:-}"
@@ -86,6 +87,10 @@ if [[ -n "$EXPECTED_PPROF_DISABLED_CHECKS" && "$EXPECTED_PPROF_DISABLED_CHECKS" 
   echo "EXPECTED_PPROF_DISABLED_CHECKS must be empty or 1" >&2
   exit 2
 fi
+if [[ -n "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" && "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
+  echo "EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION must be empty or 1" >&2
+  exit 2
+fi
 if ! operation_is_positive_go_duration_hms "$PROBE_TIMEOUT"; then
   echo "PROBE_TIMEOUT must be a positive duration within Go time.Duration ending in ms, s, m, or h" >&2
   exit 2
@@ -100,6 +105,10 @@ if [[ -n "$EXPECTED_STATUS_VERSION" && -z "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
 fi
 if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" && -z "$EXPECTED_STATUS_VERSION" ]]; then
   echo "EXPECTED_INFO_METRICS_CHECKS requires EXPECTED_STATUS_VERSION" >&2
+  exit 2
+fi
+if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" == "1" && -z "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+  echo "EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION requires EXPECTED_STATUS_CLUSTER_ID" >&2
   exit 2
 fi
 if [[ -z "$ENDPOINT" ]]; then
@@ -150,7 +159,7 @@ if [[ -n "$ETCDCTL_USER" || -n "$ETCDCTL_PASSWORD" ]]; then
     fi
     gateway_password="$ETCDCTL_PASSWORD"
   fi
-  if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+  if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" && "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
     gateway_auth_payload="$("$JQ" -nc --arg name "$gateway_username" --arg password "$gateway_password" \
       '{name: $name, password: $password}')"
     gateway_auth_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' \
@@ -1425,6 +1434,19 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
 
   gateway_status_url="${ENDPOINT%/}/v3/maintenance/status"
+  if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" == "1" ]]; then
+    gateway_rejection_response="$(run_with_probe_timeout "$CURL" -sS -i -X POST -H 'Content-Type: application/json' -d '{}' "$gateway_status_url")"
+    gateway_rejection_status="${gateway_rejection_response%%$'\n'*}"
+    if [[ "$gateway_rejection_status" != HTTP/*" 400 "* ]]; then
+      echo "gateway client certificate auth mismatch: expected HTTP 400, got ${gateway_rejection_status}" >&2
+      exit 1
+    fi
+    if [[ "$gateway_rejection_response" != *"CommonName of client sending a request against gateway will be ignored and not used as expected"* ]]; then
+      echo "gateway client certificate auth mismatch: expected etcd CommonName rejection body" >&2
+      exit 1
+    fi
+    status_summary+=", gateway_client_cert_auth=expected-rejection"
+  else
   gateway_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_status_url")"
   gateway_status_values="$(printf '%s' "$gateway_status_json" | "$JQ" -r '
     if type != "object" then
@@ -1521,6 +1543,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status downgradeInfo envelope invalid: expected object, got ${gateway_status_downgrade_info_type}" >&2
     exit 1
   fi
+  fi
   version_url="${ENDPOINT%/}/version"
   version_json="$(run_with_probe_timeout "$CURL" -fsS "$version_url")"
   version_values="$(printf '%s' "$version_json" | "$JQ" -r '
@@ -1548,7 +1571,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "/version storage must be a storage semver string, got ${version_storage}" >&2
     exit 1
   fi
-  if [[ "$version_storage" != "$gateway_status_storage_version" ]]; then
+  if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" && "$version_storage" != "$gateway_status_storage_version" ]]; then
     echo "/version storage mismatch: gateway_status=${gateway_status_storage_version}, version=${version_storage}" >&2
     exit 1
   fi
@@ -1586,26 +1609,31 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "${READYZ_URL%/readyz}/metrics" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version"
     status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, apply_duration_metrics=optional-ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, raft_snapshot_file_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
   fi
-  status_summary+=", gateway_status_version=${gateway_status_version}"
-  status_summary+=", gateway_storage_version=${gateway_status_storage_version}"
+  if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
+    status_summary+=", gateway_status_version=${gateway_status_version}"
+    status_summary+=", gateway_storage_version=${gateway_status_storage_version}"
+  fi
   status_summary+=", version_etcdserver=${version_etcdserver}"
   status_summary+=", version_etcdcluster=${version_etcdcluster}"
   status_summary+=", version_storage=${version_storage}"
   status_summary+=", info_version_storage=${info_version_storage}"
-  status_summary+=", gateway_db_size_in_use=${gateway_status_db_size_in_use}"
-  if [[ "$gateway_status_db_size_quota" != "missing" ]]; then
-    status_summary+=", gateway_db_size_quota=${gateway_status_db_size_quota}"
+  if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
+    status_summary+=", gateway_db_size_in_use=${gateway_status_db_size_in_use}"
+    if [[ "$gateway_status_db_size_quota" != "missing" ]]; then
+      status_summary+=", gateway_db_size_quota=${gateway_status_db_size_quota}"
+    fi
+    if [[ "$gateway_status_is_learner_type" != "missing" ]]; then
+      status_summary+=", gateway_is_learner=${gateway_status_is_learner}"
+    fi
+    status_summary+=", gateway_leader_id=${gateway_status_leader}"
+    status_summary+=", gateway_raft_term=${gateway_status_raft_term}"
+    status_summary+=", gateway_raft_index=${gateway_status_raft_index}"
+    status_summary+=", gateway_raft_applied_index=${gateway_status_raft_applied_index}"
+    status_summary+=", gateway_raft_indexes_sampled=true"
+    status_summary+=", gateway_downgrade_info=object"
   fi
-  if [[ "$gateway_status_is_learner_type" != "missing" ]]; then
-    status_summary+=", gateway_is_learner=${gateway_status_is_learner}"
-  fi
-  status_summary+=", gateway_leader_id=${gateway_status_leader}"
-  status_summary+=", gateway_raft_term=${gateway_status_raft_term}"
-  status_summary+=", gateway_raft_index=${gateway_status_raft_index}"
-  status_summary+=", gateway_raft_applied_index=${gateway_status_raft_applied_index}"
-  status_summary+=", gateway_raft_indexes_sampled=true"
-  status_summary+=", gateway_downgrade_info=object"
 
+  if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
   gateway_auth_status_url="${ENDPOINT%/}/v3/auth/status"
   gateway_auth_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_auth_status_url")"
   gateway_auth_status_values="$(printf '%s' "$gateway_auth_status_json" | "$JQ" -r '
@@ -1717,6 +1745,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     exit 1
   fi
   status_summary+=", gateway_alarms=empty"
+  fi
 fi
 
 hashkv_summary=""
@@ -2047,6 +2076,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     fi
   fi
 
+  if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
   gateway_hash_url="${ENDPOINT%/}/v3/maintenance/hash"
   gateway_hash_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_hash_url")"
   gateway_hash_values="$(printf '%s' "$gateway_hash_json" | "$JQ" -r '
@@ -2170,6 +2200,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_hash_metrics_boundary "${ENDPOINT%/}/metrics"
     status_summary+=", mvcc_hash_metrics=ok"
+  fi
   fi
 fi
 

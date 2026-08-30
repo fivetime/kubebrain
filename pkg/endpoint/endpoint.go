@@ -220,7 +220,13 @@ func (e *Endpoint) buildClientHTTPHandler(ctx context.Context) (http.Handler, *g
 		handlersMaps = append(handlersMaps, map[string]http.Handler{"/v3/": gateway})
 	}
 
-	return newHTTPAccessControlledHandler(e.config.CORS, e.config.HostWhitelist, handlersMaps...), gatewayConn, nil
+	return newClientHTTPAccessControlledHandler(
+		e.config.CORS,
+		e.config.HostWhitelist,
+		e.config.EnableGRPCGateway && !e.config.ClientSecurityConfig.isInsecure() && e.config.ClientSecurityConfig.ClientAuth,
+		e.server.AuthEnabled,
+		handlersMaps...,
+	), gatewayConn, nil
 }
 
 type gatewayRegisterFunc func(context.Context, *runtime.ServeMux, *grpc.ClientConn) error

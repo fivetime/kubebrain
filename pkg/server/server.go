@@ -52,6 +52,10 @@ import (
 
 // Server is the application layer server providing services for clients and peers
 type Server interface {
+	// AuthEnabled reports the authoritative etcd authentication state used by
+	// the HTTP gateway access boundary.
+	AuthEnabled(context.Context) (bool, error)
+
 	// RegisterClient registers grpc service for clients
 	RegisterClient(server *grpc.Server)
 
@@ -835,6 +839,11 @@ func (s *server) onStoppedLeading() {
 	if s.etcdServer != nil {
 		s.etcdServer.StopLeases()
 	}
+}
+
+// AuthEnabled implements Server interface.
+func (s *server) AuthEnabled(ctx context.Context) (bool, error) {
+	return s.etcdServer.AuthEnabled(ctx)
 }
 
 // RegisterClient implements Server interface

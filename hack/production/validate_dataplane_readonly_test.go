@@ -135,6 +135,50 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "gateway_auth_enabled=false",
 		},
 		{
+			name: "passes expected etcd client certificate gateway rejection",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION=1",
+			},
+			wantOK:     true,
+			wantOutput: "gateway_client_cert_auth=expected-rejection",
+		},
+		{
+			name:       "rejects wrong client certificate gateway status",
+			podsJSON:   `{"items":[{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION=1",
+				"FAKE_GATEWAY_CERT_REJECTION_RESPONSE=HTTP/1.1 401 Unauthorized",
+			},
+			wantOutput: "gateway client certificate auth mismatch: expected HTTP 400",
+		},
+		{
+			name:       "rejects wrong client certificate gateway body",
+			podsJSON:   `{"items":[{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION=1",
+				"FAKE_GATEWAY_CERT_REJECTION_RESPONSE=HTTP/1.1 400 Bad Request",
+			},
+			wantOutput: "gateway client certificate auth mismatch: expected etcd CommonName rejection body",
+		},
+		{
 			name: "reports legacy health endpoints in summary",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -4402,6 +4446,26 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			extraEnv:   []string{"EXPECTED_PPROF_DISABLED_CHECKS=true"},
 			wantOutput: "EXPECTED_PPROF_DISABLED_CHECKS must be empty or 1",
 		},
+		{
+			name:           "rejects malformed expected gateway client certificate auth flag before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:       []string{"EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION=true"},
+			wantOutput:     "EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION must be empty or 1",
+			wantNoCommands: true,
+		},
+		{
+			name:           "requires status contract for gateway client certificate rejection before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:       []string{"EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION=1"},
+			wantOutput:     "EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION requires EXPECTED_STATUS_CLUSTER_ID",
+			wantNoCommands: true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -4416,6 +4480,14 @@ printf '%s' "$FAKE_PODS_JSON"
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "curl"), `#!/usr/bin/env bash
 set -euo pipefail
 target="${@: -1}"
+if [[ "${EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION:-}" == "1" && "$target" == "${ENDPOINT%/}/v3/maintenance/status" ]]; then
+  printf '%s' "${FAKE_GATEWAY_CERT_REJECTION_RESPONSE:-HTTP/1.1 400 Bad Request
+Content-Type: text/plain; charset=utf-8
+
+CommonName of client sending a request against gateway will be ignored and not used as expected
+}"
+  exit 0
+fi
 if [[ "$target" == "${ENDPOINT%/}/v3/auth/authenticate" ]]; then
   if [[ "$*" != *'"name":"root"'* || "$*" != *'"password":"secret:with:colons"'* ]]; then
     echo "authenticate payload mismatch" >&2

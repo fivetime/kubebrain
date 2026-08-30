@@ -92,22 +92,36 @@ func newHTTPMuxWithHandlers(handlersMaps ...map[string]http.Handler) *http.Serve
 }
 
 func newHTTPAccessControlledHandler(cors, hostWhitelist []string, handlersMaps ...map[string]http.Handler) http.Handler {
+	return newClientHTTPAccessControlledHandler(cors, hostWhitelist, false, nil, handlersMaps...)
+}
+
+func newClientHTTPAccessControlledHandler(
+	cors, hostWhitelist []string,
+	gatewayClientCertAuth bool,
+	authEnabled func(context.Context) (bool, error),
+	handlersMaps ...map[string]http.Handler,
+) http.Handler {
 	mux := http.NewServeMux()
 	for _, handlersMap := range handlersMaps {
 		for pattern, handler := range handlersMap {
 			mux.Handle(pattern, handler)
 		}
 	}
-	return newHTTPAccessController(cors, hostWhitelist, mux)
+	controller := newHTTPAccessController(cors, hostWhitelist, mux)
+	controller.gatewayClientCertAuth = gatewayClientCertAuth
+	controller.authEnabled = authEnabled
+	return controller
 }
 
 type httpAccessController struct {
-	cors          map[string]struct{}
-	hostWhitelist map[string]struct{}
-	next          http.Handler
+	cors                  map[string]struct{}
+	hostWhitelist         map[string]struct{}
+	gatewayClientCertAuth bool
+	authEnabled           func(context.Context) (bool, error)
+	next                  http.Handler
 }
 
-func newHTTPAccessController(cors, hostWhitelist []string, next http.Handler) http.Handler {
+func newHTTPAccessController(cors, hostWhitelist []string, next http.Handler) *httpAccessController {
 	return &httpAccessController{
 		cors:          stringSet(cors),
 		hostWhitelist: stringSet(hostWhitelist),
@@ -170,6 +184,10 @@ This requirement has been added to help prevent DNS Rebinding attacks (CVE-2018-
 		return
 	}
 
+	if ac.rejectGatewayClientCertificate(w, req) {
+		return
+	}
+
 	origin := req.Header.Get("Origin")
 	if allows(ac.cors, "*") {
 		addCORSHeaders(w, "*")
@@ -181,6 +199,30 @@ This requirement has been added to help prevent DNS Rebinding attacks (CVE-2018-
 		return
 	}
 	ac.next.ServeHTTP(w, req)
+}
+
+const gatewayClientCertificateRejection = "CommonName of client sending a request against gateway will be ignored and not used as expected"
+
+func (ac *httpAccessController) rejectGatewayClientCertificate(w http.ResponseWriter, req *http.Request) bool {
+	if !ac.gatewayClientCertAuth || ac.authEnabled == nil || req.TLS == nil || req.URL == nil ||
+		!strings.HasPrefix(req.URL.Path, "/v3/") {
+		return false
+	}
+	enabled, err := ac.authEnabled(req.Context())
+	if err != nil {
+		http.Error(w, "failed to determine authentication state", http.StatusServiceUnavailable)
+		return true
+	}
+	if !enabled {
+		return false
+	}
+	for _, chain := range req.TLS.VerifiedChains {
+		if len(chain) > 0 && chain[0].Subject.CommonName != "" {
+			http.Error(w, gatewayClientCertificateRejection, http.StatusBadRequest)
+			return true
+		}
+	}
+	return false
 }
 
 func addCORSHeaders(w http.ResponseWriter, origin string) {

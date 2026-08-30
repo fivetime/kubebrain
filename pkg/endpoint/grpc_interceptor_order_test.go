@@ -63,6 +63,8 @@ func (*interceptorOrderMetrics) EmitHistogram(string, interface{}, ...metricspkg
 
 type rejectingInterceptorServer struct{}
 
+func (rejectingInterceptorServer) AuthEnabled(context.Context) (bool, error) { return false, nil }
+
 func (rejectingInterceptorServer) RegisterClient(server *grpc.Server) {
 	healthpb.RegisterHealthServer(server, health.NewServer())
 }
@@ -109,6 +111,8 @@ func fixedErrorServerOptions(rejected error) []grpc.ServerOption {
 type contextErrorInterceptorServer struct {
 	err error
 }
+
+func (contextErrorInterceptorServer) AuthEnabled(context.Context) (bool, error) { return false, nil }
 
 func (s contextErrorInterceptorServer) RegisterClient(server *grpc.Server) {
 	healthpb.RegisterHealthServer(server, health.NewServer())

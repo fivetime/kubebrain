@@ -150,6 +150,17 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 	s.clientCertAuth = enabled
 }
 
+// AuthEnabled returns the current durable authentication state. The public
+// HTTP access controller uses it to mirror etcd's client-certificate gateway
+// rejection without trusting a potentially stale process-local flag.
+func (s *RPCServer) AuthEnabled(ctx context.Context) (bool, error) {
+	snapshot, err := s.tokens.snapshots.current(ctx)
+	if err != nil {
+		return false, err
+	}
+	return snapshot.Config.Enabled, nil
+}
+
 // PrepareLeadershipDrain runs release only after every admitted unary RPC has
 // completed and holds later calls until the release is visible locally. New
 // public unary calls may then proxy through the successor while new peer calls
