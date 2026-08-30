@@ -65373,6 +65373,58 @@ current/update revision `a4657-tls-7d94b578fb`、3/3 Ready/updated；三个 Pod 
 两轮六个临时 Kubernetes 对象全部 NotFound。A5617 关闭“修复版本自身滚动时 Snapshot 阻塞 drain/Put”的缺口，但旧受影响版本的首次
 原地升级窗口仍开放，需要控制面采用预升级规避策略或接受一次受控维护窗口；更长时长的连续滚动与故障注入仍属于生产长稳矩阵。
 
+### A5618：源二进制 capability 前置门禁，旧版本在线升级 fail closed
+
+A5618 `3ba08bd4c03c9029b473f9a845519569d8d92545` 把 A5617 发现的“候选无法修复仍在退出的旧进程”从运行期偶发失败提升为
+显式、机器可读的升级契约。新增 info-only `GET /capabilities`，固定 document format
+`kubebrain.info-capabilities.v1`，并只声明已由 A5617 实现和验证的
+`snapshot-history-pin-before-write-barrier-release.v1`。capability 名称必须是有界小写 ASCII，文档在构造时排序去重且查询只读；
+非 GET 返回 405。该接口不冒充 etcd v3 feature negotiation，而是供 DBaaS 控制面判断源二进制是否具备安全退出语义。
+
+候选 rollout probe 新增全部源 ordinal 的 HTTPS info endpoint 与 required capability 参数。校验位于读取 PD leader、建立 TiKV/etcd
+client、创建 fixture owner 或写入 fixture 之前；任一源 Pod 的 404、非 JSON content type、未知字段、尾随 JSON、超过 16 KiB、redirect、
+format/canonical capability 漂移或缺少必需项都会 fail closed。endpoint 只接受与数据面 TLS 模式一致、显式合法端口、无 user/path/query/
+fragment 的唯一 HTTP(S) origin，HTTP client 禁用 proxy/redirect/keepalive 并分别限制 dial、response-header、整体 context。生产 runner
+从 StatefulSet 唯一 `--info-port` 构造每个 ordinal 的固定 DNS endpoint；candidate 模式默认使用不可变 `TARGET_IMAGE` 运行探针，仍允许显式
+不可变 `PROBE_IMAGE` 覆盖。restart 模式保持原语义，不把新门禁倒灌到不更换二进制的受控重启。
+
+服务端 capability、HTTP handler、probe 配置/传输/严格 JSON 及 runner 参数/顺序/镜像选择均有确定性回归。服务端 capability/race 10 轮、
+probe capability/race 10 轮、runner 新回归 race 3 轮、受影响包 vet、完整 server 普通/race、完整 probe 普通/race 和完整 runner 普通/race
+均 GREEN；runner 全量首次失败来自测试 fake 未携带 info port 且候选参数生成顺序与 fake 不一致，修正测试替身后完整普通/race 分别
+`437.997/446.657s` 通过。提交前 `hack/production/test-shard.sh --verify 4` 得到 703 项、分片 `170/193/180/160`；提交后四片
+`277.386/467.198/325.321/523.676s` 全部 GREEN。
+
+不可变候选 archive `/root/kubebrain-a5618-3ba08bd4.oci.tar` 为 914,409,984 bytes，SHA-256
+`b739236e3b18f161f2b712631155bd07e4ea3813fb24ab98ee2ecb0483fa5ef2`；outer index/platform/config/attestation 为
+`sha256:0a570abb55b653fbce9dcf8ec1fc068b495decfe6a2957a3ab474e3fb815e0b8`/
+`sha256:5564d58e4ad1439a70dff9f90b5bf987f505f134561eafe5231ed63852f71bef`/
+`sha256:088192c4da2f12a43f847bd562684acdfd491239fc384d4dc628f44fa9a20f58`/
+`sha256:30939146d18824fca6f90b637d09eae5f92f7c51b76eb651fe241534bd9fe937`。78/78 descriptor/blob 哈希、size 与可达闭包，
+SBOM 2,592 packages/8,096 relationships、provenance 3 个固定 material、71 layers/diff IDs、linux/amd64、USER
+`65532:65532`、入口、labels 与运行版本全部通过；版本 `0.0.0-3ba08bd4c03c`、TiKV、Go 1.26.5、完整 SHA、构建时间
+`2026-08-30T06:54:53Z` 一致。Kind 实际 runtime wrapper 为
+`sha256:49f07499ce583e2032006b906a95bb9799e6749688ad8be6a3758cc255436c1c`，未与 OCI index/platform/config 混用。
+
+旧源安全门禁在仍运行 A5608 的 generation 322 上使用 A5618 候选探针：第一个源 endpoint 明确返回
+`PROBE_FAIL source capability preflight: ... HTTP status 404`，且在 `PROBE_STARTED` barrier 前退出。cleanup 两次均证明
+keys/users/roles/leases 为 0；StatefulSet UID、resourceVersion、generation、current/update revision、完整 Pod template 和 3/3 Ready
+精确未变，probe/cleanup Pod 与 owner ConfigMap 全部 NotFound。因此 A5608 及更旧未知源版本不会再进入此前 iteration 172 才暴露的
+Snapshot/drain/Put 风险窗口；它们必须先走受控维护投放或由未来控制面提供等价的旧进程规避策略。
+
+随后以 StatefulSet UID/RV、容器名、当前 A5608 image 和完整 args 的 JSON Patch test 受控部署 A5618 source digest alias，generation 323
+达到 3/3 Ready/restart 0。再由正式 candidate runner 从 source alias 滚到同内容 target alias，三个源 Pod capability 全部通过后才输出
+`PROBE_STARTED` 并访问 PD/TiKV。最终 `ok/watch/direct_watch=300/300/300x3`、Snapshot 1、public/direct lease 均 alive、direct lease
+跨 11 次连接重建恢复，RangeStream 78、stream retries 6 且 partial retries 0；Put、Watch-after-Put、direct、PD TSO、TiKV Region 最大延迟
+分别为 `1175/232/19739/2/9ms`，全部低于门限。公共 Service 在滚动瞬间的 `Unavailable` 被有界 retry 吸收，最终 fail=0；fixture 四类归零，
+probe/cleanup Pod 与 owner ConfigMap 全部 NotFound。三个 Pod 的 `/capabilities` 又经独立 mTLS `/dev/fd` 请求逐一回读，JSON 精确一致；首次误用
+不存在的通用 client Secret 字段在 TLS 握手前失败，不计作服务结果，改用实际 `alice.crt/key` 后三端通过，凭据始终未落盘。
+
+最后以新鲜 UID/RV、容器名、候选 image 与完整 args 五类 test 原子回滚 A5608。终态 generation/observed 325、current/update
+`a4657-tls-7d94b578fb`、3/3 Ready/updated/restart 0，模板恢复 outer digest
+`sha256:ad184a8792faf9b69f7c977f6571d79c2710185394fb5ebead59704efcb299df`、runtime 恢复
+`sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`，连接老化参数保持 `1h/5m`；独立
+PD/TiKV 3+3 Ready/restart 0，所有临时对象和三个 port-forward 清零。审计临时目录已移入系统回收站、可恢复，候选 archive 保留。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
