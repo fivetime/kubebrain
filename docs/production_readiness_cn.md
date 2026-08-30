@@ -1515,16 +1515,18 @@ backend WatcherHub 真实状态刷新；production 只消费 60 秒内、按 Rea
 可为空，一个 stream 也可 multiplex 多个 watch，所以不错误要求 stream 与 watcher 相等。任一 Pod 的 stream
 或 watcher 超过 8000 持续 5 分钟 warning（生产 `--max-watches=10000`，native Watch 仍可能计入 backend
 watcher），slow 非零持续 5 分钟 warning；缺失、陈旧或非法 telemetry warning。
-慢消费者的历史终态另由 `watcher_hub_slow_consumer_outcome{outcome="catch_up|recovered|dropped"}` 表达，backend
-创建时三类均发布权威零值。catch_up 表示订阅缓冲已满并进入 bounded ring replay，recovered 表示追平后无 gap
+慢消费者的历史终态另由 `watcher_hub_slow_consumer_outcome{outcome="catch_up|recovered|dropped|interrupted"}` 表达，backend
+创建时四类均发布权威零值。catch_up 表示订阅缓冲已满并进入 bounded ring replay，recovered 表示追平后无 gap
 重挂 live fan-out，dropped 只表示 ring backlog 不可恢复或 reset 后干净关闭当前 backend generation；fresh leader 的
 RPC 层会从首个未成功 Send 的 revision 透明 reopen durable history，故 dropped 本身不等于公开 Watch 取消或客户端
-re-list，只有该 resume revision 已压缩才进入 `watch_generation_recovery{outcome="compacted"}` 并要求 re-list。客户端取消、
-deadline 和服务 shutdown 不计 dropped。production 仅消费 60 秒新鲜 Ready Pod UID/outcome current 与十分钟
-increase，要求两者均为 `3×Ready`，current 为 `[0,2^53]` 精确整数、increase 有限同范围，未知 outcome 非法；
-catch_up 或 dropped 任一增长 warning，缺失、陈旧、非法或组合不完整 warning。出现 dropped 时必须同时检查 ring
+re-list，只有该 resume revision 已压缩才进入 `watch_generation_recovery{outcome="compacted"}` 并要求 re-list。interrupted 表示
+已进入 catch-up 的 generation 因客户端取消、deadline 或服务 shutdown 而终止；这些原因不计 dropped。production 仅消费
+60 秒新鲜 Ready Pod UID/outcome current 与十分钟 increase，要求两者均为 `4×Ready`，current 为 `[0,2^53]`
+精确整数、increase 有限同范围，未知 outcome 非法；catch_up、dropped 或 interrupted 任一增长 warning，缺失、
+陈旧、非法或组合不完整 warning。出现 dropped 时必须同时检查 ring
 容量、Watch send-loop、客户端流控及 durable history 扫描放大，并与 generation recovered/compacted/failed 对账；
-不能因当前 slow gauge 已回零而关闭事件，也不能在 recovered 已精确收敛时误报客户端 re-list。
+出现 interrupted 时还必须检查客户端超时/取消、连接中断和服务关闭记录。不能因当前 slow gauge 已回零而关闭事件，
+也不能在 recovered 已精确收敛时误报客户端 re-list。
 换主或 peer transport 变化时，`watch_generation_recovery{outcome="retry|recovered|compacted|failed"}` 记录逻辑
 Watch generation 的恢复过程，RPC server 创建时四类均发布权威零值。每次 reopen 都从该 Watch 最后成功发送
 revision 的下一位开始：瞬时打开失败计 retry，成功建立权威 local/proxy channel 计 recovered，精确 resume revision

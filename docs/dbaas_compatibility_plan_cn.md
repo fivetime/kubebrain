@@ -65590,6 +65590,46 @@ reconnect 1，三类下限均满足，严格 interrupted 指标无额外终态�
 目录全部不存在，KubeBrain/PD/TiKV 3+3+3 Ready/restart 0。A5623 关闭一次短时“真实慢消费者压力 + transport 中断 + raw revision
 恢复”组合证据缺口；数天级长断线、连续 rollout 和多可用区网络故障长稳仍保持 P1。
 
+### A5624：慢 Watch catch-up 中断终态守恒
+
+对照 `/root/etcd` `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+`tests/integration/clientv3/watch/watch_test.go::{TestWatchReconnRunning,TestWatchResumeAfterDisconnect}` 和
+`client/v3/watch.go::serveSubstream`：etcd 客户端会在 transport 中断后继续 Watch，但 backend bounded catch-up 的服务端过程指标是
+KubeBrain 特有的可观测性合同。A5623 的真实门禁暴露了不守恒：`catch_up` 已增长，但 transport context 取消后
+`recovered|dropped` 均不增长，导致一次已开始的 catch-up 没有唯一终态。
+
+提交 `7b1b64d5c2e2b5957f07bd8eb2003a51d8bac866` 新增固定 `interrupted` outcome，backend 创建时与
+`catch_up|recovered|dropped` 一起发布权威零值。DeleteWatcher、CloseAll 或 subscriber context 取消了已进入 catch-up 的
+generation 时只计 interrupted；ring 低水位/驱逐与 context 取消并发时，catch-up 前后各检查一次 stop，使取消稳定
+胜出而不误计 dropped。终态 counter 在关闭 subscriber channel 前发布，因而客户端观测到结束时指标已具备因果可见性；
+dropped 仍保留 legacy `drop.slow.watcher`。watch-soak 的严格预言机现在解析四个固定 outcome，interrupted 模式要求 completion
+精确 `catch_up+N` 且 `interrupted+N`，其余 outcome 与 generation 指标不变。production recording 完整性升为 `4×Ready`，
+alert 同时覆盖 catch_up、dropped 和 interrupted。
+
+单元与静态门禁中，backend 取消/CloseAll/ring 并发聚焦 race 100 轮 `4.566s`；watch-soak 完整包普通 20 轮
+`29.388s`、race 10 轮 `26.476s`，production manifest 5 轮 `1.614s`、server metrics 10 轮 `0.845s`，受影响包 vet
+和 diff check 全部 GREEN。backend 全包普通 20 轮与 race 10 轮均触发 Go 默认 10 分钟全局超时，栈位于既有
+`TestCompactConsistence`，故不将它们冒充 GREEN；改以不被全局重复预算扭曲的完整单轮复验，普通 `49.381s`、race
+`69.977s` 均 GREEN。提交前 `hack/production/test-shard.sh --verify 4` 为 703 项、`170/193/180/160`；提交后四片
+`257.678/443.103/304.722/511.706s` 全部 GREEN。
+
+候选镜像 `kubebrain:a5624-7b1b64d5` 的 OCI digest 为
+`sha256:4b7e7d421b058f0db5b571fadfbebb9b57b6e5af138dc2ad0913a9637196ac74`，镜像内版本、Git SHA 与 build time
+`2026-08-30T11:17:30Z` 全部精确，kind runtime 三副本 image ID 同为
+`sha256:f97ae40e711cd103adeae6c5a90c854c9594249cbd35618174f8f7390bbbfdcc`。候选从 generation 328 滚动到 329，3/3 Ready、
+restart 0。真实 TiKV/PD 门禁使用 leader `a4657-tls-2`、独立 writer `172.18.0.2:30091`、Watch
+`127.0.0.1:13379` 和 info `127.0.0.1:18082`；1 个普通 watcher、1 个 raw slow consumer、64 并发写入 12,000 个事件。
+前两次实际注入因交互轮询延迟而在 raw 已排空后才断线，均以 `raw watch observed 0 reconnects` 明确 RED 并完成 exact-prefix
+cleanup，没有当作产品证据；最终将 barrier 检测、定时断开和 2 秒后恢复收敛到同一本地控制进程。GREEN 轮精确对账
+revisions `1233804..1245803`，`transport_connections=5`、Created 后 transport reconnects 3、普通 watcher 响应承载恢复流 1、
+raw reconnect 1；严格 baseline delta 只增加 `catch_up+1/interrupted+1`，`recovered/dropped` 不变。独立 cleanup-only 再验为零。
+
+全部数据与 info 凭据均由六个独立 `/dev/fd` process substitution 提供，无凭据落盘。最后以 UID、resourceVersion、候选镜像和
+完整 args 四重 JSON Patch test 回滚到 A5608 digest，generation 330 的 current/update revision 同为
+`a4657-tls-7d94b578fb`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，runner、port-forward 与临时目录全部不存在。门禁日志
+已经 `gio trash` 移入系统回收站、可恢复。A5624 关闭“catch-up 已开始但取消路径无终态计数”的可观测性守恒缺口；
+数天级长断线、连续 rollout 和多可用区网络故障长稳仍保持 P1。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
