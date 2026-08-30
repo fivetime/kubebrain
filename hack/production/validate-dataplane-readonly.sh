@@ -1520,6 +1520,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${status_cluster_ids}" >&2
     exit 1
   fi
+  if ! [[ "$min_status_revision" =~ ^[0-9]+$ ]]; then
+    echo "status revision must be non-negative, got ${min_status_revision}" >&2
+    exit 1
+  fi
   IFS=',' read -r -a status_member_id_array <<<"$status_member_ids"
   IFS=',' read -r -a unique_status_member_id_array <<<"$unique_status_member_ids"
   if [[ "${#status_member_id_array[@]}" != "$expected_status_endpoints" ]]; then
@@ -1544,6 +1548,9 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       ]
     | @tsv
   ' | LC_ALL=C sort)"
+  status_endpoint_revision_map="$(printf '%s' "$status_json" | "$JQ" -r '
+    .[] | [.Endpoint, (.Status.header.revision | tostring)] | @tsv
+  ' | LC_ALL=C sort)"
   gateway_expected_member_id="$(printf '%s' "$status_json" | "$JQ" -r --arg endpoint "$ENDPOINT" '
     [
       .[]
@@ -1554,6 +1561,14 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   ')"
   if ! [[ "$gateway_expected_member_id" =~ ^[1-9][0-9]*$ ]]; then
     echo "ENDPOINT must match exactly one STATUS_ENDPOINTS member: endpoint=${ENDPOINT}" >&2
+    exit 1
+  fi
+  gateway_expected_revision="$(printf '%s' "$status_json" | "$JQ" -r --arg endpoint "$ENDPOINT" '
+    [.[] | select(.Endpoint == $endpoint) | .Status.header.revision]
+    | if length == 1 then (.[0] | tostring) else "invalid" end
+  ')"
+  if ! [[ "$gateway_expected_revision" =~ ^[0-9]+$ ]]; then
+    echo "ENDPOINT must match exactly one STATUS_ENDPOINTS revision: endpoint=${ENDPOINT}" >&2
     exit 1
   fi
   if [[ -n "$INFO_ENDPOINTS" ]]; then
@@ -1606,10 +1621,6 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       echo "INFO_ENDPOINTS leader selection could not encode Status leader ${status_leader_ids} as uint64 hexadecimal" >&2
       exit 1
     fi
-  fi
-  if ! [[ "$min_status_revision" =~ ^[0-9]+$ ]]; then
-    echo "status revision must be non-negative, got ${min_status_revision}" >&2
-    exit 1
   fi
   if ! [[ "$min_status_db_size" =~ ^[1-9][0-9]*$ ]]; then
     echo "status dbSize must be positive, got ${min_status_db_size}" >&2
@@ -1712,6 +1723,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if ! [[ "$gateway_status_revision" =~ ^[0-9]+$ ]]; then
     echo "gateway status revision must be non-negative, got ${gateway_status_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_status_revision" != "$gateway_expected_revision" ]]; then
+    echo "gateway status serving revision mismatch: expected ${gateway_expected_revision}, got ${gateway_status_revision}" >&2
     exit 1
   fi
   if [[ -n "$EXPECTED_STATUS_VERSION" && "$gateway_status_version" != "$EXPECTED_STATUS_VERSION" ]]; then
@@ -1908,8 +1923,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway auth status revision must be non-negative, got ${gateway_auth_revision}" >&2
     exit 1
   fi
-  if [[ "$gateway_auth_revision" != "$min_status_revision" ]]; then
-    echo "gateway auth status revision mismatch: status=${min_status_revision}, auth=${gateway_auth_revision}" >&2
+  if [[ "$gateway_auth_revision" != "$gateway_expected_revision" ]]; then
+    echo "gateway auth status revision mismatch: status=${gateway_expected_revision}, auth=${gateway_auth_revision}" >&2
     exit 1
   fi
   if ! [[ "$gateway_auth_raft_term" =~ ^[1-9][0-9]*$ ]]; then
@@ -1965,8 +1980,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway alarm revision must be non-negative, got ${gateway_alarm_revision}" >&2
     exit 1
   fi
-  if [[ "$gateway_alarm_revision" != "$min_status_revision" ]]; then
-    echo "gateway alarm revision mismatch: status=${min_status_revision}, alarm=${gateway_alarm_revision}" >&2
+  if [[ "$gateway_alarm_revision" != "$gateway_expected_revision" ]]; then
+    echo "gateway alarm revision mismatch: status=${gateway_expected_revision}, alarm=${gateway_alarm_revision}" >&2
     exit 1
   fi
   if ! [[ "$gateway_alarm_raft_term" =~ ^[1-9][0-9]*$ ]]; then
@@ -1989,6 +2004,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   status_summary+=", gateway_alarms=empty"
   status_summary+=", gateway_endpoint_member_id=${gateway_expected_member_id}, gateway_endpoint_members_match=true"
   status_summary+=", gateway_endpoint_raft_term=${gateway_status_raft_term}, gateway_endpoint_raft_terms_match=true"
+  status_summary+=", gateway_endpoint_revision=${gateway_expected_revision}, gateway_endpoint_revisions_match=true"
   fi
 fi
 
@@ -2334,7 +2350,14 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "status/hashkv revision mismatch: status=${min_status_revision:-missing}, hashkv=${min_hashkv_revision}" >&2
     exit 1
   fi
-  hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_endpoint_members_match=true, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
+  hashkv_endpoint_revision_map="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    .[] | [.Endpoint, (.HashKV.header.revision | tostring)] | @tsv
+  ' | LC_ALL=C sort)"
+  if [[ "$hashkv_endpoint_revision_map" != "$status_endpoint_revision_map" ]]; then
+    echo "status/hashkv endpoint revision mapping mismatch: status=${status_endpoint_revision_map//$'\n'/,}, hashkv=${hashkv_endpoint_revision_map//$'\n'/,}" >&2
+    exit 1
+  fi
+  hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_endpoint_members_match=true, hashkv_endpoint_revisions_match=true, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
   hashkv_summary+=", revisions_match=true"
   if [[ "$hashkv_raft_terms" != "-" ]]; then
     hashkv_summary+=", hashkv_raft_terms=${hashkv_raft_terms}"
@@ -2380,8 +2403,8 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hash revision must be non-negative, got ${gateway_hash_revision}" >&2
     exit 1
   fi
-  if [[ "$gateway_hash_revision" != "$min_status_revision" ]]; then
-    echo "gateway hash revision mismatch: status=${min_status_revision}, hash=${gateway_hash_revision}" >&2
+  if [[ "$gateway_hash_revision" != "$gateway_expected_revision" ]]; then
+    echo "gateway hash revision mismatch: status=${gateway_expected_revision}, hash=${gateway_hash_revision}" >&2
     exit 1
   fi
   if ! [[ "$gateway_hash_raft_term" =~ ^[1-9][0-9]*$ ]]; then
@@ -2431,8 +2454,8 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv revision must be non-negative, got ${gateway_hashkv_revision}" >&2
     exit 1
   fi
-  if [[ "$gateway_hashkv_revision" != "$min_hashkv_revision" ]]; then
-    echo "gateway hashkv revision mismatch: etcdctl=${min_hashkv_revision}, gateway=${gateway_hashkv_revision}" >&2
+  if [[ "$gateway_hashkv_revision" != "$gateway_expected_revision" ]]; then
+    echo "gateway hashkv revision mismatch: etcdctl=${gateway_expected_revision}, gateway=${gateway_hashkv_revision}" >&2
     exit 1
   fi
   if ! [[ "$gateway_hashkv_raft_term" =~ ^[1-9][0-9]*$ ]]; then
