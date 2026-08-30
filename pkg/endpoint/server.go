@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc"
 	"k8s.io/klog/v2"
 
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
@@ -204,8 +205,17 @@ This requirement has been added to help prevent DNS Rebinding attacks (CVE-2018-
 const gatewayClientCertificateRejection = "CommonName of client sending a request against gateway will be ignored and not used as expected"
 
 func (ac *httpAccessController) rejectGatewayClientCertificate(w http.ResponseWriter, req *http.Request) bool {
-	if !ac.gatewayClientCertAuth || ac.authEnabled == nil || req.TLS == nil || req.URL == nil ||
+	if !ac.gatewayClientCertAuth || ac.authEnabled == nil || req.URL == nil ||
 		!strings.HasPrefix(req.URL.Path, "/v3/") {
+		return false
+	}
+	tlsState := req.TLS
+	if tlsState == nil {
+		if state, ok := transportidentity.TLSStateFromContext(req.Context()); ok {
+			tlsState = &state
+		}
+	}
+	if tlsState == nil {
 		return false
 	}
 	enabled, err := ac.authEnabled(req.Context())
@@ -216,7 +226,7 @@ func (ac *httpAccessController) rejectGatewayClientCertificate(w http.ResponseWr
 	if !enabled {
 		return false
 	}
-	for _, chain := range req.TLS.VerifiedChains {
+	for _, chain := range tlsState.VerifiedChains {
 		if len(chain) > 0 && chain[0].Subject.CommonName != "" {
 			http.Error(w, gatewayClientCertificateRejection, http.StatusBadRequest)
 			return true
@@ -252,7 +262,7 @@ func newHttpServer(handler http.Handler) exposedServer {
 	return newHTTPServer(handler)
 }
 
-func newHTTPServer(handler http.Handler) *httpServer {
+func newHTTPServer(handler http.Handler, identities ...*transportidentity.Registry) *httpServer {
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	protocols.SetHTTP2(true)
@@ -263,6 +273,12 @@ func newHTTPServer(handler http.Handler) *httpServer {
 		IdleTimeout:       httpIdleTimeout,
 		MaxHeaderBytes:    httpMaxHeaderBytes,
 		Protocols:         protocols,
+	}
+	if len(identities) > 0 && identities[0] != nil {
+		registry := identities[0]
+		svr.ConnContext = func(ctx context.Context, conn net.Conn) context.Context {
+			return registry.ContextForConnection(ctx, conn.LocalAddr(), conn.RemoteAddr())
+		}
 	}
 	shutdownStarted := make(chan struct{})
 	var shutdownStartedOnce sync.Once
@@ -403,10 +419,14 @@ func (s *nativeGRPCServer) close() error {
 	}
 }
 
-func newGRPCMuxedHTTPServer(grpcServer *grpc.Server, httpHandler http.Handler) *grpcMuxedHTTPServer {
+func newGRPCMuxedHTTPServer(
+	grpcServer *grpc.Server,
+	httpHandler http.Handler,
+	identities ...*transportidentity.Registry,
+) *grpcMuxedHTTPServer {
 	return &grpcMuxedHTTPServer{
 		grpcServer:             grpcServer,
-		httpServer:             newHTTPServer(grpcHandlerFunc(grpcServer, httpHandler)),
+		httpServer:             newHTTPServer(grpcHandlerFunc(grpcServer, httpHandler), identities...),
 		quiesceDone:            make(chan struct{}),
 		goAwayPropagationDelay: transportGoAwayPropagationPeriod,
 	}

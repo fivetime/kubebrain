@@ -156,13 +156,13 @@ func (e *Endpoint) runClientServer(ctx context.Context) (retErr error) {
 		grpcTransport := newNativeGRPCServer(clientGrpc)
 		// Native gRPC owns all HTTP/2. The existing bounded HTTP transport
 		// continues to serve health and JSON gateway requests over HTTP/1.1.
-		httpTransport := newGRPCMuxedHTTPServer(grpc.NewServer(), clientHTTPHandler)
+		httpTransport := newGRPCMuxedHTTPServer(grpc.NewServer(), clientHTTPHandler, e.tlsIdentities)
 		e.registerClientTransportDrain(grpcTransport.quiesceAndStop)
 		e.registerClientTransportDrain(httpTransport.quiesce)
 		exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig, grpcTransport, httpTransport)
 		return newRootServer(e.config.Port, exposedServers...).run(ctx)
 	}
-	muxedServer := newGRPCMuxedHTTPServer(clientGrpc, clientHTTPHandler)
+	muxedServer := newGRPCMuxedHTTPServer(clientGrpc, clientHTTPHandler, e.tlsIdentities)
 	e.registerClientTransportDrain(muxedServer.quiesce)
 	exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig, muxedServer)
 	clientServiceGroup := newRootServer(e.config.Port, exposedServers...)

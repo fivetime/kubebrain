@@ -1,6 +1,7 @@
 package endpoint
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
@@ -8,8 +9,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -524,6 +527,60 @@ func TestIdentityTLSListenerContinuesAfterRejectedHandshake(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("listener did not accept a valid connection after rejecting a malformed handshake")
 	}
+}
+
+func TestIdentityTLSListenerCarriesVerifiedClientIdentityIntoHTTP(t *testing.T) {
+	ca := newRotationCA(t)
+	serverDir := t.TempDir()
+	serverCertPath, serverKeyPath := writeRotationCertificate(t, serverDir, "server", ca, 611, "rotation.test")
+	serverCert, err := tls.LoadX509KeyPair(serverCertPath, serverKeyPath)
+	require.NoError(t, err)
+	clientDir := t.TempDir()
+	clientCertPath, clientKeyPath := writeRotationCertificate(t, clientDir, "root", ca, 612, "client.test")
+	clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.cert)
+
+	rawListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	identities := &transportidentity.Registry{}
+	listener := &identityTLSListener{
+		Listener: rawListener,
+		config: &tls.Config{
+			Certificates: []tls.Certificate{serverCert},
+			ClientAuth:   tls.RequireAndVerifyClientCert,
+			ClientCAs:    pool,
+		},
+		identities: identities,
+	}
+	handler := newClientHTTPAccessControlledHandler(nil, nil, true,
+		func(context.Context) (bool, error) { return true, nil },
+		map[string]http.Handler{"/v3/": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})},
+	)
+	server := newHTTPServer(handler, identities)
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.serve(listener) }()
+	t.Cleanup(func() {
+		require.NoError(t, server.close())
+		require.NoError(t, listener.Close())
+		require.NoError(t, normalizeServeError(<-serveErr))
+	})
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		RootCAs:      pool,
+		ServerName:   "rotation.test",
+		Certificates: []tls.Certificate{clientCert},
+	}}}
+	response, err := client.Post("https://"+rawListener.Addr().String()+"/v3/maintenance/status", "application/json", nil)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, response.StatusCode)
+	require.Equal(t, gatewayClientCertificateRejection+"\n", string(body))
 }
 
 func TestIdentityTLSListenerClosesSilentHandshakeAndRemainsUsable(t *testing.T) {

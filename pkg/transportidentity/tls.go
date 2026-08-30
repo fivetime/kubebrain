@@ -63,7 +63,14 @@ func (r *Registry) TagConn(ctx context.Context, info *stats.ConnTagInfo) context
 	if info == nil {
 		return ctx
 	}
-	state, ok := r.states.Load(addressKey(info.LocalAddr, info.RemoteAddr))
+	return r.ContextForConnection(ctx, info.LocalAddr, info.RemoteAddr)
+}
+
+// ContextForConnection attaches verified TLS state registered for one live
+// connection. It also bridges identity into net/http when an outer TLS listener
+// hands an already-decrypted connection to an inner HTTP server.
+func (r *Registry) ContextForConnection(ctx context.Context, local, remote net.Addr) context.Context {
+	state, ok := r.states.Load(addressKey(local, remote))
 	if !ok {
 		return ctx
 	}

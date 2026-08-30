@@ -25,6 +25,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 )
 
 func TestHTTPAccessControllerMatchesEtcdClientCertificateGatewayBoundary(t *testing.T) {
@@ -62,6 +64,26 @@ func TestHTTPAccessControllerMatchesEtcdClientCertificateGatewayBoundary(t *test
 	handler.ServeHTTP(response, request)
 	require.Equal(t, http.StatusNoContent, response.Code)
 	require.Equal(t, 1, called)
+}
+
+func TestHTTPAccessControllerUsesVerifiedTLSStateFromTransportContext(t *testing.T) {
+	handler := newClientHTTPAccessControlledHandler(nil, nil, true,
+		func(context.Context) (bool, error) { return true, nil },
+		map[string]http.Handler{"/v3/": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})},
+	)
+	request := httptest.NewRequest(http.MethodPost, "https://etcd.example/v3/maintenance/status", nil)
+	request.TLS = nil
+	request = request.WithContext(transportidentity.WithTLSState(request.Context(), tls.ConnectionState{
+		VerifiedChains: [][]*x509.Certificate{{{Subject: pkix.Name{CommonName: "root"}}}},
+	}))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	require.Equal(t, gatewayClientCertificateRejection+"\n", response.Body.String())
 }
 
 func TestHTTPAccessControllerClientCertificateGatewayBoundaryIsNarrow(t *testing.T) {
