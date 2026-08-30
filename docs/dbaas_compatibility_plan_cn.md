@@ -66176,11 +66176,24 @@ revision `44329` 一致。与本项范围匹配的完整只读 gate GREEN，实�
 `gateway_endpoint_revision=65743, gateway_endpoint_revisions_match=true`；独立 curl 再验证 Status、AuthStatus、Alarm、Hash、HashKV
 五个 header 都精确为 `(member=4034353177, revision=65743, term=195)`。
 
-启用最新全量 info metrics 子门禁时，现有稳定 runtime 还缺少 `watch_range_prefilter_dropped`，因此该更宽检查按预期 RED；这是独立的运行镜像
-版本差距，不用关闭 metrics 检查来伪称全量门禁 GREEN。本项只移除 `INFO_ENDPOINTS/EXPECTED_INFO_METRICS_CHECKS` 后复验 revision、gateway、
-health、version、debug/pprof 等其余只读契约并 GREEN，缺口留给后续独立实现/部署验证。验证窗口日志无 panic/fatal/data corruption/
-context deadline/TiKV/PD error；终态 KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口无监听，也没有凭据或诊断文件落盘。A5639
-关闭跨 endpoint revision 对调或 gateway revision 漂移仍可被集合最小值拼成发布 GREEN 的问题。
+启用最新全量 info metrics 子门禁时，现有稳定 runtime 还缺少 `watch_range_prefilter_dropped`，因此该更宽检查先按预期 RED；这是独立的
+运行镜像版本差距，没有通过关闭 metrics 检查伪称全量门禁 GREEN。后续审计证明该指标由 `1e666c3d` 加入产品源码，而四天前的稳定 runtime
+早于该提交；`c446ec02..HEAD` 只修改两份 gate/test 与两份文档，故本机不可变 `a5629-c446ec02` 是 HEAD 同一产品构建输入的最新候选，
+不需要重建相同二进制。候选 OCI digest 为 `sha256:cc8045e2d946da7cbcf3e6e23f5051af31a84ad0af43ca1613a0808151318043`，
+Kind runtime digest 为 `sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 部署候选至 generation 660 后，三 Pod Ready/restart 0 且三端均
+实际暴露 `watch_range_prefilter_dropped{cluster="default"} 0`。此前 RED 的完整 info metrics 门禁原参数重跑 GREEN：自动选择 leader
+`http://127.0.0.1:19081/metrics`、server ID `dc6389b`，`mvcc_watch_metrics=ok`、`info_metrics_status_fence=stable`，并同时保持
+cluster ID `7662961163671170154`、members `4034353177/2393892952/231094427`、leader `231094427`、term `197`、revision/index/applied
+`65743`、HashKV `4283180840`、compact revision `44329`、逐 endpoint revision/gateway/health/version/debug/pprof 全部 GREEN。候选窗口日志无
+panic/fatal/data corruption/context deadline/TiKV/PD error。
+
+最后用新鲜的同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed 661、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
+无监听，也没有凭据或诊断文件落盘。A5639 关闭跨 endpoint revision 对调或 gateway revision 漂移仍可被集合最小值拼成发布 GREEN 的问题，
+并证明当前产品 runtime 可以通过包含新增 watch 指标在内的完整发布门禁。
 
 ## 提交规则
 
