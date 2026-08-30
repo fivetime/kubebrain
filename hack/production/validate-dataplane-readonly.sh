@@ -1544,6 +1544,18 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       ]
     | @tsv
   ' | LC_ALL=C sort)"
+  gateway_expected_member_id="$(printf '%s' "$status_json" | "$JQ" -r --arg endpoint "$ENDPOINT" '
+    [
+      .[]
+      | select(.Endpoint == $endpoint)
+      | (if (.Status.header | has("member_id")) then .Status.header.member_id else .Status.header.memberId end)
+    ]
+    | if length == 1 then (.[0] | tostring) else "invalid" end
+  ')"
+  if ! [[ "$gateway_expected_member_id" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ENDPOINT must match exactly one STATUS_ENDPOINTS member: endpoint=${ENDPOINT}" >&2
+    exit 1
+  fi
   if [[ -n "$INFO_ENDPOINTS" ]]; then
     status_reported_leader_count="$(printf '%s' "$status_json" | "$JQ" -r '
       [
@@ -1692,6 +1704,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if ! [[ "$gateway_status_member_id" =~ ^[1-9][0-9]*$ ]]; then
     echo "gateway status member ID must be positive, got ${gateway_status_member_id}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_status_member_id" != "$gateway_expected_member_id" ]]; then
+    echo "gateway status serving member mismatch: expected ${gateway_expected_member_id}, got ${gateway_status_member_id}" >&2
     exit 1
   fi
   if ! [[ "$gateway_status_revision" =~ ^[0-9]+$ ]]; then
@@ -1882,6 +1898,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway auth status member ID must be positive, got ${gateway_auth_member_id}" >&2
     exit 1
   fi
+  if [[ "$gateway_auth_member_id" != "$gateway_expected_member_id" ]]; then
+    echo "gateway auth status serving member mismatch: expected ${gateway_expected_member_id}, got ${gateway_auth_member_id}" >&2
+    exit 1
+  fi
   if ! [[ "$gateway_auth_revision" =~ ^[0-9]+$ ]]; then
     echo "gateway auth status revision must be non-negative, got ${gateway_auth_revision}" >&2
     exit 1
@@ -1937,6 +1957,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway alarm member ID must be positive, got ${gateway_alarm_member_id}" >&2
     exit 1
   fi
+  if [[ "$gateway_alarm_member_id" != "$gateway_expected_member_id" ]]; then
+    echo "gateway alarm serving member mismatch: expected ${gateway_expected_member_id}, got ${gateway_alarm_member_id}" >&2
+    exit 1
+  fi
   if ! [[ "$gateway_alarm_revision" =~ ^[0-9]+$ ]]; then
     echo "gateway alarm revision must be non-negative, got ${gateway_alarm_revision}" >&2
     exit 1
@@ -1965,6 +1989,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     exit 1
   fi
   status_summary+=", gateway_alarms=empty"
+  status_summary+=", gateway_endpoint_member_id=${gateway_expected_member_id}, gateway_endpoint_members_match=true"
   fi
 fi
 
@@ -2348,6 +2373,10 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hash member ID must be positive, got ${gateway_hash_member_id}" >&2
     exit 1
   fi
+  if [[ "$gateway_hash_member_id" != "$gateway_expected_member_id" ]]; then
+    echo "gateway hash serving member mismatch: expected ${gateway_expected_member_id}, got ${gateway_hash_member_id}" >&2
+    exit 1
+  fi
   if ! [[ "$gateway_hash_revision" =~ ^[0-9]+$ ]]; then
     echo "gateway hash revision must be non-negative, got ${gateway_hash_revision}" >&2
     exit 1
@@ -2395,6 +2424,10 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   fi
   if ! [[ "$gateway_hashkv_member_id" =~ ^[1-9][0-9]*$ ]]; then
     echo "gateway hashkv member ID must be positive, got ${gateway_hashkv_member_id}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_hashkv_member_id" != "$gateway_expected_member_id" ]]; then
+    echo "gateway hashkv serving member mismatch: expected ${gateway_expected_member_id}, got ${gateway_hashkv_member_id}" >&2
     exit 1
   fi
   if ! [[ "$gateway_hashkv_revision" =~ ^[0-9]+$ ]]; then
