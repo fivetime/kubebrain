@@ -1674,6 +1674,10 @@ revision 链。malformed success 不得成为只读、写入、清理或 lease �
 会在调用 `etcdctl` 前 fail closed。`kubectl`、`curl`、`prefix-tool` 和 `etcdctl` 调用都由
 `TIMEOUT_CMD`（默认 `timeout`）按 `PROBE_TIMEOUT` 包裹；`PROBE_TIMEOUT` 必须是正数
 duration，单位为 `ms`、`s`、`m` 或 `h`，并且换算后不得超过 Go `time.Duration`。
+Status/HashKV 的 etcdctl 调用还会显式设置同值的 `--dial-timeout` 与 `--command-timeout`；后者
+在 upstream etcdctl 中默认仅 5 秒且不包含 dial，单独增加外层 `timeout` 不会改变该内部 context。
+因此较大 keyspace 的 HashKV 可以使用完整探针预算，同时外层 timeout 仍限制 dial 与命令合计墙钟时间；
+不得依赖调用方额外设置 `ETCDCTL_COMMAND_TIMEOUT` 才让发布门禁成立。
 数值期望必须与实际协议类型一致：Ready Pod 数为正 int32，prefix count 为非负 int64，
 cluster ID 为正 uint64，HashKV hash 为非负 uint32；所有字段要求规范十进制表示，越界或
 前导零在任何探针命令前拒绝。配置 `EXPECTED_HASHKV_HASH` 时还会运行

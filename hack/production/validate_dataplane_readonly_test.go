@@ -116,6 +116,25 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "dataplane readonly gate passed",
 		},
 		{
+			name: "passes probe timeout to etcdctl internal timeouts",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				"PROBE_TIMEOUT=60s",
+				"FAKE_REQUIRE_ETCDCTL_COMMAND_TIMEOUT=1",
+			},
+			wantOK:     true,
+			wantOutput: "status_cluster_id=123",
+		},
+		{
 			name: "passes authenticated gateway and client probes",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -4845,6 +4864,16 @@ printf '%s\n' "$FAKE_PREFIX_COUNT"
 `)
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "etcdctl"), `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${FAKE_REQUIRE_ETCDCTL_COMMAND_TIMEOUT:-}" == "1" ]]; then
+  if [[ " $* " != *" --dial-timeout=${PROBE_TIMEOUT} "* ]]; then
+    echo "etcdctl dial timeout mismatch: expected --dial-timeout=${PROBE_TIMEOUT}, got $*" >&2
+    exit 1
+  fi
+  if [[ " $* " != *" --command-timeout=${PROBE_TIMEOUT} "* ]]; then
+    echo "etcdctl command timeout mismatch: expected --command-timeout=${PROBE_TIMEOUT}, got $*" >&2
+    exit 1
+  fi
+fi
 if [[ "$*" == *"endpoint hashkv"* ]]; then
   printf '%s\n' "$FAKE_HASHKV_JSON"
   exit 0

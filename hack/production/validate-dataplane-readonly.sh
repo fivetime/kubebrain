@@ -140,6 +140,13 @@ run_with_probe_timeout() {
   "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$@"
 }
 
+run_etcdctl_with_probe_timeout() {
+  ETCDCTL_API=3 run_with_probe_timeout "$ETCDCTL" \
+    --dial-timeout="$PROBE_TIMEOUT" \
+    --command-timeout="$PROBE_TIMEOUT" \
+    "$@"
+}
+
 gateway_auth_args=()
 if [[ -n "$ETCDCTL_USER" || -n "$ETCDCTL_PASSWORD" ]]; then
   if [[ -z "$ETCDCTL_USER" ]]; then
@@ -928,7 +935,7 @@ done
 
 status_summary=""
 if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
-  status_json="$(ETCDCTL_API=3 run_with_probe_timeout "$ETCDCTL" --endpoints="$STATUS_ENDPOINTS" endpoint status -w json)"
+  status_json="$(run_etcdctl_with_probe_timeout --endpoints="$STATUS_ENDPOINTS" endpoint status -w json)"
   expected_status_endpoints="${#status_endpoint_array[@]}"
   status_count="$(printf '%s' "$status_json" | "$JQ" -r 'if type == "array" then length else 0 end')"
   if [[ "$status_count" != "$expected_status_endpoints" ]]; then
@@ -1841,7 +1848,7 @@ fi
 
 hashkv_summary=""
 if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
-  hashkv_json="$(ETCDCTL_API=3 run_with_probe_timeout "$ETCDCTL" --endpoints="$STATUS_ENDPOINTS" endpoint hashkv -w json)"
+  hashkv_json="$(run_etcdctl_with_probe_timeout --endpoints="$STATUS_ENDPOINTS" endpoint hashkv -w json)"
   expected_hashkv_endpoints="${#status_endpoint_array[@]}"
   hashkv_count="$(printf '%s' "$hashkv_json" | "$JQ" -r 'if type == "array" then length else 0 end')"
   if [[ "$hashkv_count" != "$expected_hashkv_endpoints" ]]; then

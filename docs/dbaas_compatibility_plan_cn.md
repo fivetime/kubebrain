@@ -65866,6 +65866,20 @@ info metrics 均通过。默认 5 秒 HashKV 预检曾在 term 863 三端点超�
 Ready/restart 0，六个诊断端口无监听。A5630 关闭多副本只读 gate 把 follower 指标缺失误报为执行侧兼容缺口的问题；生产 Prometheus
 仍应按 Pod UID 聚合全部成员，动态单点选择只服务于发布时的执行侧完整指标门禁。
 
+### A5631：统一只读 gate 的 etcdctl 内外层超时预算
+
+A5631 来自 A5630 真实验证中的有效门禁假阴性：`PROBE_TIMEOUT=60s` 已由 GNU `timeout` 包住 etcdctl 进程，但未改变 etcdctl 自身
+默认 5 秒 command timeout；三 endpoint HashKV 因而各自在 5 秒 context deadline 失败，而显式设置内部 60 秒后同一 hash
+`3680408421`、compact revision `1169203` 在约 37 秒一致通过。对照
+`/root/etcd/etcdctl/ctlv3/ctl.go` 与 `command/util.go`，upstream 的 `--command-timeout` 默认固定 5 秒并直接创建
+`context.WithTimeout`，且明确不含独立 dial timeout；外层进程 deadline 不会扩展这两个更短的内部 context。
+
+`validate-dataplane-readonly.sh` 现在通过统一 helper 给 Status 与 HashKV 两次 etcdctl 调用都显式传递
+`--dial-timeout="$PROBE_TIMEOUT"` 和 `--command-timeout="$PROBE_TIMEOUT"`，同时保留同值外层硬 timeout 限制整个进程墙钟时间。
+确定性 RED 令 fake etcdctl 要求 `PROBE_TIMEOUT=60s` 的两个 flag，并同时启用 Status/HashKV；旧命令精确报
+`etcdctl command timeout mismatch: expected --command-timeout=60s`，修复后两条路径均通过。该变更不延长 gate 声明的总预算，
+只消除调用者看不见的 2 秒 dial/5 秒 command 较短上限。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
