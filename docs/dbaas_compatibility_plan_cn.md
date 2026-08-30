@@ -65221,6 +65221,49 @@ Ready/restart 0。临时 Service `a5612-client` 以 UID
 源码和状态响应文件已移入系统回收站、可恢复，无凭据落盘。A5612 archive 保留。该轮关闭单慢消费者、默认 ring 容量、真实 TiKV/PD
 下的透明 eviction/reopen P1；多慢消费者、主动 compaction 竞态、数天断线与滚动更新长稳仍保持开放。
 
+### A5613：多独立慢连接的真实 TiKV/PD eviction 闭环
+
+A5613 `e42680188578ecbcbf14c86cff39ed1df0c9012f` 对齐 `/root/etcd/server/storage/mvcc/watchable_store.go` 中多个
+victim/unsynced watcher 各自追赶历史的客户端可观察语义，将既有 raw-pause oracle 扩展为 `SLOW_CONSUMERS=N`。
+旧 `SLOW_CONSUMER=true` 仍等价于 1；显式计数需要 safety flag、只接受不大于 1,000 的规范正整数，并把内存上限
+改为 `(WATCHERS+SLOW_CONSUMERS)*EVENTS <= 20m`。TLS 文件只读一次，每路 raw consumer 使用 clone 的 TLS
+config 创建独立 client/gRPC connection；每路都要求 direct leader 与 Created，之后并发 drain。首个失败会 cancel
+并 join 其他流，pressure/completion 对 slow/generation counter 要求精确 `+N`。
+
+配置、容量、三路并发全序列、失败取消并 join 阻塞 peer 及指标 `+3` 回归均通过。初版 failure fake 的 nil
+`CloseSend` panic 被确认为测试替身缺陷并补齐，不是产品 RED。focused 普通/race、全部 `hack/dev/cmd/...`
+普通/race、vet 和 shell syntax 通过；提交前 698 项 inventory 为 `169/193/177/159`，提交后四片
+`259.750/452.110/299.342/515.947s` 全绿。
+
+候选 `kubebrain:a5613-e4268018` 版本 `0.0.0-e42680188578`、构建时间 `2026-08-29T22:04:30Z`。archive
+`/root/kubebrain-a5613-e4268018.oci.tar` 为 914,403,328 bytes，SHA-256
+`6537d9580e0801fd023cff813d608424174979de9857d56e95dca10aedda429e`；OCI index/platform/config/attestation 为
+`sha256:630bd1c86810934a0bf36384ff3754fd75bf8c1e9e3d314dba40d1d8ea664aea`/
+`sha256:99cda881a250b76071a92a4329e54c6693e7aff30b0645f059b8df654325db47`/
+`sha256:bb3e19e435b156c5bbba4684a3764c8167ea3f448e76b5f85c8da0cfded5f976`/
+`sha256:e85c879c28c90894ac65b93571f4efcbb1a0e7bc163f1693073c07a3cf6cc90c`。78/78 closure、SBOM
+2,592 packages/8,096 relationships、provenance 3 materials、linux/amd64、USER `65532:65532`、labels、入口和运行版本
+均审计通过。Kind 三 Pod runtime 为导入 manifest `sha256:ba20c0f8b1c00ebcbc539908c7ba607d2e67050a9f2e7a02af81ec5e6439fa89`，
+未把 OCI index 或 platform manifest 误当 runtime digest。
+
+以 UID/RV/container/image 四重 test 将候选部署到 `a4657-tls` 后，generation/observed 302、3/3 Ready/updated、
+restart 0。在独立 3 PD/3 TiKV 上直连 `a4657-tls-2` leader：recovered 轮的 1 正常+3 独立 raw watcher、
+12,000 Put、并发 64 于 2m57.827s 完成，revision `715391..727390`，四条序列全量 GREEN，slow
+`catch_up/recovered/dropped` 精确 `+3/+3/0`。默认容量轮的同样 1+3 watcher、220,000 Put 于
+55m05.870s 完成，revision `727485..947484` 精确连续；越过 200,000-event ring 后四条序列对全部
+220,000 个 `(index, revision)` 严格一致，本轮 slow 为 `+3/0/+3`、generation `retry/recovered/compacted/failed`
+为 `0/+3/0/0`。两轮终态 slow `6/3/3`、generation `0/3/0/0`；event stale/full、collector stalled/skipped/recovery
+全零。完整 220,000 exact-key 清理约 18 分钟、无 retry/error，两个 RUN_ID 均用独立 cleanup-only 再验
+CountOnly=0 与 exit 0。
+
+凭据仅通过彼此独立的 `/dev/fd` 进程替换传入，无凭据/诊断文件落盘，未创建临时 Kubernetes 对象。port-forward
+在短连接关闭时保留本地 `broken pipe` 日志，但 RPC/oracle 无对应失败；三进程最终均 Ctrl-C exit 0，六端口无
+监听。以 RV `7413587` 及 UID/container/candidate image 四重 test 回滚 A5608 后，generation/observed 303、
+current/update `a4657-tls-6768fb4758`、3/3 Ready/updated、restart 0，三 Pod runtime 为
+`sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`，PD/TiKV 各 3/3 Ready/restart 0；
+候选 archive 保留。这关闭同一 leader 上多独立慢消费者默认容量下的透明 eviction/reopen P1，不代表主动
+compaction 竞态、数天断线或滚动更新长稳已完成。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
