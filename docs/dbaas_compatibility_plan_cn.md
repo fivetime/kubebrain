@@ -65933,6 +65933,45 @@ panic/fatal/data corruption/deadline，证书与 curl wrapper 只存在于四个
 恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV
 3+3+3 Ready/restart 0，六个诊断端口无监听。A5632 关闭跨实例拼接健康 leader metrics 的发布证据身份缺口。
 
+### A5633：将所选 leader info metrics 收紧为唯一状态元组
+
+A5630 只要求所选 info scrape 的 `etcd_server_is_leader` 去重值为 1，因此同值重复 series 会被 `sort -u` 隐藏，而且
+`etcd_server_has_leader=0` 或 `etcd_server_is_learner=1` 只要 family 存在也会整体 GREEN。对照
+`/root/etcd/server/etcdserver/raft.go`，upstream 从同一 `SoftState` 更新 has-leader 与 is-leader；
+`/root/etcd/server/etcdserver/api/membership/metrics.go` 将当前 member learner 身份规范化为 0/1。KubeBrain
+`pkg/server/server.go` 的周期刷新也从同一当前 election/member 状态发射三项 gauge。被 Status 唯一选中的权威 leader 因而必须同时
+持有 leader、确知 leader，且不可能是 learner。
+
+配置 `INFO_ENDPOINTS` 后，完整 info gate 现在抽取三类原始 sample 并按 metric 名排序，要求结果精确等于各一条
+`has_leader=1,is_leader=1,is_learner=0`；缺失、重复、非规范 value 或任一矛盾全部 fail closed，不能通过值去重掩盖重复来源。
+未配置 `INFO_ENDPOINTS` 的兼容 fallback 无法证明 scrape 对应 Status leader，仍保留原有三类 family 存在性检查。
+
+确定性 RED 将 Status leader 789 对应的完整 info fixture 仅改为 `has_leader=0`；旧 gate 错误整体 GREEN，修复后精确拒绝
+`info metrics leader state mismatch: expected exactly has_leader=1,is_leader=1,is_learner=0`。另外三个负例分别覆盖
+`is_leader=0`、`is_learner=1` 以及重复两条完全相同的 `is_leader=1`，共同证明 gate 校验的是唯一完整元组，而非某个布尔量或去重后的值集合。
+
+聚焦只读 gate 普通/race 分别为 `100.671s/102.875s`；Go vet、shell syntax、diff check 与固定
+`koalaman/shellcheck:v0.11.0` 对目标脚本的检查全部 GREEN。仓库级同镜像 shellcheck 仍会命中既有备份/运维脚本的
+SC2034/SC2054/SC2071/SC2128 基线告警，本项没有修改或掩盖这些文件，也未把该仓库级结果冒充 GREEN。
+
+代码提交 `e704b9bb51aef80e8052b0396511669e58e97691` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`270.960/455.258/318.578/525.241s`，全部 GREEN。
+
+真实独立三 PD/三 TiKV 门禁继续复用 A5629 runtime
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`，经五重 StatefulSet test 部署为
+generation 352，三 Pod Ready/restart 0。第一次只读调用沿用旧 count 基线 4，而持久 keyspace 现场已有 7 项，故在深层检查前精确以
+`prefix count mismatch ... expected 4, got 7` 拒绝；该轮没有写数据，不计产品 RED。以刚观测的权威计数 7 重跑后完整 gate GREEN：
+三端 Status 一致报告 cluster ID `7662961163671170154`、members `1279320304/848842929/2985394290`、leader
+`2985394290`、revision/index/applied `1258096`、term `878`；脚本动态选择第三项
+`https://127.0.0.1:18081/metrics`，身份 `b1f18072`，唯一 `has_leader=1,is_leader=1,is_learner=0` 元组以及全部 info
+metrics 通过。HashKV `3680408421`、compact revision `1169203`、gateway 预期拒绝、版本、debug/pprof 也全部 GREEN。
+候选日志无 panic/fatal/data corruption/context deadline/TiKV/PD error；CA/cert/key/curl wrapper 只存在于四个独立匿名 memfd。
+
+最后以同样五重 test 回滚稳定 digest。终态 generation/observed 353、current/update `a4657-tls-7d94b578fb`，三 Pod runtime
+恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV
+3+3+3 Ready/restart 0，六个诊断端口无监听，宿主剩余约 320 GiB。A5633 关闭互相矛盾或重复的 leader 状态 series 被发布 gate
+误接受的问题，同时不把无法建立 Status-to-info 身份映射的兼容 fallback 收紧为未经证明的 leader 判断。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
