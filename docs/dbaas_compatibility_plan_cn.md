@@ -65436,6 +65436,38 @@ ConfigMap 全部 absent。随后用新鲜 generation 327 UID/RV/image/args test 
 KubeBrain/PD/TiKV 3+3+3 全部 Ready/restart 0，历次 A5618 临时对象均不存在。900 轮关闭生产默认发布门禁证据缺口，但不替代矩阵仍明确
 开放的数天级断线、连续滚动和慢消费者长稳。
 
+### A5619：Watch 长稳 runner 的信号清理与 TLS authority 闭环
+
+对照 `/root/etcd` `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+`pkg/osutil/interrupt_unix.go::HandleInterrupts` 以及 `etcdctl/ctlv3/command/{lock,elect}_command.go`：长时间运行命令收到
+SIGINT/SIGTERM 后必须先把信号转换为运行 cancellation，让持有资源的退出路径执行，再恢复默认信号行为供第二次信号强制终止。旧
+`hack/dev/cmd/watch-soak` 只在 `context.Background()` 上叠加总 timeout；被 Kubernetes Job、CI 或运维系统终止时，进程不会进入
+`run` 的 defer，已取得 ownership 的 `/registry/watch-soak/<RUN_ID>/` 可能残留。提交
+`69fe2568ff8db091cf9f42703ca6b14932420e86` 建立 SIGINT/SIGTERM 根 context，首个信号取消 soak，原有独立
+`CLEANUP_TIMEOUT_SECONDS` 仍允许有界、逐精确 key 清理，第二个信号恢复默认强制终止；中断不是成功结果，清理完成后仍以非零状态报告。
+普通退出和信号退出只有在 `cleanupPrefix` 的最终 CountOnly 为零时才输出 `Watch soak cleanup completed`。
+
+同一提交关闭了现场暴露的 TLS 配置假象：etcd client v3.7 resolver 会给 endpoint 写入 address-level ServerName，新版 gRPC 在未指定
+authority 时用它覆盖 `tls.Config.ServerName`，导致已有 `ETCD_TLS_SERVER_NAME` 对“连接地址与证书 SAN 不同”的生产入口实际无效。
+`newEtcdClient` 现在把显式名字同时作为 gRPC authority；内存 TLS 回归用只含 `watch-soak.test` DNS SAN 的证书连接
+`127.0.0.1`，不跳过校验即可达到 Ready。子进程回归向自身发送真实 SIGTERM，并要求 cancellation 和 defer 清理标记都在正常测试进程
+退出前出现。首次线上验证也按预期分类了两个非产品结果：修复前 authority 被 endpoint 覆盖而 TLS 失败；修复后受限 `alice` 身份在
+preflight 返回 PermissionDenied，二者均未取得前缀 ownership、未写数据。随后改用既有 `KubeWharfServer` 管理身份，凭据始终通过三个独立
+`/dev/fd` process substitution 输入，没有落盘。
+
+继续审计发现脚本的 `exec go run` 仍会破坏上述保证：只向 go tool PID 发 SIGTERM 时，编译后二进制被 PID 1 收养并继续运行。提交
+`97e1e3f1041bce36786a697a89f8a1e7bcf87ffb` 改为在精确临时目录构建二进制，由 wrapper 捕获 INT/TERM、转发给唯一子 PID 并持续
+wait 到其退出，再以精确 `rm -f`/`rmdir` 清理构建产物；二进制安装 handler 后才输出 readiness，消除“started 但尚未可接收信号”的
+测试竞态。wrapper 端到端回归以不可达本地 endpoint 保证不写数据，普通连续 20 轮、race 10 轮均证明 SIGTERM 被转发、子进程报告
+`context canceled`、wrapper 不误报成功且临时根为空；完整包普通/race 各 10 轮、vet 与 shell syntax 同样 GREEN。
+
+最终真实门禁完全通过正式 `hack/dev/watch-soak.sh`：A5608 三副本 TLS 集群上的专属前缀先由独立 preflight 证明有 728 keys，只向
+wrapper PID `640122` 发 SIGTERM；子进程在 event 1059 取消，3.273 秒内输出最终零计数清理完成，wrapper 等待后 exit 1，wrapper/子
+进程、临时构建目录和 port-forward 全部不存在。KubeBrain 三副本 Ready/restart 0，未修改 StatefulSet、auth 图、PD/TiKV 或产品镜像。
+两个代码提交前均运行 `hack/production/test-shard.sh --verify 4`，703 项分片恒为 `170/193/180/160`；首提交后四片为
+`249.773/446.734/305.767/514.615s`，wrapper 修复后为 `269.621/459.423/312.323/526.260s`，全部 GREEN。A5619 关闭的是
+“外部终止仍执行可证明的有界清理”与 TLS server-name/脚本信号链路，不替代矩阵仍开放的数天级断线、慢消费者和连续滚动长稳。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
