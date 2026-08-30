@@ -1391,6 +1391,14 @@ identity。覆盖缺失、重复、label/value 非法或两面不一致持续 2 
 header 与 MemberList endpoint identity 均不可视为可信。
 MVCC operation counter `etcd_mvcc_range_total`、`etcd_mvcc_put_total`、
 `etcd_mvcc_delete_total` 与 `etcd_mvcc_txn_total`，
+Range 延迟 histogram `etcd_server_range_duration_seconds` 必须在实际执行 TiKV-backed Range 的
+member 上按一次公开 Range 精确观察一次；普通 Get/List 与 CountOnly 都适用。CountOnly 的 current
+count-index 和 historical List fallback 只能在最外层 Count 观察，内部嵌套读取不得重复计数。
+KubeBrain follower 会把 Range 转发给数据面 leader，因此单次诊断必须让请求 endpoint 与 info
+scrape 指向同一执行 member；scrape follower 看不到 leader backend 的 histogram，不能据此判定指标缺失。
+A5629 在独立三 PD/三 TiKV 上以 leader 对齐的完整只读 gate 验证
+`range_duration_metrics=ok`，同时保持三 member Status/HashKV、gateway client-cert-auth 拒绝与全部
+info metrics 对账 GREEN。
 以及 Go runtime/promhttp 基础指标 `go_info`、
 `go_goroutines`、`go_threads`、`go_gc_gogc_percent`、`go_gc_gomemlimit_bytes`、
 `go_sched_gomaxprocs_threads`、`os_fd_used`、`os_fd_limit`、

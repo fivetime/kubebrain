@@ -65789,6 +65789,45 @@ CA/cert/key/curl wrapper 仅位于独立匿名 memfd，没有凭据文件。候�
 四重 test 回滚 A5608；终态 generation/observed 343、current/update `a4657-tls-7d94b578fb`，KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，
 runtime 恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`，四个临时端口无监听。
 
+### A5629：CountOnly Range 延迟 histogram 精确一次观察
+
+A5629 对照 `/root/etcd/server/etcdserver/txn/txn.go`：upstream `Count` 仍通过 `txn.Range` 执行，因而
+`etcd_server_range_duration_seconds` 对普通 Get/List 与 CountOnly 都必须发射。KubeBrain 之前只在 backend shim 的 Get/List
+路径观察该 histogram；CountOnly 直接进入 `countResolver.Count`，所以 A5628 的真实 info metrics gate 已有成功 gRPC Range、
+`etcd_mvcc_range_total` 与 request-duration，却缺 range-duration histogram。提交
+`c446ec02d539823caecf7ced790a63bbde7fbdaf` 将 List/Count 分解为带 `observe` 的内部 helper：公开 Count 在最外层精确观察一次，
+current count-index 与 historical List fallback 均以 `observe=false` 执行，避免嵌套读取重复计数。确定性 RED 在 Get/List/Count
+三次调用后只得到 2 个样本；修复后 current 与 historical fallback 都精确增加 1。
+
+聚焦与完整 `pkg/server/etcd` 普通测试（`135.767s`）、完整 race（`389.328s`）、Prometheus package、vet 和 diff check
+全部 GREEN。提交前 `hack/production/test-shard.sh --verify 4` 为 703 项、`170/193/180/160`；提交后四片为
+`250.730/440.383/298.478/510.373s`，全部 GREEN。候选 `kubebrain:a5629-c446ec02` 的 OCI index/platform/config 分别为
+`sha256:cc8045e2d946da7cbcf3e6e23f5051af31a84ad0af43ca1613a0808151318043`、
+`sha256:4da92bacdfa549bb7d83c5ed5712907496212c1411d99089f80dc0b86dc12750`、
+`sha256:c8252afb20568`（缩写）；镜像内版本 `0.0.0-c446ec02d539`、完整 Git SHA、TiKV storage、Go 1.26.5、
+build time `2026-08-30T16:45:00Z` 与 USER `65532:65532` 精确。Kind 三副本 runtime 均为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0。
+
+部署前真实基线曾整体降到 0/3：PD 仍报告三 store Up、Region 有 leader，但三个 TiKV store 的 available 都是 `0B`，Kind
+节点 `/dev/vda2` 也为 2.0 TiB/100%。只读归因确认 TiKV 数据约 35 GiB，而宿主 Docker/BuildKit 累积 373.9 GB 可回收缓存；仅执行
+`docker builder prune --all --force`，保留全部镜像、容器、卷、PVC 与数据库文件，释放约 324 GiB 后 TiKV 立即重新上报约
+16 GiB available，A5608 自行恢复 3/3。这证明阻塞是共享 local-path 宿主盘耗尽，不是候选回归；缓存不可从回收站恢复但可重建。
+
+候选完整只读 gate 的第一次有效运行向 follower `13379` 发请求并 scrape follower info `18080`，因此请求在 leader backend
+产生 histogram、follower scrape 仍报告缺失；随后三 Pod 指标直接证明只有 leader `a4657-tls-1` 已有
+`etcd_server_range_duration_seconds_count{success="true"}=3`。将请求 endpoint 与 info scrape 同时固定到 leader 后，60 秒有界
+完整 gate GREEN：`range_duration_metrics=ok`，client metrics 404/info metrics 全集正确，HTTP gateway 精确 400 拒绝，三 member
+cluster ID `7662961163671170154`、revision/index/applied `1258096`、term `862`、version/storage `3.7.0`、HashKV
+`3680408421` 与 compact revision `1169203` 全部一致。该 follower scrape RED 是观测点错配，不是产品 RED，也明确固定了“backend
+执行 member 拥有指标”的诊断边界。证书与 curl wrapper 仅存在于独立匿名 memfd，没有凭据落盘；候选无 panic/fatal/data corruption，
+但 gate 前 leader 曾出现一次 TiKV deadline，随后完整 gate 与 3+3+3 Ready 证明恢复，故不声称候选窗口全程无存储告警。
+
+最后以 StatefulSet UID、resourceVersion、容器名、候选 image 与完整 args 五重原子 test 回滚 A5608。终态 generation/observed
+`345`、current/update `a4657-tls-7d94b578fb`，三 Pod runtime 恢复
+`sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，六个临时端口无监听，宿主仍有约 321 GiB 可用空间。A5629 关闭 CountOnly 不发射 upstream Range 延迟 histogram
+的兼容性缺口；跨 follower 的 per-member 指标聚合仍由生产 Prometheus 按 Pod UID 消费，单端人工 scrape 必须显式对齐执行 member。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
