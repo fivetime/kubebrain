@@ -65419,11 +65419,22 @@ Snapshot/drain/Put 风险窗口；它们必须先走受控维护投放或由未�
 probe/cleanup Pod 与 owner ConfigMap 全部 NotFound。三个 Pod 的 `/capabilities` 又经独立 mTLS `/dev/fd` 请求逐一回读，JSON 精确一致；首次误用
 不存在的通用 client Secret 字段在 TLS 握手前失败，不计作服务结果，改用实际 `alice.crt/key` 后三端通过，凭据始终未落盘。
 
-最后以新鲜 UID/RV、容器名、候选 image 与完整 args 五类 test 原子回滚 A5608。终态 generation/observed 325、current/update
+首轮最后以新鲜 UID/RV、容器名、候选 image 与完整 args 五类 test 原子回滚 A5608。终态 generation/observed 325、current/update
 `a4657-tls-7d94b578fb`、3/3 Ready/updated/restart 0，模板恢复 outer digest
 `sha256:ad184a8792faf9b69f7c977f6571d79c2710185394fb5ebead59704efcb299df`、runtime 恢复
 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`，连接老化参数保持 `1h/5m`；独立
 PD/TiKV 3+3 Ready/restart 0，所有临时对象和三个 port-forward 清零。审计临时目录已移入系统回收站、可恢复，候选 archive 保留。
+
+随后补跑未放宽任何阈值的生产默认 900 轮。A5608 generation 325 基线、archive SHA-256 与 source/target 两个精确 runtime alias
+先重新验证，再以完整 UID/RV/image/args test 部署 source alias 至 generation 326。candidate runner 的 source capability preflight
+通过后滚到 target alias，最终 `ok/watch/direct_watch=900/900/900x3`、Snapshot 1、public/direct lease 均 alive；direct lease 跨
+17 次连接重建恢复，public TCP dial 2、每端 direct TCP dial 至少 2，RangeStream 166、stream retries 6、partial retries 0。
+Put、Watch-after-Put、direct、PD TSO、TiKV Region 最大延迟分别为 `1646/105/21131/27/6ms`，全部低于既有门限。两个 ordinal
+切换期间公共 Service 分别出现有界 `Unavailable` retry，但最终 fail=0；fixture keys/users/roles/leases 全零，probe/cleanup Pod 与 owner
+ConfigMap 全部 absent。随后用新鲜 generation 327 UID/RV/image/args test 回滚，当前终态 generation/observed 328、current/update
+`a4657-tls-7d94b578fb`、A5608 runtime `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`，
+KubeBrain/PD/TiKV 3+3+3 全部 Ready/restart 0，历次 A5618 临时对象均不存在。900 轮关闭生产默认发布门禁证据缺口，但不替代矩阵仍明确
+开放的数天级断线、连续滚动和慢消费者长稳。
 
 ## 提交规则
 
