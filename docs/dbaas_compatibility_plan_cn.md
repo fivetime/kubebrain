@@ -65264,6 +65264,56 @@ current/update `a4657-tls-6768fb4758`、3/3 Ready/updated、restart 0，三 Pod 
 候选 archive 保留。这关闭同一 leader 上多独立慢消费者默认容量下的透明 eviction/reopen P1，不代表主动
 compaction 竞态、数天断线或滚动更新长稳已完成。
 
+### A5614：主动 compaction 与 watch generation 恢复竞态闭环
+
+A5614 `d214144a522456cedf50da1925ba86327cd7c960` 对齐 upstream etcd
+`server/storage/mvcc/watchable_store.go` 的 unsynced watcher 语义：watcher 进入 synced 集合前会再次用
+`compactMainRev` 检查 `minRev`。KubeBrain 原先只在 durable history scan 前读取一次 compact watermark；若扫描被
+阻塞而另一副本在此期间提交更高 watermark，扫描仍可能返回已不可访问的历史。确定性修复前 RED 在物理 GC
+刻意不执行时返回了 2 条 stale event；修复在 exact-revision fast path 及所有 event-log/object history read 后再次
+读取共享 durable watermark，严格只拒绝 `fromRevision < compactRevision`，并以独立回归锁定
+`fromRevision == compactRevision` 仍可 watch。
+
+真实 memkv/Hub 跨层回归把 public Send 阻塞到超过 result buffer、fan-out buffer 与 ring，令 generation 被逐出；
+reopen scan 被 gate 后并发 Compact，最终只接受空 events、空 CancelReason 和权威 CompactRevision 的 canceled
+response。另修正 pre-probe 提前发现 compacted 时漏记 `watch_generation_recovery{outcome="compacted"}` 的指标路径。
+watch-soak 新增 `SLOW_CONSUMER_EXPECTED_OUTCOME=compacted`：写完并确认 pressure 后在最后 revision Compact，三路
+raw stream 只能收到 written events 的严格有序真前缀，随后必须以同一 revision 取消，不能在取消前声称收齐全量。
+
+backend、server、runner 的聚焦普通/race、完整 backend 普通/race、完整 runner 普通/race、全部
+`hack/dev/cmd/...` 普通/race/vet、server 普通三次独占复验及完整 server race `377.342s` 均 GREEN。首次把完整
+server 普通测试与其他重门禁并行运行时在 `146.433s` RED，但超大日志被截断；改为独占 JSON 复验后单次及
+`count=3` 共四次均通过，未隐去该资源压力现象。提交前 inventory 698=`169/193/177/159`；提交后四片分别为
+`252.759/445.522/298.714/508.670s`，全部 GREEN。
+
+候选 `kubebrain:a5614-d214144a` 版本 `0.0.0-d214144a5224`、构建时间 `2026-08-30T00:55:49Z`。OCI archive
+`/root/kubebrain-a5614-d214144a.oci.tar` 为 914,403,840 bytes，SHA-256
+`dd28d292e74344b7d1cfd2e7d8aef089e48392fa91cb0a5e791e284b70f3df44`；outer index/platform/config/attestation
+分别为 `sha256:4320297807fa2e846f75425a0fb0102af3a5421cfec4d56c5db8ad500beeb43a`、
+`sha256:6b0668089cc0147875be9142ff3195aa3cd49f37bee755156732dc01cc5fc836`、
+`sha256:99bda7ed65cd41617c1b84f51a9ed2725f51dd0c9bf30afffb7593fe406ca1c3`、
+`sha256:14d7ea13c184856ed668621fc0d240481e06c7ba7b2591110d6b7133a2827077`。78/78 closure、SBOM
+2,592 packages/8,096 relationships、provenance 3 materials、linux/amd64、USER `65532:65532`、labels、入口与运行版本
+均通过；Kind 三 Pod runtime 为 `sha256:2f63716295dd19c781219cf7a92f7d370b2fe0d87f94a658ee6405baa6a7564c`。
+首次按 outer digest 部署因 Kind 把导入 manifest 放在 `import-2026-08-30` 仓库名下而 ImagePullBackOff；以新
+UID/RV/current-image test 改用已导入唯一 tag 后 generation/observed 305、3/3 Ready/restart 0，未把该 Kind
+解析限制记作应用 GREEN。
+
+直连 `a4657-tls-1` leader 的最终轮使用 1 个正常 watcher、3 个独立 raw 慢 watcher、220,000 Put、并发 64；
+写入 56m33.277s，revision `949204..1169203` 精确连续，随后在 `1169203` 主动 Compact。正常 watcher 收齐全部
+事件，三路慢 watcher 都只收到严格有序真前缀后以 CompactRevision `1169203` 取消；owned 指标精确为 slow
+`catch_up/recovered/dropped=3/0/3`、generation `retry/recovered/compacted/failed=0/0/3/0`。整个进程
+80m35.850s exit 0，约 24m03s exact-key 清理无 retry/error，同 RUN_ID cleanup-only 再验 CountOnly=0 并 exit 0。
+首次 runner 命令因宿主没有 `/usr/bin/time` 在执行测试前 exit 127；第二次又把 Pod client target 误写为 2379，
+首次请求前转发失败，revision 未变化；改为真实 3379 后同一 runner 正常开始写入，两者均如实排除在产品证据外。
+
+凭据仅由相互独立的 `/dev/fd` 进程替换提供，无凭据/诊断文件落盘，也未创建临时 Kubernetes 对象；三个存活
+port-forward 最终 Ctrl-C exit 0，短连接关闭的本地 broken pipe 没有对应 RPC/oracle 失败，六端口归零。以 RV
+`7434279` 及 UID/container/candidate image 四重 test 回滚 A5608 后，generation/observed 306、current/update
+`a4657-tls-6768fb4758`、3/3 Ready/restart 0，runtime 恢复
+`sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；PD/TiKV 各 3/3 Ready/restart 0。
+候选 archive 保留。该轮关闭主动 compaction 与 watch generation 恢复竞态 P1；数天断线与滚动更新长稳仍开放。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

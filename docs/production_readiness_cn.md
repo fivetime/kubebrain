@@ -9180,3 +9180,42 @@ A5608；终态 generation/observed 303、current/update `a4657-tls-6768fb4758`�
 runtime 恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`，PD/TiKV 各 3/3
 Ready/restart 0。候选 archive 保留。该轮关闭同一 leader 上多独立慢消费者的默认容量 eviction/reopen P1；
 主动 compaction 竞态、数天断线与滚动更新长稳仍保持开放。
+
+### A5614：主动 compaction 的 watch 终态生产实证
+
+A5614 `d214144a522456cedf50da1925ba86327cd7c960` 修复 history scan 与并发 Compact 的线性化缺口。
+upstream etcd 在 unsynced watcher 转 synced 前会重新比较 `minRev` 与 `compactMainRev`；KubeBrain 现在同样在
+exact-revision fast path 和全部 durable history read 后重读共享 compact watermark，只拒绝严格更旧的起点。
+确定性修复前 RED 返回 2 条已 compacted 的 stale event；边界回归同时证明
+`fromRevision == compactRevision` 仍可 watch。真实 memkv/Hub 跨层测试覆盖慢 generation 被逐出、reopen scan
+阻塞期间 Compact、权威 canceled response，并补齐 pre-probe compacted 指标。watch-soak 的 compacted 模式要求
+raw stream 只能返回 written events 的严格有序真前缀，再以最后 written revision 取消。
+
+聚焦普通/race、完整 backend 普通/race、完整 runner 普通/race、全部 `hack/dev/cmd/...` 普通/race/vet、server
+普通四次独占复验与完整 server race `377.342s` 均 GREEN。首次并行重门禁的 server 普通测试在 `146.433s` RED
+且日志被截断，独占单次及 `count=3` 未复现，如实保留为宿主资源压力记录。提交前 inventory
+698=`169/193/177/159`；提交后四片 `252.759/445.522/298.714/508.670s` 全绿。
+
+OCI archive `/root/kubebrain-a5614-d214144a.oci.tar` 为 914,403,840 bytes，SHA-256
+`dd28d292e74344b7d1cfd2e7d8aef089e48392fa91cb0a5e791e284b70f3df44`。outer index/platform/config/attestation 为
+`sha256:4320297807fa2e846f75425a0fb0102af3a5421cfec4d56c5db8ad500beeb43a`/
+`sha256:6b0668089cc0147875be9142ff3195aa3cd49f37bee755156732dc01cc5fc836`/
+`sha256:99bda7ed65cd41617c1b84f51a9ed2725f51dd0c9bf30afffb7593fe406ca1c3`/
+`sha256:14d7ea13c184856ed668621fc0d240481e06c7ba7b2591110d6b7133a2827077`；78/78 closure、SBOM
+2,592 packages/8,096 relationships、provenance 3 materials、TiKV/linux-amd64、UID/GID 65532、完整 SHA/labels/入口/
+运行版本均通过，Kind runtime 为 `sha256:2f63716295dd19c781219cf7a92f7d370b2fe0d87f94a658ee6405baa6a7564c`。
+首次用 outer digest 部署因 Kind 导入仓库名不同而 ImagePullBackOff；用新 UID/RV/current-image test 切换到已导入
+唯一 tag 后 3/3 Ready/restart 0，该环境限制未计作产品结果。
+
+最终直连 `a4657-tls-1` leader：1 个正常 watcher、3 个独立 raw 慢 watcher、220,000 Put、并发 64，写入
+56m33.277s，revision `949204..1169203` 精确连续；在 `1169203` 主动 Compact 后正常 watcher 收齐全部，三路慢
+watcher 都以同一 CompactRevision 结束且只含严格有序真前缀。slow 指标为
+`catch_up/recovered/dropped=3/0/3`，generation 为 `retry/recovered/compacted/failed=0/0/3/0`。总进程
+80m35.850s exit 0，约 24m03s exact-key cleanup 后同 RUN_ID cleanup-only 再验 CountOnly=0。宿主缺少
+`/usr/bin/time` 的首次命令在测试前 exit 127；首次 client port-forward 又误指 2379、在 revision 未变化时失败，改为
+实际 3379 后才开始有效运行，均未混入 GREEN 证据。
+
+凭据仅经独立 `/dev/fd` 提供，无凭据/诊断文件落盘、无临时 Kubernetes 对象；六端口最终无监听。以 UID/RV/
+container/image 四重 test 回滚后，A5608 generation/observed 306、current/update `a4657-tls-6768fb4758`、3/3
+Ready/restart 0，runtime `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；
+PD/TiKV 各 3/3 Ready/restart 0。主动 compaction 与 generation 恢复竞态 P1 已关闭；数天断线和滚动更新长稳仍开放。
