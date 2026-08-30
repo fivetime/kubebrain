@@ -1702,6 +1702,9 @@ compact revision 不得大于同一响应的 hash revision；该项适合冻结�
 可用于升级、恢复、网络策略或证书轮换前后的快速数据面存活门禁；
 它不能替代 `validate-production-release.sh` 的完整组合 release gate，也不能替代写入、lease、watch
 或恢复正确性演练。
+HashKV raft term 一旦在任一 endpoint 返回就必须覆盖全部 endpoint；当同轮 Status 已报告 raft term 时，
+每个 HashKV 响应都必须报告正整数 term，且全体唯一值必须与 Status 精确一致。缺失或部分覆盖不能通过
+省略 `raft_terms_match=true` 降级为成功证据。
 启用 Status 校验时，脚本还会读取 HTTP gRPC-gateway 的 `/v3/maintenance/status`、
 `/v3/auth/status`、`/v3/maintenance/alarm`、client 口 `/version` 以及从 `READYZ_URL`
 推导出的 info 口 `/version`：

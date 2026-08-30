@@ -66046,6 +66046,43 @@ alice client certificate，在最早的只读 prefix count 处精确返回 Permi
 3+3+3 Ready/restart 0，六个诊断端口无监听，宿主剩余约 320 GiB。client port-forward 在短连接关闭时记录本地 broken pipe，完整 gate
 及 Pod 日志无对应 RPC 错误。A5635 关闭“相同 endpoint/member 集合掩盖 HashKV 响应跨成员置换”的发布证据身份缺口。
 
+### A5636：Status 已定界时要求 HashKV raft term 完整覆盖
+
+只读 gate 原先只在 HashKV response header 自愿携带 raft term 时验证正整数并与 Status 比较；若所有 HashKV header 都省略 term，摘要仍可
+整体 GREEN，却不会输出 `hashkv_raft_terms` 或 `raft_terms_match=true`。对照
+`/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::HashKV` 与 `api/v3rpc/header.go::fillWithoutRevision`，upstream 在成功
+HashKV 返回前无条件从当前 server 写入 `RaftTerm`；KubeBrain unary response header interceptor 同样通过 `responseRaftTerm` 为成功响应
+填充该字段。因此 Status 已报告 term 时，缺失 HashKV term 不是应兼容的旧格式，而是无法证明本次跨 RPC 观察边界的畸形成功响应。
+
+增强 gate 现在统计 HashKV term 出现数：同轮 Status 有 term 时必须覆盖全部 HashKV endpoint；即使 Status 没有 term，只要任一 HashKV
+带 term，也禁止部分覆盖。全部 term 仍须是正 JSON integer，随后由既有逻辑要求唯一值与 Status 精确一致。确定性 RED 使用 Status
+header/body term 8 和同 revision/hash/member/endpoint、但完全省略 term 的 HashKV；旧 gate 整体 GREEN 且静默缺少 term-match 证据，
+新 gate 精确拒绝 `hashkv raft term must be present on all endpoints when Status reports raft term`。另一个双 endpoint 负例固定仅一端返回
+term，防止部分响应借可选字段路径混入摘要。
+
+首次完整聚焦普通/race 同步在两项 post-Hash metrics fixture 触发新门禁：它们的 Status 已带 term 8，却沿用无 term 的默认 HashKV
+成功响应；两项都精确失败于新覆盖要求，没有被冒充产品回归。只给这两个 fixture 补入同一 term 8、保持原 metrics 正负断言不变后，
+完整聚焦普通/race 分别为 `103.947s/106.998s`；Go vet、gofmt、shell syntax、diff check 与固定 digest 的
+`koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
+
+代码提交 `49b46a5aa568eddbfe6ca58770223c8af64869f4` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`261.360/459.043/311.793/537.087s`，全部 GREEN。
+
+真实独立三 PD/三 TiKV 门禁继续复用 A5629 runtime
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`，经五重 StatefulSet test 部署为
+generation 358，三 Pod Ready/restart 0。完整 gate 的 Status 与全部三端 HashKV 都报告 term `888`，新门禁实际输出
+`hashkv_raft_terms=888, raft_terms_match=true`；cluster ID `7662961163671170154`、members
+`1279320304/848842929/2985394290`、leader `2985394290`、revision/index/applied `1258096`、HashKV
+`3680408421`、compact revision `1169203` 继续一致。脚本动态选择 leader info
+`https://127.0.0.1:18081/metrics`、identity `b1f18072`，endpoint/member 映射、Status 前后围栏、gateway 预期拒绝、版本、debug/pprof
+和全部 metrics 均 GREEN。候选窗口日志无 panic/fatal/data corruption/context deadline/TiKV/PD error；CA/cert/key/curl wrapper
+仍只存在于四个独立匿名 memfd，没有凭据或诊断文件落盘，也未创建临时 Kubernetes 对象。
+
+最后以新鲜五重 test 回滚稳定 digest。终态 generation/observed 359、current/update `a4657-tls-7d94b578fb`，三 Pod runtime
+恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV
+3+3+3 Ready/restart 0，六个诊断端口无监听，宿主剩余约 320 GiB。A5636 关闭省略全部或部分 HashKV term 即可绕过跨 RPC
+任期一致性证据的问题。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
