@@ -16,13 +16,21 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"math/big"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -30,6 +38,9 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -64,6 +75,91 @@ func TestConfigFromEnvironment(t *testing.T) {
 	require.False(t, cfg.slowConsumer)
 	require.Zero(t, cfg.slowConsumers)
 	require.Equal(t, slowConsumerExpectedRecovered, cfg.slowConsumerExpectedOutcome)
+}
+
+func TestSignalCancellationRunsDeferredCleanup(t *testing.T) {
+	const helperEnvironment = "WATCH_SOAK_SIGNAL_HELPER"
+	if os.Getenv(helperEnvironment) == "true" {
+		ctx, stop := processContext()
+		defer stop()
+		err := runWithTimeout(ctx, time.Hour, func(runCtx context.Context) (retErr error) {
+			defer fmt.Println("deferred cleanup executed")
+			if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+				return fmt.Errorf("send SIGTERM: %w", err)
+			}
+			select {
+			case <-runCtx.Done():
+				return context.Cause(runCtx)
+			case <-time.After(5 * time.Second):
+				return errors.New("SIGTERM did not cancel the watch-soak context")
+			}
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("signal cancellation error = %v, want context.Canceled", err)
+		}
+		fmt.Println("signal cancellation observed")
+		return
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=^TestSignalCancellationRunsDeferredCleanup$")
+	command.Env = append(os.Environ(), helperEnvironment+"=true")
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "deferred cleanup executed")
+	require.Contains(t, string(output), "signal cancellation observed")
+}
+
+func TestNewEtcdClientHonorsExplicitTLSServerName(t *testing.T) {
+	const serverName = "watch-soak.test"
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	certificateTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: serverName},
+		DNSNames:              []string{serverName},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, certificateTemplate, certificateTemplate,
+		privateKey.Public(), privateKey)
+	require.NoError(t, err)
+	certificate, err := x509.ParseCertificate(certificateDER)
+	require.NoError(t, err)
+	roots := x509.NewCertPool()
+	roots.AddCert(certificate)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{{Certificate: [][]byte{certificateDER}, PrivateKey: privateKey}},
+	})))
+	serveErrors := make(chan error, 1)
+	go func() { serveErrors <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		require.NoError(t, <-serveErrors)
+	})
+
+	client, err := newEtcdClient(config{
+		endpoint: listener.Addr().String(), timeout: 5 * time.Second, tlsServerName: serverName,
+	}, &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: serverName})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	connection := client.ActiveConnection()
+	connection.Connect()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for connection.GetState() != connectivity.Ready {
+		state := connection.GetState()
+		if !connection.WaitForStateChange(ctx, state) {
+			t.Fatalf("client did not complete TLS handshake using explicit server name: state=%s err=%v",
+				connection.GetState(), context.Cause(ctx))
+		}
+	}
 }
 
 func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {

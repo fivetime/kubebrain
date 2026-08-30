@@ -23,17 +23,20 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
 )
 
 // Each normal or raw slow watcher retains one (event index, revision) pair per
@@ -101,6 +104,9 @@ type putEventFunc func(context.Context, string, string) (*clientv3.PutResponse, 
 type etcdClientFactory func() (*clientv3.Client, error)
 
 func main() {
+	processCtx, stop := processContext()
+	defer stop()
+
 	cfg, err := configFromEnvironment()
 	if err != nil {
 		log.Fatal(err)
@@ -116,11 +122,29 @@ func main() {
 	}
 	defer client.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
-	defer cancel()
-	if err := run(ctx, client, cfg, clientFactory); err != nil {
+	if err := runWithTimeout(processCtx, cfg.timeout, func(ctx context.Context) error {
+		return run(ctx, client, cfg, clientFactory)
+	}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func processContext() (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// Restore the default signal behavior after the first signal. The first one
+	// enters run's bounded exact-prefix cleanup; a second one can still force an
+	// exit if an external dependency prevents that cleanup from completing.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
+}
+
+func runWithTimeout(parent context.Context, timeout time.Duration, run func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	return run(ctx)
 }
 
 func configFromEnvironment() (config, error) {
@@ -290,9 +314,17 @@ func newEtcdClient(cfg config, tlsConfig *tls.Config) (*clientv3.Client, error) 
 	if tlsConfig != nil {
 		clientTLS = tlsConfig.Clone()
 	}
+	var dialOptions []grpc.DialOption
+	if cfg.tlsServerName != "" {
+		// The etcd resolver assigns every endpoint its own ServerName. In recent
+		// gRPC versions that address-level value takes precedence over
+		// tls.Config.ServerName unless the caller supplies an explicit authority.
+		dialOptions = append(dialOptions, grpc.WithAuthority(cfg.tlsServerName))
+	}
 	return clientv3.New(clientv3.Config{
 		Endpoints:   []string{cfg.endpoint},
 		DialTimeout: min(10*time.Second, cfg.timeout),
+		DialOptions: dialOptions,
 		TLS:         clientTLS,
 		Username:    cfg.username,
 		Password:    cfg.password,
@@ -327,7 +359,11 @@ func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), cfg.cleanupTimeout)
 		defer cancel()
-		retErr = errors.Join(retErr, cleanupPrefix(cleanupCtx, client, prefix))
+		cleanupErr := cleanupPrefix(cleanupCtx, client, prefix)
+		if cleanupErr == nil {
+			fmt.Printf("Watch soak cleanup completed: prefix=%s\n", prefix)
+		}
+		retErr = errors.Join(retErr, cleanupErr)
 	}()
 
 	startRevision := preflight.Header.Revision + 1
