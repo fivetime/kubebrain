@@ -66065,6 +66065,21 @@ term，防止部分响应借可选字段路径混入摘要。
 完整聚焦普通/race 分别为 `103.947s/106.998s`；Go vet、gofmt、shell syntax、diff check 与固定 digest 的
 `koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
 
+代码提交 `cb4a35a3294b3678043cd56ad05f6c24d1af7e8e` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`254.280/445.663/299.352/533.315s`，全部 GREEN。
+
+真实验证继续使用 auth-disabled `kubebrain` 三副本，不滚动或修改数据面。StatefulSet 全程保持 generation/observed 659、revision
+`kubebrain-9b9965dc9`、runtime `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`，三 Pod
+Ready/restart 0。三组独立 client/info port-forward 上完整只读 gate GREEN，实际输出
+`gateway_endpoint_raft_term=195, gateway_endpoint_raft_terms_match=true`；direct Status/HashKV 三端也都是 term `195`，cluster ID
+`7662961163671170154`、members `4034353177/2393892952/231094427`、leader `2393892952`、revision/index/applied
+`65743`、HashKV `4283180840`、compact revision `44329` 保持一致。独立 curl 再次逐项读取 Status、AuthStatus、Alarm、Hash、HashKV，
+五个 response header 都精确为 `(member=4034353177, term=195)`。
+
+验证窗口 Pod 日志无 panic/fatal/data corruption/context deadline/TiKV/PD error。终态仍为同一 generation/revision/runtime，
+KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口无监听；本轮没有集群 mutation，故无需 rollback。A5638 关闭 gateway
+任期漂移或省略 header term 仍可被拼成发布 GREEN 的问题。
+
 代码提交 `49b46a5aa568eddbfe6ca58770223c8af64869f4` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
 `261.360/459.043/311.793/537.087s`，全部 GREEN。
 
@@ -66118,6 +66133,29 @@ Status/HashKV 身份及 term 也全部一致。独立 curl 复核 Status、AuthS
 验证窗口 Pod 日志无 panic/fatal/data corruption/context deadline/TiKV/PD error。终态仍为相同 generation/revision/runtime，
 KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口无监听；由于没有集群 mutation，不存在需要伪造的 rollback。A5637 关闭把
 另一健康成员的 gateway Maintenance header 拼入当前 ENDPOINT 发布证据的问题。
+
+### A5638：闭合 HTTP gateway Maintenance 的 raft-term 链
+
+A5637 已把五类 gateway header 绑定到同一 serving member，但任期证据仍有两个可绕过点：gateway Status 只比较自身 header/body term，
+不与 direct Status term 对账；AuthStatus、Alarm、Hash、HashKV 则仅在 header term 存在时才校验，完全省略即可跳过。旧 gate 因而能在
+同一摘要中同时输出 direct `status_raft_terms=8` 与 gateway `gateway_raft_term=9` 并 GREEN，也能接受无 term 的 gateway HashKV。
+对照 `/root/etcd/server/etcdserver/api/v3rpc/header.go::fillWithoutRevision`，每个成功 response header 都无条件写入当前 server term；
+KubeBrain unary header interceptor 同样在发送成功响应前调用 `responseRaftTerm`，缺失字段不是合法兼容 fallback。
+
+正常 gateway 成功模式现在要求 Status header/body term 都是正整数且相等；direct Status 已报告 term 时，gateway Status 还必须与之相等。
+AuthStatus、Alarm、Hash、HashKV header term 全部改为必选正整数，并逐项等于 gateway Status term；HashKV 同时继续与三端 etcdctl HashKV
+唯一 term 对账。完整成功摘要新增 `gateway_endpoint_raft_term=<n>, gateway_endpoint_raft_terms_match=true`。预期 HTTP 400 模式没有
+成功 header，仍不伪称建立任期链。
+
+第一项确定性 RED 让 direct Status term 为 8、gateway Status header/body 同为 9，旧 gate 错误整体 GREEN，新 gate 精确拒绝
+`status/gateway status raft term mismatch`。第二项保持 direct Status/HashKV term 8 及全部 revision/hash/member 正确，只从 gateway
+HashKV header 删除 term；旧 gate 仍 GREEN，新 gate 拒绝 `gateway hashkv raft term must be positive`。另四个负例分别删除 gateway
+Status、AuthStatus、Alarm、Hash 的 header term，固定整条链没有可选缺口。
+
+首次完整聚焦普通/race 同步发现 10 个旧 fixture 省略新必选 term：四个 Auth/Alarm envelope、两个 Status index 成功路径和四个
+gateway HashKV hash/compact 路径都精确先失败于新 term 门禁。只给这些 fixture 补入与其 gateway Status 相同的 term 8、保持原断言
+目标不变后，完整聚焦普通/race 分别为 `113.700s/114.975s`；Go vet、gofmt、shell syntax、diff check 与固定 digest 的
+`koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
 
 ## 提交规则
 
