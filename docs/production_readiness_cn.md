@@ -1400,9 +1400,12 @@ scrape 指向同一执行 member；scrape follower 看不到 leader backend 的 
 生产多副本门禁应设置与 `STATUS_ENDPOINTS` 同序、同数量的 `INFO_ENDPOINTS`，每项是对应 member
 不含 path/query/fragment 的 HTTP(S) info base URL。脚本要求全部 Status 响应报告同一个正 leader ID，
 将该 ID 唯一匹配到 member ID 后按数组位置选择 info `/metrics`，并再次要求所抓指标的
-`etcd_server_is_leader=1`；数量不等、空项、规范化后重复、非法 URL、leader 缺失/分歧/不属于成员集合
+`etcd_server_is_leader=1`；选中 scrape 还必须恰有一条 value=1 的 `etcd_server_id`，其小写十六进制
+`server_id` 必须精确等于 Status 十进制 leader ID，避免把另一集群的健康 leader 指标拼入本次发布证据。
+数量不等、空项、规范化后重复、非法 URL、leader 缺失/分歧/不属于成员集合，或 server identity 缺失/重复/错值
 均 fail closed。未设置 `INFO_ENDPOINTS` 时继续从 `READYZ_URL` 推导 `/metrics`，仅用于已经显式对齐
-info 实例的旧调用或单成员实例。通过摘要会输出实际选择的 `info_metrics_endpoint=<url>/metrics`。
+info 实例的旧调用或单成员实例。通过摘要会输出实际选择的 `info_metrics_endpoint=<url>/metrics` 和
+`info_metrics_server_id=<hex>`。
 A5629 在独立三 PD/三 TiKV 上以 leader 对齐的完整只读 gate 验证
 `range_duration_metrics=ok`，同时保持三 member Status/HashKV、gateway client-cert-auth 拒绝与全部
 info metrics 对账 GREEN。

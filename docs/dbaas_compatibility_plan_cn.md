@@ -65898,6 +65898,24 @@ memfd。
 恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV
 3+3+3 Ready/restart 0，六个诊断端口无监听。A5631 关闭“声明 60 秒探针预算、etcdctl 却在 2/5 秒内部先行失败”的发布假阴性。
 
+### A5632：将 leader info metrics 绑定到 Status member 身份
+
+A5630 已根据 Status leader 选择同位置 info endpoint，并要求 scrape 自报 `etcd_server_is_leader=1`；但这仍不能证明该 leader 属于
+本次 Status cluster。若 operator 把 `INFO_ENDPOINTS` 顺序误配到另一实例，而目标恰好也是健康 leader 且暴露完整指标，旧 gate 会把两套
+集群的 Status 与 metrics 拼成 GREEN。对照 `/root/etcd/server/etcdserver/server.go` 和 `metrics.go`，upstream
+`etcd_server_id{server_id}` 使用 `types.ID.String()` 输出 member ID 的小写十六进制，gauge value 对当前身份精确为 1；KubeBrain
+`pkg/server/etcd/maintenance.go` 同样以 `strconv.FormatUint(memberID, 16)` 发射。
+
+完整 info gate 现在把已达成一致的 Status 十进制 leader ID 转成小写十六进制，要求选中 scrape 恰有一条
+`etcd_server_id`，其 `server_id` 精确匹配且 value 精确为 1；缺失、重复、错误 label/value 或无法编码的 leader 均 fail closed。
+通过摘要新增 `info_metrics_server_id=<hex>`，与 `info_metrics_endpoint` 一起形成可审计映射。未配置 `INFO_ENDPOINTS` 的兼容 fallback
+不猜测 `READYZ_URL` 属于哪个 Status member，因此仍只做原有存在性检查。
+
+确定性 RED 使用 Status leader 789（hex `315`），选中 info endpoint 却返回完整且 `is_leader=1` 的
+`etcd_server_id{server_id="e3f"} 1`；旧 gate 错误整体 GREEN，修复后精确拒绝
+`expected exactly one etcd_server_id server_id=315 value=1`。另一负例放入两条完全正确的 `server_id="315"`，证明重复 identity
+不能经值去重伪装成唯一来源；成功 fixture 同时覆盖 `leaderId`/`memberId` camelCase 与 snake_case 混合 Status。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

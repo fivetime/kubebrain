@@ -199,6 +199,7 @@ for status_endpoint in "${status_endpoint_array[@]}"; do
 done
 info_metrics_url="${READYZ_URL%/readyz}/metrics"
 info_metrics_must_be_leader="0"
+expected_info_server_id_hex=""
 info_endpoint_array=()
 if [[ -n "$INFO_ENDPOINTS" ]]; then
   if [[ "$INFO_ENDPOINTS" == ,* || "$INFO_ENDPOINTS" == *, || "$INFO_ENDPOINTS" == *,,* ]]; then
@@ -284,6 +285,7 @@ expect_info_metrics_boundary() {
   local expected_server_version="$3"
   local expected_cluster_version="$4"
   local must_be_leader="$5"
+  local expected_server_id_hex="$6"
   local client_response
   local client_status_line
   local info_metrics
@@ -293,6 +295,7 @@ expect_info_metrics_boundary() {
   local raft_snapshot_metric
   local raft_snapshot_metric_values
   local is_leader_values
+  local server_identity_rows
 
   client_response="$(run_with_probe_timeout "$CURL" -sS -i "$client_metrics_url")"
   client_status_line="${client_response%%$'\n'*}"
@@ -321,6 +324,23 @@ expect_info_metrics_boundary() {
   if [[ "$info_metrics" != *"etcd_server_id{"* || "$info_metrics" != *"server_id=\""* ]]; then
     echo "info metrics mismatch: expected etcd_server_id server_id label" >&2
     exit 1
+  fi
+  if [[ -n "$expected_server_id_hex" ]]; then
+    server_identity_rows="$(awk '
+      $1 == "etcd_server_id" || index($1, "etcd_server_id{") == 1 {
+        metric = $1
+        if (match(metric, /server_id="[^"]+"/)) {
+          server_id = substr(metric, RSTART + 11, RLENGTH - 12)
+        } else {
+          server_id = "missing"
+        }
+        print server_id "\t" $2
+      }
+    ' <<<"$info_metrics")"
+    if [[ "$server_identity_rows" != "${expected_server_id_hex}"$'\t'"1" ]]; then
+      echo "info metrics server identity mismatch: expected exactly one etcd_server_id server_id=${expected_server_id_hex} value=1, got ${server_identity_rows//$'\n'/,}" >&2
+      exit 1
+    fi
   fi
   if [[ "$info_metrics" != *"grpc_server_handled_total{"* ]]; then
     echo "info metrics mismatch: expected grpc_server_handled_total" >&2
@@ -1482,6 +1502,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     fi
     info_metrics_url="${info_endpoint_array[$leader_status_index]%/}/metrics"
     info_metrics_must_be_leader="1"
+    if ! printf -v expected_info_server_id_hex '%x' "$status_leader_ids" 2>/dev/null; then
+      echo "INFO_ENDPOINTS leader selection could not encode Status leader ${status_leader_ids} as uint64 hexadecimal" >&2
+      exit 1
+    fi
   fi
   if ! [[ "$min_status_revision" =~ ^[0-9]+$ ]]; then
     echo "status revision must be non-negative, got ${min_status_revision}" >&2
@@ -1519,6 +1543,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ -n "$INFO_ENDPOINTS" ]]; then
     status_summary+=", info_metrics_endpoint=${info_metrics_url}"
+    status_summary+=", info_metrics_server_id=${expected_info_server_id_hex}"
   fi
   if [[ "$status_raft_terms" != "-" ]]; then
     status_summary+=", status_raft_terms=${status_raft_terms}"
@@ -1704,7 +1729,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     expect_response_headers "info version" "$info_version_url" "application/json" "0"
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
-    expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "$info_metrics_url" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version" "$info_metrics_must_be_leader"
+    expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "$info_metrics_url" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version" "$info_metrics_must_be_leader" "$expected_info_server_id_hex"
     status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, apply_duration_metrics=optional-ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, raft_snapshot_file_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
   fi
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then

@@ -417,10 +417,71 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
 				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.4:8080",
 				"FAKE_LEADER_INFO_METRICS_URL=http://172.18.0.4:8080/metrics",
-				"FAKE_LEADER_INFO_METRICS=" + defaultInfoMetrics(""),
+				"FAKE_LEADER_INFO_METRICS=" + strings.Replace(
+					defaultInfoMetrics(""),
+					`server_id="e3f"`,
+					`server_id="315"`,
+					1,
+				),
 			},
 			wantOK:     true,
 			wantOutput: "info_metrics_endpoint=http://172.18.0.4:8080/metrics",
+		},
+		{
+			name: "rejects selected leader info server identity mismatch",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":789,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":789,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}
+			]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"789","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.4:8080",
+				"FAKE_LEADER_INFO_METRICS_URL=http://172.18.0.4:8080/metrics",
+				"FAKE_LEADER_INFO_METRICS=" + defaultInfoMetrics(""),
+			},
+			wantOutput: "info metrics server identity mismatch: expected exactly one etcd_server_id server_id=315 value=1",
+		},
+		{
+			name: "rejects duplicate selected leader info server identity",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":789,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":789,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}
+			]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"789","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.4:8080",
+				"FAKE_LEADER_INFO_METRICS_URL=http://172.18.0.4:8080/metrics",
+				"FAKE_LEADER_INFO_METRICS=" + strings.Replace(
+					defaultInfoMetrics(""),
+					`etcd_server_id{cluster="default",server_id="e3f"} 1`,
+					"etcd_server_id{cluster=\"default\",server_id=\"315\"} 1\n"+
+						`etcd_server_id{cluster="default",server_id="315"} 1`,
+					1,
+				),
+			},
+			wantOutput: "info metrics server identity mismatch: expected exactly one etcd_server_id server_id=315 value=1",
 		},
 		{
 			name: "rejects selected info endpoint that no longer reports leader",
@@ -444,7 +505,12 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.4:8080",
 				"FAKE_LEADER_INFO_METRICS_URL=http://172.18.0.4:8080/metrics",
 				"FAKE_LEADER_INFO_METRICS=" + strings.Replace(
-					defaultInfoMetrics(""),
+					strings.Replace(
+						defaultInfoMetrics(""),
+						`server_id="e3f"`,
+						`server_id="315"`,
+						1,
+					),
 					"etcd_server_is_leader{cluster=\"default\"} 1\n",
 					"etcd_server_is_leader{cluster=\"default\"} 0\n",
 					1,
@@ -5246,6 +5312,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"http_header_checks=ok",
 		"info_metrics=ok",
 		"info_metrics_endpoint=<url>/metrics",
+		"info_metrics_server_id=<hex>",
 		"client_metrics=404",
 		"server_identity_metrics=ok",
 		"grpc_metrics=ok",
