@@ -43,6 +43,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
+	grpcstats "google.golang.org/grpc/stats"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -55,6 +56,7 @@ func setValidEnvironment(t *testing.T) {
 	t.Setenv("CLEANUP_TIMEOUT_SECONDS", "300")
 	t.Setenv("WRITE_INTERVAL", "100ms")
 	t.Setenv("WRITE_CONCURRENCY", "1")
+	t.Setenv("MIN_TRANSPORT_RECONNECTS", "0")
 	t.Setenv("RUN_ID", "watch-soak-test")
 	t.Setenv("CLEANUP_ONLY", "false")
 	t.Setenv("SLOW_CONSUMER", "false")
@@ -73,6 +75,7 @@ func TestConfigFromEnvironment(t *testing.T) {
 	require.Equal(t, "watch-soak-test", cfg.runID)
 	require.Equal(t, 300*time.Second, cfg.cleanupTimeout)
 	require.Equal(t, 1, cfg.writeConcurrency)
+	require.Zero(t, cfg.minimumTransportReconnects)
 	require.False(t, cfg.cleanupOnly)
 	require.False(t, cfg.slowConsumer)
 	require.Zero(t, cfg.slowConsumers)
@@ -146,9 +149,10 @@ func TestNewEtcdClientHonorsExplicitTLSServerName(t *testing.T) {
 		require.NoError(t, <-serveErrors)
 	})
 
+	connectionTracker := &transportConnectionTracker{}
 	client, err := newEtcdClient(config{
 		endpoint: listener.Addr().String(), timeout: 5 * time.Second, tlsServerName: serverName,
-	}, &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: serverName})
+	}, &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: serverName}, connectionTracker)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	connection := client.ActiveConnection()
@@ -162,6 +166,26 @@ func TestNewEtcdClientHonorsExplicitTLSServerName(t *testing.T) {
 				connection.GetState(), context.Cause(ctx))
 		}
 	}
+	require.EqualValues(t, 1, connectionTracker.connectionCount())
+}
+
+func TestTransportReconnectAccountingStartsAfterCreatedBarrier(t *testing.T) {
+	tracker := &transportConnectionTracker{}
+	tracker.HandleConn(context.Background(), &grpcstats.ConnBegin{Client: false})
+	require.Zero(t, tracker.connectionCount(), "server-side events must not count as client connections")
+	tracker.HandleConn(context.Background(), &grpcstats.ConnBegin{Client: true})
+	baseline := tracker.connectionCount()
+	tracker.HandleConn(context.Background(), &grpcstats.ConnEnd{Client: true})
+	tracker.HandleConn(context.Background(), &grpcstats.ConnBegin{Client: true})
+	tracker.HandleConn(context.Background(), &grpcstats.ConnBegin{Client: true})
+
+	reconnects, err := validateTransportReconnects(2, baseline, tracker.connectionCount())
+	require.NoError(t, err)
+	require.EqualValues(t, 2, reconnects)
+	_, err = validateTransportReconnects(3, baseline, tracker.connectionCount())
+	require.ErrorContains(t, err, "observed 2 transport reconnects after Created barrier, require at least 3")
+	_, err = validateTransportReconnects(0, 0, 0)
+	require.ErrorContains(t, err, "invalid transport connection accounting")
 }
 
 func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
@@ -182,6 +206,15 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 		"excessive write concurrency": {mutate: func(t *testing.T) {
 			t.Setenv("WRITE_CONCURRENCY", "1025")
 		}, want: "WRITE_CONCURRENCY must be"},
+		"negative minimum reconnects": {mutate: func(t *testing.T) {
+			t.Setenv("MIN_TRANSPORT_RECONNECTS", "-1")
+		}, want: "MIN_TRANSPORT_RECONNECTS must be"},
+		"noncanonical minimum reconnects": {mutate: func(t *testing.T) {
+			t.Setenv("MIN_TRANSPORT_RECONNECTS", "01")
+		}, want: "MIN_TRANSPORT_RECONNECTS must be"},
+		"excessive minimum reconnects": {mutate: func(t *testing.T) {
+			t.Setenv("MIN_TRANSPORT_RECONNECTS", "1000001")
+		}, want: "MIN_TRANSPORT_RECONNECTS must be"},
 		"unsafe run ID":             {mutate: func(t *testing.T) { t.Setenv("RUN_ID", "../shared") }, want: "RUN_ID must be"},
 		"invalid cleanup-only flag": {mutate: func(t *testing.T) { t.Setenv("CLEANUP_ONLY", "1") }, want: "CLEANUP_ONLY must be"},
 		"partial TLS identity":      {mutate: func(t *testing.T) { t.Setenv("ETCD_CERT_FILE", "client.crt") }, want: "must be set together"},
@@ -422,6 +455,8 @@ func TestWrapperRequiresExplicitMutationApprovalAndUsesRepositoryCommand(t *test
 	require.Contains(t, text, `CLEANUP_TIMEOUT_SECONDS="${CLEANUP_TIMEOUT_SECONDS:-300}"`)
 	require.Contains(t, text, `WRITE_CONCURRENCY="${WRITE_CONCURRENCY:-1}"`)
 	require.Contains(t, text, `WRITE_CONCURRENCY="$WRITE_CONCURRENCY"`)
+	require.Contains(t, text, `MIN_TRANSPORT_RECONNECTS="${MIN_TRANSPORT_RECONNECTS:-0}"`)
+	require.Contains(t, text, `MIN_TRANSPORT_RECONNECTS="$MIN_TRANSPORT_RECONNECTS"`)
 	require.Contains(t, text, `CLEANUP_ONLY="${CLEANUP_ONLY:-false}"`)
 	require.Contains(t, text, `CLEANUP_ONLY="$CLEANUP_ONLY"`)
 	require.Contains(t, text, `SLOW_CONSUMER="${SLOW_CONSUMER:-false}"`)
@@ -451,6 +486,7 @@ func TestWrapperForwardsSIGTERMAndWaitsForRunner(t *testing.T) {
 		"CLEANUP_TIMEOUT_SECONDS=5",
 		"WRITE_INTERVAL=0s",
 		"WRITE_CONCURRENCY=1",
+		"MIN_TRANSPORT_RECONNECTS=0",
 		"RUN_ID=wrapper-sigterm-test",
 		"CLEANUP_ONLY=false",
 		"SLOW_CONSUMER=false",

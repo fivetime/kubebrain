@@ -37,6 +37,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
+	grpcstats "google.golang.org/grpc/stats"
 )
 
 // Each normal or raw slow watcher retains one (event index, revision) pair per
@@ -70,6 +71,7 @@ type config struct {
 	cleanupTimeout              time.Duration
 	writeInterval               time.Duration
 	writeConcurrency            int
+	minimumTransportReconnects  int
 	runID                       string
 	cleanupOnly                 bool
 	slowConsumer                bool
@@ -103,6 +105,30 @@ type eventObservation struct {
 type putEventFunc func(context.Context, string, string) (*clientv3.PutResponse, error)
 type etcdClientFactory func() (*clientv3.Client, error)
 
+type transportConnectionTracker struct {
+	connections atomic.Int64
+}
+
+func (*transportConnectionTracker) TagRPC(ctx context.Context, _ *grpcstats.RPCTagInfo) context.Context {
+	return ctx
+}
+
+func (*transportConnectionTracker) HandleRPC(context.Context, grpcstats.RPCStats) {}
+
+func (*transportConnectionTracker) TagConn(ctx context.Context, _ *grpcstats.ConnTagInfo) context.Context {
+	return ctx
+}
+
+func (tracker *transportConnectionTracker) HandleConn(_ context.Context, event grpcstats.ConnStats) {
+	if begin, ok := event.(*grpcstats.ConnBegin); ok && begin.Client {
+		tracker.connections.Add(1)
+	}
+}
+
+func (tracker *transportConnectionTracker) connectionCount() int64 {
+	return tracker.connections.Load()
+}
+
 func main() {
 	processCtx, stop := processContext()
 	defer stop()
@@ -116,15 +142,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	clientFactory := func() (*clientv3.Client, error) { return newEtcdClient(cfg, tlsConfig) }
-	client, err := clientFactory()
+	connectionTracker := &transportConnectionTracker{}
+	clientFactory := func() (*clientv3.Client, error) { return newEtcdClient(cfg, tlsConfig, nil) }
+	client, err := newEtcdClient(cfg, tlsConfig, connectionTracker)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer client.Close()
 
 	if err := runWithTimeout(processCtx, cfg.timeout, func(ctx context.Context) error {
-		return run(ctx, client, cfg, clientFactory)
+		return run(ctx, client, cfg, clientFactory, connectionTracker)
 	}); err != nil {
 		log.Fatal(err)
 	}
@@ -158,6 +185,10 @@ func configFromEnvironment() (config, error) {
 		return config{}, err
 	}
 	writeConcurrency, err := positiveInt("WRITE_CONCURRENCY", 1024)
+	if err != nil {
+		return config{}, err
+	}
+	minimumTransportReconnects, err := nonNegativeInt("MIN_TRANSPORT_RECONNECTS", 1_000_000)
 	if err != nil {
 		return config{}, err
 	}
@@ -250,7 +281,8 @@ func configFromEnvironment() (config, error) {
 		endpoint: endpoint, watchers: watchers, events: events,
 		timeout:        time.Duration(timeoutSeconds) * time.Second,
 		cleanupTimeout: time.Duration(cleanupTimeoutSeconds) * time.Second,
-		writeInterval:  writeInterval, writeConcurrency: writeConcurrency, runID: runID, cleanupOnly: cleanupOnly,
+		writeInterval:  writeInterval, writeConcurrency: writeConcurrency,
+		minimumTransportReconnects: minimumTransportReconnects, runID: runID, cleanupOnly: cleanupOnly,
 		slowConsumer: slowConsumer, slowConsumers: slowConsumers, requireSlowConsumerOutcomes: requireOutcomes,
 		slowConsumerExpectedOutcome: expectedOutcome, infoEndpoint: infoEndpoint,
 		caFile: os.Getenv("ETCD_CA_FILE"), certFile: certFile, keyFile: keyFile,
@@ -276,6 +308,15 @@ func positiveInt(name string, maximum int) (int, error) {
 	value, err := strconv.ParseInt(text, 10, 64)
 	if err != nil || value < 1 || value > int64(maximum) || strconv.FormatInt(value, 10) != text {
 		return 0, fmt.Errorf("%s must be a canonical positive integer no greater than %d: %q", name, maximum, text)
+	}
+	return int(value), nil
+}
+
+func nonNegativeInt(name string, maximum int) (int, error) {
+	text := os.Getenv(name)
+	value, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || value < 0 || value > int64(maximum) || strconv.FormatInt(value, 10) != text {
+		return 0, fmt.Errorf("%s must be a canonical non-negative integer no greater than %d: %q", name, maximum, text)
 	}
 	return int(value), nil
 }
@@ -310,7 +351,7 @@ func loadTLSConfig(cfg config) (*tls.Config, error) {
 // consumer owns an independent gRPC connection without reopening credential
 // paths. This is required for /dev/fd process substitutions, which may only be
 // consumed once and must never be copied to persistent files.
-func newEtcdClient(cfg config, tlsConfig *tls.Config) (*clientv3.Client, error) {
+func newEtcdClient(cfg config, tlsConfig *tls.Config, connectionTracker *transportConnectionTracker) (*clientv3.Client, error) {
 	var clientTLS *tls.Config
 	if tlsConfig != nil {
 		clientTLS = tlsConfig.Clone()
@@ -322,6 +363,9 @@ func newEtcdClient(cfg config, tlsConfig *tls.Config) (*clientv3.Client, error) 
 		// tls.Config.ServerName unless the caller supplies an explicit authority.
 		dialOptions = append(dialOptions, grpc.WithAuthority(cfg.tlsServerName))
 	}
+	if connectionTracker != nil {
+		dialOptions = append(dialOptions, grpc.WithStatsHandler(connectionTracker))
+	}
 	return clientv3.New(clientv3.Config{
 		Endpoints:   []string{cfg.endpoint},
 		DialTimeout: min(10*time.Second, cfg.timeout),
@@ -332,7 +376,9 @@ func newEtcdClient(cfg config, tlsConfig *tls.Config) (*clientv3.Client, error) 
 	})
 }
 
-func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory etcdClientFactory) (retErr error) {
+func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory etcdClientFactory,
+	connectionTracker *transportConnectionTracker,
+) (retErr error) {
 	prefix := "/registry/watch-soak/" + cfg.runID + "/"
 	if cfg.cleanupOnly {
 		// Recovery mode deliberately does not claim a non-empty prefix through the
@@ -384,6 +430,10 @@ func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory
 			return fmt.Errorf("wait for Created barrier %d/%d: %w", count, cfg.watchers, context.Cause(ctx))
 		}
 	}
+	if connectionTracker == nil || connectionTracker.connectionCount() < 1 {
+		return errors.New("watch Created barrier completed without an observed client transport connection")
+	}
+	transportConnectionBaseline := connectionTracker.connectionCount()
 
 	var metricsReader *slowConsumerMetricsReader
 	var baseline watchOutcomes
@@ -478,11 +528,31 @@ func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory
 			return err
 		}
 	}
+	transportConnections := connectionTracker.connectionCount()
+	transportReconnects, err := validateTransportReconnects(
+		cfg.minimumTransportReconnects, transportConnectionBaseline, transportConnections,
+	)
+	if err != nil {
+		return err
+	}
 	cancelWatches()
-	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d compact_revision=%d prefix=%s write_interval=%s write_concurrency=%d\n",
+	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d compact_revision=%d prefix=%s write_interval=%s write_concurrency=%d transport_connections=%d transport_reconnects=%d minimum_transport_reconnects=%d\n",
 		cfg.watchers, cfg.slowConsumer, cfg.slowConsumers, cfg.slowConsumerExpectedOutcome, cfg.requireSlowConsumerOutcomes, cfg.events, writtenEvents[0].revision,
-		writtenEvents[len(writtenEvents)-1].revision, compactRevision, prefix, cfg.writeInterval, cfg.writeConcurrency)
+		writtenEvents[len(writtenEvents)-1].revision, compactRevision, prefix, cfg.writeInterval, cfg.writeConcurrency,
+		transportConnections, transportReconnects, cfg.minimumTransportReconnects)
 	return nil
+}
+
+func validateTransportReconnects(minimum int, baseline, total int64) (int64, error) {
+	if minimum < 0 || baseline < 1 || total < baseline {
+		return 0, fmt.Errorf("invalid transport connection accounting: minimum=%d baseline=%d total=%d", minimum, baseline, total)
+	}
+	reconnects := total - baseline
+	if reconnects < int64(minimum) {
+		return reconnects, fmt.Errorf("watch soak observed %d transport reconnects after Created barrier, require at least %d (baseline=%d total=%d)",
+			reconnects, minimum, baseline, total)
+	}
+	return reconnects, nil
 }
 
 func validateSlowConsumerCompactResponse(revision int64, response *clientv3.CompactResponse, err error) error {
