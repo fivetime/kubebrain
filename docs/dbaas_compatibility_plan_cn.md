@@ -66195,6 +66195,45 @@ panic/fatal/data corruption/context deadline/TiKV/PD error。
 无监听，也没有凭据或诊断文件落盘。A5639 关闭跨 endpoint revision 对调或 gateway revision 漂移仍可被集合最小值拼成发布 GREEN 的问题，
 并证明当前产品 runtime 可以通过包含新增 watch 指标在内的完整发布门禁。
 
+### A5640：将 gateway Status body 绑定到 exact ENDPOINT
+
+A5637-A5639 已把 gateway Status header 的 member/revision/term 绑定到 direct Status，但 body 中 dbSize、dbSizeInUse、leader、
+raftIndex、raftAppliedIndex 等仍只分别做 envelope 校验。旧 gate 因而能把 direct `dbSize=99` 与 gateway `dbSize=100`，或 direct
+`raftIndex=7` 与 gateway `raftIndex=8` 拼成同一 GREEN 摘要。对照
+`/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status`，gRPC 与 JSON gateway 调用同一个 Status 实现，成功响应的 header 与 body
+不是可以跨采样源自由组合的两份证据。
+
+gate 现在从 `STATUS_ENDPOINTS` 中精确选择 `ENDPOINT` 对应 Status，规范化 camelCase/snake_case 后要求 gateway `dbSize` 必须相等；
+direct 输出中实际投影的 version/storageVersion、dbSizeInUse/dbSizeQuota、isLearner、leader、raftTerm、raftIndex、raftAppliedIndex 与
+downgradeInfo enabled/targetVersion 也逐字段相等。没有被旧版 etcdctl 输出投影的可选字段保持 skip，而不是误当 proto 默认值。成功摘要新增
+`gateway_status_body_match=true`。
+
+两项确定性 RED 分别只漂移 gateway dbSize 99→100 与 raftIndex 7→8，member/revision/term 及其他字段保持正确；旧 gate 都整体 GREEN，
+新 gate 分别拒绝 `gateway status dbSize mismatch with direct endpoint` 与
+`gateway status raftIndex mismatch with direct endpoint`。首次完整普通/race 同步发现 8 个旧成功 fixture 的 direct/gateway body 不一致，
+覆盖 storageVersion、禁用 quota、downgradeInfo、两类 index 与 dbSizeInUse；只同步对应 gateway/version fixture、保持原断言目标后，另修复
+malformed downgradeInfo 在 type envelope 诊断前调用 `has` 的解析顺序，9 项定向回归为 `5.260s`，完整普通/race 分别为
+`126.475s/127.807s`。
+Go vet、gofmt、shell syntax、diff check、文档契约、正向摘要测试与固定 digest 的
+`koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
+
+代码提交 `43a7c8a4357a5cd3892649878107c091936d361d` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`251.202/451.838/302.346/545.208s`，全部 GREEN。
+
+真实验证复用 A5629 当前产品候选，避免用四天前稳定 runtime 缺少新 watch 指标为由缩小检查范围。以 StatefulSet
+UID/resourceVersion/container/image/full args 五重原子 test 部署 `a5629-c446ec02` 至 generation 662；三 Pod runtime 均为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0。新脚本的完整 info metrics
+门禁 GREEN，实际输出 `gateway_status_body_match=true`，并继续输出 `info_metrics_status_fence=stable`、逐 endpoint member/revision/term
+全部匹配。cluster ID `7662961163671170154`、members `4034353177/2393892952/231094427`、leader `231094427`、term `201`、
+revision/index/applied `65743`、HashKV `4283180840`、compact revision `44329` 一致。独立调用在 endpoint 14379 上得到 direct/gateway
+tuple 都是 version `3.7.0`、dbSize/dbSizeInUse `1/1`、leader `231094427`、term `201`、index/applied `65743/65743`，仅 JSON
+数字/字符串编码形式不同。
+
+候选窗口日志无 panic/fatal/data corruption/context deadline/TiKV/PD error。最后用新鲜同类五重 test 回滚稳定 digest；终态
+StatefulSet UID 不变、generation/observed 663、current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`，KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，
+六个诊断端口无监听，没有凭据或诊断文件落盘。A5640 关闭同一 endpoint 的 direct/gateway Status body 漂移仍可进入发布摘要的问题。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

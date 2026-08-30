@@ -1724,6 +1724,9 @@ Status 与 HashKV 还会构造完整 `endpoint→revision` 映射并要求逐项
 gateway 五种 header revision 全部必须等于 `ENDPOINT` 对应的 direct Status revision。通过摘要输出
 `hashkv_endpoint_revisions_match=true`、`gateway_endpoint_revision=<n>` 与
 `gateway_endpoint_revisions_match=true`；
+gateway Status body 还必须与 exact `ENDPOINT` 的 direct Status 对账：`dbSize` 必须相等，direct 输出中实际存在的
+version/storageVersion、dbSizeInUse/dbSizeQuota、isLearner、leader、raftTerm、raftIndex、raftAppliedIndex 与
+downgradeInfo 也必须逐字段相等；通过摘要输出 `gateway_status_body_match=true`。旧版 etcdctl 未投影的可选字段不会被伪造为默认值；
 非空 client certificate CN 的预期 HTTP 400 模式没有成功 response header，因此不会声称完成该映射校验；
 client/info 双口 `/version` 的 `etcdserver`、`etcdcluster`、`storage` 必须一致，且
 `storage` 必须与 gateway Status `storageVersion` 一致。启用 HashKV 校验时，脚本还会读取
@@ -1760,13 +1763,13 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时�
 `gateway_auth_enabled=<bool>`、`gateway_alarms=empty`、`gateway_hashkv_hash=<n>`、
 `gateway_hashkv_revisions_match=true`、`gateway_endpoint_members_match=true`、
 `gateway_endpoint_raft_terms_match=true`、
-`gateway_endpoint_revisions_match=true`、`hashkv_endpoint_members_match=true`、
+`gateway_endpoint_revisions_match=true`、`gateway_status_body_match=true`、`hashkv_endpoint_members_match=true`、
 `hashkv_endpoint_revisions_match=true`、
 `revisions_match=true`、`hashkv_raft_terms=<unique>` 和
 `raft_terms_match=true` 等证据；
 其中 HashKV/gateway HashKV revision 与 raft term 交叉一致性用于证明本次只读诊断
-来自同一个静态 MVCC/Raft 观察边界；Status 的 MVCC revision、committed/applied index
-和两种 size 则按 upstream 独立采样，只分别验证类型、范围和存在性。若这些摘要字段缺失或不为 true，不能把该次
+来自同一个静态 MVCC/Raft 观察边界；不同 endpoint 的 Status 仍按 upstream 独立采样，但同一 `ENDPOINT` 的 direct/gateway Status
+必须来自同一个 body 观察结果。若这些摘要字段缺失或不为 true，不能把该次
 输出当作完整只读 gate 通过证据。
 
 生产必须使用 image digest；脚本做精确字符串比较，允许本地验证使用不可变测试 tag，
