@@ -65314,6 +65314,65 @@ port-forward 最终 Ctrl-C exit 0，短连接关闭的本地 broken pipe 没有�
 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；PD/TiKV 各 3/3 Ready/restart 0。
 候选 archive 保留。该轮关闭主动 compaction 与 watch generation 恢复竞态 P1；数天断线与滚动更新长稳仍开放。
 
+### A5615-A5616：rollout 连接老化参数化与安全调参
+
+A5615 `56d14bbb678d1e12e0d826fbce30c906f8af748e` 将 rollout availability runner 原先写死的
+`--grpc-max-connection-age=1h` 与 `--grpc-max-connection-age-grace=5m` 提升为经严格 Go duration 校验的
+`EXPECTED_GRPC_MAX_CONNECTION_AGE`/`EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE`。preflight、候选 spec、TLS 合约检查
+使用同一对期望值，使诊断轮可缩短连接老化周期并实际覆盖长连接重建，而不会让 validator 与被测模板采用不同参数。
+
+A5616 `6cd5bf87ce094bffd93490923bc45e72faacc0fb` 进一步把 migration 从只允许“参数不存在时追加”扩展为安全的完整成对调参：
+候选 spec 先删除全部现有 age/grace 参数再写入唯一目标对；preflight 只接受“两项都不存在”或“一套完整但与目标不同”的来源。
+缺一项、重复项、已经等于目标值却仍请求 migration 均 fail closed。两次提交的回归覆盖非法 duration、默认值、自定义值、成对替换和
+漂移拒绝；A5617 的 701 项 inventory 与四分片门禁继续完整覆盖这些行为。
+
+### A5617：Snapshot 建立 pin 后释放写屏障，解除 drain/Put 互锁
+
+A5617 `1fc309fbfbb075ee94fd9a61fbcc00600ec83f81` 对照 upstream
+`/root/etcd/server/storage/backend/backend.go`：etcd 的 `Backend.Snapshot()` 在后端锁内同步建立 bbolt read transaction，随后释放锁，
+实际文件流式传输并不继续占有写屏障。KubeBrain 的 `SnapshotHistoryStream()` 同样在返回前同步创建 TiKV history iterator 与
+compaction pin，但旧 `buildSnapshotOnceWithBuilder` 仍持有 `BeginRangeTxn` 的逻辑独占写屏障，直至等到第一块 stream 数据。
+真实 TiKV 首块可超过 20 秒；并发 Put 的 `TxnApply` 因此阻塞在逻辑写读锁，同时 Put 已持有 leadership drain read boundary，令
+preStop drain 无法完成。A5608 rollout 中可确定重现为 iteration 172 的 Put 在 10 秒 command timeout 到期。
+
+修复把写屏障的职责收窄为“建立一致 history iterator 与 compaction pin”：`SnapshotHistoryStreamChan` 成功返回后立即释放屏障，
+再异步等待第一块及后续数据。后端接口与 TiKV iterator 注释明确 pin 必须在返回前建立。确定性跨层回归冻结第一块 Snapshot 数据，
+要求并发 Put 在 500ms 内完成，同时最终 bbolt snapshot artifact 必须不包含该并发 key，因而同时证明可用性改善与快照边界没有被放宽。
+聚焦测试普通 20 轮、race 5 轮，完整 `pkg/server/etcd`、独占复验的完整 backend 与 vet 均 GREEN；第一次把完整 backend 与 backend
+race 并行时出现一次无可定位失败，随后独占 JSON failure filter exit 0，按资源压力如实保留而未隐藏。提交前精确
+`hack/production/test-shard.sh --verify 4` 得到 701 项、分片 `170/193/178/160`；提交后四片分别
+`249.429/443.945/299.193/513.300s`，全部 GREEN。
+
+不可变候选 archive `/root/kubebrain-a5617-1fc309fb.oci.tar` 为 914,404,864 bytes，SHA-256
+`b6a8b874e95b381e709172ade6e1bb7cf5798ec307e09a264d191cb08125570f`；outer index/platform/config/attestation 为
+`sha256:4dde67dec58a1164c26963817f4ec3d46e5e706797626d252704196f07f1b12d`/
+`sha256:cced267e7fd31703554873dbbf7afe96394611fb7a9e8376bbd56283b67264d3`/
+`sha256:c5a2beb9f8767fa3415c9321d965e11f6fd8d6d1ec1e4f9aa904b306a15baa73`/
+`sha256:d7e1d9faffb0d2e0f6755081329e8c342b7d6948c3ef4c9960c2001204238ce9`。78/78 descriptor closure、SBOM
+2,592 packages/8,096 relationships、provenance 3 materials、linux/amd64、USER `65532:65532`、入口及运行版本均通过；版本为
+`0.0.0-1fc309fbfbb0`、源码 SHA `1fc309fbfbb075ee94fd9a61fbcc00600ec83f81`、构建时间
+`2026-08-30T05:10:01Z`，Kind runtime digest 为
+`sha256:a4ab3d3b9ca4d6a0005e4f8ad9bbbfedfa9dce33484181434e872ca732556f88`。审计临时目录已移入系统回收站、可恢复，archive 保留。
+
+候选投放的非产品失败均保留分类：首次用 OCI outer digest、第二次用尚未绑定精确仓库名的 runtime digest 时，候选 Pod 都在启动前
+ImagePull 失败，缺少目标 ordinal，属于 Kind 导入命名拓扑而非产品 RED；为同一 content 增加精确本地 containerd image name 后才进入
+有效测试。随后 A5608→A5617 候选 runner 在 iteration 172 重现 10 秒 Put timeout；退出的是仍含缺陷的旧 A5608，候选尚不能修改旧
+进程的 drain 行为。runner 均以 UID/RV 围栏安全回滚，fixture keys/users/roles/leases 和临时对象为零。这个结果保留为升级约束：
+从 A5608 及更旧受影响版本做首轮原地滚动仍可能暴露旧进程窗口，不能用新版本自身 GREEN 覆盖。
+
+为验证修复本身，以 StatefulSet UID `3d124ab7-b3ab-43d3-afd5-1b354722ab54`、RV、容器名、当前镜像和参数位置的 JSON Patch
+前置条件部署 A5617，并把连接老化安全调为 `5m/30s`。在独立 3 PD/3 TiKV 上连续执行两轮 A5617→A5617 全三副本重启，每轮
+300 次：第一轮 `ok/watch/direct_watch=300/300/300x3`，Snapshot 1、Put 最大 428ms、Watch-after-Put 最大 25ms；第二轮同为
+`300/300/300x3`，Snapshot 1、Put 最大 445ms、Watch-after-Put 最大 23ms。两轮 public lease 均 alive 且零恢复，direct lease
+均 alive 并跨 10 次连接重建恢复；RangeStream 分别 71/68，`stream_partial_retries=0`，PD TSO 与 TiKV Region 延迟均在门限内。
+两轮 fixture cleanup 均为 keys/users/roles/leases=0、probe/cleanup Pod 与 owner ConfigMap 不存在，runner 最终 exit 0。
+
+最后以新鲜 UID/RV、容器名、候选 image 和 `5m/30s` 参数五类 test 原子回滚 A5608 与 `1h/5m`。终态 generation 322、
+current/update revision `a4657-tls-7d94b578fb`、3/3 Ready/updated；三个 Pod restart 0，实际 runtime 均为
+`sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`。PD/TiKV 各 3/3 Ready/restart 0，
+两轮六个临时 Kubernetes 对象全部 NotFound。A5617 关闭“修复版本自身滚动时 Snapshot 阻塞 drain/Put”的缺口，但旧受影响版本的首次
+原地升级窗口仍开放，需要控制面采用预升级规避策略或接受一次受控维护窗口；更长时长的连续滚动与故障注入仍属于生产长稳矩阵。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
