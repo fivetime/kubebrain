@@ -756,6 +756,10 @@ spec:
           expr: count(((kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) < 0) or ((kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 9007199254740992) or ((kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != floor(kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current))) + count((kubebrain_dbaas:watch_slow_consumer_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != clamp(kubebrain_dbaas:watch_slow_consumer_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current, 0, 9007199254740992)) + count(kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome{outcome!~"catch_up|recovered|dropped|interrupted"})
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:watch_slow_consumer_outcome:conservation_error_by_pod
+          expr: sum by (namespace, pod, uid) (kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome{outcome="catch_up"}) - sum by (namespace, pod, uid) (kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome{outcome=~"recovered|dropped|interrupted"}) - on(namespace, pod, uid) kubebrain_dbaas:mvcc_slow_watchers:max_by_pod
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:watch_generation_recovery:current_by_pod_outcome
           expr: max by (namespace, pod, uid, outcome) (watch_generation_recovery{namespace="kubebrain-system"} and (time() - timestamp(watch_generation_recovery{namespace="kubebrain-system"}) <= 60))
           labels:
@@ -1616,6 +1620,14 @@ spec:
           annotations:
             summary: KubeBrain Watch consumers fell behind live fan-out
             description: "A current Ready replica moved a full Watch subscriber into bounded ring catch-up, dropped it because the missed tail was unavailable, or interrupted catch-up because the subscriber context ended. catch_up preserves a gap-free stream when replay succeeds; dropped closes the backend generation for durable revision recovery; interrupted identifies client disconnect, deadline, or service shutdown before a catch-up terminal. Inspect client flow control, send-loop latency, ring capacity, transport churn, and durable-history amplification."
+        - alert: KubeBrainWatchSlowConsumerOutcomeInconsistent
+          expr: abs(kubebrain_dbaas:watch_slow_consumer_outcome:conservation_error_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain Watch slow-consumer outcomes are not conserved
+            description: "For each current Ready Pod UID, entered catch_up generations must equal recovered plus dropped plus interrupted terminal generations plus the current slow-watcher gauge. A positive error persisting for two minutes means a catch-up lost its terminal accounting; a negative error means a duplicate or terminal-without-entry classification. The delay tolerates the normal sub-second counter/gauge publication window. Preserve metrics and logs before restarting the Pod, because counters reset with the process."
         - alert: KubeBrainWatchSlowConsumerMetricsMissing
           expr: absent(kubebrain_dbaas:watch_slow_consumer_outcome_invalid_values:count) == 1 or count(kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 4 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_slow_consumer_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 4 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:watch_slow_consumer_outcome_invalid_values:count != 0
           for: 2m

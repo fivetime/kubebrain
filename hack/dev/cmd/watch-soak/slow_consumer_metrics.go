@@ -45,6 +45,24 @@ type slowConsumerOutcomes struct {
 	interrupted float64
 }
 
+// outstanding returns entered catch-up generations that have not reached one
+// of the three mutually exclusive terminal outcomes. At a quiescent boundary
+// this must be zero; while N owned consumers are deliberately held in catch-up
+// it must be exactly N. A non-zero stable baseline would let an older missing or
+// duplicate terminal hide inside this run's otherwise exact counter deltas.
+func (outcomes slowConsumerOutcomes) outstanding() float64 {
+	return outcomes.catchUp - outcomes.recovered - outcomes.dropped - outcomes.interrupted
+}
+
+func validateSlowConsumerConservation(outcomes slowConsumerOutcomes, expectedOutstanding float64, phase string) error {
+	actual := outcomes.outstanding()
+	if actual != expectedOutstanding {
+		return fmt.Errorf("slow-consumer outcome conservation failed at %s: catch_up=%v recovered=%v dropped=%v interrupted=%v outstanding=%v expected_outstanding=%v",
+			phase, outcomes.catchUp, outcomes.recovered, outcomes.dropped, outcomes.interrupted, actual, expectedOutstanding)
+	}
+	return nil
+}
+
 type watchGenerationOutcomes struct {
 	retry     float64
 	recovered float64
@@ -237,6 +255,9 @@ func expectedWatchOutcomes(baseline watchOutcomes, outcome string, slowConsumers
 	if slowConsumers < 1 {
 		return watchOutcomes{}, fmt.Errorf("slow-consumer outcome oracle requires a positive consumer count: %d", slowConsumers)
 	}
+	if err := validateSlowConsumerConservation(baseline.slow, 0, "baseline"); err != nil {
+		return watchOutcomes{}, err
+	}
 	delta := float64(slowConsumers)
 	expected := baseline
 	expected.slow.catchUp += delta
@@ -261,6 +282,13 @@ func expectedWatchOutcomes(baseline watchOutcomes, outcome string, slowConsumers
 		}
 	default:
 		return watchOutcomes{}, fmt.Errorf("unsupported slow-consumer expected outcome %q", outcome)
+	}
+	expectedOutstanding := delta
+	if completed {
+		expectedOutstanding = 0
+	}
+	if err := validateSlowConsumerConservation(expected.slow, expectedOutstanding, "expected outcome"); err != nil {
+		return watchOutcomes{}, err
 	}
 	return expected, nil
 }

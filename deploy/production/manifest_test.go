@@ -3074,6 +3074,13 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		watchSlowConsumerRule["expr"])
 	require.Equal(t, "warning", watchSlowConsumerRule["labels"].(map[string]any)["severity"])
 	require.Contains(t, watchSlowConsumerRule["annotations"].(map[string]any)["description"], "interrupted")
+	watchSlowConsumerInconsistentRule := prometheusRuleByAlert(t, groups, "KubeBrainWatchSlowConsumerOutcomeInconsistent")
+	require.Equal(t,
+		`abs(kubebrain_dbaas:watch_slow_consumer_outcome:conservation_error_by_pod * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) > 0`,
+		watchSlowConsumerInconsistentRule["expr"])
+	require.Equal(t, "2m", watchSlowConsumerInconsistentRule["for"])
+	require.Equal(t, "warning", watchSlowConsumerInconsistentRule["labels"].(map[string]any)["severity"])
+	require.Contains(t, watchSlowConsumerInconsistentRule["annotations"].(map[string]any)["description"], "recovered plus dropped plus interrupted")
 	watchSlowConsumerMissingRule := prometheusRuleByAlert(t, groups, "KubeBrainWatchSlowConsumerMetricsMissing")
 	require.Equal(t,
 		`absent(kubebrain_dbaas:watch_slow_consumer_outcome_invalid_values:count) == 1 or count(kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 4 * count(kubebrain_dbaas:ready_pods:current) or count(kubebrain_dbaas:watch_slow_consumer_outcome:increase_10m_by_pod_outcome * on(namespace, pod, uid) group_left() kubebrain_dbaas:ready_pods:current) != 4 * count(kubebrain_dbaas:ready_pods:current) or kubebrain_dbaas:watch_slow_consumer_outcome_invalid_values:count != 0`,
@@ -4075,6 +4082,8 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	expected["kubebrain_dbaas:watch_slow_consumer_outcome:increase_10m_by_pod_outcome"] =
 		`max by (namespace, pod, uid, outcome) (increase(watcher_hub_slow_consumer_outcome{namespace="kubebrain-system"}[10m]) and (time() - timestamp(watcher_hub_slow_consumer_outcome{namespace="kubebrain-system"}) <= 60))`
 	expected["kubebrain_dbaas:watch_slow_consumer_outcome_invalid_values:count"] = watchSlowConsumerOutcomeInvalidValuesExpr
+	expected["kubebrain_dbaas:watch_slow_consumer_outcome:conservation_error_by_pod"] =
+		`sum by (namespace, pod, uid) (kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome{outcome="catch_up"}) - sum by (namespace, pod, uid) (kubebrain_dbaas:watch_slow_consumer_outcome:current_by_pod_outcome{outcome=~"recovered|dropped|interrupted"}) - on(namespace, pod, uid) kubebrain_dbaas:mvcc_slow_watchers:max_by_pod`
 	expected["kubebrain_dbaas:watch_generation_recovery:current_by_pod_outcome"] =
 		`max by (namespace, pod, uid, outcome) (watch_generation_recovery{namespace="kubebrain-system"} and (time() - timestamp(watch_generation_recovery{namespace="kubebrain-system"}) <= 60))`
 	expected["kubebrain_dbaas:watch_generation_recovery:increase_10m_by_pod_outcome"] =

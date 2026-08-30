@@ -404,6 +404,33 @@ func TestMetricsReaderRejectsInvalidCounterAndRedirect(t *testing.T) {
 	reader.close()
 }
 
+func TestValidateSlowConsumerConservation(t *testing.T) {
+	stable := slowConsumerOutcomes{catchUp: 7, recovered: 2, dropped: 1, interrupted: 4}
+	require.NoError(t, validateSlowConsumerConservation(stable, 0, "baseline"))
+
+	active := stable
+	active.catchUp += 3
+	require.NoError(t, validateSlowConsumerConservation(active, 3, "pressure"))
+
+	missingTerminal := active
+	missingTerminal.recovered += 2
+	err := validateSlowConsumerConservation(missingTerminal, 0, "completion")
+	require.ErrorContains(t, err, "outstanding=1 expected_outstanding=0")
+	require.ErrorContains(t, err, "completion")
+
+	duplicateTerminal := stable
+	duplicateTerminal.interrupted++
+	err = validateSlowConsumerConservation(duplicateTerminal, 0, "baseline")
+	require.ErrorContains(t, err, "outstanding=-1 expected_outstanding=0")
+}
+
+func TestExpectedWatchOutcomesRejectsUnbalancedBaseline(t *testing.T) {
+	_, err := expectedWatchOutcomes(watchOutcomes{
+		slow: slowConsumerOutcomes{catchUp: 3, recovered: 2},
+	}, slowConsumerExpectedRecovered, 1, true)
+	require.ErrorContains(t, err, "conservation failed at baseline")
+}
+
 func TestExpectedWatchOutcomesDistinguishRingRecoveryAndEviction(t *testing.T) {
 	baseline := watchOutcomes{
 		slow:       slowConsumerOutcomes{catchUp: 3, recovered: 2, dropped: 1},
@@ -504,11 +531,11 @@ func TestDroppedOutcomeWaitsForExactGenerationRecovery(t *testing.T) {
 
 func TestInterruptedOutcomeWaitsForExplicitTerminalMetric(t *testing.T) {
 	baseline := watchOutcomes{
-		slow:       slowConsumerOutcomes{catchUp: 3, recovered: 2, dropped: 1, interrupted: 4},
+		slow:       slowConsumerOutcomes{catchUp: 7, recovered: 2, dropped: 1, interrupted: 4},
 		generation: watchGenerationOutcomes{retry: 5, recovered: 6, compacted: 7, failed: 8},
 	}
 	var body atomic.Value
-	body.Store(metricsTextWithAllOutcomes(4, 2, 1, 4, 5, 6, 7, 8))
+	body.Store(metricsTextWithAllOutcomes(8, 2, 1, 4, 5, 6, 7, 8))
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(response, body.Load().(string))
 	}))
@@ -520,7 +547,7 @@ func TestInterruptedOutcomeWaitsForExplicitTerminalMetric(t *testing.T) {
 	require.NoError(t, waitForExpectedSlowConsumerPressure(
 		context.Background(), reader, baseline, slowConsumerExpectedInterrupted, 1,
 	))
-	body.Store(metricsTextWithAllOutcomes(4, 2, 1, 5, 5, 6, 7, 8))
+	body.Store(metricsTextWithAllOutcomes(8, 2, 1, 5, 5, 6, 7, 8))
 	require.NoError(t, waitForExpectedSlowConsumerCompletion(
 		context.Background(), reader, baseline, slowConsumerExpectedInterrupted, 1,
 	))

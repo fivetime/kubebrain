@@ -600,6 +600,9 @@ func run(ctx context.Context, client, writeClient *clientv3.Client, cfg config, 
 		if err != nil {
 			return fmt.Errorf("read baseline slow-consumer outcomes: %w", err)
 		}
+		if err := validateSlowConsumerConservation(baseline.slow, 0, "baseline"); err != nil {
+			return err
+		}
 	}
 	slows := make([]*rawSlowWatch, 0, cfg.slowConsumers)
 	if cfg.slowConsumers > 0 {
