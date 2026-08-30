@@ -65846,6 +65846,26 @@ histogram，只有第二个对应 info endpoint 提供完整 fixture。旧实现
 `info metrics mismatch: expected etcd_server_range_duration_seconds_count`；修复后选择第二项并通过。另有负例覆盖配置依赖、数量、重复、
 URL 边界、Status leader 缺失/分歧、leader 不在 member 集合，以及选中 scrape 自报 `is_leader=0` 的换主竞态。
 
+提交 `8ae7d8dc3b4553c54e03c20fbe64de5da53316d7` 的聚焦只读 gate 普通/race 分别为 `97.642s/98.859s`，vet、shell syntax、
+shellcheck 与 diff check 全部 GREEN。未分片整个 production 包普通/race 都在 703 项顺序运行到无关
+`TestRolloutAvailabilityRunnerRollsBackConnectionAgingMigrationSpec` 时触发 Go 默认 10 分钟总超时，没有断言失败，故未冒充 GREEN；仓库权威
+分片门禁提交前验证为 703 项、`170/193/180/160`，提交后四片分别 `248.292/438.888/297.510/511.326s`，全部 GREEN。
+
+本项只修改 gate，不另造镜像；真实独立三 PD/三 TiKV 验证复用 A5629 候选 runtime
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`。首次直接在已回滚 A5608 上运行会因其不含 A5628
+gateway CN 拒绝修复而在固定响应体处失败，不计 A5630 RED；随后以 StatefulSet UID/resourceVersion/container/image/full args 五重 test
+部署 A5629，generation 346 三 Pod Ready/restart 0。业务 `ENDPOINT` 和 `READYZ_URL` 都固定到 follower 0，而新脚本从三组
+Status/info 映射自动选择 leader 2 的 `https://127.0.0.1:18081/metrics`，完整 gate GREEN：cluster ID
+`7662961163671170154`、members `1279320304/848842929/2985394290`、leader `2985394290`、revision/index/applied
+`1258096`、term `865`、HashKV `3680408421`、compact revision `1169203`，Range histogram、gateway 预期拒绝、版本、debug/pprof 与全部
+info metrics 均通过。默认 5 秒 HashKV 预检曾在 term 863 三端点超时并伴随一次 TiKV context deadline；改用与 gate 一致的 60 秒预算后
+三端点一致通过，未隐藏该现场延迟。候选日志无 panic/fatal/data corruption，证书三件套和 curl wrapper 全部只在四个独立匿名 memfd。
+
+最后以同样五重 test 回滚稳定 digest。终态 generation/observed 347、current/update `a4657-tls-7d94b578fb`，三 Pod runtime 均恢复
+`sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，六个诊断端口无监听。A5630 关闭多副本只读 gate 把 follower 指标缺失误报为执行侧兼容缺口的问题；生产 Prometheus
+仍应按 Pod UID 聚合全部成员，动态单点选择只服务于发布时的执行侧完整指标门禁。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
