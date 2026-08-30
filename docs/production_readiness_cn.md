@@ -1338,6 +1338,7 @@ EXPECTED_INFO_METRICS_CHECKS=1 \
 EXPECTED_DEBUG_VARS_CHECKS=1 \
 EXPECTED_PPROF_DISABLED_CHECKS=1 \
 STATUS_ENDPOINTS=https://instance-a-0.example:2379,https://instance-a-1.example:2379,https://instance-a-2.example:2379 \
+INFO_ENDPOINTS=https://instance-a-0-info.example,https://instance-a-1-info.example,https://instance-a-2-info.example \
 PROBE_TIMEOUT=10s \
   hack/production/validate-dataplane-readonly.sh
 ```
@@ -1396,6 +1397,12 @@ member 上按一次公开 Range 精确观察一次；普通 Get/List 与 CountOn
 count-index 和 historical List fallback 只能在最外层 Count 观察，内部嵌套读取不得重复计数。
 KubeBrain follower 会把 Range 转发给数据面 leader，因此单次诊断必须让请求 endpoint 与 info
 scrape 指向同一执行 member；scrape follower 看不到 leader backend 的 histogram，不能据此判定指标缺失。
+生产多副本门禁应设置与 `STATUS_ENDPOINTS` 同序、同数量的 `INFO_ENDPOINTS`，每项是对应 member
+不含 path/query/fragment 的 HTTP(S) info base URL。脚本要求全部 Status 响应报告同一个正 leader ID，
+将该 ID 唯一匹配到 member ID 后按数组位置选择 info `/metrics`，并再次要求所抓指标的
+`etcd_server_is_leader=1`；数量不等、空项、规范化后重复、非法 URL、leader 缺失/分歧/不属于成员集合
+均 fail closed。未设置 `INFO_ENDPOINTS` 时继续从 `READYZ_URL` 推导 `/metrics`，仅用于已经显式对齐
+info 实例的旧调用或单成员实例。通过摘要会输出实际选择的 `info_metrics_endpoint=<url>/metrics`。
 A5629 在独立三 PD/三 TiKV 上以 leader 对齐的完整只读 gate 验证
 `range_duration_metrics=ok`，同时保持三 member Status/HashKV、gateway client-cert-auth 拒绝与全部
 info metrics 对账 GREEN。

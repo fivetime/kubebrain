@@ -372,6 +372,134 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, apply_duration_metrics=optional-ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, raft_snapshot_file_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok",
 		},
 		{
+			name: "selects leader info metrics endpoint from status",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leaderId":789,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"memberId":789,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leaderId":789,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}
+			]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"789","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			infoMetrics: strings.Replace(
+				defaultInfoMetrics(""),
+				"etcd_server_range_duration_seconds_count{cluster=\"default\",success=\"true\"} 1\n",
+				"",
+				1,
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.4:8080",
+				"FAKE_LEADER_INFO_METRICS_URL=http://172.18.0.4:8080/metrics",
+				"FAKE_LEADER_INFO_METRICS=" + defaultInfoMetrics(""),
+			},
+			wantOK:     true,
+			wantOutput: "info_metrics_endpoint=http://172.18.0.4:8080/metrics",
+		},
+		{
+			name: "rejects selected info endpoint that no longer reports leader",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":789,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":789,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}
+			]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"789","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.4:8080",
+				"FAKE_LEADER_INFO_METRICS_URL=http://172.18.0.4:8080/metrics",
+				"FAKE_LEADER_INFO_METRICS=" + strings.Replace(
+					defaultInfoMetrics(""),
+					"etcd_server_is_leader{cluster=\"default\"} 1\n",
+					"etcd_server_is_leader{cluster=\"default\"} 0\n",
+					1,
+				),
+			},
+			wantOutput: "info metrics leader mismatch: expected etcd_server_is_leader=1, got 0",
+		},
+		{
+			name: "rejects incomplete status leader reports for info endpoint selection",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99,"leader":789}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7},"version":"3.7.0","dbSize":99}}
+			]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.4:8080",
+			},
+			wantOutput: "INFO_ENDPOINTS leader selection requires every Status response to report a leader: expected 2, got 1",
+		},
+		{
+			name: "rejects divergent status leaders for info endpoint selection",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99,"leader":456}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7},"version":"3.7.0","dbSize":99,"leader":789}}
+			]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.4:8080",
+			},
+			wantOutput: "INFO_ENDPOINTS leader selection requires one shared positive Status leader ID, got 456,789",
+		},
+		{
+			name: "rejects status leader outside info endpoint member set",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99,"leader":999}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7},"version":"3.7.0","dbSize":99,"leader":999}}
+			]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.4:8080",
+			},
+			wantOutput: "INFO_ENDPOINTS leader selection could not map Status leader 999 to exactly one member endpoint",
+		},
+		{
 			name: "rejects missing info server version metric",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -4429,6 +4557,63 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "EXPECTED_INFO_METRICS_CHECKS requires EXPECTED_STATUS_VERSION",
 		},
 		{
+			name:           "rejects info endpoints without info metrics checks before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[]`,
+			extraEnv:       []string{"INFO_ENDPOINTS=http://172.18.0.3:8080"},
+			wantOutput:     "INFO_ENDPOINTS requires EXPECTED_INFO_METRICS_CHECKS=1",
+			wantNoCommands: true,
+		},
+		{
+			name:       "rejects info endpoint count mismatch before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080",
+			},
+			wantOutput:     "INFO_ENDPOINTS count must match STATUS_ENDPOINTS: expected 2, got 1",
+			wantNoCommands: true,
+		},
+		{
+			name:       "rejects duplicate normalized info endpoints before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.3:8080/",
+			},
+			wantOutput:     "INFO_ENDPOINTS must not contain duplicate endpoints",
+			wantNoCommands: true,
+		},
+		{
+			name:       "rejects info endpoint path before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080/private",
+			},
+			wantOutput:     "INFO_ENDPOINTS must contain absolute HTTP(S) base URLs without paths",
+			wantNoCommands: true,
+		},
+		{
 			name:       "rejects malformed expected debug vars checks flag before commands",
 			podsJSON:   `{"items":[]}`,
 			readyz:     "ok",
@@ -4547,7 +4732,11 @@ if [[ " $* " == *" -i "* ]]; then
   fi
 fi
 for arg in "$@"; do
-  if [[ "$arg" == "${READYZ_URL}?verbose" ]]; then
+	if [[ -n "${FAKE_LEADER_INFO_METRICS_URL:-}" && "$arg" == "$FAKE_LEADER_INFO_METRICS_URL" ]]; then
+		printf '%s' "$FAKE_LEADER_INFO_METRICS"
+		exit 0
+	fi
+	if [[ "$arg" == "${READYZ_URL}?verbose" ]]; then
     printf '%s' "$FAKE_READYZ_VERBOSE"
     exit 0
   fi
@@ -5008,6 +5197,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"EXPECTED_INFO_METRICS_CHECKS=1",
 		"EXPECTED_DEBUG_VARS_CHECKS=1",
 		"EXPECTED_PPROF_DISABLED_CHECKS=1",
+		"INFO_ENDPOINTS=",
 	} {
 		require.Contains(t, example, required)
 	}
@@ -5026,6 +5216,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"health_method_checks=ok",
 		"http_header_checks=ok",
 		"info_metrics=ok",
+		"info_metrics_endpoint=<url>/metrics",
 		"client_metrics=404",
 		"server_identity_metrics=ok",
 		"grpc_metrics=ok",

@@ -32,6 +32,7 @@ EXPECTED_DEBUG_VARS_CHECKS="${EXPECTED_DEBUG_VARS_CHECKS:-}"
 EXPECTED_PPROF_DISABLED_CHECKS="${EXPECTED_PPROF_DISABLED_CHECKS:-}"
 EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION="${EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
+INFO_ENDPOINTS="${INFO_ENDPOINTS:-}"
 ETCDCTL_USER="${ETCDCTL_USER:-}"
 ETCDCTL_PASSWORD="${ETCDCTL_PASSWORD:-}"
 
@@ -107,6 +108,10 @@ if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" && -z "$EXPECTED_STATUS_VERSION" ]]
   echo "EXPECTED_INFO_METRICS_CHECKS requires EXPECTED_STATUS_VERSION" >&2
   exit 2
 fi
+if [[ -n "$INFO_ENDPOINTS" && "$EXPECTED_INFO_METRICS_CHECKS" != "1" ]]; then
+  echo "INFO_ENDPOINTS requires EXPECTED_INFO_METRICS_CHECKS=1" >&2
+  exit 2
+fi
 if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" == "1" && -z "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   echo "EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION requires EXPECTED_STATUS_CLUSTER_ID" >&2
   exit 2
@@ -123,7 +128,7 @@ contains_unsafe_probe_value() {
   local value="$1"
   [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
 }
-for variable in ENDPOINT READYZ_URL PREFIX STATUS_ENDPOINTS; do
+for variable in ENDPOINT READYZ_URL PREFIX STATUS_ENDPOINTS INFO_ENDPOINTS; do
   value="${!variable}"
   if contains_unsafe_probe_value "$value"; then
     echo "${variable} contains unsupported characters" >&2
@@ -185,6 +190,38 @@ for status_endpoint in "${status_endpoint_array[@]}"; do
   fi
   seen_status_endpoints[$status_endpoint]=1
 done
+info_metrics_url="${READYZ_URL%/readyz}/metrics"
+info_metrics_must_be_leader="0"
+info_endpoint_array=()
+if [[ -n "$INFO_ENDPOINTS" ]]; then
+  if [[ "$INFO_ENDPOINTS" == ,* || "$INFO_ENDPOINTS" == *, || "$INFO_ENDPOINTS" == *,,* ]]; then
+    echo "INFO_ENDPOINTS contains an empty endpoint" >&2
+    exit 2
+  fi
+  IFS=',' read -r -a raw_info_endpoint_array <<<"$INFO_ENDPOINTS"
+  if [[ "${#raw_info_endpoint_array[@]}" != "${#status_endpoint_array[@]}" ]]; then
+    echo "INFO_ENDPOINTS count must match STATUS_ENDPOINTS: expected ${#status_endpoint_array[@]}, got ${#raw_info_endpoint_array[@]}" >&2
+    exit 2
+  fi
+  declare -A seen_info_endpoints=()
+  for info_endpoint in "${raw_info_endpoint_array[@]}"; do
+    if [[ -z "$info_endpoint" ]]; then
+      echo "INFO_ENDPOINTS contains an empty endpoint" >&2
+      exit 2
+    fi
+    if [[ ! "$info_endpoint" =~ ^https?://[^/?#[:space:]]+/?$ ]]; then
+      echo "INFO_ENDPOINTS must contain absolute HTTP(S) base URLs without paths, queries, or fragments: ${info_endpoint}" >&2
+      exit 2
+    fi
+    normalized_info_endpoint="${info_endpoint%/}"
+    if [[ -n "${seen_info_endpoints[$normalized_info_endpoint]:-}" ]]; then
+      echo "INFO_ENDPOINTS must not contain duplicate endpoints: ${normalized_info_endpoint}" >&2
+      exit 2
+    fi
+    seen_info_endpoints[$normalized_info_endpoint]=1
+    info_endpoint_array+=("$normalized_info_endpoint")
+  done
+fi
 prefix_endpoint_array=("$ENDPOINT")
 declare -A seen_prefix_endpoints=()
 seen_prefix_endpoints[$ENDPOINT]=1
@@ -239,6 +276,7 @@ expect_info_metrics_boundary() {
   local info_metrics_url="$2"
   local expected_server_version="$3"
   local expected_cluster_version="$4"
+  local must_be_leader="$5"
   local client_response
   local client_status_line
   local info_metrics
@@ -247,6 +285,7 @@ expect_info_metrics_boundary() {
   local wal_metric_values
   local raft_snapshot_metric
   local raft_snapshot_metric_values
+  local is_leader_values
 
   client_response="$(run_with_probe_timeout "$CURL" -sS -i "$client_metrics_url")"
   client_status_line="${client_response%%$'\n'*}"
@@ -367,6 +406,13 @@ expect_info_metrics_boundary() {
   if [[ "$info_metrics" != *"etcd_server_is_leader{"* ]]; then
     echo "info metrics mismatch: expected etcd_server_is_leader" >&2
     exit 1
+  fi
+  if [[ "$must_be_leader" == "1" ]]; then
+    is_leader_values="$(awk '$1 == "etcd_server_is_leader" || index($1, "etcd_server_is_leader{") == 1 {print $2}' <<<"$info_metrics" | sort -u)"
+    if [[ "$is_leader_values" != "1" ]]; then
+      echo "info metrics leader mismatch: expected etcd_server_is_leader=1, got ${is_leader_values:-missing}" >&2
+      exit 1
+    fi
   fi
   if [[ "$info_metrics" != *"etcd_server_leader_changes_seen_total{"* && "$info_metrics" != *"etcd_server_leader_changes_seen_total "* ]]; then
     echo "info metrics mismatch: expected etcd_server_leader_changes_seen_total" >&2
@@ -1388,6 +1434,48 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       exit 1
     fi
   done
+  if [[ -n "$INFO_ENDPOINTS" ]]; then
+    status_reported_leader_count="$(printf '%s' "$status_json" | "$JQ" -r '
+      [
+        .[].Status
+        | if has("leader") then .leader elif has("leader_id") then .leader_id elif has("leaderId") then .leaderId else empty end
+      ] | length
+    ')"
+    if [[ "$status_reported_leader_count" != "$expected_status_endpoints" ]]; then
+      echo "INFO_ENDPOINTS leader selection requires every Status response to report a leader: expected ${expected_status_endpoints}, got ${status_reported_leader_count}" >&2
+      exit 1
+    fi
+    if [[ ! "$status_leader_ids" =~ ^[1-9][0-9]*$ ]]; then
+      echo "INFO_ENDPOINTS leader selection requires one shared positive Status leader ID, got ${status_leader_ids}" >&2
+      exit 1
+    fi
+    leader_status_endpoint="$(printf '%s' "$status_json" | "$JQ" -r --arg leader "$status_leader_ids" '
+      [
+        .[]
+        | (if (.Status.header | has("member_id")) then .Status.header.member_id elif (.Status.header | has("memberId")) then .Status.header.memberId else null end) as $member_id
+        | select(($member_id | tostring) == $leader)
+        | .Endpoint
+      ]
+      | if length == 1 then .[0] else "" end
+    ')"
+    if [[ -z "$leader_status_endpoint" ]]; then
+      echo "INFO_ENDPOINTS leader selection could not map Status leader ${status_leader_ids} to exactly one member endpoint" >&2
+      exit 1
+    fi
+    leader_status_index=""
+    for status_index in "${!status_endpoint_array[@]}"; do
+      if [[ "${status_endpoint_array[$status_index]}" == "$leader_status_endpoint" ]]; then
+        leader_status_index="$status_index"
+        break
+      fi
+    done
+    if [[ -z "$leader_status_index" ]]; then
+      echo "INFO_ENDPOINTS leader selection could not map endpoint ${leader_status_endpoint} into STATUS_ENDPOINTS" >&2
+      exit 1
+    fi
+    info_metrics_url="${info_endpoint_array[$leader_status_index]%/}/metrics"
+    info_metrics_must_be_leader="1"
+  fi
   if ! [[ "$min_status_revision" =~ ^[0-9]+$ ]]; then
     echo "status revision must be non-negative, got ${min_status_revision}" >&2
     exit 1
@@ -1421,6 +1509,9 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$status_leader_ids" != "-" ]]; then
     status_summary+=", status_leader_ids=${status_leader_ids}"
+  fi
+  if [[ -n "$INFO_ENDPOINTS" ]]; then
+    status_summary+=", info_metrics_endpoint=${info_metrics_url}"
   fi
   if [[ "$status_raft_terms" != "-" ]]; then
     status_summary+=", status_raft_terms=${status_raft_terms}"
@@ -1606,7 +1697,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     expect_response_headers "info version" "$info_version_url" "application/json" "0"
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
-    expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "${READYZ_URL%/readyz}/metrics" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version"
+    expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "$info_metrics_url" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version" "$info_metrics_must_be_leader"
     status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, apply_duration_metrics=optional-ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, raft_snapshot_file_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
   fi
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then

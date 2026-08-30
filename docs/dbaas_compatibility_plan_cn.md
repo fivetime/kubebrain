@@ -65828,6 +65828,24 @@ cluster ID `7662961163671170154`、revision/index/applied `1258096`、term `862`
 Ready/restart 0，六个临时端口无监听，宿主仍有约 321 GiB 可用空间。A5629 关闭 CountOnly 不发射 upstream Range 延迟 histogram
 的兼容性缺口；跨 follower 的 per-member 指标聚合仍由生产 Prometheus 按 Pod UID 消费，单端人工 scrape 必须显式对齐执行 member。
 
+### A5630：只读发布门禁按 Status leader 选择 info metrics
+
+A5630 处理 A5629 真实验证暴露的门禁假阴性。对照 `/root/etcd/server/etcdserver/txn/range.go`，
+`etcd_server_range_duration_seconds` 属于 backend `txn.Range` 的执行延迟；公开请求经 follower 转发时，应由 leader 观察，不能在
+follower RPC 入口再发射一份而造成双计数。旧 `validate-dataplane-readonly.sh` 却始终从 `READYZ_URL` 推导单个 info
+`/metrics`，所以请求在 leader 执行、readiness 指向 follower 时会错误报告 histogram 缺失。
+
+只读 gate 新增可选 `INFO_ENDPOINTS`，与 `STATUS_ENDPOINTS` 按位置一一对应。启用完整 info metrics 检查时，脚本在已经完成 endpoint
+集合、member ID 和 leader envelope 校验的 Status 快照上，要求每个响应都报告同一个正 leader ID，将它唯一映射到 member endpoint，
+再选择相同位置的 info base URL。选中的 scrape 还必须给出 `etcd_server_is_leader=1`，通过摘要记录精确
+`info_metrics_endpoint`。info endpoint 数量不等、空项、尾斜杠规范化后重复、带 path/query/fragment、leader 缺失/分歧或不属于成员集合
+均 fail closed；未配置时保留原有 `READYZ_URL` 推导，兼容已显式对齐的旧调用和单成员实例。
+
+确定性 RED 使用两个 Status endpoint：第一个 follower member 456、第二个 leader member 789；默认 readiness scrape 删除 Range
+histogram，只有第二个对应 info endpoint 提供完整 fixture。旧实现精确失败为
+`info metrics mismatch: expected etcd_server_range_duration_seconds_count`；修复后选择第二项并通过。另有负例覆盖配置依赖、数量、重复、
+URL 边界、Status leader 缺失/分歧、leader 不在 member 集合，以及选中 scrape 自报 `is_leader=0` 的换主竞态。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
