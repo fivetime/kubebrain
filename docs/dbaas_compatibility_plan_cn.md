@@ -35,7 +35,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；read-only serializable Txn 复用上述单一 checkpoint；当前无已知数据语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
-| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：短时单轮及三轮交替断线、断线期间持续写已门禁；继续数天级长断线/慢消费者叠加/连续滚动 soak |
+| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：短时单轮/三轮交替断线、断线期间持续写及慢消费者 catch-up 中断后的精确恢复已门禁；继续数天级长断线/连续滚动/多可用区 soak |
 | Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；异步 revoke 被阻断时 TTL 与 etcd 一样持续为负；继续扩大故障、并发和错误差分矩阵 |
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
@@ -65552,6 +65552,43 @@ runner 与 port-forward 均不存在。负例日志因 `/tmp` 挂载不支持 `g
 全部 GREEN。提交前 703 项 inventory 为 `170/193/180/160`；提交后四片为 `250.891/446.277/304.261/514.049s`，全部 GREEN。
 A5622 关闭短时三轮断线/恢复交替且每个 watcher 均实际恢复响应的证据缺口；它不替代数天级长断线、慢消费者叠加、连续 rollout 与多可用区
 网络故障长稳，后者继续保持 P1。
+
+### A5623：慢消费者 catch-up 中断后按下一条未验证 revision 显式恢复
+
+对照 `/root/etcd` `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+`tests/integration/clientv3/watch/watch_test.go::{TestWatchReconnRunning,TestWatchResumeAfterDisconnect}` 与
+`client/v3/watch.go::serveSubstream`：etcd 将 mutation client 与可故障 Watch client 分开，断线后以客户端已经交付的最后事件
+`ModRevision+1` 作为下一次起点，既不能从原始 revision 全量重放，也不能越过尚未交付的事件。A5622 只证明普通 clientv3 watcher 的恢复；
+真实 slow-consumer raw gRPC 流在服务端进入 catch-up 后若 transport 被取消，旧 runner 只能收到 EOF 并失败，尚不能证明这一组合路径可恢复。
+
+提交 `e975514d` 为每个 raw slow watcher 保存独立 stream context 与工厂；收到 EOF 或 canonical `Unavailable` 后，以
+`written[len(observations)].revision`，即下一条尚未由 oracle 验证的精确 revision，重建 Watch RPC。重建 Created 必须保持固定 Watch ID、
+cluster/member 身份、合法 header 且零事件；临时 `Unavailable` 采用 `10ms..1s` 有界指数退避，权限等非可恢复错误立即失败。最终仍逐项比较
+全部 `(index, revision)`，因此重复、跳过、乱序和错误恢复点均不能得到 GREEN。新增
+`MIN_RAW_SLOW_CONSUMER_RECONNECTS`（默认 0）逐 consumer 设下限并报告 total/min；启用它必须同时启用严格 slow-consumer 指标，且不与
+预期 compacted 终态混用。无故障负例完整写入 12,000 个事件后得到 `raw watch observed 0 reconnects, require at least 1`，明确 RED，
+证明完成事件对账或稳态流本身不会冒充恢复。
+
+服务端在 catch-up generation 的 transport context 被取消时只留下已进入 `catch_up` 的事实，不会增加 recovered、dropped 或 generation
+终态计数；因此 runner 新增严格 `interrupted` 预言机，要求 pressure 与 completion 都精确为 baseline + N 个 catch-up，其他六个计数保持
+不变，并要求 raw reconnect 下限大于零。`SLOW_CONSUMER_HOLD_AFTER_PRESSURE` 只允许在该模式使用、上限 10 分钟；runner 在精确 pressure
+barrier 后输出可观测日志并有界保持，供外部故障器在开始 Recv 前切断 transport。配置、wrapper、Created/身份校验、下一 revision、
+不可恢复错误、重开阶段 `Unavailable` 退避、零故障门禁和指标预言机均有单元测试；显式 stream 交换使用短临界区，Recv/CloseSend 不持锁，
+聚焦 race 50 轮及完整包 race 10 轮通过。
+
+真实组合门禁使用 A5608 三副本 mTLS leader `a4657-tls-2`、可停止的 `127.0.0.1:13379` Watch port-forward、始终在线的
+`172.18.0.2:30091` 独立 writer 和独立 `127.0.0.1:18082` 指标通道。1 个普通 watcher、1 个 raw slow consumer、并发 64 写入
+12,000 个事件；服务端精确报告 catch-up pressure 后完全停止 Watch transport 约 2 秒，再恢复同一端口。最终两路均精确对账 revisions
+`1197522..1209521`；摘要为 `transport_connections=5`、Created 后 transport reconnects 3、普通 watcher 响应承载恢复流 1、raw
+reconnect 1，三类下限均满足，严格 interrupted 指标无额外终态，最终 exact-prefix cleanup 及独立 cleanup-only 复验都为零。首次误用受限
+`alice` 证书在 preflight 即返回 PermissionDenied，未取得 ownership、未写入数据；随后使用既有 `KubeWharfServer` 管理身份，数据和指标
+各三份凭据始终由独立 `/dev/fd` process substitution 提供，没有落盘或修改 auth 图。
+
+最终 watch-soak 完整包普通 20 轮 `29.107s`、race 10 轮 `26.260s`、vet、shell syntax 与 diff check 全部 GREEN。提交前
+`hack/production/test-shard.sh --verify 4` 为 703 项、`170/193/180/160`；提交后四片为
+`263.545/450.568/305.154/517.821s`，全部 GREEN。临时门禁日志均经 `gio trash` 移入系统回收站、可恢复；runner、port-forward 和临时
+目录全部不存在，KubeBrain/PD/TiKV 3+3+3 Ready/restart 0。A5623 关闭一次短时“真实慢消费者压力 + transport 中断 + raw revision
+恢复”组合证据缺口；数天级长断线、连续 rollout 和多可用区网络故障长稳仍保持 P1。
 
 ## 提交规则
 
