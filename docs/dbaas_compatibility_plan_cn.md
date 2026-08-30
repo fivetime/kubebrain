@@ -66009,6 +66009,43 @@ error；CA/cert/key/curl wrapper 只存在于四个独立匿名 memfd。
 3+3+3 Ready/restart 0，六个诊断端口无监听，宿主剩余约 320 GiB。A5634 关闭单次 Status 快照无法证明 leader metrics
 在同一任期内稳定的发布证据时间窗口。
 
+### A5635：将逐端点 HashKV 身份绑定到 Status 成员
+
+只读 gate 原先分别要求 Status 与 HashKV 返回的 endpoint 集合完整、member ID 为正且各自无重复，但没有比较同一 endpoint 在两种 RPC
+中的 member ID。若代理或错误路由让两个 HashKV 响应互换，只要 cluster、revision、hash、term 以及 member ID 集合仍相同，旧 gate 会把
+endpoint 1 的 Status 身份与 endpoint 2 的 HashKV 证据拼成 GREEN。对照
+`/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::HashKV`，upstream 在返回前由当前 maintenance server 的 header helper
+填充 member ID，因此该字段标识实际服务该 endpoint 请求的成员，而不是可跨 endpoint 置换的集合标签。
+
+启用 HashKV 增强门禁后，脚本现在分别从 Status 与 HashKV 构造按 endpoint 排序的规范 `endpoint<TAB>member ID` 映射，并要求两者逐字节
+相等；只有 exact mapping 成立才输出 `hashkv_endpoint_members_match=true`。确定性 RED 使用两个 endpoint，Status 映射为
+`endpoint1→456, endpoint2→789`，HashKV 保持完全相同的 endpoint/member 集合却交换为 `endpoint1→789, endpoint2→456`；旧 gate
+整体 GREEN，新 gate 精确拒绝 `status/hashkv endpoint member mapping mismatch`。这项校验不假定固定 ordinal，也不要求 HashKV 只能从
+leader 执行，只要求每个独立成员诊断响应忠实绑定到实际被探测的 endpoint。
+
+聚焦只读 gate 普通/race 分别为 `102.821s/104.012s`；Go vet、gofmt、shell syntax、diff check 与固定 digest 的
+`koalaman/shellcheck:v0.11.0 --severity=warning` 对目标脚本检查全部 GREEN。
+
+代码提交 `305d1223fa6f9649b7fd48693f3ceaada289483b` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`248.252/439.064/298.584/517.485s`，全部 GREEN。
+
+真实独立三 PD/三 TiKV 门禁继续复用 A5629 runtime
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`，经 StatefulSet
+UID/resourceVersion/container/image/full args 五重 test 部署为 generation 356，三 Pod Ready/restart 0。首次调用误用只具有限定权限的
+alice client certificate，在最早的只读 prefix count 处精确返回 PermissionDenied；该轮没有写入，也未进入本项 HashKV 校验，不计产品 RED。
+改用夹具既有、映射 root role 的 `KubeWharfServer` 管理证书后，完整 gate GREEN：三端 Status/HashKV 都把 endpoint 精确绑定到 members
+`1279320304/848842929/2985394290`，并明确输出 `hashkv_endpoint_members_match=true`；cluster ID
+`7662961163671170154`、leader `2985394290`、term `885`、revision/index/applied `1258096`、HashKV
+`3680408421`、compact revision `1169203` 全部一致。脚本动态选择 leader info
+`https://127.0.0.1:18081/metrics`、identity `b1f18072`，Status 前后围栏、gateway 预期拒绝、版本、debug/pprof 和全部 metrics
+继续 GREEN。候选窗口日志无 panic/fatal/data corruption/context deadline/TiKV/PD error；CA/cert/key/curl wrapper 只存在于四个独立
+匿名 memfd，没有凭据或诊断文件落盘，也未创建临时 Kubernetes 对象。
+
+最后以新鲜的同类五重 test 回滚稳定 digest。终态 generation/observed 357、current/update `a4657-tls-7d94b578fb`，三 Pod runtime
+恢复 `sha256:5dc368ff1b8f9b6ee791eaf38df58d5da80d4ddbac7c78052b6c2dd4c482968b`；KubeBrain/PD/TiKV
+3+3+3 Ready/restart 0，六个诊断端口无监听，宿主剩余约 320 GiB。client port-forward 在短连接关闭时记录本地 broken pipe，完整 gate
+及 Pod 日志无对应 RPC 错误。A5635 关闭“相同 endpoint/member 集合掩盖 HashKV 响应跨成员置换”的发布证据身份缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

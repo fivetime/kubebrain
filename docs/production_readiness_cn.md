@@ -1694,7 +1694,8 @@ cluster ID 为正 uint64，HashKV hash 为非负 uint32；所有字段要求规�
 分项并以 `ok` 结束。配置 `EXPECTED_READYZ_NAMED_CHECKS=1` 时还会逐项读取这四个
 `/readyz/<check>?verbose` named check 子路径，要求各自只暴露对应 `[+]<check> ok`
 并以 `ok` 结束。HashKV 门禁要求返回 endpoint 集合与 `STATUS_ENDPOINTS` 一致、cluster ID 与
-`EXPECTED_STATUS_CLUSTER_ID` 一致、member ID 为正且集合无重复、所有
+`EXPECTED_STATUS_CLUSTER_ID` 一致、member ID 为正且集合无重复，并要求每个 endpoint
+报告的 member ID 与同一轮 Status 中该 endpoint 的 member ID 精确一致；所有
 endpoint hash 都等于期望 hash，revision/compact revision 非负，且每个 endpoint 的
 compact revision 不得大于同一响应的 hash revision；该项适合冻结写入窗口、升级或恢复后
 钉住 HashKV 诊断结果。它不写入实例，因此
@@ -1743,7 +1744,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时�
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、
 `version_etcdserver=<semver>`、`version_storage=<semver>`、`info_version_storage=<semver>`、
 `gateway_auth_enabled=<bool>`、`gateway_alarms=empty`、`gateway_hashkv_hash=<n>`、
-`gateway_hashkv_revisions_match=true`、`revisions_match=true`、`hashkv_raft_terms=<unique>` 和
+`gateway_hashkv_revisions_match=true`、`hashkv_endpoint_members_match=true`、
+`revisions_match=true`、`hashkv_raft_terms=<unique>` 和
 `raft_terms_match=true` 等证据；
 其中 HashKV/gateway HashKV revision 与 raft term 交叉一致性用于证明本次只读诊断
 来自同一个静态 MVCC/Raft 观察边界；Status 的 MVCC revision、committed/applied index
