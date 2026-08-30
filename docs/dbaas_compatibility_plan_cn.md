@@ -35,7 +35,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；read-only serializable Txn 复用上述单一 checkpoint；当前无已知数据语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
-| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：继续数天级断线/慢消费者 soak |
+| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：短时 transport 断线恢复已门禁；继续数天级多轮断线/慢消费者/连续滚动 soak |
 | Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；异步 revoke 被阻断时 TTL 与 etcd 一样持续为负；继续扩大故障、并发和错误差分矩阵 |
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
@@ -65467,6 +65467,34 @@ wrapper PID `640122` 发 SIGTERM；子进程在 event 1059 取消，3.273 秒内
 两个代码提交前均运行 `hack/production/test-shard.sh --verify 4`，703 项分片恒为 `170/193/180/160`；首提交后四片为
 `249.773/446.734/305.767/514.615s`，wrapper 修复后为 `269.621/459.423/312.323/526.260s`，全部 GREEN。A5619 关闭的是
 “外部终止仍执行可证明的有界清理”与 TLS server-name/脚本信号链路，不替代矩阵仍开放的数天级断线、慢消费者和连续滚动长稳。
+
+### A5620：Watch transport 断线必须被观测，恢复后仍按 revision 精确对账
+
+对照 `/root/etcd` `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+`tests/integration/clientv3/watch/watch_test.go::TestWatchResumeAfterDisconnect`：upstream 主动 Drop/Pause 已建立的连接，恢复后要求从原
+revision 精确收到两条历史；`client/v3/watch.go` 也明确约定未取消 context 上的 recoverable error 会持续重连。A5619 后的 KubeBrain
+runner 虽可长期比较全部 `(event index, revision)`，但没有证明测试窗口内真的发生过传输断线；完全无故障的运行会得到相同 GREEN，不能作为
+“断线恢复”证据。
+
+提交 `86640717f27fa114b746a96d6dea712fafc6c067` 为主 etcd client 安装 gRPC client-side stats handler，只统计 TLS/HTTP2 transport
+成功建立后的 `ConnBegin`。所有普通 Watch 越过 Created barrier 后才冻结连接基线，新增 `MIN_TRANSPORT_RECONNECTS`（默认 0）要求完成前
+的连接增量达到下限；因此启动期 dial 抖动、初始连接和 raw slow-consumer 的独立 client 都不能冒充测试期重连。门禁位于全部事件的精确
+loss/duplication/order 对账之后，摘要同时报告 total connections、Created 后 reconnects 和要求下限。配置只接受 0--1,000,000 的 canonical
+十进制整数，wrapper 显式传递；内存 TLS 握手回归证明真实 client transport 计为 1，表测固定 server-side event 不计数、ConnEnd 不计数、
+Created 后两次 ConnBegin 精确计为 2，以及下限不足 fail closed。
+
+真实三副本 TLS 集群先执行无故障预期 RED：2 Watch/100 events 完整写到 revision 1179261，但 baseline/total=`1/1`、reconnects=0，
+`MIN_TRANSPORT_RECONNECTS=1` 因而 exit 1，随后最终 CountOnly 证明专属前缀为空。首轮 port-forward 故障错误击中 event 1009 的 in-flight
+Put，client 返回 `Unavailable/EOF`；runner 没有对不确定提交结果盲重试，而是失败并清空前缀，这个 RED 保留为故障注入边界。纠正门禁使用
+10 秒写间隔，在独立 preflight 已证明 2 keys 后、无 Put 在途的窗口停止并重建同一 `127.0.0.1:13379` TLS port-forward。最终 2 Watch
+精确收到 5 个 events、revisions `1180281..1180285`，`transport_connections=2`、Created 后 `transport_reconnects=1`、下限 1，
+wrapper exit 0 且最终前缀为空。三个证书仍分别通过独立 `/dev/fd` process substitution 输入；没有落盘凭据、修改 StatefulSet/auth/产品
+镜像或重启数据面，KubeBrain 三副本 Ready/restart 0，所有 runner、port-forward 和临时构建目录均不存在。
+
+watch-soak 完整包普通 20 轮 `28.243s`、race 10 轮 `25.887s`、vet、shell syntax 与 diff check 全部 GREEN。提交前
+`hack/production/test-shard.sh --verify 4` 为 703 项、`170/193/180/160`；提交后四片为
+`258.664/444.515/302.147/511.597s`，全部 GREEN。A5620 关闭一次可控、无 in-flight mutation 的短时客户端 transport 断线证据缺口；
+它不把 40 秒门禁扩张为数天长稳，也不证明多轮长断线、断线期间持续写、慢消费者与连续 rollout 的组合路径，后者继续保持 P1。
 
 ## 提交规则
 
