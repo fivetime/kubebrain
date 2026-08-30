@@ -35,7 +35,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；read-only serializable Txn 复用上述单一 checkpoint；当前无已知数据语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
-| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：短时单轮断线及断线期间持续写已门禁；继续数天级多轮断线/慢消费者/连续滚动 soak |
+| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：短时单轮及三轮交替断线、断线期间持续写已门禁；继续数天级长断线/慢消费者叠加/连续滚动 soak |
 | Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；异步 revoke 被阻断时 TTL 与 etcd 一样持续为负；继续扩大故障、并发和错误差分矩阵 |
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
@@ -65523,6 +65523,35 @@ writer 读取到 1000 keys，证明剩余 520 个 Put 在 Watch 不可达期间�
 `hack/production/test-shard.sh --verify 4` 为 703 项、`170/193/180/160`；提交后四片为
 `257.009/450.711/302.502/517.982s`，全部 GREEN。A5621 关闭一次短时 Watch 断线期间持续写并从历史追平的证据缺口；它仍不替代
 数天级多轮长断线、断线/恢复反复交替、慢消费者叠加和连续 rollout 长稳，后者继续保持 P1。
+
+### A5622：逐 watcher 响应承载恢复流门禁与三轮交替断线
+
+A5620 的 `ConnBegin` 只能证明 transport 建立过：一次长故障中的连接抖动也可能制造多个连接，不能证明每个逻辑 Watch 都在每轮恢复后重新
+收到服务端响应。提交 `aeae7f46397db59485a2861374facd24677e79d7` 因此新增可选
+`MIN_RESUMED_WATCH_STREAMS_PER_WATCHER`。gRPC stats handler 只接受 client-side `/etcdserverpb.Watch/Watch` 的 `InPayload`，并以
+RPC 为单位 CAS 去重；同一流上的多个 payload 只计一次，KV/Status 等 RPC、server-side payload 和仅建连而无响应的流均不计。Created
+barrier 后冻结每个 watcher 的 payload-bearing RPC baseline，结束时逐 watcher 相减并取最小值，任何 watcher 未达到门限都 fail closed；
+摘要同时输出总恢复流、所有 watcher 的最小恢复流及配置下限，原 transport 计数继续作为独立证据。
+
+clientv3 默认把 outgoing metadata 相同的多个逻辑 Watch 复用到同一双向 RPC，无法从 client stats 把重试归属到具体 watcher。新门禁启用时
+runner 才给每个 watcher 加入仅含 canonical 数字 ID 的非敏感 metadata，使各 watcher 拥有独立可恢复 Watch RPC，但仍共享同一底层
+transport；默认下限 0 完全保留原复用形状。为避免误把 10 万 watcher 配成 10 万独立 RPC，启用时 `WATCHERS` 硬限 1000，负数、前导零、
+超出 100 万的门限及 watcher 上限均在拨号前拒绝。表测覆盖 method/client 过滤、单 RPC 多 payload 去重、不同 watcher 归属、逐 watcher
+最小值和空门禁；wrapper 固定默认值与透传。
+
+无故障负例使用 2 Watch/100 events，完整写到 revision `1181394` 后仍得到每 watcher 恢复流 0，下限 1 明确 RED、wrapper exit 1，随后
+exact-prefix cleanup 成功；这证明初始 Created 和稳态 payload 没有冒充恢复。真实门禁继续使用 A5608 三副本 mTLS 集群、可停止的
+`127.0.0.1:13379` Watch port-forward 与 `172.18.0.2:30089` 独立 writer，在 2 Watch/4000 events、20ms 持续写期间连续三次完全
+停止 port-forward、保持离线 2 秒、重建同一端口并保留 4 秒响应窗口。runner 在每个故障/恢复窗口均存活，最终精确收到 revisions
+`1181396..1185395` 的全部 4000 个事件，无丢失、重复或乱序；`transport_connections=5`、Created 后
+`transport_reconnects=3`，两个 watcher 各恰好 3 条响应承载恢复流，总计 6，全部满足下限 3，wrapper exit 0 且前缀清零。
+
+凭据仍仅经三个独立 `/dev/fd` process substitution 输入，未修改 StatefulSet/auth/PD/TiKV/产品镜像；KubeBrain 3/3 Ready/restart 0，
+runner 与 port-forward 均不存在。负例日志因 `/tmp` 挂载不支持 `gio trash`，已显式移动到系统 Trash `files` 目录；真实门禁日志由
+`gio trash` 正常回收，两者均可恢复。watch-soak 完整包普通 20 轮 `28.243s`、race 10 轮 `25.778s`、vet、shell syntax 与 diff check
+全部 GREEN。提交前 703 项 inventory 为 `170/193/180/160`；提交后四片为 `250.891/446.277/304.261/514.049s`，全部 GREEN。
+A5622 关闭短时三轮断线/恢复交替且每个 watcher 均实际恢复响应的证据缺口；它不替代数天级长断线、慢消费者叠加、连续 rollout 与多可用区
+网络故障长稳，后者继续保持 P1。
 
 ## 提交规则
 
