@@ -1592,7 +1592,14 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 	}
 	resumeGeneration := func() bool {
 		_, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
-		if (!leadingFresh && !w.grpcServer.peers.EtcdProxyEnabled()) || w.nextWatchRevisionCompacted(ctx, id) {
+		if !leadingFresh && !w.grpcServer.peers.EtcdProxyEnabled() {
+			return false
+		}
+		if w.nextWatchRevisionCompacted(ctx, id) {
+			// This is the same terminal recovery outcome as an authoritative
+			// backend open returning ErrCompacted below. Record it here because
+			// the durable pre-probe deliberately prevents that open altogether.
+			emitWatchGenerationRecovery(w.metricCli, watchGenerationRecoveryCompacted)
 			return false
 		}
 		// Backend and proxy channels are generation-scoped. Resume from the

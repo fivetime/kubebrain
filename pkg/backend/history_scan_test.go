@@ -17,6 +17,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -40,12 +41,17 @@ type gatedIterKV struct {
 	storage.KvStorage
 	gateSubstr []byte
 	iterCount  int32
+	entered    chan struct{}
+	enterOnce  sync.Once
 	release    chan struct{}
 }
 
 func (g *gatedIterKV) Iter(ctx context.Context, start []byte, end []byte, timestamp uint64, limit uint64) (storage.Iter, error) {
 	if len(g.gateSubstr) > 0 && bytes.Contains(start, g.gateSubstr) {
 		atomic.AddInt32(&g.iterCount, 1)
+		if g.entered != nil {
+			g.enterOnce.Do(func() { close(g.entered) })
+		}
 		select {
 		case <-g.release:
 		case <-ctx.Done():
@@ -53,6 +59,117 @@ func (g *gatedIterKV) Iter(ctx context.Context, start []byte, end []byte, timest
 		}
 	}
 	return g.KvStorage.Iter(ctx, start, end, timestamp, limit)
+}
+
+// TestHistoryScanRejectsCompactionThatRacesTheScan pins the active-compaction
+// side of etcd's unsynced-watch contract. Upstream removes an unsynced watcher
+// when its min revision falls below a newly published compact watermark. A
+// KubeBrain history fallback likewise must not pass its admission check, block
+// in storage, then return the now-compacted window after another leader commits
+// a newer durable watermark.
+func TestHistoryScanRejectsCompactionThatRacesTheScan(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	gkv := &gatedIterKV{
+		KvStorage: imemkv.NewKvStorage(), entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	defer func() { require.NoError(t, gkv.Close()) }()
+	b := NewBackend(gkv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	baseKey := prefix + "/history-compact-race/"
+	first, err := b.Create(ctx, newCreateRequest(baseKey+"a", "a1"))
+	require.NoError(t, err)
+	second, err := b.Create(ctx, newCreateRequest(baseKey+"b", "b1"))
+	require.NoError(t, err)
+	waitCommitted(t, b, second.Header.Revision)
+	gkv.gateSubstr, _ = b.historyPrefixBounds([]byte(baseKey))
+
+	var events []*proto.Event
+	var watchErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		events, watchErr = b.historyWatchEvents(
+			ctx, baseKey, first.Header.Revision, second.Header.Revision, second.Header.Revision,
+		)
+	}()
+	select {
+	case <-gkv.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("history scan did not reach compaction race gate")
+	}
+
+	// Model a concurrent compaction committed by another serving replica. Only
+	// advance the shared logical watermark: physical GC is deliberately omitted
+	// so a stale scan can still return rows and expose the missing post-read gate.
+	batch := gkv.BeginBatchWrite()
+	batch.Put(getCompactKey(prefix), uint64ToBytes(second.Header.Revision), 0)
+	require.NoError(t, batch.Commit(ctx))
+	close(gkv.release)
+	<-done
+
+	require.Nil(t, events)
+	require.ErrorContains(t, watchErr, fmt.Sprintf(
+		"compacted at %d newer than requested revision %d", second.Header.Revision, first.Header.Revision,
+	))
+}
+
+// TestHistoryScanRacingCompactionKeepsBoundaryWatchable locks etcd's strict
+// boundary: revision == compactRevision remains readable/watchable. The
+// post-scan fence must reject only an older start, not skip or cancel the event
+// exactly at the newly committed watermark.
+func TestHistoryScanRacingCompactionKeepsBoundaryWatchable(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	gkv := &gatedIterKV{
+		KvStorage: imemkv.NewKvStorage(), entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	defer func() { require.NoError(t, gkv.Close()) }()
+	b := NewBackend(gkv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	baseKey := prefix + "/history-compact-boundary/"
+	first, err := b.Create(ctx, newCreateRequest(baseKey+"seed", "seed"))
+	require.NoError(t, err)
+	boundary, err := b.Create(ctx, newCreateRequest(baseKey+"boundary", "boundary"))
+	require.NoError(t, err)
+	tail, err := b.Create(ctx, newCreateRequest(baseKey+"tail", "tail"))
+	require.NoError(t, err)
+	waitCommitted(t, b, tail.Header.Revision)
+	require.Less(t, first.Header.Revision, boundary.Header.Revision)
+	gkv.gateSubstr, _ = b.historyPrefixBounds([]byte(baseKey))
+
+	var events []*proto.Event
+	var watchErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		events, watchErr = b.historyWatchEvents(
+			ctx, baseKey, boundary.Header.Revision, tail.Header.Revision, tail.Header.Revision,
+		)
+	}()
+	select {
+	case <-gkv.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("boundary history scan did not reach compaction race gate")
+	}
+	batch := gkv.BeginBatchWrite()
+	batch.Put(getCompactKey(prefix), uint64ToBytes(boundary.Header.Revision), 0)
+	require.NoError(t, batch.Commit(ctx))
+	close(gkv.release)
+	<-done
+
+	require.NoError(t, watchErr)
+	require.Len(t, events, 2)
+	require.Equal(t, boundary.Header.Revision, events[0].Revision)
+	require.Equal(t, tail.Header.Revision, events[1].Revision)
 }
 
 // TestHistoryScanHerdSharesOneScan pins #30: a reconnect herd of watchers that

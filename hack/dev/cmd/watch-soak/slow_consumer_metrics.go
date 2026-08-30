@@ -249,6 +249,11 @@ func expectedWatchOutcomes(baseline watchOutcomes, outcome string, slowConsumers
 			expected.slow.dropped += delta
 			expected.generation.recovered += delta
 		}
+	case slowConsumerExpectedCompacted:
+		if completed {
+			expected.slow.dropped += delta
+			expected.generation.compacted += delta
+		}
 	default:
 		return watchOutcomes{}, fmt.Errorf("unsupported slow-consumer expected outcome %q", outcome)
 	}

@@ -54,6 +54,7 @@ const (
 const (
 	slowConsumerExpectedRecovered = "recovered"
 	slowConsumerExpectedDropped   = "dropped"
+	slowConsumerExpectedCompacted = "compacted"
 )
 
 var runIDPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
@@ -164,11 +165,12 @@ func configFromEnvironment() (config, error) {
 		return config{}, errors.New("REQUIRE_SLOW_CONSUMER_OUTCOMES=true requires SLOW_CONSUMER=true")
 	}
 	expectedOutcome := os.Getenv("SLOW_CONSUMER_EXPECTED_OUTCOME")
-	if expectedOutcome != slowConsumerExpectedRecovered && expectedOutcome != slowConsumerExpectedDropped {
-		return config{}, fmt.Errorf("SLOW_CONSUMER_EXPECTED_OUTCOME must be recovered or dropped: %q", expectedOutcome)
+	if expectedOutcome != slowConsumerExpectedRecovered && expectedOutcome != slowConsumerExpectedDropped &&
+		expectedOutcome != slowConsumerExpectedCompacted {
+		return config{}, fmt.Errorf("SLOW_CONSUMER_EXPECTED_OUTCOME must be recovered, dropped, or compacted: %q", expectedOutcome)
 	}
-	if expectedOutcome == slowConsumerExpectedDropped && (!slowConsumer || !requireOutcomes) {
-		return config{}, errors.New("SLOW_CONSUMER_EXPECTED_OUTCOME=dropped requires SLOW_CONSUMER=true and REQUIRE_SLOW_CONSUMER_OUTCOMES=true")
+	if expectedOutcome != slowConsumerExpectedRecovered && (!slowConsumer || !requireOutcomes) {
+		return config{}, fmt.Errorf("SLOW_CONSUMER_EXPECTED_OUTCOME=%s requires SLOW_CONSUMER=true and REQUIRE_SLOW_CONSUMER_OUTCOMES=true", expectedOutcome)
 	}
 	observers := int64(watchers + slowConsumers)
 	if observers*int64(events) > maximumWatchObservations {
@@ -407,7 +409,15 @@ func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory
 			return err
 		}
 	}
-	if err := consumeRawSlowWatches(slows, writtenEvents); err != nil {
+	compactRevision := int64(0)
+	if cfg.slowConsumerExpectedOutcome == slowConsumerExpectedCompacted {
+		compactRevision = writtenEvents[len(writtenEvents)-1].revision
+		response, compactErr := client.Compact(ctx, compactRevision)
+		if compactErr = validateSlowConsumerCompactResponse(compactRevision, response, compactErr); compactErr != nil {
+			return compactErr
+		}
+	}
+	if err := consumeRawSlowWatches(slows, writtenEvents, cfg.slowConsumerExpectedOutcome); err != nil {
 		return err
 	}
 
@@ -432,9 +442,19 @@ func run(ctx context.Context, client *clientv3.Client, cfg config, clientFactory
 		}
 	}
 	cancelWatches()
-	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d prefix=%s write_interval=%s write_concurrency=%d\n",
+	fmt.Printf("Watch soak completed: watchers=%d slow_consumer=%t slow_consumers=%d expected_slow_outcome=%s outcome_metrics=%t events=%d first_revision=%d last_revision=%d compact_revision=%d prefix=%s write_interval=%s write_concurrency=%d\n",
 		cfg.watchers, cfg.slowConsumer, cfg.slowConsumers, cfg.slowConsumerExpectedOutcome, cfg.requireSlowConsumerOutcomes, cfg.events, writtenEvents[0].revision,
-		writtenEvents[len(writtenEvents)-1].revision, prefix, cfg.writeInterval, cfg.writeConcurrency)
+		writtenEvents[len(writtenEvents)-1].revision, compactRevision, prefix, cfg.writeInterval, cfg.writeConcurrency)
+	return nil
+}
+
+func validateSlowConsumerCompactResponse(revision int64, response *clientv3.CompactResponse, err error) error {
+	if err != nil {
+		return fmt.Errorf("compact slow-consumer history at revision %d: %w", revision, err)
+	}
+	if response == nil || response.Header == nil || response.Header.Revision < revision {
+		return fmt.Errorf("compact slow-consumer history at revision %d returned invalid response: %+v", revision, response)
+	}
 	return nil
 }
 

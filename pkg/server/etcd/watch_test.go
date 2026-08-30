@@ -15,6 +15,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -46,6 +47,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
@@ -172,6 +174,27 @@ type blockingFirstSendWatchServer struct {
 	once    sync.Once
 	mu      sync.Mutex
 	sent    []*etcdserverpb.WatchResponse
+}
+
+type compactionRaceWatchStorage struct {
+	storage.KvStorage
+	match     []byte
+	armed     atomic.Bool
+	enterOnce sync.Once
+	entered   chan struct{}
+	release   chan struct{}
+}
+
+func (s *compactionRaceWatchStorage) Iter(ctx context.Context, start, end []byte, timestamp, limit uint64) (storage.Iter, error) {
+	if s.armed.Load() && bytes.Contains(start, s.match) {
+		s.enterOnce.Do(func() { close(s.entered) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.KvStorage.Iter(ctx, start, end, timestamp, limit)
 }
 
 type queuedControlWatchServer struct {
@@ -1278,6 +1301,15 @@ type generationWatchBackend struct {
 	progressInterval        time.Duration
 }
 
+type compactedGenerationWatchBackend struct {
+	*generationWatchBackend
+	compactRevision atomic.Uint64
+}
+
+func (b *compactedGenerationWatchBackend) GetCompactRevisionFresh(context.Context) (uint64, error) {
+	return b.compactRevision.Load(), nil
+}
+
 type blockingWatchCompactRevisionBackend struct {
 	BackendShim
 	entered chan struct{}
@@ -2097,6 +2129,54 @@ func TestFreshLeaderReopensLocalWatchWithoutPeerProxy(t *testing.T) {
 	<-done
 }
 
+func TestFreshLeaderCompactedBeforeReopenRecordsTerminalOutcome(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	initWatchGenerationRecoveryMetrics(rec)
+	firstCh := make(chan etcdproxy.WatchResult)
+	called := make(chan uint64, 1)
+	backend := &compactedGenerationWatchBackend{generationWatchBackend: &generationWatchBackend{
+		BackendShim: server.backend, generations: []<-chan etcdproxy.WatchResult{firstCh}, called: called,
+	}}
+	server.backend = backend
+	server.peers = testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return 7, true },
+	}
+
+	stream := &fakeWatchServer{ctx: context.Background()}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches:   map[int64]*watch{7: {start: "/registry/watch/precompact/", syncedRev: 9, sourceRev: 9}},
+		metricCli: rec,
+	}
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(context.Background(), 7, &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/registry/watch/precompact/"), StartRevision: 10,
+		})
+	}()
+	require.Equal(t, uint64(10), <-called)
+	backend.compactRevision.Store(11)
+	close(firstCh)
+	<-done
+
+	require.Len(t, stream.sent, 1)
+	terminal := stream.sent[0]
+	require.True(t, terminal.GetCanceled())
+	require.Equal(t, int64(11), terminal.GetCompactRevision())
+	require.Empty(t, terminal.GetCancelReason())
+	require.Equal(t, []interface{}{int64(0), 1},
+		recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryCompacted))
+	require.Equal(t, []interface{}{int64(0)},
+		recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRetry))
+	require.Equal(t, []interface{}{int64(0)},
+		recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRecovered))
+}
+
 // TestSlowLocalWatchBeyondRingReopensFromDurableHistory pins the complete
 // client-visible contract behind the backend hub's "dropped" outcome. The hub
 // closes one overloaded backend generation after its missed tail leaves the
@@ -2209,6 +2289,128 @@ func TestSlowLocalWatchBeyondRingReopensFromDurableHistory(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// TestSlowLocalWatchCompactedWhileReopeningCancelsAtDurableWatermark pins the
+// active-compaction race behind generation recovery. The slow generation is
+// first evicted from the real bounded Hub. Its durable history scan is then
+// held open while Compact advances the shared logical watermark past the first
+// undelivered revision. Like upstream's unsynced watcher, the logical Watch must
+// terminate with the authoritative compact revision rather than replay rows
+// returned by a stale scan or retry the generation forever.
+func TestSlowLocalWatchCompactedWhileReopeningCancelsAtDurableWatermark(t *testing.T) {
+	rec := &recordingMetrics{}
+	watchPrefix := "/registry/watch/compact-race/"
+	kv := &compactionRaceWatchStorage{
+		KvStorage: memkv.NewKvStorage(), match: []byte(watchPrefix),
+		entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	released := false
+	defer func() {
+		if !released {
+			close(kv.release)
+		}
+	}()
+	rawBackend := backend.NewBackend(kv, backend.Config{
+		Identity:                "slow-watch-compaction-peer",
+		EnableEtcdCompatibility: true,
+		WatchCacheSize:          4,
+		WatchFanoutBuffer:       1,
+	}, rec)
+	server := New(rawBackend, rec, testPeerService{
+		isLeader: true,
+		epochFn:  func() (uint64, bool) { return 7, true },
+	})
+	defer func() {
+		require.NoError(t, server.Close())
+		closer, ok := rawBackend.(interface{ Close() error })
+		require.True(t, ok)
+		require.NoError(t, closer.Close())
+	}()
+
+	const totalEvents = 112 // > result buffer (100) + hub buffer (1) + ring (4)
+	key := func(i int) []byte { return []byte(fmt.Sprintf("%s%03d", watchPrefix, i)) }
+	first, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key(0), Value: []byte("0")})
+	require.NoError(t, err)
+	firstRevision := uint64(first.GetHeader().GetRevision())
+	require.Eventually(t, func() bool {
+		return server.backend.GetPublishedRevision() >= firstRevision
+	}, 5*time.Second, time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &blockingFirstSendWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: ctx},
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	wt := &watch{
+		start: watchPrefix, end: "/registry/watch/compact-race0",
+		syncedRev: firstRevision - 1, sourceRev: firstRevision - 1,
+	}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: wt}, metricCli: rec,
+	}
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+			Key: []byte(watchPrefix), RangeEnd: []byte("/registry/watch/compact-race0"),
+			StartRevision: int64(firstRevision),
+		})
+	}()
+	<-stream.started
+
+	lastRevision := firstRevision
+	for i := 1; i < totalEvents; i++ {
+		response, putErr := server.Put(context.Background(), &etcdserverpb.PutRequest{
+			Key: key(i), Value: []byte(fmt.Sprintf("%d", i)),
+		})
+		require.NoError(t, putErr)
+		lastRevision = uint64(response.GetHeader().GetRevision())
+		require.Equal(t, firstRevision+uint64(i), lastRevision)
+		require.Eventually(t, func() bool {
+			return server.backend.GetPublishedRevision() >= lastRevision
+		}, 5*time.Second, time.Millisecond)
+	}
+
+	// Arm only the reopen scan; all setup writes and the original generation are
+	// already established. Releasing the blocked public Send lets the Hub expose
+	// its dropped generation and starts durable catch-up.
+	kv.armed.Store(true)
+	close(stream.release)
+	select {
+	case <-kv.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("reopened watch did not enter the gated history scan")
+	}
+	_, err = server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: int64(lastRevision)})
+	require.NoError(t, err)
+	close(kv.release)
+	released = true
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("compacted logical watch did not terminate")
+	}
+	responses := stream.snapshot()
+	require.NotEmpty(t, responses)
+	terminal := responses[len(responses)-1]
+	require.True(t, terminal.GetCanceled())
+	require.Empty(t, terminal.GetEvents())
+	require.Empty(t, terminal.GetCancelReason())
+	require.Equal(t, int64(lastRevision), terminal.GetCompactRevision())
+	require.Equal(t, []interface{}{int64(0), 1},
+		recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryCompacted))
+	require.Equal(t, []interface{}{int64(0)},
+		recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRetry))
+	require.Equal(t, []interface{}{int64(0)},
+		recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRecovered))
+	require.Equal(t, []interface{}{int64(0), 1},
+		recordedWatcherSlowConsumerOutcomeValues(rec, "dropped"))
 }
 
 func TestLocalWatchReopenStopsWhenFreshnessIsLostWithoutPeerProxy(t *testing.T) {

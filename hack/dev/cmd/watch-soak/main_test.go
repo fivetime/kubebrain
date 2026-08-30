@@ -102,9 +102,12 @@ func TestConfigRejectsNonCanonicalOrUnsafeInputs(t *testing.T) {
 		}, want: "SLOW_CONSUMERS must be"},
 		"invalid expected outcome": {mutate: func(t *testing.T) {
 			t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "drop")
-		}, want: "must be recovered or dropped"},
+		}, want: "must be recovered, dropped, or compacted"},
 		"dropped outcome requires slow metrics": {mutate: func(t *testing.T) {
 			t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "dropped")
+		}, want: "requires SLOW_CONSUMER=true and REQUIRE_SLOW_CONSUMER_OUTCOMES=true"},
+		"compacted outcome requires slow metrics": {mutate: func(t *testing.T) {
+			t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "compacted")
 		}, want: "requires SLOW_CONSUMER=true and REQUIRE_SLOW_CONSUMER_OUTCOMES=true"},
 		"outcomes require slow": {mutate: func(t *testing.T) {
 			t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "true")
@@ -177,6 +180,29 @@ func TestConfigAllowsExplicitDroppedSlowConsumerOutcome(t *testing.T) {
 	cfg, err := configFromEnvironment()
 	require.NoError(t, err)
 	require.Equal(t, slowConsumerExpectedDropped, cfg.slowConsumerExpectedOutcome)
+}
+
+func TestConfigAllowsExplicitCompactedSlowConsumerOutcome(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("SLOW_CONSUMER", "true")
+	t.Setenv("REQUIRE_SLOW_CONSUMER_OUTCOMES", "true")
+	t.Setenv("SLOW_CONSUMER_EXPECTED_OUTCOME", "compacted")
+	t.Setenv("INFO_ENDPOINT", "https://127.0.0.1:18082/metrics")
+	cfg, err := configFromEnvironment()
+	require.NoError(t, err)
+	require.Equal(t, slowConsumerExpectedCompacted, cfg.slowConsumerExpectedOutcome)
+}
+
+func TestValidateSlowConsumerCompactResponse(t *testing.T) {
+	require.NoError(t, validateSlowConsumerCompactResponse(9, &clientv3.CompactResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 10},
+	}, nil))
+	require.ErrorContains(t, validateSlowConsumerCompactResponse(9, nil, nil), "invalid response")
+	require.ErrorContains(t, validateSlowConsumerCompactResponse(9, &clientv3.CompactResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 8},
+	}, nil), "invalid response")
+	require.ErrorContains(t, validateSlowConsumerCompactResponse(9, nil, errors.New("injected compact failure")),
+		"injected compact failure")
 }
 
 func TestValidateEventRequiresExactIdentityAndEtcdCreateShape(t *testing.T) {

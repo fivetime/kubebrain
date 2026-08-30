@@ -117,16 +117,22 @@ type rawSlowWatchResult struct {
 // the same barrier. The first failure cancels all peer streams, but the helper
 // still joins every goroutine before returning so no credential-bearing client
 // or Recv remains live beyond the run lifecycle.
-func consumeRawSlowWatches(watches []*rawSlowWatch, written []eventObservation) error {
+func consumeRawSlowWatches(watches []*rawSlowWatch, written []eventObservation, expectedOutcome string) error {
 	if len(watches) == 0 {
 		return nil
 	}
 	results := make(chan rawSlowWatchResult, len(watches))
 	for id, watch := range watches {
 		go func() {
-			observed, err := watch.consume()
-			if err == nil {
-				err = validateObservedEvents(observed, written)
+			var err error
+			if expectedOutcome == slowConsumerExpectedCompacted {
+				err = watch.consumeCompacted(written)
+			} else {
+				var observed []eventObservation
+				observed, err = watch.consume()
+				if err == nil {
+					err = validateObservedEvents(observed, written)
+				}
 			}
 			results <- rawSlowWatchResult{id: id, err: err}
 		}()
@@ -142,6 +148,68 @@ func consumeRawSlowWatches(watches []*rawSlowWatch, written []eventObservation) 
 		}
 	}
 	return firstErr
+}
+
+// consumeCompacted requires an exact, ordered prefix of the written events
+// followed by etcd's compacted terminal response. A raw stream may already have
+// queued some pre-compaction events, but it must neither skip/reorder them nor
+// claim the entire history survived once its generation resume point was
+// compacted.
+func (watch *rawSlowWatch) consumeCompacted(written []eventObservation) error {
+	if len(written) == 0 {
+		return errors.New("compacted raw watch requires written events")
+	}
+	target := written[len(written)-1].revision
+	observations := make([]eventObservation, 0, min(watch.eventCount, len(written)))
+	for {
+		response, err := watch.stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return fmt.Errorf("raw watch stream closed without compacted response after %d/%d events", len(observations), watch.eventCount)
+			}
+			return fmt.Errorf("receive compacted raw watch response after %d/%d events: %w", len(observations), watch.eventCount, err)
+		}
+		if response == nil || response.Header == nil || response.Header.ClusterId != watch.clusterID ||
+			response.Header.MemberId != watch.memberID || response.WatchId != slowConsumerWatchID {
+			return fmt.Errorf("compacted raw watch response identity mismatch after %d events: %+v", len(observations), response)
+		}
+		if response.Created {
+			return fmt.Errorf("compacted raw watch returned duplicate Created response after %d events", len(observations))
+		}
+		if response.Canceled {
+			if len(response.Events) != 0 || response.CancelReason != "" || response.CompactRevision != target {
+				return fmt.Errorf("invalid compacted raw watch terminal after %d events: reason=%q compact_revision=%d events=%d want_revision=%d",
+					len(observations), response.CancelReason, response.CompactRevision, len(response.Events), target)
+			}
+			if len(observations) >= len(written) {
+				return fmt.Errorf("compacted raw watch delivered all %d events before cancellation", len(observations))
+			}
+			return validateObservedEventPrefix(observations, written)
+		}
+		for _, event := range response.Events {
+			position := len(observations)
+			if position >= len(written) || position >= watch.eventCount {
+				return fmt.Errorf("compacted raw watch received extra event at position %d", position)
+			}
+			observation, observeErr := observeEvent(watch.prefix, (*clientv3.Event)(event))
+			if observeErr != nil {
+				return fmt.Errorf("compacted raw event position %d: %w", position, observeErr)
+			}
+			observations = append(observations, observation)
+		}
+	}
+}
+
+func validateObservedEventPrefix(observed, written []eventObservation) error {
+	if len(observed) > len(written) {
+		return fmt.Errorf("observed event prefix count %d exceeds written count %d", len(observed), len(written))
+	}
+	for position := range observed {
+		if observed[position] != written[position] {
+			return fmt.Errorf("event position %d mismatch: got=%+v want=%+v", position, observed[position], written[position])
+		}
+	}
+	return nil
 }
 
 // consume begins only after every write and (when requested) the exact catch_up

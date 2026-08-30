@@ -116,7 +116,7 @@ func TestMultipleRawSlowWatchesConsumeAndValidateConcurrently(t *testing.T) {
 		{stream: &scriptedRawWatchStream{responses: events()}, prefix: prefix, eventCount: 2, clusterID: 7, memberID: 9},
 		{stream: &scriptedRawWatchStream{responses: events()}, prefix: prefix, eventCount: 2, clusterID: 7, memberID: 9},
 	}
-	require.NoError(t, consumeRawSlowWatches(watches, written))
+	require.NoError(t, consumeRawSlowWatches(watches, written, slowConsumerExpectedRecovered))
 }
 
 func TestMultipleRawSlowWatchesCancelAndJoinPeersAfterFailure(t *testing.T) {
@@ -133,13 +133,66 @@ func TestMultipleRawSlowWatchesCancelAndJoinPeersAfterFailure(t *testing.T) {
 			prefix: "/registry/watch-soak/failing-slow/", eventCount: 1, clusterID: 7, memberID: 9,
 		},
 	}
-	err := consumeRawSlowWatches(watches, []eventObservation{{index: 0, revision: 8}})
+	err := consumeRawSlowWatches(watches, []eventObservation{{index: 0, revision: 8}}, slowConsumerExpectedRecovered)
 	require.ErrorContains(t, err, "raw slow-consumer watcher 0")
 	require.ErrorContains(t, err, "identity mismatch")
 	select {
 	case <-done:
 	default:
 		t.Fatal("peer raw watcher was not canceled before join returned")
+	}
+}
+
+func TestRawSlowWatchAcceptsExactPrefixThenCompactedTerminal(t *testing.T) {
+	prefix := "/registry/watch-soak/compacted-slow/"
+	event := func(index int, revision int64) *mvccpb.Event {
+		return &mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{
+			Key: []byte(expectedKey(prefix, index)), Value: []byte(expectedValue(index)),
+			CreateRevision: revision, ModRevision: revision, Version: 1,
+		}}
+	}
+	written := []eventObservation{{index: 0, revision: 7}, {index: 1, revision: 8}, {index: 2, revision: 9}}
+	watch := &rawSlowWatch{
+		stream: &scriptedRawWatchStream{responses: []*etcdserverpb.WatchResponse{
+			rawResponse(8, event(0, 7), event(1, 8)),
+			{
+				Header:  &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 9, Revision: 9},
+				WatchId: slowConsumerWatchID, Canceled: true, CompactRevision: 9,
+			},
+		}},
+		prefix: prefix, eventCount: len(written), clusterID: 7, memberID: 9,
+	}
+	require.NoError(t, watch.consumeCompacted(written))
+}
+
+func TestRawSlowWatchRejectsInvalidCompactedTerminalAndPrefix(t *testing.T) {
+	prefix := "/registry/watch-soak/invalid-compacted-slow/"
+	written := []eventObservation{{index: 0, revision: 7}, {index: 1, revision: 9}}
+	validHeader := &etcdserverpb.ResponseHeader{ClusterId: 7, MemberId: 9, Revision: 9}
+	for name, responses := range map[string][]*etcdserverpb.WatchResponse{
+		"wrong compact revision": {{Header: validHeader, WatchId: slowConsumerWatchID, Canceled: true, CompactRevision: 8}},
+		"nonempty reason":        {{Header: validHeader, WatchId: slowConsumerWatchID, Canceled: true, CompactRevision: 9, CancelReason: "compacted"}},
+		"all events before cancel": {
+			rawResponse(9,
+				&mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte(expectedKey(prefix, 0)), Value: []byte(expectedValue(0)), CreateRevision: 7, ModRevision: 7, Version: 1}},
+				&mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte(expectedKey(prefix, 1)), Value: []byte(expectedValue(1)), CreateRevision: 9, ModRevision: 9, Version: 1}},
+			),
+			{Header: validHeader, WatchId: slowConsumerWatchID, Canceled: true, CompactRevision: 9},
+		},
+		"non-prefix event": {
+			rawResponse(9, &mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{
+				Key: []byte(expectedKey(prefix, 1)), Value: []byte(expectedValue(1)), CreateRevision: 9, ModRevision: 9, Version: 1,
+			}}),
+			{Header: validHeader, WatchId: slowConsumerWatchID, Canceled: true, CompactRevision: 9},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			watch := &rawSlowWatch{
+				stream: &scriptedRawWatchStream{responses: responses},
+				prefix: prefix, eventCount: len(written), clusterID: 7, memberID: 9,
+			}
+			require.Error(t, watch.consumeCompacted(written))
+		})
 	}
 }
 
@@ -278,9 +331,21 @@ func TestExpectedWatchOutcomesDistinguishRingRecoveryAndEviction(t *testing.T) {
 		},
 	}, droppedComplete)
 
-	compacted := droppedComplete
-	compacted.generation.compacted++
-	require.True(t, watchOutcomesExceeded(compacted, droppedComplete),
+	compactedEntered, err := expectedWatchOutcomes(baseline, slowConsumerExpectedCompacted, 3, false)
+	require.NoError(t, err)
+	require.Equal(t, droppedEntered, compactedEntered)
+	compactedComplete, err := expectedWatchOutcomes(baseline, slowConsumerExpectedCompacted, 3, true)
+	require.NoError(t, err)
+	require.Equal(t, watchOutcomes{
+		slow: slowConsumerOutcomes{catchUp: 6, recovered: 2, dropped: 4},
+		generation: watchGenerationOutcomes{
+			retry: 4, recovered: 5, compacted: 9, failed: 7,
+		},
+	}, compactedComplete)
+
+	unownedCompaction := droppedComplete
+	unownedCompaction.generation.compacted++
+	require.True(t, watchOutcomesExceeded(unownedCompaction, droppedComplete),
 		"a compacted terminal must fail an oracle expecting transparent generation recovery")
 	_, err = expectedWatchOutcomes(baseline, "unknown", 3, true)
 	require.ErrorContains(t, err, "unsupported")

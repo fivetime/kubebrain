@@ -168,12 +168,9 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 	// leader's TTL cache may predate a compaction committed by its predecessor.
 	// Returning an empty replay in either window would make the watch appear
 	// caught up while silently omitting inaccessible history.
-	compactRevision, err := b.GetCompactRevisionFresh(ctx)
+	compactRevision, err := b.watchHistoryCompactRevision(ctx, fromRevision)
 	if err != nil {
 		return nil, err
-	}
-	if compactRevision > 0 && fromRevision < compactRevision {
-		return nil, fmt.Errorf("cache event oldest revision is compacted at %d newer than requested revision %d", compactRevision, fromRevision)
 	}
 	// A restart commonly asks for exactly the last committed revision while the
 	// leadership hook has conservatively moved elogStart to that same value. V2
@@ -185,6 +182,11 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 		if exact, served, exactErr := b.eventLogWatchEvents(ctx, prefix, fromRevision, currentRevision); exactErr != nil {
 			return nil, exactErr
 		} else if served {
+			// The exact-revision fast path still performs storage reads and can
+			// race a compactor just like the shared scan below.
+			if _, compactErr := b.watchHistoryCompactRevision(ctx, fromRevision); compactErr != nil {
+				return nil, compactErr
+			}
 			return exact, nil
 		}
 	}
@@ -290,6 +292,16 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 		}
 		events = own
 	}
+	// Upstream etcd rechecks unsynced watchers against compactMainRev while
+	// moving them to the synced set. Mirror that ordering boundary after every
+	// KubeBrain history read: a compactor may have advanced the shared durable
+	// watermark while an event-log/object scan was blocked. Returning those rows
+	// would silently turn a watch that must re-list into a successful catch-up.
+	// A compaction that begins after this fence can linearize after the completed
+	// catch-up; the already-materialized events remain safe to deliver.
+	if _, compactErr := b.watchHistoryCompactRevision(ctx, fromRevision); compactErr != nil {
+		return nil, compactErr
+	}
 	if fromRevision <= scanFrom {
 		// Bucket-aligned (or clamped to the watermark): the result is already
 		// exactly this caller's window — reuse it read-only, do not mutate.
@@ -304,6 +316,17 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 		}
 	}
 	return out, nil
+}
+
+func (b *backend) watchHistoryCompactRevision(ctx context.Context, fromRevision uint64) (uint64, error) {
+	compactRevision, err := b.GetCompactRevisionFresh(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if compactRevision > 0 && fromRevision < compactRevision {
+		return 0, fmt.Errorf("cache event oldest revision is compacted at %d newer than requested revision %d", compactRevision, fromRevision)
+	}
+	return compactRevision, nil
 }
 
 // ringEventsFrom returns the watch-cache-ring events with revision >=
