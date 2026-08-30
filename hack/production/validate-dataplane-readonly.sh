@@ -147,6 +147,70 @@ run_etcdctl_with_probe_timeout() {
     "$@"
 }
 
+status_info_selection_fence() {
+  local status_json="$1"
+  local expected_count="$2"
+
+  printf '%s' "$status_json" | "$JQ" -r --argjson expected_count "$expected_count" '
+    def cluster_id:
+      if (.Status.header | has("cluster_id")) then .Status.header.cluster_id
+      elif (.Status.header | has("clusterId")) then .Status.header.clusterId
+      else null end;
+    def member_id:
+      if (.Status.header | has("member_id")) then .Status.header.member_id
+      elif (.Status.header | has("memberId")) then .Status.header.memberId
+      else null end;
+    def leader_id:
+      if (.Status | has("leader")) then .Status.leader
+      elif (.Status | has("leader_id")) then .Status.leader_id
+      elif (.Status | has("leaderId")) then .Status.leaderId
+      else null end;
+    def raft_term:
+      if (.Status | has("raftTerm")) then .Status.raftTerm
+      elif (.Status | has("raft_term")) then .Status.raft_term
+      else null end;
+    def header_raft_term:
+      if (.Status.header | has("raft_term")) then .Status.header.raft_term
+      elif (.Status.header | has("raftTerm")) then .Status.header.raftTerm
+      else null end;
+    def status_errors:
+      if (.Status | has("errors")) then .Status.errors
+      elif (.Status | has("Errors")) then .Status.Errors
+      else [] end;
+    def positive_integer: type == "number" and . == floor and . > 0;
+    if type != "array" or length != $expected_count then
+      "invalid"
+    elif any(.[];
+      (.Endpoint | type) != "string" or .Endpoint == "" or
+      .Status == null or .Status.header == null or
+      (cluster_id | positive_integer | not) or
+      (member_id | positive_integer | not) or
+      (leader_id | positive_integer | not) or
+      (raft_term | positive_integer | not) or
+      (header_raft_term | positive_integer | not) or
+      header_raft_term != raft_term or
+      (status_errors | type) != "array" or
+      (status_errors | length) != 0
+    ) then
+      "invalid"
+    else
+      [
+        .[]
+        | [
+            .Endpoint,
+            (cluster_id | tostring),
+            (member_id | tostring),
+            (leader_id | tostring),
+            (raft_term | tostring)
+          ]
+        | @tsv
+      ]
+      | sort
+      | .[]
+    end
+  '
+}
+
 gateway_auth_args=()
 if [[ -n "$ETCDCTL_USER" || -n "$ETCDCTL_PASSWORD" ]]; then
   if [[ -z "$ETCDCTL_USER" ]]; then
@@ -200,6 +264,7 @@ done
 info_metrics_url="${READYZ_URL%/readyz}/metrics"
 info_metrics_must_be_leader="0"
 expected_info_server_id_hex=""
+info_metrics_status_fence=""
 info_endpoint_array=()
 if [[ -n "$INFO_ENDPOINTS" ]]; then
   if [[ "$INFO_ENDPOINTS" == ,* || "$INFO_ENDPOINTS" == *, || "$INFO_ENDPOINTS" == *,,* ]]; then
@@ -1510,6 +1575,11 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       echo "INFO_ENDPOINTS leader selection could not map endpoint ${leader_status_endpoint} into STATUS_ENDPOINTS" >&2
       exit 1
     fi
+    info_metrics_status_fence="$(status_info_selection_fence "$status_json" "$expected_status_endpoints")"
+    if [[ "$info_metrics_status_fence" == "invalid" ]]; then
+      echo "INFO_ENDPOINTS leader selection requires every Status response to report a complete positive endpoint/cluster/member/leader/raft-term fence" >&2
+      exit 1
+    fi
     info_metrics_url="${info_endpoint_array[$leader_status_index]%/}/metrics"
     info_metrics_must_be_leader="1"
     if ! printf -v expected_info_server_id_hex '%x' "$status_leader_ids" 2>/dev/null; then
@@ -1741,6 +1811,15 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "$info_metrics_url" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version" "$info_metrics_must_be_leader" "$expected_info_server_id_hex"
     status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, apply_duration_metrics=optional-ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, raft_snapshot_file_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
+    if [[ -n "$INFO_ENDPOINTS" ]]; then
+      post_info_status_json="$(run_etcdctl_with_probe_timeout --endpoints="$STATUS_ENDPOINTS" endpoint status -w json)"
+      post_info_status_fence="$(status_info_selection_fence "$post_info_status_json" "$expected_status_endpoints")"
+      if [[ "$post_info_status_fence" != "$info_metrics_status_fence" ]]; then
+        echo "INFO_ENDPOINTS status fence changed across info metrics scrape: before=${info_metrics_status_fence//$'\n'/,}, after=${post_info_status_fence//$'\n'/,}" >&2
+        exit 1
+      fi
+      status_summary+=", info_metrics_status_fence=stable"
+    fi
   fi
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
     status_summary+=", gateway_status_version=${gateway_status_version}"

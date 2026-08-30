@@ -29,6 +29,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		serialHealthJSON  string
 		count             string
 		statusJSON        string
+		secondStatusJSON  string
 		gatewayJSON       string
 		authJSON          string
 		alarmJSON         string
@@ -426,6 +427,40 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			},
 			wantOK:     true,
 			wantOutput: "info_metrics_endpoint=http://172.18.0.4:8080/metrics",
+		},
+		{
+			name: "rejects leader term change across selected info metrics scrape",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":789,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":789,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}
+			]`,
+			secondStatusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":9},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":789,"raftTerm":9,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":9},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":789,"raftTerm":9,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}
+			]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"789","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				"INFO_ENDPOINTS=http://172.18.0.3:8080,http://172.18.0.4:8080",
+				"FAKE_LEADER_INFO_METRICS_URL=http://172.18.0.4:8080/metrics",
+				"FAKE_LEADER_INFO_METRICS=" + strings.Replace(
+					defaultInfoMetrics(""),
+					`server_id="e3f"`,
+					`server_id="315"`,
+					1,
+				),
+			},
+			wantOutput: "INFO_ENDPOINTS status fence changed across info metrics scrape",
 		},
 		{
 			name: "rejects selected leader info server identity mismatch",
@@ -5035,6 +5070,17 @@ if [[ "$*" == *"endpoint hashkv"* ]]; then
   printf '%s\n' "$FAKE_HASHKV_JSON"
   exit 0
 fi
+if [[ "$*" == *"endpoint status"* && -n "${FAKE_SECOND_STATUS_JSON:-}" ]]; then
+  status_calls=0
+  if [[ -f "$FAKE_STATUS_CALL_LOG" ]]; then
+    status_calls="$(wc -l <"$FAKE_STATUS_CALL_LOG")"
+  fi
+  printf 'status\n' >>"$FAKE_STATUS_CALL_LOG"
+  if (( status_calls >= 1 )); then
+    printf '%s\n' "$FAKE_SECOND_STATUS_JSON"
+    exit 0
+  fi
+fi
 printf '%s\n' "$FAKE_STATUS_JSON"
 `)
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "timeout"), `#!/usr/bin/env bash
@@ -5045,6 +5091,7 @@ printf '%s %s\n' "$duration" "$(basename "$1")" >>"$FAKE_TIMEOUT_LOG"
 exec "$@"
 `)
 			timeoutLog := filepath.Join(dir, "timeout.log")
+			statusCallLog := filepath.Join(dir, "status-calls.log")
 
 			env := []string{
 				"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
@@ -5079,6 +5126,8 @@ exec "$@"
 				"FAKE_SERIALIZABLE_HEALTH_JSON=" + defaultHealthJSON(tc.serialHealthJSON),
 				"FAKE_PREFIX_COUNT=" + tc.count,
 				"FAKE_STATUS_JSON=" + tc.statusJSON,
+				"FAKE_SECOND_STATUS_JSON=" + tc.secondStatusJSON,
+				"FAKE_STATUS_CALL_LOG=" + statusCallLog,
 				"FAKE_GATEWAY_STATUS_JSON=" + defaultGatewayStatusJSON(tc.gatewayJSON),
 				"FAKE_GATEWAY_AUTH_STATUS_JSON=" + defaultGatewayAuthStatusJSON(tc.authJSON),
 				"FAKE_GATEWAY_ALARM_JSON=" + defaultGatewayAlarmJSON(tc.alarmJSON),
@@ -5404,6 +5453,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"info_metrics=ok",
 		"info_metrics_endpoint=<url>/metrics",
 		"info_metrics_server_id=<hex>",
+		"info_metrics_status_fence=stable",
 		"client_metrics=404",
 		"server_identity_metrics=ok",
 		"grpc_metrics=ok",
