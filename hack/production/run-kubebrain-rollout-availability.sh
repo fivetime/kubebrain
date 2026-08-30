@@ -12,6 +12,7 @@ KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
 KUBEBRAIN_CLIENT_SERVICE="${KUBEBRAIN_CLIENT_SERVICE:-kubebrain-client}"
 KUBEBRAIN_CLIENT_PORT="${KUBEBRAIN_CLIENT_PORT:-3379}"
+EXPECTED_INFO_PORT="${EXPECTED_INFO_PORT:-8080}"
 EXPECTED_REPLICAS="${EXPECTED_REPLICAS:-3}"
 EXPECTED_LEADER_RETRY_PERIOD="${EXPECTED_LEADER_RETRY_PERIOD:-500ms}"
 EXPECTED_GRPC_MAX_CONNECTION_AGE="${EXPECTED_GRPC_MAX_CONNECTION_AGE:-1h}"
@@ -67,6 +68,7 @@ PROBE_IMAGE="${PROBE_IMAGE:-}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
 PROBE_MIN_PUBLIC_TCP_DIALS="${PROBE_MIN_PUBLIC_TCP_DIALS:-1}"
 PROBE_MIN_DIRECT_TCP_DIALS="${PROBE_MIN_DIRECT_TCP_DIALS:-1}"
+SOURCE_SNAPSHOT_DRAIN_CAPABILITY=snapshot-history-pin-before-write-barrier-release.v1
 MAX_RUNTIME_EVIDENCE_BYTES=1048576
 MAX_PROBE_PHASE_RESPONSE_BYTES=4096
 
@@ -137,6 +139,10 @@ if [[ "$EXPECTED_REPLICAS" -lt 3 ]]; then
 fi
 if ! operation_is_positive_int64 "$KUBEBRAIN_CLIENT_PORT" || (( KUBEBRAIN_CLIENT_PORT > 65535 )); then
   echo "KUBEBRAIN_CLIENT_PORT must be a positive int64 between 1 and 65535" >&2
+  exit 2
+fi
+if ! operation_is_positive_int64 "$EXPECTED_INFO_PORT" || (( EXPECTED_INFO_PORT > 65535 )); then
+  echo "EXPECTED_INFO_PORT must be a positive int64 between 1 and 65535" >&2
   exit 2
 fi
 if ! operation_is_positive_go_seconds_decimal "$PROBE_INTERVAL"; then
@@ -444,6 +450,8 @@ if [[ -n "$TARGET_IMAGE" && "$TARGET_IMAGE" == "$image" ]]; then
   exit 2
 fi
 retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_RETRY_PERIOD}" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(. == $expected)] | length' "$statefulset_json")"
+info_port_count="$(jq --arg expected "--info-port=${EXPECTED_INFO_PORT}" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(. == $expected)] | length' "$statefulset_json")"
+info_port_any_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(startswith("--info-port="))] | length' "$statefulset_json")"
 pd_addrs="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(startswith("--pd-addrs=")) | sub("^--pd-addrs="; "")] | if length == 1 then .[0] else "" end' "$statefulset_json")"
 headless_service="$(jq -r '.spec.serviceName // ""' "$statefulset_json")"
 pd_endpoints=""
@@ -544,10 +552,10 @@ if [[ -z "$current_revision" || "$current_revision" != "$update_revision" ]]; th
   echo "KubeBrain StatefulSet is not at one stable revision" >&2
   exit 1
 fi
-if [[ -z "$image" || -z "$pd_endpoints" || -z "$probe_pod_security_context" || ! "$headless_service" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || "$retry_count" != 1 || "$prestop" != "$expected_prestop" || "$tls_contract_valid" != true || "$readiness_contract_valid" != true ]] ||
+if [[ -z "$image" || -z "$pd_endpoints" || -z "$probe_pod_security_context" || ! "$headless_service" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || "$retry_count" != 1 || "$info_port_count" != 1 || "$info_port_any_count" != 1 || "$prestop" != "$expected_prestop" || "$tls_contract_valid" != true || "$readiness_contract_valid" != true ]] ||
   ! operation_is_positive_int64 "$termination_grace_period_seconds" ||
   (( termination_grace_period_seconds < MIN_TERMINATION_GRACE_PERIOD_SECONDS )); then
-  echo "KubeBrain rollout drain contract mismatch (image/retry/serviceName/preStop/readiness/terminationGracePeriodSeconds/probe security context/TLS identity)" >&2
+  echo "KubeBrain rollout drain contract mismatch (image/retry/infoPort/serviceName/preStop/readiness/terminationGracePeriodSeconds/probe security context/TLS identity)" >&2
   exit 1
 fi
 headless_service_json="$runtime_evidence_dir/headless-service-initial.json"
@@ -932,11 +940,17 @@ trap cleanup EXIT
 
 endpoint="${endpoint_scheme}://${KUBEBRAIN_CLIENT_SERVICE}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
 direct_endpoints=""
+source_info_endpoints=""
 for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
   direct_endpoint="${endpoint_scheme}://${KUBEBRAIN_STATEFULSET}-${ordinal}.${headless_service}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
   direct_endpoints="${direct_endpoints:+${direct_endpoints},}${direct_endpoint}"
+  source_info_endpoint="${endpoint_scheme}://${KUBEBRAIN_STATEFULSET}-${ordinal}.${headless_service}.${KUBEBRAIN_NAMESPACE}.svc:${EXPECTED_INFO_PORT}"
+  source_info_endpoints="${source_info_endpoints:+${source_info_endpoints},}${source_info_endpoint}"
 done
 probe_image="$image"
+if [[ -n "$TARGET_IMAGE" ]]; then
+  probe_image="$TARGET_IMAGE"
+fi
 if [[ -n "$PROBE_IMAGE" ]]; then
   probe_image="$PROBE_IMAGE"
 fi
@@ -971,6 +985,12 @@ probe_command=(
   "${probe_tls_args[@]}" \
   --dial-timeout="$PROBE_DIAL_TIMEOUT"
 )
+if [[ -n "$TARGET_IMAGE" ]]; then
+  probe_command+=(
+    --source-info-endpoints="$source_info_endpoints"
+    --required-source-capabilities="$SOURCE_SNAPSHOT_DRAIN_CAPABILITY"
+  )
+fi
 if [[ "$HARD_FAILOVER" == true ]]; then
   probe_command+=(
     --report-leader-target-on-complete

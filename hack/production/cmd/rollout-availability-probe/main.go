@@ -35,6 +35,8 @@ import (
 type config struct {
 	endpoint            string
 	directEndpoints     []string
+	sourceInfoEndpoints []string
+	requiredSourceCaps  []string
 	prefix              string
 	iterations          int
 	interval            time.Duration
@@ -82,6 +84,10 @@ func main() {
 	flag.StringVar(&cfg.endpoint, "endpoint", "", "etcd endpoint")
 	var directEndpoints string
 	flag.StringVar(&directEndpoints, "direct-endpoints", "", "comma-separated stable direct KubeBrain Pod endpoints")
+	var sourceInfoEndpoints string
+	flag.StringVar(&sourceInfoEndpoints, "source-info-endpoints", "", "comma-separated stable source Pod info endpoints checked before any fixture write")
+	var requiredSourceCapabilities string
+	flag.StringVar(&requiredSourceCapabilities, "required-source-capabilities", "", "comma-separated source data-plane capabilities required before an online rollout")
 	flag.StringVar(&cfg.prefix, "prefix", "/kubebrain-rollout-availability/", "exclusive probe key prefix")
 	flag.IntVar(&cfg.iterations, "iterations", 0, "number of write/watch probes")
 	flag.DurationVar(&cfg.interval, "interval", 100*time.Millisecond, "interval between probes")
@@ -127,6 +133,12 @@ func main() {
 	}
 	if directEndpoints != "" {
 		cfg.directEndpoints = strings.Split(directEndpoints, ",")
+	}
+	if sourceInfoEndpoints != "" {
+		cfg.sourceInfoEndpoints = strings.Split(sourceInfoEndpoints, ",")
+	}
+	if requiredSourceCapabilities != "" {
+		cfg.requiredSourceCaps = strings.Split(requiredSourceCapabilities, ",")
 	}
 	if pdEndpoints != "" {
 		cfg.pdEndpoints = strings.Split(pdEndpoints, ",")
@@ -395,6 +407,9 @@ func (cfg config) validate() error {
 			return fmt.Errorf("direct KubeBrain endpoint scheme and TLS identity must match: %q", endpoint)
 		}
 		seenDirectEndpoints[endpoint] = struct{}{}
+	}
+	if err := validateSourceCapabilityConfig(cfg, tlsEnabled); err != nil {
+		return err
 	}
 	for _, endpoint := range cfg.pdEndpoints {
 		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
@@ -768,6 +783,12 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	tlsConfig, err := cfg.clientTLSConfig()
 	if err != nil {
 		return fmt.Errorf("load KubeBrain TLS identity: %w", err)
+	}
+	if len(cfg.requiredSourceCaps) > 0 {
+		if err := verifySourceCapabilities(ctx, cfg.sourceInfoEndpoints, cfg.requiredSourceCaps,
+			tlsConfig, cfg.dialTimeout, cfg.commandTimeout); err != nil {
+			return fmt.Errorf("source capability preflight: %w", err)
+		}
 	}
 	initialPDLeader, err := readPDLeader(ctx, cfg.pdEndpoints, cfg.dialTimeout)
 	if err != nil {

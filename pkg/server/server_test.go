@@ -45,6 +45,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/server/capability"
 	etcdcompat "github.com/kubewharf/kubebrain/pkg/server/etcd"
 	"github.com/kubewharf/kubebrain/pkg/server/service"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
@@ -1524,6 +1525,32 @@ func TestInfoHTTPVersionHandlerExposeEtcdCORSOptions(t *testing.T) {
 	require.Contains(t, get.Body.String(), `"etcdserver"`)
 	require.Contains(t, get.Body.String(), `"storage":"`+etcdsnapshot.StorageVersion+`"`)
 	require.Equal(t, "*", get.Header().Get("Access-Control-Allow-Origin"))
+}
+
+func TestInfoCapabilitiesHandlerPublishesCanonicalRolloutContract(t *testing.T) {
+	handler := (&server{}).GetInfoHttpHandlers()["/capabilities"]
+	require.NotNil(t, handler)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/capabilities", nil))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "application/json; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Equal(t, "*", recorder.Header().Get("Access-Control-Allow-Origin"))
+	var document capability.Document
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &document))
+	require.NoError(t, document.Validate())
+	require.True(t, document.Has(capability.SnapshotDrainPinned))
+}
+
+func TestInfoCapabilitiesHandlerRejectsNonGet(t *testing.T) {
+	handler := (&server{}).GetInfoHttpHandlers()["/capabilities"]
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/capabilities", nil))
+
+	require.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+	require.Equal(t, http.MethodGet, recorder.Header().Get("Allow"))
+	require.Equal(t, "Method Not Allowed\n", recorder.Body.String())
 }
 
 func TestHTTPHealthMatchesEtcdNoSpaceAlarmSemantics(t *testing.T) {

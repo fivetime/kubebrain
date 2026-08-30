@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kubewharf/kubebrain/pkg/server/capability"
 )
 
 func TestRolloutAvailabilityRunnerRequiresExplicitMutationApproval(t *testing.T) {
@@ -40,6 +42,16 @@ func TestRolloutAvailabilityRunnerBudgetsSnapshotScaleInitialization(t *testing.
 	require.NoError(t, err)
 	require.Contains(t, string(source), `PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-90s}"`)
 	require.Contains(t, string(source), "bounded 16 MiB Snapshot scale fixture")
+}
+
+func TestRolloutAvailabilityRunnerPinsSourceSnapshotDrainCapability(t *testing.T) {
+	source, err := os.ReadFile("run-kubebrain-rollout-availability.sh")
+	require.NoError(t, err)
+	text := string(source)
+	require.Contains(t, text, "SOURCE_SNAPSHOT_DRAIN_CAPABILITY="+capability.SnapshotDrainPinned)
+	require.Contains(t, text, `--source-info-endpoints="$source_info_endpoints"`)
+	require.Contains(t, text, `--required-source-capabilities="$SOURCE_SNAPSHOT_DRAIN_CAPABILITY"`)
+	require.Contains(t, text, `probe_image="$TARGET_IMAGE"`)
 }
 
 func TestRolloutAvailabilityRunnerDefaultCompletionBudgetCoversFullStreamRetry(t *testing.T) {
@@ -1488,9 +1500,35 @@ func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system patch statefulset/kubebrain --type=json -p ")
 	require.Contains(t, log, `"value":"`+target+`"`)
+	require.Contains(t, log, `"image":"`+target+`"`, "candidate mode must run the candidate probe toolchain")
+	require.Contains(t, log, "--source-info-endpoints=http://kubebrain-0.kubebrain-peer.kubebrain-system.svc:8080,http://kubebrain-1.kubebrain-peer.kubebrain-system.svc:8080,http://kubebrain-2.kubebrain-peer.kubebrain-system.svc:8080")
+	require.Contains(t, log, "--required-source-capabilities="+capability.SnapshotDrainPinned)
 	require.NotContains(t, log, " rollout restart ")
 	for ordinal := 0; ordinal < 3; ordinal++ {
 		require.Contains(t, log, " get pod kubebrain-"+string(rune('0'+ordinal))+" -o json")
+	}
+}
+
+func TestRolloutAvailabilityRunnerRejectsInvalidInfoPortContractBeforeMutation(t *testing.T) {
+	for name, environment := range map[string]string{
+		"missing":   "FAKE_NO_INFO_PORT=true",
+		"duplicate": "FAKE_DUPLICATE_INFO_PORT=true",
+		"wrong":     "FAKE_INFO_PORT=8081",
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(),
+				"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", environment,
+			)
+			output, err := command.CombinedOutput()
+			require.Error(t, err)
+			require.Contains(t, string(output), "rollout drain contract mismatch")
+			log := readOptionalFile(t, logPath)
+			require.NotContains(t, log, " run ")
+			require.NotContains(t, log, " patch ")
+		})
 	}
 }
 
@@ -2176,6 +2214,20 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
     if [[ "${ENABLE_HTTP_READINESS_MIGRATION:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]]; then
       readiness_probe='{"failureThreshold":3,"initialDelaySeconds":5,"periodSeconds":5,"successThreshold":1,"tcpSocket":{"port":"client"},"timeoutSeconds":1}'
     fi
+  fi
+  if [[ "${FAKE_NO_INFO_PORT:-false}" != true ]]; then
+    info_port="${FAKE_INFO_PORT:-8080}"
+    args="$(jq -c --arg info_port "--info-port=${info_port}" '. + [$info_port]' <<<"$args")"
+    if [[ "${FAKE_DUPLICATE_INFO_PORT:-false}" == true ]]; then
+      args="$(jq -c --arg info_port "--info-port=${info_port}" '. + [$info_port]' <<<"$args")"
+    fi
+  fi
+  if [[ "${FAKE_TLS_STATE:-false}" == true && "${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}" == true && -e "$FAKE_KUBECTL_STATE" ]]; then
+    max_age="${EXPECTED_GRPC_MAX_CONNECTION_AGE:-1h}"
+    max_age_grace="${EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE:-5m}"
+    args="$(jq -c --arg age "--grpc-max-connection-age=${max_age}" --arg grace "--grpc-max-connection-age-grace=${max_age_grace}" '
+      [ .[] | select((startswith("--grpc-max-connection-age=") or startswith("--grpc-max-connection-age-grace=")) | not) ] + [$age,$grace]
+    ' <<<"$args")"
   fi
   [[ "${FAKE_ROOT_POD_CONTEXT:-false}" != true ]] || pod_security_context='{"runAsNonRoot":false,"runAsUser":0,"runAsGroup":0,"fsGroup":0}'
   runtime_image=kubebrain:test

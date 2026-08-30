@@ -42,6 +42,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/brain"
+	"github.com/kubewharf/kubebrain/pkg/server/capability"
 	"github.com/kubewharf/kubebrain/pkg/server/etcd"
 	"github.com/kubewharf/kubebrain/pkg/server/service"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
@@ -909,12 +910,13 @@ func (s *server) GetPeerHttpHandlers() map[string]http.Handler {
 // GetInfoHttpHandlers implements Server interface
 func (s *server) GetInfoHttpHandlers() map[string]http.Handler {
 	handlers := map[string]http.Handler{
-		"/health":   http.HandlerFunc(s.httpHealthHandler),
-		"/ping":     http.HandlerFunc(s.httpPingHandler),
-		"/ready":    http.HandlerFunc(s.httpReadyHandler),
-		"/status":   http.HandlerFunc(s.revisionHandler),
-		"/election": http.HandlerFunc(s.electionHandler),
-		"/drain":    http.HandlerFunc(s.httpDrainHandler),
+		"/health":       http.HandlerFunc(s.httpHealthHandler),
+		"/ping":         http.HandlerFunc(s.httpPingHandler),
+		"/ready":        http.HandlerFunc(s.httpReadyHandler),
+		"/status":       http.HandlerFunc(s.revisionHandler),
+		"/election":     http.HandlerFunc(s.electionHandler),
+		"/drain":        http.HandlerFunc(s.httpDrainHandler),
+		"/capabilities": http.HandlerFunc(s.capabilitiesHandler),
 		// kubeadm 1.37's ExternalEtcd.HTTPEndpoints lets users point etcd HTTP
 		// probes at a separate port from gRPC; its preflight GETs /version there
 		// and treats a 404 as a fatal parse error. Serve it on the info port too
@@ -1201,6 +1203,17 @@ func (s *server) httpPingHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	s.writeHealthy(w)
+}
+
+func (s *server) capabilitiesHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(capability.SupportedDocument())
 }
 
 func (s *server) httpDrainHandler(w http.ResponseWriter, req *http.Request) {
