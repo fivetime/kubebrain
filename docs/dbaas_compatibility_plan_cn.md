@@ -66714,6 +66714,49 @@ current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
 Ready/restart 0，无端口转发、凭据或诊断文件落盘。A5653 关闭多个发布表面一致伪造非 canonical storage schema version 后仍可进入生产
 GREEN 的缺口。
 
+### A5654：锁定 Status 3.6 版本化字段组边界
+
+A5653 之后，product proxy、raw Status probe 与 readonly gate 仍允许 pre-3.6 server 发布 `storageVersion`、`dbSizeQuota` 或
+`downgradeInfo`。这不是上游可达状态：`/root/etcd/api/etcdserverpb/rpc.proto` 把三个字段分别标记为自 etcd 3.6 引入；
+`/root/etcd/server/storage/schema/version.go` 说明 storage version 从 3.6 才持久化；
+`/root/etcd/server/storage/schema/migration.go` 在降级目标低于 3.6 时清除 storage version；
+`/root/etcd/server/etcdserver/api/etcdhttp/version.go` 对 nil storage version 发布 `unknown`。旧 gate 甚至把 3.3/3.4/3.5 正例 fixture
+建模成带 3.6 字段的响应，因而无法证明真实 legacy 兼容窗口。
+
+确定性 RED 同时覆盖 product validator、follower Status hedge、raw probe，以及 endpoint status/gateway/raw `/version`/info `/version`
+全部伪造 3.5 字段的发布 gate。旧 product 在 `0.248s` 后错误接受非法 follower/proxy 并拒绝真实 legacy defaults；probe 在
+`0.009s` 后错误接受三类字段；gate 在 `1.866s` 后错误放行非法 3.5 发布，并因强制 gateway storageVersion 拒绝三个修正后的 legacy 正例。
+提交 `6e6298bb` 以 server version 为边界：pre-3.6 必须同时缺失三个字段，3.6+ 的稳定发布门禁要求 canonical storage version、非零
+quota 与 object downgradeInfo；raw/gateway/status list 和 `/version` 独立校验同一契约，legacy `/version.storage` 必须为 `unknown`。
+产品代理与 raw probe 保留上游版本监控收敛前 3.6+ storageVersion 暂空的兼容窗口，但存在时仍必须 canonical；稳定部署 gate 继续要求完整字段。
+
+聚焦 product、probe 与 gate 分别为 `0.246s`、`0.010s`、`0.365s`；完整 `pkg/server/etcd` 普通/race 为
+`132.939s/409.264s`，完整 readonly gate 普通/race 为 `146.651s/145.479s`，probe 普通/race 为 `0.011s/1.137s`。Go vet、
+gofmt、bash syntax、diff check 与固定 `koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。提交前 inventory 为 703 项、
+`170/193/180/160`；提交后四片分别为 `267.901/464.103/306.882/581.960s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5654-6e6298bb` 内嵌版本 `0.0.0-6e6298bb21e3`、完整提交
+`6e6298bb21e34a1034db53d721ec93d1634432d5` 与 build time `2026-08-31T12:24:05Z`。OCI index、platform manifest、config 分别为
+`sha256:106dcf589c7c78af334c0776c3fb0f9177124a6b5a6dff08d604d64cb8688d8e`、
+`sha256:26c5d8de85b7f4e1885ce1e491e7e58d3849b37d29d6106d400a0323f85d7df8`、
+`sha256:d5e0e26a9c8a1f89f1bab585176e5324f395b91d37c1da98ebefb261992ae881`；Kind/containerd runtime digest 为
+`sha256:b20208dbfc9022d2ab1bf8554e2dd604a3e3eb4d9bdd9aa0db436ce11d20e577`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 695 部署至 generation 696；三 Pod 均落在
+revision `kubebrain-76b45d9c86`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。三个 exact endpoint 的 raw
+Status 均返回 version/storage `3.7.0/3.7.0`、cluster ID `7662961163671170154`、revision/index/applied `65743`、term `265`、leader
+`2393892952`、quota `1073741824` 和 disabled+empty downgrade。八项 named/HTTP/metrics/debug 及全部端点一致性开关全开的 readonly gate
+GREEN，并明确输出 `direct_status_v36_fields_match=true`；HashKV 为 `4283180840`、compact revision 为 `44329`、direct hash 为
+`1884729719`。候选 Pod 日志为 `631/324/661` 行；0/2 两个 Pod 的宽泛错误模式计数为 0，Pod 1 在滚动期间出现两次 TiKV deadline INFO、
+一次 leader-election fallback INFO 和一次 error 级 lease update deadline。其后完整 gate 与三次 proposal health 全部 GREEN，三 Pod 无重启；
+该瞬时存储延迟按原始证据保留，不伪写为零错误，也不归因于本轮 Status 校验路径。
+
+最后关闭六个端口转发并确认无监听，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 697、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，endpoint proposal health GREEN，无端口转发、凭据或诊断文件落盘。A5654 关闭了 pre-3.6 server 伪造 3.6 Status 字段组后
+仍可通过产品代理与生产门禁的兼容性缺口，并恢复真实 3.3/3.4/3.5 缺字段响应的接受路径。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
