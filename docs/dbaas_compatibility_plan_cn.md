@@ -66448,6 +66448,46 @@ gateway 的 cluster/member/revision/term/hash/hashRevision/compact 元组均为
 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
 无监听，也没有凭据或诊断文件落盘。A5646 关闭旧诊断客户端字段投影能力与服务端 3.6+ HashKV 语义混淆的问题。
 
+### A5647：用版本化 raw gRPC 证明 3.6+ Status 字段
+
+readonly gate 此前用宿主 `etcdctl endpoint status -w json` 作为 direct Status 证据，再把 gateway Status 中 direct JSON 实际出现的字段逐项
+对账。现场宿主 `etcdctl 3.5.16` 只投影 `dbSize/dbSizeInUse/header/leader/raftAppliedIndex/raftIndex/raftTerm/version`；对照
+`/root/etcd/api/etcdserverpb/rpc.proto::StatusResponse`，field 11/12/13 的 `storageVersion`、`dbSizeQuota` 与 `downgradeInfo` 都自 3.6
+引入。因此旧 gate 在 direct 客户端看不到三字段时，会跳过对应比较并仍输出 `gateway_status_body_match=true`。三项确定性 RED 分别只令
+gateway quota、downgrade 或 storage 与一个模拟 v3.7 raw Status 漂移；旧 gate 三项都整体 GREEN，新 gate 分别拒绝
+`raw/gateway status dbSizeQuota mismatch`、`downgradeInfo mismatch` 与 `storageVersion mismatch`。
+
+提交 `78bdcec7` 新增 `maintenance-status-probe`，复用统一 TLS、FD 凭据与 timeout 环境，直接用仓库 v3.7 protobuf 对 exact
+`ENDPOINT` 发出只读 `Maintenance.StatusRequest`。probe 投影完整 upstream response，包括 header、version、dbSize、leader、Raft
+indexes/term、errors、dbSizeInUse、isLearner 与三个 3.6 字段；gate 将 raw cluster/member 绑定到配置 cluster 与 exact endpoint serving
+member，要求 raw/gateway version 和空 errors 一致，并按 raw version 仅在 3.6+ 强制比较 storage/quota/downgrade。跨独立 Status 调用可变化的
+revision、leader、dbSize 与 Raft index 不被错误要求相等；3.5 用例明确输出 `direct_status_v36_fields_match=not-required`。成功摘要新增
+`direct_status_endpoint_identity_match=true`、`direct_status_v36_fields_match=true` 与 `direct_status_errors=empty`。
+
+probe 普通/race 单测为 `0.011s/1.041s`，完整 dataplane gate 普通/race 为 `145.733s/146.883s`；Go vet、gofmt、bash syntax 与 diff
+check 全部 GREEN。提交前 inventory 为 703 项、`170/193/180/160`；`78bdcec7` 提交后四片为
+`267.799/460.799/318.426/577.669s`，全部 GREEN。
+
+第一次真实尝试以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 部署同一产品候选至 generation 678；
+KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，但完整 gate 正确拒绝 `raw status errors envelope invalid`。独立取样确认 protobuf 空 repeated
+经初版 probe 编码为 `errors:null`，不是契约要求的 JSON 数组；该候选没有被放行，并以新鲜五重 test 回滚 generation 679。修正提交
+`5a743110` 把空 errors 复制到非 nil 空切片并新增非 nil 回归断言，确保 JSON 为 `[]`；修正提交后四片
+`255.800/459.513/314.036/574.081s` 全部 GREEN。
+
+最终真实验证以新鲜五重 test 部署候选至 generation 680；current/update revision 为 `kubebrain-8465b8fd97`，三 Pod runtime 均为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。
+完整 gate GREEN，明确输出三个新增 direct Status 标记，同时保持全部 info metrics、AuthStatus/Alarm/Hash/HashKV 检查。验证窗口 cluster ID
+`7662961163671170154`、exact member `4034353177`、leader `2393892952`、term `233`、revision/index/applied `65743`、quota
+`1073741824`、HashKV `4283180840`、compact revision `44329`。独立规范化 raw/gateway Status 元组均为
+`7662961163671170154/4034353177/3.7.0/3.7.0/1073741824/false/empty/0-errors`，而 etcdctl 3.5 projection 明确缺失三字段；候选窗口
+日志无 panic/fatal/segmentation/data race。
+
+最后以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 681、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
+无监听，也没有凭据或诊断文件落盘。A5647 关闭旧诊断客户端字段投影能力与服务端 3.6+ Status 语义混淆的问题，并固定 repeated 空值必须
+保留数组 JSON 契约。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

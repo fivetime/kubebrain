@@ -1729,6 +1729,13 @@ version/storageVersion、dbSizeInUse/dbSizeQuota、isLearner、leader、raftTerm
 downgradeInfo 也必须逐字段相等；通过摘要输出 `gateway_status_body_match=true`。旧版 etcdctl 未投影的可选字段不会被伪造为默认值；
 gateway Status 的缺省 `errors` 视为 protojson 空 repeated；显式值必须是字符串数组且长度为零，通过摘要输出
 `gateway_status_errors=empty`，不得忽略 gateway 单独报告的 no-leader/alarm 错误；
+脚本还会通过仓库固定的 etcd v3.7 protobuf 对 exact `ENDPOINT` 发出只读 raw gRPC `Maintenance.Status`。raw response 的
+cluster/member 必须绑定到配置 cluster 与 exact endpoint serving member，version 必须与 gateway 相等，errors 必须编码为空字符串数组；
+当 raw version 为 etcd 3.6 或更高版本时，`storageVersion`、`dbSizeQuota` 与 `downgradeInfo` 必须和 gateway 完全相等。该检查不依赖
+宿主机旧版 etcdctl 是否能投影 3.6 起引入的字段，并通过摘要输出 `direct_status_endpoint_identity_match=true`、
+`direct_status_v36_fields_match=true` 与 `direct_status_errors=empty`；3.6 以前的响应明确输出
+`direct_status_v36_fields_match=not-required`。revision、leader、dbSize 与 Raft index 等独立 Status 调用之间可能合法变化，不把它们误作
+跨采样相等条件；
 gateway `/v3/auth/status` 还必须与 exact `ENDPOINT` 的 direct `etcdctl auth status` 对账：两侧缺省 scalar 按 proto 默认值
 `enabled=false`、`authRevision=0` 规范化，ResponseHeader、enabled 与 authRevision 必须分别相等；通过摘要输出
 `gateway_auth_status_match=true`；
@@ -1782,6 +1789,7 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 `gateway_hashkv_revisions_match=true`、`gateway_hashkv_body_match=true`、`gateway_endpoint_members_match=true`、
 `gateway_endpoint_raft_terms_match=true`、
 `gateway_endpoint_revisions_match=true`、`gateway_status_body_match=true`、`gateway_status_errors=empty`、
+`direct_status_endpoint_identity_match=true`、`direct_status_v36_fields_match=true`、`direct_status_errors=empty`、
 `hashkv_endpoint_members_match=true`、
 `hashkv_endpoint_revisions_match=true`、
 `direct_hashkv_body_match=true`、`direct_hashkv_hash_revision_match=true`、`revisions_match=true`、`hashkv_raft_terms=<unique>` 和
