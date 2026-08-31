@@ -66406,6 +66406,48 @@ deadline/TiKV/PD error。
 无监听，也没有凭据或诊断文件落盘。A5645 关闭 exact endpoint 的 gateway HashKV body 从其他 endpoint 借用 compact revision 仍可进入
 发布摘要的问题。
 
+### A5646：用版本化 raw gRPC 证明 3.6+ HashKV hash_revision
+
+readonly gate 此前允许所有 direct `etcdctl endpoint hashkv` 响应都省略 `hash_revision`，并用 header revision 回退；只在部分 endpoint
+存在、部分缺失时拒绝。旧 gate 因而无法区分“3.7 服务端没有返回 3.6 起引入的字段”和“旧诊断客户端不能投影该字段”，却仍输出
+`gateway_hashkv_body_match=true`。对照 `/root/etcd/api/etcdserverpb/rpc.proto::HashKVResponse`，`hash_revision` 自 3.6 引入；
+`/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::HashKV` 每次都从 `HashByRev` 结果填充该字段，且
+`/root/etcd/tests/e2e/v3_curl_maintenance_test.go::testCurlV3MaintenanceHashKV` 明确把 gateway JSON 的该字段列为必需字段。
+
+第一次实现提交 `db143a7002deb7f8dc6f08b08795c7be5be6adac` 直接按 server version 要求 etcdctl JSON presence；提交前 inventory 为
+703 项、`170/193/180/160`，提交后普通四片 `250.956/448.924/303.743/558.683s`、race 四片
+`317.476/488.915/329.765/571.191s` 都 GREEN，但 generation 674 真实 gate 立即拒绝 `present=0,total=3`。现场取样证明宿主
+`etcdctl version=3.5.16/API=3.5`，其 protobuf 无法投影字段；同一时刻 gateway 正确返回 `hash_revision=65743`，仓库 Go module 已固定
+etcd api/client v3.7.0。因此把旧客户端投影缺失解释成服务端缺失是 gate 假阴性。该候选没有被放行，并以新鲜五重原子 test 回滚
+generation 675；稳定 revision/runtime 与 3+3+3 健康恢复、六端口关闭。
+
+修正提交 `5bbaf71b17df52b4cbbdecfb8236a9fc83056925` 新增 `maintenance-hashkv-probe`，复用统一 TLS、FD 凭据与 timeout 环境，直接用
+仓库 v3.7 protobuf 对 exact `ENDPOINT` 发出只读 raw `Maintenance.HashKVRequest`。gate 把 raw header/hash/compactRevision 与 exact
+Status、etcdctl 和 gateway 逐字段绑定；当 `EXPECTED_STATUS_VERSION >= 3.6` 时，再要求 raw hashRevision 与 header revision 及 gateway
+完全相等。3.5 或未声明版本仍允许 raw 默认 0，不再依赖宿主 etcdctl 的字段投影能力。成功摘要新增
+`direct_hashkv_body_match=true`、`direct_hashkv_hash_revision=<n>` 与 `direct_hashkv_hash_revision_match=true`。
+
+最终确定性 RED 保持 3.7 Status、gateway HashKV 与 etcdctl 的 member/revision/term/hash/compact 全部正确，只令 v3.7 raw probe 返回
+默认 hashRevision 0；旧 gate 因不调用 raw probe 而整体 GREEN，新 gate 拒绝 raw/header revision mismatch。3.7 缺失/显式成功、3.5
+兼容、A5645 跨 endpoint 与 compact sentinel 五项回归为 `4.168s`；raw probe 普通/race 单测为 `0.010s/1.035s`，完整 dataplane
+probe 普通/race 为 `136.110s/137.558s`。Go vet、gofmt、bash syntax、diff check、文档契约与固定 digest 的
+`koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。修正提交前 inventory 仍为 703 项、`170/193/180/160`；提交后普通
+四片 `274.887/462.393/326.376/565.745s` 全部 GREEN；主脚本的全部子用例另由上述完整 race probe 覆盖。
+
+最终真实验证以同类五重 test 部署候选至 generation 676；current/update revision 为 `kubebrain-8465b8fd97`，三 Pod runtime 均为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。
+完整 gate GREEN，明确输出 `direct_hashkv_body_match=true`、`direct_hashkv_hash_revision=65743`、
+`direct_hashkv_hash_revision_match=true`，并保持所有 info metrics、Status/AuthStatus/Alarm/Hash 与三 endpoint HashKV 检查。cluster ID
+`7662961163671170154`、members `4034353177/2393892952/231094427`、leader `231094427`、term `225`、revision/index/applied
+`65743`、HashKV `4283180840`、compact revision `44329` 一致。独立三路取样再次确认 etcdctl 3.5 projection missing，而 raw v3.7 与
+gateway 的 cluster/member/revision/term/hash/hashRevision/compact 元组均为
+`7662961163671170154/4034353177/65743/225/4283180840/65743/44329`；候选窗口日志 clean。
+
+最后以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 677、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
+无监听，也没有凭据或诊断文件落盘。A5646 关闭旧诊断客户端字段投影能力与服务端 3.6+ HashKV 语义混淆的问题。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

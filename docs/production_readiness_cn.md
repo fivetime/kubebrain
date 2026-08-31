@@ -1741,7 +1741,10 @@ client/info 双口 `/version` 的 `etcdserver`、`etcdcluster`、`storage` 必�
 HTTP gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv`，要求 HashKV hash、
 hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；其中 gateway HashKV 必须与 exact `ENDPOINT` 的 direct
 HashKV hash、hashRevision、compactRevision 逐字段相等，而非借用其他 endpoint 的全局最小值，通过摘要输出
-`gateway_hashkv_body_match=true`。脚本还会通过只读 raw gRPC probe 调用 exact
+`gateway_hashkv_body_match=true`。脚本还会通过仓库 etcd v3.7 protobuf 的只读 raw gRPC probe 调用 exact `ENDPOINT` 的 HashKV，
+把 header/hash/compactRevision 与 Status、etcdctl 和 gateway 逐字段绑定；当 `EXPECTED_STATUS_VERSION` 为 etcd 3.6 或更高版本时，
+还要求 raw `hash_revision` 与 header revision 相等，通过摘要输出 `direct_hashkv_body_match=true` 与
+`direct_hashkv_hash_revision_match=true`。该检查不依赖宿主机旧版 etcdctl 是否能在 JSON 中投影 3.6 起引入的字段。脚本还会通过只读 raw gRPC probe 调用 exact
 `ENDPOINT` 的 Maintenance Hash，要求 direct/gateway
 ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；通过摘要输出
 `direct_hash=<n>` 与 `gateway_hash_match=true`；若同时启用 metrics
@@ -1781,7 +1784,7 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 `gateway_endpoint_revisions_match=true`、`gateway_status_body_match=true`、`gateway_status_errors=empty`、
 `hashkv_endpoint_members_match=true`、
 `hashkv_endpoint_revisions_match=true`、
-`revisions_match=true`、`hashkv_raft_terms=<unique>` 和
+`direct_hashkv_body_match=true`、`direct_hashkv_hash_revision_match=true`、`revisions_match=true`、`hashkv_raft_terms=<unique>` 和
 `raft_terms_match=true` 等证据；
 其中 HashKV/gateway HashKV revision 与 raft term 交叉一致性用于证明本次只读诊断
 来自同一个静态 MVCC/Raft 观察边界；不同 endpoint 的 Status 仍按 upstream 独立采样，但同一 `ENDPOINT` 的 direct/gateway Status
