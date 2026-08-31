@@ -66757,6 +66757,46 @@ current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
 Ready/restart 0，endpoint proposal health GREEN，无端口转发、凭据或诊断文件落盘。A5654 关闭了 pre-3.6 server 伪造 3.6 Status 字段组后
 仍可通过产品代理与生产门禁的兼容性缺口，并恢复真实 3.3/3.4/3.5 缺字段响应的接受路径。
 
+### A5655：锁定 Status 3.4 字段组边界
+
+A5654 关闭 3.6 字段组年代缺口后，Status 中另一组版本字段仍未完整建模。上游
+`/root/etcd/api/etcdserverpb/rpc.proto::StatusResponse` 把 `raftAppliedIndex`、`errors`、`dbSizeInUse`、`isLearner` 四项均标为
+`etcd_version_field=3.4`；但 product proxy 和 raw probe 会接受 3.3 server 的非默认值，readonly gate 也会放行 status list、gateway、raw
+三面同时伪造这些字段。反向上，旧 gate 又要求 pre-3.4 的既有 `raftIndex` 必须与尚不存在的 `raftAppliedIndex` 成对，因而拒绝真实 3.3 响应。
+
+确定性 RED 中，product/follower 在 `0.274s` 后接受四类非法非默认值，probe 在 `0.013s` 后四项均返回 nil error，gate 在 `0.913s`
+后整体放行显式 3.3 字段，同时以 `missing_pair` 拒绝修正后的真实 3.3 fixture。提交 `d4f777c4` 以 strict server semver 的 core 边界处理
+3.4 字段组：product 与 raw probe 对 pre-3.4 要求 applied index、errors、in-use size、learner 回到 proto 默认值；status list 与 gateway
+按 JSON 字段存在性拒绝显式发布，raw 投影要求默认值。版本明确为 3.4+ 或无法从旧 etcdctl 输出取得版本时，原有 raft index 配对约束保持；
+版本明确低于 3.4 时允许旧 `raftIndex` 单独出现。status list、gateway、raw 三面分别有独立负例，避免只由最早失败面提供伪覆盖。
+
+最终聚焦 product、probe 与跨三发布面的 gate 分别为 `0.255s`、`0.010s`、`1.808s`；完整 `pkg/server/etcd` 普通为 `141.587s`，
+probe 普通/race 为 `0.011s/1.046s`，完整 readonly gate 普通/race 为 `151.952s/150.323s`。首次未过滤 product race 在
+`370.120s` 后失败，但约 25 万 token 预期日志被执行器截断，未留下失败用例或 data-race 证据；随后以 `go test -race -json` 流式只保留
+fail/data-race 事件重跑同一完整包，退出码 0 且无任何失败事件。该首轮异常按不可诊断测试运行保留，不伪造原因，也不替代成功重跑证据。
+Go vet、gofmt、bash syntax、diff check 与固定 `koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。提交前 inventory 为 703 项、
+`170/193/180/160`；提交后四片分别为 `259.042/456.461/311.278/579.526s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5655-d4f777c4` 内嵌版本 `0.0.0-d4f777c450ed`、完整提交
+`d4f777c450ed2ce2dab15f0c3a4bfca953578e94` 与 build time `2026-08-31T13:40:23Z`。OCI index、platform manifest、config 分别为
+`sha256:96d992cbf9cc4563cc0f6c5101232f9dcd665e354c532a5d2e6fb4fbff06fb88`、
+`sha256:d9221ab8750ce9f93ca79e27527a9e6d3d30725432c2db42539307cbdc4a8355`、
+`sha256:a5f68cd01151e715f68894aaac4d706b3509a32ff9c4673614ca931925b9452a`；Kind/containerd runtime digest 为
+`sha256:de95d7588c00d16d03dc3c0e0e4fae35cb2d14622fa1ce7b8be785f44693f758`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 697 部署至 generation 698；三 Pod 均落在
+revision `kubebrain-6f88b6958f`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。三个 exact endpoint 的 raw
+Status 均返回 version/storage `3.7.0/3.7.0`、cluster ID `7662961163671170154`、revision/index/applied `65743`、term `268`、leader
+`231094427`、quota `1073741824`、空 errors、non-learner 与 disabled+empty downgrade。八项 named/HTTP/metrics/debug 及全部端点一致性开关
+全开的 readonly gate GREEN；HashKV 为 `4283180840`、compact revision 为 `44329`、direct hash 为 `1884729719`。候选 Pod 日志为
+`425/429/274` 行，error 级别与 panic/fatal/data race/data corruption/TiKV/PD error 模式计数均为 0；三次 proposal health 成功。
+
+最后关闭六个端口转发并确认无监听，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 699、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，endpoint proposal health GREEN，无端口转发、凭据或诊断文件落盘。A5655 关闭了 pre-3.4 server 伪造四项后发 Status
+字段仍可通过产品代理与生产门禁的缺口，同时恢复真实 3.3 `raftIndex` 单字段响应的接受路径。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
