@@ -66299,6 +66299,37 @@ shell syntax、diff check、文档契约与固定 digest 的 `koalaman/shellchec
 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
 无监听，也没有凭据或诊断文件落盘。A5642 关闭 direct/gateway AuthStatus body 漂移仍可进入发布摘要的问题。
 
+### A5643：将 gateway Alarm 绑定到 exact ENDPOINT
+
+readonly gate 此前只调用 gateway `/v3/maintenance/alarm` 并要求其列表为空，没有调用 direct `etcdctl alarm list`。旧 gate 因而能在
+Status errors 与 gateway alarms 都为空时忽略 direct Alarm 独立返回的 NOSPACE/CORRUPT。对照
+`/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Alarm`、`server/etcdserver/v3_server.go::Alarm` 与
+`server/etcdserver/apply/backend.go::Alarm`，gRPC 与 JSON gateway 都经同一 Raft `AlarmResponse`，并由同一 maintenance server
+补齐 ResponseHeader；两条路径不是可独立采样的告警真相源。
+
+新 gate 对 exact `ENDPOINT` 额外执行 direct Alarm list，把 cluster/member/revision/term 绑定到同一 Status 观察围栏；direct/gateway
+两侧缺省 alarms 均按 proto 空 repeated 解释，显式值必须是数组且为空。成功摘要新增 `direct_alarms=empty` 与
+`gateway_alarm_match=true`，并保留 `gateway_alarms=empty`。确定性 RED 保持 Status/gateway header 与 body 全部正确，只让 direct
+返回一个 NOSPACE alarm；旧 gate 整体 GREEN，新 gate 拒绝 `direct alarm list must be empty`。另覆盖 direct alarms 非数组与 serving
+member 漂移。定向回归为 `2.213s`，完整普通/race 分别为 `144.904s/146.283s`。Go vet、gofmt、shell syntax、diff check、文档契约与
+固定 digest 的 `koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
+
+代码提交 `929b6e29b4e59e5da01c8ce18210d56b95f1ebec` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`269.247/460.938/323.141/562.178s`，全部 GREEN。
+
+真实验证复用 A5629 当前产品候选，以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 部署
+`a5629-c446ec02` 至 generation 668；三 Pod runtime 均为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0。完整只读门禁 GREEN，明确输出
+`direct_alarms=empty` 与 `gateway_alarm_match=true`，并继续通过完整 info metrics、Status、AuthStatus、HashKV 与 gateway Maintenance
+检查。cluster ID `7662961163671170154`、members `4034353177/2393892952/231094427`、leader `231094427`、term `212`、
+revision/index/applied `65743`、HashKV `4283180840`、compact revision `44329` 一致。独立调用 direct/gateway Alarm 得到完全相同的
+规范化元组 `7662961163671170154/4034353177/65743/212/0`；候选窗口日志无 panic/fatal/data corruption/context deadline/TiKV/PD error。
+
+最后用新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 669、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
+无监听，也没有凭据或诊断文件落盘。A5643 关闭 direct Alarm 独立漂移仍可进入发布摘要的问题。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
