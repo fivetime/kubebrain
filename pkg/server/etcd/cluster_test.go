@@ -787,6 +787,69 @@ func TestFollowerLinearizableMemberListRejectsInvalidProxyPayload(t *testing.T) 
 	}
 }
 
+func TestFollowerLinearizableMemberListRejectsStaticMembershipDrift(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func([]*etcdserverpb.Member) []*etcdserverpb.Member
+	}{
+		{name: "missing member", mutate: func(members []*etcdserverpb.Member) []*etcdserverpb.Member {
+			return members[:len(members)-1]
+		}},
+		{name: "unexpected member", mutate: func(members []*etcdserverpb.Member) []*etcdserverpb.Member {
+			return append(members, &etcdserverpb.Member{ID: ^uint64(0), Name: "foreign"})
+		}},
+		{name: "changed name", mutate: func(members []*etcdserverpb.Member) []*etcdserverpb.Member {
+			members[0].Name = "poisoned"
+			return members
+		}},
+		{name: "changed peer URLs", mutate: func(members []*etcdserverpb.Member) []*etcdserverpb.Member {
+			members[0].PeerURLs = []string{"http://poisoned:2380"}
+			return members
+		}},
+		{name: "changed client URLs", mutate: func(members []*etcdserverpb.Member) []*etcdserverpb.Member {
+			members[0].ClientURLs = []string{"http://poisoned:2379"}
+			return members
+		}},
+		{name: "changed learner state", mutate: func(members []*etcdserverpb.Member) []*etcdserverpb.Member {
+			members[0].IsLearner = !members[0].IsLearner
+			return members
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			localID := server.localMemberID()
+			otherID := localID + 1
+			if otherID == 0 {
+				otherID = localID - 1
+			}
+			server.SetStaticMembers([]*etcdserverpb.Member{
+				{ID: localID, Name: "local", PeerURLs: []string{"http://local:2380"}, ClientURLs: []string{"http://local:2379"}},
+				{ID: otherID, Name: "other", PeerURLs: []string{"http://other:2380"}, ClientURLs: []string{"http://other:2379"}},
+			})
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initClusterProxyIntegrityMetrics(rec)
+			server.peers = testPeerService{
+				proxyEnabled: true,
+				epochFn:      func() (uint64, bool) { return 7, false },
+				memberListFn: func(context.Context, *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
+					return &etcdserverpb.MemberListResponse{
+						Header:  proxiedResponseHeader(server, 0),
+						Members: tt.mutate(server.membersSnapshot()),
+					}, nil
+				},
+			}
+
+			response, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, "configured membership")
+			require.Equal(t, []interface{}{int64(0), 1}, recordedClusterProxyIntegrityValues(rec))
+		})
+	}
+}
+
 // TestMemberListSerializableSurvivesUnavailableReadBarrier mirrors upstream
 // tests/common TestMemberListSerializable (845cd3885). KubeBrain's topology is
 // DBaaS-managed rather than Raft-mutated, but the wire option must preserve the

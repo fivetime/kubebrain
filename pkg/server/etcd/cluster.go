@@ -46,7 +46,7 @@ func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 				}
 				response, err := s.peers.MemberList(proxyCtx, req)
 				response, err = validateClusterProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), clusterProxyRPCMemberList, response, err)
-				response, err = validateMemberListProxyPayload(s.metricCli, response, err)
+				response, err = validateMemberListProxyPayload(s.metricCli, s.staticMembers, response, err)
 				s.observeForwardedRevision(response.GetHeader(), err)
 				return response, err
 			}

@@ -18,6 +18,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
@@ -47,21 +48,41 @@ func validateClusterProxyResult[T any](metricCli metrics.Metrics, identity proxy
 	return nil, status.Error(codes.DataLoss, "leader member_list proxy returned both response and error")
 }
 
-func validateMemberListProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.MemberListResponse, err error) (*etcdserverpb.MemberListResponse, error) {
+func validateMemberListProxyPayload(metricCli metrics.Metrics, expectedMembers []*etcdserverpb.Member, response *etcdserverpb.MemberListResponse, err error) (*etcdserverpb.MemberListResponse, error) {
 	if err != nil {
 		return response, err
+	}
+	fail := func(message string) (*etcdserverpb.MemberListResponse, error) {
+		emitClusterProxyIntegrityFailure(metricCli, clusterProxyRPCMemberList)
+		return nil, status.Error(codes.DataLoss, message)
 	}
 	var previousID uint64
 	for i, member := range response.GetMembers() {
 		if member == nil {
-			emitClusterProxyIntegrityFailure(metricCli, clusterProxyRPCMemberList)
-			return nil, status.Error(codes.DataLoss, "leader member_list proxy returned a nil member")
+			return fail("leader member_list proxy returned a nil member")
 		}
 		if i > 0 && member.GetID() <= previousID {
-			emitClusterProxyIntegrityFailure(metricCli, clusterProxyRPCMemberList)
-			return nil, status.Error(codes.DataLoss, "leader member_list proxy returned members outside strict ID order")
+			return fail("leader member_list proxy returned members outside strict ID order")
 		}
 		previousID = member.GetID()
+	}
+	if len(expectedMembers) == 0 {
+		return response, nil
+	}
+	if len(response.GetMembers()) != len(expectedMembers) {
+		return fail("leader member_list proxy returned a member set different from configured membership")
+	}
+	expectedByID := make(map[uint64]*etcdserverpb.Member, len(expectedMembers))
+	for _, member := range expectedMembers {
+		if member == nil {
+			return fail("leader member_list proxy could not validate configured membership")
+		}
+		expectedByID[member.GetID()] = member
+	}
+	for _, member := range response.GetMembers() {
+		if !proto.Equal(member, expectedByID[member.GetID()]) {
+			return fail("leader member_list proxy returned a member different from configured membership")
+		}
 	}
 	return response, nil
 }

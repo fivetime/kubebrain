@@ -336,7 +336,7 @@ func TestMemberListProxyPayloadValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := &recordingMetrics{}
 			want := &etcdserverpb.MemberListResponse{Header: txnHeader(1), Members: tt.members}
-			response, err := validateMemberListProxyPayload(rec, want, nil)
+			response, err := validateMemberListProxyPayload(rec, nil, want, nil)
 			if tt.valid {
 				require.Same(t, want, response)
 				require.NoError(t, err)
@@ -351,9 +351,20 @@ func TestMemberListProxyPayloadValidation(t *testing.T) {
 
 	wantErr := errors.New("transport failed")
 	want := &etcdserverpb.MemberListResponse{}
-	response, err := validateMemberListProxyPayload(nil, want, wantErr)
+	response, err := validateMemberListProxyPayload(nil, nil, want, wantErr)
 	require.Same(t, want, response)
 	require.ErrorIs(t, err, wantErr)
+
+	rec := &recordingMetrics{}
+	expected := []*etcdserverpb.Member{
+		{ID: 2, Name: "second", PeerURLs: []string{"http://second:2380"}, ClientURLs: []string{"http://second:2379"}, IsLearner: true},
+		{ID: 1, Name: "first", PeerURLs: []string{"http://first:2380"}, ClientURLs: []string{"http://first:2379"}},
+	}
+	want = &etcdserverpb.MemberListResponse{Members: []*etcdserverpb.Member{expected[1], expected[0]}}
+	response, err = validateMemberListProxyPayload(rec, expected, want, nil)
+	require.Same(t, want, response)
+	require.NoError(t, err)
+	require.Empty(t, recordedClusterProxyIntegrityValues(rec))
 }
 
 func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
