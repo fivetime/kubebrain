@@ -3024,6 +3024,57 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput:       "status storageVersion envelope invalid",
 		},
 		{
+			name: "rejects versioned status fields before etcd 3.4",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.3.0","dbSize":99,"dbSizeInUse":88,"isLearner":false,"errors":[],"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.3.0","dbSize":"99","dbSizeInUse":"88","isLearner":false,"errors":[],"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7"}`,
+			directStatusJSON: statusProbeJSON("3.3.0", "", 0, false, ""),
+			versionJSON:      `{"etcdserver":"3.3.0","etcdcluster":"3.3","storage":"unknown"}`,
+			infoVersionJSON:  `{"etcdserver":"3.3.0","etcdcluster":"3.3","storage":"unknown"}`,
+			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.3.0"},
+			wantOutput:       "status 3.4 fields are unavailable before etcd 3.4",
+		},
+		{
+			name: "rejects versioned gateway status fields before etcd 3.4",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.3.0","dbSize":99,"leader":456,"raftTerm":8,"raftIndex":7}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.3.0","dbSize":"99","dbSizeInUse":"88","leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7"}`,
+			directStatusJSON: pre34StatusProbeJSON("3.3.0"),
+			versionJSON:      `{"etcdserver":"3.3.0","etcdcluster":"3.3","storage":"unknown"}`,
+			infoVersionJSON:  `{"etcdserver":"3.3.0","etcdcluster":"3.3","storage":"unknown"}`,
+			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.3.0"},
+			wantOutput:       "gateway status 3.4 fields are unavailable before etcd 3.4",
+		},
+		{
+			name: "rejects versioned raw status fields before etcd 3.4",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.3.0","dbSize":99,"leader":456,"raftTerm":8,"raftIndex":7}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.3.0","dbSize":"99","leader":"456","raftTerm":"8","raftIndex":"7"}`,
+			directStatusJSON: statusProbeJSON("3.3.0", "", 0, false, ""),
+			versionJSON:      `{"etcdserver":"3.3.0","etcdcluster":"3.3","storage":"unknown"}`,
+			infoVersionJSON:  `{"etcdserver":"3.3.0","etcdcluster":"3.3","storage":"unknown"}`,
+			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.3.0"},
+			wantOutput:       "raw status versioned fields are unavailable before etcd 3.4",
+		},
+		{
 			name: "rejects versioned status fields before etcd 3.6",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -3114,9 +3165,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			]}`,
 			readyz:           "ok",
 			count:            "4",
-			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.3.0","dbSize":99,"dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7}}]`,
-			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.3.0","dbSize":"99","dbSizeInUse":"88","leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7"}`,
-			directStatusJSON: statusProbeJSON("3.3.0", "", 0, false, ""),
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.3.0","dbSize":99,"leader":456,"raftTerm":8,"raftIndex":7}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.3.0","dbSize":"99","leader":"456","raftTerm":"8","raftIndex":"7"}`,
+			directStatusJSON: pre34StatusProbeJSON("3.3.0"),
 			versionJSON:      `{"etcdserver":"3.3.0","etcdcluster":"3.3","storage":"unknown"}`,
 			infoVersionJSON:  `{"etcdserver":"3.3.0","etcdcluster":"3.3","storage":"unknown"}`,
 			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.3.0"},
@@ -6081,6 +6132,10 @@ func defaultDirectStatusJSON(value string) string {
 
 func statusProbeJSON(version, storageVersion string, dbSizeQuota int64, downgradeEnabled bool, downgradeTarget string) string {
 	return fmt.Sprintf(`{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":%q,"db_size":99,"leader":456,"raft_index":7,"raft_term":8,"raft_applied_index":7,"errors":[],"db_size_in_use":88,"is_learner":false,"storage_version":%q,"db_size_quota":%d,"downgrade_info":{"enabled":%t,"target_version":%q}}`, version, storageVersion, dbSizeQuota, downgradeEnabled, downgradeTarget)
+}
+
+func pre34StatusProbeJSON(version string) string {
+	return fmt.Sprintf(`{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":%q,"db_size":99,"leader":456,"raft_index":7,"raft_term":8,"raft_applied_index":0,"errors":[],"db_size_in_use":0,"is_learner":false,"storage_version":"","db_size_quota":0,"downgrade_info":{"enabled":false,"target_version":""}}`, version)
 }
 
 func defaultGatewayAuthStatusJSON(value string) string {

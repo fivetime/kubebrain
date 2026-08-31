@@ -1271,13 +1271,13 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         | (
             if ($raft_index == null and $applied_index == null) then
               empty
-            elif ($raft_index == null or $applied_index == null) then
+            elif ($raft_index == null) then
               "missing_pair"
-            elif (($raft_index | type) != "number" or ($applied_index | type) != "number") then
+            elif (($raft_index | type) != "number" or ($applied_index != null and ($applied_index | type) != "number")) then
               "not_number"
-            elif ($raft_index != ($raft_index | floor) or $applied_index != ($applied_index | floor)) then
+            elif ($raft_index != ($raft_index | floor) or ($applied_index != null and $applied_index != ($applied_index | floor))) then
               "not_integer"
-            elif ($raft_index < 0 or $applied_index < 0) then
+            elif ($raft_index < 0 or ($applied_index != null and $applied_index < 0)) then
               "negative"
             else
               empty
@@ -1361,6 +1361,38 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       exit 1
     fi
   fi
+  status_fields34_rows="$(printf '%s' "$status_json" | "$JQ" -r '
+    .[]
+    | [
+        (.Endpoint // "unknown"),
+        (.Status.version // "missing"),
+        ((.Status | has("raftIndex") or has("raft_index")) | tostring),
+        ((.Status | has("raftAppliedIndex") or has("raft_applied_index")) | tostring),
+        ((.Status | has("dbSizeInUse") or has("db_size_in_use")) | tostring),
+        ((.Status | has("errors") or has("Errors")) | tostring),
+        ((.Status | has("isLearner") or has("is_learner")) | tostring)
+      ]
+    | @tsv
+  ')"
+  while IFS=$'\t' read -r status_endpoint status_version status_has_raft_index status_has_raft_applied_index status_has_db_size_in_use status_has_errors status_has_is_learner; do
+    [[ -n "$status_endpoint" ]] || continue
+    if [[ "$status_version" == "missing" ]]; then
+      if [[ "$status_has_raft_index" != "$status_has_raft_applied_index" ]]; then
+        echo "status raft index envelope invalid: ${status_endpoint}: missing_pair" >&2
+        exit 1
+      fi
+    elif ! semver_core_at_least_3_minor "$status_version" 4; then
+      if [[ "$status_has_raft_applied_index" == "true" || "$status_has_db_size_in_use" == "true" || "$status_has_errors" == "true" || "$status_has_is_learner" == "true" ]]; then
+        echo "status 3.4 fields are unavailable before etcd 3.4: ${status_endpoint}" >&2
+        exit 1
+      fi
+    else
+      if [[ "$status_has_raft_index" != "$status_has_raft_applied_index" ]]; then
+        echo "status raft index envelope invalid: ${status_endpoint}: missing_pair" >&2
+        exit 1
+      fi
+    fi
+  done <<<"$status_fields34_rows"
   status_storage_version_violations="$(printf '%s' "$status_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
@@ -1795,7 +1827,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   gateway_status_values="$(printf '%s' "$gateway_status_json" | "$JQ" -r '
     if type != "object" then
-      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       (if has("isLearner") then .isLearner elif has("is_learner") then .is_learner else null end) as $is_learner
       | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else null end) as $downgrade_info
@@ -1818,11 +1850,12 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         (if has("raftAppliedIndex") then .raftAppliedIndex elif has("raft_applied_index") then .raft_applied_index else "missing" end),
         (if $downgrade_info == null then "missing" else ($downgrade_info | type) end),
         (if $downgrade_info == null then "missing" elif ($downgrade_info | type) != "object" then "invalid" elif ($downgrade_info | has("enabled")) then ($downgrade_info.enabled | tostring) else "false" end),
-        (if $downgrade_info == null then "missing" elif ($downgrade_info | type) != "object" then "invalid" elif ($downgrade_info | has("targetVersion")) then ($downgrade_info.targetVersion | if . == "" then "-" else . end) elif ($downgrade_info | has("target_version")) then ($downgrade_info.target_version | if . == "" then "-" else . end) else "-" end)
+        (if $downgrade_info == null then "missing" elif ($downgrade_info | type) != "object" then "invalid" elif ($downgrade_info | has("targetVersion")) then ($downgrade_info.targetVersion | if . == "" then "-" else . end) elif ($downgrade_info | has("target_version")) then ($downgrade_info.target_version | if . == "" then "-" else . end) else "-" end),
+        ((has("errors") or has("Errors")) | tostring)
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r gateway_status_cluster_id gateway_status_member_id gateway_status_revision gateway_status_header_raft_term gateway_status_version gateway_status_storage_version gateway_status_db_size gateway_status_db_size_in_use gateway_status_db_size_quota gateway_status_is_learner_type gateway_status_is_learner gateway_status_leader gateway_status_raft_term gateway_status_raft_index gateway_status_raft_applied_index gateway_status_downgrade_info_type gateway_status_downgrade_enabled gateway_status_downgrade_target_version <<<"$gateway_status_values"
+  IFS=$'\t' read -r gateway_status_cluster_id gateway_status_member_id gateway_status_revision gateway_status_header_raft_term gateway_status_version gateway_status_storage_version gateway_status_db_size gateway_status_db_size_in_use gateway_status_db_size_quota gateway_status_is_learner_type gateway_status_is_learner gateway_status_leader gateway_status_raft_term gateway_status_raft_index gateway_status_raft_applied_index gateway_status_downgrade_info_type gateway_status_downgrade_enabled gateway_status_downgrade_target_version gateway_status_has_errors <<<"$gateway_status_values"
   if [[ "$gateway_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${gateway_status_cluster_id}" >&2
     exit 1
@@ -1845,6 +1878,23 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ -n "$EXPECTED_STATUS_VERSION" && "$gateway_status_version" != "$EXPECTED_STATUS_VERSION" ]]; then
     echo "gateway status version mismatch: expected ${EXPECTED_STATUS_VERSION}, got ${gateway_status_version}" >&2
+    exit 1
+  fi
+  if semver_core_at_least_3_minor "$gateway_status_version" 4; then
+    if ! [[ "$gateway_status_db_size_in_use" =~ ^[0-9]+$ ]]; then
+      echo "gateway status dbSizeInUse must be non-negative, got ${gateway_status_db_size_in_use}" >&2
+      exit 1
+    fi
+    if [[ "$gateway_status_is_learner_type" != "missing" && "$gateway_status_is_learner_type" != "boolean" ]]; then
+      echo "gateway status isLearner must be boolean, got ${gateway_status_is_learner_type}" >&2
+      exit 1
+    fi
+    if ! [[ "$gateway_status_raft_applied_index" =~ ^[0-9]+$ ]]; then
+      echo "gateway status raftAppliedIndex must be non-negative, got ${gateway_status_raft_applied_index}" >&2
+      exit 1
+    fi
+  elif [[ "$gateway_status_db_size_in_use" != "missing" || "$gateway_status_is_learner_type" != "missing" || "$gateway_status_raft_applied_index" != "missing" || "$gateway_status_has_errors" != "false" ]]; then
+    echo "gateway status 3.4 fields are unavailable before etcd 3.4" >&2
     exit 1
   fi
   gateway_status_v36_fields_required=0
@@ -1870,14 +1920,6 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status dbSize must be positive, got ${gateway_status_db_size}" >&2
     exit 1
   fi
-  if ! [[ "$gateway_status_db_size_in_use" =~ ^[0-9]+$ ]]; then
-    echo "gateway status dbSizeInUse must be non-negative, got ${gateway_status_db_size_in_use}" >&2
-    exit 1
-  fi
-  if [[ "$gateway_status_is_learner_type" != "missing" && "$gateway_status_is_learner_type" != "boolean" ]]; then
-    echo "gateway status isLearner must be boolean, got ${gateway_status_is_learner_type}" >&2
-    exit 1
-  fi
   if ! [[ "$gateway_status_leader" =~ ^[1-9][0-9]*$ ]]; then
     echo "gateway status leader must be positive, got ${gateway_status_leader}" >&2
     exit 1
@@ -1900,10 +1942,6 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if ! [[ "$gateway_status_raft_index" =~ ^[0-9]+$ ]]; then
     echo "gateway status raftIndex must be non-negative, got ${gateway_status_raft_index}" >&2
-    exit 1
-  fi
-  if ! [[ "$gateway_status_raft_applied_index" =~ ^[0-9]+$ ]]; then
-    echo "gateway status raftAppliedIndex must be non-negative, got ${gateway_status_raft_applied_index}" >&2
     exit 1
   fi
   if [[ "$gateway_status_db_size" != "$gateway_expected_status_db_size" ]]; then
@@ -1971,7 +2009,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   direct_status_values="$(printf '%s' "$direct_status_json" | "$JQ" -r '
     if type != "object" or (.header | type) != "object" or (.downgrade_info | type) != "object" then
-      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       [
         (.header.cluster_id // "missing"),
@@ -1981,11 +2019,13 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         (.db_size_quota // "missing"),
         (if (.is_learner | type) == "boolean" then (.is_learner | tostring) else "invalid" end),
         (if (.downgrade_info.enabled | type) == "boolean" then (.downgrade_info.enabled | tostring) else "invalid" end),
-        (if (.downgrade_info.target_version | type) == "string" then (.downgrade_info.target_version | if . == "" then "-" else . end) else "invalid" end)
+        (if (.downgrade_info.target_version | type) == "string" then (.downgrade_info.target_version | if . == "" then "-" else . end) else "invalid" end),
+        (.raft_applied_index // "missing"),
+        (.db_size_in_use // "missing")
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r direct_status_cluster_id direct_status_member_id direct_status_version direct_status_storage_version direct_status_db_size_quota direct_status_is_learner direct_status_downgrade_enabled direct_status_downgrade_target_version <<<"$direct_status_values"
+  IFS=$'\t' read -r direct_status_cluster_id direct_status_member_id direct_status_version direct_status_storage_version direct_status_db_size_quota direct_status_is_learner direct_status_downgrade_enabled direct_status_downgrade_target_version direct_status_raft_applied_index direct_status_db_size_in_use <<<"$direct_status_values"
   if [[ "$direct_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "raw status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${direct_status_cluster_id}" >&2
     exit 1
@@ -2005,6 +2045,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   direct_status_v34_learner_required=0
   if semver_core_at_least_3_minor "$direct_status_version" 4; then
     direct_status_v34_learner_required=1
+    if ! [[ "$direct_status_raft_applied_index" =~ ^[0-9]+$ && "$direct_status_db_size_in_use" =~ ^[0-9]+$ ]]; then
+      echo "raw status 3.4 fields envelope invalid" >&2
+      exit 1
+    fi
     if [[ "$direct_status_is_learner" == "invalid" ]]; then
       echo "raw status isLearner envelope invalid: expected a boolean" >&2
       exit 1
@@ -2019,6 +2063,9 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       echo "raw/gateway status isLearner mismatch: raw=${direct_status_is_learner}, gateway=${gateway_status_is_learner_effective}" >&2
       exit 1
     fi
+  elif [[ "$direct_status_raft_applied_index" != "0" || "$direct_status_db_size_in_use" != "0" || "$direct_status_is_learner" != "false" ]]; then
+    echo "raw status versioned fields are unavailable before etcd 3.4" >&2
+    exit 1
   fi
   direct_status_v36_fields_required=0
   if semver_core_at_least_3_6 "$direct_status_version"; then
@@ -2127,7 +2174,9 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   status_summary+=", version_storage=${version_storage}"
   status_summary+=", info_version_storage=${info_version_storage}"
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
-    status_summary+=", gateway_db_size_in_use=${gateway_status_db_size_in_use}"
+    if [[ "$gateway_status_db_size_in_use" != "missing" ]]; then
+      status_summary+=", gateway_db_size_in_use=${gateway_status_db_size_in_use}"
+    fi
     if [[ "$gateway_status_db_size_quota" != "missing" ]]; then
       status_summary+=", gateway_db_size_quota=${gateway_status_db_size_quota}"
     fi
@@ -2137,8 +2186,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     status_summary+=", gateway_leader_id=${gateway_status_leader}"
     status_summary+=", gateway_raft_term=${gateway_status_raft_term}"
     status_summary+=", gateway_raft_index=${gateway_status_raft_index}"
-    status_summary+=", gateway_raft_applied_index=${gateway_status_raft_applied_index}"
-    status_summary+=", gateway_raft_indexes_sampled=true"
+    if [[ "$gateway_status_raft_applied_index" != "missing" ]]; then
+      status_summary+=", gateway_raft_applied_index=${gateway_status_raft_applied_index}"
+      status_summary+=", gateway_raft_indexes_sampled=true"
+    fi
     if [[ "$gateway_status_v36_fields_required" == "1" ]]; then
       status_summary+=", gateway_downgrade_info=object"
     fi

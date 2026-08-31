@@ -125,6 +125,15 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 	if response.GetDbSizeInUse() < 0 {
 		return statusProbeResult{}, fmt.Errorf("maintenance Status db size in use must be non-negative, got %d", response.GetDbSizeInUse())
 	}
+	requiresFields34, err := statusVersionCoreAtLeast3Minor(response.GetVersion(), "4")
+	if err != nil {
+		return statusProbeResult{}, err
+	}
+	if !requiresFields34 &&
+		(response.GetRaftAppliedIndex() != 0 || len(response.GetErrors()) != 0 ||
+			response.GetDbSizeInUse() != 0 || response.GetIsLearner()) {
+		return statusProbeResult{}, errors.New("maintenance Status versioned fields are unavailable before etcd 3.4")
+	}
 	requiresVersionedFields, err := statusVersionCoreAtLeast3Minor(response.GetVersion(), "6")
 	if err != nil {
 		return statusProbeResult{}, err

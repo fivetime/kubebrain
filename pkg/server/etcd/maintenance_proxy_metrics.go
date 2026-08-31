@@ -155,6 +155,13 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	if parseErr != nil {
 		return fail("leader status proxy returned an invalid server version")
 	}
+	hasStatusFields34 := serverVersion.Major() > 3 ||
+		(serverVersion.Major() == 3 && serverVersion.Minor() >= 4)
+	if !hasStatusFields34 &&
+		(response.GetRaftAppliedIndex() != 0 || len(response.GetErrors()) != 0 ||
+			response.GetDbSizeInUse() != 0 || response.GetIsLearner()) {
+		return fail("leader status proxy returned 3.4 fields for a pre-3.4 server")
+	}
 	hasVersionedStatusFields := serverVersion.Major() > 3 ||
 		(serverVersion.Major() == 3 && serverVersion.Minor() >= 6)
 	downgradeInfo := response.GetDowngradeInfo()

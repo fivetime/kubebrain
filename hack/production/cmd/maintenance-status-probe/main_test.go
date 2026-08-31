@@ -158,6 +158,25 @@ func TestValidateStatusResponseRejectsVersionedFieldsBefore36(t *testing.T) {
 	}
 }
 
+func TestValidateStatusResponseRejectsVersionedFieldsBefore34(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response *etcdserverpb.StatusResponse
+	}{
+		{name: "applied index", response: &etcdserverpb.StatusResponse{RaftAppliedIndex: 1}},
+		{name: "errors", response: &etcdserverpb.StatusResponse{Errors: []string{"alarm:NOSPACE"}}},
+		{name: "database size in use", response: &etcdserverpb.StatusResponse{DbSizeInUse: 1}},
+		{name: "learner", response: &etcdserverpb.StatusResponse{IsLearner: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.response.Header = &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8}
+			tc.response.Version = "3.3.0"
+			_, err := validateStatusResponse(tc.response)
+			require.ErrorContains(t, err, "versioned fields are unavailable before etcd 3.4")
+		})
+	}
+}
+
 func TestValidateStatusResponseRejectsMissingEnvelope(t *testing.T) {
 	_, err := validateStatusResponse(nil)
 	require.ErrorContains(t, err, "nil response")

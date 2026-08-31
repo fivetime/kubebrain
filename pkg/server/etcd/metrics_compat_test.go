@@ -1021,6 +1021,16 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 			Leader: 1, RaftIndex: 7, RaftAppliedIndex: 6, DowngradeInfo: &etcdserverpb.DowngradeInfo{},
 		}
 	}
+	pre34Defaults := func(response *etcdserverpb.StatusResponse) {
+		response.Version = "3.3.0"
+		response.RaftAppliedIndex = 0
+		response.Errors = nil
+		response.DbSizeInUse = 0
+		response.IsLearner = false
+		response.StorageVersion = ""
+		response.DbSizeQuota = 0
+		response.DowngradeInfo = nil
+	}
 	tests := []struct {
 		name   string
 		mutate func(*etcdserverpb.StatusResponse)
@@ -1041,6 +1051,23 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 		{name: "pre-3.6 versioned fields", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.Version = "3.5.0"
 			response.StorageVersion = "3.5.0"
+		}},
+		{name: "pre-3.4 defaults", mutate: pre34Defaults, valid: true},
+		{name: "pre-3.4 applied index", mutate: func(response *etcdserverpb.StatusResponse) {
+			pre34Defaults(response)
+			response.RaftAppliedIndex = 1
+		}},
+		{name: "pre-3.4 errors", mutate: func(response *etcdserverpb.StatusResponse) {
+			pre34Defaults(response)
+			response.Errors = []string{"alarm:NOSPACE"}
+		}},
+		{name: "pre-3.4 database size in use", mutate: func(response *etcdserverpb.StatusResponse) {
+			pre34Defaults(response)
+			response.DbSizeInUse = 1
+		}},
+		{name: "pre-3.4 learner", mutate: func(response *etcdserverpb.StatusResponse) {
+			pre34Defaults(response)
+			response.IsLearner = true
 		}},
 		{name: "semantic prerelease server version", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.Version = "3.7.0-rc.1+build.2"
