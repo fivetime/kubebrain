@@ -2583,6 +2583,28 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "status/hashkv endpoint revision mapping mismatch: status=${status_endpoint_revision_map//$'\n'/,}, hashkv=${hashkv_endpoint_revision_map//$'\n'/,}" >&2
     exit 1
   fi
+  direct_endpoint_hashkv_values="$(printf '%s' "$hashkv_json" | "$JQ" -r --arg endpoint "$ENDPOINT" '
+    [
+      .[]
+      | select(.Endpoint == $endpoint)
+      | [
+          (.HashKV.hash | tostring),
+          (.HashKV.header.revision | tostring),
+          ((if (.HashKV | has("hash_revision")) then .HashKV.hash_revision elif (.HashKV | has("hashRevision")) then .HashKV.hashRevision else .HashKV.header.revision end) | tostring),
+          ((if (.HashKV | has("compact_revision")) then .HashKV.compact_revision else .HashKV.compactRevision end) | tostring)
+        ]
+    ] as $matches
+    | if ($matches | length) != 1 then
+        [($matches | length | tostring), "invalid", "invalid", "invalid", "invalid"] | @tsv
+      else
+        (["1"] + $matches[0]) | @tsv
+      end
+  ')"
+  IFS=$'\t' read -r direct_endpoint_hashkv_count direct_endpoint_hashkv_hash direct_endpoint_hashkv_revision direct_endpoint_hashkv_hash_revision direct_endpoint_hashkv_compact_revision <<<"$direct_endpoint_hashkv_values"
+  if [[ "$direct_endpoint_hashkv_count" != "1" ]]; then
+    echo "ENDPOINT must match exactly one direct HashKV response: endpoint=${ENDPOINT}, matches=${direct_endpoint_hashkv_count}" >&2
+    exit 1
+  fi
   hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_endpoint_members_match=true, hashkv_endpoint_revisions_match=true, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
   hashkv_summary+=", revisions_match=true"
   if [[ "$hashkv_raft_terms" != "-" ]]; then
@@ -2737,6 +2759,10 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv revision mismatch: etcdctl=${gateway_expected_revision}, gateway=${gateway_hashkv_revision}" >&2
     exit 1
   fi
+  if [[ "$gateway_hashkv_revision" != "$direct_endpoint_hashkv_revision" ]]; then
+    echo "gateway hashkv header revision mismatch with direct endpoint: direct=${direct_endpoint_hashkv_revision}, gateway=${gateway_hashkv_revision}" >&2
+    exit 1
+  fi
   if ! [[ "$gateway_hashkv_raft_term" =~ ^[1-9][0-9]*$ ]]; then
     echo "gateway hashkv raft term must be positive, got ${gateway_hashkv_raft_term}" >&2
     exit 1
@@ -2753,6 +2779,10 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv hash mismatch: expected ${EXPECTED_HASHKV_HASH}, got ${gateway_hashkv_hash}" >&2
     exit 1
   fi
+  if [[ "$gateway_hashkv_hash" != "$direct_endpoint_hashkv_hash" ]]; then
+    echo "gateway hashkv hash mismatch with direct endpoint: direct=${direct_endpoint_hashkv_hash}, gateway=${gateway_hashkv_hash}" >&2
+    exit 1
+  fi
   if ! [[ "$gateway_hashkv_compact_revision" =~ ^(-1|[0-9]+)$ ]]; then
     echo "gateway hashkv compact revision must be at least -1, got ${gateway_hashkv_compact_revision}" >&2
     exit 1
@@ -2765,12 +2795,16 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv hash revision must match header revision: hash_revision=${gateway_hashkv_hash_revision}, header_revision=${gateway_hashkv_revision}" >&2
     exit 1
   fi
+  if [[ "$gateway_hashkv_hash_revision" != "$direct_endpoint_hashkv_hash_revision" ]]; then
+    echo "gateway hashkv hash revision mismatch with direct endpoint: direct=${direct_endpoint_hashkv_hash_revision}, gateway=${gateway_hashkv_hash_revision}" >&2
+    exit 1
+  fi
   if (( gateway_hashkv_compact_revision > gateway_hashkv_hash_revision )); then
     echo "gateway hashkv compact revision must not exceed hash revision: compact=${gateway_hashkv_compact_revision}, hash=${gateway_hashkv_hash_revision}" >&2
     exit 1
   fi
-  if [[ "$gateway_hashkv_compact_revision" != "$min_hashkv_compact_revision" ]]; then
-    echo "gateway hashkv compact revision mismatch: etcdctl=${min_hashkv_compact_revision}, gateway=${gateway_hashkv_compact_revision}" >&2
+  if [[ "$gateway_hashkv_compact_revision" != "$direct_endpoint_hashkv_compact_revision" ]]; then
+    echo "gateway hashkv compact revision mismatch with direct endpoint: direct=${direct_endpoint_hashkv_compact_revision}, gateway=${gateway_hashkv_compact_revision}" >&2
     exit 1
   fi
   hashkv_summary+=", direct_hash=${direct_hash_value}, gateway_hash=${gateway_hash_value}, gateway_hash_match=true"
@@ -2778,6 +2812,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   hashkv_summary+=", gateway_hashkv_hash_revision=${gateway_hashkv_hash_revision}"
   hashkv_summary+=", gateway_hashkv_compact_revision=${gateway_hashkv_compact_revision}"
   hashkv_summary+=", gateway_hashkv_revisions_match=true"
+  hashkv_summary+=", gateway_hashkv_body_match=true"
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_hash_metrics_boundary "${ENDPOINT%/}/metrics"
     status_summary+=", mvcc_hash_metrics=ok"

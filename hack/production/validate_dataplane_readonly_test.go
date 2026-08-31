@@ -3244,7 +3244,32 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":"111","compact_revision":"3","hash_revision":"7"}`,
 			},
 			wantOK:     true,
-			wantOutput: "direct_hash=222, gateway_hash=222, gateway_hash_match=true, gateway_hashkv_hash=111, gateway_hashkv_hash_revision=7, gateway_hashkv_compact_revision=3, gateway_hashkv_revisions_match=true",
+			wantOutput: "direct_hash=222, gateway_hash=222, gateway_hash_match=true, gateway_hashkv_hash=111, gateway_hashkv_hash_revision=7, gateway_hashkv_compact_revision=3, gateway_hashkv_revisions_match=true, gateway_hashkv_body_match=true",
+		},
+		{
+			name: "rejects gateway hashkv compact revision from another endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"dbSize":99,"raftTerm":8}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":8},"dbSize":99,"raftTerm":8}}
+			]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				`FAKE_HASHKV_JSON=[
+					{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":5,"hash_revision":7}},
+					{"Endpoint":"http://127.0.0.2:2379","HashKV":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}
+				]`,
+				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":"111","compact_revision":"3","hash_revision":"7"}`,
+			},
+			wantOutput: "gateway hashkv compact revision mismatch with direct endpoint",
 		},
 		{
 			name: "rejects gateway hash mismatch with direct endpoint",
@@ -4909,7 +4934,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":"111","compact_revision":"-1","hash_revision":"7"}`,
 			},
 			wantOK:     true,
-			wantOutput: "gateway_hashkv_compact_revision=-1, gateway_hashkv_revisions_match=true",
+			wantOutput: "gateway_hashkv_compact_revision=-1, gateway_hashkv_revisions_match=true, gateway_hashkv_body_match=true",
 		},
 		{
 			name: "rejects hashkv compact revision below sentinel",
@@ -6064,6 +6089,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"gateway_status_errors=empty",
 		"gateway_hashkv_hash=<n>",
 		"gateway_hashkv_revisions_match=true",
+		"gateway_hashkv_body_match=true",
 		"hashkv_endpoint_members_match=true",
 		"hashkv_endpoint_revisions_match=true",
 		"revisions_match=true",
