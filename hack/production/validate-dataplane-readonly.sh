@@ -2419,6 +2419,18 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
       ([.[] | select((.HashKV | has("hash_revision")) or (.HashKV | has("hashRevision")))] | length)
     end
   ')"
+  hashkv_hash_revision_summary=""
+  if [[ -n "$EXPECTED_STATUS_VERSION" ]]; then
+    expected_status_core="${EXPECTED_STATUS_VERSION%%[-+]*}"
+    IFS='.' read -r expected_status_major expected_status_minor _ <<<"$expected_status_core"
+    if (( 10#$expected_status_major > 3 || (10#$expected_status_major == 3 && 10#$expected_status_minor >= 6) )); then
+      if [[ "$hashkv_hash_revision_presence" != "$hashkv_count" ]]; then
+        echo "hashkv hash revision is required for etcd ${EXPECTED_STATUS_VERSION}: present=${hashkv_hash_revision_presence}, total=${hashkv_count}" >&2
+        exit 1
+      fi
+      hashkv_hash_revision_summary=", hashkv_hash_revisions_present=true"
+    fi
+  fi
   if [[ "$hashkv_hash_revision_presence" != "0" && "$hashkv_hash_revision_presence" != "$hashkv_count" ]]; then
     echo "hashkv hash revision must be present on all endpoints when present: present=${hashkv_hash_revision_presence}, total=${hashkv_count}" >&2
     exit 1
@@ -2606,6 +2618,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     exit 1
   fi
   hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_endpoint_members_match=true, hashkv_endpoint_revisions_match=true, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
+  hashkv_summary+="$hashkv_hash_revision_summary"
   hashkv_summary+=", revisions_match=true"
   if [[ "$hashkv_raft_terms" != "-" ]]; then
     hashkv_summary+=", hashkv_raft_terms=${hashkv_raft_terms}"
