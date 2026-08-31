@@ -348,8 +348,10 @@ func validateTxnProxyPutPayload(request *etcdserverpb.PutRequest, response *etcd
 	if validateProxyKeyValueLifecycle(previous) != nil {
 		return fmt.Errorf("put returned invalid previous key-value revision metadata")
 	}
-	if previous.GetModRevision() > outerRevision {
-		return fmt.Errorf("put returned a previous key-value newer than the transaction revision")
+	// etcd reads PrevKV from the transaction's pre-write snapshot and rejects
+	// overlapping writes, while any effective Put advances the outer revision.
+	if previous.GetModRevision() >= outerRevision {
+		return fmt.Errorf("put returned a previous key-value not older than the transaction revision")
 	}
 	return nil
 }
@@ -380,8 +382,10 @@ func validateTxnProxyDeletePayload(request *etcdserverpb.DeleteRangeRequest, res
 		if validateProxyKeyValueLifecycle(previous) != nil {
 			return fmt.Errorf("delete returned invalid previous key-value revision metadata")
 		}
-		if previous.GetModRevision() > outerRevision {
-			return fmt.Errorf("delete returned a previous key-value newer than the transaction revision")
+		// An effective delete advances the outer revision after collecting its
+		// previous values from the same pre-write transaction snapshot.
+		if previous.GetModRevision() >= outerRevision {
+			return fmt.Errorf("delete returned a previous key-value not older than the transaction revision")
 		}
 		if index > 0 && bytes.Compare(response.GetPrevKvs()[index-1].GetKey(), previous.GetKey()) >= 0 {
 			return fmt.Errorf("delete returned duplicate or unsorted previous keys")

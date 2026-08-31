@@ -562,6 +562,7 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 		name     string
 		request  *etcdserverpb.TxnRequest
 		response *etcdserverpb.TxnResponse
+		message  string
 	}{
 		{name: "zero revision", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(0), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{rangeResponse()}}},
 		{name: "missing operation", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true}},
@@ -573,7 +574,32 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 		{name: "future operation revision", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(3)}}}}}},
 		{name: "invalid range payload", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("other"), CreateRevision: 1, ModRevision: 1, Version: 1}}}}}}}},
 		{name: "invalid put payload", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("p")}}}}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(2), PrevKv: &mvccpb.KeyValue{Key: []byte("p"), CreateRevision: 1, ModRevision: 1, Version: 1}}}}}}},
+		{
+			name: "put previous at write revision",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("p"), PrevKv: true}},
+			}}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{
+					Header: txnHeader(2), PrevKv: &mvccpb.KeyValue{Key: []byte("p"), CreateRevision: 2, ModRevision: 2, Version: 1},
+				}},
+			}}},
+			message: "put returned a previous key-value not older than the transaction revision",
+		},
 		{name: "invalid delete payload", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), PrevKv: true}}}}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(2), Deleted: 1}}}}}},
+		{
+			name: "delete previous at write revision",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), PrevKv: true}},
+			}}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+					Header: txnHeader(2), Deleted: 1,
+					PrevKvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 2, ModRevision: 2, Version: 1}},
+				}},
+			}}},
+			message: "delete returned a previous key-value not older than the transaction revision",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -584,6 +610,7 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			initKVProxyIntegrityMetrics(rec)
 			tt.response.Header.ClusterId = server.backend.ClusterID()
 			tt.response.Header.MemberId = server.localMemberID()
+			tt.response.Header.RaftTerm = 1
 			server.peers = testPeerService{
 				isLeader: false, proxyEnabled: true,
 				txnFn: func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
@@ -594,6 +621,9 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			response, err := server.Txn(context.Background(), tt.request)
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
+			if tt.message != "" {
+				require.ErrorContains(t, err, tt.message)
+			}
 			require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCTxn))
 		})
 	}
