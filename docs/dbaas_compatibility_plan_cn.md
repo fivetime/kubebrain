@@ -66266,6 +66266,39 @@ panic/fatal/data corruption/context deadline/TiKV/PD error。
 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
 无监听，也没有凭据或诊断文件落盘。A5641 关闭 direct Status 健康但 gateway 独立报告 no-leader/alarm 或畸形 errors 仍可进入发布摘要的问题。
 
+### A5642：将 gateway AuthStatus 绑定到 exact ENDPOINT
+
+readonly gate 此前只验证 gateway `/v3/auth/status` 自身的 envelope 与 Status header 围栏，没有调用 direct
+`etcdctl auth status`。旧 gate 因而能在 header 全部正确时接受 direct `enabled=true`、gateway 缺省为 false，或 direct
+`authRevision=5`、gateway `authRevision=6`。对照 `/root/etcd/server/etcdserver/api/v3rpc/auth.go::AuthStatus` 与
+`server/etcdserver/apply/backend.go::AuthStatus`，gRPC 与 JSON gateway 都投影同一个 `AuthStatusResponse`，其 enabled 与 authRevision
+不是可独立漂移的展示值。
+
+新 gate 对 exact `ENDPOINT` 额外执行 direct AuthStatus，把其 cluster/member/revision/term 绑定到同一 Status 观察围栏；direct/gateway
+两侧缺省 scalar 均按 proto 默认值 `enabled=false`、`authRevision=0` 规范化，显式 enabled 必须是 boolean，authRevision 必须是 canonical
+uint64，最后逐字段相等。成功摘要新增 `gateway_auth_status_match=true`。两项确定性 RED 在旧 gate 下都整体 GREEN，新 gate 分别拒绝
+enabled 与 authRevision 漂移；另覆盖双侧省略、direct enabled 类型错误和 authRevision uint64 溢出。定向回归为 `5.624s`。
+
+首次完整普通/race 回归只发现两项旧 raft-index 成功 fixture 的 Status/gateway/auth/alarm revision 已固定为 9，而新增 direct AuthStatus
+仍继承默认 revision 7；同步这两项 direct fixture、保持原断言目标后，完整普通/race 分别为 `129.471s/130.567s`。Go vet、gofmt、
+shell syntax、diff check、文档契约与固定 digest 的 `koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
+
+代码提交 `aa230e4b47aaeaa87cd8dd22997c79f625bcc87f` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`256.471/450.064/298.743/551.559s`，全部 GREEN。
+
+真实验证复用 A5629 当前产品候选，以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 部署
+`a5629-c446ec02` 至 generation 666；三 Pod runtime 均为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0。完整只读门禁 GREEN，明确输出
+`gateway_auth_status_match=true`，同时保持完整 info metrics、Status、HashKV 与 gateway Maintenance 检查。cluster ID
+`7662961163671170154`、members `4034353177/2393892952/231094427`、leader `231094427`、term `209`、revision/index/applied
+`65743`、HashKV `4283180840`、compact revision `44329` 一致。独立调用 direct/gateway AuthStatus 得到完全相同的规范化元组
+`7662961163671170154/4034353177/65743/209/false/281`；候选窗口日志无 panic/fatal/data corruption/context deadline/TiKV/PD error。
+
+最后用新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 667、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
+无监听，也没有凭据或诊断文件落盘。A5642 关闭 direct/gateway AuthStatus body 漂移仍可进入发布摘要的问题。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
