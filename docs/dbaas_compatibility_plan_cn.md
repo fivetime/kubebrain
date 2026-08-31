@@ -66523,6 +66523,46 @@ current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
 Ready/restart 0，六个诊断端口无监听，也没有凭据或诊断文件落盘。真实 3.7 集群证明正常阈值路径无回归；无界组件的溢出行为由上述确定性
 fake probe 覆盖。A5648 关闭了通过超大版本组件绕过 3.6+ 强制兼容校验的入口。
 
+### A5649：将 raw Status learner 身份绑定到 gateway
+
+对照 `/root/etcd/api/etcdserverpb/rpc.proto::StatusResponse`，`isLearner` 自 3.4 起是稳定成员身份字段。A5647 的版本化 raw probe 已读取
+`is_learner`，但 gate 只把 raw cluster/member/version、3.6 三字段和 errors 纳入对账；宿主 etcdctl 3.5.16 又不投影 `isLearner`。因此
+exact endpoint 的 raw Status 报 `true`、同 endpoint gateway 报 `false` 时，旧 gate 仍整体 GREEN。确定性 RED 保持 etcdctl 旧投影，令
+raw v3.7 learner 为 true、gateway 为 false；旧 gate 在 `0.631s` 后因“预期失败但返回 nil”而失败，成功摘要中只有
+`gateway_is_learner=false`，没有 raw learner 证据。
+
+提交 `bb4d47e7` 将 A5648 的无溢出 helper 泛化为 `semver_core_at_least_3_minor`，保留 `semver_core_at_least_3_6` wrapper；raw
+版本至少 3.4 时读取布尔 `is_learner` 并与 gateway 对账，3.3 及更早输出 `direct_status_is_learner_match=not-required`。新增 learner 漂移、
+3.4 边界与 pre-3.4 回归；RED 转 GREEN，边界集合 `1.504s`，跨 3.3/3.4/3.5/3.7 与 A5647/A5648 的聚焦集合 `4.924s`。
+第一次完整普通/race 暴露三个旧 fixture 未携带新成功标记或显式省略字段，修正测试合同后为 `149.730/151.114s`。vet、gofmt、bash
+syntax、diff check 与固定 ShellCheck 全绿；提交前 inventory 为 703 项、`170/193/180/160`，提交后四片
+`267.645/469.938/309.325/586.831s` 全绿。
+
+第一次真实验证以 UID/resourceVersion/container/image/full args 五重原子 test 部署同一不可变产品候选至 generation 684；三副本和
+PD/TiKV 3+3 均 Ready/restart 0，但完整 gate 正确停止在
+`gateway status isLearner is required for etcd 3.7.0`。现场响应证明 grpc-gateway 按 proto3 JSON 合法省略默认 `bool=false`；测试 fixture
+此前显式写 false，因而把“wire 上省略的默认值”误建模成“字段缺失”。该轮没有放行，也没有把产品候选记为 RED；关闭端口转发后以新鲜五重
+test 回滚稳定 generation 685。
+
+修正提交 `1faa8b61` 在比较时把 gateway 省略的 bool 规范化为 proto3 默认 false，显式非布尔仍由原 envelope 检查拒绝；漂移回归同步改为
+更真实的 raw=true、gateway 省略，即仍精确拒绝 raw true 与默认 false 不一致。3.4 省略 false 正例与 pre-3.4 正例分别固定版本边界。
+修正聚焦普通/race 为 `2.321/3.789s`，完整 readonly probe 普通/race 为 `147.647/148.920s`，vet、固定 ShellCheck 与全部静态门禁
+GREEN；提交前仍为 703 项、`170/193/180/160`，提交后四片 `253.698/450.563/307.848/568.090s` 全绿。
+
+最终真实验证以新鲜五重 test 部署候选至 generation 686；current/update revision 为 `kubebrain-8465b8fd97`，三 Pod runtime 均为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0，主 PD/TiKV 3+3
+Ready/restart 0。八项 named/HTTP/metrics/debug 与全部端点一致性检查全开的 readonly gate GREEN，明确输出
+`direct_status_is_learner_match=true`、`direct_status_v36_fields_match=true` 和 `direct_hashkv_hash_revision_match=true`。验证窗口 cluster ID
+`7662961163671170154`、exact member `4034353177`、leader `2393892952`、term `246`、revision/index/applied `65743`、quota
+`1073741824`、HashKV `4283180840`、compact revision `44329`；三个候选 Pod 均无 error/fatal/panic/data race，门禁后 3+3+3
+仍 Ready/restart 0。
+
+最后关闭受控转发并确认六端口无监听，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 687、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，无端口转发、凭据或诊断文件落盘。A5649 关闭旧诊断客户端字段投影掩盖 raw/gateway learner 身份漂移的缺口，同时固定
+proto3 JSON 默认值省略语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
