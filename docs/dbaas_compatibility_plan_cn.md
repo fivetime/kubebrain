@@ -66635,6 +66635,45 @@ current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
 Ready/restart 0，无凭据或诊断文件落盘。A5651 关闭 follower proxy 或 raw 发布证据接受上游状态机不可能 downgradeInfo 的缺口。
 
+### A5652：校验 Status downgrade target 与成员版本的时间关系
+
+A5651 已要求 enabled downgrade 携带严格 release semver，但尚未把 target 与响应成员的 server version 关联。因此 server `3.7.0` 仍可声称
+target `3.5.0`、`4.0.0` 或 `3.6.1`，product follower hedge 和 raw 发布 probe 都会接受。对照
+`/root/etcd/server/etcdserver/version/downgrade.go::allowedDowngradeVersion`，上游只允许同 major、恰低一个 minor、patch 为 0 的目标；滚动降级
+期间成员可能仍在旧版本，也可能已到 target，故单个 Status 的合法窗口是 target minor 等于 responding member minor，或恰低一个 minor。
+`/root/etcd/tests/e2e/cluster_downgrade_test.go` 的集群降级流程也覆盖了新旧版本成员共存窗口。
+
+确定性 RED 同时向 product validator、真实 follower Status hedge 与 raw probe 注入 skipped-minor、cross-major、nonzero-patch 三类 target；旧
+product 两条路径都错误返回非 nil response，三项 probe 都错误返回 nil error。product/follower RED 为 `0.216s`，probe RED 为 `0.011s`。
+提交 `829269e7` 在两处边界要求 enabled target patch 为 0、major 与 server 相同，并只接受 target minor 等于 server minor 或 server minor
+减一；product 复用已解析的 server semver，raw probe 则继续采用无界十进制字符串比较，避免重新引入 A5648 的机器整数溢出。probe 正例明确
+覆盖 server minor `18446744073709551616` 与 target minor `18446744073709551615` 的 uint64 边界外相邻关系。
+
+聚焦 product 为 `0.213s`，probe 普通/race 为 `0.010s/1.044s`，无界边界为 `0.010s`；完整 `pkg/server/etcd` 普通/race 分别为
+`131.886s/385.031s`，完整 readonly gate 普通/race 为 `147.030s/148.629s`。Go vet、gofmt、diff check、bash syntax 与固定
+`koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别为
+`256.365/457.238/313.329/578.858s`，全部 GREEN。
+
+本轮构建 HEAD 专属候选 `docker.io/library/kubebrain:a5652-829269e7`。OCI index 为
+`sha256:046409ad970f75ffd39e405a092ea311f17b0c366c6ec169d8cf05d7ec712460`、平台 manifest 为
+`sha256:43a08ecb3c13419eed6c0b458a203cecc7d0b938a8cc6b7e5abb7a12467ffb0f`、config 为
+`sha256:5aa3a7413c4d78d2ccdb618635d9fc7f12880f54e2aea79e7aae1bd081723c64`，label 精确绑定完整提交
+`829269e7329f74f18be081150a5ca95e762878f9`；Kind/containerd runtime digest 为
+`sha256:51ea0438023f12dd7dee5defa160eee0d5e58b78e1584e173b6418fcb3faf171`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 691 部署至 generation 692；三 Pod 均落在
+revision `kubebrain-66b79577dd`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。raw Status 返回 cluster ID
+`7662961163671170154`、exact member `4034353177`、leader `231094427`、term `256`、revision/index/applied `65743`、version/storage
+`3.7.0`、quota `1073741824` 和 disabled+empty downgrade。八项 named/HTTP/metrics/debug 与全部端点一致性检查全开的 readonly gate
+GREEN；HashKV 为 `4283180840`、compact revision 为 `44329`、direct hash 为 `1884729719`。三个候选 Pod 日志分别为
+`388/411/329` 行，error 级别与 panic/fatal/data race/data corruption/TiKV/PD error 模式计数均为 0。
+
+最后关闭三组端口转发并确认六端口无监听，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 693、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，无端口转发、凭据或诊断文件落盘。A5652 关闭了任意严格 semver target 仍可伪装成上游可达降级状态的缺口，同时保留滚动
+降级过程中已到 target 的成员 Status。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
