@@ -3244,7 +3244,44 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":"111","compact_revision":"3","hash_revision":"7"}`,
 			},
 			wantOK:     true,
-			wantOutput: "gateway_hash=222, gateway_hashkv_hash=111, gateway_hashkv_hash_revision=7, gateway_hashkv_compact_revision=3, gateway_hashkv_revisions_match=true",
+			wantOutput: "direct_hash=222, gateway_hash=222, gateway_hash_match=true, gateway_hashkv_hash=111, gateway_hashkv_hash_revision=7, gateway_hashkv_compact_revision=3, gateway_hashkv_revisions_match=true",
+		},
+		{
+			name: "rejects gateway hash mismatch with direct endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"dbSize":99,"raftTerm":8}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}}]`,
+				`FAKE_DIRECT_HASH_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111}`,
+				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":222}`,
+			},
+			wantOutput: "gateway hash mismatch with direct endpoint",
+		},
+		{
+			name: "rejects gateway hash uint32 overflow",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"dbSize":99,"raftTerm":8}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}}]`,
+				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":"4294967296"}`,
+			},
+			wantOutput: "gateway hash must be a non-negative uint32",
 		},
 		{
 			name: "reports post hash mvcc metrics in summary",
@@ -5520,6 +5557,10 @@ printf '%s' "$FAKE_READYZ"
 `)
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "go"), `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "$*" == *"maintenance-hash-probe"* ]]; then
+  printf '%s\n' "$FAKE_DIRECT_HASH_JSON"
+  exit 0
+fi
 if [[ -n "${FAKE_PREFIX_COUNTS:-}" ]]; then
   while IFS= read -r line; do
     endpoint="${line%=*}"
@@ -5630,6 +5671,7 @@ exec "$@"
 				"FAKE_INFO_PPROF_RESPONSE=" + defaultInfoPprofResponse(tc.infoPprof),
 				"FAKE_CLIENT_PPROF_RESPONSE=" + defaultClientPprofResponse(tc.clientPprof),
 				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":222}`,
+				`FAKE_DIRECT_HASH_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":222}`,
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":111,"compact_revision":"3","hash_revision":"7"}`,
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":3}}]`,
 				"FAKE_TIMEOUT_LOG=" + timeoutLog,
@@ -6010,6 +6052,8 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"direct_alarms=empty",
 		"gateway_alarms=empty",
 		"gateway_alarm_match=true",
+		"direct_hash=<n>",
+		"gateway_hash_match=true",
 		"gateway_endpoint_member_id=<id>",
 		"gateway_endpoint_members_match=true",
 		"gateway_endpoint_raft_term=<n>",

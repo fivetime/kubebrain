@@ -2597,6 +2597,55 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   fi
 
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
+  direct_hash_json="$(ENDPOINT="$ENDPOINT" TIMEOUT="$PROBE_TIMEOUT" \
+    "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$GO" run "$ROOT_DIR/hack/production/cmd/maintenance-hash-probe")"
+  direct_hash_values="$(printf '%s' "$direct_hash_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
+    else
+      [
+        (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
+        (if .header == null then "missing" elif (.header | has("member_id")) then .header.member_id elif (.header | has("memberId")) then .header.memberId else "missing" end),
+        (if .header == null then "missing" else .header.revision // "missing" end),
+        (if .header == null then "missing" elif (.header | has("raft_term")) then .header.raft_term elif (.header | has("raftTerm")) then .header.raftTerm else "missing" end),
+        (.hash // "missing")
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r direct_hash_cluster_id direct_hash_member_id direct_hash_revision direct_hash_raft_term direct_hash_value <<<"$direct_hash_values"
+  if [[ "$direct_hash_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "direct hash cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${direct_hash_cluster_id}" >&2
+    exit 1
+  fi
+  if ! operation_is_positive_uint64 "$direct_hash_member_id"; then
+    echo "direct hash member ID must be positive, got ${direct_hash_member_id}" >&2
+    exit 1
+  fi
+  if [[ "$direct_hash_member_id" != "$gateway_expected_member_id" ]]; then
+    echo "direct hash serving member mismatch: expected ${gateway_expected_member_id}, got ${direct_hash_member_id}" >&2
+    exit 1
+  fi
+  if ! operation_is_nonnegative_int64 "$direct_hash_revision"; then
+    echo "direct hash revision must be non-negative, got ${direct_hash_revision}" >&2
+    exit 1
+  fi
+  if [[ "$direct_hash_revision" != "$gateway_expected_revision" ]]; then
+    echo "direct hash revision mismatch: status=${gateway_expected_revision}, hash=${direct_hash_revision}" >&2
+    exit 1
+  fi
+  if ! operation_is_positive_uint64 "$direct_hash_raft_term"; then
+    echo "direct hash raft term must be positive, got ${direct_hash_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$direct_hash_raft_term" != "$gateway_status_raft_term" ]]; then
+    echo "direct status/hash raft term mismatch: status=${gateway_status_raft_term}, hash=${direct_hash_raft_term}" >&2
+    exit 1
+  fi
+  if ! operation_is_nonnegative_uint32 "$direct_hash_value"; then
+    echo "direct hash must be a non-negative uint32, got ${direct_hash_value}" >&2
+    exit 1
+  fi
+
   gateway_hash_url="${ENDPOINT%/}/v3/maintenance/hash"
   gateway_hash_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_hash_url")"
   gateway_hash_values="$(printf '%s' "$gateway_hash_json" | "$JQ" -r '
@@ -2641,8 +2690,12 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway status/hash raft term mismatch: status=${gateway_status_raft_term}, hash=${gateway_hash_raft_term}" >&2
     exit 1
   fi
-  if ! [[ "$gateway_hash_value" =~ ^[0-9]+$ ]]; then
-    echo "gateway hash must be a non-negative integer, got ${gateway_hash_value}" >&2
+  if ! operation_is_nonnegative_uint32 "$gateway_hash_value"; then
+    echo "gateway hash must be a non-negative uint32, got ${gateway_hash_value}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_hash_value" != "$direct_hash_value" ]]; then
+    echo "gateway hash mismatch with direct endpoint: direct=${direct_hash_value}, gateway=${gateway_hash_value}" >&2
     exit 1
   fi
 
@@ -2720,7 +2773,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv compact revision mismatch: etcdctl=${min_hashkv_compact_revision}, gateway=${gateway_hashkv_compact_revision}" >&2
     exit 1
   fi
-  hashkv_summary+=", gateway_hash=${gateway_hash_value}"
+  hashkv_summary+=", direct_hash=${direct_hash_value}, gateway_hash=${gateway_hash_value}, gateway_hash_match=true"
   hashkv_summary+=", gateway_hashkv_hash=${gateway_hashkv_hash}"
   hashkv_summary+=", gateway_hashkv_hash_revision=${gateway_hashkv_hash_revision}"
   hashkv_summary+=", gateway_hashkv_compact_revision=${gateway_hashkv_compact_revision}"
