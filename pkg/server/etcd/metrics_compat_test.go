@@ -441,8 +441,10 @@ func TestLeaseProxyPayloadValidation(t *testing.T) {
 			valid    bool
 		}{
 			{name: "exact TTL", request: &etcdserverpb.LeaseGrantRequest{TTL: 5}, response: &etcdserverpb.LeaseGrantResponse{TTL: 5}, valid: true},
-			{name: "server-chosen longer TTL", request: &etcdserverpb.LeaseGrantRequest{TTL: 1}, response: &etcdserverpb.LeaseGrantResponse{TTL: 5}, valid: true},
-			{name: "negative request raised to minimum", request: &etcdserverpb.LeaseGrantRequest{TTL: -1}, response: &etcdserverpb.LeaseGrantResponse{TTL: 5}, valid: true},
+			{name: "small request raised to exact minimum", request: &etcdserverpb.LeaseGrantRequest{TTL: 1}, response: &etcdserverpb.LeaseGrantResponse{TTL: minLeaseTTL}, valid: true},
+			{name: "negative request raised to exact minimum", request: &etcdserverpb.LeaseGrantRequest{TTL: -1}, response: &etcdserverpb.LeaseGrantResponse{TTL: minLeaseTTL}, valid: true},
+			{name: "TTL above request", request: &etcdserverpb.LeaseGrantRequest{TTL: 5}, response: &etcdserverpb.LeaseGrantResponse{TTL: 6}},
+			{name: "TTL above normalized minimum", request: &etcdserverpb.LeaseGrantRequest{TTL: 1}, response: &etcdserverpb.LeaseGrantResponse{TTL: minLeaseTTL + 1}},
 			{name: "non-positive TTL", request: &etcdserverpb.LeaseGrantRequest{TTL: 1}, response: &etcdserverpb.LeaseGrantResponse{}},
 			{name: "TTL below minimum", request: &etcdserverpb.LeaseGrantRequest{TTL: minLeaseTTL - 1}, response: &etcdserverpb.LeaseGrantResponse{TTL: minLeaseTTL - 1}},
 			{name: "TTL below request", request: &etcdserverpb.LeaseGrantRequest{TTL: 5}, response: &etcdserverpb.LeaseGrantResponse{TTL: 4}},

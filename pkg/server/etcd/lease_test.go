@@ -3150,6 +3150,18 @@ func TestLeaseFollowerRejectsInvalidUnaryProxyPayload(t *testing.T) {
 			message: "granted TTL 29 below requested TTL 30",
 		},
 		{
+			name: "grant ttl above normalized request", rpc: leaseProxyRPCGrant,
+			configure: func(peers *testPeerService, server *RPCServer) {
+				peers.leaseGrantFn = func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+					return &etcdserverpb.LeaseGrantResponse{Header: proxiedResponseHeader(server, 1), ID: -1, TTL: 31}, nil
+				}
+			},
+			invoke: func(server *RPCServer) (any, error) {
+				return server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: -1, TTL: 30})
+			},
+			message: "granted TTL 31 instead of normalized requested TTL 30",
+		},
+		{
 			name: "grant ttl below minimum", rpc: leaseProxyRPCGrant,
 			configure: func(peers *testPeerService, server *RPCServer) {
 				peers.leaseGrantFn = func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {

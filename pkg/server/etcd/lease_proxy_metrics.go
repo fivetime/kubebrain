@@ -102,6 +102,14 @@ func validateLeaseGrantProxyPayload(metricCli metrics.Metrics, request *etcdserv
 		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCGrant)
 		return nil, status.Errorf(codes.DataLoss, "leader lease grant proxy returned granted TTL %d below requested TTL %d", response.GetTTL(), request.GetTTL())
 	}
+	normalizedTTL := request.GetTTL()
+	if normalizedTTL < minLeaseTTL {
+		normalizedTTL = minLeaseTTL
+	}
+	if response.GetTTL() != normalizedTTL {
+		emitLeaseProxyIntegrityFailure(metricCli, leaseProxyRPCGrant)
+		return nil, status.Errorf(codes.DataLoss, "leader lease grant proxy returned granted TTL %d instead of normalized requested TTL %d", response.GetTTL(), normalizedTTL)
+	}
 	return response, nil
 }
 
