@@ -66563,6 +66563,38 @@ current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
 Ready/restart 0，无端口转发、凭据或诊断文件落盘。A5649 关闭旧诊断客户端字段投影掩盖 raw/gateway learner 身份漂移的缺口，同时固定
 proto3 JSON 默认值省略语义。
 
+### A5650：拒绝 raw 3.6+ Status 缺失 downgradeInfo
+
+A5647 的版本化 raw probe 虽然投影了 `downgrade_info`，但在 protobuf `StatusResponse.DowngradeInfo=nil` 时会把结果静默初始化为
+`{enabled:false,target_version:""}`。因此 3.6+ 服务端实际省略 field 13 时，readonly gate 仍会看到合法对象，并可继续输出
+`direct_status_v36_fields_match=true`。对照 `/root/etcd/api/etcdserverpb/rpc.proto::StatusResponse`，`downgradeInfo` 自 3.6 起属于版本化
+字段；`/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status` 总是先构造 disabled 的非 nil 默认对象，再按真实降级状态覆盖。本项目
+`validateStatusProxyPayload` 也已把 leader 返回 nil 视为 DataLoss，raw 发布证据不应采用更宽松的默认化语义。
+
+确定性 RED 向 `validateStatusResponse` 输入 version `3.6.0`、合法 header 与 nil `DowngradeInfo`；旧实现错误返回 nil error，测试精确失败于
+“expected error but got nil”。提交 `a7ef63b2` 在 probe 输出前按 server version core 判断字段是否必需，3.6+ 缺失 message 直接失败，3.5
+及更早仍保留 proto 默认兼容。版本比较沿用 A5648 的无溢出原则：规范化任意长度十进制 major/minor 后按长度和字典序比较，不转换为机器整数；
+测试覆盖 3.5、3.6、3.6 prerelease、4.0、超出 int64 的 `9223372036854775808.0.0` 以及非法版本。
+
+probe 普通/race 单测为 `0.011s/1.040s`，完整 readonly gate 普通/race 为 `148.320s/149.636s`；Go vet、gofmt、bash syntax、diff check
+与固定 `koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。提交前 inventory 为 703 项、`170/193/180/160`；提交后四片
+分别为 `253.859/453.451/306.117/575.772s`，全部 GREEN。
+
+真实验证复用不可变产品候选 `docker.io/library/kubebrain:a5629-c446ec02`，以 StatefulSet
+UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 687 部署至 generation 688。三 Pod runtime 均为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0，PD/TiKV 3+3
+Ready/restart 0。独立 raw probe 明确读取到非 nil `downgrade_info={enabled:false,target_version:""}`。八项 named/HTTP/metrics/debug
+安全检查及全部端点一致性开关全开的 readonly gate GREEN，继续输出 `direct_status_v36_fields_match=true`、
+`direct_status_is_learner_match=true` 与 `direct_hashkv_hash_revision_match=true`。验证窗口 cluster ID
+`7662961163671170154`、exact member `4034353177`、leader `2393892952`、term `249`、revision/index/applied `65743`、quota
+`1073741824`、HashKV `4283180840`、compact revision `44329`；三个候选 Pod 的结构化日志共 `446/276/503` 行，error/fatal/panic
+级别与 panic/fatal/data race/data corruption/TiKV/PD error 模式计数均为 0。
+
+最后关闭三组端口转发并确认六端口无监听，用新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 689、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，无端口转发、凭据或诊断文件落盘。A5650 关闭 3.6+ raw Status 缺失 message 被 probe 合成默认对象后进入发布 GREEN 的缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
