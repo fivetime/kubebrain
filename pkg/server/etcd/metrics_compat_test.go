@@ -1051,6 +1051,24 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 		{name: "independently sampled applied above committed", mutate: func(response *etcdserverpb.StatusResponse) { response.RaftAppliedIndex = 8 }, valid: true},
 		{name: "negative disabled quota", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeQuota = -1 }, valid: true},
 		{name: "missing downgrade info", mutate: func(response *etcdserverpb.StatusResponse) { response.DowngradeInfo = nil }},
+		{name: "disabled downgrade with target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.TargetVersion = "3.5.0"
+		}},
+		{name: "enabled downgrade without target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+		}},
+		{name: "enabled downgrade with invalid target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+			response.DowngradeInfo.TargetVersion = "not-semver"
+		}},
+		{name: "enabled downgrade with prerelease target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+			response.DowngradeInfo.TargetVersion = "3.5.0-rc.1"
+		}},
+		{name: "enabled downgrade with release target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+			response.DowngradeInfo.TargetVersion = "3.5.0"
+		}, valid: true},
 		{name: "empty status error", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{""} }},
 		{name: "zero leader without error", mutate: func(response *etcdserverpb.StatusResponse) { response.Leader = 0 }},
 		{name: "leader with no leader error", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{rpctypes.ErrNoLeader.Error()} }},

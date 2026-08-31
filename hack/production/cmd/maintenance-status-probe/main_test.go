@@ -64,6 +64,27 @@ func TestValidateStatusResponseRejectsMissingVersionedDowngradeInfo(t *testing.T
 	}
 }
 
+func TestValidateStatusResponseRejectsInvalidDowngradeState(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		info *etcdserverpb.DowngradeInfo
+	}{
+		{name: "disabled with target", info: &etcdserverpb.DowngradeInfo{TargetVersion: "3.6.0"}},
+		{name: "enabled without target", info: &etcdserverpb.DowngradeInfo{Enabled: true}},
+		{name: "enabled with invalid target", info: &etcdserverpb.DowngradeInfo{Enabled: true, TargetVersion: "not-semver"}},
+		{name: "enabled with prerelease target", info: &etcdserverpb.DowngradeInfo{Enabled: true, TargetVersion: "3.6.0-rc.1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
+				Header:        &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+				Version:       "3.7.0",
+				DowngradeInfo: tc.info,
+			})
+			require.ErrorContains(t, err, "downgrade information is inconsistent")
+		})
+	}
+}
+
 func TestValidateStatusResponseRejectsInvalidVersion(t *testing.T) {
 	_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
 		Header:  &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},

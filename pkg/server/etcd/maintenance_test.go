@@ -618,6 +618,20 @@ func TestFollowerStatusHedgeRejectsInvalidProxyPayload(t *testing.T) {
 		{name: "negative in use", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = -1 }},
 		{name: "zero quota", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeQuota = 0 }},
 		{name: "missing downgrade info", mutate: func(response *etcdserverpb.StatusResponse) { response.DowngradeInfo = nil }},
+		{name: "disabled downgrade with target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.TargetVersion = "3.5.0"
+		}},
+		{name: "enabled downgrade without target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+		}},
+		{name: "enabled downgrade with invalid target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+			response.DowngradeInfo.TargetVersion = "not-semver"
+		}},
+		{name: "enabled downgrade with prerelease target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+			response.DowngradeInfo.TargetVersion = "3.5.0-rc.1"
+		}},
 		{name: "inconsistent leader health", mutate: func(response *etcdserverpb.StatusResponse) { response.Leader = 0 }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

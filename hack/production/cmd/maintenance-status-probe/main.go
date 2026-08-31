@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	etcdserverpb "go.etcd.io/etcd/api/v3/etcdserverpb"
 )
@@ -130,6 +131,18 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 	}
 	if requiresDowngradeInfo && downgradeInfo == nil {
 		return statusProbeResult{}, errors.New("maintenance Status downgrade information is missing for etcd 3.6 or later")
+	}
+	if downgradeInfo != nil {
+		if !downgradeInfo.GetEnabled() {
+			if downgradeInfo.GetTargetVersion() != "" {
+				return statusProbeResult{}, errors.New("maintenance Status downgrade information is inconsistent")
+			}
+		} else {
+			targetVersion, parseErr := semver.StrictNewVersion(downgradeInfo.GetTargetVersion())
+			if parseErr != nil || targetVersion.Prerelease() != "" || targetVersion.Metadata() != "" {
+				return statusProbeResult{}, errors.New("maintenance Status downgrade information is inconsistent")
+			}
+		}
 	}
 	result := statusProbeResult{
 		Header: statusProbeHeader{

@@ -173,8 +173,19 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	if response.GetDbSizeQuota() == 0 {
 		return fail("leader status proxy returned a zero database quota")
 	}
-	if response.GetDowngradeInfo() == nil {
+	downgradeInfo := response.GetDowngradeInfo()
+	if downgradeInfo == nil {
 		return fail("leader status proxy returned no downgrade information")
+	}
+	if !downgradeInfo.GetEnabled() {
+		if downgradeInfo.GetTargetVersion() != "" {
+			return fail("leader status proxy returned inconsistent downgrade information")
+		}
+	} else {
+		targetVersion, parseErr := semver.StrictNewVersion(downgradeInfo.GetTargetVersion())
+		if parseErr != nil || targetVersion.Prerelease() != "" || targetVersion.Metadata() != "" {
+			return fail("leader status proxy returned inconsistent downgrade information")
+		}
 	}
 	noLeader := false
 	for _, statusErr := range response.GetErrors() {
