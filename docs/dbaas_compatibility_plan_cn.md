@@ -66365,6 +66365,47 @@ cluster ID `7662961163671170154`、members `4034353177/2393892952/231094427`、t
 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
 无监听，也没有凭据或诊断文件落盘。A5644 关闭 gateway Hash body 与 direct raw RPC 漂移或超出 proto uint32 仍可进入发布摘要的问题。
 
+### A5645：将 gateway HashKV body 绑定到 exact ENDPOINT
+
+readonly gate 已分别验证 direct `etcdctl endpoint hashkv` 的 endpoint/revision 集合与 gateway HashKV envelope，却把 gateway
+`compactRevision` 对照到所有 direct endpoint 的全局最小值。旧 gate 因而能在 exact `ENDPOINT` 返回 compact revision 5、另一
+endpoint 返回 3 时，接受 gateway 对 exact `ENDPOINT` 返回 3；header member/revision/term 与 hash 都正确也不能证明 body 来自同一
+endpoint 观察。对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::HashKV`，gRPC 与 JSON gateway 调用同一个 HashKV
+实现，hash、header revision、hashRevision 与 compactRevision 应作为同一响应整体比较。
+
+新 gate 从 direct HashKV JSON 中要求 exact `ENDPOINT` 恰好匹配一项，规范化 snake_case/camelCase 与缺省 hashRevision 后，逐字段
+要求 gateway hash、header revision、hashRevision、compactRevision 与该项完全相等；不再用跨 endpoint 的全局最小 compact
+revision 作为 gateway 身份证据。成功摘要新增 `gateway_hashkv_body_match=true`。确定性 RED 固定两个 direct endpoint 的 compact
+revision 为 5/3，让 gateway 对第一项返回 3；旧 gate 整体 GREEN，新 gate 拒绝
+`gateway hashkv compact revision mismatch with direct endpoint`。RED 为 `0.825s`，最终实现的两项聚焦回归为 `1.681s`；bash syntax
+与固定 digest 的 `koalaman/shellcheck:v0.11.0 --severity=warning` 均 GREEN。
+
+Go vet、gofmt、diff check 与文档契约也全部 GREEN。当前共享机器负载下，未分片普通/race 套件触发 Go 总套件时限；普通套件
+即使把总上限放宽到 20 分钟也只在末尾触发总时限，所有已完成子包与测试均无断言失败。按仓库确定性 SHA-256 inventory 分片后，代码提交
+`bd5614affcd5013e6fb450fb754e3b854f1cb745` 的提交前 inventory 为 703 项、`170/193/180/160`，提交后普通四片分别
+`249.667/453.205/302.262/559.065s`，race 四片分别 `321.093/490.042/325.912/567.451s`，全部 GREEN。未进入主 package
+inventory 的 production 子包也已在普通/race 全套调用中全部 GREEN。
+
+真实验证复用产品 revision `c446ec02d539823caecf7ced790a63bbde7fbdaf` 的不可变候选：host OCI digest 为
+`sha256:cc8045e2d946da7cbcf3e6e23f5051af31a84ad0af43ca1613a0808151318043`，Kind runtime digest 为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`；`c446ec02..HEAD` 仍只涉及 gate/test/docs，
+无需重建相同产品二进制。以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 部署候选至 generation 672；
+current/update revision 都是 `kubebrain-8465b8fd97`，三 Pod Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。
+
+完整只读门禁 GREEN，明确输出 `gateway_hashkv_body_match=true`，并继续通过完整 info metrics、Status body/errors、AuthStatus、Alarm、
+raw Hash 与三 endpoint HashKV 检查。cluster ID `7662961163671170154`、members `4034353177/2393892952/231094427`、leader
+`2393892952`、term `219`、revision/index/applied `65743`、HashKV `4283180840`、compact revision `44329` 一致。门禁之外再次独立调用
+exact endpoint 14379 的 direct `etcdctl endpoint hashkv` 与 gateway `/v3/maintenance/hashkv`，双方规范化
+cluster/member/revision/term/hash/hashRevision/compact 元组均为
+`7662961163671170154/4034353177/65743/219/4283180840/65743/44329`。候选窗口日志无 panic/fatal/data corruption/context
+deadline/TiKV/PD error。
+
+最后用新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 673、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
+无监听，也没有凭据或诊断文件落盘。A5645 关闭 exact endpoint 的 gateway HashKV body 从其他 endpoint 借用 compact revision 仍可进入
+发布摘要的问题。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

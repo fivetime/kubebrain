@@ -1739,7 +1739,9 @@ ResponseHeader，双方缺省 `alarms` 均按空 repeated 解释、显式值必�
 client/info 双口 `/version` 的 `etcdserver`、`etcdcluster`、`storage` 必须一致，且
 `storage` 必须与 gateway Status `storageVersion` 一致。启用 HashKV 校验时，脚本还会读取
 HTTP gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv`，要求 HashKV hash、
-hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；脚本还会通过只读 raw gRPC probe 调用 exact
+hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；其中 gateway HashKV 必须与 exact `ENDPOINT` 的 direct
+HashKV hash、hashRevision、compactRevision 逐字段相等，而非借用其他 endpoint 的全局最小值，通过摘要输出
+`gateway_hashkv_body_match=true`。脚本还会通过只读 raw gRPC probe 调用 exact
 `ENDPOINT` 的 Maintenance Hash，要求 direct/gateway
 ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；通过摘要输出
 `direct_hash=<n>` 与 `gateway_hash_match=true`；若同时启用 metrics
@@ -1774,7 +1776,7 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 `gateway_auth_enabled=<bool>`、`direct_alarms=empty`、`gateway_alarms=empty`、`gateway_alarm_match=true`、`gateway_hashkv_hash=<n>`、
 `direct_hash=<n>`、`gateway_hash_match=true`、
 `gateway_auth_status_match=true`、
-`gateway_hashkv_revisions_match=true`、`gateway_endpoint_members_match=true`、
+`gateway_hashkv_revisions_match=true`、`gateway_hashkv_body_match=true`、`gateway_endpoint_members_match=true`、
 `gateway_endpoint_raft_terms_match=true`、
 `gateway_endpoint_revisions_match=true`、`gateway_status_body_match=true`、`gateway_status_errors=empty`、
 `hashkv_endpoint_members_match=true`、
