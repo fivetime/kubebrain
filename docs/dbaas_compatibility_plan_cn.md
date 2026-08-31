@@ -67018,6 +67018,49 @@ canceled、count index rebuilding 后本地回退，以及错误 HTTP method 的
 Ready/restart 0，回滚后三轮九次稳定 Pod 内 `3379` proposal health 全部 GREEN，无端口转发或六个诊断监听残留。A5660 关闭了 proxy
 成功响应 revision 缺失或落入错误 RPC 家族取值域后，被本地 header stamp 掩盖的跨家族完整性缺口。
 
+### A5661：把 linearizable MemberList proxy 绑定到 DBaaS 静态拓扑
+
+A5660 已固定 Cluster proxy header 的身份与 revision 域，但 `validateMemberListProxyPayload` 仍只拒绝 nil member 和非严格 ID 顺序。
+因此同 cluster 的 leader peer 即使删减/增加成员，或替换任一成员的 name、peer URLs、client URLs、learner 状态，只要 ID 仍严格递增就会被
+follower 当作成功返回，直接污染 clientv3 endpoint discovery。对照
+`/root/etcd/server/etcdserver/api/v3rpc/member.go::MemberList/membersToProtoMembers`，upstream 返回服务端实际 cluster membership 的完整
+protobuf 投影；KubeBrain 又明确不开放 member mutation，`SetStaticMembers` 是 DBaaS 控制面在 serving 前安装的唯一拓扑，故所有生产成员应返回
+同一不可变快照。
+
+确定性 tests-only RED `TestFollowerLinearizableMemberListRejectsStaticMembershipDrift` 构造 missing member、unexpected member、changed
+name/peer URLs/client URLs/learner 六类仍有序响应，旧实现全部返回非 nil 成功，包在 `0.115s` 后按预期失败。提交 `f6b0152d` 将
+`s.staticMembers` 传入 payload 门禁：先保留通用 nil/order 校验；静态配置非空时再要求响应数量相同，并按 member ID 对 name、ID、PeerURLs、
+ClientURLs、IsLearner 做 protobuf 语义全字段相等。按 ID 匹配允许可信配置输入顺序不同，公开响应仍必须严格 ID 排序；无静态 membership 的
+嵌入式 fallback 保留原结构校验。实现后五项核心定向集合为 `0.160s`，全部 MemberList/Cluster proxy 集合为 `3.171s`；完整普通包为
+`136.315s`，完整 race 为 `384.233s`，`go vet ./pkg/server/etcd`、gofmt 与 diff check 全部 GREEN。提交前 inventory 为 703 项、
+`170/193/180/160`；提交后四片分别为 `258.695/457.949/312.424/587.252s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5661-f6b0152d` 内嵌版本 `0.0.0-f6b0152dc9ec`、完整提交
+`f6b0152dc9ec344324dd5f04c735fbd28c356180` 与 build time `2026-08-31T20:34:29Z`，运行用户 `65532:65532`、Go
+`1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI index、platform manifest、config 分别为
+`sha256:35fedf2fa9e3f954c2693bd213fa8f0eaf0f75bd735c9688f5da00787b78e15f`、
+`sha256:4a977f90582c2082eb9d46234c943772182b009fa87881758570923d96702c79`、
+`sha256:6fb5f5189c0a7e58ead2b1e6f7a1d95a3c3e25b4f867a3d5a939194ea218b2f5`；Kind/containerd runtime digest 为
+`sha256:8099d73601bedaeed514d48ab9cae88bc071ce7ec44e2885bf32a121a29b1b92`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 709 部署至 generation 710；三 Pod 均落在
+revision `kubebrain-5887ff4d8d`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。三个 exact endpoint 的
+linearizable raw HTTP MemberList 均返回完全相同且严格按 ID 排序的三成员集合 `231094427/2393892952/4034353177`；每个成员的
+`kubebrain-2/1/0` name、peer URL、统一 client URL `http://172.18.0.2:30079` 和 voter 状态均精确匹配静态配置。三个公开 header 保持
+cluster ID `7662961163671170154`、本地 member ID `4034353177/2393892952/231094427`、revision 0、term `291`。
+
+全部开关启用的 readonly gate 一次 GREEN：version/storage `3.7.0/3.7.0`、leader `231094427`、revision/index/applied `65743`、
+HashKV `4283180840`、compact revision `44329`、direct hash `1884729719`、auth disabled/revision `281`，named/HTTP/metrics/debug/pprof
+及跨端点身份、member set、revision、term 均通过；三轮九次 exact endpoint proposal health 全部成功，延迟约 `9.6–13.4ms`。候选 Pod
+日志为 `501/515/275` 行，结构化 error、panic/fatal/data race/data corruption 与 TiKV/PD storage error 均为 0。
+
+最后关闭三组 client+info 端口转发并确认六端口和相关进程无残留，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID
+`817bc005-a4d1-4d57-9aab-de93e0874054` 不变，generation/observed 711、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，回滚后三轮九次稳定 Pod 内 `3379` proposal health 全部 GREEN，无端口转发或六个诊断监听残留。A5661 关闭了合法已知
+member 身份仍可携带缺失、额外或被篡改 MemberList 拓扑穿越 leader proxy 的服务发现完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
