@@ -66488,6 +66488,41 @@ KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，但完整 gate 正确拒绝 `raw statu
 无监听，也没有凭据或诊断文件落盘。A5647 关闭旧诊断客户端字段投影能力与服务端 3.6+ Status 语义混淆的问题，并固定 repeated 空值必须
 保留数组 JSON 契约。
 
+### A5648：版本阈值比较不受 Bash 有符号整数溢出影响
+
+A5647 与 A5646 的 gate 都需要判断兼容版本是否至少为 3.6，以决定是否强制校验 Status 的
+`storageVersion/dbSizeQuota/downgradeInfo` 和 HashKV 的 `hashRevision == header.revision`。旧实现把已通过格式校验的 major/minor
+组件送入 Bash 算术；但 Bash 算术只有机器宽度有符号整数，`9223372036854775808.0.0` 会静默回绕并被误判为小于 3.6。攻击者或错误配置
+因而可以用超大、但符合 gate 既有版本格式的组件关闭本应必需的兼容性检查。
+
+两项确定性 RED 固定该缺口：第一项令 raw/gateway quota 在版本 `9223372036854775808.0.0` 下漂移，旧 gate 仍整体 GREEN 并输出
+`direct_status_v36_fields_match=not-required`；第二项令同版本的 raw HashKV `hashRevision=0`、header revision `7`，旧 gate 仍整体
+GREEN 且不产生 hashRevision 成功标记。两项 RED 合并运行耗时 `1.485s`，都因“预期失败但返回 nil”而失败。
+
+提交 `2aeb37e3` 新增共享 `semver_core_at_least_3_6`：先移除 prerelease/build 后缀并解析 core，再去除 major/minor 前导零，仅按规范化十进制
+字符串长度和单字符范围判断 3.6 边界，绝不把无界版本组件转换为 Bash 整数。Status 与 HashKV 两条分支统一调用该 helper，避免今后再次出现
+不同阈值实现。两项 RED 转 GREEN；连同 3.5、3.7 与 A5647 回归的定向集合为 `4.278s`，完整 readonly probe 普通/race 为
+`144.907s/145.928s`，gofmt、bash syntax、diff check 与固定 `koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。提交前
+inventory 为 703 项、`170/193/180/160`。提交后分片 0/1/3 分别为 `254.607/453.051/574.551s`；首次并发分片 2 在既有
+`TestValidateTiKVRegionHealth` 的磁盘压力子场景中耗时异常并得到空输出，低负载定向重跑 `90.558s` GREEN，随后原样分片 2 重跑
+`293.800s` GREEN，确认没有由本提交引入的稳定失败。
+
+本次只修改 gate 与测试，产品候选沿用宿主 OCI digest
+`sha256:cc8045e2d946da7cbcf3e6e23f5051af31a84ad0af43ca1613a0808151318043`。以 StatefulSet
+UID/resourceVersion/container/image/full args 五重原子 test 部署至 generation 682；current/update revision 为 `kubebrain-8465b8fd97`，
+三 Pod runtime 均为 `sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0，主
+PD/TiKV 3+3 Ready/restart 0。八项 named/HTTP/metrics/debug 安全检查及所有端点一致性开关全开的真实 readonly gate GREEN，明确输出
+`direct_status_v36_fields_match=true`、`direct_hashkv_hash_revision=65743`、`direct_hashkv_hash_revision_match=true`；验证窗口 cluster ID
+`7662961163671170154`、exact member `4034353177`、leader `231094427`、term `237`、revision/index/applied `65743`、quota
+`1073741824`、HashKV `4283180840`、compact revision `44329`。三个候选 Pod 的结构化日志均无 error/fatal/panic/data race；仅有短连接
+取消和滚动 drain 的 warning，门禁后 3+3+3 仍 Ready/restart 0。
+
+最后关闭受控端口转发并确认六端口无监听，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 683、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，六个诊断端口无监听，也没有凭据或诊断文件落盘。真实 3.7 集群证明正常阈值路径无回归；无界组件的溢出行为由上述确定性
+fake probe 覆盖。A5648 关闭了通过超大版本组件绕过 3.6+ 强制兼容校验的入口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
