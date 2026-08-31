@@ -49,12 +49,19 @@ func validateProxyResponseHeader(response any, identity proxyResponseIdentity) s
 		return "with a zero member ID"
 	}
 	if len(identity.members) > 0 {
+		knownMember := false
 		for _, member := range identity.members {
 			if member != nil && member.GetID() == header.GetMemberId() {
-				return ""
+				knownMember = true
+				break
 			}
 		}
-		return "for an unknown member"
+		if !knownMember {
+			return "for an unknown member"
+		}
+	}
+	if header.GetRaftTerm() == 0 {
+		return "with a zero raft term"
 	}
 	return ""
 }
