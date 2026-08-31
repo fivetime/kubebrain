@@ -67148,6 +67148,47 @@ error/fatal/panic 与 data race/data corruption/storage error 均为 0；首次�
 Ready/restart 0，回滚后三轮九次稳定 Pod 内 `3379` proposal health 全部 GREEN，LeaseLeases 为空，无端口转发或六个诊断监听残留。
 A5663 关闭了合法 TTL 域内仍可由 leader proxy 篡改 LeaseGrant 精确租期、令客户端获得并不存在的延长租约承诺这一完整性缺口。
 
+### A5664：把 proxied Status leader 绑定到静态成员拓扑
+
+继续对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status`：上游 `StatusResponse.Leader` 来自当前 Raft
+状态，因此非零 leader 必然是集群成员；KubeBrain 则由静态三成员拓扑承载相同身份契约。旧 follower proxy 门禁已校验响应
+header member，却接受任意非零 `Status.Leader`，使被代理端可以把不存在的成员作为 leader 交付客户端。同期复核确认
+LeaseTimeToLive attached keys 与上游一样来自 map、没有顺序契约；Auth UserGet/UserList/RoleGet/RoleList 已覆盖本实现支持的
+上游不变量，未把这些假缺口误改为产品约束。
+
+tests-only RED 在真实 follower `Status` hedge 路径把 header member 显式绑定到静态拓扑、再注入未知 leader；旧实现于
+`0.048s` 后错误成功。提交 `bf9db123` 抽出共享 `proxyResponseIdentityHasMember`，并让一次 proxied Status 冻结同一份
+identity 快照供 header 与 payload 两阶段校验，避免拓扑快照撕裂；拓扑存在时，非零 leader 不属于静态成员集合即返回
+`DataLoss`，而 leader=0 仍沿用既有 `ErrNoLeader` 契约。定向测试 `0.271s`，Maintenance/Status/ProxyResponseIdentity
+集合 `2.127s`，完整普通包 `141.679s`、完整 race `384.622s`，`go vet ./pkg/server/etcd`、gofmt 和 diff check 均通过。
+提交前 production inventory 为 703 项、四片 `170/193/180/160`；提交后四片分别为
+`271.102/470.227/328.329/600.555s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5664-bf9db123` 内嵌版本 `0.0.0-bf9db1231d85`、完整提交
+`bf9db1231d85df34f8b30a808ea123becfead608` 与 build time `2026-08-31T23:08:31Z`，运行用户 `65532:65532`、Go
+`1.26.5`、平台 `linux/amd64`、后端 TiKV，构建墙钟 `3m54.418s`。OCI index、platform manifest、config 分别为
+`sha256:2fc1de307fe555def6fb41a111ec697393cf7d30a28bf666d42228b4e21ecc45`、
+`sha256:f2eaa233a7150e4eb2be64bc92a70da11e1d6e1ab12aadf1d8d2e9be67f3bfd9`、
+`sha256:751232e8a45edf78d53ba8b89b5683f82dca24253eff333eae167164aef49b95`；Kind/containerd runtime digest 为
+`sha256:04551a9014edfd1e6359d75c4e1f9531f1b428eb2ceddac764563e8748814788`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 715 部署至 generation 716；
+三 Pod 均落在 revision `kubebrain-8d8d4b5d4`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3
+Ready/restart 0。三个 exact Pod endpoint 的 Status 均返回 leader `231094427`，各自 MemberList 均包含该成员且精确为三成员，
+term `303`、revision `65743`，LeaseLeases 为空。全部开关启用的 readonly gate 一次 GREEN：prefix `/a5664/` count 0、
+cluster `7662961163671170154`、version/storage `3.7.0/3.7.0`、leader `231094427`、revision/index/applied
+`65743`、HashKV `4283180840`、compact revision `44329`、direct hash `1884729719`、auth disabled/revision `281`，
+named/HTTP/metrics/debug/pprof 及跨端点身份、revision、term 均通过。三轮九次 exact endpoint proposal health 全部成功，
+含本地转发/CLI 启动的墙钟为 `54–63ms`；候选日志为 `394/415/313` 行，结构化 error/fatal/panic/corruption/storage/race
+模式计数均为 0。
+
+关闭三组 client+info 端口转发并确认六端口和相关进程无残留后，以新鲜同类五类 test 回滚稳定 digest。终态 StatefulSet UID
+`817bc005-a4d1-4d57-9aab-de93e0874054` 不变，generation/observed 717、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，回滚后三轮九次稳定 Pod `3379` proposal health 全部 GREEN（`9.680–16.403ms`），LeaseLeases 为空，
+无端口转发或六个诊断监听残留。A5664 关闭了 proxied Status 可用未知成员伪造 leader、破坏客户端集群身份与领导者认知的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
