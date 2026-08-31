@@ -1987,6 +1987,66 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
 
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
+  direct_auth_status_json="$(run_etcdctl_with_probe_timeout --endpoints="$ENDPOINT" auth status -w json)"
+  direct_auth_status_values="$(printf '%s' "$direct_auth_status_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+    else
+      (if has("enabled") then .enabled else null end) as $enabled
+      |
+      [
+        (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
+        (if .header == null then "missing" elif (.header | has("member_id")) then .header.member_id elif (.header | has("memberId")) then .header.memberId else "missing" end),
+        (if .header == null then "missing" else .header.revision // "missing" end),
+        (if .header == null then "missing" elif (.header | has("raft_term")) then .header.raft_term elif (.header | has("raftTerm")) then .header.raftTerm else "missing" end),
+        (if $enabled == null then "missing" else ($enabled | type) end),
+        (if $enabled == null then "false" else ($enabled | tostring) end),
+        (if has("authRevision") then .authRevision elif has("auth_revision") then .auth_revision else "missing" end)
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r direct_auth_cluster_id direct_auth_member_id direct_auth_revision direct_auth_raft_term direct_auth_enabled_type direct_auth_enabled direct_auth_revision_value <<<"$direct_auth_status_values"
+  if [[ "$direct_auth_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "direct auth status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${direct_auth_cluster_id}" >&2
+    exit 1
+  fi
+  if ! operation_is_positive_uint64 "$direct_auth_member_id"; then
+    echo "direct auth status member ID must be positive, got ${direct_auth_member_id}" >&2
+    exit 1
+  fi
+  if [[ "$direct_auth_member_id" != "$gateway_expected_member_id" ]]; then
+    echo "direct auth status serving member mismatch: expected ${gateway_expected_member_id}, got ${direct_auth_member_id}" >&2
+    exit 1
+  fi
+  if ! operation_is_nonnegative_int64 "$direct_auth_revision"; then
+    echo "direct auth status revision must be non-negative, got ${direct_auth_revision}" >&2
+    exit 1
+  fi
+  if [[ "$direct_auth_revision" != "$gateway_expected_revision" ]]; then
+    echo "direct auth status revision mismatch: status=${gateway_expected_revision}, auth=${direct_auth_revision}" >&2
+    exit 1
+  fi
+  if ! operation_is_positive_uint64 "$direct_auth_raft_term"; then
+    echo "direct auth status raft term must be positive, got ${direct_auth_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$direct_auth_raft_term" != "$gateway_status_raft_term" ]]; then
+    echo "direct status/auth status raft term mismatch: status=${gateway_status_raft_term}, auth=${direct_auth_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$direct_auth_enabled_type" != "missing" && "$direct_auth_enabled_type" != "boolean" ]]; then
+    echo "direct auth status enabled must be boolean, got ${direct_auth_enabled_type}" >&2
+    exit 1
+  fi
+  direct_auth_revision_normalized=0
+  if [[ "$direct_auth_revision_value" != "missing" ]]; then
+    if ! operation_is_nonnegative_uint64 "$direct_auth_revision_value"; then
+      echo "direct auth status authRevision must be non-negative uint64, got ${direct_auth_revision_value}" >&2
+      exit 1
+    fi
+    direct_auth_revision_normalized="$direct_auth_revision_value"
+  fi
+
   gateway_auth_status_url="${ENDPOINT%/}/v3/auth/status"
   gateway_auth_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_auth_status_url")"
   gateway_auth_status_values="$(printf '%s' "$gateway_auth_status_json" | "$JQ" -r '
@@ -2039,14 +2099,27 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway auth status enabled must be boolean, got ${gateway_auth_enabled_type}" >&2
     exit 1
   fi
-  if [[ "$gateway_auth_revision_value" != "missing" && ! "$gateway_auth_revision_value" =~ ^[0-9]+$ ]]; then
-    echo "gateway auth status authRevision must be non-negative, got ${gateway_auth_revision_value}" >&2
+  gateway_auth_revision_normalized=0
+  if [[ "$gateway_auth_revision_value" != "missing" ]]; then
+    if ! operation_is_nonnegative_uint64 "$gateway_auth_revision_value"; then
+      echo "gateway auth status authRevision must be non-negative uint64, got ${gateway_auth_revision_value}" >&2
+      exit 1
+    fi
+    gateway_auth_revision_normalized="$gateway_auth_revision_value"
+  fi
+  if [[ "$gateway_auth_enabled" != "$direct_auth_enabled" ]]; then
+    echo "gateway auth status enabled mismatch with direct endpoint: direct=${direct_auth_enabled}, gateway=${gateway_auth_enabled}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_auth_revision_normalized" != "$direct_auth_revision_normalized" ]]; then
+    echo "gateway auth status authRevision mismatch with direct endpoint: direct=${direct_auth_revision_normalized}, gateway=${gateway_auth_revision_normalized}" >&2
     exit 1
   fi
   status_summary+=", gateway_auth_enabled=${gateway_auth_enabled}"
   if [[ "$gateway_auth_revision_value" != "missing" ]]; then
     status_summary+=", gateway_auth_revision=${gateway_auth_revision_value}"
   fi
+  status_summary+=", gateway_auth_status_match=true"
 
   gateway_alarm_url="${ENDPOINT%/}/v3/maintenance/alarm"
   gateway_alarm_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{"action":"GET"}' "$gateway_alarm_url")"

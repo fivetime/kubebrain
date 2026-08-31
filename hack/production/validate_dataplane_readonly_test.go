@@ -31,6 +31,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		statusJSON        string
 		secondStatusJSON  string
 		gatewayJSON       string
+		directAuthJSON    string
 		authJSON          string
 		alarmJSON         string
 		versionJSON       string
@@ -2716,7 +2717,81 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			authJSON:   `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"authRevision":"5"}`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:     true,
-			wantOutput: "gateway_auth_enabled=false, gateway_auth_revision=5",
+			wantOutput: "gateway_auth_enabled=false, gateway_auth_revision=5, gateway_auth_status_match=true",
+		},
+		{
+			name: "normalizes omitted auth status scalars on both paths",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"raftTerm":8}}]`,
+			directAuthJSON: `{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8}}`,
+			authJSON:       `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"}}`,
+			extraEnv:       []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:         true,
+			wantOutput:     "gateway_auth_enabled=false, gateway_auth_status_match=true",
+		},
+		{
+			name: "rejects gateway auth enabled mismatch with direct endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"raftTerm":8}}]`,
+			directAuthJSON: `{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"enabled":true,"authRevision":5}`,
+			authJSON:       `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"authRevision":"5"}`,
+			extraEnv:       []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput:     "gateway auth status enabled mismatch with direct endpoint",
+		},
+		{
+			name: "rejects gateway auth revision mismatch with direct endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"raftTerm":8}}]`,
+			directAuthJSON: `{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"authRevision":5}`,
+			authJSON:       `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"authRevision":"6"}`,
+			extraEnv:       []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput:     "gateway auth status authRevision mismatch with direct endpoint",
+		},
+		{
+			name: "rejects malformed direct auth enabled envelope",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"raftTerm":8}}]`,
+			directAuthJSON: `{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"enabled":"false","authRevision":5}`,
+			extraEnv:       []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput:     "direct auth status enabled must be boolean",
+		},
+		{
+			name: "rejects direct auth revision uint64 overflow",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"raftTerm":8}}]`,
+			directAuthJSON: `{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"authRevision":"18446744073709551616"}`,
+			extraEnv:       []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput:     "direct auth status authRevision must be non-negative uint64",
 		},
 		{
 			name: "reports gateway alarm envelope in summary",
@@ -2943,15 +3018,16 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
 			]}`,
-			readyz:      "ok",
-			count:       "4",
-			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":9},"dbSize":99,"raftIndex":9,"raftAppliedIndex":9}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"9","raftAppliedIndex":"9","downgradeInfo":{}}`,
-			authJSON:    `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"},"authRevision":"5"}`,
-			alarmJSON:   `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"}}`,
-			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOK:      true,
-			wantOutput:  "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_sampled=true",
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":9},"dbSize":99,"raftIndex":9,"raftAppliedIndex":9}}]`,
+			gatewayJSON:    `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"9","raftAppliedIndex":"9","downgradeInfo":{}}`,
+			directAuthJSON: `{"header":{"cluster_id":123,"member_id":456,"revision":9,"raft_term":8},"authRevision":5}`,
+			authJSON:       `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"},"authRevision":"5"}`,
+			alarmJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"}}`,
+			extraEnv:       []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:         true,
+			wantOutput:     "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_sampled=true",
 		},
 		{
 			name: "reports snakecase status raft indexes in summary",
@@ -2960,15 +3036,16 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
 			]}`,
-			readyz:      "ok",
-			count:       "4",
-			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":9},"dbSize":99,"raft_index":9,"raft_applied_index":9}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"9","raftAppliedIndex":"9","downgradeInfo":{}}`,
-			authJSON:    `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"},"authRevision":"5"}`,
-			alarmJSON:   `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"}}`,
-			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOK:      true,
-			wantOutput:  "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_sampled=true",
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":9},"dbSize":99,"raft_index":9,"raft_applied_index":9}}]`,
+			gatewayJSON:    `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"9","raftAppliedIndex":"9","downgradeInfo":{}}`,
+			directAuthJSON: `{"header":{"cluster_id":123,"member_id":456,"revision":9,"raft_term":8},"authRevision":5}`,
+			authJSON:       `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"},"authRevision":"5"}`,
+			alarmJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"9","raft_term":"8"}}`,
+			extraEnv:       []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:         true,
+			wantOutput:     "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_sampled=true",
 		},
 		{
 			name: "reports status db size in use in summary",
@@ -5427,6 +5504,10 @@ if [[ "$*" == *"endpoint hashkv"* ]]; then
   printf '%s\n' "$FAKE_HASHKV_JSON"
   exit 0
 fi
+if [[ "$*" == *"auth status"* ]]; then
+  printf '%s\n' "$FAKE_DIRECT_AUTH_STATUS_JSON"
+  exit 0
+fi
 if [[ "$*" == *"endpoint status"* && -n "${FAKE_SECOND_STATUS_JSON:-}" ]]; then
   status_calls=0
   if [[ -f "$FAKE_STATUS_CALL_LOG" ]]; then
@@ -5486,6 +5567,7 @@ exec "$@"
 				"FAKE_SECOND_STATUS_JSON=" + tc.secondStatusJSON,
 				"FAKE_STATUS_CALL_LOG=" + statusCallLog,
 				"FAKE_GATEWAY_STATUS_JSON=" + defaultGatewayStatusJSON(tc.gatewayJSON),
+				"FAKE_DIRECT_AUTH_STATUS_JSON=" + defaultDirectAuthStatusJSON(tc.directAuthJSON),
 				"FAKE_GATEWAY_AUTH_STATUS_JSON=" + defaultGatewayAuthStatusJSON(tc.authJSON),
 				"FAKE_GATEWAY_ALARM_JSON=" + defaultGatewayAlarmJSON(tc.alarmJSON),
 				"FAKE_VERSION_JSON=" + defaultVersionJSON(tc.versionJSON),
@@ -5617,6 +5699,13 @@ func defaultGatewayAuthStatusJSON(value string) string {
 		return value
 	}
 	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"authRevision":"5"}`
+}
+
+func defaultDirectAuthStatusJSON(value string) string {
+	if value != "" {
+		return value
+	}
+	return `{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"authRevision":5}`
 }
 
 func defaultGatewayAlarmJSON(value string) string {
@@ -5859,6 +5948,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"version_storage=<semver>",
 		"info_version_storage=<semver>",
 		"gateway_auth_enabled=<bool>",
+		"gateway_auth_status_match=true",
 		"gateway_alarms=empty",
 		"gateway_endpoint_member_id=<id>",
 		"gateway_endpoint_members_match=true",
