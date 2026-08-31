@@ -1033,6 +1033,15 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 		}, valid: true},
 		{name: "empty storage version allowed", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "" }, valid: true},
 		{name: "canonical storage version", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "3.6.0" }, valid: true},
+		{name: "pre-3.6 defaults", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Version = "3.5.0"
+			response.DbSizeQuota = 0
+			response.DowngradeInfo = nil
+		}, valid: true},
+		{name: "pre-3.6 versioned fields", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Version = "3.5.0"
+			response.StorageVersion = "3.5.0"
+		}},
 		{name: "semantic prerelease server version", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.Version = "3.7.0-rc.1+build.2"
 		}, valid: true},

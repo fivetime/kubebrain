@@ -614,6 +614,10 @@ func TestFollowerStatusHedgeRejectsInvalidProxyPayload(t *testing.T) {
 		{name: "empty version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "" }},
 		{name: "invalid server version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "not-semver" }},
 		{name: "invalid storage version", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "not-semver" }},
+		{name: "pre-3.6 versioned fields", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Version = "3.5.0"
+			response.StorageVersion = "3.5.0"
+		}},
 		{name: "storage version with nonzero patch", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "3.7.1" }},
 		{name: "storage version with prerelease", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "3.7.0-rc.1" }},
 		{name: "storage version with metadata", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "3.7.0+build.2" }},

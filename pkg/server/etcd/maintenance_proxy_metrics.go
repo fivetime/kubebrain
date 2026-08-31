@@ -155,6 +155,14 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	if parseErr != nil {
 		return fail("leader status proxy returned an invalid server version")
 	}
+	hasVersionedStatusFields := serverVersion.Major() > 3 ||
+		(serverVersion.Major() == 3 && serverVersion.Minor() >= 6)
+	downgradeInfo := response.GetDowngradeInfo()
+	if !hasVersionedStatusFields {
+		if response.GetStorageVersion() != "" || response.GetDbSizeQuota() != 0 || downgradeInfo != nil {
+			return fail("leader status proxy returned 3.6 fields for a pre-3.6 server")
+		}
+	}
 	// StorageVersion is empty on pre-3.6 backends. Whenever present, upstream's
 	// UnsafeSetStorageVersion normalizes it to a canonical major.minor.0 release.
 	if response.GetStorageVersion() != "" {
@@ -173,12 +181,14 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	// Upstream uses a negative configured quota to disable quota enforcement
 	// and publishes that sentinel unchanged in Status. Zero is replaced by the
 	// default quota before the response is returned.
-	if response.GetDbSizeQuota() == 0 {
+	if hasVersionedStatusFields && response.GetDbSizeQuota() == 0 {
 		return fail("leader status proxy returned a zero database quota")
 	}
-	downgradeInfo := response.GetDowngradeInfo()
-	if downgradeInfo == nil {
+	if hasVersionedStatusFields && downgradeInfo == nil {
 		return fail("leader status proxy returned no downgrade information")
+	}
+	if downgradeInfo == nil {
+		return response, nil
 	}
 	if !downgradeInfo.GetEnabled() {
 		if downgradeInfo.GetTargetVersion() != "" {

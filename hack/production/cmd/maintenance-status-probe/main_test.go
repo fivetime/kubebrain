@@ -101,11 +101,21 @@ func TestValidateStatusResponseAcceptsEnabledDowngradeTargetWindows(t *testing.T
 			_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
 				Header:        &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
 				Version:       tc.server,
+				DbSizeQuota:   1,
 				DowngradeInfo: &etcdserverpb.DowngradeInfo{Enabled: true, TargetVersion: tc.target},
 			})
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestValidateStatusResponseRejectsZeroVersionedQuota(t *testing.T) {
+	_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
+		Header:        &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+		Version:       "3.6.0",
+		DowngradeInfo: &etcdserverpb.DowngradeInfo{},
+	})
+	require.ErrorContains(t, err, "database quota must be non-zero")
 }
 
 func TestValidateStatusResponseRejectsInvalidVersion(t *testing.T) {
@@ -126,6 +136,24 @@ func TestValidateStatusResponseRejectsNonCanonicalStorageVersion(t *testing.T) {
 				DowngradeInfo:  &etcdserverpb.DowngradeInfo{},
 			})
 			require.ErrorContains(t, err, "storage version must be a canonical major.minor.0 release")
+		})
+	}
+}
+
+func TestValidateStatusResponseRejectsVersionedFieldsBefore36(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response *etcdserverpb.StatusResponse
+	}{
+		{name: "storage version", response: &etcdserverpb.StatusResponse{StorageVersion: "3.5.0"}},
+		{name: "database quota", response: &etcdserverpb.StatusResponse{DbSizeQuota: 1}},
+		{name: "downgrade information", response: &etcdserverpb.StatusResponse{DowngradeInfo: &etcdserverpb.DowngradeInfo{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.response.Header = &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8}
+			tc.response.Version = "3.5.0"
+			_, err := validateStatusResponse(tc.response)
+			require.ErrorContains(t, err, "versioned fields are unavailable before etcd 3.6")
 		})
 	}
 }

@@ -1479,6 +1479,25 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status downgradeInfo envelope invalid: ${status_downgrade_info_violations}" >&2
     exit 1
   fi
+  status_versioned_field_rows="$(printf '%s' "$status_json" | "$JQ" -r '
+    .[]
+    | [
+        (.Endpoint // "unknown"),
+        (.Status.version // "missing"),
+        ((.Status | has("storageVersion") or has("storage_version")) | tostring),
+        ((.Status | has("dbSizeQuota") or has("db_size_quota")) | tostring),
+        ((.Status | has("downgradeInfo") or has("downgrade_info")) | tostring)
+      ]
+    | @tsv
+  ')"
+  while IFS=$'\t' read -r status_endpoint status_version status_has_storage_version status_has_db_size_quota status_has_downgrade_info; do
+    [[ -n "$status_endpoint" ]] || continue
+    if ! semver_core_at_least_3_6 "$status_version" &&
+      [[ "$status_has_storage_version" == "true" || "$status_has_db_size_quota" == "true" || "$status_has_downgrade_info" == "true" ]]; then
+      echo "status 3.6 fields are unavailable before etcd 3.6: ${status_endpoint}" >&2
+      exit 1
+    fi
+  done <<<"$status_versioned_field_rows"
   status_leader_violations="$(printf '%s' "$status_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
@@ -1828,8 +1847,23 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status version mismatch: expected ${EXPECTED_STATUS_VERSION}, got ${gateway_status_version}" >&2
     exit 1
   fi
-  if ! [[ "$gateway_status_storage_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.0$ ]]; then
-    echo "gateway status storageVersion must be a storage semver string, got ${gateway_status_storage_version}" >&2
+  gateway_status_v36_fields_required=0
+  if semver_core_at_least_3_6 "$gateway_status_version"; then
+    gateway_status_v36_fields_required=1
+    if ! [[ "$gateway_status_storage_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.0$ ]]; then
+      echo "gateway status storageVersion must be a storage semver string, got ${gateway_status_storage_version}" >&2
+      exit 1
+    fi
+    if ! [[ "$gateway_status_db_size_quota" =~ ^(-[1-9][0-9]*|[1-9][0-9]*)$ ]]; then
+      echo "gateway status dbSizeQuota must be a non-zero integer, got ${gateway_status_db_size_quota}" >&2
+      exit 1
+    fi
+    if [[ "$gateway_status_downgrade_info_type" != "object" ]]; then
+      echo "gateway status downgradeInfo envelope invalid: expected object, got ${gateway_status_downgrade_info_type}" >&2
+      exit 1
+    fi
+  elif [[ "$gateway_status_storage_version" != "missing" || "$gateway_status_db_size_quota" != "missing" || "$gateway_status_downgrade_info_type" != "missing" ]]; then
+    echo "gateway status 3.6 fields are unavailable before etcd 3.6" >&2
     exit 1
   fi
   if ! [[ "$gateway_status_db_size" =~ ^[1-9][0-9]*$ ]]; then
@@ -1839,12 +1873,6 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   if ! [[ "$gateway_status_db_size_in_use" =~ ^[0-9]+$ ]]; then
     echo "gateway status dbSizeInUse must be non-negative, got ${gateway_status_db_size_in_use}" >&2
     exit 1
-  fi
-  if [[ "$gateway_status_db_size_quota" != "missing" ]]; then
-    if ! [[ "$gateway_status_db_size_quota" =~ ^(-[1-9][0-9]*|[1-9][0-9]*)$ ]]; then
-      echo "gateway status dbSizeQuota must be a non-zero integer, got ${gateway_status_db_size_quota}" >&2
-      exit 1
-    fi
   fi
   if [[ "$gateway_status_is_learner_type" != "missing" && "$gateway_status_is_learner_type" != "boolean" ]]; then
     echo "gateway status isLearner must be boolean, got ${gateway_status_is_learner_type}" >&2
@@ -1876,10 +1904,6 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if ! [[ "$gateway_status_raft_applied_index" =~ ^[0-9]+$ ]]; then
     echo "gateway status raftAppliedIndex must be non-negative, got ${gateway_status_raft_applied_index}" >&2
-    exit 1
-  fi
-  if [[ "$gateway_status_downgrade_info_type" != "object" ]]; then
-    echo "gateway status downgradeInfo envelope invalid: expected object, got ${gateway_status_downgrade_info_type}" >&2
     exit 1
   fi
   if [[ "$gateway_status_db_size" != "$gateway_expected_status_db_size" ]]; then
@@ -1953,7 +1977,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         (.header.cluster_id // "missing"),
         (.header.member_id // "missing"),
         (.version // "missing"),
-        (.storage_version // "missing"),
+        (if (.storage_version | type) != "string" then "invalid" elif .storage_version == "" then "missing" else .storage_version end),
         (.db_size_quota // "missing"),
         (if (.is_learner | type) == "boolean" then (.is_learner | tostring) else "invalid" end),
         (if (.downgrade_info.enabled | type) == "boolean" then (.downgrade_info.enabled | tostring) else "invalid" end),
@@ -2036,12 +2060,17 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "/version etcdcluster mismatch: expected ${expected_cluster_version}, got ${version_etcdcluster}" >&2
     exit 1
   fi
-  if ! [[ "$version_storage" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.0$ ]]; then
-    echo "/version storage must be a storage semver string, got ${version_storage}" >&2
-    exit 1
-  fi
-  if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" && "$version_storage" != "$gateway_status_storage_version" ]]; then
-    echo "/version storage mismatch: gateway_status=${gateway_status_storage_version}, version=${version_storage}" >&2
+  if semver_core_at_least_3_6 "$version_etcdserver"; then
+    if ! [[ "$version_storage" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.0$ ]]; then
+      echo "/version storage must be a storage semver string, got ${version_storage}" >&2
+      exit 1
+    fi
+    if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" && "$version_storage" != "$gateway_status_storage_version" ]]; then
+      echo "/version storage mismatch: gateway_status=${gateway_status_storage_version}, version=${version_storage}" >&2
+      exit 1
+    fi
+  elif [[ "$version_storage" != "unknown" ]]; then
+    echo "/version storage must be unknown before etcd 3.6, got ${version_storage}" >&2
     exit 1
   fi
   info_version_url="${READYZ_URL%/readyz}/version"
@@ -2089,7 +2118,9 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
     status_summary+=", gateway_status_version=${gateway_status_version}"
-    status_summary+=", gateway_storage_version=${gateway_status_storage_version}"
+    if [[ "$gateway_status_storage_version" != "missing" ]]; then
+      status_summary+=", gateway_storage_version=${gateway_status_storage_version}"
+    fi
   fi
   status_summary+=", version_etcdserver=${version_etcdserver}"
   status_summary+=", version_etcdcluster=${version_etcdcluster}"
@@ -2108,7 +2139,9 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     status_summary+=", gateway_raft_index=${gateway_status_raft_index}"
     status_summary+=", gateway_raft_applied_index=${gateway_status_raft_applied_index}"
     status_summary+=", gateway_raft_indexes_sampled=true"
-    status_summary+=", gateway_downgrade_info=object"
+    if [[ "$gateway_status_v36_fields_required" == "1" ]]; then
+      status_summary+=", gateway_downgrade_info=object"
+    fi
     status_summary+=", gateway_status_body_match=true"
     status_summary+=", gateway_status_errors=empty"
     status_summary+=", direct_status_endpoint_identity_match=true"

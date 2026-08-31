@@ -125,6 +125,15 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 	if response.GetDbSizeInUse() < 0 {
 		return statusProbeResult{}, fmt.Errorf("maintenance Status db size in use must be non-negative, got %d", response.GetDbSizeInUse())
 	}
+	requiresVersionedFields, err := statusVersionCoreAtLeast3Minor(response.GetVersion(), "6")
+	if err != nil {
+		return statusProbeResult{}, err
+	}
+	downgradeInfo := response.GetDowngradeInfo()
+	if !requiresVersionedFields &&
+		(response.GetStorageVersion() != "" || response.GetDbSizeQuota() != 0 || downgradeInfo != nil) {
+		return statusProbeResult{}, errors.New("maintenance Status versioned fields are unavailable before etcd 3.6")
+	}
 	if storageVersion := response.GetStorageVersion(); storageVersion != "" {
 		parsedStorageVersion, parseErr := semver.StrictNewVersion(storageVersion)
 		if parseErr != nil || parsedStorageVersion.Patch() != 0 || parsedStorageVersion.Prerelease() != "" ||
@@ -132,12 +141,7 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 			return statusProbeResult{}, errors.New("maintenance Status storage version must be a canonical major.minor.0 release")
 		}
 	}
-	downgradeInfo := response.GetDowngradeInfo()
-	requiresDowngradeInfo, err := statusVersionCoreAtLeast3Minor(response.GetVersion(), "6")
-	if err != nil {
-		return statusProbeResult{}, err
-	}
-	if requiresDowngradeInfo && downgradeInfo == nil {
+	if requiresVersionedFields && downgradeInfo == nil {
 		return statusProbeResult{}, errors.New("maintenance Status downgrade information is missing for etcd 3.6 or later")
 	}
 	if downgradeInfo != nil {
@@ -152,6 +156,9 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 				return statusProbeResult{}, errors.New("maintenance Status downgrade information is inconsistent")
 			}
 		}
+	}
+	if requiresVersionedFields && response.GetDbSizeQuota() == 0 {
+		return statusProbeResult{}, errors.New("maintenance Status database quota must be non-zero for etcd 3.6 or later")
 	}
 	result := statusProbeResult{
 		Header: statusProbeHeader{
