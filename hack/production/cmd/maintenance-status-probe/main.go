@@ -220,7 +220,7 @@ func validateStatusErrors(response *etcdserverpb.StatusResponse) error {
 	for _, statusErr := range statusErrors[alarmOffset:] {
 		var alarm etcdserverpb.AlarmMember
 		if err := prototext.Unmarshal([]byte(statusErr), &alarm); err != nil ||
-			alarm.GetAlarm() == etcdserverpb.AlarmType_NONE || persistedAlarmStatusText(&alarm) != statusErr {
+			alarm.GetAlarm() == etcdserverpb.AlarmType_NONE || !matchesPersistedAlarmStatusText(&alarm, statusErr) {
 			return fmt.Errorf("maintenance Status errors contain an invalid alarm: %q", statusErr)
 		}
 		identity := struct {
@@ -243,6 +243,14 @@ func persistedAlarmStatusText(alarm *etcdserverpb.AlarmMember) string {
 		return fmt.Sprintf("memberID:%d", alarm.GetMemberID())
 	}
 	return fmt.Sprintf("memberID:%d  alarm:%s", alarm.GetMemberID(), alarm.GetAlarm().String())
+}
+
+func matchesPersistedAlarmStatusText(alarm *etcdserverpb.AlarmMember, value string) bool {
+	if alarm.GetMemberID() == 0 || alarm.GetAlarm() == etcdserverpb.AlarmType_NONE {
+		return value == persistedAlarmStatusText(alarm)
+	}
+	return value == persistedAlarmStatusText(alarm) ||
+		value == fmt.Sprintf("memberID:%d alarm:%s", alarm.GetMemberID(), alarm.GetAlarm().String())
 }
 
 func statusVersionCoreAtLeast3Minor(value string, minor string) (bool, error) {

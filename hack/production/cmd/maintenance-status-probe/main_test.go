@@ -45,7 +45,7 @@ func TestValidateStatusResponseAcceptsReachableStatusErrors(t *testing.T) {
 	response := &etcdserverpb.StatusResponse{
 		Header:  &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
 		Version: "3.7.0", Leader: 0, DbSizeQuota: 1, DowngradeInfo: &etcdserverpb.DowngradeInfo{},
-		Errors: []string{"etcdserver: no leader", "alarm:NOSPACE", "memberID:456  alarm:127"},
+		Errors: []string{"etcdserver: no leader", "alarm:NOSPACE", "memberID:456 alarm:127"},
 	}
 	result, err := validateStatusResponse(response)
 	require.NoError(t, err)
@@ -61,7 +61,7 @@ func TestValidateStatusResponseRejectsUnreachableStatusErrors(t *testing.T) {
 		{name: "arbitrary", leader: 456, errors: []string{"disk unavailable"}},
 		{name: "alarm without type", leader: 456, errors: []string{"memberID:456"}},
 		{name: "NONE alarm", leader: 456, errors: []string{"memberID:456  alarm:NONE"}},
-		{name: "noncanonical alarm", leader: 456, errors: []string{"memberID:456 alarm:NOSPACE"}},
+		{name: "noncanonical alarm spacing", leader: 456, errors: []string{"memberID:456   alarm:NOSPACE"}},
 		{name: "duplicate alarm", leader: 456, errors: []string{"memberID:456  alarm:NOSPACE", "memberID:456  alarm:NOSPACE"}},
 		{name: "missing no leader", leader: 0, errors: []string{"alarm:NOSPACE"}},
 		{name: "duplicate no leader", leader: 0, errors: []string{"etcdserver: no leader", "etcdserver: no leader"}},

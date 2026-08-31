@@ -66,9 +66,18 @@ func validateMaintenanceProxyResult[T any](
 				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
 				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response without a header", rpc))
 			}
-			if headerResponse.GetHeader().GetRevision() < 0 {
+			header := headerResponse.GetHeader()
+			if header.GetRevision() < 0 {
 				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
 				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a negative header revision", rpc))
+			}
+			if header.GetClusterId() == 0 {
+				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a zero cluster ID", rpc))
+			}
+			if header.GetMemberId() == 0 {
+				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a zero member ID", rpc))
 			}
 		}
 		return response, err
@@ -230,11 +239,12 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	}]struct{}, len(statusErrors)-alarmOffset)
 	for _, statusErr := range statusErrors[alarmOffset:] {
 		// Status emits AlarmMember.String(), not arbitrary diagnostic strings.
-		// Parse with protobuf's own text codec and require the exact canonical
-		// rendering, including omitted zero fields and numeric unknown enums.
+		// Parse with protobuf's own text codec and require one of its two
+		// build-dependent compact renderings, including omitted zero fields and
+		// numeric unknown enums.
 		var alarm etcdserverpb.AlarmMember
 		if parseErr := prototext.Unmarshal([]byte(statusErr), &alarm); parseErr != nil ||
-			alarm.GetAlarm() == etcdserverpb.AlarmType_NONE || alarmStatusError(&alarm) != statusErr {
+			alarm.GetAlarm() == etcdserverpb.AlarmType_NONE || !matchesAlarmStatusError(&alarm, statusErr) {
 			return fail("leader status proxy returned an invalid status alarm")
 		}
 		identity := struct {

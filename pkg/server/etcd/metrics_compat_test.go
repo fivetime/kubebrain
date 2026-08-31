@@ -1047,6 +1047,9 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 		{name: "member alarm", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.Errors = []string{"memberID:7  alarm:CORRUPT"}
 		}, valid: true},
+		{name: "member alarm single-space build", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Errors = []string{"memberID:7 alarm:CORRUPT"}
+		}, valid: true},
 		{name: "unknown alarm", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.Errors = []string{"memberID:7  alarm:127"}
 		}, valid: true},
@@ -1160,6 +1163,7 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 		{name: "explicit zero member", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{"memberID:0 alarm:NOSPACE"} }},
 		{name: "noncanonical member", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{"memberID:007 alarm:NOSPACE"} }},
 		{name: "noncanonical unknown alarm", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{"memberID:7 alarm:0127"} }},
+		{name: "noncanonical alarm spacing", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{"memberID:7   alarm:NOSPACE"} }},
 		{name: "duplicate alarm", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.Errors = []string{"memberID:7  alarm:NOSPACE", "memberID:7  alarm:NOSPACE"}
 		}},
@@ -1327,17 +1331,25 @@ func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.ErrorContains(t, err, "without a header")
-			response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{Header: txnHeader(-1)}, nil)
+			response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2, Revision: -1}}, nil)
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.ErrorContains(t, err, "negative header revision")
-			require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
+			response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{MemberId: 2}}, nil)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, "zero cluster ID")
+			response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 1}}, nil)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, "zero member ID")
+			require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
 		} else {
 			require.Equal(t, []interface{}{int64(0), 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
 		}
 	}
 
-	want := &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{}}
+	want := &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2}}
 	response, err := validateMaintenanceProxyResult(rec, maintenanceProxyRPCStatus, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
@@ -1345,7 +1357,7 @@ func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateMaintenanceProxyResult[etcdserverpb.StatusResponse](rec, maintenanceProxyRPCStatus, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
 
 	wantDefragment := &etcdserverpb.DefragmentResponse{}
 	responseDefragment, err := validateMaintenanceProxyResult(rec, maintenanceProxyRPCDefragment, wantDefragment, nil)

@@ -485,11 +485,9 @@ func (s *RPCServer) freshMaintenanceRevision(ctx context.Context) (uint64, error
 
 func alarmStatusError(alarm *etcdserverpb.AlarmMember) string {
 	// Upstream Status appends AlarmMember.String() verbatim. In particular,
-	// alarms reach that call after protobuf persistence. The compact renderer
-	// separates two populated fields with two spaces in that state, while the
-	// fresh messages assembled from KubeBrain's TiKV metadata have not passed
-	// through proto.Marshal. Render the persisted form directly and preserve
-	// protobuf's omission of zero-valued fields.
+	// protobuf deliberately varies the compact renderer's separator between
+	// builds. Emit one of the two reachable forms deterministically while
+	// preserving protobuf's omission of zero-valued fields.
 	if alarm.GetMemberID() == 0 && alarm.GetAlarm() == etcdserverpb.AlarmType_NONE {
 		return ""
 	}
@@ -500,6 +498,14 @@ func alarmStatusError(alarm *etcdserverpb.AlarmMember) string {
 		return fmt.Sprintf("memberID:%d", alarm.GetMemberID())
 	}
 	return fmt.Sprintf("memberID:%d  alarm:%s", alarm.GetMemberID(), alarm.GetAlarm().String())
+}
+
+func matchesAlarmStatusError(alarm *etcdserverpb.AlarmMember, value string) bool {
+	if alarm.GetMemberID() == 0 || alarm.GetAlarm() == etcdserverpb.AlarmType_NONE {
+		return value == alarmStatusError(alarm)
+	}
+	return value == alarmStatusError(alarm) ||
+		value == fmt.Sprintf("memberID:%d alarm:%s", alarm.GetMemberID(), alarm.GetAlarm().String())
 }
 
 func (s *RPCServer) Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
