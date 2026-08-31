@@ -112,21 +112,25 @@ func TestProxyResponseHeaderValidation(t *testing.T) {
 		name     string
 		header   *etcdserverpb.ResponseHeader
 		identity proxyResponseIdentity
+		policy   proxyResponseRevisionPolicy
 		want     string
 	}{
 		{name: "missing", identity: identity, want: "without a header"},
 		{name: "negative revision", header: testProxyResponseHeader(-1), identity: identity, want: "with a negative header revision"},
-		{name: "zero cluster", header: &etcdserverpb.ResponseHeader{MemberId: 2}, identity: identity, want: "with a zero cluster ID"},
-		{name: "foreign cluster", header: &etcdserverpb.ResponseHeader{ClusterId: 4, MemberId: 2}, identity: identity, want: "for a foreign cluster"},
-		{name: "zero member", header: &etcdserverpb.ResponseHeader{ClusterId: 1}, identity: identity, want: "with a zero member ID"},
-		{name: "unknown member", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 4}, identity: identity, want: "for an unknown member"},
-		{name: "zero raft term", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2}, identity: identity, want: "with a zero raft term"},
-		{name: "approved member", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 3, RaftTerm: 7}, identity: identity},
-		{name: "nonzero member without static membership", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 4, RaftTerm: 7}, identity: proxyResponseIdentity{clusterID: 1}},
+		{name: "zero cluster", header: &etcdserverpb.ResponseHeader{MemberId: 2, Revision: 1}, identity: identity, want: "with a zero cluster ID"},
+		{name: "foreign cluster", header: &etcdserverpb.ResponseHeader{ClusterId: 4, MemberId: 2, Revision: 1}, identity: identity, want: "for a foreign cluster"},
+		{name: "zero member", header: &etcdserverpb.ResponseHeader{ClusterId: 1, Revision: 1}, identity: identity, want: "with a zero member ID"},
+		{name: "unknown member", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 4, Revision: 1}, identity: identity, want: "for an unknown member"},
+		{name: "zero raft term", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2, Revision: 1}, identity: identity, want: "with a zero raft term"},
+		{name: "positive revision required", header: testProxyResponseHeader(0), identity: identity, want: "with a non-positive header revision"},
+		{name: "zero revision required", header: testProxyResponseHeader(1), identity: identity, policy: proxyResponseRevisionZero, want: "with a nonzero header revision"},
+		{name: "approved member", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 3, Revision: 1, RaftTerm: 7}, identity: identity},
+		{name: "approved zero revision", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 3, RaftTerm: 7}, identity: identity, policy: proxyResponseRevisionZero},
+		{name: "nonzero member without static membership", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 4, Revision: 1, RaftTerm: 7}, identity: proxyResponseIdentity{clusterID: 1}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			response := &etcdserverpb.StatusResponse{Header: tt.header}
-			require.Equal(t, tt.want, validateProxyResponseHeader(response, tt.identity))
+			require.Equal(t, tt.want, validateProxyResponseHeader(response, tt.identity, tt.policy))
 		})
 	}
 }
@@ -299,7 +303,12 @@ func TestClusterProxyIntegrityMetricsAndValidation(t *testing.T) {
 	require.Nil(t, response)
 	require.Equal(t, codes.DataLoss, status.Code(err))
 	require.ErrorContains(t, err, "zero raft term")
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
+	response, err = validateClusterProxyResult(rec, identity, clusterProxyRPCMemberList,
+		&etcdserverpb.MemberListResponse{Header: testProxyResponseHeader(1)}, nil)
+	require.Nil(t, response)
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.ErrorContains(t, err, "nonzero header revision")
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
 
 	want := &etcdserverpb.MemberListResponse{Header: testProxyResponseHeader(0)}
 	response, err = validateClusterProxyResult(rec, identity, clusterProxyRPCMemberList, want, nil)
@@ -309,7 +318,7 @@ func TestClusterProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateClusterProxyResult[etcdserverpb.MemberListResponse](rec, identity, clusterProxyRPCMemberList, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
 }
 
 func TestMemberListProxyPayloadValidation(t *testing.T) {
@@ -372,10 +381,14 @@ func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "zero raft term")
-		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, rpc))
+		response, err = validateLeaseProxyResult(rec, identity, rpc, &etcdserverpb.LeaseGrantResponse{Header: testProxyResponseHeader(0)}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "non-positive header revision")
+		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, rpc))
 	}
 
-	want := &etcdserverpb.LeaseGrantResponse{Header: testProxyResponseHeader(0)}
+	want := &etcdserverpb.LeaseGrantResponse{Header: testProxyResponseHeader(1)}
 	response, err := validateLeaseProxyResult(rec, identity, leaseProxyRPCGrant, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
@@ -383,7 +396,7 @@ func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateLeaseProxyResult[etcdserverpb.LeaseGrantResponse](rec, identity, leaseProxyRPCGrant, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
 }
 
 func TestLeaseProxyResponseIDValidation(t *testing.T) {
@@ -548,10 +561,14 @@ func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "zero raft term")
-		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, action))
+		response, err = validateAuthProxyResult(rec, identity, action, &etcdserverpb.AuthStatusResponse{Header: testProxyResponseHeader(0)}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "non-positive header revision")
+		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, action))
 	}
 
-	want := &etcdserverpb.AuthStatusResponse{Header: testProxyResponseHeader(0)}
+	want := &etcdserverpb.AuthStatusResponse{Header: testProxyResponseHeader(1)}
 	response, err := validateAuthProxyResult(rec, identity, authProxyActionStatus, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
@@ -559,7 +576,7 @@ func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateAuthProxyResult[etcdserverpb.AuthStatusResponse](rec, identity, authProxyActionStatus, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
 }
 
 func TestAuthNameListProxyPayloadValidation(t *testing.T) {
@@ -741,10 +758,14 @@ func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "zero raft term")
-		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1}, recordedKVProxyIntegrityValues(rec, rpc))
+		response, err = validateKVProxyResult(rec, identity, rpc, &etcdserverpb.RangeResponse{Header: testProxyResponseHeader(0)}, nil)
+		require.Nil(t, response)
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "non-positive header revision")
+		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedKVProxyIntegrityValues(rec, rpc))
 	}
 
-	want := &etcdserverpb.RangeResponse{Header: testProxyResponseHeader(0)}
+	want := &etcdserverpb.RangeResponse{Header: testProxyResponseHeader(1)}
 	response, err := validateKVProxyResult(rec, identity, kvProxyRPCRange, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
@@ -752,7 +773,7 @@ func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateKVProxyResult[etcdserverpb.RangeResponse](rec, identity, kvProxyRPCRange, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
 }
 
 func TestRangeProxyPayloadValidation(t *testing.T) {
@@ -1421,13 +1442,17 @@ func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.ErrorContains(t, err, "zero raft term")
-			require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
+			response, err = validateMaintenanceProxyResult(rec, identity, rpc, &etcdserverpb.StatusResponse{Header: testProxyResponseHeader(0)}, nil)
+			require.Nil(t, response)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, "non-positive header revision")
+			require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
 		} else {
 			require.Equal(t, []interface{}{int64(0), 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, rpc))
 		}
 	}
 
-	want := &etcdserverpb.StatusResponse{Header: testProxyResponseHeader(0)}
+	want := &etcdserverpb.StatusResponse{Header: testProxyResponseHeader(1)}
 	response, err := validateMaintenanceProxyResult(rec, identity, maintenanceProxyRPCStatus, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
@@ -1435,7 +1460,7 @@ func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	response, err = validateMaintenanceProxyResult[etcdserverpb.StatusResponse](rec, identity, maintenanceProxyRPCStatus, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
-	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
+	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
 
 	wantDefragment := &etcdserverpb.DefragmentResponse{}
 	responseDefragment, err := validateMaintenanceProxyResult(rec, identity, maintenanceProxyRPCDefragment, wantDefragment, nil)

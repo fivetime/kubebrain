@@ -59,7 +59,7 @@ func validateMaintenanceProxyResult[T any](
 ) (*T, error) {
 	if (response == nil) != (err == nil) {
 		if response != nil && rpc != maintenanceProxyRPCDefragment {
-			if issue := validateProxyResponseHeader(response, identity); issue != "" {
+			if issue := validateProxyResponseHeader(response, identity, proxyResponseRevisionPositive); issue != "" {
 				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
 				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response %s", rpc, issue))
 			}

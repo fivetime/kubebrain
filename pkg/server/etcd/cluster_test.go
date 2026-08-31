@@ -702,7 +702,7 @@ func TestFollowerLinearizableMemberListProxiesBeforeLocalBarrier(t *testing.T) {
 	defer closeFn()
 	request := &etcdserverpb.MemberListRequest{Linearizable: true}
 	want := &etcdserverpb.MemberListResponse{
-		Header:  proxiedResponseHeader(server, 42),
+		Header:  proxiedResponseHeader(server, 0),
 		Members: []*etcdserverpb.Member{{ID: 7, Name: "leader"}},
 	}
 	server.peers = testPeerService{
@@ -775,7 +775,7 @@ func TestFollowerLinearizableMemberListRejectsInvalidProxyPayload(t *testing.T) 
 				proxyEnabled: true,
 				epochFn:      func() (uint64, bool) { return 7, false },
 				memberListFn: func(context.Context, *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
-					return &etcdserverpb.MemberListResponse{Header: proxiedResponseHeader(server, 2), Members: tt.members}, nil
+					return &etcdserverpb.MemberListResponse{Header: proxiedResponseHeader(server, 0), Members: tt.members}, nil
 				},
 			}
 

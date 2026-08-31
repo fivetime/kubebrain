@@ -33,7 +33,7 @@ func initClusterProxyIntegrityMetrics(metricCli metrics.Metrics) {
 func validateClusterProxyResult[T any](metricCli metrics.Metrics, identity proxyResponseIdentity, rpc string, response *T, err error) (*T, error) {
 	if (response == nil) != (err == nil) {
 		if response != nil {
-			if issue := validateProxyResponseHeader(response, identity); issue != "" {
+			if issue := validateProxyResponseHeader(response, identity, proxyResponseRevisionZero); issue != "" {
 				emitClusterProxyIntegrityFailure(metricCli, rpc)
 				return nil, status.Error(codes.DataLoss, "leader member_list proxy returned a response "+issue)
 			}

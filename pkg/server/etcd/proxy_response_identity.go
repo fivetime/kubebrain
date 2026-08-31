@@ -21,6 +21,13 @@ type proxyResponseIdentity struct {
 	members   []*etcdserverpb.Member
 }
 
+type proxyResponseRevisionPolicy uint8
+
+const (
+	proxyResponseRevisionPositive proxyResponseRevisionPolicy = iota
+	proxyResponseRevisionZero
+)
+
 func (s *RPCServer) expectedProxyResponseIdentity() proxyResponseIdentity {
 	return proxyResponseIdentity{
 		clusterID: s.backend.ClusterID(),
@@ -28,7 +35,7 @@ func (s *RPCServer) expectedProxyResponseIdentity() proxyResponseIdentity {
 	}
 }
 
-func validateProxyResponseHeader(response any, identity proxyResponseIdentity) string {
+func validateProxyResponseHeader(response any, identity proxyResponseIdentity, revisionPolicy proxyResponseRevisionPolicy) string {
 	headerResponse, ok := response.(interface {
 		GetHeader() *etcdserverpb.ResponseHeader
 	})
@@ -62,6 +69,16 @@ func validateProxyResponseHeader(response any, identity proxyResponseIdentity) s
 	}
 	if header.GetRaftTerm() == 0 {
 		return "with a zero raft term"
+	}
+	switch revisionPolicy {
+	case proxyResponseRevisionPositive:
+		if header.GetRevision() == 0 {
+			return "with a non-positive header revision"
+		}
+	case proxyResponseRevisionZero:
+		if header.GetRevision() != 0 {
+			return "with a nonzero header revision"
+		}
 	}
 	return ""
 }

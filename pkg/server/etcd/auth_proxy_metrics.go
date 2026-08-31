@@ -78,7 +78,7 @@ func initAuthProxyIntegrityMetrics(metricCli metrics.Metrics) {
 func validateAuthProxyResult[T any](metricCli metrics.Metrics, identity proxyResponseIdentity, action string, response *T, err error) (*T, error) {
 	if (response == nil) != (err == nil) {
 		if response != nil {
-			if issue := validateProxyResponseHeader(response, identity); issue != "" {
+			if issue := validateProxyResponseHeader(response, identity, proxyResponseRevisionPositive); issue != "" {
 				emitAuthProxyIntegrityFailure(metricCli, action)
 				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response %s", action, issue))
 			}
