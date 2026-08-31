@@ -67061,6 +67061,49 @@ HashKV `4283180840`、compact revision `44329`、direct hash `1884729719`、auth
 Ready/restart 0，回滚后三轮九次稳定 Pod 内 `3379` proposal health 全部 GREEN，无端口转发或六个诊断监听残留。A5661 关闭了合法已知
 member 身份仍可携带缺失、额外或被篡改 MemberList 拓扑穿越 leader proxy 的服务发现完整性缺口。
 
+### A5662：强制 Lease proxy 的 canonical granted-TTL 域
+
+A5661 后继续审计 unary/stream proxy payload。对照 `/root/etcd/server/lease/lessor.go::Grant/initAndRecover/Renew` 与
+`/root/etcd/server/etcdserver/v3_server.go::leaseTimeToLive`：lessor 在 Grant 和恢复时都把 granted TTL 提升到配置最小值；成功 Renew 精确返回
+lease 的 granted TTL；TimeToLive 的 `GrantedTTL` 同样来自该值。KubeBrain 对应 `LeaseGrant`/`applyLeaseRecordsWithPrimary`/keepalive 也固定
+`minLeaseTTL=2`，并用 `maxLeaseTTL=9000000000` 拒绝过大租约。但旧 proxy payload 门禁只要求 Grant TTL 正数、KeepAlive TTL 非负、
+TimeToLive GrantedTTL 正数，因而会接受本集群 leader 不可能产生的 Grant=1、KeepAlive=1/9000000001 和 TimeToLive GrantedTTL=1。
+
+确定性 tests-only RED 从真实 follower Grant、KeepAlive stream 与 TimeToLive 调用路径注入上述四类响应；旧实现全部把它们交付为成功，包在
+`0.185s` 后按预期失败。提交 `7dba3fd4` 统一门禁：Grant 成功 TTL 必须落在 `[2,9000000000]` 且不低于请求；KeepAlive 的 0 继续表示
+not-found，实际 lease TTL 必须落在相同区间；TimeToLive not-found 继续精确允许 `TTL=-1/GrantedTTL=0`，found GrantedTTL 必须落在相同
+区间。remaining TTL 不受该区间约束，保留 upstream 可观察的过期但尚未 revoke 负值，并避免把 leader promotion grace 造成的 remaining TTL
+临时高于 granted TTL 误判为损坏。核心定向集合为 `0.209s`，全部 Lease 测试为 `10.200s`；完整普通包为 `135.562s`，完整 race 为
+`381.680s`，`go vet ./pkg/server/etcd`、gofmt 与 diff check 全部 GREEN。提交前 inventory 为 703 项、`170/193/180/160`；提交后
+四片分别为 `258.006/442.902/306.627/569.977s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5662-7dba3fd4` 内嵌版本 `0.0.0-7dba3fd429ad`、完整提交
+`7dba3fd429ad71b814d69ae788bce8db59960038` 与 build time `2026-08-31T21:25:39Z`，运行用户 `65532:65532`、Go
+`1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI index、platform manifest、config 分别为
+`sha256:a4d78ee24d4415b5d5e4554d5e03c515fb0a5e74418fee6392c5b82b08de2839`、
+`sha256:419584108b68b496e1c7437b64c58ab7bdfc531cb2ab1e4908284b141c6ec0b1`、
+`sha256:3c7fc7d867de14adb07f95f5d274d8fc5bc9639f7a7b653ae38c53c3099b0869`；Kind/containerd runtime digest 为
+`sha256:e0bdbd7c481f60af48652d39fcf22453f5f2a4999dd789610f48d0f1b1fcacba`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 711 部署至 generation 712；三 Pod 均落在
+revision `kubebrain-57944dc978`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。三个 exact Pod endpoint
+各自完成真实 `LeaseGrant(TTL=1)`→`KeepAlive --once`→`TimeToLive`→`Revoke`：Grant 均规范化为 2，KeepAlive 均返回 2，TimeToLive
+均返回 remaining TTL 1/granted TTL 2；公开 header 的本地 member ID 分别为 `4034353177/2393892952/231094427`，term 均为
+`295`。三个租约及一次参数格式探测产生的短租约最终全部消失，LeaseLeases 精确为空。
+
+全部开关启用的 readonly gate 一次 GREEN：prefix `/a5662/` count 0、version/storage `3.7.0/3.7.0`、leader
+`2393892952`、revision/index/applied `65743`、HashKV `4283180840`、compact revision `44329`、direct hash
+`1884729719`、auth disabled/revision `281`，named/HTTP/metrics/debug/pprof 及跨端点身份、revision、term 均通过；三轮九次 exact
+endpoint proposal health 全部成功，延迟约 `10.3–15.1ms`。候选 Pod 日志为 `504/285/564` 行，结构化 error、panic/fatal/data
+race/data corruption 与 TiKV/PD storage error 均为 0。
+
+最后关闭三组 client+info 端口转发并确认六端口和相关进程无残留，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID
+`817bc005-a4d1-4d57-9aab-de93e0874054` 不变，generation/observed 713、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，回滚后三轮九次稳定 Pod 内 `3379` proposal health 全部 GREEN，LeaseLeases 为空，无端口转发或六个诊断监听残留。
+A5662 关闭了不可能的过小/过大 granted TTL 穿越 Lease leader proxy、误导客户端续租生命周期的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
