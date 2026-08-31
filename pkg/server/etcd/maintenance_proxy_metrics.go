@@ -151,7 +151,8 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	if response.GetVersion() == "" {
 		return fail("leader status proxy returned an empty version")
 	}
-	if _, parseErr := semver.StrictNewVersion(response.GetVersion()); parseErr != nil {
+	serverVersion, parseErr := semver.StrictNewVersion(response.GetVersion())
+	if parseErr != nil {
 		return fail("leader status proxy returned an invalid server version")
 	}
 	// StorageVersion is empty on pre-3.6 backends, but whenever present upstream
@@ -183,7 +184,10 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 		}
 	} else {
 		targetVersion, parseErr := semver.StrictNewVersion(downgradeInfo.GetTargetVersion())
-		if parseErr != nil || targetVersion.Prerelease() != "" || targetVersion.Metadata() != "" {
+		if parseErr != nil || targetVersion.Prerelease() != "" || targetVersion.Metadata() != "" ||
+			targetVersion.Patch() != 0 || targetVersion.Major() != serverVersion.Major() ||
+			(targetVersion.Minor() != serverVersion.Minor() &&
+				(serverVersion.Minor() == 0 || targetVersion.Minor() != serverVersion.Minor()-1)) {
 			return fail("leader status proxy returned inconsistent downgrade information")
 		}
 	}

@@ -1065,9 +1065,25 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 			response.DowngradeInfo.Enabled = true
 			response.DowngradeInfo.TargetVersion = "3.5.0-rc.1"
 		}},
+		{name: "enabled downgrade with skipped minor target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+			response.DowngradeInfo.TargetVersion = "3.4.0"
+		}},
+		{name: "enabled downgrade with cross major target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+			response.DowngradeInfo.TargetVersion = "4.0.0"
+		}},
+		{name: "enabled downgrade with nonzero patch target", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+			response.DowngradeInfo.TargetVersion = "3.5.1"
+		}},
 		{name: "enabled downgrade with release target", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.DowngradeInfo.Enabled = true
 			response.DowngradeInfo.TargetVersion = "3.5.0"
+		}, valid: true},
+		{name: "enabled downgrade already on target release", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.DowngradeInfo.Enabled = true
+			response.DowngradeInfo.TargetVersion = "3.6.0"
 		}, valid: true},
 		{name: "empty status error", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{""} }},
 		{name: "zero leader without error", mutate: func(response *etcdserverpb.StatusResponse) { response.Leader = 0 }},

@@ -73,6 +73,9 @@ func TestValidateStatusResponseRejectsInvalidDowngradeState(t *testing.T) {
 		{name: "enabled without target", info: &etcdserverpb.DowngradeInfo{Enabled: true}},
 		{name: "enabled with invalid target", info: &etcdserverpb.DowngradeInfo{Enabled: true, TargetVersion: "not-semver"}},
 		{name: "enabled with prerelease target", info: &etcdserverpb.DowngradeInfo{Enabled: true, TargetVersion: "3.6.0-rc.1"}},
+		{name: "enabled with skipped minor target", info: &etcdserverpb.DowngradeInfo{Enabled: true, TargetVersion: "3.5.0"}},
+		{name: "enabled with cross major target", info: &etcdserverpb.DowngradeInfo{Enabled: true, TargetVersion: "4.0.0"}},
+		{name: "enabled with nonzero patch target", info: &etcdserverpb.DowngradeInfo{Enabled: true, TargetVersion: "3.6.1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
@@ -81,6 +84,26 @@ func TestValidateStatusResponseRejectsInvalidDowngradeState(t *testing.T) {
 				DowngradeInfo: tc.info,
 			})
 			require.ErrorContains(t, err, "downgrade information is inconsistent")
+		})
+	}
+}
+
+func TestValidateStatusResponseAcceptsEnabledDowngradeTargetWindows(t *testing.T) {
+	for _, tc := range []struct {
+		server string
+		target string
+	}{
+		{server: "3.7.0", target: "3.6.0"},
+		{server: "3.7.0", target: "3.7.0"},
+		{server: "3.18446744073709551616.0", target: "3.18446744073709551615.0"},
+	} {
+		t.Run(tc.server+"/"+tc.target, func(t *testing.T) {
+			_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
+				Header:        &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+				Version:       tc.server,
+				DowngradeInfo: &etcdserverpb.DowngradeInfo{Enabled: true, TargetVersion: tc.target},
+			})
+			require.NoError(t, err)
 		})
 	}
 }

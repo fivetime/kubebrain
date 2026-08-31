@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -139,7 +140,8 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 			}
 		} else {
 			targetVersion, parseErr := semver.StrictNewVersion(downgradeInfo.GetTargetVersion())
-			if parseErr != nil || targetVersion.Prerelease() != "" || targetVersion.Metadata() != "" {
+			if parseErr != nil || targetVersion.Prerelease() != "" || targetVersion.Metadata() != "" ||
+				!statusDowngradeTargetMatchesVersion(response.GetVersion(), targetVersion) {
 				return statusProbeResult{}, errors.New("maintenance Status downgrade information is inconsistent")
 			}
 		}
@@ -182,6 +184,29 @@ func statusVersionCoreAtLeast3Minor(value string, minor string) (bool, error) {
 		return majorComparison > 0, nil
 	}
 	return compareUnsignedDecimals(parts[2], minor) >= 0, nil
+}
+
+func statusDowngradeTargetMatchesVersion(value string, target *semver.Version) bool {
+	parts := statusVersionPattern.FindStringSubmatch(value)
+	if parts == nil || target.Patch() != 0 ||
+		compareUnsignedDecimals(parts[1], strconv.FormatUint(target.Major(), 10)) != 0 {
+		return false
+	}
+	targetMinor := strconv.FormatUint(target.Minor(), 10)
+	return compareUnsignedDecimals(parts[2], targetMinor) == 0 ||
+		compareUnsignedDecimals(parts[2], incrementUnsignedDecimal(targetMinor)) == 0
+}
+
+func incrementUnsignedDecimal(value string) string {
+	digits := []byte(value)
+	for index := len(digits) - 1; index >= 0; index-- {
+		if digits[index] != '9' {
+			digits[index]++
+			return string(digits)
+		}
+		digits[index] = '0'
+	}
+	return "1" + string(digits)
 }
 
 func compareUnsignedDecimals(left, right string) int {
