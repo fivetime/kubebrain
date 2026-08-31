@@ -1711,6 +1711,28 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     status_summary+=", gateway_client_cert_auth=expected-rejection"
   else
   gateway_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_status_url")"
+  gateway_status_errors_state="$(printf '%s' "$gateway_status_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid"
+    else
+      (if has("errors") then .errors elif has("Errors") then .Errors else [] end) as $errors
+      | if ($errors | type) != "array" or any($errors[]; type != "string") then
+          "invalid"
+        elif ($errors | length) > 0 then
+          "nonempty:\($errors | tojson)"
+        else
+          "empty"
+        end
+    end
+  ')"
+  if [[ "$gateway_status_errors_state" == "invalid" ]]; then
+    echo "gateway status errors envelope invalid: expected an array of strings" >&2
+    exit 1
+  fi
+  if [[ "$gateway_status_errors_state" == nonempty:* ]]; then
+    echo "gateway status errors must be empty: ${gateway_status_errors_state#nonempty:}" >&2
+    exit 1
+  fi
   gateway_status_values="$(printf '%s' "$gateway_status_json" | "$JQ" -r '
     if type != "object" then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
@@ -1961,6 +1983,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     status_summary+=", gateway_raft_indexes_sampled=true"
     status_summary+=", gateway_downgrade_info=object"
     status_summary+=", gateway_status_body_match=true"
+    status_summary+=", gateway_status_errors=empty"
   fi
 
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
