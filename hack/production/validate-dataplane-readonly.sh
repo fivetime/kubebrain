@@ -147,13 +147,16 @@ run_etcdctl_with_probe_timeout() {
     "$@"
 }
 
-# semver_core_at_least_3_6 compares only the major/minor release boundary using
-# canonical decimal strings. Bash arithmetic is signed machine-width; converting
-# an otherwise valid, unbounded semver component can wrap and silently classify a
-# future version as pre-3.6, disabling required compatibility checks.
-semver_core_at_least_3_6() {
+# semver_core_at_least_3_minor compares only a 3.x major/minor release boundary
+# using canonical decimal strings. Bash arithmetic is signed machine-width;
+# converting an otherwise valid, unbounded semver component can wrap and silently
+# classify a future version below the requested boundary, disabling required
+# compatibility checks. The threshold is an internal single decimal digit.
+semver_core_at_least_3_minor() {
   local version="$1"
+  local minimum_minor="$2"
   local core major minor patch_component
+  [[ "$minimum_minor" =~ ^[0-9]$ ]] || return 1
   core="${version%%[-+]*}"
   IFS='.' read -r major minor patch_component <<<"$core"
   if [[ -z "$major" || -z "$minor" || -z "$patch_component" ]]; then
@@ -177,7 +180,12 @@ semver_core_at_least_3_6() {
   if [[ "${#minor}" -gt 1 ]]; then
     return 0
   fi
-  [[ "$minor" =~ ^[6-9]$ ]]
+  [[ "$minor" =~ ^[0-9]$ ]] || return 1
+  (( 10#$minor >= 10#$minimum_minor ))
+}
+
+semver_core_at_least_3_6() {
+  semver_core_at_least_3_minor "$1" 6
 }
 
 status_info_selection_fence() {
@@ -1939,7 +1947,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   direct_status_values="$(printf '%s' "$direct_status_json" | "$JQ" -r '
     if type != "object" or (.header | type) != "object" or (.downgrade_info | type) != "object" then
-      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       [
         (.header.cluster_id // "missing"),
@@ -1947,12 +1955,13 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         (.version // "missing"),
         (.storage_version // "missing"),
         (.db_size_quota // "missing"),
+        (if (.is_learner | type) == "boolean" then (.is_learner | tostring) else "invalid" end),
         (if (.downgrade_info.enabled | type) == "boolean" then (.downgrade_info.enabled | tostring) else "invalid" end),
         (if (.downgrade_info.target_version | type) == "string" then (.downgrade_info.target_version | if . == "" then "-" else . end) else "invalid" end)
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r direct_status_cluster_id direct_status_member_id direct_status_version direct_status_storage_version direct_status_db_size_quota direct_status_downgrade_enabled direct_status_downgrade_target_version <<<"$direct_status_values"
+  IFS=$'\t' read -r direct_status_cluster_id direct_status_member_id direct_status_version direct_status_storage_version direct_status_db_size_quota direct_status_is_learner direct_status_downgrade_enabled direct_status_downgrade_target_version <<<"$direct_status_values"
   if [[ "$direct_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "raw status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${direct_status_cluster_id}" >&2
     exit 1
@@ -1968,6 +1977,22 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   if [[ ! "$direct_status_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
     echo "raw status version must be a semver string, got ${direct_status_version}" >&2
     exit 1
+  fi
+  direct_status_v34_learner_required=0
+  if semver_core_at_least_3_minor "$direct_status_version" 4; then
+    direct_status_v34_learner_required=1
+    if [[ "$direct_status_is_learner" == "invalid" ]]; then
+      echo "raw status isLearner envelope invalid: expected a boolean" >&2
+      exit 1
+    fi
+    if [[ "$gateway_status_is_learner_type" == "missing" ]]; then
+      echo "gateway status isLearner is required for etcd ${direct_status_version}" >&2
+      exit 1
+    fi
+    if [[ "$direct_status_is_learner" != "$gateway_status_is_learner" ]]; then
+      echo "raw/gateway status isLearner mismatch: raw=${direct_status_is_learner}, gateway=${gateway_status_is_learner}" >&2
+      exit 1
+    fi
   fi
   direct_status_v36_fields_required=0
   if semver_core_at_least_3_6 "$direct_status_version"; then
@@ -2085,6 +2110,11 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     status_summary+=", gateway_status_body_match=true"
     status_summary+=", gateway_status_errors=empty"
     status_summary+=", direct_status_endpoint_identity_match=true"
+    if [[ "$direct_status_v34_learner_required" == "1" ]]; then
+      status_summary+=", direct_status_is_learner_match=true"
+    else
+      status_summary+=", direct_status_is_learner_match=not-required"
+    fi
     if [[ "$direct_status_v36_fields_required" == "1" ]]; then
       status_summary+=", direct_status_v36_fields_match=true"
     else
