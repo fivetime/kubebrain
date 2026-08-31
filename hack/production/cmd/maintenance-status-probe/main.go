@@ -9,11 +9,15 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"regexp"
+	"strings"
 	"syscall"
 
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	etcdserverpb "go.etcd.io/etcd/api/v3/etcdserverpb"
 )
+
+var statusVersionPattern = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$`)
 
 type statusProbeHeader struct {
 	ClusterID uint64 `json:"cluster_id"`
@@ -120,6 +124,13 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 		return statusProbeResult{}, fmt.Errorf("maintenance Status db size in use must be non-negative, got %d", response.GetDbSizeInUse())
 	}
 	downgradeInfo := response.GetDowngradeInfo()
+	requiresDowngradeInfo, err := statusVersionCoreAtLeast3Minor(response.GetVersion(), "6")
+	if err != nil {
+		return statusProbeResult{}, err
+	}
+	if requiresDowngradeInfo && downgradeInfo == nil {
+		return statusProbeResult{}, errors.New("maintenance Status downgrade information is missing for etcd 3.6 or later")
+	}
 	result := statusProbeResult{
 		Header: statusProbeHeader{
 			ClusterID: header.GetClusterId(),
@@ -146,4 +157,34 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 		}
 	}
 	return result, nil
+}
+
+func statusVersionCoreAtLeast3Minor(value string, minor string) (bool, error) {
+	parts := statusVersionPattern.FindStringSubmatch(value)
+	if parts == nil {
+		return false, fmt.Errorf("maintenance Status version must be a semver string, got %q", value)
+	}
+	majorComparison := compareUnsignedDecimals(parts[1], "3")
+	if majorComparison != 0 {
+		return majorComparison > 0, nil
+	}
+	return compareUnsignedDecimals(parts[2], minor) >= 0, nil
+}
+
+func compareUnsignedDecimals(left, right string) int {
+	normalize := func(value string) string {
+		value = strings.TrimLeft(value, "0")
+		if value == "" {
+			return "0"
+		}
+		return value
+	}
+	left, right = normalize(left), normalize(right)
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	return strings.Compare(left, right)
 }

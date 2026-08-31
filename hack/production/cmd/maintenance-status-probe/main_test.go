@@ -43,12 +43,33 @@ func TestValidateStatusResponseProjectsExactEnvelope(t *testing.T) {
 
 func TestValidateStatusResponseProjectsDefaultDowngradeInfo(t *testing.T) {
 	result, err := validateStatusResponse(&etcdserverpb.StatusResponse{
-		Header: &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+		Header:  &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+		Version: "3.5.0",
 	})
 	require.NoError(t, err)
 	require.Equal(t, statusProbeDowngradeInfo{}, result.DowngradeInfo)
 	require.Empty(t, result.Errors)
 	require.NotNil(t, result.Errors)
+}
+
+func TestValidateStatusResponseRejectsMissingVersionedDowngradeInfo(t *testing.T) {
+	for _, version := range []string{"3.6.0", "3.6.0-rc.1", "4.0.0", "9223372036854775808.0.0"} {
+		t.Run(version, func(t *testing.T) {
+			_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
+				Header:  &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+				Version: version,
+			})
+			require.ErrorContains(t, err, "downgrade information is missing")
+		})
+	}
+}
+
+func TestValidateStatusResponseRejectsInvalidVersion(t *testing.T) {
+	_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
+		Header:  &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+		Version: "not-semver",
+	})
+	require.ErrorContains(t, err, "version must be a semver string")
 }
 
 func TestValidateStatusResponseRejectsMissingEnvelope(t *testing.T) {
