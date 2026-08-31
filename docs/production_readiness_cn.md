@@ -1727,6 +1727,8 @@ gateway 五种 header revision 全部必须等于 `ENDPOINT` 对应的 direct St
 gateway Status body 还必须与 exact `ENDPOINT` 的 direct Status 对账：`dbSize` 必须相等，direct 输出中实际存在的
 version/storageVersion、dbSizeInUse/dbSizeQuota、isLearner、leader、raftTerm、raftIndex、raftAppliedIndex 与
 downgradeInfo 也必须逐字段相等；通过摘要输出 `gateway_status_body_match=true`。旧版 etcdctl 未投影的可选字段不会被伪造为默认值；
+gateway Status 的缺省 `errors` 视为 protojson 空 repeated；显式值必须是字符串数组且长度为零，通过摘要输出
+`gateway_status_errors=empty`，不得忽略 gateway 单独报告的 no-leader/alarm 错误；
 非空 client certificate CN 的预期 HTTP 400 模式没有成功 response header，因此不会声称完成该映射校验；
 client/info 双口 `/version` 的 `etcdserver`、`etcdcluster`、`storage` 必须一致，且
 `storage` 必须与 gateway Status `storageVersion` 一致。启用 HashKV 校验时，脚本还会读取
@@ -1763,7 +1765,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时�
 `gateway_auth_enabled=<bool>`、`gateway_alarms=empty`、`gateway_hashkv_hash=<n>`、
 `gateway_hashkv_revisions_match=true`、`gateway_endpoint_members_match=true`、
 `gateway_endpoint_raft_terms_match=true`、
-`gateway_endpoint_revisions_match=true`、`gateway_status_body_match=true`、`hashkv_endpoint_members_match=true`、
+`gateway_endpoint_revisions_match=true`、`gateway_status_body_match=true`、`gateway_status_errors=empty`、
+`hashkv_endpoint_members_match=true`、
 `hashkv_endpoint_revisions_match=true`、
 `revisions_match=true`、`hashkv_raft_terms=<unique>` 和
 `raft_terms_match=true` 等证据；

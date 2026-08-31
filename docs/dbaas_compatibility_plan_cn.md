@@ -66234,6 +66234,38 @@ StatefulSet UID 不变、generation/observed 663、current/update `kubebrain-9b9
 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`，KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，
 六个诊断端口无监听，没有凭据或诊断文件落盘。A5640 关闭同一 endpoint 的 direct/gateway Status body 漂移仍可进入发布摘要的问题。
 
+### A5641：拒绝 gateway Status 独立 errors
+
+direct `etcdctl endpoint status` 已要求所有 endpoint 的 errors 为空，但 gateway Status 的 `errors` 字段此前完全未解析。旧 gate 因而能在
+direct errors 为空时接受 gateway `errors=["alarm:NOSPACE"]`，甚至接受 boolean 等非 repeated-string envelope。对照
+`/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status`，同一 Status 实现会在无 leader 时加入 `ErrNoLeader`，并把当前 member alarms
+逐项加入 response errors；gateway 单独出现 errors 不是可忽略的展示字段。
+
+新 gate 将缺省 errors 按 protojson repeated 省略解释为空数组；显式 `errors`/`Errors` 必须是字符串数组且长度为零。非数组或包含非字符串
+元素拒绝为 `gateway status errors envelope invalid`，任何非空数组拒绝为 `gateway status errors must be empty`，成功摘要新增
+`gateway_status_errors=empty`。确定性 RED 保持 header、body、member/revision/term 全部与 direct Status 一致，只增加非空 errors 或畸形
+boolean；旧 gate 两项均整体 GREEN。第三项固定数组内 boolean，覆盖容器正确但元素类型错误的旁路。三项定向回归为 `1.213s`，完整普通/race
+分别为 `118.707s/119.970s`。
+Go vet、gofmt、shell syntax、diff check、文档契约、正向摘要测试与固定 digest 的
+`koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
+
+代码提交 `2231add91490fbd8c95970232b37c1905209786a` 的提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`249.347/438.334/299.148/533.258s`，全部 GREEN。
+
+真实验证复用 A5629 当前产品候选，以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 部署
+`a5629-c446ec02` 至 generation 664；三 Pod runtime 均为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0。完整只读门禁 GREEN，明确输出
+`gateway_status_errors=empty`，并继续通过完整 info metrics、Status body、endpoint identity/revision/term 与 HashKV 检查。cluster ID
+`7662961163671170154`、members `4034353177/2393892952/231094427`、leader `231094427`、term `205`、revision/index/applied
+`65743`、HashKV `4283180840`、compact revision `44329` 一致。独立 gateway 取样得到 `errorsType=array, errors=[]`，且 direct/gateway
+Status 的 cluster/member/revision/term、version、dbSize/dbSizeInUse、leader 与 index/applied 元组完全一致；候选窗口日志无
+panic/fatal/data corruption/context deadline/TiKV/PD error。
+
+最后用新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 665、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
+无监听，也没有凭据或诊断文件落盘。A5641 关闭 direct Status 健康但 gateway 独立报告 no-leader/alarm 或畸形 errors 仍可进入发布摘要的问题。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
