@@ -1,6 +1,7 @@
 package production_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		statusJSON        string
 		secondStatusJSON  string
 		gatewayJSON       string
+		directStatusJSON  string
 		directAuthJSON    string
 		authJSON          string
 		directAlarmJSON   string
@@ -2475,15 +2477,16 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
 			]}`,
-			readyz:          "ok",
-			count:           "4",
-			statusJSON:      `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","storageVersion":"3.6","dbSize":99}}]`,
-			gatewayJSON:     `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.6","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
-			versionJSON:     `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6"}`,
-			infoVersionJSON: `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6"}`,
-			extraEnv:        []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOK:          true,
-			wantOutput:      "status_storage_versions=3.6",
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","storageVersion":"3.6","dbSize":99}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.6","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			directStatusJSON: statusProbeJSON("3.7.0", "3.6", 2147483648, false, ""),
+			versionJSON:      `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6"}`,
+			infoVersionJSON:  `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6"}`,
+			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:           true,
+			wantOutput:       "status_storage_versions=3.6",
 		},
 		{
 			name: "reports snakecase status storage version in summary",
@@ -2492,15 +2495,16 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
 			]}`,
-			readyz:          "ok",
-			count:           "4",
-			statusJSON:      `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","storage_version":"3.6","dbSize":99}}]`,
-			gatewayJSON:     `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.6","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
-			versionJSON:     `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6"}`,
-			infoVersionJSON: `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6"}`,
-			extraEnv:        []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOK:          true,
-			wantOutput:      "status_storage_versions=3.6",
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","storage_version":"3.6","dbSize":99}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.6","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			directStatusJSON: statusProbeJSON("3.7.0", "3.6", 2147483648, false, ""),
+			versionJSON:      `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6"}`,
+			infoVersionJSON:  `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6"}`,
+			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:           true,
+			wantOutput:       "status_storage_versions=3.6",
 		},
 		{
 			name: "reports full status storage version in summary",
@@ -2551,13 +2555,14 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
 			]}`,
-			readyz:      "ok",
-			count:       "4",
-			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99,"dbSizeQuota":-1}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"-1","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
-			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOK:      true,
-			wantOutput:  "min_status_db_size_quota=-1",
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99,"dbSizeQuota":-1}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"-1","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			directStatusJSON: statusProbeJSON("3.7.0", "3.7.0", -1, false, ""),
+			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:           true,
+			wantOutput:       "min_status_db_size_quota=-1",
 		},
 		{
 			name: "reports status learner envelope in summary",
@@ -2594,13 +2599,14 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
 			]}`,
-			readyz:      "ok",
-			count:       "4",
-			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99,"downgradeInfo":{"enabled":true,"targetVersion":"3.6.0"}}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{"enabled":true,"targetVersion":"3.6.0"}}`,
-			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOK:      true,
-			wantOutput:  "status_downgrade_enableds=true, status_downgrade_target_versions=3.6.0",
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99,"downgradeInfo":{"enabled":true,"targetVersion":"3.6.0"}}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{"enabled":true,"targetVersion":"3.6.0"}}`,
+			directStatusJSON: statusProbeJSON("3.7.0", "3.7.0", 2147483648, true, "3.6.0"),
+			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:           true,
+			wantOutput:       "status_downgrade_enableds=true, status_downgrade_target_versions=3.6.0",
 		},
 		{
 			name: "reports snakecase status downgrade info in summary",
@@ -2609,13 +2615,14 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
 			]}`,
-			readyz:      "ok",
-			count:       "4",
-			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99,"downgrade_info":{"enabled":true,"target_version":"3.6.0"}}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{"enabled":true,"targetVersion":"3.6.0"}}`,
-			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOK:      true,
-			wantOutput:  "status_downgrade_enableds=true, status_downgrade_target_versions=3.6.0",
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99,"downgrade_info":{"enabled":true,"target_version":"3.6.0"}}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{"enabled":true,"targetVersion":"3.6.0"}}`,
+			directStatusJSON: statusProbeJSON("3.7.0", "3.7.0", 2147483648, true, "3.6.0"),
+			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:           true,
+			wantOutput:       "status_downgrade_enableds=true, status_downgrade_target_versions=3.6.0",
 		},
 		{
 			name: "allows disabled status downgrade info without target",
@@ -2661,7 +2668,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_VERSION=3.7.0",
 			},
 			wantOK:     true,
-			wantOutput: "version_etcdserver=3.7.0, version_etcdcluster=3.7, version_storage=3.7.0, info_version_storage=3.7.0, gateway_db_size_in_use=88, gateway_db_size_quota=2147483648, gateway_is_learner=false, gateway_leader_id=456, gateway_raft_term=8, gateway_raft_index=7, gateway_raft_applied_index=7, gateway_raft_indexes_sampled=true, gateway_downgrade_info=object, gateway_status_body_match=true, gateway_status_errors=empty",
+			wantOutput: "version_etcdserver=3.7.0, version_etcdcluster=3.7, version_storage=3.7.0, info_version_storage=3.7.0, gateway_db_size_in_use=88, gateway_db_size_quota=2147483648, gateway_is_learner=false, gateway_leader_id=456, gateway_raft_term=8, gateway_raft_index=7, gateway_raft_applied_index=7, gateway_raft_indexes_sampled=true, gateway_downgrade_info=object, gateway_status_body_match=true, gateway_status_errors=empty, direct_status_endpoint_identity_match=true, direct_status_v36_fields_match=true, direct_status_errors=empty",
 		},
 		{
 			name: "rejects malformed version storage envelope",
@@ -2930,13 +2937,14 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
 			]}`,
-			readyz:      "ok",
-			count:       "4",
-			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"-1","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
-			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOK:      true,
-			wantOutput:  "gateway_db_size_quota=-1",
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"-1","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			directStatusJSON: statusProbeJSON("3.7.0", "3.7.0", -1, false, ""),
+			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:           true,
+			wantOutput:       "gateway_db_size_quota=-1",
 		},
 		{
 			name: "rejects malformed gateway status learner envelope",
@@ -3012,6 +3020,59 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:      false,
 			wantOutput:  "gateway status downgradeInfo envelope invalid",
+		},
+		{
+			name: "rejects gateway status quota drift hidden by old etcdctl",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7}}]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"123","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				`FAKE_DIRECT_STATUS_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","db_size":99,"leader":456,"raft_index":7,"raft_term":8,"raft_applied_index":7,"errors":[],"db_size_in_use":88,"is_learner":false,"storage_version":"3.7.0","db_size_quota":2147483648,"downgrade_info":{"enabled":false,"target_version":""}}`,
+			},
+			wantOutput: "raw/gateway status dbSizeQuota mismatch",
+		},
+		{
+			name: "rejects gateway status downgrade drift hidden by old etcdctl",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7}}]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{"enabled":true,"targetVersion":"3.6.0"}}`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				`FAKE_DIRECT_STATUS_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","db_size":99,"leader":456,"raft_index":7,"raft_term":8,"raft_applied_index":7,"errors":[],"db_size_in_use":88,"is_learner":false,"storage_version":"3.7.0","db_size_quota":2147483648,"downgrade_info":{"enabled":false,"target_version":""}}`,
+			},
+			wantOutput: "raw/gateway status downgradeInfo mismatch",
+		},
+		{
+			name: "rejects gateway status storage drift hidden by old etcdctl",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:          "ok",
+			count:           "4",
+			statusJSON:      `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7}}]`,
+			gatewayJSON:     `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.6.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			versionJSON:     `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6.0"}`,
+			infoVersionJSON: `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6.0"}`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				`FAKE_DIRECT_STATUS_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","db_size":99,"leader":456,"raft_index":7,"raft_term":8,"raft_applied_index":7,"errors":[],"db_size_in_use":88,"is_learner":false,"storage_version":"3.7.0","db_size_quota":2147483648,"downgrade_info":{"enabled":false,"target_version":""}}`,
+			},
+			wantOutput: "raw/gateway status storageVersion mismatch",
 		},
 		{
 			name: "reports status leader and raft term in summary",
@@ -4528,12 +4589,13 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
 			]}`,
-			readyz:          "ok",
-			count:           "4",
-			statusJSON:      `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.5.0","dbSize":99,"storageVersion":"3.5.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
-			gatewayJSON:     `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.5.0","storageVersion":"3.5.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
-			versionJSON:     `{"etcdserver":"3.5.0","etcdcluster":"3.5","storage":"3.5.0"}`,
-			infoVersionJSON: `{"etcdserver":"3.5.0","etcdcluster":"3.5","storage":"3.5.0"}`,
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.5.0","dbSize":99,"storageVersion":"3.5.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.5.0","storageVersion":"3.5.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			directStatusJSON: statusProbeJSON("3.5.0", "3.5.0", 2147483648, false, ""),
+			versionJSON:      `{"etcdserver":"3.5.0","etcdcluster":"3.5","storage":"3.5.0"}`,
+			infoVersionJSON:  `{"etcdserver":"3.5.0","etcdcluster":"3.5","storage":"3.5.0"}`,
 			extraEnv: []string{
 				"EXPECTED_STATUS_CLUSTER_ID=123",
 				"EXPECTED_STATUS_VERSION=3.5.0",
@@ -4542,7 +4604,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_DIRECT_HASHKV_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":0}`,
 			},
 			wantOK:     true,
-			wantOutput: "gateway_hashkv_body_match=true",
+			wantOutput: "direct_status_v36_fields_match=not-required",
 		},
 		{
 			name: "rejects hashkv hash revision mismatch",
@@ -5645,6 +5707,10 @@ printf '%s' "$FAKE_READYZ"
 `)
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "go"), `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "$*" == *"maintenance-status-probe"* ]]; then
+  printf '%s\n' "$FAKE_DIRECT_STATUS_JSON"
+  exit 0
+fi
 if [[ "$*" == *"maintenance-hashkv-probe"* ]]; then
   printf '%s\n' "$FAKE_DIRECT_HASHKV_JSON"
   exit 0
@@ -5750,6 +5816,7 @@ exec "$@"
 				"FAKE_SECOND_STATUS_JSON=" + tc.secondStatusJSON,
 				"FAKE_STATUS_CALL_LOG=" + statusCallLog,
 				"FAKE_GATEWAY_STATUS_JSON=" + defaultGatewayStatusJSON(tc.gatewayJSON),
+				"FAKE_DIRECT_STATUS_JSON=" + defaultDirectStatusJSON(tc.directStatusJSON),
 				"FAKE_DIRECT_AUTH_STATUS_JSON=" + defaultDirectAuthStatusJSON(tc.directAuthJSON),
 				"FAKE_GATEWAY_AUTH_STATUS_JSON=" + defaultGatewayAuthStatusJSON(tc.authJSON),
 				"FAKE_DIRECT_ALARM_JSON=" + defaultDirectAlarmJSON(tc.directAlarmJSON),
@@ -5878,6 +5945,17 @@ func defaultGatewayStatusJSON(value string) string {
 		return value
 	}
 	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`
+}
+
+func defaultDirectStatusJSON(value string) string {
+	if value != "" {
+		return value
+	}
+	return statusProbeJSON("3.7.0", "3.7.0", 2147483648, false, "")
+}
+
+func statusProbeJSON(version, storageVersion string, dbSizeQuota int64, downgradeEnabled bool, downgradeTarget string) string {
+	return fmt.Sprintf(`{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":%q,"db_size":99,"leader":456,"raft_index":7,"raft_term":8,"raft_applied_index":7,"errors":[],"db_size_in_use":88,"is_learner":false,"storage_version":%q,"db_size_quota":%d,"downgrade_info":{"enabled":%t,"target_version":%q}}`, version, storageVersion, dbSizeQuota, downgradeEnabled, downgradeTarget)
 }
 
 func defaultGatewayAuthStatusJSON(value string) string {

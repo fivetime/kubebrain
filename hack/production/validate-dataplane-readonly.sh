@@ -1885,6 +1885,75 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status downgradeInfo mismatch with direct endpoint: direct=${gateway_expected_status_downgrade_enabled}/${gateway_expected_status_downgrade_target_version}, gateway=${gateway_status_downgrade_enabled}/${gateway_status_downgrade_target_version}" >&2
     exit 1
   fi
+  direct_status_json="$(ENDPOINT="$ENDPOINT" TIMEOUT="$PROBE_TIMEOUT" \
+    "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$GO" run "$ROOT_DIR/hack/production/cmd/maintenance-status-probe")"
+  direct_status_errors_state="$(printf '%s' "$direct_status_json" | "$JQ" -r '
+    if type != "object" or (.errors | type) != "array" or any(.errors[]; type != "string") then
+      "invalid"
+    elif (.errors | length) > 0 then
+      "nonempty:\(.errors | tojson)"
+    else
+      "empty"
+    end
+  ')"
+  if [[ "$direct_status_errors_state" == "invalid" ]]; then
+    echo "raw status errors envelope invalid: expected an array of strings" >&2
+    exit 1
+  fi
+  if [[ "$direct_status_errors_state" == nonempty:* ]]; then
+    echo "raw status errors must be empty: ${direct_status_errors_state#nonempty:}" >&2
+    exit 1
+  fi
+  direct_status_values="$(printf '%s' "$direct_status_json" | "$JQ" -r '
+    if type != "object" or (.header | type) != "object" or (.downgrade_info | type) != "object" then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+    else
+      [
+        (.header.cluster_id // "missing"),
+        (.header.member_id // "missing"),
+        (.version // "missing"),
+        (.storage_version // "missing"),
+        (.db_size_quota // "missing"),
+        (if (.downgrade_info.enabled | type) == "boolean" then (.downgrade_info.enabled | tostring) else "invalid" end),
+        (if (.downgrade_info.target_version | type) == "string" then (.downgrade_info.target_version | if . == "" then "-" else . end) else "invalid" end)
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r direct_status_cluster_id direct_status_member_id direct_status_version direct_status_storage_version direct_status_db_size_quota direct_status_downgrade_enabled direct_status_downgrade_target_version <<<"$direct_status_values"
+  if [[ "$direct_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "raw status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${direct_status_cluster_id}" >&2
+    exit 1
+  fi
+  if [[ "$direct_status_member_id" != "$gateway_expected_member_id" ]]; then
+    echo "raw status serving member mismatch: expected ${gateway_expected_member_id}, got ${direct_status_member_id}" >&2
+    exit 1
+  fi
+  if [[ "$direct_status_version" != "$gateway_status_version" ]]; then
+    echo "raw/gateway status version mismatch: raw=${direct_status_version}, gateway=${gateway_status_version}" >&2
+    exit 1
+  fi
+  if [[ ! "$direct_status_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+    echo "raw status version must be a semver string, got ${direct_status_version}" >&2
+    exit 1
+  fi
+  direct_status_v36_fields_required=0
+  direct_status_core="${direct_status_version%%[-+]*}"
+  IFS='.' read -r direct_status_major direct_status_minor _ <<<"$direct_status_core"
+  if (( 10#$direct_status_major > 3 || (10#$direct_status_major == 3 && 10#$direct_status_minor >= 6) )); then
+    direct_status_v36_fields_required=1
+    if [[ "$direct_status_storage_version" != "$gateway_status_storage_version" ]]; then
+      echo "raw/gateway status storageVersion mismatch: raw=${direct_status_storage_version}, gateway=${gateway_status_storage_version}" >&2
+      exit 1
+    fi
+    if [[ "$direct_status_db_size_quota" != "$gateway_status_db_size_quota" ]]; then
+      echo "raw/gateway status dbSizeQuota mismatch: raw=${direct_status_db_size_quota}, gateway=${gateway_status_db_size_quota}" >&2
+      exit 1
+    fi
+    if [[ "$direct_status_downgrade_enabled" != "$gateway_status_downgrade_enabled" || "$direct_status_downgrade_target_version" != "$gateway_status_downgrade_target_version" ]]; then
+      echo "raw/gateway status downgradeInfo mismatch: raw=${direct_status_downgrade_enabled}/${direct_status_downgrade_target_version}, gateway=${gateway_status_downgrade_enabled}/${gateway_status_downgrade_target_version}" >&2
+      exit 1
+    fi
+  fi
   fi
   version_url="${ENDPOINT%/}/version"
   version_json="$(run_with_probe_timeout "$CURL" -fsS "$version_url")"
@@ -1984,6 +2053,13 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     status_summary+=", gateway_downgrade_info=object"
     status_summary+=", gateway_status_body_match=true"
     status_summary+=", gateway_status_errors=empty"
+    status_summary+=", direct_status_endpoint_identity_match=true"
+    if [[ "$direct_status_v36_fields_required" == "1" ]]; then
+      status_summary+=", direct_status_v36_fields_match=true"
+    else
+      status_summary+=", direct_status_v36_fields_match=not-required"
+    fi
+    status_summary+=", direct_status_errors=empty"
   fi
 
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
