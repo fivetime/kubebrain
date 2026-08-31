@@ -66595,6 +66595,46 @@ current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
 Ready/restart 0，无端口转发、凭据或诊断文件落盘。A5650 关闭 3.6+ raw Status 缺失 message 被 probe 合成默认对象后进入发布 GREEN 的缺口。
 
+### A5651：拒绝 Status downgradeInfo 的不可能状态组合
+
+A5650 已要求 3.6+ raw Status 必须携带 `downgradeInfo` message，但 product 的 `validateStatusProxyPayload` 与 raw probe 都只验证非 nil：
+disabled 状态仍可携带残留 target，enabled 状态也可省略 target、携带非法 semver 或 prerelease。Follower 本地 TiKV 状态不可用而由 leader
+hedge 胜出时，这类畸形 payload 会原样返回客户端。对照 `/root/etcd/server/etcdserver/adapters.go::Downgrade{Enable,Cancel}` 与
+`server/etcdserver/apply/backend.go::DowngradeInfoSet`，ENABLE 只写入已校验的 `targetVersion.String()`，CANCEL 则重建
+`Enabled=false` 且空 target；`/root/etcd/tests/e2e/cluster_downgrade_test.go` 也分别断言 enabled+release target 与 disabled+empty。
+
+确定性 RED 同时覆盖 product validator、真实 follower Status hedge 和 raw probe：disabled+`3.5.0`、enabled+empty、enabled+`not-semver`
+三类旧实现全部错误成功；product 两条路径分别返回非 nil `StatusResponse` 而不是 DataLoss，probe 三项均得到 nil error。product RED 为
+`0.167s`，probe RED 为 `0.010s`。提交 `45736980` 把状态关系纳入两处边界：disabled 只接受空 target；enabled 只接受无 prerelease/build
+metadata 的严格 release semver。合法 enabled+`3.5.0` 正例保留，另增加 prerelease 负例；proxy 拒绝继续发射
+`maintenance.proxy.integrity_failure{rpc="Status"}` 并返回 gRPC DataLoss。
+
+聚焦 product 为 `0.194s`，probe 普通/race 为 `0.010s/1.043s`；完整 `pkg/server/etcd` 普通/race 分别为
+`149.113s/387.662s`，其中官方 client/v3 `TestClientPlatformManagedOperationsReturnActionableErrors` 继续覆盖合法 Downgrade VALIDATE；完整
+readonly gate 普通/race 为 `146.163s/147.374s`。Go vet、gofmt、diff check 与固定
+`koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别
+`273.822/468.816/314.332/591.113s`，全部 GREEN。
+
+本轮 product 代码变化使用 HEAD 专属候选 `docker.io/library/kubebrain:a5651-45736980`。固定 base digest 构建得到 OCI index
+`sha256:d2729c15d71686119f3f445f1a55451bcbb4d63097eafa6901412a57c68eaf12`、平台 manifest
+`sha256:5bf5c89e07dd2c383e363b70b7a285c0f9ed71de1e7aca5d96e8a39c676998b0`、config
+`sha256:71d1ebb90d2882f78351e0f8fda9cb3b014f349147cbe554e3c570c0bd425351`，label 精确绑定完整提交
+`457369807430550a94589225c2580ba798a52f50`；Kind 导入后的 runtime digest 为
+`sha256:5f216d916aa0a11b97f3081e378ede91797dabf6eed47c253740461e33ea21c8`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 689 部署候选至 generation 690；三 Pod
+均落在 revision `kubebrain-6b96d6695f`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。raw Status 明确返回
+`downgrade_info={enabled:false,target_version:""}`；八项 named/HTTP/metrics/debug 与全部端点一致性检查全开的 readonly gate GREEN，
+cluster ID `7662961163671170154`、exact member `4034353177`、leader `2393892952`、term `252`、revision/index/applied
+`65743`、quota `1073741824`、HashKV `4283180840`、compact revision `44329`。宿主旧 `etcdctl 3.5.16` 不含 downgrade 子命令，
+没有把该工具能力缺失伪装成产品证据；合法 client/v3 路径由上述完整产品测试证明。三个候选 Pod 日志 `411/283/468` 行，错误级别和
+panic/fatal/data race/data corruption/TiKV/PD error 模式均为 0。
+
+最后关闭三组端口转发并确认六端口无监听，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 691、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，无凭据或诊断文件落盘。A5651 关闭 follower proxy 或 raw 发布证据接受上游状态机不可能 downgradeInfo 的缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
