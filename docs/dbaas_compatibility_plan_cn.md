@@ -66330,6 +66330,41 @@ revision/index/applied `65743`、HashKV `4283180840`、compact revision `44329` 
 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
 无监听，也没有凭据或诊断文件落盘。A5643 关闭 direct Alarm 独立漂移仍可进入发布摘要的问题。
 
+### A5644：将 gateway Hash 绑定到 direct raw Maintenance.Hash
+
+readonly gate 已把 gateway Hash header 绑定到 Status，却只把 body 当作无界十进制整数，也没有 direct 对照。旧 gate 因而能接受 direct raw
+Hash `111`、gateway Hash `222`，甚至接受超出 proto `uint32` 的 `4294967296`。对照
+`/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Hash` 与 `/root/etcd/api/etcdserverpb/rpc.proto::HashResponse`，gRPC 与 JSON
+gateway 调用同一 Hash 实现，header 与 uint32 hash 都属于同一个响应观察结果。
+
+新增 `hack/production/cmd/maintenance-hash-probe` 复用仓库统一的 TLS、FD 凭据与 timeout 环境，只通过 clientv3 active connection 发出 raw
+`Maintenance.HashRequest`，不写入 TiKV；probe 在输出前要求 response/header 存在、cluster/member/term 为正且 revision 非负，再以 Go
+`uint32` 类型投影 hash。readonly gate 在 HashKV 检查路径调用该 probe，把 direct header 绑定到 exact `ENDPOINT` 的 Status
+member/revision/term，要求 direct/gateway hash 都是 canonical uint32 且完全相等；成功摘要新增 `direct_hash=<n>` 与
+`gateway_hash_match=true`。
+
+两项确定性 RED 保持 Status、HashKV 与 gateway header 全部正确，只漂移 direct/gateway hash 或注入 uint32 溢出；旧 gate 都整体 GREEN，
+新 gate 分别拒绝 body mismatch 与 overflow。probe 单测覆盖最大 uint32、nil response、缺失 header 及四类非法 header；probe 与 gate
+定向回归分别为 `0.010s/2.727s`，完整普通/race 分别为 `131.499s/132.651s`。Go vet、gofmt、shell syntax、diff check、文档契约与
+固定 digest 的 `koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。
+
+代码提交 `61bcd6a76b24f92121f0bf8a02d175cbf48d689f` 的提交前主 production package inventory 为 703 项、
+`170/193/180/160`；新增 probe 独立 package 单测另行通过。提交后四片分别 `248.603/440.780/296.728/543.762s`，全部 GREEN。
+
+真实验证复用 A5629 当前产品候选，以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 部署
+`a5629-c446ec02` 至 generation 670；三 Pod runtime 均为
+`sha256:7bf4b5fdb9958a27f949dc9926c4165cf89731076a1f88864009b23180044510`、Ready/restart 0。完整只读门禁 GREEN，明确输出
+`direct_hash=1884729719`、`gateway_hash=1884729719` 与 `gateway_hash_match=true`，并继续通过完整 info metrics、Status、AuthStatus、
+Alarm 与 HashKV 检查。验证窗口 leader 正常迁移至 member `2393892952`，gate 自动选择对应 info endpoint 并保持前后 Status fence 稳定；
+cluster ID `7662961163671170154`、members `4034353177/2393892952/231094427`、term `216`、revision/index/applied `65743`、HashKV
+`4283180840`、compact revision `44329` 一致。独立调用 direct/gateway Hash 得到完全相同的规范化元组
+`7662961163671170154/4034353177/65743/216/1884729719`；候选窗口日志无 panic/fatal/data corruption/context deadline/TiKV/PD error。
+
+最后用新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 671、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，六个诊断端口
+无监听，也没有凭据或诊断文件落盘。A5644 关闭 gateway Hash body 与 direct raw RPC 漂移或超出 proto uint32 仍可进入发布摘要的问题。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
