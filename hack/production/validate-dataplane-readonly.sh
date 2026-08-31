@@ -1374,7 +1374,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
               empty
             elif (($storage_version | type) != "string") then
               "not_string"
-            elif ($storage_version | test("^[0-9]+\\.[0-9]+(\\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)?$") | not) then
+            elif ($storage_version | test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.0$") | not) then
               "not_version"
             else
               empty
@@ -1828,7 +1828,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status version mismatch: expected ${EXPECTED_STATUS_VERSION}, got ${gateway_status_version}" >&2
     exit 1
   fi
-  if ! [[ "$gateway_status_storage_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)?$ ]]; then
+  if ! [[ "$gateway_status_storage_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.0$ ]]; then
     echo "gateway status storageVersion must be a storage semver string, got ${gateway_status_storage_version}" >&2
     exit 1
   fi
@@ -2036,7 +2036,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "/version etcdcluster mismatch: expected ${expected_cluster_version}, got ${version_etcdcluster}" >&2
     exit 1
   fi
-  if ! [[ "$version_storage" =~ ^[0-9]+\.[0-9]+(\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)?$ ]]; then
+  if ! [[ "$version_storage" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.0$ ]]; then
     echo "/version storage must be a storage semver string, got ${version_storage}" >&2
     exit 1
   fi

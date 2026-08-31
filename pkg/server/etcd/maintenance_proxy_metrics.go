@@ -155,10 +155,12 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	if parseErr != nil {
 		return fail("leader status proxy returned an invalid server version")
 	}
-	// StorageVersion is empty on pre-3.6 backends, but whenever present upstream
-	// derives it from a parsed schema version and serializes semver.String().
+	// StorageVersion is empty on pre-3.6 backends. Whenever present, upstream's
+	// UnsafeSetStorageVersion normalizes it to a canonical major.minor.0 release.
 	if response.GetStorageVersion() != "" {
-		if _, parseErr := semver.StrictNewVersion(response.GetStorageVersion()); parseErr != nil {
+		storageVersion, parseErr := semver.StrictNewVersion(response.GetStorageVersion())
+		if parseErr != nil || storageVersion.Patch() != 0 || storageVersion.Prerelease() != "" ||
+			storageVersion.Metadata() != "" || storageVersion.String() != response.GetStorageVersion() {
 			return fail("leader status proxy returned an invalid storage version")
 		}
 	}

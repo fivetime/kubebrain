@@ -116,6 +116,20 @@ func TestValidateStatusResponseRejectsInvalidVersion(t *testing.T) {
 	require.ErrorContains(t, err, "version must be a semver string")
 }
 
+func TestValidateStatusResponseRejectsNonCanonicalStorageVersion(t *testing.T) {
+	for _, storageVersion := range []string{"3.7.1", "3.7.0-rc.1", "3.7.0+build.2", "03.7.0"} {
+		t.Run(storageVersion, func(t *testing.T) {
+			_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
+				Header:         &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+				Version:        "3.7.0",
+				StorageVersion: storageVersion,
+				DowngradeInfo:  &etcdserverpb.DowngradeInfo{},
+			})
+			require.ErrorContains(t, err, "storage version must be a canonical major.minor.0 release")
+		})
+	}
+}
+
 func TestValidateStatusResponseRejectsMissingEnvelope(t *testing.T) {
 	_, err := validateStatusResponse(nil)
 	require.ErrorContains(t, err, "nil response")

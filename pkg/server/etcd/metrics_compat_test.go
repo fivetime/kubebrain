@@ -1032,9 +1032,9 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 			response.Errors = []string{rpctypes.ErrNoLeader.Error()}
 		}, valid: true},
 		{name: "empty storage version allowed", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "" }, valid: true},
-		{name: "semantic prerelease versions", mutate: func(response *etcdserverpb.StatusResponse) {
+		{name: "canonical storage version", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "3.6.0" }, valid: true},
+		{name: "semantic prerelease server version", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.Version = "3.7.0-rc.1+build.2"
-			response.StorageVersion = "3.7.0-rc.1+build.2"
 		}, valid: true},
 		{name: "zero raft fields allowed", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.RaftIndex = 0
@@ -1044,6 +1044,9 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 		{name: "empty version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "" }},
 		{name: "invalid server version", mutate: func(response *etcdserverpb.StatusResponse) { response.Version = "not-semver" }},
 		{name: "invalid storage version", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "not-semver" }},
+		{name: "storage version with nonzero patch", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "3.6.1" }},
+		{name: "storage version with prerelease", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "3.6.0-rc.1" }},
+		{name: "storage version with metadata", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "3.6.0+build.2" }},
 		{name: "negative size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSize = -1 }},
 		{name: "negative in use", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = -1 }},
 		{name: "independently sampled in use above size", mutate: func(response *etcdserverpb.StatusResponse) { response.DbSizeInUse = 11 }, valid: true},

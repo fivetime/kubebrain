@@ -125,6 +125,13 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 	if response.GetDbSizeInUse() < 0 {
 		return statusProbeResult{}, fmt.Errorf("maintenance Status db size in use must be non-negative, got %d", response.GetDbSizeInUse())
 	}
+	if storageVersion := response.GetStorageVersion(); storageVersion != "" {
+		parsedStorageVersion, parseErr := semver.StrictNewVersion(storageVersion)
+		if parseErr != nil || parsedStorageVersion.Patch() != 0 || parsedStorageVersion.Prerelease() != "" ||
+			parsedStorageVersion.Metadata() != "" || parsedStorageVersion.String() != storageVersion {
+			return statusProbeResult{}, errors.New("maintenance Status storage version must be a canonical major.minor.0 release")
+		}
+	}
 	downgradeInfo := response.GetDowngradeInfo()
 	requiresDowngradeInfo, err := statusVersionCoreAtLeast3Minor(response.GetVersion(), "6")
 	if err != nil {
