@@ -3075,6 +3075,23 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "raw/gateway status storageVersion mismatch",
 		},
 		{
+			name: "rejects status quota drift for oversized compatible version",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"9223372036854775808.0.0","dbSize":99,"dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"9223372036854775808.0.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"123","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			directStatusJSON: statusProbeJSON("9223372036854775808.0.0", "3.7.0", 2147483648, false, ""),
+			versionJSON:      `{"etcdserver":"9223372036854775808.0.0","etcdcluster":"9223372036854775808.0","storage":"3.7.0"}`,
+			infoVersionJSON:  `{"etcdserver":"9223372036854775808.0.0","etcdcluster":"9223372036854775808.0","storage":"3.7.0"}`,
+			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput:       "raw/gateway status dbSizeQuota mismatch",
+		},
+		{
 			name: "reports status leader and raft term in summary",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -4562,6 +4579,29 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_DIRECT_HASHKV_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":0}`,
 			},
 			wantOutput: "direct hashkv hash revision must match header revision for etcd 3.7.0",
+		},
+		{
+			name: "rejects missing hashkv hash revision for oversized compatible version",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"9223372036854775808.0.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"9223372036854775808.0.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			directStatusJSON: statusProbeJSON("9223372036854775808.0.0", "3.7.0", 2147483648, false, ""),
+			versionJSON:      `{"etcdserver":"9223372036854775808.0.0","etcdcluster":"9223372036854775808.0","storage":"3.7.0"}`,
+			infoVersionJSON:  `{"etcdserver":"9223372036854775808.0.0","etcdcluster":"9223372036854775808.0","storage":"3.7.0"}`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=9223372036854775808.0.0",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}}]`,
+				`FAKE_DIRECT_HASHKV_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":0}`,
+			},
+			wantOutput: "direct hashkv hash revision must match header revision for etcd 9223372036854775808.0.0",
 		},
 		{
 			name: "reports required hashkv hash revisions for etcd 3.7",

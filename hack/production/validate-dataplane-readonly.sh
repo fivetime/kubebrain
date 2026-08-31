@@ -147,6 +147,39 @@ run_etcdctl_with_probe_timeout() {
     "$@"
 }
 
+# semver_core_at_least_3_6 compares only the major/minor release boundary using
+# canonical decimal strings. Bash arithmetic is signed machine-width; converting
+# an otherwise valid, unbounded semver component can wrap and silently classify a
+# future version as pre-3.6, disabling required compatibility checks.
+semver_core_at_least_3_6() {
+  local version="$1"
+  local core major minor patch_component
+  core="${version%%[-+]*}"
+  IFS='.' read -r major minor patch_component <<<"$core"
+  if [[ -z "$major" || -z "$minor" || -z "$patch_component" ]]; then
+    return 1
+  fi
+  while [[ "${#major}" -gt 1 && "$major" == 0* ]]; do
+    major="${major#0}"
+  done
+  while [[ "${#minor}" -gt 1 && "$minor" == 0* ]]; do
+    minor="${minor#0}"
+  done
+  if [[ "${#major}" -gt 1 ]]; then
+    return 0
+  fi
+  if [[ "$major" =~ ^[4-9]$ ]]; then
+    return 0
+  fi
+  if [[ "$major" != "3" ]]; then
+    return 1
+  fi
+  if [[ "${#minor}" -gt 1 ]]; then
+    return 0
+  fi
+  [[ "$minor" =~ ^[6-9]$ ]]
+}
+
 status_info_selection_fence() {
   local status_json="$1"
   local expected_count="$2"
@@ -1937,9 +1970,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     exit 1
   fi
   direct_status_v36_fields_required=0
-  direct_status_core="${direct_status_version%%[-+]*}"
-  IFS='.' read -r direct_status_major direct_status_minor _ <<<"$direct_status_core"
-  if (( 10#$direct_status_major > 3 || (10#$direct_status_major == 3 && 10#$direct_status_minor >= 6) )); then
+  if semver_core_at_least_3_6 "$direct_status_version"; then
     direct_status_v36_fields_required=1
     if [[ "$direct_status_storage_version" != "$gateway_status_storage_version" ]]; then
       echo "raw/gateway status storageVersion mismatch: raw=${direct_status_storage_version}, gateway=${gateway_status_storage_version}" >&2
@@ -2811,15 +2842,11 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     exit 1
   fi
   direct_hashkv_hash_revision_required=0
-  if [[ -n "$EXPECTED_STATUS_VERSION" ]]; then
-    expected_status_core="${EXPECTED_STATUS_VERSION%%[-+]*}"
-    IFS='.' read -r expected_status_major expected_status_minor _ <<<"$expected_status_core"
-    if (( 10#$expected_status_major > 3 || (10#$expected_status_major == 3 && 10#$expected_status_minor >= 6) )); then
-      direct_hashkv_hash_revision_required=1
-      if [[ "$direct_hashkv_hash_revision" != "$direct_hashkv_revision" ]]; then
-        echo "direct hashkv hash revision must match header revision for etcd ${EXPECTED_STATUS_VERSION}: hash_revision=${direct_hashkv_hash_revision}, header_revision=${direct_hashkv_revision}" >&2
-        exit 1
-      fi
+  if [[ -n "$EXPECTED_STATUS_VERSION" ]] && semver_core_at_least_3_6 "$EXPECTED_STATUS_VERSION"; then
+    direct_hashkv_hash_revision_required=1
+    if [[ "$direct_hashkv_hash_revision" != "$direct_hashkv_revision" ]]; then
+      echo "direct hashkv hash revision must match header revision for etcd ${EXPECTED_STATUS_VERSION}: hash_revision=${direct_hashkv_hash_revision}, header_revision=${direct_hashkv_revision}" >&2
+      exit 1
     fi
   fi
 
