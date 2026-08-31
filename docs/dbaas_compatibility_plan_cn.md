@@ -66890,6 +66890,52 @@ current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
 Ready/restart 0，三轮九次稳定 Pod 内 proposal health 全部 GREEN，无端口转发、凭据或诊断文件落盘。A5657 关闭了不可信 leader
 proxy 伪造零 cluster/member 身份成功响应的缺口，并恢复了 protobuf compact Status alarm 文本的真实跨 build 可达集合。
 
+### A5658：把全部 unary leader proxy 成功响应绑定到 DBaaS 集群身份
+
+A5657 只把 maintenance proxy 的零身份挡在边界外，KV、Lease、Auth 与 Cluster 的通用 proxy validator 仍只检查
+response/error 互斥、header 存在和 revision 非负；maintenance 也只要求身份非零而不要求属于本实例。因此一个错误路由或不可信 peer 可以返回
+另一个 cluster 的合法非零 header，随后 `pkg/server/etcd/header_interceptor.go::stampHeader` 又会在公开响应上覆盖为本地 cluster/member，令外部客户端
+看不见被代理结果的真实来源。对照 `/root/etcd/server/etcdserver/api/v3rpc/header.go::newHeader/fillWithoutRevision`、
+`key.go`、`lease.go`、`maintenance.go` 和 `/root/etcd/server/etcdserver/apply/backend.go::newHeader`，上游成功响应的 cluster ID 与 member ID
+均来自实际服务该请求的 etcd cluster/member，而不是可任意伪造的 payload 字段。
+
+修复前源码中的五个 validator 均不存在 cluster 精确匹配或静态成员归属检查；新增确定性身份表固定缺 header、负 revision、零/foreign cluster、
+零/unknown member、任一已知成员与无静态 membership fallback。启用新边界后的首轮完整 `pkg/server/etcd` 在 `143.345s` 后给出横跨 KV、
+Lease、Auth、Cluster、Maintenance、peer HTTP 与间接 Watch 的 DataLoss 失败清单，证明门禁到达真实 follower 路由而非只覆盖独立 helper；这些旧
+proxy 桩随后改为返回与被测服务器一致的上游可达身份。提交 `e39a1384` 新增统一
+`validateProxyResponseHeader`：cluster ID 必须非零且精确等于一次构造后稳定的 `backend.ClusterID()`；member ID 必须非零，并在生产已配置静态
+DBaaS membership 时属于该成员集合。校验成员集合而不是只绑定瞬时 leader ID，避免 leader 在 peer RPC 返回与本地检查之间切换时误拒绝合法结果；
+无静态 membership 的嵌入式/单元测试 fallback 仍要求 member 非零，生产服务则在开始 serving 前调用 `SetStaticMembers`。实现直接扫描只读的三成员
+切片，不在高频 KV/Lease proxy 请求上分配 map。Defragment 继续保持上游 headerless 例外，revision 0 继续合法。
+
+全部生产调用点（Cluster 1、KV 12、Lease 7、Auth 17、Maintenance/peer 7）均传入期望身份。定向 validator 为 `0.041s`，上述跨家族集成集合修正为
+`0.347s`；完整普通包以 JSON fail 流退出 0 且无 fail 事件，完整 race 为 `383.980s`。`go vet`、gofmt、diff check 全部 GREEN。
+提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别为
+`252.582/445.318/306.917/569.815s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5658-e39a1384` 内嵌版本 `0.0.0-e39a1384312b`、完整提交
+`e39a1384312b25b328ae7d44167e472025cad716` 与 build time `2026-08-31T17:43:09Z`，运行用户 `65532:65532`、平台
+`linux/amd64`。OCI index、platform manifest、config 分别为
+`sha256:c4066c9a3a07d29fa4e9d6b3bdc467f08436f64d3f4dcc29eef3960bc21a9dcd`、
+`sha256:9f0b58691aa2fd3c53390266ab40d4c3501fa7e32db6b13f5e037bb8889b4c4d`、
+`sha256:9db7b5124017a1691c5b31de0cd8ec15d89d2d31b4ca9156472399a3cdacbd49`；Kind/containerd runtime digest 为
+`sha256:8a68a8fed3d75960fcb5831d0af5bb8dbccb7b101df4e87ae0b59acfe2e70d3e`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 703 部署至 generation 704；三 Pod 均落在
+revision `kubebrain-5dd5f7fbfb`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。三个 exact endpoint 的 raw
+Status 均返回 version/storage `3.7.0/3.7.0`、cluster ID `7662961163671170154`，member ID 分别为
+`4034353177/2393892952/231094427`，revision/index/applied `65743`、term `281`、leader `2393892952`、quota
+`1073741824`、空 errors、non-learner 与 disabled+empty downgrade。八项 named/HTTP/metrics/debug 及全部端点一致性开关全开的
+readonly gate 一次 GREEN；HashKV 为 `4283180840`、compact revision 为 `44329`、direct hash 为 `1884729719`。candidate Pod 日志为
+`453/273/527` 行，error level、panic/fatal/data race/data corruption 与 TiKV/PD error 模式均为 0；三轮九次 exact endpoint
+proposal health 全部成功。
+
+最后关闭三组 client+info 端口转发并确认六端口无监听，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、
+generation/observed 705、current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，回滚后三轮九次稳定 Pod 内 proposal health 全部 GREEN，无端口转发、凭据或诊断文件落盘。A5658 关闭了 foreign cluster
+或非 DBaaS 成员的成功响应可穿越 leader proxy、再被本地 header stamp 伪装成可信结果的跨家族完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
