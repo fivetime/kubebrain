@@ -133,7 +133,7 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 		RaftIndex:        response.GetRaftIndex(),
 		RaftTerm:         response.GetRaftTerm(),
 		RaftAppliedIndex: response.GetRaftAppliedIndex(),
-		Errors:           append([]string(nil), response.GetErrors()...),
+		Errors:           append([]string{}, response.GetErrors()...),
 		DBSizeInUse:      response.GetDbSizeInUse(),
 		IsLearner:        response.GetIsLearner(),
 		StorageVersion:   response.GetStorageVersion(),

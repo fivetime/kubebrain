@@ -48,6 +48,7 @@ func TestValidateStatusResponseProjectsDefaultDowngradeInfo(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, statusProbeDowngradeInfo{}, result.DowngradeInfo)
 	require.Empty(t, result.Errors)
+	require.NotNil(t, result.Errors)
 }
 
 func TestValidateStatusResponseRejectsMissingEnvelope(t *testing.T) {
