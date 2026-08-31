@@ -3048,13 +3048,13 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:           "ok",
 			count:            "4",
 			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7}}]`,
-			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			gatewayJSON:      `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
 			directStatusJSON: `{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","db_size":99,"leader":456,"raft_index":7,"raft_term":8,"raft_applied_index":7,"errors":[],"db_size_in_use":88,"is_learner":true,"storage_version":"3.7.0","db_size_quota":2147483648,"downgrade_info":{"enabled":false,"target_version":""}}`,
 			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0"},
 			wantOutput:       "raw/gateway status isLearner mismatch",
 		},
 		{
-			name: "rejects missing gateway status learner for etcd 3.4",
+			name: "accepts omitted false gateway status learner for etcd 3.4",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -3068,7 +3068,8 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			versionJSON:      `{"etcdserver":"3.4.0","etcdcluster":"3.4","storage":"3.4.0"}`,
 			infoVersionJSON:  `{"etcdserver":"3.4.0","etcdcluster":"3.4","storage":"3.4.0"}`,
 			extraEnv:         []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.4.0"},
-			wantOutput:       "gateway status isLearner is required for etcd 3.4.0",
+			wantOK:           true,
+			wantOutput:       "direct_status_is_learner_match=true",
 		},
 		{
 			name: "allows missing gateway status learner before etcd 3.4",

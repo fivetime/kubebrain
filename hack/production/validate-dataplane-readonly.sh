@@ -1985,12 +1985,14 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       echo "raw status isLearner envelope invalid: expected a boolean" >&2
       exit 1
     fi
+    # grpc-gateway follows proto3 JSON default elision, so an omitted bool is
+    # observably false rather than an absent Status field.
+    gateway_status_is_learner_effective="$gateway_status_is_learner"
     if [[ "$gateway_status_is_learner_type" == "missing" ]]; then
-      echo "gateway status isLearner is required for etcd ${direct_status_version}" >&2
-      exit 1
+      gateway_status_is_learner_effective=false
     fi
-    if [[ "$direct_status_is_learner" != "$gateway_status_is_learner" ]]; then
-      echo "raw/gateway status isLearner mismatch: raw=${direct_status_is_learner}, gateway=${gateway_status_is_learner}" >&2
+    if [[ "$direct_status_is_learner" != "$gateway_status_is_learner_effective" ]]; then
+      echo "raw/gateway status isLearner mismatch: raw=${direct_status_is_learner}, gateway=${gateway_status_is_learner_effective}" >&2
       exit 1
     fi
   fi
