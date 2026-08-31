@@ -17,6 +17,8 @@ import (
 	"github.com/Masterminds/semver/v3"
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	etcdserverpb "go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/protobuf/encoding/prototext"
 )
 
 var statusVersionPattern = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.[0-9]+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$`)
@@ -169,6 +171,11 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 	if requiresVersionedFields && response.GetDbSizeQuota() == 0 {
 		return statusProbeResult{}, errors.New("maintenance Status database quota must be non-zero for etcd 3.6 or later")
 	}
+	if requiresFields34 {
+		if err := validateStatusErrors(response); err != nil {
+			return statusProbeResult{}, err
+		}
+	}
 	result := statusProbeResult{
 		Header: statusProbeHeader{
 			ClusterID: header.GetClusterId(),
@@ -195,6 +202,47 @@ func validateStatusResponse(response *etcdserverpb.StatusResponse) (statusProbeR
 		}
 	}
 	return result, nil
+}
+
+func validateStatusErrors(response *etcdserverpb.StatusResponse) error {
+	statusErrors := response.GetErrors()
+	alarmOffset := 0
+	if response.GetLeader() == 0 {
+		if len(statusErrors) == 0 || statusErrors[0] != rpctypes.ErrNoLeader.Error() {
+			return errors.New("maintenance Status errors do not match zero leader")
+		}
+		alarmOffset = 1
+	}
+	seen := make(map[struct {
+		memberID uint64
+		alarm    etcdserverpb.AlarmType
+	}]struct{}, len(statusErrors)-alarmOffset)
+	for _, statusErr := range statusErrors[alarmOffset:] {
+		var alarm etcdserverpb.AlarmMember
+		if err := prototext.Unmarshal([]byte(statusErr), &alarm); err != nil ||
+			alarm.GetAlarm() == etcdserverpb.AlarmType_NONE || persistedAlarmStatusText(&alarm) != statusErr {
+			return fmt.Errorf("maintenance Status errors contain an invalid alarm: %q", statusErr)
+		}
+		identity := struct {
+			memberID uint64
+			alarm    etcdserverpb.AlarmType
+		}{memberID: alarm.GetMemberID(), alarm: alarm.GetAlarm()}
+		if _, exists := seen[identity]; exists {
+			return fmt.Errorf("maintenance Status errors contain a duplicate alarm: %q", statusErr)
+		}
+		seen[identity] = struct{}{}
+	}
+	return nil
+}
+
+func persistedAlarmStatusText(alarm *etcdserverpb.AlarmMember) string {
+	if alarm.GetMemberID() == 0 {
+		return fmt.Sprintf("alarm:%s", alarm.GetAlarm().String())
+	}
+	if alarm.GetAlarm() == etcdserverpb.AlarmType_NONE {
+		return fmt.Sprintf("memberID:%d", alarm.GetMemberID())
+	}
+	return fmt.Sprintf("memberID:%d  alarm:%s", alarm.GetMemberID(), alarm.GetAlarm().String())
 }
 
 func statusVersionCoreAtLeast3Minor(value string, minor string) (bool, error) {

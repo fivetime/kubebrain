@@ -16,7 +16,7 @@ func TestValidateStatusResponseProjectsExactEnvelope(t *testing.T) {
 		RaftIndex:        7,
 		RaftTerm:         8,
 		RaftAppliedIndex: 7,
-		Errors:           []string{"example"},
+		Errors:           []string{"memberID:456  alarm:CORRUPT"},
 		DbSizeInUse:      88,
 		IsLearner:        true,
 		StorageVersion:   "3.7.0",
@@ -32,7 +32,7 @@ func TestValidateStatusResponseProjectsExactEnvelope(t *testing.T) {
 		RaftIndex:        7,
 		RaftTerm:         8,
 		RaftAppliedIndex: 7,
-		Errors:           []string{"example"},
+		Errors:           []string{"memberID:456  alarm:CORRUPT"},
 		DBSizeInUse:      88,
 		IsLearner:        true,
 		StorageVersion:   "3.7.0",
@@ -41,15 +41,61 @@ func TestValidateStatusResponseProjectsExactEnvelope(t *testing.T) {
 	}, result)
 }
 
+func TestValidateStatusResponseAcceptsReachableStatusErrors(t *testing.T) {
+	response := &etcdserverpb.StatusResponse{
+		Header:  &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+		Version: "3.7.0", Leader: 0, DbSizeQuota: 1, DowngradeInfo: &etcdserverpb.DowngradeInfo{},
+		Errors: []string{"etcdserver: no leader", "alarm:NOSPACE", "memberID:456  alarm:127"},
+	}
+	result, err := validateStatusResponse(response)
+	require.NoError(t, err)
+	require.Equal(t, response.Errors, result.Errors)
+}
+
+func TestValidateStatusResponseRejectsUnreachableStatusErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		leader uint64
+		errors []string
+	}{
+		{name: "arbitrary", leader: 456, errors: []string{"disk unavailable"}},
+		{name: "alarm without type", leader: 456, errors: []string{"memberID:456"}},
+		{name: "NONE alarm", leader: 456, errors: []string{"memberID:456  alarm:NONE"}},
+		{name: "noncanonical alarm", leader: 456, errors: []string{"memberID:456 alarm:NOSPACE"}},
+		{name: "duplicate alarm", leader: 456, errors: []string{"memberID:456  alarm:NOSPACE", "memberID:456  alarm:NOSPACE"}},
+		{name: "missing no leader", leader: 0, errors: []string{"alarm:NOSPACE"}},
+		{name: "duplicate no leader", leader: 0, errors: []string{"etcdserver: no leader", "etcdserver: no leader"}},
+		{name: "unexpected no leader", leader: 456, errors: []string{"etcdserver: no leader"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
+				Header:  &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+				Version: "3.7.0", Leader: tc.leader, DbSizeQuota: 1,
+				DowngradeInfo: &etcdserverpb.DowngradeInfo{}, Errors: tc.errors,
+			})
+			require.ErrorContains(t, err, "Status errors")
+		})
+	}
+}
+
 func TestValidateStatusResponseProjectsDefaultDowngradeInfo(t *testing.T) {
 	result, err := validateStatusResponse(&etcdserverpb.StatusResponse{
 		Header:  &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
-		Version: "3.5.0",
+		Version: "3.5.0", Leader: 456,
 	})
 	require.NoError(t, err)
 	require.Equal(t, statusProbeDowngradeInfo{}, result.DowngradeInfo)
 	require.Empty(t, result.Errors)
 	require.NotNil(t, result.Errors)
+}
+
+func TestValidateStatusResponseAcceptsPre34ZeroLeaderWithoutErrorsField(t *testing.T) {
+	result, err := validateStatusResponse(&etcdserverpb.StatusResponse{
+		Header:  &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
+		Version: "3.3.0", Leader: 0,
+	})
+	require.NoError(t, err)
+	require.Empty(t, result.Errors)
 }
 
 func TestValidateStatusResponseRejectsMissingVersionedDowngradeInfo(t *testing.T) {
@@ -101,6 +147,7 @@ func TestValidateStatusResponseAcceptsEnabledDowngradeTargetWindows(t *testing.T
 			_, err := validateStatusResponse(&etcdserverpb.StatusResponse{
 				Header:        &etcdserverpb.ResponseHeader{ClusterId: 123, MemberId: 456, Revision: 7, RaftTerm: 8},
 				Version:       tc.server,
+				Leader:        456,
 				DbSizeQuota:   1,
 				DowngradeInfo: &etcdserverpb.DowngradeInfo{Enabled: true, TargetVersion: tc.target},
 			})

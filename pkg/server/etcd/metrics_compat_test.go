@@ -1041,6 +1041,19 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 			response.Leader = 0
 			response.Errors = []string{rpctypes.ErrNoLeader.Error()}
 		}, valid: true},
+		{name: "zero-member alarm", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Errors = []string{"alarm:NOSPACE"}
+		}, valid: true},
+		{name: "member alarm", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Errors = []string{"memberID:7  alarm:CORRUPT"}
+		}, valid: true},
+		{name: "unknown alarm", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Errors = []string{"memberID:7  alarm:127"}
+		}, valid: true},
+		{name: "no leader before alarm", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Leader = 0
+			response.Errors = []string{rpctypes.ErrNoLeader.Error(), "memberID:7  alarm:NOSPACE"}
+		}, valid: true},
 		{name: "empty storage version allowed", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "" }, valid: true},
 		{name: "canonical storage version", mutate: func(response *etcdserverpb.StatusResponse) { response.StorageVersion = "3.6.0" }, valid: true},
 		{name: "pre-3.6 defaults", mutate: func(response *etcdserverpb.StatusResponse) {
@@ -1048,11 +1061,27 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 			response.DbSizeQuota = 0
 			response.DowngradeInfo = nil
 		}, valid: true},
+		{name: "pre-3.6 canonical alarm", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Version = "3.5.0"
+			response.DbSizeQuota = 0
+			response.DowngradeInfo = nil
+			response.Errors = []string{"memberID:7  alarm:NOSPACE"}
+		}, valid: true},
+		{name: "pre-3.6 arbitrary status error", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Version = "3.5.0"
+			response.DbSizeQuota = 0
+			response.DowngradeInfo = nil
+			response.Errors = []string{"disk unavailable"}
+		}},
 		{name: "pre-3.6 versioned fields", mutate: func(response *etcdserverpb.StatusResponse) {
 			response.Version = "3.5.0"
 			response.StorageVersion = "3.5.0"
 		}},
 		{name: "pre-3.4 defaults", mutate: pre34Defaults, valid: true},
+		{name: "pre-3.4 zero leader without unavailable errors field", mutate: func(response *etcdserverpb.StatusResponse) {
+			pre34Defaults(response)
+			response.Leader = 0
+		}, valid: true},
 		{name: "pre-3.4 applied index", mutate: func(response *etcdserverpb.StatusResponse) {
 			pre34Defaults(response)
 			response.RaftAppliedIndex = 1
@@ -1125,6 +1154,23 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 			response.DowngradeInfo.TargetVersion = "3.6.0"
 		}, valid: true},
 		{name: "empty status error", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{""} }},
+		{name: "arbitrary status error", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{"disk unavailable"} }},
+		{name: "alarm without type", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{"memberID:7"} }},
+		{name: "NONE alarm", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{"memberID:7 alarm:NONE"} }},
+		{name: "explicit zero member", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{"memberID:0 alarm:NOSPACE"} }},
+		{name: "noncanonical member", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{"memberID:007 alarm:NOSPACE"} }},
+		{name: "noncanonical unknown alarm", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{"memberID:7 alarm:0127"} }},
+		{name: "duplicate alarm", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Errors = []string{"memberID:7  alarm:NOSPACE", "memberID:7  alarm:NOSPACE"}
+		}},
+		{name: "duplicate no leader", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Leader = 0
+			response.Errors = []string{rpctypes.ErrNoLeader.Error(), rpctypes.ErrNoLeader.Error()}
+		}},
+		{name: "no leader after alarm", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Leader = 0
+			response.Errors = []string{"memberID:7  alarm:NOSPACE", rpctypes.ErrNoLeader.Error()}
+		}},
 		{name: "zero leader without error", mutate: func(response *etcdserverpb.StatusResponse) { response.Leader = 0 }},
 		{name: "leader with no leader error", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{rpctypes.ErrNoLeader.Error()} }},
 	}

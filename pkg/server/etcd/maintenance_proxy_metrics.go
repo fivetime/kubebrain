@@ -22,6 +22,7 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/prototext"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
@@ -194,33 +195,56 @@ func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverp
 	if hasVersionedStatusFields && downgradeInfo == nil {
 		return fail("leader status proxy returned no downgrade information")
 	}
-	if downgradeInfo == nil {
+	if downgradeInfo != nil {
+		if !downgradeInfo.GetEnabled() {
+			if downgradeInfo.GetTargetVersion() != "" {
+				return fail("leader status proxy returned inconsistent downgrade information")
+			}
+		} else {
+			targetVersion, parseErr := semver.StrictNewVersion(downgradeInfo.GetTargetVersion())
+			if parseErr != nil || targetVersion.Prerelease() != "" || targetVersion.Metadata() != "" ||
+				targetVersion.Patch() != 0 || targetVersion.Major() != serverVersion.Major() ||
+				(targetVersion.Minor() != serverVersion.Minor() &&
+					(serverVersion.Minor() == 0 || targetVersion.Minor() != serverVersion.Minor()-1)) {
+				return fail("leader status proxy returned inconsistent downgrade information")
+			}
+		}
+	}
+	if !hasStatusFields34 {
 		return response, nil
 	}
-	if !downgradeInfo.GetEnabled() {
-		if downgradeInfo.GetTargetVersion() != "" {
-			return fail("leader status proxy returned inconsistent downgrade information")
+	statusErrors := response.GetErrors()
+	alarmOffset := 0
+	if response.GetLeader() == 0 {
+		// Upstream appends ErrNoLeader exactly once before iterating its alarm
+		// store. Preserve that order so duplicate or displaced diagnostics cannot
+		// cross the trusted leader-proxy boundary as an apparently valid Status.
+		if len(statusErrors) == 0 || statusErrors[0] != rpctypes.ErrNoLeader.Error() {
+			return fail("leader status proxy returned inconsistent leader health")
 		}
-	} else {
-		targetVersion, parseErr := semver.StrictNewVersion(downgradeInfo.GetTargetVersion())
-		if parseErr != nil || targetVersion.Prerelease() != "" || targetVersion.Metadata() != "" ||
-			targetVersion.Patch() != 0 || targetVersion.Major() != serverVersion.Major() ||
-			(targetVersion.Minor() != serverVersion.Minor() &&
-				(serverVersion.Minor() == 0 || targetVersion.Minor() != serverVersion.Minor()-1)) {
-			return fail("leader status proxy returned inconsistent downgrade information")
-		}
+		alarmOffset = 1
 	}
-	noLeader := false
-	for _, statusErr := range response.GetErrors() {
-		if statusErr == "" {
-			return fail("leader status proxy returned an empty status error")
+	seenAlarms := make(map[struct {
+		memberID uint64
+		alarm    etcdserverpb.AlarmType
+	}]struct{}, len(statusErrors)-alarmOffset)
+	for _, statusErr := range statusErrors[alarmOffset:] {
+		// Status emits AlarmMember.String(), not arbitrary diagnostic strings.
+		// Parse with protobuf's own text codec and require the exact canonical
+		// rendering, including omitted zero fields and numeric unknown enums.
+		var alarm etcdserverpb.AlarmMember
+		if parseErr := prototext.Unmarshal([]byte(statusErr), &alarm); parseErr != nil ||
+			alarm.GetAlarm() == etcdserverpb.AlarmType_NONE || alarmStatusError(&alarm) != statusErr {
+			return fail("leader status proxy returned an invalid status alarm")
 		}
-		if statusErr == rpctypes.ErrNoLeader.Error() {
-			noLeader = true
+		identity := struct {
+			memberID uint64
+			alarm    etcdserverpb.AlarmType
+		}{memberID: alarm.GetMemberID(), alarm: alarm.GetAlarm()}
+		if _, exists := seenAlarms[identity]; exists {
+			return fail("leader status proxy returned a duplicate status alarm")
 		}
-	}
-	if noLeader != (response.GetLeader() == 0) {
-		return fail("leader status proxy returned inconsistent leader health")
+		seenAlarms[identity] = struct{}{}
 	}
 	return response, nil
 }

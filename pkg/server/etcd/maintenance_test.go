@@ -1595,14 +1595,18 @@ func TestAlarmStatusErrorMatchesReferenceStatusText(t *testing.T) {
 		alarm *etcdserverpb.AlarmMember
 		want  string
 	}{
+		{name: "zero message", alarm: &etcdserverpb.AlarmMember{}, want: ""},
 		{name: "zero member", alarm: &etcdserverpb.AlarmMember{Alarm: etcdserverpb.AlarmType_NOSPACE}, want: "alarm:NOSPACE"},
 		{name: "zero alarm", alarm: &etcdserverpb.AlarmMember{MemberID: 7}, want: "memberID:7"},
-		{name: "known", alarm: &etcdserverpb.AlarmMember{MemberID: 7, Alarm: etcdserverpb.AlarmType_CORRUPT}, want: "memberID:7 alarm:CORRUPT"},
-		{name: "unknown", alarm: &etcdserverpb.AlarmMember{MemberID: 7, Alarm: etcdserverpb.AlarmType(127)}, want: "memberID:7 alarm:127"},
+		{name: "known", alarm: &etcdserverpb.AlarmMember{MemberID: 7, Alarm: etcdserverpb.AlarmType_CORRUPT}, want: "memberID:7  alarm:CORRUPT"},
+		{name: "unknown", alarm: &etcdserverpb.AlarmMember{MemberID: 7, Alarm: etcdserverpb.AlarmType(127)}, want: "memberID:7  alarm:127"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			require.Equal(t, test.want, alarmStatusError(test.alarm))
+			_, err := proto.Marshal(test.alarm)
+			require.NoError(t, err)
+			require.Equal(t, test.want, test.alarm.String())
 		})
 	}
 }

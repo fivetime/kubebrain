@@ -23,7 +23,6 @@ import (
 	"hash/crc32"
 	"runtime"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -485,14 +484,22 @@ func (s *RPCServer) freshMaintenanceRevision(ctx context.Context) (uint64, error
 }
 
 func alarmStatusError(alarm *etcdserverpb.AlarmMember) string {
-	fields := make([]string, 0, 2)
-	if alarm.GetMemberID() != 0 {
-		fields = append(fields, fmt.Sprintf("memberID:%d", alarm.GetMemberID()))
+	// Upstream Status appends AlarmMember.String() verbatim. In particular,
+	// alarms reach that call after protobuf persistence. The compact renderer
+	// separates two populated fields with two spaces in that state, while the
+	// fresh messages assembled from KubeBrain's TiKV metadata have not passed
+	// through proto.Marshal. Render the persisted form directly and preserve
+	// protobuf's omission of zero-valued fields.
+	if alarm.GetMemberID() == 0 && alarm.GetAlarm() == etcdserverpb.AlarmType_NONE {
+		return ""
 	}
-	if alarm.GetAlarm() != etcdserverpb.AlarmType_NONE {
-		fields = append(fields, fmt.Sprintf("alarm:%s", alarm.GetAlarm().String()))
+	if alarm.GetMemberID() == 0 {
+		return fmt.Sprintf("alarm:%s", alarm.GetAlarm().String())
 	}
-	return strings.Join(fields, " ")
+	if alarm.GetAlarm() == etcdserverpb.AlarmType_NONE {
+		return fmt.Sprintf("memberID:%d", alarm.GetMemberID())
+	}
+	return fmt.Sprintf("memberID:%d  alarm:%s", alarm.GetMemberID(), alarm.GetAlarm().String())
 }
 
 func (s *RPCServer) Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
