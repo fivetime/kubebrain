@@ -245,7 +245,7 @@ func (s *RPCServer) hedgedPeerHashKV(ctx context.Context, req *etcdserverpb.Hash
 	go func() {
 		proxyCtx := metadata.AppendToOutgoingContext(ctx, authorizedPeerHashKVProxyMetadataKey, "1")
 		response, err := s.peers.HashKV(proxyCtx, req)
-		response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCHashKV, response, err)
+		response, err = validateMaintenanceProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), maintenanceProxyRPCHashKV, response, err)
 		response, err = validateHashKVProxyPayload(s.metricCli, req, response, err)
 		results <- peerHashKVResult{response: response, err: err, forwarded: true}
 	}()

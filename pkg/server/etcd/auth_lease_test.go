@@ -407,7 +407,7 @@ func TestAuthFollowerLeaseTimeToLiveRechecksRevisionAfterProxyLikeEtcd(t *testin
 						return nil, rpctypes.ErrAuthOldRevision
 					}
 					return &etcdserverpb.LeaseTimeToLiveResponse{
-						Header: txnHeader(1), ID: 123, TTL: 30, GrantedTTL: 30,
+						Header: proxiedResponseHeader(server, 1), ID: 123, TTL: 30, GrantedTTL: 30,
 					}, nil
 				},
 			}
@@ -505,7 +505,7 @@ func TestAuthFollowerLeaseTimeToLiveFinalFenceTracksAuthEnableDisableLikeEtcd(t 
 			isLeader: false, proxyEnabled: true,
 			leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
 				require.NoError(t, server.auth.disable(context.Background()))
-				return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: 123, TTL: 30, GrantedTTL: 30}, nil
+				return &etcdserverpb.LeaseTimeToLiveResponse{Header: proxiedResponseHeader(server, 1), ID: 123, TTL: 30, GrantedTTL: 30}, nil
 			},
 		}
 
@@ -620,7 +620,7 @@ func TestAuthLeaseTimeToLiveProxiesDemotionDuringAuthorization(t *testing.T) {
 		leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
 			forwarded.Store(true)
 			return &etcdserverpb.LeaseTimeToLiveResponse{
-				Header: txnHeader(123), ID: lease.ID, TTL: 59, GrantedTTL: 60,
+				Header: proxiedResponseHeader(server, 123), ID: lease.ID, TTL: 59, GrantedTTL: 60,
 			}, nil
 		},
 	}
@@ -706,7 +706,7 @@ func TestAuthLeaseLeasesProxiesDemotionDuringAuthorization(t *testing.T) {
 		leaseLeasesFn: func(context.Context, *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
 			forwarded.Store(true)
 			return &etcdserverpb.LeaseLeasesResponse{
-				Header: txnHeader(123), Leases: []*etcdserverpb.LeaseStatus{{ID: 999}},
+				Header: proxiedResponseHeader(server, 123), Leases: []*etcdserverpb.LeaseStatus{{ID: 999}},
 			}, nil
 		},
 	}
@@ -821,6 +821,7 @@ func TestAuthFollowerKeepAliveDefersStaleAttachmentAuthorizationToLeader(t *test
 			if len(leaderStream.sent) != 1 {
 				return nil, errors.New("leader keepalive did not produce exactly one response")
 			}
+			leaderStream.sent[0].Header = proxiedResponseHeader(leader, leaderStream.sent[0].GetHeader().GetRevision())
 			return leaderStream.sent[0], nil
 		},
 	})

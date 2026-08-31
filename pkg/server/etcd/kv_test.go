@@ -488,7 +488,7 @@ func TestSerializableHistoricalTxnProxiesWhenFollowerCheckpointLags(t *testing.T
 			forwarded++
 			require.Equal(t, request, got)
 			return &etcdserverpb.TxnResponse{
-				Header:    txnHeader(written.Header.Revision),
+				Header:    proxiedResponseHeader(server, written.Header.Revision),
 				Succeeded: true,
 				Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{
 					ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(written.Header.Revision)},
@@ -528,7 +528,7 @@ func TestFollowerLinearizableReadonlyTxnProxiesBeforeLocalBarrier(t *testing.T) 
 			forwarded++
 			require.Equal(t, request, got)
 			return &etcdserverpb.TxnResponse{
-				Header:    txnHeader(put.Header.Revision),
+				Header:    proxiedResponseHeader(server, put.Header.Revision),
 				Succeeded: true,
 				Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{
 					ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(put.Header.Revision)},
@@ -582,6 +582,8 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			rec := &recordingMetrics{}
 			server.metricCli = rec
 			initKVProxyIntegrityMetrics(rec)
+			tt.response.Header.ClusterId = server.backend.ClusterID()
+			tt.response.Header.MemberId = server.localMemberID()
 			server.peers = testPeerService{
 				isLeader: false, proxyEnabled: true,
 				txnFn: func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
@@ -717,7 +719,7 @@ func TestFollowerLinearizableHistoricalRangeProxiesBeforeLocalBarrier(t *testing
 			require.True(t, ok)
 			require.Equal(t, []string{"raw-jwt"}, md.Get(rpctypes.TokenFieldNameGRPC))
 			return &etcdserverpb.RangeResponse{
-				Header: latest.Header,
+				Header: proxiedResponseHeader(server, latest.Header.GetRevision()),
 				Kvs: []*mvccpb.KeyValue{{
 					Key: key, Value: []byte("v1"), CreateRevision: first.Header.Revision,
 					ModRevision: first.Header.Revision, Version: 1,
@@ -1068,7 +1070,7 @@ func TestFollowerSerializableLatestRangePrefersLeaderAndFallsBackToProtectedChec
 						return nil, tc.proxyErr
 					}
 					return &etcdserverpb.RangeResponse{
-						Header: txnHeader(tc.wantRevision),
+						Header: proxiedResponseHeader(base, tc.wantRevision),
 						Kvs: []*mvccpb.KeyValue{{
 							Key: append([]byte(nil), request.Key...), Value: []byte("leader"),
 							CreateRevision: tc.wantRevision, ModRevision: tc.wantRevision, Version: 1,
@@ -1175,7 +1177,7 @@ func TestFollowerSerializableReadonlyTxnPrefersLeaderAndFallsBackToProtectedChec
 						return nil, tc.proxyErr
 					}
 					return &etcdserverpb.TxnResponse{
-						Header: txnHeader(tc.wantRevision), Succeeded: true,
+						Header: proxiedResponseHeader(base, tc.wantRevision), Succeeded: true,
 						Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{
 							ResponseRange: &etcdserverpb.RangeResponse{
 								Header: txnHeader(tc.wantRevision),
@@ -2720,7 +2722,7 @@ func TestFollowerSerializableHistoricalRangeWithoutDurableRevisionProxiesToLeade
 			require.Equal(t, []byte("/registry/pods/historical"), req.Key)
 			require.Equal(t, int64(10), req.Revision)
 			return &etcdserverpb.RangeResponse{
-				Header: &etcdserverpb.ResponseHeader{Revision: 20},
+				Header: proxiedBackendResponseHeader(backendStore, 1, 20),
 				Kvs: []*mvccpb.KeyValue{{
 					Key: req.Key, Value: []byte("leader"), CreateRevision: 10,
 					ModRevision: 10, Version: 1,
@@ -2767,6 +2769,8 @@ func TestFollowerRejectsInvalidRangeProxyPayload(t *testing.T) {
 			rec := &recordingMetrics{}
 			server.metricCli = rec
 			initKVProxyIntegrityMetrics(rec)
+			tt.response.Header.ClusterId = server.backend.ClusterID()
+			tt.response.Header.MemberId = server.localMemberID()
 			server.peers = testPeerService{
 				isLeader: false, proxyEnabled: true,
 				rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -3236,7 +3240,7 @@ func TestFollowerCompactProxiesToLeader(t *testing.T) {
 		compactFn: func(_ context.Context, req *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
 			called = true
 			require.Equal(t, int64(123), req.Revision)
-			return &etcdserverpb.CompactionResponse{Header: &etcdserverpb.ResponseHeader{Revision: 456}}, nil
+			return &etcdserverpb.CompactionResponse{Header: proxiedBackendResponseHeader(backendStore, 1, 456)}, nil
 		},
 	})
 
@@ -3263,6 +3267,8 @@ func TestFollowerRejectsInvalidCompactProxyPayload(t *testing.T) {
 			rec := &recordingMetrics{}
 			server.metricCli = rec
 			initKVProxyIntegrityMetrics(rec)
+			tt.response.Header.ClusterId = server.backend.ClusterID()
+			tt.response.Header.MemberId = server.localMemberID()
 			server.peers = testPeerService{
 				isLeader: false, proxyEnabled: true,
 				compactFn: func(context.Context, *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
@@ -4367,12 +4373,12 @@ func TestFollowerPutAndDeleteRangeProxyToLeader(t *testing.T) {
 		putFn: func(_ context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 			putForwarded = true
 			require.Equal(t, []byte("/registry/follower-put"), req.Key)
-			return &etcdserverpb.PutResponse{Header: &etcdserverpb.ResponseHeader{Revision: 10}}, nil
+			return &etcdserverpb.PutResponse{Header: proxiedBackendResponseHeader(b, 1, 10)}, nil
 		},
 		deleteRangeFn: func(_ context.Context, req *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
 			deleteForwarded = true
 			require.Equal(t, []byte("/registry/follower-put"), req.Key)
-			return &etcdserverpb.DeleteRangeResponse{Header: &etcdserverpb.ResponseHeader{Revision: 11}, Deleted: 1}, nil
+			return &etcdserverpb.DeleteRangeResponse{Header: proxiedBackendResponseHeader(b, 1, 11), Deleted: 1}, nil
 		},
 	})
 	defer server.stopLeases()
@@ -4410,6 +4416,8 @@ func TestFollowerRejectsInvalidPutProxyPayload(t *testing.T) {
 			rec := &recordingMetrics{}
 			server.metricCli = rec
 			initKVProxyIntegrityMetrics(rec)
+			tt.response.Header.ClusterId = server.backend.ClusterID()
+			tt.response.Header.MemberId = server.localMemberID()
 			server.peers = testPeerService{
 				isLeader: false, proxyEnabled: true,
 				putFn: func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
@@ -4449,6 +4457,8 @@ func TestFollowerRejectsInvalidDeleteRangeProxyPayload(t *testing.T) {
 			rec := &recordingMetrics{}
 			server.metricCli = rec
 			initKVProxyIntegrityMetrics(rec)
+			tt.response.Header.ClusterId = server.backend.ClusterID()
+			tt.response.Header.MemberId = server.localMemberID()
 			server.peers = testPeerService{
 				isLeader: false, proxyEnabled: true,
 				deleteRangeFn: func(context.Context, *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {

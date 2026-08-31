@@ -40,7 +40,7 @@ func (s *RPCServer) AuthEnable(ctx context.Context, request *etcdserverpb.AuthEn
 	}
 	if proxy {
 		response, err := s.peers.AuthEnable(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionEnable, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionEnable, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -73,7 +73,7 @@ func (s *RPCServer) AuthDisable(ctx context.Context, request *etcdserverpb.AuthD
 	}
 	if proxy {
 		response, err := s.peers.AuthDisable(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionDisable, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionDisable, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -145,7 +145,7 @@ func (s *RPCServer) AuthStatus(ctx context.Context, request *etcdserverpb.AuthSt
 		// trusted leader validate any credential and report the authoritative auth
 		// revision without requiring this ingress to reach its storage path.
 		response, err := s.peers.AuthStatus(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionStatus, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionStatus, response, err)
 		response, err = validateAuthStatusProxyPayload(s.metricCli, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
@@ -184,7 +184,7 @@ func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.Auth
 			}
 		}()
 		response, err := s.peers.Authenticate(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionAuthenticate, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionAuthenticate, response, err)
 		response, err = validateAuthenticateProxyPayload(s.metricCli, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
@@ -240,7 +240,7 @@ func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserA
 	}
 	if proxy {
 		response, err := s.peers.UserAdd(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionUserAdd, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserAdd, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -295,7 +295,7 @@ func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserG
 	}
 	if proxy {
 		response, err := s.peers.UserGet(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionUserGet, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserGet, response, err)
 		response, err = validateAuthNameListProxyPayload(s.metricCli, authProxyActionUserGet, response.GetRoles(), response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
@@ -326,7 +326,7 @@ func (s *RPCServer) UserList(ctx context.Context, request *etcdserverpb.AuthUser
 	}
 	if proxy {
 		response, err := s.peers.UserList(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionUserList, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserList, response, err)
 		response, err = validateAuthNameListProxyPayload(s.metricCli, authProxyActionUserList, response.GetUsers(), response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
@@ -353,7 +353,7 @@ func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUs
 	}
 	if proxy {
 		response, err := s.peers.UserDelete(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionUserDelete, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserDelete, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -378,7 +378,7 @@ func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverp
 	}
 	if proxy {
 		response, err := s.peers.UserChangePassword(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionUserChangePassword, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserChangePassword, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -411,7 +411,7 @@ func (s *RPCServer) UserGrantRole(ctx context.Context, request *etcdserverpb.Aut
 	}
 	if proxy {
 		response, err := s.peers.UserGrantRole(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionUserGrantRole, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserGrantRole, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -436,7 +436,7 @@ func (s *RPCServer) UserRevokeRole(ctx context.Context, request *etcdserverpb.Au
 	}
 	if proxy {
 		response, err := s.peers.UserRevokeRole(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionUserRevokeRole, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserRevokeRole, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -461,7 +461,7 @@ func (s *RPCServer) RoleAdd(ctx context.Context, request *etcdserverpb.AuthRoleA
 	}
 	if proxy {
 		response, err := s.peers.RoleAdd(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionRoleAdd, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionRoleAdd, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -505,7 +505,7 @@ func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleG
 	}
 	if proxy {
 		response, err := s.peers.RoleGet(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionRoleGet, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionRoleGet, response, err)
 		response, err = validateAuthRoleGetProxyPayload(s.metricCli, request, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
@@ -544,7 +544,7 @@ func (s *RPCServer) RoleList(ctx context.Context, request *etcdserverpb.AuthRole
 	}
 	if proxy {
 		response, err := s.peers.RoleList(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionRoleList, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionRoleList, response, err)
 		response, err = validateAuthNameListProxyPayload(s.metricCli, authProxyActionRoleList, response.GetRoles(), response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
@@ -571,7 +571,7 @@ func (s *RPCServer) RoleDelete(ctx context.Context, request *etcdserverpb.AuthRo
 	}
 	if proxy {
 		response, err := s.peers.RoleDelete(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionRoleDelete, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionRoleDelete, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -596,7 +596,7 @@ func (s *RPCServer) RoleGrantPermission(ctx context.Context, request *etcdserver
 	}
 	if proxy {
 		response, err := s.peers.RoleGrantPermission(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionRoleGrantPermission, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionRoleGrantPermission, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
@@ -621,7 +621,7 @@ func (s *RPCServer) RoleRevokePermission(ctx context.Context, request *etcdserve
 	}
 	if proxy {
 		response, err := s.peers.RoleRevokePermission(proxyCtx, request)
-		response, err = validateAuthProxyResult(s.metricCli, authProxyActionRoleRevokePermission, response, err)
+		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionRoleRevokePermission, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}

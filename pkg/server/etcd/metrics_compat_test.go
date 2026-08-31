@@ -79,6 +79,56 @@ type recordedGauge struct {
 	tags  []metrics.T
 }
 
+func testProxyResponseIdentity() proxyResponseIdentity {
+	return proxyResponseIdentity{
+		clusterID: 1,
+		members: []*etcdserverpb.Member{
+			{ID: 2},
+			{ID: 3},
+		},
+	}
+}
+
+func testProxyResponseHeader(revision int64) *etcdserverpb.ResponseHeader {
+	return &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2, Revision: revision}
+}
+
+func proxiedResponseHeader(server *RPCServer, revision int64) *etcdserverpb.ResponseHeader {
+	return proxiedBackendResponseHeader(server.backend, server.localMemberID(), revision)
+}
+
+func proxiedBackendResponseHeader(backend interface{ ClusterID() uint64 }, memberID uint64, revision int64) *etcdserverpb.ResponseHeader {
+	return &etcdserverpb.ResponseHeader{
+		ClusterId: backend.ClusterID(),
+		MemberId:  memberID,
+		Revision:  revision,
+	}
+}
+
+func TestProxyResponseHeaderValidation(t *testing.T) {
+	identity := testProxyResponseIdentity()
+	for _, tt := range []struct {
+		name     string
+		header   *etcdserverpb.ResponseHeader
+		identity proxyResponseIdentity
+		want     string
+	}{
+		{name: "missing", identity: identity, want: "without a header"},
+		{name: "negative revision", header: testProxyResponseHeader(-1), identity: identity, want: "with a negative header revision"},
+		{name: "zero cluster", header: &etcdserverpb.ResponseHeader{MemberId: 2}, identity: identity, want: "with a zero cluster ID"},
+		{name: "foreign cluster", header: &etcdserverpb.ResponseHeader{ClusterId: 4, MemberId: 2}, identity: identity, want: "for a foreign cluster"},
+		{name: "zero member", header: &etcdserverpb.ResponseHeader{ClusterId: 1}, identity: identity, want: "with a zero member ID"},
+		{name: "unknown member", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 4}, identity: identity, want: "for an unknown member"},
+		{name: "approved member", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 3}, identity: identity},
+		{name: "nonzero member without static membership", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 4}, identity: proxyResponseIdentity{clusterID: 1}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response := &etcdserverpb.StatusResponse{Header: tt.header}
+			require.Equal(t, tt.want, validateProxyResponseHeader(response, tt.identity))
+		})
+	}
+}
+
 func recordedWatchGenerationRecoveryValues(rec *recordingMetrics, outcome string) []interface{} {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
@@ -222,33 +272,34 @@ func recordedClusterProxyIntegrityValues(rec *recordingMetrics) []interface{} {
 
 func TestClusterProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
+	identity := testProxyResponseIdentity()
 	initClusterProxyIntegrityMetrics(rec)
-	response, err := validateClusterProxyResult[etcdserverpb.MemberListResponse](rec, clusterProxyRPCMemberList, nil, nil)
+	response, err := validateClusterProxyResult[etcdserverpb.MemberListResponse](rec, identity, clusterProxyRPCMemberList, nil, nil)
 	require.Nil(t, response)
 	require.Equal(t, codes.DataLoss, status.Code(err))
-	response, err = validateClusterProxyResult(rec, clusterProxyRPCMemberList,
+	response, err = validateClusterProxyResult(rec, identity, clusterProxyRPCMemberList,
 		&etcdserverpb.MemberListResponse{}, errors.New("mixed"))
 	require.Nil(t, response)
 	require.Equal(t, codes.DataLoss, status.Code(err))
 
-	response, err = validateClusterProxyResult(rec, clusterProxyRPCMemberList,
+	response, err = validateClusterProxyResult(rec, identity, clusterProxyRPCMemberList,
 		&etcdserverpb.MemberListResponse{}, nil)
 	require.Nil(t, response)
 	require.Equal(t, codes.DataLoss, status.Code(err))
 	require.ErrorContains(t, err, "without a header")
-	response, err = validateClusterProxyResult(rec, clusterProxyRPCMemberList,
+	response, err = validateClusterProxyResult(rec, identity, clusterProxyRPCMemberList,
 		&etcdserverpb.MemberListResponse{Header: txnHeader(-1)}, nil)
 	require.Nil(t, response)
 	require.Equal(t, codes.DataLoss, status.Code(err))
 	require.ErrorContains(t, err, "negative header revision")
 	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
 
-	want := &etcdserverpb.MemberListResponse{Header: &etcdserverpb.ResponseHeader{}}
-	response, err = validateClusterProxyResult(rec, clusterProxyRPCMemberList, want, nil)
+	want := &etcdserverpb.MemberListResponse{Header: testProxyResponseHeader(0)}
+	response, err = validateClusterProxyResult(rec, identity, clusterProxyRPCMemberList, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
 	wantErr := errors.New("transport failed")
-	response, err = validateClusterProxyResult[etcdserverpb.MemberListResponse](rec, clusterProxyRPCMemberList, nil, wantErr)
+	response, err = validateClusterProxyResult[etcdserverpb.MemberListResponse](rec, identity, clusterProxyRPCMemberList, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
 	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedClusterProxyIntegrityValues(rec))
@@ -291,33 +342,34 @@ func TestMemberListProxyPayloadValidation(t *testing.T) {
 
 func TestLeaseProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
+	identity := testProxyResponseIdentity()
 	initLeaseProxyIntegrityMetrics(rec)
 	for _, rpc := range leaseProxyRPCs {
-		response, err := validateLeaseProxyResult[etcdserverpb.LeaseGrantResponse](rec, rpc, nil, nil)
+		response, err := validateLeaseProxyResult[etcdserverpb.LeaseGrantResponse](rec, identity, rpc, nil, nil)
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 
-		response, err = validateLeaseProxyResult(rec, rpc, &etcdserverpb.LeaseGrantResponse{}, errors.New("mixed"))
+		response, err = validateLeaseProxyResult(rec, identity, rpc, &etcdserverpb.LeaseGrantResponse{}, errors.New("mixed"))
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 
-		response, err = validateLeaseProxyResult(rec, rpc, &etcdserverpb.LeaseGrantResponse{}, nil)
+		response, err = validateLeaseProxyResult(rec, identity, rpc, &etcdserverpb.LeaseGrantResponse{}, nil)
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "without a header")
-		response, err = validateLeaseProxyResult(rec, rpc, &etcdserverpb.LeaseGrantResponse{Header: txnHeader(-1)}, nil)
+		response, err = validateLeaseProxyResult(rec, identity, rpc, &etcdserverpb.LeaseGrantResponse{Header: txnHeader(-1)}, nil)
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "negative header revision")
 		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, rpc))
 	}
 
-	want := &etcdserverpb.LeaseGrantResponse{Header: &etcdserverpb.ResponseHeader{}}
-	response, err := validateLeaseProxyResult(rec, leaseProxyRPCGrant, want, nil)
+	want := &etcdserverpb.LeaseGrantResponse{Header: testProxyResponseHeader(0)}
+	response, err := validateLeaseProxyResult(rec, identity, leaseProxyRPCGrant, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
 	wantErr := errors.New("transport failed")
-	response, err = validateLeaseProxyResult[etcdserverpb.LeaseGrantResponse](rec, leaseProxyRPCGrant, nil, wantErr)
+	response, err = validateLeaseProxyResult[etcdserverpb.LeaseGrantResponse](rec, identity, leaseProxyRPCGrant, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
 	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCGrant))
@@ -462,33 +514,34 @@ func TestLeaseProxyPayloadValidation(t *testing.T) {
 
 func TestAuthProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
+	identity := testProxyResponseIdentity()
 	initAuthProxyIntegrityMetrics(rec)
 	for _, action := range authProxyActions {
-		response, err := validateAuthProxyResult[etcdserverpb.AuthStatusResponse](rec, action, nil, nil)
+		response, err := validateAuthProxyResult[etcdserverpb.AuthStatusResponse](rec, identity, action, nil, nil)
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 
-		response, err = validateAuthProxyResult(rec, action, &etcdserverpb.AuthStatusResponse{}, errors.New("mixed"))
+		response, err = validateAuthProxyResult(rec, identity, action, &etcdserverpb.AuthStatusResponse{}, errors.New("mixed"))
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 
-		response, err = validateAuthProxyResult(rec, action, &etcdserverpb.AuthStatusResponse{}, nil)
+		response, err = validateAuthProxyResult(rec, identity, action, &etcdserverpb.AuthStatusResponse{}, nil)
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "without a header")
-		response, err = validateAuthProxyResult(rec, action, &etcdserverpb.AuthStatusResponse{Header: txnHeader(-1)}, nil)
+		response, err = validateAuthProxyResult(rec, identity, action, &etcdserverpb.AuthStatusResponse{Header: txnHeader(-1)}, nil)
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "negative header revision")
 		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, action))
 	}
 
-	want := &etcdserverpb.AuthStatusResponse{Header: &etcdserverpb.ResponseHeader{}}
-	response, err := validateAuthProxyResult(rec, authProxyActionStatus, want, nil)
+	want := &etcdserverpb.AuthStatusResponse{Header: testProxyResponseHeader(0)}
+	response, err := validateAuthProxyResult(rec, identity, authProxyActionStatus, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
 	wantErr := errors.New("transport failed")
-	response, err = validateAuthProxyResult[etcdserverpb.AuthStatusResponse](rec, authProxyActionStatus, nil, wantErr)
+	response, err = validateAuthProxyResult[etcdserverpb.AuthStatusResponse](rec, identity, authProxyActionStatus, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
 	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedAuthProxyIntegrityValues(rec, authProxyActionStatus))
@@ -650,33 +703,34 @@ func TestAuthenticateProxyPayloadValidation(t *testing.T) {
 
 func TestKVProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
+	identity := testProxyResponseIdentity()
 	initKVProxyIntegrityMetrics(rec)
 	for _, rpc := range kvProxyRPCs {
-		response, err := validateKVProxyResult[etcdserverpb.RangeResponse](rec, rpc, nil, nil)
+		response, err := validateKVProxyResult[etcdserverpb.RangeResponse](rec, identity, rpc, nil, nil)
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 
-		response, err = validateKVProxyResult(rec, rpc, &etcdserverpb.RangeResponse{}, errors.New("mixed"))
+		response, err = validateKVProxyResult(rec, identity, rpc, &etcdserverpb.RangeResponse{}, errors.New("mixed"))
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 
-		response, err = validateKVProxyResult(rec, rpc, &etcdserverpb.RangeResponse{}, nil)
+		response, err = validateKVProxyResult(rec, identity, rpc, &etcdserverpb.RangeResponse{}, nil)
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "without a header")
-		response, err = validateKVProxyResult(rec, rpc, &etcdserverpb.RangeResponse{Header: txnHeader(-1)}, nil)
+		response, err = validateKVProxyResult(rec, identity, rpc, &etcdserverpb.RangeResponse{Header: txnHeader(-1)}, nil)
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "negative header revision")
 		require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedKVProxyIntegrityValues(rec, rpc))
 	}
 
-	want := &etcdserverpb.RangeResponse{Header: &etcdserverpb.ResponseHeader{}}
-	response, err := validateKVProxyResult(rec, kvProxyRPCRange, want, nil)
+	want := &etcdserverpb.RangeResponse{Header: testProxyResponseHeader(0)}
+	response, err := validateKVProxyResult(rec, identity, kvProxyRPCRange, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
 	wantErr := errors.New("transport failed")
-	response, err = validateKVProxyResult[etcdserverpb.RangeResponse](rec, kvProxyRPCRange, nil, wantErr)
+	response, err = validateKVProxyResult[etcdserverpb.RangeResponse](rec, identity, kvProxyRPCRange, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
 	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
@@ -1315,31 +1369,32 @@ func TestDowngradeProxyPayloadValidation(t *testing.T) {
 
 func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	rec := &recordingMetrics{}
+	identity := testProxyResponseIdentity()
 	initMaintenanceProxyIntegrityMetrics(rec)
 	for _, rpc := range maintenanceProxyRPCs {
-		response, err := validateMaintenanceProxyResult[etcdserverpb.StatusResponse](rec, rpc, nil, nil)
+		response, err := validateMaintenanceProxyResult[etcdserverpb.StatusResponse](rec, identity, rpc, nil, nil)
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "neither response nor error")
 
-		response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{}, errors.New("mixed"))
+		response, err = validateMaintenanceProxyResult(rec, identity, rpc, &etcdserverpb.StatusResponse{}, errors.New("mixed"))
 		require.Nil(t, response)
 		require.Equal(t, codes.DataLoss, status.Code(err))
 		require.ErrorContains(t, err, "both response and error")
 		if rpc != maintenanceProxyRPCDefragment {
-			response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{}, nil)
+			response, err = validateMaintenanceProxyResult(rec, identity, rpc, &etcdserverpb.StatusResponse{}, nil)
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.ErrorContains(t, err, "without a header")
-			response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2, Revision: -1}}, nil)
+			response, err = validateMaintenanceProxyResult(rec, identity, rpc, &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2, Revision: -1}}, nil)
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.ErrorContains(t, err, "negative header revision")
-			response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{MemberId: 2}}, nil)
+			response, err = validateMaintenanceProxyResult(rec, identity, rpc, &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{MemberId: 2}}, nil)
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.ErrorContains(t, err, "zero cluster ID")
-			response, err = validateMaintenanceProxyResult(rec, rpc, &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 1}}, nil)
+			response, err = validateMaintenanceProxyResult(rec, identity, rpc, &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 1}}, nil)
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.ErrorContains(t, err, "zero member ID")
@@ -1350,17 +1405,17 @@ func TestMaintenanceProxyIntegrityMetricsAndValidation(t *testing.T) {
 	}
 
 	want := &etcdserverpb.StatusResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2}}
-	response, err := validateMaintenanceProxyResult(rec, maintenanceProxyRPCStatus, want, nil)
+	response, err := validateMaintenanceProxyResult(rec, identity, maintenanceProxyRPCStatus, want, nil)
 	require.Same(t, want, response)
 	require.NoError(t, err)
 	wantErr := errors.New("transport failed")
-	response, err = validateMaintenanceProxyResult[etcdserverpb.StatusResponse](rec, maintenanceProxyRPCStatus, nil, wantErr)
+	response, err = validateMaintenanceProxyResult[etcdserverpb.StatusResponse](rec, identity, maintenanceProxyRPCStatus, nil, wantErr)
 	require.Nil(t, response)
 	require.ErrorIs(t, err, wantErr)
 	require.Equal(t, []interface{}{int64(0), 1, 1, 1, 1, 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCStatus))
 
 	wantDefragment := &etcdserverpb.DefragmentResponse{}
-	responseDefragment, err := validateMaintenanceProxyResult(rec, maintenanceProxyRPCDefragment, wantDefragment, nil)
+	responseDefragment, err := validateMaintenanceProxyResult(rec, identity, maintenanceProxyRPCDefragment, wantDefragment, nil)
 	require.Same(t, wantDefragment, responseDefragment)
 	require.NoError(t, err)
 	require.Equal(t, []interface{}{int64(0), 1, 1}, recordedMaintenanceProxyIntegrityValues(rec, maintenanceProxyRPCDefragment))

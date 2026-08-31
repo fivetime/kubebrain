@@ -317,7 +317,7 @@ func TestAuthorizedFollowerHistoricalRangeRechecksAuthAfterProxy(t *testing.T) {
 		proxyEnabled: true,
 		rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 			mutationErr = server.auth.roleAdd(context.Background(), "follower-range-proxy-revision-bump")
-			return &etcdserverpb.RangeResponse{Header: txnHeader(1)}, nil
+			return &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 1)}, nil
 		},
 	}
 
@@ -755,7 +755,7 @@ func TestClientCertificateIdentitySurvivesFollowerProxy(t *testing.T) {
 			caller, err := server.authCallerFromContext(peerCtx)
 			require.NoError(t, err)
 			forwardedUsername = caller.username
-			return &etcdserverpb.PutResponse{Header: txnHeader(initialAuthRevision)}, nil
+			return &etcdserverpb.PutResponse{Header: proxiedResponseHeader(server, initialAuthRevision)}, nil
 		},
 	}
 

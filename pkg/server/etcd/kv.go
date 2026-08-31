@@ -124,7 +124,7 @@ func (s *RPCServer) proxyLatestSerializableRange(
 		return nil, err
 	}
 	response, err = s.peers.Range(proxyCtx, r)
-	response, err = validateKVProxyResult(s.metricCli, kvProxyRPCRange, response, err)
+	response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCRange, response, err)
 	response, err = validateRangeProxyPayload(s.metricCli, r, response, err)
 	s.observeForwardedRevision(response.GetHeader(), err)
 	return response, err
@@ -157,7 +157,7 @@ func (s *RPCServer) rangeWithAfterReadOnce(
 			return nil, err
 		}
 		response, err := s.peers.Range(proxyCtx, r)
-		response, err = validateKVProxyResult(s.metricCli, kvProxyRPCRange, response, err)
+		response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCRange, response, err)
 		response, err = validateRangeProxyPayload(s.metricCli, r, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		if err == nil && afterRead != nil {
@@ -194,7 +194,7 @@ func (s *RPCServer) rangeWithAfterReadOnce(
 			return nil, err
 		}
 		response, err := s.peers.Range(proxyCtx, r)
-		response, err = validateKVProxyResult(s.metricCli, kvProxyRPCRange, response, err)
+		response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCRange, response, err)
 		response, err = validateRangeProxyPayload(s.metricCli, r, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		if err == nil && afterRead != nil {
@@ -949,7 +949,7 @@ func (s *RPCServer) proxyLatestSerializableTxn(
 		return nil, err
 	}
 	response, err = s.peers.Txn(proxyCtx, txn)
-	response, err = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, err)
+	response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCTxn, response, err)
 	response, err = validateTxnProxyPayload(s.metricCli, txn, response, err)
 	s.observeForwardedRevision(response.GetHeader(), err)
 	return response, err
@@ -983,7 +983,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 			}
 			proxyCtx = s.forwardQuotaAdmissionMember(proxyCtx)
 			response, err := s.peers.Txn(proxyCtx, txn)
-			response, err = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, err)
+			response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCTxn, response, err)
 			response, err = validateTxnProxyPayload(s.metricCli, txn, response, err)
 			s.observeForwardedRevision(response.GetHeader(), err)
 			return response, err
@@ -1012,7 +1012,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 				return nil, err
 			}
 			response, err := s.peers.Txn(proxyCtx, txn)
-			response, err = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, err)
+			response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCTxn, response, err)
 			response, err = validateTxnProxyPayload(s.metricCli, txn, response, err)
 			s.observeForwardedRevision(response.GetHeader(), err)
 			return response, err
@@ -1055,7 +1055,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 					return nil, err
 				}
 				response, err := s.peers.Txn(proxyCtx, txn)
-				response, err = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, err)
+				response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCTxn, response, err)
 				response, err = validateTxnProxyPayload(s.metricCli, txn, response, err)
 				s.observeForwardedRevision(response.GetHeader(), err)
 				return response, err
@@ -1116,7 +1116,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 				return nil, err
 			}
 			response, err := s.peers.Txn(proxyCtx, txn)
-			response, err = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, err)
+			response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCTxn, response, err)
 			response, err = validateTxnProxyPayload(s.metricCli, txn, response, err)
 			s.observeForwardedRevision(response.GetHeader(), err)
 			return response, err
@@ -1151,7 +1151,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 					return nil, proxyErr
 				}
 				response, proxyErr := s.peers.Txn(proxyCtx, txn)
-				response, proxyErr = validateKVProxyResult(s.metricCli, kvProxyRPCTxn, response, proxyErr)
+				response, proxyErr = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCTxn, response, proxyErr)
 				response, proxyErr = validateTxnProxyPayload(s.metricCli, txn, response, proxyErr)
 				s.observeForwardedRevision(response.GetHeader(), proxyErr)
 				return response, proxyErr
@@ -1708,7 +1708,7 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 			return nil, err
 		}
 		response, err := s.peers.Compact(proxyCtx, r)
-		response, err = validateKVProxyResult(s.metricCli, kvProxyRPCCompact, response, err)
+		response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCCompact, response, err)
 		response, err = validateCompactProxyPayload(s.metricCli, r, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
@@ -1838,7 +1838,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		}
 		proxyCtx = s.forwardQuotaAdmissionMember(proxyCtx)
 		response, err := s.peers.Put(proxyCtx, r)
-		response, err = validateKVProxyResult(s.metricCli, kvProxyRPCPut, response, err)
+		response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCPut, response, err)
 		response, err = validatePutProxyPayload(s.metricCli, r, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
@@ -1938,7 +1938,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 				return nil, err
 			}
 			response, err := s.peers.DeleteRange(proxyCtx, r)
-			response, err = validateKVProxyResult(s.metricCli, kvProxyRPCDeleteRange, response, err)
+			response, err = validateKVProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), kvProxyRPCDeleteRange, response, err)
 			response, err = validateDeleteRangeProxyPayload(s.metricCli, r, response, err)
 			s.observeForwardedRevision(response.GetHeader(), err)
 			return response, err

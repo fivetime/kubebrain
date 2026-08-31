@@ -127,7 +127,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 			return nil, err
 		}
 		response, err := s.peers.Alarm(proxyCtx, req)
-		response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCAlarm, response, err)
+		response, err = validateMaintenanceProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), maintenanceProxyRPCAlarm, response, err)
 		response, err = validateAlarmProxyPayload(s.metricCli, req, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
@@ -434,7 +434,7 @@ func (s *RPCServer) hedgedMaintenanceStatus(
 				return nil, err
 			}
 			response, err := s.peers.Status(proxyCtx, req)
-			response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCStatus, response, err)
+			response, err = validateMaintenanceProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), maintenanceProxyRPCStatus, response, err)
 			response, err = validateStatusProxyPayload(s.metricCli, response, err)
 			if response != nil {
 				// IsLearner is a property of the serving member, not the leader that
@@ -571,7 +571,7 @@ func (s *RPCServer) hedgedMaintenanceDefragment(
 				return nil, err
 			}
 			response, err := s.peers.Defragment(proxyCtx, req)
-			return validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCDefragment, response, err)
+			return validateMaintenanceProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), maintenanceProxyRPCDefragment, response, err)
 		},
 		func(response *etcdserverpb.DefragmentResponse, err error) {
 			s.observeForwardedRevision(response.GetHeader(), err)
@@ -768,7 +768,7 @@ func (s *RPCServer) hedgedMaintenanceHash(ctx context.Context, req *etcdserverpb
 				return nil, err
 			}
 			response, err := s.peers.Hash(proxyCtx, req)
-			response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCHash, response, err)
+			response, err = validateMaintenanceProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), maintenanceProxyRPCHash, response, err)
 			return validateHashProxyPayload(s.metricCli, response, err)
 		},
 		func(response *etcdserverpb.HashResponse, err error) {
@@ -804,7 +804,7 @@ func (s *RPCServer) hedgedMaintenanceHashKV(
 				return nil, err
 			}
 			response, err := s.peers.HashKV(proxyCtx, req)
-			response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCHashKV, response, err)
+			response, err = validateMaintenanceProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), maintenanceProxyRPCHashKV, response, err)
 			return validateHashKVProxyPayload(s.metricCli, req, response, err)
 		},
 		func(response *etcdserverpb.HashKVResponse, err error) {
@@ -1205,7 +1205,7 @@ func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.Downgra
 			return nil, err
 		}
 		response, err := s.peers.Downgrade(proxyCtx, request)
-		response, err = validateMaintenanceProxyResult(s.metricCli, maintenanceProxyRPCDowngrade, response, err)
+		response, err = validateMaintenanceProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), maintenanceProxyRPCDowngrade, response, err)
 		response, err = validateDowngradeProxyPayload(s.metricCli, request, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err

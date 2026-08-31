@@ -3533,7 +3533,7 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 		isLeader:     false,
 		proxyEnabled: true,
 		putFn: func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
-			return &etcdserverpb.PutResponse{Header: txnHeader(61)}, nil
+			return &etcdserverpb.PutResponse{Header: proxiedResponseHeader(server, 61)}, nil
 		},
 		syncReadFn: func(context.Context) error {
 			if barrierCalls.Add(1) == 1 {

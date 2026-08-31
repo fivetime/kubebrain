@@ -476,19 +476,12 @@ func initKVProxyIntegrityMetrics(metricCli metrics.Metrics) {
 	}
 }
 
-func validateKVProxyResult[T any](metricCli metrics.Metrics, rpc string, response *T, err error) (*T, error) {
+func validateKVProxyResult[T any](metricCli metrics.Metrics, identity proxyResponseIdentity, rpc string, response *T, err error) (*T, error) {
 	if (response == nil) != (err == nil) {
 		if response != nil {
-			headerResponse, ok := any(response).(interface {
-				GetHeader() *etcdserverpb.ResponseHeader
-			})
-			if !ok || headerResponse.GetHeader() == nil {
+			if issue := validateProxyResponseHeader(response, identity); issue != "" {
 				emitKVProxyIntegrityFailure(metricCli, rpc)
-				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response without a header", rpc))
-			}
-			if headerResponse.GetHeader().GetRevision() < 0 {
-				emitKVProxyIntegrityFailure(metricCli, rpc)
-				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a negative header revision", rpc))
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response %s", rpc, issue))
 			}
 		}
 		return response, err

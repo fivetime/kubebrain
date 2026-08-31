@@ -91,7 +91,7 @@ func TestAuthCompactAdminCheckIsPreservedAcrossFollowerRouting(t *testing.T) {
 					case tokens[0] != rootToken:
 						return nil, rpctypes.ErrPermissionDenied
 					}
-					return &etcdserverpb.CompactionResponse{Header: txnHeader(1)}, nil
+					return &etcdserverpb.CompactionResponse{Header: proxiedResponseHeader(server, 1)}, nil
 				},
 			}
 

@@ -75,19 +75,12 @@ func initAuthProxyIntegrityMetrics(metricCli metrics.Metrics) {
 	}
 }
 
-func validateAuthProxyResult[T any](metricCli metrics.Metrics, action string, response *T, err error) (*T, error) {
+func validateAuthProxyResult[T any](metricCli metrics.Metrics, identity proxyResponseIdentity, action string, response *T, err error) (*T, error) {
 	if (response == nil) != (err == nil) {
 		if response != nil {
-			headerResponse, ok := any(response).(interface {
-				GetHeader() *etcdserverpb.ResponseHeader
-			})
-			if !ok || headerResponse.GetHeader() == nil {
+			if issue := validateProxyResponseHeader(response, identity); issue != "" {
 				emitAuthProxyIntegrityFailure(metricCli, action)
-				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response without a header", action))
-			}
-			if headerResponse.GetHeader().GetRevision() < 0 {
-				emitAuthProxyIntegrityFailure(metricCli, action)
-				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a negative header revision", action))
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response %s", action, issue))
 			}
 		}
 		return response, err

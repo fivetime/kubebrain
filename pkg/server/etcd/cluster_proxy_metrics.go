@@ -30,19 +30,12 @@ func initClusterProxyIntegrityMetrics(metricCli metrics.Metrics) {
 	}
 }
 
-func validateClusterProxyResult[T any](metricCli metrics.Metrics, rpc string, response *T, err error) (*T, error) {
+func validateClusterProxyResult[T any](metricCli metrics.Metrics, identity proxyResponseIdentity, rpc string, response *T, err error) (*T, error) {
 	if (response == nil) != (err == nil) {
 		if response != nil {
-			headerResponse, ok := any(response).(interface {
-				GetHeader() *etcdserverpb.ResponseHeader
-			})
-			if !ok || headerResponse.GetHeader() == nil {
+			if issue := validateProxyResponseHeader(response, identity); issue != "" {
 				emitClusterProxyIntegrityFailure(metricCli, rpc)
-				return nil, status.Error(codes.DataLoss, "leader member_list proxy returned a response without a header")
-			}
-			if headerResponse.GetHeader().GetRevision() < 0 {
-				emitClusterProxyIntegrityFailure(metricCli, rpc)
-				return nil, status.Error(codes.DataLoss, "leader member_list proxy returned a response with a negative header revision")
+				return nil, status.Error(codes.DataLoss, "leader member_list proxy returned a response "+issue)
 			}
 		}
 		return response, err

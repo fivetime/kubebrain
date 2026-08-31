@@ -383,7 +383,7 @@ func TestFollowerAuthStatusProxiesToLeader(t *testing.T) {
 			called = true
 			require.Same(t, request, got)
 			return &etcdserverpb.AuthStatusResponse{
-				Header: txnHeader(123), Enabled: true, AuthRevision: 17,
+				Header: proxiedResponseHeader(server, 123), Enabled: true, AuthRevision: 17,
 			}, nil
 		},
 	}
@@ -405,7 +405,7 @@ func TestFollowerRejectsZeroAuthStatusProxyRevision(t *testing.T) {
 	server.peers = testPeerService{
 		isLeader: false, proxyEnabled: true,
 		authStatusFn: func(context.Context, *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
-			return &etcdserverpb.AuthStatusResponse{Header: txnHeader(2), Enabled: true}, nil
+			return &etcdserverpb.AuthStatusResponse{Header: proxiedResponseHeader(server, 2), Enabled: true}, nil
 		},
 	}
 
@@ -554,15 +554,15 @@ func TestFollowerAuthReadsProxyToLeader(t *testing.T) {
 		isLeader: false, proxyEnabled: true,
 		userGetFn: func(_ context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
 			calls = append(calls, "user-get:"+req.GetName())
-			return &etcdserverpb.AuthUserGetResponse{Header: txnHeader(1), Roles: []string{"r"}}, nil
+			return &etcdserverpb.AuthUserGetResponse{Header: proxiedResponseHeader(server, 1), Roles: []string{"r"}}, nil
 		},
 		userListFn: func(context.Context, *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
 			calls = append(calls, "user-list")
-			return &etcdserverpb.AuthUserListResponse{Header: txnHeader(2), Users: []string{"u"}}, nil
+			return &etcdserverpb.AuthUserListResponse{Header: proxiedResponseHeader(server, 2), Users: []string{"u"}}, nil
 		},
 		roleGetFn: func(_ context.Context, req *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
 			calls = append(calls, "role-get:"+req.GetRole())
-			return &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(3), Perm: []*authpb.Permission{
+			return &etcdserverpb.AuthRoleGetResponse{Header: proxiedResponseHeader(server, 3), Perm: []*authpb.Permission{
 				{PermType: authpb.READ, Key: []byte("same"), RangeEnd: []byte("same-b")},
 				{PermType: authpb.WRITE, Key: []byte("same"), RangeEnd: []byte("same-c")},
 				{PermType: authpb.WRITE, Key: []byte("same"), RangeEnd: []byte("same-c")},
@@ -570,7 +570,7 @@ func TestFollowerAuthReadsProxyToLeader(t *testing.T) {
 		},
 		roleListFn: func(context.Context, *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
 			calls = append(calls, "role-list")
-			return &etcdserverpb.AuthRoleListResponse{Header: txnHeader(4), Roles: []string{"r"}}, nil
+			return &etcdserverpb.AuthRoleListResponse{Header: proxiedResponseHeader(server, 4), Roles: []string{"r"}}, nil
 		},
 	}
 

@@ -55,29 +55,13 @@ func initMaintenanceProxyIntegrityMetrics(metricCli metrics.Metrics) {
 }
 
 func validateMaintenanceProxyResult[T any](
-	metricCli metrics.Metrics, rpc string, response *T, err error,
+	metricCli metrics.Metrics, identity proxyResponseIdentity, rpc string, response *T, err error,
 ) (*T, error) {
 	if (response == nil) != (err == nil) {
 		if response != nil && rpc != maintenanceProxyRPCDefragment {
-			headerResponse, ok := any(response).(interface {
-				GetHeader() *etcdserverpb.ResponseHeader
-			})
-			if !ok || headerResponse.GetHeader() == nil {
+			if issue := validateProxyResponseHeader(response, identity); issue != "" {
 				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
-				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response without a header", rpc))
-			}
-			header := headerResponse.GetHeader()
-			if header.GetRevision() < 0 {
-				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
-				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a negative header revision", rpc))
-			}
-			if header.GetClusterId() == 0 {
-				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
-				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a zero cluster ID", rpc))
-			}
-			if header.GetMemberId() == 0 {
-				emitMaintenanceProxyIntegrityFailure(metricCli, rpc)
-				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response with a zero member ID", rpc))
+				return nil, status.Error(codes.DataLoss, fmt.Sprintf("leader %s proxy returned a response %s", rpc, issue))
 			}
 		}
 		return response, err

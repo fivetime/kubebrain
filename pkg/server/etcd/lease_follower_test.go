@@ -164,10 +164,10 @@ func TestFollowerLeaseReadsProxyWhenEnabled(t *testing.T) {
 	server := New(b, metrics, testPeerService{
 		isLeader: false, proxyEnabled: true,
 		leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
-			return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: 1, TTL: 30, GrantedTTL: 30}, nil
+			return &etcdserverpb.LeaseTimeToLiveResponse{Header: proxiedBackendResponseHeader(b, 1, 1), ID: 1, TTL: 30, GrantedTTL: 30}, nil
 		},
 		leaseLeasesFn: func(context.Context, *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
-			return &etcdserverpb.LeaseLeasesResponse{Header: txnHeader(1), Leases: []*etcdserverpb.LeaseStatus{{ID: 1}}}, nil
+			return &etcdserverpb.LeaseLeasesResponse{Header: proxiedBackendResponseHeader(b, 1, 1), Leases: []*etcdserverpb.LeaseStatus{{ID: 1}}}, nil
 		},
 	})
 	defer func() {

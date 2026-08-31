@@ -50,10 +50,6 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
-func proxiedMaintenanceHeader(revision int64) *etcdserverpb.ResponseHeader {
-	return &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2, Revision: revision}
-}
-
 type writeAfterHashBackendShim struct {
 	BackendShim
 	t              *testing.T
@@ -545,7 +541,7 @@ func TestFollowerStatusHedgesIsolatedStorageToLeaderAndPreservesLocalLearner(t *
 	server.SetStaticMembers([]*etcdserverpb.Member{{ID: localID, Name: "local", IsLearner: true}})
 
 	want := &etcdserverpb.StatusResponse{
-		Header:           proxiedMaintenanceHeader(91),
+		Header:           proxiedResponseHeader(server, 91),
 		Version:          Version,
 		DbSize:           1,
 		DbSizeInUse:      2,
@@ -671,7 +667,7 @@ func TestFollowerStatusHedgeRejectsInvalidProxyPayload(t *testing.T) {
 			initMaintenanceProxyIntegrityMetrics(rec)
 			server.backend = &quotaStatusErrorBackendShim{BackendShim: server.backend, err: errors.New("storage unavailable")}
 			response := &etcdserverpb.StatusResponse{
-				Header: proxiedMaintenanceHeader(5), Version: Version, DbSize: 10, DbSizeInUse: 8, DbSizeQuota: 100,
+				Header: proxiedResponseHeader(server, 5), Version: Version, DbSize: 10, DbSizeInUse: 8, DbSizeQuota: 100,
 				Leader: 1, RaftIndex: 7, RaftAppliedIndex: 6, DowngradeInfo: &etcdserverpb.DowngradeInfo{},
 			}
 			tt.mutate(response)
@@ -749,9 +745,9 @@ func TestFollowerHashesHedgeIsolatedStorageAndPreserveRevision(t *testing.T) {
 
 	hashRequest := &etcdserverpb.HashRequest{}
 	hashKVRequest := &etcdserverpb.HashKVRequest{Revision: 42}
-	hashResponse := &etcdserverpb.HashResponse{Header: proxiedMaintenanceHeader(77), Hash: 101}
+	hashResponse := &etcdserverpb.HashResponse{Header: proxiedResponseHeader(server, 77), Hash: 101}
 	hashKVResponse := &etcdserverpb.HashKVResponse{
-		Header: proxiedMaintenanceHeader(77), Hash: 202, HashRevision: 42, CompactRevision: 10,
+		Header: proxiedResponseHeader(server, 77), Hash: 202, HashRevision: 42, CompactRevision: 10,
 	}
 	hashCalls, hashKVCalls := 0, 0
 	syncStarted := make(chan struct{}, 2)
@@ -817,7 +813,7 @@ func TestFollowerHashesHedgeRejectsInvalidProxyPayload(t *testing.T) {
 			isLeader: false, proxyEnabled: true,
 			epochFn: func() (uint64, bool) { return 7, false },
 			hashFn: func(context.Context, *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
-				return &etcdserverpb.HashResponse{Header: proxiedMaintenanceHeader(0)}, nil
+				return &etcdserverpb.HashResponse{Header: proxiedResponseHeader(server, 0)}, nil
 			},
 		}
 
@@ -838,7 +834,7 @@ func TestFollowerHashesHedgeRejectsInvalidProxyPayload(t *testing.T) {
 			isLeader: false, proxyEnabled: true,
 			epochFn: func() (uint64, bool) { return 7, false },
 			hashKVFn: func(context.Context, *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
-				return &etcdserverpb.HashKVResponse{Header: proxiedMaintenanceHeader(7), HashRevision: 4, CompactRevision: 3}, nil
+				return &etcdserverpb.HashKVResponse{Header: proxiedResponseHeader(server, 7), HashRevision: 4, CompactRevision: 3}, nil
 			},
 		}
 
@@ -1025,7 +1021,7 @@ func TestFollowerAlarmProxiesEveryActionToLeader(t *testing.T) {
 		},
 		alarmFn: func(_ context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
 			forwarded = append(forwarded, req.GetAction())
-			return &etcdserverpb.AlarmResponse{Header: proxiedMaintenanceHeader(int64(len(forwarded)))}, nil
+			return &etcdserverpb.AlarmResponse{Header: proxiedResponseHeader(server, int64(len(forwarded)))}, nil
 		},
 	}
 
@@ -1051,10 +1047,10 @@ func TestFollowerRejectsInvalidAlarmProxyPayload(t *testing.T) {
 		request  *etcdserverpb.AlarmRequest
 		response *etcdserverpb.AlarmResponse
 	}{
-		{name: "nil get alarm", request: &etcdserverpb.AlarmRequest{}, response: &etcdserverpb.AlarmResponse{Header: proxiedMaintenanceHeader(2), Alarms: []*etcdserverpb.AlarmMember{nil}}},
-		{name: "get filter mismatch", request: &etcdserverpb.AlarmRequest{Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: proxiedMaintenanceHeader(2), Alarms: []*etcdserverpb.AlarmMember{{MemberID: 1, Alarm: etcdserverpb.AlarmType_CORRUPT}}}},
-		{name: "activate mismatch", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: proxiedMaintenanceHeader(2), Alarms: []*etcdserverpb.AlarmMember{{MemberID: 2, Alarm: etcdserverpb.AlarmType_NOSPACE}}}},
-		{name: "deactivate too many", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: proxiedMaintenanceHeader(2), Alarms: []*etcdserverpb.AlarmMember{{MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}, {MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}}}},
+		{name: "nil get alarm", request: &etcdserverpb.AlarmRequest{}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(2), Alarms: []*etcdserverpb.AlarmMember{nil}}},
+		{name: "get filter mismatch", request: &etcdserverpb.AlarmRequest{Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(2), Alarms: []*etcdserverpb.AlarmMember{{MemberID: 1, Alarm: etcdserverpb.AlarmType_CORRUPT}}}},
+		{name: "activate mismatch", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(2), Alarms: []*etcdserverpb.AlarmMember{{MemberID: 2, Alarm: etcdserverpb.AlarmType_NOSPACE}}}},
+		{name: "deactivate too many", request: &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}, response: &etcdserverpb.AlarmResponse{Header: txnHeader(2), Alarms: []*etcdserverpb.AlarmMember{{MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}, {MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE}}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
@@ -1062,6 +1058,8 @@ func TestFollowerRejectsInvalidAlarmProxyPayload(t *testing.T) {
 			rec := &recordingMetrics{}
 			server.metricCli = rec
 			initMaintenanceProxyIntegrityMetrics(rec)
+			tt.response.Header.ClusterId = server.backend.ClusterID()
+			tt.response.Header.MemberId = server.localMemberID()
 			server.peers = testPeerService{
 				isLeader: false, proxyEnabled: true,
 				alarmFn: func(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
@@ -1301,7 +1299,7 @@ func TestFollowerDowngradeProxiesEveryActionToLeader(t *testing.T) {
 		proxyEnabled: true,
 		downgradeFn: func(_ context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
 			forwarded = append(forwarded, req.GetAction())
-			return &etcdserverpb.DowngradeResponse{Header: proxiedMaintenanceHeader(int64(len(forwarded))), Version: ClusterVersion}, nil
+			return &etcdserverpb.DowngradeResponse{Header: proxiedResponseHeader(server, int64(len(forwarded))), Version: ClusterVersion}, nil
 		},
 	}
 
@@ -1335,7 +1333,7 @@ func TestFollowerDowngradeRejectsInvalidProxyPayload(t *testing.T) {
 	server.peers = testPeerService{
 		isLeader: false, proxyEnabled: true,
 		downgradeFn: func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
-			return &etcdserverpb.DowngradeResponse{Header: proxiedMaintenanceHeader(2), Version: "3.6"}, nil
+			return &etcdserverpb.DowngradeResponse{Header: proxiedResponseHeader(server, 2), Version: "3.6"}, nil
 		},
 	}
 
@@ -1725,7 +1723,7 @@ func TestPeerHashKVHandlerHedgesIsolatedStorageWithTrustedMarker(t *testing.T) {
 	wantErr := errors.New("isolated peer hash storage must not be reached")
 	server.backend = &maintenanceHashTrapBackendShim{BackendShim: server.backend, err: wantErr}
 	want := &etcdserverpb.HashKVResponse{
-		Header: proxiedMaintenanceHeader(77), Hash: 202, HashRevision: 42, CompactRevision: 10,
+		Header: proxiedResponseHeader(server, 77), Hash: 202, HashRevision: 42, CompactRevision: 10,
 	}
 	calls := 0
 	server.peers = testPeerService{
@@ -2011,10 +2009,10 @@ func TestHedgedPeerHashKVRejectsInvalidForwardedResult(t *testing.T) {
 						return &etcdserverpb.HashKVResponse{}, nil
 					}
 					if shape == "negative_revision" {
-						return &etcdserverpb.HashKVResponse{Header: proxiedMaintenanceHeader(-1)}, nil
+						return &etcdserverpb.HashKVResponse{Header: proxiedResponseHeader(server, -1)}, nil
 					}
 					if shape == "payload" {
-						return &etcdserverpb.HashKVResponse{Header: proxiedMaintenanceHeader(7), HashRevision: 6, CompactRevision: -1}, nil
+						return &etcdserverpb.HashKVResponse{Header: proxiedResponseHeader(server, 7), HashRevision: 6, CompactRevision: -1}, nil
 					}
 					return nil, nil
 				},
