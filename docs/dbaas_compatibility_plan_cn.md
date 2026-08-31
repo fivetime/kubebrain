@@ -66797,6 +66797,52 @@ current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
 Ready/restart 0，endpoint proposal health GREEN，无端口转发、凭据或诊断文件落盘。A5655 关闭了 pre-3.4 server 伪造四项后发 Status
 字段仍可通过产品代理与生产门禁的缺口，同时恢复真实 3.3 `raftIndex` 单字段响应的接受路径。
 
+### A5656：锁定 Status errors 的上游可达集合与持久化文本
+
+上游 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Status` 只会先在 leader 为 `raft.None` 时追加一次固定
+`etcdserver: no leader`，再逐项追加 `AlarmStore.Alarms()` 中 `AlarmMember.String()` 的结果；AlarmStore 又以 `(alarm type,
+member ID)` 为键去重。此前 product leader proxy 只拒绝空字符串并核对 no-leader 是否存在，会接受任意诊断、重复告警、重复或错位的
+no-leader 文案；且 `downgradeInfo == nil` 的提前返回使 etcd 3.4/3.5 完全绕过 errors 校验。raw maintenance probe 同样会投影任意
+字符串。进一步的差分取证确认，上游告警在 `MustPutAlarm` 的 `proto.Marshal` 后进入 Status，当前 protobuf compact text 对两个非零字段使用
+两个空格，例如 `memberID:7  alarm:CORRUPT`；KubeBrain 原先手工 `strings.Join` 生成的单空格文本也与该生命周期不一致。
+
+确定性 RED 中，product 在 `0.045s` 后放行任意文本、NONE/缺 type/非规范告警、重复告警及重复/错位 no-leader；另一个用例证明
+3.5 的任意 errors 因提前返回而被接受。probe 在 `0.010s` 后放行同类不可达集合。提交 `61f71791` 后，product 与 raw probe 均以
+protobuf text codec 解析告警，再要求精确等于持久化生命周期的规范文本；允许零 member、已知枚举和非零未知数字枚举，拒绝 NONE、显式
+零字段、非规范数字/空格、任意诊断及重复 `(memberID, alarm)`。leader 为零时 no-leader 必须恰好位于首项，leader 非零时不得出现。
+校验从 errors 字段实际存在的 3.4 起生效；真实 3.3 的零 leader 可保持 errors proto 默认值。Status 本地生成端也改为与持久化后的
+`AlarmMember.String()` 逐字一致。readonly gate 原本就要求健康生产响应的 list/gateway/raw 三面 errors 为空，本轮新增 raw 面独立负例，
+防止只依赖前两面提供覆盖。
+
+最终聚焦 product、probe 与 raw gate 分别为 `0.040s`、`0.011s`、`0.466s`；完整 `pkg/server/etcd` 普通为 `132.266s`，probe
+普通/race 为 `0.013s/1.047s`，完整 readonly gate 普通/race 为 `151.862s/152.855s`。首次未过滤 product race 在
+`386.047s` 后失败，但约 25 万 token 预期日志被执行器截断，未留下失败用例或 data-race 证据；随后以 `go test -race -json` 流式只
+保留 fail/data-race 事件重跑同一完整包，退出码 0 且无任何失败事件。该首轮异常按不可诊断测试运行保留。Go vet、gofmt、bash
+syntax、diff check 与固定 `koalaman/shellcheck:v0.11.0 --severity=warning` 全部 GREEN。提交前 inventory 为 703 项、
+`170/193/180/160`；提交后四片分别为 `275.218/475.033/321.102/598.155s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5656-61f71791` 内嵌版本 `0.0.0-61f71791e968`、完整提交
+`61f71791e968a55220d3d28fcccc790a468da3c4` 与 build time `2026-08-31T15:00:48Z`，运行用户 `65532:65532`、平台
+`linux/amd64`。OCI index、platform manifest、config 分别为
+`sha256:49b7f6ff251166efcb7c7bd575a19acec5d3758310c1d8bc25d797bab2e38418`、
+`sha256:29baac37403f9e700f12dc427bbac15e8b197cf24e625ef9fbdfd38b9caca6fe`、
+`sha256:63d31445ea4ef9962713865db8f03a6e798bd1d60a359ff30d2498136afb3e85`；Kind/containerd runtime digest 为
+`sha256:17b27d4edb422819c3ce4c1d2dcb55ee6ce339f0ab763390ebb5a6e8fcd59e25`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 699 部署至 generation 700；三 Pod 均落在
+revision `kubebrain-678bd475b`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。三个 exact endpoint 的 raw
+Status 均返回 version/storage `3.7.0/3.7.0`、cluster ID `7662961163671170154`、revision/index/applied `65743`、term `273`、leader
+`2393892952`、quota `1073741824`、空 errors、non-learner 与 disabled+empty downgrade。首次完整 gate 因操作者把 metrics HTTP 基址
+误指向 client port 而以预期 404 退出；改为正确 info port 后，八项 named/HTTP/metrics/debug 及全部端点一致性开关全开的 readonly gate
+GREEN，HashKV 为 `4283180840`、compact revision 为 `44329`、direct hash 为 `1884729719`。候选 Pod 日志为 `684/283/723` 行，
+error 级别与 panic/fatal/data race/data corruption/TiKV/PD error 模式计数均为 0；三轮九次 proposal health 全部成功。
+
+最后关闭六个端口转发并确认无监听，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 701、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，三轮九次稳定 endpoint proposal health 全部 GREEN，无端口转发、凭据或诊断文件落盘。A5656 关闭了任意或重复
+Status errors 穿越 leader proxy/raw probe 的完整性缺口，并修正 KubeBrain 告警 Status 文本与上游持久化生命周期的空格差异。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
