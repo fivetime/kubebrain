@@ -134,13 +134,16 @@ func validateAlarmProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 	return response, nil
 }
 
-func validateStatusProxyPayload(metricCli metrics.Metrics, response *etcdserverpb.StatusResponse, err error) (*etcdserverpb.StatusResponse, error) {
+func validateStatusProxyPayload(metricCli metrics.Metrics, identity proxyResponseIdentity, response *etcdserverpb.StatusResponse, err error) (*etcdserverpb.StatusResponse, error) {
 	if err != nil {
 		return response, err
 	}
 	fail := func(message string) (*etcdserverpb.StatusResponse, error) {
 		emitMaintenanceProxyIntegrityFailure(metricCli, maintenanceProxyRPCStatus)
 		return nil, status.Error(codes.DataLoss, message)
+	}
+	if response.GetLeader() != 0 && len(identity.members) > 0 && !proxyResponseIdentityHasMember(identity, response.GetLeader()) {
+		return fail("leader status proxy returned an unknown leader ID")
 	}
 	if response.GetVersion() == "" {
 		return fail("leader status proxy returned an empty version")

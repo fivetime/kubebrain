@@ -1128,6 +1128,7 @@ func TestAlarmProxyPayloadValidation(t *testing.T) {
 }
 
 func TestStatusProxyPayloadValidation(t *testing.T) {
+	identity := proxyResponseIdentity{members: []*etcdserverpb.Member{{ID: 1}}}
 	valid := func() *etcdserverpb.StatusResponse {
 		return &etcdserverpb.StatusResponse{
 			Header: txnHeader(5), Version: "3.6.0", DbSize: 10, DbSizeInUse: 8, DbSizeQuota: 100,
@@ -1290,6 +1291,7 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 		}},
 		{name: "zero leader without error", mutate: func(response *etcdserverpb.StatusResponse) { response.Leader = 0 }},
 		{name: "leader with no leader error", mutate: func(response *etcdserverpb.StatusResponse) { response.Errors = []string{rpctypes.ErrNoLeader.Error()} }},
+		{name: "unknown leader", mutate: func(response *etcdserverpb.StatusResponse) { response.Leader = 2 }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1298,7 +1300,7 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 				tt.mutate(response)
 			}
 			rec := &recordingMetrics{}
-			got, err := validateStatusProxyPayload(rec, response, nil)
+			got, err := validateStatusProxyPayload(rec, identity, response, nil)
 			if tt.valid {
 				require.Same(t, response, got)
 				require.NoError(t, err)
@@ -1313,7 +1315,7 @@ func TestStatusProxyPayloadValidation(t *testing.T) {
 
 	wantErr := errors.New("transport failed")
 	want := &etcdserverpb.StatusResponse{}
-	response, err := validateStatusProxyPayload(nil, want, wantErr)
+	response, err := validateStatusProxyPayload(nil, identity, want, wantErr)
 	require.Same(t, want, response)
 	require.ErrorIs(t, err, wantErr)
 }

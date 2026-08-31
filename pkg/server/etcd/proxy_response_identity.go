@@ -35,6 +35,15 @@ func (s *RPCServer) expectedProxyResponseIdentity() proxyResponseIdentity {
 	}
 }
 
+func proxyResponseIdentityHasMember(identity proxyResponseIdentity, memberID uint64) bool {
+	for _, member := range identity.members {
+		if member != nil && member.GetID() == memberID {
+			return true
+		}
+	}
+	return false
+}
+
 func validateProxyResponseHeader(response any, identity proxyResponseIdentity, revisionPolicy proxyResponseRevisionPolicy) string {
 	headerResponse, ok := response.(interface {
 		GetHeader() *etcdserverpb.ResponseHeader
@@ -56,14 +65,7 @@ func validateProxyResponseHeader(response any, identity proxyResponseIdentity, r
 		return "with a zero member ID"
 	}
 	if len(identity.members) > 0 {
-		knownMember := false
-		for _, member := range identity.members {
-			if member != nil && member.GetID() == header.GetMemberId() {
-				knownMember = true
-				break
-			}
-		}
-		if !knownMember {
+		if !proxyResponseIdentityHasMember(identity, header.GetMemberId()) {
 			return "for an unknown member"
 		}
 	}

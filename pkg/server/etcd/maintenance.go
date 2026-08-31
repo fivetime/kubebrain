@@ -433,9 +433,10 @@ func (s *RPCServer) hedgedMaintenanceStatus(
 			if err != nil {
 				return nil, err
 			}
+			identity := s.expectedProxyResponseIdentity()
 			response, err := s.peers.Status(proxyCtx, req)
-			response, err = validateMaintenanceProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), maintenanceProxyRPCStatus, response, err)
-			response, err = validateStatusProxyPayload(s.metricCli, response, err)
+			response, err = validateMaintenanceProxyResult(s.metricCli, identity, maintenanceProxyRPCStatus, response, err)
+			response, err = validateStatusProxyPayload(s.metricCli, identity, response, err)
 			if response != nil {
 				// IsLearner is a property of the serving member, not the leader that
 				// supplied the shared TiKV-backed status payload.

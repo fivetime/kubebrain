@@ -538,7 +538,10 @@ func TestFollowerStatusHedgesIsolatedStorageToLeaderAndPreservesLocalLearner(t *
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	localID := server.memberIDForPeerIdentity(server.backend.GetResourceLock().Identity())
-	server.SetStaticMembers([]*etcdserverpb.Member{{ID: localID, Name: "local", IsLearner: true}})
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: localID, Name: "local", IsLearner: true},
+		{ID: 8, Name: "leader"},
+	})
 
 	want := &etcdserverpb.StatusResponse{
 		Header:           proxiedResponseHeader(server, 91),
@@ -658,6 +661,9 @@ func TestFollowerStatusHedgeRejectsInvalidProxyPayload(t *testing.T) {
 			response.DowngradeInfo.TargetVersion = "3.6.1"
 		}},
 		{name: "inconsistent leader health", mutate: func(response *etcdserverpb.StatusResponse) { response.Leader = 0 }},
+		{name: "unknown leader", mutate: func(response *etcdserverpb.StatusResponse) {
+			response.Leader = response.GetHeader().GetMemberId() + 1
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
@@ -666,9 +672,12 @@ func TestFollowerStatusHedgeRejectsInvalidProxyPayload(t *testing.T) {
 			server.metricCli = rec
 			initMaintenanceProxyIntegrityMetrics(rec)
 			server.backend = &quotaStatusErrorBackendShim{BackendShim: server.backend, err: errors.New("storage unavailable")}
+			header := proxiedResponseHeader(server, 5)
+			server.SetStaticMembers([]*etcdserverpb.Member{{ID: header.GetMemberId(), Name: "known"}})
 			response := &etcdserverpb.StatusResponse{
-				Header: proxiedResponseHeader(server, 5), Version: Version, DbSize: 10, DbSizeInUse: 8, DbSizeQuota: 100,
-				Leader: 1, RaftIndex: 7, RaftAppliedIndex: 6, DowngradeInfo: &etcdserverpb.DowngradeInfo{},
+				Header: header, Version: Version, DbSize: 10, DbSizeInUse: 8, DbSizeQuota: 100,
+				Leader: header.GetMemberId(), RaftIndex: 7, RaftAppliedIndex: 6,
+				DowngradeInfo: &etcdserverpb.DowngradeInfo{},
 			}
 			tt.mutate(response)
 			server.peers = testPeerService{
