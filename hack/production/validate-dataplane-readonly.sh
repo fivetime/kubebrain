@@ -2121,6 +2121,59 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   status_summary+=", gateway_auth_status_match=true"
 
+  direct_alarm_json="$(run_etcdctl_with_probe_timeout --endpoints="$ENDPOINT" alarm list -w json)"
+  direct_alarm_values="$(printf '%s' "$direct_alarm_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
+    else
+      [
+        (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
+        (if .header == null then "missing" elif (.header | has("member_id")) then .header.member_id elif (.header | has("memberId")) then .header.memberId else "missing" end),
+        (if .header == null then "missing" else .header.revision // "missing" end),
+        (if .header == null then "missing" elif (.header | has("raft_term")) then .header.raft_term elif (.header | has("raftTerm")) then .header.raftTerm else "missing" end),
+        (if has("alarms") then (.alarms | type) else "missing" end)
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r direct_alarm_cluster_id direct_alarm_member_id direct_alarm_revision direct_alarm_raft_term direct_alarm_type <<<"$direct_alarm_values"
+  if [[ "$direct_alarm_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "direct alarm cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${direct_alarm_cluster_id}" >&2
+    exit 1
+  fi
+  if ! operation_is_positive_uint64 "$direct_alarm_member_id"; then
+    echo "direct alarm member ID must be positive, got ${direct_alarm_member_id}" >&2
+    exit 1
+  fi
+  if [[ "$direct_alarm_member_id" != "$gateway_expected_member_id" ]]; then
+    echo "direct alarm serving member mismatch: expected ${gateway_expected_member_id}, got ${direct_alarm_member_id}" >&2
+    exit 1
+  fi
+  if ! operation_is_nonnegative_int64 "$direct_alarm_revision"; then
+    echo "direct alarm revision must be non-negative, got ${direct_alarm_revision}" >&2
+    exit 1
+  fi
+  if [[ "$direct_alarm_revision" != "$gateway_expected_revision" ]]; then
+    echo "direct alarm revision mismatch: status=${gateway_expected_revision}, alarm=${direct_alarm_revision}" >&2
+    exit 1
+  fi
+  if ! operation_is_positive_uint64 "$direct_alarm_raft_term"; then
+    echo "direct alarm raft term must be positive, got ${direct_alarm_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$direct_alarm_raft_term" != "$gateway_status_raft_term" ]]; then
+    echo "direct status/alarm raft term mismatch: status=${gateway_status_raft_term}, alarm=${direct_alarm_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$direct_alarm_type" != "missing" && "$direct_alarm_type" != "array" ]]; then
+    echo "direct alarm alarms must be an array when present, got ${direct_alarm_type}" >&2
+    exit 1
+  fi
+  direct_alarm_count="$(printf '%s' "$direct_alarm_json" | "$JQ" -r 'if type == "object" and has("alarms") then (.alarms | length) else 0 end')"
+  if [[ "$direct_alarm_count" != "0" ]]; then
+    echo "direct alarm list must be empty, got ${direct_alarm_count}" >&2
+    exit 1
+  fi
+
   gateway_alarm_url="${ENDPOINT%/}/v3/maintenance/alarm"
   gateway_alarm_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{"action":"GET"}' "$gateway_alarm_url")"
   gateway_alarm_values="$(printf '%s' "$gateway_alarm_json" | "$JQ" -r '
@@ -2174,7 +2227,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway alarm list must be empty, got ${gateway_alarm_count}" >&2
     exit 1
   fi
-  status_summary+=", gateway_alarms=empty"
+  status_summary+=", direct_alarms=empty, gateway_alarms=empty, gateway_alarm_match=true"
   status_summary+=", gateway_endpoint_member_id=${gateway_expected_member_id}, gateway_endpoint_members_match=true"
   status_summary+=", gateway_endpoint_raft_term=${gateway_status_raft_term}, gateway_endpoint_raft_terms_match=true"
   status_summary+=", gateway_endpoint_revision=${gateway_expected_revision}, gateway_endpoint_revisions_match=true"
