@@ -66843,6 +66843,53 @@ current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
 Ready/restart 0，三轮九次稳定 endpoint proposal health 全部 GREEN，无端口转发、凭据或诊断文件落盘。A5656 关闭了任意或重复
 Status errors 穿越 leader proxy/raw probe 的完整性缺口，并修正 KubeBrain 告警 Status 文本与上游持久化生命周期的空格差异。
 
+### A5657：拒绝 maintenance leader proxy 的零身份成功响应
+
+上游 `/root/etcd/server/etcdserver/api/v3rpc/header.go::newHeader/fillWithoutRevision` 从真实 `Cluster().ID()` 与
+`MemberID()` 无条件填入每个 maintenance ResponseHeader；Alarm、Status、Hash、HashKV 与 Downgrade 的成功路径均调用该 header
+填充逻辑，cluster/member ID 的零值是身份缺失哨兵而不是已启动成员的合法身份。KubeBrain 的通用
+`validateMaintenanceProxyResult` 原先只拒绝缺 header 和负 revision，因此不可信 leader proxy 可让 cluster ID 或 member ID 为零的
+成功响应进入客户端；peer HTTP HashKV 也复用同一缺口。Defragment 与 upstream 一致继续允许无 header，revision 继续允许零值。
+
+确定性 RED 在 `0.038s` 后证明全部非 Defragment maintenance RPC 放行零 cluster ID。提交 `5c15d174` 后，通用边界对零
+cluster/member ID 分别返回 DataLoss 并递增原有 `maintenance.proxy.integrity_failure{rpc}`，因而同时覆盖 Alarm、Status、Hash、
+HashKV、Downgrade 和 peer HTTP HashKV；合法非零身份加 revision 0 的响应仍通过。所有集成测试 leader stub 改用上游可达 header，
+避免非法 payload 测试在身份层提前失败。定向完整集合为 `0.228s`，maintenance 相关集合为 `12.108s`。
+
+本轮同时纠正 A5656 对 `AlarmMember.String()` 空格稳定性的错误假设。当前 `/root/etcd` 使用的 protobuf
+`internal/encoding/text/encode.go::prepareNext` 明确按可执行文件哈希决定是否追加额外空格，且公开 `Format` 注释禁止依赖跨 build
+稳定输出；两个非零字段之间的一个空格和两个空格都是真实 upstream build 可达值。product proxy 与 raw probe 现只接受这两种
+compact text，仍拒绝三空格、显式零字段、前导零、NONE、任意诊断、重复 alarm 及错位/重复 no-leader；KubeBrain 自身继续确定性
+输出双空格这一合法形式。probe 普通/race 为 `0.013s/1.045s`，完整 readonly gate 测试为 `149.490s`。
+
+完整 `pkg/server/etcd` 普通/race 分别为 `131.813s/373.732s`。首轮完整普通/race 都正确暴露一个遗漏的 Status 成功代理 stub 仍使用
+零身份 header；用 JSON fail 事件定位并修正后，两种模式均退出 0 且无 data race。Go vet、gofmt、diff check、bash syntax 全部
+GREEN。提交前 inventory 为 703 项、`170/193/180/160`；提交后四片分别为
+`251.422/448.639/302.567/576.910s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5657-5c15d174` 内嵌版本 `0.0.0-5c15d174a74e`、完整提交
+`5c15d174a74e69d9e9cfc741bd704ad48a619cb8` 与 build time `2026-08-31T16:21:43Z`，运行用户 `65532:65532`、平台
+`linux/amd64`。OCI index、platform manifest、config 分别为
+`sha256:d28ce9d2faf89caf33074178b81912b903c39c8f85b38008c7b5504cdbf6eb54`、
+`sha256:f3ea9fb8966fdaea757b0e9e60bfaa911819ce4b9a389e39962ec06147ad9703`、
+`sha256:4b9c5087af56b51d9304a7db7a72ce7532c8f55f5232ef88e4484090a3f36089`；Kind/containerd runtime digest 为
+`sha256:aebd2f763261c32c7913690ef4b43bcdfac6b7057758b76e6369397de84c94dc`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 701 部署至 generation 702；三 Pod 均落在
+revision `kubebrain-6c858b6dc`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。三个 exact endpoint 的
+raw Status 均返回 version/storage `3.7.0/3.7.0`、cluster ID `7662961163671170154`，member ID 分别为
+`4034353177/2393892952/231094427`，revision/index/applied `65743`、term `277`、leader `231094427`、quota
+`1073741824`、空 errors、non-learner 与 disabled+empty downgrade。八项 named/HTTP/metrics/debug 及全部端点一致性开关全开的
+readonly gate 一次 GREEN；HashKV 为 `4283180840`、compact revision 为 `44329`、direct hash 为 `1884729719`。候选 Pod 日志为
+`621/650/286` 行，error level 与 panic/fatal/data race/data corruption 模式计数均为 0；三轮九次 exact endpoint proposal health
+全部成功。
+
+最后关闭六个端口转发并确认无监听，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、generation/observed 703、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，三轮九次稳定 Pod 内 proposal health 全部 GREEN，无端口转发、凭据或诊断文件落盘。A5657 关闭了不可信 leader
+proxy 伪造零 cluster/member 身份成功响应的缺口，并恢复了 protobuf compact Status alarm 文本的真实跨 build 可达集合。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
