@@ -3267,6 +3267,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 					{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":5,"hash_revision":7}},
 					{"Endpoint":"http://127.0.0.2:2379","HashKV":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}
 				]`,
+				`FAKE_DIRECT_HASHKV_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":5,"hash_revision":7}`,
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":"111","compact_revision":"3","hash_revision":"7"}`,
 			},
 			wantOutput: "gateway hashkv compact revision mismatch with direct endpoint",
@@ -4497,8 +4498,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_VERSION=3.7.0",
 				"EXPECTED_HASHKV_HASH=111",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}}]`,
+				`FAKE_DIRECT_HASHKV_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":0}`,
 			},
-			wantOutput: "hashkv hash revision is required for etcd 3.7.0",
+			wantOutput: "direct hashkv hash revision must match header revision for etcd 3.7.0",
 		},
 		{
 			name: "reports required hashkv hash revisions for etcd 3.7",
@@ -4517,7 +4519,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
 			wantOK:     true,
-			wantOutput: "hashkv_hash_revisions_present=true",
+			wantOutput: "direct_hashkv_hash_revision=7, direct_hashkv_hash_revision_match=true",
 		},
 		{
 			name: "allows missing hashkv hash revision before etcd 3.6",
@@ -4537,6 +4539,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_VERSION=3.5.0",
 				"EXPECTED_HASHKV_HASH=111",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}}]`,
+				`FAKE_DIRECT_HASHKV_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":0}`,
 			},
 			wantOK:     true,
 			wantOutput: "gateway_hashkv_body_match=true",
@@ -4990,6 +4993,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_CLUSTER_ID=123",
 				"EXPECTED_HASHKV_HASH=111",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":-1}}]`,
+				`FAKE_DIRECT_HASHKV_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":-1,"hash_revision":7}`,
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":"111","compact_revision":"-1","hash_revision":"7"}`,
 			},
 			wantOK:     true,
@@ -5641,6 +5645,10 @@ printf '%s' "$FAKE_READYZ"
 `)
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "go"), `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "$*" == *"maintenance-hashkv-probe"* ]]; then
+  printf '%s\n' "$FAKE_DIRECT_HASHKV_JSON"
+  exit 0
+fi
 if [[ "$*" == *"maintenance-hash-probe"* ]]; then
   printf '%s\n' "$FAKE_DIRECT_HASH_JSON"
   exit 0
@@ -5756,6 +5764,7 @@ exec "$@"
 				"FAKE_CLIENT_PPROF_RESPONSE=" + defaultClientPprofResponse(tc.clientPprof),
 				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":222}`,
 				`FAKE_DIRECT_HASH_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":222}`,
+				`FAKE_DIRECT_HASHKV_JSON={"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}`,
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":111,"compact_revision":"3","hash_revision":"7"}`,
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":3}}]`,
 				"FAKE_TIMEOUT_LOG=" + timeoutLog,
@@ -6151,7 +6160,8 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"gateway_hashkv_body_match=true",
 		"hashkv_endpoint_members_match=true",
 		"hashkv_endpoint_revisions_match=true",
-		"hashkv_hash_revisions_present=true",
+		"direct_hashkv_body_match=true",
+		"direct_hashkv_hash_revision_match=true",
 		"revisions_match=true",
 		"hashkv_raft_terms=<unique>",
 		"raft_terms_match=true",

@@ -2419,18 +2419,6 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
       ([.[] | select((.HashKV | has("hash_revision")) or (.HashKV | has("hashRevision")))] | length)
     end
   ')"
-  hashkv_hash_revision_summary=""
-  if [[ -n "$EXPECTED_STATUS_VERSION" ]]; then
-    expected_status_core="${EXPECTED_STATUS_VERSION%%[-+]*}"
-    IFS='.' read -r expected_status_major expected_status_minor _ <<<"$expected_status_core"
-    if (( 10#$expected_status_major > 3 || (10#$expected_status_major == 3 && 10#$expected_status_minor >= 6) )); then
-      if [[ "$hashkv_hash_revision_presence" != "$hashkv_count" ]]; then
-        echo "hashkv hash revision is required for etcd ${EXPECTED_STATUS_VERSION}: present=${hashkv_hash_revision_presence}, total=${hashkv_count}" >&2
-        exit 1
-      fi
-      hashkv_hash_revision_summary=", hashkv_hash_revisions_present=true"
-    fi
-  fi
   if [[ "$hashkv_hash_revision_presence" != "0" && "$hashkv_hash_revision_presence" != "$hashkv_count" ]]; then
     echo "hashkv hash revision must be present on all endpoints when present: present=${hashkv_hash_revision_presence}, total=${hashkv_count}" >&2
     exit 1
@@ -2618,7 +2606,6 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     exit 1
   fi
   hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_endpoint_members_match=true, hashkv_endpoint_revisions_match=true, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
-  hashkv_summary+="$hashkv_hash_revision_summary"
   hashkv_summary+=", revisions_match=true"
   if [[ "$hashkv_raft_terms" != "-" ]]; then
     hashkv_summary+=", hashkv_raft_terms=${hashkv_raft_terms}"
@@ -2679,6 +2666,85 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   if ! operation_is_nonnegative_uint32 "$direct_hash_value"; then
     echo "direct hash must be a non-negative uint32, got ${direct_hash_value}" >&2
     exit 1
+  fi
+
+  direct_hashkv_json="$(ENDPOINT="$ENDPOINT" TIMEOUT="$PROBE_TIMEOUT" \
+    "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$GO" run "$ROOT_DIR/hack/production/cmd/maintenance-hashkv-probe")"
+  direct_hashkv_values="$(printf '%s' "$direct_hashkv_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+    else
+      [
+        (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
+        (if .header == null then "missing" elif (.header | has("member_id")) then .header.member_id elif (.header | has("memberId")) then .header.memberId else "missing" end),
+        (if .header == null then "missing" else .header.revision // "missing" end),
+        (if .header == null then "missing" elif (.header | has("raft_term")) then .header.raft_term elif (.header | has("raftTerm")) then .header.raftTerm else "missing" end),
+        (.hash // "missing"),
+        (if has("compact_revision") then .compact_revision elif has("compactRevision") then .compactRevision else "missing" end),
+        (if has("hash_revision") then .hash_revision elif has("hashRevision") then .hashRevision else "missing" end)
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r direct_hashkv_cluster_id direct_hashkv_member_id direct_hashkv_revision direct_hashkv_raft_term direct_hashkv_hash direct_hashkv_compact_revision direct_hashkv_hash_revision <<<"$direct_hashkv_values"
+  if [[ "$direct_hashkv_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "direct hashkv cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${direct_hashkv_cluster_id}" >&2
+    exit 1
+  fi
+  if ! operation_is_positive_uint64 "$direct_hashkv_member_id"; then
+    echo "direct hashkv member ID must be positive, got ${direct_hashkv_member_id}" >&2
+    exit 1
+  fi
+  if [[ "$direct_hashkv_member_id" != "$gateway_expected_member_id" ]]; then
+    echo "direct hashkv serving member mismatch: expected ${gateway_expected_member_id}, got ${direct_hashkv_member_id}" >&2
+    exit 1
+  fi
+  if ! operation_is_nonnegative_int64 "$direct_hashkv_revision"; then
+    echo "direct hashkv revision must be non-negative, got ${direct_hashkv_revision}" >&2
+    exit 1
+  fi
+  if [[ "$direct_hashkv_revision" != "$gateway_expected_revision" ]]; then
+    echo "direct status/hashkv revision mismatch: status=${gateway_expected_revision}, hashkv=${direct_hashkv_revision}" >&2
+    exit 1
+  fi
+  if ! operation_is_positive_uint64 "$direct_hashkv_raft_term"; then
+    echo "direct hashkv raft term must be positive, got ${direct_hashkv_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$direct_hashkv_raft_term" != "$gateway_status_raft_term" ]]; then
+    echo "direct status/hashkv raft term mismatch: status=${gateway_status_raft_term}, hashkv=${direct_hashkv_raft_term}" >&2
+    exit 1
+  fi
+  if ! operation_is_nonnegative_uint32 "$direct_hashkv_hash"; then
+    echo "direct hashkv hash must be a non-negative uint32, got ${direct_hashkv_hash}" >&2
+    exit 1
+  fi
+  if [[ "$direct_hashkv_hash" != "$direct_endpoint_hashkv_hash" ]]; then
+    echo "raw/direct endpoint hashkv hash mismatch: raw=${direct_hashkv_hash}, etcdctl=${direct_endpoint_hashkv_hash}" >&2
+    exit 1
+  fi
+  if ! operation_is_nonnegative_int64 "$direct_hashkv_hash_revision"; then
+    echo "direct hashkv hash revision must be non-negative, got ${direct_hashkv_hash_revision}" >&2
+    exit 1
+  fi
+  if ! [[ "$direct_hashkv_compact_revision" =~ ^(-1|[0-9]+)$ ]]; then
+    echo "direct hashkv compact revision must be at least -1, got ${direct_hashkv_compact_revision}" >&2
+    exit 1
+  fi
+  if [[ "$direct_hashkv_compact_revision" != "$direct_endpoint_hashkv_compact_revision" ]]; then
+    echo "raw/direct endpoint hashkv compact revision mismatch: raw=${direct_hashkv_compact_revision}, etcdctl=${direct_endpoint_hashkv_compact_revision}" >&2
+    exit 1
+  fi
+  direct_hashkv_hash_revision_required=0
+  if [[ -n "$EXPECTED_STATUS_VERSION" ]]; then
+    expected_status_core="${EXPECTED_STATUS_VERSION%%[-+]*}"
+    IFS='.' read -r expected_status_major expected_status_minor _ <<<"$expected_status_core"
+    if (( 10#$expected_status_major > 3 || (10#$expected_status_major == 3 && 10#$expected_status_minor >= 6) )); then
+      direct_hashkv_hash_revision_required=1
+      if [[ "$direct_hashkv_hash_revision" != "$direct_hashkv_revision" ]]; then
+        echo "direct hashkv hash revision must match header revision for etcd ${EXPECTED_STATUS_VERSION}: hash_revision=${direct_hashkv_hash_revision}, header_revision=${direct_hashkv_revision}" >&2
+        exit 1
+      fi
+    fi
   fi
 
   gateway_hash_url="${ENDPOINT%/}/v3/maintenance/hash"
@@ -2796,6 +2862,10 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv hash mismatch with direct endpoint: direct=${direct_endpoint_hashkv_hash}, gateway=${gateway_hashkv_hash}" >&2
     exit 1
   fi
+  if [[ "$gateway_hashkv_hash" != "$direct_hashkv_hash" ]]; then
+    echo "gateway hashkv hash mismatch with raw direct endpoint: direct=${direct_hashkv_hash}, gateway=${gateway_hashkv_hash}" >&2
+    exit 1
+  fi
   if ! [[ "$gateway_hashkv_compact_revision" =~ ^(-1|[0-9]+)$ ]]; then
     echo "gateway hashkv compact revision must be at least -1, got ${gateway_hashkv_compact_revision}" >&2
     exit 1
@@ -2812,6 +2882,10 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv hash revision mismatch with direct endpoint: direct=${direct_endpoint_hashkv_hash_revision}, gateway=${gateway_hashkv_hash_revision}" >&2
     exit 1
   fi
+  if [[ "$direct_hashkv_hash_revision_required" == "1" && "$gateway_hashkv_hash_revision" != "$direct_hashkv_hash_revision" ]]; then
+    echo "gateway hashkv hash revision mismatch with raw direct endpoint: direct=${direct_hashkv_hash_revision}, gateway=${gateway_hashkv_hash_revision}" >&2
+    exit 1
+  fi
   if (( gateway_hashkv_compact_revision > gateway_hashkv_hash_revision )); then
     echo "gateway hashkv compact revision must not exceed hash revision: compact=${gateway_hashkv_compact_revision}, hash=${gateway_hashkv_hash_revision}" >&2
     exit 1
@@ -2820,12 +2894,20 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "gateway hashkv compact revision mismatch with direct endpoint: direct=${direct_endpoint_hashkv_compact_revision}, gateway=${gateway_hashkv_compact_revision}" >&2
     exit 1
   fi
+  if [[ "$gateway_hashkv_compact_revision" != "$direct_hashkv_compact_revision" ]]; then
+    echo "gateway hashkv compact revision mismatch with raw direct endpoint: direct=${direct_hashkv_compact_revision}, gateway=${gateway_hashkv_compact_revision}" >&2
+    exit 1
+  fi
   hashkv_summary+=", direct_hash=${direct_hash_value}, gateway_hash=${gateway_hash_value}, gateway_hash_match=true"
   hashkv_summary+=", gateway_hashkv_hash=${gateway_hashkv_hash}"
   hashkv_summary+=", gateway_hashkv_hash_revision=${gateway_hashkv_hash_revision}"
   hashkv_summary+=", gateway_hashkv_compact_revision=${gateway_hashkv_compact_revision}"
   hashkv_summary+=", gateway_hashkv_revisions_match=true"
   hashkv_summary+=", gateway_hashkv_body_match=true"
+  hashkv_summary+=", direct_hashkv_body_match=true"
+  if [[ "$direct_hashkv_hash_revision_required" == "1" ]]; then
+    hashkv_summary+=", direct_hashkv_hash_revision=${direct_hashkv_hash_revision}, direct_hashkv_hash_revision_match=true"
+  fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_hash_metrics_boundary "${ENDPOINT%/}/metrics"
     status_summary+=", mvcc_hash_metrics=ok"
