@@ -66936,6 +66936,47 @@ generation/observed 705、current/update `kubebrain-9b9965dc9`，三 Pod runtime
 Ready/restart 0，回滚后三轮九次稳定 Pod 内 proposal health 全部 GREEN，无端口转发、凭据或诊断文件落盘。A5658 关闭了 foreign cluster
 或非 DBaaS 成员的成功响应可穿越 leader proxy、再被本地 header stamp 伪装成可信结果的跨家族完整性缺口。
 
+### A5659：拒绝全部 unary leader proxy 的零 Raft term 成功响应
+
+A5658 已把 proxy 成功响应绑定到本 DBaaS cluster 和静态成员，但统一 validator 仍接受 `ResponseHeader.RaftTerm == 0`。随后
+`pkg/server/etcd/header_interceptor.go::stampHeader` 会用本地 term 覆盖公开 header，使客户端无法发现上游响应其实缺少任期身份。对照
+`/root/etcd/server/etcdserver/api/v3rpc/header.go::fillWithoutRevision`、`v3_server.go::newHeader` 与
+`/root/etcd/server/etcdserver/apply/backend.go::newHeader`，upstream 从实际 `Term()` 填充成功响应；KubeBrain 共享选举也从首次选举开始以
+`LeaderTransitions+1` 发布正 term。因此已启动成员的零 term 是缺失身份，不是合法稳态响应。
+
+确定性 tests-only RED `TestProxyResponseHeaderValidation` 在 `0.034s` 后证明共享门禁放行零 term。提交 `bea066f9` 将 term 检查加入
+`validateProxyResponseHeader`，并把静态成员扫描改为 `knownMember` 判定，确保合法成员不会提前 return 而绕过 term 检查。Cluster、KV、
+Lease、Auth、Maintenance/peer 五族收到零 term 成功响应时均返回 DataLoss，并递增各自既有 proxy integrity metric；Defragment 继续保留
+upstream headerless 例外。校验只要求 term 非零而不与当前本地 term 精确相等：leader/term 可在 proxy 返回和本地校验之间合法切换，upstream
+Status 也分别采样 header 与 body term，强制瞬时相等会把真实过渡误判为损坏。
+
+实现后的共享及五族定向集合为 `0.035s`；完整 `pkg/server/etcd` 普通测试以 JSON fail 流退出 0 且无 fail 事件，完整 race 为
+`383.733s`。`go vet ./pkg/server/etcd`、gofmt 与 diff check 全部 GREEN。提交前 inventory 为 703 项、
+`170/193/180/160`；提交后四片分别为 `279.918/474.842/335.259/602.428s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5659-bea066f9` 内嵌版本 `0.0.0-bea066f9a182`、完整提交
+`bea066f9a182abf29c5efc07904e39241713d463` 与 build time `2026-08-31T18:32:09Z`，运行用户 `65532:65532`、平台
+`linux/amd64`。OCI index、platform manifest、config 分别为
+`sha256:ac103cb3e0f839303e7dcdf5e4587732b8cb956031d1bc0d486c0be6b12a2be8`、
+`sha256:abea5e182e8334eb24e839a65609707a8fcdc4d13edfaef28f9e80683bfbb51a`、
+`sha256:82fba937ce997bb46fbca9f86a1835e442c2b5f372e3532cec32d747bed44265`；Kind/containerd runtime digest 为
+`sha256:3b849665a66c24c2b33b54ef2f1a6a2e70ae1c5da40149f67f9a6b809831f0f3`。
+
+以 StatefulSet UID/resourceVersion/container/image/full args 五重原子 test 从稳定 generation 705 部署至 generation 706；三 Pod 均落在
+revision `kubebrain-79f9cbd4c8`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3 Ready/restart 0。三个 exact endpoint 的 raw
+Status 均返回 version/storage `3.7.0/3.7.0`、cluster ID `7662961163671170154`，member ID 分别为
+`4034353177/2393892952/231094427`，revision/index/applied `65743`、header/body term `284`、leader
+`231094427`、quota `1073741824`、空 errors、non-learner 与 disabled+empty downgrade。八项 named/HTTP/metrics/debug 及全部端点一致性
+开关全开的 readonly gate 一次 GREEN；HashKV 为 `4283180840`、compact revision 为 `44329`、direct hash 为
+`1884729719`。候选 Pod 日志为 `380/399/326` 行，error level、panic/fatal/data race/data corruption 与 TiKV/PD error 模式均为 0；
+三轮九次 exact endpoint proposal health 全部成功。
+
+最后关闭三组 client+info 端口转发并确认六端口无监听，以新鲜同类五重 test 回滚稳定 digest。终态 StatefulSet UID 不变、
+generation/observed 707、current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，回滚后三轮九次稳定 Pod 内 `3379` proposal health 全部 GREEN，无端口转发、六个诊断监听、凭据或诊断文件落盘。
+A5659 关闭了零任期 proxy 成功响应可被本地 header stamp 洗成可信结果的最后一个共享 header 身份缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
