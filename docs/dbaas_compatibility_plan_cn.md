@@ -67691,6 +67691,63 @@ port-forward 探测还因缺少 fail-fast 打印了错误尾部摘要，该摘�
 未产生数据写入，最终关闭端口转发并确认六个监听无残留，未使用凭据或落盘诊断文件。A5673 关闭了 follower
 Txn 接受 leader 违反 etcd 元数据不变量及 enum fallthrough 语义选择不可能分支的完整性缺口。
 
+### A5674：拒绝超过 Txn pre-write revision 上界的不可能 Compare 分支
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{Txn,compareToPath,txn}` 与
+`/root/etcd/server/storage/mvcc/kvstore_txn.go`。上游在执行任何写入前用同一个 `txnRead` 递归计算完整
+txnPath；写事务只有 `txnWrite.Changes()` 非空时才把响应 revision 从 begin revision 增加 1。因而所有根/嵌套
+Compare 看到同一个 pre-write revision：只读或无效写为 outer revision，有效 Put/Delete 为
+`outer revision - 1`。missing key 元数据为 0；现存 KV 的 CREATE/MOD 不超过该快照 revision，VERSION 又不
+超过 MOD。A5673 只利用非负下界，旧 follower validator 仍允许 leader 用超过该上界的阈值选择不可能分支。
+
+tests-only RED 覆盖普通范围 `MOD > outer` 却选 Success、`CREATE < outer+1` 却选 Failure、有效写使用
+outer 而非 pre-write 上界、先写后嵌套 Compare 仍共享 pre-write 上界，以及两个 follower RPC 路径；六项均被
+旧实现接受，聚焦包报告 `0.324s`。提交 `07bb2402` 在响应树结构确认并根据 selected branch 识别有效写后
+计算 `baseRevision`，新增 `validateTxnProxyRevisionBoundCompareBranches` 以同一上界递归校验所有嵌套 Txn；
+静态下界/enum 结果与 revision 上界统一按 AND 规则聚合。正向测试固定阈值仍落在 `[0, baseRevision]` 时两
+分支都允许、LEASE 不受 revision 上界约束，以及有效写位于 Failure 分支时同样正确减一。
+
+实现后初始聚焦 GREEN `0.320s`，扩展边界组合 `0.756s`，定向 race `1.962s`，全部 Txn 测试
+`30.347s`，完整 `pkg/server/etcd` `136.763s`，`go vet ./pkg/server/etcd` 通过。提交前 production
+inventory 为 703 项、四片 `170/193/180/160`；提交后四片分别为
+`262.479/451.180/311.756/579.198s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5674-07bb2402` 内嵌版本
+`0.0.0-07bb24023ae2`、完整提交 `07bb24023ae28e03e2671a308c4b8a3708a7a464` 与 build time
+`2026-09-01T08:13:30Z`，运行用户 `65532:65532`、Go `1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI
+index、platform manifest、config 与 attestation manifest 分别为
+`sha256:54775bd83a5c5b1f2578c078f4ea6f88a28a8afa364af40c54f7803f9adba7c7`、
+`sha256:5c16969c66135b6a7134837012a91a45439480366d02bc3417fb2dc189c981e8`、
+`sha256:d8884ea9af3046330bc579e39352182b324ed3caf946d1556b6bb42899034244`、
+`sha256:e28194279f71af83e9ef7ee1f089c04a33369f61f6d2cb3db7459bbdadcac33e`；Kind/containerd Pod
+runtime digest 为 `sha256:c3bfcbe5234ef2b516b370c589baaad3467f96b523fdee42d664ca94a048cd20`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 737
+部署至 generation 738；三 Pod 均落在 revision `kubebrain-7f9766b8fc`、Ready/restart 0。逐个 exact Pod
+endpoint 通过 etcd v3 JSON gateway 执行并用 15 个 `jq -e` 断言五种场景：全 keyspace
+`MOD > current` 选 Failure；`CREATE < current+1` 选 Success；Compare 上界等于响应 revision 的 Success
+Put；相同上界的 VERSION EQUAL 选 Failure 并执行 Failure Put；外层先 Put、内层仍以 pre-write 上界执行
+MOD Compare 并选 Success，nested header 为 `{}`。三端起始 revision 分别为 `65884/65887/65890`，每端
+三个有效写后到 `65887/65890/65893`；统一删除 9 个隔离键后 revision/index/applied 收敛到 `65894`，
+`/a5674/` count 为 0。
+
+候选 term `348`、leader `231094427`，HashKV `2288114445`、compact revision `44329`。以该新鲜值运行
+全部适用开关启用的 readonly gate 一次 GREEN，direct hash `1663233291`、auth disabled/revision `281`，
+named/HTTP/metrics/debug/pprof 与跨端点身份、revision、term 均通过。候选三轮九次 exact endpoint
+proposal health 全部成功（`10.662–13.545ms`），LeaseLeases 为空，三 Pod 全量日志 `479/503/306` 行且
+关键错误命中为 0，KubeBrain/目标 PD/TiKV 3+3+3 Ready/restart 0。
+
+以同类五类原子 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed `739/739`、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；revision、HashKV 与 compact
+revision 保持 `65894/2288114445/44329`，term `350`、leader `2393892952`，prefix count 0、Lease 为空。
+稳定三轮九次 Pod-local proposal health 全部 GREEN（`7.418–10.739ms`），全量日志 `310/273/397` 行、
+关键错误均为 0，随后三 Pod 最近 60 秒也为 0，KubeBrain/目标 PD/TiKV 3+3+3 Ready/restart 0。稳定旧镜像
+继续采用独立 status/HashKV/health/lease/log 审计，不把 A5673 已证明其缺少 HEAD 新增 watch 指标的全量 gate
+伪记为通过。端口转发退出时的 reset/broken-pipe 仅来自本地 kubectl；最终确认六个监听无残留，未使用凭据或
+落盘诊断文件。A5674 关闭了 follower Txn 接受 leader 违反 pre-write MVCC revision 上界选择不可能分支的
+完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
