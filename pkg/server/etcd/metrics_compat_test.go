@@ -1708,6 +1708,34 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		}, response: valueEvidenceBranchResponse(false, &etcdserverpb.ResponseOp{
 			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
 		}), valid: true},
+		{name: "snapshot-equal historical range is value evidence", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 5)), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1))},
+		{name: "snapshot-equal historical range after overlapping put remains pre-write evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 4)},
+			Failure: []*etcdserverpb.RequestOp{putRequest("evidence"), valueEvidenceRangeRequest(false, 4)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), valueEvidenceRangeResponse("expected", 5, 4, 4, 1),
+		}}},
+		{name: "snapshot-equal filtered count-only is lifecycle evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := valueEvidenceRangeRequest(false, 5)
+				request.GetRequestRange().CountOnly = true
+				request.GetRequestRange().MinModRevision = 6
+				return request
+			}()},
+			Failure: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := valueEvidenceRangeRequest(false, 5)
+				request.GetRequestRange().CountOnly = true
+				request.GetRequestRange().MinModRevision = 6
+				return request
+			}()},
+		}, response: valueEvidenceBranchResponse(false, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
+		})},
 		{name: "filtered range is not value evidence", request: valueEvidenceBranchRequest(filteredEvidenceRequest), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1)), valid: true},
 		{name: "historical range is not current evidence selected success", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 4)), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1)), valid: true},
 		{name: "historical range is not current evidence selected failure", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 4)), response: valueEvidenceBranchResponse(false, valueEvidenceRangeResponse("other", 5, 4, 4, 1)), valid: true},

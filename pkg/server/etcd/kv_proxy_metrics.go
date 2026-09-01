@@ -267,7 +267,7 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 	}
 	var mutations []txnProxyMutationInterval
 	var compareEvidence []txnProxyCompareEvidence
-	collectTxnProxyCompareEvidence(request, response, &mutations, &compareEvidence)
+	collectTxnProxyCompareEvidence(request, response, baseRevision, &mutations, &compareEvidence)
 	if validationErr := validateTxnProxyCompareEvidenceBranches(request, response, compareEvidence); validationErr != nil {
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
@@ -379,6 +379,7 @@ type txnProxyCompareEvidence struct {
 	leaseProjected bool
 	countOnly      bool
 	count          int64
+	snapshotPinned bool
 }
 
 type txnProxyMutationInterval struct {
@@ -390,11 +391,14 @@ type txnProxyMutationInterval struct {
 // tree before executing any operation. A complete current Range, requested Put
 // PrevKv, complete Delete PrevKvs, or no-op Delete therefore observes the same
 // compare snapshot for every subinterval not intersected by an earlier
-// effective mutation. Mutations outside a compared subinterval do not
-// invalidate that slice of a containing evidence payload.
+// effective mutation. A Range explicitly pinned to the pre-write base revision
+// bypasses staged mutations and remains evidence even after an overlapping
+// write. Mutations outside a compared subinterval do not invalidate that slice
+// of a containing evidence payload.
 func collectTxnProxyCompareEvidence(
 	request *etcdserverpb.TxnRequest,
 	response *etcdserverpb.TxnResponse,
+	baseRevision int64,
 	mutations *[]txnProxyMutationInterval,
 	evidence *[]txnProxyCompareEvidence,
 ) {
@@ -408,7 +412,7 @@ func collectTxnProxyCompareEvidence(
 		case requestOp.GetRequestRange() != nil:
 			rangeRequest := requestOp.GetRequestRange()
 			rangeResponse := responseOp.GetResponseRange()
-			if txnProxyRangeProvidesCompareEvidence(rangeRequest, rangeResponse) {
+			if txnProxyRangeProvidesCompareEvidence(rangeRequest, rangeResponse, baseRevision) {
 				*evidence = append(*evidence, txnProxyCompareEvidence{
 					key: rangeRequest.GetKey(), rangeEnd: rangeRequest.GetRangeEnd(),
 					kvs:            rangeResponse.GetKvs(),
@@ -417,6 +421,7 @@ func collectTxnProxyCompareEvidence(
 					leaseProjected: rangeRequest.GetKeysOnly() && rangeRequest.GetSortTarget() != etcdserverpb.RangeRequest_VALUE,
 					countOnly:      rangeRequest.GetCountOnly(),
 					count:          rangeResponse.GetCount(),
+					snapshotPinned: rangeRequest.GetRevision() == baseRevision,
 				})
 			}
 		case requestOp.GetRequestPut() != nil:
@@ -455,7 +460,7 @@ func collectTxnProxyCompareEvidence(
 			}
 		case requestOp.GetRequestTxn() != nil:
 			collectTxnProxyCompareEvidence(
-				requestOp.GetRequestTxn(), responseOp.GetResponseTxn(), mutations, evidence,
+				requestOp.GetRequestTxn(), responseOp.GetResponseTxn(), baseRevision, mutations, evidence,
 			)
 		}
 	}
@@ -533,8 +538,13 @@ func txnProxyIntervalContainsInterval(outer, inner txnProxyMutationInterval) boo
 	return isFromKeyRangeEnd(outer.rangeEnd) || bytes.Compare(inner.rangeEnd, outer.rangeEnd) <= 0
 }
 
-func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest, response *etcdserverpb.RangeResponse) bool {
-	// Historical responses are not descriptions of the current compare snapshot.
+func txnProxyRangeProvidesCompareEvidence(
+	request *etcdserverpb.RangeRequest,
+	response *etcdserverpb.RangeResponse,
+	baseRevision int64,
+) bool {
+	// A historical response is evidence only when its explicit revision is the
+	// transaction's pre-write base revision and therefore the compare snapshot.
 	// CountOnly returns full interval cardinality directly from MVCC before the
 	// Range layer applies revision filters, so both Limit and those filters are
 	// ineffective for its Count. A regular filtered response is not a description
@@ -545,7 +555,7 @@ func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest, re
 	// KeysOnly preserves key and MVCC metadata; its projection capabilities are
 	// enforced when evaluating a compare. Sort and Serializable do not change
 	// the represented key set.
-	if request.GetRevision() != 0 {
+	if request.GetRevision() != 0 && request.GetRevision() != baseRevision {
 		return false
 	}
 	if request.GetCountOnly() {
@@ -631,7 +641,7 @@ func txnProxyCompareResultFromEvidence(
 		if !txnProxyIntervalContainsInterval(candidateInterval, compareInterval) {
 			continue
 		}
-		if txnProxyIntervalWasMutated(compareInterval, candidate.priorMutations) {
+		if !candidate.snapshotPinned && txnProxyIntervalWasMutated(compareInterval, candidate.priorMutations) {
 			continue
 		}
 		if candidate.countOnly && candidate.count > 0 {
