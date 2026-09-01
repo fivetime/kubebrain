@@ -68424,6 +68424,70 @@ GREEN，不能把这个版本边界误报成“旧稳定镜像通过 HEAD 完整
 不把 region API 结果替代完整 storage isolation gate。A5685 关闭了 follower 接受全局不可满足的重叠区间计数方程
 以及有限 byte-lexicographic 区间超容量响应的完整性缺口，同时保留 staged/historical 边界与上游真实可表示键集。
 
+### A5686：用有限 staged mutation 容量约束写后完整 Range 的 pre-write 上界
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{compareToPath,executeTxn}` 与
+`/root/etcd/server/storage/mvcc/kvstore_txn.go::{storeTxnWrite.Range,rangeKeys}`。上游先在统一 read view 求值
+Compare，随后所选分支按序执行；写后 current 普通 Range 虽不再完整描述与 staged mutation 相交的 key，但在 mutation
+union 之外仍精确枚举同一 pre-write 快照。A5685 为避免把 staged state 当成旧状态，会把这类完整 Range 的整个 interval
+从全局 cardinality equations 排除，仅保留逐 key 的未变异证据。因此 pre-write CountOnly `[a,z)=2`、随后 Put `m`、
+写后完整 `[a,z)` 只含 `m` 的伪造响应仍会被接受：两侧已明确为空，而唯一未知 point 在 pre-write 最多只能容纳一个 key。
+
+tests-only RED 精确出现两个失败：直接 Txn payload validator 与真实 follower 转发路径都接受上述不可能响应；把 pre-write
+count 改为 1 的可行边界保持 GREEN。提交 `a7e002c243c2838157017676ee437958d5848ad3` 为 A5685 difference
+solver 增加单向 `cardinality(interval) <= maximum` edge。对写后完整普通/KeysOnly Range，maximum 等于所有未变异
+observed keys，加上 candidate interval 内 staged mutation union 的 byte-key 最大容量；point Put/Delete 容量为 1，
+`[k,k+N×NUL)` 延续 A5685 的有限容量 N。mutation intersection 先规范成半开 interval、排序并合并重叠/相邻区间，
+所以重复 point 不重复计数，`m` 与 `m+NUL` 精确形成容量 2；任一普通 finite range 或 from-key intersection 容量无界时
+不生成上界，继续保守接受。CountOnly 无 KV payload，不能切分；snapshot-pinned Range 已是完整 pre-write equality，均不走
+该上界路径。算法不枚举 byte key，int64 求和显式防溢出，任意精度负环 solver 继续承担组合可满足性判断。
+
+扩展测试固定：bounded two-NUL DeleteRange 无法隐藏 pre-count=3，普通 `[m,n)` DeleteRange 可保守隐藏任意数量；重复
+point union=1、相邻 byte point union=2、unmutated observed keys 加入上界、宽 mutation 被有限 candidate 截断、
+disjoint/count-only/pinned 不误用，以及 upper-bound-only 不制造虚假下界。首轮修复聚焦 `0.469s`，扩展集合 `0.476s`，
+连续三轮 `0.457/0.514/0.467s`，race `2.650s`，全部 Txn `33.050s`，完整 `pkg/server/etcd`
+`136.996s`，新增上界 helper 连续 100 轮 `0.113s`，vet 与 diff check 通过。提交前 production verifier 精确为
+703 项、四片 `170/193/180/160`；代码提交后四片分别为 `263.538/463.841/315.706/590.855s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5686-a7e002c2` 内嵌版本 `0.0.0-a7e002c243c2`、完整提交
+`a7e002c243c2838157017676ee437958d5848ad3`、build time `2026-09-01T19:31:08Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:0b44105b4ba6a51a75c7b7d8087e7cfca0ea71419fb50f6de66e6e1c07713f93`、
+`sha256:2531fe815e02c4887a0794dd99183eb696c211b56a70a6b9baa2dccf229d3d62`、
+`sha256:edd033e2fb455cb7efb2924177ba8f81f7aaa98fab0ac71f525489fd4fb9252b`、
+`sha256:4b2e136289fa28e220faa63ad66f24635ba6f0cfa93c0fab2c126736057918fd`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功，Kind runtime digest 为
+`sha256:8b234bef38afc4f923bcfdedeeba9b559a98fd7963c7bb11b80f05b980e2d918`。
+
+稳定基线 generation `764`，revision/index/applied、HashKV、compact revision 为
+`66219/66219/66219/3246113572/44329`，term `400`、leader `231094427`。以 StatefulSet
+UID/resourceVersion/container/current image/full args 五类原子 test 部署到 generation `765`；三 Pod
+均落在 `kubebrain-55cc8dd577`、Ready/restart 0、同一候选 runtime digest，Pod 内版本与完整 SHA 一致。
+最初尝试把同 key 的两次 Put 放进一个 Txn，以在线覆盖重复 mutation union；公开入口按 upstream overlap admission
+正确返回 HTTP 400，trap 已清理，故没有把不可达请求伪报成产品失败或有效场景。随后逐个 Pod-local gateway 全量重跑
+六类 upstream 可达事务：更新既有 point、创建新 point、未变异两侧 key 加一个 staged point、相邻 `m`/`m+NUL`
+两个 point、容量 2 的 bounded DeleteRange，以及普通 `[m,n)` unbounded DeleteRange；每 Pod 六类、共 18 类次全部
+通过，各前缀最终 Count=0。NUL key 继续通过 base64 JSON body 传递。
+
+候选终态 revision/index/applied 为 `66282`，HashKV `1044510207`、compact revision `44329`，term `402`、
+leader `2393892952`。全部适用开关启用的 HEAD readonly gate 一次 GREEN；候选三轮九次 exact endpoint proposal
+health 全部成功（`9.630–11.615ms`），三个 store Up，pending/down/miss/extra/learner 五类 region check 连续
+三轮全零。候选三 Pod 日志 `537/272/577` 行，关键错误及最近 60 秒关键错误均为 0；KubeBrain/TiKV 3+3
+Ready/restart 0，PD 3 Ready、各沿用一次历史 restart，Lease/Alarm 为空。
+
+以同类五类原子 test 回滚固定稳定 digest。StatefulSet UID 不变，generation/observed `766/766`、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。HEAD
+readonly gate 在稳定 A5525 镜像上仍按预期精确拒绝缺少 `watch_range_prefilter_dropped`；排除该新版 info-metrics
+合同后其余门禁全部 GREEN。稳定三轮九次 proposal health 全部成功（`10.079–12.249ms`），store/region 连续
+三轮健康；终态 revision/index/applied、HashKV、compact revision 保持
+`66282/66282/66282/1044510207/44329`，term `403`、leader `231094427`，Lease/Alarm/测试前缀为空。
+稳定日志 `382/393/303` 行且关键错误为 0。全程未使用凭据或落盘诊断日志，最终六个数据面/info 端口与一个 PD
+端口均无监听残留；宿主根盘 75%、可用 487 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在，本轮
+不把 region API 结果替代完整 storage isolation gate。A5686 关闭了有限 staged mutation 与写后完整 Range 已共同
+给出严格 pre-write 上界、follower 却因整体丢弃该 Range 而接受超容量 cardinality 的完整性缺口，同时保留无界 mutation
+无法安全推导时的可用性。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
