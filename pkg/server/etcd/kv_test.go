@@ -4598,6 +4598,8 @@ func TestFollowerRejectsInvalidDeleteRangeProxyPayload(t *testing.T) {
 	}{
 		{name: "zero revision", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(0)}},
 		{name: "negative deleted", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: -1}},
+		{name: "exact key deleted above cardinality", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 2}},
+		{name: "reverse range deleted", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("c"), RangeEnd: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1}},
 		{name: "unrequested previous", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{previousA}}},
 		{name: "count mismatch", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1}},
 		{name: "outside range", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("b"), PrevKv: true}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{previousB}}},

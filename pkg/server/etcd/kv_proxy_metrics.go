@@ -121,6 +121,16 @@ func rangeIntervalCardinalityViolation(request *etcdserverpb.RangeRequest, count
 	return ""
 }
 
+func deleteRangeIntervalCardinalityViolation(request *etcdserverpb.DeleteRangeRequest, deleted int64) string {
+	if len(request.GetRangeEnd()) == 0 && deleted > 1 {
+		return fmt.Sprintf("deleted count %d above exact-key cardinality", deleted)
+	}
+	if isEmptyNonFromKeyRange(request.GetKey(), request.GetRangeEnd()) && deleted != 0 {
+		return fmt.Sprintf("nonzero deleted count %d for an empty requested range", deleted)
+	}
+	return ""
+}
+
 func validatePutProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.PutRequest, response *etcdserverpb.PutResponse, err error) (*etcdserverpb.PutResponse, error) {
 	if err != nil {
 		return response, err
@@ -170,6 +180,9 @@ func validateDeleteRangeProxyPayload(metricCli metrics.Metrics, request *etcdser
 	}
 	if response.GetDeleted() < 0 {
 		return fail("leader delete_range proxy returned a negative deleted count")
+	}
+	if violation := deleteRangeIntervalCardinalityViolation(request, response.GetDeleted()); violation != "" {
+		return fail("leader delete_range proxy returned " + violation)
 	}
 	if !request.GetPrevKv() {
 		if len(response.GetPrevKvs()) != 0 {
@@ -440,6 +453,9 @@ func validateTxnProxyPutPayload(request *etcdserverpb.PutRequest, response *etcd
 func validateTxnProxyDeletePayload(request *etcdserverpb.DeleteRangeRequest, response *etcdserverpb.DeleteRangeResponse, outerRevision int64) error {
 	if response.GetDeleted() < 0 {
 		return fmt.Errorf("delete returned a negative deleted count")
+	}
+	if violation := deleteRangeIntervalCardinalityViolation(request, response.GetDeleted()); violation != "" {
+		return fmt.Errorf("delete returned %s", violation)
 	}
 	if response.GetDeleted() > 0 && response.GetHeader().GetRevision() != outerRevision {
 		return fmt.Errorf("effective delete revision %d differs from outer revision %d", response.GetHeader().GetRevision(), outerRevision)
