@@ -67885,6 +67885,65 @@ etcdctl HashKV 数组当对象而只读失败并纠正；一次 ready_port 编�
 监听均无残留，未使用凭据、未落盘诊断日志。A5676 同时关闭了 follower 忽略不相交 mutation evidence 的完整性
 缺口，以及 guarded no-op Delete 永久重试的可用性缺陷。
 
+### A5677：用完整包含区间证据校验 Txn Compare 子区间
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{compareToPath,applyCompare,compareKV}`。上游 Compare 对其
+point/range 读取同一个写前 `txnRead`；一个 unlimited、未投影、未过滤的 current Range 若完整包含 Compare 子区间，
+其 payload 可以按子区间无歧义切片。现有 Range payload 门禁已同时要求 `More=false`、`Count=len(Kvs)`、key 均位于
+请求区间、无重复且 metadata/排序有效，但 A5676 evidence validator 仍只接受区间完全相等，允许 follower 接受 leader
+返回的包含 Range 或 Delete PrevKvs 明确证明 Compare 为 true/false、却选择相反分支的响应。
+
+tests-only RED 覆盖有限 Range 包含 point 的 true/false、包含 payload 证明子点 missing、from-key 包含有限 Compare、
+Delete PrevKvs 包含 point，以及 follower RPC；旧实现接受五类矛盾直接响应和 follower 响应。正向边界固定有限 Range
+不能证明 from-key Compare。进一步 RED 证明先写包含 Range 内、但 Compare 外的 key 后，该 Range 的 Compare 子区间仍是
+写前证据；反向正例则要求 Compare 子区间自身被写后，post-write Range 不得反推写前 Compare。
+
+提交 `52d6fc40` 新增 `txnProxyIntervalContainsInterval`，精确覆盖 point、有限、from-key、相交非包含及空/反向区间，
+把完整 evidence payload 过滤到 Compare 子区间后再调用 upstream 同款 `compareKeyValue`。每份 evidence 同时保存产生时
+的 append-only mutation prefix；只有 Compare 子区间与此前 mutation 不相交时才使用，因此外区间写入不再错误丢弃整份
+证据，子区间写入也不会误用 post-write payload。mutation prefix 保存不可变 slice view 而非逐份复制，避免随 operation
+数形成 O(n²) 内存。普通聚焦 `0.363s`、race `2.168s`、全部 Txn `24.652s`、完整 `pkg/server/etcd`
+`132.962s`、vet 通过。提交前 verifier 精确为 703 项、四片 `170/193/180/160`；提交后四片分别为
+`256.974/454.078/314.194/578.992s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5677-52d6fc40` 内嵌版本 `0.0.0-52d6fc4044fc`、完整提交
+`52d6fc4044fc49822ea8af4ce2752c1cf21c2407`、build time `2026-09-01T11:52:39Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:0525684c6d7daa5a3e33067c8c58807fc3147a31090419163191d5227f945acf`、
+`sha256:e8332f5200431dde425633401b9add87d08b48006a3a91da6053c965d9ed9641`、
+`sha256:b89b53f7efb9c64f559bdf25bae4a839eca457c013d95a047759fd5bea24c82b`、
+`sha256:a09f0e654e1e6d76db0fdd0b37ad1c43f66d45d878a8c7fcbad9c56fd613d03e`；BuildKit SBOM scanner 阶段成功，
+Kind runtime digest 为 `sha256:51cbfbaf23df42c87c47625f51e279215a5103210820db2fa56860a6fedfbe9e`。
+候选只存在本地时，`imagetools inspect` 准确因 registry pull denied 失败；本地 `docker image inspect` 验证 index digest、
+labels、用户和平台，但当前 CLI 未安装 `docker sbom` 子命令，因此本轮不宣称独立 SBOM 内容复验，只记录构建期 scanner
+与 attestation descriptor 证据。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 746 部署到
+generation 747，三 Pod 均落在 `kubebrain-5546bc4649`、Ready/restart 0、同一候选 runtime digest，Pod 内版本与完整
+SHA 一致。逐个 Pod-local gateway 在独立 `/a5677/p{0,1,2}/` 前缀执行六类 Txn：有限包含 Range 对 existing VALUE
+选 Success；同 Range 对 missing VALUE 选 Failure；from-key Range 包含 point Compare；Compare 外先 Put 后包含 Range
+仍保持写前证据；Compare 内先 Put 后 Range 返回新值但不被误当写前证据；包含 Delete PrevKvs 精确删除 target/neighbor
+两键。每个 Pod 最终 Count=0，revision 分别收敛到 `65947/65952/65957`。首次脚本在 p0 seed 后因 gateway response
+使用 snake_case `response_range`、断言却用 camelCase 而停止；只读检查确认两键归属后，重跑先幂等清理再完成全部场景，
+没有把断言错误记为产品失败。
+
+候选 term `365`、leader `2393892952`、HashKV `2928861403`、compact revision `44329`。全部适用开关启用的
+readonly gate 一次 GREEN，三成员 revision/index/applied、Status/HashKV、named readyz/livez、HTTP、metrics/debug/
+pprof、auth disabled/revision 281、Alarm 与空前缀均通过。候选三轮九次 exact endpoint proposal health 全部成功
+（`9.136–11.348ms`），Lease 为空，store Up 且五类 region check 连续三轮全零。候选全量日志
+`619/324/693` 行；Pod 0/2 启动阶段各有一次 leader-election lock `context deadline exceeded`，最近 60 秒三 Pod
+关键错误均为 0。KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready/restart 1 沿用此前 sandbox 事件。A5676 已记录的
+Kind local-path/宿主盘 99% 导致完整 storage isolation gate 失败仍未消除，本轮没有用 region API 结果替代该门禁。
+
+以同类五类原子 test 回滚稳定 digest。StatefulSet UID 不变，generation/observed `748/748`、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。终态
+revision/index/applied、HashKV、compact revision 保持 `65957/2928861403/44329`，term `366`、leader
+`231094427`，prefix 与 Lease 为空；稳定三轮九次 proposal health 全部 GREEN（`9.322–13.231ms`），store/region
+继续健康。稳定日志 `301/335/309` 行，Pod 2 启动期各一次 compact metric 与 lease-lock deadline，最近 60 秒均为 0。
+构建/现场脚本未使用凭据或落盘诊断日志，最终确认所有本轮端口转发监听无残留。A5677 关闭了 follower 忽略完整包含
+区间 payload 与 Compare 子区间自相矛盾的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
