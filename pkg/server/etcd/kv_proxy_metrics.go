@@ -422,8 +422,10 @@ type txnProxyCompareEvidence struct {
 }
 
 type txnProxyMutationInterval struct {
-	key, rangeEnd []byte
-	kind          txnProxyMutationKind
+	key, rangeEnd       []byte
+	kind                txnProxyMutationKind
+	cardinalityDelta    int64
+	cardinalityDeltaSet bool
 }
 
 type txnProxyMutationKind uint8
@@ -479,7 +481,10 @@ func collectTxnProxyCompareEvidence(
 				var kvs []*mvccpb.KeyValue
 				if previous := responseOp.GetResponsePut().GetPrevKv(); previous != nil {
 					kvs = []*mvccpb.KeyValue{previous}
+				} else {
+					interval.cardinalityDelta = 1
 				}
+				interval.cardinalityDeltaSet = true
 				*evidence = append(*evidence, txnProxyCompareEvidence{
 					key: putRequest.GetKey(), kvs: kvs,
 					priorMutations: *mutations,
@@ -504,9 +509,12 @@ func collectTxnProxyCompareEvidence(
 					for _, previous := range deleteResponse.GetPrevKvs() {
 						*mutations = append(*mutations, txnProxyMutationInterval{
 							key: previous.GetKey(), kind: txnProxyMutationDelete,
+							cardinalityDelta: -1, cardinalityDeltaSet: true,
 						})
 					}
 				} else {
+					interval.cardinalityDelta = -deleteResponse.GetDeleted()
+					interval.cardinalityDeltaSet = true
 					*mutations = append(*mutations, interval)
 				}
 			}
@@ -617,6 +625,18 @@ func validateTxnProxyGlobalCardinalityConsistency(
 				interval: interval, count: maximum, upperBoundOnly: true,
 			})
 		}
+		minimum, minimumBounded, maximum, maximumBounded :=
+			txnProxyPartiallyMutatedCardinalityBounds(candidate, int64(len(candidate.kvs)))
+		if minimumBounded {
+			constraints = append(constraints, txnProxyCardinalityConstraint{
+				interval: interval, count: minimum, lowerBoundOnly: true,
+			})
+		}
+		if maximumBounded {
+			constraints = append(constraints, txnProxyCardinalityConstraint{
+				interval: interval, count: maximum, upperBoundOnly: true,
+			})
+		}
 	}
 	for _, key := range knownKeys {
 		constraints = append(constraints, txnProxyCardinalityConstraint{
@@ -708,43 +728,98 @@ func txnProxyPartiallyMutatedEvidenceCardinalityUpperBound(
 func txnProxyPartiallyMutatedCountOnlyCardinalityBounds(
 	candidate txnProxyCompareEvidence,
 ) (minimum int64, minimumBounded bool, maximum int64, maximumBounded bool) {
-	if !candidate.countOnly || candidate.snapshotPinned {
+	if !candidate.countOnly {
 		return 0, false, 0, false
 	}
-	// A Put can only add a key or preserve an existing key, while a Delete can
-	// only remove a key or preserve an absent key. If their intersecting union
-	// capacities are Cp and Cd, a complete post-write count Q therefore proves
-	// Q-Cp <= pre-write count <= Q+Cd. Compute the two sides independently so
-	// an unbounded Delete does not discard a finite Put-derived lower bound.
-	_, _, unknownIntersects := txnProxyFiniteMutationUnionCapacityByKind(candidate, txnProxyMutationUnknown)
-	if unknownIntersects {
-		capacity, bounded := txnProxyFiniteMutationUnionCapacity(candidate)
-		if !bounded {
-			return 0, false, 0, false
-		}
-		minimum = candidate.count - capacity
-		if minimum < 0 {
-			minimum = 0
-		}
-		if candidate.count <= math.MaxInt64-capacity {
-			return minimum, true, candidate.count + capacity, true
-		}
-		return minimum, true, 0, false
+	return txnProxyPartiallyMutatedCardinalityBounds(candidate, candidate.count)
+}
+
+func txnProxyPartiallyMutatedCardinalityBounds(
+	candidate txnProxyCompareEvidence,
+	postCount int64,
+) (minimum int64, minimumBounded bool, maximum int64, maximumBounded bool) {
+	if candidate.snapshotPinned {
+		return 0, false, 0, false
 	}
-	putCapacity, putBounded, _ := txnProxyFiniteMutationUnionCapacityByKind(candidate, txnProxyMutationPut)
+	exactDelta, unknownCandidate := txnProxyPartitionExactCardinalityMutations(candidate)
+	// A Put can only add a key or preserve an existing key, while a Delete can
+	// only remove a key or preserve an absent key. Exact attributed mutations
+	// first shift the post-write count Q by their signed delta E. If the
+	// remaining Put/Delete union capacities are Cp and Cd, the pre-write count
+	// is bounded by Q-E-Cp <= P <= Q-E+Cd. Compute the two sides independently
+	// so an unbounded Delete does not discard a finite Put-derived lower bound.
+	_, _, unknownIntersects := txnProxyFiniteMutationUnionCapacityByKind(
+		unknownCandidate, txnProxyMutationUnknown,
+	)
+	var putCapacity, deleteCapacity int64
+	var putBounded, deleteBounded bool
+	if unknownIntersects {
+		putCapacity, putBounded = txnProxyFiniteMutationUnionCapacity(unknownCandidate)
+		deleteCapacity, deleteBounded = putCapacity, putBounded
+	} else {
+		putCapacity, putBounded, _ = txnProxyFiniteMutationUnionCapacityByKind(
+			unknownCandidate, txnProxyMutationPut,
+		)
+		deleteCapacity, deleteBounded, _ = txnProxyFiniteMutationUnionCapacityByKind(
+			unknownCandidate, txnProxyMutationDelete,
+		)
+	}
+	var base big.Int
+	base.SetInt64(postCount)
+	base.Sub(&base, &exactDelta)
+	var zero, maximumInt64 big.Int
+	maximumInt64.SetInt64(math.MaxInt64)
 	if putBounded {
-		minimum = candidate.count - putCapacity
-		if minimum < 0 {
-			minimum = 0
+		var capacity, lower big.Int
+		capacity.SetInt64(putCapacity)
+		lower.Sub(&base, &capacity)
+		if lower.Sign() < 0 {
+			lower.Set(&zero)
 		}
+		if lower.Cmp(&maximumInt64) > 0 {
+			return txnProxyImpossibleCardinalityBounds()
+		}
+		minimum = lower.Int64()
 		minimumBounded = true
 	}
-	deleteCapacity, deleteBounded, _ := txnProxyFiniteMutationUnionCapacityByKind(candidate, txnProxyMutationDelete)
-	if deleteBounded && candidate.count <= math.MaxInt64-deleteCapacity {
-		maximum = candidate.count + deleteCapacity
-		maximumBounded = true
+	if deleteBounded {
+		var capacity, upper big.Int
+		capacity.SetInt64(deleteCapacity)
+		upper.Add(&base, &capacity)
+		if upper.Sign() < 0 {
+			return txnProxyImpossibleCardinalityBounds()
+		}
+		if upper.Cmp(&maximumInt64) <= 0 {
+			maximum = upper.Int64()
+			maximumBounded = true
+		}
+	}
+	if minimumBounded && maximumBounded && minimum > maximum {
+		return txnProxyImpossibleCardinalityBounds()
 	}
 	return minimum, minimumBounded, maximum, maximumBounded
+}
+
+func txnProxyPartitionExactCardinalityMutations(
+	candidate txnProxyCompareEvidence,
+) (exactDelta big.Int, unknownCandidate txnProxyCompareEvidence) {
+	unknownCandidate = candidate
+	unknownCandidate.priorMutations = make([]txnProxyMutationInterval, 0, len(candidate.priorMutations))
+	candidateInterval := txnProxyMutationInterval{key: candidate.key, rangeEnd: candidate.rangeEnd}
+	for _, mutation := range candidate.priorMutations {
+		if mutation.cardinalityDeltaSet && txnProxyIntervalContainsInterval(candidateInterval, mutation) {
+			var delta big.Int
+			delta.SetInt64(mutation.cardinalityDelta)
+			exactDelta.Add(&exactDelta, &delta)
+			continue
+		}
+		unknownCandidate.priorMutations = append(unknownCandidate.priorMutations, mutation)
+	}
+	return exactDelta, unknownCandidate
+}
+
+func txnProxyImpossibleCardinalityBounds() (int64, bool, int64, bool) {
+	return 1, true, 0, true
 }
 
 func txnProxyFiniteMutationUnionCapacity(candidate txnProxyCompareEvidence) (int64, bool) {

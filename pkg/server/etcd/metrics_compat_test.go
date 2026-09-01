@@ -2086,6 +2086,74 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
 			countOnlyRangeResponse(2),
 		}}, valid: true},
+		{name: "fully contained delete count fixes the exact cardinality decrease", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("m"), RangeEnd: []byte("n")}}},
+			countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 3}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
+			countOnlyRangeResponse(0),
+		}}},
+		{name: "fully contained delete count also fixes ordinary range cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("m"), RangeEnd: []byte("n")}}},
+			containingEvidenceRangeRequest("a", []byte("z")),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 3}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
+			containingEvidenceRangeResponse(),
+		}}},
+		{name: "delete previous key fixes an exact point decrease", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("m"), PrevKv: true}}},
+			countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 1}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{{
+					Key: []byte("m"), Value: []byte("old"), CreateRevision: 1, ModRevision: 4, Version: 2,
+				}},
+			}}},
+			countOnlyRangeResponse(1),
+		}}},
+		{name: "put with requested missing previous fixes an exact creation", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("m"), PrevKv: true}}},
+			countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 1}}},
+			putResponse(), countOnlyRangeResponse(1),
+		}}},
+		{name: "put creation delta also fixes ordinary range cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("m"), PrevKv: true}}},
+			containingEvidenceRangeRequest("a", []byte("z")),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 1}}},
+			putResponse(), containingEvidenceRangeResponse(&mvccpb.KeyValue{
+				Key: []byte("m"), Value: []byte("new"), CreateRevision: 5, ModRevision: 5, Version: 1,
+			}),
+		}}},
+		{name: "mixed exact delete and unknown put bound the pre-write count", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("p"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("m"), RangeEnd: []byte("n")}}},
+			countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 3}}},
+			putResponse(),
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
+			countOnlyRangeResponse(1),
+		}}},
+		{name: "partially overlapping delete count is not wholly attributed", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("m", "m\x00\x00"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}}},
+			countOnlyRangeRequest("m", "m\x00\x00"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 2}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 3}}},
+			countOnlyRangeResponse(0),
+		}}, valid: true},
 		{name: "staged delete permits one removed point", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 			countOnlyRangeRequest("a", "z"), deleteRequest("m"), countOnlyRangeRequest("a", "z"),
 		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
@@ -2425,8 +2493,19 @@ func TestTxnProxyPartiallyMutatedCountOnlyCardinalityBounds(t *testing.T) {
 	point := func(key string, kind txnProxyMutationKind) txnProxyMutationInterval {
 		return txnProxyMutationInterval{key: []byte(key), kind: kind}
 	}
+	exactPoint := func(key string, kind txnProxyMutationKind, delta int64) txnProxyMutationInterval {
+		return txnProxyMutationInterval{
+			key: []byte(key), kind: kind, cardinalityDelta: delta, cardinalityDeltaSet: true,
+		}
+	}
 	finite := func(start, end string, kind txnProxyMutationKind) txnProxyMutationInterval {
 		return txnProxyMutationInterval{key: []byte(start), rangeEnd: []byte(end), kind: kind}
+	}
+	exactFinite := func(start, end string, kind txnProxyMutationKind, delta int64) txnProxyMutationInterval {
+		return txnProxyMutationInterval{
+			key: []byte(start), rangeEnd: []byte(end), kind: kind,
+			cardinalityDelta: delta, cardinalityDeltaSet: true,
+		}
 	}
 	evidence := func(count int64, mutations ...txnProxyMutationInterval) txnProxyCompareEvidence {
 		return txnProxyCompareEvidence{
@@ -2449,6 +2528,17 @@ func TestTxnProxyPartiallyMutatedCountOnlyCardinalityBounds(t *testing.T) {
 		{name: "unknown point falls back to symmetric capacity", candidate: evidence(1, point("m", txnProxyMutationUnknown)), minimum: 0, maximum: 2, minimumBounded: true, maximumBounded: true},
 		{name: "unknown unbounded mutation remains conservative", candidate: evidence(1, finite("m", "n", txnProxyMutationUnknown))},
 		{name: "delete upper overflow keeps lower bound", candidate: evidence(math.MaxInt64, point("m", txnProxyMutationDelete)), minimum: math.MaxInt64, minimumBounded: true},
+		{name: "exact put creation", candidate: evidence(1, exactPoint("m", txnProxyMutationPut, 1)), minimum: 0, maximum: 0, minimumBounded: true, maximumBounded: true},
+		{name: "exact put update", candidate: evidence(1, exactPoint("m", txnProxyMutationPut, 0)), minimum: 1, maximum: 1, minimumBounded: true, maximumBounded: true},
+		{name: "exact point delete", candidate: evidence(0, exactPoint("m", txnProxyMutationDelete, -1)), minimum: 1, maximum: 1, minimumBounded: true, maximumBounded: true},
+		{name: "exact unbounded delete", candidate: evidence(0, exactFinite("m", "n", txnProxyMutationDelete, -3)), minimum: 3, maximum: 3, minimumBounded: true, maximumBounded: true},
+		{name: "exact delete plus unknown put", candidate: evidence(1, exactFinite("m", "n", txnProxyMutationDelete, -1), point("p", txnProxyMutationPut)), minimum: 1, maximum: 2, minimumBounded: true, maximumBounded: true},
+		{name: "partially overlapping exact delete is unknown", candidate: txnProxyCompareEvidence{
+			key: []byte("m"), rangeEnd: []byte("m\x00\x00"), countOnly: true,
+			priorMutations: []txnProxyMutationInterval{exactFinite("a", "z", txnProxyMutationDelete, -3)},
+		}, minimum: 0, maximum: 2, minimumBounded: true, maximumBounded: true},
+		{name: "exact creation exceeding post count is impossible", candidate: evidence(0, exactPoint("m", txnProxyMutationPut, 1)), minimum: 1, maximum: 0, minimumBounded: true, maximumBounded: true},
+		{name: "exact delete pushes pre-write count above int64", candidate: evidence(math.MaxInt64, exactPoint("m", txnProxyMutationDelete, -1)), minimum: 1, maximum: 0, minimumBounded: true, maximumBounded: true},
 		{name: "snapshot pinned stays exact", candidate: func() txnProxyCompareEvidence {
 			candidate := evidence(1, point("m", txnProxyMutationPut))
 			candidate.snapshotPinned = true

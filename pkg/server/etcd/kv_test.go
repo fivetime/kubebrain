@@ -951,6 +951,20 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			message: "inconsistent pre-write evidence cardinality",
 		},
 		{
+			name: "fully contained delete count fixes the exact cardinality decrease",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				countOnlyRangeRequest("a", "z"),
+				{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("m"), RangeEnd: []byte("n")}}},
+				countOnlyRangeRequest("a", "z"),
+			}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 3}}},
+				{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(2), Deleted: 1}}},
+				countOnlyRangeResponse(0),
+			}},
+			message: "inconsistent pre-write evidence cardinality",
+		},
+		{
 			name: "finite lexical interval count above cardinality",
 			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 				countOnlyRangeRequest("a", "a\x00\x00"),
