@@ -445,9 +445,10 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			baseRevision = maxUint64(baseRevision, cr)
 		}
 
+		p.create = absent || tombstone
 		if op.Delete {
 			// deleting an absent or already-tombstoned key is a no-op
-			p.effective = !absent && !tombstone
+			p.effective = !p.create
 			if p.effective {
 				val, _, verr := b.getInternalVal(ctx, op.Key, p.curRev)
 				if verr != nil {
@@ -484,7 +485,6 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			}
 		} else {
 			p.effective = true
-			p.create = absent || tombstone
 			if !p.create {
 				val, _, verr := b.getInternalVal(ctx, op.Key, p.curRev)
 				if verr != nil {

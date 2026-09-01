@@ -1226,6 +1226,20 @@ func TestTxnApplyAbsentGuardOverlappingPut(t *testing.T) {
 	require.Equal(t, "created", value)
 }
 
+func TestTxnApplyAbsentGuardOverlappingNoOpDelete(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/reg/absent-overlap-delete")
+	before := b.GetCurrentRevision()
+
+	results, revision, err := b.TxnApply(ctx,
+		[]TxnWriteOp{{Key: key, Delete: true}},
+		[]TxnGuard{{Key: key, Absent: true}})
+	require.NoError(t, err)
+	require.Equal(t, before, revision)
+	require.Len(t, results, 1)
+	require.False(t, results[0].Deleted)
+}
+
 func TestTxnApplyAbsentGuardDisjointFromWrite(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	guardKey := []byte(prefix + "/reg/absent-guard")

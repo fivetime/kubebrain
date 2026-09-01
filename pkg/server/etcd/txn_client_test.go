@@ -42214,6 +42214,51 @@ func TestClientTxnNoOpDeleteWithPrevKVDoesNotConsumeRevisionMatchesEtcd(t *testi
 	require.Equal(t, int64(1), after.Kvs[1].Version)
 }
 
+func TestClientTxnMissingCompareSelectsNoOpDeleteWithoutRetrying(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := "/a5676/client-missing-compare-noop-delete"
+	before, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, before.Kvs)
+
+	txn, err := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Value(key), "=", "expected")).
+		Then(clientv3.OpGet(key)).
+		Else(clientv3.OpDelete(key, clientv3.WithPrevKV())).
+		Commit()
+	require.NoError(t, err)
+	require.False(t, txn.Succeeded)
+	require.Equal(t, before.Header.Revision, txn.Header.Revision)
+	require.Len(t, txn.Responses, 1)
+	deleted := txn.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.Zero(t, deleted.Deleted)
+	require.Empty(t, deleted.PrevKvs)
+}
+
 func TestClientTxnDeleteLeasedPointKeyWithPrevKVMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
