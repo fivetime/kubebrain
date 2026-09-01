@@ -67327,6 +67327,67 @@ PD/TiKV 3+3 Ready/restart 0。
 真实 klog E/F 与 panic/fatal 均为 0。最终关闭端口转发并确认六个诊断监听均无残留。A5667 同时关闭了 leader 生成错误 pre-write
 header 和 follower 接受不可能 revision 轨迹这两个相互关联的兼容性/完整性缺口。
 
+### A5668：按请求区间形状校验 Range proxy 的 Count/More 基数
+
+继续对照 `/root/etcd/server/etcdserver/txn/range.go::{executeRange,asembleRangeResponse}`、同目录
+`delete.go::mkGteRange` 与 `/root/etcd/server/storage/mvcc/index.go::{Revisions,CountRevisions}`：没有
+`range_end` 的请求是精确键查询，最多只能命中一个 key；单字节 NUL 的 `range_end={0}` 是 from-key
+开放上界，可以命中任意多个 key；其余有界区间在 `range_end<=key` 时为空，Count、Kvs、More 必须分别为
+0、空、false。这些基数约束在 revision filter 和 CountOnly 下仍成立。
+
+旧 follower validator 只检查 `Count>=len(Kvs)`，并在 CountOnly 校验后提前返回；带 revision filter 时还会
+跳过一般 Count/More 一致性检查。因此伪造 leader 可以让精确键返回 Count=2，或让等界/反向空区间返回
+Count=1，也可以在精确键 limit+filter 响应上伪造 More=true。tests-only RED 精确命中上述五个误接受场景，
+同时以 from-key CountOnly=2 固定 NUL 特例不得被误杀；旧实现的定向命令报告五个失败子项，包耗时
+`0.168s`。
+
+提交 `5b36da12` 在 CountOnly 提前返回前按请求区间形状执行完整性校验：精确键拒绝 Count>1 和任意
+More=true；普通空区间拒绝任何非空 Count/Kvs/More；`range_end={0}` 继续保留无界多键语义。校验复用于
+unary follower 与 Txn 内嵌 Range，新增实际 follower 和 Txn 传播回归；leader 生成侧新增精确键
+CountOnly present/missing=`1/0` 证明。最小 GREEN `0.176s`，扩展 unary/follower/Txn/leader 集合
+`0.214s`，完整 `pkg/server/etcd` `144.844s`；`go vet ./pkg/server/etcd` 和定向 race（包报告
+`1.711s`）均通过。提交前 production inventory 仍为 703 项、四片 `170/193/180/160`；提交后四片分别
+为 `275.336/473.125/314.470/599.175s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5668-5b36da12` 内嵌版本 `0.0.0-5b36da12bba6`、完整提交
+`5b36da12bba6fa3bceeeef6fd86e368ca92ce8dd` 与 build time `2026-09-01T02:53:35Z`，运行用户
+`65532:65532`、Go `1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI index、platform manifest、config
+与 attestation manifest 分别为
+`sha256:19a7f885c28d600476efbc062f5e7c5f4580b728f987c3cfe66ef72546f80f7e`、
+`sha256:3dadbf5680d906e36b9e5fb9efe25cb95b27aee2c27b6fe7b1849df149f942ef`、
+`sha256:fd538b8ab46fb70bfce0c81155c758d8ea11d364cb33b9daecadac6a28511e66`、
+`sha256:dc86321af52c33a7e16503de55b6619da4f6fc0b23ae07432f0b0734810dacb5`；Kind/containerd runtime
+digest 为 `sha256:9ec4e5fe3c9b09b4b49269484319aca7aa65394df61685a53cb41da61f47ba8b`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 723
+部署至 generation 724；三 Pod 均落在 revision `kubebrain-77d4b947fc`、使用上述 runtime digest、
+Ready/restart 0。首次 shell 组装命令存在 `)ntest` 换行拼写错误，导致 jq 与 patch 在任何集群写入前失败；
+权威复读确认 generation/image/resourceVersion 全部仍为稳定值后，改用 `set -euo pipefail` 和新鲜五类 test
+完成部署，没有把本地 harness 错误伪装成 rollout 结果。
+
+三个 exact Pod endpoint 分别写入两个 `/a5668/<port>/` key，并验证精确键 present/missing CountOnly 为
+`1/0`、limit 下 More=false、等界和反向有界区间均为 `0`、from-key 均为 `2`；端口
+12379/22379/32379 的最终检查 revision 分别为 `65777/65779/65781`。本机 etcdctl 3.5.16 的
+CountOnly 只支持 fields 输出且没有 `--min-mod-rev`，两次不兼容 CLI 尝试均显式失败，随后使用其实际支持的
+fields 接口完成在线矩阵；filter 维度由已通过的直接 validator、follower 与 Txn 测试覆盖。清理 6 个唯一键后
+`/a5668/` 三端 Count=0、revision `65782`。
+
+以新鲜 HashKV `1392751404` 运行全部只读 gate 开关一次 GREEN：cluster
+`7662961163671170154`、version/storage `3.7.0/3.7.0`、leader `231094427`、term `319`、
+revision/index/applied `65782`、compact revision `44329`、direct hash `3484289740`、auth
+disabled/revision `281`，named/HTTP/metrics/debug/pprof 及跨端点身份、revision、term 均通过。候选三轮
+九次 exact endpoint proposal health 全部成功（`11.028–18.141ms`），LeaseLeases 为空，三 Pod 日志真实
+klog E/F、panic/fatal 均为 0，PD/TiKV 3+3 Ready/restart 0。
+
+以新鲜同类五类 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed `725/725`、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；三成员 revision 保持
+`65782`、HashKV 保持 `1392751404`、compact revision 保持 `44329`，KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0。稳定镜像不含后续新增的单项 watch metric，故终态没有伪跑当前全指标 gate，而是逐项完成
+status/HashKV/readyz/livez/prefix/proposal/lease/log/storage 审计；回滚后三轮九次 proposal health 全部
+GREEN（`10.374–14.214ms`），LeaseLeases 为空，日志真实 klog E/F 与 panic/fatal 均为 0。最终关闭端口
+转发并确认六个监听均无残留。A5668 关闭了 follower/Txn 接受不可能 Range 区间基数与分页元数据的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
