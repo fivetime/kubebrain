@@ -41,16 +41,10 @@ func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 	if request.GetRevision() > 0 && response.GetHeader().GetRevision() < request.GetRevision() {
 		return fail(fmt.Sprintf("leader range proxy returned header revision %d below requested revision %d", response.GetHeader().GetRevision(), request.GetRevision()))
 	}
-	if len(request.GetRangeEnd()) == 0 {
-		if response.GetCount() > 1 {
-			return fail(fmt.Sprintf("leader range proxy returned count %d above exact-key cardinality", response.GetCount()))
-		}
-		if response.GetMore() {
-			return fail("leader range proxy returned more=true for an exact-key request")
-		}
-	} else if isEmptyNonFromKeyRange(request.GetKey(), request.GetRangeEnd()) &&
-		(response.GetCount() != 0 || len(response.GetKvs()) != 0 || response.GetMore()) {
-		return fail("leader range proxy returned non-empty metadata for an empty requested range")
+	if violation := rangeIntervalCardinalityViolation(
+		request, response.GetCount(), int64(len(response.GetKvs())), response.GetMore(),
+	); violation != "" {
+		return fail("leader range proxy returned " + violation)
 	}
 	if request.GetCountOnly() {
 		if len(response.GetKvs()) != 0 || response.GetMore() {
@@ -108,6 +102,23 @@ func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 		}
 	}
 	return response, nil
+}
+
+func rangeIntervalCardinalityViolation(request *etcdserverpb.RangeRequest, count, kvCount int64, more bool) string {
+	if len(request.GetRangeEnd()) == 0 {
+		if count > 1 {
+			return fmt.Sprintf("count %d above exact-key cardinality", count)
+		}
+		if more {
+			return "more=true for an exact-key request"
+		}
+		return ""
+	}
+	if isEmptyNonFromKeyRange(request.GetKey(), request.GetRangeEnd()) &&
+		(count != 0 || kvCount != 0 || more) {
+		return "non-empty metadata for an empty requested range"
+	}
+	return ""
 }
 
 func validatePutProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.PutRequest, response *etcdserverpb.PutResponse, err error) (*etcdserverpb.PutResponse, error) {

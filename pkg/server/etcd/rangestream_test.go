@@ -801,6 +801,10 @@ func TestFollowerRangeStreamRejectsInvalidProxyPayload(t *testing.T) {
 		{name: "count below sent", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned an invalid terminal count"},
 		{name: "inconsistent more", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Limit: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned inconsistent terminal count and more metadata"},
 		{name: "count-only payload", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned key-values for a count-only request"},
+		{name: "exact key count above cardinality", request: &etcdserverpb.RangeRequest{Key: []byte("a"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2}}, message: "forwarded range stream returned count 2 above exact-key cardinality"},
+		{name: "exact key limited pagination above cardinality", request: &etcdserverpb.RangeRequest{Key: []byte("a"), Limit: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, More: true, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned count 2 above exact-key cardinality"},
+		{name: "reverse count-only range", request: &etcdserverpb.RangeRequest{Key: []byte("z"), RangeEnd: []byte("a"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1}}, message: "forwarded range stream returned non-empty metadata for an empty requested range"},
+		{name: "equal count-only range", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("a"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1}}, message: "forwarded range stream returned non-empty metadata for an empty requested range"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			rec := &recordingMetrics{}
@@ -841,6 +845,9 @@ func TestRangeStreamProxyPayloadValidatorAcceptsCanonicalStreams(t *testing.T) {
 		{name: "multi-frame unlimited", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Kvs: []*mvccpb.KeyValue{kv("a")}}, {Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{kv("b")}}}},
 		{name: "limited more", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Limit: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, More: true, Kvs: []*mvccpb.KeyValue{kv("a")}}}},
 		{name: "count only", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 3}}},
+		{name: "exact key count only", request: &etcdserverpb.RangeRequest{Key: []byte("a"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1}}},
+		{name: "exact key limited", request: &etcdserverpb.RangeRequest{Key: []byte("a"), Limit: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{kv("a")}}}},
+		{name: "from key count only", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte{0}, CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 3}}},
 		{name: "keys only", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{kv("a")}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

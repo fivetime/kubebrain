@@ -89,6 +89,11 @@ func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.Range
 	if response.GetCount() < 0 || response.GetCount() < v.sentCount {
 		return fail("returned an invalid terminal count")
 	}
+	if violation := rangeIntervalCardinalityViolation(
+		v.request, response.GetCount(), v.sentCount, response.GetMore(),
+	); violation != "" {
+		return fail("returned " + violation)
+	}
 	if v.request.GetCountOnly() {
 		if v.sentCount != 0 || response.GetMore() {
 			return fail("returned key-values or more=true for a count-only request")
