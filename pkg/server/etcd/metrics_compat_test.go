@@ -1088,6 +1088,26 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_LEASE,
 		TargetUnion: &etcdserverpb.Compare_Lease{Lease: -1},
 	}
+	revisionUpperFalse := &etcdserverpb.Compare{
+		Key: []byte("upper-false"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_MOD,
+		TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 5},
+	}
+	revisionUpperTrue := &etcdserverpb.Compare{
+		Key: []byte("upper-true"), RangeEnd: []byte("z"),
+		Result: etcdserverpb.Compare_LESS, Target: etcdserverpb.Compare_CREATE,
+		TargetUnion: &etcdserverpb.Compare_CreateRevision{CreateRevision: 6},
+	}
+	revisionBoundUnknown := &etcdserverpb.Compare{
+		Key: []byte("upper-unknown"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+		TargetUnion: &etcdserverpb.Compare_Version{Version: 4},
+	}
+	revisionBoundLeaseUnknown := &etcdserverpb.Compare{
+		Key: []byte("upper-lease"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_LEASE,
+		TargetUnion: &etcdserverpb.Compare_Lease{Lease: 6},
+	}
 	nestedRequest := &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
 			Key: []byte("nested-compare"), Target: etcdserverpb.Compare_VERSION,
@@ -1142,6 +1162,45 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		{name: "mismatched version false selected success", request: branchRequest(mismatchedVersionFalse), response: branchResponse(true)},
 		{name: "signed lease selected success", request: branchRequest(signedLeaseUnknown), response: branchResponse(true), valid: true},
 		{name: "signed lease selected failure", request: branchRequest(signedLeaseUnknown), response: branchResponse(false), valid: true},
+		{name: "revision upper false selected success", request: branchRequest(revisionUpperFalse), response: branchResponse(true)},
+		{name: "revision upper true selected failure", request: branchRequest(revisionUpperTrue), response: branchResponse(false)},
+		{name: "unknown point then revision upper false selected success", request: branchRequest(unknownPoint, revisionUpperFalse), response: branchResponse(true)},
+		{name: "revision bounded unknown selected success", request: branchRequest(revisionBoundUnknown), response: branchResponse(true), valid: true},
+		{name: "revision bounded unknown selected failure", request: branchRequest(revisionBoundUnknown), response: branchResponse(false), valid: true},
+		{name: "revision bounded lease selected success", request: branchRequest(revisionBoundLeaseUnknown), response: branchResponse(true), valid: true},
+		{name: "revision bounded lease selected failure", request: branchRequest(revisionBoundLeaseUnknown), response: branchResponse(false), valid: true},
+		{name: "pre-write revision upper false selected success", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("pre-write"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 5},
+			}},
+			Success: []*etcdserverpb.RequestOp{putRequest("write")}, Failure: []*etcdserverpb.RequestOp{rangeRequest("failure")},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{putResponse()}}},
+		{name: "failure write uses pre-write revision", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("failure-write"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 5},
+			}},
+			Success: []*etcdserverpb.RequestOp{rangeRequest("success")}, Failure: []*etcdserverpb.RequestOp{putRequest("failure-write")},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{putResponse()}}, valid: true},
+		{name: "nested compare uses pre-write revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			putRequest("outer-write"),
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key: []byte("nested-upper"), Result: etcdserverpb.Compare_LESS, Target: etcdserverpb.Compare_MOD,
+					TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 5},
+				}},
+				Success: []*etcdserverpb.RequestOp{rangeRequest("nested-success")},
+				Failure: []*etcdserverpb.RequestOp{rangeRequest("nested-failure")},
+			}}},
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(),
+			{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{
+				Header: txnHeader(0), Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{
+					ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)},
+				}}},
+			}}},
+		}}},
 		{name: "read-only previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},
 		{name: "pre-write operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key"), putRequest("put")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}, putResponse()}}, valid: true},
 		{name: "post-write previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{putRequest("put"), rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{putResponse(), {Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},

@@ -679,6 +679,44 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			}}},
 			message: "deterministically select the failure branch",
 		},
+		{
+			name: "revision upper false selected success",
+			request: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key: []byte("upper"), RangeEnd: []byte{0},
+					Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_MOD,
+					TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 2},
+				}},
+				Success: []*etcdserverpb.RequestOp{rangeRequest("success")},
+				Failure: []*etcdserverpb.RequestOp{rangeRequest("failure")},
+			},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2)}},
+			}}},
+			message: "deterministically select the failure branch",
+		},
+		{
+			name: "nested revision upper true selected failure",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+					Compare: []*etcdserverpb.Compare{{
+						Key: []byte("nested-upper"), RangeEnd: []byte{0},
+						Result: etcdserverpb.Compare_LESS, Target: etcdserverpb.Compare_CREATE,
+						TargetUnion: &etcdserverpb.Compare_CreateRevision{CreateRevision: 3},
+					}},
+					Success: []*etcdserverpb.RequestOp{rangeRequest("nested-success")},
+					Failure: []*etcdserverpb.RequestOp{rangeRequest("nested-failure")},
+				}},
+			}}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{
+					Header: txnHeader(0), Responses: []*etcdserverpb.ResponseOp{{
+						Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2)}},
+					}},
+				}},
+			}}},
+			message: "deterministically select the success branch",
+		},
 		{name: "missing operation header", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{rangeResponse()}}},
 		{
 			name:    "operation header identity",

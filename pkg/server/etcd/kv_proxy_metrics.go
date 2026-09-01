@@ -252,6 +252,10 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 		}
 		baseRevision--
 	}
+	if validationErr := validateTxnProxyRevisionBoundCompareBranches(request, response, baseRevision); validationErr != nil {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
+		return nil, status.Error(codes.DataLoss, validationErr.Error())
+	}
 	changed := false
 	if validationErr := validateTxnProxyResponseHeaders(request, response, outerRevision, baseRevision, true, &changed); validationErr != nil {
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
@@ -273,16 +277,7 @@ func validateTxnProxyResponseTree(request *etcdserverpb.TxnRequest, response *et
 	if len(request.GetCompare()) != 0 {
 		expected, deterministic := txnProxyDeterministicCompareBranch(request.GetCompare())
 		if deterministic && response.GetSucceeded() != expected {
-			selectedBranch := "failure"
-			expectedBranch := "success"
-			if response.GetSucceeded() {
-				selectedBranch = "success"
-				expectedBranch = "failure"
-			}
-			return fmt.Errorf(
-				"leader txn proxy selected the %s branch for compares that deterministically select the %s branch",
-				selectedBranch, expectedBranch,
-			)
+			return txnProxyCompareBranchError(response.GetSucceeded(), expected)
 		}
 	}
 	requests := request.GetFailure()
@@ -328,6 +323,47 @@ func validateTxnProxyResponseTree(request *etcdserverpb.TxnRequest, response *et
 	return nil
 }
 
+func validateTxnProxyRevisionBoundCompareBranches(
+	request *etcdserverpb.TxnRequest,
+	response *etcdserverpb.TxnResponse,
+	maxRevision int64,
+) error {
+	if len(request.GetCompare()) != 0 {
+		expected, deterministic := txnProxyDeterministicCompareBranchAtRevision(request.GetCompare(), maxRevision)
+		if deterministic && response.GetSucceeded() != expected {
+			return txnProxyCompareBranchError(response.GetSucceeded(), expected)
+		}
+	}
+	requests := request.GetFailure()
+	if response.GetSucceeded() {
+		requests = request.GetSuccess()
+	}
+	for index, requestOp := range requests {
+		if requestOp.GetRequestTxn() == nil {
+			continue
+		}
+		if err := validateTxnProxyRevisionBoundCompareBranches(
+			requestOp.GetRequestTxn(), response.GetResponses()[index].GetResponseTxn(), maxRevision,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func txnProxyCompareBranchError(selected, expected bool) error {
+	selectedBranch := "failure"
+	expectedBranch := "success"
+	if selected {
+		selectedBranch = "success"
+		expectedBranch = "failure"
+	}
+	return fmt.Errorf(
+		"leader txn proxy selected the %s branch for compares that deterministically select the %s branch",
+		selectedBranch, expectedBranch,
+	)
+}
+
 func txnProxyDeterministicCompareBranch(compares []*etcdserverpb.Compare) (bool, bool) {
 	allDeterministic := true
 	for _, compare := range compares {
@@ -342,6 +378,51 @@ func txnProxyDeterministicCompareBranch(compares []*etcdserverpb.Compare) (bool,
 	}
 	if allDeterministic {
 		return true, true
+	}
+	return false, false
+}
+
+func txnProxyDeterministicCompareBranchAtRevision(compares []*etcdserverpb.Compare, maxRevision int64) (bool, bool) {
+	allDeterministic := true
+	for _, compare := range compares {
+		result, deterministic := txnProxyDeterministicCompareAtRevision(compare, maxRevision)
+		if !deterministic {
+			allDeterministic = false
+			continue
+		}
+		if !result {
+			return false, true
+		}
+	}
+	if allDeterministic {
+		return true, true
+	}
+	return false, false
+}
+
+func txnProxyDeterministicCompareAtRevision(compare *etcdserverpb.Compare, maxRevision int64) (bool, bool) {
+	if result, deterministic := txnProxyDeterministicCompare(compare); deterministic {
+		return result, true
+	}
+	var expected int64
+	switch compare.GetTarget() {
+	case etcdserverpb.Compare_VERSION:
+		expected = compare.GetVersion()
+	case etcdserverpb.Compare_CREATE:
+		expected = compare.GetCreateRevision()
+	case etcdserverpb.Compare_MOD:
+		expected = compare.GetModRevision()
+	default:
+		return false, false
+	}
+	// compareToPath evaluates every nested transaction against the same
+	// pre-write read view. Existing metadata cannot exceed that revision;
+	// missing keys contribute zero.
+	if expected > maxRevision {
+		return compareOrder(-1, compare.GetResult()), true
+	}
+	if expected == maxRevision && compare.GetResult() == etcdserverpb.Compare_GREATER {
+		return false, true
 	}
 	return false, false
 }
