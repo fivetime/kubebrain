@@ -604,6 +604,29 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			message: "selected the failure branch without compares",
 		},
 		{name: "missing operation header", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{rangeResponse()}}},
+		{
+			name:    "operation header identity",
+			request: simple,
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+					Header: &etcdserverpb.ResponseHeader{ClusterId: 9, Revision: 2},
+				}},
+			}}},
+			message: "operation header with nonzero identity",
+		},
+		{
+			name:    "nested txn header identity",
+			request: nested,
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{
+					Header: &etcdserverpb.ResponseHeader{RaftTerm: 7}, Succeeded: true,
+					Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{
+						ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2)},
+					}}},
+				}},
+			}}},
+			message: "nested txn header with nonzero identity",
+		},
 		{name: "read-only operation at previous revision", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(1)}}}}}, message: "operation revision 1 differs from visible revision 2"},
 		{
 			name: "post-write range at previous revision",
@@ -5902,16 +5925,25 @@ func TestTxnNestedSuccessResponseMatchesEtcd(t *testing.T) {
 	require.NotNil(t, nested)
 	require.NotNil(t, nested.Header)
 	require.Zero(t, nested.Header.Revision)
+	require.Zero(t, nested.Header.ClusterId)
+	require.Zero(t, nested.Header.MemberId)
+	require.Zero(t, nested.Header.RaftTerm)
 	require.True(t, nested.Succeeded)
 	require.Len(t, nested.Responses, 2)
 	putResp := nested.Responses[0].GetResponsePut()
 	require.NotNil(t, putResp)
 	require.NotNil(t, putResp.Header)
 	require.Equal(t, resp.Header.Revision, putResp.Header.Revision)
+	require.Zero(t, putResp.Header.ClusterId)
+	require.Zero(t, putResp.Header.MemberId)
+	require.Zero(t, putResp.Header.RaftTerm)
 	rangeResp := nested.Responses[1].GetResponseRange()
 	require.NotNil(t, rangeResp)
 	require.NotNil(t, rangeResp.Header)
 	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Zero(t, rangeResp.Header.ClusterId)
+	require.Zero(t, rangeResp.Header.MemberId)
+	require.Zero(t, rangeResp.Header.RaftTerm)
 	require.Len(t, rangeResp.Kvs, 1)
 	require.Equal(t, []byte("nested"), rangeResp.Kvs[0].Value)
 }

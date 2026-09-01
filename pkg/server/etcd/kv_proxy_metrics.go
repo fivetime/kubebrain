@@ -345,8 +345,13 @@ func validateTxnProxyResponseHeaders(
 	if response.GetHeader() == nil {
 		return fmt.Errorf("leader txn proxy returned a txn response without a header")
 	}
-	if !root && response.GetHeader().GetRevision() != 0 {
-		return fmt.Errorf("leader txn proxy returned nested txn revision %d instead of zero", response.GetHeader().GetRevision())
+	if !root {
+		if txnProxyHeaderHasIdentity(response.GetHeader()) {
+			return fmt.Errorf("leader txn proxy returned nested txn header with nonzero identity")
+		}
+		if response.GetHeader().GetRevision() != 0 {
+			return fmt.Errorf("leader txn proxy returned nested txn revision %d instead of zero", response.GetHeader().GetRevision())
+		}
 	}
 	requests := request.GetFailure()
 	if response.GetSucceeded() {
@@ -376,6 +381,9 @@ func validateTxnProxyResponseHeaders(
 		if header == nil {
 			return fmt.Errorf("leader txn proxy returned response operation without a header at index %d", index)
 		}
+		if txnProxyHeaderHasIdentity(header) {
+			return fmt.Errorf("leader txn proxy returned operation header with nonzero identity at index %d", index)
+		}
 		visibleRevision := baseRevision
 		if *changed {
 			visibleRevision = outerRevision
@@ -388,6 +396,10 @@ func validateTxnProxyResponseHeaders(
 		}
 	}
 	return nil
+}
+
+func txnProxyHeaderHasIdentity(header *etcdserverpb.ResponseHeader) bool {
+	return header.GetClusterId() != 0 || header.GetMemberId() != 0 || header.GetRaftTerm() != 0
 }
 
 func validateTxnProxyOperationPayloads(request *etcdserverpb.TxnRequest, response *etcdserverpb.TxnResponse, outerRevision int64) error {
