@@ -67631,6 +67631,66 @@ revision 保持 `65884/1465918337/44329`，term 为 `342`，prefix count 0、rea
 端口转发并确认六个监听均无残留，未使用凭据或落盘诊断文件。A5672 关闭了 follower Txn 接受 leader
 为确定性空 Compare 区间选择上游不可能分支的完整性缺口。
 
+### A5673：拒绝元数据不变量与未知 enum 决定的不可能 Txn 分支
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{applyCompare,compareKV}` 与
+`/root/etcd/server/etcdserver/api/v3rpc/key.go::checkTxnRequest`。上游请求校验只要求 Compare key 非空，
+允许负阈值、未知 result/target enum 及 target/oneof 不匹配；missing key 的 VERSION/CREATE/MOD 为 0，
+现存 KV 的三项元数据均为正数，所以完整可观察域非负。由此，三类元数据对负阈值的比较和 `< 0` 对任意
+point/range 都可确定；未知 result 在 `compareKV` 中落入 true，未知 target 保持 order=0。VALUE 在运行时
+空区间会先被 missing-value 特例判 false，LEASE 又允许有符号 ID，二者不能套用非负元数据推断。
+
+tests-only RED 增加四个直接 validator 和两个 follower RPC 场景，旧实现全部接受，聚焦包报告 `0.314s`。
+最初把“未知 result 恒真”夹具写成 VALUE；复核 `applyCompare` 后发现空区间会在进入 `compareKV` 前失败，
+因此在实现前改为 MOD，并新增 VALUE 两分支都允许的正向边界。提交 `08affa2a` 将原空区间 helper 扩展为
+`txnProxyDeterministicCompareBranch`：递归聚合确定性 Compare，任一恒假即选 Failure、全部恒真才选
+Success；同时覆盖 VERSION/CREATE/MOD 非负域、未知 enum 和错误 oneof 的上游有效零阈值，并明确保留
+VALUE/LEASE 未知路径。
+
+实现后初始聚焦 GREEN `0.299s`，扩展边界组合 `0.729s`，定向 race `1.963s`，全部 Txn 测试
+`27.781s`，完整 `pkg/server/etcd` `138.241s`，`go vet ./pkg/server/etcd` 通过。提交前 production
+inventory 为 703 项、四片 `170/193/180/160`；提交后四片分别为
+`257.181/450.434/309.367/577.067s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5673-08affa2a` 内嵌版本
+`0.0.0-08affa2a2385`、完整提交 `08affa2a2385f3701a6f05dcb366a9ca71caa2ef` 与 build time
+`2026-09-01T07:26:06Z`，运行用户 `65532:65532`、Go `1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI
+index、platform manifest、config 与 attestation manifest 分别为
+`sha256:f80dc28e21ec2aeffda0377b178556256a5b2bfedbb1d491c784f22e0e069371`、
+`sha256:1c700a5cd77056192204cfcdf5acb042bd4cbaa7220c40e34fc40725c2051b5c`、
+`sha256:12fb565815aacfcc873dc49a8d4f2da1890cf75589a177a7a684c73a76601962`、
+`sha256:d2fa0ff2a8fd0f12cf519833e1f34298f3ffe2ff53c8fe113fc746d6f683aa80`；Kind/containerd Pod
+runtime digest 为 `sha256:cbddffb4eb37f90b93a4b39e1f5b8eaed9951371df12d8a0621f6a477ad7404d`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 735
+部署至 generation 736；三 Pod 均落在 revision `kubebrain-8485d99648`、Ready/restart 0。逐个 exact Pod
+endpoint 通过 etcd v3 JSON gateway 执行并用 15 个 `jq -e` 断言五种无写场景：from-key
+`VERSION > -1` 恒真选 Success；普通范围 `MOD < 0` 恒假选 Failure；未知 MOD result 恒真选 Success；
+外层无 Compare 选 Success、内层未知 target + NOT_EQUAL 固定选 Failure 且 nested header 为 `{}`；未知
+VALUE result 对 missing point 仍选 Failure。三端 `/a5673/` count 均为 0，revision/index/applied 始终
+`65884`。
+
+候选 term `344`、leader `2393892952`，HashKV `1465918337`、compact revision `44329`。以该值运行
+全部适用开关启用的 readonly gate 一次 GREEN，direct hash `1782561772`、auth disabled/revision `281`，
+named/HTTP/metrics/debug/pprof 与跨端点身份、revision、term 均通过。候选三轮九次 exact endpoint
+proposal health 全部成功（`10.943–12.719ms`），LeaseLeases 为空，三 Pod 全量日志 `468/276/523` 行且
+关键错误命中为 0，KubeBrain/目标 PD/TiKV 3+3+3 Ready/restart 0。
+
+以同类五类原子 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed `737/737`、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；revision、HashKV 与 compact
+revision 保持 `65884/1465918337/44329`，term `346`、leader `231094427`，prefix count 0、Lease 为空。
+稳定三轮九次 proposal health 全部 GREEN（`10.258–13.182ms`），全量日志 `577/639/352` 行、关键错误
+均为 0，随后三 Pod 最近 60 秒也为 0，KubeBrain/目标 PD/TiKV 3+3+3 Ready/restart 0。
+
+HEAD 的最新 readonly gate 不被用作旧稳定镜像的回滚成功证据：首次稳定复跑准确失败于三成员均未暴露
+`watch_range_prefilter_dropped`，无写 watch 也不会使旧镜像注册该新增指标；数据、状态、健康与日志改由
+上述独立断言证明。构建入口检索时 unmatched `Makefile*`、一次 `--count-only -w json`、Pod 重建后的旧
+port-forward 探测以及本机 etcdctl 3.5 对省略零值/camelCase 的错误断言均在只读阶段失败并已纠正；其中旧
+port-forward 探测还因缺少 fail-fast 打印了错误尾部摘要，该摘要明确作废。所有 Txn、watch 和 health 验证均
+未产生数据写入，最终关闭端口转发并确认六个监听无残留，未使用凭据或落盘诊断文件。A5673 关闭了 follower
+Txn 接受 leader 违反 etcd 元数据不变量及 enum fallthrough 语义选择不可能分支的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
