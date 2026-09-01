@@ -67448,6 +67448,71 @@ restart 仍为 0，随后三 Pod 最近 60 秒真实 klog E/F 与 panic/fatal �
 没有误报成全量日志零错误。最终关闭端口转发并确认六个监听均无残留。A5669 关闭了 follower RangeStream
 接受上游不可能区间基数与分页元数据的完整性缺口。
 
+### A5670：校验 follower/Txn DeleteRange 的请求区间删除基数
+
+继续对照 `/root/etcd/server/etcdserver/txn/delete.go::{DeleteRange,deleteRange,mkGteRange}`、
+`/root/etcd/server/storage/mvcc/kv.go::DeleteRange` 与
+`/root/etcd/server/storage/mvcc/kvstore_txn.go::storeTxnWrite.DeleteRange`。上游把空 `range_end` 解释为
+精确键，所以最多删除一个键；NUL `range_end={0}` 经 `mkGteRange` 转成 from-key，可删除任意多个键；其余
+`range_end<=key` 是普通空半开区间，必须删除 0 个键。旧 KubeBrain unary 与 Txn follower payload validator
+只检查 `Deleted>=0`，并在 `PrevKv=false` 时提前返回，因此会接受精确键 `Deleted=2`、等界或反向空区间
+`Deleted=1`；Txn 路径还会据此错误影响“是否发生有效写入”的 revision 轨迹。
+
+tests-only RED 首先让直接 unary 的精确键、等界、反向三项和 Txn 的精确键、反向两项错误成功，包报告
+`0.158s`。提交 `45b60eda` 增加共享 `deleteRangeIntervalCardinalityViolation`，在 `PrevKv` 分支前统一拒绝
+上述不可能基数，同时用普通范围和 NUL from-key 多删除正例固定合法行为。后续审计发现既有
+`TestFollowerRejectsInvalidDeleteRangeProxyPayload` 没有给伪造 header 设置 RaftTerm，新增用例会被通用 header
+校验提前拒绝，不能证明 payload 分支。提交 `a22bd812` 补齐 RaftTerm，并让新增两项分别断言
+`above exact-key cardinality` 与 `empty requested range`；临时仅移除 unary 新调用后，真实 follower RPC 两项均
+错误返回成功并 RED `0.148s`，恢复后 GREEN `0.150s`。最终五项聚焦组合 `0.192s`、定向 race `1.478s`、
+完整 `pkg/server/etcd` `137.390s`，`go vet ./pkg/server/etcd` 通过。
+
+两个代码提交前的 production inventory 都是 703 项、四片 `170/193/180/160`。`45b60eda` 提交后四片为
+`253.004/444.175/301.791/572.297s`；测试夹具提交 `a22bd812` 后四片为
+`270.345/458.617/307.821/586.948s`，全部 GREEN。编辑期间两次大上下文 `apply_patch` 因长行上下文不匹配
+而原子失败、未改文件；测试夹具修复时又通过 diff 审查发现并撤销了相似上下文造成的 Txn/Range 临时漂移，
+最终提交只包含 DeleteRange follower 的 RaftTerm 与目标错误断言。
+
+首次代码候选 `docker.io/library/kubebrain:a5670-45b60eda` 曾以 generation 728 部署并在 729 回滚；它完成了
+三端删除矩阵与全量只读 gate，但随后被上述测试证据缺陷审计取代，不能作为最终 HEAD 候选。该阶段最初用
+Deployment 名称查询 StatefulSet 得到 NotFound、镜像模板读取不存在的 `Config.Cmd` 失败、使用旧 Kind 名称
+加载镜像得到 no nodes；三者均在变更前失败。首次在线矩阵也因 etcdctl 3.5 JSON 省略 protobuf 零值而把
+`null` 与 0 比较失败，退出 trap 已清理测试键；改用 `field // 0` 后完成验证。这些失败没有被误记为产品
+故障或成功证据。
+
+最终 HEAD 专属候选 `docker.io/library/kubebrain:a5670-a22bd812` 内嵌版本
+`0.0.0-a22bd8123943`、完整提交 `a22bd81239433189b2bad810978d8eba4a8cf70f` 与 build time
+`2026-09-01T05:01:10Z`，运行用户 `65532:65532`、Go `1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI
+index、platform manifest、config 与 attestation manifest 分别为
+`sha256:b7b2ca6e3b1510116a866e587809bfac350eb1b04f3461a88e1573eecd680c98`、
+`sha256:1301428b291941f87b622a554b72d5c946b61472228b8a3a61f8751dc9c1c6be`、
+`sha256:d5587086ae45e5a46c0517ff45e353ecf94dc924dd89c12a4b736bd0c2a3839d`、
+`sha256:2738b866379cb8db93d4939d3f7f205604df964fc9d818e2efd16ed334775149`；Kind/containerd Pod
+runtime digest 为 `sha256:da6d0c18bbbad3972ab612be8cc19d410b341a1d7b7a1cc4476a58f5b5140e8b`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 729
+部署至 generation 730；三 Pod 均落在 revision `kubebrain-579bb99b7b`、Ready/restart 0。逐个 exact Pod
+endpoint 验证精确键删除 `1/0`、等界删除 0 且保留 1、反向删除 0 且保留 2、普通范围删除 2。为安全验证
+from-key，多键起点使用 `0xff` 高位前缀，先用 limit=1 证明其上界区间为空，再写入并 from-key 删除 2；三端
+普通与高位前缀最终均为 0。清理后 revision `65863`、HashKV `227830114`、compact revision `44329`。
+
+以该新鲜 HashKV 运行全部只读 gate 开关一次 GREEN：cluster `7662961163671170154`、version/storage
+`3.7.0/3.7.0`、leader `231094427`、term `332`、revision/index/applied `65863`、direct hash
+`2433472115`、auth disabled/revision `281`，named/HTTP/metrics/debug/pprof 及跨端点身份、revision、term
+均通过。候选三轮九次 exact endpoint proposal health 全部成功（`10.216–14.832ms`），LeaseLeases 为空，
+三 Pod 全量日志真实 klog E/F、panic/fatal 均为 0，KubeBrain/目标 PD/TiKV 3+3+3 Ready/restart 0。
+
+以新鲜同类五类 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed `731/731`、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；三成员 revision 保持
+`65863`、HashKV 保持 `227830114`、compact revision 保持 `44329`，term 为 `334`，KubeBrain/目标
+PD/TiKV 3+3+3 Ready/restart 0。稳定范围 status/HashKV/readyz/livez/prefix/lease/storage 审计通过，回滚后
+三轮九次 proposal health 全部 GREEN（`10.484–14.728ms`）。稳定 `kubebrain-2` 全量启动日志有且仅有一次
+`refresh compact revision metric failed: context deadline exceeded`，restart 仍为 0，随后三 Pod 最近 60 秒
+真实 klog E/F 与 panic/fatal 均为 0；该瞬时日志被如实保留。最终关闭端口转发并确认六个监听均无残留。
+A5670 关闭了 follower unary/Txn 接受上游不可能 DeleteRange 区间删除基数的完整性缺口，并修复了对应
+follower 回归测试被通用 header 校验短路的问题。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
