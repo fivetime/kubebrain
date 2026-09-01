@@ -68290,6 +68290,72 @@ revision/index/applied、HashKV、compact revision 保持 `66109/345401319/44329
 诊断日志，最终六个数据面/info 端口与一个 PD 端口均无监听残留，宿主盘 73%、可用 524 GiB。A5683 关闭了
 follower 只校验 Compare 布尔结果、却放过同一快照内未观察字段或 cardinality 自相矛盾的完整性缺口。
 
+### A5684：聚合校验同一 pre-write 快照的 CountOnly cardinality 下界
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{compareToPath,executeTxn}` 与
+`/root/etcd/server/storage/mvcc/kvstore_txn.go::rangeKeys`。上游在同一 read view 中执行整棵 Compare 路径，
+因此一个完整外层 CountOnly 的返回值不仅约束任意单份内层证据，也必须不小于所有可同时成立的已知键和互不重叠
+子区间 cardinality 下界。A5683 的成对校验仍会放过三类真实 etcd 不可能产生的 leader payload：外层 count=1
+却有两个不同 point key；内层 CountOnly=1 与其区间外另一个已知 point 同时被外层 count=1 包含；两个互不重叠
+子区间各 count=2、外层却仅 count=2。直接相加所有子区间又会错误拒绝重叠区间，而重复 point、staged write 后
+current Range 和更旧 historical Range 也不能重复或错误计入 pre-write 下界。
+
+tests-only RED 恰好出现四个失败：上述三类聚合矛盾和 follower 接受“两个不同 point 超过外层 CountOnly”的
+伪造响应；重复 point 只计一次、重叠子区间不相加、post-write point 不作为 pre-write witness 三类边界保持
+GREEN。提交 `14abe8bb9f37b910941a54a129d300c3dbc1d9fa` 收集所有仍代表 pre-write 的完整 Range/PrevKV
+键并按字节序全局去重；对每个完整外层 CountOnly，先扣除其已知键，再为每个被包含的完整 CountOnly 子区间
+计算 `child count - child known keys`。二次动态规划只选择互不重叠子区间的最大总增益，有限区间端点相邻可并存，
+from-key 区间不会被错误置于后续区间之前；上界饱和加法只计算到“外层剩余容量 + 1”，避免整数溢出。任何已知键
+已超过内/外层 count，或最大可并存增益超过外层剩余容量，均以 aggregate cardinality inconsistency fail closed；
+snapshot-pinned 证据继续参与，更旧历史与受 staged mutation 影响的 current 证据继续排除。
+
+实现后聚焦测试 `0.407s`，直接 helper 与聚焦联合 `0.443s`，聚焦连续三轮
+`0.411/0.408/0.407s`（墙钟 `12.289s`），race `2.436s`（墙钟 `75.206s`），全部 Txn
+`33.641s`（墙钟 `37.406s`），完整 `pkg/server/etcd` `139.753s`（墙钟 `143.542s`），vet
+墙钟 `0.807s`。提交前 production verifier 为 703 项、四片 `170/193/180/160`；代码提交后四片分别为
+`251.540/444.643/302.656/571.773s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5684-14abe8bb` 内嵌版本 `0.0.0-14abe8bb9f37`、完整提交
+`14abe8bb9f37b910941a54a129d300c3dbc1d9fa`、build time `2026-09-01T17:27:00Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:7ba71a1821c0806df24f20081fac3dd4b5597cb5eb213ddff9107ab4a2162397`、
+`sha256:558f37486ad22699d9b07680a784911a4e1dc9bb8ac2490146838b6b953dd92c`、
+`sha256:61c1f21cc6a881aee86706a469b5b91cc8ecd2120c99b86700a775e0ea8126b2`、
+`sha256:ad218f4f2d9750e359d8cf775a8e5b0a0b0ac4aa0785ce67bb8f032212d140c8`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功，Kind runtime digest 为
+`sha256:cfc50334548e704d5bf12a045e3088609f18064768df7010d850680782f434b8`。
+
+稳定基线 revision/index/applied、HashKV、compact revision 为 `66109/66109/66109/345401319/44329`，term
+`391`、leader `2393892952`，`/a5684/`、Lease 与 Alarm 为空。以 StatefulSet UID/resourceVersion/
+container/current image/full args 五类原子 test 从 generation 760 部署到 generation 761，三 Pod 均落在
+`kubebrain-758d646d6`、Ready/restart 0、同一候选 runtime digest，Pod 内版本、完整 SHA、平台与 build time
+一致。逐个 Pod-local gateway 串行执行八类合法聚合 Txn：两个 distinct point 恰好填满外层 count、重复 point
+去重、重叠 child count 不相加、相邻不重叠 child count 求和、inner count 加区间外 point、staged Put 后 current
+point 排除、写后 snapshot-pinned count/points，以及 older historical point 排除；每 Pod 八类、共 24 类次全部
+通过。最终显式清理所有测试键，revision/index/applied 均为 `66174`，prefix Count=0，HashKV `3474706291`、
+compact revision `44329`。
+
+全部适用开关启用的 HEAD readonly gate 一次 GREEN，三成员 Status/HashKV、named readyz/livez、HTTP、
+metrics/debug/pprof、auth disabled/revision 281、Alarm 与空前缀均通过。候选 term `393`、leader
+`2393892952`，三轮九次 exact endpoint proposal health 全部成功（`10.184–11.189ms`），Lease/Alarm 为空；
+三 Pod 全量日志 `754/284/775` 行且关键错误、最近 60 秒关键错误均为 0。三个 store Up，pending/down/miss/
+extra/learner 五类 region check 连续三轮全零，KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各沿用一次
+历史 restart。
+
+以同类五类原子 test 回滚稳定 digest。StatefulSet UID `817bc005-a4d1-4d57-9aab-de93e0874054` 不变，
+generation/observed `762/762`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。HEAD
+readonly gate 在稳定 A5525 镜像上按预期拒绝其尚未提供的最新 raw metric `watch_range_prefilter_dropped`；不启用
+该新版 info-metrics 合同后，其余 Status/HashKV、gateway、readyz/livez、auth、Alarm、debug/pprof 门禁全部
+GREEN。这是回滚基线与 HEAD 运维脚本的显式版本差异，不能伪报为“稳定旧镜像通过最新完整 metrics 合同”；本轮
+候选已经通过该完整合同。稳定终态 revision/index/applied、HashKV、compact revision 保持
+`66174/66174/66174/3474706291/44329`，term `395`、leader `231094427`，三轮九次 proposal health 全部 GREEN
+（`10.184–13.094ms`），store/region 连续三轮健康；日志 `406/426/311` 行且关键错误均为 0。A5676 已记录的
+Kind local-path 非 CSI 存储隔离风险仍存在，本轮不把 region API 结果替代完整 storage isolation gate。全程未使用
+凭据或落盘诊断日志，最终六个数据面/info 端口与一个 PD 端口均无监听残留，宿主盘 74%、可用 512 GiB。A5684
+关闭了 follower 只做成对 cardinality 校验、却放过多份可同时成立的 pre-write 证据聚合下界超过外层 CountOnly
+的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
