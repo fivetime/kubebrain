@@ -2020,6 +2020,33 @@ func TestRangeEmptyNonFromKeyRangeMatchesEtcd(t *testing.T) {
 	}
 }
 
+func TestRangeExactKeyCountOnlyCardinalityMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	present := []byte("/registry/pods/exact-count/present")
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: present, Value: []byte("value")})
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name  string
+		key   []byte
+		count int64
+	}{
+		{name: "present", key: present, count: 1},
+		{name: "missing", key: []byte("/registry/pods/exact-count/missing"), count: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: tc.key, CountOnly: true})
+			require.NoError(t, err)
+			require.Equal(t, tc.count, resp.Count)
+			require.Empty(t, resp.Kvs)
+			require.False(t, resp.More)
+		})
+	}
+}
+
 func TestRangeSortsByKeyDescending(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -2878,6 +2905,8 @@ func TestFollowerRejectsInvalidRangeProxyPayload(t *testing.T) {
 	}{
 		{name: "count below values", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
 		{name: "count only values", request: &etcdserverpb.RangeRequest{Key: []byte("b"), CountOnly: true}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
+		{name: "exact key count above cardinality", request: &etcdserverpb.RangeRequest{Key: []byte("b"), CountOnly: true}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 2}},
+		{name: "reverse range count", request: &etcdserverpb.RangeRequest{Key: []byte("d"), RangeEnd: []byte("b"), CountOnly: true}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1}},
 		{name: "nil value", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{nil}}},
 		{name: "outside range", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("d")}}}},
 		{name: "duplicate key", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}, {Key: []byte("b")}}}},

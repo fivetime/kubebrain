@@ -41,6 +41,17 @@ func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 	if request.GetRevision() > 0 && response.GetHeader().GetRevision() < request.GetRevision() {
 		return fail(fmt.Sprintf("leader range proxy returned header revision %d below requested revision %d", response.GetHeader().GetRevision(), request.GetRevision()))
 	}
+	if len(request.GetRangeEnd()) == 0 {
+		if response.GetCount() > 1 {
+			return fail(fmt.Sprintf("leader range proxy returned count %d above exact-key cardinality", response.GetCount()))
+		}
+		if response.GetMore() {
+			return fail("leader range proxy returned more=true for an exact-key request")
+		}
+	} else if isEmptyNonFromKeyRange(request.GetKey(), request.GetRangeEnd()) &&
+		(response.GetCount() != 0 || len(response.GetKvs()) != 0 || response.GetMore()) {
+		return fail("leader range proxy returned non-empty metadata for an empty requested range")
+	}
 	if request.GetCountOnly() {
 		if len(response.GetKvs()) != 0 || response.GetMore() {
 			return fail("leader range proxy returned key-values or more=true for a count-only request")
