@@ -1134,6 +1134,21 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 	valueEvidenceBranchResponse := func(succeeded bool, rangeResponse *etcdserverpb.ResponseOp) *etcdserverpb.TxnResponse {
 		return &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: succeeded, Responses: []*etcdserverpb.ResponseOp{rangeResponse}}
 	}
+	valueEvidenceKV := func(value string) *mvccpb.KeyValue {
+		return &mvccpb.KeyValue{
+			Key: []byte("evidence"), Value: []byte(value), CreateRevision: 4, ModRevision: 4, Version: 1,
+		}
+	}
+	valueEvidencePutRequest := func() *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+			Key: []byte("evidence"), Value: []byte("new"), PrevKv: true,
+		}}}
+	}
+	valueEvidencePutResponse := func(previous *mvccpb.KeyValue) *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{
+			Header: txnHeader(5), PrevKv: previous,
+		}}}
+	}
 	countOnlyEvidenceRequest := valueEvidenceRangeRequest(false, 0)
 	countOnlyEvidenceRequest.GetRequestRange().CountOnly = true
 	limitedEvidenceRequest := valueEvidenceRangeRequest(false, 0)
@@ -1235,6 +1250,83 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		}}},
 		{name: "range evidence true selected failure", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 0)), response: valueEvidenceBranchResponse(false, valueEvidenceRangeResponse("expected", 5, 4, 4, 1))},
 		{name: "range evidence false selected success", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 0)), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1))},
+		{name: "put previous evidence true selected failure", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{valueEvidencePutRequest()},
+			Failure: []*etcdserverpb.RequestOp{valueEvidencePutRequest()},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{
+			valueEvidencePutResponse(valueEvidenceKV("expected")),
+		}}},
+		{name: "put previous evidence false selected success", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{valueEvidencePutRequest()},
+			Failure: []*etcdserverpb.RequestOp{valueEvidencePutRequest()},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidencePutResponse(valueEvidenceKV("other")),
+		}}},
+		{name: "put missing previous evidence false selected success", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{valueEvidencePutRequest()},
+			Failure: []*etcdserverpb.RequestOp{valueEvidencePutRequest()},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidencePutResponse(nil),
+		}}},
+		{name: "delete previous range evidence one mismatch selected success", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("a"), RangeEnd: []byte("z"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VALUE,
+				TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("expected")},
+			}},
+			Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), PrevKv: true}}}},
+			Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), PrevKv: true}}}},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 2, PrevKvs: []*mvccpb.KeyValue{
+					{Key: []byte("a"), Value: []byte("expected"), CreateRevision: 4, ModRevision: 4, Version: 1},
+					{Key: []byte("b"), Value: []byte("other"), CreateRevision: 4, ModRevision: 4, Version: 1},
+				},
+			}},
+		}}}},
+		{name: "no-op delete proves missing value", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{deleteRequest("evidence")},
+			Failure: []*etcdserverpb.RequestOp{deleteRequest("evidence")},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{deleteResponse()}}},
+		{name: "range after disjoint put remains pre-write evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{putRequest("unrelated"), valueEvidenceRangeRequest(false, 0)},
+			Failure: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), valueEvidenceRangeResponse("other", 5, 4, 4, 1),
+		}}},
+		{name: "put previous after disjoint put remains pre-write evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{putRequest("unrelated"), valueEvidencePutRequest()},
+			Failure: []*etcdserverpb.RequestOp{valueEvidencePutRequest()},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), valueEvidencePutResponse(valueEvidenceKV("other")),
+		}}},
+		{name: "put previous after overlapping from-key delete is not pre-write evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{
+				{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte{0}}}},
+				valueEvidencePutRequest(),
+			},
+			Failure: []*etcdserverpb.RequestOp{valueEvidencePutRequest()},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
+			valueEvidencePutResponse(nil),
+		}}, valid: true},
+		{name: "delete previous after overlapping delete is not pre-write evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{
+				deleteRequest("evidence"),
+				{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("evidence"), PrevKv: true}}},
+			},
+			Failure: []*etcdserverpb.RequestOp{valueEvidencePutRequest()},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5)}}},
+		}}, valid: true},
 		{name: "missing value evidence false selected success", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 0)), response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
 			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}},
 		})},
@@ -1369,6 +1461,44 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 	response, err := validateTxnProxyPayload(nil, &etcdserverpb.TxnRequest{}, want, wantErr)
 	require.Same(t, want, response)
 	require.ErrorIs(t, err, wantErr)
+}
+
+func TestTxnProxyIntervalsIntersect(t *testing.T) {
+	point := func(key string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(key)}
+	}
+	rangeInterval := func(start, end string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(start), rangeEnd: []byte(end)}
+	}
+	fromKey := func(key string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(key), rangeEnd: []byte{0}}
+	}
+	tests := []struct {
+		name        string
+		left, right txnProxyMutationInterval
+		want        bool
+	}{
+		{name: "same point", left: point("b"), right: point("b"), want: true},
+		{name: "different points", left: point("b"), right: point("c")},
+		{name: "point inside finite range", left: point("b"), right: rangeInterval("a", "c"), want: true},
+		{name: "point at finite end", left: point("c"), right: rangeInterval("a", "c")},
+		{name: "finite ranges overlap", left: rangeInterval("a", "c"), right: rangeInterval("b", "d"), want: true},
+		{name: "finite ranges touch", left: rangeInterval("a", "b"), right: rangeInterval("b", "c")},
+		{name: "from-key contains start point", left: fromKey("b"), right: point("b"), want: true},
+		{name: "from-key contains later point", left: fromKey("b"), right: point("c"), want: true},
+		{name: "from-key excludes earlier point", left: fromKey("b"), right: point("a")},
+		{name: "from-key overlaps finite range", left: fromKey("b"), right: rangeInterval("a", "c"), want: true},
+		{name: "from-key touches finite end", left: fromKey("b"), right: rangeInterval("a", "b")},
+		{name: "two from-key ranges", left: fromKey("b"), right: fromKey("z"), want: true},
+		{name: "empty finite range", left: rangeInterval("b", "b"), right: point("b")},
+		{name: "reverse finite range", left: rangeInterval("c", "a"), right: fromKey("a")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, txnProxyIntervalsIntersect(tt.left, tt.right))
+			require.Equal(t, tt.want, txnProxyIntervalsIntersect(tt.right, tt.left))
+		})
+	}
 }
 
 func TestAlarmProxyPayloadValidation(t *testing.T) {

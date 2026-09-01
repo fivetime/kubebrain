@@ -763,6 +763,35 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			}},
 			message: "deterministically select the success branch",
 		},
+		{
+			name: "root put previous evidence rejects nested failure",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+					Key: []byte("evidence"), Value: []byte("new"), PrevKv: true,
+				}}},
+				{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+					Compare: []*etcdserverpb.Compare{{
+						Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VALUE,
+						TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("expected")},
+					}},
+					Success: []*etcdserverpb.RequestOp{rangeRequest("nested-success")},
+					Failure: []*etcdserverpb.RequestOp{rangeRequest("nested-failure")},
+				}},
+				}}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{
+					Header: txnHeader(2), PrevKv: &mvccpb.KeyValue{
+						Key: []byte("evidence"), Value: []byte("expected"), CreateRevision: 1, ModRevision: 1, Version: 1,
+					},
+				}}},
+				{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{
+					Header: txnHeader(0), Responses: []*etcdserverpb.ResponseOp{{
+						Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2)}},
+					}},
+				}}},
+			}},
+			message: "deterministically select the success branch",
+		},
 		{name: "missing operation header", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{rangeResponse()}}},
 		{
 			name:    "operation header identity",

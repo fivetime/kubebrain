@@ -265,10 +265,10 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
 	}
-	preWriteChanged := false
-	var rangeEvidence []txnProxyRangeEvidence
-	collectTxnProxyPreWriteRangeEvidence(request, response, &preWriteChanged, &rangeEvidence)
-	if validationErr := validateTxnProxyRangeEvidenceBranches(request, response, rangeEvidence); validationErr != nil {
+	var mutations []txnProxyMutationInterval
+	var compareEvidence []txnProxyCompareEvidence
+	collectTxnProxyCompareEvidence(request, response, &mutations, &compareEvidence)
+	if validationErr := validateTxnProxyCompareEvidenceBranches(request, response, compareEvidence); validationErr != nil {
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
 	}
@@ -371,22 +371,26 @@ func txnProxyCompareBranchError(selected, expected bool) error {
 	)
 }
 
-type txnProxyRangeEvidence struct {
+type txnProxyCompareEvidence struct {
 	key, rangeEnd []byte
 	kvs           []*mvccpb.KeyValue
 }
 
-// collectTxnProxyPreWriteRangeEvidence walks the selected operations in their
+type txnProxyMutationInterval struct {
+	key, rangeEnd []byte
+}
+
+// collectTxnProxyCompareEvidence walks the selected operations in their
 // execution order. Upstream compareToPath evaluates the entire selected txn
-// tree before executing any operation, so a complete current Range observed
-// before the first effective mutation is a second observation of that same
-// compare snapshot. Once a mutation becomes visible, later Ranges cannot prove
-// the precomputed branch.
-func collectTxnProxyPreWriteRangeEvidence(
+// tree before executing any operation. A complete current Range, requested Put
+// PrevKv, complete Delete PrevKvs, or no-op Delete therefore observes the same
+// compare snapshot whenever no earlier effective mutation intersects that
+// interval. Disjoint mutations do not invalidate the evidence.
+func collectTxnProxyCompareEvidence(
 	request *etcdserverpb.TxnRequest,
 	response *etcdserverpb.TxnResponse,
-	changed *bool,
-	evidence *[]txnProxyRangeEvidence,
+	mutations *[]txnProxyMutationInterval,
+	evidence *[]txnProxyCompareEvidence,
 ) {
 	requests := request.GetFailure()
 	if response.GetSucceeded() {
@@ -397,24 +401,102 @@ func collectTxnProxyPreWriteRangeEvidence(
 		switch {
 		case requestOp.GetRequestRange() != nil:
 			rangeRequest := requestOp.GetRequestRange()
-			if !*changed && txnProxyRangeProvidesCompareEvidence(rangeRequest) {
-				*evidence = append(*evidence, txnProxyRangeEvidence{
+			interval := txnProxyMutationInterval{key: rangeRequest.GetKey(), rangeEnd: rangeRequest.GetRangeEnd()}
+			if txnProxyRangeProvidesCompareEvidence(rangeRequest) && !txnProxyIntervalWasMutated(interval, *mutations) {
+				*evidence = append(*evidence, txnProxyCompareEvidence{
 					key: rangeRequest.GetKey(), rangeEnd: rangeRequest.GetRangeEnd(),
 					kvs: responseOp.GetResponseRange().GetKvs(),
 				})
 			}
 		case requestOp.GetRequestPut() != nil:
-			*changed = true
+			putRequest := requestOp.GetRequestPut()
+			interval := txnProxyMutationInterval{key: putRequest.GetKey()}
+			if putRequest.GetPrevKv() && !txnProxyIntervalWasMutated(interval, *mutations) {
+				var kvs []*mvccpb.KeyValue
+				if previous := responseOp.GetResponsePut().GetPrevKv(); previous != nil {
+					kvs = []*mvccpb.KeyValue{previous}
+				}
+				*evidence = append(*evidence, txnProxyCompareEvidence{key: putRequest.GetKey(), kvs: kvs})
+			}
+			*mutations = append(*mutations, interval)
 		case requestOp.GetRequestDeleteRange() != nil:
-			if responseOp.GetResponseDeleteRange().GetDeleted() > 0 {
-				*changed = true
+			deleteRequest := requestOp.GetRequestDeleteRange()
+			deleteResponse := responseOp.GetResponseDeleteRange()
+			interval := txnProxyMutationInterval{key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd()}
+			if !txnProxyIntervalWasMutated(interval, *mutations) &&
+				(deleteRequest.GetPrevKv() || deleteResponse.GetDeleted() == 0) {
+				*evidence = append(*evidence, txnProxyCompareEvidence{
+					key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd(), kvs: deleteResponse.GetPrevKvs(),
+				})
+			}
+			if deleteResponse.GetDeleted() > 0 {
+				if deleteRequest.GetPrevKv() {
+					for _, previous := range deleteResponse.GetPrevKvs() {
+						*mutations = append(*mutations, txnProxyMutationInterval{key: previous.GetKey()})
+					}
+				} else {
+					*mutations = append(*mutations, interval)
+				}
 			}
 		case requestOp.GetRequestTxn() != nil:
-			collectTxnProxyPreWriteRangeEvidence(
-				requestOp.GetRequestTxn(), responseOp.GetResponseTxn(), changed, evidence,
+			collectTxnProxyCompareEvidence(
+				requestOp.GetRequestTxn(), responseOp.GetResponseTxn(), mutations, evidence,
 			)
 		}
 	}
+}
+
+func txnProxyIntervalWasMutated(interval txnProxyMutationInterval, mutations []txnProxyMutationInterval) bool {
+	for _, mutation := range mutations {
+		if txnProxyIntervalsIntersect(interval, mutation) {
+			return true
+		}
+	}
+	return false
+}
+
+func txnProxyIntervalsIntersect(left, right txnProxyMutationInterval) bool {
+	if txnProxyIntervalIsEmpty(left) || txnProxyIntervalIsEmpty(right) {
+		return false
+	}
+	leftPoint := len(left.rangeEnd) == 0
+	rightPoint := len(right.rangeEnd) == 0
+	if leftPoint {
+		return txnProxyIntervalContains(right, left.key)
+	}
+	if rightPoint {
+		return txnProxyIntervalContains(left, right.key)
+	}
+	leftFromKey := isFromKeyRangeEnd(left.rangeEnd)
+	rightFromKey := isFromKeyRangeEnd(right.rangeEnd)
+	if leftFromKey && rightFromKey {
+		return true
+	}
+	if leftFromKey {
+		return bytes.Compare(left.key, right.rangeEnd) < 0
+	}
+	if rightFromKey {
+		return bytes.Compare(right.key, left.rangeEnd) < 0
+	}
+	return bytes.Compare(left.key, right.rangeEnd) < 0 && bytes.Compare(right.key, left.rangeEnd) < 0
+}
+
+func txnProxyIntervalIsEmpty(interval txnProxyMutationInterval) bool {
+	return len(interval.rangeEnd) != 0 && !isFromKeyRangeEnd(interval.rangeEnd) &&
+		bytes.Compare(interval.key, interval.rangeEnd) >= 0
+}
+
+func txnProxyIntervalContains(interval txnProxyMutationInterval, key []byte) bool {
+	if txnProxyIntervalIsEmpty(interval) {
+		return false
+	}
+	if len(interval.rangeEnd) == 0 {
+		return bytes.Equal(interval.key, key)
+	}
+	if bytes.Compare(key, interval.key) < 0 {
+		return false
+	}
+	return isFromKeyRangeEnd(interval.rangeEnd) || bytes.Compare(key, interval.rangeEnd) < 0
 }
 
 func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest) bool {
@@ -427,13 +509,13 @@ func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest) bo
 		request.GetMinCreateRevision() == 0 && request.GetMaxCreateRevision() == 0
 }
 
-func validateTxnProxyRangeEvidenceBranches(
+func validateTxnProxyCompareEvidenceBranches(
 	request *etcdserverpb.TxnRequest,
 	response *etcdserverpb.TxnResponse,
-	evidence []txnProxyRangeEvidence,
+	evidence []txnProxyCompareEvidence,
 ) error {
 	if len(request.GetCompare()) != 0 {
-		expected, deterministic, err := txnProxyDeterministicCompareBranchFromRangeEvidence(request.GetCompare(), evidence)
+		expected, deterministic, err := txnProxyDeterministicCompareBranchFromEvidence(request.GetCompare(), evidence)
 		if err != nil {
 			return err
 		}
@@ -449,7 +531,7 @@ func validateTxnProxyRangeEvidenceBranches(
 		if requestOp.GetRequestTxn() == nil {
 			continue
 		}
-		if err := validateTxnProxyRangeEvidenceBranches(
+		if err := validateTxnProxyCompareEvidenceBranches(
 			requestOp.GetRequestTxn(), response.GetResponses()[index].GetResponseTxn(), evidence,
 		); err != nil {
 			return err
@@ -458,13 +540,13 @@ func validateTxnProxyRangeEvidenceBranches(
 	return nil
 }
 
-func txnProxyDeterministicCompareBranchFromRangeEvidence(
+func txnProxyDeterministicCompareBranchFromEvidence(
 	compares []*etcdserverpb.Compare,
-	evidence []txnProxyRangeEvidence,
+	evidence []txnProxyCompareEvidence,
 ) (bool, bool, error) {
 	allDeterministic := true
 	for _, compare := range compares {
-		result, deterministic, err := txnProxyCompareResultFromRangeEvidence(compare, evidence)
+		result, deterministic, err := txnProxyCompareResultFromEvidence(compare, evidence)
 		if err != nil {
 			return false, false, err
 		}
@@ -482,9 +564,9 @@ func txnProxyDeterministicCompareBranchFromRangeEvidence(
 	return false, false, nil
 }
 
-func txnProxyCompareResultFromRangeEvidence(
+func txnProxyCompareResultFromEvidence(
 	compare *etcdserverpb.Compare,
-	evidence []txnProxyRangeEvidence,
+	evidence []txnProxyCompareEvidence,
 ) (bool, bool, error) {
 	var result bool
 	found := false
@@ -507,7 +589,7 @@ func txnProxyCompareResultFromRangeEvidence(
 			}
 		}
 		if found && result != candidateResult {
-			return false, false, fmt.Errorf("leader txn proxy returned inconsistent pre-write range evidence for a compare interval")
+			return false, false, fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence for a compare interval")
 		}
 		result = candidateResult
 		found = true
