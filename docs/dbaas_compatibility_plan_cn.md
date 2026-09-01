@@ -67274,6 +67274,59 @@ Ready/restart 0，回滚后三轮九次稳定 Pod proposal health 全部 GREEN�
 closed；候选 A5666 的同一门禁已完整通过，这一代际差异未被误报为候选回归。最终关闭端口转发并确认六个诊断监听均无残留。
 A5666 关闭了 follower 接受上游永远不可能产生的无 Compare Failure 响应树、破坏事务分支真实性的完整性缺口。
 
+### A5667：校验并生成 Txn 子操作的精确可见 revision 轨迹
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{txn,executeTxn}` 及同目录 `range.go`、`put.go`、`delete.go`：etcd 在同一
+MVCC write transaction 中按请求顺序执行已选分支。首次有效 Put/Delete 前，Range 或无效 Delete 的 response header 是 pre-write
+revision；首次有效写及其后的所有操作 header 才是最终 outer revision。完全只读或只有无效 Delete 的 Txn 不推进 revision，所有操作
+header 必须精确等于 outer；嵌套 Txn 只把自身 header 保持为 0，仍与外层共享同一个执行顺序和可见 revision 游标。
+
+旧 follower validator 仅接受宽松窗口 `[outer-1,outer]`，没有结合请求顺序和 Delete 的实际 `Deleted` 判断可见 revision，因此会接受
+纯只读操作伪装成 `outer-1`，也会接受 Put 后的 Range 倒退到 `outer-1`。同时 KubeBrain 原子 fast path 把所有操作 header 统一盖成
+最终 revision；无效 Delete→Put 因而由本地 leader 错误生成 `outer/outer`，而上游要求 `outer-1/outer`。tests-only RED 分别证明两种
+伪造 proxy 响应被成功返回（两个 follower 定向包各 `0.056s`，直接 validator 集合 `0.038s`），本地无效 Delete→Put 也以实际
+`expected 1, actual 2` 在 `0.054s` 失败。
+
+提交 `5c9f1374` 先从已通过结构校验的响应树递归判定是否存在有效写，得到 outer 或 `outer-1` 的 pre-write revision；随后以单一
+`changed` 游标按已选分支 DFS 穿过所有嵌套 Txn，逐个要求 Range、Put、Delete header 等于当时可见 revision，并拒绝 revision 1 上
+声称发生有效写。原子生成端使用同一顺序和 `TxnWriteResult.Deleted` 重写用户操作 header，不改变 nested header=0、单 revision commit
+或后端原子性。测试同时修正两个旧错误正例：只有 Range 的 Txn 不再允许 `outer-1`；Range→Put 的真正 pre-write Range 才允许
+`outer-1`。新增正反例覆盖只读、首次写前后、无效 Delete 前后、嵌套写推进外层 Range 及跨层游标。
+
+最小 GREEN 集合 `0.066s`，扩展轨迹集合 `0.265s`，跨嵌套本地生成端 `0.057s`，全部 Txn/ProxyPayload 集合 `27.832s`，完整普通包
+`134.201s`；`go vet ./pkg/server/etcd`、gofmt、diff check 均通过。完整 race 以显式 `PIPESTATUS` 确认
+`GO_TEST_STATUS=0`、墙钟 `7m39.674s`，且未发现 DATA RACE、panic 或失败行。提交前 production inventory 为 703 项、四片
+`170/193/180/160`；提交后四片分别为 `252.122/439.868/301.310/566.219s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5667-5c9f1374` 内嵌版本 `0.0.0-5c9f137496c1`、完整提交
+`5c9f137496c11f1d81b012f5b873da3feb1963aa` 与 build time `2026-09-01T02:11:25Z`，运行用户 `65532:65532`、Go
+`1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI index、platform manifest、config 分别为
+`sha256:093fd9f2a0ace5174b3b1293d684c9dfd2453188d7642a0076f5184033e6e29e`、
+`sha256:255fec6742cc2797c21a151d77a3edb9fc9f3b78a2d8a794e0de40aa17492314`、
+`sha256:99271f21cc8bb6dfdd385f9026ac3aaeb5c98b8897617b97cbba632336cc56bb`；Kind/containerd runtime digest 为
+`sha256:2773de9efe652169facb4c16fabf442f432c131112582cf2de7efaace9e9447c`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 721 部署至 generation 722；
+三 Pod 均落在 revision `kubebrain-6c7b89d996`、使用上述 runtime digest、Ready/restart 0。三个 exact Pod endpoint 分别执行
+只读 Range、Range→Put、Put→Range、无效 Delete→Put 和嵌套无效 Delete→外层 Put：端口 12379 的 outer revisions 为
+`65756/65757/65758/65759/65760`，对应 pre-write revisions 为 `65756/65758/65759`；端口 22379 为
+`65761/65762/65763/65764/65765` 与 `65761/65763/65764`；端口 32379 为
+`65766/65767/65768/65769/65770` 与 `65766/65768/65769`。所有只读和 post-write header 精确等于 outer，所有真正 pre-write
+header 精确为 `outer-1`，nested header 均为 0。每端点清理 4 个写入键，最终 `/a5667/` count 0、revision `65771`。
+
+以新鲜 HashKV `3498631807` 运行全部只读 gate 开关一次 GREEN：cluster `7662961163671170154`、version/storage
+`3.7.0/3.7.0`、leader `2393892952`、term `315`、revision/index/applied `65771`、compact revision `44329`、direct hash
+`776910975`、auth disabled/revision `281`，named/HTTP/metrics/debug/pprof 及跨端点身份、revision、term 均通过。候选三轮九次
+exact endpoint proposal health 全部成功（`10.403–16.650ms`），LeaseLeases 为空，三 Pod 日志真实 klog E/F、panic/fatal 均为 0，
+PD/TiKV 3+3 Ready/restart 0。
+
+以新鲜同类五类 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed 723、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；三成员 revision 保持 `65771`、HashKV 保持
+`3498631807`，KubeBrain/PD/TiKV 3+3+3 Ready/restart 0，回滚后三轮九次 proposal health 全部 GREEN，LeaseLeases 为空，日志
+真实 klog E/F 与 panic/fatal 均为 0。最终关闭端口转发并确认六个诊断监听均无残留。A5667 同时关闭了 leader 生成错误 pre-write
+header 和 follower 接受不可能 revision 轨迹这两个相互关联的兼容性/完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
