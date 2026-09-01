@@ -372,8 +372,9 @@ func txnProxyCompareBranchError(selected, expected bool) error {
 }
 
 type txnProxyCompareEvidence struct {
-	key, rangeEnd []byte
-	kvs           []*mvccpb.KeyValue
+	key, rangeEnd  []byte
+	kvs            []*mvccpb.KeyValue
+	priorMutations []txnProxyMutationInterval // immutable append-only prefix at observation time
 }
 
 type txnProxyMutationInterval struct {
@@ -384,8 +385,9 @@ type txnProxyMutationInterval struct {
 // execution order. Upstream compareToPath evaluates the entire selected txn
 // tree before executing any operation. A complete current Range, requested Put
 // PrevKv, complete Delete PrevKvs, or no-op Delete therefore observes the same
-// compare snapshot whenever no earlier effective mutation intersects that
-// interval. Disjoint mutations do not invalidate the evidence.
+// compare snapshot for every subinterval not intersected by an earlier
+// effective mutation. Mutations outside a compared subinterval do not
+// invalidate that slice of a containing evidence payload.
 func collectTxnProxyCompareEvidence(
 	request *etcdserverpb.TxnRequest,
 	response *etcdserverpb.TxnResponse,
@@ -401,32 +403,36 @@ func collectTxnProxyCompareEvidence(
 		switch {
 		case requestOp.GetRequestRange() != nil:
 			rangeRequest := requestOp.GetRequestRange()
-			interval := txnProxyMutationInterval{key: rangeRequest.GetKey(), rangeEnd: rangeRequest.GetRangeEnd()}
-			if txnProxyRangeProvidesCompareEvidence(rangeRequest) && !txnProxyIntervalWasMutated(interval, *mutations) {
+			if txnProxyRangeProvidesCompareEvidence(rangeRequest) {
 				*evidence = append(*evidence, txnProxyCompareEvidence{
 					key: rangeRequest.GetKey(), rangeEnd: rangeRequest.GetRangeEnd(),
-					kvs: responseOp.GetResponseRange().GetKvs(),
+					kvs:            responseOp.GetResponseRange().GetKvs(),
+					priorMutations: *mutations,
 				})
 			}
 		case requestOp.GetRequestPut() != nil:
 			putRequest := requestOp.GetRequestPut()
 			interval := txnProxyMutationInterval{key: putRequest.GetKey()}
-			if putRequest.GetPrevKv() && !txnProxyIntervalWasMutated(interval, *mutations) {
+			if putRequest.GetPrevKv() {
 				var kvs []*mvccpb.KeyValue
 				if previous := responseOp.GetResponsePut().GetPrevKv(); previous != nil {
 					kvs = []*mvccpb.KeyValue{previous}
 				}
-				*evidence = append(*evidence, txnProxyCompareEvidence{key: putRequest.GetKey(), kvs: kvs})
+				*evidence = append(*evidence, txnProxyCompareEvidence{
+					key: putRequest.GetKey(), kvs: kvs,
+					priorMutations: *mutations,
+				})
 			}
 			*mutations = append(*mutations, interval)
 		case requestOp.GetRequestDeleteRange() != nil:
 			deleteRequest := requestOp.GetRequestDeleteRange()
 			deleteResponse := responseOp.GetResponseDeleteRange()
 			interval := txnProxyMutationInterval{key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd()}
-			if !txnProxyIntervalWasMutated(interval, *mutations) &&
-				(deleteRequest.GetPrevKv() || deleteResponse.GetDeleted() == 0) {
+			if deleteRequest.GetPrevKv() || deleteResponse.GetDeleted() == 0 {
 				*evidence = append(*evidence, txnProxyCompareEvidence{
-					key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd(), kvs: deleteResponse.GetPrevKvs(),
+					key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd(),
+					kvs:            deleteResponse.GetPrevKvs(),
+					priorMutations: *mutations,
 				})
 			}
 			if deleteResponse.GetDeleted() > 0 {
@@ -497,6 +503,25 @@ func txnProxyIntervalContains(interval txnProxyMutationInterval, key []byte) boo
 		return false
 	}
 	return isFromKeyRangeEnd(interval.rangeEnd) || bytes.Compare(key, interval.rangeEnd) < 0
+}
+
+func txnProxyIntervalContainsInterval(outer, inner txnProxyMutationInterval) bool {
+	if txnProxyIntervalIsEmpty(inner) {
+		return true
+	}
+	if txnProxyIntervalIsEmpty(outer) {
+		return false
+	}
+	if len(inner.rangeEnd) == 0 {
+		return txnProxyIntervalContains(outer, inner.key)
+	}
+	if len(outer.rangeEnd) == 0 || !txnProxyIntervalContains(outer, inner.key) {
+		return false
+	}
+	if isFromKeyRangeEnd(inner.rangeEnd) {
+		return isFromKeyRangeEnd(outer.rangeEnd)
+	}
+	return isFromKeyRangeEnd(outer.rangeEnd) || bytes.Compare(inner.rangeEnd, outer.rangeEnd) <= 0
 }
 
 func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest) bool {
@@ -570,23 +595,32 @@ func txnProxyCompareResultFromEvidence(
 ) (bool, bool, error) {
 	var result bool
 	found := false
+	compareInterval := txnProxyMutationInterval{key: compare.GetKey(), rangeEnd: compare.GetRangeEnd()}
 	for _, candidate := range evidence {
-		// Only an exact interval match is a complete proof. Inferring a compare
-		// from a containing Range would require independently proving that the
-		// returned payload has been sliced without omission.
-		if !bytes.Equal(compare.GetKey(), candidate.key) || !bytes.Equal(compare.GetRangeEnd(), candidate.rangeEnd) {
+		candidateInterval := txnProxyMutationInterval{key: candidate.key, rangeEnd: candidate.rangeEnd}
+		// Evidence payloads are admitted only when their unlimited, unprojected,
+		// unfiltered response is complete. A containing interval can therefore
+		// be sliced without omission to evaluate the compare's exact subrange.
+		if !txnProxyIntervalContainsInterval(candidateInterval, compareInterval) {
+			continue
+		}
+		if txnProxyIntervalWasMutated(compareInterval, candidate.priorMutations) {
 			continue
 		}
 		candidateResult := true
-		if len(candidate.kvs) == 0 {
-			candidateResult = compareKeyValue(compare, nil)
-		} else {
-			for _, kv := range candidate.kvs {
-				if !compareKeyValue(compare, kv) {
-					candidateResult = false
-					break
-				}
+		matched := false
+		for _, kv := range candidate.kvs {
+			if !txnProxyIntervalContains(compareInterval, kv.GetKey()) {
+				continue
 			}
+			matched = true
+			if !compareKeyValue(compare, kv) {
+				candidateResult = false
+				break
+			}
+		}
+		if !matched {
+			candidateResult = compareKeyValue(compare, nil)
 		}
 		if found && result != candidateResult {
 			return false, false, fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence for a compare interval")

@@ -1125,6 +1125,16 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 			}},
 		}}}
 	}
+	containingEvidenceRangeRequest := func(key string, rangeEnd []byte) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: []byte(key), RangeEnd: rangeEnd,
+		}}}
+	}
+	containingEvidenceRangeResponse := func(kvs ...*mvccpb.KeyValue) *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+			Header: txnHeader(5), Count: int64(len(kvs)), Kvs: kvs,
+		}}}
+	}
 	valueEvidenceBranchRequest := func(rangeRequest *etcdserverpb.RequestOp) *etcdserverpb.TxnRequest {
 		return &etcdserverpb.TxnRequest{
 			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
@@ -1250,6 +1260,43 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		}}},
 		{name: "range evidence true selected failure", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 0)), response: valueEvidenceBranchResponse(false, valueEvidenceRangeResponse("expected", 5, 4, 4, 1))},
 		{name: "range evidence false selected success", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 0)), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1))},
+		{name: "containing range evidence true selected failure", request: valueEvidenceBranchRequest(containingEvidenceRangeRequest("a", []byte("z"))), response: valueEvidenceBranchResponse(false, containingEvidenceRangeResponse(valueEvidenceKV("expected")))},
+		{name: "containing range evidence false selected success", request: valueEvidenceBranchRequest(containingEvidenceRangeRequest("a", []byte("z"))), response: valueEvidenceBranchResponse(true, containingEvidenceRangeResponse(valueEvidenceKV("other")))},
+		{name: "containing range missing point evidence false selected success", request: valueEvidenceBranchRequest(containingEvidenceRangeRequest("a", []byte("z"))), response: valueEvidenceBranchResponse(true, containingEvidenceRangeResponse(&mvccpb.KeyValue{
+			Key: []byte("neighbor"), Value: []byte("expected"), CreateRevision: 4, ModRevision: 4, Version: 1,
+		}))},
+		{name: "from-key range evidence contains finite compare", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), RangeEnd: []byte("f"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VALUE,
+				TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("expected")},
+			}},
+			Success: []*etcdserverpb.RequestOp{containingEvidenceRangeRequest("a", []byte{0})},
+			Failure: []*etcdserverpb.RequestOp{containingEvidenceRangeRequest("a", []byte{0})},
+		}, response: valueEvidenceBranchResponse(false, containingEvidenceRangeResponse(valueEvidenceKV("expected")))},
+		{name: "containing range after mutation outside compare remains evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{putRequest("neighbor"), containingEvidenceRangeRequest("a", []byte("z"))},
+			Failure: []*etcdserverpb.RequestOp{containingEvidenceRangeRequest("a", []byte("z"))},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), containingEvidenceRangeResponse(valueEvidenceKV("other")),
+		}}},
+		{name: "containing range after mutation inside compare is not evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{containingEvidenceRangeRequest("a", []byte("z"))},
+			Failure: []*etcdserverpb.RequestOp{putRequest("evidence"), containingEvidenceRangeRequest("a", []byte("z"))},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), containingEvidenceRangeResponse(&mvccpb.KeyValue{
+				Key: []byte("evidence"), Value: []byte("expected"), CreateRevision: 4, ModRevision: 5, Version: 2,
+			}),
+		}}, valid: true},
+		{name: "finite range evidence does not contain from-key compare", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), RangeEnd: []byte{0}, Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VALUE,
+				TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("expected")},
+			}},
+			Success: []*etcdserverpb.RequestOp{containingEvidenceRangeRequest("a", []byte("z"))},
+			Failure: []*etcdserverpb.RequestOp{containingEvidenceRangeRequest("a", []byte("z"))},
+		}, response: valueEvidenceBranchResponse(false, containingEvidenceRangeResponse(valueEvidenceKV("expected"))), valid: true},
 		{name: "put previous evidence true selected failure", request: &etcdserverpb.TxnRequest{
 			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
 			Success: []*etcdserverpb.RequestOp{valueEvidencePutRequest()},
@@ -1284,6 +1331,15 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 					{Key: []byte("a"), Value: []byte("expected"), CreateRevision: 4, ModRevision: 4, Version: 1},
 					{Key: []byte("b"), Value: []byte("other"), CreateRevision: 4, ModRevision: 4, Version: 1},
 				},
+			}},
+		}}}},
+		{name: "containing delete previous evidence true selected failure", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), PrevKv: true}}}},
+			Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), PrevKv: true}}}},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{valueEvidenceKV("expected")},
 			}},
 		}}}},
 		{name: "no-op delete proves missing value", request: &etcdserverpb.TxnRequest{
@@ -1497,6 +1553,43 @@ func TestTxnProxyIntervalsIntersect(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, txnProxyIntervalsIntersect(tt.left, tt.right))
 			require.Equal(t, tt.want, txnProxyIntervalsIntersect(tt.right, tt.left))
+		})
+	}
+}
+
+func TestTxnProxyIntervalContainsInterval(t *testing.T) {
+	point := func(key string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(key)}
+	}
+	rangeInterval := func(start, end string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(start), rangeEnd: []byte(end)}
+	}
+	fromKey := func(key string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(key), rangeEnd: []byte{0}}
+	}
+	tests := []struct {
+		name         string
+		outer, inner txnProxyMutationInterval
+		want         bool
+	}{
+		{name: "same point", outer: point("b"), inner: point("b"), want: true},
+		{name: "different point", outer: point("b"), inner: point("c")},
+		{name: "finite contains point", outer: rangeInterval("a", "c"), inner: point("b"), want: true},
+		{name: "finite excludes end point", outer: rangeInterval("a", "c"), inner: point("c")},
+		{name: "finite contains finite", outer: rangeInterval("a", "d"), inner: rangeInterval("b", "c"), want: true},
+		{name: "overlap is not containment", outer: rangeInterval("a", "c"), inner: rangeInterval("b", "d")},
+		{name: "same finite", outer: rangeInterval("a", "c"), inner: rangeInterval("a", "c"), want: true},
+		{name: "point does not contain finite", outer: point("b"), inner: rangeInterval("b", "c")},
+		{name: "from-key contains finite", outer: fromKey("a"), inner: rangeInterval("b", "c"), want: true},
+		{name: "from-key contains later from-key", outer: fromKey("a"), inner: fromKey("b"), want: true},
+		{name: "from-key excludes earlier from-key", outer: fromKey("b"), inner: fromKey("a")},
+		{name: "finite does not contain from-key", outer: rangeInterval("a", "z"), inner: fromKey("b")},
+		{name: "empty inner is contained", outer: point("a"), inner: rangeInterval("z", "a"), want: true},
+		{name: "empty outer excludes point", outer: rangeInterval("z", "a"), inner: point("z")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, txnProxyIntervalContainsInterval(tt.outer, tt.inner))
 		})
 	}
 }
