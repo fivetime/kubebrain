@@ -2004,6 +2004,38 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
 			countOnlyRangeResponse(3), countOnlyRangeResponse(2), countOnlyRangeResponse(2), countOnlyRangeResponse(1),
 		}}, valid: true},
+		{name: "post-write complete range leaves only one mutated point for pre-write count", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("m"), containingEvidenceRangeRequest("a", []byte("z")),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 2}}},
+			putResponse(),
+			containingEvidenceRangeResponse(&mvccpb.KeyValue{Key: []byte("m"), Value: []byte("new"), CreateRevision: 4, ModRevision: 5, Version: 2}),
+		}}},
+		{name: "post-write complete range permits one pre-existing mutated point", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("m"), containingEvidenceRangeRequest("a", []byte("z")),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 1}}},
+			putResponse(),
+			containingEvidenceRangeResponse(&mvccpb.KeyValue{Key: []byte("m"), Value: []byte("new"), CreateRevision: 4, ModRevision: 5, Version: 2}),
+		}}, valid: true},
+		{name: "bounded staged delete cannot hide excess pre-write cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("m"), RangeEnd: []byte("m\x00\x00")}}},
+			containingEvidenceRangeRequest("a", []byte("z")),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 3}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 2}}},
+			containingEvidenceRangeResponse(),
+		}}},
+		{name: "unbounded staged delete conservatively permits hidden pre-write cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("m"), RangeEnd: []byte("n")}}},
+			containingEvidenceRangeRequest("a", []byte("z")),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 3}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 3}}},
+			containingEvidenceRangeResponse(),
+		}}, valid: true},
 		{name: "post-write current count-only is not a pre-write equation", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 			countOnlyRangeRequest("a", "z"), putRequest("b"), countOnlyRangeRequest("a", "z"),
 		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
@@ -2142,6 +2174,9 @@ func TestTxnProxyIntervalsIntersect(t *testing.T) {
 }
 
 func TestTxnProxyCardinalityConstraintsSatisfiable(t *testing.T) {
+	rangeInterval := func(start, end string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(start), rangeEnd: []byte(end)}
+	}
 	finite := func(start, end string, count int64) txnProxyCardinalityConstraint {
 		return txnProxyCardinalityConstraint{
 			interval: txnProxyMutationInterval{key: []byte(start), rangeEnd: []byte(end)},
@@ -2177,10 +2212,67 @@ func TestTxnProxyCardinalityConstraintsSatisfiable(t *testing.T) {
 		{name: "empty from key conflicts with point", constraints: []txnProxyCardinalityConstraint{fromKey("m", 0), point("z")}},
 		{name: "arbitrary precision detects summed overflow", constraints: []txnProxyCardinalityConstraint{finite("a", "z", math.MaxInt64), finite("a", "m", math.MaxInt64), finite("m", "z", math.MaxInt64)}},
 		{name: "finite overlap atom cannot hold two keys", constraints: []txnProxyCardinalityConstraint{finite("a", "a\x00\x00\x00", 2), finite("a", "a\x00\x00", 2), finite("a\x00", "a\x00\x00\x00", 2)}},
+		{name: "upper bound agrees with exact count", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 1), {interval: rangeInterval("a", "z"), count: 1, upperBoundOnly: true}}, want: true},
+		{name: "upper bound rejects larger exact count", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 2), {interval: rangeInterval("a", "z"), count: 1, upperBoundOnly: true}}},
+		{name: "containing upper bound rejects larger child", constraints: []txnProxyCardinalityConstraint{finite("m", "n", 2), {interval: rangeInterval("a", "z"), count: 1, upperBoundOnly: true}}},
+		{name: "upper bound alone does not impose a lower bound", constraints: []txnProxyCardinalityConstraint{{interval: rangeInterval("a", "z"), count: 1, upperBoundOnly: true}}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, txnProxyCardinalityConstraintsSatisfiable(tt.constraints))
+		})
+	}
+}
+
+func TestTxnProxyPartiallyMutatedEvidenceCardinalityUpperBound(t *testing.T) {
+	point := func(key string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(key)}
+	}
+	finite := func(start, end string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(start), rangeEnd: []byte(end)}
+	}
+	evidence := func(mutations ...txnProxyMutationInterval) txnProxyCompareEvidence {
+		return txnProxyCompareEvidence{
+			key: []byte("a"), rangeEnd: []byte("z"),
+			priorMutations: mutations,
+		}
+	}
+	tests := []struct {
+		name        string
+		candidate   txnProxyCompareEvidence
+		want        int64
+		wantBounded bool
+	}{
+		{name: "one mutated point", candidate: evidence(point("m")), want: 1, wantBounded: true},
+		{name: "duplicate mutated point is counted once", candidate: evidence(point("m"), point("m")), want: 1, wantBounded: true},
+		{name: "adjacent byte points merge exactly", candidate: evidence(point("m"), point("m\x00")), want: 2, wantBounded: true},
+		{name: "unmutated observed keys add to mutation capacity", candidate: func() txnProxyCompareEvidence {
+			candidate := evidence(point("m"))
+			candidate.kvs = []*mvccpb.KeyValue{{Key: []byte("b")}, {Key: []byte("m")}, {Key: []byte("x")}}
+			return candidate
+		}(), want: 3, wantBounded: true},
+		{name: "arbitrary finite mutation has unbounded byte cardinality", candidate: evidence(finite("m", "n"))},
+		{name: "from-key mutation is unbounded", candidate: evidence(txnProxyMutationInterval{key: []byte("m"), rangeEnd: []byte{0}})},
+		{name: "disjoint mutation does not create a partial bound", candidate: evidence(point("zz"))},
+		{name: "broad mutation clipped by bounded candidate", candidate: txnProxyCompareEvidence{
+			key: []byte("m"), rangeEnd: []byte("m\x00\x00"), priorMutations: []txnProxyMutationInterval{finite("a", "z")},
+		}, want: 2, wantBounded: true},
+		{name: "count-only payload cannot be partitioned", candidate: func() txnProxyCompareEvidence {
+			candidate := evidence(point("m"))
+			candidate.countOnly = true
+			return candidate
+		}()},
+		{name: "snapshot-pinned payload is handled as an exact equation", candidate: func() txnProxyCompareEvidence {
+			candidate := evidence(point("m"))
+			candidate.snapshotPinned = true
+			return candidate
+		}()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, bounded := txnProxyPartiallyMutatedEvidenceCardinalityUpperBound(tt.candidate)
+			require.Equal(t, tt.wantBounded, bounded)
+			require.Equal(t, tt.want, got)
 		})
 	}
 }

@@ -910,6 +910,23 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			message: "inconsistent pre-write evidence cardinality",
 		},
 		{
+			name: "post-write complete range bounds pre-write mutated point",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				countOnlyRangeRequest("a", "z"), putRequest("m"),
+				{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}}},
+			}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 2}}},
+				{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(2)}}},
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+					Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{
+						Key: []byte("m"), Value: []byte("new"), CreateRevision: 1, ModRevision: 2, Version: 2,
+					}},
+				}}},
+			}},
+			message: "inconsistent pre-write evidence cardinality",
+		},
+		{
 			name: "finite lexical interval count above cardinality",
 			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 				countOnlyRangeRequest("a", "a\x00\x00"),

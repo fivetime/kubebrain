@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"math/big"
 	"sort"
 
@@ -558,6 +559,9 @@ func validateTxnProxyCompareEvidenceConsistency(evidence []txnProxyCompareEviden
 type txnProxyCardinalityConstraint struct {
 	interval txnProxyMutationInterval
 	count    int64
+	// upperBoundOnly encodes cardinality(interval) <= count. The default
+	// constraint is an equality and therefore emits both difference edges.
+	upperBoundOnly bool
 }
 
 func validateTxnProxyGlobalCardinalityConsistency(
@@ -567,14 +571,22 @@ func validateTxnProxyGlobalCardinalityConsistency(
 	constraints := make([]txnProxyCardinalityConstraint, 0, len(evidence)+len(knownKeys))
 	for _, candidate := range evidence {
 		interval := txnProxyMutationInterval{key: candidate.key, rangeEnd: candidate.rangeEnd}
-		if txnProxyIntervalIsEmpty(interval) || !txnProxyEvidenceRepresentsPreWrite(candidate, interval) {
+		if txnProxyIntervalIsEmpty(interval) {
 			continue
 		}
-		count := candidate.count
-		if !candidate.countOnly {
-			count = int64(len(candidate.kvs))
+		if txnProxyEvidenceRepresentsPreWrite(candidate, interval) {
+			count := candidate.count
+			if !candidate.countOnly {
+				count = int64(len(candidate.kvs))
+			}
+			constraints = append(constraints, txnProxyCardinalityConstraint{interval: interval, count: count})
+			continue
 		}
-		constraints = append(constraints, txnProxyCardinalityConstraint{interval: interval, count: count})
+		if maximum, bounded := txnProxyPartiallyMutatedEvidenceCardinalityUpperBound(candidate); bounded {
+			constraints = append(constraints, txnProxyCardinalityConstraint{
+				interval: interval, count: maximum, upperBoundOnly: true,
+			})
+		}
 	}
 	for _, key := range knownKeys {
 		constraints = append(constraints, txnProxyCardinalityConstraint{
@@ -585,6 +597,127 @@ func validateTxnProxyGlobalCardinalityConsistency(
 		return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence cardinality from global interval constraints")
 	}
 	return nil
+}
+
+type txnProxyNormalizedInterval struct {
+	start, end []byte
+	infinity   bool
+}
+
+func txnProxyNormalizeInterval(interval txnProxyMutationInterval) (txnProxyNormalizedInterval, bool) {
+	if txnProxyIntervalIsEmpty(interval) {
+		return txnProxyNormalizedInterval{}, false
+	}
+	normalized := txnProxyNormalizedInterval{start: interval.key}
+	switch {
+	case len(interval.rangeEnd) == 0:
+		normalized.end = make([]byte, len(interval.key)+1)
+		copy(normalized.end, interval.key)
+	case isFromKeyRangeEnd(interval.rangeEnd):
+		normalized.infinity = true
+	default:
+		normalized.end = interval.rangeEnd
+	}
+	return normalized, true
+}
+
+func txnProxyIntersectNormalizedIntervals(
+	left, right txnProxyNormalizedInterval,
+) (txnProxyNormalizedInterval, bool) {
+	intersection := txnProxyNormalizedInterval{start: left.start}
+	if bytes.Compare(right.start, intersection.start) > 0 {
+		intersection.start = right.start
+	}
+	switch {
+	case left.infinity && right.infinity:
+		intersection.infinity = true
+	case left.infinity:
+		intersection.end = right.end
+	case right.infinity:
+		intersection.end = left.end
+	case bytes.Compare(left.end, right.end) <= 0:
+		intersection.end = left.end
+	default:
+		intersection.end = right.end
+	}
+	if !intersection.infinity && bytes.Compare(intersection.start, intersection.end) >= 0 {
+		return txnProxyNormalizedInterval{}, false
+	}
+	return intersection, true
+}
+
+func txnProxyPartiallyMutatedEvidenceCardinalityUpperBound(
+	candidate txnProxyCompareEvidence,
+) (int64, bool) {
+	// A complete ordinary Range after staged mutations still enumerates every
+	// key outside the mutated union. Its pre-write population is therefore at
+	// most the observed unmutated keys plus the byte-key capacity of that union.
+	// Point Put/Delete mutations are bounded by one key, and NUL-extension
+	// ranges retain the finite capacity established by A5685. Any other range
+	// has unbounded byte cardinality, so it cannot safely provide this upper
+	// bound and remains conservative evidence only at the individual key level.
+	if candidate.countOnly || candidate.snapshotPinned {
+		return 0, false
+	}
+	candidateInterval, ok := txnProxyNormalizeInterval(txnProxyMutationInterval{
+		key: candidate.key, rangeEnd: candidate.rangeEnd,
+	})
+	if !ok {
+		return 0, false
+	}
+	mutated := make([]txnProxyNormalizedInterval, 0, len(candidate.priorMutations))
+	for _, mutation := range candidate.priorMutations {
+		mutationInterval, valid := txnProxyNormalizeInterval(mutation)
+		if !valid {
+			continue
+		}
+		if intersection, intersects := txnProxyIntersectNormalizedIntervals(candidateInterval, mutationInterval); intersects {
+			mutated = append(mutated, intersection)
+		}
+	}
+	if len(mutated) == 0 {
+		return 0, false
+	}
+	sort.Slice(mutated, func(left, right int) bool {
+		return bytes.Compare(mutated[left].start, mutated[right].start) < 0
+	})
+	merged := mutated[:0]
+	for _, interval := range mutated {
+		if len(merged) == 0 {
+			merged = append(merged, interval)
+			continue
+		}
+		last := &merged[len(merged)-1]
+		if last.infinity || bytes.Compare(interval.start, last.end) <= 0 {
+			if !last.infinity && (interval.infinity || bytes.Compare(interval.end, last.end) > 0) {
+				last.end = interval.end
+				last.infinity = interval.infinity
+			}
+			continue
+		}
+		merged = append(merged, interval)
+	}
+	maximum := int64(0)
+	for _, interval := range merged {
+		if interval.infinity {
+			return 0, false
+		}
+		capacity, bounded := finiteLexicalIntervalMaximumCardinality(interval.start, interval.end)
+		if !bounded || capacity > math.MaxInt64-maximum {
+			return 0, false
+		}
+		maximum += capacity
+	}
+	for _, kv := range candidate.kvs {
+		if txnProxyIntervalWasMutated(txnProxyMutationInterval{key: kv.GetKey()}, candidate.priorMutations) {
+			continue
+		}
+		if maximum == math.MaxInt64 {
+			return 0, false
+		}
+		maximum++
+	}
+	return maximum, true
 }
 
 type txnProxyCardinalityEndpoint struct {
@@ -638,13 +771,14 @@ func txnProxyCardinalityConstraintsSatisfiable(constraints []txnProxyCardinality
 	for index, constraint := range constraints {
 		start := endpointIndex[normalized[index][0]]
 		end := endpointIndex[normalized[index][1]]
-		var count, negativeCount big.Int
+		var count big.Int
 		count.SetInt64(constraint.count)
-		negativeCount.Neg(&count)
-		edges = append(edges,
-			txnProxyCardinalityEdge{from: start, to: end, weight: count},
-			txnProxyCardinalityEdge{from: end, to: start, weight: negativeCount},
-		)
+		edges = append(edges, txnProxyCardinalityEdge{from: start, to: end, weight: count})
+		if !constraint.upperBoundOnly {
+			var negativeCount big.Int
+			negativeCount.Neg(&count)
+			edges = append(edges, txnProxyCardinalityEdge{from: end, to: start, weight: negativeCount})
+		}
 	}
 	for index := 1; index < len(endpoints); index++ {
 		edges = append(edges, txnProxyCardinalityEdge{from: index, to: index - 1})
