@@ -1767,6 +1767,124 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
 			valueEvidenceRangeResponse("expected", 5, 4, 4, 1), valueEvidenceRangeResponse("other", 5, 4, 4, 1),
 		}}},
+		{name: "same-truth pre-write ranges disagree on value", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidenceRangeResponse("one", 5, 4, 4, 1), valueEvidenceRangeResponse("two", 5, 4, 4, 1),
+		}}},
+		{name: "same-truth keys-only ranges disagree on lifecycle", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(true, 0), valueEvidenceRangeRequest(true, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidenceRangeResponse("", 5, 4, 4, 1), valueEvidenceRangeResponse("", 5, 3, 3, 1),
+		}}},
+		{name: "count-only cardinality disagrees with complete range", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := valueEvidenceRangeRequest(false, 0)
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}}},
+		}}},
+		{name: "keys-only value projection permits ordinary value", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(true, 0), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidenceRangeResponse("", 5, 4, 4, 1), valueEvidenceRangeResponse("visible", 5, 4, 4, 1),
+		}}, valid: true},
+		{name: "post-write range may differ from pre-write range", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0), putRequest("evidence"), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidenceRangeResponse("old", 4, 4, 4, 1), putResponse(), valueEvidenceRangeResponse("new", 5, 4, 5, 2),
+		}}, valid: true},
+		{name: "older historical range may differ from pre-write range", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 3), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidenceRangeResponse("historical", 5, 3, 3, 1), valueEvidenceRangeResponse("current", 5, 3, 4, 2),
+		}}, valid: true},
+		{name: "matching count-only cardinality and complete range", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := valueEvidenceRangeRequest(false, 0)
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}}},
+			valueEvidenceRangeResponse("value", 5, 4, 4, 1),
+		}}, valid: true},
+		{name: "overlapping complete ranges disagree on membership", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{containingEvidenceRangeRequest("a", []byte("z")), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			containingEvidenceRangeResponse(valueEvidenceKV("value")),
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}}},
+		}}},
+		{name: "equal count-only ranges disagree on cardinality", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := valueEvidenceRangeRequest(false, 0)
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), func() *etcdserverpb.RequestOp {
+				request := valueEvidenceRangeRequest(false, 0)
+				request.GetRequestRange().CountOnly = true
+				return request
+			}()},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}}},
+		}}},
+		{name: "containing zero count-only disagrees with positive point", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), func() *etcdserverpb.RequestOp {
+				request := valueEvidenceRangeRequest(false, 0)
+				request.GetRequestRange().CountOnly = true
+				return request
+			}()},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}}},
+		}}},
+		{name: "fast keys-only lease projection permits ordinary lease", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(true, 0), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidenceRangeResponse("", 5, 4, 4, 1),
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("evidence"), Value: []byte("visible"), CreateRevision: 4, ModRevision: 4, Version: 1, Lease: 7,
+				}},
+			}}},
+		}}, valid: true},
+		{name: "value-sort keys-only preserves and disagrees on lease", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := valueEvidenceRangeRequest(true, 0)
+				request.GetRequestRange().SortTarget = etcdserverpb.RangeRequest_VALUE
+				request.GetRequestRange().SortOrder = etcdserverpb.RangeRequest_ASCEND
+				return request
+			}(), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("evidence"), CreateRevision: 4, ModRevision: 4, Version: 1, Lease: 6,
+				}},
+			}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("evidence"), Value: []byte("visible"), CreateRevision: 4, ModRevision: 4, Version: 1, Lease: 7,
+				}},
+			}}},
+		}}},
+		{name: "disjoint write does not mask pre-write disagreement", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0), putRequest("unrelated"), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidenceRangeResponse("one", 4, 4, 4, 1), putResponse(), valueEvidenceRangeResponse("two", 5, 4, 4, 1),
+		}}},
+		{name: "snapshot-pinned post-write range must match pre-write range", request: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0), putRequest("evidence"), valueEvidenceRangeRequest(false, 4)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidenceRangeResponse("one", 4, 4, 4, 1), putResponse(), valueEvidenceRangeResponse("two", 5, 4, 4, 1),
+		}}},
 		{name: "read-only previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},
 		{name: "pre-write operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key"), putRequest("put")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}, putResponse()}}, valid: true},
 		{name: "post-write previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{putRequest("put"), rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{putResponse(), {Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},

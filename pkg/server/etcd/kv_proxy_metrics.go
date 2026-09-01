@@ -268,6 +268,10 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 	var mutations []txnProxyMutationInterval
 	var compareEvidence []txnProxyCompareEvidence
 	collectTxnProxyCompareEvidence(request, response, baseRevision, &mutations, &compareEvidence)
+	if validationErr := validateTxnProxyCompareEvidenceConsistency(compareEvidence); validationErr != nil {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
+		return nil, status.Error(codes.DataLoss, validationErr.Error())
+	}
 	if validationErr := validateTxnProxyCompareEvidenceBranches(request, response, compareEvidence); validationErr != nil {
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
@@ -421,7 +425,7 @@ func collectTxnProxyCompareEvidence(
 					leaseProjected: rangeRequest.GetKeysOnly() && rangeRequest.GetSortTarget() != etcdserverpb.RangeRequest_VALUE,
 					countOnly:      rangeRequest.GetCountOnly(),
 					count:          rangeResponse.GetCount(),
-					snapshotPinned: rangeRequest.GetRevision() == baseRevision,
+					snapshotPinned: rangeRequest.GetRevision() > 0 && rangeRequest.GetRevision() == baseRevision,
 				})
 			}
 		case requestOp.GetRequestPut() != nil:
@@ -464,6 +468,136 @@ func collectTxnProxyCompareEvidence(
 			)
 		}
 	}
+}
+
+func validateTxnProxyCompareEvidenceConsistency(evidence []txnProxyCompareEvidence) error {
+	if len(evidence) < 2 {
+		return nil
+	}
+	// Every admitted payload is complete for its interval, but current reads
+	// after an overlapping staged mutation no longer describe compareToPath's
+	// pre-write snapshot. Compare only the key-level or interval-level overlap
+	// for which both observations still represent that snapshot. Projection
+	// flags fence fields that upstream KeysOnly deliberately omitted.
+	byKey := make([]map[string]*mvccpb.KeyValue, len(evidence))
+	for index, candidate := range evidence {
+		if candidate.countOnly {
+			continue
+		}
+		byKey[index] = make(map[string]*mvccpb.KeyValue, len(candidate.kvs))
+		for _, kv := range candidate.kvs {
+			byKey[index][string(kv.GetKey())] = kv
+		}
+	}
+	for leftIndex := range evidence {
+		for rightIndex := leftIndex + 1; rightIndex < len(evidence); rightIndex++ {
+			left, right := evidence[leftIndex], evidence[rightIndex]
+			if err := validateTxnProxyCountEvidenceConsistency(left, right); err != nil {
+				return err
+			}
+			if err := validateTxnProxyCountEvidenceConsistency(right, left); err != nil {
+				return err
+			}
+			if left.countOnly || right.countOnly {
+				continue
+			}
+			if err := validateTxnProxyKVSetConsistency(left, right, byKey[rightIndex]); err != nil {
+				return err
+			}
+			if err := validateTxnProxyKVSetConsistency(right, left, byKey[leftIndex]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateTxnProxyCountEvidenceConsistency(countEvidence, other txnProxyCompareEvidence) error {
+	if !countEvidence.countOnly {
+		return nil
+	}
+	countInterval := txnProxyMutationInterval{key: countEvidence.key, rangeEnd: countEvidence.rangeEnd}
+	otherInterval := txnProxyMutationInterval{key: other.key, rangeEnd: other.rangeEnd}
+	if other.countOnly {
+		if txnProxyIntervalsEqual(countInterval, otherInterval) &&
+			txnProxyEvidenceRepresentsPreWrite(countEvidence, countInterval) &&
+			txnProxyEvidenceRepresentsPreWrite(other, countInterval) &&
+			countEvidence.count != other.count {
+			return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence cardinality")
+		}
+		if countEvidence.count == 0 && other.count > 0 &&
+			txnProxyIntervalContainsInterval(countInterval, otherInterval) &&
+			txnProxyEvidenceRepresentsPreWrite(countEvidence, otherInterval) &&
+			txnProxyEvidenceRepresentsPreWrite(other, otherInterval) {
+			return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence cardinality")
+		}
+		return nil
+	}
+	if txnProxyIntervalContainsInterval(otherInterval, countInterval) &&
+		txnProxyEvidenceRepresentsPreWrite(countEvidence, countInterval) &&
+		txnProxyEvidenceRepresentsPreWrite(other, countInterval) {
+		var observed int64
+		for _, kv := range other.kvs {
+			if txnProxyIntervalContains(countInterval, kv.GetKey()) {
+				observed++
+			}
+		}
+		if observed != countEvidence.count {
+			return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence cardinality")
+		}
+		return nil
+	}
+	if countEvidence.count != 0 {
+		return nil
+	}
+	for _, kv := range other.kvs {
+		keyInterval := txnProxyMutationInterval{key: kv.GetKey()}
+		if txnProxyIntervalContains(countInterval, kv.GetKey()) &&
+			txnProxyEvidenceRepresentsPreWrite(countEvidence, keyInterval) &&
+			txnProxyEvidenceRepresentsPreWrite(other, keyInterval) {
+			return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence for key %q", kv.GetKey())
+		}
+	}
+	return nil
+}
+
+func validateTxnProxyKVSetConsistency(
+	observed, complete txnProxyCompareEvidence,
+	completeByKey map[string]*mvccpb.KeyValue,
+) error {
+	completeInterval := txnProxyMutationInterval{key: complete.key, rangeEnd: complete.rangeEnd}
+	for _, observedKV := range observed.kvs {
+		if !txnProxyIntervalContains(completeInterval, observedKV.GetKey()) {
+			continue
+		}
+		keyInterval := txnProxyMutationInterval{key: observedKV.GetKey()}
+		if !txnProxyEvidenceRepresentsPreWrite(observed, keyInterval) ||
+			!txnProxyEvidenceRepresentsPreWrite(complete, keyInterval) {
+			continue
+		}
+		completeKV, exists := completeByKey[string(observedKV.GetKey())]
+		if !exists {
+			return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence for key %q", observedKV.GetKey())
+		}
+		if observedKV.GetCreateRevision() != completeKV.GetCreateRevision() ||
+			observedKV.GetModRevision() != completeKV.GetModRevision() ||
+			observedKV.GetVersion() != completeKV.GetVersion() {
+			return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence lifecycle for key %q", observedKV.GetKey())
+		}
+		if !observed.valueProjected && !complete.valueProjected &&
+			!bytes.Equal(observedKV.GetValue(), completeKV.GetValue()) {
+			return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence value for key %q", observedKV.GetKey())
+		}
+		if !observed.leaseProjected && !complete.leaseProjected &&
+			observedKV.GetLease() != completeKV.GetLease() {
+			return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence lease for key %q", observedKV.GetKey())
+		}
+	}
+	return nil
+}
+
+func txnProxyEvidenceRepresentsPreWrite(candidate txnProxyCompareEvidence, interval txnProxyMutationInterval) bool {
+	return candidate.snapshotPinned || !txnProxyIntervalWasMutated(interval, candidate.priorMutations)
 }
 
 func txnProxyIntervalWasMutated(interval txnProxyMutationInterval, mutations []txnProxyMutationInterval) bool {

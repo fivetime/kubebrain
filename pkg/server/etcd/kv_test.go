@@ -843,6 +843,25 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			message: "deterministically select the success branch",
 		},
 		{
+			name: "same-snapshot ranges disagree on unobserved value",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				rangeRequest("evidence"), rangeRequest("evidence"),
+			}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+					Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{
+						Key: []byte("evidence"), Value: []byte("one"), CreateRevision: 1, ModRevision: 1, Version: 1,
+					}},
+				}}},
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+					Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{
+						Key: []byte("evidence"), Value: []byte("two"), CreateRevision: 1, ModRevision: 1, Version: 1,
+					}},
+				}}},
+			}},
+			message: "inconsistent pre-write evidence",
+		},
+		{
 			name: "root range evidence rejects nested failure",
 			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 				rangeRequest("evidence"),
