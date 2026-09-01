@@ -68551,6 +68551,69 @@ readonly gate 在稳定 A5525 镜像上仍按预期精确拒绝缺少 `watch_ran
 结果替代完整 storage isolation gate。A5687 关闭了 follower 对有限 staged mutation 前后 CountOnly 差值超容量仍予接受的
 完整性缺口，同时对无界 mutation 保持保守兼容。
 
+### A5688：按 staged Put/Delete 方向收紧写后 CountOnly 的 pre-write 边界
+
+继续对照 `/root/etcd/server/etcdserver/txn/{txn.go,put.go,delete.go}` 与
+`/root/etcd/server/storage/mvcc/kvstore_txn.go`。上游 Put 对任一区间只能新增 key 或保持已有 key，DeleteRange 只能删除
+key 或保持不存在；A5687 只按全部 mutation union 容量 C 给出对称界 `Q-C <= P <= Q+C`，仍会接受 Put 后 CountOnly
+从 2 降到 1、Delete 后从 0 升到 1，以及一个 Put 加一个 Delete 却净减少超过 Delete 容量的伪造响应。将 candidate
+interval 内 Put union 容量记为 Cp、Delete union 容量记为 Cd，可安全独立推出
+`max(0,Q-Cp) <= P <= Q+Cd`。该推导不要求 Put/Delete interval 互不重叠，也不假设 Put 一定创建新 key。
+
+tests-only RED 精确出现四个失败：直接 payload validator 接受 Put `2->1`、Delete `0->1`、mixed `3->1` 三种矛盾，
+真实 follower 转发路径也接受 Put `2->1`；合法 Delete `2->1` 保持 GREEN。提交
+`99a6c7ed3757d877875d16f8c97cd7602aefd17c` 给 staged mutation 标注 `put/delete` kind，并在 CountOnly
+约束中分别规范化、与 candidate 相交、排序合并和计算 byte-key union capacity。Put-derived lower bound 与
+Delete-derived upper bound 独立生成，因此普通 `[m,n)` 无界 Delete 只使上界不可证明，不会连带丢弃“Delete 不会增加”
+或有限 Put union 给出的下界；`Q+Cd` 溢出时同样只舍弃上界。内部手工证据的 zero-value unknown kind 继续退回 A5687
+总 union 对称界，unknown union 本身无界时保守不推导。普通 Range 的 A5686 总 union helper 仍跨 kind 一次合并，未因
+方向拆分而重复计算重叠容量。
+
+扩展测试固定：Put update/create、Delete point 与保留区间外 key、mixed cardinality 不变、相邻 Put union、普通无界
+Delete 仍保留下界、有限 Put 加无界 Delete 只退化一侧、unknown kind 有界/无界回退、snapshot-pinned 与
+`MaxInt64` Delete upper overflow。tests-only RED 为 `0.454s`，首轮修复聚焦 `0.515s`，扩展集合 `0.494s`，连续三轮
+`1.324s`，race `2.717s`，全部 Txn `30.220s`，完整 `pkg/server/etcd` `135.904s`，新增方向 helper 连续 100 轮
+`0.118s`；vet 与 diff check 通过。提交前 production verifier 精确为 703 项、四片 `170/193/180/160`；代码提交后
+四片分别为 `251.255/439.604/295.931/565.945s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5688-99a6c7ed` 内嵌版本 `0.0.0-99a6c7ed3757`、完整提交
+`99a6c7ed3757d877875d16f8c97cd7602aefd17c`、build time `2026-09-01T21:12:14Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:ac0e99ebdb1d3144ed673ae4727a2063cab255df92f3a85d68d5916c710a391e`、
+`sha256:15ac7a32686c9eb4236fa2310d2907af4ab84d54521e54d9b925612d838da774`、
+`sha256:b3a851a1354a372f7188202ffc45fcd9b7ff324285e3f2d035a119ab9f4d601c`、
+`sha256:a0a432a296d2f0b802fdf9ec486b3821002d445ebb6aaf6114ec86137a3c9fe2`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功，Kind runtime digest 为
+`sha256:6535cda3f7b17b7ca7477a1ac64216f0d38660b78b6ff5c3235520799a6003b3`。
+
+稳定基线 generation `768`，revision/index/applied、HashKV、compact revision 为
+`66333/66333/66333/2542532205/44329`，term `408`、leader `2393892952`。以 StatefulSet
+UID/resourceVersion/container/current image/full args 五类原子 test 部署到 generation `769`；三 Pod 均落在
+`kubebrain-5fcdf6fd99`、Ready/restart 0、同一候选 runtime digest，Pod 内版本与完整 SHA 一致。逐个 Pod-local
+gateway 运行 Put update、Put create、Delete point、Delete 后保留外部 key、有界 mixed、有限 Put 加普通无界 Delete
+六类 upstream 可达事务；每 Pod 六类、共 18 类次的 CountOnly 分别为 `1->1/0->1/1->0/2->1/2->2/1->1`，
+全部通过，各独立前缀最终 Count=0。
+
+候选终态 revision/index/applied 为 `66387`，HashKV `2846246930`、compact revision `44329`，term `409`、
+leader `231094427`。全部适用开关启用的 HEAD readonly gate 一次 GREEN；候选三轮九次 exact endpoint proposal
+health 全部成功（`10.193–12.348ms`），三个 store Up，pending/down/miss/extra/learner 五类 region check 连续三轮
+全零。候选三 Pod 日志 `963/970/317` 行；Pod0 历史日志有一条 `Error retrieving lease lock`，根因链为 TiKV-1
+`context deadline exceeded`，同时出现 PD timestamp slow。该瞬态之后的最近 60 秒关键错误为 0，完整 gate、九次
+proposal、三轮 store/region 检查均成功，TiKV 3 Ready/restart 0，故不把它归因于本轮 CountOnly 代码，也不隐去为
+“全程关键错误 0”。PD 3 Ready、各沿用一次历史 restart，Lease/Alarm 为空。
+
+以同类五类原子 test 回滚固定稳定 digest。StatefulSet UID 不变，generation/observed `770/770`、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。HEAD readonly gate
+在稳定 A5525 镜像上仍按预期精确拒绝缺少 `watch_range_prefilter_dropped`；排除该新版 info-metrics 合同后其余门禁
+全部 GREEN。稳定三轮九次 proposal health 全部成功（`10.557–13.549ms`），store/region 连续三轮健康，未再出现上述
+TiKV timeout；终态 revision/index/applied、HashKV、compact revision 保持
+`66387/66387/66387/2846246930/44329`，term `411`、leader `2393892952`，Lease/Alarm/测试前缀为空。稳定日志
+`463/276/548` 行且关键错误为 0。全程未使用凭据或落盘诊断日志，最终六个数据面/info 端口与一个 PD 端口均无监听
+残留；宿主根盘 76%、可用 464 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在，本轮不把 region API
+结果替代完整 storage isolation gate。A5688 关闭了 follower 忽略 staged mutation 方向而接受违反 Put/Delete 单调性的
+CountOnly cardinality 缺口，并在一侧无界时保留另一侧仍可证明的约束。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
