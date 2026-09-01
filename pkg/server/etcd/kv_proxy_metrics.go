@@ -559,9 +559,11 @@ func validateTxnProxyCompareEvidenceConsistency(evidence []txnProxyCompareEviden
 type txnProxyCardinalityConstraint struct {
 	interval txnProxyMutationInterval
 	count    int64
-	// upperBoundOnly encodes cardinality(interval) <= count. The default
+	// upperBoundOnly encodes cardinality(interval) <= count, while
+	// lowerBoundOnly encodes cardinality(interval) >= count. The default
 	// constraint is an equality and therefore emits both difference edges.
 	upperBoundOnly bool
+	lowerBoundOnly bool
 }
 
 func validateTxnProxyGlobalCardinalityConsistency(
@@ -580,6 +582,25 @@ func validateTxnProxyGlobalCardinalityConsistency(
 				count = int64(len(candidate.kvs))
 			}
 			constraints = append(constraints, txnProxyCardinalityConstraint{interval: interval, count: count})
+			continue
+		}
+		if candidate.countOnly {
+			capacity, bounded := txnProxyFiniteMutationUnionCapacity(candidate)
+			if !bounded {
+				continue
+			}
+			minimum := candidate.count - capacity
+			if minimum < 0 {
+				minimum = 0
+			}
+			constraints = append(constraints, txnProxyCardinalityConstraint{
+				interval: interval, count: minimum, lowerBoundOnly: true,
+			})
+			if candidate.count <= math.MaxInt64-capacity {
+				constraints = append(constraints, txnProxyCardinalityConstraint{
+					interval: interval, count: candidate.count + capacity, upperBoundOnly: true,
+				})
+			}
 			continue
 		}
 		if maximum, bounded := txnProxyPartiallyMutatedEvidenceCardinalityUpperBound(candidate); bounded {
@@ -659,6 +680,26 @@ func txnProxyPartiallyMutatedEvidenceCardinalityUpperBound(
 	if candidate.countOnly || candidate.snapshotPinned {
 		return 0, false
 	}
+	maximum, bounded := txnProxyFiniteMutationUnionCapacity(candidate)
+	if !bounded {
+		return 0, false
+	}
+	for _, kv := range candidate.kvs {
+		if txnProxyIntervalWasMutated(txnProxyMutationInterval{key: kv.GetKey()}, candidate.priorMutations) {
+			continue
+		}
+		if maximum == math.MaxInt64 {
+			return 0, false
+		}
+		maximum++
+	}
+	return maximum, true
+}
+
+func txnProxyFiniteMutationUnionCapacity(candidate txnProxyCompareEvidence) (int64, bool) {
+	if candidate.snapshotPinned {
+		return 0, false
+	}
 	candidateInterval, ok := txnProxyNormalizeInterval(txnProxyMutationInterval{
 		key: candidate.key, rangeEnd: candidate.rangeEnd,
 	})
@@ -707,15 +748,6 @@ func txnProxyPartiallyMutatedEvidenceCardinalityUpperBound(
 			return 0, false
 		}
 		maximum += capacity
-	}
-	for _, kv := range candidate.kvs {
-		if txnProxyIntervalWasMutated(txnProxyMutationInterval{key: kv.GetKey()}, candidate.priorMutations) {
-			continue
-		}
-		if maximum == math.MaxInt64 {
-			return 0, false
-		}
-		maximum++
 	}
 	return maximum, true
 }
@@ -773,7 +805,9 @@ func txnProxyCardinalityConstraintsSatisfiable(constraints []txnProxyCardinality
 		end := endpointIndex[normalized[index][1]]
 		var count big.Int
 		count.SetInt64(constraint.count)
-		edges = append(edges, txnProxyCardinalityEdge{from: start, to: end, weight: count})
+		if !constraint.lowerBoundOnly {
+			edges = append(edges, txnProxyCardinalityEdge{from: start, to: end, weight: count})
+		}
 		if !constraint.upperBoundOnly {
 			var negativeCount big.Int
 			negativeCount.Neg(&count)

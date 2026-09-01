@@ -2042,6 +2042,60 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}},
 			putResponse(), countOnlyRangeResponse(1),
 		}}, valid: true},
+		{name: "post-write count-only cannot lose more than one mutated point", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("m"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 3}}},
+			putResponse(), countOnlyRangeResponse(1),
+		}}},
+		{name: "post-write count-only cannot gain more than one mutated point", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("m"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}},
+			putResponse(), countOnlyRangeResponse(2),
+		}}},
+		{name: "post-write count-only retains its lower bound when the upper bound overflows", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("m"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: math.MaxInt64 - 2}}},
+			putResponse(), countOnlyRangeResponse(math.MaxInt64),
+		}}},
+		{name: "post-write count-only permits an updated mutated point", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("m"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 1}}},
+			putResponse(), countOnlyRangeResponse(1),
+		}}, valid: true},
+		{name: "post-write count-only permits one unmutated key plus a created point", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("m"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 1}}},
+			putResponse(), countOnlyRangeResponse(2),
+		}}, valid: true},
+		{name: "post-write count-only permits two adjacent created points", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("m"), putRequest("m\x00"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}},
+			putResponse(), putResponse(), countOnlyRangeResponse(2),
+		}}, valid: true},
+		{name: "bounded staged delete cannot hide excess pre-write count-only cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("m"), RangeEnd: []byte("m\x00\x00")}}},
+			countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 3}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 2}}},
+			countOnlyRangeResponse(0),
+		}}},
+		{name: "unbounded staged delete conservatively permits count-only cardinality delta", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("m"), RangeEnd: []byte("n")}}},
+			countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 3}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 3}}},
+			countOnlyRangeResponse(0),
+		}}, valid: true},
 		{name: "snapshot-pinned count-only remains a pre-write equation", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 			countOnlyRangeRequest("a", "z"), putRequest("b"), func() *etcdserverpb.RequestOp {
 				request := countOnlyRangeRequest("a", "z")
@@ -2216,6 +2270,11 @@ func TestTxnProxyCardinalityConstraintsSatisfiable(t *testing.T) {
 		{name: "upper bound rejects larger exact count", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 2), {interval: rangeInterval("a", "z"), count: 1, upperBoundOnly: true}}},
 		{name: "containing upper bound rejects larger child", constraints: []txnProxyCardinalityConstraint{finite("m", "n", 2), {interval: rangeInterval("a", "z"), count: 1, upperBoundOnly: true}}},
 		{name: "upper bound alone does not impose a lower bound", constraints: []txnProxyCardinalityConstraint{{interval: rangeInterval("a", "z"), count: 1, upperBoundOnly: true}}, want: true},
+		{name: "lower bound agrees with exact count", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 1), {interval: rangeInterval("a", "z"), count: 1, lowerBoundOnly: true}}, want: true},
+		{name: "lower bound rejects smaller exact count", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 0), {interval: rangeInterval("a", "z"), count: 1, lowerBoundOnly: true}}},
+		{name: "containing lower bound rejects empty outer", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 0), {interval: rangeInterval("m", "n"), count: 1, lowerBoundOnly: true}}},
+		{name: "lower bound alone does not impose an upper bound", constraints: []txnProxyCardinalityConstraint{{interval: rangeInterval("a", "z"), count: 1, lowerBoundOnly: true}}, want: true},
+		{name: "crossed upper and lower bounds conflict", constraints: []txnProxyCardinalityConstraint{{interval: rangeInterval("a", "z"), count: 1, upperBoundOnly: true}, {interval: rangeInterval("a", "z"), count: 2, lowerBoundOnly: true}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2271,6 +2330,46 @@ func TestTxnProxyPartiallyMutatedEvidenceCardinalityUpperBound(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, bounded := txnProxyPartiallyMutatedEvidenceCardinalityUpperBound(tt.candidate)
+			require.Equal(t, tt.wantBounded, bounded)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestTxnProxyFiniteMutationUnionCapacity(t *testing.T) {
+	point := func(key string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(key)}
+	}
+	finite := func(start, end string) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(start), rangeEnd: []byte(end)}
+	}
+	evidence := func(mutations ...txnProxyMutationInterval) txnProxyCompareEvidence {
+		return txnProxyCompareEvidence{
+			key: []byte("a"), rangeEnd: []byte("z"), countOnly: true,
+			priorMutations: mutations,
+		}
+	}
+	tests := []struct {
+		name        string
+		candidate   txnProxyCompareEvidence
+		want        int64
+		wantBounded bool
+	}{
+		{name: "count-only point", candidate: evidence(point("m")), want: 1, wantBounded: true},
+		{name: "duplicate count-only point", candidate: evidence(point("m"), point("m")), want: 1, wantBounded: true},
+		{name: "adjacent count-only points", candidate: evidence(point("m"), point("m\x00")), want: 2, wantBounded: true},
+		{name: "bounded delete interval", candidate: evidence(finite("m", "m\x00\x00")), want: 2, wantBounded: true},
+		{name: "arbitrary finite delete interval is unbounded", candidate: evidence(finite("m", "n"))},
+		{name: "disjoint mutation", candidate: evidence(point("zz"))},
+		{name: "snapshot pinned is exact evidence", candidate: func() txnProxyCompareEvidence {
+			candidate := evidence(point("m"))
+			candidate.snapshotPinned = true
+			return candidate
+		}()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, bounded := txnProxyFiniteMutationUnionCapacity(tt.candidate)
 			require.Equal(t, tt.wantBounded, bounded)
 			require.Equal(t, tt.want, got)
 		})
