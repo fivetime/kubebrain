@@ -208,7 +208,17 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
 	}
-	if validationErr := validateTxnProxyResponseHeaders(response, response.GetHeader().GetRevision(), true); validationErr != nil {
+	outerRevision := response.GetHeader().GetRevision()
+	baseRevision := outerRevision
+	if txnProxyResponseHasEffectiveWrite(request, response) {
+		if outerRevision <= 1 {
+			emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
+			return nil, status.Error(codes.DataLoss, "leader txn proxy returned an effective write without a positive pre-write revision")
+		}
+		baseRevision--
+	}
+	changed := false
+	if validationErr := validateTxnProxyResponseHeaders(request, response, outerRevision, baseRevision, true, &changed); validationErr != nil {
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
 	}
@@ -268,24 +278,62 @@ func validateTxnProxyResponseTree(request *etcdserverpb.TxnRequest, response *et
 	return nil
 }
 
-func validateTxnProxyResponseHeaders(response *etcdserverpb.TxnResponse, outerRevision int64, root bool) error {
+func txnProxyResponseHasEffectiveWrite(request *etcdserverpb.TxnRequest, response *etcdserverpb.TxnResponse) bool {
+	requests := request.GetFailure()
+	if response.GetSucceeded() {
+		requests = request.GetSuccess()
+	}
+	for index, requestOp := range requests {
+		switch {
+		case requestOp.GetRequestPut() != nil:
+			return true
+		case requestOp.GetRequestDeleteRange() != nil:
+			if response.GetResponses()[index].GetResponseDeleteRange().GetDeleted() > 0 {
+				return true
+			}
+		case requestOp.GetRequestTxn() != nil:
+			if txnProxyResponseHasEffectiveWrite(requestOp.GetRequestTxn(), response.GetResponses()[index].GetResponseTxn()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func validateTxnProxyResponseHeaders(
+	request *etcdserverpb.TxnRequest,
+	response *etcdserverpb.TxnResponse,
+	outerRevision, baseRevision int64,
+	root bool,
+	changed *bool,
+) error {
 	if response.GetHeader() == nil {
 		return fmt.Errorf("leader txn proxy returned a txn response without a header")
 	}
 	if !root && response.GetHeader().GetRevision() != 0 {
 		return fmt.Errorf("leader txn proxy returned nested txn revision %d instead of zero", response.GetHeader().GetRevision())
 	}
+	requests := request.GetFailure()
+	if response.GetSucceeded() {
+		requests = request.GetSuccess()
+	}
 	for index, responseOp := range response.GetResponses() {
 		var header *etcdserverpb.ResponseHeader
-		switch {
-		case responseOp.GetResponseRange() != nil:
+		switch requestOp := requests[index]; {
+		case requestOp.GetRequestRange() != nil:
 			header = responseOp.GetResponseRange().GetHeader()
-		case responseOp.GetResponsePut() != nil:
+		case requestOp.GetRequestPut() != nil:
+			*changed = true
 			header = responseOp.GetResponsePut().GetHeader()
-		case responseOp.GetResponseDeleteRange() != nil:
+		case requestOp.GetRequestDeleteRange() != nil:
+			if responseOp.GetResponseDeleteRange().GetDeleted() > 0 {
+				*changed = true
+			}
 			header = responseOp.GetResponseDeleteRange().GetHeader()
-		case responseOp.GetResponseTxn() != nil:
-			if err := validateTxnProxyResponseHeaders(responseOp.GetResponseTxn(), outerRevision, false); err != nil {
+		case requestOp.GetRequestTxn() != nil:
+			if err := validateTxnProxyResponseHeaders(
+				requestOp.GetRequestTxn(), responseOp.GetResponseTxn(), outerRevision, baseRevision, false, changed,
+			); err != nil {
 				return err
 			}
 			continue
@@ -293,9 +341,15 @@ func validateTxnProxyResponseHeaders(response *etcdserverpb.TxnResponse, outerRe
 		if header == nil {
 			return fmt.Errorf("leader txn proxy returned response operation without a header at index %d", index)
 		}
-		revision := header.GetRevision()
-		if revision <= 0 || revision > outerRevision || revision < outerRevision-1 {
-			return fmt.Errorf("leader txn proxy returned response operation revision %d outside outer revision window [%d,%d] at index %d", revision, outerRevision-1, outerRevision, index)
+		visibleRevision := baseRevision
+		if *changed {
+			visibleRevision = outerRevision
+		}
+		if header.GetRevision() != visibleRevision {
+			return fmt.Errorf(
+				"leader txn proxy returned operation revision %d differs from visible revision %d at index %d",
+				header.GetRevision(), visibleRevision, index,
+			)
 		}
 	}
 	return nil

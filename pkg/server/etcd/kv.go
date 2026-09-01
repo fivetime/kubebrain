@@ -2304,9 +2304,43 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 			s.recordEtcdMVCCPutSize(put.Key, put.Value)
 		}
 	}
+	stampAtomicTxnOperationRevisions(plan, results[:userCount], int64(rev))
 	stampTxnResponseHeaders(plan.root, int64(rev))
 	s.applyLeaseIndexes(writes, results, userCount)
 	return plan.root, true, nil
+}
+
+func stampAtomicTxnOperationRevisions(plan *atomicTxnPlan, results []backend.TxnWriteResult, revision int64) {
+	hasEffectiveWrite := false
+	for index, request := range plan.requests {
+		if request.GetRequestPut() != nil || results[index].Deleted {
+			hasEffectiveWrite = true
+			break
+		}
+	}
+	baseRevision := revision
+	if hasEffectiveWrite {
+		baseRevision--
+	}
+	changed := false
+	for index, request := range plan.requests {
+		response := plan.responses[index]
+		visibleRevision := baseRevision
+		switch {
+		case request.GetRequestPut() != nil:
+			changed = true
+			visibleRevision = revision
+			response.GetResponsePut().Header.Revision = visibleRevision
+		case request.GetRequestDeleteRange() != nil:
+			if results[index].Deleted {
+				changed = true
+			}
+			if changed {
+				visibleRevision = revision
+			}
+			response.GetResponseDeleteRange().Header.Revision = visibleRevision
+		}
+	}
 }
 
 func buildAtomicTxnPlan(txn *etcdserverpb.TxnRequest, cur *txnPathCursor, plan *atomicTxnPlan) (*etcdserverpb.TxnResponse, bool, error) {

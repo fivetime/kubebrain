@@ -554,6 +554,11 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			ResponseRange: &etcdserverpb.RangeResponse{},
 		}}
 	}
+	putRequest := func(key string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte(key), Value: []byte("value")},
+		}}
+	}
 	simple := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}
 	nested := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
 		Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: simple},
@@ -599,6 +604,18 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			message: "selected the failure branch without compares",
 		},
 		{name: "missing operation header", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{rangeResponse()}}},
+		{name: "read-only operation at previous revision", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(1)}}}}}, message: "operation revision 1 differs from visible revision 2"},
+		{
+			name: "post-write range at previous revision",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				putRequest("write"), rangeRequest("read"),
+			}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(2)}}},
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(1)}}},
+			}},
+			message: "operation revision 1 differs from visible revision 2",
+		},
 		{name: "future operation revision", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(3)}}}}}},
 		{name: "invalid range payload", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("other"), CreateRevision: 1, ModRevision: 1, Version: 1}}}}}}}},
 		{name: "invalid put payload", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("p")}}}}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(2), PrevKv: &mvccpb.KeyValue{Key: []byte("p"), CreateRevision: 1, ModRevision: 1, Version: 1}}}}}}},
@@ -655,6 +672,57 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCTxn))
 		})
 	}
+}
+
+func TestTxnNoOpDeleteRevisionTracksVisibleWrites(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	deleteBefore := []byte("/txn-revision-trajectory/delete-before")
+	putAfter := []byte("/txn-revision-trajectory/put-after")
+	before, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: deleteBefore}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: putAfter, Value: []byte("value")}}},
+	}})
+	require.NoError(t, err)
+	require.True(t, before.Succeeded)
+	require.Len(t, before.Responses, 2)
+	require.Zero(t, before.Responses[0].GetResponseDeleteRange().Deleted)
+	require.Equal(t, before.Header.Revision-1, before.Responses[0].GetResponseDeleteRange().Header.Revision)
+	require.Equal(t, before.Header.Revision, before.Responses[1].GetResponsePut().Header.Revision)
+
+	putBefore := []byte("/txn-revision-trajectory/put-before")
+	deleteAfter := []byte("/txn-revision-trajectory/delete-after")
+	after, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: putBefore, Value: []byte("value")}}},
+		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: deleteAfter}}},
+	}})
+	require.NoError(t, err)
+	require.True(t, after.Succeeded)
+	require.Len(t, after.Responses, 2)
+	require.Equal(t, after.Header.Revision, after.Responses[0].GetResponsePut().Header.Revision)
+	require.Zero(t, after.Responses[1].GetResponseDeleteRange().Deleted)
+	require.Equal(t, after.Header.Revision, after.Responses[1].GetResponseDeleteRange().Header.Revision)
+
+	nestedDelete := []byte("/txn-revision-trajectory/nested-delete-before")
+	outerPut := []byte("/txn-revision-trajectory/outer-put-after")
+	nested, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: nestedDelete}}},
+		}}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: outerPut, Value: []byte("value")}}},
+	}})
+	require.NoError(t, err)
+	require.True(t, nested.Succeeded)
+	require.Len(t, nested.Responses, 2)
+	nestedResponse := nested.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedResponse)
+	require.Zero(t, nestedResponse.Header.Revision)
+	require.Len(t, nestedResponse.Responses, 1)
+	require.Zero(t, nestedResponse.Responses[0].GetResponseDeleteRange().Deleted)
+	require.Equal(t, nested.Header.Revision-1, nestedResponse.Responses[0].GetResponseDeleteRange().Header.Revision)
+	require.Equal(t, nested.Header.Revision, nested.Responses[1].GetResponsePut().Header.Revision)
 }
 
 func TestTxnWithoutComparesIgnoresNonEmptyFailureBranch(t *testing.T) {
