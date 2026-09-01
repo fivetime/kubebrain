@@ -67944,6 +67944,67 @@ revision/index/applied、HashKV、compact revision 保持 `65957/2928861403/4432
 构建/现场脚本未使用凭据或落盘诊断日志，最终确认所有本轮端口转发监听无残留。A5677 关闭了 follower 忽略完整包含
 区间 payload 与 Compare 子区间自相矛盾的完整性缺口。
 
+### A5678：安全利用 CountOnly 与 KeysOnly Range 证据
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{applyCompare,compareKV}` 与上游 Range 投影行为。`CountOnly`
+响应的 `Count=0` 可完整证明请求区间为空；`KeysOnly` 仍保留 key/create/mod/version，因此可证明 missing 以及
+CREATE/MOD/VERSION Compare。普通 KeysOnly 快路径不返回 value/lease，已有 key 的 VALUE 与 LEASE 必须保持未知；但
+`SortTarget=VALUE` 会先读取完整 KV 再清空 value，lease 仍可作为证据。此前 validator 一律拒绝 CountOnly/KeysOnly，
+会放过已由这些响应明确证明、却选择相反分支的 leader/follower Txn。
+
+tests-only RED 覆盖 KeysOnly missing VALUE、VERSION true、VALUE-sort KeysOnly LEASE true、CountOnly exact/包含区间
+missing，以及 follower CountOnly 矛盾响应；旧实现接受五类矛盾。正向边界固定普通 KeysOnly 的已有 VALUE 与 LEASE
+均保持 unknown。提交 `ac4c49ed` 为 evidence 记录增加 `valueProjected/leaseProjected`，令
+`txnProxyRangeProvidesCompareEvidence` 同时检查 request/response：完整当前 Range 与 KeysOnly 可入证据集合，CountOnly
+仅在 `Count=0` 时入集合；只在已有 KV 且 Compare 依赖被投影字段时跳过求值，空子区间仍按 missing 语义求值。
+VALUE-sort KeysOnly 不标记 lease 投影。聚焦测试 `0.353s`、race `2.163s`（含编译墙钟 `73.236s`）、全部 Txn
+`25.442s`、完整 `pkg/server/etcd` `137.635s`、vet 通过。提交前 verifier 精确为 703 项、四片
+`170/193/180/160`；提交后四片分别为 `251.643/452.598/308.553/574.029s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5678-ac4c49ed` 内嵌版本 `0.0.0-ac4c49ed6cd9`、完整提交
+`ac4c49ed6cd95fc2f5b3ad1eaa067076e4285d97`、build time `2026-09-01T12:33:49Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:a81b23d72f4401345c133846caf8ab93625907eb25087ab90192de9c2ef1766f`、
+`sha256:37c167d6524a4956bbb9c2dfcbe921f06bf13b98cc2eba0635ec4b23f28c264a`、
+`sha256:57f05af427f496d676f8274835718814d58b13b3b984f32c4ab3b928be7f38b5`、
+`sha256:97b9a8fb5c7d53ff798adfb1b5e2e48de6284c2c978fd80254986f5518ae78e6`；BuildKit SBOM scanner 阶段成功，
+Kind runtime digest 为 `sha256:28147d0da1d92e37bbacc36df9db770d476000b1552f35ffdfa4b211b8f2df19`。
+本地 `docker image inspect` 再次验证 index ID、labels、用户与平台；当前 CLI 仍无 `docker sbom`，不宣称独立 SBOM
+内容复验。
+
+候选发布前，稳定三 Pod 因宿主根盘 100%、TiKV `AlreadyFull` 无法续写 election lease 而一度全部 NotReady；该事件
+发生在候选部署之前。只读归因显示目标 TiKV PVC 合计约 34 GiB，真正占用是 Kind 节点 containerd 的 432 个历史镜像
+与快照约 896 GiB。仅删除 `EXITED` 容器、`NOTREADY` sandbox 和未被容器引用的镜像后，40 个运行中容器与全部 PVC
+均保留，根盘降至 70%、可用 581 GiB，稳定三 Pod 自动恢复 Ready，revision/HashKV/compact 保持
+`65957/2928861403/44329`。清理中一个 sandbox 被 Kubelet 并发先删，重新枚举后安全收敛；候选镜像随后从已核验本地
+OCI 重新加载。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 748 部署到
+generation 749，三 Pod 均落在 `kubebrain-77bcc89f9f`、Ready/restart 0、同一候选 runtime digest，Pod 内版本与完整
+SHA 一致。逐个 Pod-local gateway 在 `/a5678/p{0,1,2}/` 执行七类 Txn：CountOnly exact missing、CountOnly 包含
+区间 missing、KeysOnly missing、KeysOnly VERSION、普通 KeysOnly LEASE 保守未知、VALUE-sort KeysOnly LEASE 证据，
+以及普通 KeysOnly 已有 VALUE 保守未知；全部选择上游真实分支。三 Pod 分别清理收敛到 revision
+`65962/65967/65972`，前缀 Count=0、Lease 为空。首次断言未考虑 proto3 JSON 会省略 false/zero/空字段而停止，trap
+已完成清理；打印原始响应确认产品正确后，按 proto3 零值重跑全部通过。
+
+候选 term `368`、leader `231094427`、HashKV `2571327285`、compact revision `44329`。全部适用开关启用的
+readonly gate 一次 GREEN，三成员 revision/index/applied、Status/HashKV、named readyz/livez、HTTP、metrics/debug/
+pprof、auth disabled/revision 281、Alarm 与空前缀均通过。首次 gate 把 `READYZ_URL` 错指 client 端口，候选正确返回
+`/debug/vars` 404；改用 info 端口后完整通过。候选三轮九次 exact endpoint proposal health 全部成功
+（`8.964–12.637ms`），Lease 为空，三 Pod 全量日志 `797/783/313` 行且关键错误为 0；三 store Up、五类 region
+check 连续三轮全零。KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready/restart 1 沿用此前 sandbox 事件。
+
+以同类五类原子 test 回滚稳定 digest。StatefulSet UID 不变，generation/observed `750/750`、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。终态三成员
+revision/index/applied、HashKV、compact revision 保持 `65972/2571327285/44329`，term `370`、leader
+`231094427`，prefix、Lease 与 Alarm 为空；稳定三轮九次 proposal health 全部 GREEN（`9.715–12.118ms`），日志
+`339/385/304` 行且关键错误为 0，store/region 继续健康，宿主盘保持 70%。宿主 `etcdctl 3.5.16` 不接受 JSON
+模式的 `get --count-only` 组合，改用普通 prefix JSON 的 `count=0` 完成只读证明。A5676 已记录的 Kind local-path 非 CSI
+存储隔离风险仍存在；本轮恢复了实际容量余量，但不把 region API 代替完整 storage isolation gate。全程未使用凭据或
+落盘诊断日志，最终七个临时监听均无残留。A5678 关闭了 projected Range 已明确证明 Compare 时 follower 仍接受矛盾
+Txn 分支的完整性缺口，同时保留上游无法从投影字段得出结论时的可用性。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
