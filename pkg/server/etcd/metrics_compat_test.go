@@ -1462,6 +1462,107 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		{name: "count-only range is not value evidence", request: valueEvidenceBranchRequest(countOnlyEvidenceRequest), response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
 			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
 		}), valid: true},
+		{name: "positive count-only version greater zero true selected failure", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest}, Failure: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest},
+		}, response: valueEvidenceBranchResponse(false, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
+		})},
+		{name: "positive count-only create equal zero false selected success", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_CREATE,
+				TargetUnion: &etcdserverpb.Compare_CreateRevision{CreateRevision: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest}, Failure: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest},
+		}, response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
+		})},
+		{name: "positive count-only mod not equal zero true selected failure", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_NOT_EQUAL, Target: etcdserverpb.Compare_MOD,
+				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest}, Failure: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest},
+		}, response: valueEvidenceBranchResponse(false, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
+		})},
+		{name: "positive count-only version less one false selected success", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_LESS, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 1},
+			}},
+			Success: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest}, Failure: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest},
+		}, response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
+		})},
+		{name: "positive count-only finite range version greater zero true selected failure", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("a"), RangeEnd: []byte("z"), Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}()},
+			Failure: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}()},
+		}, response: valueEvidenceBranchResponse(false, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 2}},
+		})},
+		{name: "positive count-only after disjoint put remains pre-write evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest},
+			Failure: []*etcdserverpb.RequestOp{putRequest("unrelated"), countOnlyEvidenceRequest},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), {Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}}},
+		}}},
+		{name: "positive count-only after overlapping put is not pre-write evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest},
+			Failure: []*etcdserverpb.RequestOp{putRequest("evidence"), countOnlyEvidenceRequest},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), {Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}}},
+		}}, valid: true},
+		{name: "positive count-only version equal one remains unknown", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 1},
+			}},
+			Success: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest}, Failure: []*etcdserverpb.RequestOp{countOnlyEvidenceRequest},
+		}, response: valueEvidenceBranchResponse(false, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
+		}), valid: true},
+		{name: "containing positive count-only does not prove point nonempty", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}()},
+			Failure: []*etcdserverpb.RequestOp{func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}()},
+		}, response: valueEvidenceBranchResponse(false, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
+		}), valid: true},
 		{name: "count-only zero proves missing value", request: valueEvidenceBranchRequest(countOnlyEvidenceRequest), response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
 			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}},
 		})},

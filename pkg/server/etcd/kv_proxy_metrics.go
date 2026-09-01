@@ -377,6 +377,8 @@ type txnProxyCompareEvidence struct {
 	priorMutations []txnProxyMutationInterval // immutable append-only prefix at observation time
 	valueProjected bool
 	leaseProjected bool
+	countOnly      bool
+	count          int64
 }
 
 type txnProxyMutationInterval struct {
@@ -406,13 +408,15 @@ func collectTxnProxyCompareEvidence(
 		case requestOp.GetRequestRange() != nil:
 			rangeRequest := requestOp.GetRequestRange()
 			rangeResponse := responseOp.GetResponseRange()
-			if txnProxyRangeProvidesCompareEvidence(rangeRequest, rangeResponse) {
+			if txnProxyRangeProvidesCompareEvidence(rangeRequest) {
 				*evidence = append(*evidence, txnProxyCompareEvidence{
 					key: rangeRequest.GetKey(), rangeEnd: rangeRequest.GetRangeEnd(),
 					kvs:            rangeResponse.GetKvs(),
 					priorMutations: *mutations,
 					valueProjected: rangeRequest.GetKeysOnly(),
 					leaseProjected: rangeRequest.GetKeysOnly() && rangeRequest.GetSortTarget() != etcdserverpb.RangeRequest_VALUE,
+					countOnly:      rangeRequest.GetCountOnly(),
+					count:          rangeResponse.GetCount(),
 				})
 			}
 		case requestOp.GetRequestPut() != nil:
@@ -529,18 +533,20 @@ func txnProxyIntervalContainsInterval(outer, inner txnProxyMutationInterval) boo
 	return isFromKeyRangeEnd(outer.rangeEnd) || bytes.Compare(inner.rangeEnd, outer.rangeEnd) <= 0
 }
 
-func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest, response *etcdserverpb.RangeResponse) bool {
+func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest) bool {
 	// Limited, historical, or revision-filtered responses are not complete
-	// descriptions of their requested intervals. An empty CountOnly response
-	// proves the entire interval missing. KeysOnly preserves key and MVCC
-	// metadata; its projection capabilities are enforced when evaluating a
-	// compare. Sort and Serializable do not change the represented key set.
+	// descriptions of their requested intervals. CountOnly preserves interval
+	// cardinality: zero proves every subinterval missing, while a positive count
+	// can prove only lifecycle facts about the exact requested interval.
+	// KeysOnly preserves key and MVCC metadata; its projection capabilities are
+	// enforced when evaluating a compare. Sort and Serializable do not change
+	// the represented key set.
 	if request.GetRevision() != 0 || request.GetLimit() > 0 ||
 		request.GetMinModRevision() != 0 || request.GetMaxModRevision() != 0 ||
 		request.GetMinCreateRevision() != 0 || request.GetMaxCreateRevision() != 0 {
 		return false
 	}
-	return !request.GetCountOnly() || response.GetCount() == 0
+	return true
 }
 
 func validateTxnProxyCompareEvidenceBranches(
@@ -616,6 +622,24 @@ func txnProxyCompareResultFromEvidence(
 		if txnProxyIntervalWasMutated(compareInterval, candidate.priorMutations) {
 			continue
 		}
+		if candidate.countOnly && candidate.count > 0 {
+			// A positive cardinality for a containing interval does not identify
+			// which subinterval is non-empty. For the exact interval, however,
+			// every returned logical key has positive lifecycle metadata.
+			if !txnProxyIntervalsEqual(candidateInterval, compareInterval) {
+				continue
+			}
+			candidateResult, deterministic := txnProxyPositiveLifecycleCompareResult(compare)
+			if !deterministic {
+				continue
+			}
+			if found && result != candidateResult {
+				return false, false, fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence for a compare interval")
+			}
+			result = candidateResult
+			found = true
+			continue
+		}
 		candidateResult := true
 		matched := false
 		candidateUsable := true
@@ -647,6 +671,47 @@ func txnProxyCompareResultFromEvidence(
 		found = true
 	}
 	return result, found, nil
+}
+
+func txnProxyIntervalsEqual(left, right txnProxyMutationInterval) bool {
+	return bytes.Equal(left.key, right.key) && bytes.Equal(left.rangeEnd, right.rangeEnd)
+}
+
+func txnProxyPositiveLifecycleCompareResult(compare *etcdserverpb.Compare) (bool, bool) {
+	var expected int64
+	switch compare.GetTarget() {
+	case etcdserverpb.Compare_VERSION:
+		expected = compare.GetVersion()
+	case etcdserverpb.Compare_CREATE:
+		expected = compare.GetCreateRevision()
+	case etcdserverpb.Compare_MOD:
+		expected = compare.GetModRevision()
+	default:
+		return false, false
+	}
+	// Existing keys have VERSION, CREATE, and MOD values in [1, MaxInt64].
+	// These are the only standard comparisons whose result is fixed over that
+	// complete domain; positive thresholds otherwise require the projected
+	// metadata values themselves.
+	switch compare.GetResult() {
+	case etcdserverpb.Compare_EQUAL:
+		if expected <= 0 {
+			return false, true
+		}
+	case etcdserverpb.Compare_NOT_EQUAL:
+		if expected <= 0 {
+			return true, true
+		}
+	case etcdserverpb.Compare_GREATER:
+		if expected <= 0 {
+			return true, true
+		}
+	case etcdserverpb.Compare_LESS:
+		if expected <= 1 {
+			return false, true
+		}
+	}
+	return false, false
 }
 
 func txnProxyDeterministicCompareBranch(compares []*etcdserverpb.Compare) (bool, bool) {
