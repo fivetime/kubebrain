@@ -300,6 +300,13 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
 	}
+	var postWriteMutations []txnProxyPostWriteMutation
+	if validationErr := validateTxnProxyPostWriteMutationEvidence(
+		request, response, outerRevision, &postWriteMutations,
+	); validationErr != nil {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
+		return nil, status.Error(codes.DataLoss, validationErr.Error())
+	}
 	var mutations []txnProxyMutationInterval
 	var compareEvidence []txnProxyCompareEvidence
 	collectTxnProxyCompareEvidence(request, response, baseRevision, &mutations, &compareEvidence)
@@ -435,6 +442,190 @@ const (
 	txnProxyMutationPut
 	txnProxyMutationDelete
 )
+
+type txnProxyPostWriteMutation struct {
+	interval txnProxyMutationInterval
+	put      *etcdserverpb.PutRequest
+	previous *mvccpb.KeyValue
+}
+
+// validateTxnProxyPostWriteMutationEvidence follows the selected operation
+// tree in upstream execution order. A revision-zero Range after a staged Put
+// observes that Put at the transaction revision; a Range after DeleteRange
+// cannot return any key in the deleted interval. Historical reads deliberately
+// bypass this check because they may still expose the pre-write key state.
+func validateTxnProxyPostWriteMutationEvidence(
+	request *etcdserverpb.TxnRequest,
+	response *etcdserverpb.TxnResponse,
+	outerRevision int64,
+	mutations *[]txnProxyPostWriteMutation,
+) error {
+	requests := request.GetFailure()
+	if response.GetSucceeded() {
+		requests = request.GetSuccess()
+	}
+	for index, requestOp := range requests {
+		responseOp := response.GetResponses()[index]
+		switch {
+		case requestOp.GetRequestRange() != nil:
+			if err := validateTxnProxyPostWriteRangeEvidence(
+				requestOp.GetRequestRange(), responseOp.GetResponseRange(), outerRevision, *mutations,
+			); err != nil {
+				return err
+			}
+		case requestOp.GetRequestPut() != nil:
+			putRequest := requestOp.GetRequestPut()
+			*mutations = append(*mutations, txnProxyPostWriteMutation{
+				interval: txnProxyMutationInterval{key: putRequest.GetKey(), kind: txnProxyMutationPut},
+				put:      putRequest,
+				previous: responseOp.GetResponsePut().GetPrevKv(),
+			})
+		case requestOp.GetRequestDeleteRange() != nil:
+			deleteRequest := requestOp.GetRequestDeleteRange()
+			*mutations = append(*mutations, txnProxyPostWriteMutation{interval: txnProxyMutationInterval{
+				key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd(), kind: txnProxyMutationDelete,
+			}})
+		case requestOp.GetRequestTxn() != nil:
+			if err := validateTxnProxyPostWriteMutationEvidence(
+				requestOp.GetRequestTxn(), responseOp.GetResponseTxn(), outerRevision, mutations,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateTxnProxyPostWriteRangeEvidence(
+	request *etcdserverpb.RangeRequest,
+	response *etcdserverpb.RangeResponse,
+	outerRevision int64,
+	mutations []txnProxyPostWriteMutation,
+) error {
+	if request.GetRevision() != 0 || len(mutations) == 0 {
+		return nil
+	}
+	orderedMutations := txnProxySortedPostWriteMutations(mutations)
+	visiblePuts := make(map[string]struct{}, len(orderedMutations))
+	for _, kv := range response.GetKvs() {
+		mutation, mutated := txnProxyPostWriteMutationForKey(orderedMutations, kv.GetKey())
+		if mutated {
+			switch mutation.interval.kind {
+			case txnProxyMutationDelete:
+				return txnProxyPostWriteMutationEvidenceError(kv.GetKey(), "range returned a key removed by DeleteRange")
+			case txnProxyMutationPut:
+				if err := validateTxnProxyVisiblePutState(request, *mutation, kv, outerRevision); err != nil {
+					return err
+				}
+				visiblePuts[string(mutation.interval.key)] = struct{}{}
+			}
+		}
+	}
+	if request.GetCountOnly() || !txnProxyRangeProvidesCompareEvidence(request, response, 0) {
+		return nil
+	}
+	rangeInterval := txnProxyMutationInterval{key: request.GetKey(), rangeEnd: request.GetRangeEnd()}
+	for _, mutation := range orderedMutations {
+		if mutation.interval.kind != txnProxyMutationPut ||
+			!txnProxyIntervalContains(rangeInterval, mutation.interval.key) {
+			continue
+		}
+		if _, ok := visiblePuts[string(mutation.interval.key)]; !ok {
+			return txnProxyPostWriteMutationEvidenceError(mutation.interval.key, "complete range omitted a staged Put")
+		}
+	}
+	return nil
+}
+
+func txnProxySortedPostWriteMutations(mutations []txnProxyPostWriteMutation) []txnProxyPostWriteMutation {
+	// checkIntervals rejects overlapping writes before the request reaches this
+	// validator. Sorting their non-empty intervals lets a large Range locate the
+	// sole possible mutation for each returned key in O(log M), instead of
+	// multiplying every returned key by the maximum transaction operation count.
+	ordered := make([]txnProxyPostWriteMutation, 0, len(mutations))
+	for _, mutation := range mutations {
+		if txnProxyIntervalIsEmpty(mutation.interval) {
+			continue
+		}
+		ordered = append(ordered, mutation)
+	}
+	sort.Slice(ordered, func(left, right int) bool {
+		return bytes.Compare(ordered[left].interval.key, ordered[right].interval.key) < 0
+	})
+	return ordered
+}
+
+func txnProxyPostWriteMutationForKey(
+	mutations []txnProxyPostWriteMutation,
+	key []byte,
+) (*txnProxyPostWriteMutation, bool) {
+	index := sort.Search(len(mutations), func(index int) bool {
+		return bytes.Compare(mutations[index].interval.key, key) > 0
+	}) - 1
+	if index < 0 || !txnProxyIntervalContains(mutations[index].interval, key) {
+		return nil, false
+	}
+	return &mutations[index], true
+}
+
+func validateTxnProxyVisiblePutState(
+	rangeRequest *etcdserverpb.RangeRequest,
+	mutation txnProxyPostWriteMutation,
+	visible *mvccpb.KeyValue,
+	outerRevision int64,
+) error {
+	putRequest := mutation.put
+	key := mutation.interval.key
+	if visible.GetModRevision() != outerRevision {
+		return txnProxyPostWriteMutationEvidenceError(key, "staged Put has the wrong mod revision")
+	}
+	if putRequest.GetPrevKv() {
+		previous := mutation.previous
+		if previous == nil {
+			if visible.GetCreateRevision() != outerRevision || visible.GetVersion() != 1 {
+				return txnProxyPostWriteMutationEvidenceError(key, "created Put has the wrong lifecycle")
+			}
+		} else {
+			if previous.GetVersion() == math.MaxInt64 ||
+				visible.GetCreateRevision() != previous.GetCreateRevision() ||
+				visible.GetVersion() != previous.GetVersion()+1 {
+				return txnProxyPostWriteMutationEvidenceError(key, "updated Put has the wrong lifecycle")
+			}
+		}
+	}
+	if !rangeRequest.GetKeysOnly() {
+		expectedValue, known := putRequest.GetValue(), true
+		if putRequest.GetIgnoreValue() {
+			if putRequest.GetPrevKv() && mutation.previous != nil {
+				expectedValue = mutation.previous.GetValue()
+			} else {
+				known = false
+			}
+		}
+		if known && !bytes.Equal(visible.GetValue(), expectedValue) {
+			return txnProxyPostWriteMutationEvidenceError(key, "staged Put has the wrong value")
+		}
+	}
+	leaseProjected := rangeRequest.GetKeysOnly() && rangeRequest.GetSortTarget() != etcdserverpb.RangeRequest_VALUE
+	if !leaseProjected {
+		expectedLease, known := putRequest.GetLease(), true
+		if putRequest.GetIgnoreLease() {
+			if putRequest.GetPrevKv() && mutation.previous != nil {
+				expectedLease = mutation.previous.GetLease()
+			} else {
+				known = false
+			}
+		}
+		if known && visible.GetLease() != expectedLease {
+			return txnProxyPostWriteMutationEvidenceError(key, "staged Put has the wrong lease")
+		}
+	}
+	return nil
+}
+
+func txnProxyPostWriteMutationEvidenceError(key []byte, detail string) error {
+	return fmt.Errorf("leader txn proxy returned inconsistent post-write mutation evidence for key %q: %s", key, detail)
+}
 
 // collectTxnProxyCompareEvidence walks the selected operations in their
 // execution order. Upstream compareToPath evaluates the entire selected txn

@@ -1014,6 +1014,11 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 	putRequest := func(key string) *etcdserverpb.RequestOp {
 		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte(key)}}}
 	}
+	putValueRequest := func(key, value string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+			Key: []byte(key), Value: []byte(value),
+		}}}
+	}
 	deleteRequest := func(key string) *etcdserverpb.RequestOp {
 		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte(key)}}}
 	}
@@ -1295,7 +1300,7 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		{name: "containing range after mutation inside compare is not evidence", request: &etcdserverpb.TxnRequest{
 			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
 			Success: []*etcdserverpb.RequestOp{containingEvidenceRangeRequest("a", []byte("z"))},
-			Failure: []*etcdserverpb.RequestOp{putRequest("evidence"), containingEvidenceRangeRequest("a", []byte("z"))},
+			Failure: []*etcdserverpb.RequestOp{putValueRequest("evidence", "expected"), containingEvidenceRangeRequest("a", []byte("z"))},
 		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{
 			putResponse(), containingEvidenceRangeResponse(&mvccpb.KeyValue{
 				Key: []byte("evidence"), Value: []byte("expected"), CreateRevision: 4, ModRevision: 5, Version: 2,
@@ -1760,7 +1765,7 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		}}},
 		{name: "post-write range is not pre-write evidence", request: &etcdserverpb.TxnRequest{
 			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
-			Success: []*etcdserverpb.RequestOp{putRequest("evidence"), valueEvidenceRangeRequest(false, 0)},
+			Success: []*etcdserverpb.RequestOp{putValueRequest("evidence", "other"), valueEvidenceRangeRequest(false, 0)},
 			Failure: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0)},
 		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
 			putResponse(), valueEvidenceRangeResponse("other", 5, 4, 5, 2),
@@ -1805,7 +1810,7 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 			valueEvidenceRangeResponse("", 5, 4, 4, 1), valueEvidenceRangeResponse("visible", 5, 4, 4, 1),
 		}}, valid: true},
 		{name: "post-write range may differ from pre-write range", request: &etcdserverpb.TxnRequest{
-			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0), putRequest("evidence"), valueEvidenceRangeRequest(false, 0)},
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0), putValueRequest("evidence", "new"), valueEvidenceRangeRequest(false, 0)},
 		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
 			valueEvidenceRangeResponse("old", 4, 4, 4, 1), putResponse(), valueEvidenceRangeResponse("new", 5, 4, 5, 2),
 		}}, valid: true},
@@ -2005,18 +2010,211 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 			countOnlyRangeResponse(3), countOnlyRangeResponse(2), countOnlyRangeResponse(2), countOnlyRangeResponse(1),
 		}}, valid: true},
 		{name: "post-write complete range leaves only one mutated point for pre-write count", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
-			countOnlyRangeRequest("a", "z"), putRequest("m"), containingEvidenceRangeRequest("a", []byte("z")),
+			countOnlyRangeRequest("a", "z"), putValueRequest("m", "new"), containingEvidenceRangeRequest("a", []byte("z")),
 		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
 			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 2}}},
 			putResponse(),
 			containingEvidenceRangeResponse(&mvccpb.KeyValue{Key: []byte("m"), Value: []byte("new"), CreateRevision: 4, ModRevision: 5, Version: 2}),
 		}}},
 		{name: "post-write complete range permits one pre-existing mutated point", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
-			countOnlyRangeRequest("a", "z"), putRequest("m"), containingEvidenceRangeRequest("a", []byte("z")),
+			countOnlyRangeRequest("a", "z"), putValueRequest("m", "new"), containingEvidenceRangeRequest("a", []byte("z")),
 		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
 			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 1}}},
 			putResponse(),
 			containingEvidenceRangeResponse(&mvccpb.KeyValue{Key: []byte("m"), Value: []byte("new"), CreateRevision: 4, ModRevision: 5, Version: 2}),
+		}}, valid: true},
+		{name: "put creation post-write range has the requested state", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), Value: []byte("new"), Lease: 7, PrevKv: true,
+			}}}, rangeRequest("evidence"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), valueEvidenceRangeResponse("wrong", 5, 5, 5, 1),
+		}}},
+		{name: "put update post-write range increments lifecycle", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), Value: []byte("new"), Lease: 7, PrevKv: true,
+			}}}, rangeRequest("evidence"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidencePutResponse(&mvccpb.KeyValue{
+				Key: []byte("evidence"), Value: []byte("old"), CreateRevision: 2, ModRevision: 4, Version: 3, Lease: 6,
+			}),
+			valueEvidenceRangeResponse("new", 5, 2, 5, 3),
+		}}},
+		{name: "put without previous still fixes visible value lease and mod revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), Value: []byte("new"), Lease: 7,
+			}}}, rangeRequest("evidence"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), valueEvidenceRangeResponse("old", 5, 2, 4, 3),
+		}}},
+		{name: "delete post-write range cannot return a deleted key", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			deleteRequest("evidence"), rangeRequest("evidence"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 1,
+			}}}, valueEvidenceRangeResponse("old", 5, 2, 4, 3),
+		}}},
+		{name: "put creation post-write range exposes exact state", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), Value: []byte("new"), Lease: 7, PrevKv: true,
+			}}}, rangeRequest("evidence"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), {Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("evidence"), Value: []byte("new"), CreateRevision: 5, ModRevision: 5, Version: 1, Lease: 7,
+				}},
+			}}},
+		}}, valid: true},
+		{name: "put update post-write range exposes exact state", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), Value: []byte("new"), Lease: 7, PrevKv: true,
+			}}}, rangeRequest("evidence"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidencePutResponse(&mvccpb.KeyValue{
+				Key: []byte("evidence"), Value: []byte("old"), CreateRevision: 2, ModRevision: 4, Version: 3, Lease: 6,
+			}),
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("evidence"), Value: []byte("new"), CreateRevision: 2, ModRevision: 5, Version: 4, Lease: 7,
+				}},
+			}}},
+		}}, valid: true},
+		{name: "put ignore flags inherit requested previous state", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), PrevKv: true, IgnoreValue: true, IgnoreLease: true,
+			}}}, rangeRequest("evidence"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidencePutResponse(&mvccpb.KeyValue{
+				Key: []byte("evidence"), Value: []byte("old"), CreateRevision: 2, ModRevision: 4, Version: 3, Lease: 6,
+			}),
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("evidence"), Value: []byte("old"), CreateRevision: 2, ModRevision: 5, Version: 4, Lease: 6,
+				}},
+			}}},
+		}}, valid: true},
+		{name: "put ignore value cannot expose a different value", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), PrevKv: true, IgnoreValue: true,
+			}}}, rangeRequest("evidence"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidencePutResponse(&mvccpb.KeyValue{
+				Key: []byte("evidence"), Value: []byte("old"), CreateRevision: 2, ModRevision: 4, Version: 3,
+			}),
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("evidence"), Value: []byte("wrong"), CreateRevision: 2, ModRevision: 5, Version: 4,
+				}},
+			}}},
+		}}},
+		{name: "keys-only post-write range may project put value and lease", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), Value: []byte("new"), Lease: 7, PrevKv: true,
+			}}}, valueEvidenceRangeRequest(true, 0),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), valueEvidenceRangeResponse("", 5, 5, 5, 1),
+		}}, valid: true},
+		{name: "keys-only post-write range still fixes put lifecycle", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), Value: []byte("new"), PrevKv: true,
+			}}}, valueEvidenceRangeRequest(true, 0),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), valueEvidenceRangeResponse("", 5, 4, 5, 2),
+		}}},
+		{name: "value-sorted keys-only post-write range retains put lease", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), Value: []byte("new"), Lease: 7, PrevKv: true,
+			}}}, func() *etcdserverpb.RequestOp {
+				request := valueEvidenceRangeRequest(true, 0)
+				request.GetRequestRange().SortTarget = etcdserverpb.RangeRequest_VALUE
+				request.GetRequestRange().SortOrder = etcdserverpb.RangeRequest_ASCEND
+				return request
+			}(),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), {Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("evidence"), CreateRevision: 5, ModRevision: 5, Version: 1, Lease: 7,
+				}},
+			}}},
+		}}, valid: true},
+		{name: "value-sorted keys-only post-write range cannot project put lease", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: []byte("evidence"), Value: []byte("new"), Lease: 7, PrevKv: true,
+			}}}, func() *etcdserverpb.RequestOp {
+				request := valueEvidenceRangeRequest(true, 0)
+				request.GetRequestRange().SortTarget = etcdserverpb.RangeRequest_VALUE
+				request.GetRequestRange().SortOrder = etcdserverpb.RangeRequest_ASCEND
+				return request
+			}(),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), valueEvidenceRangeResponse("", 5, 5, 5, 1),
+		}}},
+		{name: "complete post-write range cannot omit staged put", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			putValueRequest("m", "new"), containingEvidenceRangeRequest("a", []byte("z")),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), containingEvidenceRangeResponse(),
+		}}},
+		{name: "truncated post-write range may omit staged put", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			putValueRequest("m", "new"), func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().Limit = 1
+				return request
+			}(),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), {Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 2, More: true, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("a"), Value: []byte("old"), CreateRevision: 4, ModRevision: 4, Version: 1,
+				}},
+			}}},
+		}}, valid: true},
+		{name: "filtered post-write range may omit staged put", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			putValueRequest("evidence", "new"), func() *etcdserverpb.RequestOp {
+				request := rangeRequest("evidence")
+				request.GetRequestRange().MinModRevision = 6
+				return request
+			}(),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), rangeResponse(),
+		}}, valid: true},
+		{name: "nested put is visible to trailing root range", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				putValueRequest("evidence", "new"),
+			}}}}, rangeRequest("evidence"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{
+				Header: txnHeader(0), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{putResponse()},
+			}}}, valueEvidenceRangeResponse("new", 5, 5, 5, 1),
+		}}, valid: true},
+		{name: "post-delete complete range may retain disjoint key", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+				Key: []byte("m"), RangeEnd: []byte("n"),
+			}}}, containingEvidenceRangeRequest("a", []byte("z")),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 1,
+			}}}, containingEvidenceRangeResponse(&mvccpb.KeyValue{
+				Key: []byte("b"), Value: []byte("old"), CreateRevision: 4, ModRevision: 4, Version: 1,
+			}),
+		}}, valid: true},
+		{name: "historical range after put may return previous state", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			putValueRequest("evidence", "new"), func() *etcdserverpb.RequestOp {
+				request := rangeRequest("evidence")
+				request.GetRequestRange().Revision = 4
+				return request
+			}(),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), valueEvidenceRangeResponse("old", 5, 2, 4, 3),
+		}}, valid: true},
+		{name: "historical range after delete may return the deleted key", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			deleteRequest("evidence"), func() *etcdserverpb.RequestOp {
+				request := rangeRequest("evidence")
+				request.GetRequestRange().Revision = 4
+				return request
+			}(),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 1,
+			}}}, valueEvidenceRangeResponse("old", 5, 2, 4, 3),
 		}}, valid: true},
 		{name: "bounded staged delete cannot hide excess pre-write cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 			countOnlyRangeRequest("a", "z"),
@@ -2233,7 +2431,7 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 				request := containingEvidenceRangeRequest("a", []byte("z"))
 				request.GetRequestRange().CountOnly = true
 				return request
-			}(), putRequest("b"), rangeRequest("b"),
+			}(), putValueRequest("b", "new"), rangeRequest("b"),
 		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
 			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}},
 			putResponse(),
@@ -2284,8 +2482,8 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 			rec := &recordingMetrics{}
 			response, err := validateTxnProxyPayload(rec, tt.request, tt.response, nil)
 			if tt.valid {
-				require.Same(t, tt.response, response)
 				require.NoError(t, err)
+				require.Same(t, tt.response, response)
 				require.Empty(t, recordedKVProxyIntegrityValues(rec, kvProxyRPCTxn))
 				return
 			}
@@ -2300,6 +2498,43 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 	response, err := validateTxnProxyPayload(nil, &etcdserverpb.TxnRequest{}, want, wantErr)
 	require.Same(t, want, response)
 	require.ErrorIs(t, err, wantErr)
+}
+
+func TestTxnProxyPostWriteMutationLookup(t *testing.T) {
+	mutations := []txnProxyPostWriteMutation{
+		{interval: txnProxyMutationInterval{key: []byte("m"), kind: txnProxyMutationPut}},
+		{interval: txnProxyMutationInterval{key: []byte("z"), rangeEnd: []byte{0}, kind: txnProxyMutationDelete}},
+		{interval: txnProxyMutationInterval{key: []byte("l"), rangeEnd: []byte("a"), kind: txnProxyMutationDelete}},
+		{interval: txnProxyMutationInterval{key: []byte("a"), rangeEnd: []byte("m"), kind: txnProxyMutationDelete}},
+	}
+	ordered := txnProxySortedPostWriteMutations(mutations)
+	require.Len(t, ordered, 3)
+	require.Equal(t, []byte("m"), mutations[0].interval.key, "lookup preparation must not reorder caller state")
+
+	tests := []struct {
+		name string
+		key  string
+		kind txnProxyMutationKind
+		ok   bool
+	}{
+		{name: "before all intervals", key: "0"},
+		{name: "inside finite delete", key: "b", kind: txnProxyMutationDelete, ok: true},
+		{name: "finite delete upper bound", key: "m", kind: txnProxyMutationPut, ok: true},
+		{name: "after point before from-key", key: "n"},
+		{name: "from-key lower bound", key: "z", kind: txnProxyMutationDelete, ok: true},
+		{name: "inside from-key", key: "zz", kind: txnProxyMutationDelete, ok: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mutation, ok := txnProxyPostWriteMutationForKey(ordered, []byte(tt.key))
+			require.Equal(t, tt.ok, ok)
+			if tt.ok {
+				require.Equal(t, tt.kind, mutation.interval.kind)
+			} else {
+				require.Nil(t, mutation)
+			}
+		})
+	}
 }
 
 func TestTxnProxyIntervalsIntersect(t *testing.T) {

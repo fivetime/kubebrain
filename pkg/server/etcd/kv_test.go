@@ -920,7 +920,7 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 				{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(2)}}},
 				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
 					Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{
-						Key: []byte("m"), Value: []byte("new"), CreateRevision: 1, ModRevision: 2, Version: 2,
+						Key: []byte("m"), Value: []byte("value"), CreateRevision: 1, ModRevision: 2, Version: 2,
 					}},
 				}}},
 			}},
@@ -949,6 +949,21 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 				countOnlyRangeResponse(1),
 			}},
 			message: "inconsistent pre-write evidence cardinality",
+		},
+		{
+			name: "post-write range must expose staged put state",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				putRequest("evidence"), rangeRequest("evidence"),
+			}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(2)}}},
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+					Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{
+						Key: []byte("evidence"), Value: []byte("stale"), CreateRevision: 1, ModRevision: 1, Version: 1,
+					}},
+				}}},
+			}},
+			message: "inconsistent post-write mutation evidence",
 		},
 		{
 			name: "fully contained delete count fixes the exact cardinality decrease",
