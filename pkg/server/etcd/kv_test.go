@@ -862,6 +862,31 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			message: "inconsistent pre-write evidence",
 		},
 		{
+			name: "distinct point evidence exceeds containing count-only",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+					Key: []byte("a"), RangeEnd: []byte("z"), CountOnly: true,
+				}}},
+				rangeRequest("b"), rangeRequest("c"),
+			}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+					Header: txnHeader(2), Count: 1,
+				}}},
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+					Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{
+						Key: []byte("b"), Value: []byte("b"), CreateRevision: 1, ModRevision: 1, Version: 1,
+					}},
+				}}},
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+					Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{
+						Key: []byte("c"), Value: []byte("c"), CreateRevision: 1, ModRevision: 1, Version: 1,
+					}},
+				}}},
+			}},
+			message: "inconsistent pre-write evidence cardinality",
+		},
+		{
 			name: "root range evidence rejects nested failure",
 			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 				rangeRequest("evidence"),

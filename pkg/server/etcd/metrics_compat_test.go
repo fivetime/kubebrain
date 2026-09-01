@@ -1885,6 +1885,92 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
 			valueEvidenceRangeResponse("one", 4, 4, 4, 1), putResponse(), valueEvidenceRangeResponse("two", 5, 4, 4, 1),
 		}}},
+		{name: "distinct point evidence exceeds containing count-only", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), rangeRequest("b"), rangeRequest("c"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}}},
+			containingEvidenceRangeResponse(&mvccpb.KeyValue{Key: []byte("b"), Value: []byte("b"), CreateRevision: 4, ModRevision: 4, Version: 1}),
+			containingEvidenceRangeResponse(&mvccpb.KeyValue{Key: []byte("c"), Value: []byte("c"), CreateRevision: 4, ModRevision: 4, Version: 1}),
+		}}},
+		{name: "inner count and outside point exceed containing count-only", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("m"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), rangeRequest("x"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}}},
+			containingEvidenceRangeResponse(&mvccpb.KeyValue{Key: []byte("x"), Value: []byte("x"), CreateRevision: 4, ModRevision: 4, Version: 1}),
+		}}},
+		{name: "disjoint child counts exceed containing count-only", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("m"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("m", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 2}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 2}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 2}}},
+		}}},
+		{name: "duplicate point evidence is counted once", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), rangeRequest("b"), rangeRequest("b"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}}},
+			containingEvidenceRangeResponse(&mvccpb.KeyValue{Key: []byte("b"), Value: []byte("b"), CreateRevision: 4, ModRevision: 4, Version: 1}),
+			containingEvidenceRangeResponse(&mvccpb.KeyValue{Key: []byte("b"), Value: []byte("b"), CreateRevision: 4, ModRevision: 4, Version: 1}),
+		}}, valid: true},
+		{name: "overlapping child counts are not added", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("n"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("m", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 2}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 2}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 2}}},
+		}}, valid: true},
+		{name: "post-write point is not a pre-write count witness", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			func() *etcdserverpb.RequestOp {
+				request := containingEvidenceRangeRequest("a", []byte("z"))
+				request.GetRequestRange().CountOnly = true
+				return request
+			}(), putRequest("b"), rangeRequest("b"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}},
+			putResponse(),
+			containingEvidenceRangeResponse(&mvccpb.KeyValue{Key: []byte("b"), Value: []byte("new"), CreateRevision: 5, ModRevision: 5, Version: 1}),
+		}}, valid: true},
 		{name: "read-only previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},
 		{name: "pre-write operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key"), putRequest("put")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}, putResponse()}}, valid: true},
 		{name: "post-write previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{putRequest("put"), rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{putResponse(), {Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},
@@ -1981,6 +2067,54 @@ func TestTxnProxyIntervalsIntersect(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, txnProxyIntervalsIntersect(tt.left, tt.right))
 			require.Equal(t, tt.want, txnProxyIntervalsIntersect(tt.right, tt.left))
+		})
+	}
+}
+
+func TestTxnProxyKnownKeyCount(t *testing.T) {
+	keys := [][]byte{[]byte("a"), []byte("a\x00"), []byte("b"), []byte("z")}
+	tests := []struct {
+		name     string
+		interval txnProxyMutationInterval
+		want     uint64
+	}{
+		{name: "point", interval: txnProxyMutationInterval{key: []byte("a")}, want: 1},
+		{name: "missing point", interval: txnProxyMutationInterval{key: []byte("aa")}},
+		{name: "finite prefix", interval: txnProxyMutationInterval{key: []byte("a"), rangeEnd: []byte("b")}, want: 2},
+		{name: "from key", interval: txnProxyMutationInterval{key: []byte("b"), rangeEnd: []byte{0}}, want: 2},
+		{name: "empty", interval: txnProxyMutationInterval{key: []byte("z"), rangeEnd: []byte("a")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, txnProxyKnownKeyCount(keys, tt.interval))
+		})
+	}
+}
+
+func TestTxnProxyMaximumDisjointCardinalityGain(t *testing.T) {
+	witness := func(key, rangeEnd string, gain uint64) txnProxyCardinalityWitness {
+		return txnProxyCardinalityWitness{
+			interval: txnProxyMutationInterval{key: []byte(key), rangeEnd: []byte(rangeEnd)},
+			gain:     gain,
+		}
+	}
+	point := func(key string, gain uint64) txnProxyCardinalityWitness {
+		return txnProxyCardinalityWitness{interval: txnProxyMutationInterval{key: []byte(key)}, gain: gain}
+	}
+	tests := []struct {
+		name      string
+		witnesses []txnProxyCardinalityWitness
+		cap, want uint64
+	}{
+		{name: "adjacent", witnesses: []txnProxyCardinalityWitness{witness("a", "m", 2), witness("m", "z", 3)}, cap: 9, want: 5},
+		{name: "overlapping", witnesses: []txnProxyCardinalityWitness{witness("a", "n", 2), witness("m", "z", 3)}, cap: 9, want: 3},
+		{name: "point before range", witnesses: []txnProxyCardinalityWitness{point("a", 1), witness("a\x00", "z", 2)}, cap: 9, want: 3},
+		{name: "saturates", witnesses: []txnProxyCardinalityWitness{witness("a", "m", 6), witness("m", "z", 7)}, cap: 10, want: 10},
+		{name: "empty", cap: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, txnProxyMaximumDisjointCardinalityGain(tt.witnesses, tt.cap))
 		})
 	}
 }
