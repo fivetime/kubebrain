@@ -68005,6 +68005,60 @@ revision/index/applied、HashKV、compact revision 保持 `65972/2571327285/4432
 落盘诊断日志，最终七个临时监听均无残留。A5678 关闭了 projected Range 已明确证明 Compare 时 follower 仍接受矛盾
 Txn 分支的完整性缺口，同时保留上游无法从投影字段得出结论时的可用性。
 
+### A5679：安全利用 CountOnly 正计数的生命周期证据
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{applyCompare,compareKV}`。对同一个当前 revision、无 limit、
+无 revision filter 的 CountOnly 精确区间，`Count>0` 能证明该区间至少存在一个逻辑 key；当 Compare 区间与其逐字节
+完全相同时，实际 VERSION、CREATE、MOD 均落在 `[1, MaxInt64]`。因此在整个定义域上结果固定的真值为：
+`EQUAL expected<=0` 必为 false，`NOT_EQUAL expected<=0` 与 `GREATER expected<=0` 必为 true，
+`LESS expected<=1` 必为 false；其他正阈值与
+VALUE/LEASE 目标仍 unknown。正计数的包含区间不能证明某个子区间或 point 非空，`Count=0` 则继续沿用 A5678 的完整
+包含区间 missing 证明。此前 validator 只接纳零 CountOnly，会放过上述确定证据与所选 Txn 分支矛盾的响应。
+
+tests-only RED 固定五个核心矛盾：正计数 VERSION `>0` 却选 Failure、CREATE `==0` 却选 Success、MOD `!=0` 却选
+Failure、VERSION `<1` 却选 Success，以及 follower 接受正计数 VERSION `>0` 的错误分支，旧实现均未拒绝。边界测试
+同时固定 VERSION `==1` 仍 unknown、正计数包含 range 不能证明子 point 非空、两个 key 的有限区间可用、前置不相交
+Put 后证据仍可用，而前置重叠 Put 后不得把 post-write count 当作写前证据。
+
+提交 `c22a909a` 为 Range evidence 保存 `countOnly/count`，接纳所有当前 revision、unlimited、无 revision filter 的
+CountOnly；仅对字节级相同区间调用正生命周期真值表，并继续使用 observation 时的 interval-aware mutation prefix。
+聚焦 GREEN `0.359s`（此前重复为 `0.356/0.376s`）、race `2.228s`（墙钟 `7.108s`）、全部 Txn `24.667s`、
+完整 `pkg/server/etcd` `153.123s`、vet `5.148s`。提交前 production verifier 精确为 703 项、四片
+`170/193/180/160`；提交后四片分别为 `250.286/445.093/302.556/574.080s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5679-c22a909a` 内嵌版本 `0.0.0-c22a909aa22c`、完整提交
+`c22a909aa22c8f99fffbe99958689067d381622e`、build time `2026-09-01T13:35:09Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:fc9a6ddff9452487b4f1b8aa76ad8600380202d05f941c6d3c702725cc60f199`、
+`sha256:ef7dc33c9994eaeb26950df730ebb53b9639421823c1b2df0991b6c5caa1c4b7`、
+`sha256:6dd90bc8bacedac1749a7f88f4fac6c321c1eaf151e6d4181223ebb544a78f10`、
+`sha256:9a770c9014eae29a7db4503e33f20e9c31bcba9461442fae6c002ec27667ab4e`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 scanner 阶段成功，Kind runtime digest 为
+`sha256:0000c65525140f5d4a3de46d0cfbf75ae5072f8bb704826057b6ae6d292cded7`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 750 部署到
+generation 751，三 Pod 均落在 `kubebrain-5777895bd6`、Ready/restart 0、同一候选 runtime digest，Pod 内版本与完整
+SHA 一致。逐个 Pod-local gateway 在 `/a5679/p{0,1,2}/` 执行九类 Txn：VERSION `>0`、CREATE `==0`、MOD
+`!=0`、VERSION `<1`、两 key 有限 range VERSION `>0`、VERSION `==1` unknown、包含 CountOnly 对 missing point
+保持 unknown、同 key Put 后正计数证据失效，以及不相交 Put 后正计数证据仍可用。27 个场景全部选择上游真实分支，
+三 Pod 清理后 revision 分别为 `65981/65990/65999`，最终前缀 Count=0。
+
+候选 term `372`、leader `231094427`、HashKV `1108309606`、compact revision `44329`。全部适用开关启用的
+readonly gate 一次 GREEN，三成员 revision/index/applied、Status/HashKV、named readyz/livez、HTTP、metrics/debug/
+pprof、auth disabled/revision 281、Alarm 与空前缀均通过。候选三轮九次 exact endpoint proposal health 全部成功
+（`10.057–11.147ms`），Lease/Alarm 为空；三 Pod 日志 `470/486/273` 行且全量与最近窗口关键错误均为 0。三 store
+Up、五类 region check 连续三轮全零，KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready/restart 1 沿用此前历史事件。
+
+以同类五类原子 test 回滚稳定 digest。StatefulSet UID `817bc005-a4d1-4d57-9aab-de93e0874054` 不变，
+generation/observed `752/752`、current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。终态三成员
+revision/index/applied、HashKV、compact revision 保持 `65999/1108309606/44329`，term `374`、leader
+`231094427`，prefix、Lease 与 Alarm 为空；稳定三轮九次 proposal health 全部 GREEN（`10.984–11.597ms`），日志
+`313/340/304` 行且关键错误为 0，store/region 继续健康，宿主盘 71%、可用 569 GiB。A5676 已记录的 Kind
+local-path 非 CSI 存储隔离风险仍存在，本轮不把 region API 结果代替完整 storage isolation gate。全程未使用凭据或
+落盘诊断日志，最终七个临时监听均无残留。A5679 关闭了精确正 CountOnly 已足以确定生命周期 Compare 时 follower 仍
+接受矛盾 Txn 分支的完整性缺口，并保留正阈值、投影目标与包含子区间无法确定时的保守可用性。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
