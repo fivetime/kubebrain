@@ -549,6 +549,16 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(key)},
 		}}
 	}
+	countOnlyRangeRequest := func(key, rangeEnd string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(key), RangeEnd: []byte(rangeEnd), CountOnly: true},
+		}}
+	}
+	countOnlyRangeResponse := func(count int64) *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseRange{
+			ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: count},
+		}}
+	}
 	rangeResponse := func() *etcdserverpb.ResponseOp {
 		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseRange{
 			ResponseRange: &etcdserverpb.RangeResponse{},
@@ -885,6 +895,29 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 				}}},
 			}},
 			message: "inconsistent pre-write evidence cardinality",
+		},
+		{
+			name: "empty overlap makes child counts globally inconsistent",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				countOnlyRangeRequest("a", "z"),
+				countOnlyRangeRequest("a", "n"),
+				countOnlyRangeRequest("m", "z"),
+				countOnlyRangeRequest("m", "n"),
+			}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				countOnlyRangeResponse(2), countOnlyRangeResponse(2), countOnlyRangeResponse(2), countOnlyRangeResponse(0),
+			}},
+			message: "inconsistent pre-write evidence cardinality",
+		},
+		{
+			name: "finite lexical interval count above cardinality",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				countOnlyRangeRequest("a", "a\x00\x00"),
+			}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				countOnlyRangeResponse(3),
+			}},
+			message: "above requested interval cardinality",
 		},
 		{
 			name: "root range evidence rejects nested failure",

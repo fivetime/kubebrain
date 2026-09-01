@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"fmt"
+	"math/big"
 	"sort"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -119,6 +120,9 @@ func rangeIntervalCardinalityViolation(request *etcdserverpb.RangeRequest, count
 		(count != 0 || kvCount != 0 || more) {
 		return "non-empty metadata for an empty requested range"
 	}
+	if maximum, bounded := rangeIntervalMaximumCardinality(request.GetKey(), request.GetRangeEnd()); bounded && count > maximum {
+		return fmt.Sprintf("count %d above requested interval cardinality %d", count, maximum)
+	}
 	return ""
 }
 
@@ -129,7 +133,36 @@ func deleteRangeIntervalCardinalityViolation(request *etcdserverpb.DeleteRangeRe
 	if isEmptyNonFromKeyRange(request.GetKey(), request.GetRangeEnd()) && deleted != 0 {
 		return fmt.Sprintf("nonzero deleted count %d for an empty requested range", deleted)
 	}
+	if maximum, bounded := rangeIntervalMaximumCardinality(request.GetKey(), request.GetRangeEnd()); bounded && deleted > maximum {
+		return fmt.Sprintf("deleted count %d above requested interval cardinality %d", deleted, maximum)
+	}
 	return ""
+}
+
+func rangeIntervalMaximumCardinality(start, end []byte) (int64, bool) {
+	if len(end) == 0 {
+		return 1, true
+	}
+	if isFromKeyRangeEnd(end) {
+		return 0, false
+	}
+	return finiteLexicalIntervalMaximumCardinality(start, end)
+}
+
+func finiteLexicalIntervalMaximumCardinality(start, end []byte) (int64, bool) {
+	if bytes.Compare(start, end) >= 0 {
+		return 0, true
+	}
+	if !bytes.HasPrefix(end, start) {
+		return 0, false
+	}
+	suffix := end[len(start):]
+	for _, value := range suffix {
+		if value != 0 {
+			return 0, false
+		}
+	}
+	return int64(len(suffix)), true
 }
 
 func validatePutProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.PutRequest, response *etcdserverpb.PutResponse, err error) (*etcdserverpb.PutResponse, error) {
@@ -519,132 +552,135 @@ func validateTxnProxyCompareEvidenceConsistency(evidence []txnProxyCompareEviden
 	for _, key := range knownKeySet {
 		knownKeys = append(knownKeys, key)
 	}
-	sort.Slice(knownKeys, func(left, right int) bool {
-		return bytes.Compare(knownKeys[left], knownKeys[right]) < 0
-	})
-	return validateTxnProxyAggregateCountEvidenceConsistency(evidence, knownKeys)
+	return validateTxnProxyGlobalCardinalityConsistency(evidence, knownKeys)
 }
 
-type txnProxyCardinalityWitness struct {
+type txnProxyCardinalityConstraint struct {
 	interval txnProxyMutationInterval
-	gain     uint64
+	count    int64
 }
 
-func validateTxnProxyAggregateCountEvidenceConsistency(
+func validateTxnProxyGlobalCardinalityConsistency(
 	evidence []txnProxyCompareEvidence,
 	knownKeys [][]byte,
 ) error {
-	for outerIndex, outer := range evidence {
-		if !outer.countOnly {
+	constraints := make([]txnProxyCardinalityConstraint, 0, len(evidence)+len(knownKeys))
+	for _, candidate := range evidence {
+		interval := txnProxyMutationInterval{key: candidate.key, rangeEnd: candidate.rangeEnd}
+		if txnProxyIntervalIsEmpty(interval) || !txnProxyEvidenceRepresentsPreWrite(candidate, interval) {
 			continue
 		}
-		outerInterval := txnProxyMutationInterval{key: outer.key, rangeEnd: outer.rangeEnd}
-		if !txnProxyEvidenceRepresentsPreWrite(outer, outerInterval) {
-			continue
+		count := candidate.count
+		if !candidate.countOnly {
+			count = int64(len(candidate.kvs))
 		}
-		outerCount := uint64(outer.count)
-		knownOuter := txnProxyKnownKeyCount(knownKeys, outerInterval)
-		if knownOuter > outerCount {
-			return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence cardinality from aggregate observations")
-		}
-		witnesses := make([]txnProxyCardinalityWitness, 0, len(evidence)-1)
-		for innerIndex, inner := range evidence {
-			if innerIndex == outerIndex || !inner.countOnly || inner.count == 0 {
-				continue
-			}
-			innerInterval := txnProxyMutationInterval{key: inner.key, rangeEnd: inner.rangeEnd}
-			if !txnProxyIntervalContainsInterval(outerInterval, innerInterval) ||
-				!txnProxyEvidenceRepresentsPreWrite(inner, innerInterval) {
-				continue
-			}
-			knownInner := txnProxyKnownKeyCount(knownKeys, innerInterval)
-			innerCount := uint64(inner.count)
-			if knownInner > innerCount {
-				return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence cardinality from aggregate observations")
-			}
-			if gain := innerCount - knownInner; gain > 0 {
-				witnesses = append(witnesses, txnProxyCardinalityWitness{interval: innerInterval, gain: gain})
-			}
-		}
-		remaining := outerCount - knownOuter
-		if txnProxyMaximumDisjointCardinalityGain(witnesses, remaining+1) > remaining {
-			return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence cardinality from aggregate observations")
-		}
+		constraints = append(constraints, txnProxyCardinalityConstraint{interval: interval, count: count})
+	}
+	for _, key := range knownKeys {
+		constraints = append(constraints, txnProxyCardinalityConstraint{
+			interval: txnProxyMutationInterval{key: key}, count: 1,
+		})
+	}
+	if !txnProxyCardinalityConstraintsSatisfiable(constraints) {
+		return fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence cardinality from global interval constraints")
 	}
 	return nil
 }
 
-func txnProxyKnownKeyCount(keys [][]byte, interval txnProxyMutationInterval) uint64 {
-	if txnProxyIntervalIsEmpty(interval) {
-		return 0
-	}
-	start := sort.Search(len(keys), func(index int) bool {
-		return bytes.Compare(keys[index], interval.key) >= 0
-	})
-	if len(interval.rangeEnd) == 0 {
-		if start < len(keys) && bytes.Equal(keys[start], interval.key) {
-			return 1
-		}
-		return 0
-	}
-	if isFromKeyRangeEnd(interval.rangeEnd) {
-		return uint64(len(keys) - start)
-	}
-	end := sort.Search(len(keys), func(index int) bool {
-		return bytes.Compare(keys[index], interval.rangeEnd) >= 0
-	})
-	return uint64(end - start)
+type txnProxyCardinalityEndpoint struct {
+	key      string
+	infinity bool
 }
 
-func txnProxyMaximumDisjointCardinalityGain(witnesses []txnProxyCardinalityWitness, cap uint64) uint64 {
-	if len(witnesses) == 0 {
-		return 0
+type txnProxyCardinalityEdge struct {
+	from, to int
+	weight   big.Int
+}
+
+func txnProxyCardinalityConstraintsSatisfiable(constraints []txnProxyCardinalityConstraint) bool {
+	if len(constraints) == 0 {
+		return true
 	}
-	sort.Slice(witnesses, func(left, right int) bool {
-		order := bytes.Compare(witnesses[left].interval.key, witnesses[right].interval.key)
-		if order != 0 {
-			return order < 0
+	endpointSet := make(map[txnProxyCardinalityEndpoint]struct{}, len(constraints)*2)
+	normalized := make([][2]txnProxyCardinalityEndpoint, len(constraints))
+	for index, constraint := range constraints {
+		start := txnProxyCardinalityEndpoint{key: string(constraint.interval.key)}
+		end := txnProxyCardinalityEndpoint{}
+		switch {
+		case len(constraint.interval.rangeEnd) == 0:
+			pointEnd := make([]byte, len(constraint.interval.key)+1)
+			copy(pointEnd, constraint.interval.key)
+			end.key = string(pointEnd)
+		case isFromKeyRangeEnd(constraint.interval.rangeEnd):
+			end.infinity = true
+		default:
+			end.key = string(constraint.interval.rangeEnd)
 		}
-		return bytes.Compare(witnesses[left].interval.rangeEnd, witnesses[right].interval.rangeEnd) < 0
+		normalized[index] = [2]txnProxyCardinalityEndpoint{start, end}
+		endpointSet[start] = struct{}{}
+		endpointSet[end] = struct{}{}
+	}
+	endpoints := make([]txnProxyCardinalityEndpoint, 0, len(endpointSet))
+	for endpoint := range endpointSet {
+		endpoints = append(endpoints, endpoint)
+	}
+	sort.Slice(endpoints, func(left, right int) bool {
+		if endpoints[left].infinity != endpoints[right].infinity {
+			return !endpoints[left].infinity
+		}
+		return endpoints[left].key < endpoints[right].key
 	})
-	bestEndingAt := make([]uint64, len(witnesses))
-	var best uint64
-	for current := range witnesses {
-		bestEndingAt[current] = witnesses[current].gain
-		if bestEndingAt[current] > cap {
-			bestEndingAt[current] = cap
+	endpointIndex := make(map[txnProxyCardinalityEndpoint]int, len(endpoints))
+	for index, endpoint := range endpoints {
+		endpointIndex[endpoint] = index
+	}
+	edges := make([]txnProxyCardinalityEdge, 0, len(constraints)*2+len(endpoints)-1)
+	for index, constraint := range constraints {
+		start := endpointIndex[normalized[index][0]]
+		end := endpointIndex[normalized[index][1]]
+		var count, negativeCount big.Int
+		count.SetInt64(constraint.count)
+		negativeCount.Neg(&count)
+		edges = append(edges,
+			txnProxyCardinalityEdge{from: start, to: end, weight: count},
+			txnProxyCardinalityEdge{from: end, to: start, weight: negativeCount},
+		)
+	}
+	for index := 1; index < len(endpoints); index++ {
+		edges = append(edges, txnProxyCardinalityEdge{from: index, to: index - 1})
+		if endpoints[index].infinity {
+			continue
 		}
-		for previous := range current {
-			if !txnProxyIntervalBefore(witnesses[previous].interval, witnesses[current].interval) {
+		maximum, bounded := finiteLexicalIntervalMaximumCardinality(
+			[]byte(endpoints[index-1].key), []byte(endpoints[index].key),
+		)
+		if bounded {
+			var weight big.Int
+			weight.SetInt64(maximum)
+			edges = append(edges, txnProxyCardinalityEdge{from: index - 1, to: index, weight: weight})
+		}
+	}
+	distances := make([]big.Int, len(endpoints))
+	for iteration := range len(endpoints) {
+		changed := false
+		for edgeIndex := range edges {
+			edge := &edges[edgeIndex]
+			var candidate big.Int
+			candidate.Add(&distances[edge.from], &edge.weight)
+			if distances[edge.to].Cmp(&candidate) <= 0 {
 				continue
 			}
-			candidate := txnProxySaturatingCardinalityAdd(bestEndingAt[previous], witnesses[current].gain, cap)
-			if candidate > bestEndingAt[current] {
-				bestEndingAt[current] = candidate
-			}
+			distances[edge.to].Set(&candidate)
+			changed = true
 		}
-		if bestEndingAt[current] > best {
-			best = bestEndingAt[current]
+		if !changed {
+			return true
+		}
+		if iteration == len(endpoints)-1 {
+			return false
 		}
 	}
-	return best
-}
-
-func txnProxyIntervalBefore(left, right txnProxyMutationInterval) bool {
-	if len(left.rangeEnd) == 0 {
-		return bytes.Compare(left.key, right.key) < 0
-	}
-	if isFromKeyRangeEnd(left.rangeEnd) {
-		return false
-	}
-	return bytes.Compare(left.rangeEnd, right.key) <= 0
-}
-
-func txnProxySaturatingCardinalityAdd(left, right, cap uint64) uint64 {
-	if left >= cap || right >= cap-left {
-		return cap
-	}
-	return left + right
+	return true
 }
 
 func validateTxnProxyCountEvidenceConsistency(countEvidence, other txnProxyCompareEvidence) error {

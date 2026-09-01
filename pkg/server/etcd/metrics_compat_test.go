@@ -810,6 +810,7 @@ func TestRangeProxyPayloadValidation(t *testing.T) {
 		{name: "count only values", request: &etcdserverpb.RangeRequest{Key: []byte("b"), CountOnly: true}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
 		{name: "count only more", request: &etcdserverpb.RangeRequest{Key: []byte("b"), CountOnly: true}, result: &etcdserverpb.RangeResponse{Header: txnHeader(1), More: true}},
 		{name: "exact key count above cardinality", request: &etcdserverpb.RangeRequest{Key: []byte("b"), CountOnly: true}, result: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 2}},
+		{name: "finite lexical interval count above cardinality", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("a\x00\x00"), CountOnly: true}, result: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 3}},
 		{name: "filtered exact key count above cardinality", request: &etcdserverpb.RangeRequest{Key: []byte("b"), MinModRevision: 1}, result: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 2}},
 		{name: "filtered exact key cannot have more", request: &etcdserverpb.RangeRequest{Key: []byte("b"), Limit: 1, MinModRevision: 1}, result: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, More: true, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 1, ModRevision: 1, Version: 1}}}},
 		{name: "reverse range cannot have count", request: &etcdserverpb.RangeRequest{Key: []byte("d"), RangeEnd: []byte("b"), CountOnly: true}, result: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1}},
@@ -926,6 +927,7 @@ func TestDeleteRangeProxyPayloadValidation(t *testing.T) {
 		{name: "zero revision", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(0)}},
 		{name: "negative deleted", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: -1}},
 		{name: "exact key deleted above cardinality", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 2}},
+		{name: "finite lexical interval deleted above cardinality", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("a\x00\x00")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 3}},
 		{name: "reverse range deleted", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("c"), RangeEnd: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 1}},
 		{name: "equal range deleted", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a"), RangeEnd: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(4), Deleted: 1}},
 		{name: "unrequested previous", request: &etcdserverpb.DeleteRangeRequest{Key: []byte("a")}, response: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(3), Deleted: 1, PrevKvs: []*mvccpb.KeyValue{previousA}}},
@@ -998,6 +1000,16 @@ func TestCompactProxyPayloadValidation(t *testing.T) {
 func TestTxnProxyPayloadValidation(t *testing.T) {
 	rangeRequest := func(key string) *etcdserverpb.RequestOp {
 		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte(key)}}}
+	}
+	countOnlyRangeRequest := func(key, rangeEnd string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: []byte(key), RangeEnd: []byte(rangeEnd), CountOnly: true,
+		}}}
+	}
+	countOnlyRangeResponse := func(count int64) *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+			Header: txnHeader(5), Count: count,
+		}}}
 	}
 	putRequest := func(key string) *etcdserverpb.RequestOp {
 		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte(key)}}}
@@ -1960,6 +1972,63 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 2}}},
 			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 2}}},
 		}}, valid: true},
+		{name: "empty overlap makes child counts globally inconsistent", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			countOnlyRangeRequest("a", "n"),
+			countOnlyRangeRequest("m", "z"),
+			countOnlyRangeRequest("m", "n"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			countOnlyRangeResponse(2), countOnlyRangeResponse(2), countOnlyRangeResponse(2), countOnlyRangeResponse(0),
+		}}},
+		{name: "bounded overlap makes child counts globally inconsistent", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			countOnlyRangeRequest("a", "n"),
+			countOnlyRangeRequest("m", "z"),
+			countOnlyRangeRequest("m", "n"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			countOnlyRangeResponse(2), countOnlyRangeResponse(2), countOnlyRangeResponse(2), countOnlyRangeResponse(1),
+		}}},
+		{name: "complete empty overlap makes child counts globally inconsistent", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			countOnlyRangeRequest("a", "n"),
+			countOnlyRangeRequest("m", "z"),
+			containingEvidenceRangeRequest("m", []byte("n")),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			countOnlyRangeResponse(2), countOnlyRangeResponse(2), countOnlyRangeResponse(2), containingEvidenceRangeResponse(),
+		}}},
+		{name: "bounded overlap exactly explains outer count", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			countOnlyRangeRequest("a", "n"),
+			countOnlyRangeRequest("m", "z"),
+			countOnlyRangeRequest("m", "n"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			countOnlyRangeResponse(3), countOnlyRangeResponse(2), countOnlyRangeResponse(2), countOnlyRangeResponse(1),
+		}}, valid: true},
+		{name: "post-write current count-only is not a pre-write equation", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("b"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}},
+			putResponse(), countOnlyRangeResponse(1),
+		}}, valid: true},
+		{name: "snapshot-pinned count-only remains a pre-write equation", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("b"), func() *etcdserverpb.RequestOp {
+				request := countOnlyRangeRequest("a", "z")
+				request.GetRequestRange().Revision = 4
+				return request
+			}(),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}},
+			putResponse(), countOnlyRangeResponse(1),
+		}}},
+		{name: "older historical count-only is not a pre-write equation", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), func() *etcdserverpb.RequestOp {
+				request := countOnlyRangeRequest("a", "z")
+				request.GetRequestRange().Revision = 3
+				return request
+			}(),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			countOnlyRangeResponse(0), countOnlyRangeResponse(1),
+		}}, valid: true},
 		{name: "post-write point is not a pre-write count witness", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 			func() *etcdserverpb.RequestOp {
 				request := containingEvidenceRangeRequest("a", []byte("z"))
@@ -2001,6 +2070,7 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		{name: "nested txn cluster identity", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}}}}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{Header: &etcdserverpb.ResponseHeader{ClusterId: 1}, Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}}}}}}}}}},
 		{name: "range count mismatch", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Kvs: []*mvccpb.KeyValue{{Key: []byte("key"), CreateRevision: 4, ModRevision: 4, Version: 1}}}}}}}},
 		{name: "range exact key count above cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("key"), CountOnly: true}}}}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 2}}}}}},
+		{name: "range finite lexical interval count above cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{countOnlyRangeRequest("a", "a\x00\x00")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{countOnlyRangeResponse(3)}}},
 		{name: "nested range outside request", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("a")}}}}}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{Header: txnHeader(0), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 4, ModRevision: 4, Version: 1}}}}}}}}}}}},
 		{name: "put revision before outer", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{putRequest("p")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(4)}}}}}},
 		{name: "put unrequested previous", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{putRequest("p")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(5), PrevKv: &mvccpb.KeyValue{Key: []byte("p"), CreateRevision: 4, ModRevision: 4, Version: 1}}}}}}},
@@ -2071,52 +2141,94 @@ func TestTxnProxyIntervalsIntersect(t *testing.T) {
 	}
 }
 
-func TestTxnProxyKnownKeyCount(t *testing.T) {
-	keys := [][]byte{[]byte("a"), []byte("a\x00"), []byte("b"), []byte("z")}
+func TestTxnProxyCardinalityConstraintsSatisfiable(t *testing.T) {
+	finite := func(start, end string, count int64) txnProxyCardinalityConstraint {
+		return txnProxyCardinalityConstraint{
+			interval: txnProxyMutationInterval{key: []byte(start), rangeEnd: []byte(end)},
+			count:    count,
+		}
+	}
+	point := func(key string) txnProxyCardinalityConstraint {
+		return txnProxyCardinalityConstraint{interval: txnProxyMutationInterval{key: []byte(key)}, count: 1}
+	}
+	fromKey := func(key string, count int64) txnProxyCardinalityConstraint {
+		return txnProxyCardinalityConstraint{
+			interval: txnProxyMutationInterval{key: []byte(key), rangeEnd: []byte{0}},
+			count:    count,
+		}
+	}
 	tests := []struct {
-		name     string
-		interval txnProxyMutationInterval
-		want     uint64
+		name        string
+		constraints []txnProxyCardinalityConstraint
+		want        bool
 	}{
-		{name: "point", interval: txnProxyMutationInterval{key: []byte("a")}, want: 1},
-		{name: "missing point", interval: txnProxyMutationInterval{key: []byte("aa")}},
-		{name: "finite prefix", interval: txnProxyMutationInterval{key: []byte("a"), rangeEnd: []byte("b")}, want: 2},
-		{name: "from key", interval: txnProxyMutationInterval{key: []byte("b"), rangeEnd: []byte{0}}, want: 2},
-		{name: "empty", interval: txnProxyMutationInterval{key: []byte("z"), rangeEnd: []byte("a")}},
+		{name: "empty", want: true},
+		{name: "equal interval agrees", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 2), finite("a", "z", 2)}, want: true},
+		{name: "equal interval disagrees", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 1), finite("a", "z", 2)}},
+		{name: "disjoint children exactly fill outer", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 5), finite("a", "m", 2), finite("m", "z", 3)}, want: true},
+		{name: "disjoint children exceed outer", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 4), finite("a", "m", 2), finite("m", "z", 3)}},
+		{name: "unconstrained overlap may contain all keys", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 2), finite("a", "n", 2), finite("m", "z", 2)}, want: true},
+		{name: "empty overlap makes union exceed outer", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 2), finite("a", "n", 2), finite("m", "z", 2), finite("m", "n", 0)}},
+		{name: "bounded overlap exactly explains outer", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 3), finite("a", "n", 2), finite("m", "z", 2), finite("m", "n", 1)}, want: true},
+		{name: "bounded overlap exceeds outer", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 2), finite("a", "n", 2), finite("m", "z", 2), finite("m", "n", 1)}},
+		{name: "duplicate point", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 1), point("b"), point("b")}, want: true},
+		{name: "distinct points exceed outer", constraints: []txnProxyCardinalityConstraint{finite("a", "z", 1), point("b"), point("c")}},
+		{name: "from key contains point", constraints: []txnProxyCardinalityConstraint{fromKey("m", 1), point("z")}, want: true},
+		{name: "empty from key conflicts with point", constraints: []txnProxyCardinalityConstraint{fromKey("m", 0), point("z")}},
+		{name: "arbitrary precision detects summed overflow", constraints: []txnProxyCardinalityConstraint{finite("a", "z", math.MaxInt64), finite("a", "m", math.MaxInt64), finite("m", "z", math.MaxInt64)}},
+		{name: "finite overlap atom cannot hold two keys", constraints: []txnProxyCardinalityConstraint{finite("a", "a\x00\x00\x00", 2), finite("a", "a\x00\x00", 2), finite("a\x00", "a\x00\x00\x00", 2)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, txnProxyKnownKeyCount(keys, tt.interval))
+			require.Equal(t, tt.want, txnProxyCardinalityConstraintsSatisfiable(tt.constraints))
 		})
 	}
 }
 
-func TestTxnProxyMaximumDisjointCardinalityGain(t *testing.T) {
-	witness := func(key, rangeEnd string, gain uint64) txnProxyCardinalityWitness {
-		return txnProxyCardinalityWitness{
-			interval: txnProxyMutationInterval{key: []byte(key), rangeEnd: []byte(rangeEnd)},
-			gain:     gain,
-		}
+func TestTxnProxyCardinalityConstraintsAtMaxTxnOps(t *testing.T) {
+	constraints := make([]txnProxyCardinalityConstraint, 0, defaultMaxTxnOps)
+	constraints = append(constraints, txnProxyCardinalityConstraint{
+		interval: txnProxyMutationInterval{key: []byte{1}, rangeEnd: []byte{2}},
+		count:    defaultMaxTxnOps - 1,
+	})
+	for index := byte(0); index < byte(defaultMaxTxnOps-1); index++ {
+		constraints = append(constraints, txnProxyCardinalityConstraint{
+			interval: txnProxyMutationInterval{key: []byte{1, index}}, count: 1,
+		})
 	}
-	point := func(key string, gain uint64) txnProxyCardinalityWitness {
-		return txnProxyCardinalityWitness{interval: txnProxyMutationInterval{key: []byte(key)}, gain: gain}
-	}
+	require.Len(t, constraints, defaultMaxTxnOps)
+	require.True(t, txnProxyCardinalityConstraintsSatisfiable(constraints))
+	constraints[0].count--
+	require.False(t, txnProxyCardinalityConstraintsSatisfiable(constraints))
+}
+
+func TestFiniteLexicalIntervalMaximumCardinality(t *testing.T) {
 	tests := []struct {
-		name      string
-		witnesses []txnProxyCardinalityWitness
-		cap, want uint64
+		name        string
+		start, end  []byte
+		want        int64
+		wantBounded bool
 	}{
-		{name: "adjacent", witnesses: []txnProxyCardinalityWitness{witness("a", "m", 2), witness("m", "z", 3)}, cap: 9, want: 5},
-		{name: "overlapping", witnesses: []txnProxyCardinalityWitness{witness("a", "n", 2), witness("m", "z", 3)}, cap: 9, want: 3},
-		{name: "point before range", witnesses: []txnProxyCardinalityWitness{point("a", 1), witness("a\x00", "z", 2)}, cap: 9, want: 3},
-		{name: "saturates", witnesses: []txnProxyCardinalityWitness{witness("a", "m", 6), witness("m", "z", 7)}, cap: 10, want: 10},
-		{name: "empty", cap: 1},
+		{name: "equal", start: []byte("a"), end: []byte("a"), wantBounded: true},
+		{name: "reverse", start: []byte("z"), end: []byte("a"), wantBounded: true},
+		{name: "immediate successor", start: []byte("a"), end: []byte("a\x00"), want: 1, wantBounded: true},
+		{name: "two zero successors", start: []byte("a"), end: []byte("a\x00\x00"), want: 2, wantBounded: true},
+		{name: "nested zero successor", start: []byte("a\x00"), end: []byte("a\x00\x00"), want: 1, wantBounded: true},
+		{name: "different prefix", start: []byte("a"), end: []byte("b")},
+		{name: "nonzero suffix", start: []byte("a"), end: []byte("a\x00\x01")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, txnProxyMaximumDisjointCardinalityGain(tt.witnesses, tt.cap))
+			got, bounded := finiteLexicalIntervalMaximumCardinality(tt.start, tt.end)
+			require.Equal(t, tt.wantBounded, bounded)
+			require.Equal(t, tt.want, got)
 		})
 	}
+	maximum, bounded := rangeIntervalMaximumCardinality([]byte("a"), nil)
+	require.Equal(t, int64(1), maximum)
+	require.True(t, bounded)
+	_, bounded = rangeIntervalMaximumCardinality([]byte("a"), []byte{0})
+	require.False(t, bounded)
 }
 
 func TestTxnProxyIntervalContainsInterval(t *testing.T) {
