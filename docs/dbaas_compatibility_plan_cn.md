@@ -67232,6 +67232,48 @@ method-not-allowed 所对应的三条 `/health`/`/debug/vars` HTTP 405 warning�
 Ready/restart 0，回滚后三轮九次稳定 Pod `3379` proposal health 全部 GREEN（`10.776–17.796ms`），LeaseLeases 为空，
 无端口转发或六个诊断监听残留。A5665 关闭了 follower 可把当前事务写 revision 伪装成历史 PrevKV revision、破坏事务前态证明的完整性缺口。
 
+### A5666：拒绝无 Compare 的 proxied Txn 选择 Failure 分支
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{compareToPath,applyCompares}`：上游对空 Compare 列表恒返回成功，且
+`compareToPath` 会在每一层嵌套 Txn 独立应用这一规则，所以无 Compare 的根事务或嵌套事务都只能执行 Success 分支。旧 KubeBrain
+follower proxy payload validator 却直接信任 leader 返回的 `Succeeded=false` 并按 Failure 请求树校验；伪造 leader 因而可以构造上游
+永远不可能产生、但仍被 follower 当成合法结果返回的响应树。
+
+tests-only RED 分别覆盖根层和嵌套层的无 Compare Failure 选择，旧实现把两种伪造响应都成功返回，定向包在 `0.062s` 后按预期失败。
+提交 `cf93a630` 在递归响应树入口要求空 Compare 必须 `Succeeded=true`，否则返回 `DataLoss`；已有合法 Failure fixture 补入可失败的
+Compare，并新增直接 validator 负例。根/嵌套/proxy/local no-compare 定向集合 `0.220s`、全部 Txn/ProxyPayload 集合 `28.445s`、
+完整普通包 `135.262s`、`go vet ./pkg/server/etcd` 与 diff check 均通过。首个完整 race 运行退出 1，但执行通道截断了中段诊断；一次
+过滤重跑没有发现 race/FAIL 诊断但管道退出码不可归因，最终以显式保留 `PIPESTATUS` 的完整重跑确认 `GO_TEST_STATUS=0`、墙钟
+`6m20.155s`，且过滤器没有发现 DATA RACE、panic 或失败行。提交前 production inventory 为 703 项、四片
+`170/193/180/160`；提交后四片分别为 `258.124/451.745/308.114/577.627s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5666-cf93a630` 内嵌版本 `0.0.0-cf93a630acf7`、完整提交
+`cf93a630acf7a8abb6bce6e965b4205600a324a6` 与 build time `2026-09-01T01:15:29Z`，运行用户 `65532:65532`、Go
+`1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI index、platform manifest、config 分别为
+`sha256:4431e2334097f0b0f6a51ce60528d04738b0992df41fb1c3f956636c27714861`、
+`sha256:3b6a784d4f242e3d446ee066f25fff63f6e2646a852867255b0aa1306768af2f`、
+`sha256:ddc8599aa3e4f9b5950d2cf755a564f432c8105f7eec96c59423a8f032e574f9`；Kind/containerd runtime digest 为
+`sha256:08ad11c866300503ab377afc6a721cc3c25317db09f8ab19d56c294928cea256`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 719 部署至 generation 720；
+三 Pod 均落在 revision `kubebrain-75d7f89fbd`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3
+Ready/restart 0。三个 exact Pod endpoint 都执行两种真实 HTTP `/v3/kv/txn`：根层无 Compare 的 Success 为 Range、Failure 为 Put；
+嵌套用外层和内层两个无 Compare Txn，两个 Failure 都为 Put。六个事务全部返回根层及嵌套层 `succeeded=true` 和
+`response_range`，revision 均为 `65756`，最终 `/a5666/` count 0，证明不可达 Failure 没有写入。
+
+以新鲜 HashKV `1205564789` 运行全部只读 gate 开关一次 GREEN：cluster `7662961163671170154`、version/storage
+`3.7.0/3.7.0`、leader `231094427`、term `310`、revision/index/applied `65756`、compact revision `44329`、direct hash
+`1045393047`、auth disabled/revision `281`，named/HTTP/metrics/debug/pprof 及跨端点身份、revision、term 均通过。候选三轮九次
+exact endpoint proposal health 全部成功（`11.357–14.229ms`），LeaseLeases 为空；三 Pod 日志的真实 klog E/F、panic/fatal 均为 0。
+
+以新鲜同类五类 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed 721、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，回滚后三轮九次稳定 Pod proposal health 全部 GREEN，LeaseLeases 为空，日志真实 klog E/F 与 panic/fatal 均为 0。
+较旧的稳定 a5525 镜像不导出当前门禁新增的 `watch_range_prefilter_dropped`，所以回滚后的全开关门禁两次均在该精确指标检查 fail
+closed；候选 A5666 的同一门禁已完整通过，这一代际差异未被误报为候选回归。最终关闭端口转发并确认六个诊断监听均无残留。
+A5666 关闭了 follower 接受上游永远不可能产生的无 Compare Failure 响应树、破坏事务分支真实性的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
