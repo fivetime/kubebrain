@@ -423,7 +423,16 @@ type txnProxyCompareEvidence struct {
 
 type txnProxyMutationInterval struct {
 	key, rangeEnd []byte
+	kind          txnProxyMutationKind
 }
+
+type txnProxyMutationKind uint8
+
+const (
+	txnProxyMutationUnknown txnProxyMutationKind = iota
+	txnProxyMutationPut
+	txnProxyMutationDelete
+)
 
 // collectTxnProxyCompareEvidence walks the selected operations in their
 // execution order. Upstream compareToPath evaluates the entire selected txn
@@ -465,7 +474,7 @@ func collectTxnProxyCompareEvidence(
 			}
 		case requestOp.GetRequestPut() != nil:
 			putRequest := requestOp.GetRequestPut()
-			interval := txnProxyMutationInterval{key: putRequest.GetKey()}
+			interval := txnProxyMutationInterval{key: putRequest.GetKey(), kind: txnProxyMutationPut}
 			if putRequest.GetPrevKv() {
 				var kvs []*mvccpb.KeyValue
 				if previous := responseOp.GetResponsePut().GetPrevKv(); previous != nil {
@@ -480,7 +489,9 @@ func collectTxnProxyCompareEvidence(
 		case requestOp.GetRequestDeleteRange() != nil:
 			deleteRequest := requestOp.GetRequestDeleteRange()
 			deleteResponse := responseOp.GetResponseDeleteRange()
-			interval := txnProxyMutationInterval{key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd()}
+			interval := txnProxyMutationInterval{
+				key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd(), kind: txnProxyMutationDelete,
+			}
 			if deleteRequest.GetPrevKv() || deleteResponse.GetDeleted() == 0 {
 				*evidence = append(*evidence, txnProxyCompareEvidence{
 					key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd(),
@@ -491,7 +502,9 @@ func collectTxnProxyCompareEvidence(
 			if deleteResponse.GetDeleted() > 0 {
 				if deleteRequest.GetPrevKv() {
 					for _, previous := range deleteResponse.GetPrevKvs() {
-						*mutations = append(*mutations, txnProxyMutationInterval{key: previous.GetKey()})
+						*mutations = append(*mutations, txnProxyMutationInterval{
+							key: previous.GetKey(), kind: txnProxyMutationDelete,
+						})
 					}
 				} else {
 					*mutations = append(*mutations, interval)
@@ -585,20 +598,16 @@ func validateTxnProxyGlobalCardinalityConsistency(
 			continue
 		}
 		if candidate.countOnly {
-			capacity, bounded := txnProxyFiniteMutationUnionCapacity(candidate)
-			if !bounded {
-				continue
-			}
-			minimum := candidate.count - capacity
-			if minimum < 0 {
-				minimum = 0
-			}
-			constraints = append(constraints, txnProxyCardinalityConstraint{
-				interval: interval, count: minimum, lowerBoundOnly: true,
-			})
-			if candidate.count <= math.MaxInt64-capacity {
+			minimum, minimumBounded, maximum, maximumBounded :=
+				txnProxyPartiallyMutatedCountOnlyCardinalityBounds(candidate)
+			if minimumBounded {
 				constraints = append(constraints, txnProxyCardinalityConstraint{
-					interval: interval, count: candidate.count + capacity, upperBoundOnly: true,
+					interval: interval, count: minimum, lowerBoundOnly: true,
+				})
+			}
+			if maximumBounded {
+				constraints = append(constraints, txnProxyCardinalityConstraint{
+					interval: interval, count: maximum, upperBoundOnly: true,
 				})
 			}
 			continue
@@ -696,18 +705,84 @@ func txnProxyPartiallyMutatedEvidenceCardinalityUpperBound(
 	return maximum, true
 }
 
+func txnProxyPartiallyMutatedCountOnlyCardinalityBounds(
+	candidate txnProxyCompareEvidence,
+) (minimum int64, minimumBounded bool, maximum int64, maximumBounded bool) {
+	if !candidate.countOnly || candidate.snapshotPinned {
+		return 0, false, 0, false
+	}
+	// A Put can only add a key or preserve an existing key, while a Delete can
+	// only remove a key or preserve an absent key. If their intersecting union
+	// capacities are Cp and Cd, a complete post-write count Q therefore proves
+	// Q-Cp <= pre-write count <= Q+Cd. Compute the two sides independently so
+	// an unbounded Delete does not discard a finite Put-derived lower bound.
+	_, _, unknownIntersects := txnProxyFiniteMutationUnionCapacityByKind(candidate, txnProxyMutationUnknown)
+	if unknownIntersects {
+		capacity, bounded := txnProxyFiniteMutationUnionCapacity(candidate)
+		if !bounded {
+			return 0, false, 0, false
+		}
+		minimum = candidate.count - capacity
+		if minimum < 0 {
+			minimum = 0
+		}
+		if candidate.count <= math.MaxInt64-capacity {
+			return minimum, true, candidate.count + capacity, true
+		}
+		return minimum, true, 0, false
+	}
+	putCapacity, putBounded, _ := txnProxyFiniteMutationUnionCapacityByKind(candidate, txnProxyMutationPut)
+	if putBounded {
+		minimum = candidate.count - putCapacity
+		if minimum < 0 {
+			minimum = 0
+		}
+		minimumBounded = true
+	}
+	deleteCapacity, deleteBounded, _ := txnProxyFiniteMutationUnionCapacityByKind(candidate, txnProxyMutationDelete)
+	if deleteBounded && candidate.count <= math.MaxInt64-deleteCapacity {
+		maximum = candidate.count + deleteCapacity
+		maximumBounded = true
+	}
+	return minimum, minimumBounded, maximum, maximumBounded
+}
+
 func txnProxyFiniteMutationUnionCapacity(candidate txnProxyCompareEvidence) (int64, bool) {
-	if candidate.snapshotPinned {
+	capacity, bounded, intersects := txnProxyFiniteSelectedMutationUnionCapacity(
+		candidate, txnProxyMutationUnknown, false,
+	)
+	if !intersects {
 		return 0, false
+	}
+	return capacity, bounded
+}
+
+func txnProxyFiniteMutationUnionCapacityByKind(
+	candidate txnProxyCompareEvidence,
+	kind txnProxyMutationKind,
+) (capacity int64, bounded bool, intersects bool) {
+	return txnProxyFiniteSelectedMutationUnionCapacity(candidate, kind, true)
+}
+
+func txnProxyFiniteSelectedMutationUnionCapacity(
+	candidate txnProxyCompareEvidence,
+	kind txnProxyMutationKind,
+	filterKind bool,
+) (capacity int64, bounded bool, intersects bool) {
+	if candidate.snapshotPinned {
+		return 0, false, false
 	}
 	candidateInterval, ok := txnProxyNormalizeInterval(txnProxyMutationInterval{
 		key: candidate.key, rangeEnd: candidate.rangeEnd,
 	})
 	if !ok {
-		return 0, false
+		return 0, false, false
 	}
 	mutated := make([]txnProxyNormalizedInterval, 0, len(candidate.priorMutations))
 	for _, mutation := range candidate.priorMutations {
+		if filterKind && mutation.kind != kind {
+			continue
+		}
 		mutationInterval, valid := txnProxyNormalizeInterval(mutation)
 		if !valid {
 			continue
@@ -717,7 +792,7 @@ func txnProxyFiniteMutationUnionCapacity(candidate txnProxyCompareEvidence) (int
 		}
 	}
 	if len(mutated) == 0 {
-		return 0, false
+		return 0, true, false
 	}
 	sort.Slice(mutated, func(left, right int) bool {
 		return bytes.Compare(mutated[left].start, mutated[right].start) < 0
@@ -741,15 +816,15 @@ func txnProxyFiniteMutationUnionCapacity(candidate txnProxyCompareEvidence) (int
 	maximum := int64(0)
 	for _, interval := range merged {
 		if interval.infinity {
-			return 0, false
+			return 0, false, true
 		}
 		capacity, bounded := finiteLexicalIntervalMaximumCardinality(interval.start, interval.end)
 		if !bounded || capacity > math.MaxInt64-maximum {
-			return 0, false
+			return 0, false, true
 		}
 		maximum += capacity
 	}
-	return maximum, true
+	return maximum, true, true
 }
 
 type txnProxyCardinalityEndpoint struct {

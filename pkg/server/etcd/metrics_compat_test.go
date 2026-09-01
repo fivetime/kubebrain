@@ -2048,6 +2048,51 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 3}}},
 			putResponse(), countOnlyRangeResponse(1),
 		}}},
+		{name: "staged put cannot reduce post-write count-only cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("m"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 2}}},
+			putResponse(), countOnlyRangeResponse(1),
+		}}},
+		{name: "staged delete cannot increase post-write count-only cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), deleteRequest("m"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
+			countOnlyRangeResponse(1),
+		}}},
+		{name: "mixed staged mutations cannot remove more than the delete capacity", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("p"), deleteRequest("m"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 3}}},
+			putResponse(),
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
+			countOnlyRangeResponse(1),
+		}}},
+		{name: "unbounded staged delete still cannot increase post-write count-only cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("m"), RangeEnd: []byte("n")}}},
+			countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
+			countOnlyRangeResponse(1),
+		}}},
+		{name: "mixed staged put and delete permit an unchanged cardinality", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), putRequest("p"), deleteRequest("m"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 2}}},
+			putResponse(),
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
+			countOnlyRangeResponse(2),
+		}}, valid: true},
+		{name: "staged delete permits one removed point", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"), deleteRequest("m"), countOnlyRangeRequest("a", "z"),
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 2}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5), Deleted: 1}}},
+			countOnlyRangeResponse(1),
+		}}, valid: true},
 		{name: "post-write count-only cannot gain more than one mutated point", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 			countOnlyRangeRequest("a", "z"), putRequest("m"), countOnlyRangeRequest("a", "z"),
 		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
@@ -2372,6 +2417,52 @@ func TestTxnProxyFiniteMutationUnionCapacity(t *testing.T) {
 			got, bounded := txnProxyFiniteMutationUnionCapacity(tt.candidate)
 			require.Equal(t, tt.wantBounded, bounded)
 			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestTxnProxyPartiallyMutatedCountOnlyCardinalityBounds(t *testing.T) {
+	point := func(key string, kind txnProxyMutationKind) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(key), kind: kind}
+	}
+	finite := func(start, end string, kind txnProxyMutationKind) txnProxyMutationInterval {
+		return txnProxyMutationInterval{key: []byte(start), rangeEnd: []byte(end), kind: kind}
+	}
+	evidence := func(count int64, mutations ...txnProxyMutationInterval) txnProxyCompareEvidence {
+		return txnProxyCompareEvidence{
+			key: []byte("a"), rangeEnd: []byte("z"), countOnly: true, count: count,
+			priorMutations: mutations,
+		}
+	}
+	tests := []struct {
+		name                           string
+		candidate                      txnProxyCompareEvidence
+		minimum, maximum               int64
+		minimumBounded, maximumBounded bool
+	}{
+		{name: "put point", candidate: evidence(1, point("m", txnProxyMutationPut)), minimum: 0, maximum: 1, minimumBounded: true, maximumBounded: true},
+		{name: "delete point", candidate: evidence(1, point("m", txnProxyMutationDelete)), minimum: 1, maximum: 2, minimumBounded: true, maximumBounded: true},
+		{name: "mixed points", candidate: evidence(1, point("m", txnProxyMutationDelete), point("p", txnProxyMutationPut)), minimum: 0, maximum: 2, minimumBounded: true, maximumBounded: true},
+		{name: "adjacent puts", candidate: evidence(2, point("m", txnProxyMutationPut), point("m\x00", txnProxyMutationPut)), minimum: 0, maximum: 2, minimumBounded: true, maximumBounded: true},
+		{name: "unbounded delete preserves put-free lower bound", candidate: evidence(1, finite("m", "n", txnProxyMutationDelete)), minimum: 1, minimumBounded: true},
+		{name: "unbounded delete preserves finite put lower bound", candidate: evidence(2, point("p", txnProxyMutationPut), finite("m", "n", txnProxyMutationDelete)), minimum: 1, minimumBounded: true},
+		{name: "unknown point falls back to symmetric capacity", candidate: evidence(1, point("m", txnProxyMutationUnknown)), minimum: 0, maximum: 2, minimumBounded: true, maximumBounded: true},
+		{name: "unknown unbounded mutation remains conservative", candidate: evidence(1, finite("m", "n", txnProxyMutationUnknown))},
+		{name: "delete upper overflow keeps lower bound", candidate: evidence(math.MaxInt64, point("m", txnProxyMutationDelete)), minimum: math.MaxInt64, minimumBounded: true},
+		{name: "snapshot pinned stays exact", candidate: func() txnProxyCompareEvidence {
+			candidate := evidence(1, point("m", txnProxyMutationPut))
+			candidate.snapshotPinned = true
+			return candidate
+		}()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			minimum, minimumBounded, maximum, maximumBounded :=
+				txnProxyPartiallyMutatedCountOnlyCardinalityBounds(tt.candidate)
+			require.Equal(t, tt.minimum, minimum)
+			require.Equal(t, tt.minimumBounded, minimumBounded)
+			require.Equal(t, tt.maximum, maximum)
+			require.Equal(t, tt.maximumBounded, maximumBounded)
 		})
 	}
 }
