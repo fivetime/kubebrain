@@ -68118,6 +68118,61 @@ revision/index/applied、HashKV、compact revision 保持 `66029/3765752696/4432
 最终六个数据面/info 端口与一个 PD 端口均无监听残留，宿主盘 71%、可用 558 GiB。A5680 关闭了 follower 忽略完整
 有限页与带 Limit CountOnly 确定证据的完整性缺口，同时保留截断、historical 和 revision-filtered 响应的保守边界。
 
+### A5681：CountOnly 忽略 revision filter，保留 historical 快照边界
+
+继续对照 `/root/etcd/server/etcdserver/txn/range.go::{executeRange,filterRangeResults}` 与
+`/root/etcd/server/storage/mvcc/kvstore_txn.go::rangeKeys`。上游 MVCC 在 `CountOnly=true` 时直接从 index 返回
+`KVs=nil,Count=total`，随后四类 min/max mod/create filter 只能裁剪空 KV slice，不能改变 Count；Limit 和 sort 同样
+不影响该 cardinality。只有显式 `Revision>0` 会让 MVCC 在历史快照计数。A5680 的 evidence 门禁却先统一拒绝 revision
+filter，再判断 CountOnly，因而会接受当前 filtered CountOnly 已明确证明零/正 cardinality、却选择相反 Txn 分支的
+leader/follower 响应。
+
+tests-only RED 恰好出现四个失败：MinMod-filtered 零 CountOnly 已证明包含 point missing、MinCreate-filtered 正
+CountOnly 已证明 VERSION `>0` true、相互矛盾的 MinMod/MaxMod filtered 正 CountOnly 仍证明同一生命周期真值，以及
+follower 接受 filtered 正 CountOnly 已证明 true 却选择 Failure。边界测试固定 historical filtered CountOnly 即使返回
+正计数也不是当前 Compare 证据；普通/KeysOnly filtered Range 仍只描述筛选后的 payload，继续保持 unknown。
+
+提交 `8e3d76a3` 调整 `txnProxyRangeProvidesCompareEvidence` 的资格顺序：先拒绝 historical revision，再让当前
+CountOnly 忽略四类 filter 与 Limit 并执行已有 payload 形状门禁，最后才对普通/KeysOnly 拒绝 revision filter。聚焦
+三次 GREEN `1.028s`、race `2.289s`、全部 Txn `28.621s`、完整 `pkg/server/etcd` `136.340s`，vet 通过
+（墙钟 `5.268s`）。提交前 production verifier 为 703 项、四片 `170/193/180/160`；提交后四片分别为
+`259.778/448.701/307.740/575.940s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5681-8e3d76a3` 内嵌版本 `0.0.0-8e3d76a30f20`、完整提交
+`8e3d76a30f20c19f90e540d8b780f659c1d1b258`、build time `2026-09-01T15:04:59Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:f81b446e30823dd5ee7659b7b19aadc0821dd13df587218276c01c57e807e322`、
+`sha256:87aa355e5ccd9a3a7430a5762f6df67b3a861f89e8d75ad82e3b2aa06af86173`、
+`sha256:703767b3523b941dcbde2ef6dc806080fe208f212734012d8d73da53d869a8f6`、
+`sha256:d81578ccd70fcac232342e87584304010111fc28db61c9412207cc223f3a82b6`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功，Kind runtime digest 为
+`sha256:30772ab41fffe9493d2719890098ab336b77995889689f19487c93025863774a`。
+
+稳定基线 revision/index/applied、HashKV、compact revision 为 `66029/3765752696/44329`。以 StatefulSet
+UID/resourceVersion/container/current image/full args 五类原子 test 从 generation 754 部署到 generation 755，三 Pod
+均落在 `kubebrain-754f4cdfb9`、Ready/restart 0、同一候选 runtime digest，Pod 内版本与完整 SHA 一致。逐个
+Pod-local gateway 在 `/a5681/p{0,1,2}/` 执行七类 Txn：MinMod、MaxMod、MinCreate、MaxCreate filtered 正
+CountOnly 分别覆盖 VERSION/CREATE/MOD 生命周期真值，四类相互矛盾 filter 仍返回完整正 Count，filtered 零 CountOnly
+证明包含 point missing，以及历史 filtered 正 CountOnly 不得反推当前已删除 key 存在。每 Pod 七类、共 21 类次全部
+选择上游真实分支，p0/p1/p2 清理 revision 分别为 `66033/66037/66041`，各前缀 Count=0。
+
+候选 term `381`、leader `2393892952`、HashKV `378386971`、compact revision `44329`。全部适用开关启用的
+readonly gate 一次 GREEN，三成员 revision/index/applied、Status/HashKV、named readyz/livez、HTTP、metrics/debug/
+pprof、auth disabled/revision 281、Alarm 与空前缀均通过。候选三轮九次 exact endpoint proposal health 全部成功
+（`6.528–9.442ms`），Lease/Alarm 为空；三 Pod 日志 `464/275/522` 行且全量与最近窗口关键错误均为 0。三 store
+Up、五类 region check 连续三轮全零，KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各沿用一次历史 restart。
+
+以同类五类原子 test 回滚稳定 digest。StatefulSet UID `817bc005-a4d1-4d57-9aab-de93e0874054` 不变，
+generation/observed `756/756`、current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。终态三成员
+revision/index/applied、HashKV、compact revision 保持 `66041/378386971/44329`，term `382`、leader
+`231094427`，prefix、Lease 与 Alarm 为空；稳定三轮九次 proposal health 全部 GREEN（`6.157–9.196ms`），日志
+`273/307/272` 行，Pod 2 启动期一次 compact metric `context deadline exceeded`，最近 60 秒为 0，其他关键错误为 0；
+store/region 回滚后继续连续三轮健康。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在，本轮不把 region API
+结果代替完整 storage isolation gate。全程未使用凭据或落盘诊断日志，最终六个数据面/info 端口与一个 PD 端口均无
+监听残留，宿主盘 72%、可用 546 GiB。A5681 关闭了 follower 把 CountOnly 无效 filter 当成证据失效条件的完整性缺口，
+同时保留历史快照和会实际裁剪 KV payload 的普通 filtered Range 边界。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
