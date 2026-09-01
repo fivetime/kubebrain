@@ -1048,6 +1048,46 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
 		TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
 	}
+	nonnegativeVersionTrue := &etcdserverpb.Compare{
+		Key: []byte("version"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_VERSION,
+		TargetUnion: &etcdserverpb.Compare_Version{Version: -1},
+	}
+	nonnegativeModFalse := &etcdserverpb.Compare{
+		Key: []byte("mod"), RangeEnd: []byte("z"),
+		Result: etcdserverpb.Compare_LESS, Target: etcdserverpb.Compare_MOD,
+		TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
+	}
+	unknownResultTrue := &etcdserverpb.Compare{
+		Key: []byte("unknown-result"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_CompareResult(99), Target: etcdserverpb.Compare_MOD,
+		TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 99},
+	}
+	unknownValueResult := &etcdserverpb.Compare{
+		Key: []byte("unknown-value-result"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_CompareResult(99), Target: etcdserverpb.Compare_VALUE,
+		TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("anything")},
+	}
+	unknownTargetFalse := &etcdserverpb.Compare{
+		Key: []byte("unknown-target"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_NOT_EQUAL, Target: etcdserverpb.Compare_CompareTarget(99),
+		TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: -1},
+	}
+	unknownTargetTrue := &etcdserverpb.Compare{
+		Key: []byte("unknown-target-true"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_CompareTarget(99),
+		TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: -1},
+	}
+	mismatchedVersionFalse := &etcdserverpb.Compare{
+		Key: []byte("mismatched-version"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_LESS, Target: etcdserverpb.Compare_VERSION,
+		TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("ignored")},
+	}
+	signedLeaseUnknown := &etcdserverpb.Compare{
+		Key: []byte("lease"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_LEASE,
+		TargetUnion: &etcdserverpb.Compare_Lease{Lease: -1},
+	}
 	nestedRequest := &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
 			Key: []byte("nested-compare"), Target: etcdserverpb.Compare_VERSION,
@@ -1091,6 +1131,17 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		{name: "unknown point after empty true selected failure", request: branchRequest(emptyVersionTrue, unknownPoint), response: branchResponse(false), valid: true},
 		{name: "from-key selected success", request: branchRequest(fromKey), response: branchResponse(true), valid: true},
 		{name: "from-key selected failure", request: branchRequest(fromKey), response: branchResponse(false), valid: true},
+		{name: "nonnegative version true selected failure", request: branchRequest(nonnegativeVersionTrue), response: branchResponse(false)},
+		{name: "nonnegative mod false selected success", request: branchRequest(nonnegativeModFalse), response: branchResponse(true)},
+		{name: "unknown point then nonnegative mod false selected success", request: branchRequest(unknownPoint, nonnegativeModFalse), response: branchResponse(true)},
+		{name: "unknown result true selected failure", request: branchRequest(unknownResultTrue), response: branchResponse(false)},
+		{name: "unknown value result selected success", request: branchRequest(unknownValueResult), response: branchResponse(true), valid: true},
+		{name: "unknown value result selected failure", request: branchRequest(unknownValueResult), response: branchResponse(false), valid: true},
+		{name: "unknown target false selected success", request: branchRequest(unknownTargetFalse), response: branchResponse(true)},
+		{name: "unknown target true selected failure", request: branchRequest(unknownTargetTrue), response: branchResponse(false)},
+		{name: "mismatched version false selected success", request: branchRequest(mismatchedVersionFalse), response: branchResponse(true)},
+		{name: "signed lease selected success", request: branchRequest(signedLeaseUnknown), response: branchResponse(true), valid: true},
+		{name: "signed lease selected failure", request: branchRequest(signedLeaseUnknown), response: branchResponse(false), valid: true},
 		{name: "read-only previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},
 		{name: "pre-write operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key"), putRequest("put")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}, putResponse()}}, valid: true},
 		{name: "post-write previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{putRequest("put"), rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{putResponse(), {Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},

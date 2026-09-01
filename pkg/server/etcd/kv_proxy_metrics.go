@@ -271,7 +271,7 @@ func validateTxnProxyResponseTree(request *etcdserverpb.TxnRequest, response *et
 		return fmt.Errorf("leader txn proxy selected the failure branch without compares")
 	}
 	if len(request.GetCompare()) != 0 {
-		expected, deterministic := txnProxyDeterministicEmptyCompareBranch(request.GetCompare())
+		expected, deterministic := txnProxyDeterministicCompareBranch(request.GetCompare())
 		if deterministic && response.GetSucceeded() != expected {
 			selectedBranch := "failure"
 			expectedBranch := "success"
@@ -328,22 +328,68 @@ func validateTxnProxyResponseTree(request *etcdserverpb.TxnRequest, response *et
 	return nil
 }
 
-func txnProxyDeterministicEmptyCompareBranch(compares []*etcdserverpb.Compare) (bool, bool) {
+func txnProxyDeterministicCompareBranch(compares []*etcdserverpb.Compare) (bool, bool) {
 	allDeterministic := true
 	for _, compare := range compares {
-		if !isEmptyNonFromKeyRange(compare.GetKey(), compare.GetRangeEnd()) {
+		result, deterministic := txnProxyDeterministicCompare(compare)
+		if !deterministic {
 			allDeterministic = false
 			continue
 		}
-		// Upstream applyCompare evaluates an empty numeric interval against a
-		// zero KeyValue and always fails VALUE compares. compareKeyValue shares
-		// that exact truth table, including unknown enum fallthrough behavior.
-		if !compareKeyValue(compare, nil) {
+		if !result {
 			return false, true
 		}
 	}
 	if allDeterministic {
 		return true, true
+	}
+	return false, false
+}
+
+func txnProxyDeterministicCompare(compare *etcdserverpb.Compare) (bool, bool) {
+	if isEmptyNonFromKeyRange(compare.GetKey(), compare.GetRangeEnd()) {
+		// Upstream applyCompare evaluates an empty numeric interval against a
+		// zero KeyValue and always fails VALUE compares. compareKeyValue shares
+		// that exact truth table, including unknown enum fallthrough behavior.
+		return compareKeyValue(compare, nil), true
+	}
+
+	// Unknown results fall through to true in upstream compareKV. VALUE is the
+	// exception for an interval whose runtime result is empty: applyCompare
+	// returns false before compareKV, so its branch still depends on storage.
+	switch compare.GetResult() {
+	case etcdserverpb.Compare_EQUAL, etcdserverpb.Compare_GREATER,
+		etcdserverpb.Compare_LESS, etcdserverpb.Compare_NOT_EQUAL:
+	default:
+		if compare.GetTarget() == etcdserverpb.Compare_VALUE {
+			return false, false
+		}
+		return true, true
+	}
+
+	// Upstream leaves the comparison order at zero for unknown targets.
+	switch compare.GetTarget() {
+	case etcdserverpb.Compare_VERSION:
+		return txnProxyNonNegativeCompareResult(compare.GetVersion(), compare.GetResult())
+	case etcdserverpb.Compare_CREATE:
+		return txnProxyNonNegativeCompareResult(compare.GetCreateRevision(), compare.GetResult())
+	case etcdserverpb.Compare_MOD:
+		return txnProxyNonNegativeCompareResult(compare.GetModRevision(), compare.GetResult())
+	case etcdserverpb.Compare_VALUE, etcdserverpb.Compare_LEASE:
+		return false, false
+	default:
+		return compareOrder(0, compare.GetResult()), true
+	}
+}
+
+func txnProxyNonNegativeCompareResult(expected int64, result etcdserverpb.Compare_CompareResult) (bool, bool) {
+	// Missing keys contribute zero; existing VERSION/CREATE/MOD metadata is
+	// positive. Therefore the complete observable domain is non-negative.
+	if expected < 0 {
+		return compareOrder(1, result), true
+	}
+	if expected == 0 && result == etcdserverpb.Compare_LESS {
+		return false, true
 	}
 	return false, false
 }
