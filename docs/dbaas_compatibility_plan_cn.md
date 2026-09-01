@@ -68173,6 +68173,63 @@ store/region 回滚后继续连续三轮健康。A5676 已记录的 Kind local-p
 监听残留，宿主盘 72%、可用 546 GiB。A5681 关闭了 follower 把 CountOnly 无效 filter 当成证据失效条件的完整性缺口，
 同时保留历史快照和会实际裁剪 KV payload 的普通 filtered Range 边界。
 
+### A5682：把显式 base revision Range 固定为 Txn pre-write Compare 快照证据
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 compare-to-path 执行顺序与
+`/root/etcd/server/storage/mvcc/kvstore_txn.go` 的历史 Range 读取语义。上游会在执行选中分支的任何写操作前，
+以事务 base revision 统一求值整棵 Compare 树；因此分支中的显式 `Range.Revision == baseRevision` 恰好读取同一个
+pre-write 快照，即使它位于重叠 Put/Delete 之后也绕过 staged mutation。更旧的
+`0 < Range.Revision < baseRevision` 描述的仍是另一个历史快照，不能据此反推本次 Compare。
+
+tests-only RED 恰好出现四个失败：snapshot-equal historical value Range 已证明 Compare false 却选择 Success、同一
+Range 位于重叠 Put 后仍证明 pre-write true、带 revision filter 的 snapshot-equal CountOnly 仍证明生命周期真值，
+以及 follower 接受 snapshot-equal value 证据已证明 true 却选择 Failure。既有更旧 historical revision 边界继续
+GREEN。提交 `87d87cb017ff01abcbe9f996b47bf8e160cb75c6` 将 `baseRevision` 传入 evidence collector，
+允许 `Revision=0` 或精确等于 base revision 的 Range，并用 `snapshotPinned` 使后者不被 earlier staged mutation
+失效；普通、KeysOnly、CountOnly、filter 与完整有限页仍复用各自既有 payload 完整性门禁，未扩大更旧历史响应。
+
+聚焦首轮 GREEN `0.399s`，连续三轮 `1.060s`（墙钟 `4.873s`），race `2.363s`（墙钟
+`73.253s`），全部 Txn `32.081s`，完整 `pkg/server/etcd` `138.303s`，vet 墙钟 `5.843s`。
+提交前 production verifier 为 703 项、四片 `170/193/180/160`；代码提交后四片分别为
+`245.851/443.857/297.141/570.715s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5682-87d87cb0` 内嵌版本 `0.0.0-87d87cb017ff`、完整提交
+`87d87cb017ff01abcbe9f996b47bf8e160cb75c6`、build time `2026-09-01T15:44:15Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:29becec18d2bf3ea7730348e2d4f2d782c9f097396506562e19cb16911b59275`、
+`sha256:9c657502a05b3a1ad8ed95f5aae2cbb6c5591053680d3c1f815902cb1db74f34`、
+`sha256:d3d49ee46f8bef279dceb4453c3c0d969adaea6168c3e81951cef576ad51f88b`、
+`sha256:b79b77ad5ce44365849efd20081611d3300541a03ddeeab33ad545e822e28c11`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功，Kind runtime digest 为
+`sha256:e1e5a666cc2fdfbd3680aaaacbbbbbba48913bc188b0d008be4295388ddd9b93`。
+
+稳定基线 revision/index/applied、HashKV、compact revision 为 `66041/378386971/44329`，term `382`、leader
+`231094427`，`/a5682/`、Lease 与 Alarm 为空。以 StatefulSet UID/resourceVersion/container/current image/full
+args 五类原子 test 从 generation 756 部署到 generation 757，三 Pod 均落在 `kubebrain-67fd6c487d`、
+Ready/restart 0、同一候选 runtime digest，Pod 内版本与完整 SHA 一致。逐个 Pod-local gateway 串行执行七类 Txn：
+snapshot-equal ordinary value Range、filtered positive CountOnly、missing zero CountOnly、重叠 Put 后 historical
+Range、重叠 Delete 后 historical Range、更旧 historical revision 不得反推当前 Compare，以及完整有限 KeysOnly；
+每 Pod 七类、共 21 类次全部选择上游真实分支。显式清理 15 个最终态测试键后 revision/index/applied 为 `66069`，
+prefix Count=0，HashKV `2102941512`、compact revision `44329`。
+
+全部适用开关启用的 readonly gate 一次 GREEN，三成员 revision/index/applied、Status/HashKV、named
+readyz/livez、HTTP、metrics/debug/pprof、auth disabled/revision 281、Alarm 与空前缀均通过。候选 term `385`、
+leader `231094427`，三轮九次 exact endpoint proposal health 全部成功（`6.912–8.296ms`），Lease/Alarm
+为空；三 Pod 全量日志 `717/738/321` 行，真实 klog E/F、panic/fatal/data race/data corruption、TiKV/PD
+error 与最近 60 秒关键错误均为 0。三个 store Up，pending/down/miss/extra/learner 五类 region check 连续三轮
+全零，KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各沿用一次历史 restart。
+
+以同类五类原子 test 回滚稳定 digest。StatefulSet UID `817bc005-a4d1-4d57-9aab-de93e0874054` 不变，
+generation/observed `758/758`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。终态
+revision/index/applied、HashKV、compact revision 保持 `66069/2102941512/44329`，term `387`、leader
+`2393892952`，prefix、Lease 与 Alarm 为空；稳定三轮九次 proposal health 全部 GREEN（`7.163–7.902ms`），
+日志 `300/270/378` 行，Pod 1 启动期一次 compact revision metric `context deadline exceeded`、最近 60 秒为
+0，其余关键错误为 0；store/region 回滚后继续连续三轮健康。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险
+仍存在，本轮不把 region API 结果替代完整 storage isolation gate。全程未使用凭据或落盘诊断日志，最终六个
+数据面/info 端口与一个 PD 端口均无监听残留，宿主盘 73%、可用 536 GiB。A5682 关闭了 follower 把精确
+base-revision 快照证据当作未知、从而放过矛盾 Txn 分支的完整性缺口，同时保留所有更旧历史快照的保守边界。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
