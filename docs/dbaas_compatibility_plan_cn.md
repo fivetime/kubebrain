@@ -67748,6 +67748,69 @@ revision 保持 `65894/2288114445/44329`，term `350`、leader `2393892952`，pr
 落盘诊断文件。A5674 关闭了 follower Txn 接受 leader 违反 pre-write MVCC revision 上界选择不可能分支的
 完整性缺口。
 
+### A5675：用写前完整 Range 响应校验 Txn Compare 分支自一致性
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{compareToPath,applyCompares,applyCompare,compareKV}`。
+上游在执行任何 operation 前，用同一个 read view 递归计算完整 txnPath；空区间/缺失 key 的 VALUE Compare 恒为
+false，数值 target 按零值比较，非空区间则要求每个 KV 都满足 Compare。因此，selected tree 中首次有效 Put 或
+`Deleted>0` 的 Delete 前返回的 current、unlimited、非 keys/count-only、无 revision filter 的完整 Range payload，
+与根及任意嵌套 Compare 共享 pre-write snapshot，可作为独立的分支自一致性证据。historical、limited、projected、
+filtered 和有效写后的 Range 都不具备这个证明能力。
+
+tests-only RED 覆盖 VALUE true 却选 Failure、VALUE false 却选 Success、前置未知 Compare 后已知 false 仍选 Success、
+写前 Range 后执行 Put、根 Range 证明嵌套 Compare，以及两个 follower RPC 路径；旧实现接受六项，聚焦包为
+`0.327s`。提交 `852b5d8f` 在既有响应树、header 与 operation payload 校验之后，按 selected operation 的真实执行
+顺序收集写前完整 Range；任何 Put 或有效 Delete 都关闭后续证据窗口，无效 Delete 保持窗口。新 validator 用与
+upstream 相同的 `compareKeyValue` 真值表对完全相同 key/range_end 的 Compare 求值，按 AND 规则递归校验整棵
+selected tree，并拒绝同一区间互相矛盾的两份写前证据。保守排除项和正向测试覆盖 missing VALUE、LEASE、两键区间、
+keys-only、count-only、limit、revision filter、historical、写后 Range、无效 Delete 及冲突证据。
+
+实现后聚焦 GREEN `0.336s`，定向 race `2.055s`，全部 Txn 测试 `29.451s`，完整
+`pkg/server/etcd` `137.956s`，`go vet ./pkg/server/etcd` 通过。提交前 production inventory 为 703 项、四片
+`170/193/180/160`；提交后四片分别为 `285.788/479.734/328.759/604.469s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5675-852b5d8f` 内嵌版本
+`0.0.0-852b5d8fb5af`、完整提交 `852b5d8fb5af7cd7862cc10b7a874a9d89563742` 与 build time
+`2026-09-01T09:05:17Z`，运行用户 `65532:65532`、Go `1.26.5`、平台 `linux/amd64`、后端 TiKV。带
+SBOM/provenance 的 OCI index、platform manifest、config 与 attestation manifest 分别为
+`sha256:c19cd9ebe9b052c0fc7213a1d6a73f49e28e138ac1419bf145460ed302fab910`、
+`sha256:7e07f3be774b7abdbea890e37587b748e0ee1e056fd02109faf79a5f3d954a80`、
+`sha256:e55ac387a7732015836da147e29dd854b314a7c6edaf57b1b28cfad891a79e14`、
+`sha256:18d55e7b9414fbc7babe2210130db8821d4b76cd389e15b9a84f772aea98a18e`；Kind/containerd Pod runtime
+digest 为 `sha256:887ac6fb1c23ec98a63849d95fb1409f13d8de6766415d996f50765cb3780214`。
+
+候选部署前 Kind 节点发生一次独立 sandbox 重建，PD/TiKV restartCount 从 0 变为 1，stable KubeBrain 暂时
+0/3 Ready 且为 `3/1/1`；StatefulSet UID/spec/image 未变，日志显示 PD graceful stop 后重连。先等待 stable 自行
+恢复 3/3 Ready，再冻结 revision `65894`、HashKV `2288114445`、compact revision `44329`、term `350`、leader
+`2393892952`、Lease 空及三端 proposal health `8.356–16.404ms`，没有把该基础设施事件归因于候选。随后以
+StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 只替换 image，部署到 generation
+740；三 Pod 均落在 revision `kubebrain-748ccdcbb5`、Ready/restart 0、同一 candidate runtime digest。
+
+逐个 Pod-local JSON gateway 用六个 `/a5675/` 隔离键执行六类真实 Txn：完整 Range 与 VALUE true/false 分支一致；
+未附 lease 的 KV 以 LEASE=0 选 Success；outer Range 证明随后 nested VALUE Compare 选 Success 且 nested header
+为 `{}`；写前 Range 在同一 Txn 的 Put 前返回旧值与 revision `65900`，outer 写 revision 为 `65901`；先 Put 后
+Range 返回新值与同一 revision `65902`，证明写后 Range 未被误当作 Compare 证据。统一 DeleteRange 精确删除 6 键并
+推进到 `65903`，最终 `/a5675/` count 为 0。
+
+候选 term `352`、leader `2393892952`、HashKV `233684362`、compact revision `44329`。以该新鲜值运行全部适用
+开关启用的 readonly gate 一次 GREEN，direct hash `3715824005`、auth disabled/revision `281`，named/HTTP/
+metrics/debug/pprof 与跨端点身份、revision、term 均通过。候选三轮九次 exact endpoint proposal health 全部成功
+（`9.992–61.798ms`），Lease 为空，三 Pod 全量日志 `614/278/673` 行且关键错误命中为 0；KubeBrain 3/3
+Ready/restart 0，目标 PD/TiKV 3+3 Ready，二者 restart 1 明确来自候选前的节点事件。
+
+以同类五类原子 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed `741/741`、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b` 且 Ready/restart 0；revision、
+HashKV 与 compact revision 保持 `65903/233684362/44329`，term `353`、leader `231094427`、prefix count 0、
+Lease 为空。稳定三轮九次 Pod-local proposal health 全部 GREEN（`6.121–8.610ms`），全量日志
+`377/410/269` 行、关键错误均为 0，随后最近 60 秒也为 0，目标 PD/TiKV 仍 3+3 Ready。
+
+候选前首个 count-only JSON 断言因零 count 被 protobuf JSON 省略而只读失败，修正为显式零值 fallback；回滚后
+`etcdctl get --count-only -w json` 又准确拒绝该 CLI 不支持的输出组合，改用 gateway CountOnly 完成零残留证明。
+Pod 替换期间 port-forward 的 reset/broken-pipe 仅来自本地 kubectl，最终六个监听全部关闭。全程未使用凭据、未落盘
+诊断文件。A5675 关闭了 follower 接受 leader 返回的完整写前 Range payload 与其根/嵌套 Txn Compare 分支相互矛盾
+这一代理完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
