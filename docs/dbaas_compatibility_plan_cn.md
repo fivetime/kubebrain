@@ -67573,6 +67573,64 @@ panic/fatal 均为 0。最初误查不存在的 `kubebrain` namespace、使用 `
 端口转发退出时的短连接 reset/broken-pipe 仅来自本地 kubectl。最终关闭端口转发并确认六个监听均无残留，
 未使用凭据或落盘诊断文件。A5671 关闭了 follower Txn 响应树接受上游不可能身份字段的完整性缺口。
 
+### A5672：拒绝确定性空 Compare 区间选择不可能的 Txn 分支
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::applyCompare`。上游先对 Compare 区间执行 Range；
+区间无 KV 时，VALUE 比较固定为 false，CREATE/MOD/VERSION/LEASE 则以零值 `mvccpb.KeyValue`
+参与比较。因而相等端点和反向端点（不含 NUL from-key 上界）是可静态确认的空区间：任一 Compare
+确定为 false 即选 Failure，全部 Compare 都是确定性空区间且为 true 才选 Success；只要仍含 point、
+非空范围或 from-key 等未知区间且没有确定性 false，就不能预判分支。旧 follower validator 只校验
+无 Compare 的 Txn 必须选 Success，允许 leader 为上述确定性 Compare 返回上游不可能的分支。
+
+tests-only RED 覆盖相等区间 `VERSION == 0` 却选 Failure、反向区间 VALUE 比较却选 Success、未知
+point 与确定性 false 组合却选 Success、嵌套反向 VALUE 却选 Success等五项，旧实现均接受，包报告
+`0.276s`。提交 `1c45d502` 在递归 follower Txn 响应树校验中加入
+`txnProxyDeterministicEmptyCompareBranch`，复用本地与上游一致的 `compareKeyValue(compare, nil)`；
+同时固定未知 point、确定性 true 后接未知 point，以及 `range_end={0}` from-key 的正向兼容路径，避免把
+运行时未知区间误判为空。
+
+实现后聚焦测试 GREEN `0.275s`，包含真实空区间、缺失 response union、未知 Compare enum 与嵌套路径的
+兼容组合 `0.353s`，定向 race `2.223s`，全部 Txn 测试 `28.715s`，完整 `pkg/server/etcd`
+`137.792s`，`go vet ./pkg/server/etcd` 通过。提交前 production inventory 为 703 项、四片
+`170/193/180/160`；提交后四片分别为 `249.177/444.278/301.338/571.614s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5672-1c45d502` 内嵌版本
+`0.0.0-1c45d502d43d`、完整提交 `1c45d502d43d9450683604610fcda4dca324dfa1` 与 build time
+`2026-09-01T06:35:36Z`，运行用户 `65532:65532`、Go `1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI
+index、platform manifest、config 与 attestation manifest 分别为
+`sha256:90c21deb872100dd2b48c6ea6b8ceb5a7d2a42aa463098256717034f271efeaf`、
+`sha256:c67a1231ade4ba90d0933fbb3a533391cc9b83cd9089aa774f0021eacbdf5ffa`、
+`sha256:cf01b5dc466ebb59e88095ac0478e1b3c6379dabd34982986a2639dcf11da26e`、
+`sha256:c2ff260290eb6d25e4b1a3896516c37da37b3d154cdcdc1d718801e7574ad8cd`；Kind/containerd Pod
+runtime digest 为 `sha256:ee206f4f299f9b1739039db53dbf6e048b519d07a6e9c13fadde6674dde04f0c`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 733
+部署至 generation 734；三 Pod 均落在 revision `kubebrain-8b7c95c44`、Ready/restart 0。逐个 exact Pod
+endpoint 通过 etcd v3 JSON gateway 执行并用 15 个 `jq -e` 断言五种场景：相等区间
+`VERSION == 0` 选 Success；反向区间 VALUE NOT_EQUAL 任意值选 Failure；未知 point 后接确定性 false
+选 Failure；外层无 Compare 选 Success、内层反向 VALUE 选 Failure 且嵌套 header 为 `{}`；NUL
+from-key `VERSION == 0` 保持运行时求值并选 Success。三端 `/a5672/` count 均为 0，验证全程未改变
+revision `65884`。
+
+候选 status 三端 revision/index/applied 均为 `65884`、term `341`、leader `2393892952`，HashKV
+`1465918337`、compact revision `44329`。以该值运行全部开关启用的 readonly gate 一次 GREEN，direct
+hash `1782561772`、auth disabled/revision `281`，named/HTTP/metrics/debug/pprof 与跨端点身份、revision、
+term 均通过。候选三轮九次 exact endpoint proposal health 全部成功（`10.708–13.211ms`），LeaseLeases
+为空，三 Pod 全量日志 `536/294/592` 行且关键错误命中为 0，KubeBrain/目标 PD/TiKV 3+3+3
+Ready/restart 0。
+
+以同类五类原子 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed `735/735`、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；revision、HashKV 与 compact
+revision 保持 `65884/1465918337/44329`，term 为 `342`，prefix count 0、readyz/livez、lease 与目标存储
+审计通过，三轮九次 proposal health 全部 GREEN（`11.089–13.624ms`），KubeBrain/目标 PD/TiKV
+3+3+3 Ready/restart 0。稳定三 Pod 全量日志 `323/356/275` 行；`kubebrain-2` 启动时有且仅有一次
+`refresh compact revision metric failed: context deadline exceeded`，随后三 Pod 最近 60 秒关键错误命中
+均为 0。收尾时首先误查了不存在的 `kubebrain` namespace，改为从全 namespace 定位
+`kubebrain-dev` 后完成复核，不计为产品故障；端口转发退出时的短连接 reset 仅来自本地 kubectl。最终关闭
+端口转发并确认六个监听均无残留，未使用凭据或落盘诊断文件。A5672 关闭了 follower Txn 接受 leader
+为确定性空 Compare 区间选择上游不可能分支的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
