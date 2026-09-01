@@ -68059,6 +68059,65 @@ local-path 非 CSI 存储隔离风险仍存在，本轮不把 region API 结果�
 落盘诊断日志，最终七个临时监听均无残留。A5679 关闭了精确正 CountOnly 已足以确定生命周期 Compare 时 follower 仍
 接受矛盾 Txn 分支的完整性缺口，并保留正阈值、投影目标与包含子区间无法确定时的保守可用性。
 
+### A5680：利用未截断的有限 Range 证据，并保留过滤/截断边界
+
+继续对照 `/root/etcd/server/etcdserver/txn/{txn.go,range.go}`。上游普通 Range 在 `Limit>0` 时多取一项，只有实际
+截断才返回 `More=true`；未使用 revision filter 时，既有 proxy payload validator 还强制
+`More == (Count > len(Kvs))`。因此 `More=false && Count=len(Kvs)` 的有限普通/KeysOnly 响应已经是请求区间的完整
+描述，可以与 unlimited Range 一样切片校验 Compare。CountOnly 则在上游 MVCC 路径直接求完整区间 cardinality，
+忽略 Limit 并强制无 KV、`More=false`，所以带 Limit 的零/正 CountOnly 也保留 A5678/A5679 的证据能力。此前 evidence
+门禁一律拒绝 `Limit>0`，会接受这些完整写前响应与所选 Txn 分支矛盾的 leader/follower 结果。
+
+tests-only RED 恰好出现五个失败：完整 exact-key 有限 Range 已证明 VALUE false、完整有限包含 Range 已证明子 point
+VALUE false、带 Limit 的正 CountOnly 已证明 VERSION `>0` true、带 Limit 的零 CountOnly 已证明包含 point missing，
+以及 follower 接受完整有限 Range 已证明 VALUE true 却选择 Failure。边界测试同时固定 `More=true` 截断页仍 unknown，
+完整有限 KeysOnly 可使用 VERSION metadata，而带 revision filter 的有限响应不得用作未过滤 Compare 证据。
+
+提交 `4dade83d` 把 `txnProxyRangeProvidesCompareEvidence` 恢复为 request/response 双输入：先拒绝 historical 与四类
+revision filter；CountOnly 不再因 Limit 失去资格，并防御性要求无 KV、`More=false`；普通/KeysOnly 的正 Limit 仅在
+`More=false && Count=len(Kvs)` 时入 evidence。聚焦测试首次 GREEN `0.391s`、重复三次 `0.966s`，race `2.242s`，
+全部 Txn `28.397s`、完整 `pkg/server/etcd` `133.561s`，vet 通过（墙钟 `5.276s`）。提交前 production verifier
+仍为 703 项、四片 `170/193/180/160`；提交后四片分别为 `248.854/443.401/298.622/571.004s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5680-4dade83d` 内嵌版本 `0.0.0-4dade83d5640`、完整提交
+`4dade83d56407d3fe1e10a9c7b7358d2f03fc84f`、build time `2026-09-01T14:21:18Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:17e0e83314a46b412d9ac1bdb43d294442a8a61ac5c2ff2a4f88b99cc92f3a54`、
+`sha256:c2c99598ef0a24e3a129674451668d24085deb9603991277a6ae2b4ca3202ec3`、
+`sha256:9d771c602514386adf209e574e5f99b5cd6c68480b4830337bad95133a87dd3c`、
+`sha256:eb6d4c006dd1e814d61d1469093e1d7b9a4b1c41ca696c8d48487c2b08a08ade`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功，Kind runtime digest 为
+`sha256:3facaefb94e973d8f34253eba90af6d88f5ef503ca80c92bab801eb5837ecadc`。
+
+稳定基线 revision/index/applied、HashKV、compact revision 为 `65999/1108309606/44329`。以 StatefulSet
+UID/resourceVersion/container/current image/full args 五类原子 test 从 generation 752 部署到 generation 753，三 Pod
+均落在 `kubebrain-8669b666cd`、Ready/restart 0、同一候选 runtime digest，Pod 内版本与完整 SHA 一致。逐个
+Pod-local gateway 在 `/a5680/p{0,1,2}/` 执行七类 Txn：exact-key 有限完整页、有限包含完整页、`More=true` 截断页
+保持 unknown、带 Limit 的正 CountOnly、带 Limit 的零 CountOnly、有限 KeysOnly lifecycle，以及 revision-filtered
+有限 Range payload 为空但不得反推 Compare missing。每 Pod 七类、共 21 类次全部选择上游真实分支，p0/p1/p2 清理
+检查时 revision 分别为 `66029/66020/66027`，最终全局收敛 `66029`、前缀 Count=0。
+
+p0 首次在第五类因 proto3 JSON 省略 `succeeded=false` 而停止，trap 已清理；按 false 缺省值重跑后通过。随后现场
+假设 revision filter 会令 CountOnly count 归零，但原始响应准确显示上游优先语义为完整 `count=1`；普通过滤 Range
+同样保留过滤前 Count、仅清空 Kvs。两次均未记为产品失败，打印原始响应并对照上游 `pruneKVs` 后，把安全边界改为
+`count=1,Kvs=[]` 的普通过滤 Range 仍不能成为 evidence，修正断言后通过；所有中止路径均完成前缀清理。
+
+候选 term `377`、leader `2393892952`、HashKV `3765752696`、compact revision `44329`。全部适用开关启用的
+readonly gate 一次 GREEN，三成员 revision/index/applied、Status/HashKV、named readyz/livez、HTTP、metrics/debug/
+pprof、auth disabled/revision 281、Alarm 与空前缀均通过。候选三轮九次 exact endpoint proposal health 全部成功
+（`6.276–9.653ms`），Lease/Alarm 为空；三 Pod 日志 `829/285/871` 行且全量与最近窗口关键错误均为 0。三 store
+Up、五类 region check 连续三轮全零，KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各沿用一次历史 restart。
+
+以同类五类原子 test 回滚稳定 digest。StatefulSet UID `817bc005-a4d1-4d57-9aab-de93e0874054` 不变，
+generation/observed `754/754`、current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。终态三成员
+revision/index/applied、HashKV、compact revision 保持 `66029/3765752696/44329`，term `379`、leader
+`231094427`，prefix、Lease 与 Alarm 为空；稳定三轮九次 proposal health 全部 GREEN（`6.809–9.790ms`），日志
+`280/322/313` 行且关键错误为 0，store/region 回滚后继续连续三轮健康。A5676 已记录的 Kind local-path 非 CSI
+存储隔离风险仍存在，本轮不把 region API 结果代替完整 storage isolation gate。全程未使用凭据或落盘诊断日志，
+最终六个数据面/info 端口与一个 PD 端口均无监听残留，宿主盘 71%、可用 558 GiB。A5680 关闭了 follower 忽略完整
+有限页与带 Limit CountOnly 确定证据的完整性缺口，同时保留截断、historical 和 revision-filtered 响应的保守边界。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
