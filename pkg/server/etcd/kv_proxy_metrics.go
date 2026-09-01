@@ -270,6 +270,21 @@ func validateTxnProxyResponseTree(request *etcdserverpb.TxnRequest, response *et
 	if len(request.GetCompare()) == 0 && !response.GetSucceeded() {
 		return fmt.Errorf("leader txn proxy selected the failure branch without compares")
 	}
+	if len(request.GetCompare()) != 0 {
+		expected, deterministic := txnProxyDeterministicEmptyCompareBranch(request.GetCompare())
+		if deterministic && response.GetSucceeded() != expected {
+			selectedBranch := "failure"
+			expectedBranch := "success"
+			if response.GetSucceeded() {
+				selectedBranch = "success"
+				expectedBranch = "failure"
+			}
+			return fmt.Errorf(
+				"leader txn proxy selected the %s branch for compares that deterministically select the %s branch",
+				selectedBranch, expectedBranch,
+			)
+		}
+	}
 	requests := request.GetFailure()
 	if response.GetSucceeded() {
 		requests = request.GetSuccess()
@@ -311,6 +326,26 @@ func validateTxnProxyResponseTree(request *etcdserverpb.TxnRequest, response *et
 		}
 	}
 	return nil
+}
+
+func txnProxyDeterministicEmptyCompareBranch(compares []*etcdserverpb.Compare) (bool, bool) {
+	allDeterministic := true
+	for _, compare := range compares {
+		if !isEmptyNonFromKeyRange(compare.GetKey(), compare.GetRangeEnd()) {
+			allDeterministic = false
+			continue
+		}
+		// Upstream applyCompare evaluates an empty numeric interval against a
+		// zero KeyValue and always fails VALUE compares. compareKeyValue shares
+		// that exact truth table, including unknown enum fallthrough behavior.
+		if !compareKeyValue(compare, nil) {
+			return false, true
+		}
+	}
+	if allDeterministic {
+		return true, true
+	}
+	return false, false
 }
 
 func txnProxyResponseHasEffectiveWrite(request *etcdserverpb.TxnRequest, response *etcdserverpb.TxnResponse) bool {

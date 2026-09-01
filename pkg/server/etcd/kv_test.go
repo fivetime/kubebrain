@@ -603,6 +603,44 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			}}},
 			message: "selected the failure branch without compares",
 		},
+		{
+			name: "empty interval true selected failure",
+			request: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key: []byte("equal"), RangeEnd: []byte("equal"),
+					Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+					TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+				}},
+				Success: []*etcdserverpb.RequestOp{rangeRequest("success")},
+				Failure: []*etcdserverpb.RequestOp{rangeRequest("failure")},
+			},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2)}},
+			}}},
+			message: "deterministically select the success branch",
+		},
+		{
+			name: "nested empty interval false selected success",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+					Compare: []*etcdserverpb.Compare{{
+						Key: []byte("reverse-z"), RangeEnd: []byte("reverse-a"),
+						Result: etcdserverpb.Compare_NOT_EQUAL, Target: etcdserverpb.Compare_VALUE,
+						TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("anything")},
+					}},
+					Success: []*etcdserverpb.RequestOp{rangeRequest("nested-success")},
+					Failure: []*etcdserverpb.RequestOp{rangeRequest("nested-failure")},
+				}},
+			}}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{
+					Header: txnHeader(0), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+						Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2)}},
+					}},
+				}},
+			}}},
+			message: "deterministically select the failure branch",
+		},
 		{name: "missing operation header", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{rangeResponse()}}},
 		{
 			name:    "operation header identity",

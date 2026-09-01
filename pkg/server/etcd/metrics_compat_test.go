@@ -1014,6 +1014,40 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 	deleteResponse := func() *etcdserverpb.ResponseOp {
 		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5)}}}
 	}
+	branchRequest := func(compares ...*etcdserverpb.Compare) *etcdserverpb.TxnRequest {
+		return &etcdserverpb.TxnRequest{
+			Compare: compares,
+			Success: []*etcdserverpb.RequestOp{rangeRequest("success")},
+			Failure: []*etcdserverpb.RequestOp{rangeRequest("failure")},
+		}
+	}
+	branchResponse := func(succeeded bool) *etcdserverpb.TxnResponse {
+		return &etcdserverpb.TxnResponse{
+			Header: txnHeader(5), Succeeded: succeeded,
+			Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{
+				ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)},
+			}}},
+		}
+	}
+	emptyVersionTrue := &etcdserverpb.Compare{
+		Key: []byte("equal"), RangeEnd: []byte("equal"),
+		Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+		TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+	}
+	emptyValueFalse := &etcdserverpb.Compare{
+		Key: []byte("reverse-z"), RangeEnd: []byte("reverse-a"),
+		Result: etcdserverpb.Compare_NOT_EQUAL, Target: etcdserverpb.Compare_VALUE,
+		TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("anything")},
+	}
+	unknownPoint := &etcdserverpb.Compare{
+		Key: []byte("point"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+		TargetUnion: &etcdserverpb.Compare_Version{Version: 1},
+	}
+	fromKey := &etcdserverpb.Compare{
+		Key: []byte("from"), RangeEnd: []byte{0},
+		Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+		TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+	}
 	nestedRequest := &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
 			Key: []byte("nested-compare"), Target: etcdserverpb.Compare_VERSION,
@@ -1050,6 +1084,13 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		{name: "selected success tree", request: request, response: validSuccess, valid: true},
 		{name: "selected failure branch", request: request, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{putResponse()}}, valid: true},
 		{name: "unconditional selected failure", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("success")}, Failure: []*etcdserverpb.RequestOp{putRequest("failure")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{putResponse()}}},
+		{name: "empty interval true selected failure", request: branchRequest(emptyVersionTrue), response: branchResponse(false)},
+		{name: "empty interval false selected success", request: branchRequest(emptyValueFalse), response: branchResponse(true)},
+		{name: "unknown point then empty false selected success", request: branchRequest(unknownPoint, emptyValueFalse), response: branchResponse(true)},
+		{name: "unknown point after empty true selected success", request: branchRequest(emptyVersionTrue, unknownPoint), response: branchResponse(true), valid: true},
+		{name: "unknown point after empty true selected failure", request: branchRequest(emptyVersionTrue, unknownPoint), response: branchResponse(false), valid: true},
+		{name: "from-key selected success", request: branchRequest(fromKey), response: branchResponse(true), valid: true},
+		{name: "from-key selected failure", request: branchRequest(fromKey), response: branchResponse(false), valid: true},
 		{name: "read-only previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},
 		{name: "pre-write operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key"), putRequest("put")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}, putResponse()}}, valid: true},
 		{name: "post-write previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{putRequest("put"), rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{putResponse(), {Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},
