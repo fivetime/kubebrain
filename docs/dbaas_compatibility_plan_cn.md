@@ -68356,6 +68356,74 @@ Kind local-path 非 CSI 存储隔离风险仍存在，本轮不把 region API �
 关闭了 follower 只做成对 cardinality 校验、却放过多份可同时成立的 pre-write 证据聚合下界超过外层 CountOnly
 的完整性缺口。
 
+### A5685：全局求解 Txn 区间 cardinality，并约束有限字节区间容量
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{compareToPath,executeTxn}`、
+`/root/etcd/server/storage/mvcc/kvstore_txn.go::rangeKeys` 与 Go `bytes.Compare` 的 byte-lexicographic
+半开区间语义。A5684 只求和几何不重叠的 CountOnly 子区间；两个相交子区间即使另有精确交集证据，旧实现也不会联合求解。
+例如 outer=2、left=2、right=2、intersection=0 在同一 pre-write 快照上不可能成立，却会被成对/不重叠下界检查放过。
+另一方面，有限端点本身也给出真实键空间容量：`[a,a\x00\x00)` 只能包含 `a` 与 `a\x00` 两个 byte key；此前
+Range/Delete validator 只限制 exact point，仍会接受该区间 Count/Deleted 大于 2 的伪造响应。
+
+tests-only RED 首先固定三个重叠方程矛盾（含 follower）并保留 outer=3、left=2、right=2、intersection=1 的合法边界；
+随后再固定 standalone Range、standalone Delete、Txn、follower 与直接 solver 五个有限容量失败。提交
+`ca279856ac1ac3d40d370a7b57c95f4f11e75e5a` 用任意精度 `big.Int` 前缀变量统一表达所有仍代表 pre-write
+快照的完整区间证据：每个 `[start,end)` 精确计数成为两个 difference-constraint equality edge，相邻端点用
+单调 edge 保证 atom population 非负；point 规范为 `[key,key+NUL)`，from-key 使用独立无穷端点；相邻有限
+端点再加入 byte-key 最大容量 edge。Bellman-Ford 检测负环即证明整组方程不可满足，避免 int64 溢出或局部
+heuristic 漏检。每个 pre-write 已知 key 同时加入 count=1 的 point equation；post-write current、更旧 historical
+证据继续排除，精确 base-revision snapshot-pinned 证据继续参加。独立 Range/Delete validator 复用
+`finiteLexicalIntervalMaximumCardinality`：只有 end 等于 start 后接 N 个 NUL 时容量有界且为 N，exact point 仍为 1，
+其他有限区间保持无武断上界；检查顺序保留旧 empty/reverse 与 exact-point 错误文本优先级。
+
+实现后聚焦测试 `0.452s`，扩展边界 `0.459s`，容量集合 `0.495s`，最大 Txn op/直接 solver 边界 `0.497s`；
+聚焦连续三轮 `0.468/0.452/0.484s`，race `2.635s`（墙钟 `76.591s`），全部 Txn `31.904s`，完整
+`pkg/server/etcd` `132.997s`（墙钟 `136.736s`），最大 128-op 场景连续 50 轮 `0.778s`，vet 墙钟
+`5.738s`。完整包首轮仅暴露新增容量检查抢先改变 reverse/equal 旧错误优先级；调整顺序后定向失败集合与聚焦联合
+`0.742s`、权威完整包均 GREEN。提交前 production verifier 精确为 703 项、四片 `170/193/180/160`；代码提交后
+四片分别为 `250.649/447.694/303.640/574.666s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5685-ca279856` 内嵌版本 `0.0.0-ca279856ac1a`、完整提交
+`ca279856ac1ac3d40d370a7b57c95f4f11e75e5a`、build time `2026-09-01T18:36:00Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:7eae691bc5a2d6f09ea6f67fee95a7a246922955146e6c6b224398004a9317dc`、
+`sha256:85311b39fc368c2a31f9dcdd914a3b95a9f8cfc75d836bbf3dc10f33d4dd5740`、
+`sha256:5428753e892b58555829f317c44868358999211230c5478993de690e73812b62`、
+`sha256:251000b54d17b3c39f948abf79085b0190d67a77e71c180381c6d20c5014d60d`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功，Kind runtime digest 为
+`sha256:34b50b7c987a57743c0f07b4cb0d7ecc9dd406a0f67b160724c05949e21e4bf4`。
+
+稳定基线 generation `762`，revision/index/applied、HashKV、compact revision 为
+`66174/66174/66174/3474706291/44329`，term `395`、leader `231094427`。以 StatefulSet
+UID/resourceVersion/container/current image/full args 五类原子 test 部署到 generation `763`；三 Pod
+均落在 `kubebrain-7677c7997c`、Ready/restart 0、同一候选 runtime digest，Pod 内版本与完整 SHA 一致。
+逐个 Pod-local HTTP gateway 在 `/a5685/p{0,1,2}/` 串行执行七类合法 Txn：outer/left/right/intersection
+精确重叠方程、完整普通 Range 给出的空交集、没有显式交集证据的完全重叠 children、包含 `k` 与 `k+NUL` 的
+`[k,k+NUL+NUL)` CountOnly/普通 Range、staged Put 后 current CountOnly、写后 base-revision snapshot-pinned
+CountOnly/point，以及 older historical/current cardinality 隔离；每 Pod 七类、共 21 类次全部通过，各前缀最终
+Count=0。显式 NUL key 通过 base64 gateway body 传递，没有依赖无法携带 NUL 的 shell argv。
+
+候选终态 revision/index/applied 为 `66219`，HashKV `3246113572`、compact revision `44329`，term `397`、
+leader `231094427`。全部适用开关启用的 HEAD readonly gate 一次 GREEN，三成员 Status/HashKV、named
+readyz/livez、HTTP、完整 raw metrics/debug/pprof、auth disabled/revision 281、Alarm 与空前缀均通过。候选
+三轮九次 exact endpoint proposal health 全部成功（`10.160–12.174ms`）；三个 store Up，pending/down/miss/
+extra/learner 五类 region check 连续三轮全零。候选三 Pod 全量日志 `678/700/329` 行，关键错误及最近 60 秒
+关键错误均为 0；KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各沿用一次历史 restart。
+
+以同类五类原子 test 回滚固定稳定 digest。StatefulSet UID
+`817bc005-a4d1-4d57-9aab-de93e0874054` 不变，generation/observed `764/764`、current/update
+`kubebrain-9b9965dc9`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。
+HEAD readonly gate 在稳定 A5525 镜像上按预期精确拒绝尚未导出的 `watch_range_prefilter_dropped`；明确排除
+新版 info-metrics 合同后，其余 Status/HashKV、gateway、readyz/livez、auth、Alarm、debug/pprof 门禁全部
+GREEN，不能把这个版本边界误报成“旧稳定镜像通过 HEAD 完整门禁”。稳定三轮九次 proposal health 全部成功
+（`9.528–18.592ms`），store/region 连续三轮健康。最终 revision/index/applied、HashKV、compact revision
+保持 `66219/66219/66219/3246113572/44329`，term `400`、leader `231094427`，Lease/Alarm/测试前缀为空；
+稳定日志 `403/415/317` 行且关键错误为 0。全程未使用凭据或落盘诊断日志，最终六个数据面/info 端口与一个 PD
+端口均无监听残留；宿主根盘 74%、可用 499 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在，本轮
+不把 region API 结果替代完整 storage isolation gate。A5685 关闭了 follower 接受全局不可满足的重叠区间计数方程
+以及有限 byte-lexicographic 区间超容量响应的完整性缺口，同时保留 staged/historical 边界与上游真实可表示键集。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
