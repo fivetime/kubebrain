@@ -534,22 +534,26 @@ func txnProxyIntervalContainsInterval(outer, inner txnProxyMutationInterval) boo
 }
 
 func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest, response *etcdserverpb.RangeResponse) bool {
-	// Historical or revision-filtered responses are not descriptions of the
-	// current unfiltered compare snapshot. CountOnly ignores Limit upstream and
-	// preserves full interval cardinality. A regular limited response is complete
+	// Historical responses are not descriptions of the current compare snapshot.
+	// CountOnly returns full interval cardinality directly from MVCC before the
+	// Range layer applies revision filters, so both Limit and those filters are
+	// ineffective for its Count. A regular filtered response is not a description
+	// of the unfiltered compare snapshot. A regular limited response is complete
 	// only when More is false and Count confirms that no key-value was omitted.
 	// Zero CountOnly proves every subinterval missing, while a positive count can
 	// prove only lifecycle facts about the exact requested interval.
 	// KeysOnly preserves key and MVCC metadata; its projection capabilities are
 	// enforced when evaluating a compare. Sort and Serializable do not change
 	// the represented key set.
-	if request.GetRevision() != 0 ||
-		request.GetMinModRevision() != 0 || request.GetMaxModRevision() != 0 ||
-		request.GetMinCreateRevision() != 0 || request.GetMaxCreateRevision() != 0 {
+	if request.GetRevision() != 0 {
 		return false
 	}
 	if request.GetCountOnly() {
 		return !response.GetMore() && len(response.GetKvs()) == 0
+	}
+	if request.GetMinModRevision() != 0 || request.GetMaxModRevision() != 0 ||
+		request.GetMinCreateRevision() != 0 || request.GetMaxCreateRevision() != 0 {
+		return false
 	}
 	if request.GetLimit() > 0 {
 		return !response.GetMore() && response.GetCount() == int64(len(response.GetKvs()))
