@@ -786,6 +786,25 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			message: "deterministically select the success branch",
 		},
 		{
+			name: "complete limited range evidence rejects value failure",
+			request: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VALUE,
+					TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("expected")},
+				}},
+				Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("evidence"), Limit: 1}}}},
+				Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("evidence"), Limit: 1}}}},
+			},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+					Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{
+						Key: []byte("evidence"), Value: []byte("expected"), CreateRevision: 1, ModRevision: 1, Version: 1,
+					}},
+				}},
+			}}},
+			message: "deterministically select the success branch",
+		},
+		{
 			name: "root range evidence rejects nested failure",
 			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 				rangeRequest("evidence"),
