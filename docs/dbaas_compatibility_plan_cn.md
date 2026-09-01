@@ -67189,6 +67189,49 @@ named/HTTP/metrics/debug/pprof 及跨端点身份、revision、term 均通过。
 Ready/restart 0，回滚后三轮九次稳定 Pod `3379` proposal health 全部 GREEN（`9.680–16.403ms`），LeaseLeases 为空，
 无端口转发或六个诊断监听残留。A5664 关闭了 proxied Status 可用未知成员伪造 leader、破坏客户端集群身份与领导者认知的完整性缺口。
 
+### A5665：要求 proxied Txn PrevKV 严格早于事务写 revision
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{Txn,txn,executeTxn}` 与
+`/root/etcd/server/etcdserver/api/v3rpc/key.go::checkIntervals`：上游先从事务的 pre-write snapshot 读取 Put/Delete PrevKV，
+有效写入再把外层 revision 推进一；同一事务内的重叠写会被 API 拒绝，因此返回的 PrevKV mod revision 必须严格早于外层写
+revision。KubeBrain unary Put/Delete proxy 门禁已执行这一约束，但 Txn 内嵌 Put/Delete 只拒绝 `>`，错误接受等于外层 revision 的
+伪造历史值。同期排除 LeaseTimeToLive remaining TTL 不得超过 GrantedTTL 这一假缺口：上游 lessor promote 会按 election timeout
+合法延长 expiry，过期待回收窗口也可返回负 remaining TTL。
+
+先补齐旧 follower Txn invalid-payload fixture 缺失的正 RaftTerm，确保测试不再被 header 门禁提前拒绝；tests-only RED 随后证明
+旧实现把 Put/Delete 两种等 revision PrevKV 原样成功返回，定向包在 `0.069s` 后按预期失败。提交 `b18e09a8` 将两处比较收紧为
+`>=` 即 `DataLoss`，直接 validator 表同时把旧错误正例改为负例，并新增严格更旧的 Put/Delete 正例。定向测试 `0.064s`、
+包含真实本地 Txn PrevKV 的集合 `0.196s`、全部 Txn/ProxyPayload 集合 `26.908s`，完整普通包 `144.904s`、完整 race
+`376.491s`，`go vet ./pkg/server/etcd`、gofmt 与 diff check 均通过。提交前 production inventory 为 703 项、四片
+`170/193/180/160`；提交后四片分别为 `253.951/451.105/306.948/584.682s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5665-b18e09a8` 内嵌版本 `0.0.0-b18e09a8a51f`、完整提交
+`b18e09a8a51fada2766f8251c2f90dbcd5740db9` 与 build time `2026-09-01T00:08:18Z`，运行用户 `65532:65532`、Go
+`1.26.5`、平台 `linux/amd64`、后端 TiKV，构建墙钟 `3m55.427s`。OCI index、platform manifest、config 分别为
+`sha256:3a95657cf1a6ac4cdc7eaa7f190721269d3e705d4ceb3c77357ce5a57e844c5d`、
+`sha256:e78f6003bc12c34a04a20dd226a6088e196e3fbda59c03f21e610d13140506e8`、
+`sha256:e45c990eb6f92e1f6621d758c03a4220d863838a873172912e349ea5f268ad56`；Kind/containerd runtime digest 为
+`sha256:a32630cf770a264d9a08dba400c900df7dc9e63ec129e0aaf31420403d71350a`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 717 部署至 generation 718；
+三 Pod 均落在 revision `kubebrain-85897bf78`、使用上述 runtime digest、Ready/restart 0，PD/TiKV 3+3
+Ready/restart 0。三个 exact Pod endpoint 分别执行 seed→Txn Put `prev_kv=true`→seed→Txn Delete `prev_kv=true`：Put 的
+PrevKV/Txn revisions 为 `65744/65746`、`65748/65750`、`65752/65754`，Delete 为 `65745/65747`、
+`65749/65751`、`65753/65755`，六组均严格更旧，最终 `/a5665/` count 0。首次只读 gate 使用测试前 HashKV
+`4283180840` 后按预期 fail closed；六次写删改变 MVCC 历史，新鲜权威值为 `1205564789`，以该值重跑全部开关一次 GREEN：
+cluster `7662961163671170154`、version/storage `3.7.0/3.7.0`、leader `231094427`、term `306`、
+revision/index/applied `65756`、compact revision `44329`、direct hash `1229182128`、auth disabled/revision `281`，
+named/HTTP/metrics/debug/pprof 及跨端点身份、revision、term 均通过。
+
+候选三轮九次 exact endpoint proposal health 全部成功（`11.303–14.736ms`），LeaseLeases 为空。候选日志最终为
+`579/586/275` 行，error/fatal/panic 与 data race/data corruption/storage error 均为 0；leader 上仅有只读 gate 主动验证
+method-not-allowed 所对应的三条 `/health`/`/debug/vars` HTTP 405 warning。关闭端口转发并确认六端口和相关进程无残留后，
+以新鲜同类五类 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed 719、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0，回滚后三轮九次稳定 Pod `3379` proposal health 全部 GREEN（`10.776–17.796ms`），LeaseLeases 为空，
+无端口转发或六个诊断监听残留。A5665 关闭了 follower 可把当前事务写 revision 伪装成历史 PrevKV revision、破坏事务前态证明的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
