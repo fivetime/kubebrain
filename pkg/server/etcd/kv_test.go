@@ -570,6 +570,34 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 		{name: "wrong operation type", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{}}}}}},
 		{name: "nil typed payload", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{}}}}},
 		{name: "nested mismatch", request: nested, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{Succeeded: true}}}}}},
+		{
+			name: "unconditional root selected failure",
+			request: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{rangeRequest("success")},
+				Failure: []*etcdserverpb.RequestOp{rangeRequest("failure")},
+			},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2)}},
+			}}},
+			message: "selected the failure branch without compares",
+		},
+		{
+			name: "unconditional nested selected failure",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+					Success: []*etcdserverpb.RequestOp{rangeRequest("nested-success")},
+					Failure: []*etcdserverpb.RequestOp{rangeRequest("nested-failure")},
+				}},
+			}}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: &etcdserverpb.TxnResponse{
+					Header: txnHeader(0), Responses: []*etcdserverpb.ResponseOp{{
+						Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2)}},
+					}},
+				}},
+			}}},
+			message: "selected the failure branch without compares",
+		},
 		{name: "missing operation header", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{rangeResponse()}}},
 		{name: "future operation revision", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(3)}}}}}},
 		{name: "invalid range payload", request: simple, response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("other"), CreateRevision: 1, ModRevision: 1, Version: 1}}}}}}}},

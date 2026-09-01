@@ -220,6 +220,11 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 }
 
 func validateTxnProxyResponseTree(request *etcdserverpb.TxnRequest, response *etcdserverpb.TxnResponse) error {
+	// Upstream applyCompares returns true for an empty compare list, and
+	// compareToPath applies that rule independently to every nested transaction.
+	if len(request.GetCompare()) == 0 && !response.GetSucceeded() {
+		return fmt.Errorf("leader txn proxy selected the failure branch without compares")
+	}
 	requests := request.GetFailure()
 	if response.GetSucceeded() {
 		requests = request.GetSuccess()

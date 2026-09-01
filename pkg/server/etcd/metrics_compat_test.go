@@ -1004,9 +1004,19 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 	deleteResponse := func() *etcdserverpb.ResponseOp {
 		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{Header: txnHeader(5)}}}
 	}
-	nestedRequest := &etcdserverpb.TxnRequest{Failure: []*etcdserverpb.RequestOp{deleteRequest("nested")}}
+	nestedRequest := &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: []byte("nested-compare"), Target: etcdserverpb.Compare_VERSION,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 1},
+		}},
+		Failure: []*etcdserverpb.RequestOp{deleteRequest("nested")},
+	}
 	nestedResponse := &etcdserverpb.TxnResponse{Header: txnHeader(0), Responses: []*etcdserverpb.ResponseOp{deleteResponse()}}
 	request := &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: []byte("root-compare"), Target: etcdserverpb.Compare_VERSION,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 1},
+		}},
 		Success: []*etcdserverpb.RequestOp{
 			rangeRequest("range"), putRequest("put"), deleteRequest("delete"),
 			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: nestedRequest}},
@@ -1028,6 +1038,7 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 	}{
 		{name: "selected success tree", request: request, response: validSuccess, valid: true},
 		{name: "selected failure branch", request: request, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{putResponse()}}, valid: true},
+		{name: "unconditional selected failure", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("success")}, Failure: []*etcdserverpb.RequestOp{putRequest("failure")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{putResponse()}}},
 		{name: "pre-write operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}, valid: true},
 		{name: "historical range payload with signed lease", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("a"), Revision: 4}}}}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 3, ModRevision: 4, Version: 2, Lease: math.MinInt64}}}}}}}, valid: true},
 		{name: "put previous from older revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("p"), PrevKv: true}}}}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(5), PrevKv: &mvccpb.KeyValue{Key: []byte("p"), CreateRevision: 4, ModRevision: 4, Version: 1, Lease: math.MinInt64}}}}}}, valid: true},
