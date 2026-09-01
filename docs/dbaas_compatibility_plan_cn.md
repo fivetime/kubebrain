@@ -67811,6 +67811,80 @@ Pod 替换期间 port-forward 的 reset/broken-pipe 仅来自本地 kubectl，�
 诊断文件。A5675 关闭了 follower 接受 leader 返回的完整写前 Range payload 与其根/嵌套 Txn Compare 分支相互矛盾
 这一代理完整性缺口。
 
+### A5676：按区间跟踪 Txn mutation evidence，并修复 guarded no-op Delete 重试
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{compareToPath,applyCompares,applyCompare}`。上游先用同一
+`txnRead` 求完整 path，再按选中路径执行 operation；因此写前完整 Range 之外，请求 Put PrevKv 后返回的旧值或 nil、
+Delete PrevKvs 及 `Deleted=0` 的 no-op Delete 也能证明同一写前快照。证据有效性不能使用全局“尚未写入”开关：前面
+mutation 与证据区间不相交时仍可用于 Compare，而 point、有限 range、from-key 和反向空区间必须遵循 etcd 精确区间语义。
+
+tests-only RED 增加七个直接 validator/follower 场景和区间真值表，旧实现均接受矛盾分支。提交 `a4bda820` 改用按
+operation 顺序共享的 interval-aware mutation tracker：未与既有有效 mutation 相交的完整 current Range、请求的 Put
+PrevKv、Delete PrevKvs 和 no-op Delete 均可成为证据；Put 总是记录 point mutation，有效 Delete 无 PrevKv 时保守
+记录完整请求区间，有 PrevKv 时记录精确旧 key，根与 nested selected path 共用顺序。聚焦 GREEN `0.348s`、race
+`2.098s`、全部 Txn `33.309s`、完整 `pkg/server/etcd` `136.323s`，vet 通过。提交前 production inventory
+为 703 项、四片 `170/193/180/160`；提交后四片 `245.858/442.537/297.958/570.547s` 全部 GREEN。
+
+首个候选 `docker.io/library/kubebrain:a5676-a4bda820` 的 OCI index/platform/config/attestation 分别为
+`sha256:66e27fbfbf295d2c025751e467cf10d23463f877dcbb07d19931be5ae2dc6ef0`、
+`sha256:38f1f64ce7772041c4bf7704e865d2b1eb901de51ad82d80ad87ee9dedc1ab27`、
+`sha256:261b069928d6ddd15c991d9133e70545ffa04d1623756ab4824685de86fa6c5b`、
+`sha256:703d1cc14ffb043d01854c5a14afe441c911a75dd8c634efe4333d2fda318f06`，runtime digest 为
+`sha256:c89a77df037fa40cda16c9f716eda9aa175a56c3b3f88f47b1fc96a74b092025`。首次把只在本机构建、未推入
+registry 的 OCI index digest 写入 StatefulSet，generation 742 准确进入 `ImagePullBackOff`；以同样五类原子
+test 改为已加载 tag 后 generation 743 Ready。Put PrevKv 与 Delete PrevKvs 现场用例通过，但 missing VALUE
+Compare 选择同一 missing point 的 no-op Delete 持续 504；立即回滚 generation 744 后稳定镜像也精确复现，证明并非
+新 response validator 回归。
+
+现场逐个重建 `kb-tikv-1/2/0` 并保留原 PVC，确认三个 store Up、五类 region check 全零，再逐个重建三个稳定
+KubeBrain Pod 刷新 TiKV client；no-op 形状仍超时，而同类 Failure/Success Put 立即成功。根因在
+`pkg/backend/txn_apply.go`：Put 把 absent/tombstone 标为 create，Delete 未设置，导致 absent guard 与 absent
+Delete 重叠时误报 `ErrTxnGuardConflict`，generic Txn 重试到 deadline。tests-only RED 分别固定直接 guard conflict
+和 client 5 秒超时；提交 `28b36274` 在 Put/Delete 分流前统一设置 `p.create = absent || tombstone`，Delete 有效性
+改为 `!p.create`。修复后 backend/server 聚焦 `0.056/0.409s`、race `1.202/2.219s`、完整 backend
+`49.580s`、全部 Txn `27.855s`、完整 server `135.662s`，两包 vet 通过；inventory 仍为 703 项和
+`170/193/180/160`，提交后四片 `256.738/443.090/300.591/570.460s` 全部 GREEN。
+
+组合候选 `docker.io/library/kubebrain:a5676-28b36274` 内嵌版本 `0.0.0-28b36274846a`、完整提交
+`28b36274846a9f4423a7199a315f9bffdc50f91b`、build time `2026-09-01T10:53:03Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:3150556fe13fdba3a17520fd12f4fc075b6e71a8db9bcb863e54649a3cba25ef`、
+`sha256:a1217af76fe7e90e688408ac8bb5882f5d5b33c93c94febb39a27fcf19b2a6d0`、
+`sha256:d2770d5ab3fa4af8bbc7663554e7f8d1488ff3b56d36055b500a434c7b82ea5e`、
+`sha256:79b1ab16f6e1a63b1c123c01a374aac38cc55d060e24c688c80bae9e30cc966c`，runtime digest 为
+`sha256:343a5cbf106d5e8a8970a5930635eb3159150f09434631ae763176dddc5d6796`。第一次组合构建手工写错 SHA，
+与 `git rev-parse HEAD` 对账后在 output/load 前取消，未部署；随后动态读取 HEAD 重建正确 artifact。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 部署 generation 745，三 Pod
+Ready/restart 0。原失败 no-op Txn 在三个 Pod-local gateway 均于 `157–175ms` 返回 Failure、`Deleted=0`，
+revision 保持 `65918`。Put PrevKv true/false/missing、Delete PrevKvs range、前置 disjoint Put 后 Range/Put
+PrevKv、根 evidence 证明 nested Compare、from-key overlap、同 key 有效 Delete 后 PrevKv no-op Delete 全部通过；
+最终清理 7 键，revision `65939`、`/a5676/` count 0。首次 from-key fixture 使用 `/a5676/overlap`，其 Delete
+from-key 合法删除字典序更后的 fixture，失败来自断言而非服务；改用 `/a5676/z-overlap` 后通过。
+
+候选 term `361`、leader `231094427`、HashKV `2282920520`、compact revision `44329`。全部适用开关启用的
+readonly gate 一次 GREEN，三成员身份、revision/index/applied、term、Status/HashKV、named readyz/livez、HTTP、
+metrics/debug/pprof、auth disabled/revision 281、Alarm 和空前缀均通过。三轮九次 proposal health 全部成功
+（`9.463–17.069ms`），Lease/Alarm 为空；三 Pod 全量日志 `765/781/309` 行，真实 klog E/F、panic/fatal、
+data race/data corruption/storage error 均为 0。KubeBrain 3/3 Ready/restart 0，重建后 TiKV 3/3 Ready/restart
+0；PD 3/3 Ready/restart 1 来自此前节点 sandbox 事件。
+
+完整 `validate-tikv-region-health.sh` 没有被伪记为通过：当前 Kind 使用 local-path PV 而非要求的独立 CSI identity，
+容器看到约 2 TiB 宿主文件系统而声明 PVC 仅 2/5 GiB，宿主盘使用率 99%，因此 storage identity、filesystem
+isolation 与 90% disk-pressure 三类生产门禁准确失败。这是现有测试基础设施风险，不是候选行为回归，也意味着该
+Kind 环境不能充当完整生产存储隔离证明。独立读取 PD `/stores` 与五类 region API 在候选及回滚后均连续三轮证明
+三个 store Up，pending/down/miss/extra/learner peer 全零；恢复过程未删除数据 PVC。
+
+以同类五类原子 test 回滚稳定 digest。StatefulSet UID 不变，generation/observed `746/746`、current/update
+`kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。终态
+revision/index/applied、HashKV、compact revision 保持 `65939/2282920520/44329`，term `363`、leader
+`2393892952`，prefix、Lease、Alarm 为空；稳定三轮九次 proposal health 全部 GREEN（`9.652–12.165ms`），
+全量日志 `416/270/478` 行且关键错误为 0，store/region 继续健康。两次本地审计分别因过期 namespace 摘要和误把
+etcdctl HashKV 数组当对象而只读失败并纠正；一次 ready_port 编排插值错误在工具执行前被拦截。最终六个端口转发
+监听均无残留，未使用凭据、未落盘诊断日志。A5676 同时关闭了 follower 忽略不相交 mutation evidence 的完整性
+缺口，以及 guarded no-op Delete 永久重试的可用性缺陷。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
