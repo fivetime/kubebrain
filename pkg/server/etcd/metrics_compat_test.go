@@ -1108,6 +1108,38 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		Result: etcdserverpb.Compare_GREATER, Target: etcdserverpb.Compare_LEASE,
 		TargetUnion: &etcdserverpb.Compare_Lease{Lease: 6},
 	}
+	valueEvidenceCompare := &etcdserverpb.Compare{
+		Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VALUE,
+		TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("expected")},
+	}
+	valueEvidenceRangeRequest := func(keysOnly bool, revision int64) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: []byte("evidence"), KeysOnly: keysOnly, Revision: revision,
+		}}}
+	}
+	valueEvidenceRangeResponse := func(value string, headerRevision, createRevision, modRevision, version int64) *etcdserverpb.ResponseOp {
+		return &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+			Header: txnHeader(headerRevision), Count: 1, Kvs: []*mvccpb.KeyValue{{
+				Key: []byte("evidence"), Value: []byte(value), CreateRevision: createRevision,
+				ModRevision: modRevision, Version: version,
+			}},
+		}}}
+	}
+	valueEvidenceBranchRequest := func(rangeRequest *etcdserverpb.RequestOp) *etcdserverpb.TxnRequest {
+		return &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{rangeRequest}, Failure: []*etcdserverpb.RequestOp{rangeRequest},
+		}
+	}
+	valueEvidenceBranchResponse := func(succeeded bool, rangeResponse *etcdserverpb.ResponseOp) *etcdserverpb.TxnResponse {
+		return &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: succeeded, Responses: []*etcdserverpb.ResponseOp{rangeResponse}}
+	}
+	countOnlyEvidenceRequest := valueEvidenceRangeRequest(false, 0)
+	countOnlyEvidenceRequest.GetRequestRange().CountOnly = true
+	limitedEvidenceRequest := valueEvidenceRangeRequest(false, 0)
+	limitedEvidenceRequest.GetRequestRange().Limit = 1
+	filteredEvidenceRequest := valueEvidenceRangeRequest(false, 0)
+	filteredEvidenceRequest.GetRequestRange().MinModRevision = 1
 	nestedRequest := &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
 			Key: []byte("nested-compare"), Target: etcdserverpb.Compare_VERSION,
@@ -1200,6 +1232,82 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 					ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)},
 				}}},
 			}}},
+		}}},
+		{name: "range evidence true selected failure", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 0)), response: valueEvidenceBranchResponse(false, valueEvidenceRangeResponse("expected", 5, 4, 4, 1))},
+		{name: "range evidence false selected success", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 0)), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1))},
+		{name: "missing value evidence false selected success", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 0)), response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}},
+		})},
+		{name: "lease evidence true selected failure", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_LEASE,
+				TargetUnion: &etcdserverpb.Compare_Lease{Lease: 6},
+			}},
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0)},
+			Failure: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0)},
+		}, response: valueEvidenceBranchResponse(false, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("evidence"), Value: []byte("value"), CreateRevision: 4, ModRevision: 4, Version: 1, Lease: 6,
+				}},
+			}},
+		})},
+		{name: "range evidence one mismatch selected success", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("a"), RangeEnd: []byte("z"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VALUE,
+				TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("expected")},
+			}},
+			Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}}}},
+			Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}}}},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 2, Kvs: []*mvccpb.KeyValue{
+					{Key: []byte("a"), Value: []byte("expected"), CreateRevision: 4, ModRevision: 4, Version: 1},
+					{Key: []byte("b"), Value: []byte("other"), CreateRevision: 4, ModRevision: 4, Version: 1},
+				},
+			}},
+		}}}},
+		{name: "unknown compare then range evidence false selected success", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{unknownPoint, valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0)},
+			Failure: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0)},
+		}, response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1))},
+		{name: "keys-only range is not value evidence selected success", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(true, 0)), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("", 5, 4, 4, 1)), valid: true},
+		{name: "keys-only range is not value evidence selected failure", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(true, 0)), response: valueEvidenceBranchResponse(false, valueEvidenceRangeResponse("", 5, 4, 4, 1)), valid: true},
+		{name: "count-only range is not value evidence", request: valueEvidenceBranchRequest(countOnlyEvidenceRequest), response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
+		}), valid: true},
+		{name: "limited range is not value evidence", request: valueEvidenceBranchRequest(limitedEvidenceRequest), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1)), valid: true},
+		{name: "filtered range is not value evidence", request: valueEvidenceBranchRequest(filteredEvidenceRequest), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1)), valid: true},
+		{name: "historical range is not current evidence selected success", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 4)), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1)), valid: true},
+		{name: "historical range is not current evidence selected failure", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 4)), response: valueEvidenceBranchResponse(false, valueEvidenceRangeResponse("other", 5, 4, 4, 1)), valid: true},
+		{name: "pre-write range evidence false selected success write", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0), putRequest("evidence")},
+			Failure: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidenceRangeResponse("other", 4, 4, 4, 1), putResponse(),
+		}}},
+		{name: "post-write range is not pre-write evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{putRequest("evidence"), valueEvidenceRangeRequest(false, 0)},
+			Failure: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			putResponse(), valueEvidenceRangeResponse("other", 5, 4, 5, 2),
+		}}, valid: true},
+		{name: "no-op delete preserves pre-write range evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{deleteRequest("missing"), valueEvidenceRangeRequest(false, 0)},
+			Failure: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			deleteResponse(), valueEvidenceRangeResponse("other", 5, 4, 4, 1),
+		}}},
+		{name: "inconsistent pre-write range evidence", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0), valueEvidenceRangeRequest(false, 0)},
+			Failure: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(false, 0), valueEvidenceRangeRequest(false, 0)},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			valueEvidenceRangeResponse("expected", 5, 4, 4, 1), valueEvidenceRangeResponse("other", 5, 4, 4, 1),
 		}}},
 		{name: "read-only previous operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}}}},
 		{name: "pre-write operation revision", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{rangeRequest("key"), putRequest("put")}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4)}}}, putResponse()}}, valid: true},

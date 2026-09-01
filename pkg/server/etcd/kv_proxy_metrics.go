@@ -265,6 +265,13 @@ func validateTxnProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.Tx
 		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
 		return nil, status.Error(codes.DataLoss, validationErr.Error())
 	}
+	preWriteChanged := false
+	var rangeEvidence []txnProxyRangeEvidence
+	collectTxnProxyPreWriteRangeEvidence(request, response, &preWriteChanged, &rangeEvidence)
+	if validationErr := validateTxnProxyRangeEvidenceBranches(request, response, rangeEvidence); validationErr != nil {
+		emitKVProxyIntegrityFailure(metricCli, kvProxyRPCTxn)
+		return nil, status.Error(codes.DataLoss, validationErr.Error())
+	}
 	return response, nil
 }
 
@@ -362,6 +369,150 @@ func txnProxyCompareBranchError(selected, expected bool) error {
 		"leader txn proxy selected the %s branch for compares that deterministically select the %s branch",
 		selectedBranch, expectedBranch,
 	)
+}
+
+type txnProxyRangeEvidence struct {
+	key, rangeEnd []byte
+	kvs           []*mvccpb.KeyValue
+}
+
+// collectTxnProxyPreWriteRangeEvidence walks the selected operations in their
+// execution order. Upstream compareToPath evaluates the entire selected txn
+// tree before executing any operation, so a complete current Range observed
+// before the first effective mutation is a second observation of that same
+// compare snapshot. Once a mutation becomes visible, later Ranges cannot prove
+// the precomputed branch.
+func collectTxnProxyPreWriteRangeEvidence(
+	request *etcdserverpb.TxnRequest,
+	response *etcdserverpb.TxnResponse,
+	changed *bool,
+	evidence *[]txnProxyRangeEvidence,
+) {
+	requests := request.GetFailure()
+	if response.GetSucceeded() {
+		requests = request.GetSuccess()
+	}
+	for index, requestOp := range requests {
+		responseOp := response.GetResponses()[index]
+		switch {
+		case requestOp.GetRequestRange() != nil:
+			rangeRequest := requestOp.GetRequestRange()
+			if !*changed && txnProxyRangeProvidesCompareEvidence(rangeRequest) {
+				*evidence = append(*evidence, txnProxyRangeEvidence{
+					key: rangeRequest.GetKey(), rangeEnd: rangeRequest.GetRangeEnd(),
+					kvs: responseOp.GetResponseRange().GetKvs(),
+				})
+			}
+		case requestOp.GetRequestPut() != nil:
+			*changed = true
+		case requestOp.GetRequestDeleteRange() != nil:
+			if responseOp.GetResponseDeleteRange().GetDeleted() > 0 {
+				*changed = true
+			}
+		case requestOp.GetRequestTxn() != nil:
+			collectTxnProxyPreWriteRangeEvidence(
+				requestOp.GetRequestTxn(), responseOp.GetResponseTxn(), changed, evidence,
+			)
+		}
+	}
+}
+
+func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest) bool {
+	// A limited, projected, historical, or revision-filtered response is not a
+	// complete description of its requested interval. Sort and Serializable do
+	// not change the represented key-values and therefore need no exclusion.
+	return request.GetRevision() == 0 && request.GetLimit() <= 0 &&
+		!request.GetKeysOnly() && !request.GetCountOnly() &&
+		request.GetMinModRevision() == 0 && request.GetMaxModRevision() == 0 &&
+		request.GetMinCreateRevision() == 0 && request.GetMaxCreateRevision() == 0
+}
+
+func validateTxnProxyRangeEvidenceBranches(
+	request *etcdserverpb.TxnRequest,
+	response *etcdserverpb.TxnResponse,
+	evidence []txnProxyRangeEvidence,
+) error {
+	if len(request.GetCompare()) != 0 {
+		expected, deterministic, err := txnProxyDeterministicCompareBranchFromRangeEvidence(request.GetCompare(), evidence)
+		if err != nil {
+			return err
+		}
+		if deterministic && response.GetSucceeded() != expected {
+			return txnProxyCompareBranchError(response.GetSucceeded(), expected)
+		}
+	}
+	requests := request.GetFailure()
+	if response.GetSucceeded() {
+		requests = request.GetSuccess()
+	}
+	for index, requestOp := range requests {
+		if requestOp.GetRequestTxn() == nil {
+			continue
+		}
+		if err := validateTxnProxyRangeEvidenceBranches(
+			requestOp.GetRequestTxn(), response.GetResponses()[index].GetResponseTxn(), evidence,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func txnProxyDeterministicCompareBranchFromRangeEvidence(
+	compares []*etcdserverpb.Compare,
+	evidence []txnProxyRangeEvidence,
+) (bool, bool, error) {
+	allDeterministic := true
+	for _, compare := range compares {
+		result, deterministic, err := txnProxyCompareResultFromRangeEvidence(compare, evidence)
+		if err != nil {
+			return false, false, err
+		}
+		if !deterministic {
+			allDeterministic = false
+			continue
+		}
+		if !result {
+			return false, true, nil
+		}
+	}
+	if allDeterministic {
+		return true, true, nil
+	}
+	return false, false, nil
+}
+
+func txnProxyCompareResultFromRangeEvidence(
+	compare *etcdserverpb.Compare,
+	evidence []txnProxyRangeEvidence,
+) (bool, bool, error) {
+	var result bool
+	found := false
+	for _, candidate := range evidence {
+		// Only an exact interval match is a complete proof. Inferring a compare
+		// from a containing Range would require independently proving that the
+		// returned payload has been sliced without omission.
+		if !bytes.Equal(compare.GetKey(), candidate.key) || !bytes.Equal(compare.GetRangeEnd(), candidate.rangeEnd) {
+			continue
+		}
+		candidateResult := true
+		if len(candidate.kvs) == 0 {
+			candidateResult = compareKeyValue(compare, nil)
+		} else {
+			for _, kv := range candidate.kvs {
+				if !compareKeyValue(compare, kv) {
+					candidateResult = false
+					break
+				}
+			}
+		}
+		if found && result != candidateResult {
+			return false, false, fmt.Errorf("leader txn proxy returned inconsistent pre-write range evidence for a compare interval")
+		}
+		result = candidateResult
+		found = true
+	}
+	return result, found, nil
 }
 
 func txnProxyDeterministicCompareBranch(compares []*etcdserverpb.Compare) (bool, bool) {
