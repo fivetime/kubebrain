@@ -1422,9 +1422,56 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 		}, response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1))},
 		{name: "keys-only range is not value evidence selected success", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(true, 0)), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("", 5, 4, 4, 1)), valid: true},
 		{name: "keys-only range is not value evidence selected failure", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(true, 0)), response: valueEvidenceBranchResponse(false, valueEvidenceRangeResponse("", 5, 4, 4, 1)), valid: true},
+		{name: "keys-only missing point proves value compare false", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(true, 0)), response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}},
+		})},
+		{name: "keys-only version evidence true selected failure", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 1},
+			}},
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(true, 0)},
+			Failure: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(true, 0)},
+		}, response: valueEvidenceBranchResponse(false, valueEvidenceRangeResponse("", 5, 4, 4, 1))},
+		{name: "fast keys-only lease remains unknown", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_LEASE,
+				TargetUnion: &etcdserverpb.Compare_Lease{Lease: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(true, 0)},
+			Failure: []*etcdserverpb.RequestOp{valueEvidenceRangeRequest(true, 0)},
+		}, response: valueEvidenceBranchResponse(false, valueEvidenceRangeResponse("", 5, 4, 4, 1)), valid: true},
+		{name: "value-sort keys-only lease evidence true selected failure", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_LEASE,
+				TargetUnion: &etcdserverpb.Compare_Lease{Lease: 6},
+			}},
+			Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+				Key: []byte("evidence"), KeysOnly: true, SortTarget: etcdserverpb.RangeRequest_VALUE, SortOrder: etcdserverpb.RangeRequest_ASCEND,
+			}}}},
+			Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+				Key: []byte("evidence"), KeysOnly: true, SortTarget: etcdserverpb.RangeRequest_VALUE, SortOrder: etcdserverpb.RangeRequest_ASCEND,
+			}}}},
+		}, response: valueEvidenceBranchResponse(false, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(5), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("evidence"), CreateRevision: 4, ModRevision: 4, Version: 1, Lease: 6,
+				}},
+			}},
+		})},
 		{name: "count-only range is not value evidence", request: valueEvidenceBranchRequest(countOnlyEvidenceRequest), response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
 			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5), Count: 1}},
 		}), valid: true},
+		{name: "count-only zero proves missing value", request: valueEvidenceBranchRequest(countOnlyEvidenceRequest), response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}},
+		})},
+		{name: "containing count-only zero proves missing point", request: valueEvidenceBranchRequest(func() *etcdserverpb.RequestOp {
+			request := containingEvidenceRangeRequest("a", []byte("z"))
+			request.GetRequestRange().CountOnly = true
+			return request
+		}()), response: valueEvidenceBranchResponse(true, &etcdserverpb.ResponseOp{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(5)}},
+		})},
 		{name: "limited range is not value evidence", request: valueEvidenceBranchRequest(limitedEvidenceRequest), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1)), valid: true},
 		{name: "filtered range is not value evidence", request: valueEvidenceBranchRequest(filteredEvidenceRequest), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1)), valid: true},
 		{name: "historical range is not current evidence selected success", request: valueEvidenceBranchRequest(valueEvidenceRangeRequest(false, 4)), response: valueEvidenceBranchResponse(true, valueEvidenceRangeResponse("other", 5, 4, 4, 1)), valid: true},

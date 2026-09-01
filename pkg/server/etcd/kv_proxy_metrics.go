@@ -375,6 +375,8 @@ type txnProxyCompareEvidence struct {
 	key, rangeEnd  []byte
 	kvs            []*mvccpb.KeyValue
 	priorMutations []txnProxyMutationInterval // immutable append-only prefix at observation time
+	valueProjected bool
+	leaseProjected bool
 }
 
 type txnProxyMutationInterval struct {
@@ -403,11 +405,14 @@ func collectTxnProxyCompareEvidence(
 		switch {
 		case requestOp.GetRequestRange() != nil:
 			rangeRequest := requestOp.GetRequestRange()
-			if txnProxyRangeProvidesCompareEvidence(rangeRequest) {
+			rangeResponse := responseOp.GetResponseRange()
+			if txnProxyRangeProvidesCompareEvidence(rangeRequest, rangeResponse) {
 				*evidence = append(*evidence, txnProxyCompareEvidence{
 					key: rangeRequest.GetKey(), rangeEnd: rangeRequest.GetRangeEnd(),
-					kvs:            responseOp.GetResponseRange().GetKvs(),
+					kvs:            rangeResponse.GetKvs(),
 					priorMutations: *mutations,
+					valueProjected: rangeRequest.GetKeysOnly(),
+					leaseProjected: rangeRequest.GetKeysOnly() && rangeRequest.GetSortTarget() != etcdserverpb.RangeRequest_VALUE,
 				})
 			}
 		case requestOp.GetRequestPut() != nil:
@@ -524,14 +529,18 @@ func txnProxyIntervalContainsInterval(outer, inner txnProxyMutationInterval) boo
 	return isFromKeyRangeEnd(outer.rangeEnd) || bytes.Compare(inner.rangeEnd, outer.rangeEnd) <= 0
 }
 
-func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest) bool {
-	// A limited, projected, historical, or revision-filtered response is not a
-	// complete description of its requested interval. Sort and Serializable do
-	// not change the represented key-values and therefore need no exclusion.
-	return request.GetRevision() == 0 && request.GetLimit() <= 0 &&
-		!request.GetKeysOnly() && !request.GetCountOnly() &&
-		request.GetMinModRevision() == 0 && request.GetMaxModRevision() == 0 &&
-		request.GetMinCreateRevision() == 0 && request.GetMaxCreateRevision() == 0
+func txnProxyRangeProvidesCompareEvidence(request *etcdserverpb.RangeRequest, response *etcdserverpb.RangeResponse) bool {
+	// Limited, historical, or revision-filtered responses are not complete
+	// descriptions of their requested intervals. An empty CountOnly response
+	// proves the entire interval missing. KeysOnly preserves key and MVCC
+	// metadata; its projection capabilities are enforced when evaluating a
+	// compare. Sort and Serializable do not change the represented key set.
+	if request.GetRevision() != 0 || request.GetLimit() > 0 ||
+		request.GetMinModRevision() != 0 || request.GetMaxModRevision() != 0 ||
+		request.GetMinCreateRevision() != 0 || request.GetMaxCreateRevision() != 0 {
+		return false
+	}
+	return !request.GetCountOnly() || response.GetCount() == 0
 }
 
 func validateTxnProxyCompareEvidenceBranches(
@@ -598,9 +607,9 @@ func txnProxyCompareResultFromEvidence(
 	compareInterval := txnProxyMutationInterval{key: compare.GetKey(), rangeEnd: compare.GetRangeEnd()}
 	for _, candidate := range evidence {
 		candidateInterval := txnProxyMutationInterval{key: candidate.key, rangeEnd: candidate.rangeEnd}
-		// Evidence payloads are admitted only when their unlimited, unprojected,
-		// unfiltered response is complete. A containing interval can therefore
-		// be sliced without omission to evaluate the compare's exact subrange.
+		// Evidence payloads are admitted only when their key set is complete. A
+		// containing interval can therefore be sliced without omission; projected
+		// fields are checked below only when the compare subrange contains a key.
 		if !txnProxyIntervalContainsInterval(candidateInterval, compareInterval) {
 			continue
 		}
@@ -609,11 +618,17 @@ func txnProxyCompareResultFromEvidence(
 		}
 		candidateResult := true
 		matched := false
+		candidateUsable := true
 		for _, kv := range candidate.kvs {
 			if !txnProxyIntervalContains(compareInterval, kv.GetKey()) {
 				continue
 			}
 			matched = true
+			if (candidate.valueProjected && compare.GetTarget() == etcdserverpb.Compare_VALUE) ||
+				(candidate.leaseProjected && compare.GetTarget() == etcdserverpb.Compare_LEASE) {
+				candidateUsable = false
+				break
+			}
 			if !compareKeyValue(compare, kv) {
 				candidateResult = false
 				break
@@ -621,6 +636,9 @@ func txnProxyCompareResultFromEvidence(
 		}
 		if !matched {
 			candidateResult = compareKeyValue(compare, nil)
+		}
+		if !candidateUsable {
+			continue
 		}
 		if found && result != candidateResult {
 			return false, false, fmt.Errorf("leader txn proxy returned inconsistent pre-write evidence for a compare interval")

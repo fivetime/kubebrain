@@ -756,6 +756,21 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			message: "deterministically select the success branch",
 		},
 		{
+			name: "count-only zero evidence rejects missing value success",
+			request: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VALUE,
+					TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("expected")},
+				}},
+				Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("evidence"), CountOnly: true}}}},
+				Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("evidence"), CountOnly: true}}}},
+			},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(2)}},
+			}}},
+			message: "deterministically select the failure branch",
+		},
+		{
 			name: "root range evidence rejects nested failure",
 			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 				rangeRequest("evidence"),
