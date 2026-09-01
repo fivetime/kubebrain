@@ -68230,6 +68230,66 @@ revision/index/applied、HashKV、compact revision 保持 `66069/2102941512/4432
 数据面/info 端口与一个 PD 端口均无监听残留，宿主盘 73%、可用 536 GiB。A5682 关闭了 follower 把精确
 base-revision 快照证据当作未知、从而放过矛盾 Txn 分支的完整性缺口，同时保留所有更旧历史快照的保守边界。
 
+### A5683：交叉校验同一 pre-write 快照的多份 Txn 证据
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go::{compareToPath,executeTxn}` 与
+`/root/etcd/server/storage/mvcc/kvstore_txn.go::rangeKeys`。上游先在同一个 read view 上求值整棵 Compare 路径，
+随后才顺序执行选中分支；因此两份完整 Range/PrevKV/CountOnly 只要在重叠区间都仍代表该 pre-write 快照，就必须
+给出同一键集合、生命周期、未投影 value/lease 和 cardinality。旧门禁只在这些证据令当前 Compare 得出相反布尔值
+时拒绝；若两个 payload 的 value 或元数据互相矛盾但 Compare 未观察该字段，follower 会放过真实 etcd 不可能产生的
+响应。
+
+tests-only RED 恰好出现四个失败：两个普通 Range 对同一键给出不同但未被 Compare 观察的 value、两个 KeysOnly
+Range 给出不同生命周期、CountOnly cardinality 与同区间完整 Range 不一致，以及 follower 接受同快照两个 Range
+对未观察 value 的矛盾。新增边界固定 overlapping complete membership、相等/包含 CountOnly、KeysOnly value
+projection、fast KeysOnly lease projection、value-sort KeysOnly 保留 lease、重叠 staged write、disjoint write、
+snapshot-pinned post-write Range 和更旧 historical Range；只有仍描述同一 pre-write overlap 的字段可以交叉比较。
+
+提交 `579cc44309ee92944c3027ab10bfae90bbe543d5` 在 evidence collector 后构建一次 key index，并成对校验上述
+一致性；单证据事务快速返回。逐键校验只在双方未受该键 staged mutation 影响或显式 pinned 时执行，CountOnly
+只有在区间包含关系足以给出精确 cardinality 时参与，投影字段继续 unknown；`Revision=0` 明确不标成显式 pinned。
+首轮修复聚焦 GREEN `0.406s`，扩展边界后 `0.413s`，连续三轮 `0.409/0.417/0.425s`（墙钟
+`12.478s`），race `2.387s`（墙钟 `74.729s`），全部 Txn `27.979s`（墙钟 `31.855s`），完整
+`pkg/server/etcd` `135.059s`（墙钟 `138.787s`）；快速返回后聚焦 `0.423s`，vet 墙钟 `5.431s`。
+提交前 production verifier 为 703 项、四片 `170/193/180/160`；代码提交后四片分别为
+`255.318/446.023/307.121/573.671s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5683-579cc443` 内嵌版本 `0.0.0-579cc44309ee`、完整提交
+`579cc44309ee92944c3027ab10bfae90bbe543d5`、build time `2026-09-01T16:38:54Z`，运行用户
+`65532:65532`、Go `1.26.5`、`linux/amd64`、TiKV。OCI index/platform/config/attestation 分别为
+`sha256:1d68fd887820fdba6ed6f692301a3f91800e42ef0c30739dd34a87651af3ec88`、
+`sha256:3576e2c6a1f46a3bdc47d2a2925d3dc648b52d46c87dfa58db7bf3f7d18cf887`、
+`sha256:1428fd3633d9fb275a4457dbf24260e573a332128dc510850509358fea8ba71e`、
+`sha256:8d0b6a0a841a66179686a41cefd6fa8e35b743fcb68960d8577841a84baace1b`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功，Kind runtime digest 为
+`sha256:97887dafa9aecde074c075a55260af2acadbab8383a533c41c1830e9af8a9ac0`。
+
+稳定基线 revision/index/applied、HashKV、compact revision 为 `66069/2102941512/44329`，term `387`、leader
+`2393892952`，`/a5683/`、Lease 与 Alarm 为空。以 StatefulSet UID/resourceVersion/container/current image/full
+args 五类原子 test 从 generation 758 部署到 generation 759，三 Pod 均落在 `kubebrain-8d6f48564`、
+Ready/restart 0、同一候选 runtime digest，Pod 内版本与完整 SHA 一致。逐个 Pod-local gateway 串行执行九类合法
+多证据 Txn：重复普通 Range、containing/point membership、CountOnly/完整 Range、fast KeysOnly/普通 Range、
+value-sort KeysOnly/普通 Range、disjoint Put 两侧 Range、overlap Put 两侧 current Range、overlap Put 后
+snapshot-pinned Range，以及 older historical/current Range；每 Pod 九类、共 27 类次全部通过，p0/p1/p2 末次
+revision 为 `66082/66095/66108`。显式清理 30 个最终态测试键后 revision/index/applied 为 `66109`，prefix
+Count=0，HashKV `345401319`、compact revision `44329`。
+
+全部适用开关启用的 readonly gate 一次 GREEN，三成员 Status/HashKV、named readyz/livez、HTTP、metrics/debug/
+pprof、auth disabled/revision 281、Alarm 与空前缀均通过。候选 term `389`、leader `2393892952`，三轮九次
+exact endpoint proposal health 全部成功（`6.151–9.383ms`），Lease/Alarm 为空；三 Pod 全量日志
+`489/276/546` 行且关键错误均为 0。三个 store Up，pending/down/miss/extra/learner 五类 region check 连续
+三轮全零，KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各沿用一次历史 restart。
+
+以同类五类原子 test 回滚稳定 digest。StatefulSet UID `817bc005-a4d1-4d57-9aab-de93e0874054` 不变，
+generation/observed `760/760`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。终态
+revision/index/applied、HashKV、compact revision 保持 `66109/345401319/44329`，term `391`、leader
+`2393892952`，prefix、Lease 与 Alarm 为空；稳定三轮九次 proposal health 全部 GREEN（`5.854–8.426ms`），
+日志 `280/269/354` 行且关键错误为 0；store/region 回滚后继续连续三轮健康。A5676 已记录的 Kind local-path
+非 CSI 存储隔离风险仍存在，本轮不把 region API 结果替代完整 storage isolation gate。全程未使用凭据或落盘
+诊断日志，最终六个数据面/info 端口与一个 PD 端口均无监听残留，宿主盘 73%、可用 524 GiB。A5683 关闭了
+follower 只校验 Compare 布尔结果、却放过同一快照内未观察字段或 cardinality 自相矛盾的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
