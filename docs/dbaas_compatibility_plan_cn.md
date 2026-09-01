@@ -67388,6 +67388,66 @@ status/HashKV/readyz/livez/prefix/proposal/lease/log/storage 审计；回滚后�
 GREEN（`10.374–14.214ms`），LeaseLeases 为空，日志真实 klog E/F 与 panic/fatal 均为 0。最终关闭端口
 转发并确认六个监听均无残留。A5668 关闭了 follower/Txn 接受不可能 Range 区间基数与分页元数据的完整性缺口。
 
+### A5669：将 Range 区间基数完整性扩展到 follower RangeStream
+
+继续对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go::{RangeStream,checkRangeStreamRequest}`、
+`/root/etcd/server/etcdserver/txn/range.go::{executeRange,asembleRangeResponse}` 与
+`/root/etcd/server/storage/mvcc/index.go::{Revisions,CountRevisions}`。RangeStream 不支持 revision filter，
+但 point、CountOnly 和普通空区间仍是合法请求；上游对它们执行同一 Range 语义，所以精确键最多 Count=1、
+普通 `range_end<=key` 区间必须为空，而 `range_end={0}` 仍是可多键的 from-key 特例。
+
+KubeBrain leader 对 CountOnly/point/空区间会委托 unary Range，生成端已经满足该约束；但 follower 在进入该
+委托分支前先代理 RangeStream。旧 `rangeStreamProxyPayloadValidator` 只要求 terminal Count 不小于已发送 KV，
+因此会接受精确键 CountOnly=2、等界/反向 CountOnly=1，以及精确键发送一条 KV 后伪造 Count=2/More=true。
+tests-only RED 让上述四个 follower 流全部错误成功并向客户端发送 terminal frame，包报告 `0.196s`；合法
+point CountOnly=1、point limit 一条 KV 与 from-key CountOnly=3 同时作为正例护栏。
+
+提交 `35280828` 将 A5668 的区间形状判断抽成 unary/RangeStream 共用
+`rangeIntervalCardinalityViolation`，保留 unary 的既有错误文本与行为，并在流式 terminal Count 基础校验后、
+CountOnly 提前返回前应用同一规则。这样精确键统一拒绝 Count>1/More=true，普通空区间统一拒绝非零
+Count/KV/More，NUL from-key 不受影响。A5668 unary/follower/Txn 与 A5669 RangeStream 正反例联合 GREEN
+`0.335s`，全部 RangeStream 测试 `1.794s`，完整 `pkg/server/etcd` `135.534s`；
+`go vet ./pkg/server/etcd` 和定向 race（包报告 `2.163s`）均通过。提交前 production inventory 仍为
+703 项、四片 `170/193/180/160`；提交后四片分别为
+`264.510/456.970/311.465/582.613s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5669-35280828` 内嵌版本 `0.0.0-35280828f1df`、完整提交
+`35280828f1df96e596d43efa7bf4b1ffacb9920d` 与 build time `2026-09-01T03:36:43Z`，运行用户
+`65532:65532`、Go `1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI index、platform manifest、config
+与 attestation manifest 分别为
+`sha256:1babcd8af09920f7ffa0d6eb486b65402fcce150d889905eac712cad4be5aacc`、
+`sha256:22b00cc284a05cbaa9aa07527dff9e775ad0db5200930e898cef90f47ab54c50`、
+`sha256:bfc95d09776dba8400b08963e1ce90d2789c0804c4b8ac58853be1872fa812f7`、
+`sha256:984066cb6eec695157399ca7c6ac64cb8524f0fc35c083131f4e290b4c545f71`；Kind/containerd runtime
+digest 为 `sha256:ba2a63856080efa728adc412b510d990ab3bef6064d52cecd5824664b7f0a43e`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 725
+部署至 generation 726；三 Pod 均落在 revision `kubebrain-84d87bc946`、使用上述 runtime digest、
+Ready/restart 0。每个 exact Pod endpoint 写入两个 `/a5669/<port>/` key，随后用当前 etcd 3.7
+`clientv3.GetStream` 的仓库 bigstream 工具逐端直连：三端都返回 `chunks=1 keys=2`，耗时分别为
+`22/18/25ms`，实际覆盖 leader 和两个 follower 的 RangeStream 转发链。首次从主模块运行 nested-module
+工具在编译前被 Go 拒绝，未发送请求；切换到其独立 `hack/scale-lab/bigstream` 模块后完成上述验证。
+
+共用 helper 的合法行为再由三端 unary 检查固定：point CountOnly=1、等界/反向区间 CountOnly=0；按各前缀
+字典序执行 from-key 得到 `6/4/2`，证明 NUL 特例没有被空区间规则误杀。清理 6 个唯一键后 `/a5669/`
+三端 Count=0、revision `65789`。以新鲜 HashKV `2410587426` 运行全部只读 gate 开关一次 GREEN：
+cluster `7662961163671170154`、version/storage `3.7.0/3.7.0`、leader `2393892952`、term `324`、
+revision/index/applied `65789`、compact revision `44329`、direct hash `1001319362`、auth
+disabled/revision `281`，named/HTTP/metrics/debug/pprof 及跨端点身份、revision、term 均通过。候选三轮
+九次 exact endpoint proposal health 全部成功（`10.374–13.770ms`），LeaseLeases 为空，三 Pod 全量日志
+真实 klog E/F、panic/fatal 均为 0，PD/TiKV 3+3 Ready/restart 0。
+
+以新鲜同类五类 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed `727/727`、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；三成员 revision 保持
+`65789`、HashKV 保持 `2410587426`、compact revision 保持 `44329`，term 为 `326`，
+KubeBrain/PD/TiKV 3+3+3 Ready/restart 0。稳定范围的 status/HashKV/readyz/livez/prefix/lease/storage
+审计通过，回滚后三轮九次 proposal health 全部 GREEN（`10.737–14.487ms`）。稳定 `kubebrain-1` 全量
+启动日志在 Ready 后约 31 秒有且仅有一次 `refresh compact revision metric failed: context deadline exceeded`，
+restart 仍为 0，随后三 Pod 最近 60 秒真实 klog E/F 与 panic/fatal 均为 0；该稳定镜像瞬时日志被保留为证据，
+没有误报成全量日志零错误。最终关闭端口转发并确认六个监听均无残留。A5669 关闭了 follower RangeStream
+接受上游不可能区间基数与分页元数据的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
