@@ -67513,6 +67513,66 @@ PD/TiKV 3+3+3 Ready/restart 0。稳定范围 status/HashKV/readyz/livez/prefix/l
 A5670 关闭了 follower unary/Txn 接受上游不可能 DeleteRange 区间删除基数的完整性缺口，并修复了对应
 follower 回归测试被通用 header 校验短路的问题。
 
+### A5671：拒绝 Txn 嵌套与操作响应头注入 leader 身份
+
+继续对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go::kvServer.Txn` 与
+`/root/etcd/server/etcdserver/txn/txn.go::{newTxnResp,executeTxn}`。上游只在最外层 Txn 返回前由
+`s.hdr.fill(resp.Header)` 填充 cluster/member/raft term；嵌套 Txn header 保持零值，Range/Put/Delete
+操作 header 只携带可见 revision。旧 KubeBrain follower validator 会校验根 header、嵌套 revision 与操作
+revision，却允许 leader 在嵌套 Txn 或任一操作 header 注入非零 cluster ID、member ID 或 raft term，随后把
+这些上游不可达字段原样暴露给客户端。
+
+tests-only RED 给 Range/Put/Delete 操作分别注入 cluster/member/term，并给嵌套 Txn 注入 cluster ID；直接
+validator 六项错误成功，包报告 `0.247s`。首次 RED 编辑误引用尚未声明的 `nested` 夹具，先得到编译失败，
+修正后才取得上述行为 RED；另一次给本地 `RPCServer` 测试根 header 增加非零身份断言时发现该测试绕过 gRPC
+header interceptor，随即撤销，未把错误测试假设提交。提交 `de14748b` 增加
+`txnProxyHeaderHasIdentity`，递归拒绝嵌套 header 身份和所有 Range/Put/Delete 操作 header 身份；follower
+RPC 两项分别精确断言 `operation header with nonzero identity` 与
+`nested txn header with nonzero identity`。本地 leader 嵌套成功路径同时固定嵌套 header 身份全零、revision
+为零，以及内层 Put/Range header 身份全零且 revision 等于外层可见 revision。
+
+实现后聚焦组合 GREEN `0.270s`，全部 Txn 测试 `31.462s`，定向 race `1.896s`，完整
+`pkg/server/etcd` `137.001s`，`go vet ./pkg/server/etcd` 通过。提交前 production inventory 为 703 项、
+四片 `170/193/180/160`；提交后四片分别为 `261.463/453.016/313.219/574.899s`，全部 GREEN。
+
+HEAD 专属候选 `docker.io/library/kubebrain:a5671-de14748b` 内嵌版本
+`0.0.0-de14748b0b08`、完整提交 `de14748b0b0828e41af0bc099ae110e65c9c6edc` 与 build time
+`2026-09-01T05:41:53Z`，运行用户 `65532:65532`、Go `1.26.5`、平台 `linux/amd64`、后端 TiKV。OCI
+index、platform manifest、config 与 attestation manifest 分别为
+`sha256:ea43053609fe5b14c16ec9d456b91d93a04ed4e8044a32f96f6379e709692e56`、
+`sha256:a2d94aaae9cb2fdb74b9ad9f04dad39bd7c1a77b962e4ab3c9580b0a37b4c7a4`、
+`sha256:c67f347df8393c2c2b85a164489fe9909af9f679d2d79a474d2e741afd807298`、
+`sha256:96d5a8bd77a1de54e6895d7331e4555b0e257a5fb53404dece91c958f6722fb0`；Kind/containerd Pod
+runtime digest 为 `sha256:2d2ab2fccff2cc0f660b4477e79f0507d034f84ff1b55d1ed8f0db1da7708953`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation 731
+部署至 generation 732；三 Pod 均落在 revision `kubebrain-8699f6df54`、Ready/restart 0。逐个 exact Pod
+endpoint 通过 etcd v3 JSON gateway 执行外层 Put/Range 与嵌套 Put/Range/Delete：三份根 header 均携带
+真实 cluster `7662961163671170154`、各自 member ID 与 term `336`；嵌套 Txn header 均为 `{}`；五个操作
+header 均只携带与根一致的 revision，内层 Delete 均删除 1 个键。`jq -e` 对身份字段缺失、revision 一致、
+响应树形状和删除基数做了机器断言。首次把同一键用于多个操作时得到预期
+`etcdserver: duplicate key given in txn request`，改用互不重叠键后完成验证；清理每端 4 个剩余键，
+`/a5671/` 三端 count 均为 0。
+
+清理后 revision `65884`、HashKV `1465918337`、compact revision `44329`。以该新鲜值运行全部开关
+启用的 readonly gate 一次 GREEN：version/storage `3.7.0/3.7.0`、leader `2393892952`、term `336`、
+revision/index/applied `65884`、direct hash `350097573`、auth disabled/revision `281`，named/HTTP/metrics/
+debug/pprof 与跨端点身份、revision、term 均通过。候选三轮九次 exact endpoint proposal health 全部成功
+（`11.339–15.316ms`），LeaseLeases 为空，三 Pod 全量日志 `908/329/965` 行，真实 klog E/F、panic/fatal、
+data race/data corruption 命中均为 0，KubeBrain/目标 PD/TiKV 3+3+3 Ready/restart 0。
+
+以同类五类原子 test 回滚稳定 digest。终态 StatefulSet UID 不变，generation/observed `733/733`、
+current/update `kubebrain-9b9965dc9`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；revision、HashKV 与 compact
+revision 保持 `65884/1465918337/44329`，term 为 `338`，prefix count 0、readyz/livez、lease 与目标存储
+审计通过，三轮九次 proposal health 全部 GREEN（`10.351–14.685ms`），KubeBrain/PD/TiKV 3+3+3
+Ready/restart 0。稳定 `kubebrain-2` 启动日志有且仅有一次
+`refresh compact revision metric failed: context deadline exceeded`，随后三 Pod 最近 60 秒真实 klog E/F 与
+panic/fatal 均为 0。最初误查不存在的 `kubebrain` namespace、使用 `--count-only -w json` 的非法 CLI
+组合以及对未推送本地 tag 执行 registry `imagetools inspect` 均在只读阶段失败并已纠正，不计为产品故障；
+端口转发退出时的短连接 reset/broken-pipe 仅来自本地 kubectl。最终关闭端口转发并确认六个监听均无残留，
+未使用凭据或落盘诊断文件。A5671 关闭了 follower Txn 响应树接受上游不可能身份字段的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
