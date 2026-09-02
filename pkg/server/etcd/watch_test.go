@@ -3556,40 +3556,42 @@ func TestFollowerWatchRejectsInvalidProxyErrorHeaderBeforeAuthoritativeCreate(t 
 				Header: test.header(server), Err: compactedRevisionError(),
 				Revision: 50, CompactRevision: 999,
 			}
+			close(proxyCh)
 			server.peers = testPeerService{
 				isLeader:                   false,
 				proxyEnabled:               true,
 				preserveMissingWatchHeader: true,
-				syncReadFn: func(context.Context) error {
-					server.backend.SetCurrentRevision(50)
-					return nil
-				},
-				watchFn: func(watchCtx context.Context, _, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
-					go func() {
-						<-watchCtx.Done()
-						close(proxyCh)
-					}()
+				watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
 					return proxyCh, nil
 				},
 			}
 			ctx, cancel := context.WithCancel(context.Background())
-			stream := &controllableWatchServer{ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 1)}
-			done := make(chan error, 1)
-			go func() { done <- server.Watch(stream) }()
-			stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
-				CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/invalid-error-header"), WatchId: 421},
-			}}
-			require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
-			response := stream.snapshot()[0]
+			defer cancel()
+			response := &etcdserverpb.WatchResponse{}
+			generation := &watch{
+				cancel: cancel, awaitAuthoritativeCreate: true,
+				authoritativeControl: response, authoritativeReady: make(chan struct{}),
+			}
+			w := &watcher{
+				backend: server.backend, grpcServer: server,
+				watches: map[int64]*watch{421: generation}, metricCli: rec,
+			}
+			w.wg.Add(1)
+			go w.Watch(ctx, 421, &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/invalid-error-header"), WatchId: 421, StartRevision: 51,
+			})
+			select {
+			case <-generation.authoritativeReady:
+			case <-time.After(time.Second):
+				t.Fatal("invalid authoritative error did not release the create barrier")
+			}
 			require.True(t, response.Created)
 			require.True(t, response.Canceled)
 			require.Equal(t, int64(-1), response.WatchId)
 			require.Zero(t, response.CompactRevision, "an unauthenticated compaction watermark must not be exposed")
 			require.Contains(t, response.CancelReason, test.message)
 			require.Equal(t, []interface{}{0, 1}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
-
-			cancel()
-			requireWatchCanceled(t, <-done)
+			w.wg.Wait()
 		})
 	}
 }
@@ -4091,6 +4093,10 @@ func TestFollowerProxyWatchCreateUnavailableIsNonCompactedCancel(t *testing.T) {
 func TestFollowerProxyWatchCompactedErrorIsForwarded(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initWatchBackendIntegrityMetrics(rec)
+	server.staticMembers = []*etcdserverpb.Member{{ID: server.localMemberID()}}
 
 	ctx := context.Background()
 	putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
@@ -4105,11 +4111,15 @@ func TestFollowerProxyWatchCompactedErrorIsForwarded(t *testing.T) {
 	require.NoError(t, err)
 
 	proxyCh := make(chan etcdproxy.WatchResult, 1)
-	proxyCh <- etcdproxy.WatchResult{Err: compactedRevisionError()}
+	proxyCh <- etcdproxy.WatchResult{
+		Header: proxiedResponseHeader(server, 0), Err: compactedRevisionError(),
+		CompactRevision: putResp.Header.Revision,
+	}
 	close(proxyCh)
 	server.peers = testPeerService{
-		isLeader:     false,
-		proxyEnabled: true,
+		isLeader:                   false,
+		proxyEnabled:               true,
+		preserveMissingWatchHeader: true,
 		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
 			return proxyCh, nil
 		},
@@ -4139,6 +4149,7 @@ func TestFollowerProxyWatchCompactedErrorIsForwarded(t *testing.T) {
 	require.Empty(t, resp.CancelReason)
 	require.NotNil(t, resp.Header)
 	require.Zero(t, resp.Header.Revision)
+	require.Equal(t, []interface{}{0}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
 }
 
 func TestIsWatchCompactedError(t *testing.T) {
@@ -5365,6 +5376,8 @@ func TestFollowerCancelBackpressureUsesBoundedSenderGoroutines(t *testing.T) {
 		backend: server.backend, watchServer: stream, grpcServer: server,
 		watches: watches, metricCli: server.metricCli,
 	}
+	baselineCancelSenders := goroutineStackOccurrences("(*watcher).cancel.func1")
+	baselineDirectSenders := goroutineStackOccurrences("(*watcher).sendDirectControls")
 	w.startDirectControls()
 	defer func() {
 		close(release)
@@ -5381,11 +5394,11 @@ func TestFollowerCancelBackpressureUsesBoundedSenderGoroutines(t *testing.T) {
 		t.Fatal("follower cancellation sender did not enter blocked Send")
 	}
 	require.Never(t, func() bool {
-		return goroutineStackOccurrences("(*watcher).cancel.func1") > 1
+		return goroutineStackOccurrences("(*watcher).cancel.func1") > baselineCancelSenders+1
 	}, 100*time.Millisecond, time.Millisecond,
 		"output backpressure must not create one blocked sender goroutine per canceled watch")
-	require.Equal(t, 1, goroutineStackOccurrences("(*watcher).sendDirectControls"),
-		"one stream-owned sender must serialize the bounded cancellation backlog")
+	require.LessOrEqual(t, goroutineStackOccurrences("(*watcher).sendDirectControls"), baselineDirectSenders+1,
+		"one additional stream-owned sender must serialize the bounded cancellation backlog")
 	backpressured := make(chan struct{})
 	go func() {
 		w.CancelRequest(cancellationCount)

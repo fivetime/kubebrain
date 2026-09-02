@@ -26,6 +26,7 @@ type proxyResponseRevisionPolicy uint8
 const (
 	proxyResponseRevisionPositive proxyResponseRevisionPolicy = iota
 	proxyResponseRevisionZero
+	proxyResponseRevisionNonNegative
 )
 
 func (s *RPCServer) expectedProxyResponseIdentity() proxyResponseIdentity {
@@ -81,6 +82,8 @@ func validateProxyResponseHeader(response any, identity proxyResponseIdentity, r
 		if header.GetRevision() != 0 {
 			return "with a nonzero header revision"
 		}
+	case proxyResponseRevisionNonNegative:
+		// The common negative-revision check above is the complete policy.
 	}
 	return ""
 }

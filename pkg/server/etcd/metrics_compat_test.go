@@ -126,6 +126,8 @@ func TestProxyResponseHeaderValidation(t *testing.T) {
 		{name: "zero revision required", header: testProxyResponseHeader(1), identity: identity, policy: proxyResponseRevisionZero, want: "with a nonzero header revision"},
 		{name: "approved member", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 3, Revision: 1, RaftTerm: 7}, identity: identity},
 		{name: "approved zero revision", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 3, RaftTerm: 7}, identity: identity, policy: proxyResponseRevisionZero},
+		{name: "approved non-negative zero revision", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 3, RaftTerm: 7}, identity: identity, policy: proxyResponseRevisionNonNegative},
+		{name: "approved non-negative positive revision", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 3, Revision: 1, RaftTerm: 7}, identity: identity, policy: proxyResponseRevisionNonNegative},
 		{name: "nonzero member without static membership", header: &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 4, Revision: 1, RaftTerm: 7}, identity: proxyResponseIdentity{clusterID: 1}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

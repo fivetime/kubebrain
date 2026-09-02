@@ -259,7 +259,14 @@ func invalidWatchResultShape(result etcdproxy.WatchResult) error {
 
 func validateForwardedWatchResultHeader(result etcdproxy.WatchResult, identity proxyResponseIdentity) error {
 	response := &etcdserverpb.WatchResponse{Header: result.Header}
-	if issue := validateProxyResponseHeader(response, identity, proxyResponseRevisionPositive); issue != "" {
+	revisionPolicy := proxyResponseRevisionPositive
+	if result.Err != nil {
+		// etcd may attach a fully populated serving identity to an authoritative
+		// watch error while leaving the header revision at zero. Preserve that
+		// wire behavior without weakening cluster/member/term validation.
+		revisionPolicy = proxyResponseRevisionNonNegative
+	}
+	if issue := validateProxyResponseHeader(response, identity, revisionPolicy); issue != "" {
 		return errors.New("watch leader proxy returned a response " + issue)
 	}
 	coveredRevision := result.Revision

@@ -184,7 +184,7 @@ func TestWatchErrorResultFromResponsePreservesIdentity(t *testing.T) {
 	watchErr := status.Error(codes.OutOfRange, "required revision has been compacted")
 	response := clientv3.WatchResponse{
 		Header: &etcdserverpb.ResponseHeader{
-			ClusterId: 7, MemberId: 11, Revision: 43, RaftTerm: 13,
+			ClusterId: 7, MemberId: 11, RaftTerm: 13,
 		},
 		Created:         true,
 		CompactRevision: 41,
@@ -194,7 +194,7 @@ func TestWatchErrorResultFromResponsePreservesIdentity(t *testing.T) {
 	require.NotSame(t, response.Header, got.Header)
 	require.ErrorIs(t, got.Err, watchErr)
 	require.True(t, got.Created)
-	require.Equal(t, uint64(43), got.Revision)
+	require.Zero(t, got.Revision, "etcd compaction errors may carry an identity header with revision zero")
 	require.Equal(t, int64(41), got.CompactRevision)
 }
 
