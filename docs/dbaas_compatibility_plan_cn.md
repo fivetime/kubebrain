@@ -69231,6 +69231,66 @@ health 全部成功（`49.199–61.266ms`），三个 store Up、五类 Region c
 存储隔离风险仍存在。本轮关闭了同身份 malformed Watch error 借伪造 compaction 水位覆盖真实错误的漏洞，同时保留
 etcd 合法鉴权与 compaction 错误语义。
 
+### A5698：拒绝成功 Watch 结果携带 compaction 水位
+
+继续审计 A5697 固定的 `WatchResult` transport 合同，并对照 client/v3 `WatchResponse.Err()` 与
+`IsProgressNotify()`：client/v3 只要看到非零 `CompactRevision` 就优先解释为 `ErrCompacted`；成功 Created、progress
+或 event 响应必须零水位。现有 follower 仅在 `Err!=nil` 时检查水位，`Err=nil` 会直接返回；因此代理若漏掉错误却保留
+compaction 水位，首次 create 会被当成成功，已建立 generation 的 Created 会静默忽略，progress/event 也会发布并推进
+水位，真实 compaction cancellation 被吞掉。
+
+新增 RED `TestFollowerWatchRejectsSuccessfulCompactRevisionBeforeAuthoritativeCreate`，修复前收到
+`Created+CompactRevision=49` 后错误返回成功 create；表驱动
+`TestFollowerWatchRejectsSuccessfulCompactRevisionAfterAuthoritativeCreate` 覆盖 Created/progress/event 三种成功结果携带
+水位，修复前均未产生 integrity cancellation。修正测试替身随 context 关闭 channel 的清理语义后，四条差异稳定 RED
+（`3.086s`）。提交 `9d72b229` 将 validator 扩展并更名为 `validateForwardedWatchResultShape`：`Err=nil` 时要求
+`CompactRevision==0`，否则在首次 authoritative create 或已建立 generation 发布前递增固定
+`watch.backend.integrity_failure{kind="invalid_result"}`、以零水位取消且不推进 `syncedRev`；A5697 的 error/compaction
+规则保持不变。接口注释同步固定“每个成功结果水位为零”，日志也改为准确的 invalid proxy result shape。
+
+修复后 focused/race 分别 `0.196s/1.625s` GREEN，全部 Watch 测试 `13.400s`、完整
+`pkg/server/etcd` `141.368s`、`pkg/server/service/etcdproxy` `1.790s`、两包 vet 与 `git diff --check` 均 GREEN。
+提交前 verifier 精确分配 703 项为 `170/193/180/160`，四分片分别 `250.932/444.566/300.651/572.123s`
+GREEN；紧邻提交 verifier 再次 GREEN。提交后四分片 `255.049/447.433/303.599/574.585s` 全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5698-9d72b2291b57` 内嵌版本 `0.0.0-9d72b2291b57`、完整提交
+`9d72b2291b5734e96c789994cf9e5e9213cc2f0b`、build time `2026-09-02T10:15:09Z`、Go `1.26.5`、
+`linux/amd64`、TiKV、USER `65532:65532`。BuildKit 90/90 completed；OCI index/platform/config/attestation
+分别为 `sha256:7050a6726171a23d9381c45c1b97516dd4049f83b7d591f180c2749b41dbd696`、
+`sha256:cdb96be7d9512615f58368d2a44bfcf26a3becd74b54763c0c4ebff7588c47e6`、
+`sha256:8e8688188485d1f52beb0e2b3869282ce8c129c2e96c542435699cf451a16843`、
+`sha256:6e529a6b51fa4d73c1f50574eb2ef2bfe8eb1aa2824994d8e7f90f9b8350d8fd`；provenance attachment 为
+`sha256:4735f81c5134cb96e6dd61b45dd6a54f08108fd722c7a8f28dc4cf68c8fd4a54`，SPDX/SLSA layer 为
+`sha256:a836da3061669707c099c431d425e407d02b4cc72cba31cfb747e6aaebe25628`、
+`sha256:e80e76d09c3b9c85b11e2e1dd17861ebc721debd665f320592bc6fea3c6568c3`。本地 registry
+`imagetools inspect` 按预期 pull denied；Docker OCI archive、BuildKit history 与本地元数据交叉验证 descriptor。
+Kind 加载后显式注册完整 index digest 别名，未出现 ImagePullBackOff。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 790 部署到候选 791；
+三 Pod runtime digest 同为 `sha256:ecf733a22bfb8797d0dbbbb0f9b729afcbb6022c5b18c5ea70a471baf91fad89`、
+Ready/restart 0，Pod 内构建身份一致。现场 leader 为 `23381`，followers 为 `23379/23380`；固定
+`TestWatchCompactedRevisionDifferentialAgainstReferenceEtcd` 分别直连两个 follower，合法 compaction error 路径
+`0.658/0.565s` GREEN，测试前后三 Pod `watch_backend_integrity_failure{kind="invalid_result"}` 均为 0。候选完整
+HEAD readonly gate GREEN。
+
+候选终态 revision/index/applied 为 `66691/66691/66691`，HashKV `1079606183`、compact revision `66687`，
+term `453`、leader `231094427`，Lease/Alarm 为空。三轮九次 endpoint proposal health 全部成功
+（`48.133–69.772ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零。
+KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各保留一次历史 restart；候选日志 `539/564/382` 行，关键错误及
+最近 60 秒关键错误均为 0。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `792/792`、current/update
+`kubebrain-9b9965dc9`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。稳定镜像
+完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除 info-metrics 合同后其余门禁
+全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66691/66691/66691/1079606183/66687`，term `455`、leader `231094427`，Lease/Alarm 为空；三轮九次
+health 全部成功（`48.704–64.553ms`），三个 store Up、五类 Region check 连续三轮全零。稳定日志
+`484/523/304` 行，关键错误与最近 60 秒关键错误均为 0。全程无凭据、无落盘诊断日志；最终七个 port-forward
+会话全部关闭且目标端口无监听。宿主根盘 83%、可用约 328 GiB。A5676 已记录的 Kind local-path 非 CSI
+存储隔离风险仍存在。本轮关闭了成功 Watch 结果携带伪 compaction 水位导致真实取消丢失的漏洞，同时证明合法
+compaction 路径与稳定数据状态不变。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
