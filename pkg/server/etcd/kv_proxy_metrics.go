@@ -84,6 +84,9 @@ func validateRangeProxyPayload(metricCli metrics.Metrics, request *etcdserverpb.
 		if request.GetKeysOnly() && len(kv.GetValue()) != 0 {
 			return fail("leader range proxy returned a value for a keys-only request")
 		}
+		if request.GetKeysOnly() && request.GetSortTarget() != etcdserverpb.RangeRequest_VALUE && kv.GetLease() != 0 {
+			return fail("leader range proxy returned a lease for a fast keys-only request")
+		}
 		if validateProxyKeyValueLifecycle(kv) != nil {
 			return fail("leader range proxy returned invalid key-value revision metadata")
 		}

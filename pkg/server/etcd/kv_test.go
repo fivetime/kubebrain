@@ -3389,6 +3389,7 @@ func TestFollowerRejectsInvalidRangeProxyPayload(t *testing.T) {
 		name     string
 		request  *etcdserverpb.RangeRequest
 		response *etcdserverpb.RangeResponse
+		message  string
 	}{
 		{name: "count below values", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
 		{name: "count only values", request: &etcdserverpb.RangeRequest{Key: []byte("b"), CountOnly: true}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}}}},
@@ -3398,6 +3399,7 @@ func TestFollowerRejectsInvalidRangeProxyPayload(t *testing.T) {
 		{name: "outside range", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("d")}}}},
 		{name: "duplicate key", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("d")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b")}, {Key: []byte("b")}}}},
 		{name: "keys only value", request: &etcdserverpb.RangeRequest{Key: []byte("b"), KeysOnly: true}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), Value: []byte("secret")}}}},
+		{name: "fast keys only lease", request: &etcdserverpb.RangeRequest{Key: []byte("b"), KeysOnly: true}, response: &etcdserverpb.RangeResponse{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 1, ModRevision: 2, Version: 2, Lease: 7}}}, message: "leader range proxy returned a lease for a fast keys-only request"},
 		{name: "impossible metadata", request: &etcdserverpb.RangeRequest{Key: []byte("b")}, response: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 3, Version: 3}}}},
 		{name: "newer than snapshot", request: &etcdserverpb.RangeRequest{Key: []byte("b"), Revision: 2}, response: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 3, ModRevision: 3, Version: 1}}}},
 		{name: "outside revision filter", request: &etcdserverpb.RangeRequest{Key: []byte("b"), MinModRevision: 3}, response: &etcdserverpb.RangeResponse{Header: txnHeader(3), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 2, ModRevision: 2, Version: 1}}}},
@@ -3413,6 +3415,9 @@ func TestFollowerRejectsInvalidRangeProxyPayload(t *testing.T) {
 			initKVProxyIntegrityMetrics(rec)
 			tt.response.Header.ClusterId = server.backend.ClusterID()
 			tt.response.Header.MemberId = server.localMemberID()
+			if tt.message != "" {
+				tt.response.Header.RaftTerm = 1
+			}
 			server.peers = testPeerService{
 				isLeader: false, proxyEnabled: true,
 				rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -3423,6 +3428,9 @@ func TestFollowerRejectsInvalidRangeProxyPayload(t *testing.T) {
 			response, err := server.Range(context.Background(), tt.request)
 			require.Nil(t, response)
 			require.Equal(t, codes.DataLoss, status.Code(err))
+			if tt.message != "" {
+				require.ErrorContains(t, err, tt.message)
+			}
 			require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
 		})
 	}

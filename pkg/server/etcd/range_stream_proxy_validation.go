@@ -57,6 +57,9 @@ func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.Range
 		if v.request.GetKeysOnly() && len(kv.GetValue()) != 0 {
 			return fail("returned a value for a keys-only request")
 		}
+		if v.request.GetKeysOnly() && v.request.GetSortTarget() != etcdserverpb.RangeRequest_VALUE && kv.GetLease() != 0 {
+			return fail("returned a lease for a fast keys-only request")
+		}
 		if validateProxyKeyValueLifecycle(kv) != nil {
 			return fail("returned invalid key-value revision metadata")
 		}
