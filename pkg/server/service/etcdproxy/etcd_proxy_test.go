@@ -180,6 +180,24 @@ func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
 	require.Equal(t, []byte("k"), got.Events[0].Kv.Key)
 }
 
+func TestWatchErrorResultFromResponsePreservesIdentity(t *testing.T) {
+	watchErr := status.Error(codes.OutOfRange, "required revision has been compacted")
+	response := clientv3.WatchResponse{
+		Header: &etcdserverpb.ResponseHeader{
+			ClusterId: 7, MemberId: 11, Revision: 43, RaftTerm: 13,
+		},
+		Created:         true,
+		CompactRevision: 41,
+	}
+	got := watchErrorResultFromResponse(response, watchErr)
+	require.Equal(t, response.Header, got.Header)
+	require.NotSame(t, response.Header, got.Header)
+	require.ErrorIs(t, got.Err, watchErr)
+	require.True(t, got.Created)
+	require.Equal(t, uint64(43), got.Revision)
+	require.Equal(t, int64(41), got.CompactRevision)
+}
+
 func TestOnlyCreatedWatchResponseAuthorizesContinuation(t *testing.T) {
 	tests := []struct {
 		name     string

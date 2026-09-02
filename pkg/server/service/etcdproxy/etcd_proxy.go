@@ -1408,13 +1408,7 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 							break
 						}
 						select {
-						case outputCh <- WatchResult{
-							Header:          cloneWatchResponseHeader(wresp.Header),
-							Err:             err,
-							Created:         wresp.Created,
-							Revision:        uint64(wresp.Header.Revision),
-							CompactRevision: wresp.CompactRevision,
-						}:
+						case outputCh <- watchErrorResultFromResponse(wresp, err):
 						case <-ctx.Done():
 						}
 						return
@@ -1549,6 +1543,16 @@ func watchResultFromResponse(wresp clientv3.WatchResponse) WatchResult {
 		Header:   header,
 		Events:   convertEvents(wresp.Events),
 		Revision: uint64(wresp.Header.Revision),
+	}
+}
+
+func watchErrorResultFromResponse(wresp clientv3.WatchResponse, err error) WatchResult {
+	return WatchResult{
+		Header:          cloneWatchResponseHeader(wresp.Header),
+		Err:             err,
+		Created:         wresp.Created,
+		Revision:        uint64(wresp.Header.Revision),
+		CompactRevision: wresp.CompactRevision,
 	}
 }
 

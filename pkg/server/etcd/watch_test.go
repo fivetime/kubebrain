@@ -3516,6 +3516,142 @@ func TestFollowerWatchRejectsInvalidProxyHeaderBeforeAuthoritativeCreate(t *test
 	requireWatchCanceled(t, <-done)
 }
 
+func TestFollowerWatchRejectsInvalidProxyErrorHeaderBeforeAuthoritativeCreate(t *testing.T) {
+	tests := []struct {
+		name    string
+		header  func(*RPCServer) *etcdserverpb.ResponseHeader
+		message string
+	}{
+		{name: "missing", header: func(*RPCServer) *etcdserverpb.ResponseHeader { return nil }, message: "without a header"},
+		{name: "foreign cluster", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			header := proxiedResponseHeader(server, 50)
+			header.ClusterId++
+			return header
+		}, message: "foreign cluster"},
+		{name: "unknown member", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			header := proxiedResponseHeader(server, 50)
+			header.MemberId++
+			return header
+		}, message: "unknown member"},
+		{name: "zero term", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			header := proxiedResponseHeader(server, 50)
+			header.RaftTerm = 0
+			return header
+		}, message: "zero raft term"},
+		{name: "revision mismatch", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			return proxiedResponseHeader(server, 51)
+		}, message: "header revision 51 differing from covered revision 50"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			server.metricCli = rec
+			initWatchBackendIntegrityMetrics(rec)
+			server.staticMembers = []*etcdserverpb.Member{{ID: server.localMemberID()}}
+
+			proxyCh := make(chan etcdproxy.WatchResult, 1)
+			proxyCh <- etcdproxy.WatchResult{
+				Header: test.header(server), Err: compactedRevisionError(),
+				Revision: 50, CompactRevision: 999,
+			}
+			server.peers = testPeerService{
+				isLeader:                   false,
+				proxyEnabled:               true,
+				preserveMissingWatchHeader: true,
+				syncReadFn: func(context.Context) error {
+					server.backend.SetCurrentRevision(50)
+					return nil
+				},
+				watchFn: func(watchCtx context.Context, _, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+					go func() {
+						<-watchCtx.Done()
+						close(proxyCh)
+					}()
+					return proxyCh, nil
+				},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			stream := &controllableWatchServer{ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 1)}
+			done := make(chan error, 1)
+			go func() { done <- server.Watch(stream) }()
+			stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/invalid-error-header"), WatchId: 421},
+			}}
+			require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+			response := stream.snapshot()[0]
+			require.True(t, response.Created)
+			require.True(t, response.Canceled)
+			require.Equal(t, int64(-1), response.WatchId)
+			require.Zero(t, response.CompactRevision, "an unauthenticated compaction watermark must not be exposed")
+			require.Contains(t, response.CancelReason, test.message)
+			require.Equal(t, []interface{}{0, 1}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
+
+			cancel()
+			requireWatchCanceled(t, <-done)
+		})
+	}
+}
+
+func TestFollowerWatchRejectsInvalidProxyErrorHeaderAfterAuthoritativeCreate(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initWatchBackendIntegrityMetrics(rec)
+	server.staticMembers = []*etcdserverpb.Member{{ID: server.localMemberID()}}
+
+	header := proxiedResponseHeader(server, 10)
+	header.ClusterId++
+	results := make(chan etcdproxy.WatchResult, 1)
+	server.peers = testPeerService{
+		isLeader:                   false,
+		proxyEnabled:               true,
+		preserveMissingWatchHeader: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			return results, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
+	wt := &watch{
+		cancel: func() {}, start: "/registry/watch/", end: "/registry/watch0",
+		syncedRev: 9, sourceRev: 9,
+	}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: wt}, metricCli: rec,
+	}
+	w.wg.Add(1)
+	go w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/"), RangeEnd: []byte("/registry/watch0"), StartRevision: 10,
+	})
+	results <- etcdproxy.WatchResult{
+		Header: header, Err: compactedRevisionError(), Revision: 10, CompactRevision: 999,
+	}
+	close(results)
+
+	require.Eventually(t, func() bool {
+		for _, response := range stream.snapshot() {
+			if response.Canceled {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	responses := stream.snapshot()
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Zero(t, responses[0].CompactRevision)
+	require.Contains(t, responses[0].CancelReason, "foreign cluster")
+	require.Empty(t, responses[0].Events)
+	require.Equal(t, uint64(9), atomic.LoadUint64(&wt.syncedRev))
+	require.Equal(t, []interface{}{0, 1}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
+	w.wg.Wait()
+}
+
 func TestStaleFreshnessWatchCannotOpenLocalGeneration(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

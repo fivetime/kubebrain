@@ -1535,7 +1535,7 @@ func (s testPeerService) Watch(ctx context.Context, key, rangeEnd []byte, revisi
 					if !ok {
 						return
 					}
-					if result.Err == nil && result.Header == nil {
+					if result.Header == nil {
 						coveredRevision := result.Revision
 						if result.ProgressRevision > 0 {
 							coveredRevision = result.ProgressRevision
@@ -1548,6 +1548,13 @@ func (s testPeerService) Watch(ctx context.Context, key, rangeEnd []byte, revisi
 							if coveredRevision > 0 {
 								result.Revision = coveredRevision
 							}
+						}
+						if coveredRevision == 0 {
+							coveredRevision = revision
+							if coveredRevision == 0 {
+								coveredRevision = 1
+							}
+							result.Revision = coveredRevision
 						}
 						result.Header = testPeerWatchResponseHeader(coveredRevision)
 					}
