@@ -68686,6 +68686,84 @@ health 全部成功（`9.328–12.903ms`），store/region 连续三轮健康，
 结果替代完整 storage isolation gate。A5689 关闭了完整归因的 PrevKV/Deleted 已给出精确 cardinality delta、
 leader/follower 却仍只按 mutation 容量做宽松估计的完整性缺口，同时保留部分归因和未知变化的保守兼容。
 
+### A5690：校验事务内写后 Range 的精确 KV 状态
+
+继续对照 `/root/etcd/server/etcdserver/txn/txn.go`、`put.go`、`delete.go` 与
+`/root/etcd/server/storage/mvcc/kvstore_txn.go`。上游在选中分支中按顺序执行 operation；因此 revision=0
+的 Range 必须看到此前 staged Put 在本事务 revision 上的结果，也不能返回已被此前 DeleteRange 删除的
+key。显式历史 revision 仍读取历史快照；快速 KeysOnly 可以投影 value/lease，但按 VALUE 排序时上游必须
+加载完整 KV 后再清空 value，所以 lease 仍是可验证字段。A5689 已约束写后 cardinality，却仍会接受
+错误 value/lease/create revision/mod revision/version、遗漏 staged Put 或返回 deleted key 的 leader 响应。
+
+tests-only RED 精确暴露五条旧实现会放过的响应：创建 Put 的错误 value、更新 Put 未递增 version、无
+PrevKV Put 暴露旧 value/lease/mod revision、Delete 后 Range 仍返回被删 key，以及 follower 接受陈旧
+写后状态。扩展边界覆盖正确创建/更新，IgnoreValue/IgnoreLease 继承 PrevKV，普通与 VALUE-sort
+KeysOnly 的不同投影能力，错误 lifecycle，完整 Range 不得遗漏 staged Put，limited/filtered Range
+允许遗漏，nested Txn 写入对尾随根 Range 可见，Delete 后可保留区间外 key，以及 Put/Delete 后历史
+Range 仍可返回旧状态。独立 lookup 测试覆盖乱序输入、空区间、point、有限 Delete、gap 和 from-key。
+
+提交 `1018a98c4805b60cfab305573ee95044b5231896` 递归遍历实际选中分支并保存已执行 mutation。对每个
+revision=0 Range，返回 KV 若落入 Delete interval 立即报 DataLoss；若命中 Put，则校验 outer
+mod revision，并在请求 PrevKV 时精确区分创建或更新、固定 create revision/version，校验请求 value/
+lease 或 IgnoreValue/IgnoreLease 的继承结果。完整且未过滤、未截断的普通/KeysOnly Range 还必须包含
+区间内每个 staged Put。现有 `checkIntervals` 在准入时拒绝重叠写；validator 因而只需复制并排序最多
+128 个非空 mutation，再用二分为每个返回 key 定位唯一 interval，复杂度从 O(K*M) 降为 O(K log M)，
+且只为 staged Put 建立最多 128 项的可见集合。
+
+最终聚焦测试 `0.505s`，优化后 race `2.686s`，全部 Txn `29.140s`，完整
+`pkg/server/etcd` `138.575s`，vet、diff check 均通过。提交前 production verifier 精确为 703 项、
+四片 `170/193/180/160`；代码提交后四片全部 GREEN，权威耗时为
+`266.125/456.057/317.189/582.470s`。
+
+正确候选 `docker.io/library/kubebrain:a5690-1018a98c` 内嵌版本
+`0.0.0-1018a98c4805`、完整提交 `1018a98c4805b60cfab305573ee95044b5231896`、build time
+`2026-09-01T23:37:29Z`，Go `1.26.5`、`linux/amd64`、TiKV、USER `65532:65532`。OCI
+index/platform/config/attestation 分别为
+`sha256:2a57632daa1384a693c7653848b4ba117b06d0369b53bc37c451ca580fec98c2`、
+`sha256:6f1fef434e38972b53ff5364741e3f72c833172f00c1dd8034514ef94ef292ea`、
+`sha256:7b9f291ec5c4ac92f696dde46a3906cecfc9a734298928fb24970d92894f8e04`、
+`sha256:32e79d1900a9cd92087618e462d0cb35c1b542a08fa8369c734a2b96e85b1732`；BuildKit 使用
+`--provenance=mode=max --sbom=true`，syft scanner 成功，provenance attachment 为
+`sha256:45dcf0b3e63fcc80f9fba2b1ea9fb0e18a140936052520770a31cb5a059162bd`，Kind runtime digest 为
+`sha256:c821c694d9f98932cdb0dc156caf1632303afd82812e3242f707eaeea4560993`。首次构建因同一 shell
+前缀中的 build-time 变量尚未展开而被 Dockerfile 非空校验拒绝；随后一次手工填写了错误完整 SHA，
+BuildKit VCS 审计发现 label/binary 与真实 revision 不同。失败记录和错误元数据候选均未部署，最终镜像
+重新构建并交叉确认 VCS revision、label 与 Pod 内二进制 SHA 完全一致。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation
+`772` 部署到 `773`。Kind 初次只有 mutable tag、没有 index digest 别名，首个 Pod 因外部 registry
+pull 被拒绝；为同一已审计 index 增加本地 containerd digest alias 并只删除失败的 `kubebrain-2` Pod
+后，rollout 3/3 完成，未删除数据卷。三 Pod 同一 revision `kubebrain-66dbdfd765`、同一 runtime
+digest、Ready/restart 0，Pod 内版本和完整 SHA 一致。
+
+逐个 Pod-local gateway 执行 Put PrevKV 创建、Put PrevKV 更新、IgnoreValue 继承 value 并更新 lease、
+IgnoreLease 继承 lease 并更新 value、快速 KeysOnly 投影、Delete 后 Range 排除被删 key 且保留区间外
+key，以及 nested Put 对尾随根 Range 可见；每 Pod 七类、共 21 类次全部通过。首版 runner 把 prefix
+range-end 错写成追加 `/0`，导致范围为空且 trap 未清理非租约 key；分阶段证明产品七类行为后，按字节
+前缀把末尾 `/` 递增为 `0`，先清除残留，再对三 Pod 全量重跑并确认三个前缀 Count=0。该 harness
+错误没有记为产品失败。
+
+候选终态 revision/index/applied 为 `66506`，HashKV `342540746`、compact revision `44329`，term
+`418`、leader `231094427`。全部适用开关启用的 HEAD readonly gate 一次 GREEN；候选三轮九次
+endpoint proposal health 全部成功（`10.147–11.423ms`），三个 store Up，pending/down/miss/extra/
+learner 五类 region check 连续三轮全零，Lease/Alarm 为空。候选三 Pod 日志 `894/884/363` 行，真实
+klog E/F、panic/fatal/data race/data corruption、TiKV/PD 关键错误与最近 60 秒关键错误均为 0；
+KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各沿用一次历史 restart。
+
+以同类五类原子 test 回滚固定稳定 digest。StatefulSet UID 不变，generation/observed `774/774`、
+current/update `kubebrain-9b9965dc9`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。
+显式关闭并重建全部 port-forward 后，HEAD readonly gate 在稳定 A5525 镜像上按预期只拒绝缺少
+`watch_range_prefilter_dropped`；排除该新版 info-metrics 合同后其余门禁全部 GREEN。稳定终态
+revision/index/applied、HashKV、compact revision 为 `66506/66506/66506/342540746/44329`，term
+`420`、leader `231094427`；三轮九次 proposal health 全部成功（`10.391–11.601ms`），store/region
+连续三轮健康，Lease/Alarm 为空。稳定日志 `520/529/272` 行；`kubebrain-2` 启动后一次
+`refresh compact revision metric failed: context deadline exceeded`，其后超过四分钟未复现，最近 60 秒
+关键错误为 0，panic/fatal/data race/data corruption 与 TiKV/PD 关键错误均为 0。全程未使用凭据或
+落盘诊断日志；宿主根盘 78%、可用 433 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍
+存在，本轮不把 region API 结果替代完整 storage isolation gate。A5690 关闭了 leader/follower 可返回
+与已执行 Put/Delete 不一致的写后 KV 状态这一完整性缺口，同时保留历史、投影、过滤与截断语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
