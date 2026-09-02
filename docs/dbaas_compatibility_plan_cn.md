@@ -68946,6 +68946,70 @@ health 全部成功（`9.706–12.014ms`），store/region 连续三轮健康，
 隔离风险仍存在，本轮不以 PD region API 替代完整 storage isolation gate。A5693 关闭了 RangeStream
 NONE+非 KEY target 与 unary 排序结果不一致，以及 follower 对同一形状错误接受/拒绝 payload 的双向缺口。
 
+### A5694：将 follower RangeStream 响应绑定到代理身份围栏
+
+对照 `/root/etcd/api/etcdserverpb/rpc.proto` 的 `ResponseHeader` 以及 KubeBrain unary proxy 的
+`validateProxyResponseHeader`，审计发现 follower `RangeStream` 只校验 terminal revision 和 payload，
+没有像 unary Range 一样校验 cluster ID、serving member ID、静态成员集合与正 Raft term。恶意或故障
+leader 因而可以返回 foreign cluster、未知 member 或零 term 的 terminal header；旧实现会把该 header
+发送给客户端，并用它推进 follower watermark。五个先行负例分别注入零 cluster、foreign cluster、零
+member、未知 member 和零 Raft term，修复前均错误返回 nil。
+
+提交 `cebc8e4cd9e11118961b46c4c85795785dab4f7f` 在 terminal payload 校验之后、watermark 推进和公开
+frame 之前复用统一 response-header validator，并要求预期 cluster、已知非零 serving member、正 term
+和正 revision。任一身份异常都返回 DataLoss，不发送任何公开 frame，不推进 follower watermark，同时
+记录 `read.range_stream.failure{stage=protocol}` 与 `kv.proxy.integrity_failure{rpc=range}`。正常 follower
+fixture 统一使用真实代理 header；新增测试同时证明五类异常被拒绝、客户端不可见且 watermark 不变。
+
+聚焦测试 GREEN；完整 RangeStream、race、完整 `pkg/server/etcd` 分别为 `1.806s`、`6.086s`、
+`136.696s`，vet 和 diff check 均通过。提交前 production verifier 精确为 703 项、四片
+`170/193/180/160`。首次并行四片中 shard 0 的既有计时测试
+`TestRolloutAvailabilityRunnerReportsProbeFailureBeforeStartBarrier` 在主机并行压力下耗时
+`6.24521772s`，超过测试自身 `<5s` 围栏；其余三片 GREEN。该测试隔离复跑 `4.050s`，shard 0
+隔离复跑 `244.976s` 全绿，证明是测试调度计时噪声而非产品回归；提交前 verifier 再次全绿。代码提交后
+强制四片耗时 `248.362/445.099/301.583/572.867s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5694-cebc8e4c` 内嵌版本 `0.0.0-cebc8e4cd9e1`、完整提交
+`cebc8e4cd9e11118961b46c4c85795785dab4f7f`、build time `2026-09-02T03:39:55Z`，Go
+`1.26.5`、`linux/amd64`、TiKV、USER `65532:65532`。OCI index/platform/config/attestation
+分别为 `sha256:953a780785a11c1c5a1c223dcd3de0e570b058c5def7d0dfd120e1fdca2e9d2b`、
+`sha256:f612a689b9165cdc2450434ed4fecfa22cce5060057892a605096eb3746abc50`、
+`sha256:a3c871c9aa4c8bdc92a3f5c87bb5ee4db7eb72715f9c600c89ef6b77abe7745f`、
+`sha256:63d2da47f195b7c8a2d2062153f5e10d23cca6d0143533cded58c39f7b693522`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功，provenance attachment 为
+`sha256:398acc771ecc77ec7b521d5af363adb0a3da670834957cf3b392be4e61c0ba82`，Kind runtime
+digest 为 `sha256:07f5d6367fbc02db209ced2eb6975ac87b15920b520ea4db8b0a6b97112b6364`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation
+`780` 部署到候选 `781`；三 Pod 同一 revision `kubebrain-8f94597dc`、同一候选 runtime digest、
+Ready/restart 0，Pod 内身份与构建元数据一致。复用仓库既有 `hack/etcd-client-compat`，将 reference 与
+KubeBrain direct endpoints 都指向候选三端，运行
+`TestRangeStreamFollowerDifferentialAgainstReferenceEtcd` 得到 `1.193s` GREEN；这是 Kube-only 的
+follower 拓扑/oracle 复用，不冒充独立 reference differential，但完整覆盖 leader discovery、两个直连
+follower、serializable latest/negative/count/keys/limit/historical、linearizable proxy、unary/stream
+一致性和 follower header 身份。测试后各 Pod 的
+`kv_proxy_integrity_failure{rpc="range"}` 与 `read_range_stream_failure{stage="protocol"}` 均为 0。
+清理探针前两次因 etcdctl 输出格式使用错误而在发请求前被 CLI 拒绝，改用 `-w fields` 后普通和 `$` low
+prefix 均 Count=0；这是操作者 harness 误用，不是产品失败。
+
+候选终态 revision/index/applied 为 `66601`，HashKV `507944527`、compact revision `44329`，term
+`434`、leader `231094427`。全部适用开关启用的 HEAD readonly gate GREEN；三轮九次 endpoint
+proposal health 全部成功（`9.742–12.405ms`），三个 store Up，pending/down/miss/extra/learner
+连续三轮全零，Lease/Alarm 为空。候选 KubeBrain 日志 `513/518/278` 行，关键错误与最近 60 秒关键
+错误均为 0；KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各沿用一次历史 restart。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `782/782`、current/update
+`kubebrain-9b9965dc9`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。
+稳定镜像上的完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除该
+info-metrics 合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision
+为 `66601/66601/66601/507944527/44329`，term `437`、leader `2393892952`；三轮九次 proposal
+health 全部成功（`9.618–11.866ms`），三个 store Up，pending/down/miss/extra/learner 连续三轮全零，
+Lease/Alarm 为空。稳定日志 `693/272/769` 行，关键错误与最近 60 秒关键错误均为 0。全程未使用凭据
+或落盘诊断日志；全部端口转发已关闭且目标端口无监听，宿主根盘 80%、可用 386 GiB。A5676 已记录的 Kind local-path 非 CSI 存储
+隔离风险仍存在，本轮不以 PD region API 替代完整 storage isolation gate。A5694 关闭了 follower
+RangeStream 接受并公开伪造代理身份、再用其推进本地已知 revision 的协议完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
