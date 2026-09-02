@@ -143,9 +143,9 @@ type RangeStreamResult struct {
 // zero), or a progress notification (ProgressRevision > 0) — never a mix. An
 // error has a positive CompactRevision exactly when it reports compaction; that
 // watermark is at least the requested revision and at most a nonzero response
-// revision. Revision is
-// independent of visible events because server-side watch filters may remove
-// some or all events while the watch still advances through the batch. Header
+// revision. Every successful result has CompactRevision zero. Revision is independent
+// of visible events because server-side watch filters may remove some or all events
+// while the watch still advances through the batch. Header
 // preserves the serving leader's response identity for the ingress replica to
 // validate before it publishes or advances any client-visible watermark.
 type WatchResult struct {

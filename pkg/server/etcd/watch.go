@@ -282,8 +282,14 @@ func validateForwardedWatchResultHeader(result etcdproxy.WatchResult, identity p
 	return nil
 }
 
-func validateForwardedWatchErrorResult(result etcdproxy.WatchResult, requestedRevision uint64) error {
+func validateForwardedWatchResultShape(result etcdproxy.WatchResult, requestedRevision uint64) error {
 	if result.Err == nil {
+		if result.CompactRevision != 0 {
+			return fmt.Errorf(
+				"watch leader proxy returned a successful result with compact revision %d",
+				result.CompactRevision,
+			)
+		}
 		return nil
 	}
 	if result.ProgressRevision != 0 {
@@ -1613,7 +1619,7 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 					w.rejectAuthoritativeCreate(id, wt, identityErr, 0)
 					return
 				}
-				if resultErr := validateForwardedWatchErrorResult(result, watchRevision); resultErr != nil {
+				if resultErr := validateForwardedWatchResultShape(result, watchRevision); resultErr != nil {
 					emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
 					w.rejectAuthoritativeCreate(id, wt, resultErr, 0)
 					return
@@ -1767,9 +1773,9 @@ watchLoop:
 					cancel()
 					return
 				}
-				if resultErr := validateForwardedWatchErrorResult(result, watchRevision); resultErr != nil {
+				if resultErr := validateForwardedWatchResultShape(result, watchRevision); resultErr != nil {
 					emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
-					klog.ErrorS(resultErr, "[watch stream] cancel due to invalid proxy error result", "watcher", w.id, "watch", id)
+					klog.ErrorS(resultErr, "[watch stream] cancel due to invalid proxy result shape", "watcher", w.id, "watch", id)
 					w.CancelGeneration(id, wt, resultErr, false)
 					cancel()
 					return
