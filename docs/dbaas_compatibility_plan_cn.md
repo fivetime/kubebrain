@@ -69291,6 +69291,61 @@ health 全部成功（`48.704–64.553ms`），三个 store Up、五类 Region c
 存储隔离风险仍存在。本轮关闭了成功 Watch 结果携带伪 compaction 水位导致真实取消丢失的漏洞，同时证明合法
 compaction 路径与稳定数据状态不变。
 
+### A5699：精确分类 Watch compaction 错误，拒绝无关 OutOfRange 伪装水位
+
+继续审计 A5697/A5698 固定的代理结果合同，并对照 etcd `rpctypes`：`ErrGRPCCompacted` 与
+`ErrGRPCFutureRev` 都使用 gRPC `OutOfRange`，租约 TTL 过大等其他错误也会复用该 code。旧
+`isWatchCompactedError` 只按 `status.Code(err)==codes.OutOfRange` 判断，因此同身份代理可把无关
+`OutOfRange` 与非零 `CompactRevision` 组合成伪 compaction，绕过 A5697 的 result-shape 拒绝并向客户端发布伪造水位；
+直接分类器也会把 future revision 错误误判为已压缩。
+
+新增 RED：`TestFollowerWatchRejectsMalformedProxyErrorBeforeAuthoritativeCreate` 加入无关 OutOfRange、revision/compact
+revision 均为 50 的代理结果，修复前错误暴露水位 50；`TestIsWatchCompactedError` 固定 wrapped gRPC compacted 为真，
+future revision 与无关 OutOfRange 为假，修复前两者均误判为真。focused RED `0.123s` 精确出现上述三处差异。
+提交 `5309e0a0` 改为以 `errors.Is(err, rpctypes.ErrCompacted)` 识别 etcd 标准 compaction，并保留 TiKV cache
+后端的两个既有语义消息；不再把整个 OutOfRange code 空间泛化成 compaction。这样无关错误携带水位会进入
+`invalid_result` fail-closed 路径，标准/包装 compaction 与后端 cache-too-old 语义保持兼容。
+
+修复后 affected focused `0.182s`、race `1.618s`、全部 Watch 测试 `13.408s`、完整
+`pkg/server/etcd` `133.421s`、该包 vet 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片分别 `268.953/461.523/319.661/590.214s` GREEN；紧邻提交 verifier 再次
+GREEN。提交后四分片 `262.838/457.435/311.745/583.781s` 全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5699-5309e0a0b120` 内嵌版本 `0.0.0-5309e0a0b120`、完整提交
+`5309e0a0b12049e49d9e5c3008f2dee7cc87f239`、build time `2026-09-02T11:20:49Z`、`linux/amd64`、TiKV。
+BuildKit 90/90 completed，固定 Alpine/Golang/Syft 三项材料；OCI index/platform/config/attestation 分别为
+`sha256:f5cfbb24e728de69ec05ad0afa5e0974ca4e208d946c98ec92ce257d61c7e74e`、
+`sha256:1057d88201b195a224632da24b9c35720867bff40ea37676df04e83cda236e96`、
+`sha256:5ea22d57b15cbac8cdfd2b874de3d61c51600ae4abd3ed2e4c25200285841ae8`、
+`sha256:121b8c4119dbd5866fea0ee400c725b40b1d4061773a879d364cc75c6299c2ae`；BuildKit provenance attachment
+为 `sha256:1d389e9a8bf798f20dc5e67f2ca5d7f9bf7c000d0bbdf9c6dc44805bce1199e1`，SPDX/SLSA in-toto layer 为
+`sha256:e2d4950c7bdaabb6d450798bf98632b98aea5740451413a86d77270b665fea89`、
+`sha256:4909020341129ef04015db6347cbdfc79bb2346921e8636e481d8d00537a730a`。本地 registry
+`imagetools inspect` 按预期 pull denied；Docker image metadata、BuildKit history 与 containerd OCI content
+交叉验证上述 descriptor。Kind 加载后显式注册完整 index digest 别名，未出现 ImagePullBackOff。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 792 部署到候选 793；
+三 Pod runtime digest 同为 `sha256:97c42c8b4c9adf05298910bf1a77ce17d6e0795fd382e18450e49578831a7578`、
+Ready/restart 0。现场 leader 为 `23380`，followers 为 `23379/23381`；固定
+`TestWatchCompactedRevisionDifferentialAgainstReferenceEtcd` 分别直连两个 follower，合法 compaction 路径
+`0.577/0.552s` GREEN，三 Pod `watch_backend_integrity_failure{kind="invalid_result"}` 均为 0。候选完整
+HEAD readonly gate GREEN。
+
+候选终态 revision/index/applied 为 `66715/66715/66715`，HashKV `4018727742`、compact revision `66711`，
+term `457`、leader `2393892952`，Lease/Alarm 为空。三轮九次 endpoint proposal health 全部成功
+（`50.061–63.991ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零。
+三 Pod 关键错误日志为空。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `794/794`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。稳定镜像
+完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除 info-metrics 合同后其余门禁
+全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66715/66715/66715/4018727742/66711`，term `458`、leader `231094427`，Lease/Alarm 为空；三轮九次
+health 全部成功（`48.035–70.146ms`），三个 store Up、五类 Region check 连续三轮全零，三 Pod
+`invalid_result` 均为 0 且关键错误日志为空。全程无凭据、无落盘诊断日志；最终七个 port-forward 会话全部关闭且
+目标端口无监听。宿主根盘 84%、可用约 317 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。
+本轮关闭了所有 OutOfRange 被错误升级为 compaction、进而接受伪水位的漏洞，同时证明合法 compaction 与稳定数据状态不变。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
