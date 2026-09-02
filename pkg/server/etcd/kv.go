@@ -466,6 +466,15 @@ func (s *RPCServer) rangeStreamOnce(
 						emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
 						return err
 					}
+					if response.RangeResponse.GetHeader() != nil {
+						if issue := validateProxyResponseHeader(
+							response.RangeResponse, s.expectedProxyResponseIdentity(), proxyResponseRevisionPositive,
+						); issue != "" {
+							emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+							emitKVProxyIntegrityFailure(s.metricCli, kvProxyRPCRange)
+							return status.Error(codes.DataLoss, "forwarded range stream returned a response "+issue)
+						}
+					}
 					terminalSeen = response.RangeResponse.Header != nil
 					s.observeForwardedRevision(response.RangeResponse.Header, nil)
 					if err := rs.Send(response); err != nil {

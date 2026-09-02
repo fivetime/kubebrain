@@ -615,7 +615,7 @@ func TestFollowerLinearizableRangeStreamProxiesBeforeLocalBarrier(t *testing.T) 
 	defer cleanup()
 	request := &etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")}
 	want := &etcdserverpb.RangeStreamResponse{RangeResponse: &etcdserverpb.RangeResponse{
-		Header: txnHeader(42), Count: 1,
+		Header: proxiedResponseHeader(server, 42), Count: 1,
 		Kvs: []*mvccpb.KeyValue{{Key: []byte("/stream/key"), Value: []byte("value"), CreateRevision: 1, ModRevision: 1, Version: 1}},
 	}}
 	server.peers = testPeerService{
@@ -674,7 +674,7 @@ func TestFollowerSerializableLatestRangeStreamPrefersLeaderAndFallsBackBeforeFir
 					results := make(chan etcdproxy.RangeStreamResult, 1)
 					results <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
 						RangeResponse: &etcdserverpb.RangeResponse{
-							Header: txnHeader(tc.wantRev), Count: 1,
+							Header: proxiedResponseHeader(server, tc.wantRev), Count: 1,
 							Kvs: []*mvccpb.KeyValue{{
 								Key: []byte("/checkpoint/key"), Value: []byte("leader"),
 								CreateRevision: tc.wantRev, ModRevision: tc.wantRev, Version: 1,
@@ -701,18 +701,18 @@ func TestFollowerSerializableLatestRangeStreamPrefersLeaderAndFallsBackBeforeFir
 func TestFollowerRangeStreamRejectsInvalidProxyTermination(t *testing.T) {
 	tests := []struct {
 		name       string
-		results    func() <-chan etcdproxy.RangeStreamResult
+		results    func(*RPCServer) <-chan etcdproxy.RangeStreamResult
 		message    string
 		sentFrames int
 	}{
 		{
 			name:    "nil channel",
-			results: func() <-chan etcdproxy.RangeStreamResult { return nil },
+			results: func(*RPCServer) <-chan etcdproxy.RangeStreamResult { return nil },
 			message: "forwarded range stream returned a nil result channel",
 		},
 		{
 			name: "closed without terminal",
-			results: func() <-chan etcdproxy.RangeStreamResult {
+			results: func(*RPCServer) <-chan etcdproxy.RangeStreamResult {
 				ch := make(chan etcdproxy.RangeStreamResult)
 				close(ch)
 				return ch
@@ -721,7 +721,7 @@ func TestFollowerRangeStreamRejectsInvalidProxyTermination(t *testing.T) {
 		},
 		{
 			name: "empty result",
-			results: func() <-chan etcdproxy.RangeStreamResult {
+			results: func(*RPCServer) <-chan etcdproxy.RangeStreamResult {
 				ch := make(chan etcdproxy.RangeStreamResult, 1)
 				ch <- etcdproxy.RangeStreamResult{}
 				close(ch)
@@ -731,7 +731,7 @@ func TestFollowerRangeStreamRejectsInvalidProxyTermination(t *testing.T) {
 		},
 		{
 			name: "mixed response and error",
-			results: func() <-chan etcdproxy.RangeStreamResult {
+			results: func(*RPCServer) <-chan etcdproxy.RangeStreamResult {
 				ch := make(chan etcdproxy.RangeStreamResult, 1)
 				ch <- etcdproxy.RangeStreamResult{
 					Response: &etcdserverpb.RangeStreamResponse{RangeResponse: &etcdserverpb.RangeResponse{Header: txnHeader(42)}},
@@ -744,9 +744,9 @@ func TestFollowerRangeStreamRejectsInvalidProxyTermination(t *testing.T) {
 		},
 		{
 			name: "continued after terminal",
-			results: func() <-chan etcdproxy.RangeStreamResult {
+			results: func(server *RPCServer) <-chan etcdproxy.RangeStreamResult {
 				ch := make(chan etcdproxy.RangeStreamResult, 2)
-				ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{RangeResponse: &etcdserverpb.RangeResponse{Header: txnHeader(42)}}}
+				ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{RangeResponse: &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 42)}}}
 				ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{RangeResponse: &etcdserverpb.RangeResponse{Kvs: []*mvccpb.KeyValue{{Key: []byte("late")}}}}}
 				close(ch)
 				return ch
@@ -764,7 +764,7 @@ func TestFollowerRangeStreamRejectsInvalidProxyTermination(t *testing.T) {
 				proxyEnabled: true,
 				epochFn:      func() (uint64, bool) { return 7, false },
 				rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
-					return test.results(), nil
+					return test.results(server), nil
 				},
 			}
 			stream := &fakeRangeStreamServer{ctx: context.Background()}
@@ -831,6 +831,50 @@ func TestFollowerRangeStreamRejectsInvalidProxyPayload(t *testing.T) {
 			requireRangeStreamStatusError(t, err, codes.DataLoss, test.message)
 			require.Len(t, stream.sent, test.sent)
 			require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureProtocol))
+		})
+	}
+}
+
+func TestFollowerRangeStreamRejectsInvalidProxyHeaderIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		mutate  func(*etcdserverpb.ResponseHeader)
+		message string
+	}{
+		{name: "zero cluster", mutate: func(header *etcdserverpb.ResponseHeader) { header.ClusterId = 0 }, message: "forwarded range stream returned a response with a zero cluster ID"},
+		{name: "foreign cluster", mutate: func(header *etcdserverpb.ResponseHeader) { header.ClusterId++ }, message: "forwarded range stream returned a response for a foreign cluster"},
+		{name: "zero member", mutate: func(header *etcdserverpb.ResponseHeader) { header.MemberId = 0 }, message: "forwarded range stream returned a response with a zero member ID"},
+		{name: "unknown member", mutate: func(header *etcdserverpb.ResponseHeader) { header.MemberId++ }, message: "forwarded range stream returned a response for an unknown member"},
+		{name: "zero raft term", mutate: func(header *etcdserverpb.ResponseHeader) { header.RaftTerm = 0 }, message: "forwarded range stream returned a response with a zero raft term"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+			defer cleanup()
+			beforeRevision := server.backend.GetCurrentRevision()
+			header := proxiedResponseHeader(server, 2)
+			server.staticMembers = []*etcdserverpb.Member{{ID: header.MemberId}}
+			test.mutate(header)
+			server.peers = testPeerService{
+				proxyEnabled: true,
+				epochFn:      func() (uint64, bool) { return 7, false },
+				rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+					ch := make(chan etcdproxy.RangeStreamResult, 1)
+					ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
+						RangeResponse: &etcdserverpb.RangeResponse{Header: header},
+					}}
+					close(ch)
+					return ch, nil
+				},
+			}
+			stream := &fakeRangeStreamServer{ctx: context.Background()}
+
+			err := server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, stream)
+			requireRangeStreamStatusError(t, err, codes.DataLoss, test.message)
+			require.Empty(t, stream.sent)
+			require.Equal(t, beforeRevision, server.backend.GetCurrentRevision(), "invalid identity must not advance the follower watermark")
+			require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureProtocol))
+			require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
 		})
 	}
 }
@@ -911,7 +955,7 @@ func TestFollowerRangeStreamSendFailureUsesCanonicalMetric(t *testing.T) {
 				rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
 					ch := make(chan etcdproxy.RangeStreamResult, 1)
 					ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
-						RangeResponse: &etcdserverpb.RangeResponse{Header: txnHeader(42)},
+						RangeResponse: &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 42)},
 					}}
 					close(ch)
 					return ch, nil
@@ -969,7 +1013,7 @@ func TestFollowerRangeStreamRetriesPeerDrainBeforeFirstPublicFrame(t *testing.T)
 			}
 			results := make(chan etcdproxy.RangeStreamResult, 1)
 			results <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
-				RangeResponse: &etcdserverpb.RangeResponse{Header: txnHeader(42)},
+				RangeResponse: &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 42)},
 			}}
 			close(results)
 			return results, nil
