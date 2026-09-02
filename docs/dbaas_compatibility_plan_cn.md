@@ -68883,6 +68883,69 @@ exceeded`，最近 60 秒未复现，其余真实 klog E/F、关键错误均为 
 PD region API 结果替代完整 storage isolation gate。A5692 关闭 fast KeysOnly 代理可泄露不可能的
 lease 字段这一客户端可见完整性缺口，同时保留 VALUE-sort 必须先读取完整 KV 的上游 lease 语义。
 
+### A5693：对齐 RangeStream 的 NONE 非 KEY 排序语义
+
+上游 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的 `checkRangeStreamRequest` 接受
+`SortOrder=NONE` 搭配任意合法 SortTarget；随后
+`/root/etcd/server/etcdserver/txn/range.go` 的 `sortRangeResults` 会把 NONE 搭配非 KEY target
+提升为该 target 的 ASCEND，而不是自然 key 顺序。原 KubeBrain RangeStream 注释和本地分区扫描都把 NONE
+无条件解释为 key ASCEND；既有测试数据的 value 又与 key 同向，掩盖了差异。follower stream 代理则相反，
+无论 target 都强制 key 严格递增，既会放过 VERSION 逆序 payload，也会拒绝合法的 VERSION 顺序及
+KeysOnly VALUE 投影后无法从响应重建的顺序。
+
+提交 `a4f368efaa7cd7a58d1c99ce4a3580dd53af5755` 让 NONE+非 KEY target 走现有 unary
+结果路径：先按完整 KV 排序，再应用 Limit 和 KeysOnly 投影，最后按 gRPC 大小拆 frame；普通 key-order
+递归范围仍沿用有界分区流，不把异常排序形状伪装成可增量扫描。stream proxy validator 改用共享
+`rangeProxyOrderValid` 跨 frame 校验实际 target/order，并以 seen-key 集合独立拒绝排序字段相等时的重复
+key；保留 KeysOnly+VALUE 因 value 已投影而不可重建顺序的边界。本地和代理测试先 RED：本地前三个 key
+与 unary 的 VALUE ASCEND 前三项不同，VERSION 逆序被接受，两个合法的非 key 顺序被旧 key 围栏拒绝；
+修复后同时覆盖 VALUE 排序先于 KeysOnly 投影、lease 保留、Count/More/Limit 及重复 key 拒绝。
+
+聚焦测试 `0.183s`，race `1.949s`，完整 `pkg/server/etcd` `142.718s`，vet、diff check
+均通过。提交前 production verifier 精确为 703 项、四片 `170/193/180/160`；提交前四片耗时
+`255.836/445.799/300.395/569.857s`，代码提交后强制四片耗时
+`258.852/449.707/305.947/574.882s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5693-a4f368ef` 内嵌版本 `0.0.0-a4f368efaa7c`、完整提交
+`a4f368efaa7cd7a58d1c99ce4a3580dd53af5755`、build time `2026-09-02T02:33:42Z`，Go
+`1.26.5`、`linux/amd64`、TiKV、USER `65532:65532`。OCI index/platform/config/attestation
+分别为 `sha256:04218c9ff44069d70fbf07543cbc1f7c3ba5e81ecbf43ae6dd367d1a5455c98b`、
+`sha256:e27045cc64176f4c0ec5e6d1cd2160a9ce3a092d1ea510c4f14d6d3ad9c9c156`、
+`sha256:3c46f6c394e8f77608750c3bf70acf1cf67dfcb3032ac5973cb3388c26d940b2`、
+`sha256:e433a7612832dc441f70edce086fd4dfc4a6f90ff8f6114061362cdf17974c11`；BuildKit 使用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功，provenance attachment 为
+`sha256:3f6bf9526ba1f0aca9437772ebecb344242e6773852ccb917f7e0090770e5a81`，Kind runtime
+digest 为 `sha256:6cc138ac5695614dbea9f85fb1d4dc01b5150567c3907e080c796eecd6599d7f`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation
+`778` 部署到候选 `779`；预先加载候选 index 并建立同 digest containerd alias，三 Pod 同一 revision
+`kubebrain-cd657648f`、同一候选 runtime digest、Ready/restart 0，Pod 内版本、完整 SHA 与构建时间一致。
+逐 Pod 公开 client/v3 `GetStream` 多 frame 黑盒测试分别 `0.630/0.796/0.704s`，Limit、Count/More、
+wire size 与清理全部通过。尝试以纯 FD overlay 运行不落盘的定制探针时，Go 在 package load/compiler
+两次读取同一描述符导致第二次 EOF；改用既有模块前第一次又从父 module 调用而在连接前被 Go 拒绝，
+修正 module cwd 后三 Pod 全绿。这些均未触达产品，未创建文件，也不计为产品失败；新增排序语义的精确
+客户端可见等价由上述普通、race、全包及 703 项 production gate 覆盖。
+
+候选终态 revision/index/applied 为 `66585`，HashKV `340551181`、compact revision `44329`，term
+`430`、leader `231094427`。全部适用开关启用的 HEAD readonly gate GREEN；三轮九次 endpoint
+proposal health 全部成功（`10.005–12.093ms`），三个 store Up，pending/down/miss/extra/learner
+连续三轮全零，Lease/Alarm 为空。候选 KubeBrain 日志 `848/866/298` 行，关键错误与最近 60 秒关键错误
+均为 0；TiKV/PD 只存在候选部署前的宿主 monotonic clock 回跳和一次 PD deadline 历史记录，最近 60 秒
+均为 0，PD `initial-corrupt-check=false` 命中是 INFO 配置字段而非错误。KubeBrain/TiKV 3+3
+Ready/restart 0，PD 3 Ready、各沿用一次历史 restart。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `780/780`、current/update
+`kubebrain-9b9965dc9`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。
+稳定镜像上的完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除该
+info-metrics 合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision
+为 `66585/66585/66585/340551181/44329`，term `432`、leader `231094427`；三轮九次 proposal
+health 全部成功（`9.706–12.014ms`），store/region 连续三轮健康，Lease/Alarm 为空。稳定日志
+`466/474/274` 行，关键错误与最近 60 秒关键错误均为 0。全程未使用凭据或落盘诊断日志；全部端口转发
+已关闭且目标端口无监听，宿主根盘 80%、可用 398 GiB。A5676 已记录的 Kind local-path 非 CSI 存储
+隔离风险仍存在，本轮不以 PD region API 替代完整 storage isolation gate。A5693 关闭了 RangeStream
+NONE+非 KEY target 与 unary 排序结果不一致，以及 follower 对同一形状错误接受/拒绝 payload 的双向缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
