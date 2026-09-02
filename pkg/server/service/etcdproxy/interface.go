@@ -140,8 +140,10 @@ type RangeStreamResult struct {
 // set, Revision is the leader's response revision), an event batch (Events set,
 // Revision is the store revision covered by the batch), an authoritative error
 // (Err set, Revision is the leader's response revision, which etcd may leave
-// zero), or a progress
-// notification (ProgressRevision > 0) — never a mix. Revision is
+// zero), or a progress notification (ProgressRevision > 0) — never a mix. An
+// error has a positive CompactRevision exactly when it reports compaction; that
+// watermark is at least the requested revision and at most a nonzero response
+// revision. Revision is
 // independent of visible events because server-side watch filters may remove
 // some or all events while the watch still advances through the batch. Header
 // preserves the serving leader's response identity for the ingress replica to
