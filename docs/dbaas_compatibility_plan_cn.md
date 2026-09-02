@@ -68764,6 +68764,66 @@ revision/index/applied、HashKV、compact revision 为 `66506/66506/66506/342540
 存在，本轮不把 region API 结果替代完整 storage isolation gate。A5690 关闭了 leader/follower 可返回
 与已执行 Put/Delete 不一致的写后 KV 状态这一完整性缺口，同时保留历史、投影、过滤与截断语义。
 
+### A5691：把无 PrevKV Delete 的 Deleted 作为前态精确基数证据
+
+上游 `/root/etcd/server/etcdserver/txn/delete.go` 把
+`txnWrite.DeleteRange` 的返回计数直接写入 `DeleteRangeResponse.Deleted`；
+`/root/etcd/server/storage/mvcc/kvstore_txn.go` 则对请求区间中的每个 key 执行删除并返回数量。
+因此，无 `PrevKv` 的 Delete 虽不暴露具体 KV，`Deleted` 仍是该事务写入前、所请求区间内的精确
+key 基数，而不是只能在写后 Range 中间接观察的数量变化。
+
+提交 `d77f80c0ae5d397037427353fc3ad1d0e2191012` 在递归事务响应收集器中加入 count-only
+compare evidence：有 `PrevKv` 时继续保存完整 KV；无 `PrevKv` 时保存 Delete interval 与
+`Deleted`。该证据可判定精确 point/interval 的存在性和完整区间基数，却不会把宽区间的正计数错误地
+归因到某个具体 key，也不能推断宽区间内的 value、lease 或 key 分布。RED 测试精确捕获四类旧行为：
+point Delete 的 `Deleted=1` 仍接受 `VERSION==0` 成功分支、完整 Range count 1 与 Delete count 2
+矛盾未被拒绝、CountOnly count 1 与 Delete count 2 矛盾未被拒绝，以及 follower 同类矛盾未被拒绝。
+边界测试同时证明 point 正计数不泄露 value、宽区间正计数不识别被比较 point、匹配的 count 2/2
+仍可接受，并且宽 Delete count 2 与其中 point count 1 可以同时满足。
+
+最终聚焦测试 `0.498s`，race `2.736s`，全部 Txn `29.156s`，完整 `pkg/server/etcd`
+`136.577s`，vet、diff check 均通过。提交前 production verifier 精确为 703 项、四片
+`170/193/180/160`；代码提交后四片全部 GREEN，权威耗时为
+`256.430/449.744/308.177/577.633s`。
+
+候选 `docker.io/library/kubebrain:a5691-d77f80c0` 内嵌版本 `0.0.0-d77f80c0ae5d`、完整提交
+`d77f80c0ae5d397037427353fc3ad1d0e2191012`、build time `2026-09-02T00:37:23Z`，Go
+`1.26.5`、`linux/amd64`、TiKV、USER `65532:65532`。OCI index/platform/config/attestation
+分别为 `sha256:a02564a4243241f9c842e81221c82ceed7b3eed25e514d12b5ea42b934767378`、
+`sha256:b0eda460e2e51f5aaeeb2cab7347068010a1aea576620a78bfe86bdeeaa6ebae`、
+`sha256:4bdbe5146ff7bb8847244b3c66f26d87b5ab2f188b802ad548de0290207e9af0`、
+`sha256:d601677ffc383c8d963b178b613b17bb85294ab97e1acf3e43d97afd3de504f3`；provenance attachment
+为 `sha256:8eaf00dd533c3cbbd03f61abe4b006a0b2c101f2702af0b15aa51e0a941dd73d`，Kind runtime
+digest 为 `sha256:30db2c682216c313c1a90cb19bff822597f5904a99001e1cfc9398b9044552f3`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation
+`774` 部署到候选 `775`。三 Pod 同一 revision `kubebrain-8555fdd86c`、同一候选 runtime digest、
+Ready/restart 0。逐 Pod 验证六类场景：已有 point 的 `VERSION==0` 选择 failure 且 Deleted 1、缺失
+point 选择 success 且 Deleted 0、普通完整 Range count 2 与 Delete count 2、CountOnly count 3 与
+Delete count 3、宽 Delete count 1 不会否定所比较 point 缺失，以及 nested Delete 对已有 key 选择
+failure 且 Deleted 1；三 Pod 共 18 类次全部通过。首版在线 harness 把 protobuf JSON 省略的
+`succeeded=false` 当成字段缺失失败；改用默认 false 后全量重跑通过，这不是产品失败。三个测试前缀
+最终 Count 均为 0。
+
+候选终态 revision/index/applied 为 `66549`，HashKV `1711797012`、compact revision `44329`，term
+`422`、leader `2393892952`。全部适用开关启用的 HEAD readonly gate GREEN；三轮九次 endpoint
+proposal health 全部成功（`10.490–13.370ms`），三个 store Up，miss/pending/down/extra/learner
+连续三轮全零，Lease/Alarm 为空。候选三 Pod 日志 `580/284/643` 行，真实 klog E/F、panic/fatal/
+data race/data corruption、TiKV/PD 关键错误与最近 60 秒关键错误均为 0；KubeBrain/TiKV 3+3
+Ready/restart 0，PD 3 Ready、各沿用一次历史 restart。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `776/776`、current/update
+`kubebrain-9b9965dc9`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。
+稳定镜像上的完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除该
+info-metrics 合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision
+为 `66549/66549/66549/1711797012/44329`，term `424`、leader `231094427`；三轮九次 proposal
+health 全部成功（`10.383–12.619ms`），store/region 连续三轮健康，Lease/Alarm 为空。稳定日志
+`432/457/315` 行，全部关键错误检查为 0。全程未使用凭据或落盘诊断日志；端口转发已全部关闭，宿主
+根盘 79%、可用 421 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在，本轮不把 PD
+region API 结果替代完整 storage isolation gate。A5691 关闭了无 PrevKV Delete 的精确前态基数未被
+事务 compare validator 使用这一完整性缺口，同时保留宽区间计数不识别具体 key 的信息边界。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
