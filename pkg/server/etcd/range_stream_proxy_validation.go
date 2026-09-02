@@ -15,22 +15,23 @@
 package etcd
 
 import (
-	"bytes"
-
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 type rangeStreamProxyPayloadValidator struct {
-	request     *etcdserverpb.RangeRequest
-	sentCount   int64
-	previousKey []byte
-	maxModRev   int64
+	request    *etcdserverpb.RangeRequest
+	sentCount  int64
+	previousKV *mvccpb.KeyValue
+	seenKeys   map[string]struct{}
+	maxModRev  int64
 }
 
 func newRangeStreamProxyPayloadValidator(request *etcdserverpb.RangeRequest) *rangeStreamProxyPayloadValidator {
-	return &rangeStreamProxyPayloadValidator{request: request}
+	return &rangeStreamProxyPayloadValidator{request: request, seenKeys: make(map[string]struct{})}
 }
 
 func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.RangeResponse) error {
@@ -51,8 +52,11 @@ func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.Range
 		if !rangeProxyContainsKey(v.request.GetKey(), v.request.GetRangeEnd(), kv.GetKey()) {
 			return fail("returned a key outside the requested range")
 		}
-		if len(v.previousKey) != 0 && bytes.Compare(v.previousKey, kv.GetKey()) >= 0 {
-			return fail("returned keys outside strict ascending order")
+		if _, ok := v.seenKeys[string(kv.GetKey())]; ok {
+			return fail("returned a duplicate key")
+		}
+		if v.previousKV != nil && !rangeProxyOrderValid(v.request, v.previousKV, kv) {
+			return fail("returned key-values outside the requested sort order")
 		}
 		if v.request.GetKeysOnly() && len(kv.GetValue()) != 0 {
 			return fail("returned a value for a keys-only request")
@@ -63,7 +67,8 @@ func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.Range
 		if validateProxyKeyValueLifecycle(kv) != nil {
 			return fail("returned invalid key-value revision metadata")
 		}
-		v.previousKey = append(v.previousKey[:0], kv.GetKey()...)
+		v.seenKeys[string(kv.GetKey())] = struct{}{}
+		v.previousKV = proto.Clone(kv).(*mvccpb.KeyValue)
 		if kv.GetModRevision() > v.maxModRev {
 			v.maxModRev = kv.GetModRevision()
 		}

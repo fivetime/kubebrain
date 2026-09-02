@@ -793,7 +793,9 @@ func TestFollowerRangeStreamRejectsInvalidProxyPayload(t *testing.T) {
 		{name: "zero terminal revision", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(0)}}, message: "forwarded range stream returned a non-positive terminal revision"},
 		{name: "nil key-value", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{nil}}}, message: "forwarded range stream returned a nil key-value"},
 		{name: "outside range", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned a key outside the requested range"},
-		{name: "cross-frame descending", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Kvs: []*mvccpb.KeyValue{validKV("b")}}, {Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned keys outside strict ascending order", sent: 1},
+		{name: "cross-frame descending", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Kvs: []*mvccpb.KeyValue{validKV("b")}}, {Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned key-values outside the requested sort order", sent: 1},
+		{name: "none version target descending", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), SortTarget: etcdserverpb.RangeRequest_VERSION}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(3), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 1, ModRevision: 2, Version: 2}, {Key: []byte("b"), CreateRevision: 3, ModRevision: 3, Version: 1}}}}, message: "forwarded range stream returned key-values outside the requested sort order"},
+		{name: "duplicate key with equal version", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), SortTarget: etcdserverpb.RangeRequest_VERSION}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a"), validKV("a")}}}, message: "forwarded range stream returned a duplicate key"},
 		{name: "keys-only value", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned a value for a keys-only request"},
 		{name: "fast keys-only lease", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 1, ModRevision: 1, Version: 1, Lease: 7}}}}, message: "forwarded range stream returned a lease for a fast keys-only request"},
 		{name: "invalid lifecycle", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a")}}}}, message: "forwarded range stream returned invalid key-value revision metadata"},
@@ -851,6 +853,8 @@ func TestRangeStreamProxyPayloadValidatorAcceptsCanonicalStreams(t *testing.T) {
 		{name: "from key count only", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte{0}, CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 3}}},
 		{name: "keys only", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{kv("a")}}}},
 		{name: "value-sort keys only retains lease", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true, SortTarget: etcdserverpb.RangeRequest_VALUE}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 2, ModRevision: 2, Version: 1, Lease: 7}}}}},
+		{name: "none version target ascending", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), SortTarget: etcdserverpb.RangeRequest_VERSION}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(3), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 1, ModRevision: 1, Version: 1}, {Key: []byte("a"), CreateRevision: 1, ModRevision: 2, Version: 2}}}}},
+		{name: "none value target keys-only projected order", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true, SortTarget: etcdserverpb.RangeRequest_VALUE}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(3), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 1, ModRevision: 1, Version: 1, Lease: 7}, {Key: []byte("a"), CreateRevision: 1, ModRevision: 2, Version: 2, Lease: 8}}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			validator := newRangeStreamProxyPayloadValidator(test.request)
@@ -1274,7 +1278,7 @@ func TestRangeStreamSupportedOptionsMatchUnaryRange(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 8; i++ {
 		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
-			Key: []byte(fmt.Sprintf("/options/%02d", i)), Value: []byte(fmt.Sprintf("value-%02d", i)),
+			Key: []byte(fmt.Sprintf("/options/%02d", i)), Value: []byte(fmt.Sprintf("value-%02d", 7-i)),
 		})
 		require.NoError(t, err)
 	}
@@ -1296,7 +1300,8 @@ func TestRangeStreamSupportedOptionsMatchUnaryRange(t *testing.T) {
 		}},
 		{name: "limit", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3}},
 		{name: "explicit ascending key", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3, SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
-		{name: "none ignores non-key target", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3, SortOrder: etcdserverpb.RangeRequest_NONE, SortTarget: etcdserverpb.RangeRequest_VALUE}},
+		{name: "none promotes non-key target to ascending", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3, SortOrder: etcdserverpb.RangeRequest_NONE, SortTarget: etcdserverpb.RangeRequest_VALUE}},
+		{name: "none value sort precedes keys-only projection", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3, KeysOnly: true, SortOrder: etcdserverpb.RangeRequest_NONE, SortTarget: etcdserverpb.RangeRequest_VALUE}},
 		{name: "keys only", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), KeysOnly: true}},
 	}
 	for _, tt := range tests {

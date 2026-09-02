@@ -374,9 +374,11 @@ func (s *RPCServer) rangeStreamOnce(
 	if err := validateRangeRequest(r); err != nil {
 		return err
 	}
-	// Match etcd's checkRangeStreamRequest: NONE means the natural ascending-key
-	// order regardless of SortTarget, and explicit ASCEND+KEY is equivalent.
-	// Other sort orders and revision filters cannot be streamed incrementally.
+	// Match etcd's checkRangeStreamRequest: NONE and explicit ASCEND+KEY are
+	// accepted. Upstream's Range implementation promotes NONE with a non-KEY
+	// target to ascending order for that target; the exceptional shape is
+	// delegated to the unary result path below because it cannot be produced by
+	// the ordinary ascending-key partition stream.
 	if !isDefaultRangeStreamOrdering(r) {
 		return status.Error(codes.Unimplemented, "RangeStream does not support custom sort orders")
 	}
@@ -503,9 +505,12 @@ func (s *RPCServer) rangeStreamOnce(
 	// CountOnly has no KV payload to stream. A point lookup is inherently
 	// bounded to one KV, and empty/reversed intervals must not enter the
 	// partition scanner: its encoded MVCC borders are meaningful only for a
-	// non-empty range. Use the unary path for these shapes, matching etcd's
-	// Range result exactly while keeping recursive ranges on the bounded stream.
-	if r.CountOnly || len(r.RangeEnd) == 0 || isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
+	// non-empty range. NONE with a non-KEY target must sort the complete unary
+	// result before applying Limit and KeysOnly projection. Use the unary path
+	// for these exceptional shapes, matching etcd's Range result exactly while
+	// keeping ordinary recursive key-order ranges on the bounded stream.
+	if r.CountOnly || len(r.RangeEnd) == 0 || isEmptyNonFromKeyRange(r.Key, r.RangeEnd) ||
+		(r.SortOrder == etcdserverpb.RangeRequest_NONE && r.SortTarget != etcdserverpb.RangeRequest_KEY) {
 		var sendErr error
 		_, err := s.rangeWithAfterRead(ctx, proto.Clone(r).(*etcdserverpb.RangeRequest), func(resp *etcdserverpb.RangeResponse) error {
 			for _, response := range splitRangeStreamResponse(resp, int(s.maxRequestBytes), true) {
