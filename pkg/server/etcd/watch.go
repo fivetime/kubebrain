@@ -2229,7 +2229,7 @@ func isWatchCompactedError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if status.Code(err) == codes.OutOfRange {
+	if errors.Is(err, rpctypes.ErrCompacted) {
 		return true
 	}
 	msg := err.Error()

@@ -3613,6 +3613,20 @@ func TestFollowerWatchRejectsMalformedProxyErrorBeforeAuthoritativeCreate(t *tes
 			message: "non-compaction error with compact revision 999",
 		},
 		{
+			name: "unrelated out of range error with compact revision",
+			result: func(server *RPCServer) etcdproxy.WatchResult {
+				return etcdproxy.WatchResult{
+					Header: proxiedResponseHeader(server, 50),
+					Err: status.Error(
+						codes.OutOfRange,
+						"watch cursor is outside the accepted range",
+					),
+					Revision: 50, CompactRevision: 50,
+				}
+			},
+			message: "non-compaction error with compact revision 50",
+		},
+		{
 			name: "compaction error without compact revision",
 			result: func(server *RPCServer) etcdproxy.WatchResult {
 				return etcdproxy.WatchResult{Header: proxiedResponseHeader(server, 0), Err: compactedRevisionError()}
@@ -4470,7 +4484,10 @@ func TestIsWatchCompactedError(t *testing.T) {
 		want bool
 	}{
 		{name: "nil", want: false},
-		{name: "grpc out of range", err: status.Error(codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted"), want: true},
+		{name: "grpc compacted", err: status.Error(codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted"), want: true},
+		{name: "wrapped grpc compacted", err: fmt.Errorf("watch proxy: %w", status.Error(codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")), want: true},
+		{name: "grpc future revision", err: status.Error(codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision"), want: false},
+		{name: "grpc unrelated out of range", err: status.Error(codes.OutOfRange, "watch cursor is outside the accepted range"), want: false},
 		{name: "backend compacted string", err: errors.New("cache event oldest revision is compacted at 10 newer than requested revision 9"), want: true},
 		{name: "backend cache too old string", err: errors.New("cache event oldest revision is 10 newer than requested revision 9"), want: true},
 		{name: "grpc unavailable", err: status.Error(codes.Unavailable, "leader is not ready"), want: false},
