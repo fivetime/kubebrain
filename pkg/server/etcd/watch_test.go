@@ -1463,6 +1463,117 @@ func TestWatchRejectsBatchRevisionBelowVisibleEvent(t *testing.T) {
 	w.wg.Wait()
 }
 
+func TestFollowerWatchRejectsInvalidProxyHeadersBeforePublication(t *testing.T) {
+	tests := []struct {
+		name    string
+		header  func(*RPCServer) *etcdserverpb.ResponseHeader
+		message string
+	}{
+		{name: "missing", header: func(*RPCServer) *etcdserverpb.ResponseHeader { return nil }, message: "without a header"},
+		{name: "zero cluster", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			header := proxiedResponseHeader(server, 10)
+			header.ClusterId = 0
+			return header
+		}, message: "zero cluster ID"},
+		{name: "foreign cluster", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			header := proxiedResponseHeader(server, 10)
+			header.ClusterId++
+			return header
+		}, message: "foreign cluster"},
+		{name: "zero member", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			header := proxiedResponseHeader(server, 10)
+			header.MemberId = 0
+			return header
+		}, message: "zero member ID"},
+		{name: "unknown member", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			header := proxiedResponseHeader(server, 10)
+			header.MemberId++
+			return header
+		}, message: "unknown member"},
+		{name: "zero term", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			header := proxiedResponseHeader(server, 10)
+			header.RaftTerm = 0
+			return header
+		}, message: "zero raft term"},
+		{name: "zero revision", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			header := proxiedResponseHeader(server, 10)
+			header.Revision = 0
+			return header
+		}, message: "non-positive header revision"},
+		{name: "negative revision", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			header := proxiedResponseHeader(server, 10)
+			header.Revision = -1
+			return header
+		}, message: "negative header revision"},
+		{name: "revision mismatch", header: func(server *RPCServer) *etcdserverpb.ResponseHeader {
+			return proxiedResponseHeader(server, 11)
+		}, message: "header revision 11 differing from covered revision 10"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+
+			results := make(chan etcdproxy.WatchResult, 1)
+			called := make(chan uint64, 1)
+			server.peers = testPeerService{
+				isLeader:                   false,
+				proxyEnabled:               true,
+				preserveMissingWatchHeader: true,
+				watchFn: func(_ context.Context, _ []byte, _ []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+					called <- revision
+					return results, nil
+				},
+			}
+			server.staticMembers = []*etcdserverpb.Member{{ID: server.localMemberID()}}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
+			wt := &watch{
+				cancel: func() {}, start: "/registry/watch/", end: "/registry/watch0",
+				syncedRev: 9, sourceRev: 9,
+			}
+			w := &watcher{
+				backend: server.backend, watchServer: stream, grpcServer: server,
+				watches: map[int64]*watch{7: wt}, metricCli: server.metricCli,
+			}
+			w.wg.Add(1)
+			go w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/registry/watch/"), RangeEnd: []byte("/registry/watch0"), StartRevision: 10,
+			})
+			require.Equal(t, uint64(10), <-called)
+			results <- etcdproxy.WatchResult{
+				Header: test.header(server), Revision: 10,
+				Events: []*mvccpb.Event{{
+					Type: mvccpb.PUT,
+					Kv: &mvccpb.KeyValue{
+						Key: []byte("/registry/watch/a"), Value: []byte("must-not-publish"),
+						CreateRevision: 10, ModRevision: 10, Version: 1,
+					},
+				}},
+			}
+			close(results)
+
+			require.Eventually(t, func() bool {
+				for _, response := range stream.snapshot() {
+					if response.Canceled {
+						return true
+					}
+				}
+				return false
+			}, time.Second, time.Millisecond)
+			for _, response := range stream.snapshot() {
+				require.Empty(t, response.Events, "an invalid proxy event must never be published")
+				if response.Canceled {
+					require.Contains(t, response.CancelReason, test.message)
+				}
+			}
+			require.Equal(t, uint64(9), atomic.LoadUint64(&wt.syncedRev))
+			w.wg.Wait()
+		})
+	}
+}
+
 func TestWatchRejectsMixedProgressAndEventResult(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -2447,8 +2558,9 @@ func TestWatchReopenMetricsRecordRetryAndRecovery(t *testing.T) {
 	watchCh := make(chan etcdproxy.WatchResult)
 	var attempts atomic.Int32
 	server.peers = testPeerService{
-		epochFn:      func() (uint64, bool) { return 0, false },
-		proxyEnabled: true,
+		epochFn:                    func() (uint64, bool) { return 0, false },
+		proxyEnabled:               true,
+		preserveMissingWatchHeader: true,
 		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
 			if attempts.Add(1) == 1 {
 				return nil, nil
@@ -3359,6 +3471,49 @@ func TestFollowerWatchReadBarrierFailureIsRetryable(t *testing.T) {
 	err := server.Watch(stream)
 	requireWatchStatusError(t, err, codes.Unavailable, barrierErr.Error())
 	require.Empty(t, stream.sent, "a watch without a revision fence must not be created")
+}
+
+func TestFollowerWatchRejectsInvalidProxyHeaderBeforeAuthoritativeCreate(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.staticMembers = []*etcdserverpb.Member{{ID: server.localMemberID()}}
+	header := proxiedResponseHeader(server, 50)
+	header.ClusterId++
+	proxyCh := make(chan etcdproxy.WatchResult, 1)
+	proxyCh <- etcdproxy.WatchResult{Header: header, Created: true, Revision: 50}
+	server.peers = testPeerService{
+		isLeader:                   false,
+		proxyEnabled:               true,
+		preserveMissingWatchHeader: true,
+		syncReadFn: func(context.Context) error {
+			server.backend.SetCurrentRevision(50)
+			return nil
+		},
+		watchFn: func(watchCtx context.Context, _, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			go func() {
+				<-watchCtx.Done()
+				close(proxyCh)
+			}()
+			return proxyCh, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &controllableWatchServer{ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 1)}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/foreign-create"), WatchId: 419},
+	}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	response := stream.snapshot()[0]
+	require.True(t, response.Canceled)
+	require.True(t, response.Created, "a rejected create uses etcd's created+canceled envelope")
+	require.Equal(t, int64(-1), response.WatchId)
+	require.Empty(t, response.Events)
+	require.Contains(t, response.CancelReason, "foreign cluster")
+	cancel()
+	requireWatchCanceled(t, <-done)
 }
 
 func TestStaleFreshnessWatchCannotOpenLocalGeneration(t *testing.T) {

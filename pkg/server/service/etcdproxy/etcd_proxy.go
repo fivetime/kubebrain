@@ -35,6 +35,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
@@ -1408,6 +1409,7 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 						}
 						select {
 						case outputCh <- WatchResult{
+							Header:          cloneWatchResponseHeader(wresp.Header),
 							Err:             err,
 							Created:         wresp.Created,
 							Revision:        uint64(wresp.Header.Revision),
@@ -1536,16 +1538,25 @@ func nextWatchRevision(current uint64, headerRev int64) uint64 {
 // so the proxy's FIFO copy preserves the guarantee. Any other response carries
 // converted events.
 func watchResultFromResponse(wresp clientv3.WatchResponse) WatchResult {
+	header := cloneWatchResponseHeader(wresp.Header)
 	if wresp.Created {
-		return WatchResult{Created: true, Revision: uint64(wresp.Header.Revision)}
+		return WatchResult{Header: header, Created: true, Revision: uint64(wresp.Header.Revision)}
 	}
 	if wresp.IsProgressNotify() {
-		return WatchResult{ProgressRevision: uint64(wresp.Header.Revision)}
+		return WatchResult{Header: header, ProgressRevision: uint64(wresp.Header.Revision)}
 	}
 	return WatchResult{
+		Header:   header,
 		Events:   convertEvents(wresp.Events),
 		Revision: uint64(wresp.Header.Revision),
 	}
+}
+
+func cloneWatchResponseHeader(header *etcdserverpb.ResponseHeader) *etcdserverpb.ResponseHeader {
+	if header == nil {
+		return nil
+	}
+	return proto.Clone(header).(*etcdserverpb.ResponseHeader)
 }
 
 func convertEvents(events []*clientv3.Event) []*mvccpb.Event {

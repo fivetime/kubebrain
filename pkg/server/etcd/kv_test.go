@@ -19,6 +19,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/crc32"
+	"hash/fnv"
 	"math"
 	"net"
 	"sync"
@@ -78,13 +80,16 @@ type testPeerService struct {
 	roleGetFn        func(context.Context, *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error)
 	roleListFn       func(context.Context, *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error)
 	watchFn          func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error)
-	leaseGrantFn     func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error)
-	leaseRevokeFn    func(context.Context, *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error)
-	leaseKeepAliveFn func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
-	leaseTTLFn       func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error)
-	leaseLeasesFn    func(context.Context, *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error)
-	snapshotFn       func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error)
-	txnFn            func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error)
+	// preserveMissingWatchHeader disables the default fixture normalization for
+	// tests that intentionally inject a malformed headerless proxy result.
+	preserveMissingWatchHeader bool
+	leaseGrantFn               func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error)
+	leaseRevokeFn              func(context.Context, *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error)
+	leaseKeepAliveFn           func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
+	leaseTTLFn                 func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error)
+	leaseLeasesFn              func(context.Context, *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error)
+	snapshotFn                 func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error)
+	txnFn                      func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error)
 }
 
 type compareDeleteTrapBackendShim struct {
@@ -1515,9 +1520,59 @@ func (s testPeerService) RoleList(ctx context.Context, req *etcdserverpb.AuthRol
 
 func (s testPeerService) Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
 	if s.watchFn != nil {
-		return s.watchFn(ctx, key, rangeEnd, revision)
+		results, err := s.watchFn(ctx, key, rangeEnd, revision)
+		if err != nil || results == nil || s.preserveMissingWatchHeader {
+			return results, err
+		}
+		normalized := make(chan etcdproxy.WatchResult)
+		go func() {
+			defer close(normalized)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case result, ok := <-results:
+					if !ok {
+						return
+					}
+					if result.Err == nil && result.Header == nil {
+						coveredRevision := result.Revision
+						if result.ProgressRevision > 0 {
+							coveredRevision = result.ProgressRevision
+						} else if coveredRevision == 0 {
+							for _, event := range result.Events {
+								if eventRevision := event.GetKv().GetModRevision(); eventRevision > 0 && uint64(eventRevision) > coveredRevision {
+									coveredRevision = uint64(eventRevision)
+								}
+							}
+							if coveredRevision > 0 {
+								result.Revision = coveredRevision
+							}
+						}
+						result.Header = testPeerWatchResponseHeader(coveredRevision)
+					}
+					select {
+					case normalized <- result:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}()
+		return normalized, nil
 	}
 	return nil, nil
+}
+
+func testPeerWatchResponseHeader(revision uint64) *etcdserverpb.ResponseHeader {
+	clusterHash := fnv.New64a()
+	_, _ = clusterHash.Write([]byte("kubebrain/"))
+	return &etcdserverpb.ResponseHeader{
+		ClusterId: clusterHash.Sum64() | 1,
+		MemberId:  uint64(crc32.ChecksumIEEE([]byte("test-peer"))),
+		Revision:  int64(revision),
+		RaftTerm:  1,
+	}
 }
 
 func (s testPeerService) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {

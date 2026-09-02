@@ -257,6 +257,27 @@ func invalidWatchResultShape(result etcdproxy.WatchResult) error {
 	return nil
 }
 
+func validateForwardedWatchResultHeader(result etcdproxy.WatchResult, identity proxyResponseIdentity) error {
+	if result.Err != nil {
+		return nil
+	}
+	response := &etcdserverpb.WatchResponse{Header: result.Header}
+	if issue := validateProxyResponseHeader(response, identity, proxyResponseRevisionPositive); issue != "" {
+		return errors.New("watch leader proxy returned a response " + issue)
+	}
+	coveredRevision := result.Revision
+	if result.ProgressRevision > 0 {
+		coveredRevision = result.ProgressRevision
+	}
+	if uint64(result.Header.GetRevision()) != coveredRevision {
+		return fmt.Errorf(
+			"watch leader proxy returned header revision %d differing from covered revision %d",
+			result.Header.GetRevision(), coveredRevision,
+		)
+	}
+	return nil
+}
+
 func validatedWatchBatchRevision(result etcdproxy.WatchResult, sourceRevision uint64) (uint64, error) {
 	batchRevision := result.Revision
 	if batchRevision == 0 {
@@ -1549,6 +1570,13 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 					w.rejectAuthoritativeCreate(id, wt, errors.New("watch backend omitted authoritative create acknowledgement"), 0)
 					return
 				}
+				if !localGeneration {
+					if identityErr := validateForwardedWatchResultHeader(result, w.grpcServer.expectedProxyResponseIdentity()); identityErr != nil {
+						emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
+						w.rejectAuthoritativeCreate(id, wt, identityErr, 0)
+						return
+					}
+				}
 				authoritativeCreateAccepted = true
 			case <-ctx.Done():
 				return
@@ -1694,6 +1722,12 @@ watchLoop:
 					w.CancelGeneration(id, wt, resultErr, false)
 					return
 				}
+				if identityErr := validateForwardedWatchResultHeader(result, w.grpcServer.expectedProxyResponseIdentity()); identityErr != nil {
+					emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
+					w.CancelGeneration(id, wt, identityErr, false)
+					cancel()
+					return
+				}
 				// Every proxy reconnect requests CreatedNotify. The logical watch was
 				// already exposed after its first authoritative acknowledgement, so
 				// later generation-local acknowledgements are internal-only.
@@ -1705,6 +1739,15 @@ watchLoop:
 				w.CancelGeneration(id, wt, resultErr, false)
 				cancel()
 				return
+			}
+			if !localGeneration {
+				if identityErr := validateForwardedWatchResultHeader(result, w.grpcServer.expectedProxyResponseIdentity()); identityErr != nil {
+					emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
+					klog.ErrorS(identityErr, "[watch stream] cancel due to invalid proxy identity", "watcher", w.id, "watch", id)
+					w.CancelGeneration(id, wt, identityErr, false)
+					cancel()
+					return
+				}
 			}
 			if !localGeneration {
 				if rangeErr := validateForwardedWatchEventRange(result.Events, r.Key, r.RangeEnd); rangeErr != nil {

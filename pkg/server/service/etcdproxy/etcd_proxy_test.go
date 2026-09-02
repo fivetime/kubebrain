@@ -144,6 +144,8 @@ func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
 		Created: true,
 	}
 	got := watchResultFromResponse(created)
+	require.Equal(t, created.Header, got.Header)
+	require.NotSame(t, created.Header, got.Header)
 	require.True(t, got.Created)
 	require.Equal(t, uint64(41), got.Revision)
 	require.Zero(t, got.ProgressRevision)
@@ -155,6 +157,8 @@ func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
 	}
 	require.True(t, progress.IsProgressNotify())
 	got = watchResultFromResponse(progress)
+	require.Equal(t, progress.Header, got.Header)
+	require.NotSame(t, progress.Header, got.Header)
 	require.Equal(t, uint64(42), got.ProgressRevision)
 	require.Zero(t, got.Revision)
 	require.Empty(t, got.Events)
@@ -168,6 +172,8 @@ func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
 	}
 	require.False(t, event.IsProgressNotify())
 	got = watchResultFromResponse(event)
+	require.Equal(t, event.Header, got.Header)
+	require.NotSame(t, event.Header, got.Header)
 	require.Equal(t, uint64(0), got.ProgressRevision)
 	require.Equal(t, uint64(43), got.Revision)
 	require.Len(t, got.Events, 1)
