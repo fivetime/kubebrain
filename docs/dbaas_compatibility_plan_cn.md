@@ -68824,6 +68824,65 @@ health 全部成功（`10.383–12.619ms`），store/region 连续三轮健康�
 region API 结果替代完整 storage isolation gate。A5691 关闭了无 PrevKV Delete 的精确前态基数未被
 事务 compare validator 使用这一完整性缺口，同时保留宽区间计数不识别具体 key 的信息边界。
 
+### A5692：强制 fast KeysOnly 的 lease 投影边界
+
+上游 `/root/etcd/server/etcdserver/txn/range.go` 只在 `KeysOnly=true` 且 SortTarget 不是 VALUE
+时启用 `mvcc.RangeOptions.FastKeysOnly`；`/root/etcd/server/storage/mvcc/kvstore_txn.go` 的该路径
+只从索引构造 Key/CreateRevision/ModRevision/Version，因而 Value 与 Lease 都必须为零。SortTarget 为
+VALUE 时，上游必须先读取完整 KV 才能排序，随后 `asembleRangeResponse` 只清空 Value，Lease 仍保留。
+KubeBrain 的本地实现早已由 `projectRangeKeysOnly` 对齐这一区别，但 leader unary/Txn 与 follower
+RangeStream 代理完整性校验只拒绝非空 Value，会放过 fast KeysOnly 中上游不可能返回的非零 Lease。
+
+提交 `d699dd54dae2c0d95bf3af4e829ac680146d9240` 在共享 Range payload validator 与流式 frame
+validator 中拒绝 `KeysOnly && SortTarget != VALUE && Lease != 0`。测试先 RED：普通 Range、Txn 内
+Range、RangeStream 三条路径均接受伪造 lease；follower unary 旧负例表还被更早的零 Raft term 围栏
+截获，本轮把新 case 的代理身份补成合法 term 并精确断言 projection 错误，避免“因其他原因失败”的
+伪覆盖。VALUE-sort KeysOnly 保留非零 lease 的 unary、Txn、stream 合法边界始终 GREEN。
+
+最终五组聚焦测试 `0.513s`，race `3.245s`，完整 `pkg/server/etcd` `138.766s`，vet、diff
+check 均通过。提交前 production verifier 精确为 703 项、四片 `170/193/180/160`；代码提交后四片
+全部 GREEN，权威耗时为 `249.963/441.185/302.440/568.865s`。
+
+候选 `docker.io/library/kubebrain:a5692-d699dd54` 内嵌版本 `0.0.0-d699dd54dae2`、完整提交
+`d699dd54dae2c0d95bf3af4e829ac680146d9240`、build time `2026-09-02T01:26:17Z`，Go
+`1.26.5`、`linux/amd64`、TiKV、USER `65532:65532`。OCI index/platform/config/attestation
+分别为 `sha256:e9c520c39372a455c47a5d6e7ba737ac0ed858ce5c7c0ef8171360f2cafb0611`、
+`sha256:630896c2aa540da00619b998f2db6a42876a835f4744bbb5b92cd7a8c8391d4a`、
+`sha256:6c1a88c11afa7fb30f650aa74a80928d05703078dbee72c11257f56b806b5724`、
+`sha256:cbc3dfd3a2af9b9039c6afbe4bf74863947b07eac0002bbed537ab8a5fc9a54b`；BuildKit 使用
+`--provenance=mode=max --sbom=true`，syft scanner 成功，provenance attachment 为
+`sha256:805acdaa3cb4d74f05a4f21095d38e0b70b43cabf49315c2bd406848e2a47316`，Kind runtime
+digest 为 `sha256:0e9cb6a7efd2be0a5a92569c82de5ae0825cc50e0b3dca10f97bcc464efc35d3`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation
+`776` 部署到候选 `777`。预先加载候选 index 并建立同 digest containerd alias，rollout 3/3 完成；
+三 Pod 同一 revision `kubebrain-6b759597b4`、同一候选 runtime digest、Ready/restart 0，Pod 内
+版本、完整 SHA 与构建时间一致。逐 Pod 创建带租约 key 后，fast KeysOnly 均返回 Lease 0、VALUE-sort
+KeysOnly 均保留精确 lease，六次 Range Count 均为 1。首版 harness 把 protobuf JSON 的十进制 lease
+ID 直接传给按十六进制解析的 `etcdctl --lease`，Put 在写入前按预期返回 requested lease not found；
+盘点并撤销唯一残留 lease 后改为十六进制 CLI 参数，全量重跑通过，这不是产品失败。清理后
+`/a5692/` Count=0，LeaseList 为空。
+
+候选终态 revision/index/applied 为 `66555`，HashKV `108851821`、compact revision `44329`，term
+`426`、leader `231094427`。全部适用开关启用的 HEAD readonly gate GREEN；三轮九次 endpoint
+proposal health 全部成功（`10.023–11.104ms`），三个 store Up，miss/pending/down/extra/learner
+连续三轮全零，Lease/Alarm 为空。候选三 Pod 日志 `706/709/280` 行，真实 klog E/F、panic/fatal/
+data race/data corruption、TiKV/PD 关键错误与最近 60 秒关键错误均为 0；KubeBrain/TiKV 3+3
+Ready/restart 0，主 PD 3 Ready、各沿用一次历史 restart。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `778/778`、current/update
+`kubebrain-9b9965dc9`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。
+稳定镜像上的完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除该
+info-metrics 合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision
+为 `66555/66555/66555/108851821/44329`，term `428`、leader `231094427`；三轮九次 proposal
+health 全部成功（`9.765–11.062ms`），store/region 连续三轮健康，Lease/Alarm 为空。稳定日志
+`448/453/273` 行；`kubebrain-2` 启动时一次 `refresh compact revision metric failed: context deadline
+exceeded`，最近 60 秒未复现，其余真实 klog E/F、关键错误均为 0。全程未使用凭据或落盘诊断日志；
+宿主根盘 79%、可用 410 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在，本轮不把
+PD region API 结果替代完整 storage isolation gate。A5692 关闭 fast KeysOnly 代理可泄露不可能的
+lease 字段这一客户端可见完整性缺口，同时保留 VALUE-sort 必须先读取完整 KV 的上游 lease 语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
