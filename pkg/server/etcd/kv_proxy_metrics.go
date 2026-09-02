@@ -688,11 +688,22 @@ func collectTxnProxyCompareEvidence(
 			interval := txnProxyMutationInterval{
 				key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd(), kind: txnProxyMutationDelete,
 			}
-			if deleteRequest.GetPrevKv() || deleteResponse.GetDeleted() == 0 {
+			if deleteRequest.GetPrevKv() {
 				*evidence = append(*evidence, txnProxyCompareEvidence{
 					key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd(),
 					kvs:            deleteResponse.GetPrevKvs(),
 					priorMutations: *mutations,
+				})
+			} else {
+				// DeleteRange removes every key in its requested interval, so
+				// Deleted is the interval's exact pre-write cardinality even when
+				// PrevKv was not requested. Keep it count-only: a positive count
+				// does not reveal which keys populated a multi-key interval.
+				*evidence = append(*evidence, txnProxyCompareEvidence{
+					key: deleteRequest.GetKey(), rangeEnd: deleteRequest.GetRangeEnd(),
+					priorMutations: *mutations,
+					countOnly:      true,
+					count:          deleteResponse.GetDeleted(),
 				})
 			}
 			if deleteResponse.GetDeleted() > 0 {

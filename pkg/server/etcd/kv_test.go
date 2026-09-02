@@ -897,6 +897,28 @@ func TestFollowerRejectsInvalidTxnProxyPayload(t *testing.T) {
 			message: "inconsistent pre-write evidence cardinality",
 		},
 		{
+			name: "effective delete count disagrees with complete pre-write range",
+			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+				{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+					Key: []byte("a"), RangeEnd: []byte("z"),
+				}}},
+				{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+					Key: []byte("a"), RangeEnd: []byte("z"),
+				}}},
+			}},
+			response: &etcdserverpb.TxnResponse{Header: txnHeader(2), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+				{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+					Header: txnHeader(1), Count: 1, Kvs: []*mvccpb.KeyValue{{
+						Key: []byte("m"), Value: []byte("value"), CreateRevision: 1, ModRevision: 1, Version: 1,
+					}},
+				}}},
+				{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+					Header: txnHeader(2), Deleted: 2,
+				}}},
+			}},
+			message: "inconsistent pre-write evidence cardinality",
+		},
+		{
 			name: "empty overlap makes child counts globally inconsistent",
 			request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 				countOnlyRangeRequest("a", "z"),

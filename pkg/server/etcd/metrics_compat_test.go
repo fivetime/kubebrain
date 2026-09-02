@@ -1364,6 +1364,109 @@ func TestTxnProxyPayloadValidation(t *testing.T) {
 			Success: []*etcdserverpb.RequestOp{deleteRequest("evidence")},
 			Failure: []*etcdserverpb.RequestOp{deleteRequest("evidence")},
 		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{deleteResponse()}}},
+		{name: "effective delete count proves existing point", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{deleteRequest("evidence")},
+			Failure: []*etcdserverpb.RequestOp{deleteRequest("evidence")},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 1,
+			}},
+		}}}},
+		{name: "effective delete count does not reveal point value selected success", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{deleteRequest("evidence")},
+			Failure: []*etcdserverpb.RequestOp{deleteRequest("evidence")},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 1,
+			}},
+		}}}, valid: true},
+		{name: "effective delete count does not reveal point value selected failure", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
+			Success: []*etcdserverpb.RequestOp{deleteRequest("evidence")},
+			Failure: []*etcdserverpb.RequestOp{deleteRequest("evidence")},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Responses: []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 1,
+			}},
+		}}}, valid: true},
+		{name: "broad effective delete count does not identify compared point", request: &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: []byte("evidence"), Result: etcdserverpb.Compare_EQUAL, Target: etcdserverpb.Compare_VERSION,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+				Key: []byte("a"), RangeEnd: []byte("z"),
+			}}}},
+			Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+				Key: []byte("a"), RangeEnd: []byte("z"),
+			}}}},
+		}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 1,
+			}},
+		}}}, valid: true},
+		{name: "complete range disagrees with effective delete count", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			containingEvidenceRangeRequest("a", []byte("z")),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+				Key: []byte("a"), RangeEnd: []byte("z"),
+			}}},
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(4), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("m"), Value: []byte("value"), CreateRevision: 4, ModRevision: 4, Version: 1,
+				}},
+			}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 2,
+			}}},
+		}}},
+		{name: "count-only range disagrees with effective delete count", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			countOnlyRangeRequest("a", "z"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+				Key: []byte("a"), RangeEnd: []byte("z"),
+			}}},
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{Header: txnHeader(4), Count: 1}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 2,
+			}}},
+		}}},
+		{name: "complete range agrees with effective delete count", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			containingEvidenceRangeRequest("a", []byte("z")),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+				Key: []byte("a"), RangeEnd: []byte("z"),
+			}}},
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(4), Count: 2, Kvs: []*mvccpb.KeyValue{
+					{Key: []byte("m"), Value: []byte("one"), CreateRevision: 4, ModRevision: 4, Version: 1},
+					{Key: []byte("n"), Value: []byte("two"), CreateRevision: 4, ModRevision: 4, Version: 1},
+				},
+			}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 2,
+			}}},
+		}}, valid: true},
+		{name: "point evidence permits additional deleted key outside point", request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+			rangeRequest("m"),
+			{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+				Key: []byte("a"), RangeEnd: []byte("z"),
+			}}},
+		}}, response: &etcdserverpb.TxnResponse{Header: txnHeader(5), Succeeded: true, Responses: []*etcdserverpb.ResponseOp{
+			{Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: &etcdserverpb.RangeResponse{
+				Header: txnHeader(4), Count: 1, Kvs: []*mvccpb.KeyValue{{
+					Key: []byte("m"), Value: []byte("value"), CreateRevision: 4, ModRevision: 4, Version: 1,
+				}},
+			}}},
+			{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: &etcdserverpb.DeleteRangeResponse{
+				Header: txnHeader(5), Deleted: 2,
+			}}},
+		}}, valid: true},
 		{name: "range after disjoint put remains pre-write evidence", request: &etcdserverpb.TxnRequest{
 			Compare: []*etcdserverpb.Compare{valueEvidenceCompare},
 			Success: []*etcdserverpb.RequestOp{putRequest("unrelated"), valueEvidenceRangeRequest(false, 0)},
