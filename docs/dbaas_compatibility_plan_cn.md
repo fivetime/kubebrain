@@ -69087,6 +69087,89 @@ refused/empty reply。关闭这七个已知会话并重新建立后稳定验收�
 存储隔离风险仍存在，本轮不以 PD region API 替代完整 storage isolation gate。A5695 关闭了 follower Watch
 接受、公开伪造代理身份并用其推进重连水位的协议完整性缺口。
 
+### A5696：在解释 Watch 错误前验证代理身份，并保留零 revision 兼容语义
+
+继续审计 A5695 的 follower Watch 身份围栏时发现，`validateForwardedWatchResultHeader` 对 `Err != nil`
+直接返回，且首次 authoritative create 与已建立 Watch 都先解释错误和 `CompactRevision`、再验证 header。
+因此伪造或缺失身份的 compaction 错误可把攻击者控制的水位公开给客户端并触发错误 relist。先行 RED 以
+`CompactRevision=999` 覆盖缺失 header、foreign cluster、未知 member、零 term 与 header/covered revision
+不一致；修复前五例均错误公开 999。提交 `f6759c32d93ab8ef048647a00a7f207edfa1dacc` 让所有由代理
+产出的 authoritative error 先通过 cluster/member/term/revision 身份围栏，异常统一增加
+`watch.backend.integrity_failure{kind="invalid_result"}`、清零 compaction 水位且不推进 `syncedRev`；transport
+错误仍由 channel 关闭与重连路径处理。proxy mapper 抽出错误转换函数，完整克隆 leader header，并在接口合同中
+明确错误结果携带 leader 身份。
+
+聚焦测试、proxy 全包、两包 race、完整 `pkg/server/etcd`、vet 与 diff check 均通过。完整包曾两次暴露既有
+`TestFollowerCancelBackpressureUsesBoundedSenderGoroutines` 使用全进程绝对 goroutine 数的隔离缺陷：隔离连续
+5/10 次通过，但全包中其他 watcher 尚在退出时会把期望 1 观测为 2。后续把断言改为相对测试起点最多新增一个
+sender，同时保留固定队列满时反压与不得为每次 cancel 新建 sender 的证明。新建的首次 authoritative error
+表驱动测试在高次数运行中也暴露 `FailNow` 后未取消完整 gRPC stream、污染后续子例的问题；改为直接驱动
+`watchGeneration` 并等待 authoritative control barrier，连续 50 次通过，语义断言未削弱。最终完整 etcd 包
+`132.582s`、proxy 全包 `1.785s`、etcd/proxy race `1.597/1.092s` 均 GREEN。
+
+production verifier 始终精确为 703 项、四片 `170/193/180/160`。`f6759c32` 提交前四片为
+`250.597/441.574/302.696/569.524s`，提交后为 `265.835/457.988/306.519/588.118s`；随后修正提交
+`2f52d9060ee8795c828b44fd272f6adf7385172d` 前四片为
+`253.376/448.040/304.344/574.681s`，提交后为 `250.279/439.164/298.188/563.126s`，全部 GREEN。
+
+首个候选 `docker.io/library/kubebrain:a5696-f6759c32` 内嵌版本 `0.0.0-f6759c32d93a`、build time
+`2026-09-02T06:33:50Z`。其 OCI index/platform/config/attestation 为
+`sha256:efc78d6c687db2bdbba63d7995221beed80929269ce6cc453eb43b7bd0398e98`、
+`sha256:0d2f5ad739df2f629301f8d3541b66bfee00b0f12097bafd4401653bec358f2b`、
+`sha256:a6746b401c9560b3e9aef88dacdfc321b4a83c62c19141a4df0f0422e9f7b179`、
+`sha256:f54fd5c958a7612974c5f89619601323d6a295315a0178892573bea40c23342a`；provenance attachment、
+SPDX/SLSA layer 为 `sha256:3251597a1d6c01ec7723bf2ec31b7675825134383df8efb28381306f86d784df`、
+`sha256:03307c18685abe3f42e2f16c5d9e9298013e5a177f11134e7b81c938c6c25766`、
+`sha256:b38f24845aea3450d35dd2495722bba1b41fa6857551e3ed08655c10d5fc75e5`。以五类原子 test 从稳定
+generation 784 部署到 785 后，三 Pod runtime digest 为
+`sha256:163553d3d8b68058d30ce9857dc07bd3531b13713d02e9595a8050ebc5b7b0c2`、Ready/restart 0。
+首次 Kind 加载只注册 tag，digest 引用触发一次 `ImagePullBackOff`；为同一完整 OCI index 补注册本地 digest
+别名后 rollout 正常完成。此为候选准备问题，不是产品进程失败。
+
+运行时 compaction differential 随即发现更深的 etcd 语义：合法 follower compaction error 的 header 具有
+正确 cluster/member/term，但 revision 可以为 0。首候选把它拒绝为 `non-positive header revision`，清空了真实
+CompactRevision；该运行门禁准确拒绝候选，随即以五类原子 test 回滚稳定 generation 786。新的 RED
+`TestFollowerProxyWatchCompactedErrorIsForwarded` 精确复现 CompactRevision 从 2 变 0。提交 `2f52d906` 新增
+non-negative revision 策略：仅 authoritative error 允许零 revision，成功 Created/event/progress 仍要求正数；
+负 revision 仍拒绝，header/result revision 仍必须一致，cluster/member/term 围栏完全保留。mapper 测试也固定
+etcd error header revision=0 的合同。
+
+修正候选 `docker.io/library/kubebrain:a5696-2f52d906` 内嵌版本 `0.0.0-2f52d9060ee8`、完整提交、build time
+`2026-09-02T07:48:47Z`，Go `1.26.5`、`linux/amd64`、TiKV、USER `65532:65532`。OCI
+index/platform/config/attestation 分别为
+`sha256:4b822bff48be7e7a875b12012cb611749e8f16e80d603c9bf12a788d2883bbb9`、
+`sha256:84f3e57dee172beeb179f82a795e8d5e3bb8c43b626901d3637961611e488991`、
+`sha256:a6355cbbf53a73ef5f6e63e961c7ce90c7365124fecce1d07e629373cd79c16c`、
+`sha256:60c0213c00c19ef388a90ec1d21f3397e61cabfb273eea2c049e755bc01c1218`；BuildKit 90/90 completed，
+provenance attachment 为 `sha256:ce837f2f24cbeb0f58b14011176eda0924c6ac5e9762382862ba5b6668b19cc4`，
+SPDX/SLSA layer 为 `sha256:cf9d7aa347e35307cf1e2caf330f89cb4ff34465dfa3635adb724af1bcad2d1e`、
+`sha256:41e3d3b42ad927074711108f44adc015ad47ba80555a352e444ffc7361e2bf82`。
+
+以五类原子 test 从稳定 generation 786 部署到候选 787；三 Pod 同一 runtime digest
+`sha256:f2c8849a3f21dc1290642306747b89b06b70130b87bf0ab250a67ad89ded65e6`、Ready/restart 0，Pod 内
+构建身份一致。直连确认 `23379/23380` 是 follower、`23381` 是 leader。固定静态 etcd 结果的
+`TestWatchCompactedRevisionDifferentialAgainstReferenceEtcd` 分别直连两个 follower，真实覆盖零 revision
+authoritative error，`0.564/0.565s` GREEN；测试前后三个 Pod 的 `invalid_result` 均为 0。候选所有适用开关
+启用的完整 HEAD readonly gate GREEN。
+
+候选终态 revision/index/applied 为 `66643/66643/66643`，HashKV `3232684261`、compact revision
+`66639`，term `446`、leader `231094427`，Lease/Alarm 为空。三轮九次 proposal health 全部成功
+（`49.078–78.771ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 三轮全零。
+KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各保留一次历史 restart；候选日志 `592/636/345` 行，
+关键错误及最近 60 秒关键错误均为 0。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `788/788`、current/update
+`kubebrain-9b9965dc9`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。稳定镜像
+完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除 info-metrics 合同后其余
+门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66643/66643/66643/3232684261/66639`，term `448`、leader `231094427`；三轮九次 health 全部成功
+（`50.113–68.777ms`），三个 store Up、五类 Region check 三轮全零，Lease/Alarm 为空。稳定日志
+`443/479/272` 行，关键错误与最近 60 秒关键错误均为 0。全程无凭据、无落盘诊断日志；最终七个 port-forward
+会话全部关闭且目标端口无监听。宿主根盘 82%、可用约 349 GiB。A5676 已记录的 Kind local-path 非 CSI
+存储隔离风险仍存在。本轮关闭了伪造 Watch error 身份/compaction 水位漏洞，并用运行时 RED 补齐了 etcd 合法
+零 revision 错误语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
