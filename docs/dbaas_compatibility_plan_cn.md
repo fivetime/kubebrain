@@ -69010,6 +69010,83 @@ Lease/Alarm 为空。稳定日志 `693/272/769` 行，关键错误与最近 60 �
 隔离风险仍存在，本轮不以 PD region API 替代完整 storage isolation gate。A5694 关闭了 follower
 RangeStream 接受并公开伪造代理身份、再用其推进本地已知 revision 的协议完整性缺口。
 
+### A5695：将 follower Watch 响应绑定到代理身份围栏
+
+对照 `/root/etcd/api/etcdserverpb/rpc.proto` 的 `WatchResponse`/`ResponseHeader` 以及 KubeBrain
+unary/RangeStream proxy 的身份校验，审计发现 follower `Watch` 代理把 leader 返回的
+`clientv3.WatchResponse` 转换成内部 `WatchResult` 时丢弃完整 header，只保留 revision。外层因此无法区分
+foreign cluster、未知 serving member 或零 Raft term；畸形结果不仅可能被公开给客户端，还可能推进
+`syncedRev`，使后续重连从过高 revision 开始而静默漏事件。Watch batch header revision 可以合法高于可见
+event revision（慢 Watch catch-up、filter 等路径），因此不能把二者强制相等；正确围栏是验证来源身份，并要求
+内部 covered revision 与同一 upstream header 的 revision 一致。
+
+提交 `660fc109cf6a78a4e4d3aa361c359b1bbb93d5d0` 为 `WatchResult` 保存克隆后的完整 header，Created、
+progress、event 和非 transport error 都遵循同一合同；follower 在首次 authoritative Created、重连 Created、
+event 和 progress 的任何公开/水位处理前复用 `validateProxyResponseHeader`，要求预期 cluster、已知非零 member、
+正 term、正 revision，并校验 header revision 与对应 `Revision`/`ProgressRevision` 相等。异常统一递增固定
+`watch.backend.integrity_failure{kind="invalid_result"}`、取消当前 generation，不发送事件且不推进
+`syncedRev`。正常 fixture 统一补齐真实代理 header；缺失 header 只在显式 malformed 负例中保留。
+
+先行 RED 证明 mapper 原先返回 nil header，foreign-cluster event 也会错误公开。修复后行为测试覆盖缺失
+header、零/foreign cluster、零/未知 member、零 term、零/负 revision、header/covered revision 不一致；所有
+异常都只产生 etcd 兼容的 created/canceled 或 canceled envelope，不公开事件，follower `syncedRev` 保持 9。
+首次 authoritative Created 身份异常同样返回 `WatchId=-1` 的 created+canceled envelope。clone 测试证明
+Created/progress/event header 内容相等但对象不共享。聚焦测试、两包 race、完整 proxy 包、完整
+`pkg/server/etcd`、vet 与 diff check 均 GREEN，耗时分别包含 `1.103s`、`1.905s`、`1.785s`、`132.249s`。
+一次完整 Watch 测试运行出现输出被截断、测试名未保留的失败；立即完整复跑及 `-count=3` 均通过，未能复现，
+因此如实记录为一次未归因噪声而不宣称已定位原因。production verifier 精确为 703 项、四片
+`170/193/180/160`；提交前四片 `259.396/453.988/308.302/583.021s`，提交后强制四片
+`256.948/449.724/306.872/576.792s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5695-660fc109` 内嵌版本 `0.0.0-660fc109cf6a`、完整提交
+`660fc109cf6a78a4e4d3aa361c359b1bbb93d5d0`、build time `2026-09-02T05:11:43Z`，Go
+`1.26.5`、`linux/amd64`、TiKV、USER `65532:65532`，内置 kubectl `v1.36.2`。OCI
+index/platform/config/attestation 分别为
+`sha256:fbfb87a9d5c6bbd4db06d78a5f319a9141fc6e8b5f80906c9dfd4fd2bb9b0968`、
+`sha256:19eb4a9f6378c1a84b8c6da4160171445fe27c8938ac5f45a35408958d64c7d5`、
+`sha256:6aee67cd1a520ab092f66a0f93453bf75aa3172e8a20ecc66fc826b79aa0e562`、
+`sha256:baef59332d5a1ab6f1563ceade10b59c886c0a33b2903965b60862990d2a6de6`；BuildKit 使用
+`--provenance=mode=max --sbom=true`，syft scanner 成功，构建记录 completed，provenance attachment 为
+`sha256:b84ec2bc2c6eca36b67482453a6422e2a49657d569a57aed7efff5bf76502711`，attestation 内 SPDX/SLSA
+layer 分别为 `sha256:26531aae6b26c1a203c8551ec9d9731cbf8b6e257fb57c6f0f999a9fbf464a` 与
+`sha256:92ad9330c81007b8ab8e9ded55f980433444297c043133cf63e94f1d89cf33fb`。未推送本地 tag 的
+registry `imagetools inspect` 按预期 pull denied；本地 BuildKit history、OCI descriptor、Docker/Kind
+inspect 与容器自检提供了供应链和运行时证据。Kind runtime digest 为
+`sha256:3d25c6b0a98448605b7b4c7d1aa1e76ad9ea000d58509b27ca3d7e3a31434124`。
+
+以 StatefulSet UID/resourceVersion/container/current image/full args 五类原子 test 从稳定 generation
+`782` 部署到候选 `783`；三 Pod 同一 revision `kubebrain-667c85f458`、同一候选 runtime digest、
+Ready/restart 0，Pod 内构建身份一致。直连 Status 证明 `23379/23380` 分别是 member
+`4034353177/2393892952` 的 follower，`23381` 是 member `231094427` 的 leader。复用仓库既有
+`TestWatchLocalControlResponsesAcrossDirectReplicas`，逐端验证负 revision、非法 range、成功/重复 Created、
+Put event、Cancel 的 cluster/member/term/revision 与 payload，`0.304s` GREEN；它真实覆盖两个 follower
+代理 header 与一个 leader 本地路径。测试前后三个 Pod 的
+`watch_backend_integrity_failure{kind="invalid_result"}` 均为 0。一次清理计数探针把 etcdctl
+`--count-only` 错配成 JSON，被 CLI 在发请求前拒绝；改用 fields 输出确认 `/` 前缀 Count=0，不计为产品失败。
+
+候选全部适用开关启用的 HEAD readonly gate GREEN。候选终态 revision/index/applied 为
+`66607/66607/66607`，HashKV `2466687508`、compact revision `44329`，term `438`、leader
+`231094427`，Lease/Alarm 为空。三轮九次 endpoint proposal health 全部成功（`11.040–12.237ms`）；三个
+store Up，pending/down/miss/extra/learner 连续三轮全零。KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、
+各沿用一次历史 restart。候选 KubeBrain 日志 `893/898/356` 行，关键错误与最近 60 秒关键错误均为 0；
+Pod 0 仅有完整门禁故意发送不允许 HTTP method 所产生的两条 405 warning，不属于 error/fatal。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `784/784`、current/update
+`kubebrain-9b9965dc9`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。
+稳定镜像上的完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除该
+info-metrics 合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66607/66607/66607/2466687508/44329`，term `441`、leader `2393892952`；三轮九次 proposal
+health 全部成功（`10.093–11.753ms`），三个 store Up，五类 Region check 连续三轮全零，Lease/Alarm 为空。
+稳定日志 `563/273/620` 行，关键错误与最近 60 秒关键错误均为 0；KubeBrain/TiKV 3+3 Ready/restart 0，
+PD 3 Ready、各保留一次历史 restart。
+
+Pod 重建后首组 `kubectl port-forward` 仍占用本地 listener、但旧远端通道已关闭；只读请求准确 connection
+refused/empty reply。关闭这七个已知会话并重新建立后稳定验收正常，最终全部会话再次关闭，七个目标端口均无监听。
+全程未使用凭据或落盘诊断日志；宿主根盘 81%、可用约 373 GiB。A5676 已记录的 Kind local-path 非 CSI
+存储隔离风险仍存在，本轮不以 PD region API 替代完整 storage isolation gate。A5695 关闭了 follower Watch
+接受、公开伪造代理身份并用其推进重连水位的协议完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
