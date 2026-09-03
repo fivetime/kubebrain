@@ -69398,6 +69398,60 @@ health 全部成功（`53.736–87.368ms`），三个 store Up、五类 Region c
 可用约 308 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮关闭了非 compaction gRPC
 状态借字符串兼容路径伪造压缩水位的漏洞，同时证明标准 compaction、TiKV 后端兼容路径与稳定数据状态不变。
 
+### A5701：隔离代理与本地 Watch compaction 错误域
+
+A5700 阻断了携带非 compaction gRPC status 的文本仿冒，但 `isWatchCompactedError` 仍同时服务本地 TiKV backend 与
+follower proxy：普通 Go error 只要复制 `cache event oldest revision` 等本地兼容文本，仍会被代理路径当作
+compaction。创建前，这类错误可携带非零 `CompactRevision` 并直接向客户端发布伪水位；创建后，即使代理未携带水位，
+也会被升级为 compaction，覆盖真实错误语义并触发不必要的 relist。对照 `/root/etcd` 的 clientv3 Watch 转换路径，
+代理错误来自标准 etcd client，必须保留 `rpctypes.ErrCompacted/ErrGRPCCompacted` sentinel；字符串兼容只属于本地
+TiKV watch backend，不能跨越 peer 信任边界。
+
+新增两条行为 RED：`TestFollowerWatchRejectsMalformedProxyErrorBeforeAuthoritativeCreate` 加入普通 proxy error 复制
+cache 文本并携带水位 50，修复前实际公开 `CompactRevision=50`；
+`TestFollowerWatchDoesNotUpgradePlainProxyBackendErrorAfterAuthoritativeCreate` 固定已创建 Watch 收到普通 cache 文本错误时
+必须保持非 compaction、公开原始 reason，修复前被改写为“compaction error without a positive compact revision”。focused
+RED `0.163s` 精确出现上述差异。提交 `999ac203` 新增严格的 `isForwardedWatchCompactedError`，代理结果形状校验及
+post-create 取消均只接受标准 etcd sentinel；既有 `isWatchCompactedError` 继续为本地 generation 保留 TiKV cache
+字符串兼容，标准/包装 client 与 gRPC compaction 行为不变。
+
+修复后 focused `0.155s`、全部 Watch 测试 `13.448s`、focused race `1.476s`、完整
+`pkg/server/etcd` `149.988s`，该包 vet 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `260.228/458.636/306.435/583.335s` GREEN；紧邻提交 verifier 再次 GREEN；
+提交后四分片 `282.890/473.563/318.938/600.967s` 全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5701-999ac203e017` 内嵌版本 `0.0.0-999ac203e017`、完整提交
+`999ac203e017c05f3f6885bce0d7c64e6ae8a2bc`、build time `2026-09-03T09:51:52Z`、Go `1.26.5`、
+`linux/amd64`、TiKV。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:4b8ea67d290322094f0611f8d51bfea5e0bcda10a089fd9186247b5977dd37df`、
+`sha256:dd5e7fb87389d3e8a2ee76e0f15dc7e2b43d7bbb1582384e5178711bdb55363e`、
+`sha256:c399b06825fef8cad9efe6e9d608964a1cec851962e4fe15c5130334824fef1e`、
+`sha256:ee1681671504028455e8475a21d8a00e9dbf10bd5c64a3f69728597d8e0517cc`；BuildKit provenance
+attachment 为 `sha256:4ca7beee9993e700bcaf5eed127c41ee3263fc62fb639550b1bbfee49bc66149`，SPDX/SLSA
+in-toto layer 为 `sha256:ffa856fca6ec626cb3c60ae589f3327f21f164535c7c4d93e7eab0a8b50e7266`、
+`sha256:19076ab4d432112d8e4164754a602971810259edbee7c079c87a9269e382c408`。本地 registry
+`imagetools inspect` 按预期 pull denied；Docker metadata、containerd OCI descriptor 与 SLSA subject 交叉验证，Kind
+加载后显式注册完整 index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 796 部署到候选 797；
+三 Pod runtime digest 同为 `sha256:a71440e591bf1a9a300008064ccef8385c3ad0ec911f69fa0133b47063f785f1`、
+Ready/restart 0。现场 leader 为 `23381`，followers 为 `23379/23380`；固定合法 compaction differential 分别
+`0.345/0.380s` GREEN，三 Pod `watch_backend_integrity_failure{kind="invalid_result"}` 均为 0，候选完整 HEAD
+readonly gate GREEN。候选终态 revision/index/applied 为 `66751/66751/66751`，HashKV `3630756764`、
+compact revision `66748`、term `463`、leader `231094427`，Lease/Alarm 为空。三轮九次 endpoint health 全部成功
+（`57.015–81.066ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零，
+关键错误日志为空。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `798/798`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。稳定镜像
+完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除 info-metrics 合同后其余门禁
+全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66751/66751/66751/3630756764/66748`，term `465`、leader `231094427`，Lease/Alarm 为空；三轮九次
+health 全部成功（`51.910–75.279ms`），三个 store Up、五类 Region check 连续三轮全零，关键错误日志为空。
+全程认证关闭且无凭据、无持久诊断日志；最终七个 port-forward 会话全部关闭且目标端口无监听。宿主根盘 85%、
+可用约 297 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮将本地 TiKV 文本兼容限制在
+本地 generation，关闭普通代理错误复制 cache 文本后伪造或触发 compaction 的跨边界漏洞。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
