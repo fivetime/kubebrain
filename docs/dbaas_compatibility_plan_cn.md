@@ -69557,6 +69557,59 @@ leader `231094427`，Auth disabled/revision 281、Alarm 为空。三轮九次 en
 可用约 275 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮消除了 Watch proxy 两端对内部授权
 capability 的解析分歧，并确保只有 authoritative Created 能把首代转发升级为可跨 leader generation 的合法续传。
 
+### A5704：规范化 peer HashKV 内部授权 capability
+
+沿 A5703 继续审计内部 metadata capability。peer HTTP corruption-check 在本地 TiKV 路径隔离时，会把 HashKV
+hedge 到 leader 的 gRPC Maintenance/HashKV；这条内部调用没有可转发的 etcd 用户凭据，因此用
+`kubebrain-authorized-peer-hashkv-proxy` 表示已在 peer HTTP 边界建立信任。原发送端用 Append 追加 `"1"`，接收端却
+只检查 marker 是否存在：上游 middleware 或后续内部调用方预置 `malformed` 时会形成 `[malformed,1]`，malformed、重复或
+混合值在 peer listener 上也都会直接跳过 admin auth。public listener 的进程内 provenance 保护仍然有效，但两端没有同一
+canonical encoding。
+
+新增真实 peer HTTP→gRPC hedge RED：在 HTTP request context 预置 malformed capability 和一项无关 metadata，修复前
+leader 转发实际收到 `[malformed,1]`；接收端表同时证明 peer malformed、duplicated、mixed 三种输入错误返回 HashKV，
+focused RED `0.149s`。提交 `f8934cdd` 新增 `withAuthorizedPeerHashKVProxy`：复制全部 outgoing metadata、保留无关字段，
+但用 singleton `"1"` 覆盖 capability；`authorizedPeerHashKVProxy` 同时要求 peer listener provenance、恰好一个值且精确
+等于 `"1"`。public canonical 与所有非 canonical peer 输入均回到普通 admin auth 并 fail closed。
+
+修复后 focused `0.139s`、HashKV/peer HTTP 相关组 `0.539s`、focused race `1.972s`、完整
+`pkg/server/etcd` `140.945s`，该包 vet 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `264.392/451.150/307.745/579.271s` GREEN；提交后四分片
+`252.817/446.095/303.358/574.917s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5704-f8934cdd6516` 内嵌版本 `0.0.0-f8934cdd6516`、完整提交
+`f8934cdd6516fcb802c86c0f3c198a9e0d50b6ee`、build time `2026-09-03T12:32:56Z`、Go `1.26.5`、
+`linux/amd64`、TiKV。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:96487d6dcbfa37a5b5b9e10965f2f0a09ae4d734b2202d5f83d07dc0afea9082`、
+`sha256:3f2331146c0af09bf8e7bfbd5c6cc04d734de0a9680e4f55fe07c2697ba5ca98`、
+`sha256:b04234929ed76d097f9c60b719d517180c3b29372e9826777cc2349cae3ede71`、
+`sha256:524fdc9b17e71843f736b2b1fc622f784bf1974c5757c80137096f30cddbc569`；BuildKit provenance attachment
+config 为 `sha256:1ab0fe382e5e3068f09f6ddb9b746d5d3b242e22e8fb07a7b755b206bf1f7864`，SPDX/SLSA in-toto
+layer 为 `sha256:058223aa9abfc2134387114ec6c8bd333340ea174afdad2c9ac2b6567eee833d`、
+`sha256:bf5409e39d5cade8ba2faffe86f35a7a4ce8b29a05738a7159d48db39ee15b4d`。SPDX 含 2,592 packages/
+8,096 relationships，SLSA subject、四项 build args、三项 materials 均与 platform manifest/完整提交一致；OCI labels、
+非 root `65532:65532`、入口和运行版本交叉验证通过，本地 registry pull denied 符合未发布预期，Kind 中显式登记完整
+index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 802 部署到候选 803；
+三 Pod runtime digest 同为 `sha256:8d4381c16fab5bd671bb7cd903d451de2ebfe24f63a7de23d6cc572a30ed0602`、
+Ready/restart 0，三处运行版本绑定上述完整提交。候选完整 HEAD readonly gate GREEN；HashKV 状态机指标存在，三 Pod
+`watch_backend_integrity_failure{kind="invalid_result"}` 与 `watch_range_prefilter_dropped` 均为 0。候选终态
+revision/index/applied 为 `66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `474`、
+leader `231094427`，Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功
+（`46.760–64.936ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零，关键错误
+日志为空。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `804/804`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。稳定镜像
+完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除 info-metrics 合同后其余门禁
+全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `476`、leader `231094427`，Auth disabled/revision 281、Lease/Alarm
+为空；三轮九次 health 全部成功（`53.730–74.772ms`），三个 store Up、五类 Region check 连续三轮全零，关键错误
+日志为空。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward 会话关闭且目标端口无监听。宿主根盘 87%、
+可用约 263 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 peer HashKV capability 从“存在即
+授权”收紧为双端一致的 canonical singleton，并防止继承 metadata 在内部 hedge 链上扩张授权语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
