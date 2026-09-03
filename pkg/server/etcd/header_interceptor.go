@@ -242,6 +242,16 @@ func isPeerRequest(ctx context.Context) bool {
 	return peerRequest
 }
 
+func withCanonicalOutgoingMetadata(ctx context.Context, key, value string) context.Context {
+	outgoing, _ := metadata.FromOutgoingContext(ctx)
+	canonical := make(metadata.MD, len(outgoing)+1)
+	for existingKey, values := range outgoing {
+		canonical[existingKey] = append([]string(nil), values...)
+	}
+	canonical.Set(key, value)
+	return metadata.NewOutgoingContext(ctx, canonical)
+}
+
 const requireLeaderPollInterval = 100 * time.Millisecond
 
 type serverStreamWithContext struct {

@@ -11,6 +11,7 @@ package etcd
 import (
 	"context"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -517,6 +519,58 @@ func TestQuotaRPCOversizedPutArmsReceivingMemberBeforeApply(t *testing.T) {
 	read, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("large")})
 	require.NoError(t, err)
 	require.Empty(t, read.Kvs)
+}
+
+func TestForwardQuotaAdmissionMemberCanonicalizesInheritedMetadata(t *testing.T) {
+	server := newQuotaRPCServer(t, 100)
+	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(
+		quotaAdmissionMemberMetadataKey, "malformed",
+		"kubebrain-test-quota-metadata", "preserved",
+	))
+
+	forwarded := server.forwardQuotaAdmissionMember(ctx)
+	outgoing, ok := metadata.FromOutgoingContext(forwarded)
+	require.True(t, ok)
+	localID := server.memberIDForPeerIdentity(server.backend.GetResourceLock().Identity())
+	require.Equal(t, []string{strconv.FormatUint(localID, 10)}, outgoing.Get(quotaAdmissionMemberMetadataKey))
+	require.Equal(t, []string{"preserved"}, outgoing.Get("kubebrain-test-quota-metadata"))
+}
+
+func TestQuotaAdmissionMemberRequiresCanonicalPeerSingleton(t *testing.T) {
+	server := newQuotaRPCServer(t, 100)
+	localID := server.memberIDForPeerIdentity(server.backend.GetResourceLock().Identity())
+	var remoteID uint64
+	for _, member := range server.membersSnapshot() {
+		if member.GetID() != localID {
+			remoteID = member.GetID()
+			break
+		}
+	}
+	require.NotZero(t, remoteID)
+	canonical := strconv.FormatUint(remoteID, 10)
+	tests := []struct {
+		name   string
+		peer   bool
+		values []string
+		want   uint64
+	}{
+		{name: "public canonical", values: []string{canonical}, want: localID},
+		{name: "peer canonical", peer: true, values: []string{canonical}, want: remoteID},
+		{name: "peer leading zero", peer: true, values: []string{"0" + canonical}, want: localID},
+		{name: "peer duplicated", peer: true, values: []string{canonical, canonical}, want: localID},
+		{name: "peer malformed", peer: true, values: []string{"malformed"}, want: localID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			md := metadata.MD{}
+			md.Set(quotaAdmissionMemberMetadataKey, tt.values...)
+			ctx := metadata.NewIncomingContext(context.Background(), md)
+			if tt.peer {
+				ctx = context.WithValue(ctx, peerRequestContextKey{}, true)
+			}
+			require.Equal(t, tt.want, server.quotaAdmissionMember(ctx))
+		})
+	}
 }
 
 func TestQuotaRPCConfiguredCeilingPrecedesCorruptWriteApplierLikeEtcd(t *testing.T) {

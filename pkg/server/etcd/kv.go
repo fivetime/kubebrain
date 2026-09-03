@@ -1358,7 +1358,7 @@ const quotaAdmissionMemberMetadataKey = "kubebrain-quota-admission-member"
 
 func (s *RPCServer) forwardQuotaAdmissionMember(ctx context.Context) context.Context {
 	memberID := s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity())
-	return metadata.AppendToOutgoingContext(ctx, quotaAdmissionMemberMetadataKey, strconv.FormatUint(memberID, 10))
+	return withCanonicalOutgoingMetadata(ctx, quotaAdmissionMemberMetadataKey, strconv.FormatUint(memberID, 10))
 }
 
 func (s *RPCServer) quotaAdmissionMember(ctx context.Context) uint64 {
@@ -1371,7 +1371,7 @@ func (s *RPCServer) quotaAdmissionMember(ctx context.Context) uint64 {
 		return localID
 	}
 	memberID, err := strconv.ParseUint(values[0], 10, 64)
-	if err != nil || memberID == 0 || s.memberByID(memberID) == nil {
+	if err != nil || memberID == 0 || strconv.FormatUint(memberID, 10) != values[0] || s.memberByID(memberID) == nil {
 		return localID
 	}
 	return memberID
