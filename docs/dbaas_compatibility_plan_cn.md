@@ -70046,6 +70046,61 @@ digest、config alias；稳定镜像和数据卷未删除。宿主根盘 91%、�
 非 CSI 存储隔离风险仍存在。本轮把“身份 canonicalization”扩展为“身份与内部授权 capability 同时 canonicalization”，
 避免受信 peer hop 放大陈旧上下文权限。
 
+### A5713：清除通用鉴权转发继承的内部 Count capability
+
+A5712 清除了 Watch continuation、peer HashKV 和 quota attribution 三种内部 capability；继续审计同一 outgoing
+context 发现第四种 `kubebrain-count-proxy=1` 仍会被通用鉴权转发原样继承。该标记只应由 follower 的专用 Count
+proxy 路径在向 leader 转发 CountOnly Range 时签发，使 leader 的 count index 正在 rebuild 且无法服务时快速返回
+Unavailable，再由 follower 本地 scan 分摊负载。若 middleware 或内部调用方遗留 canonical 标记，普通 peer Range
+会被 leader 误判成 count-proxy 请求，失去直接请求应有的 best-effort scan 语义。公网 incoming metadata 本身不会自动
+进入 outgoing context，但通用 helper 必须对复用或污染的内部 context 保持 capability 收敛。
+
+扩展 `TestForwardedAuthIdentityCanonicalizesOutgoingMetadata`，在既有六种 authenticated、anonymous、raw bearer、
+raw swagger bearer、anonymous write 和 verified certificate 场景中加入污染的 `kubebrain-count-proxy=1`，并要求
+canonicalization 后为空。修复前六个子例均精确保留该值而 RED（`0.034s`）；提交 `31d8240f` 在安装 canonical
+身份之前显式删除 `countProxyMarkerKey`，专用 `SetCountProxy` 路径仍会按自身前置条件重新写入标记，无关 metadata
+继续保留。修复后 focused Count/Auth 集合 `0.062s`、race `1.213s`。首次完整 `pkg/server/etcd` 普通运行非零退出，
+但输出因体积截断而没有留下可定位的失败测试；随后立即以结构化 JSON 连续运行两次均无 fail event 且退出 0，未能
+复现。该包 vet、gofmt 与 `git diff --check` 均 GREEN，后续生产全分片也未出现失败。提交前 verifier 精确分配
+703 项为 `170/193/180/160`，四分片 `269.931/472.130/319.489/594.233s` GREEN；提交后四分片
+`276.104/469.246/322.537/593.400s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5713-31d8240fe743` 内嵌版本 `0.0.0-31d8240fe743`、完整提交
+`31d8240fe743e02b7ac29c18230890b764fa6277`、build time `2026-09-03T21:07:44Z`、Go `1.26.5`、
+`linux/amd64`、TiKV、kubectl `v1.36.2`。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:d004480a75b45dde6537e7de8a257ec56b6d509ab5a2e423e8d25ea98bc2fc95`、
+`sha256:1fb564d2e2a7ef1f4b6799b5bd98ad6da502d03e21dcac08049ac69d97f64fb2`、
+`sha256:335437b2f62d5da65659eaaebb05017e2f200ccf5c91c740537cc63e67d92bdd`、
+`sha256:d7ecc7821840512836dab84b74d1480a77652d33c950fac22304960350726acf`；attestation config 为
+`sha256:bf3ce15f995ed5adebf7ddad13435e2794a8a97ea533b8c7d7f168426866c699`，SPDX/SLSA in-toto layer 为
+`sha256:10d12b1f89f77f5e77b1a0dc665712bbbb9a57d9e0bf1e6e4b49a72d4aaa1681`、
+`sha256:77e5e6bbe09f93aa543d15b42c58e9b0bcf30ab54c878db2c690e54a267e4e2b`。SPDX 2.3 含 2,592
+packages/8,096 relationships；SLSA subject 精确绑定 platform manifest、五项 build args 与三项 materials。
+OCI labels、非 root `65532:65532`、入口和运行版本交叉验证通过，registry pull denied 符合未发布候选预期，Kind 中显式
+登记完整 index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 820 部署到候选
+821；三 Pod runtime digest 同为
+`sha256:22f0d3eca2901a336d507c74bc5f70268e6b9f3d1152cf4884da9f1e80f777c8`、Ready/restart 0，三处运行
+版本绑定上述完整提交且参数未漂移。候选完整 HEAD readonly gate GREEN；终态 revision/index/applied 为
+`66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `510`、leader `231094427`，
+Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功（`50.527–68.010ms`）；三个
+TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零。候选日志 `477/503/309` 行，
+关键错误及最近 60 秒关键错误均为 0。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `822/822`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项
+参数未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除该
+info-metrics 代际合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `512`、leader `2393892952`，Auth disabled/revision 281、
+Lease/Alarm 为空；三轮九次 health 全部成功（`47.913–59.968ms`），三个 store Up、五类 Region check 连续三轮
+全零，稳定日志 `422/266/476` 行且关键错误为空。KubeBrain/TiKV 3+3 Ready/restart 0；PD 3 Ready、各沿用一次
+历史 restart。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward 会话关闭且六个目标端口无监听。确认
+没有 Pod/容器引用 A5713 后，精确删除 Docker 候选 tag 与 Kind 的 tag、index digest、config alias；稳定镜像和
+数据卷未删除。宿主根盘 91%、可用约 175 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。
+本轮把内部 capability canonicalization 补齐到 Count 负载保护标记，避免通用鉴权转发把陈旧上下文升级成内部
+count-proxy 请求。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
