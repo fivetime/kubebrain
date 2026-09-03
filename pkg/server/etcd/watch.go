@@ -2229,8 +2229,15 @@ func isWatchCompactedError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, rpctypes.ErrCompacted) {
+	if errors.Is(err, rpctypes.ErrCompacted) || errors.Is(err, rpctypes.ErrGRPCCompacted) {
 		return true
+	}
+	// The proxy path preserves a gRPC status, whose code and message jointly
+	// identify the etcd error. Never let an unrelated status opt into the local
+	// backend's string-only compatibility fallback merely by copying compaction
+	// wording into its message.
+	if _, ok := status.FromError(err); ok {
+		return false
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "required revision has been compacted") ||
