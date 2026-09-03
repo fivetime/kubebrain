@@ -69718,6 +69718,60 @@ leader `2393892952`，Auth disabled/revision 281、Lease/Alarm 为空。三轮�
 公网 metadata 触发的存在性标记收紧为仅 peer listener 可建立的 canonical capability，同时保持 follower 重建窗口的
 负载保护语义。
 
+### A5707：规范化 follower 转发鉴权身份
+
+继续审计 follower→leader 的鉴权 metadata。对照 `/root/etcd/server/auth/store.go`，公网接收端读取同名重复 token 的
+首值属于 etcd 现有语义，不能误改为拒绝重复值；差距在 KubeBrain 的内部发送边界。`forwardAuthToken` 与
+`forwardWriteAuthContext` 原先用 Append 追加 authoritative token/证书用户名，或在 caller/credential 为空时直接返回
+原 context。若 middleware 或后续内部调用方已写入 outgoing `token` 或
+`kubebrain-forwarded-client-certificate-username`，已认证请求会形成双身份，匿名请求甚至会把陈旧内部身份原样送给
+leader；leader 优先读取 token，可能拒绝正确证书身份或以错误 caller 执行。
+
+新增五场景 RED：authenticated caller 实际发出 `[polluted-token,authoritative-token]`，raw bearer 同样形成双 token；
+anonymous read/write 均保留 polluted token；verified certificate write 也保留优先级更高的 polluted token。focused RED
+`0.034s` 全部精确失败。提交 `076dc363` 新增 `withCanonicalForwardedAuthIdentity`：复制 outgoing metadata、保留无关
+字段，先删除 token 与 forwarded certificate username，再只安装 authoritative token 或证书用户名之一；匿名与证书
+验证失败路径显式清空两者。公网 incoming token 的首值选择与 Bearer/simple/JWT 验证顺序保持 etcd 一致。
+
+修复后 focused `0.033s`、鉴权/证书/follower proxy 相关组 `0.278s`、focused race `1.123s`、完整
+`pkg/server/etcd` `140.386s`，该包 vet 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `259.226/465.811/311.132/595.839s` GREEN；提交后四分片
+`258.731/453.490/310.854/577.368s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5707-076dc3632af0` 内嵌版本 `0.0.0-076dc3632af0`、完整提交
+`076dc3632af02dc45b1f062e969262633d5d6673`、build time `2026-09-03T15:17:59Z`、Go `1.26.5`、
+`linux/amd64`、TiKV。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:c59c2b5ba707dda5a807497ec8789f67e2d81238ff6387f42d7c2895ce2d4e07`、
+`sha256:6470cc484e2e2fbebb92d43c4dd9e7e9ff171581e29318a84b8fb0d4c52b4ffa`、
+`sha256:7e0295a60629b44aa0208592fc16272ba78e8dc5b2ee51e3af29c9f9f8af722c`、
+`sha256:236a9dd0826b821a036e1f0c22c3299a27274f44a6ff9b82d76a4b38058af0d1`；BuildKit provenance
+attachment config 为 `sha256:76d61a0e6501936995d21d842f61a7942bb4120879dde2fde7cddafd608ccfa3`，SPDX/SLSA
+in-toto layer 为 `sha256:589df317d73e48d3c72899223aa7f8899b948be8f93816b882615a31f85db71d`、
+`sha256:84065a007523f8336c514159fad5b828843f9aac5ad1cac9dd768dbd8a8d5bab`。SPDX 2.3 含 2,592
+packages/8,096 relationships，SLSA subject 精确绑定 platform manifest、四项 build args 与三项 materials；OCI
+labels、非 root `65532:65532`、入口和运行版本交叉验证通过，本地 registry pull denied 符合未发布预期，Kind 中显式
+登记完整 index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 808 部署到候选 809；
+三 Pod runtime digest 同为 `sha256:abaca7e05c71728439de503f2ec8a4fdfcff14173a9fb4feabf68a6e7bd0ef8f`、
+Ready/restart 0，三处运行版本绑定上述完整提交。候选完整 HEAD readonly gate GREEN；三 Pod maintenance proxy 与
+`watch_backend_integrity_failure{kind="invalid_result"}` 均为 0，`watch_range_prefilter_dropped` 为 0。候选终态
+revision/index/applied 为 `66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `486`、
+leader `2393892952`，Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功
+（`50.692–74.717ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零。日志
+仅有 rollout 连接切换和 hedge 输家取消 warning，无鉴权错误、panic/fatal 或完整性错误。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `810/810`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项参数
+未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除 info-metrics
+合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `488`、leader `231094427`，Auth disabled/revision 281、Lease/Alarm
+为空；三轮九次 health 全部成功（`51.304–62.500ms`），三个 store Up、五类 Region check 连续三轮全零。日志只有
+rollout drain 与 hedge cancellation warning。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward 会话
+关闭且目标端口无监听。宿主根盘 89%、可用约 228 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。
+本轮在不改变 etcd 公网 token 解析语义的前提下，把内部代理身份收紧为 authoritative、互斥且 canonical 的单一来源，
+消除了上下文继承导致的身份混淆与匿名身份泄漏。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
