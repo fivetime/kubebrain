@@ -326,6 +326,28 @@ func validateForwardedWatchResultShape(result etcdproxy.WatchResult, requestedRe
 	return nil
 }
 
+func (w *watcher) validateForwardedWatchCompactionWatermark(ctx context.Context, result etcdproxy.WatchResult) error {
+	if !isForwardedWatchCompactedError(result.Err) {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, watchCompactionProbeTimeout)
+	defer cancel()
+	durableRevision, err := w.backend.GetCompactRevisionFresh(probeCtx)
+	if err != nil {
+		return fmt.Errorf(
+			"watch leader proxy compact revision %d could not be verified against durable state: %w",
+			result.CompactRevision, err,
+		)
+	}
+	if uint64(result.CompactRevision) > durableRevision {
+		return fmt.Errorf(
+			"watch leader proxy returned compact revision %d above durable compact revision %d",
+			result.CompactRevision, durableRevision,
+		)
+	}
+	return nil
+}
+
 func validatedWatchBatchRevision(result etcdproxy.WatchResult, sourceRevision uint64) (uint64, error) {
 	batchRevision := result.Revision
 	if batchRevision == 0 {
@@ -1624,6 +1646,11 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 					w.rejectAuthoritativeCreate(id, wt, resultErr, 0)
 					return
 				}
+				if watermarkErr := w.validateForwardedWatchCompactionWatermark(ctx, result); watermarkErr != nil {
+					emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
+					w.rejectAuthoritativeCreate(id, wt, watermarkErr, 0)
+					return
+				}
 				if result.Err != nil {
 					w.rejectAuthoritativeCreate(id, wt, result.Err, result.CompactRevision)
 					return
@@ -1777,6 +1804,13 @@ watchLoop:
 					emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
 					klog.ErrorS(resultErr, "[watch stream] cancel due to invalid proxy result shape", "watcher", w.id, "watch", id)
 					w.CancelGeneration(id, wt, resultErr, false)
+					cancel()
+					return
+				}
+				if watermarkErr := w.validateForwardedWatchCompactionWatermark(ctx, result); watermarkErr != nil {
+					emitWatchBackendIntegrityFailure(w.metricCli, "invalid_result")
+					klog.ErrorS(watermarkErr, "[watch stream] cancel due to unverified proxy compaction watermark", "watcher", w.id, "watch", id)
+					w.CancelGeneration(id, wt, watermarkErr, false)
 					cancel()
 					return
 				}

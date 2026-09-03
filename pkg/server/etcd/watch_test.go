@@ -3600,6 +3600,7 @@ func TestFollowerWatchRejectsMalformedProxyErrorBeforeAuthoritativeCreate(t *tes
 	tests := []struct {
 		name    string
 		result  func(*RPCServer) etcdproxy.WatchResult
+		backend func(*RPCServer) BackendShim
 		message string
 	}{
 		{
@@ -3680,6 +3681,32 @@ func TestFollowerWatchRejectsMalformedProxyErrorBeforeAuthoritativeCreate(t *tes
 			message: "compact revision 51 above response revision 50",
 		},
 		{
+			name: "zero response revision with compact revision above durable watermark",
+			result: func(server *RPCServer) etcdproxy.WatchResult {
+				return etcdproxy.WatchResult{
+					Header: proxiedResponseHeader(server, 0), Err: compactedRevisionError(), CompactRevision: 50,
+				}
+			},
+			backend: func(server *RPCServer) BackendShim {
+				return &staleCompactRevisionCacheShim{BackendShim: server.backend, durableRevision: 49}
+			},
+			message: "compact revision 50 above durable compact revision 49",
+		},
+		{
+			name: "compaction watermark durable verification unavailable",
+			result: func(server *RPCServer) etcdproxy.WatchResult {
+				return etcdproxy.WatchResult{
+					Header: proxiedResponseHeader(server, 0), Err: compactedRevisionError(), CompactRevision: 50,
+				}
+			},
+			backend: func(server *RPCServer) BackendShim {
+				return &blockingCancelCompactRevisionBackend{
+					BackendShim: server.backend, entered: make(chan struct{}), release: make(chan struct{}),
+				}
+			},
+			message: "compact revision 50 could not be verified against durable state",
+		},
+		{
 			name: "error mixed with progress",
 			result: func(server *RPCServer) etcdproxy.WatchResult {
 				return etcdproxy.WatchResult{
@@ -3727,8 +3754,12 @@ func TestFollowerWatchRejectsMalformedProxyErrorBeforeAuthoritativeCreate(t *tes
 				cancel: cancel, awaitAuthoritativeCreate: true,
 				authoritativeControl: response, authoritativeReady: make(chan struct{}),
 			}
+			backend := server.backend
+			if test.backend != nil {
+				backend = test.backend(server)
+			}
 			w := &watcher{
-				backend: server.backend, grpcServer: server,
+				backend: backend, grpcServer: server,
 				watches: map[int64]*watch{422: generation}, metricCli: rec,
 			}
 			w.wg.Add(1)
@@ -3969,6 +4000,62 @@ func TestFollowerWatchDoesNotUpgradePlainProxyBackendErrorAfterAuthoritativeCrea
 	require.Empty(t, responses[0].Events)
 	require.Equal(t, uint64(9), atomic.LoadUint64(&wt.syncedRev))
 	require.Equal(t, []interface{}{0}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
+	w.wg.Wait()
+}
+
+func TestFollowerWatchRejectsCompactionWatermarkAboveDurableStateAfterAuthoritativeCreate(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initWatchBackendIntegrityMetrics(rec)
+	server.staticMembers = []*etcdserverpb.Member{{ID: server.localMemberID()}}
+
+	results := make(chan etcdproxy.WatchResult, 1)
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true, preserveMissingWatchHeader: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			return results, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
+	wt := &watch{
+		cancel: func() {}, start: "/registry/watch/", end: "/registry/watch0",
+		syncedRev: 9, sourceRev: 9,
+	}
+	backend := &staleCompactRevisionCacheShim{BackendShim: server.backend, durableRevision: 49}
+	w := &watcher{
+		backend: backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: wt}, metricCli: rec,
+	}
+	w.wg.Add(1)
+	go w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/"), RangeEnd: []byte("/registry/watch0"), StartRevision: 10,
+	})
+	results <- etcdproxy.WatchResult{
+		Header: proxiedResponseHeader(server, 0), Err: compactedRevisionError(), CompactRevision: 50,
+	}
+	close(results)
+
+	require.Eventually(t, func() bool {
+		for _, response := range stream.snapshot() {
+			if response.Canceled {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	responses := stream.snapshot()
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Zero(t, responses[0].CompactRevision, "an unverified proxy compaction watermark must not be exposed")
+	require.Contains(t, responses[0].CancelReason, "compact revision 50 above durable compact revision 49")
+	require.Empty(t, responses[0].Events)
+	require.Equal(t, uint64(9), atomic.LoadUint64(&wt.syncedRev))
+	require.True(t, backend.freshRead)
+	require.Equal(t, []interface{}{0, 1}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
 	w.wg.Wait()
 }
 
