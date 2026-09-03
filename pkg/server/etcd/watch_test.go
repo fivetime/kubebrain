@@ -3641,6 +3641,19 @@ func TestFollowerWatchRejectsMalformedProxyErrorBeforeAuthoritativeCreate(t *tes
 			message: "non-compaction error with compact revision 50",
 		},
 		{
+			name: "plain proxy error mimics backend compaction text with compact revision",
+			result: func(server *RPCServer) etcdproxy.WatchResult {
+				return etcdproxy.WatchResult{
+					Header: proxiedResponseHeader(server, 50),
+					Err: errors.New(
+						"cache event oldest revision is 50 newer than requested revision 49",
+					),
+					Revision: 50, CompactRevision: 50,
+				}
+			},
+			message: "non-compaction error with compact revision 50",
+		},
+		{
 			name: "compaction error without compact revision",
 			result: func(server *RPCServer) etcdproxy.WatchResult {
 				return etcdproxy.WatchResult{Header: proxiedResponseHeader(server, 0), Err: compactedRevisionError()}
@@ -3900,6 +3913,62 @@ func TestFollowerWatchRejectsMalformedProxyErrorAfterAuthoritativeCreate(t *test
 	require.Empty(t, responses[0].Events)
 	require.Equal(t, uint64(9), atomic.LoadUint64(&wt.syncedRev))
 	require.Equal(t, []interface{}{0, 1}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
+	w.wg.Wait()
+}
+
+func TestFollowerWatchDoesNotUpgradePlainProxyBackendErrorAfterAuthoritativeCreate(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initWatchBackendIntegrityMetrics(rec)
+	server.staticMembers = []*etcdserverpb.Member{{ID: server.localMemberID()}}
+
+	results := make(chan etcdproxy.WatchResult, 1)
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true, preserveMissingWatchHeader: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			return results, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
+	wt := &watch{
+		cancel: func() {}, start: "/registry/watch/", end: "/registry/watch0",
+		syncedRev: 9, sourceRev: 9,
+	}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: wt}, metricCli: rec,
+	}
+	w.wg.Add(1)
+	go w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/"), RangeEnd: []byte("/registry/watch0"), StartRevision: 10,
+	})
+	results <- etcdproxy.WatchResult{
+		Header:   proxiedResponseHeader(server, 10),
+		Err:      errors.New("cache event oldest revision is 10 newer than requested revision 9"),
+		Revision: 10,
+	}
+	close(results)
+
+	require.Eventually(t, func() bool {
+		for _, response := range stream.snapshot() {
+			if response.Canceled {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	responses := stream.snapshot()
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Zero(t, responses[0].CompactRevision, "a proxy-local backend message must not trigger compaction")
+	require.Contains(t, responses[0].CancelReason, "cache event oldest revision")
+	require.Empty(t, responses[0].Events)
+	require.Equal(t, uint64(9), atomic.LoadUint64(&wt.syncedRev))
+	require.Equal(t, []interface{}{0}, recordedWatchBackendIntegrityValues(rec, "invalid_result"))
 	w.wg.Wait()
 }
 

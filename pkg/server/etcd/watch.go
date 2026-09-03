@@ -298,7 +298,7 @@ func validateForwardedWatchResultShape(result etcdproxy.WatchResult, requestedRe
 	if len(result.Events) != 0 {
 		return fmt.Errorf("watch leader proxy returned an error mixed with %d events", len(result.Events))
 	}
-	if !isWatchCompactedError(result.Err) {
+	if !isForwardedWatchCompactedError(result.Err) {
 		if result.CompactRevision != 0 {
 			return fmt.Errorf(
 				"watch leader proxy returned a non-compaction error with compact revision %d",
@@ -1783,7 +1783,11 @@ watchLoop:
 			}
 			if result.Err != nil {
 				klog.InfoS("[watch stream] watch channel error", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "err", result.Err)
-				w.CancelGeneration(id, wt, result.Err, isWatchCompactedError(result.Err))
+				compacted := isWatchCompactedError(result.Err)
+				if !localGeneration {
+					compacted = isForwardedWatchCompactedError(result.Err)
+				}
+				w.CancelGeneration(id, wt, result.Err, compacted)
 				return
 			}
 			if result.Created {
@@ -2229,7 +2233,7 @@ func isWatchCompactedError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, rpctypes.ErrCompacted) || errors.Is(err, rpctypes.ErrGRPCCompacted) {
+	if isForwardedWatchCompactedError(err) {
 		return true
 	}
 	// The proxy path preserves a gRPC status, whose code and message jointly
@@ -2242,6 +2246,14 @@ func isWatchCompactedError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "required revision has been compacted") ||
 		strings.Contains(msg, "cache event oldest revision")
+}
+
+// A forwarded Watch error originates from clientv3 and must retain etcd's
+// canonical compaction sentinel. String-only compatibility is reserved for the
+// local TiKV watch backend; accepting it across the peer boundary would let a
+// plain proxy error opt into CompactRevision handling by copying backend text.
+func isForwardedWatchCompactedError(err error) bool {
+	return errors.Is(err, rpctypes.ErrCompacted) || errors.Is(err, rpctypes.ErrGRPCCompacted)
 }
 
 func normalizeWatchCreateRequest(r *etcdserverpb.WatchCreateRequest) *etcdserverpb.WatchCreateRequest {
