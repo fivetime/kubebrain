@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -767,6 +768,45 @@ func TestFollowerPasswordMutationsClearPlaintext(t *testing.T) {
 		require.Nil(t, response)
 		require.ErrorIs(t, err, proxyErr)
 		require.Empty(t, request.GetPassword())
+	})
+}
+
+func TestLeaderPasswordMutationsClearPlaintextAfterHashFailure(t *testing.T) {
+	password := strings.Repeat("x", 73)
+
+	t.Run("user add", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+
+		request := &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: password}
+		response, err := server.UserAdd(context.Background(), request)
+		require.Nil(t, response)
+		require.ErrorIs(t, err, bcrypt.ErrPasswordTooLong)
+		require.Empty(t, request.GetPassword())
+	})
+
+	t.Run("user change password", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+
+		request := &etcdserverpb.AuthUserChangePasswordRequest{Name: "alice", Password: password}
+		response, err := server.UserChangePassword(context.Background(), request)
+		require.Nil(t, response)
+		require.ErrorIs(t, err, bcrypt.ErrPasswordTooLong)
+		require.Empty(t, request.GetPassword())
+	})
+
+	t.Run("no password user preserves ignored field", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+
+		request := &etcdserverpb.AuthUserAddRequest{
+			Name: "alice", Password: password, Options: &authpb.UserAddOptions{NoPassword: true},
+		}
+		response, err := server.UserAdd(context.Background(), request)
+		require.NoError(t, err)
+		require.NotNil(t, response)
+		require.Equal(t, password, request.GetPassword())
 	})
 }
 

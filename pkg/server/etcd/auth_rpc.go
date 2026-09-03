@@ -234,14 +234,17 @@ func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.Auth
 }
 
 func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) (_ *etcdserverpb.AuthUserAddResponse, retErr error) {
+	// Keep plaintext lifetime bounded by this RPC on every exit path, including
+	// follower discovery and bcrypt failures. NoPassword deliberately preserves
+	// the ignored field, matching etcd's request mutation semantics.
+	if request != nil && (request.Options == nil || !request.Options.NoPassword) {
+		defer func() { request.Password = "" }()
+	}
 	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if proxy {
-		if request != nil && (request.Options == nil || !request.Options.NoPassword) {
-			defer func() { request.Password = "" }()
-		}
 		response, err := s.peers.UserAdd(proxyCtx, request)
 		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserAdd, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
@@ -375,14 +378,16 @@ func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUs
 }
 
 func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverpb.AuthUserChangePasswordRequest) (_ *etcdserverpb.AuthUserChangePasswordResponse, retErr error) {
+	// Install the plaintext cleanup before any operation that can fail so the
+	// caller-owned protobuf cannot retain a supplied password after return.
+	if request != nil && request.Password != "" {
+		defer func() { request.Password = "" }()
+	}
 	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if proxy {
-		if request != nil && request.Password != "" {
-			defer func() { request.Password = "" }()
-		}
 		response, err := s.peers.UserChangePassword(proxyCtx, request)
 		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserChangePassword, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
