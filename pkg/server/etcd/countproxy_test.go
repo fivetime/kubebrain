@@ -60,16 +60,24 @@ func TestCountProxyFailureArmsObservableQuietWindow(t *testing.T) {
 	proxyCalls := 0
 	server := New(be, rec, testPeerService{
 		proxyEnabled: true,
-		rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+		rangeFn: func(ctx context.Context, _ *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 			proxyCalls++
+			outgoing, ok := metadata.FromOutgoingContext(ctx)
+			require.True(t, ok)
+			require.Equal(t, []string{"1"}, outgoing.Get(countProxyMarkerKey))
+			require.Equal(t, []string{"preserved"}, outgoing.Get("kubebrain-test-count-metadata"))
 			return nil, errors.New("leader count unavailable")
 		},
 	})
 	req := &etcdserverpb.RangeRequest{Key: []byte(pfx + "/"), RangeEnd: []byte(pfx + "0"), CountOnly: true}
+	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(
+		countProxyMarkerKey, "malformed",
+		"kubebrain-test-count-metadata", "preserved",
+	))
 
-	_, err := server.backend.Count(context.Background(), req)
+	_, err := server.backend.Count(ctx, req)
 	require.NoError(t, err)
-	_, err = server.backend.Count(context.Background(), req)
+	_, err = server.backend.Count(ctx, req)
 	require.NoError(t, err)
 	require.Equal(t, 1, proxyCalls, "the second count must skip the peer during the quiet window")
 	require.Equal(t, []interface{}{int64(0), 1}, countProxyOutcomeValues(rec, countProxyOutcomeFailure))
@@ -171,8 +179,36 @@ func TestCountProxyFastRejectsWhenIndexNotReady(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(3), resp.Count, "a direct client must get the leader's fallback scan")
 
+	// Public metadata never proves that the request came from a follower. A
+	// client-supplied marker must retain direct-client best-effort semantics.
+	publicProxyCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(countProxyMarkerKey, "1"))
+	resp, err = shim.Count(publicProxyCtx, req)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), resp.Count)
+
+	// Peer provenance is necessary but not sufficient: only the canonical
+	// singleton is accepted. Malformed or duplicated markers must not turn a
+	// normal peer request into a count-proxy fast-reject.
+	for name, values := range map[string][]string{
+		"malformed":  {"malformed"},
+		"duplicated": {"1", "1"},
+		"mixed":      {"malformed", "1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			md := metadata.MD{}
+			md.Set(countProxyMarkerKey, values...)
+			peerCtx := context.WithValue(metadata.NewIncomingContext(ctx, md), peerRequestContextKey{}, true)
+			got, countErr := shim.Count(peerCtx, req)
+			require.NoError(t, countErr)
+			require.Equal(t, int64(3), got.Count)
+		})
+	}
+
 	// Follower-proxied count (marker present) the index cannot serve: fast-reject.
-	proxyCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(countProxyMarkerKey, "1"))
+	proxyCtx := context.WithValue(
+		metadata.NewIncomingContext(ctx, metadata.Pairs(countProxyMarkerKey, "1")),
+		peerRequestContextKey{}, true,
+	)
 	_, err = shim.Count(proxyCtx, req)
 	requireCountProxyIndexNotReady(t, err)
 

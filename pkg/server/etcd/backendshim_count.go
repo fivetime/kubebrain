@@ -49,8 +49,11 @@ var errCountIndexNotReady = proxyprotocol.ErrCountIndexNotReady
 // isCountProxyRequest reports whether this count arrived via the leader count
 // proxy (carries countProxyMarkerKey in its gRPC metadata).
 func isCountProxyRequest(ctx context.Context) bool {
-	md, ok := metadata.FromIncomingContext(ctx)
-	return ok && len(md.Get(countProxyMarkerKey)) > 0
+	if !isPeerRequest(ctx) {
+		return false
+	}
+	values := metadata.ValueFromIncomingContext(ctx, countProxyMarkerKey)
+	return len(values) == 1 && values[0] == "1"
 }
 
 // countResolver owns exact-range counting for paginated LIST: the per-page
