@@ -69878,6 +69878,61 @@ follower auth mutation proxy 边界。回滚验收后确认没有容器引用 A5
 Docker/Kind 候选 tag、index digest 与 config alias；稳定镜像和数据卷未删除，宿主可用空间回升到约 214 GiB，
 generation 814 的三个稳定 Pod 仍 Ready/restart 0。
 
+### A5710：清除 leader 密码哈希失败路径的明文
+
+A5709 已把 `UserAdd`/`UserChangePassword` 的 follower proxy 返回路径纳入明文清理，但继续审计发现 leader
+仍有更早的退出点：`bcrypt.GenerateFromPassword` 拒绝超过 72 字节的密码时，两个 RPC 都会在已有显式
+`Password = ""` 之前返回，调用方持有的 protobuf 因而继续保留原明文。upstream
+`/root/etcd/server/etcdserver/v3_server.go` 同样只在 bcrypt 成功后清空；本项不改变其线上的错误码或存储语义，
+而是把 KubeBrain 的生产安全边界收紧为“普通密码字段在 RPC 返回后不再驻留”。`Authenticate` 原有全路径 defer
+已满足该边界，`NoPassword=true` 的 `UserAdd` 字段仍按 upstream 作为被忽略字段保留。
+
+新增 `TestLeaderPasswordMutationsClearPlaintextAfterHashFailure`，分别用 73 字节密码触发 `UserAdd` 和
+`UserChangePassword` 的 `bcrypt.ErrPasswordTooLong`，并固定 `NoPassword=true` 不被误清理。修复前两个普通密码
+子例精确 RED、NoPassword 边界 GREEN，完整 RED `0.083s`。提交 `9fd7cccb` 把条件 defer 移到两个 RPC 的最早
+入口：leader/follower 选择、领导状态检查、bcrypt、代理 transport 与后续鉴权/存储任一路径返回时都会清空普通
+明文；代理仍在调用期间收到原请求，hashed API 与 NoPassword 语义不变。
+
+修复后聚焦普通测试 `0.113s`、聚焦 race `1.332s`、完整 `pkg/server/etcd` `139.582s`，该包 vet、gofmt 与
+`git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为 `170/193/180/160`，四分片
+`258.499/453.860/312.781/583.622s` GREEN；提交后四分片
+`265.132/460.210/313.867/590.120s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5710-9fd7cccb6485` 内嵌版本 `0.0.0-9fd7cccb6485`、完整提交
+`9fd7cccb648597b033c275527d90d7e47bc38905`、build time `2026-09-03T18:14:04Z`、Go `1.26.5`、
+`linux/amd64`、TiKV。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:c77e1466fafe948efc61a5cf4183f3ed53fd9239d3114182563efb605ff65865`、
+`sha256:3b9796453d8e76aff4b6507ea4482e3dbd1ef96581f29cfe11ea7b1e84e110f3`、
+`sha256:72eeab778b77d38ae7e16e69ce7463004f961f6f0794d5f741b26c854d1458fb`、
+`sha256:a4fedee00e46080f556edf36078cb8877cd4983d7fe07791bce564fdb46961c3`；attestation config 为
+`sha256:0f586c34dd7146509e5b4edd687c20b05f6ae641c42cca86a7a8dbd4d350c605`，SPDX/SLSA in-toto layer 为
+`sha256:4e04e5ddeb40a123189e92f4ac6102ff6e85685f22ef5eff57c9f8044387269d`、
+`sha256:9c74e56eb4f01e1fc540493db69d4cccff125ec679362b03880ca0ad508aa254`。SPDX 2.3 含 2,592
+packages/8,096 relationships；SLSA subject 精确绑定 platform manifest、四项显式 build args 与三项 materials。
+OCI labels、非 root `65532:65532`、入口、kubectl `v1.36.2` 和运行版本交叉验证通过；远端 registry pull denied
+符合未发布候选预期，Kind 中显式登记完整 index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 814 部署到
+候选 815；三 Pod runtime digest 同为
+`sha256:d8ff0130ef1e1a4ac0e8780c1611b3e11b0acd3838cdb4fe6cd7a21a66a69190`、Ready/restart 0，三处运行
+版本绑定上述完整提交且参数未漂移。候选完整 HEAD readonly gate GREEN；终态 revision/index/applied 为
+`66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `499`、leader `2393892952`，
+Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功（`48.190–70.338ms`）；三个
+TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零，完整性/预过滤非零异常指标为空，
+候选日志 `548/277/592` 行且关键错误为空。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `816/816`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整
+22 项参数未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除
+该 info-metrics 代际合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `500`、leader `231094427`；三轮九次 health 全部成功
+（`50.616–68.709ms`），三个 store Up、五类 Region check 连续三轮全零，稳定日志 `419/428/291` 行且关键
+错误为空。宿主无法直连 Pod IP 的一次只读诊断在 etcdctl deadline 后留下一个无 curl deadline 的进程，已立即按
+精确 PID 终止，随后所有探针使用硬 deadline 的临时 port-forward；全程认证关闭且无凭据、无持久诊断日志，最终
+六个临时监听与进程均清零。回滚验收后确认没有 Docker/Kind 容器引用 A5710，再精确删除该候选 tag 与 Kind 的 tag、
+digest alias；稳定镜像和数据卷未删除，宿主仍约 204 GiB 可用。A5676 已记录的 Kind local-path 非 CSI 存储隔离
+风险仍存在。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
