@@ -69989,6 +69989,63 @@ digest、config alias；稳定镜像和数据卷未删除。宿主根盘 90%、�
 非 CSI 存储隔离风险仍存在。本轮让所有 bearer 别名在内部代理边界收敛为单一 canonical credential，消除了跨请求
 上下文继承造成的身份混淆。
 
+### A5712：清除通用鉴权转发继承的内部 peer capability
+
+A5711 已把 bearer 身份别名收敛为 canonical credential；继续审计同一 outgoing context 发现它仍无差别保留三种
+KubeBrain 内部 metadata：Watch 已授权续传、peer HTTP HashKV 免用户鉴权与 quota admission member。它们只应由各自
+专用路径在完成授权或确定 ingress member 后签发。若 middleware 或内部调用方遗留 canonical `"1"`，普通 follower
+Watch 经受信 peer listener 后会被误判为既有 Watch 续传，跳过 leader 的首次 create-time 授权；同理，HashKV 标记可
+跳过 admin auth，quota 标记可污染告警归属。upstream 没有这些跨 KubeBrain member capability；应保持的是 etcd 已建立
+Watch 不因后续权限变更而取消，以及 peer corruption check 的内部可用性，而不是继承任意旧 context 的授权。
+
+扩展 `TestForwardedAuthIdentityCanonicalizesOutgoingMetadata`，同时污染
+`kubebrain-authorized-watch-proxy=1`、`kubebrain-authorized-peer-hashkv-proxy=1` 与
+`kubebrain-quota-admission-member=4034353177`。修复前 authenticated、anonymous、raw bearer、raw swagger bearer、
+anonymous write 与 verified certificate 六个子例都在首个 Watch capability 断言精确 RED（`0.036s`），源码路径同时
+确认三项均由同一 metadata copy 保留。提交 `1fbc95e8` 让 `withCanonicalForwardedAuthIdentity` 在安装单一鉴权身份前
+删除全部三项内部 capability；Watch continuation、peer HashKV 和 quota forwarding 的专用 helper 随后仍可按其独立
+前置条件重新写入 canonical 值，无关 metadata 继续保留。
+
+修复后 focused `0.031s`，Watch/HashKV/quota 发送与接收合同组合测试 `0.274s`、race `1.407s`，完整
+`pkg/server/etcd` `142.231s`，该包 vet、gofmt 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `259.073/449.004/303.076/571.124s` GREEN；提交后四分片
+`256.036/448.635/304.839/574.562s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5712-1fbc95e83054` 内嵌版本 `0.0.0-1fbc95e83054`、完整提交
+`1fbc95e8305402dbdc30d182e7d8a461ce9e3f9a`、build time `2026-09-03T20:08:25Z`、Go `1.26.5`、
+`linux/amd64`、TiKV、kubectl `v1.36.2`。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:ed62b66c1d5189428635abb2d3b863567dc18a88f5721098067b630f7a1167cb`、
+`sha256:9248a0124cd20adb3aeb5e5f196ca8d250e5b0174e9ee3f4badb067cdd8152ec`、
+`sha256:5575bf601333c3ebdcfee0500ded32899d549c7bd8fbe79a1e82dc8fe622cecb`、
+`sha256:7ff78db978a4aad04e4eb38c7d2ccb008782a88a769b471c1fcbef208e544356`；attestation config 为
+`sha256:a47cf966f5a572d3d5b5de2ef5467e23ba7367e2331005b72cd5812fa78da41d`，SPDX/SLSA in-toto layer 为
+`sha256:a82f5ac0406ff6a2ac2bd10ff22af0df6bac6d9e6725d35f4d902e52f3de2a60`、
+`sha256:ebae3126f8f07e1f67faf459b0a3c6d30dc8cf893539304a3fed3fc9dd9f35ef`。SPDX 2.3 含 2,592
+packages/8,096 relationships；SLSA subject 精确绑定 platform manifest、五项 build args 与三项 materials。
+OCI labels、非 root `65532:65532`、入口和运行版本交叉验证通过，registry pull denied 符合未发布候选预期，Kind 中显式
+登记完整 index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 818 部署到候选
+819；三 Pod runtime digest 同为
+`sha256:0e9ef7bb5551d48b8538fbbda00fdecc14180ea843eb12f984c7824b628aae4f`、Ready/restart 0，三处运行
+版本绑定上述完整提交且参数未漂移。候选完整 HEAD readonly gate GREEN；终态 revision/index/applied 为
+`66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `506`、leader `2393892952`，
+Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功（`50.486–81.234ms`）；三个
+TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零，候选日志 `371/276/427` 行且
+关键错误为空。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `820/820`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项
+参数未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除该
+info-metrics 代际合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `508`、leader `231094427`，Auth disabled/revision 281、
+Lease/Alarm 为空；三轮九次 health 全部成功（`50.412–80.114ms`），三个 store Up、五类 Region check 连续三轮
+全零，稳定日志 `376/396/327` 行且关键错误为空。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward
+会话关闭且六个目标端口无监听。确认没有 Pod/容器引用 A5712 后，精确删除 Docker 候选 tag 与 Kind 的 tag、index
+digest、config alias；稳定镜像和数据卷未删除。宿主根盘 91%、可用约 185 GiB。A5676 已记录的 Kind local-path
+非 CSI 存储隔离风险仍存在。本轮把“身份 canonicalization”扩展为“身份与内部授权 capability 同时 canonicalization”，
+避免受信 peer hop 放大陈旧上下文权限。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
