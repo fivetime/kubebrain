@@ -25,6 +25,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -64,13 +65,22 @@ func TestCountProxyFailureArmsObservableQuietWindow(t *testing.T) {
 			proxyCalls++
 			outgoing, ok := metadata.FromOutgoingContext(ctx)
 			require.True(t, ok)
+			require.Equal(t, []string{"Bearer client-token"}, outgoing.Get(rpctypes.TokenFieldNameGRPC))
+			require.Empty(t, outgoing.Get(rpctypes.TokenFieldNameSwagger))
+			require.Empty(t, outgoing.Get(forwardedClientCertificateUsernameMetadataKey))
 			require.Equal(t, []string{"1"}, outgoing.Get(countProxyMarkerKey))
 			require.Equal(t, []string{"preserved"}, outgoing.Get("kubebrain-test-count-metadata"))
 			return nil, errors.New("leader count unavailable")
 		},
 	})
 	req := &etcdserverpb.RangeRequest{Key: []byte(pfx + "/"), RangeEnd: []byte(pfx + "0"), CountOnly: true}
-	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, "Bearer client-token",
+	))
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, "polluted-token",
+		rpctypes.TokenFieldNameSwagger, "polluted-swagger-token",
+		forwardedClientCertificateUsernameMetadataKey, "polluted-certificate-user",
 		countProxyMarkerKey, "malformed",
 		"kubebrain-test-count-metadata", "preserved",
 	))

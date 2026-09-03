@@ -340,9 +340,25 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		req.KeysOnly = false
 		pctx, cancel := context.WithTimeout(ctx, countProxyTimeout)
 		defer cancel()
+		// A serializable follower Range is authorized locally before Count runs,
+		// but the leader must still receive the original identity when this
+		// optimization crosses the peer hop. Normalize it exactly like the other
+		// pre-apply forwarding paths: preserve a raw client credential for
+		// authoritative leader verification, translate verified client-certificate
+		// identity, and scrub any inherited aliases or internal capabilities.
+		var err error
+		pctx, err = server.forwardWriteAuthContext(pctx)
+		if err != nil {
+			proxyQuietUntil.Store(time.Now().Add(countProxyFailureQuiet).UnixNano())
+			server.metricCli.EmitCounter("count.proxy.err", 1)
+			emitCountProxyOutcome(server.metricCli, countProxyOutcomeFailure)
+			return 0, false
+		}
 		// Mark the forward so the leader can fast-reject it (rather than full-scan)
 		// while its count index is rebuilding; on that reject the failure branch
-		// below opens the quiet window and this node falls back to a local scan.
+		// below opens the quiet window and this node falls back to a local scan. Add
+		// this only after identity normalization, which deliberately removes every
+		// inherited internal capability.
 		pctx = withCanonicalOutgoingMetadata(pctx, countProxyMarkerKey, "1")
 		resp, err := peers.Range(pctx, req)
 		if err != nil || resp == nil {
