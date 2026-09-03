@@ -240,6 +240,7 @@ func TestForwardedAuthIdentityCanonicalizesOutgoingMetadata(t *testing.T) {
 			etcdproxy.AuthorizedWatchProxyMetadataKey, "1",
 			authorizedPeerHashKVProxyMetadataKey, "1",
 			quotaAdmissionMemberMetadataKey, "4034353177",
+			countProxyMarkerKey, "1",
 			"kubebrain-test-auth-metadata", "preserved",
 		))
 	}
@@ -253,6 +254,7 @@ func TestForwardedAuthIdentityCanonicalizesOutgoingMetadata(t *testing.T) {
 		require.Empty(t, outgoing.Get(etcdproxy.AuthorizedWatchProxyMetadataKey))
 		require.Empty(t, outgoing.Get(authorizedPeerHashKVProxyMetadataKey))
 		require.Empty(t, outgoing.Get(quotaAdmissionMemberMetadataKey))
+		require.Empty(t, outgoing.Get(countProxyMarkerKey))
 		require.Equal(t, []string{"preserved"}, outgoing.Get("kubebrain-test-auth-metadata"))
 	}
 

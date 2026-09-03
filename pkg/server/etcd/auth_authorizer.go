@@ -323,6 +323,7 @@ func withCanonicalForwardedAuthIdentity(ctx context.Context, token, certificateU
 	canonical.Delete(etcdproxy.AuthorizedWatchProxyMetadataKey)
 	canonical.Delete(authorizedPeerHashKVProxyMetadataKey)
 	canonical.Delete(quotaAdmissionMemberMetadataKey)
+	canonical.Delete(countProxyMarkerKey)
 	if token != "" {
 		canonical.Set(rpctypes.TokenFieldNameGRPC, token)
 	} else if certificateUsername != "" {
