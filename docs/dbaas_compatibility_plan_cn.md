@@ -69874,7 +69874,9 @@ failure，quiet-skip 为 0，完整门禁与后续健康检查均未发现数据
 （`49.975–71.459ms`），三个 store Up、五类 Region check 连续三轮全零，关键错误日志为空。全程认证关闭且无凭据、
 无持久诊断日志；最终全部 port-forward 关闭且目标端口无监听。宿主根盘 90%、可用约 205 GiB。A5676 已记录的
 Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 upstream 的密码驻留最小化合同扩展到 KubeBrain 独有的
-follower auth mutation proxy 边界。
+follower auth mutation proxy 边界。回滚验收后确认没有容器引用 A5705--A5709，再精确删除这五个可由提交重建的
+Docker/Kind 候选 tag、index digest 与 config alias；稳定镜像和数据卷未删除，宿主可用空间回升到约 214 GiB，
+generation 814 的三个稳定 Pod 仍 Ready/restart 0。
 
 ## 提交规则
 
