@@ -234,6 +234,7 @@ func TestForwardedAuthIdentityCanonicalizesOutgoingMetadata(t *testing.T) {
 	polluted := func(ctx context.Context) context.Context {
 		return metadata.NewOutgoingContext(ctx, metadata.Pairs(
 			rpctypes.TokenFieldNameGRPC, "polluted-token",
+			rpctypes.TokenFieldNameSwagger, "polluted-swagger-token",
 			forwardedClientCertificateUsernameMetadataKey, "polluted-user",
 			"kubebrain-test-auth-metadata", "preserved",
 		))
@@ -243,6 +244,7 @@ func TestForwardedAuthIdentityCanonicalizesOutgoingMetadata(t *testing.T) {
 		outgoing, ok := metadata.FromOutgoingContext(ctx)
 		require.True(t, ok)
 		require.Equal(t, token, outgoing.Get(rpctypes.TokenFieldNameGRPC))
+		require.Empty(t, outgoing.Get(rpctypes.TokenFieldNameSwagger))
 		require.Equal(t, username, outgoing.Get(forwardedClientCertificateUsernameMetadataKey))
 		require.Equal(t, []string{"preserved"}, outgoing.Get("kubebrain-test-auth-metadata"))
 	}
@@ -269,6 +271,16 @@ func TestForwardedAuthIdentityCanonicalizesOutgoingMetadata(t *testing.T) {
 		forwarded, err := server.forwardWriteAuthContext(polluted(incoming))
 		require.NoError(t, err)
 		assertOutgoing(t, forwarded, []string{"raw-client-token"}, nil)
+	})
+
+	t.Run("raw swagger bearer write", func(t *testing.T) {
+		server.SetClientCertAuth(false)
+		incoming := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+			rpctypes.TokenFieldNameSwagger, "Bearer raw-client-token",
+		))
+		forwarded, err := server.forwardWriteAuthContext(polluted(incoming))
+		require.NoError(t, err)
+		assertOutgoing(t, forwarded, []string{"Bearer raw-client-token"}, nil)
 	})
 
 	t.Run("anonymous write", func(t *testing.T) {

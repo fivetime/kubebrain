@@ -313,6 +313,7 @@ func withCanonicalForwardedAuthIdentity(ctx context.Context, token, certificateU
 	outgoing, _ := metadata.FromOutgoingContext(ctx)
 	canonical := outgoing.Copy()
 	canonical.Delete(rpctypes.TokenFieldNameGRPC)
+	canonical.Delete(rpctypes.TokenFieldNameSwagger)
 	canonical.Delete(forwardedClientCertificateUsernameMetadataKey)
 	if token != "" {
 		canonical.Set(rpctypes.TokenFieldNameGRPC, token)
