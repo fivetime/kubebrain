@@ -70101,6 +70101,63 @@ Lease/Alarm 为空；三轮九次 health 全部成功（`47.913–59.968ms`）�
 本轮把内部 capability canonicalization 补齐到 Count 负载保护标记，避免通用鉴权转发把陈旧上下文升级成内部
 count-proxy 请求。
 
+### A5714：Follower Count 代理保留客户端认证身份
+
+继续沿 CountOnly fast path 审计发现，普通 follower Range 转发会先调用认证身份 canonicalization，而
+`SetCountProxy` 的内部 leader hop 只添加 `kubebrain-count-proxy=1`。对于已经在 follower 本地完成鉴权的
+serializable CountOnly Range，backend Count 收到的仍是公网 incoming context；旧实现直接从该 context 派生
+outgoing context，因此既没有把 incoming bearer/simple/JWT credential 放到 peer 请求，也会保留调用链上污染的
+outgoing credential。auth enabled 时 leader 会把合法 Count proxy 当成匿名或错误身份拒绝，follower 随后静默退回
+本地全量 scan；结果虽可能正确，却丢失专门为百万级 key count 建立的 leader index 优化并重新暴露超时风险。verified
+client certificate 身份同样无法跨 hop。
+
+扩展 `TestCountProxyFailureArmsObservableQuietWindow`，输入 incoming `Bearer client-token`，同时注入污染的 gRPC/
+Swagger token、forwarded certificate username 与 Count marker；要求 peer 仅收到原始客户端 credential、canonical
+Count marker 和无关保留 metadata。修复前精确收到 `polluted-token` 而 RED（`0.055s`）。提交 `ca3bbbb7` 在签发
+Count capability 之前调用统一 `forwardWriteAuthContext`：raw credential 由 leader 权威校验，verified certificate
+转换为受信 peer username，所有身份 alias 与继承 capability 先清空，再由专用路径重新写入 Count marker；转换异常仍
+进入既有 failure metric、quiet window 与本地 fallback。修复后 focused `0.055s`，Count/Auth 组合 `0.100s`，Count
+race `1.243s`，完整 `pkg/server/etcd` `138.479s`，该包 vet、gofmt、`git diff --check` 均 GREEN。提交前 verifier
+精确分配 703 项为 `170/193/180/160`，四分片 `266.954/462.832/315.039/588.769s` GREEN；提交后四分片
+`262.904/465.202/316.582/592.743s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5714-ca3bbbb7346d` 内嵌版本 `0.0.0-ca3bbbb7346d`、完整提交
+`ca3bbbb7346dc757bb9fa0a52df2479b20aed3cc`、build time `2026-09-03T22:25:45Z`、Go `1.26.5`、
+`linux/amd64`、TiKV、kubectl `v1.36.2`。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:13b9f886b9e7c7cbb73d3874d7f7a90d8d677a0607317f1e76fc781de8721101`、
+`sha256:a7b9b5b0a84d7558feee998251cb59387d0141787a8c752bbe0eb84533c9746a`、
+`sha256:43d55c5160d0460d007388fa6db001fba639e5db55fe25efc9214bc7e5d1c836`、
+`sha256:c1ffeb2f0eed851c317b29e7a4b34953788a173c0fe2c570b229cdde20209e7f`；attestation config 为
+`sha256:32f7b4ceb135f5b017c32033afd034f6635cf8c1cd94fd2a3359c56cd2f89cc7`，SPDX/SLSA in-toto layer 为
+`sha256:e59c3c87b44fdb8997ce1ab070a054745ce17c900c8c6f33e0da125c497f4bd2`、
+`sha256:09269cf1161ff23f745745dcf72c79eb8047ab4ec505bba815c6d167023c534d`。SPDX 2.3 含 2,592
+packages/8,096 relationships；SLSA subject 精确绑定 platform manifest、四项显式 build args 与 syft/alpine/golang
+三项固定 materials。OCI labels、非 root `65532:65532`、入口和运行版本交叉验证通过，Kind 中显式登记 tag、完整
+index digest 与 config alias。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 822 部署到候选
+823；三 Pod runtime digest 同为
+`sha256:7ad4f56a8a742eba9215fdfbc1c4dce6254475e3fd3d6c8c6e7015637115330d`、Ready/restart 0，三处运行
+版本绑定上述完整提交且参数未漂移。候选完整 HEAD readonly gate GREEN；终态 revision/index/applied 为
+`66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `513`、leader `231094427`，
+Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功（`48.832–64.435ms`）；三个
+TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零。候选日志 `565/559/279` 行，
+关键错误及最近 60 秒关键错误均为 0。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `824/824`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项
+参数未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除该
+info-metrics 代际合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `515`、leader `231094427`，Auth disabled/revision 281、
+Lease/Alarm 为空；三轮九次 health 全部成功（`50.172–92.124ms`），三个 store Up、五类 Region check 连续三轮
+全零。稳定日志 `378/393/282` 行；kubebrain-2 启动期有一次 compact-revision metric refresh context deadline，
+随后门禁读取正确 compact revision 且最近 60 秒三 Pod 关键错误均为 0，未形成持续故障。KubeBrain/TiKV 3+3
+Ready/restart 0；PD 3 Ready、各沿用一次历史 restart。全程认证关闭且无凭据、无持久诊断日志；最终所有
+port-forward 会话关闭且六个目标端口无监听。确认没有 Pod/容器引用 A5714 后，精确删除 Docker 候选 tag 与 Kind
+的 tag、index digest、config alias；稳定镜像和数据卷未删除。宿主根盘 92%、可用约 165 GiB。A5676 已记录的
+Kind local-path 非 CSI 存储隔离风险仍存在。本轮恢复了 auth enabled 环境中 CountOnly follower 的 leader-index
+优化，同时保持 leader 权威鉴权、内部 capability 收敛与失败时正确本地回退。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
