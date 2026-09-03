@@ -69663,6 +69663,61 @@ leader `2393892952`，Auth disabled/revision 281、Lease/Alarm 为空。三轮�
 admission member 收紧为 canonical singleton，并确保 follower ingress 的 NOSPACE Alarm 归属不会被继承或非规范
 metadata 污染。
 
+### A5706：规范化 count proxy 内部标记
+
+继续审计 follower→leader CountOnly 优化路径。leader 在 count index 重建期间会对 follower 代理的 count 快速返回
+`Unavailable`，让 follower 打开 quiet window 并回退本地 scan，避免全副本 count 压到 leader；公网直连请求则必须保留
+best-effort scan。原发送端用 Append 追加 `kubebrain-count-proxy=1`，接收端却只检查 marker 是否存在，既不验证 peer
+listener provenance，也不验证 singleton/value。公网客户端可以伪造任意非空 marker，在 index 重建窗口把本应成功的
+CountOnly 改成 `Unavailable`；继承 malformed metadata 的内部调用还会扩张成 `[malformed,1]`。
+
+新增 RED 同时覆盖双端合同：污染 outgoing context 后，修复前 leader 实际收到 `[malformed,1]`；public canonical marker
+也被错误识别为内部 proxy 并 fast-reject。focused RED `0.067s` 精确命中两处差异。提交 `18a039d1` 让发送端复用
+`withCanonicalOutgoingMetadata`，保留无关 metadata 但以 singleton `"1"` 覆盖目标 key；接收端同时要求
+`isPeerRequest` 进程内 provenance、恰好一个值且精确等于 `"1"`。public、malformed、duplicated 与 mixed 输入均恢复
+direct-client best-effort scan，合法 follower proxy 仍保持 index-not-ready fast-reject。
+
+修复后 focused `0.068s`、全部 CountProxy 相关测试 `0.101s`、focused race `1.248s`、完整
+`pkg/server/etcd` `136.929s`，该包 vet 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `253.208/452.955/304.494/579.188s` GREEN；提交后四分片
+`259.011/450.317/307.937/576.677s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5706-18a039d17173` 内嵌版本 `0.0.0-18a039d17173`、完整提交
+`18a039d17173659c54d0a6b7450830f8f3c86a8a`、build time `2026-09-03T14:28:12Z`、Go `1.26.5`、
+`linux/amd64`、TiKV。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:9923de4d9580165cb9eca3362320abb0bac8654a7576a30d0c798906fc692980`、
+`sha256:9d742c82d2d1f3b970ad5b44dc71ceacc878741ec2bdaaf88d6cedd6ae1edd34`、
+`sha256:fa652eac7d07f2b4084efadeb236962ed785926d5299d81715a1dff317dc3689`、
+`sha256:4dc9538c1f59d1db4bd02e1c46e53daed42020d03384b2e90581323c78c1e0dc`；BuildKit provenance
+attachment config 为 `sha256:d57d6820f8ea81670e44476af71a791d461e28435d1ac54101e6ec7753565b4e`，SPDX/SLSA
+in-toto layer 为 `sha256:7d4ff8a1beabcd82d59796042a8434ea85466c2e8062678735862cca9bf2e205`、
+`sha256:0da83a4a75679979ed039b86a6671f225521e5f274bc639d200d496d48b59ad8`。SPDX 2.3 含 2,592
+packages/8,096 relationships，SLSA subject 精确绑定 platform manifest、四项 build args 与三项 materials；OCI
+labels、非 root `65532:65532`、入口和运行版本交叉验证通过，本地 registry pull denied 符合未发布预期，Kind 中显式
+登记完整 index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 806 部署到候选 807；
+三 Pod runtime digest 同为 `sha256:b13bc6b9260fff1f2dd6840d45ee634ef7a7ca22c838d6fb892e27948e6eb40d`、
+Ready/restart 0，三处运行版本绑定上述完整提交。候选完整 HEAD readonly gate GREEN；三 Pod
+`count_proxy_outcome{outcome="failure"}` 与 `count_proxy_outcome{outcome="quiet_skip"}` 均为 0，合法 hit 分别为
+`96/26/164`，
+`watch_backend_integrity_failure{kind="invalid_result"}` 与 `watch_range_prefilter_dropped` 均为 0。候选终态
+revision/index/applied 为 `66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `483`、
+leader `2393892952`，Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功
+（`49.661–63.529ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零，关键
+错误日志为空。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `808/808`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项参数
+未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除 info-metrics
+合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `484`、leader `231094427`，Auth disabled/revision 281、Lease/Alarm
+为空；三轮九次 health 全部成功（`50.911–89.526ms`），三个 store Up、五类 Region check 连续三轮全零，关键错误
+日志为空。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward 会话关闭且目标端口无监听。宿主根盘 88%、
+可用约 240 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 count proxy fast-reject 从可由
+公网 metadata 触发的存在性标记收紧为仅 peer listener 可建立的 canonical capability，同时保持 follower 重建窗口的
+负载保护语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
