@@ -582,7 +582,11 @@ func (s *RPCServer) hedgedMaintenanceDefragment(
 }
 
 func authorizedPeerHashKVProxy(ctx context.Context) bool {
-	return isPeerRequest(ctx) && len(metadata.ValueFromIncomingContext(ctx, authorizedPeerHashKVProxyMetadataKey)) != 0
+	if !isPeerRequest(ctx) {
+		return false
+	}
+	values := metadata.ValueFromIncomingContext(ctx, authorizedPeerHashKVProxyMetadataKey)
+	return len(values) == 1 && values[0] == "1"
 }
 
 func (s *RPCServer) Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {

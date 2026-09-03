@@ -49,6 +49,19 @@ const maxPeerHashKVRequestBytes = 64 * 1024
 // PeerServerOptions context marker; public metadata with this name is ignored.
 const authorizedPeerHashKVProxyMetadataKey = "kubebrain-authorized-peer-hashkv-proxy"
 
+func withAuthorizedPeerHashKVProxy(ctx context.Context) context.Context {
+	outgoing, _ := metadata.FromOutgoingContext(ctx)
+	canonical := make(metadata.MD, len(outgoing)+1)
+	for key, values := range outgoing {
+		canonical[key] = append([]string(nil), values...)
+	}
+	// This marker is an internal capability with one canonical encoding. Replace
+	// any inherited value instead of appending to it, while preserving unrelated
+	// metadata needed by the peer transport.
+	canonical.Set(authorizedPeerHashKVProxyMetadataKey, "1")
+	return metadata.NewOutgoingContext(ctx, canonical)
+}
+
 // GetPeerHttpHandlers returns etcd-compatible peer HTTP handlers.
 func (s *RPCServer) GetPeerHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
@@ -243,7 +256,7 @@ func (s *RPCServer) hedgedPeerHashKV(ctx context.Context, req *etcdserverpb.Hash
 		results <- peerHashKVResult{response: response, err: err}
 	}()
 	go func() {
-		proxyCtx := metadata.AppendToOutgoingContext(ctx, authorizedPeerHashKVProxyMetadataKey, "1")
+		proxyCtx := withAuthorizedPeerHashKVProxy(ctx)
 		response, err := s.peers.HashKV(proxyCtx, req)
 		response, err = validateMaintenanceProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), maintenanceProxyRPCHashKV, response, err)
 		response, err = validateHashKVProxyPayload(s.metricCli, req, response, err)

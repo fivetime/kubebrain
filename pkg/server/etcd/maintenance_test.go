@@ -1734,28 +1734,36 @@ func TestPeerHashKVHandlerHedgesIsolatedStorageWithTrustedMarker(t *testing.T) {
 	want := &etcdserverpb.HashKVResponse{
 		Header: proxiedResponseHeader(server, 77), Hash: 202, HashRevision: 42, CompactRevision: 10,
 	}
-	calls := 0
+	type forwardedHashKV struct {
+		request  *etcdserverpb.HashKVRequest
+		metadata metadata.MD
+	}
+	forwarded := make(chan forwardedHashKV, 1)
 	server.peers = testPeerService{
 		isLeader: false, proxyEnabled: true,
 		epochFn: func() (uint64, bool) { return 7, false },
 		hashKVFn: func(ctx context.Context, request *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
-			calls++
-			require.Equal(t, int64(42), request.GetRevision())
-			outgoing, ok := metadata.FromOutgoingContext(ctx)
-			require.True(t, ok)
-			require.Equal(t, []string{"1"}, outgoing.Get(authorizedPeerHashKVProxyMetadataKey))
+			outgoing, _ := metadata.FromOutgoingContext(ctx)
+			forwarded <- forwardedHashKV{request: request, metadata: outgoing.Copy()}
 			return want, nil
 		},
 	}
 	body, err := json.Marshal(&etcdserverpb.HashKVRequest{Revision: 42})
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodGet, PeerHashKVPath, bytes.NewReader(body))
+	req = req.WithContext(metadata.NewOutgoingContext(req.Context(), metadata.Pairs(
+		authorizedPeerHashKVProxyMetadataKey, "malformed",
+		"kubebrain-test-peer-metadata", "preserved",
+	)))
 	rec := httptest.NewRecorder()
 
 	server.peerHashKVHandler(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, 1, calls)
+	gotForwarded := <-forwarded
+	require.Equal(t, int64(42), gotForwarded.request.GetRevision())
+	require.Equal(t, []string{"1"}, gotForwarded.metadata.Get(authorizedPeerHashKVProxyMetadataKey))
+	require.Equal(t, []string{"preserved"}, gotForwarded.metadata.Get("kubebrain-test-peer-metadata"))
 	var response etcdserverpb.HashKVResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
 	require.Equal(t, want.GetHash(), response.GetHash())
@@ -1812,23 +1820,41 @@ func TestPeerHashKVHandlerHedgesIsolatedLeaderWithLocalStorage(t *testing.T) {
 	}, time.Second, time.Millisecond)
 }
 
-func TestAuthorizedPeerHashKVProxyMarkerRequiresPeerListener(t *testing.T) {
+func TestAuthorizedPeerHashKVProxyMarkerRequiresCanonicalPeerSingleton(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	setupAuthKVUser(t, server)
 	server.peers = testPeerService{isLeader: true, epochFn: func() (uint64, bool) { return 7, true }}
-	marked := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
-		authorizedPeerHashKVProxyMetadataKey, "1",
-	))
-
-	response, err := server.HashKV(marked, &etcdserverpb.HashKVRequest{})
-	require.Nil(t, response)
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty, "public metadata must not bypass admin auth")
-
-	peerCtx := context.WithValue(marked, peerRequestContextKey{}, true)
-	response, err = server.HashKV(peerCtx, &etcdserverpb.HashKVRequest{})
-	require.NoError(t, err)
-	require.NotNil(t, response)
+	tests := []struct {
+		name       string
+		peer       bool
+		values     []string
+		authorized bool
+	}{
+		{name: "public canonical", values: []string{"1"}},
+		{name: "peer canonical", peer: true, values: []string{"1"}, authorized: true},
+		{name: "peer malformed", peer: true, values: []string{"malformed"}},
+		{name: "peer duplicated", peer: true, values: []string{"1", "1"}},
+		{name: "peer mixed", peer: true, values: []string{"1", "malformed"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			md := metadata.MD{}
+			md.Set(authorizedPeerHashKVProxyMetadataKey, tt.values...)
+			ctx := metadata.NewIncomingContext(context.Background(), md)
+			if tt.peer {
+				ctx = context.WithValue(ctx, peerRequestContextKey{}, true)
+			}
+			response, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{})
+			if tt.authorized {
+				require.NoError(t, err)
+				require.NotNil(t, response)
+				return
+			}
+			require.Nil(t, response)
+			require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+		})
+	}
 }
 
 func TestPeerHashKVHandlerMapsForwardedRevisionErrors(t *testing.T) {
