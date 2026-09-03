@@ -69772,6 +69772,58 @@ rollout drain 与 hedge cancellation warning。全程认证关闭且无凭据、
 本轮在不改变 etcd 公网 token 解析语义的前提下，把内部代理身份收紧为 authoritative、互斥且 canonical 的单一来源，
 消除了上下文继承导致的身份混淆与匿名身份泄漏。
 
+### A5708：规范化已授权 Watch 的续传标记
+
+继续审计 leader→follower 角色切换期间的 Watch 内部 metadata。对照
+`/root/etcd/server/etcdserver/api/v3rpc/watch.go`，upstream 在 create 时调用一次 `isWatchPermitted`，已建立 Watch 不会因
+后续权限 revision 改变而重新鉴权。KubeBrain 用 `kubebrain-authorized-watch-proxy=1` 把这项 create-time 决定传给后继
+leader，但本地 leader 创建路径原先用 `AppendToOutgoingContext` 追加标记。若 middleware 或内部调用方已留下同名
+outgoing metadata，角色切换后会发出 `[polluted,0,1]`；接收端按 A5703 的严格 singleton 合同拒绝它，真实 proxy 还会
+剥离整组 malformed marker，导致已建立 Watch 被错误地重新鉴权。
+
+新增真实 `RPCServer.Watch` RED：以带两项污染 marker 和一项无关 metadata 的 stream 在本地 leader 建立 generation，
+随后切换为 follower 并关闭本地 channel；修复前 successor proxy 精确收到 `[polluted,0,1]`，focused RED `0.150s`。
+提交 `9b7686c1` 新增 `withCanonicalAuthorizedWatchContinuation`，复制 outgoing metadata、以 singleton `"1"` 覆盖目标
+key，并保留无关字段；公网 incoming metadata、初始 follower 必须由 leader 鉴权的路径和 A5703 接收端 peer provenance
+约束均不变。
+
+修复后 focused/相邻角色切换与 provenance 组 `0.271s`、focused race `1.399s`、完整 `pkg/server/etcd`
+`141.355s`，该包 vet 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `254.309/456.961/305.589/585.888s` GREEN；提交后四分片
+`295.708/497.214/340.864/619.987s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5708-9b7686c16cb2` 内嵌版本 `0.0.0-9b7686c16cb2`、完整提交
+`9b7686c16cb2eef2251931e199a288240b5e4e0a`、build time `2026-09-03T16:15:57Z`、Go `1.26.5`、
+`linux/amd64`、TiKV。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:4fbbd3182908a1843ea3756640f9904a42560226050607b6bd305aa11ce9e88a`、
+`sha256:eefba074f6c7df6c284a7fc41c8c235b9eb89f1169826f3b59775331e18a18bd`、
+`sha256:04c125e1de26a9cc388f013e814371c2cb2dfed9dbe0f9f7f328a8c064a90a15`、
+`sha256:9d4e8725c7eb8ea5a2be21821cfd47b9da2d57d3b1534d51a9745bb79346bab6`；BuildKit provenance
+attachment config 为 `sha256:254b114102e0804e1a3a524c70348b4d39a62db5f06829d565b3537364c1fbbe`，SPDX/SLSA
+in-toto layer 为 `sha256:83592c501e38866116cd5551e2a3e46e1e9d5eeb60e0a4ed7214e23b01ff27a2`、
+`sha256:3d168d69b3143410d3477397dea83bfe11f1e29487d1fcbca5bcaa2a7f49f42c`。SPDX 2.3 含 2,592
+packages/8,096 relationships，SLSA subject 精确绑定 platform manifest、五项 build args 与三项 materials；OCI
+labels、非 root `65532:65532`、入口、kubectl `v1.36.2` 和运行版本交叉验证通过，registry pull denied 符合未发布
+预期，Kind 中显式登记完整 index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 810 部署到候选 811；
+三 Pod runtime digest 同为 `sha256:d2039a2c0103713646f3bb6863f5388642e2fce4c4be19b8354fd1bac12fd192`、
+Ready/restart 0，三处运行版本绑定上述完整提交且 22 项参数未漂移。候选完整 HEAD readonly gate GREEN；终态
+revision/index/applied 为 `66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `490`、
+leader `231094427`，Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功
+（`48.170–59.621ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零；三 Pod
+`watch_backend_integrity_failure` 与 `watch_range_prefilter_dropped` 均为 0，关键错误日志为空。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `812/812`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项参数
+未漂移。跨 Pod 重建保留的旧 port-forward 首次准确返回 empty reply；关闭并重建临时会话后，稳定镜像完整 HEAD
+readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标，排除 info-metrics 合同后其余门禁全部 GREEN。
+稳定终态 revision/index/applied、HashKV、compact revision 为 `66763/66763/66763/848652157/66760`，term `492`、
+leader `231094427`；三轮九次 health 全部成功（`49.889–65.124ms`），三个 store Up、五类 Region check 连续三轮
+全零，关键错误日志为空。全程认证关闭且无凭据、无持久诊断日志；最终全部 port-forward 关闭且目标端口无监听。
+宿主根盘 89%、可用约 217 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮让 Watch 内部
+capability 的发送与接收合同重新对称，保持 upstream 已建立 Watch 的 create-time 授权语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
