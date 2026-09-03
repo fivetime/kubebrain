@@ -69933,6 +69933,62 @@ TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮
 digest alias；稳定镜像和数据卷未删除，宿主仍约 204 GiB 可用。A5676 已记录的 Kind local-path 非 CSI 存储隔离
 风险仍存在。
 
+### A5711：清除 follower 转发鉴权的 authorization 别名
+
+继续审计 A5707 引入的 canonical follower→leader 鉴权身份。etcd 的 HTTP/gRPC gateway 兼容路径除 `token` 外还接受
+`authorization`（`rpctypes.TokenFieldNameSwagger`）；leader 的 `authCredentialFromContext` 也把它作为后备凭据。
+`withCanonicalForwardedAuthIdentity` 原先只删除 outgoing `token` 与转发证书用户名，因此 middleware 或内部调用方遗留的
+`authorization` 会在 authenticated、anonymous 或 verified-certificate 转发中继续存在：匿名请求可能意外携带陈旧身份，
+证书身份也可能被该 bearer 别名覆盖。公网 incoming metadata 的 etcd 兼容解析语义不变；修复点仅位于内部发送边界。
+
+扩展 `TestForwardedAuthIdentityCanonicalizesOutgoingMetadata`，在污染上下文中加入
+`authorization=polluted-swagger-token`，覆盖 authenticated、anonymous read/write、raw bearer write 与 verified
+certificate write；同时用正例固定 incoming `authorization: Bearer ...` 必须先规范化为 canonical outgoing `token`，而不是
+被丢弃。修复前五类污染场景均精确保留了别名，focused RED `0.033s`。提交 `30eeb9c0` 在复制 outgoing metadata 后同时
+删除 `rpctypes.TokenFieldNameSwagger`，再只安装 token、证书用户名或匿名三种互斥身份之一。
+
+修复后 focused/相邻普通测试 `0.075s`、focused race `1.123s`、最终收窄 focused `0.033s`、完整
+`pkg/server/etcd` `135.868s`，该包 vet、gofmt 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `254.619/444.828/304.996/571.961s` GREEN；提交后四分片
+`260.236/451.989/306.999/580.736s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5711-30eeb9c07b26` 内嵌版本 `0.0.0-30eeb9c07b26`、完整提交
+`30eeb9c07b26c66c8af697d2f3a97019e5a808fb`、build time `2026-09-03T19:12:16Z`、Go `1.26.5`、
+`linux/amd64`、TiKV、kubectl `v1.36.2`。OCI index/platform/config/attestation 分别为
+`sha256:8ac3f46403941587ea70b12273873cc74f404c96773bb9c840b5350e4141564f`、
+`sha256:96639d129bdd9a655e3eda60352640f76b480d8e6a31d7f13fba01441a7f2ff6`、
+`sha256:ef1d8d22b1ab2e2ac49b490c1e757980df0bf9ea0137ad7dd04352723406c5d6`、
+`sha256:8af980154602e502c617b96d7871ae9a63e5ecdac0fc293b2f50c06931bce482`；attestation config 为
+`sha256:0a95d0aa93910b80d9f4100a16f0f8c9c385ca9e9ba77cc32c4e8df94f944877`，SPDX/SLSA in-toto layer 为
+`sha256:860326bd3295ca0aa837793501ecf99228ac39809b6d5c41f119d12139ef3a34`、
+`sha256:e24e3dd79eeb780675619ca5cfd4a078ee16ae3114e06f6b583bfb0fba57f442`。SPDX 2.3 含 2,592
+packages/8,096 relationships；SLSA subject 精确绑定 platform manifest、五项 build args 与三项 materials。
+OCI labels、非 root `65532:65532`、入口和运行版本交叉验证通过，registry pull denied 符合未发布候选预期，Kind 中显式
+登记完整 index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 816 部署到
+候选 817；三 Pod runtime digest 同为
+`sha256:92d5957300c0a89ee81a687a71c7abdf47f524abf7d4cd25c90b9581599c19bb`、Ready/restart 0，三处运行
+版本绑定上述完整提交且参数未漂移。候选完整 HEAD readonly gate GREEN；终态 revision/index/applied 为
+`66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `502`、leader `231094427`，
+Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功（`47.595–96.637ms`）；三个
+TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零。候选日志 `370/651/305` 行；
+`kubebrain-1` 在 rollout 选主切换中出现一次 `Failed to update lease: cas failed`，随后两分钟未复现，完整门禁和后续健康
+检查均 GREEN，未发现数据或鉴权错误。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `818/818`；旧 port-forward 在跨 Pod 重建后精确返回
+empty reply，关闭并重建临时会话后继续验收。三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项
+参数未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除该
+info-metrics 代际合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `504`、leader `231094427`，Auth disabled/revision 281、
+Lease/Alarm 为空；三轮九次 health 全部成功（`49.099–68.130ms`），三个 store Up、五类 Region check 连续三轮
+全零，稳定日志 `587/608/306` 行且关键错误为空。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward
+会话关闭且六个目标端口无监听。确认没有 Pod/容器引用 A5711 后，精确删除 Docker 候选 tag 与 Kind 的 tag、index
+digest、config alias；稳定镜像和数据卷未删除。宿主根盘 90%、可用约 193 GiB。A5676 已记录的 Kind local-path
+非 CSI 存储隔离风险仍存在。本轮让所有 bearer 别名在内部代理边界收敛为单一 canonical credential，消除了跨请求
+上下文继承造成的身份混淆。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
