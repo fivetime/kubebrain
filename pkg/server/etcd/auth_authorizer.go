@@ -309,9 +309,22 @@ func withAuthWriteGuard(ctx context.Context, caller *authCaller) context.Context
 	return backend.WithInternalWriteGuard(ctx, authConfigKey, encodeAuthConfig(caller.snapshot.Config))
 }
 
+func withCanonicalForwardedAuthIdentity(ctx context.Context, token, certificateUsername string) context.Context {
+	outgoing, _ := metadata.FromOutgoingContext(ctx)
+	canonical := outgoing.Copy()
+	canonical.Delete(rpctypes.TokenFieldNameGRPC)
+	canonical.Delete(forwardedClientCertificateUsernameMetadataKey)
+	if token != "" {
+		canonical.Set(rpctypes.TokenFieldNameGRPC, token)
+	} else if certificateUsername != "" {
+		canonical.Set(forwardedClientCertificateUsernameMetadataKey, certificateUsername)
+	}
+	return metadata.NewOutgoingContext(ctx, canonical)
+}
+
 func (s *RPCServer) forwardAuthToken(ctx context.Context, caller *authCaller) (context.Context, error) {
 	if caller == nil {
-		return ctx, nil
+		return withCanonicalForwardedAuthIdentity(ctx, "", ""), nil
 	}
 	token := caller.forwardToken
 	if token == "" && caller.certificate {
@@ -322,9 +335,9 @@ func (s *RPCServer) forwardAuthToken(ctx context.Context, caller *authCaller) (c
 		}
 	}
 	if token != "" {
-		return metadata.AppendToOutgoingContext(ctx, rpctypes.TokenFieldNameGRPC, token), nil
+		return withCanonicalForwardedAuthIdentity(ctx, token, ""), nil
 	}
-	return ctx, nil
+	return withCanonicalForwardedAuthIdentity(ctx, "", ""), nil
 }
 
 // forwardWriteAuthContext preserves etcd's raft-write admission order: a
@@ -335,25 +348,25 @@ func (s *RPCServer) forwardAuthToken(ctx context.Context, caller *authCaller) (c
 // used by the existing authenticated proxy path when one is available.
 func (s *RPCServer) forwardWriteAuthContext(ctx context.Context) (context.Context, error) {
 	if credential, ok := authCredentialFromContext(ctx); ok {
-		return metadata.AppendToOutgoingContext(ctx, rpctypes.TokenFieldNameGRPC, credential), nil
+		return withCanonicalForwardedAuthIdentity(ctx, credential, ""), nil
 	}
 	// Without client-certificate auth there is nothing to translate for the
 	// internal hop. In particular, do not turn a follower proxy into a local
 	// auth-storage read: the leader will authoritatively apply auth to the raw
 	// request, and a follower may legitimately have lost its own PD path.
 	if !s.clientCertAuth {
-		return ctx, nil
+		return withCanonicalForwardedAuthIdentity(ctx, "", ""), nil
 	}
 	username, err := verifiedClientCertificateUsername(ctx)
 	if err != nil {
 		// Forward an unauthenticated request and let the leader's auth applier
 		// return the canonical error after leadership has been established.
-		return ctx, nil
+		return withCanonicalForwardedAuthIdentity(ctx, "", ""), nil
 	}
 	// Do not consult the follower's auth cache here. A cluster-wide AuthEnable
 	// may have committed after this ingress lost its PD/TiKV path; the leader
 	// owns the current enabled flag, auth revision, user existence and roles.
-	return metadata.AppendToOutgoingContext(ctx, forwardedClientCertificateUsernameMetadataKey, username), nil
+	return withCanonicalForwardedAuthIdentity(ctx, "", username), nil
 }
 
 func (c *authCaller) isRoot() bool {

@@ -229,6 +229,65 @@ func TestAuthCallerUsesFirstRepeatedMetadataToken(t *testing.T) {
 	requireAuthAuthorizerError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 }
 
+func TestForwardedAuthIdentityCanonicalizesOutgoingMetadata(t *testing.T) {
+	server := &RPCServer{}
+	polluted := func(ctx context.Context) context.Context {
+		return metadata.NewOutgoingContext(ctx, metadata.Pairs(
+			rpctypes.TokenFieldNameGRPC, "polluted-token",
+			forwardedClientCertificateUsernameMetadataKey, "polluted-user",
+			"kubebrain-test-auth-metadata", "preserved",
+		))
+	}
+	assertOutgoing := func(t *testing.T, ctx context.Context, token, username []string) {
+		t.Helper()
+		outgoing, ok := metadata.FromOutgoingContext(ctx)
+		require.True(t, ok)
+		require.Equal(t, token, outgoing.Get(rpctypes.TokenFieldNameGRPC))
+		require.Equal(t, username, outgoing.Get(forwardedClientCertificateUsernameMetadataKey))
+		require.Equal(t, []string{"preserved"}, outgoing.Get("kubebrain-test-auth-metadata"))
+	}
+
+	t.Run("authenticated caller", func(t *testing.T) {
+		forwarded, err := server.forwardAuthToken(
+			polluted(context.Background()), &authCaller{forwardToken: "authoritative-token"},
+		)
+		require.NoError(t, err)
+		assertOutgoing(t, forwarded, []string{"authoritative-token"}, nil)
+	})
+
+	t.Run("anonymous caller", func(t *testing.T) {
+		forwarded, err := server.forwardAuthToken(polluted(context.Background()), nil)
+		require.NoError(t, err)
+		assertOutgoing(t, forwarded, nil, nil)
+	})
+
+	t.Run("raw bearer write", func(t *testing.T) {
+		server.SetClientCertAuth(false)
+		incoming := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+			rpctypes.TokenFieldNameGRPC, "raw-client-token",
+		))
+		forwarded, err := server.forwardWriteAuthContext(polluted(incoming))
+		require.NoError(t, err)
+		assertOutgoing(t, forwarded, []string{"raw-client-token"}, nil)
+	})
+
+	t.Run("anonymous write", func(t *testing.T) {
+		server.SetClientCertAuth(false)
+		forwarded, err := server.forwardWriteAuthContext(polluted(context.Background()))
+		require.NoError(t, err)
+		assertOutgoing(t, forwarded, nil, nil)
+	})
+
+	t.Run("verified certificate write", func(t *testing.T) {
+		server.SetClientCertAuth(true)
+		forwarded, err := server.forwardWriteAuthContext(polluted(
+			verifiedTLSContext(context.Background(), "alice"),
+		))
+		require.NoError(t, err)
+		assertOutgoing(t, forwarded, nil, []string{"alice"})
+	})
+}
+
 func TestAuthCallerFailsClosedAndDisabledBypasses(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
