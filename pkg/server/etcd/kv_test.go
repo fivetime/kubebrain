@@ -75,6 +75,8 @@ type testPeerService struct {
 	downgradeFn      func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
 	authStatusFn     func(context.Context, *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error)
 	authenticateFn   func(context.Context, *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error)
+	userAddFn        func(context.Context, *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error)
+	changePasswordFn func(context.Context, *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error)
 	userGetFn        func(context.Context, *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error)
 	userListFn       func(context.Context, *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error)
 	roleGetFn        func(context.Context, *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error)
@@ -1462,13 +1464,20 @@ func (s testPeerService) AuthEnable(context.Context, *etcdserverpb.AuthEnableReq
 func (s testPeerService) AuthDisable(context.Context, *etcdserverpb.AuthDisableRequest) (*etcdserverpb.AuthDisableResponse, error) {
 	return nil, nil
 }
-func (s testPeerService) UserAdd(context.Context, *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {
+
+func (s testPeerService) UserAdd(ctx context.Context, req *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {
+	if s.userAddFn != nil {
+		return s.userAddFn(ctx, req)
+	}
 	return nil, nil
 }
 func (s testPeerService) UserDelete(context.Context, *etcdserverpb.AuthUserDeleteRequest) (*etcdserverpb.AuthUserDeleteResponse, error) {
 	return nil, nil
 }
-func (s testPeerService) UserChangePassword(context.Context, *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error) {
+func (s testPeerService) UserChangePassword(ctx context.Context, req *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error) {
+	if s.changePasswordFn != nil {
+		return s.changePasswordFn(ctx, req)
+	}
 	return nil, nil
 }
 func (s testPeerService) UserGrantRole(context.Context, *etcdserverpb.AuthUserGrantRoleRequest) (*etcdserverpb.AuthUserGrantRoleResponse, error) {

@@ -726,6 +726,50 @@ func TestFollowerAuthenticateProxiesAndClearsPassword(t *testing.T) {
 	require.Empty(t, request.GetPassword())
 }
 
+func TestFollowerPasswordMutationsClearPlaintext(t *testing.T) {
+	proxyErr := errors.New("injected auth proxy failure")
+
+	t.Run("user add", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+
+		request := &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "add-secret"}
+		server.peers = testPeerService{
+			isLeader: false, proxyEnabled: true,
+			userAddFn: func(_ context.Context, got *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {
+				require.Same(t, request, got)
+				require.Equal(t, "add-secret", got.GetPassword())
+				return nil, proxyErr
+			},
+		}
+
+		response, err := server.UserAdd(context.Background(), request)
+		require.Nil(t, response)
+		require.ErrorIs(t, err, proxyErr)
+		require.Empty(t, request.GetPassword())
+	})
+
+	t.Run("user change password", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+
+		request := &etcdserverpb.AuthUserChangePasswordRequest{Name: "alice", Password: "change-secret"}
+		server.peers = testPeerService{
+			isLeader: false, proxyEnabled: true,
+			changePasswordFn: func(_ context.Context, got *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error) {
+				require.Same(t, request, got)
+				require.Equal(t, "change-secret", got.GetPassword())
+				return nil, proxyErr
+			},
+		}
+
+		response, err := server.UserChangePassword(context.Background(), request)
+		require.Nil(t, response)
+		require.ErrorIs(t, err, proxyErr)
+		require.Empty(t, request.GetPassword())
+	})
+}
+
 func TestFollowerRejectsEmptyAuthenticateProxyToken(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

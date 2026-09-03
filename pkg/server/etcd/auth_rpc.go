@@ -239,6 +239,9 @@ func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserA
 		return nil, err
 	}
 	if proxy {
+		if request != nil && (request.Options == nil || !request.Options.NoPassword) {
+			defer func() { request.Password = "" }()
+		}
 		response, err := s.peers.UserAdd(proxyCtx, request)
 		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserAdd, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
@@ -377,6 +380,9 @@ func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverp
 		return nil, err
 	}
 	if proxy {
+		if request != nil && request.Password != "" {
+			defer func() { request.Password = "" }()
+		}
 		response, err := s.peers.UserChangePassword(proxyCtx, request)
 		response, err = validateAuthProxyResult(s.metricCli, s.expectedProxyResponseIdentity(), authProxyActionUserChangePassword, response, err)
 		s.observeForwardedRevision(response.GetHeader(), err)
