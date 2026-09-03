@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/peer"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 )
 
@@ -315,6 +316,13 @@ func withCanonicalForwardedAuthIdentity(ctx context.Context, token, certificateU
 	canonical.Delete(rpctypes.TokenFieldNameGRPC)
 	canonical.Delete(rpctypes.TokenFieldNameSwagger)
 	canonical.Delete(forwardedClientCertificateUsernameMetadataKey)
+	// Capabilities are granted by their dedicated forwarding paths after auth
+	// identity has been normalized. Never let an inherited outgoing context turn
+	// an initial Watch into an authorized continuation, bypass HashKV admin auth,
+	// or attribute quota admission to a different member on the trusted peer hop.
+	canonical.Delete(etcdproxy.AuthorizedWatchProxyMetadataKey)
+	canonical.Delete(authorizedPeerHashKVProxyMetadataKey)
+	canonical.Delete(quotaAdmissionMemberMetadataKey)
 	if token != "" {
 		canonical.Set(rpctypes.TokenFieldNameGRPC, token)
 	} else if certificateUsername != "" {

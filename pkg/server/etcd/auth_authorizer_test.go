@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
+	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 )
 
@@ -236,6 +237,9 @@ func TestForwardedAuthIdentityCanonicalizesOutgoingMetadata(t *testing.T) {
 			rpctypes.TokenFieldNameGRPC, "polluted-token",
 			rpctypes.TokenFieldNameSwagger, "polluted-swagger-token",
 			forwardedClientCertificateUsernameMetadataKey, "polluted-user",
+			etcdproxy.AuthorizedWatchProxyMetadataKey, "1",
+			authorizedPeerHashKVProxyMetadataKey, "1",
+			quotaAdmissionMemberMetadataKey, "4034353177",
 			"kubebrain-test-auth-metadata", "preserved",
 		))
 	}
@@ -246,6 +250,9 @@ func TestForwardedAuthIdentityCanonicalizesOutgoingMetadata(t *testing.T) {
 		require.Equal(t, token, outgoing.Get(rpctypes.TokenFieldNameGRPC))
 		require.Empty(t, outgoing.Get(rpctypes.TokenFieldNameSwagger))
 		require.Equal(t, username, outgoing.Get(forwardedClientCertificateUsernameMetadataKey))
+		require.Empty(t, outgoing.Get(etcdproxy.AuthorizedWatchProxyMetadataKey))
+		require.Empty(t, outgoing.Get(authorizedPeerHashKVProxyMetadataKey))
+		require.Empty(t, outgoing.Get(quotaAdmissionMemberMetadataKey))
 		require.Equal(t, []string{"preserved"}, outgoing.Get("kubebrain-test-auth-metadata"))
 	}
 
