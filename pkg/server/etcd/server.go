@@ -361,7 +361,13 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		// inherited internal capability.
 		pctx = withCanonicalOutgoingMetadata(pctx, countProxyMarkerKey, "1")
 		resp, err := peers.Range(pctx, req)
-		if err != nil || resp == nil {
+		// This optimization returns only the count, but it crosses the same trusted
+		// peer boundary as every other Range proxy. Do not let a missing/foreign
+		// header or malformed CountOnly payload become a public count merely because
+		// the local fallback interface intentionally collapses proxy errors to false.
+		resp, err = validateKVProxyResult(server.metricCli, server.expectedProxyResponseIdentity(), kvProxyRPCRange, resp, err)
+		resp, err = validateRangeProxyPayload(server.metricCli, req, resp, err)
+		if err != nil {
 			proxyQuietUntil.Store(time.Now().Add(countProxyFailureQuiet).UnixNano())
 			server.metricCli.EmitCounter("count.proxy.err", 1)
 			emitCountProxyOutcome(server.metricCli, countProxyOutcomeFailure)

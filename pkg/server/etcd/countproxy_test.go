@@ -95,6 +95,105 @@ func TestCountProxyFailureArmsObservableQuietWindow(t *testing.T) {
 	require.Equal(t, []interface{}{int64(0)}, countProxyOutcomeValues(rec, countProxyOutcomeHit))
 }
 
+func TestCountProxyValidatesPeerResponseBeforeUsingCount(t *testing.T) {
+	tests := []struct {
+		name       string
+		response   func(*RPCServer) (*etcdserverpb.RangeResponse, error)
+		wantCount  int64
+		wantHit    bool
+		wantKVFail bool
+	}{
+		{
+			name: "valid",
+			response: func(server *RPCServer) (*etcdserverpb.RangeResponse, error) {
+				return &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 1), Count: 42}, nil
+			},
+			wantCount: 42,
+			wantHit:   true,
+		},
+		{
+			name: "missing header",
+			response: func(*RPCServer) (*etcdserverpb.RangeResponse, error) {
+				return &etcdserverpb.RangeResponse{Count: 42}, nil
+			},
+			wantCount:  3,
+			wantKVFail: true,
+		},
+		{
+			name: "foreign cluster",
+			response: func(server *RPCServer) (*etcdserverpb.RangeResponse, error) {
+				header := proxiedResponseHeader(server, 1)
+				header.ClusterId++
+				return &etcdserverpb.RangeResponse{Header: header, Count: 42}, nil
+			},
+			wantCount:  3,
+			wantKVFail: true,
+		},
+		{
+			name: "negative count",
+			response: func(server *RPCServer) (*etcdserverpb.RangeResponse, error) {
+				return &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 1), Count: -1}, nil
+			},
+			wantCount:  3,
+			wantKVFail: true,
+		},
+		{
+			name: "count-only more",
+			response: func(server *RPCServer) (*etcdserverpb.RangeResponse, error) {
+				return &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 1), Count: 42, More: true}, nil
+			},
+			wantCount:  3,
+			wantKVFail: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rec := &recordingMetrics{}
+			kv := imemkv.NewKvStorage()
+			t.Cleanup(func() { require.NoError(t, kv.Close()) })
+			pfx := fmt.Sprintf("/kubebrain/cproxy_validation/%s/%d", test.name, time.Now().UnixNano())
+			be := backend.NewBackend(kv, backend.Config{
+				Prefix: pfx, Identity: "count-proxy-validation", EnableEtcdCompatibility: true,
+			}, rec)
+			be.SetCurrentRevision(uint64(time.Now().UnixNano()))
+			for i := 0; i < 3; i++ {
+				_, err := be.Create(context.Background(), &proto.CreateRequest{
+					Key: []byte(path.Join(pfx, fmt.Sprintf("k%d", i))), Value: []byte("v"),
+				})
+				require.NoError(t, err)
+			}
+
+			proxyCalls := 0
+			var server *RPCServer
+			server = New(be, rec, testPeerService{
+				proxyEnabled: true,
+				rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+					proxyCalls++
+					return test.response(server)
+				},
+			})
+			request := &etcdserverpb.RangeRequest{
+				Key: []byte(pfx + "/"), RangeEnd: []byte(pfx + "0"), CountOnly: true,
+			}
+			response, err := server.backend.Count(context.Background(), request)
+			require.NoError(t, err)
+			require.Equal(t, test.wantCount, response.Count)
+			require.Equal(t, 1, proxyCalls)
+			if test.wantHit {
+				require.Equal(t, []interface{}{int64(0), 1}, countProxyOutcomeValues(rec, countProxyOutcomeHit))
+				require.Equal(t, []interface{}{int64(0)}, countProxyOutcomeValues(rec, countProxyOutcomeFailure))
+			} else {
+				require.Equal(t, []interface{}{int64(0)}, countProxyOutcomeValues(rec, countProxyOutcomeHit))
+				require.Equal(t, []interface{}{int64(0), 1}, countProxyOutcomeValues(rec, countProxyOutcomeFailure))
+			}
+			if test.wantKVFail {
+				require.Equal(t, []interface{}{int64(0), 1}, recordedKVProxyIntegrityValues(rec, kvProxyRPCRange))
+			}
+		})
+	}
+}
+
 // TestCountProxyServesFollowerCounts pins #41: when the local count index
 // cannot serve (a follower — the index is leader-only), counts route to the
 // wired proxy (the leader's index over the wire) instead of a full range scan;
