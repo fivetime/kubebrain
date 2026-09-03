@@ -69824,6 +69824,58 @@ leader `231094427`；三轮九次 health 全部成功（`49.889–65.124ms`）�
 宿主根盘 89%、可用约 217 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮让 Watch 内部
 capability 的发送与接收合同重新对称，保持 upstream 已建立 Watch 的 create-time 授权语义。
 
+### A5709：清除 follower 鉴权代理入口的明文密码
+
+继续对照 `/root/etcd/server/etcdserver/v3_server.go` 的密码生命周期。upstream `UserAdd` 在生成 bcrypt hash 后、
+`UserChangePassword` 在收到非空新密码时，都会在进入 raft request 前把原 protobuf 的 `Password` 清空；
+`Authenticate` 还用 defer 保证所有返回路径清空。KubeBrain 的本地执行路径已有同等行为，follower `Authenticate`
+也显式清理，但 `UserAdd`/`UserChangePassword` 在 proxy 分支提前返回：leader 只清理 gRPC 反序列化后的另一份请求，
+入口 follower 的原 request 在成功或失败后仍保留明文。
+
+新增两场景 RED，peer 在转发时先确认仍能读取必要的 `add-secret`/`change-secret`，随后注入 proxy error；修复前
+两个入口 request 返回后仍分别保留原明文，focused RED `0.063s`。提交 `03d55396` 在 proxy call 周围安装与 upstream
+一致的 defer：普通 `UserAdd`（`Options=nil` 或 `NoPassword=false`）和带非空 `Password` 的
+`UserChangePassword` 无论成功、验证失败或 transport error 都清空入口字段；`NoPassword=true` 与 empty-password
+hashed API 的既有语义不变，leader 仍收到未提前破坏的请求内容。
+
+修复后 focused `0.076s`（fixture 收窄后复核 `0.065s`）、focused race `1.265s`、完整
+`pkg/server/etcd` `139.398s`，该包 vet 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `247.690/437.967/298.627/564.287s` GREEN；提交后四分片
+`247.181/441.836/297.881/567.993s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5709-03d5539679b3` 内嵌版本 `0.0.0-03d5539679b3`、完整提交
+`03d5539679b3018b6e358e2351e2a253794b5d13`、build time `2026-09-03T17:13:42Z`、Go `1.26.5`、
+`linux/amd64`、TiKV。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:f5649398f52a1159da8cc846d19fde6af47d4ffc83141898736fdf29d4ce1ec2`、
+`sha256:e8207f8bb4108ac276de35e2dbee0c25ef328f53cffab01293173902bea6047e`、
+`sha256:de114cdb7b7dc02c2d6b2d37b60e02573428449e03eeb09535c75c2813a59488`、
+`sha256:af5b26ce5a2593d7d2810089611691f81a2c1ea71ff6e37d6672d275f02121d9`；BuildKit provenance
+attachment config 为 `sha256:0e4d50e1ec311cfd639435a7aeddebb09d247ae829264a27d3bacd0c9b8c5542`，SPDX/SLSA
+in-toto layer 为 `sha256:97d4a00508aa4bcfcf9c82f11e9703062200e0e795da397850fea521290bc4f1`、
+`sha256:f7d4163be1abe5691744805306c29f4f58134d533aa02f7a735403e1c55a4513`。SPDX 2.3 含 2,592
+packages/8,096 relationships，SLSA subject 精确绑定 platform manifest、五项 build args 与三项 materials；OCI
+labels、非 root `65532:65532`、入口、kubectl `v1.36.2` 和运行版本交叉验证通过，registry pull denied 符合未发布
+预期，Kind 中显式登记完整 index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 812 部署到候选 813；
+三 Pod runtime digest 同为 `sha256:051f2242333dce45904df5e1397e6a5773a287f7df8a1d7d2b27bd0372a3fda8`、
+Ready/restart 0，三处运行版本绑定上述完整提交且 22 项参数未漂移。候选完整 HEAD readonly gate GREEN；终态
+revision/index/applied 为 `66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `494`、
+leader `231094427`，Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功
+（`49.456–73.372ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零，
+Watch 完整性/预过滤指标均为 0，关键错误日志为空。一个 follower 在 rollout 连接切换期间累计一次 count proxy
+failure，quiet-skip 为 0，完整门禁与后续健康检查均未发现数据错误。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `814/814`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项参数
+未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除 info-metrics
+合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `496`、leader `231094427`；三轮九次 health 全部成功
+（`49.975–71.459ms`），三个 store Up、五类 Region check 连续三轮全零，关键错误日志为空。全程认证关闭且无凭据、
+无持久诊断日志；最终全部 port-forward 关闭且目标端口无监听。宿主根盘 90%、可用约 205 GiB。A5676 已记录的
+Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 upstream 的密码驻留最小化合同扩展到 KubeBrain 独有的
+follower auth mutation proxy 边界。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
