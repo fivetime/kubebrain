@@ -859,7 +859,7 @@ func authorizedPeerWatchContinuation(ctx context.Context) bool {
 		return false
 	}
 	values := metadata.ValueFromIncomingContext(ctx, etcdproxy.AuthorizedWatchProxyMetadataKey)
-	return len(values) > 0 && values[0] == "1"
+	return len(values) == 1 && values[0] == "1"
 }
 
 func (w *watcher) hasWatchID(id int64) bool {

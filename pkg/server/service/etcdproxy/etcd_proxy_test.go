@@ -59,6 +59,34 @@ type proxyMetricsRecorder struct {
 	registrations []recordedProxyMetric
 }
 
+type watchMetadataRecorder struct {
+	etcdserverpb.UnimplementedWatchServer
+	metadata chan metadata.MD
+}
+
+func (s *watchMetadataRecorder) Watch(stream etcdserverpb.Watch_WatchServer) error {
+	md, _ := metadata.FromIncomingContext(stream.Context())
+	select {
+	case s.metadata <- md.Copy():
+	case <-stream.Context().Done():
+		return stream.Context().Err()
+	}
+	request, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	if request.GetCreateRequest() == nil {
+		return nil
+	}
+	if err := stream.Send(&etcdserverpb.WatchResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 31}, Created: true, WatchId: 7,
+	}); err != nil {
+		return err
+	}
+	<-stream.Context().Done()
+	return stream.Context().Err()
+}
+
 func (*proxyMetricsRecorder) GetGrpcServerOption() []grpc.ServerOption { return nil }
 func (*proxyMetricsRecorder) GetHttpHandlers() map[string]http.Handler { return nil }
 func (r *proxyMetricsRecorder) EmitCounter(name string, value any, tags ...metrics.T) error {
@@ -215,6 +243,51 @@ func TestOnlyCreatedWatchResponseAuthorizesContinuation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, watchResponseAuthorizesContinuation(tt.response))
 		})
+	}
+}
+
+func TestWatchRejectsMalformedAuthorizedContinuationMetadata(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	recorder := &watchMetadataRecorder{metadata: make(chan metadata.MD, 1)}
+	server := grpc.NewServer()
+	etcdserverpb.RegisterWatchServer(server, recorder)
+	registerServingHealth(server)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	address := listener.Addr().String()
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{address}, DialTimeout: time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	require.NoError(t, checkClientConn(client, nil, time.Second))
+	proxy := &etcdProxy{
+		election:  &testLeaderElection{leaderAddress: address},
+		client:    client,
+		curLeader: address,
+		closed:    make(chan struct{}),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs(
+		AuthorizedWatchProxyMetadataKey, "malformed",
+	))
+	results, err := proxy.Watch(ctx, []byte("/watch/metadata"), nil, 1)
+	require.NoError(t, err)
+	select {
+	case md := <-recorder.metadata:
+		require.Empty(t, md.Get(AuthorizedWatchProxyMetadataKey),
+			"a malformed internal authorization marker must not reach the leader")
+	case <-ctx.Done():
+		t.Fatal("leader did not receive the proxied watch")
+	}
+	select {
+	case result := <-results:
+		require.NoError(t, result.Err)
+		require.True(t, result.Created)
+	case <-ctx.Done():
+		t.Fatal("proxy did not return the leader's created response")
 	}
 }
 

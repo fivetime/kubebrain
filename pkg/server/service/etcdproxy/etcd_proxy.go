@@ -1353,7 +1353,17 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		outgoingMetadata, _ := metadata.FromOutgoingContext(ctx)
-		authorizedContinuation := len(outgoingMetadata.Get(AuthorizedWatchProxyMetadataKey)) > 0
+		authorizedValues := outgoingMetadata.Get(AuthorizedWatchProxyMetadataKey)
+		authorizedContinuation := len(authorizedValues) == 1 && authorizedValues[0] == "1"
+		if len(authorizedValues) != 0 && !authorizedContinuation {
+			// The marker is an internal capability, not an arbitrary truthy header.
+			// Strip malformed or duplicated values before the first generation so
+			// the leader performs normal create-time authorization. A successful
+			// Created response installs the canonical singleton marker below.
+			sanitized := outgoingMetadata.Copy()
+			sanitized.Delete(AuthorizedWatchProxyMetadataKey)
+			ctx = metadata.NewOutgoingContext(ctx, sanitized)
+		}
 		watchRevision := revision
 		for {
 			// The ingress replica may itself win the next term. A proxy generation

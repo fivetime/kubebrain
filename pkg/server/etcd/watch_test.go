@@ -6391,6 +6391,32 @@ func TestAuthorizedPeerWatchContinuationSurvivesPermissionRevisionChange(t *test
 	require.NoError(t, publicStream.CloseSend())
 }
 
+func TestAuthorizedPeerWatchContinuationRequiresCanonicalSingleton(t *testing.T) {
+	tests := []struct {
+		name   string
+		peer   bool
+		values []string
+		want   bool
+	}{
+		{name: "peer canonical", peer: true, values: []string{"1"}, want: true},
+		{name: "public canonical", values: []string{"1"}},
+		{name: "peer malformed", peer: true, values: []string{"malformed"}},
+		{name: "peer duplicated", peer: true, values: []string{"1", "1"}},
+		{name: "peer mixed", peer: true, values: []string{"1", "malformed"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			md := metadata.MD{}
+			md.Set(etcdproxy.AuthorizedWatchProxyMetadataKey, tt.values...)
+			ctx := metadata.NewIncomingContext(context.Background(), md)
+			if tt.peer {
+				ctx = context.WithValue(ctx, peerRequestContextKey{}, true)
+			}
+			require.Equal(t, tt.want, authorizedPeerWatchContinuation(ctx))
+		})
+	}
+}
+
 // TestQuietWatchProgressAdvancesWhileOtherKeysWritten is the headline repro of
 // the confirmed frozen-progress bug, driven end-to-end through the real
 // RPCServer.Watch pipeline under -race. A ProgressNotify watch on a quiet key
