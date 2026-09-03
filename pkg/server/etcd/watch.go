@@ -765,9 +765,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				// This logical Watch was authorized at the public ingress. Mark every
 				// internal generation so a successor reached through the peer listener
 				// preserves that create-time decision across auth revision changes.
-				watchCtx = metadata.AppendToOutgoingContext(
-					watchCtx, etcdproxy.AuthorizedWatchProxyMetadataKey, "1",
-				)
+				watchCtx = withCanonicalAuthorizedWatchContinuation(watchCtx)
 			}
 			// A local watch generation is leader-only. Use the same lease-freshness
 			// boundary as linearizable reads; client-go's leader flag can remain true
@@ -860,6 +858,13 @@ func authorizedPeerWatchContinuation(ctx context.Context) bool {
 	}
 	values := metadata.ValueFromIncomingContext(ctx, etcdproxy.AuthorizedWatchProxyMetadataKey)
 	return len(values) == 1 && values[0] == "1"
+}
+
+func withCanonicalAuthorizedWatchContinuation(ctx context.Context) context.Context {
+	outgoing, _ := metadata.FromOutgoingContext(ctx)
+	canonical := outgoing.Copy()
+	canonical.Set(etcdproxy.AuthorizedWatchProxyMetadataKey, "1")
+	return metadata.NewOutgoingContext(ctx, canonical)
 }
 
 func (w *watcher) hasWatchID(id int64) bool {

@@ -2179,6 +2179,59 @@ func TestLeaderWatchResumesThroughProxyAfterLocalGenerationCloses(t *testing.T) 
 	<-done
 }
 
+func TestLocallyAuthorizedWatchCanonicalizesContinuationMarkerBeforeRoleChange(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	localCh := make(chan etcdproxy.WatchResult)
+	localCalled := make(chan uint64, 1)
+	server.backend = &roleSwitchWatchBackend{BackendShim: server.backend, local: localCh, called: localCalled}
+	var leading atomic.Bool
+	leading.Store(true)
+	proxyMetadata := make(chan metadata.MD, 1)
+	proxyResults := make(chan etcdproxy.WatchResult)
+	server.peers = testPeerService{
+		isLeaderFn:   leading.Load,
+		epochFn:      func() (uint64, bool) { return 7, leading.Load() },
+		proxyEnabled: true,
+		watchFn: func(ctx context.Context, _, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			md, _ := metadata.FromOutgoingContext(ctx)
+			proxyMetadata <- md
+			return proxyResults, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs(
+		etcdproxy.AuthorizedWatchProxyMetadataKey, "polluted",
+		etcdproxy.AuthorizedWatchProxyMetadataKey, "0",
+		"unrelated-metadata", "preserved",
+	))
+	stream := &controllableWatchServer{ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 1)}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/canonical-marker"), StartRevision: 1},
+	}}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	require.Equal(t, uint64(1), <-localCalled)
+
+	leading.Store(false)
+	close(localCh)
+	var md metadata.MD
+	select {
+	case md = <-proxyMetadata:
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "watch did not resume through the follower proxy")
+	}
+	require.Equal(t, []string{"1"}, md.Get(etcdproxy.AuthorizedWatchProxyMetadataKey),
+		"an established locally authorized watch must forward one canonical continuation marker")
+	require.Equal(t, []string{"preserved"}, md.Get("unrelated-metadata"))
+
+	cancel()
+	close(proxyResults)
+	requireWatchCanceled(t, <-done)
+}
+
 func TestFreshLeaderReopensLocalWatchWithoutPeerProxy(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
