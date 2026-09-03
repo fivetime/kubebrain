@@ -69452,6 +69452,58 @@ health 全部成功（`51.910–75.279ms`），三个 store Up、五类 Region c
 可用约 297 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮将本地 TiKV 文本兼容限制在
 本地 generation，关闭普通代理错误复制 cache 文本后伪造或触发 compaction 的跨边界漏洞。
 
+### A5702：以 TiKV 持久状态约束代理 Watch compaction 水位
+
+继续审计 A5697–A5701 的 compaction 结果合同：etcd 的初始 compacted Watch 合法地允许 response header revision 为 0，
+因此现有 `validateForwardedWatchResultShape` 只能在 response revision 非零时约束 `CompactRevision` 上界。同身份代理若返回
+标准 `ErrGRPCCompacted`、零 response revision 和高于真实 TiKV compact watermark 的水位，创建前会把该值原样公开；
+创建后虽由 `CancelGeneration` 再读 TiKV 并替换水位，畸形代理结果本身仍被当作可信。共享 TiKV 是三副本的持久 MVCC
+事实来源，代理报告的历史水位可以落后于随后发生的新 compaction，但绝不能领先于 fresh durable watermark。
+
+新增 RED：创建前表加入 header revision 0、代理 compact 50、TiKV durable compact 49，修复前实际公开伪水位 50；
+post-create 行为测试固定同一输入必须以 `invalid_result` fail closed，修复前却静默公开本地水位 49。另加入 fresh durable
+读取阻塞负例，要求在既有 250ms 探测预算内拒绝而不能相信未证明的代理水位。focused RED `0.168s` 精确出现前两项差异。
+提交 `646a1187` 新增 `validateForwardedWatchCompactionWatermark`：仅对标准代理 compaction 响应执行有界
+`GetCompactRevisionFresh`，读取失败或代理水位高于持久水位时均计入 `invalid_result` 并以零公开水位 fail closed；代理水位
+等于或低于当前持久值继续保持 upstream 兼容。
+
+修复后 focused（含读取不可用负例）`0.438s`、全部 Watch 测试 `13.705s`、focused race `1.865s`、完整
+`pkg/server/etcd` `147.442s`，该包 vet 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `250.121/439.101/299.992/565.035s` GREEN；紧邻提交 verifier 再次 GREEN；
+提交后四分片 `248.483/439.598/295.787/567.378s` 全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5702-646a1187b719` 内嵌版本 `0.0.0-646a1187b719`、完整提交
+`646a1187b7199d225234bdab8cc7e7820519908c`、build time `2026-09-03T10:47:19Z`、Go `1.26.5`、
+`linux/amd64`、TiKV。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:665512cfba851bb5b73fafc1fb6ee3ab6179db41efa1c1170d8eadff7b4aa0f4`、
+`sha256:e19c1bfadf747d36ee05ea0362c18174ee793ba99151be157caa924a6e904b52`、
+`sha256:6fee90fc53d85522e1224da6896f53f88011da9f12d8c162e32e8a12998c92cb`、
+`sha256:b78678ac7155008b71d0d979dafceb8930097f18885f1cc941577da364e813f8`；BuildKit provenance
+attachment 为 `sha256:1883a16d4798271e1204ffa1a192eeeebe4d30ac685575ad6cd722ae5b01a601`，SPDX/SLSA
+in-toto layer 为 `sha256:32c85de5ac681dd449326cafeb7db5169e6b071d89133cde35137aa3d7f88194`、
+`sha256:6a70b5a4b27482333b994990878faf68a7b4bb10e1205073fc4b6278752a938d`。本地 registry
+`imagetools inspect` 按预期 pull denied；Docker 与 containerd descriptor 交叉验证，Kind 加载后显式注册完整 index
+digest 别名。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 798 部署到候选 799；
+三 Pod runtime digest 同为 `sha256:119c16d14ad57202b2f043da7a4c20faf8918131def566b27669981619a541ee`、
+Ready/restart 0。现场 leader 为 `23381`，followers 为 `23379/23380`；固定合法 compaction differential 分别
+`0.40/0.35s` GREEN，三 Pod `watch_backend_integrity_failure{kind="invalid_result"}` 均为 0，候选完整 HEAD
+readonly gate GREEN。候选终态 revision/index/applied 为 `66763/66763/66763`，HashKV `848652157`、
+compact revision `66760`、term `467`、leader `231094427`，Lease/Alarm 为空。三轮九次 endpoint health 全部成功
+（`58.163–80.615ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零，
+关键错误日志为空。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `800/800`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。稳定镜像
+完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除 info-metrics 合同后其余门禁
+全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `469`、leader `2393892952`，Lease/Alarm 为空；三轮九次
+health 全部成功（`55.471–77.405ms`），三个 store Up、五类 Region check 连续三轮全零，关键错误日志为空。
+全程认证关闭且无凭据、无持久诊断日志；最终七个 port-forward 会话全部关闭且目标端口无监听。宿主根盘 86%、
+可用约 286 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮以共享 TiKV 的 fresh durable
+compact watermark 封闭了零 response revision 无法约束代理水位上界的完整性缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
