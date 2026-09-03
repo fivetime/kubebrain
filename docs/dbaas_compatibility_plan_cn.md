@@ -69346,6 +69346,58 @@ health 全部成功（`48.035–70.146ms`），三个 store Up、五类 Region c
 目标端口无监听。宿主根盘 84%、可用约 317 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。
 本轮关闭了所有 OutOfRange 被错误升级为 compaction、进而接受伪水位的漏洞，同时证明合法 compaction 与稳定数据状态不变。
 
+### A5700：阻断非 compaction gRPC 状态借文本回退伪造 Watch 压缩水位
+
+继续审计 A5699 收窄后的 `isWatchCompactedError`：标准 `rpctypes.ErrCompacted` 判定之后仍保留 TiKV cache
+后端的文本兼容回退，因此携带相同文本的 `PermissionDenied`，或包装后携带 cache-too-old 文本的 `Unavailable`，仍会被
+错误提升为 compaction。同身份代理可把这类非 compaction gRPC error 与非零 `CompactRevision` 组合，绕过结果形状拒绝并
+向客户端发布伪造水位。etcd 的客户端错误和精确 gRPC 错误必须继续被接受，而已具有 gRPC status 的其他错误不能进入本地
+后端字符串回退。
+
+新增 RED：代理 malformed-result 表加入携带 compaction 文本、`CompactRevision=50` 的 `PermissionDenied`；分类器表加入
+client/grpc 标准 compaction 及 wrapped 正例，并固定 `PermissionDenied` 文本仿冒和 wrapped `Unavailable` cache 文本仿冒
+为反例。focused RED `0.135s` 精确显示伪水位 50 被暴露及两个仿冒错误均误判为真。提交 `22801bb1` 先以
+`errors.Is(err, rpctypes.ErrCompacted/ErrGRPCCompacted)` 接受标准错误，再用 `status.FromError` 拒绝其他 gRPC status，
+只有纯本地后端错误可进入既有 TiKV cache 文本兼容。
+
+修复后首次全部 Watch 测试在 `600.194s` 超时；该结果未被忽略。三分钟 JSON 诊断唯一未结束用例为
+`TestWatchReopenMetricsRecordCompactedTerminal`，定位到旧测试用 `OutOfRange` 加文本模拟 compaction，与新精确合同不符；
+将 fixture 改为官方 `rpctypes.ErrGRPCCompacted` 后，单测/focused `0.155/0.150s`、全部 Watch 测试 `13.320s`、
+focused race `1.419s`、完整 `pkg/server/etcd` `143.996s`，该包 vet 与 `git diff --check` 均 GREEN。提交前 verifier
+精确分配 703 项为 `170/193/180/160`，四分片 `274.869/467.653/313.470/595.830s` GREEN；紧邻提交 verifier
+再次 GREEN；提交后四分片 `248.802/448.536/299.730/574.375s` 全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5700-22801bb17fdb` 内嵌版本 `0.0.0-22801bb17fdb`、完整提交
+`22801bb17fdb551d1a4d08290bb4bfac707be28d`、build time `2026-09-03T03:57:45Z`。BuildKit 90/90
+completed；OCI index/platform/config/attestation 分别为
+`sha256:5c2ce29c32ee5e589c254000c41b31563eafe89e5083e72132eabc1fd7fbbccd`、
+`sha256:06da400a25dbee3eb7b2110c33d694b6a9eea2db6b06c7a12f2cf37d7d0e13cb`、
+`sha256:7d35746e6b2dea75d8a6953ab77f5066bf5a0d861a779639be4f524efb62e502`、
+`sha256:5432416b8bdd24df8a022c4dc6d9cb1a66fe77efdf1769233ed44e654abcb858`；BuildKit provenance
+attachment 为 `sha256:95dae77a4f3462dc097d375b724b239657dd384922f8f4849874ffdb80dc6ed5`，SPDX/SLSA
+layer 为 `sha256:9befeaa46d824ab8b0c0c4035c49c54505798113e25da9779ccd4e1ebeadd047`、
+`sha256:97c6f9143b934eaad9e4a1d25f615d55b0f3265c69026f554f1875f74198d9e3`。本地 registry
+`imagetools inspect` 按预期 pull denied；Kind 加载并显式注册完整 index digest 别名，候选 runtime digest 为
+`sha256:263202b28fb44b40102f12e55f2517a966e0023d039745c38aefd641018c068d`。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 794 部署到候选 795，
+三 Pod Ready/restart 0。现场 leader 为 `23380`，followers 为 `23379/23381`；固定合法 compaction differential
+分别 `0.576/0.557s` GREEN，三 Pod `watch_backend_integrity_failure{kind="invalid_result"}` 均为 0，候选完整
+HEAD readonly gate GREEN。候选终态 revision/index/applied 为 `66739/66739/66739`，HashKV
+`1338640958`、compact revision `66735`、term `460`、leader `2393892952`；Lease/Alarm 为空。三轮九次
+endpoint health 全部成功（`49.548–60.614ms`），三个 TiKV store Up，pending/down/miss/extra/learner 五类
+Region check 连续三轮全零，关键错误日志为空。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `796/796`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0。稳定镜像
+完整 HEAD readonly gate 按预期只缺少新版指标 `watch_range_prefilter_dropped`；排除 info-metrics 合同后其余门禁
+全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66739/66739/66739/1338640958/66735`，term `461`、leader `231094427`，Lease/Alarm 为空；三轮九次
+health 全部成功（`53.736–87.368ms`），三个 store Up、五类 Region check 连续三轮全零，关键错误日志为空。
+全程认证关闭且无凭据、无落盘诊断日志；最终七个 port-forward 会话全部关闭且目标端口无监听。宿主根盘 84%、
+可用约 308 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮关闭了非 compaction gRPC
+状态借字符串兼容路径伪造压缩水位的漏洞，同时证明标准 compaction、TiKV 后端兼容路径与稳定数据状态不变。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
