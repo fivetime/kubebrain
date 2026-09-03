@@ -69610,6 +69610,59 @@ leader `231094427`，Auth disabled/revision 281、Lease/Alarm 为空。三轮九
 可用约 263 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 peer HashKV capability 从“存在即
 授权”收紧为双端一致的 canonical singleton，并防止继承 metadata 在内部 hedge 链上扩张授权语义。
 
+### A5705：规范化 quota admission member metadata
+
+继续审计 follower→leader KV 代理携带的 quota admission member。该 metadata 不绕过鉴权，但用于把 etcd NOSPACE
+Alarm 归属到实际接收写请求的 ingress member。原发送端用 Append 追加当前 member ID；如果调用上下文已带 malformed
+值，leader 会收到 `[malformed,<member-id>]` 并回退到 leader 本地 member。接收端又直接用 `ParseUint` 接受带前导零的
+非 canonical 十进制，可能把 NOSPACE Alarm 归属到错误 member，破坏多副本运维定位的一致性。
+
+新增 RED 同时覆盖发送和接收边界：发送端继承 malformed quota metadata 时，修复前实际得到
+`[malformed,3775586180]` 而非 singleton；接收端表证明带前导零的 remote member ID 被错误接受，focused RED
+`0.146s`。提交 `50298cac` 新增通用 `withCanonicalOutgoingMetadata`：复制全部 outgoing metadata、保留无关字段，
+但对目标 key 执行 singleton 覆盖；peer HashKV 的 A5704 helper 也复用该原语。quota 接收端在 `ParseUint` 后要求
+`FormatUint` 精确 round trip，public、malformed、duplicated、mixed 与非 canonical 十进制均回退本地 admission
+member，只有精确 canonical singleton 能保留 ingress member。
+
+修复后 focused（含 A5704 回归）`0.217s`、quota/NOSPACE/peer HashKV 相关组 `0.598s`、focused race
+`1.975s`、完整 `pkg/server/etcd` `137.412s`，该包 vet 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配
+703 项为 `170/193/180/160`，四分片 `248.171/452.066/309.605/574.452s` GREEN；提交后四分片
+`277.229/467.965/320.069/593.697s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5705-50298cace670` 内嵌版本 `0.0.0-50298cace670`、完整提交
+`50298cace6708d5ffffd73cf1246d8f6e5bd5e16`、build time `2026-09-03T13:22:07Z`、Go `1.26.5`、
+`linux/amd64`、TiKV。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:bb1f28626d2c55a21d581c73e3226e8657b5d04302ae4f2a9ca277b5211e8985`、
+`sha256:3163050d25d3cda8bfb240e0fc23eb9e6daf8971bccdfb1c84c81fb47afeab2e`、
+`sha256:043ac735c966306db253d7b6646ab307845b765d45157e6e32c3026933490cfa`、
+`sha256:354b1d55e9cfbcd9daf0e5dbeea09f1bd32a283a668e2b2d0afd0e9197ef2e92`；BuildKit provenance
+attachment config 为 `sha256:1f80d74bf393b2c155d797d33773d8f3177d862f21808f3f0f61a2f0117533fe`，SPDX/SLSA
+in-toto layer 为 `sha256:040ea3c298a6b2f260cff9a74ed5d96c733f9149a370fbf210fe7a21114c9a4a`、
+`sha256:b0a3b69d55c03c3b0601bddc00628d7198578ac5a468c68c255519262bb01579`。SPDX 含 2,592 packages/
+8,096 relationships，SLSA subject 精确绑定 platform manifest、四项 build args 与三项 materials；OCI labels、
+非 root `65532:65532`、入口和运行版本交叉验证通过，本地 registry pull denied 符合未发布预期，Kind 中显式登记完整
+index digest 别名。
+
+以 UID/resourceVersion/container name/current image/full args 五类原子 test 从稳定 generation 804 部署到候选 805；
+三 Pod runtime digest 同为 `sha256:b0af52469427cac8df12e11fcd52b6ad08203bc742dc064dc918f6911c8c69b4`、
+Ready/restart 0，三处运行版本绑定上述完整提交。候选完整 HEAD readonly gate GREEN；
+`watch_backend_integrity_failure{kind="invalid_result"}` 与 `watch_range_prefilter_dropped` 均为 0。候选终态
+revision/index/applied 为 `66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `478`、
+leader `2393892952`，Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功
+（`49.572–56.800ms`）；三个 TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零。
+日志仅有 HashKV hedge 输家被取消产生的预期 `context canceled` warning，无 panic/fatal 或完整性错误。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `806/806`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项参数
+未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除 info-metrics
+合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `480`、leader `231094427`，Auth disabled/revision 281、Lease/Alarm
+为空；三轮九次 health 全部成功（`50.812–69.202ms`），三个 store Up、五类 Region check 连续三轮全零。日志仅有
+同类 hedge cancellation warning。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward 会话关闭且目标端口
+无监听。宿主根盘 87%、可用约 251 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 quota
+admission member 收紧为 canonical singleton，并确保 follower ingress 的 NOSPACE Alarm 归属不会被继承或非规范
+metadata 污染。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
