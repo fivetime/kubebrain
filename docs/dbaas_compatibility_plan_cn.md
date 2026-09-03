@@ -70158,6 +70158,61 @@ port-forward 会话关闭且六个目标端口无监听。确认没有 Pod/容�
 Kind local-path 非 CSI 存储隔离风险仍存在。本轮恢复了 auth enabled 环境中 CountOnly follower 的 leader-index
 优化，同时保持 leader 权威鉴权、内部 capability 收敛与失败时正确本地回退。
 
+### A5715：校验内部 Count proxy 的 leader 响应
+
+A5714 恢复了 Count proxy 的客户端身份，继续沿同一 peer 边界审计发现它仍是唯一一个在 `peers.Range` 返回后不调用
+`validateKVProxyResult` 和 `validateRangeProxyPayload` 的 Range 路径。backend 的 `(count, true)` 会直接成为公开
+RangeResponse，因此错误或被污染的受信 peer 响应可绕过其余 Range proxy 已有的 cluster/member/header/revision 与
+CountOnly payload 合同：缺 header、foreign cluster、负 count、`more=true` 均会被直接采用。这不仅缺少观测，还会向
+客户端返回不可能的 count。Count proxy 本来就是可选优化，transport/integrity 失败应进入 quiet window 并使用本地精确
+scan，而不能让未经验证的 leader 值胜过本地结果。
+
+新增 `TestCountProxyValidatesPeerResponseBeforeUsingCount`，每个子例构造 3 个本地 key：合法 leader response 必须返回
+42 并记录 hit；缺 header、foreign cluster、负 count、CountOnly `more=true` 必须记录 KV integrity failure 和 Count
+failure，最终返回本地 3。旧实现四个坏响应分别返回 `42/42/-1/42` 而 RED（`0.102s`）。提交 `2986697d` 在 Count
+capability hop 后依次应用通用响应身份校验和完整 Range payload 校验，任何异常都复用既有 failure metric、quiet
+window 与本地 fallback。修复后的第一次运行已通过所有业务断言，只因新测试漏算 `kv.proxy.integrity_failure` 初始化零
+样本而失败（`0.096s`）；按项目固定指标合同改为 `[0,1]` 后 focused `0.110s`、Count/Range validator 集合
+`0.275s`、Count race `1.462s`、完整 `pkg/server/etcd` `136.828s`，该包 vet、gofmt、`git diff --check` 均
+GREEN。提交前 verifier 精确分配 703 项为 `170/193/180/160`，四分片
+`257.042/455.330/307.991/582.634s` GREEN；提交后四分片 `267.937/457.971/319.276/580.273s`
+再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5715-2986697d99c8` 内嵌版本 `0.0.0-2986697d99c8`、完整提交
+`2986697d99c8fdd33f9137ad16b85a3fcb35f7fa`、build time `2026-09-03T23:27:21Z`、Go `1.26.5`、
+`linux/amd64`、TiKV、kubectl `v1.36.2`。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:194fe2cc1dc81fc0d4ad5e79712f75d330b783f87875b3a4093f3eb403ae0d88`、
+`sha256:1f408dc9ef8192eabcebf5b3594b662fb86d2e3040e366bd181e2edeb6b68fdc`、
+`sha256:a9c9cedb1316bb4c9d7b6e80dee4964361d8ae44926c5ad210a8455016a466a0`、
+`sha256:463a6f786d76bf04b7c0ec136c7ec9fa4b9d40f50712127f72c50f6d9dc578ca`；attestation config 为
+`sha256:a31a9467e07b7484616e556235986ef52512a71ca771623341ee03907912d35c`，SPDX/SLSA in-toto layer 为
+`sha256:115c19d42a47fa1b7db12c7c8ddf74926818ccd86b06a7e615973036d9bda345`、
+`sha256:c3611b2e26f6113a4b744a664619f9497670469388860f9df8c206fa4de08e05`。SPDX 2.3 含 2,592
+packages/8,096 relationships；SLSA subject 精确绑定 platform manifest、四项显式 build args 与三项固定
+materials。OCI labels、非 root `65532:65532`、入口和运行版本交叉验证通过，Kind 中显式登记 tag、index digest
+与 config alias。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 824 部署到候选
+825；三 Pod runtime digest 同为
+`sha256:8b6056b0ba11209ecfb5680037c763802a3376ed415d640d839887b05c520d7a`、Ready/restart 0，三处运行
+版本绑定上述完整提交且参数未漂移。候选完整 HEAD readonly gate GREEN；终态 revision/index/applied 为
+`66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `517`、leader `231094427`，
+Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功（`50.507–68.654ms`）；三个
+TiKV store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零。候选日志 `360/373/275` 行，
+关键错误及最近 60 秒关键错误均为 0。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `826/826`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项
+参数未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除该
+info-metrics 代际合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `519`、leader `231094427`，Auth disabled/revision 281、
+Lease/Alarm 为空；三轮九次 health 全部成功（`49.660–99.941ms`），三个 store Up、五类 Region check 连续三轮
+全零，稳定日志 `382/392/275` 行且关键错误为空。KubeBrain/TiKV 3+3 Ready/restart 0；PD 3 Ready、各沿用一次
+历史 restart。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward 会话关闭且六个目标端口无监听。
+确认没有 Pod/容器引用 A5715 后，精确删除 Docker 候选 tag 与 Kind 的 tag、index digest、config alias；稳定镜像和
+数据卷未删除。宿主根盘 92%、可用约 155 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮
+让 CountOnly leader-index 优化与所有其他 Range proxy 共享同一响应信任边界，坏 peer 响应不再成为公开 count。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
