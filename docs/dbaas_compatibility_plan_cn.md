@@ -70662,6 +70662,72 @@ KubeBrain/TiKV 3+3 Ready/restart 0；PD 3 Ready、各沿用一次历史 restart�
 A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 unary ranged KeysOnly 常规路径从“读取后再清 payload”推进为
 “scanner 交付前即清 payload”，同时保持 metadata、排序、legacy 与损坏数据的可观察语义。
 
+### A5724：RangeStream KeysOnly 在 chunk buffer 前丢弃用户 payload
+
+上游 `/root/etcd/server/etcdserver/v3_server.go::rangeStream` 对每个流式 chunk 重新进入
+`txn.Range`，而 `/root/etcd/server/etcdserver/txn/range.go` 对 `KeysOnly && SortTarget != VALUE` 设置
+`FastKeysOnly`，所以 RangeStream 同样不需要从 MVCC backend 取回用户 value。KubeBrain A5723 只覆盖 unary ranged
+KeysOnly；native RangeStream 的 backend 接口不携带请求选项，`backend.RangeStream` 仍把 scanner 的 `keysOnly` 固定为
+false，完整 payload 会先进入 partition receiver/chunk buffer，最后才由 gRPC 层清空。对 Kubernetes 1.37
+EtcdRangeStream 大 LIST，这仍会保留每个活跃 partition chunk 的大对象。
+
+新增 `TestRangeStreamKeysOnlyUsesMetadataStream`，用可选 metadata stream probe 令普通 stream 硬失败，同时固定唯一终态
+envelope、key/create/mod/version、空 value 与 lease 0；旧实现 `0.048s` 以
+`KeysOnly RangeStream unexpectedly requested full values` RED。提交 `c5990215` 后，RPC server 在所有通过
+RangeStream 排序校验的 KeysOnly 范围上探测 `RangeStreamKeysOnlyChan`；shim 再探测 backend
+`RangeStreamKeysOnly`，旧 adapter 保留普通流回退。生产 backend 共用同一 revision pin、decoded-range、count-index、
+spill、latest-index 与 corruption fence，只把 metadata-only 作为执行模式传下去；生产 `MetadataScanner` 的 worker 在
+receiver/chunk buffer 前投影 inline envelope。decoded-boundary 的 ordered-index/spill 路径仍以最多 16 个大 value 的既有
+窗口读取精确 key，但在发送窗口前投影；普通 value stream、count-index rebuild 的 nil-value stream 和 SnapshotStream
+均不改变。
+
+新增 `TestRangeStreamMetadataProjectsValuesBeforeChunkBuffer`，以 2 MiB value 证明 metadata stream 的 receiver 只收到
+投影值且普通 stream 保留原值；新增 `TestRangeStreamKeysOnlyDropsPayloadAndPreservesInlineMetadata`，证明更新后的 2 MiB
+payload 在 backend stream 中缩为不足 64-byte envelope，并保留 create/version/revision。三项 focused 常规测试为
+`0.027/0.075/0.061s`，完整 scanner/backend/etcd server 为 `0.280/50.239/138.464s`，focused race 为
+`1.106/1.297/1.157s`；vet、gofmt 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `249.286/445.950/298.992/569.873s` 全部 GREEN；提交后 verifier 不变，四分片
+`253.554/447.942/303.722/574.879s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5724-c59902153201` 内嵌版本 `0.0.0-c59902153201`、完整提交
+`c599021532011f6b2b2d63e8ed13252ec46de971`、build time `2026-09-04T08:40:52Z`、Go `1.26.5`、
+`linux/amd64` 与 TiKV。OCI nested index/platform/config/attestation 分别为
+`sha256:b6c311c51867321e508f5792ebc526953b2b32bb2459a248b61e8c0e4efc71ce`、
+`sha256:f811567bd5e15eb582dac2db611162f228b37ff85dc66426c86994a033de7759`、
+`sha256:b8b8f59da6bbf9907d40ef2814f088dc41089d6490c9ccfc7b45445a02dcffc1`、
+`sha256:b8e1f545107503c0efce10829aebf988e6c650729ba0456cb951e56db67999e0`；attestation config 为
+`sha256:8f385f03fc1ba248cc7a64442b500199add37908fdfde7270d0e3fc06961c4e4`，SPDX/SLSA layer 为
+`sha256:c68fb172575f7b32f4891d7a9d8cc2fde99756c041e626311d507f0103fac240`、
+`sha256:e19f3e1ff11f4d29faa589a89fa855d4bde3d5ecfe8021e0423740bacc6cd5aa`。78/78 descriptor edges 的
+digest/size 全部正确；SPDX 2.3 含 2,592 packages/381 files/8,096 relationships，SLSA 唯一 subject 绑定 platform
+manifest、四项显式 build args 与 syft/alpine/golang 三项固定 materials。914,596,352-byte archive SHA-256 为
+`65c2455c24d66740d76b2b6edd2878ee1d2c73b605c79a1202e5eba6711d3e3b`；顶层 OCI `index.json`/Kind runtime
+digest 为 `sha256:41a34147d4ed1a893bbb9c593948a5b37a855ae0f713e6d953cfe588f34e9e0e`，71 layers/diff IDs、
+非 root `65532:65532`、入口、labels 与运行二进制身份均通过。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test，从稳定 generation 842/RV
+`8361123` 部署到候选 generation 843/RV `8368348`；三 Pod Ready/restart 0、参数未漂移，runtime imageID 均为上述顶层
+digest。候选完整 HEAD readonly gate GREEN；revision/index/applied 为 `66763/66763/66763`，cluster ID
+`7662961163671170154`、HashKV `848652157`、compact revision `66760`、term `555`、leader `2393892952`，Auth
+disabled/revision 281、Alarm 与用户 keyspace 为空。无写入 raw gRPC probe 在三个 endpoint 各连续 7 次执行
+`RangeStream(Key=/, RangeEnd=NUL, KeysOnly, Limit=3)`，均正常 EOF、唯一终态 envelope、revision 66763、count 0、
+More=false；内部 metadata-only 选择由上述 full-value-fail 单测与运行二进制 provenance 共同固定。三轮九次 health 全部成功
+（`53.629–73.064ms`），三个 TiKV store Up，五类 Region check 连续三轮全零。候选日志 `727/274/777` 行、广义关键字
+`9/2/4`，内容仅为 rollout/门禁预期 cancel、405 与 peer reset；最近 60 秒均为 0，无 panic/fatal/data loss/corruption。
+
+以同类五类原子 test 从候选 RV `8368348` 回滚固定稳定 digest，generation/observed `844/844`、RV `8369575`；三 Pod
+runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，22 项参数
+未漂移。Pod 替换后第一次稳定门禁复用了即将退出的旧 port-forward，得到一次 `curl: Empty reply from server`；确认六个旧
+listener 随 Pod 退出、重建六个转发后，同一稳定门禁（排除旧稳定镜像不含的新版 info-metrics 代际合同）完整 GREEN，不能把
+第一次瞬态误记为数据面通过或失败。稳定终态 revision/index/applied 与 HashKV/compact revision 不变，term `556`、leader
+`231094427`；三轮九次 health 全部成功（`49.526–65.758ms`），三个 store Up、五类 Region check 连续三轮全零。
+稳定日志 `445/464/266` 行、广义关键字 `5/1/3`；kubebrain-2 启动时一次 compact revision metric refresh deadline，
+其余均为门禁预期 405/cancel 或 rollout peer drain，随后三 Pod 最近 30 秒关键错误均为 0。KubeBrain/TiKV 3+3
+Ready/restart 0；PD 3 Ready、各沿用一次历史 restart。最终关闭六个 port-forward，确认无 Pod/容器引用候选后精确删除
+Kind 四个候选名称、Docker candidate tag/index 与 1.8 GiB `/dev/shm/kubebrain-a5724.mSJYOm`；稳定镜像、源码和数据卷
+未删除。宿主根盘约 97%、可用 72 GiB；A5676 的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 A5723 的无 payload
+KeysOnly 能力延伸到 native RangeStream 常规编码路径，并为 decoded-boundary 保持既有有界窗口与完整协议语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
