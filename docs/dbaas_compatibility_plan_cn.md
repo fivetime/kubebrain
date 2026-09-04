@@ -70728,6 +70728,73 @@ Kind 四个候选名称、Docker candidate tag/index 与 1.8 GiB `/dev/shm/kubeb
 未删除。宿主根盘约 97%、可用 72 GiB；A5676 的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 A5723 的无 payload
 KeysOnly 能力延伸到 native RangeStream 常规编码路径，并为 decoded-boundary 保持既有有界窗口与完整协议语义。
 
+### A5725：point KeysOnly 在 backend 边界前释放用户 payload
+
+上游 `/root/etcd/server/etcdserver/txn/range.go::executeRange` 对所有
+`KeysOnly && SortTarget != VALUE` 请求设置 `FastKeysOnly`，包括没有 RangeEnd 的 point read；其
+`/root/etcd/server/storage/mvcc/kvstore_txn.go::rangeKeys` 只从内存索引构造 key/create/mod/version，完全不读取
+backend value，并且 lease 为 0。KubeBrain A5723/A5724 已覆盖范围与流，但 point `backend.Get` 仍把完整用户 value
+跨过 backend/shim 边界，最后才由 `applyRangeOptions` 清空。由于当前 TiKV inline-value 布局没有独立的持久 metadata
+索引，本轮不能伪称消除了 TiKV 网络读取；修复目标是完成完整性校验后立即释放 payload，显著缩短大 point value 的堆保留
+生命周期。VALUE SortTarget 仍必须走普通 Get，以保持上游投影前 value 可用且 lease 保留的边界。
+
+新增 `TestBackendShimFastPointKeysOnlyUsesMetadataGet`，令普通 Get 硬失败并要求可选 `GetKeysOnly` 成功；旧实现
+`0.042s` 以 `fast point KeysOnly unexpectedly materialized values` RED。提交
+`512e5147770b5cdb410915a70e8d6820ceb77478` 后，shim 仅对 fast KeysOnly 探测可选能力，旧 adapter 自动回退；生产
+backend 的 `Get`/`GetKeysOnly` 共用完全相同的 current/historical revision、revision-index、tombstone、legacy metadata
+恢复与 corruption witness 路径，只在校验成功后以 `projectMetadataValue` 投影。反向测试
+`TestBackendShimValueSortPointKeysOnlyUsesOrdinaryGet` 固定 VALUE-sort 不得进入 metadata Get；生产
+`TestGetKeysOnlyDropsPayloadAndPreservesInlineMetadata` 用更新后的 2 MiB value 证明跨边界 envelope 小于 64 bytes，且
+create/version/mod revision 不变。
+
+聚焦 shim/backend 测试为 `0.049/0.092s`，完整 backend/server 包为 `49.333/137.613s`，聚焦 race 为
+`1.270/1.161s`；vet、gofmt 与 diff check 均 GREEN。提交前 verifier 精确分配 703 项为 `170/193/180/160`，四分片
+`254.022/449.139/304.967/573.452s` 全部 GREEN；提交后 verifier 不变，四分片
+`250.931/450.909/304.705/578.988s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5725-512e5147770b` 内嵌版本 `0.0.0-512e5147770b`、上述完整提交、build time
+`2026-09-04T09:45:42Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI nested index/platform/config/attestation 为
+`sha256:3c48226cbd086940c3a0feafc606d69f0081da9dafafba6d02f040a042a02e10`、
+`sha256:aa5c53077e2961e6dbe1a28d78f5a48fd83a0d6358f9cc982a8dd344f7f5e049`、
+`sha256:95e562ada5180d2939b86594a28af6ad122bd317a6046d92371e02bfffbed89b`、
+`sha256:ad7e56eed5a759fea7d9ce010ea56e8e482f2a74b1de6c0f4a110d4d8c987ccf`；attestation config、SPDX/SLSA
+layer 为 `sha256:2227f339f49dd950b029218e10abc15a056fd429aaad34b4d353903f5798eac8`、
+`sha256:e6401718212a455f7e037919ceaffdf3bd7f35854d33394f57be2e87f973fc29`、
+`sha256:7073fbd4ac169991b1ffbace469e5c52d69a2ed4e909c24c48cdead89f37b027`。78/78 descriptor edges、71
+layers/diff IDs 全部正确；SPDX 2.3 含 2,592 packages/381 files/8,096 relationships，SLSA subject、四项 build args
+和 syft/alpine/golang 三项固定 materials 均匹配。914,595,328-byte archive SHA-256 为
+`9d8f320d170646a5461d45e042db7caef6ebf08ca68dc789386fae7647c63709`；顶层 `index.json` SHA-256/Kind runtime
+imageID 为 `sha256:92adde734faec5a86b8d0ac1782c4d9cd0b97ec1abd582f55a87b6b0678e85c0`。非 root
+`65532:65532`、入口、labels 与运行二进制身份均通过。
+
+以 UID/resourceVersion/container/current image/full 22 args 五类原子 test，从稳定 generation 844/RV `8369575`
+部署到候选 generation 845/RV `8376191`；三 Pod Ready/restart 0、参数未漂移，runtime imageID 均为上述顶层
+`index.json` digest。候选完整 HEAD readonly gate GREEN；写入前 revision/index/applied 为 `66763/66763/66763`，
+cluster ID `7662961163671170154`、HashKV `848652157`、compact revision `66760`、term `559`、leader
+`2393892952`，Auth disabled/revision 281、Alarm 与用户 keyspace 为空。随后建立 1 MiB leased point，三个 endpoint
+各连续 7 次验证 fast KeysOnly 的 value 为空、lease 0、metadata 为正，同时验证 VALUE-sort KeysOnly 的 value 为空但
+lease 精确保留；共 42 次请求全部通过。删除 key 并 revoke lease 后 `/a5725/` 与 LeaseList 均为空，终态 revision/index/
+applied 为 `66765/66765/66765`，HashKV `3915433493`。首次清理复核误用当前 etcdctl 不支持的
+`--count-only -w json` 组合，写清理此前已经成功；改读普通 JSON Range 的 count 后确认 0，不能把 CLI 用法错误记作产品
+失败。三轮九次 health 全部成功（`51.947–80.475ms`），三个 store Up、五类 Region check 连续三轮全零；首次 Region
+脚本误把 `{count,regions}` 对象的字段数 2 当成 Region 数，改读 `.count` 后三轮全零。候选日志 `568/275/634` 行、广义
+关键字 `7/2/8`，均为 rollout/门禁预期 drain、cancel、405/reset；critical 与最近 60 秒均为 0。
+
+以同类五类原子 test 从候选 RV `8376191` 回滚固定稳定 digest，generation/observed `846/846`、RV `8377127`；三 Pod
+runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，22 项参数
+未漂移。主动关闭候选 Pod 生命周期建立的六个 port-forward 并重建后，稳定门禁（排除旧稳定镜像不含的新版 info-metrics
+代际合同）完整 GREEN；revision/index/applied、HashKV、compact revision 为
+`66765/66765/66765/3915433493/66760`，term `560`、leader `231094427`，Auth disabled/revision 281，Alarm、
+用户前缀与 LeaseList 为空。稳定三轮九次 health 全部成功（`57.325–82.553ms`），三个 store Up、五类 Region check 连续
+三轮全零。稳定日志 `422/437/288` 行、广义关键字 `8/0/4`，仅有门禁预期 405/cancel 与 rollout drain/NOT_SERVING，
+critical 和最近 30 秒均为 0。KubeBrain/TiKV 3+3 Ready/restart 0；PD 3 Ready、各沿用历史 restart 1。
+
+最终关闭六个 port-forward，确认没有 Pod 引用候选后精确删除 Kind 三个候选名称、Docker candidate tag/index 与 1.8 GiB
+`/dev/shm/kubebrain-a5725.JL4kPd`；稳定镜像、源码和数据卷未删除。首次包含递归 `rm` 的清理命令在启动前被执行环境拒绝，
+因此未造成部分清理；随后以精确镜像名和限定路径完成。宿主根盘约 97%、可用 67 GiB；共享 build cache 未擅自清理。
+A5676 的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮关闭 standalone/historical point KeysOnly 的长 payload retention；
+只读 Txn 的混合批量 point prefetch 仍需按请求投影需求去重后独立优化，TiKV inline layout 也意味着 point value 网络读取尚未消除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
