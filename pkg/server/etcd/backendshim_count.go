@@ -152,6 +152,32 @@ func (cr *countResolver) resolveCountFromIndex(ctx context.Context, key, end []b
 	return cr.proxiedCount(ctx, &etcdserverpb.RangeRequest{Key: key, RangeEnd: end, Revision: rev, CountOnly: true})
 }
 
+// resolveRequestCountFromIndex preserves an exact-key request across the peer
+// boundary so the leader applies point authorization, while giving the local
+// ordered index an explicit exclusive bound. The backend count index uses nil
+// end for "to keyspace end"; [key,key+NUL) is the canonical range containing
+// exactly key for arbitrary byte strings.
+func (cr *countResolver) resolveRequestCountFromIndex(
+	ctx context.Context,
+	r *etcdserverpb.RangeRequest,
+) (count int64, headerRevision int64, served bool) {
+	if c, headerRevision, served := cr.shim.backend.CountAtRevision(
+		ctx, r.Key, countRequestEnd(r), normalizeRangeRevision(r.Revision),
+	); served {
+		return c, int64(headerRevision), true
+	}
+	return cr.proxiedCount(ctx, r)
+}
+
+func countRequestEnd(r *etcdserverpb.RangeRequest) []byte {
+	if len(r.RangeEnd) != 0 {
+		return r.RangeEnd
+	}
+	end := make([]byte, len(r.Key)+1)
+	copy(end, r.Key)
+	return end
+}
+
 func (cr *countResolver) exactRangeCountUncached(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
 	// Serve from the in-memory count index when possible (approach A-index); it
 	// roots the per-page O(range) count scan that made paginated LIST O(N^2).
@@ -237,7 +263,7 @@ func (cr *countResolver) count(
 		// rebuild miss (#41; a steady follower's Revision>0 Range was already
 		// forwarded wholesale by kv.go). Last resort: a revision-honoring List
 		// (strips Kvs for CountOnly). See resolveCountFromIndex.
-		if c, headerRevision, ok := cr.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, r.Revision); ok {
+		if c, headerRevision, ok := cr.resolveRequestCountFromIndex(ctx, r); ok {
 			return &etcdserverpb.RangeResponse{
 				Header: txnHeader(headerRevision),
 				Count:  c,
@@ -257,7 +283,7 @@ func (cr *countResolver) count(
 	// A proxied rev=0 count is taken at the leader's current revision. Preserve
 	// that response revision alongside the reduced count so the follower does not
 	// stamp a newer snapshot's count with its older process-local watermark.
-	if c, headerRevision, ok := cr.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, 0); ok {
+	if c, headerRevision, ok := cr.resolveRequestCountFromIndex(ctx, r); ok {
 		return &etcdserverpb.RangeResponse{
 			Header: txnHeader(headerRevision),
 			Count:  c,
@@ -270,7 +296,7 @@ func (cr *countResolver) count(
 	}
 	request := &proto.CountRequest{
 		Key: r.Key,
-		End: r.RangeEnd,
+		End: countRequestEnd(r),
 	}
 	response, err := cr.shim.backend.Count(ctx, request)
 	if err != nil {
@@ -283,7 +309,7 @@ func (cr *countResolver) count(
 }
 
 func (cr *countResolver) countPinnedSnapshot(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-	response, err := cr.shim.backend.Count(ctx, &proto.CountRequest{Key: r.Key, End: r.RangeEnd})
+	response, err := cr.shim.backend.Count(ctx, &proto.CountRequest{Key: r.Key, End: countRequestEnd(r)})
 	if err != nil {
 		return nil, err
 	}

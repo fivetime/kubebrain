@@ -261,21 +261,21 @@ func (s *RPCServer) rangeWithAfterReadOnce(
 		err                   error
 		methodTag, successTag metrics.T
 	)
-	if len(r.RangeEnd) == 0 {
-		// get method
-		response, err = s.backend.Get(ctx, r)
-		methodTag = metrics.Tag("method", "get")
-	} else if r.CountOnly {
+	if r.CountOnly {
 		// Count only. Upstream obtains cardinality from CountRevisions before
 		// applying revision filters to the empty KV slice, so filters, sorting, and
-		// Limit are inert for this shape. Keep every ranged CountOnly request on the
-		// non-materializing path. Count honors r.Revision: for the current revision
-		// (or a historical one the count index can serve) it returns a count with no
+		// Limit are inert for this shape. Keep every CountOnly request, including an
+		// exact key, on the non-materializing path. Count honors r.Revision: for the
+		// current revision (or a historical one the count index can serve) it avoids
 		// range materialization; a historical count the index cannot serve falls
 		// back inside Count to a revision-honoring range read, so the count reflects
 		// that revision, not the current one.
 		methodTag = metrics.Tag("method", "count")
 		response, err = s.backend.Count(ctx, r)
+	} else if len(r.RangeEnd) == 0 {
+		// get method
+		response, err = s.backend.Get(ctx, r)
+		methodTag = metrics.Tag("method", "get")
 	} else {
 		methodTag = metrics.Tag("method", "range")
 		response, err = s.backend.List(ctx, r)

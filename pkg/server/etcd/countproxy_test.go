@@ -268,6 +268,44 @@ func TestCountProxyServesFollowerCounts(t *testing.T) {
 	require.Equal(t, int64(3), resp.Count)
 }
 
+func TestPointCountOnlyPreservesExactKeyBounds(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/point_count/%d", time.Now().UnixNano())
+	be := backend.NewBackend(kv, backend.Config{
+		Prefix: pfx, Identity: "point-count", EnableEtcdCompatibility: true,
+	}, m)
+	be.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	key := []byte(pfx + "/target")
+	for _, candidate := range [][]byte{key, []byte(pfx + "/target-later")} {
+		_, err := be.Create(ctx, &proto.CreateRequest{Key: candidate, Value: []byte("value")})
+		require.NoError(t, err)
+	}
+
+	shim := NewBackendShim(be, m).(*backendShim)
+	request := &etcdserverpb.RangeRequest{Key: key, CountOnly: true}
+	shim.SetCountProxy(nil)
+	response, err := shim.Count(ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), response.Count, "an empty RangeEnd means one exact key, not from-key")
+
+	proxied := false
+	shim.SetCountProxy(func(_ context.Context, forwarded *etcdserverpb.RangeRequest) (int64, int64, bool) {
+		proxied = true
+		require.Equal(t, request, forwarded, "the peer request must retain point auth semantics")
+		return 1, int64(be.GetCurrentRevision()), true
+	})
+	response, err = shim.Count(ctx, request)
+	require.NoError(t, err)
+	require.True(t, proxied)
+	require.Equal(t, int64(1), response.Count)
+}
+
 // TestCountProxyFastRejectsWhenIndexNotReady pins the review-51 leftover: during
 // a leader's count-index rebuild, a follower-proxied count the index cannot serve
 // must be fast-rejected (Unavailable) so the follower falls back locally, instead

@@ -131,6 +131,7 @@ type checkpointCountBackendShim struct {
 type filteredCountRouteBackendShim struct {
 	BackendShim
 	countCalled bool
+	getCalled   bool
 	listCalled  bool
 	request     *etcdserverpb.RangeRequest
 }
@@ -147,6 +148,11 @@ func (b *filteredCountRouteBackendShim) Count(_ context.Context, request *etcdse
 func (b *filteredCountRouteBackendShim) List(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 	b.listCalled = true
 	return nil, errors.New("filtered CountOnly unexpectedly materialized List")
+}
+
+func (b *filteredCountRouteBackendShim) Get(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	b.getCalled = true
+	return nil, errors.New("CountOnly unexpectedly materialized Get")
 }
 
 func (b *checkpointCountBackendShim) Count(ctx context.Context, _ *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -2583,6 +2589,40 @@ func TestRangeFilteredCountOnlyUsesCountPath(t *testing.T) {
 	require.True(t, shim.countCalled)
 	require.False(t, shim.listCalled)
 	require.Equal(t, request, shim.request, "Count must retain the wire request while ignoring inert projection options")
+	require.Equal(t, int64(7), response.Count)
+	require.Empty(t, response.Kvs)
+	require.False(t, response.More)
+}
+
+// TestRangePointCountOnlyUsesCountPath pins upstream's MVCC execution order for
+// an exact key: CountRevisions(key, nil, rev) reads only the revision index and
+// returns cardinality 0/1. Reading and decoding the complete value before
+// discarding it makes CountOnly availability and cost depend on an unrequested
+// payload, which is especially harmful for maximum-size values.
+func TestRangePointCountOnlyUsesCountPath(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	shim := &filteredCountRouteBackendShim{BackendShim: server.backend}
+	server.backend = shim
+	request := &etcdserverpb.RangeRequest{
+		Key:               []byte("/registry/pods/exact-count"),
+		Limit:             1,
+		SortOrder:         etcdserverpb.RangeRequest_DESCEND,
+		SortTarget:        etcdserverpb.RangeRequest_VALUE,
+		CountOnly:         true,
+		MinModRevision:    11,
+		MaxModRevision:    10,
+		MinCreateRevision: 9,
+		MaxCreateRevision: 8,
+	}
+
+	response, err := server.Range(context.Background(), request)
+	require.NoError(t, err)
+	require.True(t, shim.countCalled)
+	require.False(t, shim.getCalled)
+	require.False(t, shim.listCalled)
+	require.Equal(t, request, shim.request, "point Count path must retain the public request for auth/proxy semantics")
 	require.Equal(t, int64(7), response.Count)
 	require.Empty(t, response.Kvs)
 	require.False(t, response.More)
