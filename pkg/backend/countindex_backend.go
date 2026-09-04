@@ -32,18 +32,20 @@ import (
 
 // CountAtRevision returns the exact live-key count of [key,end) at revision rev
 // from the in-memory index, and whether the index served it. rev==0 means the
-// current revision. When the index is disabled/unavailable/not-ready for rev,
-// served is false and the caller must fall back to a scan.
-func (b *backend) CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (count int64, served bool) {
+// current revision. headerRevision is sampled before the index read so a
+// rev==0 count stays paired with the exact snapshot selected for it. When the
+// index is disabled/unavailable/not-ready for rev, served is false and the
+// caller must fall back to a scan.
+func (b *backend) CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (count int64, headerRevision uint64, served bool) {
 	if b.countIndex == nil {
-		return 0, false
+		return 0, 0, false
+	}
+	current, err := b.safeCurrentRevision(ctx)
+	if err != nil {
+		return 0, 0, false
 	}
 	if rev == 0 {
-		cur, err := b.safeCurrentRevision(ctx)
-		if err != nil {
-			return 0, false
-		}
-		rev = cur
+		rev = current
 	}
 	if isFromKeyEnd(end) {
 		end = nil // "from key" range: count to the end of the keyspace
@@ -53,10 +55,10 @@ func (b *backend) CountAtRevision(ctx context.Context, key, end []byte, rev uint
 	n, ok := b.countIndex.CountIfReady(key, end, rev)
 	if !ok {
 		b.metricCli.EmitCounter("count_index.miss", 1)
-		return 0, false
+		return 0, 0, false
 	}
 	b.metricCli.EmitCounter("count_index.hit", 1)
-	return int64(n), true
+	return int64(n), current, true
 }
 
 // RebuildCountIndex rebuilds the count index from a snapshot of the live keys at

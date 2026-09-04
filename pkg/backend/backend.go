@@ -210,8 +210,9 @@ type Backend interface {
 	Hash(ctx context.Context) (BackendHashResult, error)
 
 	// CountAtRevision returns the exact live-key count of [key,end) at rev from
-	// the in-memory count index; served is false when it must fall back to a scan.
-	CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (count int64, served bool)
+	// the in-memory count index and the response-header revision selected with it.
+	// served is false when it must fall back to a scan.
+	CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (count int64, headerRevision uint64, served bool)
 
 	// RebuildCountIndex rebuilds the count index; call on leadership acquisition.
 	RebuildCountIndex(ctx context.Context) error

@@ -3823,8 +3823,8 @@ func TestBackendShimObservesPointRangeAndCountMVCCReads(t *testing.T) {
 
 type countMetricFallbackBackend struct{ rangeRevisionProbeBackend }
 
-func (b *countMetricFallbackBackend) CountAtRevision(context.Context, []byte, []byte, uint64) (int64, bool) {
-	return 0, false
+func (b *countMetricFallbackBackend) CountAtRevision(context.Context, []byte, []byte, uint64) (int64, uint64, bool) {
+	return 0, 0, false
 }
 
 func TestBackendShimObservesCountFallbackExactlyOnce(t *testing.T) {

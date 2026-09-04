@@ -70,7 +70,7 @@ func TestCountIndexMatchesScanAcrossRevisions(t *testing.T) {
 		return len(resp.Kvs)
 	}
 	assertIndexMatches := func(rev uint64) {
-		c, served := b.CountAtRevision(ctx, []byte(p), end, rev)
+		c, _, served := b.CountAtRevision(ctx, []byte(p), end, rev)
 		require.True(t, served, "index should serve count at rev %d", rev)
 		require.Equal(t, scanCount(rev), int(c), "index count != scan count at rev %d", rev)
 	}
@@ -84,6 +84,11 @@ func TestCountIndexMatchesScanAcrossRevisions(t *testing.T) {
 
 	require.NoError(t, b.RebuildCountIndex(ctx))
 	assertIndexMatches(revAfter5) // 5 live
+	currentCount, headerRevision, served := b.CountAtRevision(ctx, []byte(p), end, 0)
+	require.True(t, served, "index should resolve a current-revision count")
+	require.Equal(t, int64(5), currentCount)
+	require.Equal(t, b.GetCurrentRevision(), headerRevision,
+		"rev=0 count must return the exact current revision selected for its index snapshot")
 
 	// delete one, add two more.
 	del("k02")
@@ -96,7 +101,7 @@ func TestCountIndexMatchesScanAcrossRevisions(t *testing.T) {
 
 	// sub-range count also matches.
 	subEnd := PrefixEnd([]byte(p + "k03"))
-	c, served := b.CountAtRevision(ctx, []byte(p+"k00"), subEnd, b.GetCurrentRevision())
+	c, _, served := b.CountAtRevision(ctx, []byte(p+"k00"), subEnd, b.GetCurrentRevision())
 	require.True(t, served)
 	sub, err := b.List(ctx, &proto.RangeRequest{Key: []byte(p + "k00"), End: subEnd, Revision: b.GetCurrentRevision()})
 	require.NoError(t, err)
@@ -134,7 +139,7 @@ func TestCountIndexRebuildIgnoresSystemNamespace(t *testing.T) {
 	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= last }, 5*time.Second, 2*time.Millisecond)
 
 	require.NoError(t, b.RebuildCountIndex(ctx))
-	c, served := b.CountAtRevision(ctx, []byte(p), end, b.GetCurrentRevision())
+	c, _, served := b.CountAtRevision(ctx, []byte(p), end, b.GetCurrentRevision())
 	require.True(t, served, "index should serve after rebuild")
 	require.Equal(t, 7, int(c), "rebuild bounded by the system namespace would miss all user keys")
 }

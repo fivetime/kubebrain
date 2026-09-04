@@ -26,6 +26,24 @@ type rangeRevisionProbeBackend struct {
 	backendCountCalled bool
 }
 
+type currentCountRevisionRaceBackend struct {
+	backend.Backend
+	current         uint64
+	countedRevision uint64
+}
+
+func (b *currentCountRevisionRaceBackend) CountAtRevision(_ context.Context, _, _ []byte, revision uint64) (int64, uint64, bool) {
+	if revision == 0 {
+		b.countedRevision = b.current
+		// Simulate a commit becoming visible after the index selected its snapshot
+		// but before the shim asks GetCurrentRevision for the response header.
+		b.current++
+	}
+	return 3, b.countedRevision, true
+}
+
+func (b *currentCountRevisionRaceBackend) GetCurrentRevision() uint64 { return b.current }
+
 type malformedInlineValueBackend struct {
 	backend.Backend
 	value       []byte
@@ -53,9 +71,9 @@ func (b *rangeRevisionProbeBackend) List(_ context.Context, req *proto.RangeRequ
 	return &proto.RangeResponse{Header: &proto.ResponseHeader{Revision: 11}}, nil
 }
 
-func (b *rangeRevisionProbeBackend) CountAtRevision(_ context.Context, _, _ []byte, revision uint64) (int64, bool) {
+func (b *rangeRevisionProbeBackend) CountAtRevision(_ context.Context, _, _ []byte, revision uint64) (int64, uint64, bool) {
 	b.countRevision = revision
-	return 0, true
+	return 0, b.GetCurrentRevision(), true
 }
 
 func (b *rangeRevisionProbeBackend) Count(ctx context.Context, _ *proto.CountRequest) (*proto.CountResponse, error) {
@@ -117,6 +135,20 @@ func TestBackendShimCountUsesCheckpointHeader(t *testing.T) {
 	require.False(t, response.More)
 	require.True(t, probe.backendCountCalled)
 	require.Zero(t, probe.countRevision, "checkpoint count must bypass the shim's local index response")
+}
+
+func TestBackendShimCurrentCountPreservesResolvedRevision(t *testing.T) {
+	probe := &currentCountRevisionRaceBackend{current: 11}
+	shim := NewBackendShim(probe, &recordingMetrics{})
+
+	response, err := shim.Count(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("/current-count/"), RangeEnd: []byte("/current-count0"), CountOnly: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), response.Count)
+	require.Equal(t, int64(probe.countedRevision), response.GetHeader().GetRevision(),
+		"current count and response header must describe the same resolved snapshot")
+	require.Equal(t, uint64(12), probe.GetCurrentRevision(), "fixture must expose the simulated concurrent commit")
 }
 
 func TestBackendShimGetRejectsMalformedInlineValue(t *testing.T) {

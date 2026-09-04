@@ -1081,7 +1081,7 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 
 	// Serve from the in-memory count index when available (approach A-index);
 	// otherwise fall back to a full scan.
-	if c, served := b.CountAtRevision(ctx, r.Key, r.End, rev); served {
+	if c, _, served := b.CountAtRevision(ctx, r.Key, r.End, rev); served {
 		return &proto.CountResponse{Header: responseHeader(rev), Count: uint64(c)}, nil
 	}
 
