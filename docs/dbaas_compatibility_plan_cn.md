@@ -70266,6 +70266,60 @@ Pod/容器引用 A5716 后，精确删除 Kind 的 tag、canonical digest、inde
 稳定镜像和数据卷未删除。宿主根盘 93%、可用约 145 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。
 本轮使 CountOnly leader-index 优化返回自洽的 count/header revision，并确保无效 future header 不污染 follower 水位。
 
+### A5717：保留本地 Count index 的精确响应 revision
+
+A5716 已让远端 leader Count proxy 保留其 header revision，但同一 resolver 的本地 index 分支仍在
+`backend.CountAtRevision` 返回 count 后调用 `GetCurrentRevision()` 生成 header。rev=0 在 backend 内部先用
+`safeCurrentRevision` 选择索引快照；若提交恰好在索引读取与 shim 二次读水位之间可见，旧快照 count 会被标上新 revision，
+继续违反 etcd 的 response header 与结果快照绑定合同。
+
+新增 `TestBackendShimCurrentCountPreservesResolvedRevision`，fake backend 在选定 revision 11 的 count 快照后、返回 shim 前
+模拟水位推进到 12；旧实现把 header 标成 12 而 RED（`0.042s`）。提交 `ea737a10` 将 backend
+`CountAtRevision` 合同扩展为 `(count, headerRevision, served)`：在 index read 之前解析 current revision，rev=0 同时用它
+固定 count 快照和响应 header；历史 count 也携带同次调用解析的当前 header；shim 不再二次读取可能已变化的水位。backend
+真实 count-index 测试另行确认 rev=0 返回的 count、header 与所选 current snapshot 一致。修复后 focused `0.046s`，
+backend/etcd 相关集合 `0.079/0.185s`，backend focused `0.058s`，backend/etcd race `1.189/1.498s`，完整
+backend/etcd 包 `50.334/142.759s`，两包 vet、gofmt、`git diff --check` 均 GREEN。提交前 verifier 精确分配
+703 项为 `170/193/180/160`，四分片 `263.949/458.455/310.870/582.068s` GREEN；提交后四分片
+`251.622/446.207/300.444/574.765s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5717-ea737a10ab4a` 内嵌版本 `0.0.0-ea737a10ab4a`、完整提交
+`ea737a10ab4a3c8cbf7a080a8a24ef3a476f75c8`、build time `2026-09-04T01:24:04Z`、Go `1.26.5`、
+`linux/amd64`、TiKV、kubectl `v1.36.2`。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:c6e3985b026cfee6331ea3273d8b4f37acce98287ad38890d02731b957ea32e7`、
+`sha256:a1695fed6cf93dbcf68574adc7849182996b0773ce6addfeb5f1617e3a384d60`、
+`sha256:523c49e781e5aa5d002da0efab31095c68d14447abe29f2176c89fc23b4f282c`、
+`sha256:742fc65bb2f8c969d94ddb5f1fb7376b62c601c4417208da86aff3130296c18d`；attestation config 为
+`sha256:5beebed77dc0e80a2dbb7700f61d4afac3ca7d7fe7f416242572d163a24f710b`，SPDX/SLSA in-toto layer 为
+`sha256:dc8c048de17a0002baafdcdc13f07849df3a075ff10f1b3db7a8054447320864`、
+`sha256:1932391ab81272c243677a14060f2dee06d26a926ac956f6b22cb7a120feea18`。SPDX 2.3 含 2,592
+packages/8,096 relationships；SLSA subject 精确绑定 platform manifest、四项显式 build args 与 syft/alpine/golang
+三项固定 materials。OCI labels、非 root `65532:65532`、入口和运行版本交叉验证通过；Kind 在部署前显式登记 tag、
+canonical digest、index 与 config 四种名称。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 828 部署到候选 829；
+三 Pod runtime digest 同为
+`sha256:6948f49e5241f6e1d48788ebb5b7e4e19e9ba0b7c6ec0f428bdee68c2a67e324`、Ready/restart 0，三处运行
+版本均绑定上述完整提交且参数未漂移。候选完整 HEAD readonly gate GREEN；终态 revision/index/applied 为
+`66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `526`、leader `231094427`，
+Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功（`49.903–90.934ms`）；三个 TiKV
+store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零。候选日志 `380/403/318` 行；
+`kubebrain-2` 在旧 leader 被滚动停止时记录一次 lease CAS 竞争并于约 0.28 秒后切换 leader，其他关键错误为 0，三 Pod
+最近 60 秒关键错误均为 0，完整门禁和九次 health 均在切换后通过。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `830/830`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项
+参数未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除该
+info-metrics 代际合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `528`、leader `2393892952`，Auth disabled/revision 281、
+Lease/Alarm 为空；三轮九次 health 全部成功（`48.415–78.396ms`），三个 store Up、五类 Region check 连续三轮
+全零。稳定日志 `463/271/507` 行；`kubebrain-1` 在回滚滚动期记录一次 compact metric refresh deadline，其他关键错误
+为 0，三 Pod 最近 60 秒关键错误均为 0，随后完整数据面门禁、HashKV 与九次 health 全部通过。KubeBrain/TiKV 3+3
+Ready/restart 0；PD 3 Ready、各沿用一次历史 restart。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward
+会话关闭且六个目标端口无监听。确认没有 Pod/容器引用 A5717 后，精确删除 Kind 的 tag、canonical digest、index、config
+四个候选名称及 Docker 候选 tag/index；稳定镜像和数据卷未删除。宿主根盘 93%、可用约 135 GiB。A5676 已记录的 Kind
+local-path 非 CSI 存储隔离风险仍存在。本轮使本地与远端两条 Count index 快路径都返回自洽的 count/header revision。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
