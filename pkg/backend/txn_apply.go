@@ -360,6 +360,11 @@ func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, p
 			if err := txn.Put(deleted.revisionKey, deleted.newRevisionValue, 0); err != nil {
 				return err
 			}
+			if deleted.latestMetadataKey != nil {
+				if err := txn.Put(deleted.latestMetadataKey, deleted.latestMetadataValue, 0); err != nil {
+					return err
+				}
+			}
 			if err := txn.Put(deleted.objectKey, deleted.objectValue, 0); err != nil {
 				return err
 			}
@@ -387,6 +392,11 @@ func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, p
 		}
 		if err := txn.Put(encoded.revisionKey, encoded.newRevisionValue, 0); err != nil {
 			return err
+		}
+		if encoded.latestMetadataKey != nil {
+			if err := txn.Put(encoded.latestMetadataKey, encoded.latestMetadataValue, 0); err != nil {
+				return err
+			}
 		}
 		for _, object := range encoded.objectMutations {
 			if err := txn.Put(object.key, object.value, 0); err != nil {

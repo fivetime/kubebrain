@@ -70,7 +70,25 @@ func (b *backend) getResponse(ctx context.Context, r *proto.GetRequest, metadata
 	}
 	requireRev := r.GetRevision()
 
-	val, modRev, err := b.get(ctx, r.Key, requireRev)
+	var val []byte
+	var modRev uint64
+	if metadataOnly && requireRev == 0 && b.config.EnableEtcdCompatibility {
+		// Sample before pinning: a ready in-memory directory can witness a
+		// corrupt physical revision index, while the two durable index reads
+		// themselves must observe one engine snapshot.
+		expectation := b.sampleLatestIndexExpectation(ctx, r.Key, true)
+		ctx, err = b.withRangeSnapshotTimestamp(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var handled bool
+		val, modRev, handled, err = b.getLatestMetadataOnly(ctx, r.Key, expectation)
+		if !handled && err == nil {
+			val, modRev, err = b.get(ctx, r.Key, requireRev)
+		}
+	} else {
+		val, modRev, err = b.get(ctx, r.Key, requireRev)
+	}
 	if errors.Is(err, storage.ErrKeyNotFound) {
 		return &proto.GetResponse{
 			Header: responseHeader(curRev),
@@ -109,6 +127,99 @@ func (b *backend) getResponse(ctx context.Context, r *proto.GetRequest, metadata
 	}
 
 	return resp, nil
+}
+
+// getLatestMetadataOnly joins the authoritative revision index with the
+// auxiliary latest metadata directory at one engine snapshot. handled=false
+// means an old writer, stale entry, or malformed auxiliary value requires the
+// ordinary object path. The revision index remains authoritative throughout a
+// mixed-version rollout and after rollback.
+func (b *backend) getLatestMetadataOnly(
+	ctx context.Context, key []byte, expectation latestIndexExpectation,
+) (value []byte, modRevision uint64, handled bool, err error) {
+	revisionValue, revisionFound, raw, metadataFound, err := b.readLatestMetadataPair(ctx, key)
+	if err != nil {
+		return nil, 0, true, err
+	}
+	if !revisionFound {
+		if validationErr := validateMissingLatestRevisionIndex(key, expectation); validationErr != nil {
+			if validationErr = b.persistCurrentCountIndexCorruption(
+				ctx, expectation.readyRevision, validationErr,
+			); validationErr != nil {
+				return nil, 0, true, validationErr
+			}
+		}
+		return nil, 0, false, nil
+	}
+	currentRevision, currentTombstone, err := coder.ParseRevision(revisionValue)
+	if err != nil {
+		cause := invalidMVCCMetadataError(err, "decode revision index for key %q", key)
+		return nil, 0, true, b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+	}
+	if _, validationErr := validateLatestRevisionIndex(
+		key, currentRevision, currentTombstone, expectation,
+	); validationErr != nil {
+		if validationErr = b.persistCurrentCountIndexCorruption(
+			ctx, expectation.readyRevision, validationErr,
+		); validationErr != nil {
+			return nil, 0, true, validationErr
+		}
+	}
+
+	if !metadataFound {
+		return nil, 0, false, nil
+	}
+	meta, decodeErr := decodeLatestMetadata(raw)
+	if decodeErr != nil || meta.ModRevision != currentRevision || meta.Tombstone != currentTombstone {
+		// This directory is explicitly rebuildable and optional. A partial old
+		// rollout or damage to it must not make healthy authoritative MVCC data
+		// unreadable; the full path still performs its normal corruption checks.
+		return nil, 0, false, nil
+	}
+	if currentTombstone {
+		return nil, currentRevision, true, storage.ErrKeyNotFound
+	}
+	// FastKeysOnly does not expose a lease, matching projectMetadataValue.
+	return encodeValueWithMeta(nil, EtcdMetadata{
+		CreateRevision: meta.Metadata.CreateRevision,
+		Version:        meta.Metadata.Version,
+	}), currentRevision, true, nil
+}
+
+// readLatestMetadataPair uses one region-aware snapshot batch on TiKV. The two
+// small index rows may live in different Regions; BatchGetAt fans those reads
+// out concurrently without ever transferring the large object value.
+func (b *backend) readLatestMetadataPair(
+	ctx context.Context, key []byte,
+) (revisionValue []byte, revisionFound bool, metadataValue []byte, metadataFound bool, err error) {
+	revisionKey := b.coder.EncodeRevisionKey(key)
+	metadataKey := b.ks.EncodeLatestMetadataKey(key)
+	if timestamp, pinned := storage.SnapshotTimestampFromContext(ctx); pinned {
+		if reader, supported := storage.FindCapability[storage.SnapshotGetter](b.kv); supported {
+			values, batchErr := reader.BatchGetAt(ctx, [][]byte{revisionKey, metadataKey}, timestamp)
+			if batchErr != nil {
+				return nil, false, nil, false, batchErr
+			}
+			revisionValue, revisionFound = values[string(revisionKey)]
+			metadataValue, metadataFound = values[string(metadataKey)]
+			return revisionValue, revisionFound, metadataValue, metadataFound, nil
+		}
+	}
+	revisionValue, err = b.snapshotGet(ctx, revisionKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return nil, false, nil, false, nil
+	}
+	if err != nil {
+		return nil, false, nil, false, err
+	}
+	metadataValue, err = b.snapshotGet(ctx, metadataKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return revisionValue, true, nil, false, nil
+	}
+	if err != nil {
+		return nil, false, nil, false, err
+	}
+	return revisionValue, true, metadataValue, true, nil
 }
 
 // GetBatch resolves independent point reads against one engine snapshot with a

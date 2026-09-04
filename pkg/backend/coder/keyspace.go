@@ -46,6 +46,17 @@ type Keyspace struct {
 
 var internalKVInfix = []byte("\x00internal\x00")
 
+// latestMetadataInfix starts a rollout-safe latest-value metadata directory in
+// the already-reserved \x00 internal user-key namespace. Its physical keys are
+// deliberately valid revision-zero object keys: old binaries decode and skip
+// them exactly as they skip every per-key revision index, while new binaries
+// additionally classify them as internal. The auxiliary value is never placed
+// in a real user's revision-index value, so old point readers remain compatible.
+var (
+	latestMetadataInfix   = []byte("\x00latestmeta\x00")
+	latestMetadataTrailer = []byte{'$', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+)
+
 // EncodeInternalKey maps service metadata into a tenant-scoped raw storage
 // keyspace. Internal values are durable but deliberately bypass user MVCC,
 // revisions, event logs, watches, and the count index.
@@ -54,6 +65,27 @@ func (k *Keyspace) EncodeInternalKey(key []byte) []byte {
 	out = append(out, k.magic...)
 	out = append(out, internalKVInfix...)
 	return append(out, key...)
+}
+
+// EncodeLatestMetadataKey maps a user key to its tenant-scoped latest-value
+// metadata entry. Raw user bytes are injective because the reserved prefix and
+// revision-zero trailer have fixed lengths.
+func (k *Keyspace) EncodeLatestMetadataKey(userKey []byte) []byte {
+	out := make([]byte, 0, len(k.magic)+len(latestMetadataInfix)+len(userKey)+len(latestMetadataTrailer))
+	out = append(out, k.magic...)
+	out = append(out, latestMetadataInfix...)
+	out = append(out, userKey...)
+	return append(out, latestMetadataTrailer...)
+}
+
+func (k *Keyspace) isLatestMetadataKey(key []byte) bool {
+	prefixLen := len(k.magic) + len(latestMetadataInfix)
+	if len(key) < prefixLen+len(latestMetadataTrailer) ||
+		!bytes.Equal(key[:len(k.magic)], k.magic) ||
+		!bytes.Equal(key[len(k.magic):prefixLen], latestMetadataInfix) {
+		return false
+	}
+	return bytes.Equal(key[len(key)-len(latestMetadataTrailer):], latestMetadataTrailer)
 }
 
 // keyspaceNameRE bounds names to something that also embeds cleanly into the
@@ -156,7 +188,8 @@ func (k *Keyspace) IsInternalStorageKey(key []byte) bool {
 	internalPrefix := append(append([]byte(nil), k.magic...), internalKVInfix...)
 	return bytes.HasPrefix(key, k.elogMagic) ||
 		bytes.HasPrefix(key, k.elogMetaKey) ||
-		bytes.HasPrefix(key, internalPrefix)
+		bytes.HasPrefix(key, internalPrefix) ||
+		k.isLatestMetadataKey(key)
 }
 
 // DecodeEventLogKey splits one of this keyspace's event-log keys back into

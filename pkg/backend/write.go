@@ -47,6 +47,8 @@ type encodedPutMutation struct {
 	revisionKey           []byte
 	expectedRevisionValue []byte
 	newRevisionValue      []byte
+	latestMetadataKey     []byte
+	latestMetadataValue   []byte
 	objectMutations       []encodedMutation
 	eventKey              []byte
 	eventValue            []byte
@@ -60,7 +62,7 @@ func (b *backend) encodeCreateMutation(key, value []byte, meta EtcdMetadata, rev
 func (b *backend) encodePutMutation(key, value []byte, meta EtcdMetadata, previousRevision, newRevision uint64, verb proto.Event_EventType, subRevision, total uint32) encodedPutMutation {
 	objectKey := b.coder.EncodeObjectKey(key, newRevision)
 	eventKey, eventValue := encodeEventLogEntry(b.ks, newRevision, key, verb, previousRevision, subRevision, total)
-	return encodedPutMutation{
+	encoded := encodedPutMutation{
 		revisionKey:           b.coder.EncodeRevisionKey(key),
 		expectedRevisionValue: uint64ToBytes(previousRevision),
 		newRevisionValue:      uint64ToBytes(newRevision),
@@ -68,12 +70,22 @@ func (b *backend) encodePutMutation(key, value []byte, meta EtcdMetadata, previo
 		eventKey:              eventKey,
 		eventValue:            eventValue,
 	}
+	if b.config.EnableEtcdCompatibility {
+		encoded.latestMetadataKey = b.ks.EncodeLatestMetadataKey(key)
+		encoded.latestMetadataValue = encodeLatestMetadata(latestMetadata{
+			ModRevision: newRevision,
+			Metadata:    meta,
+		})
+	}
+	return encoded
 }
 
 type encodedDeleteMutation struct {
 	revisionKey           []byte
 	expectedRevisionValue []byte
 	newRevisionValue      []byte
+	latestMetadataKey     []byte
+	latestMetadataValue   []byte
 	objectKey             []byte
 	objectValue           []byte
 	eventKey              []byte
@@ -86,7 +98,7 @@ func (b *backend) encodeDeleteMutation(key []byte, expectedRevision, newRevision
 
 func (b *backend) encodeDeleteMutationAt(key []byte, expectedRevision, newRevision uint64, subRevision, total uint32) encodedDeleteMutation {
 	eventKey, eventValue := encodeEventLogEntry(b.ks, newRevision, key, proto.Event_DELETE, expectedRevision, subRevision, total)
-	return encodedDeleteMutation{
+	encoded := encodedDeleteMutation{
 		revisionKey:           b.coder.EncodeRevisionKey(key),
 		expectedRevisionValue: uint64ToBytes(expectedRevision),
 		newRevisionValue:      append(uint64ToBytes(newRevision), 0),
@@ -95,6 +107,14 @@ func (b *backend) encodeDeleteMutationAt(key []byte, expectedRevision, newRevisi
 		eventKey:              eventKey,
 		eventValue:            eventValue,
 	}
+	if b.config.EnableEtcdCompatibility {
+		encoded.latestMetadataKey = b.ks.EncodeLatestMetadataKey(key)
+		encoded.latestMetadataValue = encodeLatestMetadata(latestMetadata{
+			ModRevision: newRevision,
+			Tombstone:   true,
+		})
+	}
+	return encoded
 }
 
 // healOrphanIndex repairs a live object whose revision index is missing. It is

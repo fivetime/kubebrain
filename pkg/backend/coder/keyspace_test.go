@@ -57,6 +57,7 @@ func TestKeyspacesAreDisjoint(t *testing.T) {
 			ks.NewCoder().EncodeObjectKey([]byte("/registry/pods/p"), 42),
 			ks.EncodeEventLogKey(42, []byte("/registry/pods/p")),
 			ks.ElogMetaStartKey(),
+			ks.EncodeLatestMetadataKey([]byte("/registry/pods/p")),
 		} {
 			require.True(t, bytes.Compare(key, ks.ObjectKeyspaceStart()) >= 0 &&
 				bytes.Compare(key, ks.ObjectKeyspaceEnd()) < 0,
@@ -122,5 +123,16 @@ func TestIsInternalStorageKey(t *testing.T) {
 	require.True(t, ks.IsInternalStorageKey(ks.EncodeEventLogKey(42, []byte("/key"))))
 	require.True(t, ks.IsInternalStorageKey(ks.ElogMetaStartKey()))
 	require.True(t, ks.IsInternalStorageKey(ks.EncodeInternalKey([]byte("lease/meta"))))
+	metadataKey := ks.EncodeLatestMetadataKey([]byte{'a', 0, '$', 0xff})
+	require.True(t, ks.IsInternalStorageKey(metadataKey))
+	metadataUserKey, metadataRevision, decodeErr := ks.NewCoder().Decode(metadataKey)
+	require.NoError(t, decodeErr)
+	require.Zero(t, metadataRevision, "old binaries must parse and skip this as a revision index")
+	require.True(t, bytes.HasPrefix(metadataUserKey, latestMetadataInfix))
 	require.False(t, ks.IsInternalStorageKey(ks.NewCoder().EncodeObjectKey([]byte("/key"), 42)))
+	// A user key may begin with the metadata-family infix. Classification uses
+	// the disjoint trailer too, so the object must remain user-visible.
+	require.False(t, ks.IsInternalStorageKey(ks.NewCoder().EncodeObjectKey(
+		append(append([]byte(nil), latestMetadataInfix...), []byte("user")...), 42,
+	)))
 }
