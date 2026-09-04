@@ -70795,6 +70795,85 @@ critical 和最近 30 秒均为 0。KubeBrain/TiKV 3+3 Ready/restart 0；PD 3 Re
 A5676 的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮关闭 standalone/historical point KeysOnly 的长 payload retention；
 只读 Txn 的混合批量 point prefetch 仍需按请求投影需求去重后独立优化，TiKV inline layout 也意味着 point value 网络读取尚未消除。
 
+### A5726：read-only Txn point batch 按键投影并支持嵌套升级
+
+上游 `/root/etcd/server/etcdserver/txn/range.go::executeRange` 对
+`KeysOnly && SortTarget != VALUE` 设置 `FastKeysOnly`。KubeBrain staged read-only Txn 原先会先用
+`BatchGetAtRevision` 为全部 point range 缓存完整 value；同一键又可能在当前层或后续已选中的 nested Txn 中被完整读取，因而
+不能简单把整个 batch 改成 KeysOnly。本轮新增逐键 `metadataOnly` 模式：当前层先合并重复键需求且 full 优先；缓存记录投影状态，
+后续 nested full read 对单键执行一次完整升级。旧 backend adapter 仍回退普通 batch，缺失 batch 结果 fail closed。生产 backend
+的 `GetBatch`/`GetBatchProjected` 共用同一个 snapshot、revision/tombstone/legacy metadata/corruption 校验路径，每个 worker 只在
+完整性校验后投影 envelope；shim 同时校验响应数量，避免越界或静默错配。该优化只覆盖 read-only Txn point prefetch；含写 Txn
+仍可物化 value，当前 TiKV inline-value 布局也仍会从网络读取 payload，不能宣称消除了 TiKV 网络流量。
+
+新增 `TestReadonlyTxnPointPrefetchProjectsPerKeyAndUpgradesNestedCache`，旧实现 `0.051s` RED，证明纯 fast 两键和混合重复键仍调用
+普通 full batch，nested full read 也没有 projected upgrade；现覆盖纯投影、full-dominates、嵌套升级和 adapter 漏键拒绝。
+`TestReadonlyTxnPointPrefetchFallsBackToLegacyFullBatch` 固定兼容回退，
+`TestBackendShimProjectedPointBatchPreservesPerKeyModes` 固定 shim/raw 的逐键模式、revision 和短响应拒绝，
+`TestGetBatchProjectedDropsPayloadPerKeyAndPreservesSnapshot` 用两个更新后的 2 MiB value 证明投影 envelope 小于 64 bytes、完整模式
+仍大于 2 MiB，且 metadata 与 snapshot 精确一致。测试夹具曾把第二次 Update 的 `Revision` 留空，等待 revision 不能使 version 从 1
+变 2；补传首个 header revision 后恢复真实更新语义，随后修正严格断言的 `int64/uint64` 类型。bridge 测试也改为像生产代码一样
+对 `NewBackendShim` 的窄接口做可选能力断言。
+
+最终提交 `a4f9eb0bfc5d400696c44bdc64bbb30c20a7bdf8`；聚焦 backend/server 为 `0.107/0.062s`，完整包为
+`50.473/136.875s`，聚焦 race 为 `1.450/1.229s`，vet、gofmt、diff check 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `253.030/447.690/302.587/572.988s` 全部 GREEN。初次提交 `86e3b818` 时误漏
+`pkg/server/etcd/backendshim_keysonly_test.go`；实现和其余测试已进入提交，但 bridge 测试仍在工作树。该提交后立即执行的 verifier
+与四分片 `251.390/444.648/303.315/570.102s` 全绿，同时作为包含遗漏测试的 amend 前门禁；随后 amend 得到最终提交，并再次
+执行 verifier 与四分片 `250.430/445.039/302.032/569.847s` 全绿。该过程没有跳过任何最终代码状态的提交前后精确门禁。
+
+候选 `docker.io/library/kubebrain:a5726-a4f9eb0bfc5d` 内嵌版本 `0.0.0-a4f9eb0bfc5d`、完整 SHA、build time
+`2026-09-04T11:02:54Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI nested index/platform/config/attestation 为
+`sha256:9e7f5d1165b18788b946674538170c78d547ba93bc89c887dd373b421c6b1bae`、
+`sha256:41cefd3525d491c61e66fc426ead553663bd624f099d09e46aea5c236137467f`、
+`sha256:4a91a15c92cd5e789a670bffcacd243884c86a6891f34ec4be8109090c5c1eba`、
+`sha256:dfc850f04ffa530a8e1e57101524c866334c5f58c843986493af7e1c04a956fa`；attestation config、SPDX/SLSA
+layer 为 `sha256:2023b71a4ebf33859b599c085184f78e84efa30911e670d3d004d46e130d4740`、
+`sha256:934633298f1528f8ec16c76daf517b2986cfb53f3d04c5e2d22351ee15e76bcb`、
+`sha256:ca92d670e59081664996afacd2067aee6daf26d42e9095d47bf7f5ffb40cec38`。78/78 descriptor edges、71
+layers/diff IDs 全部正确；SPDX 含 2,592 packages/381 files/8,096 relationships，SLSA subject、四项 build args 与三项
+materials 均匹配。914,604,544-byte archive SHA-256 为
+`2f86054753ffb6cd6c0f66ffb7a2b877b720ecdea7aa27f5750a8eb0b886b408`；顶层 `index.json` SHA-256/Kind runtime
+imageID 为 `sha256:7e06f07a7393c837da1a0c9b8e6679ca1433ec1d99febb09d1ef050f3a6d7495`。非 root
+`65532:65532`、入口、labels 与运行二进制身份均通过。
+
+以 UID/resourceVersion/container/current image/full 22 args 五类原子 test，从稳定 generation 846/RV `8377127`
+部署到候选 generation 847/RV `8385863`；三 Pod runtime 均为上述顶层 index digest、Ready/restart 0、参数未漂移。首次
+`rollout status` 的观察进程在输出等待信息后结束，但 StatefulSet 控制器仍继续工作；重新读取权威状态并持续观察，最终 3/3 完全
+收敛，不能把观察进程结束误记为 rollout 结束或失败。第一组后台 port-forward 随短生命周期 shell 一起退出，门禁在第一条 curl
+即报 18080 无监听且未执行测试；改用可跟踪长生命周期会话承载六条转发后，同一候选完整 HEAD readonly gate GREEN。写入前
+revision/index/applied 为 `66765/66765/66765`，cluster ID `7662961163671170154`、HashKV `3915433493`、compact
+revision `66760`、term `562`、leader `2393892952`，Auth disabled/revision 281、Alarm 与用户 keyspace 为空。
+
+真实 raw gRPC probe 建立两个 1 MiB leased point，三个 endpoint 各 7 轮执行双 KeysOnly point Txn、fast/full 同键混合 Txn
+和 outer fast + nested full Txn，共 63 个 read-only Txn 全部通过：投影项 value 为空、lease 0 且 revision/version metadata
+保留，full 项精确保留 1 MiB value 与 lease。初版探针把两个 1 MiB Put 合在一个 Txn，编码后请求为 2,097,270 bytes，超过
+2,097,152-byte gRPC 上限 122 bytes，被原子拒绝且未写键；改成两个独立 Put 后通过。该失败路径用 `os.Exit` 跳过 defer，
+留下一个空租约；JSON 的十进制 ID 又被误直接交给按十六进制解析的 `etcdctl lease revoke`，首次返回 not found。把
+`1020811401784833` 精确转换为 `3a06c2cfc6e01` 后撤销成功，最终 `/a5726-runtime-`、LeaseList 和 Alarm 均为空。终态
+revision/index/applied 为 `66768/66768/66768`，HashKV `1744637105`、compact revision `66760`。
+
+候选三轮九次 health 全部成功（`59.341–99.193ms`），三个 TiKV store Up、各 14 Regions，pending/down/miss/extra/learner
+五类检查连续三轮全零。完整 `validate-tikv-region-health.sh` 同时按设计拒绝 Kind local-path 非 CSI 卷、共享文件系统容量远大于
+PVC 声明且宿主盘使用率 98%；这是 A5676 已知生产隔离风险，随后直接读取 PD 权威 store/Region API 单独证明数据面无异常，不能
+把综合脚本失败伪装成绿色。候选日志 `737/279/784` 行、广义关键字 `8/2/6`，均为 rollout/门禁预期 405、cancel、drain/reset；
+critical 和最近 60 秒均为 0。
+
+以同类五类原子 test 从候选 RV `8385863` 回滚固定稳定 digest，generation/observed `848/848`、RV `8387330`；三 Pod
+runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，22 项参数
+未漂移。关闭候选 Pod 生命周期的转发并为新 Pod 重建后，稳定门禁（排除旧稳定镜像不含的候选 info-metrics 代际合同）完整
+GREEN；revision/index/applied、HashKV、compact revision 为 `66768/66768/66768/1744637105/66760`，term `564`、
+leader `231094427`，Auth disabled/revision 281，Alarm、用户前缀与 LeaseList 为空。稳定三轮九次 health 全部成功
+（`56.060–79.965ms`），三个 store Up、五类 Region 检查三轮全零。稳定日志 `395/419/337` 行、广义关键字 `6/3/6`，
+仅有门禁预期 405/cancel 与 rollout drain/reset/NOT_SERVING，critical 和最近 30 秒均为 0。KubeBrain/TiKV 3+3
+Ready/restart 0；PD 3 Ready、各沿用历史 restart 1。
+
+最终关闭六个 port-forward，确认 Pod 候选引用为 0 后精确删除 Kind tag/import/config 三个候选名称、Docker candidate tag/index
+与 1.8 GiB `/dev/shm/kubebrain-a5726.7pm9nu`；稳定镜像、源码和数据卷未删除。六个端口 listener 为 0、临时 probe 源码
+和候选目录均不存在。宿主根盘约 98%、可用 57 GiB；共享 build cache 未擅自清理，Kind local-path 非 CSI 存储隔离与容量压力
+仍是明确的生产阻塞风险。本轮关闭 read-only Txn point batch 的跨 backend/shim 长 payload retention，但 TiKV inline layout 的
+网络读取和含写 Txn 的 value 物化仍需后续演进。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
