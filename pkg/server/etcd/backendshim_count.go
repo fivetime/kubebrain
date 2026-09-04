@@ -69,8 +69,9 @@ type countResolver struct {
 	rangeCountFlight singleflight.Group
 	// countProxy resolves a count via the leader when the local index cannot
 	// serve it (#41: the count index is leader-only, so a follower's count
-	// fallback was a full range scan). nil until wired.
-	countProxy func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool)
+	// fallback was a full range scan). The header revision stays paired with the
+	// count across the reduced internal interface. nil until wired.
+	countProxy func(ctx context.Context, r *etcdserverpb.RangeRequest) (count int64, headerRevision int64, served bool)
 }
 
 func newCountResolver(shim *backendShim) *countResolver {
@@ -81,7 +82,8 @@ func (b *backendShim) CountAtRevision(ctx context.Context, key, end []byte, rev 
 	if rev > uint64(math.MaxInt64) {
 		return 0, false
 	}
-	return b.resolveCountFromIndex(ctx, key, end, int64(rev))
+	count, _, served := b.resolveCountFromIndex(ctx, key, end, int64(rev))
+	return count, served
 }
 
 func (cr *countResolver) exactRangeCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
@@ -112,7 +114,7 @@ func (cr *countResolver) exactRangeCount(ctx context.Context, r *etcdserverpb.Ra
 		// follower/transition miss (#41), keeping the rolling scheme O(pageSize)
 		// per page — see resolveCountFromIndex.
 		if bytes.Compare(r.Key, e.lastStart) > 0 {
-			delta, served := cr.resolveCountFromIndex(ctx, e.lastStart, r.Key, r.Revision)
+			delta, _, served := cr.resolveCountFromIndex(ctx, e.lastStart, r.Key, r.Revision)
 			if served {
 				c := e.count - delta
 				cr.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c}, int64(len(r.Key)))
@@ -143,9 +145,9 @@ func (cr *countResolver) exactRangeCount(ctx context.Context, r *etcdserverpb.Ra
 // the call site. Single-sourcing the ladder keeps the three count paths from
 // drifting (review #51). proxiedCount only reads Key/RangeEnd/Revision, so the
 // minimal request here is equivalent to forwarding the caller's.
-func (cr *countResolver) resolveCountFromIndex(ctx context.Context, key, end []byte, rev int64) (int64, bool) {
+func (cr *countResolver) resolveCountFromIndex(ctx context.Context, key, end []byte, rev int64) (count int64, headerRevision int64, served bool) {
 	if c, served := cr.shim.backend.CountAtRevision(ctx, key, end, normalizeRangeRevision(rev)); served {
-		return c, true
+		return c, int64(cr.shim.backend.GetCurrentRevision()), true
 	}
 	return cr.proxiedCount(ctx, &etcdserverpb.RangeRequest{Key: key, RangeEnd: end, Revision: rev, CountOnly: true})
 }
@@ -155,7 +157,7 @@ func (cr *countResolver) exactRangeCountUncached(ctx context.Context, r *etcdser
 	// roots the per-page O(range) count scan that made paginated LIST O(N^2).
 	// Revision filters change the counted set, which the index does not model.
 	if !hasRangeRevisionFilters(r) {
-		if c, ok := cr.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, r.Revision); ok {
+		if c, _, ok := cr.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, r.Revision); ok {
 			return c, nil
 		}
 	}
@@ -183,19 +185,19 @@ func (cr *countResolver) exactRangeCountUncached(ctx context.Context, r *etcdser
 // the wire) for a count the local index cannot serve. false means unavailable
 // (not wired, this node IS the leader, or the forward failed) and the caller
 // must fall back to its local path.
-func (cr *countResolver) proxiedCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool) {
+func (cr *countResolver) proxiedCount(ctx context.Context, r *etcdserverpb.RangeRequest) (count int64, headerRevision int64, served bool) {
 	if cr.countProxy == nil {
-		return 0, false
+		return 0, 0, false
 	}
-	c, ok := cr.countProxy(ctx, r)
+	c, revision, ok := cr.countProxy(ctx, r)
 	if ok {
 		cr.shim.metricCli.EmitCounter("count.proxy.hit", 1)
 	}
-	return c, ok
+	return c, revision, ok
 }
 
 // SetCountProxy implements BackendShim.
-func (cr *countResolver) SetCountProxy(f func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool)) {
+func (cr *countResolver) SetCountProxy(f func(ctx context.Context, r *etcdserverpb.RangeRequest) (count int64, headerRevision int64, served bool)) {
 	cr.countProxy = f
 }
 
@@ -235,9 +237,9 @@ func (cr *countResolver) count(
 		// rebuild miss (#41; a steady follower's Revision>0 Range was already
 		// forwarded wholesale by kv.go). Last resort: a revision-honoring List
 		// (strips Kvs for CountOnly). See resolveCountFromIndex.
-		if c, ok := cr.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, r.Revision); ok {
+		if c, headerRevision, ok := cr.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, r.Revision); ok {
 			return &etcdserverpb.RangeResponse{
-				Header: txnHeader(int64(cr.shim.backend.GetCurrentRevision())),
+				Header: txnHeader(headerRevision),
 				Count:  c,
 			}, nil
 		}
@@ -252,15 +254,12 @@ func (cr *countResolver) count(
 
 	// Current-revision count. Prefer the local index, then the leader's index
 	// over the wire (#41), then the pass-through count scan.
-	// A proxied rev=0 count is taken at the LEADER's current revision, which can
-	// sit slightly ahead of the follower-stamped header revision; k8s consumes
-	// this count only as the remainingItemCount estimate, where a small skew is
-	// tolerated by contract. Forcing the follower's revision instead would trade
-	// this for a List materialization on the leader whenever its index cannot
-	// serve that historical revision — a far worse failure mode (review #51).
-	if c, ok := cr.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, 0); ok {
+	// A proxied rev=0 count is taken at the leader's current revision. Preserve
+	// that response revision alongside the reduced count so the follower does not
+	// stamp a newer snapshot's count with its older process-local watermark.
+	if c, headerRevision, ok := cr.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, 0); ok {
 		return &etcdserverpb.RangeResponse{
-			Header: txnHeader(int64(cr.shim.backend.GetCurrentRevision())),
+			Header: txnHeader(headerRevision),
 			Count:  c,
 		}, nil
 	}

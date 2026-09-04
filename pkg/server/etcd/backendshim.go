@@ -204,9 +204,9 @@ type BackendShim interface {
 
 	// SetCountProxy wires a remote count resolver, consulted when the local
 	// count index cannot serve (follower — the index is leader-only; #41). It
-	// returns (count, true) when the leader answered, (0, false) to fall back
-	// to the local scan.
-	SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool))
+	// returns the count and its exact response-header revision when the leader
+	// answered; served=false falls back to the local scan.
+	SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (count int64, headerRevision int64, served bool))
 }
 
 type backendPointBatchGetter interface {

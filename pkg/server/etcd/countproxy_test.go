@@ -100,16 +100,19 @@ func TestCountProxyValidatesPeerResponseBeforeUsingCount(t *testing.T) {
 		name       string
 		response   func(*RPCServer) (*etcdserverpb.RangeResponse, error)
 		wantCount  int64
+		wantHeader bool
 		wantHit    bool
 		wantKVFail bool
 	}{
 		{
 			name: "valid",
 			response: func(server *RPCServer) (*etcdserverpb.RangeResponse, error) {
-				return &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 1), Count: 42}, nil
+				revision := int64(server.backend.GetCurrentRevision()) + 1
+				return &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, revision), Count: 42}, nil
 			},
-			wantCount: 42,
-			wantHit:   true,
+			wantCount:  42,
+			wantHeader: true,
+			wantHit:    true,
 		},
 		{
 			name: "missing header",
@@ -122,7 +125,7 @@ func TestCountProxyValidatesPeerResponseBeforeUsingCount(t *testing.T) {
 		{
 			name: "foreign cluster",
 			response: func(server *RPCServer) (*etcdserverpb.RangeResponse, error) {
-				header := proxiedResponseHeader(server, 1)
+				header := proxiedResponseHeader(server, int64(server.backend.GetCurrentRevision())+1)
 				header.ClusterId++
 				return &etcdserverpb.RangeResponse{Header: header, Count: 42}, nil
 			},
@@ -132,7 +135,8 @@ func TestCountProxyValidatesPeerResponseBeforeUsingCount(t *testing.T) {
 		{
 			name: "negative count",
 			response: func(server *RPCServer) (*etcdserverpb.RangeResponse, error) {
-				return &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 1), Count: -1}, nil
+				header := proxiedResponseHeader(server, int64(server.backend.GetCurrentRevision())+1)
+				return &etcdserverpb.RangeResponse{Header: header, Count: -1}, nil
 			},
 			wantCount:  3,
 			wantKVFail: true,
@@ -140,7 +144,8 @@ func TestCountProxyValidatesPeerResponseBeforeUsingCount(t *testing.T) {
 		{
 			name: "count-only more",
 			response: func(server *RPCServer) (*etcdserverpb.RangeResponse, error) {
-				return &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 1), Count: 42, More: true}, nil
+				header := proxiedResponseHeader(server, int64(server.backend.GetCurrentRevision())+1)
+				return &etcdserverpb.RangeResponse{Header: header, Count: 42, More: true}, nil
 			},
 			wantCount:  3,
 			wantKVFail: true,
@@ -165,25 +170,35 @@ func TestCountProxyValidatesPeerResponseBeforeUsingCount(t *testing.T) {
 			}
 
 			proxyCalls := 0
+			var proxyHeaderRevision int64
 			var server *RPCServer
 			server = New(be, rec, testPeerService{
 				proxyEnabled: true,
 				rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 					proxyCalls++
-					return test.response(server)
+					response, err := test.response(server)
+					proxyHeaderRevision = response.GetHeader().GetRevision()
+					return response, err
 				},
 			})
+			beforeRevision := server.backend.GetCurrentRevision()
 			request := &etcdserverpb.RangeRequest{
 				Key: []byte(pfx + "/"), RangeEnd: []byte(pfx + "0"), CountOnly: true,
 			}
 			response, err := server.backend.Count(context.Background(), request)
 			require.NoError(t, err)
 			require.Equal(t, test.wantCount, response.Count)
+			if test.wantHeader {
+				require.Positive(t, proxyHeaderRevision)
+				require.Equal(t, proxyHeaderRevision, response.GetHeader().GetRevision())
+				require.Equal(t, uint64(proxyHeaderRevision), server.backend.GetCurrentRevision())
+			}
 			require.Equal(t, 1, proxyCalls)
 			if test.wantHit {
 				require.Equal(t, []interface{}{int64(0), 1}, countProxyOutcomeValues(rec, countProxyOutcomeHit))
 				require.Equal(t, []interface{}{int64(0)}, countProxyOutcomeValues(rec, countProxyOutcomeFailure))
 			} else {
+				require.Equal(t, beforeRevision, server.backend.GetCurrentRevision())
 				require.Equal(t, []interface{}{int64(0)}, countProxyOutcomeValues(rec, countProxyOutcomeHit))
 				require.Equal(t, []interface{}{int64(0), 1}, countProxyOutcomeValues(rec, countProxyOutcomeFailure))
 			}
@@ -228,10 +243,10 @@ func TestCountProxyServesFollowerCounts(t *testing.T) {
 
 	// Proxy answers: its count wins over the local scan.
 	proxied := 0
-	shim.SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool) {
+	shim.SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, int64, bool) {
 		proxied++
 		require.True(t, r.CountOnly)
-		return 42, true
+		return 42, 1, true
 	})
 	resp, err := shim.Count(ctx, req)
 	require.NoError(t, err)
@@ -239,8 +254,8 @@ func TestCountProxyServesFollowerCounts(t *testing.T) {
 	require.Equal(t, 1, proxied)
 
 	// Proxy declines: the local fallback still answers with the real count.
-	shim.SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool) {
-		return 0, false
+	shim.SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, int64, bool) {
+		return 0, 0, false
 	})
 	resp, err = shim.Count(ctx, req)
 	require.NoError(t, err)

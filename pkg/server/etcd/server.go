@@ -326,13 +326,13 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	// proxy entirely (a request may consult it twice — first-page rolling count,
 	// then the rev=0 count path — and election gaps affect every request at once).
 	var proxyQuietUntil atomic.Int64
-	server.backend.SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool) {
+	server.backend.SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (count int64, headerRevision int64, served bool) {
 		if peers == nil || peers.IsLeader() || !peers.EtcdProxyEnabled() {
-			return 0, false
+			return 0, 0, false
 		}
 		if time.Now().UnixNano() < proxyQuietUntil.Load() {
 			emitCountProxyOutcome(server.metricCli, countProxyOutcomeQuietSkip)
-			return 0, false
+			return 0, 0, false
 		}
 		req := proto.Clone(r).(*etcdserverpb.RangeRequest)
 		req.CountOnly = true
@@ -352,7 +352,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 			proxyQuietUntil.Store(time.Now().Add(countProxyFailureQuiet).UnixNano())
 			server.metricCli.EmitCounter("count.proxy.err", 1)
 			emitCountProxyOutcome(server.metricCli, countProxyOutcomeFailure)
-			return 0, false
+			return 0, 0, false
 		}
 		// Mark the forward so the leader can fast-reject it (rather than full-scan)
 		// while its count index is rebuilding; on that reject the failure branch
@@ -371,10 +371,11 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 			proxyQuietUntil.Store(time.Now().Add(countProxyFailureQuiet).UnixNano())
 			server.metricCli.EmitCounter("count.proxy.err", 1)
 			emitCountProxyOutcome(server.metricCli, countProxyOutcomeFailure)
-			return 0, false
+			return 0, 0, false
 		}
+		server.observeForwardedRevision(resp.GetHeader(), nil)
 		emitCountProxyOutcome(server.metricCli, countProxyOutcomeHit)
-		return resp.Count, true
+		return resp.Count, resp.GetHeader().GetRevision(), true
 	})
 	// Upstream recovers leases synchronously from local bbolt. Our equivalent
 	// crosses PD/TiKV, so a network black hole must not prevent the process from
