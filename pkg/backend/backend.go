@@ -438,6 +438,9 @@ type backend struct {
 	// for the same prefix issue two extra TiKV scans each. The cache is strictly
 	// bounded; failed probes are never stored.
 	boundaryProbeCache boundaryProbeCache
+	// latestMetadataBackfill asynchronously heals rollout-safe auxiliary rows
+	// discovered missing or stale by the latest KeysOnly range fast path.
+	latestMetadataBackfill *latestMetadataBackfillQueue
 
 	// historyScanSem bounds the number of concurrent watch-history fallback
 	// scans. After a cache reset (e.g. leader change) every reconnecting watcher
@@ -660,6 +663,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	initRestartWitnessCorruptionMetrics(metricCli)
 	initWriteFenceRejectionMetrics(metricCli)
 	initOrphanIndexHealMetrics(metricCli)
+	initLatestMetadataBackfillMetrics(metricCli)
 	initWatcherSlowConsumerMetrics(metricCli)
 	ks, ksErr := coder.NewKeyspace(config.Keyspace)
 	if ksErr != nil {
@@ -717,6 +721,9 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	// rotation is not recursively fenced by the old token.
 	b.kv = &leadershipFencedStorage{KvStorage: kv, backend: b}
 
+	if config.EnableEtcdCompatibility {
+		b.latestMetadataBackfill = newLatestMetadataBackfillQueue()
+	}
 	if config.EnableCountIndex && config.EnableEtcdCompatibility {
 		b.countIndex = countindex.New(config.CountIndexMaxKeys)
 	}
@@ -749,6 +756,8 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	b.startWorker(b.emitCountIndexMetrics)
 	// Live watch backlog gauge, including an authoritative idle zero.
 	b.startWorker(b.emitWatchRevisionLagMetrics)
+	// Bounded, deduplicated rollout repair for old-writer metadata misses.
+	b.startWorker(b.runLatestMetadataBackfill)
 
 	return b
 }

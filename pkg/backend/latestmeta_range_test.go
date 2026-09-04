@@ -40,6 +40,7 @@ func newLatestMetadataRangeBackend(t *testing.T) (*backend, *latestMetadataReadP
 		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
 		EnableCountIndex: true,
 	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(b.stopWorkers)
 	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
 	return b, store
 }
@@ -99,16 +100,99 @@ func TestLatestListKeysOnlyUsesMetadataDirectoryWithoutObjectScan(t *testing.T) 
 	// A node written by an older binary has no auxiliary row. Keep the
 	// count-index ordering fast path, but resolve that key through its
 	// authoritative object row instead of omitting it.
-	missingMetadata := store.BeginBatchWrite()
-	missingMetadata.Del(b.ks.EncodeLatestMetadataKey(keys[2]))
-	require.NoError(t, missingMetadata.Commit(ctx))
 	store.setObjectKey(b.coder.EncodeObjectKey(keys[2], createRevisions[2]))
-	store.objectReads.Store(0)
-	response, err = b.ListKeysOnly(ctx, &proto.RangeRequest{Key: []byte(p), End: end})
+	for _, test := range []struct {
+		name  string
+		value []byte
+	}{
+		{name: "missing"},
+		{name: "stale", value: encodeLatestMetadata(latestMetadata{
+			ModRevision: createRevisions[2] - 1,
+			Metadata: EtcdMetadata{
+				CreateRevision: createRevisions[2] - 1,
+				Version:        1,
+			},
+		})},
+		{name: "malformed", value: []byte("not-an-index")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			seed := store.BeginBatchWrite()
+			if test.value == nil {
+				seed.Del(b.ks.EncodeLatestMetadataKey(keys[2]))
+			} else {
+				seed.Put(b.ks.EncodeLatestMetadataKey(keys[2]), test.value, 0)
+			}
+			require.NoError(t, seed.Commit(ctx))
+			store.objectReads.Store(0)
+			response, readErr := b.ListKeysOnly(ctx, &proto.RangeRequest{Key: []byte(p), End: end})
+			require.NoError(t, readErr)
+			require.Len(t, response.Kvs, len(keys))
+			require.Equal(t, keys[2], response.Kvs[2].Key)
+			require.EqualValues(t, 1, store.objectReads.Load(), "an old-writer row must fall back to its object")
+			require.Eventually(t, func() bool {
+				raw, getErr := store.Get(ctx, b.ks.EncodeLatestMetadataKey(keys[2]))
+				if getErr != nil {
+					return false
+				}
+				meta, decodeErr := decodeLatestMetadata(raw)
+				return decodeErr == nil && meta.ModRevision == createRevisions[2]
+			}, 5*time.Second, 2*time.Millisecond, "the bounded backfill worker must heal an old-writer row")
+			store.objectReads.Store(0)
+			response, readErr = b.ListKeysOnly(ctx, &proto.RangeRequest{Key: []byte(p), End: end})
+			require.NoError(t, readErr)
+			require.Len(t, response.Kvs, len(keys))
+			require.Zero(t, store.objectReads.Load(), "the healed metadata row must make the next range payload-free")
+		})
+	}
+}
+
+func TestLatestMetadataBackfillCannotReplaceConcurrentUpdate(t *testing.T) {
+	b, store := newLatestMetadataRangeBackend(t)
+	ctx := context.Background()
+	key := []byte(prefix + "/latest-metadata-backfill/concurrent")
+	created, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{Key: key, Value: []byte("one")}})
 	require.NoError(t, err)
-	require.Len(t, response.Kvs, len(keys))
-	require.Equal(t, keys[2], response.Kvs[2].Key)
-	require.EqualValues(t, 1, store.objectReads.Load(), "an old-writer row must fall back to its object")
+	remove := store.BeginBatchWrite()
+	remove.Del(b.ks.EncodeLatestMetadataKey(key))
+	require.NoError(t, remove.Commit(ctx))
+
+	task := latestMetadataBackfillTask{
+		key: key, revision: created.Header.Revision,
+		metadata: EtcdMetadata{CreateRevision: created.Header.Revision, Version: 1},
+	}
+	updated, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: []byte("two"), Revision: created.Header.Revision,
+	}})
+	require.NoError(t, err)
+	require.True(t, updated.Succeeded)
+	require.ErrorIs(t, b.applyLatestMetadataBackfill(ctx, task), storage.ErrCASFailed)
+
+	raw, err := store.Get(ctx, b.ks.EncodeLatestMetadataKey(key))
+	require.NoError(t, err)
+	meta, err := decodeLatestMetadata(raw)
+	require.NoError(t, err)
+	require.Equal(t, updated.Header.Revision, meta.ModRevision)
+	require.Equal(t, EtcdMetadata{CreateRevision: created.Header.Revision, Version: 2}, meta.Metadata)
+}
+
+func TestLatestMetadataBackfillHonorsCorruptAlarm(t *testing.T) {
+	b, store := newLatestMetadataRangeBackend(t)
+	ctx := context.Background()
+	key := []byte(prefix + "/latest-metadata-backfill/corrupt")
+	created, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{Key: key, Value: []byte("value")}})
+	require.NoError(t, err)
+	remove := store.BeginBatchWrite()
+	remove.Del(b.ks.EncodeLatestMetadataKey(key))
+	require.NoError(t, remove.Commit(ctx))
+	require.NoError(t, b.ArmCorrupt(ctx, 5731001))
+
+	err = b.applyLatestMetadataBackfill(ctx, latestMetadataBackfillTask{
+		key: key, revision: created.Header.Revision,
+		metadata: EtcdMetadata{CreateRevision: created.Header.Revision, Version: 1},
+	})
+	require.ErrorIs(t, err, ErrCorruptAlarmActive)
+	_, err = store.Get(ctx, b.ks.EncodeLatestMetadataKey(key))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 }
 
 func TestLatestRangeStreamKeysOnlyPaginatesMetadataDirectory(t *testing.T) {

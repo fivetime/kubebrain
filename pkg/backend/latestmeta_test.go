@@ -128,6 +128,7 @@ func TestLatestKeysOnlyUsesMetadataIndexAndFallsBackSafely(t *testing.T) {
 	b := NewBackend(store, Config{
 		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
 	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	defer b.stopWorkers()
 	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
 	ctx := context.Background()
 	key := []byte(prefix + "/latest-metadata/large")
@@ -188,6 +189,19 @@ func TestLatestKeysOnlyUsesMetadataIndexAndFallsBackSafely(t *testing.T) {
 			require.NotNil(t, response.Kv)
 			require.Equal(t, created.Header.Revision, response.Kv.Revision)
 			require.EqualValues(t, 1, store.objectReads.Load(), "optional-index miss must use the authoritative object path")
+			require.Eventually(t, func() bool {
+				raw, getErr := store.Get(ctx, indexKey)
+				if getErr != nil {
+					return false
+				}
+				meta, decodeErr := decodeLatestMetadata(raw)
+				return decodeErr == nil && meta.ModRevision == created.Header.Revision
+			}, 5*time.Second, 2*time.Millisecond)
+			store.objectReads.Store(0)
+			response, err = b.GetKeysOnly(ctx, &proto.GetRequest{Key: key})
+			require.NoError(t, err)
+			require.NotNil(t, response.Kv)
+			require.Zero(t, store.objectReads.Load(), "the healed point metadata must avoid another object fetch")
 		})
 	}
 }

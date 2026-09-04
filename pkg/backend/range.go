@@ -72,6 +72,7 @@ func (b *backend) getResponse(ctx context.Context, r *proto.GetRequest, metadata
 
 	var val []byte
 	var modRev uint64
+	var latestMetadataBackfill *latestMetadataBackfillTask
 	if metadataOnly && requireRev == 0 && b.config.EnableEtcdCompatibility {
 		// Sample before pinning: a ready in-memory directory can witness a
 		// corrupt physical revision index, while the two durable index reads
@@ -82,9 +83,17 @@ func (b *backend) getResponse(ctx context.Context, r *proto.GetRequest, metadata
 			return nil, err
 		}
 		var handled bool
-		val, modRev, handled, err = b.getLatestMetadataOnly(ctx, r.Key, expectation)
+		val, modRev, handled, latestMetadataBackfill, err = b.getLatestMetadataOnly(ctx, r.Key, expectation)
 		if !handled && err == nil {
 			val, modRev, err = b.get(ctx, r.Key, requireRev)
+			if err == nil && latestMetadataBackfill != nil && modRev == latestMetadataBackfill.revision {
+				meta, _, inlined, decodeErr := DecodeInlineValueChecked(val)
+				if decodeErr == nil && inlined &&
+					ValidateEtcdMetadataAtRevision(meta, modRev, "latest metadata backfill source") == nil {
+					latestMetadataBackfill.metadata = meta
+					b.queueLatestMetadataBackfill(*latestMetadataBackfill)
+				}
+			}
 		}
 	} else {
 		val, modRev, err = b.get(ctx, r.Key, requireRev)
@@ -136,25 +145,25 @@ func (b *backend) getResponse(ctx context.Context, r *proto.GetRequest, metadata
 // mixed-version rollout and after rollback.
 func (b *backend) getLatestMetadataOnly(
 	ctx context.Context, key []byte, expectation latestIndexExpectation,
-) (value []byte, modRevision uint64, handled bool, err error) {
+) (value []byte, modRevision uint64, handled bool, backfill *latestMetadataBackfillTask, err error) {
 	revisionValue, revisionFound, raw, metadataFound, err := b.readLatestMetadataPair(ctx, key)
 	if err != nil {
-		return nil, 0, true, err
+		return nil, 0, true, nil, err
 	}
 	if !revisionFound {
 		if validationErr := validateMissingLatestRevisionIndex(key, expectation); validationErr != nil {
 			if validationErr = b.persistCurrentCountIndexCorruption(
 				ctx, expectation.readyRevision, validationErr,
 			); validationErr != nil {
-				return nil, 0, true, validationErr
+				return nil, 0, true, nil, validationErr
 			}
 		}
-		return nil, 0, false, nil
+		return nil, 0, false, nil, nil
 	}
 	currentRevision, currentTombstone, err := coder.ParseRevision(revisionValue)
 	if err != nil {
 		cause := invalidMVCCMetadataError(err, "decode revision index for key %q", key)
-		return nil, 0, true, b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+		return nil, 0, true, nil, b.persistWitnessedRevisionIndexCorruption(ctx, cause)
 	}
 	if _, validationErr := validateLatestRevisionIndex(
 		key, currentRevision, currentTombstone, expectation,
@@ -162,28 +171,37 @@ func (b *backend) getLatestMetadataOnly(
 		if validationErr = b.persistCurrentCountIndexCorruption(
 			ctx, expectation.readyRevision, validationErr,
 		); validationErr != nil {
-			return nil, 0, true, validationErr
+			return nil, 0, true, nil, validationErr
 		}
 	}
 
 	if !metadataFound {
-		return nil, 0, false, nil
+		if !currentTombstone {
+			backfill = &latestMetadataBackfillTask{key: key, revision: currentRevision}
+		}
+		return nil, 0, false, backfill, nil
 	}
 	meta, decodeErr := decodeLatestMetadata(raw)
 	if decodeErr != nil || meta.ModRevision != currentRevision || meta.Tombstone != currentTombstone {
 		// This directory is explicitly rebuildable and optional. A partial old
 		// rollout or damage to it must not make healthy authoritative MVCC data
 		// unreadable; the full path still performs its normal corruption checks.
-		return nil, 0, false, nil
+		if !currentTombstone {
+			backfill = &latestMetadataBackfillTask{
+				key: key, revision: currentRevision,
+				expectedMetadata: raw, expectedMetadataFound: true,
+			}
+		}
+		return nil, 0, false, backfill, nil
 	}
 	if currentTombstone {
-		return nil, currentRevision, true, storage.ErrKeyNotFound
+		return nil, currentRevision, true, nil, storage.ErrKeyNotFound
 	}
 	// FastKeysOnly does not expose a lease, matching projectMetadataValue.
 	return encodeValueWithMeta(nil, EtcdMetadata{
 		CreateRevision: meta.Metadata.CreateRevision,
 		Version:        meta.Metadata.Version,
-	}), currentRevision, true, nil
+	}), currentRevision, true, nil, nil
 }
 
 // readLatestMetadataPair uses one region-aware snapshot batch on TiKV. The two
@@ -685,6 +703,7 @@ func (b *backend) readLatestMetadataStates(
 			return nil, err
 		}
 		fallback := make([]int, 0)
+		backfill := make(map[int]latestMetadataBackfillTask)
 		for offset, state := range batch {
 			revisionKey := physicalKeys[offset*2]
 			metadataKey := physicalKeys[offset*2+1]
@@ -709,6 +728,14 @@ func (b *backend) readLatestMetadataStates(
 						continue
 					}
 				}
+				if physicalRevision == state.Revision && !tombstone {
+					backfill[offset] = latestMetadataBackfillTask{
+						key:                   state.Key,
+						revision:              state.Revision,
+						expectedMetadata:      metadataValue,
+						expectedMetadataFound: metadataFound,
+					}
+				}
 			}
 			fallback = append(fallback, offset)
 		}
@@ -727,6 +754,14 @@ func (b *backend) readLatestMetadataStates(
 				if kvs[i] == nil {
 					return nil, invalidMVCCMetadataError(storage.ErrKeyNotFound,
 						"latest metadata range index key %q is not live at revision %d", keys[i], revision)
+				}
+				if task, ok := backfill[offset]; ok && kvs[i].Revision == task.revision {
+					meta, _, inlined, decodeErr := DecodeInlineValueChecked(kvs[i].Value)
+					if decodeErr == nil && inlined &&
+						ValidateEtcdMetadataAtRevision(meta, task.revision, "latest metadata backfill source") == nil {
+						task.metadata = meta
+						b.queueLatestMetadataBackfill(task)
+					}
 				}
 				kvs[i].Value = projectMetadataValue(kvs[i].Value)
 				result[batchStart+offset] = kvs[i]
