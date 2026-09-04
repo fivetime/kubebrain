@@ -71029,6 +71029,83 @@ probe 与候选目录均为 0。宿主根盘仍约 98%、可用 48 GiB，共享 
 压力仍是生产阻塞风险。普通 inline Put 已消除跨整个 commit/response 等待持有不可观察旧 payload，但单键 pre-read 仍会从 TiKV
 取回并短暂分配完整 value；独立持久 metadata 索引仍是消除该网络与初始分配成本的后续方向。
 
+### A5729：独立 latest metadata 索引消除最新点 KeysOnly 的对象 payload 读取
+
+A5728 已缩短普通 Put 对旧 payload 的引用生命周期，但最新点 `FastKeysOnly` 仍先从 TiKV 读取完整 inline object，再在 backend
+边界投影掉 Value。直接扩展既有 per-key revision-index value 不可行：滚动升级期间旧二进制会用严格的 8/9-byte 解码器读取同一
+值，新增字段会立即成为数据损坏。A5729 因此增加 tenant-scoped、latest-only 的独立 metadata directory；写者把它与 revision
+index、object、event log 和 durable witness 放在同一个 TiKV 原子事务。directory value 用版本化定长编码记录 mod revision、
+create revision、version、lease 和 tombstone，严格拒绝零/溢出 revision、非法 lifecycle、未知 flags/version 及 tombstone 携带
+live fields。
+
+directory 物理键使用保留的 `\x00latestmeta\x00` pseudo-user-key 加 revision-zero 后缀。它仍落在 tenant 的整体物理范围内，因而
+原有备份、恢复与销毁范围完整覆盖；旧二进制会把它合法解码为 revision index 并按 `revision==0` 跳过，不会在混合滚动或回滚后
+误当对象。新 `IsInternalStorageKey` 同时精确识别 prefix 和 9-byte revision-zero trailer；真实用户对象即使以该 infix 开头、
+revision 非零，也不会被隐藏。
+
+最新点 `GetKeysOnly` 先固定一个 engine snapshot，并用一次 region-aware `BatchGetAt` 并发读取权威 revision index 和小型 metadata
+entry；只有 entry 的 mod revision 和 tombstone 与同一快照中的 revision index 完全一致，才直接构造无 payload 的 inline metadata
+envelope。directory 缺失、陈旧、损坏或由旧 writer 留下时均回退原有 object 路径；历史 revision、普通 Get 和未开启 etcd
+compatibility 的调用保持原路径。权威 revision-index 的格式、count-index 交叉见证和 CORRUPT fence 未改变；缺失 revision index
+仍在快照固定前采样 ready count-index，并按原有证据链 fail closed。
+
+`TestLatestMetadataEncodingRejectsImpossibleState`、`TestLatestKeysOnlyUsesMetadataIndexAndFallsBackSafely`、
+`TestLatestKeysOnlyUsesTombstoneMetadataWithoutObjectRead`、`TestLatestMetadataTracksUpdateLifecycleAndLease` 与 keyspace 测试先在旧代码
+上因缺少类型/编码器/键方法编译 RED。最终测试用 2 MiB object 固定 metadata hit 只发起一次两键 snapshot batch 且 object read
+计数为 0；普通 Get 仍读取完整对象，missing/stale/malformed entry 均读取权威 object；create/update/delete、负 lease、历史 metadata
+以及旧 reader 的 revision-zero 跳过语义均被覆盖。聚焦测试约 `0.091s`、race `1.364s`，backend 完整包 `49.557s`、etcd server
+完整包 `137.083s`，`go vet`、gofmt 和 diff check 全部 GREEN。
+
+代码提交 `f522da5a7f4a0c75322ea16e5260feae09310adf` 前 verifier 精确分配 703 项为 `170/193/180/160`，四分片
+`253.764/441.825/301.466/568.096s` 全部 GREEN；提交后 verifier 不变，四分片
+`298.809/495.952/350.572/610.395s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5729-f522da5a` 内嵌版本 `0.0.0-f522da5a`、完整提交、build time
+`2026-09-04T14:57:38Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。914,611,712-byte OCI archive SHA-256 为
+`02e5f3cab7efdf1da3c6dfc4c8125b67b9b1d8d2fe9bfb52cd3e84ddac6201e1`；顶层 `index.json` SHA-256/Kind runtime
+imageID 为 `sha256:49bd26ecae3dce2ad8d97a2b2ef1e81472d1b45439d61571ca4e11b4eba1edb6`。nested index/platform manifest/
+config、attestation manifest/config 为 `sha256:65adead51ed29a5e2d6e0db786ba31e4af51282d70496a5ba7f6ac39e290c388`、
+`sha256:63ade29cba25efea943cd7e0526bbd58151c95c51c2747d1052afda1fc5920e0`、
+`sha256:89a6ca56fe1d0ed7cab5b7acc54a08b7436d274ec556394196d18525ff186fad`、
+`sha256:2eb23aecd520bf71b37d15fa11b621a588fe873463fc5de70fd37e2cfe4bcbc9`、
+`sha256:bc29595347574b660dfef8d73ec1da8c784d8bbf40d5e1f13272677ac3fb7e33`；SPDX/SLSA layer 为
+`sha256:10f113c07d52603a2e7859c65cf122b141c3868633401dbb511670e82e8c0b3e`、
+`sha256:4bc3d1033d999e42684f591055a4422851d589e8de15675c1df5fd75b5aa51d8`。修正校验器不递归 SLSA/SPDX 内部构建元数据后，
+OCI graph 为 78/78 descriptor edges、78 blobs，大小和内容 hash 全部匹配；71 layers/diff IDs、SPDX 2,592 packages/381
+files/8,096 relationships、SLSA subject/四项 build args/三项 materials、非 root `65532:65532`、入口和 labels 均通过。
+
+Kind 精确出现 tag、上述 import digest 与 config 三条引用。以 UID/resourceVersion/container/current image/full 22 args 五类原子
+test，从稳定 generation `852`/RV `8404203` 部署到候选 generation/observed `853/853`、RV `8437822`；三 Pod runtime
+均为上述顶层 digest、Ready/restart 0、参数未漂移。候选写前完整 readonly gate GREEN：revision/index/applied
+`66982/66982/66982`、HashKV `1236587080`、compact `66760`、term `575`、leader `2393892952`，Auth disabled/revision
+281，Alarm、Lease 和测试前缀为空。
+
+真实 clientv3 探针最初三次分别由客户端 2 MiB send 默认值、服务端 gRPC 2 MiB receive 上限和 etcd request 上限在提交前拒绝；
+三个临时 lease 均用精确十六进制 ID 撤销，确认没有用户写入或遗留 lease。按实例合同调整为同一事务 2 个 512 KiB leased value
+后通过：create revision
+`66983` 的最新批量 KeysOnly 全部返回空 Value/Lease 与 version 1；普通 Get 返回完整 512 KiB 和原 lease；同一事务覆盖为小值后
+revision `66984`、create revision 不变、version 2，历史 `rev=66983` KeysOnly 仍精确为 version 1。最终 revision `66985`
+删除两键并 revoke lease，前缀 count、LeaseList、Alarm 均为空。三副本 revision/index/applied 为 `66985`，HashKV
+`2148567785`、compact `66760`，终态完整 readonly gate 再次 GREEN。
+
+候选三轮九次 health 全部成功（`147.791–228.893ms`），三个 TiKV store Up、各 14 Regions，pending/down/miss/extra/learner
+五类检查连续三轮全零。候选日志 `896/315/938` 行，门禁 cancel/405 与 rollout drain/reset/NOT_SERVING 模式
+`15/2/11`，critical 和最近 30 秒 critical 均为 0。
+
+以同类五类原子 test 从候选 RV `8437822` 回滚固定稳定 digest，generation/observed `854/854`、RV `8439311`；三 Pod
+runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0、22 项参数
+未漂移。关闭六个候选 port-forward、确认 listener 为零并为新 Pod 重建后，稳定镜像适用的 readonly gate（排除旧镜像不含的候选
+info-metrics 代际合同）完整 GREEN；revision/HashKV/compact 保持 `66985/2148567785/66760`，term `577`、leader
+`231094427`。稳定三轮九次 health 全成功（`164.544–197.235ms`），TiKV 状态和五类 Region 检查持续全绿；稳定日志
+`431/465/311` 行，选定模式 `6/3/6`，critical 与最近 critical 均为 0。
+
+最终关闭六个 port-forward，确认候选 Pod 引用为 0 后精确删除 Kind tag/import/config、Docker candidate tag/index 以及可重建的
+1,829,164,272-byte `/dev/shm/kubebrain-a5729.xN2tCc`；稳定镜像、源码、共享 layers 和数据卷未删除。listener、候选
+Pod/Kind/Docker 引用、临时 probe 与目录均为 0。宿主根盘仍约 98%、可用约 40 GiB，共享 build cache 未擅自清理；Kind
+local-path 非 CSI 存储隔离和容量压力仍是生产阻塞风险。A5729 只优化新格式覆盖后的 latest point KeysOnly；latest range/stream
+仍从 object scanner 投影，旧 writer 留下的 key 在下一次新写入前走安全 fallback，后续可基于同一 directory 扩展有序 range
+metadata 读取和后台回填。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
