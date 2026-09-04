@@ -221,6 +221,54 @@ func TestListKeysOnlyDropsPayloadAndPreservesInlineMetadata(t *testing.T) {
 	require.Equal(t, fullMeta.Version, projectedMeta.Version)
 }
 
+func TestGetKeysOnlyDropsPayloadAndPreservesInlineMetadata(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	key := []byte(prefix + "/keys-only-point/large")
+	first, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: bytes.Repeat([]byte("a"), 2<<20),
+	}})
+	require.NoError(t, err)
+	second, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: bytes.Repeat([]byte("b"), 2<<20),
+	}})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= second.Header.Revision }, 5*time.Second, 2*time.Millisecond)
+
+	request := &proto.GetRequest{Key: key}
+	full, err := b.Get(ctx, request)
+	require.NoError(t, err)
+	projected, err := b.GetKeysOnly(ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, full.Header.Revision, projected.Header.Revision)
+	require.NotNil(t, full.Kv)
+	require.NotNil(t, projected.Kv)
+	require.Equal(t, full.Kv.Key, projected.Kv.Key)
+	require.Equal(t, full.Kv.Revision, projected.Kv.Revision)
+	require.Greater(t, len(full.Kv.Value), 2<<20)
+	require.Less(t, len(projected.Kv.Value), 64)
+
+	fullMeta, _, fullInline, err := DecodeInlineValueChecked(full.Kv.Value)
+	require.NoError(t, err)
+	projectedMeta, raw, projectedInline, err := DecodeInlineValueChecked(projected.Kv.Value)
+	require.NoError(t, err)
+	require.True(t, fullInline)
+	require.True(t, projectedInline)
+	require.Empty(t, raw)
+	require.Equal(t, first.Header.Revision, fullMeta.CreateRevision)
+	require.Equal(t, fullMeta.CreateRevision, projectedMeta.CreateRevision)
+	require.Equal(t, fullMeta.Version, projectedMeta.Version)
+}
+
 func TestRangeStreamKeysOnlyDropsPayloadAndPreservesInlineMetadata(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

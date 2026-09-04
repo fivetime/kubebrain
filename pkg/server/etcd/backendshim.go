@@ -1006,8 +1006,22 @@ func (b *backendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (_ 
 		Key:      r.Key,
 		Revision: normalizeRangeRevision(r.Revision),
 	}
-	// pass through get method
-	response, err := b.backend.Get(ctx, request)
+	// Match etcd's FastKeysOnly boundary for point reads as well as ranges.
+	// VALUE ordering deliberately retains the ordinary Get path: upstream needs
+	// the value before projection and preserves Lease for that request shape.
+	var response *proto.GetResponse
+	var err error
+	if r.KeysOnly && r.SortTarget != etcdserverpb.RangeRequest_VALUE {
+		if getter, ok := b.backend.(interface {
+			GetKeysOnly(context.Context, *proto.GetRequest) (*proto.GetResponse, error)
+		}); ok {
+			response, err = getter.GetKeysOnly(ctx, request)
+		} else {
+			response, err = b.backend.Get(ctx, request)
+		}
+	} else {
+		response, err = b.backend.Get(ctx, request)
+	}
 	if err != nil {
 		return nil, err
 	}

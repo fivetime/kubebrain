@@ -30,7 +30,48 @@ import (
 type keysOnlyProbeBackend struct {
 	backend.Backend
 	keysOnlyCalled bool
+	getCalled      bool
 	listCalled     bool
+}
+
+type valueSortPointProbeBackend struct {
+	backend.Backend
+	getCalled      bool
+	keysOnlyCalled bool
+}
+
+func (b *valueSortPointProbeBackend) Get(_ context.Context, request *proto.GetRequest) (*proto.GetResponse, error) {
+	b.getCalled = true
+	return &proto.GetResponse{
+		Header: &proto.ResponseHeader{Revision: 11},
+		Kv: &proto.KeyValue{
+			Key: request.Key, Value: []byte("value-used-for-ordering"), Revision: 7,
+		},
+	}, nil
+}
+
+func (b *valueSortPointProbeBackend) GetKeysOnly(context.Context, *proto.GetRequest) (*proto.GetResponse, error) {
+	b.keysOnlyCalled = true
+	return nil, errors.New("VALUE-sort KeysOnly unexpectedly used metadata Get")
+}
+
+func (b *valueSortPointProbeBackend) GetEtcdMetadata(context.Context, []byte, uint64) (backend.EtcdMetadata, error) {
+	return backend.EtcdMetadata{CreateRevision: 3, Version: 2}, nil
+}
+
+func (b *keysOnlyProbeBackend) Get(context.Context, *proto.GetRequest) (*proto.GetResponse, error) {
+	b.getCalled = true
+	return nil, errors.New("fast point KeysOnly unexpectedly materialized values")
+}
+
+func (b *keysOnlyProbeBackend) GetKeysOnly(_ context.Context, request *proto.GetRequest) (*proto.GetResponse, error) {
+	b.keysOnlyCalled = true
+	return &proto.GetResponse{
+		Header: &proto.ResponseHeader{Revision: 11},
+		Kv: &proto.KeyValue{
+			Key: request.Key, Value: nil, Revision: 7,
+		},
+	}, nil
 }
 
 func (b *keysOnlyProbeBackend) List(context.Context, *proto.RangeRequest) (*proto.RangeResponse, error) {
@@ -72,4 +113,41 @@ func TestBackendShimFastKeysOnlyUsesMetadataList(t *testing.T) {
 	require.Equal(t, int64(7), response.Kvs[0].ModRevision)
 	require.Equal(t, int64(2), response.Kvs[0].Version)
 	require.Zero(t, response.Kvs[0].Lease)
+}
+
+func TestBackendShimFastPointKeysOnlyUsesMetadataGet(t *testing.T) {
+	probe := &keysOnlyProbeBackend{}
+	shim := NewBackendShim(probe, &recordingMetrics{})
+
+	response, err := shim.Get(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("/keys-only/point"), KeysOnly: true,
+		SortTarget: etcdserverpb.RangeRequest_VERSION,
+	})
+	require.NoError(t, err)
+	require.True(t, probe.keysOnlyCalled)
+	require.False(t, probe.getCalled)
+	require.Equal(t, int64(11), response.GetHeader().GetRevision())
+	require.Equal(t, int64(1), response.Count)
+	require.Len(t, response.Kvs, 1)
+	require.Equal(t, []byte("/keys-only/point"), response.Kvs[0].Key)
+	require.Empty(t, response.Kvs[0].Value)
+	require.Equal(t, int64(3), response.Kvs[0].CreateRevision)
+	require.Equal(t, int64(7), response.Kvs[0].ModRevision)
+	require.Equal(t, int64(2), response.Kvs[0].Version)
+	require.Zero(t, response.Kvs[0].Lease)
+}
+
+func TestBackendShimValueSortPointKeysOnlyUsesOrdinaryGet(t *testing.T) {
+	probe := &valueSortPointProbeBackend{}
+	shim := NewBackendShim(probe, &recordingMetrics{})
+
+	response, err := shim.Get(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("/keys-only/value-sort"), KeysOnly: true,
+		SortTarget: etcdserverpb.RangeRequest_VALUE,
+	})
+	require.NoError(t, err)
+	require.True(t, probe.getCalled)
+	require.False(t, probe.keysOnlyCalled)
+	require.Len(t, response.Kvs, 1)
+	require.Empty(t, response.Kvs[0].Value)
 }

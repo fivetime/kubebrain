@@ -41,6 +41,19 @@ import (
 
 // Get implements Backend interface
 func (b *backend) Get(ctx context.Context, r *proto.GetRequest) (resp *proto.GetResponse, err error) {
+	return b.getResponse(ctx, r, false)
+}
+
+// GetKeysOnly is the metadata-only point-read counterpart of Get. It retains
+// the ordinary point-read revision, tombstone, legacy-metadata, and corruption
+// checks, but releases the user payload before the response crosses the backend
+// boundary. It remains optional to callers so older Backend adapters continue
+// to fall back to Get.
+func (b *backend) GetKeysOnly(ctx context.Context, r *proto.GetRequest) (resp *proto.GetResponse, err error) {
+	return b.getResponse(ctx, r, true)
+}
+
+func (b *backend) getResponse(ctx context.Context, r *proto.GetRequest, metadataOnly bool) (resp *proto.GetResponse, err error) {
 	ts := time.Now()
 	defer func() {
 		klog.V(klogLevel).InfoS("get",
@@ -79,6 +92,9 @@ func (b *backend) Get(ctx context.Context, r *proto.GetRequest) (resp *proto.Get
 			}
 			return nil, validationErr
 		}
+	}
+	if metadataOnly {
+		val = projectMetadataValue(val)
 	}
 
 	resp = &proto.GetResponse{
