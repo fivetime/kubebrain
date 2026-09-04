@@ -1271,6 +1271,18 @@ func LatestRangeStreamFromContext(ctx context.Context) bool {
 // a raw user key never matches the magic-prefixed stored keys — pins the read
 // revision, and streams the result in disjoint chunks.
 func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, rev uint64) (<-chan *proto.StreamRangeResponse, error) {
+	return b.rangeStream(ctx, userStart, userEnd, rev, false)
+}
+
+// RangeStreamKeysOnly is the FastKeysOnly counterpart of RangeStream. It keeps
+// the metadata needed by the etcd response while dropping the user payload at
+// the earliest scanner/chunk boundary. It remains an optional capability so
+// existing Backend adapters retain the value-carrying fallback.
+func (b *backend) RangeStreamKeysOnly(ctx context.Context, userStart, userEnd []byte, rev uint64) (<-chan *proto.StreamRangeResponse, error) {
+	return b.rangeStream(ctx, userStart, userEnd, rev, true)
+}
+
+func (b *backend) rangeStream(ctx context.Context, userStart, userEnd []byte, rev uint64, metadataOnly bool) (<-chan *proto.StreamRangeResponse, error) {
 	curRev, err := b.safeCurrentRevision(ctx)
 	if err != nil {
 		return nil, err
@@ -1298,22 +1310,59 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 			return nil, ensureErr
 		}
 		var served bool
-		stream, served, err = b.decodedUserRangeStreamFromCountIndex(scanCtx, userStart, userEnd, rev)
+		stream, served, err = b.decodedUserRangeStreamFromCountIndex(scanCtx, userStart, userEnd, rev, metadataOnly)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
 		if !served {
-			stream = b.decodedUserRangeStreamFromSpill(scanCtx, userStart, userEnd, rev)
+			stream = b.decodedUserRangeStreamFromSpill(scanCtx, userStart, userEnd, rev, metadataOnly)
 		}
 	} else {
 		key := b.rangeStartKey(userStart)
 		rangeEnd := b.rangeEndKey(userEnd)
 		klog.V(klogLevel).InfoS("range stream", "start", Key(userStart), "end", Key(userEnd), "rev", rev)
-		stream = b.scanner.RangeStream(scanCtx, key, rangeEnd, rev, false)
+		if metadataOnly {
+			if metadataScanner, ok := b.scanner.(scanner.MetadataScanner); ok {
+				stream = metadataScanner.RangeStreamMetadata(scanCtx, key, rangeEnd, rev)
+			} else {
+				stream = projectMetadataRangeStream(scanCtx, b.scanner.RangeStream(scanCtx, key, rangeEnd, rev, false))
+			}
+		} else {
+			stream = b.scanner.RangeStream(scanCtx, key, rangeEnd, rev, false)
+		}
 	}
 	indexExpectation := b.newLatestRangeStreamExpectation(userStart, userEnd, rev, latest && !callerPinned)
 	return b.validatedRangeStream(scanCtx, cancel, stream, rev, indexExpectation), nil
+}
+
+// projectMetadataRangeStream is the compatibility fallback for Scanner
+// adapters that do not implement MetadataScanner. The production scanner
+// projects inside its workers; this wrapper preserves correctness for older
+// adapters, though they necessarily materialize each source chunk first.
+func projectMetadataRangeStream(
+	ctx context.Context,
+	input <-chan *proto.StreamRangeResponse,
+) <-chan *proto.StreamRangeResponse {
+	output := make(chan *proto.StreamRangeResponse)
+	go func() {
+		defer close(output)
+		for chunk := range input {
+			if chunk != nil && chunk.RangeResponse != nil {
+				for _, kv := range chunk.RangeResponse.Kvs {
+					if kv != nil {
+						kv.Value = projectMetadataValue(kv.Value)
+					}
+				}
+			}
+			select {
+			case output <- chunk:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return output
 }
 
 // validatedRangeStream validates each bounded data chunk before it becomes
@@ -1529,6 +1578,7 @@ func (b *backend) decodedUserRangeStreamFromCountIndex(
 	ctx context.Context,
 	userStart, userEnd []byte,
 	revision uint64,
+	metadataOnly bool,
 ) (<-chan *proto.StreamRangeResponse, bool, error) {
 	if b.countIndex == nil {
 		return nil, false, nil
@@ -1575,6 +1625,9 @@ func (b *backend) decodedUserRangeStreamFromCountIndex(
 				for index, kv := range kvs {
 					if kv == nil {
 						return fmt.Errorf("decoded range index key %q is not live at revision %d", chunkKeys[index], revision)
+					}
+					if metadataOnly {
+						kv.Value = projectMetadataValue(kv.Value)
 					}
 				}
 				if !send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{

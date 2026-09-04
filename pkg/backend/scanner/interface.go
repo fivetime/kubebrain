@@ -70,4 +70,5 @@ type Scanner interface {
 type MetadataScanner interface {
 	RangeMetadata(ctx context.Context, start, end []byte, revision uint64, limit int64) ([]*proto.KeyValue, error)
 	RangeMetadataFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) ([]*proto.KeyValue, error)
+	RangeStreamMetadata(ctx context.Context, start, end []byte, revision uint64) chan *proto.StreamRangeResponse
 }

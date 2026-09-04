@@ -1232,10 +1232,38 @@ type rangeStreamChunk struct {
 // Kvs) carrying the pinned revision, so callers always get Header.Revision — the
 // etcd "header on the last chunk" contract — even for an empty range.
 func (b *backendShim) RangeStreamChan(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan rangeStreamChunk, error) {
+	return b.rangeStreamChan(ctx, startKey, endKey, revision, false)
+}
+
+// RangeStreamKeysOnlyChan selects the backend's optional metadata-only stream.
+// The ordinary stream remains the compatibility fallback for backend adapters
+// that have not implemented the production optimization.
+func (b *backendShim) RangeStreamKeysOnlyChan(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan rangeStreamChunk, error) {
+	return b.rangeStreamChan(ctx, startKey, endKey, revision, true)
+}
+
+func (b *backendShim) rangeStreamChan(
+	ctx context.Context,
+	startKey, endKey []byte,
+	revision uint64,
+	metadataOnly bool,
+) (<-chan rangeStreamChunk, error) {
 	// Derive a cancelable context so the scanner's workers, iterators and
 	// snapshots are torn down on client disconnect (same leak fix as ListByStream).
 	scanCtx, cancel := context.WithCancel(ctx)
-	ch, err := b.backend.RangeStream(scanCtx, startKey, endKey, revision)
+	var ch <-chan *proto.StreamRangeResponse
+	var err error
+	if metadataOnly {
+		if streamer, ok := b.backend.(interface {
+			RangeStreamKeysOnly(context.Context, []byte, []byte, uint64) (<-chan *proto.StreamRangeResponse, error)
+		}); ok {
+			ch, err = streamer.RangeStreamKeysOnly(scanCtx, startKey, endKey, revision)
+		} else {
+			ch, err = b.backend.RangeStream(scanCtx, startKey, endKey, revision)
+		}
+	} else {
+		ch, err = b.backend.RangeStream(scanCtx, startKey, endKey, revision)
+	}
 	if err != nil {
 		cancel()
 		return nil, err

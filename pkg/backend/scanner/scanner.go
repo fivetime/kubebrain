@@ -246,6 +246,16 @@ func keySet(keys [][]byte) map[string]struct{} {
 // values at once (a failover-time memory spike); range reads that need the value
 // pass false.
 func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, revision uint64, keysOnly bool) chan *proto.StreamRangeResponse {
+	return r.rangeStream(ctx, start, end, revision, keysOnly, false)
+}
+
+// RangeStreamMetadata streams keys and their compact inline MVCC metadata while
+// projecting out user payloads before a chunk enters the receiver buffer.
+func (r *scanner) RangeStreamMetadata(ctx context.Context, start, end []byte, revision uint64) chan *proto.StreamRangeResponse {
+	return r.rangeStream(ctx, start, end, revision, false, true)
+}
+
+func (r *scanner) rangeStream(ctx context.Context, start, end []byte, revision uint64, keysOnly, metadataOnly bool) chan *proto.StreamRangeResponse {
 	// Buffer sizing is part of the stream memory bound (k8s 1.37 review). A deep
 	// shared buffer once held GB-scale spikes per stream (measured: +1.3GB on a
 	// throttled 2GB stream). The ordered implementation now adds one chunk slot
@@ -263,7 +273,7 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 
 	go func() {
 		defer close(stream)
-		err := r.rangeStreamOrdered(ctx, start, end, revision, keysOnly, stream)
+		err := r.rangeStreamOrdered(ctx, start, end, revision, keysOnly, metadataOnly, stream)
 		select {
 		case stream <- getListStreamEnd(revision, err):
 		case <-ctx.Done():
@@ -297,7 +307,13 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 // key order whenever a range crosses TiKV regions. One buffered chunk per
 // partition preserves parallel prefetch without materializing a partition (or
 // the full range) in memory.
-func (r *scanner) rangeStreamOrdered(ctx context.Context, start, end []byte, revision uint64, keysOnly bool, output chan<- *proto.StreamRangeResponse) error {
+func (r *scanner) rangeStreamOrdered(
+	ctx context.Context,
+	start, end []byte,
+	revision uint64,
+	keysOnly, metadataOnly bool,
+	output chan<- *proto.StreamRangeResponse,
+) error {
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	defer cancelWorkers()
 	tso, pinned := storage.SnapshotTimestampFromContext(workerCtx)
@@ -369,8 +385,10 @@ func (r *scanner) rangeStreamOrdered(ctx context.Context, start, end []byte, rev
 				tso:                  tso,
 				revision:             revision,
 				keysOnly:             keysOnly,
+				metadataOnly:         metadataOnly,
 				tombstone:            r.config.Tombstone,
 				isInternalStorageKey: r.config.IsInternalStorageKey,
+				projectMetadataValue: r.config.ProjectMetadataValue,
 			}, r.store, r.coder, r.metricCli)
 			_, scanErr := worker.runWithBackoffRetry(workerCtx, receiver)
 			if scanErr == nil {

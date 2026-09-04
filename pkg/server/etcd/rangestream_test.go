@@ -82,6 +82,26 @@ type listCountingBackendShim struct {
 	listCalls int
 }
 
+type keysOnlyRangeStreamProbeShim struct {
+	BackendShim
+	ordinaryCalls int
+	metadataCalls int
+}
+
+func (b *keysOnlyRangeStreamProbeShim) RangeStreamChan(
+	context.Context, []byte, []byte, uint64,
+) (<-chan rangeStreamChunk, error) {
+	b.ordinaryCalls++
+	return nil, errors.New("KeysOnly RangeStream unexpectedly requested full values")
+}
+
+func (b *keysOnlyRangeStreamProbeShim) RangeStreamKeysOnlyChan(
+	ctx context.Context, start, end []byte, revision uint64,
+) (<-chan rangeStreamChunk, error) {
+	b.metadataCalls++
+	return b.BackendShim.RangeStreamChan(ctx, start, end, revision)
+}
+
 type prematureRangeStreamBackendShim struct {
 	BackendShim
 }
@@ -348,6 +368,40 @@ func TestRangeStreamStreamsAllKeys(t *testing.T) {
 		require.False(t, chunk.RangeResponse.More, "unlimited RangeStream must not expose scanner chunking as Range.More")
 	}
 	require.Equal(t, want, got, "concatenated chunks must equal the full key set")
+}
+
+func TestRangeStreamKeysOnlyUsesMetadataStream(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/range-stream-keys-only/a"), Value: []byte("large-user-payload"),
+	})
+	require.NoError(t, err)
+	probe := &keysOnlyRangeStreamProbeShim{BackendShim: server.backend}
+	server.backend = probe
+
+	stream := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+		Key:      []byte("/range-stream-keys-only/"),
+		RangeEnd: []byte("/range-stream-keys-only0"),
+		KeysOnly: true,
+	}, stream))
+	require.Zero(t, probe.ordinaryCalls)
+	require.Equal(t, 1, probe.metadataCalls)
+
+	var kvs []*mvccpb.KeyValue
+	for _, chunk := range stream.sent {
+		kvs = append(kvs, chunk.RangeResponse.Kvs...)
+	}
+	require.Len(t, kvs, 1)
+	require.Equal(t, []byte("/range-stream-keys-only/a"), kvs[0].Key)
+	require.Empty(t, kvs[0].Value)
+	require.Equal(t, put.Header.Revision, kvs[0].CreateRevision)
+	require.Equal(t, put.Header.Revision, kvs[0].ModRevision)
+	require.EqualValues(t, 1, kvs[0].Version)
+	require.Zero(t, kvs[0].Lease)
 }
 
 func TestRangeStreamNormalizesNegativeRevisionBeforeBackend(t *testing.T) {

@@ -55,6 +55,7 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 	ctx context.Context,
 	userStart, userEnd []byte,
 	revision uint64,
+	metadataOnly bool,
 ) <-chan *proto.StreamRangeResponse {
 	// A page can contain 16 near-limit values; do not queue multiple pages in
 	// memory while the gRPC layer is still transmitting the previous one.
@@ -202,6 +203,9 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 					for index, kv := range kvs {
 						if kv == nil {
 							return fmt.Errorf("decoded range spilled key %q is not live at revision %d", chunkKeys[index], revision)
+						}
+						if metadataOnly {
+							kv.Value = projectMetadataValue(kv.Value)
 						}
 					}
 					if !send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{

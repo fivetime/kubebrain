@@ -599,7 +599,18 @@ func (s *RPCServer) rangeStreamOnce(
 		backendRevision = streamHeaderRevision
 		ctx = backend.WithLatestRangeStream(ctx)
 	}
-	ch, err := s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, backendRevision)
+	var ch <-chan rangeStreamChunk
+	if r.KeysOnly {
+		if streamer, ok := s.backend.(interface {
+			RangeStreamKeysOnlyChan(context.Context, []byte, []byte, uint64) (<-chan rangeStreamChunk, error)
+		}); ok {
+			ch, err = streamer.RangeStreamKeysOnlyChan(ctx, r.Key, r.RangeEnd, backendRevision)
+		} else {
+			ch, err = s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, backendRevision)
+		}
+	} else {
+		ch, err = s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, backendRevision)
+	}
 	if err != nil {
 		s.metricCli.EmitCounter("read.range_stream.err", 1)
 		emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)

@@ -725,6 +725,52 @@ func TestRangeMetadataProjectsValuesBeforeResultRetention(t *testing.T) {
 	require.Equal(t, value, full[0].Value, "ordinary value-carrying ranges must remain unchanged")
 }
 
+func TestRangeStreamMetadataProjectsValuesBeforeChunkBuffer(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.DefaultKeyspace().NewCoder()
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	userKey := []byte("/registry/configmaps/large-stream")
+	value := bytes.Repeat([]byte("s"), 2<<20)
+	batch := kv.BeginBatchWrite()
+	batch.Put(c.EncodeObjectKey(userKey, 9), value, 0)
+	require.NoError(t, batch.Commit(context.Background()))
+
+	var projectedBytes atomic.Int64
+	sc := NewScanner(kv, c, Config{
+		CompactKey: []byte("/compact"), Tombstone: []byte("tomb"),
+		ProjectMetadataValue: func(stored []byte) []byte {
+			projectedBytes.Add(int64(len(stored)))
+			return []byte("stream-metadata")
+		},
+	}, m)
+	metadataScanner, ok := sc.(MetadataScanner)
+	require.True(t, ok)
+	start := c.EncodeObjectKey([]byte("/registry/configmaps/"), 0)
+	end := c.EncodeObjectKey([]byte("/registry/configmaps0"), 0)
+
+	var projected []*proto.KeyValue
+	for response := range metadataScanner.RangeStreamMetadata(context.Background(), start, end, 9) {
+		require.Empty(t, response.Err)
+		projected = append(projected, response.RangeResponse.Kvs...)
+	}
+	require.Len(t, projected, 1)
+	require.Equal(t, userKey, projected[0].Key)
+	require.Equal(t, []byte("stream-metadata"), projected[0].Value)
+	require.Equal(t, int64(len(value)), projectedBytes.Load())
+
+	var full []*proto.KeyValue
+	for response := range sc.RangeStream(context.Background(), start, end, 9, false) {
+		require.Empty(t, response.Err)
+		full = append(full, response.RangeResponse.Kvs...)
+	}
+	require.Len(t, full, 1)
+	require.Equal(t, value, full[0].Value, "ordinary value-carrying streams must remain unchanged")
+}
+
 type partitionedTestStorage struct {
 	storage.KvStorage
 	partitions []storage.Partition
