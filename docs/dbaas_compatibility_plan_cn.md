@@ -70601,6 +70601,67 @@ KubeBrain/TiKV 3+3 Ready/restart 0；PD 3 Ready、各沿用一次历史 restart�
 本轮使 CountOnly 在 index 可用、index miss、current、historical、checkpoint、point、range 与全只读 Txn 组合下都保持上游
 “先计数、无 payload、filters 不影响 cardinality”的执行语义。
 
+### A5723：范围 KeysOnly 在扫描阶段丢弃用户 payload
+
+上游 etcd 提交 `7624a8a2e`（`Range with --keys-only retrieves from memory when possible`）在
+`KeysOnly && SortTarget != VALUE` 时走 `FastKeysOnly`，避免为只需要 key/metadata 的范围读取保留完整 value。
+KubeBrain 此前所有 unary ranged KeysOnly 都先经普通 `List` 物化并保留完整用户 payload，直到 etcd shim 最后投影；大 value
+范围会造成不必要的 TiKV 解码与堆内存保留。VALUE sort 必须先按原值排序，因此不属于该优化边界；point Get 与
+RangeStream 也不在本轮范围内。
+
+新增 scanner 可选 `MetadataScanner` 能力与 backend `ListKeysOnly` 能力；普通编码区间在 scanner worker 的 receiver
+接收结果前，将合法 inline v1/v2/v3 value 投影成仅保留 create/version 的紧凑 v3 metadata envelope，legacy raw value
+投影为 nil 并由既有 etcd metadata 恢复路径补齐。带保留 magic 但格式损坏的 envelope 原样保留，使既有 persisted
+corruption 校验继续生效。shim 仅在 `KeysOnly && SortTarget != VALUE` 时探测该可选能力；未升级 adapter 自动回退普通
+List，VALUE sort 始终保留原路径。极少见 decoded-boundary 区间仍在有界读取后投影，因此扫描前降 payload 的收益主要覆盖
+常规编码范围，协议结果在两条路径一致。
+
+新增 `TestBackendShimFastKeysOnlyUsesMetadataList`，令普通 List 硬失败并固定 header/count/key/create/mod/version、空 value
+及 lease 0；旧实现 `0.041s` 以 `fast KeysOnly unexpectedly materialized values` RED。新增
+`TestRangeMetadataProjectsValuesBeforeResultRetention`，以 2 MiB value 证明 scanner receiver 只收到 `metadata`，且普通
+Range 不变；新增 `TestListKeysOnlyDropsPayloadAndPreservesInlineMetadata`，固定更新后 2 MiB payload 被缩为不足 64-byte
+envelope，同时保留 create/version/revision。提交 `b02895e1` 后 focused scanner/backend/server 为
+`0.026/0.078/0.040s`，完整包为 `0.272/49.649/138.858s`，focused race 为
+`1.104/1.458/2.195s`；vet、gofmt 与 `git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `262.633/453.528/306.768/578.029s` 全部 GREEN；提交后 verifier 不变，四分片
+`255.372/448.989/308.424/577.566s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5723-b02895e153fa` 内嵌完整提交
+`b02895e153faa3ff4ec12eda07929c36f4b18dea`、build time `2026-09-04T07:33:17Z`、`linux/amd64`、TiKV，BuildKit
+构建完成。OCI nested index/platform/config/attestation 分别为
+`sha256:ba705bd2da1b0431b3fe9570a423cdca2e364174f7dbee044f55fabaf963120a`、
+`sha256:11978fe3084de76a5accaaa90d3907e3dd6f28e9ea78f675abb307118f9e1eac`、
+`sha256:f6d25182c103a49139aee00f204b4bdaa02ca51c1bdfb740d032f1ee0378cc0c`、
+`sha256:6897172096cec9516adac572f534fbfbfc748054fe14ee1f1260fce676bc2bbe`；attestation config 为
+`sha256:6ff0bee83904a380ec86c50d71752bc968f64eea524a6d618e39046a6d475441`，SPDX/SLSA in-toto layer 为
+`sha256:553a06409e0d79ae2997ec87d88d39b4f585fbf46efec822bcf4ef86045a5080`、
+`sha256:1e9d818bb1b59d5e4f74153494a21a7f73c4b25c647c9d6af49533fa0b8d25be`。SPDX 2.3 含 2,592
+packages/381 files/8,096 relationships；SLSA subject、platform、四项 build args 与三项固定 materials 交叉验证通过。
+914,585,600-byte archive SHA-256 为 `52e637caedb4ff1243af05dc1d7011dcf6db0b60c99a34a495843b49c4dd8edf`；
+顶层 OCI `index.json`/Kind runtime digest 为
+`sha256:92d5224da7fa96405da2a7a557b48eec328f187fd8c9bc2abcfd488200c906d2`，OCI labels、非 root
+`65532:65532`、入口、二进制版本与 provenance 均通过验证。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 840 部署到候选 841；
+三 Pod Ready/restart 0、参数未漂移，runtime imageID 同为上述顶层 digest。候选完整 HEAD readonly gate GREEN；终态
+revision/index/applied 为 `66763/66763/66763`，cluster ID `7662961163671170154`、HashKV `848652157`、compact
+revision `66760`、term `551`、leader `231094427`，Auth disabled/revision 281、Alarm 与测试前缀为空。三个 endpoint
+各连续 7 次执行 `get / --from-key --keys-only --limit=3`，每次 KVs 不超过 3，value 为空、create/mod/version 为正且 lease 0，
+证明运行时进入 fast ranged KeysOnly 外观。三轮九次 health 全部成功（`48.873–63.170ms`）；三个 TiKV store Up，五类
+Region check 连续三轮全零。候选日志中的 `/health`、`/debug/vars` 405、maintenance hedge context-canceled 与 rollout peer
+drain 均为门禁/换代预期，最近 60 秒关键错误为 0，无 panic/fatal/data loss/corruption。
+
+以同类五类原子 test、候选 RV `8359988` 回滚固定稳定 digest，generation/observed `842/842`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项参数未漂移。
+稳定镜像排除新版 info-metrics 代际合同后其余 HEAD readonly gate 全部 GREEN；终态 revision/index/applied 为
+`66763/66763/66763`、term `553`、leader `231094427`。三轮九次 health 全部成功（`51.022–70.732ms`），三个 store Up、
+五类 Region check 连续三轮全零；门禁产生的预期 405/context-canceled 退出最近窗口后，三 Pod 最近 30 秒关键错误均为 0。
+KubeBrain/TiKV 3+3 Ready/restart 0；PD 3 Ready、各沿用一次历史 restart。全程认证关闭且无凭据、无持久诊断日志；最终
+六个 port-forward 端口均无监听。确认没有 Pod/容器引用 A5723 后，精确删除 Kind 四个候选名称、Docker 候选 tag/index，
+并删除 1.8 GiB 精确 `/dev/shm/kubebrain-a5723.h1X3Dh` 临时目录；该构建临时产物不可恢复，稳定镜像、源码和数据卷未删除。
+A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 unary ranged KeysOnly 常规路径从“读取后再清 payload”推进为
+“scanner 交付前即清 payload”，同时保持 metadata、排序、legacy 与损坏数据的可观察语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
