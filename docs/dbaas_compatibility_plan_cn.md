@@ -70952,6 +70952,83 @@ rollout drain/NOT_SERVING，以及 kubebrain-2 启动时一次 compact revision 
 压力仍是生产阻塞风险。普通 Put 已完全消除不可观察旧值读取；metadata 路径仍受 TiKV inline-value 布局限制，会读取网络 payload
 后在 backend 边界释放，后续需要独立持久 metadata 索引才能消除该网络成本。
 
+### A5728：Txn Put 在旧值不可观察时缩短 payload 生命周期
+
+A5727 已让 staged executor 的普通 Put 不再额外读取旧 KV，但 backend `TxnApply` 为解出 create/version/lease、计算 quota
+变化和兼容旧 raw/v1 provenance，仍必须读取当前 object envelope；旧实现还无条件把该 envelope 留在 `txnPrep.prevValue`，直至
+TiKV 原子提交、结果构造和 revision 可见等待全部结束。多 Put 事务因此会同时保留每个旧 payload，即使请求没有 `PrevKv`、
+PUT watch event 只需要新值且调用方永远不会观察 `TxnWriteResult.PrevValue`。
+
+本轮在 `TxnWriteOp` 增加内部优化提示 `DiscardPrevValue`。backend shim 先验证 `prevKv` 与 op 数量精确相等，再复制调用方 op
+切片，只对 `Internal=false && Delete=false && prevKv=false` 的 Put 设置提示，不污染调用方稍后用于 lease index/reconcile 的对象。
+backend 对启用 quota 的现有值在 pre-read 阶段立即把逻辑 raw-value 长度压缩为 `int64`，quota delta 不再依赖保留 envelope；
+普通 v2/v3 更新在完成完整性校验和 metadata 解码后即清除旧 value 引用。旧 raw/v1 且有权威 lease provenance 的更新仍保留旧
+payload 到 atomic callback 完成原位 v2/v3 迁移，随后统一清除；Delete 无视该提示，因为 delete Watch/PrevKV 仍需要上一版本。
+未设置提示的 backend 直接调用继续返回完整 `PrevValue`，兼容接口默认行为不变。这里缩短的是 Go 对旧 payload 的强引用生命周期，
+不宣称立即降低进程 RSS，也不宣称消除 TiKV inline-value 的网络读取。
+
+`TestTxnApplyCanDiscardUnobservedPutPreviousValue` 与
+`TestTxnApplyProjectsUnobservedPutPreviousValues` 在旧代码上先因不存在 `DiscardPrevValue` 字段而编译 RED，证明测试确实要求新边界；
+前者用 2 MiB 旧值固定结果不携带 payload、历史版本仍完整、create/version/mod revision 不变，且未设置提示时仍返回旧值；后者固定
+shim 只投影无 PrevKv Put、保留 PrevKv Put/Delete，并且不修改调用方切片。
+`TestLogicalQuotaUsesDecodedSizeAfterDiscardingPutPreviousValue` 固定生产启用 quota 时 2 MiB→3-byte 覆盖仍精确扣减旧值大小；已有
+`TestTxnApplyMigratesLegacyCurrentLeaseBeforeItBecomesHistory` 扩展为在请求丢弃结果的同时证明旧 v1 payload 仍先原子迁移且 snapshot
+history 保留 lease。四项聚焦测试为 backend/server `0.116/0.169s`，完整包 `49.933/147.623s`，聚焦 race
+`1.501/2.023s`，vet、gofmt 与 diff check 均 GREEN。
+
+提交 `2ddd47d7bce85d675e071bc0a0722b824777458d` 前 verifier 精确分配 703 项为 `170/193/180/160`，四分片
+`251.131/450.469/302.167/577.757s` 全部 GREEN；提交后 verifier 不变，四分片
+`252.851/452.263/309.256/580.999s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5728-2ddd47d7bce8` 内嵌版本 `0.0.0-2ddd47d7bce8`、完整提交、build time
+`2026-09-04T13:24:05Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。914,606,592-byte OCI archive SHA-256 为
+`e57647f4ca9c3be472bc5648c3a0d9d53396660735323d9df7da639701faf40b`；顶层 `index.json` SHA-256/Kind runtime
+imageID 为 `sha256:ea5b9020c7214948d9b0abfeb5dff74513c1880a42c813cb991aafa839bdcbd8`。nested index/platform/config/
+attestation manifest/config 为 `sha256:aed79ade020af048887857c188074b7a158c49cd0b1e3b8a39e5d6e9612cfdea`、
+`sha256:7687a4aeca9c3d73ba2c51c382d3935d0a87bf22379302b848df0065f702315e`、
+`sha256:84c8733f251457d366a3e0bf8cbaa1ef9706c706cbd2f8047f7bfb6c31586719`、
+`sha256:398f7083528e1b0d99b3723dc89d954913bd6b9e944ea0369ea6c2fc20392a57`、
+`sha256:25ce537886bce7aa17d09609a9c18c42f072acc18082bd2316db4e8bc48b4479`；SPDX/SLSA layer 为
+`sha256:aa5a6f4b60d16427dbc8a05f06a9f3abb0a7a8637e83a50cfc182e9cf845fb72`、
+`sha256:75d4cbf1ab46718448dd62b204951bfd3795b5dcb88d1e192ff788f2368c0039`。首轮闭包脚本把两个 index 不存在的
+`.config` 取值当作两个 `null` descriptor，报告 `80/2`；修正为 `select(.digest != null)` 后 78/78 descriptor edges、78
+blobs、71 layers/diff IDs 全部正确。SPDX 含 2,592 packages/381 files/8,096 relationships，SLSA subject、四项 build args
+与 syft/alpine/golang 三项 materials 均匹配；非 root `65532:65532`、入口、labels 和实际运行版本均通过。
+
+Kind 精确出现 tag、上述 import digest 与 config 三条引用。以 UID/resourceVersion/container/current image/full 22 args 五类
+原子 test，从稳定 generation 850/RV `8395947` 部署到候选 generation/observed `851/851`、RV `8403105`；三 Pod
+runtime 均为上述顶层 index digest、Ready/restart 0、参数未漂移。候选门禁第一次误启用
+`EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION=1`，而实例明确 Auth disabled，脚本在只读 HTTP 200 检查即停止且没有写入；移除错误
+期望后完整 HEAD readonly gate GREEN。写前 revision/index/applied 为 `66874/66874/66874`，HashKV `2007903147`、
+compact revision `66760`、term `570`、leader `231094427`，Auth disabled/revision 281、Alarm/Lease/测试前缀为空。
+
+真实 clientv3 探针在三个 endpoint 各建立 32 个 512 KiB leased 旧值（每批 16 MiB），再以一个 32-op、无 PrevKv Txn 覆盖为
+小值；三批共 96 个大值全部共享各自单一 revision `66907/66943/66979`，PutResponse 不泄漏 PrevKV，最终 value、lease=0、
+create/mod revision、version=2 全部精确。每个 endpoint 的 quota logical usage 都从大 payload 正确缩减到 32 个新 key/value 的
+总和；随后另建 1 MiB leased key，以显式 PrevKv Txn 验证完整 1 MiB 旧值、lease/create/mod/version 未被投影，加入新 current
+值后 Status 报告精确 `1021` bytes。每轮删除作用域前缀并 revoke lease，最终三个前缀 count 0、LeaseList 与 Alarm 为空；三副本
+revision/index/applied 为 `66982/66982/66982`，HashKV `1236587080`、compact revision `66760`。
+
+候选三轮九次 health 全部成功（`151.740–174.066ms`），三个 TiKV store Up、各 14 Regions，pending/down/miss/extra/learner
+五类检查连续三轮全零。候选日志 `711/729/320` 行，修正后的 405/cancel/drain/reset 模式 `14/6/4`，均为门禁或 rollout
+采样；critical 和最近 30 秒为 0。
+
+以同类五类原子 test 从候选 RV `8403105` 回滚固定稳定 digest，generation/observed `852/852`、RV `8404203`；三 Pod
+runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，22 项参数
+未漂移。候选期 port-forward 虽仍监听但指向已删除 Pod，首次稳定门禁第一条 curl 返回 empty reply 并立即停止；关闭旧会话、确认六
+端口为零并为稳定 Pod 重建后，稳定门禁（排除旧镜像不含的候选 info-metrics 代际合同）完整 GREEN。revision/index/applied、
+HashKV、compact revision 为 `66982/66982/66982/1236587080/66760`，term `572`、leader `231094427`，Auth disabled/
+revision 281，Alarm、Lease 与测试前缀为空。稳定三轮九次 health 全成功（`151.797–183.049ms`），TiKV 三 store Up、五类 Region
+检查三轮全零。稳定日志 `486/505/270` 行，修正模式 `8/0/3`；仅有门禁 405/cancel、一次 rollout drain/reset 和启动期一次
+compact revision metric refresh deadline，随后门禁/健康全绿；critical 与最近 30 秒为 0。KubeBrain/TiKV 3+3
+Ready/restart 0，PD 3 Ready、各沿用历史 restart 1。
+
+最终关闭六个 port-forward，确认 Pod 候选引用为 0 后精确删除 Kind tag/import/config 三条候选名称、Docker candidate tag/index
+与 `/dev/shm/kubebrain-a5728.U5r44p`；稳定镜像、源码、共享 layers 和数据卷未删除。listener、候选 Pod/Kind/Docker 引用、临时
+probe 与候选目录均为 0。宿主根盘仍约 98%、可用 48 GiB，共享 build cache 未擅自清理；Kind local-path 非 CSI 存储隔离和容量
+压力仍是生产阻塞风险。普通 inline Put 已消除跨整个 commit/response 等待持有不可观察旧 payload，但单键 pre-read 仍会从 TiKV
+取回并短暂分配完整 value；独立持久 metadata 索引仍是消除该网络与初始分配成本的后续方向。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
