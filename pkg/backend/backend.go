@@ -213,6 +213,10 @@ type Backend interface {
 	// the in-memory count index and the response-header revision selected with it.
 	// served is false when it must fall back to a scan.
 	CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (count int64, headerRevision uint64, served bool)
+	// CountAtRevisionScan counts [key,end) at rev without retaining a KeyValue
+	// result set. It is the bounded-memory fallback when CountAtRevision cannot
+	// serve from the in-memory index; rev==0 selects the current revision.
+	CountAtRevisionScan(ctx context.Context, key, end []byte, rev uint64) (count int64, headerRevision uint64, err error)
 
 	// RebuildCountIndex rebuilds the count index; call on leadership acquisition.
 	RebuildCountIndex(ctx context.Context) error

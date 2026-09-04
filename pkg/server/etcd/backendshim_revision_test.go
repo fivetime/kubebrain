@@ -32,6 +32,14 @@ type currentCountRevisionRaceBackend struct {
 	countedRevision uint64
 }
 
+type historicalCountScanProbeBackend struct {
+	backend.Backend
+	scanKey      []byte
+	scanEnd      []byte
+	scanRevision uint64
+	listCalled   bool
+}
+
 func (b *currentCountRevisionRaceBackend) CountAtRevision(_ context.Context, _, _ []byte, revision uint64) (int64, uint64, bool) {
 	if revision == 0 {
 		b.countedRevision = b.current
@@ -43,6 +51,22 @@ func (b *currentCountRevisionRaceBackend) CountAtRevision(_ context.Context, _, 
 }
 
 func (b *currentCountRevisionRaceBackend) GetCurrentRevision() uint64 { return b.current }
+
+func (b *historicalCountScanProbeBackend) CountAtRevision(context.Context, []byte, []byte, uint64) (int64, uint64, bool) {
+	return 0, 0, false
+}
+
+func (b *historicalCountScanProbeBackend) CountAtRevisionScan(_ context.Context, key, end []byte, revision uint64) (int64, uint64, error) {
+	b.scanKey = append([]byte(nil), key...)
+	b.scanEnd = append([]byte(nil), end...)
+	b.scanRevision = revision
+	return 4, 11, nil
+}
+
+func (b *historicalCountScanProbeBackend) List(context.Context, *proto.RangeRequest) (*proto.RangeResponse, error) {
+	b.listCalled = true
+	return nil, fmt.Errorf("historical CountOnly unexpectedly materialized List")
+}
 
 type malformedInlineValueBackend struct {
 	backend.Backend
@@ -151,6 +175,28 @@ func TestBackendShimHistoricalCountUsesRequestedRevisionInsideCheckpoint(t *test
 	require.Equal(t, uint64(7), probe.countRevision)
 	require.False(t, probe.backendCountCalled, "an explicit historical revision must not be replaced by the checkpoint revision")
 	require.Equal(t, int64(probe.GetCurrentRevision()), response.Header.Revision)
+}
+
+func TestBackendShimHistoricalCountIndexMissUsesUnfilteredScan(t *testing.T) {
+	probe := &historicalCountScanProbeBackend{}
+	shim := NewBackendShim(probe, &recordingMetrics{})
+	request := &etcdserverpb.RangeRequest{
+		Key: []byte("/historical-count-scan/"), RangeEnd: []byte("/historical-count-scan0"),
+		Revision: 7, CountOnly: true, Limit: 1,
+		SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_VALUE,
+		MinModRevision: 100, MaxModRevision: 10, MinCreateRevision: 200, MaxCreateRevision: 20,
+	}
+
+	response, err := shim.Count(context.Background(), request)
+	require.NoError(t, err)
+	require.False(t, probe.listCalled)
+	require.Equal(t, request.Key, probe.scanKey)
+	require.Equal(t, request.RangeEnd, probe.scanEnd)
+	require.Equal(t, uint64(request.Revision), probe.scanRevision)
+	require.Equal(t, int64(11), response.GetHeader().GetRevision())
+	require.Equal(t, int64(4), response.Count)
+	require.Empty(t, response.Kvs)
+	require.False(t, response.More)
 }
 
 func TestBackendShimCurrentCountPreservesResolvedRevision(t *testing.T) {

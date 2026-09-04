@@ -1084,24 +1084,60 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 	if c, _, served := b.CountAtRevision(ctx, r.Key, r.End, rev); served {
 		return &proto.CountResponse{Header: responseHeader(rev), Count: uint64(c)}, nil
 	}
-
-	decodedRange, err := b.requiresDecodedUserRange(ctx, r.Key, r.End, rev)
+	count, err := b.countAtRevisionScan(ctx, r.Key, r.End, rev)
 	if err != nil {
+		klog.Errorf("backend count %v return err %v", r, err)
 		return nil, err
+	}
+	return &proto.CountResponse{
+		Header: responseHeader(rev),
+		Count:  uint64(count),
+	}, nil
+}
+
+// CountAtRevisionScan implements Backend. Unlike CountAtRevision, this method
+// deliberately bypasses the in-memory index: callers use it only after the
+// local/leader index ladder has declined the request. The scanner retains only
+// an integer, so a historical CountOnly fallback never constructs a full KV
+// slice and its inert Range filters cannot change cardinality.
+func (b *backend) CountAtRevisionScan(ctx context.Context, key, end []byte, rev uint64) (count int64, headerRevision uint64, err error) {
+	headerRevision, err = b.safeCurrentRevision(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	if rev == 0 {
+		rev = headerRevision
+	} else if rev > headerRevision {
+		// Match CountAtRevision: a cold replica may scan a storage snapshot newer
+		// than its process-local watermark. A successful response header cannot
+		// describe a revision older than the snapshot it counted.
+		headerRevision = rev
+	}
+	count, err = b.countAtRevisionScan(ctx, key, end, rev)
+	return count, headerRevision, err
+}
+
+func (b *backend) countAtRevisionScan(ctx context.Context, key, end []byte, rev uint64) (int64, error) {
+	if !b.config.EnableEtcdCompatibility {
+		return 0, nil
+	}
+	decodedRange, err := b.requiresDecodedUserRange(ctx, key, end, rev)
+	if err != nil {
+		return 0, err
 	}
 	var count int
 	if decodedRange {
 		ctx, err = b.withRangeSnapshotTimestamp(ctx)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
-		userEnd := r.End
+		userEnd := end
 		if isFromKeyEnd(userEnd) {
 			userEnd = nil
 		}
-		scanStart, scanEnd, exactKeys := b.decodedUserRangeScanPlan(r.Key, r.End)
+		scanStart, scanEnd, exactKeys := b.decodedUserRangeScanPlan(key, end)
 		count, err = b.scanner.CountFilteredExcluding(
-			ctx, scanStart, scanEnd, r.Key, userEnd, exactKeys, rev,
+			ctx, scanStart, scanEnd, key, userEnd, exactKeys, rev,
 		)
 		if err == nil {
 			err = b.visitDecodedRangeExactKeyChunks(ctx, exactKeys, rev, func(_ [][]byte, exactKVs []*proto.KeyValue) error {
@@ -1114,17 +1150,13 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 			})
 		}
 	} else {
-		key, rangeEnd := b.rangeStartKey(r.Key), b.rangeEndKey(r.End)
-		count, err = b.scanner.Count(ctx, key, rangeEnd, rev)
+		start, rangeEnd := b.rangeStartKey(key), b.rangeEndKey(end)
+		count, err = b.scanner.Count(ctx, start, rangeEnd, rev)
 	}
 	if err != nil {
-		klog.Errorf("backend count %v return err %v", r, err)
-		return nil, err
+		return 0, err
 	}
-	return &proto.CountResponse{
-		Header: responseHeader(rev),
-		Count:  uint64(count),
-	}, nil
+	return int64(count), nil
 }
 
 // GetPartitions implements Backend interface

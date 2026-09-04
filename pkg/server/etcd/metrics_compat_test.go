@@ -3827,6 +3827,10 @@ func (b *countMetricFallbackBackend) CountAtRevision(context.Context, []byte, []
 	return 0, 0, false
 }
 
+func (b *countMetricFallbackBackend) CountAtRevisionScan(context.Context, []byte, []byte, uint64) (int64, uint64, error) {
+	return 2, b.GetCurrentRevision(), nil
+}
+
 func TestBackendShimObservesCountFallbackExactlyOnce(t *testing.T) {
 	for _, revision := range []int64{0, 7} {
 		t.Run(strconv.FormatInt(revision, 10), func(t *testing.T) {

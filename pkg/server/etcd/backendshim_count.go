@@ -275,7 +275,19 @@ func (cr *countResolver) count(
 		if isCountProxyRequest(ctx) {
 			return nil, errCountIndexNotReady
 		}
-		return cr.shim.list(ctx, r, false)
+		// CountOnly cardinality is computed before Range filters in upstream etcd;
+		// pass only its range and revision to the integer-only scanner fallback so
+		// inert filters cannot prune the count or force a materialized List.
+		count, headerRevision, err := cr.shim.backend.CountAtRevisionScan(
+			ctx, r.Key, countRequestEnd(r), normalizeRangeRevision(r.Revision),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return &etcdserverpb.RangeResponse{
+			Header: txnHeader(int64(headerRevision)),
+			Count:  count,
+		}, nil
 	}
 
 	// Current-revision count. Prefer the local index, then the leader's index

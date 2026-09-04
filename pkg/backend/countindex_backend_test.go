@@ -125,6 +125,53 @@ func TestCountIndexMatchesScanAcrossRevisions(t *testing.T) {
 	require.Equal(t, len(sub.Kvs), int(c))
 }
 
+func TestCountAtRevisionScanMatchesHistoricalStateWithoutIndex(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	p := prefix + "/historical-scan/"
+	end := PrefixEnd([]byte(p))
+	put := func(name string) uint64 {
+		response, err := b.Create(ctx, &proto.CreateRequest{
+			Key: []byte(p + name), Value: []byte("large-value-that-count-must-not-retain"),
+		})
+		require.NoError(t, err)
+		waitCommitted(t, b, response.Header.Revision)
+		return response.Header.Revision
+	}
+
+	put("a")
+	historicalRevision := put("b")
+	currentRevision := put("c")
+	_, _, served := b.CountAtRevision(ctx, []byte(p), end, historicalRevision)
+	require.False(t, served, "fixture must force the scanner fallback")
+
+	count, headerRevision, err := b.CountAtRevisionScan(ctx, []byte(p), end, historicalRevision)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), count)
+	require.GreaterOrEqual(t, headerRevision, currentRevision)
+
+	count, headerRevision, err = b.CountAtRevisionScan(ctx, []byte(p), end, 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), count)
+	require.GreaterOrEqual(t, headerRevision, currentRevision)
+
+	point := []byte(p + "b")
+	count, _, err = b.CountAtRevisionScan(ctx, point, append(append([]byte(nil), point...), 0), historicalRevision)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), count)
+}
+
 // TestCountIndexRebuildIgnoresSystemNamespace pins the rebuild scan to the
 // whole object keyspace: with a system namespace (--system-namespace, né
 // --key-prefix) that sorts AFTER the client's key prefix, the old
