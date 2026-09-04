@@ -70320,6 +70320,57 @@ Ready/restart 0；PD 3 Ready、各沿用一次历史 restart。全程认证关�
 四个候选名称及 Docker 候选 tag/index；稳定镜像和数据卷未删除。宿主根盘 93%、可用约 135 GiB。A5676 已记录的 Kind
 local-path 非 CSI 存储隔离风险仍存在。本轮使本地与远端两条 Count index 快路径都返回自洽的 count/header revision。
 
+### A5718：历史 Count index 命中不依赖 compact 元数据
+
+A5717 为 CountAtRevision 增加精确 header revision 时，对 rev=0 与显式历史 revision 都调用了 `safeCurrentRevision`。
+这使原本已经由 `(requested revision, index Ready)` 完整证明的历史 count 命中重新依赖 compact watermark 的 TiKV 读取：缓存
+过期时一次控制面元数据故障会把纯内存命中误判为 miss，继而触发 leader proxy 或物化 range scan，降低可用性并放大故障期负载。
+
+新增 `TestHistoricalCountIndexDoesNotReadCompactWatermark`：先在 revision 固定且 index ready 的状态完成 rebuild，再过期 compact
+cache 并原子启用仅针对 watermark 的 storage Get 故障；A5717 实现返回 `served=false` 而 RED（`0.059s`）。提交
+`049e205e` 仅在 rev=0 时调用 `safeCurrentRevision` 来解析当前快照；显式 revision 直接使用进程水位，并在冷水位低于目标时以
+已就绪 index 对该快照存在性的证明把 header 下界提升至目标 revision，因此不会返回低于响应快照的 header，也不会给历史
+内存命中增加 storage 依赖。初版测试通过后 race 检出夹具在后台 worker 存活时替换 `b.kv`；改为构造时注入并通过
+`atomic.Bool` 启用的固定 wrapper，产品代码不变。最终相关常规测试 `0.076s`、race `1.242s`，完整 backend/etcd 包
+`50.741/145.948s`，两包 vet、gofmt、`git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为
+`170/193/180/160`，四分片 `259.573/456.221/308.144/585.040s` GREEN；提交后四分片
+`253.063/446.799/304.456/574.406s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5718-049e205e3e75` 内嵌版本 `0.0.0-049e205e3e75`、完整提交
+`049e205e3e752c629bab72506ae0f76ea798068b`、build time `2026-09-04T02:17:04Z`、Go `1.26.5`、
+`linux/amd64`、TiKV、kubectl `v1.36.2`。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:0e87373f94d31e5595442d06c012283749dd3a09a9ca4ba4659f3d509a11f9f6`、
+`sha256:85f2794bcb3f9a33a5b2d9ea9dcafb4f6d997fa7d120b767fe66f60871b015f3`、
+`sha256:c97b9f91d20e868f2ac05f7156e789d0c1bbd185969eebee0f92ebbc3f0c4b8e`、
+`sha256:47da3f85012cb43f937d1c576cec604ceec84177ee9311f906db47a29419f07b`；attestation config 为
+`sha256:f6ef84dba4dcfbef691ce2c737545dec27920dbce3415fe828081ad677f6fc18`，SPDX/SLSA in-toto layer 为
+`sha256:af3a70599230ab0ebe539fe1b9d4fd8e4b239feafaa36edeaed8cf4eb798938b`、
+`sha256:d76fec0b56ab290270ebef5569fb99ff4b1fa5d48169510f0e4ba0a29e40b49f`。SPDX 2.3 含 2,592
+packages/8,096 relationships；SLSA subject 精确绑定 platform manifest、四项显式 build args 与 syft/alpine/golang
+三项固定 materials。OCI labels、非 root `65532:65532`、入口和运行版本交叉验证通过；Kind 在部署前显式登记 tag、
+canonical digest、index 与 config 四种名称。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 830 部署到候选 831；
+三 Pod runtime digest 同为
+`sha256:bae5d74cbedad0c67369429fce252c226393745ed3fbf78d1bdca2bd1a124ef7`、Ready/restart 0，三处运行
+版本均绑定上述完整提交且参数未漂移。候选完整 HEAD readonly gate GREEN；终态 revision/index/applied 为
+`66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `529`、leader `231094427`，
+Auth disabled/revision 281、Lease/Alarm 为空。三轮九次 endpoint health 全部成功（`50.906–56.707ms`）；三个 TiKV
+store Up，pending/down/miss/extra/learner 五类 Region check 连续三轮全零。候选日志 `393/411/275` 行，关键错误及
+最近 60 秒关键错误均为 0。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `832/832`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项
+参数未漂移。稳定镜像完整 HEAD readonly gate 按预期只缺少新版 `watch_range_prefilter_dropped` 指标；排除该
+info-metrics 代际合同后其余门禁全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `532`、leader `231094427`，Auth disabled/revision 281、
+Lease/Alarm 为空；三轮九次 health 全部成功（`49.973–68.942ms`），三个 store Up、五类 Region check 连续三轮
+全零，稳定日志 `441/465/324` 行且关键错误为空。KubeBrain/TiKV 3+3 Ready/restart 0；PD 3 Ready、各沿用一次历史
+restart。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward 会话关闭且六个目标端口无监听。确认没有 Pod/容器
+引用 A5718 后，精确删除 Kind 的 tag、canonical digest、index、config 四个候选名称及 Docker 候选 tag/index；稳定镜像和
+数据卷未删除。宿主根盘 94%、可用约 126 GiB。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮恢复了
+历史 Count index 的零存储读取可用性，同时保留 A5717 的当前快照 revision 一致性。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
