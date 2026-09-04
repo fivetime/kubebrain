@@ -70874,6 +70874,84 @@ Ready/restart 0；PD 3 Ready、各沿用历史 restart 1。
 仍是明确的生产阻塞风险。本轮关闭 read-only Txn point batch 的跨 backend/shim 长 payload retention，但 TiKV inline layout 的
 网络读取和含写 Txn 的 value 物化仍需后续演进。
 
+### A5727：write-classified Txn 跳过不可观察旧值并投影 Range 基础快照
+
+上游 `/root/etcd/server/etcdserver/txn/put.go::getPrevKV` 只有在 Put 设置 `IgnoreValue`、`IgnoreLease` 或 `PrevKv` 时才读取
+旧 KV；普通覆盖写不会先物化旧 value。`/root/etcd/server/storage/mvcc/kvstore_txn.go::rangeKeys` 又在 CountOnly 时直接使用
+`CountRevisions`，在 `FastKeysOnly` 时只从 index 构造 key/create/mod/version。上游 `IsTxnReadonly` 刻意不递归：顶层包含
+nested Txn 就进入 write-classified 路径，即使选中的 nested 分支只有 Range。KubeBrain 保持该分类，但旧 staged executor 对每个
+Put 都先做完整 `currentPoint`，且 write-classified Txn 不使用 A5726 prefetch，nested fast KeysOnly/CountOnly 基础快照再次跨过
+backend/shim 携带完整 payload。
+
+本轮让普通 Put 仅在上述三个依赖旧状态的 flag 存在时调用 `currentPoint`；`PrevKv/IgnoreValue/IgnoreLease` 的读取和错误顺序保持
+不变。对 staged Put 重建逻辑 KV 时，旧 value 与 lease 都会被新 op 覆盖，因此改用 FastKeysOnly metadata Get 获取
+create/version/mod revision；同键 staged point read 直接处理 delete 或从 metadata+新 op 构造结果，不再先读旧 full KV 后覆盖。
+write-classified Range 合并 staged mutation 前，对 CountOnly 及 `KeysOnly && SortTarget != VALUE` 的基础 point/range 请求携带
+metadata-only 模式；filters、排序、limit 和 staged merge 仍在同一逻辑快照完成。VALUE-sort KeysOnly 保留普通读取和 lease，
+delete 及 PrevKv 路径明确传 full 模式。旧 backend adapter 仍由 shim 自动回退 full Get/List，兼容边界不变。
+
+`TestMutableTxnProjectsFastRangesAndSkipsObsoletePutRead` 在旧代码上先以 `0.055s` RED：普通 Put 和 selected nested fast point
+均触发禁止的 full Get；修复第一步又暴露同键 staged full read 仍先读取旧 payload，随后补上 point staged-mutation 直达路径。
+新增 CountOnly 子用例在中间实现上再以 `0.054s` RED，证明 VALUE sort 的 CountOnly 仍错误走 full List；修复后固定 staged Put
+合并后的精确 count。VERSION 升序测试的初始期望误把 staged version=3 排在 base version=2 前，产品输出正确，断言改为
+`base,staged`。`TestMutableTxnRetainsRequiredFullValueReads` 反向固定 PrevKv/IgnoreValue/IgnoreLease 必须完整读旧值，且 VALUE-sort
+KeysOnly 必须清空 value 但保留 lease。连同 A5726 回归的聚焦测试为 `0.091s`，完整 server 包 `137.494s`，聚焦 race
+`1.280s`，vet、gofmt、diff check 均 GREEN。
+
+提交 `312a8226069e2706945f01442796aa07786d7d49` 前 verifier 精确分配 703 项为 `170/193/180/160`，四分片
+`265.574/458.125/320.420/581.900s` 全部 GREEN；提交后 verifier 不变，四分片
+`257.221/443.789/321.269/582.542s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5727-312a8226069e` 内嵌版本 `0.0.0-312a8226069e`、完整 SHA、build time
+`2026-09-04T12:18:47Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI nested index/platform/config/attestation 为
+`sha256:b389efc576eb9910f6fa23a183894a6ceb31149f4caf30cbeaadac7e7dbde511`、
+`sha256:a5d71b21435f69fe0b9a71dcfd173774fb570ec799e1a00e71f54b495ef3d24a`、
+`sha256:8339bd5a6a1415c7854f0cf404a8ce7af4a9d2f2d2c110b476d73fa431c17216`、
+`sha256:868147df19113bc26c83be761746775d492775e3f9b9a0334244df150c0ac300`；attestation config、SPDX/SLSA
+layer 为 `sha256:bab382ef488788f60501cbecafb30621809a6743bc7ec94feb4f968dcd7d7e38`、
+`sha256:1a2c3e14546e853098cf40b865cb29e8b5bcfcab851b5baf8f80a8605fe5ee2d`、
+`sha256:16b6b72088afb97af4b90851a4fb6c1d15543be7b01792828990e7db530ebab3`。78/78 descriptor edges、71
+layers/diff IDs 全部正确；SPDX 含 2,592 packages/381 files/8,096 relationships，SLSA subject、四项 build args 和三项
+materials 均匹配。914,601,472-byte archive SHA-256 为
+`13b13065e9fe7bf28ba46ea4444b0520e49b481b76b2fadbb1a9c3ba386453f3`；顶层 `index.json` SHA-256/Kind runtime
+imageID 为 `sha256:e1191427c611e99aa7c14893e798d9031be788c1b2d376ce4b11a11589262f60`。非 root
+`65532:65532`、入口、labels 与运行二进制身份均通过。第一次 Kind load 的短观察进程打印 loading 后结束，但 containerd 尚无
+候选引用，未误判成功；改用持久会话重跑后 tag/import/config 三条精确引用均出现。
+
+以 UID/resourceVersion/container/current image/full 22 args 五类原子 test，从稳定 generation 848/RV `8387330`
+部署到候选 generation/observed `849/849`、RV `8394873`；三 Pod runtime 均为上述顶层 index digest、Ready/restart 0、
+参数未漂移。候选完整 HEAD readonly gate GREEN；写入前 revision/index/applied 为 `66768/66768/66768`，cluster ID
+`7662961163671170154`、HashKV `1744637105`、compact revision `66760`、term `566`、leader `2393892952`，Auth
+disabled/revision 281、Alarm 与用户 keyspace 为空。
+
+真实 raw gRPC probe 在三个 endpoint 各执行 7 轮。每轮先建立三个 1 MiB leased old value，再以普通 Put 覆盖 A，并在 selected
+nested Txn 中验证 fast point B、覆盖 A/B/C 的 fast range、VALUE-sort CountOnly 和 staged full A；随后用 PrevKv 覆盖 C 并
+要求返回完整 1 MiB 旧值。共 21 次 mutable+nested、各 21 次 fast point/range/CountOnly/staged full/PrevKv 全部通过：投影
+项 value 为空、lease 0 且 metadata 正确，CountOnly 精确为 3 且无 KVs，staged full 精确保留新 value/lease/create revision 并
+递增 version，PrevKv 没有被误投影。临时探针初稿仅在本地编译时因 nested RequestOp 复合字面量少一个闭合括号失败，未连接服务或
+写入；修正后一次通过。删除 63 个测试键并 revoke lease 后，`/a5727-runtime-`、LeaseList 和 Alarm 均为空；终态
+revision/index/applied 为 `66874/66874/66874`，HashKV `2007903147`、compact revision `66760`。
+
+候选三轮九次 health 全部成功（`307.213–556.137ms`），三个 TiKV store Up、各 14 Regions，pending/down/miss/extra/learner
+五类检查连续三轮全零。候选日志 `661/277/728` 行，选定的 405/cancel/drain/reset 匹配 `9/2/4`，均为 rollout/门禁采样；
+critical 为 0。旧广义日志正则中的裸 `405` 会误匹配时间戳毫秒 `.405`，因此本轮改用完整 `status code 405` 短语，不把误计数
+作为故障证据。
+
+以同类五类原子 test 从候选 RV `8394873` 回滚固定稳定 digest，generation/observed `850/850`、RV `8395947`；三 Pod
+runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，22 项参数
+未漂移。关闭候选转发并为新 Pod 重建后，稳定门禁（排除旧稳定镜像不含的候选 info-metrics 代际合同）完整 GREEN；revision/
+index/applied、HashKV、compact revision 为 `66874/66874/66874/2007903147/66760`，term `567`、leader `231094427`，
+Auth disabled/revision 281，Alarm、用户前缀与 LeaseList 为空。稳定三轮九次 health 全部成功（`333.138–421.719ms`），三个
+store Up、五类 Region 检查三轮全零。稳定日志 `409/420/270` 行，修正后的选定模式匹配 `7/0/5`；仅为门禁 cancel/405、
+rollout drain/NOT_SERVING，以及 kubebrain-2 启动时一次 compact revision metric refresh deadline，随后门禁/健康全绿；critical
+和最近 30 秒均为 0。KubeBrain/TiKV 3+3 Ready/restart 0，PD 3 Ready、各沿用历史 restart 1。
+
+最终关闭六个 port-forward，确认 Pod 候选引用为 0 后精确删除 Kind tag/import/config 三个候选名称、Docker candidate tag/index
+与 1.8 GiB `/dev/shm/kubebrain-a5727.sFvMmW`；稳定镜像、源码和数据卷未删除。六个端口 listener、候选镜像引用、临时 probe
+源码和候选目录均为 0；宿主根盘约 98%、可用 49 GiB，共享 build cache 未擅自清理。Kind local-path 非 CSI 存储隔离和容量
+压力仍是生产阻塞风险。普通 Put 已完全消除不可观察旧值读取；metadata 路径仍受 TiKV inline-value 布局限制，会读取网络 payload
+后在 backend 边界释放，后续需要独立持久 metadata 索引才能消除该网络成本。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
