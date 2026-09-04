@@ -33,6 +33,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/countindex"
+	"github.com/kubewharf/kubebrain/pkg/backend/scanner"
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/util"
@@ -327,6 +328,18 @@ func validateLatestRevisionIndex(
 
 // List implements Backend interface
 func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.RangeResponse, err error) {
+	return b.list(ctx, r, false)
+}
+
+// ListKeysOnly returns the same keys and MVCC metadata as List while dropping
+// user values at the scanner/result boundary. It is an optional backend
+// capability consumed by the etcd FastKeysOnly path; it intentionally remains
+// outside Backend so adapters can fall back to List without source breakage.
+func (b *backend) ListKeysOnly(ctx context.Context, r *proto.RangeRequest) (resp *proto.RangeResponse, err error) {
+	return b.list(ctx, r, true)
+}
+
+func (b *backend) list(ctx context.Context, r *proto.RangeRequest, metadataOnly bool) (resp *proto.RangeResponse, err error) {
 	ts := time.Now()
 	defer func() {
 		klog.V(klogLevel).InfoS("list",
@@ -370,13 +383,33 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 	var kvs []*proto.KeyValue
 	if decodedRange {
 		kvs, err = b.decodedUserRange(ctx, r.Key, r.End, reqRevision)
+		if metadataOnly {
+			for _, kv := range kvs {
+				if kv != nil {
+					kv.Value = projectMetadataValue(kv.Value)
+				}
+			}
+		}
 		if err == nil && limit > 0 && int64(len(kvs)) > limit {
 			kvs = kvs[:limit]
 		}
 	} else {
 		key := b.rangeStartKey(r.Key)
 		rangeEnd := b.rangeEndKey(r.End)
-		kvs, err = b.scanner.Range(ctx, key, rangeEnd, reqRevision, limit)
+		if metadataOnly {
+			if metadataScanner, ok := b.scanner.(scanner.MetadataScanner); ok {
+				kvs, err = metadataScanner.RangeMetadata(ctx, key, rangeEnd, reqRevision, limit)
+			} else {
+				kvs, err = b.scanner.Range(ctx, key, rangeEnd, reqRevision, limit)
+				for _, kv := range kvs {
+					if kv != nil {
+						kv.Value = projectMetadataValue(kv.Value)
+					}
+				}
+			}
+		} else {
+			kvs, err = b.scanner.Range(ctx, key, rangeEnd, reqRevision, limit)
+		}
 	}
 	if err != nil {
 		klog.ErrorS(err, "backend range err", "key", util.LoggedKey(r.GetKey()), "end", util.LoggedKey(r.GetEnd()), "revision", r.GetRevision())

@@ -50,6 +50,7 @@ func (c *Config) getScannerConfig(isInternalStorageKey func([]byte) bool) scanne
 		CompactKey:           getCompactKey(c.Prefix),
 		Tombstone:            tombStoneBytes,
 		IsInternalStorageKey: isInternalStorageKey,
+		ProjectMetadataValue: projectMetadataValue,
 		SkipCompactUserKey: func(key []byte) bool {
 			for _, prefix := range skippedPrefixes {
 				if bytes.HasPrefix(key, prefix) {
@@ -59,6 +60,24 @@ func (c *Config) getScannerConfig(isInternalStorageKey func([]byte) bool) scanne
 			return false
 		},
 	}
+}
+
+func projectMetadataValue(stored []byte) []byte {
+	meta, _, inlined, err := DecodeInlineValueChecked(stored)
+	if err != nil {
+		// Keep malformed evidence intact for validateRangeObjectValues.
+		return stored
+	}
+	if !inlined {
+		// Legacy metadata is recovered from the separate etcdmeta record.
+		return nil
+	}
+	// FastKeysOnly does not expose Lease, so normalize every valid envelope to
+	// the compact known-unleased form with no user payload.
+	return encodeValueWithMeta(nil, EtcdMetadata{
+		CreateRevision: meta.CreateRevision,
+		Version:        meta.Version,
+	})
 }
 
 func (c *Config) complete() {

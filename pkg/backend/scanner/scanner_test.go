@@ -685,6 +685,46 @@ func TestRangeStreamKeysOnlyDropsValues(t *testing.T) {
 	}
 }
 
+func TestRangeMetadataProjectsValuesBeforeResultRetention(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.DefaultKeyspace().NewCoder()
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	userKey := []byte("/registry/configmaps/large")
+	value := bytes.Repeat([]byte("v"), 2<<20)
+	batch := kv.BeginBatchWrite()
+	batch.Put(c.EncodeObjectKey(userKey, 7), value, 0)
+	require.NoError(t, batch.Commit(context.Background()))
+
+	var projectedBytes atomic.Int64
+	sc := NewScanner(kv, c, Config{
+		CompactKey: []byte("/compact"), Tombstone: []byte("tomb"),
+		ProjectMetadataValue: func(stored []byte) []byte {
+			projectedBytes.Add(int64(len(stored)))
+			return []byte("metadata")
+		},
+	}, m)
+	metadataScanner, ok := sc.(MetadataScanner)
+	require.True(t, ok)
+
+	start := c.EncodeObjectKey([]byte("/registry/configmaps/"), 0)
+	end := c.EncodeObjectKey([]byte("/registry/configmaps0"), 0)
+	kvs, err := metadataScanner.RangeMetadata(context.Background(), start, end, 7, 0)
+	require.NoError(t, err)
+	require.Len(t, kvs, 1)
+	require.Equal(t, userKey, kvs[0].Key)
+	require.Equal(t, []byte("metadata"), kvs[0].Value)
+	require.Equal(t, int64(len(value)), projectedBytes.Load())
+
+	full, err := sc.Range(context.Background(), start, end, 7, 0)
+	require.NoError(t, err)
+	require.Len(t, full, 1)
+	require.Equal(t, value, full[0].Value, "ordinary value-carrying ranges must remain unchanged")
+}
+
 type partitionedTestStorage struct {
 	storage.KvStorage
 	partitions []storage.Partition

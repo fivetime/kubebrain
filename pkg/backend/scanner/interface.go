@@ -61,3 +61,13 @@ type Scanner interface {
 	// baseline (the caller falls back to a full scan).
 	CompactKeys(ctx context.Context, userKeys [][]byte, revision uint64) error
 }
+
+// MetadataScanner is the optional value-projecting range capability used by
+// etcd FastKeysOnly reads. Implementations retain each key's revision and the
+// compact inline metadata envelope while discarding the user payload before it
+// enters the result receiver. Keeping it separate from Scanner preserves
+// compatibility with storage/test adapters that do not need the optimization.
+type MetadataScanner interface {
+	RangeMetadata(ctx context.Context, start, end []byte, revision uint64, limit int64) ([]*proto.KeyValue, error)
+	RangeMetadataFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) ([]*proto.KeyValue, error)
+}

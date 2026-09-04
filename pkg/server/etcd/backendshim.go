@@ -1053,8 +1053,25 @@ func (b *backendShim) list(
 		Limit:    limit,
 		Revision: normalizeRangeRevision(r.Revision),
 	}
-	// pass through list method
-	response, err := b.backend.List(ctx, request)
+	// Match etcd's FastKeysOnly boundary. Unless VALUE ordering is requested,
+	// KeysOnly needs key and MVCC metadata but not the user value. A capable
+	// backend can therefore discard the payload at the scanner boundary instead
+	// of retaining every large value until this projection step. VALUE sorting
+	// deliberately keeps the ordinary List path because ordering happens before
+	// projection in etcd.
+	var response *proto.RangeResponse
+	var err error
+	if r.KeysOnly && r.SortTarget != etcdserverpb.RangeRequest_VALUE {
+		if lister, ok := b.backend.(interface {
+			ListKeysOnly(context.Context, *proto.RangeRequest) (*proto.RangeResponse, error)
+		}); ok {
+			response, err = lister.ListKeysOnly(ctx, request)
+		} else {
+			response, err = b.backend.List(ctx, request)
+		}
+	} else {
+		response, err = b.backend.List(ctx, request)
+	}
 	if err != nil {
 		return nil, err
 	}

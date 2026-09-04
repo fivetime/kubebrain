@@ -172,6 +172,55 @@ func TestCountAtRevisionScanMatchesHistoricalStateWithoutIndex(t *testing.T) {
 	require.Equal(t, int64(1), count)
 }
 
+func TestListKeysOnlyDropsPayloadAndPreservesInlineMetadata(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	p := prefix + "/keys-only/"
+	key := []byte(p + "large")
+	first, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: bytes.Repeat([]byte("a"), 2<<20),
+	}})
+	require.NoError(t, err)
+	second, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: bytes.Repeat([]byte("b"), 2<<20),
+	}})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= second.Header.Revision }, 5*time.Second, 2*time.Millisecond)
+
+	request := &proto.RangeRequest{Key: []byte(p), End: PrefixEnd([]byte(p))}
+	full, err := b.List(ctx, request)
+	require.NoError(t, err)
+	projected, err := b.ListKeysOnly(ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, full.Header.Revision, projected.Header.Revision)
+	require.Len(t, full.Kvs, 1)
+	require.Len(t, projected.Kvs, 1)
+	require.Equal(t, full.Kvs[0].Key, projected.Kvs[0].Key)
+	require.Equal(t, full.Kvs[0].Revision, projected.Kvs[0].Revision)
+	require.Greater(t, len(full.Kvs[0].Value), 2<<20)
+	require.Less(t, len(projected.Kvs[0].Value), 64)
+
+	fullMeta, _, fullInline, err := DecodeInlineValueChecked(full.Kvs[0].Value)
+	require.NoError(t, err)
+	projectedMeta, raw, projectedInline, err := DecodeInlineValueChecked(projected.Kvs[0].Value)
+	require.NoError(t, err)
+	require.True(t, fullInline)
+	require.True(t, projectedInline)
+	require.Empty(t, raw)
+	require.Equal(t, first.Header.Revision, fullMeta.CreateRevision)
+	require.Equal(t, fullMeta.CreateRevision, projectedMeta.CreateRevision)
+	require.Equal(t, fullMeta.Version, projectedMeta.Version)
+}
+
 // TestCountIndexRebuildIgnoresSystemNamespace pins the rebuild scan to the
 // whole object keyspace: with a system namespace (--system-namespace, né
 // --key-prefix) that sorts AFTER the client's key prefix, the old

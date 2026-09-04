@@ -105,6 +105,12 @@ type Config struct {
 	// version GC. Filtering after Decode is required because the legacy raw
 	// key+'$'+revision encoding cannot represent collision-free physical holes.
 	SkipCompactUserKey func([]byte) bool
+
+	// ProjectMetadataValue strips a stored value to the bytes needed to recover
+	// etcd MVCC metadata. A malformed reserved envelope is returned unchanged so
+	// the backend's ordinary visible-object validation still reports and
+	// persists the same corruption evidence as a value-carrying List.
+	ProjectMetadataValue func([]byte) []byte
 }
 
 // Range implements Scanner interface
@@ -114,7 +120,21 @@ func (r *scanner) Range(ctx context.Context, start []byte, end []byte, revision 
 	}
 
 	receiver := &commonResultReceiver{}
-	_, err := r.scan(ctx, start, end, revision, false, false, receiver)
+	_, err := r.scan(ctx, start, end, revision, false, false, false, receiver)
+	if err != nil {
+		return nil, err
+	}
+	return receiver.result, nil
+}
+
+// RangeMetadata is Range with user values projected out at the worker/result
+// boundary. It is used only when the caller needs keys and MVCC metadata.
+func (r *scanner) RangeMetadata(ctx context.Context, start, end []byte, revision uint64, limit int64) ([]*proto.KeyValue, error) {
+	if limit > 0 {
+		return r.rangeWithLimitMode(ctx, start, end, revision, limit, true)
+	}
+	receiver := &commonResultReceiver{}
+	_, err := r.scan(ctx, start, end, revision, false, false, true, receiver)
 	if err != nil {
 		return nil, err
 	}
@@ -133,13 +153,27 @@ func (r *scanner) RangeFiltered(ctx context.Context, start, end, userStart, user
 // when their legacy version runs straddle an otherwise safe raw scan bound.
 func (r *scanner) RangeFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) ([]*proto.KeyValue, error) {
 	receiver := &filteredResultReceiver{start: userStart, end: userEnd, excluded: keySet(excluded)}
-	if _, err := r.scan(ctx, start, end, revision, false, false, receiver); err != nil {
+	if _, err := r.scan(ctx, start, end, revision, false, false, false, receiver); err != nil {
+		return nil, err
+	}
+	return receiver.result, nil
+}
+
+// RangeMetadataFilteredExcluding is the decoded-boundary counterpart of
+// RangeMetadata.
+func (r *scanner) RangeMetadataFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) ([]*proto.KeyValue, error) {
+	receiver := &filteredResultReceiver{start: userStart, end: userEnd, excluded: keySet(excluded)}
+	if _, err := r.scan(ctx, start, end, revision, false, false, true, receiver); err != nil {
 		return nil, err
 	}
 	return receiver.result, nil
 }
 
 func (r *scanner) rangeWithLimit(ctx context.Context, start []byte, end []byte, revision uint64, limit int64) ([]*proto.KeyValue, error) {
+	return r.rangeWithLimitMode(ctx, start, end, revision, limit, false)
+}
+
+func (r *scanner) rangeWithLimitMode(ctx context.Context, start []byte, end []byte, revision uint64, limit int64, metadataOnly bool) ([]*proto.KeyValue, error) {
 	tso, pinned := storage.SnapshotTimestampFromContext(ctx)
 	if !pinned {
 		var err error
@@ -160,7 +194,9 @@ func (r *scanner) rangeWithLimit(ctx context.Context, start []byte, end []byte, 
 		revision:             revision,
 		tombstone:            r.config.Tombstone,
 		compact:              false,
+		metadataOnly:         metadataOnly,
 		isInternalStorageKey: r.config.IsInternalStorageKey,
+		projectMetadataValue: r.config.ProjectMetadataValue,
 	}, r.store, r.coder, r.metricCli)
 	_, err = w.run(ctx, receiver)
 	if err != nil {
@@ -174,7 +210,7 @@ func (r *scanner) Count(ctx context.Context, start []byte, end []byte, revision 
 	// A full partition-parallel scan that discards values and only counts live
 	// keys — the count-index fallback path. O(keys in range).
 	receiver := &emptyResultReceiver{}
-	return r.scan(ctx, start, end, revision, false, false, receiver)
+	return r.scan(ctx, start, end, revision, false, false, false, receiver)
 }
 
 // CountFiltered implements Scanner. It is the low-byte-boundary fallback for
@@ -188,7 +224,7 @@ func (r *scanner) CountFiltered(ctx context.Context, start, end, userStart, user
 // payloads; excluded keys are counted later from exact point reads.
 func (r *scanner) CountFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) (int, error) {
 	receiver := &filteredCountReceiver{start: userStart, end: userEnd, excluded: keySet(excluded)}
-	if _, err := r.scan(ctx, start, end, revision, false, false, receiver); err != nil {
+	if _, err := r.scan(ctx, start, end, revision, false, false, false, receiver); err != nil {
 		return 0, err
 	}
 	return receiver.count, nil
@@ -386,7 +422,7 @@ func (r *scanner) Compact(ctx context.Context, borders [][]byte, revision uint64
 	for i := 0; i+1 < len(borders); i += 2 {
 		// Scan every border best-effort even if one fails: each border's GC is
 		// independent, and returning the first error still surfaces the failure.
-		if _, err := r.scan(ctx, borders[i], borders[i+1], revision, true, false, &emptyResultReceiver{}); err != nil {
+		if _, err := r.scan(ctx, borders[i], borders[i+1], revision, true, false, false, &emptyResultReceiver{}); err != nil {
 			klog.ErrorS(err, "compact scan failed for border", "revision", revision,
 				"start", util.LoggedKey(borders[i]), "end", util.LoggedKey(borders[i+1]))
 			if firstErr == nil {
@@ -516,7 +552,7 @@ func (r *scanner) adjustPartitionsBorders(ps []storage.Partition) (ret []storage
 	return ret
 }
 
-func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, keysOnly bool, receiver resultReceiver) (int, error) {
+func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, keysOnly, metadataOnly bool, receiver resultReceiver) (int, error) {
 	store := r.store
 	if exclusiveKvStorage, ok := storage.FindCapability[storage.ExclusiveKvStorage](r.store); ok && compact {
 		klog.InfoS("compact with exclusive kv storage", "start", util.LoggedKey(start), "end", util.LoggedKey(end), "rev", revision)
@@ -589,9 +625,11 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 				revision:             revision,
 				compact:              compact,
 				keysOnly:             keysOnly,
+				metadataOnly:         metadataOnly,
 				tombstone:            r.config.Tombstone,
 				isInternalStorageKey: r.config.IsInternalStorageKey,
 				skipCompactUserKey:   r.config.SkipCompactUserKey,
+				projectMetadataValue: r.config.ProjectMetadataValue,
 			}, store, r.coder, r.metricCli)
 
 			// run worker
@@ -679,6 +717,9 @@ type workerConfig struct {
 	// on failover. Dropping the value at the source removes that spike; real
 	// range reads (which need the value) leave it false.
 	keysOnly bool
+	// metadataOnly retains only the projected inline metadata envelope.
+	metadataOnly         bool
+	projectMetadataValue func([]byte) []byte
 
 	isInternalStorageKey func([]byte) bool
 	skipCompactUserKey   func([]byte) bool
@@ -990,6 +1031,9 @@ func (w *worker) runRead(
 func (w *worker) emitValue(v []byte) []byte {
 	if w.keysOnly {
 		return nil
+	}
+	if w.metadataOnly && w.projectMetadataValue != nil {
+		return w.projectMetadataValue(v)
 	}
 	return v
 }
