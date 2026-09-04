@@ -276,8 +276,12 @@ func (e *stagedTxnExecutor) currentPoint(key []byte) (*mvccpb.KeyValue, error) {
 
 func (e *stagedTxnExecutor) stagedPutKV(op backend.TxnWriteOp) (*mvccpb.KeyValue, error) {
 	// Validation rejects multiple puts to the same key, so the base state is the
-	// state this one staged put updates.
-	baseResp, err := e.srv.backend.Get(e.ctx, &etcdserverpb.RangeRequest{Key: op.Key, Revision: e.baseRev})
+	// state this one staged put updates. Its old user value and lease are both
+	// replaced by the staged operation, so only the revision/version metadata is
+	// needed to construct the transaction's logical view.
+	baseResp, err := e.srv.backend.Get(e.ctx, &etcdserverpb.RangeRequest{
+		Key: op.Key, Revision: e.baseRev, KeysOnly: true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -305,9 +309,16 @@ func (e *stagedTxnExecutor) put(r *etcdserverpb.PutRequest) (*etcdserverpb.PutRe
 			return nil, err
 		}
 	}
-	current, err := e.currentPoint(r.Key)
-	if err != nil {
-		return nil, err
+	// Match upstream getPrevKV: an ordinary replacement does not read the old
+	// value. Only flags whose response or write value depends on that state need
+	// to materialize it.
+	var current *mvccpb.KeyValue
+	if r.IgnoreValue || r.IgnoreLease || r.PrevKv {
+		var err error
+		current, err = e.currentPoint(r.Key)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if (r.IgnoreValue || r.IgnoreLease) && current == nil {
 		return nil, txnKeyNotFoundError()
@@ -333,7 +344,7 @@ func (e *stagedTxnExecutor) put(r *etcdserverpb.PutRequest) (*etcdserverpb.PutRe
 }
 
 func (e *stagedTxnExecutor) deleteRange(r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
-	kvs, err := e.currentRangeLimited(r.Key, r.RangeEnd, e.srv.maxDeleteRangeKeys)
+	kvs, err := e.currentRangeLimited(r.Key, r.RangeEnd, e.srv.maxDeleteRangeKeys, false)
 	if err != nil {
 		return nil, err
 	}
@@ -365,15 +376,28 @@ func (e *stagedTxnExecutor) stage(op backend.TxnWriteOp) {
 	e.changed = true
 }
 
-func (e *stagedTxnExecutor) currentRange(start, end []byte) ([]*mvccpb.KeyValue, error) {
-	return e.currentRangeLimited(start, end, 0)
+func (e *stagedTxnExecutor) currentRange(r *etcdserverpb.RangeRequest) ([]*mvccpb.KeyValue, error) {
+	// CountOnly is answered from revision metadata regardless of its otherwise
+	// irrelevant sort target. FastKeysOnly likewise needs no value payload.
+	metadataOnly := r.CountOnly || (r.KeysOnly && r.SortTarget != etcdserverpb.RangeRequest_VALUE)
+	return e.currentRangeLimited(r.Key, r.RangeEnd, 0, metadataOnly)
 }
 
-func (e *stagedTxnExecutor) currentRangeLimited(start, end []byte, maxKeys uint32) ([]*mvccpb.KeyValue, error) {
+func (e *stagedTxnExecutor) currentRangeLimited(start, end []byte, maxKeys uint32, metadataOnly bool) ([]*mvccpb.KeyValue, error) {
 	if isEmptyNonFromKeyRange(start, end) {
 		return nil, nil
 	}
-	if len(end) == 0 && len(e.mutations) == 0 {
+	if len(end) == 0 {
+		if mutation, staged := e.mutations[string(start)]; staged {
+			if mutation.op.Delete {
+				return nil, nil
+			}
+			kv, err := e.stagedPutKV(mutation.op)
+			if err != nil {
+				return nil, err
+			}
+			return []*mvccpb.KeyValue{kv}, nil
+		}
 		if kv, cached := e.pointReads[string(start)]; cached {
 			if kv == nil {
 				return nil, nil
@@ -384,6 +408,13 @@ func (e *stagedTxnExecutor) currentRangeLimited(start, end []byte, maxKeys uint3
 	var resp *etcdserverpb.RangeResponse
 	var err error
 	request := &etcdserverpb.RangeRequest{Key: start, RangeEnd: end, Revision: e.baseRev}
+	// A transaction containing Put/Delete/nested operations is classified as a
+	// write transaction by upstream, even when a selected Range itself qualifies
+	// for FastKeysOnly. Preserve that per-Range projection at the backend boundary
+	// while staged mutations are merged below.
+	if metadataOnly {
+		request.KeysOnly = true
+	}
 	if maxKeys > 0 && len(end) != 0 {
 		// A prior staged delete may remove a base key from this transaction's
 		// logical view. Read one replacement for each such key plus the overflow
@@ -470,7 +501,7 @@ func (e *stagedTxnExecutor) rangeResponse(r *etcdserverpb.RangeRequest) (*etcdse
 		}
 		return resp, err
 	}
-	kvs, err := e.currentRange(r.Key, r.RangeEnd)
+	kvs, err := e.currentRange(r)
 	if err != nil {
 		return nil, err
 	}

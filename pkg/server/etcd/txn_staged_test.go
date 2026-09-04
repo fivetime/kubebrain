@@ -9,6 +9,8 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/kubewharf/kubebrain/pkg/backend"
 )
 
 type readonlyTxnCountBackendShim struct {
@@ -33,6 +35,58 @@ type projectedTxnPointBatchBackendShim struct {
 type legacyTxnPointBatchBackendShim struct {
 	BackendShim
 	calls int
+}
+
+type mutableTxnProjectionBackendShim struct {
+	BackendShim
+	getRequests  []*etcdserverpb.RangeRequest
+	listRequests []*etcdserverpb.RangeRequest
+}
+
+type mutableTxnDependencyBackendShim struct {
+	BackendShim
+	getRequests []*etcdserverpb.RangeRequest
+	lease       int64
+}
+
+func (b *mutableTxnDependencyBackendShim) Get(_ context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	b.getRequests = append(b.getRequests, proto.Clone(request).(*etcdserverpb.RangeRequest))
+	return &etcdserverpb.RangeResponse{
+		Header: txnHeader(11),
+		Kvs: []*mvccpb.KeyValue{{
+			Key: append([]byte(nil), request.Key...), Value: []byte("old-value"),
+			CreateRevision: 3, ModRevision: 7, Version: 2, Lease: b.lease,
+		}},
+		Count: 1,
+	}, nil
+}
+
+func (b *mutableTxnProjectionBackendShim) Get(_ context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	b.getRequests = append(b.getRequests, proto.Clone(request).(*etcdserverpb.RangeRequest))
+	if !request.KeysOnly || request.SortTarget == etcdserverpb.RangeRequest_VALUE {
+		return nil, errors.New("mutable Txn unexpectedly materialized an obsolete point value")
+	}
+	return &etcdserverpb.RangeResponse{
+		Header: txnHeader(11),
+		Kvs: []*mvccpb.KeyValue{{
+			Key: append([]byte(nil), request.Key...), CreateRevision: 3, ModRevision: 7, Version: 2,
+		}},
+		Count: 1,
+	}, nil
+}
+
+func (b *mutableTxnProjectionBackendShim) List(_ context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	b.listRequests = append(b.listRequests, proto.Clone(request).(*etcdserverpb.RangeRequest))
+	if !request.KeysOnly || request.SortTarget == etcdserverpb.RangeRequest_VALUE {
+		return nil, errors.New("mutable Txn unexpectedly materialized obsolete range values")
+	}
+	return &etcdserverpb.RangeResponse{
+		Header: txnHeader(11),
+		Kvs: []*mvccpb.KeyValue{{
+			Key: []byte("/mutable/b"), CreateRevision: 3, ModRevision: 7, Version: 2,
+		}},
+		Count: 1,
+	}, nil
 }
 
 func (b *legacyTxnPointBatchBackendShim) BatchGetAtRevision(
@@ -303,4 +357,182 @@ func TestReadonlyTxnPointPrefetchFallsBackToLegacyFullBatch(t *testing.T) {
 	require.Equal(t, 1, shim.calls)
 	require.Empty(t, response.Responses[0].GetResponseRange().Kvs[0].Value)
 	require.Empty(t, response.Responses[1].GetResponseRange().Kvs[0].Value)
+}
+
+func TestMutableTxnProjectsFastRangesAndSkipsObsoletePutRead(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	shim := &mutableTxnProjectionBackendShim{BackendShim: server.backend}
+	server.backend = shim
+	newExecutor := func(paths []bool) *stagedTxnExecutor {
+		return &stagedTxnExecutor{
+			srv: server, ctx: context.Background(), baseRev: 11, pendingRev: 12,
+			paths: &txnPathCursor{paths: paths}, mutations: make(map[string]*stagedMutation), readonly: false,
+		}
+	}
+
+	t.Run("plain put does not read old value", func(t *testing.T) {
+		shim.getRequests = nil
+		shim.listRequests = nil
+		response, err := newExecutor([]bool{true}).execute(&etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: []byte("/mutable/a"), Value: []byte("new-a")},
+			}}},
+		})
+		require.NoError(t, err)
+		require.Len(t, response.Responses, 1)
+		require.Empty(t, shim.getRequests)
+		require.Empty(t, shim.listRequests)
+	})
+
+	t.Run("selected nested reads project base values", func(t *testing.T) {
+		shim.getRequests = nil
+		shim.listRequests = nil
+		fast := func(key, end string) *etcdserverpb.RequestOp {
+			return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+				RequestRange: &etcdserverpb.RangeRequest{
+					Key: []byte(key), RangeEnd: []byte(end), KeysOnly: true,
+					SortTarget: etcdserverpb.RangeRequest_VERSION,
+				},
+			}}
+		}
+		full := func(key string) *etcdserverpb.RequestOp {
+			return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+				RequestRange: &etcdserverpb.RangeRequest{Key: []byte(key)},
+			}}
+		}
+		response, err := newExecutor([]bool{true, true}).execute(&etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{
+				{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+					Key: []byte("/mutable/a"), Value: []byte("new-a"),
+				}}},
+				{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+					Success: []*etcdserverpb.RequestOp{
+						fast("/mutable/b", ""), fast("/mutable/", "/mutable0"), full("/mutable/a"),
+					},
+				}}},
+			},
+		})
+		require.NoError(t, err)
+		nested := response.Responses[1].GetResponseTxn()
+		require.NotNil(t, nested)
+		require.Empty(t, nested.Responses[0].GetResponseRange().Kvs[0].Value)
+		require.Equal(t, [][]byte{[]byte("/mutable/b"), []byte("/mutable/a")}, [][]byte{
+			nested.Responses[1].GetResponseRange().Kvs[0].Key,
+			nested.Responses[1].GetResponseRange().Kvs[1].Key,
+		})
+		for _, kv := range nested.Responses[1].GetResponseRange().Kvs {
+			require.Empty(t, kv.Value)
+			require.Zero(t, kv.Lease)
+		}
+		staged := nested.Responses[2].GetResponseRange().Kvs[0]
+		require.Equal(t, []byte("new-a"), staged.Value)
+		require.Equal(t, int64(3), staged.CreateRevision)
+		require.Equal(t, int64(12), staged.ModRevision)
+		require.Equal(t, int64(3), staged.Version)
+		require.Len(t, shim.getRequests, 3)
+		for _, request := range shim.getRequests {
+			require.True(t, request.KeysOnly)
+			require.NotEqual(t, etcdserverpb.RangeRequest_VALUE, request.SortTarget)
+			require.Equal(t, int64(11), request.Revision)
+		}
+		require.Len(t, shim.listRequests, 1)
+		require.True(t, shim.listRequests[0].KeysOnly)
+		require.NotEqual(t, etcdserverpb.RangeRequest_VALUE, shim.listRequests[0].SortTarget)
+		require.Equal(t, int64(11), shim.listRequests[0].Revision)
+	})
+
+	t.Run("CountOnly projects values while merging a staged put", func(t *testing.T) {
+		shim.getRequests = nil
+		shim.listRequests = nil
+		response, err := newExecutor([]bool{true}).execute(&etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{
+				{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+					Key: []byte("/mutable/a"), Value: []byte("new-a"),
+				}}},
+				{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+					Key: []byte("/mutable/"), RangeEnd: []byte("/mutable0"), CountOnly: true,
+					SortTarget: etcdserverpb.RangeRequest_VALUE,
+				}}},
+			},
+		})
+		require.NoError(t, err)
+		counted := response.Responses[1].GetResponseRange()
+		require.Equal(t, int64(2), counted.Count)
+		require.Empty(t, counted.Kvs)
+		require.Len(t, shim.getRequests, 1)
+		require.True(t, shim.getRequests[0].KeysOnly)
+		require.Len(t, shim.listRequests, 1)
+		require.True(t, shim.listRequests[0].KeysOnly)
+	})
+}
+
+func TestMutableTxnRetainsRequiredFullValueReads(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	shim := &mutableTxnDependencyBackendShim{BackendShim: server.backend}
+	server.backend = shim
+	newExecutor := func() *stagedTxnExecutor {
+		return &stagedTxnExecutor{
+			srv: server, ctx: context.Background(), baseRev: 11, pendingRev: 12,
+			mutations: make(map[string]*stagedMutation), readonly: false,
+		}
+	}
+
+	for _, test := range []struct {
+		name    string
+		request *etcdserverpb.PutRequest
+		check   func(*testing.T, *etcdserverpb.PutResponse, backend.TxnWriteOp)
+	}{
+		{
+			name:    "PrevKv",
+			request: &etcdserverpb.PutRequest{Key: []byte("/dependency/prev"), Value: []byte("new"), PrevKv: true},
+			check: func(t *testing.T, response *etcdserverpb.PutResponse, op backend.TxnWriteOp) {
+				require.Equal(t, []byte("old-value"), response.PrevKv.Value)
+				require.Equal(t, []byte("new"), op.Value)
+			},
+		},
+		{
+			name:    "IgnoreValue",
+			request: &etcdserverpb.PutRequest{Key: []byte("/dependency/value"), IgnoreValue: true},
+			check: func(t *testing.T, response *etcdserverpb.PutResponse, op backend.TxnWriteOp) {
+				require.Nil(t, response.PrevKv)
+				require.Equal(t, []byte("old-value"), op.Value)
+			},
+		},
+		{
+			name:    "IgnoreLease",
+			request: &etcdserverpb.PutRequest{Key: []byte("/dependency/lease"), Value: []byte("new"), IgnoreLease: true},
+			check: func(t *testing.T, response *etcdserverpb.PutResponse, op backend.TxnWriteOp) {
+				require.Nil(t, response.PrevKv)
+				require.Zero(t, op.Lease)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			shim.getRequests = nil
+			executor := newExecutor()
+			response, err := executor.put(test.request)
+			require.NoError(t, err)
+			require.Len(t, shim.getRequests, 1)
+			require.False(t, shim.getRequests[0].KeysOnly)
+			test.check(t, response, executor.mutations[string(test.request.Key)].op)
+		})
+	}
+
+	t.Run("VALUE sort KeysOnly", func(t *testing.T) {
+		shim.getRequests = nil
+		shim.lease = 19
+		response, err := newExecutor().rangeResponse(&etcdserverpb.RangeRequest{
+			Key: []byte("/dependency/sort"), KeysOnly: true, SortTarget: etcdserverpb.RangeRequest_VALUE,
+		})
+		require.NoError(t, err)
+		require.Len(t, shim.getRequests, 1)
+		require.False(t, shim.getRequests[0].KeysOnly)
+		require.Len(t, response.Kvs, 1)
+		require.Empty(t, response.Kvs[0].Value)
+		require.Equal(t, int64(19), response.Kvs[0].Lease)
+	})
 }
