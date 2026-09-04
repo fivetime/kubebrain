@@ -32,6 +32,9 @@ type keysOnlyProbeBackend struct {
 	keysOnlyCalled bool
 	getCalled      bool
 	listCalled     bool
+	batchFlags     []bool
+	batchRevision  uint64
+	shortBatch     bool
 }
 
 type valueSortPointProbeBackend struct {
@@ -72,6 +75,28 @@ func (b *keysOnlyProbeBackend) GetKeysOnly(_ context.Context, request *proto.Get
 			Key: request.Key, Value: nil, Revision: 7,
 		},
 	}, nil
+}
+
+func (b *keysOnlyProbeBackend) GetBatchProjected(
+	_ context.Context, keys [][]byte, revision uint64, metadataOnly []bool,
+) ([]*proto.GetResponse, error) {
+	b.batchFlags = append([]bool(nil), metadataOnly...)
+	b.batchRevision = revision
+	responses := make([]*proto.GetResponse, len(keys))
+	for index, key := range keys {
+		value := []byte("full-" + string(key))
+		if metadataOnly[index] {
+			value = nil
+		}
+		responses[index] = &proto.GetResponse{
+			Header: &proto.ResponseHeader{Revision: revision},
+			Kv:     &proto.KeyValue{Key: key, Value: value, Revision: 7},
+		}
+	}
+	if b.shortBatch {
+		responses = responses[:len(responses)-1]
+	}
+	return responses, nil
 }
 
 func (b *keysOnlyProbeBackend) List(context.Context, *proto.RangeRequest) (*proto.RangeResponse, error) {
@@ -150,4 +175,29 @@ func TestBackendShimValueSortPointKeysOnlyUsesOrdinaryGet(t *testing.T) {
 	require.False(t, probe.keysOnlyCalled)
 	require.Len(t, response.Kvs, 1)
 	require.Empty(t, response.Kvs[0].Value)
+}
+
+func TestBackendShimProjectedPointBatchPreservesPerKeyModes(t *testing.T) {
+	probe := &keysOnlyProbeBackend{}
+	publicShim := NewBackendShim(probe, &recordingMetrics{})
+	shim, ok := publicShim.(txnPointBatchProjectedGetter)
+	require.True(t, ok)
+	keys := [][]byte{[]byte("/keys-only/batch-a"), []byte("/keys-only/batch-b")}
+
+	response, err := shim.BatchGetAtRevisionProjected(context.Background(), keys, []bool{true, false}, 13)
+	require.NoError(t, err)
+	require.Equal(t, uint64(13), probe.batchRevision)
+	require.Equal(t, []bool{true, false}, probe.batchFlags)
+	require.Len(t, response, 2)
+	require.Empty(t, response[string(keys[0])].Value)
+	require.Equal(t, []byte("full-/keys-only/batch-b"), response[string(keys[1])].Value)
+	for _, kv := range response {
+		require.Equal(t, int64(3), kv.CreateRevision)
+		require.Equal(t, int64(7), kv.ModRevision)
+		require.Equal(t, int64(2), kv.Version)
+	}
+
+	probe.shortBatch = true
+	_, err = shim.BatchGetAtRevisionProjected(context.Background(), keys, []bool{true, false}, 13)
+	require.EqualError(t, err, "backend point batch returned 1 responses for 2 keys")
 }

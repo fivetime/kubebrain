@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 
@@ -52,10 +53,18 @@ type stagedTxnExecutor struct {
 	changed    bool
 	readonly   bool
 	pointReads map[string]*mvccpb.KeyValue
+	// pointReadMetadataOnly records which cached point values were projected by
+	// FastKeysOnly. A later selected nested operation can upgrade that entry to a
+	// full value before it is observed.
+	pointReadMetadataOnly map[string]bool
 }
 
 type txnPointBatchGetter interface {
 	BatchGetAtRevision(context.Context, [][]byte, int64) (map[string]*mvccpb.KeyValue, error)
+}
+
+type txnPointBatchProjectedGetter interface {
+	BatchGetAtRevisionProjected(context.Context, [][]byte, []bool, int64) (map[string]*mvccpb.KeyValue, error)
 }
 
 var errTxnPointBatchUnsupported = errors.New("txn point batch reads are unsupported")
@@ -158,31 +167,69 @@ func (e *stagedTxnExecutor) prefetchPointRanges(ops []*etcdserverpb.RequestOp) e
 	if !e.readonly {
 		return nil
 	}
-	getter, ok := e.srv.backend.(txnPointBatchGetter)
-	if !ok {
-		return nil
+	type pointRequirement struct {
+		key          []byte
+		metadataOnly bool
+		upgrade      bool
 	}
+	requirements := make(map[string]*pointRequirement, len(ops))
+	order := make([]string, 0, len(ops))
 	keys := make([][]byte, 0, len(ops))
-	seen := make(map[string]struct{}, len(ops))
 	for _, op := range ops {
 		rangeRequest := op.GetRequestRange()
 		if rangeRequest == nil || rangeRequest.CountOnly || len(rangeRequest.RangeEnd) != 0 || rangeRequest.Revision > 0 {
 			continue
 		}
 		key := string(rangeRequest.Key)
-		if _, cached := e.pointReads[key]; cached {
+		metadataOnly := rangeRequest.KeysOnly && rangeRequest.SortTarget != etcdserverpb.RangeRequest_VALUE
+		if cachedKV, cached := e.pointReads[key]; cached {
+			if cachedKV == nil || !e.pointReadMetadataOnly[key] || metadataOnly {
+				continue
+			}
+		}
+		if requirement, duplicate := requirements[key]; duplicate {
+			requirement.metadataOnly = requirement.metadataOnly && metadataOnly
 			continue
 		}
-		if _, duplicate := seen[key]; duplicate {
-			continue
+		_, cached := e.pointReads[key]
+		requirements[key] = &pointRequirement{
+			key: append([]byte(nil), rangeRequest.Key...), metadataOnly: metadataOnly, upgrade: cached,
 		}
-		seen[key] = struct{}{}
-		keys = append(keys, rangeRequest.Key)
+		order = append(order, key)
 	}
-	if len(keys) < 2 {
+	metadataOnly := make([]bool, 0, len(order))
+	needsProjectedCall := false
+	for _, key := range order {
+		requirement := requirements[key]
+		keys = append(keys, requirement.key)
+		metadataOnly = append(metadataOnly, requirement.metadataOnly)
+		needsProjectedCall = needsProjectedCall || requirement.metadataOnly || requirement.upgrade
+	}
+	if len(keys) == 0 {
 		return nil
 	}
-	batch, err := getter.BatchGetAtRevision(e.ctx, keys, e.baseRev)
+	var (
+		batch     map[string]*mvccpb.KeyValue
+		err       error
+		projected bool
+	)
+	if getter, ok := e.srv.backend.(txnPointBatchProjectedGetter); ok && (len(keys) >= 2 || needsProjectedCall) {
+		batch, err = getter.BatchGetAtRevisionProjected(e.ctx, keys, metadataOnly, e.baseRev)
+		projected = !errors.Is(err, errTxnPointBatchUnsupported)
+	}
+	if !projected {
+		if err != nil && !errors.Is(err, errTxnPointBatchUnsupported) {
+			return err
+		}
+		if len(keys) < 2 {
+			return nil
+		}
+		getter, ok := e.srv.backend.(txnPointBatchGetter)
+		if !ok {
+			return nil
+		}
+		batch, err = getter.BatchGetAtRevision(e.ctx, keys, e.baseRev)
+	}
 	if errors.Is(err, errTxnPointBatchUnsupported) {
 		return nil
 	}
@@ -192,8 +239,16 @@ func (e *stagedTxnExecutor) prefetchPointRanges(ops []*etcdserverpb.RequestOp) e
 	if e.pointReads == nil {
 		e.pointReads = make(map[string]*mvccpb.KeyValue, len(batch))
 	}
-	for key, kv := range batch {
+	if e.pointReadMetadataOnly == nil {
+		e.pointReadMetadataOnly = make(map[string]bool, len(batch))
+	}
+	for index, key := range order {
+		kv, present := batch[key]
+		if !present {
+			return fmt.Errorf("point batch response omitted key %q", key)
+		}
 		e.pointReads[key] = kv
+		e.pointReadMetadataOnly[key] = projected && metadataOnly[index]
 	}
 	return nil
 }

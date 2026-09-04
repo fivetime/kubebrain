@@ -118,6 +118,25 @@ func (b *backend) getResponse(ctx context.Context, r *proto.GetRequest, metadata
 // Keeping the method outside Backend lets storage/test adapters that do not
 // need the optimization retain their existing interface contract.
 func (b *backend) GetBatch(ctx context.Context, keys [][]byte, revision uint64) ([]*proto.GetResponse, error) {
+	return b.getBatch(ctx, keys, revision, nil)
+}
+
+// GetBatchProjected applies the FastKeysOnly projection independently to each
+// point read. metadataOnly must align exactly with keys; a false entry retains
+// the ordinary value so one full read can safely dominate duplicate KeysOnly
+// reads of the same key in a read-only etcd transaction.
+func (b *backend) GetBatchProjected(
+	ctx context.Context, keys [][]byte, revision uint64, metadataOnly []bool,
+) ([]*proto.GetResponse, error) {
+	if len(metadataOnly) != len(keys) {
+		return nil, fmt.Errorf("point batch projection count %d does not match key count %d", len(metadataOnly), len(keys))
+	}
+	return b.getBatch(ctx, keys, revision, metadataOnly)
+}
+
+func (b *backend) getBatch(
+	ctx context.Context, keys [][]byte, revision uint64, metadataOnly []bool,
+) ([]*proto.GetResponse, error) {
 	ctx, err := b.withRangeSnapshotTimestamp(ctx)
 	if err != nil {
 		return nil, err
@@ -128,7 +147,8 @@ func (b *backend) GetBatch(ctx context.Context, keys [][]byte, revision uint64) 
 	for index, key := range keys {
 		index, key := index, append([]byte(nil), key...)
 		group.Go(func() error {
-			response, getErr := b.Get(groupCtx, &proto.GetRequest{Key: key, Revision: revision})
+			project := metadataOnly != nil && metadataOnly[index]
+			response, getErr := b.getResponse(groupCtx, &proto.GetRequest{Key: key, Revision: revision}, project)
 			if getErr != nil {
 				return getErr
 			}

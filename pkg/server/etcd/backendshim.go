@@ -213,6 +213,10 @@ type backendPointBatchGetter interface {
 	GetBatch(context.Context, [][]byte, uint64) ([]*proto.GetResponse, error)
 }
 
+type backendPointBatchProjectedGetter interface {
+	GetBatchProjected(context.Context, [][]byte, uint64, []bool) ([]*proto.GetResponse, error)
+}
+
 // BatchGetAtRevision is deliberately optional on BackendShim consumers. The
 // production shim exposes it for large read-only Txn requests, while existing
 // storage adapters and focused service doubles may continue to implement the
@@ -226,14 +230,42 @@ func (b *backendShim) BatchGetAtRevision(ctx context.Context, keys [][]byte, rev
 	if err != nil {
 		return nil, err
 	}
+	return b.batchGetResponsesToEtcd(ctx, keys, responses)
+}
+
+// BatchGetAtRevisionProjected is optional to staged Txn execution. Projection
+// modes are per key because duplicate reads must retain a full value whenever
+// any selected operation needs it, while unrelated fast KeysOnly reads can
+// release their payload before entering the shared point cache.
+func (b *backendShim) BatchGetAtRevisionProjected(
+	ctx context.Context, keys [][]byte, metadataOnly []bool, revision int64,
+) (map[string]*mvccpb.KeyValue, error) {
+	getter, ok := b.backend.(backendPointBatchProjectedGetter)
+	if !ok {
+		return nil, errTxnPointBatchUnsupported
+	}
+	responses, err := getter.GetBatchProjected(ctx, keys, normalizeRangeRevision(revision), metadataOnly)
+	if err != nil {
+		return nil, err
+	}
+	return b.batchGetResponsesToEtcd(ctx, keys, responses)
+}
+
+func (b *backendShim) batchGetResponsesToEtcd(
+	ctx context.Context, keys [][]byte, responses []*proto.GetResponse,
+) (map[string]*mvccpb.KeyValue, error) {
+	if len(responses) != len(keys) {
+		return nil, fmt.Errorf("backend point batch returned %d responses for %d keys", len(responses), len(keys))
+	}
 	result := make(map[string]*mvccpb.KeyValue, len(keys))
 	for index, response := range responses {
 		var kv *mvccpb.KeyValue
 		if response != nil && response.Kv != nil {
-			kv, err = b.kvToEtcdKv(ctx, response.Kv)
+			converted, err := b.kvToEtcdKv(ctx, response.Kv)
 			if err != nil {
 				return nil, err
 			}
+			kv = converted
 		}
 		result[string(keys[index])] = kv
 	}

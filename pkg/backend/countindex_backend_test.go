@@ -269,6 +269,66 @@ func TestGetKeysOnlyDropsPayloadAndPreservesInlineMetadata(t *testing.T) {
 	require.Equal(t, fullMeta.Version, projectedMeta.Version)
 }
 
+func TestGetBatchProjectedDropsPayloadPerKeyAndPreservesSnapshot(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	keys := [][]byte{
+		[]byte(prefix + "/keys-only-batch/projected"),
+		[]byte(prefix + "/keys-only-batch/full"),
+	}
+	createRevisions := make([]uint64, len(keys))
+	var lastRevision uint64
+	for index, key := range keys {
+		first, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+			Key: key, Value: bytes.Repeat([]byte("a"), 2<<20),
+		}})
+		require.NoError(t, err)
+		createRevisions[index] = first.Header.Revision
+		require.Eventually(t, func() bool {
+			return b.GetCurrentRevision() >= first.Header.Revision
+		}, 5*time.Second, 2*time.Millisecond)
+		second, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+			Key: key, Value: bytes.Repeat([]byte("b"), 2<<20), Revision: first.Header.Revision,
+		}})
+		require.NoError(t, err)
+		lastRevision = second.Header.Revision
+	}
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= lastRevision }, 5*time.Second, 2*time.Millisecond)
+
+	responses, err := b.GetBatchProjected(ctx, keys, lastRevision, []bool{true, false})
+	require.NoError(t, err)
+	require.Len(t, responses, 2)
+	require.Equal(t, responses[0].Header.Revision, responses[1].Header.Revision)
+	require.Equal(t, lastRevision, responses[0].Header.Revision)
+	require.Less(t, len(responses[0].Kv.Value), 64)
+	require.Greater(t, len(responses[1].Kv.Value), 2<<20)
+
+	projectedMeta, raw, projectedInline, err := DecodeInlineValueChecked(responses[0].Kv.Value)
+	require.NoError(t, err)
+	require.True(t, projectedInline)
+	require.Empty(t, raw)
+	require.Equal(t, createRevisions[0], projectedMeta.CreateRevision)
+	require.Equal(t, uint64(2), projectedMeta.Version)
+	fullMeta, fullRaw, fullInline, err := DecodeInlineValueChecked(responses[1].Kv.Value)
+	require.NoError(t, err)
+	require.True(t, fullInline)
+	require.Len(t, fullRaw, 2<<20)
+	require.Equal(t, createRevisions[1], fullMeta.CreateRevision)
+	require.Equal(t, uint64(2), fullMeta.Version)
+
+	_, err = b.GetBatchProjected(ctx, keys, lastRevision, []bool{true})
+	require.EqualError(t, err, "point batch projection count 1 does not match key count 2")
+}
+
 func TestRangeStreamKeysOnlyDropsPayloadAndPreservesInlineMetadata(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
