@@ -39,6 +39,14 @@ type latestMetadataReadProbeStorage struct {
 	objectKey   []byte
 	objectReads atomic.Int64
 	batchReads  atomic.Int64
+	iterReads   atomic.Int64
+}
+
+func (s *latestMetadataReadProbeStorage) Iter(
+	ctx context.Context, start, end []byte, timestamp, limit uint64,
+) (storage.Iter, error) {
+	s.iterReads.Add(1)
+	return s.KvStorage.Iter(ctx, start, end, timestamp, limit)
 }
 
 func (s *latestMetadataReadProbeStorage) setObjectKey(key []byte) {
