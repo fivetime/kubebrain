@@ -899,6 +899,9 @@ func (b *backendShim) GetCompactRevisionFresh(ctx context.Context) (uint64, erro
 }
 
 func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	if len(prevKv) != len(ops) {
+		return nil, 0, nil, fmt.Errorf("txn prev-kv projection count %d does not match operation count %d", len(prevKv), len(ops))
+	}
 	keys := make([][]byte, 0, len(ops))
 	for i := range ops {
 		keys = append(keys, ops[i].Key)
@@ -909,7 +912,11 @@ func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, gu
 	}
 	defer unlock()
 
-	results, rev, err := b.backend.TxnApply(ctx, ops, guards)
+	backendOps := append([]backend.TxnWriteOp(nil), ops...)
+	for i := range backendOps {
+		backendOps[i].DiscardPrevValue = !backendOps[i].Internal && !backendOps[i].Delete && !prevKv[i]
+	}
+	results, rev, err := b.backend.TxnApply(ctx, backendOps, guards)
 	if err != nil {
 		// Preserve the reserved revision on an uncertain commit. Lease-index
 		// reconciliation waits for the backend collector to resolve this revision

@@ -188,6 +188,26 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.False(t, alarm)
 }
 
+func TestLogicalQuotaUsesDecodedSizeAfterDiscardingPutPreviousValue(t *testing.T) {
+	b, ctx := newQuotaBackend(t, 4<<20)
+	key := []byte("discard-quota-old-value")
+	oldValue := bytes.Repeat([]byte("q"), 2<<20)
+	_, _, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: oldValue}}, nil)
+	require.NoError(t, err)
+
+	results, _, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: key, Value: []byte("new"), DiscardPrevValue: true,
+	}}, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Nil(t, results[0].PrevValue)
+	usage, quota, alarm, err := b.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(len(key)+len("new")), usage)
+	require.Equal(t, int64(4<<20), quota)
+	require.False(t, alarm)
+}
+
 func TestQuotaInitializationArmsCorruptForWitnessedObject(t *testing.T) {
 	b, ctx := newQuotaBackend(t, 100)
 	key := []byte(prefix + "/quota-rebuild-corrupt/witnessed")

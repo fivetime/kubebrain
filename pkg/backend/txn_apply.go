@@ -103,6 +103,12 @@ type TxnWriteOp struct {
 	// extra MVCC revision and emits no extra watch event.
 	PrevLeaseKnown bool
 	PrevLease      int64
+	// DiscardPrevValue says an update caller will not observe the previous value
+	// in TxnWriteResult. TxnApply may release a normal inline previous payload as
+	// soon as its metadata and logical size have been decoded. Deletes ignore the
+	// hint because their watch event still depends on the previous version; a
+	// legacy raw/v1 put keeps the bytes through its atomic provenance migration.
+	DiscardPrevValue bool
 }
 
 // TxnGuard asserts that a compared key is either still live at exactly Revision,
@@ -226,15 +232,16 @@ func validateTxnApplyRequest(ops []TxnWriteOp, guards []TxnGuard) error {
 
 // txnPrep holds the pre-read state and planned outcome for one op.
 type txnPrep struct {
-	op          TxnWriteOp
-	rvBytes     []byte // exact revision-key value read (nil if key absent)
-	curRev      uint64 // current mod revision (0 if absent)
-	effective   bool   // whether this op produces a batch write
-	create      bool   // put: create/recreate rather than update
-	prevValue   []byte // enveloped previous value (update/delete)
-	prevMeta    EtcdMetadata
-	migratePrev bool
-	meta        EtcdMetadata
+	op              TxnWriteOp
+	rvBytes         []byte // exact revision-key value read (nil if key absent)
+	curRev          uint64 // current mod revision (0 if absent)
+	effective       bool   // whether this op produces a batch write
+	create          bool   // put: create/recreate rather than update
+	prevValue       []byte // enveloped previous value (update/delete)
+	prevLogicalSize int64  // decoded raw-value size used by quota accounting
+	prevMeta        EtcdMetadata
+	migratePrev     bool
+	meta            EtcdMetadata
 }
 
 type txnGuardPrep struct {
@@ -466,6 +473,12 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 					}
 				}
 				p.prevValue = val
+				if b.config.QuotaBackendBytes > 0 {
+					p.prevLogicalSize, verr = logicalStoredValueSize(val)
+					if verr != nil {
+						return nil, 0, false, verr
+					}
+				}
 				if b.config.EnableEtcdCompatibility && op.PrevLeaseKnown && !InlineValueLeaseKnown(val) {
 					meta, _, ok, decodeErr := DecodeInlineValueChecked(val)
 					if decodeErr != nil {
@@ -502,6 +515,12 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 					}
 				}
 				p.prevValue = val
+				if b.config.QuotaBackendBytes > 0 {
+					p.prevLogicalSize, verr = logicalStoredValueSize(val)
+					if verr != nil {
+						return nil, 0, false, verr
+					}
+				}
 				meta, _, ok, decodeErr := DecodeInlineValueChecked(val)
 				if decodeErr != nil {
 					return nil, 0, false, decodeErr
@@ -519,6 +538,9 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 					p.prevMeta, p.migratePrev = meta, true
 				}
 				p.meta = meta
+				if op.DiscardPrevValue && !p.migratePrev {
+					p.prevValue = nil
+				}
 			}
 		}
 		preps = append(preps, p)
@@ -696,21 +718,13 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				continue
 			}
 			if p.op.Delete {
-				previousSize, sizeErr := logicalStoredValueSize(p.prevValue)
-				if sizeErr != nil {
-					return nil, baseRevision, false, sizeErr
-				}
-				delta -= int64(len(p.op.Key)) + previousSize
+				delta -= int64(len(p.op.Key)) + p.prevLogicalSize
 				continue
 			}
 			if p.create {
 				delta += int64(len(p.op.Key))
 			} else {
-				previousSize, sizeErr := logicalStoredValueSize(p.prevValue)
-				if sizeErr != nil {
-					return nil, baseRevision, false, sizeErr
-				}
-				delta -= previousSize
+				delta -= p.prevLogicalSize
 			}
 			delta += int64(len(p.op.Value))
 		}
@@ -753,6 +767,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	})
 	cerr := b.commitUserBatch(ctx, batch)
 	newRevision = *allocated
+	discardTxnPutPreviousValues(preps)
 	if cerr != nil {
 		if errors.Is(cerr, storage.ErrUncertainResult) && txnHasEffectiveUserWrite(preps) {
 			// Some storage failures happen before the Atomic callback starts. No
@@ -856,6 +871,18 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		return nil, newRevision, false, storage.NewErrUncertainResult(waitErr)
 	}
 	return results, newRevision, false, nil
+}
+
+// discardTxnPutPreviousValues drops update payloads after the atomic callback
+// has had its one chance to migrate a legacy raw/v1 row. Uncertain resolution
+// reconstructs PUT watch events from the new value and metadata, so it does not
+// need the old value either.
+func discardTxnPutPreviousValues(preps []txnPrep) {
+	for i := range preps {
+		if preps[i].op.DiscardPrevValue && !preps[i].op.Delete && !preps[i].op.Internal {
+			preps[i].prevValue = nil
+		}
+	}
 }
 
 func txnHasEffectiveUserWrite(preps []txnPrep) bool {

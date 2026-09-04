@@ -43,10 +43,11 @@ func TestTxnApplyMigratesLegacyCurrentLeaseBeforeItBecomesHistory(t *testing.T) 
 
 	results, updatedRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
 		Key: key, Value: []byte("replacement"),
-		PrevLeaseKnown: true, PrevLease: 1751,
+		PrevLeaseKnown: true, PrevLease: 1751, DiscardPrevValue: true,
 	}}, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
+	require.Nil(t, results[0].PrevValue)
 	waitCommitted(t, b, updatedRevision)
 
 	stream, err := b.SnapshotHistoryStream(ctx, updatedRevision)

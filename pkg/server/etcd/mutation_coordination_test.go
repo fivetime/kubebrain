@@ -20,6 +20,7 @@ type mutationLockProbeBackend struct {
 	backend.Backend
 	deleteCalled   bool
 	txnApplyCalled bool
+	txnOps         []backend.TxnWriteOp
 }
 
 func (b *mutationLockProbeBackend) Delete(context.Context, *proto.DeleteRequest) (*proto.DeleteResponse, error) {
@@ -27,9 +28,10 @@ func (b *mutationLockProbeBackend) Delete(context.Context, *proto.DeleteRequest)
 	return &proto.DeleteResponse{Header: &proto.ResponseHeader{}}, nil
 }
 
-func (b *mutationLockProbeBackend) TxnApply(context.Context, []backend.TxnWriteOp, []backend.TxnGuard) ([]backend.TxnWriteResult, uint64, error) {
+func (b *mutationLockProbeBackend) TxnApply(_ context.Context, ops []backend.TxnWriteOp, _ []backend.TxnGuard) ([]backend.TxnWriteResult, uint64, error) {
 	b.txnApplyCalled = true
-	return []backend.TxnWriteResult{{}}, 1, nil
+	b.txnOps = append([]backend.TxnWriteOp(nil), ops...)
+	return make([]backend.TxnWriteResult, len(ops)), 1, nil
 }
 
 func (b *mutationLockProbeBackend) BeginRangeTxn(ctx context.Context) (context.Context, func()) {
@@ -130,6 +132,28 @@ func TestPointDeleteAndTxnApplyUseMutationKeyLock(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	require.False(t, probe.deleteCalled)
 	require.False(t, probe.txnApplyCalled)
+}
+
+func TestTxnApplyProjectsUnobservedPutPreviousValues(t *testing.T) {
+	probe := &mutationLockProbeBackend{}
+	shim := &backendShim{backend: probe}
+	for i := range shim.mutationLocks {
+		shim.mutationLocks[i] = make(chan struct{}, 1)
+	}
+	ops := []backend.TxnWriteOp{
+		{Key: []byte("/put-without-prev"), Value: []byte("a")},
+		{Key: []byte("/put-with-prev"), Value: []byte("b")},
+		{Key: []byte("/delete-without-prev"), Delete: true},
+	}
+	_, _, _, err := shim.TxnApply(context.Background(), ops, nil, []bool{false, true, false})
+	require.NoError(t, err)
+	require.Len(t, probe.txnOps, len(ops))
+	require.True(t, probe.txnOps[0].DiscardPrevValue)
+	require.False(t, probe.txnOps[1].DiscardPrevValue)
+	require.False(t, probe.txnOps[2].DiscardPrevValue)
+	for i := range ops {
+		require.False(t, ops[i].DiscardPrevValue, "caller-owned operation %d was mutated", i)
+	}
 }
 
 func TestBeginMutationCarriesOwnershipIntoTxnApply(t *testing.T) {

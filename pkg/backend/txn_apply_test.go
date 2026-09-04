@@ -378,6 +378,36 @@ func TestTxnApplySingleRevisionAtomic(t *testing.T) {
 	require.Equal(t, "", v, "deleted key must be gone")
 }
 
+func TestTxnApplyCanDiscardUnobservedPutPreviousValue(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/discard-put-prev/key")
+	oldValue := bytes.Repeat([]byte("o"), 2<<20)
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: oldValue})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	results, updatedRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: key, Value: []byte("replacement"), DiscardPrevValue: true,
+	}}, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Nil(t, results[0].PrevValue)
+	require.Equal(t, created.Header.Revision, results[0].Meta.CreateRevision)
+	require.EqualValues(t, 2, results[0].Meta.Version)
+
+	historical, err := b.Get(ctx, &proto.GetRequest{Key: key, Revision: created.Header.Revision})
+	require.NoError(t, err)
+	require.Equal(t, oldValue, StripInlineValue(historical.Kv.Value))
+	latest, latestRevision := liveValue(t, b, ctx, key)
+	require.Equal(t, "replacement", latest)
+	require.Equal(t, updatedRevision, latestRevision)
+
+	results, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("observed")}}, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "replacement", string(StripInlineValue(results[0].PrevValue)))
+}
+
 func TestTxnApplyCommittedUncertainResultResolvesAsOneTransaction(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
