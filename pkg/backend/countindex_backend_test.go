@@ -15,8 +15,11 @@
 package backend
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,8 +29,22 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type historicalCountFailCompactKV struct {
+	storage.KvStorage
+	compactKey []byte
+	armed      atomic.Bool
+}
+
+func (s *historicalCountFailCompactKV) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if s.armed.Load() && bytes.Equal(key, s.compactKey) {
+		return nil, errors.New("injected compact watermark failure")
+	}
+	return s.KvStorage.Get(ctx, key)
+}
 
 // TestCountIndexMatchesScanAcrossRevisions verifies the in-memory count index
 // returns exactly the same live-key count as a storage scan (List length),
@@ -142,6 +159,45 @@ func TestCountIndexRebuildIgnoresSystemNamespace(t *testing.T) {
 	c, _, served := b.CountAtRevision(ctx, []byte(p), end, b.GetCurrentRevision())
 	require.True(t, served, "index should serve after rebuild")
 	require.Equal(t, 7, int(c), "rebuild bounded by the system namespace would miss all user keys")
+}
+
+func TestHistoricalCountIndexDoesNotReadCompactWatermark(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &historicalCountFailCompactKV{
+		KvStorage:  imemkv.NewKvStorage(),
+		compactKey: getCompactKey(prefix),
+	}
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		EnableCountIndex:        true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	key := []byte(prefix + "/historical-count/a")
+	end := PrefixEnd([]byte(prefix + "/historical-count/"))
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("v")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+	require.NoError(t, b.RebuildCountIndex(ctx))
+	revision := b.GetCurrentRevision()
+
+	// Expire the compact cache and make the metadata read fail. A historical
+	// index hit already names its snapshot and must remain a pure in-memory read.
+	b.compactRevCache.mu.Lock()
+	b.compactRevCache.loaded = time.Time{}
+	b.compactRevCache.mu.Unlock()
+	kv.armed.Store(true)
+
+	count, headerRevision, served := b.CountAtRevision(ctx, []byte(prefix+"/historical-count/"), end, revision)
+	require.True(t, served, "ready historical index must not depend on compact metadata availability")
+	require.Equal(t, int64(1), count)
+	require.Equal(t, revision, headerRevision)
 }
 
 func TestCountIndexRebuildBypassesStaleCompactRevisionCache(t *testing.T) {

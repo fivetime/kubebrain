@@ -40,12 +40,19 @@ func (b *backend) CountAtRevision(ctx context.Context, key, end []byte, rev uint
 	if b.countIndex == nil {
 		return 0, 0, false
 	}
-	current, err := b.safeCurrentRevision(ctx)
-	if err != nil {
-		return 0, 0, false
-	}
+	current := b.GetCurrentRevision()
 	if rev == 0 {
+		var err error
+		current, err = b.safeCurrentRevision(ctx)
+		if err != nil {
+			return 0, 0, false
+		}
 		rev = current
+	} else if rev > current {
+		// Readiness for rev proves that snapshot exists even when this replica's
+		// process-local watermark is cold. Never emit a header below the snapshot
+		// revision, and do not add a storage dependency to a historical index hit.
+		current = rev
 	}
 	if isFromKeyEnd(end) {
 		end = nil // "from key" range: count to the end of the keyspace
