@@ -1449,7 +1449,7 @@ func TestMaintenanceFixedRevisionHashKVUsesProtectedCheckpoint(t *testing.T) {
 	}, stages)
 }
 
-func TestMaintenanceHashFallsBackToProtectedCheckpointWhenBackendIsUnavailable(t *testing.T) {
+func TestMaintenanceHashDoesNotSubstituteProtectedCheckpointForLiveBackend(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	_, err := server.Hash(context.Background(), &etcdserverpb.HashRequest{})
@@ -1468,11 +1468,11 @@ func TestMaintenanceHashFallsBackToProtectedCheckpointWhenBackendIsUnavailable(t
 	server.peers = testPeerService{isLeader: true}
 
 	response, err := server.Hash(context.Background(), &etcdserverpb.HashRequest{})
-	require.NoError(t, err)
-	require.Equal(t, uint32(73), response.Hash)
-	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, storage.ErrUnavailable)
 	require.Equal(t, 1, shim.liveCalls)
-	require.Equal(t, 1, shim.pinnedCalls)
+	require.Zero(t, shim.pinnedCalls,
+		"backend Hash includes revision-neutral internal state that a user-revision checkpoint cannot identify")
 }
 
 func TestMaintenanceHashDoesNotMaskDeterministicBackendFailureWithCheckpoint(t *testing.T) {
@@ -1498,7 +1498,7 @@ func TestMaintenanceHashDoesNotMaskDeterministicBackendFailureWithCheckpoint(t *
 	require.Zero(t, shim.pinnedCalls)
 }
 
-func TestMaintenanceHashCheckpointFallbackPreservesAdminAuthorization(t *testing.T) {
+func TestMaintenanceHashLiveFailurePreservesAdminAuthorization(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	aliceCtx := setupAuthKVUser(t, server)
@@ -1525,15 +1525,16 @@ func TestMaintenanceHashCheckpointFallbackPreservesAdminAuthorization(t *testing
 	server.peers = testPeerService{isLeader: true}
 
 	response, err := server.Hash(rootCtx, &etcdserverpb.HashRequest{})
-	require.NoError(t, err)
-	require.Equal(t, uint32(73), response.Hash)
-	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
-	require.Equal(t, 1, shim.pinnedCalls)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, storage.ErrUnavailable)
+	require.Equal(t, 1, shim.liveCalls)
+	require.Zero(t, shim.pinnedCalls)
 
 	response, err = server.Hash(aliceCtx, &etcdserverpb.HashRequest{})
 	require.Nil(t, response)
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
-	require.Equal(t, 1, shim.pinnedCalls, "a non-admin caller must not reach the protected backend hash")
+	require.Equal(t, 1, shim.liveCalls, "a non-admin caller must not reach the backend hash")
+	require.Zero(t, shim.pinnedCalls)
 }
 
 func TestMaintenanceHashStableUntilWriteAndChangesAfterWrite(t *testing.T) {

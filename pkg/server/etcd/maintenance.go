@@ -591,16 +591,12 @@ func authorizedPeerHashKVProxy(ctx context.Context) bool {
 
 func (s *RPCServer) Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
 	s.metricCli.EmitCounter("maintenance.hash", 1)
-	if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
-		liveCtx, cancel := context.WithTimeout(ctx, serializableLiveReadBudget)
-		response, err := s.hashOnce(liveCtx, req)
-		cancel()
-		if err == nil || ctx.Err() != nil || !isSerializableLiveReadFallbackError(err) {
-			return response, err
-		}
-		s.metricCli.EmitCounter("maintenance.hash.checkpoint_fallback", 1)
-		return s.localMaintenanceHash(backend.WithSerializableCheckpoint(ctx, checkpoint), false)
-	}
+	// Backend Hash covers revision-neutral internal state in addition to user
+	// MVCC. A serializable checkpoint is identified only by the user revision,
+	// so substituting an older checkpoint after a slow live scan can return a
+	// different checksum with the same response-header revision. Upstream Hash
+	// is a current backend diagnostic rather than a revision-addressed read:
+	// preserve that identity and fail when the live backend cannot be read.
 	return s.hashOnce(ctx, req)
 }
 
