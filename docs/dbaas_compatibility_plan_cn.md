@@ -70424,6 +70424,63 @@ index、config 四个候选名称及 Docker 候选 tag/index，并删除两次 O
 A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。本轮消除了过滤 CountOnly 的全范围物化风险，同时保持上游
 etcd 对过滤、limit 与 sort 不改变 CountOnly count 的兼容语义。
 
+### A5720：point CountOnly 不再读取完整 value
+
+上游 `/root/etcd/server/storage/mvcc/kvstore_txn.go::rangeKeys` 在任何 `CountOnly` 请求上都先调用
+`CountRevisions` 并直接返回空 KVs；`index.go::CountRevisions` 对 `end=nil` 的精确键只执行一次 revision-index lookup，
+返回 0/1，不读取 MVCC value。KubeBrain 此前却先按空 `RangeEnd` 把 point `CountOnly` 路由到 `backend.Get`，读取、解码并
+校验完整 value 后才丢弃 KVs；最大尺寸对象因此让无 payload 的计数承担不必要的 TiKV I/O、内存和 value corruption 可用性依赖。
+
+新增 `TestRangePointCountOnlyUsesCountPath`，让 Get 显式失败并要求携带四类矛盾 revision filters、limit、VALUE DESCEND 的
+原始 point 请求完整进入 Count；新增 `TestPointCountOnlyPreservesExactKeyBounds`，在目标键之后另置一键，固定空
+`RangeEnd` 必须只计目标键，同时要求 peer proxy 仍看到原始空上界。旧实现分别以
+`CountOnly unexpectedly materialized Get` 与 count `0 != 1` RED（合跑 `0.119s`）。提交 `b9d31bc0` 将所有
+CountOnly 优先于 Get 路由；本地 index/scanner 用 `[key,key+NUL)` 表示任意字节串的唯一精确键，而 peer 请求保持空上界，
+避免把 point 授权扩大为 range 授权。current、historical、serializable checkpoint 三条 Count 路径共用该内部边界。
+最终相关常规/race 测试 `0.329/2.745s`，完整 etcd 包 `142.349s`，vet、gofmt、`git diff --check` 均 GREEN。
+提交前 verifier 精确分配 703 项为 `170/193/180/160`，四分片
+`253.175/444.790/303.581/570.382s` 全部 GREEN；提交后 verifier 不变，四分片
+`247.882/441.598/297.515/569.602s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5720-b9d31bc0b947` 内嵌版本 `0.0.0-b9d31bc0b947`、完整提交
+`b9d31bc0b9477a4e8b2ebc65ef359f3ad5596d3d`、build time `2026-09-04T04:25:09Z`、Go `1.26.5`、
+`linux/amd64`、TiKV、kubectl `v1.36.2`。BuildKit 90/90 completed；OCI index/platform/config/attestation 分别为
+`sha256:e09b5f37c9844887577a7623a7f1897dc49591037b5b4f52dd476b8abd9f9c7d`、
+`sha256:2a9d129c56148fbc409671eedea6d859e995f3e85cefbcad7b2bc5f042e56f1d`、
+`sha256:b716710940d1e7db3daf64c38f2e13e070826ae8af72b9e9b3aa6dc1f58f952a`、
+`sha256:875a004c2fcb3aa3550df2aa3246a0c1988418082ed553079900371f1d5b3ba8`；attestation config 为
+`sha256:27386ae2bbc0139fff9e54ada1787c22970bfe7f07407584c992344d72a3e172`，SPDX/SLSA in-toto layer 为
+`sha256:cb9cff0d7fd28d9f9f42e7defbb29e43a14cebc96677966ce249db34e8ff2825`、
+`sha256:d64ce3081a6089f10e61e696c193635bc043d5aebe3f4710b00dfa6164c3803e`。SPDX 2.3 含 2,592
+packages/8,096 relationships；SLSA subject 精确绑定 platform manifest、四项显式 build args 与 syft/alpine/golang
+三项固定 materials。914,578,432-byte archive SHA-256 为
+`d51fee38fe59dba56b6e3dafb92f4c75274a5e6b71a08e33643ae37476b936d7`；OCI labels、非 root
+`65532:65532`、入口与运行版本交叉验证通过，Kind 在部署前显式登记 tag、canonical digest、index 与 config 四种名称。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 834 部署到候选 835；
+三 Pod runtime digest 同为 `sha256:171b050031c85eaaafd1c296ffea38abcc7559f84b86b1aef21647c5de7c08ee`、
+Ready/restart 0，三处运行版本均绑定上述完整提交且参数未漂移。候选完整 HEAD readonly gate GREEN；终态
+revision/index/applied 为 `66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `538`、
+leader `231094427`，Auth disabled/revision 281、Alarm 与测试前缀为空。leader 上带全部四类过滤、limit 与 VALUE sort 的
+missing point CountOnly 连续 7 次均返回 revision 66763、count 0、无 KVs/More；同一紧邻采样窗口 Get counter 保持 40，
+count-index hit 从 531 增至 539。指标提取器因 `awk` 提前关闭 pipe 产生 curl 23 且漏配动态 count 标签，因此不把该脚本整体
+退出或 count series 作为成功证据；响应断言、Get 不增与 hit 下界仍独立成立。三轮九次 endpoint health 全部成功
+（`57.985–67.983ms`），三个 TiKV store Up，五类 Region check 连续三轮全零。候选日志 `497/517/297` 行，关键错误及
+最近 60 秒关键错误均为 0。
+
+以同类五类原子 test 回滚固定稳定 digest，generation/observed `836/836`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项
+参数未漂移。稳定镜像因版本边界不含新版 `watch_range_prefilter_dropped` 指标，排除该 info-metrics 代际合同后其余 HEAD
+readonly gate 全部 GREEN。稳定终态 revision/index/applied、HashKV、compact revision 为
+`66763/66763/66763/848652157/66760`，term `540`、leader `231094427`，Auth disabled/revision 281、Alarm 与测试
+前缀为空；三轮九次 health 全部成功（`57.662–73.649ms`），三个 store Up、五类 Region check 连续三轮全零。
+稳定日志 `373/416/266` 行且关键错误及最近 60 秒关键错误均为 0。KubeBrain/TiKV 3+3 Ready/restart 0；PD 3 Ready、
+各沿用一次历史 restart。全程认证关闭且无凭据、无持久诊断日志；最终所有 port-forward 会话关闭且六个目标端口无监听。
+确认没有 Pod/容器引用 A5720 后，精确删除 Kind 的 tag、canonical digest、index、config 四个候选名称及 Docker 候选
+tag/index，并删除精确 `/dev/shm` archive；稳定镜像和数据卷未删除。宿主根盘 95%、可用约 111 GiB。A5676 已记录的
+Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 A5719 的无物化 CountOnly 路径覆盖到 point 请求，同时保留精确键、
+历史 revision、checkpoint 与授权边界语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
