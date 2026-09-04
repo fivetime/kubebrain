@@ -166,7 +166,7 @@ func (e *stagedTxnExecutor) prefetchPointRanges(ops []*etcdserverpb.RequestOp) e
 	seen := make(map[string]struct{}, len(ops))
 	for _, op := range ops {
 		rangeRequest := op.GetRequestRange()
-		if rangeRequest == nil || len(rangeRequest.RangeEnd) != 0 || rangeRequest.Revision > 0 {
+		if rangeRequest == nil || rangeRequest.CountOnly || len(rangeRequest.RangeEnd) != 0 || rangeRequest.Revision > 0 {
 			continue
 		}
 		key := string(rangeRequest.Key)
@@ -385,6 +385,22 @@ func (e *stagedTxnExecutor) rangeResponse(r *etcdserverpb.RangeRequest) (*etcdse
 	// transaction revision rather than the requested historical revision.
 	if isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
 		return &etcdserverpb.RangeResponse{Header: txnHeader(e.visibleRevision())}, nil
+	}
+	// A wholly read-only Txn has no staged mutations to merge. Match upstream's
+	// executeRange -> CountRevisions path without fetching values: pin a latest
+	// request to the Txn snapshot, while preserving an explicit historical
+	// revision. The nested response header still reports the enclosing Txn's
+	// visible revision, as etcd does.
+	if e.readonly && r.CountOnly {
+		request := proto.Clone(r).(*etcdserverpb.RangeRequest)
+		if request.Revision <= 0 {
+			request.Revision = e.baseRev
+		}
+		resp, err := e.srv.backend.Count(e.ctx, request)
+		if err == nil && resp != nil && resp.Header != nil {
+			resp.Header.Revision = e.visibleRevision()
+		}
+		return resp, err
 	}
 	if r.Revision > 0 {
 		var resp *etcdserverpb.RangeResponse

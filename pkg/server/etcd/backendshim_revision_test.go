@@ -137,6 +137,22 @@ func TestBackendShimCountUsesCheckpointHeader(t *testing.T) {
 	require.Zero(t, probe.countRevision, "checkpoint count must bypass the shim's local index response")
 }
 
+func TestBackendShimHistoricalCountUsesRequestedRevisionInsideCheckpoint(t *testing.T) {
+	probe := &rangeRevisionProbeBackend{}
+	shim := NewBackendShim(probe, &recordingMetrics{})
+	checkpoint := backend.SerializableCheckpoint{Revision: 29, Timestamp: 101}
+	ctx := backend.WithSerializableCheckpoint(context.Background(), checkpoint)
+
+	response, err := shim.Count(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte("/checkpoint/history/"), RangeEnd: []byte("/checkpoint/history0"),
+		Revision: 7, Serializable: true, CountOnly: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint64(7), probe.countRevision)
+	require.False(t, probe.backendCountCalled, "an explicit historical revision must not be replaced by the checkpoint revision")
+	require.Equal(t, int64(probe.GetCurrentRevision()), response.Header.Revision)
+}
+
 func TestBackendShimCurrentCountPreservesResolvedRevision(t *testing.T) {
 	probe := &currentCountRevisionRaceBackend{current: 11}
 	shim := NewBackendShim(probe, &recordingMetrics{})

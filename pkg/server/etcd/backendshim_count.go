@@ -243,7 +243,7 @@ func (cr *countResolver) count(
 		start := time.Now()
 		defer func() { emitEtcdRangeDuration(cr.shim.metricCli, time.Since(start), retErr) }()
 	}
-	if _, checkpoint := backend.SerializableCheckpointFromContext(ctx); checkpoint {
+	if _, checkpoint := backend.SerializableCheckpointFromContext(ctx); checkpoint && r.Revision <= 0 {
 		// CountAtRevision is checkpoint-aware, but its shim response historically
 		// stamped the process-local revision. Delegate to backend.Count so both an
 		// index hit and its non-materializing scanner fallback use the pinned TiKV
