@@ -70541,6 +70541,66 @@ tag/index，并删除两处精确 `/dev/shm` 目录；稳定镜像和数据卷�
 Kind local-path 非 CSI 存储隔离风险仍存在。本轮把 A5719/A5720 的无物化 CountOnly 路径扩展到全只读 Txn，同时保持
 外层快照 header、显式历史 revision、授权边界与含写 staged mutation 语义。
 
+### A5722：历史 CountOnly index-miss 使用整数扫描回退
+
+上游 `/root/etcd/server/etcdserver/txn/range.go::executeRange` 把 CountOnly 传给 MVCC Range，
+`/root/etcd/server/storage/mvcc/kvstore_txn.go::rangeKeys` 先由 `CountRevisions` 取得总数并返回空 KVs；后续 revision
+filters 只能裁剪空 KVs，不会改变 count。KubeBrain 的 current/checkpoint/index-hit Count 已满足该顺序，但显式历史 revision
+在本地与 leader count-index 都拒绝服务时仍回退 `backendshim.List`：它既构造完整 KeyValue 切片，又把四类本应无效的 filters
+应用到 count，因而冷启动、index rebuild/overflow 或过旧但未 compact 的历史请求会同时出现语义和内存放大差距。
+
+新增 `TestBackendShimHistoricalCountIndexMissUsesUnfilteredScan`，令 index 明确 miss、旧 List 硬失败，要求 point/range 边界与
+revision 7 进入不携带 filters 的整数扫描并保留 current response header；旧实现在 `0.040s` 以
+`historical CountOnly unexpectedly materialized List` RED。新增
+`TestCountAtRevisionScanMatchesHistoricalStateWithoutIndex`，在关闭 count-index 的真实 memkv 后端上固定历史/current/point
+计数为 `2/3/1`。提交 `90065fbe` 把原有 backend Count scanner 提取为 `CountAtRevisionScan`：它复用 decoded-range 与低字节
+边界规划，但 receiver 只累计整数、不保留 KV；current Count 与 historical fallback 共用该实现。shim 的历史回退只传
+key/end/revision，所以 filters、sort、limit、KeysOnly 都不能改变 cardinality 或迫使 List 物化；成功扫描的 header 不低于所选
+revision。接口升级首次完整 etcd 包准确暴露一个嵌入 nil Backend 的 metrics fixture 缺新方法并 panic，补齐该 index-miss
+适配器后定向测试 `0.044s`、完整 backend/etcd `49.715/138.605s`、focused race `1.187/1.171s`，vet、gofmt 与
+`git diff --check` 均 GREEN。提交前 verifier 精确分配 703 项为 `170/193/180/160`，四分片
+`253.205/457.579/303.677/583.343s` 全部 GREEN；提交后 verifier 不变，四分片
+`250.283/442.306/296.860/569.715s` 再次全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5722-90065fbe4446` 内嵌版本 `0.0.0-90065fbe4446`、完整提交
+`90065fbe44461cc97314cfe2d6cd8c054a6d9f7f`、build time `2026-09-04T06:26:28Z`、Go `1.26.5`、
+`linux/amd64` 与 TiKV；BuildKit 91/91 completed。OCI index/platform/config/attestation 分别为
+`sha256:6d5992434da1b54dae5588e3bcbd234a9e7b8ec2cd50b7f1bff02fd428fdd6a2`、
+`sha256:dd7c7d445558ea2d1e423ef4101f087844fe4777c6937d828b384f7ef95c7a21`、
+`sha256:8c682e5c0bee9bf0d59bf17722afc253d8b312322f413f06f586ff2b2ec8c952`、
+`sha256:96ea413ebf9770f4926dfb41716dde77e96ee64d278bc19e584857261f95f2ca`；attestation config 为
+`sha256:bf79a43d67d61258df46eecd55f734a7aa6de29f38983960b23c3d6ea820c3fa`，SPDX/SLSA in-toto layer 为
+`sha256:331dd4250b5cffce90ce67f90f4055ab0c05df841f1e78c53d2e82763a2a282a`、
+`sha256:7f1bf16952a523f055748f04078b69234960973c1b665a3934795f932b94c017`。SPDX 2.3 含 2,592
+packages/8,096 relationships；SLSA subject 精确绑定 platform manifest、四项显式 build args 与 syft/alpine/golang
+三项固定 materials。914,581,504-byte archive SHA-256 为
+`427473dda95d26e4f43a4ed2eaa8a5aa366104ff04d15a1036d2ff414970e6e1`；OCI labels、非 root
+`65532:65532`、入口与运行版本交叉验证通过。Kind 部署前显式登记 tag、canonical digest、platform 与 config 四种名称；
+三 Pod runtime digest 同为 `sha256:198fa13507eb3fa2a1b270431f5dce34e2c65aebd455860a7b5df418c8149246`。
+
+以 UID/resourceVersion/container name/current image/full 22 args 五类原子 test 从稳定 generation 838 部署到候选 839；
+三 Pod Ready/restart 0 且参数未漂移。候选完整 HEAD readonly gate GREEN，终态 revision/index/applied 为
+`66763/66763/66763`，HashKV `848652157`、compact revision `66760`、term `547`、leader `2393892952`，Auth
+disabled/revision 281、Alarm 与测试前缀为空。leader 上 revision 66761 的 missing point/range CountOnly 在同一个只读
+Txn 内携带四类矛盾 filters、limit 与 VALUE sort，连续 7 次均返回外层/嵌套 revision 66763、count 0、无 KVs/More；
+count-index miss 从 26 精确增至 40，证明 14 个子请求全部进入目标 fallback。三轮九次 endpoint health 全部成功
+（`47.992–68.127ms`），三个 TiKV store Up，五类 Region check 连续三轮全零。候选日志 `452/462/515` 行；
+kubebrain-2 在 rollout 换主窗口有一次 TiKV election lock 后的 lease CAS 竞争并立即连接新 leader，最近 60 秒关键错误为 0，
+其余两 Pod 全程关键错误为 0。
+
+以同类五类原子 test、候选 RV `8351702` 回滚固定稳定 digest，generation/observed `840/840`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、Ready/restart 0，完整 22 项
+参数未漂移。稳定镜像排除新版 info-metrics 代际合同后其余 HEAD readonly gate 全部 GREEN；终态
+revision/index/applied、HashKV、compact revision 为 `66763/66763/66763/848652157/66760`，term `549`、leader
+`231094427`，Auth disabled/revision 281、Alarm 与测试前缀为空。三轮九次 health 全部成功（`47.856–59.169ms`），三个
+store Up、五类 Region check 连续三轮全零。稳定日志 `402/428/317` 行；kubebrain-2 启动时一次 compact revision metric
+refresh 超时，随后 count-index rev 66763 ready 且最近 60 秒关键错误为 0，其余两 Pod 全程关键错误为 0。
+KubeBrain/TiKV 3+3 Ready/restart 0；PD 3 Ready、各沿用一次历史 restart。全程认证关闭且无凭据、无持久诊断日志；最终
+所有 port-forward 会话关闭且六个目标端口无监听。确认没有 Pod/容器引用 A5722 后，精确删除 Kind 四个候选名称、Docker
+候选 tag/index 及两处 `/dev/shm` 目录；稳定镜像和数据卷未删除。A5676 已记录的 Kind local-path 非 CSI 存储隔离风险仍存在。
+本轮使 CountOnly 在 index 可用、index miss、current、historical、checkpoint、point、range 与全只读 Txn 组合下都保持上游
+“先计数、无 payload、filters 不影响 cardinality”的执行语义。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
